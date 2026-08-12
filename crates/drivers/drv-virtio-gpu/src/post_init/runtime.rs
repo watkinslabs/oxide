@@ -30,7 +30,7 @@ fn submit_ctrl_for_key<F: Fn(&mut [u8]) -> usize>(driver_key: drm::node::Scanout
     // this ctx's 4 KiB command frame and its CTRLQ stay live and single-producer
     // and the previous submission on the queue was already retired.
     let ok = unsafe {
-        submit_one(cmd_buf_va_p, ctx.cmd_buf_pa, |b| encode(b), ctx.ctrlq, ctx.hhdm)
+        submit_one(cmd_buf_va_p, ctx.cmd_buf_dma, |b| encode(b), ctx.ctrlq, ctx.hhdm)
     };
     if !retain_ctx_after_submit(ctx, ok) { return false; }
     // SAFETY: RESP_OFF (0x200) is a 4-byte-aligned offset with 0xE00 bytes left
@@ -114,7 +114,7 @@ pub fn present_rect_for_key(driver_key: drm::node::ScanoutDriverKey, res_id: u32
     if ctx.quiesced { return false; }
     let (steps, n) = present::plan(ctx.bound, next, rect, damage::BYTES_PER_PIXEL as u32);
     let cmd_buf_va_p = ctx.cmd_buf_va as *mut u8;
-    let (cmd_buf_pa, ctrlq, hhdm) = (ctx.cmd_buf_pa, ctx.ctrlq, ctx.hhdm);
+    let (cmd_buf_dma, ctrlq, hhdm) = (ctx.cmd_buf_dma, ctx.ctrlq, ctx.hhdm);
     for step in steps.iter().take(n) {
         let ok = match *step {
             // SAFETY: `submit_one`'s contract — `CTX` is held across the whole
@@ -122,7 +122,7 @@ pub fn present_rect_for_key(driver_key: drm::node::ScanoutDriverKey, res_id: u32
             // single-producer, and each step waits for the previous descriptor
             // to retire before the frame is reused.
             present::Step::Transfer { rect: r, offset } => unsafe {
-                submit_one(cmd_buf_va_p, cmd_buf_pa,
+                submit_one(cmd_buf_va_p, cmd_buf_dma,
                     |b| crate::encode_transfer_to_host_2d(b, res_id, r.x, r.y, r.w, r.h, offset), ctrlq, hhdm)
             },
             // SAFETY: `submit_one`'s contract — `CTX` is held across the whole
@@ -130,7 +130,7 @@ pub fn present_rect_for_key(driver_key: drm::node::ScanoutDriverKey, res_id: u32
             // single-producer, and each step waits for the previous descriptor
             // to retire before the frame is reused.
             present::Step::SetScanout => unsafe {
-                submit_one(cmd_buf_va_p, cmd_buf_pa,
+                submit_one(cmd_buf_va_p, cmd_buf_dma,
                     |b| crate::encode_set_scanout(b, 0, res_id, 0, 0, w, h), ctrlq, hhdm)
             },
             // SAFETY: `submit_one`'s contract — `CTX` is held across the whole
@@ -138,7 +138,7 @@ pub fn present_rect_for_key(driver_key: drm::node::ScanoutDriverKey, res_id: u32
             // single-producer, and each step waits for the previous descriptor
             // to retire before the frame is reused.
             present::Step::Flush { rect: r } => unsafe {
-                submit_one(cmd_buf_va_p, cmd_buf_pa,
+                submit_one(cmd_buf_va_p, cmd_buf_dma,
                     |b| crate::encode_resource_flush(b, res_id, r.x, r.y, r.w, r.h), ctrlq, hhdm)
             },
         };
@@ -163,7 +163,7 @@ pub fn set_cursor_for_key(driver_key: drm::node::ScanoutDriverKey, res_id: u32,
         // 4 KiB command frame and CURSORQ are live and single-producer; the
         // cursor area 0x100..0x200 is disjoint from the CTRLQ areas.
         let ok = unsafe {
-            submit_cursor_one(ctx.cmd_buf_va as *mut u8, ctx.cmd_buf_pa,
+            submit_cursor_one(ctx.cmd_buf_va as *mut u8, ctx.cmd_buf_dma,
                 |b| crate::encode_update_cursor(b, 0, 0, 0, 0, 0, 0, 0), ctx.cursorq, ctx.hhdm)
         };
         return retain_ctx_after_submit(ctx, ok);
@@ -182,15 +182,15 @@ pub fn set_cursor_for_key(driver_key: drm::node::ScanoutDriverKey, res_id: u32,
     // live and single-producer, and each command waits for the previous
     // descriptor to retire before the frame is reused.
     unsafe {
-        if !retain_ctx_after_submit(ctx, submit_one(cmd_buf_va, ctx.cmd_buf_pa,
+        if !retain_ctx_after_submit(ctx, submit_one(cmd_buf_va, ctx.cmd_buf_dma,
             |b| crate::encode_transfer_to_host_2d(b, res_id, 0, 0, w, h, 0), ctx.ctrlq, ctx.hhdm)) {
             return false;
         }
-        if !retain_ctx_after_submit(ctx, submit_one(cmd_buf_va, ctx.cmd_buf_pa,
+        if !retain_ctx_after_submit(ctx, submit_one(cmd_buf_va, ctx.cmd_buf_dma,
             |b| crate::encode_resource_flush(b, res_id, 0, 0, w, h), ctx.ctrlq, ctx.hhdm)) {
             return false;
         }
-        retain_ctx_after_submit(ctx, submit_cursor_one(cmd_buf_va, ctx.cmd_buf_pa,
+        retain_ctx_after_submit(ctx, submit_cursor_one(cmd_buf_va, ctx.cmd_buf_dma,
             |b| crate::encode_update_cursor(b, res_id, w, h, x, y, hot_x, hot_y), ctx.cursorq, ctx.hhdm)
         )
     }
@@ -206,7 +206,7 @@ pub fn move_cursor_for_key(driver_key: drm::node::ScanoutDriverKey, x: i32, y: i
     // command frame and CURSORQ are live and single-producer, and the cursor
     // area 0x100..0x200 is disjoint from the CTRLQ request and reply areas.
     let ok = unsafe {
-        submit_cursor_one(ctx.cmd_buf_va as *mut u8, ctx.cmd_buf_pa,
+        submit_cursor_one(ctx.cmd_buf_va as *mut u8, ctx.cmd_buf_dma,
             |b| crate::encode_move_cursor(b, x, y), ctx.cursorq, ctx.hhdm)
     };
     retain_ctx_after_submit(ctx, ok)
@@ -251,12 +251,12 @@ pub fn flush_scanout_for_key(driver_key: fbdev::FbDriverKey) {
     // this ctx's 4 KiB command frame and its CTRLQ stay live and single-producer
     // and the previous submission on the queue was already retired.
     unsafe {
-        if !retain_ctx_after_submit(ctx, submit_one(cmd_buf_va_p, ctx.cmd_buf_pa,
+        if !retain_ctx_after_submit(ctx, submit_one(cmd_buf_va_p, ctx.cmd_buf_dma,
             |buf| crate::encode_transfer_to_host_2d(buf, res_id, 0, 0, w, h, 0),
             ctx.ctrlq, ctx.hhdm)) {
             return;
         }
-        let _ = retain_ctx_after_submit(ctx, submit_one(cmd_buf_va_p, ctx.cmd_buf_pa,
+        let _ = retain_ctx_after_submit(ctx, submit_one(cmd_buf_va_p, ctx.cmd_buf_dma,
             |buf| crate::encode_resource_flush(buf, res_id, 0, 0, w, h),
             ctx.ctrlq, ctx.hhdm));
     }

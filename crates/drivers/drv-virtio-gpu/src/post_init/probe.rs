@@ -1,10 +1,5 @@
 use super::*;
 
-/// Spin iterations a probe-time submission waits for the device to retire its
-/// descriptor. Exceeding it means the descriptor is still device-owned, so the
-/// command frame must be leaked rather than freed or reused.
-const SUBMIT_POLL_BUDGET: u32 = 1_000_000;
-
 /// Submit `CMD_GET_DISPLAY_INFO` on q0; spin-poll used.idx for
 /// completion; parse the response and re-install the device with
 /// real DisplayInfo.
@@ -23,7 +18,7 @@ pub fn get_display_info(
     }
     let cfg_va = resources.cfg_va;
     let hhdm = resources.hhdm;
-    let mut cmd_buf = match ProbeCommandBuffer::alloc(hhdm) {
+    let mut cmd_buf = match ProbeCommandBuffer::alloc(hhdm, bdf) {
         Some(buf) => buf,
         None => return false,
     };
@@ -42,12 +37,12 @@ pub fn get_display_info(
     // `size` down to one frame's worth); descriptor 0 is the 24-byte request and
     // 1 the 408-byte reply at RESP_OFF, both inside the probe's command frame.
     unsafe {
-        core::ptr::write_volatile(desc0.add(0), cmd_buf.pa);
+        core::ptr::write_volatile(desc0.add(0), cmd_buf.dma);
         let d0 = 24u64
                | ((virtio::VRING_DESC_F_NEXT as u64) << 32)
                | (1u64 << 48);
         core::ptr::write_volatile(desc0.add(1), d0);
-        core::ptr::write_volatile(desc0.add(2), cmd_buf.pa + 0x200);
+        core::ptr::write_volatile(desc0.add(2), cmd_buf.dma + 0x200);
         let d1 = 408u64 | ((virtio::VRING_DESC_F_WRITE as u64) << 32);
         core::ptr::write_volatile(desc0.add(3), d1);
     }
@@ -110,7 +105,7 @@ pub fn get_display_info(
     // and the display-info descriptor above was retired, so nothing else is in
     // flight on this queue — `fetch`'s documented contract.
     let edid = unsafe {
-        super::edid::fetch(drv_features, cmd_buf.va, cmd_buf.pa, ctrlq, hhdm,
+        super::edid::fetch(drv_features, cmd_buf.va, cmd_buf.dma, ctrlq, hhdm,
             &mut edid_timed_out)
     };
     if edid_timed_out {
@@ -152,7 +147,7 @@ pub fn get_display_info(
             setup_scanout(
                 device_key,
                 info.modes[0].r.width, info.modes[0].r.height,
-                cfg_va, ctrlq, cursorq, cmd_buf.va, cmd_buf.pa, hhdm,
+                cfg_va, ctrlq, cursorq, cmd_buf.va, cmd_buf.pa, cmd_buf.dma, bdf, hhdm,
             )
         };
         if !scanout_ok {
@@ -193,7 +188,7 @@ unsafe fn setup_scanout(
     cfg_va: u64,
     ctrlq: virtio::VirtQueueResource,
     cursorq: virtio::VirtQueueResource,
-    cmd_buf_va: *mut u8, cmd_buf_pa: u64,
+    cmd_buf_va: *mut u8, cmd_buf_pa: u64, cmd_buf_dma: u64, bdf: pci::Bdf,
     hhdm: u64,
 ) -> bool {
     let pitch = w as u64 * 4;
@@ -203,11 +198,12 @@ unsafe fn setup_scanout(
     let mut order: u32 = 0;
     while (1usize << order) < pages_req { order += 1; }
     let fb_order = pmm::Order(order as u8);
-    let mut fb_run = match ProbeFramebufferRun::alloc(fb_order) {
+    let mut fb_run = match ProbeFramebufferRun::alloc(bdf, fb_order) {
         Some(run) => run,
         None => return false,
     };
     let base_pa = fb_run.base_pa;
+    let base_dma = fb_run.base_dma;
     {
         let mut console = fbcon::Console::new(w, h);
         console.fg = [0xff, 0xff, 0xff];
@@ -259,7 +255,7 @@ unsafe fn setup_scanout(
     // command frame is live and ≥ RESP_OFF + NODATA_RESP_LEN, CTRLQ's VAs are
     // valid, and the probe is single-threaded, so the previous submission was
     // already retired and no other producer touches the queue.
-    if unsafe { !submit_one(cmd_buf_va, cmd_buf_pa,
+    if unsafe { !submit_one(cmd_buf_va, cmd_buf_dma,
         |buf| crate::encode_resource_create_2d(buf, res_id,
             crate::VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM, w, h),
         ctrlq, hhdm,
@@ -271,16 +267,16 @@ unsafe fn setup_scanout(
     // command frame is live and ≥ RESP_OFF + NODATA_RESP_LEN, CTRLQ's VAs are
     // valid, and the probe is single-threaded, so the previous submission was
     // already retired and no other producer touches the queue.
-    if unsafe { !submit_one(cmd_buf_va, cmd_buf_pa,
+    if unsafe { !submit_one(cmd_buf_va, cmd_buf_dma,
         |buf| crate::encode_resource_attach_backing_one(
-            buf, res_id, base_pa, fb_bytes as u32),
+            buf, res_id, base_dma, fb_bytes as u32),
         ctrlq, hhdm,
     ) } {
         return false;
     }
     log_resp(b"attach");
     // Corruption-hunt fix (state.md): once ATTACH succeeds, the device's
-    // resource table holds base_pa as this resource's backing store —
+    // resource table holds the mapped backing DMA range —
     // `fb_run`'s ownership must transfer here, before any LATER submit
     // (setscanout/transfer/flush) can fail and return early. Without this,
     // an early return would drop `fb_run` and free_contig the frame while
@@ -297,7 +293,7 @@ unsafe fn setup_scanout(
     // command frame is live and ≥ RESP_OFF + NODATA_RESP_LEN, CTRLQ's VAs are
     // valid, and the probe is single-threaded, so the previous submission was
     // already retired and no other producer touches the queue.
-    if unsafe { !submit_one(cmd_buf_va, cmd_buf_pa,
+    if unsafe { !submit_one(cmd_buf_va, cmd_buf_dma,
         |buf| crate::encode_set_scanout(buf, 0, res_id, 0, 0, w, h),
         ctrlq, hhdm,
     ) } {
@@ -308,7 +304,7 @@ unsafe fn setup_scanout(
     // command frame is live and ≥ RESP_OFF + NODATA_RESP_LEN, CTRLQ's VAs are
     // valid, and the probe is single-threaded, so the previous submission was
     // already retired and no other producer touches the queue.
-    if unsafe { !submit_one(cmd_buf_va, cmd_buf_pa,
+    if unsafe { !submit_one(cmd_buf_va, cmd_buf_dma,
         |buf| crate::encode_transfer_to_host_2d(buf, res_id, 0, 0, w, h, 0),
         ctrlq, hhdm,
     ) } {
@@ -319,7 +315,7 @@ unsafe fn setup_scanout(
     // command frame is live and ≥ RESP_OFF + NODATA_RESP_LEN, CTRLQ's VAs are
     // valid, and the probe is single-threaded, so the previous submission was
     // already retired and no other producer touches the queue.
-    if unsafe { !submit_one(cmd_buf_va, cmd_buf_pa,
+    if unsafe { !submit_one(cmd_buf_va, cmd_buf_dma,
         |buf| crate::encode_resource_flush(buf, res_id, 0, 0, w, h),
         ctrlq, hhdm,
     ) } {
@@ -329,8 +325,8 @@ unsafe fn setup_scanout(
     if !install_scanout_ctx(
         device_key,
         w, h,
-        cfg_va, hhdm.wrapping_add(base_pa), fb_bytes, fb_order, res_id,
-        ctrlq, cursorq, cmd_buf_va as u64, cmd_buf_pa, hhdm,
+        cfg_va, hhdm.wrapping_add(base_pa), base_dma, fb_run.map_bytes, fb_bytes, fb_order, res_id,
+        ctrlq, cursorq, cmd_buf_va as u64, cmd_buf_pa, cmd_buf_dma, bdf, hhdm,
     ) {
         return false;
     }
@@ -350,7 +346,7 @@ unsafe fn setup_scanout(
 
 /// Submit a single CTRLQ command via the encoder closure.
 pub(super) unsafe fn submit_one<F: FnOnce(&mut [u8]) -> usize>(
-    buf_va: *mut u8, buf_pa: u64, encode: F,
+    buf_va: *mut u8, buf_dma: u64, encode: F,
     ctrlq: virtio::VirtQueueResource, hhdm: u64,
 ) -> bool {
     // Scrubbing the reply area first stops a stale header from an earlier
@@ -364,11 +360,11 @@ pub(super) unsafe fn submit_one<F: FnOnce(&mut [u8]) -> usize>(
         let req = core::slice::from_raw_parts_mut(buf_va, 0x100);
         let _ = encode(req);
     }
-    // SAFETY: `buf_pa` is the physical address of the frame just encoded into,
+    // SAFETY: `buf_dma` is the device-visible mapped address of the frame just encoded into,
     // whose request area is 0x100 bytes (≥ the 64 described) and whose reply
     // area at RESP_OFF has room for NODATA_RESP_LEN; CTRLQ's VAs come from the
     // caller's validated queue resource.
-    unsafe { submit_raw(buf_pa, 64, NODATA_RESP_LEN, ctrlq, hhdm) }
+    unsafe { submit_raw(buf_dma, 64, NODATA_RESP_LEN, ctrlq, hhdm) }
 }
 
 /// Response descriptor length for a command whose reply is a bare ctrl header.
@@ -380,7 +376,7 @@ pub(super) const RESP_OFF: u64 = 0x200;
 /// it before reusing the serialized command buffer. Cursor queue commands have
 /// no response descriptor by specification.
 pub(super) unsafe fn submit_cursor_one<F: FnOnce(&mut [u8]) -> usize>(
-    buf_va: *mut u8, buf_pa: u64, encode: F,
+    buf_va: *mut u8, buf_dma: u64, encode: F,
     cursorq: virtio::VirtQueueResource, hhdm: u64,
 ) -> bool {
     let cursor_off = 0x100usize;
@@ -396,7 +392,7 @@ pub(super) unsafe fn submit_cursor_one<F: FnOnce(&mut [u8]) -> usize>(
         let req = core::slice::from_raw_parts_mut(buf_va.add(cursor_off), 0x100);
         let req_len = encode(req);
         if req_len == 0 || req_len > 0x100 { return false; }
-        submit_cursor_raw(buf_pa + cursor_off as u64, req_len, cursorq, hhdm)
+        submit_cursor_raw(buf_dma + cursor_off as u64, req_len, cursorq, hhdm)
     }
 }
 
@@ -404,7 +400,7 @@ pub(super) unsafe fn submit_cursor_one<F: FnOnce(&mut [u8]) -> usize>(
 /// consumes it. `resp_len` sizes the device-writable descriptor; a command whose
 /// reply is larger than a bare header must say so or the device truncates it.
 pub(super) unsafe fn submit_raw(
-    buf_pa: u64, req_len: usize, resp_len: usize,
+    buf_dma: u64, req_len: usize, resp_len: usize,
     ctrlq: virtio::VirtQueueResource, hhdm: u64,
 ) -> bool {
     let desc0 = (hhdm.wrapping_add(ctrlq.desc_pa)) as *mut u64;
@@ -414,12 +410,12 @@ pub(super) unsafe fn submit_raw(
     // its first 32 bytes; this probe is the queue's sole producer and the
     // previous submission was retired before this one.
     unsafe {
-        core::ptr::write_volatile(desc0.add(0), buf_pa);
+        core::ptr::write_volatile(desc0.add(0), buf_dma);
         let d0 = req_len as u64
                | ((virtio::VRING_DESC_F_NEXT as u64) << 32)
                | (1u64 << 48);
         core::ptr::write_volatile(desc0.add(1), d0);
-        core::ptr::write_volatile(desc0.add(2), buf_pa + RESP_OFF);
+        core::ptr::write_volatile(desc0.add(2), buf_dma + RESP_OFF);
         let d1 = resp_len as u64 | ((virtio::VRING_DESC_F_WRITE as u64) << 32);
         core::ptr::write_volatile(desc0.add(3), d1);
     }
@@ -458,16 +454,16 @@ pub(super) unsafe fn submit_raw(
 }
 
 unsafe fn submit_cursor_raw(
-    buf_pa: u64, req_len: usize,
+    buf_dma: u64, req_len: usize,
     cursorq: virtio::VirtQueueResource, hhdm: u64,
 ) -> bool {
     let desc = (hhdm.wrapping_add(cursorq.desc_pa)) as *mut u64;
     // Data-only: one read-only descriptor, no reply (Virtio 1.2 §5.7.6).
     // SAFETY: CURSORQ's descriptor frame via HHDM; entry 0 is its first 16
-    // bytes. The caller guarantees `buf_pa..buf_pa+req_len` lies in the command
+    // bytes. The caller guarantees `buf_dma..buf_dma+req_len` lies in the mapped command
     // frame it owns and that no other producer uses this queue.
     unsafe {
-        core::ptr::write_volatile(desc.add(0), buf_pa);
+        core::ptr::write_volatile(desc.add(0), buf_dma);
         core::ptr::write_volatile(desc.add(1), req_len as u64);
     }
     let avail = (hhdm.wrapping_add(cursorq.driver_pa)) as *mut u16;

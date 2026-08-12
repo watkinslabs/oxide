@@ -23,12 +23,16 @@ fn test_scanout_ctx(device_key: virtio::VirtioChildDeviceKey) -> ScanoutCtx {
         w: 640,
         h: 480,
         fb_va: 0,
+        fb_dma: 0,
+        fb_map_bytes: 0,
         fb_bytes: 0,
         fb_order: pmm::Order(0),
         res_id: 1,
         ctrlq: test_ctrlq(), cursorq: test_ctrlq(),
         cmd_buf_va: 0,
         cmd_buf_pa: 0,
+        cmd_buf_dma: 0,
+        bdf: pci::Bdf { segment: 0, bus: 0, device: 0, function: 0 },
         hhdm: 0,
         fbdev_idx: None,
         quiesced: false,
@@ -102,11 +106,16 @@ fn failed_probe_unwind_owns_probe_command_and_framebuffer_state() {
     CTX.lock().clear();
     let mut cmd = ProbeCommandBuffer {
         pa: 0,
+        dma: 0,
+        bdf: pci::Bdf { segment: 0, bus: 0, device: 0, function: 0 },
         va: core::ptr::null_mut(),
         owned: true,
     };
     let mut fb = ProbeFramebufferRun {
         base_pa: 0,
+        base_dma: 0,
+        map_bytes: 0,
+        bdf: pci::Bdf { segment: 0, bus: 0, device: 0, function: 0 },
         order: pmm::Order(0),
         owned: true,
     };
@@ -122,12 +131,16 @@ fn failed_probe_unwind_owns_probe_command_and_framebuffer_state() {
         0,
         0xffff_8000_0000_4000,
         0x1000,
+        0x1000,
+        0x1000,
         fb.order,
         1,
         test_ctrlq(),
         test_ctrlq(),
         0,
         cmd.pa,
+        0x4000,
+        pci::Bdf { segment: 0, bus: 0, device: 0, function: 0 },
         0xffff_8000_0000_4000,
     ));
     {
