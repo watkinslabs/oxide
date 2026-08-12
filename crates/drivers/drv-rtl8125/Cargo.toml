@@ -7,5 +7,10 @@ publish = false
 [lib]
 path = "src/lib.rs"
 
+[dependencies]
+pci = { path = "../pci" }
+pmm = { path = "../../kernel/mm-pmm" }
+iommu = { path = "../../kernel/iommu" }
+
 [lints]
 workspace = true

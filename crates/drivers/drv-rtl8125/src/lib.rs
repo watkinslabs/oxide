@@ -4,3 +4,6 @@
 
 pub mod regs;
 pub mod bringup;
+pub mod dma;
+#[cfg(target_os = "oxide-kernel")]
+mod dma_owner;
