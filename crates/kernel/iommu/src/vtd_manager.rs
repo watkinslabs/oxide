@@ -45,6 +45,11 @@ pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf],
         let Some(mut tables) = VtdTables::new(hhdm_offset) else { return VtdActivation::Failed; };
         if !regs.cache_coherent() || !regs.supports_address_width(tables.address_width())
             || !tables.map_identity_regions(regions) { return VtdActivation::Failed; }
+        // Linux disables firmware-pre-enabled IR/translation/QI state before
+        // it replaces their table bases.  Do this only after replacement
+        // allocations and mappings succeeded, so an allocation failure leaves
+        // the firmware configuration intact.
+        if !regs.quiesce_firmware_state() { return activation_failed(&mut manager); }
         let ir = if regs.supports_interrupt_remapping() && regs.supports_queued_invalidation() {
             let Some(table) = VtdIrTable::new(hhdm_offset, false) else { return activation_failed(&mut manager); };
             Some(table)

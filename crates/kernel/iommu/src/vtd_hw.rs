@@ -129,6 +129,19 @@ impl VtdRegisters {
         // SAFETY: caller validated this aligned VT-d register aperture from firmware.
         Some(Self { map: unsafe { mmio_map::map_owned(mmio_pa, pages) }, bytes })
     }
+    /// Quiesce firmware-owned remapping state before replacement tables are
+    /// programmed.
+    ///
+    /// Match Linux's VT-d teardown ordering: interrupt remapping must stop
+    /// using the old IRTA, translation must stop using the old root/context
+    /// tree, and queued invalidation must stop consuming the old IQA.  The
+    /// PCI bootstrap has already disabled bus mastering for every requester.
+    /// # C: O(poll limit)
+    pub fn quiesce_firmware_state(&self) -> bool {
+        self.disable_interrupt_remapping()
+            && self.disable_translation()
+            && self.disable_queued_invalidation()
+    }
     /// Program the root table and wait until hardware acknowledges it. # C: O(poll limit)
     pub fn set_root_table(&self, root_pa: u64) -> bool {
         if root_pa & (PAGE_BYTES - 1) != 0 || root_pa & !ROOT_TABLE_MASK != 0 { return false; }
