@@ -37,18 +37,18 @@ pub(super) fn ctx(device_key: virtio::VirtioChildDeviceKey) -> QueueCtx {
         bdf: pci::Bdf { segment: 0, bus: 0, device: 0, function: 0 },
         cfg_va: 0,
         hhdm: 0,
-        eventq: queue(),
+        eventq: None,
         buf_pa: 0,
         buf_dma: 0,
         event_buffers: queue().size.min(super::super::queue::MAX_EVENT_BUFFERS),
-        statusq,
+        event_desc_slots: [u16::MAX; super::super::queue::MAX_EVENT_BUFFERS as usize],
+        statusq: None,
         status_buf_pa: 0,
         status_buf_dma: 0,
         status: super::super::status::StatusState::new(statusq.size)
             .expect("status state"),
+        status_desc_slots: [u16::MAX; super::super::status::MAX_STATUS_DESCRIPTORS],
         pending_output: VecDeque::new(),
-        last_used: 0,
-        avail_idx: 0,
         eventq_failed: false,
     }
 }

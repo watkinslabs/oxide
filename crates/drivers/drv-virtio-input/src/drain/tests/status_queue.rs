@@ -67,27 +67,24 @@ impl Fixture {
         size: u16,
     ) -> QueueCtx {
         let statusq = self.queue(size);
-        let status = status::initialize(0, statusq, self.frames.0.as_mut_ptr() as u64)
-            .expect("valid status queue");
+        let status = status::StatusState::new(statusq.size).expect("valid status queue");
+        let statusq_owner = virtio::VirtioSplitQueue::new(statusq, 0).expect("status queue");
         QueueCtx {
             device_key,
             bdf: pci::Bdf { segment: 0, bus: 0, device: 0, function: 0 },
             cfg_va: 0,
             hhdm: 0,
-            eventq: virtio::VirtQueueResource {
-                index: EVENT_QUEUE_INDEX,
-                ..statusq
-            },
+            eventq: None,
             buf_pa: TEST_EVENT_BUF_PA,
             buf_dma: TEST_EVENT_BUF_PA,
             event_buffers: size.min(queue::MAX_EVENT_BUFFERS),
-            statusq,
+            event_desc_slots: [u16::MAX; queue::MAX_EVENT_BUFFERS as usize],
+            statusq: Some(statusq_owner),
             status_buf_pa: self.frames.0.as_mut_ptr() as u64,
             status_buf_dma: self.frames.0.as_mut_ptr() as u64,
             status,
+            status_desc_slots: [u16::MAX; status::MAX_STATUS_DESCRIPTORS],
             pending_output: VecDeque::new(),
-            last_used: 0,
-            avail_idx: 0,
             eventq_failed: false,
         }
     }
@@ -186,7 +183,10 @@ fn eventq_publishes_every_frame_backed_descriptor() {
     };
     let frame_pa = fixture.frames.0.as_mut_ptr() as u64;
 
-    let supplied = queue::initialize_eventq(0, eventq, frame_pa);
+    let mut owner = virtio::VirtioSplitQueue::new(eventq, 0).expect("event queue");
+    let mut slots = [u16::MAX; queue::MAX_EVENT_BUFFERS as usize];
+    let supplied = queue::post_event_buffers(&mut owner, frame_pa, &mut slots)
+        .expect("event buffers");
 
     assert_eq!(supplied, queue::MAX_EVENT_BUFFERS);
     assert_eq!(
@@ -210,7 +210,7 @@ fn eventq_publishes_every_frame_backed_descriptor() {
 }
 
 #[test]
-fn status_descriptor_is_driver_readable_eight_byte_indexed_buffer() {
+fn status_submission_uses_driver_readable_eight_byte_buffer() {
     let _devices = crate::registry::own_device_table();
     const DEVICE_KEY_RAW: u32 = 0x4100_0000;
     const QUEUE_SIZE: u16 = 2;
@@ -221,13 +221,12 @@ fn status_descriptor_is_driver_readable_eight_byte_indexed_buffer() {
     let mut fixture = Fixture::new();
     let mut ctx = fixture.context(key(DEVICE_KEY_RAW), QUEUE_SIZE);
 
-    assert_eq!(read_u64(&fixture.desc, 0), fixture.frames.0.as_ptr() as u64);
-    assert_eq!(read_u32(&fixture.desc, DESC_LEN_OFF), EVENT_BYTES as u32);
-    assert_eq!(read_u16(&fixture.desc, DESC_FLAGS_OFF), 0);
-    assert_eq!(read_u16(&fixture.desc, DESC_NEXT_OFF), 0);
     assert_eq!(read_u16(&fixture.avail, RING_INDEX_OFF), 0);
 
     assert_eq!(status::submit(&mut ctx, event(EVENT_VALUE)), Ok(()));
+    assert_eq!(read_u64(&fixture.desc, 0), fixture.frames.0.as_ptr() as u64);
+    assert_eq!(read_u32(&fixture.desc, DESC_LEN_OFF), EVENT_BYTES as u32);
+    assert_eq!(read_u16(&fixture.desc, DESC_FLAGS_OFF), 0);
     assert_eq!(read_u16(&fixture.avail, RING_INDEX_OFF), 1);
     assert_eq!(read_u16(&fixture.avail, RING_ENTRIES_OFF), 0);
     assert_eq!(fixture.notify, STATUS_QUEUE_INDEX);

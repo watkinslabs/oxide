@@ -50,28 +50,31 @@ impl Fixture {
             notify_off: 0,
         };
         let statusq = virtio::VirtQueueResource { index: 1, ..eventq };
-        let event_buffers = queue::initialize_eventq(
-            0,
-            eventq,
+        let mut eventq_owner = virtio::VirtioSplitQueue::new(eventq, 0).expect("event queue");
+        let mut event_desc_slots = [u16::MAX; queue::MAX_EVENT_BUFFERS as usize];
+        let event_buffers = queue::post_event_buffers(
+            &mut eventq_owner,
             self.frames.0.as_mut_ptr() as u64,
-        );
+            &mut event_desc_slots,
+        ).expect("event buffers");
+        let statusq_owner = virtio::VirtioSplitQueue::new(statusq, 0).expect("status queue");
         QueueCtx {
             device_key: key(DEVICE_KEY_RAW),
             bdf: pci::Bdf { segment: 0, bus: 0, device: 0, function: 0 },
             cfg_va: 0,
             hhdm: 0,
-            eventq,
+            eventq: Some(eventq_owner),
             buf_pa: self.frames.0.as_mut_ptr() as u64,
             buf_dma: self.frames.0.as_mut_ptr() as u64,
             event_buffers,
-            statusq,
+            event_desc_slots,
+            statusq: Some(statusq_owner),
             status_buf_pa: 0,
             status_buf_dma: 0,
             status: super::super::status::StatusState::new(size)
                 .expect("status state"),
+            status_desc_slots: [u16::MAX; super::super::status::MAX_STATUS_DESCRIPTORS],
             pending_output: VecDeque::new(),
-            last_used: 0,
-            avail_idx: event_buffers,
             eventq_failed: false,
         }
     }
@@ -93,8 +96,6 @@ fn write_u32(page: &mut Page, off: usize, value: u32) {
 
 fn assert_rejected_without_partial_delivery(fixture: &Fixture, ctx: &QueueCtx, before: u64) {
     assert!(ctx.eventq_failed);
-    assert_eq!(ctx.last_used, 0);
-    assert_eq!(ctx.avail_idx, ctx.event_buffers);
     assert_eq!(fixture.notify, 0);
     assert_eq!(ring::DRAINED_EVENTS.load(Ordering::Relaxed), before);
 }
