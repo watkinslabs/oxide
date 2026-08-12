@@ -35,7 +35,7 @@ const KEYCODE: [u8; 256] = [
 ];
 
 fn modifier_key(index: u8) -> u16 { KEYCODE[(index + 224) as usize] as u16 }
-fn keycode(usage: u8) -> Option<u16> { u16::from(KEYCODE[usage as usize]).checked_sub(1).map(|code| code + 1) }
+pub(crate) fn keycode(usage: u8) -> Option<u16> { u16::from(KEYCODE[usage as usize]).checked_sub(1).map(|code| code + 1) }
 
 #[cfg(test)]
 mod tests { use super::*;
