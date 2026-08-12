@@ -1549,3 +1549,8 @@ Six lanes filed the same defect separately. The canonical row lives in
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED F1002 | DEFECT | HIGH | The NVMe hard IRQ path marked every delivered PCI vector as a completed command. A spurious or stale vector therefore woke the request owner, which found no phase-valid CQE and poisoned a healthy controller. The IRQ endpoint now retains the sole I/O CQ cursor and signals only when its current CQE has the expected phase tag; process context remains the owner that consumes the CQE, rings the CQ doorbell, and republishes the next cursor. | `drv_nvme::regs::tests::cqe_phase_and_cid` pins both matching and mismatching phase predicates; `cargo test -p drv-nvme --lib -- --test-threads=1`. | F1002 |
+### F1003-e1000-napi-irq-masking
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED F1003 | DEFECT | HIGH | e1000 acknowledged ICR and scheduled its deferred RX poll while leaving every receive cause enabled. A busy physical NIC could continuously interrupt CPUs while the bounded poll was already responsible for draining the ring, degrading interactive scheduling. The endpoint now owns a NAPI-shaped polling bit: the first valid cause masks the source and schedules NET_RX; the poll keeps it masked while work remains, otherwise checks the latched cause, clears its poll bit, and reenables interrupts so no masked-window event is lost. | `cargo test -p drv-e1000 --lib -- --test-threads=1`; kernel target builds exercise the IRQ-only code path. | F1003 |
