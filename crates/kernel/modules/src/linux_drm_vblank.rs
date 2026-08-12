@@ -7,12 +7,12 @@ use sched::deadline::clock::now_ns;
 
 const DRM_CRTC_DEV_OFF: usize = 0;
 const DRM_CRTC_INDEX_OFF: usize = 144;
-const DRM_DEVICE_VBLANK_OFF: usize = 312;
-const DRM_DEVICE_NUM_CRTCS_OFF: usize = 356;
-const DRM_VBLANK_CRTC_SIZE: usize = 400;
-const DRM_VBLANK_REFCOUNT_OFF: usize = 96;
+pub(super) const DRM_DEVICE_VBLANK_OFF: usize = 312;
+pub(super) const DRM_DEVICE_NUM_CRTCS_OFF: usize = 356;
+pub(super) const DRM_VBLANK_CRTC_SIZE: usize = 400;
+pub(super) const DRM_VBLANK_REFCOUNT_OFF: usize = 96;
 const DRM_VBLANK_INMODESET_OFF: usize = 108;
-const DRM_VBLANK_ENABLED_OFF: usize = 256;
+pub(super) const DRM_VBLANK_ENABLED_OFF: usize = 256;
 const DRM_VBLANK_COUNT_OFF: usize = 80;
 const DRM_VBLANK_TIME_OFF: usize = 88;
 const DRM_VBLANK_FRAMEDUR_OFF: usize = 116;
