@@ -17,6 +17,7 @@ devfs     = { path = "../devfs" }
 elf-load  = { path = "../exec" }
 arch-irq  = { path = "../arch-irq" }
 ipc       = { path = "../ipc" }
+iommu     = { path = "../iommu" }
 elf     = { path = "../../shared/elf" }
 net     = { path = "../net" }
 modules = { path = "../modules" }

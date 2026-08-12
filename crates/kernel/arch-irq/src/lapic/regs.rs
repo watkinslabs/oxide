@@ -74,6 +74,9 @@ const fn icr_destination_fits(x2apic: bool, destination: u32) -> bool {
 /// CPU in x2APIC mode (see those fns for why we don't flip the mode ourselves).
 #[cfg(target_arch = "x86_64")]
 static X2APIC_EOI: AtomicBool = AtomicBool::new(false);
+/// BSP-selected x2APIC mode, consumed by every AP before it programs LAPIC state.
+#[cfg(target_arch = "x86_64")]
+static X2APIC_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 /// CPUID.01h:ECX bit 21 — x2APIC supported by this CPU. Detection only; does
 /// not imply x2APIC mode is enabled. # C: O(1)
@@ -116,6 +119,32 @@ pub(super) fn select_eoi_path() {
 /// # C: O(1)
 #[cfg(target_arch = "x86_64")]
 pub(crate) fn x2apic_active() -> bool { X2APIC_EOI.load(Ordering::Acquire) }
+
+/// Returns whether bare-metal x2APIC transport can be selected.
+/// # C: O(1)
+#[cfg(target_arch = "x86_64")]
+pub(crate) const fn x2apic_permitted(cpu_supports: bool, remap_x2apic: bool) -> bool { cpu_supports && remap_x2apic }
+
+/// Selects x2APIC MSR transport on this CPU after interrupt remapping permits it.
+/// # C: O(1)
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub(crate) fn enable_x2apic_transport(remap_x2apic: bool) -> bool {
+    if !x2apic_permitted(x2apic_supported(), remap_x2apic) { return false; }
+    // SAFETY: BSP runs this before AP startup; IA32_APIC_BASE permits the architected x2APIC mode transition.
+    unsafe { let base = rdmsr(MSR_IA32_APIC_BASE); wrmsr(MSR_IA32_APIC_BASE, base | APIC_GLOBAL_ENABLE | APIC_X2_ENABLE); }
+    X2APIC_REQUESTED.store(true, Ordering::Release); select_eoi_path(); true
+}
+
+/// Enters the BSP-selected x2APIC mode on an AP before local register access.
+/// # C: O(1)
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub(crate) fn enable_x2apic_for_ap() -> bool {
+    if !X2APIC_REQUESTED.load(Ordering::Acquire) { return false; }
+    if !x2apic_supported() { return false; }
+    // SAFETY: this AP is the sole writer of its IA32_APIC_BASE before LAPIC initialization.
+    unsafe { let base = rdmsr(MSR_IA32_APIC_BASE); wrmsr(MSR_IA32_APIC_BASE, base | APIC_GLOBAL_ENABLE | APIC_X2_ENABLE); }
+    select_eoi_path(); true
+}
 
 /// Mapped kernel VA after `enable` runs. `0` until then.
 #[cfg(target_arch = "x86_64")]
@@ -281,5 +310,9 @@ mod tests {
         assert!(icr_destination_fits(false, XAPIC_DESTINATION_MAX));
         assert!(!icr_destination_fits(false, XAPIC_DESTINATION_MAX + 1));
         assert!(icr_destination_fits(true, u32::MAX));
+    }
+    #[test]
+    fn bare_metal_x2apic_requires_remapped_destinations() {
+        assert!(!x2apic_permitted(false, true)); assert!(!x2apic_permitted(true, false)); assert!(x2apic_permitted(true, true));
     }
 }
