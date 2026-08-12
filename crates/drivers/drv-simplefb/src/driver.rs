@@ -39,6 +39,28 @@ fn flush_pixels(pixels: &[u8], rect: fbcon::kernel::FlushRect) {
     format::copy_damage(pixels, dst, rect, live.fb);
 }
 
+/// Present canonical XRGB8888 pixels from a DRM scanout buffer.
+///
+/// This reuses the framebuffer's validated native-format conversion and the
+/// same WC mapping as fbcon. It is the common linear-scanout bridge for native
+/// PCI display drivers; callers must supply a complete source surface.
+/// # C: O(damage pixels)
+pub fn present_xrgb(pixels: &[u8], stride_px: u32, width: u32, height: u32,
+                    x: u32, y: u32, w: u32, h: u32) -> bool {
+    let mut live = LIVE.lock();
+    let Some(live) = live.as_mut() else { return false; };
+    if stride_px < width || width > live.fb.width || height > live.fb.height { return false; }
+    let bytes = match u64::from(stride_px).checked_mul(u64::from(height)).and_then(|n| n.checked_mul(4)) {
+        Some(n) => n,
+        None => return false,
+    };
+    if bytes > pixels.len() as u64 { return false; }
+    // SAFETY: Live owns its complete WC mapping while present_xrgb holds LIVE.
+    let dst = unsafe { core::slice::from_raw_parts_mut(live.fb_va as *mut u8, live.bytes as usize) };
+    format::copy_damage(pixels, dst, fbcon::kernel::FlushRect { x, y, w, h, stride_px }, live.fb);
+    true
+}
+
 fn detach() {
     let live = LIVE.lock().take();
     let Some(live) = live else { return };

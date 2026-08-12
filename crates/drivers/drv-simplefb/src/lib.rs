@@ -15,4 +15,4 @@ extern crate std;
 mod driver;
 mod format;
 
-pub use driver::{attach_native_scanout, configure_probe, device_addr, driver, present};
+pub use driver::{attach_native_scanout, configure_probe, device_addr, driver, present, present_xrgb};
