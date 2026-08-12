@@ -45,53 +45,72 @@ pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf],
         let Some(mut tables) = VtdTables::new(hhdm_offset) else { return VtdActivation::Failed; };
         if !regs.cache_coherent() || !regs.supports_address_width(tables.address_width())
             || !tables.map_identity_regions(regions) { return VtdActivation::Failed; }
-        let qi = if regs.supports_queued_invalidation() {
-            let Some(queue) = VtdQiQueue::new(hhdm_offset) else { return VtdActivation::Failed; };
-            if !regs.enable_queued_invalidation(&queue) { return VtdActivation::Failed; }
-            Some(queue)
-        } else { None };
-        let ir = if regs.supports_interrupt_remapping() && qi.is_some() {
-            let Some(table) = VtdIrTable::new(hhdm_offset, false) else { return VtdActivation::Failed; };
+        let ir = if regs.supports_interrupt_remapping() && regs.supports_queued_invalidation() {
+            let Some(table) = VtdIrTable::new(hhdm_offset, false) else { return activation_failed(&mut manager); };
             Some(table)
+        } else { None };
+        let qi = if regs.supports_queued_invalidation() {
+            let Some(queue) = VtdQiQueue::new(hhdm_offset) else { return activation_failed(&mut manager); };
+            if !regs.enable_queued_invalidation(&queue) {
+                let _ = regs.disable_queued_invalidation();
+                return activation_failed(&mut manager);
+            }
+            Some(queue)
         } else { None };
         manager.push(VtdBootUnit { unit, regs, requesters: Vec::new(), ioapic_source: None, hpet_source: None, tables, qi, ir });
     }
     for entry in manager.iter_mut() {
         for index in 0..intel_vtd_rmrr_count() {
             let Some(rmrr) = rmrr_for_unit(reader, requesters, index, entry.unit) else { continue; };
-            let Some(len) = rmrr.end.checked_sub(rmrr.base).and_then(|bytes| bytes.checked_add(1)) else { return VtdActivation::Failed; };
-            if !entry.tables.map_identity_range(rmrr.base, len) { return VtdActivation::Failed; }
+            let Some(len) = rmrr.end.checked_sub(rmrr.base).and_then(|bytes| bytes.checked_add(1)) else { return activation_failed(&mut manager); };
+            if !entry.tables.map_identity_range(rmrr.base, len) { return activation_failed(&mut manager); }
         }
     }
     for bdf in requesters {
         let Some(unit) = intel_vtd_unit_for_bdf(reader, *bdf) else { continue; };
-        let Some(entry) = manager.iter_mut().find(|entry| entry.unit == unit) else { return VtdActivation::Failed; };
-        if !entry.tables.attach(*bdf, INITIAL_DOMAIN_ID) { return VtdActivation::Failed; }
+        let Some(entry) = manager.iter_mut().find(|entry| entry.unit == unit) else { return activation_failed(&mut manager); };
+        if !entry.tables.attach(*bdf, INITIAL_DOMAIN_ID) { return activation_failed(&mut manager); }
         entry.requesters.push(*bdf);
     }
     if let Some(ioapic_id) = firmware::ioapic_id() {
         if let Some((unit, source_id)) = intel_vtd_ioapic_source(reader, ioapic_id) {
-            let Some(entry) = manager.iter_mut().find(|entry| entry.unit == unit) else { return VtdActivation::Failed; };
+            let Some(entry) = manager.iter_mut().find(|entry| entry.unit == unit) else { return activation_failed(&mut manager); };
             entry.ioapic_source = Some(source_id);
         }
     }
     if let Some(hpet_id) = firmware::hpet_id() {
         if let Some((unit, source_id)) = intel_vtd_hpet_source(reader, hpet_id) {
-            let Some(entry) = manager.iter_mut().find(|entry| entry.unit == unit) else { return VtdActivation::Failed; };
+            let Some(entry) = manager.iter_mut().find(|entry| entry.unit == unit) else { return activation_failed(&mut manager); };
             entry.hpet_source = Some(source_id);
         }
     }
     for entry in manager.iter_mut() {
         if !entry.regs.set_root_table(entry.tables.root_pa()) || !invalidate(entry)
-            || !entry.regs.enable_translation() { return VtdActivation::Failed; }
+            || !entry.regs.enable_translation() { return activation_failed(&mut manager); }
         if let Some(ir) = entry.ir.as_ref() {
-            if !entry.regs.set_interrupt_remap_table(ir.irta()) { return VtdActivation::Failed; }
+            if !entry.regs.set_interrupt_remap_table(ir.irta()) { return activation_failed(&mut manager); }
         }
     }
     let eim_capable = !firmware::acpi::dmar_x2apic_opt_out() && all_vtd_units_support_eim();
     *MANAGER.lock() = manager;
     EIM_CAPABLE.store(eim_capable, Ordering::Release);
     VtdActivation::Enabled
+}
+
+/// Undo every VT-d side effect created during an unsuccessful global
+/// bootstrap. Linux's error paths disable translation before queued
+/// invalidation (`disable_dmar_iommu()` and `dmar_disable_qi()`); preserving
+/// that order keeps no hardware unit pointing at boot-owned tables after the
+/// caller rejects PCI driver admission. # C: O(units * poll limit)
+fn activation_failed(manager: &mut Vec<VtdBootUnit>) -> VtdActivation {
+    for entry in manager.iter_mut() {
+        let _ = entry.regs.disable_interrupt_remapping();
+        let _ = entry.regs.disable_translation();
+        let _ = entry.regs.disable_queued_invalidation();
+    }
+    manager.clear();
+    EIM_CAPABLE.store(false, Ordering::Release);
+    VtdActivation::Failed
 }
 
 /// Enable VT-d interrupt remapping only after the IRQ owner is ready to issue
