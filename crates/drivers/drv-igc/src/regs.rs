@@ -18,13 +18,38 @@ pub const CTRL_RST: u32 = 1 << 26; pub const CTRL_EXT_DRV_LOAD: u32 = 1 << 28; p
 pub const RCTL_SECRC: u32 = 1 << 26; pub const TCTL_EN: u32 = 1 << 1; pub const TCTL_PSP: u32 = 1 << 3;
 pub const ICR_TXDW: u32 = 1; pub const ICR_LSC: u32 = 1 << 2; pub const ICR_RXO: u32 = 1 << 6; pub const ICR_RXT0: u32 = 1 << 7;
 pub const IMS_DEFAULT: u32 = ICR_TXDW | ICR_LSC | ICR_RXO | ICR_RXT0; pub const RAH_AV: u32 = 1 << 31;
+pub const RXD_STAT_DD: u32 = 1;
+pub const TXD_STAT_DD: u32 = 1;
+pub const ADVTXD_DTYP_DATA: u32 = 0x0030_0000;
+pub const ADVTXD_DCMD_EOP: u32 = 0x0100_0000;
+pub const ADVTXD_DCMD_IFCS: u32 = 0x0200_0000;
+pub const ADVTXD_DCMD_RS: u32 = 0x0800_0000;
+pub const ADVTXD_DCMD_DEXT: u32 = 0x2000_0000;
 
 #[repr(C)]
 #[derive(Copy, Clone, Default)]
-pub struct LegacyRxDesc { pub addr: u64, pub length: u16, pub checksum: u16, pub status: u8, pub errors: u8, pub special: u16 }
+pub struct AdvRxDesc { pub packet_addr: u64, pub header_addr: u64 }
 #[repr(C)]
 #[derive(Copy, Clone, Default)]
-pub struct LegacyTxDesc { pub addr: u64, pub length: u16, pub cso: u8, pub cmd: u8, pub status: u8, pub css: u8, pub special: u16 }
+pub struct AdvRxWriteback { pub lower: u64, pub status_error: u32, pub length: u16, pub vlan: u16 }
+#[repr(C)]
+#[derive(Copy, Clone, Default)]
+pub struct AdvTxDesc { pub buffer_addr: u64, pub cmd_type_len: u32, pub olinfo_status: u32 }
+#[repr(C)]
+#[derive(Copy, Clone, Default)]
+pub struct AdvTxWriteback { pub reserved: u64, pub next_seq_seed: u32, pub status: u32 }
+
+/// Tests the completed advanced RX descriptor's status and error word.
+/// # C: O(1)
+pub const fn rx_status_error(desc: &AdvRxWriteback) -> u32 { desc.status_error }
+
+/// Tests whether an advanced RX descriptor has been completed by the device.
+/// # C: O(1)
+pub const fn rx_done(desc: &AdvRxWriteback) -> bool { desc.status_error & RXD_STAT_DD != 0 }
+
+/// Tests whether an advanced TX descriptor has been completed by the device.
+/// # C: O(1)
+pub const fn tx_done(desc: &AdvTxWriteback) -> bool { desc.status & TXD_STAT_DD != 0 }
 
 pub fn supported(vendor: u16, device: u16) -> bool { vendor == INTEL_VENDOR && PCI_IDS.contains(&device) }
 pub const fn split_dma(dma: u64) -> (u32, u32) { (dma as u32, (dma >> 32) as u32) }
@@ -33,5 +58,7 @@ pub const fn split_dma(dma: u64) -> (u32, u32) { (dma as u32, (dma >> 32) as u32
 mod tests { use super::*;
     #[test] fn igc_ids_do_not_overlap_legacy_e1000() { assert!(supported(INTEL_VENDOR, I226_V)); assert!(!supported(INTEL_VENDOR, 0x100e)); }
     #[test] fn queue_zero_offsets_match_the_igc_window() { assert_eq!(RDBAL0, 0x0c000); assert_eq!(TDBAL0, 0x0e000); assert_eq!(ICR, 0x01500); }
-    #[test] fn descriptors_are_hardware_sized() { assert_eq!(core::mem::size_of::<LegacyRxDesc>(), 16); assert_eq!(core::mem::size_of::<LegacyTxDesc>(), 16); }
+    #[test] fn descriptors_are_hardware_sized() { assert_eq!(core::mem::size_of::<AdvRxDesc>(), 16); assert_eq!(core::mem::size_of::<AdvRxWriteback>(), 16); assert_eq!(core::mem::size_of::<AdvTxDesc>(), 16); assert_eq!(core::mem::size_of::<AdvTxWriteback>(), 16); }
+    #[test] fn advanced_tx_command_requires_data_and_extension() { assert_eq!(ADVTXD_DTYP_DATA | ADVTXD_DCMD_DEXT, 0x2030_0000); }
+    #[test] fn completion_is_read_from_the_device_writeback_view() { let rx = AdvRxWriteback { status_error: RXD_STAT_DD, length: 1500, ..Default::default() }; let tx = AdvTxWriteback { status: TXD_STAT_DD, ..Default::default() }; assert!(rx_done(&rx)); assert_eq!(rx.length, 1500); assert!(tx_done(&tx)); }
 }
