@@ -12,6 +12,10 @@ use core::ptr::write;
 use core::sync::atomic::{AtomicI32, Ordering};
 use sync::{Spinlock, Modules as ModulesLockClass};
 
+// Module manifest: connector owns connector construction, attachment and teardown.
+#[path = "linux_drm_connector.rs"]
+mod connector;
+
 struct DeviceAllocation {
     dev: usize,
     base: usize,
@@ -22,6 +26,7 @@ struct DeviceAllocation {
     planes: Vec<PlaneRecord>,
     crtcs: Vec<CrtcRecord>,
     encoders: Vec<EncoderRecord>,
+    connectors: Vec<connector::ConnectorRecord>,
     put_pending: bool,
     unplugged: bool,
 }
@@ -117,6 +122,7 @@ pub fn export_symbols() {
     crate::symtab::export("drm_crtc_cleanup", drm_crtc_cleanup as *const () as usize, false);
     crate::symtab::export("drm_encoder_init", drm_encoder_init as *const () as usize, false);
     crate::symtab::export("drm_encoder_cleanup", drm_encoder_cleanup as *const () as usize, false);
+    connector::export_symbols();
 }
 
 fn layout_for(size: usize) -> Option<Layout> {
@@ -160,7 +166,7 @@ extern "C" fn __devm_drm_dev_alloc(
     let dev = unsafe { base.add(offset) };
     initialize_device(dev, parent, driver, base);
     let dev = dev.cast::<c_void>();
-    DEVICES.lock().push(DeviceAllocation { dev: dev as usize, base: base as usize, layout, refs: 1, mode_config: false, objects: Vec::new(), planes: Vec::new(), crtcs: Vec::new(), encoders: Vec::new(), put_pending: false, unplugged: false });
+    DEVICES.lock().push(DeviceAllocation { dev: dev as usize, base: base as usize, layout, refs: 1, mode_config: false, objects: Vec::new(), planes: Vec::new(), crtcs: Vec::new(), encoders: Vec::new(), connectors: Vec::new(), put_pending: false, unplugged: false });
     if devres::add_action_or_reset(parent, Some(devm_drm_dev_put), dev) != 0 { return core::ptr::null_mut(); }
     base.cast()
 }

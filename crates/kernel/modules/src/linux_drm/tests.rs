@@ -12,6 +12,9 @@ struct TestCrtc([u8; 1228]);
 #[repr(C, align(8))]
 struct TestEncoder([u8; 128]);
 
+#[repr(C, align(8))]
+struct TestConnector([u8; 2280]);
+
 fn device(parent: &mut LinuxDevice, size: usize) -> *mut c_void {
     let container = __devm_drm_dev_alloc(parent, core::ptr::null(), size, 64);
     // SAFETY: each caller supplies enough container bytes for the embedded device.
@@ -51,7 +54,7 @@ fn mode_config_initializes_each_object_list_once() {
 fn invalid_embedded_offset_is_rejected_before_allocation() { let _modules = crate::test_serial::claim(); let mut parent = LinuxDevice::new(); assert!(__devm_drm_dev_alloc(&mut parent, core::ptr::null(), 8, 8).is_null()); }
 
 #[test]
-fn exports_lifetime_entry_points() { let _modules = crate::test_serial::claim(); export_symbols(); for name in ["__devm_drm_dev_alloc", "drm_dev_put", "drm_dev_get", "drm_dev_enter", "drm_dev_exit", "drm_dev_unplug", "drmm_mode_config_init", "drm_mode_object_add", "drm_mode_object_unregister", "drm_universal_plane_init", "drm_plane_cleanup", "drm_crtc_init_with_planes", "drm_crtc_cleanup", "drm_encoder_init", "drm_encoder_cleanup"] { assert!(crate::symtab::is_exported(name)); } }
+fn exports_lifetime_entry_points() { let _modules = crate::test_serial::claim(); export_symbols(); for name in ["__devm_drm_dev_alloc", "drm_dev_put", "drm_dev_get", "drm_dev_enter", "drm_dev_exit", "drm_dev_unplug", "drmm_mode_config_init", "drm_mode_object_add", "drm_mode_object_unregister", "drm_universal_plane_init", "drm_plane_cleanup", "drm_crtc_init_with_planes", "drm_crtc_cleanup", "drm_encoder_init", "drm_encoder_cleanup", "drm_connector_init", "drm_connector_cleanup"] { assert!(crate::symtab::is_exported(name)); } }
 
 #[test]
 fn critical_section_token_is_released_once() { let _modules = crate::test_serial::claim(); let mut parent = LinuxDevice::new(); let dev = device(&mut parent, 256); let mut token = 0; assert!(drm_dev_enter(dev, &mut token)); drm_dev_exit(token); assert!(GUARDS.lock().is_empty()); devres::release_device(&mut parent); }
@@ -107,4 +110,12 @@ fn encoder_links_the_mode_graph_with_a_typed_id_and_cleans_up() {
     // SAFETY: initialization assigned the core object type, type/index fields, and mode-config count.
     unsafe { assert_eq!(*(encoder.0.as_ptr().add(DRM_ENCODER_BASE_OFF).cast::<u32>()), 1); assert_eq!(*(encoder.0.as_ptr().add(DRM_ENCODER_BASE_OFF + DRM_MODE_OBJECT_TYPE_OFF).cast::<u32>()), DRM_MODE_OBJECT_ENCODER); assert_eq!(*(encoder.0.as_ptr().add(DRM_ENCODER_TYPE_OFF).cast::<i32>()), 10); assert_eq!(*(config.add(MODE_CONFIG_NUM_ENCODER_OFF).cast::<i32>()), 1); }
     drm_encoder_cleanup(encoder.0.as_mut_ptr().cast()); assert_eq!(DEVICES.lock()[0].encoders.len(), 0); unsafe { assert_eq!(*(config.add(MODE_CONFIG_NUM_ENCODER_OFF).cast::<i32>()), 0); assert_eq!(*(encoder.0.as_ptr().add(DRM_ENCODER_BASE_OFF).cast::<u32>()), 0); } devres::release_device(&mut parent);
+}
+
+#[test]
+fn connector_links_the_mode_graph_and_cleans_up() {
+    let _modules = crate::test_serial::claim(); let mut parent = LinuxDevice::new(); let dev = device(&mut parent, 2048); assert_eq!(drmm_mode_config_init(dev), 0); let mut connector = TestConnector([0; 2280]); let funcs = 1u8;
+    assert_eq!(connector::drm_connector_init(dev, connector.0.as_mut_ptr().cast(), (&funcs as *const u8).cast(), 11), 0); let config = dev.cast::<u8>().wrapping_add(DRM_MODE_CONFIG_OFF);
+    unsafe { assert_eq!(*(connector.0.as_ptr().add(connector::DRM_CONNECTOR_BASE_OFF).cast::<u32>()), 1); assert_eq!(*(connector.0.as_ptr().add(connector::DRM_CONNECTOR_BASE_OFF + DRM_MODE_OBJECT_TYPE_OFF).cast::<u32>()), connector::DRM_MODE_OBJECT_CONNECTOR); assert_eq!(*(config.add(connector::MODE_CONFIG_NUM_CONNECTOR_OFF).cast::<i32>()), 1); }
+    connector::drm_connector_cleanup(connector.0.as_mut_ptr().cast()); assert_eq!(DEVICES.lock()[0].connectors.len(), 0); devres::release_device(&mut parent);
 }
