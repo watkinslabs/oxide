@@ -72,9 +72,11 @@ impl VirtioSplitQueue {
         Ok(queue)
     }
 
-    /// Publish one nonempty scatter-gather chain and notify the device.
+    /// Publish one nonempty scatter-gather chain without notifying the device.
+    /// Call [`Self::kick`] after publishing a batch, matching Linux's
+    /// `virtqueue_add_*` followed by `virtqueue_kick` contract.
     /// # C: O(segments)
-    pub fn submit(&mut self, segs: &[SplitQueueSeg]) -> Result<u16, SplitQueueError> {
+    pub fn submit_no_kick(&mut self, segs: &[SplitQueueSeg]) -> Result<u16, SplitQueueError> {
         if segs.is_empty() { return Err(SplitQueueError::EmptyChain); }
         if segs.len() > self.num_free as usize { return Err(SplitQueueError::NoDescriptors); }
         let head = self.free_head;
@@ -98,9 +100,22 @@ impl VirtioSplitQueue {
         // SAFETY: avail.idx follows the release fence that exposes its ring entry.
         unsafe { core::ptr::write_volatile(self.avail_ptr().add(1), self.avail_idx); }
         core::sync::atomic::fence(Ordering::Release);
+        Ok(head)
+    }
+
+    /// Publish one nonempty scatter-gather chain and notify the device.
+    /// # C: O(segments)
+    pub fn submit(&mut self, segs: &[SplitQueueSeg]) -> Result<u16, SplitQueueError> {
+        let head = self.submit_no_kick(segs)?;
+        self.kick();
+        Ok(head)
+    }
+
+    /// Notify the device after one or more `submit_no_kick` calls.
+    /// # C: O(1)
+    pub fn kick(&self) {
         // SAFETY: notify_va is the transport-mapped queue notification register.
         unsafe { core::ptr::write_volatile(self.resource.notify_va as *mut u16, self.resource.index); }
-        Ok(head)
     }
 
     /// Retire one device completion and return the head/request length.
@@ -108,6 +123,9 @@ impl VirtioSplitQueue {
     pub fn pop_used(&mut self) -> Result<Option<SplitUsed>, SplitQueueError> {
         let used_idx = self.read_used_idx();
         if used_idx == self.used_seen { return Ok(None); }
+        if used_idx.wrapping_sub(self.used_seen) > self.resource.size {
+            return Err(SplitQueueError::BadUsedId);
+        }
         core::sync::atomic::fence(Ordering::Acquire);
         let slot = (self.used_seen % self.resource.size) as usize;
         // SAFETY: the acquire fence follows the device-owned used.idx load;
@@ -215,5 +233,21 @@ mod tests {
         }
         assert_eq!(queue.pop_used().unwrap(), Some(SplitUsed { head, len: 48 }));
         assert_eq!(queue.submit(&[SplitQueueSeg { dma: 0x9000_3000, len: 8, device_writes: false }]).unwrap(), head);
+    }
+
+    #[test]
+    fn batch_submission_defers_notification_until_kick() {
+        let desc = Page([0; 4096]);
+        let avail = Page([0; 4096]);
+        let used = Page([0; 4096]);
+        let mut notify = 0;
+        let mut queue = VirtioSplitQueue::new(resource(&desc, &avail, &used, &mut notify), 0).unwrap();
+        queue.submit_no_kick(&[SplitQueueSeg { dma: 0x9000_1000, len: 8, device_writes: true }]).unwrap();
+        queue.submit_no_kick(&[SplitQueueSeg { dma: 0x9000_2000, len: 8, device_writes: true }]).unwrap();
+        assert_eq!(notify, 0);
+        // SAFETY: test owns the private avail frame and reads its published idx.
+        assert_eq!(unsafe { core::ptr::read_volatile((avail.0.as_ptr() as *const u16).add(1)) }, 2);
+        queue.kick();
+        assert_eq!(notify, 3);
     }
 }

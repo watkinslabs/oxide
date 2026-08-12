@@ -4,22 +4,14 @@ use sync::{Spinlock, TaskList as DriverLockClass};
 
 use super::{ring, status};
 
-const DESC_BYTES: usize = core::mem::size_of::<virtio::queue::Desc>();
 const EVENT_BYTES: usize = core::mem::size_of::<crate::VirtioInputEvent>();
-const DESC_LEN_OFF: usize = core::mem::size_of::<u64>();
-const DESC_FLAGS_OFF: usize = DESC_LEN_OFF + core::mem::size_of::<u32>();
-const DESC_NEXT_OFF: usize = DESC_FLAGS_OFF + core::mem::size_of::<u16>();
-const RING_INDEX_OFF: usize = core::mem::size_of::<u16>();
-const RING_ENTRIES_OFF: usize = RING_INDEX_OFF + core::mem::size_of::<u16>();
-const AVAIL_ENTRY_BYTES: usize = core::mem::size_of::<u16>();
-const DESC_FRAME_CAPACITY: usize = hal::PAGE_SIZE_BYTES as usize / DESC_BYTES;
+const DESC_FRAME_CAPACITY: usize = hal::PAGE_SIZE_BYTES as usize
+    / core::mem::size_of::<virtio::queue::Desc>();
 const EVENT_FRAME_CAPACITY: usize = hal::PAGE_SIZE_BYTES as usize / EVENT_BYTES;
 pub(super) const MAX_EVENT_BUFFERS: u16 =
     if DESC_FRAME_CAPACITY < EVENT_FRAME_CAPACITY {
         DESC_FRAME_CAPACITY as u16
-    } else {
-        EVENT_FRAME_CAPACITY as u16
-    };
+    } else { EVENT_FRAME_CAPACITY as u16 };
 
 /// Per-virtio-input-device runtime state. Captured at boot via
 /// `install_eventq`; consumed by the softirq drain.
@@ -28,17 +20,17 @@ pub(super) struct QueueCtx {
     pub(super) bdf:         pci::Bdf,
     pub(super) cfg_va:      u64,
     pub(super) hhdm:        u64,
-    pub(super) eventq:      virtio::VirtQueueResource,
+    pub(super) eventq:      Option<virtio::VirtioSplitQueue>,
     pub(super) buf_pa:      u64,
     pub(super) buf_dma:     u64,
     pub(super) event_buffers: u16,
-    pub(super) statusq:     virtio::VirtQueueResource,
+    pub(super) event_desc_slots: [u16; MAX_EVENT_BUFFERS as usize],
+    pub(super) statusq:     Option<virtio::VirtioSplitQueue>,
     pub(super) status_buf_pa: u64,
     pub(super) status_buf_dma: u64,
     pub(super) status:      status::StatusState,
+    pub(super) status_desc_slots: [u16; status::MAX_STATUS_DESCRIPTORS],
     pub(super) pending_output: VecDeque<crate::VirtioInputEvent>,
-    pub(super) last_used:   u16,
-    pub(super) avail_idx:   u16,
     pub(super) eventq_failed: bool,
 }
 
@@ -81,45 +73,22 @@ fn zero_frame(hhdm: u64, pa: u64) {
     }
 }
 
-pub(super) fn initialize_eventq(
-    hhdm: u64,
-    eventq: virtio::VirtQueueResource,
+pub(super) fn post_event_buffers(
+    eventq: &mut virtio::VirtioSplitQueue,
     buf_dma: u64,
-) -> u16 {
-    let supplied = eventq.size.min(MAX_EVENT_BUFFERS);
-    let desc_va = hhdm.wrapping_add(eventq.desc_pa) as *mut u8;
-    let avail_va = hhdm.wrapping_add(eventq.driver_pa) as *mut u8;
-    // SAFETY: supplied entries fit the defined event-buffer pool and rings.
-    unsafe {
-        for i in 0..supplied as usize {
-            let off = i * DESC_BYTES;
-            core::ptr::write_volatile(
-                desc_va.add(off) as *mut u64,
-                buf_dma.wrapping_add((i * EVENT_BYTES) as u64),
-            );
-            core::ptr::write_volatile(
-                desc_va.add(off + DESC_LEN_OFF) as *mut u32,
-                EVENT_BYTES as u32,
-            );
-            core::ptr::write_volatile(
-                desc_va.add(off + DESC_FLAGS_OFF) as *mut u16,
-                virtio::queue::VRING_DESC_F_WRITE,
-            );
-            core::ptr::write_volatile(desc_va.add(off + DESC_NEXT_OFF) as *mut u16, 0);
-        }
-        core::ptr::write_volatile(avail_va as *mut u16, 0);
-        for i in 0..supplied as usize {
-            core::ptr::write_volatile(
-                avail_va.add(RING_ENTRIES_OFF + i * AVAIL_ENTRY_BYTES) as *mut u16,
-                i as u16,
-            );
-        }
-        core::ptr::write_volatile(
-            avail_va.add(RING_INDEX_OFF) as *mut u16,
-            supplied,
-        );
+    slots: &mut [u16; MAX_EVENT_BUFFERS as usize],
+) -> Result<u16, virtio::SplitQueueError> {
+    let supplied = eventq.resource().size.min(MAX_EVENT_BUFFERS);
+    for slot in 0..supplied {
+        let head = eventq.submit_no_kick(&[virtio::SplitQueueSeg {
+            dma: buf_dma.wrapping_add(u64::from(slot) * EVENT_BYTES as u64),
+            len: EVENT_BYTES as u32,
+            device_writes: true,
+        }])?;
+        slots[head as usize] = slot;
     }
-    supplied
+    eventq.kick();
+    Ok(supplied)
 }
 
 /// Install per-device queue context after DRIVER_OK. Pre-fills the event ring.
@@ -165,26 +134,32 @@ pub fn install_eventq(
         if g[slot_idx].is_none()
             && !g.iter().flatten().any(|ctx| ctx.device_key == device_key)
         {
-            let event_buffers = initialize_eventq(hhdm, eventq, buf_dma);
-            if let Some(status_state) =
-                status::initialize(hhdm, statusq, status_buf_dma)
+            let mut event_queue = virtio::VirtioSplitQueue::new(eventq, hhdm).ok();
+            let status_size = statusq.size;
+            let status_queue = virtio::VirtioSplitQueue::new(statusq, hhdm).ok();
+            let mut event_desc_slots = [u16::MAX; MAX_EVENT_BUFFERS as usize];
+            let event_buffers = event_queue.as_mut().and_then(|queue| {
+                post_event_buffers(queue, buf_dma, &mut event_desc_slots).ok()
+            });
+            if let (Some(eventq), Some(statusq), Some(event_buffers), Some(status_state)) =
+                (event_queue, status_queue, event_buffers, status::StatusState::new(status_size))
             {
                 g[slot_idx] = Some(QueueCtx {
                     device_key,
                     bdf,
                     cfg_va: resources.cfg_va,
                     hhdm,
-                    eventq,
+                    eventq: Some(eventq),
                     buf_pa,
                     buf_dma,
                     event_buffers,
-                    statusq,
+                    event_desc_slots,
+                    statusq: Some(statusq),
                     status_buf_pa,
                     status_buf_dma,
                     status: status_state,
+                    status_desc_slots: [u16::MAX; status::MAX_STATUS_DESCRIPTORS],
                     pending_output: VecDeque::new(),
-                    last_used: 0,
-                    avail_idx: event_buffers,
                     eventq_failed: false,
                 });
                 installed = true;
@@ -204,8 +179,6 @@ pub fn install_eventq(
     if !HANDLER_INSTALLED.swap(true, Ordering::AcqRel) {
         softirq::set_handler(softirq::Slot::InputDrain, drain_softirq);
     }
-    // SAFETY: per-queue notification register VA; aligned u16 queue index store.
-    unsafe { core::ptr::write_volatile(eventq.notify_va as *mut u16, eventq.index); }
     Ok(())
 }
 

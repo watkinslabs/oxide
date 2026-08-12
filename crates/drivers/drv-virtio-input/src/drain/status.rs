@@ -1,28 +1,15 @@
 use alloc::vec::Vec;
-use core::sync::atomic::{fence, Ordering};
-
 use super::queue::{QueueCtx, CTXS};
 use crate::VirtioInputEvent;
 
-const DESC_BYTES: usize = core::mem::size_of::<virtio::queue::Desc>();
 const EVENT_BYTES: usize = core::mem::size_of::<VirtioInputEvent>();
-const USED_ELEM_BYTES: usize = core::mem::size_of::<virtio::queue::UsedElem>();
-const DESC_LEN_OFF: usize = core::mem::size_of::<u64>();
-const DESC_FLAGS_OFF: usize = DESC_LEN_OFF + core::mem::size_of::<u32>();
-const DESC_NEXT_OFF: usize = DESC_FLAGS_OFF + core::mem::size_of::<u16>();
-const RING_INDEX_OFF: usize = core::mem::size_of::<u16>();
-const RING_ENTRIES_OFF: usize = RING_INDEX_OFF + core::mem::size_of::<u16>();
-const AVAIL_ENTRY_BYTES: usize = core::mem::size_of::<u16>();
-const USED_ID_OFF: usize = 0;
-const USED_LEN_OFF: usize = core::mem::size_of::<u32>();
-const DESC_FRAME_CAPACITY: usize = hal::PAGE_SIZE_BYTES as usize / DESC_BYTES;
 const EVENT_FRAME_CAPACITY: usize = hal::PAGE_SIZE_BYTES as usize / EVENT_BYTES;
+const DESC_FRAME_CAPACITY: usize = hal::PAGE_SIZE_BYTES as usize
+    / core::mem::size_of::<virtio::queue::Desc>();
 pub(super) const MAX_STATUS_DESCRIPTORS: usize =
     if DESC_FRAME_CAPACITY < EVENT_FRAME_CAPACITY {
         DESC_FRAME_CAPACITY
-    } else {
-        EVENT_FRAME_CAPACITY
-    };
+    } else { EVENT_FRAME_CAPACITY };
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum StatusError {
@@ -34,6 +21,8 @@ pub enum StatusError {
 /// Bounded ownership ledger for 8-byte, driver-to-device statusq buffers
 /// matching virtio 1.2 §5.8.6.
 pub(super) struct StatusState {
+    /// Diagnostic submission/completion counters. Ring ownership remains in
+    /// `VirtioSplitQueue`; these only preserve the status-slot ledger.
     pub(super) last_used: u16,
     pub(super) avail_idx: u16,
     pub(super) free: [u16; MAX_STATUS_DESCRIPTORS],
@@ -85,76 +74,45 @@ impl StatusState {
         }
         self.in_flight[id as usize] = false;
         self.in_flight_len -= 1;
+        self.last_used = self.last_used.wrapping_add(1);
         self.free[self.free_len as usize] = id as u16;
         self.free_len += 1;
         Ok(())
     }
-}
 
-/// Initialize q1 descriptors as driver-readable 8-byte buffers. In
-/// `vring_desc`, absence of `VRING_DESC_F_WRITE` is the required out direction.
-pub(super) fn initialize(
-    hhdm: u64,
-    queue: virtio::VirtQueueResource,
-    buf_dma: u64,
-) -> Option<StatusState> {
-    let state = StatusState::new(queue.size)?;
-    let desc = hhdm.wrapping_add(queue.desc_pa) as *mut u8;
-    let avail = hhdm.wrapping_add(queue.driver_pa) as *mut u8;
-    // SAFETY: transport validated a qsize-entry descriptor/avail allocation;
-    // the status frame has one 8-byte slot for every accepted descriptor.
-    unsafe {
-        for id in 0..queue.size as usize {
-            let off = id * DESC_BYTES;
-            core::ptr::write_volatile(
-                desc.add(off) as *mut u64,
-                buf_dma.wrapping_add((id * EVENT_BYTES) as u64),
-            );
-            core::ptr::write_volatile(
-                desc.add(off + DESC_LEN_OFF) as *mut u32,
-                EVENT_BYTES as u32,
-            );
-            core::ptr::write_volatile(desc.add(off + DESC_FLAGS_OFF) as *mut u16, 0);
-            core::ptr::write_volatile(desc.add(off + DESC_NEXT_OFF) as *mut u16, 0);
+    fn cancel(&mut self, id: u16, qsize: u16) -> Result<(), StatusError> {
+        if id >= qsize || !self.in_flight[id as usize] || self.free_len >= qsize {
+            return Err(StatusError::CorruptQueue);
         }
-        core::ptr::write_volatile(avail as *mut u16, 0);
-        core::ptr::write_volatile(avail.add(RING_INDEX_OFF) as *mut u16, 0);
+        self.in_flight[id as usize] = false;
+        self.in_flight_len -= 1;
+        self.free[self.free_len as usize] = id;
+        self.free_len += 1;
+        Ok(())
     }
-    Some(state)
 }
 
 fn reap_used(ctx: &mut QueueCtx) -> Result<(), StatusError> {
     if ctx.status.poisoned {
         return Err(StatusError::CorruptQueue);
     }
-    let used = ctx.hhdm.wrapping_add(ctx.statusq.device_pa) as *const u8;
-    // SAFETY: q1 used-ring header is transport-owned mapped memory.
-    let device_idx = unsafe {
-        core::ptr::read_volatile(used.add(RING_INDEX_OFF) as *const u16)
-    };
-    fence(Ordering::Acquire);
-    let pending = device_idx.wrapping_sub(ctx.status.last_used);
-    if pending > ctx.status.in_flight_len || pending > ctx.statusq.size {
-        ctx.status.poisoned = true;
-        return Err(StatusError::CorruptQueue);
-    }
-    while ctx.status.last_used != device_idx {
-        let slot = (ctx.status.last_used as usize) % ctx.statusq.size as usize;
-        let elem = RING_ENTRIES_OFF + slot * USED_ELEM_BYTES;
-        // SAFETY: slot is bounded by qsize and the used element is mapped.
-        let (id, len) = unsafe {
-            (
-                core::ptr::read_volatile(used.add(elem + USED_ID_OFF) as *const u32),
-                core::ptr::read_volatile(used.add(elem + USED_LEN_OFF) as *const u32),
-            )
+    let Some(statusq) = ctx.statusq.as_mut() else { return Err(StatusError::NoDevice); };
+    let qsize = statusq.resource().size;
+    loop {
+        let used = match statusq.pop_used() {
+            Ok(Some(used)) => used,
+            Ok(None) => return Ok(()),
+            Err(_) => {
+                ctx.status.poisoned = true;
+                return Err(StatusError::CorruptQueue);
+            }
         };
-        if len != 0 || ctx.status.complete(id, ctx.statusq.size).is_err() {
+        let id = ctx.status_desc_slots[used.head as usize];
+        if used.len != 0 || id == u16::MAX || ctx.status.complete(u32::from(id), qsize).is_err() {
             ctx.status.poisoned = true;
             return Err(StatusError::CorruptQueue);
         }
-        ctx.status.last_used = ctx.status.last_used.wrapping_add(1);
     }
-    Ok(())
 }
 
 fn submit_ready(ctx: &mut QueueCtx, event: VirtioInputEvent) -> Result<(), StatusError> {
@@ -163,30 +121,26 @@ fn submit_ready(ctx: &mut QueueCtx, event: VirtioInputEvent) -> Result<(), Statu
         .wrapping_add(ctx.status_buf_pa)
         .wrapping_add(u64::from(id) * EVENT_BYTES as u64)
         as *mut VirtioInputEvent;
-    let avail = ctx.hhdm.wrapping_add(ctx.statusq.driver_pa) as *mut u8;
-    let slot = (ctx.status.avail_idx as usize) % ctx.statusq.size as usize;
-    // SAFETY: id owns one 8-byte frame and slot is bounded by qsize.
-    unsafe {
-        core::ptr::write_volatile(frame, event);
-        core::ptr::write_volatile(
-            avail.add(RING_ENTRIES_OFF + slot * AVAIL_ENTRY_BYTES) as *mut u16,
-            id,
-        );
-    }
-    fence(Ordering::Release);
+    // SAFETY: id was removed from the status free ledger and owns this slot.
+    unsafe { core::ptr::write_volatile(frame, event); }
+    let Some(statusq) = ctx.statusq.as_mut() else {
+        let _ = ctx.status.cancel(id, ctx.status.free_len + ctx.status.in_flight_len);
+        return Err(StatusError::NoDevice);
+    };
+    let qsize = statusq.resource().size;
+    let head = match statusq.submit(&[virtio::SplitQueueSeg {
+        dma: ctx.status_buf_dma.wrapping_add(u64::from(id) * EVENT_BYTES as u64),
+        len: EVENT_BYTES as u32,
+        device_writes: false,
+    }]) {
+        Ok(head) => head,
+        Err(_) => {
+            let _ = ctx.status.cancel(id, qsize);
+            return Err(StatusError::CorruptQueue);
+        }
+    };
+    ctx.status_desc_slots[head as usize] = id;
     ctx.status.avail_idx = ctx.status.avail_idx.wrapping_add(1);
-    // SAFETY: q1 avail header and notify register are mapped transport state.
-    unsafe {
-        core::ptr::write_volatile(
-            avail.add(RING_INDEX_OFF) as *mut u16,
-            ctx.status.avail_idx,
-        );
-    }
-    fence(Ordering::SeqCst);
-    // SAFETY: q1 notify register is mapped transport state.
-    unsafe {
-        core::ptr::write_volatile(ctx.statusq.notify_va as *mut u16, ctx.statusq.index);
-    }
     Ok(())
 }
 
