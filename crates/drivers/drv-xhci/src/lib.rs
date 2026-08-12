@@ -30,6 +30,8 @@ mod irq;
 #[cfg(target_os = "oxide-kernel")]
 pub(crate) mod probe;
 #[cfg(target_os = "oxide-kernel")]
+mod probe_hub;
+#[cfg(target_os = "oxide-kernel")]
 mod storage_block;
 #[cfg(target_os = "oxide-kernel")]
 pub use probe::XHCI_DRIVER;
