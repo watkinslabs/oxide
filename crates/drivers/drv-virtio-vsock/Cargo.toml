@@ -13,10 +13,10 @@ klog    = { path = "../../shared/klog" }
 drv     = { path = "../../drivers/drv" }
 virtio  = { path = "../../drivers/virtio" }
 sync    = { path = "../../shared/sync" }
-pmm     = { path = "../../kernel/mm-pmm" }
 net     = { path = "../../kernel/net" }
 softirq = { path = "../../kernel/softirq" }
 sched   = { path = "../../kernel/sched" }
+pci     = { path = "../../drivers/pci" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64  = { path = "../../arch/hal-x86_64" }
@@ -30,6 +30,7 @@ debug-boot = []
 
 [dev-dependencies]
 net = { path = "../../kernel/net", features = ["hosted"] }
+pmm = { path = "../../kernel/mm-pmm" }
 
 [lints]
 workspace = true

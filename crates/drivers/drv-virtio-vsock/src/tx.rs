@@ -16,7 +16,7 @@ pub fn tx_packet(owner: net::vsock::VsockOwner, frame: &[u8]) -> bool {
     }
     let h = ctx.hhdm;
 
-    let dst = h.wrapping_add(ctx.tx_buf_pa) as *mut u8;
+    let dst = h.wrapping_add(ctx.tx_buf.pa) as *mut u8;
     // SAFETY: HHDM view of the single TX bounce frame this context owns for its
     // whole lifetime (allocated at install, freed only after the context is out
     // of CTX); `want <= FRAME_BYTES` keeps every store inside that one frame,
@@ -28,12 +28,12 @@ pub fn tx_packet(owner: net::vsock::VsockOwner, frame: &[u8]) -> bool {
     }
 
     let desc = h.wrapping_add(ctx.txq.desc_pa) as *mut u64;
-    // Descriptor 0 = { addr=tx_buf_pa, len=want, flags=0 }: device-readable, so
+    // Descriptor 0 = { addr=tx_buf.dma, len=want, flags=0 }: device-readable, so
     // the device never writes back into the frame this request published.
     // SAFETY: HHDM-mapped q1 descriptor table (require_queue accepted desc_pa);
     // two aligned u64 stores at slot 0, present for any negotiated queue size.
     unsafe {
-        core::ptr::write_volatile(desc.add(0), ctx.tx_buf_pa);
+        core::ptr::write_volatile(desc.add(0), virtio::device_dma_addr(ctx.tx_buf));
         core::ptr::write_volatile(desc.add(1), want as u64);
     }
 

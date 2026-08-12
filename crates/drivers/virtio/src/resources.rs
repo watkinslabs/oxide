@@ -33,7 +33,7 @@ pub use transport::{
 };
 
 mod dma_frame;
-pub use dma_frame::{push_unique_dma_frame, VirtioProbeFrameSet};
+pub use dma_frame::{allocate_dma_frame, device_dma_addr, push_unique_dma_frame, release_dma_frame, VirtioProbeFrameSet};
 
 mod child;
 pub use child::{

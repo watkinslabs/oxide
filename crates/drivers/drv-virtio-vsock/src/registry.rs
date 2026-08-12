@@ -10,6 +10,7 @@ use crate::{consts::{FRAME_BYTES, VSOCK_CFG_OFF_GUEST_CID}, RX_RING_BUFS};
 /// a single bounce frame serialised by the driver Spinlock.
 pub struct Ctx {
     pub device_key: virtio::VirtioChildDeviceKey,
+    pub bdf: pci::Bdf,
     pub cfg_va: u64,
     pub hhdm: u64,
     pub guest_cid: u64,
@@ -17,10 +18,10 @@ pub struct Ctx {
     pub txq: virtio::VirtQueueResource,
     pub rx_avail_idx: u16,
     pub rx_used_seen: u16,
-    pub rx_bufs: [u64; RX_RING_BUFS],
+    pub rx_bufs: [virtio::VirtioDmaFrame; RX_RING_BUFS],
     pub tx_avail_idx: u16,
     pub tx_used_seen: u16,
-    pub tx_buf_pa: u64,
+    pub tx_buf: virtio::VirtioDmaFrame,
 }
 
 pub(crate) static CTX: Spinlock<Vec<Ctx>, DriverLockClass> = Spinlock::new(Vec::new());
@@ -44,29 +45,31 @@ fn vsock_owner(device_key: virtio::VirtioChildDeviceKey) -> Option<net::vsock::V
 
 struct VsockProbeState {
     device_key: virtio::VirtioChildDeviceKey,
-    rx_bufs: [u64; RX_RING_BUFS],
-    tx_buf_pa: u64,
+    bdf: pci::Bdf,
+    rx_bufs: [virtio::VirtioDmaFrame; RX_RING_BUFS],
+    tx_buf: virtio::VirtioDmaFrame,
     reserved_endpoint: bool,
     owned_frames: bool,
 }
 
 impl VsockProbeState {
-    fn reserve_and_alloc(device_key: virtio::VirtioChildDeviceKey) -> Option<Self> {
+    fn reserve_and_alloc(device_key: virtio::VirtioChildDeviceKey, bdf: pci::Bdf) -> Option<Self> {
         let owner = vsock_owner(device_key)?;
         if !net::vsock::driver_reserve(owner) {
             return None;
         }
         let mut state = Self {
             device_key,
-            rx_bufs: [0u64; RX_RING_BUFS],
-            tx_buf_pa: 0,
+            bdf,
+            rx_bufs: [virtio::VirtioDmaFrame::default(); RX_RING_BUFS],
+            tx_buf: virtio::VirtioDmaFrame::default(),
             reserved_endpoint: true,
             owned_frames: true,
         };
         for slot in state.rx_bufs.iter_mut() {
-            *slot = pmm::setup::alloc_one_frame()?;
+            *slot = virtio::allocate_dma_frame(bdf, FRAME_BYTES)?;
         }
-        state.tx_buf_pa = pmm::setup::alloc_one_frame()?;
+        state.tx_buf = virtio::allocate_dma_frame(bdf, FRAME_BYTES)?;
         Some(state)
     }
 
@@ -82,15 +85,8 @@ impl VsockProbeState {
 impl Drop for VsockProbeState {
     fn drop(&mut self) {
         if self.owned_frames {
-            free_rx_bufs(&mut self.rx_bufs);
-            if self.tx_buf_pa != 0 {
-                // SAFETY: `owned_frames` is still set, so this probe failed
-                // before `transfer_frames_to_ctx` handed the frames to a Ctx —
-                // no descriptor names them, the device was never kicked for
-                // them, and this drop is their only remaining owner.
-                unsafe { pmm::setup::free_one_frame(self.tx_buf_pa); }
-                self.tx_buf_pa = 0;
-            }
+            free_rx_bufs(self.bdf, &mut self.rx_bufs);
+            let _ = virtio::release_dma_frame(self.bdf, &mut self.tx_buf, FRAME_BYTES);
         }
         if self.reserved_endpoint {
             if let Some(owner) = vsock_owner(self.device_key) {
@@ -117,7 +113,7 @@ pub fn present_for(device_key: virtio::VirtioChildDeviceKey) -> bool {
     CTX.lock_bh::<crate::registry::VsockBh>().iter().any(|ctx| ctx.device_key == device_key)
 }
 
-pub fn install(device_key: virtio::VirtioChildDeviceKey, resources: virtio::VirtioResources,
+pub fn install(device_key: virtio::VirtioChildDeviceKey, bdf: pci::Bdf, resources: virtio::VirtioResources,
     features: u64) -> bool
 {
     let Some(rxq) = resources.require_queue_at_least(0, RX_RING_BUFS as u16) else {
@@ -138,7 +134,7 @@ pub fn install(device_key: virtio::VirtioChildDeviceKey, resources: virtio::Virt
     if CTX.lock_bh::<crate::registry::VsockBh>().iter().any(|ctx| ctx.device_key == device_key) {
         return false;
     }
-    let mut probe = match VsockProbeState::reserve_and_alloc(device_key) {
+    let mut probe = match VsockProbeState::reserve_and_alloc(device_key, bdf) {
         Some(probe) => probe,
         None => return false,
     };
@@ -157,6 +153,7 @@ pub fn install(device_key: virtio::VirtioChildDeviceKey, resources: virtio::Virt
 
     let ctx = Ctx {
         device_key,
+        bdf,
         cfg_va: resources.cfg_va,
         hhdm: resources.hhdm,
         guest_cid,
@@ -167,7 +164,7 @@ pub fn install(device_key: virtio::VirtioChildDeviceKey, resources: virtio::Virt
         rx_bufs: probe.rx_bufs,
         tx_avail_idx: tx_used_seen,
         tx_used_seen,
-        tx_buf_pa: probe.tx_buf_pa,
+        tx_buf: probe.tx_buf,
     };
     let mut g = CTX.lock_bh::<crate::registry::VsockBh>();
     if g.iter().any(|ctx| ctx.device_key == device_key) {
@@ -191,16 +188,9 @@ pub fn install(device_key: virtio::VirtioChildDeviceKey, resources: virtio::Virt
     true
 }
 
-fn free_rx_bufs(rx_bufs: &mut [u64; RX_RING_BUFS]) {
-    for pa in rx_bufs.iter_mut() {
-        if *pa != 0 {
-            // SAFETY: each `pa` came from `alloc_one_frame` for this context's
-            // RX ring; every caller either never published it (probe drop) or
-            // has already removed the Ctx from CTX and reset the transport, so
-            // the device holds no descriptor pointing at it.
-            unsafe { pmm::setup::free_one_frame(*pa); }
-            *pa = 0;
-        }
+fn free_rx_bufs(bdf: pci::Bdf, rx_bufs: &mut [virtio::VirtioDmaFrame; RX_RING_BUFS]) {
+    for frame in rx_bufs.iter_mut() {
+        let _ = virtio::release_dma_frame(bdf, frame, FRAME_BYTES);
     }
 }
 
@@ -215,13 +205,8 @@ pub fn uninstall(device_key: virtio::VirtioChildDeviceKey) -> bool {
         clear_rx_softirq_handler();
     }
     let _ = virtio::reset_device(ctx.cfg_va);
-    free_rx_bufs(&mut ctx.rx_bufs);
-    if ctx.tx_buf_pa != 0 {
-        // SAFETY: `remove_ctx` took this Ctx out of CTX and `tx_packet` runs
-        // entirely under the CTX lock, so no sender can still be using the
-        // frame; the transport reset above stopped the device first.
-        unsafe { pmm::setup::free_one_frame(ctx.tx_buf_pa); }
-    }
+    free_rx_bufs(ctx.bdf, &mut ctx.rx_bufs);
+    let _ = virtio::release_dma_frame(ctx.bdf, &mut ctx.tx_buf, FRAME_BYTES);
     true
 }
 
@@ -236,13 +221,8 @@ pub fn shutdown(device_key: virtio::VirtioChildDeviceKey) -> bool {
         clear_rx_softirq_handler();
     }
     let _ = virtio::reset_device(ctx.cfg_va);
-    free_rx_bufs(&mut ctx.rx_bufs);
-    if ctx.tx_buf_pa != 0 {
-        // SAFETY: same disarm order as `uninstall` — the Ctx left CTX before
-        // this point, so no TX or RX path can name the frame, and the reset
-        // above quiesced the device that was given it.
-        unsafe { pmm::setup::free_one_frame(ctx.tx_buf_pa); }
-    }
+    free_rx_bufs(ctx.bdf, &mut ctx.rx_bufs);
+    let _ = virtio::release_dma_frame(ctx.bdf, &mut ctx.tx_buf, FRAME_BYTES);
     true
 }
 
@@ -298,13 +278,13 @@ fn drain_ctxs_for_tests(mut release: impl FnMut(u64)) {
     };
     for context in contexts.iter_mut() {
         for frame in context.rx_bufs.iter_mut() {
-            if *frame == 0 { continue; }
-            release(*frame);
-            *frame = 0;
+            if frame.pa == 0 { continue; }
+            release(frame.pa);
+            *frame = virtio::VirtioDmaFrame::default();
         }
-        if context.tx_buf_pa != 0 {
-            release(context.tx_buf_pa);
-            context.tx_buf_pa = 0;
+        if context.tx_buf.pa != 0 {
+            release(context.tx_buf.pa);
+            context.tx_buf = virtio::VirtioDmaFrame::default();
         }
     }
 }
@@ -348,8 +328,9 @@ fn reserve_endpoint_only_for_tests(device_key: virtio::VirtioChildDeviceKey) -> 
     }
     Some(VsockProbeState {
         device_key,
-        rx_bufs: [0u64; RX_RING_BUFS],
-        tx_buf_pa: 0,
+        bdf: pci::Bdf { segment: 0, bus: 0, device: 0, function: 0 },
+        rx_bufs: [virtio::VirtioDmaFrame::default(); RX_RING_BUFS],
+        tx_buf: virtio::VirtioDmaFrame::default(),
         reserved_endpoint: true,
         owned_frames: false,
     })
@@ -389,6 +370,7 @@ pub(crate) fn publish_failure_releases_context_and_endpoint_for_tests(
     };
     CTX.lock_bh::<crate::registry::VsockBh>().push(Ctx {
         device_key,
+        bdf: pci::Bdf { segment: 0, bus: 0, device: 0, function: 0 },
         cfg_va: 0,
         hhdm: 0,
         guest_cid,
@@ -399,7 +381,7 @@ pub(crate) fn publish_failure_releases_context_and_endpoint_for_tests(
         rx_bufs: probe.rx_bufs,
         tx_avail_idx: 0,
         tx_used_seen: 0,
-        tx_buf_pa: probe.tx_buf_pa,
+        tx_buf: probe.tx_buf,
     });
     probe.transfer_frames_to_ctx();
     if net::vsock::driver_publish_reserved(owner, guest_cid, 0,

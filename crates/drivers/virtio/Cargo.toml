@@ -10,6 +10,8 @@ path = "src/lib.rs"
 [dependencies]
 pci = { path = "../../drivers/pci" }
 drv = { path = "../../drivers/drv" }
+iommu = { path = "../../kernel/iommu" }
+pmm = { path = "../../kernel/mm-pmm" }
 
 [features]
 default = []

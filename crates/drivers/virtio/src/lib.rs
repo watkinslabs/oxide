@@ -35,7 +35,7 @@ pub use resources::{
     POLL_QUEUE_INDEX,
     build_queue_resources, build_runtime_handoff, push_unique_frame, virtio_child_addr,
     virtio_child_has_parent, resolve_planned_notify_mappings, run_child_probe, run_child_remove,
-    run_child_shutdown,
+    run_child_shutdown, allocate_dma_frame, device_dma_addr, release_dma_frame,
 };
 
 pub mod common_cfg;
