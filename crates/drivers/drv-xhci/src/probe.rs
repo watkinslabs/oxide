@@ -2,7 +2,7 @@
 
 extern crate alloc;
 
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use sync::{Spinlock, TaskList as DriverLockClass};
 
@@ -23,21 +23,27 @@ struct UsbDeviceState {
     mouse_buttons: u8,
 }
 
-struct UsbDevice { state: Spinlock<UsbDeviceState, DriverLockClass> }
+struct UsbDevice { _controller: Weak<Controller>, state: Spinlock<UsbDeviceState, DriverLockClass> }
 
 impl UsbDevice {
-    fn new(bdf: pci::Bdf, device: AddressDeviceDma) -> Arc<Self> {
+    fn new(controller: &Arc<Controller>, device: AddressDeviceDma) -> Arc<Self> {
         let slot = device.slot();
         let protocol = device.hid_protocol();
-        let evdev = install_hid_input(bdf, slot, protocol);
-        let input_platform = evdev.map(|_| platform_id(bdf, slot));
-        Arc::new(Self { state: Spinlock::new(UsbDeviceState { device, slot, protocol, evdev, input_platform, keyboard: [0; 8], mouse_buttons: 0 }) })
+        let evdev = install_hid_input(controller.bdf, slot, protocol);
+        let input_platform = evdev.map(|_| platform_id(controller.bdf, slot));
+        Arc::new(Self { _controller: Arc::downgrade(controller), state: Spinlock::new(UsbDeviceState { device, slot, protocol, evdev, input_platform, keyboard: [0; 8], mouse_buttons: 0 }) })
+    }
+
+    pub(crate) fn with_transport<T>(&self, f: impl FnOnce(&Mmio, Binding, &mut CommandTransport, &mut UsbDeviceState) -> T) -> Option<T> {
+        let controller = self._controller.upgrade()?;
+        let mut controller = controller.state.lock_bh::<XhciBh>();
+        let mut device = self.state.lock_bh::<XhciBh>();
+        let ControllerState { mmio, irq, command, .. } = &mut *controller;
+        Some(f(mmio, *irq, command, &mut device))
     }
 }
 
-struct Record {
-    bdf: pci::Bdf,
-    command_orig: u16,
+struct ControllerState {
     mmio: Mmio,
     irq: Binding,
     command: CommandTransport,
@@ -46,9 +52,12 @@ struct Record {
     _erst: DmaPage,
     _event: DmaPage,
 }
-static CONTROLLERS: Spinlock<Vec<Record>, DriverLockClass> = Spinlock::new(Vec::new());
+struct Controller { bdf: pci::Bdf, command_orig: u16, state: Spinlock<ControllerState, DriverLockClass> }
+static CONTROLLERS: Spinlock<Vec<Arc<Controller>>, DriverLockClass> = Spinlock::new(Vec::new());
 #[cfg(target_os = "oxide-kernel")]
 type XhciBh = sched::bh::SchedBh;
+#[cfg(not(target_os = "oxide-kernel"))]
+type XhciBh = sync::NoopBh;
 
 fn advertise(bits: &mut [u8], code: u16) { bits[code as usize / 8] |= 1 << (code % 8); }
 fn platform_id(bdf: pci::Bdf, slot: u8) -> u32 { crate::identity::input_platform_id(bdf, slot) }
@@ -75,47 +84,48 @@ fn remove_hid_input(device: &UsbDeviceState) {
     if let Some(platform) = device.input_platform { let _ = input::remove_device(input::InputDeviceKey::platform(platform)); }
 }
 
-fn add_usb_device(record: &mut Record, device: AddressDeviceDma) {
-    record.devices.push(UsbDevice::new(record.bdf, device));
+fn add_usb_device(controller: &Arc<Controller>, state: &mut ControllerState, device: AddressDeviceDma) {
+    state.devices.push(UsbDevice::new(controller, device));
 }
 
-fn service_port_changes(record: &mut Record) {
-    let changed = record.irq.take_port_changes();
-    for port in 1..=record.mmio.geometry().max_ports {
+fn service_port_changes(controller: &Arc<Controller>, state: &mut ControllerState) {
+    let changed = state.irq.take_port_changes();
+    for port in 1..=state.mmio.geometry().max_ports {
         if changed & (1u64 << (port - 1)) == 0 { continue; }
-        let connected = record.mmio.port_status(port).is_some_and(|status| status & crate::ports::PORT_CONNECT != 0);
+        let connected = state.mmio.port_status(port).is_some_and(|status| status & crate::ports::PORT_CONNECT != 0);
         if !connected {
-            if let Some(index) = record.devices.iter().position(|device| device.state.lock().device.port() == port) {
-                let device = record.devices.remove(index);
-                let state = device.state.lock();
-                disable_slot(&record.mmio, &mut record.command, record.irq, state.slot);
-                remove_hid_input(&state);
+            if let Some(index) = state.devices.iter().position(|device| device.state.lock().device.port() == port) {
+                let device = state.devices.remove(index);
+                let device_state = device.state.lock();
+                disable_slot(&state.mmio, &mut state.command, state.irq, device_state.slot);
+                remove_hid_input(&device_state);
             }
             continue;
         }
-        if record.devices.iter().any(|device| device.state.lock().device.port() == port) { continue; }
-        if let Some(device) = address_port_device(record.bdf, &record.mmio, &mut record.command, &record._dcbaa, record.irq, port) {
-            add_usb_device(record, device);
+        if state.devices.iter().any(|device| device.state.lock().device.port() == port) { continue; }
+        if let Some(device) = address_port_device(controller.bdf, &state.mmio, &mut state.command, &state._dcbaa, state.irq, port) {
+            add_usb_device(controller, state, device);
         }
     }
 }
 
 fn input_bottom_half() {
-    let mut controllers = CONTROLLERS.lock_bh::<XhciBh>();
-    for record in controllers.iter_mut() {
-        service_port_changes(record);
-        for device in record.devices.iter() {
-            let mut device = device.state.lock_bh::<XhciBh>();
-            let report = {
-                let Some(pending) = device.device.hid_pending() else { continue; };
-                let Some(completion) = record.irq.take_transfer_completion(pending) else { continue; };
-                device.device.take_hid_report(completion)
-            };
-            if let Some(report) = report {
-                publish_report(&mut device, &report);
-                let slot = device.slot;
-                let _ = device.device.submit_hid_report(&record.mmio, slot);
-            }
+    let controllers = CONTROLLERS.lock_bh::<XhciBh>();
+    for controller in controllers.iter() {
+        let devices = {
+            let mut state = controller.state.lock_bh::<XhciBh>();
+            service_port_changes(controller, &mut state);
+            state.devices.clone()
+        };
+        for device in devices {
+            let _ = device.with_transport(|mmio, irq, _, state| {
+                let Some(pending) = state.device.hid_pending() else { return; };
+                let Some(completion) = irq.take_transfer_completion(pending) else { return; };
+                let Some(report) = state.device.take_hid_report(completion) else { return; };
+                publish_report(state, &report);
+                let slot = state.slot;
+                let _ = state.device.submit_hid_report(mmio, slot);
+            });
         }
     }
 }
@@ -135,17 +145,18 @@ fn restore_bus_master(bdf: pci::Bdf, command_orig: u16) {
 }
 
 fn remove(bdf: pci::Bdf) {
-    let record = {
+    let controller = {
         let mut controllers = CONTROLLERS.lock();
-        controllers.iter().position(|record| record.bdf == bdf).map(|index| controllers.remove(index))
+        controllers.iter().position(|controller| controller.bdf == bdf).map(|index| controllers.remove(index))
     };
-    if let Some(record) = record {
-        let _ = record.mmio.halt();
-        record.irq.disable_and_free();
-        for device in record.devices {
+    if let Some(controller) = controller {
+        let state = controller.state.lock();
+        let _ = state.mmio.halt();
+        state.irq.disable_and_free();
+        for device in &state.devices {
             remove_hid_input(&device.state.lock());
         }
-        restore_bus_master(record.bdf, record.command_orig);
+        restore_bus_master(controller.bdf, controller.command_orig);
     }
     if CONTROLLERS.lock().is_empty() { let _ = softirq::clear_handler(softirq::Slot::UsbInput); }
 }
@@ -290,19 +301,29 @@ impl drv::Driver for XhciDriver {
         let Some(mmio) = (unsafe { Mmio::map(resource.start, bytes) }) else { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); };
         if !mmio.halt_reset() { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); }
         let Some((command, dcbaa, erst, event)) = prepare_dma(bdf, &mmio) else { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); };
-        let Some(mut command) = CommandTransport::new(command) else { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); };
+        let Some(command) = CommandTransport::new(command) else { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); };
         let Some(irq) = crate::irq::bind(bdf, &mmio) else { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); };
         if !irq.arm(&mmio, &event) || !mmio.run() {
             irq.disable_and_free();
             restore_bus_master(bdf, command_orig);
             return Err(drv::Error::ProbeFailed);
         }
-        let mut devices = Vec::new();
-        for port in 1..=mmio.geometry().max_ports {
-            let Some(device) = address_port_device(bdf, &mmio, &mut command, &dcbaa, irq, port) else { continue; };
-            devices.push(UsbDevice::new(bdf, device));
+        let controller = Arc::new(Controller {
+            bdf,
+            command_orig,
+            state: Spinlock::new(ControllerState { mmio, irq, command, _dcbaa: dcbaa, devices: Vec::new(), _erst: erst, _event: event }),
+        });
+        {
+            let mut state = controller.state.lock();
+            let ports = state.mmio.geometry().max_ports;
+            let irq = state.irq;
+            for port in 1..=ports {
+                let ControllerState { mmio, command, _dcbaa, .. } = &mut *state;
+                let Some(device) = address_port_device(controller.bdf, mmio, command, _dcbaa, irq, port) else { continue; };
+                add_usb_device(&controller, &mut state, device);
+            }
         }
-        CONTROLLERS.lock().push(Record { bdf, command_orig, mmio, irq, command, _dcbaa: dcbaa, devices, _erst: erst, _event: event });
+        CONTROLLERS.lock().push(controller);
         Ok(())
     }
     fn remove(&self, dev: &drv::Device) { if let Some(bdf) = pci::parse_bdf_addr(&dev.addr) { remove(bdf); } }
