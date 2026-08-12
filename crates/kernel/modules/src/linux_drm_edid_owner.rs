@@ -14,6 +14,22 @@ pub(super) fn export_symbols() {
     crate::symtab::export("drm_edid_raw", drm_edid_raw as *const () as usize, false);
 }
 
+/// Adopt a raw EDID allocation into the opaque two-word owner.  The caller
+/// transfers ownership of `raw` regardless of whether this returns an owner.
+pub(super) fn from_owned(raw: *mut u8, size: usize) -> *mut c_void {
+    if raw.is_null() || size < EDID_LENGTH { return core::ptr::null_mut(); }
+    let owner_layout = Layout::new::<[usize; 2]>();
+    // SAFETY: the owner contains only the immutable allocation extent and its raw owner.
+    let owner = unsafe { alloc(owner_layout) };
+    if owner.is_null() {
+        if let Ok(layout) = Layout::array::<u8>(size) { unsafe { dealloc(raw, layout); } }
+        return core::ptr::null_mut();
+    }
+    // SAFETY: both opaque owner fields are initialized before publication.
+    unsafe { write(owner.add(DRM_EDID_SIZE_OFF).cast::<usize>(), size); write(owner.add(DRM_EDID_RAW_OFF).cast::<*mut u8>(), raw); }
+    owner.cast()
+}
+
 /// Allocate an opaque owner that duplicates at least one full EDID block. # C: O(size)
 pub(super) extern "C" fn drm_edid_alloc(raw: *const c_void, size: usize) -> *mut c_void {
     if raw.is_null() || size < EDID_LENGTH { return core::ptr::null_mut(); }
