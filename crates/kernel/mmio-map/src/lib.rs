@@ -64,6 +64,14 @@ pub unsafe fn map_pages(pa: u64, n_pages: u64) -> u64 {
     unsafe { map_pages_with_flags(pa, n_pages, device_flags()) }
 }
 
+/// Map device physical pages with write-combining cache attributes.
+/// # C: O(n_pages)
+pub unsafe fn map_pages_wc(pa: u64, n_pages: u64) -> u64 {
+    // SAFETY: caller provides a page-aligned device range whose WC alias is
+    // retained until the matching unmap_pages call removes this mapping.
+    unsafe { map_pages_with_flags(pa, n_pages, write_combine_flags()) }
+}
+
 /// Map 4K physical pages into contiguous fresh kernel VA space.
 ///
 /// # Safety
