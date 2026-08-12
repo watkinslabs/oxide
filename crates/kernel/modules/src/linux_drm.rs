@@ -18,9 +18,13 @@ struct DeviceAllocation {
     layout: Layout,
     refs: usize,
     mode_config: bool,
+    objects: Vec<ModeObjectRecord>,
     put_pending: bool,
     unplugged: bool,
 }
+
+#[derive(Copy, Clone)]
+struct ModeObjectRecord { ptr: usize, id: u32 }
 
 static DEVICES: Spinlock<Vec<DeviceAllocation>, ModulesLockClass> = Spinlock::new(Vec::new());
 static GUARDS: Spinlock<Vec<(i32, usize)>, ModulesLockClass> = Spinlock::new(Vec::new());
@@ -53,6 +57,8 @@ const MODE_CONFIG_LISTS: [usize; 9] = [
     MODE_CONFIG_PLANE_LIST_OFF, MODE_CONFIG_COLOROP_LIST_OFF, MODE_CONFIG_CRTC_LIST_OFF,
     MODE_CONFIG_PROPERTY_LIST_OFF, MODE_CONFIG_PRIVOBJ_LIST_OFF, MODE_CONFIG_BLOB_LIST_OFF,
 ];
+const DRM_MODE_OBJECT_ID_OFF: usize = 0;
+const DRM_MODE_OBJECT_TYPE_OFF: usize = 4;
 
 /// Register the DRM core object-lifetime ABI.
 /// # C: O(1)
@@ -64,6 +70,8 @@ pub fn export_symbols() {
     crate::symtab::export("drm_dev_exit", drm_dev_exit as *const () as usize, false);
     crate::symtab::export("drm_dev_unplug", drm_dev_unplug as *const () as usize, false);
     crate::symtab::export("drmm_mode_config_init", drmm_mode_config_init as *const () as usize, false);
+    crate::symtab::export("drm_mode_object_add", drm_mode_object_add as *const () as usize, false);
+    crate::symtab::export("drm_mode_object_unregister", drm_mode_object_unregister as *const () as usize, false);
 }
 
 fn layout_for(size: usize) -> Option<Layout> {
@@ -107,7 +115,7 @@ extern "C" fn __devm_drm_dev_alloc(
     let dev = unsafe { base.add(offset) };
     initialize_device(dev, parent, driver, base);
     let dev = dev.cast::<c_void>();
-    DEVICES.lock().push(DeviceAllocation { dev: dev as usize, base: base as usize, layout, refs: 1, mode_config: false, put_pending: false, unplugged: false });
+    DEVICES.lock().push(DeviceAllocation { dev: dev as usize, base: base as usize, layout, refs: 1, mode_config: false, objects: Vec::new(), put_pending: false, unplugged: false });
     if devres::add_action_or_reset(parent, Some(devm_drm_dev_put), dev) != 0 { return core::ptr::null_mut(); }
     base.cast()
 }
@@ -165,6 +173,41 @@ extern "C" fn drmm_mode_config_init(dev: *mut c_void) -> i32 {
         }
     }
     0
+}
+
+/// Allocate and publish a KMS object identifier in one device's mode configuration. # C: O(N_objects)
+extern "C" fn drm_mode_object_add(dev: *mut c_void, object: *mut c_void, obj_type: u32) -> i32 {
+    if object.is_null() { return -LINUX_ENODEV; }
+    let mut devices = DEVICES.lock();
+    let Some(rec) = devices.iter_mut().find(|rec| rec.dev == dev as usize && rec.mode_config && !rec.put_pending && !rec.unplugged) else { return -LINUX_ENODEV; };
+    if rec.objects.iter().any(|entry| entry.ptr == object as usize) { return -LINUX_EBUSY; }
+    let mut id = 1u32;
+    while rec.objects.iter().any(|entry| entry.id == id) {
+        let Some(next) = id.checked_add(1) else { return -LINUX_EBUSY; };
+        id = next;
+    }
+    // SAFETY: caller provides a mutable drm_mode_object; its id and type are the two
+    // leading u32 ABI fields and are published while the device object owner is locked.
+    unsafe {
+        write(object.cast::<u8>().add(DRM_MODE_OBJECT_ID_OFF).cast::<u32>(), id);
+        write(object.cast::<u8>().add(DRM_MODE_OBJECT_TYPE_OFF).cast::<u32>(), obj_type);
+    }
+    rec.objects.push(ModeObjectRecord { ptr: object as usize, id });
+    0
+}
+
+/// Withdraw a KMS object identifier; repeated withdrawal is a no-op. # C: O(N_objects)
+extern "C" fn drm_mode_object_unregister(dev: *mut c_void, object: *mut c_void) {
+    if object.is_null() { return; }
+    let mut devices = DEVICES.lock();
+    let Some(rec) = devices.iter_mut().find(|rec| rec.dev == dev as usize) else { return; };
+    let Some(pos) = rec.objects.iter().position(|entry| entry.ptr == object as usize) else { return; };
+    let entry = rec.objects.remove(pos);
+    // SAFETY: object was the exact live ABI object recorded by drm_mode_object_add.
+    unsafe {
+        let id = object.cast::<u8>().add(DRM_MODE_OBJECT_ID_OFF).cast::<u32>();
+        if *id == entry.id { write(id, 0); }
+    }
 }
 
 fn next_guard() -> i32 {
@@ -304,6 +347,9 @@ mod tests {
         assert!(crate::symtab::is_exported("drm_dev_enter"));
         assert!(crate::symtab::is_exported("drm_dev_exit"));
         assert!(crate::symtab::is_exported("drm_dev_unplug"));
+        assert!(crate::symtab::is_exported("drmm_mode_config_init"));
+        assert!(crate::symtab::is_exported("drm_mode_object_add"));
+        assert!(crate::symtab::is_exported("drm_mode_object_unregister"));
     }
 
     #[test]
@@ -347,6 +393,35 @@ mod tests {
         let dev: *mut c_void = unsafe { container.cast::<u8>().add(64).cast() };
         drm_dev_unplug(dev);
         assert!(!drm_dev_enter(dev, &mut 0));
+        devres::release_device(&mut parent);
+    }
+
+    #[test]
+    fn mode_objects_receive_reusable_ids_and_unregister_once() {
+        let _modules = crate::test_serial::claim();
+        let mut parent = LinuxDevice::new();
+        let container = __devm_drm_dev_alloc(&mut parent, core::ptr::null(), 2048, 64);
+        // SAFETY: the allocation is 2048 bytes and its embedded DRM device begins at 64.
+        let dev: *mut c_void = unsafe { container.cast::<u8>().add(64).cast() };
+        assert_eq!(drmm_mode_config_init(dev), 0);
+        let mut first = [0u8; 32];
+        let mut second = [0u8; 32];
+        assert_eq!(drm_mode_object_add(dev, first.as_mut_ptr().cast(), 0xcccc_cccc), 0);
+        assert_eq!(drm_mode_object_add(dev, second.as_mut_ptr().cast(), 0xdddd_dddd), 0);
+        // SAFETY: successful creation initialized the first two u32 ABI fields of both objects.
+        unsafe {
+            assert_eq!(*(first.as_ptr().cast::<u32>()), 1);
+            assert_eq!(*(second.as_ptr().cast::<u32>()), 2);
+            assert_eq!(*(first.as_ptr().add(DRM_MODE_OBJECT_TYPE_OFF).cast::<u32>()), 0xcccc_cccc);
+        }
+        drm_mode_object_unregister(dev, first.as_mut_ptr().cast());
+        drm_mode_object_unregister(dev, first.as_mut_ptr().cast());
+        // SAFETY: unregister zeroes the object's public identifier field exactly once.
+        assert_eq!(unsafe { *(first.as_ptr().cast::<u32>()) }, 0);
+        let mut reused = [0u8; 32];
+        assert_eq!(drm_mode_object_add(dev, reused.as_mut_ptr().cast(), 0), 0);
+        // SAFETY: the lowest released object identifier is assigned to the new object.
+        assert_eq!(unsafe { *(reused.as_ptr().cast::<u32>()) }, 1);
         devres::release_device(&mut parent);
     }
 }
