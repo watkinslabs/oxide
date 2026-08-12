@@ -17,6 +17,9 @@ impl BlkState {
         // free list, which kalloc_grow (or anything else) could then carve
         // into a live heap object the device keeps writing into.
         if self.bounce_pa != 0 && reset_confirmed {
+            if !iommu::unmap_dma(self.bdf, self.bounce_dma, BOUNCE_BYTES) {
+                return;
+            }
             // SAFETY: `bounce_pa` is this driver's own `alloc_contig(BOUNCE_ORDER)`
             // block, freed exactly once here; `reset_confirmed` proves the device
             // read status==0 after reset, so no in-flight DMA targets the frames,
@@ -103,6 +106,9 @@ impl BlkState {
             };
             for request in pending {
                 if reset_confirmed {
+                    if !iommu::unmap_dma(self.bdf, request.bounce_dma, BOUNCE_BYTES) {
+                        continue;
+                    }
                     // SAFETY: reset_common_cfg confirmed status==0 before this
                     // call, so the device has actually stopped DMA and cannot
                     // retain this request buffer.

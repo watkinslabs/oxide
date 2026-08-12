@@ -16,7 +16,9 @@ license = "MPL-2.0"
 [dependencies]
 block    = { path = "../../kernel/block" }
 hal      = { path = "../../arch/hal" }
+iommu    = { path = "../../kernel/iommu" }
 klog     = { path = "../../shared/klog" }
+pci     = { path = "../pci" }
 pmm      = { path = "../../kernel/mm-pmm" }
 sched    = { path = "../../kernel/sched" }
 sync     = { path = "../../shared/sync" }

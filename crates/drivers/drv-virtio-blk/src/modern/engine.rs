@@ -50,10 +50,10 @@ impl BlkState {
             core::ptr::write_volatile(bounce.add(STATUS_OFF), 0xFFu8);
         }
 
-        let hdr_pa = self.bounce_pa + HDR_OFF as u64;
-        let data_pa = self.bounce_pa + DATA_OFF as u64;
-        let status_pa = self.bounce_pa + STATUS_OFF as u64;
-        let (descs, n) = blk::build_chain(is_in, hdr_pa, data_pa, data_len, status_pa);
+        let hdr_dma = self.bounce_dma + HDR_OFF as u64;
+        let data_dma = self.bounce_dma + DATA_OFF as u64;
+        let status_dma = self.bounce_dma + STATUS_OFF as u64;
+        let (descs, n) = blk::build_chain(is_in, hdr_dma, data_dma, data_len, status_dma);
 
         let desc_tbl = h.wrapping_add(self.requestq.res.desc_pa) as *mut u64;
         // `acquire_turn` gives this task sole ownership of heads 0..n, and the
