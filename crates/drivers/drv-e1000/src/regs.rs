@@ -1,5 +1,16 @@
-// Register and descriptor ABI for the Intel legacy/e1000e-compatible DMA
-// register file. All ring decisions stay host-testable in this module.
+// Register and descriptor ABI for the Intel legacy e1000 DMA register file.
+// All ring decisions stay host-testable in this module.
+
+/// PCI IDs owned by Linux's legacy `e1000` driver, not `e1000e` or `igb`.
+///
+/// The reset sequence in this crate is 82540-class-specific. PCH integrated
+/// NICs and 82580-class adapters have superficially similar descriptor
+/// registers but require Linux's separate `e1000e` and `igb` hardware paths,
+/// so they must remain unbound until those drivers exist. # C: O(1)
+pub const LEGACY_PCI_IDS: &[u16] = &[
+    0x100e, 0x100f, 0x1015, 0x1016, 0x1017, 0x1018, 0x1075, 0x1076,
+    0x1077, 0x1078, 0x1079, 0x107a, 0x10b5,
+];
 
 pub const CTRL: u64 = 0x00000;
 pub const ICR: u64 = 0x000c0;
@@ -78,6 +89,7 @@ pub fn ring_bytes<T>() -> u32 { (core::mem::size_of::<T>() * RING_COUNT) as u32 
 pub fn split_dma(pa: u64) -> (u32, u32) { (pa as u32, (pa >> 32) as u32) }
 /// Convert an unbounded software cursor to one hardware ring tail. # C: O(1)
 pub fn ring_tail(next: usize) -> u32 { (next % RING_COUNT) as u32 }
+
 /// Admit only complete Ethernet frames fitting one hardware RX/TX slot. # C: O(1)
 pub fn valid_frame_len(len: usize) -> bool { (14..=ETH_MAX_FRAME).contains(&len) }
 /// Test whether an entire DMA allocation stays within a 32-bit bus aperture. # C: O(1)
@@ -114,5 +126,15 @@ mod tests {
         assert_eq!(mac_from_rar(0, 0), None);
         assert!(dma32_range_fits(0xffff_f000, 4096));
         assert!(!dma32_range_fits(0xffff_f000, 4097));
+    }
+    #[test]
+    fn only_linux_legacy_e1000_ids_match_the_82540_reset_path() {
+        assert!(LEGACY_PCI_IDS.contains(&0x100e));
+        assert!(LEGACY_PCI_IDS.contains(&0x10b5));
+        // e1000e: PCH integrated devices.
+        assert!(!LEGACY_PCI_IDS.contains(&0x10ea));
+        assert!(!LEGACY_PCI_IDS.contains(&0x1502));
+        // igb: 82580 devices.
+        assert!(!LEGACY_PCI_IDS.contains(&0x150e));
     }
 }

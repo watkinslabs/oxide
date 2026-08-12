@@ -400,12 +400,9 @@ fn poll_rx() {
 
 const INTEL_VENDOR: u16 = 0x8086;
 const ETHERNET_CLASS: u32 = 0x02_00_00;
-const E1000_IDS: &[u16] = &[0x100e, 0x100f, 0x1015, 0x1016, 0x1017, 0x1018, 0x1075,
-    0x1076, 0x1077, 0x1078, 0x1079, 0x107a, 0x10b5, 0x10bc, 0x10bd, 0x10d3, 0x10ea,
-    0x10eb, 0x10ef, 0x10f0, 0x10f5, 0x1502, 0x1503, 0x150c, 0x150e, 0x150f];
 fn supported(dev: &drv::Device) -> bool {
     dev.bus == "pci" && dev.class == ETHERNET_CLASS && dev.vendor_id == INTEL_VENDOR
-        && E1000_IDS.contains(&dev.device_id)
+        && regs::LEGACY_PCI_IDS.contains(&dev.device_id)
 }
 
 fn remove_bdf(bdf: pci::Bdf) {
