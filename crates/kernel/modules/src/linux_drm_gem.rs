@@ -65,7 +65,7 @@ type FbDestroy = unsafe extern "C" fn(*mut c_void);
 type ModeObjectFree = unsafe extern "C" fn(*mut c_void);
 
 #[repr(C)]
-struct GemObjectFuncs {
+pub(crate) struct GemObjectFuncs {
     free: Option<GemFree>,
     _before_mmap: [usize; 9],
     mmap: Option<GemObjectMmap>,
@@ -76,7 +76,7 @@ struct GemObjectFuncs {
 // SAFETY: this immutable ABI callback table contains only fixed function and null pointers.
 unsafe impl Sync for GemObjectFuncs {}
 
-static SHMEM_OBJECT_FUNCS: GemObjectFuncs = GemObjectFuncs { free: Some(shmem_object_free), _before_mmap: [0; 9], mmap: None, _before_vm_ops: [0; 2], vm_ops: (&super::gem_mmap::SHMEM_VM_OPS as *const super::gem_mmap::GemVmOps).cast() };
+pub(crate) static SHMEM_OBJECT_FUNCS: GemObjectFuncs = GemObjectFuncs { free: Some(shmem_object_free), _before_mmap: [0; 9], mmap: None, _before_vm_ops: [0; 2], vm_ops: (&super::gem_mmap::SHMEM_VM_OPS as *const super::gem_mmap::GemVmOps).cast() };
 static GEM_FB_FUNCS: [Option<FbDestroy>; 3] = [Some(gem_fb_destroy), None, None];
 
 /// Retain one framebuffer reference through its embedded mode object. # C: O(1)
@@ -351,10 +351,18 @@ fn release_handle(object: *mut c_void, file: *mut c_void) {
     object_put(object);
 }
 
-pub(super) fn object_put(object: *mut c_void) {
+pub(crate) fn object_put(object: *mut c_void) {
     // SAFETY: every caller holds exactly one previously acquired GEM object reference.
     let refs = unsafe { read(object.cast::<u8>().add(DRM_GEM_REFCOUNT_OFF).cast::<i32>()) };
     if refs <= 1 { object_free(object); } else { unsafe { write(object.cast::<u8>().add(DRM_GEM_REFCOUNT_OFF).cast::<i32>(), refs - 1); } }
+}
+
+/// Retain one established GEM VMA reference. # C: O(1)
+pub(crate) fn object_get(object: *mut c_void) -> bool {
+    if object.is_null() { return false; }
+    // SAFETY: caller names a live GEM object already retained by one VMA.
+    unsafe { let refs = read(object.cast::<u8>().add(DRM_GEM_REFCOUNT_OFF).cast::<i32>()); if refs <= 0 { return false; } write(object.cast::<u8>().add(DRM_GEM_REFCOUNT_OFF).cast::<i32>(), refs.saturating_add(1)); }
+    true
 }
 
 fn object_free(object: *mut c_void) {
