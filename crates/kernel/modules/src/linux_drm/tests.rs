@@ -15,6 +15,8 @@ struct TestEncoder([u8; 128]);
 #[repr(C, align(8))]
 struct TestConnector([u8; 2280]);
 
+const VERIFIED_MODE_CONFIG_NUM_CONNECTOR_OFF: usize = 236;
+
 fn device(parent: &mut LinuxDevice, size: usize) -> *mut c_void {
     let container = __devm_drm_dev_alloc(parent, core::ptr::null(), size, 64);
     // SAFETY: each caller supplies enough container bytes for the embedded device.
@@ -116,7 +118,7 @@ fn encoder_links_the_mode_graph_with_a_typed_id_and_cleans_up() {
 fn connector_links_the_mode_graph_and_cleans_up() {
     let _modules = crate::test_serial::claim(); let mut parent = LinuxDevice::new(); let dev = device(&mut parent, 2048); assert_eq!(drmm_mode_config_init(dev), 0); let mut connector = TestConnector([0; 2280]); let funcs = 1u8;
     assert_eq!(connector::drm_connector_init(dev, connector.0.as_mut_ptr().cast(), (&funcs as *const u8).cast(), 11), 0); let config = dev.cast::<u8>().wrapping_add(DRM_MODE_CONFIG_OFF);
-    unsafe { assert_eq!(*(connector.0.as_ptr().add(connector::DRM_CONNECTOR_BASE_OFF).cast::<u32>()), 1); assert_eq!(*(connector.0.as_ptr().add(connector::DRM_CONNECTOR_BASE_OFF + DRM_MODE_OBJECT_TYPE_OFF).cast::<u32>()), connector::DRM_MODE_OBJECT_CONNECTOR); assert_eq!(*(config.add(connector::MODE_CONFIG_NUM_CONNECTOR_OFF).cast::<i32>()), 1); }
+    unsafe { assert_eq!(*(connector.0.as_ptr().add(connector::DRM_CONNECTOR_BASE_OFF).cast::<u32>()), 1); assert_eq!(*(connector.0.as_ptr().add(connector::DRM_CONNECTOR_BASE_OFF + DRM_MODE_OBJECT_TYPE_OFF).cast::<u32>()), connector::DRM_MODE_OBJECT_CONNECTOR); assert_eq!(*(config.add(VERIFIED_MODE_CONFIG_NUM_CONNECTOR_OFF).cast::<i32>()), 1); }
     connector::drm_connector_cleanup(connector.0.as_mut_ptr().cast()); assert_eq!(DEVICES.lock()[0].connectors.len(), 0); devres::release_device(&mut parent);
 }
 

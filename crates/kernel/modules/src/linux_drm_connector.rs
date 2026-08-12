@@ -18,7 +18,7 @@ pub(super) const DRM_CONNECTOR_STATUS_DISCONNECTED: i32 = 2;
 pub(super) const DRM_CONNECTOR_STATUS_UNKNOWN: i32 = 3;
 pub(super) const DRM_CONNECTOR_POSSIBLE_ENCODERS_OFF: usize = 1736;
 const DRM_CONNECTOR_ENCODER_OFF: usize = 1744;
-pub(super) const MODE_CONFIG_NUM_CONNECTOR_OFF: usize = 248;
+pub(super) const MODE_CONFIG_NUM_CONNECTOR_OFF: usize = 236;
 pub(super) const DRM_MODE_OBJECT_CONNECTOR: u32 = 0xc0c0_c0c0;
 
 pub(super) fn export_symbols() {
