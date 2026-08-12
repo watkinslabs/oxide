@@ -83,11 +83,7 @@ pub(super) fn build_grub_iso(
     fs::create_dir_all(stage.join("boot/grub")).map_err(|_| 1u8)?;
     fs::copy(kernel_elf, stage.join(format!("boot/oxide-{arch}"))).map_err(|_| 1u8)?;
     let args = super::bootargs::kernel_cmdline(arch, &format!("/boot/oxide-{arch}"));
-    let cfg = format!(
-        "set timeout=0\nset default=0\nserial --unit=0 --speed=115200\nterminal_input serial console\nterminal_output serial console\n\n\
-         menuentry \"oxide (multiboot2)\" {{\n    \
-         multiboot2 /boot/oxide-{arch} {args}\n    \
-         boot\n}}\n");
+    let cfg = x86_grub_cfg(arch, &args);
     fs::write(stage.join("boot/grub/grub.cfg"), cfg).map_err(|_| 1u8)?;
     let iso = crate::buildns::iso_path(repo, id, arch);
     let _ = fs::remove_file(&iso);
@@ -97,6 +93,20 @@ pub(super) fn build_grub_iso(
     run(c)?;
     eprintln!("xtask grub: produced {}", iso.display());
     Ok(iso)
+}
+
+/// GRUB configuration shared by BIOS and UEFI x86 images.
+///
+/// The Multiboot framebuffer request remains optional so a broken GOP never
+/// blocks serial recovery, but `gfxpayload=keep` makes a valid firmware mode
+/// an explicit handoff contract for simpledrm rather than an accidental GRUB
+/// default. # C: O(config bytes)
+fn x86_grub_cfg(arch: &str, args: &str) -> String {
+    format!(
+        "set timeout=0\nset default=0\nset gfxpayload=keep\nserial --unit=0 --speed=115200\nterminal_input serial console\nterminal_output serial console\n\n\
+         menuentry \"oxide (multiboot2)\" {{\n    \
+         multiboot2 /boot/oxide-{arch} {args}\n    \
+         boot\n}}\n")
 }
 
 /// Boot the GRUB ISO under QEMU. `OXIDE_QEMU_UEFI=1` selects OVMF; the
@@ -337,7 +347,7 @@ pub(super) fn qemu_run_grub_x86_64(
 
 #[cfg(test)]
 mod tests {
-    use super::HardwareProfile;
+    use super::{HardwareProfile, x86_grub_cfg};
 
     #[test]
     fn native_profile_selects_the_native_pci_e1000() {
@@ -352,5 +362,14 @@ mod tests {
             "usb-kbd,bus=xhci.0",
             "usb-tablet,bus=xhci.0",
         ]);
+    }
+
+    #[test]
+    fn x86_grub_keeps_the_firmware_framebuffer_but_retains_serial_recovery() {
+        let cfg = x86_grub_cfg("x86_64", "root=/dev/root");
+        assert!(cfg.contains("set gfxpayload=keep"));
+        assert!(cfg.contains("terminal_input serial console"));
+        assert!(cfg.contains("terminal_output serial console"));
+        assert!(cfg.contains("multiboot2 /boot/oxide-x86_64 root=/dev/root"));
     }
 }
