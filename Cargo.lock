@@ -342,11 +342,18 @@ dependencies = [
 name = "drv-igc"
 version = "0.1.0"
 dependencies = [
+ "arch-irq",
+ "drv",
+ "hal-aarch64",
+ "hal-x86_64",
  "iommu",
  "mmio-map",
+ "net",
  "pci",
+ "pci-irq",
  "pmm",
  "sched",
+ "sync",
 ]
 
 [[package]]
@@ -1391,6 +1398,7 @@ dependencies = [
  "drv-ahci",
  "drv-bochs",
  "drv-e1000",
+ "drv-igc",
  "drv-nvme",
  "drv-rtl8125",
  "drv-virtio-blk",

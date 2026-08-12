@@ -34,6 +34,7 @@ drv-virtio-snd   = { path = "../../drivers/drv-virtio-snd" }
 drv-nvme         = { path = "../../drivers/drv-nvme" }
 drv-ahci         = { path = "../../drivers/drv-ahci" }
 drv-e1000        = { path = "../../drivers/drv-e1000" }
+drv-igc          = { path = "../../drivers/drv-igc" }
 drv-rtl8125      = { path = "../../drivers/drv-rtl8125" }
 drv-bochs        = { path = "../../drivers/drv-bochs" }
 drv-xhci         = { path = "../../drivers/drv-xhci" }
