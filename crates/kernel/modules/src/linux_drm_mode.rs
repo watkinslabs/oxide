@@ -134,9 +134,8 @@ pub(super) extern "C" fn drm_connector_list_update(connector: *mut c_void) {
 }
 
 pub(super) unsafe fn connector_get_modes(connector: *mut c_void) -> i32 {
-    const HELPER_PRIVATE_OFF: usize = 2248;
     // SAFETY: helper_private names a live helper vtable whose first member is the get_modes callback.
-    unsafe { let table = *(connector.cast::<u8>().add(HELPER_PRIVATE_OFF).cast::<*const c_void>()); if table.is_null() { return 0; } let callback = table.cast::<extern "C" fn(*mut c_void) -> i32>().read(); let count = callback(connector); if count < 0 { 0 } else { count } }
+    unsafe { let table = *(connector.cast::<u8>().add(connector::DRM_CONNECTOR_HELPER_PRIVATE_OFF).cast::<*const c_void>()); if table.is_null() { return 0; } let callback = table.cast::<extern "C" fn(*mut c_void) -> i32>().read(); let count = callback(connector); if count < 0 { 0 } else { count } }
 }
 
 unsafe fn modes_equal(left: *const u8, right: *const u8) -> bool {
