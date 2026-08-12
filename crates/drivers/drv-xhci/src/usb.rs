@@ -10,6 +10,8 @@ pub const DESC_CONFIGURATION: u8 = 2;
 pub const CONFIG_DESC_HEADER_BYTES: usize = 9;
 /// Largest configuration descriptor accepted by the one-page enumeration buffer. # C: O(1)
 pub const CONFIG_DESC_MAX_BYTES: usize = 4096;
+/// Maximum report descriptor fitting the xHCI-owned enumeration page. # C: O(1)
+pub const HID_REPORT_DESC_MAX_BYTES: usize = 4096;
 /// USB hub descriptor type. # C: O(1)
 pub const DESC_HUB: u8 = 0x29;
 /// USB hub class code. # C: O(1)
@@ -164,6 +166,9 @@ pub struct ConfigurationHeader { pub total_length: usize, pub value: u8, pub int
 /// One Linux-compatible HID boot interrupt-IN interface. # C: O(1)
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct HidBootInterface { pub configuration: u8, pub interface: u8, pub protocol: u8, pub endpoint: u8, pub max_packet: u16, pub interval: u8 }
+/// Generic descriptor-driven HID interrupt-IN interface. # C: O(1)
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct HidInterface { pub configuration: u8, pub interface: u8, pub endpoint: u8, pub max_packet: u16, pub interval: u8, pub report_bytes: usize }
 
 /// One alternate-setting-zero USB hub status-change interrupt endpoint.
 /// # C: O(1)
@@ -280,6 +285,25 @@ pub fn hid_boot_interface(bytes: &[u8]) -> Option<HidBootInterface> {
     None
 }
 
+/// Find a HID interface, its report-descriptor length, and interrupt-IN endpoint.
+/// # C: O(descriptors)
+pub fn hid_interface(bytes: &[u8]) -> Option<HidInterface> {
+    let header = configuration_header(bytes)?; if bytes.len() != header.total_length { return None; }
+    let mut offset = CONFIG_DESC_HEADER_BYTES; let mut active = None; let mut report_bytes = None;
+    while offset < bytes.len() {
+        if offset + 2 > bytes.len() { return None; } let length = bytes[offset] as usize;
+        if length < 2 || offset.checked_add(length)? > bytes.len() { return None; }
+        match bytes[offset + 1] {
+            4 if length >= 9 => { active = (bytes[offset + 3] == 0 && bytes[offset + 5] == 3).then_some(bytes[offset + 2]); report_bytes = None; }
+            0x21 if active.is_some() && length >= 9 && bytes[offset + 5] != 0 && bytes[offset + 6] == 0x22 => { let size = u16::from_le_bytes([bytes[offset + 7], bytes[offset + 8]]) as usize; if !(1..=HID_REPORT_DESC_MAX_BYTES).contains(&size) { return None; } report_bytes = Some(size); }
+            5 if length >= 7 => if let (Some(interface), Some(report_bytes)) = (active, report_bytes) { let endpoint = bytes[offset + 2]; let max_packet = u16::from_le_bytes([bytes[offset + 4], bytes[offset + 5]]) & 0x07ff; if endpoint & 0x80 != 0 && endpoint & 0x0f != 0 && bytes[offset + 3] & 3 == 3 && max_packet != 0 && bytes[offset + 6] != 0 { return Some(HidInterface { configuration: header.value, interface, endpoint, max_packet, interval: bytes[offset + 6], report_bytes }); } },
+            _ => {}
+        }
+        offset += length;
+    }
+    None
+}
+
 /// Build the standard IN GET_DESCRIPTOR(Device, index 0) EP0 TD. # C: O(1)
 pub fn get_device_descriptor_trbs(buffer_pa: u64) -> Option<[crate::ring::Trb; 3]> {
     Some([
@@ -297,6 +321,12 @@ pub fn get_configuration_descriptor_trbs(buffer_pa: u64, index: u8, length: usiz
         crate::ring::Trb::data_stage(buffer_pa, length as u32, true)?,
         crate::ring::Trb::status_stage(true),
     ])
+}
+
+/// Build HID interface GET_DESCRIPTOR(Report) into the descriptor DMA page. # C: O(1)
+pub fn get_hid_report_descriptor_trbs(buffer_pa: u64, interface: u8, length: usize) -> Option<[crate::ring::Trb; 3]> {
+    if !(1..=HID_REPORT_DESC_MAX_BYTES).contains(&length) { return None; }
+    Some([crate::ring::Trb::setup_stage(0x81, 6, 0x2200, u16::from(interface), length as u16), crate::ring::Trb::data_stage(buffer_pa, length as u32, true)?, crate::ring::Trb::status_stage(true)])
 }
 
 /// Build standard OUT SET_CONFIGURATION with no data stage. # C: O(1)
@@ -347,6 +377,14 @@ mod tests {
         assert_eq!(hid_boot_interface(&bytes), Some(HidBootInterface { configuration: 1, interface: 0, protocol: 1, endpoint: 0x81, max_packet: 8, interval: 10 }));
         let mut non_boot = bytes; non_boot[15] = 2;
         assert!(hid_boot_interface(&non_boot).is_none());
+    }
+    #[test]
+    fn generic_hid_interface_and_report_request_are_exact() {
+        let bytes = [9, DESC_CONFIGURATION, 34, 0, 1, 1, 0, 0x80, 50, 9, 4, 0, 0, 1, 3, 0, 0, 0, 9, 0x21, 0x11, 1, 0, 1, 0x22, 52, 0, 7, 5, 0x81, 3, 8, 0, 10];
+        assert_eq!(hid_interface(&bytes), Some(HidInterface { configuration: 1, interface: 0, endpoint: 0x81, max_packet: 8, interval: 10, report_bytes: 52 }));
+        let td = get_hid_report_descriptor_trbs(0x90_000, 0, 52).unwrap();
+        assert_eq!(td[0].dword[0], 0x2200_0681);
+        assert_eq!(td[1].dword[2], 52);
     }
     #[test]
     fn storage_parser_requires_transparent_scsi_bulk_in_and_out() {
