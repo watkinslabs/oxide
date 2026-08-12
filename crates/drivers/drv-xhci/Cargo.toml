@@ -19,6 +19,7 @@ pci-irq = { path = "../../kernel/pci-irq" }
 softirq = { path = "../../kernel/softirq" }
 input = { path = "../../kernel/input" }
 iommu = { path = "../../kernel/iommu" }
+block = { path = "../../kernel/block" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64 = { path = "../../arch/hal-x86_64" }
