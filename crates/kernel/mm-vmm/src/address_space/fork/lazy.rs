@@ -49,7 +49,7 @@ impl AddressSpace {
             mlock_onfault: core::sync::atomic::AtomicBool::new(false),
             // Fresh/forked AS: no CPU has loaded it yet (Linux clears
             // mm_cpumask on mm init; the activating CPU sets its bit).
-            cpumask: core::sync::atomic::AtomicU64::new(0),
+            cpumask: cpu::AtomicCpuMask::new(),
             mm_layout: super::super::mmfields::MmLayout::forked(&self.mm_layout),
             pkeys: super::super::pkeys::PkeyContext::forked(&self.pkeys),
             accounting,

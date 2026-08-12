@@ -121,6 +121,13 @@ impl AtomicCpuMask {
         }
     }
 
+    /// Remove one CPU from the published set. # C: O(1)
+    pub fn clear_cpu(&self, cpu: usize, order: Ordering) {
+        if cpu < MAX_CPUS {
+            self.words[cpu / CPU_MASK_WORD_BITS].fetch_and(!(1u64 << (cpu % CPU_MASK_WORD_BITS)), order);
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn clear(&self) {
         for word in &self.words { word.store(0, Ordering::Release); }
