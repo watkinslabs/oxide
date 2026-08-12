@@ -86,6 +86,7 @@ pub mod linux_debugfs_extra;
 pub mod linux_debugfs_file;
 pub mod linux_netdev;
 pub mod linux_pci;
+pub mod linux_drm;
 pub mod linux_platform;
 pub mod linux_pm;
 pub mod linux_runtime;
