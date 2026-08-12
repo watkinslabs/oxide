@@ -1,5 +1,3 @@
-use core::sync::atomic::Ordering;
-
 use crate::consts::{FRAME_BYTES, TX_POLL_BUDGET};
 use crate::registry::CTX;
 
@@ -27,43 +25,17 @@ pub fn tx_packet(owner: net::vsock::VsockOwner, frame: &[u8]) -> bool {
         }
     }
 
-    let desc = h.wrapping_add(ctx.txq.desc_pa) as *mut u64;
-    // Descriptor 0 = { addr=tx_buf.dma, len=want, flags=0 }: device-readable, so
-    // the device never writes back into the frame this request published.
-    // SAFETY: HHDM-mapped q1 descriptor table (require_queue accepted desc_pa);
-    // two aligned u64 stores at slot 0, present for any negotiated queue size.
-    unsafe {
-        core::ptr::write_volatile(desc.add(0), virtio::device_dma_addr(ctx.tx_buf));
-        core::ptr::write_volatile(desc.add(1), want as u64);
-    }
-
-    let qsz = ctx.txq.size;
-    let slot = (ctx.tx_avail_idx % qsz) as usize;
-    let avail = h.wrapping_add(ctx.txq.driver_pa) as *mut u16;
-    // SAFETY: HHDM-mapped q1 avail ring; ring[slot] is u16 index 2+slot with
-    // slot < qsz (`txq.size`, nonzero per require_queue and capped at one
-    // ring frame by the transport), idx is index 1, and the release fence
-    // publishes descriptor 0 + ring[slot] before the idx store.
-    let target = unsafe {
-        core::ptr::write_volatile(avail.add(2 + slot), 0u16);
-        core::sync::atomic::fence(Ordering::Release);
-        ctx.tx_avail_idx = ctx.tx_avail_idx.wrapping_add(1);
-        core::ptr::write_volatile(avail.add(1), ctx.tx_avail_idx);
-        ctx.tx_avail_idx
-    };
-    core::sync::atomic::fence(Ordering::Release);
-    // SAFETY: q1 notify VA is the Device-attr MMIO window the transport mapped
-    // for this child; the kick is one aligned u16 store of the queue index.
-    unsafe { core::ptr::write_volatile(ctx.txq.notify_va as *mut u16, ctx.txq.index) };
-
-    let used = h.wrapping_add(ctx.txq.device_pa) as *const u16;
+    let Some(txq) = ctx.txq.as_mut() else { return false; };
+    let Ok(target) = txq.submit(&[virtio::SplitQueueSeg {
+        dma: virtio::device_dma_addr(ctx.tx_buf), len: want as u32, device_writes: false,
+    }]) else { return false; };
     let mut polls = 0u32;
     loop {
-        // SAFETY: HHDM-mapped q1 used ring; aligned u16 load of used.idx at
-        // index 1, volatile because the device is what advances it.
-        let uidx = unsafe { core::ptr::read_volatile(used.add(1)) };
-        if uidx == target {
-            break;
+        match txq.pop_used() {
+            Ok(Some(used)) if used.head == target => return true,
+            Ok(Some(_)) => return false,
+            Ok(None) => {}
+            Err(_) => return false,
         }
         if polls >= TX_POLL_BUDGET {
             return false;
@@ -71,6 +43,4 @@ pub fn tx_packet(owner: net::vsock::VsockOwner, frame: &[u8]) -> bool {
         polls += 1;
         core::hint::spin_loop();
     }
-    ctx.tx_used_seen = target;
-    true
 }

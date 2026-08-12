@@ -59,6 +59,9 @@ pub use queue::{
     VRING_AVAIL_F_NO_INTERRUPT, VRING_AVAIL_FLAGS_OFF,
 };
 
+mod split_queue;
+pub use split_queue::{SplitQueueError, SplitQueueSeg, SplitUsed, VirtioSplitQueue};
+
 pub mod net;
 pub use net::{VirtioNet, VirtioNetHdr, VIRTIO_NET_HDR_LEN_V1,
               VIRTIO_NET_F_CSUM, VIRTIO_NET_F_MAC, VIRTIO_NET_F_MRG_RXBUF,

@@ -14,13 +14,10 @@ pub struct Ctx {
     pub cfg_va: u64,
     pub hhdm: u64,
     pub guest_cid: u64,
-    pub rxq: virtio::VirtQueueResource,
-    pub txq: virtio::VirtQueueResource,
-    pub rx_avail_idx: u16,
-    pub rx_used_seen: u16,
+    pub rxq: Option<virtio::VirtioSplitQueue>,
+    pub txq: Option<virtio::VirtioSplitQueue>,
     pub rx_bufs: [virtio::VirtioDmaFrame; RX_RING_BUFS],
-    pub tx_avail_idx: u16,
-    pub tx_used_seen: u16,
+    pub rx_desc_bufs: [u16; RX_RING_BUFS],
     pub tx_buf: virtio::VirtioDmaFrame,
 }
 
@@ -139,17 +136,8 @@ pub fn install(device_key: virtio::VirtioChildDeviceKey, bdf: pci::Bdf, resource
         None => return false,
     };
 
-    let rx_used = resources.hhdm.wrapping_add(rxq.device_pa) as *const u16;
-    let tx_used = resources.hhdm.wrapping_add(txq.device_pa) as *const u16;
-    // SAFETY: HHDM-mapped q0/q1 used rings — `require_queue` accepted both
-    // device_pa values above — read as aligned u16 loads of used.idx at index
-    // 1, so the driver's avail counters start from what the device consumed.
-    let (rx_used_seen, tx_used_seen) = unsafe {
-        (
-            core::ptr::read_volatile(rx_used.add(1)),
-            core::ptr::read_volatile(tx_used.add(1)),
-        )
-    };
+    let Some(rxq) = virtio::VirtioSplitQueue::new(rxq, resources.hhdm).ok() else { return false; };
+    let Some(txq) = virtio::VirtioSplitQueue::new(txq, resources.hhdm).ok() else { return false; };
 
     let ctx = Ctx {
         device_key,
@@ -157,13 +145,10 @@ pub fn install(device_key: virtio::VirtioChildDeviceKey, bdf: pci::Bdf, resource
         cfg_va: resources.cfg_va,
         hhdm: resources.hhdm,
         guest_cid,
-        rxq,
-        txq,
-        rx_avail_idx: rx_used_seen,
-        rx_used_seen,
+        rxq: Some(rxq),
+        txq: Some(txq),
         rx_bufs: probe.rx_bufs,
-        tx_avail_idx: tx_used_seen,
-        tx_used_seen,
+        rx_desc_bufs: [u16::MAX; RX_RING_BUFS],
         tx_buf: probe.tx_buf,
     };
     let mut g = CTX.lock_bh::<crate::registry::VsockBh>();
@@ -308,19 +293,6 @@ pub(crate) fn read_guest_cid_from_resources_for_tests(resources: virtio::VirtioR
 }
 
 #[cfg(test)]
-fn test_queue(index: u16) -> virtio::VirtQueueResource {
-    virtio::VirtQueueResource {
-        index,
-        size: 8,
-        desc_pa: 0,
-        driver_pa: 0,
-        device_pa: 0,
-        notify_va: 0,
-        notify_off: 0,
-    }
-}
-
-#[cfg(test)]
 fn reserve_endpoint_only_for_tests(device_key: virtio::VirtioChildDeviceKey) -> Option<VsockProbeState> {
     let owner = vsock_owner(device_key)?;
     if !net::vsock::driver_reserve(owner) {
@@ -374,13 +346,10 @@ pub(crate) fn publish_failure_releases_context_and_endpoint_for_tests(
         cfg_va: 0,
         hhdm: 0,
         guest_cid,
-        rxq: test_queue(0),
-        txq: test_queue(1),
-        rx_avail_idx: 0,
-        rx_used_seen: 0,
+        rxq: None,
+        txq: None,
         rx_bufs: probe.rx_bufs,
-        tx_avail_idx: 0,
-        tx_used_seen: 0,
+        rx_desc_bufs: [u16::MAX; RX_RING_BUFS],
         tx_buf: probe.tx_buf,
     });
     probe.transfer_frames_to_ctx();
