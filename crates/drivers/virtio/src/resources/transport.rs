@@ -5,16 +5,26 @@ pub struct VirtioResources {
     pub cfg_va: u64,
     pub device_cfg_va: u64,
     pub hhdm: u64,
+    /// Features accepted by the transport for this child. Queue owners use
+    /// transport-ring bits here; device protocols keep their own feature use.
+    pub drv_features: u64,
     queues: [Option<VirtQueueResource>; MAX_RESOURCE_QUEUES],
 }
 
 impl VirtioResources {
     pub const fn new(cfg_va: u64, hhdm: u64) -> Self {
-        Self { cfg_va, device_cfg_va: 0, hhdm, queues: [None; MAX_RESOURCE_QUEUES] }
+        Self { cfg_va, device_cfg_va: 0, hhdm, drv_features: 0, queues: [None; MAX_RESOURCE_QUEUES] }
     }
 
     pub const fn with_device_cfg_va(mut self, device_cfg_va: u64) -> Self {
         self.device_cfg_va = device_cfg_va;
+        self
+    }
+
+    /// Attach the features accepted during the parent transport probe.
+    /// # C: O(1)
+    pub const fn with_drv_features(mut self, drv_features: u64) -> Self {
+        self.drv_features = drv_features;
         self
     }
 

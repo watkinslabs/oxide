@@ -134,9 +134,13 @@ pub fn install_eventq(
         if g[slot_idx].is_none()
             && !g.iter().flatten().any(|ctx| ctx.device_key == device_key)
         {
-            let mut event_queue = virtio::VirtioSplitQueue::new(eventq, hhdm).ok();
+            let mut event_queue = virtio::VirtioSplitQueue::new_with_features(
+                eventq, hhdm, resources.drv_features,
+            ).ok();
             let status_size = statusq.size;
-            let status_queue = virtio::VirtioSplitQueue::new(statusq, hhdm).ok();
+            let status_queue = virtio::VirtioSplitQueue::new_with_features(
+                statusq, hhdm, resources.drv_features,
+            ).ok();
             let mut event_desc_slots = [u16::MAX; MAX_EVENT_BUFFERS as usize];
             let event_buffers = event_queue.as_mut().and_then(|queue| {
                 post_event_buffers(queue, buf_dma, &mut event_desc_slots).ok()

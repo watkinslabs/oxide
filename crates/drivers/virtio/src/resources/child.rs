@@ -141,6 +141,7 @@ impl VirtioChildProbeFacts {
         requirements: VirtioChildRequirements,
     ) -> Option<VirtioResources> {
         self.resources.resources_for_child(requirements)
+            .map(|resources| resources.with_drv_features(self.drv_features))
     }
 }
 

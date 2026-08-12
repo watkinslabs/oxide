@@ -204,6 +204,7 @@ fn transport_profiles_describe_child_queue_policy() {
 
     let snd = VirtioTransportProfile::snd(0xaa, None, None);
     assert_eq!(snd.drv_features, 0xaa);
+    assert_eq!(snd.with_ring_event_idx().drv_features, 0xaa | crate::VIRTIO_F_RING_EVENT_IDX);
     assert_eq!(snd.queue_plans[1].map(|q| q.index), Some(1));
     assert_eq!(snd.queue_plans[2].map(|q| q.index), Some(2));
     assert_eq!(snd.queue_plans[3].map(|q| q.index), Some(3));

@@ -48,7 +48,7 @@ pub const fn transport_profile() -> virtio::VirtioTransportProfile {
         ],
         virtio::resources::VirtioEarlyPayloadPolicy::None,
         virtio::VirtioChildRequirements::q0_q1_device_cfg(),
-    )
+    ).with_ring_event_idx()
 }
 
 pub const VIRTIO_INPUT_CFG_UNSET: u8 = 0;

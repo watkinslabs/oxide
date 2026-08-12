@@ -111,6 +111,13 @@ impl VirtioTransportProfile {
         Self { drv_features, msix0_handler, queue_plans, early_payload_policy, child_requirements }
     }
 
+    /// Request event-index notification suppression for a child whose queue
+    /// owner implements the corresponding split-ring event fields. # C: O(1)
+    pub const fn with_ring_event_idx(mut self) -> Self {
+        self.drv_features |= crate::VIRTIO_F_RING_EVENT_IDX;
+        self
+    }
+
     pub const fn q0(drv_features: u64, msix0_handler: Option<fn()>) -> Self {
         Self::new(
             drv_features,

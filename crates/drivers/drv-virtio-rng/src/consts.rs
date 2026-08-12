@@ -20,5 +20,5 @@ pub const fn wanted_features() -> u64 {
 }
 
 pub const fn transport_profile() -> virtio::VirtioTransportProfile {
-    virtio::VirtioTransportProfile::q0(wanted_features(), None)
+    virtio::VirtioTransportProfile::q0(wanted_features(), None).with_ring_event_idx()
 }

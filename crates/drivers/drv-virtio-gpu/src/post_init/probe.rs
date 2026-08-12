@@ -18,10 +18,14 @@ pub fn get_display_info(
     }
     let cfg_va = resources.cfg_va;
     let hhdm = resources.hhdm;
-    let mut ctrlq = match virtio::VirtioSplitQueue::new(ctrlq_resource, hhdm) {
+    let mut ctrlq = match virtio::VirtioSplitQueue::new_with_features(
+        ctrlq_resource, hhdm, drv_features,
+    ) {
         Ok(queue) => Some(queue), Err(_) => return false,
     };
-    let mut cursorq = match virtio::VirtioSplitQueue::new(cursorq_resource, hhdm) {
+    let mut cursorq = match virtio::VirtioSplitQueue::new_with_features(
+        cursorq_resource, hhdm, drv_features,
+    ) {
         Ok(queue) => Some(queue), Err(_) => return false,
     };
     let mut cmd_buf = match ProbeCommandBuffer::alloc(hhdm, bdf) {

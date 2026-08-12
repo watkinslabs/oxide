@@ -44,7 +44,8 @@ fn child_probe_facts_expose_features_payloads_and_resources() {
 
     assert_eq!(facts.drv_features, 0x55);
     assert!(facts.net_boot_payloads().is_present());
-    assert!(facts.resources_for_child(VirtioChildRequirements::q0()).is_some());
+    let resources = facts.resources_for_child(VirtioChildRequirements::q0()).unwrap();
+    assert_eq!(resources.drv_features, 0x55);
 }
 
 #[test]

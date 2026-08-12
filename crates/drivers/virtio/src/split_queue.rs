@@ -8,6 +8,7 @@ const USED_RING_OFF: usize = 1;
 const DESC_FLAGS_SHIFT: u64 = 32;
 const DESC_NEXT_SHIFT: u64 = 48;
 const DESC_NEXT_MASK: u64 = 0xffff << DESC_NEXT_SHIFT;
+const VRING_USED_F_NO_NOTIFY: u16 = 1;
 
 /// One device-visible scatter-gather segment. `dma` is an IOVA supplied by the
 /// DMA owner, never a CPU physical address.
@@ -45,12 +46,22 @@ pub struct VirtioSplitQueue {
     num_free: u16,
     avail_idx: u16,
     used_seen: u16,
+    last_kick_avail: u16,
+    event_idx: bool,
 }
 
 impl VirtioSplitQueue {
     /// Adopt one transport-programmed split ring and initialize its descriptor
     /// free list before the child publishes any request. # C: O(queue_size)
     pub fn new(resource: VirtQueueResource, hhdm: u64) -> Result<Self, SplitQueueError> {
+        Self::new_with_features(resource, hhdm, 0)
+    }
+
+    /// Adopt one transport-programmed split ring with its accepted transport
+    /// features. # C: O(queue_size)
+    pub fn new_with_features(
+        resource: VirtQueueResource, hhdm: u64, drv_features: u64,
+    ) -> Result<Self, SplitQueueError> {
         if !resource.is_runtime_valid() || !resource.size.is_power_of_two() {
             return Err(SplitQueueError::InvalidQueue);
         }
@@ -61,6 +72,8 @@ impl VirtioSplitQueue {
             num_free: resource.size,
             avail_idx: 0,
             used_seen: 0,
+            last_kick_avail: 0,
+            event_idx: drv_features & crate::VIRTIO_F_RING_EVENT_IDX != 0,
         };
         for index in 0..resource.size {
             let next = if index + 1 == resource.size { 0 } else { index + 1 };
@@ -69,6 +82,7 @@ impl VirtioSplitQueue {
         let used_seen = queue.read_used_idx();
         queue.avail_idx = used_seen;
         queue.used_seen = used_seen;
+        queue.last_kick_avail = used_seen;
         Ok(queue)
     }
 
@@ -113,9 +127,23 @@ impl VirtioSplitQueue {
 
     /// Notify the device after one or more `submit_no_kick` calls.
     /// # C: O(1)
-    pub fn kick(&self) {
+    pub fn kick(&mut self) -> bool {
+        let old = self.last_kick_avail;
+        let new = self.avail_idx;
+        self.last_kick_avail = new;
+        if old == new { return false; }
+        // The device can update its suppression field while it observes our
+        // avail entries. Order publication before reading that field.
+        core::sync::atomic::fence(Ordering::SeqCst);
+        let notify = if self.event_idx {
+            vring_need_event(self.read_used_event(), new, old)
+        } else {
+            self.read_used_flags() & VRING_USED_F_NO_NOTIFY == 0
+        };
+        if !notify { return false; }
         // SAFETY: notify_va is the transport-mapped queue notification register.
         unsafe { core::ptr::write_volatile(self.resource.notify_va as *mut u16, self.resource.index); }
+        true
     }
 
     /// Retire one device completion and return the head/request length.
@@ -178,6 +206,19 @@ impl VirtioSplitQueue {
         unsafe { core::ptr::read_volatile(self.used_u16_ptr().add(1)) }
     }
 
+    fn read_used_flags(&self) -> u16 {
+        // SAFETY: device frame is HHDM-mapped by the transport and flags is
+        // its aligned first u16 field, owned by the device.
+        unsafe { core::ptr::read_volatile(self.used_u16_ptr()) }
+    }
+
+    fn read_used_event(&self) -> u16 {
+        let offset = AVAIL_RING_OFF + self.resource.size as usize;
+        // SAFETY: event-index negotiation makes the u16 immediately after the
+        // avail ring device-owned; queue size bounds the calculated location.
+        unsafe { core::ptr::read_volatile(self.avail_ptr().add(offset)) }
+    }
+
     fn read_desc_word(&self, index: u16) -> u64 {
         // SAFETY: index is validated by queue construction or chain traversal before use.
         unsafe { core::ptr::read_volatile(self.desc_ptr().add(index as usize * DESC_WORDS + 1)) }
@@ -199,6 +240,10 @@ impl VirtioSplitQueue {
     fn avail_ptr(&self) -> *mut u16 { self.hhdm.wrapping_add(self.resource.driver_pa) as *mut u16 }
     fn used_ptr(&self) -> *const u32 { self.hhdm.wrapping_add(self.resource.device_pa) as *const u32 }
     fn used_u16_ptr(&self) -> *const u16 { self.hhdm.wrapping_add(self.resource.device_pa) as *const u16 }
+}
+
+fn vring_need_event(event: u16, new: u16, old: u16) -> bool {
+    new.wrapping_sub(event).wrapping_sub(1) < new.wrapping_sub(old)
 }
 
 #[cfg(test)]
@@ -256,6 +301,38 @@ mod tests {
         // SAFETY: test owns the private avail frame and reads its published idx.
         assert_eq!(unsafe { core::ptr::read_volatile((avail.0.as_ptr() as *const u16).add(1)) }, 2);
         queue.kick();
+        assert_eq!(notify, 3);
+    }
+
+    #[test]
+    fn kick_obeys_device_no_notify_without_event_index() {
+        let desc = Page([0; 4096]);
+        let avail = Page([0; 4096]);
+        let used = Page([0; 4096]);
+        let mut notify = 0;
+        // SAFETY: test emulates the device-owned used.flags field.
+        unsafe { core::ptr::write_volatile(used.0.as_ptr() as *mut u16, VRING_USED_F_NO_NOTIFY); }
+        let mut queue = VirtioSplitQueue::new(resource(&desc, &avail, &used, &mut notify), 0).unwrap();
+        queue.submit(&[SplitQueueSeg { dma: 0x9000_1000, len: 8, device_writes: true }]).unwrap();
+        assert_eq!(notify, 0);
+    }
+
+    #[test]
+    fn kick_obeys_event_index_when_negotiated() {
+        let desc = Page([0; 4096]);
+        let avail = Page([0; 4096]);
+        let used = Page([0; 4096]);
+        let mut notify = 0;
+        let event = unsafe { (avail.0.as_ptr() as *mut u16).add(AVAIL_RING_OFF + 8) };
+        // SAFETY: test emulates the device-owned used_event field after an
+        // eight-entry avail ring in its private driver frame.
+        unsafe { core::ptr::write_volatile(event, 1); }
+        let mut queue = VirtioSplitQueue::new_with_features(
+            resource(&desc, &avail, &used, &mut notify), 0, crate::VIRTIO_F_RING_EVENT_IDX,
+        ).unwrap();
+        queue.submit(&[SplitQueueSeg { dma: 0x9000_1000, len: 8, device_writes: true }]).unwrap();
+        assert_eq!(notify, 0);
+        queue.submit(&[SplitQueueSeg { dma: 0x9000_2000, len: 8, device_writes: true }]).unwrap();
         assert_eq!(notify, 3);
     }
 }
