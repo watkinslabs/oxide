@@ -58,6 +58,9 @@ fn publish(inv: IommuInventory) {
         DMAR_RMRR_SCOPE_COUNT[i].store(rmrr.scope_count as u32, Ordering::Relaxed);
     }
     let kind = match inv.kind { IommuKind::AmdVi => IOMMU_KIND_AMD_VI, IommuKind::IntelVtd => IOMMU_KIND_INTEL_VTD };
+    // Publish every payload field before the kind's release-store makes this
+    // inventory observable to readers.
+    DMAR_FLAGS.store(inv.dmar_x2apic_opt_out as u32, Ordering::Relaxed);
     if IOMMU_KIND.compare_exchange(IOMMU_KIND_NONE, kind, Ordering::Release, Ordering::Acquire).is_ok() {
         AMD_SCOPE_COUNT.store(inv.amd_scope_count as u32, Ordering::Release);
         AMD_ALIAS_COUNT.store(inv.amd_alias_count as u32, Ordering::Release);
@@ -65,6 +68,13 @@ fn publish(inv: IommuInventory) {
         DMAR_RMRR_COUNT.store(inv.dmar_rmrr_count as u32, Ordering::Release);
         IOMMU_COUNT.store(inv.unit_count as u32, Ordering::Release);
     }
+}
+
+/// Return whether the DMAR table forbids x2APIC interrupt-remapping mode.
+/// This is Linux's `DMAR_X2APIC_OPT_OUT` firmware policy gate. # C: O(1)
+pub fn dmar_x2apic_opt_out() -> bool {
+    IOMMU_KIND.load(Ordering::Acquire) == IOMMU_KIND_INTEL_VTD
+        && DMAR_FLAGS.load(Ordering::Acquire) != 0
 }
 
 /// Count validated IOMMU units published during the ACPI walk. # C: O(1)

@@ -108,6 +108,7 @@ fn dmar_drhd_preserves_the_linux_device_ownership_keys() {
     assert_eq!(inv.units[0].register_base, 0xfed9_0000);
     assert_eq!(inv.units[0].register_pages, 1);
     assert!(inv.units[0].include_all);
+    assert!(!inv.dmar_x2apic_opt_out);
     assert_eq!(inv.dmar_scope_count, 1);
     assert_eq!(inv.dmar_scopes[0].unit_index, 0);
     assert_eq!(inv.dmar_scopes[0].start_bus, 8);
@@ -119,6 +120,14 @@ fn dmar_drhd_preserves_the_linux_device_ownership_keys() {
     assert_eq!(inv.dmar_rmrrs[0].end, 0x7f00_0fff);
     assert_eq!(inv.dmar_rmrrs[0].scope_count, 1);
     assert_eq!(inv.dmar_rmrrs[0].scopes[0].start_bus, 8);
+}
+
+#[test]
+fn dmar_preserves_x2apic_opt_out_policy() {
+    let mut table = dmar();
+    table[37] = 1 << 1;
+    finish(&mut table);
+    assert!(parse_dmar(&table).expect("valid DMAR").dmar_x2apic_opt_out);
 }
 
 #[test]
