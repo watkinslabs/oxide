@@ -16,12 +16,10 @@ use crate::device::AddressDeviceDma;
 pub(crate) struct UsbDeviceState {
     pub(crate) device: AddressDeviceDma,
     pub(crate) slot: u8,
-    protocol: Option<u8>,
+    decoder: Option<crate::hid_report::ReportDecoder>,
     evdev: Option<u32>,
     input_platform: Option<u32>,
     storage_name: Option<block::ScsiDiskName>,
-    keyboard: [u8; 8],
-    mouse_buttons: u8,
 }
 
 pub(crate) struct UsbDevice { _controller: Weak<Controller>, pub(crate) state: Spinlock<UsbDeviceState, DriverLockClass> }
@@ -29,10 +27,10 @@ pub(crate) struct UsbDevice { _controller: Weak<Controller>, pub(crate) state: S
 impl UsbDevice {
     fn new(controller: &Arc<Controller>, device: AddressDeviceDma) -> Arc<Self> {
         let slot = device.slot();
-        let protocol = device.hid_protocol();
-        let evdev = install_hid_input(controller.bdf, slot, protocol);
+        let layout = device.hid_layout();
+        let evdev = install_hid_input(controller.bdf, slot, layout);
         let input_platform = evdev.map(|_| platform_id(controller.bdf, slot));
-        Arc::new(Self { _controller: Arc::downgrade(controller), state: Spinlock::new(UsbDeviceState { device, slot, protocol, evdev, input_platform, storage_name: None, keyboard: [0; 8], mouse_buttons: 0 }) })
+        Arc::new(Self { _controller: Arc::downgrade(controller), state: Spinlock::new(UsbDeviceState { device, slot, decoder: layout.map(crate::hid_report::ReportDecoder::new), evdev, input_platform, storage_name: None }) })
     }
 
     pub(crate) fn with_transport<T>(&self, f: impl FnOnce(&Mmio, Binding, &mut CommandTransport, &mut UsbDeviceState) -> T) -> Option<T> {
@@ -62,21 +60,26 @@ pub(crate) type XhciBh = sync::NoopBh;
 
 fn advertise(bits: &mut [u8], code: u16) { bits[code as usize / 8] |= 1 << (code % 8); }
 fn platform_id(bdf: pci::Bdf, slot: u8) -> u32 { crate::identity::input_platform_id(bdf, slot) }
-fn install_hid_input(bdf: pci::Bdf, slot: u8, protocol: Option<u8>) -> Option<u32> {
-    let protocol = protocol?;
+fn install_hid_input(bdf: pci::Bdf, slot: u8, layout: Option<crate::hid_report::ReportLayout>) -> Option<u32> {
+    let layout = layout?;
     let mut dev = input::VirtioInputDev::empty_platform_boxed(platform_id(bdf, slot));
-    advertise(&mut dev.ev_bits, input::EV_KEY);
-    if protocol == 1 { for code in 1..=255 { advertise(&mut dev.key_bits.bits, code); } }
-    if protocol == 2 { dev.is_pointer = true; for code in [input::BTN_LEFT, input::BTN_MIDDLE, input::BTN_RIGHT] { advertise(&mut dev.key_bits.bits, code); } advertise(&mut dev.ev_bits, input::EV_REL); advertise(&mut dev.rel_bits.bits, input::REL_X); advertise(&mut dev.rel_bits.bits, input::REL_Y); }
+    for index in 0..layout.len() {
+        let field = layout.field(index)?;
+        match field.usage_page {
+            7 => for usage in field.usage_min..=field.usage_max.min(u32::from(u8::MAX)) { if let Some(code) = crate::hid::keycode(usage as u8) { advertise(&mut dev.ev_bits, input::EV_KEY); advertise(&mut dev.key_bits.bits, code); } },
+            9 => for usage in field.usage_min.max(1)..=field.usage_max.min(29) { advertise(&mut dev.ev_bits, input::EV_KEY); advertise(&mut dev.key_bits.bits, 271 + usage as u16); },
+            1 if field.flags & 4 != 0 && (field.usage_min..=field.usage_max).contains(&0x30) => { dev.is_pointer = true; advertise(&mut dev.ev_bits, input::EV_REL); advertise(&mut dev.rel_bits.bits, input::REL_X); },
+            1 if field.flags & 4 != 0 && (field.usage_min..=field.usage_max).contains(&0x31) => { dev.is_pointer = true; advertise(&mut dev.ev_bits, input::EV_REL); advertise(&mut dev.rel_bits.bits, input::REL_Y); },
+            _ => {}
+        }
+    }
+    if dev.ev_bits.iter().all(|bits| *bits == 0) { return None; }
     let (_, evdev) = input::install(dev)?; input::publish_evdev(evdev).then_some(evdev)
 }
 fn publish_report(device: &mut UsbDeviceState, report: &[u8]) {
     let Some(evdev) = device.evdev else { return; };
-    let events = match device.protocol {
-        Some(1) => match crate::hid::keyboard(&device.keyboard, report) { Some((state, events)) => { device.keyboard = state; events }, None => return },
-        Some(2) => match crate::hid::mouse(device.mouse_buttons, report) { Some((buttons, events)) => { device.mouse_buttons = buttons; [events[0], events[1], events[2], events[3], events[4], None, None, None, None, None, None, None, None, None, None, None, None, None, None, None] }, None => return },
-        _ => return,
-    };
+    let Some(decoder) = device.decoder.as_mut() else { return; };
+    let events = decoder.decode(report);
     for event in events.into_iter().flatten() { match event { crate::hid::Event::Key { code, value } => { let _ = input::push_evdev_event(evdev, input::EV_KEY, code, value); }, crate::hid::Event::Relative { code, value } => { let _ = input::push_evdev_event(evdev, input::EV_REL, code, value); } } }
 }
 
@@ -228,7 +231,7 @@ fn fetch_first_configuration(mmio: &Mmio, irq: Binding, device: &mut AddressDevi
     let Some(full_td) = crate::usb::get_configuration_descriptor_trbs(device.descriptor_pa(), 0, header.total_length) else { return false; };
     let Some(full_status) = device.submit_ep0(mmio, slot, &full_td) else { return false; };
     if !control_complete(irq, full_status, slot) || device.configuration_header() != Some(header) { return false; }
-    let _ = device.discover_hid_boot();
+    let _ = device.discover_hid();
     let _ = device.discover_hub();
     let _ = device.discover_mass_storage();
     true
@@ -254,11 +257,11 @@ fn set_device_configuration(mmio: &Mmio, irq: Binding, device: &mut AddressDevic
     control_complete(irq, status_pa, slot)
 }
 
-fn set_hid_boot_protocol(mmio: &Mmio, irq: Binding, device: &mut AddressDeviceDma, slot: u8) -> bool {
+fn fetch_hid_report_descriptor(mmio: &Mmio, irq: Binding, device: &mut AddressDeviceDma, slot: u8) -> bool {
     let Some(hid) = device.hid_interface() else { return true; };
-    let td = crate::usb::set_hid_boot_protocol_trbs(hid.interface);
+    let Some(td) = crate::usb::get_hid_report_descriptor_trbs(device.descriptor_pa(), hid.interface, hid.report_bytes) else { return false; };
     let Some(status_pa) = device.submit_ep0(mmio, slot, &td) else { return false; };
-    control_complete(irq, status_pa, slot)
+    control_complete(irq, status_pa, slot) && device.discover_hid_report().is_some()
 }
 
 fn fetch_hub_descriptor(mmio: &Mmio, irq: Binding, device: &mut AddressDeviceDma, slot: u8) -> bool {
@@ -375,11 +378,11 @@ fn address_enabled_device(bdf: pci::Bdf, mmio: &Mmio, command: &mut CommandTrans
         if control_complete(irq, status_pa, slot) {
             if let Some(descriptor) = device.device_descriptor() {
                 match device.prepare_evaluate_ep0(descriptor.max_packet0) {
-                    Some(false) => if fetch_first_configuration(mmio, irq, &mut device, slot) && configure_device_endpoint(mmio, command, irq, &mut device, slot) && set_device_configuration(mmio, irq, &mut device, slot) && configure_hub_device(mmio, command, irq, &mut device, slot) && set_hid_boot_protocol(mmio, irq, &mut device, slot) && arm_hid_interrupt_in(mmio, &mut device, slot) && arm_hub_interrupt_in(mmio, &mut device, slot) { return Some(device); },
+                    Some(false) => if fetch_first_configuration(mmio, irq, &mut device, slot) && configure_device_endpoint(mmio, command, irq, &mut device, slot) && set_device_configuration(mmio, irq, &mut device, slot) && fetch_hid_report_descriptor(mmio, irq, &mut device, slot) && configure_hub_device(mmio, command, irq, &mut device, slot) && arm_hid_interrupt_in(mmio, &mut device, slot) && arm_hub_interrupt_in(mmio, &mut device, slot) { return Some(device); },
                     Some(true) => {
                         if let Some(evaluate) = Trb::evaluate_context(device.input_pa(), slot) {
                             if let Some(evaluate_pa) = command.submit(mmio, evaluate) {
-                                if irq.wait_command_completion(evaluate_pa, 1_000_000_000).is_some_and(|completion| completion.completion_code == crate::ring::COMPLETION_SUCCESS && completion.slot == slot) && fetch_first_configuration(mmio, irq, &mut device, slot) && configure_device_endpoint(mmio, command, irq, &mut device, slot) && set_device_configuration(mmio, irq, &mut device, slot) && configure_hub_device(mmio, command, irq, &mut device, slot) && set_hid_boot_protocol(mmio, irq, &mut device, slot) && arm_hid_interrupt_in(mmio, &mut device, slot) && arm_hub_interrupt_in(mmio, &mut device, slot) { return Some(device); }
+                                if irq.wait_command_completion(evaluate_pa, 1_000_000_000).is_some_and(|completion| completion.completion_code == crate::ring::COMPLETION_SUCCESS && completion.slot == slot) && fetch_first_configuration(mmio, irq, &mut device, slot) && configure_device_endpoint(mmio, command, irq, &mut device, slot) && set_device_configuration(mmio, irq, &mut device, slot) && fetch_hid_report_descriptor(mmio, irq, &mut device, slot) && configure_hub_device(mmio, command, irq, &mut device, slot) && arm_hid_interrupt_in(mmio, &mut device, slot) && arm_hub_interrupt_in(mmio, &mut device, slot) { return Some(device); }
                             }
                         }
                     }
