@@ -84,8 +84,10 @@ fn remove_hid_input(device: &UsbDeviceState) {
     if let Some(platform) = device.input_platform { let _ = input::remove_device(input::InputDeviceKey::platform(platform)); }
 }
 
-fn add_usb_device(controller: &Arc<Controller>, state: &mut ControllerState, device: AddressDeviceDma) {
-    state.devices.push(UsbDevice::new(controller, device));
+fn add_usb_device(controller: &Arc<Controller>, state: &mut ControllerState, device: AddressDeviceDma) -> Arc<UsbDevice> {
+    let device = UsbDevice::new(controller, device);
+    state.devices.push(Arc::clone(&device));
+    device
 }
 
 fn service_port_changes(controller: &Arc<Controller>, state: &mut ControllerState) {
@@ -104,7 +106,7 @@ fn service_port_changes(controller: &Arc<Controller>, state: &mut ControllerStat
         }
         if state.devices.iter().any(|device| device.state.lock().device.port() == port) { continue; }
         if let Some(device) = address_port_device(controller.bdf, &state.mmio, &mut state.command, &state._dcbaa, state.irq, port) {
-            add_usb_device(controller, state, device);
+            let _ = add_usb_device(controller, state, device);
         }
     }
 }
@@ -236,6 +238,41 @@ fn arm_hid_interrupt_in(mmio: &Mmio, device: &mut AddressDeviceDma, slot: u8) ->
     device.hid_configuration().is_none() || device.submit_hid_report(mmio, slot).is_some()
 }
 
+fn storage_complete(irq: Binding, trb_pa: u64, slot: u8, endpoint: u8, length: u32) -> bool {
+    let endpoint_id = (endpoint & 0x0f).checked_mul(2).and_then(|id| id.checked_add(u8::from(endpoint & 0x80 != 0)));
+    irq.wait_transfer_completion(trb_pa, 1_000_000_000).is_some_and(|completion| {
+        completion.completion_code == crate::ring::COMPLETION_SUCCESS && completion.slot == slot
+            && Some(completion.endpoint_id) == endpoint_id && completion.residual <= length
+    })
+}
+
+fn bulk_only_command(device: &UsbDevice, tag: u32, cdb: &[u8], data_bytes: u32, device_to_host: bool) -> Option<Vec<u8>> {
+    device.with_transport(|mmio, irq, _, state| {
+        let storage = state.device.storage_interface()?;
+        let cbw = state.device.submit_storage_cbw(mmio, state.slot, tag, data_bytes, device_to_host, cdb)?;
+        if !storage_complete(irq, cbw, state.slot, storage.bulk_out, crate::storage::CBW_BYTES as u32) { return None; }
+        if data_bytes != 0 {
+            let data = state.device.submit_storage_data(mmio, state.slot, data_bytes, device_to_host)?;
+            let endpoint = if device_to_host { storage.bulk_in } else { storage.bulk_out };
+            if !storage_complete(irq, data, state.slot, endpoint, data_bytes) { return None; }
+        }
+        let csw = state.device.submit_storage_csw(mmio, state.slot)?;
+        if !storage_complete(irq, csw, state.slot, storage.bulk_in, crate::storage::CSW_BYTES as u32) { return None; }
+        let (status, residue) = state.device.storage_csw(tag, data_bytes)?;
+        if status != crate::storage::CswStatus::Passed || residue != 0 { return None; }
+        if device_to_host { state.device.storage_data(data_bytes as usize) } else { Some(Vec::new()) }
+    })?
+}
+
+fn probe_storage_capacity(device: &UsbDevice) -> Option<(u64, u32)> {
+    if device.state.lock().device.storage_interface().is_none() { return None; }
+    let inquiry = bulk_only_command(device, 1, &crate::storage::inquiry_cdb(), 36, true)?;
+    if inquiry.len() != 36 { return None; }
+    let capacity = bulk_only_command(device, 2, &crate::storage::read_capacity10_cdb(), 8, true)?;
+    let (last_lba, block_bytes) = crate::storage::read_capacity10(&capacity)?;
+    Some((u64::from(last_lba).checked_add(1)?, block_bytes))
+}
+
 fn disable_slot(mmio: &Mmio, command: &mut CommandTransport, irq: Binding, slot: u8) {
     if let Some(disable) = Trb::disable_slot(slot) {
         if let Some(disable_pa) = command.submit(mmio, disable) { let _ = irq.wait_command_completion(disable_pa, 1_000_000_000); }
@@ -313,16 +350,19 @@ impl drv::Driver for XhciDriver {
             command_orig,
             state: Spinlock::new(ControllerState { mmio, irq, command, _dcbaa: dcbaa, devices: Vec::new(), _erst: erst, _event: event }),
         });
-        {
+        let devices = {
             let mut state = controller.state.lock();
+            let mut devices = Vec::new();
             let ports = state.mmio.geometry().max_ports;
             let irq = state.irq;
             for port in 1..=ports {
                 let ControllerState { mmio, command, _dcbaa, .. } = &mut *state;
                 let Some(device) = address_port_device(controller.bdf, mmio, command, _dcbaa, irq, port) else { continue; };
-                add_usb_device(&controller, &mut state, device);
+                devices.push(add_usb_device(&controller, &mut state, device));
             }
-        }
+            devices
+        };
+        for device in devices { let _ = probe_storage_capacity(&device); }
         CONTROLLERS.lock().push(controller);
         Ok(())
     }
