@@ -18,6 +18,7 @@ use sync::{Spinlock, Modules as ModulesLockClass};
 #[path = "linux_drm_dmt.rs"] mod dmt; #[path = "linux_drm_probe.rs"] mod probe;
 #[path = "linux_drm_file.rs"] mod file;
 #[path = "linux_drm_ioctl.rs"] mod ioctl;
+#[path = "linux_drm_gem.rs"] mod gem;
 
 struct DeviceAllocation {
     dev: usize,
@@ -143,6 +144,7 @@ pub fn export_symbols() {
     mode::export_symbols(); probe::export_symbols();
     file::export_symbols();
     ioctl::export_symbols();
+    gem::export_symbols();
 }
 
 fn layout_for(size: usize) -> Option<Layout> {

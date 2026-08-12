@@ -34,6 +34,7 @@ pub(super) extern "C" fn drm_open(inode: *mut c_void, filp: *mut c_void) -> i32 
     // SAFETY: the layout is the verified complete drm_file size and release deallocates it exactly once.
     let file = unsafe { alloc_zeroed(layout) };
     if file.is_null() { return -LINUX_EBUSY; }
+    if !gem::file_init(file.cast()) { unsafe { dealloc(file, layout); } return -LINUX_EBUSY; }
     // SAFETY: minor is live while registered; its device field and drm_file fields use verified ABI offsets.
     let dev = unsafe { read((minor as *const u8).add(DRM_MINOR_DEV_OFF).cast::<*mut c_void>()) };
     unsafe { write(file.add(DRM_FILE_MINOR_OFF).cast::<*mut c_void>(), minor as *mut c_void); write(file.add(DRM_FILE_FILP_OFF).cast::<*mut c_void>(), filp); }
@@ -53,7 +54,7 @@ pub(super) extern "C" fn drm_open(inode: *mut c_void, filp: *mut c_void) -> i32 
     // SAFETY: the loaded driver's open callback, when non-null, follows the external DRM ABI.
     let driver = unsafe { read(dev.cast::<u8>().add(DRM_DEVICE_DRIVER_OFF).cast::<*const c_void>()) };
     let open = unsafe { read(driver.cast::<u8>().add(DRM_DRIVER_OPEN_OFF).cast::<Option<unsafe extern "C" fn(*mut c_void, *mut c_void) -> i32>>()) };
-    if let Some(open) = open { let rc = unsafe { open(dev, file.cast()) }; if rc < 0 { release_primary_master(dev, file.cast()); drm_dev_put(dev); unsafe { dealloc(file, layout); } return rc; } }
+    if let Some(open) = open { let rc = unsafe { open(dev, file.cast()) }; if rc < 0 { release_primary_master(dev, file.cast()); gem::file_release(dev, file.cast()); drm_dev_put(dev); unsafe { dealloc(file, layout); } return rc; } }
     // SAFETY: filp is the live ABI-shaped file object passed by the adapter; private_data is its verified field.
     unsafe { write(filp.cast::<u8>().add(DRM_LINUX_FILE_PRIVATE_OFF).cast::<*mut c_void>(), file.cast()); }
     0
@@ -69,6 +70,7 @@ pub(super) extern "C" fn drm_release(_inode: *mut c_void, filp: *mut c_void) -> 
     let driver = unsafe { read(dev.cast::<u8>().add(DRM_DEVICE_DRIVER_OFF).cast::<*const c_void>()) }; let postclose = unsafe { read(driver.cast::<u8>().add(DRM_DRIVER_POSTCLOSE_OFF).cast::<Option<unsafe extern "C" fn(*mut c_void, *mut c_void)>>()) };
     if let Some(postclose) = postclose { unsafe { postclose(dev, file.cast()); } }
     release_primary_master(dev, file.cast());
+    gem::file_release(dev, file.cast());
     // SAFETY: release owns this context and clears the file slot before the exact matching deallocation.
     unsafe { write(filp.cast::<u8>().add(DRM_LINUX_FILE_PRIVATE_OFF).cast::<*mut c_void>(), core::ptr::null_mut()); dealloc(file, Layout::from_size_align(DRM_FILE_SIZE, core::mem::align_of::<u64>()).unwrap()); }
     drm_dev_put(dev); 0
