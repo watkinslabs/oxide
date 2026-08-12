@@ -310,28 +310,6 @@ fn enable_interrupts(c: &Controller) {
     let _ = c.read(regs::IMS);
 }
 
-#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-fn bind_intx(line: u32, endpoint: usize) -> Option<(u32, u32)> {
-    let vector = arch_irq::alloc_x86_vector()?;
-    if arch_irq::register_irq_line_handler(vector as u32, hard_intx).is_err() {
-        let _ = arch_irq::free_x86_vector(vector);
-        return None;
-    }
-    let gsi_base = firmware::ioapic_gsi_base();
-    if line < gsi_base || hal_x86_64::ioapic::base_va() == 0 {
-        let _ = arch_irq::free_x86_vector(vector);
-        return None;
-    }
-    let pin = line - gsi_base;
-    // SAFETY: the boot path mapped the I/O APIC; the line handler is installed before unmask.
-    if !unsafe { arch_irq::program_x86_ioapic(pin, vector, arch_irq::lapic::local_apic_id() as u8, true, true) } {
-        let _ = arch_irq::free_x86_vector(vector);
-        return None;
-    }
-    ENDPOINTS[endpoint].state.store(ENDPOINT_ACTIVE, Ordering::Release);
-    Some((vector as u32, pin))
-}
-
 fn hard_msi() { let _ = hard_irq(); }
 
 fn bind_pci_message(bdf: pci::Bdf, endpoint: usize, ctrl: &Controller) -> Option<pci_irq::Binding> {
@@ -342,27 +320,7 @@ fn bind_pci_message(bdf: pci::Bdf, endpoint: usize, ctrl: &Controller) -> Option
     Some(binding)
 }
 
-#[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
-fn bind_intx(_line: u32, _endpoint: usize) -> Option<(u32, u32)> { None }
-
-fn disable_intx(vector: u32, pin: u32, endpoint: usize) {
-    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-    {
-        // SAFETY: this record owns the programmed I/O-APIC pin until teardown completes.
-        unsafe { hal_x86_64::ioapic::mask(pin); }
-        if let Ok(vector) = u8::try_from(vector) { let _ = arch_irq::free_x86_vector(vector); }
-    }
-    #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
-    let _ = (vector, pin);
-    while ENDPOINTS[endpoint].in_handler.load(Ordering::Acquire) != 0 { core::hint::spin_loop(); }
-    endpoint_release(endpoint);
-}
-
-enum IrqBinding {
-    Intx { vector: u32, pin: u32 },
-    Pci(pci_irq::Binding),
-}
-struct Record { bdf: pci::Bdf, command_orig: u16, endpoint: usize, irq: IrqBinding, dev: Arc<E1000NetDev> }
+struct Record { bdf: pci::Bdf, command_orig: u16, endpoint: usize, irq: pci_irq::Binding, dev: Arc<E1000NetDev> }
 static DEVICES: Spinlock<Vec<Record>, DriverLockClass> = Spinlock::new(Vec::new());
 static POLL_INSTALLED: AtomicBool = AtomicBool::new(false);
 static NEXT_NAME: AtomicU32 = AtomicU32::new(0);
@@ -401,21 +359,10 @@ fn hard_irq() -> bool {
     pending
 }
 
-#[cfg_attr(target_arch = "aarch64", allow(dead_code))]
-fn hard_intx(_line: u32) -> arch_irq::IrqReport {
-    if hard_irq() { arch_irq::IrqReport::hard(arch_irq::IrqRet::Handled) }
-    else { arch_irq::IrqReport::hard(arch_irq::IrqRet::NotMine) }
-}
-
-fn release_irq(irq: IrqBinding, endpoint: usize) {
-    match irq {
-        IrqBinding::Intx { vector, pin } => disable_intx(vector, pin, endpoint),
-        IrqBinding::Pci(binding) => {
-            while ENDPOINTS[endpoint].in_handler.load(Ordering::Acquire) != 0 { core::hint::spin_loop(); }
-            endpoint_release(endpoint);
-            binding.release();
-        }
-    }
+fn release_irq(irq: pci_irq::Binding, endpoint: usize) {
+    while ENDPOINTS[endpoint].in_handler.load(Ordering::Acquire) != 0 { core::hint::spin_loop(); }
+    endpoint_release(endpoint);
+    irq.release();
 }
 
 /// Finish a bounded device poll without losing an interrupt that arrived while
@@ -500,11 +447,11 @@ impl drv::Driver for E1000Driver {
         let (controller, mac) = match configure_rings(mmio, io_base, bdf) { Some(value) => value, None => { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); } };
         trace("[INFO]  e1000: rings ready\n");
         let endpoint = match endpoint_claim(controller.mmio.base_va()) { Some(endpoint) => endpoint, None => { let mut controller = controller; controller.free(); restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); } };
-        let line = parent.pci.map(|p| p.interrupt_line).filter(|line| *line != 0);
-        let irq = if parent.msi_allowed() {
-            bind_pci_message(bdf, endpoint, &controller).map(IrqBinding::Pci)
-        } else { None }.or_else(|| line.and_then(|line| bind_intx(line, endpoint)
-            .map(|(vector, pin)| IrqBinding::Intx { vector, pin })));
+        // Linux permits an INTx fallback because ACPI _PRT supplies its exact
+        // GSI routing. Oxide has no AML/_PRT interpreter, so pretending the
+        // PCI interrupt-line byte is routable would deliver a vector to the
+        // wrong pin on real firmware. Require PCI core MSI/MSI-X instead.
+        let irq = parent.msi_allowed().then(|| bind_pci_message(bdf, endpoint, &controller)).flatten();
         let irq = match irq { Some(irq) => irq, None => { endpoint_release(endpoint); let mut controller = controller; controller.free(); restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); } };
         trace("[INFO]  e1000: irq ready\n");
         let dev = Arc::new(E1000NetDev {
