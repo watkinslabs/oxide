@@ -3,8 +3,11 @@
 //! Module manifest:
 //! - `regs`: PCI identity, MMIO queue geometry, and descriptor layouts.
 //! - `queue`: validated queue geometry and MMIO programming values.
+//! - `dma`: target-only IOMMU-backed descriptor and buffer ownership.
 
 #![no_std]
 
 pub mod regs;
 pub mod queue;
+#[cfg(target_os = "oxide-kernel")]
+pub mod dma;

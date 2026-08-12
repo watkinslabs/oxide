@@ -341,6 +341,11 @@ dependencies = [
 [[package]]
 name = "drv-igc"
 version = "0.1.0"
+dependencies = [
+ "iommu",
+ "pci",
+ "pmm",
+]
 
 [[package]]
 name = "drv-nvme"
