@@ -83,46 +83,56 @@ impl drv::Driver for SimpleFbDriver {
     }
 
     fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
-        if present() { return Err(drv::Error::Busy); }
         let fb = *CONFIG.lock();
         let bytes = fb.byte_len().ok_or(drv::Error::Invalid)?;
         let end = fb.base_pa.checked_add(bytes - 1).ok_or(drv::Error::Invalid)?;
         if !dev.resources.iter().any(|r| r.flags & drv::IORESOURCE_MEM != 0 && r.start <= fb.base_pa && r.end >= end) {
             return Err(drv::Error::Invalid);
         }
-        let page_pa = fb.base_pa & !(PAGE_BYTES - 1);
-        let page_off = fb.base_pa - page_pa;
-        let span = page_off.checked_add(bytes).ok_or(drv::Error::Invalid)?;
-        let pages = span.checked_add(PAGE_BYTES - 1).ok_or(drv::Error::Invalid)? / PAGE_BYTES;
-        let var = format::fb_var(fb).ok_or(drv::Error::Invalid)?;
-        let aperture = fbdev::acquire_aperture(fb.base_pa, bytes, detach_aperture).map_err(|err| match err {
-            fbdev::ApertureError::Inval => drv::Error::Invalid,
-            fbdev::ApertureError::Busy => drv::Error::Busy,
-        })?;
-        // SAFETY: the platform resource above contains the complete firmware
-        // framebuffer; its lifetime is the bound device's lifetime and page_pa
-        // is aligned. The driver owns the returned WC alias until detach.
-        let mapping = unsafe { mmio_map::map_owned_wc(page_pa, pages) };
-        let fb_va = mapping.base_va() + page_off;
-        let idx = fbdev::init_scanout_configured(
-            fb.base_pa, fb_va, bytes, fb.pitch, var, vmm::PhysCacheMode::WriteCombine,
-        );
-        if idx == fbdev::INVALID_FB_INDEX {
-            let _ = fbdev::release_aperture(aperture);
-            return Err(drv::Error::ProbeFailed);
-        }
-        *LIVE.lock() = Some(Live { fb, idx, mapping, fb_va, bytes, aperture });
-        PRESENT.store(true, Ordering::Release);
-        publish_console(fb);
-        #[cfg(feature = "debug-boot")]
-        {
-            klog::write_raw(b"[INFO]  simplefb: registered WC framebuffer\n");
-        }
-        Ok(())
+        attach_native_scanout(fb)
     }
 
     fn remove(&self, _dev: &drv::Device) { detach(); }
     fn shutdown(&self, _dev: &drv::Device) {}
+}
+
+/// Claim, map, and publish a validated linear native scanout.
+///
+/// The caller owns hardware mode programming and must have evicted any
+/// overlapping firmware aperture before returning control to its PCI driver.
+/// # C: O(framebuffer pages)
+pub fn attach_native_scanout(fb: BootFramebuffer) -> drv::KResult<()> {
+    if present() { return Err(drv::Error::Busy); }
+    let bytes = fb.byte_len().ok_or(drv::Error::Invalid)?;
+    let page_pa = fb.base_pa & !(PAGE_BYTES - 1);
+    let page_off = fb.base_pa - page_pa;
+    let span = page_off.checked_add(bytes).ok_or(drv::Error::Invalid)?;
+    let pages = span.checked_add(PAGE_BYTES - 1).ok_or(drv::Error::Invalid)? / PAGE_BYTES;
+    let var = format::fb_var(fb).ok_or(drv::Error::Invalid)?;
+    let aperture = fbdev::acquire_aperture(fb.base_pa, bytes, detach_aperture).map_err(|err| match err {
+        fbdev::ApertureError::Inval => drv::Error::Invalid,
+        fbdev::ApertureError::Busy => drv::Error::Busy,
+    })?;
+        // SAFETY: the platform resource above contains the complete firmware
+        // framebuffer; its lifetime is the bound device's lifetime and page_pa
+        // is aligned. The driver owns the returned WC alias until detach.
+    let mapping = unsafe { mmio_map::map_owned_wc(page_pa, pages) };
+    let fb_va = mapping.base_va() + page_off;
+    let idx = fbdev::init_scanout_configured(
+        fb.base_pa, fb_va, bytes, fb.pitch, var, vmm::PhysCacheMode::WriteCombine,
+    );
+    if idx == fbdev::INVALID_FB_INDEX {
+        let _ = fbdev::release_aperture(aperture);
+        return Err(drv::Error::ProbeFailed);
+    }
+    *LIVE.lock() = Some(Live { fb, idx, mapping, fb_va, bytes, aperture });
+    PRESENT.store(true, Ordering::Release);
+    publish_console(fb);
+    #[cfg(feature = "debug-boot")]
+    {
+        klog::write_raw(b"[INFO]  simplefb: registered WC framebuffer\n");
+    }
+    Ok(())
 }
 
 static DRIVER: SimpleFbDriver = SimpleFbDriver;

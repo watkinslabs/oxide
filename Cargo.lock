@@ -301,6 +301,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "drv-bochs"
+version = "0.1.0"
+dependencies = [
+ "boot-info",
+ "drv",
+ "drv-simplefb",
+ "fbdev",
+ "hal-x86_64",
+ "pci",
+ "sync",
+]
+
+[[package]]
 name = "drv-e1000"
 version = "0.1.0"
 dependencies = [
@@ -1346,6 +1359,7 @@ dependencies = [
  "devfs",
  "drv",
  "drv-ahci",
+ "drv-bochs",
  "drv-e1000",
  "drv-nvme",
  "drv-virtio-blk",
