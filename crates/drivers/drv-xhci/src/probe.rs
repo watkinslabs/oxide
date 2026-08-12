@@ -179,11 +179,13 @@ fn fetch_first_configuration(mmio: &Mmio, irq: Binding, device: &mut AddressDevi
     let Some(full_status) = device.submit_ep0(mmio, slot, &full_td) else { return false; };
     if !control_complete(irq, full_status, slot) || device.configuration_header() != Some(header) { return false; }
     let _ = device.discover_hid_boot();
+    let _ = device.discover_mass_storage();
     true
 }
 
 fn configure_hid_endpoint(mmio: &Mmio, command: &mut CommandTransport, irq: Binding, device: &mut AddressDeviceDma, slot: u8) -> bool {
-    match device.prepare_hid_endpoint() {
+    let prepared = if device.hid_interface().is_some() { device.prepare_hid_endpoint() } else { device.prepare_storage_endpoints() };
+    match prepared {
         Some(false) => true,
         Some(true) => {
             let Some(configure) = Trb::configure_endpoint(device.input_pa(), slot) else { return false; };
@@ -195,7 +197,7 @@ fn configure_hid_endpoint(mmio: &Mmio, command: &mut CommandTransport, irq: Bind
 }
 
 fn set_hid_configuration(mmio: &Mmio, irq: Binding, device: &mut AddressDeviceDma, slot: u8) -> bool {
-    let Some(value) = device.hid_configuration() else { return true; };
+    let Some(value) = device.hid_configuration().or(device.storage_configuration()) else { return true; };
     let Some(td) = crate::usb::set_configuration_trbs(value) else { return false; };
     let Some(status_pa) = device.submit_ep0(mmio, slot, &td) else { return false; };
     control_complete(irq, status_pa, slot)
