@@ -31,6 +31,7 @@ use sync::{Spinlock, Modules as ModulesLockClass};
 #[path = "linux_drm_mode_object_refs.rs"] mod mode_object_refs;
 #[path = "linux_drm_atomic_connector.rs"] mod atomic_connector;
 #[path = "linux_drm_atomic_crtc.rs"] mod atomic_crtc;
+#[path = "linux_drm_properties.rs"] mod properties;
 
 struct DeviceAllocation {
     dev: usize,
@@ -169,6 +170,7 @@ pub fn export_symbols() {
     mode_object_refs::export_symbols();
     atomic_connector::export_symbols();
     atomic_crtc::export_symbols();
+    properties::export_symbols();
 }
 
 fn layout_for(size: usize) -> Option<Layout> {
@@ -378,7 +380,7 @@ unsafe extern "C" fn drm_universal_plane_init(
     unsafe {
         let head = plane.cast::<u8>().add(DRM_PLANE_HEAD_OFF).cast::<*mut c_void>(); let list = config.add(MODE_CONFIG_PLANE_LIST_OFF).cast::<*mut c_void>(); let tail = *list.add(1);
         write(head, list.cast()); write(head.add(1), tail); write(tail as *mut *mut c_void, head.cast()); write(list.add(1), head.cast()); write(plane.cast::<u8>().cast::<*mut c_void>(), dev);
-        write(plane.cast::<u8>().add(DRM_PLANE_POSSIBLE_CRTCS_OFF).cast::<u32>(), possible_crtcs); write(plane.cast::<u8>().add(DRM_PLANE_FORMATS_OFF).cast::<*mut u32>(), copied.cast()); write(plane.cast::<u8>().add(DRM_PLANE_FORMAT_COUNT_OFF).cast::<u32>(), format_count);
+        write(plane.cast::<u8>().add(DRM_PLANE_BASE_OFF + 8).cast::<*mut u8>(), plane.cast::<u8>().add(properties::DRM_PLANE_PROPERTIES_OFF)); write(plane.cast::<u8>().add(DRM_PLANE_POSSIBLE_CRTCS_OFF).cast::<u32>(), possible_crtcs); write(plane.cast::<u8>().add(DRM_PLANE_FORMATS_OFF).cast::<*mut u32>(), copied.cast()); write(plane.cast::<u8>().add(DRM_PLANE_FORMAT_COUNT_OFF).cast::<u32>(), format_count);
         write(plane.cast::<u8>().add(DRM_PLANE_FUNCS_OFF).cast::<*const c_void>(), funcs); write(plane.cast::<u8>().add(DRM_PLANE_TYPE_OFF).cast::<i32>(), plane_type); write(plane.cast::<u8>().add(DRM_PLANE_INDEX_OFF).cast::<u32>(), index as u32); write(config.add(MODE_CONFIG_NUM_TOTAL_PLANE_OFF).cast::<i32>(), index + 1);
     }
     rec.planes.push(PlaneRecord { ptr: plane as usize, formats: copied as usize, layout });
@@ -439,7 +441,7 @@ unsafe extern "C" fn drm_crtc_init_with_planes(
     // SAFETY: crtc, its optional plane objects, and the mode-config graph use the verified ABI offsets; all mutations are serialized by DEVICES.
     unsafe {
         let head = crtc.cast::<u8>().add(DRM_CRTC_HEAD_OFF).cast::<*mut c_void>(); let list = config.add(MODE_CONFIG_CRTC_LIST_OFF).cast::<*mut c_void>(); let tail = *list.add(1);
-        write(head, list.cast()); write(head.add(1), tail); write(tail as *mut *mut c_void, head.cast()); write(list.add(1), head.cast()); write(crtc.cast::<*mut c_void>(), dev); write(crtc.cast::<u8>().add(32).cast::<*mut u8>(), name as *mut u8); write(crtc.cast::<u8>().add(DRM_CRTC_FUNCS_OFF).cast::<*const c_void>(), funcs); write(crtc.cast::<u8>().add(DRM_CRTC_PRIMARY_OFF).cast::<*mut c_void>(), primary); write(crtc.cast::<u8>().add(DRM_CRTC_CURSOR_OFF).cast::<*mut c_void>(), cursor); write(crtc.cast::<u8>().add(DRM_CRTC_INDEX_OFF).cast::<u32>(), index as u32); write(config.add(MODE_CONFIG_NUM_CRTC_OFF).cast::<i32>(), index + 1);
+        write(head, list.cast()); write(head.add(1), tail); write(tail as *mut *mut c_void, head.cast()); write(list.add(1), head.cast()); write(crtc.cast::<*mut c_void>(), dev); write(crtc.cast::<u8>().add(DRM_CRTC_BASE_OFF + 8).cast::<*mut u8>(), crtc.cast::<u8>().add(properties::DRM_CRTC_PROPERTIES_OFF)); write(crtc.cast::<u8>().add(32).cast::<*mut u8>(), name as *mut u8); write(crtc.cast::<u8>().add(DRM_CRTC_FUNCS_OFF).cast::<*const c_void>(), funcs); write(crtc.cast::<u8>().add(DRM_CRTC_PRIMARY_OFF).cast::<*mut c_void>(), primary); write(crtc.cast::<u8>().add(DRM_CRTC_CURSOR_OFF).cast::<*mut c_void>(), cursor); write(crtc.cast::<u8>().add(DRM_CRTC_INDEX_OFF).cast::<u32>(), index as u32); write(config.add(MODE_CONFIG_NUM_CRTC_OFF).cast::<i32>(), index + 1);
         if !primary.is_null() && *(primary.cast::<u8>().add(DRM_PLANE_POSSIBLE_CRTCS_OFF).cast::<u32>()) == 0 { write(primary.cast::<u8>().add(DRM_PLANE_POSSIBLE_CRTCS_OFF).cast::<u32>(), 1u32 << index); }
         if !cursor.is_null() && *(cursor.cast::<u8>().add(DRM_PLANE_POSSIBLE_CRTCS_OFF).cast::<u32>()) == 0 { write(cursor.cast::<u8>().add(DRM_PLANE_POSSIBLE_CRTCS_OFF).cast::<u32>(), 1u32 << index); }
     }
