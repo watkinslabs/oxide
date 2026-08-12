@@ -1601,3 +1601,9 @@ Six lanes filed the same defect separately. The canonical row lives in
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED F1015 | MISSING | HIGH | The xHCI input path parsed generic HID report descriptors but discarded them before device publication, then selected only boot-subclass keyboard/mouse interfaces and forced Boot protocol. Native HID devices that publish their normal report format therefore had no input node; a boot device could also be switched away from the descriptor it had already advertised. The retained device state now owns the selected HID interface and parsed layout, fetches the report descriptor after configuration, derives advertised input capabilities from its usages, and decodes each interrupt report against that layout. | `cargo test -p drv-xhci --lib -- --test-threads=1` (53 passed), including descriptor request, parser, decoder, and endpoint-context contracts; native x86 kernel build in this lane compiles the target-only enumeration and input wiring. | F1015 |
+
+### F1019-rtl8125-iommu-dma-owner
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED F1019 | MISSING | HIGH | RTL8125 had descriptor declarations but no retained requester-keyed DMA ownership, so a future PCI probe could easily place raw PMM addresses in a bus-mastering NIC. The hardware owner now retains four PMM allocations and their four IOMMU mappings, rolls every partial map failure back before freeing backing pages, initializes every RX descriptor with a device DMA address, and unmaps every mapping before PMM release. | `cargo test -p drv-rtl8125 --lib -- --test-threads=1` (3 passed); direct x86 kernel-target build of `drv-rtl8125` completed with `-Zbuild-std`. | F1019 |

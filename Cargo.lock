@@ -377,6 +377,11 @@ dependencies = [
 [[package]]
 name = "drv-rtl8125"
 version = "0.1.0"
+dependencies = [
+ "iommu",
+ "pci",
+ "pmm",
+]
 
 [[package]]
 name = "drv-serial"
@@ -1365,6 +1370,7 @@ dependencies = [
  "drv-bochs",
  "drv-e1000",
  "drv-nvme",
+ "drv-rtl8125",
  "drv-virtio-blk",
  "drv-virtio-gpu",
  "drv-virtio-input",
