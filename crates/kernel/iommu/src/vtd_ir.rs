@@ -27,6 +27,17 @@ impl VtdIrte {
         Self { words: [low, high] }
     }
 
+    /// Build a present HPET IRTE.  HPET source verification uses the
+    /// architected three-bit source-qualifier relaxation for firmware blocks
+    /// that do not present a fully stable low requester-ID field. # C: O(1)
+    pub const fn hpet(vector: u8, destination_apic_id: u32, source_id: u16,
+        extended_mode: bool) -> Self {
+        let destination = if extended_mode { destination_apic_id } else { destination_apic_id << 8 };
+        let low = 1 | (1 << 3) | ((vector as u64) << 16) | ((destination as u64) << 32);
+        let high = source_id as u64 | (3 << 16) | (2 << 18);
+        Self { words: [low, high] }
+    }
+
     /// Return raw hardware words for layout tests. # C: O(1)
     #[cfg(test)]
     pub const fn words(self) -> [u64; 2] { self.words }
@@ -62,6 +73,11 @@ impl VtdIrTable {
         self.allocate(vector, destination_apic_id, source_id)
     }
 
+    /// Allocate one HPET FSB-interrupt IRTE. # C: O(entries)
+    pub fn allocate_hpet(&mut self, vector: u8, destination_apic_id: u32, source_id: u16) -> Option<u16> {
+        self.allocate_hpet_entry(vector, destination_apic_id, source_id)
+    }
+
     fn allocate(&mut self, vector: u8, destination_apic_id: u32, requester_id: u16) -> Option<u16> {
         for (word_index, word) in self.used.iter_mut().enumerate() {
             if *word == u64::MAX { continue; }
@@ -69,6 +85,22 @@ impl VtdIrTable {
             let index = word_index * 64 + bit;
             *word |= 1u64 << bit;
             let entry = VtdIrte::msi(vector, destination_apic_id, requester_id, self.extended_mode);
+            let va = self.hhdm_offset.checked_add(self.pa)?.checked_add((index * IRTE_BYTES) as u64)? as *mut VtdIrte;
+            // SAFETY: index is newly reserved and lies within the exclusively owned table.
+            unsafe { core::ptr::write_volatile(va, entry); }
+            core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+            return u16::try_from(index).ok();
+        }
+        None
+    }
+
+    fn allocate_hpet_entry(&mut self, vector: u8, destination_apic_id: u32, source_id: u16) -> Option<u16> {
+        for (word_index, word) in self.used.iter_mut().enumerate() {
+            if *word == u64::MAX { continue; }
+            let bit = (!*word).trailing_zeros() as usize;
+            let index = word_index * 64 + bit;
+            *word |= 1u64 << bit;
+            let entry = VtdIrte::hpet(vector, destination_apic_id, source_id, self.extended_mode);
             let va = self.hhdm_offset.checked_add(self.pa)?.checked_add((index * IRTE_BYTES) as u64)? as *mut VtdIrte;
             // SAFETY: index is newly reserved and lies within the exclusively owned table.
             unsafe { core::ptr::write_volatile(va, entry); }
@@ -122,5 +154,11 @@ mod tests {
     #[test]
     fn remappable_msi_encodes_the_irte_handle_not_an_apic_destination() {
         assert_eq!(remapped_msi(0x1234, 7), (0xFEE2_4690, 7));
+    }
+
+    #[test]
+    fn hpet_irte_uses_the_firmware_source_qualifier_encoding() {
+        assert_eq!(VtdIrte::hpet(0x51, 0x1234, 0x9abc, true).words(),
+            [0x0000_1234_0051_0009, 0x0000_0000_000b_9abc]);
     }
 }

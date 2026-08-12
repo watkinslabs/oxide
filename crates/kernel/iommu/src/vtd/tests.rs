@@ -68,3 +68,14 @@ fn ioapic_scope_uses_madt_id_and_exact_pci_source_id() {
     assert_eq!(ioapic_scope_source(&r, 7, unit, ioapic), Some((unit, 0x0310)));
     assert_eq!(ioapic_scope_source(&r, 8, unit, ioapic), None);
 }
+
+#[test]
+fn hpet_scope_uses_acpi_block_id_and_pci_source_id() {
+    let r = reader();
+    let mut hpet = scope(DMAR_SCOPE_HPET);
+    hpet.enumeration_id = 3;
+    let unit = IommuUnit { kind: IommuKind::IntelVtd, segment: 0,
+        register_base: 0xfed9_0000, register_pages: 1, include_all: false };
+    assert_eq!(hpet_scope_source(&r, 3, unit, hpet), Some((unit, 0x0310)));
+    assert_eq!(hpet_scope_source(&r, 4, unit, hpet), None);
+}

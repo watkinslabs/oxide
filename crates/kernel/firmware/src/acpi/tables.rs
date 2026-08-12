@@ -290,6 +290,7 @@ pub unsafe fn decode_hpet(pa: u64, hhdm_offset: u64) {
         let addr_space = core::ptr::read_volatile(p.add(40));
         let base       = read_u64_le(p.add(44));
         let hpet_num   = core::ptr::read_volatile(p.add(52));
+        if addr_space == 0 { crate::set_hpet(hpet_num, base); }
         alog_raw(b"[INFO]    hpet block_id=");
         alog_hex(block_id as u64);
         alog_raw(b" pa=");

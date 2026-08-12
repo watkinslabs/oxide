@@ -4,6 +4,7 @@ use pci::{Bdf, ConfigSpaceReader, PciDevice, bridge_buses};
 const DMAR_SCOPE_ENDPOINT: u8 = 1;
 const DMAR_SCOPE_BRIDGE: u8 = 2;
 const DMAR_SCOPE_IOAPIC: u8 = 3;
+const DMAR_SCOPE_HPET: u8 = 4;
 const PCI_DEVICES: u8 = 32;
 const PCI_FUNCTIONS: u8 = 8;
 
@@ -98,6 +99,31 @@ fn ioapic_scope_source<R: ConfigSpaceReader>(r: &R, ioapic_id: u8, unit: IommuUn
     scope: DmarScope) -> Option<(IommuUnit, u16)> {
     if scope.unit_index == DMAR_RMRR_SCOPE_UNIT || scope.scope_type != DMAR_SCOPE_IOAPIC
         || scope.enumeration_id != ioapic_id || unit.kind != firmware::acpi::IommuKind::IntelVtd { return None; }
+    let bdf = scope_target(r, unit.segment, scope)?;
+    let source_id = (u16::from(bdf.bus) << 8) | (u16::from(bdf.device) << 3) | u16::from(bdf.function);
+    Some((unit, source_id))
+}
+
+/// Resolve the Intel-DMAR HPET scope selected by the ACPI HPET block number.
+/// HPET FSB interrupts must use its firmware-owned PCI source ID; ambiguous
+/// firmware ownership is refused. # C: O(N_scopes * PCI_tree)
+pub fn intel_vtd_hpet_source<R: ConfigSpaceReader>(r: &R, hpet_id: u8) -> Option<(IommuUnit, u16)> {
+    let mut found = None;
+    for index in 0..dmar_scope_count() {
+        let scope = dmar_scope(index)?;
+        if scope.unit_index == DMAR_RMRR_SCOPE_UNIT { continue; }
+        let unit = iommu_unit(scope.unit_index as usize)?;
+        let Some(candidate) = hpet_scope_source(r, hpet_id, unit, scope) else { continue; };
+        if found.is_some_and(|old| old != candidate) { return None; }
+        found = Some(candidate);
+    }
+    found
+}
+
+fn hpet_scope_source<R: ConfigSpaceReader>(r: &R, hpet_id: u8, unit: IommuUnit,
+    scope: DmarScope) -> Option<(IommuUnit, u16)> {
+    if scope.scope_type != DMAR_SCOPE_HPET || scope.enumeration_id != hpet_id
+        || unit.kind != firmware::acpi::IommuKind::IntelVtd { return None; }
     let bdf = scope_target(r, unit.segment, scope)?;
     let source_id = (u16::from(bdf.bus) << 8) | (u16::from(bdf.device) << 3) | u16::from(bdf.function);
     Some((unit, source_id))
