@@ -21,10 +21,6 @@ fn cleanup_hwrng_devices() {
     }
 }
 
-fn test_queue() -> virtio::VirtQueueResource {
-    virtio::VirtQueueResource::new(0, 8, 0x1000, 0x2000, 0x3000, 0x4000, 0)
-}
-
 fn test_record(device_key: virtio::VirtioChildDeviceKey, shutdown: bool) -> RngHandle {
     let hwrng_dev = Arc::new(drv::Device::new("misc", String::from("hwrng"), 0, 0, 0));
     Arc::new(Spinlock::new(RngState {
@@ -32,9 +28,7 @@ fn test_record(device_key: virtio::VirtioChildDeviceKey, shutdown: bool) -> RngH
         bdf: pci::Bdf { segment: 0, bus: 0, device: 0, function: 0 },
         cfg_va: 0,
         hhdm: 0,
-        requestq: test_queue(),
-        avail_idx: 0,
-        used_idx_seen: 0,
+        requestq: None,
         bounce_pa: 0,
         bounce_dma: 0,
         hwrng_dev,
@@ -60,9 +54,7 @@ fn test_record_with_device(
         bdf: pci::Bdf { segment: 0, bus: 0, device: 0, function: 0 },
         cfg_va,
         hhdm: 0,
-        requestq: test_queue(),
-        avail_idx: 0,
-        used_idx_seen: 0,
+        requestq: None,
         bounce_pa: 0,
         bounce_dma: 0,
         hwrng_dev,
@@ -78,6 +70,18 @@ fn ready_queue_record(
     notify: &mut u16,
     bounce: &mut [u8; 32],
 ) -> RngHandle {
+    let requestq = virtio::VirtioSplitQueue::new(
+        virtio::VirtQueueResource::new(
+            0,
+            1,
+            desc.as_mut_ptr() as u64,
+            avail.as_mut_ptr() as u64,
+            used.as_mut_ptr() as u64,
+            notify as *mut u16 as u64,
+            0,
+        ),
+        0,
+    ).unwrap();
     used[1] = 1;
     used[4] = bounce.len() as u16;
     Arc::new(Spinlock::new(RngState {
@@ -85,17 +89,7 @@ fn ready_queue_record(
         bdf: pci::Bdf { segment: 0, bus: 0, device: 0, function: 0 },
         cfg_va: 0,
         hhdm: 0,
-        requestq: virtio::VirtQueueResource::new(
-            0,
-            8,
-            desc.as_mut_ptr() as u64,
-            avail.as_mut_ptr() as u64,
-            used.as_mut_ptr() as u64,
-            notify as *mut u16 as u64,
-            0,
-        ),
-        avail_idx: 0,
-        used_idx_seen: 0,
+        requestq: Some(requestq),
         bounce_pa: bounce.as_mut_ptr() as u64,
         bounce_dma: bounce.as_mut_ptr() as u64,
         hwrng_dev: Arc::new(drv::Device::new("misc", String::from("hwrng"), 0, 0, 0)),
