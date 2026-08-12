@@ -14,11 +14,13 @@ struct DeviceAllocation {
     base: usize,
     layout: Layout,
     put_pending: bool,
+    unplugged: bool,
 }
 
 static DEVICES: Spinlock<Vec<DeviceAllocation>, ModulesLockClass> = Spinlock::new(Vec::new());
 static GUARDS: Spinlock<Vec<(i32, usize)>, ModulesLockClass> = Spinlock::new(Vec::new());
 static NEXT_GUARD: AtomicI32 = AtomicI32::new(1);
+static DRAIN_WAIT: sched::live::WaitList = sched::live::WaitList::new();
 
 /// Register the DRM core object-lifetime ABI.
 /// # C: O(1)
@@ -27,6 +29,7 @@ pub fn export_symbols() {
     crate::symtab::export("drm_dev_put", drm_dev_put as *const () as usize, false);
     crate::symtab::export("drm_dev_enter", drm_dev_enter as *const () as usize, false);
     crate::symtab::export("drm_dev_exit", drm_dev_exit as *const () as usize, false);
+    crate::symtab::export("drm_dev_unplug", drm_dev_unplug as *const () as usize, false);
 }
 
 fn layout_for(size: usize) -> Option<Layout> {
@@ -52,7 +55,7 @@ extern "C" fn __devm_drm_dev_alloc(
     // SAFETY: offset+pointer-size was checked against this allocation and base
     // is aligned for the driver-private object supplied by the module ABI.
     let dev = unsafe { base.add(offset) as *mut c_void };
-    DEVICES.lock().push(DeviceAllocation { dev: dev as usize, base: base as usize, layout, put_pending: false });
+    DEVICES.lock().push(DeviceAllocation { dev: dev as usize, base: base as usize, layout, put_pending: false, unplugged: false });
     dev
 }
 
@@ -87,7 +90,7 @@ extern "C" fn drm_dev_enter(dev: *mut c_void, idx: *mut i32) -> bool {
     if dev.is_null() || idx.is_null() { return false; }
     let id = next_guard();
     let devices = DEVICES.lock();
-    if !devices.iter().any(|rec| rec.dev == dev as usize && !rec.put_pending) { return false; }
+    if !devices.iter().any(|rec| rec.dev == dev as usize && !rec.put_pending && !rec.unplugged) { return false; }
     GUARDS.lock().push((id, dev as usize));
     // SAFETY: idx was checked non-null and the caller owns this one i32 output.
     unsafe { *idx = id; }
@@ -102,6 +105,7 @@ extern "C" fn drm_dev_exit(idx: i32) {
         let Some(pos) = guards.iter().position(|(id, _)| *id == idx) else { return };
         guards.remove(pos).1
     };
+    DRAIN_WAIT.wake_all();
     let rec = {
         let mut devices = DEVICES.lock();
         let Some(pos) = devices.iter().position(|rec| rec.dev == dev && rec.put_pending) else { return };
@@ -110,6 +114,22 @@ extern "C" fn drm_dev_exit(idx: i32) {
     // SAFETY: the final guard removed this pending allocation and the record
     // was atomically removed before its original allocation is released.
     unsafe { dealloc(rec.base as *mut u8, rec.layout); }
+}
+
+fn guards_drained(dev: usize) -> bool { !GUARDS.lock().iter().any(|(_, guarded)| *guarded == dev) }
+
+/// Make a DRM device inaccessible and wait until prior critical sections exit.
+/// # C: O(N_devices + N_guards)
+extern "C" fn drm_dev_unplug(dev: *mut c_void) {
+    if dev.is_null() { return; }
+    {
+        let mut devices = DEVICES.lock();
+        let Some(rec) = devices.iter_mut().find(|rec| rec.dev == dev as usize) else { return };
+        rec.unplugged = true;
+    }
+    // SAFETY: this runs in driver teardown process context and DRAIN_WAIT is
+    // woken by every matching drm_dev_exit after it removes the guard token.
+    let _ = unsafe { sched::live::wait_event_uninterruptible(&DRAIN_WAIT, || guards_drained(dev as usize)) };
 }
 
 #[cfg(test)]
@@ -139,6 +159,7 @@ mod tests {
         assert!(crate::symtab::is_exported("drm_dev_put"));
         assert!(crate::symtab::is_exported("drm_dev_enter"));
         assert!(crate::symtab::is_exported("drm_dev_exit"));
+        assert!(crate::symtab::is_exported("drm_dev_unplug"));
     }
 
     #[test]
@@ -164,5 +185,14 @@ mod tests {
         assert!(!drm_dev_enter(dev, &mut 0));
         drm_dev_exit(token);
         assert!(DEVICES.lock().is_empty());
+    }
+
+    #[test]
+    fn unplug_refuses_new_entries_after_the_drain() {
+        let _modules = crate::test_serial::claim();
+        let dev = __devm_drm_dev_alloc(core::ptr::null_mut(), core::ptr::null(), 128, 64);
+        drm_dev_unplug(dev);
+        assert!(!drm_dev_enter(dev, &mut 0));
+        drm_dev_put(dev);
     }
 }
