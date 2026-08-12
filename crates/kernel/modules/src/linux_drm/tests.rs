@@ -1,4 +1,5 @@
 use super::*;
+use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
 #[repr(C, align(8))]
 struct TestDriver([u8; 200]);
@@ -54,6 +55,20 @@ fn registration_publishes_and_withdraws_a_primary_drm_minor() {
     let container = __devm_drm_dev_alloc(&mut parent, (&driver as *const TestDriver).cast(), 2048, 64); let dev = unsafe { container.cast::<u8>().add(64).cast::<c_void>() };
     assert_eq!(register::drm_dev_register(dev, 0), 0); assert!(vfs::lookup_chrdev(vfs::Devt::from_kdev(226 << 20)).is_some());
     register::drm_dev_unregister(dev); assert!(vfs::lookup_chrdev(vfs::Devt::from_kdev(226 << 20)).is_none()); devres::release_device(&mut parent);
+}
+
+static DRIVER_OPEN: AtomicUsize = AtomicUsize::new(0);
+static DRIVER_CLOSE: AtomicUsize = AtomicUsize::new(0);
+extern "C" fn test_file_open(_dev: *mut c_void, _file: *mut c_void) -> i32 { DRIVER_OPEN.fetch_add(1, AtomicOrdering::SeqCst); 0 }
+extern "C" fn test_file_close(_dev: *mut c_void, _file: *mut c_void) { DRIVER_CLOSE.fetch_add(1, AtomicOrdering::SeqCst); }
+
+#[test]
+fn core_file_context_calls_driver_open_and_postclose_once() {
+    let _modules = crate::test_serial::claim(); DRIVER_OPEN.store(0, AtomicOrdering::SeqCst); DRIVER_CLOSE.store(0, AtomicOrdering::SeqCst); let mut parent = LinuxDevice::new(); let mut driver = TestDriver([0; 200]); let mut fops = [0u8; 272];
+    // SAFETY: raw ABI tables reserve the verified driver and file-operation callback slots.
+    unsafe { write(driver.0.as_mut_ptr().add(8).cast::<usize>(), test_file_open as *const () as usize); write(driver.0.as_mut_ptr().add(16).cast::<usize>(), test_file_close as *const () as usize); write(driver.0.as_mut_ptr().add(192).cast::<*const c_void>(), fops.as_ptr().cast()); write(fops.as_mut_ptr().add(104).cast::<usize>(), file::drm_open as *const () as usize); write(fops.as_mut_ptr().add(120).cast::<usize>(), file::drm_release as *const () as usize); }
+    let container = __devm_drm_dev_alloc(&mut parent, (&driver as *const TestDriver).cast(), 2048, 64); let dev = unsafe { container.cast::<u8>().add(64).cast::<c_void>() }; assert_eq!(register::drm_dev_register(dev, 0), 0);
+    let mut inode = [0u8; 616]; let mut filp = [0u8; 184]; unsafe { write(inode.as_mut_ptr().add(76).cast::<u32>(), 226 << 20); } assert_eq!(file::drm_open(inode.as_mut_ptr().cast(), filp.as_mut_ptr().cast()), 0); assert_eq!(DRIVER_OPEN.load(AtomicOrdering::SeqCst), 1); assert!(!unsafe { read(filp.as_ptr().add(24).cast::<*mut c_void>()) }.is_null()); assert_eq!(file::drm_release(inode.as_mut_ptr().cast(), filp.as_mut_ptr().cast()), 0); assert_eq!(DRIVER_CLOSE.load(AtomicOrdering::SeqCst), 1); assert!(unsafe { read(filp.as_ptr().add(24).cast::<*mut c_void>()) }.is_null()); register::drm_dev_unregister(dev); devres::release_device(&mut parent);
 }
 
 #[test]
