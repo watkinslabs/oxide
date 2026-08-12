@@ -1,5 +1,5 @@
 use super::*;
-use super::super::config::{pci_read_config_byte, pci_read_config_dword, pci_read_config_word, pci_write_config_byte, pci_write_config_dword};
+use super::super::config::{pci_read_config_byte, pci_read_config_dword, pci_read_config_word, pci_write_config_byte, pci_write_config_dword, pci_write_config_word};
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
@@ -41,6 +41,8 @@ const TEST_PCIE_CAP: usize = 0x40 / 4;
 const TEST_PCIE_CAP_POINTER: usize = 0x34 / 4;
 const TEST_PCIE_DEVCTL: usize = 0x48 / 4;
 const TEST_PCIE_READRQ_512: u16 = 0x2000;
+const TEST_MSIX_CAP: u8 = 0x50;
+const TEST_MSIX_TABLE_SIZE_MINUS_ONE: u16 = 7;
 
 static MODEL_PROBES: AtomicUsize = AtomicUsize::new(0);
 static MODEL_REMOVES: AtomicUsize = AtomicUsize::new(0);
@@ -229,6 +231,16 @@ fn msi_irq_vectors_allocate_and_free_arch_vectors() {
         TEST_MSI_VECTOR_COUNT
     );
     pci_free_irq_vectors(&mut dev);
+}
+
+#[test]
+fn msix_vector_count_reads_the_capability_table_size() {
+    let _modules = crate::test_serial::claim();
+    let mut dev = test_dev();
+    assert_eq!(pci_msix_vec_count(&mut dev), -LINUX_EINVAL);
+    dev.msix_cap = TEST_MSIX_CAP;
+    assert_eq!(pci_write_config_word(&mut dev, (TEST_MSIX_CAP + 2) as i32, TEST_MSIX_TABLE_SIZE_MINUS_ONE), LINUX_OK);
+    assert_eq!(pci_msix_vec_count(&mut dev), TEST_MSIX_TABLE_SIZE_MINUS_ONE as i32 + 1);
 }
 
 #[test]

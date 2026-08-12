@@ -258,7 +258,15 @@ extern "C" fn pci_disable_msi(dev: *mut LinuxPciDev) {
     if flags & PCI_IRQ_MSI != 0 { pci_free_irq_vectors(dev); }
 }
 
-extern "C" fn pci_msix_vec_count(_dev: *mut LinuxPciDev) -> i32 { -LINUX_EINVAL }
+extern "C" fn pci_msix_vec_count(dev: *mut LinuxPciDev) -> i32 {
+    if dev.is_null() { return -LINUX_EINVAL; }
+    // SAFETY: caller supplied a live PCI-device ABI object; the capability
+    // byte was populated during PCI capability discovery.
+    let cap = unsafe { (*dev).msix_cap };
+    if cap == 0 { return -LINUX_EINVAL; }
+    let control = super::config::read16(dev, cap.wrapping_add(2));
+    ((control & 0x07ff) as i32) + 1
+}
 
 extern "C" fn pci_alloc_irq_vectors(dev: *mut LinuxPciDev, min_vecs: i32, max_vecs: i32, flags: u32) -> i32 {
     super::vectors::alloc_irq_vectors(dev, min_vecs, max_vecs, flags)
