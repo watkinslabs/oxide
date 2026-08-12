@@ -16,7 +16,7 @@
 
 
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate as cpu_topology;
 
@@ -24,12 +24,18 @@ use crate as cpu_topology;
 /// CPU `i` is online). The boot CPU sets its bit in `set_boot_cpu_id`; each
 /// AP sets its bit in `mark_online`. Read by the x86 TLB-shootdown sender to
 /// target only CPUs that can actually ACK the IPI (sending to a not-yet-online
-/// AP would spin forever waiting for an ACK that never comes). `MAX_CPUS == 64`
-/// fits exactly in a `u64`.
-static ONLINE_MASK: AtomicU64 = AtomicU64::new(0);
+/// AP would spin forever waiting for an ACK that never comes).  This is a
+/// word-array mask so the topology cap can grow without changing the online
+/// set's representation.
+static ONLINE_MASK: crate::AtomicCpuMask = crate::AtomicCpuMask::new();
 
 /// Bitmask of online logical CPUs. # C: O(1)
-pub fn online_mask() -> u64 { ONLINE_MASK.load(Ordering::Acquire) }
+pub fn online_mask() -> u64 { ONLINE_MASK.load(Ordering::Acquire).low_word() }
+
+/// Complete online CPU set.  New multiword consumers must use this rather
+/// than adding another scalar online bitmap.
+/// # C: O(words)
+pub fn online_cpumask() -> crate::CpuMask { ONLINE_MASK.load(Ordering::Acquire) }
 
 /// Mark logical CPU `cpu` online in the bitmap. Boot CPU + each AP call this
 /// as they finish bring-up. Idempotent.
@@ -38,7 +44,7 @@ pub fn online_mask() -> u64 { ONLINE_MASK.load(Ordering::Acquire) }
 /// # C: O(1)
 pub unsafe fn mark_online(cpu: u32) {
     if (cpu as usize) < crate::MAX_CPUS {
-        ONLINE_MASK.fetch_or(1u64 << cpu, Ordering::AcqRel);
+        ONLINE_MASK.set(cpu as usize, Ordering::AcqRel);
     }
 }
 
@@ -129,6 +135,7 @@ mod tests {
     fn reset() {
         BOOT_CPU_ID.store(u32::MAX, Ordering::Release);
         ONLINE.store(0, Ordering::Release);
+        ONLINE_MASK.clear();
     }
 
     #[test]
@@ -154,5 +161,15 @@ mod tests {
         let n2 = ap_arrived();
         assert_eq!(n2, 3);
         assert_eq!(online_count(), 3);
+    }
+
+    #[test]
+    fn online_set_is_published_through_the_canonical_cpumask() {
+        reset();
+        // SAFETY: hosted-test single-thread invariant; each logical bit has one writer.
+        unsafe { mark_online(0); mark_online(crate::MAX_CPUS as u32 - 1); }
+        let online = online_cpumask();
+        assert!(online.contains(0));
+        assert!(online.contains(crate::MAX_CPUS - 1));
     }
 }
