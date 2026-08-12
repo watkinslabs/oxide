@@ -11,8 +11,18 @@ use crate::ring::{CommandRing, Trb, TRB_BYTES, TRBS_PER_SEGMENT};
 
 struct HidDma { ring: DmaPage, report: DmaPage, producer: CommandRing, pending: u64 }
 
+struct StorageDma {
+    _bulk_in_ring: DmaPage,
+    _bulk_out_ring: DmaPage,
+    _command: DmaPage,
+    _status: DmaPage,
+    _data: DmaPage,
+    _bulk_in_producer: CommandRing,
+    _bulk_out_producer: CommandRing,
+}
+
 /// Input context, output device context, and endpoint-zero transfer ring.
-pub struct AddressDeviceDma { bdf: pci::Bdf, input: DmaPage, output: DmaPage, ep0: DmaPage, descriptor: DmaPage, context_bytes: u8, speed: u8, port: u8, slot: u8, _hid: Option<crate::usb::HidBootInterface>, hid_ring: Option<HidDma>, ep0_ring: CommandRing }
+pub struct AddressDeviceDma { bdf: pci::Bdf, input: DmaPage, output: DmaPage, ep0: DmaPage, descriptor: DmaPage, context_bytes: u8, speed: u8, port: u8, slot: u8, _hid: Option<crate::usb::HidBootInterface>, _storage: Option<crate::storage::MassStorageInterface>, hid_ring: Option<HidDma>, storage_dma: Option<StorageDma>, ep0_ring: CommandRing }
 
 impl AddressDeviceDma {
     /// Allocate and construct every DMA object required by Address Device. # C: O(page bytes)
@@ -30,7 +40,7 @@ impl AddressDeviceDma {
         }
         input.clean_to_device(); output.clean_to_device(); ep0.clean_to_device();
         let ep0_ring = CommandRing::new(ep0.dma())?;
-        Some(Self { bdf, input, output, ep0, descriptor, context_bytes, speed, port, slot: 0, _hid: None, hid_ring: None, ep0_ring })
+        Some(Self { bdf, input, output, ep0, descriptor, context_bytes, speed, port, slot: 0, _hid: None, _storage: None, hid_ring: None, storage_dma: None, ep0_ring })
     }
 
     /// Input-context device DMA address for Address Device. # C: O(1)
@@ -55,13 +65,15 @@ impl AddressDeviceDma {
     }
     /// Parse and retain an eligible HID boot interface from the fetched configuration. # C: O(descriptor bytes)
     pub fn discover_hid_boot(&mut self) -> Option<crate::usb::HidBootInterface> {
-        let header = self.configuration_header()?;
-        let mut bytes = Vec::with_capacity(header.total_length);
-        self.descriptor.invalidate_from_device();
-        for offset in 0..header.total_length { bytes.push(self.descriptor.read8(offset as u64)?); }
-        let hid = crate::usb::hid_boot_interface(&bytes)?;
+        let hid = crate::usb::hid_boot_interface(&self.configuration_bytes()?)?;
         self._hid = Some(hid);
         Some(hid)
+    }
+    /// Parse and retain a transparent-SCSI Bulk-Only interface from the fetched configuration. # C: O(descriptor bytes)
+    pub fn discover_mass_storage(&mut self) -> Option<crate::storage::MassStorageInterface> {
+        let storage = crate::usb::mass_storage_interface(&self.configuration_bytes()?)?;
+        self._storage = Some(storage);
+        Some(storage)
     }
     /// Build a retained interrupt-IN ring and Configure Endpoint input context. # C: O(page bytes)
     pub fn prepare_hid_endpoint(&mut self) -> Option<bool> {
@@ -81,8 +93,36 @@ impl AddressDeviceDma {
         self.hid_ring = Some(HidDma { producer: CommandRing::new(ring.dma())?, ring, report: DmaPage::allocate(self.bdf)?, pending: 0 });
         Some(true)
     }
+    /// Retain bulk rings and DMA buffers, then populate their Configure Endpoint input contexts. # C: O(page bytes)
+    pub fn prepare_storage_endpoints(&mut self) -> Option<bool> {
+        let Some(storage) = self._storage else { return Some(false); };
+        if self.storage_dma.is_some() { return Some(true); }
+        let (bulk_in_ring, bulk_in_producer) = transfer_ring(self.bdf)?;
+        let (bulk_out_ring, bulk_out_producer) = transfer_ring(self.bdf)?;
+        self.output.invalidate_from_device();
+        let stride = self.context_bytes as u64;
+        let mut output_slot = [0u32; 8];
+        for (index, word) in output_slot.iter_mut().enumerate() { *word = self.output.read32(stride + (index * 4) as u64)?; }
+        let words = context::configure_storage_words(self.context_bytes, output_slot, self.speed, storage, bulk_in_ring.dma(), bulk_out_ring.dma())?;
+        for word in words { if !self.input.write32(word.offset as u64, word.value) { return None; } }
+        self.input.clean_to_device();
+        self.storage_dma = Some(StorageDma {
+            _bulk_in_ring: bulk_in_ring,
+            _bulk_out_ring: bulk_out_ring,
+            _command: DmaPage::allocate(self.bdf)?,
+            _status: DmaPage::allocate(self.bdf)?,
+            _data: DmaPage::allocate(self.bdf)?,
+            _bulk_in_producer: bulk_in_producer,
+            _bulk_out_producer: bulk_out_producer,
+        });
+        Some(true)
+    }
     /// Configuration value selected by the discovered HID interface. # C: O(1)
     pub fn hid_configuration(&self) -> Option<u8> { self._hid.map(|hid| hid.configuration) }
+    /// Configuration value selected by the discovered mass-storage interface. # C: O(1)
+    pub fn storage_configuration(&self) -> Option<u8> { self._storage.map(|storage| storage.configuration) }
+    /// Selected transparent-SCSI Bulk-Only interface descriptor. # C: O(1)
+    pub fn storage_interface(&self) -> Option<crate::storage::MassStorageInterface> { self._storage }
     /// Selected HID boot interface descriptor. # C: O(1)
     pub fn hid_interface(&self) -> Option<crate::usb::HidBootInterface> { self._hid }
     /// HID boot protocol: 1 keyboard or 2 mouse. # C: O(1)
@@ -158,4 +198,23 @@ impl AddressDeviceDma {
         self.slot = slot;
         true
     }
+
+    fn configuration_bytes(&self) -> Option<Vec<u8>> {
+        let header = self.configuration_header()?;
+        let mut bytes = Vec::with_capacity(header.total_length);
+        self.descriptor.invalidate_from_device();
+        for offset in 0..header.total_length { bytes.push(self.descriptor.read8(offset as u64)?); }
+        Some(bytes)
+    }
+}
+
+fn transfer_ring(bdf: pci::Bdf) -> Option<(DmaPage, CommandRing)> {
+    let ring = DmaPage::allocate(bdf)?;
+    let link = Trb::link(ring.dma(), true)?;
+    for (word, value) in link.dword.iter().enumerate() {
+        if !ring.write32(((TRBS_PER_SEGMENT - 1) * TRB_BYTES + word * 4) as u64, *value) { return None; }
+    }
+    ring.clean_to_device();
+    let producer = CommandRing::new(ring.dma())?;
+    Some((ring, producer))
 }
