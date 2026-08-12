@@ -298,9 +298,11 @@ pub const DRM_MODE_DISCONNECTED:      u32 = 2;
 pub const DRM_MODE_UNKNOWNCONNECTION: u32 = 3;
 
 // drm_mode connector types (DRM/KMS modesetting UAPI)
+pub const DRM_MODE_CONNECTOR_UNKNOWN: u32 = 0;
 pub const DRM_MODE_CONNECTOR_VIRTUAL: u32 = 15;
 
 // drm_mode encoder types (DRM/KMS modesetting UAPI)
+pub const DRM_MODE_ENCODER_NONE: u32 = 0;
 pub const DRM_MODE_ENCODER_VIRTUAL: u32 = 5;
 
 // drm_mode subpixel order (DRM/KMS modesetting UAPI)
