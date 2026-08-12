@@ -249,9 +249,8 @@ pub(super) fn qemu_run_grub_x86_64(
         // it up, registers nvme0n1, self-tests an LBA-0 read).
         "-drive", nvme_drive.as_str(),
         "-device", "nvme,serial=oxnvme,drive=nvm0,bus=pcie.0",
-        // D3.6: AHCI HBA + a SATA disk on it. drv-ahci enumerates the
-        // ich9-ahci controller (class 0x010601), brings up port 0, registers
-        // sata0, and self-tests an LBA-0 read.
+        // D3.6: AHCI HBA + a SATA disk on it. drv-ahci enumerates every
+        // implemented ready ATA port and registers each as an sdX disk.
         "-device", "ich9-ahci,id=ahci,bus=pcie.0",
         "-drive", ahci_drive.as_str(),
         "-device", "ide-hd,drive=sata0,bus=ahci.0,serial=oxahci0",
@@ -337,6 +336,14 @@ pub(super) fn qemu_run_grub_x86_64(
             "-device", "ich9-ahci,id=ahci1,bus=pcie.0",
             "-drive", ahci1_drive.as_str(),
             "-device", "ide-hd,drive=sata1,bus=ahci1.0,serial=oxahci1",
+        ]);
+    }
+    if std::env::var_os("OXIDE_AHCI_MULTIPORT_SMOKE").is_some() {
+        let extra = ensure_ahci_extra_img(repo, id, "x86_64");
+        let drive = format!("id=sata-multi,if=none,format=raw,file={}", extra.display());
+        c.args([
+            "-drive", drive.as_str(),
+            "-device", "ide-hd,drive=sata-multi,bus=ahci.1,serial=oxahci-multi",
         ]);
     }
     let firmware = if uefi { "OVMF" } else { "SeaBIOS" };
