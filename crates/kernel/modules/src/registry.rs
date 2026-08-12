@@ -77,6 +77,7 @@ static REGISTRY: Spinlock<Vec<Option<ModuleRecord>>, ModulesLockClass>
 static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
 
 const TAINT_PROPRIETARY_MODULE: u64 = 1 << 0;
+const TAINT_FORCED_MODULE:      u64 = 1 << 1;
 const TAINT_FORCED_RMMOD:       u64 = 1 << 3;
 const TAINT_OOT_MODULE:         u64 = 1 << 12;
 
@@ -89,8 +90,19 @@ pub fn load_blob(bytes: &[u8]) -> Option<usize> {
 /// Load + register a module with an optional caller-supplied name.
 /// # C: O(N_sections + N_relocs + N_modules)
 pub fn load_blob_named(bytes: &[u8], name: Option<&str>) -> Result<usize, RegistryError> {
+    load_blob_named_with_flags(bytes, name, false)
+}
+
+/// Load one module while honoring finit_module's force-vermagic flag.
+/// # C: O(N_sections + N_relocs + N_modules)
+pub fn load_blob_named_with_flags(
+    bytes: &[u8],
+    name: Option<&str>,
+    ignore_vermagic: bool,
+) -> Result<usize, RegistryError> {
     let info = ModuleInfo::parse_elf(bytes).ok_or(RegistryError::Load)?;
-    if !info.vermagic_matches() { return Err(RegistryError::Vermagic); }
+    let forced = !info.vermagic_matches();
+    if !vermagic_admitted(&info, ignore_vermagic) { return Err(RegistryError::Vermagic); }
     let r = KernelSymResolver { module_is_gpl: info.is_gpl_compatible() };
     let m = load_module(bytes, &r).map_err(|_| RegistryError::Load)?;
     let final_name = match name {
@@ -102,7 +114,7 @@ pub fn load_blob_named(bytes: &[u8], name: Option<&str>) -> Result<usize, Regist
         }
         None => synthetic_name(NEXT_ID.fetch_add(1, Ordering::Relaxed)),
     };
-    register_loaded_module(final_name, m)
+    register_loaded_module_with_taints(final_name, m, if forced { TAINT_FORCED_MODULE } else { 0 })
 }
 
 /// Snapshot for `/proc/modules`-style introspection.
@@ -226,7 +238,16 @@ pub unsafe fn init_exports() {
     crate::linux_usb::export_symbols();
 }
 
+#[cfg(test)]
 fn register_loaded_module(name: String, module: LoadedModule) -> Result<usize, RegistryError> {
+    register_loaded_module_with_taints(name, module, 0)
+}
+
+fn register_loaded_module_with_taints(
+    name: String,
+    module: LoadedModule,
+    extra_taints: u64,
+) -> Result<usize, RegistryError> {
     validate_name(&name)?;
     let init = init_fns(&module)?;
     let idx = {
@@ -235,7 +256,7 @@ fn register_loaded_module(name: String, module: LoadedModule) -> Result<usize, R
             return Err(RegistryError::Exists);
         }
         let idx = g.len();
-        let taints = module_taints(&module);
+        let taints = module_taints(&module) | extra_taints;
         g.push(Some(ModuleRecord {
             name, module, refcnt: 0, taints, state: ModuleState::Coming, unload_pending: false,
         }));
@@ -393,6 +414,10 @@ fn module_taints(m: &LoadedModule) -> u64 {
         _ => { t |= TAINT_PROPRIETARY_MODULE; }
     }
     t
+}
+
+fn vermagic_admitted(info: &ModuleInfo, ignore_vermagic: bool) -> bool {
+    info.vermagic_matches() || ignore_vermagic
 }
 
 fn synthetic_name(id: usize) -> String {
