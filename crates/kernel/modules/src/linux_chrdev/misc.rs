@@ -132,17 +132,7 @@ mod tests {
     use crate::linux_chrdev::types::LinuxFileOperations;
     use core::ptr::null_mut;
 
-    static FOPS: LinuxFileOperations = LinuxFileOperations {
-        owner: null_mut(),
-        open: None,
-        read: None,
-        write: None,
-        unlocked_ioctl: None,
-        release: None,
-        poll: None,
-        mmap: None,
-        llseek: null_mut(),
-    };
+    static FOPS: LinuxFileOperations = LinuxFileOperations::new(None, None, None, None, None, None, None);
     static TEST_NAME: &[u8] = b"oxide-misc-kpi\0";
 
     fn new_misc() -> LinuxMiscDevice {

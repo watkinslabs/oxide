@@ -19,13 +19,19 @@ static NEXT_INO: vfs::pseudo_ino::RegionAllocator
 static LOCK: Spinlock<(), ModulesLockClass> = Spinlock::new(());
 
 #[repr(C)]
-pub struct LinuxFile { pub(crate) private_data: *mut c_void }
+pub struct LinuxFile { _head: [u8; 8], pub(crate) f_op: *const LinuxFileOperations, pub(crate) f_mapping: *mut c_void, pub(crate) private_data: *mut c_void, _before_flags: [u8; 8], pub(crate) f_flags: u32, _tail: [u8; 140] }
+
+impl LinuxFile { pub(crate) const fn new(private_data: *mut c_void) -> Self { Self { _head: [0; 8], f_op: core::ptr::null(), f_mapping: core::ptr::null_mut(), private_data, _before_flags: [0; 8], f_flags: 0, _tail: [0; 140] } } }
 
 #[repr(C)]
 pub struct LinuxInode {
+    _head: [u8; 76],
     pub(crate) i_rdev: u32,
+    _between: [u8; 528],
     pub(crate) private: *mut c_void,
 }
+
+impl LinuxInode { pub(crate) const fn new(i_rdev: u32, private: *mut c_void) -> Self { Self { _head: [0; 76], i_rdev, _between: [0; 528], private } } }
 
 pub(crate) type LinuxRead = unsafe extern "C" fn(*mut LinuxFile, *mut c_char, usize, *mut i64) -> isize;
 pub(crate) type LinuxWrite = unsafe extern "C" fn(*mut LinuxFile, *const c_char, usize, *mut i64) -> isize;
@@ -36,15 +42,26 @@ pub(crate) type LinuxIoctl = unsafe extern "C" fn(*mut LinuxFile, u32, usize) ->
 #[repr(C)]
 pub struct LinuxFileOperations {
     pub(crate) owner: *mut c_void,
-    pub(crate) open: Option<LinuxOpen>,
+    pub(crate) fop_flags: u32,
+    _owner_pad: u32,
+    pub(crate) llseek: *mut c_void,
     pub(crate) read: Option<LinuxRead>,
     pub(crate) write: Option<LinuxWrite>,
-    pub(crate) unlocked_ioctl: Option<LinuxIoctl>,
-    pub(crate) release: Option<LinuxRelease>,
+    _read_iter: *mut c_void,
+    _write_iter: *mut c_void,
+    _iopoll: *mut c_void,
+    _iterate_shared: *mut c_void,
     pub(crate) poll: Option<unsafe extern "C" fn(*mut LinuxFile, *mut c_void) -> u32>,
+    pub(crate) unlocked_ioctl: Option<LinuxIoctl>,
+    _compat_ioctl: *mut c_void,
     pub(crate) mmap: Option<unsafe extern "C" fn(*mut LinuxFile, *mut c_void) -> i32>,
-    pub(crate) llseek: *mut c_void,
+    pub(crate) open: Option<LinuxOpen>,
+    _flush: *mut c_void,
+    pub(crate) release: Option<LinuxRelease>,
+    _tail: [u8; 144],
 }
+
+impl LinuxFileOperations { pub(crate) const fn new(open: Option<LinuxOpen>, read: Option<LinuxRead>, write: Option<LinuxWrite>, ioctl: Option<LinuxIoctl>, release: Option<LinuxRelease>, poll: Option<unsafe extern "C" fn(*mut LinuxFile, *mut c_void) -> u32>, mmap: Option<unsafe extern "C" fn(*mut LinuxFile, *mut c_void) -> i32>) -> Self { Self { owner: core::ptr::null_mut(), fop_flags: 0, _owner_pad: 0, llseek: core::ptr::null_mut(), read, write, _read_iter: core::ptr::null_mut(), _write_iter: core::ptr::null_mut(), _iopoll: core::ptr::null_mut(), _iterate_shared: core::ptr::null_mut(), poll, unlocked_ioctl: ioctl, _compat_ioctl: core::ptr::null_mut(), mmap, open, _flush: core::ptr::null_mut(), release, _tail: [0; 144] } } }
 
 unsafe impl Sync for LinuxFileOperations {}
 
@@ -315,17 +332,7 @@ unsafe extern "C" fn noop_write(
     _pos: *mut i64,
 ) -> isize { len as isize }
 
-pub(crate) static NULL_FILE_OPS: LinuxFileOperations = LinuxFileOperations {
-    owner: null_mut(),
-    open: None,
-    read: Some(noop_read),
-    write: Some(noop_write),
-    unlocked_ioctl: None,
-    release: None,
-    poll: None,
-    mmap: None,
-    llseek: null_mut(),
-};
+pub(crate) static NULL_FILE_OPS: LinuxFileOperations = LinuxFileOperations::new(None, Some(noop_read), Some(noop_write), None, None, None, None);
 
 pub(crate) fn checked_size(v: isize) -> KResult<usize> {
     if v < 0 { Err(errno_to_vfs((-v) as i32)) } else { Ok(v as usize) }

@@ -367,8 +367,8 @@ mod tests {
     #[test]
     fn simple_attr_round_trips_value() {
         let _modules = crate::test_serial::claim();
-        let mut inode = LinuxInode { i_rdev: 0, private: null_mut() };
-        let mut file = LinuxFile { private_data: null_mut() };
+        let mut inode = LinuxInode::new(0, null_mut());
+        let mut file = LinuxFile::new(null_mut());
         assert_eq!(
             simple_attr_open(
                 &mut inode,
