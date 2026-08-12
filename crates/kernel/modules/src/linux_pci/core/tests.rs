@@ -243,6 +243,34 @@ fn msix_vector_count_reads_the_capability_table_size() {
 }
 
 #[test]
+fn msix_irq_vectors_program_table_and_preserve_device_relative_irqs() {
+    let _modules = crate::test_serial::claim();
+    let mut dev = test_dev();
+    let mut table = [0u32; 8];
+    dev.resource[TEST_BAR_IDX].start = table.as_mut_ptr() as u64;
+    dev.resource[TEST_BAR_IDX].end = dev.resource[TEST_BAR_IDX].start + (core::mem::size_of_val(&table) as u64) - 1;
+    dev.msix_cap = TEST_MSIX_CAP;
+    cfg_set(&mut dev, (TEST_MSIX_CAP / 4) as usize, pci::CAP_ID_MSIX as u32 | (1 << 16));
+    cfg_set(&mut dev, ((TEST_MSIX_CAP + 4) / 4) as usize, 0);
+
+    assert_eq!(pci_alloc_irq_vectors(&mut dev, 2, 2, PCI_IRQ_MSIX), 2);
+    assert!(pci_irq_vector(&mut dev, 0) > 0);
+    assert!(pci_irq_vector(&mut dev, 1) > 0);
+    assert_ne!(table[0], 0);
+    assert_ne!(table[2] & 0xffff, 0);
+    assert_eq!(table[3], 0);
+    assert_ne!(table[4], 0);
+    assert_ne!(table[6] & 0xffff, 0);
+    assert_eq!(table[7], 0);
+
+    pci_free_irq_vectors(&mut dev);
+    assert_eq!(pci_irq_vector(&mut dev, 0), -LINUX_EINVAL);
+    assert_eq!(table[3], pci::MSIX_VECTOR_CONTROL_MASKED);
+    assert_eq!(table[7], pci::MSIX_VECTOR_CONTROL_MASKED);
+    assert_eq!(cfg_get(&mut dev, (TEST_MSIX_CAP / 4) as usize) & pci::MSIX_ENABLE, 0);
+}
+
+#[test]
 fn config_helpers_update_fallback_config_space() {
     let _modules = crate::test_serial::claim();
     let mut dev = test_dev();

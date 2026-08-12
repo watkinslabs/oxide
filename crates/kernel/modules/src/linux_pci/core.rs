@@ -278,9 +278,7 @@ extern "C" fn pci_free_irq_vectors(dev: *mut LinuxPciDev) {
 
 extern "C" fn pci_irq_vector(dev: *mut LinuxPciDev, nr: u32) -> i32 {
     if dev.is_null() { return -LINUX_EINVAL; }
-    let Some((base, count, _)) = super::registry::irq_vectors(dev) else { return -LINUX_EINVAL; };
-    if count <= 0 || nr >= count as u32 { return -LINUX_EINVAL; }
-    base.wrapping_add(nr) as i32
+    super::registry::irq_vector(dev, nr).map(|irq| irq as i32).unwrap_or(-LINUX_EINVAL)
 }
 
 const PCI_COMMAND_STATUS_OFF: u8 = 0x04;

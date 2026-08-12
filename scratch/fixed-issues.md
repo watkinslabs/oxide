@@ -1,5 +1,11 @@
 # Fixed issues
 
+### F993-linux-pci-msix
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED F993 | MISSING | high | **The Linux PCI facade could reserve bare CPU vectors for MSI-X without programming the PCI function, so external drivers received IRQ numbers for hardware that could not interrupt.** `pci_alloc_irq_vectors` now follows the Linux order: MSI-X before MSI; capability/table-BAR validation; function-mask before every table write; one IOMMU-aware architecture MSI message per device-relative entry; publish the exact per-entry IRQ list; then enable and unmask the function. Teardown masks each retained table entry, disables MSI-X, releases the mapping, and frees the same messages. | F993. `linux_pci::core::tests::msix_irq_vectors_program_table_and_preserve_device_relative_irqs`; `cargo test -p modules --lib -- --test-threads=1` (333 passed). Compared with `../linux-master/drivers/pci/msi/{api,msi}.c`. | Chris Watkins |
+
 ### F959-drm-fb-memcpy
 
 | Status | Class | Sev | Issue | Evidence | Owner |
