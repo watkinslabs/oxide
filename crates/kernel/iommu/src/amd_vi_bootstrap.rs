@@ -14,7 +14,16 @@ impl AmdViBootstrap {
         let regs = unsafe { AmdViRegisters::map(mmio_pa) }?;
         let tables = AmdViTables::allocate(hhdm_offset)?;
         let mut unit = AmdViUnit::new(mmio_pa, segment);
-        if !unit.mapped() || !unit.program_tables(&regs, &tables) { return None; }
+        if !unit.mapped() || !unit.quiesce_firmware(&regs) {
+            // SAFETY: table-register programming was not attempted, so all
+            // allocations remain private to this constructor.
+            unsafe { tables.release_unpublished(); }
+            return None;
+        }
+        // A failed register-programming sequence may already have exposed one
+        // table base to hardware. Keep these allocations pinned instead of
+        // freeing a potentially hardware-visible DMA span.
+        if !unit.program_tables(&regs, &tables) { return None; }
         Some(Self { unit, regs, tables, hhdm_offset })
     }
     /// Attach an already-identity-mapped domain to one requester and invalidate its DTE.

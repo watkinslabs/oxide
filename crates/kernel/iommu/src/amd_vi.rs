@@ -9,9 +9,15 @@ pub const EVENT_HEAD: u64 = 0x2010;
 pub const EVENT_TAIL: u64 = 0x2018;
 pub const CONTROL_IOMMU_ENABLE: u64 = 1 << 0;
 pub const CONTROL_EVENT_ENABLE: u64 = 1 << 2;
+pub const CONTROL_EVENT_INTERRUPT_ENABLE: u64 = 1 << 3;
 pub const CONTROL_COMPLETION_ENABLE: u64 = 1 << 4;
 pub const CONTROL_COHERENT_ENABLE: u64 = 1 << 10;
 pub const CONTROL_COMMAND_ENABLE: u64 = 1 << 12;
+const CONTROL_PPR_LOG_ENABLE: u64 = 1 << 13;
+const CONTROL_PPR_INTERRUPT_ENABLE: u64 = 1 << 14;
+const CONTROL_GA_LOG_ENABLE: u64 = 1 << 28;
+const CONTROL_GA_INTERRUPT_ENABLE: u64 = 1 << 29;
+const CONTROL_IRT_CACHE_DISABLE: u64 = 1 << 59;
 const MMIO_BYTES: u64 = 0x80000;
 const PAGE_BYTES: u64 = 4096;
 const DEVICE_TABLE_BYTES: u64 = 2 * 1024 * 1024;
@@ -143,6 +149,20 @@ impl AmdViTables {
         }
         Some(Self { device_table_pa, command_buffer_pa, event_log_pa, completion_pa, command_tail: sync::Spinlock::new(0), completion_sequence: sync::Spinlock::new(0) })
     }
+    /// Return tables that never became visible through an IOMMU register.
+    ///
+    /// # SAFETY
+    /// The caller must prove no device table, command ring, event log, or
+    /// completion record was published to hardware. # C: O(1)
+    pub(crate) unsafe fn release_unpublished(self) {
+        // SAFETY: the caller proves every allocation remained private.
+        unsafe {
+            pmm::setup::free_contig(self.completion_pa, pmm::Order(0));
+            pmm::setup::free_contig(self.event_log_pa, pmm::Order(BUFFER_ORDER));
+            pmm::setup::free_contig(self.command_buffer_pa, pmm::Order(BUFFER_ORDER));
+            pmm::setup::free_contig(self.device_table_pa, pmm::Order(DEVICE_TABLE_ORDER));
+        }
+    }
     /// Construct table bases after validating permanent physical allocations. # C: O(1)
     pub const fn from_physical(device_table_pa: u64, command_buffer_pa: u64, event_log_pa: u64) -> Option<Self> {
         if device_table_pa & (DEVICE_TABLE_BYTES - 1) != 0 || command_buffer_pa & (PAGE_BYTES - 1) != 0 || event_log_pa & (PAGE_BYTES - 1) != 0 { return None; }
@@ -245,6 +265,19 @@ impl AmdViUnit {
     pub const fn state(&self) -> AmdViState { self.state }
     /// Advance after owned device MMIO mapping exists. # C: O(1)
     pub fn mapped(&mut self) -> bool { self.advance(AmdViState::Discovered, AmdViState::Mapped) }
+    /// Quiesce firmware-owned translation before replacing DMA tables.
+    ///
+    /// This is Linux `iommu_disable()`'s ordering: command processing, then
+    /// event/GA/PPR reporting, then translation and the IRTE cache control.
+    /// PCI bus mastering is already quiesced by the caller. # C: O(1)
+    pub fn quiesce_firmware(&self, regs: &AmdViRegisters) -> bool {
+        if self.state != AmdViState::Mapped { return false; }
+        for bit in FIRMWARE_QUIESCE_ORDER {
+            let Some(control) = regs.read64(CONTROL) else { return false; };
+            if !regs.write64(CONTROL, control & !bit) { return false; }
+        }
+        true
+    }
     /// Install one DTE while translation remains disabled. # C: O(1)
     pub unsafe fn install_initial_dte(&self, regs: &AmdViRegisters, tables: &AmdViTables, hhdm_offset: u64, bdf: pci::Bdf, dte: AmdViDte) -> bool {
         if bdf.segment != self.segment { return false; }
@@ -336,6 +369,20 @@ impl AmdViUnit {
     }
 }
 
+// Exact `iommu_disable()` feature order from Linux
+// drivers/iommu/amd/init.c. Separate writes preserve the hardware handoff.
+const FIRMWARE_QUIESCE_ORDER: [u64; 9] = [
+    CONTROL_COMMAND_ENABLE,
+    CONTROL_EVENT_INTERRUPT_ENABLE,
+    CONTROL_EVENT_ENABLE,
+    CONTROL_GA_LOG_ENABLE,
+    CONTROL_GA_INTERRUPT_ENABLE,
+    CONTROL_PPR_LOG_ENABLE,
+    CONTROL_PPR_INTERRUPT_ENABLE,
+    CONTROL_IOMMU_ENABLE,
+    CONTROL_IRT_CACHE_DISABLE,
+];
+
 #[cfg(test)] mod tests {
     use super::*;
     #[test] fn translation_requires_programmed_and_attached_domains() {
@@ -370,6 +417,15 @@ impl AmdViUnit {
         let disabled = live & !(CONTROL_COMMAND_ENABLE | CONTROL_EVENT_ENABLE
             | CONTROL_COMPLETION_ENABLE | CONTROL_IOMMU_ENABLE);
         assert_eq!(disabled, CONTROL_COHERENT_ENABLE | (1 << 19));
+    }
+    #[test] fn firmware_quiesce_order_matches_linux_iommu_disable() {
+        assert_eq!(FIRMWARE_QUIESCE_ORDER, [
+            CONTROL_COMMAND_ENABLE, CONTROL_EVENT_INTERRUPT_ENABLE,
+            CONTROL_EVENT_ENABLE, CONTROL_GA_LOG_ENABLE,
+            CONTROL_GA_INTERRUPT_ENABLE, CONTROL_PPR_LOG_ENABLE,
+            CONTROL_PPR_INTERRUPT_ENABLE, CONTROL_IOMMU_ENABLE,
+            CONTROL_IRT_CACHE_DISABLE,
+        ]);
     }
     #[test] fn device_table_entries_preserve_the_32_byte_hardware_layout() {
         assert_eq!(core::mem::size_of::<AmdViDte>(), 32);
