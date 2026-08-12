@@ -20,6 +20,7 @@ struct DeviceAllocation {
     mode_config: bool,
     objects: Vec<ModeObjectRecord>,
     planes: Vec<PlaneRecord>,
+    crtcs: Vec<CrtcRecord>,
     put_pending: bool,
     unplugged: bool,
 }
@@ -28,6 +29,9 @@ struct DeviceAllocation {
 struct ModeObjectRecord { ptr: usize, id: u32 }
 
 struct PlaneRecord { ptr: usize, formats: usize, layout: Layout }
+
+#[derive(Copy, Clone)]
+struct CrtcRecord { ptr: usize, name: usize, layout: Layout }
 
 static DEVICES: Spinlock<Vec<DeviceAllocation>, ModulesLockClass> = Spinlock::new(Vec::new());
 static GUARDS: Spinlock<Vec<(i32, usize)>, ModulesLockClass> = Spinlock::new(Vec::new());
@@ -44,6 +48,7 @@ const DRM_DRIVER_FEATURES_OFF: usize = 168;
 const INITIAL_REFERENCE_COUNT: i32 = 1;
 const LINUX_ENODEV: i32 = 19;
 const LINUX_EBUSY: i32 = 16;
+const LINUX_EINVAL: i32 = 22;
 const DRM_MODE_CONFIG_OFF: usize = 360;
 const DRM_DEVICE_SIZE: usize = 1584;
 const MODE_CONFIG_FB_LIST_OFF: usize = 216;
@@ -63,6 +68,7 @@ const MODE_CONFIG_LISTS: [usize; 9] = [
 const DRM_MODE_OBJECT_ID_OFF: usize = 0;
 const DRM_MODE_OBJECT_TYPE_OFF: usize = 4;
 const MODE_CONFIG_NUM_TOTAL_PLANE_OFF: usize = 312;
+const MODE_CONFIG_NUM_CRTC_OFF: usize = 384;
 const DRM_PLANE_HEAD_OFF: usize = 8;
 const DRM_PLANE_BASE_OFF: usize = 88;
 const DRM_PLANE_POSSIBLE_CRTCS_OFF: usize = 120;
@@ -71,7 +77,14 @@ const DRM_PLANE_FORMAT_COUNT_OFF: usize = 136;
 const DRM_PLANE_FUNCS_OFF: usize = 184;
 const DRM_PLANE_TYPE_OFF: usize = 200;
 const DRM_PLANE_INDEX_OFF: usize = 1224;
-const DRM_MODE_OBJECT_PLANE: u32 = 0xcccc_cccc;
+const DRM_CRTC_HEAD_OFF: usize = 16;
+const DRM_CRTC_BASE_OFF: usize = 96;
+const DRM_CRTC_PRIMARY_OFF: usize = 128;
+const DRM_CRTC_CURSOR_OFF: usize = 136;
+const DRM_CRTC_INDEX_OFF: usize = 144;
+const DRM_CRTC_FUNCS_OFF: usize = 408;
+const DRM_MODE_OBJECT_CRTC: u32 = 0xcccc_cccc;
+const DRM_MODE_OBJECT_PLANE: u32 = 0xeeee_eeee;
 const MAX_KMS_OBJECTS: i32 = 32;
 
 /// Register the DRM core object-lifetime ABI.
@@ -88,6 +101,8 @@ pub fn export_symbols() {
     crate::symtab::export("drm_mode_object_unregister", drm_mode_object_unregister as *const () as usize, false);
     crate::symtab::export("drm_universal_plane_init", drm_universal_plane_init as *const () as usize, false);
     crate::symtab::export("drm_plane_cleanup", drm_plane_cleanup as *const () as usize, false);
+    crate::symtab::export("drm_crtc_init_with_planes", drm_crtc_init_with_planes as *const () as usize, false);
+    crate::symtab::export("drm_crtc_cleanup", drm_crtc_cleanup as *const () as usize, false);
 }
 
 fn layout_for(size: usize) -> Option<Layout> {
@@ -131,7 +146,7 @@ extern "C" fn __devm_drm_dev_alloc(
     let dev = unsafe { base.add(offset) };
     initialize_device(dev, parent, driver, base);
     let dev = dev.cast::<c_void>();
-    DEVICES.lock().push(DeviceAllocation { dev: dev as usize, base: base as usize, layout, refs: 1, mode_config: false, objects: Vec::new(), planes: Vec::new(), put_pending: false, unplugged: false });
+    DEVICES.lock().push(DeviceAllocation { dev: dev as usize, base: base as usize, layout, refs: 1, mode_config: false, objects: Vec::new(), planes: Vec::new(), crtcs: Vec::new(), put_pending: false, unplugged: false });
     if devres::add_action_or_reset(parent, Some(devm_drm_dev_put), dev) != 0 { return core::ptr::null_mut(); }
     base.cast()
 }
@@ -247,30 +262,24 @@ unsafe extern "C" fn drm_universal_plane_init(
     if copied.is_null() { return -LINUX_EBUSY; }
     // SAFETY: copied covers format_count u32 values and formats identifies the input array required by the ABI.
     unsafe { core::ptr::copy_nonoverlapping(formats, copied.cast::<u32>(), format_count as usize); }
-    if drm_mode_object_add(dev, unsafe { plane.cast::<u8>().add(DRM_PLANE_BASE_OFF).cast() }, DRM_MODE_OBJECT_PLANE) != 0 {
+    let base = unsafe { plane.cast::<u8>().add(DRM_PLANE_BASE_OFF).cast() };
+    let object_result = drm_mode_object_add(dev, base, DRM_MODE_OBJECT_PLANE);
+    if object_result != 0 {
         // SAFETY: copied has not been published and is released with the allocation layout above.
         unsafe { dealloc(copied, layout); }
-        return -LINUX_ENODEV;
+        return object_result;
     }
     let mut devices = DEVICES.lock();
-    let Some(rec) = devices.iter_mut().find(|rec| rec.dev == dev as usize && rec.mode_config && !rec.put_pending && !rec.unplugged) else { return -LINUX_ENODEV; };
+    let Some(rec) = devices.iter_mut().find(|rec| rec.dev == dev as usize && rec.mode_config && !rec.put_pending && !rec.unplugged) else { unsafe { dealloc(copied, layout); } drop(devices); drm_mode_object_unregister(dev, base); return -LINUX_ENODEV; };
     let config = dev.cast::<u8>().wrapping_add(DRM_MODE_CONFIG_OFF);
     // SAFETY: the object was accepted by drm_mode_object_add and every plane/config offset is verified ABI layout.
+    let index = unsafe { *(config.add(MODE_CONFIG_NUM_TOTAL_PLANE_OFF).cast::<i32>()) };
+    if index >= MAX_KMS_OBJECTS { unsafe { dealloc(copied, layout); } drop(devices); drm_mode_object_unregister(dev, base); return -LINUX_EBUSY; }
     unsafe {
-        let index = *(config.add(MODE_CONFIG_NUM_TOTAL_PLANE_OFF).cast::<i32>());
-        if index >= MAX_KMS_OBJECTS { return -LINUX_EBUSY; }
-        let head = plane.cast::<u8>().add(DRM_PLANE_HEAD_OFF).cast::<*mut c_void>();
-        let list = config.add(MODE_CONFIG_PLANE_LIST_OFF).cast::<*mut c_void>();
-        let tail = *list.add(1);
-        write(head, list.cast()); write(head.add(1), tail); write(tail as *mut *mut c_void, head.cast()); write(list.add(1), head.cast());
-        write(plane.cast::<u8>().cast::<*mut c_void>(), dev);
-        write(plane.cast::<u8>().add(DRM_PLANE_POSSIBLE_CRTCS_OFF).cast::<u32>(), possible_crtcs);
-        write(plane.cast::<u8>().add(DRM_PLANE_FORMATS_OFF).cast::<*mut u32>(), copied.cast());
-        write(plane.cast::<u8>().add(DRM_PLANE_FORMAT_COUNT_OFF).cast::<u32>(), format_count);
-        write(plane.cast::<u8>().add(DRM_PLANE_FUNCS_OFF).cast::<*const c_void>(), funcs);
-        write(plane.cast::<u8>().add(DRM_PLANE_TYPE_OFF).cast::<i32>(), plane_type);
-        write(plane.cast::<u8>().add(DRM_PLANE_INDEX_OFF).cast::<u32>(), index as u32);
-        write(config.add(MODE_CONFIG_NUM_TOTAL_PLANE_OFF).cast::<i32>(), index + 1);
+        let head = plane.cast::<u8>().add(DRM_PLANE_HEAD_OFF).cast::<*mut c_void>(); let list = config.add(MODE_CONFIG_PLANE_LIST_OFF).cast::<*mut c_void>(); let tail = *list.add(1);
+        write(head, list.cast()); write(head.add(1), tail); write(tail as *mut *mut c_void, head.cast()); write(list.add(1), head.cast()); write(plane.cast::<u8>().cast::<*mut c_void>(), dev);
+        write(plane.cast::<u8>().add(DRM_PLANE_POSSIBLE_CRTCS_OFF).cast::<u32>(), possible_crtcs); write(plane.cast::<u8>().add(DRM_PLANE_FORMATS_OFF).cast::<*mut u32>(), copied.cast()); write(plane.cast::<u8>().add(DRM_PLANE_FORMAT_COUNT_OFF).cast::<u32>(), format_count);
+        write(plane.cast::<u8>().add(DRM_PLANE_FUNCS_OFF).cast::<*const c_void>(), funcs); write(plane.cast::<u8>().add(DRM_PLANE_TYPE_OFF).cast::<i32>(), plane_type); write(plane.cast::<u8>().add(DRM_PLANE_INDEX_OFF).cast::<u32>(), index as u32); write(config.add(MODE_CONFIG_NUM_TOTAL_PLANE_OFF).cast::<i32>(), index + 1);
     }
     rec.planes.push(PlaneRecord { ptr: plane as usize, formats: copied as usize, layout });
     0
@@ -298,6 +307,55 @@ extern "C" fn drm_plane_cleanup(plane: *mut c_void) {
     }
     drop(devices);
     drm_mode_object_unregister(dev, unsafe { plane.cast::<u8>().add(DRM_PLANE_BASE_OFF).cast() });
+}
+
+fn crtc_name(index: i32) -> Option<(usize, Layout)> {
+    let layout = Layout::array::<u8>(16).ok()?;
+    // SAFETY: layout holds the fixed `crtc-` prefix, ten decimal digits and a terminator.
+    let name = unsafe { alloc_zeroed(layout) };
+    if name.is_null() { return None; }
+    // SAFETY: name has room for the complete bounded decimal representation and terminator.
+    unsafe { core::ptr::copy_nonoverlapping(b"crtc-".as_ptr(), name, 5); let mut value = index as u32; let mut digits = [0u8; 10]; let mut len = 1; digits[0] = b'0' + (value % 10) as u8; while value >= 10 { value /= 10; digits[len] = b'0' + (value % 10) as u8; len += 1; } for pos in 0..len { *name.add(5 + pos) = digits[len - pos - 1]; } }
+    Some((name as usize, layout))
+}
+
+/// Initialize one CRTC and attach its legacy planes to the managed KMS graph. # C: O(N_crtcs + N_objects)
+unsafe extern "C" fn drm_crtc_init_with_planes(
+    dev: *mut c_void, crtc: *mut c_void, primary: *mut c_void, cursor: *mut c_void,
+    funcs: *const c_void, _name: *const core::ffi::c_char, mut _args: ...,
+) -> i32 {
+    if crtc.is_null() || funcs.is_null() { return -LINUX_EINVAL; }
+    let config = dev.cast::<u8>().wrapping_add(DRM_MODE_CONFIG_OFF);
+    let index = { let devices = DEVICES.lock(); if !devices.iter().any(|rec| rec.dev == dev as usize && rec.mode_config && !rec.put_pending && !rec.unplugged) { return -LINUX_ENODEV; } unsafe { *(config.add(MODE_CONFIG_NUM_CRTC_OFF).cast::<i32>()) } };
+    if index >= MAX_KMS_OBJECTS { return -LINUX_EINVAL; }
+    let Some((name, layout)) = crtc_name(index) else { return -LINUX_EBUSY; };
+    let base = unsafe { crtc.cast::<u8>().add(DRM_CRTC_BASE_OFF).cast() };
+    let object_result = drm_mode_object_add(dev, base, DRM_MODE_OBJECT_CRTC);
+    if object_result != 0 { unsafe { dealloc(name as *mut u8, layout); } return object_result; }
+    let mut devices = DEVICES.lock();
+    let Some(rec) = devices.iter_mut().find(|rec| rec.dev == dev as usize && rec.mode_config && !rec.put_pending && !rec.unplugged) else { unsafe { dealloc(name as *mut u8, layout); } drop(devices); drm_mode_object_unregister(dev, base); return -LINUX_ENODEV; };
+    let index = unsafe { *(config.add(MODE_CONFIG_NUM_CRTC_OFF).cast::<i32>()) };
+    if index >= MAX_KMS_OBJECTS { unsafe { dealloc(name as *mut u8, layout); } drop(devices); drm_mode_object_unregister(dev, base); return -LINUX_EINVAL; }
+    // SAFETY: crtc, its optional plane objects, and the mode-config graph use the verified ABI offsets; all mutations are serialized by DEVICES.
+    unsafe {
+        let head = crtc.cast::<u8>().add(DRM_CRTC_HEAD_OFF).cast::<*mut c_void>(); let list = config.add(MODE_CONFIG_CRTC_LIST_OFF).cast::<*mut c_void>(); let tail = *list.add(1);
+        write(head, list.cast()); write(head.add(1), tail); write(tail as *mut *mut c_void, head.cast()); write(list.add(1), head.cast()); write(crtc.cast::<*mut c_void>(), dev); write(crtc.cast::<u8>().add(32).cast::<*mut u8>(), name as *mut u8); write(crtc.cast::<u8>().add(DRM_CRTC_FUNCS_OFF).cast::<*const c_void>(), funcs); write(crtc.cast::<u8>().add(DRM_CRTC_PRIMARY_OFF).cast::<*mut c_void>(), primary); write(crtc.cast::<u8>().add(DRM_CRTC_CURSOR_OFF).cast::<*mut c_void>(), cursor); write(crtc.cast::<u8>().add(DRM_CRTC_INDEX_OFF).cast::<u32>(), index as u32); write(config.add(MODE_CONFIG_NUM_CRTC_OFF).cast::<i32>(), index + 1);
+        if !primary.is_null() && *(primary.cast::<u8>().add(DRM_PLANE_POSSIBLE_CRTCS_OFF).cast::<u32>()) == 0 { write(primary.cast::<u8>().add(DRM_PLANE_POSSIBLE_CRTCS_OFF).cast::<u32>(), 1u32 << index); }
+        if !cursor.is_null() && *(cursor.cast::<u8>().add(DRM_PLANE_POSSIBLE_CRTCS_OFF).cast::<u32>()) == 0 { write(cursor.cast::<u8>().add(DRM_PLANE_POSSIBLE_CRTCS_OFF).cast::<u32>(), 1u32 << index); }
+    }
+    rec.crtcs.push(CrtcRecord { ptr: crtc as usize, name, layout });
+    0
+}
+
+/// Detach a CRTC from its device mode graph and release its core-owned name. # C: O(N_crtcs + N_objects)
+extern "C" fn drm_crtc_cleanup(crtc: *mut c_void) {
+    if crtc.is_null() { return; }
+    let dev = unsafe { *(crtc.cast::<*mut c_void>()) }; let mut devices = DEVICES.lock();
+    let Some(rec) = devices.iter_mut().find(|rec| rec.dev == dev as usize) else { return; };
+    let Some(pos) = rec.crtcs.iter().position(|entry| entry.ptr == crtc as usize) else { return; }; let entry = rec.crtcs.remove(pos); let config = dev.cast::<u8>().wrapping_add(DRM_MODE_CONFIG_OFF);
+    // SAFETY: entry is the exact CRTC owned by this device, including its linked list node and allocated name.
+    unsafe { let head = crtc.cast::<u8>().add(DRM_CRTC_HEAD_OFF).cast::<*mut c_void>(); let next = *head; let prev = *head.add(1); write(prev.cast::<*mut c_void>(), next); write(next.cast::<*mut c_void>().add(1), prev); let count = config.add(MODE_CONFIG_NUM_CRTC_OFF).cast::<i32>(); if *count > 0 { write(count, *count - 1); } core::ptr::write_bytes(crtc.cast::<u8>(), 0, DRM_CRTC_FUNCS_OFF + core::mem::size_of::<*const c_void>()); dealloc(entry.name as *mut u8, entry.layout); }
+    drop(devices); drm_mode_object_unregister(dev, unsafe { crtc.cast::<u8>().add(DRM_CRTC_BASE_OFF).cast() });
 }
 
 fn next_guard() -> i32 {
