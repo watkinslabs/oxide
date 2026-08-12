@@ -120,6 +120,13 @@ audit_pci()
                 case "$vendor:$product" in
                     0x8086:0x100e|0x8086:0x100f|0x8086:0x1015|0x8086:0x1016|0x8086:0x1017|0x8086:0x1018|0x8086:0x1075|0x8086:0x1076|0x8086:0x1077|0x8086:0x1078|0x8086:0x1079|0x8086:0x107a|0x8086:0x10b5|0x8086:0x10bc|0x8086:0x10bd|0x8086:0x10d3|0x8086:0x10ea|0x8086:0x10eb|0x8086:0x10ef|0x8086:0x10f0|0x8086:0x10f5|0x8086:0x1502|0x8086:0x1503|0x8086:0x150c|0x8086:0x150e|0x8086:0x150f)
                         audit_pci_driver "$bdf" "$driver" e1000 ;;
+                    # Linux's r8169 PCI table binds this RTL8125 PCI ID.
+                    # Oxide exposes its matching native driver under the
+                    # same name, so the physical-machine audit must grade
+                    # the actual successful bind rather than flag it as an
+                    # unselected NIC.
+                    0x10ec:0x8125)
+                        audit_pci_driver "$bdf" "$driver" r8169 ;;
                     *) emit driver-assessment NEEDS-SELECTION "bdf=$bdf" driver=physical-nic \
                         "reason=no-matched-native-driver" ;;
                 esac ;;
