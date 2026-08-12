@@ -113,19 +113,35 @@ audit_pci()
         driver=${driver##*/}
         emit pci-device PRESENT "bdf=$bdf" "vendor=$vendor" "device=$product" "class=$class" "driver=$driver"
         case "$class" in
-            0x010802*) emit driver-assessment NATIVE-CANDIDATE "bdf=$bdf" driver=drv-nvme ;;
-            0x010601*) emit driver-assessment NATIVE-CANDIDATE "bdf=$bdf" driver=drv-ahci ;;
-            0x0c0330*) emit driver-assessment NATIVE-CANDIDATE "bdf=$bdf" driver=drv-xhci ;;
+            0x010802*) audit_pci_driver "$bdf" "$driver" nvme ;;
+            0x010601*) audit_pci_driver "$bdf" "$driver" ahci ;;
+            0x0c0330*) audit_pci_driver "$bdf" "$driver" xhci ;;
             0x020000*)
                 case "$vendor:$product" in
                     0x8086:0x100e|0x8086:0x100f|0x8086:0x1015|0x8086:0x1016|0x8086:0x1017|0x8086:0x1018|0x8086:0x1075|0x8086:0x1076|0x8086:0x1077|0x8086:0x1078|0x8086:0x1079|0x8086:0x107a|0x8086:0x10b5|0x8086:0x10bc|0x8086:0x10bd|0x8086:0x10d3|0x8086:0x10ea|0x8086:0x10eb|0x8086:0x10ef|0x8086:0x10f0|0x8086:0x10f5|0x8086:0x1502|0x8086:0x1503|0x8086:0x150c|0x8086:0x150e|0x8086:0x150f)
-                        emit driver-assessment NATIVE-CANDIDATE "bdf=$bdf" driver=drv-e1000 ;;
+                        audit_pci_driver "$bdf" "$driver" e1000 ;;
                     *) emit driver-assessment NEEDS-SELECTION "bdf=$bdf" driver=physical-nic \
                         "reason=no-matched-native-driver" ;;
                 esac ;;
         esac
     done
     emit pci PRESENT "devices=$count"
+}
+
+# Linux publishes a PCI driver's successful probe through the device's
+# `driver` symlink. A class or PCI-ID match merely makes a driver eligible;
+# it is never proof that its probe completed. Keep this audit on that same
+# contract so an unbound controller cannot be mistaken for support.
+audit_pci_driver()
+{
+    bdf=$1
+    actual=$2
+    expected=$3
+    case "$actual" in
+        "$expected") emit driver-assessment BOUND "bdf=$bdf" "driver=$expected" ;;
+        -) emit driver-assessment UNBOUND "bdf=$bdf" "expected=$expected" ;;
+        *) emit driver-assessment WRONG-DRIVER "bdf=$bdf" "expected=$expected" "driver=$actual" ;;
+    esac
 }
 
 audit_block()
