@@ -198,6 +198,11 @@ audit_display()
         [ -e "$card" ] || [ -L "$card" ] || continue
         count=$((count + 1))
         name=${card##*/}
+        # /sys/class/drm also contains connector links such as card1-DP-1.
+        # Linux calls only a decimal cardN node a DRM card; do not turn every
+        # connector into a false GPU result in the physical-hardware ledger.
+        number=${name#card}
+        case "$number" in ''|*[!0-9]*) count=$((count - 1)); continue ;; esac
         driver=$(link_value "/sys/class/drm/$name/device/driver")
         driver=${driver##*/}
         case "$driver" in
