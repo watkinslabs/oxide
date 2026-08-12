@@ -8,7 +8,6 @@ use block::{BlockDevice, BlockError, BlockOp, BlockRequest, KResult, QueueLimits
 use crate::probe::{storage_command, UsbDevice};
 
 const SCSI_DISK_DRIVER: block::registry::BlockDriver = block::registry::BlockDriver::fixed("sd", block::uapi::SCSI_DISK_MAJOR);
-const STORAGE_DMA_BYTES: usize = 4096;
 const MAX_RW10_BLOCKS: u32 = u16::MAX as u32;
 
 struct UsbStorageBlock {
@@ -25,7 +24,7 @@ impl UsbStorageBlock {
             return Err(BlockError::Einval);
         }
         let bytes = (request.len_blocks as usize).checked_mul(self.block_bytes as usize).ok_or(BlockError::Einval)?;
-        if bytes > STORAGE_DMA_BYTES || request.buffer.len() != bytes { return Err(BlockError::Einval); }
+        if bytes > crate::device::STORAGE_MAX_TRANSFER_BYTES || request.buffer.len() != bytes { return Err(BlockError::Einval); }
         let blocks = request.len_blocks as u16;
         let lba = request.start_block as u32;
         if write {
@@ -64,7 +63,7 @@ impl BlockDevice for UsbStorageBlock {
 /// Publish a discovered transparent-SCSI USB disk through the sole block registry.
 /// # C: O(registry publication)
 pub(crate) fn register(device: Arc<UsbDevice>, capacity: u64, block_bytes: u32) -> Option<block::ScsiDiskName> {
-    if capacity == 0 || !block_bytes.is_power_of_two() || block_bytes < 512 || block_bytes as usize > STORAGE_DMA_BYTES { return None; }
+    if capacity == 0 || !block_bytes.is_power_of_two() || block_bytes < 512 || block_bytes as usize > crate::device::STORAGE_MAX_TRANSFER_BYTES { return None; }
     let name = block::reserve_scsi_disk_name()?;
     let disk = Arc::new(UsbStorageBlock { device, capacity, block_bytes });
     let index = block::registry::register_with_driver(SCSI_DISK_DRIVER, name.as_str(), None, disk);
