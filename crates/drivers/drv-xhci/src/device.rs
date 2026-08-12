@@ -12,12 +12,15 @@ use crate::ring::{CommandRing, Trb, TRB_BYTES, TRBS_PER_SEGMENT};
 struct HidDma { ring: DmaPage, report: DmaPage, producer: CommandRing, pending: u64 }
 
 struct StorageDma {
-    bulk_in_ring: DmaPage, bulk_out_ring: DmaPage, command: DmaPage, status: DmaPage, data: DmaPage,
+    bulk_in_ring: DmaPage, bulk_out_ring: DmaPage, command: DmaPage, status: DmaPage, data: Vec<DmaPage>,
     bulk_in_producer: CommandRing, bulk_out_producer: CommandRing,
 }
 
 /// Input context, output device context, and endpoint-zero transfer ring.
 pub struct AddressDeviceDma { bdf: pci::Bdf, input: DmaPage, output: DmaPage, ep0: DmaPage, descriptor: DmaPage, context_bytes: u8, speed: u8, port: u8, slot: u8, _hid: Option<crate::usb::HidBootInterface>, _storage: Option<crate::storage::MassStorageInterface>, hid_ring: Option<HidDma>, storage_dma: Option<StorageDma>, ep0_ring: CommandRing }
+
+/// Maximum chained USB-storage transfer accepted by one retained endpoint ring.
+pub const STORAGE_MAX_TRANSFER_BYTES: usize = DmaPage::BYTES * crate::ring::COMMAND_USABLE_TRBS;
 
 impl AddressDeviceDma {
     /// Allocate and construct every DMA object required by Address Device. # C: O(page bytes)
@@ -102,7 +105,7 @@ impl AddressDeviceDma {
         for word in words { if !self.input.write32(word.offset as u64, word.value) { return None; } }
         self.input.clean_to_device();
         self.storage_dma = Some(StorageDma {
-            bulk_in_ring, bulk_out_ring, command: DmaPage::allocate(self.bdf)?, status: DmaPage::allocate(self.bdf)?, data: DmaPage::allocate(self.bdf)?, bulk_in_producer, bulk_out_producer,
+            bulk_in_ring, bulk_out_ring, command: DmaPage::allocate(self.bdf)?, status: DmaPage::allocate(self.bdf)?, data: Vec::new(), bulk_in_producer, bulk_out_producer,
         });
         Some(true)
     }
@@ -129,9 +132,10 @@ impl AddressDeviceDma {
     pub fn submit_storage_data(&mut self, mmio: &Mmio, slot: u8, length: u32, device_to_host: bool) -> Option<u64> {
         let storage = self._storage?;
         let dma = self.storage_dma.as_mut()?;
-        if length == 0 || length as u64 > 4096 { return None; }
+        if length == 0 || length as usize > STORAGE_MAX_TRANSFER_BYTES { return None; }
+        ensure_storage_pages(self.bdf, &mut dma.data, length as usize)?;
         let (endpoint, producer, ring) = if device_to_host { (storage.bulk_in, &mut dma.bulk_in_producer, &dma.bulk_in_ring) } else { (storage.bulk_out, &mut dma.bulk_out_producer, &dma.bulk_out_ring) };
-        submit_transfer(mmio, slot, endpoint, producer, ring, dma.data.dma(), length)
+        submit_transfer_pages(mmio, slot, endpoint, producer, ring, &dma.data, length as usize)
     }
     /// Publish the final IN command-status wrapper receive. # C: O(CSW bytes)
     pub fn submit_storage_csw(&mut self, mmio: &Mmio, slot: u8) -> Option<u64> {
@@ -141,22 +145,29 @@ impl AddressDeviceDma {
     }
     /// Read a completed data-stage payload after its matching IN completion. # C: O(data bytes)
     pub fn storage_data(&self, length: usize) -> Option<Vec<u8>> {
-        if length > 4096 { return None; }
+        if length > STORAGE_MAX_TRANSFER_BYTES { return None; }
         let dma = self.storage_dma.as_ref()?;
-        dma.data.invalidate_from_device();
+        let page_count = pages_for(length)?;
+        if page_count > dma.data.len() { return None; }
+        for page in dma.data.iter().take(page_count) { page.invalidate_from_device(); }
         let mut bytes = Vec::with_capacity(length);
-        for offset in 0..length { bytes.push(dma.data.read8(offset as u64)?); }
+        for offset in 0..length {
+            let page = offset / DmaPage::BYTES;
+            bytes.push(dma.data[page].read8((offset % DmaPage::BYTES) as u64)?);
+        }
         Some(bytes)
     }
     /// Copy one host-to-device Bulk-Only data stage into its retained DMA page.
     /// # C: O(data bytes)
     pub fn set_storage_data(&mut self, bytes: &[u8]) -> bool {
-        if bytes.len() > 4096 { return false; }
+        if bytes.len() > STORAGE_MAX_TRANSFER_BYTES { return false; }
         let Some(dma) = self.storage_dma.as_mut() else { return false; };
+        if ensure_storage_pages(self.bdf, &mut dma.data, bytes.len()).is_none() { return false; }
         for (offset, byte) in bytes.iter().copied().enumerate() {
-            if !dma.data.write8(offset as u64, byte) { return false; }
+            let page = offset / DmaPage::BYTES;
+            if !dma.data[page].write8((offset % DmaPage::BYTES) as u64, byte) { return false; }
         }
-        dma.data.clean_to_device();
+        for page in dma.data.iter().take(pages_for(bytes.len()).unwrap_or(0)) { page.clean_to_device(); }
         true
     }
     /// Read and validate a completed Bulk-Only command-status wrapper. # C: O(CSW bytes)
@@ -268,4 +279,37 @@ fn submit_transfer(mmio: &Mmio, slot: u8, endpoint: u8, producer: &mut CommandRi
     for (word, value) in written.dword.iter().enumerate() { if !ring.write32((index * TRB_BYTES + word * 4) as u64, *value) { return None; } }
     ring.clean_to_device();
     mmio.ring_endpoint_doorbell(slot, endpoint_id).then_some(pa)
+}
+
+fn pages_for(length: usize) -> Option<usize> {
+    length.checked_add(DmaPage::BYTES - 1)?.checked_div(DmaPage::BYTES)
+}
+
+fn ensure_storage_pages(bdf: pci::Bdf, pages: &mut Vec<DmaPage>, length: usize) -> Option<()> {
+    let needed = pages_for(length)?;
+    if needed > crate::ring::COMMAND_USABLE_TRBS { return None; }
+    while pages.len() < needed { pages.push(DmaPage::allocate(bdf)?); }
+    Some(())
+}
+
+fn submit_transfer_pages(mmio: &Mmio, slot: u8, endpoint: u8, producer: &mut CommandRing, ring: &DmaPage, pages: &[DmaPage], length: usize) -> Option<u64> {
+    let endpoint_id = (endpoint & 0x0f).checked_mul(2)?.checked_add(u8::from(endpoint & 0x80 != 0))?;
+    let count = pages_for(length)?;
+    if count == 0 || count > pages.len() || count > producer.capacity() { return None; }
+    let mut remaining = length;
+    let mut completion = None;
+    for (index, page) in pages.iter().take(count).enumerate() {
+        let bytes = remaining.min(DmaPage::BYTES) as u32;
+        let last = index + 1 == count;
+        let trb = Trb::normal_chain(page.dma(), bytes, !last, last)?;
+        let (pa, _) = producer.push(trb);
+        let ring_index = pa.checked_sub(ring.dma())?.checked_div(TRB_BYTES as u64)? as usize;
+        let written = producer.trb(ring_index)?;
+        for (word, value) in written.dword.iter().enumerate() { if !ring.write32((ring_index * TRB_BYTES + word * 4) as u64, *value) { return None; } }
+        remaining = remaining.checked_sub(bytes as usize)?;
+        completion = Some(pa);
+    }
+    if remaining != 0 { return None; }
+    ring.clean_to_device();
+    mmio.ring_endpoint_doorbell(slot, endpoint_id).then_some(completion?)
 }

@@ -21,6 +21,8 @@ fn hhdm() -> u64 {
 pub struct DmaPage { bdf: pci::Bdf, pa: u64, dma: u64 }
 
 impl DmaPage {
+    /// Byte length of one IOMMU-mapped controller DMA page. # C: O(1)
+    pub const BYTES: usize = PAGE as usize;
     /// Allocate and clear a page before it can be named in a controller register.
     /// # C: O(page bytes)
     pub fn allocate(bdf: pci::Bdf) -> Option<Self> {

@@ -78,8 +78,16 @@ impl Trb {
     }
     /// Build one interrupt/bulk Normal TRB with an interrupt-on-completion event. # C: O(1)
     pub fn normal(buffer_pa: u64, length: u32) -> Option<Self> {
+        Self::normal_chain(buffer_pa, length, false, true)
+    }
+
+    /// Build one Normal TRB in a chained bulk transfer descriptor.
+    /// `chain` joins this buffer to its successor; only the terminal TRB
+    /// requests the completion event. # C: O(1)
+    pub fn normal_chain(buffer_pa: u64, length: u32, chain: bool, ioc: bool) -> Option<Self> {
         if length == 0 || length > 0x1ffff { return None; }
-        Some(Self { dword: [buffer_pa as u32, (buffer_pa >> 32) as u32, length, (TRB_TYPE_NORMAL << TRB_TYPE_SHIFT) | (1 << 5)] })
+        let control = (TRB_TYPE_NORMAL << TRB_TYPE_SHIFT) | (u32::from(chain) << 4) | (u32::from(ioc) << 5);
+        Some(Self { dword: [buffer_pa as u32, (buffer_pa >> 32) as u32, length, control] })
     }
 
     /// Decode a command-completion event, preserving the command TRB address. # C: O(1)
@@ -234,6 +242,16 @@ mod tests {
         assert_eq!(Trb::normal(0x90_000, 8).unwrap().dword[3], (TRB_TYPE_NORMAL << TRB_TYPE_SHIFT) | (1 << 5));
         let completion = Trb { dword: [0x20_000, 0, (COMPLETION_SUCCESS as u32) << 24, (TRB_TYPE_COMMAND_COMPLETION << TRB_TYPE_SHIFT) | (2 << 24)] };
         assert_eq!(completion.command_completion(), Some(CommandCompletion { command_pa: 0x20_000, completion_code: COMPLETION_SUCCESS, slot: 2 }));
+    }
+
+    #[test]
+    fn chained_bulk_trbs_interrupt_only_after_the_final_buffer() {
+        let first = Trb::normal_chain(0x40_000, 4096, true, false).unwrap();
+        let last = Trb::normal_chain(0x41_000, 512, false, true).unwrap();
+        assert_ne!(first.dword[3] & (1 << 4), 0);
+        assert_eq!(first.dword[3] & (1 << 5), 0);
+        assert_eq!(last.dword[3] & (1 << 4), 0);
+        assert_ne!(last.dword[3] & (1 << 5), 0);
     }
 
     #[test]
