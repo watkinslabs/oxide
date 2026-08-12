@@ -11,6 +11,10 @@ mod vmalloc;
 
 pub use vmalloc::{snapshot as vmalloc_snapshot, Snapshot as VmallocSnapshot};
 
+pub(crate) fn vmalloc_alloc(size: usize, zero: bool) -> *mut u8 { vmalloc::alloc(size, zero) }
+pub(crate) fn vmalloc_free(base: *mut u8) -> bool { vmalloc::free(base) }
+pub(crate) fn vmalloc_page_pa(base: *const u8, off: usize) -> Option<u64> { vmalloc::page_pa(base, off) }
+
 use alloc::alloc::{alloc, dealloc, Layout};
 use alloc::boxed::Box;
 use alloc::vec::Vec;

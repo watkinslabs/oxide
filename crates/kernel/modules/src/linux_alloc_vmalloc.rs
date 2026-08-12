@@ -153,6 +153,18 @@ pub fn free(base: *mut u8) -> bool {
     true
 }
 
+/// Return the PMM frame backing one page of a live vmalloc allocation. # C: O(log N)
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn page_pa(base: *const u8, off: usize) -> Option<u64> {
+    if base.is_null() || off % PAGE_BYTES != 0 { return None; }
+    let state = STATE.lock();
+    let allocation = state.live.get(&(base as u64))?;
+    allocation.pages.get(off / PAGE_BYTES).copied()
+}
+
+#[cfg(not(target_os = "oxide-kernel"))]
+pub(crate) fn page_pa(_base: *const u8, _off: usize) -> Option<u64> { None }
+
 #[cfg(not(target_os = "oxide-kernel"))]
 pub fn alloc(size: usize, zero: bool) -> *mut u8 { super::alloc_bytes(size, PAGE_BYTES, zero) }
 #[cfg(not(target_os = "oxide-kernel"))]

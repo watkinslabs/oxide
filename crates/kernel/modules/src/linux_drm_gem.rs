@@ -270,13 +270,19 @@ pub(super) extern "C" fn drm_gem_shmem_dumb_create(file: *mut c_void, dev: *mut 
     // SAFETY: sizing succeeded and wrote the exact u64 size field in args.
     let size = unsafe { read(args.cast::<u8>().add(DRM_DUMB_SIZE_OFF).cast::<u64>()) };
     let Ok(size) = usize::try_from(size) else { return -LINUX_EBUSY; };
-    let Some(backing_layout) = Layout::from_size_align(size, PAGE_SIZE as usize).ok() else { return -LINUX_EBUSY; };
     let object_layout = Layout::from_size_align(DRM_GEM_SHMEM_OBJECT_SIZE, core::mem::align_of::<u64>()).unwrap();
     // SAFETY: both layouts were validated and every failure below releases exactly its allocation.
     let object = unsafe { alloc_zeroed(object_layout) };
     if object.is_null() { return -LINUX_EBUSY; }
-    // SAFETY: backing is page-aligned zeroed memory owned by this shmem object until its free callback.
-    let backing = unsafe { alloc_zeroed(backing_layout) };
+    // The object keeps one CPU-visible contiguous VA, while the vmalloc owner
+    // retains the actual PMM frames for the later VMA fault path.
+    #[cfg(target_os = "oxide-kernel")]
+    let backing = crate::linux_alloc::vmalloc_alloc(size, true);
+    #[cfg(not(target_os = "oxide-kernel"))]
+    let backing = match Layout::from_size_align(size, PAGE_SIZE as usize) {
+        // SAFETY: hosted tests need an equivalent page-aligned zeroed area.
+        Ok(layout) => unsafe { alloc_zeroed(layout) }, Err(_) => core::ptr::null_mut(),
+    };
     if backing.is_null() { unsafe { dealloc(object, object_layout); } return -LINUX_EBUSY; }
     drm_gem_private_object_init(dev, object.cast(), size);
     // SAFETY: object reserves the complete shmem-GEM ABI record; these fields install its backing and free contract.
@@ -284,7 +290,15 @@ pub(super) extern "C" fn drm_gem_shmem_dumb_create(file: *mut c_void, dev: *mut 
     // SAFETY: args owns the user-visible handle output, populated only after the object is fully initialized.
     let out = unsafe { args.cast::<u8>().add(DRM_DUMB_HANDLE_OFF).cast::<u32>() };
     let rc = drm_gem_handle_create(file, object.cast(), out);
-    if rc != 0 { unsafe { dealloc(backing, backing_layout); dealloc(object, object_layout); } return rc; }
+    if rc != 0 {
+        #[cfg(target_os = "oxide-kernel")]
+        { crate::linux_alloc::vmalloc_free(backing); }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        if let Ok(layout) = Layout::from_size_align(size, PAGE_SIZE as usize) { unsafe { dealloc(backing, layout); } }
+        // SAFETY: object was allocated above and was not published after handle creation failed.
+        unsafe { dealloc(object, object_layout); }
+        return rc;
+    }
     object_put(object.cast()); 0
 }
 
@@ -356,6 +370,9 @@ unsafe extern "C" fn shmem_object_free(object: *mut c_void) {
     if object.is_null() { return; }
     // SAFETY: this callback owns the object allocated by drm_gem_shmem_dumb_create and its page-aligned backing.
     let (size, backing) = unsafe { (read(object.cast::<u8>().add(DRM_GEM_SIZE_OFF).cast::<usize>()), read(object.cast::<u8>().add(DRM_GEM_SHMEM_VADDR_OFF).cast::<*mut u8>())) };
+    #[cfg(target_os = "oxide-kernel")]
+    { let _ = size; crate::linux_alloc::vmalloc_free(backing); }
+    #[cfg(not(target_os = "oxide-kernel"))]
     if let Ok(layout) = Layout::from_size_align(size, PAGE_SIZE as usize) { unsafe { dealloc(backing, layout); } }
     let layout = Layout::from_size_align(DRM_GEM_SHMEM_OBJECT_SIZE, core::mem::align_of::<u64>()).unwrap();
     unsafe { dealloc(object.cast(), layout); }
