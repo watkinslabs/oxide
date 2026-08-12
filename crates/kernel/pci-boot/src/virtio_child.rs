@@ -212,6 +212,7 @@ impl virtio::VirtioChildDriverOps<VirtioChildSession> for VirtioBlkOps {
         let device_key = session.device_key();
         let idx = drv_virtio_blk::modern::init_blk(drv_virtio_blk::modern::BlkInit {
             device_key,
+            bdf: session.pci_bdf(),
             resources,
             drv_features: session.drv_features(),
         });

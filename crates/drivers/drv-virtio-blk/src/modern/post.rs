@@ -70,16 +70,27 @@ impl BlkState {
         let Some(bounce_pa) = pmm::setup::alloc_contig(pmm::Order(BOUNCE_ORDER)) else {
             return Err((request, completion, BlockError::Enomem));
         };
+        let Some(bounce_dma) = iommu::map_dma(self.bdf, bounce_pa, BOUNCE_BYTES) else {
+            // SAFETY: mapping failed before a descriptor could name this run.
+            unsafe { pmm::setup::free_contig(bounce_pa, pmm::Order(BOUNCE_ORDER)); }
+            return Err((request, completion, BlockError::Enomem));
+        };
         let h = hhdm();
         let mut ring = q.lock();
         if self.poisoned.load(core::sync::atomic::Ordering::Acquire) {
             drop(ring);
+            if !iommu::unmap_dma(self.bdf, bounce_dma, BOUNCE_BYTES) {
+                return Err((request, completion, BlockError::Eio));
+            }
             // SAFETY: this allocation has not been published to the device.
             unsafe { pmm::setup::free_contig(bounce_pa, pmm::Order(BOUNCE_ORDER)); }
             return Err((request, completion, BlockError::Eio));
         }
         if ring.busy || ring.free_heads.is_empty() || (!deferred_head && !ring.deferred.is_empty()) {
             drop(ring);
+            if !iommu::unmap_dma(self.bdf, bounce_dma, BOUNCE_BYTES) {
+                return Err((request, completion, BlockError::Eio));
+            }
             // SAFETY: this allocation has not been published to a device or
             // another CPU; returning it immediately satisfies PMM ownership.
             unsafe { pmm::setup::free_contig(bounce_pa, pmm::Order(BOUNCE_ORDER)); }
@@ -95,6 +106,9 @@ impl BlkState {
         }
         let Some(head) = ring.free_heads.pop() else {
             drop(ring);
+            if !iommu::unmap_dma(self.bdf, bounce_dma, BOUNCE_BYTES) {
+                return Err((request, completion, BlockError::Eio));
+            }
             // SAFETY: no descriptor was published, so this remains private.
             unsafe { pmm::setup::free_contig(bounce_pa, pmm::Order(BOUNCE_ORDER)); }
             return Err((request, completion, BlockError::Eio));
@@ -121,10 +135,10 @@ impl BlkState {
         }
         let (descs, descriptor_count) = blk::build_chain(
             is_in,
-            bounce_pa + HDR_OFF as u64,
-            bounce_pa + DATA_OFF as u64,
+            bounce_dma + HDR_OFF as u64,
+            bounce_dma + DATA_OFF as u64,
             data_len,
-            bounce_pa + STATUS_OFF as u64,
+            bounce_dma + STATUS_OFF as u64,
         );
         let desc_table = h.wrapping_add(q.res.desc_pa) as *mut u64;
         // `head` came from `free_heads` (entries `slot * MAX_REQUEST_DESCRIPTORS`
@@ -154,7 +168,7 @@ impl BlkState {
             ring.avail_idx = ring.avail_idx.wrapping_add(1);
             core::ptr::write_volatile(avail.add(1), ring.avail_idx);
         }
-        ring.pending.push(PendingRequest { head, bounce_pa, request, completion, is_in, data_len });
+        ring.pending.push(PendingRequest { head, bounce_pa, bounce_dma, request, completion, is_in, data_len });
         drop(ring);
         core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
         // SAFETY: `notify_va` is this queue's doorbell in the Device-attr notify

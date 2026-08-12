@@ -114,9 +114,11 @@ impl BlkState {
                 Ok(()) => Ok(()),
                 Err(st) => Err(block_error_for_status(st)),
             };
-            // SAFETY: the device returned this descriptor head in used.ring;
-            // the DMA region is no longer reachable by the device.
-            unsafe { pmm::setup::free_contig(pending.bounce_pa, pmm::Order(BOUNCE_ORDER)); }
+            if iommu::unmap_dma(self.bdf, pending.bounce_dma, BOUNCE_BYTES) {
+                // SAFETY: the device returned this descriptor head in used.ring,
+                // and its mapping is retired before returning PMM ownership.
+                unsafe { pmm::setup::free_contig(pending.bounce_pa, pmm::Order(BOUNCE_ORDER)); }
+            }
             // Counted at DELIVERY, not at ring-entry consumption: a used entry
             // whose head matches no pending request poisons the device above
             // and delivers nothing, and reporting it as a completion would tell

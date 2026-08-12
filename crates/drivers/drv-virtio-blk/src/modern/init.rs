@@ -123,6 +123,11 @@ pub fn init_blk(init: BlkInit) -> u32 {
         Some(pa) => pa,
         None => return 0,
     };
+    let Some(bounce_dma) = iommu::map_dma(init.bdf, bounce_pa, BOUNCE_BYTES) else {
+        // SAFETY: DMA mapping failed, so no device can reference this run.
+        unsafe { pmm::setup::free_contig(bounce_pa, pmm::Order(BOUNCE_ORDER)); }
+        return 0;
+    };
     let h = hhdm();
     if h != 0 {
         let va = h.wrapping_add(bounce_pa) as *mut u8;
@@ -138,6 +143,7 @@ pub fn init_blk(init: BlkInit) -> u32 {
     let seed = seed_used_index(h, &requestq);
 
     let mut state = BlkState {
+        bdf: init.bdf,
         cfg_va: init.resources.cfg_va,
         requestq: BlkQueue::new(requestq, seed, false),
         pollq: build_poll_queue(init.resources, init.drv_features, device_cfg.num_queues, h),
@@ -145,6 +151,7 @@ pub fn init_blk(init: BlkInit) -> u32 {
         blk_size,
         serial: [0u8; blk::BLK_SERIAL_LEN],
         bounce_pa,
+        bounce_dma,
         // The reference derives the queue's write-cache mode straight from
         // the negotiated `F_FLUSH` bit: that bit IS the cache mode.
         write_cache: virtio::cache_mode_writeback(init.drv_features),

@@ -265,6 +265,7 @@ pub(super) fn same_device(rec: &BlkRecord, device_key: virtio::VirtioChildDevice
 }
 
 pub struct BlkState {
+    pub(super) bdf: pci::Bdf,
     pub(super) cfg_va: u64,
     /// The interrupt-driven request queue. Its completions raise the device
     /// interrupt, which raises the block softirq, which drains it.
@@ -278,6 +279,7 @@ pub struct BlkState {
     pub(super) blk_size: u32,
     pub(super) serial: [u8; blk::BLK_SERIAL_LEN],
     pub(super) bounce_pa: u64,
+    pub(super) bounce_dma: u64,
     /// Post-negotiation cache mode (Linux `virtblk_get_cache_mode` →
     /// `blk_queue_write_cache`). `false` = write-through: no volatile cache to
     /// fence, and `VIRTIO_BLK_T_FLUSH` must NOT go on the wire.
@@ -295,6 +297,7 @@ impl BlkState {
     /// a second, interrupt-free request queue beside the default one. # C: O(1)
     pub(crate) fn for_test_cfg_with_poll_queue(cfg_va: u64, with_poll_queue: bool) -> Self {
         Self {
+            bdf: pci::Bdf { segment: 0, bus: 0, device: 0, function: 0 },
             cfg_va,
             requestq: BlkQueue::new(unprogrammed_queue(0), 0, false),
             pollq: if with_poll_queue {
@@ -306,6 +309,7 @@ impl BlkState {
             blk_size: blk::VIRTIO_BLK_SECTOR_BYTES,
             serial: [0u8; blk::BLK_SERIAL_LEN],
             bounce_pa: 0,
+            bounce_dma: 0,
             write_cache: true,
             poisoned: core::sync::atomic::AtomicBool::new(false),
         }
@@ -355,6 +359,7 @@ pub(super) struct RingShadow {
 pub(super) struct PendingRequest {
     pub(super) head: u16,
     pub(super) bounce_pa: u64,
+    pub(super) bounce_dma: u64,
     pub(super) request: BlockRequest,
     pub(super) completion: BlockCompletion,
     pub(super) is_in: bool,
@@ -384,6 +389,7 @@ unsafe impl Sync for BlkState {}
 #[derive(Copy, Clone)]
 pub struct BlkInit {
     pub device_key: virtio::VirtioChildDeviceKey,
+    pub bdf: pci::Bdf,
     pub resources: virtio::VirtioResources,
     pub drv_features: u64,
 }
