@@ -11,6 +11,7 @@ const DRM_CONNECTOR_TYPE_ID_OFF: usize = 144;
 pub(super) const DRM_CONNECTOR_FUNCS_OFF: usize = 416;
 pub(super) const DRM_CONNECTOR_HELPER_PRIVATE_OFF: usize = 1576;
 const DRM_CONNECTOR_DETECT_OFF: usize = 16;
+const DRM_CONNECTOR_HELPER_DETECT_CTX_OFF: usize = 8;
 const DRM_CONNECTOR_STATUS_CONNECTED: i32 = 1;
 const DRM_CONNECTOR_STATUS_DISCONNECTED: i32 = 2;
 const DRM_CONNECTOR_STATUS_UNKNOWN: i32 = 3;
@@ -24,6 +25,7 @@ pub(super) fn export_symbols() {
     crate::symtab::export("drm_connector_cleanup", drm_connector_cleanup as *const () as usize, false);
     crate::symtab::export("drm_connector_attach_encoder", drm_connector_attach_encoder as *const () as usize, false);
     crate::symtab::export("drm_connector_helper_add", drm_connector_helper_add as *const () as usize, false);
+    crate::symtab::export("drm_helper_probe_detect", drm_helper_probe_detect as *const () as usize, false);
 }
 
 /// Attach a connector helper vtable. # C: O(1)
@@ -34,9 +36,18 @@ pub(super) extern "C" fn drm_connector_helper_add(connector: *mut c_void, funcs:
 }
 
 pub(super) unsafe fn connector_detect(connector: *mut c_void, force: bool) -> i32 {
-    // SAFETY: funcs and detect slots are ABI-verified pointers; a missing detect callback means connected.
-    unsafe { let funcs = *(connector.cast::<u8>().add(DRM_CONNECTOR_FUNCS_OFF).cast::<*const c_void>()); if funcs.is_null() { return DRM_CONNECTOR_STATUS_CONNECTED; } let callback = funcs.cast::<u8>().add(DRM_CONNECTOR_DETECT_OFF).cast::<extern "C" fn(*mut c_void, bool) -> i32>().read(); let status = callback(connector, force); if [DRM_CONNECTOR_STATUS_CONNECTED, DRM_CONNECTOR_STATUS_DISCONNECTED, DRM_CONNECTOR_STATUS_UNKNOWN].contains(&status) { status } else { DRM_CONNECTOR_STATUS_UNKNOWN } }
+    // SAFETY: helper and connector callback slots are ABI-verified pointers; missing callbacks imply connected.
+    unsafe { let helper = *(connector.cast::<u8>().add(DRM_CONNECTOR_HELPER_PRIVATE_OFF).cast::<*const c_void>()); if !helper.is_null() { let callback = helper.cast::<u8>().add(DRM_CONNECTOR_HELPER_DETECT_CTX_OFF).cast::<extern "C" fn(*mut c_void, *mut c_void, bool) -> i32>().read(); if callback as usize != 0 { return normalize_status(callback(connector, core::ptr::null_mut(), force)); } } let funcs = *(connector.cast::<u8>().add(DRM_CONNECTOR_FUNCS_OFF).cast::<*const c_void>()); if funcs.is_null() { return DRM_CONNECTOR_STATUS_CONNECTED; } let callback = funcs.cast::<u8>().add(DRM_CONNECTOR_DETECT_OFF).cast::<extern "C" fn(*mut c_void, bool) -> i32>().read(); if callback as usize == 0 { DRM_CONNECTOR_STATUS_CONNECTED } else { normalize_status(callback(connector, force)) } }
 }
+
+/// Probe connector status through its helper callback chain. # C: O(1)
+extern "C" fn drm_helper_probe_detect(connector: *mut c_void, _ctx: *mut c_void, force: bool) -> i32 {
+    if connector.is_null() { return DRM_CONNECTOR_STATUS_UNKNOWN; }
+    // SAFETY: caller supplies a live connector object with ABI-verified callback tables.
+    unsafe { connector_detect(connector, force) }
+}
+
+fn normalize_status(status: i32) -> i32 { if [DRM_CONNECTOR_STATUS_CONNECTED, DRM_CONNECTOR_STATUS_DISCONNECTED, DRM_CONNECTOR_STATUS_UNKNOWN].contains(&status) { status } else { DRM_CONNECTOR_STATUS_UNKNOWN } }
 
 /// Add an encoder to a connector's possible-encoder routing mask. # C: O(1)
 pub(super) extern "C" fn drm_connector_attach_encoder(connector: *mut c_void, encoder: *mut c_void) -> i32 {
