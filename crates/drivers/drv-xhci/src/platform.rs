@@ -2,7 +2,7 @@
 
 use core::ptr::{read_volatile, write_volatile};
 
-use crate::regs::{geometry, protocol_for_port, Geometry, PortProtocol, CAPLENGTH, DBOFF, HCCPARAMS1, HCSPARAMS1, RTSOFF};
+use crate::regs::{geometry, protocol_for_port, Geometry, PortProtocol, CAPLENGTH, HCIVERSION, DBOFF, HCCPARAMS1, HCSPARAMS1, RTSOFF};
 use crate::controller::{halt_command, reset_command, reset_complete, USBCMD, USBSTS};
 use crate::controller::{RunPlan, CONFIG, CRCR, DCBAAP, ERDP, ERSTBA, ERSTSZ, IMAN};
 
@@ -130,6 +130,8 @@ impl Mmio {
         let base = mapping.base_va();
         // SAFETY: every dword is inside the first capability page of this owned mapping.
         let caplength = unsafe { read_volatile((base + CAPLENGTH) as *const u8) };
+        // SAFETY: the aligned HCI-version field resides in the capability page.
+        let hci_version = unsafe { read_volatile((base + HCIVERSION) as *const u16) };
         // SAFETY: capability dword access is aligned and inside the owned BAR mapping.
         let hcsparams1 = unsafe { read_volatile((base + HCSPARAMS1) as *const u32) };
         // SAFETY: capability dword access is aligned and inside the owned BAR mapping.
@@ -138,7 +140,7 @@ impl Mmio {
         let dboff = unsafe { read_volatile((base + DBOFF) as *const u32) };
         // SAFETY: capability dword access is aligned and inside the owned BAR mapping.
         let rtsoff = unsafe { read_volatile((base + RTSOFF) as *const u32) };
-        let geometry = geometry(bar_bytes, caplength, hcsparams1, hccparams1, dboff, rtsoff)?;
+        let geometry = geometry(bar_bytes, hci_version, caplength, hcsparams1, hccparams1, dboff, rtsoff)?;
         Some(Self { mapping, geometry, bytes: bar_bytes })
     }
 

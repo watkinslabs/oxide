@@ -18,7 +18,7 @@ struct StorageDma {
 }
 
 /// Input context, output device context, and endpoint-zero transfer ring.
-pub struct AddressDeviceDma { bdf: pci::Bdf, input: DmaPage, output: DmaPage, ep0: DmaPage, descriptor: DmaPage, context_bytes: u8, speed: u8, port: u8, slot: u8, _hid: Option<crate::usb::HidBootInterface>, _hub: Option<crate::usb::HubInterface>, _storage: Option<crate::storage::MassStorageInterface>, hid_ring: Option<HidDma>, hub_ring: Option<HubDma>, storage_dma: Option<StorageDma>, ep0_ring: CommandRing }
+pub struct AddressDeviceDma { bdf: pci::Bdf, input: DmaPage, output: DmaPage, ep0: DmaPage, descriptor: DmaPage, context_bytes: u8, speed: u8, port: u8, slot: u8, device_protocol: u8, hub_descriptor: Option<crate::usb::HubDescriptor>, _hid: Option<crate::usb::HidBootInterface>, _hub: Option<crate::usb::HubInterface>, _storage: Option<crate::storage::MassStorageInterface>, hid_ring: Option<HidDma>, hub_ring: Option<HubDma>, storage_dma: Option<StorageDma>, ep0_ring: CommandRing }
 
 /// Maximum chained USB-storage transfer accepted by one retained endpoint ring.
 pub const STORAGE_MAX_TRANSFER_BYTES: usize = DmaPage::BYTES * crate::ring::COMMAND_USABLE_TRBS;
@@ -45,7 +45,7 @@ impl AddressDeviceDma {
         }
         input.clean_to_device(); output.clean_to_device(); ep0.clean_to_device();
         let ep0_ring = CommandRing::new(ep0.dma())?;
-        Some(Self { bdf, input, output, ep0, descriptor, context_bytes, speed, port: topology.root_port, slot: 0, _hid: None, _hub: None, _storage: None, hid_ring: None, hub_ring: None, storage_dma: None, ep0_ring })
+        Some(Self { bdf, input, output, ep0, descriptor, context_bytes, speed, port: topology.root_port, slot: 0, device_protocol: 0, hub_descriptor: None, _hid: None, _hub: None, _storage: None, hid_ring: None, hub_ring: None, storage_dma: None, ep0_ring })
     }
 
     /// Input-context device DMA address for Address Device. # C: O(1)
@@ -55,11 +55,13 @@ impl AddressDeviceDma {
     /// DMA address reserved for a standard device descriptor. # C: O(1)
     pub fn descriptor_pa(&self) -> u64 { self.descriptor.dma() }
     /// Read and validate the device descriptor after its completed IN transfer. # C: O(18)
-    pub fn device_descriptor(&self) -> Option<crate::usb::DeviceDescriptor> {
+    pub fn device_descriptor(&mut self) -> Option<crate::usb::DeviceDescriptor> {
         self.descriptor.invalidate_from_device();
         let mut bytes = [0u8; crate::usb::DEVICE_DESC_BYTES];
         for (offset, byte) in bytes.iter_mut().enumerate() { *byte = self.descriptor.read8(offset as u64)?; }
-        crate::usb::device_descriptor(&bytes)
+        let descriptor = crate::usb::device_descriptor(&bytes)?;
+        self.device_protocol = descriptor.device_protocol;
+        Some(descriptor)
     }
     /// Read the first configuration header after the completed header transfer. # C: O(9)
     pub fn configuration_header(&self) -> Option<crate::usb::ConfigurationHeader> {
@@ -148,6 +150,37 @@ impl AddressDeviceDma {
     pub fn hid_protocol(&self) -> Option<u8> { self._hid.map(|hid| hid.protocol) }
     /// Selected hub interface descriptor. # C: O(1)
     pub fn hub_interface(&self) -> Option<crate::usb::HubInterface> { self._hub }
+    /// Read the exact hub-descriptor size after its fixed-header transfer. # C: O(7)
+    pub fn hub_descriptor_length(&self) -> Option<usize> {
+        self.descriptor.invalidate_from_device();
+        let mut header = [0u8; crate::usb::HUB_DESC_HEADER_BYTES];
+        for (offset, byte) in header.iter_mut().enumerate() { *byte = self.descriptor.read8(offset as u64)?; }
+        crate::usb::hub_descriptor_length(&header)
+    }
+    /// Read and retain a complete hub descriptor after its EP0 control transfer. # C: O(descriptor bytes)
+    pub fn discover_hub_descriptor(&mut self) -> Option<crate::usb::HubDescriptor> {
+        self.descriptor.invalidate_from_device();
+        let mut header = [0u8; crate::usb::HUB_DESC_HEADER_BYTES];
+        for (offset, byte) in header.iter_mut().enumerate() { *byte = self.descriptor.read8(offset as u64)?; }
+        let length = crate::usb::hub_descriptor_length(&header)?;
+        let mut bytes = Vec::with_capacity(length);
+        for offset in 0..length { bytes.push(self.descriptor.read8(offset as u64)?); }
+        let descriptor = crate::usb::hub_descriptor(&bytes)?;
+        self.hub_descriptor = Some(descriptor);
+        Some(descriptor)
+    }
+    /// Build the controller input context that identifies this slot as a hub. # C: O(1)
+    pub fn prepare_hub_slot(&mut self, hci_version: u16) -> Option<bool> {
+        let hub = self.hub_descriptor?;
+        self.output.invalidate_from_device();
+        let stride = self.context_bytes as u64;
+        let mut output_slot = [0u32; 8];
+        for (index, word) in output_slot.iter_mut().enumerate() { *word = self.output.read32(stride + (index * 4) as u64)?; }
+        let words = context::update_hub_slot_words(self.context_bytes, output_slot, hci_version, self.speed, self.device_protocol, hub)?;
+        for word in words { if !self.input.write32(word.offset as u64, word.value) { return None; } }
+        self.input.clean_to_device();
+        Some(true)
+    }
     /// Publish the command-block wrapper for one Bulk-Only command. # C: O(CBW bytes)
     pub fn submit_storage_cbw(&mut self, mmio: &Mmio, slot: u8, tag: u32, transfer_bytes: u32, device_to_host: bool, cdb: &[u8]) -> Option<u64> {
         let storage = self._storage?;
