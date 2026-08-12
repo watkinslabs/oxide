@@ -32,6 +32,6 @@ pub use vtd_pt::VtdPte;
 pub use vtd_pt_tree::VtdPageTable;
 pub use vtd_tables::VtdTables;
 pub use vtd_ir::{VtdIrTable, VtdIrte, invalidate_irte, remapped_msi};
-pub use vtd_manager::{VtdActivation, VtdHpet, VtdIoapic, VtdMsi, activate_vtd, allocate_vtd_hpet, allocate_vtd_ioapic, allocate_vtd_msi, vtd_eim_capable};
+pub use vtd_manager::{VtdActivation, VtdHpet, VtdIoapic, VtdMsi, activate_vtd, allocate_vtd_hpet, allocate_vtd_ioapic, allocate_vtd_msi, enable_vtd_interrupt_remapping, vtd_eim_capable};
 
 #[cfg(test)] extern crate std;
