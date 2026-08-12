@@ -132,7 +132,7 @@ pub(crate) extern "C" fn dma_alloc_attrs(dev: *mut LinuxDevice, size: usize, dma
     if size == 0 || dma_handle.is_null() { return null_mut(); }
     let order = match order_for_size(size) { Some(v) => v, None => return null_mut() };
     let (pa, va) = match linux_alloc::page_run_alloc(order, true) { Some(v) => v, None => return null_mut() };
-    let dma = match map_for_device(dev, pa, size) { Some(value) => value, None => {
+    let dma = match map_for_device(dev, pa, size, device_dma_mask(dev, true)) { Some(value) => value, None => {
         linux_alloc::page_run_free_pa(pa, order);
         return null_mut();
     } };
@@ -160,7 +160,7 @@ pub(crate) extern "C" fn dma_free_attrs(dev: *mut LinuxDevice, size: usize, cpu_
 pub(crate) extern "C" fn dma_map_single(dev: *mut LinuxDevice, ptr: *mut c_void, size: usize, dir: i32) -> u64 {
     if ptr.is_null() || size == 0 || !valid_dir(dir) { return DMA_MAPPING_ERROR; }
     let pa = match linux_alloc::direct_pa_for_va(ptr as *const u8) { Some(v) => v, None => return DMA_MAPPING_ERROR };
-    let Some(dma) = map_for_device(dev, pa, size) else { return DMA_MAPPING_ERROR; };
+    let Some(dma) = map_for_device(dev, pa, size, device_dma_mask(dev, false)) else { return DMA_MAPPING_ERROR; };
     if !fits_mask(dma, size, device_dma_mask(dev, false)) { unmap_for_device(dev, dma, size); return DMA_MAPPING_ERROR; }
     sync_for_device(dir);
     dma
@@ -181,7 +181,7 @@ pub(crate) extern "C" fn dma_map_page_attrs(dev: *mut LinuxDevice, page: *mut Li
     // SAFETY: dma_map_page's KPI requires page to be a live descriptor while the mapping is installed.
     let base = match unsafe { linux_alloc::linux_page_phys(page) } { Some(v) => v, None => return DMA_MAPPING_ERROR };
     let pa = match base.checked_add(offset as u64) { Some(v) => v, None => return DMA_MAPPING_ERROR };
-    let Some(dma) = map_for_device(dev, pa, size) else { return DMA_MAPPING_ERROR; };
+    let Some(dma) = map_for_device(dev, pa, size, device_dma_mask(dev, false)) else { return DMA_MAPPING_ERROR; };
     if !fits_mask(dma, size, device_dma_mask(dev, false)) { unmap_for_device(dev, dma, size); return DMA_MAPPING_ERROR; }
     if attrs & DMA_ATTR_SKIP_CPU_SYNC == 0 { sync_for_device(dir); }
     dma
@@ -435,7 +435,7 @@ fn map_sg_entry(dev: *mut LinuxDevice, ent: &ScatterList, dir: i32, attrs: u64) 
     } else {
         match linux_alloc::direct_pa_for_va(ent.dma_address as *const u8) { Some(v) => v, None => return DMA_MAPPING_ERROR }
     };
-    let Some(dma) = map_for_device(dev, pa, ent.length as usize) else { return DMA_MAPPING_ERROR; };
+    let Some(dma) = map_for_device(dev, pa, ent.length as usize, device_dma_mask(dev, false)) else { return DMA_MAPPING_ERROR; };
     if !fits_mask(dma, ent.length as usize, device_dma_mask(dev, false)) {
         unmap_for_device(dev, dma, ent.length as usize);
         return DMA_MAPPING_ERROR;
@@ -444,10 +444,10 @@ fn map_sg_entry(dev: *mut LinuxDevice, ent: &ScatterList, dir: i32, attrs: u64) 
     dma
 }
 
-fn map_for_device(dev: *mut LinuxDevice, pa: u64, len: usize) -> Option<u64> {
+fn map_for_device(dev: *mut LinuxDevice, pa: u64, len: usize, mask: u64) -> Option<u64> {
     match crate::linux_pci::bdf_for_device(dev) {
-        Some(bdf) => iommu::map_dma(bdf, pa, len),
-        None => Some(pa),
+        Some(bdf) => iommu::map_dma_below(bdf, pa, len, mask),
+        None => fits_mask(pa, len, mask).then_some(pa),
     }
 }
 

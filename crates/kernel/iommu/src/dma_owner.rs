@@ -15,13 +15,19 @@ static MAPPINGS: Spinlock<Vec<Mapping>, Devices> = Spinlock::new(Vec::new());
 /// under the full requester identity; callers must unmap before memory reuse.
 /// # C: O(live mappings)
 pub fn map_dma(requester: Bdf, pa: u64, len: usize) -> Option<u64> {
+    map_dma_below(requester, pa, len, u64::MAX)
+}
+
+/// Install a DMA mapping constrained by the requester's inclusive DMA mask.
+/// # C: O(live mappings)
+pub fn map_dma_below(requester: Bdf, pa: u64, len: usize, mask: u64) -> Option<u64> {
     if len == 0 || !super::bus_master_admitted(requester) { return None; }
     let _ = pa.checked_add(len as u64 - 1)?;
     let iova = if super::amd_vi_manager::owns(requester) {
-        super::amd_vi_manager::map_dma(requester, pa, len)?
+        super::amd_vi_manager::map_dma_below(requester, pa, len, mask)?
     } else if super::vtd_manager::owns(requester) {
-        super::vtd_manager::map_dma(requester, pa, len)?
-    } else { pa };
+        super::vtd_manager::map_dma_below(requester, pa, len, mask)?
+    } else if pa.checked_add(len as u64 - 1)? <= mask { pa } else { return None };
     let mapping = Mapping { requester, iova, pa, len };
     MAPPINGS.lock().push(mapping);
     Some(mapping.iova)

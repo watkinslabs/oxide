@@ -38,8 +38,12 @@ impl VtdTables {
     pub fn map_identity_range(&mut self, pa: u64, len: u64) -> bool { self.map_identity(pa, len).is_some() }
     /// Install one live DMA interval at a newly allocated IOVA interval. # C: O(pages * levels)
     pub fn map_dma(&mut self, pa: u64, len: u64, align: u64) -> Option<Mapping> {
+        self.map_dma_below(pa, len, align, u64::MAX)
+    }
+    /// Install one live DMA interval below an inclusive device address mask. # C: O(pages * levels)
+    pub fn map_dma_below(&mut self, pa: u64, len: u64, align: u64, mask: u64) -> Option<Mapping> {
         if pa & (PAGE_BYTES - 1) != 0 { return None; }
-        let iova = self.space.alloc(len, align)?;
+        let iova = self.space.alloc_below(len, align, mask)?;
         if !self.page_table.map(iova.start, pa, iova.len) {
             let _ = self.space.free(iova);
             return None;
