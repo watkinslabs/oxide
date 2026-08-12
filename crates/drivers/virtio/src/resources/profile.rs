@@ -108,7 +108,15 @@ impl VirtioTransportProfile {
         early_payload_policy: VirtioEarlyPayloadPolicy,
         child_requirements: VirtioChildRequirements,
     ) -> Self {
-        Self { drv_features, msix0_handler, queue_plans, early_payload_policy, child_requirements }
+        // Ring features are transport capabilities. Keep them outside every
+        // child driver's device-specific feature declaration.
+        Self {
+            drv_features: drv_features | crate::VIRTIO_F_RING_EVENT_IDX,
+            msix0_handler,
+            queue_plans,
+            early_payload_policy,
+            child_requirements,
+        }
     }
 
     pub const fn q0(drv_features: u64, msix0_handler: Option<fn()>) -> Self {

@@ -195,7 +195,7 @@ fn child_requirements_describe_transport_contracts() {
 #[test]
 fn transport_profiles_describe_child_queue_policy() {
     let net = VirtioTransportProfile::net(0x55, None);
-    assert_eq!(net.drv_features, 0x55);
+    assert_eq!(net.drv_features, 0x55 | crate::VIRTIO_F_RING_EVENT_IDX);
     assert_eq!(net.early_payload_policy, VirtioEarlyPayloadPolicy::Net);
     assert_eq!(net.queue_plans[1].map(|q| q.index), Some(1));
     assert!(net.queue_plans[1].map(|q| q.map_notify).unwrap_or(false));
@@ -203,7 +203,7 @@ fn transport_profiles_describe_child_queue_policy() {
     assert!(net.child_requirements.needs_device_cfg);
 
     let snd = VirtioTransportProfile::snd(0xaa, None, None);
-    assert_eq!(snd.drv_features, 0xaa);
+    assert_eq!(snd.drv_features, 0xaa | crate::VIRTIO_F_RING_EVENT_IDX);
     assert_eq!(snd.queue_plans[1].map(|q| q.index), Some(1));
     assert_eq!(snd.queue_plans[2].map(|q| q.index), Some(2));
     assert_eq!(snd.queue_plans[3].map(|q| q.index), Some(3));

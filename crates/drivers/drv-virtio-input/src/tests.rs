@@ -69,8 +69,8 @@ fn transport_profile_carries_child_feature_mask() {
     let _devices = crate::registry::own_device_table();
     let profile = crate::transport_profile();
 
-    assert_eq!(profile.drv_features, crate::wanted_features());
-    assert_eq!(profile.drv_features, virtio::VIRTIO_F_VERSION_1);
+    assert_eq!(profile.drv_features, crate::wanted_features() | virtio::VIRTIO_F_RING_EVENT_IDX);
+    assert_eq!(profile.drv_features, virtio::VIRTIO_F_VERSION_1 | virtio::VIRTIO_F_RING_EVENT_IDX);
     assert!(profile.child_requirements.needs_device_cfg);
     assert!(profile.child_requirements.required_queues[0]);
     assert!(profile.child_requirements.required_queues[1]);

@@ -54,7 +54,7 @@ fn blk_transport_profile_declares_blk_size_feature() {
     let profile = crate::modern::transport_profile();
 
     assert_ne!(features & virtio::VIRTIO_BLK_F_BLK_SIZE, 0);
-    assert_eq!(profile.drv_features, features);
+    assert_eq!(profile.drv_features, features | virtio::VIRTIO_F_RING_EVENT_IDX);
     assert!(profile.child_requirements.needs_device_cfg);
     assert!(profile.child_requirements.required_queues[0]);
     assert!(profile.child_requirements.required_queues[1..].iter().all(|required| !required));

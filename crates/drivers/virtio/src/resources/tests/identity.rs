@@ -418,7 +418,7 @@ fn child_model_driver_faults_release_without_transport_publish() {
     reset_model_fault_state(ModelFaultMode::BeginFail);
     let begin_fail = drv::try_device_add(model_fault_device()).unwrap();
     assert!(begin_fail.bound().is_none());
-    assert_eq!(model_fault_events(), vec![("begin", MODEL_FAULT_FEATURES)]);
+    assert_eq!(model_fault_events(), vec![("begin", MODEL_FAULT_FEATURES | crate::VIRTIO_F_RING_EVENT_IDX)]);
     drv::device_del(&begin_fail);
 
     reset_model_fault_state(ModelFaultMode::ChildFail);
@@ -427,7 +427,7 @@ fn child_model_driver_faults_release_without_transport_publish() {
     assert_eq!(
         model_fault_events(),
         vec![
-            ("begin", MODEL_FAULT_FEATURES),
+            ("begin", MODEL_FAULT_FEATURES | crate::VIRTIO_F_RING_EVENT_IDX),
             ("probe", MODEL_FAULT_KEY_RAW),
             ("release", MODEL_FAULT_KEY_RAW),
         ]);
@@ -438,7 +438,7 @@ fn child_model_driver_faults_release_without_transport_publish() {
     assert_eq!(
         model_fault_events(),
         vec![
-            ("begin", MODEL_FAULT_FEATURES),
+            ("begin", MODEL_FAULT_FEATURES | crate::VIRTIO_F_RING_EVENT_IDX),
             ("probe", MODEL_FAULT_KEY_RAW),
             ("publish", MODEL_FAULT_KEY_RAW),
         ]);

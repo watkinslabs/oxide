@@ -136,8 +136,12 @@ pub fn install(device_key: virtio::VirtioChildDeviceKey, bdf: pci::Bdf, resource
         None => return false,
     };
 
-    let Some(rxq) = virtio::VirtioSplitQueue::new(rxq, resources.hhdm).ok() else { return false; };
-    let Some(txq) = virtio::VirtioSplitQueue::new(txq, resources.hhdm).ok() else { return false; };
+    let Some(rxq) = virtio::VirtioSplitQueue::new_with_features(
+        rxq, resources.hhdm, resources.drv_features,
+    ).ok() else { return false; };
+    let Some(txq) = virtio::VirtioSplitQueue::new_with_features(
+        txq, resources.hhdm, resources.drv_features,
+    ).ok() else { return false; };
 
     let ctx = Ctx {
         device_key,

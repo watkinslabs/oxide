@@ -43,7 +43,9 @@ pub fn install(
     if !resources.common_cfg_valid() || find_handle(device_key).is_some() {
         return None;
     }
-    let requestq = match virtio::VirtioSplitQueue::new(requestq_resource, resources.hhdm) {
+    let requestq = match virtio::VirtioSplitQueue::new_with_features(
+        requestq_resource, resources.hhdm, resources.drv_features,
+    ) {
         Ok(queue) => queue,
         Err(_) => return None,
     };

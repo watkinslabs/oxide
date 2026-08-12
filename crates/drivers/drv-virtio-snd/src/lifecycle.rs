@@ -85,10 +85,18 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
         // yet; the loop clears exactly the one frame that was allocated.
         unsafe { for i in 0..SND_FRAME_BYTES { core::ptr::write_volatile(va.add(i), 0); } }
     }
-    let controlq = virtio::VirtioSplitQueue::new(controlq, p.resources.hhdm).ok()?;
-    let mut eventq = virtio::VirtioSplitQueue::new(eventq, p.resources.hhdm).ok()?;
-    let txq = txq.map(|queue| virtio::VirtioSplitQueue::new(queue, p.resources.hhdm)).transpose().ok()?;
-    let rxq = rxq.map(|queue| virtio::VirtioSplitQueue::new(queue, p.resources.hhdm)).transpose().ok()?;
+    let controlq = virtio::VirtioSplitQueue::new_with_features(
+        controlq, p.resources.hhdm, p.resources.drv_features,
+    ).ok()?;
+    let mut eventq = virtio::VirtioSplitQueue::new_with_features(
+        eventq, p.resources.hhdm, p.resources.drv_features,
+    ).ok()?;
+    let txq = txq.map(|queue| virtio::VirtioSplitQueue::new_with_features(
+        queue, p.resources.hhdm, p.resources.drv_features,
+    )).transpose().ok()?;
+    let rxq = rxq.map(|queue| virtio::VirtioSplitQueue::new_with_features(
+        queue, p.resources.hhdm, p.resources.drv_features,
+    )).transpose().ok()?;
     let mut g = CTX.lock_bh::<crate::state::SndBh>();
     if g.iter().any(|ctx| ctx.device_key == p.device_key) {
         drop(g);
@@ -149,9 +157,9 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
     // context and softirq handler must likewise exist before this first doorbell:
     // an immediate completion otherwise has nowhere to be drained.
     if let Some(eventq) = CTX.lock_bh::<crate::state::SndBh>()
-        .iter()
+        .iter_mut()
         .find(|ctx| ctx.device_key == p.device_key)
-        .and_then(|ctx| ctx.eventq.as_ref()) {
+        .and_then(|ctx| ctx.eventq.as_mut()) {
         eventq.kick();
     } else {
         if let Some(ctx) = remove_ctx_and_release_event_handler(p.device_key) {
