@@ -6,7 +6,7 @@
 use super::{arch, policy};
 use super::policy::{Kind, Ready};
 
-use core::sync::atomic::{fence, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{fence, AtomicU32, Ordering};
 
 use syscall::errno::Errno;
 
@@ -19,8 +19,8 @@ const SPIN_CAP: u64 = 1_000_000_000;
 
 /// Logical CPU owning the in-flight round.
 static OWNER: AtomicU32 = AtomicU32::new(OWNER_FREE);
-/// Bitmask of logical CPUs that must still ACK the in-flight round.
-static PENDING: AtomicU64 = AtomicU64::new(0);
+/// CPU set of logical CPUs that must still ACK the in-flight round.
+static PENDING: cpu::AtomicCpuMask = cpu::AtomicCpuMask::new();
 /// `Kind::as_u32` of the in-flight round. Published BEFORE `PENDING`, so a
 /// target that observes its own bit has necessarily observed the kind that
 /// tells it what work the round owes.
@@ -44,9 +44,7 @@ fn this_cpu() -> usize {
 /// # Ctx: IRQ
 pub fn service() {
     let me = this_cpu();
-    if me >= 64 { return; }
-    let bit = 1u64 << me;
-    if PENDING.load(Ordering::Acquire) & bit == 0 { return; }
+    if !PENDING.load(Ordering::Acquire).contains(me) { return; }
     // Linux `ipi_mb`. Ordered after the Acquire load above, so every user
     // access this CPU performed before entering the kernel is complete.
     fence(Ordering::SeqCst);
@@ -64,7 +62,7 @@ pub fn service() {
         // when the round caused no reschedule at all.
         Kind::Rseq => crate::rseq::force_fixup(),
     }
-    PENDING.fetch_and(!bit, Ordering::AcqRel);
+    PENDING.clear_cpu(me, Ordering::AcqRel);
 }
 
 /// Barrier every online CPU named in `mask` except this one, and wait.
@@ -72,7 +70,7 @@ pub fn service() {
 /// missed one is a broken guarantee).
 /// # C: O(popcount(targets)) + IPI round trip
 /// # Ctx: process (IRQs on)
-fn ipi_barrier(mask: u64, kind: Kind) {
+fn ipi_barrier(mask: cpu::CpuMask, kind: Kind) {
     // A SYNC_CORE round owes the CALLING CPU a serializing instruction even
     // when it is the only CPU online — the caller is the thread that rewrote
     // the code it is about to execute. Every other kind is fully implied by
@@ -85,13 +83,14 @@ fn ipi_barrier(mask: u64, kind: Kind) {
     // and Linux holds `preempt_disable()` across `smp_call_function_many`.
     crate::preempt::preempt_disable();
     let me = this_cpu() as u32;
-    let targets = mask & cpu::smp::online_mask() & !(1u64 << me);
+    let targets = mask.intersect(cpu::smp::online_cpumask())
+        .without(cpu::CpuMask::of(me as usize));
     // Linux dispatches a SYNC_CORE round with `on_each_cpu_mask` rather than
     // the many-variant that skips the caller: if we migrate around the barrier
     // and a sibling thread of the same mm takes our place, that thread would
     // otherwise resume having never serialized.
     if policy::includes_self(kind) { arch::sync_core(); }
-    if targets != 0 {
+    if !targets.is_empty() {
         while OWNER
             .compare_exchange(OWNER_FREE, me, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
@@ -108,18 +107,18 @@ fn ipi_barrier(mask: u64, kind: Kind) {
         // for a SYNC_CORE round and silently drop the guarantee.
         KIND.store(kind.as_u32(), Ordering::Release);
         PENDING.store(targets, Ordering::Release);
-        let mut c = 0u32;
-        while c < 64 {
-            if targets & (1u64 << c) != 0 {
+        let mut c = 0usize;
+        while c < cpu::MAX_CPUS {
+            if targets.contains(c) {
                 // SAFETY: `send_resched_ipi` is the boot-installed non-blocking
                 // cross-CPU poke (LAPIC ICR / ICC_SGI1R_EL1); `c` is an online
                 // logical CPU taken from the online mask above.
-                unsafe { let _ = crate::live::send_resched_ipi(c); }
+                unsafe { let _ = crate::live::send_resched_ipi(c as u32); }
             }
             c += 1;
         }
         let mut spins = 0u64;
-        while PENDING.load(Ordering::Acquire) != 0 {
+        while !PENDING.load(Ordering::Acquire).is_empty() {
             service();
             core::hint::spin_loop();
             spins = spins.wrapping_add(1);
@@ -133,7 +132,7 @@ fn ipi_barrier(mask: u64, kind: Kind) {
                 {
                     klog::kerror!("membarrier: target CPU never ACKed the barrier IPI");
                 }
-                PENDING.store(0, Ordering::Release);
+                PENDING.store(cpu::CpuMask::empty(), Ordering::Release);
                 break;
             }
         }
@@ -166,7 +165,7 @@ pub fn global() -> Result<(), Errno> {
 /// that could disagree with the mm itself.
 /// # C: O(online CPUs) + IPI round trip
 pub fn global_expedited() -> Result<(), Errno> {
-    ipi_barrier(u64::MAX, Kind::Mb);
+    ipi_barrier(cpu::CpuMask::all(), Kind::Mb);
     Ok(())
 }
 
@@ -204,12 +203,12 @@ pub fn private_expedited(kind: Kind, cpu_id: i32) -> Result<(), Errno> {
         // otherwise do. `ipi_barrier` still short-circuits the single-CPU
         // case, and the SYNC_CORE carve-out is what must never be skipped.
         if policy::may_skip_round(kind, false, cpu::smp::online_count() <= 1) { return Ok(()); }
-        let mut mask = mm.cpumask();
+        let mut mask = mm.cpumask_full();
         if cpu_id >= 0 {
             // Linux answers a plain success for a CPU that is out of range or
             // is not running this mm, so a racing hotplug is not an error.
             if !policy::cpu_id_targetable(cpu_id, cpu::MAX_CPUS) { return Ok(()); }
-            mask &= 1u64 << cpu_id;
+            mask = mask.intersect(cpu::CpuMask::of(cpu_id as usize));
         }
         ipi_barrier(mask, kind);
         Ok(())
