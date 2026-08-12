@@ -45,6 +45,7 @@ struct DeviceAllocation {
     crtcs: Vec<CrtcRecord>,
     encoders: Vec<EncoderRecord>,
     connectors: Vec<connector::ConnectorRecord>,
+    clients: Vec<client::ClientRecord>,
     vblank: Option<(usize, Layout)>,
     /// The current primary-node master file. Linux keeps this relationship in
     /// `drm_device::master`; the module ABI needs the same ownership decision
@@ -76,6 +77,7 @@ const DRM_DEVICE_DMA_DEV_OFF: usize = 16;
 const DRM_DEVICE_FINAL_KFREE_OFF: usize = 40;
 const DRM_DEVICE_DRIVER_OFF: usize = 56;
 const DRM_DEVICE_FEATURES_OFF: usize = 112;
+const DRM_DEVICE_CLIENTLIST_OFF: usize = 272;
 const DRM_DRIVER_FEATURES_OFF: usize = 168;
 const INITIAL_REFERENCE_COUNT: i32 = 1;
 const LINUX_ENODEV: i32 = 19;
@@ -180,7 +182,7 @@ fn layout_for(size: usize) -> Option<Layout> {
     Layout::from_size_align(size, core::mem::align_of::<u64>()).ok()
 }
 
-fn initialize_device(dev: *mut u8, parent: *mut LinuxDevice, driver: *const c_void, base: *mut u8) {
+fn initialize_device(dev: *mut u8, parent: *mut LinuxDevice, driver: *const c_void, base: *mut u8, size: usize, offset: usize) {
     // SAFETY: dev is the aligned embedded drm_device region inside this allocation; the
     // checked caller-provided offset leaves every written scalar within the object layout.
     unsafe {
@@ -191,6 +193,7 @@ fn initialize_device(dev: *mut u8, parent: *mut LinuxDevice, driver: *const c_vo
         write(dev.add(DRM_DEVICE_DRIVER_OFF).cast::<*const c_void>(), driver);
         let features = if driver.is_null() { 0 } else { *(driver.cast::<u8>().add(DRM_DRIVER_FEATURES_OFF).cast::<u32>()) };
         write(dev.add(DRM_DEVICE_FEATURES_OFF).cast::<u32>(), features);
+        if offset.saturating_add(DRM_DEVICE_CLIENTLIST_OFF + 2 * core::mem::size_of::<*mut c_void>()) <= size { let clientlist = dev.add(DRM_DEVICE_CLIENTLIST_OFF).cast::<*mut c_void>(); write(clientlist, clientlist.cast()); write(clientlist.add(1), clientlist.cast()); }
     }
 }
 
@@ -214,9 +217,9 @@ extern "C" fn __devm_drm_dev_alloc(
     if base.is_null() { return core::ptr::null_mut(); }
     // SAFETY: end was checked against size and base is aligned for the caller's container.
     let dev = unsafe { base.add(offset) };
-    initialize_device(dev, parent, driver, base);
+    initialize_device(dev, parent, driver, base, size, offset);
     let dev = dev.cast::<c_void>();
-    DEVICES.lock().push(DeviceAllocation { dev: dev as usize, base: base as usize, layout, refs: 1, mode_config: false, objects: Vec::new(), planes: Vec::new(), crtcs: Vec::new(), encoders: Vec::new(), connectors: Vec::new(), vblank: None, primary_master: None, put_pending: false, unplugged: false });
+    DEVICES.lock().push(DeviceAllocation { dev: dev as usize, base: base as usize, layout, refs: 1, mode_config: false, objects: Vec::new(), planes: Vec::new(), crtcs: Vec::new(), encoders: Vec::new(), connectors: Vec::new(), clients: Vec::new(), vblank: None, primary_master: None, put_pending: false, unplugged: false });
     if devres::add_action_or_reset(parent, Some(devm_drm_dev_put), dev) != 0 { return core::ptr::null_mut(); }
     base.cast()
 }
