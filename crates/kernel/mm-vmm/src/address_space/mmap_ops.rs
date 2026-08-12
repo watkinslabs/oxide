@@ -3,7 +3,7 @@
 use hal::UserVirtAddr;
 
 use crate::hole::hole_clear;
-use crate::vma::{Vma, VmaBacking, VmaFlags, VmaProt};
+use crate::vma::{FileBackingError, FileMmapSetup, Vma, VmaBacking, VmaFlags, VmaProt};
 use crate::{Error, KResult, MdweAdmission, MmapError, MmapPlacement};
 
 use super::layout::{end_of, is_aligned, validate_aligned, validate_len};
@@ -233,6 +233,17 @@ impl AddressSpace {
             }
         };
 
+        let end_va = end_of(start_va, len_u64)?;
+        if let VmaBacking::File { backing, off } = &backing {
+            let mut setup = FileMmapSetup::new(start_va, end_va, off / hal::PAGE_SIZE_BYTES);
+            if let Err(error) = backing.mmap_setup(&mut setup) {
+                return Err(match error {
+                    FileBackingError::Acces => Error::Access.into(),
+                    FileBackingError::NoMem => Error::NoMem.into(),
+                    FileBackingError::Badf | FileBackingError::Inval | FileBackingError::Io | FileBackingError::OpNotSupp => Error::Inval.into(),
+                });
+            }
+        }
         match mdwe {
             MdweMode::Check => { self.mdwe_admit_new_mapping(prot)?; }
             MdweMode::Admitted(admission) => admission.validate(self, prot)?,
@@ -261,7 +272,6 @@ impl AddressSpace {
             let removed = tree.remove_range(start_va, end);
             for vma in &removed { self.accounting.remove_vma(vma); }
         }
-        let end_va = end_of(start_va, len_u64)?;
         let added = Vma::new_with_may(start_va, end_va, prot, may_prot, flags, backing);
         tree.insert(added.clone()).map_err(|_| Error::Inval)?;
         self.accounting.add_vma(&added);

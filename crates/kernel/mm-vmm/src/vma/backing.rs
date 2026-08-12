@@ -8,6 +8,7 @@
 use alloc::sync::Arc;
 
 use crate::file_rmap::FileRmap;
+use crate::vma::FileMmapSetup;
 
 /// File-backed mmap surface, per `11§4` + `17§5`. The demand-page
 /// handler calls `read_at(off, dst)` to populate a freshly-allocated
@@ -23,6 +24,11 @@ use crate::file_rmap::FileRmap;
 /// `mm-vmm`. Concrete impls live in `kernel/src/dev/...` (inode
 /// wrapper) and pull `vfs::Inode::read` through the page cache.
 pub trait FileBacking: Send + Sync {
+    /// Establish file-specific VMA state after placement selected its exact
+    /// range and before the VMA becomes visible to faults or other threads.
+    /// # C: driver-dependent
+    fn mmap_setup(&self, _setup: &mut FileMmapSetup) -> Result<(), FileBackingError> { Ok(()) }
+
     /// Fill `dst` with bytes starting at file offset `off`. Short
     /// reads are allowed; the handler zero-fills the unread tail.
     /// Errors retain their allocation or I/O cause so the fault path never
