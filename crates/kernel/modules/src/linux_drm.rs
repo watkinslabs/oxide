@@ -23,6 +23,7 @@ use sync::{Spinlock, Modules as ModulesLockClass};
 #[path = "linux_drm_format_helper.rs"] mod format_helper;
 #[path = "linux_drm_atomic.rs"] mod atomic;
 #[path = "linux_drm_vblank.rs"] mod vblank;
+#[path = "linux_drm_vblank_event.rs"] mod vblank_event;
 #[path = "linux_drm_edid.rs"] mod edid;
 #[path = "linux_drm_edid_owner.rs"] mod edid_owner;
 #[path = "linux_drm_edid_read.rs"] mod edid_read;
@@ -168,6 +169,7 @@ pub fn export_symbols() {
     format_helper::export_symbols();
     atomic::export_symbols();
     vblank::export_symbols();
+    vblank_event::export_symbols();
     edid::export_symbols();
     edid_owner::export_symbols();
     edid_read::export_symbols();
@@ -200,6 +202,7 @@ fn initialize_device(dev: *mut u8, parent: *mut LinuxDevice, driver: *const c_vo
         write(dev.add(DRM_DEVICE_FEATURES_OFF).cast::<u32>(), features);
         if offset.saturating_add(DRM_DEVICE_CLIENTLIST_OFF + 2 * core::mem::size_of::<*mut c_void>()) <= size { let clientlist = dev.add(DRM_DEVICE_CLIENTLIST_OFF).cast::<*mut c_void>(); write(clientlist, clientlist.cast()); write(clientlist.add(1), clientlist.cast()); }
         if offset.saturating_add(DRM_DEVICE_FILELIST_INTERNAL_OFF + 2 * core::mem::size_of::<*mut c_void>()) <= size { let filelist = dev.add(DRM_DEVICE_FILELIST_INTERNAL_OFF).cast::<*mut c_void>(); write(filelist, filelist.cast()); write(filelist.add(1), filelist.cast()); }
+        if offset.saturating_add(352) <= size { let events = dev.add(336).cast::<*mut c_void>(); write(events, events.cast()); write(events.add(1), events.cast()); }
     }
 }
 

@@ -65,8 +65,22 @@ fn timer_fire(arg: usize) {
         let expiry = read(vblank.add(DRM_VBLANK_TIMER_EXPIRES_OFF).cast::<i64>()).max(0) as u64;
         let now = now_ns(); let next = expiry.saturating_add(interval as u64).max(now.saturating_add(interval as u64));
         let count = read(vblank.add(DRM_VBLANK_COUNT_OFF).cast::<i64>()); write(vblank.add(DRM_VBLANK_COUNT_OFF).cast::<i64>(), count.saturating_add(1)); write(vblank.add(DRM_VBLANK_TIME_OFF).cast::<i64>(), expiry as i64);
+        vblank_event::deliver_due(read(vblank.cast::<*mut c_void>()), read(vblank.add(112).cast::<u32>()), count.saturating_add(1) as u64, expiry);
         arm(vblank, next);
     }
+}
+
+pub(super) fn get_reference(crtc: *mut c_void) -> bool {
+    let Some(vblank) = record(crtc) else { return false; };
+    // SAFETY: this is the vblank-core reference held until its queued event completes.
+    unsafe { if !read(vblank.add(DRM_VBLANK_ENABLED_OFF).cast::<bool>()) { return false; } let refs = read(vblank.add(DRM_VBLANK_REFCOUNT_OFF).cast::<i32>()); write(vblank.add(DRM_VBLANK_REFCOUNT_OFF).cast::<i32>(), refs.saturating_add(1)); }
+    true
+}
+
+pub(super) fn put_reference_live(dev: *mut c_void, pipe: u32) {
+    if dev.is_null() { return; }
+    // SAFETY: caller retains DEVICES for this live device; the pipe bound is checked before its counter is decremented.
+    unsafe { let count = read(dev.cast::<u8>().add(DRM_DEVICE_NUM_CRTCS_OFF).cast::<u32>()); let base = read(dev.cast::<u8>().add(DRM_DEVICE_VBLANK_OFF).cast::<*mut u8>()); if base.is_null() || pipe >= count { return; } let record = base.add(pipe as usize * DRM_VBLANK_CRTC_SIZE); let refs = read(record.add(DRM_VBLANK_REFCOUNT_OFF).cast::<i32>()); write(record.add(DRM_VBLANK_REFCOUNT_OFF).cast::<i32>(), refs.saturating_sub(1)); }
 }
 
 /// Cancel every timer in vblank storage before the owning DRM allocation is freed.
