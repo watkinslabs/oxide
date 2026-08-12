@@ -27,8 +27,8 @@ unsafe impl Send for OpenedFile {}
 impl OpenedFile {
     fn new(data: usize) -> Self {
         Self {
-            inode: LinuxInode { i_rdev: 0, private: data as *mut c_void },
-            file:  LinuxFile { private_data: data as *mut c_void },
+            inode: LinuxInode::new(0, data as *mut c_void),
+            file:  LinuxFile::new(data as *mut c_void),
         }
     }
 
@@ -193,17 +193,7 @@ mod tests {
         0
     }
 
-    static ACTIVE_FOPS: LinuxFileOperations = LinuxFileOperations {
-        owner: null_mut(),
-        open: Some(active_open),
-        read: Some(active_read),
-        write: None,
-        unlocked_ioctl: None,
-        release: Some(active_release),
-        poll: None,
-        mmap: None,
-        llseek: null_mut(),
-    };
+    static ACTIVE_FOPS: LinuxFileOperations = LinuxFileOperations::new(Some(active_open), Some(active_read), None, None, Some(active_release), None, None);
 
     #[test]
     fn debugfs_file_open_state_lives_until_last_close() {

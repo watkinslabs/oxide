@@ -333,7 +333,7 @@ mod tests {
     #[test]
     fn single_open_read_release_materializes_show_output() {
         let _modules = crate::test_serial::claim();
-        let mut file = LinuxFile { private_data: null_mut() };
+        let mut file = LinuxFile::new(null_mut());
         assert_eq!(single_open(&mut file, Some(show), b"demo\0".as_ptr() as *mut c_void), 0);
         let mut pos = 0i64;
         let mut buf = [0i8; 32];

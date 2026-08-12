@@ -1,4 +1,5 @@
 use super::*;
+use core::mem::{offset_of, size_of};
 use crate::linux_device::types::LinuxKobject;
 use alloc::sync::Arc;
 use core::ffi::c_char;
@@ -46,17 +47,7 @@ unsafe extern "C" fn sample_ioctl(_file: *mut LinuxFile, cmd: u32, arg: usize) -
     if cmd == TEST_IOCTL_CMD && arg == TEST_IOCTL_ARG { TEST_IOCTL_RET } else { -LINUX_EINVAL as isize }
 }
 
-static FOPS: LinuxFileOperations = LinuxFileOperations {
-    owner: null_mut(),
-    open: Some(sample_open),
-    read: Some(sample_read),
-    write: Some(sample_write),
-    unlocked_ioctl: Some(sample_ioctl),
-    release: None,
-    poll: None,
-    mmap: None,
-    llseek: null_mut(),
-};
+static FOPS: LinuxFileOperations = LinuxFileOperations::new(Some(sample_open), Some(sample_read), Some(sample_write), Some(sample_ioctl), None, None, None);
 
 unsafe extern "C" fn state_open(_inode: *mut LinuxInode, file: *mut LinuxFile) -> i32 {
     if file.is_null() { return -LINUX_EINVAL; }
@@ -105,20 +96,28 @@ unsafe extern "C" fn state_release(_inode: *mut LinuxInode, file: *mut LinuxFile
     }
 }
 
-static STATE_FOPS: LinuxFileOperations = LinuxFileOperations {
-    owner: null_mut(),
-    open: Some(state_open),
-    read: Some(state_read),
-    write: None,
-    unlocked_ioctl: None,
-    release: Some(state_release),
-    poll: Some(state_poll),
-    mmap: Some(state_mmap),
-    llseek: null_mut(),
-};
+static STATE_FOPS: LinuxFileOperations = LinuxFileOperations::new(Some(state_open), Some(state_read), None, None, Some(state_release), Some(state_poll), Some(state_mmap));
 
 fn new_cdev() -> LinuxCdev {
     LinuxCdev { kobj: LinuxKobject::new(), ops: core::ptr::null(), owner: null_mut(), dev: 0, count: 0, added: 0, private: null_mut() }
+}
+
+#[test]
+fn external_file_callback_abi_uses_the_linux_object_offsets() {
+    assert_eq!(size_of::<LinuxFileOperations>(), 272);
+    assert_eq!(offset_of!(LinuxFileOperations, llseek), 16);
+    assert_eq!(offset_of!(LinuxFileOperations, read), 24);
+    assert_eq!(offset_of!(LinuxFileOperations, poll), 72);
+    assert_eq!(offset_of!(LinuxFileOperations, unlocked_ioctl), 80);
+    assert_eq!(offset_of!(LinuxFileOperations, mmap), 96);
+    assert_eq!(offset_of!(LinuxFileOperations, open), 104);
+    assert_eq!(offset_of!(LinuxFileOperations, release), 120);
+    assert_eq!(size_of::<LinuxFile>(), 184);
+    assert_eq!(offset_of!(LinuxFile, f_mapping), 16);
+    assert_eq!(offset_of!(LinuxFile, private_data), 24);
+    assert_eq!(offset_of!(LinuxFile, f_flags), 40);
+    assert_eq!(size_of::<LinuxInode>(), 616);
+    assert_eq!(offset_of!(LinuxInode, i_rdev), 76);
 }
 
 #[test]

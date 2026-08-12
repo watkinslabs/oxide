@@ -352,13 +352,11 @@ fn ranges_overlap(a_major: u32, a_base: u32, a_count: u32, b_major: u32, b_base:
     a0 < b1 && b0 < a1
 }
 
-fn inode_for(devt: Devt, cdev: usize) -> LinuxInode {
-    LinuxInode { i_rdev: devt.to_kdev(), private: cdev as *mut c_void }
-}
+fn inode_for(devt: Devt, cdev: usize) -> LinuxInode { LinuxInode::new(devt.to_kdev(), cdev as *mut c_void) }
 
 fn file_for_call(cdev: usize, file: Option<&File>) -> LinuxFile {
     let private = file.map(|f| f.private_data() as *mut c_void).unwrap_or(cdev as *mut c_void);
-    LinuxFile { private_data: private }
+    LinuxFile::new(private)
 }
 
 fn store_file_private(file: &File, lf: &LinuxFile) {
