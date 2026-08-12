@@ -60,13 +60,10 @@ fn ctx(device_key: virtio::VirtioChildDeviceKey) -> Ctx {
         cfg_va: 0,
         hhdm: 0,
         guest_cid: device_key.raw() as u64,
-        rxq: queue(0),
-        txq: queue(1),
-        rx_avail_idx: 0,
-        rx_used_seen: 0,
+        rxq: None,
+        txq: None,
         rx_bufs: [virtio::VirtioDmaFrame::default(); RX_RING_BUFS],
-        tx_avail_idx: 0,
-        tx_used_seen: 0,
+        rx_desc_bufs: [u16::MAX; RX_RING_BUFS],
         tx_buf: virtio::VirtioDmaFrame::default(),
     }
 }
