@@ -100,7 +100,7 @@ core::arch::global_asm!(
     // rbx/rbp/r12-r15 hands the handler garbage in `uc_mcontext` and restores
     // that garbage at `rt_sigreturn`. Push order is identical to the fault
     // stubs, so rsp after them IS a `PtRegs` (`pt_regs.rs`).
-    ".type oxide_irq_common, @function",
+    ".globl oxide_irq_common", ".type oxide_irq_common, @function",
     "oxide_irq_common:",
     // GS fixup, before the first `gs:[…]` below. The interrupted context's
     // ring is in the saved CS the CPU pushed — at this point the per-vector
@@ -193,6 +193,9 @@ core::arch::global_asm!(
 );
 
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+core::arch::global_asm!(include_str!("irq_msi_vectors.S"));
+
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 extern "C" {
     fn oxide_irq_vec_40();
     fn oxide_irq_vec_41();
@@ -213,6 +216,7 @@ extern "C" {
     fn oxide_irq_vec_5d();
     fn oxide_irq_vec_5e();
     fn oxide_irq_vec_5f();
+    fn oxide_irq_vec_60();
 }
 
 /// Per-CPU slot (`gs:[24]`) holding this CPU's hardirq-stack top; 0 = unarmed.
@@ -387,6 +391,9 @@ pub const VEC_MSI_13: u8 = 0x5D;
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub const VEC_MSI_14: u8 = 0x5E;
 pub const VEC_MSI_15: u8 = 0x5F;
+const VEC_MSI_EXPANDED_FIRST: u8 = 0x60;
+const VEC_MSI_EXPANDED_LAST: u8 = 0x7f;
+const VEC_MSI_EXPANDED_STUB_BYTES: u64 = 16;
 pub const VEC_MSI: u8 = VEC_MSI_0;
 
 /// First / last vector in the per-vector MSI pool (F58). Each
@@ -394,7 +401,7 @@ pub const VEC_MSI: u8 = VEC_MSI_0;
 /// the arch-irq dispatcher routes each vector to its registered
 /// handler via the per-vector table.
 pub const VEC_MSI_POOL_FIRST: u8 = VEC_MSI_0;
-pub const VEC_MSI_POOL_LAST:  u8 = VEC_MSI_15;
+pub const VEC_MSI_POOL_LAST:  u8 = VEC_MSI_EXPANDED_LAST;
 pub const VEC_MSI_POOL_LEN: usize =
     (VEC_MSI_POOL_LAST as usize) - (VEC_MSI_POOL_FIRST as usize) + 1;
 
@@ -424,6 +431,7 @@ pub fn irq_stub_addr(vec: u8) -> u64 {
             VEC_MSI_13 => return oxide_irq_vec_5d as *const () as usize as u64,
             VEC_MSI_14 => return oxide_irq_vec_5e as *const () as usize as u64,
             VEC_MSI_15 => return oxide_irq_vec_5f as *const () as usize as u64,
+            v if v >= VEC_MSI_EXPANDED_FIRST && v <= VEC_MSI_EXPANDED_LAST => return (oxide_irq_vec_60 as *const () as usize as u64) + u64::from(v - VEC_MSI_EXPANDED_FIRST) * VEC_MSI_EXPANDED_STUB_BYTES,
             _ => {}
         }
     }
@@ -437,10 +445,10 @@ mod tests {
     use super::{VEC_MSI_POOL_FIRST, VEC_MSI_POOL_LAST, VEC_MSI_POOL_LEN};
 
     #[test]
-    fn msi_pool_covers_sixteen_contiguous_vectors() {
+    fn msi_pool_covers_forty_eight_contiguous_vectors() {
         assert_eq!(VEC_MSI_POOL_FIRST, 0x50);
-        assert_eq!(VEC_MSI_POOL_LAST, 0x5f);
-        assert_eq!(VEC_MSI_POOL_LEN, 16);
+        assert_eq!(VEC_MSI_POOL_LAST, 0x7f);
+        assert_eq!(VEC_MSI_POOL_LEN, 48);
         assert_eq!(
             usize::from(VEC_MSI_POOL_LAST - VEC_MSI_POOL_FIRST) + 1,
             VEC_MSI_POOL_LEN,
