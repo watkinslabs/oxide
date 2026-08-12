@@ -17,13 +17,18 @@ pub struct MsiMessage {
 #[cfg(target_arch = "x86_64")]
 const X86_APIC_MSI_ADDRESS: u64 = 0xFEE0_0000;
 
-/// Allocate one PCI message for `requester_id` and device-local `event_id`.
+/// Allocate one PCI message for `requester` and device-local `event_id`.
 /// # C: O(N_irq_slots)
-pub fn alloc_pci_msi(requester_id: u32, event_id: u32) -> Option<MsiMessage> {
+pub fn alloc_pci_msi(requester: pci::Bdf, event_id: u32) -> Option<MsiMessage> {
     #[cfg(target_arch = "x86_64")]
     {
-        let _ = (requester_id, event_id);
         let vector = super::alloc_x86_vector()?;
+        match iommu::allocate_vtd_msi(requester, vector, 0) {
+            iommu::VtdMsi::Remapped { address, data } => return Some(MsiMessage { irq: vector as u32, address, data }),
+            iommu::VtdMsi::Failed => { let _ = super::free_x86_vector(vector); return None; }
+            iommu::VtdMsi::Direct => {}
+        }
+        let _ = event_id;
         return Some(MsiMessage {
             irq: vector as u32,
             address: X86_APIC_MSI_ADDRESS,
@@ -32,6 +37,7 @@ pub fn alloc_pci_msi(requester_id: u32, event_id: u32) -> Option<MsiMessage> {
     }
     #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
     {
+        let requester_id = ((requester.bus as u32) << 8) | ((requester.device as u32) << 3) | requester.function as u32;
         return arm::alloc(requester_id, event_id);
     }
     #[cfg(not(any(
@@ -39,7 +45,7 @@ pub fn alloc_pci_msi(requester_id: u32, event_id: u32) -> Option<MsiMessage> {
         all(target_arch = "aarch64", target_os = "oxide-kernel")
     )))]
     {
-        let _ = (requester_id, event_id);
+        let _ = (requester, event_id);
         None
     }
 }
@@ -277,7 +283,7 @@ mod tests {
             [None; hal_x86_64::VEC_MSI_POOL_LEN];
 
         for (event_id, slot) in messages.iter_mut().enumerate() {
-            let message = alloc_pci_msi(0x1234, event_id as u32)
+            let message = alloc_pci_msi(pci::Bdf { segment: 0, bus: 0x12, device: 6, function: 4 }, event_id as u32)
                 .expect("one message per advertised vector");
             assert_eq!(message.address, X86_APIC_MSI_ADDRESS);
             assert_eq!(message.irq, u32::from(hal_x86_64::VEC_MSI_POOL_FIRST)
@@ -285,7 +291,7 @@ mod tests {
             assert_eq!(message.data, message.irq);
             *slot = Some(message);
         }
-        assert_eq!(alloc_pci_msi(0x1234, messages.len() as u32), None);
+        assert_eq!(alloc_pci_msi(pci::Bdf { segment: 0, bus: 0x12, device: 6, function: 4 }, messages.len() as u32), None);
 
         for message in messages.into_iter().flatten() {
             free_pci_msi(message.irq);

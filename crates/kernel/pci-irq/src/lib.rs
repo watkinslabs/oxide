@@ -123,10 +123,6 @@ impl MsixGroup {
     }
 }
 
-fn requester_id(bdf: pci::Bdf) -> u32 {
-    ((bdf.bus as u32) << 8) | ((bdf.device as u32) << 3) | bdf.function as u32
-}
-
 fn begin_msix_with<R: pci::ConfigSpaceReader>(r: &R, bdf: pci::Bdf) -> Option<MsixGroup> {
     let caps = pci::capabilities(r, bdf);
     let cap_off = caps.find(pci::CAP_ID_MSIX)?.cfg_off;
@@ -142,7 +138,7 @@ fn begin_msix_with<R: pci::ConfigSpaceReader>(r: &R, bdf: pci::Bdf) -> Option<Ms
 
 fn bind_msix_with<R: pci::ConfigSpaceReader>(_: &R, group: &mut MsixGroup,
     entry: MsixEntry, action: arch_irq::DeviceAction, handler: fn()) -> Option<u32> {
-    let message = arch_irq::alloc_pci_msi(requester_id(group.bdf), entry.vector as u32)?;
+    let message = arch_irq::alloc_pci_msi(group.bdf, entry.vector as u32)?;
     if !arch_irq::register_pci_msi_handler(message.irq, action, handler) {
         arch_irq::free_pci_msi(message.irq);
         return None;
@@ -180,7 +176,7 @@ fn request_with<R: pci::ConfigSpaceReader>(r: &R, bdf: pci::Bdf, table: BarMappi
 
 fn request_msi<R: pci::ConfigSpaceReader>(r: &R, bdf: pci::Bdf, cap_off: u8,
     action: arch_irq::DeviceAction, handler: fn()) -> Option<Binding> {
-    let message = arch_irq::alloc_pci_msi(requester_id(bdf), 0)?;
+    let message = arch_irq::alloc_pci_msi(bdf, 0)?;
     if !arch_irq::register_pci_msi_handler(message.irq, action, handler) {
         arch_irq::free_pci_msi(message.irq);
         return None;
@@ -196,7 +192,7 @@ fn request_msi<R: pci::ConfigSpaceReader>(r: &R, bdf: pci::Bdf, cap_off: u8,
 
 fn request_msix<R: pci::ConfigSpaceReader>(r: &R, bdf: pci::Bdf, msi_cap: Option<u8>,
     cap_off: u8, entry_va: u64, action: arch_irq::DeviceAction, handler: fn()) -> Option<Binding> {
-    let message = arch_irq::alloc_pci_msi(requester_id(bdf), 0)?;
+    let message = arch_irq::alloc_pci_msi(bdf, 0)?;
     if !arch_irq::register_pci_msi_handler(message.irq, action, handler) {
         arch_irq::free_pci_msi(message.irq);
         return None;

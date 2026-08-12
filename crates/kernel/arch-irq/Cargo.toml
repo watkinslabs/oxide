@@ -20,6 +20,8 @@ boot-info = { path = "../../shared/boot-info" }
 cpu      = { path = "../cpu" }
 sync     = { path = "../../shared/sync" }
 softirq  = { path = "../softirq" }
+iommu    = { path = "../iommu" }
+pci      = { path = "../../drivers/pci" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64 = { path = "../../arch/hal-x86_64" }

@@ -15,6 +15,7 @@ mod vtd_hw;
 mod vtd_pt;
 mod vtd_pt_tree;
 mod vtd_tables;
+mod vtd_ir;
 mod vtd_manager;
 pub use amd_vi::{AmdViCommand, AmdViDte, AmdViRegisters, AmdViState, AmdViTables, AmdViUnit, COMMAND_BUFFER, COMMAND_HEAD, COMMAND_TAIL,
     CONTROL, CONTROL_COHERENT_ENABLE, CONTROL_COMMAND_ENABLE, CONTROL_COMPLETION_ENABLE, CONTROL_EVENT_ENABLE, CONTROL_IOMMU_ENABLE, DEVICE_TABLE, EVENT_HEAD, EVENT_LOG, EVENT_TAIL};
@@ -26,10 +27,11 @@ pub use amd_vi_pt::{AmdViPte, iova_indices};
 pub use amd_vi_pt_tree::AmdViPageTable;
 pub use domain::{AmdViDomain, Domain, Mapping, amd_vi_unit_for_bdf};
 pub use vtd::{intel_vtd_rmrr_count, intel_vtd_rmrr_for_bdf, intel_vtd_unit_for_bdf};
-pub use vtd_hw::{VtdContextEntry, VtdQiQueue, VtdRegisters, VtdRootEntry};
+pub use vtd_hw::{VtdContextEntry, VtdQiDesc, VtdQiQueue, VtdRegisters, VtdRootEntry};
 pub use vtd_pt::VtdPte;
 pub use vtd_pt_tree::VtdPageTable;
 pub use vtd_tables::VtdTables;
-pub use vtd_manager::{VtdActivation, activate_vtd};
+pub use vtd_ir::{VtdIrTable, VtdIrte, invalidate_irte, remapped_msi};
+pub use vtd_manager::{VtdActivation, VtdMsi, activate_vtd, allocate_vtd_msi};
 
 #[cfg(test)] extern crate std;

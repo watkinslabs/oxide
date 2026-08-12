@@ -10,9 +10,15 @@ const GCMD: u64 = 0x18;
 const GSTS: u64 = 0x1c;
 const GCMD_SET_ROOT_TABLE: u32 = 1 << 30;
 const GCMD_QUEUED_INVALIDATION_ENABLE: u32 = 1 << 26;
+const GCMD_SET_INTERRUPT_REMAP_TABLE: u32 = 1 << 24;
+const GCMD_INTERRUPT_REMAP_ENABLE: u32 = 1 << 25;
+const GCMD_COMPATIBILITY_FORMAT_INTERRUPT: u32 = 1 << 23;
 const GCMD_TRANSLATION_ENABLE: u32 = 1 << 31;
 const GSTS_ROOT_TABLE_PRESENT: u32 = 1 << 30;
 const GSTS_QUEUED_INVALIDATION_ENABLED: u32 = 1 << 26;
+const GSTS_INTERRUPT_REMAP_TABLE_PRESENT: u32 = 1 << 24;
+const GSTS_INTERRUPT_REMAP_ENABLED: u32 = 1 << 25;
+const GSTS_COMPATIBILITY_FORMAT_INTERRUPT: u32 = 1 << 23;
 const GSTS_TRANSLATION_ENABLED: u32 = 1 << 31;
 const CCMD_INVALIDATE: u64 = 1 << 63;
 const CCMD_GLOBAL: u64 = 1 << 61;
@@ -27,6 +33,8 @@ const CONTEXT_TRANSLATION_MULTI_LEVEL: u64 = 0;
 const CONTEXT_ADDRESS_WIDTH_MASK: u64 = 0x7;
 const CONTEXT_DOMAIN_ID_SHIFT: u64 = 8;
 const ECAP_QUEUED_INVALIDATION: u64 = 1 << 1;
+const ECAP_INTERRUPT_REMAP: u64 = 1 << 3;
+const ECAP_EXTENDED_INTERRUPT_MODE: u64 = 1 << 4;
 const QI_DESC_BYTES: u64 = core::mem::size_of::<VtdQiDesc>() as u64;
 const QI_DESC_COUNT: u16 = (PAGE_BYTES / QI_DESC_BYTES) as u16;
 
@@ -39,6 +47,10 @@ impl VtdQiDesc {
     pub const fn global_context() -> Self { Self { words: [1, 0] } }
     /// Build a global IOTLB invalidation descriptor. # C: O(1)
     pub const fn global_iotlb() -> Self { Self { words: [(2u64) | (1 << 4), 0] } }
+    /// Build a selective interrupt-entry-cache invalidation descriptor. # C: O(1)
+    pub const fn interrupt_entry(index: u16, mask: u8) -> Self {
+        Self { words: [4 | (1 << 4) | ((mask as u64 & 0x1f) << 27) | ((index as u64) << 32), 0] }
+    }
     /// Return the little-endian hardware words. # C: O(1)
     #[cfg(test)]
     pub const fn words(self) -> [u64; 2] { self.words }
@@ -136,6 +148,10 @@ impl VtdRegisters {
     pub fn supports_queued_invalidation(&self) -> bool {
         self.read64(ECAP).is_some_and(|ecap| ecap & ECAP_QUEUED_INVALIDATION != 0)
     }
+    /// Return whether this unit supports interrupt remapping. # C: O(1)
+    pub fn supports_interrupt_remapping(&self) -> bool { self.read64(ECAP).is_some_and(|ecap| ecap & ECAP_INTERRUPT_REMAP != 0) }
+    /// Return whether this unit supports x2APIC extended interrupt mode. # C: O(1)
+    pub fn supports_extended_interrupt_mode(&self) -> bool { self.read64(ECAP).is_some_and(|ecap| ecap & ECAP_EXTENDED_INTERRUPT_MODE != 0) }
     /// Program IQA and enable queued invalidation. # C: O(poll limit)
     pub fn enable_queued_invalidation(&self, queue: &VtdQiQueue) -> bool {
         if !self.supports_queued_invalidation() || queue.pa() & (PAGE_BYTES - 1) != 0 { return false; }
@@ -143,6 +159,23 @@ impl VtdRegisters {
         let Some(command) = self.read32(GCMD) else { return false; };
         if !self.write32(GCMD, command | GCMD_QUEUED_INVALIDATION_ENABLE) { return false; }
         self.wait_status(GSTS_QUEUED_INVALIDATION_ENABLED, true)
+    }
+    /// Program IRTA and wait for the hardware to latch it. # C: O(poll limit)
+    pub fn set_interrupt_remap_table(&self, irta: u64) -> bool {
+        if !self.supports_interrupt_remapping() || irta & 0xfff != 0xf { return false; }
+        if !self.write64(0xb8, irta) { return false; }
+        let Some(command) = self.read32(GCMD) else { return false; };
+        if !self.write32(GCMD, command | GCMD_SET_INTERRUPT_REMAP_TABLE) { return false; }
+        self.wait_status(GSTS_INTERRUPT_REMAP_TABLE_PRESENT, true)
+    }
+    /// Enable IR and block compatibility-format messages. # C: O(poll limit)
+    pub fn enable_interrupt_remapping(&self) -> bool {
+        if self.read32(GSTS).is_none_or(|status| status & GSTS_INTERRUPT_REMAP_TABLE_PRESENT == 0) { return false; }
+        let Some(command) = self.read32(GCMD) else { return false; };
+        if !self.write32(GCMD, command | GCMD_INTERRUPT_REMAP_ENABLE) || !self.wait_status(GSTS_INTERRUPT_REMAP_ENABLED, true) { return false; }
+        let Some(command) = self.read32(GCMD) else { return false; };
+        if !self.write32(GCMD, command & !GCMD_COMPATIBILITY_FORMAT_INTERRUPT) { return false; }
+        self.wait_status(GSTS_COMPATIBILITY_FORMAT_INTERRUPT, false)
     }
     /// Complete the global context and IOTLB invalidations required after root installation. # C: O(poll limit)
     pub fn invalidate_initial_tables(&self) -> bool {
@@ -161,6 +194,17 @@ impl VtdRegisters {
     pub fn invalidate_queued(&self, queue: &mut VtdQiQueue) -> bool {
         if self.read32(GSTS).is_none_or(|status| status & GSTS_QUEUED_INVALIDATION_ENABLED == 0) { return false; }
         let Some(tail) = queue.publish(&[VtdQiDesc::global_context(), VtdQiDesc::global_iotlb()]) else { return false; };
+        if !self.write64(IQT, tail) { return false; }
+        for _ in 0..POLL_LIMIT {
+            if self.read64(IQH).is_some_and(|head| head == tail) { return true; }
+            core::hint::spin_loop();
+        }
+        false
+    }
+    /// Invalidate one interrupt-entry-cache record after an IRTE publication. # C: O(poll limit)
+    pub fn invalidate_interrupt_entry(&self, queue: &mut VtdQiQueue, index: u16) -> bool {
+        if self.read32(GSTS).is_none_or(|status| status & GSTS_QUEUED_INVALIDATION_ENABLED == 0) { return false; }
+        let Some(tail) = queue.publish(&[VtdQiDesc::interrupt_entry(index, 0)]) else { return false; };
         if !self.write64(IQT, tail) { return false; }
         for _ in 0..POLL_LIMIT {
             if self.read64(IQH).is_some_and(|head| head == tail) { return true; }
