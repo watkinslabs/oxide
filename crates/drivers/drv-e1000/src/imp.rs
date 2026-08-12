@@ -17,9 +17,9 @@ const ENDPOINT_ACTIVE: u8 = 2;
 #[cfg_attr(target_arch = "aarch64", allow(dead_code))]
 const ENDPOINT_HANDLING: u8 = 3;
 
-struct Endpoint { state: AtomicU8, mmio: AtomicU64, in_handler: AtomicU32 }
+struct Endpoint { state: AtomicU8, mmio: AtomicU64, in_handler: AtomicU32, polling: AtomicBool }
 impl Endpoint {
-    const fn new() -> Self { Self { state: AtomicU8::new(ENDPOINT_FREE), mmio: AtomicU64::new(0), in_handler: AtomicU32::new(0) } }
+    const fn new() -> Self { Self { state: AtomicU8::new(ENDPOINT_FREE), mmio: AtomicU64::new(0), in_handler: AtomicU32::new(0), polling: AtomicBool::new(false) } }
 }
 static ENDPOINTS: [Endpoint; MAX_DEVICES] = [const { Endpoint::new() }; MAX_DEVICES];
 
@@ -128,7 +128,7 @@ impl Controller {
 
 struct E1000NetDev {
     name: alloc::string::String, mac: net::MacAddr, iface: AtomicU64,
-    generation: AtomicU64, removed: AtomicBool, ctrl: Spinlock<Controller, DriverLockClass>,
+    generation: AtomicU64, removed: AtomicBool, endpoint: usize, ctrl: Spinlock<Controller, DriverLockClass>,
 }
 impl E1000NetDev {
     fn xmit_frame(&self, frame: &[u8]) -> net::NetResult<()> { self.ctrl.lock_bh::<sched::bh::SchedBh>().xmit(frame) }
@@ -302,6 +302,10 @@ fn start(c: &Controller) {
     // e1000_open configures hardware before e1000_irq_enable; only then may
     // the completion causes be unmasked. The read flushes the posted write.
     let _ = c.read(regs::ICR);
+    enable_interrupts(c);
+}
+
+fn enable_interrupts(c: &Controller) {
     c.write(regs::IMS, regs::IMS_DEFAULT);
     let _ = c.read(regs::IMS);
 }
@@ -371,11 +375,11 @@ fn trace(_stage: &'static str) {}
 fn endpoint_claim(mmio: u64) -> Option<usize> {
     for (i, e) in ENDPOINTS.iter().enumerate() {
         if e.state.compare_exchange(ENDPOINT_FREE, ENDPOINT_SETUP, Ordering::AcqRel, Ordering::Acquire).is_ok() {
-            e.mmio.store(mmio, Ordering::Release); e.in_handler.store(0, Ordering::Release); return Some(i);
+            e.mmio.store(mmio, Ordering::Release); e.in_handler.store(0, Ordering::Release); e.polling.store(false, Ordering::Release); return Some(i);
         }
     } None
 }
-fn endpoint_release(i: usize) { let e = &ENDPOINTS[i]; e.mmio.store(0, Ordering::Release); e.state.store(ENDPOINT_FREE, Ordering::Release); }
+fn endpoint_release(i: usize) { let e = &ENDPOINTS[i]; e.mmio.store(0, Ordering::Release); e.polling.store(false, Ordering::Release); e.state.store(ENDPOINT_FREE, Ordering::Release); }
 #[cfg_attr(target_arch = "aarch64", allow(dead_code))]
 fn hard_irq() -> bool {
     let mut pending = false;
@@ -386,7 +390,11 @@ fn hard_irq() -> bool {
         // SAFETY: ACTIVE owns this MMIO identity; removal waits for in_handler before unmapping it.
         // SAFETY: ACTIVE owns the live controller MMIO identity until this handler drains.
         let cause = unsafe { core::ptr::read_volatile((mmio + regs::ICR) as *const u32) };
-        pending |= cause != 0;
+        if cause != 0 && e.polling.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+            // SAFETY: ACTIVE publishes the MMIO mapping; mask before deferred poll owns RX cleanup.
+            unsafe { core::ptr::write_volatile((mmio + regs::IMC) as *mut u32, u32::MAX); }
+            pending = true;
+        }
         e.in_handler.fetch_sub(1, Ordering::Release); e.state.store(ENDPOINT_ACTIVE, Ordering::Release);
     }
     if pending { net::backlog::net_rx_schedule_ingress(); }
@@ -410,6 +418,18 @@ fn release_irq(irq: IrqBinding, endpoint: usize) {
     }
 }
 
+/// Finish a bounded device poll without losing an interrupt that arrived while
+/// the hardware source was masked. Returns true when another poll is owed.
+fn complete_poll(endpoint: usize, ctrl: &Controller) -> bool {
+    let ep = &ENDPOINTS[endpoint];
+    if ctrl.read(regs::ICR) != 0 { return true; }
+    // A cause arriving after the ICR read remains latched while masked. Clear
+    // the software poll state first, so IMS delivery schedules a fresh poll.
+    ep.polling.store(false, Ordering::Release);
+    enable_interrupts(ctrl);
+    false
+}
+
 fn poll_rx() {
     let devices: Vec<Arc<E1000NetDev>> = DEVICES.lock_bh::<sched::bh::SchedBh>().iter().map(|r| r.dev.clone()).collect();
     let stack = net::sock::stack();
@@ -425,6 +445,9 @@ fn poll_rx() {
             let _ = stack.netif_rx_ethernet(iface, generation, pkt, net::PacketRxMetadata::default());
         }
         if more { net::backlog::net_rx_schedule_ingress(); }
+        else if complete_poll(dev.endpoint, &dev.ctrl.lock_bh::<sched::bh::SchedBh>()) {
+            net::backlog::net_rx_schedule_ingress();
+        }
     }
 }
 
@@ -487,7 +510,7 @@ impl drv::Driver for E1000Driver {
         let dev = Arc::new(E1000NetDev {
             name: alloc::format!("eth{}", NEXT_NAME.fetch_add(1, Ordering::Relaxed)), mac,
             iface: AtomicU64::new(0), generation: AtomicU64::new(0), removed: AtomicBool::new(false),
-            ctrl: Spinlock::new(controller),
+            endpoint, ctrl: Spinlock::new(controller),
         });
         let stack = net::sock::stack();
         let namespace = net::net_ns::initial_namespace();
