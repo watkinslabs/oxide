@@ -23,6 +23,7 @@ pub(super) fn export_symbols() {
     crate::symtab::export("drm_mode_set_name", drm_mode_set_name as *const () as usize, false);
     crate::symtab::export("drm_mode_vrefresh", drm_mode_vrefresh as *const () as usize, false);
     crate::symtab::export("drm_mode_copy", drm_mode_copy as *const () as usize, false);
+    crate::symtab::export("drm_mode_init", drm_mode_init as *const () as usize, false);
     crate::symtab::export("drm_mode_duplicate", drm_mode_duplicate as *const () as usize, false);
 }
 
@@ -84,6 +85,13 @@ pub(super) extern "C" fn drm_mode_copy(dst: *mut c_void, src: *const c_void) {
     if dst.is_null() || src.is_null() { return; }
     // SAFETY: caller supplies complete non-overlapping display-mode objects; linkage is restored after the value copy.
     unsafe { let mut head = [0u8; core::mem::size_of::<*mut c_void>() * 2]; core::ptr::copy_nonoverlapping(dst.cast::<u8>().add(DRM_DISPLAY_MODE_HEAD_OFF), head.as_mut_ptr(), head.len()); core::ptr::copy_nonoverlapping(src.cast::<u8>(), dst.cast::<u8>(), DRM_DISPLAY_MODE_SIZE); core::ptr::copy_nonoverlapping(head.as_ptr(), dst.cast::<u8>().add(DRM_DISPLAY_MODE_HEAD_OFF), head.len()); }
+}
+
+/// Initialize a mode from another value with an empty list linkage. # C: O(1)
+pub(super) extern "C" fn drm_mode_init(dst: *mut c_void, src: *const c_void) {
+    if dst.is_null() || src.is_null() { return; }
+    // SAFETY: caller supplies complete non-overlapping display-mode objects; the destination is cleared before copying.
+    unsafe { core::ptr::write_bytes(dst.cast::<u8>(), 0, DRM_DISPLAY_MODE_SIZE); drm_mode_copy(dst, src); }
 }
 
 /// Allocate and copy one display mode. # C: O(1)

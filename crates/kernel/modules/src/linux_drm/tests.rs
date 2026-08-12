@@ -143,6 +143,16 @@ fn mode_helpers_name_copy_duplicate_and_measure_refresh() {
 }
 
 #[test]
+fn mode_init_copies_values_but_zeros_list_linkage() {
+    let _modules = crate::test_serial::claim(); let mut src = [0u8; mode::DRM_DISPLAY_MODE_SIZE]; let mut dst = [0xffu8; mode::DRM_DISPLAY_MODE_SIZE];
+    // SAFETY: both buffers reserve complete display-mode ABI objects.
+    unsafe { write(src.as_mut_ptr().cast::<i32>(), 25175); write(src.as_mut_ptr().add(mode::DRM_DISPLAY_MODE_HEAD_OFF).cast::<*mut c_void>(), 1usize as *mut c_void); write(src.as_mut_ptr().add(mode::DRM_DISPLAY_MODE_HEAD_OFF + core::mem::size_of::<*mut c_void>()).cast::<*mut c_void>(), 2usize as *mut c_void); }
+    mode::drm_mode_init(dst.as_mut_ptr().cast(), src.as_ptr().cast());
+    // SAFETY: mode initialization copies values while retaining the cleared destination list head.
+    unsafe { assert_eq!(*(dst.as_ptr().cast::<i32>()), 25175); assert!(dst.as_ptr().add(mode::DRM_DISPLAY_MODE_HEAD_OFF).cast::<*mut c_void>().read().is_null()); assert!(dst.as_ptr().add(mode::DRM_DISPLAY_MODE_HEAD_OFF + core::mem::size_of::<*mut c_void>()).cast::<*mut c_void>().read().is_null()); }
+}
+
+#[test]
 fn connector_attachment_sets_only_its_live_encoder_bit() {
     let _modules = crate::test_serial::claim(); let mut parent = LinuxDevice::new(); let dev = device(&mut parent, 2048); assert_eq!(drmm_mode_config_init(dev), 0); let funcs = 1u8; let mut encoder = TestEncoder([0; 128]); let mut connector = TestConnector([0; 2280]);
     assert_eq!(unsafe { drm_encoder_init(dev, encoder.0.as_mut_ptr().cast(), (&funcs as *const u8).cast(), 10, core::ptr::null()) }, 0); assert_eq!(connector::drm_connector_init(dev, connector.0.as_mut_ptr().cast(), (&funcs as *const u8).cast(), 11), 0); assert_eq!(connector::drm_connector_attach_encoder(connector.0.as_mut_ptr().cast(), encoder.0.as_mut_ptr().cast()), 0);
