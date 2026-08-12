@@ -33,6 +33,14 @@ impl CpuMask {
         out
     }
 
+    /// Set containing every addressable logical CPU. # C: O(words)
+    pub const fn all() -> Self {
+        let mut out = Self { words: [u64::MAX; CPU_MASK_WORDS] };
+        let tail = MAX_CPUS % CPU_MASK_WORD_BITS;
+        if tail != 0 { out.words[CPU_MASK_WORDS - 1] = (1u64 << tail) - 1; }
+        out
+    }
+
     /// True when no CPU is set. # C: O(words)
     pub const fn is_empty(&self) -> bool {
         let mut i = 0;
@@ -114,6 +122,11 @@ impl AtomicCpuMask {
         out
     }
 
+    /// Replace the published set. # C: O(words)
+    pub fn store(&self, mask: CpuMask, order: Ordering) {
+        for (word, value) in self.words.iter().zip(mask.words) { word.store(value, order); }
+    }
+
     /// Publish one CPU as present in the set. # C: O(1)
     pub fn set(&self, cpu: usize, order: Ordering) {
         if cpu < MAX_CPUS {
@@ -146,6 +159,14 @@ mod tests {
         assert!(m.contains(0));
         assert!(m.contains(CPU_MASK_WORD_BITS - 1));
         assert!(!m.contains(MAX_CPUS));
+    }
+
+    #[test]
+    fn all_names_every_addressable_cpu_without_tail_bits() {
+        let mask = CpuMask::all();
+        assert!(mask.contains(0));
+        assert!(mask.contains(MAX_CPUS - 1));
+        assert!(!mask.contains(MAX_CPUS));
     }
 
     #[test]
