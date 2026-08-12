@@ -1,5 +1,11 @@
 # Fixed issues
 
+### F957-drm-plane-abi-layout
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED F957 | DEFECT | blocker | **The module DRM plane facade used field offsets eight bytes past the external-driver ABI for its embedded mode object, format table, callback table, type, and index.** `drm_universal_plane_init` therefore registered and populated the wrong object fields, which can corrupt driver-owned plane state during load. The facade now uses the verified `drm_plane` layout throughout construction, callback teardown, and mode-object cleanup. | F957. Complete record-layout dump from the headers used by the external 6.19 Bochs module: `base=80`, `possible_crtcs=112`, `format_types=120`, `format_count=128`, `funcs=176`, `type=1216`, `index=1220`. `linux_drm::tests::universal_plane_owns_formats_links_the_mode_list_and_cleans_up` independently pins every populated offset; `cargo test -p modules linux_drm` 37 passed. | Chris Watkins |
+
 ### F863-oom-allocation-context-entry
 
 | Status | Class | Sev | Issue | Evidence | Owner |
