@@ -78,6 +78,7 @@ const DRM_DEVICE_FINAL_KFREE_OFF: usize = 40;
 const DRM_DEVICE_DRIVER_OFF: usize = 56;
 const DRM_DEVICE_FEATURES_OFF: usize = 112;
 const DRM_DEVICE_CLIENTLIST_OFF: usize = 272;
+const DRM_DEVICE_FILELIST_INTERNAL_OFF: usize = 224;
 const DRM_DRIVER_FEATURES_OFF: usize = 168;
 const INITIAL_REFERENCE_COUNT: i32 = 1;
 const LINUX_ENODEV: i32 = 19;
@@ -194,6 +195,7 @@ fn initialize_device(dev: *mut u8, parent: *mut LinuxDevice, driver: *const c_vo
         let features = if driver.is_null() { 0 } else { *(driver.cast::<u8>().add(DRM_DRIVER_FEATURES_OFF).cast::<u32>()) };
         write(dev.add(DRM_DEVICE_FEATURES_OFF).cast::<u32>(), features);
         if offset.saturating_add(DRM_DEVICE_CLIENTLIST_OFF + 2 * core::mem::size_of::<*mut c_void>()) <= size { let clientlist = dev.add(DRM_DEVICE_CLIENTLIST_OFF).cast::<*mut c_void>(); write(clientlist, clientlist.cast()); write(clientlist.add(1), clientlist.cast()); }
+        if offset.saturating_add(DRM_DEVICE_FILELIST_INTERNAL_OFF + 2 * core::mem::size_of::<*mut c_void>()) <= size { let filelist = dev.add(DRM_DEVICE_FILELIST_INTERNAL_OFF).cast::<*mut c_void>(); write(filelist, filelist.cast()); write(filelist.add(1), filelist.cast()); }
     }
 }
 
