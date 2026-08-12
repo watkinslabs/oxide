@@ -87,6 +87,23 @@ fn scatterlist_maps_buffer_and_page_entries() {
 }
 
 #[test]
+fn sgtable_mapping_uses_original_entries_and_publishes_mapped_count() {
+    let _modules = crate::test_serial::claim();
+    let mut table = SgTable { sgl: null_mut(), nents: 0, orig_nents: 0 };
+    assert_eq!(sg_alloc_table(&mut table, 2, 0), 0);
+    let mut first = [0u8; 8];
+    let mut second = [0u8; 8];
+    sg_set_buf(table.sgl, first.as_mut_ptr() as *const c_void, first.len() as u32);
+    // SAFETY: sg_alloc_table created exactly two entries.
+    unsafe { sg_set_buf(table.sgl.add(1), second.as_mut_ptr() as *const c_void, second.len() as u32); }
+    assert_eq!(dma_map_sgtable(null_mut(), &mut table, DMA_TO_DEVICE, 0), 0);
+    assert_eq!(table.orig_nents, 2);
+    assert_eq!(table.nents, 2);
+    dma_unmap_sg_attrs(null_mut(), table.sgl, table.orig_nents as i32, DMA_TO_DEVICE, 0);
+    sg_free_table(&mut table);
+}
+
+#[test]
 fn page_dma_mapping_refuses_a_range_past_the_page_run() {
     let _modules = crate::test_serial::claim();
     let page = crate::linux_alloc::alloc_pages(0, 0);
@@ -148,7 +165,7 @@ fn export_symbols_registers_dma_surface() {
     export_symbols();
     for name in [
         "dma_alloc_coherent", "dma_alloc_attrs", "dmam_alloc_coherent", "dmam_alloc_attrs", "dma_free_coherent", "dma_free_attrs", "dmam_free_coherent", "dma_map_single",
-        "dma_unmap_single", "dma_map_page", "dma_map_page_attrs", "dma_unmap_page_attrs", "dma_map_phys", "dma_unmap_phys", "dma_map_resource", "dma_unmap_resource", "dma_map_sg", "dma_map_sg_attrs", "dma_unmap_sg", "dma_unmap_sg_attrs",
+        "dma_unmap_single", "dma_map_page", "dma_map_page_attrs", "dma_unmap_page_attrs", "dma_map_phys", "dma_unmap_phys", "dma_map_resource", "dma_unmap_resource", "dma_map_sg", "dma_map_sg_attrs", "dma_map_sgtable", "dma_unmap_sg", "dma_unmap_sg_attrs",
         "dma_sync_single_for_cpu", "dma_sync_single_for_device", "__dma_sync_single_for_cpu", "__dma_sync_single_for_device",
         "dma_mapping_error", "dma_set_mask", "dma_set_coherent_mask",
         "dma_set_mask_and_coherent", "sg_init_table", "sg_set_buf", "sg_set_page",

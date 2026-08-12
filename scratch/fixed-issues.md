@@ -1,5 +1,11 @@
 # Fixed issues
 
+### F1008-linux-dma-sgtable-kpi
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED F1008 | MISSING | high | **The Linux driver facade exported scatterlist mapping but omitted GPL-only `dma_map_sgtable`, the entry point modern DRM, Wi-Fi, and network drivers use to establish DMA ownership of an entire `sg_table`.** The new wrapper maps `orig_nents` and publishes only the resulting device-visible count into `nents`; header-inline Linux unmap/sync wrappers retain their normal calls to the existing SG exports. | F1008. `linux_dma_tests::sgtable_mapping_uses_original_entries_and_publishes_mapped_count`; export test pins the GPL KPI. Compared with target Linux `kernel/dma/mapping.c::dma_map_sgtable`. | Chris Watkins |
+
 ### F1007-linux-dma-resource-mapping-kpi
 
 | Status | Class | Sev | Issue | Evidence | Owner |

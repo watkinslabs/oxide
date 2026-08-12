@@ -94,6 +94,7 @@ pub fn export_symbols() {
         ("dma_unmap_resource",        dma_unmap_resource        as *const () as usize),
         ("dma_map_sg",                dma_map_sg                as *const () as usize),
         ("dma_map_sg_attrs",          dma_map_sg_attrs          as *const () as usize),
+        ("dma_map_sgtable",           dma_map_sgtable           as *const () as usize),
         ("dma_unmap_sg",              dma_unmap_sg              as *const () as usize),
         ("dma_unmap_sg_attrs",        dma_unmap_sg_attrs        as *const () as usize),
         ("dma_mapping_error",         dma_mapping_error         as *const () as usize),
@@ -126,7 +127,7 @@ pub fn export_symbols() {
         ("dma_pool_alloc",             pool::dma_pool_alloc as *const () as usize),
         ("dma_pool_free",              pool::dma_pool_free as *const () as usize),
     ] {
-        let gpl_only = matches!(name, "dma_map_phys" | "dma_unmap_phys");
+        let gpl_only = matches!(name, "dma_map_phys" | "dma_unmap_phys" | "dma_map_sgtable");
         export(name, addr, gpl_only);
     }
 }
@@ -265,6 +266,23 @@ pub(crate) extern "C" fn dma_map_sg_attrs(dev: *mut LinuxDevice, sg: *mut Scatte
         mapped += 1;
     }
     mapped
+}
+
+/// Linux's `dma_map_sgtable` wrapper maps the original entry count and then
+/// publishes the hardware-visible count in `sgt->nents`. `dma_unmap_sgtable`
+/// is inline in Linux headers and reaches the existing `dma_unmap_sg_attrs`.
+pub(crate) extern "C" fn dma_map_sgtable(dev: *mut LinuxDevice, table: *mut SgTable,
+    dir: i32, attrs: u64) -> i32 {
+    if table.is_null() { return -LINUX_EINVAL; }
+    // SAFETY: the Linux KPI requires a live `struct sg_table` for this call.
+    let table = unsafe { &mut *table };
+    if table.sgl.is_null() || table.orig_nents == 0 || table.orig_nents > i32::MAX as u32 {
+        return -LINUX_EINVAL;
+    }
+    let mapped = dma_map_sg_attrs(dev, table.sgl, table.orig_nents as i32, dir, attrs);
+    if mapped == 0 { return -LINUX_ENOMEM; }
+    table.nents = mapped as u32;
+    LINUX_OK
 }
 
 pub(crate) extern "C" fn dma_unmap_sg(_dev: *mut LinuxDevice, sg: *mut ScatterList, nents: i32, dir: i32) {
