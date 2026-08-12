@@ -128,7 +128,9 @@ fn hard_handler_for(index: usize) {
     }
     endpoint.in_handler.fetch_sub(1, Ordering::Release);
     endpoint.state.store(ACTIVE, Ordering::Release);
-    if transfer_event { softirq::raise(softirq::Slot::UsbInput); }
+    if transfer_event || endpoint.port_changes.load(Ordering::Acquire) != 0 {
+        softirq::raise(softirq::Slot::UsbInput);
+    }
 }
 fn handler_0() { hard_handler_for(0); } fn handler_1() { hard_handler_for(1); }
 fn handler_2() { hard_handler_for(2); } fn handler_3() { hard_handler_for(3); }
@@ -203,6 +205,12 @@ impl Binding {
         let meta = endpoint.transfer_completion_meta.load(Ordering::Acquire);
         if endpoint.transfer_completion_pa.compare_exchange(trb_pa, 0, Ordering::AcqRel, Ordering::Acquire).is_err() { return None; }
         Some(crate::ring::TransferCompletion { trb_pa, residual: meta as u32 & 0x00ff_ffff, completion_code: (meta >> 24) as u8, endpoint_id: (meta >> 32) as u8 & 0x1f, slot: (meta >> 40) as u8 })
+    }
+
+    /// Consume root-port status changes observed by this controller vector.
+    /// # C: O(1)
+    pub(crate) fn take_port_changes(self) -> u64 {
+        ENDPOINTS[self.endpoint].port_changes.swap(0, Ordering::AcqRel)
     }
 
     /// Wait for one exact Transfer Event without consuming another endpoint's TD. # C: O(timeout)

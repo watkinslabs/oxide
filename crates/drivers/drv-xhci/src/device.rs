@@ -12,7 +12,7 @@ use crate::ring::{CommandRing, Trb, TRB_BYTES, TRBS_PER_SEGMENT};
 struct HidDma { ring: DmaPage, report: DmaPage, producer: CommandRing, pending: u64 }
 
 /// Input context, output device context, and endpoint-zero transfer ring.
-pub struct AddressDeviceDma { bdf: pci::Bdf, input: DmaPage, output: DmaPage, ep0: DmaPage, descriptor: DmaPage, context_bytes: u8, speed: u8, slot: u8, _hid: Option<crate::usb::HidBootInterface>, hid_ring: Option<HidDma>, ep0_ring: CommandRing }
+pub struct AddressDeviceDma { bdf: pci::Bdf, input: DmaPage, output: DmaPage, ep0: DmaPage, descriptor: DmaPage, context_bytes: u8, speed: u8, port: u8, slot: u8, _hid: Option<crate::usb::HidBootInterface>, hid_ring: Option<HidDma>, ep0_ring: CommandRing }
 
 impl AddressDeviceDma {
     /// Allocate and construct every DMA object required by Address Device. # C: O(page bytes)
@@ -30,7 +30,7 @@ impl AddressDeviceDma {
         }
         input.clean_to_device(); output.clean_to_device(); ep0.clean_to_device();
         let ep0_ring = CommandRing::new(ep0.dma())?;
-        Some(Self { bdf, input, output, ep0, descriptor, context_bytes, speed, slot: 0, _hid: None, hid_ring: None, ep0_ring })
+        Some(Self { bdf, input, output, ep0, descriptor, context_bytes, speed, port, slot: 0, _hid: None, hid_ring: None, ep0_ring })
     }
 
     /// Input-context device DMA address for Address Device. # C: O(1)
@@ -89,6 +89,8 @@ impl AddressDeviceDma {
     pub fn hid_protocol(&self) -> Option<u8> { self._hid.map(|hid| hid.protocol) }
     /// Enabled xHCI slot retained for this device. # C: O(1)
     pub fn slot(&self) -> u8 { self.slot }
+    /// Physical root-hub port this slot was addressed through. # C: O(1)
+    pub fn port(&self) -> u8 { self.port }
     /// Publish one HID interrupt-IN report receive TRB and ring that endpoint. # C: O(1)
     pub fn submit_hid_report(&mut self, mmio: &Mmio, slot: u8) -> Option<u64> {
         let hid = self._hid?;
