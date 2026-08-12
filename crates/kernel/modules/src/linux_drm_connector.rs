@@ -9,12 +9,26 @@ const DRM_CONNECTOR_INDEX_OFF: usize = 136;
 const DRM_CONNECTOR_TYPE_OFF: usize = 140;
 const DRM_CONNECTOR_TYPE_ID_OFF: usize = 144;
 const DRM_CONNECTOR_FUNCS_OFF: usize = 416;
+pub(super) const DRM_CONNECTOR_POSSIBLE_ENCODERS_OFF: usize = 1736;
+const DRM_CONNECTOR_ENCODER_OFF: usize = 1744;
 pub(super) const MODE_CONFIG_NUM_CONNECTOR_OFF: usize = 248;
 pub(super) const DRM_MODE_OBJECT_CONNECTOR: u32 = 0xc0c0_c0c0;
 
 pub(super) fn export_symbols() {
     crate::symtab::export("drm_connector_init", drm_connector_init as *const () as usize, false);
     crate::symtab::export("drm_connector_cleanup", drm_connector_cleanup as *const () as usize, false);
+    crate::symtab::export("drm_connector_attach_encoder", drm_connector_attach_encoder as *const () as usize, false);
+}
+
+/// Add an encoder to a connector's possible-encoder routing mask. # C: O(1)
+pub(super) extern "C" fn drm_connector_attach_encoder(connector: *mut c_void, encoder: *mut c_void) -> i32 {
+    if connector.is_null() || encoder.is_null() { return -LINUX_EINVAL; }
+    let dev = unsafe { *(connector.cast::<*mut c_void>()) }; let mut devices = DEVICES.lock();
+    let Some(rec) = devices.iter_mut().find(|rec| rec.dev == dev as usize) else { return -LINUX_ENODEV; };
+    if !rec.connectors.iter().any(|entry| entry.ptr == connector as usize) || !rec.encoders.iter().any(|entry| entry.ptr == encoder as usize) { return -LINUX_ENODEV; }
+    // SAFETY: both objects are live in the same graph; ABI fields model the routing relation.
+    unsafe { if !(*(connector.cast::<u8>().add(DRM_CONNECTOR_ENCODER_OFF).cast::<*mut c_void>())).is_null() { return -LINUX_EINVAL; } let index = *(encoder.cast::<u8>().add(DRM_ENCODER_INDEX_OFF).cast::<u32>()); if index >= MAX_KMS_OBJECTS as u32 { return -LINUX_EINVAL; } let mask = connector.cast::<u8>().add(DRM_CONNECTOR_POSSIBLE_ENCODERS_OFF).cast::<u32>(); write(mask, *mask | (1u32 << index)); }
+    0
 }
 
 /// Initialize a connector and publish it in the device connector list. # C: O(N_connectors + N_objects)
