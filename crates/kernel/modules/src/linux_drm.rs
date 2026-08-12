@@ -17,6 +17,7 @@ struct DeviceAllocation {
     base: usize,
     layout: Layout,
     refs: usize,
+    mode_config: bool,
     put_pending: bool,
     unplugged: bool,
 }
@@ -34,6 +35,24 @@ const DRM_DEVICE_DRIVER_OFF: usize = 56;
 const DRM_DEVICE_FEATURES_OFF: usize = 112;
 const DRM_DRIVER_FEATURES_OFF: usize = 168;
 const INITIAL_REFERENCE_COUNT: i32 = 1;
+const LINUX_ENODEV: i32 = 19;
+const LINUX_EBUSY: i32 = 16;
+const DRM_MODE_CONFIG_OFF: usize = 360;
+const DRM_DEVICE_SIZE: usize = 1584;
+const MODE_CONFIG_FB_LIST_OFF: usize = 216;
+const MODE_CONFIG_CONNECTOR_LIST_OFF: usize = 256;
+const MODE_CONFIG_ENCODER_LIST_OFF: usize = 320;
+const MODE_CONFIG_PLANE_LIST_OFF: usize = 344;
+const MODE_CONFIG_COLOROP_LIST_OFF: usize = 368;
+const MODE_CONFIG_CRTC_LIST_OFF: usize = 392;
+const MODE_CONFIG_PROPERTY_LIST_OFF: usize = 408;
+const MODE_CONFIG_PRIVOBJ_LIST_OFF: usize = 424;
+const MODE_CONFIG_BLOB_LIST_OFF: usize = 592;
+const MODE_CONFIG_LISTS: [usize; 9] = [
+    MODE_CONFIG_FB_LIST_OFF, MODE_CONFIG_CONNECTOR_LIST_OFF, MODE_CONFIG_ENCODER_LIST_OFF,
+    MODE_CONFIG_PLANE_LIST_OFF, MODE_CONFIG_COLOROP_LIST_OFF, MODE_CONFIG_CRTC_LIST_OFF,
+    MODE_CONFIG_PROPERTY_LIST_OFF, MODE_CONFIG_PRIVOBJ_LIST_OFF, MODE_CONFIG_BLOB_LIST_OFF,
+];
 
 /// Register the DRM core object-lifetime ABI.
 /// # C: O(1)
@@ -44,6 +63,7 @@ pub fn export_symbols() {
     crate::symtab::export("drm_dev_enter", drm_dev_enter as *const () as usize, false);
     crate::symtab::export("drm_dev_exit", drm_dev_exit as *const () as usize, false);
     crate::symtab::export("drm_dev_unplug", drm_dev_unplug as *const () as usize, false);
+    crate::symtab::export("drmm_mode_config_init", drmm_mode_config_init as *const () as usize, false);
 }
 
 fn layout_for(size: usize) -> Option<Layout> {
@@ -87,7 +107,7 @@ extern "C" fn __devm_drm_dev_alloc(
     let dev = unsafe { base.add(offset) };
     initialize_device(dev, parent, driver, base);
     let dev = dev.cast::<c_void>();
-    DEVICES.lock().push(DeviceAllocation { dev: dev as usize, base: base as usize, layout, refs: 1, put_pending: false, unplugged: false });
+    DEVICES.lock().push(DeviceAllocation { dev: dev as usize, base: base as usize, layout, refs: 1, mode_config: false, put_pending: false, unplugged: false });
     if devres::add_action_or_reset(parent, Some(devm_drm_dev_put), dev) != 0 { return core::ptr::null_mut(); }
     base.cast()
 }
@@ -119,6 +139,32 @@ extern "C" fn drm_dev_get(dev: *mut c_void) {
     if dev.is_null() { return; }
     let mut devices = DEVICES.lock();
     if let Some(rec) = devices.iter_mut().find(|rec| rec.dev == dev as usize && !rec.put_pending) { rec.refs = rec.refs.saturating_add(1); }
+}
+
+fn is_live_device(dev: *mut c_void) -> bool {
+    !dev.is_null() && DEVICES.lock().iter().any(|rec| rec.dev == dev as usize && !rec.put_pending && !rec.unplugged)
+}
+
+/// Initialize the KMS mode-object lists embedded in a managed DRM device. # C: O(1)
+extern "C" fn drmm_mode_config_init(dev: *mut c_void) -> i32 {
+    if !is_live_device(dev) { return -LINUX_ENODEV; }
+    {
+        let mut devices = DEVICES.lock();
+        let Some(rec) = devices.iter_mut().find(|rec| rec.dev == dev as usize) else { return -LINUX_ENODEV; };
+        if rec.mode_config || rec.dev.saturating_sub(rec.base).saturating_add(DRM_DEVICE_SIZE) > rec.layout.size() { return -LINUX_EBUSY; }
+        rec.mode_config = true;
+    }
+    let config = dev.cast::<u8>().wrapping_add(DRM_MODE_CONFIG_OFF);
+    // SAFETY: dev is a live allocation initialized with a full embedded drm_device layout;
+    // every offset names one aligned list_head within its mode_config subobject.
+    unsafe {
+        for off in MODE_CONFIG_LISTS {
+            let head = config.add(off).cast::<*mut c_void>();
+            write(head, head.cast());
+            write(head.add(1), head.cast());
+        }
+    }
+    0
 }
 
 fn next_guard() -> i32 {
@@ -217,6 +263,27 @@ mod tests {
             assert_eq!(*(dev.add(DRM_DEVICE_DRIVER_OFF).cast::<*const c_void>()), (&driver as *const TestDriver).cast());
             assert_eq!(*(dev.add(DRM_DEVICE_FEATURES_OFF).cast::<u32>()), features);
         }
+        devres::release_device(&mut parent);
+    }
+
+    #[test]
+    fn mode_config_initializes_each_object_list_once() {
+        let _modules = crate::test_serial::claim();
+        let mut parent = LinuxDevice::new();
+        let container = __devm_drm_dev_alloc(&mut parent, core::ptr::null(), 2048, 64);
+        // SAFETY: the allocation is 2048 bytes and its embedded DRM device begins at 64.
+        let dev: *mut c_void = unsafe { container.cast::<u8>().add(64).cast() };
+        assert_eq!(drmm_mode_config_init(dev), 0);
+        let config = dev.cast::<u8>().wrapping_add(DRM_MODE_CONFIG_OFF);
+        // SAFETY: the mode config was initialized above, so every tracked list head is live.
+        unsafe {
+            for off in MODE_CONFIG_LISTS {
+                let head = config.add(off).cast::<*mut c_void>();
+                assert_eq!(*head, head.cast());
+                assert_eq!(*head.add(1), head.cast());
+            }
+        }
+        assert_eq!(drmm_mode_config_init(dev), -LINUX_EBUSY);
         devres::release_device(&mut parent);
     }
 
