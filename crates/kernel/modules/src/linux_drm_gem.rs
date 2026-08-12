@@ -1,7 +1,7 @@
 //! DRM generic private-GEM objects and per-file handles.
 
 use super::*;
-use alloc::alloc::alloc;
+use alloc::alloc::{alloc, alloc_zeroed, dealloc};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::alloc::Layout;
@@ -9,10 +9,13 @@ use core::alloc::Layout;
 const LINUX_EBUSY: i32 = 16;
 const LINUX_EINVAL: i32 = 22;
 const PAGE_SIZE: u64 = 4096;
+const DRM_GEM_OBJECT_SIZE: usize = 384;
+const DRM_GEM_SHMEM_OBJECT_SIZE: usize = 448;
 const BITS_PER_BYTE: u64 = 8;
 const DRM_DUMB_HEIGHT_OFF: usize = 0;
 const DRM_DUMB_WIDTH_OFF: usize = 4;
 const DRM_DUMB_BPP_OFF: usize = 8;
+const DRM_DUMB_HANDLE_OFF: usize = 16;
 const DRM_DUMB_PITCH_OFF: usize = 20;
 const DRM_DUMB_SIZE_OFF: usize = 24;
 const DRM_FILE_OBJECT_IDR_HEAD_OFF: usize = 88;
@@ -23,6 +26,8 @@ const DRM_GEM_FILP_OFF: usize = 16;
 const DRM_GEM_SIZE_OFF: usize = 216;
 const DRM_GEM_OBJECT_FUNCS_OFF: usize = 352;
 const DRM_GEM_FUNCS_CLOSE_OFF: usize = 16;
+const DRM_GEM_FUNCS_FREE_OFF: usize = 0;
+const DRM_GEM_SHMEM_VADDR_OFF: usize = 432;
 const INITIAL_REFERENCE_COUNT: i32 = 1;
 
 struct GemHandle { handle: u32, object: usize }
@@ -30,6 +35,9 @@ struct GemHandle { handle: u32, object: usize }
 struct GemFile { next: u32, handles: Vec<GemHandle> }
 
 type GemClose = unsafe extern "C" fn(*mut c_void, *mut c_void);
+type GemFree = unsafe extern "C" fn(*mut c_void);
+
+static SHMEM_OBJECT_FUNCS: [Option<GemFree>; 3] = [Some(shmem_object_free), None, None];
 
 pub(super) fn export_symbols() {
     crate::symtab::export("drm_gem_private_object_init", drm_gem_private_object_init as *const () as usize, false);
@@ -39,6 +47,7 @@ pub(super) fn export_symbols() {
     crate::symtab::export("drm_gem_object_lookup", drm_gem_object_lookup as *const () as usize, false);
     crate::symtab::export("drm_gem_release", drm_gem_release as *const () as usize, false);
     crate::symtab::export("drm_mode_size_dumb", drm_mode_size_dumb as *const () as usize, false);
+    crate::symtab::export("drm_gem_shmem_dumb_create", drm_gem_shmem_dumb_create as *const () as usize, false);
 }
 
 /// Initialize the exact `drm_file.object_idr` owner used by GEM handles.
@@ -111,8 +120,8 @@ pub(super) extern "C" fn drm_gem_handle_create(file: *mut c_void, object: *mut c
     if handle == 0 { return -LINUX_EBUSY; }
     state.next = handle.checked_add(1).unwrap_or(0);
     state.handles.push(GemHandle { handle, object: object as usize });
-    // SAFETY: object is now published to this file and handle_count records that ownership.
-    unsafe { let count = read(object.cast::<u8>().add(DRM_GEM_HANDLE_COUNT_OFF).cast::<u32>()); write(object.cast::<u8>().add(DRM_GEM_HANDLE_COUNT_OFF).cast::<u32>(), count.saturating_add(1)); write(out, handle); }
+    // SAFETY: the newly published handle obtains one object reference and increments its handle count.
+    unsafe { let refs = read(object.cast::<u8>().add(DRM_GEM_REFCOUNT_OFF).cast::<i32>()); let count = read(object.cast::<u8>().add(DRM_GEM_HANDLE_COUNT_OFF).cast::<u32>()); write(object.cast::<u8>().add(DRM_GEM_REFCOUNT_OFF).cast::<i32>(), refs.saturating_add(1)); write(object.cast::<u8>().add(DRM_GEM_HANDLE_COUNT_OFF).cast::<u32>(), count.saturating_add(1)); write(out, handle); }
     0
 }
 
@@ -151,6 +160,30 @@ pub(super) extern "C" fn drm_mode_size_dumb(_dev: *mut c_void, args: *mut c_void
     0
 }
 
+/// Create a page-backed shmem dumb buffer and publish its one file handle. # C: O(size)
+pub(super) extern "C" fn drm_gem_shmem_dumb_create(file: *mut c_void, dev: *mut c_void, args: *mut c_void) -> i32 {
+    let rc = drm_mode_size_dumb(dev, args, 0, 0); if rc != 0 { return rc; }
+    // SAFETY: sizing succeeded and wrote the exact u64 size field in args.
+    let size = unsafe { read(args.cast::<u8>().add(DRM_DUMB_SIZE_OFF).cast::<u64>()) };
+    let Ok(size) = usize::try_from(size) else { return -LINUX_EBUSY; };
+    let Some(backing_layout) = Layout::from_size_align(size, PAGE_SIZE as usize).ok() else { return -LINUX_EBUSY; };
+    let object_layout = Layout::from_size_align(DRM_GEM_SHMEM_OBJECT_SIZE, core::mem::align_of::<u64>()).unwrap();
+    // SAFETY: both layouts were validated and every failure below releases exactly its allocation.
+    let object = unsafe { alloc_zeroed(object_layout) };
+    if object.is_null() { return -LINUX_EBUSY; }
+    // SAFETY: backing is page-aligned zeroed memory owned by this shmem object until its free callback.
+    let backing = unsafe { alloc_zeroed(backing_layout) };
+    if backing.is_null() { unsafe { dealloc(object, object_layout); } return -LINUX_EBUSY; }
+    drm_gem_private_object_init(dev, object.cast(), size);
+    // SAFETY: object reserves the complete shmem-GEM ABI record; these fields install its backing and free contract.
+    unsafe { write(object.add(DRM_GEM_OBJECT_FUNCS_OFF).cast::<*const Option<GemFree>>(), SHMEM_OBJECT_FUNCS.as_ptr()); write(object.add(DRM_GEM_SHMEM_VADDR_OFF).cast::<*mut u8>(), backing); }
+    // SAFETY: args owns the user-visible handle output, populated only after the object is fully initialized.
+    let out = unsafe { args.cast::<u8>().add(DRM_DUMB_HANDLE_OFF).cast::<u32>() };
+    let rc = drm_gem_handle_create(file, object.cast(), out);
+    if rc != 0 { unsafe { dealloc(backing, backing_layout); dealloc(object, object_layout); } return rc; }
+    object_put(object.cast()); 0
+}
+
 fn align_up(value: u64, align: u64) -> Option<u64> { value.checked_add(align.checked_sub(1)?).map(|v| v / align * align) }
 
 fn release_handle(object: *mut c_void, file: *mut c_void) {
@@ -164,6 +197,31 @@ fn release_handle(object: *mut c_void, file: *mut c_void) {
     }
     // SAFETY: this handle's reference is removed exactly once from the file owner's vector.
     unsafe { let count = read(object.cast::<u8>().add(DRM_GEM_HANDLE_COUNT_OFF).cast::<u32>()); write(object.cast::<u8>().add(DRM_GEM_HANDLE_COUNT_OFF).cast::<u32>(), count.saturating_sub(1)); }
+    object_put(object);
+}
+
+fn object_put(object: *mut c_void) {
+    // SAFETY: every caller holds exactly one previously acquired GEM object reference.
+    let refs = unsafe { read(object.cast::<u8>().add(DRM_GEM_REFCOUNT_OFF).cast::<i32>()) };
+    if refs <= 1 { object_free(object); } else { unsafe { write(object.cast::<u8>().add(DRM_GEM_REFCOUNT_OFF).cast::<i32>(), refs - 1); } }
+}
+
+fn object_free(object: *mut c_void) {
+    // SAFETY: funcs is the complete object callback table and its first field is the optional free callback.
+    let funcs = unsafe { read(object.cast::<u8>().add(DRM_GEM_OBJECT_FUNCS_OFF).cast::<*const u8>()) };
+    if funcs.is_null() { return; }
+    // SAFETY: a non-null free slot has the external DRM object-free signature.
+    let free = unsafe { read(funcs.add(DRM_GEM_FUNCS_FREE_OFF).cast::<Option<GemFree>>()) };
+    if let Some(free) = free { unsafe { free(object); } }
+}
+
+unsafe extern "C" fn shmem_object_free(object: *mut c_void) {
+    if object.is_null() { return; }
+    // SAFETY: this callback owns the object allocated by drm_gem_shmem_dumb_create and its page-aligned backing.
+    let (size, backing) = unsafe { (read(object.cast::<u8>().add(DRM_GEM_SIZE_OFF).cast::<usize>()), read(object.cast::<u8>().add(DRM_GEM_SHMEM_VADDR_OFF).cast::<*mut u8>())) };
+    if let Ok(layout) = Layout::from_size_align(size, PAGE_SIZE as usize) { unsafe { dealloc(backing, layout); } }
+    let layout = Layout::from_size_align(DRM_GEM_SHMEM_OBJECT_SIZE, core::mem::align_of::<u64>()).unwrap();
+    unsafe { dealloc(object.cast(), layout); }
 }
 
 #[cfg(test)]
@@ -184,7 +242,7 @@ mod tests {
     #[test]
     fn generic_gem_entry_points_are_module_exports() {
         export_symbols();
-        for name in ["drm_gem_private_object_init", "drm_gem_object_release", "drm_gem_handle_create", "drm_gem_handle_delete", "drm_gem_object_lookup", "drm_gem_release", "drm_mode_size_dumb"] { assert!(crate::symtab::is_exported(name)); }
+        for name in ["drm_gem_private_object_init", "drm_gem_object_release", "drm_gem_handle_create", "drm_gem_handle_delete", "drm_gem_object_lookup", "drm_gem_release", "drm_mode_size_dumb", "drm_gem_shmem_dumb_create"] { assert!(crate::symtab::is_exported(name)); }
     }
 
     #[test]
@@ -196,5 +254,20 @@ mod tests {
         // SAFETY: successful sizing populated the checked output fields.
         unsafe { assert_eq!(read(args.as_ptr().add(DRM_DUMB_PITCH_OFF).cast::<u32>()), 4096); assert_eq!(read(args.as_ptr().add(DRM_DUMB_SIZE_OFF).cast::<u64>()), 3_145_728); write(args.as_mut_ptr().add(DRM_DUMB_WIDTH_OFF).cast::<u32>(), u32::MAX); }
         assert_eq!(drm_mode_size_dumb(core::ptr::null_mut(), args.as_mut_ptr().cast(), 0, 0), -LINUX_EINVAL);
+    }
+
+    #[test]
+    fn shmem_dumb_create_publishes_a_page_backed_handle_and_reclaims_it() {
+        let mut file = [0u8; 416]; let mut dev = [0u8; 64]; let mut args = [0u8; 32];
+        assert!(file_init(file.as_mut_ptr().cast()));
+        // SAFETY: args reserves the complete dumb-buffer ABI record.
+        unsafe { write(args.as_mut_ptr().add(DRM_DUMB_HEIGHT_OFF).cast::<u32>(), 4); write(args.as_mut_ptr().add(DRM_DUMB_WIDTH_OFF).cast::<u32>(), 8); write(args.as_mut_ptr().add(DRM_DUMB_BPP_OFF).cast::<u32>(), 32); }
+        assert_eq!(drm_gem_shmem_dumb_create(file.as_mut_ptr().cast(), dev.as_mut_ptr().cast(), args.as_mut_ptr().cast()), 0);
+        // SAFETY: successful creation populated handle and page-rounded size.
+        let handle = unsafe { read(args.as_ptr().add(DRM_DUMB_HANDLE_OFF).cast::<u32>()) }; assert_ne!(handle, 0);
+        let object = drm_gem_object_lookup(file.as_mut_ptr().cast(), handle); assert!(!object.is_null());
+        // SAFETY: object is live through its file handle and contains the shmem backing pointer.
+        unsafe { assert_eq!(read(object.cast::<u8>().add(DRM_GEM_SIZE_OFF).cast::<usize>()), PAGE_SIZE as usize); assert!(!read(object.cast::<u8>().add(DRM_GEM_SHMEM_VADDR_OFF).cast::<*mut u8>()).is_null()); }
+        assert_eq!(drm_gem_handle_delete(file.as_mut_ptr().cast(), handle), 0); assert!(drm_gem_object_lookup(file.as_mut_ptr().cast(), handle).is_null()); file_release(dev.as_mut_ptr().cast(), file.as_mut_ptr().cast());
     }
 }
