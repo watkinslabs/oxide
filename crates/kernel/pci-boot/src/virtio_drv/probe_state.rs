@@ -1,6 +1,7 @@
 use super::runtime::VirtioPciRuntime;
 use super::{
-    bind_msix_vector, kick_queue_notify, restore_pci_command, unmask_msix_bindings, MsixBinding,
+    bind_msix_vector, bind_shared_msix_vector, kick_queue_notify, release_msix_bindings,
+    restore_pci_command, unmask_msix_bindings, MsixBinding,
     NetRxBootBuffer, ProgrammedQueues, TransportMappings, VirtioProbeDevres, Vec,
     VIRTIO_PCI_PAGE_BASE_MASK,
 };
@@ -73,31 +74,79 @@ impl VirtioProbeState {
         None
     }
 
-    fn bind_msix_config(
+    fn bind_optional_msix(
         &mut self,
         d: &pci::PciDevice,
         caps: &pci::heapless_caps::CapVec,
         bars: &[pci::Bar; 6],
         handler: Option<fn()>,
     ) -> Option<u16> {
-        self.bind_msix_queue(d, caps, bars, handler)
+        match handler {
+            Some(handler) => self.bind_msix_queue(d, caps, bars, Some(handler)),
+            None => Some(virtio::VIRTIO_MSI_NO_VECTOR),
+        }
     }
 
-    fn resolve_queue_plan_msix(
+    fn resolve_per_queue_msix(
         &mut self,
         d: &pci::PciDevice,
         caps: &pci::heapless_caps::CapVec,
         bars: &[pci::Bar; 6],
-        queue_plans: &[Option<virtio::VirtioQueuePlan>; virtio::MAX_RESOURCE_QUEUES],
-    ) -> [Option<virtio::VirtioQueuePlan>; virtio::MAX_RESOURCE_QUEUES] {
-        let mut resolved = *queue_plans;
+        profile: &virtio::VirtioTransportProfile,
+    ) -> Option<(u16, [Option<virtio::VirtioQueuePlan>; virtio::MAX_RESOURCE_QUEUES])> {
+        let mut resolved = profile.queue_plans;
+        let q0_msix_vec = self.bind_optional_msix(d, caps, bars, profile.q0_handler)?;
         for plan in resolved.iter_mut().flatten() {
-            let msix_vec = self
-                .bind_msix_queue(d, caps, bars, plan.msix_handler)
-                .unwrap_or(virtio::VIRTIO_MSI_NO_VECTOR);
+            let msix_vec = self.bind_optional_msix(d, caps, bars, plan.msix_handler)?;
             *plan = plan.with_msix_vec(msix_vec);
         }
-        resolved
+        Some((q0_msix_vec, resolved))
+    }
+
+    fn resolve_shared_queue_msix(
+        &mut self,
+        d: &pci::PciDevice,
+        bars: &[pci::Bar; 6],
+        profile: &virtio::VirtioTransportProfile,
+    ) -> Option<(u16, [Option<virtio::VirtioQueuePlan>; virtio::MAX_RESOURCE_QUEUES])> {
+        let mut handlers = [None; virtio::MAX_RESOURCE_QUEUES + 1];
+        handlers[0] = profile.q0_handler;
+        let mut resolved = profile.queue_plans;
+        for (index, plan) in resolved.iter().enumerate() {
+            handlers[index + 1] = plan.map(|plan| plan.msix_handler).flatten();
+        }
+        let shared = if handlers.iter().any(Option::is_some) {
+            bind_shared_msix_vector(
+                d, bars, &mut self.mappings, &mut self.msix, self.next_msix_vector, &handlers,
+            )?
+        } else {
+            virtio::VIRTIO_MSI_NO_VECTOR
+        };
+        if shared != virtio::VIRTIO_MSI_NO_VECTOR {
+            self.next_msix_vector = self.next_msix_vector.saturating_add(1);
+        }
+        for plan in resolved.iter_mut().flatten() {
+            *plan = plan.with_msix_vec(if plan.msix_handler.is_some() { shared } else { virtio::VIRTIO_MSI_NO_VECTOR });
+        }
+        Some((if profile.q0_handler.is_some() { shared } else { virtio::VIRTIO_MSI_NO_VECTOR }, resolved))
+    }
+
+    fn resolve_msix(
+        &mut self,
+        d: &pci::PciDevice,
+        caps: &pci::heapless_caps::CapVec,
+        bars: &[pci::Bar; 6],
+        profile: &virtio::VirtioTransportProfile,
+    ) -> Option<(u16, u16, [Option<virtio::VirtioQueuePlan>; virtio::MAX_RESOURCE_QUEUES])> {
+        let config = self.bind_optional_msix(d, caps, bars, profile.config_handler)?;
+        if let Some((q0, queues)) = self.resolve_per_queue_msix(d, caps, bars, profile) {
+            return Some((config, q0, queues));
+        }
+        release_msix_bindings(&mut self.msix);
+        self.next_msix_vector = 0;
+        let config = self.bind_optional_msix(d, caps, bars, profile.config_handler)?;
+        let (q0, queues) = self.resolve_shared_queue_msix(d, bars, profile)?;
+        Some((config, q0, queues))
     }
 
     pub(super) fn negotiate_and_program(
@@ -109,16 +158,10 @@ impl VirtioProbeState {
         runtime: VirtioPciRuntime,
     ) -> virtio::CommonCfgBringup<ProgrammedQueues> {
         let bringup = virtio::bring_up_common_cfg(self.cfg_va, profile.drv_features, || {
-            let config_msix_vec = self
-                .bind_msix_config(d, caps, bars, profile.config_handler)
-                .unwrap_or(virtio::VIRTIO_MSI_NO_VECTOR);
+            let (config_msix_vec, q0_msix_vec, queue_plans) = self.resolve_msix(d, caps, bars, &profile)?;
             if virtio::set_config_msix_vector(self.cfg_va, config_msix_vec) != config_msix_vec {
                 return None;
             }
-            let q0_msix_vec = self
-                .bind_msix_queue(d, caps, bars, profile.q0_handler)
-                .unwrap_or(virtio::VIRTIO_MSI_NO_VECTOR);
-            let queue_plans = self.resolve_queue_plan_msix(d, caps, bars, &profile.queue_plans);
             runtime.program_queue_set(self.cfg_va, q0_msix_vec, &queue_plans)
         });
         if (bringup.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0 {
