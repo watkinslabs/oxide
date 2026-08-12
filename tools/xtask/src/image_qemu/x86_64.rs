@@ -30,6 +30,21 @@ impl HardwareProfile {
             Self::NativePci => "e1000,netdev=net0,bus=pcie.0",
         }
     }
+
+    /// Non-virtio input devices supplied by this hardware profile.
+    fn input_devices(self) -> &'static [&'static str] {
+        match self {
+            Self::Default => &[],
+            // Keep these as a named contract rather than anonymous arguments
+            // in the QEMU command: this profile is the regression lane for
+            // Oxide's PCI xHCI and descriptor-driven USB HID stack.
+            Self::NativePci => &[
+                "qemu-xhci,id=xhci,bus=pcie.0",
+                "usb-kbd,bus=xhci.0",
+                "usb-tablet,bus=xhci.0",
+            ],
+        }
+    }
 }
 
 fn validate_nic_selector() -> Result<(), u8> {
@@ -237,6 +252,9 @@ pub(super) fn qemu_run_grub_x86_64(
         "-display", if headless { "none" } else { "gtk" },
         "-no-reboot",
     ]);
+    for device in profile.input_devices() {
+        c.args(["-device", device]);
+    }
     match profile {
         HardwareProfile::Default => c.args([
             "-drive", &format!("if=none,id=root,format=raw,file={}", root_img.display()),
@@ -252,13 +270,6 @@ pub(super) fn qemu_run_grub_x86_64(
             "-device", "virtio-sound-pci,audiodev=snd0,disable-legacy=on,bus=pcie.0",
         ]),
         HardwareProfile::NativePci => c.args([
-            // Exercise the same PCI xHCI + descriptor-driven HID path used
-            // by physical USB keyboards and mice.  These devices are kept
-            // out of the default profile, which intentionally covers virtio
-            // input separately.
-            "-device", "qemu-xhci,id=xhci,bus=pcie.0",
-            "-device", "usb-kbd,bus=xhci.0",
-            "-device", "usb-tablet,bus=xhci.0",
             "-device", "ich9-ahci,id=boot-ahci,bus=pcie.0",
             "-drive", &format!("if=none,id=root,format=raw,file={}", root_img.display()),
             "-device", "ide-hd,drive=root,bus=boot-ahci.0,serial=oxide-root",
@@ -331,5 +342,15 @@ mod tests {
     #[test]
     fn native_profile_selects_the_native_pci_e1000() {
         assert_eq!(HardwareProfile::NativePci.nic_device(), "e1000,netdev=net0,bus=pcie.0");
+    }
+
+    #[test]
+    fn native_profile_exercises_pci_xhci_and_standard_usb_hid() {
+        assert_eq!(HardwareProfile::Default.input_devices(), &[] as &[&str]);
+        assert_eq!(HardwareProfile::NativePci.input_devices(), &[
+            "qemu-xhci,id=xhci,bus=pcie.0",
+            "usb-kbd,bus=xhci.0",
+            "usb-tablet,bus=xhci.0",
+        ]);
     }
 }
