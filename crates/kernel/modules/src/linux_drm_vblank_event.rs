@@ -10,6 +10,7 @@ const DRM_CRTC_INDEX_OFF: usize = 144;
 const DRM_CRTC_STATE_EVENT_OFF: usize = 312;
 const DRM_DEVICE_VBLANK_EVENT_LIST_OFF: usize = 336;
 const DRM_PENDING_EVENT_FILE_OFF: usize = 32;
+#[cfg(test)]
 const DRM_PENDING_EVENT_EVENT_OFF: usize = 16;
 const DRM_PENDING_EVENT_LINK_OFF: usize = 40;
 const DRM_PENDING_EVENT_PENDING_LINK_OFF: usize = 56;
@@ -17,6 +18,7 @@ const DRM_PENDING_VBLANK_PIPE_OFF: usize = 72;
 const DRM_PENDING_VBLANK_SEQUENCE_OFF: usize = 80;
 const DRM_PENDING_VBLANK_EVENT_OFF: usize = 88;
 const DRM_EVENT_SEQUENCE_OFF: usize = 24;
+#[cfg(test)]
 const DRM_EVENT_LENGTH_OFF: usize = 4;
 const DRM_FILE_EVENT_LIST_OFF: usize = 264;
 static EVENT_LOCK: Spinlock<(), ModulesLockClass> = Spinlock::new(());

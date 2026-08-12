@@ -9,49 +9,55 @@
 
 extern crate alloc;
 
-use boot_info::{BootFramebuffer, BootFramebufferBitfield, BootFramebufferKind};
+#[cfg(any(test, all(target_os = "oxide-kernel", target_arch = "x86_64")))]
+mod bochs {
+    use boot_info::{BootFramebuffer, BootFramebufferBitfield, BootFramebufferKind};
 
-const BOCHS_VENDOR: u16 = 0x1234;
-const BOCHS_DEVICE: u16 = 0x1111;
-const VBE_INDEX_PORT: u16 = 0x01ce;
-const VBE_DATA_PORT: u16 = 0x01cf;
-const VBE_ID0: u16 = 0xb0c0;
-const VBE_INDEX_ID: u16 = 0;
-const VBE_INDEX_XRES: u16 = 1;
-const VBE_INDEX_YRES: u16 = 2;
-const VBE_INDEX_BPP: u16 = 3;
-const VBE_INDEX_ENABLE: u16 = 4;
-const VBE_INDEX_BANK: u16 = 5;
-const VBE_INDEX_VIRT_WIDTH: u16 = 6;
-const VBE_INDEX_VIRT_HEIGHT: u16 = 7;
-const VBE_INDEX_X_OFFSET: u16 = 8;
-const VBE_INDEX_Y_OFFSET: u16 = 9;
-const VBE_INDEX_VIDEO_MEMORY_64K: u16 = 10;
-const VBE_ENABLED: u16 = 0x01;
-const VBE_LFB_ENABLED: u16 = 0x40;
-const MODE_WIDTH: u32 = 1024;
-const MODE_HEIGHT: u32 = 768;
-const MODE_BPP: u8 = 32;
-const DRM_FORMAT_XRGB8888: u32 = 0x3432_5258;
-const DRM_FORMAT_ARGB8888: u32 = 0x3432_5241;
+    pub const BOCHS_VENDOR: u16 = 0x1234;
+    pub const BOCHS_DEVICE: u16 = 0x1111;
+    pub const VBE_INDEX_PORT: u16 = 0x01ce;
+    pub const VBE_DATA_PORT: u16 = 0x01cf;
+    pub const VBE_ID0: u16 = 0xb0c0;
+    pub const VBE_INDEX_ID: u16 = 0;
+    pub const VBE_INDEX_XRES: u16 = 1;
+    pub const VBE_INDEX_YRES: u16 = 2;
+    pub const VBE_INDEX_BPP: u16 = 3;
+    pub const VBE_INDEX_ENABLE: u16 = 4;
+    pub const VBE_INDEX_BANK: u16 = 5;
+    pub const VBE_INDEX_VIRT_WIDTH: u16 = 6;
+    pub const VBE_INDEX_VIRT_HEIGHT: u16 = 7;
+    pub const VBE_INDEX_X_OFFSET: u16 = 8;
+    pub const VBE_INDEX_Y_OFFSET: u16 = 9;
+    pub const VBE_INDEX_VIDEO_MEMORY_64K: u16 = 10;
+    pub const VBE_ENABLED: u16 = 0x01;
+    pub const VBE_LFB_ENABLED: u16 = 0x40;
+    pub const MODE_WIDTH: u32 = 1024;
+    pub const MODE_HEIGHT: u32 = 768;
+    pub const MODE_BPP: u8 = 32;
+    pub const DRM_FORMAT_XRGB8888: u32 = 0x3432_5258;
+    pub const DRM_FORMAT_ARGB8888: u32 = 0x3432_5241;
 
-fn mode_bytes(width: u32, height: u32, bpp: u8) -> Option<u64> {
-    u64::from(width).checked_mul(u64::from(height))?.checked_mul(u64::from(bpp).checked_div(8)?)
+    pub fn mode_bytes(width: u32, height: u32, bpp: u8) -> Option<u64> {
+        u64::from(width).checked_mul(u64::from(height))?.checked_mul(u64::from(bpp).checked_div(8)?)
+    }
+
+    pub fn framebuffer(base_pa: u64, vram_bytes: u64) -> Option<BootFramebuffer> {
+        let pitch = MODE_WIDTH.checked_mul(u32::from(MODE_BPP).checked_div(8)?)?;
+        let bytes = mode_bytes(MODE_WIDTH, MODE_HEIGHT, MODE_BPP)?;
+        if base_pa == 0 || bytes > vram_bytes { return None; }
+        Some(BootFramebuffer {
+            base_pa, pitch, width: MODE_WIDTH, height: MODE_HEIGHT, bpp: MODE_BPP,
+            kind: BootFramebufferKind::Rgb,
+            red: BootFramebufferBitfield { offset: 16, length: 8 },
+            green: BootFramebufferBitfield { offset: 8, length: 8 },
+            blue: BootFramebufferBitfield { offset: 0, length: 8 },
+            _pad: [0; 2],
+        })
+    }
 }
 
-fn framebuffer(base_pa: u64, vram_bytes: u64) -> Option<BootFramebuffer> {
-    let pitch = MODE_WIDTH.checked_mul(u32::from(MODE_BPP).checked_div(8)?)?;
-    let bytes = mode_bytes(MODE_WIDTH, MODE_HEIGHT, MODE_BPP)?;
-    if base_pa == 0 || bytes > vram_bytes { return None; }
-    Some(BootFramebuffer {
-        base_pa, pitch, width: MODE_WIDTH, height: MODE_HEIGHT, bpp: MODE_BPP,
-        kind: BootFramebufferKind::Rgb,
-        red: BootFramebufferBitfield { offset: 16, length: 8 },
-        green: BootFramebufferBitfield { offset: 8, length: 8 },
-        blue: BootFramebufferBitfield { offset: 0, length: 8 },
-        _pad: [0; 2],
-    })
-}
+#[cfg(any(test, all(target_os = "oxide-kernel", target_arch = "x86_64")))]
+use bochs::*;
 
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 mod kernel {

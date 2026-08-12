@@ -1,5 +1,11 @@
 # Fixed issues
 
+### F998-cross-architecture-driver-build
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED F998 | DEFECT | blocker | **The native-PCI smoke build could not reach QEMU: seven stale DRM constants were production-unused, and then the cross-architecture build exposed three x86 MSI-vector constants and the complete x86-only Bochs register/model surface as unconditional aarch64 dead code.** The DRM values are now removed or test-gated according to their only consumer; the x86 IDT stub bounds are compiled only with the x86 kernel stubs; and Bochs hardware declarations now share the driver’s x86-kernel boundary while hosted tests retain the exact mode helper. | F998. `cargo test -p modules --lib -- --test-threads=1` (337 passed); `cargo test -p drv-bochs --lib -- --test-threads=1` (1 passed); `make x86` and `make arm` link `oxide-x86_64` and `oxide-aarch64` with warnings denied. | Chris Watkins |
+
 ### F993-linux-pci-msix
 
 | Status | Class | Sev | Issue | Evidence | Owner |

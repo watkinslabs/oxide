@@ -4,7 +4,6 @@ use super::*;
 use alloc::alloc::{alloc_zeroed, dealloc};
 
 const DRM_CRTC_STATE_SIZE: usize = 336;
-const DRM_CRTC_STATE_CRTC_OFF: usize = 0;
 const DRM_CRTC_STATE_CHANGE_FLAGS_OFF: usize = 10;
 const DRM_CRTC_STATE_MODE_BLOB_OFF: usize = 264;
 const DRM_CRTC_STATE_DEGAMMA_OFF: usize = 272;

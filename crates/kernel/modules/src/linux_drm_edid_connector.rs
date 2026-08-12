@@ -13,7 +13,6 @@ const DRM_CONNECTOR_EPOCH_OFF: usize = 1728;
 const DRM_PROPERTY_BLOB_HEADER: usize = 88;
 const DRM_PROPERTY_BLOB_LENGTH_OFF: usize = 72;
 const DRM_PROPERTY_BLOB_DATA_OFF: usize = 80;
-const MODE_PREFERRED: u8 = 1 << 3;
 
 pub(super) fn export_symbols() {
     crate::symtab::export("drm_edid_connector_update", drm_edid_connector_update as *const () as usize, false);
