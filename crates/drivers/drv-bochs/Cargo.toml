@@ -1,0 +1,22 @@
+[package]
+name = "drv-bochs"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+boot-info = { path = "../../shared/boot-info" }
+drv = { path = "../drv" }
+drv-simplefb = { path = "../drv-simplefb" }
+fbdev = { path = "../fbdev" }
+pci = { path = "../pci" }
+sync = { path = "../../shared/sync" }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+hal-x86_64 = { path = "../../arch/hal-x86_64" }
+
+[lints]
+workspace = true

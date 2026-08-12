@@ -165,6 +165,18 @@ pub fn write_command<R: ConfigSpaceReader>(r: &R, bdf: Bdf, command: u16) {
     r.write32(bdf, 0x04, (cur & 0xFFFF_0000) | command as u32);
 }
 
+/// Enable Memory Space decoding without granting DMA bus mastering.
+///
+/// Display adapters with a CPU-owned framebuffer need their BAR decoded, but
+/// do not need (and must not implicitly receive) the Bus Master bit.
+/// Returns the prior command value for teardown restoration. # C: O(1)
+pub fn enable_mem_decode<R: ConfigSpaceReader>(r: &R, bdf: Bdf) -> u16 {
+    let old = read_command(r, bdf);
+    let new = old | COMMAND_MEMORY;
+    if new != old { write_command(r, bdf, new); }
+    old
+}
+
 /// Enable Memory Space and Bus Master for a function claimed by a driver.
 /// Returns the previous command value so a driver can restore it on failed
 /// probe or remove when it owns that policy.

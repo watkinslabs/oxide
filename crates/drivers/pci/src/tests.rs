@@ -222,6 +222,15 @@ fn enable_mem_bus_master_preserves_status_bits() {
 }
 
 #[test]
+fn enable_mem_decode_does_not_grant_bus_master() {
+    let r = MapReader { m: Mutex::new(HashMap::new()) };
+    let bdf = Bdf { segment: 0, bus: 0, device: 4, function: 0 };
+    r.write32(bdf, 0x04, 0xbeef_0001);
+    assert_eq!(enable_mem_decode(&r, bdf), 1);
+    assert_eq!(r.read32(bdf, 0x04), 0xbeef_0003);
+}
+
+#[test]
 fn disable_mem_bus_master_preserves_status_bits() {
     let r = MapReader {
         m: Mutex::new(HashMap::new()),
