@@ -39,10 +39,9 @@ mod wait;
 
 #[cfg(target_os = "oxide-kernel")]
 mod imp {
-    use alloc::string::String;
     use alloc::sync::Arc;
+    use alloc::string::String;
     use alloc::vec::Vec;
-    use core::sync::atomic::{AtomicU32, Ordering};
     use sync::{Spinlock, TaskList as DriverLockClass};
     use block::BlockDevice;
     #[cfg(feature = "debug-boot")]
@@ -54,14 +53,10 @@ mod imp {
     /// 0x06 (SATA), prog-if 0x01 (AHCI 1.0). # C: O(1)
     pub const AHCI_CLASS24: u32 = 0x01_06_01;
 
-    /// Global registration-order counter for Linux SCSI disk names.
-    /// Each successfully-published AHCI disk claims the next `sdX` slot.
-    static NEXT_DISK_INDEX: AtomicU32 = AtomicU32::new(0);
-
     struct AhciRecord {
         device_key: pci::Bdf,
         command_orig: u16,
-        name:       String,
+        name:       block::ScsiDiskName,
         dev:        Arc<AhciBlk>,
     }
 
@@ -100,28 +95,6 @@ type AhciBh = sync::NoopBh;
     fn key_device(key: pci::Bdf) -> u8 { key.device }
     #[cfg(feature = "debug-boot")]
     fn key_function(key: pci::Bdf) -> u8 { key.function }
-
-    fn sd_name(index: u32) -> String {
-        let mut out = [0u8; 8];
-        out[0] = b's';
-        out[1] = b'd';
-        let mut suffix = [0u8; 6];
-        let mut k = 0usize;
-        let mut n = index as u64 + 1;
-        while n > 0 && k < suffix.len() {
-            n -= 1;
-            suffix[k] = b'a' + (n % 26) as u8;
-            k += 1;
-            n /= 26;
-        }
-        let mut w = 2usize;
-        while k > 0 && w < out.len() {
-            k -= 1;
-            out[w] = suffix[k];
-            w += 1;
-        }
-        String::from_utf8_lossy(&out[..w]).into_owned()
-    }
 
     pub fn device_key_from_bdf(bdf: pci::Bdf) -> pci::Bdf {
         bdf
@@ -179,10 +152,15 @@ type AhciBh = sync::NoopBh;
         let dev = Arc::new(AhciBlk::new(a, binding, blk_size, capacity));
 
         let block_dev: Arc<dyn BlockDevice> = dev.clone();
-        let name = sd_name(NEXT_DISK_INDEX.fetch_add(1, Ordering::Relaxed));
-        let existed = block::registry::by_name(&name).is_some();
+        let Some(name) = block::reserve_scsi_disk_name() else {
+            dev.remove();
+            unregister_completion_if_idle();
+            return 0;
+        };
+        let name_text = String::from(name.as_str());
+        let existed = block::registry::by_name(&name_text).is_some();
         let idx = block::registry::register_with_driver(
-            block::registry::BlockDriver::fixed("sd", block::uapi::SCSI_DISK_MAJOR), &name, serial.as_deref(), block_dev);
+            block::registry::BlockDriver::fixed("sd", block::uapi::SCSI_DISK_MAJOR), &name_text, serial.as_deref(), block_dev);
         let published = if idx != 0 && !existed {
             let mut devices = DEVICES.lock_bh::<AhciBh>();
             if devices.iter().any(|rec| rec.device_key == device_key) {
@@ -191,7 +169,7 @@ type AhciBh = sync::NoopBh;
                 devices.push(AhciRecord {
                     device_key,
                     command_orig,
-                    name: name.clone(),
+                    name,
                     dev: dev.clone(),
                 });
                 true
@@ -201,7 +179,7 @@ type AhciBh = sync::NoopBh;
         };
         if !published {
             if idx != 0 && !existed {
-                let _ = block::registry::unregister(&name);
+                let _ = block::registry::unregister(&name_text);
             }
             dev.remove();
             unregister_completion_if_idle();
@@ -239,6 +217,16 @@ type AhciBh = sync::NoopBh;
     /// Remove the registered AHCI disk and release controller-owned resources.
     /// # C: O(N_ahci + N_disks + port shutdown)
     pub fn remove(device_key: pci::Bdf) -> bool {
+        let name = match DEVICES
+            .lock_bh::<AhciBh>()
+            .iter()
+            .find(|rec| rec.device_key == device_key)
+            .map(|rec| String::from(rec.name.as_str()))
+        {
+            Some(name) => name,
+            None => return false,
+        };
+        if !block::registry::unregister(&name) { return false; }
         let rec = {
             let mut devices = DEVICES.lock_bh::<AhciBh>();
             match devices.iter().position(|rec| rec.device_key == device_key) {
@@ -246,7 +234,6 @@ type AhciBh = sync::NoopBh;
                 None => return false,
             }
         };
-        let _ = block::registry::unregister(&rec.name);
         rec.dev.remove();
         unregister_completion_if_idle();
         true
