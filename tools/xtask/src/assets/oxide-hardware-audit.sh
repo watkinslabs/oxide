@@ -171,6 +171,37 @@ audit_block()
     emit storage PRESENT "devices=$count"
 }
 
+# Linux exposes a DRM card through /sys/class/drm/cardN.  A hardware card is
+# parented to its PCI device, so its successful driver probe is visible through
+# the parent `driver` link.  simpledrm intentionally has no hardware parent:
+# its parentless card is the firmware-framebuffer fallback and is still a
+# usable graphical console, not an unbound GPU.
+audit_display()
+{
+    cards=$(path /sys/class/drm)
+    if [ ! -d "$cards" ]; then
+        emit display UNAVAILABLE sysfs
+        return
+    fi
+    count=0
+    for card in "$cards"/card*; do
+        [ -e "$card" ] || [ -L "$card" ] || continue
+        count=$((count + 1))
+        name=${card##*/}
+        driver=$(link_value "/sys/class/drm/$name/device/driver")
+        driver=${driver##*/}
+        case "$driver" in
+            -) emit display-card FIRMWARE-FALLBACK "card=$name" driver=simpledrm ;;
+            *) emit display-card BOUND "card=$name" "driver=$driver" ;;
+        esac
+    done
+    if [ "$count" -eq 0 ]; then
+        emit display NO-CARD drm
+    else
+        emit display PRESENT "cards=$count"
+    fi
+}
+
 audit_input()
 {
     events=$(path /sys/class/input)
@@ -237,6 +268,7 @@ main()
     audit_cpu
     audit_pci
     audit_block
+    audit_display
     audit_input
     audit_network
     audit_iommu
