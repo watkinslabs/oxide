@@ -305,11 +305,14 @@ name = "drv-bochs"
 version = "0.1.0"
 dependencies = [
  "boot-info",
+ "drm",
  "drv",
  "drv-simplefb",
+ "fbcon",
  "fbdev",
  "hal-x86_64",
  "pci",
+ "pmm",
  "sync",
 ]
 
