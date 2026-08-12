@@ -14,7 +14,16 @@ const DRM_RECT_Y1_OFF: usize = 4;
 const DRM_RECT_X2_OFF: usize = 8;
 const DRM_RECT_Y2_OFF: usize = 12;
 
-pub(super) fn export_symbols() { crate::symtab::export("drm_fb_memcpy", drm_fb_memcpy as *const () as usize, false); }
+pub(super) fn export_symbols() { crate::symtab::export("drm_fb_memcpy", drm_fb_memcpy as *const () as usize, false); crate::symtab::export("drm_fb_clip_offset", drm_fb_clip_offset as *const () as usize, false); }
+
+/// Return a clip rectangle's top-left byte offset in the first framebuffer plane. # C: O(1)
+pub(super) extern "C" fn drm_fb_clip_offset(pitch: u32, format: *const u8, clip: *const c_void) -> u32 {
+    if format.is_null() || clip.is_null() { return 0; }
+    // SAFETY: format and clip are complete immutable ABI records supplied by the DRM format-helper call chain.
+    let (cpp, x1, y1) = unsafe { (*format.add(DRM_FORMAT_CPP_OFF) as u64, read(clip.cast::<u8>().add(DRM_RECT_X1_OFF).cast::<i32>()), read(clip.cast::<u8>().add(DRM_RECT_Y1_OFF).cast::<i32>())) };
+    if x1 < 0 || y1 < 0 { return 0; }
+    (y1 as u64).saturating_mul(pitch as u64).saturating_add((x1 as u64).saturating_mul(cpp)).min(u32::MAX as u64) as u32
+}
 
 /// Copy a rectangle from shadow GEM mappings into display mappings. # C: O(planes * height * width)
 pub(super) extern "C" fn drm_fb_memcpy(dst: *mut c_void, dst_pitch: *const u32, src: *const c_void, fb: *const c_void, clip: *const c_void) {
@@ -61,5 +70,11 @@ mod tests {
     }
 
     #[test]
-    fn fb_memcpy_is_a_module_export() { export_symbols(); assert!(crate::symtab::is_exported("drm_fb_memcpy")); }
+    fn format_helpers_are_module_exports() { export_symbols(); assert!(crate::symtab::is_exported("drm_fb_memcpy")); assert!(crate::symtab::is_exported("drm_fb_clip_offset")); }
+
+    #[test]
+    fn clip_offset_uses_first_plane_pitch_and_pixel_size() {
+        let mut format = [0u8; 24]; let clip = [3i32, 2, 0, 0]; format[DRM_FORMAT_CPP_OFF] = 4;
+        assert_eq!(drm_fb_clip_offset(64, format.as_ptr(), clip.as_ptr().cast()), 140);
+    }
 }
