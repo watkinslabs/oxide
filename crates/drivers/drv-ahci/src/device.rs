@@ -150,6 +150,7 @@ impl AhciBlk {
                                 );
                             }
                         }
+                        pmm::dma::clean_to_device(ctrl.data_va(), len);
                     }
                     ctrl.start_rw(write, lba, count)
                 }
@@ -162,6 +163,7 @@ impl AhciBlk {
                 ok = false;
             } else if !write {
                 let data = ctrl.data_va() as *const u8;
+                pmm::dma::invalidate_from_device(data as u64, len);
                 // SAFETY: terminal IRQ plus command_finished_ok establish DMA
                 // completion; the turn retains exclusive DMA-run ownership.
                 unsafe {
