@@ -41,16 +41,27 @@ pub unsafe fn activate_amd_vi(requesters: &[Bdf], hhdm_offset: u64, regions: &[p
 
     for bdf in requesters {
         let Some(unit) = crate::amd_vi_unit_for_bdf(*bdf) else { continue; };
-        let Some(entry) = manager.iter_mut().find(|entry| entry.unit == unit) else { return AmdViActivation::Failed; };
+        let Some(entry) = manager.iter_mut().find(|entry| entry.unit == unit) else { return activation_failed(&mut manager); };
         // SAFETY: the identity domain maps every PMM-owned DMA address before translation enables.
-        if !unsafe { entry.bootstrap.attach(*bdf, &entry.domain, INITIAL_DOMAIN_ID) } { return AmdViActivation::Failed; }
+        if !unsafe { entry.bootstrap.attach(*bdf, &entry.domain, INITIAL_DOMAIN_ID) } { return activation_failed(&mut manager); }
     }
     for entry in manager.iter_mut() {
-        if !entry.bootstrap.enable() { return AmdViActivation::Failed; }
+        if !entry.bootstrap.enable() { return activation_failed(&mut manager); }
     }
 
     *MANAGER.lock() = manager;
     AmdViActivation::Enabled
+}
+
+/// Roll back every touched AMD-Vi unit after a global bootstrap failure.
+///
+/// Linux's `iommu_disable()` first stops command and event machinery and then
+/// clears translation. We apply that to all units, including ones that reached
+/// `Enabled` before a later unit failed. # C: O(units)
+fn activation_failed(manager: &mut [AmdViBootUnit]) -> AmdViActivation {
+    for entry in manager.iter_mut() { let _ = entry.bootstrap.disable(); }
+    MANAGER.lock().clear();
+    AmdViActivation::Failed
 }
 
 /// Return whether this manager owns the full PCI requester identity. # C: O(units)

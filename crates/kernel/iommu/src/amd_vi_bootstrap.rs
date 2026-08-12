@@ -37,6 +37,8 @@ impl AmdViBootstrap {
             && self.unit.domains_attached_after_drain()
             && self.unit.enable_translation(&self.regs)
     }
+    /// Disable every hardware feature this bootstrap enabled. # C: O(1)
+    pub fn disable(&mut self) -> bool { self.unit.disable_bootstrap(&self.regs) }
     /// Invalidate one changed DMA interval and wait until the command engine consumed it. # C: O(poll limit)
     pub fn invalidate_mapping(&mut self, map: Mapping, domain_id: u16) -> bool {
         let Some(last) = map.iova.end().checked_sub(pci::IOVA_PAGE_SIZE) else { return false; };

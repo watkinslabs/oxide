@@ -233,7 +233,7 @@ impl AmdViRegisters {
 /// Hardware activation state. Each transition corresponds to a required
 /// completed ownership step; translation cannot precede attached domains.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum AmdViState { Discovered, Mapped, TablesProgrammed, DomainsAttached, Enabled }
+pub enum AmdViState { Discovered, Mapped, TablesProgrammed, DomainsAttached, Enabled, Disabled }
 
 pub struct AmdViUnit { pub mmio_pa: u64, pub segment: u16, state: AmdViState }
 impl AmdViUnit {
@@ -312,6 +312,21 @@ impl AmdViUnit {
         regs.write64(CONTROL, control | CONTROL_IOMMU_ENABLE)
             && self.advance(AmdViState::DomainsAttached, AmdViState::Enabled)
     }
+    /// Undo this bootstrap's command/event/translation transition.
+    ///
+    /// This follows Linux's `iommu_disable()`: command processing and event
+    /// logging are stopped before translation is cleared. It is valid for a
+    /// partially prepared unit too, because a failed global boot transition
+    /// must not leave an earlier unit consuming its private tables. # C: O(1)
+    pub fn disable_bootstrap(&mut self, regs: &AmdViRegisters) -> bool {
+        if self.state == AmdViState::Discovered || self.state == AmdViState::Disabled { return true; }
+        let Some(control) = regs.read64(CONTROL) else { return false; };
+        let disabled = control & !(CONTROL_COMMAND_ENABLE | CONTROL_EVENT_ENABLE
+            | CONTROL_COMPLETION_ENABLE | CONTROL_IOMMU_ENABLE);
+        if !regs.write64(CONTROL, disabled) { return false; }
+        self.state = AmdViState::Disabled;
+        true
+    }
     fn advance(&mut self, from: AmdViState, to: AmdViState) -> bool {
         if self.state != from { return false; }
         self.state = to; true
@@ -348,6 +363,13 @@ impl AmdViUnit {
         let required = CONTROL_COMMAND_ENABLE | CONTROL_EVENT_ENABLE | CONTROL_COMPLETION_ENABLE | CONTROL_COHERENT_ENABLE;
         assert_eq!(required & CONTROL_COMPLETION_ENABLE, CONTROL_COMPLETION_ENABLE);
         assert_eq!(required & CONTROL_COHERENT_ENABLE, CONTROL_COHERENT_ENABLE);
+    }
+    #[test] fn rollback_clears_only_bootstrap_owned_enable_bits() {
+        let live = CONTROL_COMMAND_ENABLE | CONTROL_EVENT_ENABLE | CONTROL_COMPLETION_ENABLE
+            | CONTROL_COHERENT_ENABLE | CONTROL_IOMMU_ENABLE | (1 << 19);
+        let disabled = live & !(CONTROL_COMMAND_ENABLE | CONTROL_EVENT_ENABLE
+            | CONTROL_COMPLETION_ENABLE | CONTROL_IOMMU_ENABLE);
+        assert_eq!(disabled, CONTROL_COHERENT_ENABLE | (1 << 19));
     }
     #[test] fn device_table_entries_preserve_the_32_byte_hardware_layout() {
         assert_eq!(core::mem::size_of::<AmdViDte>(), 32);
