@@ -1,4 +1,5 @@
 use crate::linux_device::types::{LinuxDevice, LinuxDeviceDriver};
+pub(super) use crate::linux_resource::LinuxResource;
 use core::ffi::{c_char, c_void};
 
 pub(super) type PlatformProbe = unsafe extern "C" fn(*mut PlatformDevice) -> i32;
@@ -15,19 +16,6 @@ pub(super) const IORESOURCE_TYPE_BITS: u64 = 0x0000_1f00;
 pub(super) const IORESOURCE_MEM: u64 = 0x0000_0200;
 pub(super) const IORESOURCE_IRQ: u64 = 0x0000_0400;
 pub(super) const PLATFORM_DEVICE_REGISTERED: u32 = 1;
-
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub(super) struct LinuxResource {
-    pub(super) start: u64,
-    pub(super) end: u64,
-    pub(super) name: *const c_char,
-    pub(super) flags: u64,
-    pub(super) desc: u64,
-    pub(super) parent: *mut LinuxResource,
-    pub(super) sibling: *mut LinuxResource,
-    pub(super) child: *mut LinuxResource,
-}
 
 #[repr(C)]
 pub(super) struct PlatformDeviceId {

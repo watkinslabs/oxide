@@ -88,6 +88,18 @@ fn pci_kpi_structures_match_the_c_header_abi() {
     assert_eq!(offset_of!(LinuxPciDriver, driver), 104);
 }
 
+#[test]
+fn pci_bar_claim_conflicts_with_the_managed_memory_resource_tree() {
+    let _modules = crate::test_serial::claim();
+    let mut pci = test_dev();
+    let mut other = crate::linux_device::types::LinuxDevice::new();
+    assert_eq!(pci_request_region(&mut pci, TEST_BAR, c"pci".as_ptr()), LINUX_OK);
+    assert!(crate::linux_resource::__devm_request_region(&mut other, crate::linux_resource::iomem_resource(), TEST_MMIO_START, TEST_MMIO_END - TEST_MMIO_START + 1, c"other".as_ptr()).is_null());
+    pci_release_region(&mut pci, TEST_BAR);
+    assert!(!crate::linux_resource::__devm_request_region(&mut other, crate::linux_resource::iomem_resource(), TEST_MMIO_START, TEST_MMIO_END - TEST_MMIO_START + 1, c"other".as_ptr()).is_null());
+    crate::linux_device::devres::release_device(&mut other);
+}
+
 fn test_dev() -> LinuxPciDev {
     // SAFETY: repr(C) KPI structs are plain data and zero is a valid empty state for tests.
     let mut dev: LinuxPciDev = unsafe { MaybeUninit::zeroed().assume_init() };
