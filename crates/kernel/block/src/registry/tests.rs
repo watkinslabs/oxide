@@ -1,6 +1,7 @@
 use super::*;
 use alloc::boxed::Box;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use ::core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use crate::{BlockCompletion, BlockDevice, BlockError, BlockRequest, KResult, MemDisk, QueueFeatures, QueueLimits};
 use sync::{Spinlock, TaskList};
@@ -108,6 +109,17 @@ fn released_minor_never_aliases_a_live_minor() {
     assert_ne!(later, live, "a released tail cannot roll back over a live minor");
     release_number(driver, later);
     release_number(driver, live);
+}
+
+#[test]
+fn scsi_disk_names_use_the_shared_reusable_base26_allocator() {
+    let mut names = Vec::new();
+    for _ in 0..27 { names.push(reserve_scsi_disk_name().expect("SCSI disk name")); }
+    assert_eq!(names[0].as_str(), "sda");
+    assert_eq!(names[25].as_str(), "sdz");
+    assert_eq!(names[26].as_str(), "sdaa");
+    drop(names.remove(0));
+    assert_eq!(reserve_scsi_disk_name().expect("reused SCSI disk name").as_str(), "sda");
 }
 
 #[test]
