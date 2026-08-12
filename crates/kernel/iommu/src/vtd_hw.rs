@@ -1,13 +1,18 @@
 const PAGE_BYTES: u64 = 4096;
 const RTADDR: u64 = 0x20;
+const IQH: u64 = 0x80;
+const IQT: u64 = 0x88;
+const IQA: u64 = 0x90;
 const CAP: u64 = 0x08;
 const ECAP: u64 = 0x10;
 const CCMD: u64 = 0x28;
 const GCMD: u64 = 0x18;
 const GSTS: u64 = 0x1c;
 const GCMD_SET_ROOT_TABLE: u32 = 1 << 30;
+const GCMD_QUEUED_INVALIDATION_ENABLE: u32 = 1 << 26;
 const GCMD_TRANSLATION_ENABLE: u32 = 1 << 31;
 const GSTS_ROOT_TABLE_PRESENT: u32 = 1 << 30;
+const GSTS_QUEUED_INVALIDATION_ENABLED: u32 = 1 << 26;
 const GSTS_TRANSLATION_ENABLED: u32 = 1 << 31;
 const CCMD_INVALIDATE: u64 = 1 << 63;
 const CCMD_GLOBAL: u64 = 1 << 61;
@@ -21,6 +26,52 @@ const CONTEXT_PRESENT: u64 = 1;
 const CONTEXT_TRANSLATION_MULTI_LEVEL: u64 = 0;
 const CONTEXT_ADDRESS_WIDTH_MASK: u64 = 0x7;
 const CONTEXT_DOMAIN_ID_SHIFT: u64 = 8;
+const ECAP_QUEUED_INVALIDATION: u64 = 1 << 1;
+const QI_DESC_BYTES: u64 = core::mem::size_of::<VtdQiDesc>() as u64;
+const QI_DESC_COUNT: u16 = (PAGE_BYTES / QI_DESC_BYTES) as u16;
+
+/// Hardware-format 16-byte VT-d queued-invalidation descriptor.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct VtdQiDesc { words: [u64; 2] }
+impl VtdQiDesc {
+    /// Build a global context-cache invalidation descriptor. # C: O(1)
+    pub const fn global_context() -> Self { Self { words: [1, 0] } }
+    /// Build a global IOTLB invalidation descriptor. # C: O(1)
+    pub const fn global_iotlb() -> Self { Self { words: [(2u64) | (1 << 4), 0] } }
+    /// Return the little-endian hardware words. # C: O(1)
+    #[cfg(test)]
+    pub const fn words(self) -> [u64; 2] { self.words }
+}
+
+/// One permanent 256-entry queued-invalidation ring.  Its single page uses
+/// IQA.QS=0, the VT-d encoding for 2^8 16-byte descriptors.
+pub struct VtdQiQueue { pa: u64, hhdm_offset: u64, tail: u16 }
+impl VtdQiQueue {
+    /// Allocate and clear an IQA.QS=0 queue. # C: O(1)
+    pub fn new(hhdm_offset: u64) -> Option<Self> {
+        if hhdm_offset == 0 { return None; }
+        let pa = pmm::setup::alloc_contig(pmm::Order(0))?;
+        // SAFETY: this page is permanently and exclusively owned as a VT-d QI ring.
+        unsafe { core::ptr::write_bytes(hhdm_offset.wrapping_add(pa) as *mut u8, 0, PAGE_BYTES as usize); }
+        Some(Self { pa, hhdm_offset, tail: 0 })
+    }
+    /// Physical IQA base. # C: O(1)
+    pub const fn pa(&self) -> u64 { self.pa }
+    fn publish(&mut self, descs: &[VtdQiDesc]) -> Option<u64> {
+        if descs.is_empty() || descs.len() >= QI_DESC_COUNT as usize { return None; }
+        let start = self.tail;
+        for desc in descs {
+            let slot = self.tail as u64;
+            let va = self.hhdm_offset.checked_add(self.pa)?.checked_add(slot * QI_DESC_BYTES)? as *mut VtdQiDesc;
+            // SAFETY: tail is always reduced modulo QI_DESC_COUNT and this QI page is exclusive.
+            unsafe { core::ptr::write_volatile(va, *desc); }
+            self.tail = (self.tail + 1) % QI_DESC_COUNT;
+        }
+        core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+        Some(u64::from(self.tail) * QI_DESC_BYTES).filter(|_| start != self.tail)
+    }
+}
 
 /// Hardware-format 16-byte VT-d root-table entry.
 #[repr(C)]
@@ -81,6 +132,18 @@ impl VtdRegisters {
     }
     /// Return whether the unit observes ordinary CPU stores to its page tables coherently. # C: O(1)
     pub fn cache_coherent(&self) -> bool { self.read64(ECAP).is_some_and(|ecap| ecap & 1 != 0) }
+    /// Return whether ECAP advertises queued invalidation. # C: O(1)
+    pub fn supports_queued_invalidation(&self) -> bool {
+        self.read64(ECAP).is_some_and(|ecap| ecap & ECAP_QUEUED_INVALIDATION != 0)
+    }
+    /// Program IQA and enable queued invalidation. # C: O(poll limit)
+    pub fn enable_queued_invalidation(&self, queue: &VtdQiQueue) -> bool {
+        if !self.supports_queued_invalidation() || queue.pa() & (PAGE_BYTES - 1) != 0 { return false; }
+        if !self.write64(IQA, queue.pa()) || !self.write64(IQH, 0) || !self.write64(IQT, 0) { return false; }
+        let Some(command) = self.read32(GCMD) else { return false; };
+        if !self.write32(GCMD, command | GCMD_QUEUED_INVALIDATION_ENABLE) { return false; }
+        self.wait_status(GSTS_QUEUED_INVALIDATION_ENABLED, true)
+    }
     /// Complete the global context and IOTLB invalidations required after root installation. # C: O(poll limit)
     pub fn invalidate_initial_tables(&self) -> bool {
         let Some(ecap) = self.read64(ECAP) else { return false; };
@@ -94,6 +157,17 @@ impl VtdRegisters {
     }
     /// Complete global context and IOTLB invalidation after a live page-table change. # C: O(poll limit)
     pub fn invalidate_live_mapping(&self) -> bool { self.invalidate_initial_tables() }
+    /// Submit global context and IOTLB invalidations to the enabled QI ring. # C: O(poll limit)
+    pub fn invalidate_queued(&self, queue: &mut VtdQiQueue) -> bool {
+        if self.read32(GSTS).is_none_or(|status| status & GSTS_QUEUED_INVALIDATION_ENABLED == 0) { return false; }
+        let Some(tail) = queue.publish(&[VtdQiDesc::global_context(), VtdQiDesc::global_iotlb()]) else { return false; };
+        if !self.write64(IQT, tail) { return false; }
+        for _ in 0..POLL_LIMIT {
+            if self.read64(IQH).is_some_and(|head| head == tail) { return true; }
+            core::hint::spin_loop();
+        }
+        false
+    }
     /// Enable DMA translation after a root/context tree has been acknowledged. # C: O(poll limit)
     pub fn enable_translation(&self) -> bool {
         if self.read32(GSTS).is_none_or(|status| status & GSTS_ROOT_TABLE_PRESENT == 0) { return false; }
@@ -154,5 +228,13 @@ impl VtdRegisters {
         assert_eq!(root.words(), [0x1234_5001, 0]);
         assert_eq!(context.words(), [0x2345_6001, 0x702]);
         assert!(VtdContextEntry::translated(0x2345_6001, 2, 7).is_none());
+    }
+    #[test] fn queued_invalidation_register_and_descriptor_layout_matches_vtd() {
+        assert_eq!((IQH, IQT, IQA), (0x80, 0x88, 0x90));
+        assert_eq!(GCMD_QUEUED_INVALIDATION_ENABLE, GSTS_QUEUED_INVALIDATION_ENABLED);
+        assert_eq!(core::mem::size_of::<VtdQiDesc>(), 16);
+        assert_eq!(VtdQiDesc::global_context().words(), [1, 0]);
+        assert_eq!(VtdQiDesc::global_iotlb().words(), [0x12, 0]);
+        assert_eq!(QI_DESC_COUNT, 256);
     }
 }
