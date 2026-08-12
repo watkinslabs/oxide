@@ -8,6 +8,8 @@
 
 #![no_std]
 
+extern crate alloc;
+
 pub mod regs;
 pub mod queue;
 #[cfg(target_os = "oxide-kernel")]

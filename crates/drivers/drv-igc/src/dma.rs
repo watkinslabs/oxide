@@ -51,6 +51,12 @@ impl Rings {
     /// Returns the transmit descriptor VA for a bounded slot.
     /// # C: O(1)
     pub fn tx_desc(&self, index: usize) -> *mut regs::AdvTxDesc { (self.tx_desc_va() as *mut regs::AdvTxDesc).wrapping_add(index % queue::RING_COUNT) }
+    /// Returns the receive descriptor VA for device cache maintenance.
+    /// # C: O(1)
+    pub fn rx_desc_slot_va(&self, index: usize) -> u64 { self.rx_desc_va() + (index % queue::RING_COUNT * core::mem::size_of::<regs::AdvRxDesc>()) as u64 }
+    /// Returns the transmit descriptor VA for device cache maintenance.
+    /// # C: O(1)
+    pub fn tx_desc_slot_va(&self, index: usize) -> u64 { self.tx_desc_va() + (index % queue::RING_COUNT * core::mem::size_of::<regs::AdvTxDesc>()) as u64 }
     /// Returns the receive data IOVA for a bounded slot.
     /// # C: O(1)
     pub fn rx_buffer_dma(&self, index: usize) -> u64 { self.rx_data_dma + (index % queue::RING_COUNT * queue::BUFFER_BYTES) as u64 }
