@@ -15,6 +15,8 @@ use sync::{Spinlock, Modules as ModulesLockClass};
 // Module manifest: connector owns connector construction, attachment and teardown.
 #[path = "linux_drm_connector.rs"]
 mod connector;
+#[path = "linux_drm_register.rs"]
+mod register;
 
 struct DeviceAllocation {
     dev: usize,
@@ -131,6 +133,7 @@ pub fn export_symbols() {
     crate::symtab::export("drm_mode_config_reset", drm_mode_config_reset as *const () as usize, false);
     crate::symtab::export("drm_vblank_init", drm_vblank_init as *const () as usize, false);
     connector::export_symbols();
+    register::export_symbols();
 }
 
 fn layout_for(size: usize) -> Option<Layout> {
