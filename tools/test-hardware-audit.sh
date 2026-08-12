@@ -13,6 +13,7 @@ driver_root="$root/sys/bus/pci/drivers"
 mkdir -p "$device_root" "$driver_root/nvme" "$driver_root/e1000" "$driver_root/r8169" "$driver_root/other"
 mkdir -p "$root/sys/class/drm/card0" "$root/sys/class/drm/card1/device"
 ln -s "$driver_root/other" "$root/sys/class/drm/card1/device/driver"
+mkdir -p "$root/sys/class/drm/card1-DP-1"
 
 device() {
     local bdf=$1 vendor=$2 product=$3 class=$4 driver=${5:-}
