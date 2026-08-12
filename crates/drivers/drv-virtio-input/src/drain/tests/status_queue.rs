@@ -71,6 +71,7 @@ impl Fixture {
             .expect("valid status queue");
         QueueCtx {
             device_key,
+            bdf: pci::Bdf { segment: 0, bus: 0, device: 0, function: 0 },
             cfg_va: 0,
             hhdm: 0,
             eventq: virtio::VirtQueueResource {
@@ -78,9 +79,11 @@ impl Fixture {
                 ..statusq
             },
             buf_pa: TEST_EVENT_BUF_PA,
+            buf_dma: TEST_EVENT_BUF_PA,
             event_buffers: size.min(queue::MAX_EVENT_BUFFERS),
             statusq,
             status_buf_pa: self.frames.0.as_mut_ptr() as u64,
+            status_buf_dma: self.frames.0.as_mut_ptr() as u64,
             status,
             pending_output: VecDeque::new(),
             last_used: 0,

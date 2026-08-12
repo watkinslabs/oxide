@@ -96,7 +96,7 @@ impl StatusState {
 pub(super) fn initialize(
     hhdm: u64,
     queue: virtio::VirtQueueResource,
-    buf_pa: u64,
+    buf_dma: u64,
 ) -> Option<StatusState> {
     let state = StatusState::new(queue.size)?;
     let desc = hhdm.wrapping_add(queue.desc_pa) as *mut u8;
@@ -108,7 +108,7 @@ pub(super) fn initialize(
             let off = id * DESC_BYTES;
             core::ptr::write_volatile(
                 desc.add(off) as *mut u64,
-                buf_pa.wrapping_add((id * EVENT_BYTES) as u64),
+                buf_dma.wrapping_add((id * EVENT_BYTES) as u64),
             );
             core::ptr::write_volatile(
                 desc.add(off + DESC_LEN_OFF) as *mut u32,

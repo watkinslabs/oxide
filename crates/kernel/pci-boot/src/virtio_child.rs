@@ -107,7 +107,7 @@ impl virtio::VirtioChildDriverOps<VirtioChildSession> for VirtioInputOps {
                 return Err(drv::Error::ProbeFailed);
             }
         };
-        let installed = drv_virtio_input::drain::install_eventq(device_key, evdev_id, resources);
+        let installed = drv_virtio_input::drain::install_eventq(device_key, evdev_id, session.pci_bdf(), resources);
         if installed.is_err() {
             let _ = drv_virtio_input::remove_device_with_node(device_key);
             return Err(drv::Error::ProbeFailed);
