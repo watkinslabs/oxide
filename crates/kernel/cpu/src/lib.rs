@@ -14,6 +14,9 @@ extern crate alloc;
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
+pub mod mask;
+pub use mask::{AtomicCpuMask, CpuMask};
+
 /// Hard cap. Linux x86 default is 8192 (NR_CPUS); v1 picks 64
 /// because we have no realistic test box that exceeds 32. The
 /// constant is the only place this changes.
