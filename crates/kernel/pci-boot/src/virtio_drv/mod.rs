@@ -2,11 +2,11 @@
 // klog calls gated under debug_boot! per R06.
 
 use super::virtio_transport::{
-    alloc_net_tx_boot_buffer, bind_msix_vector, disable_pci_command, kick_queue_notify,
+    alloc_net_tx_boot_buffer, bind_msix_vector, bind_shared_msix_vector, disable_pci_command, kick_queue_notify,
     post_net_rx_boot_buffer, program_queue_set, read_queue_used_idx, unpublish_transport_record,
     unpublish_transport_record_by_bdf, MsixBinding, NetRxBootBuffer, ProgrammedQueues, QueueRing,
     TransportMappings, VirtioProbeDevres, VIRTIO_PCI_PAGE_BASE_MASK, restore_pci_command,
-    unmask_msix_bindings,
+    release_msix_bindings, unmask_msix_bindings,
 };
 use alloc::sync::Arc;
 use alloc::vec::Vec;

@@ -6,6 +6,56 @@ use super::{TransportMappings, VIRTIO_PCI_PAGE_BASE_MASK, VIRTIO_PCI_PAGE_SIZE};
 pub(crate) struct MsixBinding {
     pub(crate) queue_vector: u16,
     group: Option<pci_irq::MsixGroup>,
+    shared_slot: Option<usize>,
+}
+
+const SHARED_MSIX_SLOTS: usize = 32;
+const SHARED_MSIX_HANDLERS: usize = virtio::MAX_RESOURCE_QUEUES + 1;
+
+#[derive(Clone, Copy)]
+struct SharedMsixSlot {
+    used: bool,
+    handlers: [Option<fn()>; SHARED_MSIX_HANDLERS],
+}
+
+impl SharedMsixSlot {
+    const fn empty() -> Self { Self { used: false, handlers: [None; SHARED_MSIX_HANDLERS] } }
+}
+
+static SHARED_DISPATCH: Spinlock<[SharedMsixSlot; SHARED_MSIX_SLOTS], VirtioTransportLockClass> =
+    Spinlock::new([const { SharedMsixSlot::empty() }; SHARED_MSIX_SLOTS]);
+
+fn dispatch_shared(slot: usize) {
+    let handlers = SHARED_DISPATCH.lock()[slot].handlers;
+    for handler in handlers.into_iter().flatten() { handler(); }
+}
+
+macro_rules! shared_dispatchers {
+    ($($name:ident:$slot:literal),+ $(,)?) => {
+        $(fn $name() { dispatch_shared($slot); })+
+        const SHARED_DISPATCHERS: [fn(); SHARED_MSIX_SLOTS] = [$($name),+];
+    };
+}
+
+shared_dispatchers!(
+    shared_0:0, shared_1:1, shared_2:2, shared_3:3, shared_4:4, shared_5:5, shared_6:6, shared_7:7,
+    shared_8:8, shared_9:9, shared_10:10, shared_11:11, shared_12:12, shared_13:13, shared_14:14, shared_15:15,
+    shared_16:16, shared_17:17, shared_18:18, shared_19:19, shared_20:20, shared_21:21, shared_22:22, shared_23:23,
+    shared_24:24, shared_25:25, shared_26:26, shared_27:27, shared_28:28, shared_29:29, shared_30:30, shared_31:31,
+);
+
+fn reserve_shared_dispatch(handlers: &[Option<fn()>]) -> Option<usize> {
+    if handlers.len() > SHARED_MSIX_HANDLERS || !handlers.iter().any(Option::is_some) { return None; }
+    let mut slots = SHARED_DISPATCH.lock();
+    let slot = slots.iter().position(|slot| !slot.used)?;
+    slots[slot].used = true;
+    slots[slot].handlers[..handlers.len()].copy_from_slice(handlers);
+    Some(slot)
+}
+
+fn release_shared_dispatch(slot: usize) {
+    let mut slots = SHARED_DISPATCH.lock();
+    if let Some(entry) = slots.get_mut(slot) { *entry = SharedMsixSlot::empty(); }
 }
 
 struct TransportRecord {
@@ -39,6 +89,34 @@ pub(crate) fn bind_msix_vector(
     queue_vector: u16,
     handler: fn(),
 ) -> Option<u16> {
+    bind_msix_vector_with_slot(d, bars, mappings, bindings, queue_vector, handler, None)
+}
+
+pub(crate) fn bind_shared_msix_vector(
+    d: &pci::PciDevice,
+    bars: &[pci::Bar; 6],
+    mappings: &mut TransportMappings,
+    bindings: &mut Vec<MsixBinding>,
+    queue_vector: u16,
+    handlers: &[Option<fn()>],
+) -> Option<u16> {
+    let slot = reserve_shared_dispatch(handlers)?;
+    let bound = bind_msix_vector_with_slot(
+        d, bars, mappings, bindings, queue_vector, SHARED_DISPATCHERS[slot], Some(slot),
+    );
+    if bound.is_none() { release_shared_dispatch(slot); }
+    bound
+}
+
+fn bind_msix_vector_with_slot(
+    d: &pci::PciDevice,
+    bars: &[pci::Bar; 6],
+    mappings: &mut TransportMappings,
+    bindings: &mut Vec<MsixBinding>,
+    queue_vector: u16,
+    handler: fn(),
+    shared_slot: Option<usize>,
+) -> Option<u16> {
     if !msi_admitted(d.bdf) { return None; }
     let new_group = bindings.is_empty();
     let mut group = if new_group { pci_irq::begin_msix(d.bdf)? } else {
@@ -68,10 +146,10 @@ pub(crate) fn bind_msix_vector(
         if new_group { group.release(); } else { bindings.first_mut()?.group = Some(group); }
         return None;
     }
-    if new_group { bindings.push(MsixBinding { queue_vector, group: Some(group) }); }
+    if new_group { bindings.push(MsixBinding { queue_vector, group: Some(group), shared_slot }); }
     else {
         bindings.first_mut()?.group = Some(group);
-        bindings.push(MsixBinding { queue_vector, group: None });
+        bindings.push(MsixBinding { queue_vector, group: None, shared_slot });
     }
     Some(queue_vector)
 }
@@ -82,6 +160,9 @@ pub(crate) fn unmask_msix_bindings(bindings: &[MsixBinding]) {
 
 pub(crate) fn release_msix_bindings(bindings: &mut Vec<MsixBinding>) {
     let mut bindings = core::mem::take(bindings);
+    for binding in bindings.iter().filter_map(|binding| binding.shared_slot) {
+        release_shared_dispatch(binding);
+    }
     if let Some(group) = bindings.first_mut().and_then(|binding| binding.group.take()) { group.release(); }
 }
 
@@ -208,6 +289,7 @@ pub(crate) fn restore_pci_command(bdf: pci::Bdf, command_orig: u16) {
         }
     }
 }
+
 
 pub(crate) fn disable_pci_command(bdf: pci::Bdf) {
     #[cfg(target_arch = "x86_64")]
