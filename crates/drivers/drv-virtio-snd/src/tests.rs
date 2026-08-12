@@ -55,10 +55,8 @@ mod prepost;
             hhdm: 0,
             cfg_va: 0,
             scratch_pa: 0,
-            eventq: Some(queue(1)),
+            eventq: None,
             event_buf_pa: 0,
-            event_last_used: 0,
-            event_avail_idx: 0,
             event_drained: 0,
             event_last_raw: 0,
             jacks: 0,
@@ -219,8 +217,8 @@ mod prepost;
         assert_eq!(event_stats_for(key(0x0030_0000)), None);
         assert_eq!(DRAINED_EVENTS.load(Ordering::Relaxed), 3);
         assert_eq!(LAST_EVENT.load(Ordering::Relaxed), 0xbbbb_0000_0000_0003);
-        assert_eq!(eventq_state_for(key(0x0010_0000)), Some((8, 0, 0)));
-        assert_eq!(eventq_state_for(key(0x0020_0000)), Some((8, 0, 0)));
+        assert_eq!(eventq_state_for(key(0x0010_0000)), None);
+        assert_eq!(eventq_state_for(key(0x0020_0000)), None);
         reset_test_state();
     }
 

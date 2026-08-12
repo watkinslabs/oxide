@@ -144,6 +144,14 @@ impl VirtioSplitQueue {
     /// # C: O(1)
     pub const fn resource(&self) -> VirtQueueResource { self.resource }
 
+    /// Return the next available-ring index owned by this queue.
+    /// # C: O(1)
+    pub const fn avail_idx(&self) -> u16 { self.avail_idx }
+
+    /// Return the next used-ring index this queue will reclaim.
+    /// # C: O(1)
+    pub const fn used_seen(&self) -> u16 { self.used_seen }
+
     fn release_chain(&mut self, head: u16) -> Result<(), SplitQueueError> {
         let mut current = head;
         let mut count = 0u16;

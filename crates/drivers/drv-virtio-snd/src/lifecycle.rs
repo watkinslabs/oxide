@@ -7,15 +7,6 @@ const SND_CFG_STREAMS_OFF: u64 = 4;
 const SND_CFG_CHMAPS_OFF: u64 = 8;
 const SND_CFG_CONTROLS_OFF: u64 = 12;
 pub(super) const VIRTQ_DESC_ENTRY_BYTES: usize = 16;
-const VIRTQ_DESC_LEN_OFF: usize = 8;
-const VIRTQ_DESC_FLAGS_OFF: usize = 12;
-const VIRTQ_DESC_NEXT_OFF: usize = 14;
-const VIRTQ_AVAIL_FLAGS_OFF: usize = 0;
-const VIRTQ_AVAIL_IDX_OFF: usize = 2;
-const VIRTQ_AVAIL_RING_OFF: usize = 4;
-const VIRTQ_AVAIL_RING_ENTRY_BYTES: usize = 2;
-const VIRTQ_AVAIL_NO_FLAGS: u16 = 0;
-const VIRTQ_DESC_NO_NEXT: u16 = 0;
 
 pub(super) fn read_device_config(resources: virtio::VirtioResources) -> Option<SndDeviceConfig> {
     let cfg = resources.device_cfg_va;
@@ -48,7 +39,7 @@ pub fn config(owner: sound::SoundOwnerKey) -> Option<(u32, u32, u32, u32)> {
 
 pub fn eventq_state() -> Option<(u16, u16, u16)> {
     active_ctx(&CTX.lock_bh::<crate::state::SndBh>()).and_then(|ctx| {
-        ctx.eventq.map(|eventq| (eventq.size, ctx.event_last_used, ctx.event_avail_idx))
+        ctx.eventq.as_ref().map(|eventq| (eventq.resource().size, eventq.used_seen(), eventq.avail_idx()))
     })
 }
 
@@ -56,7 +47,7 @@ pub fn eventq_state_for(device_key: DeviceKey) -> Option<(u16, u16, u16)> {
     CTX.lock_bh::<crate::state::SndBh>()
         .iter()
         .find(|ctx| ctx.device_key == device_key)
-        .and_then(|ctx| ctx.eventq.map(|eventq| (eventq.size, ctx.event_last_used, ctx.event_avail_idx)))
+        .and_then(|ctx| ctx.eventq.as_ref().map(|eventq| (eventq.resource().size, eventq.used_seen(), eventq.avail_idx())))
 }
 
 pub fn event_stats_for(device_key: DeviceKey) -> Option<(u64, u64)> {
@@ -95,11 +86,7 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
         unsafe { for i in 0..SND_FRAME_BYTES { core::ptr::write_volatile(va.add(i), 0); } }
     }
     let controlq = virtio::VirtioSplitQueue::new(controlq, p.resources.hhdm).ok()?;
-    let event_used = p.resources.hhdm.wrapping_add(eventq.device_pa) as *const u16;
-    // SAFETY: HHDM-mapped eventq used ring, same accepted-resource argument;
-    // aligned u16 load of used.idx at index 1 seeds the drain cursor.
-    let event_used_seen = unsafe { core::ptr::read_volatile(event_used.add(1)) };
-    let event_avail_idx = event_used_seen.wrapping_add(eventq.size);
+    let mut eventq = virtio::VirtioSplitQueue::new(eventq, p.resources.hhdm).ok()?;
     let tx_used_seen = if let Some(txq) = txq {
         let txu = p.resources.hhdm.wrapping_add(txq.device_pa) as *const u16;
         // SAFETY: reached only for a txq `require_queue` accepted, so device_pa
@@ -123,10 +110,8 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
         hhdm: p.resources.hhdm,
         cfg_va: p.resources.cfg_va,
         scratch_pa: frames.scratch_pa,
-        eventq: Some(eventq),
+        eventq: None,
         event_buf_pa: frames.event_buf_pa,
-        event_last_used: event_used_seen,
-        event_avail_idx,
         event_drained: 0,
         event_last_raw: 0,
         jacks: device_cfg.jacks,
@@ -158,8 +143,32 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
     // descriptors over `event_buf_pa` and kicking the device earlier would let
     // the losing side of a same-key install race drop its probe — returning a
     // frame the device already holds descriptors for straight to the PMM.
-    prepost_eventq(p.resources.hhdm, eventq, frames.event_buf_pa, event_avail_idx);
+    if !prepost_eventq(&mut eventq, frames.event_buf_pa) {
+        if let Some(ctx) = remove_ctx_and_release_event_handler(p.device_key) {
+            stop_reset_free(ctx);
+        }
+        return None;
+    }
+    if let Some(ctx) = CTX.lock_bh::<crate::state::SndBh>().iter_mut()
+        .find(|ctx| ctx.device_key == p.device_key) {
+        ctx.eventq = Some(eventq);
+    } else { return None; }
     softirq::set_handler(softirq::Slot::SndEvent, event_softirq);
+    // Linux fills EVENTQ with notifications disabled, then enables its
+    // callback only after every event buffer is visible to the driver.  The
+    // context and softirq handler must likewise exist before this first doorbell:
+    // an immediate completion otherwise has nowhere to be drained.
+    if let Some(eventq) = CTX.lock_bh::<crate::state::SndBh>()
+        .iter()
+        .find(|ctx| ctx.device_key == p.device_key)
+        .and_then(|ctx| ctx.eventq.as_ref()) {
+        eventq.kick();
+    } else {
+        if let Some(ctx) = remove_ctx_and_release_event_handler(p.device_key) {
+            stop_reset_free(ctx);
+        }
+        return None;
+    }
     let (out, input) = match pcm_info_scan(p.device_key) {
         Some(split) => split,
         None => {
@@ -235,39 +244,19 @@ pub(super) fn stop_reset_free(mut ctx: Ctx) {
     free_frame(ctx.scratch_pa);
 }
 
-pub(super) fn prepost_eventq(
-    hhdm: u64,
-    eventq: virtio::VirtQueueResource,
-    event_buf_pa: u64,
-    avail_idx: u16,
-) {
-    let qsize = eventq.size as usize;
-    let desc_va = hhdm.wrapping_add(eventq.desc_pa) as *mut u8;
+pub(super) fn prepost_eventq(eventq: &mut virtio::VirtioSplitQueue, event_buf_pa: u64) -> bool {
+    let qsize = eventq.resource().size as usize;
     // Every slot i gets { addr=event_buf_pa + i*EVENT_SIZE, len=EVENT_SIZE,
     // WRITE }: the device fills the driver's own event frame, nothing else.
     // `install` capped eventq.size at MAX_EVENTQ_DESCS — the smaller of what
     // one event frame and one descriptor frame hold — so slot i and buffer i
-    // both stay in-frame, and the fence orders the ring ahead of idx.
-    // SAFETY: HHDM-mapped eventq descriptor and avail rings plus the
-    // Device-attr notify window, all handed over by the transport; every
-    // store is aligned and bounded by the queue-size cap named above.
-    unsafe {
-        for i in 0..qsize {
-            let entry_pa = event_buf_pa.wrapping_add((i as u64) * EVENT_SIZE as u64);
-            let off = i * VIRTQ_DESC_ENTRY_BYTES;
-            core::ptr::write_volatile(desc_va.add(off) as *mut u64, entry_pa);
-            core::ptr::write_volatile(desc_va.add(off + VIRTQ_DESC_LEN_OFF) as *mut u32, EVENT_SIZE as u32);
-            core::ptr::write_volatile(desc_va.add(off + VIRTQ_DESC_FLAGS_OFF) as *mut u16, VRING_DESC_F_WRITE);
-            core::ptr::write_volatile(desc_va.add(off + VIRTQ_DESC_NEXT_OFF) as *mut u16, VIRTQ_DESC_NO_NEXT);
-        }
-        let avail_va = hhdm.wrapping_add(eventq.driver_pa) as *mut u8;
-        core::ptr::write_volatile(avail_va.add(VIRTQ_AVAIL_FLAGS_OFF) as *mut u16, VIRTQ_AVAIL_NO_FLAGS);
-        for i in 0..qsize {
-            let ring_off = VIRTQ_AVAIL_RING_OFF + i * VIRTQ_AVAIL_RING_ENTRY_BYTES;
-            core::ptr::write_volatile(avail_va.add(ring_off) as *mut u16, i as u16);
-        }
-        core::sync::atomic::fence(Ordering::Release);
-        core::ptr::write_volatile(avail_va.add(VIRTQ_AVAIL_IDX_OFF) as *mut u16, avail_idx);
-        core::ptr::write_volatile(eventq.notify_va as *mut u16, eventq.index);
+    // both stay in-frame.  Do not notify here: install first makes the queue
+    // reachable from its completion handler, then rings once for the batch.
+    for i in 0..qsize {
+        let entry_pa = event_buf_pa.wrapping_add((i as u64) * EVENT_SIZE as u64);
+        if eventq.submit_no_kick(&[virtio::SplitQueueSeg {
+            dma: entry_pa, len: EVENT_SIZE as u32, device_writes: true,
+        }]).is_err() { return false; }
     }
+    true
 }
