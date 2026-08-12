@@ -38,8 +38,10 @@ fn a_config_refresh_rechecks_every_registered_device_status() {
 }
 
 #[test]
-fn the_shared_queue_zero_vector_runs_the_config_refresh_handler() {
+fn profile_assigns_separate_queue_and_config_handlers() {
     let profile = transport_profile();
-    let handler = profile.msix0_handler.expect("net profile must bind config vector");
-    assert_eq!(handler as *const (), config_changed as *const ());
+    let queue = profile.q0_handler.expect("net profile must bind queue zero");
+    let config = profile.config_handler.expect("net profile must bind config vector");
+    assert_eq!(queue as *const (), super::super::raise_rx as *const ());
+    assert_eq!(config as *const (), config_changed as *const ());
 }

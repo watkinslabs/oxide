@@ -33,6 +33,10 @@ const QUEUE_ADDR_HIGH_OFF: u64 = 4;
 const QUEUE_ADDR_LOW_MASK: u64 = 0xFFFF_FFFF;
 const QUEUE_ADDR_HIGH_SHIFT: u32 = 32;
 
+const fn queue_msix_accepted(requested: u16, observed: u16) -> bool {
+    requested == observed
+}
+
 /// Queue memory provider used by the shared common-cfg queue protocol.
 pub trait VirtioQueueAllocator {
     /// Allocate one zeroable 4 KiB frame usable by the device for a split
@@ -201,7 +205,13 @@ pub fn program_queue<A: VirtioQueueAllocator>(
     w16(CFG_QUEUE_SELECT, qi);
     let notify_off = r16(CFG_QUEUE_NOTIFY);
     w16(CFG_QUEUE_MSIX, msix_vec);
-    let _ = r16(CFG_QUEUE_MSIX);
+    if !queue_msix_accepted(msix_vec, r16(CFG_QUEUE_MSIX)) {
+        allocator.free_frame(device);
+        allocator.free_frame(driver);
+        allocator.free_frame(desc);
+        w16(CFG_QUEUE_SELECT, QUEUE_ZERO);
+        return None;
+    }
     w32(CFG_QUEUE_DESC, queue_addr_low(desc.dma));
     w32(CFG_QUEUE_DESC + QUEUE_ADDR_HIGH_OFF, queue_addr_high(desc.dma));
     w32(CFG_QUEUE_DRIVER, queue_addr_low(driver.dma));
@@ -315,6 +325,13 @@ mod tests {
         assert!(allocator.allocated.is_empty());
         assert!(allocator.freed.is_empty());
         assert!(allocator.zeroed.is_empty());
+    }
+
+    #[test]
+    fn queue_vector_readback_must_match_the_requested_entry() {
+        assert!(queue_msix_accepted(3, 3));
+        assert!(!queue_msix_accepted(3, crate::VIRTIO_MSI_NO_VECTOR));
+        assert!(!queue_msix_accepted(3, 4));
     }
 
     #[test]

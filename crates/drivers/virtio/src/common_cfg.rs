@@ -190,6 +190,21 @@ pub fn read_status(cfg_va: u64) -> u8 {
     unsafe { core::ptr::read_volatile((cfg_va + CFG_DEVICE_STATUS) as *const u8) }
 }
 
+/// Bind the device-configuration interrupt to one MSI-X table entry and
+/// return the value the device accepted.  `VIRTIO_MSI_NO_VECTOR` means the
+/// transport must not expect configuration interrupts.  Queue vectors use a
+/// distinct common-cfg field and are programmed by `queue_cfg`.
+/// # SAFETY: caller mapped `cfg_va` as a Device-attr virtio common-cfg window.
+/// # C: O(1)
+pub fn set_config_msix_vector(cfg_va: u64, vector: u16) -> u16 {
+    // SAFETY: msix_config is the aligned u16 at common-cfg offset 0x10;
+    // volatile access preserves the transport register transaction.
+    unsafe {
+        core::ptr::write_volatile((cfg_va + CFG_MSIX_CONFIG_NUMQ) as *mut u16, vector);
+        core::ptr::read_volatile((cfg_va + CFG_MSIX_CONFIG_NUMQ) as *const u16)
+    }
+}
+
 /// Bounded spin budget for `reset_device`'s status-readback poll. Real
 /// hardware and QEMU's emulated backends complete a reset near-instantly;
 /// this only guards against a genuinely wedged device, not normal latency.
@@ -283,6 +298,15 @@ mod tests {
 
     #[repr(align(8))]
     struct Regs([u32; 16]);
+
+    #[test]
+    fn config_vector_uses_the_config_half_of_the_common_cfg_word() {
+        let mut regs = Regs([0; 16]);
+        let cfg_va = regs.0.as_mut_ptr() as u64;
+        let vector = set_config_msix_vector(cfg_va, 5);
+        assert_eq!(vector, 5);
+        assert_eq!(regs.0[(CFG_MSIX_CONFIG_NUMQ / 4) as usize] & 0xffff, 5);
+    }
 
     #[test]
     fn common_cfg_bringup_programs_queues_before_driver_ok() {

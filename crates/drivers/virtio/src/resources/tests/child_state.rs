@@ -231,7 +231,7 @@ fn the_block_poll_profile_registers_no_interrupt_handler_for_its_poll_queue() {
     assert!(plan.msix_handler.is_none(), "a poll queue registers no completion callback");
     assert_eq!(plan.msix_vec, VIRTIO_MSI_NO_VECTOR);
     assert!(plan.map_notify, "a poller still has to kick the queue");
-    assert!(profile.msix0_handler.is_some(), "the default queue keeps its interrupt");
+    assert!(profile.q0_handler.is_some(), "the default queue keeps its interrupt");
     assert!(!profile.child_requirements.required_queues[POLL_QUEUE_INDEX as usize]);
     assert!(profile.child_requirements.optional_queues[POLL_QUEUE_INDEX as usize]);
 }
