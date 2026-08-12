@@ -24,6 +24,7 @@ use sync::{Spinlock, Modules as ModulesLockClass};
 #[path = "linux_drm_atomic.rs"] mod atomic;
 #[path = "linux_drm_vblank.rs"] mod vblank;
 #[path = "linux_drm_edid.rs"] mod edid;
+#[path = "linux_drm_edid_owner.rs"] mod edid_owner;
 
 struct DeviceAllocation {
     dev: usize,
@@ -155,6 +156,7 @@ pub fn export_symbols() {
     atomic::export_symbols();
     vblank::export_symbols();
     edid::export_symbols();
+    edid_owner::export_symbols();
 }
 
 fn layout_for(size: usize) -> Option<Layout> {
