@@ -1,6 +1,7 @@
 use alloc::vec::Vec;
 
 use crate::{Mapping, VtdContextEntry, VtdPageTable, VtdRootEntry};
+use crate::domain::MappingRecord;
 use pci::{Bdf, IovaSpace};
 
 const PAGE_BYTES: u64 = 4096;
@@ -12,7 +13,7 @@ const IOVA_START: u64 = 0;
 const IOVA_BYTES: u64 = 1u64 << 48;
 
 /// Permanent VT-d root/context tables and their shared initial DMA domain.
-pub struct VtdTables { hhdm_offset: u64, root_pa: u64, contexts: Vec<(u8, u64)>, space: IovaSpace, maps: Vec<Mapping>, page_table: VtdPageTable }
+pub struct VtdTables { hhdm_offset: u64, root_pa: u64, contexts: Vec<(u8, u64)>, space: IovaSpace, maps: Vec<MappingRecord>, page_table: VtdPageTable }
 impl VtdTables {
     /// Allocate empty root/context ownership and a four-level DMA page-table domain. # C: O(1)
     pub fn new(hhdm_offset: u64) -> Option<Self> {
@@ -49,22 +50,25 @@ impl VtdTables {
             return None;
         }
         let map = Mapping { iova, pa };
-        self.maps.push(map);
+        self.maps.push(MappingRecord::live(map));
         Some(map)
     }
     /// Remove mapping PTEs but retain the interval until invalidation completes. # C: O(pages * levels)
     pub fn remove_for_invalidate(&mut self, map: Mapping) -> bool {
-        self.maps.iter().any(|candidate| *candidate == map) && self.page_table.unmap(map.iova.start, map.iova.len)
+        let Some(index) = self.maps.iter().position(|candidate| candidate.mapping == map) else { return false; };
+        if self.maps[index].iotlb_pending() { return true; }
+        if !self.page_table.unmap(map.iova.start, map.iova.len) { return false; }
+        self.maps[index].begin_iotlb_invalidate()
     }
     /// Release a previously invalidated interval back to the VT-d IOVA allocator. # C: O(live mappings)
     pub fn release_after_invalidate(&mut self, map: Mapping) -> bool {
-        let Some(index) = self.maps.iter().position(|candidate| *candidate == map) else { return false; };
+        let Some(index) = self.maps.iter().position(|candidate| candidate.mapping == map && candidate.iotlb_pending()) else { return false; };
         if !self.space.free(map.iova) { return false; }
         self.maps.swap_remove(index);
         true
     }
     /// Return one live mapping by its page-aligned IOVA. # C: O(live mappings)
-    pub fn mapping(&self, iova: u64) -> Option<Mapping> { self.maps.iter().copied().find(|candidate| candidate.iova.start == iova) }
+    pub fn mapping(&self, iova: u64) -> Option<Mapping> { self.maps.iter().find(|candidate| candidate.mapping.iova.start == iova).map(|candidate| candidate.mapping) }
     /// Publish one requester context after its page-table hierarchy is fully initialized. # C: O(context buses)
     pub fn attach(&mut self, bdf: Bdf, domain_id: u16) -> bool {
         let Some(context_pa) = self.context_for_bus(bdf.bus) else { return false; };
@@ -99,7 +103,7 @@ impl VtdTables {
             return None;
         }
         let map = Mapping { iova, pa };
-        self.maps.push(map);
+        self.maps.push(MappingRecord::live(map));
         Some(map)
     }
 }

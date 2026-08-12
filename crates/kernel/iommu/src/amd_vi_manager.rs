@@ -67,7 +67,13 @@ pub fn map_dma_below(requester: Bdf, pa: u64, len: usize, mask: u64) -> Option<u
     let mut manager = MANAGER.lock();
     let entry = manager.iter_mut().find(|entry| entry.unit == unit)?;
     let map = entry.domain.map_below(base, bytes, pci::IOVA_PAGE_SIZE, mask)?;
-    if !entry.bootstrap.invalidate_mapping(map, INITIAL_DOMAIN_ID) { return None; }
+    if !entry.bootstrap.invalidate_mapping(map, INITIAL_DOMAIN_ID) {
+        if entry.domain.remove_for_invalidate(map)
+            && entry.bootstrap.invalidate_mapping(map, INITIAL_DOMAIN_ID) {
+            let _ = entry.domain.release_after_invalidate(map);
+        }
+        return None;
+    }
     map.iova.start.checked_add(offset)
 }
 

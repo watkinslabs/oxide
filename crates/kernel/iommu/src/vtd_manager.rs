@@ -166,7 +166,12 @@ pub fn map_dma_below(requester: Bdf, pa: u64, len: usize, mask: u64) -> Option<u
     let mut manager = MANAGER.lock();
     let entry = manager.iter_mut().find(|entry| entry.requesters.iter().any(|candidate| *candidate == requester))?;
     let map = entry.tables.map_dma_below(base, bytes, pci::IOVA_PAGE_SIZE, mask)?;
-    if !invalidate(entry) { return None; }
+    if !invalidate(entry) {
+        if entry.tables.remove_for_invalidate(map) && invalidate(entry) {
+            let _ = entry.tables.release_after_invalidate(map);
+        }
+        return None;
+    }
     map.iova.start.checked_add(offset)
 }
 

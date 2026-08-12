@@ -1,5 +1,11 @@
 # Fixed issues
 
+### F999-iommu-invalidation-transaction
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED F999 | DEFECT | high | **A VT-d or AMD-Vi IOTLB invalidation failure after DMA PTE withdrawal made the mapping impossible to retire: a retry attempted to withdraw already-absent PTEs, failed, and retained both the IOVA and global DMA-owner record forever. The map-side failure path likewise retained an unpublished mapping without attempting withdrawal.** Each backend now records the PTE-withdrawn, IOTLB-pending state, retries only the hardware synchronization, and frees the IOVA only after that synchronization succeeds; an unpublished map rolls its PTEs back through the same state transition. | F999. `iommu::domain::tests::retired_pte_stays_owned_until_its_iotlb_sync_succeeds`; `cargo test -p iommu --lib -- --test-threads=1` (32 passed). | Chris Watkins |
+
 ### F998-cross-architecture-driver-build
 
 | Status | Class | Sev | Issue | Evidence | Owner |
