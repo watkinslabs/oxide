@@ -1544,3 +1544,8 @@ Six lanes filed the same defect separately. The canonical row lives in
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED F1001 | DEFECT | HIGH | Native NVMe and AHCI submitted an interrupt-driven request and then unconditionally busy-polled its completion predicate for 200,000 iterations before using the shared wait loop. This burned CPU on each cache-miss I/O and could visibly stall an interactive workload. Linux's normal `nvme_irq` and `ahci_single_level_irq_intr` paths complete IRQ-driven work in their handlers; NVMe polling is reserved for explicitly polled queues. Oxide now enables IRQs for one final predicate recheck and immediately uses the generic publish/recheck/schedule wait contract. | `../linux-master/drivers/nvme/host/pci.c::{nvme_irq,nvme_poll}`; `../linux-master/drivers/ata/libahci.c::ahci_single_level_irq_intr`; `cargo test -p drv-nvme -p drv-ahci --lib -- --test-threads=1` (25 passed). | F1001 |
+### F1002-nvme-irq-cq-validation
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED F1002 | DEFECT | HIGH | The NVMe hard IRQ path marked every delivered PCI vector as a completed command. A spurious or stale vector therefore woke the request owner, which found no phase-valid CQE and poisoned a healthy controller. The IRQ endpoint now retains the sole I/O CQ cursor and signals only when its current CQE has the expected phase tag; process context remains the owner that consumes the CQE, rings the CQ doorbell, and republishes the next cursor. | `drv_nvme::regs::tests::cqe_phase_and_cid` pins both matching and mismatching phase predicates; `cargo test -p drv-nvme --lib -- --test-threads=1`. | F1002 |

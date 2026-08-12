@@ -155,6 +155,12 @@ pub fn cqe_decode(dword2: u32, dword3: u32) -> (bool, u16, u16) {
     (phase, status_code, cid)
 }
 
+/// True when CQE status carries the cursor's expected phase tag. # C: O(1)
+#[inline]
+pub fn cqe_pending(dword3: u32, expected_phase: bool) -> bool {
+    (((dword3 >> 16) & 1) != 0) == expected_phase
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,6 +224,9 @@ mod tests {
         assert!(!phase);
         assert_eq!(sc, 4);
         assert_eq!(cid, 0x42);
+        assert!(cqe_pending(0x0001 << 16, true));
+        assert!(!cqe_pending(0x0001 << 16, false));
+        assert!(cqe_pending(0, false));
     }
 
     #[test]
