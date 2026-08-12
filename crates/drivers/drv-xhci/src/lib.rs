@@ -11,6 +11,7 @@
 
 pub mod regs;
 pub mod ring;
+mod completion;
 pub mod controller;
 pub mod context;
 pub mod usb;
