@@ -1539,3 +1539,8 @@ Six lanes filed the same defect separately. The canonical row lives in
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED F1000 | DEFECT | HIGH | The physical-hardware audit called an NVMe/AHCI/xHCI/e1000 PCI ID match a `NATIVE-CANDIDATE`, even when the PCI function was unbound. Linux exposes a completed PCI probe through the device's `driver` symlink; eligibility is not binding. The audit now reports `BOUND`, `UNBOUND`, or `WRONG-DRIVER` from that exact link, so a real-machine inventory cannot claim a driver lane that failed before I/O started. | `tools/test-hardware-audit.sh` constructs bound, unbound, and wrong-driver synthetic sysfs functions and checks every emitted record; `cargo test -p xtask rootfs_disks::hardware_audit -- --test-threads=1`. | F1000 |
+### F1001-native-storage-irq-waits
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED F1001 | DEFECT | HIGH | Native NVMe and AHCI submitted an interrupt-driven request and then unconditionally busy-polled its completion predicate for 200,000 iterations before using the shared wait loop. This burned CPU on each cache-miss I/O and could visibly stall an interactive workload. Linux's normal `nvme_irq` and `ahci_single_level_irq_intr` paths complete IRQ-driven work in their handlers; NVMe polling is reserved for explicitly polled queues. Oxide now enables IRQs for one final predicate recheck and immediately uses the generic publish/recheck/schedule wait contract. | `../linux-master/drivers/nvme/host/pci.c::{nvme_irq,nvme_poll}`; `../linux-master/drivers/ata/libahci.c::ahci_single_level_irq_intr`; `cargo test -p drv-nvme -p drv-ahci --lib -- --test-threads=1` (25 passed). | F1001 |
