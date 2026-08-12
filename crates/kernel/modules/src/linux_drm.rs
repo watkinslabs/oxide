@@ -27,6 +27,7 @@ struct DeviceAllocation {
     crtcs: Vec<CrtcRecord>,
     encoders: Vec<EncoderRecord>,
     connectors: Vec<connector::ConnectorRecord>,
+    vblank: Option<(usize, Layout)>,
     put_pending: bool,
     unplugged: bool,
 }
@@ -59,6 +60,11 @@ const LINUX_ENODEV: i32 = 19;
 const LINUX_EBUSY: i32 = 16;
 const LINUX_EINVAL: i32 = 22;
 const DRM_MODE_CONFIG_OFF: usize = 360;
+const DRM_DEVICE_VBLANK_OFF: usize = 312;
+const DRM_DEVICE_NUM_CRTCS_OFF: usize = 356;
+const DRM_VBLANK_CRTC_SIZE: usize = 400;
+const DRM_VBLANK_CRTC_DEV_OFF: usize = 0;
+const DRM_VBLANK_CRTC_PIPE_OFF: usize = 112;
 const DRM_DEVICE_SIZE: usize = 1584;
 const MODE_CONFIG_FB_LIST_OFF: usize = 216;
 const MODE_CONFIG_CONNECTOR_LIST_OFF: usize = 256;
@@ -123,6 +129,7 @@ pub fn export_symbols() {
     crate::symtab::export("drm_encoder_init", drm_encoder_init as *const () as usize, false);
     crate::symtab::export("drm_encoder_cleanup", drm_encoder_cleanup as *const () as usize, false);
     crate::symtab::export("drm_mode_config_reset", drm_mode_config_reset as *const () as usize, false);
+    crate::symtab::export("drm_vblank_init", drm_vblank_init as *const () as usize, false);
     connector::export_symbols();
 }
 
@@ -167,7 +174,7 @@ extern "C" fn __devm_drm_dev_alloc(
     let dev = unsafe { base.add(offset) };
     initialize_device(dev, parent, driver, base);
     let dev = dev.cast::<c_void>();
-    DEVICES.lock().push(DeviceAllocation { dev: dev as usize, base: base as usize, layout, refs: 1, mode_config: false, objects: Vec::new(), planes: Vec::new(), crtcs: Vec::new(), encoders: Vec::new(), connectors: Vec::new(), put_pending: false, unplugged: false });
+    DEVICES.lock().push(DeviceAllocation { dev: dev as usize, base: base as usize, layout, refs: 1, mode_config: false, objects: Vec::new(), planes: Vec::new(), crtcs: Vec::new(), encoders: Vec::new(), connectors: Vec::new(), vblank: None, put_pending: false, unplugged: false });
     if devres::add_action_or_reset(parent, Some(devm_drm_dev_put), dev) != 0 { return core::ptr::null_mut(); }
     base.cast()
 }
@@ -200,6 +207,16 @@ fn release_planes(rec: &mut DeviceAllocation) {
         // SAFETY: formats was allocated by drm_universal_plane_init with this exact layout.
         unsafe { dealloc(plane.formats as *mut u8, plane.layout); }
     }
+    if let Some((storage, layout)) = rec.vblank.take() { if storage != 0 { unsafe { dealloc(storage as *mut u8, layout); } } }
+}
+
+/// Allocate per-CRTC vblank storage and publish it in the DRM device. # C: O(N_crtcs)
+extern "C" fn drm_vblank_init(dev: *mut c_void, num_crtcs: u32) -> i32 {
+    let Some(size) = DRM_VBLANK_CRTC_SIZE.checked_mul(num_crtcs as usize) else { return -LINUX_EINVAL; }; let Some(layout) = layout_for(size) else { return -LINUX_EBUSY; }; let storage = if size == 0 { core::ptr::null_mut() } else { unsafe { alloc_zeroed(layout) } }; if size != 0 && storage.is_null() { return -LINUX_EBUSY; }
+    let mut devices = DEVICES.lock(); let Some(rec) = devices.iter_mut().find(|rec| rec.dev == dev as usize && !rec.put_pending && !rec.unplugged) else { unsafe { if !storage.is_null() { dealloc(storage, layout); } } return -LINUX_ENODEV; }; if rec.vblank.is_some() { unsafe { if !storage.is_null() { dealloc(storage, layout); } } return -LINUX_EBUSY; }
+    // SAFETY: storage covers exactly num_crtcs ABI vblank records; device fields are verified offsets.
+    unsafe { for pipe in 0..num_crtcs as usize { let entry = storage.add(pipe * DRM_VBLANK_CRTC_SIZE); write(entry.add(DRM_VBLANK_CRTC_DEV_OFF).cast::<*mut c_void>(), dev); write(entry.add(DRM_VBLANK_CRTC_PIPE_OFF).cast::<u32>(), pipe as u32); } write(dev.cast::<u8>().add(DRM_DEVICE_VBLANK_OFF).cast::<*mut u8>(), storage); write(dev.cast::<u8>().add(DRM_DEVICE_NUM_CRTCS_OFF).cast::<u32>(), num_crtcs); }
+    rec.vblank = Some((storage as usize, layout)); 0
 }
 
 /// Take one lifetime reference held by the caller. # C: O(N_devices)
