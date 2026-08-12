@@ -6,7 +6,7 @@ use super::*;
 
 #[test]
 fn every_kind_round_trips_through_its_wire_value() {
-    for k in [CallKind::TlbFlush, CallKind::LdtReload] {
+    for k in [CallKind::TlbFlush, CallKind::LdtReload, CallKind::Stop] {
         assert_eq!(CallKind::from_u32(k.as_u32()), Some(k), "round trip failed for {:?}", k);
     }
 }
@@ -14,6 +14,15 @@ fn every_kind_round_trips_through_its_wire_value() {
 #[test]
 fn kinds_have_distinct_wire_values() {
     assert_ne!(CallKind::TlbFlush.as_u32(), CallKind::LdtReload.as_u32());
+    assert_ne!(CallKind::LdtReload.as_u32(), CallKind::Stop.as_u32());
+}
+
+#[test]
+fn stopped_publication_keeps_the_highest_transport_cpu() {
+    let cpu = STOPPED_WORDS as u32 * u64::BITS - 1;
+    mark_stopped(cpu);
+    let words = stopped_words();
+    assert_ne!(words[STOPPED_WORDS - 1] & (1u64 << (u64::BITS - 1)), 0);
 }
 
 #[test]

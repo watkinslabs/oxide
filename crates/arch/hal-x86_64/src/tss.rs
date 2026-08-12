@@ -147,11 +147,11 @@ struct TssCell(UnsafeCell<TssFull>);
 // No cross-CPU sharing of a slot, so no data race.
 unsafe impl Sync for TssCell {}
 
-/// Per-CPU TSS count. Matches `cpu::MAX_CPUS` (64): one TSS per possible
+/// Per-CPU TSS count. Matches the architecture per-CPU transport bound: one TSS per possible
 /// CPU so each AP scheduling user tasks has its own RSP0 (a shared TSS
 /// would clobber across CPUs on every switch). GDT carries one 16-byte
 /// TSS descriptor per slot at selector `TSS_SEL + cpu*0x10`.
-pub const NR_TSS: usize = 64;
+pub const NR_TSS: usize = hal::MAX_SMP_CPUS;
 
 /// Per-CPU TSS array. CPU `i` uses `TSS[i]`, loaded via `ltr(TSS_SEL +
 /// i*0x10)` and updated via `set_rsp0` (indexed by `current_cpu()`).

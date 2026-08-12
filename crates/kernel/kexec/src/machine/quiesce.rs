@@ -112,7 +112,7 @@ pub fn stop_other_cpus() {
     klog::announce_emergency("kexec: stop requested");
     let mut spun = 0u64;
     while spun < STOP_SPIN_BUDGET {
-        if converged(cpu::CpuMask::from_words(&[hal::smp_call::stopped_mask()]), targets) { return; }
+        if converged(cpu::CpuMask::from_words(&hal::smp_call::stopped_words()), targets) { return; }
         core::hint::spin_loop();
         spun += 1;
     }

@@ -45,7 +45,7 @@ pub enum CallKind {
     ///
     /// The one handler that never returns, and the only one for which that is
     /// correct: its caller must not wait on the queue slot (`wait: false`) and
-    /// waits on [`stopped_mask`] instead, which the handler publishes BEFORE
+    /// waits on [`stopped_words`] instead, which the handler publishes BEFORE
     /// it parks.
     Stop = 3,
 }
@@ -77,19 +77,31 @@ pub const ALL: u64 = u64::MAX;
 /// Lives beside the kind rather than in the subsystem that asks for the stop:
 /// the handler is here, and a counter kept elsewhere would be a second record
 /// of the same fact that only one of the two updates.
-static STOPPED: AtomicU64 = AtomicU64::new(0);
+/// Fixed word capacity of the architecture stop transport.
+pub const STOPPED_WORDS: usize = crate::MAX_SMP_CPUS.div_ceil(u64::BITS as usize);
+
+static STOPPED: [AtomicU64; STOPPED_WORDS] = [const { AtomicU64::new(0) }; STOPPED_WORDS];
 
 /// Record `cpu` as stopped. Called by the handler immediately before it parks,
 /// so a waiter that observes the bit knows the CPU is no longer executing
 /// anything that could be relocated out from under it.
 /// # C: O(1)
 pub fn mark_stopped(cpu: u32) {
-    if cpu < 64 { STOPPED.fetch_or(1u64 << cpu, Ordering::Release); }
+    let word = cpu as usize / u64::BITS as usize;
+    if word < STOPPED_WORDS { STOPPED[word].fetch_or(1u64 << (cpu % u64::BITS), Ordering::Release); }
 }
 
 /// The set of parked CPUs.
-/// # C: O(1)
-pub fn stopped_mask() -> u64 { STOPPED.load(Ordering::Acquire) }
+/// # C: O(words)
+pub fn stopped_words() -> [u64; STOPPED_WORDS] {
+    let mut words = [0; STOPPED_WORDS];
+    let mut i = 0;
+    while i < STOPPED_WORDS {
+        words[i] = STOPPED[i].load(Ordering::Acquire);
+        i += 1;
+    }
+    words
+}
 
 /// `fn(mask, kind, arg, wait)`. Stored as `usize` because `AtomicPtr` over a
 /// function pointer is not a stable atomic form; only `set_call_hook` writes
