@@ -38,6 +38,14 @@ pub(super) fn export_symbols() {
 
 pub(super) fn mode_layout() -> Layout { Layout::from_size_align(DRM_DISPLAY_MODE_SIZE, core::mem::align_of::<u64>()).unwrap() }
 
+pub(super) fn edid_detailed_add(connector: *mut c_void, clock: i32, hdisplay: u16, hsync_start: u16, hsync_end: u16, htotal: u16, vdisplay: u16, vsync_start: u16, vsync_end: u16, vtotal: u16, flags: u32, preferred: bool) -> bool {
+    let dev = if connector.is_null() { return false; } else { unsafe { read(connector.cast::<*mut c_void>()) } };
+    let mode = drm_mode_create(dev); if mode.is_null() { return false; }
+    // SAFETY: mode is a newly allocated complete drm_display_mode; all timing offsets are ABI verified.
+    unsafe { let ptr = mode.cast::<u8>(); write(ptr.add(DRM_DISPLAY_MODE_CLOCK_OFF).cast::<i32>(), clock); write(ptr.add(DRM_DISPLAY_MODE_HDISPLAY_OFF).cast::<u16>(), hdisplay); write(ptr.add(6).cast::<u16>(), hsync_start); write(ptr.add(8).cast::<u16>(), hsync_end); write(ptr.add(DRM_DISPLAY_MODE_HTOTAL_OFF).cast::<u16>(), htotal); write(ptr.add(DRM_DISPLAY_MODE_VDISPLAY_OFF).cast::<u16>(), vdisplay); write(ptr.add(16).cast::<u16>(), vsync_start); write(ptr.add(18).cast::<u16>(), vsync_end); write(ptr.add(DRM_DISPLAY_MODE_VTOTAL_OFF).cast::<u16>(), vtotal); write(ptr.add(DRM_DISPLAY_MODE_FLAGS_OFF).cast::<u32>(), flags); if preferred { write(ptr.add(DRM_DISPLAY_MODE_TYPE_OFF), DRM_MODE_TYPE_PREFERRED | (1 << 6)); } else { write(ptr.add(DRM_DISPLAY_MODE_TYPE_OFF), 1 << 6); } }
+    drm_mode_set_name(mode); drm_mode_probed_add(connector, mode); true
+}
+
 /// Allocate one zeroed display-mode object. # C: O(1)
 pub(super) extern "C" fn drm_mode_create(_dev: *mut c_void) -> *mut c_void {
     // SAFETY: mode_layout names the complete ABI-verified display-mode allocation.
