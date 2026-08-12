@@ -88,6 +88,10 @@ pub fn export_symbols() {
         ("dma_map_page_attrs",        dma_map_page_attrs        as *const () as usize),
         ("dma_unmap_page",            dma_unmap_page            as *const () as usize),
         ("dma_unmap_page_attrs",      dma_unmap_page_attrs      as *const () as usize),
+        ("dma_map_phys",              dma_map_phys              as *const () as usize),
+        ("dma_unmap_phys",            dma_unmap_phys            as *const () as usize),
+        ("dma_map_resource",          dma_map_resource          as *const () as usize),
+        ("dma_unmap_resource",        dma_unmap_resource        as *const () as usize),
         ("dma_map_sg",                dma_map_sg                as *const () as usize),
         ("dma_map_sg_attrs",          dma_map_sg_attrs          as *const () as usize),
         ("dma_unmap_sg",              dma_unmap_sg              as *const () as usize),
@@ -121,7 +125,10 @@ pub fn export_symbols() {
         ("dma_pool_destroy",           pool::dma_pool_destroy as *const () as usize),
         ("dma_pool_alloc",             pool::dma_pool_alloc as *const () as usize),
         ("dma_pool_free",              pool::dma_pool_free as *const () as usize),
-    ] { export(name, addr, false); }
+    ] {
+        let gpl_only = matches!(name, "dma_map_phys" | "dma_unmap_phys");
+        export(name, addr, gpl_only);
+    }
 }
 
 pub(crate) extern "C" fn dma_alloc_coherent(dev: *mut LinuxDevice, size: usize, dma_handle: *mut u64, flags: u64) -> *mut c_void {
@@ -198,6 +205,44 @@ extern "C" fn dma_unmap_page_attrs(dev: *mut LinuxDevice, dma_addr: u64, size: u
     if dma_addr == DMA_MAPPING_ERROR || size == 0 || !valid_dir(dir) { return; }
     if !unmap_for_device(dev, dma_addr, size) { return; }
     if attrs & DMA_ATTR_SKIP_CPU_SYNC == 0 { sync_for_cpu(dir); }
+}
+
+/// Map a caller-owned physical range through the device's DMA translation.
+/// This is the Linux `dma_map_phys` KPI: unlike `dma_map_page`, it deliberately
+/// accepts a physical range not represented by a `struct page`.
+pub(crate) extern "C" fn dma_map_phys(dev: *mut LinuxDevice, phys: u64, size: usize,
+    dir: i32, attrs: u64) -> u64 {
+    if size == 0 || !valid_dir(dir) || phys.checked_add(size as u64 - 1).is_none() {
+        return DMA_MAPPING_ERROR;
+    }
+    let Some(dma) = map_for_device(dev, phys, size, device_dma_mask(dev, false)) else {
+        return DMA_MAPPING_ERROR;
+    };
+    if !fits_mask(dma, size, device_dma_mask(dev, false)) {
+        let _ = unmap_for_device(dev, dma, size);
+        return DMA_MAPPING_ERROR;
+    }
+    if attrs & DMA_ATTR_SKIP_CPU_SYNC == 0 { sync_for_device(dir); }
+    dma
+}
+
+pub(crate) extern "C" fn dma_unmap_phys(dev: *mut LinuxDevice, dma_addr: u64,
+    size: usize, dir: i32, attrs: u64) {
+    if dma_addr == DMA_MAPPING_ERROR || size == 0 || !valid_dir(dir) { return; }
+    if !unmap_for_device(dev, dma_addr, size) { return; }
+    if attrs & DMA_ATTR_SKIP_CPU_SYNC == 0 { sync_for_cpu(dir); }
+}
+
+/// Map a DMA-able device resource. Linux routes this through `dma_map_phys`
+/// with the MMIO attribute; MMIO never receives CPU-cache synchronization.
+pub(crate) extern "C" fn dma_map_resource(dev: *mut LinuxDevice, phys: u64,
+    size: usize, dir: i32, attrs: u64) -> u64 {
+    dma_map_phys(dev, phys, size, dir, attrs | DMA_ATTR_SKIP_CPU_SYNC)
+}
+
+pub(crate) extern "C" fn dma_unmap_resource(dev: *mut LinuxDevice, dma_addr: u64,
+    size: usize, dir: i32, attrs: u64) {
+    dma_unmap_phys(dev, dma_addr, size, dir, attrs | DMA_ATTR_SKIP_CPU_SYNC);
 }
 
 pub(crate) extern "C" fn dma_map_sg(dev: *mut LinuxDevice, sg: *mut ScatterList, nents: i32, dir: i32) -> i32 {

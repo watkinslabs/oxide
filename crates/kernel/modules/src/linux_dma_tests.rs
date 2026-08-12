@@ -59,6 +59,16 @@ fn mapping_error_returns_linux_enomem() {
 }
 
 #[test]
+fn resource_mapping_accepts_physical_and_zero_dma_addresses() {
+    let _modules = crate::test_serial::claim();
+    let dma = dma_map_resource(null_mut(), 0, linux_alloc::PAGE_SIZE, DMA_TO_DEVICE, 0);
+    assert_eq!(dma, 0);
+    assert_eq!(dma_mapping_error(null_mut(), dma), 0);
+    dma_unmap_resource(null_mut(), dma, linux_alloc::PAGE_SIZE, DMA_TO_DEVICE, 0);
+    assert_eq!(dma_map_resource(null_mut(), u64::MAX, 1, DMA_TO_DEVICE, 0), DMA_MAPPING_ERROR);
+}
+
+#[test]
 fn scatterlist_maps_buffer_and_page_entries() {
     let _modules = crate::test_serial::claim();
     let buf = [0u8; 16];
@@ -138,7 +148,7 @@ fn export_symbols_registers_dma_surface() {
     export_symbols();
     for name in [
         "dma_alloc_coherent", "dma_alloc_attrs", "dmam_alloc_coherent", "dmam_alloc_attrs", "dma_free_coherent", "dma_free_attrs", "dmam_free_coherent", "dma_map_single",
-        "dma_unmap_single", "dma_map_page", "dma_map_page_attrs", "dma_unmap_page_attrs", "dma_map_sg", "dma_map_sg_attrs", "dma_unmap_sg", "dma_unmap_sg_attrs",
+        "dma_unmap_single", "dma_map_page", "dma_map_page_attrs", "dma_unmap_page_attrs", "dma_map_phys", "dma_unmap_phys", "dma_map_resource", "dma_unmap_resource", "dma_map_sg", "dma_map_sg_attrs", "dma_unmap_sg", "dma_unmap_sg_attrs",
         "dma_sync_single_for_cpu", "dma_sync_single_for_device", "__dma_sync_single_for_cpu", "__dma_sync_single_for_device",
         "dma_mapping_error", "dma_set_mask", "dma_set_coherent_mask",
         "dma_set_mask_and_coherent", "sg_init_table", "sg_set_buf", "sg_set_page",

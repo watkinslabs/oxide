@@ -1,5 +1,11 @@
 # Fixed issues
 
+### F1007-linux-dma-resource-mapping-kpi
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED F1007 | MISSING | high | **The external-driver DMA facade omitted Linux's physical/resource mapping KPIs (`dma_map_phys`, `dma_unmap_phys`, `dma_map_resource`, and `dma_unmap_resource`), preventing drivers that DMA to reserved memory, peer memory, or MMIO-backed resources from loading.** The facade now exports the same physical-map pair with Linux's GPL restriction and routes resource maps through it with no CPU cache synchronization, as Linux's MMIO resource wrapper does. | F1007. `linux_dma_tests::resource_mapping_accepts_physical_and_zero_dma_addresses` verifies valid physical zero and overflow rejection; export coverage pins all four symbols. Compared with target Linux `kernel/dma/mapping.c`. | Chris Watkins |
+
 ### F1006-linux-dma-mapping-error-abi
 
 | Status | Class | Sev | Issue | Evidence | Owner |
