@@ -122,6 +122,7 @@ pub fn export_symbols() {
     crate::symtab::export("drm_crtc_cleanup", drm_crtc_cleanup as *const () as usize, false);
     crate::symtab::export("drm_encoder_init", drm_encoder_init as *const () as usize, false);
     crate::symtab::export("drm_encoder_cleanup", drm_encoder_cleanup as *const () as usize, false);
+    crate::symtab::export("drm_mode_config_reset", drm_mode_config_reset as *const () as usize, false);
     connector::export_symbols();
 }
 
@@ -401,6 +402,15 @@ extern "C" fn drm_encoder_cleanup(encoder: *mut c_void) {
     // SAFETY: entry is the exact encoder owned by this device, including its linked node and name allocation.
     unsafe { let head = encoder.cast::<u8>().add(DRM_ENCODER_HEAD_OFF).cast::<*mut c_void>(); let next = *head; let prev = *head.add(1); write(prev.cast::<*mut c_void>(), next); write(next.cast::<*mut c_void>().add(1), prev); let count = config.add(MODE_CONFIG_NUM_ENCODER_OFF).cast::<i32>(); if *count > 0 { write(count, *count - 1); } core::ptr::write_bytes(encoder.cast::<u8>(), 0, DRM_ENCODER_FUNCS_OFF + core::mem::size_of::<*const c_void>()); dealloc(entry.name as *mut u8, entry.layout); }
     drop(devices); drm_mode_object_unregister(dev, unsafe { encoder.cast::<u8>().add(DRM_ENCODER_BASE_OFF).cast() });
+}
+
+/// Reset every driver KMS object in construction order after graph setup. # C: O(N_objects)
+extern "C" fn drm_mode_config_reset(dev: *mut c_void) {
+    let calls = { let devices = DEVICES.lock(); let Some(rec) = devices.iter().find(|rec| rec.dev == dev as usize && rec.mode_config && !rec.put_pending && !rec.unplugged) else { return; }; let mut calls = Vec::new(); for plane in &rec.planes { calls.push((plane.ptr, DRM_PLANE_FUNCS_OFF, 24usize)); } for crtc in &rec.crtcs { calls.push((crtc.ptr, DRM_CRTC_FUNCS_OFF, 0)); } for encoder in &rec.encoders { calls.push((encoder.ptr, DRM_ENCODER_FUNCS_OFF, 0)); } for connector in &rec.connectors { calls.push((connector.ptr, connector::DRM_CONNECTOR_FUNCS_OFF, 8)); } calls };
+    for (object, funcs_off, reset_off) in calls {
+        // SAFETY: each object remains owned by the live device record; the callback offsets are verified ABI fields and reset takes that object pointer.
+        unsafe { let funcs = *(object as *mut u8).add(funcs_off).cast::<*const u8>(); if !funcs.is_null() { let reset = *(funcs.add(reset_off).cast::<Option<unsafe extern "C" fn(*mut c_void)>>()); if let Some(reset) = reset { reset(object as *mut c_void); } } }
+    }
 }
 
 fn next_guard() -> i32 {
