@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use crate::{VtdIrTable, VtdQiQueue, VtdRegisters, VtdTables, intel_vtd_ioapic_source, intel_vtd_rmrr_count, intel_vtd_rmrr_for_bdf, intel_vtd_unit_for_bdf, remapped_msi};
+use crate::{VtdIrTable, VtdQiQueue, VtdRegisters, VtdTables, intel_vtd_hpet_source, intel_vtd_ioapic_source, intel_vtd_rmrr_count, intel_vtd_rmrr_for_bdf, intel_vtd_unit_for_bdf, remapped_msi};
 use firmware::acpi::{IommuKind, IommuUnit};
 use pci::{Bdf, ConfigSpaceReader};
 use sync::{Devices, Spinlock};
@@ -17,8 +17,11 @@ pub enum VtdMsi { Direct, Remapped { address: u64, data: u32 }, Failed }
 /// Result of allocating an x86 IOAPIC interrupt through VT-d.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum VtdIoapic { Direct, Remapped { index: u16 }, Failed }
+/// Result of allocating an x86 HPET FSB interrupt through VT-d.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum VtdHpet { Direct, Remapped { address: u64, data: u32 }, Failed }
 
-struct VtdBootUnit { unit: IommuUnit, regs: VtdRegisters, requesters: Vec<Bdf>, ioapic_source: Option<u16>, tables: VtdTables, qi: Option<VtdQiQueue>, ir: Option<VtdIrTable> }
+struct VtdBootUnit { unit: IommuUnit, regs: VtdRegisters, requesters: Vec<Bdf>, ioapic_source: Option<u16>, hpet_source: Option<u16>, tables: VtdTables, qi: Option<VtdQiQueue>, ir: Option<VtdIrTable> }
 static MANAGER: Spinlock<Vec<VtdBootUnit>, Devices> = Spinlock::new(Vec::new());
 /// Hardware/firmware admission for EIM.  This does not enable x2APIC: the
 /// LAPIC owner must first put IOAPIC and HPET sources behind remapping too.
@@ -51,7 +54,7 @@ pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf],
             let Some(table) = VtdIrTable::new(hhdm_offset, false) else { return VtdActivation::Failed; };
             Some(table)
         } else { None };
-        manager.push(VtdBootUnit { unit, regs, requesters: Vec::new(), ioapic_source: None, tables, qi, ir });
+        manager.push(VtdBootUnit { unit, regs, requesters: Vec::new(), ioapic_source: None, hpet_source: None, tables, qi, ir });
     }
     for entry in manager.iter_mut() {
         for index in 0..intel_vtd_rmrr_count() {
@@ -70,6 +73,12 @@ pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf],
         if let Some((unit, source_id)) = intel_vtd_ioapic_source(reader, ioapic_id) {
             let Some(entry) = manager.iter_mut().find(|entry| entry.unit == unit) else { return VtdActivation::Failed; };
             entry.ioapic_source = Some(source_id);
+        }
+    }
+    if let Some(hpet_id) = firmware::hpet_id() {
+        if let Some((unit, source_id)) = intel_vtd_hpet_source(reader, hpet_id) {
+            let Some(entry) = manager.iter_mut().find(|entry| entry.unit == unit) else { return VtdActivation::Failed; };
+            entry.hpet_source = Some(source_id);
         }
     }
     for entry in manager.iter_mut() {
@@ -121,6 +130,23 @@ pub fn allocate_vtd_ioapic(vector: u8, destination_apic_id: u32) -> VtdIoapic {
     let Some(index) = ir.allocate_ioapic(vector, destination_apic_id, source_id) else { return VtdIoapic::Failed; };
     if !entry.regs.invalidate_interrupt_entry(queue, index) { return VtdIoapic::Failed; }
     VtdIoapic::Remapped { index }
+}
+
+/// Allocate one remapped HPET FSB message.  A published HPET block without a
+/// trustworthy DMAR scope is refused, so no caller can silently program a
+/// compatibility-format message after interrupt remapping is active.
+/// # C: O(units + IRTE scan + poll limit)
+pub fn allocate_vtd_hpet(vector: u8, destination_apic_id: u32) -> VtdHpet {
+    let mut manager = MANAGER.lock();
+    let Some(entry) = manager.iter_mut().find(|entry| entry.hpet_source.is_some()) else {
+        return if firmware::hpet_pa() != 0 { VtdHpet::Failed } else { VtdHpet::Direct };
+    };
+    let Some(source_id) = entry.hpet_source else { return VtdHpet::Direct; };
+    let (Some(queue), Some(ir)) = (entry.qi.as_mut(), entry.ir.as_mut()) else { return VtdHpet::Direct; };
+    let Some(index) = ir.allocate_hpet(vector, destination_apic_id, source_id) else { return VtdHpet::Failed; };
+    if !entry.regs.invalidate_interrupt_entry(queue, index) { return VtdHpet::Failed; }
+    let (address, data) = remapped_msi(index, 0);
+    VtdHpet::Remapped { address, data }
 }
 
 /// Install one live mapping constrained by the requester's inclusive DMA mask.

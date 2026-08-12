@@ -73,6 +73,8 @@ use core::sync::atomic::AtomicU32;
 static IOAPIC_PA: AtomicU64 = AtomicU64::new(0);
 static IOAPIC_GSI_BASE: AtomicU32 = AtomicU32::new(0);
 static IOAPIC_ID: AtomicU32 = AtomicU32::new(u32::MAX);
+static HPET_PA: AtomicU64 = AtomicU64::new(0);
+static HPET_ID: AtomicU32 = AtomicU32::new(u32::MAX);
 const ISA_IRQS: usize = 16;
 // Legacy ISA IRQ routing defaults to identity GSI N with ACPI flags 0
 // (bus default: edge-triggered, active-high). MADT type-2 source overrides
@@ -131,6 +133,10 @@ pub fn ioapic_gsi_base() -> u32 { IOAPIC_GSI_BASE.load(Ordering::Acquire) }
 pub fn ioapic_id() -> Option<u8> {
     u8::try_from(IOAPIC_ID.load(Ordering::Acquire)).ok()
 }
+/// Physical base of the firmware HPET block (0 = absent or non-MMIO). # C: O(1)
+pub fn hpet_pa() -> u64 { HPET_PA.load(Ordering::Acquire) }
+/// Firmware HPET block number used to match a DMAR HPET scope. # C: O(1)
+pub fn hpet_id() -> Option<u8> { u8::try_from(HPET_ID.load(Ordering::Acquire)).ok() }
 /// GSI that legacy ISA IRQ `irq` is routed to after MADT source overrides.
 /// Returns `None` for non-ISA IRQ numbers. # C: O(1)
 pub fn legacy_irq_gsi(irq: u8) -> Option<u32> {
@@ -223,6 +229,14 @@ pub(crate) fn set_ioapic(id: u8, pa: u32, gsi_base: u32) {
     {
         IOAPIC_ID.store(id as u32, Ordering::Release);
         IOAPIC_GSI_BASE.store(gsi_base, Ordering::Release);
+    }
+}
+
+/// Record the first system-memory HPET block (first wins). # C: O(1)
+pub(crate) fn set_hpet(id: u8, pa: u64) {
+    if pa == 0 { return; }
+    if HPET_PA.compare_exchange(0, pa, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+        HPET_ID.store(id as u32, Ordering::Release);
     }
 }
 
