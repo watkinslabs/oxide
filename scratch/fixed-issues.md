@@ -1554,3 +1554,8 @@ Six lanes filed the same defect separately. The canonical row lives in
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED F1003 | DEFECT | HIGH | e1000 acknowledged ICR and scheduled its deferred RX poll while leaving every receive cause enabled. A busy physical NIC could continuously interrupt CPUs while the bounded poll was already responsible for draining the ring, degrading interactive scheduling. The endpoint now owns a NAPI-shaped polling bit: the first valid cause masks the source and schedules NET_RX; the poll keeps it masked while work remains, otherwise checks the latched cause, clears its poll bit, and reenables interrupts so no masked-window event is lost. | `cargo test -p drv-e1000 --lib -- --test-threads=1`; kernel target builds exercise the IRQ-only code path. | F1003 |
+### F1004-xhci-iman-pending-ack
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED F1004 | DEFECT | HIGH | xHCI event handling acknowledged USBSTS and advanced ERDP but left the primary interrupter pending bit asserted. Controllers that do not auto-clear that bit can stop signaling later USB input, hub, and storage events. The vector now acknowledges `IMAN.IP` with a posted-write flush after the event cause is observed and before event-ring consumption. | `drv_xhci::controller::tests::run_plan_uses_exact_controller_dma_pointer_encodings` pins the distinct IP/IE bits; `cargo test -p drv-xhci --lib -- --test-threads=1` (49 passed). | F1004 |

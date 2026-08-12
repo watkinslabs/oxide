@@ -36,6 +36,8 @@ pub const STS_EINT: u32 = 1 << 3;
 pub const STS_CNR: u32 = 1 << 11;
 /// Enable event interrupts for interrupter zero. # C: O(1)
 pub const IMAN_IE: u32 = 1 << 1;
+/// Interrupter pending, write-one-to-clear after event-ring consumption. # C: O(1)
+pub const IMAN_IP: u32 = 1;
 /// Event-handler-busy acknowledgement on ERDP. # C: O(1)
 pub const ERDP_EHB: u64 = 1 << 3;
 
@@ -109,6 +111,8 @@ mod tests {
         assert_eq!(p.erstsz, 1);
         assert_eq!(p.erdp, 0x23_008);
         assert_eq!(run_command(0), CMD_RUN | CMD_EIE | CMD_HSEIE);
+        assert_eq!(IMAN_IP, 1);
+        assert_eq!(IMAN_IE, 2);
     }
 
     #[test]
