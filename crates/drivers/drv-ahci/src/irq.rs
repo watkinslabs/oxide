@@ -7,7 +7,9 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use crate::port::Ahci;
 use crate::regs;
 
-const MAX_ENDPOINTS: usize = 8;
+/// AHCI exposes at most 32 ports per host; every active port needs one
+/// completion endpoint even though the PCI function has one shared vector.
+const MAX_ENDPOINTS: usize = 32;
 const ENDPOINT_FREE: u8 = 0;
 const ENDPOINT_SETUP: u8 = 1;
 const ENDPOINT_ACTIVE: u8 = 2;
@@ -29,7 +31,7 @@ impl Endpoint {
 static ENDPOINTS: [Endpoint; MAX_ENDPOINTS] = [const { Endpoint::new() }; MAX_ENDPOINTS];
 
 #[derive(Clone, Copy)]
-pub(crate) struct IrqBinding { endpoint: usize, binding: pci_irq::Binding }
+pub(crate) struct IrqBinding { endpoint: usize, binding: Option<pci_irq::Binding> }
 
 fn claim_endpoint(ctrl: &Ahci) -> Option<usize> {
     for (idx, endpoint) in ENDPOINTS.iter().enumerate() {
@@ -58,6 +60,8 @@ fn release_endpoint(idx: usize) {
 
 fn hard_handler() {
     let mut raise = false;
+    let mut hosts = [(0u64, 0u32); MAX_ENDPOINTS];
+    let mut host_count = 0usize;
     for endpoint in &ENDPOINTS {
         if endpoint.state.compare_exchange(ENDPOINT_ACTIVE, ENDPOINT_HANDLING, Ordering::AcqRel, Ordering::Acquire).is_err() { continue; }
         endpoint.in_handler.fetch_add(1, Ordering::AcqRel);
@@ -66,6 +70,14 @@ fn hard_handler() {
         let port_bit = 1u32 << port;
         // SAFETY: ACTIVE publishes the controller-owned ABAR mapping and teardown drains in_handler before unmapping it.
         let hba_is = unsafe { core::ptr::read_volatile((abar_va + regs::HBA_IS) as *const u32) };
+        let mut known_host = false;
+        for host in hosts.iter_mut().take(host_count) {
+            if host.0 == abar_va { host.1 |= hba_is; known_host = true; break; }
+        }
+        if !known_host && host_count < hosts.len() {
+            hosts[host_count] = (abar_va, hba_is);
+            host_count += 1;
+        }
         if hba_is & port_bit != 0 {
             let port_base = abar_va + regs::port_off(port);
             // SAFETY: ACTIVE publishes the selected port register block until synchronize_and_release completes.
@@ -74,7 +86,6 @@ fn hard_handler() {
                 let ci = core::ptr::read_volatile((port_base + regs::P_CI) as *const u32);
                 let tfd = core::ptr::read_volatile((port_base + regs::P_TFD) as *const u32);
                 core::ptr::write_volatile((port_base + regs::P_IS) as *mut u32, pis);
-                core::ptr::write_volatile((abar_va + regs::HBA_IS) as *mut u32, hba_is);
                 endpoint.pis.fetch_or(pis, Ordering::AcqRel);
                 endpoint.tfd.store(tfd, Ordering::Release);
                 if regs::irq_finishes_slot(pis, ci, tfd) {
@@ -88,12 +99,26 @@ fn hard_handler() {
         endpoint.in_handler.fetch_sub(1, Ordering::Release);
         endpoint.state.store(ENDPOINT_ACTIVE, Ordering::Release);
     }
+    for (abar_va, hba_is) in hosts.iter().take(host_count) {
+        // SAFETY: every selected port cause was acknowledged above while its
+        // endpoint retained the shared host mapping; acknowledge the HBA
+        // level latch only after that complete host-wide pass.
+        unsafe { core::ptr::write_volatile((*abar_va + regs::HBA_IS) as *mut u32, *hba_is); }
+    }
     if raise { block::completion::raise(); }
 }
 
 /// Bind one AHCI controller through the PCI IRQ owner. # C: O(N_caps)
 pub(crate) fn bind(bdf: pci::Bdf, ctrl: &Ahci) -> Option<IrqBinding> {
+    let shared = ENDPOINTS.iter().any(|endpoint|
+        endpoint.state.load(Ordering::Acquire) != ENDPOINT_FREE
+            && endpoint.abar_va.load(Ordering::Acquire) == ctrl.abar_va());
     let endpoint = claim_endpoint(ctrl)?;
+    if shared {
+        ENDPOINTS[endpoint].state.store(ENDPOINT_ACTIVE, Ordering::Release);
+        ctrl.enable_interrupts();
+        return Some(IrqBinding { endpoint, binding: None });
+    }
     let table = pci_irq::BarMapping { bar: 5, base_va: ctrl.abar_va(), bytes: ctrl.abar_map_bytes(), offset: ctrl.abar_offset() };
     let Some(binding) = pci_irq::request(bdf, table, arch_irq::DeviceAction::Ahci, hard_handler) else {
         release_endpoint(endpoint);
@@ -101,10 +126,12 @@ pub(crate) fn bind(bdf: pci::Bdf, ctrl: &Ahci) -> Option<IrqBinding> {
     };
     ENDPOINTS[endpoint].state.store(ENDPOINT_ACTIVE, Ordering::Release);
     ctrl.enable_interrupts();
-    Some(IrqBinding { endpoint, binding })
+    Some(IrqBinding { endpoint, binding: Some(binding) })
 }
 
 impl IrqBinding {
+    /// Whether this endpoint owns the function-level PCI interrupt binding. # C: O(1)
+    pub(crate) const fn owns_host_irq(self) -> bool { self.binding.is_some() }
     /// Reset software completion state before a new doorbell. # C: O(1)
     pub(crate) fn prepare_command(self) {
         let endpoint = &ENDPOINTS[self.endpoint];
@@ -132,7 +159,7 @@ impl IrqBinding {
 
     /// Mask AHCI sources and prevent a new hard-handler acquisition. # C: O(N_slots)
     pub(crate) fn begin_release(self, ctrl: &Ahci) {
-        ctrl.disable_interrupts();
+        if self.owns_host_irq() { ctrl.disable_interrupts(); }
         let endpoint = &ENDPOINTS[self.endpoint];
         loop {
             match endpoint.state.compare_exchange(ENDPOINT_ACTIVE, ENDPOINT_SETUP, Ordering::AcqRel, Ordering::Acquire) {
@@ -147,7 +174,7 @@ impl IrqBinding {
     pub(crate) fn synchronize_and_release(self) {
         let endpoint = &ENDPOINTS[self.endpoint];
         while endpoint.in_handler.load(Ordering::Acquire) != 0 { core::hint::spin_loop(); }
-        self.binding.release();
+        if let Some(binding) = self.binding { binding.release(); }
         release_endpoint(self.endpoint);
     }
 }

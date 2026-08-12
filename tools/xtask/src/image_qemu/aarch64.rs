@@ -220,8 +220,7 @@ pub(super) fn qemu_run_aarch64_grub(
         "-drive", nvme_drive.as_str(),
         "-device", "nvme,serial=oxnvme,drive=nvm0,bus=pcie.0",
         // D3.6: AHCI HBA + a SATA disk on it (lockstep with x86). drv-ahci
-        // enumerates the ich9-ahci controller, brings up port 0, registers
-        // sata0, and self-tests an LBA-0 read.
+        // enumerates every implemented ready ATA port as an sdX disk.
         "-device", "ich9-ahci,id=ahci,bus=pcie.0",
         "-drive", ahci_drive.as_str(),
         "-device", "ide-hd,drive=sata0,bus=ahci.0,serial=oxahci0",
@@ -277,6 +276,14 @@ pub(super) fn qemu_run_aarch64_grub(
             "-device", "ich9-ahci,id=ahci1,bus=pcie.0",
             "-drive", ahci1_drive.as_str(),
             "-device", "ide-hd,drive=sata1,bus=ahci1.0,serial=oxahci1",
+        ]);
+    }
+    if std::env::var_os("OXIDE_AHCI_MULTIPORT_SMOKE").is_some() {
+        let extra = ensure_ahci_extra_img(repo, id, "aarch64");
+        let drive = format!("id=sata-multi,if=none,format=raw,file={}", extra.display());
+        c.args([
+            "-drive", drive.as_str(),
+            "-device", "ide-hd,drive=sata-multi,bus=ahci.1,serial=oxahci-multi",
         ]);
     }
     eprintln!("xtask grub: launching qemu-system-aarch64 (OVMF→GRUB→EFI-stub), smp={smp}, headless={headless}");

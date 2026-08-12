@@ -7,7 +7,8 @@
 // and calls `init`.
 //
 // Layering: `regs.rs` = pure register/FIS/IDENTIFY math; `port.rs` = HBA/port
-// lifecycle; `command.rs` = command DMA staging; `irq.rs` = MSI hard-handler
+// lifecycle; `host.rs` = HBA-wide ABAR/IRQ ownership; `command.rs` = command
+// DMA staging; `irq.rs` = shared-MSI hard-handler
 // endpoints; `wait.rs` = process wait mechanics; `device.rs` = BlockDevice;
 // `lifecycle.rs` = hosted cleanup-order proof; this file = registration + PCI
 // bring-up glue.
@@ -31,6 +32,8 @@ mod command;
 #[cfg(target_os = "oxide-kernel")]
 mod device;
 #[cfg(target_os = "oxide-kernel")]
+mod host;
+#[cfg(target_os = "oxide-kernel")]
 mod irq;
 #[cfg(target_os = "oxide-kernel")]
 mod port;
@@ -43,10 +46,10 @@ mod imp {
     use alloc::string::String;
     use alloc::vec::Vec;
     use sync::{Spinlock, TaskList as DriverLockClass};
-    use block::BlockDevice;
     #[cfg(feature = "debug-boot")]
     use block::BlockRequest;
     use crate::device::AhciBlk;
+    use crate::host::AhciHost;
     use crate::port::Ahci;
 
     /// PCI class for an AHCI controller: base 0x01 (mass storage), subclass
@@ -101,8 +104,8 @@ type AhciBh = sync::NoopBh;
     }
 
     /// Bring up the AHCI controller whose ABAR (BAR5) register file is mapped
-    /// by `mmio` (≥2 pages), register the first SATA
-    /// disk under a unique `sdX` name, and return the 1-based registry index
+    /// by `mmio`, register every ready SATA disk under unique `sdX` names,
+    /// and return the first 1-based registry index
     /// (0 on failure). Optionally self-tests by reading LBA 0.
     /// # C: O(N_ahci + bring-up + registry O(N))
     pub fn init(
@@ -114,7 +117,7 @@ type AhciBh = sync::NoopBh;
         if DEVICES.lock_bh::<AhciBh>().iter().any(|rec| rec.device_key == device_key) {
             return 0;
         }
-        let mut a = match Ahci::bring_up(device_key, mmio, abar_off) { Ok(a) => a, Err(reason) => {
+        let host = match AhciHost::bring_up(device_key, mmio, abar_off) { Ok(host) => Arc::new(host), Err(reason) => {
             // "no ..." = an empty HBA (e.g. the ICH9 chipset SATA controller
             // with no drive attached) — benign INFO, not a failure WARN.
             #[cfg(feature = "debug-boot")]
@@ -127,78 +130,54 @@ type AhciBh = sync::NoopBh;
             let _ = reason;
             return 0;
         }};
-        let blk_size = a.blk_size;
-        let capacity = a.sectors;
-        let serial = a.serial.clone();
-
-        #[cfg(feature = "debug-boot")]
-        {
-            klog::write_raw(b"[INFO]  ahci: port0 ready sectors=");
-            klog::write_dec_u64(capacity);
-            klog::write_raw(b" bsz=");
-            klog::write_dec_u64(blk_size as u64);
-            klog::write_raw(b"\n");
-        }
-
         if !block::completion::register(run_completion_bottom_half) {
-            a.shutdown_and_free();
             return 0;
         }
-        let Some(binding) = crate::irq::bind(device_key, &a) else {
-            a.shutdown_and_free();
-            unregister_completion_if_idle();
-            return 0;
-        };
-        let dev = Arc::new(AhciBlk::new(a, binding, blk_size, capacity));
-
-        let block_dev: Arc<dyn BlockDevice> = dev.clone();
-        let Some(name) = block::reserve_scsi_disk_name() else {
-            dev.remove();
-            unregister_completion_if_idle();
-            return 0;
-        };
-        let name_text = String::from(name.as_str());
-        let existed = block::registry::by_name(&name_text).is_some();
-        let idx = block::registry::register_with_driver(
-            block::registry::BlockDriver::fixed("sd", block::uapi::SCSI_DISK_MAJOR), &name_text, serial.as_deref(), block_dev);
-        let published = if idx != 0 && !existed {
-            let mut devices = DEVICES.lock_bh::<AhciBh>();
-            if devices.iter().any(|rec| rec.device_key == device_key) {
-                false
-            } else {
-                devices.push(AhciRecord {
-                    device_key,
-                    command_orig,
-                    name,
-                    dev: dev.clone(),
-                });
-                true
+        let mut first_idx = 0u32;
+        for port in 0..32 {
+            if host.ports() & (1 << port) == 0 { continue; }
+            let Ok(mut a) = Ahci::bring_up(host.clone(), port) else { continue; };
+            let blk_size = a.blk_size;
+            let capacity = a.sectors;
+            let serial = a.serial.clone();
+            let Some(binding) = crate::irq::bind(device_key, &a) else { a.shutdown_and_free(); continue; };
+            let dev = Arc::new(AhciBlk::new(a, binding, blk_size, capacity));
+            let Some(name) = block::reserve_scsi_disk_name() else { dev.remove(); continue; };
+            let name_text = String::from(name.as_str());
+            let existed = block::registry::by_name(&name_text).is_some();
+            let idx = block::registry::register_with_driver(
+                block::registry::BlockDriver::fixed("sd", block::uapi::SCSI_DISK_MAJOR), &name_text, serial.as_deref(), dev.clone());
+            if idx == 0 || existed {
+                if idx != 0 { let _ = block::registry::unregister(&name_text); }
+                dev.remove();
+                continue;
             }
-        } else {
-            false
-        };
-        if !published {
-            if idx != 0 && !existed {
-                let _ = block::registry::unregister(&name_text);
+            DEVICES.lock_bh::<AhciBh>().push(AhciRecord { device_key, command_orig, name, dev: dev.clone() });
+            if first_idx == 0 { first_idx = idx; }
+            #[cfg(feature = "debug-boot")]
+            {
+                klog::write_raw(b"[INFO]  ahci: port=");
+                klog::write_dec_u64(port as u64);
+                klog::write_raw(b" sectors=");
+                klog::write_dec_u64(capacity);
+                klog::write_raw(b" bsz=");
+                klog::write_dec_u64(blk_size as u64);
+                klog::write_raw(b"\n");
             }
-            dev.remove();
-            unregister_completion_if_idle();
-            return 0;
-        }
-        // Run after DEVICES publication so the shared BlockIo bottom half can
-        // find and wake this controller's completion waiter.
-        #[cfg(feature = "debug-boot")]
-        {
-            let before = dev.irq_completion_count();
-            let mut req = BlockRequest::new_read(0, 1, blk_size);
-            let ok = dev.submit_sync(&mut req).is_ok();
-            let irqs = dev.irq_completion_count().saturating_sub(before);
-            klog::write_raw(b"[INFO]  ahci: lba0 read selftest=");
-            klog::write_dec_u64(ok as u64);
-            klog::write_raw(b" irq_completions=");
-            klog::write_dec_u64(irqs);
-            klog::write_raw(b"\n");
-        }
+            // Run after DEVICES publication so the shared BlockIo bottom half
+            // can find and wake this port's completion waiter.
+            #[cfg(feature = "debug-boot")]
+            {
+                let before = dev.irq_completion_count();
+                let mut req = BlockRequest::new_read(0, 1, blk_size);
+                let ok = dev.submit_sync(&mut req).is_ok();
+                let irqs = dev.irq_completion_count().saturating_sub(before);
+                klog::write_raw(b"[INFO]  ahci: lba0 read selftest=");
+                klog::write_dec_u64(ok as u64);
+                klog::write_raw(b" irq_completions=");
+                klog::write_dec_u64(irqs);
+                klog::write_raw(b"\n");
+            }
         #[cfg(feature = "debug-boot")]
         {
             klog::write_raw(b"[INFO]  ahci ");
@@ -210,31 +189,28 @@ type AhciBh = sync::NoopBh;
             klog::write_raw(b" block dev registered idx=");
             klog::write_dec_u64(idx as u64);
             klog::write_raw(b"\n");
+            }
         }
-        idx
+        if first_idx == 0 { unregister_completion_if_idle(); }
+        first_idx
     }
 
     /// Remove the registered AHCI disk and release controller-owned resources.
     /// # C: O(N_ahci + N_disks + port shutdown)
     pub fn remove(device_key: pci::Bdf) -> bool {
-        let name = match DEVICES
-            .lock_bh::<AhciBh>()
-            .iter()
-            .find(|rec| rec.device_key == device_key)
-            .map(|rec| String::from(rec.name.as_str()))
-        {
-            Some(name) => name,
-            None => return false,
-        };
-        if !block::registry::unregister(&name) { return false; }
-        let rec = {
+        let records = {
             let mut devices = DEVICES.lock_bh::<AhciBh>();
-            match devices.iter().position(|rec| rec.device_key == device_key) {
-                Some(i) => devices.remove(i),
-                None => return false,
+            let mut records = Vec::new();
+            let mut i = 0;
+            while i < devices.len() {
+                if devices[i].device_key == device_key { records.push(devices.remove(i)); }
+                else { i += 1; }
             }
+            records
         };
-        rec.dev.remove();
+        if records.is_empty() { return false; }
+        for rec in &records { let _ = block::registry::unregister(rec.name.as_str()); }
+        for rec in records.into_iter().rev() { rec.dev.remove(); }
         unregister_completion_if_idle();
         true
     }
@@ -243,16 +219,14 @@ type AhciBh = sync::NoopBh;
     /// unregistering userspace-visible block publication.
     /// # C: O(N_ahci + port shutdown)
     pub fn shutdown(device_key: pci::Bdf) -> bool {
-        let dev = match DEVICES
+        let devices: Vec<Arc<AhciBlk>> = DEVICES
             .lock_bh::<AhciBh>()
             .iter()
-            .find(|rec| rec.device_key == device_key)
+            .filter(|rec| rec.device_key == device_key)
             .map(|rec| rec.dev.clone())
-        {
-            Some(dev) => dev,
-            None => return false,
-        };
-        dev.shutdown();
+            .collect();
+        if devices.is_empty() { return false; }
+        for dev in devices.into_iter().rev() { dev.shutdown(); }
         true
     }
 

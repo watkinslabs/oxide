@@ -10,10 +10,10 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-use alloc::string::String;
+use alloc::{string::String, sync::Arc};
 
+use crate::host::AhciHost;
 use crate::regs;
-use mmio_map::Mapping;
 
 /// HHDM base for the running arch (PA→VA for HBA DMA structures + data run).
 /// # C: O(1)
@@ -48,65 +48,15 @@ const DATA_BYTES: u64 = PAGE << DATA_ORDER.0;
 /// Worst-case wait for a command completion or a port stop. 5 s is generous
 /// for QEMU's emulated AHCI; bounds a genuinely-lost completion to EIO.
 const IO_TIMEOUT_NS: u64 = 5_000_000_000;
-/// AHCI §10.4.3 requires the global HBA reset to self-clear within one second.
-const HBA_RESET_TIMEOUT_NS: u64 = 1_000_000_000;
 /// Per-port SATA PHY link-up timeout after COMRESET (bounded so empty ports
 /// don't stall boot; a real link establishes in well under this).
 const LINK_TIMEOUT_NS: u64 = 200_000_000;
-
-/// Read one global HBA register before an [`Ahci`] instance exists. # C: O(1)
-#[inline]
-fn hba_read(abar_va: u64, off: u64) -> u32 {
-    // SAFETY: probe mapped the AHCI ABAR as Device memory; callers supply an
-    // aligned global-register offset within that mapping.
-    unsafe { core::ptr::read_volatile((abar_va + off) as *const u32) }
-}
-
-/// Write one global HBA register before an [`Ahci`] instance exists. # C: O(1)
-#[inline]
-fn hba_write(abar_va: u64, off: u64, value: u32) {
-    // SAFETY: probe mapped the AHCI ABAR as Device memory; callers supply an
-    // aligned, driver-owned global-register offset within that mapping.
-    unsafe { core::ptr::write_volatile((abar_va + off) as *mut u32, value); }
-}
-
-/// Enter AHCI mode. Linux retries this write because some controllers do not
-/// latch GHC.AE on the first attempt. # C: O(5 bounded waits)
-fn enable_ahci(abar_va: u64) -> bool {
-    for _ in 0..5 {
-        let ghc = hba_read(abar_va, regs::HBA_GHC);
-        if ghc & regs::GHC_AE != 0 { return true; }
-        hba_write(abar_va, regs::HBA_GHC, ghc | regs::GHC_AE);
-        if hba_read(abar_va, regs::HBA_GHC) & regs::GHC_AE != 0 { return true; }
-        let deadline = now_ns().saturating_add(10_000_000);
-        while now_ns() < deadline { core::hint::spin_loop(); }
-    }
-    false
-}
-
-/// Assert the global HBA reset and wait for the self-clearing bit. # C: O(1 s)
-fn reset_hba(abar_va: u64) -> bool {
-    let ghc = hba_read(abar_va, regs::HBA_GHC);
-    if ghc & regs::GHC_HR == 0 {
-        hba_write(abar_va, regs::HBA_GHC, ghc | regs::GHC_HR);
-        let _ = hba_read(abar_va, regs::HBA_GHC); // flush posted MMIO write
-    }
-    let deadline = now_ns().saturating_add(HBA_RESET_TIMEOUT_NS);
-    loop {
-        if hba_read(abar_va, regs::HBA_GHC) & regs::GHC_HR == 0 { return true; }
-        if now_ns() >= deadline { return false; }
-        core::hint::spin_loop();
-    }
-}
 
 /// The AHCI controller bring-up state for one SATA-disk port. Holds the ABAR
 /// register-file VA, the port index, the DMA-structure PAs (command list,
 /// received-FIS, command table, DMA data run), and the negotiated geometry.
 pub struct Ahci {
-    bdf:       pci::Bdf,
-    mmio:      Mapping,
-    abar_va: u64,
-    abar_off: u64,
+    host: Arc<AhciHost>,
     port:    u32,
     pub(crate) clb_pa:  u64,  // command list (1 KiB, 1 KiB-aligned)
     pub(crate) clb_dma: u64,
@@ -165,31 +115,40 @@ impl Ahci {
         Ok((frames, data_pa))
     }
 
+    fn release_unstarted(bdf: pci::Bdf, frames: &mut [u64; 3], dmas: &mut [u64; 3], data_pa: u64, data_dma: u64) {
+        for (pa, dma) in frames.iter_mut().zip(dmas.iter_mut()) {
+            if *dma != 0 { let _ = iommu::unmap_dma(bdf, *dma, PAGE as usize); *dma = 0; }
+            Self::free_frame(pa);
+        }
+        if data_dma != 0 { let _ = iommu::unmap_dma(bdf, data_dma, DATA_BYTES as usize); }
+        if data_pa != 0 {
+            // SAFETY: no command list was programmed, so the HBA cannot DMA this allocation.
+            unsafe { pmm::setup::free_contig(data_pa, DATA_ORDER); }
+        }
+    }
+
     /// Stop the active port and return command/FIS/table/data DMA memory to PMM.
     /// Publication must already be removed, or the system must be in terminal
     /// shutdown, and callers quiesced.
     /// # C: O(port stop wait + DMA data run frees)
     pub fn shutdown_and_free(&mut self) {
-        if self.abar_va != 0 {
-            self.disable_interrupts();
+        if self.host.abar_va() != 0 {
             let _ = self.stop_port();
             self.pw(regs::P_CLB, 0);
             self.pw(regs::P_CLBU, 0);
             self.pw(regs::P_FB, 0);
             self.pw(regs::P_FBU, 0);
         }
-        if iommu::unmap_dma(self.bdf, self.clb_dma, PAGE as usize) { Self::free_frame(&mut self.clb_pa); self.clb_dma = 0; }
-        if iommu::unmap_dma(self.bdf, self.fb_dma, PAGE as usize) { Self::free_frame(&mut self.fb_pa); self.fb_dma = 0; }
-        if iommu::unmap_dma(self.bdf, self.ctba_dma, PAGE as usize) { Self::free_frame(&mut self.ctba_pa); self.ctba_dma = 0; }
-        if self.data_pa != 0 && iommu::unmap_dma(self.bdf, self.data_dma, DATA_BYTES as usize) {
+        if iommu::unmap_dma(self.host.bdf(), self.clb_dma, PAGE as usize) { Self::free_frame(&mut self.clb_pa); self.clb_dma = 0; }
+        if iommu::unmap_dma(self.host.bdf(), self.fb_dma, PAGE as usize) { Self::free_frame(&mut self.fb_pa); self.fb_dma = 0; }
+        if iommu::unmap_dma(self.host.bdf(), self.ctba_dma, PAGE as usize) { Self::free_frame(&mut self.ctba_pa); self.ctba_dma = 0; }
+        if self.data_pa != 0 && iommu::unmap_dma(self.host.bdf(), self.data_dma, DATA_BYTES as usize) {
             // SAFETY: port stop above prevents DMA and `data_pa` belongs to
             // this controller's `alloc_contig(DATA_ORDER)` allocation.
             unsafe { pmm::setup::free_contig(self.data_pa, DATA_ORDER); }
             self.data_pa = 0;
             self.data_dma = 0;
         }
-        self.abar_va = 0;
-        self.mmio.unmap();
     }
 
     /// Bytes one transfer carries in the contiguous PRDT data run. # C: O(1)
@@ -201,7 +160,7 @@ impl Ahci {
         // SAFETY: abar_va is the Device-attr-mapped AHCI register file
         // (map_mmio_pages, 2 pages); `off` is a spec HBA/port register offset
         // within the mapped window; aligned 32-bit MMIO load.
-        unsafe { core::ptr::read_volatile((self.abar_va + off) as *const u32) }
+        self.host.r32(off)
     }
     /// Write a 32-bit HBA/port register at ABAR + `off`. # C: O(1)
     #[inline]
@@ -209,7 +168,7 @@ impl Ahci {
         // SAFETY: abar_va is the Device-attr-mapped AHCI register file; `off`
         // is a spec HBA/port register offset within the mapped window; aligned
         // 32-bit MMIO store to a register the driver exclusively owns.
-        unsafe { core::ptr::write_volatile((self.abar_va + off) as *mut u32, val); }
+        self.host.w32(off, val);
     }
     /// Read a 32-bit per-port register of this port. # C: O(1)
     #[inline]
@@ -219,13 +178,13 @@ impl Ahci {
     pub(crate) fn pw(&self, reg: u64, val: u32) { self.w32(regs::port_reg(self.port, reg), val); }
 
     /// Device-mapped ABAR VA retained for hard-handler publication. # C: O(1)
-    pub(crate) fn abar_va(&self) -> u64 { self.abar_va }
+    pub(crate) fn abar_va(&self) -> u64 { self.host.abar_va() }
 
     /// Complete page-rounded BAR5 aperture retained by this controller. # C: O(1)
-    pub(crate) fn abar_map_bytes(&self) -> u64 { self.mmio.bytes() }
+    pub(crate) fn abar_map_bytes(&self) -> u64 { self.host.abar_map_bytes() }
 
     /// Offset from the owned mapping base to BAR5. # C: O(1)
-    pub(crate) fn abar_offset(&self) -> u64 { self.abar_off }
+    pub(crate) fn abar_offset(&self) -> u64 { self.host.abar_offset() }
 
     /// Selected SATA port index. # C: O(1)
     pub(crate) fn port_index(&self) -> u32 { self.port }
@@ -233,27 +192,21 @@ impl Ahci {
     /// W1C the selected port cause before its global level latch. # C: O(1)
     pub(crate) fn clear_command_interrupts(&self) {
         self.pw(regs::P_IS, u32::MAX);
-        self.w32(regs::HBA_IS, 1 << self.port);
-        let _ = self.r32(regs::HBA_IS);
+        self.host.clear_interrupts(1 << self.port);
     }
 
     /// Enable Linux-shaped command/error port causes and global IRQs. # C: O(1)
     pub(crate) fn enable_interrupts(&self) {
         self.clear_command_interrupts();
         self.pw(regs::P_IE, regs::PIS_ENABLE);
-        self.w32(
-            regs::HBA_GHC,
-            self.r32(regs::HBA_GHC) | regs::GHC_AE | regs::GHC_IE,
-        );
-        let _ = self.r32(regs::HBA_GHC);
+        self.host.enable_interrupts(1 << self.port);
     }
 
     /// Mask port/global causes and clear their retained latches. # C: O(1)
     pub(crate) fn disable_interrupts(&self) {
         self.pw(regs::P_IE, 0);
         let _ = self.pr(regs::P_IE);
-        self.w32(regs::HBA_GHC, self.r32(regs::HBA_GHC) & !regs::GHC_IE);
-        self.clear_command_interrupts();
+        self.host.disable_interrupts(1 << self.port);
     }
 
     /// Zero a freshly-PMM-allocated frame via HHDM. # C: O(page)
@@ -267,27 +220,15 @@ impl Ahci {
         unsafe { for i in 0..(PAGE as usize) { core::ptr::write_volatile(va.add(i), 0); } }
     }
 
-    /// Bring up the HBA + the first implemented SATA-disk port, run IDENTIFY,
-    /// and return the ready controller. `Err(reason)` on no disk (a benign
-    /// empty HBA, reason starts "no ") or a real failure (timeout/alloc).
-    /// `abar_va` is the BAR5 register-file VA (≥2 pages from map_mmio_pages).
-    /// # C: O(reset + port init + 1 IDENTIFY)
-    pub fn bring_up(bdf: pci::Bdf, mmio: Mapping, abar_off: u64) -> Result<Ahci, &'static str> {
-        let abar_va = mmio.base_va() + abar_off;
-        // AHCI §10.4.3 / Linux ahci_reset_controller: AHCI mode is required
-        // before HOST_RESET is valid. Reset all firmware-left controller/port
-        // state, then restore AHCI mode because reset may clear GHC.AE.
-        if !enable_ahci(abar_va) { return Err("AHCI enable failed"); }
-        if !reset_hba(abar_va) { return Err("HBA reset timeout"); }
-        if !enable_ahci(abar_va) { return Err("AHCI enable after reset failed"); }
-        let cap = hba_read(abar_va, regs::HBA_CAP);
+    /// Bring up one implemented SATA port, run IDENTIFY, and return its
+    /// per-port command/DMA state. The caller owns host reset and scans every
+    /// bit in the host's Ports Implemented map. # C: O(port reset + IDENTIFY)
+    pub(crate) fn bring_up(host: Arc<AhciHost>, port: u32) -> Result<Ahci, &'static str> {
+        if host.ports() & (1 << port) == 0 { return Err("port not implemented"); }
+        let cap = host.cap();
 
-        // Ports Implemented bitmap (AHCI §3.1.6).
-        // SAFETY: Device-attr HBA register file; aligned 32-bit load of PI.
-        let pi = unsafe { core::ptr::read_volatile((abar_va + regs::HBA_PI) as *const u32) };
-        if pi == 0 { return Err("no ports implemented"); }
-
-        // Find the first implemented port that has a SATA disk attached.
+        // The SATA PHY link is not necessarily established immediately after
+        // controller reset. Drive COMRESET for this port and wait for link-up.
         // The SATA PHY link (PxSSTS.DET) is not necessarily established just by
         // enabling AHCI: on some hosts (notably the aarch64 virt machine) the
         // port presents no link until the guest drives a COMRESET. So for each
@@ -295,61 +236,55 @@ impl Ahci {
         // then wait for the PHY link (PxSSTS.DET==3) — the Linux libata reset
         // sequence (AHCI §10.1.2 / SATA §). Bounded so an empty port can't
         // stall boot.
-        let mut chosen: Option<u32> = None;
-        for n in 0..32u32 {
-            if pi & (1 << n) == 0 { continue; }
+        {
+            let n = port;
             let sctl_off = regs::port_reg(n, regs::P_SCTL);
             let ssts_off = regs::port_reg(n, regs::P_SSTS);
-            // SAFETY: Device-attr HBA register file; per-port PxSCTL within the
-            // mapped window; aligned 32-bit RMW to drive DET=1 (COMRESET init).
-            unsafe {
-                let s = core::ptr::read_volatile((abar_va + sctl_off) as *const u32);
-                core::ptr::write_volatile((abar_va + sctl_off) as *mut u32, (s & !0xF) | 0x1);
-            }
+            let s = host.r32(sctl_off);
+            host.w32(sctl_off, (s & !0xF) | 0x1);
             let hold = now_ns().saturating_add(2_000_000); // ≥1ms COMRESET hold
             while now_ns() < hold { core::hint::spin_loop(); }
-            // SAFETY: same per-port PxSCTL; clear DET back to 0 to resume the
-            // link after the COMRESET hold window.
-            unsafe {
-                let s = core::ptr::read_volatile((abar_va + sctl_off) as *const u32);
-                core::ptr::write_volatile((abar_va + sctl_off) as *mut u32, s & !0xF);
-            }
+            let s = host.r32(sctl_off);
+            host.w32(sctl_off, s & !0xF);
             let deadline = now_ns().saturating_add(LINK_TIMEOUT_NS);
             let mut ssts;
             loop {
                 // SAFETY: Device-attr HBA register file; per-port PxSSTS within
                 // the mapped window; aligned 32-bit load of the SATA status.
-                ssts = unsafe { core::ptr::read_volatile((abar_va + ssts_off) as *const u32) };
+                ssts = host.r32(ssts_off);
                 if ssts & regs::SSTS_DET_MASK == regs::SSTS_DET_READY { break; }
                 if now_ns() >= deadline { break; }
                 core::hint::spin_loop();
             }
-            if ssts & regs::SSTS_DET_MASK != regs::SSTS_DET_READY { continue; }
+            if ssts & regs::SSTS_DET_MASK != regs::SSTS_DET_READY { return Err("no SATA disk"); }
             // Device present + PHY up. Do NOT gate on PxSIG here: the signature
             // register is only populated from the device's first D2H register
             // FIS, which arrives after FRE is enabled (in start_port below) —
             // x86 QEMU pre-populates it, aarch64 virt does not. Select on the
             // live link and let IDENTIFY confirm it's an ATA disk (libata does
             // the same: link first, classify after the reset/FIS).
-            chosen = Some(n);
-            break;
         }
-        let port = chosen.ok_or("no SATA disk")?;
 
         // Allocate per-port command/FIS structures plus a contiguous data
         // run. The single PRDT entry can describe this whole 2 MiB run.
         let (mut frames, data_pa) = Self::alloc_frames()?;
         let mut dmas = [0u64; 3];
         for (pa, dma) in frames.iter().zip(dmas.iter_mut()) {
-            *dma = iommu::map_dma(bdf, *pa, PAGE as usize).ok_or("DMA map frame")?;
+            match iommu::map_dma(host.bdf(), *pa, PAGE as usize) {
+                Some(mapped) => *dma = mapped,
+                None => {
+                    Self::release_unstarted(host.bdf(), &mut frames, &mut dmas, data_pa, 0);
+                    return Err("DMA map frame");
+                }
+            }
         }
-        let data_dma = iommu::map_dma(bdf, data_pa, DATA_BYTES as usize).ok_or("DMA map data")?;
+        let Some(data_dma) = iommu::map_dma(host.bdf(), data_pa, DATA_BYTES as usize) else {
+            Self::release_unstarted(host.bdf(), &mut frames, &mut dmas, data_pa, 0);
+            return Err("DMA map data");
+        };
         if !dmas.iter().all(|dma| regs::dma_range_fits(cap, *dma, PAGE))
             || !regs::dma_range_fits(cap, data_dma, DATA_BYTES) {
-            for pa in &mut frames { Self::free_frame(pa); }
-            // SAFETY: this failed before port start, so no hardware can see
-            // the just-allocated data run.
-            unsafe { pmm::setup::free_contig(data_pa, DATA_ORDER); }
+            Self::release_unstarted(host.bdf(), &mut frames, &mut dmas, data_pa, data_dma);
             return Err("DMA address exceeds HBA mask");
         }
         let [clb, fb, ct] = frames;
@@ -357,8 +292,8 @@ impl Ahci {
         for page in 0..(DATA_BYTES / PAGE) { Self::zero_frame(data_pa + page * PAGE); }
 
         let mut a = Ahci {
-            mmio, abar_va, abar_off, port,
-            bdf, clb_pa: clb, clb_dma: dmas[0], fb_pa: fb, fb_dma: dmas[1], ctba_pa: ct, ctba_dma: dmas[2], data_pa, data_dma,
+            host, port,
+            clb_pa: clb, clb_dma: dmas[0], fb_pa: fb, fb_dma: dmas[1], ctba_pa: ct, ctba_dma: dmas[2], data_pa, data_dma,
             sectors: 0, blk_size: 512, serial: None,
         };
 

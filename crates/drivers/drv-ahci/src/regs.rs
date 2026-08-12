@@ -18,6 +18,7 @@ pub const GHC_IE: u32 = 1 << 1;  // Interrupt Enable
 pub const GHC_AE: u32 = 1 << 31; // AHCI Enable
 
 /// CAP bits (AHCI §3.1.1).
+pub const CAP_NP_MASK: u32 = 0x1F; // implemented port count minus one
 pub const CAP_S64A: u32 = 1 << 31; // Supports 64-bit Addressing
 
 /// AHCI PRDT byte-count field is 22 bits plus one, so one entry can describe
@@ -109,6 +110,16 @@ pub fn port_off(n: u32) -> u64 { PORT_BASE + (n as u64) * PORT_STRIDE }
 /// Byte offset (from ABAR) of port `n`'s register `reg`. # C: O(1)
 #[inline]
 pub fn port_reg(n: u32, reg: u64) -> u64 { port_off(n) + reg }
+
+/// Keep only PI bits representable by CAP.NP and the mapped ABAR aperture.
+/// # C: O(1)
+pub fn usable_port_map(cap: u32, ports_implemented: u32, abar_bytes: u64) -> u32 {
+    let cap_ports = (cap & CAP_NP_MASK).saturating_add(1);
+    let map_ports = abar_bytes.saturating_sub(PORT_BASE) / PORT_STRIDE;
+    let count = core::cmp::min(u64::from(cap_ports), map_ports).min(32) as u32;
+    let mask = if count == 32 { u32::MAX } else { (1u32 << count).saturating_sub(1) };
+    ports_implemented & mask
+}
 
 /// Whether the complete DMA range is addressable by this HBA. # C: O(1)
 #[inline]
@@ -251,6 +262,14 @@ mod tests {
         assert_eq!(port_reg(3, P_CI), 0x100 + 3 * 0x80 + 0x38);
         // PxSSTS of port 1.
         assert_eq!(port_reg(1, P_SSTS), 0x180 + 0x28);
+    }
+
+    #[test]
+    fn usable_port_map_rejects_bits_outside_capability_or_aperture() {
+        let cap_three_ports = 2;
+        let three_port_aperture = PORT_BASE + PORT_STRIDE * 3;
+        assert_eq!(usable_port_map(cap_three_ports, 0b1111, three_port_aperture), 0b111);
+        assert_eq!(usable_port_map(7, 0b1111, PORT_BASE + PORT_STRIDE * 2), 0b11);
     }
 
     #[test]
