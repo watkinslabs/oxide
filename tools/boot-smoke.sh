@@ -303,10 +303,14 @@ attempt_boot() {
     mkfifo "$SYSRQ_FIFO" 2>/dev/null || SYSRQ_FIFO=""
     if [ -n "$SYSRQ_FIFO" ]; then
         exec {SYSRQ_WFD}<>"$SYSRQ_FIFO"
-        OXIDE_QEMU_HEADLESS=1 setsid bash -c "exec make SMP='$OXIDE_SMP' '$MAKE_TARGET' > '$LOG' 2>&1 < '$SYSRQ_FIFO'" &
+        # The launcher also keeps a serial log by default. Point it at this
+        # attempt's log so the markers below inspect the guest stream, not
+        # merely `make`/xtask narration. This also makes SMOKE_KEEP_LOG retain
+        # the actual boot evidence on both success and failure.
+        OXIDE_QEMU_HEADLESS=1 OXIDE_SERIAL_LOG="$LOG" setsid bash -c "exec make SMP='$OXIDE_SMP' '$MAKE_TARGET' > '$LOG' 2>&1 < '$SYSRQ_FIFO'" &
     else
         SYSRQ_WFD=""
-        OXIDE_QEMU_HEADLESS=1 setsid bash -c "exec make SMP='$OXIDE_SMP' '$MAKE_TARGET' > '$LOG' 2>&1 < /dev/null" &
+        OXIDE_QEMU_HEADLESS=1 OXIDE_SERIAL_LOG="$LOG" setsid bash -c "exec make SMP='$OXIDE_SMP' '$MAKE_TARGET' > '$LOG' 2>&1 < /dev/null" &
     fi
     echo $! > "$PIDFILE"
     local deadline
