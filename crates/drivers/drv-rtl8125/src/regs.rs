@@ -35,11 +35,26 @@ pub const DESC_LAST: u32 = 1 << 28;
 pub const RX_ERROR: u32 = 1 << 21;
 pub const DESC_LENGTH: u32 = 0x3fff;
 pub const RING_COUNT: usize = 256;
-pub const BUFFER_BYTES: usize = 2048;
+/// Receive buffers are one descriptor's complete non-jumbo DMA extent.
+pub const BUFFER_BYTES: usize = 16 * 1024 - 1;
 pub const ETH_MAX_FRAME: usize = 1518;
+pub const ETH_FCS_BYTES: usize = 4;
+pub const RING_BYTES: usize = RING_COUNT * core::mem::size_of::<RxDesc>();
+pub const CHIP_XID_MASK: u32 = 0x07cf;
+pub const CHIP_RTL8125A: u32 = 0x0609;
+pub const CHIP_RTL8125B: u32 = 0x0641;
+pub const CHIP_RTL8125D1: u32 = 0x0688;
+pub const CHIP_RTL8125D2: u32 = 0x0689;
+pub const CHIP_RTL8125K: u32 = 0x068a;
+pub const CHIP_RTL8125BP: u32 = 0x0681;
+pub const CHIP_RTL8125CP: u32 = 0x0708;
 
 /// Linux r8169's masked extended chip identifier for a `TxConfig` value. # C: O(1)
 pub const fn chip_xid(tx_config: u32) -> u32 { (tx_config >> 20) & 0x0fcf }
+/// Whether `TxConfig` identifies one supported RTL8125 MAC generation. # C: O(1)
+pub const fn supported_chip(tx_config: u32) -> bool {
+    matches!(chip_xid(tx_config) & CHIP_XID_MASK, CHIP_RTL8125A | CHIP_RTL8125B | CHIP_RTL8125D1 | CHIP_RTL8125D2 | CHIP_RTL8125K | CHIP_RTL8125BP | CHIP_RTL8125CP)
+}
 /// Whether a decoded PCI function belongs to this native RTL8125 driver. # C: O(1)
 pub const fn is_rtl8125(vendor: u16, device: u16) -> bool { vendor == VENDOR_REALTEK && device == DEVICE_RTL8125 }
 /// Split an aligned descriptor-ring DMA address for the RTL8125 registers. # C: O(1)
@@ -68,6 +83,11 @@ pub const fn tx_descriptor(pa: u64, len: usize, last: bool) -> TxDesc {
 }
 /// Return whether a received descriptor is complete and error-free. # C: O(1)
 pub const fn rx_complete(opts1: u32) -> bool { opts1 & (DESC_OWN | RX_ERROR) == 0 && opts1 & DESC_LENGTH >= 14 }
+/// Return the Ethernet payload length after the controller-supplied FCS. # C: O(1)
+pub const fn received_frame_length(opts1: u32) -> Option<usize> {
+    let length = (opts1 & DESC_LENGTH) as usize;
+    if opts1 & (DESC_OWN | RX_ERROR) != 0 || length < 14 + ETH_FCS_BYTES || length > BUFFER_BYTES { None } else { Some(length - ETH_FCS_BYTES) }
+}
 /// Decode the factory station address from the MAC0 byte window. # C: O(1)
 pub fn mac_valid(mac: [u8; 6]) -> bool { mac != [0; 6] && mac != [0xff; 6] }
 
@@ -86,5 +106,11 @@ mod tests {
         assert_eq!(descriptor_base(0x1234_5601), None);
         assert_eq!(initial_rx_config(), 0x4000_070a);
         assert_eq!(start_command(), 0x0c);
+        assert_eq!(BUFFER_BYTES, 16383);
+        assert_eq!(RING_BYTES, 4096);
+        assert!(supported_chip(0x6410_0000));
+        assert!(!supported_chip(0x5000_0000));
+        assert_eq!(received_frame_length(64), Some(60));
+        assert_eq!(received_frame_length(17), None);
     }
 }
