@@ -1,4 +1,5 @@
 use crate::linux_device::types::{LinuxDevice, LinuxDeviceDriver};
+pub(super) use crate::linux_resource::LinuxResource;
 use core::ffi::{c_char, c_void};
 
 pub(super) type PciProbe = unsafe extern "C" fn(*mut LinuxPciDev, *const LinuxPciDeviceId) -> i32;
@@ -27,19 +28,6 @@ pub(super) const LINUX_ENODEV: i32 = 19;
 pub(super) const LINUX_ENOMEM: i32 = 12;
 pub(super) const LINUX_EBUSY: i32 = 16;
 pub(super) const LINUX_ENOSPC: i32 = 28;
-
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub(super) struct LinuxResource {
-    pub(super) start: u64,
-    pub(super) end: u64,
-    pub(super) name: *const c_char,
-    pub(super) flags: u64,
-    pub(super) desc: u64,
-    pub(super) parent: *mut LinuxResource,
-    pub(super) sibling: *mut LinuxResource,
-    pub(super) child: *mut LinuxResource,
-}
 
 #[repr(C)]
 pub(super) struct LinuxPciDeviceId {
