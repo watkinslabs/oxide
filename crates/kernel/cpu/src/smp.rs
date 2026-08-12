@@ -32,6 +32,22 @@ static ONLINE_MASK: crate::AtomicCpuMask = crate::AtomicCpuMask::new();
 /// Bitmask of online logical CPUs. # C: O(1)
 pub fn online_mask() -> u64 { ONLINE_MASK.load(Ordering::Acquire).low_word() }
 
+/// Complete online CPU set encoded at the architecture transport width. This
+/// is for generic infrastructure that cannot depend on the scheduler's CPU
+/// mask type; scheduler consumers use [`online_cpumask`] directly.
+/// # C: O(words)
+pub fn online_transport_mask() -> [u64; hal::MAX_SMP_CPUS.div_ceil(u64::BITS as usize)] {
+    let source = ONLINE_MASK.load(Ordering::Acquire);
+    let mut out = [0u64; hal::MAX_SMP_CPUS.div_ceil(u64::BITS as usize)];
+    let words = source.as_words();
+    let mut i = 0;
+    while i < words.len() {
+        out[i] = words[i];
+        i += 1;
+    }
+    out
+}
+
 /// Complete online CPU set.  New multiword consumers must use this rather
 /// than adding another scalar online bitmap.
 /// # C: O(words)
