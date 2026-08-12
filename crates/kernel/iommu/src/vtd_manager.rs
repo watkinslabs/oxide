@@ -1,4 +1,5 @@
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::{VtdIrTable, VtdQiQueue, VtdRegisters, VtdTables, intel_vtd_rmrr_count, intel_vtd_rmrr_for_bdf, intel_vtd_unit_for_bdf, remapped_msi};
 use firmware::acpi::{IommuKind, IommuUnit};
@@ -16,6 +17,9 @@ pub enum VtdMsi { Direct, Remapped { address: u64, data: u32 }, Failed }
 
 struct VtdBootUnit { unit: IommuUnit, regs: VtdRegisters, requesters: Vec<Bdf>, tables: VtdTables, qi: Option<VtdQiQueue>, ir: Option<VtdIrTable> }
 static MANAGER: Spinlock<Vec<VtdBootUnit>, Devices> = Spinlock::new(Vec::new());
+/// Hardware/firmware admission for EIM.  This does not enable x2APIC: the
+/// LAPIC owner must first put IOAPIC and HPET sources behind remapping too.
+static EIM_CAPABLE: AtomicBool = AtomicBool::new(false);
 
 /// Build, publish, invalidate, and enable one VT-d identity domain per hardware unit.
 ///
@@ -24,6 +28,7 @@ static MANAGER: Spinlock<Vec<VtdBootUnit>, Devices> = Spinlock::new(Vec::new());
 /// # C: O(units + requesters + RAM leaves)
 pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf], hhdm_offset: u64,
     regions: &[pmm::UsableRegion]) -> VtdActivation {
+    EIM_CAPABLE.store(false, Ordering::Release);
     let mut units = Vec::new();
     for bdf in requesters {
         let Some(unit) = intel_vtd_unit_for_bdf(reader, *bdf) else { continue; };
@@ -69,9 +74,16 @@ pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf],
             if !entry.regs.set_interrupt_remap_table(ir.irta()) || !entry.regs.enable_interrupt_remapping() { return VtdActivation::Failed; }
         }
     }
+    let eim_capable = !firmware::acpi::dmar_x2apic_opt_out() && all_vtd_units_support_eim();
     *MANAGER.lock() = manager;
+    EIM_CAPABLE.store(eim_capable, Ordering::Release);
     VtdActivation::Enabled
 }
+
+/// Return whether firmware and every discovered VT-d unit admit EIM. Linux
+/// uses the same all-IOMMU gate before selecting x2APIC interrupt remapping.
+/// This result is deliberately separate from actually enabling x2APIC. # C: O(1)
+pub fn vtd_eim_capable() -> bool { EIM_CAPABLE.load(Ordering::Acquire) }
 
 /// Return whether this VT-d manager owns the exact PCI requester identity. # C: O(units * requesters)
 pub fn owns(requester: Bdf) -> bool {
@@ -130,6 +142,28 @@ fn push_unique_unit(units: &mut Vec<IommuUnit>, unit: IommuUnit) {
     if !units.iter().any(|current| *current == unit) { units.push(unit); }
 }
 
+/// Linux declines EIM if any DRHD lacks queued invalidation, interrupt
+/// remapping, or EIM. Inspect the whole published topology, not just the
+/// units that happened to receive a PCI requester in this boot scan. # C: O(units)
+fn all_vtd_units_support_eim() -> bool {
+    let count = firmware::acpi::iommu_unit_count();
+    if count == 0 { return false; }
+    for index in 0..count {
+        let Some(unit) = firmware::acpi::iommu_unit(index) else { return false; };
+        if unit.kind != IommuKind::IntelVtd { return false; }
+        // SAFETY: firmware published the bounded register aperture for this DRHD.
+        let Some(regs) = (unsafe { VtdRegisters::map(unit.register_base, unit.register_pages) }) else { return false; };
+        if !eim_capability_set_admits(regs.supports_queued_invalidation(),
+            regs.supports_interrupt_remapping(), regs.supports_extended_interrupt_mode()) { return false; }
+    }
+    true
+}
+
+const fn eim_capability_set_admits(queued_invalidation: bool, interrupt_remapping: bool,
+    extended_interrupt_mode: bool) -> bool {
+    queued_invalidation && interrupt_remapping && extended_interrupt_mode
+}
+
 fn rmrr_for_unit<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf], index: usize, unit: IommuUnit) -> Option<firmware::acpi::DmarRmrr> {
     requesters.iter().find_map(|bdf| {
         let rmrr = intel_vtd_rmrr_for_bdf(reader, *bdf, index)?;
@@ -147,5 +181,12 @@ fn rmrr_for_unit<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf], index: us
         push_unique_unit(&mut units, first);
         push_unique_unit(&mut units, second);
         assert_eq!(units, alloc::vec![first, second]);
+    }
+
+    #[test] fn eim_requires_every_vtd_capability() {
+        assert!(!eim_capability_set_admits(true, true, false));
+        assert!(!eim_capability_set_admits(true, false, true));
+        assert!(!eim_capability_set_admits(false, true, true));
+        assert!(eim_capability_set_admits(true, true, true));
     }
 }

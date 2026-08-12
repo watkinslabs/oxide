@@ -10,7 +10,7 @@ mod rmrr;
 mod published;
 pub use rmrr::{DmarRmrr, MAX_RMRR_SCOPES as MAX_DMAR_RMRR_SCOPES};
 pub use published::{amd_vi_alias_for_requester, amd_vi_unit_for_requester, decode_dmar, decode_ivrs,
-    dmar_rmrr, dmar_rmrr_count, dmar_scope, dmar_scope_count, iommu_unit, iommu_unit_count,
+    dmar_rmrr, dmar_rmrr_count, dmar_scope, dmar_scope_count, dmar_x2apic_opt_out, iommu_unit, iommu_unit_count,
     iommu_unit_for_segment};
 
 const ACPI_HEADER_LEN: usize = 36;
@@ -43,6 +43,7 @@ const IVHD_DEV_EXT_SELECT_RANGE: u8 = 0x47;
 const DMAR_TYPE_DRHD: u16 = 0;
 const DMAR_TYPE_RMRR: u16 = 1;
 const DMAR_INCLUDE_ALL: u8 = 1;
+const DMAR_X2APIC_OPT_OUT: u8 = 1 << 1;
 const DMAR_MIN_HOST_ADDRESS_WIDTH: u8 = 11;
 const IOMMU_KIND_NONE: u32 = 0;
 const IOMMU_KIND_AMD_VI: u32 = 1;
@@ -106,6 +107,7 @@ pub enum IommuError {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct IommuInventory {
     pub kind: IommuKind,
+    pub dmar_x2apic_opt_out: bool,
     pub units: [IommuUnit; MAX_IOMMU_UNITS],
     pub unit_count: usize,
     pub amd_scopes: [AmdIvhdScope; MAX_AMD_IVHD_SCOPES],
@@ -120,6 +122,7 @@ pub struct IommuInventory {
 
 static IOMMU_KIND: AtomicU32 = AtomicU32::new(IOMMU_KIND_NONE);
 static IOMMU_COUNT: AtomicU32 = AtomicU32::new(0);
+static DMAR_FLAGS: AtomicU32 = AtomicU32::new(0);
 static IOMMU_BASE: [AtomicU64; MAX_IOMMU_UNITS] = [const { AtomicU64::new(0) }; MAX_IOMMU_UNITS];
 static IOMMU_PAGES: [AtomicU64; MAX_IOMMU_UNITS] = [const { AtomicU64::new(0) }; MAX_IOMMU_UNITS];
 static IOMMU_SEGMENT: [AtomicU32; MAX_IOMMU_UNITS] = [const { AtomicU32::new(0) }; MAX_IOMMU_UNITS];
@@ -251,7 +254,7 @@ pub fn parse_ivrs(t: &[u8]) -> Result<IommuInventory, IommuError> {
     let empty_alias = AmdIvhdAlias { unit_index: 0, first_requester: 0, last_requester: 0, canonical_requester: 0 };
     let empty_dmar_scope = DmarScope { unit_index: 0, scope_type: 0, enumeration_id: 0, start_bus: 0, path_len: 0, path: [0; MAX_DMAR_PATH_BYTES] };
     let empty_rmrr = DmarRmrr { segment: 0, base: 0, end: 0, scopes: [empty_dmar_scope; rmrr::MAX_RMRR_SCOPES], scope_count: 0 };
-    let mut inv = IommuInventory { kind: IommuKind::AmdVi, units: [empty; MAX_IOMMU_UNITS], unit_count: 0,
+    let mut inv = IommuInventory { kind: IommuKind::AmdVi, dmar_x2apic_opt_out: false, units: [empty; MAX_IOMMU_UNITS], unit_count: 0,
         amd_scopes: [empty_scope; MAX_AMD_IVHD_SCOPES], amd_scope_count: 0,
         amd_aliases: [empty_alias; MAX_AMD_IVHD_ALIASES], amd_alias_count: 0,
         dmar_scopes: [empty_dmar_scope; MAX_DMAR_SCOPES], dmar_scope_count: 0, dmar_rmrrs: [empty_rmrr; MAX_DMAR_RMRRS], dmar_rmrr_count: 0 };
@@ -300,7 +303,9 @@ pub fn parse_dmar(t: &[u8]) -> Result<IommuInventory, IommuError> {
     let empty_alias = AmdIvhdAlias { unit_index: 0, first_requester: 0, last_requester: 0, canonical_requester: 0 };
     let empty_dmar_scope = DmarScope { unit_index: 0, scope_type: 0, enumeration_id: 0, start_bus: 0, path_len: 0, path: [0; MAX_DMAR_PATH_BYTES] };
     let empty_rmrr = DmarRmrr { segment: 0, base: 0, end: 0, scopes: [empty_dmar_scope; rmrr::MAX_RMRR_SCOPES], scope_count: 0 };
-    let mut inv = IommuInventory { kind: IommuKind::IntelVtd, units: [empty; MAX_IOMMU_UNITS], unit_count: 0,
+    let mut inv = IommuInventory { kind: IommuKind::IntelVtd,
+        dmar_x2apic_opt_out: t[ACPI_HEADER_LEN + 1] & DMAR_X2APIC_OPT_OUT != 0,
+        units: [empty; MAX_IOMMU_UNITS], unit_count: 0,
         amd_scopes: [empty_scope; MAX_AMD_IVHD_SCOPES], amd_scope_count: 0,
         amd_aliases: [empty_alias; MAX_AMD_IVHD_ALIASES], amd_alias_count: 0,
         dmar_scopes: [empty_dmar_scope; MAX_DMAR_SCOPES], dmar_scope_count: 0, dmar_rmrrs: [empty_rmrr; MAX_DMAR_RMRRS], dmar_rmrr_count: 0 };
