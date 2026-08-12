@@ -20,6 +20,21 @@ fn coherent_alloc_returns_dma_address_and_zeroed_memory() {
 }
 
 #[test]
+fn coherent_dma_sgtable_preserves_the_existing_device_address() {
+    let _modules = crate::test_serial::claim();
+    let mut dma = DMA_MAPPING_ERROR;
+    let size = linux_alloc::PAGE_SIZE;
+    let cpu = dma_alloc_coherent(null_mut(), size, &mut dma, 0);
+    let mut table = SgTable { sgl: null_mut(), nents: 0, orig_nents: 0 };
+    assert_eq!(dma_get_sgtable_attrs(null_mut(), &mut table, cpu, dma, size, 0), 0);
+    assert_eq!(table.nents, 1);
+    // SAFETY: successful table setup produced exactly one SG entry.
+    unsafe { assert_eq!((*table.sgl).dma_address, dma); assert_eq!((*table.sgl).dma_length, size as u32); }
+    sg_free_table(&mut table);
+    dma_free_coherent(null_mut(), size, cpu, dma);
+}
+
+#[test]
 fn managed_coherent_alloc_releases_at_device_teardown() {
     let _modules = crate::test_serial::claim();
     let mut dma = DMA_MAPPING_ERROR;
@@ -174,6 +189,7 @@ fn export_symbols_registers_dma_surface() {
         "dma_sync_single_for_cpu", "dma_sync_single_for_device", "__dma_sync_single_for_cpu", "__dma_sync_single_for_device",
         "__dma_sync_sg_for_cpu", "__dma_sync_sg_for_device",
         "dma_mapping_error", "dma_set_mask", "dma_set_coherent_mask",
+        "dma_get_sgtable_attrs",
         "dma_max_mapping_size",
         "dma_set_mask_and_coherent", "sg_init_table", "sg_set_buf", "sg_set_page",
         "sg_alloc_table", "sg_free_table", "sg_copy_to_buffer", "sg_miter_start",
