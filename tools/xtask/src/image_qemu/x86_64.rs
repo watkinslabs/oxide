@@ -86,7 +86,8 @@ pub(super) fn build_grub_iso(
 
 /// Boot the GRUB ISO under QEMU. `OXIDE_QEMU_UEFI=1` selects OVMF; the
 /// default is SeaBIOS. Both firmware paths enter the same GRUB multiboot2
-/// handoff. `native-pci` boots the ext4 rootfs from AHCI and uses e1000.
+/// handoff. `native-pci` boots the ext4 rootfs from AHCI and uses e1000 plus
+/// an emulated PCI xHCI controller with standard USB keyboard and tablet.
 pub(super) fn qemu_run_grub_x86_64(
     repo: &std::path::Path,
     id: Option<&str>,
@@ -251,6 +252,13 @@ pub(super) fn qemu_run_grub_x86_64(
             "-device", "virtio-sound-pci,audiodev=snd0,disable-legacy=on,bus=pcie.0",
         ]),
         HardwareProfile::NativePci => c.args([
+            // Exercise the same PCI xHCI + descriptor-driven HID path used
+            // by physical USB keyboards and mice.  These devices are kept
+            // out of the default profile, which intentionally covers virtio
+            // input separately.
+            "-device", "qemu-xhci,id=xhci,bus=pcie.0",
+            "-device", "usb-kbd,bus=xhci.0",
+            "-device", "usb-tablet,bus=xhci.0",
             "-device", "ich9-ahci,id=boot-ahci,bus=pcie.0",
             "-drive", &format!("if=none,id=root,format=raw,file={}", root_img.display()),
             "-device", "ide-hd,drive=root,bus=boot-ahci.0,serial=oxide-root",
