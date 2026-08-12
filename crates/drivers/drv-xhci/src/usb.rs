@@ -10,6 +10,42 @@ pub const DESC_CONFIGURATION: u8 = 2;
 pub const CONFIG_DESC_HEADER_BYTES: usize = 9;
 /// Largest configuration descriptor accepted by the one-page enumeration buffer. # C: O(1)
 pub const CONFIG_DESC_MAX_BYTES: usize = 4096;
+/// USB hub descriptor type. # C: O(1)
+pub const DESC_HUB: u8 = 0x29;
+/// USB hub class code. # C: O(1)
+pub const USB_CLASS_HUB: u8 = 9;
+/// Hub descriptor bytes before the variable port-removability bitmaps. # C: O(1)
+pub const HUB_DESC_HEADER_BYTES: usize = 7;
+/// USB hub GET_DESCRIPTOR request type: IN, class, device. # C: O(1)
+pub const HUB_GET_DESCRIPTOR_REQUEST_TYPE: u8 = 0xa0;
+
+/// Validated USB 2 hub descriptor facts used to construct child topology.
+/// # C: O(1)
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct HubDescriptor { pub ports: u8, pub power_good_ms: u16, pub multi_tt: bool }
+
+/// Parse the fixed hub descriptor header and its mandatory removable-port maps.
+/// # C: O(descriptor bytes)
+pub fn hub_descriptor(bytes: &[u8]) -> Option<HubDescriptor> {
+    if bytes.len() < HUB_DESC_HEADER_BYTES || bytes[1] != DESC_HUB { return None; }
+    let length = bytes[0] as usize;
+    let ports = bytes[2];
+    let bitmap_bytes = (usize::from(ports).checked_add(1)?.checked_add(7)?) / 8;
+    let minimum = HUB_DESC_HEADER_BYTES.checked_add(bitmap_bytes.checked_mul(2)?)?;
+    if ports == 0 || length < minimum || length > bytes.len() { return None; }
+    let characteristics = u16::from_le_bytes([bytes[3], bytes[4]]);
+    Some(HubDescriptor { ports, power_good_ms: u16::from(bytes[5]).checked_mul(2)?, multi_tt: characteristics & (1 << 5) != 0 })
+}
+
+/// Build an IN class-device GET_DESCRIPTOR(HUB) EP0 TD. # C: O(1)
+pub fn get_hub_descriptor_trbs(buffer_pa: u64, length: usize) -> Option<[crate::ring::Trb; 3]> {
+    if !(HUB_DESC_HEADER_BYTES..=CONFIG_DESC_MAX_BYTES).contains(&length) { return None; }
+    Some([
+        crate::ring::Trb::setup_stage(HUB_GET_DESCRIPTOR_REQUEST_TYPE, 6, (DESC_HUB as u16) << 8, 0, length as u16),
+        crate::ring::Trb::data_stage(buffer_pa, length as u32, true)?,
+        crate::ring::Trb::status_stage(true),
+    ])
+}
 
 /// Parsed fixed USB device descriptor fields needed by enumeration. # C: O(1)
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -193,5 +229,14 @@ mod tests {
         let td = set_hid_boot_protocol_trbs(3);
         assert_eq!(td[0].dword, [0x0000_0b21, 3, 8, (crate::ring::TRB_TYPE_SETUP << crate::ring::TRB_TYPE_SHIFT) | (1 << 6)]);
         assert_eq!(td[1].dword[3], (crate::ring::TRB_TYPE_STATUS << crate::ring::TRB_TYPE_SHIFT) | (1 << 16) | (1 << 5));
+    }
+    #[test]
+    fn hub_descriptor_and_class_request_keep_port_geometry_strict() {
+        let descriptor = [9, DESC_HUB, 4, 0x20, 0, 10, 0, 0, 0];
+        assert_eq!(hub_descriptor(&descriptor), Some(HubDescriptor { ports: 4, power_good_ms: 20, multi_tt: true }));
+        assert!(hub_descriptor(&[7, DESC_HUB, 4, 0, 0, 10, 0]).is_none());
+        let td = get_hub_descriptor_trbs(0x90_000, 9).unwrap();
+        assert_eq!(td[0].dword, [0x2900_06a0, 9 << 16, 8, (crate::ring::TRB_TYPE_SETUP << crate::ring::TRB_TYPE_SHIFT) | (1 << 6) | (3 << 16)]);
+        assert_eq!(td[1].dword[2], 9);
     }
 }

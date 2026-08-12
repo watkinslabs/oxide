@@ -25,12 +25,18 @@ pub const STORAGE_MAX_TRANSFER_BYTES: usize = DmaPage::BYTES * crate::ring::COMM
 impl AddressDeviceDma {
     /// Allocate and construct every DMA object required by Address Device. # C: O(page bytes)
     pub fn allocate(bdf: pci::Bdf, context_bytes: u8, port: u8, portsc: u32) -> Option<Self> {
+        Self::allocate_topology(bdf, context_bytes, crate::context::DeviceTopology::root(port)?, portsc)
+    }
+
+    /// Allocate one device below a normalized xHCI root/hub topology.
+    /// # C: O(page bytes)
+    pub fn allocate_topology(bdf: pci::Bdf, context_bytes: u8, topology: crate::context::DeviceTopology, portsc: u32) -> Option<Self> {
         let input = DmaPage::allocate(bdf)?;
         let output = DmaPage::allocate(bdf)?;
         let ep0 = DmaPage::allocate(bdf)?;
         let descriptor = DmaPage::allocate(bdf)?;
         let speed = ((portsc & crate::ports::PORT_SPEED_MASK) >> 10) as u8;
-        let words = context::address_device_words(context_bytes, port, portsc, ep0.dma())?;
+        let words = context::address_device_topology_words(context_bytes, topology, portsc, ep0.dma())?;
         for word in words { if !input.write32(word.offset as u64, word.value) { return None; } }
         let link = Trb::link(ep0.dma(), true)?;
         for (word, value) in link.dword.iter().enumerate() {
@@ -38,7 +44,7 @@ impl AddressDeviceDma {
         }
         input.clean_to_device(); output.clean_to_device(); ep0.clean_to_device();
         let ep0_ring = CommandRing::new(ep0.dma())?;
-        Some(Self { bdf, input, output, ep0, descriptor, context_bytes, speed, port, slot: 0, _hid: None, _storage: None, hid_ring: None, storage_dma: None, ep0_ring })
+        Some(Self { bdf, input, output, ep0, descriptor, context_bytes, speed, port: topology.root_port, slot: 0, _hid: None, _storage: None, hid_ring: None, storage_dma: None, ep0_ring })
     }
 
     /// Input-context device DMA address for Address Device. # C: O(1)

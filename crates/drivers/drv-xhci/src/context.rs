@@ -11,6 +11,7 @@ const ADD_SLOT_AND_EP0: u32 = 0x3;
 const SLOT_LAST_CONTEXT_EP0: u32 = 1 << 27;
 const SLOT_ROOT_HUB_PORT_SHIFT: u32 = 16;
 const SLOT_SPEED_SHIFT: u32 = 20;
+const SLOT_ROUTE_STRING_MASK: u32 = 0x000f_ffff;
 const EP0_TYPE_CONTROL: u32 = 4 << 3;
 const EP0_ERROR_COUNT: u32 = 3 << 1;
 const EP0_DEQUEUE_CYCLE: u64 = 1;
@@ -29,6 +30,26 @@ const EP_TYPE_INTERRUPT_IN: u32 = 7 << 3;
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct ContextWord { pub offset: usize, pub value: u32 }
 
+/// xHCI-visible position of a device below one physical root-hub port.
+/// `route` contains one four-bit downstream-port nibble per hub tier, least
+/// significant nibble nearest the root. # C: O(1)
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct DeviceTopology { pub root_port: u8, pub route: u32 }
+
+impl DeviceTopology {
+    /// Root-attached device topology. # C: O(1)
+    pub const fn root(root_port: u8) -> Option<Self> {
+        if root_port == 0 { None } else { Some(Self { root_port, route: 0 }) }
+    }
+
+    /// Descend through one hub port, preserving xHCI route-string order.
+    /// # C: O(1)
+    pub const fn child(self, hub_port: u8) -> Option<Self> {
+        if hub_port == 0 || hub_port > 15 || self.route & 0xf0000 != 0 { return None; }
+        Some(Self { root_port: self.root_port, route: (self.route << 4) | hub_port as u32 })
+    }
+}
+
 /// Endpoint transfer type represented by an xHCI endpoint context. # C: O(1)
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum EndpointType { Bulk, Interrupt }
@@ -39,16 +60,22 @@ pub struct EndpointConfig { pub address: u8, pub max_packet: u16, pub interval: 
 
 /// Exact dword writes for a Linux-shaped Address Device input context. # C: O(1)
 pub fn address_device_words(context_bytes: u8, port: u8, portsc: u32, ep0_ring_pa: u64) -> Option<[ContextWord; 7]> {
+    address_device_topology_words(context_bytes, DeviceTopology::root(port)?, portsc, ep0_ring_pa)
+}
+
+/// Exact Address Device context writes for a root or hub-descended device.
+/// # C: O(1)
+pub fn address_device_topology_words(context_bytes: u8, topology: DeviceTopology, portsc: u32, ep0_ring_pa: u64) -> Option<[ContextWord; 7]> {
     let stride = context_bytes as usize;
-    if !matches!(stride, 32 | 64) || port == 0 || ep0_ring_pa & 0xf != 0 { return None; }
+    if !matches!(stride, 32 | 64) || topology.root_port == 0 || topology.route & !SLOT_ROUTE_STRING_MASK != 0 || ep0_ring_pa & 0xf != 0 { return None; }
     let speed = (portsc & crate::ports::PORT_SPEED_MASK) >> 10;
     let max_packet = match speed { 1 => 64, 2 => 8, 3 => 64, 4 | 5 => 512, _ => return None };
     let slot = SLOT_CONTEXT * stride;
     let ep0 = EP0_CONTEXT * stride;
     Some([
         ContextWord { offset: INPUT_CONTROL_CONTEXT * stride + 4, value: ADD_SLOT_AND_EP0 },
-        ContextWord { offset: slot, value: SLOT_LAST_CONTEXT_EP0 | (speed << SLOT_SPEED_SHIFT) },
-        ContextWord { offset: slot + 4, value: (port as u32) << SLOT_ROOT_HUB_PORT_SHIFT },
+        ContextWord { offset: slot, value: SLOT_LAST_CONTEXT_EP0 | (speed << SLOT_SPEED_SHIFT) | topology.route },
+        ContextWord { offset: slot + 4, value: (topology.root_port as u32) << SLOT_ROOT_HUB_PORT_SHIFT },
         ContextWord { offset: ep0 + 4, value: EP0_TYPE_CONTROL | EP0_ERROR_COUNT | (max_packet << 16) },
         ContextWord { offset: ep0 + 8, value: ep0_ring_pa as u32 | EP0_DEQUEUE_CYCLE as u32 },
         ContextWord { offset: ep0 + 12, value: (ep0_ring_pa >> 32) as u32 },
@@ -180,6 +207,16 @@ mod tests {
         assert!(!address_device(&mut bytes, 32, 1, 0, 0x80_000));
         assert!(!address_device(&mut bytes, 32, 1, 3 << 10, 0x80_004));
         assert!(!address_device(&mut bytes, 48, 1, 3 << 10, 0x80_000));
+    }
+
+    #[test]
+    fn descendant_context_keeps_root_port_and_programs_xhci_route_string() {
+        let topology = DeviceTopology::root(3).unwrap().child(4).unwrap().child(2).unwrap();
+        assert_eq!(topology.route, 0x42);
+        let words = address_device_topology_words(64, topology, 3 << 10, 0x80_000).unwrap();
+        assert_eq!(words[1], ContextWord { offset: 64, value: SLOT_LAST_CONTEXT_EP0 | (3 << SLOT_SPEED_SHIFT) | 0x42 });
+        assert_eq!(words[2], ContextWord { offset: 68, value: 3 << SLOT_ROOT_HUB_PORT_SHIFT });
+        assert!(DeviceTopology::root(1).unwrap().child(16).is_none());
     }
 
     #[test]
