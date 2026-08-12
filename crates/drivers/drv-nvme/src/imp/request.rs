@@ -39,6 +39,17 @@ struct Plan {
     len: usize,
 }
 
+struct Aggregate {
+    state: Spinlock<AggregateState, DriverLockClass>,
+}
+
+struct AggregateState {
+    request: BlockRequest,
+    completion: Option<BlockCompletion>,
+    remaining: usize,
+    error: Option<BlockError>,
+}
+
 struct SyncResult {
     done: AtomicBool,
     result: Spinlock<Option<(BlockRequest, KResult<()>)>, DriverLockClass>,
@@ -51,24 +62,38 @@ impl SyncResult {
     }
 }
 
-impl NvmeBlk {
-    fn plan(&self, request: &mut BlockRequest) -> Result<Option<Plan>, BlockError> {
-        match request.op {
-            BlockOp::Flush => Ok(Some(Plan { write: false, lba: 0, count: 0, len: 0 })),
-            BlockOp::Discard | BlockOp::WriteZeroes { .. } => Ok(None),
-            BlockOp::Read | BlockOp::Write => {
-                let len = (request.len_blocks as usize).checked_mul(self.blk_size as usize).ok_or(BlockError::Einval)?;
-                if request.len_blocks == 0 || len > self.chunk_bytes() { return Ok(None); }
-                if request.op == BlockOp::Read {
-                    if request.buffer.len() < len { request.buffer.resize(len, 0); }
-                } else if request.buffer.len() < len {
-                    return Err(BlockError::Einval);
-                }
-                Ok(Some(Plan { write: request.op == BlockOp::Write, lba: request.start_block, count: request.len_blocks as u16, len }))
-            }
-        }
+impl Aggregate {
+    fn new(request: BlockRequest, completion: BlockCompletion, remaining: usize) -> Self {
+        Self { state: Spinlock::new(AggregateState { request, completion: Some(completion), remaining, error: None }) }
     }
 
+    fn finish_child(&self, child: BlockRequest, result: KResult<()>, offset: usize) {
+        let completion = {
+            let mut state = self.state.lock();
+            if let Err(error) = result {
+                if state.error.is_none() { state.error = Some(error); }
+            } else if state.request.op == BlockOp::Read {
+                let end = offset.saturating_add(child.buffer.len());
+                if end > state.request.buffer.len() {
+                    state.error = Some(BlockError::Eio);
+                } else {
+                    state.request.buffer[offset..end].copy_from_slice(&child.buffer);
+                }
+            }
+            state.remaining = state.remaining.saturating_sub(1);
+            if state.remaining != 0 { None } else {
+                let request = core::mem::take(&mut state.request);
+                let completion = state.completion.take();
+                Some((request, completion, state.error))
+            }
+        };
+        if let Some((request, Some(completion), error)) = completion {
+            completion(request, error.map_or(Ok(()), Err));
+        }
+    }
+}
+
+impl NvmeBlk {
     fn enqueue_or_post(
         &self, request: BlockRequest, completion: BlockCompletion, plan: Plan, deferred_head: bool,
     ) -> Result<(), (BlockRequest, BlockCompletion, BlockError)> {
@@ -113,6 +138,48 @@ impl NvmeBlk {
         // never be retired before its CID owns this canonical record.
         requests.pending.push(PendingRequest { cid, dma: dma.take(), request, completion, write: plan.write, len: plan.len });
         Ok(())
+    }
+
+    fn submit_rw(&self, mut request: BlockRequest, completion: BlockCompletion) {
+        let len = match (request.len_blocks as usize).checked_mul(self.blk_size as usize) {
+            Some(len) if request.len_blocks != 0 => len,
+            _ => { completion(request, Err(BlockError::Einval)); return; }
+        };
+        if request.op == BlockOp::Read {
+            if request.buffer.len() < len { request.buffer.resize(len, 0); }
+        } else if request.buffer.len() < len {
+            completion(request, Err(BlockError::Einval));
+            return;
+        }
+        let per_command = self.chunk_bytes() / self.blk_size as usize;
+        if per_command == 0 { completion(request, Err(BlockError::Eio)); return; }
+        let total = request.len_blocks as usize;
+        let chunks = total.div_ceil(per_command);
+        let aggregate = Arc::new(Aggregate::new(request, completion, chunks));
+        let (write, base, ioprio, polled) = {
+            let state = aggregate.state.lock();
+            (state.request.op == BlockOp::Write, state.request.start_block, state.request.ioprio, state.request.polled)
+        };
+        for index in 0..chunks {
+            let block_offset = index * per_command;
+            let count = core::cmp::min(per_command, total - block_offset);
+            let byte_offset = block_offset * self.blk_size as usize;
+            let bytes = count * self.blk_size as usize;
+            let mut child = if write {
+                let data = aggregate.state.lock().request.buffer[byte_offset..byte_offset + bytes].to_vec();
+                BlockRequest::new_write(base + block_offset as u64, count as u32, data)
+            } else {
+                BlockRequest::new_read(base + block_offset as u64, count as u32, self.blk_size)
+            };
+            child.ioprio = ioprio;
+            child.polled = polled;
+            let plan = Plan { write, lba: child.start_block, count: count as u16, len: bytes };
+            let owner = aggregate.clone();
+            let child_completion: BlockCompletion = alloc::boxed::Box::new(move |child, result| owner.finish_child(child, result, byte_offset));
+            if let Err((child, child_completion, error)) = self.enqueue_or_post(child, child_completion, plan, false) {
+                child_completion(child, Err(error));
+            }
+        }
     }
 
     fn start_deferred_requests(&self) {
@@ -222,14 +289,16 @@ impl BlockDevice for NvmeBlk {
     fn block_size(&self) -> u32 { self.blk_size }
     fn capacity_blocks(&self) -> u64 { self.capacity }
 
-    fn submit(&self, mut request: BlockRequest, completion: BlockCompletion) {
-        let plan = match self.plan(&mut request) {
-            Ok(Some(plan)) => plan,
-            Ok(None) => { completion(request, Err(BlockError::Eopnotsupp)); return; }
-            Err(error) => { completion(request, Err(error)); return; }
-        };
-        if let Err((request, completion, error)) = self.enqueue_or_post(request, completion, plan, false) {
-            completion(request, Err(error));
+    fn submit(&self, request: BlockRequest, completion: BlockCompletion) {
+        match request.op {
+            BlockOp::Read | BlockOp::Write => self.submit_rw(request, completion),
+            BlockOp::Flush => {
+                let plan = Plan { write: false, lba: 0, count: 0, len: 0 };
+                if let Err((request, completion, error)) = self.enqueue_or_post(request, completion, plan, false) {
+                    completion(request, Err(error));
+                }
+            }
+            BlockOp::Discard | BlockOp::WriteZeroes { .. } => completion(request, Err(BlockError::Eopnotsupp)),
         }
     }
 
