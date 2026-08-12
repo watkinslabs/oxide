@@ -12,10 +12,12 @@ boot-info = { path = "../../shared/boot-info" }
 cmdline   = { path = "../../kernel/cmdline" }
 console   = { path = "../../kernel/console" }
 drv       = { path = "../drv" }
+drm       = { path = "../drm" }
 fbcon     = { path = "../fbcon" }
 fbdev     = { path = "../fbdev" }
 klog      = { path = "../../shared/klog" }
 mmio-map  = { path = "../../kernel/mmio-map" }
+pmm       = { path = "../../kernel/mm-pmm" }
 sync      = { path = "../../shared/sync" }
 tty       = { path = "../../kernel/tty" }
 vmm       = { path = "../../kernel/mm-vmm" }
