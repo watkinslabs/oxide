@@ -13,7 +13,9 @@ pub const CTRL: u64 = 0x00000; pub const STATUS: u64 = 0x00008; pub const CTRL_E
 pub const ICR: u64 = 0x01500; pub const IMS: u64 = 0x01508; pub const IMC: u64 = 0x0150c;
 pub const RCTL: u64 = 0x00100; pub const TCTL: u64 = 0x00400; pub const RAL0: u64 = 0x05400; pub const RAH0: u64 = 0x05404;
 pub const RDBAL0: u64 = 0x0c000; pub const RDBAH0: u64 = 0x0c004; pub const RDLEN0: u64 = 0x0c008; pub const RDH0: u64 = 0x0c010; pub const RDT0: u64 = 0x0c018;
+pub const SRRCTL0: u64 = 0x0c00c; pub const RXDCTL0: u64 = 0x0c028;
 pub const TDBAL0: u64 = 0x0e000; pub const TDBAH0: u64 = 0x0e004; pub const TDLEN0: u64 = 0x0e008; pub const TDH0: u64 = 0x0e010; pub const TDT0: u64 = 0x0e018;
+pub const TXDCTL0: u64 = 0x0e028;
 pub const CTRL_RST: u32 = 1 << 26; pub const CTRL_EXT_DRV_LOAD: u32 = 1 << 28; pub const RCTL_EN: u32 = 1 << 1; pub const RCTL_BAM: u32 = 1 << 15;
 pub const RCTL_SECRC: u32 = 1 << 26; pub const TCTL_EN: u32 = 1 << 1; pub const TCTL_PSP: u32 = 1 << 3;
 pub const ICR_TXDW: u32 = 1; pub const ICR_LSC: u32 = 1 << 2; pub const ICR_RXO: u32 = 1 << 6; pub const ICR_RXT0: u32 = 1 << 7;
