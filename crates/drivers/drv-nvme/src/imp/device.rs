@@ -78,10 +78,10 @@ impl NvmeBlk {
         if let Some(pending) = pending {
             if ok {
                 let mut ctrl = self.ctrl.lock();
-                let status = ctrl.try_reap_io(pending);
+                let status = ctrl.reap_io();
                 let (cq_pa, cq_head, cq_phase) = ctrl.io_cq_cursor();
                 self.irq.configure_cq(cq_pa, cq_head, cq_phase);
-                ok = !self.unavailable() && status == Some(0);
+                ok = !self.unavailable() && status.map(|cqe| cqe.cid == pending.cid && cqe.status == 0).unwrap_or(false);
                 if ok && !write {
                     let bounce = ctrl.prp_va() as *const u8;
                     pmm::dma::invalidate_from_device(bounce as u64, len);
@@ -106,10 +106,10 @@ impl NvmeBlk {
         if let Some(pending) = pending {
             if ok {
                 let mut ctrl = self.ctrl.lock();
-                let status = ctrl.try_reap_io(pending);
+                let status = ctrl.reap_io();
                 let (cq_pa, cq_head, cq_phase) = ctrl.io_cq_cursor();
                 self.irq.configure_cq(cq_pa, cq_head, cq_phase);
-                ok = !self.unavailable() && status == Some(0);
+                ok = !self.unavailable() && status.map(|cqe| cqe.cid == pending.cid && cqe.status == 0).unwrap_or(false);
             }
         }
         if pending.is_some() && !ok { self.poisoned.store(true, Ordering::Release); }
