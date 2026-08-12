@@ -167,6 +167,12 @@ pub trait CharDevOps: Send + Sync {
     fn can_poll(&self, devt: Devt) -> bool { let _ = devt; false }
     /// `cdev->mmap`/shared-frame probe. # C: driver-dependent
     fn mmap_shared_frame(&self, devt: Devt, off: u64) -> KResult<Option<u64>> { let _ = (devt, off); Ok(None) }
+    /// Build one persistent mapping object for this exact open character file.
+    /// The VMM invokes its setup hook after choosing the final VMA range.
+    /// # C: driver-dependent
+    fn mmap_backing_file(&self, devt: Devt, file: &File, off: u64)
+        -> KResult<Option<Arc<dyn vmm::FileBacking>>>
+    { let _ = (devt, file, off); Ok(None) }
     /// `cdev->release`. # C: driver-dependent
     fn release_file(&self, devt: Devt, file: &File) { let _ = (devt, file); }
 }
@@ -436,6 +442,14 @@ pub fn opened_chrdev(file: &File) -> Option<(Devt, Arc<dyn CharDevOps>)> {
 pub fn opened_chrdev_ioctl(file: &File, cmd: u32, arg: usize) -> Option<KResult<usize>> {
     let (devt, ops) = opened_chrdev(file)?;
     Some(ops.ioctl_file(devt, file, cmd, arg))
+}
+/// Build the retained character driver's mapping object for this exact open.
+/// # C: driver-dependent
+pub fn opened_chrdev_mmap_backing(file: &File, off: u64)
+    -> Option<KResult<Option<Arc<dyn vmm::FileBacking>>>>
+{
+    let (devt, ops) = opened_chrdev(file)?;
+    Some(ops.mmap_backing_file(devt, file, off))
 }
 /// `open(2)` routing for a device node (Linux `chrdev_open`). # C: O(log N)
 pub fn device_inode_open(inode: &Inode) -> KResult<()> { inode.on_open() }
