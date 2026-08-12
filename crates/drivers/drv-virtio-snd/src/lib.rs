@@ -84,7 +84,7 @@ pub const fn wanted_features() -> u64 {
 }
 
 pub const fn transport_profile() -> virtio::VirtioTransportProfile {
-    virtio::VirtioTransportProfile::snd(wanted_features(), None, Some(raise_event))
+    virtio::VirtioTransportProfile::snd(wanted_features(), None, Some(raise_event)).with_ring_event_idx()
 }
 
 mod state;

@@ -434,5 +434,5 @@ pub fn wanted_features() -> u64 {
 /// consumes this profile; the PCI transport only executes it.
 /// # C: O(1)
 pub fn transport_profile() -> virtio::VirtioTransportProfile {
-    virtio::VirtioTransportProfile::q0_q1(wanted_features(), None)
+    virtio::VirtioTransportProfile::q0_q1(wanted_features(), None).with_ring_event_idx()
 }

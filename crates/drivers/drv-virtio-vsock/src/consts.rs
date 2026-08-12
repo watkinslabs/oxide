@@ -18,5 +18,5 @@ pub const fn wanted_features() -> u64 {
 }
 
 pub const fn transport_profile() -> virtio::VirtioTransportProfile {
-    virtio::VirtioTransportProfile::vsock(wanted_features(), Some(crate::raise_rx))
+    virtio::VirtioTransportProfile::vsock(wanted_features(), Some(crate::raise_rx)).with_ring_event_idx()
 }
