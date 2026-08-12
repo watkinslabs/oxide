@@ -14,6 +14,7 @@ pub mod ring;
 pub mod controller;
 pub mod context;
 pub mod usb;
+pub mod storage;
 pub mod hid;
 pub mod ports;
 pub mod identity;

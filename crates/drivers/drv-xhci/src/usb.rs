@@ -23,6 +23,44 @@ pub struct ConfigurationHeader { pub total_length: usize, pub value: u8, pub int
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct HidBootInterface { pub configuration: u8, pub interface: u8, pub protocol: u8, pub endpoint: u8, pub max_packet: u16, pub interval: u8 }
 
+/// Find one alternate-setting-zero transparent-SCSI Bulk-Only interface. # C: O(descriptors)
+pub fn mass_storage_interface(bytes: &[u8]) -> Option<crate::storage::MassStorageInterface> {
+    let header = configuration_header(bytes)?;
+    if bytes.len() != header.total_length { return None; }
+    let mut active = None;
+    let mut bulk_in = None;
+    let mut bulk_out = None;
+    let mut offset = CONFIG_DESC_HEADER_BYTES;
+    while offset < bytes.len() {
+        if offset + 2 > bytes.len() { return None; }
+        let length = bytes[offset] as usize;
+        if length < 2 || offset.checked_add(length)? > bytes.len() { return None; }
+        match bytes[offset + 1] {
+            4 if length >= 9 => {
+                active = (bytes[offset + 3] == 0 && bytes[offset + 5] == crate::storage::USB_CLASS_MASS_STORAGE
+                    && bytes[offset + 6] == crate::storage::USB_SUBCLASS_SCSI && bytes[offset + 7] == crate::storage::USB_PROTOCOL_BULK_ONLY)
+                    .then_some(bytes[offset + 2]);
+                bulk_in = None;
+                bulk_out = None;
+            }
+            5 if length >= 7 => if active.is_some() && bytes[offset + 3] & 0x3 == 2 {
+                let endpoint = bytes[offset + 2];
+                let packet = u16::from_le_bytes([bytes[offset + 4], bytes[offset + 5]]) & 0x07ff;
+                if endpoint & 0x0f != 0 && packet != 0 {
+                    if endpoint & 0x80 != 0 { bulk_in = Some((endpoint, packet)); }
+                    else { bulk_out = Some((endpoint, packet)); }
+                }
+            },
+            _ => {}
+        }
+        if let (Some(interface), Some((in_ep, in_packet)), Some((out_ep, out_packet))) = (active, bulk_in, bulk_out) {
+            return Some(crate::storage::MassStorageInterface { configuration: header.value, interface, bulk_in: in_ep, bulk_in_packet: in_packet, bulk_out: out_ep, bulk_out_packet: out_packet });
+        }
+        offset += length;
+    }
+    None
+}
+
 /// Parse one exact USB2 device descriptor. # C: O(1)
 pub fn device_descriptor(bytes: &[u8]) -> Option<DeviceDescriptor> {
     if bytes.len() < DEVICE_DESC_BYTES || bytes[0] as usize != DEVICE_DESC_BYTES || bytes[1] != DESC_DEVICE { return None; }
@@ -135,6 +173,13 @@ mod tests {
         assert_eq!(hid_boot_interface(&bytes), Some(HidBootInterface { configuration: 1, interface: 0, protocol: 1, endpoint: 0x81, max_packet: 8, interval: 10 }));
         let mut non_boot = bytes; non_boot[15] = 2;
         assert!(hid_boot_interface(&non_boot).is_none());
+    }
+    #[test]
+    fn storage_parser_requires_transparent_scsi_bulk_in_and_out() {
+        let bytes = [9, DESC_CONFIGURATION, 32, 0, 1, 1, 0, 0x80, 50, 9, 4, 2, 0, 2, 8, 6, 0x50, 0, 7, 5, 0x02, 2, 0, 2, 0, 7, 5, 0x81, 2, 0, 2, 0];
+        assert_eq!(mass_storage_interface(&bytes), Some(crate::storage::MassStorageInterface { configuration: 1, interface: 2, bulk_in: 0x81, bulk_in_packet: 512, bulk_out: 2, bulk_out_packet: 512 }));
+        let mut wrong_protocol = bytes; wrong_protocol[16] = 0x62;
+        assert!(mass_storage_interface(&wrong_protocol).is_none());
     }
     #[test]
     fn set_configuration_is_a_no_data_out_control_td() {
