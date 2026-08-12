@@ -80,7 +80,9 @@ fn private_ioctl_dispatch_validates_command_and_preserves_file_context() {
     // SAFETY: context/minor/file arrays reserve the exact fields read by the dispatcher.
     unsafe { write(minor.as_mut_ptr().add(16).cast::<*mut c_void>(), dev); write(file_ctx.as_mut_ptr().add(72).cast::<*mut c_void>(), minor.as_mut_ptr().cast()); write(filp.as_mut_ptr().add(24).cast::<*mut c_void>(), file_ctx.as_mut_ptr().cast()); }
     assert_eq!(ioctl::drm_ioctl(filp.as_mut_ptr().cast(), CMD, (&mut data as *mut u32) as usize), 0); assert_eq!(data, 0xfeed_beef); assert_eq!(IOCTL_CALLS.load(AtomicOrdering::SeqCst), 1);
-    assert_eq!(ioctl::drm_ioctl(filp.as_mut_ptr().cast(), 0, (&mut data as *mut u32) as usize), -25); assert_eq!(IOCTL_CALLS.load(AtomicOrdering::SeqCst), 1); devres::release_device(&mut parent);
+    data = 0;
+    assert_eq!(ioctl::drm_compat_ioctl(filp.as_mut_ptr().cast(), CMD, (&mut data as *mut u32) as usize), 0); assert_eq!(data, 0xfeed_beef); assert_eq!(IOCTL_CALLS.load(AtomicOrdering::SeqCst), 2);
+    assert_eq!(ioctl::drm_ioctl(filp.as_mut_ptr().cast(), 0, (&mut data as *mut u32) as usize), -25); assert_eq!(IOCTL_CALLS.load(AtomicOrdering::SeqCst), 2); devres::release_device(&mut parent);
 }
 
 #[test]
