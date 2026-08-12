@@ -148,6 +148,17 @@ impl AddressDeviceDma {
         for offset in 0..length { bytes.push(dma.data.read8(offset as u64)?); }
         Some(bytes)
     }
+    /// Copy one host-to-device Bulk-Only data stage into its retained DMA page.
+    /// # C: O(data bytes)
+    pub fn set_storage_data(&mut self, bytes: &[u8]) -> bool {
+        if bytes.len() > 4096 { return false; }
+        let Some(dma) = self.storage_dma.as_mut() else { return false; };
+        for (offset, byte) in bytes.iter().copied().enumerate() {
+            if !dma.data.write8(offset as u64, byte) { return false; }
+        }
+        dma.data.clean_to_device();
+        true
+    }
     /// Read and validate a completed Bulk-Only command-status wrapper. # C: O(CSW bytes)
     pub fn storage_csw(&self, tag: u32, transfer_bytes: u32) -> Option<(crate::storage::CswStatus, u32)> {
         let dma = self.storage_dma.as_ref()?;

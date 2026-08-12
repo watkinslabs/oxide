@@ -557,6 +557,7 @@ name = "drv-xhci"
 version = "0.1.0"
 dependencies = [
  "arch-irq",
+ "block",
  "drv",
  "hal-aarch64",
  "hal-x86_64",
