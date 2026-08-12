@@ -1,5 +1,11 @@
 # Fixed issues
 
+### F958-drm-framebuffer-lifetime
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED F958 | DEFECT | blocker | **GEM framebuffer creation allocated a complete `drm_framebuffer` but left its embedded mode-object reference count and release callback zero.** An external driver's inline framebuffer put would therefore invoke a null callback on the last reference, while the facade's direct destroy bypassed the object lifetime contract. Creation now initializes the embedded count and finalizer; the finalizer recovers the containing framebuffer and releases all retained GEM objects exactly once. | F958. Verified framebuffer record layout has mode-object refcount at 40 and final callback at 48. `linux_drm::gem::tests::gem_framebuffer_keeps_the_backing_object_after_handle_close` exercises a balanced extra reference followed by final put after the source handle closes; `cargo test -p modules linux_drm` 37 passed. | Chris Watkins |
+
 ### F957-drm-plane-abi-layout
 
 | Status | Class | Sev | Issue | Evidence | Owner |
