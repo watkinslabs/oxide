@@ -190,8 +190,8 @@ pub fn leave_class(t: &Task) {
 /// syscall and the cpuset writer consult, so the two cannot disagree about
 /// what a reservation was booked over.
 /// # C: O(1)
-pub fn confined_below_span(t: &Task, mask: u64) -> bool {
-    matches!(t.sched_class(), SchedClass::Deadline) && super::span() & !mask != 0
+pub fn confined_below_span(t: &Task, mask: cpu::CpuMask) -> bool {
+    matches!(t.sched_class(), SchedClass::Deadline) && !super::span().is_subset_of(mask)
 }
 
 /// Return a replenished entity to the ready set through the DEFERRED wake path.

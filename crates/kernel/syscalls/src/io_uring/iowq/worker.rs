@@ -58,7 +58,7 @@ pub fn spawn(class: usize) -> Result<(), sched::live::SpawnError> {
     // SAFETY: called from process context after the runqueue is installed; entry is a 'static extern "C" fn and the argument is a work-class index.
     let task = unsafe { sched::live::spawn_kernel_thread(tid, "iou-wrk", worker, class) }?;
     let mask = super::pool::cpu_mask();
-    if mask != 0 { task.cpus_allowed.store(mask, Ordering::Release); }
+    if !mask.is_empty() { task.cpus_allowed.store(mask, Ordering::Release); }
     drop(task);
     Ok(())
 }

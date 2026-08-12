@@ -54,9 +54,9 @@ pub fn enqueue_admits(task: &crate::task::Task) -> bool {
 /// possible CPU. Guessing high would let the first reservations be admitted
 /// against capacity that does not exist yet.
 /// # C: O(1)
-pub fn span() -> u64 {
-    let m = cpu::smp::online_mask();
-    if m == 0 { 1 } else { m }
+pub fn span() -> cpu::CpuMask {
+    let m = cpu::smp::online_cpumask();
+    if m.is_empty() { cpu::CpuMask::of(0) } else { m }
 }
 
 /// Ordering between two deadline entities. STRICT: an equal deadline never

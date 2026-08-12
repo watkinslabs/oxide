@@ -51,6 +51,17 @@ impl CpuMask {
         true
     }
 
+    /// Number of CPUs in the set. # C: O(words)
+    pub const fn count_ones(&self) -> u32 {
+        let mut total = 0;
+        let mut i = 0;
+        while i < CPU_MASK_WORDS {
+            total += self.words[i].count_ones();
+            i += 1;
+        }
+        total
+    }
+
     /// True when `cpu` belongs to the set. # C: O(1)
     pub const fn contains(&self, cpu: usize) -> bool {
         cpu < MAX_CPUS && (self.words[cpu / CPU_MASK_WORD_BITS] & (1u64 << (cpu % CPU_MASK_WORD_BITS))) != 0
@@ -98,6 +109,9 @@ impl CpuMask {
         out
     }
 
+    /// True when every CPU named by `self` is also named by `rhs`. # C: O(words)
+    pub const fn is_subset_of(self, rhs: Self) -> bool { self.without(rhs).is_empty() }
+
     /// Low word for an unmigrated one-word caller. # C: O(1)
     pub const fn low_word(self) -> u64 { self.words[0] }
 
@@ -126,6 +140,9 @@ pub struct AtomicCpuMask { words: [AtomicU64; CPU_MASK_WORDS] }
 impl AtomicCpuMask {
     /// Empty atomic CPU set. # C: O(1)
     pub const fn new() -> Self { Self { words: [const { AtomicU64::new(0) }; CPU_MASK_WORDS] } }
+
+    /// Atomic CPU set initially containing every addressable CPU. # C: O(1)
+    pub const fn all() -> Self { Self { words: [const { AtomicU64::new(u64::MAX) }; CPU_MASK_WORDS] } }
 
     /// Snapshot the published set. # C: O(words)
     pub fn load(&self, order: Ordering) -> CpuMask {

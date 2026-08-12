@@ -69,7 +69,7 @@ static WEIGHT_HOOK: Spinlock<Option<fn(u64, u32)>, TaskListClass> = Spinlock::ne
 /// `cpuset.cpus` delivery: `(pid, cpu_mask)`. The kernel installs a hook
 /// that rewrites the task's `cpus_allowed` so the cgroup cpuset restricts
 /// which CPUs its members run on.
-static CPUSET_HOOK: Spinlock<Option<fn(u64, u64)>, TaskListClass> = Spinlock::new(None);
+static CPUSET_HOOK: Spinlock<Option<fn(u64, cpu::CpuMask)>, TaskListClass> = Spinlock::new(None);
 
 /// vpid → canonical (global) tid resolver. `None` means ESRCH for a
 /// userspace cgroup.procs write; the tree keys membership on canonical tid.
@@ -107,7 +107,7 @@ pub fn set_weight_hook(f: fn(u64, u32)) { *WEIGHT_HOOK.lock() = Some(f); }
 
 /// Install the cpuset.cpus hook. Boot path.
 /// # C: O(1)
-pub fn set_cpuset_hook(f: fn(u64, u64)) { *CPUSET_HOOK.lock() = Some(f); }
+pub fn set_cpuset_hook(f: fn(u64, cpu::CpuMask)) { *CPUSET_HOOK.lock() = Some(f); }
 
 /// Install the vpid→tid resolver. Boot path.
 /// # C: O(1)
@@ -217,7 +217,7 @@ pub(crate) fn weight_hook() -> Option<fn(u64, u32)> {
     *WEIGHT_HOOK.lock()
 }
 
-pub(crate) fn cpuset_hook() -> Option<fn(u64, u64)> {
+pub(crate) fn cpuset_hook() -> Option<fn(u64, cpu::CpuMask)> {
     *CPUSET_HOOK.lock()
 }
 

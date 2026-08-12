@@ -32,18 +32,11 @@ use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 use crate::{SchedClass, Task};
 use crate::live::runqueue::{global_for, Runqueue};
 
-/// Bits a `cpus_allowed` word can address. A CPU id at or above this is
-/// unrepresentable in the mask and therefore unconstrained by it.
-pub const MASK_BITS: u32 = 64;
-
 /// `target` value meaning "slot empty".
 const NO_TARGET: u32 = u32::MAX;
 
 /// Does `allowed` permit `cpu`? # C: O(1)
-pub fn cpu_permitted(allowed: u64, cpu: u32) -> bool {
-    if cpu >= MASK_BITS { return true; }
-    allowed & (1u64 << cpu) != 0
-}
+pub fn cpu_permitted(allowed: cpu::CpuMask, cpu: u32) -> bool { allowed.contains(cpu as usize) }
 
 /// Destination for a still-Runnable outgoing task that may no longer use `cpu`,
 /// or `None` when it may stay. `None` also covers the terminal fallback: a mask

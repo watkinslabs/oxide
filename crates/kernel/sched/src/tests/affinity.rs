@@ -13,6 +13,8 @@ use crate::affinity::{compose, MaskChange::CpusetUpdate};
 use crate::live::sched_fork::inherit_sched_params;
 use crate::task::{SchedClass, Task};
 
+fn m(bits: u64) -> cpu::CpuMask { cpu::CpuMask::from_words(&[bits]) }
+
 fn task(tid: u32) -> Task { Task::new(tid, "affinity-test", SchedClass::Normal { weight: 1024 }) }
 
 /// A clone inherits the parent's effective mask. Without this, a
@@ -22,11 +24,11 @@ fn task(tid: u32) -> Task { Task::new(tid, "affinity-test", SchedClass::Normal {
 #[test]
 fn a_clone_inherits_the_parents_affinity_mask() {
     let parent = task(1);
-    parent.cpus_allowed.store(0b0010, Ordering::Release);
+    parent.cpus_allowed.store(m(0b0010), Ordering::Release);
     let child = task(2);
-    assert_eq!(child.cpus_allowed.load(Ordering::Acquire), u64::MAX, "fresh task starts unpinned");
+    assert_eq!(child.cpus_allowed.load(Ordering::Acquire), cpu::CpuMask::all(), "fresh task starts unpinned");
     inherit_sched_params(&child, &parent);
-    assert_eq!(child.cpus_allowed.load(Ordering::Acquire), 0b0010);
+    assert_eq!(child.cpus_allowed.load(Ordering::Acquire), m(0b0010));
 }
 
 /// The `sched_setaffinity(2)` request and the cpuset restriction are inherited
@@ -34,14 +36,14 @@ fn a_clone_inherits_the_parents_affinity_mask() {
 #[test]
 fn a_clone_inherits_the_user_request_and_the_cpuset() {
     let parent = task(1);
-    parent.user_cpus_allowed.store(0b1010, Ordering::Release);
-    parent.cpuset_cpus_allowed.store(0b0011, Ordering::Release);
-    parent.cpus_allowed.store(compose(0b0011, 0b1010, CpusetUpdate), Ordering::Release);
+    parent.user_cpus_allowed.store(m(0b1010), Ordering::Release);
+    parent.cpuset_cpus_allowed.store(m(0b0011), Ordering::Release);
+    parent.cpus_allowed.store(compose(m(0b0011), m(0b1010), CpusetUpdate), Ordering::Release);
     let child = task(2);
     inherit_sched_params(&child, &parent);
-    assert_eq!(child.user_cpus_allowed.load(Ordering::Acquire), 0b1010);
-    assert_eq!(child.cpuset_cpus_allowed.load(Ordering::Acquire), 0b0011);
-    assert_eq!(child.cpus_allowed.load(Ordering::Acquire), 0b0010);
+    assert_eq!(child.user_cpus_allowed.load(Ordering::Acquire), m(0b1010));
+    assert_eq!(child.cpuset_cpus_allowed.load(Ordering::Acquire), m(0b0011));
+    assert_eq!(child.cpus_allowed.load(Ordering::Acquire), m(0b0010));
 }
 
 /// `sched_reset_on_fork` resets policy and nice, never affinity — Linux only
@@ -51,22 +53,22 @@ fn reset_on_fork_does_not_clear_affinity() {
     let parent = task(1);
     parent.sched_reset_on_fork.store(true, Ordering::Release);
     parent.nice.store(-5, Ordering::Release);
-    parent.cpus_allowed.store(0b0100, Ordering::Release);
+    parent.cpus_allowed.store(m(0b0100), Ordering::Release);
     let child = task(2);
     inherit_sched_params(&child, &parent);
     assert_eq!(child.nice.load(Ordering::Acquire), 0, "reset_on_fork lifts a negative nice");
-    assert_eq!(child.cpus_allowed.load(Ordering::Acquire), 0b0100, "affinity survives");
+    assert_eq!(child.cpus_allowed.load(Ordering::Acquire), m(0b0100), "affinity survives");
 }
 
 /// A fresh task with no cpuset and no user request runs anywhere.
 #[test]
 fn defaults_leave_a_task_unpinned() {
     let t = task(1);
-    assert_eq!(t.cpus_allowed.load(Ordering::Acquire), u64::MAX);
-    assert_eq!(t.cpuset_cpus_allowed.load(Ordering::Acquire), u64::MAX);
-    assert_eq!(t.user_cpus_allowed.load(Ordering::Acquire), 0, "0 = never called setaffinity");
+    assert_eq!(t.cpus_allowed.load(Ordering::Acquire), cpu::CpuMask::all());
+    assert_eq!(t.cpuset_cpus_allowed.load(Ordering::Acquire), cpu::CpuMask::all());
+    assert_eq!(t.user_cpus_allowed.load(Ordering::Acquire), cpu::CpuMask::empty(), "empty = never called setaffinity");
     assert!(!t.no_setaffinity.load(Ordering::Acquire));
-    assert_eq!(compose(u64::MAX, 0, CpusetUpdate), u64::MAX);
+    assert_eq!(compose(cpu::CpuMask::all(), cpu::CpuMask::empty(), CpusetUpdate), cpu::CpuMask::all());
 }
 
 // ---- switch-time affinity eviction (`live::schedule::migrate`) ----
@@ -115,18 +117,18 @@ fn running_on(tid: u32, cpu: u32, allowed: u64) -> Arc<Task> {
     let t = Arc::new(Task::new(tid, "spinner", SchedClass::Normal { weight: 1024 }));
     t.cpu.store(cpu as u16, Ordering::Release);
     t.set_state(TaskState::Runnable);
-    t.cpus_allowed.store(allowed, Ordering::Release);
+    t.cpus_allowed.store(m(allowed), Ordering::Release);
     t
 }
 
 /// A CPU id at or above the mask width is unrepresentable, so no mask
 /// constrains it — the bit test must not wrap around to bit 0.
 #[test]
-fn mask_bits_beyond_the_word_are_unconstrained() {
-    assert!(migrate::cpu_permitted(0b0010, 1));
-    assert!(!migrate::cpu_permitted(0b0010, 0));
-    assert!(!migrate::cpu_permitted(0, 3));
-    assert!(migrate::cpu_permitted(1, migrate::MASK_BITS), "id >= mask width is unconstrained");
+fn mask_membership_does_not_wrap_at_word_boundaries() {
+    assert!(migrate::cpu_permitted(m(0b0010), 1));
+    assert!(!migrate::cpu_permitted(m(0b0010), 0));
+    assert!(!migrate::cpu_permitted(cpu::CpuMask::empty(), 3));
+    assert!(!migrate::cpu_permitted(m(1), 64), "id outside the mask is forbidden");
 }
 
 /// THE BUG. A CPU-bound task whose mask just lost the CPU it is running on
@@ -176,7 +178,7 @@ fn the_idle_task_is_never_evicted() {
     let cpus = Cpus::new(&[HERE, THERE]);
     let idle = Arc::new(Task::new(3005, "idle", SchedClass::Idle));
     idle.cpu.store(HERE as u16, Ordering::Release);
-    idle.cpus_allowed.store(1u64 << THERE, Ordering::Release);
+    idle.cpus_allowed.store(m(1u64 << THERE), Ordering::Release);
     assert_eq!(migrate::evict_target_with(&|c| cpus.get(c), HERE, &idle), None);
 }
 
@@ -252,7 +254,7 @@ fn a_queued_task_relocates_off_a_forbidden_cpu() {
     assert_eq!(cpus.holder(3011), Some(HERE));
 
     // The mask writer's new mask, then the relocation it performs.
-    t.cpus_allowed.store(1u64 << THERE, Ordering::Release);
+    t.cpus_allowed.store(m(1u64 << THERE), Ordering::Release);
     let (moved, from) = dequeue_from_owning_rq_with(&|c| cpus.get(c), 3011)
         .expect("queued task is found on the CPU that owns it, not on the caller's");
     assert_eq!(from, HERE);
@@ -293,7 +295,7 @@ fn a_queued_task_on_a_forbidden_cpu_is_moved_by_the_mask_change() {
     assert!(enqueue_on_with(&|c| cpus.get(c), HERE, Arc::clone(&t)));
     assert_eq!(cpus.holder(t.tid), Some(HERE));
 
-    let allowed = 1u64 << THERE;
+    let allowed = m(1u64 << THERE);
     t.cpus_allowed.store(allowed, Ordering::Release);
     crate::live::ttwu::relocate_for_affinity_with(&|c| cpus.get(c), &t, allowed);
 
@@ -311,7 +313,7 @@ fn a_queued_task_on_a_permitted_cpu_is_not_moved() {
     let t = running_on(4002, HERE, u64::MAX);
     assert!(enqueue_on_with(&|c| cpus.get(c), HERE, Arc::clone(&t)));
 
-    let allowed = (1u64 << HERE) | (1u64 << THERE);
+    let allowed = m((1u64 << HERE) | (1u64 << THERE));
     t.cpus_allowed.store(allowed, Ordering::Release);
     crate::live::ttwu::relocate_for_affinity_with(&|c| cpus.get(c), &t, allowed);
 
@@ -331,7 +333,7 @@ fn a_running_task_on_a_forbidden_cpu_is_left_for_schedule_to_evict() {
     let rq = cpus.get(HERE).unwrap();
     rq.current.store(Arc::as_ptr(&t) as *mut Task, Ordering::Release);
 
-    let allowed = 1u64 << THERE;
+    let allowed = m(1u64 << THERE);
     t.cpus_allowed.store(allowed, Ordering::Release);
     crate::live::ttwu::relocate_for_affinity_with(&|c| cpus.get(c), &t, allowed);
 
@@ -350,7 +352,7 @@ fn a_mask_naming_no_installed_cpu_strands_nothing() {
     let t = running_on(4004, HERE, 1 << HERE);
     assert!(enqueue_on_with(&|c| cpus.get(c), HERE, Arc::clone(&t)));
 
-    let allowed = 1u64 << 5;
+    let allowed = m(1u64 << 5);
     t.cpus_allowed.store(allowed, Ordering::Release);
     crate::live::ttwu::relocate_for_affinity_with(&|c| cpus.get(c), &t, allowed);
 

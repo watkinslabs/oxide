@@ -37,13 +37,13 @@ pub fn dl_param_changed(cur: &DlParams, attr: &SchedAttr) -> bool {
 /// fewer CPUs than the span has a guarantee the ledger never checked. An
 /// unprivileged caller is refused rather than admitted on a false premise.
 /// # C: O(1)
-pub fn affinity_covers_span(span: u64, mask: u64) -> bool { span & !mask == 0 }
+pub fn affinity_covers_span(span: cpu::CpuMask, mask: cpu::CpuMask) -> bool { span.is_subset_of(mask) }
 
 /// The unprivileged-caller gate that runs after the parameter and permission
 /// ladders: a deadline request is refused when the task cannot use the whole
 /// span, or when the class has no bandwidth to give at all.
 /// # C: O(1)
-pub fn user_dl_allowed(span: u64, mask: u64, class_bw: u64) -> bool {
+pub fn user_dl_allowed(span: cpu::CpuMask, mask: cpu::CpuMask, class_bw: u64) -> bool {
     class_bw != 0 && affinity_covers_span(span, mask)
 }
 
@@ -51,7 +51,7 @@ pub fn user_dl_allowed(span: u64, mask: u64, class_bw: u64) -> bool {
 /// reservation was admitted against the span, and honouring a narrower mask
 /// would quietly overcommit whatever is left.
 /// # C: O(1)
-pub fn setaffinity_allowed(is_dl: bool, span: u64, new_mask: u64) -> Result<(), i64> {
+pub fn setaffinity_allowed(is_dl: bool, span: cpu::CpuMask, new_mask: cpu::CpuMask) -> Result<(), i64> {
     if !is_dl { return Ok(()); }
     if affinity_covers_span(span, new_mask) { return Ok(()); }
     Err(err(Errno::Ebusy))

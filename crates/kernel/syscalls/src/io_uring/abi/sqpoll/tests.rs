@@ -231,25 +231,27 @@ fn outstanding_polled_work_keeps_the_thread_hot() {
 const SQPOLL: u32 = IORING_SETUP_SQPOLL;
 const SQ_AFF: u32 = IORING_SETUP_SQ_AFF;
 
+fn cpus(bits: u64) -> cpu::CpuMask { cpu::CpuMask::from_words(&[bits]) }
+
 #[test]
 fn no_sq_aff_means_no_pin_whatever_sq_thread_cpu_holds() {
-    assert_eq!(sq_cpu(SQPOLL, 99, 0), Ok(None), "sq_thread_cpu is not read without SQ_AFF");
+    assert_eq!(sq_cpu(SQPOLL, 99, cpus(0)), Ok(None), "sq_thread_cpu is not read without SQ_AFF");
 }
 
 #[test]
 fn sq_aff_without_sqpoll_is_einval() {
-    assert_eq!(sq_cpu(SQ_AFF, 0, 0b1), Err(Errno::Einval), "there is no thread to pin");
+    assert_eq!(sq_cpu(SQ_AFF, 0, cpus(0b1)), Err(Errno::Einval), "there is no thread to pin");
 }
 
 #[test]
 fn sq_aff_pins_to_a_processor_the_creating_task_may_itself_run_on() {
-    assert_eq!(sq_cpu(SQPOLL | SQ_AFF, 1, 0b11), Ok(Some(1)));
+    assert_eq!(sq_cpu(SQPOLL | SQ_AFF, 1, cpus(0b11)), Ok(Some(1)));
     // Confined to CPU 0: asking for CPU 1 must not be a way out of the cpuset.
-    assert_eq!(sq_cpu(SQPOLL | SQ_AFF, 1, 0b01), Err(Errno::Einval));
+    assert_eq!(sq_cpu(SQPOLL | SQ_AFF, 1, cpus(0b01)), Err(Errno::Einval));
     // Offline / nonexistent processor.
-    assert_eq!(sq_cpu(SQPOLL | SQ_AFF, 3, 0b11), Err(Errno::Einval));
-    assert_eq!(sq_cpu(SQPOLL | SQ_AFF, 64, u64::MAX), Err(Errno::Einval));
-    assert_eq!(sq_cpu(SQPOLL | SQ_AFF, u32::MAX, u64::MAX), Err(Errno::Einval));
+    assert_eq!(sq_cpu(SQPOLL | SQ_AFF, 3, cpus(0b11)), Err(Errno::Einval));
+    assert_eq!(sq_cpu(SQPOLL | SQ_AFF, 64, cpus(u64::MAX)), Err(Errno::Einval));
+    assert_eq!(sq_cpu(SQPOLL | SQ_AFF, u32::MAX, cpus(u64::MAX)), Err(Errno::Einval));
 }
 
 // -------------------------------------------------------------- enter(2) side

@@ -13,7 +13,7 @@ use alloc::vec::Vec;
 pub(crate) mod format;
 #[cfg(test)] mod tests;
 
-use format::{push, push_dec, push_hex16, push_octal, push_cpumask, push_cpulist};
+use format::{push, push_cpumask, push_cpulist, push_dec, push_hex16, push_octal, push_u64mask, push_u64list};
 
 /// Everything one `/proc/<pid>/status` body needs, snapshotted from the task.
 /// Every field is a real reading — there are no defaults here, precisely so a
@@ -72,7 +72,7 @@ pub struct Status<'a> {
     pub seccomp_filters: u64,
     /// `p->cpus_mask`, and how many CPU bits the mask is printed to
     /// (Linux `nr_cpu_ids`) — `%*pb` zero-pads to that width.
-    pub cpus_allowed: u64,
+    pub cpus_allowed: cpu::CpuMask,
     pub nr_cpus: u32,
     /// `p->mems_allowed` + its width (`MAX_NUMNODES`).
     pub mems_allowed: u64,
@@ -143,8 +143,8 @@ pub fn render(s: &Status) -> Vec<u8> {
     push(&mut o, b"\nSpeculationIndirectBranch:\tunknown");
     push(&mut o, b"\nCpus_allowed:\t"); push_cpumask(&mut o, s.cpus_allowed, s.nr_cpus);
     push(&mut o, b"\nCpus_allowed_list:\t"); push_cpulist(&mut o, s.cpus_allowed, s.nr_cpus);
-    push(&mut o, b"\nMems_allowed:\t"); push_cpumask(&mut o, s.mems_allowed, s.nr_nodes);
-    push(&mut o, b"\nMems_allowed_list:\t"); push_cpulist(&mut o, s.mems_allowed, s.nr_nodes);
+    push(&mut o, b"\nMems_allowed:\t"); push_u64mask(&mut o, s.mems_allowed, s.nr_nodes);
+    push(&mut o, b"\nMems_allowed_list:\t"); push_u64list(&mut o, s.mems_allowed, s.nr_nodes);
     push(&mut o, b"\nvoluntary_ctxt_switches:\t"); push_dec(&mut o, s.nvcsw);
     push(&mut o, b"\nnonvoluntary_ctxt_switches:\t"); push_dec(&mut o, s.nivcsw);
     o.push(b'\n');

@@ -29,7 +29,7 @@ pub fn sys_sched_getaffinity(args: &SyscallArgs) -> i64 {
     };
     let m = affinity_abi::reported_mask(t.cpus_allowed.load(Ordering::Acquire), active_cpu_mask());
     if let Err(rv) = validate_user_buf_writable(uptr, retlen as u64, 1) { return rv; }
-    if uaccess::copy_to_user(uptr, &m.to_le_bytes()[..retlen]).is_err() {
+    if uaccess::copy_to_user(uptr, &affinity_abi::mask_to_bytes(m)[..retlen]).is_err() {
         return -(Errno::Efault.as_i32() as i64);
     }
     retlen as i64

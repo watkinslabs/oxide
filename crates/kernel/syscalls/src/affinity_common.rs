@@ -25,7 +25,7 @@ pub(crate) fn affinity_target(pid: u32) -> Option<alloc::sync::Arc<sched::Task>>
 /// an empty bitmap (before `set_boot_cpu_id`) still yields a schedulable mask
 /// rather than turning every `sched_setaffinity` into EINVAL.
 /// # C: O(1)
-pub(crate) fn active_cpu_mask() -> u64 {
-    let m = cpu::smp::online_mask();
-    if m == 0 { 1 } else { m }
+pub(crate) fn active_cpu_mask() -> cpu::CpuMask {
+    let m = cpu::smp::online_cpumask();
+    if m.is_empty() { cpu::CpuMask::of(0) } else { m }
 }

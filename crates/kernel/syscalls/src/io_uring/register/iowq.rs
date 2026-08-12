@@ -29,17 +29,12 @@ pub fn max_workers(inode: &IoUringInode, arg: u64) -> i64 {
     0
 }
 
-/// The widest processor mask this kernel can express in one word. A caller
-/// naming processors above it is asking for something that cannot be honoured,
-/// which is a different answer from asking for something forbidden.
-pub const MAX_CPUS: u32 = 64;
-
 /// Apply a worker mask to the ring's submission-poll thread, if it has one.
 /// Linux routes an `IORING_SETUP_SQPOLL` ring's affinity registration through
 /// the poll thread, and parks it across the change: a thread moved between
 /// processors mid-pass would resume its loop on a processor the caller has
 /// just said it may not use. # C: O(1) + the park
-fn apply_to_poll_thread(inode: &IoUringInode, mask: u64) {
+fn apply_to_poll_thread(inode: &IoUringInode, mask: cpu::CpuMask) {
     let Some(sqd) = crate::io_uring::sqpoll::of(inode) else { return };
     // SAFETY: process context in the register syscall path on the caller's own CPU, holding no lock the poll thread takes; the caller is a user task, never the poll thread itself.
     let parked = unsafe { sqd.park() };
@@ -53,17 +48,21 @@ fn apply_to_poll_thread(inode: &IoUringInode, mask: u64) {
 pub fn affinity(inode: &IoUringInode, arg: u64, len: u32) -> i64 {
     if len == 0 {
         // Unregistering restores the unrestricted set.
-        pool::set_cpu_mask(0);
-        apply_to_poll_thread(inode, 0);
+        pool::set_cpu_mask(cpu::CpuMask::empty());
+        apply_to_poll_thread(inode, cpu::CpuMask::empty());
         return 0;
     }
-    // The caller's mask is a byte array; anything past the word this kernel
-    // schedules on must be empty rather than silently dropped.
-    let take = core::cmp::min(len as usize, MAX_CPUS as usize / 8);
-    let mut b = [0u8; MAX_CPUS as usize / 8];
+    // The ABI is a byte array sized for the kernel CPU mask. Bytes beyond the
+    // native mask are not read and therefore cannot be silently truncated.
+    let take = core::cmp::min(len as usize, cpu::mask::CPU_MASK_WORDS * 8);
+    let mut b = [0u8; cpu::mask::CPU_MASK_WORDS * 8];
     if uaccess::copy_from_user(&mut b[..take], arg).is_err() { return err(Errno::Efault); }
-    let mask = u64::from_ne_bytes(b);
-    if mask == 0 { return err(Errno::Einval); }
+    let mut words = [0u64; cpu::mask::CPU_MASK_WORDS];
+    for (word, bytes) in words.iter_mut().zip(b.chunks_exact(8)) {
+        *word = u64::from_ne_bytes(bytes.try_into().expect("eight-byte mask word"));
+    }
+    let mask = cpu::CpuMask::from_words(&words);
+    if mask.is_empty() { return err(Errno::Einval); }
     pool::set_cpu_mask(mask);
     apply_to_poll_thread(inode, mask);
     0

@@ -17,7 +17,7 @@
 use alloc::collections::VecDeque;
 use alloc::sync::{Arc, Weak};
 
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use sync::{Spinlock, TaskList as WqLockClass};
 
@@ -72,8 +72,8 @@ pub struct IoWq {
     /// Requests armed on a clock, oldest arming first. Weak: a request that
     /// completed some other way must not be held alive by its own deadline.
     pub timers: Spinlock<alloc::vec::Vec<Weak<IoReq>>, WqLockClass>,
-    /// Processors workers may run on; `0` = every processor.
-    pub cpu_mask: AtomicU64,
+    /// Processors workers may run on; an empty mask means every processor.
+    pub cpu_mask: cpu::AtomicCpuMask,
     pub started: AtomicBool,
 }
 
@@ -81,7 +81,7 @@ pub struct IoWq {
 pub static WQ: IoWq = IoWq {
     acct: [Acct::new(), Acct::new()],
     timers: Spinlock::new(alloc::vec::Vec::new()),
-    cpu_mask: AtomicU64::new(0),
+    cpu_mask: cpu::AtomicCpuMask::new(),
     started: AtomicBool::new(false),
 };
 
@@ -196,7 +196,7 @@ impl IoWq {
 
 /// The processors workers may run on, as a mask. `0` = every processor.
 /// # C: O(1)
-pub fn cpu_mask() -> u64 { WQ.cpu_mask.load(Ordering::Acquire) }
+pub fn cpu_mask() -> cpu::CpuMask { WQ.cpu_mask.load(Ordering::Acquire) }
 
 /// Restrict workers to `mask`. # C: O(1)
-pub fn set_cpu_mask(mask: u64) { WQ.cpu_mask.store(mask, Ordering::Release); }
+pub fn set_cpu_mask(mask: cpu::CpuMask) { WQ.cpu_mask.store(mask, Ordering::Release); }

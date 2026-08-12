@@ -103,7 +103,7 @@ fn pop_one_cfs(rq: &Runqueue) -> Option<Arc<Task>> {
 /// # C: O(1)
 pub fn can_migrate_task(task: &Task, dst_cpu: u32) -> bool {
     if task.on_cpu.load(Ordering::Acquire) { return false; }
-    if dst_cpu < 64 && task.cpus_allowed.load(Ordering::Acquire) & (1u64 << dst_cpu) == 0 {
+    if !task.cpus_allowed.load(Ordering::Acquire).contains(dst_cpu as usize) {
         return false;
     }
     true
