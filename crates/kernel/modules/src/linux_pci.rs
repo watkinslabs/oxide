@@ -1,5 +1,6 @@
-// Module manifest: types owns Linux C layout, maps owns iomap state, registry bridges Linux PCI drivers to the Rust driver model, core owns exported PCI facade, regions owns BAR ownership, pcie owns PCIe capability access, vectors owns IRQ vector allocation, pm owns PCI power management.
+// Module manifest: types owns Linux C layout, aperture owns firmware-display eviction, maps owns iomap state, registry bridges Linux PCI drivers to the Rust driver model, core owns exported PCI facade, regions owns BAR ownership, pcie owns PCIe capability access, vectors owns IRQ vector allocation, pm owns PCI power management.
 
+mod aperture;
 mod core;
 mod config;
 mod maps;
@@ -24,6 +25,7 @@ pub(crate) fn bdf_for_device(dev: *const crate::linux_dma::LinuxDevice) -> Optio
 /// Register Linux PCI KPI symbols.
 /// # C: O(1)
 pub fn export_symbols() {
+    aperture::export_symbols();
     core::export_symbols();
     pcie::export_symbols();
     pm::export_symbols();
