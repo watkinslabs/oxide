@@ -1182,6 +1182,7 @@ dependencies = [
  "arch-irq",
  "block",
  "cgroup",
+ "cmdline",
  "cpu",
  "crc",
  "crypt",

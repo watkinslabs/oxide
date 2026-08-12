@@ -38,6 +38,7 @@ iommu = { path = "../iommu" }
 tracefs = { path = "../tracefs" }
 kernfs = { path = "../kernfs" }
 syscall = { path = "../syscall" }
+cmdline = { path = "../cmdline" }
 
 [features]
 default = []

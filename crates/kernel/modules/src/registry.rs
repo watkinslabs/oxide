@@ -238,6 +238,7 @@ pub unsafe fn init_exports() {
     crate::linux_time::export_symbols();
     crate::linux_usercopy::export_symbols();
     crate::linux_usb::export_symbols();
+    crate::linux_video::export_symbols();
 }
 
 #[cfg(test)]
