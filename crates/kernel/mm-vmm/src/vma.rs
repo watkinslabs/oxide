@@ -17,7 +17,9 @@ use crate::{file_rmap::FileRmap, PhysCacheMode};
 // surface (`FileBacking`) and its `vm_operations_struct` hooks.
 mod clone;
 mod backing;
+mod mmap_setup;
 pub use backing::{FileBacking, FileBackingError, SharedFrame};
+pub use mmap_setup::FileMmapSetup;
 
 bitflags::bitflags! {
     /// VMA protection bits per `11§4`. R/W/X only at the VMA layer;

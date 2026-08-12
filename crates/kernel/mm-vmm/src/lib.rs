@@ -62,7 +62,7 @@ pub use ldt::{any_ldt_in_use, LdtError, LdtState, LdtView};
 pub use file_rmap::{FileRmap, WritableMapReservation, WriteSealError};
 pub use migration::{migration_attach_marker, migration_begin, migration_drop_marker_mapping, migration_finish, migration_pending_then, migration_restore_marker_mapping};
 pub use recency::vma_has_recency;
-pub use vma::{EXEC_STACK_VMA_FLAGS, FaultAccess, FaultKind, FileBacking, FileBackingError, SharedFrame, Vma, VmaBacking, VmaFlags, VmaProt};
+pub use vma::{EXEC_STACK_VMA_FLAGS, FaultAccess, FaultKind, FileBacking, FileBackingError, FileMmapSetup, SharedFrame, Vma, VmaBacking, VmaFlags, VmaProt};
 pub use tree::{HomeNodeErr, VmaTree};
 pub use uffd::{UffdContext, UffdEvent, UffdEventKind, UffdFaultKind};
 pub use vm_ops::{set_shm_vm_ops, VmaOpsFn};
@@ -116,6 +116,8 @@ mod stub_tests {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_mmap_setup;
 
 // F157: comprehensive memory torture test suite — boundary
 // conditions, fragmentation, fork chains, churn stress, brk
