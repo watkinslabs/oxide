@@ -73,62 +73,22 @@ pub(super) fn pcm_info_scan(device_key: DeviceKey) -> Option<(u32, u32)> {
 }
 
 pub(super) fn submit_ctl(ctx: &mut Ctx, req_len: usize, resp_len: usize) -> Option<u32> {
-    let h = ctx.hhdm;
-    let controlq = ctx.controlq;
-
-    let desc = h.wrapping_add(controlq.desc_pa) as *mut u64;
-    // Two-descriptor chain 0 -> 1: device-readable request at REQ_OFF, then a
-    // device-WRITE response at RESP_OFF. Both halves are the driver's own
-    // scratch frame, and callers size `req_len`/`resp_len` to stay inside it.
-    // SAFETY: HHDM-mapped q0 descriptor table (require_queue accepted
-    // desc_pa); four aligned u64 stores cover slots 0 and 1, well inside the
-    // one-frame (256-entry) descriptor table the transport allocated.
-    unsafe {
-        core::ptr::write_volatile(desc.add(0), ctx.scratch_pa + REQ_OFF);
-        let d0 = (req_len as u64) | ((VRING_DESC_F_NEXT as u64) << 32) | (1u64 << 48);
-        core::ptr::write_volatile(desc.add(1), d0);
-        core::ptr::write_volatile(desc.add(2), ctx.scratch_pa + RESP_OFF);
-        let d1 = (resp_len as u64) | ((VRING_DESC_F_WRITE as u64) << 32);
-        core::ptr::write_volatile(desc.add(3), d1);
-    }
-
-    let slot = (ctx.avail_idx % controlq.size) as usize;
-    let avail = h.wrapping_add(controlq.driver_pa) as *mut u16;
-    // SAFETY: HHDM-mapped q0 avail ring; ring[slot] is u16 index 2+slot with
-    // slot < controlq.size (nonzero per require_queue, capped at one ring
-    // frame), idx is index 1, and the release fence publishes the descriptor
-    // chain and ring entry before the idx store the device polls.
-    let target = unsafe {
-        core::ptr::write_volatile(avail.add(2 + slot), 0u16);
-        core::sync::atomic::fence(Ordering::Release);
-        ctx.avail_idx = ctx.avail_idx.wrapping_add(1);
-        core::ptr::write_volatile(avail.add(1), ctx.avail_idx);
-        ctx.avail_idx
-    };
-    core::sync::atomic::fence(Ordering::Release);
-
-    // SAFETY: controlq notify VA is the Device-attr MMIO window the transport
-    // mapped for this child; the kick is one aligned u16 store of the index.
-    unsafe { core::ptr::write_volatile(controlq.notify_va as *mut u16, controlq.index); }
-
-    let used = h.wrapping_add(controlq.device_pa) as *const u16;
-    let mut polls = 0u32;
-    loop {
-        // SAFETY: HHDM-mapped q0 used ring; aligned u16 load of used.idx at
-        // index 1, volatile because the device is what advances it.
-        let uidx = unsafe { core::ptr::read_volatile(used.add(1)) };
-        if uidx == target {
-            break;
+    let controlq = ctx.controlq.as_mut()?;
+    if controlq.submit(&[
+        virtio::SplitQueueSeg { dma: ctx.scratch_pa + REQ_OFF, len: req_len as u32, device_writes: false },
+        virtio::SplitQueueSeg { dma: ctx.scratch_pa + RESP_OFF, len: resp_len as u32, device_writes: true },
+    ]).is_err() { return None; }
+    let mut retired = false;
+    for _ in 0..CTL_POLL_BUDGET {
+        match controlq.pop_used() {
+            Ok(Some(_)) => { retired = true; break; }
+            Ok(None) => core::hint::spin_loop(),
+            Err(_) => return None,
         }
-        if polls >= CTL_POLL_BUDGET {
-            return None;
-        }
-        polls += 1;
-        core::hint::spin_loop();
     }
-    core::sync::atomic::fence(Ordering::Acquire);
+    if !retired { return None; }
 
-    let st = h.wrapping_add(ctx.scratch_pa + RESP_OFF) as *const u32;
+    let st = ctx.hhdm.wrapping_add(ctx.scratch_pa + RESP_OFF) as *const u32;
     // SAFETY: HHDM view of the response half of the driver's own scratch
     // frame, read only after used.idx reached `target` and the acquire fence
     // above; the status code is the leading aligned u32 of every response.

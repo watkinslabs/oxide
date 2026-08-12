@@ -21,7 +21,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use sync::{Spinlock, TaskList as DriverLockClass};
-use virtio::{VRING_DESC_F_NEXT, VRING_DESC_F_WRITE};
+use virtio::VRING_DESC_F_WRITE;
 
 pub const VIRTIO_ID_SOUND: u16 = 25;
 

@@ -94,10 +94,7 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
         // yet; the loop clears exactly the one frame that was allocated.
         unsafe { for i in 0..SND_FRAME_BYTES { core::ptr::write_volatile(va.add(i), 0); } }
     }
-    let used = p.resources.hhdm.wrapping_add(controlq.device_pa) as *const u16;
-    // SAFETY: HHDM-mapped controlq used ring (require_queue accepted
-    // device_pa); aligned u16 load of used.idx at index 1.
-    let used_seen = unsafe { core::ptr::read_volatile(used.add(1)) };
+    let controlq = virtio::VirtioSplitQueue::new(controlq, p.resources.hhdm).ok()?;
     let event_used = p.resources.hhdm.wrapping_add(eventq.device_pa) as *const u16;
     // SAFETY: HHDM-mapped eventq used ring, same accepted-resource argument;
     // aligned u16 load of used.idx at index 1 seeds the drain cursor.
@@ -122,11 +119,10 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
     }
     g.push(Ctx {
         device_key: p.device_key,
-        controlq,
+        controlq: Some(controlq),
         hhdm: p.resources.hhdm,
         cfg_va: p.resources.cfg_va,
         scratch_pa: frames.scratch_pa,
-        avail_idx: used_seen,
         eventq: Some(eventq),
         event_buf_pa: frames.event_buf_pa,
         event_last_used: event_used_seen,
