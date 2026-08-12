@@ -28,7 +28,7 @@ struct Record {
     command_orig: u16,
     mmio: Mmio,
     irq: Binding,
-    _command: CommandTransport,
+    command: CommandTransport,
     _dcbaa: DmaPage,
     devices: Vec<HidRecord>,
     _erst: DmaPage,
@@ -58,9 +58,43 @@ fn publish_report(device: &mut HidRecord, report: &[u8]) {
     for event in events.into_iter().flatten() { match event { crate::hid::Event::Key { code, value } => { let _ = input::push_evdev_event(evdev, input::EV_KEY, code, value); }, crate::hid::Event::Relative { code, value } => { let _ = input::push_evdev_event(evdev, input::EV_REL, code, value); } } }
 }
 
+fn remove_hid_input(device: HidRecord) {
+    if let Some(evdev) = device.evdev { let _ = input::unpublish_evdev(evdev); }
+    if let Some(platform) = device.input_platform { let _ = input::remove_device(input::InputDeviceKey::platform(platform)); }
+}
+
+fn add_hid_record(record: &mut Record, device: AddressDeviceDma) {
+    let slot = device.slot();
+    let protocol = device.hid_protocol();
+    let evdev = install_hid_input(record.bdf, slot, protocol);
+    let input_platform = evdev.map(|_| platform_id(record.bdf, slot));
+    record.devices.push(HidRecord { _device: device, slot, protocol, evdev, input_platform, keyboard: [0; 8], mouse_buttons: 0 });
+}
+
+fn service_port_changes(record: &mut Record) {
+    let changed = record.irq.take_port_changes();
+    for port in 1..=record.mmio.geometry().max_ports {
+        if changed & (1u64 << (port - 1)) == 0 { continue; }
+        let connected = record.mmio.port_status(port).is_some_and(|status| status & crate::ports::PORT_CONNECT != 0);
+        if !connected {
+            if let Some(index) = record.devices.iter().position(|device| device._device.port() == port) {
+                let device = record.devices.remove(index);
+                disable_slot(&record.mmio, &mut record.command, record.irq, device.slot);
+                remove_hid_input(device);
+            }
+            continue;
+        }
+        if record.devices.iter().any(|device| device._device.port() == port) { continue; }
+        if let Some(device) = address_port_device(record.bdf, &record.mmio, &mut record.command, &record._dcbaa, record.irq, port) {
+            add_hid_record(record, device);
+        }
+    }
+}
+
 fn input_bottom_half() {
     let mut controllers = CONTROLLERS.lock_bh::<XhciBh>();
     for record in controllers.iter_mut() {
+        service_port_changes(record);
         for device in record.devices.iter_mut() {
             let report = {
                 let Some(pending) = device._device.hid_pending() else { continue; };
@@ -98,8 +132,7 @@ fn remove(bdf: pci::Bdf) {
         let _ = record.mmio.halt();
         record.irq.disable_and_free();
         for device in record.devices {
-            if let Some(evdev) = device.evdev { let _ = input::unpublish_evdev(evdev); }
-            if let Some(platform) = device.input_platform { let _ = input::remove_device(input::InputDeviceKey::platform(platform)); }
+            remove_hid_input(device);
         }
         restore_bus_master(record.bdf, record.command_orig);
     }
@@ -260,7 +293,7 @@ impl drv::Driver for XhciDriver {
             let input_platform = evdev.map(|_| platform_id(bdf, slot));
             devices.push(HidRecord { _device: device, slot, protocol, evdev, input_platform, keyboard: [0; 8], mouse_buttons: 0 });
         }
-        CONTROLLERS.lock().push(Record { bdf, command_orig, mmio, irq, _command: command, _dcbaa: dcbaa, devices, _erst: erst, _event: event });
+        CONTROLLERS.lock().push(Record { bdf, command_orig, mmio, irq, command, _dcbaa: dcbaa, devices, _erst: erst, _event: event });
         Ok(())
     }
     fn remove(&self, dev: &drv::Device) { if let Some(bdf) = pci::parse_bdf_addr(&dev.addr) { remove(bdf); } }
