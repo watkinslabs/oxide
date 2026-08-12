@@ -25,11 +25,15 @@ mod gic_lpi_layout;
 mod gic_trigger;
 mod line;
 mod msi;
+#[cfg(target_arch = "x86_64")]
+mod ioapic;
 mod spurious;
 
 pub use line::{irq_line_disabled, LineHandler};
 pub use irqstat::DeviceAction;
 pub use msi::{alloc_pci_msi, free_pci_msi, register_pci_msi_handler, MsiMessage};
+#[cfg(target_arch = "x86_64")]
+pub use ioapic::program_x86_ioapic;
 pub use spurious::{IrqReport, IrqRet};
 #[cfg(target_arch = "x86_64")]
 pub use line::{free_irq_line_handler, invoke_x86_line_handler, register_irq_line_handler};

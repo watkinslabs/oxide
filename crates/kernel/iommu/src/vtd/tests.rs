@@ -1,4 +1,5 @@
 use super::*;
+use firmware::acpi::IommuKind;
 
 struct Reader { words: [(Bdf, u8, u32); 7] }
 impl ConfigSpaceReader for Reader {
@@ -55,4 +56,15 @@ fn reserved_range_follows_its_own_scope_and_segment() {
     let endpoint = Bdf { segment: 0, bus: 3, device: 2, function: 0 };
     assert!(rmrr_matches(&r, endpoint, rmrr(0, scope(DMAR_SCOPE_ENDPOINT))));
     assert!(!rmrr_matches(&r, endpoint, rmrr(1, scope(DMAR_SCOPE_ENDPOINT))));
+}
+
+#[test]
+fn ioapic_scope_uses_madt_id_and_exact_pci_source_id() {
+    let r = reader();
+    let mut ioapic = scope(DMAR_SCOPE_IOAPIC);
+    ioapic.enumeration_id = 7;
+    let unit = IommuUnit { kind: IommuKind::IntelVtd, segment: 0,
+        register_base: 0xfed9_0000, register_pages: 1, include_all: false };
+    assert_eq!(ioapic_scope_source(&r, 7, unit, ioapic), Some((unit, 0x0310)));
+    assert_eq!(ioapic_scope_source(&r, 8, unit, ioapic), None);
 }

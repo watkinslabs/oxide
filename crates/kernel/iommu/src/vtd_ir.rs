@@ -52,6 +52,17 @@ impl VtdIrTable {
 
     /// Allocate and publish one MSI IRTE. # C: O(entries)
     pub fn allocate_msi(&mut self, vector: u8, destination_apic_id: u32, requester_id: u16) -> Option<u16> {
+        self.allocate(vector, destination_apic_id, requester_id)
+    }
+
+    /// Allocate one source-verified IOAPIC IRTE.  IOAPIC pins are encoded in
+    /// their remappable RTE subhandle, so the IRTE itself has the same fixed,
+    /// edge-delivery form as an MSI entry. # C: O(entries)
+    pub fn allocate_ioapic(&mut self, vector: u8, destination_apic_id: u32, source_id: u16) -> Option<u16> {
+        self.allocate(vector, destination_apic_id, source_id)
+    }
+
+    fn allocate(&mut self, vector: u8, destination_apic_id: u32, requester_id: u16) -> Option<u16> {
         for (word_index, word) in self.used.iter_mut().enumerate() {
             if *word == u64::MAX { continue; }
             let bit = (!*word).trailing_zeros() as usize;

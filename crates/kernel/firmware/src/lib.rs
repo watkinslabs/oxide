@@ -72,6 +72,7 @@ use core::sync::atomic::AtomicU32;
 
 static IOAPIC_PA: AtomicU64 = AtomicU64::new(0);
 static IOAPIC_GSI_BASE: AtomicU32 = AtomicU32::new(0);
+static IOAPIC_ID: AtomicU32 = AtomicU32::new(u32::MAX);
 const ISA_IRQS: usize = 16;
 // Legacy ISA IRQ routing defaults to identity GSI N with ACPI flags 0
 // (bus default: edge-triggered, active-high). MADT type-2 source overrides
@@ -126,6 +127,10 @@ static SPCR_GSI: AtomicU32 = AtomicU32::new(0);
 pub fn ioapic_pa() -> u64 { IOAPIC_PA.load(Ordering::Acquire) }
 /// GSI base of the first I/O APIC. # C: O(1)
 pub fn ioapic_gsi_base() -> u32 { IOAPIC_GSI_BASE.load(Ordering::Acquire) }
+/// MADT APIC ID of the first I/O APIC, if firmware published one. # C: O(1)
+pub fn ioapic_id() -> Option<u8> {
+    u8::try_from(IOAPIC_ID.load(Ordering::Acquire)).ok()
+}
 /// GSI that legacy ISA IRQ `irq` is routed to after MADT source overrides.
 /// Returns `None` for non-ISA IRQ numbers. # C: O(1)
 pub fn legacy_irq_gsi(irq: u8) -> Option<u32> {
@@ -212,10 +217,11 @@ pub(crate) fn set_reset_action(a: acpi::ResetAction) {
 }
 
 /// Record the first I/O APIC from the MADT (first wins). # C: O(1)
-pub(crate) fn set_ioapic(pa: u32, gsi_base: u32) {
+pub(crate) fn set_ioapic(id: u8, pa: u32, gsi_base: u32) {
     if IOAPIC_PA.compare_exchange(0, pa as u64,
         Ordering::AcqRel, Ordering::Acquire).is_ok()
     {
+        IOAPIC_ID.store(id as u32, Ordering::Release);
         IOAPIC_GSI_BASE.store(gsi_base, Ordering::Release);
     }
 }

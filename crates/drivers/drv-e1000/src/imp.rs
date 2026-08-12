@@ -320,7 +320,10 @@ fn bind_intx(line: u32, endpoint: usize) -> Option<(u32, u32)> {
     }
     let pin = line - gsi_base;
     // SAFETY: the boot path mapped the I/O APIC; the line handler is installed before unmask.
-    unsafe { hal_x86_64::ioapic::program_redirect(pin, vector, arch_irq::lapic::local_apic_id() as u8, true, true); }
+    if !unsafe { arch_irq::program_x86_ioapic(pin, vector, arch_irq::lapic::local_apic_id() as u8, true, true) } {
+        let _ = arch_irq::free_x86_vector(vector);
+        return None;
+    }
     ENDPOINTS[endpoint].state.store(ENDPOINT_ACTIVE, Ordering::Release);
     Some((vector as u32, pin))
 }
