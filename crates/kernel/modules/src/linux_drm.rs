@@ -31,6 +31,10 @@ struct DeviceAllocation {
     encoders: Vec<EncoderRecord>,
     connectors: Vec<connector::ConnectorRecord>,
     vblank: Option<(usize, Layout)>,
+    /// The current primary-node master file. Linux keeps this relationship in
+    /// `drm_device::master`; the module ABI needs the same ownership decision
+    /// before it may admit `DRM_MASTER` ioctls.
+    primary_master: Option<usize>,
     put_pending: bool,
     unplugged: bool,
 }
@@ -182,7 +186,7 @@ extern "C" fn __devm_drm_dev_alloc(
     let dev = unsafe { base.add(offset) };
     initialize_device(dev, parent, driver, base);
     let dev = dev.cast::<c_void>();
-    DEVICES.lock().push(DeviceAllocation { dev: dev as usize, base: base as usize, layout, refs: 1, mode_config: false, objects: Vec::new(), planes: Vec::new(), crtcs: Vec::new(), encoders: Vec::new(), connectors: Vec::new(), vblank: None, put_pending: false, unplugged: false });
+    DEVICES.lock().push(DeviceAllocation { dev: dev as usize, base: base as usize, layout, refs: 1, mode_config: false, objects: Vec::new(), planes: Vec::new(), crtcs: Vec::new(), encoders: Vec::new(), connectors: Vec::new(), vblank: None, primary_master: None, put_pending: false, unplugged: false });
     if devres::add_action_or_reset(parent, Some(devm_drm_dev_put), dev) != 0 { return core::ptr::null_mut(); }
     base.cast()
 }
@@ -236,6 +240,30 @@ extern "C" fn drm_dev_get(dev: *mut c_void) {
 
 fn is_live_device(dev: *mut c_void) -> bool {
     !dev.is_null() && DEVICES.lock().iter().any(|rec| rec.dev == dev as usize && !rec.put_pending && !rec.unplugged)
+}
+
+/// Perform Linux `drm_master_open`'s primary-node ownership decision.
+///
+/// Render nodes deliberately never enter this path. The first primary open
+/// becomes current master and is authenticated; later opens are clients until
+/// that file is released. # C: O(N_devices)
+pub(super) fn claim_primary_master(dev: *mut c_void, file: *mut c_void) -> bool {
+    if dev.is_null() || file.is_null() { return false; }
+    let mut devices = DEVICES.lock();
+    let Some(record) = devices.iter_mut().find(|record| record.dev == dev as usize && !record.put_pending && !record.unplugged) else { return false; };
+    if record.primary_master.is_some() { return false; }
+    record.primary_master = Some(file as usize);
+    true
+}
+
+/// Release a primary node's current-master ownership at close/failure.
+/// # C: O(N_devices)
+pub(super) fn release_primary_master(dev: *mut c_void, file: *mut c_void) {
+    if dev.is_null() || file.is_null() { return; }
+    let mut devices = DEVICES.lock();
+    if let Some(record) = devices.iter_mut().find(|record| record.dev == dev as usize) {
+        if record.primary_master == Some(file as usize) { record.primary_master = None; }
+    }
 }
 
 /// Initialize the KMS mode-object lists embedded in a managed DRM device. # C: O(1)

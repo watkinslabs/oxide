@@ -8,7 +8,12 @@ const LINUX_EINVAL: i32 = 22;
 const DRM_FILE_SIZE: usize = 416;
 const DRM_FILE_MINOR_OFF: usize = 72;
 const DRM_FILE_FILP_OFF: usize = 144;
+const DRM_FILE_AUTHENTICATED_OFF: usize = 0;
+const DRM_FILE_WAS_MASTER_OFF: usize = 7;
+const DRM_FILE_IS_MASTER_OFF: usize = 8;
 const DRM_MINOR_DEV_OFF: usize = 16;
+const DRM_MINOR_TYPE_OFF: usize = 4;
+const DRM_MINOR_PRIMARY: u32 = 0;
 const DRM_INODE_RDEV_OFF: usize = 76;
 const DRM_LINUX_FILE_PRIVATE_OFF: usize = 24;
 const DRM_DEVICE_DRIVER_OFF: usize = 56;
@@ -33,10 +38,22 @@ pub(super) extern "C" fn drm_open(inode: *mut c_void, filp: *mut c_void) -> i32 
     let dev = unsafe { read((minor as *const u8).add(DRM_MINOR_DEV_OFF).cast::<*mut c_void>()) };
     unsafe { write(file.add(DRM_FILE_MINOR_OFF).cast::<*mut c_void>(), minor as *mut c_void); write(file.add(DRM_FILE_FILP_OFF).cast::<*mut c_void>(), filp); }
     drm_dev_get(dev);
+    // Linux drm_open_helper calls drm_master_open before driver .open. The
+    // first primary-node file becomes the current authenticated master; later
+    // primary files remain attached clients until that master is released.
+    let primary = unsafe { read((minor as *const u8).add(DRM_MINOR_TYPE_OFF).cast::<u32>()) == DRM_MINOR_PRIMARY };
+    let master = primary && claim_primary_master(dev, file.cast());
+    // SAFETY: `file` owns the verified drm_file allocation and these are its
+    // leading authentication/master fields.
+    unsafe {
+        write(file.add(DRM_FILE_AUTHENTICATED_OFF).cast::<bool>(), master);
+        write(file.add(DRM_FILE_WAS_MASTER_OFF).cast::<bool>(), master);
+        write(file.add(DRM_FILE_IS_MASTER_OFF).cast::<bool>(), master);
+    }
     // SAFETY: the loaded driver's open callback, when non-null, follows the external DRM ABI.
     let driver = unsafe { read(dev.cast::<u8>().add(DRM_DEVICE_DRIVER_OFF).cast::<*const c_void>()) };
     let open = unsafe { read(driver.cast::<u8>().add(DRM_DRIVER_OPEN_OFF).cast::<Option<unsafe extern "C" fn(*mut c_void, *mut c_void) -> i32>>()) };
-    if let Some(open) = open { let rc = unsafe { open(dev, file.cast()) }; if rc < 0 { drm_dev_put(dev); unsafe { dealloc(file, layout); } return rc; } }
+    if let Some(open) = open { let rc = unsafe { open(dev, file.cast()) }; if rc < 0 { release_primary_master(dev, file.cast()); drm_dev_put(dev); unsafe { dealloc(file, layout); } return rc; } }
     // SAFETY: filp is the live ABI-shaped file object passed by the adapter; private_data is its verified field.
     unsafe { write(filp.cast::<u8>().add(DRM_LINUX_FILE_PRIVATE_OFF).cast::<*mut c_void>(), file.cast()); }
     0
@@ -51,6 +68,7 @@ pub(super) extern "C" fn drm_release(_inode: *mut c_void, filp: *mut c_void) -> 
     let minor = unsafe { read(file.add(DRM_FILE_MINOR_OFF).cast::<*mut u8>()) }; let dev = unsafe { read(minor.add(DRM_MINOR_DEV_OFF).cast::<*mut c_void>()) };
     let driver = unsafe { read(dev.cast::<u8>().add(DRM_DEVICE_DRIVER_OFF).cast::<*const c_void>()) }; let postclose = unsafe { read(driver.cast::<u8>().add(DRM_DRIVER_POSTCLOSE_OFF).cast::<Option<unsafe extern "C" fn(*mut c_void, *mut c_void)>>()) };
     if let Some(postclose) = postclose { unsafe { postclose(dev, file.cast()); } }
+    release_primary_master(dev, file.cast());
     // SAFETY: release owns this context and clears the file slot before the exact matching deallocation.
     unsafe { write(filp.cast::<u8>().add(DRM_LINUX_FILE_PRIVATE_OFF).cast::<*mut c_void>(), core::ptr::null_mut()); dealloc(file, Layout::from_size_align(DRM_FILE_SIZE, core::mem::align_of::<u64>()).unwrap()); }
     drm_dev_put(dev); 0
