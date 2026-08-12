@@ -59,6 +59,38 @@ pub struct ConfigurationHeader { pub total_length: usize, pub value: u8, pub int
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct HidBootInterface { pub configuration: u8, pub interface: u8, pub protocol: u8, pub endpoint: u8, pub max_packet: u16, pub interval: u8 }
 
+/// One alternate-setting-zero USB hub status-change interrupt endpoint.
+/// # C: O(1)
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct HubInterface { pub configuration: u8, pub interface: u8, pub endpoint: u8, pub max_packet: u16, pub interval: u8 }
+
+/// Find the hub-class interrupt-IN endpoint that reports hub and port changes.
+/// # C: O(descriptors)
+pub fn hub_interface(bytes: &[u8]) -> Option<HubInterface> {
+    let header = configuration_header(bytes)?;
+    if bytes.len() != header.total_length { return None; }
+    let mut offset = CONFIG_DESC_HEADER_BYTES;
+    let mut active = None;
+    while offset < bytes.len() {
+        if offset + 2 > bytes.len() { return None; }
+        let length = bytes[offset] as usize;
+        if length < 2 || offset.checked_add(length)? > bytes.len() { return None; }
+        match bytes[offset + 1] {
+            4 if length >= 9 => active = (bytes[offset + 3] == 0 && bytes[offset + 5] == USB_CLASS_HUB).then_some(bytes[offset + 2]),
+            5 if length >= 7 => if let Some(interface) = active {
+                let endpoint = bytes[offset + 2];
+                let max_packet = u16::from_le_bytes([bytes[offset + 4], bytes[offset + 5]]) & 0x07ff;
+                if endpoint & 0x80 != 0 && endpoint & 0x0f != 0 && bytes[offset + 3] & 0x3 == 3 && max_packet != 0 && bytes[offset + 6] != 0 {
+                    return Some(HubInterface { configuration: header.value, interface, endpoint, max_packet, interval: bytes[offset + 6] });
+                }
+            },
+            _ => {}
+        }
+        offset += length;
+    }
+    None
+}
+
 /// Find one alternate-setting-zero transparent-SCSI Bulk-Only interface. # C: O(descriptors)
 pub fn mass_storage_interface(bytes: &[u8]) -> Option<crate::storage::MassStorageInterface> {
     let header = configuration_header(bytes)?;
@@ -238,5 +270,10 @@ mod tests {
         let td = get_hub_descriptor_trbs(0x90_000, 9).unwrap();
         assert_eq!(td[0].dword, [0x2900_06a0, 9 << 16, 8, (crate::ring::TRB_TYPE_SETUP << crate::ring::TRB_TYPE_SHIFT) | (1 << 6) | (3 << 16)]);
         assert_eq!(td[1].dword[2], 9);
+    }
+    #[test]
+    fn hub_interface_requires_class_interrupt_in_status_endpoint() {
+        let bytes = [9, DESC_CONFIGURATION, 25, 0, 1, 1, 0, 0x80, 50, 9, 4, 0, 0, 1, USB_CLASS_HUB, 0, 0, 0, 7, 5, 0x81, 3, 2, 0, 12];
+        assert_eq!(hub_interface(&bytes), Some(HubInterface { configuration: 1, interface: 0, endpoint: 0x81, max_packet: 2, interval: 12 }));
     }
 }

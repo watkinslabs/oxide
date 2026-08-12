@@ -174,6 +174,11 @@ pub fn configure_hid_words(context_bytes: u8, output_slot: [u32; 8], speed: u8, 
     configure_endpoint_words(context_bytes, output_slot, speed, &[EndpointConfig { address: hid.endpoint, max_packet: hid.max_packet, interval: hid.interval, kind: EndpointType::Interrupt, ring_pa }])?.try_into().ok()
 }
 
+/// Configure Endpoint words for one hub status-change interrupt-IN endpoint. # C: O(1)
+pub fn configure_hub_words(context_bytes: u8, output_slot: [u32; 8], speed: u8, hub: crate::usb::HubInterface, ring_pa: u64) -> Option<[ContextWord; 15]> {
+    configure_endpoint_words(context_bytes, output_slot, speed, &[EndpointConfig { address: hub.endpoint, max_packet: hub.max_packet, interval: hub.interval, kind: EndpointType::Interrupt, ring_pa }])?.try_into().ok()
+}
+
 /// Configure Endpoint words for transparent-SCSI Bulk-Only IN and OUT endpoints. # C: O(1)
 pub fn configure_storage_words(context_bytes: u8, output_slot: [u32; 8], speed: u8, storage: crate::storage::MassStorageInterface, bulk_in_ring_pa: u64, bulk_out_ring_pa: u64) -> Option<Vec<ContextWord>> {
     configure_endpoint_words(context_bytes, output_slot, speed, &[

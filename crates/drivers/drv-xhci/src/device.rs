@@ -10,6 +10,7 @@ use crate::platform::Mmio;
 use crate::ring::{CommandRing, Trb, TRB_BYTES, TRBS_PER_SEGMENT};
 
 struct HidDma { ring: DmaPage, report: DmaPage, producer: CommandRing, pending: u64 }
+struct HubDma { ring: DmaPage, status: DmaPage, producer: CommandRing, pending: u64 }
 
 struct StorageDma {
     bulk_in_ring: DmaPage, bulk_out_ring: DmaPage, command: DmaPage, status: DmaPage, data: Vec<DmaPage>,
@@ -17,7 +18,7 @@ struct StorageDma {
 }
 
 /// Input context, output device context, and endpoint-zero transfer ring.
-pub struct AddressDeviceDma { bdf: pci::Bdf, input: DmaPage, output: DmaPage, ep0: DmaPage, descriptor: DmaPage, context_bytes: u8, speed: u8, port: u8, slot: u8, _hid: Option<crate::usb::HidBootInterface>, _storage: Option<crate::storage::MassStorageInterface>, hid_ring: Option<HidDma>, storage_dma: Option<StorageDma>, ep0_ring: CommandRing }
+pub struct AddressDeviceDma { bdf: pci::Bdf, input: DmaPage, output: DmaPage, ep0: DmaPage, descriptor: DmaPage, context_bytes: u8, speed: u8, port: u8, slot: u8, _hid: Option<crate::usb::HidBootInterface>, _hub: Option<crate::usb::HubInterface>, _storage: Option<crate::storage::MassStorageInterface>, hid_ring: Option<HidDma>, hub_ring: Option<HubDma>, storage_dma: Option<StorageDma>, ep0_ring: CommandRing }
 
 /// Maximum chained USB-storage transfer accepted by one retained endpoint ring.
 pub const STORAGE_MAX_TRANSFER_BYTES: usize = DmaPage::BYTES * crate::ring::COMMAND_USABLE_TRBS;
@@ -44,7 +45,7 @@ impl AddressDeviceDma {
         }
         input.clean_to_device(); output.clean_to_device(); ep0.clean_to_device();
         let ep0_ring = CommandRing::new(ep0.dma())?;
-        Some(Self { bdf, input, output, ep0, descriptor, context_bytes, speed, port: topology.root_port, slot: 0, _hid: None, _storage: None, hid_ring: None, storage_dma: None, ep0_ring })
+        Some(Self { bdf, input, output, ep0, descriptor, context_bytes, speed, port: topology.root_port, slot: 0, _hid: None, _hub: None, _storage: None, hid_ring: None, hub_ring: None, storage_dma: None, ep0_ring })
     }
 
     /// Input-context device DMA address for Address Device. # C: O(1)
@@ -79,6 +80,11 @@ impl AddressDeviceDma {
         self._storage = Some(storage);
         Some(storage)
     }
+    /// Parse and retain a hub status-change endpoint. # C: O(descriptor bytes)
+    pub fn discover_hub(&mut self) -> Option<crate::usb::HubInterface> {
+        let hub = crate::usb::hub_interface(&self.configuration_bytes()?)?;
+        self._hub = Some(hub); Some(hub)
+    }
     /// Build a retained interrupt-IN ring and Configure Endpoint input context. # C: O(page bytes)
     pub fn prepare_hid_endpoint(&mut self) -> Option<bool> {
         let Some(hid) = self._hid else { return Some(false); };
@@ -96,6 +102,19 @@ impl AddressDeviceDma {
         ring.clean_to_device(); self.input.clean_to_device();
         self.hid_ring = Some(HidDma { producer: CommandRing::new(ring.dma())?, ring, report: DmaPage::allocate(self.bdf)?, pending: 0 });
         Some(true)
+    }
+    /// Retain the hub status ring and configure its interrupt-IN endpoint. # C: O(page bytes)
+    pub fn prepare_hub_endpoint(&mut self) -> Option<bool> {
+        let Some(hub) = self._hub else { return Some(false); };
+        let (ring, producer) = transfer_ring(self.bdf)?;
+        self.output.invalidate_from_device();
+        let stride = self.context_bytes as u64;
+        let mut output_slot = [0u32; 8];
+        for (index, word) in output_slot.iter_mut().enumerate() { *word = self.output.read32(stride + (index * 4) as u64)?; }
+        let words = context::configure_hub_words(self.context_bytes, output_slot, self.speed, hub, ring.dma())?;
+        for word in words { if !self.input.write32(word.offset as u64, word.value) { return None; } }
+        ring.clean_to_device(); self.input.clean_to_device();
+        self.hub_ring = Some(HubDma { ring, status: DmaPage::allocate(self.bdf)?, producer, pending: 0 }); Some(true)
     }
     /// Retain bulk rings and DMA buffers, then populate their Configure Endpoint input contexts. # C: O(page bytes)
     pub fn prepare_storage_endpoints(&mut self) -> Option<bool> {
@@ -117,6 +136,8 @@ impl AddressDeviceDma {
     }
     /// Configuration value selected by the discovered HID interface. # C: O(1)
     pub fn hid_configuration(&self) -> Option<u8> { self._hid.map(|hid| hid.configuration) }
+    /// Configuration value selected by the discovered hub interface. # C: O(1)
+    pub fn hub_configuration(&self) -> Option<u8> { self._hub.map(|hub| hub.configuration) }
     /// Configuration value selected by the discovered mass-storage interface. # C: O(1)
     pub fn storage_configuration(&self) -> Option<u8> { self._storage.map(|storage| storage.configuration) }
     /// Selected transparent-SCSI Bulk-Only interface descriptor. # C: O(1)
@@ -125,6 +146,8 @@ impl AddressDeviceDma {
     pub fn hid_interface(&self) -> Option<crate::usb::HidBootInterface> { self._hid }
     /// HID boot protocol: 1 keyboard or 2 mouse. # C: O(1)
     pub fn hid_protocol(&self) -> Option<u8> { self._hid.map(|hid| hid.protocol) }
+    /// Selected hub interface descriptor. # C: O(1)
+    pub fn hub_interface(&self) -> Option<crate::usb::HubInterface> { self._hub }
     /// Publish the command-block wrapper for one Bulk-Only command. # C: O(CBW bytes)
     pub fn submit_storage_cbw(&mut self, mmio: &Mmio, slot: u8, tag: u32, transfer_bytes: u32, device_to_host: bool, cdb: &[u8]) -> Option<u64> {
         let storage = self._storage?;
@@ -202,8 +225,25 @@ impl AddressDeviceDma {
         dma.ring.clean_to_device();
         mmio.ring_endpoint_doorbell(slot, endpoint_id).then_some(pa).inspect(|pending| dma.pending = *pending)
     }
+    /// Publish one hub status-change bitmap receive and ring its interrupt endpoint. # C: O(1)
+    pub fn submit_hub_status(&mut self, mmio: &Mmio, slot: u8) -> Option<u64> {
+        let hub = self._hub?;
+        if usize::from(hub.max_packet) > DmaPage::BYTES { return None; }
+        let endpoint_id = (hub.endpoint & 0x0f).checked_mul(2)?.checked_add(1)?;
+        let dma = self.hub_ring.as_mut()?;
+        if dma.pending != 0 { return None; }
+        let trb = Trb::normal(dma.status.dma(), u32::from(hub.max_packet))?;
+        let (pa, _) = dma.producer.push(trb);
+        let index = pa.checked_sub(dma.ring.dma())?.checked_div(TRB_BYTES as u64)? as usize;
+        let written = dma.producer.trb(index)?;
+        for (word, value) in written.dword.iter().enumerate() { if !dma.ring.write32((index * TRB_BYTES + word * 4) as u64, *value) { return None; } }
+        dma.ring.clean_to_device();
+        mmio.ring_endpoint_doorbell(slot, endpoint_id).then_some(pa).inspect(|pending| dma.pending = *pending)
+    }
     /// The exact TRB currently owned by the controller for HID input. # C: O(1)
     pub fn hid_pending(&self) -> Option<u64> { self.hid_ring.as_ref().and_then(|dma| (dma.pending != 0).then_some(dma.pending)) }
+    /// The exact TRB currently owned by the controller for hub status input. # C: O(1)
+    pub fn hub_pending(&self) -> Option<u64> { self.hub_ring.as_ref().and_then(|dma| (dma.pending != 0).then_some(dma.pending)) }
     /// Consume exactly one successful HID report after its matching Transfer Event. # C: O(report bytes)
     pub fn take_hid_report(&mut self, completion: crate::ring::TransferCompletion) -> Option<Vec<u8>> {
         let hid = self._hid?;
@@ -216,6 +256,19 @@ impl AddressDeviceDma {
         let mut report = Vec::with_capacity(length);
         for offset in 0..length { report.push(dma.report.read8(offset as u64)?); }
         Some(report)
+    }
+    /// Consume one completed hub status bitmap after its matching Transfer Event. # C: O(status bytes)
+    pub fn take_hub_status(&mut self, completion: crate::ring::TransferCompletion) -> Option<Vec<u8>> {
+        let hub = self._hub?;
+        let endpoint_id = (hub.endpoint & 0x0f).checked_mul(2)?.checked_add(1)?;
+        let dma = self.hub_ring.as_mut()?;
+        if completion.trb_pa != dma.pending || completion.completion_code != crate::ring::COMPLETION_SUCCESS || completion.endpoint_id != endpoint_id || completion.residual > u32::from(hub.max_packet) { return None; }
+        dma.pending = 0;
+        dma.status.invalidate_from_device();
+        let length = usize::from(hub.max_packet) - completion.residual as usize;
+        let mut status = Vec::with_capacity(length);
+        for offset in 0..length { status.push(dma.status.read8(offset as u64)?); }
+        Some(status)
     }
     /// Rebuild the input context from controller output for Linux's EP0 MPS update. # C: O(1)
     pub fn prepare_evaluate_ep0(&self, max_packet: u8) -> Option<bool> {
