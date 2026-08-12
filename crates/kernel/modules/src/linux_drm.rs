@@ -206,7 +206,7 @@ extern "C" fn drm_dev_put(dev: *mut c_void) {
         }
         devices.remove(pos)
     };
-    release_planes(&mut rec);
+    register::unregister_primary(dev); release_planes(&mut rec);
     // SAFETY: rec.base was returned by alloc_zeroed with rec.layout and was
     // removed from DEVICES first, so this exact allocation is released once.
     unsafe { dealloc(rec.base as *mut u8, rec.layout); }

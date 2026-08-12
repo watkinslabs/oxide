@@ -119,6 +119,30 @@ pub(super) extern "C" fn cdev_del(cdev: *mut LinuxCdev) {
     }
 }
 
+/// Register one kernel-owned character endpoint backed by an external Linux callback table. # C: O(N_regions)
+pub(crate) fn register_internal_cdev(dev: u32, count: u32, ops: *const c_void) -> Result<usize, i32> {
+    if ops.is_null() || count == 0 { return Err(-LINUX_EINVAL); }
+    let cdev = cdev_alloc();
+    if cdev.is_null() { return Err(-LINUX_ENOMEM); }
+    cdev_init(cdev, ops.cast());
+    let rc = cdev_add(cdev, dev, count);
+    if rc != LINUX_OK {
+        // SAFETY: cdev_alloc returned this unique heap allocation and cdev_add did not retain it on failure.
+        unsafe { drop(Box::from_raw(cdev)); }
+        return Err(rc);
+    }
+    Ok(cdev as usize)
+}
+
+/// Withdraw and release a kernel-owned character endpoint. # C: O(N_regions)
+pub(crate) fn unregister_internal_cdev(cdev: usize) {
+    if cdev == 0 { return; }
+    let cdev = cdev as *mut LinuxCdev;
+    cdev_del(cdev);
+    // SAFETY: register_internal_cdev created this exact allocation and callers relinquish it once here.
+    unsafe { drop(Box::from_raw(cdev)); }
+}
+
 extern "C" fn alloc_chrdev_region(dev: *mut u32, firstminor: u32, count: u32, _name: *const c_char) -> i32 {
     if dev.is_null() || count == 0 { return -LINUX_EINVAL; }
     let major = match allocate_major(firstminor, count) { Some(v) => v, None => return -LINUX_EBUSY };
@@ -200,7 +224,7 @@ impl CharDevOps for LinuxCharOps {
 
     fn ioctl(&self, _devt: Devt, cmd: u32, arg: usize) -> vfs::KResult<usize> {
         let ioctl = self.ops().and_then(|o| o.unlocked_ioctl).ok_or(VfsError::Enotty)?;
-        let mut file = file_for_call(self.cdev, None);
+        let mut file = self.file_for_call(None);
         // SAFETY: registered callback pointer comes from the Linux file_operations table.
         checked_size(unsafe { ioctl(&mut file, cmd, arg) })
     }
@@ -211,14 +235,14 @@ impl CharDevOps for LinuxCharOps {
 
     fn poll(&self, _devt: Devt) -> vfs::KResult<u32> {
         let poll = self.ops().and_then(|o| o.poll).ok_or(VfsError::Einval)?;
-        let mut file = file_for_call(self.cdev, None);
+        let mut file = self.file_for_call(None);
         // SAFETY: registered callback pointer comes from the Linux file_operations table.
         Ok(unsafe { poll(&mut file, null_mut()) })
     }
 
     fn poll_file(&self, _devt: Devt, file: &File) -> vfs::KResult<u32> {
         let poll = self.ops().and_then(|o| o.poll).ok_or(VfsError::Einval)?;
-        let mut lf = file_for_call(self.cdev, Some(file));
+        let mut lf = self.file_for_call(Some(file));
         // SAFETY: registered callback pointer comes from the Linux file_operations table.
         let mask = unsafe { poll(&mut lf, null_mut()) };
         store_file_private(file, &lf);
@@ -227,7 +251,7 @@ impl CharDevOps for LinuxCharOps {
 
     fn mmap_shared_frame(&self, _devt: Devt, _off: u64) -> vfs::KResult<Option<u64>> {
         let Some(mmap) = self.ops().and_then(|o| o.mmap) else { return Ok(None); };
-        let mut file = file_for_call(self.cdev, None);
+        let mut file = self.file_for_call(None);
         // SAFETY: registered callback pointer comes from the Linux file_operations table; no VMA model is available in this shared-frame query.
         let _ = unsafe { mmap(&mut file, null_mut()) };
         Ok(None)
@@ -236,7 +260,7 @@ impl CharDevOps for LinuxCharOps {
     fn release_file(&self, devt: Devt, file: &File) {
         let Some(release) = self.ops().and_then(|o| o.release) else { return; };
         let mut inode = inode_for(devt, self.cdev);
-        let mut lf = file_for_call(self.cdev, Some(file));
+        let mut lf = self.file_for_call(Some(file));
         // SAFETY: registered callback pointer comes from the Linux file_operations table.
         let _ = unsafe { release(&mut inode, &mut lf) };
         store_file_private(file, &lf);
@@ -244,12 +268,18 @@ impl CharDevOps for LinuxCharOps {
 }
 
 impl LinuxCharOps {
+    fn file_for_call(&self, file: Option<&File>) -> LinuxFile {
+        let mut f = file_for_call(self.cdev, file);
+        f.f_op = self.ops as *const LinuxFileOperations;
+        f
+    }
+
     fn open_common(&self, devt: Devt, file: Option<&File>) -> vfs::KResult<()> {
         let ops = self.ops();
         let open = ops.and_then(|o| o.open);
         if let Some(f) = open {
             let mut inode = inode_for(devt, self.cdev);
-            let mut lf = file_for_call(self.cdev, file);
+            let mut lf = self.file_for_call(file);
             // SAFETY: callback pointer comes from a registered Linux file_operations table.
             let rc = unsafe { f(&mut inode, &mut lf) };
             if let Some(file) = file { store_file_private(file, &lf); }
@@ -259,7 +289,7 @@ impl LinuxCharOps {
 
     fn read_common(&self, file: Option<&File>, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
         let read = self.ops().and_then(|o| o.read).ok_or(VfsError::Einval)?;
-        let mut lf = file_for_call(self.cdev, file);
+        let mut lf = self.file_for_call(file);
         let mut pos = off as i64;
         // SAFETY: registered callback writes at most buf.len() bytes into the provided kernel buffer.
         let rc = unsafe { read(&mut lf, buf.as_mut_ptr() as *mut c_char, buf.len(), &mut pos) };
@@ -269,7 +299,7 @@ impl LinuxCharOps {
 
     fn write_common(&self, file: Option<&File>, off: u64, buf: &[u8]) -> vfs::KResult<usize> {
         let write = self.ops().and_then(|o| o.write).ok_or(VfsError::Einval)?;
-        let mut lf = file_for_call(self.cdev, file);
+        let mut lf = self.file_for_call(file);
         let mut pos = off as i64;
         // SAFETY: registered callback reads at most buf.len() bytes from the provided kernel buffer.
         let rc = unsafe { write(&mut lf, buf.as_ptr() as *const c_char, buf.len(), &mut pos) };
