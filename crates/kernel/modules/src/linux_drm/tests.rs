@@ -63,3 +63,17 @@ fn mode_objects_receive_reusable_ids_and_unregister_once() {
     // SAFETY: the lowest released object identifier is assigned to the new object.
     assert_eq!(unsafe { *(reused.as_ptr().cast::<u32>()) }, 1); devres::release_device(&mut parent);
 }
+
+#[test]
+fn universal_plane_owns_formats_links_the_mode_list_and_cleans_up() {
+    let _modules = crate::test_serial::claim(); let mut parent = LinuxDevice::new(); let dev = device(&mut parent, 2048); assert_eq!(drmm_mode_config_init(dev), 0); let mut plane = [0u8; 1360]; let formats = [0x3432_5258u32, 0x3432_5241];
+    // SAFETY: plane has the verified drm_plane layout size and formats has two valid entries.
+    assert_eq!(unsafe { drm_universal_plane_init(dev, plane.as_mut_ptr().cast(), 1, core::ptr::null(), formats.as_ptr(), formats.len() as u32, core::ptr::null(), 1, c"plane".as_ptr()) }, 0);
+    // SAFETY: successful initialization populated the verified plane ABI fields.
+    unsafe { assert_eq!(*(plane.as_ptr().add(DRM_PLANE_BASE_OFF).cast::<u32>()), 1); assert_eq!(*(plane.as_ptr().add(DRM_PLANE_FORMAT_COUNT_OFF).cast::<u32>()), 2); let copied = *(plane.as_ptr().add(DRM_PLANE_FORMATS_OFF).cast::<*const u32>()); assert_ne!(copied, formats.as_ptr()); assert_eq!(*copied, formats[0]); }
+    assert_eq!(DEVICES.lock()[0].planes.len(), 1); drm_plane_cleanup(plane.as_mut_ptr().cast()); assert_eq!(DEVICES.lock()[0].planes.len(), 0);
+    let config = dev.cast::<u8>().wrapping_add(DRM_MODE_CONFIG_OFF);
+    // SAFETY: cleanup reinitializes the removed plane link and decrements the device plane count.
+    unsafe { let head = plane.as_ptr().add(DRM_PLANE_HEAD_OFF).cast::<*mut c_void>(); assert_eq!(*head, head.cast::<c_void>().cast_mut()); assert_eq!(*(config.add(MODE_CONFIG_NUM_TOTAL_PLANE_OFF).cast::<i32>()), 0); }
+    devres::release_device(&mut parent);
+}
