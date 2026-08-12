@@ -16,6 +16,7 @@ pub(crate) const RPM_SUSPENDED: i32 = 2;
 pub(crate) const RPM_SUSPENDING: i32 = 3;
 pub(crate) const RPM_INITIAL_DISABLE_DEPTH: i32 = 1;
 pub(crate) const PM_BUSY_TICK: usize = 1;
+pub(crate) const RPM_GET_PUT: i32 = 0x04;
 
 #[repr(C)]
 #[derive(Copy, Clone)]

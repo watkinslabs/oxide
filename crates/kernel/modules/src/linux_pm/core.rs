@@ -17,6 +17,8 @@ pub(super) fn export_symbols() {
         ("pm_runtime_put_noidle",                pm_runtime_put_noidle                as *const () as usize),
         ("pm_runtime_get_noresume",              pm_runtime_get_noresume              as *const () as usize),
         ("pm_runtime_get_if_in_use",             pm_runtime_get_if_in_use             as *const () as usize),
+        ("__pm_runtime_idle",                    pm_runtime_idle                     as *const () as usize),
+        ("__pm_runtime_resume",                  pm_runtime_resume_with_flags         as *const () as usize),
         ("pm_runtime_resume",                    pm_runtime_resume                    as *const () as usize),
         ("pm_runtime_suspend",                   pm_runtime_suspend                   as *const () as usize),
         ("pm_runtime_set_active",                pm_runtime_set_active                as *const () as usize),
@@ -37,6 +39,7 @@ pub(super) fn export_symbols() {
         ("device_may_wakeup",                    device_may_wakeup                    as *const () as usize),
         ("device_wakeup_enable",                 device_wakeup_enable                 as *const () as usize),
         ("device_wakeup_disable",                device_wakeup_disable                as *const () as usize),
+        ("device_set_wakeup_enable",             device_set_wakeup_enable             as *const () as usize),
         ("pm_wakeup_event",                      pm_wakeup_event                      as *const () as usize),
         ("pm_stay_awake",                        pm_stay_awake                        as *const () as usize),
         ("pm_relax",                             pm_relax                             as *const () as usize),
@@ -76,16 +79,11 @@ extern "C" fn pm_runtime_enabled(dev: *mut LinuxDevice) -> bool {
 
 extern "C" fn pm_runtime_get_sync(dev: *mut LinuxDevice) -> i32 {
     if dev.is_null() { return -LINUX_EINVAL; }
-    pm_runtime_get_noresume(dev);
-    let rc = pm_runtime_resume(dev);
-    if rc < LINUX_OK {
-        let _ = pm_runtime_put_noidle(dev);
-    }
-    rc
+    pm_runtime_resume_with_flags(dev, RPM_GET_PUT)
 }
 
 extern "C" fn pm_runtime_put(dev: *mut LinuxDevice) -> i32 {
-    pm_runtime_put_sync(dev)
+    pm_runtime_idle(dev, RPM_GET_PUT)
 }
 
 extern "C" fn pm_runtime_put_sync(dev: *mut LinuxDevice) -> i32 {
@@ -120,8 +118,9 @@ extern "C" fn pm_runtime_get_if_in_use(dev: *mut LinuxDevice) -> i32 {
     LINUX_TRUE
 }
 
-extern "C" fn pm_runtime_resume(dev: *mut LinuxDevice) -> i32 {
+extern "C" fn pm_runtime_resume_with_flags(dev: *mut LinuxDevice, flags: i32) -> i32 {
     if dev.is_null() { return -LINUX_EINVAL; }
+    if flags & RPM_GET_PUT != 0 { pm_runtime_get_noresume(dev); }
     if !pm_runtime_enabled(dev) { return LINUX_OK; }
     if pm_runtime_active(dev) { return LINUX_OK; }
     set_status(dev, RPM_RESUMING);
@@ -129,6 +128,20 @@ extern "C" fn pm_runtime_resume(dev: *mut LinuxDevice) -> i32 {
     set_error(dev, rc);
     set_status(dev, if rc == LINUX_OK { RPM_ACTIVE } else { RPM_SUSPENDED });
     rc
+}
+
+extern "C" fn pm_runtime_resume(dev: *mut LinuxDevice) -> i32 { pm_runtime_resume_with_flags(dev, 0) }
+
+extern "C" fn pm_runtime_idle(dev: *mut LinuxDevice, flags: i32) -> i32 {
+    if dev.is_null() { return -LINUX_EINVAL; }
+    if flags & RPM_GET_PUT != 0 {
+        let rc = pm_runtime_put_noidle(dev);
+        if rc < LINUX_OK || usage(dev) > 0 { return rc; }
+    }
+    if !pm_runtime_enabled(dev) || !pm_runtime_active(dev) { return LINUX_OK; }
+    let rc = pm_call(dev, |ops| ops.runtime_idle).unwrap_or(LINUX_OK);
+    if rc != LINUX_OK { return rc; }
+    pm_runtime_suspend(dev)
 }
 
 extern "C" fn pm_runtime_suspend(dev: *mut LinuxDevice) -> i32 {
@@ -221,6 +234,11 @@ extern "C" fn device_wakeup_disable(dev: *mut LinuxDevice) -> i32 {
     // SAFETY: device_wakeup_disable rejected null; the C-KPI caller retains dev and serializes its embedded wakeup_enabled write.
     unsafe { (*dev).power.set_wakeup_enabled(false); }
     LINUX_OK
+}
+
+extern "C" fn device_set_wakeup_enable(dev: *mut LinuxDevice, enable: bool) -> i32 {
+    if enable { device_wakeup_enable(dev) }
+    else { let _ = device_wakeup_disable(dev); LINUX_OK }
 }
 
 extern "C" fn pm_wakeup_event(dev: *mut LinuxDevice, _msec: u32) { pm_runtime_mark_last_busy(dev); }

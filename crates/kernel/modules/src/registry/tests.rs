@@ -110,6 +110,19 @@ fn register_drops_module_when_init_fails() {
 }
 
 #[test]
+fn forced_vermagic_load_is_marked_tainted() {
+    let _modules = crate::test_serial::claim();
+    let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    reset();
+    let mut m = empty_module();
+    m.info.vermagic = Some(String::from("foreign-release"));
+    assert!(!m.info.vermagic_matches());
+    assert!(!vermagic_admitted(&m.info, false));
+    assert!(vermagic_admitted(&m.info, true));
+    assert_eq!(module_taints(&m) | TAINT_FORCED_MODULE, TAINT_OOT_MODULE | TAINT_PROPRIETARY_MODULE | TAINT_FORCED_MODULE);
+}
+
+#[test]
 fn unload_runs_exitcall_before_removing_record() {
     let _modules = crate::test_serial::claim();
     let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());

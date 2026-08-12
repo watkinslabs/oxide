@@ -87,6 +87,29 @@ pub(super) unsafe extern "C" fn alloc_etherdev(sizeof_priv: i32) -> *mut LinuxNe
     unsafe { alloc_etherdev_mqs(sizeof_priv, DEFAULT_TXQS, DEFAULT_RXQS) }
 }
 
+/// # C: O(sizeof(struct net_device)+sizeof_priv)
+pub(super) unsafe extern "C" fn devm_alloc_etherdev_mqs(
+    owner: *mut crate::linux_device::types::LinuxDevice,
+    sizeof_priv: i32,
+    txqs: u32,
+    rxqs: u32,
+) -> *mut LinuxNetDevice {
+    if owner.is_null() { return null_mut(); }
+    // SAFETY: the allocation follows alloc_etherdev_mqs's size/queue contract;
+    // the returned record remains exclusively owned by this devres action.
+    let dev = unsafe { alloc_etherdev_mqs(sizeof_priv, txqs, rxqs) };
+    if dev.is_null() { return null_mut(); }
+    if crate::linux_device::devres::add_action_or_reset(owner, Some(devm_free_netdev), dev.cast()) != LINUX_OK {
+        return null_mut();
+    }
+    dev
+}
+
+unsafe extern "C" fn devm_free_netdev(data: *mut c_void) {
+    // SAFETY: devm_alloc_etherdev_mqs records exactly one live alloc_netdev result.
+    unsafe { free_netdev(data.cast()); }
+}
+
 /// # C: O(1)
 pub(super) unsafe extern "C" fn free_netdev(dev: *mut LinuxNetDevice) {
     if dev.is_null() { return; }

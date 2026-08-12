@@ -40,6 +40,7 @@ pub(super) fn export_symbols() {
     export("alloc_netdev",      netalloc::alloc_netdev      as *const () as usize, false);
     export("alloc_etherdev_mqs", netalloc::alloc_etherdev_mqs as *const () as usize, false);
     export("alloc_etherdev",    netalloc::alloc_etherdev    as *const () as usize, false);
+    export("devm_alloc_etherdev_mqs", netalloc::devm_alloc_etherdev_mqs as *const () as usize, false);
     export("free_netdev",       netalloc::free_netdev       as *const () as usize, false);
     export("netdev_priv",       netalloc::netdev_priv       as *const () as usize, false);
     export("ether_setup",       netalloc::ether_setup       as *const () as usize, false);

@@ -7,6 +7,8 @@
 
 void ether_setup(struct net_device *dev);
 void eth_hw_addr_set(struct net_device *dev, const u8 *addr);
+struct net_device *devm_alloc_etherdev_mqs(struct device *dev, int sizeof_priv,
+                                           unsigned int txqs, unsigned int rxqs);
 int eth_validate_addr(struct net_device *dev);
 int eth_mac_addr(struct net_device *dev, void *p);
 int eth_prepare_mac_addr_change(struct net_device *dev, void *p);

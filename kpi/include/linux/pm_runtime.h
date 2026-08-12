@@ -13,6 +13,8 @@ int pm_runtime_put_sync(struct device *dev);
 int pm_runtime_put_noidle(struct device *dev);
 void pm_runtime_get_noresume(struct device *dev);
 int pm_runtime_get_if_in_use(struct device *dev);
+int __pm_runtime_idle(struct device *dev, int rpmflags);
+int __pm_runtime_resume(struct device *dev, int rpmflags);
 int pm_runtime_resume(struct device *dev);
 int pm_runtime_suspend(struct device *dev);
 void pm_runtime_set_active(struct device *dev);

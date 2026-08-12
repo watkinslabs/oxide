@@ -103,6 +103,21 @@ fn netdev_allocates_one_module_stats_slot_per_cpu() {
     }
 }
 
+#[test]
+fn managed_etherdev_uses_parent_devres_for_exactly_one_free() {
+    let _modules = crate::test_serial::claim();
+    let mut owner = crate::linux_device::types::LinuxDevice::new();
+    // SAFETY: the test owns owner and releases its devres before it goes away.
+    let dev = unsafe { netalloc::devm_alloc_etherdev_mqs(&mut owner, SAMPLE_PRIV, 2, 3) };
+    assert!(!dev.is_null());
+    // SAFETY: successful allocation is live until parent devres teardown.
+    unsafe {
+        assert_eq!((*dev).num_tx_queues, 2);
+        assert_eq!((*dev).real_num_rx_queues, 3);
+    }
+    crate::linux_device::devres::release_device(&mut owner);
+}
+
 unsafe extern "C" fn sample_xmit(skb: *mut LinuxSkBuff, _dev: *mut LinuxNetDevice) -> i32 {
     if !skb.is_null() {
         // SAFETY: test callback receives an skb allocated by the facade.
@@ -160,6 +175,7 @@ fn export_symbols_registers_netdev_surface() {
     let _modules = crate::test_serial::claim();
     crate::linux_netdev::export_symbols();
     assert!(resolve("alloc_etherdev", false).is_ok());
+    assert!(resolve("devm_alloc_etherdev_mqs", false).is_ok());
     assert!(resolve("register_netdev", false).is_ok());
     assert!(resolve("netif_rx", false).is_ok());
     assert!(resolve("dev_alloc_skb", false).is_ok());

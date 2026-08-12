@@ -53,8 +53,9 @@ pub fn sys_finit_module(args: &SyscallArgs) -> i64 {
         // module path maps it to "image too large".
         if buf.len() > MODULE_IMAGE_MAX { return -(Errno::Enomem.as_i32() as i64); }
     }
-    match modules::registry::load_blob(&buf) {
-        Some(_) => 0,
-        None    => -(Errno::Einval.as_i32() as i64),
+    let ignore_vermagic = args.a2 & modules::admission::MODULE_INIT_IGNORE_VERMAGIC != 0;
+    match modules::registry::load_blob_named_with_flags(&buf, None, ignore_vermagic) {
+        Ok(_)  => 0,
+        Err(_) => -(Errno::Einval.as_i32() as i64),
     }
 }

@@ -93,6 +93,29 @@ fn wakeup_helpers_track_capability_and_enablement() {
     assert!(device_may_wakeup(&mut dev));
     device_set_wakeup_capable(&mut dev, false);
     assert!(!device_may_wakeup(&mut dev));
+    device_set_wakeup_capable(&mut dev, true);
+    assert_eq!(device_set_wakeup_enable(&mut dev, false), LINUX_OK);
+    assert!(!device_may_wakeup(&mut dev));
+    assert_eq!(device_set_wakeup_enable(&mut dev, true), LINUX_OK);
+    assert!(device_may_wakeup(&mut dev));
+}
+
+#[test]
+fn private_runtime_entry_points_preserve_usage_count_contract() {
+    let _modules = crate::test_serial::claim();
+    RUNTIME_SUSPENDS.store(0, Ordering::Relaxed);
+    RUNTIME_RESUMES.store(0, Ordering::Relaxed);
+    let ops = test_ops();
+    let mut driver = test_driver();
+    let mut dev = test_dev(&ops, &mut driver);
+    pm_runtime_set_suspended(&mut dev);
+    pm_runtime_enable(&mut dev);
+    assert_eq!(pm_runtime_resume_with_flags(&mut dev, RPM_GET_PUT), LINUX_OK);
+    assert_eq!(dev.power.usage_count, 1);
+    assert_eq!(RUNTIME_RESUMES.load(Ordering::Relaxed), 1);
+    assert_eq!(pm_runtime_idle(&mut dev, RPM_GET_PUT), LINUX_OK);
+    assert_eq!(dev.power.usage_count, 0);
+    assert_eq!(RUNTIME_SUSPENDS.load(Ordering::Relaxed), 1);
 }
 
 #[test]
@@ -101,7 +124,8 @@ fn export_symbols_registers_pm_surface() {
     export_symbols();
     for name in [
         "pm_runtime_enable", "pm_runtime_get_sync", "pm_runtime_put_sync",
-        "pm_runtime_set_suspended", "device_init_wakeup", "dev_pm_suspend",
+        "pm_runtime_set_suspended", "device_init_wakeup", "device_set_wakeup_enable",
+        "__pm_runtime_idle", "__pm_runtime_resume", "dev_pm_suspend",
     ] {
         assert!(crate::symtab::is_exported(name));
     }
