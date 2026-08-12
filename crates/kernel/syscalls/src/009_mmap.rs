@@ -185,6 +185,22 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
                 Err(e) => return -(e.as_i32() as i64),
             }
         }
+        // Character devices own mmap through the driver selected at open,
+        // rather than through the current registry entry or a fault-time
+        // probe. A backing that accepts the request receives the final VMA
+        // range from VMM before it becomes visible to faults.
+        if let Some(result) = vfs::opened_chrdev_mmap_backing(&file, offset) {
+            let backing = match result {
+                Ok(Some(backing)) => backing,
+                Ok(None) => return -(Errno::Enodev.as_i32() as i64),
+                Err(error) => return crate::namei_common::errno_from_vfs(error),
+            };
+            return match pmm::user_as::glue_mmap(args.a0, args.a1, prot, args.a3,
+                                                fd as i64, offset, Some(backing), None, None, may_prot, file_vma_flags) {
+                Ok(va) => va as i64,
+                Err(error) => error,
+            };
+        }
         // DRM dumb buffers: the `offset` is a MODE_MAP_DUMB cookie that
         // selects the buffer. Pin the dumb handle for the VMA lifetime and map
         // it through the file-backed shared-frame path so PTE refs keep pages
