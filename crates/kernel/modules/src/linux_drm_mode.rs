@@ -13,6 +13,8 @@ const DRM_DISPLAY_MODE_NAME_OFF: usize = 80;
 const DRM_DISPLAY_MODE_NAME_LEN: usize = 32;
 const DRM_MODE_FLAG_INTERLACE: u32 = 1 << 4;
 const DRM_MODE_FLAG_DBLSCAN: u32 = 1 << 5;
+const DRM_DISPLAY_MODE_TYPE_OFF: usize = 62;
+const DRM_MODE_TYPE_PREFERRED: u8 = 1 << 3;
 pub(super) const DRM_CONNECTOR_MODES_OFF: usize = 168;
 pub(super) const DRM_CONNECTOR_PROBED_MODES_OFF: usize = 184;
 
@@ -26,6 +28,7 @@ pub(super) fn export_symbols() {
     crate::symtab::export("drm_mode_init", drm_mode_init as *const () as usize, false);
     crate::symtab::export("drm_mode_duplicate", drm_mode_duplicate as *const () as usize, false);
     crate::symtab::export("drm_add_modes_noedid", drm_add_modes_noedid as *const () as usize, false);
+    crate::symtab::export("drm_set_preferred_mode", drm_set_preferred_mode as *const () as usize, false);
 }
 
 pub(super) fn mode_layout() -> Layout { Layout::from_size_align(DRM_DISPLAY_MODE_SIZE, core::mem::align_of::<u64>()).unwrap() }
@@ -110,6 +113,13 @@ pub(super) extern "C" fn drm_add_modes_noedid(connector: *mut c_void, max_h: u32
         // SAFETY: mode is a newly allocated complete display-mode object; every written field is ABI-verified.
         unsafe { let ptr = mode.cast::<u8>(); write(ptr.add(DRM_DISPLAY_MODE_CLOCK_OFF).cast::<i32>(), clock); write(ptr.add(DRM_DISPLAY_MODE_HDISPLAY_OFF).cast::<u16>(), h); write(ptr.add(6).cast::<u16>(), hs); write(ptr.add(8).cast::<u16>(), he); write(ptr.add(DRM_DISPLAY_MODE_HTOTAL_OFF).cast::<u16>(), ht); write(ptr.add(12).cast::<u16>(), sk); write(ptr.add(DRM_DISPLAY_MODE_VDISPLAY_OFF).cast::<u16>(), v); write(ptr.add(16).cast::<u16>(), vs); write(ptr.add(18).cast::<u16>(), ve); write(ptr.add(DRM_DISPLAY_MODE_VTOTAL_OFF).cast::<u16>(), vt); write(ptr.add(DRM_DISPLAY_MODE_VSCAN_OFF).cast::<u16>(), scan); write(ptr.add(DRM_DISPLAY_MODE_FLAGS_OFF).cast::<u32>(), flags); write(ptr.add(62), 1 << 6); } drm_mode_set_name(mode); drm_mode_probed_add(connector, mode); count += 1; }
     count
+}
+
+/// Mark every pending mode matching the requested visible resolution preferred. # C: O(N_modes)
+pub(super) extern "C" fn drm_set_preferred_mode(connector: *mut c_void, hpref: i32, vpref: i32) {
+    if connector.is_null() { return; } let dev = unsafe { *(connector.cast::<*mut c_void>()) }; let devices = DEVICES.lock();
+    let Some(record) = devices.iter().find(|record| record.dev == dev as usize) else { return; }; let Some(entry) = record.connectors.iter().find(|entry| entry.ptr == connector as usize) else { return; };
+    for &mode in &entry.modes { unsafe { let ptr = mode as *mut u8; if *(ptr.add(DRM_DISPLAY_MODE_HDISPLAY_OFF).cast::<u16>()) as i32 == hpref && *(ptr.add(DRM_DISPLAY_MODE_VDISPLAY_OFF).cast::<u16>()) as i32 == vpref { let ty = ptr.add(DRM_DISPLAY_MODE_TYPE_OFF); write(ty, *ty | DRM_MODE_TYPE_PREFERRED); } } }
 }
 
 unsafe fn decimal(out: *mut u8, mut value: u32) -> usize {
