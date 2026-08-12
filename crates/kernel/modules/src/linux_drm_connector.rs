@@ -9,6 +9,7 @@ const DRM_CONNECTOR_INDEX_OFF: usize = 136;
 const DRM_CONNECTOR_TYPE_OFF: usize = 140;
 const DRM_CONNECTOR_TYPE_ID_OFF: usize = 144;
 pub(super) const DRM_CONNECTOR_FUNCS_OFF: usize = 416;
+const DRM_CONNECTOR_HELPER_PRIVATE_OFF: usize = 2248;
 pub(super) const DRM_CONNECTOR_POSSIBLE_ENCODERS_OFF: usize = 1736;
 const DRM_CONNECTOR_ENCODER_OFF: usize = 1744;
 pub(super) const MODE_CONFIG_NUM_CONNECTOR_OFF: usize = 248;
@@ -18,6 +19,14 @@ pub(super) fn export_symbols() {
     crate::symtab::export("drm_connector_init", drm_connector_init as *const () as usize, false);
     crate::symtab::export("drm_connector_cleanup", drm_connector_cleanup as *const () as usize, false);
     crate::symtab::export("drm_connector_attach_encoder", drm_connector_attach_encoder as *const () as usize, false);
+    crate::symtab::export("drm_connector_helper_add", drm_connector_helper_add as *const () as usize, false);
+}
+
+/// Attach a connector helper vtable. # C: O(1)
+pub(super) extern "C" fn drm_connector_helper_add(connector: *mut c_void, funcs: *const c_void) {
+    if connector.is_null() { return; }
+    // SAFETY: helper_private is the ABI-verified connector helper-vtable pointer field.
+    unsafe { write(connector.cast::<u8>().add(DRM_CONNECTOR_HELPER_PRIVATE_OFF).cast::<*const c_void>(), funcs); }
 }
 
 /// Add an encoder to a connector's possible-encoder routing mask. # C: O(1)
