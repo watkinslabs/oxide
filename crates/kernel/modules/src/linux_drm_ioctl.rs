@@ -32,6 +32,7 @@ type DrmIoctl = unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> i
 
 pub(super) fn export_symbols() {
     crate::symtab::export("drm_ioctl", drm_ioctl as *const () as usize, false);
+    crate::symtab::export("drm_compat_ioctl", drm_compat_ioctl as *const () as usize, false);
     crate::symtab::export("drm_ioctl_kernel", drm_ioctl_kernel as *const () as usize, false);
 }
 
@@ -50,6 +51,17 @@ pub(super) extern "C" fn drm_ioctl(filp: *mut c_void, cmd: u32, arg: usize) -> i
     let rc = unsafe { invoke(file, desc, data.as_mut_ptr().cast()) };
     if ioctl_dir(cmd) & IOC_READ != 0 && copy_to_user(arg as *mut u8, data.as_ptr(), size) != 0 { return -(LINUX_EFAULT as isize); }
     rc as isize
+}
+
+/// Compat entry point for driver file-operations tables.
+///
+/// Oxide presently has one 64-bit userspace ABI, so no DRM core command needs
+/// a 32-bit structure translation. Driver-private commands still need the
+/// exact same checked dispatch and permission handling as native callers;
+/// forwarding preserves that Linux contract until a compat task ABI exists.
+/// # C: O(ioctl payload)
+pub(super) extern "C" fn drm_compat_ioctl(filp: *mut c_void, cmd: u32, arg: usize) -> isize {
+    drm_ioctl(filp, cmd, arg)
 }
 
 /// Execute a selected DRM ioctl after its caller supplied kernel-resident data. # C: O(1)
