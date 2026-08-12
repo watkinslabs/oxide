@@ -259,10 +259,11 @@ impl CharDevOps for LinuxCharOps {
     }
 
     fn mmap_shared_frame(&self, _devt: Devt, _off: u64) -> vfs::KResult<Option<u64>> {
-        let Some(mmap) = self.ops().and_then(|o| o.mmap) else { return Ok(None); };
-        let mut file = self.file_for_call(None);
-        // SAFETY: registered callback pointer comes from the Linux file_operations table; no VMA model is available in this shared-frame query.
-        let _ = unsafe { mmap(&mut file, null_mut()) };
+        // This fault-time shared-frame query has neither the mapping range nor
+        // a persistent ABI VMA. Calling a Linux f_op->mmap here used to pass a
+        // null VMA and discard its result, which can corrupt a driver and can
+        // never establish a valid mapping. The syscall mmap owner constructs
+        // the VMA and invokes the callback before it installs any VMA.
         Ok(None)
     }
 
