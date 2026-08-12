@@ -22,7 +22,7 @@ use alloc::vec::Vec;
 pub(super) unsafe fn fetch(
     features_negotiated: u64,
     cmd_buf_va: *mut u8, cmd_buf_dma: u64,
-    ctrlq: virtio::VirtQueueResource, hhdm: u64,
+    ctrlq: &mut virtio::VirtioSplitQueue,
     timed_out: &mut bool,
 ) -> Option<Vec<u8>> {
     if !crate::should_fetch(features_negotiated) { return None; }
@@ -42,7 +42,7 @@ pub(super) unsafe fn fetch(
     if req_len != crate::GET_EDID_REQ_LEN { return None; }
     // SAFETY: request encoded above at the mapped command DMA address; the response descriptor is
     // sized for the whole EDID reply inside the same probe frame.
-    if !unsafe { probe::submit_raw(cmd_buf_dma, req_len, crate::RESP_EDID_LEN, ctrlq, hhdm) } {
+    if !unsafe { probe::submit_raw(cmd_buf_dma, req_len, crate::RESP_EDID_LEN, ctrlq) } {
         *timed_out = true;
         return None;
     }

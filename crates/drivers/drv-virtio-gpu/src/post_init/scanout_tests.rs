@@ -2,14 +2,10 @@ use super::*;
 
 fn key(raw: u32) -> virtio::VirtioChildDeviceKey { virtio::VirtioChildDeviceKey::from_raw(raw) }
 
-fn ctrlq() -> virtio::VirtQueueResource {
-    virtio::VirtQueueResource { index: 0, size: 1, desc_pa: 0, driver_pa: 0, device_pa: 0, notify_va: 0, notify_off: 0 }
-}
-
 fn ctx(device_key: virtio::VirtioChildDeviceKey) -> ScanoutCtx {
     ScanoutCtx {
         device_key, cfg_va: 0, w: 640, h: 480, fb_va: 0, fb_dma: 0, fb_map_bytes: 0, fb_bytes: 0,
-        fb_order: pmm::Order(0), res_id: BOOT_SCANOUT_RES_ID, ctrlq: ctrlq(), cursorq: ctrlq(),
+        fb_order: pmm::Order(0), res_id: BOOT_SCANOUT_RES_ID, ctrlq: None, cursorq: None,
         cmd_buf_va: 0, cmd_buf_pa: 0, cmd_buf_dma: 0,
         bdf: pci::Bdf { segment: 0, bus: 0, device: 0, function: 0 }, hhdm: 0,
         fbdev_idx: None, quiesced: false, bound: None,
