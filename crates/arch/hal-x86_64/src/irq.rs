@@ -390,9 +390,12 @@ pub const VEC_MSI_12: u8 = 0x5C;
 pub const VEC_MSI_13: u8 = 0x5D;
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub const VEC_MSI_14: u8 = 0x5E;
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub const VEC_MSI_15: u8 = 0x5F;
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 const VEC_MSI_EXPANDED_FIRST: u8 = 0x60;
 const VEC_MSI_EXPANDED_LAST: u8 = 0x7f;
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 const VEC_MSI_EXPANDED_STUB_BYTES: u64 = 16;
 pub const VEC_MSI: u8 = VEC_MSI_0;
 

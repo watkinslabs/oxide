@@ -4,6 +4,7 @@ use super::*;
 use alloc::alloc::{alloc_zeroed, dealloc};
 
 const DRM_PLANE_STATE_SIZE: usize = 184;
+#[cfg(test)]
 const DRM_CRTC_STATE_SIZE: usize = 336;
 const DRM_SHADOW_PLANE_STATE_SIZE: usize = 336;
 const DRM_PLANE_STATE_PLANE_OFF: usize = 0;

@@ -18,7 +18,6 @@ const DRM_PROPERTY_FLAGS_OFF: usize = 48;
 const DRM_PROPERTY_NAME_OFF: usize = 52;
 const DRM_PROPERTY_DEV_OFF: usize = 96;
 const DRM_PROPERTY_HEAD_OFF: usize = 0;
-const DRM_PROPERTY_NAME_LEN: usize = 32;
 const DRM_MODE_OBJECT_PROPERTY: u32 = 0xb0b0_b0b0;
 const DRM_MODE_PROP_IMMUTABLE: u32 = 1 << 2;
 const DRM_MODE_PROP_BLOB: u32 = 1 << 4;

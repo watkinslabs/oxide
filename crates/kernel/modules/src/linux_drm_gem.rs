@@ -9,7 +9,6 @@ use core::alloc::Layout;
 const LINUX_EBUSY: i32 = 16;
 const LINUX_EINVAL: i32 = 22;
 const PAGE_SIZE: u64 = 4096;
-const DRM_GEM_OBJECT_SIZE: usize = 384;
 const DRM_GEM_SHMEM_OBJECT_SIZE: usize = 448;
 const BITS_PER_BYTE: u64 = 8;
 const DRM_DUMB_HEIGHT_OFF: usize = 0;
