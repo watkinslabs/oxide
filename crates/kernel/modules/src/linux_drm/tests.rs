@@ -134,6 +134,15 @@ fn probed_mode_links_to_the_connector_and_destroy_unlinks_it() {
 }
 
 #[test]
+fn mode_helpers_name_copy_duplicate_and_measure_refresh() {
+    let _modules = crate::test_serial::claim(); let mut mode = [0u8; mode::DRM_DISPLAY_MODE_SIZE];
+    // SAFETY: mode reserves the complete display-mode ABI object used by the helpers.
+    unsafe { write(mode.as_mut_ptr().add(0).cast::<i32>(), 25175); write(mode.as_mut_ptr().add(4).cast::<u16>(), 640); write(mode.as_mut_ptr().add(10).cast::<u16>(), 800); write(mode.as_mut_ptr().add(14).cast::<u16>(), 480); write(mode.as_mut_ptr().add(20).cast::<u16>(), 525); }
+    mode::drm_mode_set_name(mode.as_mut_ptr().cast()); assert_eq!(unsafe { core::ffi::CStr::from_ptr(mode.as_ptr().add(80).cast()) }, c"640x480"); assert_eq!(mode::drm_mode_vrefresh(mode.as_ptr().cast()), 60);
+    let duplicate = mode::drm_mode_duplicate(core::ptr::null_mut(), mode.as_ptr().cast()); assert!(!duplicate.is_null()); assert_eq!(mode::drm_mode_vrefresh(duplicate), 60); mode::drm_mode_destroy(core::ptr::null_mut(), duplicate);
+}
+
+#[test]
 fn connector_attachment_sets_only_its_live_encoder_bit() {
     let _modules = crate::test_serial::claim(); let mut parent = LinuxDevice::new(); let dev = device(&mut parent, 2048); assert_eq!(drmm_mode_config_init(dev), 0); let funcs = 1u8; let mut encoder = TestEncoder([0; 128]); let mut connector = TestConnector([0; 2280]);
     assert_eq!(unsafe { drm_encoder_init(dev, encoder.0.as_mut_ptr().cast(), (&funcs as *const u8).cast(), 10, core::ptr::null()) }, 0); assert_eq!(connector::drm_connector_init(dev, connector.0.as_mut_ptr().cast(), (&funcs as *const u8).cast(), 11), 0); assert_eq!(connector::drm_connector_attach_encoder(connector.0.as_mut_ptr().cast(), encoder.0.as_mut_ptr().cast()), 0);
