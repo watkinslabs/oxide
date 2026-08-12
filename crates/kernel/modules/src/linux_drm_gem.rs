@@ -8,6 +8,13 @@ use core::alloc::Layout;
 
 const LINUX_EBUSY: i32 = 16;
 const LINUX_EINVAL: i32 = 22;
+const PAGE_SIZE: u64 = 4096;
+const BITS_PER_BYTE: u64 = 8;
+const DRM_DUMB_HEIGHT_OFF: usize = 0;
+const DRM_DUMB_WIDTH_OFF: usize = 4;
+const DRM_DUMB_BPP_OFF: usize = 8;
+const DRM_DUMB_PITCH_OFF: usize = 20;
+const DRM_DUMB_SIZE_OFF: usize = 24;
 const DRM_FILE_OBJECT_IDR_HEAD_OFF: usize = 88;
 const DRM_GEM_REFCOUNT_OFF: usize = 0;
 const DRM_GEM_HANDLE_COUNT_OFF: usize = 4;
@@ -31,6 +38,7 @@ pub(super) fn export_symbols() {
     crate::symtab::export("drm_gem_handle_delete", drm_gem_handle_delete as *const () as usize, false);
     crate::symtab::export("drm_gem_object_lookup", drm_gem_object_lookup as *const () as usize, false);
     crate::symtab::export("drm_gem_release", drm_gem_release as *const () as usize, false);
+    crate::symtab::export("drm_mode_size_dumb", drm_mode_size_dumb as *const () as usize, false);
 }
 
 /// Initialize the exact `drm_file.object_idr` owner used by GEM handles.
@@ -124,6 +132,27 @@ pub(super) extern "C" fn drm_gem_object_lookup(file: *mut c_void, handle: u32) -
 /// Release all file-private GEM references. # C: O(N_handles)
 pub(super) extern "C" fn drm_gem_release(dev: *mut c_void, file: *mut c_void) { file_release(dev, file); }
 
+/// Calculate a page-mappable dumb-buffer pitch and size. # C: O(1)
+pub(super) extern "C" fn drm_mode_size_dumb(_dev: *mut c_void, args: *mut c_void, pitch_align: usize, size_align: usize) -> i32 {
+    if args.is_null() { return -LINUX_EINVAL; }
+    // SAFETY: args is the complete drm_mode_create_dumb ABI record supplied by the caller.
+    let (height, width, bpp) = unsafe { (read(args.cast::<u8>().add(DRM_DUMB_HEIGHT_OFF).cast::<u32>()) as u64, read(args.cast::<u8>().add(DRM_DUMB_WIDTH_OFF).cast::<u32>()) as u64, read(args.cast::<u8>().add(DRM_DUMB_BPP_OFF).cast::<u32>()) as u64) };
+    if width == 0 || height == 0 || bpp == 0 { return -LINUX_EINVAL; }
+    let bytes_per_pixel = bpp.checked_add(BITS_PER_BYTE - 1).map(|v| v / BITS_PER_BYTE).unwrap_or(0);
+    let mut pitch = width.checked_mul(bytes_per_pixel).filter(|v| *v <= u32::MAX as u64).unwrap_or(0);
+    if pitch == 0 { return -LINUX_EINVAL; }
+    if pitch_align != 0 { let align = pitch_align as u64; pitch = align_up(pitch, align).unwrap_or(0); if pitch < align { return -LINUX_EINVAL; } }
+    let align = if size_align == 0 { PAGE_SIZE } else { size_align as u64 };
+    if align == 0 || align % PAGE_SIZE != 0 { return -LINUX_EINVAL; }
+    let size = height.checked_mul(pitch).and_then(|v| align_up(v, align)).filter(|v| *v != 0 && *v <= u32::MAX as u64);
+    let Some(size) = size else { return -LINUX_EINVAL; };
+    // SAFETY: pitch and size are the two output fields of the same verified dumb-buffer ABI record.
+    unsafe { write(args.cast::<u8>().add(DRM_DUMB_PITCH_OFF).cast::<u32>(), pitch as u32); write(args.cast::<u8>().add(DRM_DUMB_SIZE_OFF).cast::<u64>(), size); }
+    0
+}
+
+fn align_up(value: u64, align: u64) -> Option<u64> { value.checked_add(align.checked_sub(1)?).map(|v| v / align * align) }
+
 fn release_handle(object: *mut c_void, file: *mut c_void) {
     if object.is_null() { return; }
     // SAFETY: funcs is the ABI function table selected by the driver; close is optional.
@@ -155,6 +184,17 @@ mod tests {
     #[test]
     fn generic_gem_entry_points_are_module_exports() {
         export_symbols();
-        for name in ["drm_gem_private_object_init", "drm_gem_object_release", "drm_gem_handle_create", "drm_gem_handle_delete", "drm_gem_object_lookup", "drm_gem_release"] { assert!(crate::symtab::is_exported(name)); }
+        for name in ["drm_gem_private_object_init", "drm_gem_object_release", "drm_gem_handle_create", "drm_gem_handle_delete", "drm_gem_object_lookup", "drm_gem_release", "drm_mode_size_dumb"] { assert!(crate::symtab::is_exported(name)); }
+    }
+
+    #[test]
+    fn dumb_size_rounds_pitch_and_size_and_rejects_overflow() {
+        let mut args = [0u8; 32];
+        // SAFETY: args reserves the complete dumb-buffer ABI record.
+        unsafe { write(args.as_mut_ptr().add(DRM_DUMB_HEIGHT_OFF).cast::<u32>(), 768); write(args.as_mut_ptr().add(DRM_DUMB_WIDTH_OFF).cast::<u32>(), 1024); write(args.as_mut_ptr().add(DRM_DUMB_BPP_OFF).cast::<u32>(), 32); }
+        assert_eq!(drm_mode_size_dumb(core::ptr::null_mut(), args.as_mut_ptr().cast(), 64, 0), 0);
+        // SAFETY: successful sizing populated the checked output fields.
+        unsafe { assert_eq!(read(args.as_ptr().add(DRM_DUMB_PITCH_OFF).cast::<u32>()), 4096); assert_eq!(read(args.as_ptr().add(DRM_DUMB_SIZE_OFF).cast::<u64>()), 3_145_728); write(args.as_mut_ptr().add(DRM_DUMB_WIDTH_OFF).cast::<u32>(), u32::MAX); }
+        assert_eq!(drm_mode_size_dumb(core::ptr::null_mut(), args.as_mut_ptr().cast(), 0, 0), -LINUX_EINVAL);
     }
 }
