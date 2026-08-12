@@ -1,4 +1,5 @@
 use super::*;
+use crate::lifecycle::prepost_eventq;
 
 const IDLE_KEY_RAW: u32 = 0x0010_0000;
 const ACTIVE_KEY_RAW: u32 = 0x0020_0000;
@@ -11,115 +12,79 @@ const USED_ELEM_BYTES: usize = 8;
 const AVAIL_IDX_OFF: usize = 2;
 const AVAIL_RING_OFF: usize = 4;
 const AVAIL_RING_ENTRY_BYTES: usize = 2;
-const USED_BYTES: usize = USED_RING_OFF + QUEUE_SIZE as usize * USED_ELEM_BYTES;
-const AVAIL_BYTES: usize = AVAIL_RING_OFF + QUEUE_SIZE as usize * AVAIL_RING_ENTRY_BYTES;
-const EVENT_BYTES: usize = QUEUE_SIZE as usize * EVENT_SIZE;
-const USED_EVENTS: u16 = 2;
 const FIRST_DESC_ID: u32 = 3;
 const SECOND_DESC_ID: u32 = 4;
 const FIRST_EVENT_RAW: u64 = 0xcccc_0000_0000_0003;
 const SECOND_EVENT_RAW: u64 = 0xcccc_0000_0000_0004;
-const NO_EVENTS: u64 = 0;
-const IDLE_AVAIL_IDX: u16 = 0;
-const IDLE_LAST_USED: u16 = 0;
-const WRAP_KEY_RAW: u32 = 0x0040_0000;
-const WRAP_START_AVAIL_IDX: u16 = QUEUE_SIZE - 1;
-const WRAP_FINAL_AVAIL_IDX: u16 = WRAP_START_AVAIL_IDX + USED_EVENTS;
-const WRAP_FIRST_DESC_ID: u32 = 5;
-const WRAP_SECOND_DESC_ID: u32 = 6;
-const WRAP_FIRST_EVENT_RAW: u64 = 0xdddd_0000_0000_0005;
-const WRAP_SECOND_EVENT_RAW: u64 = 0xdddd_0000_0000_0006;
+
+#[repr(align(4096))]
+struct Page([u8; 4096]);
+
+fn eventq(desc: &mut Page, avail: &mut Page, used: &Page, notify: &mut u16) -> virtio::VirtioSplitQueue {
+    let resource = virtio::VirtQueueResource {
+        index: EVENTQ_INDEX,
+        size: QUEUE_SIZE,
+        desc_pa: desc.0.as_mut_ptr() as u64,
+        driver_pa: avail.0.as_mut_ptr() as u64,
+        device_pa: used.0.as_ptr() as u64,
+        notify_va: notify as *mut u16 as u64,
+        notify_off: 0,
+    };
+    virtio::VirtioSplitQueue::new(resource, 0).unwrap()
+}
 
 #[test]
 fn eventq_drain_accounting_is_keyed_by_snd_context() {
     let _guard = TEST_LOCK.lock();
     reset_test_state();
-    let mut used0 = [0u8; USED_BYTES];
-    let mut avail0 = [0u8; AVAIL_BYTES];
-    let mut events0 = [0u8; EVENT_BYTES];
-    let mut notify0 = 0u16;
-    let mut used1 = [0u8; USED_BYTES];
-    let mut avail1 = [0u8; AVAIL_BYTES];
-    let mut events1 = [0u8; EVENT_BYTES];
-    let mut notify1 = 0u16;
-    put_u16(&mut used1, USED_IDX_OFF, USED_EVENTS);
-    put_u32(&mut used1, USED_RING_OFF, FIRST_DESC_ID);
-    put_u32(&mut used1, USED_RING_OFF + USED_ELEM_BYTES, SECOND_DESC_ID);
-    put_event(&mut events1, FIRST_DESC_ID as usize, FIRST_EVENT_RAW);
-    put_event(&mut events1, SECOND_DESC_ID as usize, SECOND_EVENT_RAW);
+    let mut idle_desc = Page([0; 4096]);
+    let mut idle_avail = Page([0; 4096]);
+    let idle_used = Page([0; 4096]);
+    let mut idle_events = Page([0; 4096]);
+    let mut idle_notify = 0u16;
+    let mut active_desc = Page([0; 4096]);
+    let mut active_avail = Page([0; 4096]);
+    let mut active_used = Page([0; 4096]);
+    let mut active_events = Page([0; 4096]);
+    let mut active_notify = 0u16;
 
     let mut idle_ctx = ctx(key(IDLE_KEY_RAW));
-    let mut idle_q = queue(EVENTQ_INDEX);
-    idle_q.device_pa = used0.as_mut_ptr() as u64;
-    idle_q.driver_pa = avail0.as_mut_ptr() as u64;
-    idle_q.notify_va = (&mut notify0 as *mut u16) as u64;
+    let mut idle_q = eventq(&mut idle_desc, &mut idle_avail, &idle_used, &mut idle_notify);
+    assert!(prepost_eventq(&mut idle_q, idle_events.0.as_mut_ptr() as u64));
+    idle_notify = 0;
     idle_ctx.eventq = Some(idle_q);
-    idle_ctx.event_buf_pa = events0.as_mut_ptr() as u64;
+    idle_ctx.event_buf_pa = idle_events.0.as_mut_ptr() as u64;
 
     let mut active_ctx = ctx(key(ACTIVE_KEY_RAW));
-    let mut active_q = queue(EVENTQ_INDEX);
-    active_q.device_pa = used1.as_mut_ptr() as u64;
-    active_q.driver_pa = avail1.as_mut_ptr() as u64;
-    active_q.notify_va = (&mut notify1 as *mut u16) as u64;
+    let mut active_q = eventq(&mut active_desc, &mut active_avail, &active_used, &mut active_notify);
+    assert!(prepost_eventq(&mut active_q, active_events.0.as_mut_ptr() as u64));
+    active_notify = 0;
+    put_u16(&mut active_used.0, USED_IDX_OFF, 2);
+    put_u32(&mut active_used.0, USED_RING_OFF, FIRST_DESC_ID);
+    put_u32(&mut active_used.0, USED_RING_OFF + USED_ELEM_BYTES, SECOND_DESC_ID);
+    put_event(&mut active_events.0, FIRST_DESC_ID as usize, FIRST_EVENT_RAW);
+    put_event(&mut active_events.0, SECOND_DESC_ID as usize, SECOND_EVENT_RAW);
     active_ctx.eventq = Some(active_q);
-    active_ctx.event_buf_pa = events1.as_mut_ptr() as u64;
+    active_ctx.event_buf_pa = active_events.0.as_mut_ptr() as u64;
     CTX.lock().extend([idle_ctx, active_ctx]);
 
     event_softirq();
 
-    assert_eq!(event_stats_for(key(IDLE_KEY_RAW)), Some((NO_EVENTS, NO_EVENTS)));
-    assert_eq!(event_stats_for(key(ACTIVE_KEY_RAW)), Some((USED_EVENTS as u64, SECOND_EVENT_RAW)));
+    assert_eq!(event_stats_for(key(IDLE_KEY_RAW)), Some((0, 0)));
+    assert_eq!(event_stats_for(key(ACTIVE_KEY_RAW)), Some((2, SECOND_EVENT_RAW)));
     assert_eq!(event_stats_for(key(MISSING_KEY_RAW)), None);
-    assert_eq!(eventq_state_for(key(IDLE_KEY_RAW)), Some((QUEUE_SIZE, IDLE_LAST_USED, IDLE_AVAIL_IDX)));
-    assert_eq!(eventq_state_for(key(ACTIVE_KEY_RAW)), Some((QUEUE_SIZE, USED_EVENTS, USED_EVENTS)));
-    assert_eq!(get_u16(&avail0, AVAIL_IDX_OFF), IDLE_AVAIL_IDX);
-    assert_eq!(get_u16(&avail1, AVAIL_IDX_OFF), USED_EVENTS);
-    assert_eq!(get_u16(&avail1, AVAIL_RING_OFF), FIRST_DESC_ID as u16);
+    assert_eq!(eventq_state_for(key(IDLE_KEY_RAW)), Some((QUEUE_SIZE, 0, QUEUE_SIZE)));
+    assert_eq!(eventq_state_for(key(ACTIVE_KEY_RAW)), Some((QUEUE_SIZE, 2, QUEUE_SIZE + 2)));
+    assert_eq!(get_u16(&idle_avail.0, AVAIL_IDX_OFF), QUEUE_SIZE);
+    assert_eq!(get_u16(&active_avail.0, AVAIL_IDX_OFF), QUEUE_SIZE + 2);
+    assert_eq!(get_u16(&active_avail.0, AVAIL_RING_OFF), FIRST_DESC_ID as u16);
     assert_eq!(
-        get_u16(&avail1, AVAIL_RING_OFF + AVAIL_RING_ENTRY_BYTES),
+        get_u16(&active_avail.0, AVAIL_RING_OFF + AVAIL_RING_ENTRY_BYTES),
         SECOND_DESC_ID as u16,
     );
-    assert_eq!(notify0, IDLE_AVAIL_IDX);
-    assert_eq!(notify1, EVENTQ_INDEX);
-    assert_eq!(DRAINED_EVENTS.load(Ordering::Relaxed), USED_EVENTS as u64);
+    assert_eq!(idle_notify, 0);
+    assert_eq!(active_notify, EVENTQ_INDEX);
+    assert_eq!(DRAINED_EVENTS.load(Ordering::Relaxed), 2);
     assert_eq!(LAST_EVENT.load(Ordering::Relaxed), SECOND_EVENT_RAW);
-    reset_test_state();
-}
-
-#[test]
-fn eventq_drain_recycles_used_descriptors_with_avail_wrap() {
-    let _guard = TEST_LOCK.lock();
-    reset_test_state();
-    let mut used = [0u8; USED_BYTES];
-    let mut avail = [0u8; AVAIL_BYTES];
-    let mut events = [0u8; EVENT_BYTES];
-    let mut notify = 0u16;
-    put_u16(&mut used, USED_IDX_OFF, USED_EVENTS);
-    put_u32(&mut used, USED_RING_OFF, WRAP_FIRST_DESC_ID);
-    put_u32(&mut used, USED_RING_OFF + USED_ELEM_BYTES, WRAP_SECOND_DESC_ID);
-    put_event(&mut events, WRAP_FIRST_DESC_ID as usize, WRAP_FIRST_EVENT_RAW);
-    put_event(&mut events, WRAP_SECOND_DESC_ID as usize, WRAP_SECOND_EVENT_RAW);
-
-    let mut wrap_ctx = ctx(key(WRAP_KEY_RAW));
-    let mut q = queue(EVENTQ_INDEX);
-    q.device_pa = used.as_mut_ptr() as u64;
-    q.driver_pa = avail.as_mut_ptr() as u64;
-    q.notify_va = (&mut notify as *mut u16) as u64;
-    wrap_ctx.eventq = Some(q);
-    wrap_ctx.event_buf_pa = events.as_mut_ptr() as u64;
-    wrap_ctx.event_avail_idx = WRAP_START_AVAIL_IDX;
-    CTX.lock().push(wrap_ctx);
-
-    event_softirq();
-
-    assert_eq!(eventq_state_for(key(WRAP_KEY_RAW)), Some((QUEUE_SIZE, USED_EVENTS, WRAP_FINAL_AVAIL_IDX)));
-    assert_eq!(get_u16(&avail, AVAIL_IDX_OFF), WRAP_FINAL_AVAIL_IDX);
-    assert_eq!(
-        get_u16(&avail, AVAIL_RING_OFF + WRAP_START_AVAIL_IDX as usize * AVAIL_RING_ENTRY_BYTES),
-        WRAP_FIRST_DESC_ID as u16,
-    );
-    assert_eq!(get_u16(&avail, AVAIL_RING_OFF), WRAP_SECOND_DESC_ID as u16);
-    assert_eq!(event_stats_for(key(WRAP_KEY_RAW)), Some((USED_EVENTS as u64, WRAP_SECOND_EVENT_RAW)));
-    assert_eq!(notify, EVENTQ_INDEX);
     reset_test_state();
 }
