@@ -25,6 +25,8 @@ const DMA_FROM_DEVICE: i32 = 2;
 pub(crate) const DMA_BIDIRECTIONAL: i32 = 3;
 pub(crate) const DEFAULT_DMA_MASK: u64 = u64::MAX;
 const DMA_ADDRESS_BITS: u32 = u64::BITS;
+/// Both active x86 IOMMU backends allocate from a 48-bit IOVA aperture.
+const MAX_DMA_MAPPING_BYTES: usize = 1usize << 48;
 const DMA_ATTR_SKIP_CPU_SYNC: u64 = 1 << 5;
 const DMA_ATTR_NO_KERNEL_MAPPING: u64 = 1 << 4;
 pub(crate) const SG_END: usize = 0x02;
@@ -109,6 +111,7 @@ pub fn export_symbols() {
         ("dma_set_mask_and_coherent", dma_set_mask_and_coherent as *const () as usize),
         ("dma_supported",             dma_supported             as *const () as usize),
         ("dma_get_required_mask",     dma_get_required_mask     as *const () as usize),
+        ("dma_max_mapping_size",      dma_max_mapping_size      as *const () as usize),
         ("sg_init_table",             sg_init_table             as *const () as usize),
         ("sg_init_one",               sg_init_one               as *const () as usize),
         ("sg_set_buf",                sg_set_buf                as *const () as usize),
@@ -127,7 +130,7 @@ pub fn export_symbols() {
         ("dma_pool_alloc",             pool::dma_pool_alloc as *const () as usize),
         ("dma_pool_free",              pool::dma_pool_free as *const () as usize),
     ] {
-        let gpl_only = matches!(name, "dma_map_phys" | "dma_unmap_phys" | "dma_map_sgtable");
+        let gpl_only = matches!(name, "dma_map_phys" | "dma_unmap_phys" | "dma_map_sgtable" | "dma_max_mapping_size");
         export(name, addr, gpl_only);
     }
 }
@@ -354,6 +357,13 @@ extern "C" fn dma_supported(_dev: *mut LinuxDevice, mask: u64) -> i32 {
 
 extern "C" fn dma_get_required_mask(_dev: *mut LinuxDevice) -> u64 {
     dma_bit_mask(DMA_ADDRESS_BITS)
+}
+
+/// Largest one-shot mapping supported by Oxide's current VT-d/AMD-Vi IOVA
+/// aperture. This is the Linux `dma_max_mapping_size` query used to segment
+/// large DRM and network transfers before submitting DMA.
+pub(crate) extern "C" fn dma_max_mapping_size(_dev: *mut LinuxDevice) -> usize {
+    MAX_DMA_MAPPING_BYTES
 }
 
 pub(crate) unsafe extern "C" fn sg_init_table(sg: *mut ScatterList, nents: u32) {

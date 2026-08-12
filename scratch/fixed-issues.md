@@ -1,5 +1,11 @@
 # Fixed issues
 
+### F1010-linux-dma-max-mapping-size
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED F1010 | MISSING | high | **The external-driver DMA facade lacked GPL-only `dma_max_mapping_size`, so Linux DRM and network drivers had no supported segment bound for large SG transfers.** The KPI now reports Oxide's verified 48-bit VT-d/AMD-Vi IOVA aperture, the maximum one-shot mapping the active IOMMU owners can allocate. | F1010. `linux_dma_tests::max_mapping_size_matches_the_iommu_iova_aperture`; compared with target Linux `kernel/dma/mapping.c::dma_max_mapping_size`. | Chris Watkins |
+
 ### F1009-linux-dma-sg-sync-symbols
 
 | Status | Class | Sev | Issue | Evidence | Owner |

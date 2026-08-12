@@ -69,6 +69,11 @@ fn resource_mapping_accepts_physical_and_zero_dma_addresses() {
 }
 
 #[test]
+fn max_mapping_size_matches_the_iommu_iova_aperture() {
+    assert_eq!(dma_max_mapping_size(null_mut()), 1usize << 48);
+}
+
+#[test]
 fn scatterlist_maps_buffer_and_page_entries() {
     let _modules = crate::test_serial::claim();
     let buf = [0u8; 16];
@@ -169,6 +174,7 @@ fn export_symbols_registers_dma_surface() {
         "dma_sync_single_for_cpu", "dma_sync_single_for_device", "__dma_sync_single_for_cpu", "__dma_sync_single_for_device",
         "__dma_sync_sg_for_cpu", "__dma_sync_sg_for_device",
         "dma_mapping_error", "dma_set_mask", "dma_set_coherent_mask",
+        "dma_max_mapping_size",
         "dma_set_mask_and_coherent", "sg_init_table", "sg_set_buf", "sg_set_page",
         "sg_alloc_table", "sg_free_table", "sg_copy_to_buffer", "sg_miter_start",
         "sg_miter_next", "sg_miter_stop", "sgl_alloc_order", "sgl_free_n_order",
