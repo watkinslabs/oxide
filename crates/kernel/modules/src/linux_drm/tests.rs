@@ -1,7 +1,7 @@
 use super::*;
 
 #[repr(C, align(8))]
-struct TestDriver([u8; DRM_DRIVER_FEATURES_OFF + core::mem::size_of::<u32>()]);
+struct TestDriver([u8; 200]);
 
 #[repr(C, align(8))]
 struct TestPlane([u8; 1360]);
@@ -35,7 +35,7 @@ fn embedded_device_keeps_the_drivers_requested_offset() {
 #[test]
 fn allocation_returns_the_container_and_initializes_the_embedded_device() {
     let _modules = crate::test_serial::claim();
-    let mut parent = LinuxDevice::new(); let mut driver = TestDriver([0; DRM_DRIVER_FEATURES_OFF + core::mem::size_of::<u32>()]); let features = 0x1234_5678u32;
+    let mut parent = LinuxDevice::new(); let mut driver = TestDriver([0; 200]); let features = 0x1234_5678u32;
     // SAFETY: TestDriver reserves the exact driver_features field range at its ABI offset.
     unsafe { write(driver.0.as_mut_ptr().add(DRM_DRIVER_FEATURES_OFF).cast::<u32>(), features); }
     let container = __devm_drm_dev_alloc(&mut parent, (&driver as *const TestDriver).cast(), 256, 64);
@@ -44,6 +44,16 @@ fn allocation_returns_the_container_and_initializes_the_embedded_device() {
     // SAFETY: every field below was initialized within the checked embedded device range.
     unsafe { assert_eq!(*(dev.add(DRM_DEVICE_REF_OFF).cast::<i32>()), INITIAL_REFERENCE_COUNT); assert!(*(dev.add(DRM_DEVICE_DEV_OFF).cast::<*mut LinuxDevice>()) == &mut parent); assert!(*(dev.add(DRM_DEVICE_DMA_DEV_OFF).cast::<*mut LinuxDevice>()) == &mut parent); assert_eq!(*(dev.add(DRM_DEVICE_FINAL_KFREE_OFF).cast::<*mut u8>()), container.cast()); assert_eq!(*(dev.add(DRM_DEVICE_DRIVER_OFF).cast::<*const c_void>()), (&driver as *const TestDriver).cast()); assert_eq!(*(dev.add(DRM_DEVICE_FEATURES_OFF).cast::<u32>()), features); }
     devres::release_device(&mut parent);
+}
+
+#[test]
+fn registration_publishes_and_withdraws_a_primary_drm_minor() {
+    let _modules = crate::test_serial::claim(); let mut parent = LinuxDevice::new(); let mut driver = TestDriver([0; 200]); let fops = [0u8; 272];
+    // SAFETY: TestDriver reserves the complete fops pointer field at its verified ABI offset.
+    unsafe { write(driver.0.as_mut_ptr().add(192).cast::<*const c_void>(), fops.as_ptr().cast()); }
+    let container = __devm_drm_dev_alloc(&mut parent, (&driver as *const TestDriver).cast(), 2048, 64); let dev = unsafe { container.cast::<u8>().add(64).cast::<c_void>() };
+    assert_eq!(register::drm_dev_register(dev, 0), 0); assert!(vfs::lookup_chrdev(vfs::Devt::from_kdev(226 << 20)).is_some());
+    register::drm_dev_unregister(dev); assert!(vfs::lookup_chrdev(vfs::Devt::from_kdev(226 << 20)).is_none()); devres::release_device(&mut parent);
 }
 
 #[test]

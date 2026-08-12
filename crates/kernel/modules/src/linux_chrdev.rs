@@ -7,6 +7,8 @@ mod core;
 mod misc;
 mod types;
 
+pub(crate) use core::{register_internal_cdev, unregister_internal_cdev};
+
 /// Register Linux char/misc KPI symbols.
 /// # C: O(1)
 pub fn export_symbols() {
