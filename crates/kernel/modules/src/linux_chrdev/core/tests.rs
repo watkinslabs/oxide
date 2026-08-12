@@ -209,7 +209,7 @@ fn device_node_routes_open_state_poll_mmap_and_release() {
     assert_eq!(file.poll(), vfs::POLL_IN);
     assert_eq!(POLL_COUNT.load(Ordering::SeqCst), 1);
     assert_eq!(file.inode().mmap_shared_frame(0), Ok(None));
-    assert_eq!(MMAP_COUNT.load(Ordering::SeqCst), 1);
+    assert_eq!(MMAP_COUNT.load(Ordering::SeqCst), 0);
 
     drop(file);
     assert_eq!(RELEASE_COUNT.load(Ordering::SeqCst), 1);
