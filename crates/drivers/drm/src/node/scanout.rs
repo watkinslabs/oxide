@@ -14,7 +14,7 @@ pub struct ScanoutOps {
     /// Driver-owned runtime key for the owning GPU.
     pub driver_key: ScanoutDriverKey,
     /// Create a virtio-gpu resource over a contiguous PA; returns res_id.
-    pub create_from_pa: fn(driver_key: ScanoutDriverKey, pa: u64, w: u32, h: u32, fmt_drm: u32) -> Option<u32>,
+    pub create_from_pa: fn(driver_key: ScanoutDriverKey, pa: u64, w: u32, h: u32, pitch: u32, fmt_drm: u32) -> Option<u32>,
     /// Drop a previously-created runtime scanout resource.
     pub destroy_resource: fn(driver_key: ScanoutDriverKey, res_id: u32) -> bool,
     /// Present `damage` of `res_id` on scanout 0. The driver uploads the

@@ -13,11 +13,11 @@ use crate::{crtc_idx_of, DrmModeCrtc};
 
 /// Resolve an FB id → its primary dumb buffer's (pa, w, h, fourcc).
 /// `None` if the fb or its handle is unknown. # C: O(n)
-fn fb_to_scanout(card_id: u32, fb_id: u32) -> Option<(u64, u32, u32, u32, u32)> {
+fn fb_to_scanout(card_id: u32, fb_id: u32) -> Option<(u64, u32, u32, u32, u32, u32)> {
     let t = crate::dumb::TABLES.lock();
     let fb = t.find_fb(card_id, fb_id)?;
     let buf = t.find_buf(card_id, fb.handles[0])?;
-    Some((buf.pa, fb.w, fb.h, fb.pixel_format, fb.scanout_res_id))
+    Some((buf.pa, fb.w, fb.h, buf.pitch, fb.pixel_format, fb.scanout_res_id))
 }
 
 fn release_new_scanout_resource(card_id: u32, res_id: u32) {
@@ -27,11 +27,11 @@ fn release_new_scanout_resource(card_id: u32, res_id: u32) {
 }
 
 pub(crate) fn fb_scanout_resource(card_id: u32, ops: crate::node::ScanoutOps, fb_id: u32) -> Option<(u32, u32, u32)> {
-    let (pa, w, h, fmt, existing) = fb_to_scanout(card_id, fb_id)?;
+    let (pa, w, h, pitch, fmt, existing) = fb_to_scanout(card_id, fb_id)?;
     if existing != 0 {
         return Some((existing, w, h));
     }
-    let res_id = (ops.create_from_pa)(ops.driver_key, pa, w, h, fmt)?;
+    let res_id = (ops.create_from_pa)(ops.driver_key, pa, w, h, pitch, fmt)?;
     if !crate::dumb::bind_fb_scanout_resource(card_id, fb_id, res_id) {
         release_new_scanout_resource(card_id, res_id);
         return None;

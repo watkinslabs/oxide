@@ -21,7 +21,7 @@ static LAST_SCANOUT_DRIVER_KEY: AtomicU32 = AtomicU32::new(0);
 
 fn scanout_key(raw: u32) -> ScanoutDriverKey { ScanoutDriverKey::from_raw(raw).unwrap() }
 
-fn record_create(driver_key: ScanoutDriverKey, _pa: u64, _w: u32, _h: u32, _fmt: u32) -> Option<u32> {
+fn record_create(driver_key: ScanoutDriverKey, _pa: u64, _w: u32, _h: u32, _pitch: u32, _fmt: u32) -> Option<u32> {
     LAST_SCANOUT_DRIVER_KEY.store(driver_key.raw(), Ordering::Release);
     Some(driver_key.raw().wrapping_add(1))
 }

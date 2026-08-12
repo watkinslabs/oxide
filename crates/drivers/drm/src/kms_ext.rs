@@ -180,7 +180,7 @@ fn set_cursor(card_id: u32, card: &Arc<dyn DrmDriver>, token: u64, flags: u32, c
         return einval();
     }
     if !crate::dumb::ref_cursor_handle(card_id, token, handle) { return einval(); }
-    let Some(res_id) = (ops.create_from_pa)(ops.driver_key, pa, width, height, DRM_FORMAT_ARGB8888) else {
+    let Some(res_id) = (ops.create_from_pa)(ops.driver_key, pa, width, height, width.saturating_mul(4), DRM_FORMAT_ARGB8888) else {
         crate::dumb::unref_cursor_handle(card_id, handle);
         return einval();
     };
