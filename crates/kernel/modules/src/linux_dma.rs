@@ -180,6 +180,7 @@ pub(crate) extern "C" fn dma_map_page_attrs(dev: *mut LinuxDevice, page: *mut Li
     if size == 0 || !valid_dir(dir) { return DMA_MAPPING_ERROR; }
     // SAFETY: dma_map_page's KPI requires page to be a live descriptor while the mapping is installed.
     let base = match unsafe { linux_alloc::linux_page_phys(page) } { Some(v) => v, None => return DMA_MAPPING_ERROR };
+    if !page_range_valid(page, offset, size) { return DMA_MAPPING_ERROR; }
     let pa = match base.checked_add(offset as u64) { Some(v) => v, None => return DMA_MAPPING_ERROR };
     let Some(dma) = map_for_device(dev, pa, size, device_dma_mask(dev, false)) else { return DMA_MAPPING_ERROR; };
     if !fits_mask(dma, size, device_dma_mask(dev, false)) { unmap_for_device(dev, dma, size); return DMA_MAPPING_ERROR; }
@@ -430,7 +431,9 @@ fn map_sg_entry(dev: *mut LinuxDevice, ent: &ScatterList, dir: i32, attrs: u64) 
     let page = ent.page_link & !SG_END;
     let pa = if page != 0 {
         // SAFETY: a nonzero scatterlist page link names a live struct page descriptor for the map operation.
-        let base = match unsafe { linux_alloc::linux_page_phys(page as *const LinuxPage) } { Some(v) => v, None => return DMA_MAPPING_ERROR };
+        let page = page as *mut LinuxPage;
+        let base = match unsafe { linux_alloc::linux_page_phys(page) } { Some(v) => v, None => return DMA_MAPPING_ERROR };
+        if !page_range_valid(page, ent.offset as usize, ent.length as usize) { return DMA_MAPPING_ERROR; }
         match base.checked_add(ent.offset as u64) { Some(v) => v, None => return DMA_MAPPING_ERROR }
     } else {
         match linux_alloc::direct_pa_for_va(ent.dma_address as *const u8) { Some(v) => v, None => return DMA_MAPPING_ERROR }
@@ -442,6 +445,14 @@ fn map_sg_entry(dev: *mut LinuxDevice, ent: &ScatterList, dir: i32, attrs: u64) 
     }
     if attrs & DMA_ATTR_SKIP_CPU_SYNC == 0 { sync_for_device(dir); }
     dma
+}
+
+/// Validate that an external `struct page` owns the whole byte interval a DMA
+/// request wants to expose. Compound allocations are valid; crossing the end
+/// of their recorded run is not. # C: O(1)
+fn page_range_valid(page: *mut LinuxPage, offset: usize, len: usize) -> bool {
+    let Some(run) = linux_alloc::page_run_len(page) else { return false; };
+    offset.checked_add(len).is_some_and(|end| end <= run)
 }
 
 fn map_for_device(dev: *mut LinuxDevice, pa: u64, len: usize, mask: u64) -> Option<u64> {

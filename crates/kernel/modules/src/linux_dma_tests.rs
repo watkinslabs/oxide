@@ -75,6 +75,20 @@ fn scatterlist_maps_buffer_and_page_entries() {
 }
 
 #[test]
+fn page_dma_mapping_refuses_a_range_past_the_page_run() {
+    let _modules = crate::test_serial::claim();
+    let page = crate::linux_alloc::alloc_pages(0, 0);
+    assert_eq!(
+        dma_map_page(null_mut(), page, linux_alloc::PAGE_SIZE - 1, 2, DMA_TO_DEVICE),
+        DMA_MAPPING_ERROR
+    );
+    let mut sg = ScatterList { page_link: 0, offset: 0, length: 0, dma_address: 0, dma_length: 0 };
+    sg_set_page(&mut sg, page, 2, (linux_alloc::PAGE_SIZE - 1) as u32);
+    assert_eq!(dma_map_sg(null_mut(), &mut sg, 1, DMA_TO_DEVICE), 0);
+    crate::linux_alloc::__free_pages(page, 0);
+}
+
+#[test]
 fn sg_table_and_miter_walk_real_bytes() {
     let _modules = crate::test_serial::claim();
     let mut tbl = SgTable { sgl: null_mut(), nents: 0, orig_nents: 0 };
