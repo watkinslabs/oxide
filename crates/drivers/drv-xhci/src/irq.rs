@@ -7,7 +7,7 @@
 use core::ptr::{read_volatile, write_volatile};
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 
-use crate::controller::{ERDP, ERDP_EHB, STS_EINT, USBSTS};
+use crate::controller::{ERDP, ERDP_EHB, IMAN, IMAN_IP, STS_EINT, USBSTS};
 use crate::platform::{DmaPage, Mmio};
 use crate::regs::interrupter_offset;
 use crate::ring::{TRB_BYTES, TRB_CYCLE, TRBS_PER_SEGMENT};
@@ -24,6 +24,7 @@ struct Endpoint {
     mmio_va: AtomicU64,
     status_offset: AtomicU64,
     erdp_offset: AtomicU64,
+    iman_offset: AtomicU64,
     event_va: AtomicU64,
     event_pa: AtomicU64,
     bar_bytes: AtomicU64,
@@ -39,7 +40,7 @@ impl Endpoint {
     const fn new() -> Self {
         Self {
             state: AtomicU8::new(FREE), in_handler: AtomicU32::new(0),
-            mmio_va: AtomicU64::new(0), status_offset: AtomicU64::new(0), erdp_offset: AtomicU64::new(0),
+            mmio_va: AtomicU64::new(0), status_offset: AtomicU64::new(0), erdp_offset: AtomicU64::new(0), iman_offset: AtomicU64::new(0),
             event_va: AtomicU64::new(0), event_pa: AtomicU64::new(0), bar_bytes: AtomicU64::new(0), max_ports: AtomicU8::new(0), port_changes: AtomicU64::new(0), command_completion_pa: AtomicU64::new(0), command_completion_status: AtomicU32::new(0), transfer_completions: crate::completion::TransferCompletions::new(), dequeue: AtomicU32::new(0), cycle: AtomicBool::new(true),
         }
     }
@@ -65,6 +66,13 @@ fn hard_handler_for(index: usize) {
             if status & STS_EINT != 0 {
                 // SAFETY: USBSTS event is write-one-to-clear and this offset was validated above.
                 unsafe { write_volatile((base + status_offset) as *mut u32, STS_EINT); }
+                let iman_offset = endpoint.iman_offset.load(Ordering::Acquire);
+                // SAFETY: IMAN is a validated primary-interrupter register in this owned BAR.
+                unsafe {
+                    let iman = read_volatile((base + iman_offset) as *const u32);
+                    write_volatile((base + iman_offset) as *mut u32, iman | IMAN_IP);
+                    let _ = read_volatile((base + iman_offset) as *const u32);
+                }
             }
             // SAFETY: event_va is a retained DmaPage direct-map address.  DMA
             // coherency must precede every observation of controller-owned TRBs.
@@ -166,6 +174,7 @@ impl Binding {
         endpoint.cycle.store(true, Ordering::Relaxed);
         endpoint.status_offset.store(mmio.geometry().operational + USBSTS, Ordering::Relaxed);
         endpoint.erdp_offset.store(intr + ERDP, Ordering::Relaxed);
+        endpoint.iman_offset.store(intr + IMAN, Ordering::Relaxed);
         endpoint.event_pa.store(event.dma(), Ordering::Relaxed);
         endpoint.event_va.store(event_va, Ordering::Relaxed);
         endpoint.bar_bytes.store(mmio.bytes(), Ordering::Relaxed);
