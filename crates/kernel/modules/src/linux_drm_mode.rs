@@ -25,6 +25,7 @@ pub(super) fn export_symbols() {
     crate::symtab::export("drm_mode_copy", drm_mode_copy as *const () as usize, false);
     crate::symtab::export("drm_mode_init", drm_mode_init as *const () as usize, false);
     crate::symtab::export("drm_mode_duplicate", drm_mode_duplicate as *const () as usize, false);
+    crate::symtab::export("drm_add_modes_noedid", drm_add_modes_noedid as *const () as usize, false);
 }
 
 pub(super) fn mode_layout() -> Layout { Layout::from_size_align(DRM_DISPLAY_MODE_SIZE, core::mem::align_of::<u64>()).unwrap() }
@@ -98,6 +99,17 @@ pub(super) extern "C" fn drm_mode_init(dst: *mut c_void, src: *const c_void) {
 pub(super) extern "C" fn drm_mode_duplicate(dev: *mut c_void, src: *const c_void) -> *mut c_void {
     if src.is_null() { return core::ptr::null_mut(); }
     let mode = drm_mode_create(dev); if mode.is_null() { return mode; } drm_mode_copy(mode, src); mode
+}
+
+/// Add every standard fallback mode within the requested display bounds. # C: O(N_dmt)
+pub(super) extern "C" fn drm_add_modes_noedid(connector: *mut c_void, max_h: u32, max_v: u32) -> i32 {
+    if connector.is_null() { return 0; } let dev = unsafe { *(connector.cast::<*mut c_void>()) };
+    if !DEVICES.lock().iter().any(|record| record.dev == dev as usize && record.connectors.iter().any(|entry| entry.ptr == connector as usize)) { return 0; }
+    let mut count = 0;
+    for &(clock,h,hs,he,ht,sk,v,vs,ve,vt,scan,flags) in &dmt::DMT { if max_h != 0 && max_v != 0 && (h as u32 > max_h || v as u32 > max_v) { continue; } let mode = drm_mode_create(dev); if mode.is_null() { continue; }
+        // SAFETY: mode is a newly allocated complete display-mode object; every written field is ABI-verified.
+        unsafe { let ptr = mode.cast::<u8>(); write(ptr.add(DRM_DISPLAY_MODE_CLOCK_OFF).cast::<i32>(), clock); write(ptr.add(DRM_DISPLAY_MODE_HDISPLAY_OFF).cast::<u16>(), h); write(ptr.add(6).cast::<u16>(), hs); write(ptr.add(8).cast::<u16>(), he); write(ptr.add(DRM_DISPLAY_MODE_HTOTAL_OFF).cast::<u16>(), ht); write(ptr.add(12).cast::<u16>(), sk); write(ptr.add(DRM_DISPLAY_MODE_VDISPLAY_OFF).cast::<u16>(), v); write(ptr.add(16).cast::<u16>(), vs); write(ptr.add(18).cast::<u16>(), ve); write(ptr.add(DRM_DISPLAY_MODE_VTOTAL_OFF).cast::<u16>(), vt); write(ptr.add(DRM_DISPLAY_MODE_VSCAN_OFF).cast::<u16>(), scan); write(ptr.add(DRM_DISPLAY_MODE_FLAGS_OFF).cast::<u32>(), flags); write(ptr.add(62), 1 << 6); } drm_mode_set_name(mode); drm_mode_probed_add(connector, mode); count += 1; }
+    count
 }
 
 unsafe fn decimal(out: *mut u8, mut value: u32) -> usize {

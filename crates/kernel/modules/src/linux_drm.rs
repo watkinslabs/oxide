@@ -21,6 +21,7 @@ mod register;
 mod format;
 #[path = "linux_drm_mode.rs"]
 mod mode;
+#[path = "linux_drm_dmt.rs"] mod dmt;
 
 struct DeviceAllocation {
     dev: usize,
