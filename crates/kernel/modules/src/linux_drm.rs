@@ -28,6 +28,7 @@ use sync::{Spinlock, Modules as ModulesLockClass};
 #[path = "linux_drm_edid_read.rs"] mod edid_read;
 #[path = "linux_drm_print.rs"] mod print;
 #[path = "linux_drm_mode_object_refs.rs"] mod mode_object_refs;
+#[path = "linux_drm_atomic_connector.rs"] mod atomic_connector;
 
 struct DeviceAllocation {
     dev: usize,
@@ -163,6 +164,7 @@ pub fn export_symbols() {
     edid_read::export_symbols();
     print::export_symbols();
     mode_object_refs::export_symbols();
+    atomic_connector::export_symbols();
 }
 
 fn layout_for(size: usize) -> Option<Layout> {
