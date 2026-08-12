@@ -149,7 +149,7 @@ pub unsafe fn decode_madt(pa: u64, hhdm_offset: u64) {
                     let ioapic_id = core::ptr::read_volatile(p.add(off + 2));
                     let addr      = read_u32_le(p.add(off + 4));
                     let gsi_base  = read_u32_le(p.add(off + 8));
-                    crate::set_ioapic(addr, gsi_base);
+                    crate::set_ioapic(ioapic_id, addr, gsi_base);
                     alog_raw(b"[INFO]      ioapic id=");
                     alog_dec(ioapic_id as u64);
                     alog_raw(b" pa=");

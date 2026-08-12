@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use crate::{VtdIrTable, VtdQiQueue, VtdRegisters, VtdTables, intel_vtd_rmrr_count, intel_vtd_rmrr_for_bdf, intel_vtd_unit_for_bdf, remapped_msi};
+use crate::{VtdIrTable, VtdQiQueue, VtdRegisters, VtdTables, intel_vtd_ioapic_source, intel_vtd_rmrr_count, intel_vtd_rmrr_for_bdf, intel_vtd_unit_for_bdf, remapped_msi};
 use firmware::acpi::{IommuKind, IommuUnit};
 use pci::{Bdf, ConfigSpaceReader};
 use sync::{Devices, Spinlock};
@@ -14,8 +14,11 @@ pub enum VtdActivation { Bypass, Enabled, Failed }
 /// Result of allocating an x86 PCI message through the VT-d IRQ owner.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum VtdMsi { Direct, Remapped { address: u64, data: u32 }, Failed }
+/// Result of allocating an x86 IOAPIC interrupt through VT-d.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum VtdIoapic { Direct, Remapped { index: u16 }, Failed }
 
-struct VtdBootUnit { unit: IommuUnit, regs: VtdRegisters, requesters: Vec<Bdf>, tables: VtdTables, qi: Option<VtdQiQueue>, ir: Option<VtdIrTable> }
+struct VtdBootUnit { unit: IommuUnit, regs: VtdRegisters, requesters: Vec<Bdf>, ioapic_source: Option<u16>, tables: VtdTables, qi: Option<VtdQiQueue>, ir: Option<VtdIrTable> }
 static MANAGER: Spinlock<Vec<VtdBootUnit>, Devices> = Spinlock::new(Vec::new());
 /// Hardware/firmware admission for EIM.  This does not enable x2APIC: the
 /// LAPIC owner must first put IOAPIC and HPET sources behind remapping too.
@@ -29,11 +32,7 @@ static EIM_CAPABLE: AtomicBool = AtomicBool::new(false);
 pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf], hhdm_offset: u64,
     regions: &[pmm::UsableRegion]) -> VtdActivation {
     EIM_CAPABLE.store(false, Ordering::Release);
-    let mut units = Vec::new();
-    for bdf in requesters {
-        let Some(unit) = intel_vtd_unit_for_bdf(reader, *bdf) else { continue; };
-        push_unique_unit(&mut units, unit);
-    }
+    let units = published_vtd_units();
     if units.is_empty() { return VtdActivation::Bypass; }
     if units.iter().any(|unit| unit.kind != IommuKind::IntelVtd) { return VtdActivation::Failed; }
 
@@ -52,7 +51,7 @@ pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf],
             let Some(table) = VtdIrTable::new(hhdm_offset, false) else { return VtdActivation::Failed; };
             Some(table)
         } else { None };
-        manager.push(VtdBootUnit { unit, regs, requesters: Vec::new(), tables, qi, ir });
+        manager.push(VtdBootUnit { unit, regs, requesters: Vec::new(), ioapic_source: None, tables, qi, ir });
     }
     for entry in manager.iter_mut() {
         for index in 0..intel_vtd_rmrr_count() {
@@ -66,6 +65,12 @@ pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf],
         let Some(entry) = manager.iter_mut().find(|entry| entry.unit == unit) else { return VtdActivation::Failed; };
         if !entry.tables.attach(*bdf, INITIAL_DOMAIN_ID) { return VtdActivation::Failed; }
         entry.requesters.push(*bdf);
+    }
+    if let Some(ioapic_id) = firmware::ioapic_id() {
+        if let Some((unit, source_id)) = intel_vtd_ioapic_source(reader, ioapic_id) {
+            let Some(entry) = manager.iter_mut().find(|entry| entry.unit == unit) else { return VtdActivation::Failed; };
+            entry.ioapic_source = Some(source_id);
+        }
     }
     for entry in manager.iter_mut() {
         if !entry.regs.set_root_table(entry.tables.root_pa()) || !invalidate(entry)
@@ -105,6 +110,19 @@ pub fn allocate_vtd_msi(requester: Bdf, vector: u8, destination_apic_id: u32) ->
     VtdMsi::Remapped { address, data }
 }
 
+/// Allocate one remapped IOAPIC route.  `Direct` leaves the caller on the
+/// ordinary APIC route when firmware did not publish a trustworthy IOAPIC
+/// scope or its owning VT-d unit lacks interrupt remapping. # C: O(units + IRTE scan + poll limit)
+pub fn allocate_vtd_ioapic(vector: u8, destination_apic_id: u32) -> VtdIoapic {
+    let mut manager = MANAGER.lock();
+    let Some(entry) = manager.iter_mut().find(|entry| entry.ioapic_source.is_some()) else { return VtdIoapic::Direct; };
+    let Some(source_id) = entry.ioapic_source else { return VtdIoapic::Direct; };
+    let (Some(queue), Some(ir)) = (entry.qi.as_mut(), entry.ir.as_mut()) else { return VtdIoapic::Direct; };
+    let Some(index) = ir.allocate_ioapic(vector, destination_apic_id, source_id) else { return VtdIoapic::Failed; };
+    if !entry.regs.invalidate_interrupt_entry(queue, index) { return VtdIoapic::Failed; }
+    VtdIoapic::Remapped { index }
+}
+
 /// Install one live mapping constrained by the requester's inclusive DMA mask.
 /// # C: O(pages * levels + poll limit)
 pub fn map_dma_below(requester: Bdf, pa: u64, len: usize, mask: u64) -> Option<u64> {
@@ -138,8 +156,17 @@ fn invalidate(entry: &mut VtdBootUnit) -> bool {
     }
 }
 
-fn push_unique_unit(units: &mut Vec<IommuUnit>, unit: IommuUnit) {
-    if !units.iter().any(|current| *current == unit) { units.push(unit); }
+fn published_vtd_units() -> Vec<IommuUnit> {
+    let mut units = Vec::new();
+    for index in 0..firmware::acpi::iommu_unit_count() {
+        let Some(unit) = firmware::acpi::iommu_unit(index) else { continue; };
+        append_unique_vtd(&mut units, unit);
+    }
+    units
+}
+
+fn append_unique_vtd(units: &mut Vec<IommuUnit>, unit: IommuUnit) {
+    if unit.kind == IommuKind::IntelVtd && !units.iter().any(|current| *current == unit) { units.push(unit); }
 }
 
 /// Linux declines EIM if any DRHD lacks queued invalidation, interrupt
@@ -177,9 +204,9 @@ fn rmrr_for_unit<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf], index: us
         let first = IommuUnit { kind: IommuKind::IntelVtd, segment: 1, register_base: 0xfed9_0000, register_pages: 1, include_all: false };
         let second = IommuUnit { segment: 2, ..first };
         let mut units = Vec::new();
-        push_unique_unit(&mut units, first);
-        push_unique_unit(&mut units, first);
-        push_unique_unit(&mut units, second);
+        append_unique_vtd(&mut units, first);
+        append_unique_vtd(&mut units, first);
+        append_unique_vtd(&mut units, second);
         assert_eq!(units, alloc::vec![first, second]);
     }
 

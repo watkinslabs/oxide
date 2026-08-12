@@ -99,7 +99,10 @@ unsafe fn install_line(
     let bsp_apic = BSP_APIC_ID.load(Ordering::Acquire) as u8;
     // SAFETY: a handler owns `vec`, the I/O-APIC window is mapped, and this
     // probe owns the line until the matching published pin is taken.
-    unsafe { hal_x86_64::ioapic::program_redirect(pin, vec, bsp_apic, level, active_low); }
+    if !unsafe { arch_irq::program_x86_ioapic(pin, vec, bsp_apic, level, active_low) } {
+        let _ = arch_irq::free_x86_vector(vec);
+        return false;
+    }
     vector.store(vec as u64, Ordering::Release);
     pin_slot.store(pin as u64, Ordering::Release);
     true

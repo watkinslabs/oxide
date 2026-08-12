@@ -35,6 +35,12 @@ const RTE_DELIVERY_MASK: u32 = 0x700;
 const RTE_DELIVERY_SMI: u32 = 2 << 8;
 /// Vector field of a redirection entry.
 const RTE_VECTOR_MASK: u32 = 0xFF;
+/// Remappable-format marker in redirection-entry bit 48.
+const RTE_REMAP_FORMAT: u32 = 1 << 16;
+/// Lower 15 bits of the interrupt-remapping table index occupy bits 49:63.
+const RTE_REMAP_INDEX_SHIFT: u32 = 17;
+/// The final interrupt-remapping table-index bit occupies RTE bit 11.
+const RTE_REMAP_INDEX_HIGH: u32 = 1 << 11;
 
 /// Publish the I/O APIC MMIO kernel VA. # C: O(1)
 pub fn set_base_va(va: u64) { IOAPIC_VA.store(va, Ordering::Release); }
@@ -108,6 +114,44 @@ pub unsafe fn program_redirect(
         write_reg(hi_idx, hi);
         write_reg(lo_idx, lo);
     }
+}
+
+fn remapped_redirect_words(pin: u32, index: u16, level: bool, active_low: bool) -> Option<(u32, u32)> {
+    let subhandle = u8::try_from(pin).ok()?;
+    let mut lo = u32::from(subhandle);
+    if active_low { lo |= 1 << 13; }
+    if level { lo |= RTE_LEVEL; }
+    if index & (1 << 15) != 0 { lo |= RTE_REMAP_INDEX_HIGH; }
+    let hi = RTE_REMAP_FORMAT | (u32::from(index & 0x7fff) << RTE_REMAP_INDEX_SHIFT);
+    Some((lo, hi))
+}
+
+/// Program one redirection entry in interrupt-remappable format.  The
+/// caller has already published and invalidated `index` in the owning IOMMU;
+/// this operation only changes the IOAPIC's source-side message encoding.
+///
+/// # SAFETY: I/O APIC mapped via `set_base_va`; `vector` has an installed
+/// handler; `index` is a live IRTE owned by the IOAPIC source; single-CPU,
+/// IRQ-off boot context.
+/// # C: O(1)
+/// # Ctx: pre-init, IRQ-off, single-CPU
+pub unsafe fn program_remapped_redirect(
+    pin: u32,
+    vector: u8,
+    index: u16,
+    level: bool,
+    active_low: bool,
+) -> bool {
+    let Some((lo, hi)) = remapped_redirect_words(pin, index, level, active_low) else { return false; };
+    let lo_idx = 0x10 + 2 * pin;
+    let hi_idx = 0x11 + 2 * pin;
+    route_vector(vector, pin);
+    // SAFETY: per fn contract — the live IRTE precedes this source-side unmask.
+    unsafe {
+        write_reg(hi_idx, hi);
+        write_reg(lo_idx, lo);
+    }
+    true
 }
 
 /// Mask redirection entry `pin` (set bit 16 of its low word).
@@ -198,5 +242,12 @@ mod tests {
         assert_eq!(pin_for_vector(vector), Some(u32::MAX));
         unroute_vector(vector);
         assert_eq!(pin_for_vector(vector), None);
+    }
+
+    #[test]
+    fn remapped_rte_uses_pin_subhandle_and_split_irte_index() {
+        assert_eq!(remapped_redirect_words(0x34, 0x9234, true, true),
+            Some((0x0000_a834, 0x2469_0000)));
+        assert_eq!(remapped_redirect_words(256, 0, false, false), None);
     }
 }
