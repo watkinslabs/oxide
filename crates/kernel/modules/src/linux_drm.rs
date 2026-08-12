@@ -8,7 +8,7 @@ use crate::linux_device::devres;
 use crate::linux_device::types::LinuxDevice;
 use core::alloc::Layout;
 use core::ffi::c_void;
-use core::ptr::write;
+use core::ptr::{read, write};
 use core::sync::atomic::{AtomicI32, Ordering};
 use sync::{Spinlock, Modules as ModulesLockClass};
 
