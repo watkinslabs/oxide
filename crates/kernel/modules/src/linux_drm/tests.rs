@@ -61,6 +61,27 @@ static DRIVER_OPEN: AtomicUsize = AtomicUsize::new(0);
 static DRIVER_CLOSE: AtomicUsize = AtomicUsize::new(0);
 extern "C" fn test_file_open(_dev: *mut c_void, _file: *mut c_void) -> i32 { DRIVER_OPEN.fetch_add(1, AtomicOrdering::SeqCst); 0 }
 extern "C" fn test_file_close(_dev: *mut c_void, _file: *mut c_void) { DRIVER_CLOSE.fetch_add(1, AtomicOrdering::SeqCst); }
+static IOCTL_CALLS: AtomicUsize = AtomicUsize::new(0);
+extern "C" fn test_ioctl(dev: *mut c_void, data: *mut c_void, file: *mut c_void) -> i32 {
+    if dev.is_null() || data.is_null() || file.is_null() { return -LINUX_EINVAL; }
+    // SAFETY: test dispatch supplies a writable u32 payload and file context.
+    unsafe { *(data.cast::<u32>()) = 0xfeed_beef; }
+    IOCTL_CALLS.fetch_add(1, AtomicOrdering::SeqCst); 0
+}
+
+#[test]
+fn private_ioctl_dispatch_validates_command_and_preserves_file_context() {
+    let _modules = crate::test_serial::claim(); IOCTL_CALLS.store(0, AtomicOrdering::SeqCst);
+    let mut parent = LinuxDevice::new(); let mut driver = TestDriver([0; 200]); let mut desc = [0u8; 24]; let mut minor = [0u8; 40]; let mut file_ctx = [0u8; 416]; let mut filp = [0u8; 184]; let mut data = 0u32;
+    const CMD: u32 = 0xc004_6440;
+    // SAFETY: raw arrays reserve their verified DRM ABI field ranges and the test handler uses only its u32 payload.
+    unsafe { write(driver.0.as_mut_ptr().add(176).cast::<*const u8>(), desc.as_ptr()); write(driver.0.as_mut_ptr().add(184).cast::<i32>(), 1); write(desc.as_mut_ptr().cast::<u32>(), CMD); write(desc.as_mut_ptr().add(8).cast::<usize>(), test_ioctl as *const () as usize); }
+    let container = __devm_drm_dev_alloc(&mut parent, (&driver as *const TestDriver).cast(), 2048, 64); let dev = unsafe { container.cast::<u8>().add(64).cast::<c_void>() };
+    // SAFETY: context/minor/file arrays reserve the exact fields read by the dispatcher.
+    unsafe { write(minor.as_mut_ptr().add(16).cast::<*mut c_void>(), dev); write(file_ctx.as_mut_ptr().add(72).cast::<*mut c_void>(), minor.as_mut_ptr().cast()); write(filp.as_mut_ptr().add(24).cast::<*mut c_void>(), file_ctx.as_mut_ptr().cast()); }
+    assert_eq!(ioctl::drm_ioctl(filp.as_mut_ptr().cast(), CMD, (&mut data as *mut u32) as usize), 0); assert_eq!(data, 0xfeed_beef); assert_eq!(IOCTL_CALLS.load(AtomicOrdering::SeqCst), 1);
+    assert_eq!(ioctl::drm_ioctl(filp.as_mut_ptr().cast(), 0, (&mut data as *mut u32) as usize), -25); assert_eq!(IOCTL_CALLS.load(AtomicOrdering::SeqCst), 1); devres::release_device(&mut parent);
+}
 
 #[test]
 fn core_file_context_calls_driver_open_and_postclose_once() {

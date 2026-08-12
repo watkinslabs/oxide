@@ -11,16 +11,13 @@ use core::sync::atomic::{AtomicI32, Ordering};
 use sync::{Spinlock, Modules as ModulesLockClass};
 
 // Module manifest: connector owns connector construction, attachment and teardown.
-#[path = "linux_drm_connector.rs"]
-mod connector;
-#[path = "linux_drm_register.rs"]
-mod register;
-#[path = "linux_drm_format.rs"]
-mod format;
-#[path = "linux_drm_mode.rs"]
-mod mode;
+#[path = "linux_drm_connector.rs"] mod connector;
+#[path = "linux_drm_register.rs"] mod register;
+#[path = "linux_drm_format.rs"] mod format;
+#[path = "linux_drm_mode.rs"] mod mode;
 #[path = "linux_drm_dmt.rs"] mod dmt; #[path = "linux_drm_probe.rs"] mod probe;
 #[path = "linux_drm_file.rs"] mod file;
+#[path = "linux_drm_ioctl.rs"] mod ioctl;
 
 struct DeviceAllocation {
     dev: usize,
@@ -141,6 +138,7 @@ pub fn export_symbols() {
     format::export_symbols();
     mode::export_symbols(); probe::export_symbols();
     file::export_symbols();
+    ioctl::export_symbols();
 }
 
 fn layout_for(size: usize) -> Option<Layout> {
