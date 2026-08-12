@@ -107,7 +107,13 @@ pub fn amd_vi_unit_for_requester(segment: u16, requester: u16) -> Option<IommuUn
     let mut alias_unit = None;
     for index in 0..AMD_ALIAS_COUNT.load(Ordering::Acquire) as usize {
         let range = AMD_ALIAS_RANGE[index].load(Ordering::Relaxed);
-        if requester < range as u16 || requester > (range >> 16) as u16 { continue; }
+        let first = range as u16;
+        let last = (range >> 16) as u16;
+        let canonical = AMD_ALIAS_TARGET[index].load(Ordering::Relaxed) as u16;
+        // Linux installs the IVHD unit in its requester lookup for both an
+        // alias source and its canonical source ID. Either ID can appear as a
+        // scanned PCI function, so the ownership query must resolve both.
+        if !amd_alias_owns_requester(first, last, canonical, requester) { continue; }
         let unit = iommu_unit(AMD_ALIAS_UNIT[index].load(Ordering::Relaxed) as usize)?;
         if unit.segment != segment || alias_unit.is_some_and(|old: IommuUnit| old != unit) { return None; }
         alias_unit = Some(unit);
@@ -125,6 +131,10 @@ pub fn amd_vi_unit_for_requester(segment: u16, requester: u16) -> Option<IommuUn
     found
 }
 
+const fn amd_alias_owns_requester(first: u16, last: u16, canonical: u16, requester: u16) -> bool {
+    (requester >= first && requester <= last) || requester == canonical
+}
+
 /// Return the canonical requester ID for an IVHD alias, if this ID is aliased. # C: O(N)
 pub fn amd_vi_alias_for_requester(segment: u16, requester: u16) -> Option<u16> {
     if IOMMU_KIND.load(Ordering::Relaxed) != IOMMU_KIND_AMD_VI { return None; }
@@ -139,6 +149,19 @@ pub fn amd_vi_alias_for_requester(segment: u16, requester: u16) -> Option<u16> {
         target = Some(value);
     }
     target
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ivhd_alias_ownership_covers_source_range_and_canonical_requester() {
+        assert!(amd_alias_owns_requester(0x1200, 0x12ff, 0x4321, 0x1200));
+        assert!(amd_alias_owns_requester(0x1200, 0x12ff, 0x4321, 0x12ff));
+        assert!(amd_alias_owns_requester(0x1200, 0x12ff, 0x4321, 0x4321));
+        assert!(!amd_alias_owns_requester(0x1200, 0x12ff, 0x4321, 0x1300));
+    }
 }
 
 /// Count published Intel DRHD device scopes. # C: O(1)
