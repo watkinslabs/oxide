@@ -177,6 +177,18 @@ impl VtdRegisters {
         if !self.write32(GCMD, command & !GCMD_COMPATIBILITY_FORMAT_INTERRUPT) { return false; }
         self.wait_status(GSTS_COMPATIBILITY_FORMAT_INTERRUPT, false)
     }
+    /// Disable interrupt remapping after an unsuccessful boot-path transition.
+    /// This follows Linux's `iommu_disable_irq_remapping()`: invalidate the
+    /// interrupt-entry cache at the caller, then clear IRE and wait until the
+    /// unit no longer reports remapping enabled. # C: O(poll limit)
+    pub fn disable_interrupt_remapping(&self) -> bool {
+        if !self.supports_interrupt_remapping() { return true; }
+        let Some(status) = self.read32(GSTS) else { return false; };
+        if status & GSTS_INTERRUPT_REMAP_ENABLED == 0 { return true; }
+        let Some(command) = self.read32(GCMD) else { return false; };
+        if !self.write32(GCMD, command & !GCMD_INTERRUPT_REMAP_ENABLE) { return false; }
+        self.wait_status(GSTS_INTERRUPT_REMAP_ENABLED, false)
+    }
     /// Complete the global context and IOTLB invalidations required after root installation. # C: O(poll limit)
     pub fn invalidate_initial_tables(&self) -> bool {
         let Some(ecap) = self.read64(ECAP) else { return false; };

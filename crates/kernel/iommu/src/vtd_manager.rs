@@ -99,9 +99,29 @@ pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf],
 pub fn enable_vtd_interrupt_remapping() -> bool {
     let mut manager = MANAGER.lock();
     for entry in manager.iter_mut() {
-        if entry.ir.is_some() && !entry.regs.enable_interrupt_remapping() { return false; }
+        if entry.ir.is_some() && !entry.regs.enable_interrupt_remapping() {
+            rollback_interrupt_remapping(&mut manager);
+            return false;
+        }
     }
     true
+}
+
+/// Undo a partially completed all-unit IR transition.  VT-d has one remapping
+/// enable per DRHD, so a later unit failing its status handshake must not
+/// leave earlier units enabled while the caller declines to publish drivers.
+/// Linux similarly invalidates the interrupt-entry cache before clearing IRE.
+/// Best effort is deliberate here: this path is already handling a hardware
+/// failure, but every reachable unit receives the architected teardown.
+/// # C: O(units * poll limit)
+fn rollback_interrupt_remapping(manager: &mut [VtdBootUnit]) {
+    for entry in manager.iter_mut() {
+        if entry.ir.is_none() { continue; }
+        if let Some(queue) = entry.qi.as_mut() {
+            let _ = entry.regs.invalidate_queued(queue);
+        }
+        let _ = entry.regs.disable_interrupt_remapping();
+    }
 }
 
 /// Return whether firmware and every discovered VT-d unit admit EIM. Linux
