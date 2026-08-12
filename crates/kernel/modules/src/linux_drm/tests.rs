@@ -119,3 +119,11 @@ fn connector_links_the_mode_graph_and_cleans_up() {
     unsafe { assert_eq!(*(connector.0.as_ptr().add(connector::DRM_CONNECTOR_BASE_OFF).cast::<u32>()), 1); assert_eq!(*(connector.0.as_ptr().add(connector::DRM_CONNECTOR_BASE_OFF + DRM_MODE_OBJECT_TYPE_OFF).cast::<u32>()), connector::DRM_MODE_OBJECT_CONNECTOR); assert_eq!(*(config.add(connector::MODE_CONFIG_NUM_CONNECTOR_OFF).cast::<i32>()), 1); }
     connector::drm_connector_cleanup(connector.0.as_mut_ptr().cast()); assert_eq!(DEVICES.lock()[0].connectors.len(), 0); devres::release_device(&mut parent);
 }
+
+#[test]
+fn connector_attachment_sets_only_its_live_encoder_bit() {
+    let _modules = crate::test_serial::claim(); let mut parent = LinuxDevice::new(); let dev = device(&mut parent, 2048); assert_eq!(drmm_mode_config_init(dev), 0); let funcs = 1u8; let mut encoder = TestEncoder([0; 128]); let mut connector = TestConnector([0; 2280]);
+    assert_eq!(unsafe { drm_encoder_init(dev, encoder.0.as_mut_ptr().cast(), (&funcs as *const u8).cast(), 10, core::ptr::null()) }, 0); assert_eq!(connector::drm_connector_init(dev, connector.0.as_mut_ptr().cast(), (&funcs as *const u8).cast(), 11), 0); assert_eq!(connector::drm_connector_attach_encoder(connector.0.as_mut_ptr().cast(), encoder.0.as_mut_ptr().cast()), 0);
+    unsafe { assert_eq!(*(connector.0.as_ptr().add(connector::DRM_CONNECTOR_POSSIBLE_ENCODERS_OFF).cast::<u32>()), 1); }
+    connector::drm_connector_cleanup(connector.0.as_mut_ptr().cast()); drm_encoder_cleanup(encoder.0.as_mut_ptr().cast()); devres::release_device(&mut parent);
+}
