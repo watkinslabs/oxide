@@ -149,6 +149,12 @@ pub trait CharDevOps: Send + Sync {
     fn ioctl(&self, devt: Devt, cmd: u32, arg: usize) -> KResult<usize> {
         let _ = (devt, cmd, arg); Err(VfsError::Enotty)
     }
+    /// `cdev->unlocked_ioctl` with the open file description. Drivers that
+    /// retain per-open state receive the same file object from open to release.
+    /// # C: driver-dependent
+    fn ioctl_file(&self, devt: Devt, file: &File, cmd: u32, arg: usize) -> KResult<usize> {
+        let _ = file; self.ioctl(devt, cmd, arg)
+    }
     /// `cdev->poll`. # C: driver-dependent
     fn poll(&self, devt: Devt) -> KResult<u32> { let _ = devt; Ok(crate::inode::POLL_IN | crate::inode::POLL_OUT) }
     /// `cdev->poll` with per-open state. # C: driver-dependent
@@ -424,6 +430,12 @@ pub fn opened_chrdev(file: &File) -> Option<(Devt, Arc<dyn CharDevOps>)> {
         OpenedDevice::Char { devt, ops } => Some((devt, ops)),
         OpenedDevice::Block { .. } => None,
     }
+}
+/// Invoke a character driver's ioctl through the exact open description.
+/// # C: driver-dependent
+pub fn opened_chrdev_ioctl(file: &File, cmd: u32, arg: usize) -> Option<KResult<usize>> {
+    let (devt, ops) = opened_chrdev(file)?;
+    Some(ops.ioctl_file(devt, file, cmd, arg))
 }
 /// `open(2)` routing for a device node (Linux `chrdev_open`). # C: O(log N)
 pub fn device_inode_open(inode: &Inode) -> KResult<()> { inode.on_open() }

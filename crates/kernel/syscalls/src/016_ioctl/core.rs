@@ -240,6 +240,12 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
         }
         return -(Errno::Enotty.as_i32() as i64);
     }
+    // An opened character device owns its file_operations ioctl. In particular,
+    // external DRM drivers require the private state installed by their open
+    // callback, not a synthetic file assembled from the device number.
+    if let Some(rv) = vfs::opened_chrdev_ioctl(&file, req as u32, arg as usize) {
+        return match rv { Ok(v) => v as i64, Err(e) => -(e as i64) };
+    }
     handle_tty_ioctl(cur, &file, &fdt, fd, req, arg)
 }
 
