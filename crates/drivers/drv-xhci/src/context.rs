@@ -20,6 +20,10 @@ const EP0_FLAG: u32 = 1 << 1;
 const EP_STATE_MASK: u32 = 0x7;
 const MAX_PACKET_MASK: u32 = 0xffff << 16;
 const SLOT_CONTEXT_ENTRIES_MASK: u32 = 0x1f << 27;
+const SLOT_HUB: u32 = 1 << 26;
+const SLOT_MTT: u32 = 1 << 25;
+const SLOT_MAX_PORTS_SHIFT: u32 = 24;
+const TT_THINK_TIME_SHIFT: u32 = 16;
 const EP_ERROR_COUNT: u32 = 3 << 1;
 const EP_TYPE_BULK_OUT: u32 = 2 << 3;
 const EP_TYPE_INTERRUPT_OUT: u32 = 3 << 3;
@@ -179,6 +183,29 @@ pub fn configure_hub_words(context_bytes: u8, output_slot: [u32; 8], speed: u8, 
     configure_endpoint_words(context_bytes, output_slot, speed, &[EndpointConfig { address: hub.endpoint, max_packet: hub.max_packet, interval: hub.interval, kind: EndpointType::Interrupt, ring_pa }])?.try_into().ok()
 }
 
+/// Copy the live slot context and mark it as a hub after descriptor discovery. # C: O(1)
+pub fn update_hub_slot_words(context_bytes: u8, output_slot: [u32; 8], hci_version: u16, speed: u8, device_protocol: u8, hub: crate::usb::HubDescriptor) -> Option<[ContextWord; 10]> {
+    let stride = context_bytes as usize;
+    if !matches!(stride, 32 | 64) || !matches!(speed, 1..=5) || hub.ports == 0 { return None; }
+    let mut slot0 = output_slot[0] | SLOT_HUB;
+    if device_protocol == 2 { slot0 |= SLOT_MTT; }
+    else if speed == 1 { slot0 &= !SLOT_MTT; }
+    let mut slot1 = output_slot[1];
+    let mut tt = output_slot[2];
+    if hci_version > 0x0095 {
+        slot1 = (slot1 & !(0xff << SLOT_MAX_PORTS_SHIFT)) | (u32::from(hub.ports) << SLOT_MAX_PORTS_SHIFT);
+        if hci_version < 0x0100 || speed == 3 { tt = (tt & !(0x3 << TT_THINK_TIME_SHIFT)) | (u32::from(hub.tt_think_time) << TT_THINK_TIME_SHIFT); }
+    }
+    let slot = SLOT_CONTEXT * stride;
+    Some([
+        ContextWord { offset: 0, value: 0 }, ContextWord { offset: 4, value: 1 },
+        ContextWord { offset: slot, value: slot0 }, ContextWord { offset: slot + 4, value: slot1 },
+        ContextWord { offset: slot + 8, value: tt }, ContextWord { offset: slot + 12, value: 0 },
+        ContextWord { offset: slot + 16, value: output_slot[4] }, ContextWord { offset: slot + 20, value: output_slot[5] },
+        ContextWord { offset: slot + 24, value: output_slot[6] }, ContextWord { offset: slot + 28, value: output_slot[7] },
+    ])
+}
+
 /// Configure Endpoint words for transparent-SCSI Bulk-Only IN and OUT endpoints. # C: O(1)
 pub fn configure_storage_words(context_bytes: u8, output_slot: [u32; 8], speed: u8, storage: crate::storage::MassStorageInterface, bulk_in_ring_pa: u64, bulk_out_ring_pa: u64) -> Option<Vec<ContextWord>> {
     configure_endpoint_words(context_bytes, output_slot, speed, &[
@@ -253,5 +280,14 @@ mod tests {
         assert!(words.contains(&ContextWord { offset: 324, value: EP_ERROR_COUNT | EP_TYPE_BULK_IN | (512 << 16) }));
         assert!(words.contains(&ContextWord { offset: 272, value: 0 }));
         assert!(configure_endpoint_words(64, [0; 8], 3, &[EndpointConfig { address: 0x81, max_packet: 8, interval: 0, kind: EndpointType::Interrupt, ring_pa: 0x90_000 }]).is_none());
+    }
+    #[test]
+    fn hub_slot_update_copies_live_context_and_sets_linux_hub_fields() {
+        let hub = crate::usb::HubDescriptor { ports: 4, power_good_ms: 20, tt_think_time: 2 };
+        let words = update_hub_slot_words(64, [3 << 27, 3 << 16, 0, 7, 8, 9, 10, 11], 0x0100, 3, 2, hub).unwrap();
+        assert_eq!(words[1], ContextWord { offset: 4, value: 1 });
+        assert_eq!(words[2], ContextWord { offset: 64, value: (3 << 27) | SLOT_HUB | SLOT_MTT });
+        assert_eq!(words[3], ContextWord { offset: 68, value: (3 << 16) | (4 << SLOT_MAX_PORTS_SHIFT) });
+        assert_eq!(words[4], ContextWord { offset: 72, value: 2 << TT_THINK_TIME_SHIFT });
     }
 }

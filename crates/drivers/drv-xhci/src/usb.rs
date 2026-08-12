@@ -22,19 +22,26 @@ pub const HUB_GET_DESCRIPTOR_REQUEST_TYPE: u8 = 0xa0;
 /// Validated USB 2 hub descriptor facts used to construct child topology.
 /// # C: O(1)
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct HubDescriptor { pub ports: u8, pub power_good_ms: u16, pub multi_tt: bool }
+pub struct HubDescriptor { pub ports: u8, pub power_good_ms: u16, pub tt_think_time: u8 }
+
+/// Return the exact USB2 hub-descriptor length from its fixed header. # C: O(1)
+pub fn hub_descriptor_length(bytes: &[u8]) -> Option<usize> {
+    if bytes.len() < HUB_DESC_HEADER_BYTES || bytes[1] != DESC_HUB || bytes[2] == 0 { return None; }
+    let bitmap_bytes = (usize::from(bytes[2]).checked_add(1)?.checked_add(7)?) / 8;
+    let minimum = HUB_DESC_HEADER_BYTES.checked_add(bitmap_bytes.checked_mul(2)?)?;
+    let length = bytes[0] as usize;
+    (length >= minimum && length <= CONFIG_DESC_MAX_BYTES).then_some(length)
+}
 
 /// Parse the fixed hub descriptor header and its mandatory removable-port maps.
 /// # C: O(descriptor bytes)
 pub fn hub_descriptor(bytes: &[u8]) -> Option<HubDescriptor> {
     if bytes.len() < HUB_DESC_HEADER_BYTES || bytes[1] != DESC_HUB { return None; }
-    let length = bytes[0] as usize;
+    let length = hub_descriptor_length(bytes)?;
     let ports = bytes[2];
-    let bitmap_bytes = (usize::from(ports).checked_add(1)?.checked_add(7)?) / 8;
-    let minimum = HUB_DESC_HEADER_BYTES.checked_add(bitmap_bytes.checked_mul(2)?)?;
-    if ports == 0 || length < minimum || length > bytes.len() { return None; }
+    if length > bytes.len() { return None; }
     let characteristics = u16::from_le_bytes([bytes[3], bytes[4]]);
-    Some(HubDescriptor { ports, power_good_ms: u16::from(bytes[5]).checked_mul(2)?, multi_tt: characteristics & (1 << 5) != 0 })
+    Some(HubDescriptor { ports, power_good_ms: u16::from(bytes[5]).checked_mul(2)?, tt_think_time: ((characteristics >> 5) & 0x3) as u8 })
 }
 
 /// Build an IN class-device GET_DESCRIPTOR(HUB) EP0 TD. # C: O(1)
@@ -49,7 +56,7 @@ pub fn get_hub_descriptor_trbs(buffer_pa: u64, length: usize) -> Option<[crate::
 
 /// Parsed fixed USB device descriptor fields needed by enumeration. # C: O(1)
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct DeviceDescriptor { pub vendor: u16, pub product: u16, pub device_class: u8, pub max_packet0: u8, pub configurations: u8 }
+pub struct DeviceDescriptor { pub vendor: u16, pub product: u16, pub device_class: u8, pub device_protocol: u8, pub max_packet0: u8, pub configurations: u8 }
 
 /// Parsed fixed configuration-descriptor header. # C: O(1)
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -134,7 +141,7 @@ pub fn device_descriptor(bytes: &[u8]) -> Option<DeviceDescriptor> {
     if bytes.len() < DEVICE_DESC_BYTES || bytes[0] as usize != DEVICE_DESC_BYTES || bytes[1] != DESC_DEVICE { return None; }
     let max_packet0 = bytes[7];
     if !matches!(max_packet0, 8 | 16 | 32 | 64) || bytes[17] == 0 { return None; }
-    Some(DeviceDescriptor { vendor: u16::from_le_bytes([bytes[8], bytes[9]]), product: u16::from_le_bytes([bytes[10], bytes[11]]), device_class: bytes[4], max_packet0, configurations: bytes[17] })
+    Some(DeviceDescriptor { vendor: u16::from_le_bytes([bytes[8], bytes[9]]), product: u16::from_le_bytes([bytes[10], bytes[11]]), device_class: bytes[4], device_protocol: bytes[6], max_packet0, configurations: bytes[17] })
 }
 
 /// Parse the first nine bytes needed for Linux's two-stage configuration fetch. # C: O(1)
@@ -215,7 +222,7 @@ mod tests {
     #[test]
     fn device_descriptor_requires_exact_header_and_ep0_geometry() {
         let mut bytes = [0u8; DEVICE_DESC_BYTES]; bytes[0] = 18; bytes[1] = DESC_DEVICE; bytes[7] = 64; bytes[8] = 0x34; bytes[9] = 0x12; bytes[10] = 0x78; bytes[11] = 0x56; bytes[17] = 1;
-        assert_eq!(device_descriptor(&bytes), Some(DeviceDescriptor { vendor: 0x1234, product: 0x5678, device_class: 0, max_packet0: 64, configurations: 1 }));
+        assert_eq!(device_descriptor(&bytes), Some(DeviceDescriptor { vendor: 0x1234, product: 0x5678, device_class: 0, device_protocol: 0, max_packet0: 64, configurations: 1 }));
         bytes[7] = 7; assert!(device_descriptor(&bytes).is_none());
     }
     #[test]
@@ -265,7 +272,7 @@ mod tests {
     #[test]
     fn hub_descriptor_and_class_request_keep_port_geometry_strict() {
         let descriptor = [9, DESC_HUB, 4, 0x20, 0, 10, 0, 0, 0];
-        assert_eq!(hub_descriptor(&descriptor), Some(HubDescriptor { ports: 4, power_good_ms: 20, multi_tt: true }));
+        assert_eq!(hub_descriptor(&descriptor), Some(HubDescriptor { ports: 4, power_good_ms: 20, tt_think_time: 1 }));
         assert!(hub_descriptor(&[7, DESC_HUB, 4, 0, 0, 10, 0]).is_none());
         let td = get_hub_descriptor_trbs(0x90_000, 9).unwrap();
         assert_eq!(td[0].dword, [0x2900_06a0, 9 << 16, 8, (crate::ring::TRB_TYPE_SETUP << crate::ring::TRB_TYPE_SHIFT) | (1 << 6) | (3 << 16)]);

@@ -259,6 +259,27 @@ fn set_hid_boot_protocol(mmio: &Mmio, irq: Binding, device: &mut AddressDeviceDm
     control_complete(irq, status_pa, slot)
 }
 
+fn fetch_hub_descriptor(mmio: &Mmio, irq: Binding, device: &mut AddressDeviceDma, slot: u8) -> bool {
+    if device.hub_interface().is_none() { return true; }
+    let Some(header_td) = crate::usb::get_hub_descriptor_trbs(device.descriptor_pa(), crate::usb::HUB_DESC_HEADER_BYTES) else { return false; };
+    let Some(header_status) = device.submit_ep0(mmio, slot, &header_td) else { return false; };
+    if !control_complete(irq, header_status, slot) { return false; }
+    let Some(length) = device.hub_descriptor_length() else { return false; };
+    let Some(full_td) = crate::usb::get_hub_descriptor_trbs(device.descriptor_pa(), length) else { return false; };
+    let Some(full_status) = device.submit_ep0(mmio, slot, &full_td) else { return false; };
+    control_complete(irq, full_status, slot) && device.discover_hub_descriptor().is_some()
+}
+
+fn configure_hub_device(mmio: &Mmio, command: &mut CommandTransport, irq: Binding, device: &mut AddressDeviceDma, slot: u8) -> bool {
+    if !fetch_hub_descriptor(mmio, irq, device, slot) { return false; }
+    if device.hub_interface().is_none() { return true; }
+    let Some(true) = device.prepare_hub_slot(mmio.geometry().hci_version) else { return false; };
+    let command_trb = if mmio.geometry().hci_version > 0x0095 { Trb::configure_endpoint(device.input_pa(), slot) } else { Trb::evaluate_context(device.input_pa(), slot) };
+    let Some(command_trb) = command_trb else { return false; };
+    let Some(command_pa) = command.submit(mmio, command_trb) else { return false; };
+    irq.wait_command_completion(command_pa, 1_000_000_000).is_some_and(|completion| completion.completion_code == crate::ring::COMPLETION_SUCCESS && completion.slot == slot)
+}
+
 fn arm_hid_interrupt_in(mmio: &Mmio, device: &mut AddressDeviceDma, slot: u8) -> bool {
     device.hid_configuration().is_none() || device.submit_hid_report(mmio, slot).is_some()
 }
@@ -334,11 +355,11 @@ fn address_port_device(bdf: pci::Bdf, mmio: &Mmio, command: &mut CommandTranspor
         if control_complete(irq, status_pa, enable.slot) {
             if let Some(descriptor) = device.device_descriptor() {
                 match device.prepare_evaluate_ep0(descriptor.max_packet0) {
-                    Some(false) => if fetch_first_configuration(mmio, irq, &mut device, enable.slot) && configure_device_endpoint(mmio, command, irq, &mut device, enable.slot) && set_device_configuration(mmio, irq, &mut device, enable.slot) && set_hid_boot_protocol(mmio, irq, &mut device, enable.slot) && arm_hid_interrupt_in(mmio, &mut device, enable.slot) && arm_hub_interrupt_in(mmio, &mut device, enable.slot) { return Some(device); },
+                    Some(false) => if fetch_first_configuration(mmio, irq, &mut device, enable.slot) && configure_device_endpoint(mmio, command, irq, &mut device, enable.slot) && set_device_configuration(mmio, irq, &mut device, enable.slot) && configure_hub_device(mmio, command, irq, &mut device, enable.slot) && set_hid_boot_protocol(mmio, irq, &mut device, enable.slot) && arm_hid_interrupt_in(mmio, &mut device, enable.slot) && arm_hub_interrupt_in(mmio, &mut device, enable.slot) { return Some(device); },
                     Some(true) => {
                         if let Some(evaluate) = Trb::evaluate_context(device.input_pa(), enable.slot) {
                             if let Some(evaluate_pa) = command.submit(mmio, evaluate) {
-                                if irq.wait_command_completion(evaluate_pa, 1_000_000_000).is_some_and(|completion| completion.completion_code == crate::ring::COMPLETION_SUCCESS && completion.slot == enable.slot) && fetch_first_configuration(mmio, irq, &mut device, enable.slot) && configure_device_endpoint(mmio, command, irq, &mut device, enable.slot) && set_device_configuration(mmio, irq, &mut device, enable.slot) && set_hid_boot_protocol(mmio, irq, &mut device, enable.slot) && arm_hid_interrupt_in(mmio, &mut device, enable.slot) && arm_hub_interrupt_in(mmio, &mut device, enable.slot) { return Some(device); }
+                                if irq.wait_command_completion(evaluate_pa, 1_000_000_000).is_some_and(|completion| completion.completion_code == crate::ring::COMPLETION_SUCCESS && completion.slot == enable.slot) && fetch_first_configuration(mmio, irq, &mut device, enable.slot) && configure_device_endpoint(mmio, command, irq, &mut device, enable.slot) && set_device_configuration(mmio, irq, &mut device, enable.slot) && configure_hub_device(mmio, command, irq, &mut device, enable.slot) && set_hid_boot_protocol(mmio, irq, &mut device, enable.slot) && arm_hid_interrupt_in(mmio, &mut device, enable.slot) && arm_hub_interrupt_in(mmio, &mut device, enable.slot) { return Some(device); }
                             }
                         }
                     }
