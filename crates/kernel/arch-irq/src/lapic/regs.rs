@@ -56,6 +56,15 @@ const MSR_X2APIC_ICR: u32 = 0x830;
 const REG_EOI: usize = 0x0B0;
 #[cfg(target_arch = "x86_64")]
 const REG_ICR_LO: usize = 0x300;
+/// xAPIC's ICR-high destination field is only eight bits wide.
+#[cfg(target_arch = "x86_64")]
+const XAPIC_DESTINATION_MAX: u32 = u8::MAX as u32;
+
+/// Whether an APIC ID can be represented by the active ICR format. # C: O(1)
+#[cfg(target_arch = "x86_64")]
+const fn icr_destination_fits(x2apic: bool, destination: u32) -> bool {
+    x2apic || destination <= XAPIC_DESTINATION_MAX
+}
 
 
 /// True iff EOI must go through the x2APIC EOI MSR (0x80B) instead of the xAPIC
@@ -160,6 +169,11 @@ pub(crate) unsafe fn write_icr_register(destination: u32, low: u32) -> bool {
         unsafe { wrmsr(MSR_X2APIC_ICR, value); }
         return true;
     }
+    // xAPIC exposes only destination bits 56:63 through ICR-high. Silently
+    // shifting a wider MADT APIC ID would target a different CPU; Linux moves
+    // to x2APIC before it can use such IDs. Refuse it until this CPU is in
+    // the x2APIC backend instead.
+    if !icr_destination_fits(false, destination) { return false; }
     let va = LAPIC_BASE_VA.load(Ordering::Acquire);
     if va == 0 { return false; }
     // SAFETY: the enabled xAPIC page covers the ICR high and low register words.
@@ -255,5 +269,17 @@ pub fn busy_wait_us(us: u64) {
     for _ in 0..iters {
         // SAFETY: `pause` is a microarchitectural hint, no side effects.
         unsafe { core::arch::asm!("pause", options(nomem, nostack, preserves_flags)); }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn xapic_rejects_wide_apic_ids_but_x2apic_accepts_them() {
+        assert!(icr_destination_fits(false, XAPIC_DESTINATION_MAX));
+        assert!(!icr_destination_fits(false, XAPIC_DESTINATION_MAX + 1));
+        assert!(icr_destination_fits(true, u32::MAX));
     }
 }

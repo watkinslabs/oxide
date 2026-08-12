@@ -17,9 +17,9 @@ use core::sync::atomic::{AtomicU32, Ordering};
 pub mod mask;
 pub use mask::{AtomicCpuMask, CpuMask};
 
-/// Logical CPU admission cap. It stays below the architecture transport bound
-/// until every scheduler-visible affinity path is mask-shaped.
-pub const MAX_CPUS: usize = 64;
+/// Logical CPU admission cap. Scheduler affinity and architecture transport
+/// are word-array shaped through the full architectural 256-CPU limit.
+pub const MAX_CPUS: usize = 256;
 const _: () = assert!(MAX_CPUS <= hal::MAX_SMP_CPUS);
 /// Offset in every architecture per-CPU page used by Linux module code.
 pub const LINUX_MODULE_PERCPU_OFFSET: usize = 16;
