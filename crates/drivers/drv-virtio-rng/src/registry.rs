@@ -9,9 +9,7 @@ pub(crate) struct RngState {
     pub bdf: pci::Bdf,
     pub cfg_va: u64,
     pub hhdm: u64,
-    pub requestq: virtio::VirtQueueResource,
-    pub avail_idx: u16,
-    pub used_idx_seen: u16,
+    pub requestq: Option<virtio::VirtioSplitQueue>,
     pub bounce_pa: u64,
     pub bounce_dma: u64,
     pub hwrng_dev: Arc<drv::Device>,
@@ -39,12 +37,16 @@ pub fn install(
     bdf: pci::Bdf,
     resources: virtio::VirtioResources,
 ) -> Option<usize> {
-    let Some(requestq) = resources.require_queue(0) else {
+    let Some(requestq_resource) = resources.require_queue(0) else {
         return None;
     };
     if !resources.common_cfg_valid() || find_handle(device_key).is_some() {
         return None;
     }
+    let requestq = match virtio::VirtioSplitQueue::new(requestq_resource, resources.hhdm) {
+        Ok(queue) => queue,
+        Err(_) => return None,
+    };
     let bounce_pa = pmm::setup::alloc_one_frame()?;
     let Some(bounce_dma) = iommu::map_dma(bdf, bounce_pa, BOUNCE_FRAME_BYTES) else {
         // SAFETY: mapping failed before a virtqueue descriptor could name the frame.
@@ -60,11 +62,6 @@ pub fn install(
             core::ptr::write_volatile(va.add(i), 0);
         }
     }
-    let used = resources.hhdm.wrapping_add(requestq.device_pa) as *const u16;
-    // SAFETY: HHDM-mapped q0 used ring (require_queue accepted device_pa);
-    // aligned u16 load of used.idx at index 1, taken once so the driver's
-    // avail counter starts from whatever the device has already consumed.
-    let used_seen = unsafe { core::ptr::read_volatile(used.add(1)) };
     let hwrng_dev = Arc::new(
         drv::Device::new("misc", String::from("hwrng"), 0, 0, 0)
             .with_devnode("misc", String::from("hwrng"), Some((HWRNG_MAJOR, HWRNG_MINOR)))
@@ -85,9 +82,7 @@ pub fn install(
         bdf,
         cfg_va: resources.cfg_va,
         hhdm: resources.hhdm,
-        requestq,
-        avail_idx: used_seen,
-        used_idx_seen: used_seen,
+        requestq: Some(requestq),
         bounce_pa,
         bounce_dma,
         hwrng_dev: Arc::clone(&hwrng_dev),
