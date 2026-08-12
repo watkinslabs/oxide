@@ -21,6 +21,7 @@ use sync::{Spinlock, Modules as ModulesLockClass};
 #[path = "linux_drm_gem.rs"] mod gem;
 #[path = "linux_drm_shadow.rs"] mod shadow;
 #[path = "linux_drm_format_helper.rs"] mod format_helper;
+#[path = "linux_drm_atomic.rs"] mod atomic;
 
 struct DeviceAllocation {
     dev: usize,
@@ -149,6 +150,7 @@ pub fn export_symbols() {
     gem::export_symbols();
     shadow::export_symbols();
     format_helper::export_symbols();
+    atomic::export_symbols();
 }
 
 fn layout_for(size: usize) -> Option<Layout> {
