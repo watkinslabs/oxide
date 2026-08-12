@@ -7,6 +7,12 @@ use crate::controller::{halt_command, reset_command, reset_complete, USBCMD, USB
 use crate::controller::{RunPlan, CONFIG, CRCR, DCBAAP, ERDP, ERSTBA, ERSTSZ, IMAN};
 
 const PAGE: u64 = 4096;
+const LEGACY_CONTROL: u64 = 4;
+const LEGACY_BIOS_OWNED: u32 = 1 << 16;
+const LEGACY_OS_OWNED: u32 = 1 << 24;
+const LEGACY_DISABLE_SMI: u32 = (0x7 << 1) | (0xff << 5) | (0x7 << 17);
+const LEGACY_SMI_EVENTS: u32 = 0x7 << 29;
+const LEGACY_HANDOFF_NS: u64 = 1_000_000_000;
 
 /// Convert a controller DMA physical page into its direct-map virtual alias.
 /// # C: O(1)
@@ -155,6 +161,34 @@ impl Mmio {
     /// Protocol declaration governing one root-hub port, if firmware supplied one. # C: O(BAR dwords)
     pub fn protocol_for_port(&self, port: u8) -> Option<PortProtocol> {
         protocol_for_port(|offset| self.read32(offset), self.bytes, self.geometry.extended_capabilities, self.geometry.max_ports, port)
+    }
+
+    /// Take optional firmware ownership of an xHCI controller before reset.
+    /// Missing legacy support is valid. A firmware timeout follows the native
+    /// driver's forced-takeover rule, then disables legacy SMI delivery.
+    /// # C: O(one-second bounded firmware handoff)
+    pub fn legacy_handoff(&self, force: bool) -> bool {
+        let Some(offset) = crate::regs::legacy_capability_offset(|at| self.read32(at), self.bytes, self.geometry.extended_capabilities) else { return true; };
+        let Some(mut legacy) = self.read32(offset) else { return false; };
+        if legacy == u32::MAX || offset.checked_add(LEGACY_CONTROL + 4).is_none_or(|end| end > self.bytes) { return false; }
+        if force {
+            legacy = (legacy | LEGACY_OS_OWNED) & !LEGACY_BIOS_OWNED;
+            if !self.write32(offset, legacy) { return false; }
+        } else if legacy & LEGACY_BIOS_OWNED != 0 {
+            if !self.write32(offset, legacy | LEGACY_OS_OWNED) { return false; }
+            let deadline = sched::deadline::clock::now_ns().saturating_add(LEGACY_HANDOFF_NS);
+            loop {
+                let Some(observed) = self.read32(offset) else { return false; };
+                if observed & LEGACY_BIOS_OWNED == 0 { break; }
+                if sched::deadline::clock::now_ns() >= deadline {
+                    if !self.write32(offset, observed & !LEGACY_BIOS_OWNED) { return false; }
+                    break;
+                }
+                core::hint::spin_loop();
+            }
+        }
+        let Some(control) = self.read32(offset + LEGACY_CONTROL) else { return false; };
+        self.write32(offset + LEGACY_CONTROL, (control & LEGACY_DISABLE_SMI) | LEGACY_SMI_EVENTS)
     }
 
     /// Read one aligned dword that geometry has proven lies in BAR0. # C: O(1)

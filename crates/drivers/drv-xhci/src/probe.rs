@@ -411,6 +411,9 @@ impl drv::Driver for XhciDriver {
         // SAFETY: BAR0 was enumerated for this matched PCI function and this
         // probe owns it until the symmetric remove path releases its Mapping.
         let Some(mmio) = (unsafe { Mmio::map(resource.start, bytes) }) else { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); };
+        let force_handoff = (dev.vendor_id == 0x104c && dev.device_id == 0x8241)
+            || (dev.vendor_id == 0x1912 && dev.device_id == 0x0014);
+        if !mmio.legacy_handoff(force_handoff) { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); }
         if !mmio.halt_reset() { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); }
         let Some((command, dcbaa, erst, event)) = prepare_dma(bdf, &mmio) else { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); };
         let Some(command) = CommandTransport::new(command) else { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); };
