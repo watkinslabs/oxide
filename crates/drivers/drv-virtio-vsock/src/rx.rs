@@ -28,13 +28,13 @@ pub(crate) fn prepost_all(device_key: virtio::VirtioChildDeviceKey) {
     let avail = h.wrapping_add(ctx.rxq.driver_pa) as *mut u16;
 
     for i in 0..RX_RING_BUFS {
-        let buf_pa = ctx.rx_bufs[i];
-        // Descriptor[i] = { addr=buf_pa, len=4096, flags=WRITE, next=0 }.
+        let buf = ctx.rx_bufs[i];
+        // Descriptor[i] = { addr=buf.dma, len=4096, flags=WRITE, next=0 }.
         // SAFETY: HHDM-mapped q0 descriptor table programmed by the boot
         // probe; two aligned u64 stores per slot i < RX_RING_BUFS <= rxq.size
         // build a device-writable descriptor over our owned bounce frame.
         unsafe {
-            core::ptr::write_volatile(desc.add(i * 2), buf_pa);
+            core::ptr::write_volatile(desc.add(i * 2), virtio::device_dma_addr(buf));
             let w1 = (RX_BUF_LEN as u64) | ((virtio::VRING_DESC_F_WRITE as u64) << 32);
             core::ptr::write_volatile(desc.add(i * 2 + 1), w1);
         }
@@ -92,10 +92,10 @@ pub(crate) fn drain() -> usize {
                      core::ptr::read_volatile(used_u32.add(1 + e * 2 + 1)))
                 };
                 let slot = (desc_id as usize) % RX_RING_BUFS;
-                let buf_pa = ctx.rx_bufs[slot];
+                let buf = ctx.rx_bufs[slot];
                 let n = (dev_len as usize).min(RX_BUF_LEN as usize);
                 if n >= VSOCK_HDR_LEN {
-                    let src = h.wrapping_add(buf_pa) as *const u8;
+                    let src = h.wrapping_add(buf.pa) as *const u8;
                     let mut raw = alloc::vec![0u8; n];
                     // SAFETY: HHDM-mapped RX bounce frame the device filled;
                     // bounded read of n ≤ 4 KiB bytes the device reported.
@@ -116,11 +116,11 @@ pub(crate) fn drain() -> usize {
                 let avail = h.wrapping_add(ctx.rxq.driver_pa) as *mut u16;
                 for &desc_id in &refill_slots {
                     let slot = (desc_id as usize) % RX_RING_BUFS;
-                    let buf_pa = ctx.rx_bufs[slot];
+                    let buf = ctx.rx_bufs[slot];
                     // SAFETY: HHDM-mapped q0 descriptor table; rewrite the
                     // device-writable descriptor over our owned bounce frame.
                     unsafe {
-                        core::ptr::write_volatile(desc.add(slot * 2), buf_pa);
+                        core::ptr::write_volatile(desc.add(slot * 2), virtio::device_dma_addr(buf));
                         let w1 = (RX_BUF_LEN as u64) | ((virtio::VRING_DESC_F_WRITE as u64) << 32);
                         core::ptr::write_volatile(desc.add(slot * 2 + 1), w1);
                     }

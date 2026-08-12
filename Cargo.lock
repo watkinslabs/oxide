@@ -540,6 +540,7 @@ dependencies = [
  "hal-x86_64",
  "klog",
  "net",
+ "pci",
  "pmm",
  "sched",
  "softirq",
@@ -2235,7 +2236,9 @@ name = "virtio"
 version = "0.1.0"
 dependencies = [
  "drv",
+ "iommu",
  "pci",
+ "pmm",
 ]
 
 [[package]]

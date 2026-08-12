@@ -56,6 +56,7 @@ fn rx_noop(_owner: net::vsock::VsockOwner) -> usize { 0 }
 fn ctx(device_key: virtio::VirtioChildDeviceKey) -> Ctx {
     Ctx {
         device_key,
+        bdf: pci::Bdf { segment: 0, bus: 0, device: 0, function: 0 },
         cfg_va: 0,
         hhdm: 0,
         guest_cid: device_key.raw() as u64,
@@ -63,10 +64,10 @@ fn ctx(device_key: virtio::VirtioChildDeviceKey) -> Ctx {
         txq: queue(1),
         rx_avail_idx: 0,
         rx_used_seen: 0,
-        rx_bufs: [0; RX_RING_BUFS],
+        rx_bufs: [virtio::VirtioDmaFrame::default(); RX_RING_BUFS],
         tx_avail_idx: 0,
         tx_used_seen: 0,
-        tx_buf_pa: 0,
+        tx_buf: virtio::VirtioDmaFrame::default(),
     }
 }
 
@@ -285,9 +286,9 @@ fn hosted_domain_drop_restores_driver_and_protocol_state() {
 fn context_cleanup_releases_every_owned_queue_frame() {
     let _domain = test_domain();
     let mut context = ctx(key(0x0040_0000));
-    context.rx_bufs[0] = 0x1000;
-    context.rx_bufs[1] = 0x2000;
-    context.tx_buf_pa = 0x3000;
+    context.rx_bufs[0] = virtio::VirtioDmaFrame { pa: 0x1000, dma: 0x1000 };
+    context.rx_bufs[1] = virtio::VirtioDmaFrame { pa: 0x2000, dma: 0x2000 };
+    context.tx_buf = virtio::VirtioDmaFrame { pa: 0x3000, dma: 0x3000 };
     crate::registry::CTX.lock().push(context);
     let mut released = alloc::vec::Vec::new();
     crate::registry::clear_ctxs_with_for_tests(|frame| released.push(frame));
