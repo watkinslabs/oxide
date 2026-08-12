@@ -6,21 +6,27 @@ use alloc::alloc::{alloc_zeroed, dealloc};
 use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::ffi::c_void;
+use core::sync::atomic::{AtomicI32, Ordering};
 use sync::{Spinlock, Modules as ModulesLockClass};
 
 struct DeviceAllocation {
     dev: usize,
     base: usize,
     layout: Layout,
+    put_pending: bool,
 }
 
 static DEVICES: Spinlock<Vec<DeviceAllocation>, ModulesLockClass> = Spinlock::new(Vec::new());
+static GUARDS: Spinlock<Vec<(i32, usize)>, ModulesLockClass> = Spinlock::new(Vec::new());
+static NEXT_GUARD: AtomicI32 = AtomicI32::new(1);
 
 /// Register the DRM core object-lifetime ABI.
 /// # C: O(1)
 pub fn export_symbols() {
     crate::symtab::export("__devm_drm_dev_alloc", __devm_drm_dev_alloc as *const () as usize, false);
     crate::symtab::export("drm_dev_put", drm_dev_put as *const () as usize, false);
+    crate::symtab::export("drm_dev_enter", drm_dev_enter as *const () as usize, false);
+    crate::symtab::export("drm_dev_exit", drm_dev_exit as *const () as usize, false);
 }
 
 fn layout_for(size: usize) -> Option<Layout> {
@@ -46,7 +52,7 @@ extern "C" fn __devm_drm_dev_alloc(
     // SAFETY: offset+pointer-size was checked against this allocation and base
     // is aligned for the driver-private object supplied by the module ABI.
     let dev = unsafe { base.add(offset) as *mut c_void };
-    DEVICES.lock().push(DeviceAllocation { dev: dev as usize, base: base as usize, layout });
+    DEVICES.lock().push(DeviceAllocation { dev: dev as usize, base: base as usize, layout, put_pending: false });
     dev
 }
 
@@ -57,10 +63,52 @@ extern "C" fn drm_dev_put(dev: *mut c_void) {
     let rec = {
         let mut devices = DEVICES.lock();
         let Some(pos) = devices.iter().position(|rec| rec.dev == dev as usize) else { return };
+        if GUARDS.lock().iter().any(|(_, guarded)| *guarded == dev as usize) {
+            devices[pos].put_pending = true;
+            return;
+        }
         devices.remove(pos)
     };
     // SAFETY: rec.base was returned by alloc_zeroed with rec.layout and was
     // removed from DEVICES first, so this exact allocation is released once.
+    unsafe { dealloc(rec.base as *mut u8, rec.layout); }
+}
+
+fn next_guard() -> i32 {
+    loop {
+        let id = NEXT_GUARD.fetch_add(1, Ordering::Relaxed);
+        if id > 0 { return id; }
+    }
+}
+
+/// Enter a live DRM-device critical section and return its release token.
+/// # C: O(N_devices + N_guards)
+extern "C" fn drm_dev_enter(dev: *mut c_void, idx: *mut i32) -> bool {
+    if dev.is_null() || idx.is_null() { return false; }
+    let id = next_guard();
+    let devices = DEVICES.lock();
+    if !devices.iter().any(|rec| rec.dev == dev as usize && !rec.put_pending) { return false; }
+    GUARDS.lock().push((id, dev as usize));
+    // SAFETY: idx was checked non-null and the caller owns this one i32 output.
+    unsafe { *idx = id; }
+    true
+}
+
+/// Exit the DRM-device critical section identified by `drm_dev_enter`.
+/// # C: O(N_guards)
+extern "C" fn drm_dev_exit(idx: i32) {
+    let dev = {
+        let mut guards = GUARDS.lock();
+        let Some(pos) = guards.iter().position(|(id, _)| *id == idx) else { return };
+        guards.remove(pos).1
+    };
+    let rec = {
+        let mut devices = DEVICES.lock();
+        let Some(pos) = devices.iter().position(|rec| rec.dev == dev && rec.put_pending) else { return };
+        devices.remove(pos)
+    };
+    // SAFETY: the final guard removed this pending allocation and the record
+    // was atomically removed before its original allocation is released.
     unsafe { dealloc(rec.base as *mut u8, rec.layout); }
 }
 
@@ -89,5 +137,32 @@ mod tests {
         export_symbols();
         assert!(crate::symtab::is_exported("__devm_drm_dev_alloc"));
         assert!(crate::symtab::is_exported("drm_dev_put"));
+        assert!(crate::symtab::is_exported("drm_dev_enter"));
+        assert!(crate::symtab::is_exported("drm_dev_exit"));
+    }
+
+    #[test]
+    fn critical_section_token_is_released_once() {
+        let _modules = crate::test_serial::claim();
+        let dev = __devm_drm_dev_alloc(core::ptr::null_mut(), core::ptr::null(), 128, 64);
+        let mut token = 0;
+        assert!(drm_dev_enter(dev, &mut token));
+        assert!(token > 0);
+        drm_dev_exit(token);
+        assert!(GUARDS.lock().is_empty());
+        drm_dev_put(dev);
+    }
+
+    #[test]
+    fn put_waits_for_the_last_critical_section() {
+        let _modules = crate::test_serial::claim();
+        let dev = __devm_drm_dev_alloc(core::ptr::null_mut(), core::ptr::null(), 128, 64);
+        let mut token = 0;
+        assert!(drm_dev_enter(dev, &mut token));
+        drm_dev_put(dev);
+        assert_eq!(DEVICES.lock().len(), 1);
+        assert!(!drm_dev_enter(dev, &mut 0));
+        drm_dev_exit(token);
+        assert!(DEVICES.lock().is_empty());
     }
 }
