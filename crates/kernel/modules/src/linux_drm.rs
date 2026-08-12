@@ -20,6 +20,7 @@ use sync::{Spinlock, Modules as ModulesLockClass};
 #[path = "linux_drm_ioctl.rs"] mod ioctl;
 #[path = "linux_drm_gem.rs"] mod gem;
 #[path = "linux_drm_shadow.rs"] mod shadow;
+#[path = "linux_drm_format_helper.rs"] mod format_helper;
 
 struct DeviceAllocation {
     dev: usize,
@@ -147,6 +148,7 @@ pub fn export_symbols() {
     ioctl::export_symbols();
     gem::export_symbols();
     shadow::export_symbols();
+    format_helper::export_symbols();
 }
 
 fn layout_for(size: usize) -> Option<Layout> {
