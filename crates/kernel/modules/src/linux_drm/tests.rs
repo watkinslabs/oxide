@@ -121,6 +121,19 @@ fn connector_links_the_mode_graph_and_cleans_up() {
 }
 
 #[test]
+fn probed_mode_links_to_the_connector_and_destroy_unlinks_it() {
+    let _modules = crate::test_serial::claim(); let mut parent = LinuxDevice::new(); let dev = device(&mut parent, 2048); assert_eq!(drmm_mode_config_init(dev), 0); let mut connector = TestConnector([0; 2280]); let funcs = 1u8;
+    assert_eq!(connector::drm_connector_init(dev, connector.0.as_mut_ptr().cast(), (&funcs as *const u8).cast(), 11), 0); let mode = mode::drm_mode_create(dev);
+    assert!(!mode.is_null()); mode::drm_mode_probed_add(connector.0.as_mut_ptr().cast(), mode);
+    // SAFETY: successful publication links the display-mode node into the connector's probed list.
+    unsafe { let head = connector.0.as_mut_ptr().add(mode::DRM_CONNECTOR_PROBED_MODES_OFF).cast::<*mut c_void>(); let node = mode.cast::<u8>().add(mode::DRM_DISPLAY_MODE_HEAD_OFF).cast::<*mut c_void>(); assert_eq!(*head.add(1), node.cast()); assert_eq!(*node, head.cast()); assert_eq!(*node.add(1), head.cast()); }
+    mode::drm_mode_destroy(dev, mode);
+    // SAFETY: destruction restores the initialized empty-list relation.
+    unsafe { let head = connector.0.as_mut_ptr().add(mode::DRM_CONNECTOR_PROBED_MODES_OFF).cast::<*mut c_void>(); assert_eq!(*head, head.cast()); assert_eq!(*head.add(1), head.cast()); }
+    connector::drm_connector_cleanup(connector.0.as_mut_ptr().cast()); devres::release_device(&mut parent);
+}
+
+#[test]
 fn connector_attachment_sets_only_its_live_encoder_bit() {
     let _modules = crate::test_serial::claim(); let mut parent = LinuxDevice::new(); let dev = device(&mut parent, 2048); assert_eq!(drmm_mode_config_init(dev), 0); let funcs = 1u8; let mut encoder = TestEncoder([0; 128]); let mut connector = TestConnector([0; 2280]);
     assert_eq!(unsafe { drm_encoder_init(dev, encoder.0.as_mut_ptr().cast(), (&funcs as *const u8).cast(), 10, core::ptr::null()) }, 0); assert_eq!(connector::drm_connector_init(dev, connector.0.as_mut_ptr().cast(), (&funcs as *const u8).cast(), 11), 0); assert_eq!(connector::drm_connector_attach_encoder(connector.0.as_mut_ptr().cast(), encoder.0.as_mut_ptr().cast()), 0);

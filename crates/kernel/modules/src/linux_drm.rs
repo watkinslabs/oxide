@@ -19,6 +19,8 @@ mod connector;
 mod register;
 #[path = "linux_drm_format.rs"]
 mod format;
+#[path = "linux_drm_mode.rs"]
+mod mode;
 
 struct DeviceAllocation {
     dev: usize,
@@ -137,6 +139,7 @@ pub fn export_symbols() {
     connector::export_symbols();
     register::export_symbols();
     format::export_symbols();
+    mode::export_symbols();
 }
 
 fn layout_for(size: usize) -> Option<Layout> {
