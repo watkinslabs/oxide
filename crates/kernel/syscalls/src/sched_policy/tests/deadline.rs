@@ -170,7 +170,11 @@ fn a_task_that_cannot_reach_the_whole_span_is_refused_even_with_cap_sys_nice() {
     privileged(&caller);
     let t = normal(2, 0);
     let span = sched::deadline::span();
-    t.cpus_allowed.store(span & !(span & span.wrapping_neg()), Ordering::Release);
+    let mut confined = span;
+    for cpu in 0..cpu::MAX_CPUS {
+        if confined.remove(cpu) { break; }
+    }
+    t.cpus_allowed.store(confined, Ordering::Release);
     assert_eq!(setattr(&caller, &t, &dl(1_000_000, 10_000_000, 10_000_000)), EPERM);
     assert_eq!(task_policy(&t), SCHED_NORMAL);
 }

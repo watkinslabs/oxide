@@ -1,24 +1,26 @@
-/// Parse a Linux cpulist (`"0-3,7,9-11"`) into a CPU bitmask (bit N ⇔
-/// CPU N), capped at 64. Empty/whitespace → `None` (no restriction).
+/// Parse a Linux cpulist (`"0-3,7,9-11"`) into a CPU mask (bit N ⇔ CPU N).
+/// Empty/whitespace → `None` (no restriction).
 /// Malformed tokens are skipped (best-effort, matching how the kernel
 /// tolerates partial writes). Pure — hosted-tested.
 /// # C: O(len)
-pub fn cpulist_to_mask(s: &str) -> Option<u64> {
+pub fn cpulist_to_mask(s: &str) -> Option<cpu::CpuMask> {
     let s = s.trim();
     if s.is_empty() { return None; }
-    let mut mask = 0u64;
+    let mut mask = cpu::CpuMask::empty();
     for tok in s.split(',') {
         let tok = tok.trim();
         if tok.is_empty() { continue; }
         if let Some((a, b)) = tok.split_once('-') {
             if let (Ok(lo), Ok(hi)) = (a.trim().parse::<u32>(), b.trim().parse::<u32>()) {
-                for c in lo..=hi.min(63) { if c < 64 { mask |= 1u64 << c; } }
+                for c in lo..=hi.min((cpu::MAX_CPUS - 1) as u32) {
+                    mask.insert(c as usize);
+                }
             }
         } else if let Ok(c) = tok.parse::<u32>() {
-            if c < 64 { mask |= 1u64 << c; }
+            if c < cpu::MAX_CPUS as u32 { mask.insert(c as usize); }
         }
     }
-    if mask == 0 { None } else { Some(mask) }
+    if mask.is_empty() { None } else { Some(mask) }
 }
 
 /// Map cgroup v2 `cpu.weight` (1..=10000, default 100) → CFS load weight

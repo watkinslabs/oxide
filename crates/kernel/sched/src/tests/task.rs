@@ -4,13 +4,15 @@ use core::sync::atomic::Ordering;
 use std::sync::{Arc, Barrier};
 use std::vec::Vec;
 
+fn m(bits: u64) -> cpu::CpuMask { cpu::CpuMask::from_words(&[bits]) }
+
 #[test]
 fn cpus_allowed_defaults_to_any() {
     let t = Task::new(1, "t", SchedClass::Normal { weight: 1024 });
-    assert_eq!(t.cpus_allowed.load(Ordering::Acquire), u64::MAX);
-    t.cpus_allowed.store(1, Ordering::Release);
-    assert_eq!(t.cpus_allowed.load(Ordering::Acquire) & (1 << 0), 1, "allowed on cpu0");
-    assert_eq!(t.cpus_allowed.load(Ordering::Acquire) & (1 << 1), 0, "not on cpu1");
+    assert_eq!(t.cpus_allowed.load(Ordering::Acquire), cpu::CpuMask::all());
+    t.cpus_allowed.store(m(1), Ordering::Release);
+    assert!(t.cpus_allowed.load(Ordering::Acquire).contains(0), "allowed on cpu0");
+    assert!(!t.cpus_allowed.load(Ordering::Acquire).contains(1), "not on cpu1");
 }
 
 #[test]

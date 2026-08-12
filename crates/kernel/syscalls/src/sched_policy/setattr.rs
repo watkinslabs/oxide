@@ -82,11 +82,11 @@ pub fn setattr(caller: &sched::Task, t: &Arc<sched::Task>, attr: &SchedAttr) -> 
 
 /// The CPU span the deadline class is admitted against.
 /// # C: O(1)
-fn dl_span() -> u64 { sched::deadline::span() }
+fn dl_span() -> cpu::CpuMask { sched::deadline::span() }
 
 /// The CPUs `t` may actually run on.
 /// # C: O(1)
-fn dl_task_mask(t: &sched::Task) -> u64 { t.cpus_allowed.load(Ordering::Acquire) }
+fn dl_task_mask(t: &sched::Task) -> cpu::CpuMask { t.cpus_allowed.load(Ordering::Acquire) }
 
 /// Linux's `goto change` ladder: would this request alter anything the task
 /// already has?

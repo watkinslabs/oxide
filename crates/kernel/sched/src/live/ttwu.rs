@@ -158,7 +158,7 @@ pub fn sched_ttwu_pending(cpu: u32, current: *mut Task, rq: &Runqueue) -> bool {
         // target before acquiring this rq, preserving TaskWake -> Runqueue.
         let _wake = task.task_wake_lock.lock_irqsave::<RqIrq>();
         let allowed = task.cpus_allowed.load(Ordering::Acquire);
-        if cpu < 64 && allowed & (1u64 << cpu) == 0 {
+        if !allowed.contains(cpu as usize) {
             reroute.push(Arc::clone(&task));
             continue;
         }
@@ -237,7 +237,7 @@ where F: Fn(u32) -> Option<&'a Runqueue> {
     let prev = task.cpu.load(Ordering::Acquire);
     if prev != u16::MAX {
         let cpu = prev as u32;
-        if cpu < 64 && (allowed & (1u64 << cpu)) != 0 {
+        if allowed.contains(cpu as usize) {
             if let Some(rq) = get_rq(cpu) {
                 // Keep prev ONLY if it is idle (cache-warm + runs the wakee
                 // immediately). If prev is busy, fall through to the idlest-CPU
@@ -255,8 +255,7 @@ where F: Fn(u32) -> Option<&'a Runqueue> {
     let order = core::iter::once(local)
         .chain((0..cpu::MAX_CPUS as u32).filter(move |&c| c != local));
     for cpu in order {
-        // Affinity: only CPUs in the task's mask (bit per CPU, <64).
-        if cpu < 64 && (allowed & (1u64 << cpu)) == 0 { continue; }
+        if !allowed.contains(cpu as usize) { continue; }
         if let Some(rq) = get_rq(cpu) {
             let load = rq.nr_running.load(Ordering::Acquire);
             if load < best_load { best_load = load; best = Some(cpu); }
@@ -293,7 +292,7 @@ pub fn resched_curr(cpu: u32) {
 /// task's `finish_task_switch` place it once `on_cpu` has cleared
 /// (`live::schedule::migrate`). UP / single CPU: no-op (allowed == local).
 /// # C: O(N_cpus · log N)
-pub fn relocate_for_affinity(task: &Arc<Task>, allowed: u64) {
+pub fn relocate_for_affinity(task: &Arc<Task>, allowed: cpu::CpuMask) {
     // Affinity and ttwu share the task wake lock. Hold it through removing
     // queued work and selecting its replacement CPU, so a concurrent wake
     // sees either the old placement or this completed new one, never a mix.
@@ -304,7 +303,7 @@ pub fn relocate_for_affinity(task: &Arc<Task>, allowed: u64) {
 /// Publish one source of a task affinity mask and complete its relocation
 /// while holding the same task-side lock ttwu uses for CPU selection.
 /// # C: O(N_cpus · log N)
-pub fn update_affinity(task: &Arc<Task>, user: Option<u64>, cpuset: Option<u64>) {
+pub fn update_affinity(task: &Arc<Task>, user: Option<cpu::CpuMask>, cpuset: Option<cpu::CpuMask>) {
     let _wake = task.task_wake_lock.lock_irqsave::<RqIrq>();
     if let Some(mask) = user { task.user_cpus_allowed.store(mask, Ordering::Release); }
     if let Some(mask) = cpuset { task.cpuset_cpus_allowed.store(mask, Ordering::Release); }
@@ -321,7 +320,7 @@ pub fn update_affinity(task: &Arc<Task>, user: Option<u64>, cpuset: Option<u64>)
     relocate_for_affinity_live(task, allowed);
 }
 
-fn relocate_for_affinity_live(task: &Arc<Task>, allowed: u64) {
+fn relocate_for_affinity_live(task: &Arc<Task>, allowed: cpu::CpuMask) {
     // SAFETY: `global_for` is sound for any index and yields `None` for a CPU
     // that has not completed `install_global`, which the walk skips.
     relocate_for_affinity_with(&|c| unsafe { global_for(c) }, task, allowed)
@@ -346,13 +345,13 @@ where F: Fn(u32) -> Option<&'a Runqueue> {
 /// which off-target exist for CPU 0 alone — that is how the running-task half
 /// of this function shipped untested.
 /// # C: O(N_cpus · log N)
-pub fn relocate_for_affinity_with<'a, F>(get_rq: &F, task: &Arc<Task>, allowed: u64)
+pub fn relocate_for_affinity_with<'a, F>(get_rq: &F, task: &Arc<Task>, allowed: cpu::CpuMask)
 where F: Fn(u32) -> Option<&'a Runqueue> {
 
     let tid = task.tid;
     for cpu in 0..cpu::MAX_CPUS as u32 {
         // Skip CPUs the task is allowed on.
-        if cpu < 64 && (allowed & (1u64 << cpu)) != 0 { continue; }
+        if allowed.contains(cpu as usize) { continue; }
         let rq = match get_rq(cpu) { Some(r) => r, None => continue };
         // Try to dequeue it from this disallowed CPU's runqueue (queued, not
         // running). One rq lock at a time — no nesting, no ordering hazard.

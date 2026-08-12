@@ -31,6 +31,7 @@ use sync::{Namespace, Spinlock, TaskList as TaskListClass, TaskWake as TaskWakeC
 use vfs::FdTable;
 use vmm::AddressSpace;
 use network_namespace::NetworkNamespaceRef;
+use cpu::AtomicCpuMask;
 
 mod arch;
 pub mod cap;
@@ -227,15 +228,15 @@ pub struct Task {
     /// = may run on CPU N), composed from [`Self::user_cpus_allowed`] and
     /// [`Self::cpuset_cpus_allowed`]. Balancer, ttwu and initial placement all
     /// refuse to place outside it. Default all-ones; inherited on fork.
-    pub cpus_allowed: AtomicU64,
+    pub cpus_allowed: AtomicCpuMask,
     /// Linux `task_struct::user_cpus_ptr` — the mask `sched_setaffinity(2)`
     /// last requested, kept apart from the effective mask so a later cgroup
     /// `cpuset.cpus` change re-applies the user's request instead of erasing
     /// it. `0` = never set.
-    pub user_cpus_allowed: AtomicU64,
+    pub user_cpus_allowed: AtomicCpuMask,
     /// Linux `cpuset_cpus_allowed(p)` — the mask the task's cpuset permits.
     /// Default all-ones (no cpuset restriction).
-    pub cpuset_cpus_allowed: AtomicU64,
+    pub cpuset_cpus_allowed: AtomicCpuMask,
     /// Linux `PF_NO_SETAFFINITY` — set on per-CPU kernel threads
     /// (`ksoftirqd/N`, `kworker/N`) that `kthread_bind` pinned; their affinity
     /// is structural, so `sched_setaffinity(2)` on them is EINVAL.

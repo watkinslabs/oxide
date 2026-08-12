@@ -9,6 +9,8 @@ use crate::task::SchedClass;
 const SRC: u32 = 40;
 const DST: u32 = 41;
 
+fn m(bits: u64) -> cpu::CpuMask { cpu::CpuMask::from_words(&[bits]) }
+
 fn cfs_task(tid: u32) -> Arc<Task> {
     Arc::new(Task::new(tid, "t", SchedClass::Normal { weight: 1024 }))
 }
@@ -45,7 +47,7 @@ fn the_running_refusal_lifts_once_the_switch_completes() {
 #[test]
 fn a_task_pinned_away_from_the_destination_is_not_migratable() {
     let t = cfs_task(3004);
-    t.cpus_allowed.store(1u64 << SRC, Ordering::Release);
+    t.cpus_allowed.store(cpu::CpuMask::of(SRC as usize), Ordering::Release);
     assert!(!can_migrate_task(&t, DST));
     assert!(can_migrate_task(&t, SRC));
 }
@@ -55,16 +57,16 @@ fn a_task_pinned_away_from_the_destination_is_not_migratable() {
 #[test]
 fn running_outranks_a_permissive_affinity_mask() {
     let t = cfs_task(3005);
-    t.cpus_allowed.store(u64::MAX, Ordering::Release);
+    t.cpus_allowed.store(cpu::CpuMask::all(), Ordering::Release);
     t.on_cpu.store(true, Ordering::Release);
     assert!(!can_migrate_task(&t, DST));
 }
 
-/// A CPU id past the 64-bit mask width cannot be expressed in `cpus_allowed`,
-/// so affinity does not constrain it (matching the guarded call sites).
+/// A CPU id outside the kernel CPU-mask capacity is never admitted by an
+/// affinity mask.
 #[test]
-fn affinity_does_not_constrain_cpu_ids_past_the_mask_width() {
+fn affinity_refuses_cpu_ids_outside_the_mask() {
     let t = cfs_task(3006);
-    t.cpus_allowed.store(0, Ordering::Release);
-    assert!(can_migrate_task(&t, 64));
+    t.cpus_allowed.store(m(0), Ordering::Release);
+    assert!(!can_migrate_task(&t, 64));
 }

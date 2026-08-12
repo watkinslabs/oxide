@@ -102,7 +102,7 @@ pub fn spawn_ksoftirqd() -> Result<(), super::SpawnError> {
         // Pin to CPU n (Linux per-CPU ksoftirqd is bound to its CPU): set the
         // affinity mask then relocate off the spawn CPU onto n's runqueue.
         if n < 64 {
-            super::update_affinity(&arc, Some(1u64 << n), None);
+            super::update_affinity(&arc, Some(cpu::CpuMask::of(n as usize)), None);
             // Linux `kthread_bind` sets PF_NO_SETAFFINITY: a per-CPU kthread's
             // affinity is structural, so `sched_setaffinity(2)` on it is EINVAL.
             arc.no_setaffinity.store(true, Ordering::Release);

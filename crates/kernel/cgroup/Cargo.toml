@@ -12,6 +12,7 @@ klog = { path = "../../shared/klog" }
 sync  = { path = "../../shared/sync" }
 vfs   = { path = "../vfs" }
 hal   = { path = "../../arch/hal" }
+cpu   = { path = "../cpu" }
 syscall = { path = "../syscall" }
 
 [features]

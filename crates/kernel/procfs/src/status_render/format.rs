@@ -44,7 +44,7 @@ pub(super) fn push_hex16(v: &mut Vec<u8>, n: u64) { push_hex(v, n, 16) }
 /// first, comma-separated. Every chunk is 8 digits except the most significant
 /// one, which is only as wide as the bit count needs — so a 1-CPU machine
 /// prints `1`, not `00000001`. # C: O(nbits/4)
-pub(super) fn push_cpumask(v: &mut Vec<u8>, mask: u64, nbits: u32) {
+pub(super) fn push_u64mask(v: &mut Vec<u8>, mask: u64, nbits: u32) {
     if nbits == 0 { return; }
     let top_bits = match nbits % CHUNKSZ { 0 => CHUNKSZ, r => r };
     let chunks = nbits.div_ceil(CHUNKSZ);
@@ -60,13 +60,44 @@ pub(super) fn push_cpumask(v: &mut Vec<u8>, mask: u64, nbits: u32) {
 
 /// Linux `%*pbl` (`bitmap_list_string`): ascending set-bit ranges, `a-b` for
 /// runs of 2+ and a bare index otherwise, comma-separated. # C: O(nbits)
-pub(super) fn push_cpulist(v: &mut Vec<u8>, mask: u64, nbits: u32) {
+pub(super) fn push_u64list(v: &mut Vec<u8>, mask: u64, nbits: u32) {
     let mut first = true;
     let mut i = 0u32;
     while i < nbits {
         if mask >> i & 1 == 0 { i += 1; continue; }
         let start = i;
         while i + 1 < nbits && mask >> (i + 1) & 1 == 1 { i += 1; }
+        if !first { v.push(b','); }
+        first = false;
+        push_dec(v, start as u64);
+        if i > start { v.push(b'-'); push_dec(v, i as u64); }
+        i += 1;
+    }
+}
+
+/// Linux `%*pb` over the scheduler's complete CPU-mask representation. # C: O(nbits/4)
+pub(super) fn push_cpumask(v: &mut Vec<u8>, mask: cpu::CpuMask, nbits: u32) {
+    if nbits == 0 { return; }
+    let top_bits = match nbits % CHUNKSZ { 0 => CHUNKSZ, r => r };
+    let chunks = nbits.div_ceil(CHUNKSZ);
+    for c in (0..chunks).rev() {
+        if c + 1 != chunks { v.push(b','); }
+        let width = if c + 1 == chunks { top_bits } else { CHUNKSZ };
+        let mut value = 0u64;
+        let base = c * CHUNKSZ;
+        for bit in 0..width { if mask.contains((base + bit) as usize) { value |= 1u64 << bit; } }
+        push_hex(v, value, width.div_ceil(4) as usize);
+    }
+}
+
+/// Linux `%*pbl` over the scheduler's complete CPU-mask representation. # C: O(nbits)
+pub(super) fn push_cpulist(v: &mut Vec<u8>, mask: cpu::CpuMask, nbits: u32) {
+    let mut first = true;
+    let mut i = 0u32;
+    while i < nbits {
+        if !mask.contains(i as usize) { i += 1; continue; }
+        let start = i;
+        while i + 1 < nbits && mask.contains((i + 1) as usize) { i += 1; }
         if !first { v.push(b','); }
         first = false;
         push_dec(v, start as u64);

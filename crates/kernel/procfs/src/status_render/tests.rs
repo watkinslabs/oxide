@@ -1,6 +1,8 @@
 use super::*;
 use alloc::string::String;
 
+fn cpus(bits: u64) -> cpu::CpuMask { cpu::CpuMask::from_words(&[bits]) }
+
 /// A deliberately NON-root, NON-privileged task: every field that the old
 /// renderer hardcoded (uid/gid quads, the capability bitmaps, NoNewPrivs) is
 /// set to something a fabricated constant could not produce.
@@ -18,7 +20,7 @@ fn unprivileged() -> Status<'static> {
         sig_pnd: 0, shd_pnd: 0, sig_blk: 0x1000, sig_ign: 0x1000, sig_cgt: 0x0000_0001_0000_4002,
         cap_inh: 0, cap_prm: 0, cap_eff: 0, cap_bnd: 0x0000_01ff_ffff_ffff, cap_amb: 0,
         no_new_privs: true, seccomp: 2, seccomp_filters: 1,
-        cpus_allowed: 0xf, nr_cpus: 4,
+        cpus_allowed: cpus(0xf), nr_cpus: 4,
         mems_allowed: 1, nr_nodes: 1,
         nvcsw: 41, nivcsw: 7,
         mem_rows: b"",
@@ -126,20 +128,20 @@ fn a_traced_kernel_thread_reports_its_tracer_and_kthread_flag() {
 #[test]
 fn cpu_mask_matches_linuxs_bitmap_chunking() {
     let mut s = unprivileged();
-    s.cpus_allowed = 0x0000_ffff_ffff_ffff; s.nr_cpus = 48;
+    s.cpus_allowed = cpus(0x0000_ffff_ffff_ffff); s.nr_cpus = 48;
     let b = body_of(&s);
     assert_eq!(field(&b, "Cpus_allowed"), "ffff,ffffffff");
     assert_eq!(field(&b, "Cpus_allowed_list"), "0-47");
 
-    s.cpus_allowed = 1; s.nr_cpus = 1;
+    s.cpus_allowed = cpus(1); s.nr_cpus = 1;
     assert_eq!(field(&body_of(&s), "Cpus_allowed"), "1", "a 1-CPU mask is one digit, not 8");
 
-    s.cpus_allowed = 0b1101; s.nr_cpus = 4;
+    s.cpus_allowed = cpus(0b1101); s.nr_cpus = 4;
     let b = body_of(&s);
     assert_eq!(field(&b, "Cpus_allowed"), "d");
     assert_eq!(field(&b, "Cpus_allowed_list"), "0,2-3");
 
-    s.cpus_allowed = 0; s.nr_cpus = 4;
+    s.cpus_allowed = cpus(0); s.nr_cpus = 4;
     assert_eq!(field(&body_of(&s), "Cpus_allowed_list"), "", "empty mask lists nothing");
 }
 

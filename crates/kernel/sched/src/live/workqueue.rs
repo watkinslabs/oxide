@@ -221,7 +221,7 @@ pub fn spawn_kworkers() -> Result<(), super::SpawnError> {
         // is a 'static extern "C" fn ptr; arg = the CPU to pin to.
         let arc = unsafe { super::spawn_kernel_thread(tid, "kworker", kworker, n) }?;
         if n < 64 {
-            super::update_affinity(&arc, Some(1u64 << n), None);
+            super::update_affinity(&arc, Some(cpu::CpuMask::of(n as usize)), None);
             // Linux `kthread_bind` -> PF_NO_SETAFFINITY (see ksoftirqd).
             arc.no_setaffinity.store(true, Ordering::Release);
         }

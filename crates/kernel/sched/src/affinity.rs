@@ -30,36 +30,39 @@ pub enum MaskChange {
 /// Effective `cpus_allowed` for a task whose cpuset permits `cpuset` and whose
 /// last `sched_setaffinity(2)` request was `user` (`0` = never called, i.e. no
 /// `user_cpus_ptr`), for the writer named by `change`.
-/// # C: O(1)
-pub fn compose(cpuset: u64, user: u64, change: MaskChange) -> u64 {
+/// # C: O(words)
+pub fn compose(cpuset: cpu::CpuMask, user: cpu::CpuMask, change: MaskChange) -> cpu::CpuMask {
     match change {
-        MaskChange::UserRequest => cpuset & user,
+        MaskChange::UserRequest => cpuset.intersect(user),
         MaskChange::CpusetUpdate => {
-            if user == 0 { return cpuset; }
-            let both = cpuset & user;
-            if both == 0 { cpuset } else { both }
+            if user.is_empty() { return cpuset; }
+            let both = cpuset.intersect(user);
+            if both.is_empty() { cpuset } else { both }
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use cpu::CpuMask;
     use super::{compose, MaskChange::{CpusetUpdate, UserRequest}};
+
+    fn m(bits: u64) -> CpuMask { CpuMask::from_words(&[bits]) }
 
     /// No `sched_setaffinity` yet: the cpuset alone decides.
     #[test]
     fn cpuset_alone_when_no_user_request() {
-        assert_eq!(compose(0b0011, 0, CpusetUpdate), 0b0011);
-        assert_eq!(compose(u64::MAX, 0, CpusetUpdate), u64::MAX);
+        assert_eq!(compose(m(0b0011), CpuMask::empty(), CpusetUpdate), m(0b0011));
+        assert_eq!(compose(CpuMask::all(), CpuMask::empty(), CpusetUpdate), CpuMask::all());
     }
 
     /// The two compose by intersection, in either order of arrival.
     #[test]
     fn user_request_and_cpuset_intersect() {
-        assert_eq!(compose(0b0011, 0b1111, CpusetUpdate), 0b0011);
-        assert_eq!(compose(0b1111, 0b1010, CpusetUpdate), 0b1010);
-        assert_eq!(compose(0b0110, 0b0011, CpusetUpdate), 0b0010);
-        assert_eq!(compose(0b0110, 0b0011, UserRequest), 0b0010);
+        assert_eq!(compose(m(0b0011), m(0b1111), CpusetUpdate), m(0b0011));
+        assert_eq!(compose(m(0b1111), m(0b1010), CpusetUpdate), m(0b1010));
+        assert_eq!(compose(m(0b0110), m(0b0011), CpusetUpdate), m(0b0010));
+        assert_eq!(compose(m(0b0110), m(0b0011), UserRequest), m(0b0010));
     }
 
     /// Disjoint under a cpuset write: the cpuset wins rather than the mask
@@ -68,8 +71,8 @@ mod tests {
     /// merely dormant.
     #[test]
     fn disjoint_cpuset_update_falls_back_to_the_cpuset() {
-        assert_eq!(compose(0b1100, 0b0011, CpusetUpdate), 0b1100);
-        assert_ne!(compose(0b1100, 0b0011, CpusetUpdate), 0);
+        assert_eq!(compose(m(0b1100), m(0b0011), CpusetUpdate), m(0b1100));
+        assert_ne!(compose(m(0b1100), m(0b0011), CpusetUpdate), CpuMask::empty());
     }
 
     /// Disjoint under a `sched_setaffinity(2)` request: NO substitution. The
@@ -78,15 +81,15 @@ mod tests {
     /// the caller never asked for.
     #[test]
     fn disjoint_user_request_stays_empty() {
-        assert_eq!(compose(0b1100, 0b0011, UserRequest), 0);
+        assert_eq!(compose(m(0b1100), m(0b0011), UserRequest), CpuMask::empty());
     }
 
     /// A dormant user request revives when the cpuset widens to overlap it,
     /// which is why the request is parked instead of being erased.
     #[test]
     fn a_dormant_user_request_revives_when_the_cpuset_widens() {
-        let user = 0b0011;
-        assert_eq!(compose(0b1100, user, CpusetUpdate), 0b1100, "dormant");
-        assert_eq!(compose(0b1111, user, CpusetUpdate), 0b0011, "revived");
+        let user = m(0b0011);
+        assert_eq!(compose(m(0b1100), user, CpusetUpdate), m(0b1100), "dormant");
+        assert_eq!(compose(m(0b1111), user, CpusetUpdate), m(0b0011), "revived");
     }
 }

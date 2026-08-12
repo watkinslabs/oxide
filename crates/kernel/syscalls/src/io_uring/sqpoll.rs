@@ -159,12 +159,12 @@ impl SqData {
     }
 
     /// Pin the thread to `mask`, or release it to every processor when `mask`
-    /// is zero.  Only `SqParkGuard` exposes this, matching Linux's rule that
-    /// the SQPOLL control lock must be held. # C: O(1)
-    fn set_cpus_allowed_parked(&self, mask: u64) {
+    /// is empty. Only `SqParkGuard` exposes this, matching Linux's rule that
+    /// the SQPOLL control lock must be held. # C: O(words)
+    fn set_cpus_allowed_parked(&self, mask: cpu::CpuMask) {
         let t = self.task.lock().clone();
         let Some(t) = t else { return };
-        t.cpus_allowed.store(if mask == 0 { u64::MAX } else { mask }, Ordering::Release);
+        t.cpus_allowed.store(if mask.is_empty() { cpu::CpuMask::all() } else { mask }, Ordering::Release);
     }
 }
 
@@ -178,8 +178,8 @@ pub struct SqParkGuard<'a> {
 
 impl SqParkGuard<'_> {
     /// Change the poll thread's allowed processors while it is parked.
-    /// # C: O(1)
-    pub fn set_cpus_allowed(&self, mask: u64) {
+    /// # C: O(words)
+    pub fn set_cpus_allowed(&self, mask: cpu::CpuMask) {
         self.sqd.set_cpus_allowed_parked(mask);
     }
 }
@@ -372,10 +372,10 @@ extern "C" fn sq_thread(arg: usize) -> ! {
 /// Processors the creating task may itself run on. Linux tests
 /// `p->sq_thread_cpu` against `cpuset_cpus_allowed(current)`, so a confined
 /// task cannot place a poll thread outside its own confinement. # C: O(1)
-fn creator_cpus() -> u64 {
+fn creator_cpus() -> cpu::CpuMask {
     let active = crate::affinity_common::active_cpu_mask();
     match sched::live::current() {
-        Some(t) => t.cpus_allowed.load(Ordering::Acquire) & active,
+        Some(t) => t.cpus_allowed.load(Ordering::Acquire).intersect(active),
         None => active,
     }
 }
@@ -428,7 +428,7 @@ pub fn offload_create(ring: &Arc<IoUringInode>, p: &Params) -> Result<(), Errno>
             return Err(Errno::Enomem);
         }
     };
-    if let Some(c) = cpu { task.cpus_allowed.store(1u64 << c, Ordering::Release); }
+    if let Some(c) = cpu { task.cpus_allowed.store(cpu::CpuMask::of(c as usize), Ordering::Release); }
     *sqd.task.lock() = Some(task);
     *ring.sq.lock() = Some(sqd);
     Ok(())

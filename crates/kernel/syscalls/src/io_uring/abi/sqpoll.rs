@@ -61,11 +61,11 @@ pub fn sq_thread_idle_ns(sq_thread_idle_ms: u32) -> u64 {
 /// processor outside it. A processor past the mask's width, one that is not
 /// online, or one outside that mask is `EINVAL`, and so is `IORING_SETUP_SQ_AFF`
 /// without `IORING_SETUP_SQPOLL` — there is no thread to pin. # C: O(1)
-pub fn sq_cpu(flags: u32, sq_thread_cpu: u32, allowed: u64) -> Result<Option<u32>, Errno> {
+pub fn sq_cpu(flags: u32, sq_thread_cpu: u32, allowed: cpu::CpuMask) -> Result<Option<u32>, Errno> {
     if flags & IORING_SETUP_SQ_AFF == 0 { return Ok(None); }
     if flags & IORING_SETUP_SQPOLL == 0 { return Err(Errno::Einval); }
-    if sq_thread_cpu >= u64::BITS { return Err(Errno::Einval); }
-    if allowed & (1u64 << sq_thread_cpu) == 0 { return Err(Errno::Einval); }
+    if sq_thread_cpu as usize >= cpu::MAX_CPUS { return Err(Errno::Einval); }
+    if !allowed.contains(sq_thread_cpu as usize) { return Err(Errno::Einval); }
     Ok(Some(sq_thread_cpu))
 }
 

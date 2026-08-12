@@ -101,8 +101,8 @@ pub fn freeze_hook(pid: u64, v: bool) {
 /// two a last-writer-wins pair. An empty intersection leaves the cpuset in
 /// force rather than parking the task on an unschedulable mask.
 /// # C: O(N) registry lookup + O(N_cpus) relocate
-pub fn cpuset_hook(pid: u64, mask: u64) {
-    if mask == 0 { return; }
+pub fn cpuset_hook(pid: u64, mask: cpu::CpuMask) {
+    if mask.is_empty() { return; }
     if let Some(t) = lookup_init_pid(pid as u32) {
         // A `SCHED_DEADLINE` task's reservation was admitted against the whole
         // span the class schedules over. A cpuset that would confine it to less

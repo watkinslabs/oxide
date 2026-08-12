@@ -6,6 +6,8 @@
 
 use super::*;
 
+fn m(bits: u64) -> CpuMask { CpuMask::from_words(&[bits]) }
+
 // --- cpumask sizing --------------------------------------------------------
 
 /// `cpumask_size() == bitmap_size(nr_cpu_ids)`: 64 CPU ids is one 8-byte long.
@@ -57,9 +59,9 @@ fn getaffinity_returns_bytes_written_not_zero() {
 /// never advertised as usable, even though the stored mask still names it.
 #[test]
 fn getaffinity_masks_the_stored_mask_with_active_cpus() {
-    assert_eq!(reported_mask(0b1111, 0b0011), 0b0011);
-    assert_eq!(reported_mask(u64::MAX, 0b0001), 0b0001);
-    assert_eq!(reported_mask(0b1000, 0b0011), 0, "pinned to an offline CPU reports empty");
+    assert_eq!(reported_mask(m(0b1111), m(0b0011)), m(0b0011));
+    assert_eq!(reported_mask(m(u64::MAX), m(0b0001)), m(0b0001));
+    assert_eq!(reported_mask(m(0b1000), m(0b0011)), m(0), "pinned to an offline CPU reports empty");
 }
 
 // --- sched_setaffinity: user buffer decode ---------------------------------
@@ -75,12 +77,12 @@ fn setaffinity_accepts_a_short_len_and_zero_fills() {
     assert_eq!(set_copy_len(8), 8);
     assert_eq!(set_copy_len(128), 8, "clamped to cpumask_size()");
 
-    assert_eq!(mask_from_bytes(&[0b0000_0101]), 0b101, "one byte names CPUs 0..7");
-    assert_eq!(mask_from_bytes(&[0xFF, 0xFF, 0xFF, 0xFF]), 0xFFFF_FFFF);
-    assert_eq!(mask_from_bytes(&[]), 0, "len 0 copies nothing -> empty mask");
-    assert_eq!(mask_from_bytes(&[0, 0, 0, 0, 0, 0, 0, 0x80]), 1u64 << 63);
+    assert_eq!(mask_from_bytes(&[0b0000_0101]), m(0b101), "one byte names CPUs 0..7");
+    assert_eq!(mask_from_bytes(&[0xFF, 0xFF, 0xFF, 0xFF]), m(0xFFFF_FFFF));
+    assert_eq!(mask_from_bytes(&[]), m(0), "len 0 copies nothing -> empty mask");
+    assert_eq!(mask_from_bytes(&[0, 0, 0, 0, 0, 0, 0, 0x80]), m(1u64 << 63));
     // Bytes past cpumask_size() are never consulted.
-    assert_eq!(mask_from_bytes(&[0xFF; 16]), u64::MAX);
+    assert_eq!(mask_from_bytes(&[0xFF; 16]), m(u64::MAX));
 }
 
 /// The bytes are little-endian: bit N of byte K is CPU `K*8 + N`.
@@ -89,34 +91,34 @@ fn mask_bytes_are_little_endian_cpu_order() {
     for cpu in 0..64usize {
         let mut b = [0u8; 8];
         b[cpu / 8] = 1u8 << (cpu % 8);
-        assert_eq!(mask_from_bytes(&b), 1u64 << cpu, "cpu {cpu}");
+        assert_eq!(mask_from_bytes(&b), m(1u64 << cpu), "cpu {cpu}");
     }
 }
 
 // --- sched_setaffinity: the ordered decision -------------------------------
 
-const ALL: u64 = u64::MAX;
-const ACTIVE: u64 = 0b1111;
+fn all() -> CpuMask { CpuMask::all() }
+fn active() -> CpuMask { m(0b1111) }
 
 /// The happy path stores the requested mask narrowed by the cpuset — NOT
 /// narrowed by the active mask, so a CPU that is only temporarily offline stays
 /// in the mask and is used again once it is back.
 #[test]
 fn setaffinity_stores_the_request_narrowed_by_the_cpuset_only() {
-    assert_eq!(setaffinity_decide(0b1010, ALL, ACTIVE, false, true, false), Ok(0b1010));
+    assert_eq!(setaffinity_decide(m(0b1010), all(), active(), false, true, false), Ok(m(0b1010)));
     // A CPU outside the active set survives in the stored mask.
-    assert_eq!(setaffinity_decide(0b1_0001, ALL, ACTIVE, false, true, false), Ok(0b1_0001));
+    assert_eq!(setaffinity_decide(m(0b1_0001), all(), active(), false, true, false), Ok(m(0b1_0001)));
     // The cpuset does narrow it.
-    assert_eq!(setaffinity_decide(0b1111, 0b0011, ACTIVE, false, true, false), Ok(0b0011));
+    assert_eq!(setaffinity_decide(m(0b1111), m(0b0011), active(), false, true, false), Ok(m(0b0011)));
 }
 
 /// A mask that names no ACTIVE CPU is EINVAL: the task could never run again.
 #[test]
 fn setaffinity_rejects_a_mask_with_no_active_cpu() {
-    assert_eq!(setaffinity_decide(0, ALL, ACTIVE, false, true, false), Err(Errno::Einval));
-    assert_eq!(setaffinity_decide(0b1_0000, ALL, ACTIVE, false, true, false), Err(Errno::Einval));
+    assert_eq!(setaffinity_decide(m(0), all(), active(), false, true, false), Err(Errno::Einval));
+    assert_eq!(setaffinity_decide(m(0b1_0000), all(), active(), false, true, false), Err(Errno::Einval));
     // Empty only after the cpuset intersection is still EINVAL.
-    assert_eq!(setaffinity_decide(0b1100, 0b0011, ACTIVE, false, true, false), Err(Errno::Einval));
+    assert_eq!(setaffinity_decide(m(0b1100), m(0b0011), active(), false, true, false), Err(Errno::Einval));
 }
 
 /// A task the caller does not own is EPERM unless the caller has CAP_SYS_NICE.
@@ -129,8 +131,8 @@ fn setaffinity_requires_ownership_or_cap_sys_nice() {
     assert!(setaffinity_permitted(true, true));
     assert!(!setaffinity_permitted(false, false));
 
-    assert_eq!(setaffinity_decide(0b1, ALL, ACTIVE, false, false, false), Err(Errno::Eperm));
-    assert_eq!(setaffinity_decide(0b1, ALL, ACTIVE, false, false, true), Ok(0b1));
+    assert_eq!(setaffinity_decide(m(0b1), all(), active(), false, false, false), Err(Errno::Eperm));
+    assert_eq!(setaffinity_decide(m(0b1), all(), active(), false, false, true), Ok(m(0b1)));
 }
 
 /// EPERM is decided BEFORE the mask is examined: an unprivileged caller
@@ -138,16 +140,16 @@ fn setaffinity_requires_ownership_or_cap_sys_nice() {
 /// forbidden target.
 #[test]
 fn eperm_precedes_the_empty_mask_einval() {
-    assert_eq!(setaffinity_decide(0, ALL, ACTIVE, false, false, false), Err(Errno::Eperm));
-    assert_eq!(setaffinity_decide(0, ALL, ACTIVE, false, true, false), Err(Errno::Einval));
+    assert_eq!(setaffinity_decide(m(0), all(), active(), false, false, false), Err(Errno::Eperm));
+    assert_eq!(setaffinity_decide(m(0), all(), active(), false, true, false), Err(Errno::Einval));
 }
 
 /// `PF_NO_SETAFFINITY` (per-CPU kernel threads such as `ksoftirqd/N`) is EINVAL,
 /// and it is decided BEFORE the permission test — exactly Linux's order.
 #[test]
 fn per_cpu_kthreads_are_einval_before_any_permission_test() {
-    assert_eq!(setaffinity_decide(0b1, ALL, ACTIVE, true, true, true), Err(Errno::Einval));
-    assert_eq!(setaffinity_decide(0b1, ALL, ACTIVE, true, false, false), Err(Errno::Einval),
+    assert_eq!(setaffinity_decide(m(0b1), all(), active(), true, true, true), Err(Errno::Einval));
+    assert_eq!(setaffinity_decide(m(0b1), all(), active(), true, false, false), Err(Errno::Einval),
                "EINVAL wins over EPERM for a task that can never be repinned");
 }
 
@@ -159,19 +161,19 @@ fn per_cpu_kthreads_are_einval_before_any_permission_test() {
 #[test]
 fn cpuset_and_user_mask_compose_instead_of_last_writer_wins() {
     // No user request yet: the cpuset is the whole story.
-    assert_eq!(cpuset_recompute(0b0011, 0), 0b0011);
+    assert_eq!(cpuset_recompute(m(0b0011), m(0)), m(0b0011));
     // User asked for CPUs 0..3, cpuset allows 0..1 -> 0..1.
-    assert_eq!(cpuset_recompute(0b0011, 0b1111), 0b0011);
+    assert_eq!(cpuset_recompute(m(0b0011), m(0b1111)), m(0b0011));
     // User asked for CPU 1 only, cpuset allows 0..1 -> CPU 1.
-    assert_eq!(cpuset_recompute(0b0011, 0b0010), 0b0010);
+    assert_eq!(cpuset_recompute(m(0b0011), m(0b0010)), m(0b0010));
     // Widening the cpuset re-admits the CPUs the user asked for.
-    assert_eq!(cpuset_recompute(0b1111, 0b1010), 0b1010);
+    assert_eq!(cpuset_recompute(m(0b1111), m(0b1010)), m(0b1010));
 }
 
 /// A cpuset disjoint from the user's request leaves the cpuset in force —
 /// Linux never parks a task on an empty, unschedulable mask.
 #[test]
 fn a_disjoint_cpuset_wins_rather_than_emptying_the_mask() {
-    assert_eq!(cpuset_recompute(0b1100, 0b0011), 0b1100);
-    assert_ne!(cpuset_recompute(0b1100, 0b0011), 0);
+    assert_eq!(cpuset_recompute(m(0b1100), m(0b0011)), m(0b1100));
+    assert_ne!(cpuset_recompute(m(0b1100), m(0b0011)), m(0));
 }

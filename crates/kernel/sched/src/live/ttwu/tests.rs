@@ -174,7 +174,7 @@ fn wake_selecting_a_remote_cpu_is_deferred_through_its_wake_list() {
     let cpus = Cpus::new(&[ME, REMOTE]);
     let t = settled_sleeper(2005, REMOTE);
     // Pin it to REMOTE so select_task_rq cannot choose the local CPU.
-    t.cpus_allowed.store(1u64 << REMOTE, Ordering::Release);
+    t.cpus_allowed.store(cpu::CpuMask::of(REMOTE as usize), Ordering::Release);
     assert!(t.claim_wake());
 
     place_runnable_with(&|c| cpus.get(c), ME, Arc::clone(&t), false);
@@ -249,7 +249,7 @@ fn select_task_rq_honours_the_affinity_mask() {
     const ALLOWED: u32 = 34;
     let cpus = Cpus::new(&[ME, ALLOWED]);
     let t = settled_sleeper(2008, ALLOWED);
-    t.cpus_allowed.store(1u64 << ALLOWED, Ordering::Release);
+    t.cpus_allowed.store(cpu::CpuMask::of(ALLOWED as usize), Ordering::Release);
 
     assert_eq!(select_task_rq_with(&|c| cpus.get(c), ME, &t), ALLOWED);
 }

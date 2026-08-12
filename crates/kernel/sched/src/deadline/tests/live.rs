@@ -256,8 +256,10 @@ fn a_deadline_task_confined_below_the_span_is_refused() {
     let t = dl_task(1, MS, 10 * MS, 10 * MS);
     let span = crate::deadline::span();
     assert!(!live::confined_below_span(&t, span));
-    assert!(!live::confined_below_span(&t, u64::MAX));
-    assert!(live::confined_below_span(&t, span & !1 | 0));
+    assert!(!live::confined_below_span(&t, cpu::CpuMask::all()));
+    let mut narrower = span;
+    narrower.remove(0);
+    assert!(live::confined_below_span(&t, narrower));
     // A fair task is never subject to the rule.
-    assert!(!live::confined_below_span(&fair_task(2), 0));
+    assert!(!live::confined_below_span(&fair_task(2), cpu::CpuMask::empty()));
 }

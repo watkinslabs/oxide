@@ -3,6 +3,8 @@
 use super::*;
 use crate::sched_attr::{FLAG_DL_OVERRUN, FLAG_RECLAIM};
 
+fn m(bits: u64) -> cpu::CpuMask { cpu::CpuMask::from_words(&[bits]) }
+
 const MS: u64 = 1_000_000;
 const EBUSY: i64 = -(Errno::Ebusy as i32 as i64);
 
@@ -47,37 +49,37 @@ fn an_omitted_period_matches_the_reservation_it_produced() {
 
 #[test]
 fn a_task_that_can_use_every_cpu_covers_the_span() {
-    assert!(affinity_covers_span(0b0011, 0b0011));
-    assert!(affinity_covers_span(0b0011, 0b1111));
+    assert!(affinity_covers_span(m(0b0011), m(0b0011)));
+    assert!(affinity_covers_span(m(0b0011), m(0b1111)));
 }
 
 #[test]
 fn a_task_confined_below_the_span_does_not_cover_it() {
-    assert!(!affinity_covers_span(0b0011, 0b0001));
-    assert!(!affinity_covers_span(0b1111, 0b0111));
+    assert!(!affinity_covers_span(m(0b0011), m(0b0001)));
+    assert!(!affinity_covers_span(m(0b1111), m(0b0111)));
 }
 
 #[test]
 fn an_unprivileged_deadline_request_needs_the_whole_span_and_a_nonzero_cap() {
-    assert!(user_dl_allowed(0b0011, 0b0011, 1024));
-    assert!(!user_dl_allowed(0b0011, 0b0001, 1024), "confined below the span");
-    assert!(!user_dl_allowed(0b0011, 0b0011, 0), "the class has no bandwidth");
+    assert!(user_dl_allowed(m(0b0011), m(0b0011), 1024));
+    assert!(!user_dl_allowed(m(0b0011), m(0b0001), 1024), "confined below the span");
+    assert!(!user_dl_allowed(m(0b0011), m(0b0011), 0), "the class has no bandwidth");
 }
 
 #[test]
 fn narrowing_a_deadline_tasks_affinity_is_ebusy() {
     // A capacity answer, not a permission or argument one: the reservation was
     // booked against the span and the narrower mask cannot honour it.
-    assert_eq!(setaffinity_allowed(true, 0b0011, 0b0001), Err(EBUSY));
+    assert_eq!(setaffinity_allowed(true, m(0b0011), m(0b0001)), Err(EBUSY));
 }
 
 #[test]
 fn a_deadline_task_may_keep_the_whole_span() {
-    assert_eq!(setaffinity_allowed(true, 0b0011, 0b0011), Ok(()));
-    assert_eq!(setaffinity_allowed(true, 0b0011, 0b1111), Ok(()));
+    assert_eq!(setaffinity_allowed(true, m(0b0011), m(0b0011)), Ok(()));
+    assert_eq!(setaffinity_allowed(true, m(0b0011), m(0b1111)), Ok(()));
 }
 
 #[test]
 fn a_non_deadline_task_is_never_refused_on_this_rule() {
-    assert_eq!(setaffinity_allowed(false, 0b1111, 0b0001), Ok(()));
+    assert_eq!(setaffinity_allowed(false, m(0b1111), m(0b0001)), Ok(()));
 }
