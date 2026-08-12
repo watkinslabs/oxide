@@ -17,6 +17,7 @@ pub mod context;
 pub mod usb;
 pub mod storage;
 pub mod hid;
+pub mod hid_report;
 pub mod ports;
 pub mod identity;
 #[cfg(target_os = "oxide-kernel")]
