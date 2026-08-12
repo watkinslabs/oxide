@@ -33,6 +33,7 @@ device 0000:00:05.0 0x10ec 0x8125 0x02000000 r8169
 device 0000:00:06.0 0x10ec 0x8125 0x02000000 other
 device 0000:00:07.0 0x8086 0x1502 0x02000000
 device 0000:00:08.0 0x8086 0x150e 0x02000000
+device 0000:00:09.0 0x1d6a 0x04c0 0x02000000
 
 out=$(OXIDE_HARDWARE_AUDIT_ROOT="$root" sh "$audit")
 printf '%s\n' "$out" | grep -Fx 'OXIDE_HARDWARE_AUDIT|v1|driver-assessment|BOUND|bdf=0000:00:01.0|driver=nvme'
@@ -43,6 +44,7 @@ printf '%s\n' "$out" | grep -Fx 'OXIDE_HARDWARE_AUDIT|v1|driver-assessment|BOUND
 printf '%s\n' "$out" | grep -Fx 'OXIDE_HARDWARE_AUDIT|v1|driver-assessment|WRONG-DRIVER|bdf=0000:00:06.0|expected=r8169|driver=other'
 printf '%s\n' "$out" | grep -Fx 'OXIDE_HARDWARE_AUDIT|v1|driver-assessment|NEEDS-DRIVER|bdf=0000:00:07.0|driver=e1000e|reason=linux-e1000e-family'
 printf '%s\n' "$out" | grep -Fx 'OXIDE_HARDWARE_AUDIT|v1|driver-assessment|NEEDS-DRIVER|bdf=0000:00:08.0|driver=igb|reason=linux-igb-family'
+printf '%s\n' "$out" | grep -Fx 'OXIDE_HARDWARE_AUDIT|v1|driver-assessment|NEEDS-DRIVER|bdf=0000:00:09.0|driver=atlantic|reason=linux-atlantic-aqc113-family'
 printf '%s\n' "$out" | grep -Fx 'OXIDE_HARDWARE_AUDIT|v1|display-card|FIRMWARE-FALLBACK|card=card0|driver=simpledrm'
 printf '%s\n' "$out" | grep -Fx 'OXIDE_HARDWARE_AUDIT|v1|display-card|BOUND|card=card1|driver=other'
 printf '%s\n' "$out" | grep -Fx 'OXIDE_HARDWARE_AUDIT|v1|display|PRESENT|cards=2'

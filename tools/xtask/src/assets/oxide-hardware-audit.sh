@@ -130,6 +130,12 @@ audit_pci()
                     # implementation even though their descriptor ABI resembles e1000.
                     0x8086:0x150e|0x8086:0x150f)
                         emit driver-assessment NEEDS-DRIVER "bdf=$bdf" driver=igb "reason=linux-igb-family" ;;
+                    # Linux binds the AQC113 (device 04c0) to its distinct
+                    # Atlantic v2 hardware path.  It has its own MAC/PHY,
+                    # queue and firmware contracts, so neither the e1000 nor
+                    # RTL8125 driver is an eligible substitute.
+                    0x1d6a:0x04c0)
+                        emit driver-assessment NEEDS-DRIVER "bdf=$bdf" driver=atlantic "reason=linux-atlantic-aqc113-family" ;;
                     # Linux's r8169 PCI table binds this RTL8125 PCI ID.
                     # Oxide exposes its matching native driver under the
                     # same name, so the physical-machine audit must grade
