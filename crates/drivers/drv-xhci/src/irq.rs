@@ -31,8 +31,7 @@ struct Endpoint {
     port_changes: AtomicU64,
     command_completion_pa: AtomicU64,
     command_completion_status: AtomicU32,
-    transfer_completion_pa: AtomicU64,
-    transfer_completion_meta: AtomicU64,
+    transfer_completions: crate::completion::TransferCompletions,
     dequeue: AtomicU32,
     cycle: AtomicBool,
 }
@@ -41,7 +40,7 @@ impl Endpoint {
         Self {
             state: AtomicU8::new(FREE), in_handler: AtomicU32::new(0),
             mmio_va: AtomicU64::new(0), status_offset: AtomicU64::new(0), erdp_offset: AtomicU64::new(0),
-            event_va: AtomicU64::new(0), event_pa: AtomicU64::new(0), bar_bytes: AtomicU64::new(0), max_ports: AtomicU8::new(0), port_changes: AtomicU64::new(0), command_completion_pa: AtomicU64::new(0), command_completion_status: AtomicU32::new(0), transfer_completion_pa: AtomicU64::new(0), transfer_completion_meta: AtomicU64::new(0), dequeue: AtomicU32::new(0), cycle: AtomicBool::new(true),
+            event_va: AtomicU64::new(0), event_pa: AtomicU64::new(0), bar_bytes: AtomicU64::new(0), max_ports: AtomicU8::new(0), port_changes: AtomicU64::new(0), command_completion_pa: AtomicU64::new(0), command_completion_status: AtomicU32::new(0), transfer_completions: crate::completion::TransferCompletions::new(), dequeue: AtomicU32::new(0), cycle: AtomicBool::new(true),
         }
     }
 }
@@ -62,9 +61,11 @@ fn hard_handler_for(index: usize) {
         let status_offset = endpoint.status_offset.load(Ordering::Acquire);
         // SAFETY: binding arms only validated offsets in the owned BAR mapping.
         let status = unsafe { read_volatile((base + status_offset) as *const u32) };
-        if status != u32::MAX && status & STS_EINT != 0 {
-            // SAFETY: USBSTS event is write-one-to-clear and this offset was validated above.
-            unsafe { write_volatile((base + status_offset) as *mut u32, STS_EINT); }
+        if status != u32::MAX {
+            if status & STS_EINT != 0 {
+                // SAFETY: USBSTS event is write-one-to-clear and this offset was validated above.
+                unsafe { write_volatile((base + status_offset) as *mut u32, STS_EINT); }
+            }
             // SAFETY: event_va is a retained DmaPage direct-map address.  DMA
             // coherency must precede every observation of controller-owned TRBs.
             pmm::dma::invalidate_from_device(event_va, TRBS_PER_SEGMENT * TRB_BYTES);
@@ -92,8 +93,7 @@ fn hard_handler_for(index: usize) {
                     let status = unsafe { read_volatile((event_va + (dequeue * TRB_BYTES + 8) as u64) as *const u32) };
                     let meta = (status & 0x00ff_ffff) as u64 | (((status >> 24) as u64) << 24)
                         | ((((control >> 16) & 0x1f) as u64) << 32) | (((control >> 24) as u64) << 40);
-                    endpoint.transfer_completion_meta.store(meta, Ordering::Relaxed);
-                    endpoint.transfer_completion_pa.store(parameter as u64 | ((parameter_hi as u64) << 32), Ordering::Release);
+                    if !endpoint.transfer_completions.publish(parameter as u64 | ((parameter_hi as u64) << 32), meta) { break; }
                     transfer_event = true;
                 }
                 if let Some(port) = crate::ports::event_port_id(parameter, control, endpoint.max_ports.load(Ordering::Acquire)) {
@@ -173,8 +173,7 @@ impl Binding {
         endpoint.port_changes.store(0, Ordering::Relaxed);
         endpoint.command_completion_pa.store(0, Ordering::Relaxed);
         endpoint.command_completion_status.store(0, Ordering::Relaxed);
-        endpoint.transfer_completion_pa.store(0, Ordering::Relaxed);
-        endpoint.transfer_completion_meta.store(0, Ordering::Relaxed);
+        endpoint.transfer_completions.clear();
         endpoint.mmio_va.store(mmio.base_va(), Ordering::Release);
         true
     }
@@ -201,9 +200,10 @@ impl Binding {
     /// Consume a matching Transfer Event without losing endpoint or slot identity. # C: O(1)
     pub(crate) fn take_transfer_completion(self, trb_pa: u64) -> Option<crate::ring::TransferCompletion> {
         let endpoint = &ENDPOINTS[self.endpoint];
-        if endpoint.transfer_completion_pa.load(Ordering::Acquire) != trb_pa { return None; }
-        let meta = endpoint.transfer_completion_meta.load(Ordering::Acquire);
-        if endpoint.transfer_completion_pa.compare_exchange(trb_pa, 0, Ordering::AcqRel, Ordering::Acquire).is_err() { return None; }
+        let meta = endpoint.transfer_completions.take(trb_pa)?;
+        // A prior IRQ may have left an event in the hardware ring because the
+        // bounded handoff was full. Revisit it now that this consumer freed a slot.
+        hard_handler_for(self.endpoint);
         Some(crate::ring::TransferCompletion { trb_pa, residual: meta as u32 & 0x00ff_ffff, completion_code: (meta >> 24) as u8, endpoint_id: (meta >> 32) as u8 & 0x1f, slot: (meta >> 40) as u8 })
     }
 
@@ -240,6 +240,7 @@ impl Binding {
         endpoint.event_pa.store(0, Ordering::Release);
         endpoint.port_changes.store(0, Ordering::Release);
         endpoint.command_completion_pa.store(0, Ordering::Release);
+        endpoint.transfer_completions.clear();
         release(self.endpoint);
     }
 }
