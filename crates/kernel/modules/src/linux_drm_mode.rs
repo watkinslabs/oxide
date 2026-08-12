@@ -19,7 +19,7 @@ const DRM_DISPLAY_MODE_TYPE_OFF: usize = 62;
 pub(super) const DRM_MODE_TYPE_PREFERRED: u8 = 1 << 3;
 pub(super) const DRM_MODE_TYPE_USERDEF: u8 = 1 << 5;
 pub(super) const MODE_STATUS_STALE: i32 = -3;
-pub(super) const DRM_CONNECTOR_MODES_OFF: usize = 168;
+pub(super) const DRM_CONNECTOR_MODES_OFF: usize = 160;
 pub(super) const DRM_CONNECTOR_PROBED_MODES_OFF: usize = 184;
 
 pub(super) fn export_symbols() {
@@ -133,9 +133,23 @@ pub(super) extern "C" fn drm_connector_list_update(connector: *mut c_void) {
     let probed = core::mem::take(&mut entry.probed_modes); for mode in probed { let found = entry.modes.iter().copied().find(|old| unsafe { modes_equal(*old as *const u8, mode as *const u8) }); if let Some(old) = found { unsafe { let old = old as *mut u8; let new = mode as *mut u8; if read(old.add(DRM_DISPLAY_MODE_STATUS_OFF).cast::<i32>()) == MODE_STATUS_STALE { drm_mode_copy(old.cast(), new.cast()); } else if read(old.add(DRM_DISPLAY_MODE_TYPE_OFF) as *const u8) & DRM_MODE_TYPE_PREFERRED == 0 && read(new.add(DRM_DISPLAY_MODE_TYPE_OFF) as *const u8) & DRM_MODE_TYPE_PREFERRED != 0 { let ty = new.add(DRM_DISPLAY_MODE_TYPE_OFF); write(ty, read(ty as *const u8) | read(old.add(DRM_DISPLAY_MODE_TYPE_OFF) as *const u8)); drm_mode_copy(old.cast(), new.cast()); } else { let ty = old.add(DRM_DISPLAY_MODE_TYPE_OFF); write(ty, read(ty as *const u8) | read(new.add(DRM_DISPLAY_MODE_TYPE_OFF) as *const u8)); } unlink_mode(new.cast()); dealloc(new, mode_layout()); } } else { unsafe { unlink_mode(mode as *mut c_void); link_tail(connector.cast::<u8>().add(DRM_CONNECTOR_MODES_OFF), (mode as *mut u8).add(DRM_DISPLAY_MODE_HEAD_OFF)); } entry.modes.push(mode); } }
 }
 
+pub(super) fn mark_live_modes_stale(connector: *mut c_void) {
+    if connector.is_null() { return; } let dev = unsafe { *(connector.cast::<*mut c_void>()) }; let devices = DEVICES.lock(); let Some(record) = devices.iter().find(|record| record.dev == dev as usize) else { return; }; let Some(entry) = record.connectors.iter().find(|entry| entry.ptr == connector as usize) else { return; };
+    for &mode in &entry.modes { unsafe { write((mode as *mut u8).add(DRM_DISPLAY_MODE_STATUS_OFF).cast::<i32>(), MODE_STATUS_STALE); } }
+}
+
+pub(super) fn prune_invalid_live_modes(connector: *mut c_void, max_width: u32, max_height: u32) {
+    if connector.is_null() { return; } let dev = unsafe { *(connector.cast::<*mut c_void>()) }; let mut devices = DEVICES.lock(); let Some(record) = devices.iter_mut().find(|record| record.dev == dev as usize) else { return; }; let Some(entry) = record.connectors.iter_mut().find(|entry| entry.ptr == connector as usize) else { return; }; let modes = core::mem::take(&mut entry.modes);
+    for mode in modes { unsafe { let ptr = mode as *mut u8; let within_bounds = (max_width == 0 || read(ptr.add(DRM_DISPLAY_MODE_HDISPLAY_OFF).cast::<u16>()) as u32 <= max_width) && (max_height == 0 || read(ptr.add(DRM_DISPLAY_MODE_VDISPLAY_OFF).cast::<u16>()) as u32 <= max_height); if read(ptr.add(DRM_DISPLAY_MODE_STATUS_OFF).cast::<i32>()) == 0 && within_bounds { entry.modes.push(mode); } else { unlink_mode(mode as *mut c_void); dealloc(ptr, mode_layout()); } } }
+}
+
+pub(super) fn live_mode_count(connector: *mut c_void) -> usize {
+    if connector.is_null() { return 0; } let dev = unsafe { *(connector.cast::<*mut c_void>()) }; let devices = DEVICES.lock(); devices.iter().find(|record| record.dev == dev as usize).and_then(|record| record.connectors.iter().find(|entry| entry.ptr == connector as usize)).map_or(0, |entry| entry.modes.len())
+}
+
 pub(super) unsafe fn connector_get_modes(connector: *mut c_void) -> i32 {
     // SAFETY: helper_private names a live helper vtable whose first member is the get_modes callback.
-    unsafe { let table = *(connector.cast::<u8>().add(connector::DRM_CONNECTOR_HELPER_PRIVATE_OFF).cast::<*const c_void>()); if table.is_null() { return 0; } let callback = table.cast::<extern "C" fn(*mut c_void) -> i32>().read(); let count = callback(connector); if count < 0 { 0 } else { count } }
+    unsafe { let table = *(connector.cast::<u8>().add(connector::DRM_CONNECTOR_HELPER_PRIVATE_OFF).cast::<*const c_void>()); if table.is_null() { return 0; } let address = table.cast::<usize>().read(); if address == 0 { return 0; } let callback: extern "C" fn(*mut c_void) -> i32 = core::mem::transmute(address); let count = callback(connector); if count < 0 { 0 } else { count } }
 }
 
 unsafe fn modes_equal(left: *const u8, right: *const u8) -> bool {
