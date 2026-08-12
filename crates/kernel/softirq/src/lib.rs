@@ -81,6 +81,64 @@ pub enum Slot {
 }
 
 const N_SLOTS: usize = 32;
+/// Linux's fixed `/proc/stat` and `/proc/softirqs` class order.  Internal
+/// work slots remain independently numbered; this is only their externally
+/// observable execution-accounting class.
+#[repr(usize)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum StatClass { Hi = 0, Timer = 1, NetTx = 2, NetRx = 3, Block = 4, IrqPoll = 5, Tasklet = 6, Sched = 7, Hrtimer = 8, Rcu = 9 }
+
+pub const N_STAT_CLASSES: usize = 10;
+
+impl Slot {
+    /// Linux softirq accounting class for this internal deferred-work slot.
+    /// # C: O(1)
+    pub const fn stat_class(self) -> StatClass {
+        match self {
+            Self::NetRx => StatClass::NetRx,
+            Self::BlockIo => StatClass::Block,
+            Self::BridgeStp => StatClass::Timer,
+            Self::PerfDeferred => StatClass::Sched,
+            Self::Tasklet | Self::FbconFlush | Self::InputDrain | Self::VsockRx
+            | Self::SndEvent | Self::NetNsReap | Self::UsbInput => StatClass::Tasklet,
+        }
+    }
+}
+
+fn stat_class_for_index(idx: usize) -> Option<StatClass> {
+    match idx {
+        x if x == Slot::FbconFlush as usize => Some(Slot::FbconFlush.stat_class()),
+        x if x == Slot::InputDrain as usize => Some(Slot::InputDrain.stat_class()),
+        x if x == Slot::NetRx as usize => Some(Slot::NetRx.stat_class()),
+        x if x == Slot::VsockRx as usize => Some(Slot::VsockRx.stat_class()),
+        x if x == Slot::SndEvent as usize => Some(Slot::SndEvent.stat_class()),
+        x if x == Slot::NetNsReap as usize => Some(Slot::NetNsReap.stat_class()),
+        x if x == Slot::BlockIo as usize => Some(Slot::BlockIo.stat_class()),
+        x if x == Slot::BridgeStp as usize => Some(Slot::BridgeStp.stat_class()),
+        x if x == Slot::Tasklet as usize => Some(Slot::Tasklet.stat_class()),
+        x if x == Slot::PerfDeferred as usize => Some(Slot::PerfDeferred.stat_class()),
+        x if x == Slot::UsbInput as usize => Some(Slot::UsbInput.stat_class()),
+        _ => None,
+    }
+}
+
+/// Per-CPU handler-dispatch counts, classified in the Linux-visible softirq
+/// layout.  The increment sits beside the actual function call, so a raised
+/// but deferred bit never masquerades as completed work.
+static STAT_CALLS: [[core::sync::atomic::AtomicU64; MAX_CPUS]; N_STAT_CLASSES] =
+    [const { [const { core::sync::atomic::AtomicU64::new(0) }; MAX_CPUS] }; N_STAT_CLASSES];
+
+/// Number of completed handlers in `class` on `cpu`. # C: O(1)
+pub fn stat_count(class: StatClass, cpu: usize) -> u64 {
+    if cpu >= MAX_CPUS { return 0; }
+    STAT_CALLS[class as usize][cpu].load(Ordering::Relaxed)
+}
+
+/// Sum `class` across the supplied online CPU count. # C: O(N_cpu)
+pub fn stat_total(class: StatClass, ncpu: usize) -> u64 {
+    let n = ncpu.min(MAX_CPUS);
+    (0..n).map(|cpu| stat_count(class, cpu)).sum()
+}
 const PROCESS_ONLY: u32 = 1u32 << (Slot::NetNsReap as u32);
 /// Per-CPU array width (Linux `irq_stat[NR_CPUS]`).
 const MAX_CPUS: usize = cpu::MAX_CPUS;
@@ -325,6 +383,9 @@ unsafe fn run_pending_mode<A: HandlerAccounting>(process_context: bool) {
             let raw = HANDLERS[idx].load(Ordering::Acquire);
             if !raw.is_null() {
                 HANDLER_CALLS.fetch_add(1, Ordering::Relaxed);
+                if let Some(class) = stat_class_for_index(idx) {
+                    STAT_CALLS[class as usize][c].fetch_add(1, Ordering::Relaxed);
+                }
                 // SAFETY: raw was stored via set_handler which casts a non-null `fn()` through `*mut ()`; reverse-cast restores the original ABI-compatible fn pointer; handlers are responsible for their own safety contracts.
                 let f: fn() = unsafe { core::mem::transmute::<*mut (), fn()>(raw) };
                 let snapshot = A::before();

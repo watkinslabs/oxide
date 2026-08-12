@@ -22,6 +22,7 @@ net  = { path = "../net" }
 netlink = { path = "../netlink" }
 modules = { path = "../modules" }
 sched = { path = "../sched" }
+softirq = { path = "../softirq" }
 syscall = { path = "../syscall" }
 vmm   = { path = "../mm-vmm" }
 devfs = { path = "../devfs" }

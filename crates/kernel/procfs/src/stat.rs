@@ -9,7 +9,7 @@
 //   processes <total spawned>
 //   procs_running <runnable count>
 //   procs_blocked 0
-//   softirq 0 0 0 0 0 0 0 0 0 0
+//   softirq <total> <HI> <TIMER> <NET_TX> <NET_RX> <BLOCK> <IRQ_POLL> <TASKLET> <SCHED> <HRTIMER> <RCU>
 //
 // v1: jiffies counters report 0 (no per-CPU tick accounting yet).
 // btime and processes/procs_running come from live kernel state.
@@ -39,6 +39,12 @@ fn body() -> Vec<u8> {
             let _ = core::fmt::Write::write_fmt(&mut VecFmt(&mut out), format_args!(
                 "cpu{c} {u} 0 {s} {i} 0 0 0 0 0 0\n"));
         }
+        let classes = [softirq::StatClass::Hi, softirq::StatClass::Timer, softirq::StatClass::NetTx,
+            softirq::StatClass::NetRx, softirq::StatClass::Block, softirq::StatClass::IrqPoll,
+            softirq::StatClass::Tasklet, softirq::StatClass::Sched, softirq::StatClass::Hrtimer,
+            softirq::StatClass::Rcu];
+        let counts: [u64; softirq::N_STAT_CLASSES] = classes.map(|class| softirq::stat_total(class, ncpu));
+        let softirq_total: u64 = counts.iter().sum();
         let _ = core::fmt::Write::write_fmt(&mut VecFmt(&mut out), format_args!(
             "intr 0\n\
              ctxt {ctxt}\n\
@@ -46,7 +52,8 @@ fn body() -> Vec<u8> {
              processes {total}\n\
              procs_running {running}\n\
              procs_blocked 0\n\
-             softirq 0 0 0 0 0 0 0 0 0 0\n",
+             softirq {softirq_total} {} {} {} {} {} {} {} {} {} {}\n",
+             counts[0], counts[1], counts[2], counts[3], counts[4], counts[5], counts[6], counts[7], counts[8], counts[9],
         ));
         out
 }
