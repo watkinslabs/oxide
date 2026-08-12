@@ -217,8 +217,9 @@ pub struct AddressSpace {
     /// CPUs (`flush_tlb_others`), not every online CPU — over-inclusion
     /// is a harmless spurious flush, under-inclusion is corruption, so
     /// the set/clear ordering (mark-before-activate, clear-after-activate)
-    /// is load-bearing. `u64` exactly covers `cpu::MAX_CPUS == 64`.
-    cpumask: core::sync::atomic::AtomicU64,
+    /// is load-bearing.  CPU-set storage is word-array based so CPU-scale
+    /// support does not fork address-space residency from the online set.
+    cpumask: cpu::AtomicCpuMask,
     /// Linux `mm_struct` argv/env/stack/code/data/start_brk bounds +
     /// saved auxv. Set at execve; rewritable via `prctl(PR_SET_MM)` under
     /// CAP_SYS_RESOURCE. Source for `/proc/<pid>/{cmdline,environ,stat}`.
@@ -341,7 +342,7 @@ impl AddressSpace {
             mlock_onfault: core::sync::atomic::AtomicBool::new(false),
             // Fresh/forked AS: no CPU has loaded it yet (Linux clears
             // mm_cpumask on mm init; the activating CPU sets its bit).
-            cpumask: core::sync::atomic::AtomicU64::new(0),
+            cpumask: cpu::AtomicCpuMask::new(),
             mm_layout: mmfields::MmLayout::new(),
             accounting: accounting::VmAccounting::new(root_pa),
             membarrier: membarrier::MembarrierState::new(),
@@ -496,6 +497,13 @@ impl AddressSpace {
     /// that actually need invalidating.
     /// # C: O(1)
     pub fn cpumask(&self) -> u64 {
+        self.cpumask.load(core::sync::atomic::Ordering::Acquire).low_word()
+    }
+
+    /// Full residency set for the address space.  New wide-target callers
+    /// must use this rather than introducing another scalar mm mask.
+    /// # C: O(words)
+    pub fn cpumask_full(&self) -> cpu::CpuMask {
         self.cpumask.load(core::sync::atomic::Ordering::Acquire)
     }
 
@@ -505,9 +513,7 @@ impl AddressSpace {
     /// guarantees a peer shootdown never skips a CPU that has the mm.
     /// # C: O(1)
     pub fn mark_cpu(&self, cpu: usize) {
-        if cpu < 64 {
-            self.cpumask.fetch_or(1u64 << cpu, core::sync::atomic::Ordering::AcqRel);
-        }
+        self.cpumask.set(cpu, core::sync::atomic::Ordering::AcqRel);
     }
 
     /// Clear logical CPU `cpu`'s bit. Called AFTER the CR3/TTBR0 reload
@@ -518,8 +524,6 @@ impl AddressSpace {
     /// write-while-shared / use-after-free corruption.
     /// # C: O(1)
     pub fn clear_cpu(&self, cpu: usize) {
-        if cpu < 64 {
-            self.cpumask.fetch_and(!(1u64 << cpu), core::sync::atomic::Ordering::AcqRel);
-        }
+        self.cpumask.clear_cpu(cpu, core::sync::atomic::Ordering::AcqRel);
     }
 }

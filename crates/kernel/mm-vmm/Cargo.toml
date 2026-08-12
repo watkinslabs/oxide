@@ -13,6 +13,7 @@ klog      = { path = "../../shared/klog" }
 sync      = { path = "../../shared/sync" }
 uaccess   = { path = "../uaccess" }
 bitflags  = { version = "2", default-features = false }
+cpu       = { path = "../cpu" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64 = { path = "../../arch/hal-x86_64" }
