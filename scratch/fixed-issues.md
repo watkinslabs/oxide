@@ -1,5 +1,11 @@
 # Fixed issues
 
+### F1006-linux-dma-mapping-error-abi
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED F1006 | DEFECT | high | **The external Linux DMA facade defined `DMA_MAPPING_ERROR` as zero, although Linux defines it as the all-ones `dma_addr_t`. This incorrectly treated a valid device DMA address of zero as failure and gave Linux modules a different ABI contract.** The facade now uses `u64::MAX`, matching the target `dma_addr_t` width and leaving zero valid. | F1006. `linux_dma_tests::mapping_error_returns_linux_enomem` pins both the all-ones error sentinel and valid zero address; compared with the target Linux `include/linux/dma-mapping.h` definition. | Chris Watkins |
+
 ### F999-iommu-invalidation-transaction
 
 | Status | Class | Sev | Issue | Evidence | Owner |
