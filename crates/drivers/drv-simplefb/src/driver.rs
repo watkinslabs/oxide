@@ -15,6 +15,7 @@ struct Live {
     mapping: mmio_map::Mapping,
     fb_va: u64,
     bytes: u64,
+    aperture: fbdev::ApertureKey,
 }
 
 static CONFIG: Spinlock<BootFramebuffer, DriverLockClass> = Spinlock::new(BootFramebuffer::EMPTY);
@@ -44,8 +45,11 @@ fn detach() {
     PRESENT.store(false, Ordering::Release);
     unpublish_console();
     let _ = fbdev::unregister(live.idx);
+    let _ = fbdev::release_aperture(live.aperture);
     drop(live.mapping);
 }
+
+fn detach_aperture(_key: fbdev::ApertureKey) { detach(); }
 
 #[cfg(target_os = "oxide-kernel")]
 fn unpublish_console() {
@@ -90,17 +94,24 @@ impl drv::Driver for SimpleFbDriver {
         let page_off = fb.base_pa - page_pa;
         let span = page_off.checked_add(bytes).ok_or(drv::Error::Invalid)?;
         let pages = span.checked_add(PAGE_BYTES - 1).ok_or(drv::Error::Invalid)? / PAGE_BYTES;
+        let var = format::fb_var(fb).ok_or(drv::Error::Invalid)?;
+        let aperture = fbdev::acquire_aperture(fb.base_pa, bytes, detach_aperture).map_err(|err| match err {
+            fbdev::ApertureError::Inval => drv::Error::Invalid,
+            fbdev::ApertureError::Busy => drv::Error::Busy,
+        })?;
         // SAFETY: the platform resource above contains the complete firmware
         // framebuffer; its lifetime is the bound device's lifetime and page_pa
         // is aligned. The driver owns the returned WC alias until detach.
         let mapping = unsafe { mmio_map::map_owned_wc(page_pa, pages) };
         let fb_va = mapping.base_va() + page_off;
-        let var = format::fb_var(fb).ok_or(drv::Error::Invalid)?;
         let idx = fbdev::init_scanout_configured(
             fb.base_pa, fb_va, bytes, fb.pitch, var, vmm::PhysCacheMode::WriteCombine,
         );
-        if idx == fbdev::INVALID_FB_INDEX { return Err(drv::Error::ProbeFailed); }
-        *LIVE.lock() = Some(Live { fb, idx, mapping, fb_va, bytes });
+        if idx == fbdev::INVALID_FB_INDEX {
+            let _ = fbdev::release_aperture(aperture);
+            return Err(drv::Error::ProbeFailed);
+        }
+        *LIVE.lock() = Some(Live { fb, idx, mapping, fb_va, bytes, aperture });
         PRESENT.store(true, Ordering::Release);
         publish_console(fb);
         #[cfg(feature = "debug-boot")]

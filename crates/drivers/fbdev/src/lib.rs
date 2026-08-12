@@ -26,6 +26,12 @@ pub use registry::{
     var_of, Error, FbDev, FbDriverKey, FbOps, KResult, FBS, INVALID_FB_INDEX,
 };
 
+mod aperture;
+pub use aperture::{
+    acquire_aperture, release_aperture, remove_conflicting_apertures, ApertureError, ApertureKey,
+    ApertureResult,
+};
+
 mod vblank;
 pub use vblank::{
     clear_wait_hooks, set_now_hook, set_yield_hook, vblank_seq, vblank_tick, wait_vblank,
