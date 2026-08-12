@@ -41,7 +41,8 @@ pub const fn wanted_features() -> u64 {
 /// consumes this profile; the PCI transport only executes it.
 /// # C: O(1)
 pub const fn transport_profile() -> virtio::VirtioTransportProfile {
-    virtio::VirtioTransportProfile::net(wanted_features(), Some(config_changed))
+    virtio::VirtioTransportProfile::net(wanted_features(), Some(raise_rx))
+        .with_config_handler(Some(config_changed))
 }
 
 /// Persistent runtime state for one modern virtio-net device. Queue resources
@@ -193,8 +194,7 @@ fn ensure_config_refresh_retry() {
 #[cfg(not(target_os = "oxide-kernel"))]
 fn ensure_config_refresh_retry() {}
 
-/// Defer a virtio-net configuration interrupt to process context. Queue zero
-/// shares this MSI-X vector, so RX still needs the same bottom-half wake.
+/// Defer a virtio-net configuration interrupt to process context.
 /// # C: O(1)
 pub fn config_changed() {
     CONFIG_REFRESH_PENDING.store(true, Ordering::Release);

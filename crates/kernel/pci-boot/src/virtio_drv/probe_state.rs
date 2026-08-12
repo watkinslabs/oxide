@@ -5,24 +5,19 @@ use super::{
     VIRTIO_PCI_PAGE_BASE_MASK,
 };
 
-const VIRTIO_MSIX_Q0_VECTOR: u16 = 0;
-
 pub(super) struct VirtioProbeState {
     bdf: pci::Bdf,
     mappings: TransportMappings,
     cfg_va: u64,
     device_cfg_va: u64,
     msix: Vec<MsixBinding>,
+    next_msix_vector: u16,
 }
 
 impl VirtioProbeState {
     fn new(bdf: pci::Bdf, mappings: TransportMappings, cfg_va: u64, device_cfg_va: u64) -> Self {
         Self {
-            bdf,
-            mappings,
-            cfg_va,
-            device_cfg_va,
-            msix: Vec::new(),
+            bdf, mappings, cfg_va, device_cfg_va, msix: Vec::new(), next_msix_vector: 0,
         }
     }
 
@@ -59,7 +54,6 @@ impl VirtioProbeState {
         d: &pci::PciDevice,
         _caps: &pci::heapless_caps::CapVec,
         bars: &[pci::Bar; 6],
-        queue_vector: u16,
         handler: Option<fn()>,
     ) -> Option<u16> {
         let Some(handler) = handler else {
@@ -68,24 +62,25 @@ impl VirtioProbeState {
         if let Some(binding) = self
             .msix
             .iter()
-            .find(|binding| binding.queue_vector == queue_vector)
-        {
-            return Some(binding.queue_vector);
-        }
-        if let Some(queue_vector) = bind_msix_vector(d, bars, &mut self.mappings, &mut self.msix, queue_vector, handler) {
-            return Some(queue_vector);
+            .find(|binding| binding.queue_vector == self.next_msix_vector)
+        { return Some(binding.queue_vector); }
+        if let Some(vector) = bind_msix_vector(
+            d, bars, &mut self.mappings, &mut self.msix, self.next_msix_vector, handler,
+        ) {
+            self.next_msix_vector = self.next_msix_vector.saturating_add(1);
+            return Some(vector);
         }
         None
     }
 
-    fn bind_msix0(
+    fn bind_msix_config(
         &mut self,
         d: &pci::PciDevice,
         caps: &pci::heapless_caps::CapVec,
         bars: &[pci::Bar; 6],
         handler: Option<fn()>,
     ) -> Option<u16> {
-        self.bind_msix_queue(d, caps, bars, VIRTIO_MSIX_Q0_VECTOR, handler)
+        self.bind_msix_queue(d, caps, bars, handler)
     }
 
     fn resolve_queue_plan_msix(
@@ -98,7 +93,7 @@ impl VirtioProbeState {
         let mut resolved = *queue_plans;
         for plan in resolved.iter_mut().flatten() {
             let msix_vec = self
-                .bind_msix_queue(d, caps, bars, plan.index, plan.msix_handler)
+                .bind_msix_queue(d, caps, bars, plan.msix_handler)
                 .unwrap_or(virtio::VIRTIO_MSI_NO_VECTOR);
             *plan = plan.with_msix_vec(msix_vec);
         }
@@ -114,8 +109,14 @@ impl VirtioProbeState {
         runtime: VirtioPciRuntime,
     ) -> virtio::CommonCfgBringup<ProgrammedQueues> {
         let bringup = virtio::bring_up_common_cfg(self.cfg_va, profile.drv_features, || {
+            let config_msix_vec = self
+                .bind_msix_config(d, caps, bars, profile.config_handler)
+                .unwrap_or(virtio::VIRTIO_MSI_NO_VECTOR);
+            if virtio::set_config_msix_vector(self.cfg_va, config_msix_vec) != config_msix_vec {
+                return None;
+            }
             let q0_msix_vec = self
-                .bind_msix0(d, caps, bars, profile.msix0_handler)
+                .bind_msix_queue(d, caps, bars, profile.q0_handler)
                 .unwrap_or(virtio::VIRTIO_MSI_NO_VECTOR);
             let queue_plans = self.resolve_queue_plan_msix(d, caps, bars, &profile.queue_plans);
             runtime.program_queue_set(self.cfg_va, q0_msix_vec, &queue_plans)

@@ -42,6 +42,7 @@ pub mod common_cfg;
 pub use common_cfg::{
     bring_up_common_cfg, complete_driver_status, negotiate_features, read_status, reset_device,
     scan_queue_sizes, set_driver_ok, set_failed, CommonCfgBringup, FeatureNegotiation,
+    set_config_msix_vector,
 };
 
 pub mod queue_cfg;

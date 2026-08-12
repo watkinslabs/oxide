@@ -94,7 +94,13 @@ impl VirtioEarlyPayloadPolicy {
 #[derive(Copy, Clone)]
 pub struct VirtioTransportProfile {
     pub drv_features: u64,
-    pub msix0_handler: Option<fn()>,
+    /// Queue-zero completion callback.  The PCI transport assigns this an
+    /// independently allocated queue vector; it is never the configuration
+    /// vector by convention.
+    pub q0_handler: Option<fn()>,
+    /// Device-configuration-change callback.  This is programmed through
+    /// `msix_config`, separately from every `queue_msix_vector`.
+    pub config_handler: Option<fn()>,
     pub queue_plans: [Option<VirtioQueuePlan>; MAX_RESOURCE_QUEUES],
     pub early_payload_policy: VirtioEarlyPayloadPolicy,
     pub child_requirements: VirtioChildRequirements,
@@ -103,12 +109,25 @@ pub struct VirtioTransportProfile {
 impl VirtioTransportProfile {
     pub const fn new(
         drv_features: u64,
-        msix0_handler: Option<fn()>,
+        q0_handler: Option<fn()>,
         queue_plans: [Option<VirtioQueuePlan>; MAX_RESOURCE_QUEUES],
         early_payload_policy: VirtioEarlyPayloadPolicy,
         child_requirements: VirtioChildRequirements,
     ) -> Self {
-        Self { drv_features, msix0_handler, queue_plans, early_payload_policy, child_requirements }
+        Self {
+            drv_features,
+            q0_handler,
+            config_handler: None,
+            queue_plans,
+            early_payload_policy,
+            child_requirements,
+        }
+    }
+
+    /// Request a distinct configuration-change interrupt. # C: O(1)
+    pub const fn with_config_handler(mut self, handler: Option<fn()>) -> Self {
+        self.config_handler = handler;
+        self
     }
 
     /// Request event-index notification suppression for a child whose queue
@@ -118,20 +137,20 @@ impl VirtioTransportProfile {
         self
     }
 
-    pub const fn q0(drv_features: u64, msix0_handler: Option<fn()>) -> Self {
+    pub const fn q0(drv_features: u64, q0_handler: Option<fn()>) -> Self {
         Self::new(
             drv_features,
-            msix0_handler,
+            q0_handler,
             [None, None, None, None, None, None, None, None],
             VirtioEarlyPayloadPolicy::None,
             VirtioChildRequirements::q0(),
         )
     }
 
-    pub const fn q0_device_cfg(drv_features: u64, msix0_handler: Option<fn()>) -> Self {
+    pub const fn q0_device_cfg(drv_features: u64, q0_handler: Option<fn()>) -> Self {
         Self::new(
             drv_features,
-            msix0_handler,
+            q0_handler,
             [None, None, None, None, None, None, None, None],
             VirtioEarlyPayloadPolicy::None,
             VirtioChildRequirements::q0_device_cfg(),
@@ -143,10 +162,10 @@ impl VirtioTransportProfile {
     /// transport binds it `VIRTIO_MSI_NO_VECTOR` and the device is left with
     /// no vector to raise for it. Its notify doorbell is still mapped: a
     /// poller must be able to kick. # C: O(1)
-    pub const fn q0_device_cfg_poll_q1(drv_features: u64, msix0_handler: Option<fn()>) -> Self {
+    pub const fn q0_device_cfg_poll_q1(drv_features: u64, q0_handler: Option<fn()>) -> Self {
         Self::new(
             drv_features,
-            msix0_handler,
+            q0_handler,
             [None, Some(VirtioQueuePlan::new(POLL_QUEUE_INDEX, None, true)), None, None, None, None, None, None],
             VirtioEarlyPayloadPolicy::None,
             VirtioChildRequirements::q0_device_cfg()
@@ -154,30 +173,30 @@ impl VirtioTransportProfile {
         )
     }
 
-    pub const fn q0_q1(drv_features: u64, msix0_handler: Option<fn()>) -> Self {
+    pub const fn q0_q1(drv_features: u64, q0_handler: Option<fn()>) -> Self {
         Self::new(
             drv_features,
-            msix0_handler,
+            q0_handler,
             [None, Some(VirtioQueuePlan::new(1, None, true)), None, None, None, None, None, None],
             VirtioEarlyPayloadPolicy::None,
             VirtioChildRequirements::q0_q1(),
         )
     }
 
-    pub const fn net(drv_features: u64, msix0_handler: Option<fn()>) -> Self {
+    pub const fn net(drv_features: u64, q0_handler: Option<fn()>) -> Self {
         Self::new(
             drv_features,
-            msix0_handler,
+            q0_handler,
             [None, Some(VirtioQueuePlan::new(1, None, true)), None, None, None, None, None, None],
             VirtioEarlyPayloadPolicy::Net,
             VirtioChildRequirements::net(),
         )
     }
 
-    pub const fn vsock(drv_features: u64, msix0_handler: Option<fn()>) -> Self {
+    pub const fn vsock(drv_features: u64, q0_handler: Option<fn()>) -> Self {
         Self::new(
             drv_features,
-            msix0_handler,
+            q0_handler,
             [None, Some(VirtioQueuePlan::new(1, None, true)), None, None, None, None, None, None],
             VirtioEarlyPayloadPolicy::None,
             VirtioChildRequirements::q0_q1_device_cfg(),
@@ -186,12 +205,12 @@ impl VirtioTransportProfile {
 
     pub const fn snd(
         drv_features: u64,
-        msix0_handler: Option<fn()>,
+        q0_handler: Option<fn()>,
         event_handler: Option<fn()>,
     ) -> Self {
         Self::new(
             drv_features,
-            msix0_handler,
+            q0_handler,
             [
                 None,
                 Some(VirtioQueuePlan::new(1, event_handler, true)),

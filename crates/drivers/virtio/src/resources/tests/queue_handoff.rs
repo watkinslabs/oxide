@@ -237,24 +237,36 @@ fn same_fn(left: Option<fn()>, right: fn()) -> bool {
 }
 
 #[test]
-fn transport_profiles_carry_child_declared_msix_handlers() {
+fn transport_profiles_keep_config_and_queue_handlers_distinct() {
     let net = VirtioTransportProfile::net(0x55, Some(fake_config_irq));
-    assert!(same_fn(net.msix0_handler, fake_config_irq));
+    assert!(same_fn(net.q0_handler, fake_config_irq));
+    assert!(net.config_handler.is_none());
     assert!(net.queue_plans[1].and_then(|q| q.msix_handler).is_none());
 
     let input = VirtioTransportProfile::q0_device_cfg(0x66, Some(fake_config_irq));
-    assert!(same_fn(input.msix0_handler, fake_config_irq));
+    assert!(same_fn(input.q0_handler, fake_config_irq));
+    assert!(input.config_handler.is_none());
     assert!(input.queue_plans.iter().all(|plan| plan.is_none()));
 
     let snd = VirtioTransportProfile::snd(0x77, None, Some(fake_event_irq));
-    assert!(snd.msix0_handler.is_none());
+    assert!(snd.q0_handler.is_none());
+    assert!(snd.config_handler.is_none());
     assert!(same_fn(snd.queue_plans[1].and_then(|q| q.msix_handler), fake_event_irq));
     assert!(snd.queue_plans[2].and_then(|q| q.msix_handler).is_none());
     assert!(snd.queue_plans[3].and_then(|q| q.msix_handler).is_none());
 
     let rng = VirtioTransportProfile::q0(0x88, None);
-    assert!(rng.msix0_handler.is_none());
+    assert!(rng.q0_handler.is_none());
+    assert!(rng.config_handler.is_none());
     assert!(rng.queue_plans.iter().all(|plan| plan.is_none()));
+}
+
+#[test]
+fn profile_can_request_a_distinct_config_vector() {
+    let profile = VirtioTransportProfile::net(0x55, Some(fake_event_irq))
+        .with_config_handler(Some(fake_config_irq));
+    assert!(same_fn(profile.q0_handler, fake_event_irq));
+    assert!(same_fn(profile.config_handler, fake_config_irq));
 }
 
 #[test]

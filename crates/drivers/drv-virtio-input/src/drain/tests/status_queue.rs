@@ -139,7 +139,7 @@ fn transport_profile_requires_event_status_and_device_config() {
     assert!(q1.map_notify);
     assert_eq!(
         q1.msix_handler.is_some(),
-        profile.msix0_handler.is_some(),
+        profile.q0_handler.is_some(),
     );
 }
 
