@@ -20,6 +20,8 @@ use sync::{Spinlock, Modules as ModulesLockClass};
 #[path = "linux_drm_ioctl.rs"] mod ioctl;
 #[path = "linux_drm_gem.rs"] mod gem;
 #[path = "linux_drm_gem_mmap.rs"] mod gem_mmap;
+pub(crate) use gem::{object_get, object_put};
+pub(crate) use gem_mmap::{shmem_mapping_frame, shmem_mapping_object, shmem_mapping_size};
 #[path = "linux_drm_shadow.rs"] mod shadow;
 #[path = "linux_drm_format_helper.rs"] mod format_helper;
 #[path = "linux_drm_atomic.rs"] mod atomic;

@@ -75,6 +75,37 @@ pub(super) extern "C" fn drm_gem_vm_close(vma: *mut c_void) {
     gem::object_put(object);
 }
 
+/// Return the shmem GEM object retained by one successfully established VMA. # C: O(1)
+pub(crate) fn shmem_mapping_object(vma: *mut c_void) -> Option<*mut c_void> {
+    if vma.is_null() { return None; }
+    // SAFETY: the mapper owns the complete ABI VMA until this handoff finishes.
+    let object = unsafe { read(vma.cast::<u8>().add(VMA_PRIVATE_OFF).cast::<*mut c_void>()) };
+    if object.is_null() { return None; }
+    // SAFETY: GEM function-table pointer is immutable for this established object.
+    let funcs = unsafe { read(object.cast::<u8>().add(GEM_FUNCS_OFF).cast::<*const c_void>()) };
+    let shmem: *const c_void = (&gem::SHMEM_OBJECT_FUNCS as *const gem::GemObjectFuncs).cast();
+    if funcs == shmem { Some(object) } else { None }
+}
+
+/// Size and PMM frame of one shmem-GEM page. # C: O(log N)
+pub(crate) fn shmem_mapping_frame(object: *mut c_void, off: u64) -> Option<(u64, u64)> {
+    if object.is_null() || off % PAGE_SIZE != 0 { return None; }
+    // SAFETY: established shmem GEM object's immutable size/backing slots are valid through its mapping reference.
+    let (size, backing) = unsafe { (read(object.cast::<u8>().add(GEM_SIZE_OFF).cast::<u64>()), read(object.cast::<u8>().add(432).cast::<*mut u8>())) };
+    if off >= size { return None; }
+    #[cfg(target_os = "oxide-kernel")]
+    { crate::linux_alloc::vmalloc_page_pa(backing, off as usize).map(|pa| (size, pa)) }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    { let _ = backing; None }
+}
+
+/// Size of one established shmem GEM mapping. # C: O(1)
+pub(crate) fn shmem_mapping_size(object: *mut c_void) -> Option<u64> {
+    if object.is_null() { return None; }
+    // SAFETY: established object's immutable size field is valid through its mapping reference.
+    Some(unsafe { read(object.cast::<u8>().add(GEM_SIZE_OFF).cast::<u64>()) })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
