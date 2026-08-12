@@ -36,10 +36,18 @@ pub const HUB_PORT_FEATURE_POWER: u16 = 8;
 pub const HUB_PORT_FEATURE_RESET: u16 = 4;
 /// Hub-port connection-change feature selector. # C: O(1)
 pub const HUB_PORT_FEATURE_C_CONNECTION: u16 = 16;
+/// Hub-port reset-complete change selector. # C: O(1)
+pub const HUB_PORT_FEATURE_C_RESET: u16 = 20;
 /// Hub-port connection-present status bit. # C: O(1)
 pub const HUB_PORT_STATUS_CONNECTION: u16 = 1;
+/// Hub-port enable status bit. # C: O(1)
+pub const HUB_PORT_STATUS_ENABLE: u16 = 2;
+/// Hub-port reset-in-progress status bit. # C: O(1)
+pub const HUB_PORT_STATUS_RESET: u16 = 16;
 /// Hub-port connection-change status bit. # C: O(1)
 pub const HUB_PORT_CHANGE_CONNECTION: u16 = 1;
+/// Hub-port reset-complete change bit. # C: O(1)
+pub const HUB_PORT_CHANGE_RESET: u16 = 16;
 /// Largest USB2 hub change bitmap: bit zero plus 255 downstream ports. # C: O(1)
 pub const HUB_STATUS_MAX_BYTES: usize = 32;
 
@@ -61,6 +69,17 @@ impl HubPortStatus {
     pub const fn connected(self) -> bool { self.status & HUB_PORT_STATUS_CONNECTION != 0 }
     /// Whether the hub reports a connection-state transition. # C: O(1)
     pub const fn connection_changed(self) -> bool { self.change & HUB_PORT_CHANGE_CONNECTION != 0 }
+    /// Whether the downstream port is enabled after reset. # C: O(1)
+    pub const fn enabled(self) -> bool { self.status & HUB_PORT_STATUS_ENABLE != 0 }
+    /// Whether reset remains in progress. # C: O(1)
+    pub const fn resetting(self) -> bool { self.status & HUB_PORT_STATUS_RESET != 0 }
+    /// Whether the hub latched reset completion. # C: O(1)
+    pub const fn reset_changed(self) -> bool { self.change & HUB_PORT_CHANGE_RESET != 0 }
+    /// xHCI slot-speed field synthesized from USB2 hub port status. # C: O(1)
+    pub const fn xhci_portsc(self) -> u32 {
+        let speed = if self.status & 0x0200 != 0 { 2 } else if self.status & 0x0400 != 0 { 3 } else { 1 };
+        speed << 10
+    }
 }
 
 /// Test whether one downstream port is named in a hub interrupt status bitmap. # C: O(1)
@@ -370,6 +389,9 @@ mod tests {
         assert_eq!(hub_port_changed(&[0b0000_0010], 1), Some(true));
         assert_eq!(hub_port_changed(&[0b0000_0010], 2), Some(false));
         assert_eq!(hub_port_changed(&[0], 8), None);
+        let reset = hub_port_status(&[0x13, 4, 16, 0]).unwrap();
+        assert!(reset.connected() && reset.enabled() && reset.resetting() && reset.reset_changed());
+        assert_eq!(reset.xhci_portsc(), 3 << 10);
     }
     #[test]
     fn hub_interrupt_bitmap_is_exact_and_covers_bit_zero_through_last_port() {

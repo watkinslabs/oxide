@@ -18,7 +18,7 @@ struct StorageDma {
 }
 
 /// Input context, output device context, and endpoint-zero transfer ring.
-pub struct AddressDeviceDma { bdf: pci::Bdf, input: DmaPage, output: DmaPage, ep0: DmaPage, descriptor: DmaPage, context_bytes: u8, speed: u8, port: u8, slot: u8, device_protocol: u8, hub_descriptor: Option<crate::usb::HubDescriptor>, hub_events: [u8; crate::usb::HUB_STATUS_MAX_BYTES], hub_events_len: u8, _hid: Option<crate::usb::HidBootInterface>, _hub: Option<crate::usb::HubInterface>, _storage: Option<crate::storage::MassStorageInterface>, hid_ring: Option<HidDma>, hub_ring: Option<HubDma>, storage_dma: Option<StorageDma>, ep0_ring: CommandRing }
+pub struct AddressDeviceDma { bdf: pci::Bdf, input: DmaPage, output: DmaPage, ep0: DmaPage, descriptor: DmaPage, context_bytes: u8, speed: u8, topology: crate::context::DeviceTopology, slot: u8, device_protocol: u8, hub_descriptor: Option<crate::usb::HubDescriptor>, hub_needs_power: bool, hub_events: [u8; crate::usb::HUB_STATUS_MAX_BYTES], hub_events_len: u8, _hid: Option<crate::usb::HidBootInterface>, _hub: Option<crate::usb::HubInterface>, _storage: Option<crate::storage::MassStorageInterface>, hid_ring: Option<HidDma>, hub_ring: Option<HubDma>, storage_dma: Option<StorageDma>, ep0_ring: CommandRing }
 
 /// Maximum chained USB-storage transfer accepted by one retained endpoint ring.
 pub const STORAGE_MAX_TRANSFER_BYTES: usize = DmaPage::BYTES * crate::ring::COMMAND_USABLE_TRBS;
@@ -45,7 +45,7 @@ impl AddressDeviceDma {
         }
         input.clean_to_device(); output.clean_to_device(); ep0.clean_to_device();
         let ep0_ring = CommandRing::new(ep0.dma())?;
-        Some(Self { bdf, input, output, ep0, descriptor, context_bytes, speed, port: topology.root_port, slot: 0, device_protocol: 0, hub_descriptor: None, hub_events: [0; crate::usb::HUB_STATUS_MAX_BYTES], hub_events_len: 0, _hid: None, _hub: None, _storage: None, hid_ring: None, hub_ring: None, storage_dma: None, ep0_ring })
+        Some(Self { bdf, input, output, ep0, descriptor, context_bytes, speed, topology, slot: 0, device_protocol: 0, hub_descriptor: None, hub_needs_power: false, hub_events: [0; crate::usb::HUB_STATUS_MAX_BYTES], hub_events_len: 0, _hid: None, _hub: None, _storage: None, hid_ring: None, hub_ring: None, storage_dma: None, ep0_ring })
     }
 
     /// Input-context device DMA address for Address Device. # C: O(1)
@@ -186,6 +186,13 @@ impl AddressDeviceDma {
         for offset in 0..length { bytes.push(self.descriptor.read8(offset as u64)?); }
         let descriptor = crate::usb::hub_descriptor(&bytes)?;
         self.hub_descriptor = Some(descriptor);
+        self.hub_needs_power = true;
+        let length = (usize::from(descriptor.ports).checked_add(8)? / 8).max(1);
+        for port in 1..=descriptor.ports {
+            let bit = usize::from(port);
+            self.hub_events[bit / 8] |= 1 << (bit % 8);
+        }
+        self.hub_events_len = length as u8;
         Some(descriptor)
     }
     /// Build the controller input context that identifies this slot as a hub. # C: O(1)
@@ -262,7 +269,9 @@ impl AddressDeviceDma {
     /// Enabled xHCI slot retained for this device. # C: O(1)
     pub fn slot(&self) -> u8 { self.slot }
     /// Physical root-hub port this slot was addressed through. # C: O(1)
-    pub fn port(&self) -> u8 { self.port }
+    pub fn port(&self) -> u8 { self.topology.root_port }
+    /// xHCI root-port plus route-string identity of this device. # C: O(1)
+    pub fn topology(&self) -> crate::context::DeviceTopology { self.topology }
     /// Publish one HID interrupt-IN report receive TRB and ring that endpoint. # C: O(1)
     pub fn submit_hid_report(&mut self, mmio: &Mmio, slot: u8) -> Option<u64> {
         let hid = self._hid?;
@@ -337,6 +346,13 @@ impl AddressDeviceDma {
         self.hub_events[..length].fill(0);
         self.hub_events_len = 0;
         Some(bitmap)
+    }
+    /// Claim initial hub-port power-up delay once after descriptor discovery. # C: O(1)
+    pub fn take_hub_power_delay_ms(&mut self) -> Option<u16> {
+        let hub = self.hub_descriptor?;
+        if !self.hub_needs_power { return None; }
+        self.hub_needs_power = false;
+        Some(hub.power_good_ms)
     }
     /// Whether an interrupt status bitmap still awaits process-context service. # C: O(1)
     pub fn hub_events_pending(&self) -> bool { self.hub_events_len != 0 }
