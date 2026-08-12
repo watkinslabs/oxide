@@ -112,6 +112,7 @@ pub fn export_symbols() {
         ("dma_supported",             dma_supported             as *const () as usize),
         ("dma_get_required_mask",     dma_get_required_mask     as *const () as usize),
         ("dma_max_mapping_size",      dma_max_mapping_size      as *const () as usize),
+        ("dma_get_sgtable_attrs",     dma_get_sgtable_attrs     as *const () as usize),
         ("sg_init_table",             sg_init_table             as *const () as usize),
         ("sg_init_one",               sg_init_one               as *const () as usize),
         ("sg_set_buf",                sg_set_buf                as *const () as usize),
@@ -168,6 +169,25 @@ pub(crate) extern "C" fn dma_free_attrs(dev: *mut LinuxDevice, size: usize, cpu_
     let Some(pa) = linux_alloc::direct_pa_for_va(cpu_addr as *const u8) else { return; };
     if !unmap_for_device(dev, dma_handle, size) { return; }
     if let Some(order) = order_for_size(size) { linux_alloc::page_run_free_pa(pa, order); }
+}
+
+/// Describe a coherent DMA allocation for export without sending it back
+/// through the streaming map path. Linux's coherent SG-table API preserves the
+/// allocation's existing device address for exactly this reason.
+pub(crate) extern "C" fn dma_get_sgtable_attrs(_dev: *mut LinuxDevice, table: *mut SgTable,
+    cpu_addr: *mut c_void, dma_addr: u64, size: usize, _attrs: u64) -> i32 {
+    if table.is_null() || cpu_addr.is_null() || size == 0 || size > u32::MAX as usize || dma_addr == DMA_MAPPING_ERROR
+        || linux_alloc::direct_pa_for_va(cpu_addr as *const u8).and_then(|pa| pa.checked_add(size as u64 - 1)).is_none() {
+        return -LINUX_EINVAL;
+    }
+    if sg_alloc_table(table, 1, 0) != LINUX_OK { return -LINUX_ENOMEM; }
+    // SAFETY: sg_alloc_table initialized one owned entry in `table` above.
+    unsafe {
+        sg_set_buf((*table).sgl, cpu_addr, size as u32);
+        (*(*table).sgl).dma_address = dma_addr;
+        (*(*table).sgl).dma_length = size as u32;
+    }
+    LINUX_OK
 }
 
 pub(crate) extern "C" fn dma_map_single(dev: *mut LinuxDevice, ptr: *mut c_void, size: usize, dir: i32) -> u64 {

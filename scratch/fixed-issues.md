@@ -1,5 +1,11 @@
 # Fixed issues
 
+### F1011-linux-coherent-dma-sgtable
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED F1011 | MISSING | high | **The external DMA facade lacked `dma_get_sgtable_attrs`, preventing Linux DRM coherent-buffer helpers from exporting a coherent allocation through DMA-BUF. Re-mapping it as streaming DMA would be incorrect because the allocation already has a live device address.** The helper now builds a single owned SG entry retaining the allocation's original DMA address and length, without touching IOMMU ownership. | F1011. `linux_dma_tests::coherent_dma_sgtable_preserves_the_existing_device_address`; compared with target Linux `kernel/dma/mapping.c::dma_get_sgtable_attrs`. | Chris Watkins |
+
 ### F1010-linux-dma-max-mapping-size
 
 | Status | Class | Sev | Issue | Evidence | Owner |
