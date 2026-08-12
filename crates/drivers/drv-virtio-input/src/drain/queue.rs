@@ -25,13 +25,16 @@ pub(super) const MAX_EVENT_BUFFERS: u16 =
 /// `install_eventq`; consumed by the softirq drain.
 pub(super) struct QueueCtx {
     pub(super) device_key:  virtio::VirtioChildDeviceKey,
+    pub(super) bdf:         pci::Bdf,
     pub(super) cfg_va:      u64,
     pub(super) hhdm:        u64,
     pub(super) eventq:      virtio::VirtQueueResource,
     pub(super) buf_pa:      u64,
+    pub(super) buf_dma:     u64,
     pub(super) event_buffers: u16,
     pub(super) statusq:     virtio::VirtQueueResource,
     pub(super) status_buf_pa: u64,
+    pub(super) status_buf_dma: u64,
     pub(super) status:      status::StatusState,
     pub(super) pending_output: VecDeque<crate::VirtioInputEvent>,
     pub(super) last_used:   u16,
@@ -81,7 +84,7 @@ fn zero_frame(hhdm: u64, pa: u64) {
 pub(super) fn initialize_eventq(
     hhdm: u64,
     eventq: virtio::VirtQueueResource,
-    buf_pa: u64,
+    buf_dma: u64,
 ) -> u16 {
     let supplied = eventq.size.min(MAX_EVENT_BUFFERS);
     let desc_va = hhdm.wrapping_add(eventq.desc_pa) as *mut u8;
@@ -92,7 +95,7 @@ pub(super) fn initialize_eventq(
             let off = i * DESC_BYTES;
             core::ptr::write_volatile(
                 desc_va.add(off) as *mut u64,
-                buf_pa.wrapping_add((i * EVENT_BYTES) as u64),
+                buf_dma.wrapping_add((i * EVENT_BYTES) as u64),
             );
             core::ptr::write_volatile(
                 desc_va.add(off + DESC_LEN_OFF) as *mut u32,
@@ -125,6 +128,7 @@ pub(super) fn initialize_eventq(
 pub fn install_eventq(
     device_key: virtio::VirtioChildDeviceKey,
     evdev_id: u32,
+    bdf: pci::Bdf,
     resources: virtio::VirtioResources,
 ) -> Result<(), ()> {
     let slot_idx = evdev_id as usize;
@@ -144,6 +148,15 @@ pub fn install_eventq(
         unsafe { pmm::setup::free_one_frame(buf_pa); }
         return Err(());
     };
+    let Some(buf_dma) = iommu::map_dma(bdf, buf_pa, hal::PAGE_SIZE_BYTES as usize) else {
+        unsafe { pmm::setup::free_one_frame(status_buf_pa); pmm::setup::free_one_frame(buf_pa); }
+        return Err(());
+    };
+    let Some(status_buf_dma) = iommu::map_dma(bdf, status_buf_pa, hal::PAGE_SIZE_BYTES as usize) else {
+        let _ = iommu::unmap_dma(bdf, buf_dma, hal::PAGE_SIZE_BYTES as usize);
+        unsafe { pmm::setup::free_one_frame(status_buf_pa); pmm::setup::free_one_frame(buf_pa); }
+        return Err(());
+    };
     zero_frame(hhdm, buf_pa);
     zero_frame(hhdm, status_buf_pa);
     let mut installed = false;
@@ -152,19 +165,22 @@ pub fn install_eventq(
         if g[slot_idx].is_none()
             && !g.iter().flatten().any(|ctx| ctx.device_key == device_key)
         {
-            let event_buffers = initialize_eventq(hhdm, eventq, buf_pa);
+            let event_buffers = initialize_eventq(hhdm, eventq, buf_dma);
             if let Some(status_state) =
-                status::initialize(hhdm, statusq, status_buf_pa)
+                status::initialize(hhdm, statusq, status_buf_dma)
             {
                 g[slot_idx] = Some(QueueCtx {
                     device_key,
+                    bdf,
                     cfg_va: resources.cfg_va,
                     hhdm,
                     eventq,
                     buf_pa,
+                    buf_dma,
                     event_buffers,
                     statusq,
                     status_buf_pa,
+                    status_buf_dma,
                     status: status_state,
                     pending_output: VecDeque::new(),
                     last_used: 0,
@@ -176,6 +192,8 @@ pub fn install_eventq(
         }
     }
     if !installed {
+        let _ = iommu::unmap_dma(bdf, status_buf_dma, hal::PAGE_SIZE_BYTES as usize);
+        let _ = iommu::unmap_dma(bdf, buf_dma, hal::PAGE_SIZE_BYTES as usize);
         // SAFETY: neither frame was retained in CTXS.
         unsafe {
             pmm::setup::free_one_frame(status_buf_pa);
@@ -205,6 +223,12 @@ pub(super) fn owned_frames(ctx: &QueueCtx) -> [u64; 2] {
 }
 
 fn free_owned_frames(ctx: &QueueCtx) {
+    if !iommu::unmap_dma(ctx.bdf, ctx.status_buf_dma, hal::PAGE_SIZE_BYTES as usize) {
+        return;
+    }
+    if !iommu::unmap_dma(ctx.bdf, ctx.buf_dma, hal::PAGE_SIZE_BYTES as usize) {
+        return;
+    }
     for pa in owned_frames(ctx) {
         // SAFETY: reset confirmed DMA quiescence and CTXS no longer owns pa.
         unsafe { pmm::setup::free_one_frame(pa); }

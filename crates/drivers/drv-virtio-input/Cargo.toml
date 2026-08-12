@@ -9,6 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 hal     = { path = "../../arch/hal" }
+iommu   = { path = "../../kernel/iommu" }
 klog    = { path = "../../shared/klog" }
 drv     = { path = "../../drivers/drv" }
 virtio  = { path = "../../drivers/virtio" }
@@ -22,6 +23,7 @@ softirq = { path = "../../kernel/softirq" }
 tty     = { path = "../../kernel/tty" }
 vt      = { path = "../../drivers/vt" }
 pmm     = { path = "../../kernel/mm-pmm" }
+pci     = { path = "../../drivers/pci" }
 sched   = { path = "../../kernel/sched" }
 input   = { path = "../../kernel/input" }
 power   = { path = "../../kernel/power" }

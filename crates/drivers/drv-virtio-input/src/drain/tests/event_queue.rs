@@ -57,13 +57,16 @@ impl Fixture {
         );
         QueueCtx {
             device_key: key(DEVICE_KEY_RAW),
+            bdf: pci::Bdf { segment: 0, bus: 0, device: 0, function: 0 },
             cfg_va: 0,
             hhdm: 0,
             eventq,
             buf_pa: self.frames.0.as_mut_ptr() as u64,
+            buf_dma: self.frames.0.as_mut_ptr() as u64,
             event_buffers,
             statusq,
             status_buf_pa: 0,
+            status_buf_dma: 0,
             status: super::super::status::StatusState::new(size)
                 .expect("status state"),
             pending_output: VecDeque::new(),

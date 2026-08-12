@@ -34,13 +34,16 @@ pub(super) fn ctx(device_key: virtio::VirtioChildDeviceKey) -> QueueCtx {
     let statusq = virtio::VirtQueueResource { index: 1, ..queue() };
     QueueCtx {
         device_key,
+        bdf: pci::Bdf { segment: 0, bus: 0, device: 0, function: 0 },
         cfg_va: 0,
         hhdm: 0,
         eventq: queue(),
         buf_pa: 0,
+        buf_dma: 0,
         event_buffers: queue().size.min(super::super::queue::MAX_EVENT_BUFFERS),
         statusq,
         status_buf_pa: 0,
+        status_buf_dma: 0,
         status: super::super::status::StatusState::new(statusq.size)
             .expect("status state"),
         pending_output: VecDeque::new(),
