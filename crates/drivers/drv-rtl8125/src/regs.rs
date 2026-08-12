@@ -62,7 +62,9 @@ pub const fn descriptor_base(pa: u64) -> Option<(u32, u32)> {
     if pa & 0xff != 0 { None } else { Some((pa as u32, (pa >> 32) as u32)) }
 }
 /// Linux r8169's initial RTL8125 receive configuration. # C: O(1)
-pub const fn initial_rx_config() -> u32 { RX_FETCH_8125 | RX_DMA_BURST | RX_ACCEPT_MY_PHYS | RX_ACCEPT_BROADCAST }
+pub const fn initial_rx_config() -> u32 { RX_FETCH_8125 | RX_DMA_BURST }
+/// Add the station and broadcast filters after ring configuration. # C: O(1)
+pub const fn rx_config_unicast_broadcast() -> u32 { initial_rx_config() | RX_ACCEPT_MY_PHYS | RX_ACCEPT_BROADCAST }
 /// Command value that enables both RTL8125 data engines after descriptor publication. # C: O(1)
 pub const fn start_command() -> u8 { CMD_RX_ENABLE | CMD_TX_ENABLE }
 
@@ -104,7 +106,8 @@ mod tests {
         assert!(!is_rtl8125(VENDOR_REALTEK, 0x8168));
         assert_eq!(descriptor_base(0x1234_5600), Some((0x1234_5600, 0)));
         assert_eq!(descriptor_base(0x1234_5601), None);
-        assert_eq!(initial_rx_config(), 0x4000_070a);
+        assert_eq!(initial_rx_config(), 0x4000_0700);
+        assert_eq!(rx_config_unicast_broadcast(), 0x4000_070a);
         assert_eq!(start_command(), 0x0c);
         assert_eq!(BUFFER_BYTES, 16383);
         assert_eq!(RING_BYTES, 4096);
