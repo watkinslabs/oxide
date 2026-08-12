@@ -218,7 +218,9 @@ fn transport_profiles_describe_child_queue_policy() {
 fn queue_plans_default_to_named_no_vector_sentinel() {
     let plan = VirtioQueuePlan::new(1, None, true);
     assert_eq!(plan.msix_vec, VIRTIO_MSI_NO_VECTOR);
+    assert!(!plan.slow_path);
     assert_eq!(plan.with_msix_vec(2).msix_vec, 2);
+    assert!(plan.with_slow_path().slow_path);
 
     let net = VirtioTransportProfile::net(0x55, None);
     assert_eq!(net.queue_plans[1].map(|q| q.msix_vec), Some(VIRTIO_MSI_NO_VECTOR));

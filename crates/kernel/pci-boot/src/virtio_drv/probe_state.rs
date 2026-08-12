@@ -131,6 +131,42 @@ impl VirtioProbeState {
         Some((if profile.q0_handler.is_some() { shared } else { virtio::VIRTIO_MSI_NO_VECTOR }, resolved))
     }
 
+    fn resolve_shared_slow_msix(
+        &mut self,
+        d: &pci::PciDevice,
+        caps: &pci::heapless_caps::CapVec,
+        bars: &[pci::Bar; 6],
+        profile: &virtio::VirtioTransportProfile,
+    ) -> Option<(u16, u16, [Option<virtio::VirtioQueuePlan>; virtio::MAX_RESOURCE_QUEUES])> {
+        let mut slow_handlers = [None; virtio::MAX_RESOURCE_QUEUES + 1];
+        slow_handlers[0] = profile.config_handler;
+        let mut resolved = profile.queue_plans;
+        for (index, plan) in resolved.iter().enumerate() {
+            if let Some(plan) = plan.filter(|plan| plan.slow_path) {
+                slow_handlers[index + 1] = plan.msix_handler;
+            }
+        }
+        let config = if slow_handlers.iter().any(Option::is_some) {
+            let vector = bind_shared_msix_vector(
+                d, bars, &mut self.mappings, &mut self.msix, self.next_msix_vector, &slow_handlers,
+            )?;
+            self.next_msix_vector = self.next_msix_vector.saturating_add(1);
+            vector
+        } else {
+            virtio::VIRTIO_MSI_NO_VECTOR
+        };
+        let q0 = self.bind_optional_msix(d, caps, bars, profile.q0_handler)?;
+        for plan in resolved.iter_mut().flatten() {
+            let vector = if plan.slow_path && plan.msix_handler.is_some() {
+                config
+            } else {
+                self.bind_optional_msix(d, caps, bars, plan.msix_handler)?
+            };
+            *plan = plan.with_msix_vec(vector);
+        }
+        Some((config, q0, resolved))
+    }
+
     fn resolve_msix(
         &mut self,
         d: &pci::PciDevice,
@@ -141,6 +177,11 @@ impl VirtioProbeState {
         let config = self.bind_optional_msix(d, caps, bars, profile.config_handler)?;
         if let Some((q0, queues)) = self.resolve_per_queue_msix(d, caps, bars, profile) {
             return Some((config, q0, queues));
+        }
+        release_msix_bindings(&mut self.msix);
+        self.next_msix_vector = 0;
+        if let Some(result) = self.resolve_shared_slow_msix(d, caps, bars, profile) {
+            return Some(result);
         }
         release_msix_bindings(&mut self.msix);
         self.next_msix_vector = 0;

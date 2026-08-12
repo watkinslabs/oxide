@@ -63,15 +63,22 @@ pub struct VirtioQueuePlan {
     pub msix_handler: Option<fn()>,
     pub msix_vec: u16,
     pub map_notify: bool,
+    pub slow_path: bool,
 }
 
 impl VirtioQueuePlan {
     pub const fn new(index: u16, msix_handler: Option<fn()>, map_notify: bool) -> Self {
-        Self { index, msix_handler, msix_vec: VIRTIO_MSI_NO_VECTOR, map_notify }
+        Self { index, msix_handler, msix_vec: VIRTIO_MSI_NO_VECTOR, map_notify, slow_path: false }
     }
 
     pub const fn with_msix_vec(mut self, msix_vec: u16) -> Self {
         self.msix_vec = msix_vec;
+        self
+    }
+
+    /// Route this queue with configuration changes when vectors are scarce. # C: O(1)
+    pub const fn with_slow_path(mut self) -> Self {
+        self.slow_path = true;
         self
     }
 }
