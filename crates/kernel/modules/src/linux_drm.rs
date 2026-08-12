@@ -17,6 +17,8 @@ use sync::{Spinlock, Modules as ModulesLockClass};
 mod connector;
 #[path = "linux_drm_register.rs"]
 mod register;
+#[path = "linux_drm_format.rs"]
+mod format;
 
 struct DeviceAllocation {
     dev: usize,
@@ -134,6 +136,7 @@ pub fn export_symbols() {
     crate::symtab::export("drm_vblank_init", drm_vblank_init as *const () as usize, false);
     connector::export_symbols();
     register::export_symbols();
+    format::export_symbols();
 }
 
 fn layout_for(size: usize) -> Option<Layout> {
