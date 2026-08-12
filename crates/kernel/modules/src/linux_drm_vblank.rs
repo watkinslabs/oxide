@@ -51,7 +51,7 @@ mod tests {
         let mut crtc = [0u8; 1228]; let mut dev = [0u8; 512]; let mut records = [0u8; DRM_VBLANK_CRTC_SIZE];
         // SAFETY: test arrays reserve the relevant CRTC, device, and one vblank record ABI fields.
         unsafe { write(crtc.as_mut_ptr().cast::<*mut c_void>(), dev.as_mut_ptr().cast()); write(crtc.as_mut_ptr().add(DRM_CRTC_INDEX_OFF).cast::<u32>(), 0); write(dev.as_mut_ptr().add(DRM_DEVICE_NUM_CRTCS_OFF).cast::<u32>(), 1); write(dev.as_mut_ptr().add(DRM_DEVICE_VBLANK_OFF).cast::<*mut u8>(), records.as_mut_ptr()); }
-        DEVICES.lock().push(DeviceAllocation { dev: dev.as_mut_ptr() as usize, base: 0, layout: Layout::new::<u8>(), refs: 1, mode_config: false, objects: Vec::new(), planes: Vec::new(), crtcs: Vec::new(), encoders: Vec::new(), connectors: Vec::new(), vblank: None, primary_master: None, put_pending: false, unplugged: false });
+        DEVICES.lock().push(DeviceAllocation { dev: dev.as_mut_ptr() as usize, base: 0, layout: Layout::new::<u8>(), refs: 1, mode_config: false, objects: Vec::new(), planes: Vec::new(), crtcs: Vec::new(), encoders: Vec::new(), connectors: Vec::new(), clients: Vec::new(), vblank: None, primary_master: None, put_pending: false, unplugged: false });
         drm_crtc_vblank_off(crtc.as_mut_ptr().cast()); drm_crtc_vblank_off(crtc.as_mut_ptr().cast());
         assert_eq!(unsafe { read(records.as_ptr().add(DRM_VBLANK_REFCOUNT_OFF).cast::<i32>()) }, 1);
         drm_crtc_vblank_on(crtc.as_mut_ptr().cast()); assert_eq!(unsafe { read(records.as_ptr().add(DRM_VBLANK_REFCOUNT_OFF).cast::<i32>()) }, 0); assert!(unsafe { read(records.as_ptr().add(DRM_VBLANK_ENABLED_OFF).cast::<bool>()) });
