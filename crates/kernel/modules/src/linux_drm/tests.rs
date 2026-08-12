@@ -93,6 +93,52 @@ fn core_file_context_calls_driver_open_and_postclose_once() {
 }
 
 #[test]
+fn primary_open_assigns_one_authenticated_master_and_handoffs_on_close() {
+    let _modules = crate::test_serial::claim();
+    let mut parent = LinuxDevice::new(); let mut driver = TestDriver([0; 200]); let fops = [0u8; 272]; let mut desc = [0u8; 24]; let mut data = 0u32;
+    const CMD: u32 = 0xc004_6440;
+    // SAFETY: TestDriver and descriptor reserve their verified DRM ABI fields.
+    unsafe {
+        write(driver.0.as_mut_ptr().add(176).cast::<*const u8>(), desc.as_ptr());
+        write(driver.0.as_mut_ptr().add(184).cast::<i32>(), 1);
+        write(driver.0.as_mut_ptr().add(192).cast::<*const c_void>(), fops.as_ptr().cast());
+        write(desc.as_mut_ptr().cast::<u32>(), CMD);
+        write(desc.as_mut_ptr().add(4).cast::<u32>(), 1 << 1);
+        write(desc.as_mut_ptr().add(8).cast::<usize>(), test_ioctl as *const () as usize);
+    }
+    let container = __devm_drm_dev_alloc(&mut parent, (&driver as *const TestDriver).cast(), 2048, 64);
+    let dev = unsafe { container.cast::<u8>().add(64).cast::<c_void>() };
+    assert_eq!(register::drm_dev_register(dev, 0), 0);
+    let mut inode = [0u8; 616]; let mut first = [0u8; 184]; let mut second = [0u8; 184]; let mut third = [0u8; 184];
+    // SAFETY: inode carries the primary drm rdev that register_primary published.
+    unsafe { write(inode.as_mut_ptr().add(76).cast::<u32>(), 226 << 20); }
+    assert_eq!(file::drm_open(inode.as_mut_ptr().cast(), first.as_mut_ptr().cast()), 0);
+    assert_eq!(file::drm_open(inode.as_mut_ptr().cast(), second.as_mut_ptr().cast()), 0);
+    // SAFETY: successful opens install complete drm_file pointers in private_data.
+    unsafe {
+        let first_file = read(first.as_ptr().add(24).cast::<*mut u8>());
+        let second_file = read(second.as_ptr().add(24).cast::<*mut u8>());
+        assert!(*first_file.add(0).cast::<bool>());
+        assert!(*first_file.add(8).cast::<bool>());
+        assert!(!*second_file.add(0).cast::<bool>());
+        assert!(!*second_file.add(8).cast::<bool>());
+    }
+    assert_eq!(ioctl::drm_ioctl(first.as_mut_ptr().cast(), CMD, (&mut data as *mut u32) as usize), 0);
+    assert_eq!(ioctl::drm_ioctl(second.as_mut_ptr().cast(), CMD, (&mut data as *mut u32) as usize), -13);
+    assert_eq!(file::drm_release(inode.as_mut_ptr().cast(), first.as_mut_ptr().cast()), 0);
+    assert_eq!(file::drm_open(inode.as_mut_ptr().cast(), third.as_mut_ptr().cast()), 0);
+    // SAFETY: closing the current master releases the ownership slot, so the next primary open is master.
+    unsafe {
+        let third_file = read(third.as_ptr().add(24).cast::<*mut u8>());
+        assert!(*third_file.add(0).cast::<bool>());
+        assert!(*third_file.add(8).cast::<bool>());
+    }
+    assert_eq!(file::drm_release(inode.as_mut_ptr().cast(), second.as_mut_ptr().cast()), 0);
+    assert_eq!(file::drm_release(inode.as_mut_ptr().cast(), third.as_mut_ptr().cast()), 0);
+    register::drm_dev_unregister(dev); devres::release_device(&mut parent);
+}
+
+#[test]
 fn mode_config_initializes_each_object_list_once() {
     let _modules = crate::test_serial::claim(); let mut parent = LinuxDevice::new(); let dev = device(&mut parent, 2048); assert_eq!(drmm_mode_config_init(dev), 0); let config = dev.cast::<u8>().wrapping_add(DRM_MODE_CONFIG_OFF);
     // SAFETY: the mode config was initialized above, so every tracked list head is live.
