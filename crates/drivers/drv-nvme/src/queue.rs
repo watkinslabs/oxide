@@ -4,8 +4,8 @@
 // the boot probe maps BAR0 and hands the register-file VA here; this module
 // owns reset → admin queues → IDENTIFY → one I/O queue pair → READ/WRITE.
 //
-// Single I/O queue pair, one in-flight command at a time, serialised by the
-// caller's Spinlock (see lib.rs). Completion is polled on the CQ phase bit.
+// One I/O queue pair. The BlockDevice owner keeps the live CID-indexed request
+// records; this controller owns only SQ/CQ publication and retirement.
 
 #![cfg(target_os = "oxide-kernel")]
 
@@ -43,29 +43,22 @@ struct Queue {
     cid:      u16,
 }
 
-/// One I/O command published to the controller submission queue.
-#[derive(Clone, Copy)]
-pub struct IoPending { pub(crate) cid: u16 }
-
 /// One controller completion, identified by the CID the hardware returned.
 #[derive(Clone, Copy)]
 pub struct IoCompletion { pub cid: u16, pub status: u16 }
 
 /// The NVMe controller bring-up state. Holds the BAR0 register-file VA, the
 /// admin + single I/O queue, and the negotiated geometry (namespace block
-/// size + capacity). One PRP bounce frame bounds a request to one transfer.
+/// size + capacity). Each live command owns its own PRP data resources.
 pub struct Nvme {
     bdf:     pci::Bdf,
     mmio:    Mapping,
     bar0_va: u64,
     admin:   Queue,
     io:      Queue,
-    /// Contiguous data run for one serialized I/O request.
-    data_pa: u64,
-    data_dma: u64,
-    /// One PRP-list page used once the transfer needs more than two pages.
-    prp_list_pa: u64,
-    prp_list_dma: u64,
+    /// One controller-private page for synchronous admin IDENTIFY transfers.
+    admin_data_pa: u64,
+    admin_data_dma: u64,
     /// Namespace 1 geometry harvested at IDENTIFY.
     pub ns_blocks: u64,
     pub blk_size:  u32,
@@ -85,6 +78,9 @@ const DATA_PAGES: u64 = regs::MAX_PRP_DATA_PAGES;
 
 impl Nvme {
     pub(crate) const fn bdf(&self) -> pci::Bdf { self.bdf }
+    /// Maximum concurrently posted I/O commands, leaving one SQ entry empty.
+    /// # C: O(1)
+    pub(crate) const fn io_capacity(&self) -> usize { self.io.entries.saturating_sub(1) as usize }
     pub(crate) fn io_cq_cursor(&self) -> (u64, u32, bool) { (self.io.cq_pa, self.io.cq_head, self.io.cq_phase) }
     fn free_frame(bdf: pci::Bdf, pa: &mut u64, dma: &mut u64) {
         if *pa == 0 || !iommu::unmap_dma(bdf, *dma, PAGE as usize) {
@@ -98,7 +94,7 @@ impl Nvme {
         *dma = 0;
     }
 
-    fn alloc_frames(bdf: pci::Bdf) -> Option<([u64; 5], [u64; 5], u64, u64)> {
+    fn alloc_frames(bdf: pci::Bdf) -> Option<([u64; 5], [u64; 5])> {
         let mut frames = [0u64; 5]; let mut dmas = [0u64; 5];
         let mut i = 0usize;
         while i < frames.len() {
@@ -113,13 +109,7 @@ impl Nvme {
             }
             i += 1;
         }
-        let Some(data_pa) = pmm::setup::alloc_contig(DATA_ORDER) else {
-            for (pa, dma) in frames.iter_mut().zip(dmas.iter_mut()) { Self::free_frame(bdf, pa, dma); }
-            return None;
-        };
-        let bytes = (DATA_PAGES * PAGE) as usize;
-        let Some(data_dma) = iommu::map_dma(bdf, data_pa, bytes) else { unsafe { pmm::setup::free_contig(data_pa, DATA_ORDER); } for (pa, dma) in frames.iter_mut().zip(dmas.iter_mut()) { Self::free_frame(bdf, pa, dma); } return None; };
-        Some((frames, dmas, data_pa, data_dma))
+        Some((frames, dmas))
     }
 
     /// Disable the controller and return all queue/PRP frames to PMM.
@@ -134,13 +124,7 @@ impl Nvme {
         Self::free_frame(self.bdf, &mut self.admin.cq_pa, &mut self.admin.cq_dma);
         Self::free_frame(self.bdf, &mut self.io.sq_pa, &mut self.io.sq_dma);
         Self::free_frame(self.bdf, &mut self.io.cq_pa, &mut self.io.cq_dma);
-        Self::free_frame(self.bdf, &mut self.prp_list_pa, &mut self.prp_list_dma);
-        if self.data_pa != 0 && iommu::unmap_dma(self.bdf, self.data_dma, (DATA_PAGES * PAGE) as usize) {
-            // SAFETY: controller disable completed and this private data run has no live DMA owner.
-            unsafe { pmm::setup::free_contig(self.data_pa, DATA_ORDER); }
-            self.data_pa = 0;
-            self.data_dma = 0;
-        }
+        Self::free_frame(self.bdf, &mut self.admin_data_pa, &mut self.admin_data_dma);
         self.bar0_va = 0;
         self.mmio.unmap();
     }
@@ -184,10 +168,9 @@ impl Nvme {
     /// `bar0_va` is the HHDM-independent register-file VA from map_mmio_pages.
     /// # C: O(reset + 2 admin cmds + 2 create-queue cmds)
     pub fn bring_up(bdf: pci::Bdf, mmio: Mapping, bar0_off: u64, io_vector: u16) -> Option<Nvme> {
-        // Allocate queue frames, one PRP-list page, and the serialized I/O data run.
-        let ([asq, acq, isq, icq, prp_list], [asq_dma, acq_dma, isq_dma, icq_dma, prp_list_dma], data_pa, data_dma) = Self::alloc_frames(bdf)?;
-        for f in [asq, acq, isq, icq, prp_list] { Self::zero_frame(f); }
-        for page in 0..DATA_PAGES { Self::zero_frame(data_pa + page * PAGE); }
+        // Queue and admin-IDENTIFY frames are controller-owned; posted I/O owns its PRPs.
+        let ([asq, acq, isq, icq, admin_data], [asq_dma, acq_dma, isq_dma, icq_dma, admin_data_dma]) = Self::alloc_frames(bdf)?;
+        for f in [asq, acq, isq, icq, admin_data] { Self::zero_frame(f); }
         let bar0_va = mmio.base_va() + bar0_off;
 
         // Pre-read DSTRD from CAP off `bar0_va` directly: the doorbell VAs it
@@ -217,7 +200,7 @@ impl Nvme {
         };
 
         let mut nv = Nvme {
-            bdf, mmio, bar0_va, admin, io, data_pa, data_dma, prp_list_pa: prp_list, prp_list_dma,
+            bdf, mmio, bar0_va, admin, io, admin_data_pa: admin_data, admin_data_dma,
             ns_blocks: 0, blk_size: 512,
         };
         let to_ms = regs::cap_to_ms(cap).max(2_000);
@@ -370,21 +353,21 @@ impl Nvme {
         }
     }
 
-    /// IDENTIFY (opcode 0x06): DMA a 4 KiB structure into the PRP bounce
-    /// frame. `cns` selects controller (1) / namespace (0); `nsid` is the
+    /// IDENTIFY (opcode 0x06): DMA a 4 KiB structure into the controller's
+    /// admin page. `cns` selects controller (1) / namespace (0); `nsid` is the
     /// namespace id (0 for controller). Returns Some(prp_va) on success so
     /// the caller can read fields, None on failure. # C: O(one admin cmd)
     fn identify(&mut self, cns: u32, nsid: u32) -> Option<u64> {
         let mut cmd = [0u32; 16];
         cmd[0] = regs::ADMIN_IDENTIFY as u32;     // opcode (CID stamped in submit)
         cmd[1] = nsid;                            // NSID
-        cmd[6] = (self.data_dma & 0xFFFF_FFFF) as u32; // PRP1 low
-        cmd[7] = (self.data_dma >> 32) as u32;         // PRP1 high
+        cmd[6] = (self.admin_data_dma & 0xFFFF_FFFF) as u32; // PRP1 low
+        cmd[7] = (self.admin_data_dma >> 32) as u32;         // PRP1 high
         cmd[10] = cns;                            // CDW10: CNS
         let status = self.submit(false, cmd)?;
         if status != 0 { return None; }
-        pmm::dma::invalidate_from_device(hhdm().wrapping_add(self.data_pa), PAGE as usize);
-        Some(hhdm().wrapping_add(self.data_pa))
+        pmm::dma::invalidate_from_device(hhdm().wrapping_add(self.admin_data_pa), PAGE as usize);
+        Some(hhdm().wrapping_add(self.admin_data_pa))
     }
 
     /// IDENTIFY namespace 1 and harvest NSZE (capacity in blocks) + the

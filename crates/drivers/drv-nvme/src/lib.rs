@@ -7,9 +7,8 @@
 //
 // Layering: `regs.rs` = pure register/bit math (host-tested); `queue.rs` =
 // the kernel-only MMIO + queue mechanics (the `Nvme` controller);
-// `lifecycle.rs` = hosted cleanup-order proof; this file =
-// the BlockDevice impl + registration + PCI bring-up glue. Mirrors
-// drv-virtio-blk: one synchronous in-flight request, serialised by a Spinlock.
+// `lifecycle.rs` = hosted cleanup-order proof; `imp/request.rs` = owned block
+// request posting/completion; this file = registration + PCI bring-up glue.
 
 #![no_std]
 
@@ -41,76 +40,28 @@ mod imp {
     use alloc::vec::Vec;
     use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use sync::{Spinlock, TaskList as DriverLockClass};
-    use block::{BlockDevice, BlockRequest, BlockError, BlockOp, KResult};
-    use sched::live::wait_list::WaitList;
+    use block::{BlockCompletion, BlockDevice, BlockRequest, BlockError, BlockOp, KResult};
     use crate::irq::IrqBinding;
     use crate::queue::Nvme;
     use crate::wait;
 
     mod device;
+    mod request;
 
     /// PCI class for an NVMe controller: base 0x01 (mass storage), subclass
     /// 0x08 (non-volatile memory), prog-if 0x02 (NVMe). # C: O(1)
     pub const NVME_CLASS24: u32 = 0x01_08_02;
 
-    /// The registered `BlockDevice`: an `Nvme` controller behind a Spinlock
-    /// (single I/O queue, one in-flight command — the lock serialises every
-    /// submit, mirroring drv-virtio-rng's whole-body lock).
+    /// The registered block namespace: controller queue mechanics plus the
+    /// one owned CID-indexed request state for that hardware queue.
     pub struct NvmeBlk {
         ctrl:     Spinlock<Nvme, DriverLockClass>,
+        requests: Spinlock<request::Requests, DriverLockClass>,
         irq:      IrqBinding,
-        completion: WaitList,
-        turn_wait:  WaitList,
-        turn_busy:  AtomicBool,
         blk_size: u32,
         capacity: u64,
         removed:  AtomicBool,
         poisoned: AtomicBool,
-    }
-
-    impl BlockDevice for NvmeBlk {
-        fn block_size(&self) -> u32 { self.blk_size }
-        fn capacity_blocks(&self) -> u64 { self.capacity }
-
-        fn submit_sync(&self, req: &mut BlockRequest) -> KResult<()> {
-            if self.unavailable() {
-                return Err(BlockError::Eio);
-            }
-            let bs = self.blk_size as usize;
-            match req.op {
-                BlockOp::Flush => if self.flush_command() { Ok(()) } else { Err(BlockError::Eio) },
-                BlockOp::Discard | BlockOp::WriteZeroes { .. } => Err(BlockError::Eopnotsupp),
-                BlockOp::Read | BlockOp::Write => {
-                    let nbytes = (req.len_blocks as usize)
-                        .checked_mul(bs).ok_or(BlockError::Einval)?;
-                    if req.op == BlockOp::Read {
-                        if req.buffer.len() < nbytes { req.buffer.resize(nbytes, 0); }
-                    } else if req.buffer.len() < nbytes {
-                        return Err(BlockError::Einval);
-                    }
-                    let write = req.op == BlockOp::Write;
-                    let cblk = self.chunk_blocks().max(1);
-                    let mut done: u64 = 0;
-                    let total = req.len_blocks as u64;
-                    while done < total {
-                        let n = core::cmp::min(cblk, total - done);
-                        let off = (done as usize) * bs;
-                        let len = (n as usize) * bs;
-                        let slba = req.start_block + done;
-                        if !self.rw_chunk(req, write, slba, n as u16, off, len) { return Err(BlockError::Eio); }
-                        done += n;
-                    }
-                    Ok(())
-                }
-            }
-        }
-
-        fn flush(&self) -> KResult<()> {
-            if self.unavailable() {
-                return Err(BlockError::Eio);
-            }
-            if self.flush_command() { Ok(()) } else { Err(BlockError::Eio) }
-        }
     }
 
     impl NvmeBlk {
@@ -131,10 +82,9 @@ mod imp {
 
         fn quiesce_and_free(&self) {
             if self.removed.swap(true, Ordering::AcqRel) { return; }
-            self.completion.wake_all();
-            self.turn_wait.wake_all();
             self.irq.begin_release();
             self.irq.synchronize_and_release();
+            self.fail_owned_requests();
             self.ctrl.lock().shutdown_and_free();
         }
     }
@@ -223,10 +173,8 @@ mod imp {
 
         let dev = Arc::new(NvmeBlk {
             ctrl: Spinlock::new(nv),
+            requests: Spinlock::new(request::Requests::new()),
             irq,
-            completion: WaitList::new(),
-            turn_wait: WaitList::new(),
-            turn_busy: AtomicBool::new(false),
             blk_size, capacity,
             removed: AtomicBool::new(false),
             poisoned: AtomicBool::new(false),
