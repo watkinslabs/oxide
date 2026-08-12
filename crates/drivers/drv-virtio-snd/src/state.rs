@@ -2,11 +2,10 @@ use super::*;
 
 pub(super) struct Ctx {
     pub device_key: DeviceKey,
-    pub controlq: virtio::VirtQueueResource,
+    pub controlq: Option<virtio::VirtioSplitQueue>,
     pub hhdm: u64,
     pub cfg_va: u64,
     pub scratch_pa: u64,
-    pub avail_idx: u16,
     pub eventq: Option<virtio::VirtQueueResource>,
     pub event_buf_pa: u64,
     pub event_last_used: u16,

@@ -51,11 +51,10 @@ mod prepost;
     fn ctx(device_key: DeviceKey) -> Ctx {
         Ctx {
             device_key,
-            controlq: queue(0),
+            controlq: None,
             hhdm: 0,
             cfg_va: 0,
             scratch_pa: 0,
-            avail_idx: 0,
             eventq: Some(queue(1)),
             event_buf_pa: 0,
             event_last_used: 0,
