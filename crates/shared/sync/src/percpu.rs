@@ -12,8 +12,8 @@
 use core::cell::UnsafeCell;
 use core::marker::PhantomData;
 
-/// Maximum CPU count per `01§3` (`MAX_CPUS=256`).
-pub const MAX_CPUS: usize = 256;
+/// Maximum CPU count supported by generic per-CPU storage.
+pub const MAX_CPUS: usize = hal::MAX_SMP_CPUS;
 
 /// Cacheline boundary per `04§6` data-structure-defaults — false-sharing
 /// avoidance for any per-CPU slot.

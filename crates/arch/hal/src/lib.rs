@@ -12,6 +12,11 @@ pub mod fault_class;
 pub mod siginfo;
 pub use siginfo::{read_siginfo, write_siginfo, SigFault, SigPayload, SigPoll, Sigsys};
 
+/// Compile-time capacity of architecture-owned per-CPU transport state.
+/// Higher-level CPU admission may be lower while scheduler-visible masks are
+/// migrated, but no architecture path may silently truncate within this bound.
+pub const MAX_SMP_CPUS: usize = 256;
+
 use core::time::Duration;
 
 // ---------------------------------------------------------------------------
