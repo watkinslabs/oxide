@@ -215,7 +215,7 @@ fn init_runtime_subsystems() {
             #[cfg(target_arch = "aarch64")]
             { (hal_aarch64::ArmCpuOps::current_cpu() as usize).min(cpu::MAX_CPUS - 1) }
         },
-        cpu::smp::online_mask,
+        cpu::smp::online_transport_mask,
     );
     let _ = kalloc::replace_global_context(kalloc::AllocationContext::memcg(cgroup::kernel_context_memcg()));
     ::sched::set_allocation_context_hook(|task, kernel| {

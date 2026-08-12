@@ -61,6 +61,11 @@ const BLOCK_STALL: u64 = 1 << 20;
 static CPU_QS: [CacheLine<AtomicU64>; MAX_CPUS] =
     [const { CacheLine(AtomicU64::new(0)) }; MAX_CPUS];
 
+/// Words in the generic per-CPU transport mask. This follows the storage
+/// capacity, not a scheduler-local admission limit, because RCU must never
+/// omit an online CPU from a grace period.
+const CPU_MASK_WORDS: usize = MAX_CPUS.div_ceil(u64::BITS as usize);
+
 /// Completed grace-period generation. Monotonic; a callback enqueued at
 /// `GP_SEQ == n` is satisfied once `GP_SEQ >= n + 2` (the `+2` covers the
 /// case where a grace period was already in flight at enqueue — its
@@ -126,7 +131,7 @@ static STATE: Spinlock<DrainState, KMalloc> = Spinlock::new(DrainState {
 static CUR_CPU_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 static ONLINE_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 type CurCpuFn = fn() -> usize;
-type OnlineFn = fn() -> u64;
+type OnlineFn = fn() -> [u64; CPU_MASK_WORDS];
 
 #[inline]
 fn cur_cpu() -> usize {
@@ -142,10 +147,12 @@ fn cur_cpu() -> usize {
 }
 
 #[inline]
-fn online() -> u64 {
+fn online() -> [u64; CPU_MASK_WORDS] {
     let p = ONLINE_HOOK.load(Ordering::Acquire);
     if p.is_null() {
-        1 // boot CPU only (effectively-UP default)
+        let mut boot_only = [0u64; CPU_MASK_WORDS];
+        boot_only[0] = 1; // boot CPU only (effectively-UP default)
+        boot_only
     } else {
         // SAFETY: p was round-tripped from a `fn() -> u64` in
         // `set_cpu_hooks`; install-once-at-boot, valid for kernel lifetime.
@@ -155,7 +162,7 @@ fn online() -> u64 {
 }
 
 /// Install the CPU-topology hooks. Boot, once, before SMP grace periods
-/// matter. `cur` = current logical CPU, `on` = online-CPU bitmask.
+/// matter. `cur` = current logical CPU, `on` = complete online-CPU mask.
 /// # C: O(1)
 pub fn set_cpu_hooks(cur: CurCpuFn, on: OnlineFn) {
     CUR_CPU_HOOK.store(cur as *mut (), Ordering::Release);
@@ -199,13 +206,14 @@ pub fn call_rcu(f: RcuCallback) {
 }
 
 /// True iff every online CPU has passed a QS since `snap` was taken.
-fn all_quiesced(snap: &[u64; MAX_CPUS], mask: u64) -> bool {
-    let mut bits = mask;
-    while bits != 0 {
-        let c = bits.trailing_zeros() as usize;
-        bits &= bits - 1;
-        if c < MAX_CPUS && CPU_QS[c].0.load(Ordering::Acquire) <= snap[c] {
-            return false;
+fn all_quiesced(snap: &[u64; MAX_CPUS], mask: [u64; CPU_MASK_WORDS]) -> bool {
+    for (word_index, mut bits) in mask.into_iter().enumerate() {
+        while bits != 0 {
+            let c = word_index * u64::BITS as usize + bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            if c < MAX_CPUS && CPU_QS[c].0.load(Ordering::Acquire) <= snap[c] {
+                return false;
+            }
         }
     }
     true
@@ -446,5 +454,17 @@ mod tests {
         for _ in 0..4 { drain_once(true); }
         assert!(ran.load(Ordering::Acquire), "stalled period force-completed → callback ran");
         assert_eq!(pending_callbacks(), 0);
+    }
+
+    #[test]
+    fn grace_period_includes_an_online_cpu_above_the_first_mask_word() {
+        let _g = guard();
+        let cpu = u64::BITS as usize + 2;
+        let mut online = [0u64; CPU_MASK_WORDS];
+        online[cpu / u64::BITS as usize] = 1u64 << (cpu % u64::BITS as usize);
+        let snap = [0u64; MAX_CPUS];
+        assert!(!all_quiesced(&snap, online));
+        CPU_QS[cpu].0.store(1, Ordering::Release);
+        assert!(all_quiesced(&snap, online));
     }
 }
