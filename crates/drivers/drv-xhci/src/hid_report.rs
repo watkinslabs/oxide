@@ -5,6 +5,8 @@
 
 const MAX_FIELDS: usize = 64;
 const MAX_VALUES: usize = 32;
+/// HID 1.11's fixed global-environment nesting limit, shared with Linux.
+const HID_GLOBAL_STACK_SIZE: usize = 4;
 
 /// One input field from a HID report descriptor.  Usage ranges model both
 /// variable controls and array controls without expanding untrusted input.
@@ -76,6 +78,8 @@ impl Local { const fn new() -> Self { Self { usage: None, usage_min: None, usage
 /// Long items and malformed/truncated descriptors are rejected. # C: O(bytes + fields)
 pub fn parse_report_descriptor(bytes: &[u8]) -> Option<ReportLayout> {
     let mut globals = Global::new();
+    let mut global_stack = [Global::new(); HID_GLOBAL_STACK_SIZE];
+    let mut global_depth = 0usize;
     let mut locals = Local::new();
     let mut bits = [0u32; 256];
     let mut layout = ReportLayout::empty();
@@ -95,6 +99,20 @@ pub fn parse_report_descriptor(bytes: &[u8]) -> Option<ReportLayout> {
             (1, 7) if value <= 255 => globals.report_size = value as u8,
             (1, 8) if value != 0 && value <= 255 => globals.report_id = value as u8,
             (1, 9) if value <= u16::MAX as u32 => globals.report_count = value as u16,
+            // HID_GLOBAL_ITEM_TAG_PUSH/POP retain and restore every global
+            // item (including report ID and bit geometry). Linux rejects
+            // stack overflow and underflow; do the same before accepting a
+            // descriptor from an untrusted USB device.
+            (1, 10) => {
+                if global_depth == HID_GLOBAL_STACK_SIZE { return None; }
+                global_stack[global_depth] = globals;
+                global_depth += 1;
+            }
+            (1, 11) => {
+                if global_depth == 0 { return None; }
+                global_depth -= 1;
+                globals = global_stack[global_depth];
+            }
             (2, 0) => locals.usage = Some(value),
             (2, 1) => locals.usage_min = Some(value),
             (2, 2) => locals.usage_max = Some(value),
@@ -153,5 +171,20 @@ mod tests {
         assert_eq!(decoder.decode(&[1])[0], Some(crate::hid::Event::Key { code: 30, value: 1 }));
         assert_eq!(decoder.decode(&[1])[0], None);
         assert_eq!(decoder.decode(&[0])[0], Some(crate::hid::Event::Key { code: 30, value: 0 }));
+    }
+    #[test]
+    fn global_push_pop_restores_usage_page_and_bit_geometry() {
+        let report = [0x05, 0x01, 0x15, 0, 0x25, 1, 0x75, 1, 0x95, 1,
+            0xa4, 0x05, 0x07, 0x09, 4, 0x81, 2, 0xb4, 0x09, 0x30, 0x81, 6];
+        let layout = parse_report_descriptor(&report).unwrap();
+        assert_eq!(layout.len(), 2);
+        assert_eq!(layout.field(0).unwrap().usage_page, 7);
+        assert_eq!(layout.field(1).unwrap().usage_page, 1);
+        assert_eq!(layout.field(1).unwrap().bit_offset, 1);
+    }
+    #[test]
+    fn global_stack_overflow_and_underflow_are_rejected() {
+        assert!(parse_report_descriptor(&[0xa4, 0xa4, 0xa4, 0xa4, 0xa4]).is_none());
+        assert!(parse_report_descriptor(&[0xb4]).is_none());
     }
 }
