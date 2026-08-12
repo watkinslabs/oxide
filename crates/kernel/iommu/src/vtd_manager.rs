@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use crate::{VtdQiQueue, VtdRegisters, VtdTables, intel_vtd_rmrr_count, intel_vtd_rmrr_for_bdf, intel_vtd_unit_for_bdf};
+use crate::{VtdIrTable, VtdQiQueue, VtdRegisters, VtdTables, intel_vtd_rmrr_count, intel_vtd_rmrr_for_bdf, intel_vtd_unit_for_bdf, remapped_msi};
 use firmware::acpi::{IommuKind, IommuUnit};
 use pci::{Bdf, ConfigSpaceReader};
 use sync::{Devices, Spinlock};
@@ -10,8 +10,11 @@ const INITIAL_DOMAIN_ID: u16 = 1;
 /// Result of asking the VT-d manager to own the scanned PCI requesters.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum VtdActivation { Bypass, Enabled, Failed }
+/// Result of allocating an x86 PCI message through the VT-d IRQ owner.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum VtdMsi { Direct, Remapped { address: u64, data: u32 }, Failed }
 
-struct VtdBootUnit { unit: IommuUnit, regs: VtdRegisters, requesters: Vec<Bdf>, tables: VtdTables, qi: Option<VtdQiQueue> }
+struct VtdBootUnit { unit: IommuUnit, regs: VtdRegisters, requesters: Vec<Bdf>, tables: VtdTables, qi: Option<VtdQiQueue>, ir: Option<VtdIrTable> }
 static MANAGER: Spinlock<Vec<VtdBootUnit>, Devices> = Spinlock::new(Vec::new());
 
 /// Build, publish, invalidate, and enable one VT-d identity domain per hardware unit.
@@ -40,7 +43,11 @@ pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf],
             if !regs.enable_queued_invalidation(&queue) { return VtdActivation::Failed; }
             Some(queue)
         } else { None };
-        manager.push(VtdBootUnit { unit, regs, requesters: Vec::new(), tables, qi });
+        let ir = if regs.supports_interrupt_remapping() && qi.is_some() {
+            let Some(table) = VtdIrTable::new(hhdm_offset, false) else { return VtdActivation::Failed; };
+            Some(table)
+        } else { None };
+        manager.push(VtdBootUnit { unit, regs, requesters: Vec::new(), tables, qi, ir });
     }
     for entry in manager.iter_mut() {
         for index in 0..intel_vtd_rmrr_count() {
@@ -58,6 +65,9 @@ pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf],
     for entry in manager.iter_mut() {
         if !entry.regs.set_root_table(entry.tables.root_pa()) || !invalidate(entry)
             || !entry.regs.enable_translation() { return VtdActivation::Failed; }
+        if let Some(ir) = entry.ir.as_ref() {
+            if !entry.regs.set_interrupt_remap_table(ir.irta()) || !entry.regs.enable_interrupt_remapping() { return VtdActivation::Failed; }
+        }
     }
     *MANAGER.lock() = manager;
     VtdActivation::Enabled
@@ -66,6 +76,21 @@ pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf],
 /// Return whether this VT-d manager owns the exact PCI requester identity. # C: O(units * requesters)
 pub fn owns(requester: Bdf) -> bool {
     MANAGER.lock().iter().any(|entry| entry.requesters.iter().any(|candidate| *candidate == requester))
+}
+
+/// Allocate one remapped x86 MSI for a requester owned by an IR-capable VT-d unit.
+/// `None` means the unit is not using interrupt remapping, so the caller keeps
+/// the ordinary APIC MSI encoding.
+/// # C: O(units + IRTE scan + poll limit)
+pub fn allocate_vtd_msi(requester: Bdf, vector: u8, destination_apic_id: u32) -> VtdMsi {
+    let requester_id = (u16::from(requester.bus) << 8) | (u16::from(requester.device) << 3) | u16::from(requester.function);
+    let mut manager = MANAGER.lock();
+    let Some(entry) = manager.iter_mut().find(|entry| entry.requesters.iter().any(|candidate| *candidate == requester)) else { return VtdMsi::Direct; };
+    let (Some(queue), Some(ir)) = (entry.qi.as_mut(), entry.ir.as_mut()) else { return VtdMsi::Direct; };
+    let Some(index) = ir.allocate_msi(vector, destination_apic_id, requester_id) else { return VtdMsi::Failed; };
+    if !entry.regs.invalidate_interrupt_entry(queue, index) { return VtdMsi::Failed; }
+    let (address, data) = remapped_msi(index, 0);
+    VtdMsi::Remapped { address, data }
 }
 
 /// Install one live mapping constrained by the requester's inclusive DMA mask.
