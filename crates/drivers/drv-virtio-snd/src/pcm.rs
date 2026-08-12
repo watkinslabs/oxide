@@ -1,7 +1,3 @@
-use core::sync::atomic::Ordering;
-
-use virtio::{VRING_DESC_F_NEXT, VRING_DESC_F_WRITE};
-
 use crate::{
     active_ctx, active_ctx_for, active_ctx_mut, active_ctx_mut_for, submit_ctl, Ctx, PcmState,
     CTX, PLAYBACK_RATE_HZ, REQ_OFF, SND_FRAME_BYTES, SND_HDR_SIZE, SND_XFER_HDR_BYTES,
@@ -10,6 +6,25 @@ use crate::{
     VIRTIO_SND_R_PCM_RELEASE, VIRTIO_SND_R_PCM_SET_PARAMS, VIRTIO_SND_R_PCM_START,
     VIRTIO_SND_R_PCM_STOP, VIRTIO_SND_S_OK,
 };
+
+pub(crate) fn wait_for_period_completion(
+    queue: &mut virtio::VirtioSplitQueue, head: u16, cfg_va: u64,
+) -> Option<u32> {
+    let mut polls = 0u32;
+    loop {
+        match queue.pop_used() {
+            Ok(Some(used)) if used.head == head => return Some(used.len),
+            Ok(Some(_)) | Err(_) => return None,
+            Ok(None) => {}
+        }
+        if polls >= TX_POLL_BUDGET { return None; }
+        if cfg_va != 0 {
+            let _ = virtio::read_status(cfg_va);
+        }
+        polls += 1;
+        core::hint::spin_loop();
+    }
+}
 
 mod accessors;
 pub use accessors::{

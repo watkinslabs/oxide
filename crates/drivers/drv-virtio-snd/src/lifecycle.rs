@@ -87,18 +87,8 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
     }
     let controlq = virtio::VirtioSplitQueue::new(controlq, p.resources.hhdm).ok()?;
     let mut eventq = virtio::VirtioSplitQueue::new(eventq, p.resources.hhdm).ok()?;
-    let tx_used_seen = if let Some(txq) = txq {
-        let txu = p.resources.hhdm.wrapping_add(txq.device_pa) as *const u16;
-        // SAFETY: reached only for a txq `require_queue` accepted, so device_pa
-        // is an HHDM-mapped used ring; aligned u16 load of used.idx.
-        unsafe { core::ptr::read_volatile(txu.add(1)) }
-    } else { 0 };
-    let rx_used_seen = if let Some(rxq) = rxq {
-        let rxu = p.resources.hhdm.wrapping_add(rxq.device_pa) as *const u16;
-        // SAFETY: reached only for an rxq `require_queue` accepted, so
-        // device_pa is an HHDM-mapped used ring; aligned u16 load of used.idx.
-        unsafe { core::ptr::read_volatile(rxu.add(1)) }
-    } else { 0 };
+    let txq = txq.map(|queue| virtio::VirtioSplitQueue::new(queue, p.resources.hhdm)).transpose().ok()?;
+    let rxq = rxq.map(|queue| virtio::VirtioSplitQueue::new(queue, p.resources.hhdm)).transpose().ok()?;
     let mut g = CTX.lock_bh::<crate::state::SndBh>();
     if g.iter().any(|ctx| ctx.device_key == p.device_key) {
         drop(g);
@@ -120,7 +110,7 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
         controls: device_cfg.controls,
         out_stream: None,
         out_formats: 0, out_rates: 0, out_ch_min: 1, out_ch_max: 2,
-        txq, tx_avail_idx: tx_used_seen,
+        txq,
         tx_buf_pa: frames.tx_buf_pa, tx_scratch_pa: frames.tx_scratch_pa,
         pcm_state: PcmState::Idle,
         cfg_rate: VIRTIO_SND_PCM_RATE_44100,
@@ -129,7 +119,7 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
         cfg_period_bytes: PERIOD_BYTES as u32,
         in_stream: None,
         in_formats: 0, in_rates: 0, in_ch_min: 1, in_ch_max: 2,
-        rxq, rx_avail_idx: rx_used_seen,
+        rxq,
         rx_buf_pa: frames.rx_buf_pa, rx_scratch_pa: frames.rx_scratch_pa,
         cap_state: PcmState::Idle,
         cap_rate: VIRTIO_SND_PCM_RATE_44100,
