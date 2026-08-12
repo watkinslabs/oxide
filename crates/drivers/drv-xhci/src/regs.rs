@@ -14,6 +14,7 @@ pub const CAP_REGS_MIN: u64 = 0x20;
 pub const REGISTER_ALIGN: u64 = 4;
 pub const RUNTIME_INTR0: u64 = 0x20;
 pub const DOORBELL_HOST: u8 = 0;
+const EXT_CAP_ID_LEGACY: u8 = 1;
 const EXT_CAP_ID_PROTOCOL: u8 = 2;
 const EXT_CAP_NEXT_SHIFT: u32 = 8;
 const EXT_CAP_NEXT_MASK: u32 = 0xff;
@@ -47,6 +48,24 @@ pub fn supported_protocol(header: u32, revision: u32, ports: u32, max_ports: u8)
 /// First extended-capability offset from HCCPARAMS1, in BAR-relative bytes. # C: O(1)
 pub fn extended_capabilities(hccparams1: u32) -> u64 {
     (((hccparams1 >> EXT_CAP_POINTER_SHIFT) & EXT_CAP_POINTER_MASK) as u64) * EXT_CAP_DWORD
+}
+
+/// Find the optional USB Legacy Support capability in the xHCI extended-capability chain.
+/// # C: O(BAR dwords)
+pub fn legacy_capability_offset(mut read: impl FnMut(u64) -> Option<u32>, bar_bytes: u64,
+                                extended_capabilities: u64) -> Option<u64> {
+    let mut offset = extended_capabilities;
+    if offset == 0 || offset.checked_add(EXT_CAP_DWORD)? > bar_bytes { return None; }
+    for _ in 0..bar_bytes.checked_div(EXT_CAP_DWORD)? {
+        let header = read(offset)?;
+        if header == u32::MAX { return None; }
+        if header as u8 == EXT_CAP_ID_LEGACY { return Some(offset); }
+        let next = (header >> EXT_CAP_NEXT_SHIFT) & EXT_CAP_NEXT_MASK;
+        if next == 0 { return None; }
+        offset = offset.checked_add((next as u64) * EXT_CAP_DWORD)?;
+        if offset.checked_add(EXT_CAP_DWORD)? > bar_bytes { return None; }
+    }
+    None
 }
 
 /// Find the protocol declaration that owns one root-hub port.
@@ -183,5 +202,16 @@ mod tests {
             0x48 => Some(8 | (2 << 8)),
             _ => None,
         }, 0x100, extended, 8, 8).is_none());
+    }
+
+    #[test]
+    fn legacy_capability_walks_the_same_checked_chain() {
+        let extended = extended_capabilities(16 << 16);
+        assert_eq!(legacy_capability_offset(|offset| match offset {
+            0x40 => Some(EXT_CAP_ID_PROTOCOL as u32 | (4 << EXT_CAP_NEXT_SHIFT)),
+            0x50 => Some(EXT_CAP_ID_LEGACY as u32),
+            _ => None,
+        }, 0x100, extended), Some(0x50));
+        assert_eq!(legacy_capability_offset(|offset| if offset == 0x40 { Some(EXT_CAP_ID_PROTOCOL as u32) } else { None }, 0x100, extended), None);
     }
 }
