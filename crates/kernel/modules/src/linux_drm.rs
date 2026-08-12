@@ -33,6 +33,7 @@ use sync::{Spinlock, Modules as ModulesLockClass};
 #[path = "linux_drm_atomic_crtc.rs"] mod atomic_crtc;
 #[path = "linux_drm_properties.rs"] mod properties;
 #[path = "linux_drm_client.rs"] mod client;
+#[path = "linux_drm_fbdev_client.rs"] mod fbdev_client;
 
 struct DeviceAllocation {
     dev: usize,
@@ -176,6 +177,7 @@ pub fn export_symbols() {
     atomic_crtc::export_symbols();
     properties::export_symbols();
     client::export_symbols();
+    fbdev_client::export_symbols();
 }
 
 fn layout_for(size: usize) -> Option<Layout> {
