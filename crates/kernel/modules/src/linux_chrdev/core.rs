@@ -229,6 +229,15 @@ impl CharDevOps for LinuxCharOps {
         checked_size(unsafe { ioctl(&mut file, cmd, arg) })
     }
 
+    fn ioctl_file(&self, _devt: Devt, file: &File, cmd: u32, arg: usize) -> vfs::KResult<usize> {
+        let ioctl = self.ops().and_then(|o| o.unlocked_ioctl).ok_or(VfsError::Enotty)?;
+        let mut lf = self.file_for_call(Some(file));
+        // SAFETY: registered callback pointer comes from the Linux file_operations table and receives its open file context.
+        let rc = checked_size(unsafe { ioctl(&mut lf, cmd, arg) });
+        store_file_private(file, &lf);
+        rc
+    }
+
     /// The registered `file_operations` answers directly: a module that left
     /// `.poll` NULL is not epoll-able. # C: O(1)
     fn can_poll(&self, _devt: Devt) -> bool { self.ops().and_then(|o| o.poll).is_some() }

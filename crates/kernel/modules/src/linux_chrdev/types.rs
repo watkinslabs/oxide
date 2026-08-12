@@ -78,6 +78,7 @@ pub(super) struct LinuxFileOperations {
 }
 
 impl LinuxFileOperations {
+    #[cfg(test)]
     pub(super) const fn new(open: Option<LinuxOpen>, read: Option<LinuxRead>, write: Option<LinuxWrite>, ioctl: Option<LinuxIoctl>, release: Option<LinuxRelease>, poll: Option<LinuxPoll>, mmap: Option<LinuxMmap>) -> Self {
         Self { owner: core::ptr::null_mut(), fop_flags: 0, _owner_pad: 0, llseek: core::ptr::null_mut(), read, write, _read_iter: core::ptr::null_mut(), _write_iter: core::ptr::null_mut(), _iopoll: core::ptr::null_mut(), _iterate_shared: core::ptr::null_mut(), poll, unlocked_ioctl: ioctl, _compat_ioctl: core::ptr::null_mut(), mmap, open, _flush: core::ptr::null_mut(), release, _tail: [0; 144] }
     }

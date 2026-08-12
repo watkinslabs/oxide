@@ -23,6 +23,7 @@ static OPEN_COUNT: AtomicUsize = AtomicUsize::new(0);
 static RELEASE_COUNT: AtomicUsize = AtomicUsize::new(0);
 static POLL_COUNT: AtomicUsize = AtomicUsize::new(0);
 static MMAP_COUNT: AtomicUsize = AtomicUsize::new(0);
+static IOCTL_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 unsafe extern "C" fn sample_open(_inode: *mut LinuxInode, file: *mut LinuxFile) -> i32 {
     if file.is_null() { return -LINUX_EINVAL; }
@@ -79,6 +80,16 @@ unsafe extern "C" fn state_poll(file: *mut LinuxFile, _wait: *mut core::ffi::c_v
     }
 }
 
+unsafe extern "C" fn state_ioctl(file: *mut LinuxFile, cmd: u32, arg: usize) -> isize {
+    if file.is_null() || cmd != TEST_IOCTL_CMD || arg != TEST_IOCTL_ARG { return -LINUX_EINVAL as isize; }
+    // SAFETY: file is checked non-null and points at the VFS adapter's open description.
+    unsafe {
+        if (*file).private_data as usize != TEST_PRIVATE_RW { return -LINUX_EINVAL as isize; }
+        IOCTL_COUNT.fetch_add(1, Ordering::SeqCst);
+    }
+    TEST_IOCTL_RET
+}
+
 unsafe extern "C" fn state_mmap(_file: *mut LinuxFile, _vma: *mut core::ffi::c_void) -> i32 {
     MMAP_COUNT.fetch_add(1, Ordering::SeqCst);
     LINUX_OK
@@ -96,7 +107,7 @@ unsafe extern "C" fn state_release(_inode: *mut LinuxInode, file: *mut LinuxFile
     }
 }
 
-static STATE_FOPS: LinuxFileOperations = LinuxFileOperations::new(Some(state_open), Some(state_read), None, None, Some(state_release), Some(state_poll), Some(state_mmap));
+static STATE_FOPS: LinuxFileOperations = LinuxFileOperations::new(Some(state_open), Some(state_read), None, Some(state_ioctl), Some(state_release), Some(state_poll), Some(state_mmap));
 
 fn new_cdev() -> LinuxCdev {
     LinuxCdev { kobj: LinuxKobject::new(), ops: core::ptr::null(), owner: null_mut(), dev: 0, count: 0, added: 0, private: null_mut() }
@@ -174,6 +185,7 @@ fn device_node_routes_open_state_poll_mmap_and_release() {
     RELEASE_COUNT.store(0, Ordering::SeqCst);
     POLL_COUNT.store(0, Ordering::SeqCst);
     MMAP_COUNT.store(0, Ordering::SeqCst);
+    IOCTL_COUNT.store(0, Ordering::SeqCst);
 
     let mut cdev = new_cdev();
     cdev_init(&mut cdev, &STATE_FOPS);
@@ -187,11 +199,13 @@ fn device_node_routes_open_state_poll_mmap_and_release() {
     assert_eq!(file.open_hook(), Ok(()));
     assert_eq!(OPEN_COUNT.load(Ordering::SeqCst), 1);
     assert_eq!(file.private_data(), TEST_PRIVATE_OPEN as u64);
-
     let mut buf = [0u8; 1];
     assert_eq!(file.read(&mut buf), Ok(1));
     assert_eq!(buf[0], POLL_BYTE);
     assert_eq!(file.private_data(), TEST_PRIVATE_RW as u64);
+    let (opened_devt, opened_ops) = vfs::opened_chrdev(&file).expect("opened character device");
+    assert_eq!(opened_ops.ioctl_file(opened_devt, &file, TEST_IOCTL_CMD, TEST_IOCTL_ARG), Ok(TEST_IOCTL_RET as usize));
+    assert_eq!(IOCTL_COUNT.load(Ordering::SeqCst), 1);
     assert_eq!(file.poll(), vfs::POLL_IN);
     assert_eq!(POLL_COUNT.load(Ordering::SeqCst), 1);
     assert_eq!(file.inode().mmap_shared_frame(0), Ok(None));
