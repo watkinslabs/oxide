@@ -63,12 +63,13 @@ pub fn owns(requester: Bdf) -> bool {
     MANAGER.lock().iter().any(|entry| entry.requesters.iter().any(|candidate| *candidate == requester))
 }
 
-/// Install one live VT-d mapping and wait until the IOTLB has consumed it. # C: O(pages * levels + poll limit)
-pub fn map_dma(requester: Bdf, pa: u64, len: usize) -> Option<u64> {
+/// Install one live mapping constrained by the requester's inclusive DMA mask.
+/// # C: O(pages * levels + poll limit)
+pub fn map_dma_below(requester: Bdf, pa: u64, len: usize, mask: u64) -> Option<u64> {
     let (base, bytes, offset) = crate::dma_span::normalize_dma_span(pa, len)?;
     let mut manager = MANAGER.lock();
     let entry = manager.iter_mut().find(|entry| entry.requesters.iter().any(|candidate| *candidate == requester))?;
-    let map = entry.tables.map_dma(base, bytes, pci::IOVA_PAGE_SIZE)?;
+    let map = entry.tables.map_dma_below(base, bytes, pci::IOVA_PAGE_SIZE, mask)?;
     if !entry.regs.invalidate_live_mapping() { return None; }
     map.iova.start.checked_add(offset)
 }

@@ -25,13 +25,19 @@ impl IovaSpace {
 
     /// Reserve a page-aligned IOVA interval. # C: O(number of free ranges)
     pub fn alloc(&mut self, len: u64, align: u64) -> Option<IovaRange> {
+        self.alloc_below(len, align, u64::MAX)
+    }
+
+    /// Reserve a page-aligned interval whose inclusive final byte fits `mask`.
+    /// # C: O(number of free ranges)
+    pub fn alloc_below(&mut self, len: u64, align: u64, mask: u64) -> Option<IovaRange> {
         if len == 0 || len & (IOVA_PAGE_SIZE - 1) != 0 || align == 0
             || align & (IOVA_PAGE_SIZE - 1) != 0 || !align.is_power_of_two() { return None; }
         for i in 0..self.free.len() {
             let r = self.free[i];
             let start = r.start.checked_add(align - 1)? & !(align - 1);
             let end = start.checked_add(len)?;
-            if start < r.start || end > r.end() { continue; }
+            if start < r.start || end > r.end() || end.checked_sub(1)? > mask { continue; }
             let before = start - r.start;
             let after = r.end() - end;
             if before != 0 && after != 0 {
@@ -110,5 +116,12 @@ mod tests {
         let mut s = IovaSpace::new(0, 0x10_000).unwrap();
         assert_eq!(s.reserve_at(0x4000, 0x2000), Some(IovaRange { start: 0x4000, len: 0x2000 }));
         assert_eq!(s.reserve_at(0x4000, 0x1000), None);
+    }
+
+    #[test]
+    fn masked_allocation_uses_the_lowest_device_addressable_interval() {
+        let mut s = IovaSpace::new(0, 0x20_000).unwrap();
+        assert_eq!(s.alloc_below(0x1000, IOVA_PAGE_SIZE, 0x0fff), Some(IovaRange { start: 0, len: 0x1000 }));
+        assert_eq!(s.alloc_below(0x1000, IOVA_PAGE_SIZE, 0x0fff), None);
     }
 }

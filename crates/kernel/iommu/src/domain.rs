@@ -46,8 +46,13 @@ impl AmdViDomain {
     pub fn dte(&self, domain_id: u16) -> Option<AmdViDte> { AmdViDte::paging(self.page_table.root_pa(), self.page_table.page_mode(), domain_id) }
     /// Allocate IOVA space and install matching AMD-Vi leaf PTEs. # C: O(pages * levels)
     pub fn map(&mut self, pa: u64, len: u64, align: u64) -> Option<Mapping> {
+        self.map_below(pa, len, align, u64::MAX)
+    }
+    /// Allocate an AMD-Vi mapping whose inclusive final IOVA byte fits `mask`.
+    /// # C: O(pages * levels)
+    pub fn map_below(&mut self, pa: u64, len: u64, align: u64, mask: u64) -> Option<Mapping> {
         if pa & (pci::IOVA_PAGE_SIZE - 1) != 0 { return None; }
-        let iova = self.space.alloc(len, align)?;
+        let iova = self.space.alloc_below(len, align, mask)?;
         if !self.page_table.map(iova.start, pa, iova.len) {
             let _ = self.space.free(iova);
             return None;

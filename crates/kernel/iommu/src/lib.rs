@@ -19,7 +19,7 @@ mod vtd_manager;
 pub use amd_vi::{AmdViCommand, AmdViDte, AmdViRegisters, AmdViState, AmdViTables, AmdViUnit, COMMAND_BUFFER, COMMAND_HEAD, COMMAND_TAIL,
     CONTROL, CONTROL_COHERENT_ENABLE, CONTROL_COMMAND_ENABLE, CONTROL_COMPLETION_ENABLE, CONTROL_EVENT_ENABLE, CONTROL_IOMMU_ENABLE, DEVICE_TABLE, EVENT_HEAD, EVENT_LOG, EVENT_TAIL};
 pub use admission::{admit_boot_requesters, bus_master_admitted};
-pub use dma_owner::{map_dma, unmap_dma};
+pub use dma_owner::{map_dma, map_dma_below, unmap_dma};
 pub use amd_vi_bootstrap::AmdViBootstrap;
 pub use amd_vi_manager::{AmdViActivation, activate_amd_vi};
 pub use amd_vi_pt::{AmdViPte, iova_indices};

@@ -59,13 +59,14 @@ pub fn owns(requester: Bdf) -> bool {
     MANAGER.lock().iter().any(|entry| entry.unit == unit)
 }
 
-/// Install one live AMD-Vi mapping and complete its IOTLB invalidation. # C: O(pages * levels + poll limit)
-pub fn map_dma(requester: Bdf, pa: u64, len: usize) -> Option<u64> {
+/// Install one live mapping constrained by the requester's inclusive DMA mask.
+/// # C: O(pages * levels + poll limit)
+pub fn map_dma_below(requester: Bdf, pa: u64, len: usize, mask: u64) -> Option<u64> {
     let unit = crate::amd_vi_unit_for_bdf(requester)?;
     let (base, bytes, offset) = crate::dma_span::normalize_dma_span(pa, len)?;
     let mut manager = MANAGER.lock();
     let entry = manager.iter_mut().find(|entry| entry.unit == unit)?;
-    let map = entry.domain.map(base, bytes, pci::IOVA_PAGE_SIZE)?;
+    let map = entry.domain.map_below(base, bytes, pci::IOVA_PAGE_SIZE, mask)?;
     if !entry.bootstrap.invalidate_mapping(map, INITIAL_DOMAIN_ID) { return None; }
     map.iova.start.checked_add(offset)
 }
