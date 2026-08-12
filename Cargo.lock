@@ -1088,6 +1088,7 @@ dependencies = [
  "hal",
  "hal-aarch64",
  "hal-x86_64",
+ "iommu",
  "ipc",
  "kalloc",
  "kexec",

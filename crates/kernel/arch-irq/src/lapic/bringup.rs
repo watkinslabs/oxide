@@ -2,7 +2,7 @@ use core::sync::atomic::Ordering;
 
 use super::ipi::{build_icr_lo, wait_icr_idle, write_icr};
 use super::regs::{
-    rdmsr, read_register, select_eoi_path, write_register, wrmsr, APIC_GLOBAL_ENABLE, LAPIC_BASE_VA,
+    enable_x2apic_for_ap, enable_x2apic_transport, rdmsr, read_register, select_eoi_path, write_register, wrmsr, APIC_GLOBAL_ENABLE, LAPIC_BASE_VA,
     MSR_IA32_APIC_BASE, REG_SVR, REG_VERSION, SPURIOUS_VECTOR, SVR_ENABLE,
 };
 
@@ -140,6 +140,7 @@ pub unsafe fn enable_for_ap() -> (u32, u32) {
             wrmsr(MSR_IA32_APIC_BASE, cur | APIC_GLOBAL_ENABLE);
         }
     }
+    let _ = enable_x2apic_for_ap();
     // GAP-2 hardening: pick the EOI path for this AP (MSR if in x2APIC mode).
     select_eoi_path();
     // SAFETY: the active xAPIC/x2APIC backend reaches this AP's local registers.
@@ -149,3 +150,8 @@ pub unsafe fn enable_for_ap() -> (u32, u32) {
         (super::regs::local_apic_id(), read_register(REG_VERSION).unwrap_or(0))
     }
 }
+
+/// Enables BSP x2APIC transport only when interrupt remapping supports it.
+/// # C: O(1)
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub fn enable_x2apic(remap_x2apic: bool) -> bool { enable_x2apic_transport(remap_x2apic) }

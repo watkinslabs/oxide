@@ -23,7 +23,6 @@ pub unsafe fn init(info: &BootInfo) {
     step("install_drv_sysfs_hooks", install_drv_sysfs_hooks);
     step("init_serial_console", init_serial_console);
     step("init_ps2_keyboard", || init_ps2_keyboard(info));
-    step("init_smp", || init_smp(info));
     step("init_runtime_subsystems", init_runtime_subsystems);
     step("init_vt_and_drv_hooks", init_vt_and_drv_hooks);
     // Wire the control-event notifier BEFORE any netdev registers. Linux
@@ -33,6 +32,7 @@ pub unsafe fn init(info: &BootInfo) {
     // install) dropped that event on the floor (control_event.rs notifier=None).
     net::control_event::set_notifier(netlink::mcast::notify_control_event);
     step("init_network_and_pci", init_network_and_pci);
+    step("init_x2apic_and_smp", || init_smp(info));
     // Generic firmware framebuffer is a fallback, not a competitor to a
     // native scanout. PCI probing runs first so virtio-gpu remains fb0 in the
     // desktop VM; physical machines without a supported display driver bind
@@ -87,6 +87,7 @@ fn init_smp(info: &BootInfo) {
     let _ = info; // only the x86_64 arm threads BootInfo through
     #[cfg(target_arch = "x86_64")]
     {
+        let _ = arch_irq::lapic::enable_x2apic(iommu::vtd_eim_capable());
         // SAFETY: kernel_main post-init, post-ACPI-MADT walk; single-CPU with IRQs masked, so the BSP is the sole writer of the trampoline page and every per-AP data block.
         let started = unsafe { arch_irq::smp_x86::bring_up_aps_x86(info) };
         debug_boot! {
