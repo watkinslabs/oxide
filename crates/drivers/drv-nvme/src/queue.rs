@@ -14,6 +14,8 @@ use crate::platform::{hhdm, now_ns};
 use mmio_map::Mapping;
 
 mod commands;
+mod dma;
+pub(crate) use dma::IoDma;
 
 /// Worst-case wait for an admin/IO completion. CAP.TO bounds RDY transitions;
 /// this caps a genuinely-lost completion to EIO. 5 s is generous for QEMU.
@@ -82,6 +84,7 @@ const DATA_ORDER: pmm::Order = pmm::Order(9);
 const DATA_PAGES: u64 = regs::MAX_PRP_DATA_PAGES;
 
 impl Nvme {
+    pub(crate) const fn bdf(&self) -> pci::Bdf { self.bdf }
     pub(crate) fn io_cq_cursor(&self) -> (u64, u32, bool) { (self.io.cq_pa, self.io.cq_head, self.io.cq_phase) }
     fn free_frame(bdf: pci::Bdf, pa: &mut u64, dma: &mut u64) {
         if *pa == 0 || !iommu::unmap_dma(bdf, *dma, PAGE as usize) {

@@ -59,18 +59,19 @@ impl NvmeBlk {
 
     pub(super) fn rw_chunk(&self, req: &mut BlockRequest, write: bool, lba: u64, count: u16, off: usize, len: usize) -> bool {
         if !self.acquire_turn() { return false; }
+        let Some(mut dma) = crate::queue::IoDma::allocate(self.ctrl.lock().bdf()) else { self.release_turn(); return false; };
         self.irq.prepare_command();
         let pending = {
             let mut ctrl = self.ctrl.lock();
             if self.unavailable() { None } else {
-                let bounce = ctrl.prp_va() as *mut u8;
+                let bounce = dma.data_va() as *mut u8;
                 if bounce.is_null() { None } else {
                     if write {
                         // SAFETY: the turn exclusively owns the one-page PRP bounce frame; len is chunk-bounded.
                         unsafe { for i in 0..len { core::ptr::write_volatile(bounce.add(i), req.buffer[off + i]); } }
                         pmm::dma::clean_to_device(bounce as u64, len);
                     }
-                    ctrl.rw_submit(write, lba, count - 1)
+                    ctrl.rw_submit(&dma, write, lba, count - 1)
                 }
             }
         };
@@ -83,7 +84,7 @@ impl NvmeBlk {
                 self.irq.configure_cq(cq_pa, cq_head, cq_phase);
                 ok = !self.unavailable() && status.map(|cqe| cqe.cid == pending.cid && cqe.status == 0).unwrap_or(false);
                 if ok && !write {
-                    let bounce = ctrl.prp_va() as *const u8;
+                    let bounce = dma.data_va() as *const u8;
                     pmm::dma::invalidate_from_device(bounce as u64, len);
                     // SAFETY: a matching completed CQE establishes DMA completion; the turn still owns the bounce frame.
                     unsafe { for i in 0..len { req.buffer[off + i] = core::ptr::read_volatile(bounce.add(i)); } }
@@ -91,6 +92,7 @@ impl NvmeBlk {
             }
         }
         if pending.is_some() && !ok { self.poisoned.store(true, Ordering::Release); }
+        dma.release();
         self.release_turn();
         ok
     }
