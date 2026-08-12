@@ -17,6 +17,7 @@ const DRM_MODE_FLAG_INTERLACE: u32 = 1 << 4;
 const DRM_MODE_FLAG_DBLSCAN: u32 = 1 << 5;
 const DRM_DISPLAY_MODE_TYPE_OFF: usize = 62;
 pub(super) const DRM_MODE_TYPE_PREFERRED: u8 = 1 << 3;
+#[allow(dead_code)] pub(super) const DRM_MODE_TYPE_USERDEF: u8 = 1 << 5;
 pub(super) const MODE_STATUS_STALE: i32 = -3;
 pub(super) const DRM_CONNECTOR_MODES_OFF: usize = 160;
 pub(super) const DRM_CONNECTOR_PROBED_MODES_OFF: usize = 184;
