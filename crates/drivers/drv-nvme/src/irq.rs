@@ -69,6 +69,7 @@ fn hard_handler_for(idx: usize) {
         if pa != 0 {
             let h = crate::platform::hhdm();
             if h != 0 {
+            pmm::dma::invalidate_from_device(h + pa + u64::from(head) * 16, 16);
             // SAFETY: the configured cursor is a live controller-owned CQE;
             // the completion phase is read before any process-context reap.
             let status = unsafe { core::ptr::read_volatile((h + pa + u64::from(head) * 16 + 12) as *const u32) };
