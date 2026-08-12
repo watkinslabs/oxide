@@ -35,6 +35,7 @@ pub(super) extern "C" fn drm_dev_register(dev: *mut c_void, _flags: usize) -> i3
 /// Withdraw a DRM device from driver clients without releasing its allocation. # C: O(N_devices)
 pub(super) extern "C" fn drm_dev_unregister(dev: *mut c_void) {
     if !is_live_device(dev) { return; }
+    client::unregister_device(dev);
     unregister_primary(dev);
     // SAFETY: dev is a live managed drm_device and registered is its verified ABI bool field.
     unsafe { *(dev.cast::<u8>().add(DRM_DEVICE_REGISTERED_OFF).cast::<bool>()) = false; }
