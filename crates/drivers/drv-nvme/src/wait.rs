@@ -5,7 +5,6 @@
 use sched::live::wait_list::WaitList;
 
 pub(crate) const IO_TIMEOUT_NS: u64 = 5_000_000_000;
-pub(crate) const IO_SPIN_BUDGET: u64 = 200_000;
 
 /// Monotonic wait clock. # C: O(1)
 pub(crate) fn now_ns() -> u64 {
@@ -52,18 +51,18 @@ fn can_sleep() -> bool {
     }
 }
 
-/// Poll a lock-free condition with IRQs enabled for one bounded budget.
-/// # C: O(IO_SPIN_BUDGET)
-pub(crate) fn poll_enabled(mut done: impl FnMut() -> bool, deadline: u64) -> bool {
+/// Recheck the lock-free condition once with IRQs enabled before parking.
+///
+/// Linux's normal NVMe PCI path completes interrupt-driven queues in its IRQ
+/// handler. It does not busy-poll an IRQ-driven request before sleeping; only
+/// explicitly polled queues take that path. This one recheck admits an IRQ
+/// that was masked on entry without turning every storage request into a CPU
+/// spin window. The following shared wait loop publishes before rechecking,
+/// which closes the wake-before-park race.
+/// # C: O(1)
+pub(crate) fn poll_enabled(mut done: impl FnMut() -> bool, _deadline: u64) -> bool {
     let irq = irq_save_enable();
-    let mut spun = 0u64;
-    let mut complete = false;
-    while spun < IO_SPIN_BUDGET {
-        if done() { complete = true; break; }
-        if now_ns() >= deadline { break; }
-        spun += 1;
-        core::hint::spin_loop();
-    }
+    let complete = done();
     irq_restore(irq);
     complete
 }
