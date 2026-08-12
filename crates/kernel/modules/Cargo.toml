@@ -29,6 +29,7 @@ arch-irq = { path = "../arch-irq" }
 devfs = { path = "../devfs" }
 drv = { path = "../../drivers/drv" }
 pci = { path = "../../drivers/pci" }
+fbdev = { path = "../../drivers/fbdev" }
 vfs = { path = "../vfs" }
 net = { path = "../net" }
 block = { path = "../block" }

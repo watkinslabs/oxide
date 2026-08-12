@@ -1189,6 +1189,7 @@ dependencies = [
  "drv",
  "elf",
  "ext4",
+ "fbdev",
  "hal",
  "hal-aarch64",
  "hal-x86_64",
