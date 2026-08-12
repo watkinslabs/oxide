@@ -19,6 +19,8 @@ const DRM_MODESET_SIZE: usize = 48;
 const DRM_MODESET_CRTC_OFF: usize = 8;
 const DRM_MODESET_CONNECTORS_OFF: usize = 32;
 const DRM_DEVICE_CLIENTLIST_OFF: usize = 272;
+const DRM_DEVICE_FILELIST_INTERNAL_OFF: usize = 224;
+const DRM_FILE_LHEAD_OFF: usize = 56;
 
 pub(super) struct ClientRecord { pub(super) client: usize, pub(super) file: usize, modesets: usize, modesets_layout: Layout, connector_arrays: Vec<(usize, Layout)>, registered: bool }
 
@@ -55,6 +57,7 @@ fn free_modesets(modesets: usize, modesets_layout: Layout, connector_arrays: Vec
 fn detach(record: ClientRecord) {
     unsafe { write((record.client as *mut u8).add(DRM_CLIENT_MODESETS_OFF).cast::<*mut u8>(), core::ptr::null_mut()); write((record.client as *mut u8).add(DRM_CLIENT_FILE_OFF).cast::<*mut u8>(), core::ptr::null_mut()); }
     if record.registered { unsafe { let head = (record.client as *mut u8).add(DRM_CLIENT_LIST_OFF).cast::<*mut c_void>(); let next = read(head); let prev = read(head.add(1)); write(prev.cast::<*mut c_void>(), next); write(next.cast::<*mut c_void>().add(1), prev); } }
+    unsafe { let head = (record.file as *mut u8).add(DRM_FILE_LHEAD_OFF).cast::<*mut c_void>(); let next = read(head); let prev = read(head.add(1)); write(prev.cast::<*mut c_void>(), next); write(next.cast::<*mut c_void>().add(1), prev); }
     free_modesets(record.modesets, record.modesets_layout, record.connector_arrays);
     gem::file_release(unsafe { read((record.client as *mut u8).cast::<*mut c_void>()) }, record.file as *mut c_void);
     unsafe { dealloc(record.file as *mut u8, layout(DRM_FILE_SIZE).unwrap()); }
@@ -65,7 +68,7 @@ pub(super) extern "C" fn drm_client_init(dev: *mut c_void, client: *mut c_void, 
     if !supported(dev) { return -LINUX_EOPNOTSUPP; }
     let (modesets, modesets_layout, connector_arrays) = { let devices = DEVICES.lock(); let Some(device) = devices.iter().find(|device| device.dev == dev as usize && device.mode_config && !device.put_pending && !device.unplugged) else { return -LINUX_EINVAL; }; let crtcs: Vec<CrtcRecord> = device.crtcs.iter().copied().collect(); drop(devices); let Some(parts) = new_modesets(&crtcs) else { return -LINUX_ENOMEM; }; parts };
     let file_layout = layout(DRM_FILE_SIZE).unwrap(); let file = unsafe { alloc_zeroed(file_layout) }; if file.is_null() || !gem::file_init(file.cast()) { if !file.is_null() { unsafe { dealloc(file, file_layout); } } free_modesets(modesets, modesets_layout, connector_arrays); return -LINUX_ENOMEM; }
-    unsafe { write(client.cast::<*mut c_void>(), dev); write(client.cast::<u8>().add(8).cast::<*const u8>(), name); write(client.cast::<u8>().add(DRM_CLIENT_LIST_OFF).cast::<*mut u8>(), client.cast()); write(client.cast::<u8>().add(DRM_CLIENT_LIST_OFF + 8).cast::<*mut u8>(), client.cast()); write(client.cast::<u8>().add(DRM_CLIENT_FUNCS_OFF).cast::<*const c_void>(), funcs); write(client.cast::<u8>().add(DRM_CLIENT_FILE_OFF).cast::<*mut u8>(), file); write(client.cast::<u8>().add(DRM_CLIENT_MODESETS_OFF).cast::<*mut u8>(), modesets as *mut u8); }
+    unsafe { write(client.cast::<*mut c_void>(), dev); write(client.cast::<u8>().add(8).cast::<*const u8>(), name); write(client.cast::<u8>().add(DRM_CLIENT_LIST_OFF).cast::<*mut u8>(), client.cast()); write(client.cast::<u8>().add(DRM_CLIENT_LIST_OFF + 8).cast::<*mut u8>(), client.cast()); write(client.cast::<u8>().add(DRM_CLIENT_FUNCS_OFF).cast::<*const c_void>(), funcs); write(client.cast::<u8>().add(DRM_CLIENT_FILE_OFF).cast::<*mut u8>(), file); write(client.cast::<u8>().add(DRM_CLIENT_MODESETS_OFF).cast::<*mut u8>(), modesets as *mut u8); let list = dev.cast::<u8>().add(DRM_DEVICE_FILELIST_INTERNAL_OFF).cast::<*mut c_void>(); let head = file.add(DRM_FILE_LHEAD_OFF).cast::<*mut c_void>(); let tail = read(list.add(1)); write(head, list.cast()); write(head.add(1), tail); write(tail.cast::<*mut c_void>(), head.cast()); write(list.add(1), head.cast()); }
     let mut devices = DEVICES.lock(); let Some(device) = devices.iter_mut().find(|device| device.dev == dev as usize && device.mode_config && !device.put_pending && !device.unplugged) else { unsafe { gem::file_release(dev, file.cast()); dealloc(file, file_layout); } free_modesets(modesets, modesets_layout, connector_arrays); return -LINUX_EINVAL; }; device.clients.push(ClientRecord { client: client as usize, file: file as usize, modesets, modesets_layout, connector_arrays, registered: false }); drop(devices); drm_dev_get(dev); 0
 }
 
