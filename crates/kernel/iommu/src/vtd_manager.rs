@@ -27,7 +27,7 @@ static MANAGER: Spinlock<Vec<VtdBootUnit>, Devices> = Spinlock::new(Vec::new());
 /// LAPIC owner must first put IOAPIC and HPET sources behind remapping too.
 static EIM_CAPABLE: AtomicBool = AtomicBool::new(false);
 
-/// Build, publish, invalidate, and enable one VT-d identity domain per hardware unit.
+/// Build, publish, and invalidate one VT-d identity domain per hardware unit.
 ///
 /// # SAFETY
 /// The caller must run before any requester can acquire PCI bus mastering.
@@ -85,13 +85,23 @@ pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf],
         if !entry.regs.set_root_table(entry.tables.root_pa()) || !invalidate(entry)
             || !entry.regs.enable_translation() { return VtdActivation::Failed; }
         if let Some(ir) = entry.ir.as_ref() {
-            if !entry.regs.set_interrupt_remap_table(ir.irta()) || !entry.regs.enable_interrupt_remapping() { return VtdActivation::Failed; }
+            if !entry.regs.set_interrupt_remap_table(ir.irta()) { return VtdActivation::Failed; }
         }
     }
     let eim_capable = !firmware::acpi::dmar_x2apic_opt_out() && all_vtd_units_support_eim();
     *MANAGER.lock() = manager;
     EIM_CAPABLE.store(eim_capable, Ordering::Release);
     VtdActivation::Enabled
+}
+
+/// Enable VT-d interrupt remapping only after the IRQ owner is ready to issue
+/// remapped MSI/MSI-X messages. # C: O(units * poll limit)
+pub fn enable_vtd_interrupt_remapping() -> bool {
+    let mut manager = MANAGER.lock();
+    for entry in manager.iter_mut() {
+        if entry.ir.is_some() && !entry.regs.enable_interrupt_remapping() { return false; }
+    }
+    true
 }
 
 /// Return whether firmware and every discovered VT-d unit admit EIM. Linux
