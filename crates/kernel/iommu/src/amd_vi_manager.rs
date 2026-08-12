@@ -33,7 +33,7 @@ pub unsafe fn activate_amd_vi(requesters: &[Bdf], hhdm_offset: u64, regions: &[p
     let mut manager = Vec::new();
     for unit in units {
         let Some(mut domain) = AmdViDomain::new(IOVA_START, IOVA_BYTES, hhdm_offset) else { return AmdViActivation::Failed; };
-        if !domain.map_identity_regions(regions) { return AmdViActivation::Failed; }
+        if !domain.map_identity_regions(regions) || !map_ivmd_regions(&mut domain, unit, requesters) { return AmdViActivation::Failed; }
         // SAFETY: the firmware inventory owns this unit and PCI probing has not enabled DMA.
         let Some(bootstrap) = (unsafe { AmdViBootstrap::new(unit.register_base, unit.segment, hhdm_offset) }) else { return AmdViActivation::Failed; };
         manager.push(AmdViBootUnit { unit, bootstrap, domain });
@@ -51,6 +51,20 @@ pub unsafe fn activate_amd_vi(requesters: &[Bdf], hhdm_offset: u64, regions: &[p
 
     *MANAGER.lock() = manager;
     AmdViActivation::Enabled
+}
+
+/// Map the validated firmware ranges Linux calls IVMD unity/exclusion maps
+/// before an AMD-Vi DTE may expose its page table to hardware. # C: O(IVMDs)
+fn map_ivmd_regions(domain: &mut AmdViDomain, unit: IommuUnit, requesters: &[Bdf]) -> bool {
+    for index in 0..firmware::acpi::amd_ivmd_count() {
+        let Some(ivmd) = firmware::acpi::amd_ivmd(index) else { return false; };
+        if ivmd.segment != unit.segment || !requesters.iter().any(|bdf| {
+            let requester = (u16::from(bdf.bus) << 8) | (u16::from(bdf.device) << 3) | u16::from(bdf.function);
+            bdf.segment == ivmd.segment && requester >= ivmd.first_requester && requester <= ivmd.last_requester
+        }) { continue; }
+        if domain.map_identity(ivmd.base, ivmd.len).is_none() { return false; }
+    }
+    true
 }
 
 /// Roll back every touched AMD-Vi unit after a global bootstrap failure.

@@ -45,6 +45,13 @@ fn publish(inv: IommuInventory) {
         AMD_ALIAS_RANGE[i].store((alias.first_requester as u32) | ((alias.last_requester as u32) << 16), Ordering::Relaxed);
         AMD_ALIAS_TARGET[i].store(alias.canonical_requester as u32, Ordering::Relaxed);
     }
+    for i in 0..inv.amd_ivmd_count {
+        let ivmd = inv.amd_ivmds[i];
+        AMD_IVMD_SEGMENT[i].store(ivmd.segment as u32, Ordering::Relaxed);
+        AMD_IVMD_RANGE[i].store((ivmd.first_requester as u32) | ((ivmd.last_requester as u32) << 16), Ordering::Relaxed);
+        AMD_IVMD_BASE[i].store(ivmd.base, Ordering::Relaxed);
+        AMD_IVMD_LEN[i].store(ivmd.len, Ordering::Relaxed);
+    }
     for i in 0..inv.dmar_scope_count { store_scope(&DMAR_SCOPE_META[i], &DMAR_SCOPE_PATH_LO[i], &DMAR_SCOPE_PATH_HI[i], inv.dmar_scopes[i]); }
     for i in 0..inv.dmar_rmrr_count {
         let rmrr = inv.dmar_rmrrs[i];
@@ -64,10 +71,23 @@ fn publish(inv: IommuInventory) {
     if IOMMU_KIND.compare_exchange(IOMMU_KIND_NONE, kind, Ordering::Release, Ordering::Acquire).is_ok() {
         AMD_SCOPE_COUNT.store(inv.amd_scope_count as u32, Ordering::Release);
         AMD_ALIAS_COUNT.store(inv.amd_alias_count as u32, Ordering::Release);
+        AMD_IVMD_COUNT.store(inv.amd_ivmd_count as u32, Ordering::Release);
         DMAR_SCOPE_COUNT.store(inv.dmar_scope_count as u32, Ordering::Release);
         DMAR_RMRR_COUNT.store(inv.dmar_rmrr_count as u32, Ordering::Release);
         IOMMU_COUNT.store(inv.unit_count as u32, Ordering::Release);
     }
+}
+
+/// Count firmware-required AMD IVMD unity/exclusion mappings. # C: O(1)
+pub fn amd_ivmd_count() -> usize { AMD_IVMD_COUNT.load(Ordering::Acquire) as usize }
+
+/// Return one validated AMD IVMD range. # C: O(1)
+pub fn amd_ivmd(index: usize) -> Option<AmdIvmd> {
+    if index >= amd_ivmd_count() || IOMMU_KIND.load(Ordering::Relaxed) != IOMMU_KIND_AMD_VI { return None; }
+    let range = AMD_IVMD_RANGE[index].load(Ordering::Relaxed);
+    Some(AmdIvmd { segment: AMD_IVMD_SEGMENT[index].load(Ordering::Relaxed) as u16,
+        first_requester: range as u16, last_requester: (range >> 16) as u16,
+        base: AMD_IVMD_BASE[index].load(Ordering::Relaxed), len: AMD_IVMD_LEN[index].load(Ordering::Relaxed) })
 }
 
 /// Return whether the DMAR table forbids x2APIC interrupt-remapping mode.

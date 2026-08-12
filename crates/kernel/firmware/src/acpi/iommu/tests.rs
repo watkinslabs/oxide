@@ -99,6 +99,27 @@ fn aliased_ivrs() -> Vec<u8> {
     t
 }
 
+fn ivmd_ivrs() -> Vec<u8> {
+    let mut t = vec![0u8; 104];
+    t[..4].copy_from_slice(b"IVRS");
+    le32(&mut t, 4, 104);
+    t[48] = 0x10;
+    le16(&mut t, 50, 24);
+    le64(&mut t, 56, 0xfed8_0000);
+    le16(&mut t, 64, 3);
+    // IVMD range: Linux maps unity/exclusion records before enabling AMD-Vi.
+    t[72] = 0x22;
+    t[73] = 1;
+    le16(&mut t, 74, 32);
+    le16(&mut t, 76, 0x1234);
+    le16(&mut t, 78, 0x12ff);
+    le16(&mut t, 80, 3);
+    le64(&mut t, 88, 0x8000);
+    le64(&mut t, 96, 0x2000);
+    finish(&mut t);
+    t
+}
+
 #[test]
 fn dmar_drhd_preserves_the_linux_device_ownership_keys() {
     let inv = parse_dmar(&dmar()).expect("valid DRHD");
@@ -159,6 +180,26 @@ fn ivrs_ivhd_preserves_canonical_requester_aliases() {
     assert_eq!(inv.amd_aliases[0].first_requester, 0x1234);
     assert_eq!(inv.amd_aliases[0].last_requester, 0x1234);
     assert_eq!(inv.amd_aliases[0].canonical_requester, 0x4321);
+}
+
+#[test]
+fn ivrs_ivmd_preserves_linux_unity_mapping_scope_and_extent() {
+    let inv = parse_ivrs(&ivmd_ivrs()).expect("valid IVMD");
+    assert_eq!(inv.amd_ivmd_count, 1);
+    let ivmd = inv.amd_ivmds[0];
+    assert_eq!(ivmd.segment, 3);
+    assert_eq!((ivmd.first_requester, ivmd.last_requester), (0x1234, 0x12ff));
+    assert_eq!((ivmd.base, ivmd.len), (0x8000, 0x2000));
+}
+
+#[test]
+fn ivrs_page_aligns_ivmd_like_linux() {
+    let mut t = ivmd_ivrs();
+    t[88] = 1;
+    t[96] = 1;
+    finish(&mut t);
+    let ivmd = parse_ivrs(&t).expect("Linux-compatible unaligned IVMD").amd_ivmds[0];
+    assert_eq!((ivmd.base, ivmd.len), (0x9000, 0x3000));
 }
 
 #[test]
