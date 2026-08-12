@@ -29,12 +29,14 @@ fn test_record(device_key: virtio::VirtioChildDeviceKey, shutdown: bool) -> RngH
     let hwrng_dev = Arc::new(drv::Device::new("misc", String::from("hwrng"), 0, 0, 0));
     Arc::new(Spinlock::new(RngState {
         device_key,
+        bdf: pci::Bdf { segment: 0, bus: 0, device: 0, function: 0 },
         cfg_va: 0,
         hhdm: 0,
         requestq: test_queue(),
         avail_idx: 0,
         used_idx_seen: 0,
         bounce_pa: 0,
+        bounce_dma: 0,
         hwrng_dev,
         shutdown,
     }))
@@ -55,12 +57,14 @@ fn test_record_with_device(
 ) -> RngHandle {
     Arc::new(Spinlock::new(RngState {
         device_key,
+        bdf: pci::Bdf { segment: 0, bus: 0, device: 0, function: 0 },
         cfg_va,
         hhdm: 0,
         requestq: test_queue(),
         avail_idx: 0,
         used_idx_seen: 0,
         bounce_pa: 0,
+        bounce_dma: 0,
         hwrng_dev,
         shutdown: false,
     }))
@@ -78,6 +82,7 @@ fn ready_queue_record(
     used[4] = bounce.len() as u16;
     Arc::new(Spinlock::new(RngState {
         device_key,
+        bdf: pci::Bdf { segment: 0, bus: 0, device: 0, function: 0 },
         cfg_va: 0,
         hhdm: 0,
         requestq: virtio::VirtQueueResource::new(
@@ -92,6 +97,7 @@ fn ready_queue_record(
         avail_idx: 0,
         used_idx_seen: 0,
         bounce_pa: bounce.as_mut_ptr() as u64,
+        bounce_dma: bounce.as_mut_ptr() as u64,
         hwrng_dev: Arc::new(drv::Device::new("misc", String::from("hwrng"), 0, 0, 0)),
         shutdown: false,
     }))

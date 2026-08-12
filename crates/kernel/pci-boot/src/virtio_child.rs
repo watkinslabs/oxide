@@ -250,7 +250,7 @@ impl virtio::VirtioChildDriverOps<VirtioChildSession> for VirtioRngOps {
         };
         let device_key = session.device_key();
         // `_seeded` — read only by the `debug-boot`-gated log line below.
-        let _seeded = match drv_virtio_rng::install(device_key, resources) {
+        let _seeded = match drv_virtio_rng::install(device_key, session.pci_bdf(), resources) {
             Some(seeded) => seeded,
             None => {
                 return Err(drv::Error::ProbeFailed);

@@ -23,20 +23,20 @@ pub(crate) fn fill_record(record: &RngHandle, buf: &mut [u8]) -> usize {
     let mut g = record.lock();
     let ctx = &mut *g;
     let want = buf.len().min(FILL_BUFFER_BYTES);
-    if want == 0 || ctx.shutdown || ctx.bounce_pa == 0 {
+    if want == 0 || ctx.shutdown || ctx.bounce_pa == 0 || ctx.bounce_dma == 0 {
         return 0;
     }
     let h = ctx.hhdm;
     let q = ctx.requestq;
     let desc = h.wrapping_add(q.desc_pa) as *mut u64;
-    // Descriptor 0 = { addr=bounce_pa, len=want, flags=WRITE, next=0 }: the
+    // Descriptor 0 = { addr=bounce_dma, len=want, flags=WRITE, next=0 }: the
     // device fills the driver's own frame, never memory it was not handed.
     // SAFETY: HHDM-mapped q0 descriptor table the boot probe programmed and
-    // this record still owns (bounce_pa != 0 checked above under the record
+    // this record still owns (the PA/DMA pair was checked above under the record
     // lock); slot 0 exists for every negotiated queue size, and the two
     // aligned u64 stores cover addr and the len/flags/next word.
     unsafe {
-        core::ptr::write_volatile(desc.add(0), ctx.bounce_pa);
+        core::ptr::write_volatile(desc.add(0), ctx.bounce_dma);
         let w1 = (want as u64) | ((virtio::VRING_DESC_F_WRITE as u64) << 32);
         core::ptr::write_volatile(desc.add(1), w1);
     }
