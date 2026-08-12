@@ -449,15 +449,29 @@ pub unsafe fn bring_up_aps_x86(_info: &BootInfo) -> usize {
         let vec = (TRAMP_PA >> 12) as u8;
         // SAFETY: LAPIC enabled by the BSP; INIT then two SIPIs per Intel
         // SDM Vol 3 §8.4.4.1; wait_icr_idle bounds each delivery.
-        unsafe {
-            crate::lapic::write_icr(id, crate::lapic::icr_lo_init_assert());
-            crate::lapic::wait_icr_idle();
-            crate::lapic::busy_wait_us(10_000);
-            crate::lapic::write_icr(id, crate::lapic::icr_lo_sipi(vec));
-            crate::lapic::wait_icr_idle();
-            crate::lapic::busy_wait_us(200);
-            crate::lapic::write_icr(id, crate::lapic::icr_lo_sipi(vec));
-            crate::lapic::wait_icr_idle();
+        let started_ipi = unsafe {
+            if !crate::lapic::write_icr(id, crate::lapic::icr_lo_init_assert()) {
+                false
+            } else {
+                crate::lapic::wait_icr_idle();
+                crate::lapic::busy_wait_us(10_000);
+                if !crate::lapic::write_icr(id, crate::lapic::icr_lo_sipi(vec)) {
+                    false
+                } else {
+                    crate::lapic::wait_icr_idle();
+                    crate::lapic::busy_wait_us(200);
+                    if !crate::lapic::write_icr(id, crate::lapic::icr_lo_sipi(vec)) {
+                        false
+                    } else {
+                        crate::lapic::wait_icr_idle();
+                        true
+                    }
+                }
+            }
+        };
+        if !started_ipi {
+            klog::write_raw(b"[SMP] AP ICR destination unsupported\n");
+            continue;
         }
         // Wait (bounded) for the AP to increment the online count.
         let mut spins = 0u32;
