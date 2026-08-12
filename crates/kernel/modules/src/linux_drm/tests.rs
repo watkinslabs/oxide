@@ -180,6 +180,14 @@ fn connector_helper_add_publishes_the_helper_vtable() {
     connector::drm_connector_cleanup(connector.0.as_mut_ptr().cast()); devres::release_device(&mut parent);
 }
 
+extern "C" fn test_get_modes(_connector: *mut c_void) -> i32 { -1 }
+
+#[test]
+fn helper_get_modes_clamps_negative_callback_returns() {
+    let _modules = crate::test_serial::claim(); let mut connector = TestConnector([0; 2280]); let table: [extern "C" fn(*mut c_void) -> i32; 1] = [test_get_modes];
+    connector::drm_connector_helper_add(connector.0.as_mut_ptr().cast(), table.as_ptr().cast()); assert_eq!(unsafe { mode::connector_get_modes(connector.0.as_mut_ptr().cast()) }, 0);
+}
+
 #[test]
 fn connector_attachment_sets_only_its_live_encoder_bit() {
     let _modules = crate::test_serial::claim(); let mut parent = LinuxDevice::new(); let dev = device(&mut parent, 2048); assert_eq!(drmm_mode_config_init(dev), 0); let funcs = 1u8; let mut encoder = TestEncoder([0; 128]); let mut connector = TestConnector([0; 2280]);
