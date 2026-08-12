@@ -33,6 +33,19 @@ impl Controller {
     /// # C: O(1)
     pub fn stop(&self) { self.write(regs::IMC, u32::MAX); self.write(regs::RCTL, 0); self.write(regs::TCTL, regs::TCTL_PSP); let _ = self.read(regs::ICR); }
 
+    /// Returns the mapped register-file base for the owned PCI interrupt source.
+    /// # C: O(1)
+    pub fn mmio_base(&self) -> u64 { self.map.base_va() }
+    /// Returns the mapped register-file byte extent for PCI MSI-X validation.
+    /// # C: O(1)
+    pub fn mmio_bytes(&self) -> u64 { self.map.bytes() }
+    /// Completes one deferred interrupt poll without losing a masked cause.
+    /// # C: O(1)
+    pub fn complete_poll(&self) -> bool {
+        if self.read(regs::ICR) != 0 { return true; }
+        self.write(regs::IMS, regs::IMS_DEFAULT); let _ = self.read(regs::IMS); false
+    }
+
     /// Returns the controller MAC address only when the receive address is valid.
     /// # C: O(1)
     pub fn mac(&self) -> Option<[u8; 6]> {
