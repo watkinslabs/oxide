@@ -18,7 +18,7 @@ struct StorageDma {
 }
 
 /// Input context, output device context, and endpoint-zero transfer ring.
-pub struct AddressDeviceDma { bdf: pci::Bdf, input: DmaPage, output: DmaPage, ep0: DmaPage, descriptor: DmaPage, context_bytes: u8, speed: u8, port: u8, slot: u8, device_protocol: u8, hub_descriptor: Option<crate::usb::HubDescriptor>, _hid: Option<crate::usb::HidBootInterface>, _hub: Option<crate::usb::HubInterface>, _storage: Option<crate::storage::MassStorageInterface>, hid_ring: Option<HidDma>, hub_ring: Option<HubDma>, storage_dma: Option<StorageDma>, ep0_ring: CommandRing }
+pub struct AddressDeviceDma { bdf: pci::Bdf, input: DmaPage, output: DmaPage, ep0: DmaPage, descriptor: DmaPage, context_bytes: u8, speed: u8, port: u8, slot: u8, device_protocol: u8, hub_descriptor: Option<crate::usb::HubDescriptor>, hub_events: [u8; crate::usb::HUB_STATUS_MAX_BYTES], hub_events_len: u8, _hid: Option<crate::usb::HidBootInterface>, _hub: Option<crate::usb::HubInterface>, _storage: Option<crate::storage::MassStorageInterface>, hid_ring: Option<HidDma>, hub_ring: Option<HubDma>, storage_dma: Option<StorageDma>, ep0_ring: CommandRing }
 
 /// Maximum chained USB-storage transfer accepted by one retained endpoint ring.
 pub const STORAGE_MAX_TRANSFER_BYTES: usize = DmaPage::BYTES * crate::ring::COMMAND_USABLE_TRBS;
@@ -45,7 +45,7 @@ impl AddressDeviceDma {
         }
         input.clean_to_device(); output.clean_to_device(); ep0.clean_to_device();
         let ep0_ring = CommandRing::new(ep0.dma())?;
-        Some(Self { bdf, input, output, ep0, descriptor, context_bytes, speed, port: topology.root_port, slot: 0, device_protocol: 0, hub_descriptor: None, _hid: None, _hub: None, _storage: None, hid_ring: None, hub_ring: None, storage_dma: None, ep0_ring })
+        Some(Self { bdf, input, output, ep0, descriptor, context_bytes, speed, port: topology.root_port, slot: 0, device_protocol: 0, hub_descriptor: None, hub_events: [0; crate::usb::HUB_STATUS_MAX_BYTES], hub_events_len: 0, _hid: None, _hub: None, _storage: None, hid_ring: None, hub_ring: None, storage_dma: None, ep0_ring })
     }
 
     /// Input-context device DMA address for Address Device. # C: O(1)
@@ -150,12 +150,31 @@ impl AddressDeviceDma {
     pub fn hid_protocol(&self) -> Option<u8> { self._hid.map(|hid| hid.protocol) }
     /// Selected hub interface descriptor. # C: O(1)
     pub fn hub_interface(&self) -> Option<crate::usb::HubInterface> { self._hub }
+    /// Retained hub descriptor used to bound downstream-port control. # C: O(1)
+    pub fn hub_descriptor(&self) -> Option<crate::usb::HubDescriptor> { self.hub_descriptor }
     /// Read the exact hub-descriptor size after its fixed-header transfer. # C: O(7)
     pub fn hub_descriptor_length(&self) -> Option<usize> {
         self.descriptor.invalidate_from_device();
         let mut header = [0u8; crate::usb::HUB_DESC_HEADER_BYTES];
         for (offset, byte) in header.iter_mut().enumerate() { *byte = self.descriptor.read8(offset as u64)?; }
         crate::usb::hub_descriptor_length(&header)
+    }
+    /// Submit a hub-port GET_STATUS control transfer into the retained descriptor page. # C: O(1)
+    pub fn submit_hub_port_status(&mut self, mmio: &Mmio, slot: u8, port: u8) -> Option<u64> {
+        let td = crate::usb::get_hub_port_status_trbs(self.descriptor.dma(), port)?;
+        self.submit_ep0(mmio, slot, &td)
+    }
+    /// Decode the retained hub-port GET_STATUS reply after its exact completion. # C: O(4)
+    pub fn hub_port_status(&self) -> Option<crate::usb::HubPortStatus> {
+        self.descriptor.invalidate_from_device();
+        let mut bytes = [0u8; crate::usb::HUB_PORT_STATUS_BYTES];
+        for (offset, byte) in bytes.iter_mut().enumerate() { *byte = self.descriptor.read8(offset as u64)?; }
+        crate::usb::hub_port_status(&bytes)
+    }
+    /// Submit one class-port SET_FEATURE or CLEAR_FEATURE control transfer. # C: O(1)
+    pub fn submit_hub_port_feature(&mut self, mmio: &Mmio, slot: u8, port: u8, feature: u16, set: bool) -> Option<u64> {
+        let td = crate::usb::hub_port_feature_trbs(port, feature, set)?;
+        self.submit_ep0(mmio, slot, &td)
     }
     /// Read and retain a complete hub descriptor after its EP0 control transfer. # C: O(descriptor bytes)
     pub fn discover_hub_descriptor(&mut self) -> Option<crate::usb::HubDescriptor> {
@@ -291,18 +310,36 @@ impl AddressDeviceDma {
         Some(report)
     }
     /// Consume one completed hub status bitmap after its matching Transfer Event. # C: O(status bytes)
-    pub fn take_hub_status(&mut self, completion: crate::ring::TransferCompletion) -> Option<Vec<u8>> {
+    pub fn take_hub_status(&mut self, completion: crate::ring::TransferCompletion) -> Option<()> {
         let hub = self._hub?;
+        let descriptor = self.hub_descriptor?;
         let endpoint_id = (hub.endpoint & 0x0f).checked_mul(2)?.checked_add(1)?;
         let dma = self.hub_ring.as_mut()?;
         if completion.trb_pa != dma.pending || completion.completion_code != crate::ring::COMPLETION_SUCCESS || completion.endpoint_id != endpoint_id || completion.residual > u32::from(hub.max_packet) { return None; }
         dma.pending = 0;
         dma.status.invalidate_from_device();
-        let length = usize::from(hub.max_packet) - completion.residual as usize;
-        let mut status = Vec::with_capacity(length);
-        for offset in 0..length { status.push(dma.status.read8(offset as u64)?); }
-        Some(status)
+        let length = usize::from(hub.max_packet).checked_sub(completion.residual as usize)?;
+        let expected = (usize::from(descriptor.ports).checked_add(8)? / 8).max(1);
+        if length != expected { return None; }
+        let mut bytes = [0u8; crate::usb::HUB_STATUS_MAX_BYTES];
+        for (offset, byte) in bytes.iter_mut().take(length).enumerate() { *byte = dma.status.read8(offset as u64)?; }
+        let bitmap = crate::usb::hub_status_bitmap(&bytes[..length], descriptor.ports)?;
+        for (saved, changed) in self.hub_events.iter_mut().zip(bitmap.bytes()) { *saved |= changed; }
+        self.hub_events_len = self.hub_events_len.max(bitmap.bytes().len() as u8);
+        Some(())
     }
+    /// Claim all coalesced hub-status event bits for process-context service. # C: O(status bytes)
+    pub fn take_hub_events(&mut self) -> Option<crate::usb::HubStatusBitmap> {
+        let ports = self.hub_descriptor?.ports;
+        let length = usize::from(self.hub_events_len);
+        if length == 0 { return None; }
+        let bitmap = crate::usb::hub_status_bitmap(&self.hub_events[..length], ports)?;
+        self.hub_events[..length].fill(0);
+        self.hub_events_len = 0;
+        Some(bitmap)
+    }
+    /// Whether an interrupt status bitmap still awaits process-context service. # C: O(1)
+    pub fn hub_events_pending(&self) -> bool { self.hub_events_len != 0 }
     /// Rebuild the input context from controller output for Linux's EP0 MPS update. # C: O(1)
     pub fn prepare_evaluate_ep0(&self, max_packet: u8) -> Option<bool> {
         let stride = self.context_bytes as u64;
