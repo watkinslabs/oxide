@@ -44,6 +44,7 @@ pub(crate) const VMSTAT: u64 = 0x3000_1022;
 pub(crate) const PARTITIONS: u64 = 0x3000_1023;
 pub(crate) const DISKSTATS: u64 = 0x3000_1024;
 pub(crate) const INTERRUPTS: u64 = 0x3000_1025;
+pub(crate) const SOFTIRQS: u64 = 0x3000_102D;
 pub(crate) const DEVICES: u64 = 0x3000_1026;
 pub(crate) const FILESYSTEMS: u64 = 0x3000_1028;
 pub(crate) const BUDDYINFO: u64 = 0x3000_1027;

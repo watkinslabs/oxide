@@ -43,7 +43,7 @@ pub fn build_proc_root() -> alloc::collections::BTreeMap<alloc::string::String, 
     c.insert("zoneinfo".to_string(),    StaticFileInode::new(b"Node 0, zone Normal\n  pages free 1024\n"));
     c.insert("vmstat".to_string(),       crate::vmstat::make_proc_vmstat());
     c.insert("interrupts".to_string(),  crate::interrupts::make_proc_interrupts());
-    c.insert("softirqs".to_string(),    StaticFileInode::new(b"                CPU0       \n      HI:          0\n   TIMER:       1234\n") as InodeRef);
+    c.insert("softirqs".to_string(),    crate::softirqs::make_proc_softirqs());
     c.insert("kallsyms".to_string(),    StaticFileInode::new(b"") as InodeRef);
     // Rendered per read, and `keys` in the READING task's context — the file
     // omits every key that task cannot VIEW, so one shared body would publish

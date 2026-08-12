@@ -74,6 +74,22 @@ fn run_pending_drains_until_empty() {
 }
 
 #[test]
+fn dispatched_work_is_counted_in_its_linux_visible_class() {
+    let _state = own_softirq_state();
+    let cpu = 0;
+    let net_before = stat_count(StatClass::NetRx, cpu);
+    let block_before = stat_count(StatClass::Block, cpu);
+    set_handler(Slot::NetRx, noop_handler);
+    set_handler(Slot::BlockIo, noop_handler);
+    raise(Slot::NetRx);
+    raise(Slot::BlockIo);
+    // SAFETY: hosted test exclusively owns the one modeled CPU's softirq state.
+    unsafe { run_pending(); }
+    assert_eq!(stat_count(StatClass::NetRx, cpu), net_before + 1);
+    assert_eq!(stat_count(StatClass::Block, cpu), block_before + 1);
+}
+
+#[test]
 fn unset_slot_no_handler_no_call() {
     let _state = own_softirq_state();
     HANDLERS[Slot::InputDrain as usize].store(core::ptr::null_mut(), Ordering::Relaxed);

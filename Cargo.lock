@@ -1536,6 +1536,7 @@ dependencies = [
  "sched",
  "security",
  "slab",
+ "softirq",
  "sync",
  "syscall",
  "sysfs",
