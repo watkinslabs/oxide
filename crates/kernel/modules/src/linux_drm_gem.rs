@@ -60,10 +60,23 @@ struct GemFile { next: u32, next_mmap_page: u64, handles: Vec<GemHandle>, mmap_o
 
 type GemClose = unsafe extern "C" fn(*mut c_void, *mut c_void);
 type GemFree = unsafe extern "C" fn(*mut c_void);
+type GemObjectMmap = unsafe extern "C" fn(*mut c_void, *mut c_void) -> i32;
 type FbDestroy = unsafe extern "C" fn(*mut c_void);
 type ModeObjectFree = unsafe extern "C" fn(*mut c_void);
 
-static SHMEM_OBJECT_FUNCS: [Option<GemFree>; 3] = [Some(shmem_object_free), None, None];
+#[repr(C)]
+struct GemObjectFuncs {
+    free: Option<GemFree>,
+    _before_mmap: [usize; 9],
+    mmap: Option<GemObjectMmap>,
+    _before_vm_ops: [usize; 2],
+    vm_ops: *const c_void,
+}
+
+// SAFETY: this immutable ABI callback table contains only fixed function and null pointers.
+unsafe impl Sync for GemObjectFuncs {}
+
+static SHMEM_OBJECT_FUNCS: GemObjectFuncs = GemObjectFuncs { free: Some(shmem_object_free), _before_mmap: [0; 9], mmap: None, _before_vm_ops: [0; 2], vm_ops: (&super::gem_mmap::SHMEM_VM_OPS as *const super::gem_mmap::GemVmOps).cast() };
 static GEM_FB_FUNCS: [Option<FbDestroy>; 3] = [Some(gem_fb_destroy), None, None];
 
 /// Retain one framebuffer reference through its embedded mode object. # C: O(1)
@@ -267,7 +280,7 @@ pub(super) extern "C" fn drm_gem_shmem_dumb_create(file: *mut c_void, dev: *mut 
     if backing.is_null() { unsafe { dealloc(object, object_layout); } return -LINUX_EBUSY; }
     drm_gem_private_object_init(dev, object.cast(), size);
     // SAFETY: object reserves the complete shmem-GEM ABI record; these fields install its backing and free contract.
-    unsafe { write(object.add(DRM_GEM_OBJECT_FUNCS_OFF).cast::<*const Option<GemFree>>(), SHMEM_OBJECT_FUNCS.as_ptr()); write(object.add(DRM_GEM_SHMEM_VADDR_OFF).cast::<*mut u8>(), backing); }
+    unsafe { write(object.add(DRM_GEM_OBJECT_FUNCS_OFF).cast::<*const GemObjectFuncs>(), &SHMEM_OBJECT_FUNCS); write(object.add(DRM_GEM_SHMEM_VADDR_OFF).cast::<*mut u8>(), backing); }
     // SAFETY: args owns the user-visible handle output, populated only after the object is fully initialized.
     let out = unsafe { args.cast::<u8>().add(DRM_DUMB_HANDLE_OFF).cast::<u32>() };
     let rc = drm_gem_handle_create(file, object.cast(), out);
@@ -324,7 +337,7 @@ fn release_handle(object: *mut c_void, file: *mut c_void) {
     object_put(object);
 }
 
-fn object_put(object: *mut c_void) {
+pub(super) fn object_put(object: *mut c_void) {
     // SAFETY: every caller holds exactly one previously acquired GEM object reference.
     let refs = unsafe { read(object.cast::<u8>().add(DRM_GEM_REFCOUNT_OFF).cast::<i32>()) };
     if refs <= 1 { object_free(object); } else { unsafe { write(object.cast::<u8>().add(DRM_GEM_REFCOUNT_OFF).cast::<i32>(), refs - 1); } }

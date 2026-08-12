@@ -19,6 +19,7 @@ use sync::{Spinlock, Modules as ModulesLockClass};
 #[path = "linux_drm_file.rs"] mod file;
 #[path = "linux_drm_ioctl.rs"] mod ioctl;
 #[path = "linux_drm_gem.rs"] mod gem;
+#[path = "linux_drm_gem_mmap.rs"] mod gem_mmap;
 #[path = "linux_drm_shadow.rs"] mod shadow;
 #[path = "linux_drm_format_helper.rs"] mod format_helper;
 #[path = "linux_drm_atomic.rs"] mod atomic;
@@ -165,6 +166,7 @@ pub fn export_symbols() {
     file::export_symbols();
     ioctl::export_symbols();
     gem::export_symbols();
+    gem_mmap::export_symbols();
     shadow::export_symbols();
     format_helper::export_symbols();
     atomic::export_symbols();
