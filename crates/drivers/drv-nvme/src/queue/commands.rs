@@ -42,27 +42,27 @@ impl Nvme {
         Some(IoCompletion { cid, status })
     }
 
-    /// Submit one READ or WRITE on I/O queue 1 through the serialized PRP run. # C: O(one I/O cmd)
-    pub fn rw_submit(&mut self, write: bool, slba: u64, nlb_minus_1: u16) -> Option<IoPending> {
+    /// Submit one READ or WRITE on I/O queue 1 through command-private DMA. # C: O(one I/O cmd)
+    pub fn rw_submit(&mut self, dma: &IoDma, write: bool, slba: u64, nlb_minus_1: u16) -> Option<IoPending> {
         let bytes = u64::from(nlb_minus_1).saturating_add(1).saturating_mul(u64::from(self.blk_size));
         let second = regs::prp_second(bytes)?;
         let mut cmd = [0u32; 16];
         cmd[0] = if write { regs::IO_WRITE } else { regs::IO_READ } as u32;
         cmd[1] = 1;
-        cmd[6] = (self.data_dma & 0xFFFF_FFFF) as u32;
-        cmd[7] = (self.data_dma >> 32) as u32;
+        cmd[6] = (dma.data_dma & 0xFFFF_FFFF) as u32;
+        cmd[7] = (dma.data_dma >> 32) as u32;
         match second {
             regs::PrpSecond::None => {}
-            regs::PrpSecond::DirectPage => { let prp2 = self.data_dma + PAGE; cmd[8] = prp2 as u32; cmd[9] = (prp2 >> 32) as u32; }
+            regs::PrpSecond::DirectPage => { let prp2 = dma.data_dma + PAGE; cmd[8] = prp2 as u32; cmd[9] = (prp2 >> 32) as u32; }
             regs::PrpSecond::List { entries } => {
                 let h = hhdm();
-                if h == 0 || self.prp_list_pa == 0 { return None; }
-                let list = h.wrapping_add(self.prp_list_pa) as *mut u64;
+                if h == 0 || dma.list_va() == 0 { return None; }
+                let list = dma.list_va() as *mut u64;
                 // SAFETY: this controller owns the 512-entry PRP-list page and entries never exceeds 511.
-                unsafe { for index in 0..entries { core::ptr::write_volatile(list.add(index), self.data_dma + (index as u64 + 1) * PAGE); } }
-                pmm::dma::clean_to_device(h.wrapping_add(self.prp_list_pa), entries * core::mem::size_of::<u64>());
+                unsafe { for index in 0..entries { core::ptr::write_volatile(list.add(index), dma.data_dma + (index as u64 + 1) * PAGE); } }
+                pmm::dma::clean_to_device(dma.list_va(), entries * core::mem::size_of::<u64>());
                 core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
-                cmd[8] = self.prp_list_dma as u32; cmd[9] = (self.prp_list_dma >> 32) as u32;
+                cmd[8] = dma.list_dma as u32; cmd[9] = (dma.list_dma >> 32) as u32;
             }
         }
         cmd[10] = (slba & 0xFFFF_FFFF) as u32; cmd[11] = (slba >> 32) as u32; cmd[12] = nlb_minus_1 as u32;
@@ -74,6 +74,4 @@ impl Nvme {
         let mut cmd = [0u32; 16]; cmd[0] = regs::IO_FLUSH as u32; cmd[1] = 1; self.submit_io(cmd)
     }
 
-    /// HHDM VA of the serialized PRP data run. # C: O(1)
-    pub fn prp_va(&self) -> u64 { hhdm().wrapping_add(self.data_pa) }
 }
