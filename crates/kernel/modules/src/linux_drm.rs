@@ -1,7 +1,5 @@
 //! DRM module ABI object allocation and lifetime.
-
 extern crate alloc;
-
 use alloc::alloc::{alloc, alloc_zeroed, dealloc};
 use alloc::vec::Vec;
 use crate::linux_device::devres;
@@ -22,6 +20,7 @@ mod format;
 #[path = "linux_drm_mode.rs"]
 mod mode;
 #[path = "linux_drm_dmt.rs"] mod dmt; #[path = "linux_drm_probe.rs"] mod probe;
+#[path = "linux_drm_file.rs"] mod file;
 
 struct DeviceAllocation {
     dev: usize,
@@ -141,6 +140,7 @@ pub fn export_symbols() {
     register::export_symbols();
     format::export_symbols();
     mode::export_symbols(); probe::export_symbols();
+    file::export_symbols();
 }
 
 fn layout_for(size: usize) -> Option<Layout> {

@@ -1,16 +1,21 @@
 use super::*;
 use alloc::vec::Vec;
+use alloc::alloc::{alloc_zeroed, dealloc};
+use core::alloc::Layout;
 use core::ptr::read;
 use sync::{Modules as ModulesLockClass, Spinlock};
 
 const DRM_DEVICE_REGISTERED_OFF: usize = 96;
+const DRM_DEVICE_PRIMARY_OFF: usize = 72;
 const DRM_DEVICE_DRIVER_OFF: usize = 56;
 const DRM_DRIVER_FOPS_OFF: usize = 192;
 const DRM_MAJOR: u32 = 226;
 const DRM_PRIMARY_LIMIT: u32 = 64;
 const LINUX_ENOMEM: i32 = 12;
 
-struct PrimaryMinor { dev: usize, cdev: usize, minor: u32 }
+const DRM_MINOR_SIZE: usize = 40;
+const DRM_MINOR_DEV_OFF: usize = 16;
+struct PrimaryMinor { dev: usize, cdev: usize, minor: u32, object: usize }
 static PRIMARY_MINORS: Spinlock<Vec<PrimaryMinor>, ModulesLockClass> = Spinlock::new(Vec::new());
 
 pub(super) fn export_symbols() {
@@ -47,15 +52,25 @@ fn register_primary(dev: *mut c_void) -> Result<(), i32> {
         let ops = unsafe { read(driver.cast::<u8>().add(DRM_DRIVER_FOPS_OFF).cast::<*const c_void>()) };
         (minor, ops)
     };
-    let cdev = crate::linux_chrdev::register_internal_cdev((DRM_MAJOR << 20) | minor, 1, ops)?;
-    PRIMARY_MINORS.lock().push(PrimaryMinor { dev: dev as usize, cdev, minor });
+    let layout = Layout::from_size_align(DRM_MINOR_SIZE, core::mem::align_of::<u64>()).map_err(|_| -LINUX_ENOMEM)?;
+    // SAFETY: layout covers one verified drm_minor object and is released by unregister_primary.
+    let object = unsafe { alloc_zeroed(layout) };
+    if object.is_null() { return Err(-LINUX_ENOMEM); }
+    // SAFETY: object is a zeroed drm_minor allocation; these fields use verified ABI offsets.
+    unsafe { write(object.cast::<u32>(), minor); write(object.add(4).cast::<u32>(), 0); write(object.add(DRM_MINOR_DEV_OFF).cast::<*mut c_void>(), dev); }
+    let cdev = match crate::linux_chrdev::register_internal_cdev((DRM_MAJOR << 20) | minor, 1, ops) { Ok(v) => v, Err(rc) => { unsafe { dealloc(object, layout); } return Err(rc); } };
+    // SAFETY: dev remains a live managed drm_device while its published minor is registered.
+    unsafe { write(dev.cast::<u8>().add(DRM_DEVICE_PRIMARY_OFF).cast::<*mut c_void>(), object.cast()); }
+    PRIMARY_MINORS.lock().push(PrimaryMinor { dev: dev as usize, cdev, minor, object: object as usize });
     Ok(())
 }
 
 pub(super) fn unregister_primary(dev: *mut c_void) {
-    let cdev = {
+    let minor = {
         let mut g = PRIMARY_MINORS.lock();
-        g.iter().position(|m| m.dev == dev as usize).map(|p| g.remove(p).cdev)
+        g.iter().position(|m| m.dev == dev as usize).map(|p| g.remove(p))
     };
-    if let Some(cdev) = cdev { crate::linux_chrdev::unregister_internal_cdev(cdev); }
+    if let Some(minor) = minor { crate::linux_chrdev::unregister_internal_cdev(minor.cdev); let layout = Layout::from_size_align(DRM_MINOR_SIZE, core::mem::align_of::<u64>()).unwrap(); unsafe { dealloc(minor.object as *mut u8, layout); write(dev.cast::<u8>().add(DRM_DEVICE_PRIMARY_OFF).cast::<*mut c_void>(), core::ptr::null_mut()); } }
 }
+
+pub(super) fn minor_for_rdev(rdev: u32) -> Option<usize> { let n = rdev & ((1 << 20) - 1); PRIMARY_MINORS.lock().iter().find(|m| m.minor == n).map(|m| m.object) }
