@@ -188,6 +188,14 @@ fn helper_get_modes_clamps_negative_callback_returns() {
     connector::drm_connector_helper_add(connector.0.as_mut_ptr().cast(), table.as_ptr().cast()); assert_eq!(unsafe { mode::connector_get_modes(connector.0.as_mut_ptr().cast()) }, 0);
 }
 
+extern "C" fn test_detect(_connector: *mut c_void, _force: bool) -> i32 { 99 }
+
+#[test]
+fn connector_detect_normalizes_invalid_callback_status() {
+    let _modules = crate::test_serial::claim(); let mut connector = TestConnector([0; 2280]); let funcs: [usize; 3] = [0, 0, test_detect as *const () as usize];
+    unsafe { write(connector.0.as_mut_ptr().add(connector::DRM_CONNECTOR_FUNCS_OFF).cast::<*const c_void>(), funcs.as_ptr().cast()); } assert_eq!(unsafe { connector::connector_detect(connector.0.as_mut_ptr().cast(), true) }, 3);
+}
+
 #[test]
 fn connector_attachment_sets_only_its_live_encoder_bit() {
     let _modules = crate::test_serial::claim(); let mut parent = LinuxDevice::new(); let dev = device(&mut parent, 2048); assert_eq!(drmm_mode_config_init(dev), 0); let funcs = 1u8; let mut encoder = TestEncoder([0; 128]); let mut connector = TestConnector([0; 2280]);
