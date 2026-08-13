@@ -1,7 +1,7 @@
 extern crate alloc;
 use super::adapter::LinuxBlockAdapter;
 use crate::linux_block::contract::release_needs_unregister;
-use crate::linux_device::types::LinuxDevice;
+use crate::linux_device::types::{LinuxDevice, LinuxKobject, LinuxKset};
 use crate::linux_block::types::*;
 use alloc::boxed::Box;
 use alloc::string::String;
@@ -9,12 +9,14 @@ use alloc::sync::Arc;
 use block::BlockDevice;
 use core::ffi::c_char;
 use core::ptr::null_mut;
+use sync::{Modules as ModulesLockClass, Spinlock};
 
 pub(super) const DEFAULT_MINORS: i32 = 1;
 const DEFAULT_NODE_ID: i32 = 0;
 const DISK_DEAD_FLAG: u32 = 1 << 31;
 const REGISTERED_NO: u32 = 0;
 const REGISTERED_YES: u32 = 1;
+static BLOCK_KSET: Spinlock<usize, ModulesLockClass> = Spinlock::new(0);
 
 /// Register the gendisk half of the block KPI.
 /// # C: O(1)
@@ -83,6 +85,7 @@ pub(in crate::linux_block) unsafe extern "C" fn add_disk(disk: *mut LinuxGendisk
     // identity, so device-core publication precedes the block adapter that makes it externally reachable.
     unsafe {
         crate::linux_device::core::initialize_embedded(&mut (*disk).dev);
+        (*disk).dev.kobj.kset = block_kset();
         crate::linux_device::core::set_name_from_cstr(&mut (*disk).dev, (*disk).disk_name.as_ptr());
         if crate::linux_device::core::device_add(&mut (*disk).dev) != LINUX_OK { return; }
     }
@@ -96,6 +99,20 @@ pub(in crate::linux_block) unsafe extern "C" fn add_disk(disk: *mut LinuxGendisk
         (*disk).registered = if idx == 0 { REGISTERED_NO } else { REGISTERED_YES };
         if !(*disk).queue.is_null() { (*(*disk).queue).disk = disk; }
     }
+}
+
+fn block_kset() -> *mut LinuxKset {
+    let mut slot = BLOCK_KSET.lock();
+    if *slot == 0 {
+        let kset = Box::new(LinuxKset {
+            list: [null_mut(); 2], list_lock: 0, _pad: 0,
+            kobj: LinuxKobject { name: c"block".as_ptr(), entry: [null_mut(); 2], parent: null_mut(),
+                kset: null_mut(), ktype: core::ptr::null(), sd: null_mut(), kref: 1, state: 1 },
+            uevent_ops: core::ptr::null(),
+        });
+        *slot = Box::into_raw(kset) as usize;
+    }
+    *slot as *mut LinuxKset
 }
 
 unsafe extern "C" fn del_gendisk(disk: *mut LinuxGendisk) {
