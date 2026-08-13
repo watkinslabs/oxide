@@ -270,7 +270,7 @@ impl Drop for AddressSpace {
             klog::write_raw(b"[AS-DROP] root=");
             klog::write_hex_u64(self.root_pa);
             klog::write_raw(b" cpumask=");
-            klog::write_hex_u64(self.cpumask.load(core::sync::atomic::Ordering::Acquire));
+            klog::write_hex_u64(self.cpumask.load(core::sync::atomic::Ordering::Acquire).low_word());
             klog::write_raw(b" vmas=");
             klog::write_dec_u64(vma_count as u64);
             klog::write_raw(b"\n");
@@ -301,7 +301,7 @@ impl AddressSpace {
         klog::write_raw(b" root=");
         klog::write_hex_u64(self.root_pa);
         klog::write_raw(b" cpumask=");
-        klog::write_hex_u64(self.cpumask.load(core::sync::atomic::Ordering::Acquire));
+        klog::write_hex_u64(self.cpumask.load(core::sync::atomic::Ordering::Acquire).low_word());
         klog::write_raw(b" vmas=");
         klog::write_dec_u64(vmas as u64);
         klog::write_raw(b"\n");
