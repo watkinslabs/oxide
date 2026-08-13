@@ -7,7 +7,8 @@ use alloc::vec::Vec;
 use crate::partitions::{self, PartitionDevice};
 use crate::BlockDevice;
 
-use super::{by_name, DevNum, Disk, PARTITION_MINOR_COUNT};
+use super::{DevNum, Disk, PARTITION_MINOR_COUNT};
+#[cfg(test)] use super::by_name;
 
 /// One published partition, owned by its parent whole-disk object.
 pub struct Partition {
