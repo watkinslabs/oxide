@@ -147,7 +147,7 @@ pub fn enumerate_and_log() {
         klog::write_raw(b"\n");
     }
     let requesters = devs.iter().map(|d| d.bdf).collect::<alloc::vec::Vec<_>>();
-    let aliases = dma_aliases(&requesters);
+    let aliases = dma_aliases(&requesters, &devs);
     quiesce_bus_masters(&requesters);
     // Keep every quiesced requester denied until its DMA owner has attached it.
     // This policy must be visible before activation so a failed activation
@@ -350,7 +350,7 @@ pub fn enumerate_and_log() {
     }
 }
 
-fn dma_aliases(requesters: &[pci::Bdf]) -> pci::DmaAliases {
+fn dma_aliases(requesters: &[pci::Bdf], devices: &[pci::PciDevice]) -> pci::DmaAliases {
     let mut aliases = pci::DmaAliases::new();
     for index in 0..firmware::acpi::amd_vi_alias_count() {
         let Some(record) = firmware::acpi::amd_vi_alias(index) else { continue; };
@@ -361,6 +361,20 @@ fn dma_aliases(requesters: &[pci::Bdf]) -> pci::DmaAliases {
                 device: ((record.canonical_requester >> 3) & 0x1f) as u8, function: (record.canonical_requester & 7) as u8 };
             if requesters.contains(&canonical) { let _ = aliases.add(requester, canonical); }
         }
+    }
+    #[cfg(target_arch = "x86_64")]
+    if let Some(reader) = hal_x86_64::pci::EcamPci::from_published() {
+        let bridges = devices.iter().filter_map(|d| pci::bridge_buses(&reader, d.bdf).map(|b| (d.bdf, b)))
+            .collect::<alloc::vec::Vec<_>>();
+        pci::add_topology_dma_aliases(&mut aliases, requesters, &bridges,
+            |bdf| pci::pcie_type(&reader, bdf));
+    }
+    #[cfg(target_arch = "aarch64")]
+    if let Some(reader) = hal_aarch64::pci::EcamPci::from_published() {
+        let bridges = devices.iter().filter_map(|d| pci::bridge_buses(&reader, d.bdf).map(|b| (d.bdf, b)))
+            .collect::<alloc::vec::Vec<_>>();
+        pci::add_topology_dma_aliases(&mut aliases, requesters, &bridges,
+            |bdf| pci::pcie_type(&reader, bdf));
     }
     aliases
 }

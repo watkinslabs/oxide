@@ -48,6 +48,24 @@ pub struct PciCap {
     pub cfg_off: u8,
 }
 
+/// PCIe device/port type encoded in PCIe capability register bits 7:4.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum PcieType { Endpoint, LegacyEndpoint, RootPort, UpstreamPort, DownstreamPort, PcieToPciBridge, PciToPcieBridge, RootComplexEvent, RootComplexEndpoint, Unknown }
+
+/// Decode the PCIe port type. This is the discriminator used by DMA-alias
+/// walking: ordinary PCIe ports preserve requester IDs, while bridge types
+/// can translate them. # C: O(N_caps)
+pub fn pcie_type<R: ConfigSpaceReader>(r: &R, bdf: Bdf) -> Option<PcieType> {
+    let cap = capabilities(r, bdf).find(CAP_ID_PCIE)?;
+    let flags = (r.read32(bdf, cap.cfg_off.wrapping_add(2) & !3) >> (((cap.cfg_off.wrapping_add(2) & 3) * 8))) as u16;
+    Some(match (flags >> 4) & 0xf {
+        0 => PcieType::Endpoint, 1 => PcieType::LegacyEndpoint, 4 => PcieType::RootPort,
+        5 => PcieType::UpstreamPort, 6 => PcieType::DownstreamPort, 7 => PcieType::PcieToPciBridge,
+        8 => PcieType::PciToPcieBridge, 9 => PcieType::RootComplexEvent,
+        10 => PcieType::RootComplexEndpoint, _ => PcieType::Unknown,
+    })
+}
+
 /// Return the Device Serial Number from the bounded extended-capability chain.
 /// A malformed loop, all-zero header, or absent DSN has no serial number.
 /// # C: O(extended capabilities)
