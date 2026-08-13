@@ -105,6 +105,12 @@ fn extra_params() -> String {
 }
 
 pub(super) fn kernel_cmdline(arch: &str, image_path: &str) -> String {
+    kernel_cmdline_for_root(arch, image_path, "/dev/vda")
+}
+
+/// Compose the boot line for an explicit, already-modelled root device.
+/// # C: O(command-line length)
+pub(super) fn kernel_cmdline_for_root(arch: &str, image_path: &str, root: &str) -> String {
     let ser = serial_console(arch);
     let dev = serial_devnode(arch);
     let boot_image = if bootloader_supplies_boot_image(arch) {
@@ -117,7 +123,7 @@ pub(super) fn kernel_cmdline(arch: &str, image_path: &str) -> String {
     // silence while every consumer expects a talkative boot is a line that
     // lies. A boot that wants it can pass it through OXIDE_CMDLINE_EXTRA.
     format!(
-        "{boot_image}root=/dev/vda rw {KERNEL_CONSOLE_PARAMS} {SYSRQ_PARAMS} {extra}\
+        "{boot_image}root={root} rw {KERNEL_CONSOLE_PARAMS} {SYSRQ_PARAMS} {extra}\
          console={ser},115200 console=tty0 \
          systemd.mask=firewalld.service systemd.mask=chronyd.service \
          systemd.mask=ModemManager.service systemd.mask=plymouth-start.service \
