@@ -9,6 +9,8 @@ mod status;
 #[cfg(test)]
 mod tests;
 
+pub(super) use queue::{freeze_and_wait, queue_begin_use, queue_end_use};
+
 /// Register Linux blk-mq KPI symbols.
 /// # C: O(1)
 pub(super) fn export_symbols() {
