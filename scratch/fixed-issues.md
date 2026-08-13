@@ -1,5 +1,11 @@
 # Fixed issues
 
+### F1098-partition-4kn
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED F1098 | MISSING | med | Partition-table I/O rejected every non-512-byte logical-sector disk, leaving valid 4Kn NVMe/SATA GPT roots undiscoverable. The reader now uses the device logical block size for GPT headers and entry arrays, while DOS entries are converted from their 512-byte units only when representable by the device. | `block::partitions::tests::read_uses_the_devices_logical_block_size_for_gpt`; `cargo test -p block --lib -- --test-threads=1` (106 passed). | F1098-partition-4kn |
+
 ### F1021-wait-event-ready-fast-path
 
 | Status | Class | Sev | Issue | Evidence | Owner |
