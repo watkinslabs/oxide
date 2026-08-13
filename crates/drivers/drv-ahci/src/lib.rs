@@ -47,7 +47,7 @@ mod imp {
     use alloc::vec::Vec;
     use sync::{Spinlock, TaskList as DriverLockClass};
     #[cfg(feature = "debug-boot")]
-    use block::BlockRequest;
+    use block::{BlockDevice, BlockRequest};
     use crate::device::AhciBlk;
     use crate::host::AhciHost;
     use crate::port::Ahci;

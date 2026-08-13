@@ -52,6 +52,7 @@ pub struct IoCompletion { pub cid: u16, pub status: u16 }
 /// size + capacity). Each live command owns its own PRP data resources.
 pub struct Nvme {
     bdf:     pci::Bdf,
+    dma_mask: u64,
     mmio:    Mapping,
     bar0_va: u64,
     admin:   Queue,
@@ -82,6 +83,7 @@ impl Nvme {
     pub(crate) const fn bdf(&self) -> pci::Bdf { self.bdf }
     /// Active namespace ID selected during controller bring-up. # C: O(1)
     pub(crate) const fn namespace_id(&self) -> u32 { self.nsid }
+    pub(crate) const fn dma_mask(&self) -> u64 { self.dma_mask }
     /// Maximum concurrently posted I/O commands, leaving one SQ entry empty.
     /// # C: O(1)
     pub(crate) const fn io_capacity(&self) -> usize { self.io.entries.saturating_sub(1) as usize }
@@ -98,12 +100,12 @@ impl Nvme {
         *dma = 0;
     }
 
-    fn alloc_frames(bdf: pci::Bdf) -> Option<([u64; 5], [u64; 5])> {
+    fn alloc_frames(bdf: pci::Bdf, dma_mask: u64) -> Option<([u64; 5], [u64; 5])> {
         let mut frames = [0u64; 5]; let mut dmas = [0u64; 5];
         let mut i = 0usize;
         while i < frames.len() {
             match pmm::setup::alloc_one_frame() {
-                Some(pa) => match iommu::map_dma(bdf, pa, PAGE as usize) { Some(dma) => { frames[i] = pa; dmas[i] = dma; }, None => { unsafe { pmm::setup::free_one_frame(pa); } for (pa, dma) in frames.iter_mut().zip(dmas.iter_mut()) { Self::free_frame(bdf, pa, dma); } return None; } },
+                Some(pa) => match iommu::map_dma_below(bdf, pa, PAGE as usize, dma_mask) { Some(dma) => { frames[i] = pa; dmas[i] = dma; }, None => { unsafe { pmm::setup::free_one_frame(pa); } for (pa, dma) in frames.iter_mut().zip(dmas.iter_mut()) { Self::free_frame(bdf, pa, dma); } return None; } },
                 None => {
                     for (pa, dma) in frames.iter_mut().zip(dmas.iter_mut()) {
                         Self::free_frame(bdf, pa, dma);
@@ -171,9 +173,9 @@ impl Nvme {
     /// create the I/O queue pair. Returns None on any timeout/alloc failure.
     /// `bar0_va` is the HHDM-independent register-file VA from map_mmio_pages.
     /// # C: O(reset + 2 admin cmds + 2 create-queue cmds)
-    pub fn bring_up(bdf: pci::Bdf, mmio: Mapping, bar0_off: u64, io_vector: u16) -> Option<Nvme> {
+    pub fn bring_up(bdf: pci::Bdf, dma_mask: u64, mmio: Mapping, bar0_off: u64, io_vector: u16) -> Option<Nvme> {
         // Queue and admin-IDENTIFY frames are controller-owned; posted I/O owns its PRPs.
-        let ([asq, acq, isq, icq, admin_data], [asq_dma, acq_dma, isq_dma, icq_dma, admin_data_dma]) = Self::alloc_frames(bdf)?;
+        let ([asq, acq, isq, icq, admin_data], [asq_dma, acq_dma, isq_dma, icq_dma, admin_data_dma]) = Self::alloc_frames(bdf, dma_mask)?;
         for f in [asq, acq, isq, icq, admin_data] { Self::zero_frame(f); }
         let bar0_va = mmio.base_va() + bar0_off;
 
@@ -204,7 +206,7 @@ impl Nvme {
         };
 
         let mut nv = Nvme {
-            bdf, mmio, bar0_va, admin, io, admin_data_pa: admin_data, admin_data_dma,
+            bdf, dma_mask, mmio, bar0_va, admin, io, admin_data_pa: admin_data, admin_data_dma,
             nsid: 0, ns_blocks: 0, blk_size: 512,
         };
         let to_ms = regs::cap_to_ms(cap).max(2_000);
