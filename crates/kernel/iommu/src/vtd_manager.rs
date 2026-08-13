@@ -177,6 +177,8 @@ pub fn owns(requester: Bdf) -> bool {
     MANAGER.lock().iter().any(|entry| entry.requesters.iter().any(|candidate| *candidate == requester))
 }
 
+pub(crate) fn active() -> bool { !MANAGER.lock().is_empty() }
+
 /// Allocate one remapped x86 MSI for a requester owned by an IR-capable VT-d unit.
 /// `None` means the unit is not using interrupt remapping, so the caller keeps
 /// the ordinary APIC MSI encoding.
