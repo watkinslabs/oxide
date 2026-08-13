@@ -94,6 +94,12 @@ impl Disk {
         // SAFETY: partition publication is process-context lifecycle work.
         unsafe { self.partitions.lock() }.clone()
     }
+    /// Replace this disk's discovered partition set after a successful rescan.
+    /// # C: O(partitions)
+    pub fn publish_partitions(&self, partitions: Vec<Arc<Partition>>) {
+        // SAFETY: partition rescans are process-context lifecycle operations.
+        *unsafe { self.partitions.lock() } = partitions;
+    }
 }
 
 /// The generic block-device lifetime state. Holders are kernel consumers such
