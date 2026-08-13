@@ -19,6 +19,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 extern crate alloc;
 
 pub mod acpi;
+pub mod driver_blob;
 pub mod fdt;
 pub mod memreserve;
 pub mod smbios;
@@ -73,6 +74,15 @@ use core::sync::atomic::AtomicU32;
 static IOAPIC_PA: AtomicU64 = AtomicU64::new(0);
 static IOAPIC_GSI_BASE: AtomicU32 = AtomicU32::new(0);
 static IOAPIC_ID: AtomicU32 = AtomicU32::new(u32::MAX);
+const MAX_IOAPICS: usize = 8;
+/// One MADT-declared I/O APIC. The GSI range upper bound is discovered from
+/// the controller version after its MMIO window is mapped.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct IoApic { pub id: u8, pub pa: u64, pub gsi_base: u32 }
+static IOAPIC_COUNT: AtomicU32 = AtomicU32::new(0);
+static IOAPIC_ALL_PA: [AtomicU64; MAX_IOAPICS] = [const { AtomicU64::new(0) }; MAX_IOAPICS];
+static IOAPIC_ALL_GSI: [AtomicU32; MAX_IOAPICS] = [const { AtomicU32::new(0) }; MAX_IOAPICS];
+static IOAPIC_ALL_ID: [AtomicU32; MAX_IOAPICS] = [const { AtomicU32::new(u32::MAX) }; MAX_IOAPICS];
 static HPET_PA: AtomicU64 = AtomicU64::new(0);
 static HPET_ID: AtomicU32 = AtomicU32::new(u32::MAX);
 const ISA_IRQS: usize = 16;
@@ -132,6 +142,17 @@ pub fn ioapic_gsi_base() -> u32 { IOAPIC_GSI_BASE.load(Ordering::Acquire) }
 /// MADT APIC ID of the first I/O APIC, if firmware published one. # C: O(1)
 pub fn ioapic_id() -> Option<u8> {
     u8::try_from(IOAPIC_ID.load(Ordering::Acquire)).ok()
+}
+/// Number of complete MADT I/O-APIC records retained at boot. # C: O(1)
+pub fn ioapic_count() -> usize { (IOAPIC_COUNT.load(Ordering::Acquire) as usize).min(MAX_IOAPICS) }
+/// Return one MADT I/O-APIC record by enumeration order. # C: O(1)
+pub fn ioapic(index: usize) -> Option<IoApic> {
+    if index >= ioapic_count() { return None; }
+    Some(IoApic {
+        id: u8::try_from(IOAPIC_ALL_ID[index].load(Ordering::Relaxed)).ok()?,
+        pa: IOAPIC_ALL_PA[index].load(Ordering::Relaxed),
+        gsi_base: IOAPIC_ALL_GSI[index].load(Ordering::Acquire),
+    })
 }
 /// Physical base of the firmware HPET block (0 = absent or non-MMIO). # C: O(1)
 pub fn hpet_pa() -> u64 { HPET_PA.load(Ordering::Acquire) }
@@ -222,8 +243,18 @@ pub(crate) fn set_reset_action(a: acpi::ResetAction) {
     }
 }
 
-/// Record the first I/O APIC from the MADT (first wins). # C: O(1)
+/// Record one I/O APIC from the MADT in firmware enumeration order. # C: O(1)
 pub(crate) fn set_ioapic(id: u8, pa: u32, gsi_base: u32) {
+    if pa == 0 { return; }
+    let index = IOAPIC_COUNT.fetch_add(1, Ordering::AcqRel) as usize;
+    if index < MAX_IOAPICS {
+        IOAPIC_ALL_PA[index].store(pa as u64, Ordering::Relaxed);
+        IOAPIC_ALL_GSI[index].store(gsi_base, Ordering::Relaxed);
+        IOAPIC_ALL_ID[index].store(id as u32, Ordering::Relaxed);
+        IOAPIC_COUNT.store((index + 1) as u32, Ordering::Release);
+    } else {
+        IOAPIC_COUNT.store(MAX_IOAPICS as u32, Ordering::Release);
+    }
     if IOAPIC_PA.compare_exchange(0, pa as u64,
         Ordering::AcqRel, Ordering::Acquire).is_ok()
     {
