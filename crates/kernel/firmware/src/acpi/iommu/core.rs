@@ -71,6 +71,8 @@ pub enum IommuKind { AmdVi, IntelVtd }
 pub struct IommuUnit {
     pub kind: IommuKind,
     pub segment: u16,
+    pub source_id: u16,
+    pub event_msi: u8,
     pub register_base: u64,
     pub register_pages: u64,
     pub include_all: bool,
@@ -167,6 +169,8 @@ static DMAR_FLAGS: AtomicU32 = AtomicU32::new(0);
 static IOMMU_BASE: [AtomicU64; MAX_IOMMU_UNITS] = [const { AtomicU64::new(0) }; MAX_IOMMU_UNITS];
 static IOMMU_PAGES: [AtomicU64; MAX_IOMMU_UNITS] = [const { AtomicU64::new(0) }; MAX_IOMMU_UNITS];
 static IOMMU_SEGMENT: [AtomicU32; MAX_IOMMU_UNITS] = [const { AtomicU32::new(0) }; MAX_IOMMU_UNITS];
+static IOMMU_SOURCE: [AtomicU32; MAX_IOMMU_UNITS] = [const { AtomicU32::new(0) }; MAX_IOMMU_UNITS];
+static IOMMU_EVENT_MSI: [AtomicU32; MAX_IOMMU_UNITS] = [const { AtomicU32::new(0) }; MAX_IOMMU_UNITS];
 static IOMMU_FLAGS: [AtomicU32; MAX_IOMMU_UNITS] = [const { AtomicU32::new(0) }; MAX_IOMMU_UNITS];
 static AMD_SCOPE_UNIT: [AtomicU32; MAX_AMD_IVHD_SCOPES] = [const { AtomicU32::new(0) }; MAX_AMD_IVHD_SCOPES];
 static AMD_SCOPE_RANGE: [AtomicU32; MAX_AMD_IVHD_SCOPES] = [const { AtomicU32::new(0) }; MAX_AMD_IVHD_SCOPES];
@@ -319,7 +323,7 @@ fn parse_ivhd_entries(t: &[u8], start: usize, end: usize, unit_index: usize, inv
 /// # C: O(table bytes)
 pub fn parse_ivrs(t: &[u8]) -> Result<IommuInventory, IommuError> {
     let t = checked_table(t, b"IVRS")?;
-    let empty = IommuUnit { kind: IommuKind::AmdVi, segment: 0, register_base: 0, register_pages: 1, include_all: false };
+    let empty = IommuUnit { kind: IommuKind::AmdVi, segment: 0, source_id: 0, event_msi: 0, register_base: 0, register_pages: 1, include_all: false };
     let empty_scope = AmdIvhdScope { unit_index: 0, first_requester: 0, last_requester: 0 };
     let empty_alias = AmdIvhdAlias { unit_index: 0, first_requester: 0, last_requester: 0, canonical_requester: 0 };
     let empty_ivmd = AmdIvmd { segment: 0, first_requester: 0, last_requester: 0, base: 0, len: 0, read: false, write: false };
@@ -346,7 +350,8 @@ pub fn parse_ivrs(t: &[u8]) -> Result<IommuInventory, IommuError> {
         if hlen != 0 {
             if len < hlen { return Err(IommuError::BadRecord); }
             parse_ivhd_entries(t, off + hlen, end, inv.unit_count, &mut inv)?;
-            push(&mut inv, IommuUnit { kind: IommuKind::AmdVi, segment: le16(t, off + 16), register_base: le64(t, off + 8), register_pages: 1, include_all: false })?;
+            let info = le16(t, off + 18);
+            push(&mut inv, IommuUnit { kind: IommuKind::AmdVi, segment: le16(t, off + 16), source_id: le16(t, off + 4), event_msi: (info & 0x1f) as u8, register_base: le64(t, off + 8), register_pages: 1, include_all: false })?;
         } else if matches!(ty, IVMD_TYPE_ALL | IVMD_TYPE_SELECT | IVMD_TYPE_RANGE) {
             if len != IVMD_HEADER_LEN { return Err(IommuError::BadRecord); }
             let flags = t[off + 1];
@@ -386,7 +391,7 @@ fn parse_drhd_scopes(t: &[u8], start: usize, end: usize, unit_index: usize, inv:
 pub fn parse_dmar(t: &[u8]) -> Result<IommuInventory, IommuError> {
     let t = checked_table(t, b"DMAR")?;
     if t[ACPI_HEADER_LEN] < DMAR_MIN_HOST_ADDRESS_WIDTH { return Err(IommuError::BadRecord); }
-    let empty = IommuUnit { kind: IommuKind::IntelVtd, segment: 0, register_base: 0, register_pages: 1, include_all: false };
+    let empty = IommuUnit { kind: IommuKind::IntelVtd, segment: 0, source_id: 0, event_msi: 0, register_base: 0, register_pages: 1, include_all: false };
     let empty_scope = AmdIvhdScope { unit_index: 0, first_requester: 0, last_requester: 0 };
     let empty_alias = AmdIvhdAlias { unit_index: 0, first_requester: 0, last_requester: 0, canonical_requester: 0 };
     let empty_ivmd = AmdIvmd { segment: 0, first_requester: 0, last_requester: 0, base: 0, len: 0, read: false, write: false };
@@ -411,7 +416,7 @@ pub fn parse_dmar(t: &[u8]) -> Result<IommuInventory, IommuError> {
             if len < DRHD_LEN { return Err(IommuError::BadRecord); }
             parse_drhd_scopes(t, off + DRHD_LEN, end, inv.unit_count, &mut inv)?;
             let Some(register_pages) = 1u64.checked_shl(u32::from(t[off + 5])) else { return Err(IommuError::BadRecord); };
-            push(&mut inv, IommuUnit { kind: IommuKind::IntelVtd, segment: le16(t, off + 6), register_base: le64(t, off + 8), register_pages, include_all: t[off + 4] & DMAR_INCLUDE_ALL != 0 })?;
+            push(&mut inv, IommuUnit { kind: IommuKind::IntelVtd, segment: le16(t, off + 6), source_id: 0, event_msi: 0, register_base: le64(t, off + 8), register_pages, include_all: t[off + 4] & DMAR_INCLUDE_ALL != 0 })?;
         } else if ty == DMAR_TYPE_RMRR { rmrr::parse(t, off, end, &mut inv)?; }
         off = end;
     }

@@ -308,7 +308,7 @@ fn rmrr_for_unit<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf], index: us
 #[cfg(test)] mod tests {
     use super::*;
     #[test] fn deduplicates_vtd_units_without_merging_segments() {
-        let first = IommuUnit { kind: IommuKind::IntelVtd, segment: 1, register_base: 0xfed9_0000, register_pages: 1, include_all: false };
+        let first = IommuUnit { kind: IommuKind::IntelVtd, segment: 1, source_id: 0, event_msi: 0, register_base: 0xfed9_0000, register_pages: 1, include_all: false };
         let second = IommuUnit { segment: 2, ..first };
         let mut units = Vec::new();
         append_unique_vtd(&mut units, first);

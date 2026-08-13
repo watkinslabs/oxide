@@ -60,8 +60,10 @@ fn ivrs() -> Vec<u8> {
     le32(&mut t, 4, 72);
     t[48] = 0x10;
     le16(&mut t, 50, 24);
+    le16(&mut t, 52, 0x00a1);
     le64(&mut t, 56, 0xfed8_0000);
     le16(&mut t, 64, 3);
+    le16(&mut t, 66, 0x0017);
     finish(&mut t);
     t
 }
@@ -173,6 +175,8 @@ fn ivrs_ivhd_preserves_segment_and_register_base() {
     assert_eq!(inv.kind, IommuKind::AmdVi);
     assert_eq!(inv.unit_count, 1);
     assert_eq!(inv.units[0].segment, 3);
+    assert_eq!(inv.units[0].source_id, 0x00a1);
+    assert_eq!(inv.units[0].event_msi, 0x17);
     assert_eq!(inv.units[0].register_base, 0xfed8_0000);
 }
 
