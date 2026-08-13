@@ -26,6 +26,7 @@ pub(super) fn export_symbols() {
     export("del_gendisk",     del_gendisk     as *const () as usize, false);
     export("set_capacity",    set_capacity    as *const () as usize, false);
     export("get_capacity",    get_capacity    as *const () as usize, false);
+    export("disk_live",       disk_live       as *const () as usize, false);
 }
 
 pub(super) extern "C" fn alloc_disk(minors: i32) -> *mut LinuxGendisk {
@@ -111,6 +112,15 @@ unsafe extern "C" fn get_capacity(disk: *const LinuxGendisk) -> u64 {
     // SAFETY: disk is null-checked; alloc_disk_node zero-initialises capacity before publishing the gendisk,
     // so this load is defined even if the module never called set_capacity.
     unsafe { (*disk).capacity }
+}
+
+/// Report whether the disk remains published and has not been withdrawn as dead.
+/// # C: O(1)
+pub(super) unsafe extern "C" fn disk_live(disk: *mut LinuxGendisk) -> bool {
+    if disk.is_null() { return false; }
+    // SAFETY: disk is caller-owned live gendisk storage; the registry publication flag and dead bit are
+    // the canonical Oxide counterparts to the live part-0 backing object tested by block paths.
+    unsafe { (*disk).registered == REGISTERED_YES && ((*disk).flags & DISK_DEAD_FLAG) == 0 }
 }
 
 /// Mark a gendisk dead so its holders stop issuing new I/O.
