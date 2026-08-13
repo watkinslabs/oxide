@@ -1553,6 +1553,7 @@ static int __init sample_init(void)
     (void)param_set_int("-7", &param_int_kp);
     (void)param_get_int(param_buf, &param_int_kp);
     (void)param_set_uint("42", &param_uint_kp);
+    (void)param_set_uint_minmax("42", &param_uint_kp, 1, 1024);
     (void)param_get_uint(param_buf, &param_uint_kp);
     (void)param_set_ulong("123", &param_ulong_kp);
     (void)param_get_ulong(param_buf, &param_ulong_kp);
