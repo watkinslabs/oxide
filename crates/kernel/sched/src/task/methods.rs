@@ -10,7 +10,7 @@ use vmm::AddressSpace;
 
 use crate::ARCH_CTX_SIZE;
 
-use super::{ArchCtxBuf, ArchFpuBuf, Creds, PendingWake, SigActions, SignalPending, SchedClass, Task, TaskState};
+use super::{ArchCtxBuf, ArchFpuBuf, Creds, PendingWake, SigActions, SignalPending, SchedClass, Task, TaskState, WaitState};
 use super::namespaces::TaskNamespaces;
 use crate::signum::Signum;
 
@@ -590,11 +590,14 @@ impl Task {
     /// # C: O(1)
     pub fn cas_state(&self, from: TaskState, to: TaskState) -> Result<(), TaskState> {
         self.debug_check_canary("cas_state");
-        match self.state.compare_exchange(
-            from as u8, to as u8, Ordering::AcqRel, Ordering::Acquire,
-        ) {
-            Ok(_)  => Ok(()),
-            Err(v) => Err(TaskState::from_u8(v).expect("Task::cas_state corrupt")),
+        let mut seen = self.state.load(Ordering::Acquire);
+        loop {
+            let current = TaskState::from_u8(seen).expect("Task::cas_state corrupt");
+            if current != from { return Err(current); }
+            if self.state.compare_exchange_weak(seen, to as u8, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+                return Ok(());
+            }
+            seen = self.state.load(Ordering::Acquire);
         }
     }
 
@@ -603,6 +606,20 @@ impl Task {
     /// the task to a runqueue or deferred wake list. # C: O(1)
     pub fn claim_wake(&self) -> bool {
         self.cas_state(TaskState::Sleeping, TaskState::Runnable).is_ok()
+    }
+
+    /// Atomically publish both `TASK_*` wake mask and Sleeping lifecycle
+    /// state.  Linux keeps these in one state word so a signal waker cannot
+    /// observe a sleeping task with a stale mask.
+    /// # C: O(1)
+    pub fn set_sleep_state(&self, state: WaitState) {
+        self.state.store(TaskState::Sleeping as u8 | state.state_bits(), Ordering::Release);
+    }
+
+    /// Snapshot the sleep mask encoded in the task-state word.
+    /// # C: O(1)
+    pub fn sleep_wait_state(&self) -> WaitState {
+        WaitState::from_state_bits(self.state.load(Ordering::Acquire))
     }
 
     /// Resolve a claimed deferred wake against the draining CPU's current task.

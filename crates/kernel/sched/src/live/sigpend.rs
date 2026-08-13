@@ -7,6 +7,7 @@
 // richer set used by sigaction / kill / signalfd.
 
 use core::sync::atomic::Ordering;
+use crate::signal_pending_state;
 
 // `Signum` moved to the non-gated `crate::signum` module so the signal(7)
 // default-disposition policy is hosted-testable (`live` is kernel-only). Kept
@@ -227,7 +228,7 @@ pub fn wake_if_sleeping(task: &alloc::sync::Arc<crate::Task>) {
 /// owning an already-runnable target so it reaches a signal-delivery point.
 /// # C: O(log N)
 pub fn signal_wake_up(task: &alloc::sync::Arc<crate::Task>) {
-    wake_if_sleeping(task);
+    if signal_pending_state(task, task.sleep_wait_state()) { wake_if_sleeping(task); }
     if task.state() != crate::TaskState::Runnable { return; }
     let target_cpu = task.cpu.load(Ordering::Acquire);
     if target_cpu == u16::MAX || target_cpu as usize >= cpu::MAX_CPUS { return; }

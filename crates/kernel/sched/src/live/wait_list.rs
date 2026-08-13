@@ -28,7 +28,7 @@ use core::sync::atomic::Ordering;
 #[cfg(feature = "debug-desktop")]
 use core::sync::atomic::AtomicU32;
 
-use crate::{Task, TaskState};
+use crate::{Task, TaskState, WaitState};
 use sync::{Spinlock, TaskList as WaitClass};
 
 /// Bounded, feature-gated ledger for compositor deadline parks.  Retaining the
@@ -97,7 +97,8 @@ impl WaitList {
     pub unsafe fn prepare_to_wait_interruptible(&self) {
         // SAFETY: forwards the prepared-wait contract while adding the
         // signal-after-publication check required for an interruptible wait.
-        unsafe { self.park_interruptible_with_deadline(0); }
+        unsafe { self.park_with_wait_state(0, WaitState::Interruptible); }
+        self.check_pending_after_park();
     }
 
     /// Timed interruptible [`prepare_to_wait`]. # SAFETY: see that method.
@@ -105,7 +106,8 @@ impl WaitList {
     pub unsafe fn prepare_to_wait_interruptible_with_deadline(&self, deadline_ns: u64) {
         // SAFETY: forwards the prepared-wait contract with the caller's
         // absolute deadline retained for the scheduler's deadline scanner.
-        unsafe { self.park_interruptible_with_deadline(deadline_ns); }
+        unsafe { self.park_with_wait_state(deadline_ns, WaitState::Interruptible); }
+        self.check_pending_after_park();
     }
 
     /// Arm a deadline for the running task's existing prepared wait without
@@ -144,7 +146,7 @@ impl WaitList {
     /// # Lk: WaitList.waiters (TaskList class)
     pub(crate) unsafe fn park(&self) {
         // SAFETY: same contract as park_with_deadline; 0 deadline disables the timer-wake path.
-        unsafe { self.park_with_deadline(0); }
+        unsafe { self.park_with_wait_state(0, WaitState::Uninterruptible); }
     }
 
     /// F169: as `park` but also arms a wait expiry, so the timer IRQ rouses the
@@ -162,10 +164,18 @@ impl WaitList {
     /// `schedule()` call.
     /// # C: O(N armed)
     pub(crate) unsafe fn park_with_deadline(&self, deadline_ns: u64) {
+        // SAFETY: default wait ignores ordinary signals.
+        unsafe { self.park_with_wait_state(deadline_ns, WaitState::Uninterruptible); }
+    }
+
+    /// Publish a waiter with its signal wake mask in the task-state word.
+    /// # SAFETY: see [`park`].
+    /// # C: O(N armed)
+    pub(crate) unsafe fn park_with_wait_state(&self, deadline_ns: u64, state: WaitState) {
         let slack = super::schedule::current()
             .map(crate::hrtimeout::task_slack_ns).unwrap_or(0);
-        // SAFETY: forwards the caller's contract unchanged; this wrapper only supplies the default slack.
-        unsafe { self.park_with_deadline_range(deadline_ns, slack); }
+        // SAFETY: forwards the publication contract with the selected signal mask.
+        unsafe { self.park_with_wait_state_range(deadline_ns, slack, state); }
     }
 
     /// [`park_with_deadline`] with an explicit coalescing window — Linux
@@ -174,6 +184,15 @@ impl WaitList {
     /// # SAFETY: see `park`.
     /// # C: O(N armed)
     pub(crate) unsafe fn park_with_deadline_range(&self, deadline_ns: u64, slack_ns: u64) {
+        // SAFETY: default wait ignores ordinary signals.
+        unsafe { self.park_with_wait_state_range(deadline_ns, slack_ns, WaitState::Uninterruptible); }
+    }
+
+    /// Timed publication with an explicit signal wake mask.
+    /// # SAFETY: see [`park`].
+    /// # C: O(N armed)
+    pub(crate) unsafe fn park_with_wait_state_range(&self, deadline_ns: u64, slack_ns: u64,
+                                                    state: WaitState) {
         let rq = match super::runqueue::global() { Some(r) => r, None => return };
         let raw = rq.current.load(Ordering::Acquire);
         if raw.is_null() { return; }
@@ -217,7 +236,7 @@ impl WaitList {
         let cur = raw as *const Task;
         g.retain(|a| Arc::as_ptr(a) != cur);
         g.push(arc);
-        timer_arc.set_state(TaskState::Sleeping);
+        timer_arc.set_sleep_state(state);
         drop(g);
         // Timer setup follows publication because its lock ranks below the
         // wait-list lock. A wake can win in this small interval, before an
@@ -227,15 +246,6 @@ impl WaitList {
         if timer_arc.state() != TaskState::Sleeping {
             crate::hrtimeout::disarm(&timer_arc);
         }
-    }
-
-    /// Park with a deadline while closing the signal-before-sleep race.
-    /// # C: O(1)
-    pub(crate) unsafe fn park_interruptible_with_deadline(&self, deadline_ns: u64) {
-        // SAFETY: caller provides the same process-context contract required by
-        // park_with_deadline; this wrapper only performs the post-publish check.
-        unsafe { self.park_with_deadline(deadline_ns); }
-        self.check_pending_after_park();
     }
 
     /// Close the signal-before-sleep race: a signal that arrived while this
