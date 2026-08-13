@@ -157,7 +157,7 @@ ABI_TYPES: tuple[str, ...] = (
     "input_dev",
     # Linux NVMe core directly dereferences these.  Keep them visible to the
     # ABI gate until the module bridge owns a pinned, executable layout.
-    "request_queue", "block_device",
+    "request_queue", "block_device", "gendisk", "blk_mq_tag_set",
 )
 BTF_DETAIL_TYPES: frozenset[str] = frozenset((
     *ABI_TYPES,
