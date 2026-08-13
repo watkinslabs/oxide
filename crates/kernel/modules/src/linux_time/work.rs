@@ -56,7 +56,6 @@ pub(super) fn export_symbols() {
         ("cancel_delayed_work_sync", cancel_delayed_work_sync as *const () as usize),
         ("delayed_work_timer_fn", delayed_work_timer_fn as *const () as usize),
         ("kblockd_schedule_work", kblockd_schedule_work as *const () as usize),
-        ("async_schedule_node_domain", async_schedule_node_domain as *const () as usize),
     ] { export(name, addr, false); }
 }
 
@@ -231,17 +230,6 @@ pub(super) extern "C" fn delayed_work_timer_fn(t: *mut LinuxTimerList) {
 }
 
 pub(super) extern "C" fn kblockd_schedule_work(w: *mut LinuxWorkStruct) -> i32 { schedule_work(w) }
-
-pub(super) extern "C" fn async_schedule_node_domain(
-    func: Option<extern "C" fn(*mut u8, usize)>,
-    data: *mut u8,
-    node: i32,
-    domain: *mut u8,
-) -> *mut u8 {
-    let _ = (node, domain);
-    if let Some(f) = func { f(data, 0); }
-    data
-}
 
 fn enqueue_work_on(cpu: i32, w: *mut LinuxWorkStruct) -> bool {
     // SAFETY: non-null pointer names caller-owned work_struct storage.
