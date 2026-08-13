@@ -24,7 +24,7 @@ pub(super) fn export_symbols() {
 fn layout() -> Layout { Layout::from_size_align(DRM_CRTC_STATE_SIZE, 8).unwrap() }
 fn resources(state: *const u8) -> bool {
     // SAFETY: each listed field is a pointer in the verified complete CRTC-state layout.
-    unsafe { [DRM_CRTC_STATE_MODE_BLOB_OFF, DRM_CRTC_STATE_DEGAMMA_OFF, DRM_CRTC_STATE_CTM_OFF, DRM_CRTC_STATE_GAMMA_OFF, DRM_CRTC_STATE_COMMIT_OFF].into_iter().any(|offset| !read(state.add(offset).cast::<*mut c_void>()).is_null()) }
+    unsafe { [DRM_CRTC_STATE_MODE_BLOB_OFF, DRM_CRTC_STATE_DEGAMMA_OFF, DRM_CRTC_STATE_CTM_OFF, DRM_CRTC_STATE_GAMMA_OFF].into_iter().any(|offset| !read(state.add(offset).cast::<*mut c_void>()).is_null()) }
 }
 
 /// Reset a CRTC to a fresh standard atomic state. # C: O(1)
@@ -54,9 +54,16 @@ pub(super) extern "C" fn drm_atomic_helper_crtc_duplicate_state(crtc: *mut c_voi
 
 /// Release a standard resource-free CRTC state. # C: O(1)
 pub(super) extern "C" fn drm_atomic_helper_crtc_destroy_state(_crtc: *mut c_void, state: *mut c_void) {
-    if state.is_null() || resources(state.cast()) { return; }
+    if state.is_null() { return; }
+    let state = state.cast::<u8>();
+    // SAFETY: a CRTC state owns one commit reference when its ABI commit field is non-null.
+    let commit = unsafe { read(state.add(DRM_CRTC_STATE_COMMIT_OFF).cast::<*mut u8>()) };
+    crtc_commit::put(commit);
+    // SAFETY: release makes a repeated state-destroy call unable to consume the same commit reference twice.
+    unsafe { write(state.add(DRM_CRTC_STATE_COMMIT_OFF).cast::<*mut u8>(), core::ptr::null_mut()); }
+    if resources(state) { return; }
     // SAFETY: state was allocated by reset or duplicate under this exact layout.
-    unsafe { dealloc(state.cast(), layout()); }
+    unsafe { dealloc(state, layout()); }
 }
 
 #[cfg(test)]
@@ -67,7 +74,7 @@ mod tests {
         let mut crtc = [0u8; 1656]; drm_atomic_helper_crtc_reset(crtc.as_mut_ptr().cast()); let state = unsafe { read(crtc.as_ptr().add(DRM_CRTC_STATE_OFF).cast::<*mut u8>()) }; assert_eq!(unsafe { read(state.cast::<*mut c_void>()) }, crtc.as_mut_ptr().cast());
         unsafe { *state.add(DRM_CRTC_STATE_CHANGE_FLAGS_OFF) = 0x3f; *state.add(DRM_CRTC_STATE_ASYNC_FLIP_OFF) = 1; *state.add(DRM_CRTC_STATE_SELF_REFRESH_OFF) = 1; write(state.add(DRM_CRTC_STATE_EVENT_OFF).cast::<*mut c_void>(), 1usize as *mut c_void); }
         let duplicate = drm_atomic_helper_crtc_duplicate_state(crtc.as_mut_ptr().cast()).cast::<u8>(); assert!(!duplicate.is_null()); assert_eq!(unsafe { *duplicate.add(DRM_CRTC_STATE_CHANGE_FLAGS_OFF) & 0x3f }, 0); assert_eq!(unsafe { *duplicate.add(DRM_CRTC_STATE_ASYNC_FLIP_OFF) }, 0); assert!(unsafe { read(duplicate.add(DRM_CRTC_STATE_EVENT_OFF).cast::<*mut c_void>()) }.is_null());
-        drm_atomic_helper_crtc_destroy_state(crtc.as_mut_ptr().cast(), duplicate.cast()); unsafe { write(state.add(DRM_CRTC_STATE_EVENT_OFF).cast::<*mut c_void>(), core::ptr::null_mut()); } drm_atomic_helper_crtc_destroy_state(crtc.as_mut_ptr().cast(), state.cast());
+        let commit = crtc_commit::alloc(crtc.as_mut_ptr().cast()); unsafe { write(duplicate.add(DRM_CRTC_STATE_COMMIT_OFF).cast::<*mut u8>(), commit); } drm_atomic_helper_crtc_destroy_state(crtc.as_mut_ptr().cast(), duplicate.cast()); unsafe { write(state.add(DRM_CRTC_STATE_EVENT_OFF).cast::<*mut c_void>(), core::ptr::null_mut()); } drm_atomic_helper_crtc_destroy_state(crtc.as_mut_ptr().cast(), state.cast());
     }
     #[test]
     fn standard_crtc_state_entry_points_are_module_exports() { export_symbols(); for name in ["drm_atomic_helper_crtc_reset", "drm_atomic_helper_crtc_duplicate_state", "drm_atomic_helper_crtc_destroy_state"] { assert!(crate::symtab::is_exported(name)); } }
