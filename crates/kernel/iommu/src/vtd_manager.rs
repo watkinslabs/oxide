@@ -84,6 +84,9 @@ pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf],
         }
         for requester in &unit_requesters {
             if !entry.tables.attach_requester(*requester) { return activation_failed(&mut manager); }
+            for alias in aliases.for_requester(*requester) {
+                if !entry.tables.attach_alias(*requester, alias) { return activation_failed(&mut manager); }
+            }
         }
     }
     for index in 0..firmware::ioapic_count() {

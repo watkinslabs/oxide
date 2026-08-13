@@ -140,3 +140,15 @@ fn dma_groups_close_chained_explicit_aliases() {
     assert_eq!(vtd_dma_groups(&config, &[first, second, third], &aliases),
         alloc::vec![alloc::vec![first, second, third]]);
 }
+
+#[test]
+fn dma_groups_close_requesters_with_one_translated_alias() {
+    let config = GroupConfig::new();
+    let first = Bdf { segment: 0, bus: 4, device: 1, function: 0 };
+    let second = Bdf { segment: 0, bus: 4, device: 2, function: 0 };
+    let translated = Bdf { segment: 0, bus: 9, device: 0, function: 0 };
+    let mut aliases = pci::DmaAliases::new();
+    assert!(aliases.add(first, translated));
+    assert!(aliases.add(second, translated));
+    assert_eq!(vtd_dma_groups(&config, &[first, second], &aliases), alloc::vec![alloc::vec![first, second]]);
+}

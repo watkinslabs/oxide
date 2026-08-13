@@ -114,6 +114,14 @@ impl VtdTables {
             (domain.page_table.root_pa(), domain.page_table.address_width(), domain.id)) else { return false; };
         self.attach(bdf, root_pa, address_width, domain_id)
     }
+    /// Attach a translated requester ID to its owner's completed DMA domain.
+    /// # C: O(context buses)
+    pub fn attach_alias(&mut self, requester: Bdf, alias: Bdf) -> bool {
+        if requester.segment != alias.segment || requester == alias { return true; }
+        let Some((root_pa, address_width, domain_id)) = self.domain(requester).map(|domain|
+            (domain.page_table.root_pa(), domain.page_table.address_width(), domain.id)) else { return false; };
+        self.attach(alias, root_pa, address_width, domain_id)
+    }
     fn attach(&mut self, bdf: Bdf, root_pa: u64, address_width: u8, domain_id: u16) -> bool {
         let Some(context_pa) = self.context_for_bus(bdf.bus) else { return false; };
         let devfn = (usize::from(bdf.device) << 3) | usize::from(bdf.function);
@@ -121,7 +129,10 @@ impl VtdTables {
         let Some(context) = VtdContextEntry::translated(root_pa, address_width, domain_id) else { return false; };
         let [lo, hi] = context.words();
         let entry_pa = context_pa + devfn as u64 * CONTEXT_ENTRY_BYTES;
-        if read64(self.hhdm_offset, entry_pa) & PRESENT != 0 { return false; }
+        let old_lo = read64(self.hhdm_offset, entry_pa);
+        if old_lo & PRESENT != 0 {
+            return old_lo == lo && read64(self.hhdm_offset, entry_pa + core::mem::size_of::<u64>() as u64) == hi;
+        }
         write64(self.hhdm_offset, entry_pa + core::mem::size_of::<u64>() as u64, hi);
         write64(self.hhdm_offset, entry_pa, lo & !PRESENT);
         core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
