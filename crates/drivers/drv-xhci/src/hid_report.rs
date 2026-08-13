@@ -3,6 +3,10 @@
 //! This is intentionally descriptor-driven: unlike the boot-protocol helper,
 //! it records the bit geometry and usages that the device actually publishes.
 
+extern crate alloc;
+
+use alloc::boxed::Box;
+
 const MAX_FIELDS: usize = 64;
 const MAX_VALUES: usize = 32;
 /// HID 1.11's fixed global-environment nesting limit, shared with Linux.
@@ -35,9 +39,9 @@ impl ReportLayout {
 
 /// Stateful HID input decoder. Values are retained per descriptor field so
 /// variable controls and array-key reports emit only transitions.
-pub struct ReportDecoder { layout: ReportLayout, values: [[i32; MAX_VALUES]; MAX_FIELDS] }
+pub struct ReportDecoder { layout: ReportLayout, values: Box<[[i32; MAX_VALUES]; MAX_FIELDS]> }
 impl ReportDecoder {
-    pub const fn new(layout: ReportLayout) -> Self { Self { layout, values: [[0; MAX_VALUES]; MAX_FIELDS] } }
+    pub fn new(layout: ReportLayout) -> Self { Self { layout, values: Box::new([[0; MAX_VALUES]; MAX_FIELDS]) } }
     /// Decode one interrupt report into changed Linux input events. # C: O(fields * values)
     pub fn decode(&mut self, report: &[u8]) -> [Option<crate::hid::Event>; MAX_FIELDS] {
         let mut events = [None; MAX_FIELDS]; let mut out = 0usize;
