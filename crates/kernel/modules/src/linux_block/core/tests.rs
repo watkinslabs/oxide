@@ -1,6 +1,6 @@
 extern crate alloc;
 use super::bio::{bio_add_page, bio_alloc, bio_put, copy_bio_to_slice, copy_slice_to_bio, BIO_ADD_REJECTED};
-use super::disk::{add_disk, alloc_disk, put_disk, write_disk_name, DEFAULT_MINORS};
+use super::disk::{add_disk, alloc_disk, disk_live, mark_disk_dead, put_disk, write_disk_name, DEFAULT_MINORS};
 use super::queue::{blk_alloc_queue, blk_cleanup_queue, blk_queue_logical_block_size, blk_queue_make_request, GFP_KERNEL};
 use crate::linux_block::types::*;
 use alloc::vec::Vec;
@@ -132,6 +132,25 @@ fn put_disk_withdraws_the_registry_publication() {
     assert!(block::registry::by_name("kblkput0").is_none(), "put_disk unregisters");
     // SAFETY: q is still the test's own queue allocation; put_disk does not free it.
     unsafe { blk_cleanup_queue(q); }
+}
+
+#[test]
+fn disk_live_follows_publication_and_dead_withdrawal() {
+    let _modules = crate::test_serial::claim();
+    let q = blk_alloc_queue(GFP_KERNEL);
+    let disk = alloc_disk(DEFAULT_MINORS);
+    write_disk_name(disk, b"kblklive0");
+    // SAFETY: the test owns these fresh allocations and exercises each live-state transition in order.
+    unsafe {
+        (*disk).queue = q;
+        assert!(!disk_live(disk));
+        add_disk(disk);
+        assert!(disk_live(disk));
+        mark_disk_dead(disk);
+        assert!(!disk_live(disk));
+        put_disk(disk);
+        blk_cleanup_queue(q);
+    }
 }
 
 // A page's capacity comes from the page: a resolvable page lends its whole run, independent of the

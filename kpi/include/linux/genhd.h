@@ -31,5 +31,6 @@ void add_disk(struct gendisk *disk);
 void del_gendisk(struct gendisk *disk);
 void set_capacity(struct gendisk *disk, sector_t sectors);
 sector_t get_capacity(const struct gendisk *disk);
+bool disk_live(struct gendisk *disk);
 
 #endif
