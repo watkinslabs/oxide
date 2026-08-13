@@ -12,7 +12,6 @@ const NODE_TAG: usize = 2;
 const NODE_MASK: usize = 3;
 const LINUX_EEXIST: i32 = 17;
 const LINUX_EINVAL: i32 = 22;
-const LINUX_ERR_PTR_RANGE: usize = 4095;
 
 #[repr(C)]
 pub struct LinuxXArray { pub(crate) lock: LinuxSpinlock, pub(crate) flags: u32, pub(crate) head: *mut c_void }

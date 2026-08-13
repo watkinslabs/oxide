@@ -24,6 +24,7 @@ sched = { path = "../sched" }
 vmm = { path = "../mm-vmm" }
 uaccess = { path = "../uaccess" }
 timer = { path = "../timer" }
+timekeeper = { path = "../timekeeper" }
 mmio-map = { path = "../mmio-map" }
 arch-irq = { path = "../arch-irq" }
 devfs = { path = "../devfs" }

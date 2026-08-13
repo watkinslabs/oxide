@@ -3,7 +3,7 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
-use core::{ffi::c_void, ptr};
+use core::ffi::c_void;
 use crate::linux_xarray::{destroy_locked, erase_locked, find_locked, load_locked, store_locked, with_lock, LinuxXArray};
 
 const IDA_BITMAP_BITS: usize = 128 * usize::BITS as usize;
