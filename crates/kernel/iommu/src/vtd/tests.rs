@@ -1,5 +1,28 @@
 use super::*;
 use firmware::acpi::IommuKind;
+use std::collections::HashMap;
+use std::sync::Mutex;
+
+struct GroupConfig { words: Mutex<HashMap<(Bdf, u16), u32>> }
+impl GroupConfig { fn new() -> Self { Self { words: Mutex::new(HashMap::new()) } } }
+impl ConfigSpaceReader for GroupConfig {
+    fn read32(&self, bdf: Bdf, offset: u8) -> u32 { self.read32_ext(bdf, u16::from(offset)) }
+    fn write32(&self, bdf: Bdf, offset: u8, value: u32) { self.write32_ext(bdf, u16::from(offset), value); }
+    fn read32_ext(&self, bdf: Bdf, offset: u16) -> u32 { self.words.lock().unwrap().get(&(bdf, offset)).copied().unwrap_or(u32::MAX) }
+    fn write32_ext(&self, bdf: Bdf, offset: u16, value: u32) { self.words.lock().unwrap().insert((bdf, offset), value); }
+}
+
+fn group_endpoint(config: &GroupConfig, bdf: Bdf) { config.write32(bdf, 0, 1); }
+fn group_bridge(config: &GroupConfig, bdf: Bdf, secondary: u8) {
+    group_endpoint(config, bdf);
+    config.write32(bdf, 0x08, 0x0604_0000);
+    config.write32(bdf, 0x0c, 1 << 16);
+    config.write32(bdf, 0x18, (u32::from(secondary) << 8) | (u32::from(secondary) << 16));
+}
+fn group_acs(config: &GroupConfig, bdf: Bdf) {
+    config.write32_ext(bdf, 0x100, 0x000d);
+    config.write32_ext(bdf, 0x104, 0x001d_001d);
+}
 
 struct Reader { words: [(Bdf, u8, u32); 7] }
 impl ConfigSpaceReader for Reader {
@@ -78,4 +101,22 @@ fn hpet_scope_uses_acpi_block_id_and_pci_source_id() {
         register_base: 0xfed9_0000, register_pages: 1, include_all: false };
     assert_eq!(hpet_scope_source(&r, 3, unit, hpet), Some((unit, 0x0310)));
     assert_eq!(hpet_scope_source(&r, 4, unit, hpet), None);
+}
+
+#[test]
+fn dma_groups_merge_unisolated_subtree_and_multifunction_slot() {
+    let config = GroupConfig::new();
+    let root = Bdf { segment: 0, bus: 0, device: 1, function: 0 };
+    let child_a = Bdf { segment: 0, bus: 1, device: 0, function: 0 };
+    let child_a_fn1 = Bdf { segment: 0, bus: 1, device: 0, function: 1 };
+    let child_b = Bdf { segment: 0, bus: 1, device: 1, function: 0 };
+    group_bridge(&config, root, 1);
+    group_endpoint(&config, child_a);
+    group_endpoint(&config, child_a_fn1);
+    group_endpoint(&config, child_b);
+    assert_eq!(vtd_dma_groups(&config, &[child_a, child_b, child_a_fn1]),
+        alloc::vec![alloc::vec![child_a, child_a_fn1, child_b]]);
+    group_acs(&config, root);
+    assert_eq!(vtd_dma_groups(&config, &[child_a, child_b, child_a_fn1]),
+        alloc::vec![alloc::vec![child_a, child_a_fn1], alloc::vec![child_b]]);
 }

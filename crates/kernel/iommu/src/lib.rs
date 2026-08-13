@@ -31,6 +31,7 @@ pub use amd_vi_pt::{AmdViPte, iova_indices};
 pub use amd_vi_pt_tree::AmdViPageTable;
 pub use domain::{AmdViDomain, Domain, Mapping, amd_vi_unit_for_bdf};
 pub use vtd::{intel_vtd_hpet_source, intel_vtd_ioapic_source, intel_vtd_rmrr_count, intel_vtd_rmrr_for_bdf, intel_vtd_unit_for_bdf};
+pub(crate) use vtd::vtd_dma_groups;
 pub use vtd_hw::{VtdContextEntry, VtdQiDesc, VtdQiQueue, VtdRegisters, VtdRootEntry};
 pub use vtd_pt::VtdPte;
 pub use vtd_pt_tree::VtdPageTable;

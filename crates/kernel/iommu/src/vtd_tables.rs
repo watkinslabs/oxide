@@ -12,21 +12,45 @@ const PRESENT: u64 = 1;
 const IOVA_START: u64 = 0;
 const IOVA_BYTES: u64 = 1u64 << 48;
 
-/// Permanent VT-d root/context tables and their shared initial DMA domain.
-pub struct VtdTables { hhdm_offset: u64, root_pa: u64, contexts: Vec<(u8, u64)>, space: IovaSpace, maps: Vec<MappingRecord>, page_table: VtdPageTable }
+struct VtdDomain { id: u16, requesters: Vec<Bdf>, space: IovaSpace, maps: Vec<MappingRecord>, page_table: VtdPageTable }
+
+/// Permanent VT-d root/context tables and DMA domains selected by isolation group.
+pub struct VtdTables { hhdm_offset: u64, root_pa: u64, contexts: Vec<(u8, u64)>, domains: Vec<VtdDomain> }
 impl VtdTables {
-    /// Allocate empty root/context ownership and a four-level DMA page-table domain. # C: O(1)
+    /// Allocate empty root/context ownership. # C: O(1)
     pub fn new(hhdm_offset: u64) -> Option<Self> {
         if hhdm_offset == 0 { return None; }
         let root_pa = allocate_page(hhdm_offset)?;
-        Some(Self { hhdm_offset, root_pa, contexts: Vec::new(), space: IovaSpace::new(IOVA_START, IOVA_BYTES)?, maps: Vec::new(), page_table: VtdPageTable::new(hhdm_offset)? })
+        Some(Self { hhdm_offset, root_pa, contexts: Vec::new(), domains: Vec::new() })
     }
     /// Return the physical root table address for the VT-d RTADDR register. # C: O(1)
     pub const fn root_pa(&self) -> u64 { self.root_pa }
     /// Return the hardware-selected adjusted guest address width. # C: O(1)
-    pub const fn address_width(&self) -> u8 { self.page_table.address_width() }
-    /// Map all PMM-owned RAM identities before attaching any PCI requester. # C: O(regions * leaves * levels)
-    pub fn map_identity_regions(&mut self, regions: &[pmm::UsableRegion]) -> bool {
+    pub const fn address_width(&self) -> u8 { 2 }
+    /// Create one isolated DMA domain and populate its RAM identity mappings. # C: O(regions * leaves * levels)
+    pub fn install_group(&mut self, id: u16, requesters: &[Bdf], regions: &[pmm::UsableRegion]) -> bool {
+        if id == 0 || requesters.is_empty() || self.domains.iter().any(|domain| domain.id == id || requesters.iter().any(|bdf| domain.requesters.contains(bdf))) { return false; }
+        let Some(mut domain) = VtdDomain::new(id, requesters, self.hhdm_offset) else { return false; };
+        if !domain.map_identity_regions(regions) { return false; }
+        self.domains.push(domain);
+        true
+    }
+    /// Map one validated firmware-reserved DMA interval into the requester group. # C: O(leaves * levels)
+    pub fn map_identity_range(&mut self, requester: Bdf, pa: u64, len: u64) -> bool {
+        self.domain_mut(requester).is_some_and(|domain| domain.map_identity(pa, len).is_some())
+    }
+    fn domain_mut(&mut self, requester: Bdf) -> Option<&mut VtdDomain> {
+        self.domains.iter_mut().find(|domain| domain.requesters.contains(&requester))
+    }
+    fn domain(&self, requester: Bdf) -> Option<&VtdDomain> {
+        self.domains.iter().find(|domain| domain.requesters.contains(&requester))
+    }
+}
+impl VtdDomain {
+    fn new(id: u16, requesters: &[Bdf], hhdm_offset: u64) -> Option<Self> {
+        Some(Self { id, requesters: requesters.to_vec(), space: IovaSpace::new(IOVA_START, IOVA_BYTES)?, maps: Vec::new(), page_table: VtdPageTable::new(hhdm_offset)? })
+    }
+    fn map_identity_regions(&mut self, regions: &[pmm::UsableRegion]) -> bool {
         for region in regions {
             if region.len_pfn == 0 { continue; }
             let Some(pa) = region.start.0.checked_shl(12) else { return false; };
@@ -35,14 +59,7 @@ impl VtdTables {
         }
         true
     }
-    /// Map one validated firmware-reserved DMA interval before requester attachment. # C: O(leaves * levels)
-    pub fn map_identity_range(&mut self, pa: u64, len: u64) -> bool { self.map_identity(pa, len).is_some() }
-    /// Install one live DMA interval at a newly allocated IOVA interval. # C: O(pages * levels)
-    pub fn map_dma(&mut self, pa: u64, len: u64, align: u64) -> Option<Mapping> {
-        self.map_dma_below(pa, len, align, u64::MAX)
-    }
-    /// Install one live DMA interval below an inclusive device address mask. # C: O(pages * levels)
-    pub fn map_dma_below(&mut self, pa: u64, len: u64, align: u64, mask: u64) -> Option<Mapping> {
+    fn map_dma_below(&mut self, pa: u64, len: u64, align: u64, mask: u64) -> Option<Mapping> {
         if pa & (PAGE_BYTES - 1) != 0 { return None; }
         let iova = self.space.alloc_below(len, align, mask)?;
         if !self.page_table.map(iova.start, pa, iova.len) {
@@ -53,28 +70,55 @@ impl VtdTables {
         self.maps.push(MappingRecord::live(map));
         Some(map)
     }
-    /// Remove mapping PTEs but retain the interval until invalidation completes. # C: O(pages * levels)
-    pub fn remove_for_invalidate(&mut self, map: Mapping) -> bool {
+    fn remove_for_invalidate(&mut self, map: Mapping) -> bool {
         let Some(index) = self.maps.iter().position(|candidate| candidate.mapping == map) else { return false; };
         if self.maps[index].iotlb_pending() { return true; }
         if !self.page_table.unmap(map.iova.start, map.iova.len) { return false; }
         self.maps[index].begin_iotlb_invalidate()
     }
-    /// Release a previously invalidated interval back to the VT-d IOVA allocator. # C: O(live mappings)
-    pub fn release_after_invalidate(&mut self, map: Mapping) -> bool {
+    fn release_after_invalidate(&mut self, map: Mapping) -> bool {
         let Some(index) = self.maps.iter().position(|candidate| candidate.mapping == map && candidate.iotlb_pending()) else { return false; };
         if !self.space.free(map.iova) { return false; }
         self.maps.swap_remove(index);
         true
     }
-    /// Return one live mapping by its page-aligned IOVA. # C: O(live mappings)
-    pub fn mapping(&self, iova: u64) -> Option<Mapping> { self.maps.iter().find(|candidate| candidate.mapping.iova.start == iova).map(|candidate| candidate.mapping) }
-    /// Publish one requester context after its page-table hierarchy is fully initialized. # C: O(context buses)
-    pub fn attach(&mut self, bdf: Bdf, domain_id: u16) -> bool {
+    fn mapping(&self, iova: u64) -> Option<Mapping> { self.maps.iter().find(|candidate| candidate.mapping.iova.start == iova).map(|candidate| candidate.mapping) }
+    fn map_identity(&mut self, pa: u64, len: u64) -> Option<Mapping> {
+        if pa & (PAGE_BYTES - 1) != 0 { return None; }
+        if let Some(map) = self.maps.iter().find(|candidate| candidate.mapping.iova.start == pa
+            && candidate.mapping.iova.len == len && candidate.mapping.pa == pa) { return Some(map.mapping); }
+        let iova = self.space.reserve_at(pa, len)?;
+        if !self.page_table.map(pa, pa, len) {
+            let _ = self.space.free(iova);
+            return None;
+        }
+        let map = Mapping { iova, pa };
+        self.maps.push(MappingRecord::live(map));
+        Some(map)
+    }
+}
+impl VtdTables {
+    /// Install one live DMA interval in the requester's isolation domain. # C: O(pages * levels)
+    pub fn map_dma_below(&mut self, requester: Bdf, pa: u64, len: u64, align: u64, mask: u64) -> Option<Mapping> {
+        self.domain_mut(requester)?.map_dma_below(pa, len, align, mask)
+    }
+    /// Remove one live DMA interval in the requester's isolation domain. # C: O(pages * levels)
+    pub fn remove_for_invalidate(&mut self, requester: Bdf, map: Mapping) -> bool { self.domain_mut(requester).is_some_and(|domain| domain.remove_for_invalidate(map)) }
+    /// Release one invalidated DMA interval in the requester's isolation domain. # C: O(live mappings)
+    pub fn release_after_invalidate(&mut self, requester: Bdf, map: Mapping) -> bool { self.domain_mut(requester).is_some_and(|domain| domain.release_after_invalidate(map)) }
+    /// Return one live mapping in the requester's isolation domain. # C: O(live mappings)
+    pub fn mapping(&self, requester: Bdf, iova: u64) -> Option<Mapping> { self.domain(requester)?.mapping(iova) }
+    /// Publish one requester context after every mapping in its isolation domain is ready. # C: O(context buses)
+    pub fn attach_requester(&mut self, bdf: Bdf) -> bool {
+        let Some((root_pa, address_width, domain_id)) = self.domain(bdf).map(|domain|
+            (domain.page_table.root_pa(), domain.page_table.address_width(), domain.id)) else { return false; };
+        self.attach(bdf, root_pa, address_width, domain_id)
+    }
+    fn attach(&mut self, bdf: Bdf, root_pa: u64, address_width: u8, domain_id: u16) -> bool {
         let Some(context_pa) = self.context_for_bus(bdf.bus) else { return false; };
         let devfn = (usize::from(bdf.device) << 3) | usize::from(bdf.function);
         if devfn >= CONTEXT_ENTRIES { return false; }
-        let Some(context) = VtdContextEntry::translated(self.page_table.root_pa(), self.address_width(), domain_id) else { return false; };
+        let Some(context) = VtdContextEntry::translated(root_pa, address_width, domain_id) else { return false; };
         let [lo, hi] = context.words();
         let entry_pa = context_pa + devfn as u64 * CONTEXT_ENTRY_BYTES;
         if read64(self.hhdm_offset, entry_pa) & PRESENT != 0 { return false; }
@@ -94,17 +138,6 @@ impl VtdTables {
         write64(self.hhdm_offset, entry_pa, lo);
         self.contexts.push((bus, context_pa));
         Some(context_pa)
-    }
-    fn map_identity(&mut self, pa: u64, len: u64) -> Option<Mapping> {
-        if pa & (PAGE_BYTES - 1) != 0 { return None; }
-        let iova = self.space.reserve_at(pa, len)?;
-        if !self.page_table.map(pa, pa, len) {
-            let _ = self.space.free(iova);
-            return None;
-        }
-        let map = Mapping { iova, pa };
-        self.maps.push(MappingRecord::live(map));
-        Some(map)
     }
 }
 
