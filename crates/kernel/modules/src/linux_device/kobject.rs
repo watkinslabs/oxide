@@ -86,7 +86,7 @@ unsafe extern "C" fn kobject_set_name(kobj: *mut LinuxKobject, fmt: *const c_cha
     LINUX_OK
 }
 
-extern "C" fn kobject_uevent(kobj: *mut LinuxKobject, action: u32) -> i32 {
+pub(super) extern "C" fn kobject_uevent(kobj: *mut LinuxKobject, action: u32) -> i32 {
     kobject_uevent_env(kobj, action, core::ptr::null_mut())
 }
 
