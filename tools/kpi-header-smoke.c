@@ -1018,7 +1018,7 @@ static int __init sample_init(void)
             disk->queue = queue;
             disk->fops = &sample_blk_ops;
             disk->private_data = &s;
-            disk->flags = GENHD_FL_NO_PART_SCAN;
+            disk->flags = GENHD_FL_NO_PART;
             set_capacity(disk, SAMPLE_DISK_SECTORS);
             add_disk(disk);
             (void)get_capacity(disk);

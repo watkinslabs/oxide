@@ -6,7 +6,8 @@
 
 #define DISK_NAME_LEN 32u
 #define GENHD_FL_REMOVABLE (1u << 0)
-#define GENHD_FL_NO_PART_SCAN (1u << 1)
+#define GENHD_FL_HIDDEN (1u << 1)
+#define GENHD_FL_NO_PART (1u << 2)
 
 struct block_device_operations;
 
@@ -32,5 +33,6 @@ void del_gendisk(struct gendisk *disk);
 void set_capacity(struct gendisk *disk, sector_t sectors);
 sector_t get_capacity(const struct gendisk *disk);
 bool disk_live(struct gendisk *disk);
+bool set_capacity_and_notify(struct gendisk *disk, sector_t sectors);
 
 #endif
