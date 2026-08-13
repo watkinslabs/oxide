@@ -338,6 +338,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "drv-atlantic"
+version = "0.1.0"
+dependencies = [
+ "arch-irq",
+ "drv",
+ "hal-aarch64",
+ "hal-x86_64",
+ "iommu",
+ "mmio-map",
+ "net",
+ "pci",
+ "pci-irq",
+ "pmm",
+ "sched",
+ "sync",
+]
+
+[[package]]
 name = "drv-bochs"
 version = "0.1.0"
 dependencies = [
@@ -435,6 +453,7 @@ version = "0.1.0"
 dependencies = [
  "arch-irq",
  "drv",
+ "firmware",
  "hal-aarch64",
  "hal-x86_64",
  "iommu",
@@ -1452,6 +1471,7 @@ dependencies = [
  "devfs",
  "drv",
  "drv-ahci",
+ "drv-atlantic",
  "drv-bochs",
  "drv-e1000",
  "drv-igc",

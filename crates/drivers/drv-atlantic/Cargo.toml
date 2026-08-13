@@ -1,5 +1,5 @@
 [package]
-name = "drv-rtl8125"
+name = "drv-atlantic"
 version = "0.1.0"
 edition = "2021"
 publish = false
@@ -18,7 +18,6 @@ sync = { path = "../../shared/sync" }
 sched = { path = "../../kernel/sched" }
 arch-irq = { path = "../../kernel/arch-irq" }
 pci-irq = { path = "../../kernel/pci-irq" }
-firmware = { path = "../../kernel/firmware" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64 = { path = "../../arch/hal-x86_64" }
