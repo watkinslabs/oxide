@@ -32,6 +32,8 @@ fn publish(inv: IommuInventory) {
         IOMMU_BASE[i].store(u.register_base, Ordering::Relaxed);
         IOMMU_PAGES[i].store(u.register_pages, Ordering::Relaxed);
         IOMMU_SEGMENT[i].store(u.segment as u32, Ordering::Relaxed);
+        IOMMU_SOURCE[i].store(u.source_id as u32, Ordering::Relaxed);
+        IOMMU_EVENT_MSI[i].store(u.event_msi as u32, Ordering::Relaxed);
         IOMMU_FLAGS[i].store(u.include_all as u32, Ordering::Relaxed);
     }
     for i in 0..inv.amd_scope_count {
@@ -125,6 +127,7 @@ pub fn iommu_unit(index: usize) -> Option<IommuUnit> {
     if index >= iommu_unit_count() { return None; }
     let kind = match IOMMU_KIND.load(Ordering::Acquire) { IOMMU_KIND_AMD_VI => IommuKind::AmdVi, IOMMU_KIND_INTEL_VTD => IommuKind::IntelVtd, _ => return None };
     Some(IommuUnit { kind, segment: IOMMU_SEGMENT[index].load(Ordering::Relaxed) as u16,
+        source_id: IOMMU_SOURCE[index].load(Ordering::Relaxed) as u16, event_msi: IOMMU_EVENT_MSI[index].load(Ordering::Relaxed) as u8,
         register_base: IOMMU_BASE[index].load(Ordering::Relaxed), register_pages: IOMMU_PAGES[index].load(Ordering::Relaxed),
         include_all: IOMMU_FLAGS[index].load(Ordering::Relaxed) != 0 })
 }
