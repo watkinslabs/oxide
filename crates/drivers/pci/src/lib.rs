@@ -24,10 +24,10 @@ pub use bars::{
     IORESOURCE_PREFETCH,
 };
 pub use caps::{
-    capabilities, decode_msi_cap, decode_msix_cap, device_serial_number, disable_msi, emit_msix_teardown_steps,
+    acs_isolation_enabled, capabilities, decode_msi_cap, decode_msix_cap, device_serial_number, disable_msi, emit_msix_teardown_steps, extended_capability,
     heapless_caps, msi_single_control_value, msix_control_enable_masked, msix_control_value,
     msix_table_entry_offset, program_msi_single, MsiCap, MsixCap, MsixTeardownStep, PciCap,
-    CAP_ID_MSI, CAP_ID_MSIX, CAP_ID_PCIE, CAP_ID_VENDOR, MSI_ENABLE, MSIX_ENABLE,
+    ACS_ISOLATION_FLAGS, CAP_ID_MSI, CAP_ID_MSIX, CAP_ID_PCIE, CAP_ID_VENDOR, EXT_CAP_ID_ACS, MSI_ENABLE, MSIX_ENABLE,
     MSIX_FUNCTION_MASK, MSIX_MESSAGE_ADDR_HIGH_OFF, MSIX_MESSAGE_ADDR_LOW_OFF,
     MSIX_MESSAGE_DATA_OFF, MSIX_TABLE_ENTRY_BYTES, MSIX_VECTOR_CONTROL_MASKED,
     MSIX_VECTOR_CONTROL_OFF,

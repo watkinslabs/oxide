@@ -7,6 +7,10 @@ pub const CAP_ID_PCIE: u8 = 0x10;
 pub const CAP_ID_MSIX: u8 = 0x11;
 /// PCIe extended capability ID for a Device Serial Number.
 pub const EXT_CAP_ID_DSN: u16 = 0x0003;
+/// PCIe Access Control Services extended capability ID.
+pub const EXT_CAP_ID_ACS: u16 = 0x000d;
+/// Source Validation, request/completion redirection, and upstream forwarding.
+pub const ACS_ISOLATION_FLAGS: u16 = 0x001d;
 const EXT_CAP_FIRST: u16 = 0x100;
 const EXT_CAP_NEXT_MASK: u32 = 0xFFF << 20;
 const EXT_CAP_MAX_STEPS: usize = 960;
@@ -48,20 +52,32 @@ pub struct PciCap {
 /// A malformed loop, all-zero header, or absent DSN has no serial number.
 /// # C: O(extended capabilities)
 pub fn device_serial_number<R: ConfigSpaceReader>(r: &R, bdf: Bdf) -> Option<u64> {
+    let off = extended_capability(r, bdf, EXT_CAP_ID_DSN)?;
+    let lo = r.read32_ext(bdf, off + 4);
+    let hi = r.read32_ext(bdf, off + 8);
+    Some((u64::from(hi) << 32) | u64::from(lo))
+}
+
+/// Return the config offset of an extended PCIe capability. # C: O(capabilities)
+pub fn extended_capability<R: ConfigSpaceReader>(r: &R, bdf: Bdf, id: u16) -> Option<u16> {
     let mut off = EXT_CAP_FIRST;
     for _ in 0..EXT_CAP_MAX_STEPS {
         let hdr = r.read32_ext(bdf, off);
         if hdr == 0 || hdr == u32::MAX { return None; }
-        if (hdr & 0xFFFF) as u16 == EXT_CAP_ID_DSN {
-            let lo = r.read32_ext(bdf, off + 4);
-            let hi = r.read32_ext(bdf, off + 8);
-            return Some((u64::from(hi) << 32) | u64::from(lo));
-        }
+        if (hdr & 0xFFFF) as u16 == id { return Some(off); }
         let next = ((hdr & EXT_CAP_NEXT_MASK) >> 20) as u16;
         if next < EXT_CAP_FIRST || next <= off { return None; }
         off = next;
     }
     None
+}
+
+/// Return whether a PCIe function enables the isolation ACS controls. # C: O(capabilities)
+pub fn acs_isolation_enabled<R: ConfigSpaceReader>(r: &R, bdf: Bdf) -> bool {
+    let Some(off) = extended_capability(r, bdf, EXT_CAP_ID_ACS) else { return false; };
+    let cap = r.read32_ext(bdf, off + 4) as u16;
+    let ctrl = (r.read32_ext(bdf, off + 4) >> 16) as u16;
+    cap & ACS_ISOLATION_FLAGS == ACS_ISOLATION_FLAGS && ctrl & ACS_ISOLATION_FLAGS == ACS_ISOLATION_FLAGS
 }
 
 /// MSI capability shape (PCI Local Bus 3.0 §6.8.1).
@@ -407,6 +423,16 @@ mod msi_tests {
         cfg.write32_ext(BDF, 0x124, 0x5566_7788);
         cfg.write32_ext(BDF, 0x128, 0x1122_3344);
         assert_eq!(device_serial_number(&cfg, BDF), Some(0x1122_3344_5566_7788));
+    }
+
+    #[test]
+    fn acs_requires_every_isolation_capability_and_control() {
+        let cfg = Config::new();
+        cfg.write32_ext(BDF, 0x100, EXT_CAP_ID_ACS as u32);
+        cfg.write32_ext(BDF, 0x104, u32::from(ACS_ISOLATION_FLAGS) | (u32::from(ACS_ISOLATION_FLAGS) << 16));
+        assert!(acs_isolation_enabled(&cfg, BDF));
+        cfg.write32_ext(BDF, 0x104, u32::from(ACS_ISOLATION_FLAGS) | (u32::from(ACS_ISOLATION_FLAGS & !0x10) << 16));
+        assert!(!acs_isolation_enabled(&cfg, BDF));
     }
 
     #[test]
