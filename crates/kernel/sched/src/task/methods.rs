@@ -1,7 +1,7 @@
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, AtomicI8, AtomicI32, AtomicPtr, AtomicU16, AtomicU32, AtomicU64, AtomicU8, Ordering};
+use core::sync::atomic::{fence, AtomicBool, AtomicI8, AtomicI32, AtomicPtr, AtomicU16, AtomicU32, AtomicU64, AtomicU8, Ordering};
 #[cfg(feature = "debug-task-fpu-provenance")]
 use core::sync::atomic::AtomicUsize;
 
@@ -614,6 +614,11 @@ impl Task {
     /// # C: O(1)
     pub fn set_sleep_state(&self, state: WaitState) {
         self.state.store(TaskState::Sleeping as u8 | state.state_bits(), Ordering::Release);
+        // A sleep publication must order before the waiter's subsequent
+        // condition recheck.  A release store alone permits Store->Load
+        // reordering on weakly ordered SMP CPUs, letting both sides miss the
+        // event.  The paired wake claim uses AcqRel CAS.
+        fence(Ordering::SeqCst);
     }
 
     /// Snapshot the sleep mask encoded in the task-state word.

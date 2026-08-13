@@ -16,7 +16,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
-use crate::{Task, TaskState};
+use crate::{Task, TaskState, WaitState};
 use sync::{Spinlock, TaskList as TaskListClass};
 
 // Module manifest:
@@ -226,7 +226,7 @@ pub unsafe fn park_for_wait4() {
     unsafe { Arc::increment_strong_count(raw); }
     // SAFETY: matching Arc::from_raw consumes the bumped ref.
     let arc = unsafe { Arc::from_raw(raw) };
-    arc.set_state(TaskState::Sleeping);
+    arc.set_sleep_state(WaitState::Interruptible);
     let mut waiters = WAITERS.lock();
     waiters.retain(|a| a.tid != arc.tid);
     waiters.push(arc);
@@ -476,4 +476,3 @@ pub fn has_wait_zombies(parent: u32, parent_tgid: u32, pid: i32, parent_pgid: u3
     let waiter = Waiter { tid: parent, tgid: parent_tgid, pgid: parent_pgid };
     q.iter().any(|t| wait_candidate_matches(zombie_candidate(t), waiter, pid, options))
 }
-

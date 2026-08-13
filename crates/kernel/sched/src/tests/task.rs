@@ -1,5 +1,5 @@
 use crate::jobctl::WakeKind;
-use crate::task::{SchedClass, SchedPolicy, Task, TaskState};
+use crate::task::{SchedClass, SchedPolicy, Task, TaskState, WaitState};
 use core::sync::atomic::Ordering;
 use std::sync::{Arc, Barrier};
 use std::vec::Vec;
@@ -36,6 +36,17 @@ fn task_cas_state_transitions() {
     assert_eq!(t.state(), TaskState::Sleeping);
     t.cas_state(TaskState::Sleeping, TaskState::Runnable).unwrap();
     assert_eq!(t.state(), TaskState::Runnable);
+}
+
+#[test]
+fn interruptible_sleep_state_preserves_wake_mask_until_claimed() {
+    let t = Task::new(1, "t", SchedClass::Normal { weight: 1024 });
+    t.set_sleep_state(WaitState::Interruptible);
+    assert_eq!(t.state(), TaskState::Sleeping);
+    assert_eq!(t.sleep_wait_state(), WaitState::Interruptible);
+    assert!(t.claim_wake());
+    assert_eq!(t.state(), TaskState::Runnable);
+    assert_eq!(t.sleep_wait_state(), WaitState::Uninterruptible);
 }
 
 #[test]

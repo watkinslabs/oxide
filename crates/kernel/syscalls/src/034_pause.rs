@@ -20,10 +20,10 @@ fn current_task() -> Option<&'static sched::Task> { sched::current() }
 /// # C: O(schedules until signal)
 #[cfg(target_os = "oxide-kernel")]
 fn sleep_until_actionable_signal(cur: &sched::Task) -> i64 {
-    use sched::TaskState;
+    use sched::{TaskState, WaitState};
     loop {
         if cur.sleep_wake().interrupted() { return syscall::restart::restart_nohand(); }
-        cur.set_state(TaskState::Sleeping);
+        cur.set_sleep_state(WaitState::Interruptible);
         if cur.sleep_wake().interrupted() {
             cur.set_state(TaskState::Runnable);
             return syscall::restart::restart_nohand();
