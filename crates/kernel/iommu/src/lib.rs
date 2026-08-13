@@ -26,7 +26,7 @@ pub use amd_vi_ir::{AmdViIrMode, AmdViIrTable};
 pub use admission::{admit_boot_requesters, bus_master_admitted};
 pub use dma_owner::{map_dma, map_dma_below, unmap_dma};
 pub use amd_vi_bootstrap::AmdViBootstrap;
-pub use amd_vi_manager::{AmdViActivation, AmdViIoapic, AmdViMsi, activate_amd_vi, allocate_amd_vi_ioapic, allocate_amd_vi_msi, amd_vi_event_records, disable_amd_vi_event_interrupts, enable_amd_vi_event_interrupts, handle_amd_vi_event_interrupt, poll_amd_vi_events};
+pub use amd_vi_manager::{AmdViActivation, AmdViIoapic, AmdViMsi, activate_amd_vi, allocate_amd_vi_ioapic, allocate_amd_vi_msi, amd_vi_event_records, amd_vi_x2apic_capable, disable_amd_vi_event_interrupts, enable_amd_vi_event_interrupts, handle_amd_vi_event_interrupt, poll_amd_vi_events};
 pub use amd_vi_pt::{AmdViPte, iova_indices};
 pub use amd_vi_pt_tree::AmdViPageTable;
 pub use domain::{AmdViDomain, Domain, Mapping, amd_vi_unit_for_bdf};
@@ -38,5 +38,34 @@ pub use vtd_pt_tree::VtdPageTable;
 pub use vtd_tables::VtdTables;
 pub use vtd_ir::{VtdIrTable, VtdIrte, invalidate_irte, remapped_msi};
 pub use vtd_manager::{VtdActivation, VtdHpet, VtdIoapic, VtdMsi, activate_vtd, allocate_vtd_hpet, allocate_vtd_ioapic, allocate_vtd_msi, enable_vtd_interrupt_remapping, vtd_eim_capable};
+
+/// Conservative x2APIC admission: every active IOMMU owner must preserve a
+/// full destination ID through its interrupt-remapping format. # C: O(1)
+pub fn x2apic_interrupt_remapping_capable() -> bool {
+    let amd_active = amd_vi_manager::active();
+    let vtd_active = vtd_manager::active();
+    x2apic_admitted(amd_active, amd_vi_x2apic_capable(), vtd_active, vtd_eim_capable())
+}
+
+const fn x2apic_admitted(amd_active: bool, amd_xt: bool, vtd_active: bool, vtd_eim: bool) -> bool {
+    (amd_active || vtd_active) && (!amd_active || amd_xt) && (!vtd_active || vtd_eim)
+}
+
+#[cfg(test)]
+mod x2apic_tests {
+    use super::x2apic_admitted;
+
+    #[test]
+    fn every_active_iommu_must_preserve_a_wide_destination() {
+        assert!(!x2apic_admitted(false, false, false, false));
+        assert!(x2apic_admitted(true, true, false, false));
+        assert!(!x2apic_admitted(true, false, false, false));
+        assert!(x2apic_admitted(false, false, true, true));
+        assert!(!x2apic_admitted(false, false, true, false));
+        assert!(x2apic_admitted(true, true, true, true));
+        assert!(!x2apic_admitted(true, true, true, false));
+        assert!(!x2apic_admitted(true, false, true, true));
+    }
+}
 
 #[cfg(test)] extern crate std;

@@ -1,5 +1,5 @@
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::{AmdViBootstrap, AmdViDomain};
 use firmware::acpi::{IommuKind, IommuUnit};
@@ -24,6 +24,7 @@ struct AmdViGroup { domain_id: u16, requesters: Vec<Bdf>, domain: AmdViDomain }
 struct AmdViBootUnit { unit: IommuUnit, bootstrap: AmdViBootstrap, groups: Vec<AmdViGroup> }
 static MANAGER: Spinlock<Vec<AmdViBootUnit>, Devices> = Spinlock::new(Vec::new());
 static EVENT_RECORDS: AtomicU64 = AtomicU64::new(0);
+static X2APIC_CAPABLE: AtomicBool = AtomicBool::new(false);
 
 /// Activate AMD-Vi for all firmware-owned requesters before driver probing.
 ///
@@ -31,6 +32,7 @@ static EVENT_RECORDS: AtomicU64 = AtomicU64::new(0);
 /// The caller must run before any requester can acquire PCI bus mastering.
 /// # C: O(units + requesters + RAM leaves)
 pub unsafe fn activate_amd_vi(requesters: &[Bdf], aliases: &pci::DmaAliases, hhdm_offset: u64, regions: &[pmm::UsableRegion]) -> AmdViActivation {
+    X2APIC_CAPABLE.store(false, Ordering::Release);
     let mut units = Vec::new();
     for index in 0..firmware::acpi::iommu_unit_count() {
         let Some(unit) = firmware::acpi::iommu_unit(index) else { return AmdViActivation::Failed; };
@@ -71,7 +73,9 @@ pub unsafe fn activate_amd_vi(requesters: &[Bdf], aliases: &pci::DmaAliases, hhd
         if !entry.bootstrap.enable() { return activation_failed(&mut manager); }
     }
 
+    let x2apic_capable = manager.iter().all(|entry| entry.bootstrap.x2apic_capable());
     *MANAGER.lock() = manager;
+    X2APIC_CAPABLE.store(x2apic_capable, Ordering::Release);
     AmdViActivation::Enabled
 }
 
@@ -97,6 +101,7 @@ fn map_ivmd_regions(domain: &mut AmdViDomain, unit: IommuUnit, requesters: &[Bdf
 fn activation_failed(manager: &mut [AmdViBootUnit]) -> AmdViActivation {
     for entry in manager.iter_mut() { let _ = entry.bootstrap.disable(); }
     MANAGER.lock().clear();
+    X2APIC_CAPABLE.store(false, Ordering::Release);
     AmdViActivation::Failed
 }
 
@@ -106,6 +111,8 @@ pub fn owns(requester: Bdf) -> bool {
 }
 
 pub(crate) fn active() -> bool { !MANAGER.lock().is_empty() }
+/// Return whether every active AMD-Vi unit can remap to a 32-bit x2APIC destination. # C: O(1)
+pub fn amd_vi_x2apic_capable() -> bool { X2APIC_CAPABLE.load(Ordering::Acquire) }
 /// Drain all currently pending AMD-Vi fault and hardware events. # C: O(units + events)
 pub fn poll_amd_vi_events(visitor: &mut impl FnMut(crate::AmdViEvent)) -> bool {
     let manager = MANAGER.lock(); let mut complete = true;

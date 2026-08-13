@@ -21,6 +21,8 @@ impl AmdViIrMode {
         else if features & (1 << 2) == 0 { Self::Extended }
         else { Self::ExtendedXt }
     }
+    /// Whether this format can retain a full x2APIC destination ID. # C: O(1)
+    pub const fn x2apic_capable(self) -> bool { matches!(self, Self::ExtendedXt) }
     const fn entry_bytes(self) -> u64 { match self { Self::Legacy => LEGACY_IRTE_BYTES, Self::Extended | Self::ExtendedXt => EXTENDED_IRTE_BYTES } }
     const fn allocation_order(self) -> pmm::Order { match self { Self::Legacy => pmm::Order(0), Self::Extended | Self::ExtendedXt => pmm::Order(1) } }
 }
@@ -91,6 +93,9 @@ impl AmdViIrTable {
         assert_eq!(AmdViIrMode::from_extended_features(0), AmdViIrMode::Legacy);
         assert_eq!(AmdViIrMode::from_extended_features(1 << 7), AmdViIrMode::Extended);
         assert_eq!(AmdViIrMode::from_extended_features((1 << 7) | (1 << 2)), AmdViIrMode::ExtendedXt);
+        assert!(!AmdViIrMode::Legacy.x2apic_capable());
+        assert!(!AmdViIrMode::Extended.x2apic_capable());
+        assert!(AmdViIrMode::ExtendedXt.x2apic_capable());
     }
 
     #[test]

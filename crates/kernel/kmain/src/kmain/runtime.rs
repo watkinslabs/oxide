@@ -87,7 +87,7 @@ fn init_smp(info: &BootInfo) {
     let _ = info; // only the x86_64 arm threads BootInfo through
     #[cfg(target_arch = "x86_64")]
     {
-        let _ = arch_irq::lapic::enable_x2apic(iommu::vtd_eim_capable());
+        let _ = arch_irq::lapic::enable_x2apic(iommu::x2apic_interrupt_remapping_capable());
         // SAFETY: kernel_main post-init, post-ACPI-MADT walk; single-CPU with IRQs masked, so the BSP is the sole writer of the trampoline page and every per-AP data block.
         let started = unsafe { arch_irq::smp_x86::bring_up_aps_x86(info) };
         debug_boot! {
