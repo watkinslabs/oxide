@@ -103,7 +103,7 @@ fn service_port_change(controller: &Arc<Controller>, port: u8) -> Option<Arc<Usb
         if state.devices.iter().any(|device| device.state.lock_bh::<XhciBh>().device.port() == port) { return None; }
         (Arc::clone(&state.mmio), Arc::clone(&state.command), Arc::clone(&state._dcbaa), state.irq)
     };
-    let device = UsbDevice::new(controller, address_port_device(controller.bdf, &mmio, &command, &dcbaa, irq, port)?);
+    let device = UsbDevice::new(controller, Box::new(address_port_device(controller.bdf, &mmio, &command, &dcbaa, irq, port)?));
     let mut state = controller.state.lock_bh::<XhciBh>();
     if state.devices.iter().any(|existing| existing.state.lock_bh::<XhciBh>().device.port() == port) {
         crate::probe_input::remove_hid_input(&device.state.lock_bh::<XhciBh>());

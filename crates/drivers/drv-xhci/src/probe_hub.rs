@@ -55,7 +55,7 @@ fn hub_event_work(_arg: usize) {
                 (Arc::clone(&controller_state.mmio), Arc::clone(&controller_state.command), Arc::clone(&controller_state._dcbaa), controller_state.irq)
             };
             let Some(child) = address_hub_child(controller.bdf, &mmio, &command, &dcbaa, irq, request.topology, request.portsc) else { continue; };
-            let child = UsbDevice::new(controller, child);
+            let child = UsbDevice::new(controller, Box::new(child));
             let mut controller_state = controller.state.lock_bh::<XhciBh>();
             if !controller_state.devices.iter().any(|existing| existing.state.lock_bh::<XhciBh>().device.topology() == request.topology)
             { let _ = add_usb_device(&mut controller_state, child); }
