@@ -57,6 +57,8 @@ pub const fn tx_done(desc: &AdvTxWriteback) -> bool { desc.status & TXD_STAT_DD 
 
 pub fn supported(vendor: u16, device: u16) -> bool { vendor == INTEL_VENDOR && PCI_IDS.contains(&device) }
 pub const fn split_dma(dma: u64) -> (u32, u32) { (dma as u32, (dma >> 32) as u32) }
+/// Releases driver ownership while preserving every firmware-owned control bit. # C: O(1)
+pub const fn release_driver_control(ctrl_ext: u32) -> u32 { ctrl_ext & !CTRL_EXT_DRV_LOAD }
 
 #[cfg(test)]
 mod tests { use super::*;
@@ -64,5 +66,6 @@ mod tests { use super::*;
     #[test] fn queue_zero_offsets_match_the_igc_window() { assert_eq!(RDBAL0, 0x0c000); assert_eq!(TDBAL0, 0x0e000); assert_eq!(ICR, 0x01500); }
     #[test] fn descriptors_are_hardware_sized() { assert_eq!(core::mem::size_of::<AdvRxDesc>(), 16); assert_eq!(core::mem::size_of::<AdvRxWriteback>(), 16); assert_eq!(core::mem::size_of::<AdvTxDesc>(), 16); assert_eq!(core::mem::size_of::<AdvTxWriteback>(), 16); }
     #[test] fn advanced_tx_command_requires_data_and_extension() { assert_eq!(ADVTXD_DTYP_DATA | ADVTXD_DCMD_DEXT, 0x2030_0000); }
+    #[test] fn release_driver_control_preserves_firmware_state() { assert_eq!(release_driver_control(0xf123_4567 | CTRL_EXT_DRV_LOAD), 0xe123_4567); }
     #[test] fn completion_is_read_from_the_device_writeback_view() { let rx = AdvRxWriteback { status_error: RXD_STAT_DD, length: 1500, ..Default::default() }; let tx = AdvTxWriteback { status: TXD_STAT_DD, ..Default::default() }; assert!(rx_done(&rx)); assert_eq!(rx.length, 1500); assert!(tx_done(&tx)); }
 }
