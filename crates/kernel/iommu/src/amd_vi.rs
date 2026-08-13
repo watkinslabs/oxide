@@ -442,6 +442,19 @@ impl AmdViUnit {
         regs.write64(CONTROL, control | remap_enable_bits(self.ir_mode) | CONTROL_IOMMU_ENABLE)
             && self.advance(AmdViState::DomainsAttached, AmdViState::Enabled)
     }
+    /// Enable event-log interrupts only after a PCI MSI handler owns delivery. # C: O(1)
+    pub fn enable_event_interrupts(&self, regs: &AmdViRegisters) -> bool {
+        if self.state != AmdViState::Enabled { return false; }
+        let Some(control) = regs.read64(CONTROL) else { return false; };
+        if control & CONTROL_EVENT_ENABLE == 0 { return false; }
+        regs.write64(CONTROL, control | CONTROL_EVENT_INTERRUPT_ENABLE)
+    }
+    /// Mask event-log interrupts while preserving active translation and logging. # C: O(1)
+    pub fn disable_event_interrupts(&self, regs: &AmdViRegisters) -> bool {
+        if self.state != AmdViState::Enabled { return false; }
+        let Some(control) = regs.read64(CONTROL) else { return false; };
+        regs.write64(CONTROL, control & !CONTROL_EVENT_INTERRUPT_ENABLE)
+    }
     /// Undo this bootstrap's command/event/translation transition.
     ///
     /// This follows Linux's `iommu_disable()`: command processing and event
@@ -451,7 +464,7 @@ impl AmdViUnit {
     pub fn disable_bootstrap(&mut self, regs: &AmdViRegisters) -> bool {
         if self.state == AmdViState::Discovered || self.state == AmdViState::Disabled { return true; }
         let Some(control) = regs.read64(CONTROL) else { return false; };
-        let disabled = control & !(CONTROL_COMMAND_ENABLE | CONTROL_EVENT_ENABLE
+        let disabled = control & !(CONTROL_COMMAND_ENABLE | CONTROL_EVENT_ENABLE | CONTROL_EVENT_INTERRUPT_ENABLE
             | CONTROL_COMPLETION_ENABLE | CONTROL_GA_ENABLE | CONTROL_XT_ENABLE | CONTROL_IOMMU_ENABLE);
         if !regs.write64(CONTROL, disabled) { return false; }
         self.state = AmdViState::Disabled;

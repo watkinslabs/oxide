@@ -48,6 +48,10 @@ impl AmdViBootstrap {
             && self.unit.domains_attached_after_drain()
             && self.unit.enable_translation(&self.regs)
     }
+    /// Unmask event-log interrupts after their PCI MSI delivery is installed. # C: O(1)
+    pub fn enable_event_interrupts(&self) -> bool { self.unit.enable_event_interrupts(&self.regs) }
+    /// Mask event-log interrupts without disturbing the active translation state. # C: O(1)
+    pub fn disable_event_interrupts(&self) -> bool { self.unit.disable_event_interrupts(&self.regs) }
     /// Disable every hardware feature this bootstrap enabled. # C: O(1)
     pub fn disable(&mut self) -> bool { self.unit.disable_bootstrap(&self.regs) }
     /// Drain every AMD-Vi event currently produced by this hardware unit. # C: O(events)

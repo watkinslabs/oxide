@@ -1,4 +1,5 @@
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{AmdViBootstrap, AmdViDomain};
 use firmware::acpi::{IommuKind, IommuUnit};
@@ -21,6 +22,7 @@ pub enum AmdViIoapic { Direct, Remapped { index: u8 }, Failed }
 
 struct AmdViBootUnit { unit: IommuUnit, bootstrap: AmdViBootstrap, domain: AmdViDomain }
 static MANAGER: Spinlock<Vec<AmdViBootUnit>, Devices> = Spinlock::new(Vec::new());
+static EVENT_RECORDS: AtomicU64 = AtomicU64::new(0);
 
 /// Activate AMD-Vi for all firmware-owned requesters before driver probing.
 ///
@@ -95,6 +97,25 @@ pub fn poll_amd_vi_events(visitor: &mut impl FnMut(crate::AmdViEvent)) -> bool {
     for entry in manager.iter() { complete &= entry.bootstrap.drain_events(visitor); }
     complete
 }
+
+/// Enable every AMD-Vi event interrupt after PCI owns every delivery vector. # C: O(units)
+pub fn enable_amd_vi_event_interrupts() -> bool {
+    let manager = MANAGER.lock(); manager.iter().all(|entry| entry.bootstrap.enable_event_interrupts())
+}
+
+/// Mask every AMD-Vi event interrupt before releasing its PCI MSI binding. # C: O(units)
+pub fn disable_amd_vi_event_interrupts() -> bool {
+    let manager = MANAGER.lock(); manager.iter().all(|entry| entry.bootstrap.disable_event_interrupts())
+}
+
+/// Drain the event logs from the architecture PCI-MSI interrupt callback. # C: O(units + events)
+pub fn handle_amd_vi_event_interrupt() {
+    let mut discard = |_| { EVENT_RECORDS.fetch_add(1, Ordering::Relaxed); };
+    let _ = poll_amd_vi_events(&mut discard);
+}
+
+/// Return the number of AMD-Vi event records drained by hardware interrupts. # C: O(1)
+pub fn amd_vi_event_records() -> u64 { EVENT_RECORDS.load(Ordering::Acquire) }
 
 /// Allocate one remapped MSI message for an AMD-Vi-owned requester. # C: O(tables + poll limit)
 pub fn allocate_amd_vi_msi(requester: Bdf, event_id: u32, vector: u8, destination_apic_id: u32) -> AmdViMsi {
