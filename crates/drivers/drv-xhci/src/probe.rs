@@ -70,6 +70,7 @@ fn install_hid_input(bdf: pci::Bdf, slot: u8, layout: Option<crate::hid_report::
             9 => for usage in field.usage_min.max(1)..=field.usage_max.min(29) { advertise(&mut dev.ev_bits, input::EV_KEY); advertise(&mut dev.key_bits.bits, 271 + usage as u16); },
             1 if field.flags & 4 != 0 && (field.usage_min..=field.usage_max).contains(&0x30) => { dev.is_pointer = true; advertise(&mut dev.ev_bits, input::EV_REL); advertise(&mut dev.rel_bits.bits, input::REL_X); },
             1 if field.flags & 4 != 0 && (field.usage_min..=field.usage_max).contains(&0x31) => { dev.is_pointer = true; advertise(&mut dev.ev_bits, input::EV_REL); advertise(&mut dev.rel_bits.bits, input::REL_Y); },
+            1 if field.flags & 4 != 0 && (field.usage_min..=field.usage_max).contains(&0x38) => { dev.is_pointer = true; advertise(&mut dev.ev_bits, input::EV_REL); advertise(&mut dev.rel_bits.bits, input::REL_WHEEL); },
             _ => {}
         }
     }
@@ -81,6 +82,7 @@ fn publish_report(device: &mut UsbDeviceState, report: &[u8]) {
     let Some(decoder) = device.decoder.as_mut() else { return; };
     let events = decoder.decode(report);
     for event in events.into_iter().flatten() { match event { crate::hid::Event::Key { code, value } => { let _ = input::push_evdev_event(evdev, input::EV_KEY, code, value); }, crate::hid::Event::Relative { code, value } => { let _ = input::push_evdev_event(evdev, input::EV_REL, code, value); } } }
+    let _ = input::push_evdev_event(evdev, input::EV_SYN, input::SYN_REPORT, 0);
 }
 
 fn remove_hid_input(device: &UsbDeviceState) {

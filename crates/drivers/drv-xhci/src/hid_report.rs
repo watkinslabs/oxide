@@ -147,7 +147,7 @@ fn unsigned(bytes: &[u8]) -> Option<u32> { match bytes.len() { 0 => Some(0), 1 =
 fn signed(bytes: &[u8]) -> Option<i32> { match bytes.len() { 0 => Some(0), 1 => Some(i32::from(bytes[0] as i8)), 2 => Some(i32::from(i16::from_le_bytes(bytes.try_into().ok()?))), 4 => Some(i32::from_le_bytes(bytes.try_into().ok()?)), _ => None } }
 fn extract(bytes: &[u8], bit: u32, width: u8) -> Option<u32> { if width == 0 || width > 32 { return None; } let end = bit.checked_add(u32::from(width))?; if end > (bytes.len() as u32).checked_mul(8)? { return None; } let mut value = 0u32; for n in 0..width { value |= u32::from(bytes[((bit + u32::from(n)) / 8) as usize] >> ((bit + u32::from(n)) & 7) & 1) << n; } Some(value) }
 fn sign_extend(value: u32, width: u8) -> i32 { if width == 32 { value as i32 } else if value & (1 << (width - 1)) != 0 { (value | (!0u32 << width)) as i32 } else { value as i32 } }
-fn event_for(field: InputField, usage: u32, value: i32) -> Option<crate::hid::Event> { match field.usage_page { 7 => crate::hid::keycode(usage as u8).map(|code| crate::hid::Event::Key { code, value }), 9 if usage > 0 => Some(crate::hid::Event::Key { code: 271 + usage as u16, value }), 1 if matches!(usage, 0x30 | 0x31) && field.flags & 4 != 0 => Some(crate::hid::Event::Relative { code: if usage == 0x30 { 0 } else { 1 }, value }), _ => None } }
+fn event_for(field: InputField, usage: u32, value: i32) -> Option<crate::hid::Event> { match field.usage_page { 7 => crate::hid::keycode(usage as u8).map(|code| crate::hid::Event::Key { code, value }), 9 if usage > 0 => Some(crate::hid::Event::Key { code: 271 + usage as u16, value }), 1 if field.flags & 4 != 0 => match usage { 0x30 => Some(crate::hid::Event::Relative { code: 0, value }), 0x31 => Some(crate::hid::Event::Relative { code: 1, value }), 0x38 => Some(crate::hid::Event::Relative { code: 8, value }), _ => None }, _ => None } }
 
 #[cfg(test)]
 mod tests {
@@ -171,6 +171,12 @@ mod tests {
         assert_eq!(decoder.decode(&[1])[0], Some(crate::hid::Event::Key { code: 30, value: 1 }));
         assert_eq!(decoder.decode(&[1])[0], None);
         assert_eq!(decoder.decode(&[0])[0], Some(crate::hid::Event::Key { code: 30, value: 0 }));
+    }
+    #[test]
+    fn decoder_maps_relative_wheel_usage() {
+        let report = [0x05, 0x01, 0x09, 0x38, 0x15, 0x81, 0x25, 0x7f, 0x75, 8, 0x95, 1, 0x81, 6];
+        let mut decoder = ReportDecoder::new(parse_report_descriptor(&report).unwrap());
+        assert_eq!(decoder.decode(&[0xfe])[0], Some(crate::hid::Event::Relative { code: 8, value: -2 }));
     }
     #[test]
     fn global_push_pop_restores_usage_page_and_bit_geometry() {
