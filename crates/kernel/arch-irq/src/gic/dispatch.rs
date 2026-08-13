@@ -263,11 +263,10 @@ unsafe extern "C" fn oxide_arm_softirq_drain() {
 /// (and by the default/fault vector on a RESOLVED exception) after the
 /// dispatcher returns, with the whole 288 B entry frame.
 ///
-/// `user_mode(regs)` picks the arm: an EL0 return runs the ONE return-to-user
-/// work loop (`sched::exit_to_user::hook`) — reschedule, then signal delivery,
-/// looping while work remains; an EL1 return does nothing, because an
-/// interrupt that hit kernel code has no user register set to deliver into and
-/// this port is VOLUNTARY-preempt only (`smp-arch.md` Phase A).
+/// `user_mode(regs)` picks the arm: an EL0 return runs the return-to-user work
+/// loop; an EL1 return services a pending preemption through the shared
+/// IRQ-return scheduler loop. Both arms preserve the masked-IRQ return
+/// contract expected by the exception epilogue.
 ///
 /// # SAFETY: invoked only from the exception-exit asm with IRQs masked, the
 /// hardirq accounting already dropped, and SP back on the interrupted task's
@@ -281,7 +280,12 @@ unsafe extern "C" fn oxide_irq_exit_to_user(regs: *mut hal_aarch64::SvcFrame) {
     if regs.is_null() { return; }
     // SAFETY: the exception-exit asm passes SP, the live 288 B entry frame.
     let spsr = unsafe { (*regs).spsr_el1 };
-    if !hal::uregs::aarch64::user_mode(spsr) { return; }
+    if !hal::uregs::aarch64::user_mode(spsr) {
+        // SAFETY: this is the outer exception return on the interrupted task
+        // stack; hardirq/softirq accounting was released by the dispatcher.
+        unsafe { sched::live::preempt_schedule_irq::<hal_aarch64::ArmIrqGate>(); }
+        return;
+    }
     // Snapshot BEFORE the loop: the loop consumes `need_resched` when it
     // schedules, and the rseq abort below must fire exactly when the thread
     // lost the CPU inside EL0 code — not on every interrupt return, which

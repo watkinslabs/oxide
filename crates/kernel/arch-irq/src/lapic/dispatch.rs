@@ -249,13 +249,10 @@ unsafe extern "C" fn oxide_irq_dispatch(regs: *mut hal_x86_64::PtRegs) {
 /// the dispatcher returns, on the OUTER (interrupted) stack, with the whole
 /// interrupted `PtRegs`.
 ///
-/// `user_mode(regs)` picks the arm: a user-mode return runs the ONE
-/// return-to-user work loop (`sched::exit_to_user::hook`) — reschedule, then
-/// signal delivery, looping while work remains; a kernel-mode return does
-/// nothing, because an interrupt that hit kernel code has no user register set
-/// to deliver into and this port is VOLUNTARY-preempt only (`smp-arch.md`
-/// Phase A). Before B1471 only the reschedule half existed, which is why a
-/// userspace spin loop took no signals at all.
+/// `user_mode(regs)` picks the arm: a user-mode return runs the return-to-user
+/// work loop; a kernel-mode return services a pending preemption through the
+/// shared IRQ-return scheduler loop. Both arms preserve the masked-IRQ return
+/// contract expected by the assembly epilogue.
 ///
 /// # SAFETY: invoked only from the IRQ-exit asm with IRQs masked, the hardirq
 /// accounting already dropped, and `regs` the interrupted frame on this task's
@@ -271,7 +268,12 @@ unsafe extern "C" fn oxide_irq_exit_to_user(regs: *mut hal_x86_64::PtRegs) {
     // SAFETY: same frame the vector was just read from — non-null (checked
     // above) and still owned by this task's kernel stack until
     // `oxide_irq_resume_user` pops it; `from_user` only reads `cs`.
-    if !unsafe { (*regs).from_user() } { return; }
+    if !unsafe { (*regs).from_user() } {
+        // SAFETY: this is the outer IRQ return on the interrupted task stack;
+        // hardirq/softirq accounting was released by the dispatcher.
+        unsafe { sched::live::preempt_schedule_irq::<hal_x86_64::X86IrqGate>(); }
+        return;
+    }
     // Linux routes NMI through `irqentry_nmi_enter`/`irqentry_nmi_exit`, which
     // never reach `exit_to_user_mode_loop`. The fault epilogue this function
     // also serves resumes an NMI (the cross-CPU backtrace poke) exactly like a

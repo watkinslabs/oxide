@@ -1,6 +1,7 @@
 use alloc::string::String;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU32, Ordering};
+use sync::IrqGate;
 
 use crate::{SchedClass, Task};
 
@@ -95,6 +96,35 @@ fn smp_spin_warn(rank: u16, lock: usize, owner: u64, iters: u64) {
 unsafe fn schedule_hook_trampoline() {
     // SAFETY: per fn contract; schedule() preconditions match preempt_enable's "safe schedule point" guarantee.
     unsafe { schedule(); }
+}
+
+/// Linux `preempt_schedule_irq`: take a pending reschedule from an IRQ return
+/// after hardirq/softirq accounting has dropped, while preserving the IRQ-off
+/// return contract.  `schedule()` itself expects to enter with interrupts
+/// enabled so its switch tail restores an enabled task context; this wrapper
+/// masks them again before it rechecks the current task's reschedule flag and
+/// before control returns to the architecture's IRQ epilogue.
+///
+/// # SAFETY: caller is the outer IRQ-return path on the interrupted task's
+/// stack, with IRQs masked, no hardirq/softirq nesting, and no rq lock held.
+/// # C: O(log N) per actual switch
+pub unsafe fn preempt_schedule_irq<G: IrqGate>() {
+    if !crate::preempt::should_resched() { return; }
+    debug_assert_eq!(crate::preempt::preempt_count(), 0,
+        "IRQ-return schedule with nonzero preempt count");
+    debug_assert!(crate::preempt::irqs_disabled(),
+        "IRQ-return schedule entered with IRQs enabled");
+    loop {
+        // SAFETY: the caller supplies the IRQ-off entry state and schedule()
+        // has no locks held across its return; restoring these saved flags
+        // remasks IRQs before the next `need_resched` check.
+        let flags = unsafe { G::save_enable() };
+        // SAFETY: this is the IRQ-return safe point documented above.
+        unsafe { schedule(); }
+        // SAFETY: `flags` came from this iteration's matching save_enable.
+        unsafe { G::restore(flags); }
+        if !crate::preempt::should_resched() { break; }
+    }
 }
 
 /// True iff the global runqueue is installed.

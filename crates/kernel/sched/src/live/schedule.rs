@@ -26,6 +26,6 @@ pub(crate) use active_mm::sched_current_cpu;
 pub use hooks::{install_sched_switch_hook, RunStats, SchedSwitchFn};
 pub use lifecycle::{
     current, current_chroot_root, current_mount_ns, install_default_runqueue,
-    mark_done, runqueue_active, uninstall_global_with_stats,
+    mark_done, preempt_schedule_irq, runqueue_active, uninstall_global_with_stats,
 };
 pub use switch::{oxide_finish_task_switch, park_yield, sched_yield, schedule, tick_yield};
