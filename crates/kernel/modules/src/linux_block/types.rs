@@ -40,9 +40,46 @@ pub(super) const LINUX_EIO: i32 = 5;
 
 #[repr(C)]
 pub(super) struct LinuxBlockDevice {
+    pub(super) bd_start_sect: u64,
+    pub(super) bd_nr_sectors: u64,
     pub(super) bd_disk: *mut LinuxGendisk,
     pub(super) bd_queue: *mut LinuxRequestQueue,
-    pub(super) bd_private: *mut c_void,
+    pub(super) bd_stats: *mut c_void,
+    pub(super) bd_stamp: u64,
+    pub(super) bd_flags: u32,
+    pub(super) bd_dev: u32,
+    pub(super) bd_mapping: *mut c_void,
+    pub(super) bd_openers: u32,
+    pub(super) bd_size_lock: u32,
+    pub(super) bd_claiming: *mut c_void,
+    pub(super) bd_holder: *mut c_void,
+    pub(super) bd_holder_ops: *mut c_void,
+    pub(super) bd_holder_lock: [u8; 32],
+    pub(super) bd_holders: *mut c_void,
+    pub(super) bd_holder_dir: *mut c_void,
+    pub(super) bd_fsfreeze_count: u32,
+    pub(super) bd_fsfreeze_pad: u32,
+    pub(super) bd_fsfreeze_mutex: [u8; 32],
+    pub(super) bd_meta_info: *mut c_void,
+    pub(super) bd_writers: *mut c_void,
+    pub(super) bd_security: *mut c_void,
+    pub(super) bd_device: LinuxDevice,
+}
+
+impl LinuxBlockDevice {
+    pub(super) fn new() -> Self {
+        Self {
+            bd_start_sect: 0, bd_nr_sectors: 0, bd_disk: core::ptr::null_mut(),
+            bd_queue: core::ptr::null_mut(), bd_stats: core::ptr::null_mut(), bd_stamp: 0,
+            bd_flags: 0, bd_dev: 0, bd_mapping: core::ptr::null_mut(), bd_openers: 0,
+            bd_size_lock: 0, bd_claiming: core::ptr::null_mut(), bd_holder: core::ptr::null_mut(),
+            bd_holder_ops: core::ptr::null_mut(), bd_holder_lock: [0; 32],
+            bd_holders: core::ptr::null_mut(), bd_holder_dir: core::ptr::null_mut(),
+            bd_fsfreeze_count: 0, bd_fsfreeze_pad: 0, bd_fsfreeze_mutex: [0; 32],
+            bd_meta_info: core::ptr::null_mut(), bd_writers: core::ptr::null_mut(),
+            bd_security: core::ptr::null_mut(), bd_device: LinuxDevice::new(),
+        }
+    }
 }
 
 #[repr(C)]
@@ -312,6 +349,16 @@ mod tests {
         assert_eq!(offset_of!(LinuxBio, bi_io_vec), 48);
         assert_eq!(offset_of!(LinuxBio, bi_vcnt), 56);
         assert_eq!(offset_of!(LinuxBio, bi_end_io), 64);
+    }
+
+    #[test]
+    fn block_device_layout_matches_the_supported_module_abi() {
+        assert_eq!(size_of::<LinuxBlockDevice>(), 984);
+        assert_eq!(offset_of!(LinuxBlockDevice, bd_disk), 16);
+        assert_eq!(offset_of!(LinuxBlockDevice, bd_queue), 24);
+        assert_eq!(offset_of!(LinuxBlockDevice, bd_holders), 128);
+        assert_eq!(offset_of!(LinuxBlockDevice, bd_fsfreeze_mutex), 152);
+        assert_eq!(offset_of!(LinuxBlockDevice, bd_device), 208);
     }
 
     #[test]

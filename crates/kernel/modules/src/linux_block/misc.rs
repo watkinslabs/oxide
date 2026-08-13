@@ -129,7 +129,8 @@ mod tests {
         let _modules = crate::test_serial::claim();
         let ops = LinuxBlockDeviceOperations { owner: core::ptr::null_mut(), open: None, release: None, ioctl: Some(compat_ioctl) };
         let mut disk = unsafe { core::mem::zeroed::<LinuxGendisk>() }; disk.fops = &ops;
-        let mut bdev = LinuxBlockDevice { bd_disk: &mut disk, bd_queue: core::ptr::null_mut(), bd_private: core::ptr::null_mut() };
+        let mut bdev = LinuxBlockDevice::new();
+        bdev.bd_disk = &mut disk;
         assert_eq!(unsafe { blkdev_compat_ptr_ioctl(&mut bdev, 0x12, 0x34, usize::MAX) }, 37);
         assert_eq!(COMPAT_MODE.load(Ordering::SeqCst), 0x12); assert_eq!(COMPAT_CMD.load(Ordering::SeqCst), 0x34); assert_eq!(COMPAT_ARG.load(Ordering::SeqCst), u32::MAX as usize);
     }
@@ -137,7 +138,7 @@ mod tests {
     #[test]
     fn compat_ioctl_without_driver_callback_reports_linux_no_ioctl() {
         let _modules = crate::test_serial::claim();
-        let mut bdev = LinuxBlockDevice { bd_disk: core::ptr::null_mut(), bd_queue: core::ptr::null_mut(), bd_private: core::ptr::null_mut() };
+        let mut bdev = LinuxBlockDevice::new();
         assert_eq!(unsafe { blkdev_compat_ptr_ioctl(&mut bdev, 0, 0, 0) }, -LINUX_ENOIOCTLCMD);
     }
 }
