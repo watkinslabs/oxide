@@ -174,6 +174,7 @@ pub fn enumerate_and_log() {
     let requesters = devs.iter().map(|d| d.bdf).collect::<alloc::vec::Vec<_>>();
     let aliases = dma_aliases(&requesters, &devs);
     if !activate_dma_and_interrupt_ownership(&requesters, &aliases) { return; }
+    let _ = firmware::acpi::prepare_pci_intx_routes();
     register_pci_model_drivers();
     publish_scanned_devices(&devs);
 
@@ -206,7 +207,6 @@ fn activate_dma_and_interrupt_ownership(requesters: &[pci::Bdf], aliases: &pci::
     if !iommu::enable_vtd_interrupt_remapping() { return false; }
     iommu::admit_boot_requesters(requesters);
     if !map_firmware_ioapics() { return false; }
-    let _ = firmware::acpi::prepare_pci_intx_routes();
     // Linux probes interrupt-driven PCI functions with local IRQ delivery
     // enabled.  Every requester remains bus-master quiesced until its driver
     // has installed a handler and explicitly admits DMA above.
