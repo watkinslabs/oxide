@@ -36,7 +36,7 @@ const LINUX_TASK_INTERRUPTIBLE: i32 = 0x0001;
 /// `TASK_UNINTERRUPTIBLE`.
 const LINUX_TASK_WAKEKILL: i32 = 0x0100;
 #[repr(C)]
-pub struct LinuxSpinlock { state: u32 }
+pub struct LinuxSpinlock { pub(crate) state: u32 }
 #[repr(C)]
 pub struct LinuxMutex { state: u32 }
 #[repr(C)]
@@ -174,9 +174,9 @@ extern "C" fn spin_lock_init(l: *mut LinuxSpinlock) {
     // SAFETY: non-null pointer names caller-owned spinlock storage.
     unsafe { (*l).state = 0; }
 }
-extern "C" fn spin_lock(l: *mut LinuxSpinlock) { lock_u32(field_u32(l)); }
+pub(crate) extern "C" fn spin_lock(l: *mut LinuxSpinlock) { lock_u32(field_u32(l)); }
 extern "C" fn spin_trylock(l: *mut LinuxSpinlock) -> i32 { try_lock_u32(field_u32(l)) as i32 }
-extern "C" fn spin_unlock(l: *mut LinuxSpinlock) { unlock_u32(field_u32(l)); }
+pub(crate) extern "C" fn spin_unlock(l: *mut LinuxSpinlock) { unlock_u32(field_u32(l)); }
 extern "C" fn spin_is_locked(l: *mut LinuxSpinlock) -> i32 { load_u32(field_u32(l)) as i32 }
 extern "C" fn raw_spin_lock_init(l: *mut LinuxSpinlock) { spin_lock_init(l); }
 extern "C" fn raw_spin_lock(l: *mut LinuxSpinlock) { spin_lock(l); }

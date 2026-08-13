@@ -31,7 +31,7 @@ typedef unsigned long uintptr_t;
 typedef long intptr_t;
 typedef unsigned long ulong;
 typedef unsigned int uint;
-typedef unsigned long gfp_t;
+typedef unsigned int gfp_t;
 typedef unsigned long dma_addr_t;
 typedef unsigned int umode_t;
 typedef long ssize_t;

@@ -101,6 +101,7 @@ pub mod linux_time;
 pub mod linux_usercopy;
 pub mod linux_usb;
 pub mod linux_video;
+pub mod linux_xarray;
 
 pub mod loader;
 pub use loader::{load_module, LoadedModule, LoadError, PlacedSection, SymResolver};
