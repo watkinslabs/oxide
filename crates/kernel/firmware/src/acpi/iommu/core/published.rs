@@ -194,6 +194,17 @@ pub fn amd_vi_alias_for_requester(segment: u16, requester: u16) -> Option<u16> {
     target
 }
 
+/// Return one published IVRS requester alias record. # C: O(1)
+pub fn amd_vi_alias(index: usize) -> Option<AmdIvhdAlias> {
+    if index >= AMD_ALIAS_COUNT.load(Ordering::Acquire) as usize { return None; }
+    let range = AMD_ALIAS_RANGE[index].load(Ordering::Relaxed);
+    Some(AmdIvhdAlias { unit_index: AMD_ALIAS_UNIT[index].load(Ordering::Relaxed) as u8,
+        first_requester: range as u16, last_requester: (range >> 16) as u16,
+        canonical_requester: AMD_ALIAS_TARGET[index].load(Ordering::Relaxed) as u16 })
+}
+/// Return the count of published IVRS requester alias records. # C: O(1)
+pub fn amd_vi_alias_count() -> usize { AMD_ALIAS_COUNT.load(Ordering::Acquire) as usize }
+
 #[cfg(test)]
 mod tests {
     use super::*;

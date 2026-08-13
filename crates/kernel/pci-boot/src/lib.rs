@@ -147,7 +147,7 @@ pub fn enumerate_and_log() {
         klog::write_raw(b"\n");
     }
     let requesters = devs.iter().map(|d| d.bdf).collect::<alloc::vec::Vec<_>>();
-    let aliases = pci::DmaAliases::new();
+    let aliases = dma_aliases(&requesters);
     quiesce_bus_masters(&requesters);
     // Keep every quiesced requester denied until its DMA owner has attached it.
     // This policy must be visible before activation so a failed activation
@@ -348,6 +348,21 @@ pub fn enumerate_and_log() {
             klog::write_raw(b"\n");
         }
     }
+}
+
+fn dma_aliases(requesters: &[pci::Bdf]) -> pci::DmaAliases {
+    let mut aliases = pci::DmaAliases::new();
+    for index in 0..firmware::acpi::amd_vi_alias_count() {
+        let Some(record) = firmware::acpi::amd_vi_alias(index) else { continue; };
+        let Some(unit) = firmware::acpi::iommu_unit(record.unit_index as usize) else { continue; };
+        for requester in requesters.iter().copied().filter(|bdf| bdf.segment == unit.segment
+            && bdf.raw() >= record.first_requester && bdf.raw() <= record.last_requester) {
+            let canonical = pci::Bdf { segment: requester.segment, bus: (record.canonical_requester >> 8) as u8,
+                device: ((record.canonical_requester >> 3) & 0x1f) as u8, function: (record.canonical_requester & 7) as u8 };
+            if requesters.contains(&canonical) { let _ = aliases.add(requester, canonical); }
+        }
+    }
+    aliases
 }
 
 /// Walk every addressable config-space bus. # C: O(N_bdfs probed)
