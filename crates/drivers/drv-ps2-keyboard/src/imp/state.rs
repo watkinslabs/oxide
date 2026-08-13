@@ -7,6 +7,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 pub(super) static PRESENT: AtomicBool = AtomicBool::new(false);
 pub(super) static IRQ_ENABLED: AtomicBool = AtomicBool::new(false);
 pub(super) static AUX_PRESENT: AtomicBool = AtomicBool::new(false);
+pub(super) static AUX_WHEEL: AtomicBool = AtomicBool::new(false);
 pub(super) static AUX_IRQ_ENABLED: AtomicBool = AtomicBool::new(false);
 pub(super) static BSP_APIC_ID: AtomicU64 = AtomicU64::new(0);
 pub(super) static DEVICE_WINDOW_BASE: AtomicU64 = AtomicU64::new(0);
@@ -30,6 +31,9 @@ pub fn present() -> bool { PRESENT.load(Ordering::Acquire) }
 /// quiesced driver.
 /// # C: O(1)
 pub fn irq_enabled() -> bool { IRQ_ENABLED.load(Ordering::Acquire) }
+
+/// True when the auxiliary mouse accepted four-byte wheel packet mode. # C: O(1)
+pub(super) fn aux_wheel() -> bool { AUX_WHEEL.load(Ordering::Acquire) }
 
 /// Boot-time platform data used by the driver's IRQ setup.
 /// # C: O(1)

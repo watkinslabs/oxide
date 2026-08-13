@@ -8,7 +8,7 @@ use core::sync::atomic::Ordering;
 use super::bringup::{bringdown, bringup, shutdown_hw};
 use super::irq::{install_aux_irq, install_irq};
 use super::mouse::install_device as install_mouse_device;
-use super::state::{AUX_PRESENT, PRESENT, present};
+use super::state::{AUX_PRESENT, PRESENT, aux_wheel, present};
 
 struct Ps2KbdDriver;
 
@@ -40,7 +40,7 @@ impl drv::Driver for Ps2KbdDriver {
                 unsafe { bringdown(); }
                 return Err(drv::Error::ProbeFailed);
             }
-            if AUX_PRESENT.load(Ordering::Acquire) && install_mouse_device() {
+            if AUX_PRESENT.load(Ordering::Acquire) && install_mouse_device(aux_wheel()) {
                 // SAFETY: the input sink exists before IRQ12 is installed;
                 // controller delivery remains masked until this call succeeds.
                 if !unsafe { install_aux_irq() } {
