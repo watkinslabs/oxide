@@ -90,7 +90,9 @@ pub(super) fn build_grub_iso(
     let _ = fs::remove_dir_all(&stage);
     fs::create_dir_all(stage.join("boot/grub")).map_err(|_| 1u8)?;
     fs::copy(kernel_elf, stage.join(format!("boot/oxide-{arch}"))).map_err(|_| 1u8)?;
-    let args = super::bootargs::kernel_cmdline(arch, &format!("/boot/oxide-{arch}"));
+    let profile = HardwareProfile::from_env()?;
+    let root = match profile { HardwareProfile::Default => "/dev/vda", HardwareProfile::NativePci => "/dev/sda" };
+    let args = super::bootargs::kernel_cmdline_for_root(arch, &format!("/boot/oxide-{arch}"), root);
     let cfg = x86_grub_cfg(arch, &args);
     fs::write(stage.join("boot/grub/grub.cfg"), cfg).map_err(|_| 1u8)?;
     let iso = crate::buildns::iso_path(repo, id, arch);
@@ -257,11 +259,6 @@ pub(super) fn qemu_run_grub_x86_64(
         // it up, registers nvme0n1, self-tests an LBA-0 read).
         "-drive", nvme_drive.as_str(),
         "-device", "nvme,serial=oxnvme,drive=nvm0,bus=pcie.0",
-        // D3.6: AHCI HBA + a SATA disk on it. drv-ahci enumerates every
-        // implemented ready ATA port and registers each as an sdX disk.
-        "-device", "ich9-ahci,id=ahci,bus=pcie.0",
-        "-drive", ahci_drive.as_str(),
-        "-device", "ide-hd,drive=sata0,bus=ahci.0,serial=oxahci0",
         "-chardev", uart_chardev.as_str(),
         "-serial", "chardev:ser0",
         // GTK window by default so the virtio-gpu console is visible +
@@ -274,6 +271,10 @@ pub(super) fn qemu_run_grub_x86_64(
     }
     match profile {
         HardwareProfile::Default => c.args([
+            // D3.6: AHCI HBA + a SATA scratch disk for drv-ahci bring-up.
+            "-device", "ich9-ahci,id=ahci,bus=pcie.0",
+            "-drive", ahci_drive.as_str(),
+            "-device", "ide-hd,drive=sata0,bus=ahci.0,serial=oxahci0",
             "-drive", &format!("if=none,id=root,format=raw,file={}", root_img.display()),
             "-device", "virtio-blk-pci,drive=root,bus=pcie.0,serial=oxide-root,disable-legacy=on,num-queues=2",
             "-drive", &format!("if=none,id=home,format=raw,file={}", home_img.display()),
@@ -363,11 +364,17 @@ pub(super) fn qemu_run_grub_x86_64(
 #[cfg(test)]
 mod tests {
     use super::{HardwareProfile, x86_grub_cfg};
+    use crate::image_qemu::bootargs::kernel_cmdline_for_root;
 
     #[test]
     fn native_profile_selects_the_native_pci_nic() {
         assert_eq!(HardwareProfile::NativePci.nic_device(), "e1000,netdev=net0,bus=pcie.0");
         assert_eq!(HardwareProfile::NativePci.nic_device_for(Some("e1000e")), "e1000e,netdev=net0,bus=pcie.0");
+    }
+
+    #[test]
+    fn native_profile_uses_its_first_ahci_disk_as_root() {
+        assert!(kernel_cmdline_for_root("x86_64", "/img", "/dev/sda").contains("root=/dev/sda"));
     }
 
     #[test]
