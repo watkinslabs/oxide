@@ -5,9 +5,11 @@ use super::*;
 const DRM_ATOMIC_ACQUIRE_CTX_OFF: usize = 80;
 const DRM_ATOMIC_LEGACY_CURSOR_UPDATE_OFF: usize = 16;
 const DRM_ATOMIC_LEGACY_CURSOR_UPDATE: u8 = 1 << 1;
+const DRM_ATOMIC_ALLOW_MODESET: u8 = 1;
 const DRM_PLANE_DEV_OFF: usize = 0;
 const DRM_PLANE_INDEX_OFF: usize = 1220;
 const DRM_CRTC_CURSOR_OFF: usize = 136;
+const DRM_CRTC_PRIMARY_OFF: usize = 128;
 const DRM_PLANE_STATE_PLANE_OFF: usize = 0;
 const DRM_PLANE_STATE_CRTC_OFF: usize = 8;
 const DRM_PLANE_STATE_FB_OFF: usize = 16;
@@ -21,6 +23,10 @@ const DRM_PLANE_STATE_SRC_H_OFF: usize = 56;
 const DRM_PLANE_STATE_SRC_W_OFF: usize = 60;
 const DRM_PLANE_STATE_ATOMIC_OFF: usize = 168;
 const DRM_CRTC_STATE_PLANE_MASK_OFF: usize = 12;
+const DRM_CRTC_STATE_ASYNC_FLIP_OFF: usize = 300;
+const DRM_CRTC_STATE_EVENT_OFF: usize = 312;
+const DRM_CRTC_STATE_ACTIVE_OFF: usize = 9;
+const DRM_MODE_PAGE_FLIP_ASYNC: u32 = 0x02;
 const LINUX_ENOMEM: i32 = 12;
 const LINUX_EINVAL: i32 = 22;
 
@@ -32,6 +38,7 @@ pub(super) fn export_symbols() {
         ("drm_atomic_set_fb_for_plane", drm_atomic_set_fb_for_plane as *const () as usize),
         ("drm_atomic_helper_update_plane", drm_atomic_helper_update_plane as *const () as usize),
         ("drm_atomic_helper_disable_plane", drm_atomic_helper_disable_plane as *const () as usize),
+        ("drm_atomic_helper_page_flip", drm_atomic_helper_page_flip as *const () as usize),
     ] { crate::symtab::export(name, address, false); }
 }
 
@@ -133,6 +140,40 @@ pub(super) extern "C" fn drm_atomic_helper_disable_plane(plane: *mut c_void, ctx
     result
 }
 
+/// Submit one legacy page flip as a nonblocking atomic transaction without modeset permission. # C: O(N_objects)
+pub(super) extern "C" fn drm_atomic_helper_page_flip(crtc: *mut c_void, fb: *mut c_void, event: *mut c_void, flags: u32, ctx: *mut c_void) -> i32 {
+    if crtc.is_null() || fb.is_null() { return -LINUX_EINVAL; }
+    let crtc = crtc.cast::<u8>();
+    // SAFETY: a live CRTC exposes its registered primary plane at the fixed ABI field.
+    let plane = unsafe { read(crtc.add(DRM_CRTC_PRIMARY_OFF).cast::<*mut u8>()) };
+    if plane.is_null() { return -LINUX_EINVAL; }
+    // SAFETY: the primary plane begins with its owning DRM device pointer.
+    let dev = unsafe { read(plane.add(DRM_PLANE_DEV_OFF).cast::<*mut c_void>()) };
+    let state = atomic_core::drm_atomic_commit_alloc(dev);
+    if state.is_null() { return -LINUX_ENOMEM; }
+    let state_bytes = state.cast::<u8>();
+    // SAFETY: the transaction owns its acquire context and allow-modeset flag until final put.
+    unsafe { write(state_bytes.add(DRM_ATOMIC_ACQUIRE_CTX_OFF).cast::<*mut c_void>(), ctx); *state_bytes.add(DRM_ATOMIC_LEGACY_CURSOR_UPDATE_OFF) &= !DRM_ATOMIC_ALLOW_MODESET; }
+    let crtc_state = atomic_acquire::drm_atomic_get_crtc_state(state, crtc.cast());
+    let result = if let Some(code) = errno(crtc_state) { -code } else {
+        let crtc_state = crtc_state.cast::<u8>();
+        // SAFETY: the duplicated CRTC state owns these legacy event and async-flip fields.
+        unsafe { write(crtc_state.add(DRM_CRTC_STATE_EVENT_OFF).cast::<*mut c_void>(), event); write(crtc_state.add(DRM_CRTC_STATE_ASYNC_FLIP_OFF).cast::<bool>(), flags & DRM_MODE_PAGE_FLIP_ASYNC != 0); }
+        let plane_state = atomic_acquire::drm_atomic_get_plane_state(state, plane.cast());
+        if let Some(code) = errno(plane_state) { -code } else {
+            let plane_state = plane_state.cast::<u8>();
+            let ret = set_crtc(plane_state, crtc.cast());
+            if ret != 0 { ret } else {
+                drm_atomic_set_fb_for_plane(plane_state.cast(), fb);
+                // SAFETY: active is immutable for this duplicated CRTC state during the legacy admission check.
+                if !unsafe { read(crtc_state.add(DRM_CRTC_STATE_ACTIVE_OFF).cast::<bool>()) } { -LINUX_EINVAL } else { atomic_validate::drm_atomic_nonblocking_commit(state) }
+            }
+        }
+    };
+    atomic_core::drm_atomic_commit_put(state);
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,7 +184,7 @@ mod tests {
     fn legacy_plane_exports_and_framebuffer_assignment_transfer_one_reference() {
         let _modules = crate::test_serial::claim();
         export_symbols();
-        for name in ["drm_atomic_set_crtc_for_plane", "drm_atomic_set_fb_for_plane", "drm_atomic_helper_update_plane", "drm_atomic_helper_disable_plane"] { assert!(crate::symtab::is_exported(name)); }
+        for name in ["drm_atomic_set_crtc_for_plane", "drm_atomic_set_fb_for_plane", "drm_atomic_helper_update_plane", "drm_atomic_helper_disable_plane", "drm_atomic_helper_page_flip"] { assert!(crate::symtab::is_exported(name)); }
         let mut state = [0u8; 184]; let mut old = [0u8; 64]; let mut new = [0u8; 64];
         // SAFETY: fabricated records reserve the state framebuffer and embedded framebuffer kref fields.
         unsafe { write(state.as_mut_ptr().add(DRM_PLANE_STATE_FB_OFF).cast::<*mut u8>(), old.as_mut_ptr()); write(old.as_mut_ptr().add(DRM_FB_REFCOUNT_OFF).cast::<i32>(), 2); write(new.as_mut_ptr().add(DRM_FB_REFCOUNT_OFF).cast::<i32>(), 1); }
@@ -151,5 +192,6 @@ mod tests {
         // SAFETY: the assignment owns exactly the old put, new get, and state pointer writes above.
         unsafe { assert_eq!(read(state.as_ptr().add(DRM_PLANE_STATE_FB_OFF).cast::<*mut u8>()), new.as_mut_ptr()); assert_eq!(read(old.as_ptr().add(DRM_FB_REFCOUNT_OFF).cast::<i32>()), 1); assert_eq!(read(new.as_ptr().add(DRM_FB_REFCOUNT_OFF).cast::<i32>()), 2); }
         assert_eq!(drm_atomic_set_crtc_for_plane(core::ptr::null_mut(), core::ptr::null_mut()), -LINUX_EINVAL);
+        assert_eq!(drm_atomic_helper_page_flip(core::ptr::null_mut(), core::ptr::null_mut(), core::ptr::null_mut(), 0, core::ptr::null_mut()), -LINUX_EINVAL);
     }
 }
