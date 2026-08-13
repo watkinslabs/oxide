@@ -1326,6 +1326,7 @@ dependencies = [
  "klog",
  "mmio-map",
  "net",
+ "netlink",
  "pci",
  "pmm",
  "sched",

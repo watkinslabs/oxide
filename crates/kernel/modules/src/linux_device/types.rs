@@ -101,14 +101,45 @@ impl LinuxKobject {
     }
 }
 
+impl LinuxKobjUeventEnv {
+    pub(crate) const fn new() -> Self {
+        Self { argv: [core::ptr::null_mut(); 3], envp: [core::ptr::null_mut(); 64], envp_idx: 0, buf: [0; 2048], buflen: 0 }
+    }
+}
+
 #[repr(C)]
 pub struct LinuxKobjType {
     pub(crate) release: Option<KobjectRelease>,
+    pub(crate) sysfs_ops: *const c_void,
+    pub(crate) default_groups: *const *const c_void,
+    pub(crate) child_ns_type: *const c_void,
+    pub(crate) namespace: *const c_void,
+    pub(crate) get_ownership: *const c_void,
+}
+
+#[repr(C)]
+pub struct LinuxKobjUeventEnv {
+    pub(crate) argv: [*mut c_char; 3],
+    pub(crate) envp: [*mut c_char; 64],
+    pub(crate) envp_idx: i32,
+    pub(crate) buf: [c_char; 2048],
+    pub(crate) buflen: i32,
+}
+
+#[repr(C)]
+pub struct LinuxKsetUeventOps {
+    pub(crate) filter: Option<unsafe extern "C" fn(*const LinuxKobject) -> i32>,
+    pub(crate) name: Option<unsafe extern "C" fn(*const LinuxKobject) -> *const c_char>,
+    pub(crate) uevent: Option<unsafe extern "C" fn(*const LinuxKobject, *mut LinuxKobjUeventEnv) -> i32>,
 }
 
 #[repr(C)]
 pub struct LinuxKset {
+    pub(crate) list: [*mut c_void; 2],
+    pub(crate) list_lock: u32,
+    pub(crate) _pad: u32,
     pub(crate) kobj: LinuxKobject,
+    pub(crate) uevent_ops: *const LinuxKsetUeventOps,
 }
 
 #[repr(C)]

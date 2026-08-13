@@ -19,8 +19,18 @@ pub(super) unsafe fn copy_cstr(dst: *mut c_char, cap: usize, src: *const c_char)
 }
 
 pub(super) unsafe fn format_into(dst: *mut c_char, cap: usize, fmt: *const c_char, ap: &mut VaList) {
+    // SAFETY: callers satisfy format_into's pointer and varargs preconditions; this selects the name-sized formatting buffer.
+    unsafe { format_into_with_capacity::<DEVICE_NAME_LEN>(dst, cap, fmt, ap); }
+}
+
+pub(super) unsafe fn format_into_uevent(dst: *mut c_char, cap: usize, fmt: *const c_char, ap: &mut VaList) {
+    // SAFETY: callers satisfy the uevent formatter's pointer and varargs contract, and its capacity bounds output copying.
+    unsafe { format_into_with_capacity::<2048>(dst, cap, fmt, ap); }
+}
+
+unsafe fn format_into_with_capacity<const N: usize>(dst: *mut c_char, cap: usize, fmt: *const c_char, ap: &mut VaList) {
     if cap == 0 { return; }
-    let mut out = [0u8; DEVICE_NAME_LEN];
+    let mut out = [0u8; N];
     let mut n = 0usize;
     // SAFETY: fmt is a NUL-terminated C format string and ap matches it.
     unsafe { format_bytes(&mut out, &mut n, fmt, ap); }

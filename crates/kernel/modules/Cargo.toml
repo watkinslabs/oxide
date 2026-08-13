@@ -39,6 +39,7 @@ tracefs = { path = "../tracefs" }
 kernfs = { path = "../kernfs" }
 syscall = { path = "../syscall" }
 cmdline = { path = "../cmdline" }
+netlink = { path = "../netlink" }
 
 [features]
 default = []
