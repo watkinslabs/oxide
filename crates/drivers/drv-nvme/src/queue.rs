@@ -59,7 +59,9 @@ pub struct Nvme {
     /// One controller-private page for synchronous admin IDENTIFY transfers.
     admin_data_pa: u64,
     admin_data_dma: u64,
-    /// Namespace 1 geometry harvested at IDENTIFY.
+    /// Active namespace selected from the controller's namespace list.
+    nsid:    u32,
+    /// Selected namespace geometry harvested at IDENTIFY.
     pub ns_blocks: u64,
     pub blk_size:  u32,
 }
@@ -78,6 +80,8 @@ const DATA_PAGES: u64 = regs::MAX_PRP_DATA_PAGES;
 
 impl Nvme {
     pub(crate) const fn bdf(&self) -> pci::Bdf { self.bdf }
+    /// Active namespace ID selected during controller bring-up. # C: O(1)
+    pub(crate) const fn namespace_id(&self) -> u32 { self.nsid }
     /// Maximum concurrently posted I/O commands, leaving one SQ entry empty.
     /// # C: O(1)
     pub(crate) const fn io_capacity(&self) -> usize { self.io.entries.saturating_sub(1) as usize }
@@ -201,7 +205,7 @@ impl Nvme {
 
         let mut nv = Nvme {
             bdf, mmio, bar0_va, admin, io, admin_data_pa: admin_data, admin_data_dma,
-            ns_blocks: 0, blk_size: 512,
+            nsid: 0, ns_blocks: 0, blk_size: 512,
         };
         let to_ms = regs::cap_to_ms(cap).max(2_000);
 
@@ -230,8 +234,8 @@ impl Nvme {
             return None;
         }
 
-        // 5. IDENTIFY namespace 1 → capacity (NSZE) + LBA format → block size.
-        if !nv.identify_ns1() {
+        // 5. Select one active namespace, then harvest its capacity and LBA format.
+        if !nv.identify_active_namespace() {
             nv.shutdown_and_free();
             return None;
         }
@@ -370,12 +374,16 @@ impl Nvme {
         Some(hhdm().wrapping_add(self.admin_data_pa))
     }
 
-    /// IDENTIFY namespace 1 and harvest NSZE (capacity in blocks) + the
+    /// Select an active namespace then harvest NSZE (capacity in blocks) + the
     /// in-use LBA format's block size. NVMe §5.15.2.1: NSZE @ byte 0 (u64),
     /// FLBAS @ byte 26 (low 4 bits = active LBAF index), LBAF array @ byte
     /// 128 (16 × u32). # C: O(one admin cmd)
-    fn identify_ns1(&mut self) -> bool {
-        let va = match self.identify(regs::CNS_NAMESPACE, 1) { Some(v) => v, None => return false };
+    fn identify_active_namespace(&mut self) -> bool {
+        let list = match self.identify(regs::CNS_ACTIVE_NAMESPACE_LIST, 0) { Some(v) => v, None => return false };
+        // SAFETY: the Identify command filled the owned 4 KiB admin page before this read.
+        let bytes = unsafe { core::slice::from_raw_parts(list as *const u8, PAGE as usize) };
+        let Some(nsid) = regs::first_active_namespace(bytes) else { return false; };
+        let va = match self.identify(regs::CNS_NAMESPACE, nsid) { Some(v) => v, None => return false };
         // SAFETY: HHDM-mapped PRP frame the controller just filled with the
         // Identify-Namespace structure; aligned reads of NSZE/FLBAS/LBAF stay
         // within the 4 KiB page (offsets 0, 26, 128+idx*4 < 4096).
@@ -387,6 +395,7 @@ impl Nvme {
             let idx = (flbas & 0x0F) as usize;
             let lbaf_p = (va + 128 + (idx as u64) * 4) as *const u32;
             let lbaf = core::ptr::read_volatile(lbaf_p);
+            self.nsid = nsid;
             self.ns_blocks = nsze;
             self.blk_size = regs::lba_size_from_lbaf(lbaf);
         }

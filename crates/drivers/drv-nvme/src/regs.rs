@@ -62,6 +62,17 @@ pub fn prp_second(bytes: u64) -> Option<PrpSecond> {
 /// Identify CNS values (§5.15.1).
 pub const CNS_NAMESPACE:  u32 = 0x00;
 pub const CNS_CONTROLLER: u32 = 0x01;
+pub const CNS_ACTIVE_NAMESPACE_LIST: u32 = 0x02;
+
+/// Return the first nonzero namespace ID from one active-namespace list page.
+/// # C: O(namespace-list entries)
+pub fn first_active_namespace(bytes: &[u8]) -> Option<u32> {
+    for word in bytes.chunks_exact(4) {
+        let nsid = u32::from_le_bytes(word.try_into().ok()?);
+        if nsid != 0 { return Some(nsid); }
+    }
+    None
+}
 
 /// CREATE I/O CQ CDW11 bits: physically contiguous and interrupt enabled.
 pub const CREATE_CQ_PHYS_CONTIG: u32 = 1 << 0;
@@ -244,5 +255,13 @@ mod tests {
         assert_eq!(prp_second(3 * NVME_PAGE_BYTES), Some(PrpSecond::List { entries: 2 }));
         assert_eq!(prp_second(MAX_PRP_DATA_PAGES * NVME_PAGE_BYTES), Some(PrpSecond::List { entries: 511 }));
         assert_eq!(prp_second(MAX_PRP_DATA_PAGES * NVME_PAGE_BYTES + 1), None);
+    }
+
+    #[test]
+    fn active_namespace_list_skips_empty_slots() {
+        let mut list = [0u8; 16];
+        list[4..8].copy_from_slice(&7u32.to_le_bytes());
+        assert_eq!(first_active_namespace(&list), Some(7));
+        assert_eq!(first_active_namespace(&[0; 8]), None);
     }
 }
