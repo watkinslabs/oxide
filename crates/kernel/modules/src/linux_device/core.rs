@@ -46,6 +46,7 @@ pub(super) fn export_symbols() {
         ("device_destroy",          device_destroy          as *const () as usize),
         ("device_create_file",      device_create_file      as *const () as usize),
         ("device_remove_file",      device_remove_file      as *const () as usize),
+        ("device_remove_file_self", device_remove_file_self as *const () as usize),
         ("sysfs_emit",              sysfs_emit              as *const () as usize),
         ("sysfs_emit_at",           sysfs_emit_at           as *const () as usize),
         ("devm_kmalloc",            devm_kmalloc            as *const () as usize),
@@ -310,7 +311,12 @@ extern "C" fn device_create_file(dev: *mut LinuxDevice, attr: *const LinuxDevice
 
 extern "C" fn device_remove_file(dev: *mut LinuxDevice, attr: *const LinuxDeviceAttribute) {
     if dev.is_null() || attr.is_null() { return; }
-    registry::remove_attr(dev as usize, attr as usize);
+    let _ = registry::remove_attr(dev as usize, attr as usize);
+}
+
+extern "C" fn device_remove_file_self(dev: *mut LinuxDevice, attr: *const LinuxDeviceAttribute) -> bool {
+    if dev.is_null() || attr.is_null() { return false; }
+    registry::remove_attr(dev as usize, attr as usize)
 }
 
 unsafe extern "C" fn sysfs_emit(buf: *mut c_char, fmt: *const c_char, mut ap: ...) -> i32 {

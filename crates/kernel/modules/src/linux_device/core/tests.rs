@@ -164,6 +164,10 @@ fn device_attrs_and_class_destroy_are_tracked() {
     device_remove_file(dev, &attr);
     let snap = registry::snapshot(dev as usize).unwrap();
     assert_eq!(snap.attr_count, 0);
+    assert!(!device_remove_file_self(dev, &attr), "an already absent file cannot remove itself again");
+    assert_eq!(device_create_file(dev, &attr), LINUX_OK);
+    assert!(device_remove_file_self(dev, &attr), "the installed attribute removes itself exactly once");
+    assert_eq!(registry::snapshot(dev as usize).unwrap().attr_count, 0);
     device_destroy(class, 0x1234);
     assert!(registry::snapshot(dev as usize).is_none());
     class_destroy(class);
@@ -173,6 +177,7 @@ fn device_attrs_and_class_destroy_are_tracked() {
 fn export_symbols_registers_device_surface() {
     let _modules = crate::test_serial::claim();
     export_symbols();
+    assert!(crate::symtab::is_exported("device_remove_file_self"));
     for name in [
         "device_register", "device_unregister", "dev_set_drvdata",
         "dev_get_drvdata", "dev_name", "device_get_match_data", "devm_kmalloc", "devm_kfree",

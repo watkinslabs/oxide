@@ -154,6 +154,7 @@ struct device *device_create(struct class *class, struct device *parent, dev_t d
 void device_destroy(struct class *class, dev_t devt);
 int device_create_file(struct device *dev, const struct device_attribute *attr);
 void device_remove_file(struct device *dev, const struct device_attribute *attr);
+bool device_remove_file_self(struct device *dev, const struct device_attribute *attr);
 void *devm_kmalloc(struct device *dev, size_t size, gfp_t flags);
 void *devm_kzalloc(struct device *dev, size_t size, gfp_t flags);
 void devm_kfree(struct device *dev, const void *p);
