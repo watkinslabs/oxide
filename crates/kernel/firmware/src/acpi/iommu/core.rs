@@ -9,7 +9,7 @@ use crate::acpi::read::read_u32_le;
 mod rmrr;
 mod published;
 pub use rmrr::{DmarRmrr, MAX_RMRR_SCOPES as MAX_DMAR_RMRR_SCOPES};
-pub use published::{amd_ivmd, amd_ivmd_count, amd_vi_alias_for_requester, amd_vi_special, amd_vi_special_count, amd_vi_unit_for_requester, decode_dmar, decode_ivrs,
+pub use published::{amd_ivmd, amd_ivmd_count, amd_vi_alias, amd_vi_alias_count, amd_vi_alias_for_requester, amd_vi_special, amd_vi_special_count, amd_vi_unit_for_requester, decode_dmar, decode_ivrs,
     dmar_rmrr, dmar_rmrr_count, dmar_scope, dmar_scope_count, dmar_x2apic_opt_out, iommu_unit, iommu_unit_count,
     iommu_unit_for_segment};
 
