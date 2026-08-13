@@ -19,6 +19,7 @@ mod vtd_pt_tree;
 mod vtd_tables;
 mod vtd_ir;
 mod vtd_manager;
+mod vtd_fault;
 pub use amd_vi::{AmdViCommand, AmdViDte, AmdViRegisters, AmdViState, AmdViTables, AmdViUnit, COMMAND_BUFFER, COMMAND_HEAD, COMMAND_TAIL,
     CONTROL, CONTROL_COHERENT_ENABLE, CONTROL_COMMAND_ENABLE, CONTROL_COMPLETION_ENABLE, CONTROL_EVENT_ENABLE, CONTROL_IOMMU_ENABLE, DEVICE_TABLE, EVENT_HEAD, EVENT_LOG, EVENT_TAIL, EXT_FEATURES};
 pub use amd_vi_event::{AmdViEvent, AmdViEventKind};
@@ -37,7 +38,8 @@ pub use vtd_pt::VtdPte;
 pub use vtd_pt_tree::VtdPageTable;
 pub use vtd_tables::VtdTables;
 pub use vtd_ir::{VtdIrTable, VtdIrte, invalidate_irte, remapped_msi};
-pub use vtd_manager::{VtdActivation, VtdHpet, VtdIoapic, VtdMsi, activate_vtd, allocate_vtd_hpet, allocate_vtd_ioapic, allocate_vtd_msi, enable_vtd_interrupt_remapping, vtd_eim_capable};
+pub use vtd_fault::VtdFault;
+pub use vtd_manager::{VtdActivation, VtdHpet, VtdIoapic, VtdMsi, activate_vtd, allocate_vtd_hpet, allocate_vtd_ioapic, allocate_vtd_msi, enable_vtd_interrupt_remapping, enable_vtd_fault_interrupts, handle_vtd_fault_interrupt, poll_vtd_faults, vtd_eim_capable, vtd_fault_records};
 
 /// Conservative x2APIC admission: every active IOMMU owner must preserve a
 /// full destination ID through its interrupt-remapping format. # C: O(1)

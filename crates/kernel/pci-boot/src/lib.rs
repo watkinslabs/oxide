@@ -34,6 +34,8 @@ mod trace;
 mod virtio_trace;
 mod virtio_transport;
 mod amd_vi_events;
+#[cfg(target_arch = "x86_64")]
+mod vtd_faults;
 
 /// Monotonic virtio-bus sequence (`virtioN` naming) assigned in
 /// enumeration order, mirroring Linux's virtio-pci registration.
@@ -182,7 +184,10 @@ pub fn enumerate_and_log() {
     if iommu_activation == iommu::AmdViActivation::Failed { return; }
     if iommu_activation == iommu::AmdViActivation::Enabled
         && !amd_vi_events::install(&requesters) { return; }
-    if activate_vtd_arch(&requesters, &aliases) == iommu::VtdActivation::Failed { return; }
+    let vtd_activation = activate_vtd_arch(&requesters, &aliases);
+    if vtd_activation == iommu::VtdActivation::Failed { return; }
+    #[cfg(target_arch = "x86_64")]
+    if vtd_activation == iommu::VtdActivation::Enabled && !vtd_faults::install() { return; }
     if !iommu::enable_vtd_interrupt_remapping() { return; }
     iommu::admit_boot_requesters(&requesters);
     if !map_firmware_ioapics() { return; }
