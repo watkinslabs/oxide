@@ -31,6 +31,15 @@ pub struct PartitionInfo {
     pub label: Option<String>,
 }
 
+/// Derive the conventional partition node name from a whole-disk node name.
+/// Disk names ending in an ASCII digit use the required `p` separator.
+/// # C: O(name length)
+pub fn node_name(disk: &str, number: u32) -> Option<String> {
+    if disk.is_empty() || number == 0 { return None; }
+    let separator = disk.as_bytes().last().is_some_and(u8::is_ascii_digit).then_some("p").unwrap_or("");
+    Some(alloc::format!("{disk}{separator}{number}"))
+}
+
 /// Parse the partition table at the start of a 512-byte-sector disk image.
 /// A protective DOS record selects GPT; otherwise primary DOS entries are
 /// returned. Corrupt GPT metadata yields no partitions rather than mounting a
@@ -172,6 +181,16 @@ mod tests {
     fn gpt_guid_uses_the_canonical_mixed_endian_text_form() {
         assert_eq!(guid(&[0x33, 0x22, 0x11, 0x00, 0x55, 0x44, 0x77, 0x66, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff]),
                    "00112233-4455-6677-8899-aabbccddeeff");
+    }
+
+    #[test]
+    fn partition_node_separator_follows_the_disk_name_grammar() {
+        assert_eq!(node_name("sda", 1).as_deref(), Some("sda1"));
+        assert_eq!(node_name("vda", 15).as_deref(), Some("vda15"));
+        assert_eq!(node_name("nvme0n1", 2).as_deref(), Some("nvme0n1p2"));
+        assert_eq!(node_name("mmcblk0", 3).as_deref(), Some("mmcblk0p3"));
+        assert_eq!(node_name("", 1), None);
+        assert_eq!(node_name("sda", 0), None);
     }
 
     #[test]
