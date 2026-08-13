@@ -5,6 +5,7 @@ use super::*;
 const DRM_ATOMIC_DEV_OFF: usize = 8;
 const DRM_ATOMIC_PLANES_OFF: usize = 32;
 const DRM_ENTRY_OBJECT_OFF: usize = 0;
+const DRM_ENTRY_OLD_OFF: usize = 16;
 const DRM_ENTRY_NEW_OFF: usize = 24;
 const DRM_ATOMIC_PLANE_ENTRY_SIZE: usize = 32;
 const DRM_PLANE_HELPER_PRIVATE_OFF: usize = 1224;
@@ -55,6 +56,7 @@ fn each_plane(state: *mut u8, count: usize, f: &mut impl FnMut(*mut c_void, *mut
 pub(super) fn export_symbols() {
     crate::symtab::export("drm_atomic_helper_prepare_planes", drm_atomic_helper_prepare_planes as *const () as usize, false);
     crate::symtab::export("drm_atomic_helper_unprepare_planes", drm_atomic_helper_unprepare_planes as *const () as usize, false);
+    crate::symtab::export("drm_atomic_helper_cleanup_planes", drm_atomic_helper_cleanup_planes as *const () as usize, false);
 }
 
 /// Prepare framebuffer resources, unwinding exactly the acquired prefix on failure. # C: O(N_planes)
@@ -115,6 +117,28 @@ pub(super) extern "C" fn drm_atomic_helper_unprepare_planes(dev: *mut c_void, st
     let _ = each_plane(state, count, &mut |plane, new, helpers| { let cleanup = callback(helpers, DRM_PLANE_HELPER_CLEANUP_FB_OFF); if cleanup != 0 { unsafe { core::mem::transmute::<usize, unsafe extern "C" fn(*mut c_void, *mut c_void)>(cleanup)(plane, new); } } 0 });
 }
 
+/// Release framebuffer resources retained by the old state after a published commit. # C: O(N_planes)
+pub(super) extern "C" fn drm_atomic_helper_cleanup_planes(dev: *mut c_void, state: *mut c_void) {
+    let Some((state, count)) = transaction(state) else { return; };
+    // SAFETY: this transaction's retained device must match the caller's device.
+    if unsafe { read(state.add(DRM_ATOMIC_DEV_OFF).cast::<*mut c_void>()) } != dev { return; }
+    for index in 0..count {
+        // SAFETY: index is bounded by the state-owned plane entry array.
+        let entry = unsafe { entry(state, index) };
+        // SAFETY: object and old-state pointers remain valid until terminal atomic cleanup.
+        let (plane, old) = unsafe { (read(entry.add(DRM_ENTRY_OBJECT_OFF).cast::<*mut c_void>()), read(entry.add(DRM_ENTRY_OLD_OFF).cast::<*mut c_void>())) };
+        if plane.is_null() || old.is_null() { continue; }
+        // SAFETY: the plane helper table remains live for the terminal atomic callback.
+        let helpers = unsafe { read(plane.cast::<u8>().add(DRM_PLANE_HELPER_PRIVATE_OFF).cast::<*const u8>()) };
+        if helpers.is_null() { continue; }
+        let cleanup = callback(helpers, DRM_PLANE_HELPER_CLEANUP_FB_OFF);
+        if cleanup != 0 {
+            // SAFETY: cleanup_fb has the ABI-pinned plane/old-state signature.
+            unsafe { core::mem::transmute::<usize, unsafe extern "C" fn(*mut c_void, *mut c_void)>(cleanup)(plane, old); }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,5 +158,15 @@ mod tests {
         unsafe { write(state.as_mut_ptr().add(DRM_ATOMIC_DEV_OFF).cast::<*mut u8>(), dev.as_mut_ptr()); write(state.as_mut_ptr().add(DRM_ATOMIC_PLANES_OFF).cast::<*mut u8>(), entries.as_mut_ptr()); write(entries.as_mut_ptr().add(DRM_ENTRY_OBJECT_OFF).cast::<*mut u8>(), first.as_mut_ptr()); write(entries.as_mut_ptr().add(DRM_ENTRY_NEW_OFF).cast::<*mut u8>(), first_state.as_mut_ptr()); write(entries.as_mut_ptr().add(DRM_ATOMIC_PLANE_ENTRY_SIZE + DRM_ENTRY_OBJECT_OFF).cast::<*mut u8>(), second.as_mut_ptr()); write(entries.as_mut_ptr().add(DRM_ATOMIC_PLANE_ENTRY_SIZE + DRM_ENTRY_NEW_OFF).cast::<*mut u8>(), second_state.as_mut_ptr()); write(first.as_mut_ptr().add(DRM_PLANE_HELPER_PRIVATE_OFF).cast::<*mut u8>(), helpers.as_mut_ptr()); write(second.as_mut_ptr().add(DRM_PLANE_HELPER_PRIVATE_OFF).cast::<*mut u8>(), helpers.as_mut_ptr()); write(helpers.as_mut_ptr().add(DRM_PLANE_HELPER_PREPARE_FB_OFF).cast::<usize>(), prepare as *const () as usize); write(helpers.as_mut_ptr().add(DRM_PLANE_HELPER_CLEANUP_FB_OFF).cast::<usize>(), cleanup as *const () as usize); }
         DEVICES.lock().push(DeviceAllocation { dev: dev.as_mut_ptr() as usize, base: 0, layout: Layout::new::<u8>(), refs: 1, mode_config: true, objects: Vec::new(), planes: vec![PlaneRecord { ptr: first.as_mut_ptr() as usize, formats: 0, layout: Layout::new::<u8>() }, PlaneRecord { ptr: second.as_mut_ptr() as usize, formats: 0, layout: Layout::new::<u8>() }], crtcs: Vec::new(), encoders: Vec::new(), connectors: Vec::new(), clients: Vec::new(), vblank: None, primary_master: None, put_pending: false, unplugged: false });
         assert_eq!(drm_atomic_helper_prepare_planes(dev.as_mut_ptr().cast(), state.as_mut_ptr().cast()), -5); assert_eq!(PREPARED.load(Ordering::SeqCst), 2); assert_eq!(CLEANED.load(Ordering::SeqCst), 1); DEVICES.lock().clear();
+    }
+
+    #[test]
+    fn cleanup_releases_old_state_only_after_publish() {
+        let _modules = crate::test_serial::claim(); CLEANED.store(0, Ordering::SeqCst);
+        let mut dev = [0u8; 1800]; let mut state = [0u8; 128]; let mut entries = [0u8; 32]; let mut plane = [0u8; 1360]; let mut helpers = [0u8; 96]; let mut old = [0u8; 184]; let mut new = [0u8; 184];
+        // SAFETY: fabricated records reserve the one old/new entry and its cleanup callback.
+        unsafe { write(state.as_mut_ptr().add(DRM_ATOMIC_DEV_OFF).cast::<*mut u8>(), dev.as_mut_ptr()); write(state.as_mut_ptr().add(DRM_ATOMIC_PLANES_OFF).cast::<*mut u8>(), entries.as_mut_ptr()); write(entries.as_mut_ptr().add(DRM_ENTRY_OBJECT_OFF).cast::<*mut u8>(), plane.as_mut_ptr()); write(entries.as_mut_ptr().add(DRM_ENTRY_OLD_OFF).cast::<*mut u8>(), old.as_mut_ptr()); write(entries.as_mut_ptr().add(DRM_ENTRY_NEW_OFF).cast::<*mut u8>(), new.as_mut_ptr()); write(plane.as_mut_ptr().add(DRM_PLANE_HELPER_PRIVATE_OFF).cast::<*mut u8>(), helpers.as_mut_ptr()); write(helpers.as_mut_ptr().add(DRM_PLANE_HELPER_CLEANUP_FB_OFF).cast::<usize>(), cleanup as *const () as usize); }
+        DEVICES.lock().push(DeviceAllocation { dev: dev.as_mut_ptr() as usize, base: 0, layout: Layout::new::<u8>(), refs: 1, mode_config: true, objects: Vec::new(), planes: vec![PlaneRecord { ptr: plane.as_mut_ptr() as usize, formats: 0, layout: Layout::new::<u8>() }], crtcs: Vec::new(), encoders: Vec::new(), connectors: Vec::new(), clients: Vec::new(), vblank: None, primary_master: None, put_pending: false, unplugged: false });
+        drm_atomic_helper_cleanup_planes(dev.as_mut_ptr().cast(), state.as_mut_ptr().cast()); assert_eq!(CLEANED.load(Ordering::SeqCst), 1); DEVICES.lock().clear();
     }
 }

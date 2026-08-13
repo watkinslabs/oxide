@@ -5,7 +5,7 @@ use super::*;
 const DEV_OFF: usize = 8; const PLANES_OFF: usize = 32; const CRTCS_OFF: usize = 40; const FAKE_OFF: usize = 88;
 const PLANE_ENTRY: usize = 32; const CRTC_ENTRY: usize = 56; const OBJ: usize = 0; const OLD: usize = 16; const NEW: usize = 24;
 const PLANE_HELPERS: usize = 1224; const CRTC_HELPERS: usize = 432; const PLANE_UPDATE: usize = 40; const PLANE_ENABLE: usize = 48; const PLANE_DISABLE: usize = 56; const CRTC_BEGIN: usize = 88; const CRTC_FLUSH: usize = 96;
-const PLANE_CRTC: usize = 8; const PLANE_COMMIT: usize = 160; const CRTC_COMMIT: usize = 320; const COMMIT_HW: usize = 48; const COMMIT_CLEANUP: usize = 80;
+const PLANE_CRTC: usize = 8; const PLANE_COMMIT: usize = 160; const CRTC_COMMIT: usize = 320; const COMMIT_HW: usize = 48; const COMMIT_CLEANUP: usize = 80; const PLANE_END_FB_ACCESS: usize = 24;
 
 fn counts(dev: *mut c_void) -> Option<(usize, usize)> { let d = DEVICES.lock(); let r = d.iter().find(|r| r.dev == dev as usize && r.mode_config && !r.put_pending && !r.unplugged)?; Some((r.planes.len(), r.crtcs.len())) }
 unsafe fn entry(s: *mut u8, off: usize, size: usize, i: usize) -> *mut u8 { unsafe { read(s.add(off).cast::<*mut u8>()).add(i * size) } }
@@ -20,6 +20,7 @@ pub(super) extern "C" fn drm_atomic_helper_commit_planes(dev: *mut c_void, state
     for i in 0..crtcs { let e = unsafe { entry(s, CRTCS_OFF, CRTC_ENTRY, i) }; let (o, n) = unsafe { (read(e.add(OBJ).cast::<*mut u8>()), read(e.add(NEW).cast::<*mut u8>())) }; if !o.is_null() && !n.is_null() { unsafe { call2(callback(o, CRTC_HELPERS, CRTC_BEGIN), o.cast(), state); } } }
     for i in 0..planes { let e = unsafe { entry(s, PLANES_OFF, PLANE_ENTRY, i) }; let (o, old, new) = unsafe { (read(e.add(OBJ).cast::<*mut u8>()), read(e.add(OLD).cast::<*mut u8>()), read(e.add(NEW).cast::<*mut u8>())) }; if o.is_null() || old.is_null() || new.is_null() { continue; } let (old_crtc, new_crtc) = unsafe { (read(old.add(PLANE_CRTC).cast::<*mut u8>()), read(new.add(PLANE_CRTC).cast::<*mut u8>())) }; let disabling = !old_crtc.is_null() && new_crtc.is_null(); if disabling && callback(o, PLANE_HELPERS, PLANE_DISABLE) != 0 { unsafe { call2(callback(o, PLANE_HELPERS, PLANE_DISABLE), o.cast(), state); } } else if !new_crtc.is_null() || disabling { unsafe { call2(callback(o, PLANE_HELPERS, PLANE_UPDATE), o.cast(), state); if old_crtc.is_null() && !new_crtc.is_null() { call2(callback(o, PLANE_HELPERS, PLANE_ENABLE), o.cast(), state); } } } }
     for i in 0..crtcs { let e = unsafe { entry(s, CRTCS_OFF, CRTC_ENTRY, i) }; let (o, n) = unsafe { (read(e.add(OBJ).cast::<*mut u8>()), read(e.add(NEW).cast::<*mut u8>())) }; if !o.is_null() && !n.is_null() { unsafe { call2(callback(o, CRTC_HELPERS, CRTC_FLUSH), o.cast(), state); } } }
+    for i in 0..planes { let e = unsafe { entry(s, PLANES_OFF, PLANE_ENTRY, i) }; let (o, old) = unsafe { (read(e.add(OBJ).cast::<*mut u8>()), read(e.add(OLD).cast::<*mut u8>())) }; if !o.is_null() && !old.is_null() { unsafe { call2(callback(o, PLANE_HELPERS, PLANE_END_FB_ACCESS), o.cast(), old.cast()); } } }
 }
 
 /// Signal completion of hardware programming and transfer CRTC commit ownership. # C: O(N_crtcs)
