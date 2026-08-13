@@ -138,10 +138,9 @@ fn route_in_context(context: &mut RouteContext, bdf: pci::Bdf, pin_number: u8) -
     None
 }
 
-/// Resolve a PCI function's firmware-owned INTx route. # C: O(AML namespace)
+/// Resolve a PCI function's cached firmware-owned INTx route. # C: O(root routes)
 pub fn pci_intx_route(bdf: pci::Bdf, pin: u8) -> Option<PciIntxRoute> {
     let mut context = CONTEXT.lock();
-    if context.is_none() { *context = build_context(); }
     route_in_context(context.as_mut()?, bdf, pin)
 }
 
