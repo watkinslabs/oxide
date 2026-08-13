@@ -99,8 +99,8 @@ pub(super) struct LinuxGendisk {
     pub(super) private_data: *mut c_void,
     pub(super) capacity: u64,
     pub(super) flags: u32,
+    pub(super) state: usize,
     pub(super) dev: LinuxDevice,
-    pub(super) registered: u32,
 }
 
 #[repr(C)]

@@ -13,10 +13,10 @@ use sync::{Modules as ModulesLockClass, Spinlock};
 
 pub(super) const DEFAULT_MINORS: i32 = 1;
 const DEFAULT_NODE_ID: i32 = 0;
-const DISK_DEAD_FLAG: u32 = 1 << 31;
 pub(super) const GENHD_FL_HIDDEN: u32 = 1 << 1;
-const REGISTERED_NO: u32 = 0;
-const REGISTERED_YES: u32 = 1;
+pub(super) const GD_READ_ONLY: usize = 1 << 1;
+const GD_DEAD: usize = 1 << 2;
+const GD_ADDED: usize = 1 << 4;
 static BLOCK_KSET: Spinlock<usize, ModulesLockClass> = Spinlock::new(0);
 
 /// Register the gendisk half of the block KPI.
@@ -30,6 +30,7 @@ pub(super) fn export_symbols() {
     export("del_gendisk",     del_gendisk     as *const () as usize, false);
     export("set_capacity",    set_capacity    as *const () as usize, false);
     export("set_capacity_and_notify", set_capacity_and_notify as *const () as usize, true);
+    export("set_disk_ro", set_disk_ro as *const () as usize, false);
     export("get_capacity",    get_capacity    as *const () as usize, false);
     export("disk_live",       disk_live       as *const () as usize, false);
 }
@@ -49,8 +50,8 @@ pub(in crate::linux_block) extern "C" fn alloc_disk_node(minors: i32, _node_id: 
         private_data: null_mut(),
         capacity: 0,
         flags: 0,
+        state: 0,
         dev: LinuxDevice::new(),
-        registered: REGISTERED_NO,
     }))
 }
 
@@ -60,12 +61,12 @@ pub(in crate::linux_block) unsafe extern "C" fn put_disk(disk: *mut LinuxGendisk
     if disk.is_null() { return; }
     // The registry holds an adapter that dereferences this same gendisk from safe code, so a publication
     // the module never withdrew (put_disk without del_gendisk) must be withdrawn before the Box below
-    // frees the allocation; release_needs_unregister decides that from the publication flag alone.
+    // frees the allocation; release_needs_unregister decides that from the added state alone.
     // SAFETY: disk is null-checked and, per the put_disk KPI, is the module's gendisk from alloc_disk*,
-    // so `registered` and disk_name are readable fields of that still-live allocation.
+    // so `state` and disk_name are readable fields of that still-live allocation.
     unsafe {
         let name = disk_name(disk);
-        if release_needs_unregister((*disk).registered, name.len()) { del_gendisk(disk); }
+        if release_needs_unregister((*disk).state & GD_ADDED != 0, name.len()) { del_gendisk(disk); }
     }
     // SAFETY: disk was allocated by alloc_disk* and, after the unregister above, the block registry no
     // longer holds an adapter naming it, so this Box::from_raw is the last reference to the allocation.
@@ -94,11 +95,11 @@ pub(in crate::linux_block) unsafe extern "C" fn add_disk(disk: *mut LinuxGendisk
     let adapter = Arc::new(LinuxBlockAdapter::new(disk)) as Arc<dyn BlockDevice>;
     let idx = block::registry::register_with_driver(
         block::registry::GENERIC_BLOCK_DRIVER, &name, None, adapter);
-    // SAFETY: same null-checked gendisk allocation as above; registered/queue are plain fields of it. The
+    // SAFETY: same null-checked gendisk allocation as above; state/queue are plain fields of it. The
     // queue back-pointer store is guarded by the is_null test, and (*disk).queue is either null or the
     // blk_alloc_queue Box the module attached, whose `disk` field is likewise plain data.
     unsafe {
-        (*disk).registered = if idx == 0 { REGISTERED_NO } else { REGISTERED_YES };
+        if idx == 0 { (*disk).state &= !GD_ADDED; } else { (*disk).state |= GD_ADDED; }
         if !(*disk).queue.is_null() { (*(*disk).queue).disk = disk; }
     }
 }
@@ -123,10 +124,10 @@ unsafe extern "C" fn del_gendisk(disk: *mut LinuxGendisk) {
     // alloc_disk allocation and its disk_name array are still live here.
     let name = unsafe { disk_name(disk) };
     if !name.is_empty() { let _ = block::registry::unregister(&name); }
-    // SAFETY: same live gendisk; clearing `registered` must happen after the registry drops its adapter so
-    // the flag never claims a publication the block registry no longer has.
+    // SAFETY: same live gendisk; clearing added state must happen after the registry drops its adapter so
+    // the state bit never claims a publication the block registry no longer has.
     unsafe {
-        (*disk).registered = REGISTERED_NO;
+        (*disk).state &= !GD_ADDED;
         crate::linux_device::core::device_del(&mut (*disk).dev);
     }
 }
@@ -151,9 +152,27 @@ pub(super) unsafe extern "C" fn set_capacity_and_notify(disk: *mut LinuxGendisk,
     // SAFETY: same live gendisk; liveness and flags are its canonical publication state and visibility flags.
     if sectors == previous || !unsafe { disk_live(disk) } || unsafe { (*disk).flags & GENHD_FL_HIDDEN != 0 } { return false; }
     if previous == 0 || sectors == 0 { return false; }
+    let mut envp = [c"RESIZE=1".as_ptr() as *mut c_char, null_mut()];
     // SAFETY: the disk is live and its embedded device was initialized and published before the block registry.
-    unsafe { crate::linux_device::core::device_resize_uevent(&mut (*disk).dev); }
+    unsafe { crate::linux_device::core::device_change_uevent(&mut (*disk).dev, envp.as_mut_ptr()); }
     true
+}
+
+/// Toggle the gendisk read-only state and report state changes to user space.
+/// # C: O(name depth)
+pub(super) unsafe extern "C" fn set_disk_ro(disk: *mut LinuxGendisk, read_only: bool) {
+    if disk.is_null() { return; }
+    // SAFETY: disk is null-checked and remains caller-owned while its state word is updated.
+    let was_read_only = unsafe { (*disk).state & GD_READ_ONLY != 0 };
+    if was_read_only == read_only { return; }
+    // SAFETY: same live gendisk state word; this is the single gendisk read-only owner.
+    unsafe {
+        if read_only { (*disk).state |= GD_READ_ONLY; } else { (*disk).state &= !GD_READ_ONLY; }
+    }
+    let event = if read_only { c"DISK_RO=1" } else { c"DISK_RO=0" };
+    let mut envp = [event.as_ptr() as *mut c_char, null_mut()];
+    // SAFETY: same disk; event vector is local and NULL-terminated for the duration of the synchronous call.
+    unsafe { crate::linux_device::core::device_change_uevent(&mut (*disk).dev, envp.as_mut_ptr()); }
 }
 
 unsafe extern "C" fn get_capacity(disk: *const LinuxGendisk) -> u64 {
@@ -169,7 +188,7 @@ pub(super) unsafe extern "C" fn disk_live(disk: *mut LinuxGendisk) -> bool {
     if disk.is_null() { return false; }
     // SAFETY: disk is caller-owned live gendisk storage; the registry publication flag and dead bit are
     // the canonical Oxide counterparts to the live part-0 backing object tested by block paths.
-    unsafe { (*disk).registered == REGISTERED_YES && ((*disk).flags & DISK_DEAD_FLAG) == 0 }
+    unsafe { (*disk).state & (GD_ADDED | GD_DEAD) == GD_ADDED }
 }
 
 /// Mark a gendisk dead so its holders stop issuing new I/O.
@@ -177,8 +196,8 @@ pub(super) unsafe extern "C" fn disk_live(disk: *mut LinuxGendisk) -> bool {
 pub(in crate::linux_block) unsafe fn mark_disk_dead(disk: *mut LinuxGendisk) {
     if disk.is_null() { return; }
     // SAFETY: disk is null-checked and, per the blk_mark_disk_dead KPI, is the module's gendisk from
-    // alloc_disk*; `flags` is a u32 field of that allocation, so the read-modify-write stays in bounds.
-    unsafe { (*disk).flags |= DISK_DEAD_FLAG; }
+    // alloc_disk*; `state` is the gendisk lifecycle word, so the read-modify-write stays in bounds.
+    unsafe { (*disk).state |= GD_DEAD; }
 }
 
 pub(super) fn sectors_to_blocks(sectors: u64, block_size: u32) -> u64 {

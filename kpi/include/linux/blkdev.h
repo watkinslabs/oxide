@@ -122,6 +122,7 @@ void blk_mq_destroy_queue(struct request_queue *q);
 void blk_put_queue(struct request_queue *q);
 int bdev_disk_changed(struct gendisk *disk, bool invalidate);
 int device_add_disk(struct device *parent, struct gendisk *disk, const void *groups);
+void set_disk_ro(struct gendisk *disk, bool read_only);
 void blk_mark_disk_dead(struct gendisk *disk);
 void blk_queue_rq_timeout(struct request_queue *q, unsigned int timeout);
 void blk_sync_queue(struct request_queue *q);

@@ -37,10 +37,10 @@ pub(super) fn addable_bytes(region_len: usize, off: usize, len: usize) -> usize 
 }
 
 /// Whether releasing a gendisk still owes the block registry an unregister for its name.
-/// `registered` is the gendisk's publication flag, which `del_gendisk` clears.
+/// `published` is the gendisk's added state, which `del_gendisk` clears.
 /// # C: O(1)
-pub(super) fn release_needs_unregister(registered: u32, name_len: usize) -> bool {
-    registered != 0 && name_len != 0
+pub(super) fn release_needs_unregister(published: bool, name_len: usize) -> bool {
+    published && name_len != 0
 }
 
 #[cfg(test)]
@@ -108,13 +108,13 @@ mod tests {
 
     #[test]
     fn releasing_a_published_disk_still_owes_an_unregister() {
-        assert!(release_needs_unregister(1, 5));
+        assert!(release_needs_unregister(true, 5));
     }
 
     #[test]
     fn releasing_an_unpublished_or_unnamed_disk_owes_nothing() {
-        assert!(!release_needs_unregister(0, 5));
-        assert!(!release_needs_unregister(1, 0));
-        assert!(!release_needs_unregister(0, 0));
+        assert!(!release_needs_unregister(false, 5));
+        assert!(!release_needs_unregister(true, 0));
+        assert!(!release_needs_unregister(false, 0));
     }
 }
