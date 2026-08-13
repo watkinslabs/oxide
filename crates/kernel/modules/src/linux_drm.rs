@@ -32,6 +32,8 @@ pub(crate) use gem_mmap::{shmem_mapping_frame, shmem_mapping_object, shmem_mappi
 #[path = "linux_drm_atomic_affected.rs"] mod atomic_affected;
 #[path = "linux_drm_atomic_routing.rs"] mod atomic_routing;
 pub(crate) use atomic_routing::update_connector_routing;
+#[path = "linux_drm_atomic_clones.rs"] mod atomic_clones;
+pub(crate) use atomic_clones::check_valid_clones;
 #[path = "linux_drm_modeset.rs"] mod modeset;
 #[path = "linux_drm_vblank.rs"] mod vblank;
 #[path = "linux_drm_vblank_event.rs"] mod vblank_event;
