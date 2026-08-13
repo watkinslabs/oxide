@@ -48,6 +48,27 @@ impl DmaAliases {
     }
 }
 
+/// Add bridge-derived DMA aliases for `requesters`. `port_type` returns the
+/// decoded PCIe type for a bridge, or `None` for conventional PCI. This mirrors
+/// Linux's DMA-alias walk: PCIe root/upstream/downstream ports are transparent;
+/// translation bridges contribute their own requester identity. # C: O(N^3)
+pub fn add_topology_dma_aliases(
+    aliases: &mut DmaAliases, requesters: &[Bdf], bridges: &[(Bdf, BridgeBuses)],
+    port_type: impl Fn(Bdf) -> Option<crate::PcieType>,
+) {
+    for requester in requesters.iter().copied() {
+        for &(bridge, buses) in bridges {
+            if bridge.segment != requester.segment || requester.bus < buses.secondary || requester.bus > buses.subordinate { continue; }
+            let translated = match port_type(bridge) {
+                Some(crate::PcieType::PcieToPciBridge) => Bdf { segment: bridge.segment, bus: buses.subordinate, device: 0, function: 0 },
+                Some(crate::PcieType::PciToPcieBridge) | None => bridge,
+                _ => continue,
+            };
+            let _ = aliases.add(requester, translated);
+        }
+    }
+}
+
 impl Bdf {
 /// 16-bit requester identifier. Segment remains a separate ownership key.
     /// # C: O(1)
