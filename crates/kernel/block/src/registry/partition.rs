@@ -26,6 +26,10 @@ pub struct Partition {
 /// # C: O(partition table)
 pub fn rescan_partitions(name: &str) -> Option<Vec<Arc<Partition>>> {
     let disk = by_name(name)?;
+    for part in disk.partitions() {
+        crate::devbridge::unpublish_partition(&part);
+        if let Some(node) = drv::devices().into_iter().find(|device| device.bus == "block" && device.addr == part.name) { drv::device_del(&node); }
+    }
     let capacity = disk.dev.capacity_blocks();
     let parts = partitions::read(disk.dev.as_ref()).into_iter().filter_map(|info| {
         if info.number >= PARTITION_MINOR_COUNT { return None; }

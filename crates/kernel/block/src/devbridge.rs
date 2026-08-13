@@ -270,6 +270,11 @@ pub fn unpublish(number: DevNum) {
     vfs::devnode::unregister_blkdev_region(number.major, number.minor, 1);
 }
 
+/// Drop one partition's VFS block region. # C: O(R)
+pub fn unpublish_partition(part: &Partition) {
+    vfs::devnode::unregister_blkdev_region(part.number_dev.major, part.number_dev.minor, 1);
+}
+
 /// Capacity of the disk owning `dev_t` in bytes, for `BLKGETSIZE64`. # C: O(N)
 pub fn size_bytes(dev_t: u32) -> Option<u64> {
     by_dev(dev_t).map(|d| d.dev.capacity_blocks().saturating_mul(d.dev.block_size() as u64))
