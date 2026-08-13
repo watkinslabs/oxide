@@ -1,12 +1,12 @@
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use crate::{VtdIrTable, VtdQiQueue, VtdRegisters, VtdTables, intel_vtd_hpet_source, intel_vtd_ioapic_source, intel_vtd_rmrr_count, intel_vtd_rmrr_for_bdf, intel_vtd_unit_for_bdf, remapped_msi};
+use crate::{VtdIrTable, VtdQiQueue, VtdRegisters, VtdTables, intel_vtd_hpet_source, intel_vtd_ioapic_source, intel_vtd_rmrr_count, intel_vtd_rmrr_for_bdf, intel_vtd_unit_for_bdf, remapped_msi, vtd_dma_groups};
 use firmware::acpi::{IommuKind, IommuUnit};
 use pci::{Bdf, ConfigSpaceReader};
 use sync::{Devices, Spinlock};
 
-const INITIAL_DOMAIN_ID: u16 = 1;
+const FIRST_DOMAIN_ID: u16 = 1;
 
 /// Result of asking the VT-d manager to own the scanned PCI requesters.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -46,9 +46,8 @@ pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf],
     let mut manager = Vec::new();
     for unit in units {
         let Some(regs) = (unsafe { VtdRegisters::map(unit.register_base, unit.register_pages) }) else { return VtdActivation::Failed; };
-        let Some(mut tables) = VtdTables::new(hhdm_offset) else { return VtdActivation::Failed; };
-        if !regs.cache_coherent() || !regs.supports_address_width(tables.address_width())
-            || !tables.map_identity_regions(regions) { return VtdActivation::Failed; }
+        let Some(tables) = VtdTables::new(hhdm_offset) else { return VtdActivation::Failed; };
+        if !regs.cache_coherent() || !regs.supports_address_width(tables.address_width()) { return VtdActivation::Failed; }
         // Linux disables firmware-pre-enabled IR/translation/QI state before
         // it replaces their table bases.  Do this only after replacement
         // allocations and mappings succeeded, so an allocation failure leaves
@@ -69,17 +68,23 @@ pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf],
         manager.push(VtdBootUnit { unit, regs, requesters: Vec::new(), ioapic_sources: Vec::new(), hpet_source: None, tables, qi, ir });
     }
     for entry in manager.iter_mut() {
-        for index in 0..intel_vtd_rmrr_count() {
-            let Some(rmrr) = rmrr_for_unit(reader, requesters, index, entry.unit) else { continue; };
-            let Some(len) = rmrr.end.checked_sub(rmrr.base).and_then(|bytes| bytes.checked_add(1)) else { return activation_failed(&mut manager); };
-            if !entry.tables.map_identity_range(rmrr.base, len) { return activation_failed(&mut manager); }
+        let unit_requesters: Vec<Bdf> = requesters.iter().copied().filter(|bdf|
+            intel_vtd_unit_for_bdf(reader, *bdf) == Some(entry.unit)).collect();
+        for (index, group) in vtd_dma_groups(reader, &unit_requesters).iter().enumerate() {
+            let Some(domain_id) = u16::try_from(index).ok().and_then(|id| FIRST_DOMAIN_ID.checked_add(id)) else { return activation_failed(&mut manager); };
+            if !entry.tables.install_group(domain_id, group, regions) { return activation_failed(&mut manager); }
+            entry.requesters.extend_from_slice(group);
         }
-    }
-    for bdf in requesters {
-        let Some(unit) = intel_vtd_unit_for_bdf(reader, *bdf) else { continue; };
-        let Some(entry) = manager.iter_mut().find(|entry| entry.unit == unit) else { return activation_failed(&mut manager); };
-        if !entry.tables.attach(*bdf, INITIAL_DOMAIN_ID) { return activation_failed(&mut manager); }
-        entry.requesters.push(*bdf);
+        for requester in &unit_requesters {
+            for index in 0..intel_vtd_rmrr_count() {
+                let Some(rmrr) = intel_vtd_rmrr_for_bdf(reader, *requester, index) else { continue; };
+                let Some(len) = rmrr.end.checked_sub(rmrr.base).and_then(|bytes| bytes.checked_add(1)) else { return activation_failed(&mut manager); };
+                if !entry.tables.map_identity_range(*requester, rmrr.base, len) { return activation_failed(&mut manager); }
+            }
+        }
+        for requester in &unit_requesters {
+            if !entry.tables.attach_requester(*requester) { return activation_failed(&mut manager); }
+        }
     }
     for index in 0..firmware::ioapic_count() {
         let Some(ioapic_id) = firmware::ioapic(index).map(|ioapic| ioapic.id) else { continue; };
@@ -233,10 +238,10 @@ pub fn map_dma_below(requester: Bdf, pa: u64, len: usize, mask: u64) -> Option<u
     let (base, bytes, offset) = crate::dma_span::normalize_dma_span(pa, len)?;
     let mut manager = MANAGER.lock();
     let entry = manager.iter_mut().find(|entry| entry.requesters.iter().any(|candidate| *candidate == requester))?;
-    let map = entry.tables.map_dma_below(base, bytes, pci::IOVA_PAGE_SIZE, mask)?;
+    let map = entry.tables.map_dma_below(requester, base, bytes, pci::IOVA_PAGE_SIZE, mask)?;
     if !invalidate(entry) {
-        if entry.tables.remove_for_invalidate(map) && invalidate(entry) {
-            let _ = entry.tables.release_after_invalidate(map);
+        if entry.tables.remove_for_invalidate(requester, map) && invalidate(entry) {
+            let _ = entry.tables.release_after_invalidate(requester, map);
         }
         return None;
     }
@@ -251,9 +256,9 @@ pub fn unmap_dma(requester: Bdf, iova: u64, len: usize) -> bool {
     let Some(bytes) = offset.checked_add(len as u64).and_then(|n| n.checked_add(page - 1)).map(|n| n & !(page - 1)) else { return false; };
     let mut manager = MANAGER.lock();
     let Some(entry) = manager.iter_mut().find(|entry| entry.requesters.iter().any(|candidate| *candidate == requester)) else { return false; };
-    let Some(map) = entry.tables.mapping(base) else { return false; };
-    if map.iova.len != bytes || !entry.tables.remove_for_invalidate(map) { return false; }
-    invalidate(entry) && entry.tables.release_after_invalidate(map)
+    let Some(map) = entry.tables.mapping(requester, base) else { return false; };
+    if map.iova.len != bytes || !entry.tables.remove_for_invalidate(requester, map) { return false; }
+    invalidate(entry) && entry.tables.release_after_invalidate(requester, map)
 }
 
 /// Prefer capability-enabled queued invalidation; old units retain the legacy
@@ -298,13 +303,6 @@ fn all_vtd_units_support_eim() -> bool {
 const fn eim_capability_set_admits(queued_invalidation: bool, interrupt_remapping: bool,
     extended_interrupt_mode: bool) -> bool {
     queued_invalidation && interrupt_remapping && extended_interrupt_mode
-}
-
-fn rmrr_for_unit<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf], index: usize, unit: IommuUnit) -> Option<firmware::acpi::DmarRmrr> {
-    requesters.iter().find_map(|bdf| {
-        let rmrr = intel_vtd_rmrr_for_bdf(reader, *bdf, index)?;
-        (intel_vtd_unit_for_bdf(reader, *bdf) == Some(unit)).then_some(rmrr)
-    })
 }
 
 #[cfg(test)] mod tests {

@@ -1,3 +1,4 @@
+use alloc::vec::Vec;
 use firmware::acpi::{DMAR_RMRR_SCOPE_UNIT, DmarRmrr, DmarScope, IommuUnit, dmar_rmrr, dmar_rmrr_count, dmar_scope, dmar_scope_count, iommu_unit, iommu_unit_count};
 use pci::{Bdf, ConfigSpaceReader, PciDevice, bridge_buses};
 
@@ -22,7 +23,7 @@ fn scope_target<R: ConfigSpaceReader>(r: &R, segment: u16, scope: DmarScope) -> 
     None
 }
 
-fn parent_bridge<R: ConfigSpaceReader>(r: &R, child: Bdf) -> Option<Bdf> {
+pub(crate) fn parent_bridge<R: ConfigSpaceReader>(r: &R, child: Bdf) -> Option<Bdf> {
     let mut best = None;
     let mut span = u16::MAX;
     for bus in 0..=u8::MAX {
@@ -37,6 +38,40 @@ fn parent_bridge<R: ConfigSpaceReader>(r: &R, child: Bdf) -> Option<Bdf> {
         }
     }
     best
+}
+
+/// Partition requesters into DMA domains at isolation boundaries.
+/// Requesters below a bridge without enabled redirect controls remain in one
+/// domain; functions in one slot always remain together until function-level
+/// alias discovery is available.
+pub(crate) fn vtd_dma_groups<R: ConfigSpaceReader>(r: &R, requesters: &[Bdf]) -> Vec<Vec<Bdf>> {
+    let mut groups: Vec<Vec<Bdf>> = Vec::new();
+    for requester in requesters {
+        if groups.iter().flatten().any(|member| *member == *requester) { continue; }
+        let key = isolation_key(r, *requester);
+        let mut group = Vec::new();
+        for candidate in requesters {
+            if isolation_key(r, *candidate) == key || same_slot(*candidate, *requester) { group.push(*candidate); }
+        }
+        group.sort_unstable();
+        group.dedup();
+        groups.push(group);
+    }
+    groups
+}
+
+fn isolation_key<R: ConfigSpaceReader>(r: &R, requester: Bdf) -> Bdf {
+    let mut current = requester;
+    for _ in 0..=u8::MAX {
+        let Some(parent) = parent_bridge(r, current) else { break; };
+        if pci::acs_isolation_enabled(r, parent) { break; }
+        current = parent;
+    }
+    current
+}
+
+const fn same_slot(left: Bdf, right: Bdf) -> bool {
+    left.segment == right.segment && left.bus == right.bus && left.device == right.device
 }
 
 fn scope_matches<R: ConfigSpaceReader>(r: &R, bdf: Bdf, scope: DmarScope, segment: u16) -> bool {
