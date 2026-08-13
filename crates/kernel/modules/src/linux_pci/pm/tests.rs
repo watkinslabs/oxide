@@ -29,6 +29,9 @@ fn save_restore_power_state_and_wake() {
     assert_eq!(dev.current_state, PCI_D3HOT);
     assert_eq!(pci_enable_wake(&mut dev, PCI_D3HOT, true), LINUX_OK);
     assert!(crate::linux_pci::registry::test_wake_enabled(&dev));
+    dev.pm_cap = 1;
+    dev._pm_flags[0] = 1 << PCI_D3COLD;
+    assert_eq!(pci_wake_from_d3(&mut dev, true), LINUX_OK);
 }
 
 #[test]
@@ -45,7 +48,7 @@ fn export_symbols_registers_pci_pm_surface() {
     export_symbols();
     for name in [
         "pci_save_state", "pci_restore_state", "pci_set_power_state",
-        "pci_choose_state", "pci_enable_wake",
+        "pci_choose_state", "pci_enable_wake", "pci_wake_from_d3",
     ] {
         assert!(crate::symtab::is_exported(name));
     }

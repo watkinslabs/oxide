@@ -36,6 +36,8 @@ fn netdev_kpi_layout_matches_host_profile() {
     assert_eq!(core::mem::offset_of!(LinuxNetDevice, netdev_ops), 8);
     assert_eq!(core::mem::offset_of!(LinuxNetDevice, state), 168);
     assert_eq!(core::mem::offset_of!(LinuxNetDevice, tstats), 160);
+    assert_eq!(core::mem::offset_of!(LinuxNetDevice, num_tc), 54);
+    assert_eq!(core::mem::offset_of!(LinuxNetDevice, tc_to_txq), 62);
     assert_eq!(core::mem::offset_of!(LinuxNetDevice, ifindex), 224);
     assert_eq!(core::mem::offset_of!(LinuxNetDevice, name), 288);
     assert_eq!(core::mem::offset_of!(LinuxNetDevice, dev), 1464);
@@ -50,6 +52,24 @@ fn netdev_kpi_layout_matches_host_profile() {
     assert_eq!(core::mem::offset_of!(LinuxNetDevHwAddr, addr), 40);
     assert_eq!(core::mem::size_of::<LinuxNetDevHwAddrList>(), 32);
     assert_eq!(core::mem::offset_of!(LinuxNetDevHwAddrList, tree), 24);
+}
+
+#[test]
+fn traffic_class_kpis_follow_linux_range_validation() {
+    let _modules = crate::test_serial::claim();
+    // SAFETY: test owns this device allocation until free_netdev below.
+    let dev = unsafe { netalloc::alloc_etherdev(0) };
+    assert!(!dev.is_null());
+    // SAFETY: dev is live caller-owned storage and the test serializes its configuration.
+    unsafe {
+        assert_eq!(netdev_set_num_tc(dev, 2), LINUX_OK);
+        assert_eq!(netdev_set_tc_queue(dev, 0, 3, 0), LINUX_OK);
+        assert_eq!(netdev_set_tc_queue(dev, 1, 2, 3), LINUX_OK);
+        assert_eq!(((*dev).tc_to_txq[1].count, (*dev).tc_to_txq[1].offset), (2, 3));
+        assert_eq!(netdev_set_tc_queue(dev, 2, 1, 5), -LINUX_EINVAL);
+        assert_eq!(netdev_set_num_tc(dev, (TC_MAX_QUEUE + 1) as u8), -LINUX_EINVAL);
+        netalloc::free_netdev(dev);
+    }
 }
 
 #[test]
@@ -177,9 +197,27 @@ fn export_symbols_registers_netdev_surface() {
     assert!(resolve("alloc_etherdev", false).is_ok());
     assert!(resolve("devm_alloc_etherdev_mqs", false).is_ok());
     assert!(resolve("register_netdev", false).is_ok());
+    assert!(resolve("dev_open", false).is_ok());
     assert!(resolve("netif_rx", false).is_ok());
     assert!(resolve("dev_alloc_skb", false).is_ok());
     assert!(resolve("eth_type_trans", false).is_ok());
+}
+
+#[test]
+fn registration_does_not_open_and_dev_open_invokes_the_driver_once() {
+    let _modules = crate::test_serial::claim();
+    // SAFETY: test owns the net_device allocation through free_netdev.
+    let dev = unsafe { netalloc::alloc_etherdev(0) };
+    assert!(!dev.is_null());
+    // SAFETY: test-owned device and static operation table remain valid through close and free.
+    unsafe {
+        (*dev).netdev_ops = &OPS; assert_eq!(register_netdev(dev), LINUX_OK);
+        assert_eq!((*dev).flags & (IFF_UP | IFF_RUNNING), 0);
+        assert_eq!(super::super::misc::dev_open(dev, core::ptr::null_mut()), LINUX_OK);
+        assert_eq!((*dev).flags & (IFF_UP | IFF_RUNNING), IFF_UP | IFF_RUNNING);
+        assert_eq!(super::super::misc::dev_open(dev, core::ptr::null_mut()), LINUX_OK);
+        unregister_netdev(dev); netalloc::free_netdev(dev);
+    }
 }
 
 #[test]

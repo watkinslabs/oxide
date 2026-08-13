@@ -36,6 +36,7 @@ pub(super) fn export_symbols() {
     export("system_percpu_wq", &SYSTEM_PERCPU_WQ as *const _ as usize, false);
     for (name, addr) in [
         ("alloc_workqueue", alloc_workqueue as *const () as usize),
+        ("alloc_workqueue_noprof", alloc_workqueue_noprof as *const () as usize),
         ("destroy_workqueue", destroy_workqueue as *const () as usize),
         ("__flush_workqueue", flush_workqueue as *const () as usize),
         ("init_work", init_work as *const () as usize),
@@ -68,6 +69,21 @@ pub(super) fn init_runtime() {
 pub(super) extern "C" fn alloc_workqueue(name: *const u8, flags: u32, max_active: i32) -> *mut LinuxWorkqueueStruct {
     let mut wq = Box::new(LinuxWorkqueueStruct { flags, max_active, destroyed: AtomicBool::new(false), name: [0; 32] });
     copy_name(name, &mut wq.name);
+    Box::into_raw(wq)
+}
+
+/// Allocate a workqueue after formatting its Linux printf-style name.
+/// # C: O(formatted-name length)
+pub(super) unsafe extern "C" fn alloc_workqueue_noprof(
+    name: *const u8,
+    flags: u32,
+    max_active: i32,
+    mut args: ...
+) -> *mut LinuxWorkqueueStruct {
+    let mut wq = Box::new(LinuxWorkqueueStruct { flags, max_active, destroyed: AtomicBool::new(false), name: [0; 32] });
+    // SAFETY: the Linux KPI requires a NUL-terminated format and varargs matching it; the
+    // fixed-size destination is writable for its complete length.
+    unsafe { crate::linux_string::vscnprintf(wq.name.as_mut_ptr(), wq.name.len(), name, &mut args); }
     Box::into_raw(wq)
 }
 
