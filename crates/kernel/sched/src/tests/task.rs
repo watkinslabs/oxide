@@ -45,6 +45,8 @@ fn interruptible_sleep_state_preserves_wake_mask_until_claimed() {
     assert_eq!(t.state(), TaskState::Sleeping);
     assert_eq!(t.sleep_wait_state(), WaitState::Interruptible);
     assert!(t.claim_wake());
+    assert_eq!(t.state(), TaskState::Waking);
+    t.complete_wake();
     assert_eq!(t.state(), TaskState::Runnable);
     assert_eq!(t.sleep_wait_state(), WaitState::Uninterruptible);
 }
@@ -66,6 +68,8 @@ fn concurrent_wakers_have_one_placement_owner() {
     }
     let winners: usize = joins.into_iter().map(|j| usize::from(j.join().unwrap())).sum();
     assert_eq!(winners, 1, "only one waker may own runqueue placement");
+    assert_eq!(task.state(), TaskState::Waking);
+    task.complete_wake();
     assert_eq!(task.state(), TaskState::Runnable);
 }
 
@@ -84,6 +88,8 @@ fn pending_wake_closes_current_task_state_check_race() {
     let observed = prev.state();
     assert_eq!(observed, TaskState::Sleeping, "schedule snapshots the parked state");
     assert!(prev.claim_wake(), "ttwu wins after schedule's stale state snapshot");
+    assert_eq!(prev.state(), TaskState::Waking,
+        "a claimed wake must reserve placement until destination activation");
     let next_raw = Arc::as_ptr(&next) as *mut Task;
     assert_eq!(prev.pending_wake(next_raw), PendingWake::Defer,
         "the outgoing task cannot be queued before switch-off completes");
@@ -92,6 +98,8 @@ fn pending_wake_closes_current_task_state_check_race() {
     prev.on_cpu.store(false, Ordering::Release);
     assert_eq!(prev.pending_wake(next_raw), PendingWake::Ready);
     rq.enqueue(Arc::clone(&prev));
+    assert_eq!(prev.state(), TaskState::Runnable,
+        "runqueue activation is the only Waking-to-Runnable transition");
     assert_eq!(rq.nr_running(), 1);
     assert!(prev.on_rq.load(Ordering::Acquire));
     assert_eq!(prev.pending_wake(next_raw), PendingWake::Drop,

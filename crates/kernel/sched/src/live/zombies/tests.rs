@@ -162,7 +162,8 @@ fn wake_wait4_parent_defers_a_parent_that_is_still_on_cpu() {
     let deferred = crate::live::ttwu::wake_list_drain(0);
     assert_eq!(deferred.len(), 1, "the wake must be deferred to the owner CPU's wake list");
     assert_eq!(deferred[0].tid, parent.tid);
-    assert_eq!(parent.state(), TaskState::Runnable, "the wake itself is not lost");
+    assert_eq!(parent.state(), TaskState::Waking,
+        "wake ownership must remain reserved until the owner activates it");
 
     uninstall();
 }

@@ -605,7 +605,15 @@ impl Task {
     /// failed claim is always a stale or racing wake; only the winner may add
     /// the task to a runqueue or deferred wake list. # C: O(1)
     pub fn claim_wake(&self) -> bool {
-        self.cas_state(TaskState::Sleeping, TaskState::Runnable).is_ok()
+        self.cas_state(TaskState::Sleeping, TaskState::Waking).is_ok()
+    }
+
+    /// Complete a wake claim after its destination activation has been
+    /// committed.  The waker owns the interim Waking state, so schedule never
+    /// independently requeues the switching-out task.
+    /// # C: O(1)
+    pub fn complete_wake(&self) {
+        let _ = self.cas_state(TaskState::Waking, TaskState::Runnable);
     }
 
     /// Atomically publish both `TASK_*` wake mask and Sleeping lifecycle

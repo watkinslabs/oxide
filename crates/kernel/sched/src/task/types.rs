@@ -118,6 +118,10 @@ pub enum TaskState {
     Sleeping = 1,
     Stopped  = 2,
     Zombie   = 3,
+    /// Wake ownership is claimed, but activation on the destination runqueue
+    /// has not completed yet.  This keeps the switching-out CPU from putting
+    /// the task back while the waker owns placement.
+    Waking   = 4,
 }
 
 impl TaskState {
@@ -131,6 +135,7 @@ impl TaskState {
             1 => Some(Self::Sleeping),
             2 => Some(Self::Stopped),
             3 => Some(Self::Zombie),
+            4 => Some(Self::Waking),
             _ => None,
         }
     }
@@ -143,6 +148,7 @@ impl TaskState {
             Self::Sleeping => b'S',
             Self::Stopped  => b'T',
             Self::Zombie   => b'Z',
+            Self::Waking   => b'R',
         }
     }
 
@@ -154,6 +160,7 @@ impl TaskState {
             Self::Sleeping => "S (sleeping)",
             Self::Stopped  => "T (stopped)",
             Self::Zombie   => "Z (zombie)",
+            Self::Waking   => "R (running)",
         }
     }
 }
