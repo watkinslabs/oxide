@@ -415,6 +415,20 @@ fn syscall_entry_work(orig_nr: u64, args: &SyscallArgs) -> (Option<u64>, u64) {
     }
 }
 
+#[inline(never)]
+fn dispatch_routed_syscall(entry: (Option<u64>, u64), nr: u64, args: &SyscallArgs) -> i64 {
+    if let Some(rv) = entry.0 { return rv as i64; }
+    if let Some(rv) = dispatch_route_a(nr, args) { return rv; }
+    if let Some(rv) = dispatch_route_b(nr, args) { return rv; }
+    if let Some(rv) = dispatch_route_c(nr, args) { return rv; }
+    if let Some(rv) = sched::cred::cred_dispatch(nr, args) { return rv; }
+    if let Some(rv) = sched::timers::timer_dispatch(nr, args) { return rv; }
+    if let Some(rv) = crate::perms::perms_dispatch(nr, args) { return rv; }
+    if let Some(rv) = ::fs::keyring::keyring_dispatch(nr, args) { return rv; }
+    if let Some(rv) = sched::compat::try_compat(nr, args) { return rv; }
+    -(syscall::Errno::Enosys.as_i32() as i64)
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64) -> u64 {
     // Linux `vtime_user_exit`: the architectural syscall entry has crossed
@@ -501,19 +515,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     // below, so its syscall-exit stop and — for a `SECCOMP_RET_TRAP` SIGSYS —
     // its signal delivery happen before the return to userspace instead of
     // waiting for the next timer tick.
-    let rv = if let Some(rv) = entry.0 { rv as i64 }
-    else if let Some(rv) = dispatch_route_a(nr, &args) { rv }
-    else if let Some(rv) = dispatch_route_b(nr, &args) { rv }
-    else if let Some(rv) = dispatch_route_c(nr, &args) { rv }
-    else if let Some(rv) = sched::cred::cred_dispatch(nr, &args) { rv }
-    else if let Some(rv) = sched::timers::timer_dispatch(nr, &args) { rv }
-    else if let Some(rv) = crate::perms::perms_dispatch(nr, &args) { rv }
-    else if let Some(rv) = ::fs::keyring::keyring_dispatch(nr, &args) { rv }
-    else if let Some(rv) = sched::compat::try_compat(nr, &args) { rv }
-    // No modern route claimed this nr: honest ENOSYS. There is NO legacy
-    // fallback table (docs/53 hollow-shell) — an unimplemented syscall must
-    // report ENOSYS, never silently hit a stub with wrong semantics.
-    else { -(syscall::Errno::Enosys.as_i32() as i64) };
+    let rv = dispatch_routed_syscall(entry, nr, &args);
     // rv is left un-normalized here (may still carry an internal restart
     // sentinel like -ERESTARTSYS) — the ignored-restart check below and
     // dispatch_pending() need the raw sentinel. normalize_user_return()
