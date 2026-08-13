@@ -5,6 +5,8 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use crate::{BlockDevice, BlockRequest};
+
 mod device;
 pub use device::PartitionDevice;
 
@@ -40,6 +42,33 @@ pub fn parse(bytes: &[u8]) -> Vec<PartitionInfo> {
         return parse_gpt(bytes);
     }
     parse_mbr(mbr)
+}
+
+/// Read and decode a whole-disk partition table through the canonical block
+/// backend. GPT is read through the end of its declared entry array; a table
+/// outside the medium or with invalid metadata yields no entries. # C: O(table)
+pub fn read(device: &dyn BlockDevice) -> Vec<PartitionInfo> {
+    if device.block_size() != SECTOR_BYTES as u32 || device.capacity_blocks() < 2 { return Vec::new(); }
+    let mut head = BlockRequest::new_read(0, 2, SECTOR_BYTES as u32);
+    if device.submit_sync(&mut head).is_err() { return Vec::new(); }
+    if !is_protective_mbr(&head.buffer) { return parse(&head.buffer); }
+    let header = match head.buffer.get(SECTOR_BYTES..SECTOR_BYTES * 2) { Some(v) => v, None => return Vec::new() };
+    let count = le32(&header[80..84]) as usize;
+    let entry_bytes = le32(&header[84..88]) as usize;
+    let entries_lba = le64(&header[72..80]);
+    if count == 0 || !(GPT_ENTRY_MIN_BYTES..=GPT_ENTRY_MAX_BYTES).contains(&entry_bytes) { return Vec::new(); }
+    let bytes = match count.checked_mul(entry_bytes) { Some(v) => v, None => return Vec::new() };
+    let sectors = match bytes.checked_add(SECTOR_BYTES - 1).map(|v| v / SECTOR_BYTES) { Some(v) => v, None => return Vec::new() };
+    let blocks = match usize::try_from(entries_lba).ok().and_then(|v| v.checked_add(sectors)) { Some(v) => v, None => return Vec::new() };
+    if blocks > device.capacity_blocks() as usize || blocks > u32::MAX as usize { return Vec::new(); }
+    let mut table = BlockRequest::new_read(0, blocks as u32, SECTOR_BYTES as u32);
+    if device.submit_sync(&mut table).is_err() { return Vec::new(); }
+    parse(&table.buffer)
+}
+
+fn is_protective_mbr(bytes: &[u8]) -> bool {
+    bytes.get(..SECTOR_BYTES).is_some_and(|mbr| mbr.get(MBR_SIGNATURE_OFFSET..) == Some(&[0x55, 0xaa])
+        && mbr_entries(mbr).any(|(_, kind, _, _)| kind == GPT_PROTECTIVE_TYPE))
 }
 
 fn mbr_entries(mbr: &[u8]) -> impl Iterator<Item = (u32, u8, u32, u32)> + '_ {
