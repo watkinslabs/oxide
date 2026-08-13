@@ -67,6 +67,7 @@ pub mod linux_chrdev;
 pub mod linux_device;
 pub mod linux_dma;
 pub mod linux_dma_buf;
+pub mod linux_dma_fence;
 mod linux_dma_managed;
 mod linux_dma_sgl;
 #[cfg(test)]
