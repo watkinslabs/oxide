@@ -57,6 +57,7 @@ pub(super) fn export_symbols() {
         ("pci_irq_vector",            pci_irq_vector            as *const () as usize),
         ("pci_request_irq",            pci_request_irq            as *const () as usize),
         ("pci_free_irq",               pci_free_irq               as *const () as usize),
+        ("pci_sriov_configure_simple", pci_sriov_configure_simple as *const () as usize),
         ("pci_read_config_byte",      super::config::pci_read_config_byte      as *const () as usize),
         ("pci_read_config_word",      super::config::pci_read_config_word      as *const () as usize),
         ("pci_read_config_dword",     super::config::pci_read_config_dword     as *const () as usize),
@@ -120,6 +121,12 @@ extern "C" fn pci_set_master(dev: *mut LinuxPciDev) {
 extern "C" fn pci_clear_master(dev: *mut LinuxPciDev) {
     if dev.is_null() { return; }
     update_command(dev, COMMAND_BUS_MASTER, false);
+}
+
+/// Configure SR-IOV only for a physical function with a registered IOV owner. # C: O(1)
+extern "C" fn pci_sriov_configure_simple(_dev: *mut LinuxPciDev, _nr_virtfn: i32) -> i32 {
+    // No PCI function is published as a physical function until the IOV owner can enumerate VFs.
+    -LINUX_ENODEV
 }
 
 extern "C" fn pci_set_drvdata(dev: *mut LinuxPciDev, data: *mut c_void) {
