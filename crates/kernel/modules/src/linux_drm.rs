@@ -35,6 +35,7 @@ pub(crate) use atomic_routing::update_connector_routing;
 #[path = "linux_drm_atomic_clones.rs"] mod atomic_clones;
 pub(crate) use atomic_clones::check_valid_clones;
 #[path = "linux_drm_atomic_modeset_check.rs"] mod atomic_modeset_check;
+#[path = "linux_drm_atomic_zpos.rs"] mod atomic_zpos;
 #[path = "linux_drm_modeset.rs"] mod modeset;
 #[path = "linux_drm_vblank.rs"] mod vblank;
 #[path = "linux_drm_vblank_event.rs"] mod vblank_event;
@@ -189,6 +190,7 @@ pub fn export_symbols() {
     atomic_validate::export_symbols();
     atomic_affected::export_symbols();
     atomic_modeset_check::export_symbols();
+    atomic_zpos::export_symbols();
     modeset::export_symbols();
     vblank::export_symbols();
     vblank_event::export_symbols();
