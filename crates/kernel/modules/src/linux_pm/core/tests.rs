@@ -125,8 +125,9 @@ fn export_symbols_registers_pm_surface() {
     for name in [
         "pm_runtime_enable", "pm_runtime_get_sync", "pm_runtime_put_sync",
         "pm_runtime_set_suspended", "device_init_wakeup", "device_set_wakeup_enable",
-        "__pm_runtime_idle", "__pm_runtime_resume", "dev_pm_suspend",
+        "__pm_runtime_idle", "__pm_runtime_resume", "dev_pm_suspend", "pm_suspend_global_flags",
     ] {
         assert!(crate::symtab::is_exported(name));
     }
+    assert_eq!(core::mem::size_of_val(&PM_SUSPEND_GLOBAL_FLAGS), core::mem::size_of::<u32>());
 }
