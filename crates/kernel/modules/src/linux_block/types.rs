@@ -142,8 +142,11 @@ pub(super) struct LinuxBlkMqTagSet {
 pub(super) struct LinuxTagSetLifecycle {
     pub(super) queues: Spinlock<Vec<usize>, ModulesLockClass>,
     pub(super) dispatches: AtomicU32,
+    pub(super) completions: AtomicU32,
     #[cfg(target_os = "oxide-kernel")]
     pub(super) dispatch_wait: sched::live::WaitList,
+    #[cfg(target_os = "oxide-kernel")]
+    pub(super) completion_wait: sched::live::WaitList,
 }
 
 impl LinuxTagSetLifecycle {
@@ -151,8 +154,11 @@ impl LinuxTagSetLifecycle {
         Self {
             queues: Spinlock::new(Vec::new()),
             dispatches: AtomicU32::new(0),
+            completions: AtomicU32::new(0),
             #[cfg(target_os = "oxide-kernel")]
             dispatch_wait: sched::live::WaitList::new(),
+            #[cfg(target_os = "oxide-kernel")]
+            completion_wait: sched::live::WaitList::new(),
         }
     }
 }

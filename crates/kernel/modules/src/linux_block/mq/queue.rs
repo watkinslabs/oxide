@@ -29,6 +29,7 @@ pub(super) fn export_symbols() {
         ("blk_mq_quiesce_tagset",         blk_mq_quiesce_tagset         as *const () as usize),
         ("blk_mq_unquiesce_tagset",       blk_mq_unquiesce_tagset       as *const () as usize),
         ("blk_mq_wait_quiesce_done",      blk_mq_wait_quiesce_done      as *const () as usize),
+        ("blk_mq_tagset_wait_completed_request", blk_mq_tagset_wait_completed_request as *const () as usize),
         ("blk_mq_delay_kick_requeue_list", blk_mq_delay_kick_requeue_list as *const () as usize),
         ("blk_mq_start_stopped_hw_queues", blk_mq_start_stopped_hw_queues as *const () as usize),
         ("blk_mq_stop_hw_queues",         blk_mq_stop_hw_queues         as *const () as usize),
@@ -167,6 +168,10 @@ unsafe extern "C" fn blk_mq_unquiesce_tagset(set: *mut LinuxBlkMqTagSet) {
     unsafe { change_tagset_quiesce(set, false); }
 }
 unsafe extern "C" fn blk_mq_wait_quiesce_done(set: *mut LinuxBlkMqTagSet) { unsafe { wait_tagset_dispatches(set); } }
+unsafe extern "C" fn blk_mq_tagset_wait_completed_request(set: *mut LinuxBlkMqTagSet) {
+    // SAFETY: set owns the completion predicate for every request allocated through its attached queues.
+    unsafe { wait_tagset_completions(set); }
+}
 unsafe extern "C" fn blk_mq_delay_kick_requeue_list(_q: *mut LinuxRequestQueue, _msecs: u32) {}
 unsafe extern "C" fn blk_mq_start_stopped_hw_queues(_q: *mut LinuxRequestQueue, _async_: bool) {}
 unsafe extern "C" fn blk_mq_stop_hw_queues(_q: *mut LinuxRequestQueue) {}
@@ -340,6 +345,34 @@ pub(super) unsafe fn queue_end_dispatch(q: *mut LinuxRequestQueue) {
     unsafe { queue_end_use(q); }
 }
 
+/// Publish a request state transition into the tag set's completion-drain predicate.
+pub(super) unsafe fn request_mark_complete(q: *mut LinuxRequestQueue) {
+    if q.is_null() { return; }
+    // SAFETY: q is retained by the live request that is making this transition, so tag_set remains readable.
+    let set = unsafe { (*q).tag_set };
+    if let Some(tagset) = unsafe { tagset_lifecycle(set) } {
+        tagset.completions.fetch_add(1, ::core::sync::atomic::Ordering::AcqRel);
+    }
+}
+
+/// Withdraw a completed request from the tag set's completion-drain predicate.
+pub(super) unsafe fn request_unmark_complete(q: *mut LinuxRequestQueue) {
+    if q.is_null() { return; }
+    // SAFETY: q remains retained by the request until after this accounting transition has completed.
+    let set = unsafe { (*q).tag_set };
+    if let Some(tagset) = unsafe { tagset_lifecycle(set) } {
+        let was_one = tagset.completions.fetch_update(
+            ::core::sync::atomic::Ordering::AcqRel,
+            ::core::sync::atomic::Ordering::Acquire,
+            |count| count.checked_sub(1),
+        ).ok() == Some(1);
+        if was_one {
+            #[cfg(target_os = "oxide-kernel")]
+            tagset.completion_wait.wake_all();
+        }
+    }
+}
+
 unsafe fn wait_tagset_dispatches(set: *mut LinuxBlkMqTagSet) {
     let Some(lifecycle) = (unsafe { tagset_lifecycle(set) }) else { return; };
     #[cfg(target_os = "oxide-kernel")]
@@ -350,6 +383,18 @@ unsafe fn wait_tagset_dispatches(set: *mut LinuxBlkMqTagSet) {
     }
     #[cfg(not(target_os = "oxide-kernel"))]
     while lifecycle.dispatches.load(::core::sync::atomic::Ordering::Acquire) != 0 { ::core::hint::spin_loop(); }
+}
+
+unsafe fn wait_tagset_completions(set: *mut LinuxBlkMqTagSet) {
+    let Some(lifecycle) = (unsafe { tagset_lifecycle(set) }) else { return; };
+    #[cfg(target_os = "oxide-kernel")]
+    // SAFETY: the tag set owns completion_wait for its requests, and callers hold no driver completion lock.
+    unsafe {
+        let _ = sched::live::wait_event_uninterruptible(&lifecycle.completion_wait,
+            || lifecycle.completions.load(::core::sync::atomic::Ordering::Acquire) == 0);
+    }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    while lifecycle.completions.load(::core::sync::atomic::Ordering::Acquire) != 0 { ::core::hint::spin_loop(); }
 }
 
 unsafe fn bump_depth(q: *mut LinuxRequestQueue, freeze: bool) {
@@ -535,6 +580,40 @@ mod tests {
             blk_mq_unquiesce_queue(q);
             assert!(queue_begin_dispatch(q));
             queue_end_dispatch(q);
+            core::blk_cleanup_queue(q);
+            drop(Box::from_raw(set.lifecycle));
+        }
+    }
+
+    #[test]
+    fn completion_drain_waits_until_the_tagset_has_no_completed_requests() {
+        let _modules = crate::test_serial::claim();
+        DRAINED.store(false, Ordering::Release);
+        // SAFETY: the test owns this zero-initialized driver tag-set and initializes its lifecycle first.
+        let mut set: LinuxBlkMqTagSet = unsafe { ::core::mem::zeroed() };
+        set.lifecycle = Box::into_raw(Box::new(LinuxTagSetLifecycle::new()));
+        // SAFETY: q is attached to the initialized tag set and remains owned until the waiter has joined.
+        let q = unsafe { blk_mq_alloc_queue(&mut set, ::core::ptr::null(), ::core::ptr::null_mut()) };
+        assert!(!q.is_null());
+        // SAFETY: q is attached to set; this models one request that has reached MQ_RQ_COMPLETE.
+        unsafe { request_mark_complete(q); }
+        let set_addr = (&mut set as *mut LinuxBlkMqTagSet) as usize;
+        let waiter = std::thread::spawn(move || {
+            // SAFETY: set remains valid and owns the completion predicate until this wait returns.
+            unsafe { blk_mq_tagset_wait_completed_request(set_addr as *mut LinuxBlkMqTagSet); }
+            DRAINED.store(true, Ordering::Release);
+        });
+        for _ in 0..1_000 {
+            if DRAINED.load(Ordering::Acquire) { break; }
+            std::thread::yield_now();
+        }
+        assert!(!DRAINED.load(Ordering::Acquire));
+        // SAFETY: this withdraws the sole complete-state request and wakes the drain waiter.
+        unsafe { request_unmark_complete(q); }
+        waiter.join().expect("completion drain waiter joins after completed request is released");
+        assert!(DRAINED.load(Ordering::Acquire));
+        // SAFETY: q is detached before its tag-set lifecycle allocation is reclaimed.
+        unsafe {
             core::blk_cleanup_queue(q);
             drop(Box::from_raw(set.lifecycle));
         }
