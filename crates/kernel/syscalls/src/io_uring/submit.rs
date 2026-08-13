@@ -141,7 +141,7 @@ fn admit(inode: &Arc<IoUringInode>, sqe: &Sqe) -> Result<(), Errno> {
 
 /// Run one admitted entry, under the personality it names.
 /// # C: one operation
-#[inline(always)]
+#[inline(never)]
 fn issue(inode: &Arc<IoUringInode>, sqe: &Sqe) -> OpOutcome {
     if sqe.personality == 0 { return dispatch_op(inode, sqe); }
     let creds = inode.reg.lock().personality(sqe.personality as u32);
