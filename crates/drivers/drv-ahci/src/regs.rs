@@ -130,6 +130,12 @@ pub fn dma_range_fits(cap: u32, pa: u64, bytes: u64) -> bool {
     cap & CAP_S64A != 0 || last <= u32::MAX as u64
 }
 
+/// Highest DMA address accepted by this HBA. # C: O(1)
+#[inline]
+pub const fn dma_mask(cap: u32) -> u64 {
+    if cap & CAP_S64A != 0 { u64::MAX } else { u32::MAX as u64 }
+}
+
 /// Whether one enabled port interrupt terminates slot-zero waiting. # C: O(1)
 pub fn irq_finishes_slot(pis: u32, ci: u32, tfd: u32) -> bool {
     pis & PIS_ERROR != 0
@@ -280,6 +286,12 @@ mod tests {
         assert!(!dma_range_fits(0, 0xFFFF_F001, 4096));
         assert!(!dma_range_fits(0, 1 << 32, 1));
         assert!(!dma_range_fits(0, 0, 0));
+    }
+
+    #[test]
+    fn dma_mask_obeys_s64a() {
+        assert_eq!(dma_mask(CAP_S64A), u64::MAX);
+        assert_eq!(dma_mask(0), u32::MAX as u64);
     }
 
     #[test]

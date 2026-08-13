@@ -268,9 +268,10 @@ impl Ahci {
         // Allocate per-port command/FIS structures plus a contiguous data
         // run. The single PRDT entry can describe this whole 2 MiB run.
         let (mut frames, data_pa) = Self::alloc_frames()?;
+        let dma_mask = regs::dma_mask(cap);
         let mut dmas = [0u64; 3];
         for (pa, dma) in frames.iter().zip(dmas.iter_mut()) {
-            match iommu::map_dma(host.bdf(), *pa, PAGE as usize) {
+            match iommu::map_dma_below(host.bdf(), *pa, PAGE as usize, dma_mask) {
                 Some(mapped) => *dma = mapped,
                 None => {
                     Self::release_unstarted(host.bdf(), &mut frames, &mut dmas, data_pa, 0);
@@ -278,7 +279,7 @@ impl Ahci {
                 }
             }
         }
-        let Some(data_dma) = iommu::map_dma(host.bdf(), data_pa, DATA_BYTES as usize) else {
+        let Some(data_dma) = iommu::map_dma_below(host.bdf(), data_pa, DATA_BYTES as usize, dma_mask) else {
             Self::release_unstarted(host.bdf(), &mut frames, &mut dmas, data_pa, 0);
             return Err("DMA map data");
         };
