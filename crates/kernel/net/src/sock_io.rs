@@ -264,6 +264,42 @@ pub fn recvfrom_opts(
     max_len: usize,
     opts: RecvOptions,
 ) -> Result<Received, NetError> {
+    let tcp = match &*sock.kind.lock() {
+        SockKind::TcpConn(entry) => Some(entry.clone()),
+        _ => None,
+    };
+    if let Some(entry) = tcp { return recv_tcp_opts(sock, max_len, opts, entry); }
+    recvfrom_non_tcp_opts(sock, max_len, opts)
+}
+
+#[inline(never)]
+fn recv_tcp_opts(sock: &InetSocket, max_len: usize, opts: RecvOptions,
+    entry: alloc::sync::Arc<TcpEntry>) -> Result<Received, NetError>
+{
+    if let Some(note) = take_path_mtu(sock) { return Ok(Received::path_mtu(note)); }
+    drain_loopback();
+    let inline = sock.opts.base.oobinline.load(core::sync::atomic::Ordering::Acquire) != 0;
+    let payload = stack().tcp_recv_with_offset_oob(&entry, max_len, opts.peek, 0, inline,
+        |bytes| Ok::<_, ()>((bytes.to_vec(), bytes.len())))
+        .ok().flatten().unwrap_or_default();
+    if payload.is_empty() {
+        let eno = sock.take_pending_recv_error();
+        if eno != 0 { return Err(pending_net_error(eno)); }
+        return recv_empty_with(
+            sock.read_shut.load(core::sync::atomic::Ordering::Acquire)
+                || tcp_recv_eof(entry.conn.lock().state), payload);
+    }
+    let full_len = payload.len();
+    let peer = *sock.peer.lock();
+    Ok(Received { payload, full_len, peer, ..Default::default() })
+}
+
+#[inline(never)]
+fn recvfrom_non_tcp_opts(
+    sock: &InetSocket,
+    max_len: usize,
+    opts: RecvOptions,
+) -> Result<Received, NetError> {
     // `IPV6_RECVPATHMTU` is drained by the ORDINARY receive, ahead of the
     // datagram queue and without any receive flag selecting it. It is not the
     // extended-error queue: one replace-in-place cell, no `MSG_ERRQUEUE`.
@@ -389,25 +425,6 @@ pub fn recvfrom_opts(
         });
     }
     if let Some(received) = packet::recv(sock, max_len, opts) { return received; }
-    // TCP.
-    if let SockKind::TcpConn(entry) = &*sock.kind.lock() {
-        let entry = entry.clone();
-        drain_loopback();
-        let inline = sock.opts.base.oobinline.load(core::sync::atomic::Ordering::Acquire) != 0;
-        let payload = stack().tcp_recv_with_offset_oob(&entry, max_len, opts.peek, 0, inline,
-            |bytes| Ok::<_, ()>((bytes.to_vec(), bytes.len())))
-            .ok().flatten().unwrap_or_default();
-        if payload.is_empty() {
-            let eno = sock.take_pending_recv_error();
-            if eno != 0 { return Err(pending_net_error(eno)); }
-            return recv_empty_with(
-                sock.read_shut.load(core::sync::atomic::Ordering::Acquire)
-                    || tcp_recv_eof(entry.conn.lock().state), payload);
-        }
-        let full_len = payload.len();
-        let peer = *sock.peer.lock();
-        return Ok(Received { payload, full_len, peer, ..Default::default() });
-    }
     // UDP. AF_INET6 datagram sockets retain their exact v6 endpoint;
     // consulting the IPv4 endpoint would always miss.
     if sock.family.load(core::sync::atomic::Ordering::Acquire) == AF_INET6 {
