@@ -50,6 +50,17 @@ impl BlockDriver {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct DevNum { pub major: u32, pub minor: u32 }
 
+/// One published partition, owned by its parent whole-disk object.
+pub struct Partition {
+    pub name: String,
+    pub number: u32,
+    pub start_lba: u64,
+    pub sectors: u64,
+    pub uuid: Option<String>,
+    pub label: Option<String>,
+    pub dev: Arc<dyn BlockDevice>,
+}
+
 /// One registered block device.
 pub struct Disk {
     pub name: String,
@@ -65,6 +76,7 @@ pub struct Disk {
     /// first, so a mounted filesystem and a raw open cannot disagree.
     pub mapping: Arc<crate::bdev::BdevMapping>,
     pub stats: Arc<crate::stats::DiskStats>,
+    partitions: LifecycleMutex<Vec<Arc<Partition>>>,
     life: LifecycleMutex<DiskLifecycle>,
     io: Arc<Spinlock<DiskIo, DevicesClass>>,
 }
@@ -76,6 +88,11 @@ impl Disk {
         // SAFETY: VFS file release is process context and disk lifecycle is a
         // sleepable operation; this lock is never acquired from completion.
         unsafe { self.life.lock() }.openers
+    }
+    /// Snapshot child partitions from the disk-owned publication table. # C: O(partitions)
+    pub fn partitions(&self) -> Vec<Arc<Partition>> {
+        // SAFETY: partition publication is process-context lifecycle work.
+        unsafe { self.partitions.lock() }.clone()
     }
 }
 
@@ -318,6 +335,7 @@ pub fn register_with_driver(driver: BlockDriver, name: &str, serial: Option<&str
             let disk = Arc::new(Disk {
                 name: name.to_string(), index, driver, number,
                 serial: serial.filter(|s| !s.is_empty()).map(ToString::to_string), dev, mapping, stats,
+                partitions: LifecycleMutex::new(Vec::new()),
         life: LifecycleMutex::new(DiskLifecycle { holders: 0, openers: 0, quiesced: false, detached: false }),
                 io,
             });
