@@ -138,7 +138,7 @@ fn bio_alloc_owned(max_vecs: u16) -> *mut LinuxBio {
         },
         vecs: alloc::vec![empty; max_vecs as usize],
         page: null_mut(),
-        bdev: LinuxBlockDevice { bd_disk: null_mut(), bd_queue: null_mut(), bd_private: null_mut() },
+        bdev: LinuxBlockDevice::new(),
     });
     owner.bio.bi_io_vec = owner.vecs.as_mut_ptr();
     owner.bio.owner = (&mut *owner) as *mut BioOwner as *mut c_void;
@@ -186,7 +186,6 @@ pub(super) fn bio_from_request(disk: *mut LinuxGendisk, req: &BlockRequest, sect
     unsafe {
         (*owner).bdev.bd_disk = disk;
         (*owner).bdev.bd_queue = if disk.is_null() { null_mut() } else { (*disk).queue };
-        (*owner).bdev.bd_private = if disk.is_null() { null_mut() } else { (*disk).private_data };
         (*bio).bi_disk = disk;
         (*bio).bi_bdev = &mut (*owner).bdev;
         (*bio).bi_sector = sector;

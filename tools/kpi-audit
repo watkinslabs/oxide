@@ -139,6 +139,14 @@ SUPPORTED_KPI_ABI: dict[str, AbiType] = {
         ("ffbit", 184), ("swbit", 200), ("absinfo", 328), ("key", 336),
         ("led", 432), ("snd", 440), ("sw", 448), ("dev", 544), ("timestamp", 1376),
         ("inhibited", 1400))),
+    "block_device": AbiType("block_device", 984, (("bd_start_sect", 0), ("bd_nr_sectors", 8),
+        ("bd_disk", 16), ("bd_queue", 24), ("bd_stats", 32), ("bd_stamp", 40),
+        ("__bd_flags", 48), ("bd_dev", 52), ("bd_mapping", 56), ("bd_openers", 64),
+        ("bd_size_lock", 68), ("bd_claiming", 72), ("bd_holder", 80),
+        ("bd_holder_ops", 88), ("bd_holder_lock", 96), ("bd_holders", 128),
+        ("bd_holder_dir", 136), ("bd_fsfreeze_count", 144),
+        ("bd_fsfreeze_mutex", 152), ("bd_meta_info", 184), ("bd_writers", 192),
+        ("bd_security", 200), ("bd_device", 208))),
 }
 
 ABI_TYPES: tuple[str, ...] = (
