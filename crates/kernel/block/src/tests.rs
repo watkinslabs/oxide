@@ -306,6 +306,7 @@ fn an_explicit_request_priority_survives_the_registry_submit_path() {
     // reused once a disk is unregistered, so a by-index lookup can hand back a
     // sibling test's disk and this test then asserts on a spy nothing reached.
     crate::registry::register("prio-explicit", spy.clone());
+    spy.seen.lock().clear();
     let disk = crate::registry::by_name("prio-explicit").expect("registered disk");
     let want = sched::ioprio::prio_value(sched::ioprio::CLASS_RT, 2);
     let mut req = BlockRequest { op: BlockOp::Read, start_block: 0, len_blocks: 1,
@@ -319,6 +320,7 @@ fn an_explicit_request_priority_survives_the_registry_submit_path() {
 fn an_unset_request_is_stamped_at_submission() {
     let spy = Arc::new(PrioSpy { inner: Disk::new(512, 64), seen: Spinlock::new(Vec::new()) });
     crate::registry::register("prio-unset", spy.clone());
+    spy.seen.lock().clear();
     let disk = crate::registry::by_name("prio-unset").expect("registered disk");
     let mut req = BlockRequest::new_read(0, 1, 512);
     assert_eq!(req.ioprio, sched::ioprio::DEFAULT);
