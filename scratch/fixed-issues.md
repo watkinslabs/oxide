@@ -1,5 +1,11 @@
 # Fixed issues
 
+### F1020-nvme-dma-mask-contract
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED F1020 | DEFECT | high | **Native NVMe retained requester-keyed DMA ownership but bypassed its DMA-mask contract: queue, PRP-list, and data mappings were always unconstrained. Controllers with the documented 48-bit address erratum could receive an invalid IOVA; without an IOMMU, a high physical allocation could reach the device directly.** The probe now selects one controller mask, every queue and I/O allocation maps below it, and constrained controllers source backing memory below the same ceiling before publication. | `drv_nvme::regs::tests::controller_dma_mask_selects_the_48_bit_erratum_only`; `cargo test -p pmm -p drv-nvme --lib -- --test-threads=1` (215 passed); both kernel targets build with warnings denied. | F1090-hardware-dma-audit |
+
 ### F1011-linux-coherent-dma-sgtable
 
 | Status | Class | Sev | Issue | Evidence | Owner |

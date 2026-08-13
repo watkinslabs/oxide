@@ -83,12 +83,51 @@ fn alloc_frame_with_meta(refcount: u32, mapcount: u32) -> Option<u64> {
     None
 }
 
+fn alloc_frame_with_meta_below(refcount: u32, mapcount: u32, max_pa: u64) -> Option<u64> {
+    use core::sync::atomic::Ordering;
+    let p = pmm_static()?;
+    let max_pfn = max_pa / PAGE_BYTES;
+    for _ in 0..ALLOCATOR_INTEGRITY_RETRY_COUNT {
+        let Some(pa) = p.alloc_below(crate::Order(0), hal::Pfn(max_pfn)).ok().map(|pfn| pfn.0 * PAGE_BYTES) else {
+            break;
+        };
+        if let Some(meta) = page_meta() {
+            let pfn = hal::Pfn(pa / PAGE_BYTES);
+            if let Some(m) = meta.get(pfn) {
+                let rc = m.refcount.load(Ordering::Acquire);
+                let flags = crate::PageFlags::from_bits_retain(m.flags.load(Ordering::Acquire));
+                if flags.contains(crate::PageFlags::KHEAP) {
+                    kassert!(false, "kernel-heap frame returned by buddy");
+                }
+                if rc != 0 {
+                    klog::write_raw(b"[PMM] alloc skipped in-use frame pa=");
+                    klog::write_hex_u64(pa);
+                    klog::write_raw(b" rc=");
+                    klog::write_dec_u64(rc as u64);
+                    klog::write_raw(b"\n");
+                    continue;
+                }
+                m.refcount.store(refcount, Ordering::Release);
+                m.mapcount.store(mapcount, Ordering::Release);
+            }
+        }
+        return Some(pa);
+    }
+    None
+}
+
 /// Allocate a frame for a user PTE that will be installed by the caller.
 /// The returned frame starts with one struct-page reference and one live
 /// mapping, matching the immediately-following PTE install in the fault path.
 /// # C: O(1) amortised (PMM buddy alloc).
 pub fn alloc_one_frame() -> Option<u64> {
     alloc_frame_with_meta(1, 1)
+}
+
+/// Allocate one frame whose complete DMA span lies below `max_pa`.
+/// # C: O(retries)
+pub fn alloc_one_frame_below(max_pa: u64) -> Option<u64> {
+    alloc_frame_with_meta_below(1, 1, max_pa)
 }
 
 /// Allocate a frame owned by a kernel object, not by a user PTE.
