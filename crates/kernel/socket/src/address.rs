@@ -3,7 +3,6 @@ use core::sync::atomic::Ordering;
 
 use crate::{Error, KResult, SendContext};
 
-#[derive(Clone, Copy)]
 pub(crate) enum InetAddress {
     None,
     V4 { ip: net::Ipv4Addr, port: u16 },
