@@ -1,4 +1,7 @@
 // Linux module owner/refcount and parameter compatibility exports.
+// Module manifest: params owns scalar module parameter parsing and rendering.
+
+mod params;
 
 use core::ffi::{c_char, c_void};
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -6,8 +9,8 @@ use core::sync::atomic::{AtomicU32, Ordering};
 const MODULE_STATE_LIVE: usize = 0;
 const MODULE_STATE_COMING: usize = 1;
 const MODULE_STATE_GOING: usize = 2;
-const LINUX_EINVAL: i32 = 22;
-const PARAM_SCAN_LIMIT: usize = 4096;
+pub(super) const LINUX_EINVAL: i32 = 22;
+pub(super) const PARAM_SCAN_LIMIT: usize = 4096;
 
 #[repr(C)]
 pub(crate) struct LinuxModule {
@@ -17,7 +20,7 @@ pub(crate) struct LinuxModule {
 }
 
 #[repr(C)]
-struct KernelParamOps {
+pub(super) struct KernelParamOps {
     flags: u32,
     set:   Option<unsafe extern "C" fn(*const c_char, *const KernelParam) -> i32>,
     get:   Option<unsafe extern "C" fn(*mut c_char, *const KernelParam) -> i32>,
@@ -25,7 +28,7 @@ struct KernelParamOps {
 }
 
 #[repr(C)]
-struct KernelParam {
+pub(super) struct KernelParam {
     name:  *const c_char,
     mod_:  *mut LinuxModule,
     ops:   *const KernelParamOps,
@@ -96,6 +99,7 @@ pub fn export_symbols() {
         ("param_set_int",   param_set_int   as *const () as usize),
         ("param_get_int",   param_get_int   as *const () as usize),
         ("param_set_uint",  param_set_uint  as *const () as usize),
+        ("param_set_uint_minmax", params::param_set_uint_minmax as *const () as usize),
         ("param_get_uint",  param_get_uint  as *const () as usize),
         ("param_set_ulong", param_set_ulong as *const () as usize),
         ("param_get_ulong", param_get_ulong as *const () as usize),
@@ -132,67 +136,7 @@ unsafe fn refcnt(module: *mut LinuxModule) -> &'static AtomicU32 {
     unsafe { &*((&mut (*module).refcnt as *mut u32).cast::<AtomicU32>()) }
 }
 
-unsafe extern "C" fn param_set_bool(val: *const c_char, kp: *const KernelParam) -> i32 {
-    let Some(arg) = param_arg::<bool>(kp) else { return -LINUX_EINVAL; };
-    let Some(v) = parse_bool(val) else { return -LINUX_EINVAL; };
-    // SAFETY: param_arg checked kp and returned the typed backing storage.
-    unsafe { *arg = v; }
-    0
-}
-
-unsafe extern "C" fn param_get_bool(buf: *mut c_char, kp: *const KernelParam) -> i32 {
-    let Some(arg) = param_arg::<bool>(kp) else { return -LINUX_EINVAL; };
-    // SAFETY: param_arg checked kp and returned the typed backing storage.
-    let v = unsafe { *arg };
-    write_bytes(buf, if v { b"Y\n" } else { b"N\n" })
-}
-
-unsafe extern "C" fn param_set_int(val: *const c_char, kp: *const KernelParam) -> i32 {
-    let Some(arg) = param_arg::<i32>(kp) else { return -LINUX_EINVAL; };
-    let Some(v) = parse_i64(val) else { return -LINUX_EINVAL; };
-    if v < i32::MIN as i64 || v > i32::MAX as i64 { return -LINUX_EINVAL; }
-    // SAFETY: param_arg checked kp and returned the typed backing storage.
-    unsafe { *arg = v as i32; }
-    0
-}
-
-unsafe extern "C" fn param_get_int(buf: *mut c_char, kp: *const KernelParam) -> i32 {
-    let Some(arg) = param_arg::<i32>(kp) else { return -LINUX_EINVAL; };
-    // SAFETY: param_arg checked kp and returned the typed backing storage.
-    let v = unsafe { *arg };
-    write_i64(buf, v as i64)
-}
-
-unsafe extern "C" fn param_set_uint(val: *const c_char, kp: *const KernelParam) -> i32 {
-    let Some(arg) = param_arg::<u32>(kp) else { return -LINUX_EINVAL; };
-    let Some(v) = parse_u64(val) else { return -LINUX_EINVAL; };
-    if v > u32::MAX as u64 { return -LINUX_EINVAL; }
-    // SAFETY: param_arg checked kp and returned the typed backing storage.
-    unsafe { *arg = v as u32; }
-    0
-}
-
-unsafe extern "C" fn param_get_uint(buf: *mut c_char, kp: *const KernelParam) -> i32 {
-    let Some(arg) = param_arg::<u32>(kp) else { return -LINUX_EINVAL; };
-    // SAFETY: param_arg checked kp and returned the typed backing storage.
-    let v = unsafe { *arg };
-    write_u64(buf, v as u64)
-}
-
-unsafe extern "C" fn param_set_ulong(val: *const c_char, kp: *const KernelParam) -> i32 {
-    let Some(arg) = param_arg::<usize>(kp) else { return -LINUX_EINVAL; };
-    let Some(v) = parse_u64(val) else { return -LINUX_EINVAL; };
-    // SAFETY: param_arg checked kp and returned the typed backing storage.
-    unsafe { *arg = v as usize; }
-    0
-}
-
-unsafe extern "C" fn param_get_ulong(buf: *mut c_char, kp: *const KernelParam) -> i32 {
-    let Some(arg) = param_arg::<usize>(kp) else { return -LINUX_EINVAL; };
-    // SAFETY: param_arg checked kp and returned the typed backing storage.
-    let v = unsafe { *arg };
-    write_u64(buf, v as u64)
-}
+use params::{param_get_bool, param_get_int, param_get_uint, param_get_ulong, param_set_bool, param_set_int, param_set_uint, param_set_ulong};
 
 unsafe extern "C" fn param_array_set(val: *const c_char, kp: *const KernelParam) -> i32 {
     if kp.is_null() { return -LINUX_EINVAL; }
@@ -268,14 +212,14 @@ unsafe extern "C" fn param_array_get(buf: *mut c_char, kp: *const KernelParam) -
     (out + 1) as i32
 }
 
-fn param_arg<T>(kp: *const KernelParam) -> Option<*mut T> {
+pub(super) fn param_arg<T>(kp: *const KernelParam) -> Option<*mut T> {
     if kp.is_null() { return None; }
     // SAFETY: caller supplied a Linux kernel_param pointer and we only read arg.
     let arg = unsafe { (*kp).arg };
     if arg.is_null() { None } else { Some(arg.cast::<T>()) }
 }
 
-fn parse_bool(s: *const c_char) -> Option<bool> {
+pub(super) fn parse_bool(s: *const c_char) -> Option<bool> {
     let b = trim_ascii(cstr_bytes(s)?);
     if eq_ignore_case(b, b"y") || eq_ignore_case(b, b"yes") || eq_ignore_case(b, b"1") ||
        eq_ignore_case(b, b"on") || eq_ignore_case(b, b"true") {
@@ -288,7 +232,7 @@ fn parse_bool(s: *const c_char) -> Option<bool> {
     }
 }
 
-fn parse_i64(s: *const c_char) -> Option<i64> {
+pub(super) fn parse_i64(s: *const c_char) -> Option<i64> {
     let b = trim_ascii(cstr_bytes(s)?);
     if b.is_empty() { return None; }
     let neg = b[0] == b'-';
@@ -301,7 +245,7 @@ fn parse_i64(s: *const c_char) -> Option<i64> {
     }
 }
 
-fn parse_u64(s: *const c_char) -> Option<u64> {
+pub(super) fn parse_u64(s: *const c_char) -> Option<u64> {
     let b = trim_ascii(cstr_bytes(s)?);
     if b.is_empty() || b[0] == b'-' { return None; }
     let digits = if b[0] == b'+' { &b[1..] } else { b };
@@ -363,7 +307,7 @@ fn eq_ignore_case(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).all(|(&x, &y)| x.to_ascii_lowercase() == y)
 }
 
-fn write_i64(buf: *mut c_char, v: i64) -> i32 {
+pub(super) fn write_i64(buf: *mut c_char, v: i64) -> i32 {
     if buf.is_null() { return -LINUX_EINVAL; }
     let mut tmp = [0u8; 22];
     let mut n = 0usize;
@@ -377,7 +321,7 @@ fn write_i64(buf: *mut c_char, v: i64) -> i32 {
     write_bytes(buf, &tmp[..=n])
 }
 
-fn write_u64(buf: *mut c_char, v: u64) -> i32 {
+pub(super) fn write_u64(buf: *mut c_char, v: u64) -> i32 {
     if buf.is_null() { return -LINUX_EINVAL; }
     let mut tmp = [0u8; 21];
     let n = decimal_into(&mut tmp, v);
@@ -398,7 +342,7 @@ fn decimal_into(out: &mut [u8], mut v: u64) -> usize {
     n
 }
 
-fn write_bytes(buf: *mut c_char, bytes: &[u8]) -> i32 {
+pub(super) fn write_bytes(buf: *mut c_char, bytes: &[u8]) -> i32 {
     if buf.is_null() { return -LINUX_EINVAL; }
     // SAFETY: Linux param get buffer is a page-sized writable output buffer.
     unsafe {
@@ -503,6 +447,23 @@ mod tests {
         // this stack frame — the exact type param_set_bool stores through.
         assert_eq!(unsafe { param_set_bool(b"on\0".as_ptr().cast(), &kp) }, 0);
         assert!(bool_v);
+    }
+
+    #[test]
+    fn uint_minmax_validates_before_storing() {
+        let _modules = crate::test_serial::claim();
+        let mut value = 17u32;
+        let kp = KernelParam { name: null(), mod_: core::ptr::null_mut(), ops: &param_ops_uint, perm: 0, level: 0, flags: 0, arg: (&mut value as *mut u32).cast() };
+        // SAFETY: kp.arg names the live u32 backing storage and each literal is NUL-terminated.
+        assert_eq!(unsafe { params::param_set_uint_minmax(b"8\0".as_ptr().cast(), &kp, 8, 32) }, 0);
+        assert_eq!(value, 8);
+        // SAFETY: the out-of-range value uses the same valid parameter storage; rejection must
+        // occur before the backing value is written.
+        assert_eq!(unsafe { params::param_set_uint_minmax(b"33\0".as_ptr().cast(), &kp, 8, 32) }, -LINUX_EINVAL);
+        assert_eq!(value, 8);
+        // SAFETY: malformed input is NUL-terminated and must not mutate the valid backing value.
+        assert_eq!(unsafe { params::param_set_uint_minmax(b"bad\0".as_ptr().cast(), &kp, 8, 32) }, -LINUX_EINVAL);
+        assert_eq!(value, 8);
     }
 
     #[test]

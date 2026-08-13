@@ -74,6 +74,8 @@ int param_get_bool(char *buffer, const struct kernel_param *kp);
 int param_set_int(const char *val, const struct kernel_param *kp);
 int param_get_int(char *buffer, const struct kernel_param *kp);
 int param_set_uint(const char *val, const struct kernel_param *kp);
+int param_set_uint_minmax(const char *val, const struct kernel_param *kp,
+                          unsigned int min, unsigned int max);
 int param_get_uint(char *buffer, const struct kernel_param *kp);
 int param_set_ulong(const char *val, const struct kernel_param *kp);
 int param_get_ulong(char *buffer, const struct kernel_param *kp);
