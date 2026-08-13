@@ -1,5 +1,7 @@
 # Build outputs
 /target/
+**/target/
+/crates/drivers/drv-atlantic/Cargo.lock
 /tools/*/target/
 /userspace/*/target/
 **/*.rs.bk

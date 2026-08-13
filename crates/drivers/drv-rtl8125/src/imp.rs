@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use sync::{Spinlock, TaskList as DriverLockClass};
 
-use crate::{bringup::{self, Op}, dma_owner::Rings, regs};
+use crate::{bringup::{self, Op}, dma_owner::Rings, regs, rtl_firmware};
 
 const PAGE: u64 = 4096;
 const ETHERNET_CLASS: u32 = 0x02_00_00;
@@ -39,9 +39,12 @@ impl Controller {
     fn execute(&self, op: Op) { match op { Op::Write8(o, v) => self.write8(o, v), Op::Write16(o, v) => self.write16(o, v), Op::Write32(o, v) => self.write32(o, v), Op::Read32(o) => { let _ = self.read32(o); } } }
     fn start(&self) -> bool {
         let xid = self.read32(regs::TX_CONFIG);
+        let Some(name) = rtl_firmware::name_for(xid) else { return false; };
+        let Some(bytes) = firmware::driver_blob::read(name) else { return false; };
+        let Some(image) = rtl_firmware::Image::parse(&bytes) else { return false; };
         let Some(plan) = bringup::start_plan(xid, self.rings.rx_desc_dma, self.rings.tx_desc_dma) else { return false; };
         if !self.rings.initialize_rx() || !self.rings.initialize_tx() { return false; }
-        for (index, op) in plan.into_iter().enumerate() { self.execute(op); if index == 1 && !self.wait_reset() { return false; } }
+        for (index, op) in plan.into_iter().enumerate() { self.execute(op); if index == 1 && (!self.wait_reset() || !self.apply_firmware(&image)) { return false; } }
         true
     }
     fn wait_reset(&self) -> bool {
@@ -51,6 +54,9 @@ impl Controller {
             core::hint::spin_loop();
         }
         true
+    }
+    fn apply_firmware(&self, image: &rtl_firmware::Image<'_>) -> bool {
+        image.apply(&mut FirmwareAccess { controller: self, ocp_base: regs::OCP_STANDARD_PHY_BASE })
     }
     fn enable_interrupts(&self) { self.write32(regs::INTR_STATUS, u32::MAX); self.write32(regs::INTR_MASK, regs::INTR_DEFAULT as u32); let _ = self.read32(regs::INTR_MASK); }
     fn mac(&self) -> Option<net::MacAddr> {
@@ -103,6 +109,18 @@ impl Controller {
         (frames, more)
     }
     fn release(mut self) { self.stop(); self.rings.release(); self.map.unmap(); }
+}
+
+struct FirmwareAccess<'a> { controller: &'a Controller, ocp_base: u32 }
+impl FirmwareAccess<'_> {
+    fn wait_ocp(&self, high: bool) -> bool { let deadline = sched::deadline::clock::now_ns().saturating_add(250_000); loop { if (self.controller.read32(regs::GPHY_OCP) & regs::OCP_BUSY != 0) == high { return true; } if sched::deadline::clock::now_ns() >= deadline { return false; } core::hint::spin_loop(); } }
+}
+impl rtl_firmware::Ops for FirmwareAccess<'_> {
+    fn phy_read(&mut self, reg: u16) -> Option<u16> { if reg == regs::MDIO_PAGE { return Some(if self.ocp_base == regs::OCP_STANDARD_PHY_BASE { 0 } else { (self.ocp_base >> 4) as u16 }); } let reg = rtl_firmware::phy_ocp_register(self.ocp_base, reg)?; self.controller.write32(regs::GPHY_OCP, reg << 15); self.wait_ocp(true).then(|| self.controller.read32(regs::GPHY_OCP) as u16) }
+    fn phy_write(&mut self, reg: u16, value: u16) -> bool { if reg == regs::MDIO_PAGE { self.ocp_base = rtl_firmware::phy_page_base(value); return true; } let Some(reg) = rtl_firmware::phy_ocp_register(self.ocp_base, reg) else { return false; }; self.controller.write32(regs::GPHY_OCP, regs::OCP_BUSY | (reg << 15) | u32::from(value)); self.wait_ocp(false) }
+    fn mac_read(&mut self, reg: u16) -> Option<u16> { if reg == regs::MDIO_PAGE { return Some((self.ocp_base >> 4) as u16); } self.controller.write32(regs::OCPDR, (self.ocp_base + u32::from(reg)) << 15); Some(self.controller.read32(regs::OCPDR) as u16) }
+    fn mac_write(&mut self, reg: u16, value: u16) -> bool { if reg == regs::MDIO_PAGE { self.ocp_base = u32::from(value) << 4; return true; } self.controller.write32(regs::OCPDR, regs::OCP_BUSY | ((self.ocp_base + u32::from(reg)) << 15) | u32::from(value)); true }
+    fn delay_ms(&mut self, value: u16) -> bool { let deadline = sched::deadline::clock::now_ns().saturating_add(u64::from(value) * 1_000_000); while sched::deadline::clock::now_ns() < deadline { core::hint::spin_loop(); } true }
 }
 
 struct RtlNetDev { name: alloc::string::String, mac: net::MacAddr, controller: Spinlock<Option<Controller>, DriverLockClass>, iface: AtomicU64, generation: AtomicU64, removed: AtomicBool, endpoint: usize }

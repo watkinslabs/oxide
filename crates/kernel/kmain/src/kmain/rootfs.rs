@@ -59,6 +59,7 @@ unsafe fn mount_root() {
             .expect("root disk (virtio-blk serial=oxide-root) not found");
         step("ext4::rootfs::init_from_dev", || ext4::rootfs::init_from_dev(root_dev))
             .expect("ext4 root mount (oxide-root) failed to open");
+        step("pci_boot::retry_firmware_gated_drivers", pci_boot::retry_firmware_gated_drivers);
         net::sock::init();
         // Generic netlink: the nlctrl controller plus every in-kernel family
         // (VFS_DQUOT), registered before userspace can resolve one by name.

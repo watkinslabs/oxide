@@ -13,6 +13,12 @@ pub const TX_CONFIG: u64 = 0x40;
 pub const RX_CONFIG: u64 = 0x44;
 pub const RX_DESC_LOW: u64 = 0xe4;
 pub const RX_DESC_HIGH: u64 = 0xe8;
+pub const OCPDR: u64 = 0xb0;
+pub const GPHY_OCP: u64 = 0xb8;
+pub const OCP_BUSY: u32 = 1 << 31;
+pub const OCP_STANDARD_PHY_BASE: u32 = 0xa400;
+pub const MDIO_PAGE: u16 = 0x1f;
+pub const MDIO_OCP_OFFSET: u16 = 0x10;
 
 pub const CMD_RESET: u8 = 0x10;
 pub const CMD_RX_ENABLE: u8 = 0x08;
