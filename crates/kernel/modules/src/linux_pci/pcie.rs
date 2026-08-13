@@ -33,6 +33,7 @@ pub(super) fn export_symbols() {
         ("pcie_capability_clear_and_set_word_locked", pcie_capability_clear_and_set_word_locked as *const () as usize),
         ("pcie_set_readrq", pcie_set_readrq as *const () as usize),
         ("pcie_reset_flr", pcie_reset_flr as *const () as usize),
+        ("pcie_aspm_enabled", pcie_aspm_enabled as *const () as usize),
     ] { export(name, addr, false); }
 }
 
@@ -45,6 +46,12 @@ pub(super) extern "C" fn pcie_set_readrq(dev: *mut LinuxPciDev, rq: i32) -> i32 
     if !valid_readrq(rq) { return -LINUX_EINVAL; }
     let value = ((rq.trailing_zeros() - PCI_EXP_READRQ_MIN.trailing_zeros()) << PCI_EXP_READRQ_SHIFT) as u16;
     pcie_capability_clear_and_set_word_locked(dev, PCI_EXP_DEVCTL as i32, PCI_EXP_DEVCTL_READRQ, value)
+}
+
+/// Return whether this PCIe device has an upstream link with ASPM enabled. # C: O(1)
+pub(super) extern "C" fn pcie_aspm_enabled(_dev: *mut LinuxPciDev) -> bool {
+    // PCIe ASPM link-state ownership is not installed, so no link may report ASPM enabled.
+    false
 }
 
 /// Initiate a PCIe function-level reset after IOMMU DMA admission is blocked. # C: O(reset delay)

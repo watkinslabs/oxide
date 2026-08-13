@@ -339,6 +339,13 @@ fn pcie_flr_checks_capability_then_sets_reset_control() {
 }
 
 #[test]
+fn pcie_aspm_is_disabled_without_a_link_state_owner() {
+    let _modules = crate::test_serial::claim();
+    let mut dev = test_dev();
+    assert!(!super::super::pcie::pcie_aspm_enabled(&mut dev));
+}
+
+#[test]
 fn driver_registration_and_drvdata_round_trip() {
     let _modules = crate::test_serial::claim();
     let mut dev = test_dev();
