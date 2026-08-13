@@ -18,10 +18,12 @@ static ADMITTED_REQUESTERS: Spinlock<Vec<Bdf>, Devices> = Spinlock::new(Vec::new
 /// domain explicitly admits them.
 /// # C: O(requesters^2)
 pub fn admit_boot_requesters(requesters: &[Bdf]) {
+    let translation_active = super::amd_vi_manager::active() || super::vtd_manager::active();
     let mut admitted = ADMITTED_REQUESTERS.lock();
     admitted.clear();
     for &bdf in requesters {
-        if !admitted.contains(&bdf) { admitted.push(bdf); }
+        let owned = super::amd_vi_manager::owns(bdf) || super::vtd_manager::owns(bdf);
+        if admits(translation_active, owned) && !admitted.contains(&bdf) { admitted.push(bdf); }
     }
 }
 
@@ -35,6 +37,8 @@ fn contains_exact(admitted: &[Bdf], bdf: Bdf) -> bool {
     admitted.iter().any(|candidate| *candidate == bdf)
 }
 
+fn admits(translation_active: bool, owned: bool) -> bool { !translation_active || owned }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -45,5 +49,12 @@ mod tests {
         let same_rid_elsewhere = Bdf { segment: 2, ..bdf };
         assert!(contains_exact(&[bdf], bdf));
         assert!(!contains_exact(&[bdf], same_rid_elsewhere));
+    }
+
+    #[test]
+    fn active_translation_rejects_an_unowned_requester() {
+        assert!(!admits(true, false));
+        assert!(admits(true, true));
+        assert!(admits(false, false));
     }
 }

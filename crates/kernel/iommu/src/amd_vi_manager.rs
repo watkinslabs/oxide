@@ -20,7 +20,7 @@ pub enum AmdViMsi { Direct, Remapped { address: u64, data: u32 }, Failed }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum AmdViIoapic { Direct, Remapped { index: u8 }, Failed }
 
-struct AmdViBootUnit { unit: IommuUnit, bootstrap: AmdViBootstrap, domain: AmdViDomain }
+struct AmdViBootUnit { unit: IommuUnit, requesters: Vec<Bdf>, bootstrap: AmdViBootstrap, domain: AmdViDomain }
 static MANAGER: Spinlock<Vec<AmdViBootUnit>, Devices> = Spinlock::new(Vec::new());
 static EVENT_RECORDS: AtomicU64 = AtomicU64::new(0);
 
@@ -44,7 +44,7 @@ pub unsafe fn activate_amd_vi(requesters: &[Bdf], hhdm_offset: u64, regions: &[p
         if !domain.map_identity_regions(regions) || !map_ivmd_regions(&mut domain, unit, requesters) { return AmdViActivation::Failed; }
         // SAFETY: the firmware inventory owns this unit and PCI probing has not enabled DMA.
         let Some(bootstrap) = (unsafe { AmdViBootstrap::new(unit.register_base, unit.segment, hhdm_offset) }) else { return AmdViActivation::Failed; };
-        manager.push(AmdViBootUnit { unit, bootstrap, domain });
+        manager.push(AmdViBootUnit { unit, requesters: Vec::new(), bootstrap, domain });
     }
 
     for bdf in requesters {
@@ -52,6 +52,7 @@ pub unsafe fn activate_amd_vi(requesters: &[Bdf], hhdm_offset: u64, regions: &[p
         let Some(entry) = manager.iter_mut().find(|entry| entry.unit == unit) else { return activation_failed(&mut manager); };
         // SAFETY: the identity domain maps every PMM-owned DMA address before translation enables.
         if !unsafe { entry.bootstrap.attach(*bdf, &entry.domain, INITIAL_DOMAIN_ID) } { return activation_failed(&mut manager); }
+        entry.requesters.push(*bdf);
     }
     for entry in manager.iter_mut() {
         if !entry.bootstrap.enable() { return activation_failed(&mut manager); }
@@ -88,9 +89,10 @@ fn activation_failed(manager: &mut [AmdViBootUnit]) -> AmdViActivation {
 
 /// Return whether this manager owns the full PCI requester identity. # C: O(units)
 pub fn owns(requester: Bdf) -> bool {
-    let Some(unit) = crate::amd_vi_unit_for_bdf(requester) else { return false; };
-    MANAGER.lock().iter().any(|entry| entry.unit == unit)
+    MANAGER.lock().iter().any(|entry| entry.requesters.iter().any(|candidate| *candidate == requester))
 }
+
+pub(crate) fn active() -> bool { !MANAGER.lock().is_empty() }
 /// Drain all currently pending AMD-Vi fault and hardware events. # C: O(units + events)
 pub fn poll_amd_vi_events(visitor: &mut impl FnMut(crate::AmdViEvent)) -> bool {
     let manager = MANAGER.lock(); let mut complete = true;
