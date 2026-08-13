@@ -229,6 +229,22 @@ impl BlockDevice for AdmissionDev {
 /// consumes it to unpublish the disk.
 pub struct DiskQuiesce { disk: Arc<Disk>, active: bool }
 
+/// Exclusive partition-table lifecycle gate. Unlike removal it leaves I/O
+/// admitted, because reading the table is itself disk I/O. # C: O(1)
+pub(crate) struct PartitionRescan { disk: Arc<Disk>, active: bool }
+impl PartitionRescan {
+    /// Disk whose partition table is exclusively being replaced. # C: O(1)
+    pub(crate) fn disk(&self) -> &Arc<Disk> { &self.disk }
+}
+impl Drop for PartitionRescan {
+    fn drop(&mut self) {
+        if !self.active { return; }
+        // SAFETY: this token owns the partition lifecycle exclusion.
+        unsafe { self.disk.life.lock() }.quiesced = false;
+        self.active = false;
+    }
+}
+
 impl DiskQuiesce {
     /// Name of the disk whose admission gate this token owns. # C: O(1)
     pub fn name(&self) -> &str { &self.disk.name }
@@ -461,7 +477,7 @@ pub fn release(name: &str) -> bool {
 /// table lock is held only long enough to acquire the disk's stable `Arc`.
 /// # C: O(N_disks)
 pub fn open_by_dev(dev_t: u32) -> bool {
-    let Some(disk) = by_dev(dev_t) else { return false; };
+    let Some(disk) = disk_for_dev(dev_t) else { return false; };
     // SAFETY: VFS open is process context; a contended disk lifecycle must
     // sleep, never spin with the device registry or interrupts held.
     let mut life = unsafe { disk.life.lock() };
@@ -473,12 +489,31 @@ pub fn open_by_dev(dev_t: u32) -> bool {
 
 /// Release the opener acquired by [`open_by_dev`]. # C: O(N_disks)
 pub fn close_by_dev(dev_t: u32) -> bool {
-    let Some(disk) = by_dev(dev_t) else { return false; };
+    let Some(disk) = disk_for_dev(dev_t) else { return false; };
     // SAFETY: VFS close is process context; it may wait for a concurrent open.
     let mut life = unsafe { disk.life.lock() };
     if life.openers == 0 { return false; }
     life.openers -= 1;
     true
+}
+
+fn disk_for_dev(dev_t: u32) -> Option<Arc<Disk>> {
+    if let Some(disk) = by_dev(dev_t) { return Some(disk); }
+    let (major, minor) = decode_dev(dev_t);
+    snapshot().into_iter().find(|disk| disk.partitions().into_iter()
+        .any(|part| part.number_dev == DevNum { major, minor }))
+}
+
+/// Close partition-table publication against new partition file opens while
+/// allowing the table-read I/O needed to discover its replacement. # C: O(N)
+pub(crate) fn try_partition_rescan(name: &str) -> Option<PartitionRescan> {
+    let disk = by_name(name)?;
+    // SAFETY: partition rescans serialize with open and removal lifecycle work.
+    let mut life = unsafe { disk.life.lock() };
+    if life.quiesced || life.detached || life.holders != 0 || life.openers != 0 { return None; }
+    life.quiesced = true;
+    drop(life);
+    Some(PartitionRescan { disk, active: true })
 }
 /// Acquire the exclusive gate only if the disk has no holders, open file
 /// descriptions, or admitted I/O. New admissions observe this gate under the

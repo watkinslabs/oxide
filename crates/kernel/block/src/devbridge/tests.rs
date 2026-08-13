@@ -3,8 +3,8 @@ use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::blockdev::{BlockDevice, MemDisk};
-use crate::registry::{self, dev_t_of, opener_count};
+use crate::blockdev::{BlockDevice, BlockRequest, MemDisk};
+use crate::registry::{self, by_name, dev_t_of, opener_count};
 use sync::Inode as InodeClass;
 use vfs::superblock::{FileSystemType, SbStatFs, SuperBlock, SuperOps};
 use vfs::{File, FileType, KResult, OpenFlags, make_device_node_inode};
@@ -314,6 +314,32 @@ fn real_block_file_lifecycle_blocks_unregister_until_final_fput() {
     drop(duplicate);
     assert_eq!(opener_count("vdt"), Some(0));
     assert!(registry::unregister("vdt"));
+}
+
+#[test]
+fn partition_file_lifecycle_blocks_parent_unregister() {
+    const NAME: &str = "vdtpart";
+    let backing = MemDisk::<InodeClass>::new(512, 16);
+    let mut mbr = vec![0; 512];
+    mbr[446 + 4] = 0x83;
+    mbr[446 + 8..446 + 12].copy_from_slice(&1u32.to_le_bytes());
+    mbr[446 + 12..446 + 16].copy_from_slice(&8u32.to_le_bytes());
+    mbr[510..512].copy_from_slice(&[0x55, 0xaa]);
+    backing.submit_sync(&mut BlockRequest::new_write(0, 1, mbr)).unwrap();
+    assert_ne!(registry::register(NAME, backing), 0);
+    let part = by_name(NAME).unwrap().partitions().pop().unwrap();
+    let devt = vfs::Devt(registry::encode_dev(part.number_dev.major, part.number_dev.minor));
+    let sb = test_sb();
+    let node = make_device_node_inode(1, FileType::BlockDev, devt, 0o660, Arc::downgrade(&sb));
+    let file = File::new(node.clone(), vfs::dcache::d_obtain_alias(node), OpenFlags::empty());
+    file.open_hook().expect("partition file acquires parent opener");
+    assert_eq!(opener_count(NAME), Some(1));
+    assert!(registry::rescan_partitions(NAME).is_none(), "open partition blocks table replacement");
+    assert!(!registry::unregister(NAME), "open partition blocks parent removal");
+    drop(file);
+    assert_eq!(opener_count(NAME), Some(0));
+    assert!(registry::rescan_partitions(NAME).is_some(), "final close admits table replacement");
+    assert!(registry::unregister(NAME));
 }
 
 /// The half of the polled contract that reaches the DRIVER: a transfer
