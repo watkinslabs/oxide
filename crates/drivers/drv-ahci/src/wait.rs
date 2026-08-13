@@ -67,12 +67,42 @@ pub(crate) fn poll_enabled(mut done: impl FnMut() -> bool, _deadline: u64) -> bo
 
 /// Register first, then recheck to close the cross-CPU wake-before-park gap.
 /// # C: O(1)
-pub(crate) fn park_checked(list: &WaitList, done: impl FnMut() -> bool) {
+pub(crate) fn park_checked(list: &WaitList, deadline: u64, done: impl FnMut() -> bool) {
     if !can_sleep() {
         core::hint::spin_loop();
         return;
     }
     // SAFETY: process context, no driver spinlock held; the shared predicate
     // loop owns publication, recheck and schedule.
-    let _ = unsafe { sched::live::wait_event_uninterruptible(list, done) };
+    // SAFETY: process context, installed runqueue, no driver spinlock held;
+    // the shared timed predicate loop publishes before every recheck and
+    // retires the deadline on either completion or timeout.
+    unsafe {
+        let _ = sched::live::wait_event_uninterruptible_until(
+            list, deadline, now_ns, done,
+        );
+    }
+}
+
+/// Publish a command waiter before ringing the device doorbell.
+///
+/// Waiter publication precedes producer enable; the issuer then either
+/// consumes the ready state or schedules. The caller must cancel the prepared
+/// waiter if it consumes completion without yielding.
+/// # C: O(N armed)
+pub(crate) fn prepare_command_wait(list: &WaitList, deadline: u64) -> bool {
+    if !can_sleep() { return false; }
+    // SAFETY: caller is process context and owns the command turn.  No driver
+    // lock is held across its subsequent schedule, and the AHCI IRQ only
+    // mutates the lock-free completion predicate before waking this list.
+    unsafe { list.prepare_to_wait_with_deadline(deadline); }
+    true
+}
+
+/// Schedule after [`prepare_command_wait`] when the command is still pending.
+/// # C: O(log N) plus a context switch
+pub(crate) fn yield_prepared_command_wait() {
+    // SAFETY: prepare_command_wait published current as Sleeping and the
+    // caller rechecks the completion predicate after this handoff.
+    unsafe { sched::live::park_yield(); }
 }

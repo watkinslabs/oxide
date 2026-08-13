@@ -80,6 +80,7 @@ impl Local { const fn new() -> Self { Self { usage: None, usage_min: None, usage
 
 /// Parse standard short HID items and retain every non-constant Input item.
 /// Long items and malformed/truncated descriptors are rejected. # C: O(bytes + fields)
+#[inline(never)]
 pub fn parse_report_descriptor(bytes: &[u8]) -> Option<Box<ReportLayout>> {
     let mut globals = Global::new();
     let mut global_stack = [Global::new(); HID_GLOBAL_STACK_SIZE];

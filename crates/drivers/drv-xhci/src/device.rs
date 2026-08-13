@@ -147,6 +147,7 @@ impl AddressDeviceDma {
     /// Selected descriptor-driven HID interface descriptor. # C: O(1)
     pub fn hid_interface(&self) -> Option<crate::usb::HidInterface> { self._hid }
     /// Parse and retain the exact report descriptor completed in the descriptor page. # C: O(report bytes)
+    #[inline(never)]
     pub fn discover_hid_report(&mut self) -> Option<()> {
         let hid = self._hid?;
         self.descriptor.invalidate_from_device();

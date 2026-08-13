@@ -143,6 +143,23 @@ impl Ahci {
             && self.pr(regs::P_TFD) & regs::TFD_ERR == 0
     }
 
+    /// Poll a previously issued slot-zero command when no schedulable task
+    /// exists yet (early root mount).  This is the same bounded PxCI/PxTFD
+    /// completion predicate used for IDENTIFY before runtime IRQ activation.
+    /// # C: O(command)
+    pub(crate) fn poll_command_completion(&self) -> bool {
+        let deadline = now_ns().saturating_add(IO_TIMEOUT_NS);
+        loop {
+            if self.pr(regs::P_TFD) & regs::TFD_ERR != 0 { return false; }
+            if self.pr(regs::P_CI) & COMMAND_SLOT_ZERO == 0 {
+                self.clear_command_interrupts();
+                return self.pr(regs::P_TFD) & regs::TFD_ERR == 0;
+            }
+            if now_ns() >= deadline { return false; }
+            core::hint::spin_loop();
+        }
+    }
+
     /// HHDM VA of this controller's exclusive contiguous DMA run. # C: O(1)
     pub(crate) fn data_va(&self) -> u64 {
         hhdm().wrapping_add(self.data_pa)

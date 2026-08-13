@@ -16,7 +16,6 @@ use crate::wait;
 pub struct AhciBlk {
     ctrl:       Spinlock<Ahci, DriverLockClass>,
     irq:        IrqBinding,
-    completion: WaitList,
     turn_wait:  WaitList,
     turn_busy:  AtomicBool,
     blk_size:   u32,
@@ -36,7 +35,6 @@ impl AhciBlk {
         Self {
             ctrl: Spinlock::new(ctrl),
             irq,
-            completion: WaitList::new(),
             turn_wait: WaitList::new(),
             turn_busy: AtomicBool::new(false),
             blk_size,
@@ -80,7 +78,7 @@ impl AhciBlk {
                     self.poisoned.store(true, Ordering::Release);
                     return false;
                 }
-                wait::park_checked(&self.turn_wait, || {
+                wait::park_checked(&self.turn_wait, deadline, || {
                     self.unavailable() || !self.turn_busy.load(Ordering::Acquire)
                 });
             }
@@ -105,15 +103,18 @@ impl AhciBlk {
             if wait::poll_enabled(
                 || self.unavailable() || self.irq.completed(),
                 deadline,
-            ) {
-                continue;
-            }
+            ) { continue; }
+            // `sti` admits an IRQ after poll_enabled's predicate load and
+            // before it restores the caller's prior mask. Recheck after the
+            // restore before publishing a sleeper so that completion does
+            // not fall through to a needless park.
+            if self.unavailable() || self.irq.completed() { continue; }
             if wait::now_ns() >= deadline {
                 self.poisoned.store(true, Ordering::Release);
                 klog::write_raw(b"[AHCI-TIMEOUT] interrupt completion missing\n");
                 return false;
             }
-            wait::park_checked(&self.completion, || {
+            wait::park_checked(self.irq.waiters(), deadline, || {
                 self.unavailable() || self.irq.completed()
             });
         }
@@ -130,14 +131,16 @@ impl AhciBlk {
     ) -> bool {
         if !self.acquire_turn() { return false; }
         self.irq.prepare_command();
-        let started = {
+        let deadline = wait::now_ns().saturating_add(wait::IO_TIMEOUT_NS);
+        let waiter_prepared = wait::prepare_command_wait(self.irq.waiters(), deadline);
+        let (started, bootstrap_complete) = {
             let mut ctrl = self.ctrl.lock();
             if self.unavailable() {
-                false
+                (false, false)
             } else {
                 let data = ctrl.data_va() as *mut u8;
                 if data.is_null() {
-                    false
+                    (false, false)
                 } else {
                     if write {
                         // SAFETY: the turn exclusively owns the controller's
@@ -152,11 +155,18 @@ impl AhciBlk {
                         }
                         pmm::dma::clean_to_device(ctrl.data_va(), len);
                     }
-                    ctrl.start_rw(write, lba, count)
+                    let started = ctrl.start_rw(write, lba, count);
+                    let complete = started && !waiter_prepared
+                        && ctrl.poll_command_completion();
+                    (started, complete)
                 }
             }
         };
-        let mut ok = started && self.wait_for_irq();
+        if started && waiter_prepared && !self.irq.completed() {
+            wait::yield_prepared_command_wait();
+        }
+        if waiter_prepared { self.irq.waiters().cancel_current_park(); }
+        let mut ok = started && (bootstrap_complete || self.wait_for_irq());
         if ok {
             let ctrl = self.ctrl.lock();
             if self.unavailable() || !ctrl.command_finished_ok() {
@@ -182,11 +192,20 @@ impl AhciBlk {
     fn flush_command(&self) -> bool {
         if !self.acquire_turn() { return false; }
         self.irq.prepare_command();
-        let started = {
+        let deadline = wait::now_ns().saturating_add(wait::IO_TIMEOUT_NS);
+        let waiter_prepared = wait::prepare_command_wait(self.irq.waiters(), deadline);
+        let (started, bootstrap_complete) = {
             let mut ctrl = self.ctrl.lock();
-            !self.unavailable() && ctrl.start_flush()
+            let started = !self.unavailable() && ctrl.start_flush();
+            let complete = started && !waiter_prepared
+                && ctrl.poll_command_completion();
+            (started, complete)
         };
-        let mut ok = started && self.wait_for_irq();
+        if started && waiter_prepared && !self.irq.completed() {
+            wait::yield_prepared_command_wait();
+        }
+        if waiter_prepared { self.irq.waiters().cancel_current_park(); }
+        let mut ok = started && (bootstrap_complete || self.wait_for_irq());
         if ok {
             let ctrl = self.ctrl.lock();
             ok = !self.unavailable() && ctrl.command_finished_ok();
@@ -198,7 +217,7 @@ impl AhciBlk {
 
     /// Wake the command owner when its hard handler requested fanout. # C: O(waiters)
     pub(crate) fn completion_bottom_half(&self) {
-        if self.irq.take_wake() { self.completion.wake_all(); }
+        if self.irq.take_wake() { self.irq.waiters().wake_all(); }
     }
 
     #[cfg(feature = "debug-boot")]
@@ -209,7 +228,7 @@ impl AhciBlk {
 
     fn quiesce_and_free(&self) {
         if self.removed.swap(true, Ordering::AcqRel) { return; }
-        self.completion.wake_all();
+        self.irq.waiters().wake_all();
         self.turn_wait.wake_all();
         let mut ctrl = self.ctrl.lock();
         for step in lifecycle::controller_cleanup_steps() {
