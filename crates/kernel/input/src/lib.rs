@@ -16,6 +16,7 @@ extern crate std;
 mod absolute;
 mod identity;
 mod packet;
+mod query;
 mod registry;
 mod repeat;
 mod state;
@@ -24,14 +25,15 @@ mod uapi;
 
 pub use identity::{format_bitmap, modalias, uevent_env, uevent_env_for};
 pub use registry::{
-    abs_snapshot_by_identity, apply_output_by_identity, clear_devices_for_tests, count,
-    device, devices_snapshot, disconnect_device, evdev_id_for_device, inhibited_by_identity,
-    install,
-    is_pointer, name_of, publish_evdev, push_evdev_event, remove_device,
-    repeat_by_identity, set_evdev_hooks, set_inhibited_by_identity, set_output_hook,
-    set_repeat_by_identity, unpublish_evdev, AbsSnapshot, CapBitmap, EvdevHooks,
+    clear_devices_for_tests, count,
+    device, devices_snapshot, disconnect_device, evdev_id_for_device,
+    install, install_and_publish,
+    name_of, publish_evdev, push_evdev_event, remove_device,
+    set_evdev_hooks, set_output_hook, unpublish_evdev, CapBitmap, EvdevHooks,
     InputDeviceKey, VirtioInputDev,
 };
+pub use query::{abs_snapshot_by_identity, apply_output_by_identity, inhibited_by_identity,
+    is_pointer, repeat_by_identity, set_inhibited_by_identity, set_repeat_by_identity, AbsSnapshot};
 pub use packet::InputValue;
 pub use state::with_state_bits_by_identity;
 pub use state::{OutputBatch, OutputEvent};

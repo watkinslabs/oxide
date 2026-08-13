@@ -10,6 +10,8 @@ const CONCURRENT_DEVICE_KEY_BASE: u32 = 0x0090_0000;
 const PLATFORM_POINTER_ID: u32 = 0x0000_8042;
 const UPDATED_REPEAT: crate::RepeatSettings = [400, 20];
 
+fn reject_evdev_publish(_id: u32) -> bool { false }
+
 #[test]
 fn install_snapshot_remove_round_trips_device() {
     let _serial = TEST_MUTEX.lock().unwrap_or_else(|err| err.into_inner());
@@ -83,6 +85,17 @@ fn install_rejects_duplicate_key_and_never_recycles_input_identity() {
     assert!(second_input > first_input, "inputN identity is monotonic");
     assert_eq!(second_evdev, first_evdev, "evdev minor may be reused after removal");
     assert_eq!(remove_device(second_key), Some(second_evdev));
+}
+
+#[test]
+fn failed_evdev_publication_unwinds_the_canonical_model() {
+    let _serial = TEST_MUTEX.lock().unwrap_or_else(|err| err.into_inner());
+    crate::registry::clear_devices_for_tests();
+    crate::set_evdev_hooks(EvdevHooks { register: Some(reject_evdev_publish), unregister: None, push_packet: None });
+    let device_key = key(SECOND_DEVICE_KEY);
+    assert!(crate::install_and_publish(test_dev(device_key)).is_none());
+    assert_eq!(count(), 0);
+    assert_eq!(evdev_id_for_device(device_key), None);
 }
 
 #[test]

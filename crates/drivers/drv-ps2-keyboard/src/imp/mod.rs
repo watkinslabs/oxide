@@ -18,6 +18,7 @@ mod ports;
 mod bringup;
 mod irq;
 mod mouse;
+mod keyboard;
 mod driver;
 
 pub use driver::driver;
