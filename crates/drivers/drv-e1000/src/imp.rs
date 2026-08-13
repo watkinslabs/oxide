@@ -23,7 +23,7 @@ impl Endpoint {
 }
 static ENDPOINTS: [Endpoint; MAX_DEVICES] = [const { Endpoint::new() }; MAX_DEVICES];
 
-struct Controller {
+pub(crate) struct Controller {
     mmio: mmio_map::Mapping,
     rx_desc_pa: u64, tx_desc_pa: u64, rx_data_pa: u64, tx_data_pa: u64,
     rx_desc_dma: u64, tx_desc_dma: u64, rx_data_dma: u64, tx_data_dma: u64,
@@ -33,11 +33,11 @@ struct Controller {
 
 impl Controller {
     fn va(pa: u64) -> u64 { pmm::user_as::hhdm_offset().wrapping_add(pa) }
-    fn read(&self, off: u64) -> u32 {
+    pub(crate) fn read(&self, off: u64) -> u32 {
         // SAFETY: controller holds the owned MMIO mapping and `off` is an aligned register ABI offset.
         unsafe { core::ptr::read_volatile((self.mmio.base_va() + off) as *const u32) }
     }
-    fn write(&self, off: u64, value: u32) {
+    pub(crate) fn write(&self, off: u64, value: u32) {
         // SAFETY: controller holds the owned MMIO mapping and `off` is an aligned register ABI offset.
         unsafe { core::ptr::write_volatile((self.mmio.base_va() + off) as *mut u32, value); }
     }
@@ -187,14 +187,6 @@ fn restore_bus_master(bdf: pci::Bdf, original: u16) {
     if let Some(r) = hal_aarch64::pci::EcamPci::from_published() { let _ = pci::restore_mem_bus_master(&r, bdf, original); }
 }
 
-fn wait_for_reset_auto_read() {
-    #[cfg(target_os = "oxide-kernel")]
-    {
-        let deadline = sched::deadline::clock::now_ns().saturating_add(regs::RESET_AUTO_READ_NS);
-        while sched::deadline::clock::now_ns() < deadline { core::hint::spin_loop(); }
-    }
-}
-
 fn dma_bytes(order: pmm::Order) -> usize { (1usize << order.0) * PAGE as usize }
 
 fn unmap_rings(bdf: pci::Bdf, dma: [u64; 4]) {
@@ -203,72 +195,49 @@ fn unmap_rings(bdf: pci::Bdf, dma: [u64; 4]) {
     let _ = iommu::unmap_dma(bdf, dma[2], dma_bytes(RX_ORDER));
     let _ = iommu::unmap_dma(bdf, dma[3], dma_bytes(TX_ORDER));
 }
-fn map_rings(bdf: pci::Bdf, pa: [u64; 4]) -> Option<[u64; 4]> {
-    let rx_desc = iommu::map_dma(bdf, pa[0], PAGE as usize)?;
-    let Some(tx_desc) = iommu::map_dma(bdf, pa[1], PAGE as usize) else { let _ = iommu::unmap_dma(bdf, rx_desc, PAGE as usize); return None; };
-    let Some(rx_data) = iommu::map_dma(bdf, pa[2], dma_bytes(RX_ORDER)) else {
+fn map_rings(bdf: pci::Bdf, pa: [u64; 4], dma_mask: u64) -> Option<[u64; 4]> {
+    let rx_desc = iommu::map_dma_below(bdf, pa[0], PAGE as usize, dma_mask)?;
+    let Some(tx_desc) = iommu::map_dma_below(bdf, pa[1], PAGE as usize, dma_mask) else { let _ = iommu::unmap_dma(bdf, rx_desc, PAGE as usize); return None; };
+    let Some(rx_data) = iommu::map_dma_below(bdf, pa[2], dma_bytes(RX_ORDER), dma_mask) else {
         let _ = iommu::unmap_dma(bdf, rx_desc, PAGE as usize); let _ = iommu::unmap_dma(bdf, tx_desc, PAGE as usize); return None;
     };
-    let Some(tx_data) = iommu::map_dma(bdf, pa[3], dma_bytes(TX_ORDER)) else {
+    let Some(tx_data) = iommu::map_dma_below(bdf, pa[3], dma_bytes(TX_ORDER), dma_mask) else {
         let _ = iommu::unmap_dma(bdf, rx_desc, PAGE as usize); let _ = iommu::unmap_dma(bdf, tx_desc, PAGE as usize);
         let _ = iommu::unmap_dma(bdf, rx_data, dma_bytes(RX_ORDER)); return None;
     };
     Some([rx_desc, tx_desc, rx_data, tx_data])
 }
 
-#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-fn io_write32(port: u16, value: u32) {
-    // SAFETY: the matched 82540 function owns this BAR1 register window during probe.
-    unsafe { core::arch::asm!("out dx, eax", in("dx") port, in("eax") value, options(nomem, nostack, preserves_flags)); }
+fn alloc_dma(order: pmm::Order, dma_mask: u64) -> Option<u64> {
+    if dma_mask <= u32::MAX as u64 { pmm::setup::alloc_contig_below(order, DMA32_LIMIT) }
+    else { pmm::setup::alloc_contig(order) }
 }
 
-fn reset(c: &Controller, io_base: Option<u16>) {
-    c.write(regs::IMC, u32::MAX);
-    c.write(regs::RCTL, 0);
-    c.write(regs::TCTL, regs::TCTL_PSP);
-    let ctrl = c.read(regs::CTRL);
-    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-    if let Some(port) = io_base {
-        // Linux uses the 82540 I/O window for CTRL.RST: this part cannot
-        // acknowledge the MMIO write that asks it to reset its own bus path.
-        io_write32(port, regs::CTRL as u32);
-        io_write32(port.wrapping_add(4), ctrl | regs::CTRL_RST);
-    } else {
-        c.write(regs::CTRL, ctrl | regs::CTRL_RST);
-    }
-    #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
-    { let _ = io_base; c.write(regs::CTRL, ctrl | regs::CTRL_RST); }
-    // Linux e1000_get_auto_rd_done waits 5ms for the 82540 EEPROM reload.
-    wait_for_reset_auto_read();
-    let _ = c.read(regs::ICR);
-}
-
-fn configure_rings(mmio: mmio_map::Mapping, io_base: Option<u16>, bdf: pci::Bdf) -> Option<(Controller, net::MacAddr)> {
-    let rx_desc_pa = match pmm::setup::alloc_contig_below(pmm::Order(0), DMA32_LIMIT) { Some(pa) => pa, None => { trace("[INFO]  e1000: no rx desc\n"); return None; } };
-    let tx_desc_pa = match pmm::setup::alloc_contig_below(pmm::Order(0), DMA32_LIMIT) { Some(pa) => pa, None => {
+fn configure_rings(mmio: mmio_map::Mapping, io_base: Option<u16>, bdf: pci::Bdf, dma_mask: u64, profile: crate::profile::ResetProfile) -> Option<(Controller, net::MacAddr)> {
+    let rx_desc_pa = match alloc_dma(pmm::Order(0), dma_mask) { Some(pa) => pa, None => { trace("[INFO]  e1000: no rx desc\n"); return None; } };
+    let tx_desc_pa = match alloc_dma(pmm::Order(0), dma_mask) { Some(pa) => pa, None => {
         trace("[INFO]  e1000: no tx desc\n");
         // SAFETY: this failure path returns the just-allocated and still-unmapped RX descriptor frame.
         unsafe { pmm::setup::free_contig(rx_desc_pa, pmm::Order(0)); } return None;
     } };
-    let rx_data_pa = match pmm::setup::alloc_contig_below(RX_ORDER, DMA32_LIMIT) { Some(pa) => pa, None => {
+    let rx_data_pa = match alloc_dma(RX_ORDER, dma_mask) { Some(pa) => pa, None => {
         trace("[INFO]  e1000: no rx dma\n");
         // SAFETY: both descriptor frames are fresh, unpublished allocations on this failure path.
         unsafe { pmm::setup::free_contig(rx_desc_pa, pmm::Order(0)); pmm::setup::free_contig(tx_desc_pa, pmm::Order(0)); } return None;
     } };
-    let tx_data_pa = match pmm::setup::alloc_contig_below(TX_ORDER, DMA32_LIMIT) { Some(pa) => pa, None => {
+    let tx_data_pa = match alloc_dma(TX_ORDER, dma_mask) { Some(pa) => pa, None => {
         trace("[INFO]  e1000: no tx dma\n");
         // SAFETY: all prior allocations are fresh, unpublished DMA storage on this failure path.
         unsafe { pmm::setup::free_contig(rx_desc_pa, pmm::Order(0)); pmm::setup::free_contig(tx_desc_pa, pmm::Order(0)); pmm::setup::free_contig(rx_data_pa, RX_ORDER); } return None;
     } };
-    let Some([rx_desc_dma, tx_desc_dma, rx_data_dma, tx_data_dma]) = map_rings(bdf, [rx_desc_pa, tx_desc_pa, rx_data_pa, tx_data_pa]) else {
+    let Some([rx_desc_dma, tx_desc_dma, rx_data_dma, tx_data_dma]) = map_rings(bdf, [rx_desc_pa, tx_desc_pa, rx_data_pa, tx_data_pa], dma_mask) else {
         // SAFETY: no allocation was published to the device before this mapping failure.
         unsafe { pmm::setup::free_contig(rx_desc_pa, pmm::Order(0)); pmm::setup::free_contig(tx_desc_pa, pmm::Order(0)); pmm::setup::free_contig(rx_data_pa, RX_ORDER); pmm::setup::free_contig(tx_data_pa, TX_ORDER); }
         return None;
     };
-    if !regs::dma32_range_fits(rx_desc_dma, PAGE as usize)
-        || !regs::dma32_range_fits(tx_desc_dma, PAGE as usize)
-        || !regs::dma32_range_fits(rx_data_dma, dma_bytes(RX_ORDER))
-        || !regs::dma32_range_fits(tx_data_dma, dma_bytes(TX_ORDER))
+    if ![(rx_desc_dma, PAGE as usize), (tx_desc_dma, PAGE as usize),
+        (rx_data_dma, dma_bytes(RX_ORDER)), (tx_data_dma, dma_bytes(TX_ORDER))]
+        .iter().all(|(dma, bytes)| regs::dma_range_fits(*dma, *bytes, dma_mask))
     {
         unmap_rings(bdf, [rx_desc_dma, tx_desc_dma, rx_data_dma, tx_data_dma]);
         // SAFETY: no allocation was published to the device on this DMA-mask rejection path.
@@ -277,7 +246,7 @@ fn configure_rings(mmio: mmio_map::Mapping, io_base: Option<u16>, bdf: pci::Bdf)
     }
     let mut c = Controller { mmio, rx_desc_pa, tx_desc_pa, rx_data_pa, tx_data_pa, rx_desc_dma, tx_desc_dma, rx_data_dma, tx_data_dma, bdf, rx_next: 0, tx_next: 0 };
     trace("[INFO]  e1000: dma allocated\n");
-    reset(&c, io_base);
+    if !crate::reset::apply(&c, io_base, profile) { c.free(); return None; }
     trace("[INFO]  e1000: reset done\n");
     let mac = match regs::mac_from_rar(c.read(regs::RAL0), c.read(regs::RAH0)) { Some(mac) => net::MacAddr(mac), None => { trace("[INFO]  e1000: no mac\n"); c.free(); return None; } };
     for i in 0..regs::RING_COUNT {
@@ -404,6 +373,10 @@ fn supported(dev: &drv::Device) -> bool {
     dev.bus == "pci" && dev.class == ETHERNET_CLASS && dev.vendor_id == INTEL_VENDOR
         && regs::LEGACY_PCI_IDS.contains(&dev.device_id)
 }
+pub(crate) fn supports_e1000e_82574(dev: &drv::Device) -> bool {
+    dev.bus == "pci" && dev.class == ETHERNET_CLASS && dev.vendor_id == INTEL_VENDOR
+        && regs::E1000E_82574_PCI_IDS.contains(&dev.device_id)
+}
 
 fn remove_bdf(bdf: pci::Bdf) {
     let record = {
@@ -422,33 +395,32 @@ fn remove_bdf(bdf: pci::Bdf) {
         net::backlog::unregister_poll(poll_rx);
     }
 }
+pub(crate) fn remove_device(dev: &drv::Device) {
+    if let Some(bdf) = pci::parse_bdf_addr(&dev.addr) { remove_bdf(bdf); }
+}
 
-pub struct E1000Driver;
-impl drv::Driver for E1000Driver {
-    fn name(&self) -> &'static str { "e1000" }
-    fn matches(&self, dev: &drv::Device) -> bool { supported(dev) }
-    fn probe(&self, parent: &Arc<drv::Device>) -> drv::KResult<()> {
+pub(crate) fn probe_common(parent: &Arc<drv::Device>, dma_mask: u64, profile: crate::profile::ResetProfile) -> drv::KResult<()> {
         trace("[INFO]  e1000: probe begin\n");
         let bdf = pci::parse_bdf_addr(&parent.addr).ok_or(drv::Error::ProbeFailed)?;
         let command_orig = enable_bus_master(bdf).ok_or(drv::Error::ProbeFailed)?;
         let bars = decode_bars(bdf);
         let Some(resource) = parent.resources.iter().find(|resource| resource.bar == 0 && resource.flags & drv::IORESOURCE_MEM != 0) else { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); };
         let bar = resource.start;
-        let io_base = match bars[1] { pci::Bar::Io { port } => u16::try_from(port).ok(), _ => None };
+        let io_base = if profile.legacy_io_reset { match bars[1] { pci::Bar::Io { port } => u16::try_from(port).ok(), _ => None } } else { None };
         if bar == 0 { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); }
         // SAFETY: BAR0 is owned by this successfully matched PCI function and maps its register file.
         // SAFETY: BAR0 comes from the matched PCI function and the driver takes exclusive ownership.
         let bytes = resource.end.checked_sub(resource.start).and_then(|bytes| bytes.checked_add(1)).ok_or(drv::Error::ProbeFailed)?;
         let pages = (bar & (PAGE - 1)).checked_add(bytes).and_then(|bytes| bytes.checked_add(PAGE - 1)).and_then(|bytes| bytes.checked_div(PAGE)).ok_or(drv::Error::ProbeFailed)?;
         let mmio = unsafe { mmio_map::map_owned(bar & !(PAGE - 1), pages) };
-        let (controller, mac) = match configure_rings(mmio, io_base, bdf) { Some(value) => value, None => { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); } };
+        let (controller, mac) = match configure_rings(mmio, io_base, bdf, dma_mask, profile) { Some(value) => value, None => { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); } };
         trace("[INFO]  e1000: rings ready\n");
         let endpoint = match endpoint_claim(controller.mmio.base_va()) { Some(endpoint) => endpoint, None => { let mut controller = controller; controller.free(); restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); } };
         // Linux permits an INTx fallback because ACPI _PRT supplies its exact
         // GSI routing. Oxide has no AML/_PRT interpreter, so pretending the
         // PCI interrupt-line byte is routable would deliver a vector to the
         // wrong pin on real firmware. Require PCI core MSI/MSI-X instead.
-        let irq = parent.msi_allowed().then(|| bind_pci_message(bdf, endpoint, &controller)).flatten();
+        let irq = bind_pci_message(bdf, endpoint, &controller);
         let irq = match irq { Some(irq) => irq, None => { endpoint_release(endpoint); let mut controller = controller; controller.free(); restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); } };
         trace("[INFO]  e1000: irq ready\n");
         let dev = Arc::new(E1000NetDev {
@@ -474,9 +446,15 @@ impl drv::Driver for E1000Driver {
         // performs the Linux ndo_open equivalent when userspace brings it up.
         trace("[INFO]  e1000: registered down\n");
         Ok(())
-    }
-    fn remove(&self, dev: &drv::Device) { if let Some(bdf) = pci::parse_bdf_addr(&dev.addr) { remove_bdf(bdf); } }
-    fn shutdown(&self, dev: &drv::Device) { if let Some(bdf) = pci::parse_bdf_addr(&dev.addr) { remove_bdf(bdf); } }
+}
+
+pub struct E1000Driver;
+impl drv::Driver for E1000Driver {
+    fn name(&self) -> &'static str { "e1000" }
+    fn matches(&self, dev: &drv::Device) -> bool { supported(dev) }
+    fn probe(&self, parent: &Arc<drv::Device>) -> drv::KResult<()> { probe_common(parent, regs::dma_mask(false), crate::profile::ResetProfile::LEGACY) }
+    fn remove(&self, dev: &drv::Device) { remove_device(dev); }
+    fn shutdown(&self, dev: &drv::Device) { remove_device(dev); }
 }
 
 pub static E1000_DRIVER: E1000Driver = E1000Driver;

@@ -11,6 +11,13 @@ pub const LEGACY_PCI_IDS: &[u16] = &[
     0x100e, 0x100f, 0x1015, 0x1016, 0x1017, 0x1018, 0x1075, 0x1076,
     0x1077, 0x1078, 0x1079, 0x107a, 0x10b5,
 ];
+pub const E1000E_82574_PCI_IDS: &[u16] = &[0x10d3, 0x10f6];
+
+/// Return the DMA aperture for one controller profile. # C: O(1)
+#[inline]
+pub const fn dma_mask(supports_64bit: bool) -> u64 {
+    if supports_64bit { u64::MAX } else { u32::MAX as u64 }
+}
 
 pub const CTRL: u64 = 0x00000;
 pub const ICR: u64 = 0x000c0;
@@ -31,8 +38,11 @@ pub const TDH: u64 = 0x03810;
 pub const TDT: u64 = 0x03818;
 pub const RAL0: u64 = 0x05400;
 pub const RAH0: u64 = 0x05404;
+pub const SWSM: u64 = 0x05b50;
 
 pub const CTRL_RST: u32 = 1 << 26;
+pub const SWSM_SMBI: u32 = 1;
+pub const SWSM_SWESMBI: u32 = 1 << 1;
 pub const TCTL_PSP: u32 = 1 << 3;
 pub const RCTL_EN: u32 = 1 << 1;
 pub const RCTL_BAM: u32 = 1 << 15;
@@ -59,6 +69,7 @@ pub const BUFFER_BYTES: usize = 2048;
 pub const ETH_MAX_FRAME: usize = 1518;
 /// 82540-class EEPROM auto-read window after a global reset. # C: O(1)
 pub const RESET_AUTO_READ_NS: u64 = 5_000_000;
+pub const E1000E_82574_RESET_NS: u64 = 25_000_000;
 
 #[repr(C)]
 #[derive(Copy, Clone, Default)]
@@ -92,9 +103,9 @@ pub fn ring_tail(next: usize) -> u32 { (next % RING_COUNT) as u32 }
 
 /// Admit only complete Ethernet frames fitting one hardware RX/TX slot. # C: O(1)
 pub fn valid_frame_len(len: usize) -> bool { (14..=ETH_MAX_FRAME).contains(&len) }
-/// Test whether an entire DMA allocation stays within a 32-bit bus aperture. # C: O(1)
-pub fn dma32_range_fits(pa: u64, bytes: usize) -> bool {
-    bytes != 0 && pa.checked_add(bytes as u64 - 1).is_some_and(|end| end <= u32::MAX as u64)
+/// Test whether an entire DMA allocation stays within the selected aperture. # C: O(1)
+pub fn dma_range_fits(pa: u64, bytes: usize, dma_mask: u64) -> bool {
+    bytes != 0 && pa.checked_add(bytes as u64 - 1).is_some_and(|end| end <= dma_mask)
 }
 /// Decode a station address from the first receive-address register pair. # C: O(1)
 pub fn mac_from_rar(low: u32, high: u32) -> Option<[u8; 6]> {
@@ -124,8 +135,9 @@ mod tests {
         assert!(!valid_frame_len(13)); assert!(!valid_frame_len(ETH_MAX_FRAME + 1));
         assert_eq!(mac_from_rar(0x3322_1100, 0x5544), Some([0, 0x11, 0x22, 0x33, 0x44, 0x55]));
         assert_eq!(mac_from_rar(0, 0), None);
-        assert!(dma32_range_fits(0xffff_f000, 4096));
-        assert!(!dma32_range_fits(0xffff_f000, 4097));
+        assert!(dma_range_fits(0xffff_f000, 4096, dma_mask(false)));
+        assert!(!dma_range_fits(0xffff_f000, 4097, dma_mask(false)));
+        assert!(dma_range_fits(1 << 40, 4096, dma_mask(true)));
     }
     #[test]
     fn only_linux_legacy_e1000_ids_match_the_82540_reset_path() {
@@ -136,5 +148,10 @@ mod tests {
         assert!(!LEGACY_PCI_IDS.contains(&0x1502));
         // igb: 82580 devices.
         assert!(!LEGACY_PCI_IDS.contains(&0x150e));
+        assert!(E1000E_82574_PCI_IDS.contains(&0x10d3));
+        assert!(!E1000E_82574_PCI_IDS.contains(&0x10ea));
+        assert_eq!(dma_mask(false), u32::MAX as u64);
+        assert_eq!(dma_mask(true), u64::MAX);
+        assert_eq!(E1000E_82574_RESET_NS, 25_000_000);
     }
 }
