@@ -115,39 +115,35 @@ audit_pci()
         case "$class" in
             0x010802*) audit_pci_driver "$bdf" "$driver" nvme ;;
             0x010601*) audit_pci_driver "$bdf" "$driver" ahci ;;
-            0x0c0330*) audit_pci_driver "$bdf" "$driver" xhci ;;
+            0x0c0330*) audit_pci_driver "$bdf" "$driver" xhci_hcd ;;
             0x020000*)
                 case "$vendor:$product" in
                     # These are the IDs Linux assigns to the legacy e1000
                     # driver; Oxide's 82540 reset path owns only this set.
                     0x8086:0x100e|0x8086:0x100f|0x8086:0x1015|0x8086:0x1016|0x8086:0x1017|0x8086:0x1018|0x8086:0x1075|0x8086:0x1076|0x8086:0x1077|0x8086:0x1078|0x8086:0x1079|0x8086:0x107a|0x8086:0x10b5)
                         audit_pci_driver "$bdf" "$driver" e1000 ;;
+                    0x8086:0x10d3|0x8086:0x10f6)
+                        audit_pci_driver "$bdf" "$driver" e1000e ;;
+                    # I225/I226 controllers use the native IGC queue and
+                    # firmware path, distinct from legacy and e1000e.
+                    0x8086:0x15f2|0x8086:0x15f3|0x8086:0x15f7|0x8086:0x15f8|0x8086:0x3100|0x8086:0x3101|0x8086:0x3102|0x8086:0x5502|0x8086:0x5503|0x8086:0x0d9f|0x8086:0x125b|0x8086:0x125c|0x8086:0x125d|0x8086:0x125e|0x8086:0x125f|0x8086:0x15fd)
+                        audit_pci_driver "$bdf" "$driver" igc ;;
                     # Linux e1000e: PCH/ICH integrated NICs require its
                     # MAC/PHY initialization rather than legacy e1000 reset.
-                    0x8086:0x10bc|0x8086:0x10bd|0x8086:0x10d3|0x8086:0x10ea|0x8086:0x10eb|0x8086:0x10ef|0x8086:0x10f0|0x8086:0x10f5|0x8086:0x1502|0x8086:0x1503|0x8086:0x150c)
+                    0x8086:0x1049|0x8086:0x104a|0x8086:0x104b|0x8086:0x104c|0x8086:0x104d|0x8086:0x105e|0x8086:0x105f|0x8086:0x1060|0x8086:0x107d|0x8086:0x107e|0x8086:0x107f|0x8086:0x108b|0x8086:0x108c|0x8086:0x1096|0x8086:0x1098|0x8086:0x109a|0x8086:0x10a4|0x8086:0x10a5|0x8086:0x10b9|0x8086:0x10ba|0x8086:0x10bb|0x8086:0x10bc|0x8086:0x10bd|0x8086:0x10bf|0x8086:0x10c0|0x8086:0x10c2|0x8086:0x10c3|0x8086:0x10c4|0x8086:0x10c5|0x8086:0x10cb|0x8086:0x10cc|0x8086:0x10cd|0x8086:0x10ce|0x8086:0x10d3|0x8086:0x10d5|0x8086:0x10d9|0x8086:0x10da|0x8086:0x10de|0x8086:0x10df|0x8086:0x10e5|0x8086:0x10ea|0x8086:0x10eb|0x8086:0x10ef|0x8086:0x10f0|0x8086:0x10f5|0x8086:0x10f6|0x8086:0x1501|0x8086:0x1502|0x8086:0x1503|0x8086:0x150c|0x8086:0x1525|0x8086:0x153a|0x8086:0x153b|0x8086:0x1559|0x8086:0x155a|0x8086:0x156f|0x8086:0x1570|0x8086:0x15a0|0x8086:0x15a1|0x8086:0x15a2|0x8086:0x15a3|0x8086:0x15b7|0x8086:0x15b8|0x8086:0x15b9|0x8086:0x15bb|0x8086:0x15bc|0x8086:0x15bd|0x8086:0x15be|0x8086:0x15d6|0x8086:0x15d7|0x8086:0x15d8|0x8086:0x15df|0x8086:0x15e0|0x8086:0x15e1|0x8086:0x15e2|0x8086:0x15e3|0x8086:0x15f4|0x8086:0x15f5|0x8086:0x15f9|0x8086:0x15fa|0x8086:0x15fb|0x8086:0x15fc|0x8086:0x1a1c|0x8086:0x1a1d|0x8086:0x1a1e|0x8086:0x1a1f|0x8086:0x294c|0x8086:0x550a|0x8086:0x550b|0x8086:0x550c|0x8086:0x550d|0x8086:0x550e|0x8086:0x550f|0x8086:0x5510|0x8086:0x5511|0x8086:0x57a0|0x8086:0x57a1|0x8086:0x57b3|0x8086:0x57b4|0x8086:0x57b7|0x8086:0x57b8|0x8086:0x57b9|0x8086:0x57ba)
                         emit driver-assessment NEEDS-DRIVER "bdf=$bdf" driver=e1000e "reason=linux-e1000e-family" ;;
                     # Linux igb: 82580-class adapters have a third hardware
                     # implementation even though their descriptor ABI resembles e1000.
                     0x8086:0x150e|0x8086:0x150f)
                         emit driver-assessment NEEDS-DRIVER "bdf=$bdf" driver=igb "reason=linux-igb-family" ;;
-                    # I225/I226 controllers use Oxide's native IGC path.
-                    # Grade its published driver link just like every other
-                    # supported controller; an ID match is not a probe result.
-                    0x8086:0x0d9f|0x8086:0x125b|0x8086:0x125c|0x8086:0x125d|0x8086:0x125e|0x8086:0x125f|0x8086:0x15f2|0x8086:0x15f3|0x8086:0x15f7|0x8086:0x15f8|0x8086:0x15fd|0x8086:0x3100|0x8086:0x3101|0x8086:0x3102|0x8086:0x5502|0x8086:0x5503)
-                        audit_pci_driver "$bdf" "$driver" igc ;;
-                    # Linux binds the AQC113 (device 04c0) to its distinct
-                    # Atlantic v2 hardware path.  It has its own MAC/PHY,
-                    # queue and firmware contracts, so neither the e1000 nor
-                    # RTL8125 driver is an eligible substitute.
+                    # AQC113 owns a distinct Atlantic v2 hardware path. Its
+                    # MAC/PHY, queue and firmware contracts exclude e1000
+                    # and RTL8125 as substitutes; successful binding is the
+                    # only support verdict.
                     0x1d6a:0x04c0)
-                        emit driver-assessment NEEDS-DRIVER "bdf=$bdf" driver=atlantic "reason=linux-atlantic-aqc113-family" ;;
-                    # Linux's r8169 PCI table binds this RTL8125 PCI ID.
-                    # Oxide exposes its matching native driver under the
-                    # same name, so the physical-machine audit must grade
-                    # the actual successful bind rather than flag it as an
-                    # unselected NIC.
+                        audit_pci_driver "$bdf" "$driver" atlantic ;;
                     0x10ec:0x8125)
-                        audit_pci_driver "$bdf" "$driver" r8169 ;;
+                        emit driver-assessment NEEDS-DRIVER "bdf=$bdf" driver=r8169 "reason=firmware-load-and-retry-required" ;;
                     *) emit driver-assessment NEEDS-SELECTION "bdf=$bdf" driver=physical-nic \
                         "reason=no-matched-native-driver" ;;
                 esac ;;
@@ -216,9 +212,15 @@ audit_display()
         case "$number" in ''|*[!0-9]*) count=$((count - 1)); continue ;; esac
         driver=$(link_value "/sys/class/drm/$name/device/driver")
         driver=${driver##*/}
+        vendor=$(read_value "/sys/class/drm/$name/device/vendor")
+        product=$(read_value "/sys/class/drm/$name/device/device")
         case "$driver" in
             -) emit display-card FIRMWARE-FALLBACK "card=$name" driver=simpledrm ;;
-            *) emit display-card BOUND "card=$name" "driver=$driver" ;;
+            bochs-drm|virtio_gpu) emit display-card BOUND "card=$name" "driver=$driver" ;;
+            nvidia|nvidia_drm) emit display-card NEEDS-DRIVER "card=$name" "vendor=$vendor" "device=$product" driver=nvidia-drm ;;
+            amdgpu|radeon) emit display-card NEEDS-DRIVER "card=$name" "vendor=$vendor" "device=$product" driver=amdgpu ;;
+            i915|xe) emit display-card NEEDS-DRIVER "card=$name" "vendor=$vendor" "device=$product" driver=i915 ;;
+            *) emit display-card NEEDS-SELECTION "card=$name" "vendor=$vendor" "device=$product" "driver=$driver" ;;
         esac
     done
     if [ "$count" -eq 0 ]; then
