@@ -136,6 +136,13 @@ impl PartitionBlkOps {
 }
 impl BlockDevOps for PartitionBlkOps {
     fn open(&self, devt: Devt) -> KResult<()> { partition_by_dev(devt.raw()).is_some().then_some(()).ok_or(VfsError::Enxio) }
+    fn open_file(&self, devt: Devt, _file: &vfs::File) -> KResult<()> {
+        if open_by_dev(devt.raw()) { Ok(()) } else { Err(VfsError::Enxio) }
+    }
+    fn release_file(&self, devt: Devt, _file: &vfs::File) {
+        let _ = self.mapping.write_and_wait();
+        let _ = close_by_dev(devt.raw());
+    }
     fn read(&self, _devt: Devt, off: u64, buf: &mut [u8]) -> KResult<usize> { self.mapping.read_at(off, buf).map_err(block_err) }
     fn write(&self, _devt: Devt, off: u64, buf: &[u8]) -> KResult<usize> { self.mapping.write_at(off, buf).map_err(block_err) }
     fn flush_cache(&self, _devt: Devt) -> KResult<()> {

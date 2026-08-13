@@ -7,7 +7,8 @@ use alloc::vec::Vec;
 use crate::partitions::{self, PartitionDevice};
 use crate::BlockDevice;
 
-use super::{by_name, DevNum, Disk, PARTITION_MINOR_COUNT};
+use super::{DevNum, Disk, PARTITION_MINOR_COUNT};
+#[cfg(test)] use super::by_name;
 
 /// One published partition, owned by its parent whole-disk object.
 pub struct Partition {
@@ -25,7 +26,8 @@ pub struct Partition {
 /// A malformed table and a valid unpartitioned disk both publish an empty set.
 /// # C: O(partition table)
 pub fn rescan_partitions(name: &str) -> Option<Vec<Arc<Partition>>> {
-    let disk = by_name(name)?;
+    let rescan = super::try_partition_rescan(name)?;
+    let disk = Arc::clone(rescan.disk());
     unpublish_partitions(&disk);
     let capacity = disk.dev.capacity_blocks();
     let parts = partitions::read(disk.dev.as_ref()).into_iter().filter_map(|info| {
