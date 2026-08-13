@@ -132,6 +132,7 @@ fn irq12_handler(_irq: u32) -> arch_irq::IrqReport {
 /// # SAFETY: called from driver probe after i8042 bring-up, IRQs masked.
 /// # C: O(1)
 pub(super) unsafe fn install_irq() -> bool {
+    // SAFETY: this probe owns the i8042 IRQ1 route and its vector storage.
     if !unsafe { install_line(KBD_ISA_IRQ, KBD_ISA_IRQ_GSI, irq1_handler, &IRQ_VEC, &IRQ_PIN) } {
         return false;
     }
@@ -156,6 +157,7 @@ pub(super) unsafe fn install_irq() -> bool {
 /// # SAFETY: called from the i8042 probe window after `install_device` succeeds.
 /// # C: O(1)
 pub(super) unsafe fn install_aux_irq() -> bool {
+    // SAFETY: this probe owns the i8042 IRQ12 route and its vector storage.
     if !unsafe { install_line(AUX_ISA_IRQ, AUX_ISA_IRQ_GSI, irq12_handler, &AUX_IRQ_VEC, &AUX_IRQ_PIN) } {
         return false;
     }

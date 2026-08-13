@@ -48,8 +48,11 @@ pub struct RxDesc { pub buffer_dma: u64, pub header_dma: u64 }
 #[derive(Copy, Clone, Default)]
 pub struct RxWriteback { pub packet_type: u32, pub rss_hash: u32, pub status: u16, pub length: u16, pub next: u16, pub vlan: u16 }
 
+/// # C: O(1)
 pub const fn rx_queue_offset(index: u32) -> u64 { RX_QUEUE_BASE + index as u64 * RX_QUEUE_STRIDE }
+/// # C: O(1)
 pub const fn tx_queue_offset(index: u32) -> u64 { TX_QUEUE_BASE + index as u64 * TX_QUEUE_STRIDE }
+/// # C: O(1)
 pub const fn split_dma(dma: u64) -> (u32, u32) { (dma as u32, (dma >> 32) as u32) }
 /// Queue-zero RX and TX interrupt-map enable bits, both targeting vector zero.
 /// # C: O(1)
@@ -62,19 +65,24 @@ pub const fn l2_filter_mac_words(mac: [u8; 6]) -> (u32, u32) {
         (mac[0] as u32) << 8 | mac[1] as u32,
     )
 }
+/// # C: O(1)
 pub const fn queue_control(current: u32, descriptors: usize, enable: bool) -> Option<u32> {
     if descriptors == 0 || descriptors % 8 != 0 || descriptors > QUEUE_LENGTH_MASK as usize { return None; }
     Some(current & !(QUEUE_LENGTH_MASK | QUEUE_ENABLE) | descriptors as u32 | if enable { QUEUE_ENABLE } else { 0 })
 }
+/// # C: O(1)
 pub const fn tx_data_control(bytes: usize) -> Option<u32> {
     if bytes == 0 || bytes > (TX_DESC_BUFFER_LENGTH_MASK >> 4) as usize { return None; }
     Some(TX_DESC_DATA | ((bytes as u32) << 4) | TX_DESC_EOP | TX_DESC_WRITEBACK)
 }
+/// # C: O(1)
 pub const fn tx_payload_control(bytes: usize) -> Option<u32> {
     if bytes > (TX_DESC_PAYLOAD_LENGTH_MASK >> 14) as usize { return None; }
     Some((bytes as u32) << 14)
 }
+/// # C: O(1)
 pub const fn rx_done(desc: &RxWriteback) -> bool { desc.status & RX_DESC_DONE != 0 }
+/// # C: O(1)
 pub const fn tx_done(desc: &TxDesc) -> bool { desc.control & TX_DESC_DONE != 0 }
 
 #[cfg(test)]

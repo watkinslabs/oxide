@@ -57,28 +57,39 @@ impl FileOps for DmaBufFileOps {
 }
 
 fn err<T>(n: i32) -> *mut T { (-(n as isize)) as usize as *mut T }
-fn init_list(h: *mut ListHead) { unsafe { (*h).next = h; (*h).prev = h; } }
+fn init_list(h: *mut ListHead) {
+    // SAFETY: callers pass an owned, writable list head before publication.
+    unsafe { (*h).next = h; (*h).prev = h; }
+}
 unsafe fn owner(buf: *mut LinuxDmaBuf) -> *mut Owner { buf.cast() }
 unsafe fn refs(buf: *mut LinuxDmaBuf) -> &'static AtomicI64 { unsafe { &(*(*buf).file).f_ref } }
 
 /// Retain an in-kernel DMA-BUF reference. # C: O(1)
 pub(crate) unsafe fn get_ref(buf: *mut LinuxDmaBuf) {
+    // SAFETY: caller supplies a live DMA-BUF whose embedded file owns this reference counter.
     if !buf.is_null() { unsafe { refs(buf).fetch_add(1, Ordering::AcqRel); } }
 }
 
 /// Return the buffer retained by an attachment. # C: O(1)
-pub(crate) unsafe fn attachment_buf(a: *mut DmaBufAttachment) -> *mut LinuxDmaBuf { unsafe { (*a).dmabuf } }
+pub(crate) unsafe fn attachment_buf(a: *mut DmaBufAttachment) -> *mut LinuxDmaBuf {
+    // SAFETY: caller supplies a live attachment allocated by DMA-BUF attach.
+    unsafe { (*a).dmabuf }
+}
 
 /// Export a buffer whose release is tied to its file reference. # C: O(1)
 #[unsafe(no_mangle)] pub unsafe extern "C" fn dma_buf_export(info: *const DmaBufExportInfo) -> *mut LinuxDmaBuf {
     if info.is_null() { return err(EINVAL); }
+    // SAFETY: the FFI caller retains a readable export descriptor for this call.
     let i = unsafe { &*info };
+    // SAFETY: a non-null operation table is validated before each required field is read.
     if i.ops.is_null() || i.size == 0 || unsafe { (*i.ops).map_dma_buf }.is_none() || unsafe { (*i.ops).unmap_dma_buf }.is_none() || unsafe { (*i.ops).release }.is_none() { return err(EINVAL); }
+    // SAFETY: Owner is fully initialized below before its pointer is published.
     let mut o = Box::new(unsafe { core::mem::zeroed::<Owner>() });
     o.file.f_ref = AtomicI64::new(1);
     o.buf.size = i.size; o.buf.file = &mut o.file; o.buf.ops = i.ops; o.buf.exp_name = if i.exp_name.is_null() { DMA_BUF_NAME.as_ptr().cast() } else { i.exp_name };
     o.buf.owner = i.owner; o.buf.priv_ = i.priv_; o.buf.resv = if i.resv.is_null() { &mut o.resv } else { i.resv };
     let p: *mut LinuxDmaBuf = &mut o.buf;
+    // SAFETY: p addresses the owned buffer inside o, which is initialized before publication.
     unsafe { init_list(&mut (*p).attachments); init_list(&mut (*p).list_node); }
     Box::into_raw(o).cast()
 }
@@ -101,6 +112,7 @@ pub(crate) unsafe fn attachment_buf(a: *mut DmaBufAttachment) -> *mut LinuxDmaBu
     let Ok(file) = table.get(fd) else { return err(EBADF); };
     let buf = file.private_data() as *mut LinuxDmaBuf;
     if buf.is_null() { return err(EINVAL); }
+    // SAFETY: the descriptor file owns a live DMA-BUF pointer until its file reference drops.
     unsafe { get_ref(buf); }
     buf
 }
@@ -108,29 +120,41 @@ pub(crate) unsafe fn attachment_buf(a: *mut DmaBufAttachment) -> *mut LinuxDmaBu
 /// Drop one DMA-BUF file reference and invoke exporter release at final put. # C: O(1)
 #[unsafe(no_mangle)] pub unsafe extern "C" fn dma_buf_put(buf: *mut LinuxDmaBuf) {
     if buf.is_null() { return; }
+    // SAFETY: caller transfers one live reference to this final-put protocol.
     if unsafe { refs(buf).fetch_sub(1, Ordering::AcqRel) } != 1 { return; }
+    // SAFETY: final ownership retains the exporter operation table until release returns.
     let release = unsafe { (*(*buf).ops).release };
+    // SAFETY: exporter registered this callback for the still-live buffer being released.
     if let Some(f) = release { unsafe { f(buf); } }
+    // SAFETY: this is the unique final reference, recovering the original Owner allocation.
     unsafe { drop(Box::from_raw(owner(buf))); }
 }
 
 /// Attach an importer; exporter attach runs before publication to the importer. # C: O(1)
 #[unsafe(no_mangle)] pub unsafe extern "C" fn dma_buf_dynamic_attach(buf: *mut LinuxDmaBuf, dev: *mut c_void, importer_ops: *const c_void, importer_priv: *mut c_void) -> *mut DmaBufAttachment {
     if buf.is_null() || dev.is_null() { return err(EINVAL); }
+    // SAFETY: every attachment field is initialized before the allocation is returned.
     let mut a = Box::new(unsafe { core::mem::zeroed::<DmaBufAttachment>() });
     a.dmabuf = buf; a.dev = dev; a.importer_ops = importer_ops; a.importer_priv = importer_priv;
+    // SAFETY: caller supplies a live exported buffer and device for this attach transaction.
     if let Some(f) = unsafe { (*(*buf).ops).attach } { let r = unsafe { f(buf, dev) }; if r != 0 { return err((-r) as i32); } }
     Box::into_raw(a)
 }
 
 /// Attach with no importer-private owner. # C: O(1)
-#[unsafe(no_mangle)] pub unsafe extern "C" fn dma_buf_attach(buf: *mut LinuxDmaBuf, dev: *mut c_void) -> *mut DmaBufAttachment { unsafe { dma_buf_dynamic_attach(buf, dev, core::ptr::null(), core::ptr::null_mut()) } }
+#[unsafe(no_mangle)] pub unsafe extern "C" fn dma_buf_attach(buf: *mut LinuxDmaBuf, dev: *mut c_void) -> *mut DmaBufAttachment {
+    // SAFETY: this ABI wrapper preserves the caller's live buffer and device preconditions.
+    unsafe { dma_buf_dynamic_attach(buf, dev, core::ptr::null(), core::ptr::null_mut()) }
+}
 
 /// Detach an importer and return its allocation only after exporter teardown. # C: O(1)
 #[unsafe(no_mangle)] pub unsafe extern "C" fn dma_buf_detach(buf: *mut LinuxDmaBuf, a: *mut DmaBufAttachment) {
     if buf.is_null() || a.is_null() { return; }
+    // SAFETY: caller supplies the attachment allocated by this buffer's attach path.
     if unsafe { (*a).dmabuf } != buf { return; }
+    // SAFETY: the exporter operation table remains live until attachment teardown completes.
     if let Some(f) = unsafe { (*(*buf).ops).detach } { unsafe { f(buf, a); } }
+    // SAFETY: detach consumes the unique heap allocation returned by dynamic_attach.
     unsafe { drop(Box::from_raw(a)); }
 }
 
