@@ -4,7 +4,7 @@ extern crate alloc;
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use alloc::sync::Arc;
+use alloc::{boxed::Box, sync::Arc};
 use alloc::vec::Vec;
 
 use crate::irq::PORT_CHANGE_WORDS;

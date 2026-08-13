@@ -4,7 +4,7 @@ extern crate alloc;
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use alloc::sync::Arc;
+use alloc::{boxed::Box, sync::Arc};
 
 use crate::probe::{add_usb_device, address_hub_child, control_complete, Controller, UsbDevice, XhciBh, CONTROLLERS};
 
