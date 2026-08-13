@@ -12,6 +12,7 @@ pub fn export_symbols() {
     use crate::symtab::export;
     for (name, addr) in [
         ("access_ok",      access_ok      as *const () as usize),
+        ("_copy_from_user", _copy_from_user as *const () as usize),
         ("copy_from_user", copy_from_user as *const () as usize),
         ("copy_to_user",   copy_to_user   as *const () as usize),
         ("clear_user",     clear_user     as *const () as usize),
@@ -31,12 +32,21 @@ extern "C" fn access_ok(addr: *const u8, size: usize) -> bool {
 }
 
 extern "C" fn copy_from_user(dst: *mut u8, src: *const u8, n: usize) -> usize {
+    _copy_from_user(dst, src, n)
+}
+
+extern "C" fn _copy_from_user(dst: *mut u8, src: *const u8, n: usize) -> usize {
     if dst.is_null() { return n; }
     #[cfg(target_os = "oxide-kernel")]
     // SAFETY: Linux KPI caller supplies a kernel destination valid for n bytes.
-    unsafe { uaccess::raw_copy_from_user(dst, src as u64, n) }
+    let left = unsafe { uaccess::raw_copy_from_user(dst, src as u64, n) };
     #[cfg(not(target_os = "oxide-kernel"))]
-    { let _ = src; n }
+    let left = { let _ = src; n };
+    if left != 0 {
+        // SAFETY: a successful prefix plus its remaining tail both lie within the caller's n-byte destination.
+        unsafe { core::ptr::write_bytes(dst.add(n - left), 0, left); }
+    }
+    left
 }
 
 extern "C" fn copy_to_user(dst: *mut u8, src: *const u8, n: usize) -> usize {
@@ -129,11 +139,12 @@ mod tests {
     }
 
     #[test]
-    fn copy_helpers_report_uncopied_without_current_mm() {
+    fn copy_from_user_zeroes_the_uncopied_tail() {
         let _modules = crate::test_serial::claim();
-        let mut dst = [0u8; USER_LEN as usize];
+        let mut dst = [0xa5u8; USER_LEN as usize];
         let src = [1u8; USER_LEN as usize];
         assert_eq!(copy_from_user(dst.as_mut_ptr(), USER_PTR as *const u8, dst.len()), dst.len());
+        assert_eq!(dst, [0; USER_LEN as usize]);
         assert_eq!(copy_to_user(USER_PTR as *mut u8, src.as_ptr(), src.len()), src.len());
     }
 
