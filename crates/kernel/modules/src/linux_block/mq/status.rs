@@ -59,10 +59,14 @@ extern "C" fn errno_to_blk_status(errno: i32) -> u8 {
 
 unsafe extern "C" fn bdev_disk_changed(_disk: *mut LinuxGendisk, _invalidate: bool) -> i32 { LINUX_OK }
 
-unsafe extern "C" fn device_add_disk(_parent: *mut c_void, disk: *mut LinuxGendisk, _groups: *const *const c_void) -> i32 {
+unsafe extern "C" fn device_add_disk(parent: *mut c_void, disk: *mut LinuxGendisk, _groups: *const *const c_void) -> i32 {
     if disk.is_null() { return -LINUX_EINVAL; }
-    // SAFETY: disk is a live gendisk; add_disk publishes it through the block registry.
-    unsafe { core::add_disk(disk); }
+    // SAFETY: disk is a live gendisk and parent, when non-null, is the caller's Linux device pointer; the
+    // embedded device records that same parent before add_disk publishes its device/core and block lifetimes.
+    unsafe {
+        (*disk).dev.parent = parent as *mut crate::linux_device::types::LinuxDevice;
+        core::add_disk(disk);
+    }
     LINUX_OK
 }
 

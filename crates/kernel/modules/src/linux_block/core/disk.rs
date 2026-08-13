@@ -1,6 +1,7 @@
 extern crate alloc;
 use super::adapter::LinuxBlockAdapter;
 use crate::linux_block::contract::release_needs_unregister;
+use crate::linux_device::types::LinuxDevice;
 use crate::linux_block::types::*;
 use alloc::boxed::Box;
 use alloc::string::String;
@@ -34,10 +35,6 @@ pub(super) extern "C" fn alloc_disk(minors: i32) -> *mut LinuxGendisk {
 }
 
 pub(in crate::linux_block) extern "C" fn alloc_disk_node(minors: i32, _node_id: i32) -> *mut LinuxGendisk {
-    let dev = {
-        // SAFETY: LinuxDevice is a C POD mirror; zero initialization matches kzalloc.
-        unsafe { core::mem::zeroed() }
-    };
     Box::into_raw(Box::new(LinuxGendisk {
         major: 0,
         first_minor: 0,
@@ -48,7 +45,7 @@ pub(in crate::linux_block) extern "C" fn alloc_disk_node(minors: i32, _node_id: 
         private_data: null_mut(),
         capacity: 0,
         flags: 0,
-        dev,
+        dev: LinuxDevice::new(),
         registered: REGISTERED_NO,
     }))
 }
@@ -68,7 +65,12 @@ pub(in crate::linux_block) unsafe extern "C" fn put_disk(disk: *mut LinuxGendisk
     }
     // SAFETY: disk was allocated by alloc_disk* and, after the unregister above, the block registry no
     // longer holds an adapter naming it, so this Box::from_raw is the last reference to the allocation.
-    unsafe { drop(Box::from_raw(disk)); }
+    // SAFETY: the embedded device has been withdrawn above (if published), and its kobject record must end
+    // before the containing gendisk allocation is reclaimed.
+    unsafe {
+        crate::linux_device::core::release_embedded(&mut (*disk).dev);
+        drop(Box::from_raw(disk));
+    }
 }
 
 pub(in crate::linux_block) unsafe extern "C" fn add_disk(disk: *mut LinuxGendisk) {
@@ -77,6 +79,13 @@ pub(in crate::linux_block) unsafe extern "C" fn add_disk(disk: *mut LinuxGendisk
     // alloc_disk/alloc_disk_node and has not yet passed to put_disk, so its disk_name array is initialised.
     let name = unsafe { disk_name(disk) };
     if name.is_empty() { return; }
+    // SAFETY: the embedded device belongs to this live gendisk; the NUL-terminated disk name is its device
+    // identity, so device-core publication precedes the block adapter that makes it externally reachable.
+    unsafe {
+        crate::linux_device::core::initialize_embedded(&mut (*disk).dev);
+        crate::linux_device::core::set_name_from_cstr(&mut (*disk).dev, (*disk).disk_name.as_ptr());
+        if crate::linux_device::core::device_add(&mut (*disk).dev) != LINUX_OK { return; }
+    }
     let adapter = Arc::new(LinuxBlockAdapter::new(disk)) as Arc<dyn BlockDevice>;
     let idx = block::registry::register_with_driver(
         block::registry::GENERIC_BLOCK_DRIVER, &name, None, adapter);
@@ -97,7 +106,10 @@ unsafe extern "C" fn del_gendisk(disk: *mut LinuxGendisk) {
     if !name.is_empty() { let _ = block::registry::unregister(&name); }
     // SAFETY: same live gendisk; clearing `registered` must happen after the registry drops its adapter so
     // the flag never claims a publication the block registry no longer has.
-    unsafe { (*disk).registered = REGISTERED_NO; }
+    unsafe {
+        (*disk).registered = REGISTERED_NO;
+        crate::linux_device::core::device_del(&mut (*disk).dev);
+    }
 }
 
 unsafe extern "C" fn set_capacity(disk: *mut LinuxGendisk, sectors: u64) {
