@@ -28,6 +28,12 @@ use crate::AmdViIrMode;
     assert_eq!(remap_enable_bits(AmdViIrMode::Extended), 1 << 17);
     assert_eq!(remap_enable_bits(AmdViIrMode::ExtendedXt), (1 << 17) | (1 << 50));
 }
+#[test] fn event_log_restarts_only_after_an_overflow_stops_it() {
+    assert!(event_log_restart_needed(STATUS_EVENT_OVERFLOW));
+    assert!(event_log_restart_needed(STATUS_EVENT_OVERFLOW | (1 << 1)));
+    assert!(!event_log_restart_needed(STATUS_EVENT_RUNNING));
+    assert!(!event_log_restart_needed(STATUS_EVENT_OVERFLOW | STATUS_EVENT_RUNNING));
+}
 #[test] fn rollback_clears_only_bootstrap_owned_enable_bits() {
     let live = CONTROL_COMMAND_ENABLE | CONTROL_EVENT_ENABLE | CONTROL_COMPLETION_ENABLE | CONTROL_COHERENT_ENABLE | CONTROL_IOMMU_ENABLE | (1 << 19);
     let disabled = live & !(CONTROL_COMMAND_ENABLE | CONTROL_EVENT_ENABLE | CONTROL_COMPLETION_ENABLE | CONTROL_IOMMU_ENABLE);

@@ -8,6 +8,7 @@ pub const COMMAND_HEAD: u64 = 0x2000;
 pub const COMMAND_TAIL: u64 = 0x2008;
 pub const EVENT_HEAD: u64 = 0x2010;
 pub const EVENT_TAIL: u64 = 0x2018;
+pub const STATUS: u64 = 0x2020;
 pub const CONTROL_IOMMU_ENABLE: u64 = 1 << 0;
 pub const CONTROL_EVENT_ENABLE: u64 = 1 << 2;
 pub const CONTROL_EVENT_INTERRUPT_ENABLE: u64 = 1 << 3;
@@ -52,6 +53,8 @@ const DTE_IRQ_REMAP_INTCTL: u64 = 2 << 60;
 const DTE_IRQ_REMAP_ENABLE: u64 = 1;
 const DTE_INTTABLEN_MASK: u64 = 0xf << 1;
 const DTE_INTTABLEN_512: u64 = 9 << 1;
+const STATUS_EVENT_OVERFLOW: u64 = 1 << 0;
+const STATUS_EVENT_RUNNING: u64 = 1 << 3;
 
 const fn remap_enable_bits(mode: crate::AmdViIrMode) -> u64 {
     match mode {
@@ -59,6 +62,11 @@ const fn remap_enable_bits(mode: crate::AmdViIrMode) -> u64 {
         crate::AmdViIrMode::Extended => CONTROL_GA_ENABLE,
         crate::AmdViIrMode::ExtendedXt => CONTROL_GA_ENABLE | CONTROL_XT_ENABLE,
     }
+}
+
+/// Whether an AMD-Vi event-log overflow stopped hardware logging. # C: O(1)
+pub const fn event_log_restart_needed(status: u64) -> bool {
+    status & STATUS_EVENT_OVERFLOW != 0 && status & STATUS_EVENT_RUNNING == 0
 }
 
 /// Hardware-format AMD-Vi device-table entry.
@@ -209,7 +217,19 @@ impl AmdViTables {
             head = (head + 16) & (EVENT_LOG_BYTES - 1);
         }
         core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
-        regs.write64(EVENT_HEAD, head)
+        regs.write64(EVENT_HEAD, head) && self.restart_event_logging(regs)
+    }
+    /// Clear an overflowed log state and restore the event controls that were
+    /// active before hardware stopped logging. # C: O(1)
+    fn restart_event_logging(&self, regs: &AmdViRegisters) -> bool {
+        let Some(status) = regs.read64(STATUS) else { return false; };
+        if !event_log_restart_needed(status) { return true; }
+        let Some(control) = regs.read64(CONTROL) else { return false; };
+        if control & CONTROL_EVENT_ENABLE == 0 { return false; }
+        let event_controls = CONTROL_EVENT_ENABLE | CONTROL_EVENT_INTERRUPT_ENABLE;
+        if !regs.write64(CONTROL, control & !event_controls) { return false; }
+        if !regs.write64(STATUS, STATUS_EVENT_OVERFLOW) { return false; }
+        regs.write64(CONTROL, control)
     }
     const fn dte_byte_offset(requester: u16) -> u64 { requester as u64 * core::mem::size_of::<AmdViDte>() as u64 }
     unsafe fn write_initial_dte(&self, hhdm_offset: u64, requester: u16, dte: AmdViDte) {
