@@ -265,50 +265,54 @@ fn send_inet(ctx: &SendContext<'_>, target: &SendFile, socket: &Arc<net::sock::I
             return send_unix_blocking(ctx, target, socket, message, flags, scm),
         InetPrepared::Transport(address, control) => (address.remote(), control),
     };
-    let nonblock = target.nonblock() || flags as u64 & net::uapi::MSG_DONTWAIT != 0;
-    let signals_pipe = match &*socket.kind.lock() {
-        net::sock::SockKind::Unix(_, _) | net::sock::SockKind::TcpConn(_) => true,
-        net::sock::SockKind::UnixMsgPair(pair, _) => pair.kind == net::UnixMsgKind::SeqPacket,
-        _ => false,
-    };
-    let deadline = {
-        let timeout = socket.opts.base.sndtimeo_ns.load(Ordering::Acquire);
-        if timeout > 0 { monotonic_ns().saturating_add(timeout as u64) } else { 0 }
-    };
+    let state = Box::new((
+        dest,
+        control,
+        target.nonblock() || flags as u64 & net::uapi::MSG_DONTWAIT != 0,
+        match &*socket.kind.lock() {
+            net::sock::SockKind::Unix(_, _) | net::sock::SockKind::TcpConn(_) => true,
+            net::sock::SockKind::UnixMsgPair(pair, _) => pair.kind == net::UnixMsgKind::SeqPacket,
+            _ => false,
+        },
+        {
+            let timeout = socket.opts.base.sndtimeo_ns.load(Ordering::Acquire);
+            if timeout > 0 { monotonic_ns().saturating_add(timeout as u64) } else { 0 }
+        },
+        matches!(&*socket.kind.lock(), net::sock::SockKind::TcpConn(_)),
+    ));
     // One call that both opens the connection and sends: the write reports
     // one result for both halves, so it cannot go through the send loop
     // below, which assumes a connection already exists.
     if net::sock::send_fastopen::opens_connection(socket,
         flags as u64 & net::uapi::MSG_FASTOPEN != 0)
     {
-        let result = net::sock::send_fastopen::send(socket, &message.payload, dest, nonblock)
+        let result = net::sock::send_fastopen::send(socket, &message.payload, state.0.clone(), state.2)
             .map_err(Error::from);
-        return if signals_pipe { complete(ctx, flags, result) } else { result };
+        return if state.3 { complete(ctx, flags, result) } else { result };
     }
-    let stream = matches!(&*socket.kind.lock(), net::sock::SockKind::TcpConn(_));
     // The urgent pointer is set just past the last byte written, so an
     // out-of-band stream send puts every byte but the last through the
     // ordinary path and marks that one. A zero-length one has nothing to mark
     // and reports zero; it is not refused.
-    let plan = if stream { crate::oob::tcp_oob_plan(flags as u64 & net::uapi::MSG_OOB != 0,
+    let plan = if state.5 { crate::oob::tcp_oob_plan(flags as u64 & net::uapi::MSG_OOB != 0,
         message.payload.len()) } else { crate::oob::OobPlan::Inband };
     if plan == crate::oob::OobPlan::Unsupported { return Ok(0); }
     let body = crate::oob::plan_body(plan, message.payload.len());
-    if stream && body == 0 && matches!(plan, crate::oob::OobPlan::Split { .. }) {
-        return tcp_urgent_tail(ctx, socket, message, 0, signals_pipe, flags);
+    if state.5 && body == 0 && matches!(plan, crate::oob::OobPlan::Split { .. }) {
+        return tcp_urgent_tail(ctx, socket, message, 0, state.3, flags);
     }
     let mut total = 0usize;
     loop {
-        let end = if stream { body } else { message.payload.len() };
-        match net::sock::sendto(socket, &message.payload[total..end], dest.clone(), ctx.creds(), &control) {
-            Ok(bytes) if stream && bytes != 0 => {
+        let end = if state.5 { body } else { message.payload.len() };
+        match net::sock::sendto(socket, &message.payload[total..end], state.0.clone(), ctx.creds(), &state.1) {
+            Ok(bytes) if state.5 && bytes != 0 => {
                 total += bytes;
                 if total >= body {
-                    return tcp_urgent_tail(ctx, socket, message, total, signals_pipe, flags);
+                    return tcp_urgent_tail(ctx, socket, message, total, state.3, flags);
                 }
             }
             Ok(bytes) => return Ok(total.saturating_add(bytes)),
-            Err(net::NetError::Eagain) if nonblock => {
+            Err(net::NetError::Eagain) if state.2 => {
                 return if total != 0 { Ok(total) } else { Err(Error::Eagain) };
             }
             Err(net::NetError::Eagain) => {
@@ -316,19 +320,19 @@ fn send_inet(ctx: &SendContext<'_>, target: &SendFile, socket: &Arc<net::sock::I
                 // a partial transfer reports its count, as `do_error:` does.
                 if sched::live::deliverable_signals_self() != 0 {
                     return if total != 0 { Ok(total) }
-                        else { Err(Error::from(net::sock_intr::sock_intr_net(deadline))) };
+                        else { Err(Error::from(net::sock_intr::sock_intr_net(state.4))) };
                 }
-                if deadline != 0 && monotonic_ns() >= deadline {
+                if state.4 != 0 && monotonic_ns() >= state.4 {
                     return if total != 0 { Ok(total) } else { Err(Error::Eagain) };
                 }
-                if !net::sock::wait_transmit(socket, deadline) {
+                if !net::sock::wait_transmit(socket, state.4) {
                     return if total != 0 { Ok(total) } else { Err(Error::Eagain) };
                 }
             }
             Err(error) => {
                 if total != 0 { return Ok(total); }
                 let result = Err(Error::from(error));
-                return if signals_pipe { complete(ctx, flags, result) } else { result };
+                return if state.3 { complete(ctx, flags, result) } else { result };
             }
         }
     }
