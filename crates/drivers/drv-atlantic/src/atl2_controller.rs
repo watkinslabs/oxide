@@ -1,6 +1,6 @@
 //! AQC113 firmware and one-queue controller lifecycle.
 
-use alloc::vec::Vec;
+use alloc::{boxed::Box, vec::Vec};
 use core::sync::atomic::{fence, Ordering};
 
 use crate::{atl2_dma::Rings, atl2_mailbox, atl2_program, atl2_queue::{self as queue, QueuePlan}, atl2_reset};
@@ -9,7 +9,7 @@ const RX_BUFFER_ENABLE: u64 = 0x5700;
 const TX_BUFFER_ENABLE: u64 = 0x7900;
 const BUFFER_ENABLE: u32 = 1;
 
-pub struct Controller { map: mmio_map::Mapping, rings: Rings, plan: QueuePlan, rx_next: usize, tx_next: usize, tx_inflight: [bool; queue::TX_RING_DEFAULT] }
+pub struct Controller { map: mmio_map::Mapping, rings: Rings, plan: QueuePlan, rx_next: usize, tx_next: usize, tx_inflight: Box<[bool; queue::TX_RING_DEFAULT]> }
 
 impl Controller {
     /// Resets resident firmware and prepares the default queue without enabling data paths.
@@ -17,7 +17,7 @@ impl Controller {
     pub fn bring_up(map: mmio_map::Mapping, bdf: pci::Bdf, dma_mask: u64) -> Option<Self> {
         let rings = Rings::allocate(bdf, dma_mask)?;
         let plan = QueuePlan::new(rings.rx_desc_dma(), rings.tx_desc_dma(), queue::RX_RING_DEFAULT, queue::TX_RING_DEFAULT)?;
-        let mut controller = Self { map, rings, plan, rx_next: 0, tx_next: 0, tx_inflight: [false; queue::TX_RING_DEFAULT] };
+        let mut controller = Self { map, rings, plan, rx_next: 0, tx_next: 0, tx_inflight: Box::new([false; queue::TX_RING_DEFAULT]) };
         if atl2_reset::reset(&mut controller).is_err() { controller.release(); return None; }
         let filter_caps = match atl2_mailbox::filter_caps(&mut controller) { Ok(caps) => caps, Err(_) => { controller.release(); return None; } };
         if atl2_mailbox::activate(&mut controller).is_err() { controller.release(); return None; }
