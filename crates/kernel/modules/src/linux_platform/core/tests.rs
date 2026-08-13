@@ -152,13 +152,21 @@ fn firmware_match_tables_return_driver_data() {
 }
 
 #[test]
+fn storage_d3_is_disabled_without_a_published_firmware_property() {
+    let _modules = crate::test_serial::claim();
+    let mut resources = [];
+    let mut dev = empty_device(c"storage".as_ptr(), &mut resources);
+    assert!(!acpi_storage_d3(&mut dev.dev));
+}
+
+#[test]
 fn export_symbols_registers_platform_surface() {
     let _modules = crate::test_serial::claim();
     export_symbols();
     for name in [
         "__platform_driver_register", "platform_device_register", "platform_get_resource",
         "platform_get_irq_optional", "devm_platform_ioremap_resource",
-        "acpi_match_device", "of_match_device",
+        "acpi_match_device", "acpi_storage_d3", "of_match_device",
     ] {
         assert!(crate::symtab::is_exported(name));
     }

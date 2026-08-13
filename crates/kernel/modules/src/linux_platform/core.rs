@@ -36,6 +36,7 @@ pub(super) fn export_symbols() {
         ("acpi_match_device",                     acpi_match_device                     as *const () as usize),
         ("acpi_dev_get_first_match_dev",          acpi_dev_get_first_match_dev          as *const () as usize),
         ("acpi_dev_put",                          acpi_dev_put                          as *const () as usize),
+        ("acpi_storage_d3",                       acpi_storage_d3                       as *const () as usize),
         ("of_match_device",                       of_match_device                       as *const () as usize),
         ("of_property_read_u32",                  of_property_read_u32                  as *const () as usize),
         ("of_property_read_bool",                 of_property_read_bool                 as *const () as usize),
@@ -244,6 +245,12 @@ extern "C" fn acpi_dev_get_first_match_dev(hid: *const c_char, uid: *const c_cha
 }
 
 extern "C" fn acpi_dev_put(_adev: *mut AcpiDevice) {}
+
+/// Return the firmware StorageD3Enable preference for a device. # C: O(1)
+extern "C" fn acpi_storage_d3(_dev: *mut crate::linux_device::types::LinuxDevice) -> bool {
+    // ACPI companion property decoding is not published, so no device has a StorageD3Enable=1 hint.
+    false
+}
 
 extern "C" fn of_match_device(ids: *const OfDeviceId, dev: *const crate::linux_device::types::LinuxDevice) -> *const OfDeviceId {
     if ids.is_null() || dev.is_null() { return null(); }
