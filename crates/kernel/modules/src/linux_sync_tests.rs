@@ -65,7 +65,8 @@ fn export_symbols_registers_sync_surface() {
     for name in ["spin_lock", "raw_spin_lock", "mutex_lock", "read_lock",
         "down_read", "seqlock_init", "complete", "wake_up", "atomic_inc",
         "refcount_inc", "kref_put", "lockdep_set_class", "down_interruptible",
-        "wait_for_completion_io_timeout"] {
+        "wait_for_completion_io_timeout", "init_srcu_struct", "cleanup_srcu_struct",
+        "__srcu_read_lock", "__srcu_read_unlock", "synchronize_srcu"] {
         assert!(symtab::resolve(name, true).is_ok(), "{name}");
     }
 }

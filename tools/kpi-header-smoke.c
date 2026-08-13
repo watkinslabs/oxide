@@ -44,6 +44,7 @@
 #include <linux/random.h>
 #include <linux/rbtree.h>
 #include <linux/rcupdate.h>
+#include <linux/srcu.h>
 #include <linux/refcount.h>
 #include <linux/rwlock.h>
 #include <linux/rwsem.h>
