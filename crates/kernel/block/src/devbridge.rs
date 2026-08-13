@@ -26,7 +26,7 @@ use vfs::types::{KResult, VfsError};
 
 use crate::blockdev::{BlockDevice, BlockRequest};
 use crate::types::{BlockError, KResult as BlockResult, BlockOp};
-use crate::registry::{by_dev, close_by_dev, open_by_dev, DevNum, Disk};
+use crate::registry::{by_dev, close_by_dev, open_by_dev, partition_by_dev, DevNum, Disk, Partition};
 
 /// Block-layer error as the errno a file operation returns. Both enums carry
 /// the Linux numeric value, so this is a name-to-name mapping of one code.
@@ -123,6 +123,25 @@ fn issue_zeroout(dev: &dyn BlockDevice, off: u64, len: u64, no_unmap: bool) -> B
 /// answered in the ioctl syscall shim (`016_ioctl`), which has userspace access.
 pub struct DiskBlkOps {
     disk: Arc<Disk>,
+}
+
+/// Bounded block-node operations for one published partition.
+pub struct PartitionBlkOps { part: Arc<Partition>, mapping: Arc<crate::bdev::BdevMapping> }
+impl PartitionBlkOps {
+    /// # C: O(1)
+    pub fn new(part: Arc<Partition>) -> Arc<Self> {
+        let mapping = crate::bdev::BdevMapping::new(Arc::clone(&part.dev));
+        Arc::new(Self { part, mapping })
+    }
+}
+impl BlockDevOps for PartitionBlkOps {
+    fn open(&self, devt: Devt) -> KResult<()> { partition_by_dev(devt.raw()).is_some().then_some(()).ok_or(VfsError::Enxio) }
+    fn read(&self, _devt: Devt, off: u64, buf: &mut [u8]) -> KResult<usize> { self.mapping.read_at(off, buf).map_err(block_err) }
+    fn write(&self, _devt: Devt, off: u64, buf: &[u8]) -> KResult<usize> { self.mapping.write_at(off, buf).map_err(block_err) }
+    fn flush_cache(&self, _devt: Devt) -> KResult<()> {
+        self.mapping.write_and_wait().map_err(block_err)?;
+        self.part.dev.flush().map_err(block_err)
+    }
 }
 
 impl DiskBlkOps {
@@ -238,6 +257,11 @@ impl BlockDevOps for DiskBlkOps {
 /// region. # C: O(R)
 pub fn publish(number: DevNum, disk: Arc<Disk>) {
     let _ = vfs::devnode::register_blkdev_region(number.major, number.minor, 1, DiskBlkOps::new(disk));
+}
+
+/// Publish one disk-owned partition into the VFS block-device table. # C: O(R)
+pub fn publish_partition(part: Arc<Partition>) {
+    let _ = vfs::devnode::register_blkdev_region(part.number_dev.major, part.number_dev.minor, 1, PartitionBlkOps::new(part));
 }
 
 /// Drop the disk's VFS `BLKDEV` region on `unregister` so future opens ENXIO

@@ -7,11 +7,12 @@ use alloc::vec::Vec;
 use crate::partitions::{self, PartitionDevice};
 use crate::BlockDevice;
 
-use super::by_name;
+use super::{by_name, DevNum, PARTITION_MINOR_COUNT};
 
 /// One published partition, owned by its parent whole-disk object.
 pub struct Partition {
     pub name: String,
+    pub number_dev: DevNum,
     pub number: u32,
     pub start_lba: u64,
     pub sectors: u64,
@@ -27,6 +28,7 @@ pub fn rescan_partitions(name: &str) -> Option<Vec<Arc<Partition>>> {
     let disk = by_name(name)?;
     let capacity = disk.dev.capacity_blocks();
     let parts = partitions::read(disk.dev.as_ref()).into_iter().filter_map(|info| {
+        if info.number >= PARTITION_MINOR_COUNT { return None; }
         let name = partitions::node_name(&disk.name, info.number)?;
         let sectors = match info.start_lba.checked_add(info.sectors) {
             Some(end) if end <= capacity => info.sectors,
@@ -34,17 +36,34 @@ pub fn rescan_partitions(name: &str) -> Option<Vec<Arc<Partition>>> {
         };
         let dev = PartitionDevice::new(Arc::clone(&disk.dev), info.start_lba, sectors)?;
         Some(Arc::new(Partition {
-            name, number: info.number, start_lba: info.start_lba, sectors,
+            name, number_dev: DevNum { major: disk.number.major, minor: disk.number.minor.checked_add(info.number)? },
+            number: info.number, start_lba: info.start_lba, sectors,
             uuid: info.uuid, label: info.label, dev,
         }))
     }).collect();
     disk.publish_partitions(parts);
-    Some(disk.partitions())
+    let parts = disk.partitions();
+    let parent = drv::devices().into_iter().find(|device| device.bus == "block" && device.addr == disk.name);
+    for part in &parts {
+        crate::devbridge::publish_partition(Arc::clone(part));
+        let node = Arc::new(drv::Device::new("block", part.name.clone(), 0, 0, 0)
+            .with_devnode("block", part.name.clone(), Some((part.number_dev.major, part.number_dev.minor))));
+        if let Some(parent) = &parent { let _ = drv::try_device_add_with_parent(node, parent); }
+        else { let _ = drv::try_device_add(node); }
+    }
+    Some(parts)
 }
 
 /// Find a partition by its conventional block-node name. # C: O(disks + partitions)
 pub fn partition_by_name(name: &str) -> Option<Arc<Partition>> {
     super::snapshot().into_iter().flat_map(|disk| disk.partitions()).find(|part| part.name == name)
+}
+
+/// Resolve a packed device number to its disk-owned partition. # C: O(disks + partitions)
+pub fn partition_by_dev(dev_t: u32) -> Option<Arc<Partition>> {
+    let (major, minor) = super::decode_dev(dev_t);
+    super::snapshot().into_iter().flat_map(|disk| disk.partitions())
+        .find(|part| part.number_dev == DevNum { major, minor })
 }
 
 /// Find a partition by its on-media UUID. # C: O(disks + partitions)
