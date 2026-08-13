@@ -19,14 +19,14 @@ static LINE_ACTION: [AtomicU8; NLINES] = [const { AtomicU8::new(0) }; NLINES];
 
 /// Action identity rendered for one device IRQ. # C: O(1)
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DeviceAction { VirtioPci, Ahci, E1000, Igc, R8169, Nvme, Xhci }
+pub enum DeviceAction { VirtioPci, Ahci, E1000, Igc, R8169, Atlantic, Nvme, Xhci }
 impl DeviceAction {
-    const fn code(self) -> u8 { match self { Self::VirtioPci => 1, Self::Ahci => 2, Self::E1000 => 3, Self::Igc => 4, Self::R8169 => 5, Self::Nvme => 6, Self::Xhci => 7 } }
+    const fn code(self) -> u8 { match self { Self::VirtioPci => 1, Self::Ahci => 2, Self::E1000 => 3, Self::Igc => 4, Self::R8169 => 5, Self::Atlantic => 6, Self::Nvme => 7, Self::Xhci => 8 } }
     const fn from_code(code: u8) -> Option<Self> {
-        match code { 1 => Some(Self::VirtioPci), 2 => Some(Self::Ahci), 3 => Some(Self::E1000), 4 => Some(Self::Igc), 5 => Some(Self::R8169), 6 => Some(Self::Nvme), 7 => Some(Self::Xhci), _ => None }
+        match code { 1 => Some(Self::VirtioPci), 2 => Some(Self::Ahci), 3 => Some(Self::E1000), 4 => Some(Self::Igc), 5 => Some(Self::R8169), 6 => Some(Self::Atlantic), 7 => Some(Self::Nvme), 8 => Some(Self::Xhci), _ => None }
     }
     /// `/proc/interrupts` action name. # C: O(1)
-    pub const fn name(self) -> &'static str { match self { Self::VirtioPci => "virtio-pci", Self::Ahci => "ahci", Self::E1000 => "e1000", Self::Igc => "igc", Self::R8169 => "r8169", Self::Nvme => "nvme", Self::Xhci => "xhci" } }
+    pub const fn name(self) -> &'static str { match self { Self::VirtioPci => "virtio-pci", Self::Ahci => "ahci", Self::E1000 => "e1000", Self::Igc => "igc", Self::R8169 => "r8169", Self::Atlantic => "atlantic", Self::Nvme => "nvme", Self::Xhci => "xhci" } }
 }
 
 /// One active device IRQ descriptor snapshot. # C: O(1)
