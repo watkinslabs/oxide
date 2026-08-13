@@ -1,5 +1,5 @@
 extern crate alloc;
-use super::queue::mq_ops;
+use super::queue::{mq_ops, queue_begin_use, queue_end_use};
 use crate::linux_block::contract::{rq_owner_after_end_io, RqOwner};
 use crate::linux_block::core;
 use crate::linux_block::types::*;
@@ -83,6 +83,9 @@ pub(super) unsafe extern "C" fn blk_mq_free_request(rq: *mut LinuxRequest) {
         if !hctx.is_null() { drop(Box::from_raw(hctx)); }
         drop(Box::from_raw(rq));
     }
+    // SAFETY: alloc_request acquired one canonical queue-use reference for this request, and the request
+    // has now been reclaimed after all driver cleanup callbacks completed, so this is its matching release.
+    unsafe { queue_end_use(q); }
 }
 
 unsafe extern "C" fn blk_mq_start_request(rq: *mut LinuxRequest) {
@@ -287,6 +290,9 @@ unsafe extern "C" fn blk_mq_unique_tag(rq: *mut LinuxRequest) -> u32 {
 // been passed to blk_cleanup_queue.
 pub(super) unsafe fn alloc_request(q: *mut LinuxRequestQueue, opf: u32, hctx_idx: u32) -> *mut LinuxRequest {
     if q.is_null() { return null_mut(); }
+    // SAFETY: q is live by alloc_request's precondition; the lifecycle gate rejects requests once freezing
+    // begins and otherwise retains the queue until blk_mq_free_request releases this exact reference.
+    if !unsafe { queue_begin_use(q) } { return null_mut(); }
     // SAFETY: q is non-null past the check above and blk_alloc_queue initialises every field of the queue it
     // Box-allocates, so queuedata is a defined (possibly null) opaque pointer that is only copied here.
     let hctx = Box::into_raw(Box::new(LinuxBlkMqHwCtx { queue: q, driver_data: unsafe { (*q).queuedata }, queue_num: hctx_idx, nr_ctx: 1 }));
@@ -330,6 +336,8 @@ pub(super) unsafe fn alloc_request(q: *mut LinuxRequestQueue, opf: u32, hctx_idx
             // taken ownership of it; `rq` is still an owned Box and is dropped by the early return, so the
             // failure path frees each allocation exactly once.
             unsafe { drop(Box::from_raw(hctx)); }
+            // SAFETY: this is the allocation failure counterpart to the successful queue_begin_use above.
+            unsafe { queue_end_use(q); }
             return null_mut();
         }
     }

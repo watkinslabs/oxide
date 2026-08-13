@@ -32,13 +32,22 @@ pub(in crate::linux_block) extern "C" fn blk_alloc_queue(_gfp_mask: u32) -> *mut
         freeze_depth: 0,
         quiesce_depth: 0,
         limits: default_limits(),
+        lifecycle: Box::into_raw(Box::new(LinuxQueueLifecycle::new())),
     }))
 }
 
 pub(in crate::linux_block) unsafe extern "C" fn blk_cleanup_queue(q: *mut LinuxRequestQueue) {
     if q.is_null() { return; }
-    // SAFETY: q was allocated by blk_alloc_queue or blk_mq_init_queue.
-    unsafe { drop(Box::from_raw(q)); }
+    // SAFETY: q is the queue being torn down; freeze_and_wait blocks new users and waits until every
+    // request/BIO that took the queue's canonical lifecycle reference has released it.
+    unsafe { crate::linux_block::mq::freeze_and_wait(q); }
+    // SAFETY: q is frozen with no users; lifecycle was allocated together with this queue and is no longer
+    // reachable once the queue Box is reclaimed below, so each allocation is released exactly once.
+    unsafe {
+        let lifecycle = (*q).lifecycle;
+        if !lifecycle.is_null() { drop(Box::from_raw(lifecycle)); }
+        drop(Box::from_raw(q));
+    }
 }
 
 pub(super) unsafe extern "C" fn blk_queue_make_request(q: *mut LinuxRequestQueue, f: Option<MakeRequestFn>) {

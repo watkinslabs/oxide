@@ -1,6 +1,7 @@
 extern crate alloc;
 use crate::linux_alloc::{alloc_pages, page_address, page_put, page_run_len, LinuxPage, PAGE_SIZE};
 use crate::linux_block::contract::addable_bytes;
+use crate::linux_block::mq::{queue_begin_use, queue_end_use};
 use crate::linux_block::types::*;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -44,11 +45,21 @@ pub(in crate::linux_block) unsafe extern "C" fn submit_bio(bio: *mut LinuxBio) -
     // SAFETY: disk is the live gendisk named by bio, and its queue field is readable for the submission.
     let q = unsafe { (*disk).queue };
     if q.is_null() { return -LINUX_EINVAL; }
+    // SAFETY: q is the live queue named by the live gendisk; this acquires the queue's canonical usage
+    // reference only while it is not frozen, preventing a racing freeze from missing this submission.
+    if !unsafe { queue_begin_use(q) } { return -LINUX_EIO; }
     // SAFETY: q is the live request queue and make_request_fn is an initialised optional callback field.
     let make = unsafe { (*q).make_request_fn };
-    let Some(f) = make else { return -LINUX_EIO; };
+    let Some(f) = make else {
+        // SAFETY: this path owns the successful queue_begin_use reference above and releases it before return.
+        unsafe { queue_end_use(q); }
+        return -LINUX_EIO;
+    };
     // SAFETY: the registered queue callback borrows this live bio for the duration of the synchronous call.
-    unsafe { f(q, bio) }
+    let ret = unsafe { f(q, bio) };
+    // SAFETY: the synchronous callback returned, so its queue-use interval is complete.
+    unsafe { queue_end_use(q); }
+    ret
 }
 
 pub(in crate::linux_block) extern "C" fn bio_alloc(_gfp_mask: u32, nr_iovecs: u32) -> *mut LinuxBio {

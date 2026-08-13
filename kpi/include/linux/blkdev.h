@@ -39,6 +39,7 @@ struct request_queue {
     u32 freeze_depth;
     u32 quiesce_depth;
     struct queue_limits limits;
+    void *lifecycle;
 };
 
 struct block_device {

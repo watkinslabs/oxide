@@ -135,7 +135,10 @@ unsafe extern "C" fn blk_freeze_queue_start_non_owner(q: *mut LinuxRequestQueue)
     // SAFETY: q is the caller-supplied live queue.
     unsafe { bump_depth(q, true); }
 }
-unsafe extern "C" fn blk_mq_freeze_queue_wait(_q: *mut LinuxRequestQueue) {}
+unsafe extern "C" fn blk_mq_freeze_queue_wait(q: *mut LinuxRequestQueue) {
+    // SAFETY: q is the caller's live queue; this waits on the queue-owned lifecycle predicate.
+    unsafe { freeze_wait(q); }
+}
 unsafe extern "C" fn blk_mq_quiesce_queue(q: *mut LinuxRequestQueue) {
     // SAFETY: q is the caller-supplied live queue.
     unsafe { bump_depth(q, false); }
@@ -222,11 +225,47 @@ unsafe fn mq_ops_from_set(set: *mut LinuxBlkMqTagSet) -> Option<*const LinuxBlkM
     if ops.is_null() { None } else { Some(ops) }
 }
 
-unsafe fn bump_depth(q: *mut LinuxRequestQueue, freeze: bool) {
+/// Acquire one queue-use reference if freezing has not started.
+///
+/// The lifecycle gate serializes this test/increment with the first freeze, mirroring the queue usage
+/// reference transition: once freeze_depth becomes non-zero no later caller can obtain a new reference.
+pub(in crate::linux_block) unsafe fn queue_begin_use(q: *mut LinuxRequestQueue) -> bool {
+    let Some(lifecycle) = (unsafe { lifecycle(q) }) else { return false; };
+    let _gate = lifecycle.gate.lock();
+    // SAFETY: lifecycle belongs to q and its gate serializes freeze_depth with this admission decision.
+    if unsafe { (*q).freeze_depth } != 0 { return false; }
+    lifecycle.users.fetch_add(1, ::core::sync::atomic::Ordering::AcqRel);
+    true
+}
+
+/// Release the queue-use reference acquired by queue_begin_use.
+pub(in crate::linux_block) unsafe fn queue_end_use(q: *mut LinuxRequestQueue) {
+    let Some(lifecycle) = (unsafe { lifecycle(q) }) else { return; };
+    let was_one = lifecycle.users.fetch_update(
+        ::core::sync::atomic::Ordering::AcqRel,
+        ::core::sync::atomic::Ordering::Acquire,
+        |users| users.checked_sub(1),
+    ).ok() == Some(1);
+    if was_one {
+        #[cfg(target_os = "oxide-kernel")]
+        lifecycle.freeze_wait.wake_all();
+    }
+}
+
+/// Freeze a queue during destruction, then wait until all prior users drain.
+pub(in crate::linux_block) unsafe fn freeze_and_wait(q: *mut LinuxRequestQueue) {
     if q.is_null() { return; }
-    // SAFETY: q is null-checked and is the module's live request_queue; freeze_depth/quiesce_depth are u32
-    // fields blk_alloc_queue zeroes. saturating_add keeps the counters monotone so an unbalanced freeze can
-    // never wrap them back to the "not frozen" value.
+    // SAFETY: q is the queue being destroyed, so this records its final nested freeze before waiting.
+    unsafe { bump_depth(q, true); }
+    // SAFETY: the same live queue owns the lifecycle predicate waited below.
+    unsafe { freeze_wait(q); }
+}
+
+unsafe fn bump_depth(q: *mut LinuxRequestQueue, freeze: bool) {
+    let Some(lifecycle) = (unsafe { lifecycle(q) }) else { return; };
+    let _gate = lifecycle.gate.lock();
+    // SAFETY: q/lifecycle are live and this gate is the sole synchronization for the externally visible
+    // depth counters, so the first freeze becomes visible before queue_begin_use can admit another caller.
     unsafe {
         if freeze { (*q).freeze_depth = (*q).freeze_depth.saturating_add(1); }
         else { (*q).quiesce_depth = (*q).quiesce_depth.saturating_add(1); }
@@ -234,11 +273,92 @@ unsafe fn bump_depth(q: *mut LinuxRequestQueue, freeze: bool) {
 }
 
 unsafe fn drop_depth(q: *mut LinuxRequestQueue, freeze: bool) {
-    if q.is_null() { return; }
-    // SAFETY: q is null-checked and is the module's live request_queue; saturating_sub pins the counters at
-    // zero so an extra unfreeze/unquiesce cannot underflow into a huge depth that never clears.
+    let Some(lifecycle) = (unsafe { lifecycle(q) }) else { return; };
+    let _gate = lifecycle.gate.lock();
+    // SAFETY: q/lifecycle are live and this gate serializes the depth decrement with admission. Releasing
+    // the last freeze permits new users only after the counter has become visibly zero.
     unsafe {
         if freeze { (*q).freeze_depth = (*q).freeze_depth.saturating_sub(1); }
         else { (*q).quiesce_depth = (*q).quiesce_depth.saturating_sub(1); }
+    }
+    if freeze {
+        #[cfg(target_os = "oxide-kernel")]
+        lifecycle.freeze_wait.wake_all();
+    }
+}
+
+unsafe fn freeze_wait(q: *mut LinuxRequestQueue) {
+    let Some(lifecycle) = (unsafe { lifecycle(q) }) else { return; };
+    #[cfg(target_os = "oxide-kernel")]
+    // SAFETY: callers are in the sleepable block-management path; lifecycle is owned by q and q stays live
+    // until this wait drains because cleanup calls it before reclaiming the queue allocation.
+    unsafe {
+        let _ = sched::live::wait_event_uninterruptible(&lifecycle.freeze_wait,
+            || lifecycle.users.load(::core::sync::atomic::Ordering::Acquire) == 0);
+    }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    while lifecycle.users.load(::core::sync::atomic::Ordering::Acquire) != 0 { ::core::hint::spin_loop(); }
+}
+
+unsafe fn lifecycle(q: *mut LinuxRequestQueue) -> Option<&'static LinuxQueueLifecycle> {
+    if q.is_null() { return None; }
+    // SAFETY: q is non-null and comes from blk_alloc_queue; its lifecycle allocation is constructed before q
+    // escapes and destroyed only after freeze_and_wait has observed zero users during queue cleanup.
+    let lifecycle = unsafe { (*q).lifecycle };
+    if lifecycle.is_null() { None } else { Some(unsafe { &*lifecycle }) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::linux_block::core;
+    use ::core::sync::atomic::{AtomicBool, Ordering};
+
+    static DRAINED: AtomicBool = AtomicBool::new(false);
+
+    #[test]
+    fn a_frozen_queue_rejects_new_users_until_the_last_unfreeze() {
+        let _modules = crate::test_serial::claim();
+        let q = core::blk_alloc_queue(0);
+        assert!(!q.is_null());
+        // SAFETY: q is the fresh queue allocation owned by this test.
+        unsafe {
+            bump_depth(q, true);
+            assert!(!queue_begin_use(q));
+            drop_depth(q, true);
+            assert!(queue_begin_use(q));
+            queue_end_use(q);
+            core::blk_cleanup_queue(q);
+        }
+    }
+
+    #[test]
+    fn freeze_wait_returns_only_after_an_existing_queue_user_releases() {
+        let _modules = crate::test_serial::claim();
+        DRAINED.store(false, Ordering::Release);
+        let q = core::blk_alloc_queue(0);
+        assert!(!q.is_null());
+        // SAFETY: q is fresh and this test retains the use reference until the worker is joined.
+        unsafe {
+            assert!(queue_begin_use(q));
+            bump_depth(q, true);
+        }
+        let q_addr = q as usize;
+        let waiter = std::thread::spawn(move || {
+            // SAFETY: q_addr remains owned by the test until this worker has returned from freeze_wait.
+            unsafe { freeze_wait(q_addr as *mut LinuxRequestQueue); }
+            DRAINED.store(true, Ordering::Release);
+        });
+        for _ in 0..1_000 {
+            if DRAINED.load(Ordering::Acquire) { break; }
+            std::thread::yield_now();
+        }
+        assert!(!DRAINED.load(Ordering::Acquire));
+        // SAFETY: this releases the one admitted use that freeze_wait is waiting to drain.
+        unsafe { queue_end_use(q); }
+        waiter.join().expect("freeze waiter joins after the final queue user drains");
+        assert!(DRAINED.load(Ordering::Acquire));
+        // SAFETY: q is still frozen but has no users, so cleanup's nested freeze/wait and reclaim are safe.
+        unsafe { core::blk_cleanup_queue(q); }
     }
 }

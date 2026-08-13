@@ -1,6 +1,8 @@
 use crate::linux_alloc::LinuxPage;
 use crate::linux_device::types::LinuxDevice;
 use core::ffi::{c_char, c_void};
+use core::sync::atomic::AtomicU32;
+use sync::{Modules as ModulesLockClass, Spinlock};
 
 pub(super) type MakeRequestFn = unsafe extern "C" fn(*mut LinuxRequestQueue, *mut LinuxBio) -> i32;
 pub(super) type RequestFn = unsafe extern "C" fn(*mut LinuxRequestQueue);
@@ -56,6 +58,25 @@ pub(super) struct LinuxRequestQueue {
     pub(super) freeze_depth: u32,
     pub(super) quiesce_depth: u32,
     pub(super) limits: LinuxQueueLimits,
+    pub(super) lifecycle: *mut LinuxQueueLifecycle,
+}
+
+pub(super) struct LinuxQueueLifecycle {
+    pub(super) gate: Spinlock<(), ModulesLockClass>,
+    pub(super) users: AtomicU32,
+    #[cfg(target_os = "oxide-kernel")]
+    pub(super) freeze_wait: sched::live::WaitList,
+}
+
+impl LinuxQueueLifecycle {
+    pub(super) fn new() -> Self {
+        Self {
+            gate: Spinlock::new(()),
+            users: AtomicU32::new(0),
+            #[cfg(target_os = "oxide-kernel")]
+            freeze_wait: sched::live::WaitList::new(),
+        }
+    }
 }
 
 #[repr(C)]
