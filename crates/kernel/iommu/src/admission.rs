@@ -9,6 +9,7 @@ use sync::{Devices, Spinlock};
 /// requester ID: a firmware IOMMU unit is segment-scoped and equal requester
 /// IDs in distinct PCI segments are different devices.
 static ADMITTED_REQUESTERS: Spinlock<Vec<Bdf>, Devices> = Spinlock::new(Vec::new());
+static RESETTING_REQUESTERS: Spinlock<Vec<Bdf>, Devices> = Spinlock::new(Vec::new());
 
 /// Publish the requesters that were quiesced before IOMMU setup completed.
 ///
@@ -30,7 +31,18 @@ pub fn admit_boot_requesters(requesters: &[Bdf]) {
 /// Return whether IOMMU bring-up has established DMA ownership for `bdf`.
 /// # C: O(requesters)
 pub fn bus_master_admitted(bdf: Bdf) -> bool {
-    contains_exact(&ADMITTED_REQUESTERS.lock(), bdf)
+    contains_exact(&ADMITTED_REQUESTERS.lock(), bdf) && !contains_exact(&RESETTING_REQUESTERS.lock(), bdf)
+}
+
+/// Block fresh IOMMU mappings for one PCI requester during controller reset. # C: O(requesters)
+pub fn begin_pci_reset(bdf: Bdf) {
+    RESETTING_REQUESTERS.lock().push(bdf);
+}
+
+/// Allow fresh IOMMU mappings after the matching PCI controller reset. # C: O(requesters)
+pub fn end_pci_reset(bdf: Bdf) {
+    let mut resetting = RESETTING_REQUESTERS.lock();
+    if let Some(index) = resetting.iter().rposition(|candidate| *candidate == bdf) { resetting.swap_remove(index); }
 }
 
 fn contains_exact(admitted: &[Bdf], bdf: Bdf) -> bool {
@@ -56,5 +68,16 @@ mod tests {
         assert!(!admits(true, false));
         assert!(admits(true, true));
         assert!(admits(false, false));
+    }
+
+    #[test]
+    fn reset_blocks_only_the_exact_requester_until_completion() {
+        let requester = Bdf { segment: 5, bus: 6, device: 7, function: 0 };
+        admit_boot_requesters(&[requester]);
+        assert!(bus_master_admitted(requester));
+        begin_pci_reset(requester);
+        assert!(!bus_master_admitted(requester));
+        end_pci_reset(requester);
+        assert!(bus_master_admitted(requester));
     }
 }

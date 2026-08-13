@@ -46,5 +46,8 @@ pub(crate) fn deadline_after_jiffies(timeout: u64) -> u64 {
     clock::now_ns().saturating_add(clock::jiffies_to_ns(timeout))
 }
 
+/// Sleep for a process-context PCI recovery delay. # C: O(1)
+pub(crate) fn sleep_ms(ms: u32) { clock::sleep_ns(ms as u64 * 1_000_000); }
+
 #[cfg(test)]
 mod linux_time_tests;

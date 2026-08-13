@@ -323,6 +323,22 @@ fn pcie_readrq_updates_only_the_express_device_control_field() {
 }
 
 #[test]
+fn pcie_flr_checks_capability_then_sets_reset_control() {
+    let _modules = crate::test_serial::claim();
+    let mut dev = test_dev();
+    dev.devcap = 0x1000_0000;
+    cfg_set(&mut dev, 1, TEST_PCI_STATUS_CAP_LIST);
+    cfg_set(&mut dev, TEST_PCIE_CAP_POINTER, 0x40);
+    cfg_set(&mut dev, TEST_PCIE_CAP, 0x10);
+    cfg_set(&mut dev, TEST_PCIE_DEVCTL, 0);
+    assert_eq!(super::super::pcie::pcie_reset_flr(&mut dev, true), LINUX_OK);
+    assert_eq!(super::super::pcie::pcie_reset_flr(&mut dev, false), LINUX_OK);
+    assert_eq!(cfg_get(&mut dev, TEST_PCIE_DEVCTL), 0x8000);
+    dev.devcap = 0;
+    assert_eq!(super::super::pcie::pcie_reset_flr(&mut dev, false), -25);
+}
+
+#[test]
 fn driver_registration_and_drvdata_round_trip() {
     let _modules = crate::test_serial::claim();
     let mut dev = test_dev();
