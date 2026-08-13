@@ -223,6 +223,7 @@ pub(super) unsafe fn bringdown() {
     take_and_mask_aux_pin();
     take_and_free_aux_vector();
     super::mouse::remove_device();
+    super::keyboard::remove_device();
     AUX_PRESENT.store(false, Ordering::Release);
     AUX_WHEEL.store(false, Ordering::Release);
     PRESENT.store(false, Ordering::Release);

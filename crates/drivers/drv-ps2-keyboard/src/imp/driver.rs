@@ -7,6 +7,7 @@ use core::sync::atomic::Ordering;
 
 use super::bringup::{bringdown, bringup, shutdown_hw};
 use super::irq::{install_aux_irq, install_irq};
+use super::keyboard::install_device as install_keyboard_device;
 use super::mouse::install_device as install_mouse_device;
 use super::state::{AUX_PRESENT, PRESENT, aux_wheel, present};
 
@@ -28,6 +29,10 @@ impl drv::Driver for Ps2KbdDriver {
         // concurrent accessor for ports 0x60/0x64.
         if unsafe { bringup() } {
             PRESENT.store(true, Ordering::Release);
+            if !install_keyboard_device() {
+                unsafe { bringdown(); }
+                return Err(drv::Error::ProbeFailed);
+            }
             // SAFETY: `bringup` returned true, so the controller answered and
             // scanning is enabled; `PRESENT` is published, which is what gates
             // the handler this call installs. Still the single-CPU bind window,

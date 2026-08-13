@@ -33,6 +33,7 @@ pub(super) unsafe fn drain_irq() -> bool {
         if status & STS_AUX_DATA == 0 {
             if irq_enabled() {
                 if let Some((keycode, pressed)) = decode_byte(byte) {
+                    super::keyboard::report_key(keycode, pressed);
                     drv_virtio_input::drain::handle_key_event(keycode, pressed);
                 }
             }

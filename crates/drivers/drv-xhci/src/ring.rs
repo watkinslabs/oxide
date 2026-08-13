@@ -1,5 +1,9 @@
 //! xHCI command/event TRB rings with controller-visible ownership rules.
 
+extern crate alloc;
+
+use alloc::boxed::Box;
+
 /// xHCI uses 16-byte transfer request blocks. # C: O(1)
 pub const TRB_BYTES: usize = 16;
 /// A hardware segment occupies one 4 KiB page. # C: O(1)
@@ -143,7 +147,11 @@ pub struct TransferCompletion { pub trb_pa: u64, pub residual: u32, pub completi
 
 /// One-page command ring. Software is producer; the controller is consumer.
 pub struct CommandRing {
-    trbs: [Trb; TRBS_PER_SEGMENT],
+    // The hardware segment is DMA-owned and the software shadow must not make
+    // every retained endpoint consume a page of task stack.  Linux likewise
+    // keeps ring segments dynamically owned rather than embedding them in a
+    // device-discovery call frame.
+    trbs: Box<[Trb; TRBS_PER_SEGMENT]>,
     enqueue: usize,
     cycle: bool,
     dma: u64,
@@ -153,7 +161,7 @@ impl CommandRing {
     /// Initialize an empty ring with its terminal Link TRB published. # C: O(1)
     pub fn new(dma: u64) -> Option<Self> {
         if dma & 0xfff != 0 { return None; }
-        let mut trbs = [Trb::default(); TRBS_PER_SEGMENT];
+        let mut trbs = Box::new([Trb::default(); TRBS_PER_SEGMENT]);
         trbs[COMMAND_USABLE_TRBS] = Trb::link(dma, true)?;
         Some(Self { trbs, enqueue: 0, cycle: true, dma })
     }
