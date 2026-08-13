@@ -236,17 +236,17 @@ extern "C" fn raw_spin_unlock_irqrestore(l: *mut LinuxSpinlock, flags: usize) {
     unsafe { <ModIrq as IrqGate>::restore(flags as u64); }
 }
 
-extern "C" fn mutex_init(m: *mut LinuxMutex) {
+pub(crate) extern "C" fn mutex_init(m: *mut LinuxMutex) {
     if m.is_null() { return; }
     // SAFETY: non-null pointer names caller-owned mutex storage.
     unsafe { (*m).state = 0; }
 }
 extern "C" fn mutex_init_generic(m: *mut LinuxMutex) { mutex_init(m); }
 extern "C" fn __mutex_init(m: *mut LinuxMutex, _name: *const u8, _key: *mut c_void) { mutex_init(m); }
-extern "C" fn mutex_lock(m: *mut LinuxMutex) { let _ = mutex_lock_common(m, false); }
-extern "C" fn mutex_lock_interruptible(m: *mut LinuxMutex) -> i32 { mutex_lock_common(m, true) }
-extern "C" fn mutex_trylock(m: *mut LinuxMutex) -> i32 { try_lock_u32(mutex_u32(m)) as i32 }
-extern "C" fn mutex_unlock(m: *mut LinuxMutex) {
+pub(crate) extern "C" fn mutex_lock(m: *mut LinuxMutex) { let _ = mutex_lock_common(m, false); }
+pub(crate) extern "C" fn mutex_lock_interruptible(m: *mut LinuxMutex) -> i32 { mutex_lock_common(m, true) }
+pub(crate) extern "C" fn mutex_trylock(m: *mut LinuxMutex) -> i32 { try_lock_u32(mutex_u32(m)) as i32 }
+pub(crate) extern "C" fn mutex_unlock(m: *mut LinuxMutex) {
     if m.is_null() { return; }
     let cell = wait_cell(m as usize, WAIT_MUTEX);
     let gate = cell.gate.lock();

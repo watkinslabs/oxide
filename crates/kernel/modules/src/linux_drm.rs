@@ -25,6 +25,9 @@ pub(crate) use gem_mmap::{shmem_mapping_frame, shmem_mapping_object, shmem_mappi
 #[path = "linux_drm_shadow.rs"] mod shadow;
 #[path = "linux_drm_format_helper.rs"] mod format_helper;
 #[path = "linux_drm_atomic.rs"] mod atomic;
+#[path = "linux_drm_atomic_core.rs"] mod atomic_core;
+#[path = "linux_drm_atomic_acquire.rs"] mod atomic_acquire;
+#[path = "linux_drm_modeset.rs"] mod modeset;
 #[path = "linux_drm_vblank.rs"] mod vblank;
 #[path = "linux_drm_vblank_event.rs"] mod vblank_event;
 #[path = "linux_drm_edid.rs"] mod edid;
@@ -172,6 +175,9 @@ pub fn export_symbols() {
     shadow::export_symbols();
     format_helper::export_symbols();
     atomic::export_symbols();
+    atomic_core::export_symbols();
+    atomic_acquire::export_symbols();
+    modeset::export_symbols();
     vblank::export_symbols();
     vblank_event::export_symbols();
     edid::export_symbols();
@@ -331,6 +337,7 @@ extern "C" fn drmm_mode_config_init(dev: *mut c_void) -> i32 {
             write(head.add(1), head.cast());
         }
     }
+    modeset::drm_modeset_lock_init(config.wrapping_add(32).cast());
     if properties::initialize_standard(dev) { 0 } else { -LINUX_EBUSY }
 }
 
@@ -401,6 +408,7 @@ unsafe extern "C" fn drm_universal_plane_init(
         write(plane.cast::<u8>().add(DRM_PLANE_BASE_OFF + 8).cast::<*mut u8>(), plane.cast::<u8>().add(properties::DRM_PLANE_PROPERTIES_OFF)); write(plane.cast::<u8>().add(DRM_PLANE_POSSIBLE_CRTCS_OFF).cast::<u32>(), possible_crtcs); write(plane.cast::<u8>().add(DRM_PLANE_FORMATS_OFF).cast::<*mut u32>(), copied.cast()); write(plane.cast::<u8>().add(DRM_PLANE_FORMAT_COUNT_OFF).cast::<u32>(), format_count);
         write(plane.cast::<u8>().add(DRM_PLANE_FUNCS_OFF).cast::<*const c_void>(), funcs); write(plane.cast::<u8>().add(DRM_PLANE_TYPE_OFF).cast::<i32>(), plane_type); write(plane.cast::<u8>().add(DRM_PLANE_INDEX_OFF).cast::<u32>(), index as u32); write(config.add(MODE_CONFIG_NUM_TOTAL_PLANE_OFF).cast::<i32>(), index + 1);
     }
+    modeset::drm_modeset_lock_init(plane.cast::<u8>().wrapping_add(32).cast());
     rec.planes.push(PlaneRecord { ptr: plane as usize, formats: copied as usize, layout });
     0
 }
@@ -463,6 +471,7 @@ unsafe extern "C" fn drm_crtc_init_with_planes(
         if !primary.is_null() && *(primary.cast::<u8>().add(DRM_PLANE_POSSIBLE_CRTCS_OFF).cast::<u32>()) == 0 { write(primary.cast::<u8>().add(DRM_PLANE_POSSIBLE_CRTCS_OFF).cast::<u32>(), 1u32 << index); }
         if !cursor.is_null() && *(cursor.cast::<u8>().add(DRM_PLANE_POSSIBLE_CRTCS_OFF).cast::<u32>()) == 0 { write(cursor.cast::<u8>().add(DRM_PLANE_POSSIBLE_CRTCS_OFF).cast::<u32>(), 1u32 << index); }
     }
+    modeset::drm_modeset_lock_init(crtc.cast::<u8>().wrapping_add(40).cast());
     rec.crtcs.push(CrtcRecord { ptr: crtc as usize, name, layout });
     0
 }
