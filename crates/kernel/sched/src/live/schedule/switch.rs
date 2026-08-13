@@ -280,7 +280,7 @@ fn publish_forked_child_tid() {
 /// # C: O(log N) CFS pick + O(1) ctx switch
 /// # Ctx: process|kthread|irq-exit-to-user; enters preempt-off
 #[track_caller]
-pub unsafe fn schedule() {
+pub(super) unsafe fn schedule_once() {
     // Linux requires finish_task_switch(prev) to complete before the incoming
     // task can block again. Recover that invariant before adding this call's
     // own preempt-disable debt: otherwise the rq lock forgotten by the prior
@@ -697,6 +697,23 @@ pub unsafe fn schedule() {
     drop(prev_arc_opt);
     // SAFETY: restores the IRQ state saved by THIS task's irq_save_disable.
     unsafe { super::irq::restore(flags); }
+}
+
+/// Linux `schedule`: repeat scheduling rounds until the resumed task has no
+/// pending reschedule request.  A request can arrive while this task was
+/// off-CPU; returning from one round and ignoring that task-local flag strands
+/// the request until some unrelated safe point.  Blocking and yielding callers
+/// use this public loop, while the IRQ-return path owns its distinct
+/// IRQ-enable/disable loop around [`schedule_once`].
+///
+/// # SAFETY: caller satisfies the scheduler safe-point contract.
+/// # C: O(log N) per scheduling round
+pub unsafe fn schedule() {
+    loop {
+        // SAFETY: forwarded from this function's scheduler safe-point contract.
+        unsafe { schedule_once(); }
+        if !crate::preempt::should_resched() { break; }
+    }
 }
 
 /// Cooperative voluntary yield. Calls `schedule()` then parks the

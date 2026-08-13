@@ -6,7 +6,7 @@ use sync::IrqGate;
 use crate::{SchedClass, Task};
 
 use super::hooks::RunStats;
-use super::switch::schedule;
+use super::switch::{schedule, schedule_once};
 use crate::live::runqueue::{global, install_global, uninstall_global, Runqueue};
 
 /// Counters incremented by the schedule paths. Hosted-test access
@@ -119,8 +119,10 @@ pub unsafe fn preempt_schedule_irq<G: IrqGate>() {
         // has no locks held across its return; restoring these saved flags
         // remasks IRQs before the next `need_resched` check.
         let flags = unsafe { G::save_enable() };
-        // SAFETY: this is the IRQ-return safe point documented above.
-        unsafe { schedule(); }
+        // SAFETY: this is the IRQ-return safe point documented above. The
+        // IRQ-return loop owns the recheck with IRQs remasked, so it invokes
+        // one internal round rather than the public process-context loop.
+        unsafe { schedule_once(); }
         // SAFETY: `flags` came from this iteration's matching save_enable.
         unsafe { G::restore(flags); }
         if !crate::preempt::should_resched() { break; }
