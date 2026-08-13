@@ -599,6 +599,7 @@ static int __init sample_init(void)
     struct module owner;
     char param_buf[64];
     bool param_bool = false;
+    unsigned char param_byte = 0;
     int param_int = 0;
     unsigned int param_uint = 0;
     unsigned long param_ulong = 0;
@@ -612,6 +613,7 @@ static int __init sample_init(void)
         .elem = param_arr_vals,
     };
     struct kernel_param param_bool_kp = { .name = "param_bool", .mod = &owner, .ops = &param_ops_bool, .arg = &param_bool };
+    struct kernel_param param_byte_kp = { .name = "param_byte", .mod = &owner, .ops = &param_ops_byte, .arg = &param_byte };
     struct kernel_param param_int_kp = { .name = "param_int", .mod = &owner, .ops = &param_ops_int, .arg = &param_int };
     struct kernel_param param_uint_kp = { .name = "param_uint", .mod = &owner, .ops = &param_ops_uint, .arg = &param_uint };
     struct kernel_param param_ulong_kp = { .name = "param_ulong", .mod = &owner, .ops = &param_ops_ulong, .arg = &param_ulong };
@@ -1550,6 +1552,8 @@ static int __init sample_init(void)
     module_put(&owner);
     (void)param_set_bool("Y", &param_bool_kp);
     (void)param_get_bool(param_buf, &param_bool_kp);
+    (void)param_set_byte("42", &param_byte_kp);
+    (void)param_get_byte(param_buf, &param_byte_kp);
     (void)param_set_int("-7", &param_int_kp);
     (void)param_get_int(param_buf, &param_int_kp);
     (void)param_set_uint("42", &param_uint_kp);

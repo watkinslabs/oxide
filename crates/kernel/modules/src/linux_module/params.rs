@@ -2,6 +2,21 @@ use core::ffi::c_char;
 
 use super::{param_arg, parse_bool, parse_i64, parse_u64, write_bytes, write_i64, write_u64, KernelParam, LINUX_EINVAL};
 
+pub(super) unsafe extern "C" fn param_set_byte(val: *const c_char, kp: *const KernelParam) -> i32 {
+    let Some(v) = parse_u64(val).filter(|&v| v <= u8::MAX as u64) else { return -LINUX_EINVAL; };
+    let Some(arg) = param_arg::<u8>(kp) else { return -LINUX_EINVAL; };
+    // SAFETY: the parsed value is proven to fit the typed u8 backing storage.
+    unsafe { *arg = v as u8; }
+    0
+}
+
+pub(super) unsafe extern "C" fn param_get_byte(buf: *mut c_char, kp: *const KernelParam) -> i32 {
+    let Some(arg) = param_arg::<u8>(kp) else { return -LINUX_EINVAL; };
+    // SAFETY: param_arg checked kp and returned the typed backing storage.
+    let v = unsafe { *arg };
+    write_u64(buf, v as u64)
+}
+
 pub(super) unsafe extern "C" fn param_set_bool(val: *const c_char, kp: *const KernelParam) -> i32 {
     let Some(arg) = param_arg::<bool>(kp) else { return -LINUX_EINVAL; };
     let Some(v) = parse_bool(val) else { return -LINUX_EINVAL; };
