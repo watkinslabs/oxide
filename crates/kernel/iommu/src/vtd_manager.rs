@@ -1,5 +1,5 @@
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::{VtdIrTable, VtdQiQueue, VtdRegisters, VtdTables, intel_vtd_hpet_source, intel_vtd_ioapic_source, intel_vtd_rmrr_count, intel_vtd_rmrr_for_bdf, intel_vtd_unit_for_bdf, remapped_msi, vtd_dma_groups};
 use firmware::acpi::{IommuKind, IommuUnit};
@@ -29,6 +29,7 @@ static EIM_CAPABLE: AtomicBool = AtomicBool::new(false);
 /// Hardware interrupt remapping is enabled only after every firmware I/O APIC
 /// has a source scope in an IR-capable unit.
 static INTERRUPT_REMAP_ENABLED: AtomicBool = AtomicBool::new(false);
+static FAULT_RECORDS: AtomicU64 = AtomicU64::new(0);
 
 /// Build, publish, and invalidate one VT-d identity domain per hardware unit.
 ///
@@ -122,6 +123,7 @@ pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf],
 /// caller rejects PCI driver admission. # C: O(units * poll limit)
 fn activation_failed(manager: &mut Vec<VtdBootUnit>) -> VtdActivation {
     for entry in manager.iter_mut() {
+        let _ = entry.regs.disable_fault_interrupts();
         let _ = entry.regs.disable_interrupt_remapping();
         let _ = entry.regs.disable_translation();
         let _ = entry.regs.disable_queued_invalidation();
@@ -130,6 +132,34 @@ fn activation_failed(manager: &mut Vec<VtdBootUnit>) -> VtdActivation {
     EIM_CAPABLE.store(false, Ordering::Release);
     VtdActivation::Failed
 }
+
+/// Program every live DRHD with one architecture-owned primary-fault MSI. # C: O(units)
+pub fn enable_vtd_fault_interrupts(address: u64, data: u32) -> bool {
+    let manager = MANAGER.lock();
+    for entry in manager.iter() {
+        if !entry.regs.enable_fault_interrupts(address, data) {
+            for entry in manager.iter() { let _ = entry.regs.disable_fault_interrupts(); }
+            return false;
+        }
+    }
+    true
+}
+
+/// Drain each active unit's VT-d primary fault records. # C: O(units + fault records)
+pub fn poll_vtd_faults(visitor: &mut impl FnMut(crate::VtdFault)) -> bool {
+    let manager = MANAGER.lock(); let mut complete = true;
+    for entry in manager.iter() { complete &= entry.regs.drain_primary_faults(visitor); }
+    complete
+}
+
+/// Drain VT-d primary faults from the architecture MSI handler. # C: O(units + fault records)
+pub fn handle_vtd_fault_interrupt() {
+    let mut count = |_| { FAULT_RECORDS.fetch_add(1, Ordering::Relaxed); };
+    let _ = poll_vtd_faults(&mut count);
+}
+
+/// Return the number of primary fault records consumed from live VT-d units. # C: O(1)
+pub fn vtd_fault_records() -> u64 { FAULT_RECORDS.load(Ordering::Acquire) }
 
 /// Enable VT-d interrupt remapping only after the IRQ owner is ready to issue
 /// remapped MSI/MSI-X messages. # C: O(units * poll limit)

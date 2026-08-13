@@ -17,28 +17,72 @@ pub struct MsiMessage {
 #[cfg(target_arch = "x86_64")]
 const X86_APIC_MSI_ADDRESS: u64 = 0xFEE0_0000;
 
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+fn x86_bsp_apic_id() -> u32 { crate::lapic::local_apic_id() }
+#[cfg(all(target_arch = "x86_64", not(target_os = "oxide-kernel")))]
+const fn x86_bsp_apic_id() -> u32 { 0 }
+
+#[cfg(target_arch = "x86_64")]
+const fn direct_x86_msi(vector: u8, destination: u32) -> Option<MsiMessage> {
+    if destination > u8::MAX as u32 { return None; }
+    Some(MsiMessage { irq: vector as u32, address: X86_APIC_MSI_ADDRESS | ((destination as u64) << 12), data: vector as u32 })
+}
+
+#[cfg(target_arch = "x86_64")]
+const fn vtd_x86_msi(vector: u8, destination: u32) -> MsiMessage {
+    MsiMessage { irq: vector as u32, address: X86_APIC_MSI_ADDRESS | (((destination & 0xff) as u64) << 12)
+        | (((destination >> 8) as u64) << 32), data: vector as u32 }
+}
+
+/// Allocate a direct architecture MSI for a non-PCI interrupt source. # C: O(N_irq_slots)
+pub fn request_platform_msi(action: crate::irqstat::DeviceAction, handler: fn()) -> Option<MsiMessage> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let vector = super::alloc_x86_vector()?;
+        if super::register_msi_handler(vector, handler).is_err()
+            || !crate::irqstat::register_msi(vector as u32, action) {
+            let _ = super::free_x86_vector(vector);
+            return None;
+        }
+        return Some(vtd_x86_msi(vector, x86_bsp_apic_id()));
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let _ = (action, handler);
+        None
+    }
+}
+
+/// Withdraw a non-PCI architecture MSI after its producer is masked. # C: O(1)
+pub fn free_platform_msi(message: MsiMessage) {
+    crate::irqstat::unregister_msi(message.irq);
+    #[cfg(target_arch = "x86_64")]
+    if let Ok(vector) = u8::try_from(message.irq) { let _ = super::free_x86_vector(vector); }
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = message;
+}
+
 /// Allocate one PCI message for `requester` and device-local `event_id`.
 /// # C: O(N_irq_slots)
 pub fn alloc_pci_msi(requester: pci::Bdf, event_id: u32) -> Option<MsiMessage> {
     #[cfg(target_arch = "x86_64")]
     {
         let vector = super::alloc_x86_vector()?;
-        match iommu::allocate_amd_vi_msi(requester, event_id, vector, 0) {
+        let destination = x86_bsp_apic_id();
+        match iommu::allocate_amd_vi_msi(requester, event_id, vector, destination) {
             iommu::AmdViMsi::Remapped { address, data } => return Some(MsiMessage { irq: vector as u32, address, data }),
             iommu::AmdViMsi::Failed => { let _ = super::free_x86_vector(vector); return None; }
             iommu::AmdViMsi::Direct => {}
         }
-        match iommu::allocate_vtd_msi(requester, vector, 0) {
+        match iommu::allocate_vtd_msi(requester, vector, destination) {
             iommu::VtdMsi::Remapped { address, data } => return Some(MsiMessage { irq: vector as u32, address, data }),
             iommu::VtdMsi::Failed => { let _ = super::free_x86_vector(vector); return None; }
             iommu::VtdMsi::Direct => {}
         }
         let _ = event_id;
-        return Some(MsiMessage {
-            irq: vector as u32,
-            address: X86_APIC_MSI_ADDRESS,
-            data: vector as u32,
-        });
+        return match direct_x86_msi(vector, destination) {
+            Some(message) => Some(message), None => { let _ = super::free_x86_vector(vector); None }
+        };
     }
     #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
     {
@@ -280,7 +324,16 @@ mod arm {
 
 #[cfg(all(test, target_arch = "x86_64"))]
 mod tests {
-    use super::{alloc_pci_msi, free_pci_msi, MsiMessage, X86_APIC_MSI_ADDRESS};
+    use super::{alloc_pci_msi, direct_x86_msi, free_pci_msi, vtd_x86_msi, MsiMessage, X86_APIC_MSI_ADDRESS};
+
+    #[test]
+    fn direct_and_vtd_msi_preserve_their_distinct_destination_encodings() {
+        assert_eq!(direct_x86_msi(0x51, 0x2a), Some(MsiMessage { irq: 0x51,
+            address: X86_APIC_MSI_ADDRESS | 0x2a000, data: 0x51 }));
+        assert_eq!(direct_x86_msi(0x51, 0x100), None);
+        assert_eq!(vtd_x86_msi(0x51, 0xab12_3456), MsiMessage { irq: 0x51,
+            address: 0x00ab_1234_fee5_6000, data: 0x51 });
+    }
 
     #[test]
     fn x86_allocator_exposes_the_entire_vector_pool() {

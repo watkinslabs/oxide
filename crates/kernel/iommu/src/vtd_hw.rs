@@ -8,6 +8,11 @@ const ECAP: u64 = 0x10;
 const CCMD: u64 = 0x28;
 const GCMD: u64 = 0x18;
 const GSTS: u64 = 0x1c;
+const FSTS: u64 = 0x34;
+const FECTL: u64 = 0x38;
+const FEDATA: u64 = 0x3c;
+const FEADDR: u64 = 0x40;
+const FEUADDR: u64 = 0x44;
 const GCMD_SET_ROOT_TABLE: u32 = 1 << 30;
 const GCMD_QUEUED_INVALIDATION_ENABLE: u32 = 1 << 26;
 const GCMD_SET_INTERRUPT_REMAP_TABLE: u32 = 1 << 24;
@@ -35,8 +40,23 @@ const CONTEXT_DOMAIN_ID_SHIFT: u64 = 8;
 const ECAP_QUEUED_INVALIDATION: u64 = 1 << 1;
 const ECAP_INTERRUPT_REMAP: u64 = 1 << 3;
 const ECAP_EXTENDED_INTERRUPT_MODE: u64 = 1 << 4;
+const FECTL_INTERRUPT_MASK: u32 = 1 << 31;
+const FSTS_PRIMARY_OVERFLOW: u32 = 1 << 0;
+const FSTS_PRIMARY_PENDING: u32 = 1 << 1;
+const FSTS_PAGE_REQUEST_OVERFLOW: u32 = 1 << 7;
+const FSTS_PRIMARY_INDEX_SHIFT: u32 = 8;
+const FSTS_PRIMARY_INDEX_MASK: u32 = 0xff;
+const FAULT_RECORD_VALID: u32 = 1 << 31;
+const FAULT_RECORD_BYTES: u64 = 16;
 const QI_DESC_BYTES: u64 = core::mem::size_of::<VtdQiDesc>() as u64;
 const QI_DESC_COUNT: u16 = (PAGE_BYTES / QI_DESC_BYTES) as u16;
+
+fn primary_fault_layout(cap: u64, aperture_bytes: u64) -> Option<(u64, u16)> {
+    let base = ((cap >> 24) & 0x3ff).checked_mul(FAULT_RECORD_BYTES)?;
+    let count = u16::try_from(((cap >> 40) & 0xff) + 1).ok()?;
+    base.checked_add(u64::from(count).checked_mul(FAULT_RECORD_BYTES)?)
+        .filter(|end| *end <= aperture_bytes).map(|_| (base, count))
+}
 
 /// Hardware-format 16-byte VT-d queued-invalidation descriptor.
 #[repr(C)]
@@ -138,9 +158,41 @@ impl VtdRegisters {
     /// PCI bootstrap has already disabled bus mastering for every requester.
     /// # C: O(poll limit)
     pub fn quiesce_firmware_state(&self) -> bool {
-        self.disable_interrupt_remapping()
+        self.disable_fault_interrupts()
+            && self.disable_interrupt_remapping()
             && self.disable_translation()
             && self.disable_queued_invalidation()
+    }
+    /// Mask primary-fault delivery while table ownership changes. # C: O(1)
+    pub fn disable_fault_interrupts(&self) -> bool {
+        let Some(control) = self.read32(FECTL) else { return false; };
+        self.write32(FECTL, control | FECTL_INTERRUPT_MASK)
+    }
+    /// Program and unmask the architected VT-d primary-fault MSI message. # C: O(1)
+    pub fn enable_fault_interrupts(&self, address: u64, data: u32) -> bool {
+        if !self.write32(FEADDR, address as u32) || !self.write32(FEUADDR, (address >> 32) as u32)
+            || !self.write32(FEDATA, data) { return false; }
+        let Some(control) = self.read32(FECTL) else { return false; };
+        self.write32(FECTL, control & !FECTL_INTERRUPT_MASK)
+    }
+    /// Drain valid primary fault records and acknowledge their status bits. # C: O(fault records)
+    pub fn drain_primary_faults(&self, visitor: &mut impl FnMut(crate::VtdFault)) -> bool {
+        let (Some(cap), Some(status)) = (self.read64(CAP), self.read32(FSTS)) else { return false; };
+        if status & FSTS_PRIMARY_PENDING == 0 { return true; }
+        let Some((base, count)) = primary_fault_layout(cap, self.bytes) else { return false; };
+        let mut index = ((status >> FSTS_PRIMARY_INDEX_SHIFT) & FSTS_PRIMARY_INDEX_MASK) as u16;
+        if index >= count { return false; }
+        for _ in 0..count {
+            let Some(record) = base.checked_add(u64::from(index) * FAULT_RECORD_BYTES) else { return false; };
+            let Some(word3) = self.read32(record + 12) else { return false; };
+            if word3 & FAULT_RECORD_VALID == 0 { break; }
+            let (Some(word0), Some(word1), Some(word2)) = (self.read32(record), self.read32(record + 4), self.read32(record + 8)) else { return false; };
+            let fault = crate::VtdFault::from_words([word0, word1, word2, word3]);
+            if !self.write32(record + 12, FAULT_RECORD_VALID) { return false; }
+            visitor(fault);
+            index = (index + 1) % count;
+        }
+        self.write32(FSTS, FSTS_PRIMARY_OVERFLOW | FSTS_PRIMARY_PENDING | FSTS_PAGE_REQUEST_OVERFLOW)
     }
     /// Program the root table and wait until hardware acknowledges it. # C: O(poll limit)
     pub fn set_root_table(&self, root_pa: u64) -> bool {
@@ -305,6 +357,18 @@ impl VtdRegisters {
         if offset & 7 != 0 || offset.checked_add(8).is_none_or(|end| end > self.bytes) { return None; }
         // SAFETY: offset is aligned and bounded within this device mapping.
         Some(unsafe { core::ptr::read_volatile((self.map.base_va() + offset) as *const u64) })
+    }
+}
+
+#[cfg(test)]
+mod fault_tests {
+    use super::*;
+
+    #[test]
+    fn primary_fault_layout_uses_capability_encoded_offset_and_count() {
+        let cap = (0x120u64 << 24) | (3u64 << 40);
+        assert_eq!(primary_fault_layout(cap, 0x2000), Some((0x1200, 4)));
+        assert_eq!(primary_fault_layout(cap, 0x123f), None);
     }
 }
 
