@@ -3,6 +3,8 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use core::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "debug-boot")]
+use core::sync::atomic::AtomicU32;
 
 use block::{BlockDevice, BlockError, BlockOp, BlockRequest, KResult};
 use sched::live::wait_list::WaitList;
@@ -13,10 +15,12 @@ use crate::lifecycle::{self, ControllerCleanupStep};
 use crate::port::Ahci;
 use crate::wait;
 
+#[cfg(feature = "debug-boot")]
+static IO_TRACE_REMAINING: AtomicU32 = AtomicU32::new(32);
+
 pub struct AhciBlk {
     ctrl:       Spinlock<Ahci, DriverLockClass>,
     irq:        IrqBinding,
-    completion: WaitList,
     turn_wait:  WaitList,
     turn_busy:  AtomicBool,
     blk_size:   u32,
@@ -36,7 +40,6 @@ impl AhciBlk {
         Self {
             ctrl: Spinlock::new(ctrl),
             irq,
-            completion: WaitList::new(),
             turn_wait: WaitList::new(),
             turn_busy: AtomicBool::new(false),
             blk_size,
@@ -80,7 +83,7 @@ impl AhciBlk {
                     self.poisoned.store(true, Ordering::Release);
                     return false;
                 }
-                wait::park_checked(&self.turn_wait, || {
+                wait::park_checked(&self.turn_wait, deadline, || {
                     self.unavailable() || !self.turn_busy.load(Ordering::Acquire)
                 });
             }
@@ -96,7 +99,11 @@ impl AhciBlk {
         let deadline = wait::now_ns().saturating_add(wait::IO_TIMEOUT_NS);
         loop {
             if self.unavailable() { return false; }
-            if self.irq.completed() { return !self.irq.failed(); }
+            if self.irq.completed() {
+                #[cfg(feature = "debug-boot")]
+                klog::write_raw(b"[INFO]  ahci: wait ready\n");
+                return !self.irq.failed();
+            }
             if wait::now_ns() >= deadline {
                 self.poisoned.store(true, Ordering::Release);
                 klog::write_raw(b"[AHCI-TIMEOUT] interrupt completion missing\n");
@@ -106,16 +113,27 @@ impl AhciBlk {
                 || self.unavailable() || self.irq.completed(),
                 deadline,
             ) {
+                #[cfg(feature = "debug-boot")]
+                klog::write_raw(b"[INFO]  ahci: wait poll ready\n");
                 continue;
             }
+            // `sti` admits an IRQ after poll_enabled's predicate load and
+            // before it restores the caller's prior mask. Recheck after the
+            // restore before publishing a sleeper so that completion does
+            // not fall through to a needless park.
+            if self.unavailable() || self.irq.completed() { continue; }
             if wait::now_ns() >= deadline {
                 self.poisoned.store(true, Ordering::Release);
                 klog::write_raw(b"[AHCI-TIMEOUT] interrupt completion missing\n");
                 return false;
             }
-            wait::park_checked(&self.completion, || {
+            #[cfg(feature = "debug-boot")]
+            klog::write_raw(b"[INFO]  ahci: wait park\n");
+            wait::park_checked(self.irq.waiters(), deadline, || {
                 self.unavailable() || self.irq.completed()
             });
+            #[cfg(feature = "debug-boot")]
+            klog::write_raw(b"[INFO]  ahci: wait wake\n");
         }
     }
 
@@ -128,16 +146,30 @@ impl AhciBlk {
         off: usize,
         len: usize,
     ) -> bool {
+        #[cfg(feature = "debug-boot")]
+        let trace = IO_TRACE_REMAINING.fetch_update(
+            Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1),
+        ).is_ok();
+        #[cfg(feature = "debug-boot")]
+        if trace {
+            klog::write_raw(b"[INFO]  ahci: io submit lba=");
+            klog::write_dec_u64(lba);
+            klog::write_raw(b" blocks=");
+            klog::write_dec_u64(count as u64);
+            klog::write_raw(b"\n");
+        }
         if !self.acquire_turn() { return false; }
         self.irq.prepare_command();
-        let started = {
+        let deadline = wait::now_ns().saturating_add(wait::IO_TIMEOUT_NS);
+        let waiter_prepared = wait::prepare_command_wait(self.irq.waiters(), deadline);
+        let (started, bootstrap_complete) = {
             let mut ctrl = self.ctrl.lock();
             if self.unavailable() {
-                false
+                (false, false)
             } else {
                 let data = ctrl.data_va() as *mut u8;
                 if data.is_null() {
-                    false
+                    (false, false)
                 } else {
                     if write {
                         // SAFETY: the turn exclusively owns the controller's
@@ -152,13 +184,30 @@ impl AhciBlk {
                         }
                         pmm::dma::clean_to_device(ctrl.data_va(), len);
                     }
-                    ctrl.start_rw(write, lba, count)
+                    let started = ctrl.start_rw(write, lba, count);
+                    let complete = started && !waiter_prepared
+                        && ctrl.poll_command_completion();
+                    (started, complete)
                 }
             }
         };
-        let mut ok = started && self.wait_for_irq();
+        #[cfg(feature = "debug-boot")]
+        if trace { klog::write_raw(if started { b"[INFO]  ahci: io issued\n" } else { b"[WARN]  ahci: io issue failed\n" }); }
+        if started && waiter_prepared && !self.irq.completed() {
+            wait::yield_prepared_command_wait();
+        }
+        if waiter_prepared { self.irq.waiters().cancel_current_park(); }
+        #[cfg(feature = "debug-boot")]
+        if trace && started { klog::write_raw(b"[INFO]  ahci: io wait enter\n"); }
+        let mut ok = started && (bootstrap_complete || self.wait_for_irq());
+        #[cfg(feature = "debug-boot")]
+        if trace { klog::write_raw(if ok { b"[INFO]  ahci: io waiter complete\n" } else { b"[WARN]  ahci: io irq failed\n" }); }
         if ok {
+            #[cfg(feature = "debug-boot")]
+            if trace { klog::write_raw(b"[INFO]  ahci: io finish check\n"); }
             let ctrl = self.ctrl.lock();
+            #[cfg(feature = "debug-boot")]
+            if trace { klog::write_raw(b"[INFO]  ahci: io finish locked\n"); }
             if self.unavailable() || !ctrl.command_finished_ok() {
                 ok = false;
             } else if !write {
@@ -174,6 +223,8 @@ impl AhciBlk {
                 }
             }
         }
+        #[cfg(feature = "debug-boot")]
+        if trace && ok { klog::write_raw(b"[INFO]  ahci: io irq complete\n"); }
         if started && !ok { self.poisoned.store(true, Ordering::Release); }
         self.release_turn();
         ok
@@ -182,11 +233,20 @@ impl AhciBlk {
     fn flush_command(&self) -> bool {
         if !self.acquire_turn() { return false; }
         self.irq.prepare_command();
-        let started = {
+        let deadline = wait::now_ns().saturating_add(wait::IO_TIMEOUT_NS);
+        let waiter_prepared = wait::prepare_command_wait(self.irq.waiters(), deadline);
+        let (started, bootstrap_complete) = {
             let mut ctrl = self.ctrl.lock();
-            !self.unavailable() && ctrl.start_flush()
+            let started = !self.unavailable() && ctrl.start_flush();
+            let complete = started && !waiter_prepared
+                && ctrl.poll_command_completion();
+            (started, complete)
         };
-        let mut ok = started && self.wait_for_irq();
+        if started && waiter_prepared && !self.irq.completed() {
+            wait::yield_prepared_command_wait();
+        }
+        if waiter_prepared { self.irq.waiters().cancel_current_park(); }
+        let mut ok = started && (bootstrap_complete || self.wait_for_irq());
         if ok {
             let ctrl = self.ctrl.lock();
             ok = !self.unavailable() && ctrl.command_finished_ok();
@@ -198,7 +258,7 @@ impl AhciBlk {
 
     /// Wake the command owner when its hard handler requested fanout. # C: O(waiters)
     pub(crate) fn completion_bottom_half(&self) {
-        if self.irq.take_wake() { self.completion.wake_all(); }
+        if self.irq.take_wake() { self.irq.waiters().wake_all(); }
     }
 
     #[cfg(feature = "debug-boot")]
@@ -209,7 +269,7 @@ impl AhciBlk {
 
     fn quiesce_and_free(&self) {
         if self.removed.swap(true, Ordering::AcqRel) { return; }
-        self.completion.wake_all();
+        self.irq.waiters().wake_all();
         self.turn_wait.wake_all();
         let mut ctrl = self.ctrl.lock();
         for step in lifecycle::controller_cleanup_steps() {

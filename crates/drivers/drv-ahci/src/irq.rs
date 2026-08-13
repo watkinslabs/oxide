@@ -4,6 +4,8 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 
+use sched::live::wait_list::WaitList;
+
 use crate::port::Ahci;
 use crate::regs;
 
@@ -17,14 +19,16 @@ const ENDPOINT_HANDLING: u8 = 3;
 
 struct Endpoint {
     state: AtomicU8, abar_va: AtomicU64, port: AtomicU32, in_handler: AtomicU32,
-    pis: AtomicU32, tfd: AtomicU32, complete: AtomicBool, wake: AtomicBool, irq_count: AtomicU64,
+    pis: AtomicU32, tfd: AtomicU32, complete: AtomicBool, wake: AtomicBool, waiters: WaitList,
+    irq_count: AtomicU64,
 }
 
 impl Endpoint {
     const fn new() -> Self {
         Self { state: AtomicU8::new(ENDPOINT_FREE), abar_va: AtomicU64::new(0), port: AtomicU32::new(0),
             in_handler: AtomicU32::new(0), pis: AtomicU32::new(0), tfd: AtomicU32::new(0),
-            complete: AtomicBool::new(false), wake: AtomicBool::new(false), irq_count: AtomicU64::new(0) }
+            complete: AtomicBool::new(false), wake: AtomicBool::new(false), waiters: WaitList::new(),
+            irq_count: AtomicU64::new(0) }
     }
 }
 
@@ -92,6 +96,16 @@ fn hard_handler() {
                     endpoint.complete.store(true, Ordering::Release);
                     endpoint.wake.store(true, Ordering::Release);
                     endpoint.irq_count.fetch_add(1, Ordering::Relaxed);
+                    #[cfg(feature = "debug-boot")]
+                    {
+                        klog::write_raw(b"[INFO]  ahci: irq terminal port=");
+                        klog::write_dec_u64(port as u64);
+                        klog::write_raw(b"\n");
+                    }
+                    // Scheduler wake placement can take a remote runqueue
+                    // path after SMP.  Publish only from hard-IRQ context;
+                    // the registered BlockIo completion bottom half performs
+                    // the task wake after this handler has released the HBA.
                     raise = true;
                 }
             }
@@ -105,7 +119,22 @@ fn hard_handler() {
         // level latch only after that complete host-wide pass.
         unsafe { core::ptr::write_volatile((*abar_va + regs::HBA_IS) as *mut u32, *hba_is); }
     }
-    if raise { block::completion::raise(); }
+    #[cfg(feature = "debug-boot")]
+    if raise { klog::write_raw(b"[INFO]  ahci: irq host acked\n"); }
+    // If the synchronous owner has not published a sleeping waiter, its
+    // acquire-loaded completion bit is sufficient and there is no bottom-half
+    // work to run from this IRQ tail.
+    // Running BlockIo in that window re-enters scheduler-facing completion
+    // machinery before the request owner has reached the wait protocol.
+    let wake_waiter = raise && ENDPOINTS.iter().any(|endpoint|
+        endpoint.waiters.has_waiters());
+    #[cfg(feature = "debug-boot")]
+    if raise && !wake_waiter { klog::write_raw(b"[INFO]  ahci: irq no waiter\n"); }
+    if wake_waiter {
+        block::completion::raise();
+        #[cfg(feature = "debug-boot")]
+        klog::write_raw(b"[INFO]  ahci: irq softirq raised\n");
+    }
 }
 
 /// Bind one AHCI controller through the PCI IRQ owner. # C: O(N_caps)
@@ -152,6 +181,9 @@ impl IrqBinding {
 
     /// Consume one hard-handler bottom-half wake request. # C: O(1)
     pub(crate) fn take_wake(self) -> bool { ENDPOINTS[self.endpoint].wake.swap(false, Ordering::AcqRel) }
+
+    /// Command-completion wait queue owned by this IRQ endpoint. # C: O(1)
+    pub(crate) fn waiters(self) -> &'static WaitList { &ENDPOINTS[self.endpoint].waiters }
 
     #[cfg(feature = "debug-boot")]
     /// Count terminal IRQ observations. # C: O(1)
