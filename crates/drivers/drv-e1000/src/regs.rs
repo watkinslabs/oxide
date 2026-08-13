@@ -38,11 +38,10 @@ pub const TDH: u64 = 0x03810;
 pub const TDT: u64 = 0x03818;
 pub const RAL0: u64 = 0x05400;
 pub const RAH0: u64 = 0x05404;
-pub const SWSM: u64 = 0x05b50;
+pub const EXTCNF_CTRL: u64 = 0x00f00;
 
 pub const CTRL_RST: u32 = 1 << 26;
-pub const SWSM_SMBI: u32 = 1;
-pub const SWSM_SWESMBI: u32 = 1 << 1;
+pub const EXTCNF_CTRL_MDIO_SW_OWNERSHIP: u32 = 1 << 5;
 pub const TCTL_PSP: u32 = 1 << 3;
 pub const RCTL_EN: u32 = 1 << 1;
 pub const RCTL_BAM: u32 = 1 << 15;
