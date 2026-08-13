@@ -2,7 +2,7 @@
 
 use core::ptr::{read_volatile, write_volatile};
 
-use crate::regs::{geometry, protocol_for_port, Geometry, PortProtocol, CAPLENGTH, HCIVERSION, DBOFF, HCCPARAMS1, HCSPARAMS1, RTSOFF};
+use crate::regs::{geometry, protocol_for_port, Geometry, PortProtocol, CAPLENGTH, DBOFF, HCCPARAMS1, HCSPARAMS1, RTSOFF};
 use crate::controller::{halt_command, reset_command, reset_complete, USBCMD, USBSTS};
 use crate::controller::{RunPlan, CONFIG, CRCR, DCBAAP, ERDP, ERSTBA, ERSTSZ, IMAN};
 
@@ -31,7 +31,7 @@ impl DmaPage {
     pub const BYTES: usize = PAGE as usize;
     /// Allocate and clear a page before it can be named in a controller register.
     /// # C: O(page bytes)
-    pub fn allocate(bdf: pci::Bdf) -> Option<Self> {
+    pub fn allocate(bdf: pci::Bdf, dma_mask: u64) -> Option<Self> {
         let pa = pmm::setup::alloc_contig(pmm::Order(0))?;
         let va = hhdm().checked_add(pa)?;
         if va == 0 {
@@ -42,7 +42,7 @@ impl DmaPage {
         // SAFETY: `pa` is this page's fresh PMM allocation and no controller can
         // access it before the caller publishes its physical address later.
         unsafe { for byte in 0..PAGE { write_volatile((va + byte) as *mut u8, 0); } }
-        let Some(dma) = iommu::map_dma(bdf, pa, PAGE as usize) else {
+        let Some(dma) = iommu::map_dma_below(bdf, pa, PAGE as usize, dma_mask) else {
             // SAFETY: no device mapping was published for this fresh PMM allocation.
             unsafe { pmm::setup::free_contig(pa, pmm::Order(0)); }
             return None;
@@ -134,10 +134,12 @@ impl Mmio {
         // SAFETY: caller proves exclusive ownership of this page-aligned BAR range.
         let mapping = unsafe { mmio_map::map_owned(bar_pa, pages) };
         let base = mapping.base_va();
-        // SAFETY: every dword is inside the first capability page of this owned mapping.
-        let caplength = unsafe { read_volatile((base + CAPLENGTH) as *const u8) };
-        // SAFETY: the aligned HCI-version field resides in the capability page.
-        let hci_version = unsafe { read_volatile((base + HCIVERSION) as *const u16) };
+        // SAFETY: the complete capability-base dword is inside the owned
+        // mapping.  Controllers are accessed with dword MMIO transactions;
+        // derive both fields exactly as the native host driver does.
+        let capbase = unsafe { read_volatile((base + CAPLENGTH) as *const u32) };
+        let caplength = capbase as u8;
+        let hci_version = (capbase >> 16) as u16;
         // SAFETY: capability dword access is aligned and inside the owned BAR mapping.
         let hcsparams1 = unsafe { read_volatile((base + HCSPARAMS1) as *const u32) };
         // SAFETY: capability dword access is aligned and inside the owned BAR mapping.
@@ -146,6 +148,22 @@ impl Mmio {
         let dboff = unsafe { read_volatile((base + DBOFF) as *const u32) };
         // SAFETY: capability dword access is aligned and inside the owned BAR mapping.
         let rtsoff = unsafe { read_volatile((base + RTSOFF) as *const u32) };
+        #[cfg(feature = "debug-boot")]
+        {
+            klog::write_raw(b"[INFO]  xhci: caps len=");
+            klog::write_hex_u64(caplength as u64);
+            klog::write_raw(b" ver=");
+            klog::write_hex_u64(hci_version as u64);
+            klog::write_raw(b" hcs=");
+            klog::write_hex_u64(hcsparams1 as u64);
+            klog::write_raw(b" hcc=");
+            klog::write_hex_u64(hccparams1 as u64);
+            klog::write_raw(b" db=");
+            klog::write_hex_u64(dboff as u64);
+            klog::write_raw(b" rt=");
+            klog::write_hex_u64(rtsoff as u64);
+            klog::write_raw(b"\n");
+        }
         let geometry = geometry(bar_bytes, hci_version, caplength, hcsparams1, hccparams1, dboff, rtsoff)?;
         Some(Self { mapping, geometry, bytes: bar_bytes })
     }
@@ -296,23 +314,39 @@ impl Mmio {
         self.read32(offset).is_some()
     }
 
-    /// Reset a connected USB2 root-hub port and acknowledge its reset change. # C: O(reset timeout)
-    pub fn reset_usb2_port(&self, port: u8) -> bool {
+    /// Apply root-hub port power before reset/enumeration. # C: O(1)
+    pub fn power_port(&self, port: u8) -> bool {
+        let Some(offset) = crate::ports::portsc_offset(self.geometry.operational, port, self.geometry.max_ports)
+            .filter(|offset| offset.checked_add(4).is_some_and(|end| end <= self.bytes)) else { return false; };
+        let Some(portsc) = self.read32(offset) else { return false; };
+        portsc & crate::ports::PORT_POWER != 0
+            || (self.write32(offset, crate::ports::neutral_portsc(portsc) | crate::ports::PORT_POWER) && self.read32(offset).is_some())
+    }
+
+    /// Start USB2 reset; the root-hub worker waits without a controller lock. # C: O(1)
+    pub fn request_usb2_reset(&self, port: u8) -> bool {
         let Some(offset) = crate::ports::portsc_offset(self.geometry.operational, port, self.geometry.max_ports)
             .filter(|offset| offset.checked_add(4).is_some_and(|end| end <= self.bytes)) else { return false; };
         let Some(portsc) = self.read32(offset) else { return false; };
         let Some(request) = crate::ports::reset_request(portsc) else { return false; };
-        if !self.write32(offset, request) { return false; }
-        let deadline = sched::deadline::clock::now_ns().saturating_add(100_000_000);
-        loop {
-            let Some(portsc) = self.read32(offset) else { return false; };
-            if portsc == u32::MAX { return false; }
-            if crate::ports::reset_completed(portsc) {
-                return self.write32(offset, crate::ports::PORT_RESET_CHANGE);
-            }
-            if sched::deadline::clock::now_ns() >= deadline { return false; }
-            core::hint::spin_loop();
-        }
+        self.write32(offset, request)
+    }
+
+    /// Read the USB2 reset completion state and clear its one-shot change bit. # C: O(1)
+    pub fn finish_usb2_reset(&self, port: u8) -> bool {
+        let Some(offset) = crate::ports::portsc_offset(self.geometry.operational, port, self.geometry.max_ports)
+            .filter(|offset| offset.checked_add(4).is_some_and(|end| end <= self.bytes)) else { return false; };
+        let Some(portsc) = self.read32(offset) else { return false; };
+        crate::ports::reset_completed(portsc) && self.write32(offset, crate::ports::PORT_RESET_CHANGE)
+    }
+
+    /// Acknowledge root-port changes other than USB2 reset completion. # C: O(1)
+    pub fn acknowledge_nonreset_changes(&self, port: u8) -> bool {
+        let Some(offset) = crate::ports::portsc_offset(self.geometry.operational, port, self.geometry.max_ports)
+            .filter(|offset| offset.checked_add(4).is_some_and(|end| end <= self.bytes)) else { return false; };
+        let Some(portsc) = self.read32(offset) else { return false; };
+        let changes = crate::ports::acknowledge_nonreset_changes(portsc);
+        changes == 0 || self.write32(offset, changes)
     }
 
     /// Warm-reset a connected USB3 root-hub port and acknowledge completion. # C: O(reset timeout)

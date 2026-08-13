@@ -20,6 +20,7 @@ softirq = { path = "../../kernel/softirq" }
 input = { path = "../../kernel/input" }
 iommu = { path = "../../kernel/iommu" }
 block = { path = "../../kernel/block" }
+klog = { path = "../../shared/klog", optional = true }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64 = { path = "../../arch/hal-x86_64" }
@@ -29,3 +30,6 @@ hal-aarch64 = { path = "../../arch/hal-aarch64" }
 
 [lints]
 workspace = true
+
+[features]
+debug-boot = ["dep:klog"]

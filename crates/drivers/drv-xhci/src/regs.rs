@@ -8,6 +8,7 @@ pub const HCIVERSION: u64 = 0x02;
 pub const HCSPARAMS1: u64 = 0x04;
 /// Capability Parameters 1 includes the context-size flag. # C: O(1)
 pub const HCCPARAMS1: u64 = 0x10;
+pub const HCC_AC64: u32 = 1;
 pub const DBOFF: u64 = 0x14;
 pub const RTSOFF: u64 = 0x18;
 pub const CAP_REGS_MIN: u64 = 0x20;
@@ -32,11 +33,13 @@ impl PortProtocol {
     pub fn is_usb2(self) -> bool { self.major <= 2 }
 }
 
-/// Decode the three fixed dwords of a Linux `XHCI_EXT_CAPS_PROTOCOL` capability. # C: O(1)
-pub fn supported_protocol(header: u32, revision: u32, ports: u32, max_ports: u8) -> Option<PortProtocol> {
+/// Decode the fixed xHCI Supported Protocol capability layout.  The capability
+/// header carries the protocol revision; its following name dword is metadata.
+/// # C: O(1)
+pub fn supported_protocol(header: u32, ports: u32, max_ports: u8) -> Option<PortProtocol> {
     if header as u8 != EXT_CAP_ID_PROTOCOL { return None; }
-    let major = (revision >> 24) as u8;
-    let mut minor = (revision >> 16) as u8;
+    let major = (header >> 24) as u8;
+    let mut minor = (header >> 16) as u8;
     if major == 3 && (1..16).contains(&minor) { minor <<= 4; }
     if major > 3 { return None; }
     let first = ports as u8;
@@ -80,9 +83,8 @@ pub fn protocol_for_port(mut read: impl FnMut(u64) -> Option<u32>, bar_bytes: u6
         if header == u32::MAX { return None; }
         if header as u8 == EXT_CAP_ID_PROTOCOL {
             if offset.checked_add(EXT_CAP_PROTOCOL_BYTES)? > bar_bytes { return None; }
-            let revision = read(offset.checked_add(EXT_CAP_DWORD)?)?;
             let ports = read(offset.checked_add(EXT_CAP_DWORD * 2)?)?;
-            if let Some(protocol) = supported_protocol(header, revision, ports, max_ports) {
+            if let Some(protocol) = supported_protocol(header, ports, max_ports) {
                 if port >= protocol.first && port - protocol.first < protocol.count { return Some(protocol); }
             }
         }
@@ -105,6 +107,7 @@ pub struct Geometry {
     pub max_interrupters: u16,
     pub max_ports: u8,
     pub context_bytes: u8,
+    pub dma_mask: u64,
     pub extended_capabilities: u64,
 }
 
@@ -119,13 +122,14 @@ pub fn geometry(bar_bytes: u64, hci_version: u16, caplength: u8, hcsparams1: u32
     let max_ports = (hcsparams1 >> 24) as u8;
     // Linux `HCC_64BYTE_CONTEXT`: only bit 2 selects the context stride.
     let context_bytes = if hccparams1 & (1 << 2) != 0 { 64 } else { 32 };
+    let dma_mask = if hccparams1 & HCC_AC64 != 0 { u64::MAX } else { u32::MAX as u64 };
     if hci_version < 0x0090 || bar_bytes < CAP_REGS_MIN || operational < CAP_REGS_MIN
         || operational & (REGISTER_ALIGN - 1) != 0 || runtime < operational || runtime & 0x1f != 0
         || doorbells < operational || doorbells & (REGISTER_ALIGN - 1) != 0
         || max_slots == 0 || max_interrupters == 0 || max_ports == 0
         || runtime.checked_add(RUNTIME_INTR0 + 0x20)? > bar_bytes || doorbells.checked_add(4)? > bar_bytes
     { return None; }
-    Some(Geometry { hci_version, operational, runtime, doorbells, max_slots, max_interrupters, max_ports, context_bytes, extended_capabilities: extended_capabilities(hccparams1) })
+    Some(Geometry { hci_version, operational, runtime, doorbells, max_slots, max_interrupters, max_ports, context_bytes, dma_mask, extended_capabilities: extended_capabilities(hccparams1) })
 }
 
 /// Address of one interrupter register set after capability validation. # C: O(1)
@@ -147,8 +151,10 @@ mod tests {
     #[test]
     fn capability_geometry_preserves_hardware_offsets_and_limits() {
         let hcs = 64 | (8 << 8) | (12 << 24);
-        let g = geometry(0x4000, 0x0100, 0x40, hcs, (1 << 2) | (16 << 16), 0x2000, 0x1000).unwrap();
+        let g = geometry(0x4000, 0x0100, 0x40, hcs, HCC_AC64 | (1 << 2) | (16 << 16), 0x2000, 0x1000).unwrap();
         assert_eq!((g.operational, g.runtime, g.doorbells, g.max_slots, g.context_bytes), (0x40, 0x1000, 0x2000, 64, 64));
+        assert_eq!(g.dma_mask, u64::MAX);
+        assert_eq!(geometry(0x4000, 0x0100, 0x40, hcs, 0, 0x2000, 0x1000).unwrap().dma_mask, u32::MAX as u64);
         assert_eq!(interrupter_offset(g, 7), Some(0x1100));
         assert_eq!(doorbell_offset(g, 64), Some(0x2100));
         assert_eq!(g.extended_capabilities, 0x40);
@@ -165,16 +171,16 @@ mod tests {
 
     #[test]
     fn device_doorbells_follow_the_valid_slot_range() {
-        let g = Geometry { hci_version: 0x0100, operational: 0x40, runtime: 0x1000, doorbells: 0x2000, max_slots: 4, max_interrupters: 1, max_ports: 1, context_bytes: 32, extended_capabilities: 0 };
+        let g = Geometry { hci_version: 0x0100, operational: 0x40, runtime: 0x1000, doorbells: 0x2000, max_slots: 4, max_interrupters: 1, max_ports: 1, context_bytes: 32, dma_mask: u32::MAX as u64, extended_capabilities: 0 };
         assert_eq!(doorbell_offset(g, 1), Some(0x2004));
         assert_eq!(doorbell_offset(g, 4), Some(0x2010));
     }
 
     #[test]
     fn supported_protocol_uses_linux_port_range_and_usb3_minor_fixup() {
-        assert_eq!(supported_protocol(2, 0x0301_0000, 2 | (4 << 8), 8), Some(PortProtocol { major: 3, minor: 0x10, first: 2, count: 4 }));
-        assert!(supported_protocol(2, 0x0400_0000, 1 | (1 << 8), 8).is_none());
-        assert!(supported_protocol(2, 0x0300_0000, 8 | (2 << 8), 8).is_none());
+        assert_eq!(supported_protocol(0x0301_0002, 2 | (4 << 8), 8), Some(PortProtocol { major: 3, minor: 0x10, first: 2, count: 4 }));
+        assert!(supported_protocol(0x0400_0002, 1 | (1 << 8), 8).is_none());
+        assert!(supported_protocol(0x0300_0002, 8 | (2 << 8), 8).is_none());
         assert!(PortProtocol { major: 2, minor: 0, first: 1, count: 1 }.is_usb2());
         assert!(!PortProtocol { major: 3, minor: 0, first: 1, count: 1 }.is_usb2());
     }
@@ -184,8 +190,8 @@ mod tests {
         let extended = extended_capabilities(16 << 16);
         let protocol = protocol_for_port(|offset| match offset {
             0x40 => Some(1 | (4 << EXT_CAP_NEXT_SHIFT)),
-            0x50 => Some(EXT_CAP_ID_PROTOCOL as u32),
-            0x54 => Some(0x0301_0000),
+            0x50 => Some(0x0301_0002),
+            0x54 => Some(0x2042_5355),
             0x58 => Some(2 | (4 << 8)),
             _ => None,
         }, 0x100, extended, 8, 5);
@@ -197,8 +203,8 @@ mod tests {
         let extended = extended_capabilities(16 << 16);
         assert!(protocol_for_port(|offset| if offset == 0x40 { Some(1 | (0xff << EXT_CAP_NEXT_SHIFT)) } else { None }, 0x100, extended, 8, 1).is_none());
         assert!(protocol_for_port(|offset| match offset {
-            0x40 => Some(EXT_CAP_ID_PROTOCOL as u32),
-            0x44 => Some(0x0200_0000),
+            0x40 => Some(0x0200_0002),
+            0x44 => Some(0x2042_5355),
             0x48 => Some(8 | (2 << 8)),
             _ => None,
         }, 0x100, extended, 8, 8).is_none());

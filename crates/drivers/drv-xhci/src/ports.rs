@@ -46,6 +46,9 @@ pub fn portsc_offset(operational: u64, port: u8, max_ports: u8) -> Option<u64> {
 /// Isolate the only PORTSC bits software may acknowledge with ones. # C: O(1)
 pub fn acknowledge_changes(portsc: u32) -> u32 { portsc & PORT_CHANGE_MASK }
 
+/// Change bits safe to clear before the USB2 reset-completion transition. # C: O(1)
+pub fn acknowledge_nonreset_changes(portsc: u32) -> u32 { acknowledge_changes(portsc) & !PORT_RESET_CHANGE }
+
 /// Retain only PORTSC fields that can be safely written back unchanged. # C: O(1)
 pub fn neutral_portsc(portsc: u32) -> u32 {
     portsc & (PORT_CONNECT | (1 << 3) | PORT_SPEED_MASK | PORT_DEVICE_REMOVABLE)
@@ -60,7 +63,7 @@ pub fn warm_reset_completed(portsc: u32) -> bool { portsc & PORT_WARM_RESET_CHAN
 
 /// Build Linux's PORTSC reset write for a connected root-hub port. # C: O(1)
 pub fn reset_request(portsc: u32) -> Option<u32> {
-    (portsc & PORT_CONNECT != 0 && portsc & PORT_RESET == 0).then_some(portsc | PORT_RESET)
+    (portsc & PORT_CONNECT != 0 && portsc & PORT_RESET == 0).then_some(neutral_portsc(portsc) | PORT_RESET)
 }
 
 /// A USB 2 reset has completed only after reset is deasserted and its change is visible. # C: O(1)
@@ -93,11 +96,18 @@ mod tests {
     #[test]
     fn reset_requires_connected_port_and_observes_reset_change() {
         assert_eq!(reset_request(PORT_CONNECT), Some(PORT_CONNECT | PORT_RESET));
+        assert_eq!(reset_request(PORT_CONNECT | PORT_ENABLED | PORT_CHANGE_MASK), Some(PORT_CONNECT | PORT_RESET));
         assert_eq!(reset_request(0), None);
         assert_eq!(reset_request(PORT_CONNECT | PORT_RESET), None);
         assert!(reset_completed(PORT_CONNECT | PORT_RESET_CHANGE));
         assert!(!reset_completed(PORT_CONNECT));
         assert!(!reset_completed(PORT_CONNECT | PORT_RESET | PORT_RESET_CHANGE));
+    }
+
+    #[test]
+    fn reset_completion_stays_visible_until_the_root_hub_consumes_it() {
+        assert_eq!(acknowledge_nonreset_changes((1 << 17) | PORT_RESET_CHANGE), 1 << 17);
+        assert_eq!(acknowledge_nonreset_changes(PORT_RESET_CHANGE), 0);
     }
 
     #[test]

@@ -78,7 +78,7 @@ pub fn run_plan(g: Geometry, command_ring_pa: u64, dcbaa_pa: u64, erst_pa: u64, 
         iman: IMAN_IE,
         erstsz: 1,
         erstba: erst_pa,
-        erdp: event_ring_pa | ERDP_EHB,
+        erdp: event_ring_pa,
     })
 }
 
@@ -90,7 +90,7 @@ pub fn run_command(command: u32) -> u32 { command | CMD_RUN | CMD_EIE | CMD_HSEI
 mod tests {
     use super::*;
 
-    fn geometry() -> Geometry { Geometry { hci_version: 0x0100, operational: 0x40, runtime: 0x1000, doorbells: 0x2000, max_slots: 32, max_interrupters: 1, max_ports: 8, context_bytes: 32, extended_capabilities: 0 } }
+    fn geometry() -> Geometry { Geometry { hci_version: 0x0100, operational: 0x40, runtime: 0x1000, doorbells: 0x2000, max_slots: 32, max_interrupters: 1, max_ports: 8, context_bytes: 32, dma_mask: u32::MAX as u64, extended_capabilities: 0 } }
 
     #[test]
     fn reset_requires_halted_addressable_controller() {
@@ -109,7 +109,7 @@ mod tests {
         assert_eq!(p.dcbaap, 0x21_000);
         assert_eq!(p.config, 32);
         assert_eq!(p.erstsz, 1);
-        assert_eq!(p.erdp, 0x23_008);
+        assert_eq!(p.erdp, 0x23_000);
         assert_eq!(run_command(0), CMD_RUN | CMD_EIE | CMD_HSEIE);
         assert_eq!(IMAN_IP, 1);
         assert_eq!(IMAN_IE, 2);
