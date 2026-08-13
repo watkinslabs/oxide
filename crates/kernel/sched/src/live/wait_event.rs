@@ -100,6 +100,10 @@ pub unsafe fn wait_event_interruptible(wq: &WaitList, cond: impl FnMut() -> bool
 /// installed; the caller must hold no lock that a waker of `wq` also takes.
 /// # C: O(N_wakeups) condition evaluations
 pub unsafe fn wait_event_uninterruptible(wq: &WaitList, mut cond: impl FnMut() -> bool) -> WaitOutcome {
+    // Linux's public wait_event macro tests before publishing a waiter. This
+    // avoids a needless task-state transition when the predicate is already
+    // true; the loop below still publishes before every sleeping recheck.
+    if cond() { return WaitOutcome::Ready; }
     loop {
         // SAFETY: forwarded fn-level contract; plain publication intentionally
         // ignores signals, matching an uninterruptible worker/completion wait.
@@ -150,6 +154,7 @@ pub unsafe fn wait_event_uninterruptible_until(wq: &WaitList, deadline_ns: u64,
                                                now: impl Fn() -> u64,
                                                mut cond: impl FnMut() -> bool) -> WaitOutcome {
     let timed = deadline_ns != 0;
+    if cond() { return WaitOutcome::Ready; }
     loop {
         // SAFETY: forwarded sleepable-context contract; this is the timed
         // prepared publication owned by the shared predicate-wait loop.
@@ -219,5 +224,35 @@ mod tests {
         };
         assert_eq!(out, WaitOutcome::Ready);
         assert_eq!(prepares.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn uninterruptible_ready_predicate_never_publishes_a_waiter() {
+        let wait = WaitList::new();
+        let checks = AtomicU32::new(0);
+        let out = unsafe {
+            wait_event_uninterruptible(&wait, || {
+                checks.fetch_add(1, Ordering::Relaxed);
+                true
+            })
+        };
+        assert_eq!(out, WaitOutcome::Ready);
+        assert_eq!(checks.load(Ordering::Relaxed), 1);
+        assert!(!wait.has_waiters());
+    }
+
+    #[test]
+    fn timed_uninterruptible_ready_predicate_never_reads_the_clock() {
+        let wait = WaitList::new();
+        let clock_reads = AtomicU32::new(0);
+        let out = unsafe {
+            wait_event_uninterruptible_until(&wait, 1, || {
+                clock_reads.fetch_add(1, Ordering::Relaxed);
+                0
+            }, || true)
+        };
+        assert_eq!(out, WaitOutcome::Ready);
+        assert_eq!(clock_reads.load(Ordering::Relaxed), 0);
+        assert!(!wait.has_waiters());
     }
 }

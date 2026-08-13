@@ -1,5 +1,11 @@
 # Fixed issues
 
+### F1021-wait-event-ready-fast-path
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED F1021 | DEFECT | high | **The shared uninterruptible predicate waits skipped the public wait macro's initial condition check and published a waiter even when work was already ready. The path did not block, but it performed needless task-state and wait-list churn on the ready fast path.** Both untimed and timed forms now return before publication when their predicate is ready; the explicit prepare form retains publication-first semantics because its producer action depends on that ordering. | `sched::live::wait_event::tests::{uninterruptible_ready_predicate_never_publishes_a_waiter,timed_uninterruptible_ready_predicate_never_reads_the_clock}`; `cargo test -p sched --lib -- --test-threads=1` (1397 passed). | F1090-hardware-dma-audit |
+
 ### F1020-nvme-dma-mask-contract
 
 | Status | Class | Sev | Issue | Evidence | Owner |
