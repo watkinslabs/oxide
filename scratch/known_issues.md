@@ -53,11 +53,11 @@ exactly the rows a lane would have picked up first. D551 regenerated it.
 
 | Class \ Sev | blocker | high | med | low | Total |
 |---|---:|---:|---:|---:|---:|
-| `DEFECT` | 3 | 11 | 38 | 53 | 105 |
-| `MISSING` | 1 | 22 | 80 | 69 | 172 |
-| `COVERAGE` | 0 | 5 | 52 | 50 | 107 |
+| `DEFECT` | 4 | 11 | 38 | 53 | 106 |
+| `MISSING` | 1 | 24 | 82 | 69 | 176 |
+| `COVERAGE` | 0 | 6 | 52 | 50 | 108 |
 | `INFRA` | 0 | 1 | 24 | 32 | 57 |
-| **Total** | **4** | **39** | **194** | **204** | **441** |
+| **Total** | **5** | **42** | **196** | **204** | **447** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -184,6 +184,8 @@ row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
+| OPEN | MISSING | med | Partition scans publish disk-owned bounded views, but probe and root-mount flow do not invoke a rescan, and those children do not yet receive block device numbers or devtmpfs nodes. An installed-disk root on `/dev/nvme0n1p2`, `PARTUUID=`, or `PARTLABEL=` therefore remains unavailable even though the validated table metadata exists. | F1096 `block::registry::rescan_partitions` and `PartitionDevice`; `root.rs` still resolves whole disks only. | unowned |
+| OPEN | MISSING | med | Partition-table I/O rejects a device whose logical block size is not 512 bytes. GPT is defined in logical blocks and 4Kn NVMe/SATA media therefore need a sector-size-aware reader; accepting only 512-byte devices leaves a valid installed-disk root undiscoverable on that hardware. | `block::partitions::read` returns an empty set unless `block_size() == 512`. | unowned |
 | IN-PROGRESS fix/debug-boot-ahci-trait | MISSING | high | **AQC113 (`1d6a:04c0`) has a native PCI/net lifecycle but is not yet proved usable on hardware.** It owns BAR and bus-master lifetime, MSI/MSI-X/INTx binding, hard-IRQ masking, deferred RX polling, controller teardown, resident-firmware reset, transaction-consistent capability snapshot, host-active acknowledgement, firmware-selected primary MAC filter, resolver-table setup, link-rate programming, and IOMMU-mapped queue memory. The remaining closure is multi-queue RSS/QoS programming, complete receive/transmit data paths, and real-device traffic evidence; it must not be marked supported before all exist. | `drv-atlantic::{atl2_reset,atl2_mailbox,atl2_dma,atl2_program,atl2_filter,atl2_controller,imp}` is registered by `pci_boot`; 20 hosted tests; both custom kernel targets compile `pci-boot`. | fix/debug-boot-ahci-trait |
 | OPEN | MISSING | high | **External DRM modules cannot yet use the atomic modeset helper family.** DMA-BUF now has file-backed export/get/put and attach/detach ownership, and shmem PRIME import creates an imported GEM object with the attachment and reservation ownership required for teardown. Atomic-state construction, check, commit and legacy bridge paths remain separate owners, as do suspend/resume state duplication. | The Cirrus DRM module now has 8 unresolved symbols: `drm_atomic_helper_{check,commit,disable_plane,page_flip,set_config,shutdown,update_plane}`, and `drm_fbdev_shmem_driver_fbdev_probe`. | in progress |
 | IN-PROGRESS fix/debug-boot-ahci-trait | MISSING | high | **The host `atlantic.ko` cannot yet load unchanged.** Its 178 imports now resolve 161/178 against Oxide's Linux KPI. The net-device ABI is BTF-matched and traffic-class fields/operations now use the Linux offsets and validation rules. Remaining imports include IRQ affinity programming, PTP, BPF/static-key, XDP packet conversion, hardware-monitor ownership, and platform MAC retrieval; no partial loader admission may claim this module until each ABI and lifetime contract is present. | Host Fedora `atlantic.ko.xz`; `tools/kpi-audit --fail-on-missing` reports 17 missing. `--host-btf /sys/kernel/btf/vmlinux --fail-on-abi-mismatch` reports every supported KPI layout MATCH-PINNED; `linux_netdev::core::tests` pins traffic-class offsets and behavior. | fix/debug-boot-ahci-trait |
