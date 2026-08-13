@@ -121,3 +121,22 @@ fn dma_groups_merge_unisolated_subtree_and_multifunction_slot() {
     assert_eq!(vtd_dma_groups(&config, &[child_a, child_b, child_a_fn1], &aliases),
         alloc::vec![alloc::vec![child_a, child_a_fn1], alloc::vec![child_b]]);
 }
+
+#[test]
+fn dma_groups_close_chained_explicit_aliases() {
+    let config = GroupConfig::new();
+    let root = Bdf { segment: 0, bus: 0, device: 1, function: 0 };
+    let first = Bdf { segment: 0, bus: 1, device: 0, function: 0 };
+    let second = Bdf { segment: 0, bus: 1, device: 1, function: 0 };
+    let third = Bdf { segment: 0, bus: 1, device: 2, function: 0 };
+    group_bridge(&config, root, 1);
+    group_acs(&config, root);
+    group_endpoint(&config, first);
+    group_endpoint(&config, second);
+    group_endpoint(&config, third);
+    let mut aliases = pci::DmaAliases::new();
+    assert!(aliases.add(first, second));
+    assert!(aliases.add(second, third));
+    assert_eq!(vtd_dma_groups(&config, &[first, second, third], &aliases),
+        alloc::vec![alloc::vec![first, second, third]]);
+}
