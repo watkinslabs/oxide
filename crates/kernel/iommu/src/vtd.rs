@@ -48,18 +48,28 @@ pub(crate) fn vtd_dma_groups<R: ConfigSpaceReader>(r: &R, requesters: &[Bdf], al
     let mut groups: Vec<Vec<Bdf>> = Vec::new();
     for requester in requesters {
         if groups.iter().flatten().any(|member| *member == *requester) { continue; }
-        let key = isolation_key(r, *requester);
-        let mut group = Vec::new();
-        for candidate in requesters {
-            if isolation_key(r, *candidate) == key || same_slot(*candidate, *requester)
-                || aliases.for_requester(*requester).any(|alias| alias == *candidate)
-                || aliases.for_requester(*candidate).any(|alias| alias == *requester) { group.push(*candidate); }
+        let mut group = alloc::vec![*requester];
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for candidate in requesters {
+                if group.contains(candidate) { continue; }
+                if group.iter().copied().any(|member| same_dma_group(r, member, *candidate, aliases)) {
+                    group.push(*candidate);
+                    changed = true;
+                }
+            }
         }
         group.sort_unstable();
-        group.dedup();
         groups.push(group);
     }
     groups
+}
+
+fn same_dma_group<R: ConfigSpaceReader>(r: &R, left: Bdf, right: Bdf, aliases: &pci::DmaAliases) -> bool {
+    isolation_key(r, left) == isolation_key(r, right) || same_slot(left, right)
+        || aliases.for_requester(left).any(|alias| alias == right)
+        || aliases.for_requester(right).any(|alias| alias == left)
 }
 
 fn isolation_key<R: ConfigSpaceReader>(r: &R, requester: Bdf) -> Bdf {
