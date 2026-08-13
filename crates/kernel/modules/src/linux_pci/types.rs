@@ -29,6 +29,12 @@ pub(super) const LINUX_ENOMEM: i32 = 12;
 pub(super) const LINUX_EBUSY: i32 = 16;
 pub(super) const LINUX_ENOSPC: i32 = 28;
 
+/// Fixed prefix of the opaque PCI state object passed through the module ABI.
+#[repr(C)]
+pub(super) struct LinuxPciSavedState {
+    pub(super) config_space: [u32; 16],
+}
+
 #[repr(C)]
 pub(super) struct LinuxPciDeviceId {
     pub(super) vendor: u32,
