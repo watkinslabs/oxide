@@ -1,3 +1,4 @@
+use core::ffi::c_void;
 use core::ptr::copy_nonoverlapping;
 use crate::linux_errno;
 use syscall::errno::Errno;
@@ -29,6 +30,7 @@ pub(crate) fn export_symbols() {
         ("strsep",       strsep       as *const () as usize),
         ("strim",        strim        as *const () as usize),
         ("sysfs_streq",  sysfs_streq  as *const () as usize),
+        ("memchr_inv",   memchr_inv   as *const () as usize),
         ("sized_strscpy", sized_strscpy as *const () as usize),
     ] { export(name, addr, false); }
 }
@@ -187,6 +189,16 @@ pub(crate) unsafe extern "C" fn sysfs_streq(a: *const u8, b: *const u8) -> bool 
         return (av == 0 && bv == b'\n' && unsafe { *b.add(i + 1) } == 0) ||
                (av == b'\n' && unsafe { *a.add(i + 1) } == 0 && bv == 0);
     }
+}
+
+pub(crate) unsafe extern "C" fn memchr_inv(start: *const c_void, c: i32, bytes: usize) -> *mut c_void {
+    let expected = c as u8;
+    let start = start.cast::<u8>();
+    for offset in 0..bytes {
+        // SAFETY: memchr_inv's caller supplies `bytes` readable bytes beginning at start.
+        if unsafe { *start.add(offset) } != expected { return unsafe { start.add(offset).cast_mut().cast() }; }
+    }
+    core::ptr::null_mut()
 }
 
 pub(crate) unsafe extern "C" fn sized_strscpy(dst: *mut u8, src: *const u8, count: usize) -> isize {
