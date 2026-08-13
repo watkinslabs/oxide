@@ -17,6 +17,8 @@ void crypto_free_shash(struct crypto_shash *tfm);
 unsigned int crypto_shash_digestsize(struct crypto_shash *tfm);
 unsigned int crypto_shash_descsize(struct crypto_shash *tfm);
 int crypto_shash_init(struct shash_desc *desc);
+int crypto_shash_setkey(struct crypto_shash *tfm, const u8 *key, unsigned int keylen);
+int crypto_shash_finup(struct shash_desc *desc, const u8 *data, unsigned int len, u8 *out);
 int crypto_shash_update(struct shash_desc *desc, const u8 *data, unsigned int len);
 int crypto_shash_final(struct shash_desc *desc, u8 *out);
 int crypto_shash_digest(struct shash_desc *desc, const u8 *data, unsigned int len, u8 *out);

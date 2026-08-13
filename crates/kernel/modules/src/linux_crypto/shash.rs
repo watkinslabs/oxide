@@ -7,6 +7,7 @@ use crypt::Sha256;
 const LINUX_OK: i32 = 0;
 const LINUX_EINVAL: i32 = 22;
 const LINUX_ENOENT: i32 = 2;
+const LINUX_ENOSYS: i32 = 38;
 const SHA256_DIGEST_SIZE: usize = 32;
 const CRC_DIGEST_SIZE: usize = 4;
 const CRC_FINAL_XOR: u32 = u32::MAX;
@@ -51,6 +52,8 @@ pub(super) fn export_symbols() {
         ("crypto_shash_digestsize",  crypto_shash_digestsize  as *const () as usize),
         ("crypto_shash_descsize",    crypto_shash_descsize    as *const () as usize),
         ("crypto_shash_init",        crypto_shash_init        as *const () as usize),
+        ("crypto_shash_setkey",      crypto_shash_setkey      as *const () as usize),
+        ("crypto_shash_finup",       crypto_shash_finup       as *const () as usize),
         ("crypto_shash_update",      crypto_shash_update      as *const () as usize),
         ("crypto_shash_final",       crypto_shash_final       as *const () as usize),
         ("crypto_shash_digest",      crypto_shash_digest      as *const () as usize),
@@ -86,7 +89,12 @@ extern "C" fn crypto_shash_init(desc: *mut ShashDesc) -> i32 {
     LINUX_OK
 }
 
-extern "C" fn crypto_shash_update(desc: *mut ShashDesc, data: *const u8, len: u32) -> i32 {
+extern "C" fn crypto_shash_setkey(tfm: *mut CryptoShash, key: *const u8, keylen: u32) -> i32 {
+    if alg(tfm).is_none() || input(key, keylen as usize).is_none() { return -LINUX_EINVAL; }
+    -LINUX_ENOSYS
+}
+
+extern "C" fn crypto_shash_finup(desc: *mut ShashDesc, data: *const u8, len: u32, out: *mut u8) -> i32 {
     let Some(bytes) = input(data, len as usize) else { return -LINUX_EINVAL; };
     let Some(ctx) = valid_ctx(desc) else { return -LINUX_EINVAL; };
     match ctx.alg {
@@ -94,29 +102,25 @@ extern "C" fn crypto_shash_update(desc: *mut ShashDesc, data: *const u8, len: u3
         ShashAlg::Crc32  => ctx.crc = crc::crc32_update(ctx.crc, bytes),
         ShashAlg::Crc32c => ctx.crc = crc::crc32c_update(ctx.crc, bytes),
     }
-    LINUX_OK
+    if out.is_null() { return LINUX_OK; }
+    let result = write_digest(ctx, out);
+    if result == LINUX_OK { clear_ctx(desc); }
+    result
+}
+
+extern "C" fn crypto_shash_update(desc: *mut ShashDesc, data: *const u8, len: u32) -> i32 {
+    crypto_shash_finup(desc, data, len, ptr::null_mut())
 }
 
 extern "C" fn crypto_shash_final(desc: *mut ShashDesc, out: *mut u8) -> i32 {
-    if out.is_null() { return -LINUX_EINVAL; }
-    let Some(ctx) = valid_ctx(desc) else { return -LINUX_EINVAL; };
-    write_digest(ctx, out)
+    crypto_shash_finup(desc, ptr::null(), 0, out)
 }
 
 extern "C" fn crypto_shash_digest(desc: *mut ShashDesc, data: *const u8, len: u32, out: *mut u8) -> i32 {
     if out.is_null() { return -LINUX_EINVAL; }
-    let Some(alg) = desc_alg(desc) else { return -LINUX_EINVAL; };
-    let Some(bytes) = input(data, len as usize) else { return -LINUX_EINVAL; };
-    match alg {
-        ShashAlg::Sha256 => {
-            let digest = crypt::sha256::sha256(bytes);
-            // SAFETY: out points at crypto_shash_digestsize bytes for this tfm.
-            unsafe { ptr::copy_nonoverlapping(digest.as_ptr(), out, digest.len()); }
-        }
-        ShashAlg::Crc32 => write_u32(out, crc::crc32_update(CRC_FINAL_XOR, bytes) ^ CRC_FINAL_XOR),
-        ShashAlg::Crc32c => write_u32(out, crc::crc32c_update(CRC_FINAL_XOR, bytes) ^ CRC_FINAL_XOR),
-    }
-    LINUX_OK
+    let result = crypto_shash_init(desc);
+    if result != LINUX_OK { return result; }
+    crypto_shash_finup(desc, data, len, out)
 }
 
 fn read_alg(name: *const u8) -> Option<ShashAlg> {
@@ -166,6 +170,12 @@ fn valid_ctx<'a>(desc: *mut ShashDesc) -> Option<&'a mut ShashCtx> {
     // SAFETY: context was initialized by crypto_shash_init for this desc.
     let ctx = unsafe { &mut *p };
     if ctx.magic == SHASH_CTX_MAGIC && ctx.version == SHASH_CTX_VERSION { Some(ctx) } else { None }
+}
+
+fn clear_ctx(desc: *mut ShashDesc) {
+    let p = ctx_ptr(desc);
+    // SAFETY: p names the initialized descriptor context just finalized by this caller.
+    unsafe { ptr::write_bytes(p, 0, 1); }
 }
 
 fn input<'a>(data: *const u8, len: usize) -> Option<&'a [u8]> {
@@ -230,9 +240,12 @@ mod tests {
         let _modules = crate::test_serial::claim();
         let tfm = crypto_alloc_shash(c"sha256".as_ptr().cast::<u8>(), 0, 0);
         assert!(!is_err(tfm));
-        let mut desc = ShashDesc { tfm, flags: 0 };
+        let mut desc = TestDesc {
+            desc: ShashDesc { tfm, flags: 0 },
+            ctx: ShashCtx { magic: 0, version: 0, alg: ShashAlg::Sha256, sha256: Sha256::new(), crc: 0 },
+        };
         let mut out = [0u8; SHA256_DIGEST_SIZE];
-        assert_eq!(crypto_shash_digest(&mut desc, b"abc".as_ptr(), b"abc".len() as u32, out.as_mut_ptr()), LINUX_OK);
+        assert_eq!(crypto_shash_digest(&mut desc.desc, b"abc".as_ptr(), b"abc".len() as u32, out.as_mut_ptr()), LINUX_OK);
         assert_eq!(&out[..SHA256_ABC_PREFIX.len()], SHA256_ABC_PREFIX);
         crypto_free_shash(tfm);
     }
@@ -242,9 +255,12 @@ mod tests {
         let _modules = crate::test_serial::claim();
         let tfm = crypto_alloc_shash(c"crc32c".as_ptr().cast::<u8>(), 0, 0);
         assert!(!is_err(tfm));
-        let mut desc = ShashDesc { tfm, flags: 0 };
+        let mut desc = TestDesc {
+            desc: ShashDesc { tfm, flags: 0 },
+            ctx: ShashCtx { magic: 0, version: 0, alg: ShashAlg::Sha256, sha256: Sha256::new(), crc: 0 },
+        };
         let mut out = [0u8; CRC_DIGEST_SIZE];
-        assert_eq!(crypto_shash_digest(&mut desc, DATA.as_ptr(), DATA.len() as u32, out.as_mut_ptr()), LINUX_OK);
+        assert_eq!(crypto_shash_digest(&mut desc.desc, DATA.as_ptr(), DATA.len() as u32, out.as_mut_ptr()), LINUX_OK);
         assert_eq!(out, CRC32C_STANDARD);
         crypto_free_shash(tfm);
     }
@@ -262,6 +278,30 @@ mod tests {
         assert_eq!(crypto_shash_update(&mut desc.desc, b"abc".as_ptr(), b"abc".len() as u32), LINUX_OK);
         assert_eq!(crypto_shash_final(&mut desc.desc, out.as_mut_ptr()), LINUX_OK);
         assert_eq!(&out[..SHA256_ABC_PREFIX.len()], SHA256_ABC_PREFIX);
+        crypto_free_shash(tfm);
+    }
+
+    #[test]
+    fn finup_finalizes_and_zeros_descriptor_context() {
+        let _modules = crate::test_serial::claim();
+        let tfm = crypto_alloc_shash(c"sha256".as_ptr().cast::<u8>(), 0, 0);
+        let mut desc = TestDesc {
+            desc: ShashDesc { tfm, flags: 0 },
+            ctx: ShashCtx { magic: 0, version: 0, alg: ShashAlg::Sha256, sha256: Sha256::new(), crc: 0 },
+        };
+        let mut out = [0u8; SHA256_DIGEST_SIZE];
+        assert_eq!(crypto_shash_init(&mut desc.desc), LINUX_OK);
+        assert_eq!(crypto_shash_finup(&mut desc.desc, b"abc".as_ptr(), b"abc".len() as u32, out.as_mut_ptr()), LINUX_OK);
+        assert_eq!(&out[..SHA256_ABC_PREFIX.len()], SHA256_ABC_PREFIX);
+        assert_eq!(crypto_shash_update(&mut desc.desc, b"x".as_ptr(), 1), -LINUX_EINVAL);
+        crypto_free_shash(tfm);
+    }
+
+    #[test]
+    fn unkeyed_transform_rejects_setkey() {
+        let _modules = crate::test_serial::claim();
+        let tfm = crypto_alloc_shash(c"sha256".as_ptr().cast::<u8>(), 0, 0);
+        assert_eq!(crypto_shash_setkey(tfm, b"key".as_ptr(), b"key".len() as u32), -LINUX_ENOSYS);
         crypto_free_shash(tfm);
     }
 
