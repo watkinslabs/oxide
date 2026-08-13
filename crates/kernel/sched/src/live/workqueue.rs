@@ -10,10 +10,9 @@
 // reason to have both: `softirq::raise` defers work that must still be quick
 // and non-blocking; `queue_work` defers work that is allowed to sleep.
 //
-// Deliberate subset (`skizm.md` §7, labelled as required): no concurrency
-// management (Linux's `worker_pool` growing threads when one blocks), no
-// rescuer threads, no NUMA pools, no `WQ_UNBOUND`. One pinned worker per CPU
-// running items in FIFO order.
+// Each CPU owns a worker pool. A dedicated manager expands that pool when a
+// running item blocks while work remains, so one legitimate sleep cannot starve
+// unrelated process-context work on the same CPU.
 //
 // **The queue is a bounded per-CPU ring, not an allocating list.** `queue_work`
 // is callable from hard-IRQ context, which is its entire point, so it must not
@@ -24,7 +23,7 @@
 
 extern crate alloc;
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use cpu::MAX_CPUS;
 use sync::{Spinlock, Workqueue as WorkClass};
@@ -47,6 +46,7 @@ struct Work {
 /// Per-CPU ring depth. Deep enough that a burst of deferrals from one ISR
 /// storm fits; small enough to stay a fixed cost per CPU.
 pub const WORK_CAPACITY: usize = 64;
+const MAX_WORKERS_PER_CPU: usize = WORK_CAPACITY;
 
 struct Ring {
     items: [Option<Work>; WORK_CAPACITY],
@@ -88,6 +88,9 @@ impl Ring {
 const EMPTY: Spinlock<Ring, WorkClass> = Spinlock::new(Ring::new());
 static QUEUE: [Spinlock<Ring, WorkClass>; MAX_CPUS] = [EMPTY; MAX_CPUS];
 static WAIT: [WaitList; MAX_CPUS] = [const { WaitList::new() }; MAX_CPUS];
+static MANAGER_WAIT: [WaitList; MAX_CPUS] = [const { WaitList::new() }; MAX_CPUS];
+static WORKERS: [AtomicUsize; MAX_CPUS] = [const { AtomicUsize::new(0) }; MAX_CPUS];
+static ACTIVE: [AtomicUsize; MAX_CPUS] = [const { AtomicUsize::new(0) }; MAX_CPUS];
 /// Items completed per CPU — lets `flush_on` observe forward progress and
 /// gives the tests something to assert without a global barrier.
 static DONE: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
@@ -128,6 +131,7 @@ pub fn queue_work_on(cpu: usize, func: WorkFn, arg: usize) -> bool {
     if queued {
         // Wake outside the ring lock: the worker's first act is to take it.
         WAIT[cpu].wake_one();
+        MANAGER_WAIT[cpu].wake_one();
     }
     queued
 }
@@ -175,7 +179,10 @@ unsafe fn drain(cpu: usize) {
         // popped value first ends the guard's temporary scope here.
         let next = QUEUE[cpu].lock_irqsave::<WqIrq>().pop();
         let Some(w) = next else { return };
+        ACTIVE[cpu].fetch_add(1, Ordering::AcqRel);
+        MANAGER_WAIT[cpu].wake_one();
         (w.func)(w.arg);
+        ACTIVE[cpu].fetch_sub(1, Ordering::AcqRel);
         DONE[cpu].fetch_add(1, Ordering::AcqRel);
     }
 }
@@ -206,9 +213,44 @@ extern "C" fn kworker(arg: usize) -> ! {
     }
 }
 
-/// Spawn one pinned `kworker` per online CPU. Boot, once, after AP bring-up
-/// and per-CPU runqueue install — same site as `spawn_ksoftirqd`. A CPU with no
-/// installed runqueue is skipped; work queued to it simply waits.
+fn worker_deficit(pending: usize, active: usize, workers: usize) -> usize {
+    if pending == 0 || active < workers { return 0; }
+    pending.min(MAX_WORKERS_PER_CPU.saturating_sub(workers))
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn spawn_worker(cpu: usize) -> Result<(), super::SpawnError> {
+    if cpu >= MAX_CPUS || WORKERS[cpu].load(Ordering::Acquire) >= MAX_WORKERS_PER_CPU { return Ok(()); }
+    let tid = super::next_tid();
+    // SAFETY: the manager runs only after this CPU has a live runqueue, and
+    // kworker is the static process-context entrypoint pinned below.
+    let arc = unsafe { super::spawn_kernel_thread(tid, "kworker", kworker, cpu) }?;
+    if cpu < 64 {
+        super::update_affinity(&arc, Some(cpu::CpuMask::of(cpu)), None);
+        arc.no_setaffinity.store(true, Ordering::Release);
+    }
+    drop(arc);
+    WORKERS[cpu].fetch_add(1, Ordering::Release);
+    Ok(())
+}
+
+#[cfg(target_os = "oxide-kernel")]
+extern "C" fn kworker_manager(arg: usize) -> ! {
+    let cpu = if arg < MAX_CPUS { arg } else { 0 };
+    loop {
+        let deficit = worker_deficit(pending_on(cpu), ACTIVE[cpu].load(Ordering::Acquire), WORKERS[cpu].load(Ordering::Acquire));
+        for _ in 0..deficit { if spawn_worker(cpu).is_err() { break; } }
+        // SAFETY: the manager owns no queue lock; work start and queue commit
+        // publish before waking this list, closing the wait race.
+        let _ = unsafe { wait_event_interruptible(&MANAGER_WAIT[cpu], || {
+            worker_deficit(pending_on(cpu), ACTIVE[cpu].load(Ordering::Acquire), WORKERS[cpu].load(Ordering::Acquire)) != 0
+        }) };
+    }
+}
+
+/// Spawn one pinned worker and manager per online CPU. Boot, once, after AP
+/// bring-up and per-CPU runqueue install. The manager grows its pool only when
+/// running work has left queue items behind.
 /// # C: O(N_cpus)
 #[cfg(target_os = "oxide-kernel")]
 pub fn spawn_kworkers() -> Result<(), super::SpawnError> {
@@ -216,10 +258,11 @@ pub fn spawn_kworkers() -> Result<(), super::SpawnError> {
     for n in 0..online {
         // SAFETY: global_for is sound for any index; None unless CPU n is online + scheduling.
         if unsafe { super::runqueue::global_for(n as u32) }.is_none() { continue; }
+        spawn_worker(n)?;
         let tid = super::next_tid();
-        // SAFETY: boot path after install_default_runqueue + AP bring-up; entry
-        // is a 'static extern "C" fn ptr; arg = the CPU to pin to.
-        let arc = unsafe { super::spawn_kernel_thread(tid, "kworker", kworker, n) }?;
+        // SAFETY: boot path after install_default_runqueue + AP bring-up; the
+        // manager is a static process-context entrypoint pinned below.
+        let arc = unsafe { super::spawn_kernel_thread(tid, "kworkermgr", kworker_manager, n) }?;
         if n < 64 {
             super::update_affinity(&arc, Some(cpu::CpuMask::of(n as usize)), None);
             // Linux `kthread_bind` -> PF_NO_SETAFFINITY (see ksoftirqd).
@@ -243,6 +286,15 @@ mod tests {
     static SUM_FIFO: AtomicUsize = AtomicUsize::new(0);
     static HITS_WRAP: AtomicUsize = AtomicUsize::new(0);
     static HITS_REQUEUE: AtomicUsize = AtomicUsize::new(0);
+
+    #[test]
+    fn blocked_worker_expands_only_for_queued_work() {
+        assert_eq!(worker_deficit(0, 1, 1), 0);
+        assert_eq!(worker_deficit(1, 0, 1), 0);
+        assert_eq!(worker_deficit(3, 1, 1), 3);
+        assert_eq!(worker_deficit(3, 3, 2), 3);
+        assert_eq!(worker_deficit(1, 1, MAX_WORKERS_PER_CPU), 0);
+    }
 
     fn fifo(arg: usize) {
         HITS_FIFO.fetch_add(1, Ordering::AcqRel);

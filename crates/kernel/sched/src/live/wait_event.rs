@@ -162,6 +162,13 @@ pub unsafe fn wait_event_uninterruptible_until(wq: &WaitList, deadline_ns: u64,
         // SAFETY: waiter publication above makes the schedule race-free.
         unsafe { super::park_yield(); }
         if cond() { break; }
+        // A deadline wake resumes here after park_yield.  Test it before the
+        // next publication: otherwise an expired wait is immediately armed
+        // again and can never report its timeout to the caller.
+        if timed && now() >= deadline_ns {
+            wq.cancel_current_park();
+            return if cond() { WaitOutcome::Ready } else { WaitOutcome::TimedOut };
+        }
     }
     wq.cancel_current_park();
     WaitOutcome::Ready
