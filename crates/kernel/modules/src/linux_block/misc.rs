@@ -3,6 +3,7 @@ use core::ffi::c_void;
 use core::ptr::null_mut;
 
 type BusyIterFn = unsafe extern "C" fn(*mut LinuxRequest, *mut c_void) -> bool;
+const LINUX_ENOIOCTLCMD: i32 = 515;
 
 static FS_BIO_SET: usize = 0;
 
@@ -18,6 +19,7 @@ pub(super) fn export_symbols() {
         ("blk_mq_num_possible_queues", blk_mq_num_possible_queues as *const () as usize),
         ("blk_mq_tagset_busy_iter",  blk_mq_tagset_busy_iter  as *const () as usize),
         ("blk_mq_unfreeze_queue_non_owner", blk_mq_unfreeze_queue_non_owner as *const () as usize),
+        ("blkdev_compat_ptr_ioctl", blkdev_compat_ptr_ioctl as *const () as usize),
         ("__blk_rq_map_sg",          __blk_rq_map_sg          as *const () as usize),
         ("blk_rq_integrity_map_user", blk_rq_integrity_map_user as *const () as usize),
         ("blk_rq_is_poll",           blk_rq_is_poll           as *const () as usize),
@@ -53,6 +55,17 @@ unsafe extern "C" fn blk_mq_unfreeze_queue_non_owner(q: *mut LinuxRequestQueue) 
     if q.is_null() { return; }
     // SAFETY: q points to a live request queue supplied by the caller.
     unsafe { (*q).freeze_depth = (*q).freeze_depth.saturating_sub(1); }
+}
+
+unsafe extern "C" fn blkdev_compat_ptr_ioctl(bdev: *mut LinuxBlockDevice, mode: u32, cmd: u32, arg: usize) -> i32 {
+    if bdev.is_null() { return -LINUX_ENOIOCTLCMD; }
+    // SAFETY: bdev is non-null and its disk/fops pointers are the block-device ownership chain established by the driver.
+    unsafe {
+        let disk = (*bdev).bd_disk;
+        if disk.is_null() || (*disk).fops.is_null() { return -LINUX_ENOIOCTLCMD; }
+        let Some(ioctl) = (*(*disk).fops).ioctl else { return -LINUX_ENOIOCTLCMD; };
+        ioctl(bdev, mode, cmd, arg as u32 as usize)
+    }
 }
 
 unsafe extern "C" fn __blk_rq_map_sg(rq: *mut LinuxRequest, sg: *mut c_void, last: *mut *mut c_void) -> i32 {
@@ -91,6 +104,15 @@ extern "C" fn blk_zone_cond_str(_cond: u8) -> *const u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+
+    static COMPAT_MODE: AtomicU32 = AtomicU32::new(0);
+    static COMPAT_CMD: AtomicU32 = AtomicU32::new(0);
+    static COMPAT_ARG: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe extern "C" fn compat_ioctl(_bdev: *mut LinuxBlockDevice, mode: u32, cmd: u32, arg: usize) -> i32 {
+        COMPAT_MODE.store(mode, Ordering::SeqCst); COMPAT_CMD.store(cmd, Ordering::SeqCst); COMPAT_ARG.store(arg, Ordering::SeqCst); 37
+    }
 
     #[test]
     fn possible_queue_count_honors_the_driver_cap() {
@@ -100,5 +122,22 @@ mod tests {
         assert_eq!(blk_mq_num_possible_queues(0), available);
         assert_eq!(blk_mq_num_possible_queues(1), 1);
         assert_eq!(blk_mq_num_possible_queues(u32::MAX), available);
+    }
+
+    #[test]
+    fn compat_ioctl_zero_extends_the_32_bit_argument_and_forwards_mode() {
+        let _modules = crate::test_serial::claim();
+        let ops = LinuxBlockDeviceOperations { owner: core::ptr::null_mut(), open: None, release: None, ioctl: Some(compat_ioctl) };
+        let mut disk = unsafe { core::mem::zeroed::<LinuxGendisk>() }; disk.fops = &ops;
+        let mut bdev = LinuxBlockDevice { bd_disk: &mut disk, bd_queue: core::ptr::null_mut(), bd_private: core::ptr::null_mut() };
+        assert_eq!(unsafe { blkdev_compat_ptr_ioctl(&mut bdev, 0x12, 0x34, usize::MAX) }, 37);
+        assert_eq!(COMPAT_MODE.load(Ordering::SeqCst), 0x12); assert_eq!(COMPAT_CMD.load(Ordering::SeqCst), 0x34); assert_eq!(COMPAT_ARG.load(Ordering::SeqCst), u32::MAX as usize);
+    }
+
+    #[test]
+    fn compat_ioctl_without_driver_callback_reports_linux_no_ioctl() {
+        let _modules = crate::test_serial::claim();
+        let mut bdev = LinuxBlockDevice { bd_disk: core::ptr::null_mut(), bd_queue: core::ptr::null_mut(), bd_private: core::ptr::null_mut() };
+        assert_eq!(unsafe { blkdev_compat_ptr_ioctl(&mut bdev, 0, 0, 0) }, -LINUX_ENOIOCTLCMD);
     }
 }

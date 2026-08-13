@@ -63,7 +63,7 @@ pub(super) struct LinuxBlockDeviceOperations {
     pub(super) owner: *mut c_void,
     pub(super) open: Option<unsafe extern "C" fn(*mut LinuxBlockDevice, u32) -> i32>,
     pub(super) release: Option<unsafe extern "C" fn(*mut LinuxGendisk, u32)>,
-    pub(super) ioctl: Option<unsafe extern "C" fn(*mut LinuxBlockDevice, u32, usize) -> i32>,
+    pub(super) ioctl: Option<unsafe extern "C" fn(*mut LinuxBlockDevice, u32, u32, usize) -> i32>,
 }
 
 #[repr(C)]
