@@ -4,6 +4,7 @@ use super::*;
 
 const DEV_OFF: usize = 8; const FLAGS_OFF: usize = 16; const MODE_CONFIG_OFF: usize = 360; const HELPER_PRIVATE_OFF: usize = 1120;
 const ASYNC_UPDATE: u8 = 1 << 2; const LINUX_EOPNOTSUPP: i32 = 95;
+const REF_OFF: usize = 0;
 
 fn tail(dev: *mut u8) -> usize {
     // SAFETY: BTF-verified mode-config helper pointer and its first callback slot remain live through commit.
@@ -11,6 +12,20 @@ fn tail(dev: *mut u8) -> usize {
 }
 
 pub(super) fn export_symbols() { crate::symtab::export("drm_atomic_helper_commit", drm_atomic_helper_commit as *const () as usize, false); }
+
+fn finish(state: *mut c_void) {
+    let bytes = state.cast::<u8>();
+    // SAFETY: queued work retains the published transaction and its allocating DRM device.
+    let dev = unsafe { read(bytes.add(DEV_OFF).cast::<*mut c_void>()) };
+    let callback = tail(dev.cast());
+    if callback != 0 {
+        // SAFETY: driver helper-private tail callback receives the published transaction state.
+        unsafe { core::mem::transmute::<usize, unsafe extern "C" fn(*mut c_void)>(callback)(state); }
+    } else { atomic_commit_tail::drm_atomic_helper_commit_tail(state); }
+    atomic_commit_tail::drm_atomic_helper_commit_cleanup_done(state);
+}
+
+fn queued_tail(raw: usize) { let state = raw as *mut c_void; finish(state); atomic_core::drm_atomic_commit_put(state); }
 
 /// Submit one validated atomic state through the generic synchronous commit sequence. # C: O(N_objects)
 pub(super) extern "C" fn drm_atomic_helper_commit(dev: *mut c_void, state: *mut c_void, nonblock: bool) -> i32 {
@@ -25,15 +40,13 @@ pub(super) extern "C" fn drm_atomic_helper_commit(dev: *mut c_void, state: *mut 
         atomic_prepare::drm_atomic_helper_unprepare_planes(dev, state);
         return 0;
     }
-    if nonblock { return -LINUX_EOPNOTSUPP; }
-    let ret = atomic_commit_setup::drm_atomic_helper_setup_commit(state, false); if ret != 0 { return ret; }
+    let ret = atomic_commit_setup::drm_atomic_helper_setup_commit(state, nonblock); if ret != 0 { return ret; }
     let ret = atomic_prepare::drm_atomic_helper_prepare_planes(dev, state); if ret != 0 { return ret; }
     let ret = atomic_swap::drm_atomic_helper_swap_state(state, true); if ret != 0 { atomic_prepare::drm_atomic_helper_unprepare_planes(dev, state); return ret; }
-    let callback = tail(dev.cast());
-    if callback != 0 {
-        // SAFETY: driver helper-private tail callback receives the published transaction state.
-        unsafe { core::mem::transmute::<usize, unsafe extern "C" fn(*mut c_void)>(callback)(state); }
-    } else { atomic_commit_tail::drm_atomic_helper_commit_tail(state); }
-    atomic_commit_tail::drm_atomic_helper_commit_cleanup_done(state);
+    if nonblock {
+        // SAFETY: the additional reference keeps this published state alive until its worker completes.
+        unsafe { let refs = read(bytes.add(REF_OFF).cast::<i32>()); write(bytes.add(REF_OFF).cast::<i32>(), refs.saturating_add(1)); }
+        if !sched::live::workqueue::queue_work(queued_tail, state as usize) { queued_tail(state as usize); }
+    } else { finish(state); }
     0
 }
