@@ -13,10 +13,10 @@ pub(crate) struct IoDma {
 
 impl IoDma {
     /// Allocate and map a private command data run plus PRP-list page. # C: O(pages)
-    pub(crate) fn allocate(bdf: pci::Bdf) -> Option<Self> {
+    pub(crate) fn allocate(bdf: pci::Bdf, dma_mask: u64) -> Option<Self> {
         let data_pa = pmm::setup::alloc_contig(DATA_ORDER)?;
         let data_bytes = (DATA_PAGES * PAGE) as usize;
-        let Some(data_dma) = iommu::map_dma(bdf, data_pa, data_bytes) else {
+        let Some(data_dma) = iommu::map_dma_below(bdf, data_pa, data_bytes, dma_mask) else {
             // SAFETY: mapping failed before hardware received this private data run.
             unsafe { pmm::setup::free_contig(data_pa, DATA_ORDER); }
             return None;
@@ -27,7 +27,7 @@ impl IoDma {
             unsafe { pmm::setup::free_contig(data_pa, DATA_ORDER); }
             return None;
         };
-        let Some(list_dma) = iommu::map_dma(bdf, list_pa, PAGE as usize) else {
+        let Some(list_dma) = iommu::map_dma_below(bdf, list_pa, PAGE as usize, dma_mask) else {
             // SAFETY: mapping failed before hardware received this private list page.
             unsafe { pmm::setup::free_one_frame(list_pa); }
             let _ = iommu::unmap_dma(bdf, data_dma, data_bytes);

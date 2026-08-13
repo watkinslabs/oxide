@@ -137,6 +137,8 @@ mod imp {
     /// LBA 0. # C: O(N_nvme + controller bring-up + N_disks)
     pub fn init(
         device_key: pci::Bdf,
+        vendor_id: u16,
+        device_id: u16,
         command_orig: u16,
         mmio: mmio_map::Mapping,
         bar0_off: u64,
@@ -149,7 +151,8 @@ mod imp {
             unregister_completion_if_idle();
             return 0;
         };
-        let nv = match Nvme::bring_up(device_key, mmio, bar0_off, irq.vector()) { Some(n) => n, None => {
+        let dma_mask = crate::regs::dma_mask(vendor_id, device_id);
+        let nv = match Nvme::bring_up(device_key, dma_mask, mmio, bar0_off, irq.vector()) { Some(n) => n, None => {
             irq.begin_release();
             irq.synchronize_and_release();
             unregister_completion_if_idle();
@@ -348,7 +351,7 @@ impl drv::Driver for NvmeDriver {
         // SAFETY: BAR0 was enumerated for this NVMe function; this mapping owns its complete page-rounded aperture.
         let mmio = unsafe { mmio_map::map_owned(bar0_pa & BAR_PAGE_BASE_MASK, pages) };
         let device_key = imp::device_key_from_bdf(bdf);
-        if imp::init(device_key, command_orig, mmio, bar0_pa & BAR_PAGE_OFFSET_MASK) == 0 {
+        if imp::init(device_key, dev.vendor_id, dev.device_id, command_orig, mmio, bar0_pa & BAR_PAGE_OFFSET_MASK) == 0 {
             lifecycle::run_probe_failure_cleanup(|| restore_pci_bus_master(dev, command_orig));
             return Err(drv::Error::ProbeFailed);
         }
