@@ -112,6 +112,9 @@ pub fn export_symbols() {
         ("dma_supported",             dma_supported             as *const () as usize),
         ("dma_get_required_mask",     dma_get_required_mask     as *const () as usize),
         ("dma_max_mapping_size",      dma_max_mapping_size      as *const () as usize),
+        ("dma_opt_mapping_size",      dma_opt_mapping_size      as *const () as usize),
+        ("dma_get_merge_boundary",    dma_get_merge_boundary    as *const () as usize),
+        ("dma_need_unmap",            dma_need_unmap            as *const () as usize),
         ("dma_get_sgtable_attrs",     dma_get_sgtable_attrs     as *const () as usize),
         ("sg_init_table",             sg_init_table             as *const () as usize),
         ("sg_init_one",               sg_init_one               as *const () as usize),
@@ -384,6 +387,19 @@ extern "C" fn dma_get_required_mask(_dev: *mut LinuxDevice) -> u64 {
 /// large DRM and network transfers before submitting DMA.
 pub(crate) extern "C" fn dma_max_mapping_size(_dev: *mut LinuxDevice) -> usize {
     MAX_DMA_MAPPING_BYTES
+}
+
+/// Return the preferred contiguous transfer size without exceeding this DMA backend's hard limit. # C: O(1)
+pub(crate) extern "C" fn dma_opt_mapping_size(dev: *mut LinuxDevice) -> usize {
+    dma_max_mapping_size(dev)
+}
+
+/// Return this backend's safe segment merge boundary; zero forbids implicit merging. # C: O(1)
+pub(crate) extern "C" fn dma_get_merge_boundary(_dev: *mut LinuxDevice) -> usize { 0 }
+
+/// Report whether a completed mapping must be torn down by the active DMA backend. # C: O(1)
+pub(crate) extern "C" fn dma_need_unmap(dev: *mut LinuxDevice) -> bool {
+    crate::linux_pci::bdf_for_device(dev).is_some()
 }
 
 pub(crate) unsafe extern "C" fn sg_init_table(sg: *mut ScatterList, nents: u32) {

@@ -86,6 +86,9 @@ fn resource_mapping_accepts_physical_and_zero_dma_addresses() {
 #[test]
 fn max_mapping_size_matches_the_iommu_iova_aperture() {
     assert_eq!(dma_max_mapping_size(null_mut()), 1usize << 48);
+    assert_eq!(dma_opt_mapping_size(null_mut()), dma_max_mapping_size(null_mut()));
+    assert_eq!(dma_get_merge_boundary(null_mut()), 0);
+    assert!(!dma_need_unmap(null_mut()));
 }
 
 #[test]
@@ -190,7 +193,7 @@ fn export_symbols_registers_dma_surface() {
         "__dma_sync_sg_for_cpu", "__dma_sync_sg_for_device",
         "dma_mapping_error", "dma_set_mask", "dma_set_coherent_mask",
         "dma_get_sgtable_attrs",
-        "dma_max_mapping_size",
+        "dma_max_mapping_size", "dma_opt_mapping_size", "dma_get_merge_boundary", "dma_need_unmap",
         "dma_set_mask_and_coherent", "sg_init_table", "sg_set_buf", "sg_set_page",
         "sg_alloc_table", "sg_free_table", "sg_copy_to_buffer", "sg_miter_start",
         "sg_miter_next", "sg_miter_stop", "sgl_alloc_order", "sgl_free_n_order",
