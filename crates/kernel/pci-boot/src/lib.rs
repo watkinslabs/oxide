@@ -164,7 +164,6 @@ fn pci_resources_arch(d: &pci::PciDevice) -> alloc::vec::Vec<drv::Resource> {
 /// # C: O(N_bdfs probed)
 pub fn enumerate_and_log() {
     config_access::install_hooks();
-    pci_irq::set_intx_resolver(resolve_firmware_intx);
     let devs = scan_devices();
     debug_boot! {
         klog::write_raw(b"[INFO]  pci: devices=");
@@ -175,6 +174,7 @@ pub fn enumerate_and_log() {
     let aliases = dma_aliases(&requesters, &devs);
     if !activate_dma_and_interrupt_ownership(&requesters, &aliases) { return; }
     let _ = firmware::acpi::prepare_pci_intx_routes();
+    pci_irq::set_intx_resolver(resolve_firmware_intx);
     register_pci_model_drivers();
     publish_scanned_devices(&devs);
 
