@@ -378,7 +378,7 @@ extern "C" fn complete_all(c: *mut LinuxCompletion) {
     cell.wake_all();
 }
 pub(crate) extern "C" fn wait_for_completion(c: *mut LinuxCompletion) { let _ = completion_wait_common(c, false); }
-extern "C" fn wait_for_completion_interruptible(c: *mut LinuxCompletion) -> i32 { completion_wait_common(c, true) }
+pub(crate) extern "C" fn wait_for_completion_interruptible(c: *mut LinuxCompletion) -> i32 { completion_wait_common(c, true) }
 extern "C" fn wait_for_completion_timeout(c: *mut LinuxCompletion, timeout: usize) -> usize {
     completion_wait_timeout(c, timeout)
 }
