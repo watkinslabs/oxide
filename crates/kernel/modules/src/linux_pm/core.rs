@@ -1,10 +1,15 @@
 use super::types::*;
 use crate::linux_device::types::LinuxDevice;
+use core::sync::atomic::AtomicU32;
+
+/// ABI storage read directly by Linux suspend-aware drivers.
+pub(crate) static PM_SUSPEND_GLOBAL_FLAGS: AtomicU32 = AtomicU32::new(0);
 
 /// Register Linux PM KPI symbols.
 /// # C: O(1)
 pub(super) fn export_symbols() {
     use crate::symtab::export;
+    export("pm_suspend_global_flags", &PM_SUSPEND_GLOBAL_FLAGS as *const _ as usize, false);
     for (name, addr) in [
         ("dev_pm_suspend",                       dev_pm_suspend                       as *const () as usize),
         ("dev_pm_resume",                        dev_pm_resume                        as *const () as usize),
