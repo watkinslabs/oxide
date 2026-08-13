@@ -111,6 +111,13 @@ pub(crate) unsafe fn device_change_uevent(dev: *mut LinuxDevice, envp: *mut *mut
     let _ = unsafe { super::kobject::kobject_uevent_env(&mut (*dev).kobj, super::kobject::KOBJ_CHANGE, envp) };
 }
 
+/// Send a caller-selected kobject event from an already-published embedded device.
+/// # C: O(name depth)
+pub(crate) unsafe fn device_uevent(dev: *mut LinuxDevice, action: u32) {
+    // SAFETY: caller supplies a live embedded device and a valid Linux kobject action value.
+    let _ = unsafe { super::kobject::kobject_uevent(&mut (*dev).kobj, action) };
+}
+
 #[cfg(test)]
 pub(crate) fn uevent_sequence(dev: *mut LinuxDevice) -> u64 {
     if dev.is_null() { return 0; }

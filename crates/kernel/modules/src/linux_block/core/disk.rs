@@ -31,6 +31,7 @@ pub(super) fn export_symbols() {
     export("set_capacity",    set_capacity    as *const () as usize, false);
     export("set_capacity_and_notify", set_capacity_and_notify as *const () as usize, true);
     export("set_disk_ro", set_disk_ro as *const () as usize, false);
+    export("disk_uevent", disk_uevent as *const () as usize, true);
     export("get_capacity",    get_capacity    as *const () as usize, false);
     export("disk_live",       disk_live       as *const () as usize, false);
 }
@@ -173,6 +174,14 @@ pub(super) unsafe extern "C" fn set_disk_ro(disk: *mut LinuxGendisk, read_only: 
     let mut envp = [event.as_ptr() as *mut c_char, null_mut()];
     // SAFETY: same disk; event vector is local and NULL-terminated for the duration of the synchronous call.
     unsafe { crate::linux_device::core::device_change_uevent(&mut (*disk).dev, envp.as_mut_ptr()); }
+}
+
+/// Forward a disk event to every present block-device object this gendisk owns.
+/// # C: O(name depth)
+pub(super) unsafe extern "C" fn disk_uevent(disk: *mut LinuxGendisk, action: u32) {
+    if disk.is_null() { return; }
+    // SAFETY: disk is null-checked and its embedded device remains live for this synchronous event call.
+    unsafe { crate::linux_device::core::device_uevent(&mut (*disk).dev, action); }
 }
 
 unsafe extern "C" fn get_capacity(disk: *const LinuxGendisk) -> u64 {
