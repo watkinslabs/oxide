@@ -258,12 +258,12 @@ fn tcp_urgent_tail(ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSocket>,
 fn send_inet(ctx: &SendContext<'_>, target: &SendFile, socket: &Arc<net::sock::InetSocket>,
     message: &Message, flags: u32, prepared: Box<InetPrepared>) -> KResult<usize>
 {
-    let (dest, control) = match *prepared {
+    let (dest, control) = match prepared.as_ref() {
         InetPrepared::Packet =>
             return crate::packet::send(socket, &message.payload, message.name.as_deref()),
         InetPrepared::Unix(scm) =>
             return send_unix_blocking(ctx, target, socket, message, flags, scm),
-        InetPrepared::Transport(address, control) => (address.remote(), control),
+        InetPrepared::Transport(address, control) => (address.remote(), control.as_ref()),
     };
     let state = Box::new((
         dest,
@@ -304,7 +304,7 @@ fn send_inet(ctx: &SendContext<'_>, target: &SendFile, socket: &Arc<net::sock::I
     let mut total = 0usize;
     loop {
         let end = if state.5 { body } else { message.payload.len() };
-        match net::sock::sendto(socket, &message.payload[total..end], state.0.clone(), ctx.creds(), &state.1) {
+        match net::sock::sendto(socket, &message.payload[total..end], state.0.clone(), ctx.creds(), state.1) {
             Ok(bytes) if state.5 && bytes != 0 => {
                 total += bytes;
                 if total >= body {
@@ -341,7 +341,7 @@ fn send_inet(ctx: &SendContext<'_>, target: &SendFile, socket: &Arc<net::sock::I
 #[cfg(target_os = "oxide-kernel")]
 fn send_unix_blocking(ctx: &SendContext<'_>, target: &SendFile,
     socket: &Arc<net::sock::InetSocket>, message: &Message, flags: u32,
-    scm: crate::control::UnixScm) -> KResult<usize>
+    scm: &crate::control::UnixScm) -> KResult<usize>
 {
     let nonblock = target.nonblock() || flags as u64 & net::uapi::MSG_DONTWAIT != 0;
     let timeout = socket.opts.base.sndtimeo_ns.load(Ordering::Acquire);
@@ -361,7 +361,7 @@ fn send_unix_blocking(ctx: &SendContext<'_>, target: &SendFile,
     let mut total = 0usize;
     loop {
         let tail = crate::oob::owes_oob(plan, total);
-        match crate::control::send_unix_once(ctx, socket, message, &scm, cap, total, body, tail) {
+        match crate::control::send_unix_once(ctx, socket, message, scm, cap, total, body, tail) {
             Ok(n) if stream && n != 0 => {
                 total += n;
                 if total >= requested { return Ok(total); }
@@ -379,7 +379,7 @@ fn send_unix_blocking(ctx: &SendContext<'_>, target: &SendFile,
                 if deadline != 0 && monotonic_ns() >= deadline {
                     return if total == 0 { Err(Error::Eagain) } else { Ok(total) };
                 }
-                if let Err(error) = crate::control::wait_unix_send(socket, &scm,
+                if let Err(error) = crate::control::wait_unix_send(socket, scm,
                     message.payload.len().saturating_sub(total), cap, deadline)
                 {
                     if total != 0 { return Ok(total); }
