@@ -260,7 +260,7 @@ fn send_inet(ctx: &SendContext<'_>, target: &SendFile, socket: &Arc<net::sock::I
         InetPrepared::Packet =>
             return crate::packet::send(socket, &message.payload, message.name.as_deref()),
         InetPrepared::Unix(scm) =>
-            return send_unix_blocking(ctx, target, socket, message, flags, *scm),
+            return send_unix_prepared(ctx, target, socket, message, flags, scm),
         InetPrepared::Transport(address, control) => (address.remote(), control),
     };
     let nonblock = target.nonblock() || flags as u64 & net::uapi::MSG_DONTWAIT != 0;
@@ -330,6 +330,15 @@ fn send_inet(ctx: &SendContext<'_>, target: &SendFile, socket: &Arc<net::sock::I
             }
         }
     }
+}
+
+#[cfg(target_os = "oxide-kernel")]
+#[inline(never)]
+fn send_unix_prepared(ctx: &SendContext<'_>, target: &SendFile,
+    socket: &Arc<net::sock::InetSocket>, message: &Message, flags: u32,
+    scm: Box<crate::control::UnixScm>) -> KResult<usize>
+{
+    send_unix_blocking(ctx, target, socket, message, flags, *scm)
 }
 
 #[cfg(target_os = "oxide-kernel")]
