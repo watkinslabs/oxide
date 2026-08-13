@@ -36,6 +36,7 @@ static FAULT_RECORDS: AtomicU64 = AtomicU64::new(0);
 /// # SAFETY
 /// The caller must run before any requester can acquire PCI bus mastering.
 /// # C: O(units + requesters + RAM leaves)
+#[inline(never)]
 pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf], aliases: &pci::DmaAliases, hhdm_offset: u64,
     regions: &[pmm::UsableRegion]) -> VtdActivation {
     EIM_CAPABLE.store(false, Ordering::Release);
