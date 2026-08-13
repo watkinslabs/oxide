@@ -65,12 +65,15 @@ struct kparam_array {
 int try_module_get(struct module *module);
 void module_put(struct module *module);
 extern const struct kernel_param_ops param_ops_bool;
+extern const struct kernel_param_ops param_ops_byte;
 extern const struct kernel_param_ops param_ops_int;
 extern const struct kernel_param_ops param_ops_uint;
 extern const struct kernel_param_ops param_ops_ulong;
 extern const struct kernel_param_ops param_array_ops;
 int param_set_bool(const char *val, const struct kernel_param *kp);
 int param_get_bool(char *buffer, const struct kernel_param *kp);
+int param_set_byte(const char *val, const struct kernel_param *kp);
+int param_get_byte(char *buffer, const struct kernel_param *kp);
 int param_set_int(const char *val, const struct kernel_param *kp);
 int param_get_int(char *buffer, const struct kernel_param *kp);
 int param_set_uint(const char *val, const struct kernel_param *kp);

@@ -48,6 +48,14 @@ struct KParamArray {
 }
 
 #[unsafe(no_mangle)]
+static param_ops_byte: KernelParamOps = KernelParamOps {
+    flags: 0,
+    set:   Some(param_set_byte),
+    get:   Some(param_get_byte),
+    free:  None,
+};
+
+#[unsafe(no_mangle)]
 static param_ops_bool: KernelParamOps = KernelParamOps {
     flags: 0,
     set:   Some(param_set_bool),
@@ -94,6 +102,8 @@ pub fn export_symbols() {
     for (name, addr) in [
         ("try_module_get", try_module_get as *const () as usize),
         ("module_put",     module_put     as *const () as usize),
+        ("param_set_byte",  param_set_byte  as *const () as usize),
+        ("param_get_byte",  param_get_byte  as *const () as usize),
         ("param_set_bool",  param_set_bool  as *const () as usize),
         ("param_get_bool",  param_get_bool  as *const () as usize),
         ("param_set_int",   param_set_int   as *const () as usize),
@@ -104,6 +114,7 @@ pub fn export_symbols() {
         ("param_set_ulong", param_set_ulong as *const () as usize),
         ("param_get_ulong", param_get_ulong as *const () as usize),
     ] { export(name, addr, false); }
+    export("param_ops_byte",  &param_ops_byte  as *const _ as usize, false);
     export("param_ops_bool",  &param_ops_bool  as *const _ as usize, false);
     export("param_ops_int",   &param_ops_int   as *const _ as usize, false);
     export("param_ops_uint",  &param_ops_uint  as *const _ as usize, false);
@@ -136,7 +147,7 @@ unsafe fn refcnt(module: *mut LinuxModule) -> &'static AtomicU32 {
     unsafe { &*((&mut (*module).refcnt as *mut u32).cast::<AtomicU32>()) }
 }
 
-use params::{param_get_bool, param_get_int, param_get_uint, param_get_ulong, param_set_bool, param_set_int, param_set_uint, param_set_ulong};
+use params::{param_get_byte, param_get_bool, param_get_int, param_get_uint, param_get_ulong, param_set_byte, param_set_bool, param_set_int, param_set_uint, param_set_ulong};
 
 unsafe extern "C" fn param_array_set(val: *const c_char, kp: *const KernelParam) -> i32 {
     if kp.is_null() { return -LINUX_EINVAL; }
@@ -447,6 +458,19 @@ mod tests {
         // this stack frame — the exact type param_set_bool stores through.
         assert_eq!(unsafe { param_set_bool(b"on\0".as_ptr().cast(), &kp) }, 0);
         assert!(bool_v);
+    }
+
+    #[test]
+    fn byte_params_accept_only_unsigned_byte_values() {
+        let _modules = crate::test_serial::claim();
+        let mut value = 1u8;
+        let kp = KernelParam { name: null(), mod_: core::ptr::null_mut(), ops: &param_ops_byte, perm: 0, level: 0, flags: 0, arg: (&mut value as *mut u8).cast() };
+        // SAFETY: kp.arg names the live u8 backing value and the decimal input is NUL-terminated.
+        assert_eq!(unsafe { param_set_byte(b"255\0".as_ptr().cast(), &kp) }, 0);
+        assert_eq!(value, u8::MAX);
+        // SAFETY: overflow input uses the same valid parameter and must fail before storing.
+        assert_eq!(unsafe { param_set_byte(b"256\0".as_ptr().cast(), &kp) }, -LINUX_EINVAL);
+        assert_eq!(value, u8::MAX);
     }
 
     #[test]
