@@ -85,7 +85,7 @@ fn dump_tasks_emit() {
         klog::write_raw(b" current=tid:");
         klog::write_dec_u64(t.tid as u64);
     }
-    klog::write_raw(b"\n  PID   TID name             ST onrq oncpu cpu  last-sysc  nsysc      cputime_ms\n");
+    klog::write_raw(b"\n  PID   TID name             ST onrq oncpu onwl cpu  last-sysc  nsysc      cputime_ms\n");
 
     let tasks = match crate::registry::try_snapshot() {
         Some(v) => v,
@@ -110,6 +110,7 @@ fn dump_tasks_emit() {
         if t.reaped.load(Ordering::Relaxed) { klog::write_raw(b"* "); } else { klog::write_raw(b"  "); }
         klog::write_raw(if t.on_rq.load(Ordering::Relaxed) { b"y  " } else { b"n  " });
         klog::write_raw(if t.on_cpu.load(Ordering::Relaxed) { b"y    " } else { b"n    " });
+        klog::write_raw(if t.on_wake_list.load(Ordering::Relaxed) { b"y   " } else { b"n   " });
         let cpu = t.cpu.load(Ordering::Relaxed);
         if cpu == u16::MAX { klog::write_raw(b"  -"); } else { col_dec(cpu as u64, 3); }
         klog::write_raw(b"  ");
