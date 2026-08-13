@@ -1,5 +1,5 @@
 // NVMe block driver (drivers-plan D3.5). A real controller bring-up: reset →
-// admin SQ/CQ → IDENTIFY controller + namespace 1 → one I/O queue pair →
+// admin SQ/CQ → active-namespace discovery + IDENTIFY → one I/O queue pair →
 // READ/WRITE via a PRP bounce frame, exposed as a `block::BlockDevice` under
 // Linux-style registry names `nvme0n1`, `nvme1n1`, ... . The model driver's
 // `probe` matches PCI class
@@ -123,8 +123,8 @@ mod imp {
     #[cfg(feature = "debug-boot")]
     fn key_function(key: pci::Bdf) -> u8 { key.function }
 
-    fn nvme_name(index: u32) -> String {
-        alloc::format!("nvme{}n1", index)
+    fn nvme_name(index: u32, nsid: u32) -> String {
+        alloc::format!("nvme{}n{}", index, nsid)
     }
 
     pub fn device_key_from_bdf(bdf: pci::Bdf) -> pci::Bdf {
@@ -159,6 +159,7 @@ mod imp {
         }};
         let (cq_pa, cq_head, cq_phase) = nv.io_cq_cursor();
         irq.configure_cq(cq_pa, cq_head, cq_phase);
+        let nsid = nv.namespace_id();
         let blk_size = nv.blk_size;
         let capacity = nv.ns_blocks;
 
@@ -180,7 +181,7 @@ mod imp {
             poisoned: AtomicBool::new(false),
         });
 
-        let name = nvme_name(NEXT_DISK_INDEX.fetch_add(1, Ordering::Relaxed));
+        let name = nvme_name(NEXT_DISK_INDEX.fetch_add(1, Ordering::Relaxed), nsid);
         let existed = block::registry::by_name(&name).is_some();
         let idx = block::registry::register_with_driver(
             block::registry::BlockDriver::fixed("nvme", block::uapi::NVME_BLK_MAJOR), &name,

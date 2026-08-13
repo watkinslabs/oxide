@@ -46,7 +46,7 @@ impl Nvme {
         let Some(second) = regs::prp_second(bytes) else { return false; };
         let mut cmd = [0u32; 16];
         cmd[0] = if write { regs::IO_WRITE } else { regs::IO_READ } as u32;
-        cmd[1] = 1;
+        cmd[1] = self.nsid;
         cmd[6] = (dma.data_dma & 0xFFFF_FFFF) as u32;
         cmd[7] = (dma.data_dma >> 32) as u32;
         match second {
@@ -69,7 +69,7 @@ impl Nvme {
 
     /// FLUSH (opcode 0x00) on I/O queue 1. # C: O(one cmd)
     pub fn flush_submit(&mut self, cid: u16) -> bool {
-        let mut cmd = [0u32; 16]; cmd[0] = regs::IO_FLUSH as u32; cmd[1] = 1; self.submit_io(cid, cmd)
+        let mut cmd = [0u32; 16]; cmd[0] = regs::IO_FLUSH as u32; cmd[1] = self.nsid; self.submit_io(cid, cmd)
     }
 
 }
