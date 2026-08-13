@@ -103,15 +103,20 @@ impl RunqueueInner {
             return;
         }
         task.cpu.store(self.cpu, core::sync::atomic::Ordering::Release);
-        // The destination rq now owns the task.  Publish Runnable before the
-        // class insert consumes this Arc, while still holding that rq lock.
-        task.complete_wake();
+        // Keep the wake-owner state through activation.  The task must be in
+        // the destination class tree before it becomes Runnable: otherwise a
+        // scheduler observing Runnable can consume its wake while no queue
+        // owns it, stranding the task off-CPU and off-rq.
+        let activation = Arc::clone(&task);
         match task.sched_class() {
             SchedClass::Deadline      => self.dl.enqueue(task),
             SchedClass::Rt { .. }     => self.rt.enqueue_at(task, pos),
             SchedClass::Normal { .. } => self.cfs.enqueue(task),
             SchedClass::Idle          => panic!("RunqueueInner::enqueue: idle"),
         }
+        // The class tree now owns its Arc under this rq lock. This is the
+        // wake publication point, after activation rather than before it.
+        activation.complete_wake();
     }
 
     /// Linux `put_prev_task`: return the still-Runnable outgoing task to its
