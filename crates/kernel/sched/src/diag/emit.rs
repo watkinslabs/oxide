@@ -29,9 +29,25 @@ pub fn report_lockup(secs: u64, tid: u32, cur: Option<&Task>) {
         #[cfg(feature = "debug-syscall-return")]
         super::syscall_return::emit_syscall_return(t);
     }
+    emit_lockup_context();
     emit_timer_state();
     klog::write_raw(b"\n");
     dump_tasks();
+}
+
+/// Emit the live scheduler gates that decide whether this CPU can take a
+/// pending reschedule. Kept in the first watchdog line so a hard stall retains
+/// the evidence even when the task snapshot cannot acquire its registry lock.
+#[cfg(feature = "debug-watchdog")]
+fn emit_lockup_context() {
+    klog::write_raw(b" preempt_count=0x");
+    klog::write_hex_u64(crate::preempt::preempt_count() as u64);
+    klog::write_raw(b" resched=");
+    klog::write_raw(if crate::preempt::need_resched() { b"y" } else { b"n" });
+    klog::write_raw(b" irqs_off=");
+    klog::write_raw(if crate::preempt::irqs_disabled() { b"y" } else { b"n" });
+    klog::write_raw(b" interrupt=");
+    klog::write_raw(if crate::preempt::in_interrupt() { b"y" } else { b"n" });
 }
 
 /// A task dump names the KTHREAD, which for a timer wedge is always `ktimers` —
@@ -145,4 +161,3 @@ pub(super) fn sysrq_arm() { SYSRQ_ARMED.store(true, Ordering::Relaxed); }
 /// is how `c` came to print a table on a machine an operator meant to crash.
 /// # C: see `sysrq::perform`
 pub fn sysrq_rx(b: u8) -> bool { super::sysrq::rx(b) }
-
