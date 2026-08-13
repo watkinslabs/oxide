@@ -35,15 +35,15 @@ usable without it.
 | Status | System | Blocking | Finding | Branch |
 |---|---|---|---|---|
 | DONE B1875 | Console (framebuffer) | no | Multiboot2 firmware scanout feeds the full VT/fbcon stack through a WC simple-framebuffer driver when no native fbdev binds. | B1875-physical-framebuffer-source |
-| OPEN | UEFI boot | yes | x86 boots multiboot2 (BIOS/CSM) only. Modern boards are UEFI, many without CSM. | — |
-| CLAIMED F878 | Input | yes | xHCI controller register contract and PCI host-driver foundation in progress; USB enumeration and HID boot protocol remain required. | F878-xhci-host-foundation |
+| DONE | UEFI boot | no | x86 boots the hybrid GRUB ISO through either BIOS or UEFI firmware; both routes enter the same Multiboot2 handoff. | `make smoke-uefi-x86` |
+| IN PROGRESS | Input | no | Native PCI xHCI enumerates USB hubs, HID keyboard/mouse and mass-storage protocol; physical-controller interoperability remains to be demonstrated. | `drv-xhci` |
 | DONE 2b44a8a29 | Cache attributes (WC) | no | x86 PAT and arm64 Normal-NC are wired through driver-owned raw-PFN VMA policy. | B1874-x86-write-combining |
 | DONE 18936f7b5, 667c8a2da | SMP AP bringup | no | x86 INIT/SIPI and arm64 PSCI paths bring APs into the scheduler. | F425/F428 |
-| OPEN | x2APIC + CPU count | no¹ | `MAX_CPUS = 64`, `u64` online mask, no x2APIC enablement. | — |
+| IN PROGRESS | x2APIC + CPU count | no¹ | `MAX_CPUS = 256` and the canonical online mask are multiword; x2APIC MSR transport is enabled before AP startup when VT-d exposes queued invalidation, interrupt remapping, and extended-interrupt mode. AMD-Vi remains limited to legacy remapped destinations. | `cpu`, `arch-irq`, `iommu` |
 | OPEN | ACPI depth | no² | APIC/HPET/MCFG/SPCR parsed. No DSDT/AML, no FADT. | — |
-| OPEN | Ethernet | no | Only virtio-net. No driver for any physical NIC. | — |
-| IN PROGRESS F864 | IOMMU | no | ACPI IVRS/DMAR discovery is validated and published; translation domains, requester attachment, map/unmap invalidation, and hardware enablement remain absent. | F864-iommu-firmware-discovery |
-| — | Storage | no | NVMe + AHCI drivers exist and match by PCI class. Needs hardware validation only. | — |
+| IN PROGRESS | Ethernet | no | Native e1000, 82574 e1000e, IGC, RTL8125 and AQC113 paths exist; each still needs hardware-specific traffic proof. | native PCI drivers |
+| IN PROGRESS | IOMMU | no | AMD-Vi and VT-d initialize requester-keyed identity domains before PCI probing and invalidate each mapping mutation; fault handling and physical activation evidence remain. | `iommu` |
+| IN PROGRESS | Storage | no | NVMe and AHCI bind by PCI class with DMA/IOMMU ownership; real controller reset, identify and sustained-I/O proof remain. | `drv-nvme`, `drv-ahci` |
 
 ¹ Not blocking on i9-class part counts; blocking on Threadripper.
 ² Not blocking for boot given the MSI-only constraint below; blocking for
@@ -83,48 +83,20 @@ policy, and its UC-versus-WC acceptance comparison is recorded.
 
 ## 3 UEFI boot
 
-**Finding.** x86 stages a `multiboot2` GRUB entry
-(`tools/xtask/src/image_qemu/x86_64.rs:23-24`) — BIOS/CSM. TRX40/WRX80/WRX90
-and Z790/X870-class boards are UEFI; many have dropped CSM entirely. aarch64
-already boots EFI-stub, so the pattern exists in-tree.
-
-**Work.**
-
-1. GRUB EFI image alongside the BIOS one; `xtask` grows an EFI staging path.
-2. EFI memory map → `BootMemRegion` conversion, replacing the multiboot2 tag-6
-   walk. Kind mapping differs from the multiboot2 kinds already handled at
-   `mb2.rs:365-369`; EFI conventional/loader/boot-services-reclaimable each map
-   differently, and boot-services memory is only reclaimable after
-   ExitBootServices.
-3. RSDP from the EFI configuration table rather than tags 14/15.
-4. Keep the tag-8 framebuffer path from §2 — GRUB supplies it on EFI too.
-5. Verify both firmware paths still boot under QEMU (OVMF for the EFI side)
-   before touching hardware.
+**Status.** The x86 image is a hybrid GRUB ISO: firmware may boot its BIOS
+or UEFI entry, then GRUB supplies the same Multiboot2 memory map, RSDP and
+framebuffer tags to the existing kernel handoff. No parallel EFI-stub parser
+is required for x86. `make smoke-uefi-x86` pins the OVMF route; the same
+artifact is suitable for UEFI-only physical firmware.
 
 ## 4 Input
 
-**Finding.** `crates/drivers/drv-ps2-keyboard` is the only physical input
-driver. `crates/kernel/modules/src/linux_usb/` is a module-registry shim
-(types/core/gadget, 945 lines) — no host controller. Grep for xHCI across
-`crates/` returns nothing.
-
-Consequence: no USB keyboard, no USB storage, no USB anything. Many
-Threadripper and workstation boards still expose a PS/2 port, which sidesteps
-this entirely for bring-up; most consumer i9 boards do not.
-
-**Work.** Two paths, pick by board:
-
-- *Board has PS/2*: nothing. Confirm the port is wired to the legacy
-  controller and not an internal USB bridge — some boards emulate it.
-- *No PS/2*: xHCI host controller + USB core (device enumeration, control
-  transfers, interrupt endpoints) + HID boot-protocol keyboard. This is the
-  single largest item in this document — treat it as its own phase, not a
-  task. Feed it into the existing `input` registry so the VT input path
-  (`console/vt_input.rs`) is unchanged.
-
-**Board-selection note.** Whether the target board has PS/2 changes the scope
-of real-hardware bring-up by months. Establish this before committing to a
-machine.
+**Status.** `drv-xhci` owns PCI host-controller reset, root hubs, USB device
+enumeration, control and interrupt transfers, hub routing, HID keyboard/mouse
+reports, and USB mass-storage transport. HID input enters the existing input
+registry, so no PS/2 dependency remains for a normal board. The remaining
+work is physical-controller and device interoperability evidence, not a
+missing USB host stack.
 
 ## 5 Cache attributes — write-combining
 
@@ -151,24 +123,32 @@ x86 copies its 16-to-64-bit trampoline below 1 MiB, sends INIT/SIPI, waits for
 arrival, and installs per-CPU GS, GDT/IDT/TSS, syscall and IRQ stacks, LAPIC
 timer, runqueue, and online state. arm64 uses PSCI CPU_ON and joins the same
 scheduler lifecycle. SMP=2 boot and watchdog output exercise both paths. The
-remaining scale blocker is §7: the 64-CPU mask and lack of x2APIC.
+remaining scale blocker is §7: platform-specific extended interrupt remapping
+and physical scale evidence.
 
 ## 7 x2APIC and CPU count
 
-**Finding.** `crates/kernel/cpu/src/lib.rs:20` — `MAX_CPUS = 64`, and
-`smp.rs` tracks liveness in a `u64` mask. MADT decode already reads x2APIC
-entries (`crates/kernel/firmware/src/acpi/tables.rs:123-133`), but nothing
-enables x2APIC MSR mode.
+**Current state.** `MAX_CPUS = 256`; the canonical online and transport masks
+are multiword atomic bitmaps. MADT discovery preserves 32-bit APIC IDs, and
+x2APIC MSR transport is selected on the BSP before AP startup only when the
+CPU advertises x2APIC and the active VT-d units jointly provide queued
+invalidation, interrupt remapping, and extended-interrupt mode. APs consume
+that BSP decision before their first LAPIC register access.
 
-A Threadripper 7980X is 64C/128T — at or over the mask width. APIC IDs above
-255 require x2APIC; xAPIC cannot address them.
+The gate is necessary: a bare-metal PCI MSI or I/O-APIC destination cannot
+address every x2APIC ID without an extended interrupt-remapping path. The
+current AMD-Vi owner publishes only its legacy 32-bit requester interrupt table
+and accepts an 8-bit destination ID. It must grow the extended table format and
+the corresponding hardware enable sequence before x2APIC is selected on AMD
+systems. Until then, xAPIC keeps those systems safe but limits addressable APIC
+IDs to 255.
 
-**Work.**
+**Remaining work.**
 
-1. Widen the online mask from `u64` to a bitmap; raise `MAX_CPUS` past 128.
-   Audit every consumer of `online_mask()` for the `u64` assumption.
-2. Enable x2APIC via `IA32_APIC_BASE` and switch LAPIC access from MMIO to
-   MSR when firmware reports it.
+1. Add AMD-Vi extended interrupt-table capability discovery, table layout,
+   enablement and invalidation; carry a 32-bit APIC destination end-to-end.
+2. Exercise both firmware-enabled and kernel-selected x2APIC on physical
+   systems, including an AMD-Vi machine with APIC IDs above 255.
 3. Confirm the MADT walk handles both Local APIC and Local x2APIC entry types
    without double-counting a CPU present in each.
 
@@ -199,28 +179,19 @@ Two consequences:
 
 ## 9 Ethernet
 
-**Finding.** `crates/drivers/drv-virtio-net` only. No driver for any physical
-NIC.
-
-Likely silicon by board class: Intel I225/I226, Realtek RTL8125, Aquantia
-AQC113 on high-end Threadripper boards, Intel X550 on workstation boards.
-
-**Work.** One driver, chosen by the target board. All are MSI-X capable, which
-satisfies the §8 constraint. Pick the board partly by which NIC you are willing
-to write.
+**Status.** Native PCI paths exist for legacy Intel e1000, 82574 e1000e, IGC,
+RTL8125 and AQC113. Each owns PCI bus mastering, DMA/IOMMU mapping and interrupt
+delivery; the remaining requirement is traffic validation on its matching
+physical silicon. Unsupported Intel e1000e families remain unbound until their
+distinct PHY and reset contracts exist.
 
 ## 10 IOMMU
 
-**Finding.** AMD IVRS and Intel DMAR are checksum-validated and published as
-immutable unit inventories before PCI binding. Discovery deliberately does not
-touch IOMMU registers, so devices remain in direct-DMA mode.
-
-**Work.** Build the Linux-shaped domain path before enabling translation:
-preserve every unit's requester ownership, allocate IOVA/page-table state,
-attach each device before setting bus master, and complete hardware
-invalidation before a mapping or physical page is reused. Do not enable a
-firmware-advertised IOMMU early; an incomplete device table would fault every
-active DMA device.
+**Status.** AMD-Vi and VT-d retain firmware requester ownership, build one
+identity domain per unit, attach requesters before PCI driver probing, and
+invalidate every live mapping mutation. Fault reporting, capability-dependent
+page-table depth and physical activation evidence remain required before this
+path may be called fully hardware-proven.
 
 ## 11 Storage
 

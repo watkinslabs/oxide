@@ -23,9 +23,15 @@ impl HardwareProfile {
     }
 
     fn nic_device(self) -> &'static str {
+        self.nic_device_for(std::env::var("OXIDE_QEMU_NIC").ok().as_deref())
+    }
+
+    fn nic_device_for(self, selector: Option<&str>) -> &'static str {
         match self {
-            Self::Default if matches!(std::env::var("OXIDE_QEMU_NIC").as_deref(), Ok("e1000")) =>
+            Self::Default if selector == Some("e1000") =>
                 "e1000,netdev=net0,bus=pcie.0",
+            Self::Default if selector == Some("e1000e") =>
+                "e1000e,netdev=net0,bus=pcie.0",
             Self::Default => "virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on",
             Self::NativePci => "e1000,netdev=net0,bus=pcie.0",
         }
@@ -49,9 +55,9 @@ impl HardwareProfile {
 
 fn validate_nic_selector() -> Result<(), u8> {
     match std::env::var("OXIDE_QEMU_NIC").as_deref() {
-        Err(_) | Ok("virtio") | Ok("e1000") => Ok(()),
+        Err(_) | Ok("virtio") | Ok("e1000") | Ok("e1000e") => Ok(()),
         Ok(value) => {
-            eprintln!("xtask grub: unknown OXIDE_QEMU_NIC={value}; expected virtio or e1000");
+            eprintln!("xtask grub: unknown OXIDE_QEMU_NIC={value}; expected virtio, e1000, or e1000e");
             Err(2)
         }
     }
@@ -359,6 +365,11 @@ mod tests {
     #[test]
     fn native_profile_selects_the_native_pci_e1000() {
         assert_eq!(HardwareProfile::NativePci.nic_device(), "e1000,netdev=net0,bus=pcie.0");
+    }
+
+    #[test]
+    fn default_profile_can_select_the_82574e_pci_model() {
+        assert_eq!(HardwareProfile::Default.nic_device_for(Some("e1000e")), "e1000e,netdev=net0,bus=pcie.0");
     }
 
     #[test]

@@ -344,7 +344,7 @@ def scan_exports(root: Path, extra: list[Path]) -> set[str]:
     return exports
 
 
-def btf_types(path: Path) -> dict[str, AbiType]:
+def btf_types(path: Path, detail_types: frozenset[str] = BTF_DETAIL_TYPES) -> dict[str, AbiType]:
     raw = path.read_bytes()
     if len(raw) < 24:
         raise ValueError("BTF header is truncated")
@@ -394,7 +394,7 @@ def btf_types(path: Path) -> dict[str, AbiType]:
                 member_name, _member_type, member_offset = struct.unpack_from("<III", types, offset)
                 offset += 12
                 members.append((string(member_name), member_offset & 0x00FF_FFFF))
-            if kind == BTF_KIND_STRUCT and name in BTF_DETAIL_TYPES:
+            if kind == BTF_KIND_STRUCT and name in detail_types:
                 found[name] = AbiType(name, size, tuple(members))
             continue
         if kind in fixed_size:
@@ -455,6 +455,21 @@ def print_abi(path: Path) -> bool:
     return all(status == "MATCH-PINNED" for _name, _supported, _actual, status, _details in rows)
 
 
+def print_btf_types(path: Path, names: list[str]) -> bool:
+    types = btf_types(path, frozenset(names))
+    ok = True
+    for name in names:
+        actual = types.get(name)
+        if actual is None:
+            print(f"{name}: absent")
+            ok = False
+            continue
+        print(f"{name}: {actual.size} bytes")
+        for member, offset in actual.members:
+            print(f"  {member}: +{offset // 8:#x}")
+    return ok
+
+
 def category(sym: str) -> str:
     for name, needles in CATEGORY_RULES:
         if any(sym == n or sym.startswith(n) or n in sym for n in needles):
@@ -506,6 +521,7 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--fail-on-missing", action="store_true", help="exit 1 when strong missing symbols remain")
     ap.add_argument("--host-btf", type=Path, help="running-kernel BTF to compare with the pinned Oxide KPI profile")
     ap.add_argument("--fail-on-abi-mismatch", action="store_true", help="exit 1 when --host-btf differs from the supported KPI profile")
+    ap.add_argument("--inspect-btf-type", action="append", default=[], metavar="NAME", help="print exact struct size and member offsets from --host-btf")
     args = ap.parse_args(argv)
 
     root = args.root or repo_root(Path.cwd())
@@ -532,6 +548,8 @@ def main(argv: list[str]) -> int:
     if args.host_btf:
         try:
             abi_ok = print_abi(args.host_btf)
+            if args.inspect_btf_type:
+                abi_ok = print_btf_types(args.host_btf, args.inspect_btf_type) and abi_ok
         except (OSError, ValueError) as exc:
             raise SystemExit(f"{args.host_btf}: BTF parse failed: {exc}")
     if args.fail_on_missing and any(r.status == "MISSING" for r in rows):
