@@ -477,6 +477,7 @@ pub(crate) unsafe fn build_boot_info() -> &'static BootInfo {
     unsafe { build_selfboot_memmap(info); }
     use hal::TimerOps;
     info.boot_ns = hal_aarch64::ArmTimerOps::monotonic_ns().0;
+    info.framebuffer = selfboot::framebuffer();
     // The boot handoff has no CPU table. Keep the same u32 representation
     // consumed by ACPI CPU topology while deriving it from this boot CPU.
     info.bsp_lapic_id = hal_aarch64::mpidr_el1() as u32;
