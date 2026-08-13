@@ -65,6 +65,7 @@ void blk_mq_freeze_queue_wait(struct request_queue *q);
 int blk_mq_freeze_queue_wait_timeout(struct request_queue *q, unsigned long timeout);
 void blk_mq_quiesce_queue(struct request_queue *q);
 void blk_mq_unquiesce_queue(struct request_queue *q);
+void blk_mq_wait_quiesce_done(struct blk_mq_tag_set *set);
 void blk_mq_quiesce_tagset(struct blk_mq_tag_set *set);
 void blk_mq_unquiesce_tagset(struct blk_mq_tag_set *set);
 void blk_mq_delay_kick_requeue_list(struct request_queue *q, unsigned int msecs);

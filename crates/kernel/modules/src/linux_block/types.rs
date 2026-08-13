@@ -1,5 +1,6 @@
 use crate::linux_alloc::LinuxPage;
 use crate::linux_device::types::LinuxDevice;
+use alloc::vec::Vec;
 use core::ffi::{c_char, c_void};
 use core::sync::atomic::AtomicU32;
 use sync::{Modules as ModulesLockClass, Spinlock};
@@ -135,6 +136,25 @@ pub(super) struct LinuxBlkMqTagSet {
     pub(super) cmd_size: u32,
     pub(super) flags: u32,
     pub(super) driver_data: *mut c_void,
+    pub(super) lifecycle: *mut LinuxTagSetLifecycle,
+}
+
+pub(super) struct LinuxTagSetLifecycle {
+    pub(super) queues: Spinlock<Vec<usize>, ModulesLockClass>,
+    pub(super) dispatches: AtomicU32,
+    #[cfg(target_os = "oxide-kernel")]
+    pub(super) dispatch_wait: sched::live::WaitList,
+}
+
+impl LinuxTagSetLifecycle {
+    pub(super) fn new() -> Self {
+        Self {
+            queues: Spinlock::new(Vec::new()),
+            dispatches: AtomicU32::new(0),
+            #[cfg(target_os = "oxide-kernel")]
+            dispatch_wait: sched::live::WaitList::new(),
+        }
+    }
 }
 
 #[repr(C)]

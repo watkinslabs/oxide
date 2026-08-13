@@ -105,6 +105,7 @@ struct blk_mq_tag_set {
     unsigned int cmd_size;
     unsigned int flags;
     void *driver_data;
+    void *lifecycle;
 };
 
 struct request_queue *blk_alloc_queue(gfp_t gfp_mask);

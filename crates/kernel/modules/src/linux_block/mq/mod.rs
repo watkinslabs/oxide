@@ -9,7 +9,7 @@ mod status;
 #[cfg(test)]
 mod tests;
 
-pub(super) use queue::{freeze_and_wait, queue_begin_use, queue_end_use};
+pub(super) use queue::{attach_queue, detach_queue, freeze_and_wait, queue_begin_use, queue_end_use};
 
 /// Register Linux blk-mq KPI symbols.
 /// # C: O(1)
