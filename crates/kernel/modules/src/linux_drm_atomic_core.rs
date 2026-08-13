@@ -26,6 +26,8 @@ const DRM_CRTC_DESTROY_STATE_OFF: usize = 88;
 const DRM_CONNECTOR_DESTROY_STATE_OFF: usize = 56;
 const DRM_STATE_ENTRY_OBJECT_OFF: usize = 0;
 const DRM_STATE_ENTRY_DESTROY_OFF: usize = 8;
+const DRM_CRTC_ENTRY_COMMIT_OFF: usize = 32;
+const DRM_ATOMIC_FAKE_COMMIT_OFF: usize = 88;
 
 fn layout(size: usize) -> Option<Layout> { Layout::from_size_align(size.max(1), core::mem::align_of::<u64>()).ok() }
 fn alloc_array(entries: usize, bytes: usize) -> Option<*mut u8> {
@@ -151,9 +153,10 @@ pub(super) extern "C" fn drm_atomic_commit_default_clear(state: *mut c_void) {
         let connector_entries = read(state.add(DRM_ATOMIC_CONNECTORS_OFF).cast::<*mut u8>());
         for index in 0..connectors { let entry = connector_entries.add(index * DRM_ATOMIC_CONNECTOR_ENTRY_SIZE); let object = read(entry.add(DRM_STATE_ENTRY_OBJECT_OFF).cast::<*mut c_void>()); call_destroy(object, connector::DRM_CONNECTOR_FUNCS_OFF, DRM_CONNECTOR_DESTROY_STATE_OFF, read(entry.add(DRM_STATE_ENTRY_DESTROY_OFF).cast::<*mut c_void>())); if !object.is_null() { mode_object_refs::put(object.cast::<u8>().add(connector::DRM_CONNECTOR_BASE_OFF).cast()); } core::ptr::write_bytes(entry, 0, DRM_ATOMIC_CONNECTOR_ENTRY_SIZE); }
         let crtc_entries = read(state.add(DRM_ATOMIC_CRTCS_OFF).cast::<*mut u8>());
-        for index in 0..crtcs { let entry = crtc_entries.add(index * DRM_ATOMIC_CRTC_ENTRY_SIZE); let object = read(entry.add(DRM_STATE_ENTRY_OBJECT_OFF).cast::<*mut c_void>()); call_destroy(object, DRM_CRTC_FUNCS_OFF, DRM_CRTC_DESTROY_STATE_OFF, read(entry.add(DRM_STATE_ENTRY_DESTROY_OFF).cast::<*mut c_void>())); core::ptr::write_bytes(entry, 0, DRM_ATOMIC_CRTC_ENTRY_SIZE); }
+        for index in 0..crtcs { let entry = crtc_entries.add(index * DRM_ATOMIC_CRTC_ENTRY_SIZE); let object = read(entry.add(DRM_STATE_ENTRY_OBJECT_OFF).cast::<*mut c_void>()); call_destroy(object, DRM_CRTC_FUNCS_OFF, DRM_CRTC_DESTROY_STATE_OFF, read(entry.add(DRM_STATE_ENTRY_DESTROY_OFF).cast::<*mut c_void>())); crtc_commit::put(read(entry.add(DRM_CRTC_ENTRY_COMMIT_OFF).cast::<*mut u8>())); core::ptr::write_bytes(entry, 0, DRM_ATOMIC_CRTC_ENTRY_SIZE); }
         let plane_entries = read(state.add(DRM_ATOMIC_PLANES_OFF).cast::<*mut u8>());
         for index in 0..planes { let entry = plane_entries.add(index * DRM_ATOMIC_PLANE_ENTRY_SIZE); let object = read(entry.add(DRM_STATE_ENTRY_OBJECT_OFF).cast::<*mut c_void>()); call_destroy(object, DRM_PLANE_FUNCS_OFF, DRM_PLANE_DESTROY_STATE_OFF, read(entry.add(DRM_STATE_ENTRY_DESTROY_OFF).cast::<*mut c_void>())); core::ptr::write_bytes(entry, 0, DRM_ATOMIC_PLANE_ENTRY_SIZE); }
+        crtc_commit::put(read(state.add(DRM_ATOMIC_FAKE_COMMIT_OFF).cast::<*mut u8>())); write(state.add(DRM_ATOMIC_FAKE_COMMIT_OFF).cast::<*mut u8>(), core::ptr::null_mut());
     }
 }
 
