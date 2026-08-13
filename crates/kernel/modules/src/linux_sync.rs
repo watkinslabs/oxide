@@ -385,7 +385,7 @@ extern "C" fn wait_for_completion_timeout(c: *mut LinuxCompletion, timeout: usiz
 extern "C" fn wait_for_completion_io_timeout(c: *mut LinuxCompletion, timeout: usize) -> usize {
     completion_wait_timeout(c, timeout)
 }
-extern "C" fn try_wait_for_completion(c: *mut LinuxCompletion) -> i32 { completion_take(c) as i32 }
+pub(crate) extern "C" fn try_wait_for_completion(c: *mut LinuxCompletion) -> i32 { completion_take(c) as i32 }
 fn completion_take(c: *mut LinuxCompletion) -> bool {
     if c.is_null() { return false; }
     let d = done_u32(c);
