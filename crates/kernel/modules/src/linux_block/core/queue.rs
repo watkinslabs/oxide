@@ -41,6 +41,9 @@ pub(in crate::linux_block) unsafe extern "C" fn blk_cleanup_queue(q: *mut LinuxR
     // SAFETY: q is the queue being torn down; freeze_and_wait blocks new users and waits until every
     // request/BIO that took the queue's canonical lifecycle reference has released it.
     unsafe { crate::linux_block::mq::freeze_and_wait(q); }
+    // SAFETY: q is frozen and drained, so it cannot be concurrently dispatched while it is removed from the
+    // tag set's canonical queue list before the allocation is reclaimed.
+    unsafe { crate::linux_block::mq::detach_queue(q); }
     // SAFETY: q is frozen with no users; lifecycle was allocated together with this queue and is no longer
     // reachable once the queue Box is reclaimed below, so each allocation is released exactly once.
     unsafe {
@@ -66,16 +69,39 @@ pub(super) unsafe extern "C" fn blk_queue_logical_block_size(q: *mut LinuxReques
     unsafe { (*q).logical_block_size = size; }
 }
 
-extern "C" fn blk_mq_alloc_tag_set(_set: *mut LinuxBlkMqTagSet) -> i32 { LINUX_OK }
+extern "C" fn blk_mq_alloc_tag_set(set: *mut LinuxBlkMqTagSet) -> i32 {
+    if set.is_null() { return -LINUX_EINVAL; }
+    // SAFETY: set is non-null and owned by the driver; lifecycle is exclusively initialized by this setup
+    // entry before any queue may attach to the tag set.
+    unsafe {
+        if (*set).lifecycle.is_null() { (*set).lifecycle = Box::into_raw(Box::new(LinuxTagSetLifecycle::new())); }
+    }
+    LINUX_OK
+}
 
-unsafe extern "C" fn blk_mq_free_tag_set(_set: *mut LinuxBlkMqTagSet) {}
+unsafe extern "C" fn blk_mq_free_tag_set(set: *mut LinuxBlkMqTagSet) {
+    if set.is_null() { return; }
+    // SAFETY: a driver frees its tag set only after it has destroyed attached queues; the lifecycle pointer
+    // came from blk_mq_alloc_tag_set and is consumed exactly once here.
+    unsafe {
+        let lifecycle = (*set).lifecycle;
+        if !lifecycle.is_null() { drop(Box::from_raw(lifecycle)); (*set).lifecycle = null_mut(); }
+    }
+}
 
 unsafe extern "C" fn blk_mq_init_queue(set: *mut LinuxBlkMqTagSet) -> *mut LinuxRequestQueue {
     let q = blk_alloc_queue(GFP_KERNEL);
     if q.is_null() { return null_mut(); }
-    // SAFETY: q is newly allocated and set may be NULL.
+    // SAFETY: q is newly allocated and set may be NULL; when present, the module initialized its tag set
+    // through blk_mq_alloc_tag_set before this constructor, so its ops/lifecycle are ready for attachment.
     unsafe {
-        if !set.is_null() { (*q).queuedata = (*set).driver_data; }
+        if !set.is_null() {
+            (*q).queuedata = (*set).driver_data;
+            (*q).tag_set = set;
+            (*q).mq_ops = (*set).ops;
+            (*q).nr_hw_queues = (*set).nr_hw_queues.max(1);
+            crate::linux_block::mq::attach_queue(set, q);
+        }
     }
     q
 }

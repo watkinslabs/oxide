@@ -28,6 +28,7 @@ pub(super) fn export_symbols() {
         ("blk_mq_unquiesce_queue",        blk_mq_unquiesce_queue        as *const () as usize),
         ("blk_mq_quiesce_tagset",         blk_mq_quiesce_tagset         as *const () as usize),
         ("blk_mq_unquiesce_tagset",       blk_mq_unquiesce_tagset       as *const () as usize),
+        ("blk_mq_wait_quiesce_done",      blk_mq_wait_quiesce_done      as *const () as usize),
         ("blk_mq_delay_kick_requeue_list", blk_mq_delay_kick_requeue_list as *const () as usize),
         ("blk_mq_start_stopped_hw_queues", blk_mq_start_stopped_hw_queues as *const () as usize),
         ("blk_mq_stop_hw_queues",         blk_mq_stop_hw_queues         as *const () as usize),
@@ -104,6 +105,7 @@ unsafe extern "C" fn blk_mq_alloc_queue(set: *mut LinuxBlkMqTagSet, lim: *const 
             if !(*set).ops.is_null() {
                 if let Some(map) = (*(*set).ops).map_queues { map(set); }
             }
+            attach_queue(set, q);
         }
     }
     q
@@ -147,13 +149,24 @@ unsafe extern "C" fn blk_mq_freeze_queue_wait_timeout(q: *mut LinuxRequestQueue,
 unsafe extern "C" fn blk_mq_quiesce_queue(q: *mut LinuxRequestQueue) {
     // SAFETY: q is the caller-supplied live queue.
     unsafe { bump_depth(q, false); }
+    // SAFETY: a queue's tag set owns the dispatch domain that must drain after quiescing begins.
+    unsafe { wait_tagset_dispatches(if q.is_null() { null_mut() } else { (*q).tag_set }); }
 }
 unsafe extern "C" fn blk_mq_unquiesce_queue(q: *mut LinuxRequestQueue) {
     // SAFETY: q is the caller-supplied live queue.
     unsafe { drop_depth(q, false); }
 }
-unsafe extern "C" fn blk_mq_quiesce_tagset(_set: *mut LinuxBlkMqTagSet) {}
-unsafe extern "C" fn blk_mq_unquiesce_tagset(_set: *mut LinuxBlkMqTagSet) {}
+unsafe extern "C" fn blk_mq_quiesce_tagset(set: *mut LinuxBlkMqTagSet) {
+    // SAFETY: set owns its attached queue list and the list gate prevents teardown from removing an entry.
+    unsafe { change_tagset_quiesce(set, true); }
+    // SAFETY: all previously admitted dispatches use this tag-set counter and must drain before return.
+    unsafe { wait_tagset_dispatches(set); }
+}
+unsafe extern "C" fn blk_mq_unquiesce_tagset(set: *mut LinuxBlkMqTagSet) {
+    // SAFETY: set owns its attached queue list and this reverses one quiesce nesting level per queue.
+    unsafe { change_tagset_quiesce(set, false); }
+}
+unsafe extern "C" fn blk_mq_wait_quiesce_done(set: *mut LinuxBlkMqTagSet) { unsafe { wait_tagset_dispatches(set); } }
 unsafe extern "C" fn blk_mq_delay_kick_requeue_list(_q: *mut LinuxRequestQueue, _msecs: u32) {}
 unsafe extern "C" fn blk_mq_start_stopped_hw_queues(_q: *mut LinuxRequestQueue, _async_: bool) {}
 unsafe extern "C" fn blk_mq_stop_hw_queues(_q: *mut LinuxRequestQueue) {}
@@ -266,6 +279,79 @@ pub(in crate::linux_block) unsafe fn freeze_and_wait(q: *mut LinuxRequestQueue) 
     unsafe { freeze_wait(q); }
 }
 
+/// Remove a drained queue from the tag set that owns its dispatch domain.
+pub(in crate::linux_block) unsafe fn detach_queue(q: *mut LinuxRequestQueue) {
+    if q.is_null() { return; }
+    // SAFETY: q is frozen and drained by caller; its tag_set field is stable until this final detach.
+    let set = unsafe { (*q).tag_set };
+    let Some(lifecycle) = (unsafe { tagset_lifecycle(set) }) else { return; };
+    lifecycle.queues.lock().retain(|entry| *entry != q as usize);
+}
+
+pub(in crate::linux_block) unsafe fn attach_queue(set: *mut LinuxBlkMqTagSet, q: *mut LinuxRequestQueue) {
+    let Some(lifecycle) = (unsafe { tagset_lifecycle(set) }) else { return; };
+    let mut queues = lifecycle.queues.lock();
+    if !queues.contains(&(q as usize)) { queues.push(q as usize); }
+}
+
+unsafe fn change_tagset_quiesce(set: *mut LinuxBlkMqTagSet, begin: bool) {
+    let Some(lifecycle) = (unsafe { tagset_lifecycle(set) }) else { return; };
+    let queues = lifecycle.queues.lock();
+    for entry in queues.iter().copied() {
+        let q = entry as *mut LinuxRequestQueue;
+        // SAFETY: tag-set list lock retains this attached queue until the operation returns; teardown first
+        // freezes/drains then waits for this same list lock before reclaiming its queue allocation.
+        unsafe { if begin { bump_depth(q, false); } else { drop_depth(q, false); } }
+    }
+}
+
+/// Admit one hardware dispatch only while neither freezing nor quiescing is active.
+pub(super) unsafe fn queue_begin_dispatch(q: *mut LinuxRequestQueue) -> bool {
+    let Some(lifecycle) = (unsafe { lifecycle(q) }) else { return false; };
+    let _gate = lifecycle.gate.lock();
+    // SAFETY: queue lifecycle gate serializes both depth counters with dispatch admission.
+    if unsafe { (*q).freeze_depth != 0 || (*q).quiesce_depth != 0 } { return false; }
+    lifecycle.users.fetch_add(1, ::core::sync::atomic::Ordering::AcqRel);
+    // SAFETY: q remains retained by the added user reference while the dispatch counter is published.
+    let set = unsafe { (*q).tag_set };
+    if let Some(tagset) = unsafe { tagset_lifecycle(set) } {
+        tagset.dispatches.fetch_add(1, ::core::sync::atomic::Ordering::AcqRel);
+    }
+    true
+}
+
+/// Complete the dispatch interval admitted by queue_begin_dispatch.
+pub(super) unsafe fn queue_end_dispatch(q: *mut LinuxRequestQueue) {
+    if q.is_null() { return; }
+    // SAFETY: queue_begin_dispatch retained q through this callback interval, so tag_set remains readable.
+    let set = unsafe { (*q).tag_set };
+    if let Some(tagset) = unsafe { tagset_lifecycle(set) } {
+        let was_one = tagset.dispatches.fetch_update(
+            ::core::sync::atomic::Ordering::AcqRel,
+            ::core::sync::atomic::Ordering::Acquire,
+            |count| count.checked_sub(1),
+        ).ok() == Some(1);
+        if was_one {
+            #[cfg(target_os = "oxide-kernel")]
+            tagset.dispatch_wait.wake_all();
+        }
+    }
+    // SAFETY: this is the exact extra queue-use reference queue_begin_dispatch acquired.
+    unsafe { queue_end_use(q); }
+}
+
+unsafe fn wait_tagset_dispatches(set: *mut LinuxBlkMqTagSet) {
+    let Some(lifecycle) = (unsafe { tagset_lifecycle(set) }) else { return; };
+    #[cfg(target_os = "oxide-kernel")]
+    // SAFETY: this waits only on tag-set-owned dispatch state and callers hold no queue/tag-list lock.
+    unsafe {
+        let _ = sched::live::wait_event_uninterruptible(&lifecycle.dispatch_wait,
+            || lifecycle.dispatches.load(::core::sync::atomic::Ordering::Acquire) == 0);
+    }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    while lifecycle.dispatches.load(::core::sync::atomic::Ordering::Acquire) != 0 { ::core::hint::spin_loop(); }
+}
+
 unsafe fn bump_depth(q: *mut LinuxRequestQueue, freeze: bool) {
     let Some(lifecycle) = (unsafe { lifecycle(q) }) else { return; };
     let _gate = lifecycle.gate.lock();
@@ -340,10 +426,18 @@ unsafe fn lifecycle(q: *mut LinuxRequestQueue) -> Option<&'static LinuxQueueLife
     if lifecycle.is_null() { None } else { Some(unsafe { &*lifecycle }) }
 }
 
+unsafe fn tagset_lifecycle(set: *mut LinuxBlkMqTagSet) -> Option<&'static LinuxTagSetLifecycle> {
+    if set.is_null() { return None; }
+    // SAFETY: tag-set lifecycle is initialized before queues attach and freed only after every queue detaches.
+    let lifecycle = unsafe { (*set).lifecycle };
+    if lifecycle.is_null() { None } else { Some(unsafe { &*lifecycle }) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::linux_block::core;
+    use alloc::boxed::Box;
     use ::core::sync::atomic::{AtomicBool, Ordering};
 
     static DRAINED: AtomicBool = AtomicBool::new(false);
@@ -404,5 +498,45 @@ mod tests {
         assert_eq!(remaining, 17);
         // SAFETY: q has no users and is owned solely by this test.
         unsafe { core::blk_cleanup_queue(q); }
+    }
+
+    #[test]
+    fn quiesce_waits_for_tagset_dispatch_and_rejects_later_dispatches() {
+        let _modules = crate::test_serial::claim();
+        DRAINED.store(false, Ordering::Release);
+        // SAFETY: LinuxBlkMqTagSet is a plain C-layout owner supplied by the driver; zero is a valid initial
+        // state for its scalar/raw-pointer fields and this test initializes its lifecycle before attaching q.
+        let mut set: LinuxBlkMqTagSet = unsafe { ::core::mem::zeroed() };
+        set.lifecycle = Box::into_raw(Box::new(LinuxTagSetLifecycle::new()));
+        // SAFETY: the initialized tag set and default limits are owned by this test for q's full lifetime.
+        let q = unsafe { blk_mq_alloc_queue(&mut set, ::core::ptr::null(), ::core::ptr::null_mut()) };
+        assert!(!q.is_null());
+        // SAFETY: q is attached to set and is not frozen/quiesced, so it admits one dispatch to drain later.
+        assert!(unsafe { queue_begin_dispatch(q) });
+        let q_addr = q as usize;
+        let waiter = std::thread::spawn(move || {
+            // SAFETY: q remains attached and retained by the dispatch reference until this thread returns.
+            unsafe { blk_mq_quiesce_queue(q_addr as *mut LinuxRequestQueue); }
+            DRAINED.store(true, Ordering::Release);
+        });
+        for _ in 0..1_000 {
+            if DRAINED.load(Ordering::Acquire) { break; }
+            std::thread::yield_now();
+        }
+        assert!(!DRAINED.load(Ordering::Acquire));
+        // SAFETY: q is quiesced while the first dispatch is still counted, so later dispatch admission fails.
+        assert!(!unsafe { queue_begin_dispatch(q) });
+        // SAFETY: release the first and only dispatch, waking the tag-set drain waiter.
+        unsafe { queue_end_dispatch(q); }
+        waiter.join().expect("quiesce completes after the in-flight dispatch drains");
+        assert!(DRAINED.load(Ordering::Acquire));
+        // SAFETY: this reverses the quiesce depth and then tears down the detached queue/tag-set allocations.
+        unsafe {
+            blk_mq_unquiesce_queue(q);
+            assert!(queue_begin_dispatch(q));
+            queue_end_dispatch(q);
+            core::blk_cleanup_queue(q);
+            drop(Box::from_raw(set.lifecycle));
+        }
     }
 }

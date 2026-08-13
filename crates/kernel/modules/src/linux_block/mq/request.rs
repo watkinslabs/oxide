@@ -1,5 +1,5 @@
 extern crate alloc;
-use super::queue::{mq_ops, queue_begin_use, queue_end_use};
+use super::queue::{mq_ops, queue_begin_dispatch, queue_begin_use, queue_end_dispatch, queue_end_use};
 use crate::linux_block::contract::{rq_owner_after_end_io, RqOwner};
 use crate::linux_block::core;
 use crate::linux_block::types::*;
@@ -197,12 +197,21 @@ pub(super) unsafe extern "C" fn blk_execute_rq_nowait(rq: *mut LinuxRequest, _at
     // SAFETY: rq is the live request checked above; q/mq_hctx/bio are its own fields, all read here before
     // any path below that can end the request and hand its ownership elsewhere.
     let (q, hctx, bio) = unsafe { ((*rq).q, (*rq).mq_hctx, (*rq).bio) };
+    // SAFETY: q belongs to this live request; dispatch admission both rejects quiesced queues and retains q
+    // through callbacks that may complete and release the request itself.
+    if !unsafe { queue_begin_dispatch(q) } {
+        // SAFETY: a quiesced queue did not hand the request to a driver, so this path owns completion.
+        unsafe { blk_mq_end_request(rq, BLK_STS_RESOURCE); }
+        return;
+    }
     // SAFETY: q is that recorded queue pointer and mq_ops re-checks it for null before touching mq_ops.
     if let Some(f) = unsafe { mq_ops(q) }.and_then(|ops| unsafe { (*ops).queue_rq }) {
         let qd = LinuxBlkMqQueueData { rq, last: true };
         // SAFETY: rq is live and hctx is the Box alloc_request attached to it; qd is a stack struct that
         // outlives the synchronous call through its borrow.
         let st = unsafe { f(hctx, &qd) };
+        // SAFETY: the driver's synchronous queue_rq interval is over even if it completed the request itself.
+        unsafe { queue_end_dispatch(q); }
         if st != BLK_STS_OK {
             // SAFETY: queue_rq returning a non-OK status means it did not take ownership, so rq is still the
             // live allocation and this path owes it a completion; rq is not read after this call.
@@ -214,10 +223,14 @@ pub(super) unsafe extern "C" fn blk_execute_rq_nowait(rq: *mut LinuxRequest, _at
         // SAFETY: the bio was read from the live request above and belongs to it; core::submit_bio
         // re-validates bi_disk/queue/make_request_fn and returns an errno rather than faulting on nulls.
         let st = if unsafe { core::submit_bio(bio) } == LINUX_OK { BLK_STS_OK } else { BLK_STS_IOERR };
+        // SAFETY: submit_bio returned, ending this generic dispatch interval before request completion.
+        unsafe { queue_end_dispatch(q); }
         // SAFETY: submit_bio is synchronous and does not free the request, so rq is still live to complete;
         // rq is not read after this call.
         unsafe { blk_mq_end_request(rq, st); }
     } else {
+        // SAFETY: no driver or BIO was called, so the dispatch interval ends before immediate completion.
+        unsafe { queue_end_dispatch(q); }
         // SAFETY: rq is the live request from the null check at entry; with no queue_rq and no bio there is
         // nothing to submit, so it is completed immediately as OK and not read afterwards.
         unsafe { blk_mq_end_request(rq, BLK_STS_OK); }
