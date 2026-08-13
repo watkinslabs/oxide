@@ -117,7 +117,7 @@ pub(super) fn kernel_cmdline(arch: &str, image_path: &str) -> String {
     // silence while every consumer expects a talkative boot is a line that
     // lies. A boot that wants it can pass it through OXIDE_CMDLINE_EXTRA.
     format!(
-        "{boot_image}root=/dev/oxide0 rw {KERNEL_CONSOLE_PARAMS} {SYSRQ_PARAMS} {extra}\
+        "{boot_image}root=/dev/vda rw {KERNEL_CONSOLE_PARAMS} {SYSRQ_PARAMS} {extra}\
          console={ser},115200 console=tty0 \
          systemd.mask=firewalld.service systemd.mask=chronyd.service \
          systemd.mask=ModemManager.service systemd.mask=plymouth-start.service \

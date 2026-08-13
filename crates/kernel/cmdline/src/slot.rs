@@ -49,10 +49,10 @@ pub unsafe fn set(bytes: &'static [u8]) {
 pub unsafe fn install_arch_default() {
     #[cfg(target_arch = "x86_64")]
     const DEFAULT: &[u8] =
-        b"BOOT_IMAGE=/oxide root=/dev/oxide0 ro console=ttyS0,115200 console=tty0\n";
+        b"BOOT_IMAGE=/oxide root=/dev/vda ro console=ttyS0,115200 console=tty0\n";
     #[cfg(not(target_arch = "x86_64"))]
     const DEFAULT: &[u8] =
-        b"BOOT_IMAGE=/oxide root=/dev/oxide0 ro console=ttyAMA0,115200 console=tty0\n";
+        b"BOOT_IMAGE=/oxide root=/dev/vda ro console=ttyAMA0,115200 console=tty0\n";
     if !is_set() {
         // SAFETY: install_arch_default is boot-only (single-writer); DEFAULT is a 'static byte literal that outlives the kernel; no procfs read can race here because /proc isn't mounted yet.
         unsafe { set(DEFAULT); }
