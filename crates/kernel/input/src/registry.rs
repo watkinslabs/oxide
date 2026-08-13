@@ -255,6 +255,7 @@ pub(crate) fn dispatch_values(
     }
 }
 
+/// # C: O(pending input state)
 pub(crate) fn release_state(dev: &mut VirtioInputDev, release_mt: bool) -> Option<Vec<InputValue>> {
     if release_mt {
         dev.release_mt_to_pending();
@@ -367,6 +368,7 @@ pub fn device(evdev_id: u32) -> Option<Box<VirtioInputDev>> {
     DEVICES.lock().iter().find(|d| d.evdev_id == evdev_id).cloned()
 }
 
+/// # C: O(1)
 pub(crate) fn matches_identity(
     dev: &VirtioInputDev,
     device_key: InputDeviceKey,

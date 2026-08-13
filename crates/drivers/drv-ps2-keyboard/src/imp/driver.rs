@@ -30,6 +30,8 @@ impl drv::Driver for Ps2KbdDriver {
         if unsafe { bringup() } {
             PRESENT.store(true, Ordering::Release);
             if !install_keyboard_device() {
+                // SAFETY: keyboard registration failed before IRQ1 publication,
+                // so this probe still exclusively owns the initialized controller.
                 unsafe { bringdown(); }
                 return Err(drv::Error::ProbeFailed);
             }

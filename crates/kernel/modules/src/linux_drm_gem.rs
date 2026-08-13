@@ -319,6 +319,7 @@ pub(super) unsafe extern "C" fn drm_gem_shmem_prime_import_no_map(dev: *mut c_vo
     // SAFETY: dma_buf points at the verified DMA-BUF ABI whose size is immutable after export.
     let size = unsafe { read(dma_buf.cast::<u8>().cast::<usize>()) };
     let Some(size) = size.checked_add(PAGE_SIZE as usize - 1).map(|n| n / PAGE_SIZE as usize * PAGE_SIZE as usize).filter(|n| *n != 0) else {
+        // SAFETY: the failed import still owns exactly this attachment and retained buffer reference.
         unsafe { crate::linux_dma_buf::dma_buf_detach(dma_buf, attach); crate::linux_dma_buf::dma_buf_put(dma_buf); }
         return err_ptr(LINUX_EINVAL);
     };
@@ -326,6 +327,7 @@ pub(super) unsafe extern "C" fn drm_gem_shmem_prime_import_no_map(dev: *mut c_vo
     // SAFETY: imported shmem object has the verified complete ABI size and starts zeroed.
     let object = unsafe { alloc_zeroed(layout) };
     if object.is_null() {
+        // SAFETY: allocation failed before publication, so this import owns the recorded attachment and reference.
         unsafe { crate::linux_dma_buf::dma_buf_detach(dma_buf, attach); crate::linux_dma_buf::dma_buf_put(dma_buf); }
         return err_ptr(LINUX_EBUSY);
     }
@@ -415,6 +417,7 @@ unsafe extern "C" fn shmem_object_free(object: *mut c_void) {
         // SAFETY: import creation retained the buffer once and recorded this attachment until final GEM free.
         unsafe { let buf = crate::linux_dma_buf::attachment_buf(attach); crate::linux_dma_buf::dma_buf_detach(buf, attach); crate::linux_dma_buf::dma_buf_put(buf); }
         let layout = Layout::from_size_align(DRM_GEM_SHMEM_OBJECT_SIZE, core::mem::align_of::<u64>()).unwrap();
+        // SAFETY: this finalizer uniquely owns the shmem object allocation after imported attachment teardown.
         unsafe { dealloc(object.cast(), layout); }
         return;
     }

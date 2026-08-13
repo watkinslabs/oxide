@@ -29,7 +29,9 @@ pub enum Error { FirmwareTimeout, SharedReadTimeout }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct FilterCaps { pub l2_filter_slot: u8, pub l2_filter_count: u8, pub art_base: u8, pub art_count: u8 }
 
+/// # C: O(1)
 pub const fn input_offset(word: u32) -> u64 { INPUT_BUFFER + word as u64 * 4 }
+/// # C: O(1)
 pub const fn output_offset(word: u32) -> u64 { OUTPUT_BUFFER + word as u64 * 4 }
 
 /// Places the resident firmware in active host mode and waits for its acknowledgement.
