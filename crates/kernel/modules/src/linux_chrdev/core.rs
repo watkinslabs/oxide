@@ -77,6 +77,8 @@ pub(super) fn export_symbols() {
         ("cdev_alloc",               cdev_alloc               as *const () as usize),
         ("cdev_add",                 cdev_add                 as *const () as usize),
         ("cdev_del",                 cdev_del                 as *const () as usize),
+        ("cdev_device_add",          cdev_device_add          as *const () as usize),
+        ("cdev_device_del",          cdev_device_del          as *const () as usize),
         ("alloc_chrdev_region",      alloc_chrdev_region      as *const () as usize),
         ("register_chrdev_region",   register_chrdev_region   as *const () as usize),
         ("unregister_chrdev_region", unregister_chrdev_region as *const () as usize),
@@ -150,6 +152,29 @@ pub(super) extern "C" fn cdev_del(cdev: *mut LinuxCdev) {
         (*cdev).added = LINUX_FIELD_CLEAR;
         (*cdev).kobj.kref = 0;
     }
+}
+
+extern "C" fn cdev_device_add(cdev: *mut LinuxCdev, dev: *mut crate::linux_device::types::LinuxDevice) -> i32 {
+    if cdev.is_null() || dev.is_null() { return -LINUX_EINVAL; }
+    // SAFETY: cdev and dev are caller-owned live ABI objects through this combined registration.
+    let devt = unsafe { (*dev).devt };
+    if devt != 0 {
+        // SAFETY: same live objects; cdev's parent anchors its lifetime to the device kobject.
+        unsafe { (*cdev).kobj.parent = &mut (*dev).kobj; }
+        let rc = cdev_add(cdev, devt, 1);
+        if rc != LINUX_OK { return rc; }
+    }
+    let rc = crate::linux_device::core::device_add(dev);
+    if rc != LINUX_OK && devt != 0 { cdev_del(cdev); }
+    rc
+}
+
+extern "C" fn cdev_device_del(cdev: *mut LinuxCdev, dev: *mut crate::linux_device::types::LinuxDevice) {
+    if dev.is_null() { return; }
+    // SAFETY: dev is live for this inverse combined unregistration.
+    let devt = unsafe { (*dev).devt };
+    crate::linux_device::core::device_del(dev);
+    if devt != 0 { cdev_del(cdev); }
 }
 
 /// Register one kernel-owned character endpoint backed by an external Linux callback table. # C: O(N_regions)
