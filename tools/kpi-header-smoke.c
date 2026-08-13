@@ -56,6 +56,7 @@
 #include <linux/spinlock.h>
 #include <linux/suspend.h>
 #include <linux/string.h>
+#include <linux/uuid.h>
 #include <linux/sysfs.h>
 #include <linux/timer.h>
 #include <linux/uaccess.h>
@@ -746,6 +747,7 @@ static int __init sample_init(void)
     (void)sysfs_emit_at(str_buf, 2, "u=%u\n", parsed_u16);
     (void)sysfs_streq("state\n", "state");
     (void)memchr_inv(str_buf, 0, sizeof(str_buf));
+    (void)uuid_null.b[0];
     (void)request_irq(SAMPLE_IRQ, sample_irq_handler, IRQF_SHARED, "sample", &s);
     disable_irq_nosync(SAMPLE_IRQ);
     enable_irq(SAMPLE_IRQ);

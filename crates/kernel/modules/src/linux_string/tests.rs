@@ -1,4 +1,4 @@
-use super::{bitops, cstr, format, match_parser, mem, parse, unicode};
+use super::{bitops, cstr, format, match_parser, mem, parse, unicode, uuid};
 use core::ffi::c_void;
 
 #[test]
@@ -31,6 +31,14 @@ fn memchr_inv_returns_the_first_different_byte_or_null() {
     assert_eq!(unsafe { first.cast::<u8>().offset_from(bytes.as_ptr()) }, 2);
     assert!(unsafe { cstr::memchr_inv(bytes.as_ptr().cast(), 0xa5, 2) }.is_null());
     assert!(unsafe { cstr::memchr_inv(bytes.as_ptr().cast(), 0xa5, 0) }.is_null());
+}
+
+#[test]
+fn null_uuid_and_guid_are_independent_zeroed_abi_objects() {
+    let _modules = crate::test_serial::claim();
+    assert_eq!(uuid::uuid_null, [0; 16]);
+    assert_eq!(uuid::guid_null, [0; 16]);
+    assert_ne!((&uuid::uuid_null as *const _ as usize), (&uuid::guid_null as *const _ as usize));
 }
 
 #[test]
@@ -131,7 +139,7 @@ fn export_symbols_registers_string_surface() {
         "snprintf", "scnprintf", "sprintf", "_printk", "__stack_chk_fail",
         "__dynamic_pr_debug", "_ctype", "__ref_stack_chk_guard", "sscanf",
         "_find_first_bit", "_find_next_bit", "__sw_hweight32", "__sw_hweight64", "__bitmap_weight", "match_token", "match_int",
-        "utf16s_to_utf8s", "utf8s_to_utf16s", "print_hex_dump",
+        "utf16s_to_utf8s", "utf8s_to_utf16s", "print_hex_dump", "guid_null", "uuid_null",
     ] {
         assert!(crate::symtab::is_exported(name), "{name}");
     }
