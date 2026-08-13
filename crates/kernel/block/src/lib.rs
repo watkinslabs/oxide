@@ -31,6 +31,7 @@ pub mod devbridge;
 pub mod direct;
 pub mod elevator;
 pub mod pagecache;
+pub mod partitions;
 pub mod queue_limits;
 pub mod registry;
 pub mod stats;

@@ -23,6 +23,7 @@ drv      = { path = "../../drivers/drv" }
 # neither block nor drv (acyclic), same edge drv already uses.
 vfs      = { path = "../../kernel/vfs" }
 bitflags = { version = "2", default-features = false }
+crc      = { path = "../../shared/crc" }
 
 [features]
 default = []

@@ -125,6 +125,7 @@ version = "0.1.0"
 dependencies = [
  "bitflags",
  "cgroup",
+ "crc",
  "drv",
  "hal",
  "klog",
