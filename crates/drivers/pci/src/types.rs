@@ -49,22 +49,25 @@ impl DmaAliases {
 }
 
 /// Add bridge-derived DMA aliases for `requesters`. `port_type` returns the
-/// decoded PCIe type for a bridge, or `None` for conventional PCI. This mirrors
-/// Linux's DMA-alias walk: PCIe root/upstream/downstream ports are transparent;
-/// translation bridges contribute their own requester identity. # C: O(N^3)
+/// decoded PCIe type for a bridge, or `None` for conventional PCI. The walk
+/// follows only each bus's immediate upstream bridge; PCIe root/upstream/
+/// downstream ports are transparent, while translation bridges contribute a
+/// requester identity. # C: O(N^2)
 pub fn add_topology_dma_aliases(
     aliases: &mut DmaAliases, requesters: &[Bdf], bridges: &[(Bdf, BridgeBuses)],
     port_type: impl Fn(Bdf) -> Option<crate::PcieType>,
 ) {
     for requester in requesters.iter().copied() {
-        for &(bridge, buses) in bridges {
-            if bridge.segment != requester.segment || requester.bus < buses.secondary || requester.bus > buses.subordinate { continue; }
+        let mut bus = requester.bus;
+        for _ in 0..=u8::MAX {
+            let Some(&(bridge, buses)) = bridges.iter().find(|(bridge, buses)| bridge.segment == requester.segment && buses.secondary == bus) else { break; };
             let translated = match port_type(bridge) {
                 Some(crate::PcieType::PcieToPciBridge) => Bdf { segment: bridge.segment, bus: buses.subordinate, device: 0, function: 0 },
                 Some(crate::PcieType::PciToPcieBridge) | None => bridge,
-                _ => continue,
+                _ => { bus = buses.primary; continue; }
             };
             let _ = aliases.add(requester, translated);
+            bus = buses.primary;
         }
     }
 }
@@ -356,5 +359,26 @@ mod command_tests {
         assert!(!aliases.add(requester, alias));
         assert!(!aliases.add(requester, other_segment));
         assert_eq!(aliases.for_requester(requester).collect::<alloc::vec::Vec<_>>(), alloc::vec![alias]);
+    }
+
+    #[test]
+    fn topology_aliases_follow_immediate_parent_chain_only() {
+        let child = Bdf { segment: 0, bus: 8, device: 1, function: 0 };
+        let leaf = Bdf { segment: 0, bus: 3, device: 2, function: 0 };
+        let parent = Bdf { segment: 0, bus: 0, device: 3, function: 0 };
+        let unrelated = Bdf { segment: 0, bus: 2, device: 4, function: 0 };
+        let bridges = [
+            (leaf, BridgeBuses { primary: 3, secondary: 8, subordinate: 8 }),
+            (parent, BridgeBuses { primary: 0, secondary: 3, subordinate: 8 }),
+            (unrelated, BridgeBuses { primary: 2, secondary: 6, subordinate: 8 }),
+        ];
+        let mut aliases = DmaAliases::new();
+        add_topology_dma_aliases(&mut aliases, &[child], &bridges, |bridge| match bridge {
+            b if b == leaf => Some(crate::PcieType::PciToPcieBridge),
+            b if b == parent => Some(crate::PcieType::PcieToPciBridge),
+            _ => None,
+        });
+        assert_eq!(aliases.for_requester(child).collect::<alloc::vec::Vec<_>>(), alloc::vec![leaf,
+            Bdf { segment: 0, bus: 8, device: 0, function: 0 }]);
     }
 }

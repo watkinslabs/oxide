@@ -70,6 +70,7 @@ fn same_dma_group<R: ConfigSpaceReader>(r: &R, left: Bdf, right: Bdf, aliases: &
     isolation_key(r, left) == isolation_key(r, right) || same_slot(left, right)
         || aliases.for_requester(left).any(|alias| alias == right)
         || aliases.for_requester(right).any(|alias| alias == left)
+        || aliases.for_requester(left).any(|left_alias| aliases.for_requester(right).any(|right_alias| left_alias == right_alias))
 }
 
 fn isolation_key<R: ConfigSpaceReader>(r: &R, requester: Bdf) -> Bdf {
