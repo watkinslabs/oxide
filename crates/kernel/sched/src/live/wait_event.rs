@@ -51,13 +51,17 @@ fn signal_pending_state_current(state: WaitState) -> bool {
 pub unsafe fn wait_event(wq: &WaitList, state: WaitState, deadline_ns: u64,
                          now: impl Fn() -> u64, mut cond: impl FnMut() -> bool) -> WaitOutcome {
     let timed = deadline_ns != 0;
+    // The public wait macros test before creating a waiter. Besides avoiding
+    // needless state churn on the ready fast path, this keeps a current task
+    // out of a self-wake/deferred-placement round when no sleep is required.
+    if cond() { return WaitOutcome::Ready; }
     loop {
-        // `prepare_to_wait_event`: publish Sleeping and enqueue, THEN test the
-        // signal. This order is what makes the post-park recheck sound — a
-        // waker firing in the gap finds us already queued.
+        // Publish Sleeping and enqueue before either condition or signal
+        // recheck. A producer racing either check can therefore find and wake
+        // this waiter instead of losing the event.
         // SAFETY: forwarded fn-level contract — process context, runqueue
         // installed, no waker-held lock owned by this caller.
-        unsafe { wq.park_interruptible_with_deadline(deadline_ns); }
+        unsafe { wq.park_with_deadline(deadline_ns); }
         if cond() { break; }
         if signal_pending_state_current(state) {
             // Dequeue, THEN report the restart, so an

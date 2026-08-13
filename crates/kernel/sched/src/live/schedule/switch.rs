@@ -750,39 +750,11 @@ pub unsafe fn sched_yield() {
     unsafe { schedule(); }
 }
 
-/// Yield for a caller that has ALREADY parked itself Sleeping on a wait
-/// list (epoll_wait, ppoll, …). Hands the CPU to the next runnable task
-/// via `schedule()`; then halts the CPU on `hlt`/`wfi` ONLY when no other
-/// task is runnable on this CPU, so a wake IRQ can still arrive.
-///
-/// Two regimes, both Linux-correct for a blocking wait:
-///   * OTHER tasks runnable (`nr_running != 0`): return immediately, no
-///     halt. When one wake rouses many parked waiters at once (dozens of
-///     D-Bus daemons during gnome session setup) the scheduler must cycle
-///     through the whole ready set back-to-back. The old `tick_yield` used
-///     here halted the core for a full timer tick after every rescan, so
-///     it advanced only one task per tick (~1 ms); a peer's wake→run
-///     latency grew to N_ready × tick ≈ 50-80 ms and the hundreds-deep
-///     CreateSession→user@ IPC chain accumulated to ~28 s, tripping gdm's
-///     30 s TimeoutStartSec (measured: wake→run latency identical for edge
-///     and scanner wakes — the stall was scheduling throughput, not the
-///     wake mechanism). Not halting here drains the roused set at full
-///     context-switch speed.
-///   * NOTHING else runnable (`nr_running == 0`): halt with IRQs enabled
-///     (idle semantics). This is REQUIRED even though ordinary process context
-///     is IRQ-on: an explicitly IRQ-off caller can be re-selected after a
-///     (a raced wake / drained self-wake left it Runnable, or the CPU is
-///     otherwise empty), the caller would re-park→`schedule()`→re-pick in
-///     a tight loop with IRQs masked and the wake interrupt would never
-///     land — an SMP CPU-stall (`[CPU-STALL]` soft-lockup, nr_running=1).
-///     Halting opens the one-instruction STI window that lets the wake /
-///     data / timer IRQ arrive, exactly as the per-CPU idle task does.
-///
-/// `nr_running` excludes `current` + idle, so `== 0` means "this task is
-/// the only runnable entity on this CPU". Livelock-safe: unlike a
-/// busy-yield (`tick_yield`) caller that stays Runnable, a parked caller is
-/// Sleeping, so it is not re-picked until a waker makes it Runnable — two
-/// parked callers can never ping-pong the CPU with IRQs masked.
+/// Yield after a task has already published Sleeping on a wait list. The
+/// caller immediately rechecks its condition when scheduled again. CPU-idle
+/// code, not a blocking wait, owns the architectural halt; otherwise a wake
+/// that wins before this scheduling round completes is delayed until a later
+/// interrupt.
 /// # SAFETY: caller has marked itself Sleeping on a wait list and owns the
 /// post-park schedule per `schedule()`'s contract; must re-check its
 /// condition (and re-park) after this returns.
@@ -791,19 +763,6 @@ pub unsafe fn sched_yield() {
 pub unsafe fn park_yield() {
     // SAFETY: caller satisfies `schedule()`'s contract and has parked Sleeping; delegated wholesale.
     unsafe { schedule(); }
-    // Other runnable work QUEUED on this CPU? Then return without halting so
-    // the ready set drains at full speed. `nr_queued`, not `nr_running`: the
-    // latter counts the task now installed as `current` — which after the
-    // `schedule()` above is this very caller — so it is never zero here and
-    // the halt below would be unreachable.
-    let others = crate::live::runqueue::global()
-        .map(|rq| rq.nr_queued.load(Ordering::Acquire))
-        .unwrap_or(0);
-    if others != 0 { return; }
-    // Nothing else to run: halt with IRQs on so the wake/data/timer IRQ can
-    // land (idle semantics) — never spin the re-park loop with IRQs masked.
-    // SAFETY: parked caller owns a lock-free process-context idle window.
-    unsafe { super::irq::halt_enabled(); }
 }
 
 #[cfg(test)]
