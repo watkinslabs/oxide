@@ -18,24 +18,24 @@ struct StorageDma {
 }
 
 /// Input context, output device context, and endpoint-zero transfer ring.
-pub struct AddressDeviceDma { bdf: pci::Bdf, input: DmaPage, output: DmaPage, ep0: DmaPage, descriptor: DmaPage, context_bytes: u8, speed: u8, topology: crate::context::DeviceTopology, slot: u8, device_protocol: u8, hub_descriptor: Option<crate::usb::HubDescriptor>, hub_needs_power: bool, hub_events: [u8; crate::usb::HUB_STATUS_MAX_BYTES], hub_events_len: u8, _hid: Option<crate::usb::HidInterface>, hid_layout: Option<crate::hid_report::ReportLayout>, _hub: Option<crate::usb::HubInterface>, _storage: Option<crate::storage::MassStorageInterface>, hid_ring: Option<HidDma>, hub_ring: Option<HubDma>, storage_dma: Option<StorageDma>, ep0_ring: CommandRing }
+pub struct AddressDeviceDma { bdf: pci::Bdf, dma_mask: u64, input: DmaPage, output: DmaPage, ep0: DmaPage, descriptor: DmaPage, context_bytes: u8, speed: u8, topology: crate::context::DeviceTopology, slot: u8, device_protocol: u8, hub_descriptor: Option<crate::usb::HubDescriptor>, hub_needs_power: bool, hub_events: [u8; crate::usb::HUB_STATUS_MAX_BYTES], hub_events_len: u8, _hid: Option<crate::usb::HidInterface>, hid_layout: Option<crate::hid_report::ReportLayout>, _hub: Option<crate::usb::HubInterface>, _storage: Option<crate::storage::MassStorageInterface>, hid_ring: Option<HidDma>, hub_ring: Option<HubDma>, storage_dma: Option<StorageDma>, ep0_ring: CommandRing }
 
 /// Maximum chained USB-storage transfer accepted by one retained endpoint ring.
 pub const STORAGE_MAX_TRANSFER_BYTES: usize = DmaPage::BYTES * crate::ring::COMMAND_USABLE_TRBS;
 
 impl AddressDeviceDma {
     /// Allocate and construct every DMA object required by Address Device. # C: O(page bytes)
-    pub fn allocate(bdf: pci::Bdf, context_bytes: u8, port: u8, portsc: u32) -> Option<Self> {
-        Self::allocate_topology(bdf, context_bytes, crate::context::DeviceTopology::root(port)?, portsc)
+    pub fn allocate(bdf: pci::Bdf, context_bytes: u8, dma_mask: u64, port: u8, portsc: u32) -> Option<Self> {
+        Self::allocate_topology(bdf, context_bytes, dma_mask, crate::context::DeviceTopology::root(port)?, portsc)
     }
 
     /// Allocate one device below a normalized xHCI root/hub topology.
     /// # C: O(page bytes)
-    pub fn allocate_topology(bdf: pci::Bdf, context_bytes: u8, topology: crate::context::DeviceTopology, portsc: u32) -> Option<Self> {
-        let input = DmaPage::allocate(bdf)?;
-        let output = DmaPage::allocate(bdf)?;
-        let ep0 = DmaPage::allocate(bdf)?;
-        let descriptor = DmaPage::allocate(bdf)?;
+    pub fn allocate_topology(bdf: pci::Bdf, context_bytes: u8, dma_mask: u64, topology: crate::context::DeviceTopology, portsc: u32) -> Option<Self> {
+        let input = DmaPage::allocate(bdf, dma_mask)?;
+        let output = DmaPage::allocate(bdf, dma_mask)?;
+        let ep0 = DmaPage::allocate(bdf, dma_mask)?;
+        let descriptor = DmaPage::allocate(bdf, dma_mask)?;
         let speed = ((portsc & crate::ports::PORT_SPEED_MASK) >> 10) as u8;
         let words = context::address_device_topology_words(context_bytes, topology, portsc, ep0.dma())?;
         for word in words { if !input.write32(word.offset as u64, word.value) { return None; } }
@@ -45,7 +45,7 @@ impl AddressDeviceDma {
         }
         input.clean_to_device(); output.clean_to_device(); ep0.clean_to_device();
         let ep0_ring = CommandRing::new(ep0.dma())?;
-        Some(Self { bdf, input, output, ep0, descriptor, context_bytes, speed, topology, slot: 0, device_protocol: 0, hub_descriptor: None, hub_needs_power: false, hub_events: [0; crate::usb::HUB_STATUS_MAX_BYTES], hub_events_len: 0, _hid: None, hid_layout: None, _hub: None, _storage: None, hid_ring: None, hub_ring: None, storage_dma: None, ep0_ring })
+        Some(Self { bdf, dma_mask, input, output, ep0, descriptor, context_bytes, speed, topology, slot: 0, device_protocol: 0, hub_descriptor: None, hub_needs_power: false, hub_events: [0; crate::usb::HUB_STATUS_MAX_BYTES], hub_events_len: 0, _hid: None, hid_layout: None, _hub: None, _storage: None, hid_ring: None, hub_ring: None, storage_dma: None, ep0_ring })
     }
 
     /// Input-context device DMA address for Address Device. # C: O(1)
@@ -90,7 +90,7 @@ impl AddressDeviceDma {
     /// Build a retained interrupt-IN ring and Configure Endpoint input context. # C: O(page bytes)
     pub fn prepare_hid_endpoint(&mut self) -> Option<bool> {
         let Some(hid) = self._hid else { return Some(false); };
-        let ring = DmaPage::allocate(self.bdf)?;
+        let ring = DmaPage::allocate(self.bdf, self.dma_mask)?;
         let link = Trb::link(ring.dma(), true)?;
         for (word, value) in link.dword.iter().enumerate() {
             if !ring.write32(((TRBS_PER_SEGMENT - 1) * TRB_BYTES + word * 4) as u64, *value) { return None; }
@@ -102,13 +102,13 @@ impl AddressDeviceDma {
         let words = context::configure_hid_words(self.context_bytes, output_slot, self.speed, hid, ring.dma())?;
         for word in words { if !self.input.write32(word.offset as u64, word.value) { return None; } }
         ring.clean_to_device(); self.input.clean_to_device();
-        self.hid_ring = Some(HidDma { producer: CommandRing::new(ring.dma())?, ring, report: DmaPage::allocate(self.bdf)?, pending: 0 });
+        self.hid_ring = Some(HidDma { producer: CommandRing::new(ring.dma())?, ring, report: DmaPage::allocate(self.bdf, self.dma_mask)?, pending: 0 });
         Some(true)
     }
     /// Retain the hub status ring and configure its interrupt-IN endpoint. # C: O(page bytes)
     pub fn prepare_hub_endpoint(&mut self) -> Option<bool> {
         let Some(hub) = self._hub else { return Some(false); };
-        let (ring, producer) = transfer_ring(self.bdf)?;
+        let (ring, producer) = transfer_ring(self.bdf, self.dma_mask)?;
         self.output.invalidate_from_device();
         let stride = self.context_bytes as u64;
         let mut output_slot = [0u32; 8];
@@ -116,14 +116,14 @@ impl AddressDeviceDma {
         let words = context::configure_hub_words(self.context_bytes, output_slot, self.speed, hub, ring.dma())?;
         for word in words { if !self.input.write32(word.offset as u64, word.value) { return None; } }
         ring.clean_to_device(); self.input.clean_to_device();
-        self.hub_ring = Some(HubDma { ring, status: DmaPage::allocate(self.bdf)?, producer, pending: 0 }); Some(true)
+        self.hub_ring = Some(HubDma { ring, status: DmaPage::allocate(self.bdf, self.dma_mask)?, producer, pending: 0 }); Some(true)
     }
     /// Retain bulk rings and DMA buffers, then populate their Configure Endpoint input contexts. # C: O(page bytes)
     pub fn prepare_storage_endpoints(&mut self) -> Option<bool> {
         let Some(storage) = self._storage else { return Some(false); };
         if self.storage_dma.is_some() { return Some(true); }
-        let (bulk_in_ring, bulk_in_producer) = transfer_ring(self.bdf)?;
-        let (bulk_out_ring, bulk_out_producer) = transfer_ring(self.bdf)?;
+        let (bulk_in_ring, bulk_in_producer) = transfer_ring(self.bdf, self.dma_mask)?;
+        let (bulk_out_ring, bulk_out_producer) = transfer_ring(self.bdf, self.dma_mask)?;
         self.output.invalidate_from_device();
         let stride = self.context_bytes as u64;
         let mut output_slot = [0u32; 8];
@@ -132,7 +132,7 @@ impl AddressDeviceDma {
         for word in words { if !self.input.write32(word.offset as u64, word.value) { return None; } }
         self.input.clean_to_device();
         self.storage_dma = Some(StorageDma {
-            bulk_in_ring, bulk_out_ring, command: DmaPage::allocate(self.bdf)?, status: DmaPage::allocate(self.bdf)?, data: Vec::new(), bulk_in_producer, bulk_out_producer,
+            bulk_in_ring, bulk_out_ring, command: DmaPage::allocate(self.bdf, self.dma_mask)?, status: DmaPage::allocate(self.bdf, self.dma_mask)?, data: Vec::new(), bulk_in_producer, bulk_out_producer,
         });
         Some(true)
     }
@@ -231,7 +231,7 @@ impl AddressDeviceDma {
         let storage = self._storage?;
         let dma = self.storage_dma.as_mut()?;
         if length == 0 || length as usize > STORAGE_MAX_TRANSFER_BYTES { return None; }
-        ensure_storage_pages(self.bdf, &mut dma.data, length as usize)?;
+        ensure_storage_pages(self.bdf, self.dma_mask, &mut dma.data, length as usize)?;
         let (endpoint, producer, ring) = if device_to_host { (storage.bulk_in, &mut dma.bulk_in_producer, &dma.bulk_in_ring) } else { (storage.bulk_out, &mut dma.bulk_out_producer, &dma.bulk_out_ring) };
         submit_transfer_pages(mmio, slot, endpoint, producer, ring, &dma.data, length as usize)
     }
@@ -260,7 +260,7 @@ impl AddressDeviceDma {
     pub fn set_storage_data(&mut self, bytes: &[u8]) -> bool {
         if bytes.len() > STORAGE_MAX_TRANSFER_BYTES { return false; }
         let Some(dma) = self.storage_dma.as_mut() else { return false; };
-        if ensure_storage_pages(self.bdf, &mut dma.data, bytes.len()).is_none() { return false; }
+        if ensure_storage_pages(self.bdf, self.dma_mask, &mut dma.data, bytes.len()).is_none() { return false; }
         for (offset, byte) in bytes.iter().copied().enumerate() {
             let page = offset / DmaPage::BYTES;
             if !dma.data[page].write8((offset % DmaPage::BYTES) as u64, byte) { return false; }
@@ -414,8 +414,8 @@ impl AddressDeviceDma {
     }
 }
 
-fn transfer_ring(bdf: pci::Bdf) -> Option<(DmaPage, CommandRing)> {
-    let ring = DmaPage::allocate(bdf)?;
+fn transfer_ring(bdf: pci::Bdf, dma_mask: u64) -> Option<(DmaPage, CommandRing)> {
+    let ring = DmaPage::allocate(bdf, dma_mask)?;
     let link = Trb::link(ring.dma(), true)?;
     for (word, value) in link.dword.iter().enumerate() {
         if !ring.write32(((TRBS_PER_SEGMENT - 1) * TRB_BYTES + word * 4) as u64, *value) { return None; }
@@ -440,10 +440,10 @@ fn pages_for(length: usize) -> Option<usize> {
     length.checked_add(DmaPage::BYTES - 1)?.checked_div(DmaPage::BYTES)
 }
 
-fn ensure_storage_pages(bdf: pci::Bdf, pages: &mut Vec<DmaPage>, length: usize) -> Option<()> {
+fn ensure_storage_pages(bdf: pci::Bdf, dma_mask: u64, pages: &mut Vec<DmaPage>, length: usize) -> Option<()> {
     let needed = pages_for(length)?;
     if needed > crate::ring::COMMAND_USABLE_TRBS { return None; }
-    while pages.len() < needed { pages.push(DmaPage::allocate(bdf)?); }
+    while pages.len() < needed { pages.push(DmaPage::allocate(bdf, dma_mask)?); }
     Some(())
 }
 

@@ -11,6 +11,7 @@
 
 pub mod regs;
 pub mod ring;
+#[cfg(any(test, target_os = "oxide-kernel"))]
 mod completion;
 pub mod controller;
 pub mod context;
@@ -31,7 +32,11 @@ mod irq;
 #[cfg(target_os = "oxide-kernel")]
 pub(crate) mod probe;
 #[cfg(target_os = "oxide-kernel")]
+mod probe_input;
+#[cfg(target_os = "oxide-kernel")]
 mod probe_hub;
+#[cfg(target_os = "oxide-kernel")]
+mod root_hub;
 #[cfg(target_os = "oxide-kernel")]
 mod storage_block;
 #[cfg(target_os = "oxide-kernel")]

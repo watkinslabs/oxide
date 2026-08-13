@@ -650,6 +650,7 @@ dependencies = [
  "hal-x86_64",
  "input",
  "iommu",
+ "klog",
  "mmio-map",
  "pci",
  "pci-irq",

@@ -329,6 +329,14 @@ pub fn get_hid_report_descriptor_trbs(buffer_pa: u64, interface: u8, length: usi
     Some([crate::ring::Trb::setup_stage(0x81, 6, 0x2200, u16::from(interface), length as u16), crate::ring::Trb::data_stage(buffer_pa, length as u32, true)?, crate::ring::Trb::status_stage(true)])
 }
 
+/// Build HID class SET_IDLE(report=0, duration=0) for one interface. # C: O(1)
+pub fn set_hid_idle_trbs(interface: u8) -> [crate::ring::Trb; 2] {
+    [
+        crate::ring::Trb::setup_stage(0x21, 10, 0, u16::from(interface), 0),
+        crate::ring::Trb::status_stage(false),
+    ]
+}
+
 /// Build standard OUT SET_CONFIGURATION with no data stage. # C: O(1)
 pub fn set_configuration_trbs(value: u8) -> Option<[crate::ring::Trb; 2]> {
     (value != 0).then_some([
@@ -385,6 +393,10 @@ mod tests {
         let td = get_hid_report_descriptor_trbs(0x90_000, 0, 52).unwrap();
         assert_eq!(td[0].dword[0], 0x2200_0681);
         assert_eq!(td[1].dword[2], 52);
+        let idle = set_hid_idle_trbs(3);
+        assert_eq!(idle[0].dword[0], 0x0000_0a21);
+        assert_eq!(idle[0].dword[1], 3);
+        assert_eq!(idle[1].dword[3], (crate::ring::TRB_TYPE_STATUS << crate::ring::TRB_TYPE_SHIFT) | (1 << 5) | (1 << 16));
     }
     #[test]
     fn storage_parser_requires_transparent_scsi_bulk_in_and_out() {

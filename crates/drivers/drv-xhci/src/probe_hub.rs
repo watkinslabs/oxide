@@ -6,7 +6,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use alloc::sync::Arc;
 
-use crate::probe::{add_usb_device, address_hub_child, control_complete, Controller, ControllerState, UsbDevice, XhciBh, CONTROLLERS};
+use crate::probe::{add_usb_device, address_hub_child, control_complete, Controller, UsbDevice, XhciBh, CONTROLLERS};
 
 const HUB_RESET_RECOVERY_NS: u64 = 50_000_000;
 
@@ -22,7 +22,7 @@ pub(crate) fn queue_hub_work() {
 }
 
 fn hub_event_work(_arg: usize) {
-    let controllers = CONTROLLERS.lock().clone();
+    let controllers = CONTROLLERS.lock_bh::<XhciBh>().clone();
     for controller in &controllers {
         let devices = controller.state.lock_bh::<XhciBh>().devices.clone();
         for device in devices {
@@ -49,15 +49,17 @@ fn hub_event_work(_arg: usize) {
                     crate::usb::HUB_PORT_FEATURE_C_RESET, false)
                 { continue; }
                 let request = ChildRequest { topology, portsc: reset_status.xhci_portsc() };
-            let mut controller_state = controller.state.lock_bh::<XhciBh>();
-            if controller_state.devices.iter().any(|child| child.state.lock_bh::<XhciBh>().device.topology() == request.topology) { continue; }
-            let Controller { bdf, .. } = &**controller;
-            let child = {
-                let ControllerState { mmio, irq, command, _dcbaa, .. } = &mut *controller_state;
-                address_hub_child(*bdf, mmio, command, _dcbaa, *irq, request.topology, request.portsc)
+            let (mmio, command, dcbaa, irq) = {
+                let controller_state = controller.state.lock_bh::<XhciBh>();
+                if controller_state.devices.iter().any(|child| child.state.lock_bh::<XhciBh>().device.topology() == request.topology) { continue; }
+                (Arc::clone(&controller_state.mmio), Arc::clone(&controller_state.command), Arc::clone(&controller_state._dcbaa), controller_state.irq)
             };
-            if let Some(child) = child
-            { let _ = add_usb_device(controller, &mut controller_state, child); }
+            let Some(child) = address_hub_child(controller.bdf, &mmio, &command, &dcbaa, irq, request.topology, request.portsc) else { continue; };
+            let child = UsbDevice::new(controller, child);
+            let mut controller_state = controller.state.lock_bh::<XhciBh>();
+            if !controller_state.devices.iter().any(|existing| existing.state.lock_bh::<XhciBh>().device.topology() == request.topology)
+            { let _ = add_usb_device(&mut controller_state, child); }
+            else { crate::probe_input::remove_hid_input(&child.state.lock_bh::<XhciBh>()); }
             }
         }
     }
@@ -110,7 +112,7 @@ fn hub_delay_ns(delay_ns: u64) {
 }
 
 fn hub_events_pending() -> bool {
-    let controllers = CONTROLLERS.lock().clone();
+    let controllers = CONTROLLERS.lock_bh::<XhciBh>().clone();
     controllers.iter().any(|controller| controller.state.lock_bh::<XhciBh>().devices.iter()
         .any(|device| device.state.lock_bh::<XhciBh>().device.hub_events_pending()))
 }

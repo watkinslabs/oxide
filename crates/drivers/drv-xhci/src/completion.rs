@@ -44,6 +44,11 @@ impl TransferCompletions {
         None
     }
 
+    /// Report whether one exact transfer completion is available. # C: O(event ring)
+    pub fn contains(&self, trb_pa: u64) -> bool {
+        trb_pa != 0 && self.slots.iter().any(|slot| slot.trb_pa.load(Ordering::Acquire) == trb_pa)
+    }
+
     /// Discard pending completions only after controller IRQ delivery is quiesced. # C: O(event ring)
     pub fn clear(&self) {
         for slot in &self.slots { slot.trb_pa.store(0, Ordering::Release); }
