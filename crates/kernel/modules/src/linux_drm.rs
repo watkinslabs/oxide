@@ -29,6 +29,7 @@ pub(crate) use gem_mmap::{shmem_mapping_frame, shmem_mapping_object, shmem_mappi
 #[path = "linux_drm_atomic_acquire.rs"] mod atomic_acquire;
 #[path = "linux_drm_atomic_check.rs"] mod atomic_check;
 #[path = "linux_drm_atomic_validate.rs"] mod atomic_validate;
+#[path = "linux_drm_atomic_affected.rs"] mod atomic_affected;
 #[path = "linux_drm_modeset.rs"] mod modeset;
 #[path = "linux_drm_vblank.rs"] mod vblank;
 #[path = "linux_drm_vblank_event.rs"] mod vblank_event;
@@ -181,6 +182,7 @@ pub fn export_symbols() {
     atomic_acquire::export_symbols();
     atomic_check::export_symbols();
     atomic_validate::export_symbols();
+    atomic_affected::export_symbols();
     modeset::export_symbols();
     vblank::export_symbols();
     vblank_event::export_symbols();
