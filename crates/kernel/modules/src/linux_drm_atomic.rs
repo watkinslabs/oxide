@@ -197,6 +197,9 @@ pub(super) extern "C" fn drm_gem_duplicate_shadow_plane_state(plane: *mut c_void
 /// Destroy a shadow-plane state after its transient mappings have ended. # C: O(1)
 pub(super) extern "C" fn drm_gem_destroy_shadow_plane_state(_plane: *mut c_void, state: *mut c_void) {
     if state.is_null() { return; }
+    // SAFETY: a plane state owns one CRTC commit reference when its commit field is non-null.
+    let commit = unsafe { read(state.cast::<u8>().add(DRM_PLANE_STATE_COMMIT_OFF).cast::<*mut u8>()) };
+    crtc_commit::put(commit);
     // SAFETY: state is a complete shadow-plane allocation and holds one framebuffer reference if fb is non-null.
     let fb = unsafe { read(state.cast::<u8>().add(DRM_PLANE_STATE_FB_OFF).cast::<*mut c_void>()) }; gem::framebuffer_put(fb);
     let layout = Layout::from_size_align(DRM_SHADOW_PLANE_STATE_SIZE, core::mem::align_of::<u64>()).unwrap();

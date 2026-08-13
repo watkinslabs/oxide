@@ -355,7 +355,7 @@ extern "C" fn read_seqretry(s: *mut LinuxSeqLock, start: u32) -> i32 {
     (seq_u32(s).load(Ordering::Acquire) != start) as i32
 }
 
-extern "C" fn init_completion(c: *mut LinuxCompletion) {
+pub(crate) extern "C" fn init_completion(c: *mut LinuxCompletion) {
     if c.is_null() { return; }
     // SAFETY: non-null pointer names caller-owned completion storage.
     unsafe { (*c).done = 0; }
@@ -379,7 +379,7 @@ extern "C" fn complete_all(c: *mut LinuxCompletion) {
 }
 pub(crate) extern "C" fn wait_for_completion(c: *mut LinuxCompletion) { let _ = completion_wait_common(c, false); }
 pub(crate) extern "C" fn wait_for_completion_interruptible(c: *mut LinuxCompletion) -> i32 { completion_wait_common(c, true) }
-extern "C" fn wait_for_completion_timeout(c: *mut LinuxCompletion, timeout: usize) -> usize {
+pub(crate) extern "C" fn wait_for_completion_timeout(c: *mut LinuxCompletion, timeout: usize) -> usize {
     completion_wait_timeout(c, timeout)
 }
 extern "C" fn wait_for_completion_io_timeout(c: *mut LinuxCompletion, timeout: usize) -> usize {
@@ -470,15 +470,15 @@ extern "C" fn refcount_dec_and_test(r: *mut LinuxRefcount) -> i32 {
     if r.is_null() { 0 } else { (ref_u32(r).fetch_sub(1, Ordering::AcqRel) == 1) as i32 }
 }
 extern "C" fn refcount_warn_saturate(r: *mut LinuxRefcount, _t: i32) { if !r.is_null() { ref_u32(r).store(u32::MAX, Ordering::Release); } }
-extern "C" fn kref_init(k: *mut LinuxKref) {
+pub(crate) extern "C" fn kref_init(k: *mut LinuxKref) {
     if k.is_null() { return; }
     refcount_set(kref_refs(k), 1);
 }
-extern "C" fn kref_get(k: *mut LinuxKref) {
+pub(crate) extern "C" fn kref_get(k: *mut LinuxKref) {
     if k.is_null() { return; }
     refcount_inc(kref_refs(k));
 }
-extern "C" fn kref_put(k: *mut LinuxKref, release: Option<KrefRelease>) -> i32 {
+pub(crate) extern "C" fn kref_put(k: *mut LinuxKref, release: Option<KrefRelease>) -> i32 {
     if k.is_null() { return 0; }
     let zero = refcount_dec_and_test(kref_refs(k));
     if zero != 0 {

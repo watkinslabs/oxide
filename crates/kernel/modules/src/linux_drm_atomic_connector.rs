@@ -23,7 +23,7 @@ fn state_layout() -> Layout { Layout::from_size_align(DRM_CONNECTOR_STATE_SIZE, 
 
 fn has_unowned_resources(state: *const u8) -> bool {
     // SAFETY: all resource fields are in the complete verified connector-state object.
-    unsafe { !read(state.add(DRM_CONNECTOR_STATE_COMMIT_OFF).cast::<*mut c_void>()).is_null() || !read(state.add(DRM_CONNECTOR_STATE_WRITEBACK_JOB_OFF).cast::<*mut c_void>()).is_null() || !read(state.add(DRM_CONNECTOR_STATE_HDR_METADATA_OFF).cast::<*mut c_void>()).is_null() }
+    unsafe { !read(state.add(DRM_CONNECTOR_STATE_WRITEBACK_JOB_OFF).cast::<*mut c_void>()).is_null() || !read(state.add(DRM_CONNECTOR_STATE_HDR_METADATA_OFF).cast::<*mut c_void>()).is_null() }
 }
 
 /// Reset a connector's standard atomic state, withdrawing the old state first. # C: O(1)
@@ -60,6 +60,11 @@ pub(super) extern "C" fn drm_atomic_helper_connector_duplicate_state(connector: 
 pub(super) extern "C" fn drm_atomic_helper_connector_destroy_state(_connector: *mut c_void, state: *mut c_void) {
     if state.is_null() { return; }
     let state = state.cast::<u8>();
+    // SAFETY: a connector state owns one commit reference when its ABI commit field is non-null.
+    let commit = unsafe { read(state.add(DRM_CONNECTOR_STATE_COMMIT_OFF).cast::<*mut u8>()) };
+    crtc_commit::put(commit);
+    // SAFETY: release makes a repeated state-destroy call unable to consume the same commit reference twice.
+    unsafe { write(state.add(DRM_CONNECTOR_STATE_COMMIT_OFF).cast::<*mut u8>(), core::ptr::null_mut()); }
     if has_unowned_resources(state) { return; }
     // SAFETY: a duplicated state with a CRTC relation owns precisely one connector mode-object reference.
     let crtc = unsafe { read(state.add(DRM_CONNECTOR_STATE_CRTC_OFF).cast::<*mut c_void>()) };
