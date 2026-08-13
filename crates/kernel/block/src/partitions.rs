@@ -5,6 +5,9 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+mod device;
+pub use device::PartitionDevice;
+
 const SECTOR_BYTES: usize = 512;
 const GPT_SIGNATURE: &[u8; 8] = b"EFI PART";
 const GPT_HEADER_MIN_BYTES: usize = 92;
