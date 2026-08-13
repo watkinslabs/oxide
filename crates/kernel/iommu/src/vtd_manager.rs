@@ -21,11 +21,14 @@ pub enum VtdIoapic { Direct, Remapped { index: u16 }, Failed }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum VtdHpet { Direct, Remapped { address: u64, data: u32 }, Failed }
 
-struct VtdBootUnit { unit: IommuUnit, regs: VtdRegisters, requesters: Vec<Bdf>, ioapic_source: Option<u16>, hpet_source: Option<u16>, tables: VtdTables, qi: Option<VtdQiQueue>, ir: Option<VtdIrTable> }
+struct VtdBootUnit { unit: IommuUnit, regs: VtdRegisters, requesters: Vec<Bdf>, ioapic_sources: Vec<(u8, u16)>, hpet_source: Option<u16>, tables: VtdTables, qi: Option<VtdQiQueue>, ir: Option<VtdIrTable> }
 static MANAGER: Spinlock<Vec<VtdBootUnit>, Devices> = Spinlock::new(Vec::new());
 /// Hardware/firmware admission for EIM.  This does not enable x2APIC: the
 /// LAPIC owner must first put IOAPIC and HPET sources behind remapping too.
 static EIM_CAPABLE: AtomicBool = AtomicBool::new(false);
+/// Hardware interrupt remapping is enabled only after every firmware I/O APIC
+/// has a source scope in an IR-capable unit.
+static INTERRUPT_REMAP_ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// Build, publish, and invalidate one VT-d identity domain per hardware unit.
 ///
@@ -35,6 +38,7 @@ static EIM_CAPABLE: AtomicBool = AtomicBool::new(false);
 pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf], hhdm_offset: u64,
     regions: &[pmm::UsableRegion]) -> VtdActivation {
     EIM_CAPABLE.store(false, Ordering::Release);
+    INTERRUPT_REMAP_ENABLED.store(false, Ordering::Release);
     let units = published_vtd_units();
     if units.is_empty() { return VtdActivation::Bypass; }
     if units.iter().any(|unit| unit.kind != IommuKind::IntelVtd) { return VtdActivation::Failed; }
@@ -62,7 +66,7 @@ pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf],
             }
             Some(queue)
         } else { None };
-        manager.push(VtdBootUnit { unit, regs, requesters: Vec::new(), ioapic_source: None, hpet_source: None, tables, qi, ir });
+        manager.push(VtdBootUnit { unit, regs, requesters: Vec::new(), ioapic_sources: Vec::new(), hpet_source: None, tables, qi, ir });
     }
     for entry in manager.iter_mut() {
         for index in 0..intel_vtd_rmrr_count() {
@@ -77,10 +81,11 @@ pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf],
         if !entry.tables.attach(*bdf, INITIAL_DOMAIN_ID) { return activation_failed(&mut manager); }
         entry.requesters.push(*bdf);
     }
-    if let Some(ioapic_id) = firmware::ioapic_id() {
+    for index in 0..firmware::ioapic_count() {
+        let Some(ioapic_id) = firmware::ioapic(index).map(|ioapic| ioapic.id) else { continue; };
         if let Some((unit, source_id)) = intel_vtd_ioapic_source(reader, ioapic_id) {
             let Some(entry) = manager.iter_mut().find(|entry| entry.unit == unit) else { return activation_failed(&mut manager); };
-            entry.ioapic_source = Some(source_id);
+            entry.ioapic_sources.push((ioapic_id, source_id));
         }
     }
     if let Some(hpet_id) = firmware::hpet_id() {
@@ -122,13 +127,26 @@ fn activation_failed(manager: &mut Vec<VtdBootUnit>) -> VtdActivation {
 /// remapped MSI/MSI-X messages. # C: O(units * poll limit)
 pub fn enable_vtd_interrupt_remapping() -> bool {
     let mut manager = MANAGER.lock();
+    if !all_ioapics_remappable(&manager) { return true; }
     for entry in manager.iter_mut() {
         if entry.ir.is_some() && !entry.regs.enable_interrupt_remapping() {
             rollback_interrupt_remapping(&mut manager);
             return false;
         }
     }
+    INTERRUPT_REMAP_ENABLED.store(true, Ordering::Release);
     true
+}
+
+/// Require the complete firmware I/O-APIC inventory before turning on a
+/// unit's global interrupt-remapping enable bit. # C: O(units * IOAPICs)
+fn all_ioapics_remappable(manager: &[VtdBootUnit]) -> bool {
+    let count = firmware::ioapic_count();
+    if count == 0 { return manager.iter().all(|entry| entry.ir.is_some()); }
+    manager.iter().all(|entry| entry.ir.is_some()) && (0..count).all(|index| {
+        firmware::ioapic(index).is_some_and(|ioapic|
+            manager.iter().any(|entry| entry.ioapic_sources.iter().any(|(id, _)| *id == ioapic.id)))
+    })
 }
 
 /// Undo a partially completed all-unit IR transition.  VT-d has one remapping
@@ -139,6 +157,7 @@ pub fn enable_vtd_interrupt_remapping() -> bool {
 /// failure, but every reachable unit receives the architected teardown.
 /// # C: O(units * poll limit)
 fn rollback_interrupt_remapping(manager: &mut [VtdBootUnit]) {
+    INTERRUPT_REMAP_ENABLED.store(false, Ordering::Release);
     for entry in manager.iter_mut() {
         if entry.ir.is_none() { continue; }
         if let Some(queue) = entry.qi.as_mut() {
@@ -163,6 +182,7 @@ pub fn owns(requester: Bdf) -> bool {
 /// the ordinary APIC MSI encoding.
 /// # C: O(units + IRTE scan + poll limit)
 pub fn allocate_vtd_msi(requester: Bdf, vector: u8, destination_apic_id: u32) -> VtdMsi {
+    if !INTERRUPT_REMAP_ENABLED.load(Ordering::Acquire) { return VtdMsi::Direct; }
     let requester_id = (u16::from(requester.bus) << 8) | (u16::from(requester.device) << 3) | u16::from(requester.function);
     let mut manager = MANAGER.lock();
     let Some(entry) = manager.iter_mut().find(|entry| entry.requesters.iter().any(|candidate| *candidate == requester)) else { return VtdMsi::Direct; };
@@ -176,10 +196,11 @@ pub fn allocate_vtd_msi(requester: Bdf, vector: u8, destination_apic_id: u32) ->
 /// Allocate one remapped IOAPIC route.  `Direct` leaves the caller on the
 /// ordinary APIC route when firmware did not publish a trustworthy IOAPIC
 /// scope or its owning VT-d unit lacks interrupt remapping. # C: O(units + IRTE scan + poll limit)
-pub fn allocate_vtd_ioapic(vector: u8, destination_apic_id: u32) -> VtdIoapic {
+pub fn allocate_vtd_ioapic(ioapic_id: u8, vector: u8, destination_apic_id: u32) -> VtdIoapic {
+    if !INTERRUPT_REMAP_ENABLED.load(Ordering::Acquire) { return VtdIoapic::Direct; }
     let mut manager = MANAGER.lock();
-    let Some(entry) = manager.iter_mut().find(|entry| entry.ioapic_source.is_some()) else { return VtdIoapic::Direct; };
-    let Some(source_id) = entry.ioapic_source else { return VtdIoapic::Direct; };
+    let Some(entry) = manager.iter_mut().find(|entry| entry.ioapic_sources.iter().any(|(id, _)| *id == ioapic_id)) else { return VtdIoapic::Direct; };
+    let Some((_, source_id)) = entry.ioapic_sources.iter().find(|(id, _)| *id == ioapic_id).copied() else { return VtdIoapic::Direct; };
     let (Some(queue), Some(ir)) = (entry.qi.as_mut(), entry.ir.as_mut()) else { return VtdIoapic::Direct; };
     let Some(index) = ir.allocate_ioapic(vector, destination_apic_id, source_id) else { return VtdIoapic::Failed; };
     if !entry.regs.invalidate_interrupt_entry(queue, index) { return VtdIoapic::Failed; }
@@ -191,6 +212,7 @@ pub fn allocate_vtd_ioapic(vector: u8, destination_apic_id: u32) -> VtdIoapic {
 /// compatibility-format message after interrupt remapping is active.
 /// # C: O(units + IRTE scan + poll limit)
 pub fn allocate_vtd_hpet(vector: u8, destination_apic_id: u32) -> VtdHpet {
+    if !INTERRUPT_REMAP_ENABLED.load(Ordering::Acquire) { return VtdHpet::Direct; }
     let mut manager = MANAGER.lock();
     let Some(entry) = manager.iter_mut().find(|entry| entry.hpet_source.is_some()) else {
         return if firmware::hpet_pa() != 0 { VtdHpet::Failed } else { VtdHpet::Direct };

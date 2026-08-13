@@ -99,6 +99,22 @@ fn aliased_ivrs() -> Vec<u8> {
     t
 }
 
+fn special_ivrs() -> Vec<u8> {
+    let mut t = vec![0u8; 88];
+    t[..4].copy_from_slice(b"IVRS");
+    le32(&mut t, 4, 88);
+    t[48] = 0x10;
+    le16(&mut t, 50, 40);
+    le64(&mut t, 56, 0xfed8_0000);
+    le16(&mut t, 64, 3);
+    t[72] = 0x48;
+    le32(&mut t, 76, 1 | (0x00a0 << 8) | (1 << 24));
+    t[80] = 0x48;
+    le32(&mut t, 84, 2 | (0x00b0 << 8) | (2 << 24));
+    finish(&mut t);
+    t
+}
+
 fn ivmd_ivrs() -> Vec<u8> {
     let mut t = vec![0u8; 104];
     t[..4].copy_from_slice(b"IVRS");
@@ -183,6 +199,14 @@ fn ivrs_ivhd_preserves_canonical_requester_aliases() {
 }
 
 #[test]
+fn ivrs_preserves_ioapic_and_hpet_special_requester_mappings() {
+    let inv = parse_ivrs(&special_ivrs()).expect("valid IVHD special mappings");
+    assert_eq!(inv.amd_special_count, 2);
+    assert_eq!((inv.amd_specials[0].kind, inv.amd_specials[0].id, inv.amd_specials[0].requester), (1, 1, 0x00a0));
+    assert_eq!((inv.amd_specials[1].kind, inv.amd_specials[1].id, inv.amd_specials[1].requester), (2, 2, 0x00b0));
+}
+
+#[test]
 fn ivrs_ivmd_preserves_linux_unity_mapping_scope_and_extent() {
     let inv = parse_ivrs(&ivmd_ivrs()).expect("valid IVMD");
     assert_eq!(inv.amd_ivmd_count, 1);
@@ -190,6 +214,28 @@ fn ivrs_ivmd_preserves_linux_unity_mapping_scope_and_extent() {
     assert_eq!(ivmd.segment, 3);
     assert_eq!((ivmd.first_requester, ivmd.last_requester), (0x1234, 0x12ff));
     assert_eq!((ivmd.base, ivmd.len), (0x8000, 0x2000));
+    assert!(!ivmd.read && !ivmd.write);
+}
+
+#[test]
+fn ivrs_ivmd_preserves_device_access_permissions() {
+    let mut read_only = ivmd_ivrs();
+    read_only[73] = 1 | (1 << 1);
+    finish(&mut read_only);
+    let read_only = parse_ivrs(&read_only).expect("valid read-only IVMD").amd_ivmds[0];
+    assert!(read_only.read && !read_only.write);
+
+    let mut write_only = ivmd_ivrs();
+    write_only[73] = 1 | (1 << 2);
+    finish(&mut write_only);
+    let write_only = parse_ivrs(&write_only).expect("valid write-only IVMD").amd_ivmds[0];
+    assert!(!write_only.read && write_only.write);
+
+    let mut exclusion = ivmd_ivrs();
+    exclusion[73] = 1 | (1 << 3);
+    finish(&mut exclusion);
+    let exclusion = parse_ivrs(&exclusion).expect("valid exclusion IVMD").amd_ivmds[0];
+    assert!(exclusion.read && exclusion.write);
 }
 
 #[test]
