@@ -1,5 +1,7 @@
 use alloc::sync::Arc;
 #[cfg(target_os = "oxide-kernel")]
+use alloc::boxed::Box;
+#[cfg(target_os = "oxide-kernel")]
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 use sched::signum::Signum;
@@ -254,9 +256,9 @@ fn tcp_urgent_tail(ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSocket>,
 #[cfg(target_os = "oxide-kernel")]
 #[inline(never)]
 fn send_inet(ctx: &SendContext<'_>, target: &SendFile, socket: &Arc<net::sock::InetSocket>,
-    message: &Message, flags: u32, prepared: InetPrepared) -> KResult<usize>
+    message: &Message, flags: u32, prepared: Box<InetPrepared>) -> KResult<usize>
 {
-    let (dest, control) = match prepared {
+    let (dest, control) = match *prepared {
         InetPrepared::Packet =>
             return crate::packet::send(socket, &message.payload, message.name.as_deref()),
         InetPrepared::Unix(scm) =>
@@ -493,7 +495,7 @@ pub(crate) fn send_prepared(ctx: &SendContext<'_>, target: &SendFile, message: M
                     | net::sock::SockKind::Raw6(_)))
             { return Err(Error::Efault); }
             #[cfg(target_os = "oxide-kernel")]
-            { send_inet(ctx, target, socket, &message, flags, prepared) }
+            { send_inet(ctx, target, socket, &message, flags, Box::new(prepared)) }
             #[cfg(not(target_os = "oxide-kernel"))]
             {
                 match prepared {
