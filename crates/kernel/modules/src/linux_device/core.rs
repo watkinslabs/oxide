@@ -104,12 +104,11 @@ pub(crate) extern "C" fn device_del(dev: *mut LinuxDevice) {
     registry::remove_device(dev as usize);
 }
 
-/// Send the block resize change event from an already-published embedded device.
+/// Send a change event from an already-published embedded device.
 /// # C: O(name depth)
-pub(crate) unsafe fn device_resize_uevent(dev: *mut LinuxDevice) {
-    let mut envp = [c"RESIZE=1".as_ptr() as *mut c_char, null_mut()];
-    // SAFETY: caller supplies a live embedded device; `envp` is a local NULL-terminated Linux uevent vector.
-    let _ = unsafe { super::kobject::kobject_uevent_env(&mut (*dev).kobj, super::kobject::KOBJ_CHANGE, envp.as_mut_ptr()) };
+pub(crate) unsafe fn device_change_uevent(dev: *mut LinuxDevice, envp: *mut *mut c_char) {
+    // SAFETY: caller supplies a live embedded device and a NULL-terminated Linux uevent environment vector.
+    let _ = unsafe { super::kobject::kobject_uevent_env(&mut (*dev).kobj, super::kobject::KOBJ_CHANGE, envp) };
 }
 
 #[cfg(test)]

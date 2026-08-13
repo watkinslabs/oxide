@@ -21,8 +21,8 @@ struct gendisk {
     void *private_data;
     sector_t capacity;
     u32 flags;
+    unsigned long state;
     struct device dev;
-    u32 registered;
 };
 
 struct gendisk *alloc_disk(int minors);

@@ -1,6 +1,6 @@
 extern crate alloc;
 use super::bio::{bio_add_page, bio_alloc, bio_put, copy_bio_to_slice, copy_slice_to_bio, BIO_ADD_REJECTED};
-use super::disk::{add_disk, alloc_disk, disk_live, mark_disk_dead, put_disk, set_capacity, set_capacity_and_notify, write_disk_name, DEFAULT_MINORS, GENHD_FL_HIDDEN};
+use super::disk::{add_disk, alloc_disk, disk_live, mark_disk_dead, put_disk, set_capacity, set_capacity_and_notify, set_disk_ro, write_disk_name, DEFAULT_MINORS, GD_READ_ONLY, GENHD_FL_HIDDEN};
 use super::queue::{blk_alloc_queue, blk_cleanup_queue, blk_queue_logical_block_size, blk_queue_make_request, GFP_KERNEL};
 use crate::linux_block::types::*;
 use alloc::vec::Vec;
@@ -65,9 +65,33 @@ fn export_symbols_registers_block_surface() {
         "blk_alloc_queue", "blk_cleanup_queue", "blk_queue_make_request",
         "blk_queue_logical_block_size", "alloc_disk", "add_disk",
         "del_gendisk", "submit_bio", "bio_alloc", "bio_put",
-        "blk_mq_alloc_tag_set", "blk_mq_init_queue", "set_capacity_and_notify",
+        "blk_mq_alloc_tag_set", "blk_mq_init_queue", "set_capacity_and_notify", "set_disk_ro",
     ] {
         assert!(crate::symtab::is_exported(name));
+    }
+}
+
+#[test]
+fn disk_read_only_change_is_idempotent_and_announced_once_per_transition() {
+    let _modules = crate::test_serial::claim();
+    let q = blk_alloc_queue(GFP_KERNEL);
+    let disk = alloc_disk(DEFAULT_MINORS);
+    write_disk_name(disk, b"kblkro0");
+    // SAFETY: disk and queue are fresh test-owned allocations and remain live through both state transitions.
+    unsafe {
+        (*disk).queue = q;
+        add_disk(disk);
+        let before = crate::linux_device::core::uevent_sequence(&mut (*disk).dev);
+        set_disk_ro(disk, true);
+        assert_ne!((*disk).state & GD_READ_ONLY, 0);
+        assert_eq!(crate::linux_device::core::uevent_sequence(&mut (*disk).dev), before + 1);
+        set_disk_ro(disk, true);
+        assert_eq!(crate::linux_device::core::uevent_sequence(&mut (*disk).dev), before + 1);
+        set_disk_ro(disk, false);
+        assert_eq!((*disk).state & GD_READ_ONLY, 0);
+        assert_eq!(crate::linux_device::core::uevent_sequence(&mut (*disk).dev), before + 2);
+        put_disk(disk);
+        blk_cleanup_queue(q);
     }
 }
 
