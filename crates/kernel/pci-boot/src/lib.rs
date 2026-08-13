@@ -173,24 +173,39 @@ pub fn enumerate_and_log() {
     }
     let requesters = devs.iter().map(|d| d.bdf).collect::<alloc::vec::Vec<_>>();
     let aliases = dma_aliases(&requesters, &devs);
-    quiesce_bus_masters(&requesters);
+    if !activate_dma_and_interrupt_ownership(&requesters, &aliases) { return; }
+    register_pci_model_drivers();
+    publish_scanned_devices(&devs);
+
+    // F40 + F57: drain any MSIs queued during model probing through the
+    // per-architecture IRQ dispatcher, then restore the boot-mask state.
+    finish_probe_irq_window();
+
+    // F59-15: install the default L2/netlink route state for every netdev
+    // already registered by virtio-net's model probe.
+    seed_boot_network_defaults();
+}
+
+#[inline(never)]
+fn activate_dma_and_interrupt_ownership(requesters: &[pci::Bdf], aliases: &pci::DmaAliases) -> bool {
+    quiesce_bus_masters(requesters);
     // Keep every quiesced requester denied until its DMA owner has attached it.
     // This policy must be visible before activation so a failed activation
     // cannot leave a later probe able to restore Bus Master by default.
     pci::set_bus_master_admission(Some(iommu::bus_master_admitted));
     // SAFETY: all discovered PCI requesters have been quiesced and no driver is registered yet.
-    let iommu_activation = unsafe { iommu::activate_amd_vi(&requesters, &aliases,
+    let iommu_activation = unsafe { iommu::activate_amd_vi(requesters, aliases,
         pmm::user_as::hhdm_offset(), pmm::setup::usable_regions()) };
-    if iommu_activation == iommu::AmdViActivation::Failed { return; }
+    if iommu_activation == iommu::AmdViActivation::Failed { return false; }
     if iommu_activation == iommu::AmdViActivation::Enabled
-        && !amd_vi_events::install(&requesters) { return; }
-    let vtd_activation = activate_vtd_arch(&requesters, &aliases);
-    if vtd_activation == iommu::VtdActivation::Failed { return; }
+        && !amd_vi_events::install(requesters) { return false; }
+    let vtd_activation = activate_vtd_arch(requesters, aliases);
+    if vtd_activation == iommu::VtdActivation::Failed { return false; }
     #[cfg(target_arch = "x86_64")]
-    if vtd_activation == iommu::VtdActivation::Enabled && !vtd_faults::install() { return; }
-    if !iommu::enable_vtd_interrupt_remapping() { return; }
-    iommu::admit_boot_requesters(&requesters);
-    if !map_firmware_ioapics() { return; }
+    if vtd_activation == iommu::VtdActivation::Enabled && !vtd_faults::install() { return false; }
+    if !iommu::enable_vtd_interrupt_remapping() { return false; }
+    iommu::admit_boot_requesters(requesters);
+    if !map_firmware_ioapics() { return false; }
     let _ = firmware::acpi::prepare_pci_intx_routes();
     // Linux probes interrupt-driven PCI functions with local IRQ delivery
     // enabled.  Every requester remains bus-master quiesced until its driver
@@ -201,7 +216,11 @@ pub fn enumerate_and_log() {
     #[cfg(target_arch = "x86_64")]
     // SAFETY: the LAPIC/IDT are live and all unowned PCI requesters remain quiesced.
     unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
-    register_pci_model_drivers();
+    true
+}
+
+#[inline(never)]
+fn publish_scanned_devices(devs: &[pci::PciDevice]) {
     for d in devs.iter() {
         debug_boot! {
             klog::write_raw(b"[INFO]  pci ");
@@ -231,8 +250,10 @@ pub fn enumerate_and_log() {
         }
     }
 
-    // F40 + F57: drain any MSIs queued during model probing through the
-    // per-architecture IRQ dispatcher, then restore the boot-mask state.
+}
+
+#[inline(never)]
+fn finish_probe_irq_window() {
     #[cfg(target_arch = "aarch64")]
     {
         for _ in 0..2_000_000 { core::hint::spin_loop(); }
@@ -274,8 +295,10 @@ pub fn enumerate_and_log() {
         klog::write_raw(b"\n");
     }
 
-    // F59-15: install the default L2/netlink route state for every netdev
-    // already registered by virtio-net's model probe.
+}
+
+#[inline(never)]
+fn seed_boot_network_defaults() {
     {
         let stack = net::sock::stack();
         let lo_idx = stack.ifaces.lookup_name("lo").map(|(id, _)| id.0);
