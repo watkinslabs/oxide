@@ -90,6 +90,7 @@ fn gendisk_registers_adapter_and_submits_bio_io() {
         (*disk).queue = q;
         (*disk).capacity = TEST_BLOCKS;
         add_disk(disk);
+        assert!(!(*disk).dev.kobj.kset.is_null(), "published disk has the block kset for device uevents");
     }
     let reg = block::registry::by_name("kblk0").expect("gendisk published");
     assert_eq!(reg.dev.block_size(), TEST_BLOCK_SIZE);
