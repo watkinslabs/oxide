@@ -3,6 +3,7 @@ pub const DEVICE_TABLE: u64 = 0x0000;
 pub const COMMAND_BUFFER: u64 = 0x0008;
 pub const EVENT_LOG: u64 = 0x0010;
 pub const CONTROL: u64 = 0x0018;
+pub const EXT_FEATURES: u64 = 0x0030;
 pub const COMMAND_HEAD: u64 = 0x2000;
 pub const COMMAND_TAIL: u64 = 0x2008;
 pub const EVENT_HEAD: u64 = 0x2010;
@@ -13,6 +14,8 @@ pub const CONTROL_EVENT_INTERRUPT_ENABLE: u64 = 1 << 3;
 pub const CONTROL_COMPLETION_ENABLE: u64 = 1 << 4;
 pub const CONTROL_COHERENT_ENABLE: u64 = 1 << 10;
 pub const CONTROL_COMMAND_ENABLE: u64 = 1 << 12;
+const CONTROL_GA_ENABLE: u64 = 1 << 17;
+const CONTROL_XT_ENABLE: u64 = 1 << 50;
 const CONTROL_PPR_LOG_ENABLE: u64 = 1 << 13;
 const CONTROL_PPR_INTERRUPT_ENABLE: u64 = 1 << 14;
 const CONTROL_GA_LOG_ENABLE: u64 = 1 << 28;
@@ -38,11 +41,25 @@ const COMMAND_TYPE_SHIFT: u32 = 28;
 const COMMAND_COMPLETION_WAIT: u32 = 0x01;
 const COMMAND_INVALIDATE_DTE: u32 = 0x02;
 const COMMAND_INVALIDATE_IOMMU_PAGES: u32 = 0x03;
+const COMMAND_INVALIDATE_IRT: u32 = 0x05;
 const COMMAND_INVALIDATE_PAGES_SIZE: u64 = 1 << 0;
 const COMMAND_INVALIDATE_PAGES_PDE: u64 = 1 << 1;
 const COMMAND_INVALIDATE_ALL_PAGES_ADDRESS: u64 = 0x7fff_ffff_ffff_f000;
 const COMMAND_DRAIN_POLL_LIMIT: usize = 1_000_000;
 const COMMAND_COMPLETION_STORE: u32 = 1;
+const DTE_IRQ_PHYS_ADDR_MASK: u64 = 0x000f_ffff_ffff_ffc0;
+const DTE_IRQ_REMAP_INTCTL: u64 = 2 << 60;
+const DTE_IRQ_REMAP_ENABLE: u64 = 1;
+const DTE_INTTABLEN_MASK: u64 = 0xf << 1;
+const DTE_INTTABLEN_512: u64 = 9 << 1;
+
+const fn remap_enable_bits(mode: crate::AmdViIrMode) -> u64 {
+    match mode {
+        crate::AmdViIrMode::Legacy => 0,
+        crate::AmdViIrMode::Extended => CONTROL_GA_ENABLE,
+        crate::AmdViIrMode::ExtendedXt => CONTROL_GA_ENABLE | CONTROL_XT_ENABLE,
+    }
+}
 
 /// Hardware-format AMD-Vi device-table entry.
 #[repr(C, align(16))]
@@ -88,6 +105,10 @@ impl AmdViCommand {
         let flags = if page_tables { COMMAND_INVALIDATE_PAGES_PDE } else { 0 };
         Some(Self { words: [0, (domain_id as u32) | (COMMAND_INVALIDATE_IOMMU_PAGES << COMMAND_TYPE_SHIFT),
             (encoded as u32) | flags as u32, (encoded >> 32) as u32] })
+    }
+    /// Build an interrupt-table cache invalidation for one requester. # C: O(1)
+    pub const fn invalidate_irt(requester: u16) -> Self {
+        Self { words: [requester as u32, COMMAND_INVALIDATE_IRT << COMMAND_TYPE_SHIFT, 0, 0] }
     }
     /// Return the four little-endian command words. # C: O(1)
     pub const fn words(&self) -> [u32; 4] { self.words }
@@ -174,6 +195,22 @@ impl AmdViTables {
     pub const fn command_buffer_register(&self) -> u64 { self.command_buffer_pa | BUFFER_SIZE_ENCODING }
     /// Event-log base register value. # C: O(1)
     pub const fn event_log_register(&self) -> u64 { self.event_log_pa | BUFFER_SIZE_ENCODING }
+    /// Consume each event record visible to software and advance the hardware head. # C: O(events)
+    pub fn drain_events(&self, regs: &AmdViRegisters, hhdm_offset: u64, visitor: &mut impl FnMut(crate::AmdViEvent)) -> bool {
+        if hhdm_offset == 0 { return false; }
+        let Some(mut head) = regs.read64(EVENT_HEAD).map(|value| value & (EVENT_LOG_BYTES - 1)) else { return false; };
+        let Some(tail) = regs.read64(EVENT_TAIL).map(|value| value & (EVENT_LOG_BYTES - 1)) else { return false; };
+        if head & 15 != 0 || tail & 15 != 0 { return false; }
+        while head != tail {
+            let base = hhdm_offset.wrapping_add(self.event_log_pa).wrapping_add(head);
+            // SAFETY: head is a validated event-ring offset and the producer published this complete 16-byte record before advancing tail.
+            let words = unsafe { [core::ptr::read_volatile(base as *const u32), core::ptr::read_volatile((base + 4) as *const u32), core::ptr::read_volatile((base + 8) as *const u32), core::ptr::read_volatile((base + 12) as *const u32)] };
+            visitor(crate::AmdViEvent::from_words(words));
+            head = (head + 16) & (EVENT_LOG_BYTES - 1);
+        }
+        core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+        regs.write64(EVENT_HEAD, head)
+    }
     const fn dte_byte_offset(requester: u16) -> u64 { requester as u64 * core::mem::size_of::<AmdViDte>() as u64 }
     unsafe fn write_initial_dte(&self, hhdm_offset: u64, requester: u16, dte: AmdViDte) {
         let base = hhdm_offset.wrapping_add(self.device_table_pa).wrapping_add(Self::dte_byte_offset(requester));
@@ -187,6 +224,22 @@ impl AmdViTables {
             core::ptr::write_volatile(base as *mut u64, words[0]);
         }
         core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+    }
+    unsafe fn dte_word(&self, hhdm_offset: u64, requester: u16, word: u8) -> Option<u64> {
+        if hhdm_offset == 0 || word >= 4 { return None; }
+        let va = hhdm_offset.wrapping_add(self.device_table_pa)
+            .wrapping_add(Self::dte_byte_offset(requester)).wrapping_add(u64::from(word) * 8);
+        // SAFETY: caller owns this unit's DTE update and word was bounds checked.
+        Some(unsafe { core::ptr::read_volatile(va as *const u64) })
+    }
+    unsafe fn write_dte_word(&self, hhdm_offset: u64, requester: u16, word: u8, value: u64) -> bool {
+        if hhdm_offset == 0 || word >= 4 { return false; }
+        let va = hhdm_offset.wrapping_add(self.device_table_pa)
+            .wrapping_add(Self::dte_byte_offset(requester)).wrapping_add(u64::from(word) * 8);
+        // SAFETY: caller owns this unit's live DTE update and word was bounds checked.
+        unsafe { core::ptr::write_volatile(va as *mut u64, value); }
+        core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+        true
     }
     unsafe fn queue_command(&self, regs: &AmdViRegisters, hhdm_offset: u64, command: AmdViCommand) -> bool {
         let mut tail = self.command_tail.lock();
@@ -255,12 +308,14 @@ impl AmdViRegisters {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum AmdViState { Discovered, Mapped, TablesProgrammed, DomainsAttached, Enabled, Disabled }
 
-pub struct AmdViUnit { pub mmio_pa: u64, pub segment: u16, state: AmdViState }
+pub struct AmdViUnit { pub mmio_pa: u64, pub segment: u16, ir_mode: crate::AmdViIrMode, state: AmdViState }
 impl AmdViUnit {
     /// Construct a disabled unit from validated IVRS firmware data. # C: O(1)
-    pub const fn new(mmio_pa: u64, segment: u16) -> Self {
-        Self { mmio_pa, segment, state: AmdViState::Discovered }
+    pub const fn new(mmio_pa: u64, segment: u16, ir_mode: crate::AmdViIrMode) -> Self {
+        Self { mmio_pa, segment, ir_mode, state: AmdViState::Discovered }
     }
+    /// Selected remap-entry format. # C: O(1)
+    pub const fn ir_mode(&self) -> crate::AmdViIrMode { self.ir_mode }
     /// Current activation state. # C: O(1)
     pub const fn state(&self) -> AmdViState { self.state }
     /// Advance after owned device MMIO mapping exists. # C: O(1)
@@ -325,6 +380,28 @@ impl AmdViUnit {
         // SAFETY: tables owns the serialized command ring and its command engine is enabled.
         unsafe { tables.queue_command(regs, hhdm_offset, command) }
     }
+    /// Publish the requester's interrupt-table DTE field and invalidate its DTE cache. # C: O(poll limit)
+    pub unsafe fn install_interrupt_table(&self, regs: &AmdViRegisters, tables: &AmdViTables,
+        hhdm_offset: u64, bdf: pci::Bdf, table_pa: u64) -> bool {
+        if self.state != AmdViState::Enabled || bdf.segment != self.segment || table_pa & 127 != 0 { return false; }
+        let Some(old) = (unsafe { tables.dte_word(hhdm_offset, bdf.raw(), 2) }) else { return false; };
+        let value = (old & !(DTE_IRQ_PHYS_ADDR_MASK | DTE_IRQ_REMAP_INTCTL | DTE_INTTABLEN_MASK | DTE_IRQ_REMAP_ENABLE))
+            | (table_pa & DTE_IRQ_PHYS_ADDR_MASK) | DTE_IRQ_REMAP_INTCTL | DTE_INTTABLEN_512 | DTE_IRQ_REMAP_ENABLE;
+        // SAFETY: the enabled unit owns this requester's DTE and serializes its command ring.
+        if !unsafe { tables.write_dte_word(hhdm_offset, bdf.raw(), 2, value) }
+            || !unsafe { tables.queue_command(regs, hhdm_offset, AmdViCommand::invalidate_dte(bdf.raw())) } { return false; }
+        // SAFETY: the same tables own the completion record paired with the queued invalidation.
+        unsafe { tables.wait_for_completion(regs, hhdm_offset) }
+    }
+    /// Invalidate a requester's interrupt-table cache after publishing an IRTE. # C: O(poll limit)
+    pub unsafe fn invalidate_interrupt_table(&self, regs: &AmdViRegisters, tables: &AmdViTables,
+        hhdm_offset: u64, bdf: pci::Bdf) -> bool {
+        if self.state != AmdViState::Enabled || bdf.segment != self.segment { return false; }
+        // SAFETY: caller published the IRTE in the DMA-visible table before this invalidation.
+        if !unsafe { tables.queue_command(regs, hhdm_offset, AmdViCommand::invalidate_irt(bdf.raw())) } { return false; }
+        // SAFETY: this table owns the completion record paired with the queued invalidation.
+        unsafe { tables.wait_for_completion(regs, hhdm_offset) }
+    }
     /// Wait for every queued invalidation to reach the command-ring head. # C: O(poll limit)
     pub unsafe fn wait_for_invalidations(&self, regs: &AmdViRegisters, tables: &AmdViTables, hhdm_offset: u64) -> bool {
         if self.state != AmdViState::TablesProgrammed && self.state != AmdViState::Enabled { return false; }
@@ -342,7 +419,7 @@ impl AmdViUnit {
         let Some(control) = regs.read64(CONTROL) else { return false; };
         let required = CONTROL_COMMAND_ENABLE | CONTROL_EVENT_ENABLE | CONTROL_COMPLETION_ENABLE | CONTROL_COHERENT_ENABLE;
         if control & required != required { return false; }
-        regs.write64(CONTROL, control | CONTROL_IOMMU_ENABLE)
+        regs.write64(CONTROL, control | remap_enable_bits(self.ir_mode) | CONTROL_IOMMU_ENABLE)
             && self.advance(AmdViState::DomainsAttached, AmdViState::Enabled)
     }
     /// Undo this bootstrap's command/event/translation transition.
@@ -355,7 +432,7 @@ impl AmdViUnit {
         if self.state == AmdViState::Discovered || self.state == AmdViState::Disabled { return true; }
         let Some(control) = regs.read64(CONTROL) else { return false; };
         let disabled = control & !(CONTROL_COMMAND_ENABLE | CONTROL_EVENT_ENABLE
-            | CONTROL_COMPLETION_ENABLE | CONTROL_IOMMU_ENABLE);
+            | CONTROL_COMPLETION_ENABLE | CONTROL_GA_ENABLE | CONTROL_XT_ENABLE | CONTROL_IOMMU_ENABLE);
         if !regs.write64(CONTROL, disabled) { return false; }
         self.state = AmdViState::Disabled;
         true
@@ -383,78 +460,4 @@ const FIRMWARE_QUIESCE_ORDER: [u64; 9] = [
     CONTROL_IRT_CACHE_DISABLE,
 ];
 
-#[cfg(test)] mod tests {
-    use super::*;
-    #[test] fn translation_requires_programmed_and_attached_domains() {
-        let mut u = AmdViUnit::new(0xfed8_0000, 3);
-        assert_eq!(u.state(), AmdViState::Discovered); assert!(u.mapped());
-        assert_eq!(u.state(), AmdViState::Mapped);
-    }
-    #[test] fn initial_dtes_remain_admissible_after_table_programming() {
-        let mut u = AmdViUnit::new(0xfed8_0000, 3);
-        assert!(!u.accepts_initial_dte());
-        assert!(u.mapped());
-        assert!(u.accepts_initial_dte());
-        u.state = AmdViState::TablesProgrammed;
-        assert!(u.accepts_initial_dte());
-        u.state = AmdViState::DomainsAttached;
-        assert!(!u.accepts_initial_dte());
-    }
-    #[test] fn table_registers_require_aligned_permanent_memory() {
-        let t = AmdViTables::from_physical(0x4000_0000, 0x5000_0000, 0x5000_2000).unwrap();
-        assert_eq!(t.device_table_register(), 0x4000_01ff);
-        assert_eq!(t.command_buffer_register(), 0x0900_0000_5000_0000);
-        assert!(AmdViTables::from_physical(0x4000_1000, 0x5000_0000, 0x5000_2000).is_none());
-    }
-    #[test] fn translation_requires_coherent_completion_engine() {
-        let required = CONTROL_COMMAND_ENABLE | CONTROL_EVENT_ENABLE | CONTROL_COMPLETION_ENABLE | CONTROL_COHERENT_ENABLE;
-        assert_eq!(required & CONTROL_COMPLETION_ENABLE, CONTROL_COMPLETION_ENABLE);
-        assert_eq!(required & CONTROL_COHERENT_ENABLE, CONTROL_COHERENT_ENABLE);
-    }
-    #[test] fn rollback_clears_only_bootstrap_owned_enable_bits() {
-        let live = CONTROL_COMMAND_ENABLE | CONTROL_EVENT_ENABLE | CONTROL_COMPLETION_ENABLE
-            | CONTROL_COHERENT_ENABLE | CONTROL_IOMMU_ENABLE | (1 << 19);
-        let disabled = live & !(CONTROL_COMMAND_ENABLE | CONTROL_EVENT_ENABLE
-            | CONTROL_COMPLETION_ENABLE | CONTROL_IOMMU_ENABLE);
-        assert_eq!(disabled, CONTROL_COHERENT_ENABLE | (1 << 19));
-    }
-    #[test] fn firmware_quiesce_order_matches_linux_iommu_disable() {
-        assert_eq!(FIRMWARE_QUIESCE_ORDER, [
-            CONTROL_COMMAND_ENABLE, CONTROL_EVENT_INTERRUPT_ENABLE,
-            CONTROL_EVENT_ENABLE, CONTROL_GA_LOG_ENABLE,
-            CONTROL_GA_INTERRUPT_ENABLE, CONTROL_PPR_LOG_ENABLE,
-            CONTROL_PPR_INTERRUPT_ENABLE, CONTROL_IOMMU_ENABLE,
-            CONTROL_IRT_CACHE_DISABLE,
-        ]);
-    }
-    #[test] fn device_table_entries_preserve_the_32_byte_hardware_layout() {
-        assert_eq!(core::mem::size_of::<AmdViDte>(), 32);
-        assert_eq!(AmdViDte::blocked().words(), [0; 4]);
-        assert_eq!(AmdViDte::passthrough(7).words()[1], 7);
-        let dte = AmdViDte::paging(0x1234_5000, 4, 9).unwrap();
-        assert_eq!(dte.words()[0] & DTE_ROOT_MASK, 0x1234_5000);
-        assert_eq!(dte.words()[1], 9);
-        assert!(AmdViDte::paging(0x1234_5001, 4, 9).is_none());
-        assert_eq!(AmdViTables::dte_byte_offset(0x1234), 0x1234 * 32);
-    }
-    #[test] fn invalidate_command_preserves_the_16_byte_ring_layout() {
-        let command = AmdViCommand::invalidate_dte(0x1234);
-        assert_eq!(core::mem::size_of::<AmdViCommand>(), 16);
-        assert_eq!(command.words(), [0x1234, 0x2000_0000, 0, 0]);
-    }
-    #[test] fn completion_wait_command_preserves_the_16_byte_ring_layout() {
-        let command = AmdViCommand::completion_wait(0x1234_5678_9000, 7).unwrap();
-        assert_eq!(command.words(), [0x5678_9001, 0x1000_1234, 7, 0]);
-        assert!(AmdViCommand::completion_wait(0x1234_5678_9001, 7).is_none());
-        assert!(AmdViCommand::completion_wait(0x1234_5678_9000, 0).is_none());
-    }
-    #[test] fn page_invalidation_matches_domain_command_layout() {
-        let one = AmdViCommand::invalidate_iova_pages(0x1234, 0x2000, 0x2000, false).unwrap();
-        assert_eq!(one.words(), [0, 0x3000_1234, 0x2000, 0]);
-        let range = AmdViCommand::invalidate_iova_pages(7, 0x4000, 0x9000, true).unwrap();
-        assert_eq!(range.words(), [0, 0x3000_0007, 0x7003, 0]);
-        let all = AmdViCommand::invalidate_iova_pages(7, 0, u64::MAX & !0xfff, true).unwrap();
-        assert_eq!(all.words(), [0, 0x3000_0007, 0xffff_f003, 0x7fff_ffff]);
-        assert!(AmdViCommand::invalidate_iova_pages(1, 1, 0x1000, false).is_none());
-    }
-}
+#[cfg(test)] mod tests;

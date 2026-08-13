@@ -12,6 +12,12 @@ const IOVA_BYTES: u64 = 1u64 << 48;
 /// Result of asking the AMD-Vi manager to own the scanned PCI requesters.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum AmdViActivation { Bypass, Enabled, Failed }
+/// Result of allocating a PCI MSI/MSI-X message through AMD-Vi.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum AmdViMsi { Direct, Remapped { address: u64, data: u32 }, Failed }
+/// Result of routing one I/O-APIC source through AMD-Vi.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum AmdViIoapic { Direct, Remapped { index: u8 }, Failed }
 
 struct AmdViBootUnit { unit: IommuUnit, bootstrap: AmdViBootstrap, domain: AmdViDomain }
 static MANAGER: Spinlock<Vec<AmdViBootUnit>, Devices> = Spinlock::new(Vec::new());
@@ -23,9 +29,9 @@ static MANAGER: Spinlock<Vec<AmdViBootUnit>, Devices> = Spinlock::new(Vec::new()
 /// # C: O(units + requesters + RAM leaves)
 pub unsafe fn activate_amd_vi(requesters: &[Bdf], hhdm_offset: u64, regions: &[pmm::UsableRegion]) -> AmdViActivation {
     let mut units = Vec::new();
-    for bdf in requesters {
-        let Some(unit) = crate::amd_vi_unit_for_bdf(*bdf) else { continue; };
-        push_unique_unit(&mut units, unit);
+    for index in 0..firmware::acpi::iommu_unit_count() {
+        let Some(unit) = firmware::acpi::iommu_unit(index) else { return AmdViActivation::Failed; };
+        if unit.kind == IommuKind::AmdVi { push_unique_unit(&mut units, unit); }
     }
     if units.is_empty() { return AmdViActivation::Bypass; }
     if units.iter().any(|unit| unit.kind != IommuKind::AmdVi) { return AmdViActivation::Failed; }
@@ -62,7 +68,7 @@ fn map_ivmd_regions(domain: &mut AmdViDomain, unit: IommuUnit, requesters: &[Bdf
             let requester = (u16::from(bdf.bus) << 8) | (u16::from(bdf.device) << 3) | u16::from(bdf.function);
             bdf.segment == ivmd.segment && requester >= ivmd.first_requester && requester <= ivmd.last_requester
         }) { continue; }
-        if domain.map_identity(ivmd.base, ivmd.len).is_none() { return false; }
+        if domain.map_identity_with_permissions(ivmd.base, ivmd.len, ivmd.read, ivmd.write).is_none() { return false; }
     }
     true
 }
@@ -82,6 +88,39 @@ fn activation_failed(manager: &mut [AmdViBootUnit]) -> AmdViActivation {
 pub fn owns(requester: Bdf) -> bool {
     let Some(unit) = crate::amd_vi_unit_for_bdf(requester) else { return false; };
     MANAGER.lock().iter().any(|entry| entry.unit == unit)
+}
+/// Drain all currently pending AMD-Vi fault and hardware events. # C: O(units + events)
+pub fn poll_amd_vi_events(visitor: &mut impl FnMut(crate::AmdViEvent)) -> bool {
+    let manager = MANAGER.lock(); let mut complete = true;
+    for entry in manager.iter() { complete &= entry.bootstrap.drain_events(visitor); }
+    complete
+}
+
+/// Allocate one remapped MSI message for an AMD-Vi-owned requester. # C: O(tables + poll limit)
+pub fn allocate_amd_vi_msi(requester: Bdf, event_id: u32, vector: u8, destination_apic_id: u32) -> AmdViMsi {
+    let Some(unit) = crate::amd_vi_unit_for_bdf(requester) else { return AmdViMsi::Direct; };
+    let mut manager = MANAGER.lock();
+    let Some(entry) = manager.iter_mut().find(|entry| entry.unit == unit) else { return AmdViMsi::Direct; };
+    let Some(index) = entry.bootstrap.allocate_msi(requester, event_id, vector, destination_apic_id) else { return AmdViMsi::Failed; };
+    AmdViMsi::Remapped { address: 0xfee0_0000, data: u32::from(index) }
+}
+
+/// Allocate an AMD-Vi I/O-APIC source route from its IVRS special-device mapping.
+/// # C: O(special mappings + tables + poll limit)
+pub fn allocate_amd_vi_ioapic(ioapic_id: u8, pin: u32, vector: u8, destination_apic_id: u32) -> AmdViIoapic {
+    let special = (0..firmware::acpi::amd_vi_special_count()).find_map(|index| {
+        firmware::acpi::amd_vi_special(index).filter(|special|
+            special.kind == firmware::acpi::AMD_SPECIAL_IOAPIC && special.id == ioapic_id)
+    });
+    let Some(special) = special else { return AmdViIoapic::Direct; };
+    let Some(unit) = firmware::acpi::iommu_unit(special.unit_index as usize) else { return AmdViIoapic::Failed; };
+    if unit.kind != IommuKind::AmdVi { return AmdViIoapic::Failed; }
+    let bdf = Bdf { segment: unit.segment, bus: (special.requester >> 8) as u8,
+        device: ((special.requester >> 3) & 0x1f) as u8, function: (special.requester & 7) as u8 };
+    let mut manager = MANAGER.lock();
+    let Some(entry) = manager.iter_mut().find(|entry| entry.unit == unit) else { return AmdViIoapic::Failed; };
+    let Some(index) = entry.bootstrap.allocate_msi(bdf, pin, vector, destination_apic_id) else { return AmdViIoapic::Failed; };
+    u8::try_from(index).map(|index| AmdViIoapic::Remapped { index }).unwrap_or(AmdViIoapic::Failed)
 }
 
 /// Install one live mapping constrained by the requester's inclusive DMA mask.

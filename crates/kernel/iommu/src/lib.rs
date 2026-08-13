@@ -2,6 +2,8 @@
 extern crate alloc;
 // Module manifest: amd_vi owns AMD-Vi registers and activation; domain owns requester domains.
 mod amd_vi;
+mod amd_vi_event;
+mod amd_vi_ir;
 mod admission;
 mod dma_span;
 mod dma_owner;
@@ -18,11 +20,13 @@ mod vtd_tables;
 mod vtd_ir;
 mod vtd_manager;
 pub use amd_vi::{AmdViCommand, AmdViDte, AmdViRegisters, AmdViState, AmdViTables, AmdViUnit, COMMAND_BUFFER, COMMAND_HEAD, COMMAND_TAIL,
-    CONTROL, CONTROL_COHERENT_ENABLE, CONTROL_COMMAND_ENABLE, CONTROL_COMPLETION_ENABLE, CONTROL_EVENT_ENABLE, CONTROL_IOMMU_ENABLE, DEVICE_TABLE, EVENT_HEAD, EVENT_LOG, EVENT_TAIL};
+    CONTROL, CONTROL_COHERENT_ENABLE, CONTROL_COMMAND_ENABLE, CONTROL_COMPLETION_ENABLE, CONTROL_EVENT_ENABLE, CONTROL_IOMMU_ENABLE, DEVICE_TABLE, EVENT_HEAD, EVENT_LOG, EVENT_TAIL, EXT_FEATURES};
+pub use amd_vi_event::{AmdViEvent, AmdViEventKind};
+pub use amd_vi_ir::{AmdViIrMode, AmdViIrTable};
 pub use admission::{admit_boot_requesters, bus_master_admitted};
 pub use dma_owner::{map_dma, map_dma_below, unmap_dma};
 pub use amd_vi_bootstrap::AmdViBootstrap;
-pub use amd_vi_manager::{AmdViActivation, activate_amd_vi};
+pub use amd_vi_manager::{AmdViActivation, AmdViIoapic, AmdViMsi, activate_amd_vi, allocate_amd_vi_ioapic, allocate_amd_vi_msi, poll_amd_vi_events};
 pub use amd_vi_pt::{AmdViPte, iova_indices};
 pub use amd_vi_pt_tree::AmdViPageTable;
 pub use domain::{AmdViDomain, Domain, Mapping, amd_vi_unit_for_bdf};
