@@ -39,7 +39,9 @@ impl BlockDevice for LinuxBlockAdapter {
         if d.is_null() { return 0; }
         // SAFETY: same publication contract as block_size — a registered adapter's gendisk outlives it,
         // and `capacity` is a u64 field alloc_disk_node zero-initialises.
-        let sectors = unsafe { (*d).capacity };
+        let part0 = unsafe { (*d).part0 };
+        if part0.is_null() { return 0; }
+        let sectors = unsafe { (*part0).bd_nr_sectors };
         sectors_to_blocks(sectors, self.block_size())
     }
     fn submit_sync(&self, req: &mut BlockRequest) -> Result<(), BlockError> {

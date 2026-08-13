@@ -1,7 +1,7 @@
 extern crate alloc;
 use super::adapter::LinuxBlockAdapter;
 use crate::linux_block::contract::release_needs_unregister;
-use crate::linux_device::types::{LinuxDevice, LinuxKobject, LinuxKset};
+use crate::linux_device::types::{LinuxKobject, LinuxKset};
 use crate::linux_block::types::*;
 use alloc::boxed::Box;
 use alloc::string::String;
@@ -41,19 +41,28 @@ pub(super) extern "C" fn alloc_disk(minors: i32) -> *mut LinuxGendisk {
 }
 
 pub(in crate::linux_block) extern "C" fn alloc_disk_node(minors: i32, _node_id: i32) -> *mut LinuxGendisk {
-    Box::into_raw(Box::new(LinuxGendisk {
+    let mut part0 = Box::new(LinuxBlockDevice::new());
+    let disk = Box::new(LinuxGendisk {
         major: 0,
         first_minor: 0,
         minors: if minors <= 0 { DEFAULT_MINORS } else { minors },
         disk_name: [0; DISK_NAME_LEN],
-        fops: core::ptr::null(),
+        events: 0, event_flags: 0, part_tbl: [0; 16], part0: null_mut(), fops: core::ptr::null(),
         queue: null_mut(),
         private_data: null_mut(),
-        capacity: 0,
-        flags: 0,
-        state: 0,
-        dev: LinuxDevice::new(),
-    }))
+        bio_split: null_mut(), _pre_flags: [0; 240], flags: 0, _state_pad: 0, state: 0,
+        open_mutex: [0; 32], open_partitions: 0, _bdi_pad: 0, bdi: null_mut(),
+        queue_kobj: LinuxKobject { name: null_mut(), entry: [null_mut(); 2], parent: null_mut(),
+            kset: null_mut(), ktype: core::ptr::null(), sd: null_mut(), kref: 1, state: 0 },
+        slave_dir: null_mut(), slave_bdevs: [0; 16], random: null_mut(), ev: null_mut(), _zoned: [0; 72],
+        node_id: _node_id, _node_pad: 0, bb: null_mut(), diskseq: 0, open_mode: 0, _open_mode_pad: 0,
+        ia_ranges: null_mut(), rqos_state_mutex: [0; 32],
+    });
+    let disk = Box::into_raw(disk);
+    part0.bd_disk = disk;
+    // SAFETY: disk is the fresh allocation above and part0 is heap-owned until put_disk releases it.
+    unsafe { (*disk).part0 = Box::into_raw(part0); }
+    disk
 }
 
 /// Release a gendisk, withdrawing any block-registry publication it still holds first.
@@ -71,10 +80,13 @@ pub(in crate::linux_block) unsafe extern "C" fn put_disk(disk: *mut LinuxGendisk
     }
     // SAFETY: disk was allocated by alloc_disk* and, after the unregister above, the block registry no
     // longer holds an adapter naming it, so this Box::from_raw is the last reference to the allocation.
-    // SAFETY: the embedded device has been withdrawn above (if published), and its kobject record must end
-    // before the containing gendisk allocation is reclaimed.
+    // SAFETY: the part-zero device has been withdrawn above (if published), and its kobject record must end
+    // before its owning block-device allocation and containing gendisk are reclaimed.
     unsafe {
-        crate::linux_device::core::release_embedded(&mut (*disk).dev);
+        if !(*disk).part0.is_null() {
+            crate::linux_device::core::release_embedded(&mut (*(*disk).part0).bd_device);
+            drop(Box::from_raw((*disk).part0));
+        }
         drop(Box::from_raw(disk));
     }
 }
@@ -85,13 +97,15 @@ pub(in crate::linux_block) unsafe extern "C" fn add_disk(disk: *mut LinuxGendisk
     // alloc_disk/alloc_disk_node and has not yet passed to put_disk, so its disk_name array is initialised.
     let name = unsafe { disk_name(disk) };
     if name.is_empty() { return; }
-    // SAFETY: the embedded device belongs to this live gendisk; the NUL-terminated disk name is its device
-    // identity, so device-core publication precedes the block adapter that makes it externally reachable.
+    // SAFETY: part zero belongs to this live gendisk; its NUL-terminated disk name is the device identity,
+    // so device-core publication precedes the block adapter that makes it externally reachable.
     unsafe {
-        crate::linux_device::core::initialize_embedded(&mut (*disk).dev);
-        (*disk).dev.kobj.kset = block_kset();
-        crate::linux_device::core::set_name_from_cstr(&mut (*disk).dev, (*disk).disk_name.as_ptr());
-        if crate::linux_device::core::device_add(&mut (*disk).dev) != LINUX_OK { return; }
+        if (*disk).part0.is_null() { return; }
+        let dev = &mut (*(*disk).part0).bd_device;
+        crate::linux_device::core::initialize_embedded(dev);
+        dev.kobj.kset = block_kset();
+        crate::linux_device::core::set_name_from_cstr(dev, (*disk).disk_name.as_ptr());
+        if crate::linux_device::core::device_add(dev) != LINUX_OK { return; }
     }
     let adapter = Arc::new(LinuxBlockAdapter::new(disk)) as Arc<dyn BlockDevice>;
     let idx = block::registry::register_with_driver(
@@ -129,7 +143,7 @@ unsafe extern "C" fn del_gendisk(disk: *mut LinuxGendisk) {
     // the state bit never claims a publication the block registry no longer has.
     unsafe {
         (*disk).state &= !GD_ADDED;
-        crate::linux_device::core::device_del(&mut (*disk).dev);
+        if !(*disk).part0.is_null() { crate::linux_device::core::device_del(&mut (*(*disk).part0).bd_device); }
     }
 }
 
@@ -139,7 +153,7 @@ pub(super) unsafe extern "C" fn set_capacity(disk: *mut LinuxGendisk, sectors: u
     if disk.is_null() { return; }
     // SAFETY: disk is null-checked and owned by the calling module between alloc_disk and put_disk; capacity
     // is a u64 field of that allocation, read back only through get_capacity/capacity_blocks.
-    unsafe { (*disk).capacity = sectors; }
+    unsafe { if !(*disk).part0.is_null() { (*(*disk).part0).bd_nr_sectors = sectors; } }
 }
 
 /// Store capacity and announce a visible nonempty live resize.
@@ -147,15 +161,15 @@ pub(super) unsafe extern "C" fn set_capacity(disk: *mut LinuxGendisk, sectors: u
 pub(super) unsafe extern "C" fn set_capacity_and_notify(disk: *mut LinuxGendisk, sectors: u64) -> bool {
     if disk.is_null() { return false; }
     // SAFETY: disk is null-checked and remains the caller-owned gendisk throughout this capacity transition.
-    let previous = unsafe { (*disk).capacity };
+    let previous = unsafe { if (*disk).part0.is_null() { 0 } else { (*(*disk).part0).bd_nr_sectors } };
     // SAFETY: same live gendisk; setting capacity precedes every visibility decision just as it does for all callers.
     unsafe { set_capacity(disk, sectors); }
     // SAFETY: same live gendisk; liveness and flags are its canonical publication state and visibility flags.
     if sectors == previous || !unsafe { disk_live(disk) } || unsafe { (*disk).flags & GENHD_FL_HIDDEN != 0 } { return false; }
     if previous == 0 || sectors == 0 { return false; }
     let mut envp = [c"RESIZE=1".as_ptr() as *mut c_char, null_mut()];
-    // SAFETY: the disk is live and its embedded device was initialized and published before the block registry.
-    unsafe { crate::linux_device::core::device_change_uevent(&mut (*disk).dev, envp.as_mut_ptr()); }
+    // SAFETY: the disk is live and its part-zero device was initialized and published before the block registry.
+    unsafe { if !(*disk).part0.is_null() { crate::linux_device::core::device_change_uevent(&mut (*(*disk).part0).bd_device, envp.as_mut_ptr()); } }
     true
 }
 
@@ -173,22 +187,22 @@ pub(super) unsafe extern "C" fn set_disk_ro(disk: *mut LinuxGendisk, read_only: 
     let event = if read_only { c"DISK_RO=1" } else { c"DISK_RO=0" };
     let mut envp = [event.as_ptr() as *mut c_char, null_mut()];
     // SAFETY: same disk; event vector is local and NULL-terminated for the duration of the synchronous call.
-    unsafe { crate::linux_device::core::device_change_uevent(&mut (*disk).dev, envp.as_mut_ptr()); }
+    unsafe { if !(*disk).part0.is_null() { crate::linux_device::core::device_change_uevent(&mut (*(*disk).part0).bd_device, envp.as_mut_ptr()); } }
 }
 
 /// Forward a disk event to every present block-device object this gendisk owns.
 /// # C: O(name depth)
 pub(super) unsafe extern "C" fn disk_uevent(disk: *mut LinuxGendisk, action: u32) {
     if disk.is_null() { return; }
-    // SAFETY: disk is null-checked and its embedded device remains live for this synchronous event call.
-    unsafe { crate::linux_device::core::device_uevent(&mut (*disk).dev, action); }
+    // SAFETY: disk is null-checked and its part-zero device remains live for this synchronous event call.
+    unsafe { if !(*disk).part0.is_null() { crate::linux_device::core::device_uevent(&mut (*(*disk).part0).bd_device, action); } }
 }
 
 unsafe extern "C" fn get_capacity(disk: *const LinuxGendisk) -> u64 {
     if disk.is_null() { return 0; }
-    // SAFETY: disk is null-checked; alloc_disk_node zero-initialises capacity before publishing the gendisk,
+    // SAFETY: disk is null-checked; alloc_disk_node supplies a zeroed part-zero sector count before publication,
     // so this load is defined even if the module never called set_capacity.
-    unsafe { (*disk).capacity }
+    unsafe { if (*disk).part0.is_null() { 0 } else { (*(*disk).part0).bd_nr_sectors } }
 }
 
 /// Report whether the disk remains published and has not been withdrawn as dead.

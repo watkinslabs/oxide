@@ -81,9 +81,9 @@ fn disk_uevent_forwards_the_requested_action_to_the_embedded_disk_device() {
     unsafe {
         (*disk).queue = q;
         add_disk(disk);
-        let before = crate::linux_device::core::uevent_sequence(&mut (*disk).dev);
+        let before = crate::linux_device::core::uevent_sequence(&mut (*(*disk).part0).bd_device);
         disk_uevent(disk, 0);
-        assert_eq!(crate::linux_device::core::uevent_sequence(&mut (*disk).dev), before + 1);
+        assert_eq!(crate::linux_device::core::uevent_sequence(&mut (*(*disk).part0).bd_device), before + 1);
         put_disk(disk);
         blk_cleanup_queue(q);
     }
@@ -99,15 +99,15 @@ fn disk_read_only_change_is_idempotent_and_announced_once_per_transition() {
     unsafe {
         (*disk).queue = q;
         add_disk(disk);
-        let before = crate::linux_device::core::uevent_sequence(&mut (*disk).dev);
+        let before = crate::linux_device::core::uevent_sequence(&mut (*(*disk).part0).bd_device);
         set_disk_ro(disk, true);
         assert_ne!((*disk).state & GD_READ_ONLY, 0);
-        assert_eq!(crate::linux_device::core::uevent_sequence(&mut (*disk).dev), before + 1);
+        assert_eq!(crate::linux_device::core::uevent_sequence(&mut (*(*disk).part0).bd_device), before + 1);
         set_disk_ro(disk, true);
-        assert_eq!(crate::linux_device::core::uevent_sequence(&mut (*disk).dev), before + 1);
+        assert_eq!(crate::linux_device::core::uevent_sequence(&mut (*(*disk).part0).bd_device), before + 1);
         set_disk_ro(disk, false);
         assert_eq!((*disk).state & GD_READ_ONLY, 0);
-        assert_eq!(crate::linux_device::core::uevent_sequence(&mut (*disk).dev), before + 2);
+        assert_eq!(crate::linux_device::core::uevent_sequence(&mut (*(*disk).part0).bd_device), before + 2);
         put_disk(disk);
         blk_cleanup_queue(q);
     }
@@ -126,9 +126,9 @@ fn capacity_notification_only_announces_visible_live_nonempty_transitions() {
         assert!(!set_capacity_and_notify(disk, 8));
         assert!(!set_capacity_and_notify(disk, 16));
         add_disk(disk);
-        let before = crate::linux_device::core::uevent_sequence(&mut (*disk).dev);
+        let before = crate::linux_device::core::uevent_sequence(&mut (*(*disk).part0).bd_device);
         assert!(set_capacity_and_notify(disk, 32));
-        assert_eq!(crate::linux_device::core::uevent_sequence(&mut (*disk).dev), before + 1);
+        assert_eq!(crate::linux_device::core::uevent_sequence(&mut (*(*disk).part0).bd_device), before + 1);
         assert!(!set_capacity_and_notify(disk, 0));
         assert!(!set_capacity_and_notify(disk, 8));
         (*disk).flags |= GENHD_FL_HIDDEN;
@@ -155,9 +155,9 @@ fn gendisk_registers_adapter_and_submits_bio_io() {
     // SAFETY: disk and queue are live allocations owned by this test.
     unsafe {
         (*disk).queue = q;
-        (*disk).capacity = TEST_BLOCKS;
+        set_capacity(disk, TEST_BLOCKS);
         add_disk(disk);
-        assert!(!(*disk).dev.kobj.kset.is_null(), "published disk has the block kset for device uevents");
+        assert!(!(*(*disk).part0).bd_device.kobj.kset.is_null(), "published disk has the block kset for device uevents");
     }
     let reg = block::registry::by_name("kblk0").expect("gendisk published");
     assert_eq!(reg.dev.block_size(), TEST_BLOCK_SIZE);
