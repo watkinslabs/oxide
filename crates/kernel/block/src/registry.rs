@@ -9,6 +9,6 @@ mod scsi;
 #[cfg(test)] mod tests;
 
 pub use core::*;
-pub use partition::{Partition, partition_by_label, partition_by_name, partition_by_uuid, rescan_partitions};
+pub use partition::{Partition, partition_by_label, partition_by_name, partition_by_uuid, partition_by_uuid_offset, rescan_partitions};
 pub use root::{RootSpec, parse_root_spec, resolve_root_spec};
 pub use scsi::{reserve_scsi_disk_name, ScsiDiskName};

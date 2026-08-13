@@ -50,7 +50,19 @@ pub fn partition_by_name(name: &str) -> Option<Arc<Partition>> {
 /// Find a partition by its on-media UUID. # C: O(disks + partitions)
 pub fn partition_by_uuid(uuid: &str) -> Option<Arc<Partition>> {
     super::snapshot().into_iter().flat_map(|disk| disk.partitions())
-        .find(|part| part.uuid.as_deref() == Some(uuid))
+        .find(|part| part.uuid.as_deref().is_some_and(|id| id.eq_ignore_ascii_case(uuid)))
+}
+
+/// Find the partition at a signed number offset from a partition UUID.
+/// # C: O(disks + partitions)
+pub fn partition_by_uuid_offset(uuid: &str, offset: i32) -> Option<Arc<Partition>> {
+    let (disk, base) = super::snapshot().into_iter().find_map(|disk| {
+        disk.partitions().into_iter().find(|part| part.uuid.as_deref().is_some_and(|id| id.eq_ignore_ascii_case(uuid)))
+            .map(|part| (disk, part))
+    })?;
+    let number = i64::from(base.number).checked_add(i64::from(offset))?;
+    let number = u32::try_from(number).ok().filter(|number| *number != 0)?;
+    disk.partitions().into_iter().find(|part| part.number == number)
 }
 
 /// Find a partition by its on-media label. # C: O(disks + partitions)
@@ -84,7 +96,7 @@ mod tests {
         dev.submit_sync(&mut write).expect("fixture table write");
         assert_ne!(register(PUBLISH_NAME, dev), 0);
 
-        let parts = rescan_partitions(PUBLISH_NAME).expect("registered disk");
+        let parts = by_name(PUBLISH_NAME).expect("registered disk").partitions();
         assert_eq!(parts.len(), 1);
         let part = &parts[0];
         assert_eq!(part.name, "partition-scan-publish-fixture1");

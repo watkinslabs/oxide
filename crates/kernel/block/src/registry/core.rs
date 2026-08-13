@@ -352,7 +352,11 @@ pub fn register_with_driver(driver: BlockDriver, name: &str, serial: Option<&str
     match drv::try_device_add(Arc::new(
         drv::Device::new("block", name.to_string(), 0, 0, 0)
             .with_devnode("block", name.to_string(), Some((number.major, number.minor))))) {
-        Ok(_) => { crate::devbridge::publish(number, bridge_disk); index }
+        Ok(_) => {
+            crate::devbridge::publish(number, bridge_disk);
+            let _ = super::partition::rescan_partitions(name);
+            index
+        }
         Err(_) => {
             // SAFETY: registration rollback is process-context lifecycle work.
             let mut t = unsafe { TABLE.lock() };
