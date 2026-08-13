@@ -39,9 +39,9 @@ impl ReportLayout {
 
 /// Stateful HID input decoder. Values are retained per descriptor field so
 /// variable controls and array-key reports emit only transitions.
-pub struct ReportDecoder { layout: ReportLayout, values: Box<[[i32; MAX_VALUES]; MAX_FIELDS]> }
+pub struct ReportDecoder { layout: Box<ReportLayout>, values: Box<[[i32; MAX_VALUES]; MAX_FIELDS]> }
 impl ReportDecoder {
-    pub fn new(layout: ReportLayout) -> Self { Self { layout, values: Box::new([[0; MAX_VALUES]; MAX_FIELDS]) } }
+    pub fn new(layout: Box<ReportLayout>) -> Self { Self { layout, values: Box::new([[0; MAX_VALUES]; MAX_FIELDS]) } }
     /// Decode one interrupt report into changed Linux input events. # C: O(fields * values)
     pub fn decode(&mut self, report: &[u8]) -> [Option<crate::hid::Event>; MAX_FIELDS] {
         let mut events = [None; MAX_FIELDS]; let mut out = 0usize;
@@ -80,13 +80,13 @@ impl Local { const fn new() -> Self { Self { usage: None, usage_min: None, usage
 
 /// Parse standard short HID items and retain every non-constant Input item.
 /// Long items and malformed/truncated descriptors are rejected. # C: O(bytes + fields)
-pub fn parse_report_descriptor(bytes: &[u8]) -> Option<ReportLayout> {
+pub fn parse_report_descriptor(bytes: &[u8]) -> Option<Box<ReportLayout>> {
     let mut globals = Global::new();
     let mut global_stack = [Global::new(); HID_GLOBAL_STACK_SIZE];
     let mut global_depth = 0usize;
     let mut locals = Local::new();
-    let mut bits = [0u32; 256];
-    let mut layout = ReportLayout::empty();
+    let mut bits = Box::new([0u32; 256]);
+    let mut layout = Box::new(ReportLayout::empty());
     let mut at = 0usize;
     while at < bytes.len() {
         let prefix = *bytes.get(at)?; at += 1;

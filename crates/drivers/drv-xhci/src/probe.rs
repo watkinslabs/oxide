@@ -37,10 +37,10 @@ pub(crate) struct UsbDevice { _controller: Weak<Controller>, pub(crate) state: S
 
 impl UsbDevice {
     /// Construct the input-facing device before taking the controller lock. # C: O(input registration)
-    pub(crate) fn new(controller: &Arc<Controller>, device: Box<AddressDeviceDma>) -> Arc<Self> {
+    pub(crate) fn new(controller: &Arc<Controller>, mut device: Box<AddressDeviceDma>) -> Arc<Self> {
         let slot = device.slot();
-        let layout = device.hid_layout();
-        let evdev = crate::probe_input::install_hid_input(controller.bdf, slot, layout);
+        let layout = device.take_hid_layout();
+        let evdev = crate::probe_input::install_hid_input(controller.bdf, slot, layout.as_deref().copied());
         let input_platform = evdev.map(|_| crate::probe_input::platform_id(controller.bdf, slot));
         Arc::new(Self { _controller: Arc::downgrade(controller), state: Spinlock::new(UsbDeviceState { device, slot, decoder: layout.map(|layout| Box::new(crate::hid_report::ReportDecoder::new(layout))), evdev, input_platform, storage_name: None }) })
     }
