@@ -30,7 +30,7 @@ static EVENT_RECORDS: AtomicU64 = AtomicU64::new(0);
 /// # SAFETY
 /// The caller must run before any requester can acquire PCI bus mastering.
 /// # C: O(units + requesters + RAM leaves)
-pub unsafe fn activate_amd_vi(requesters: &[Bdf], hhdm_offset: u64, regions: &[pmm::UsableRegion]) -> AmdViActivation {
+pub unsafe fn activate_amd_vi(requesters: &[Bdf], aliases: &pci::DmaAliases, hhdm_offset: u64, regions: &[pmm::UsableRegion]) -> AmdViActivation {
     let mut units = Vec::new();
     for index in 0..firmware::acpi::iommu_unit_count() {
         let Some(unit) = firmware::acpi::iommu_unit(index) else { return AmdViActivation::Failed; };
@@ -60,6 +60,10 @@ pub unsafe fn activate_amd_vi(requesters: &[Bdf], hhdm_offset: u64, regions: &[p
             for requester in &group.requesters {
                 // SAFETY: every group mapping is complete before its DTE becomes present.
                 if !unsafe { entry.bootstrap.attach(*requester, &group.domain, group.domain_id) } { return activation_failed(&mut manager); }
+                for alias in aliases.for_requester(*requester) {
+                    // SAFETY: the topology alias issues DMA for this completed requester domain.
+                    if !unsafe { entry.bootstrap.attach_alias(alias, &group.domain, group.domain_id) } { return activation_failed(&mut manager); }
+                }
             }
         }
     }

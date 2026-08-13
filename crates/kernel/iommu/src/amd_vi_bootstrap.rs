@@ -34,9 +34,26 @@ impl AmdViBootstrap {
     /// `domain` must cover every DMA address `bdf` may issue before enable.
     /// # C: O(1)
     pub unsafe fn attach(&mut self, bdf: Bdf, domain: &AmdViDomain, domain_id: u16) -> bool {
+        if !unsafe { self.attach_exact(bdf, domain, domain_id) } { return false; }
+        let Some(alias) = firmware::acpi::amd_vi_alias_for_requester(bdf.segment, bdf.raw()) else { return true; };
+        let alias = Bdf { segment: bdf.segment, bus: (alias >> 8) as u8,
+            device: ((alias >> 3) & 0x1f) as u8, function: (alias & 7) as u8 };
+        if alias == bdf { return true; }
+        // SAFETY: the original requester's completed domain covers its IVRS alias.
+        unsafe { self.attach_exact(alias, domain, domain_id) }
+    }
+    /// Attach one PCI topology-translated requester to the owner's domain.
+    /// # SAFETY: `domain` must cover every DMA address the alias may issue.
+    /// # C: O(1)
+    pub unsafe fn attach_alias(&mut self, alias: Bdf, domain: &AmdViDomain, domain_id: u16) -> bool {
+        // SAFETY: forwards the domain coverage contract to exact DTE ownership.
+        unsafe { self.attach_exact(alias, domain, domain_id) }
+    }
+    unsafe fn attach_exact(&mut self, bdf: Bdf, domain: &AmdViDomain, domain_id: u16) -> bool {
         if domain_id == 0 { return false; }
+        let Some(dte) = domain.dte(domain_id) else { return false; };
         // SAFETY: caller guarantees the domain covers this requester's initial DMA set.
-        if unsafe { !self.unit.install_initial_domain(&self.regs, &self.tables, self.hhdm_offset, bdf, domain, domain_id) } { return false; }
+        if unsafe { !self.unit.install_initial_dte(&self.regs, &self.tables, self.hhdm_offset, bdf, dte) } { return false; }
         // SAFETY: the just-published DTE belongs to this bootstrap-owned command ring.
         if unsafe { !self.unit.invalidate_initial_dte(&self.regs, &self.tables, self.hhdm_offset, bdf) } { return false; }
         true

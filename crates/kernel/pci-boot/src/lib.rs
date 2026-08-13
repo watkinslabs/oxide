@@ -154,7 +154,7 @@ pub fn enumerate_and_log() {
     // cannot leave a later probe able to restore Bus Master by default.
     pci::set_bus_master_admission(Some(iommu::bus_master_admitted));
     // SAFETY: all discovered PCI requesters have been quiesced and no driver is registered yet.
-    let iommu_activation = unsafe { iommu::activate_amd_vi(&requesters,
+    let iommu_activation = unsafe { iommu::activate_amd_vi(&requesters, &aliases,
         pmm::user_as::hhdm_offset(), pmm::setup::usable_regions()) };
     if iommu_activation == iommu::AmdViActivation::Failed { return; }
     if iommu_activation == iommu::AmdViActivation::Enabled
