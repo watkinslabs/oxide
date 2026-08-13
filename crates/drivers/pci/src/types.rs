@@ -28,6 +28,26 @@ pub struct Bdf {
     pub function: u8,
 }
 
+/// One canonical PCI requester alias used for DMA ownership.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct DmaAlias { pub requester: Bdf, pub alias: Bdf }
+
+/// PCI-owned explicit DMA requester aliases collected before IOMMU activation.
+pub struct DmaAliases { entries: alloc::vec::Vec<DmaAlias> }
+impl DmaAliases {
+    /// Create an empty PCI DMA-alias inventory. # C: O(1)
+    pub const fn new() -> Self { Self { entries: alloc::vec::Vec::new() } }
+    /// Record one same-segment requester alias without duplicate entries. # C: O(N)
+    pub fn add(&mut self, requester: Bdf, alias: Bdf) -> bool {
+        if requester.segment != alias.segment || self.entries.iter().any(|entry| *entry == DmaAlias { requester, alias }) { return false; }
+        self.entries.push(DmaAlias { requester, alias }); true
+    }
+    /// Return aliases registered for one requester. # C: O(N)
+    pub fn for_requester(&self, requester: Bdf) -> impl Iterator<Item = Bdf> + '_ {
+        self.entries.iter().filter(move |entry| entry.requester == requester).map(|entry| entry.alias)
+    }
+}
+
 impl Bdf {
 /// 16-bit requester identifier. Segment remains a separate ownership key.
     /// # C: O(1)
@@ -303,5 +323,17 @@ mod command_tests {
             intx_command_value(original | COMMAND_INTX_DISABLE, false),
             original,
         );
+    }
+
+    #[test]
+    fn dma_aliases_keep_segments_separate_and_deduplicate() {
+        let requester = Bdf { segment: 1, bus: 2, device: 3, function: 0 };
+        let alias = Bdf { segment: 1, bus: 2, device: 4, function: 0 };
+        let other_segment = Bdf { segment: 2, ..alias };
+        let mut aliases = DmaAliases::new();
+        assert!(aliases.add(requester, alias));
+        assert!(!aliases.add(requester, alias));
+        assert!(!aliases.add(requester, other_segment));
+        assert_eq!(aliases.for_requester(requester).collect::<alloc::vec::Vec<_>>(), alloc::vec![alias]);
     }
 }

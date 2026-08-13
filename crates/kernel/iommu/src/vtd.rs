@@ -44,14 +44,16 @@ pub(crate) fn parent_bridge<R: ConfigSpaceReader>(r: &R, child: Bdf) -> Option<B
 /// Requesters below a bridge without enabled redirect controls remain in one
 /// domain; functions in one slot always remain together until function-level
 /// alias discovery is available.
-pub(crate) fn vtd_dma_groups<R: ConfigSpaceReader>(r: &R, requesters: &[Bdf]) -> Vec<Vec<Bdf>> {
+pub(crate) fn vtd_dma_groups<R: ConfigSpaceReader>(r: &R, requesters: &[Bdf], aliases: &pci::DmaAliases) -> Vec<Vec<Bdf>> {
     let mut groups: Vec<Vec<Bdf>> = Vec::new();
     for requester in requesters {
         if groups.iter().flatten().any(|member| *member == *requester) { continue; }
         let key = isolation_key(r, *requester);
         let mut group = Vec::new();
         for candidate in requesters {
-            if isolation_key(r, *candidate) == key || same_slot(*candidate, *requester) { group.push(*candidate); }
+            if isolation_key(r, *candidate) == key || same_slot(*candidate, *requester)
+                || aliases.for_requester(*requester).any(|alias| alias == *candidate)
+                || aliases.for_requester(*candidate).any(|alias| alias == *requester) { group.push(*candidate); }
         }
         group.sort_unstable();
         group.dedup();
