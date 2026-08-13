@@ -22,6 +22,7 @@ char *strchr(const char *s, int c);
 char *strstr(const char *haystack, const char *needle);
 char *strsep(char **s, const char *delim);
 char *strim(char *s);
+bool sysfs_streq(const char *s1, const char *s2);
 ssize_t sized_strscpy(char *dst, const char *src, size_t count);
 int hex_to_bin(int ch);
 int hex2bin(unsigned char *dst, const char *src, size_t count);
