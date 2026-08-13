@@ -218,6 +218,7 @@ pub unsafe fn init_exports() {
     crate::linux_device::export_symbols();
     crate::linux_dma::export_symbols();
     crate::linux_dma_buf::export_symbols();
+    crate::linux_dma_fence::export_symbols();
     crate::linux_firmware::export_symbols();
     crate::linux_input::export_symbols();
     crate::linux_module::export_symbols();
