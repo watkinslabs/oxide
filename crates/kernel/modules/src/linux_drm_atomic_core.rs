@@ -6,6 +6,7 @@ const DRM_ATOMIC_STATE_SIZE: usize = 128;
 const DRM_ATOMIC_REF_OFF: usize = 0;
 const DRM_ATOMIC_DEV_OFF: usize = 8;
 const DRM_ATOMIC_ALLOW_MODESET_OFF: usize = 16;
+const DRM_ATOMIC_CHECKED_BIT: u8 = 1 << 4;
 const DRM_ATOMIC_PLANES_OFF: usize = 32;
 const DRM_ATOMIC_CRTCS_OFF: usize = 40;
 const DRM_ATOMIC_NUM_CONNECTOR_OFF: usize = 48;
@@ -70,6 +71,7 @@ unsafe fn call_destroy(object: *mut c_void, funcs_off: usize, destroy_off: usize
 
 pub(super) fn export_symbols() {
     crate::symtab::export("drm_atomic_commit_alloc", drm_atomic_commit_alloc as *const () as usize, false);
+    crate::symtab::export("drm_atomic_commit_clear", drm_atomic_commit_clear as *const () as usize, false);
     crate::symtab::export("drm_atomic_commit_put", drm_atomic_commit_put as *const () as usize, false);
     crate::symtab::export("drm_atomic_commit_default_clear", drm_atomic_commit_default_clear as *const () as usize, false);
     crate::symtab::export("drm_atomic_commit_default_release", drm_atomic_commit_default_release as *const () as usize, false);
@@ -105,17 +107,14 @@ pub(super) extern "C" fn drm_atomic_commit_put(state: *mut c_void) {
     if refs > 1 { unsafe { write(state.add(DRM_ATOMIC_REF_OFF).cast::<i32>(), refs - 1); } return; }
     // SAFETY: a live atomic state always retains its live DRM device until final release.
     let dev = unsafe { read(state.add(DRM_ATOMIC_DEV_OFF).cast::<*mut c_void>()) };
+    drm_atomic_commit_clear(state.cast());
     let funcs = mode_config_funcs(dev);
     if !funcs.is_null() {
-        // SAFETY: custom state lifecycle callbacks own clear and final-state storage for this device.
-        let clear = unsafe { state_callback(funcs, DRM_MODE_CONFIG_ATOMIC_STATE_CLEAR_OFF) };
+        // SAFETY: custom state lifecycle callback owns final-state storage for this device.
         let release = unsafe { state_callback(funcs, DRM_MODE_CONFIG_ATOMIC_STATE_FREE_OFF) };
-        if clear != 0 { unsafe { core::mem::transmute::<usize, unsafe extern "C" fn(*mut c_void)>(clear)(state.cast()); } }
-        else { drm_atomic_commit_default_clear(state.cast()); }
         if release != 0 { unsafe { core::mem::transmute::<usize, unsafe extern "C" fn(*mut c_void)>(release)(state.cast()); } }
         else { drm_atomic_commit_default_release(state.cast()); unsafe { dealloc(state, layout(DRM_ATOMIC_STATE_SIZE).unwrap()); } }
     } else {
-        drm_atomic_commit_default_clear(state.cast());
         drm_atomic_commit_default_release(state.cast());
         // SAFETY: final default release owns the original complete atomic-state allocation exactly once.
         unsafe { dealloc(state, layout(DRM_ATOMIC_STATE_SIZE).unwrap()); }
@@ -123,10 +122,26 @@ pub(super) extern "C" fn drm_atomic_commit_put(state: *mut c_void) {
     drm_dev_put(dev);
 }
 
+/// Discard cached object states after modeset-lock backoff. # C: O(N_objects)
+pub(super) extern "C" fn drm_atomic_commit_clear(state: *mut c_void) {
+    if state.is_null() { return; }
+    let state = state.cast::<u8>();
+    // SAFETY: a live atomic state retains its device until final release and carries its lifecycle table.
+    let funcs = mode_config_funcs(unsafe { read(state.add(DRM_ATOMIC_DEV_OFF).cast::<*mut c_void>()) });
+    if !funcs.is_null() {
+        // SAFETY: the optional driver callback clears its own extension before the transaction is reused.
+        let clear = unsafe { state_callback(funcs, DRM_MODE_CONFIG_ATOMIC_STATE_CLEAR_OFF) };
+        if clear != 0 { unsafe { core::mem::transmute::<usize, unsafe extern "C" fn(*mut c_void)>(clear)(state.cast()); } return; }
+    }
+    drm_atomic_commit_default_clear(state.cast());
+}
+
 /// Destroy every duplicated default state and drop connector references. # C: O(N_objects)
 pub(super) extern "C" fn drm_atomic_commit_default_clear(state: *mut c_void) {
     if state.is_null() { return; }
     let state = state.cast::<u8>();
+    // SAFETY: checked is private transaction metadata and must be cleared before a retry may acquire state.
+    unsafe { *state.add(DRM_ATOMIC_ALLOW_MODESET_OFF) &= !DRM_ATOMIC_CHECKED_BIT; }
     // SAFETY: the state retains a live device while its arrays and duplicated states are cleared.
     let dev = unsafe { read(state.add(DRM_ATOMIC_DEV_OFF).cast::<*mut c_void>()) };
     let Some((planes, crtcs, _)) = release_counts(dev) else { return; };
@@ -156,10 +171,35 @@ pub(super) extern "C" fn drm_atomic_commit_default_release(state: *mut c_void) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    static CLEAR_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe extern "C" fn clear_callback(_state: *mut c_void) { CLEAR_CALLS.fetch_add(1, Ordering::SeqCst); }
     #[test]
     fn atomic_state_exports_are_present() {
         export_symbols();
-        for name in ["drm_atomic_commit_alloc", "drm_atomic_commit_put", "drm_atomic_commit_default_release"] { assert!(crate::symtab::is_exported(name)); }
+        for name in ["drm_atomic_commit_alloc", "drm_atomic_commit_clear", "drm_atomic_commit_put", "drm_atomic_commit_default_release"] { assert!(crate::symtab::is_exported(name)); }
         assert_eq!(DRM_ATOMIC_STATE_SIZE, 128); assert_eq!(DRM_ATOMIC_PLANE_ENTRY_SIZE, 32); assert_eq!(DRM_ATOMIC_CRTC_ENTRY_SIZE, 56); assert_eq!(DRM_ATOMIC_CONNECTOR_ENTRY_SIZE, 40);
+    }
+
+    #[test]
+    fn clear_resets_checked_and_prefers_driver_lifecycle_callback() {
+        let mut state = [0u8; DRM_ATOMIC_STATE_SIZE];
+        state[DRM_ATOMIC_ALLOW_MODESET_OFF] = DRM_ATOMIC_CHECKED_BIT;
+        drm_atomic_commit_clear(state.as_mut_ptr().cast());
+        assert_eq!(state[DRM_ATOMIC_ALLOW_MODESET_OFF] & DRM_ATOMIC_CHECKED_BIT, 0);
+
+        let mut dev = [0u8; DRM_DEVICE_MODE_CONFIG_OFF + DRM_MODE_CONFIG_FUNCS_OFF + 8];
+        let mut funcs = [0u8; DRM_MODE_CONFIG_ATOMIC_STATE_FREE_OFF + 8];
+        CLEAR_CALLS.store(0, Ordering::SeqCst);
+        // SAFETY: fabricated ABI records reserve the mode-config callback and atomic-device pointer fields.
+        unsafe {
+            write(dev.as_mut_ptr().add(DRM_DEVICE_MODE_CONFIG_OFF + DRM_MODE_CONFIG_FUNCS_OFF).cast::<*mut u8>(), funcs.as_mut_ptr());
+            write(funcs.as_mut_ptr().add(DRM_MODE_CONFIG_ATOMIC_STATE_CLEAR_OFF).cast::<usize>(), clear_callback as *const () as usize);
+            write(state.as_mut_ptr().add(DRM_ATOMIC_DEV_OFF).cast::<*mut u8>(), dev.as_mut_ptr());
+        }
+        drm_atomic_commit_clear(state.as_mut_ptr().cast());
+        assert_eq!(CLEAR_CALLS.load(Ordering::SeqCst), 1);
     }
 }
