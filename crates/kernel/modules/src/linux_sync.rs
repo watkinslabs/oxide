@@ -4,6 +4,8 @@ use sync::IrqGate;
 use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 #[path = "linux_sync_wait.rs"]
 mod wait;
+#[path = "linux_sync/srcu.rs"]
+mod srcu;
 use wait::{wait_cell, WAIT_COMPLETION, WAIT_MUTEX, WAIT_QUEUE, WAIT_SEM};
 
 /// Arch IRQ gate backing the module ABI's `_irq` / `_irqsave` lock variants.
@@ -164,6 +166,7 @@ pub fn export_symbols() {
         ("lockdep_set_class", lockdep_set_class as *const () as usize),
         ("lockdep_set_class_and_name", lockdep_set_class_and_name as *const () as usize),
     ] { export(name, addr, false); }
+    srcu::export_symbols();
 }
 
 extern "C" fn spin_lock_init(l: *mut LinuxSpinlock) {
