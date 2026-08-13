@@ -1,4 +1,5 @@
-use super::{EFI_BS_BASE, EFI_BS_COUNT, EFI_BS_PAGES, EFI_CMDLINE, EFI_CMDLINE_LEN, EFI_CMDLINE_MAX, EFI_RAM_BASE, EFI_RAM_COUNT, EFI_RAM_MAX, EFI_RAM_PAGES, EFI_RSDP_PA, EFI_SYSTAB_PA, EFI_TYPE_PAGES};
+use super::{EFI_BS_BASE, EFI_BS_COUNT, EFI_BS_PAGES, EFI_CMDLINE, EFI_CMDLINE_LEN, EFI_CMDLINE_MAX, EFI_FB_BASE, EFI_FB_BLUE_MASK, EFI_FB_BYTES, EFI_FB_FORMAT, EFI_FB_GREEN_MASK, EFI_FB_HEIGHT, EFI_FB_PIXELS_PER_SCANLINE, EFI_FB_RED_MASK, EFI_FB_RESERVED_MASK, EFI_FB_WIDTH, EFI_RAM_BASE, EFI_RAM_COUNT, EFI_RAM_MAX, EFI_RAM_PAGES, EFI_RSDP_PA, EFI_SYSTAB_PA, EFI_TYPE_PAGES};
+use core::sync::atomic::Ordering;
 
 /// EFI device-tree config-table GUID (gFdtTableGuid,
 /// b1b621d5-f19c-41a5-830b-d9152c69aae0) in EFI mixed-endian byte order:
@@ -27,9 +28,25 @@ const LOADED_IMAGE_GUID: [u8; 16] = [
     0x8e, 0x3f, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b,
 ];
 
+/// EFI graphics-output and console-output-device protocol identifiers.
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+const GRAPHICS_OUTPUT_GUID: [u8; 16] = [
+    0xde, 0xa9, 0x42, 0x90, 0xdc, 0x23, 0x38, 0x4a,
+    0x96, 0xfb, 0x7a, 0xde, 0xd0, 0x80, 0x51, 0x6a,
+];
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+const CONSOLE_OUT_DEVICE_GUID: [u8; 16] = [
+    0x2c, 0x6f, 0xb3, 0xd3, 0x51, 0xd5, 0xd4, 0x11,
+    0x9a, 0x46, 0x00, 0x90, 0x27, 0x3f, 0xc1, 0x4d,
+];
+
 /// `EFI_BOOT_SERVICES.HandleProtocol` slot (UEFI 2.x table order).
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 const BS_HANDLE_PROTOCOL: usize = 0x98;
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+const BS_FREE_POOL: usize = 0x48;
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+const BS_LOCATE_HANDLE_BUFFER: usize = 0x138;
 /// `EFI_LOADED_IMAGE_PROTOCOL.LoadOptionsSize` (UINT32) and `.LoadOptions`
 /// (pointer) field offsets under LP64 natural alignment.
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
@@ -73,6 +90,67 @@ unsafe fn capture_load_options(boot_services: *const u8, handle: u64) {
             true
         });
         EFI_CMDLINE_LEN.store(n as u64, core::sync::atomic::Ordering::Release);
+    }
+}
+
+/// Capture the firmware-selected linear GOP before boot services disappear.
+/// The console-associated GOP wins; a usable non-console GOP is the fallback.
+/// # SAFETY: runs once while all referenced UEFI boot-service tables live.
+/// # C: O(number of GOP handles)
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+unsafe fn capture_framebuffer(boot_services: *const u8) {
+    type LocateHandleBufferFn = extern "C" fn(u32, *const u8, *const u8, *mut usize, *mut *mut u64) -> u64;
+    type HandleProtocolFn = extern "C" fn(u64, *const u8, *mut *const u8) -> u64;
+    type FreePoolFn = extern "C" fn(*mut u8) -> u64;
+    // SAFETY: function slots and returned protocol records follow the UEFI
+    // ABI; all reads occur before ExitBootServices invalidates the services.
+    unsafe {
+        let locate: LocateHandleBufferFn = core::mem::transmute(*(boot_services.add(BS_LOCATE_HANDLE_BUFFER) as *const u64));
+        let handle_protocol: HandleProtocolFn = core::mem::transmute(*(boot_services.add(BS_HANDLE_PROTOCOL) as *const u64));
+        let free_pool: FreePoolFn = core::mem::transmute(*(boot_services.add(BS_FREE_POOL) as *const u64));
+        let mut count = 0usize;
+        let mut handles: *mut u64 = core::ptr::null_mut();
+        // LocateByProtocol is 2. Firmware owns the returned pool buffer until
+        // FreePool, so it is consumed and released in this same boot phase.
+        if locate(2, GRAPHICS_OUTPUT_GUID.as_ptr(), core::ptr::null(), &mut count, &mut handles) != 0 || handles.is_null() { return; }
+        let mut first = None;
+        let mut selected = None;
+        for index in 0..count {
+            let handle = *handles.add(index);
+            let mut gop: *const u8 = core::ptr::null();
+            if handle_protocol(handle, GRAPHICS_OUTPUT_GUID.as_ptr(), &mut gop) != 0 || gop.is_null() { continue; }
+            let mode = *(gop.add(24) as *const *const u8);
+            if mode.is_null() { continue; }
+            let info = *(mode.add(8) as *const *const u8);
+            if info.is_null() { continue; }
+            let raw = crate::efi_gop::GopMode {
+                base_pa: *(mode.add(24) as *const u64), bytes: *(mode.add(32) as *const u64),
+                width: *(info.add(4) as *const u32), height: *(info.add(8) as *const u32),
+                pixel_format: *(info.add(12) as *const u32), red_mask: *(info.add(16) as *const u32),
+                green_mask: *(info.add(20) as *const u32), blue_mask: *(info.add(24) as *const u32),
+                reserved_mask: *(info.add(28) as *const u32), pixels_per_scanline: *(info.add(32) as *const u32),
+            };
+            if crate::efi_gop::framebuffer(raw).is_none() { continue; }
+            if first.is_none() { first = Some(raw); }
+            let mut console: *const u8 = core::ptr::null();
+            if handle_protocol(handle, CONSOLE_OUT_DEVICE_GUID.as_ptr(), &mut console) == 0 {
+                selected = Some(raw);
+                break;
+            }
+        }
+        let raw = selected.or(first);
+        let _ = free_pool(handles.cast());
+        let Some(raw) = raw else { return };
+        EFI_FB_BYTES.store(raw.bytes, Ordering::Relaxed);
+        EFI_FB_WIDTH.store(u64::from(raw.width), Ordering::Relaxed);
+        EFI_FB_HEIGHT.store(u64::from(raw.height), Ordering::Relaxed);
+        EFI_FB_FORMAT.store(u64::from(raw.pixel_format), Ordering::Relaxed);
+        EFI_FB_RED_MASK.store(u64::from(raw.red_mask), Ordering::Relaxed);
+        EFI_FB_GREEN_MASK.store(u64::from(raw.green_mask), Ordering::Relaxed);
+        EFI_FB_BLUE_MASK.store(u64::from(raw.blue_mask), Ordering::Relaxed);
+        EFI_FB_RESERVED_MASK.store(u64::from(raw.reserved_mask), Ordering::Relaxed);
+        EFI_FB_PIXELS_PER_SCANLINE.store(u64::from(raw.pixels_per_scanline), Ordering::Relaxed);
+        EFI_FB_BASE.store(raw.base_pa, Ordering::Release);
     }
 }
 
@@ -134,6 +212,9 @@ pub unsafe extern "C" fn efi_stub_setup(handle: u64, systab: *const u8) -> u64 {
         // SAFETY: same firmware contract as this fn's caller; boot services
         // are alive until the ExitBootServices below returns.
         capture_load_options(boot_services, handle);
+        // Graphics must be captured before ExitBootServices for the same
+        // reason as load options: GOP is a boot-services protocol.
+        capture_framebuffer(boot_services);
 
         // GetMemoryMap @ bs+0x38, ExitBootServices @ bs+0xE8.
         type GetMemoryMapFn =
@@ -228,4 +309,3 @@ pub unsafe extern "C" fn efi_stub_setup(handle: u64, systab: *const u8) -> u64 {
         dtb
     }
 }
-

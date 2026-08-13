@@ -25,6 +25,7 @@
 
 #![cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 
+use boot_info::BootFramebuffer;
 use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 /// HHDM offset the trampoline installs (TTBR1 0xFFFF_8000… -> phys 0).
@@ -80,6 +81,19 @@ pub static EFI_CMDLINE_LEN: AtomicU64 = AtomicU64::new(0);
 pub static EFI_CMDLINE: [AtomicU8; EFI_CMDLINE_MAX] =
     [const { AtomicU8::new(0) }; EFI_CMDLINE_MAX];
 
+/// Firmware GOP mode captured before `ExitBootServices`. Zero base means no
+/// usable linear output protocol was published by the firmware.
+pub static EFI_FB_BASE: AtomicU64 = AtomicU64::new(0);
+pub static EFI_FB_BYTES: AtomicU64 = AtomicU64::new(0);
+pub static EFI_FB_WIDTH: AtomicU64 = AtomicU64::new(0);
+pub static EFI_FB_HEIGHT: AtomicU64 = AtomicU64::new(0);
+pub static EFI_FB_FORMAT: AtomicU64 = AtomicU64::new(0);
+pub static EFI_FB_RED_MASK: AtomicU64 = AtomicU64::new(0);
+pub static EFI_FB_GREEN_MASK: AtomicU64 = AtomicU64::new(0);
+pub static EFI_FB_BLUE_MASK: AtomicU64 = AtomicU64::new(0);
+pub static EFI_FB_RESERVED_MASK: AtomicU64 = AtomicU64::new(0);
+pub static EFI_FB_PIXELS_PER_SCANLINE: AtomicU64 = AtomicU64::new(0);
+
 /// Max `EfiConventionalMemory` regions captured from the EFI memory map by
 /// `efi_stub_setup` for the no-DTB PMM memmap (QEMU EDK2 in ACPI mode hands
 /// no FDT, so the DTB `/memory` extent is unavailable — without this the
@@ -112,6 +126,26 @@ pub static EFI_TYPE_PAGES: [AtomicU64; 16] =
 /// True when we entered via the self-bootstrap Image trampoline.
 /// # C: O(1)
 pub fn is_selfboot() -> bool { SB_SELFBOOT_FLAG.load(Ordering::Acquire) != 0 }
+
+/// Return the complete EFI GOP handoff after the base field's release/acquire
+/// publication, or an empty framebuffer when firmware exposed no usable mode.
+/// # C: O(1)
+pub fn framebuffer() -> BootFramebuffer {
+    let base_pa = EFI_FB_BASE.load(Ordering::Acquire);
+    if base_pa == 0 { return BootFramebuffer::EMPTY; }
+    crate::efi_gop::framebuffer(crate::efi_gop::GopMode {
+        base_pa,
+        bytes: EFI_FB_BYTES.load(Ordering::Relaxed),
+        width: EFI_FB_WIDTH.load(Ordering::Relaxed) as u32,
+        height: EFI_FB_HEIGHT.load(Ordering::Relaxed) as u32,
+        pixel_format: EFI_FB_FORMAT.load(Ordering::Relaxed) as u32,
+        red_mask: EFI_FB_RED_MASK.load(Ordering::Relaxed) as u32,
+        green_mask: EFI_FB_GREEN_MASK.load(Ordering::Relaxed) as u32,
+        blue_mask: EFI_FB_BLUE_MASK.load(Ordering::Relaxed) as u32,
+        reserved_mask: EFI_FB_RESERVED_MASK.load(Ordering::Relaxed) as u32,
+        pixels_per_scanline: EFI_FB_PIXELS_PER_SCANLINE.load(Ordering::Relaxed) as u32,
+    }).unwrap_or(BootFramebuffer::EMPTY)
+}
 
 mod asm;
 mod efi;
