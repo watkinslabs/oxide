@@ -10,6 +10,10 @@ use core::sync::atomic::{AtomicU64, Ordering};
 /// Kernel VA the I/O APIC MMIO is Device-attr mapped at (0 = unmapped).
 /// Published by the kernel after mapping `firmware::ioapic_pa()`.
 static IOAPIC_VA: AtomicU64 = AtomicU64::new(0);
+const MAX_IOAPICS: usize = 8;
+static IOAPIC_VAS: [AtomicU64; MAX_IOAPICS] = [const { AtomicU64::new(0) }; MAX_IOAPICS];
+static IOAPIC_GSI_BASES: [AtomicU64; MAX_IOAPICS] = [const { AtomicU64::new(0) }; MAX_IOAPICS];
+static IOAPIC_IDS: [AtomicU64; MAX_IOAPICS] = [const { AtomicU64::new(u64::MAX) }; MAX_IOAPICS];
 static VECTOR_PINS: [AtomicU64; 256] =
     [const { AtomicU64::new(0) }; 256];
 
@@ -43,26 +47,62 @@ const RTE_REMAP_INDEX_SHIFT: u32 = 17;
 const RTE_REMAP_INDEX_HIGH: u32 = 1 << 11;
 
 /// Publish the I/O APIC MMIO kernel VA. # C: O(1)
-pub fn set_base_va(va: u64) { IOAPIC_VA.store(va, Ordering::Release); }
+pub fn set_base_va(va: u64) {
+    IOAPIC_VA.store(va, Ordering::Release);
+    IOAPIC_VAS[0].store(va, Ordering::Release);
+}
 /// Read the published I/O APIC VA (0 = unmapped). # C: O(1)
 pub fn base_va() -> u64 { IOAPIC_VA.load(Ordering::Acquire) }
+
+/// Publish a mapped I/O APIC selected by the GSI base declared in MADT.
+/// # C: O(N_IOAPIC)
+pub fn set_gsi_base_va(id: u8, gsi_base: u32, va: u64) -> bool {
+    if va == 0 { return false; }
+    for index in 0..MAX_IOAPICS {
+        let base = IOAPIC_GSI_BASES[index].load(Ordering::Acquire);
+        if base == u64::from(gsi_base) {
+            IOAPIC_IDS[index].store(u64::from(id), Ordering::Release);
+            IOAPIC_VAS[index].store(va, Ordering::Release);
+            if index == 0 { IOAPIC_VA.store(va, Ordering::Release); }
+            return true;
+        }
+        if base == 0 && IOAPIC_GSI_BASES[index].compare_exchange(0, u64::from(gsi_base), Ordering::AcqRel, Ordering::Acquire).is_ok() {
+            IOAPIC_IDS[index].store(u64::from(id), Ordering::Release);
+            IOAPIC_VAS[index].store(va, Ordering::Release);
+            if index == 0 { IOAPIC_VA.store(va, Ordering::Release); }
+            return true;
+        }
+    }
+    false
+}
 
 /// Forget a vector-to-pin route when the vector is released. # C: O(1)
 pub fn unroute_vector(vector: u8) { VECTOR_PINS[vector as usize].store(0, Ordering::Release); }
 
-fn route_vector(vector: u8, pin: u32) {
-    VECTOR_PINS[vector as usize].store(u64::from(pin) + 1, Ordering::Release);
+fn route_vector(vector: u8, va: u64, pin: u32) {
+    let Some(index) = (0..MAX_IOAPICS).find(|index| IOAPIC_VAS[*index].load(Ordering::Acquire) == va) else { return; };
+    VECTOR_PINS[vector as usize].store(((index as u64 + 1) << 32) | (u64::from(pin) + 1), Ordering::Release);
 }
 
-fn pin_for_vector(vector: u8) -> Option<u32> {
+fn pin_for_vector(vector: u8) -> Option<(u64, u32)> {
     let encoded = VECTOR_PINS[vector as usize].load(Ordering::Acquire);
-    (encoded != 0).then_some((encoded.saturating_sub(1)) as u32)
+    if encoded == 0 { return None; }
+    let index = ((encoded >> 32).checked_sub(1)?) as usize;
+    let pin = (encoded as u32).checked_sub(1)?;
+    Some((IOAPIC_VAS.get(index)?.load(Ordering::Acquire), pin))
 }
 
 /// # SAFETY: `IOAPIC_VA` is a live Device-attr mapping; single-CPU /
 /// IRQ-off so the IOREGSEL→IOWIN pair is atomic w.r.t. other accessors.
 unsafe fn read_reg(idx: u32) -> u32 {
     let va = IOAPIC_VA.load(Ordering::Acquire);
+    // SAFETY: the first published I/O APIC VA is live under this caller's serialization.
+    unsafe { read_reg_at(va, idx) }
+}
+
+/// # SAFETY: `va` names one live Device-attr I/O APIC mapping and the caller
+/// serializes the indirect selector/window pair. # C: O(1)
+unsafe fn read_reg_at(va: u64, idx: u32) -> u32 {
     // SAFETY: caller asserts VA is mapped; the index select + window
     // read is the architected I/O APIC access sequence.
     unsafe {
@@ -71,14 +111,44 @@ unsafe fn read_reg(idx: u32) -> u32 {
     }
 }
 
-/// # SAFETY: as `read_reg`.
-unsafe fn write_reg(idx: u32, val: u32) {
-    let va = IOAPIC_VA.load(Ordering::Acquire);
+/// # SAFETY: as [`read_reg_at`]. # C: O(1)
+unsafe fn write_reg_at(va: u64, idx: u32, val: u32) {
     // SAFETY: caller asserts VA is mapped; architected select+write.
     unsafe {
         core::ptr::write_volatile((va + IOREGSEL) as *mut u32, idx);
         core::ptr::write_volatile((va + IOWIN) as *mut u32, val);
     }
+}
+
+/// Return whether `pin` is implemented by the published I/O APIC.
+///
+/// # SAFETY: the caller provides the same I/O-APIC serialization as a
+/// redirection-table programming operation. # C: O(1)
+pub unsafe fn has_pin(pin: u32) -> bool {
+    if IOAPIC_VA.load(Ordering::Acquire) == 0 { return false; }
+    // SAFETY: the published MMIO window is live and the caller serializes the
+    // indirect IOREGSEL/IOWIN pair.
+    let highest = unsafe { (read_reg(IOAPIC_VER) >> 16) & 0xff };
+    pin <= highest
+}
+
+/// Return the mapped I/O APIC and local pin that own `gsi`.
+///
+/// # SAFETY: caller serializes I/O-APIC indirect register accesses. # C: O(N_IOAPIC)
+pub unsafe fn gsi_pin(gsi: u32) -> Option<(u8, u64, u32)> {
+    for index in 0..MAX_IOAPICS {
+        let va = IOAPIC_VAS[index].load(Ordering::Acquire);
+        if va == 0 { continue; }
+        let base = IOAPIC_GSI_BASES[index].load(Ordering::Acquire) as u32;
+        let Some(pin) = gsi.checked_sub(base) else { continue; };
+        // SAFETY: `va` is published only after a complete Device MMIO map.
+        let highest = unsafe { (read_reg_at(va, IOAPIC_VER) >> 16) & 0xff };
+        if pin <= highest {
+            let id = u8::try_from(IOAPIC_IDS[index].load(Ordering::Acquire)).ok()?;
+            return Some((id, va, pin));
+        }
+    }
+    None
 }
 
 /// Program redirection entry `pin` (GSI relative to this I/O APIC's
@@ -99,6 +169,16 @@ pub unsafe fn program_redirect(
     level: bool,
     active_low: bool,
 ) {
+    let va = IOAPIC_VA.load(Ordering::Acquire);
+    // SAFETY: this wrapper preserves the documented first-I/O-APIC contract.
+    unsafe { program_redirect_at(va, pin, vector, dest_apic, level, active_low); }
+}
+
+/// Program one selected controller entry directly.
+/// # SAFETY: `va` names the selected live I/O APIC and `pin` is implemented.
+/// # C: O(1)
+pub unsafe fn program_redirect_at(va: u64, pin: u32, vector: u8, dest_apic: u8,
+    level: bool, active_low: bool) {
     let lo_idx = 0x10 + 2 * pin;
     let hi_idx = 0x11 + 2 * pin;
     // low: vector[7:0]; delivery=Fixed(000)@10:8; dest=physical(0)@11;
@@ -108,11 +188,29 @@ pub unsafe fn program_redirect(
     if level { lo |= 1 << 15; }
     // high: destination APIC id in bits 56:63 → high-word bits 24:31.
     let hi: u32 = (dest_apic as u32) << 24;
-    route_vector(vector, pin);
+    route_vector(vector, va, pin);
     // SAFETY: per fn contract — mapped MMIO; write destination, then unmask the routed pin.
     unsafe {
-        write_reg(hi_idx, hi);
-        write_reg(lo_idx, lo);
+        write_reg_at(va, hi_idx, hi);
+        write_reg_at(va, lo_idx, lo);
+    }
+}
+
+/// Program an AMD-Vi-remapped source whose wire vector is its IRTE index.
+/// # SAFETY: `va` names the selected live I/O APIC and the IRTE is already live.
+/// # C: O(1)
+pub unsafe fn program_amd_remapped_redirect_at(va: u64, pin: u32, handler_vector: u8,
+    irte_index: u8, level: bool, active_low: bool) {
+    let lo_idx = 0x10 + 2 * pin;
+    let hi_idx = 0x11 + 2 * pin;
+    let mut lo = u32::from(irte_index);
+    if active_low { lo |= 1 << 13; }
+    if level { lo |= RTE_LEVEL; }
+    route_vector(handler_vector, va, pin);
+    // SAFETY: the IOMMU invalidated the IRTE before this source-side unmask.
+    unsafe {
+        write_reg_at(va, hi_idx, 0);
+        write_reg_at(va, lo_idx, lo);
     }
 }
 
@@ -142,14 +240,24 @@ pub unsafe fn program_remapped_redirect(
     level: bool,
     active_low: bool,
 ) -> bool {
+    let va = IOAPIC_VA.load(Ordering::Acquire);
+    // SAFETY: this wrapper preserves the documented first-I/O-APIC contract.
+    unsafe { program_remapped_redirect_at(va, pin, vector, index, level, active_low) }
+}
+
+/// Program one selected controller entry in remappable format.
+/// # SAFETY: `va` names the selected live I/O APIC and `index` names a live IRTE.
+/// # C: O(1)
+pub unsafe fn program_remapped_redirect_at(va: u64, pin: u32, vector: u8, index: u16,
+    level: bool, active_low: bool) -> bool {
     let Some((lo, hi)) = remapped_redirect_words(pin, index, level, active_low) else { return false; };
     let lo_idx = 0x10 + 2 * pin;
     let hi_idx = 0x11 + 2 * pin;
-    route_vector(vector, pin);
+    route_vector(vector, va, pin);
     // SAFETY: per fn contract — the live IRTE precedes this source-side unmask.
     unsafe {
-        write_reg(hi_idx, hi);
-        write_reg(lo_idx, lo);
+        write_reg_at(va, hi_idx, hi);
+        write_reg_at(va, lo_idx, lo);
     }
     true
 }
@@ -157,11 +265,18 @@ pub unsafe fn program_remapped_redirect(
 /// Mask redirection entry `pin` (set bit 16 of its low word).
 /// # SAFETY: as `program_redirect`. # C: O(1)
 pub unsafe fn mask(pin: u32) {
+    let va = IOAPIC_VA.load(Ordering::Acquire);
+    // SAFETY: this wrapper preserves the documented first-I/O-APIC contract.
+    unsafe { mask_at(va, pin); }
+}
+
+/// # SAFETY: `va` names the selected live I/O APIC and `pin` is implemented.
+unsafe fn mask_at(va: u64, pin: u32) {
     let lo_idx = 0x10 + 2 * pin;
     // SAFETY: per fn contract — mapped MMIO read-modify-write.
     unsafe {
-        let lo = read_reg(lo_idx) | (1 << 16);
-        write_reg(lo_idx, lo);
+        let lo = read_reg_at(va, lo_idx) | (1 << 16);
+        write_reg_at(va, lo_idx, lo);
     }
 }
 
@@ -171,19 +286,18 @@ pub unsafe fn mask(pin: u32) {
 /// write the pin's vector to the EOI register, or — where that does not exist
 /// — briefly present the entry as edge triggered, which is what makes the
 /// device drop the assertion it is holding.
-/// # SAFETY: as `program_redirect`, and the entry is already masked.
-unsafe fn eoi_pin(pin: u32, lo: u32) {
+/// # SAFETY: `va` names the selected live I/O APIC and `pin` is implemented.
+unsafe fn eoi_pin_at(va: u64, pin: u32, lo: u32) {
     let lo_idx = 0x10 + 2 * pin;
     // SAFETY: per fn contract — the window is mapped and `pin` is an implemented entry.
     unsafe {
-        let ver = read_reg(IOAPIC_VER) & RTE_VECTOR_MASK;
+        let ver = read_reg_at(va, IOAPIC_VER) & RTE_VECTOR_MASK;
         if ver >= VER_WITH_EOI {
-            let va = IOAPIC_VA.load(Ordering::Acquire);
             core::ptr::write_volatile((va + IOWIN_EOI) as *mut u32, lo & RTE_VECTOR_MASK);
             return;
         }
-        write_reg(lo_idx, lo & !RTE_LEVEL);
-        write_reg(lo_idx, lo);
+        write_reg_at(va, lo_idx, lo & !RTE_LEVEL);
+        write_reg_at(va, lo_idx, lo);
     }
 }
 
@@ -201,23 +315,31 @@ unsafe fn eoi_pin(pin: u32, lo: u32) {
 /// # SAFETY: as `program_redirect`; irreversible for this boot.
 /// # C: O(pins)
 pub unsafe fn clear_all() {
-    if IOAPIC_VA.load(Ordering::Acquire) == 0 { return; }
-    // SAFETY: the window is mapped; register 0x01 is the version register.
-    let maxred = unsafe { (read_reg(IOAPIC_VER) >> 16) & 0xff };
+    for index in 0..MAX_IOAPICS {
+        let va = IOAPIC_VAS[index].load(Ordering::Acquire);
+        if va == 0 { continue; }
+        // SAFETY: the published controller window is mapped and serialized by caller.
+        unsafe { clear_at(va); }
+    }
+}
+
+/// # SAFETY: `va` names a live I/O APIC mapping under caller serialization.
+unsafe fn clear_at(va: u64) {
+    let maxred = unsafe { (read_reg_at(va, IOAPIC_VER) >> 16) & 0xff };
     for pin in 0..=maxred {
         let lo_idx = 0x10 + 2 * pin;
         let hi_idx = 0x11 + 2 * pin;
         // SAFETY: `pin` is within the entry count the device just reported.
         unsafe {
-            let mut lo = read_reg(lo_idx);
+            let mut lo = read_reg_at(va, lo_idx);
             if lo & RTE_DELIVERY_MASK == RTE_DELIVERY_SMI { continue; }
             if lo & RTE_MASK == 0 {
-                write_reg(lo_idx, lo | RTE_MASK);
-                lo = read_reg(lo_idx);
+                write_reg_at(va, lo_idx, lo | RTE_MASK);
+                lo = read_reg_at(va, lo_idx);
             }
-            if lo & RTE_REMOTE_IRR != 0 { eoi_pin(pin, lo | RTE_LEVEL); }
-            write_reg(hi_idx, 0);
-            write_reg(lo_idx, RTE_MASK);
+            if lo & RTE_REMOTE_IRR != 0 { eoi_pin_at(va, pin, lo | RTE_LEVEL); }
+            write_reg_at(va, hi_idx, 0);
+            write_reg_at(va, lo_idx, RTE_MASK);
         }
     }
 }
@@ -226,9 +348,9 @@ pub unsafe fn clear_all() {
 /// # SAFETY: the published route implies a live I/O APIC mapping.
 /// # C: O(1)
 pub unsafe fn mask_vector(vector: u8) {
-    let Some(pin) = pin_for_vector(vector) else { return; };
+    let Some((va, pin)) = pin_for_vector(vector) else { return; };
     // SAFETY: `program_redirect` publishes the route before it unmasks the low word.
-    unsafe { mask(pin); }
+    unsafe { mask_at(va, pin); }
 }
 
 #[cfg(test)]
@@ -238,8 +360,10 @@ mod tests {
     #[test]
     fn vector_route_round_trips_every_pin_bit() {
         let vector = 0x71;
-        route_vector(vector, u32::MAX);
-        assert_eq!(pin_for_vector(vector), Some(u32::MAX));
+        let va = 0xfee0_0000;
+        IOAPIC_VAS[0].store(va, Ordering::Release);
+        route_vector(vector, va, u32::MAX);
+        assert_eq!(pin_for_vector(vector), Some((va, u32::MAX)));
         unroute_vector(vector);
         assert_eq!(pin_for_vector(vector), None);
     }

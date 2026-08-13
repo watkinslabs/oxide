@@ -33,7 +33,7 @@ pub use line::{irq_line_disabled, LineHandler};
 pub use irqstat::DeviceAction;
 pub use msi::{alloc_pci_msi, free_pci_msi, register_pci_msi_handler, MsiMessage};
 #[cfg(target_arch = "x86_64")]
-pub use ioapic::program_x86_ioapic;
+pub use ioapic::{program_x86_intx_gsi, program_x86_ioapic};
 pub use spurious::{IrqReport, IrqRet};
 #[cfg(target_arch = "x86_64")]
 pub use line::{free_irq_line_handler, invoke_x86_line_handler, register_irq_line_handler};
@@ -132,6 +132,10 @@ pub fn free_x86_vector(vector: u8) -> Result<(), ()> {
         return Err(());
     }
     let idx = (vector - hal_x86_64::VEC_MSI_POOL_FIRST) as usize;
+    // SAFETY: an owned vector can have at most one I/O APIC route. Mask it
+    // before clearing its handler, so a level-triggered source cannot reach a
+    // recycled IDT vector during teardown.
+    unsafe { hal_x86_64::ioapic::mask_vector(vector); }
     MSI_HANDLERS[idx].store(core::ptr::null_mut(), Ordering::Release);
     let _ = line::free_irq_line_handler(vector as u32);
     hal_x86_64::ioapic::unroute_vector(vector);

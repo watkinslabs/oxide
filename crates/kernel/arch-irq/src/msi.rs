@@ -23,6 +23,11 @@ pub fn alloc_pci_msi(requester: pci::Bdf, event_id: u32) -> Option<MsiMessage> {
     #[cfg(target_arch = "x86_64")]
     {
         let vector = super::alloc_x86_vector()?;
+        match iommu::allocate_amd_vi_msi(requester, event_id, vector, 0) {
+            iommu::AmdViMsi::Remapped { address, data } => return Some(MsiMessage { irq: vector as u32, address, data }),
+            iommu::AmdViMsi::Failed => { let _ = super::free_x86_vector(vector); return None; }
+            iommu::AmdViMsi::Direct => {}
+        }
         match iommu::allocate_vtd_msi(requester, vector, 0) {
             iommu::VtdMsi::Remapped { address, data } => return Some(MsiMessage { irq: vector as u32, address, data }),
             iommu::VtdMsi::Failed => { let _ = super::free_x86_vector(vector); return None; }
