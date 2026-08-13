@@ -4,7 +4,7 @@ use core::ffi::c_void;
 use core::sync::atomic::{AtomicBool, Ordering};
 use sync::{Modules as ModulesLockClass, Spinlock};
 
-type IrqHandler = unsafe extern "C" fn(i32, *mut c_void) -> i32;
+pub(crate) type IrqHandler = unsafe extern "C" fn(i32, *mut c_void) -> i32;
 
 mod ids;
 
@@ -81,7 +81,7 @@ extern "C" fn request_irq(
     request_threaded_irq(irq, handler, None, flags, name, dev_id)
 }
 
-extern "C" fn request_threaded_irq(
+pub(crate) extern "C" fn request_threaded_irq(
     irq: u32,
     handler: Option<IrqHandler>,
     thread_fn: Option<IrqHandler>,
@@ -121,7 +121,7 @@ extern "C" fn request_threaded_irq(
     LINUX_OK
 }
 
-extern "C" fn free_irq(irq: u32, dev_id: *mut c_void) {
+pub(crate) extern "C" fn free_irq(irq: u32, dev_id: *mut c_void) {
     {
         let mut g = IRQ_RECORDS.lock();
         if let Some(rec) = g.iter_mut().flatten().find(|rec| rec.irq == irq && rec.dev_id == dev_id as usize) {

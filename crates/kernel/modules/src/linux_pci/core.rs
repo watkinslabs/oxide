@@ -52,8 +52,11 @@ pub(super) fn export_symbols() {
         ("pci_disable_msi",           pci_disable_msi           as *const () as usize),
         ("pci_msix_vec_count",        pci_msix_vec_count        as *const () as usize),
         ("pci_alloc_irq_vectors",     pci_alloc_irq_vectors     as *const () as usize),
+        ("pci_alloc_irq_vectors_affinity", pci_alloc_irq_vectors_affinity as *const () as usize),
         ("pci_free_irq_vectors",      pci_free_irq_vectors      as *const () as usize),
         ("pci_irq_vector",            pci_irq_vector            as *const () as usize),
+        ("pci_request_irq",            pci_request_irq            as *const () as usize),
+        ("pci_free_irq",               pci_free_irq               as *const () as usize),
         ("pci_read_config_byte",      super::config::pci_read_config_byte      as *const () as usize),
         ("pci_read_config_word",      super::config::pci_read_config_word      as *const () as usize),
         ("pci_read_config_dword",     super::config::pci_read_config_dword     as *const () as usize),
@@ -272,6 +275,11 @@ extern "C" fn pci_alloc_irq_vectors(dev: *mut LinuxPciDev, min_vecs: i32, max_ve
     super::vectors::alloc_irq_vectors(dev, min_vecs, max_vecs, flags)
 }
 
+/// Allocate PCI IRQ vectors; affinity placement is owned by the architecture vector allocator. # C: O(max_vecs)
+extern "C" fn pci_alloc_irq_vectors_affinity(dev: *mut LinuxPciDev, min_vecs: i32, max_vecs: i32, flags: u32, _affd: *const c_void) -> i32 {
+    pci_alloc_irq_vectors(dev, min_vecs, max_vecs, flags)
+}
+
 extern "C" fn pci_free_irq_vectors(dev: *mut LinuxPciDev) {
     super::vectors::free_irq_vectors(dev);
 }
@@ -279,6 +287,19 @@ extern "C" fn pci_free_irq_vectors(dev: *mut LinuxPciDev) {
 extern "C" fn pci_irq_vector(dev: *mut LinuxPciDev, nr: u32) -> i32 {
     if dev.is_null() { return -LINUX_EINVAL; }
     super::registry::irq_vector(dev, nr).map(|irq| irq as i32).unwrap_or(-LINUX_EINVAL)
+}
+
+/// Register one handler against an already allocated device-relative PCI IRQ. # C: O(1)
+unsafe extern "C" fn pci_request_irq(dev: *mut LinuxPciDev, nr: u32, handler: Option<crate::linux_irq::IrqHandler>, thread_fn: Option<crate::linux_irq::IrqHandler>, dev_id: *mut c_void, name: *const c_char, mut _args: ...) -> i32 {
+    let irq = pci_irq_vector(dev, nr);
+    if irq < 0 { return irq; }
+    crate::linux_irq::request_threaded_irq(irq as u32, handler, thread_fn, 0, name.cast(), dev_id)
+}
+
+/// Unregister one handler from an already allocated device-relative PCI IRQ. # C: O(1)
+extern "C" fn pci_free_irq(dev: *mut LinuxPciDev, nr: u32, dev_id: *mut c_void) {
+    let irq = pci_irq_vector(dev, nr);
+    if irq >= 0 { crate::linux_irq::free_irq(irq as u32, dev_id); }
 }
 
 const PCI_COMMAND_STATUS_OFF: u8 = 0x04;

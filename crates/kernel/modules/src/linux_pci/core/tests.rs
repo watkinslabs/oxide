@@ -379,6 +379,7 @@ fn export_symbols_registers_pci_surface() {
     for name in [
         "__pci_register_driver", "pci_register_driver", "pci_enable_device", "pci_resource_start",
         "pci_request_region", "pci_iomap", "pcim_iomap_region", "pci_alloc_irq_vectors",
+        "pci_alloc_irq_vectors_affinity", "pci_request_irq", "pci_free_irq",
         "pci_read_config_dword", "pci_write_config_dword", "pci_device_is_present",
         "pci_status_get_and_clear_errors",
     ] {
