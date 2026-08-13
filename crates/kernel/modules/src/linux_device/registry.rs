@@ -177,15 +177,17 @@ pub(super) fn add_attr(dev: usize, attr: usize) -> i32 {
     LINUX_OK
 }
 
-pub(super) fn remove_attr(dev: usize, attr: usize) {
+pub(super) fn remove_attr(dev: usize, attr: usize) -> bool {
     let mut g = DEVICE_STATE.lock();
-    let Some(rec) = g.iter_mut().flatten().find(|r| r.ptr == dev) else { return; };
+    let Some(rec) = g.iter_mut().flatten().find(|r| r.ptr == dev) else { return false; };
     if let Some(pos) = rec.attrs.iter().take(rec.attr_count).position(|v| *v == attr) {
         for i in pos..rec.attr_count - 1 { rec.attrs[i] = rec.attrs[i + 1]; }
         rec.attr_count -= 1;
         rec.attrs[rec.attr_count] = 0;
         rec.uevent_seq = rec.uevent_seq.saturating_add(1);
+        return true;
     }
+    false
 }
 
 #[cfg(test)]
