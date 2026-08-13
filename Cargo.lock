@@ -1332,6 +1332,7 @@ dependencies = [
  "sched",
  "sync",
  "syscall",
+ "timekeeper",
  "timer",
  "tracefs",
  "uaccess",
