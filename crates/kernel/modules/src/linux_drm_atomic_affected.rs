@@ -3,6 +3,7 @@
 use super::*;
 
 const DRM_ATOMIC_DEV_OFF: usize = 8;
+const DRM_ATOMIC_ACQUIRE_CTX_OFF: usize = 80;
 const DRM_ATOMIC_CRTCS_OFF: usize = 40;
 const DRM_ATOMIC_CRTC_ENTRY_SIZE: usize = 56;
 const DRM_ATOMIC_ENTRY_OLD_OFF: usize = 16;
@@ -11,6 +12,8 @@ const DRM_CRTC_STATE_CONNECTOR_MASK_OFF: usize = 16;
 const DRM_CRTC_INDEX_OFF: usize = 144;
 const DRM_CONNECTOR_INDEX_OFF: usize = 136;
 const DRM_PLANE_INDEX_OFF: usize = 1220;
+const DRM_DEVICE_MODE_CONFIG_OFF: usize = 360;
+const DRM_MODE_CONFIG_CONNECTION_MUTEX_OFF: usize = 32;
 const LINUX_EINVAL: i32 = 22;
 
 fn error_ptr(ptr: *mut c_void) -> Option<i32> { ((ptr as usize) >= usize::MAX - 4095).then_some(ptr as isize as i32) }
@@ -36,7 +39,13 @@ pub(super) fn export_symbols() {
 /// Add every current connector selected by a CRTC's atomic connector mask. # C: O(N_connectors)
 pub(super) extern "C" fn drm_atomic_add_affected_connectors(state: *mut c_void, crtc: *mut c_void) -> i32 {
     if state.is_null() || crtc.is_null() { return -LINUX_EINVAL; }
-    let dev = transaction_device(state); let Some((connectors, _)) = live_objects(dev) else { return -LINUX_EINVAL; };
+    let dev = transaction_device(state); if dev.is_null() { return -LINUX_EINVAL; }
+    // SAFETY: the transaction retains its acquire context and the mode-config mutex is the canonical connector-topology lock.
+    let ctx = unsafe { read(state.cast::<u8>().add(DRM_ATOMIC_ACQUIRE_CTX_OFF).cast::<*mut c_void>()) };
+    if ctx.is_null() { return -LINUX_EINVAL; }
+    let lock = dev.cast::<u8>().wrapping_add(DRM_DEVICE_MODE_CONFIG_OFF + DRM_MODE_CONFIG_CONNECTION_MUTEX_OFF);
+    let ret = modeset::drm_modeset_lock(lock.cast(), ctx); if ret != 0 { return ret; }
+    let Some((connectors, _)) = live_objects(dev) else { return -LINUX_EINVAL; };
     let crtc_state = atomic_acquire::drm_atomic_get_crtc_state(state, crtc);
     if let Some(errno) = error_ptr(crtc_state) { return errno; }
     if crtc_state.is_null() { return -LINUX_EINVAL; }
