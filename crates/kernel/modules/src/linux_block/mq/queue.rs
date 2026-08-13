@@ -23,6 +23,7 @@ pub(super) fn export_symbols() {
         ("blk_freeze_queue_start",        blk_freeze_queue_start        as *const () as usize),
         ("blk_freeze_queue_start_non_owner", blk_freeze_queue_start_non_owner as *const () as usize),
         ("blk_mq_freeze_queue_wait",      blk_mq_freeze_queue_wait      as *const () as usize),
+        ("blk_mq_freeze_queue_wait_timeout", blk_mq_freeze_queue_wait_timeout as *const () as usize),
         ("blk_mq_quiesce_queue",          blk_mq_quiesce_queue          as *const () as usize),
         ("blk_mq_unquiesce_queue",        blk_mq_unquiesce_queue        as *const () as usize),
         ("blk_mq_quiesce_tagset",         blk_mq_quiesce_tagset         as *const () as usize),
@@ -138,6 +139,10 @@ unsafe extern "C" fn blk_freeze_queue_start_non_owner(q: *mut LinuxRequestQueue)
 unsafe extern "C" fn blk_mq_freeze_queue_wait(q: *mut LinuxRequestQueue) {
     // SAFETY: q is the caller's live queue; this waits on the queue-owned lifecycle predicate.
     unsafe { freeze_wait(q); }
+}
+unsafe extern "C" fn blk_mq_freeze_queue_wait_timeout(q: *mut LinuxRequestQueue, timeout: u64) -> i32 {
+    // SAFETY: q is the caller's live queue; wait_timeout observes only its queue-owned lifecycle predicate.
+    unsafe { freeze_wait_timeout(q, timeout) }
 }
 unsafe extern "C" fn blk_mq_quiesce_queue(q: *mut LinuxRequestQueue) {
     // SAFETY: q is the caller-supplied live queue.
@@ -300,6 +305,33 @@ unsafe fn freeze_wait(q: *mut LinuxRequestQueue) {
     while lifecycle.users.load(::core::sync::atomic::Ordering::Acquire) != 0 { ::core::hint::spin_loop(); }
 }
 
+unsafe fn freeze_wait_timeout(q: *mut LinuxRequestQueue, timeout: u64) -> i32 {
+    let Some(lifecycle) = (unsafe { lifecycle(q) }) else { return 0; };
+    if lifecycle.users.load(::core::sync::atomic::Ordering::Acquire) == 0 { return timeout.min(i32::MAX as u64) as i32; }
+    if timeout == 0 { return 0; }
+    #[cfg(target_os = "oxide-kernel")]
+    {
+        let start = crate::linux_time::jiffies_now();
+        let deadline = crate::linux_time::deadline_after_jiffies(timeout);
+        // SAFETY: caller is in the sleepable queue-management path; lifecycle remains queue-owned until its
+        // drain is complete, and the shared timed predicate helper publishes before each condition recheck.
+        let outcome = unsafe {
+            sched::live::wait_event_uninterruptible_until(&lifecycle.freeze_wait, deadline,
+                timekeeper::monotonic_ns,
+                || lifecycle.users.load(::core::sync::atomic::Ordering::Acquire) == 0)
+        };
+        if outcome != sched::WaitOutcome::Ready { return 0; }
+        let elapsed = crate::linux_time::jiffies_now().saturating_sub(start);
+        return timeout.saturating_sub(elapsed).max(1).min(i32::MAX as u64) as i32;
+    }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    {
+        return if lifecycle.users.load(::core::sync::atomic::Ordering::Acquire) == 0 {
+            timeout.min(i32::MAX as u64) as i32
+        } else { 0 };
+    }
+}
+
 unsafe fn lifecycle(q: *mut LinuxRequestQueue) -> Option<&'static LinuxQueueLifecycle> {
     if q.is_null() { return None; }
     // SAFETY: q is non-null and comes from blk_alloc_queue; its lifecycle allocation is constructed before q
@@ -359,6 +391,18 @@ mod tests {
         waiter.join().expect("freeze waiter joins after the final queue user drains");
         assert!(DRAINED.load(Ordering::Acquire));
         // SAFETY: q is still frozen but has no users, so cleanup's nested freeze/wait and reclaim are safe.
+        unsafe { core::blk_cleanup_queue(q); }
+    }
+
+    #[test]
+    fn timed_freeze_wait_returns_the_unchanged_timeout_when_already_drained() {
+        let _modules = crate::test_serial::claim();
+        let q = core::blk_alloc_queue(0);
+        assert!(!q.is_null());
+        // SAFETY: q has no queue users, so the timed wait observes its ready predicate before sleeping.
+        let remaining = unsafe { blk_mq_freeze_queue_wait_timeout(q, 17) };
+        assert_eq!(remaining, 17);
+        // SAFETY: q has no users and is owned solely by this test.
         unsafe { core::blk_cleanup_queue(q); }
     }
 }
