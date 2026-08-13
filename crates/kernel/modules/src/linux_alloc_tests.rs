@@ -115,6 +115,14 @@ fn modern_noprof_allocators_match_linux_entry_points() {
     unsafe { assert_eq!(core::slice::from_raw_parts(p, 24), &[0; 24]); }
     kvfree(p);
 
+    let large = __kmalloc_large_noprof(PAGE_SIZE + 1, GFP_ZERO);
+    assert!(!large.is_null());
+    assert_eq!(large as usize % PAGE_SIZE, 0);
+    // SAFETY: large is the PAGE_SIZE+1-byte allocation asserted non-null above and GFP_ZERO
+    // requested its initial contents be zeroed, so the final byte is readable in bounds.
+    unsafe { assert_eq!(*large.add(PAGE_SIZE), 0); }
+    kfree(large);
+
     let c = __kmalloc_cache_noprof(core::ptr::null_mut(), 0, 12);
     assert!(!c.is_null());
     kfree(c);
@@ -201,7 +209,7 @@ fn export_symbols_registers_allocator_surface() {
         "kmalloc", "kzalloc", "kcalloc", "kfree", "vmalloc", "vfree", "vmap", "vunmap",
         "alloc_pages", "__free_pages", "__get_free_pages", "get_free_pages",
         "free_pages", "page_address", "page_to_phys", "kstrdup", "kasprintf",
-        "__kmalloc_noprof", "__kmalloc_node_noprof", "__kmalloc_cache_noprof", "__kvmalloc_node_noprof",
+        "__kmalloc_noprof", "__kmalloc_large_noprof", "__kmalloc_node_noprof", "__kmalloc_cache_noprof", "__kvmalloc_node_noprof",
         "alloc_pages_noprof", "__alloc_pages_noprof", "kvfree", "kvfree_call_rcu",
         "kmemdup_noprof", "__kmem_cache_create_args", "kmem_cache_alloc_noprof",
         "kmem_cache_free", "kmem_cache_destroy", "vzalloc_noprof", "__vmalloc_noprof", "kfree_sensitive",

@@ -30,6 +30,8 @@ static TIMERS: Spinlock<Vec<TimerRecord>, ModulesLockClass> = Spinlock::new(Vec:
 pub(super) fn export_symbols() {
     crate::symtab::export("drm_crtc_vblank_off", drm_crtc_vblank_off as *const () as usize, false);
     crate::symtab::export("drm_crtc_vblank_on", drm_crtc_vblank_on as *const () as usize, false);
+    crate::symtab::export("drm_crtc_vblank_atomic_enable", drm_crtc_vblank_atomic_enable as *const () as usize, false);
+    crate::symtab::export("drm_crtc_vblank_atomic_disable", drm_crtc_vblank_atomic_disable as *const () as usize, false);
     crate::symtab::export("drm_crtc_vblank_helper_enable_vblank_timer", drm_crtc_vblank_helper_enable_vblank_timer as *const () as usize, false);
     crate::symtab::export("drm_crtc_vblank_helper_disable_vblank_timer", drm_crtc_vblank_helper_disable_vblank_timer as *const () as usize, false);
     crate::symtab::export("drm_crtc_vblank_helper_get_vblank_timestamp_from_timer", drm_crtc_vblank_helper_get_vblank_timestamp_from_timer as *const () as usize, false);
@@ -115,6 +117,12 @@ pub(super) extern "C" fn drm_crtc_vblank_on(crtc: *mut c_void) {
     unsafe { if read(vblank.add(DRM_VBLANK_INMODESET_OFF).cast::<u32>()) != 0 { let refs = read(vblank.add(DRM_VBLANK_REFCOUNT_OFF).cast::<i32>()); write(vblank.add(DRM_VBLANK_REFCOUNT_OFF).cast::<i32>(), refs.saturating_sub(1)); write(vblank.add(DRM_VBLANK_INMODESET_OFF).cast::<u32>(), 0); } write(vblank.add(DRM_VBLANK_ENABLED_OFF).cast::<bool>(), true); }
 }
 
+/// Atomic-helper CRTC enable hook: restore vblank delivery for this CRTC. # C: O(1)
+pub(super) extern "C" fn drm_crtc_vblank_atomic_enable(crtc: *mut c_void, _state: *mut c_void) { drm_crtc_vblank_on(crtc); }
+
+/// Atomic-helper CRTC disable hook: quiesce vblank delivery for this CRTC. # C: O(1)
+pub(super) extern "C" fn drm_crtc_vblank_atomic_disable(crtc: *mut c_void, _state: *mut c_void) { drm_crtc_vblank_off(crtc); }
+
 /// Start the CRTC's recurring timer-backed vblank source. # C: O(1)
 pub(super) extern "C" fn drm_crtc_vblank_helper_enable_vblank_timer(crtc: *mut c_void) -> i32 {
     let Some(vblank) = record(crtc) else { return -LINUX_EINVAL; };
@@ -156,6 +164,8 @@ mod tests {
         export_symbols();
         assert!(crate::symtab::is_exported("drm_crtc_vblank_off"));
         assert!(crate::symtab::is_exported("drm_crtc_vblank_on"));
+        assert!(crate::symtab::is_exported("drm_crtc_vblank_atomic_enable"));
+        assert!(crate::symtab::is_exported("drm_crtc_vblank_atomic_disable"));
         assert!(crate::symtab::is_exported("drm_crtc_vblank_helper_enable_vblank_timer"));
         assert!(crate::symtab::is_exported("drm_crtc_vblank_helper_disable_vblank_timer"));
         assert!(crate::symtab::is_exported("drm_crtc_vblank_helper_get_vblank_timestamp_from_timer"));

@@ -39,6 +39,14 @@ pub fn export_symbols() {
         ("writew",         writew         as *const () as usize),
         ("writel",         writel         as *const () as usize),
         ("writeq",         writeq         as *const () as usize),
+        ("ioread8",        ioread8        as *const () as usize),
+        ("ioread16",       ioread16       as *const () as usize),
+        ("ioread32",       ioread32       as *const () as usize),
+        ("ioread64",       ioread64       as *const () as usize),
+        ("iowrite8",       iowrite8       as *const () as usize),
+        ("iowrite16",      iowrite16      as *const () as usize),
+        ("iowrite32",      iowrite32      as *const () as usize),
+        ("iowrite64",      iowrite64      as *const () as usize),
         ("memcpy_toio",    memcpy_toio    as *const () as usize),
         ("memcpy_fromio",  memcpy_fromio  as *const () as usize),
         ("memset_io",      memset_io      as *const () as usize),
@@ -133,6 +141,42 @@ unsafe extern "C" fn writel(v: u32, addr: *mut c_void) {
 unsafe extern "C" fn writeq(v: u64, addr: *mut c_void) {
     // SAFETY: Linux caller supplies a valid doubleword MMIO register pointer.
     unsafe { io_store(addr as *mut u64, v); }
+}
+
+// `ioread*` / `iowrite*` are the portable module ABI forms.  The native
+// architecture's port-encoded address convention is not exposed by Oxide's
+// PCI mappers, so these select the ordered MMIO half of that contract.
+unsafe extern "C" fn ioread8(addr: *const c_void) -> u32 {
+    // SAFETY: the ABI caller supplies one valid byte-wide mapped I/O address.
+    unsafe { u32::from(readb(addr)) }
+}
+unsafe extern "C" fn ioread16(addr: *const c_void) -> u32 {
+    // SAFETY: the ABI caller supplies one valid halfword-wide mapped I/O address.
+    unsafe { u32::from(readw(addr)) }
+}
+unsafe extern "C" fn ioread32(addr: *const c_void) -> u32 {
+    // SAFETY: the ABI caller supplies one valid word-wide mapped I/O address.
+    unsafe { readl(addr) }
+}
+unsafe extern "C" fn ioread64(addr: *const c_void) -> u64 {
+    // SAFETY: the ABI caller supplies one valid doubleword-wide mapped I/O address.
+    unsafe { readq(addr) }
+}
+unsafe extern "C" fn iowrite8(value: u8, addr: *mut c_void) {
+    // SAFETY: the ABI caller supplies one valid byte-wide mapped I/O address.
+    unsafe { writeb(value, addr); }
+}
+unsafe extern "C" fn iowrite16(value: u16, addr: *mut c_void) {
+    // SAFETY: the ABI caller supplies one valid halfword-wide mapped I/O address.
+    unsafe { writew(value, addr); }
+}
+unsafe extern "C" fn iowrite32(value: u32, addr: *mut c_void) {
+    // SAFETY: the ABI caller supplies one valid word-wide mapped I/O address.
+    unsafe { writel(value, addr); }
+}
+unsafe extern "C" fn iowrite64(value: u64, addr: *mut c_void) {
+    // SAFETY: the ABI caller supplies one valid doubleword-wide mapped I/O address.
+    unsafe { writeq(value, addr); }
 }
 
 unsafe extern "C" fn memcpy_toio(dst: *mut c_void, src: *const c_void, n: usize) {
@@ -291,6 +335,14 @@ mod tests {
             assert_eq!(readq(p), TEST_QWORD);
             writeb(TEST_BYTE, p);
             assert_eq!(readb(p), TEST_BYTE);
+            iowrite8(TEST_BYTE, p);
+            assert_eq!(ioread8(p), u32::from(TEST_BYTE));
+            iowrite16(0x55aa, p);
+            assert_eq!(ioread16(p), 0x55aa);
+            iowrite32(0x4433_2211, p);
+            assert_eq!(ioread32(p), 0x4433_2211);
+            iowrite64(TEST_QWORD, p);
+            assert_eq!(ioread64(p), TEST_QWORD);
         }
     }
 
@@ -325,6 +377,8 @@ mod tests {
         for name in [
             "ioremap", "ioremap_nocache", "iounmap", "readb", "readw", "readl", "readq",
             "writeb", "writew", "writel", "writeq", "memcpy_toio", "memcpy_fromio",
+            "ioread8", "ioread16", "ioread32", "ioread64", "iowrite8", "iowrite16",
+            "iowrite32", "iowrite64",
             "memset_io", "inb", "inw", "inl", "outb", "outw", "outl", "mb", "rmb", "wmb",
             "mmiowb",
         ] {

@@ -39,6 +39,7 @@ pub(super) fn export_symbols() {
     use crate::symtab::export;
     export("rtnl_lock", rtnl_lock as *const () as usize, false);
     export("rtnl_unlock", rtnl_unlock as *const () as usize, false);
+    export("dev_open", dev_open as *const () as usize, false);
     export("dev_close", dev_close as *const () as usize, false);
     export("netif_device_attach", netif_device_attach as *const () as usize, false);
     export("netif_device_detach", netif_device_detach as *const () as usize, false);
@@ -51,6 +52,7 @@ pub(super) fn export_symbols() {
     export("netdev_rss_key_fill", netdev_rss_key_fill as *const () as usize, false);
     export("net_dim_work_cancel", net_dim_work_cancel as *const () as usize, false);
     export("netdev_printk", netdev_printk as *const () as usize, false);
+    export("__dynamic_netdev_dbg", dynamic_netdev_dbg as *const () as usize, false);
     export("netdev_err", netdev_err as *const () as usize, false);
     export("netdev_warn", netdev_warn as *const () as usize, false);
     export("netdev_notice", netdev_notice as *const () as usize, false);
@@ -88,11 +90,35 @@ unsafe extern "C" fn rtnl_lock() { RTNL_DEPTH.fetch_add(1, Ordering::AcqRel); }
 unsafe extern "C" fn rtnl_unlock() { let _ = RTNL_DEPTH.fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| Some(v.saturating_sub(1))); }
 
 /// # C: O(1)
-unsafe extern "C" fn dev_close(dev: *mut LinuxNetDevice) -> i32 {
+pub(super) unsafe extern "C" fn dev_open(dev: *mut LinuxNetDevice, _extack: *mut c_void) -> i32 {
     if dev.is_null() { return -LINUX_EINVAL; }
-    // SAFETY: dev points to a valid net_device.
-    unsafe { (*dev).flags &= !IFF_UP; }
+    // SAFETY: dev points to a valid net_device and its driver operation table remains owned by its module.
+    unsafe {
+        if (*dev).flags & IFF_UP != 0 { return LINUX_OK; }
+        let ops = (*dev).netdev_ops;
+        if !ops.is_null() {
+            if let Some(open) = (*ops).ndo_open {
+                let result = open(dev);
+                if result != LINUX_OK { return result; }
+            }
+        }
+        (*dev).flags |= IFF_UP | IFF_RUNNING;
+    }
     LINUX_OK
+}
+
+/// # C: O(1)
+pub(super) unsafe extern "C" fn dev_close(dev: *mut LinuxNetDevice) {
+    if dev.is_null() { return; }
+    // SAFETY: dev points to a valid net_device and a live driver operation table for its registration lifetime.
+    unsafe {
+        if (*dev).flags & IFF_UP == 0 { return; }
+        let ops = (*dev).netdev_ops;
+        if !ops.is_null() {
+            if let Some(stop) = (*ops).ndo_stop { let _ = stop(dev); }
+        }
+        (*dev).flags &= !(IFF_UP | IFF_RUNNING);
+    }
 }
 
 /// # C: O(1)
@@ -181,6 +207,14 @@ unsafe extern "C" fn net_dim_work_cancel(_dim: *mut c_void) {}
 
 /// # C: O(1)
 unsafe extern "C" fn netdev_printk(_level: *const c_char, _dev: *const LinuxNetDevice, _fmt: *const c_char, mut _args: ...) {}
+/// Dynamic netdev debug is disabled until debug categories are configurable.
+/// # C: O(1)
+unsafe extern "C" fn dynamic_netdev_dbg(
+    _descriptor: *mut c_void,
+    _dev: *const LinuxNetDevice,
+    _format: *const c_char,
+    mut _args: ...
+) {}
 /// # C: O(1)
 unsafe extern "C" fn netdev_err(_dev: *const LinuxNetDevice, _fmt: *const c_char, mut _args: ...) {}
 /// # C: O(1)

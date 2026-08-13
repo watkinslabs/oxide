@@ -44,6 +44,13 @@ pub(super) const DUPLEX_FULL: i32 = 1;
 pub(super) const SPEED_1000: i32 = 1000;
 pub(super) const AUTONEG_ENABLE: u8 = 1;
 pub(super) const PHY_MAX_ADDR: usize = 32;
+pub(super) const TC_MAX_QUEUE: usize = 16;
+
+#[repr(C)]
+pub(super) struct LinuxNetdevTcTxq {
+    pub(super) count: u16,
+    pub(super) offset: u16,
+}
 
 #[repr(C)]
 pub(super) struct LinuxNetDeviceOps {
@@ -216,9 +223,14 @@ pub(super) struct LinuxNetDevice {
     pub(super) _tx: *mut LinuxNetdevQueue,
     pub(super) _to_real_tx: [u8; 8],
     pub(super) real_num_tx_queues: u32,
-    pub(super) _to_mtu: [u8; 12],
+    pub(super) gso_max_size: u32,
+    pub(super) gso_ipv4_max_size: u32,
+    pub(super) gso_max_segs: u16,
+    pub(super) num_tc: i16,
     pub(super) mtu: u32,
-    pub(super) _to_tstats: [u8; 100],
+    pub(super) needed_headroom: u16,
+    pub(super) tc_to_txq: [LinuxNetdevTcTxq; TC_MAX_QUEUE],
+    pub(super) _to_tstats: [u8; 34],
     pub(super) tstats: *mut LinuxPcpuSwNetStats,
     pub(super) state: AtomicU64,
     pub(super) flags: u32,

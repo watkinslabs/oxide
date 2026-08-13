@@ -30,6 +30,8 @@ pub(super) fn export_symbols() {
         ("ktime_get_ts64", ktime_get_ts64 as *const () as usize),
         ("ktime_get_raw_ts64", ktime_get_raw_ts64 as *const () as usize),
         ("ktime_get_real_ts64", ktime_get_real_ts64 as *const () as usize),
+        ("ns_to_timespec64", ns_to_timespec64 as *const () as usize),
+        ("sched_clock", sched_clock as *const () as usize),
         ("ktime_set", ktime_set as *const () as usize),
         ("ns_to_ktime", ns_to_ktime as *const () as usize),
         ("ktime_to_ns", ktime_to_ns as *const () as usize),
@@ -76,6 +78,18 @@ pub(super) extern "C" fn ktime_sub_ns(kt: i64, ns: u64) -> i64 { kt.saturating_s
 pub(super) extern "C" fn ktime_get_ts64(ts: *mut LinuxTimespec64) { write_ts64(ts, now_ns()); }
 pub(super) extern "C" fn ktime_get_raw_ts64(ts: *mut LinuxTimespec64) { write_ts64(ts, now_ns()); }
 pub(super) extern "C" fn ktime_get_real_ts64(ts: *mut LinuxTimespec64) { write_ts64(ts, now_ns()); }
+
+/// # C: O(1)
+pub(super) extern "C" fn ns_to_timespec64(ns: i64) -> LinuxTimespec64 {
+    LinuxTimespec64 {
+        tv_sec: ns.div_euclid(NSEC_PER_SEC as i64),
+        tv_nsec: ns.rem_euclid(NSEC_PER_SEC as i64),
+    }
+}
+
+/// Return the current monotonic scheduler time in nanoseconds.
+/// # C: O(1)
+pub(super) extern "C" fn sched_clock() -> u64 { now_ns() }
 
 pub(super) extern "C" fn msleep(ms: u32) { sleep_ns(ms as u64 * NSEC_PER_MSEC); }
 pub(super) extern "C" fn msleep_interruptible(ms: u32) -> u64 { msleep(ms); 0 }

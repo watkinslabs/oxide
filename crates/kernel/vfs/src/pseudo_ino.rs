@@ -109,6 +109,8 @@ pub const EPOLL: Region = Region::new("epoll", 0x7400_0000, 0x74FF_FFFF);
 /// bpf objects pinned to an fd (prog, map, link, BTF, token). Moved off
 /// `0x7300_0000`, which [`TIMERFD`] also claimed.
 pub const BPF: Region = Region::new("bpf", 0x7500_0000, 0x7500_FFFF);
+/// Anonymous DMA-BUF file descriptors.
+pub const DMA_BUF: Region = Region::new("dma-buf", 0x7580_0000, 0x7580_FFFF);
 /// `/dev/input/eventN`. Moved off `0x7400_0000`, which [`EPOLL`] also claimed.
 pub const EVDEV: Region = Region::new("evdev", 0x7600_0000, 0x7600_FFFF);
 /// hugetlbfs instances, including the kernel-private mounts
@@ -167,7 +169,7 @@ pub const REGIONS: &[Region] = &[
     PROCFS_STATIC, VFS_STATIC_FILE, TRACEFS_RING, PROCFS_DYNAMIC, TMPFS,
     BINFMT_MISC, EVENTFD, CGROUP_DIR, CGROUP_FILE,
     DEVPTS, CONFIGFS, DEBUGFS, DEBUGFS_AUTOMOUNT, INOTIFY, SIGNALFD, TIMERFD,
-    EPOLL, BPF, EVDEV, ZRAM_DEBUGFS, FBDEV, PROCFS_NET,
+    EPOLL, BPF, DMA_BUF, EVDEV, ZRAM_DEBUGFS, FBDEV, PROCFS_NET,
     PROCFS_PID, DRM_CARD, DRM_RENDER, IO_URING, NETLINK, PERF, INET_SOCK, SOUND,
     PSTORE, USERFAULTFD, VSOCK, EXT4,
 ];

@@ -113,6 +113,7 @@ pub fn export_symbols() {
     export("kasprintf",        kasprintf        as *const () as usize, false);
     export("kmemdup_noprof",   kmemdup_noprof   as *const () as usize, false);
     export("__kmalloc_noprof", __kmalloc_noprof as *const () as usize, false);
+    export("__kmalloc_large_noprof", __kmalloc_large_noprof as *const () as usize, false);
     export("__kmalloc_node_noprof", __kmalloc_node_noprof as *const () as usize, false);
     export("__kmalloc_cache_noprof", __kmalloc_cache_noprof as *const () as usize, false);
     export("__kmalloc_cache_node_noprof", __kmalloc_cache_node_noprof as *const () as usize, false);
@@ -139,6 +140,12 @@ extern "C" fn kmalloc(size: usize, flags: u32) -> *mut u8 {
 
 extern "C" fn __kmalloc_noprof(size: usize, flags: u32) -> *mut u8 {
     kmalloc(size, flags)
+}
+
+// The Linux large-allocation entry point returns a page-aligned allocation
+// which kfree can release through the normal allocation surface.
+extern "C" fn __kmalloc_large_noprof(size: usize, flags: u32) -> *mut u8 {
+    alloc_bytes(size, PAGE_SIZE, flags & GFP_ZERO != 0)
 }
 
 extern "C" fn __kmalloc_node_noprof(size: usize, _bucket: usize, flags: u32, _node: i32) -> *mut u8 {

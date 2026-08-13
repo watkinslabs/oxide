@@ -24,10 +24,13 @@ const DRM_GEM_DEVICE_OFF: usize = 8;
 const DRM_GEM_FILP_OFF: usize = 16;
 const DRM_GEM_SIZE_OFF: usize = 216;
 const DRM_GEM_IMPORT_ATTACH_OFF: usize = 240;
+const DRM_GEM_RESV_OFF: usize = 248;
 const DRM_GEM_OBJECT_FUNCS_OFF: usize = 352;
 const DRM_GEM_FUNCS_CLOSE_OFF: usize = 16;
 const DRM_GEM_FUNCS_FREE_OFF: usize = 0;
 const DRM_GEM_SHMEM_VADDR_OFF: usize = 432;
+const DRM_DEVICE_DEV_OFF: usize = 8;
+const DMA_BUF_RESV_OFF: usize = 120;
 const DRM_FB_SIZE: usize = 192;
 const DRM_FB_REFCOUNT_OFF: usize = 40;
 const DRM_FB_FREE_CB_OFF: usize = 48;
@@ -110,6 +113,7 @@ pub(super) fn export_symbols() {
     crate::symtab::export("drm_gem_dumb_map_offset", drm_gem_dumb_map_offset as *const () as usize, true);
     crate::symtab::export("drm_mode_size_dumb", drm_mode_size_dumb as *const () as usize, false);
     crate::symtab::export("drm_gem_shmem_dumb_create", drm_gem_shmem_dumb_create as *const () as usize, false);
+    crate::symtab::export("drm_gem_shmem_prime_import_no_map", drm_gem_shmem_prime_import_no_map as *const () as usize, false);
     crate::symtab::export("drm_gem_fb_create_with_dirty", drm_gem_fb_create_with_dirty as *const () as usize, false);
 }
 
@@ -301,6 +305,36 @@ pub(super) extern "C" fn drm_gem_shmem_dumb_create(file: *mut c_void, dev: *mut 
     object_put(object.cast()); 0
 }
 
+/// Import a DMA-BUF as a shmem GEM object without creating an SG mapping. # C: O(1)
+pub(super) unsafe extern "C" fn drm_gem_shmem_prime_import_no_map(dev: *mut c_void, dma_buf: *mut crate::linux_dma_buf::LinuxDmaBuf) -> *mut c_void {
+    if dev.is_null() || dma_buf.is_null() { return err_ptr(LINUX_EINVAL); }
+    // SAFETY: dev is a complete DRM device and its parent device field is at the verified ABI offset.
+    let parent = unsafe { read(dev.cast::<u8>().add(DRM_DEVICE_DEV_OFF).cast::<*mut c_void>()) };
+    if parent.is_null() { return err_ptr(LINUX_EINVAL); }
+    // SAFETY: dma_buf remains owned by its caller through this attach transaction.
+    let attach = unsafe { crate::linux_dma_buf::dma_buf_attach(dma_buf, parent) };
+    if (attach as usize) >= (!4095usize) { return attach.cast(); }
+    // SAFETY: the imported GEM owns this exact reference until its final object free.
+    unsafe { crate::linux_dma_buf::get_ref(dma_buf); }
+    // SAFETY: dma_buf points at the verified DMA-BUF ABI whose size is immutable after export.
+    let size = unsafe { read(dma_buf.cast::<u8>().cast::<usize>()) };
+    let Some(size) = size.checked_add(PAGE_SIZE as usize - 1).map(|n| n / PAGE_SIZE as usize * PAGE_SIZE as usize).filter(|n| *n != 0) else {
+        unsafe { crate::linux_dma_buf::dma_buf_detach(dma_buf, attach); crate::linux_dma_buf::dma_buf_put(dma_buf); }
+        return err_ptr(LINUX_EINVAL);
+    };
+    let layout = Layout::from_size_align(DRM_GEM_SHMEM_OBJECT_SIZE, core::mem::align_of::<u64>()).unwrap();
+    // SAFETY: imported shmem object has the verified complete ABI size and starts zeroed.
+    let object = unsafe { alloc_zeroed(layout) };
+    if object.is_null() {
+        unsafe { crate::linux_dma_buf::dma_buf_detach(dma_buf, attach); crate::linux_dma_buf::dma_buf_put(dma_buf); }
+        return err_ptr(LINUX_EBUSY);
+    }
+    drm_gem_private_object_init(dev, object.cast(), size);
+    // SAFETY: these generic GEM fields establish the imported attachment and reservation owner before publication.
+    unsafe { write(object.add(DRM_GEM_OBJECT_FUNCS_OFF).cast::<*const GemObjectFuncs>(), &SHMEM_OBJECT_FUNCS); write(object.add(DRM_GEM_IMPORT_ATTACH_OFF).cast::<*mut c_void>(), attach.cast()); write(object.add(DRM_GEM_RESV_OFF).cast::<*mut c_void>(), read(dma_buf.cast::<u8>().add(DMA_BUF_RESV_OFF).cast::<*mut c_void>())); }
+    object.cast()
+}
+
 /// Build a GEM-backed framebuffer with the atomic dirty callback contract. # C: O(N_planes)
 pub(super) extern "C" fn drm_gem_fb_create_with_dirty(dev: *mut c_void, file: *mut c_void, info: *const u8, cmd: *const u8) -> *mut c_void {
     if dev.is_null() || file.is_null() || info.is_null() || cmd.is_null() { return err_ptr(LINUX_EINVAL); }
@@ -376,7 +410,14 @@ fn object_free(object: *mut c_void) {
 unsafe extern "C" fn shmem_object_free(object: *mut c_void) {
     if object.is_null() { return; }
     // SAFETY: this callback owns the object allocated by drm_gem_shmem_dumb_create and its page-aligned backing.
-    let (size, backing) = unsafe { (read(object.cast::<u8>().add(DRM_GEM_SIZE_OFF).cast::<usize>()), read(object.cast::<u8>().add(DRM_GEM_SHMEM_VADDR_OFF).cast::<*mut u8>())) };
+    let (size, backing, attach) = unsafe { (read(object.cast::<u8>().add(DRM_GEM_SIZE_OFF).cast::<usize>()), read(object.cast::<u8>().add(DRM_GEM_SHMEM_VADDR_OFF).cast::<*mut u8>()), read(object.cast::<u8>().add(DRM_GEM_IMPORT_ATTACH_OFF).cast::<*mut crate::linux_dma_buf::DmaBufAttachment>())) };
+    if !attach.is_null() {
+        // SAFETY: import creation retained the buffer once and recorded this attachment until final GEM free.
+        unsafe { let buf = crate::linux_dma_buf::attachment_buf(attach); crate::linux_dma_buf::dma_buf_detach(buf, attach); crate::linux_dma_buf::dma_buf_put(buf); }
+        let layout = Layout::from_size_align(DRM_GEM_SHMEM_OBJECT_SIZE, core::mem::align_of::<u64>()).unwrap();
+        unsafe { dealloc(object.cast(), layout); }
+        return;
+    }
     #[cfg(target_os = "oxide-kernel")]
     { let _ = size; crate::linux_alloc::vmalloc_free(backing); }
     #[cfg(not(target_os = "oxide-kernel"))]
@@ -419,7 +460,7 @@ mod tests {
     #[test]
     fn generic_gem_entry_points_are_module_exports() {
         export_symbols();
-        for name in ["drm_gem_private_object_init", "drm_gem_object_release", "drm_gem_handle_create", "drm_gem_handle_delete", "drm_gem_object_lookup", "drm_gem_release", "drm_gem_dumb_map_offset", "drm_mode_size_dumb", "drm_gem_shmem_dumb_create"] { assert!(crate::symtab::is_exported(name)); }
+        for name in ["drm_gem_private_object_init", "drm_gem_object_release", "drm_gem_handle_create", "drm_gem_handle_delete", "drm_gem_object_lookup", "drm_gem_release", "drm_gem_dumb_map_offset", "drm_mode_size_dumb", "drm_gem_shmem_dumb_create", "drm_gem_shmem_prime_import_no_map"] { assert!(crate::symtab::is_exported(name)); }
     }
 
     #[test]

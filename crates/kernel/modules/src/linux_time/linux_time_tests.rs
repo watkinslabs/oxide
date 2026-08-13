@@ -73,9 +73,29 @@ fn work_delayed_work_tasklet_and_kthread_paths() {
 fn export_symbols_registers_time_surface() {
     let _modules = crate::test_serial::claim();
     super::export_symbols();
-    for name in ["jiffies", "jiffies_64", "msecs_to_jiffies", "ktime_get_ns",
+    for name in ["jiffies", "jiffies_64", "msecs_to_jiffies", "ktime_get_ns", "ns_to_timespec64", "sched_clock",
         "msleep", "init_timer", "hrtimer_start", "schedule_work", "system_percpu_wq",
         "schedule_delayed_work", "kthread_create", "tasklet_schedule"] {
         assert!(symtab::resolve(name, true).is_ok(), "{name}");
     }
+}
+
+#[test]
+fn timespec64_conversion_normalizes_negative_nanoseconds() {
+    let _modules = crate::test_serial::claim();
+    let ts = ns_to_timespec64(-1);
+    assert_eq!((ts.tv_sec, ts.tv_nsec), (-1, 999_999_999));
+    let ts = ns_to_timespec64(-1_000_000_001);
+    assert_eq!((ts.tv_sec, ts.tv_nsec), (-2, 999_999_999));
+}
+
+#[test]
+fn noprof_workqueue_formats_its_linux_name() {
+    let _modules = crate::test_serial::claim();
+    // SAFETY: the format is NUL-terminated and its one %s conversion receives a matching string.
+    let wq = unsafe { alloc_workqueue_noprof(b"aq-%s\0".as_ptr(), 0, 1, b"service\0".as_ptr()) };
+    assert!(!wq.is_null());
+    // SAFETY: alloc_workqueue_noprof returned the live queue above, whose name has a NUL terminator.
+    unsafe { assert_eq!(&(&(*wq).name)[..11], b"aq-service\0"); }
+    destroy_workqueue(wq);
 }

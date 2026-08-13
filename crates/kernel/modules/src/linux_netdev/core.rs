@@ -61,6 +61,8 @@ pub(super) fn export_symbols() {
     export("netif_carrier_off", netif_carrier_off           as *const () as usize, false);
     export("netif_set_real_num_tx_queues", netif_set_real_num_tx_queues as *const () as usize, false);
     export("netif_set_real_num_rx_queues", netif_set_real_num_rx_queues as *const () as usize, false);
+    export("netdev_set_num_tc", netdev_set_num_tc as *const () as usize, false);
+    export("netdev_set_tc_queue", netdev_set_tc_queue as *const () as usize, false);
     export("netif_set_tso_max_size", netif_set_tso_max_size as *const () as usize, false);
     export("netif_set_tso_max_segs", netif_set_tso_max_segs as *const () as usize, false);
     export("__netif_set_xps_queue", __netif_set_xps_queue    as *const () as usize, false);
@@ -91,7 +93,6 @@ unsafe extern "C" fn register_netdev(dev: *mut LinuxNetDevice) -> i32 {
     // SAFETY: dev is valid and owned by the caller.
     unsafe {
         (*dev).ifindex = id.raw();
-        (*dev).flags |= IFF_UP | IFF_RUNNING;
     }
     #[cfg(target_os = "oxide-kernel")]
     if !stack.publish_iface(registration) {
@@ -114,6 +115,8 @@ unsafe extern "C" fn register_netdevice(dev: *mut LinuxNetDevice) -> i32 {
 /// # C: O(N netdevs)
 unsafe extern "C" fn unregister_netdev(dev: *mut LinuxNetDevice) {
     if dev.is_null() { return; }
+    // SAFETY: unregister owns the live net_device and closes it before withdrawing its adapter.
+    unsafe { super::misc::dev_close(dev); }
     // SAFETY: dev is valid and owned by the caller.
     let id = unsafe { (*dev).ifindex };
     if id == 0 { return; }
@@ -239,6 +242,32 @@ unsafe extern "C" fn netif_set_real_num_rx_queues(dev: *mut LinuxNetDevice, n: u
     if dev.is_null() || n == 0 { return -LINUX_EINVAL; }
     // SAFETY: dev points to a valid net_device.
     unsafe { (*dev).real_num_rx_queues = n; }
+    LINUX_OK
+}
+
+/// Configure the number of hardware traffic classes before their queue ranges.
+/// # C: O(1)
+unsafe extern "C" fn netdev_set_num_tc(dev: *mut LinuxNetDevice, num_tc: u8) -> i32 {
+    if dev.is_null() || num_tc as usize > TC_MAX_QUEUE { return -LINUX_EINVAL; }
+    // SAFETY: dev was checked non-null and remains caller-owned under the RTNL contract.
+    unsafe { (*dev).num_tc = num_tc as i16; }
+    LINUX_OK
+}
+
+/// Set one traffic class's contiguous transmit-queue range.
+/// # C: O(1)
+unsafe extern "C" fn netdev_set_tc_queue(
+    dev: *mut LinuxNetDevice,
+    tc: u8,
+    count: u16,
+    offset: u16,
+) -> i32 {
+    if dev.is_null() { return -LINUX_EINVAL; }
+    // SAFETY: dev was checked non-null and tc is bounds-checked against the caller-visible class count.
+    unsafe {
+        if tc as i16 >= (*dev).num_tc { return -LINUX_EINVAL; }
+        (*dev).tc_to_txq[tc as usize] = LinuxNetdevTcTxq { count, offset };
+    }
     LINUX_OK
 }
 

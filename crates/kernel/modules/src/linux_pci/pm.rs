@@ -16,6 +16,7 @@ pub(super) fn export_symbols() {
         ("pci_set_power_state",  pci_set_power_state  as *const () as usize),
         ("pci_choose_state",     pci_choose_state     as *const () as usize),
         ("pci_enable_wake",      pci_enable_wake      as *const () as usize),
+        ("pci_wake_from_d3",     pci_wake_from_d3     as *const () as usize),
         ("pci_prepare_to_sleep", pci_prepare_to_sleep as *const () as usize),
         ("pci_dev_run_wake",     pci_dev_run_wake     as *const () as usize),
         ("pci_disable_link_state", pci_disable_link_state as *const () as usize),
@@ -57,6 +58,15 @@ extern "C" fn pci_enable_wake(dev: *mut LinuxPciDev, state: i32, enable: bool) -
     if !valid_power_state(state) { return PCI_POWER_ERROR; }
     let _ = super::registry::set_wake_enabled(dev, enable);
     LINUX_OK
+}
+
+/// Configure wake in the deepest D3 state from which this device can signal PME.
+/// # C: O(1)
+extern "C" fn pci_wake_from_d3(dev: *mut LinuxPciDev, enable: bool) -> i32 {
+    if dev.is_null() { return -LINUX_EINVAL; }
+    // SAFETY: dev was checked non-null; the first PM bitfield byte stores the PCI PME state mask.
+    let supports_d3cold = unsafe { (*dev).pm_cap != 0 && ((*dev)._pm_flags[0] & (1 << PCI_D3COLD)) != 0 };
+    pci_enable_wake(dev, if supports_d3cold { PCI_D3COLD } else { PCI_D3HOT }, enable)
 }
 
 extern "C" fn pci_prepare_to_sleep(dev: *mut LinuxPciDev) -> i32 {

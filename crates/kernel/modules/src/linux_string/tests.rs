@@ -42,6 +42,10 @@ fn scanf_match_bit_and_unicode_helpers_cover_runtime_utility_surface() {
     let bits = [0b1000_0000usize, 0];
     assert_eq!(bitops::_find_first_bit(bits.as_ptr(), usize::BITS as usize * 2), 7);
     assert_eq!(bitops::_find_next_bit(bits.as_ptr(), usize::BITS as usize * 2, 8), usize::BITS as usize * 2);
+    assert_eq!(bitops::__sw_hweight32(0xf0f0_000f), 12);
+    assert_eq!(bitops::__sw_hweight64(0xf0f0_000f_0000_0ff0), 20);
+    let weighted = [0b1011usize, usize::MAX];
+    assert_eq!(bitops::__bitmap_weight(weighted.as_ptr(), (usize::BITS + 4) as u32), 7);
 
     let mut wide = [0u16; 4];
     let mut narrow = [0u8; 8];
@@ -106,7 +110,7 @@ fn export_symbols_registers_string_surface() {
         "kstrtou8", "kstrtou16", "kstrtoint", "hex_to_bin", "hex2bin", "bin2hex",
         "snprintf", "scnprintf", "sprintf", "_printk", "__stack_chk_fail",
         "__dynamic_pr_debug", "_ctype", "__ref_stack_chk_guard", "sscanf",
-        "_find_first_bit", "_find_next_bit", "match_token", "match_int",
+        "_find_first_bit", "_find_next_bit", "__sw_hweight32", "__sw_hweight64", "__bitmap_weight", "match_token", "match_int",
         "utf16s_to_utf8s", "utf8s_to_utf16s", "print_hex_dump",
     ] {
         assert!(crate::symtab::is_exported(name), "{name}");

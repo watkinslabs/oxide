@@ -10,7 +10,7 @@ const LINUX_EINVAL: i32 = 22;
 const PARAM_SCAN_LIMIT: usize = 4096;
 
 #[repr(C)]
-struct LinuxModule {
+pub(crate) struct LinuxModule {
     name:   *const c_char,
     state:  usize,
     refcnt: u32,
@@ -107,7 +107,7 @@ pub fn export_symbols() {
     export("param_array_ops", &param_array_ops as *const _ as usize, false);
 }
 
-unsafe extern "C" fn try_module_get(module: *mut LinuxModule) -> i32 {
+pub(crate) unsafe extern "C" fn try_module_get(module: *mut LinuxModule) -> i32 {
     if module.is_null() { return 1; }
     // SAFETY: try_module_get's KPI contract is that the caller already holds a reference keeping
     // this struct module alive; module was checked non-null above and LinuxModule is repr(C) with
@@ -120,7 +120,7 @@ unsafe extern "C" fn try_module_get(module: *mut LinuxModule) -> i32 {
     r.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_add(1)).is_ok() as i32
 }
 
-unsafe extern "C" fn module_put(module: *mut LinuxModule) {
+pub(crate) unsafe extern "C" fn module_put(module: *mut LinuxModule) {
     if module.is_null() { return; }
     // SAFETY: module points at Linux module storage whose refcnt field is u32-aligned.
     let r = unsafe { refcnt(module) };
