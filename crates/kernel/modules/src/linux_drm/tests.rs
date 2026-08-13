@@ -39,6 +39,14 @@ fn embedded_device_keeps_the_drivers_requested_offset() {
 }
 
 #[test]
+fn modeset_helper_has_one_canonical_export_owner() {
+    let _modules = crate::test_serial::claim();
+    export_symbols();
+    let exported = crate::symtab::resolve("drm_atomic_helper_check_modeset", true).unwrap();
+    assert_eq!(exported.addr, atomic_modeset_check::drm_atomic_helper_check_modeset as *const () as usize);
+}
+
+#[test]
 fn allocation_returns_the_container_and_initializes_the_embedded_device() {
     let _modules = crate::test_serial::claim();
     let mut parent = LinuxDevice::new(); let mut driver = TestDriver([0; 200]); let features = 0x1234_5678u32;
