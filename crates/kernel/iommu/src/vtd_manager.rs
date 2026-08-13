@@ -35,7 +35,7 @@ static INTERRUPT_REMAP_ENABLED: AtomicBool = AtomicBool::new(false);
 /// # SAFETY
 /// The caller must run before any requester can acquire PCI bus mastering.
 /// # C: O(units + requesters + RAM leaves)
-pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf], hhdm_offset: u64,
+pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf], aliases: &pci::DmaAliases, hhdm_offset: u64,
     regions: &[pmm::UsableRegion]) -> VtdActivation {
     EIM_CAPABLE.store(false, Ordering::Release);
     INTERRUPT_REMAP_ENABLED.store(false, Ordering::Release);
@@ -70,7 +70,7 @@ pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf],
     for entry in manager.iter_mut() {
         let unit_requesters: Vec<Bdf> = requesters.iter().copied().filter(|bdf|
             intel_vtd_unit_for_bdf(reader, *bdf) == Some(entry.unit)).collect();
-        for (index, group) in vtd_dma_groups(reader, &unit_requesters).iter().enumerate() {
+        for (index, group) in vtd_dma_groups(reader, &unit_requesters, aliases).iter().enumerate() {
             let Some(domain_id) = u16::try_from(index).ok().and_then(|id| FIRST_DOMAIN_ID.checked_add(id)) else { return activation_failed(&mut manager); };
             if !entry.tables.install_group(domain_id, group, regions) { return activation_failed(&mut manager); }
             entry.requesters.extend_from_slice(group);

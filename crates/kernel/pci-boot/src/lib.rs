@@ -59,12 +59,12 @@ fn register_pci_model_drivers() {
 
 /// Activate VT-d through the architecture's live ECAM reader before driver probing.
 /// # C: O(units + requesters + RAM leaves)
-fn activate_vtd_arch(_requesters: &[pci::Bdf]) -> iommu::VtdActivation {
+fn activate_vtd_arch(_requesters: &[pci::Bdf], _aliases: &pci::DmaAliases) -> iommu::VtdActivation {
     #[cfg(target_arch = "x86_64")]
     {
         let Some(reader) = hal_x86_64::pci::EcamPci::from_published() else { return iommu::VtdActivation::Bypass; };
         // SAFETY: PCI enumeration has not registered a driver or admitted bus mastering yet.
-        return unsafe { iommu::activate_vtd(&reader, _requesters, pmm::user_as::hhdm_offset(), pmm::setup::usable_regions()) };
+        return unsafe { iommu::activate_vtd(&reader, _requesters, _aliases, pmm::user_as::hhdm_offset(), pmm::setup::usable_regions()) };
     }
     #[cfg(target_arch = "aarch64")]
     { iommu::VtdActivation::Bypass }
@@ -147,6 +147,7 @@ pub fn enumerate_and_log() {
         klog::write_raw(b"\n");
     }
     let requesters = devs.iter().map(|d| d.bdf).collect::<alloc::vec::Vec<_>>();
+    let aliases = pci::DmaAliases::new();
     quiesce_bus_masters(&requesters);
     // Keep every quiesced requester denied until its DMA owner has attached it.
     // This policy must be visible before activation so a failed activation
@@ -158,7 +159,7 @@ pub fn enumerate_and_log() {
     if iommu_activation == iommu::AmdViActivation::Failed { return; }
     if iommu_activation == iommu::AmdViActivation::Enabled
         && !amd_vi_events::install(&requesters) { return; }
-    if activate_vtd_arch(&requesters) == iommu::VtdActivation::Failed { return; }
+    if activate_vtd_arch(&requesters, &aliases) == iommu::VtdActivation::Failed { return; }
     if !iommu::enable_vtd_interrupt_remapping() { return; }
     iommu::admit_boot_requesters(&requesters);
     register_pci_model_drivers();

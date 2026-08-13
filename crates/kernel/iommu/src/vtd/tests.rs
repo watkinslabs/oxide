@@ -114,9 +114,10 @@ fn dma_groups_merge_unisolated_subtree_and_multifunction_slot() {
     group_endpoint(&config, child_a);
     group_endpoint(&config, child_a_fn1);
     group_endpoint(&config, child_b);
-    assert_eq!(vtd_dma_groups(&config, &[child_a, child_b, child_a_fn1]),
+    let aliases = pci::DmaAliases::new();
+    assert_eq!(vtd_dma_groups(&config, &[child_a, child_b, child_a_fn1], &aliases),
         alloc::vec![alloc::vec![child_a, child_a_fn1, child_b]]);
     group_acs(&config, root);
-    assert_eq!(vtd_dma_groups(&config, &[child_a, child_b, child_a_fn1]),
+    assert_eq!(vtd_dma_groups(&config, &[child_a, child_b, child_a_fn1], &aliases),
         alloc::vec![alloc::vec![child_a, child_a_fn1], alloc::vec![child_b]]);
 }
