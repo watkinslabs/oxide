@@ -8,6 +8,8 @@ use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use sync::{Spinlock, TaskList, Tty as TtyClass};
+#[cfg(target_os = "oxide-kernel")]
+use sched::live::WaitList;
 use tty::Pair as TtyPair;
 use vfs::{Ino, KResult, VfsError};
 
@@ -22,6 +24,14 @@ struct PairLifetime {
 /// Spinlock-wrapped pair shared between the master and slave inodes.
 pub struct LockedPair {
     pub(crate) inner: Spinlock<TtyPair, TtyClass>,
+    /// Blocking read waiters for the master half. Data, packet status, and
+    /// hangup publication wake this list after releasing `inner`.
+    #[cfg(target_os = "oxide-kernel")]
+    pub(crate) master_read_wait: WaitList,
+    /// Blocking read waiters for the slave half. Input and hangup publication
+    /// wake this list after releasing `inner`.
+    #[cfg(target_os = "oxide-kernel")]
+    pub(crate) slave_read_wait: WaitList,
     ino_master: Ino,
     ino_slave:  Ino,
     pts_num: u32,
@@ -50,6 +60,10 @@ impl LockedPair {
     pub(crate) fn new(pts_num: u32, instance: Arc<crate::DevptsFs>, devpts_mnt_id: u64) -> Arc<Self> {
         Arc::new(Self {
             inner: Spinlock::new(TtyPair::new(pts_num)),
+            #[cfg(target_os = "oxide-kernel")]
+            master_read_wait: WaitList::new(),
+            #[cfg(target_os = "oxide-kernel")]
+            slave_read_wait: WaitList::new(),
             ino_master: ids::master_ino(pts_num),
             ino_slave:  ids::slave_ino(pts_num),
             pts_num,
@@ -83,11 +97,30 @@ impl LockedPair {
         if master { self.master_subs.notify_mask(events); } else { self.slave_subs.notify_mask(events); }
     }
 
+    /// Wake blocking readers on one pty half after publishing a readability
+    /// or hangup transition. # C: O(N_waiters)
+    pub fn wake_readers(&self, master: bool) {
+        #[cfg(target_os = "oxide-kernel")]
+        if master { self.master_read_wait.wake_all(); } else { self.slave_read_wait.wake_all(); }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        let _ = master;
+    }
+
     /// Publish a transition on BOTH halves — the `pty_close` shape, which
     /// wakes the closing side's queues AND the link's. # C: O(N_subs)
     pub fn wake_both_subs(&self, events: u32) {
         self.master_subs.notify_mask(events);
         self.slave_subs.notify_mask(events);
+    }
+
+    /// Wake blocking readers on both pty halves after a link-wide transition.
+    /// # C: O(N_waiters)
+    pub fn wake_both_readers(&self) {
+        #[cfg(target_os = "oxide-kernel")]
+        {
+            self.master_read_wait.wake_all();
+            self.slave_read_wait.wake_all();
+        }
     }
 
     /// # C: O(1)
