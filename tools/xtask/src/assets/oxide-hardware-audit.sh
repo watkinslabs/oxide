@@ -130,6 +130,11 @@ audit_pci()
                     # implementation even though their descriptor ABI resembles e1000.
                     0x8086:0x150e|0x8086:0x150f)
                         emit driver-assessment NEEDS-DRIVER "bdf=$bdf" driver=igb "reason=linux-igb-family" ;;
+                    # I225/I226 controllers use Oxide's native IGC path.
+                    # Grade its published driver link just like every other
+                    # supported controller; an ID match is not a probe result.
+                    0x8086:0x0d9f|0x8086:0x125b|0x8086:0x125c|0x8086:0x125d|0x8086:0x125e|0x8086:0x125f|0x8086:0x15f2|0x8086:0x15f3|0x8086:0x15f7|0x8086:0x15f8|0x8086:0x15fd|0x8086:0x3100|0x8086:0x3101|0x8086:0x3102|0x8086:0x5502|0x8086:0x5503)
+                        audit_pci_driver "$bdf" "$driver" igc ;;
                     # Linux binds the AQC113 (device 04c0) to its distinct
                     # Atlantic v2 hardware path.  It has its own MAC/PHY,
                     # queue and firmware contracts, so neither the e1000 nor
