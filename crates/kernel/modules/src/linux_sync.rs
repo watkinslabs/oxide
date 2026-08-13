@@ -369,7 +369,7 @@ pub(crate) extern "C" fn complete(c: *mut LinuxCompletion) {
     drop(gate);
     cell.wake_one();
 }
-extern "C" fn complete_all(c: *mut LinuxCompletion) {
+pub(crate) extern "C" fn complete_all(c: *mut LinuxCompletion) {
     if c.is_null() { return; }
     let cell = wait_cell(c as usize, WAIT_COMPLETION);
     let gate = cell.gate.lock();

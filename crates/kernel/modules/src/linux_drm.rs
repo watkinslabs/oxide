@@ -32,6 +32,7 @@ pub(crate) use gem_mmap::{shmem_mapping_frame, shmem_mapping_object, shmem_mappi
 #[path = "linux_drm_atomic_prepare.rs"] mod atomic_prepare;
 #[path = "linux_drm_atomic_swap.rs"] mod atomic_swap;
 #[path = "linux_drm_crtc_commit.rs"] mod crtc_commit;
+#[path = "linux_drm_atomic_commit_setup.rs"] mod atomic_commit_setup;
 #[path = "linux_drm_atomic_async.rs"] mod atomic_async;
 #[path = "linux_drm_atomic_validate.rs"] mod atomic_validate;
 #[path = "linux_drm_atomic_affected.rs"] mod atomic_affected;
@@ -198,6 +199,7 @@ pub fn export_symbols() {
     atomic_prepare::export_symbols();
     atomic_swap::export_symbols();
     crtc_commit::export_symbols();
+    atomic_commit_setup::export_symbols();
     atomic_async::export_symbols();
     atomic_validate::export_symbols();
     atomic_affected::export_symbols();
