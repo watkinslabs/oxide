@@ -28,6 +28,7 @@ pub(crate) fn export_symbols() {
         ("strstr",       strstr       as *const () as usize),
         ("strsep",       strsep       as *const () as usize),
         ("strim",        strim        as *const () as usize),
+        ("sysfs_streq",  sysfs_streq  as *const () as usize),
         ("sized_strscpy", sized_strscpy as *const () as usize),
     ] { export(name, addr, false); }
 }
@@ -171,6 +172,21 @@ pub(crate) unsafe extern "C" fn strim(s: *mut u8) -> *mut u8 {
     unsafe { *s.add(end) = 0; }
     // SAFETY: start <= len == strlen(s), so s+start is at worst the terminator — a pointer inside the same buffer.
     unsafe { s.add(start) }
+}
+
+pub(crate) unsafe extern "C" fn sysfs_streq(a: *const u8, b: *const u8) -> bool {
+    let mut i = 0usize;
+    loop {
+        // SAFETY: the C-string contract requires a terminator and i advances only through equal non-NUL bytes.
+        let av = unsafe { *a.add(i) };
+        // SAFETY: the C-string contract requires a terminator and i advances only through equal non-NUL bytes.
+        let bv = unsafe { *b.add(i) };
+        if av != 0 && av == bv { i += 1; continue; }
+        if av == bv { return true; }
+        // SAFETY: a+i and b+i are the first unequal terminators or bytes; one-byte lookahead is only used after newline.
+        return (av == 0 && bv == b'\n' && unsafe { *b.add(i + 1) } == 0) ||
+               (av == b'\n' && unsafe { *a.add(i + 1) } == 0 && bv == 0);
+    }
 }
 
 pub(crate) unsafe extern "C" fn sized_strscpy(dst: *mut u8, src: *const u8, count: usize) -> isize {

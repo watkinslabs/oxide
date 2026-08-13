@@ -14,6 +14,16 @@ fn mem_and_cstr_helpers_match_c_contracts() {
 }
 
 #[test]
+fn sysfs_streq_accepts_only_a_single_trailing_newline_difference() {
+    let _modules = crate::test_serial::claim();
+    assert!(unsafe { cstr::sysfs_streq(b"queue\n\0".as_ptr(), b"queue\0".as_ptr()) });
+    assert!(unsafe { cstr::sysfs_streq(b"queue\0".as_ptr(), b"queue\n\0".as_ptr()) });
+    assert!(unsafe { cstr::sysfs_streq(b"queue\n\0".as_ptr(), b"queue\n\0".as_ptr()) });
+    assert!(!unsafe { cstr::sysfs_streq(b"queue\n\n\0".as_ptr(), b"queue\0".as_ptr()) });
+    assert!(!unsafe { cstr::sysfs_streq(b"queue \n\0".as_ptr(), b"queue\0".as_ptr()) });
+}
+
+#[test]
 fn parse_helpers_convert_linux_numbers() {
     let _modules = crate::test_serial::claim();
     let mut v8 = 0u8;
@@ -106,7 +116,7 @@ fn export_symbols_registers_string_surface() {
     let _modules = crate::test_serial::claim();
     crate::linux_string::export_symbols();
     for name in [
-        "memcpy", "memset", "memcmp", "strlen", "strcmp", "strncasecmp",
+        "memcpy", "memset", "memcmp", "strlen", "strcmp", "strncasecmp", "sysfs_streq",
         "kstrtou8", "kstrtou16", "kstrtoint", "hex_to_bin", "hex2bin", "bin2hex",
         "snprintf", "scnprintf", "sprintf", "_printk", "__stack_chk_fail",
         "__dynamic_pr_debug", "_ctype", "__ref_stack_chk_guard", "sscanf",
