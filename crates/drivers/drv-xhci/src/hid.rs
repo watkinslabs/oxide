@@ -14,12 +14,13 @@ pub fn keyboard(previous: &[u8; 8], report: &[u8]) -> Option<([u8; 8], [Option<E
     Some((next, events))
 }
 
-/// Decode the standard three-byte boot mouse report. # C: O(5)
-pub fn mouse(previous_buttons: u8, report: &[u8]) -> Option<(u8, [Option<Event>; 5])> {
-    let buttons = *report.first()? & 0x7; let mut events = [None; 5]; let mut count = 0;
-    for button in 0..3 { if (buttons ^ previous_buttons) & (1 << button) != 0 { events[count] = Some(Event::Key { code: 272 + button, value: i32::from(buttons & (1 << button) != 0) }); count += 1; } }
+/// Decode a boot mouse report, including the optional wheel byte. # C: O(8)
+pub fn mouse(previous_buttons: u8, report: &[u8]) -> Option<(u8, [Option<Event>; 8])> {
+    let buttons = *report.first()? & 0x1f; let mut events = [None; 8]; let mut count = 0;
+    for button in 0..5 { if (buttons ^ previous_buttons) & (1 << button) != 0 { events[count] = Some(Event::Key { code: 272 + button, value: i32::from(buttons & (1 << button) != 0) }); count += 1; } }
     if report.get(1).copied()? != 0 { events[count] = Some(Event::Relative { code: 0, value: i32::from(report[1] as i8) }); count += 1; }
-    if report.get(2).copied()? != 0 { events[count] = Some(Event::Relative { code: 1, value: i32::from(report[2] as i8) }); }
+    if report.get(2).copied()? != 0 { events[count] = Some(Event::Relative { code: 1, value: i32::from(report[2] as i8) }); count += 1; }
+    if let Some(wheel) = report.get(3).copied().filter(|wheel| *wheel != 0) { events[count] = Some(Event::Relative { code: 8, value: i32::from(wheel as i8) }); }
     Some((buttons, events))
 }
 
@@ -41,5 +42,6 @@ pub(crate) fn keycode(usage: u8) -> Option<u16> { u16::from(KEYCODE[usage as usi
 mod tests { use super::*;
     #[test] fn keyboard_tracks_modifiers_and_six_key_array() { let (state, events) = keyboard(&[0; 8], &[1, 0, 4, 0, 0, 0, 0, 0]).unwrap(); assert_eq!(events[0], Some(Event::Key { code: 29, value: 1 })); assert_eq!(events[1], Some(Event::Key { code: 30, value: 1 })); let (_, release) = keyboard(&state, &[0; 8]).unwrap(); assert_eq!(release[0], Some(Event::Key { code: 29, value: 0 })); assert_eq!(release[1], Some(Event::Key { code: 30, value: 0 })); }
     #[test] fn mouse_emits_button_and_signed_relative_motion() { let (_, events) = mouse(0, &[1, 2, 0xfe]).unwrap(); assert_eq!(events[0], Some(Event::Key { code: 272, value: 1 })); assert_eq!(events[1], Some(Event::Relative { code: 0, value: 2 })); assert_eq!(events[2], Some(Event::Relative { code: 1, value: -2 })); }
+    #[test] fn mouse_emits_optional_wheel_and_side_buttons() { let (_, events) = mouse(0, &[0x18, 0, 0, 0xfe]).unwrap(); assert_eq!(events[0], Some(Event::Key { code: 275, value: 1 })); assert_eq!(events[1], Some(Event::Key { code: 276, value: 1 })); assert_eq!(events[2], Some(Event::Relative { code: 8, value: -2 })); }
     #[test] fn keyboard_maps_keypad_navigation_and_extended_modifiers() { let (_, events) = keyboard(&[0; 8], &[0x80, 0, 89, 80, 0, 0, 0, 0]).unwrap(); assert_eq!(events[0], Some(Event::Key { code: 126, value: 1 })); assert_eq!(events[1], Some(Event::Key { code: 79, value: 1 })); assert_eq!(events[2], Some(Event::Key { code: 105, value: 1 })); }
 }
