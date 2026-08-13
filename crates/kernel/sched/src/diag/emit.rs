@@ -48,6 +48,16 @@ fn emit_lockup_context() {
     klog::write_raw(if crate::preempt::irqs_disabled() { b"y" } else { b"n" });
     klog::write_raw(b" interrupt=");
     klog::write_raw(if crate::preempt::in_interrupt() { b"y" } else { b"n" });
+    let pc = super::watchdog::interrupted_kernel_pc();
+    if pc != 0 {
+        klog::write_raw(b" kernel_pc=0x");
+        klog::write_hex_u64(pc);
+    }
+    #[cfg(feature = "debug-preempt")]
+    {
+        klog::write_raw(b" held_lock_rank=");
+        klog::write_dec_u64(sync::preempt_gate::held_rank() as u64);
+    }
 }
 
 /// A task dump names the KTHREAD, which for a timer wedge is always `ktimers` —

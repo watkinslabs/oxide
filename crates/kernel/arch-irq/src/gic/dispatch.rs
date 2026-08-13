@@ -281,6 +281,10 @@ unsafe extern "C" fn oxide_irq_exit_to_user(regs: *mut hal_aarch64::SvcFrame) {
     // SAFETY: the exception-exit asm passes SP, the live 288 B entry frame.
     let spsr = unsafe { (*regs).spsr_el1 };
     if !hal::uregs::aarch64::user_mode(spsr) {
+        #[cfg(feature = "debug-watchdog")]
+        // SAFETY: same checked, live interrupted frame; ELR_EL1 is the
+        // kernel PC the exception-return path is about to resume.
+        sched::diag::note_interrupted_kernel_pc(unsafe { (*regs).elr_el1 });
         // SAFETY: this is the outer exception return on the interrupted task
         // stack; hardirq/softirq accounting was released by the dispatcher.
         unsafe { sched::live::preempt_schedule_irq::<hal_aarch64::ArmIrqGate>(); }

@@ -151,7 +151,7 @@ debug-arm-mprotect = ["pmm/debug-arm-mprotect"]  # [ARM-MPROTECT] aggregate coun
 debug-arm-mprotect-detail = ["pmm/debug-arm-mprotect-detail"]  # full per-operation + per-present-leaf trace; targeted only
 debug-arm-mprotect-pages = ["pmm/debug-arm-mprotect-pages"]  # retained compatibility alias for detailed trace
 debug-udevdb = ["syscalls/debug-udevdb", "sysfs/debug-udevdb"]  # [UDEVDB] udev runtime database/tag syscall trace for seat DB materialization
-debug-watchdog = ["sched/debug-watchdog"]  # liveness watchdog soft-lockup banner + serial-sysrq task dump (05/27); one-shot/on-demand, no steady-state noise
+debug-watchdog = ["sched/debug-watchdog", "arch-irq/debug-watchdog"]  # liveness watchdog soft-lockup banner + serial-sysrq task dump (05/27); one-shot/on-demand, no steady-state noise
 # The detailed PMM/VMM/syscall probes remain opt-in because boot crates put
 # `debug-watchdog` in `default`; arming them there would poison every freed
 # page in the shipped build. `debug-all` selects this non-default aggregate.
