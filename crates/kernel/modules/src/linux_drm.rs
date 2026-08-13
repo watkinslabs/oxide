@@ -146,6 +146,8 @@ const DRM_CRTC_PRIMARY_OFF: usize = 128;
 const DRM_CRTC_CURSOR_OFF: usize = 136;
 const DRM_CRTC_INDEX_OFF: usize = 144;
 const DRM_CRTC_FUNCS_OFF: usize = 408;
+const DRM_CRTC_COMMIT_LIST_OFF: usize = 1496;
+const DRM_CRTC_COMMIT_LOCK_OFF: usize = 1512;
 const DRM_MODE_OBJECT_CRTC: u32 = 0xcccc_cccc;
 const DRM_MODE_OBJECT_ENCODER: u32 = 0xe0e0_e0e0;
 const DRM_MODE_OBJECT_PLANE: u32 = 0xeeee_eeee;
@@ -489,7 +491,7 @@ unsafe extern "C" fn drm_crtc_init_with_planes(
     // SAFETY: crtc, its optional plane objects, and the mode-config graph use the verified ABI offsets; all mutations are serialized by DEVICES.
     unsafe {
         let head = crtc.cast::<u8>().add(DRM_CRTC_HEAD_OFF).cast::<*mut c_void>(); let list = config.add(MODE_CONFIG_CRTC_LIST_OFF).cast::<*mut c_void>(); let tail = *list.add(1);
-        write(head, list.cast()); write(head.add(1), tail); write(tail as *mut *mut c_void, head.cast()); write(list.add(1), head.cast()); write(crtc.cast::<*mut c_void>(), dev); write(crtc.cast::<u8>().add(DRM_CRTC_BASE_OFF + 8).cast::<*mut u8>(), crtc.cast::<u8>().add(properties::DRM_CRTC_PROPERTIES_OFF)); write(crtc.cast::<u8>().add(32).cast::<*mut u8>(), name as *mut u8); write(crtc.cast::<u8>().add(DRM_CRTC_FUNCS_OFF).cast::<*const c_void>(), funcs); write(crtc.cast::<u8>().add(DRM_CRTC_PRIMARY_OFF).cast::<*mut c_void>(), primary); write(crtc.cast::<u8>().add(DRM_CRTC_CURSOR_OFF).cast::<*mut c_void>(), cursor); write(crtc.cast::<u8>().add(DRM_CRTC_INDEX_OFF).cast::<u32>(), index as u32); write(config.add(MODE_CONFIG_NUM_CRTC_OFF).cast::<i32>(), index + 1);
+        write(head, list.cast()); write(head.add(1), tail); write(tail as *mut *mut c_void, head.cast()); write(list.add(1), head.cast()); write(crtc.cast::<*mut c_void>(), dev); write(crtc.cast::<u8>().add(DRM_CRTC_BASE_OFF + 8).cast::<*mut u8>(), crtc.cast::<u8>().add(properties::DRM_CRTC_PROPERTIES_OFF)); write(crtc.cast::<u8>().add(32).cast::<*mut u8>(), name as *mut u8); write(crtc.cast::<u8>().add(DRM_CRTC_FUNCS_OFF).cast::<*const c_void>(), funcs); write(crtc.cast::<u8>().add(DRM_CRTC_PRIMARY_OFF).cast::<*mut c_void>(), primary); write(crtc.cast::<u8>().add(DRM_CRTC_CURSOR_OFF).cast::<*mut c_void>(), cursor); write(crtc.cast::<u8>().add(DRM_CRTC_INDEX_OFF).cast::<u32>(), index as u32); let commits = crtc.cast::<u8>().add(DRM_CRTC_COMMIT_LIST_OFF); write(commits.cast::<*mut u8>(), commits); write(commits.add(core::mem::size_of::<*mut u8>()).cast::<*mut u8>(), commits); write(crtc.cast::<u8>().add(DRM_CRTC_COMMIT_LOCK_OFF).cast::<u32>(), 0); write(config.add(MODE_CONFIG_NUM_CRTC_OFF).cast::<i32>(), index + 1);
         if !primary.is_null() && *(primary.cast::<u8>().add(DRM_PLANE_POSSIBLE_CRTCS_OFF).cast::<u32>()) == 0 { write(primary.cast::<u8>().add(DRM_PLANE_POSSIBLE_CRTCS_OFF).cast::<u32>(), 1u32 << index); }
         if !cursor.is_null() && *(cursor.cast::<u8>().add(DRM_PLANE_POSSIBLE_CRTCS_OFF).cast::<u32>()) == 0 { write(cursor.cast::<u8>().add(DRM_PLANE_POSSIBLE_CRTCS_OFF).cast::<u32>(), 1u32 << index); }
     }

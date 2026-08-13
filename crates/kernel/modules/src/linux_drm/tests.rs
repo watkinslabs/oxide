@@ -8,7 +8,7 @@ struct TestDriver([u8; 200]);
 struct TestPlane([u8; 1360]);
 
 #[repr(C, align(8))]
-struct TestCrtc([u8; 1228]);
+struct TestCrtc([u8; 1656]);
 
 #[repr(C, align(8))]
 struct TestEncoder([u8; 128]);
@@ -205,10 +205,10 @@ fn universal_plane_owns_formats_links_the_mode_list_and_cleans_up() {
 fn crtc_links_legacy_planes_and_reverses_all_owned_state() {
     let _modules = crate::test_serial::claim(); let mut parent = LinuxDevice::new(); let dev = device(&mut parent, 2048); assert_eq!(drmm_mode_config_init(dev), 0); let mut plane = TestPlane([0; 1360]); let formats = [0x3432_5258u32]; let funcs = 1u8;
     // SAFETY: plane and CRTC reserve their verified ABI layouts; the CRTC gets a live primary plane and callback table address.
-    assert_eq!(unsafe { drm_universal_plane_init(dev, plane.0.as_mut_ptr().cast(), 0, core::ptr::null(), formats.as_ptr(), 1, core::ptr::null(), 1, c"plane".as_ptr()) }, 0); let mut crtc = TestCrtc([0; 1228]); assert_eq!(unsafe { drm_crtc_init_with_planes(dev, crtc.0.as_mut_ptr().cast(), plane.0.as_mut_ptr().cast(), core::ptr::null_mut(), (&funcs as *const u8).cast(), core::ptr::null()) }, 0);
+    assert_eq!(unsafe { drm_universal_plane_init(dev, plane.0.as_mut_ptr().cast(), 0, core::ptr::null(), formats.as_ptr(), 1, core::ptr::null(), 1, c"plane".as_ptr()) }, 0); let mut crtc = TestCrtc([0; 1656]); assert_eq!(unsafe { drm_crtc_init_with_planes(dev, crtc.0.as_mut_ptr().cast(), plane.0.as_mut_ptr().cast(), core::ptr::null_mut(), (&funcs as *const u8).cast(), core::ptr::null()) }, 0);
     let config = dev.cast::<u8>().wrapping_add(DRM_MODE_CONFIG_OFF);
     // SAFETY: successful initialization populated these exact ABI fields and assigned the primary-plane CRTC mask.
-    unsafe { assert_eq!(*(crtc.0.as_ptr().add(DRM_CRTC_BASE_OFF).cast::<u32>()), 4); assert_eq!(*(crtc.0.as_ptr().add(DRM_CRTC_PRIMARY_OFF).cast::<*mut c_void>()), plane.0.as_mut_ptr().cast()); assert_eq!(*(plane.0.as_ptr().add(DRM_PLANE_POSSIBLE_CRTCS_OFF).cast::<u32>()), 1); assert_eq!(*(config.add(MODE_CONFIG_NUM_CRTC_OFF).cast::<i32>()), 1); }
+    unsafe { assert_eq!(*(crtc.0.as_ptr().add(DRM_CRTC_BASE_OFF).cast::<u32>()), 4); assert_eq!(*(crtc.0.as_ptr().add(DRM_CRTC_PRIMARY_OFF).cast::<*mut c_void>()), plane.0.as_mut_ptr().cast()); assert_eq!(*(plane.0.as_ptr().add(DRM_PLANE_POSSIBLE_CRTCS_OFF).cast::<u32>()), 1); assert_eq!(*(config.add(MODE_CONFIG_NUM_CRTC_OFF).cast::<i32>()), 1); let commits = crtc.0.as_ptr().add(DRM_CRTC_COMMIT_LIST_OFF); assert_eq!(*(commits.cast::<*mut u8>()), commits as *mut u8); assert_eq!(*(commits.add(core::mem::size_of::<*mut u8>()).cast::<*mut u8>()), commits as *mut u8); assert_eq!(*(crtc.0.as_ptr().add(DRM_CRTC_COMMIT_LOCK_OFF).cast::<u32>()), 0); }
     drm_crtc_cleanup(crtc.0.as_mut_ptr().cast()); assert_eq!(DEVICES.lock()[0].crtcs.len(), 0); unsafe { assert_eq!(*(config.add(MODE_CONFIG_NUM_CRTC_OFF).cast::<i32>()), 0); assert_eq!(*(crtc.0.as_ptr().add(DRM_CRTC_BASE_OFF).cast::<u32>()), 0); }
     drm_plane_cleanup(plane.0.as_mut_ptr().cast()); devres::release_device(&mut parent);
 }
