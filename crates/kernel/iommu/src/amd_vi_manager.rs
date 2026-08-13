@@ -20,7 +20,8 @@ pub enum AmdViMsi { Direct, Remapped { address: u64, data: u32 }, Failed }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum AmdViIoapic { Direct, Remapped { index: u8 }, Failed }
 
-struct AmdViBootUnit { unit: IommuUnit, requesters: Vec<Bdf>, bootstrap: AmdViBootstrap, domain: AmdViDomain }
+struct AmdViGroup { key: u16, domain_id: u16, requesters: Vec<Bdf>, domain: AmdViDomain }
+struct AmdViBootUnit { unit: IommuUnit, bootstrap: AmdViBootstrap, groups: Vec<AmdViGroup> }
 static MANAGER: Spinlock<Vec<AmdViBootUnit>, Devices> = Spinlock::new(Vec::new());
 static EVENT_RECORDS: AtomicU64 = AtomicU64::new(0);
 
@@ -40,19 +41,29 @@ pub unsafe fn activate_amd_vi(requesters: &[Bdf], hhdm_offset: u64, regions: &[p
 
     let mut manager = Vec::new();
     for unit in units {
-        let Some(mut domain) = AmdViDomain::new(IOVA_START, IOVA_BYTES, hhdm_offset) else { return AmdViActivation::Failed; };
-        if !domain.map_identity_regions(regions) || !map_ivmd_regions(&mut domain, unit, requesters) { return AmdViActivation::Failed; }
         // SAFETY: the firmware inventory owns this unit and PCI probing has not enabled DMA.
         let Some(bootstrap) = (unsafe { AmdViBootstrap::new(unit.register_base, unit.segment, hhdm_offset) }) else { return AmdViActivation::Failed; };
-        manager.push(AmdViBootUnit { unit, requesters: Vec::new(), bootstrap, domain });
+        manager.push(AmdViBootUnit { unit, bootstrap, groups: Vec::new() });
     }
 
     for bdf in requesters {
         let Some(unit) = crate::amd_vi_unit_for_bdf(*bdf) else { continue; };
         let Some(entry) = manager.iter_mut().find(|entry| entry.unit == unit) else { return activation_failed(&mut manager); };
-        // SAFETY: the identity domain maps every PMM-owned DMA address before translation enables.
-        if !unsafe { entry.bootstrap.attach(*bdf, &entry.domain, INITIAL_DOMAIN_ID) } { return activation_failed(&mut manager); }
-        entry.requesters.push(*bdf);
+        let key = group_key(*bdf, firmware::acpi::amd_vi_alias_for_requester(bdf.segment, bdf.raw()));
+        let index = match entry.groups.iter().position(|group| group.key == key) {
+            Some(index) => index,
+            None => {
+                let Some(domain_id) = u16::try_from(entry.groups.len()).ok().and_then(|n| INITIAL_DOMAIN_ID.checked_add(n)) else { return activation_failed(&mut manager); };
+                let Some(mut domain) = AmdViDomain::new(IOVA_START, IOVA_BYTES, hhdm_offset) else { return activation_failed(&mut manager); };
+                if !domain.map_identity_regions(regions) || !map_ivmd_regions(&mut domain, unit, &[*bdf]) { return activation_failed(&mut manager); }
+                entry.groups.push(AmdViGroup { key, domain_id, requesters: Vec::new(), domain });
+                entry.groups.len() - 1
+            }
+        };
+        let group = &mut entry.groups[index];
+        // SAFETY: the group domain maps every PMM-owned DMA address before translation enables.
+        if !unsafe { entry.bootstrap.attach(*bdf, &group.domain, group.domain_id) } { return activation_failed(&mut manager); }
+        group.requesters.push(*bdf);
     }
     for entry in manager.iter_mut() {
         if !entry.bootstrap.enable() { return activation_failed(&mut manager); }
@@ -89,7 +100,7 @@ fn activation_failed(manager: &mut [AmdViBootUnit]) -> AmdViActivation {
 
 /// Return whether this manager owns the full PCI requester identity. # C: O(units)
 pub fn owns(requester: Bdf) -> bool {
-    MANAGER.lock().iter().any(|entry| entry.requesters.iter().any(|candidate| *candidate == requester))
+    MANAGER.lock().iter().any(|entry| entry.groups.iter().any(|group| group.requesters.iter().any(|candidate| *candidate == requester)))
 }
 
 pub(crate) fn active() -> bool { !MANAGER.lock().is_empty() }
@@ -153,11 +164,12 @@ pub fn map_dma_below(requester: Bdf, pa: u64, len: usize, mask: u64) -> Option<u
     let (base, bytes, offset) = crate::dma_span::normalize_dma_span(pa, len)?;
     let mut manager = MANAGER.lock();
     let entry = manager.iter_mut().find(|entry| entry.unit == unit)?;
-    let map = entry.domain.map_below(base, bytes, pci::IOVA_PAGE_SIZE, mask)?;
-    if !entry.bootstrap.invalidate_mapping(map, INITIAL_DOMAIN_ID) {
-        if entry.domain.remove_for_invalidate(map)
-            && entry.bootstrap.invalidate_mapping(map, INITIAL_DOMAIN_ID) {
-            let _ = entry.domain.release_after_invalidate(map);
+    let group = entry.groups.iter_mut().find(|group| group.requesters.iter().any(|candidate| *candidate == requester))?;
+    let map = group.domain.map_below(base, bytes, pci::IOVA_PAGE_SIZE, mask)?;
+    if !entry.bootstrap.invalidate_mapping(map, group.domain_id) {
+        if group.domain.remove_for_invalidate(map)
+            && entry.bootstrap.invalidate_mapping(map, group.domain_id) {
+            let _ = group.domain.release_after_invalidate(map);
         }
         return None;
     }
@@ -171,14 +183,17 @@ pub fn unmap_dma(requester: Bdf, iova: u64, len: usize) -> bool {
     let Some(bytes) = offset.checked_add(len as u64).and_then(|n| n.checked_add(page - 1)).map(|n| n & !(page - 1)) else { return false; };
     let mut manager = MANAGER.lock();
     let Some(entry) = manager.iter_mut().find(|entry| entry.unit == unit) else { return false; };
-    let Some(map) = entry.domain.mapping(base) else { return false; };
-    if map.iova.len != bytes || !entry.domain.remove_for_invalidate(map) { return false; }
-    entry.bootstrap.invalidate_mapping(map, INITIAL_DOMAIN_ID) && entry.domain.release_after_invalidate(map)
+    let Some(group) = entry.groups.iter_mut().find(|group| group.requesters.iter().any(|candidate| *candidate == requester)) else { return false; };
+    let Some(map) = group.domain.mapping(base) else { return false; };
+    if map.iova.len != bytes || !group.domain.remove_for_invalidate(map) { return false; }
+    entry.bootstrap.invalidate_mapping(map, group.domain_id) && group.domain.release_after_invalidate(map)
 }
 
 fn push_unique_unit(units: &mut Vec<IommuUnit>, unit: IommuUnit) {
     if !units.iter().any(|current| *current == unit) { units.push(unit); }
 }
+
+fn group_key(bdf: Bdf, alias: Option<u16>) -> u16 { alias.unwrap_or(bdf.raw()) }
 
 #[cfg(test)] mod tests {
     use super::*;
@@ -190,5 +205,11 @@ fn push_unique_unit(units: &mut Vec<IommuUnit>, unit: IommuUnit) {
         push_unique_unit(&mut units, first);
         push_unique_unit(&mut units, other_segment);
         assert_eq!(units, alloc::vec![first, other_segment]);
+    }
+    #[test] fn alias_and_canonical_requesters_select_one_group_key() {
+        let canonical = Bdf { segment: 0, bus: 0x12, device: 3, function: 1 };
+        let alias = Bdf { segment: 0, bus: 0x12, device: 4, function: 0 };
+        assert_eq!(group_key(canonical, None), canonical.raw());
+        assert_eq!(group_key(alias, Some(canonical.raw())), canonical.raw());
     }
 }
