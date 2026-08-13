@@ -241,6 +241,7 @@ pub unsafe fn init_exports() {
     crate::linux_usercopy::export_symbols();
     crate::linux_usb::export_symbols();
     crate::linux_video::export_symbols();
+    crate::linux_xarray::export_symbols();
 }
 
 #[cfg(test)]
