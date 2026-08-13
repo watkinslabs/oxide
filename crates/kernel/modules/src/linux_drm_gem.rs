@@ -82,14 +82,14 @@ pub(crate) static SHMEM_OBJECT_FUNCS: GemObjectFuncs = GemObjectFuncs { free: So
 static GEM_FB_FUNCS: [Option<FbDestroy>; 3] = [Some(gem_fb_destroy), None, None];
 
 /// Retain one framebuffer reference through its embedded mode object. # C: O(1)
-pub(super) fn framebuffer_get(fb: *mut c_void) {
+pub(crate) fn framebuffer_get(fb: *mut c_void) {
     if fb.is_null() { return; }
     // SAFETY: framebuffer callers hold a live reference; the embedded mode-object count is initialized at creation.
     unsafe { let refs = read(fb.cast::<u8>().add(DRM_FB_REFCOUNT_OFF).cast::<i32>()); write(fb.cast::<u8>().add(DRM_FB_REFCOUNT_OFF).cast::<i32>(), refs.saturating_add(1)); }
 }
 
 /// Release one framebuffer reference and invoke its mode-object finalizer at zero. # C: O(1)
-pub(super) fn framebuffer_put(fb: *mut c_void) {
+pub(crate) fn framebuffer_put(fb: *mut c_void) {
     if fb.is_null() { return; }
     // SAFETY: framebuffer callers hold exactly one reference; its finalizer receives the embedded kref field.
     let refs = unsafe { read(fb.cast::<u8>().add(DRM_FB_REFCOUNT_OFF).cast::<i32>()) };
