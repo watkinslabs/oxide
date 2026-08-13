@@ -108,7 +108,7 @@ mod tests {
     /// line, NUL-terminated inside the reported buffer.
     #[test]
     fn ascii_command_line_round_trips() {
-        let line = "BOOT_IMAGE=/boot/oxide-aarch64.Image root=/dev/oxide0 rw quiet \
+        let line = "BOOT_IMAGE=/boot/oxide-aarch64.Image root=/dev/vda rw quiet \
                     console=ttyAMA0,115200 console=tty0 oxide.bootargs=grub";
         let mut units = utf16(line);
         units.push(0);

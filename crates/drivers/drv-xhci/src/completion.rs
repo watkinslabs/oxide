@@ -45,6 +45,7 @@ impl TransferCompletions {
     }
 
     /// Report whether one exact transfer completion is available. # C: O(event ring)
+    #[cfg(target_os = "oxide-kernel")]
     pub fn contains(&self, trb_pa: u64) -> bool {
         trb_pa != 0 && self.slots.iter().any(|slot| slot.trb_pa.load(Ordering::Acquire) == trb_pa)
     }

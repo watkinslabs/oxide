@@ -549,6 +549,12 @@ pub fn by_dev(dev_t: u32) -> Option<Arc<Disk>> {
 fn decode_dev(dev_t: u32) -> (u32, u32) {
     ((dev_t & 0x000f_ff00) >> 8, (dev_t & 0xff) | ((dev_t >> 12) & 0x000f_ff00))
 }
+/// Encode a major/minor pair only when it round-trips through the canonical
+/// packed device representation. # C: O(1)
+pub(crate) fn decode_root_dev(major: u32, minor: u32) -> Option<u32> {
+    let dev_t = encode_dev(major, minor);
+    (decode_dev(dev_t) == (major, minor)).then_some(dev_t)
+}
 /// First published disk, boot fallback only. # C: O(1)
 pub fn first_device() -> Option<Arc<dyn BlockDevice>> {
     // SAFETY: lookup holds the registry only long enough to clone the handle.

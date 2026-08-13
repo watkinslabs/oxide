@@ -54,11 +54,12 @@ unsafe fn mount_root() {
         // the owner's completion lands and it can release. Without this the boot
         // deadlocks in truncate_inode (CPU-STALL, nr_running=1).
         ext4::mount::set_yield_hook(|| sched::live::tick_yield());
-        let root_dev = block::registry::by_serial("oxide-root")
-            .or_else(block::registry::first_device)
-            .expect("root disk (virtio-blk serial=oxide-root) not found");
+        let root_spec = crate::boot_cmdline::parameter_value(b"root")
+            .expect("boot command line has no root=");
+        let root_dev = block::registry::resolve_root_spec(root_spec)
+            .expect("requested root block device not found");
         step("ext4::rootfs::init_from_dev", || ext4::rootfs::init_from_dev(root_dev))
-            .expect("ext4 root mount (oxide-root) failed to open");
+            .expect("ext4 root mount failed to open");
         step("pci_boot::retry_firmware_gated_drivers", pci_boot::retry_firmware_gated_drivers);
         net::sock::init();
         // Generic netlink: the nlctrl controller plus every in-kernel family
