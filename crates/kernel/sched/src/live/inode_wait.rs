@@ -10,12 +10,12 @@ pub fn park(key: usize) {
 
 /// Register a rwsem reader while its registration gate is held. # C: O(log N)
 pub fn park_reader(key: usize) {
-    WAITERS.prepare_interruptible((key, false));
+    WAITERS.prepare((key, false));
 }
 
 /// Register a rwsem writer while its registration gate is held. # C: O(log N)
 pub fn park_writer(key: usize) {
-    WAITERS.prepare_interruptible((key, true));
+    WAITERS.prepare((key, true));
 }
 
 /// Register a rwsem waiter in its reader or writer FIFO. # C: O(log N)

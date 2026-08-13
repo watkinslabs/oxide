@@ -98,9 +98,9 @@ impl<T> Mutex<T> {
             // Enqueue UNDER the gate — that is what closes the lost wakeup.
             // SAFETY: caller is the running task in process context; the gate is
             // dropped immediately below, before `schedule`, so no lock is held
-            // across the sleep. Interruptible so a pending unmasked signal
-            // returns us to Runnable rather than sleeping through it.
-            unsafe { self.wait.prepare_to_wait_interruptible(); }
+            // across the sleep. `mutex_lock` does not have an interrupted
+            // return path, so its wait class is uninterruptible.
+            unsafe { self.wait.prepare_to_wait(); }
             drop(g);
             // SAFETY: parked on this mutex's wait list holding no lock.
             unsafe { super::schedule(); }
