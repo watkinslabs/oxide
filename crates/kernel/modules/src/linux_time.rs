@@ -5,6 +5,7 @@
 // kthread: kthread lifecycle helpers.
 // tasklet: tasklet compatibility helpers.
 
+mod r#async;
 mod clock;
 mod kthread;
 mod tasklet;
@@ -22,6 +23,7 @@ pub fn export_symbols() {
     export("jiffies", &clock::jiffies as *const _ as usize, false);
     export("jiffies_64", &clock::jiffies_64 as *const _ as usize, false);
     clock::export_symbols();
+    r#async::export_symbols();
     timer::export_symbols();
     work::export_symbols();
     kthread::export_symbols();
