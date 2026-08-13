@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 use crate::partitions::{self, PartitionDevice};
 use crate::BlockDevice;
 
-use super::{by_name, DevNum, PARTITION_MINOR_COUNT};
+use super::{by_name, DevNum, Disk, PARTITION_MINOR_COUNT};
 
 /// One published partition, owned by its parent whole-disk object.
 pub struct Partition {
@@ -26,10 +26,7 @@ pub struct Partition {
 /// # C: O(partition table)
 pub fn rescan_partitions(name: &str) -> Option<Vec<Arc<Partition>>> {
     let disk = by_name(name)?;
-    for part in disk.partitions() {
-        crate::devbridge::unpublish_partition(&part);
-        if let Some(node) = drv::devices().into_iter().find(|device| device.bus == "block" && device.addr == part.name) { drv::device_del(&node); }
-    }
+    unpublish_partitions(&disk);
     let capacity = disk.dev.capacity_blocks();
     let parts = partitions::read(disk.dev.as_ref()).into_iter().filter_map(|info| {
         if info.number >= PARTITION_MINOR_COUNT { return None; }
@@ -56,6 +53,17 @@ pub fn rescan_partitions(name: &str) -> Option<Vec<Arc<Partition>>> {
         else { let _ = drv::try_device_add(node); }
     }
     Some(parts)
+}
+
+/// Remove all published child partitions of a disk before its parent is
+/// removed or its partition table is replaced. # C: O(partitions + devices)
+pub(crate) fn unpublish_partitions(disk: &Disk) {
+    let parts = disk.partitions();
+    disk.publish_partitions(Vec::new());
+    for part in parts {
+        crate::devbridge::unpublish_partition(&part);
+        if let Some(node) = drv::devices().into_iter().find(|device| device.bus == "block" && device.addr == part.name) { drv::device_del(&node); }
+    }
 }
 
 /// Find a partition by its conventional block-node name. # C: O(disks + partitions)
@@ -104,6 +112,7 @@ mod tests {
     const PUBLISH_NAME: &str = "partition-scan-publish-fixture";
     const REPLACE_NAME: &str = "partition-scan-replace-fixture";
     const CLIP_NAME: &str = "partition-scan-clip-fixture";
+    const REMOVE_NAME: &str = "partition-scan-remove-fixture";
     const BLOCK_BYTES: u32 = 512;
 
     #[test]
@@ -159,5 +168,25 @@ mod tests {
         assert_eq!(parts[0].start_lba, 28);
         assert_eq!(parts[0].sectors, 4);
         assert!(unregister(CLIP_NAME));
+    }
+
+    #[test]
+    fn unregister_removes_all_partition_publication() {
+        let dev = MemDisk::<TaskList>::new(BLOCK_BYTES, 32);
+        let mut mbr = vec![0; BLOCK_BYTES as usize];
+        mbr[446 + 4] = 0x83;
+        mbr[446 + 8..446 + 12].copy_from_slice(&4u32.to_le_bytes());
+        mbr[446 + 12..446 + 16].copy_from_slice(&8u32.to_le_bytes());
+        mbr[510..512].copy_from_slice(&[0x55, 0xaa]);
+        let mut write = BlockRequest::new_write(0, 1, mbr);
+        dev.submit_sync(&mut write).expect("fixture table write");
+        assert_ne!(register(REMOVE_NAME, dev), 0);
+
+        let part = by_name(REMOVE_NAME).expect("registered disk").partitions().pop().expect("published partition");
+        let devt = vfs::Devt(super::super::encode_dev(part.number_dev.major, part.number_dev.minor));
+        assert!(vfs::lookup_blkdev(devt).is_some(), "partition VFS region is live");
+
+        assert!(unregister(REMOVE_NAME));
+        assert!(vfs::lookup_blkdev(devt).is_none(), "partition VFS region is removed with disk");
     }
 }
