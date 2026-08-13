@@ -207,6 +207,9 @@ pub unsafe fn decode_fadt(pa: u64, hhdm_offset: u64) {
     alog_raw(b" dsdt=");
     alog_hex(f.dsdt_pa);
     alog_raw(b"\n");
+    // SAFETY: the FADT-derived DSDT address names an AML table retained by
+    // firmware memory for this boot, under the same HHDM contract as FADT.
+    unsafe { crate::acpi::install_dsdt(f.dsdt_pa, hhdm_offset); }
     match reset_action(&f) {
         Some(a) => {
             crate::set_reset_action(a);
