@@ -31,6 +31,7 @@ static X2APIC_CAPABLE: AtomicBool = AtomicBool::new(false);
 /// # SAFETY
 /// The caller must run before any requester can acquire PCI bus mastering.
 /// # C: O(units + requesters + RAM leaves)
+#[inline(never)]
 pub unsafe fn activate_amd_vi(requesters: &[Bdf], aliases: &pci::DmaAliases, hhdm_offset: u64, regions: &[pmm::UsableRegion]) -> AmdViActivation {
     X2APIC_CAPABLE.store(false, Ordering::Release);
     let mut units = Vec::new();

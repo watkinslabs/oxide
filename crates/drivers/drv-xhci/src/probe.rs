@@ -2,7 +2,7 @@
 
 extern crate alloc;
 
-use alloc::sync::{Arc, Weak};
+use alloc::{boxed::Box, sync::{Arc, Weak}};
 use alloc::vec::Vec;
 use sync::{Spinlock, TaskList as DriverLockClass};
 
@@ -25,9 +25,9 @@ fn port_stage(port: u8, stage: &'static [u8]) {
 }
 
 pub(crate) struct UsbDeviceState {
-    pub(crate) device: AddressDeviceDma,
+    pub(crate) device: Box<AddressDeviceDma>,
     pub(crate) slot: u8,
-    pub(crate) decoder: Option<crate::hid_report::ReportDecoder>,
+    pub(crate) decoder: Option<Box<crate::hid_report::ReportDecoder>>,
     pub(crate) evdev: Option<u32>,
     pub(crate) input_platform: Option<u32>,
     pub(crate) storage_name: Option<block::ScsiDiskName>,
@@ -37,12 +37,12 @@ pub(crate) struct UsbDevice { _controller: Weak<Controller>, pub(crate) state: S
 
 impl UsbDevice {
     /// Construct the input-facing device before taking the controller lock. # C: O(input registration)
-    pub(crate) fn new(controller: &Arc<Controller>, device: AddressDeviceDma) -> Arc<Self> {
+    pub(crate) fn new(controller: &Arc<Controller>, mut device: Box<AddressDeviceDma>) -> Arc<Self> {
         let slot = device.slot();
-        let layout = device.hid_layout();
-        let evdev = crate::probe_input::install_hid_input(controller.bdf, slot, layout);
+        let layout = device.take_hid_layout();
+        let evdev = crate::probe_input::install_hid_input(controller.bdf, slot, layout.as_deref().copied());
         let input_platform = evdev.map(|_| crate::probe_input::platform_id(controller.bdf, slot));
-        Arc::new(Self { _controller: Arc::downgrade(controller), state: Spinlock::new(UsbDeviceState { device, slot, decoder: layout.map(crate::hid_report::ReportDecoder::new), evdev, input_platform, storage_name: None }) })
+        Arc::new(Self { _controller: Arc::downgrade(controller), state: Spinlock::new(UsbDeviceState { device, slot, decoder: layout.map(|layout| Box::new(crate::hid_report::ReportDecoder::new(layout))), evdev, input_platform, storage_name: None }) })
     }
 
     pub(crate) fn with_transport<T>(&self, f: impl FnOnce(&Mmio, Binding, &CommandTransport, &mut UsbDeviceState) -> T) -> Option<T> {

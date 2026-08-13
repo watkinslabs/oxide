@@ -89,6 +89,26 @@ pub fn request(bdf: pci::Bdf, table: BarMapping, action: arch_irq::DeviceAction,
     { let _ = (bdf, table, action, handler); None }
 }
 
+/// Request one MSI vector without an INTx fallback. Platform-owned functions
+/// that report through a message-signaled event register must not depend on a
+/// firmware PCI routing entry. # C: O(capabilities)
+pub fn request_msi_only(bdf: pci::Bdf, action: arch_irq::DeviceAction, handler: fn()) -> Option<Binding> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let reader = hal_x86_64::pci::EcamPci::from_published()?;
+        let cap = pci::capabilities(&reader, bdf).find(pci::CAP_ID_MSI)?;
+        request_msi(&reader, bdf, cap.cfg_off, action, handler)
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        let reader = hal_aarch64::pci::EcamPci::from_published()?;
+        let cap = pci::capabilities(&reader, bdf).find(pci::CAP_ID_MSI)?;
+        request_msi(&reader, bdf, cap.cfg_off, action, handler)
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    { let _ = (bdf, action, handler); None }
+}
+
 /// Request a legacy INTx vector from a route already resolved by the PCI
 /// root-complex owner. This is intentionally separate from the PCI
 /// interrupt-line byte, which is not a routable interrupt-controller input.

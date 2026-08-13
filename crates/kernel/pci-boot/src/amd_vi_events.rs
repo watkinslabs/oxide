@@ -24,8 +24,7 @@ pub(super) fn install(requesters: &[Bdf]) -> bool {
         if !sources.contains(&bdf) { sources.push(bdf); }
     }
     for bdf in sources {
-        let table = pci_irq::BarMapping { bar: 0, base_va: 0, bytes: 0, offset: 0 };
-        let Some(binding) = pci_irq::request(bdf, table, arch_irq::DeviceAction::AmdVi,
+        let Some(binding) = pci_irq::request_msi_only(bdf, arch_irq::DeviceAction::AmdVi,
             iommu::handle_amd_vi_event_interrupt) else { release(&mut bindings); return false; };
         bindings.push(binding);
     }

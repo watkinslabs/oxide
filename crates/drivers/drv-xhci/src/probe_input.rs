@@ -5,6 +5,7 @@ use crate::probe::UsbDeviceState;
 fn advertise(bits: &mut [u8], code: u16) { bits[code as usize / 8] |= 1 << (code % 8); }
 pub(crate) fn platform_id(bdf: pci::Bdf, slot: u8) -> u32 { crate::identity::input_platform_id(bdf, slot) }
 
+#[inline(never)]
 pub(crate) fn install_hid_input(bdf: pci::Bdf, slot: u8, layout: Option<crate::hid_report::ReportLayout>) -> Option<u32> {
     let layout = layout?;
     let mut dev = input::VirtioInputDev::empty_platform_boxed(platform_id(bdf, slot));

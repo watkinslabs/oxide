@@ -1,4 +1,4 @@
-use alloc::sync::Arc;
+use alloc::{boxed::Box, sync::Arc};
 #[cfg(target_os = "oxide-kernel")]
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
@@ -134,7 +134,7 @@ fn send_netlink(socket: &netlink::NetlinkSocket, message: &Message, dest: netlin
 
 pub(crate) enum InetPrepared {
     Packet,
-    Unix(crate::control::UnixScm),
+    Unix(Box<crate::control::UnixScm>),
     /// The settled transmit overrides live on the heap, not in this enum: the
     /// value would otherwise be copied into three stack frames that all sit
     /// under the deepest send path in the tree, once each.
@@ -178,7 +178,7 @@ pub(crate) fn prepare(ctx: &SendContext<'_>, target: &SendFile, message: &Messag
         }
         SendKind::Inet(socket) => {
             if let Some(result) = crate::control::prepare_unix(ctx, socket, message, flags) {
-                return result.map(|scm| PreparedSend::Inet(InetPrepared::Unix(scm)));
+                return result.map(|scm| PreparedSend::Inet(InetPrepared::Unix(Box::new(scm))));
             }
             if matches!(*socket.kind.lock(), net::sock::SockKind::Packet { .. }) {
                 crate::packet::validate(message.name.as_deref())?;
@@ -254,13 +254,13 @@ fn tcp_urgent_tail(ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSocket>,
 #[cfg(target_os = "oxide-kernel")]
 #[inline(never)]
 fn send_inet(ctx: &SendContext<'_>, target: &SendFile, socket: &Arc<net::sock::InetSocket>,
-    message: &Message, flags: u32, prepared: InetPrepared) -> KResult<usize>
+    message: &Message, flags: u32, prepared: Box<InetPrepared>) -> KResult<usize>
 {
-    let (dest, control) = match prepared {
+    let (dest, control) = match *prepared {
         InetPrepared::Packet =>
             return crate::packet::send(socket, &message.payload, message.name.as_deref()),
         InetPrepared::Unix(scm) =>
-            return send_unix_blocking(ctx, target, socket, message, flags, scm),
+            return send_unix_prepared(ctx, target, socket, message, flags, scm),
         InetPrepared::Transport(address, control) => (address.remote(), control),
     };
     let nonblock = target.nonblock() || flags as u64 & net::uapi::MSG_DONTWAIT != 0;
@@ -330,6 +330,15 @@ fn send_inet(ctx: &SendContext<'_>, target: &SendFile, socket: &Arc<net::sock::I
             }
         }
     }
+}
+
+#[cfg(target_os = "oxide-kernel")]
+#[inline(never)]
+fn send_unix_prepared(ctx: &SendContext<'_>, target: &SendFile,
+    socket: &Arc<net::sock::InetSocket>, message: &Message, flags: u32,
+    scm: Box<crate::control::UnixScm>) -> KResult<usize>
+{
+    send_unix_blocking(ctx, target, socket, message, flags, *scm)
 }
 
 #[cfg(target_os = "oxide-kernel")]
@@ -493,7 +502,7 @@ pub(crate) fn send_prepared(ctx: &SendContext<'_>, target: &SendFile, message: M
                     | net::sock::SockKind::Raw6(_)))
             { return Err(Error::Efault); }
             #[cfg(target_os = "oxide-kernel")]
-            { send_inet(ctx, target, socket, &message, flags, prepared) }
+            { send_inet(ctx, target, socket, &message, flags, Box::new(prepared)) }
             #[cfg(not(target_os = "oxide-kernel"))]
             {
                 match prepared {

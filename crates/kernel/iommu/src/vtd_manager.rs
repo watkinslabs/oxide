@@ -1,4 +1,4 @@
-use alloc::vec::Vec;
+use alloc::{boxed::Box, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::{VtdIrTable, VtdQiQueue, VtdRegisters, VtdTables, intel_vtd_hpet_source, intel_vtd_ioapic_source, intel_vtd_rmrr_count, intel_vtd_rmrr_for_bdf, intel_vtd_unit_for_bdf, remapped_msi, vtd_dma_groups};
@@ -21,7 +21,7 @@ pub enum VtdIoapic { Direct, Remapped { index: u16 }, Failed }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum VtdHpet { Direct, Remapped { address: u64, data: u32 }, Failed }
 
-struct VtdBootUnit { unit: IommuUnit, regs: VtdRegisters, requesters: Vec<Bdf>, ioapic_sources: Vec<(u8, u16)>, hpet_source: Option<u16>, tables: VtdTables, qi: Option<VtdQiQueue>, ir: Option<VtdIrTable> }
+struct VtdBootUnit { unit: IommuUnit, regs: VtdRegisters, requesters: Vec<Bdf>, ioapic_sources: Vec<(u8, u16)>, hpet_source: Option<u16>, tables: VtdTables, qi: Option<VtdQiQueue>, ir: Option<Box<VtdIrTable>> }
 static MANAGER: Spinlock<Vec<VtdBootUnit>, Devices> = Spinlock::new(Vec::new());
 /// Hardware/firmware admission for EIM.  This does not enable x2APIC: the
 /// LAPIC owner must first put IOAPIC and HPET sources behind remapping too.
@@ -36,6 +36,7 @@ static FAULT_RECORDS: AtomicU64 = AtomicU64::new(0);
 /// # SAFETY
 /// The caller must run before any requester can acquire PCI bus mastering.
 /// # C: O(units + requesters + RAM leaves)
+#[inline(never)]
 pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf], aliases: &pci::DmaAliases, hhdm_offset: u64,
     regions: &[pmm::UsableRegion]) -> VtdActivation {
     EIM_CAPABLE.store(false, Ordering::Release);
@@ -56,7 +57,7 @@ pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf],
         if !regs.quiesce_firmware_state() { return activation_failed(&mut manager); }
         let ir = if regs.supports_interrupt_remapping() && regs.supports_queued_invalidation() {
             let Some(table) = VtdIrTable::new(hhdm_offset, false) else { return activation_failed(&mut manager); };
-            Some(table)
+            Some(Box::new(table))
         } else { None };
         let qi = if regs.supports_queued_invalidation() {
             let Some(queue) = VtdQiQueue::new(hhdm_offset) else { return activation_failed(&mut manager); };

@@ -96,6 +96,7 @@ fn decode_value(entry: *mut c_void) -> usize { entry as usize >> 1 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::ptr;
     use crate::linux_sync::LinuxSpinlock;
     #[test] fn allocates_ranges_reuses_releases_and_tears_down() { let _m = crate::test_serial::claim(); let mut ida = LinuxIda { xa: LinuxXArray { lock: LinuxSpinlock { state: 0 }, flags: 0, head: ptr::null_mut() } }; ida_init(&mut ida); assert_eq!(ida_alloc_range(&mut ida, 3, 9, 0), 3); assert_eq!(ida_alloc_range(&mut ida, 3, 9, 0), 4); ida_free(&mut ida, 3); assert_eq!(ida_alloc_range(&mut ida, 3, 9, 0), 3); assert_eq!(ida_alloc_range(&mut ida, 127, 130, 0), 127); assert_eq!(ida_alloc_range(&mut ida, 128, 130, 0), 128); ida_destroy(&mut ida); assert_eq!(ida_alloc_range(&mut ida, 0, 0, 0), 0); }
 }
