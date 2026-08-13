@@ -89,7 +89,7 @@ pub(crate) fn release_embedded(dev: *mut LinuxDevice) {
     unsafe { registry::remove_kobject(&mut (*dev).kobj as *mut _ as usize); }
 }
 
-extern "C" fn device_add(dev: *mut LinuxDevice) -> i32 {
+pub(crate) extern "C" fn device_add(dev: *mut LinuxDevice) -> i32 {
     if dev.is_null() { return -LINUX_EINVAL; }
     // SAFETY: dev points at caller-owned storage; a zero kref means it has not entered device core.
     if unsafe { (*dev).kobj.kref == 0 } { device_initialize(dev); }
@@ -99,7 +99,7 @@ extern "C" fn device_add(dev: *mut LinuxDevice) -> i32 {
     registry::add_device(dev as usize, class, 0, false)
 }
 
-extern "C" fn device_del(dev: *mut LinuxDevice) {
+pub(crate) extern "C" fn device_del(dev: *mut LinuxDevice) {
     if dev.is_null() { return; }
     registry::remove_device(dev as usize);
 }
