@@ -80,37 +80,6 @@ unsafe fn crtc_check(crtc: *mut u8, state: *mut u8) -> i32 {
 
 pub(super) fn export_symbols() {
     crate::symtab::export("drm_atomic_helper_check_planes", drm_atomic_helper_check_planes as *const () as usize, false);
-    crate::symtab::export("drm_atomic_helper_check_modeset", drm_atomic_helper_check_modeset as *const () as usize, false);
-}
-
-/// Build connector routing, then validate every CRTC's encoder clone mask.
-/// This is the helper-stage contract drivers invoke before their hardware
-/// mode-validation callbacks. # C: O(N_connectors + N_crtcs)
-pub(super) extern "C" fn drm_atomic_helper_check_modeset(dev: *mut c_void, state: *mut c_void) -> i32 {
-    if dev.is_null() || state.is_null() { return -LINUX_EINVAL; }
-    let state = state.cast::<u8>();
-    // SAFETY: the atomic state retains its device through the complete check stage.
-    if unsafe { read(state.add(DRM_ATOMIC_DEV_OFF).cast::<*mut c_void>()) } != dev { return -LINUX_EINVAL; }
-    let Some((_, crtcs, connectors)) = object_counts(dev) else { return -LINUX_EINVAL; };
-    for index in 0..connectors {
-        // SAFETY: the recorded connector count bounds the fixed transaction entry array.
-        let slot = unsafe { entry(state, DRM_ATOMIC_CONNECTORS_OFF, DRM_ATOMIC_CONNECTOR_ENTRY_SIZE, index) };
-        // SAFETY: an atomic connector entry carries the live object and paired old/new state pointers.
-        let (connector, old, new) = unsafe { (read(slot.add(DRM_STATE_ENTRY_OBJECT_OFF).cast::<*mut c_void>()), read(slot.add(DRM_STATE_ENTRY_OLD_OFF).cast::<*mut c_void>()), read(slot.add(DRM_STATE_ENTRY_NEW_OFF).cast::<*mut c_void>())) };
-        if connector.is_null() || old.is_null() || new.is_null() { continue; }
-        let ret = super::update_connector_routing(state.cast(), connector, old, new);
-        if ret != 0 { return ret; }
-    }
-    for index in 0..crtcs {
-        // SAFETY: the recorded CRTC count bounds the fixed transaction entry array.
-        let slot = unsafe { entry(state, DRM_ATOMIC_CRTCS_OFF, DRM_ATOMIC_CRTC_ENTRY_SIZE, index) };
-        // SAFETY: the object and new-state fields are ABI-pinned members of this transaction entry.
-        let (crtc, new) = unsafe { (read(slot.add(DRM_STATE_ENTRY_OBJECT_OFF).cast::<*mut c_void>()), read(slot.add(DRM_STATE_ENTRY_NEW_OFF).cast::<*mut c_void>())) };
-        if crtc.is_null() || new.is_null() { continue; }
-        let ret = super::check_valid_clones(state.cast(), crtc);
-        if ret != 0 { return ret; }
-    }
-    0
 }
 
 /// Mark affected CRTCs and call plane callbacks before CRTC callbacks. # C: O(N_planes + N_crtcs)
