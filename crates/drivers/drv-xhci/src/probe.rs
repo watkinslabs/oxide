@@ -370,16 +370,6 @@ fn address_enabled_device(bdf: pci::Bdf, mmio: &Mmio, command: &CommandTransport
     let Some(address_pa) = command.submit(mmio, address) else { disable_slot(mmio, command, irq, slot); return None; };
     let addressed = irq.wait_command_completion(address_pa, 1_000_000_000);
     if addressed.is_some_and(|completion| completion.completion_code == crate::ring::COMPLETION_SUCCESS && completion.slot == slot) {
-        return finish_addressed_device(mmio, command, irq, device, slot);
-    }
-    disable_slot(mmio, command, irq, slot);
-    None
-}
-
-#[inline(never)]
-fn finish_addressed_device(mmio: &Mmio, command: &CommandTransport, irq: Binding,
-    mut device: AddressDeviceDma, slot: u8) -> Option<AddressDeviceDma>
-{
         #[cfg(feature = "debug-boot")]
         probe_stage(b"[INFO]  xhci: device addressed\n");
         let Some(td) = crate::usb::get_device_descriptor_trbs(device.descriptor_pa()) else { disable_slot(mmio, command, irq, slot); return None; };
@@ -407,6 +397,7 @@ fn finish_addressed_device(mmio: &Mmio, command: &CommandTransport, irq: Binding
                 }
             }
         }
+    }
     disable_slot(mmio, command, irq, slot);
     None
 }
