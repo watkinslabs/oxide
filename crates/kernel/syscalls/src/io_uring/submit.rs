@@ -17,7 +17,7 @@
 // read an entry and to post a completion; no operation ever runs with it held,
 // because operations sleep.
 
-use alloc::sync::Arc;
+use alloc::{boxed::Box, sync::Arc};
 
 use syscall::errno::Errno;
 
@@ -34,6 +34,13 @@ use super::dispatch::{dispatch_op, OpOutcome};
 use super::req::IoReq;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
+
+struct SubmitState {
+    cursor: u32,
+    consumed: u32,
+    chain: Chain,
+    pending: Option<(Arc<IoReq>, Arc<IoReq>)>,
+}
 
 /// Consume one SQ slot. Returns the entry's wire image, or `None` when the
 /// ring is empty. An SQ index array entry naming no real SQE is counted in
@@ -195,21 +202,24 @@ pub fn submit_sqes(inode: &Arc<IoUringInode>, to_submit: u32) -> i64 {
     // SAFETY: process context in the syscall path, holding no spinlock; the guard is dropped before any wait.
     let _batch = unsafe { inode.submit.lock() };
     let submit_all = inode.flags & IORING_SETUP_SUBMIT_ALL != 0;
-    let (to_submit, mut cursor) = {
+    let (to_submit, cursor) = {
         use crate::io_uring_abi::sq_cursor::{batch_len, batch_start};
         let r = inode.ring.lock();
         let (tail, head) = (r.hdr_load(RING_SQ_TAIL), r.hdr_load(RING_SQ_HEAD));
         (batch_len(inode.flags, to_submit, tail, head, r.sq_entries),
          batch_start(inode.flags, head))
     };
-    let mut consumed: u32 = 0;
-    let mut chain = Chain::default();
-    let mut pending: Option<(Arc<IoReq>, Arc<IoReq>)> = None;
+    let mut state = Box::new(SubmitState {
+        cursor,
+        consumed: 0,
+        chain: Chain::default(),
+        pending: None,
+    });
 
-    while consumed < to_submit {
-        let left = to_submit - consumed;
-        let Some((sqe, idx, sq_entries)) = next_sqe(inode, &mut cursor) else { break };
-        consumed += 1;
+    while state.consumed < to_submit {
+        let left = to_submit - state.consumed;
+        let Some((sqe, idx, sq_entries)) = next_sqe(inode, &mut state.cursor) else { break };
+        state.consumed += 1;
         // A 128-byte entry on a ring whose array strides at 64 occupies the
         // slot after it too. Stepping over that slot HERE, before anything
         // looks at the entry, is what keeps the continuation from being run as
@@ -218,9 +228,9 @@ pub fn submit_sqes(inode: &Arc<IoUringInode>, to_submit: u32) -> i64 {
         // Stepped over HERE, before anything else looks at the entry: a later
         // refusal, and a cancellation behind a broken link, must not leave the
         // continuation to be read as an entry of its own.
-        for _ in 0..width.unwrap_or(0) { consume_continuation(inode, &mut cursor); consumed += 1; }
+        for _ in 0..width.unwrap_or(0) { consume_continuation(inode, &mut state.cursor); state.consumed += 1; }
 
-        if let Some((head, tail)) = pending.take() {
+        if let Some((head, tail)) = state.pending.take() {
             let cont = sqe.flags & SQE_LINK_FLAGS != 0;
             match width.and_then(|_| admit(inode, &sqe)) {
                 Err(e) => { refuse(inode, &sqe, e); start_chain(&head); if !submit_all { break; } }
@@ -234,7 +244,7 @@ pub fn submit_sqes(inode: &Arc<IoUringInode>, to_submit: u32) -> i64 {
                     }
                     attach(&tail, &req);
                     let next_tail = if sqe.opcode == IORING_OP_LINK_TIMEOUT { tail } else { req };
-                    if cont { pending = Some((head, next_tail)); } else { start_chain(&head); }
+                    if cont { state.pending = Some((head, next_tail)); } else { start_chain(&head); }
                 }
             }
             continue;
@@ -244,7 +254,7 @@ pub fn submit_sqes(inode: &Arc<IoUringInode>, to_submit: u32) -> i64 {
         // this ring may still be running, so the barrier has to wait for it.
         let deferred = crate::io_uring::defer::defers_on(inode, &sqe)
             || (wants_drain(sqe.flags) && !inode.inflight_reqs().is_empty());
-        let (out, init_failed) = match chain.action(sqe.flags) {
+        let (out, init_failed) = match state.chain.action(sqe.flags) {
             // Everything behind a broken link is cancelled, not executed.
             Action::Cancel => (OpOutcome::res(err(Errno::Ecanceled)), false),
             Action::Run => match width.and_then(|_| admit(inode, &sqe)) {
@@ -259,11 +269,11 @@ pub fn submit_sqes(inode: &Arc<IoUringInode>, to_submit: u32) -> i64 {
                             Err(e) => (OpOutcome::res(err(e)), true),
                             Ok(()) => {
                                 if sqe.flags & SQE_LINK_FLAGS != 0 {
-                                    pending = Some((Arc::clone(&req), req));
+                                    state.pending = Some((Arc::clone(&req), req));
                                 } else {
                                     start_chain(&req);
                                 }
-                                chain.advance(sqe.flags, 0);
+                                state.chain.advance(sqe.flags, 0);
                                 continue;
                             }
                         }
@@ -288,14 +298,14 @@ pub fn submit_sqes(inode: &Arc<IoUringInode>, to_submit: u32) -> i64 {
                 flags: crate::io_uring_abi::ops::IORING_CQE_F_NOTIF,
                 big: [0; 2], cqe32: false });
         }
-        chain.advance(sqe.flags, out.res);
+        state.chain.advance(sqe.flags, out.res);
 
         if init_failed && !submit_all { break; }
     }
     // A chain whose last entry never arrived still has to run: the submitter
     // asked for it and is waiting for its completions.
-    if let Some((head, _)) = pending { start_chain(&head); }
-    consumed as i64
+    if let Some((head, _)) = state.pending { start_chain(&head); }
+    state.consumed as i64
 }
 
 /// Hand a prepared chain to the engine. # C: O(1)
