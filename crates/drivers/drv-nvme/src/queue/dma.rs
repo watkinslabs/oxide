@@ -14,14 +14,16 @@ pub(crate) struct IoDma {
 impl IoDma {
     /// Allocate and map a private command data run plus PRP-list page. # C: O(pages)
     pub(crate) fn allocate(bdf: pci::Bdf, dma_mask: u64) -> Option<Self> {
-        let data_pa = pmm::setup::alloc_contig(DATA_ORDER)?;
+        let data_pa = if dma_mask == u64::MAX { pmm::setup::alloc_contig(DATA_ORDER) }
+            else { pmm::setup::alloc_contig_below(DATA_ORDER, dma_mask.checked_add(1)?) }?;
         let data_bytes = (DATA_PAGES * PAGE) as usize;
         let Some(data_dma) = iommu::map_dma_below(bdf, data_pa, data_bytes, dma_mask) else {
             // SAFETY: mapping failed before hardware received this private data run.
             unsafe { pmm::setup::free_contig(data_pa, DATA_ORDER); }
             return None;
         };
-        let Some(list_pa) = pmm::setup::alloc_one_frame() else {
+        let Some(list_pa) = (if dma_mask == u64::MAX { pmm::setup::alloc_one_frame() }
+            else { pmm::setup::alloc_one_frame_below(dma_mask.checked_add(1)?) }) else {
             let _ = iommu::unmap_dma(bdf, data_dma, data_bytes);
             // SAFETY: the unposted private data run has no device owner.
             unsafe { pmm::setup::free_contig(data_pa, DATA_ORDER); }

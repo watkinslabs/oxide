@@ -129,6 +129,11 @@ pub mod runqueue {
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum TaskState { Runnable, Sleeping, Zombie }
 
+/// Hosted stand-in for the sleep mask carried by the production task state.
+/// The PI harness only observes that an interruptible wait parks the task.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub enum WaitState { Interruptible }
+
 pub mod task {
     pub mod restart {
         pub const RESTART_FUTEX: u32 = 3;
@@ -197,6 +202,9 @@ impl Task {
     pub fn set_state(&self, s: TaskState) {
         self.state.store(match s { TaskState::Runnable => 0, TaskState::Sleeping => 1, TaskState::Zombie => 2 },
                          Ordering::Release);
+    }
+    pub fn set_sleep_state(&self, _state: WaitState) {
+        self.set_state(TaskState::Sleeping);
     }
     pub fn state(&self) -> TaskState {
         match self.state.load(Ordering::Acquire) { 1 => TaskState::Sleeping, 2 => TaskState::Zombie, _ => TaskState::Runnable }
@@ -283,4 +291,3 @@ pub fn wait_until_parked(t: &Task) {
     }
     panic!("waiter never reached Sleeping — harness bug, not futex bug");
 }
-

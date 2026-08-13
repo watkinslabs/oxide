@@ -269,6 +269,10 @@ unsafe extern "C" fn oxide_irq_exit_to_user(regs: *mut hal_x86_64::PtRegs) {
     // above) and still owned by this task's kernel stack until
     // `oxide_irq_resume_user` pops it; `from_user` only reads `cs`.
     if !unsafe { (*regs).from_user() } {
+        #[cfg(feature = "debug-watchdog")]
+        // SAFETY: same checked, live interrupted frame; RIP is the kernel PC
+        // the IRQ-return path is about to resume.
+        sched::diag::note_interrupted_kernel_pc(unsafe { (*regs).rip });
         // SAFETY: this is the outer IRQ return on the interrupted task stack;
         // hardirq/softirq accounting was released by the dispatcher.
         unsafe { sched::live::preempt_schedule_irq::<hal_x86_64::X86IrqGate>(); }

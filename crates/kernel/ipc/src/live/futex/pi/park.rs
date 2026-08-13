@@ -48,6 +48,6 @@ pub(super) fn park_for_grant(me: &Arc<Task>, grant: &AtomicU32, key: Key, tid: u
             if grant_kind(grant) != Grant::Pending { return Ok(()); }
             return Err(syscall::restart::restart_nointr());
         }
-        me.set_state(sched::TaskState::Sleeping);
+        me.set_sleep_state(sched::WaitState::Interruptible);
     }
 }

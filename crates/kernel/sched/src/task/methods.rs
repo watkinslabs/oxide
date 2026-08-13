@@ -1,7 +1,7 @@
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, AtomicI8, AtomicI32, AtomicPtr, AtomicU16, AtomicU32, AtomicU64, AtomicU8, Ordering};
+use core::sync::atomic::{fence, AtomicBool, AtomicI8, AtomicI32, AtomicPtr, AtomicU16, AtomicU32, AtomicU64, AtomicU8, Ordering};
 #[cfg(feature = "debug-task-fpu-provenance")]
 use core::sync::atomic::AtomicUsize;
 
@@ -605,7 +605,15 @@ impl Task {
     /// failed claim is always a stale or racing wake; only the winner may add
     /// the task to a runqueue or deferred wake list. # C: O(1)
     pub fn claim_wake(&self) -> bool {
-        self.cas_state(TaskState::Sleeping, TaskState::Runnable).is_ok()
+        self.cas_state(TaskState::Sleeping, TaskState::Waking).is_ok()
+    }
+
+    /// Complete a wake claim after its destination activation has been
+    /// committed.  The waker owns the interim Waking state, so schedule never
+    /// independently requeues the switching-out task.
+    /// # C: O(1)
+    pub fn complete_wake(&self) {
+        let _ = self.cas_state(TaskState::Waking, TaskState::Runnable);
     }
 
     /// Atomically publish both `TASK_*` wake mask and Sleeping lifecycle
@@ -614,6 +622,11 @@ impl Task {
     /// # C: O(1)
     pub fn set_sleep_state(&self, state: WaitState) {
         self.state.store(TaskState::Sleeping as u8 | state.state_bits(), Ordering::Release);
+        // A sleep publication must order before the waiter's subsequent
+        // condition recheck.  A release store alone permits Store->Load
+        // reordering on weakly ordered SMP CPUs, letting both sides miss the
+        // event.  The paired wake claim uses AcqRel CAS.
+        fence(Ordering::SeqCst);
     }
 
     /// Snapshot the sleep mask encoded in the task-state word.

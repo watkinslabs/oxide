@@ -1,5 +1,17 @@
 # Fixed issues
 
+### F1021-wait-event-ready-fast-path
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED F1021 | DEFECT | high | **The shared uninterruptible predicate waits skipped the public wait macro's initial condition check and published a waiter even when work was already ready. The path did not block, but it performed needless task-state and wait-list churn on the ready fast path.** Both untimed and timed forms now return before publication when their predicate is ready; the explicit prepare form retains publication-first semantics because its producer action depends on that ordering. | `sched::live::wait_event::tests::{uninterruptible_ready_predicate_never_publishes_a_waiter,timed_uninterruptible_ready_predicate_never_reads_the_clock}`; `cargo test -p sched --lib -- --test-threads=1` (1397 passed). | F1090-hardware-dma-audit |
+
+### F1020-nvme-dma-mask-contract
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED F1020 | DEFECT | high | **Native NVMe retained requester-keyed DMA ownership but bypassed its DMA-mask contract: queue, PRP-list, and data mappings were always unconstrained. Controllers with the documented 48-bit address erratum could receive an invalid IOVA; without an IOMMU, a high physical allocation could reach the device directly.** The probe now selects one controller mask, every queue and I/O allocation maps below it, and constrained controllers source backing memory below the same ceiling before publication. | `drv_nvme::regs::tests::controller_dma_mask_selects_the_48_bit_erratum_only`; `cargo test -p pmm -p drv-nvme --lib -- --test-threads=1` (215 passed); both kernel targets build with warnings denied. | F1090-hardware-dma-audit |
+
 ### F1011-linux-coherent-dma-sgtable
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -1607,3 +1619,9 @@ Six lanes filed the same defect separately. The canonical row lives in
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED F1019 | MISSING | HIGH | RTL8125 had descriptor declarations but no retained requester-keyed DMA ownership, so a future PCI probe could easily place raw PMM addresses in a bus-mastering NIC. The hardware owner now retains four PMM allocations and their four IOMMU mappings, rolls every partial map failure back before freeing backing pages, initializes every RX descriptor with a device DMA address, and unmaps every mapping before PMM release. | `cargo test -p drv-rtl8125 --lib -- --test-threads=1` (3 passed); direct x86 kernel-target build of `drv-rtl8125` completed with `-Zbuild-std`. | F1019 |
+
+### F1022-smp-stall-owner-diagnostics
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED F1022 | COVERAGE | HIGH | The soft-lockup report named a syscall and preemption count but not the interrupted kernel PC or the rank of the preemption-disabling lock. A CPU stalled in a kernel critical section could therefore prove that scheduling was correctly gated while leaving no way to identify the owner. Every outer kernel IRQ return now records the interrupted PC; watchdog reports include it and the held lock rank when `debug-preempt` is enabled. This follows the reference's IRQ-exit rule: do not schedule until the preemption count reaches zero; locate and repair the critical section that violates it. | Reference: `linux-master/kernel/entry/common.c::raw_irqentry_exit_cond_resched`, `linux-master/kernel/sched/core.c::preempt_schedule_irq`. `cargo test -p sched --lib -- --test-threads=1` (1397 passed); `make x86 arm` passed. | F1090 |

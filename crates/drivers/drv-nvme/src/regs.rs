@@ -45,13 +45,18 @@ pub const NVME_PAGE_BYTES: u64 = 4096;
 /// A one-page PRP list describes all pages after PRP1 in this data run.
 pub const MAX_PRP_DATA_PAGES: u64 = 512;
 
-const AMAZON_VENDOR: u16 = 0x1d0f;
-const AMAZON_48BIT_DMA_IDS: &[u16] = &[0x0061, 0x0065, 0x8061, 0xcd00, 0xcd01, 0xcd02];
+/// Default DMA mask for an NVMe controller.
+pub const DMA_MASK_64: u64 = u64::MAX;
+/// Controllers with the address-width erratum must receive only 48-bit DMA.
+pub const DMA_MASK_48: u64 = (1u64 << 48) - 1;
 
-/// DMA mask selected for one known controller capability. # C: O(1)
-#[inline]
-pub fn dma_mask(vendor: u16, device: u16) -> u64 {
-    if vendor == AMAZON_VENDOR && AMAZON_48BIT_DMA_IDS.contains(&device) { (1u64 << 48) - 1 } else { u64::MAX }
+/// Select the controller DMA address mask from its PCI identity. # C: O(1)
+pub const fn dma_mask(vendor_id: u16, device_id: u16) -> u64 {
+    if vendor_id == 0x1d0f && matches!(device_id, 0x0061 | 0x0065 | 0x8061 | 0xcd00 | 0xcd01 | 0xcd02) {
+        DMA_MASK_48
+    } else {
+        DMA_MASK_64
+    }
 }
 
 /// Encoding selected for PRP2 after the first data page.
@@ -199,6 +204,14 @@ mod tests {
     }
 
     #[test]
+    fn controller_dma_mask_selects_the_48_bit_erratum_only() {
+        assert_eq!(dma_mask(0x1d0f, 0x0061), DMA_MASK_48);
+        assert_eq!(dma_mask(0x1d0f, 0xcd02), DMA_MASK_48);
+        assert_eq!(dma_mask(0x1d0f, 0x0062), DMA_MASK_64);
+        assert_eq!(dma_mask(0x1b36, 0x0010), DMA_MASK_64);
+    }
+
+    #[test]
     fn cap_field_decode() {
         // MQES (bits 15:0) 0-based: raw 0x3F → 64 entries.
         assert_eq!(cap_mqes(0x3F), 64);
@@ -272,13 +285,5 @@ mod tests {
         list[4..8].copy_from_slice(&7u32.to_le_bytes());
         assert_eq!(first_active_namespace(&list), Some(7));
         assert_eq!(first_active_namespace(&[0; 8]), None);
-    }
-
-    #[test]
-    fn controller_dma_mask_covers_known_address_width_quirks() {
-        assert_eq!(dma_mask(AMAZON_VENDOR, 0x0061), (1u64 << 48) - 1);
-        assert_eq!(dma_mask(AMAZON_VENDOR, 0xcd02), (1u64 << 48) - 1);
-        assert_eq!(dma_mask(AMAZON_VENDOR, 0x9999), u64::MAX);
-        assert_eq!(dma_mask(0x1234, 0x0061), u64::MAX);
     }
 }

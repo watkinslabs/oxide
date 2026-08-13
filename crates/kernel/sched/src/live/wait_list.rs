@@ -323,7 +323,9 @@ impl WaitList {
         let ptr = cur as *const Task;
         waiters_lock!(self).retain(|task| Arc::as_ptr(task) != ptr);
         crate::hrtimeout::disarm(cur);
-        if cur.state() == TaskState::Sleeping { cur.set_state(TaskState::Runnable); }
+        if matches!(cur.state(), TaskState::Sleeping | TaskState::Waking) {
+            cur.set_state(TaskState::Runnable);
+        }
     }
 
     /// Internal helper: transition a popped task to Runnable and

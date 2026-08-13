@@ -44,7 +44,7 @@ pub use ring::{dump_exit_recent, note_switch, switches};
 pub use ring::record_syscall;
 #[cfg(test)]
 pub(crate) use watchdog::TEST_STALL_NS as STALL_NS;
-pub use watchdog::{Beat, WatchdogState, watchdog_tick};
+pub use watchdog::{Beat, WatchdogState, note_interrupted_kernel_pc, watchdog_tick};
 
 #[cfg(test)]
 mod tests;

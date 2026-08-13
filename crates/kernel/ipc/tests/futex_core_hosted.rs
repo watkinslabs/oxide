@@ -179,6 +179,11 @@ pub mod runqueue {
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub enum TaskState { Runnable, Sleeping, Zombie }
 
+/// Hosted stand-in for the sleep mask carried by the production task state.
+/// The futex harness only observes that an interruptible wait parks the task.
+#[derive(Copy, Clone, Eq, PartialEq)]
+pub enum WaitState { Interruptible }
+
 /// Mock of `sched::task::restart` — the discriminant + payload `wait_loop`
 /// arms for `futex_wait_restart`. Values must track the real
 /// `crates/kernel/sched/src/task/restart.rs`.
@@ -261,6 +266,9 @@ impl Task {
     pub fn set_state(&self, s: TaskState) {
         self.state.store(match s { TaskState::Runnable => 0, TaskState::Sleeping => 1, TaskState::Zombie => 2 },
                          Ordering::Release);
+    }
+    pub fn set_sleep_state(&self, _state: WaitState) {
+        self.set_state(TaskState::Sleeping);
     }
     pub fn state(&self) -> TaskState {
         match self.state.load(Ordering::Acquire) { 1 => TaskState::Sleeping, 2 => TaskState::Zombie, _ => TaskState::Runnable }

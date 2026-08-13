@@ -60,6 +60,29 @@ static WD_START_NS: AtomicU64 = AtomicU64::new(0);
 static WD_FIRED: AtomicBool = AtomicBool::new(false);
 static WD_ARMED: AtomicBool = AtomicBool::new(false);
 
+// The outer IRQ-exit path records the interrupted kernel PC before it asks
+// the scheduler to preempt.  A soft-lockup interrupt then reports the last
+// such PC, which identifies the preemption-disabled owner rather than merely
+// the syscall it happened to enter through.
+#[cfg(feature = "debug-watchdog")]
+static WD_KERNEL_PC: AtomicU64 = AtomicU64::new(0);
+
+/// Remember the kernel instruction interrupted by the most recent outer IRQ.
+///
+/// This is deliberately a relaxed diagnostic snapshot: it is written and
+/// consumed by the same CPU's interrupt path, and losing a race only makes a
+/// report name a slightly older interrupted instruction.
+#[inline]
+pub fn note_interrupted_kernel_pc(pc: u64) {
+    #[cfg(feature = "debug-watchdog")]
+    WD_KERNEL_PC.store(pc, Ordering::Relaxed);
+    #[cfg(not(feature = "debug-watchdog"))]
+    let _ = pc;
+}
+
+#[cfg(feature = "debug-watchdog")]
+pub(crate) fn interrupted_kernel_pc() -> u64 { WD_KERNEL_PC.load(Ordering::Relaxed) }
+
 #[cfg(feature = "debug-taskdump")]
 static WD_TASKDUMP_NS: AtomicU64 = AtomicU64::new(0);
 

@@ -98,10 +98,7 @@ impl NvmeBlk {
         &self, request: BlockRequest, completion: BlockCompletion, plan: Plan, deferred_head: bool,
     ) -> Result<(), (BlockRequest, BlockCompletion, BlockError)> {
         if self.unavailable() { return Err((request, completion, BlockError::Eio)); }
-        let (bdf, dma_mask) = {
-            let ctrl = self.ctrl.lock();
-            (ctrl.bdf(), ctrl.dma_mask())
-        };
+        let (bdf, dma_mask) = { let ctrl = self.ctrl.lock(); (ctrl.bdf(), ctrl.dma_mask()) };
         let mut dma = if plan.count == 0 { None } else {
             match crate::queue::IoDma::allocate(bdf, dma_mask) {
                 Some(dma) => Some(dma),

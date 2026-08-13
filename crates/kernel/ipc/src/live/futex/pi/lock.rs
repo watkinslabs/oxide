@@ -119,7 +119,7 @@ pub fn lock_pi(uaddr: u64, private: bool, deadline_ns: u64, trylock: bool) -> i6
                     boost = tbl[i].owner.clone().map(|o| (o, classes));
                 }
             }
-            if !trylock { me.set_state(TaskState::Sleeping); }
+            if !trylock { me.set_sleep_state(sched::WaitState::Interruptible); }
         }
         if let Some((owner, classes)) = boost { reboost(&owner, &classes); }
         if trylock {

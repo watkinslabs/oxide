@@ -391,9 +391,9 @@ where F: Fn(u32) -> Option<&'a Runqueue> {
 /// never take an rq lock from a hardirq/softirq that may have interrupted its
 /// owner). See [`try_to_wake_up`] / [`ttwu_deferred`].
 ///
-/// Claim-then-place (Linux ttwu): an atomic `Sleeping → Runnable` CAS claims
-/// the wake (exactly one waker wins; losers / already-runnable / exiting tasks
-/// return false), THEN the task is placed. This replaces the old "spin IF=0 on
+/// Claim-then-place: an atomic `Sleeping → Waking` CAS claims the wake
+/// (exactly one waker wins; losers / already-runnable / exiting tasks return
+/// false), THEN the task is activated and published Runnable. This replaces the old "spin IF=0 on
 /// `on_cpu`, then re-check state under the target rq lock" — that unbounded
 /// cross-CPU spin AB-BA'd against a waker-held subsystem lock (the -smp hang).
 /// # SAFETY: caller is a wake site (process/IRQ ctx); the Arc keeps `task`
@@ -406,7 +406,7 @@ unsafe fn ttwu_inner(task: Arc<Task>, force_defer: bool) -> bool {
     // spinning on interrupted process context holding this lock.
     let _wake = task.task_wake_lock.lock_irqsave::<RqIrq>();
     if !task.claim_wake() {
-        // The Sleeping -> Runnable transition is the exclusive placement
+        // The Sleeping -> Waking transition is the exclusive placement
         // claim. A winner may not have reached `on_rq` yet, so treating
         // Runnable && !on_cpu && !on_rq as repairable lets a second waker put
         // the same task on another CPU's wake-list. Once the first copy is
@@ -417,9 +417,9 @@ unsafe fn ttwu_inner(task: Arc<Task>, force_defer: bool) -> bool {
     }
     // Explicit wake clears any SO_*TIMEO deadline so the scanner doesn't re-rouse it.
     task.wakeup_deadline_ns.store(0, Ordering::Release);
-    // debug-wakelat: stamp the make-Runnable instant + wake source so a
-    // later switch-in can report the wake→run latency (H2) and whether the
-    // wake came from the arrival edge or the deferred/scanner path (H1).
+    // debug-wakelat: stamp the exclusive wake claim + source so a later
+    // switch-in can report wake-to-run latency (H2) and whether the wake came
+    // from the arrival edge or the deferred/scanner path (H1).
     #[cfg(feature = "debug-wakelat")]
     {
         let now = {

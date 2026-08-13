@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::AtomicU32;
 
-use sched::{Task, TaskState};
+use sched::Task;
 use syscall::errno::Errno;
 
 use crate::futex_pi_rules::{PiLockStep, lock_pi_step};
@@ -55,7 +55,7 @@ pub fn wait_requeue_pi(uaddr: u64, val: u32, bitset: u32, uaddr2: u64, private: 
         };
         tbl[i].waiters.push(PiWaiter {
             task: me.clone(), tid: me.tid, grant: grant.clone(), requeue_target: Some(key2) });
-        me.set_state(TaskState::Sleeping);
+        me.set_sleep_state(sched::WaitState::Interruptible);
     }
     match super::park::park_for_grant(&me, &grant, key1, me.tid, deadline_ns) {
         Ok(()) => 0,

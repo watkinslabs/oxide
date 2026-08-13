@@ -81,9 +81,9 @@ const DATA_PAGES: u64 = regs::MAX_PRP_DATA_PAGES;
 
 impl Nvme {
     pub(crate) const fn bdf(&self) -> pci::Bdf { self.bdf }
+    pub(crate) const fn dma_mask(&self) -> u64 { self.dma_mask }
     /// Active namespace ID selected during controller bring-up. # C: O(1)
     pub(crate) const fn namespace_id(&self) -> u32 { self.nsid }
-    pub(crate) const fn dma_mask(&self) -> u64 { self.dma_mask }
     /// Maximum concurrently posted I/O commands, leaving one SQ entry empty.
     /// # C: O(1)
     pub(crate) const fn io_capacity(&self) -> usize { self.io.entries.saturating_sub(1) as usize }
@@ -100,11 +100,16 @@ impl Nvme {
         *dma = 0;
     }
 
+    fn alloc_frame(dma_mask: u64) -> Option<u64> {
+        if dma_mask == u64::MAX { pmm::setup::alloc_one_frame() }
+        else { pmm::setup::alloc_one_frame_below(dma_mask.checked_add(1)?) }
+    }
+
     fn alloc_frames(bdf: pci::Bdf, dma_mask: u64) -> Option<([u64; 5], [u64; 5])> {
         let mut frames = [0u64; 5]; let mut dmas = [0u64; 5];
         let mut i = 0usize;
         while i < frames.len() {
-            match pmm::setup::alloc_one_frame() {
+            match Self::alloc_frame(dma_mask) {
                 Some(pa) => match iommu::map_dma_below(bdf, pa, PAGE as usize, dma_mask) { Some(dma) => { frames[i] = pa; dmas[i] = dma; }, None => { unsafe { pmm::setup::free_one_frame(pa); } for (pa, dma) in frames.iter_mut().zip(dmas.iter_mut()) { Self::free_frame(bdf, pa, dma); } return None; } },
                 None => {
                     for (pa, dma) in frames.iter_mut().zip(dmas.iter_mut()) {

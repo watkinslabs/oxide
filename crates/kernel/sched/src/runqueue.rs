@@ -80,7 +80,10 @@ impl RunqueueInner {
         // cgroup v2 freezer: a frozen task is held off every runqueue here
         // (the single enqueue chokepoint), so wake/yield/fork can't run it
         // until `cgroup.freeze=0` thaws it + re-enqueues.
-        if task.frozen.load(core::sync::atomic::Ordering::Acquire) { return; }
+        if task.frozen.load(core::sync::atomic::Ordering::Acquire) {
+            task.complete_wake();
+            return;
+        }
         // SMP on-rq guard (Linux `p->on_rq`): a task's Arc lives in exactly
         // one runqueue's class tree at a time. If it's already queued (a
         // concurrent waker on another CPU requeued it, or the schedule path
@@ -91,15 +94,29 @@ impl RunqueueInner {
         // A throttled deadline entity is off every ready tree until its next
         // period. This is the chokepoint that makes an exhausted budget an
         // ENFORCEMENT rather than a note.
-        if !crate::deadline::enqueue_admits(&task) { return; }
-        if task.on_rq.swap(true, core::sync::atomic::Ordering::AcqRel) { return; }
+        if !crate::deadline::enqueue_admits(&task) {
+            task.complete_wake();
+            return;
+        }
+        if task.on_rq.swap(true, core::sync::atomic::Ordering::AcqRel) {
+            task.complete_wake();
+            return;
+        }
         task.cpu.store(self.cpu, core::sync::atomic::Ordering::Release);
+        // Keep the wake-owner state through activation.  The task must be in
+        // the destination class tree before it becomes Runnable: otherwise a
+        // scheduler observing Runnable can consume its wake while no queue
+        // owns it, stranding the task off-CPU and off-rq.
+        let activation = Arc::clone(&task);
         match task.sched_class() {
             SchedClass::Deadline      => self.dl.enqueue(task),
             SchedClass::Rt { .. }     => self.rt.enqueue_at(task, pos),
             SchedClass::Normal { .. } => self.cfs.enqueue(task),
             SchedClass::Idle          => panic!("RunqueueInner::enqueue: idle"),
         }
+        // The class tree now owns its Arc under this rq lock. This is the
+        // wake publication point, after activation rather than before it.
+        activation.complete_wake();
     }
 
     /// Linux `put_prev_task`: return the still-Runnable outgoing task to its
