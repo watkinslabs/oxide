@@ -47,7 +47,7 @@ struct BindingRecord {
 
 struct PciRuntime {
     config: [u32; PCI_CONFIG_DWORDS],
-    saved_config: [u32; PCI_CONFIG_DWORDS],
+    state_saved: bool,
     irq_vector_base: u32,
     irq_vectors: i32,
     irq_vector_flags: u32,
@@ -61,7 +61,7 @@ struct PciRuntime {
 
 impl PciRuntime {
     const fn new() -> Self {
-        Self { config: [0; PCI_CONFIG_DWORDS], saved_config: [0; PCI_CONFIG_DWORDS],
+        Self { config: [0; PCI_CONFIG_DWORDS], state_saved: false,
                irq_vector_base: 0, irq_vectors: 0, irq_vector_flags: 0,
                irq_vector_ids: Vec::new(), irq_mapping: 0, wake_enabled: false }
     }
@@ -294,26 +294,33 @@ pub(super) fn config_write(dev: *mut LinuxPciDev, word: usize, value: u32) -> bo
     #[cfg(not(test))] { false }
 }
 
-pub(super) fn save_config(dev: *mut LinuxPciDev) -> bool {
+/// Discard the saved PCI configuration state for one bound device. # C: O(N)
+pub(super) fn discard_saved_config(dev: *mut LinuxPciDev) -> bool {
     let mut g = BINDINGS.lock();
-    if let Some(rec) = g.iter_mut().find(|r| r.dev == dev as usize) { rec.runtime.saved_config = rec.runtime.config; return true; }
+    if let Some(rec) = g.iter_mut().find(|r| r.dev == dev as usize) { rec.runtime.state_saved = false; return true; }
     drop(g);
     #[cfg(test)] {
-        if let Some((_, rec)) = TEST_RUNTIMES.lock().iter_mut().find(|r| r.0 == dev as usize) { rec.saved_config = rec.config; return true; }
+        if let Some((_, rec)) = TEST_RUNTIMES.lock().iter_mut().find(|r| r.0 == dev as usize) { rec.state_saved = false; return true; }
         return false;
     }
     #[cfg(not(test))] { false }
 }
 
-pub(super) fn restore_config(dev: *mut LinuxPciDev) -> bool {
+/// Mark a fixed PCI configuration header as the current restore state. # C: O(N)
+pub(super) fn load_saved_config(dev: *mut LinuxPciDev) -> bool {
     let mut g = BINDINGS.lock();
-    if let Some(rec) = g.iter_mut().find(|r| r.dev == dev as usize) { rec.runtime.config = rec.runtime.saved_config; return true; }
+    if let Some(rec) = g.iter_mut().find(|r| r.dev == dev as usize) { rec.runtime.state_saved = true; return true; }
     drop(g);
     #[cfg(test)] {
-        if let Some((_, rec)) = TEST_RUNTIMES.lock().iter_mut().find(|r| r.0 == dev as usize) { rec.config = rec.saved_config; return true; }
+        if let Some((_, rec)) = TEST_RUNTIMES.lock().iter_mut().find(|r| r.0 == dev as usize) { rec.state_saved = true; return true; }
         return false;
     }
     #[cfg(not(test))] { false }
+}
+
+#[cfg(test)]
+pub(super) fn test_state_saved(dev: *const LinuxPciDev) -> bool {
+    TEST_RUNTIMES.lock().iter().find(|r| r.0 == dev as usize).is_some_and(|r| r.1.state_saved)
 }
 
 pub(super) fn irq_vectors(dev: *const LinuxPciDev) -> Option<(u32, i32, u32)> {

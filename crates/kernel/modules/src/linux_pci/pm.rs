@@ -1,3 +1,4 @@
+use super::config::{read32, write32};
 use super::types::*;
 use crate::linux_pm::types::{LinuxPmMessage, PM_EVENT_HIBERNATE, PM_EVENT_ON, PM_EVENT_SUSPEND};
 use crate::linux_device::devres;
@@ -5,6 +6,9 @@ use crate::linux_device::devres;
 const PCI_COMMAND_INVALIDATE: u32 = 1 << 4;
 const PCI_COMMAND_OFFSET: u8 = 4;
 const LINUX_EOPNOTSUPP: i32 = 95;
+const PCI_CONFIG_HEADER_DWORDS: usize = 16;
+const PCI_HEADER_TYPE_NORMAL: u8 = 0;
+const PCI_HEADER_TYPE_BRIDGE: u8 = 1;
 
 /// Register Linux PCI PM KPI symbols.
 /// # C: O(1)
@@ -13,6 +17,7 @@ pub(super) fn export_symbols() {
     for (name, addr) in [
         ("pci_save_state",       pci_save_state       as *const () as usize),
         ("pci_restore_state",    pci_restore_state    as *const () as usize),
+        ("pci_load_saved_state", pci_load_saved_state as *const () as usize),
         ("pci_set_power_state",  pci_set_power_state  as *const () as usize),
         ("pci_choose_state",     pci_choose_state     as *const () as usize),
         ("pci_enable_wake",      pci_enable_wake      as *const () as usize),
@@ -27,14 +32,58 @@ pub(super) fn export_symbols() {
 
 extern "C" fn pci_save_state(dev: *mut LinuxPciDev) -> i32 {
     if dev.is_null() { return -LINUX_EINVAL; }
-    let _ = super::registry::save_config(dev);
+    let mut saved = [0; PCI_CONFIG_HEADER_DWORDS];
+    for (index, value) in saved.iter_mut().enumerate() { *value = read32(dev, (index * core::mem::size_of::<u32>()) as u8); }
+    // SAFETY: dev is non-null and saved_config_space is the ABI-visible PCI header snapshot.
+    unsafe { (*dev).saved_config_space = saved; }
+    let _ = super::registry::load_saved_config(dev);
     LINUX_OK
 }
 
 extern "C" fn pci_restore_state(dev: *mut LinuxPciDev) -> i32 {
     if dev.is_null() { return -LINUX_EINVAL; }
-    let _ = super::registry::restore_config(dev);
+    restore_config_space(dev);
+    let _ = super::registry::discard_saved_config(dev);
     LINUX_OK
+}
+
+/// Discard a saved PCI state, or load its fixed configuration-space prefix. # C: O(N)
+extern "C" fn pci_load_saved_state(dev: *mut LinuxPciDev, state: *const LinuxPciSavedState) -> i32 {
+    if dev.is_null() { return -LINUX_EINVAL; }
+    if state.is_null() {
+        let _ = super::registry::discard_saved_config(dev);
+        return LINUX_OK;
+    }
+    // SAFETY: state follows the Linux PCI saved-state ABI, whose fixed prefix is 16 dwords.
+    unsafe { (*dev).saved_config_space = (*state).config_space; }
+    let _ = super::registry::load_saved_config(dev);
+    LINUX_OK
+}
+
+fn restore_config_space(dev: *mut LinuxPciDev) {
+    // SAFETY: callers reject null and this function only reads the fixed PCI header array.
+    let saved = unsafe { (*dev).saved_config_space };
+    // SAFETY: callers reject null and hdr_type is part of the caller-owned PCI device ABI.
+    match unsafe { (*dev).hdr_type & 0x7f } {
+        PCI_HEADER_TYPE_NORMAL => {
+            restore_config_range(dev, &saved, 10, 15, false);
+            restore_config_range(dev, &saved, 4, 9, false);
+            restore_config_range(dev, &saved, 0, 3, false);
+        }
+        PCI_HEADER_TYPE_BRIDGE => {
+            restore_config_range(dev, &saved, 12, 15, false);
+            restore_config_range(dev, &saved, 9, 11, true);
+            restore_config_range(dev, &saved, 0, 8, false);
+        }
+        _ => restore_config_range(dev, &saved, 0, 15, false),
+    }
+}
+
+fn restore_config_range(dev: *mut LinuxPciDev, saved: &[u32; PCI_CONFIG_HEADER_DWORDS], start: usize, end: usize, force: bool) {
+    for index in (start..=end).rev() {
+        let offset = (index * core::mem::size_of::<u32>()) as u8;
+        if force || read32(dev, offset) != saved[index] { write32(dev, offset, saved[index]); }
+    }
 }
 
 extern "C" fn pci_set_power_state(dev: *mut LinuxPciDev, state: i32) -> i32 {

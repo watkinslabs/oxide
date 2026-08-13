@@ -43,11 +43,35 @@ fn choose_state_maps_system_sleep_to_d3hot() {
 }
 
 #[test]
+fn load_null_saved_state_discards_pci_pm_snapshot() {
+    let _modules = crate::test_serial::claim();
+    let mut dev = test_dev();
+    assert_eq!(pci_write_config_dword(&mut dev, (TEST_CFG_DWORD_IDX * 4) as i32, TEST_CFG_ORIGINAL), LINUX_OK);
+    assert_eq!(pci_save_state(&mut dev), LINUX_OK);
+    assert_eq!(pci_write_config_dword(&mut dev, (TEST_CFG_DWORD_IDX * 4) as i32, TEST_CFG_CHANGED), LINUX_OK);
+    assert_eq!(pci_load_saved_state(&mut dev, core::ptr::null()), LINUX_OK);
+    assert!(!crate::linux_pci::registry::test_state_saved(&dev));
+}
+
+#[test]
+fn load_saved_state_replaces_restore_header() {
+    let _modules = crate::test_serial::claim();
+    let mut dev = test_dev();
+    assert_eq!(pci_write_config_dword(&mut dev, (TEST_CFG_DWORD_IDX * 4) as i32, TEST_CFG_CHANGED), LINUX_OK);
+    let state = LinuxPciSavedState { config_space: [TEST_CFG_ORIGINAL; 16] };
+    assert_eq!(pci_load_saved_state(&mut dev, &state), LINUX_OK);
+    assert_eq!(pci_restore_state(&mut dev), LINUX_OK);
+    let mut value = 0;
+    assert_eq!(pci_read_config_dword(&mut dev, (TEST_CFG_DWORD_IDX * 4) as i32, &mut value), LINUX_OK);
+    assert_eq!(value, TEST_CFG_ORIGINAL);
+}
+
+#[test]
 fn export_symbols_registers_pci_pm_surface() {
     let _modules = crate::test_serial::claim();
     export_symbols();
     for name in [
-        "pci_save_state", "pci_restore_state", "pci_set_power_state",
+        "pci_save_state", "pci_restore_state", "pci_load_saved_state", "pci_set_power_state",
         "pci_choose_state", "pci_enable_wake", "pci_wake_from_d3",
     ] {
         assert!(crate::symtab::is_exported(name));
