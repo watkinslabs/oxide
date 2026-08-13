@@ -7,7 +7,7 @@
 struct xarray { spinlock_t xa_lock; gfp_t xa_flags; void *xa_head; };
 #define XARRAY_INIT(name, flags) { .xa_lock = { 0 }, .xa_flags = (flags), .xa_head = NULL }
 #define DEFINE_XARRAY(name) struct xarray name = XARRAY_INIT(name, 0)
-#define XA_PRESENT 0U
+#define XA_PRESENT 8U
 
 void xa_init_flags(struct xarray *xa, gfp_t flags);
 void *xa_load(struct xarray *xa, unsigned long index);

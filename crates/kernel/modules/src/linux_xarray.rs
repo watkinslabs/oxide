@@ -15,7 +15,7 @@ const LINUX_EINVAL: i32 = 22;
 const LINUX_ERR_PTR_RANGE: usize = 4095;
 
 #[repr(C)]
-pub struct LinuxXArray { lock: LinuxSpinlock, flags: u32, head: *mut c_void }
+pub struct LinuxXArray { pub(crate) lock: LinuxSpinlock, pub(crate) flags: u32, pub(crate) head: *mut c_void }
 
 struct XaNode { shift: u8, slots: [*mut c_void; CHUNK_SIZE] }
 
@@ -35,7 +35,7 @@ pub fn export_symbols() {
     ] { export(name, addr, false); }
 }
 
-extern "C" fn xa_init_flags(xa: *mut LinuxXArray, flags: u32) {
+pub(crate) extern "C" fn xa_init_flags(xa: *mut LinuxXArray, flags: u32) {
     if xa.is_null() { return; }
     // SAFETY: xa names caller-owned xarray storage.
     unsafe { ptr::write(xa, LinuxXArray { lock: LinuxSpinlock { state: 0 }, flags, head: ptr::null_mut() }); }
@@ -79,15 +79,15 @@ extern "C" fn xa_find_after(xa: *mut LinuxXArray, index: *mut usize, max: usize,
 
 extern "C" fn xa_destroy(xa: *mut LinuxXArray) {
     if xa.is_null() { return; }
-    with_lock(xa, |xa| { if is_node(xa.head) { free_node(node(xa.head)); } xa.head = ptr::null_mut(); });
+    with_lock(xa, destroy_locked);
 }
 
-fn with_lock<T>(xa: *mut LinuxXArray, f: impl FnOnce(&mut LinuxXArray) -> T) -> T {
+pub(crate) fn with_lock<T>(xa: *mut LinuxXArray, f: impl FnOnce(&mut LinuxXArray) -> T) -> T {
     // SAFETY: caller checked xa is non-null and the embedded spinlock serializes all tree access.
     unsafe { spin_lock((&mut (*xa).lock) as *mut LinuxSpinlock); let result = f(&mut *xa); spin_unlock((&mut (*xa).lock) as *mut LinuxSpinlock); result }
 }
 
-fn load_locked(xa: &LinuxXArray, index: usize) -> *mut c_void {
+pub(crate) fn load_locked(xa: &LinuxXArray, index: usize) -> *mut c_void {
     if xa.head.is_null() { return ptr::null_mut(); }
     if !is_node(xa.head) { return if index == 0 { xa.head } else { ptr::null_mut() }; }
     let mut n = node(xa.head);
@@ -103,7 +103,7 @@ fn load_locked(xa: &LinuxXArray, index: usize) -> *mut c_void {
     }
 }
 
-fn store_locked(xa: &mut LinuxXArray, index: usize, entry: *mut c_void) {
+pub(crate) fn store_locked(xa: &mut LinuxXArray, index: usize, entry: *mut c_void) {
     if xa.head.is_null() && index == 0 { xa.head = entry; return; }
     if !is_node(xa.head) {
         let old = xa.head; xa.head = tagged(new_node(0));
@@ -125,7 +125,7 @@ fn store_locked(xa: &mut LinuxXArray, index: usize, entry: *mut c_void) {
     }
 }
 
-fn erase_locked(xa: &mut LinuxXArray, index: usize) -> *mut c_void {
+pub(crate) fn erase_locked(xa: &mut LinuxXArray, index: usize) -> *mut c_void {
     let old = load_locked(xa, index);
     if old.is_null() { return old; }
     if !is_node(xa.head) { xa.head = ptr::null_mut(); return old; }
@@ -133,7 +133,12 @@ fn erase_locked(xa: &mut LinuxXArray, index: usize) -> *mut c_void {
     loop { let shift = unsafe { (*n).shift }; let slot = (index >> shift) & (CHUNK_SIZE - 1); if shift == 0 { unsafe { (*n).slots[slot] = ptr::null_mut(); } return old; } n = node(unsafe { (*n).slots[slot] }); }
 }
 
-fn find_locked(xa: &LinuxXArray, start: usize, max: usize) -> Option<(usize, *mut c_void)> {
+pub(crate) fn destroy_locked(xa: &mut LinuxXArray) {
+    if is_node(xa.head) { free_node(node(xa.head)); }
+    xa.head = ptr::null_mut();
+}
+
+pub(crate) fn find_locked(xa: &LinuxXArray, start: usize, max: usize) -> Option<(usize, *mut c_void)> {
     if start > max || xa.head.is_null() { return None; }
     if !is_node(xa.head) { return (start == 0).then_some((0, xa.head)); }
     find_node(node(xa.head), 0, start, max)
