@@ -12,7 +12,7 @@ unsafe fn entry(s: *mut u8, off: usize, size: usize, i: usize) -> *mut u8 { unsa
 unsafe fn call2(ptr: usize, a: *mut c_void, b: *mut c_void) { if ptr != 0 { unsafe { core::mem::transmute::<usize, unsafe extern "C" fn(*mut c_void, *mut c_void)>(ptr)(a, b); } } }
 fn callback(obj: *mut u8, table: usize, off: usize) -> usize { if obj.is_null() { 0 } else { unsafe { let t = read(obj.add(table).cast::<*const u8>()); if t.is_null() { 0 } else { read(t.add(off).cast::<usize>()) } } } }
 
-pub(super) fn export_symbols() { for (n, p) in [("drm_atomic_helper_commit_planes", drm_atomic_helper_commit_planes as *const () as usize), ("drm_atomic_helper_commit_hw_done", drm_atomic_helper_commit_hw_done as *const () as usize), ("drm_atomic_helper_commit_cleanup_done", drm_atomic_helper_commit_cleanup_done as *const () as usize)] { crate::symtab::export(n, p, false); } }
+pub(super) fn export_symbols() { for (n, p) in [("drm_atomic_helper_commit_planes", drm_atomic_helper_commit_planes as *const () as usize), ("drm_atomic_helper_commit_tail", drm_atomic_helper_commit_tail as *const () as usize), ("drm_atomic_helper_commit_hw_done", drm_atomic_helper_commit_hw_done as *const () as usize), ("drm_atomic_helper_commit_cleanup_done", drm_atomic_helper_commit_cleanup_done as *const () as usize)] { crate::symtab::export(n, p, false); } }
 
 /// Execute CRTC begin, plane update/disable, and CRTC flush callbacks. # C: O(N_objects)
 pub(super) extern "C" fn drm_atomic_helper_commit_planes(dev: *mut c_void, state: *mut c_void, _flags: u32) {
@@ -21,6 +21,17 @@ pub(super) extern "C" fn drm_atomic_helper_commit_planes(dev: *mut c_void, state
     for i in 0..planes { let e = unsafe { entry(s, PLANES_OFF, PLANE_ENTRY, i) }; let (o, old, new) = unsafe { (read(e.add(OBJ).cast::<*mut u8>()), read(e.add(OLD).cast::<*mut u8>()), read(e.add(NEW).cast::<*mut u8>())) }; if o.is_null() || old.is_null() || new.is_null() { continue; } let (old_crtc, new_crtc) = unsafe { (read(old.add(PLANE_CRTC).cast::<*mut u8>()), read(new.add(PLANE_CRTC).cast::<*mut u8>())) }; let disabling = !old_crtc.is_null() && new_crtc.is_null(); if disabling && callback(o, PLANE_HELPERS, PLANE_DISABLE) != 0 { unsafe { call2(callback(o, PLANE_HELPERS, PLANE_DISABLE), o.cast(), state); } } else if !new_crtc.is_null() || disabling { unsafe { call2(callback(o, PLANE_HELPERS, PLANE_UPDATE), o.cast(), state); if old_crtc.is_null() && !new_crtc.is_null() { call2(callback(o, PLANE_HELPERS, PLANE_ENABLE), o.cast(), state); } } } }
     for i in 0..crtcs { let e = unsafe { entry(s, CRTCS_OFF, CRTC_ENTRY, i) }; let (o, n) = unsafe { (read(e.add(OBJ).cast::<*mut u8>()), read(e.add(NEW).cast::<*mut u8>())) }; if !o.is_null() && !n.is_null() { unsafe { call2(callback(o, CRTC_HELPERS, CRTC_FLUSH), o.cast(), state); } } }
     for i in 0..planes { let e = unsafe { entry(s, PLANES_OFF, PLANE_ENTRY, i) }; let (o, old) = unsafe { (read(e.add(OBJ).cast::<*mut u8>()), read(e.add(OLD).cast::<*mut u8>())) }; if !o.is_null() && !old.is_null() { unsafe { call2(callback(o, PLANE_HELPERS, PLANE_END_FB_ACCESS), o.cast(), old.cast()); } } }
+}
+
+/// Commit the default plane tail, publish hardware completion, then release old plane resources. # C: O(N_objects)
+pub(super) extern "C" fn drm_atomic_helper_commit_tail(state: *mut c_void) {
+    if state.is_null() { return; }
+    // SAFETY: every live atomic transaction retains its allocating DRM device at byte 8.
+    let dev = unsafe { read(state.cast::<u8>().add(DEV_OFF).cast::<*mut c_void>()) };
+    if dev.is_null() { return; }
+    drm_atomic_helper_commit_planes(dev, state, 0);
+    drm_atomic_helper_commit_hw_done(state);
+    crate::linux_drm::atomic_prepare::drm_atomic_helper_cleanup_planes(dev, state);
 }
 
 /// Signal completion of hardware programming and transfer CRTC commit ownership. # C: O(N_crtcs)
