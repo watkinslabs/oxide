@@ -115,6 +115,7 @@ pub fn export_symbols() {
         ("dma_opt_mapping_size",      dma_opt_mapping_size      as *const () as usize),
         ("dma_get_merge_boundary",    dma_get_merge_boundary    as *const () as usize),
         ("dma_need_unmap",            dma_need_unmap            as *const () as usize),
+        ("dma_pci_p2pdma_supported",  dma_pci_p2pdma_supported  as *const () as usize),
         ("dma_get_sgtable_attrs",     dma_get_sgtable_attrs     as *const () as usize),
         ("sg_init_table",             sg_init_table             as *const () as usize),
         ("sg_init_one",               sg_init_one               as *const () as usize),
@@ -400,6 +401,12 @@ pub(crate) extern "C" fn dma_get_merge_boundary(_dev: *mut LinuxDevice) -> usize
 /// Report whether a completed mapping must be torn down by the active DMA backend. # C: O(1)
 pub(crate) extern "C" fn dma_need_unmap(dev: *mut LinuxDevice) -> bool {
     crate::linux_pci::bdf_for_device(dev).is_some()
+}
+
+/// Report whether this DMA owner can map PCI peer-resource memory. # C: O(1)
+pub(crate) extern "C" fn dma_pci_p2pdma_supported(_dev: *mut LinuxDevice) -> bool {
+    // IOMMU mappings currently own RAM pages only; no P2PDMA resource owner exists.
+    false
 }
 
 pub(crate) unsafe extern "C" fn sg_init_table(sg: *mut ScatterList, nents: u32) {
