@@ -1,7 +1,7 @@
 use crate::{imp::Controller, profile::ResetProfile, regs};
 
-const SEMAPHORE_RETRIES: usize = 64;
-const SEMAPHORE_WAIT_NS: u64 = 50_000;
+const MDIO_OWNERSHIP_RETRIES: usize = 10;
+const MDIO_OWNERSHIP_WAIT_NS: u64 = 2_000_000;
 const PRE_RESET_WAIT_NS: u64 = 10_000_000;
 
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
@@ -16,21 +16,17 @@ fn wait_ns(ns: u64) {
 }
 
 fn acquire_phy(c: &Controller) -> bool {
-    for _ in 0..SEMAPHORE_RETRIES {
-        if c.read(regs::SWSM) & regs::SWSM_SMBI == 0 { break; }
-        wait_ns(SEMAPHORE_WAIT_NS);
-    }
-    for _ in 0..SEMAPHORE_RETRIES {
-        c.write(regs::SWSM, c.read(regs::SWSM) | regs::SWSM_SWESMBI);
-        if c.read(regs::SWSM) & regs::SWSM_SWESMBI != 0 { return true; }
-        wait_ns(SEMAPHORE_WAIT_NS);
+    for _ in 0..MDIO_OWNERSHIP_RETRIES {
+        c.write(regs::EXTCNF_CTRL, c.read(regs::EXTCNF_CTRL) | regs::EXTCNF_CTRL_MDIO_SW_OWNERSHIP);
+        if c.read(regs::EXTCNF_CTRL) & regs::EXTCNF_CTRL_MDIO_SW_OWNERSHIP != 0 { return true; }
+        wait_ns(MDIO_OWNERSHIP_WAIT_NS);
     }
     release_phy(c);
     false
 }
 
 fn release_phy(c: &Controller) {
-    c.write(regs::SWSM, c.read(regs::SWSM) & !(regs::SWSM_SMBI | regs::SWSM_SWESMBI));
+    c.write(regs::EXTCNF_CTRL, c.read(regs::EXTCNF_CTRL) & !regs::EXTCNF_CTRL_MDIO_SW_OWNERSHIP);
 }
 
 pub(crate) fn apply(c: &Controller, io_base: Option<u16>, profile: ResetProfile) -> bool {
