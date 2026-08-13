@@ -24,6 +24,7 @@ struct SrcuState {
 }
 
 impl LinuxSrcuStruct {
+    #[cfg(test)]
     pub(super) const fn new() -> Self {
         Self { ctrp: core::ptr::null_mut(), sda: core::ptr::null_mut(), flavor: 0, pad: [0; 7], sup: core::ptr::null_mut() }
     }

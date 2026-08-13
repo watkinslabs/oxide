@@ -5,7 +5,7 @@ use super::*;
 const DEV_OFF: usize = 8; const PLANES_OFF: usize = 32; const CRTCS_OFF: usize = 40; const FAKE_OFF: usize = 88;
 const PLANE_ENTRY: usize = 32; const CRTC_ENTRY: usize = 56; const OBJ: usize = 0; const OLD: usize = 16; const NEW: usize = 24;
 const PLANE_HELPERS: usize = 1224; const CRTC_HELPERS: usize = 432; const PLANE_UPDATE: usize = 40; const PLANE_ENABLE: usize = 48; const PLANE_DISABLE: usize = 56; const CRTC_BEGIN: usize = 88; const CRTC_FLUSH: usize = 96;
-const PLANE_CRTC: usize = 8; const PLANE_COMMIT: usize = 160; const CRTC_COMMIT: usize = 320; const COMMIT_HW: usize = 48; const COMMIT_CLEANUP: usize = 80; const PLANE_END_FB_ACCESS: usize = 24;
+const PLANE_CRTC: usize = 8; const CRTC_COMMIT: usize = 320; const COMMIT_HW: usize = 48; const COMMIT_CLEANUP: usize = 80; const PLANE_END_FB_ACCESS: usize = 24;
 
 fn counts(dev: *mut c_void) -> Option<(usize, usize)> { let d = DEVICES.lock(); let r = d.iter().find(|r| r.dev == dev as usize && r.mode_config && !r.put_pending && !r.unplugged)?; Some((r.planes.len(), r.crtcs.len())) }
 unsafe fn entry(s: *mut u8, off: usize, size: usize, i: usize) -> *mut u8 { unsafe { read(s.add(off).cast::<*mut u8>()).add(i * size) } }
