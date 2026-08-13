@@ -25,7 +25,7 @@ impl<T> RwSem<T> {
                 return RwSemReadGuard { sem: self };
             }
             // SAFETY: running task in process context; the gate is dropped below, before `schedule`, so no lock is held across the sleep.
-            unsafe { self.wait.prepare_to_wait_interruptible(); }
+            unsafe { self.wait.prepare_to_wait(); }
             drop(g);
             // SAFETY: parked on this semaphore's own wait list while holding no lock.
             unsafe { crate::live::schedule(); }
@@ -55,7 +55,7 @@ impl<T> RwSem<T> {
                 return RwSemWriteGuard { sem: self };
             }
             // SAFETY: running task in process context; the gate is dropped below, before `schedule`, so no lock is held across the sleep.
-            unsafe { self.wait.prepare_to_wait_interruptible(); }
+            unsafe { self.wait.prepare_to_wait(); }
             drop(g);
             // SAFETY: parked on this semaphore's own wait list while holding no lock.
             unsafe { crate::live::schedule(); }
