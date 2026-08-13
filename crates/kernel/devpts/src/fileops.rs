@@ -62,15 +62,23 @@ impl FileOps for PtyMasterFileOps {
 
     fn read(&self, inode: &Inode, _o: u64, buf: &mut [u8]) -> KResult<usize> {
         let pair = pair_of(inode)?;
-        // Yield-block until the slave has written something. Mirrors the slave.
-        loop {
-            let n = {
-                let mut g = pair.inner.lock();
-                if g.master_readable() { g.master_read(buf) } else { 0 }
-            };
-            if n > 0 { master_read_freed_slave_space(pair); return Ok(n); }
-            // SAFETY: process ctx; runqueue installed; preempt-off.
-            unsafe { sched::live::tick_yield(); }
+        #[cfg(target_os = "oxide-kernel")]
+        {
+        // The predicate is checked after wait-list publication. A slave write
+        // or hangup cannot land in the former check-then-yield hole.
+        let outcome = unsafe {
+            sched::live::wait_event_interruptible(&pair.master_read_wait,
+                || pair.inner.lock().master_readable())
+        };
+        if outcome == sched::WaitOutcome::Interrupted { return Err(VfsError::Erestartsys); }
+        let n = pair.inner.lock().master_read(buf);
+        if n > 0 { master_read_freed_slave_space(pair); }
+        Ok(n)
+        }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        {
+            let _ = buf;
+            Err(VfsError::Eagain)
         }
     }
     /// F201: O_NONBLOCK read — EAGAIN when no data, so select()+read
@@ -101,8 +109,8 @@ impl FileOps for PtyMasterFileOps {
         // `n_tty_receive_buf` → `wake_up_interruptible_poll(&to->read_wait,
         // EPOLLIN)`. The bytes just queued make the SLAVE readable; ECHO
         // copies them back into `s_to_m`, which makes the MASTER readable too.
-        if n != 0 { pair.wake_subs(false, vfs::POLL_IN); }
-        if echoed { pair.wake_subs(true, vfs::POLL_IN); }
+        if n != 0 { pair.wake_subs(false, vfs::POLL_IN); pair.wake_readers(false); }
+        if echoed { pair.wake_subs(true, vfs::POLL_IN); pair.wake_readers(true); }
         if signals != 0 && fg != 0 { post_signal_pgrp(fg, signals); }
         Ok(n)
     }
@@ -135,6 +143,7 @@ impl FileOps for PtyMasterFileOps {
         // then hangs up the slave: the slave's poll must report
         // EPOLLHUP|EPOLLIN immediately, not on the next unrelated event.
         pair.wake_both_subs(vfs::POLL_IN | vfs::POLL_OUT | vfs::POLL_HUP);
+        pair.wake_both_readers();
         // Master last-close = carrier loss. Linux `__tty_hangup` delivers
         // SIGHUP + SIGCONT to the slave's foreground process group (SIGCONT
         // so a stopped job wakes to take the SIGHUP). `pending_sighup` had
@@ -177,17 +186,23 @@ impl FileOps for PtySlaveFileOps {
     fn read(&self, inode: &Inode, _o: u64, buf: &mut [u8]) -> KResult<usize> {
         let pair = pair_of(inode)?;
         slave_jobctl(pair, inode.ino(), tty::jobctl::Access::Read)?;
-        // Yield-block until at least one byte (or a complete line under
-        // ICANON) is available on the master→slave queue. Matches the
-        // ConsoleInode pattern; v1 has no proper waitqueue + IRQ wake.
-        loop {
-            let n = {
-                let mut g = pair.inner.lock();
-                if g.slave_readable() { g.slave_read(buf) } else { 0 }
-            };
-            if n > 0 { slave_read_freed_master_space(pair); return Ok(n); }
-            // SAFETY: process ctx; runqueue installed; preempt-off.
-            unsafe { sched::live::tick_yield(); }
+        #[cfg(target_os = "oxide-kernel")]
+        {
+        // A master write, EOF, or hangup wakes this list only after updating
+        // `inner`; the shared predicate loop closes the lost-wakeup window.
+        let outcome = unsafe {
+            sched::live::wait_event_interruptible(&pair.slave_read_wait,
+                || pair.inner.lock().slave_readable())
+        };
+        if outcome == sched::WaitOutcome::Interrupted { return Err(VfsError::Erestartsys); }
+        let n = pair.inner.lock().slave_read(buf);
+        if n > 0 { slave_read_freed_master_space(pair); }
+        Ok(n)
+        }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        {
+            let _ = buf;
+            Err(VfsError::Eagain)
         }
     }
     /// F201: O_NONBLOCK read — EAGAIN when master→slave queue empty.
@@ -213,7 +228,7 @@ impl FileOps for PtySlaveFileOps {
             g.slave_write(buf)
         };
         // Program output landed in `s_to_m`: the MASTER is now readable.
-        if n != 0 { pair.wake_subs(true, vfs::POLL_IN); }
+        if n != 0 { pair.wake_subs(true, vfs::POLL_IN); pair.wake_readers(true); }
         Ok(n)
     }
     /// `n_tty_poll` for the slave half; the mask itself is
