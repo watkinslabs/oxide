@@ -20,7 +20,7 @@ pub enum AmdViMsi { Direct, Remapped { address: u64, data: u32 }, Failed }
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum AmdViIoapic { Direct, Remapped { index: u8 }, Failed }
 
-struct AmdViGroup { key: u16, domain_id: u16, requesters: Vec<Bdf>, domain: AmdViDomain }
+struct AmdViGroup { domain_id: u16, requesters: Vec<Bdf>, domain: AmdViDomain }
 struct AmdViBootUnit { unit: IommuUnit, bootstrap: AmdViBootstrap, groups: Vec<AmdViGroup> }
 static MANAGER: Spinlock<Vec<AmdViBootUnit>, Devices> = Spinlock::new(Vec::new());
 static EVENT_RECORDS: AtomicU64 = AtomicU64::new(0);
@@ -46,24 +46,22 @@ pub unsafe fn activate_amd_vi(requesters: &[Bdf], hhdm_offset: u64, regions: &[p
         manager.push(AmdViBootUnit { unit, bootstrap, groups: Vec::new() });
     }
 
-    for bdf in requesters {
-        let Some(unit) = crate::amd_vi_unit_for_bdf(*bdf) else { continue; };
-        let Some(entry) = manager.iter_mut().find(|entry| entry.unit == unit) else { return activation_failed(&mut manager); };
-        let key = group_key(*bdf, firmware::acpi::amd_vi_alias_for_requester(bdf.segment, bdf.raw()));
-        let index = match entry.groups.iter().position(|group| group.key == key) {
-            Some(index) => index,
-            None => {
-                let Some(domain_id) = u16::try_from(entry.groups.len()).ok().and_then(|n| INITIAL_DOMAIN_ID.checked_add(n)) else { return activation_failed(&mut manager); };
-                let Some(mut domain) = AmdViDomain::new(IOVA_START, IOVA_BYTES, hhdm_offset) else { return activation_failed(&mut manager); };
-                if !domain.map_identity_regions(regions) || !map_ivmd_regions(&mut domain, unit, &[*bdf]) { return activation_failed(&mut manager); }
-                entry.groups.push(AmdViGroup { key, domain_id, requesters: Vec::new(), domain });
-                entry.groups.len() - 1
+    for entry in manager.iter_mut() {
+        let unit_requesters: Vec<Bdf> = requesters.iter().copied().filter(|bdf|
+            crate::amd_vi_unit_for_bdf(*bdf) == Some(entry.unit)).collect();
+        for (_, group_requesters) in requester_groups(&unit_requesters, |bdf|
+            group_key(bdf, firmware::acpi::amd_vi_alias_for_requester(bdf.segment, bdf.raw()))) {
+            let Some(domain_id) = u16::try_from(entry.groups.len()).ok().and_then(|n| INITIAL_DOMAIN_ID.checked_add(n)) else { return activation_failed(&mut manager); };
+            let Some(mut domain) = AmdViDomain::new(IOVA_START, IOVA_BYTES, hhdm_offset) else { return activation_failed(&mut manager); };
+            if !domain.map_identity_regions(regions) || !map_ivmd_regions(&mut domain, entry.unit, &group_requesters) { return activation_failed(&mut manager); }
+            entry.groups.push(AmdViGroup { domain_id, requesters: group_requesters, domain });
+        }
+        for group in &entry.groups {
+            for requester in &group.requesters {
+                // SAFETY: every group mapping is complete before its DTE becomes present.
+                if !unsafe { entry.bootstrap.attach(*requester, &group.domain, group.domain_id) } { return activation_failed(&mut manager); }
             }
-        };
-        let group = &mut entry.groups[index];
-        // SAFETY: the group domain maps every PMM-owned DMA address before translation enables.
-        if !unsafe { entry.bootstrap.attach(*bdf, &group.domain, group.domain_id) } { return activation_failed(&mut manager); }
-        group.requesters.push(*bdf);
+        }
     }
     for entry in manager.iter_mut() {
         if !entry.bootstrap.enable() { return activation_failed(&mut manager); }
@@ -195,6 +193,17 @@ fn push_unique_unit(units: &mut Vec<IommuUnit>, unit: IommuUnit) {
 
 fn group_key(bdf: Bdf, alias: Option<u16>) -> u16 { alias.unwrap_or(bdf.raw()) }
 
+fn requester_groups(requesters: &[Bdf], key_for: impl Fn(Bdf) -> u16) -> Vec<(u16, Vec<Bdf>)> {
+    let mut groups = Vec::new();
+    for requester in requesters {
+        let key = key_for(*requester);
+        if groups.iter().any(|(existing, _)| *existing == key) { continue; }
+        let members = requesters.iter().copied().filter(|candidate| key_for(*candidate) == key).collect();
+        groups.push((key, members));
+    }
+    groups
+}
+
 #[cfg(test)] mod tests {
     use super::*;
     #[test] fn deduplicates_requesters_but_never_crosses_a_segment_boundary() {
@@ -211,5 +220,15 @@ fn group_key(bdf: Bdf, alias: Option<u16>) -> u16 { alias.unwrap_or(bdf.raw()) }
         let alias = Bdf { segment: 0, bus: 0x12, device: 4, function: 0 };
         assert_eq!(group_key(canonical, None), canonical.raw());
         assert_eq!(group_key(alias, Some(canonical.raw())), canonical.raw());
+    }
+    #[test] fn aliases_form_the_complete_group_before_domain_setup() {
+        let canonical = Bdf { segment: 0, bus: 0x12, device: 3, function: 1 };
+        let alias = Bdf { segment: 0, bus: 0x12, device: 4, function: 0 };
+        let unrelated = Bdf { segment: 0, bus: 0x12, device: 5, function: 0 };
+        let groups = requester_groups(&[alias, unrelated, canonical], |bdf| {
+            if bdf == alias { canonical.raw() } else { bdf.raw() }
+        });
+        assert_eq!(groups, alloc::vec![(canonical.raw(), alloc::vec![alias, canonical]),
+            (unrelated.raw(), alloc::vec![unrelated])]);
     }
 }
