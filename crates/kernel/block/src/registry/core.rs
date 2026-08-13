@@ -25,6 +25,8 @@ use crate::blockdev::{BlockCompletion, BlockDevice, BlockRequest};
 use crate::queue_limits::QueueLimits;
 use crate::types::{BlockError, KResult};
 
+use super::partition::Partition;
+
 /// Linux assigns dynamic block majors from this reserved range first.
 pub const DYNAMIC_MAJOR_FIRST: u32 = 240;
 /// Inclusive end of Linux's preferred dynamic block-major range.
@@ -49,17 +51,6 @@ impl BlockDriver {
 /// Canonical device number allocated to one published disk.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct DevNum { pub major: u32, pub minor: u32 }
-
-/// One published partition, owned by its parent whole-disk object.
-pub struct Partition {
-    pub name: String,
-    pub number: u32,
-    pub start_lba: u64,
-    pub sectors: u64,
-    pub uuid: Option<String>,
-    pub label: Option<String>,
-    pub dev: Arc<dyn BlockDevice>,
-}
 
 /// One registered block device.
 pub struct Disk {

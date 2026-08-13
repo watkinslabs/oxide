@@ -43,7 +43,7 @@ pub use bdev::{sync_bdevs, BdevMapping};
 pub use blockdev::{BlockCompletion, BlockDevice, BlockRequest, MemDisk};
 pub use pagecache::{CachedPage, PageCache};
 pub use queue_limits::{QueueFeatures, QueueLimits, LINUX_SECTOR_BYTES, MAX_DISCARD_SECTORS};
-pub use registry::{Disk, ScsiDiskName, register, unregister, by_name, by_index, reserve_scsi_disk_name, snapshot};
+pub use registry::{Disk, Partition, ScsiDiskName, register, unregister, by_name, by_index, partition_by_label, partition_by_name, partition_by_uuid, rescan_partitions, reserve_scsi_disk_name, snapshot};
 pub use types::{BlockError, BlockOp, InodeId, KResult, PageFlags, PAGE_BYTES};
 
 #[cfg(target_os = "oxide-kernel")]
