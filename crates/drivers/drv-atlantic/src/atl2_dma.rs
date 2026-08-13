@@ -16,15 +16,15 @@ pub struct Rings {
 impl Rings {
     /// Allocates and maps the default one-queue AQC113 RX and TX regions.
     /// # C: O(1)
-    pub fn allocate(bdf: pci::Bdf) -> Option<Self> {
+    pub fn allocate(bdf: pci::Bdf, dma_mask: u64) -> Option<Self> {
         let rx_desc_pa = pmm::setup::alloc_contig(RX_DESC_ORDER)?;
         let Some(tx_desc_pa) = pmm::setup::alloc_contig(TX_DESC_ORDER) else { free(rx_desc_pa, RX_DESC_ORDER); return None; };
         let Some(rx_data_pa) = pmm::setup::alloc_contig(RX_DATA_ORDER) else { free_pair(rx_desc_pa, tx_desc_pa); return None; };
         let Some(tx_data_pa) = pmm::setup::alloc_contig(TX_DATA_ORDER) else { free_triple(rx_desc_pa, tx_desc_pa, rx_data_pa); return None; };
-        let Some(rx_desc_dma) = iommu::map_dma(bdf, rx_desc_pa, ring_rx_bytes()) else { free_all(rx_desc_pa, tx_desc_pa, rx_data_pa, tx_data_pa); return None; };
-        let Some(tx_desc_dma) = iommu::map_dma(bdf, tx_desc_pa, ring_tx_bytes()) else { let _ = iommu::unmap_dma(bdf, rx_desc_dma, ring_rx_bytes()); free_all(rx_desc_pa, tx_desc_pa, rx_data_pa, tx_data_pa); return None; };
-        let Some(rx_data_dma) = iommu::map_dma(bdf, rx_data_pa, data_rx_bytes()) else { unmap_descriptors(bdf, rx_desc_dma, tx_desc_dma); free_all(rx_desc_pa, tx_desc_pa, rx_data_pa, tx_data_pa); return None; };
-        let Some(tx_data_dma) = iommu::map_dma(bdf, tx_data_pa, data_tx_bytes()) else { unmap_descriptors(bdf, rx_desc_dma, tx_desc_dma); let _ = iommu::unmap_dma(bdf, rx_data_dma, data_rx_bytes()); free_all(rx_desc_pa, tx_desc_pa, rx_data_pa, tx_data_pa); return None; };
+        let Some(rx_desc_dma) = iommu::map_dma_below(bdf, rx_desc_pa, ring_rx_bytes(), dma_mask) else { free_all(rx_desc_pa, tx_desc_pa, rx_data_pa, tx_data_pa); return None; };
+        let Some(tx_desc_dma) = iommu::map_dma_below(bdf, tx_desc_pa, ring_tx_bytes(), dma_mask) else { let _ = iommu::unmap_dma(bdf, rx_desc_dma, ring_rx_bytes()); free_all(rx_desc_pa, tx_desc_pa, rx_data_pa, tx_data_pa); return None; };
+        let Some(rx_data_dma) = iommu::map_dma_below(bdf, rx_data_pa, data_rx_bytes(), dma_mask) else { unmap_descriptors(bdf, rx_desc_dma, tx_desc_dma); free_all(rx_desc_pa, tx_desc_pa, rx_data_pa, tx_data_pa); return None; };
+        let Some(tx_data_dma) = iommu::map_dma_below(bdf, tx_data_pa, data_tx_bytes(), dma_mask) else { unmap_descriptors(bdf, rx_desc_dma, tx_desc_dma); let _ = iommu::unmap_dma(bdf, rx_data_dma, data_rx_bytes()); free_all(rx_desc_pa, tx_desc_pa, rx_data_pa, tx_data_pa); return None; };
         Some(Self { bdf, rx_desc_pa, tx_desc_pa, rx_data_pa, tx_data_pa, rx_desc_dma, tx_desc_dma, rx_data_dma, tx_data_dma })
     }
 

@@ -125,7 +125,7 @@ impl drv::Driver for AtlanticDriver {
         let Some(bar) = device.resources.iter().find(|resource| resource.bar == 0 && resource.flags & drv::IORESOURCE_MEM != 0) else { restore_bus_master(bdf, command); return Err(drv::Error::ProbeFailed); };
         let bytes = bar.end.checked_sub(bar.start).and_then(|size| size.checked_add(1)).ok_or(drv::Error::ProbeFailed)?; let pages = (bar.start & (PAGE - 1)).checked_add(bytes).and_then(|size| size.checked_add(PAGE - 1)).and_then(|size| size.checked_div(PAGE)).ok_or(drv::Error::ProbeFailed)?;
         // SAFETY: the matched BAR0 remains exclusively owned until the matching remove transaction unmaps it.
-        let map = unsafe { mmio_map::map_owned(bar.start & !(PAGE - 1), pages) }; let Some(mut controller) = Controller::bring_up(map, bdf) else { restore_bus_master(bdf, command); return Err(drv::Error::ProbeFailed); };
+        let map = unsafe { mmio_map::map_owned(bar.start & !(PAGE - 1), pages) }; let Some(mut controller) = Controller::bring_up(map, bdf, device.dma_mask()) else { restore_bus_master(bdf, command); return Err(drv::Error::ProbeFailed); };
         let Some(mac) = controller.mac().map(net::MacAddr) else { controller.release(); restore_bus_master(bdf, command); return Err(drv::Error::ProbeFailed); };
         let Some(endpoint) = endpoint_claim(controller.mmio_base()) else { controller.release(); restore_bus_master(bdf, command); return Err(drv::Error::ProbeFailed); };
         let Some(irq) = bind_pci_message(bdf, endpoint, &controller) else { endpoint_release(endpoint); controller.release(); restore_bus_master(bdf, command); return Err(drv::Error::ProbeFailed); };

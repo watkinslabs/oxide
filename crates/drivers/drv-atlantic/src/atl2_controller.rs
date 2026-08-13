@@ -14,8 +14,8 @@ pub struct Controller { map: mmio_map::Mapping, rings: Rings, plan: QueuePlan, r
 impl Controller {
     /// Resets resident firmware and prepares the default queue without enabling data paths.
     /// # C: O(N)
-    pub fn bring_up(map: mmio_map::Mapping, bdf: pci::Bdf) -> Option<Self> {
-        let rings = Rings::allocate(bdf)?;
+    pub fn bring_up(map: mmio_map::Mapping, bdf: pci::Bdf, dma_mask: u64) -> Option<Self> {
+        let rings = Rings::allocate(bdf, dma_mask)?;
         let plan = QueuePlan::new(rings.rx_desc_dma(), rings.tx_desc_dma(), queue::RX_RING_DEFAULT, queue::TX_RING_DEFAULT)?;
         let mut controller = Self { map, rings, plan, rx_next: 0, tx_next: 0, tx_inflight: [false; queue::TX_RING_DEFAULT] };
         if atl2_reset::reset(&mut controller).is_err() { controller.release(); return None; }
