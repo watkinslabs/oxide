@@ -23,13 +23,17 @@ impl AmdViPageTable {
     pub const fn page_mode(&self) -> u8 { PAGE_MODE }
     /// Map a page-aligned physical interval at an equally sized IOVA interval. # C: O(leaves * levels)
     pub fn map(&mut self, iova: u64, pa: u64, len: u64) -> bool {
+        self.map_with_permissions(iova, pa, len, true, true)
+    }
+    /// Map a page-aligned interval with hardware read/write permission bits. # C: O(leaves * levels)
+    pub fn map_with_permissions(&mut self, iova: u64, pa: u64, len: u64, read: bool, write: bool) -> bool {
         if iova & (PAGE_BYTES - 1) != 0 || pa & (PAGE_BYTES - 1) != 0 || len == 0 || len & (PAGE_BYTES - 1) != 0 { return false; }
         let Some(end) = iova.checked_add(len) else { return false; };
         let mut cur_iova = iova;
         let mut cur_pa = pa;
         while cur_iova != end {
             let page_bytes = largest_page_size(cur_iova, cur_pa, end - cur_iova);
-            if !self.map_leaf(cur_iova, cur_pa, page_bytes) {
+            if !self.map_leaf(cur_iova, cur_pa, page_bytes, read, write) {
                 let _ = self.unmap(iova, cur_iova - iova);
                 return false;
             }
@@ -52,7 +56,7 @@ impl AmdViPageTable {
         }
         true
     }
-    fn map_leaf(&mut self, iova: u64, pa: u64, page_bytes: u64) -> bool {
+    fn map_leaf(&mut self, iova: u64, pa: u64, page_bytes: u64, read: bool, write: bool) -> bool {
         let depth = leaf_depth(page_bytes);
         let indices = iova_indices(iova);
         let mut table_pa = self.root_pa;
@@ -72,7 +76,7 @@ impl AmdViPageTable {
         }
         let leaf_pa = table_pa + indices[depth] as u64 * core::mem::size_of::<u64>() as u64;
         if read_entry(self.hhdm_offset, leaf_pa) & PTE_PRESENT != 0 { return false; }
-        let Some(leaf) = AmdViPte::leaf(pa) else { return false; };
+        let Some(leaf) = AmdViPte::leaf(pa, read, write) else { return false; };
         write_entry(self.hhdm_offset, leaf_pa, leaf.word());
         true
     }

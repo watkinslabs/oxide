@@ -51,6 +51,12 @@ fn publish(inv: IommuInventory) {
         AMD_IVMD_RANGE[i].store((ivmd.first_requester as u32) | ((ivmd.last_requester as u32) << 16), Ordering::Relaxed);
         AMD_IVMD_BASE[i].store(ivmd.base, Ordering::Relaxed);
         AMD_IVMD_LEN[i].store(ivmd.len, Ordering::Relaxed);
+        AMD_IVMD_PERMS[i].store(ivmd.read as u32 | ((ivmd.write as u32) << 1), Ordering::Relaxed);
+    }
+    for i in 0..inv.amd_special_count {
+        let special = inv.amd_specials[i];
+        AMD_SPECIAL_META[i].store(u32::from(special.unit_index) | (u32::from(special.kind) << 8) | (u32::from(special.id) << 16), Ordering::Relaxed);
+        AMD_SPECIAL_REQUESTER[i].store(u32::from(special.requester), Ordering::Relaxed);
     }
     for i in 0..inv.dmar_scope_count { store_scope(&DMAR_SCOPE_META[i], &DMAR_SCOPE_PATH_LO[i], &DMAR_SCOPE_PATH_HI[i], inv.dmar_scopes[i]); }
     for i in 0..inv.dmar_rmrr_count {
@@ -72,6 +78,7 @@ fn publish(inv: IommuInventory) {
         AMD_SCOPE_COUNT.store(inv.amd_scope_count as u32, Ordering::Release);
         AMD_ALIAS_COUNT.store(inv.amd_alias_count as u32, Ordering::Release);
         AMD_IVMD_COUNT.store(inv.amd_ivmd_count as u32, Ordering::Release);
+        AMD_SPECIAL_COUNT.store(inv.amd_special_count as u32, Ordering::Release);
         DMAR_SCOPE_COUNT.store(inv.dmar_scope_count as u32, Ordering::Release);
         DMAR_RMRR_COUNT.store(inv.dmar_rmrr_count as u32, Ordering::Release);
         IOMMU_COUNT.store(inv.unit_count as u32, Ordering::Release);
@@ -87,7 +94,20 @@ pub fn amd_ivmd(index: usize) -> Option<AmdIvmd> {
     let range = AMD_IVMD_RANGE[index].load(Ordering::Relaxed);
     Some(AmdIvmd { segment: AMD_IVMD_SEGMENT[index].load(Ordering::Relaxed) as u16,
         first_requester: range as u16, last_requester: (range >> 16) as u16,
-        base: AMD_IVMD_BASE[index].load(Ordering::Relaxed), len: AMD_IVMD_LEN[index].load(Ordering::Relaxed) })
+        base: AMD_IVMD_BASE[index].load(Ordering::Relaxed), len: AMD_IVMD_LEN[index].load(Ordering::Relaxed),
+        read: AMD_IVMD_PERMS[index].load(Ordering::Relaxed) & 1 != 0,
+        write: AMD_IVMD_PERMS[index].load(Ordering::Relaxed) & 2 != 0 })
+}
+
+/// Count IVRS special-device requester mappings. # C: O(1)
+pub fn amd_vi_special_count() -> usize { AMD_SPECIAL_COUNT.load(Ordering::Acquire) as usize }
+
+/// Return one IVRS I/O-APIC or HPET requester mapping. # C: O(1)
+pub fn amd_vi_special(index: usize) -> Option<AmdIvhdSpecial> {
+    if index >= amd_vi_special_count() || IOMMU_KIND.load(Ordering::Relaxed) != IOMMU_KIND_AMD_VI { return None; }
+    let meta = AMD_SPECIAL_META[index].load(Ordering::Relaxed);
+    Some(AmdIvhdSpecial { unit_index: meta as u8, kind: (meta >> 8) as u8, id: (meta >> 16) as u8,
+        requester: AMD_SPECIAL_REQUESTER[index].load(Ordering::Relaxed) as u16 })
 }
 
 /// Return whether the DMAR table forbids x2APIC interrupt-remapping mode.

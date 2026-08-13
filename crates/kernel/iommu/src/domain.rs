@@ -81,9 +81,13 @@ impl AmdViDomain {
     }
     /// Install an identity mapping for one PMM-owned physical interval. # C: O(leaves * levels)
     pub fn map_identity(&mut self, pa: u64, len: u64) -> Option<Mapping> {
+        self.map_identity_with_permissions(pa, len, true, true)
+    }
+    /// Install an identity map with firmware-defined device read/write permissions. # C: O(leaves * levels)
+    pub fn map_identity_with_permissions(&mut self, pa: u64, len: u64, read: bool, write: bool) -> Option<Mapping> {
         if pa & (pci::IOVA_PAGE_SIZE - 1) != 0 { return None; }
         let iova = self.space.reserve_at(pa, len)?;
-        if !self.page_table.map(pa, pa, len) {
+        if !self.page_table.map_with_permissions(pa, pa, len, read, write) {
             let _ = self.space.free(iova);
             return None;
         }

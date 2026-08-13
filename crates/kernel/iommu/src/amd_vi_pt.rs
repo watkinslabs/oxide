@@ -20,10 +20,11 @@ impl AmdViPte {
         Some(Self(PTE_PRESENT | ((next_level as u64) << PTE_NEXT_LEVEL_SHIFT & PTE_NEXT_LEVEL_MASK)
             | (next_pa & PTE_ADDRESS_MASK) | PTE_READ | PTE_WRITE))
     }
-    /// Construct a coherent 4K leaf entry with read/write DMA permission. # C: O(1)
-    pub const fn leaf(pa: u64) -> Option<Self> {
+    /// Construct a coherent 4K leaf entry with the supplied DMA permissions. # C: O(1)
+    pub const fn leaf(pa: u64, read: bool, write: bool) -> Option<Self> {
         if pa & (PAGE_BYTES - 1) != 0 || pa & !PTE_ADDRESS_MASK != 0 { return None; }
-        Some(Self(PTE_PRESENT | (pa & PTE_ADDRESS_MASK) | PTE_FORCE_COHERENCE | PTE_READ | PTE_WRITE))
+        Some(Self(PTE_PRESENT | (pa & PTE_ADDRESS_MASK) | PTE_FORCE_COHERENCE
+            | if read { PTE_READ } else { 0 } | if write { PTE_WRITE } else { 0 }))
     }
     /// Return the hardware entry word. # C: O(1)
     pub const fn word(self) -> u64 { self.0 }
@@ -41,8 +42,10 @@ pub const fn iova_indices(iova: u64) -> [usize; 4] {
     use super::*;
     #[test] fn pte_layout_matches_a_four_level_iova_walk() {
         assert_eq!(iova_indices(0x1234_5678_9000), [36, 209, 179, 393]);
-        assert_eq!(AmdViPte::leaf(0x1234_5000).unwrap().word() & PTE_ADDRESS_MASK, 0x1234_5000);
+        assert_eq!(AmdViPte::leaf(0x1234_5000, true, true).unwrap().word() & PTE_ADDRESS_MASK, 0x1234_5000);
         assert_eq!((AmdViPte::table(0x4567_8000, 3).unwrap().word() & PTE_NEXT_LEVEL_MASK) >> PTE_NEXT_LEVEL_SHIFT, 3);
-        assert!(AmdViPte::leaf(0x1234_5001).is_none());
+        assert_eq!(AmdViPte::leaf(0x1234_5000, true, false).unwrap().word() & (PTE_READ | PTE_WRITE), PTE_READ);
+        assert!(AmdViPte::leaf(0x1234_5001, true, true).is_none());
+        assert_eq!(AmdViPte::leaf(0x1234_5000, false, false).unwrap().word() & (PTE_READ | PTE_WRITE), 0);
     }
 }
