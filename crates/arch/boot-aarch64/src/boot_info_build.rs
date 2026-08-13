@@ -500,6 +500,18 @@ pub(crate) unsafe fn build_boot_info() -> &'static BootInfo {
     let dtb_len = if dtb_pa != 0 { unsafe { dtb_totalsize(dtb_pa) } } else { 0 };
     info.dtb_pa = if dtb_len != 0 { dtb_pa } else { 0 };
     info.dtb_len = dtb_len;
+    info.framebuffer = if dtb_len != 0 {
+        let va = selfboot::ARM_SELFBOOT_HHDM + dtb_pa;
+        // SAFETY: the validated DTB header bounds this HHDM-mapped blob.
+        let blob = unsafe { core::slice::from_raw_parts(va as *const u8, dtb_len as usize) };
+        dtb::simple_framebuffer(blob).map(|fb| boot_info::BootFramebuffer {
+            base_pa: fb.base_pa, pitch: fb.stride, width: fb.width, height: fb.height,
+            bpp: fb.bpp, kind: boot_info::BootFramebufferKind::Rgb,
+            red: boot_info::BootFramebufferBitfield { offset: fb.red.0, length: fb.red.1 },
+            green: boot_info::BootFramebufferBitfield { offset: fb.green.0, length: fb.green.1 },
+            blue: boot_info::BootFramebufferBitfield { offset: fb.blue.0, length: fb.blue.1 }, _pad: [0; 2],
+        }).unwrap_or(boot_info::BootFramebuffer::EMPTY)
+    } else { boot_info::BootFramebuffer::EMPTY };
     // Checksum taken HERE, at scan time, so the kernel can prove before it
     // publishes anything that the tree it is about to hand userspace is the
     // one the boot stub read (`36§4.1`).

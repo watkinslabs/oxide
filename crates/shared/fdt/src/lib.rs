@@ -45,7 +45,7 @@ pub use header::{
     FDT_LAST_COMPAT_VERSION, FDT_MAGIC, FDT_MAX_TOTALSIZE, FDT_RSVMAP_ENTRY_LEN,
 };
 pub use props::{
-    bootargs_via_prefix, chosen_bootargs, memory_regions, contains_string, enum_cpus, first_memory_region, machine_model, pl011_clock_hz,
+    bootargs_via_prefix, chosen_bootargs, memory_regions, contains_string, enum_cpus, first_memory_region, machine_model, pl011_clock_hz, simple_framebuffer, SimpleFramebuffer,
 };
 pub use build::{uefi_stub_tree, Builder, EfiFirmware, UefiHandoff};
 pub use uapi::{

@@ -332,6 +332,36 @@ pub fn bridge_buses<R: ConfigSpaceReader>(r: &R, bdf: Bdf) -> Option<BridgeBuses
     Some(BridgeBuses { primary, secondary, subordinate })
 }
 
+/// Follow PCI-to-PCI bridge ancestry and apply one INTx swizzle at each hop.
+/// The returned BDF is the function whose root-bridge `_PRT` entry receives
+/// the resulting pin. # C: O(256 * 32 * 8 * bridge depth)
+pub fn swizzle_intx_to_root<R: ConfigSpaceReader>(r: &R, mut device: Bdf, mut pin: u8) -> Option<(Bdf, u8)> {
+    if !(1..=4).contains(&pin) { return None; }
+    let mut hops = 0usize;
+    while let Some(parent) = parent_bridge(r, device.segment, device.bus) {
+        pin = ((pin - 1 + device.device) & 3) + 1;
+        device = parent;
+        hops += 1;
+        if hops > u8::MAX as usize { return None; }
+    }
+    Some((device, pin))
+}
+
+fn parent_bridge<R: ConfigSpaceReader>(r: &R, segment: u16, child_bus: u8) -> Option<Bdf> {
+    let mut selected: Option<(Bdf, BridgeBuses)> = None;
+    for bus in 0..=u8::MAX {
+        for device in 0..32u8 {
+            for function in 0..8u8 {
+                let bdf = Bdf { segment, bus, device, function };
+                let Some(window) = bridge_buses(r, bdf) else { continue; };
+                if child_bus < window.secondary || child_bus > window.subordinate { continue; }
+                if selected.is_none_or(|(_, old)| window.secondary >= old.secondary) { selected = Some((bdf, window)); }
+            }
+        }
+    }
+    selected.map(|(bdf, _)| bdf)
+}
+
 #[cfg(test)]
 mod command_tests {
     use super::*;
