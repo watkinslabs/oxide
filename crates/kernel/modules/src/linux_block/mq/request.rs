@@ -1,5 +1,5 @@
 extern crate alloc;
-use super::queue::{mq_ops, queue_begin_dispatch, queue_begin_use, queue_end_dispatch, queue_end_use};
+use super::queue::{mq_ops, queue_begin_dispatch, queue_begin_use, queue_end_dispatch, queue_end_use, request_mark_complete, request_unmark_complete};
 use crate::linux_block::contract::{rq_owner_after_end_io, RqOwner};
 use crate::linux_block::core;
 use crate::linux_block::types::*;
@@ -56,6 +56,9 @@ pub(super) unsafe extern "C" fn blk_mq_free_request(rq: *mut LinuxRequest) {
     // SAFETY: rq is null-checked, and every request this module hands out comes from alloc_request, which
     // Box-allocates a fully initialised LinuxRequest; `q` is the queue pointer stored at that time.
     let q = unsafe { (*rq).q };
+    // SAFETY: rq remains live until the Box reclaim below; a completed request must leave its tag set's
+    // completion-drain predicate before that reclaim makes its state unreadable.
+    if unsafe { (*rq).state } == REQ_STATE_COMPLETE { unsafe { request_unmark_complete(q); } }
     // SAFETY: q is guarded by is_null; when non-null it is the request's owning queue allocation, whose
     // tag_set field was written by blk_mq_alloc_queue (possibly null, which the callbacks tolerate).
     let set = if q.is_null() { null_mut() } else { unsafe { (*q).tag_set } };
@@ -113,8 +116,10 @@ unsafe fn end_request(rq: *mut LinuxRequest, status: u8, iob: *const LinuxIoComp
     // end_io being the Option<fn> the module installed. Every read of rq happens here, before the callback
     // below runs, because the callback may take the request's ownership away from this path.
     let end_io = unsafe {
+        let was_complete = (*rq).state == REQ_STATE_COMPLETE;
         (*rq).status = status;
         (*rq).state = REQ_STATE_COMPLETE;
+        if !was_complete { request_mark_complete((*rq).q); }
         (*rq).end_io
     };
     let ret = match end_io {
@@ -143,7 +148,9 @@ pub(super) unsafe extern "C" fn blk_mq_complete_request(rq: *mut LinuxRequest) {
     // `q` and `status` are its own fields, and mq_ops null-checks the queue before touching the ops mirror.
     // Both are read here, before the callback below can take the request away.
     let (complete, status) = unsafe {
+        let was_complete = (*rq).state == REQ_STATE_COMPLETE;
         (*rq).state = REQ_STATE_COMPLETE;
+        if !was_complete { request_mark_complete((*rq).q); }
         (mq_ops((*rq).q).and_then(|ops| (*ops).complete), (*rq).status)
     };
     match complete {
@@ -289,7 +296,10 @@ unsafe extern "C" fn blk_mq_requeue_request(rq: *mut LinuxRequest, _kick: bool) 
     if rq.is_null() { return; }
     // SAFETY: rq is null-checked and is a live alloc_request Box; resetting `state` to REQ_STATE_ALLOCATED
     // is the whole requeue effect here — no ownership moves, so the module still holds the request.
-    unsafe { (*rq).state = REQ_STATE_ALLOCATED; }
+    unsafe {
+        if (*rq).state == REQ_STATE_COMPLETE { request_unmark_complete((*rq).q); }
+        (*rq).state = REQ_STATE_ALLOCATED;
+    }
 }
 
 unsafe extern "C" fn blk_mq_unique_tag(rq: *mut LinuxRequest) -> u32 {
