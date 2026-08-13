@@ -7,6 +7,8 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use core::ptr::{read_volatile, write_volatile};
+#[cfg(target_arch = "x86_64")]
+use core::sync::atomic::{AtomicPtr, Ordering};
 
 /// One BAR mapping that contains an MSI-X table. Drivers retain ownership of
 /// the mapping until [`Binding::release`] returns. # C: O(1)
@@ -14,7 +16,38 @@ use core::ptr::{read_volatile, write_volatile};
 pub struct BarMapping { pub bar: u8, pub base_va: u64, pub bytes: u64, pub offset: u64 }
 
 #[derive(Clone, Copy)]
-enum Mode { Msi { cap_off: u8 }, Msix { cap_off: u8, entry_va: u64 } }
+enum Mode {
+    Msi { cap_off: u8 },
+    Msix { cap_off: u8, entry_va: u64 },
+    #[cfg(target_arch = "x86_64")]
+    Intx,
+}
+
+/// PCI interrupt delivery mechanism selected for a binding. # C: O(1)
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Delivery { Msi, Msix, Intx }
+
+/// A firmware-resolved PCI INTx route. `gsi` is an interrupt-controller
+/// input, not the legacy PCI interrupt-line register. PCI routes are level
+/// triggered and active-low unless firmware explicitly says otherwise.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IntxRoute { pub gsi: u32, pub level: bool, pub active_low: bool }
+
+/// Firmware route lookup installed by the PCI root-complex owner. It mirrors
+/// the PCI core's separation between ACPI `_PRT` resolution and driver IRQ
+/// allocation.
+pub type IntxResolver = fn(pci::Bdf, u8) -> Option<IntxRoute>;
+
+#[cfg(target_arch = "x86_64")]
+static INTX_RESOLVER: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Publish the ACPI-backed INTx resolver before PCI drivers probe. # C: O(1)
+pub fn set_intx_resolver(resolver: IntxResolver) {
+    #[cfg(target_arch = "x86_64")]
+    INTX_RESOLVER.store(resolver as *mut (), Ordering::Release);
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = resolver;
+}
 
 /// One PCI-core-owned interrupt message. A driver only owns its handler and
 /// synchronizes it before releasing this binding. # C: O(1)
@@ -56,9 +89,24 @@ pub fn request(bdf: pci::Bdf, table: BarMapping, action: arch_irq::DeviceAction,
     { let _ = (bdf, table, action, handler); None }
 }
 
+/// Request a legacy INTx vector from a route already resolved by the PCI
+/// root-complex owner. This is intentionally separate from the PCI
+/// interrupt-line byte, which is not a routable interrupt-controller input.
+/// # C: O(N_vectors + IRTE scan)
+pub fn request_intx(bdf: pci::Bdf, route: IntxRoute, action: arch_irq::DeviceAction,
+    handler: fn()) -> Option<Binding> {
+    #[cfg(target_arch = "x86_64")]
+    { request_intx_x86(bdf, route, action, handler) }
+    #[cfg(not(target_arch = "x86_64"))]
+    { let _ = (bdf, route, action, handler); None }
+}
+
 /// Linux `pci_irq_vector(dev, 0)` equivalent for this single-vector owner.
 /// # C: O(1)
 pub const fn irq(binding: Binding) -> u32 { binding.irq }
+/// Returns the transport selected by the PCI IRQ owner.
+/// # C: O(1)
+pub const fn delivery(binding: Binding) -> Delivery { match binding.mode { Mode::Msi { .. } => Delivery::Msi, Mode::Msix { .. } => Delivery::Msix, #[cfg(target_arch = "x86_64")] Mode::Intx => Delivery::Intx } }
 
 /// Start one MSI-X allocation group for a PCI function. The caller adds each
 /// requested device-relative vector with [`MsixGroup::bind`]. # C: O(capabilities)
@@ -75,6 +123,11 @@ impl Binding {
     /// Mask and disable the PCI message, restore INTx state, then free its
     /// architecture vector. The driver must quiesce its handler first. # C: O(1)
     pub fn release(self) {
+        #[cfg(target_arch = "x86_64")]
+        if matches!(self.mode, Mode::Intx) {
+            arch_irq::free_pci_msi(self.irq);
+            return;
+        }
         #[cfg(target_arch = "x86_64")]
         if let Some(r) = hal_x86_64::pci::EcamPci::from_published() { release_with(&r, self); }
         #[cfg(target_arch = "aarch64")]
@@ -171,7 +224,44 @@ fn request_with<R: pci::ConfigSpaceReader>(r: &R, bdf: pci::Bdf, table: BarMappi
                 cap.0, entry_va, action, handler) { return Some(binding); }
         }
     }
-    request_msi(r, bdf, caps.find(pci::CAP_ID_MSI)?.cfg_off, action, handler)
+    if let Some(cap) = caps.find(pci::CAP_ID_MSI) {
+        if let Some(binding) = request_msi(r, bdf, cap.cfg_off, action, handler) { return Some(binding); }
+    }
+    let pin = pci::read8(r, bdf, pci::uapi::INTERRUPT_PIN_OFF);
+    let (route_bdf, route_pin) = pci::swizzle_intx_to_root(r, bdf, pin)?;
+    resolved_intx(route_bdf, route_pin).and_then(|route| request_intx(bdf, route, action, handler))
+}
+
+fn resolved_intx(bdf: pci::Bdf, pin: u8) -> Option<IntxRoute> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let raw = INTX_RESOLVER.load(Ordering::Acquire);
+        if raw.is_null() { return None; }
+        // SAFETY: set_intx_resolver accepts only an ABI-compatible Rust fn and
+        // never clears it while PCI probing may use the callback.
+        let resolve: IntxResolver = unsafe { core::mem::transmute(raw) };
+        return resolve(bdf, pin);
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    { let _ = (bdf, pin); None }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn request_intx_x86(bdf: pci::Bdf, route: IntxRoute, action: arch_irq::DeviceAction,
+    handler: fn()) -> Option<Binding> {
+    let vector = arch_irq::alloc_x86_vector()?;
+    if !arch_irq::register_pci_msi_handler(u32::from(vector), action, handler) {
+        let _ = arch_irq::free_x86_vector(vector);
+        return None;
+    }
+    // SAFETY: the handler is installed before the source is unmasked; PCI
+    // root-complex serialization is still held during early driver probe.
+    let routed = unsafe { arch_irq::program_x86_intx_gsi(route.gsi, vector, 0, route.level, route.active_low) };
+    if !routed {
+        arch_irq::free_pci_msi(u32::from(vector));
+        return None;
+    }
+    Some(Binding { bdf, irq: u32::from(vector), prior_command: 0, mode: Mode::Intx })
 }
 
 fn request_msi<R: pci::ConfigSpaceReader>(r: &R, bdf: pci::Bdf, cap_off: u8,
@@ -217,6 +307,8 @@ fn release_with<R: pci::ConfigSpaceReader>(r: &R, binding: Binding) {
             r.write32(binding.bdf, cfg, pci::msix_control_value(r.read32(binding.bdf, cfg), false));
             let _ = r.read32(binding.bdf, cfg);
         }
+        #[cfg(target_arch = "x86_64")]
+        Mode::Intx => {}
     }
     let _ = pci::restore_intx_disabled(r, binding.bdf, binding.prior_command);
 }
@@ -270,5 +362,18 @@ mod tests {
         assert_eq!(group.entry_offset(0), Some((2, 0x2000)));
         assert_eq!(group.entry_offset(1), Some((2, 0x2010)));
         assert_eq!(group.entry_offset(2), None);
+    }
+
+    fn test_route(bdf: pci::Bdf, _: u8) -> Option<IntxRoute> {
+        (bdf.device == 2).then_some(IntxRoute { gsi: 19, level: true, active_low: true })
+    }
+
+    #[test]
+    fn resolver_returns_only_firmware_owned_routes() {
+        set_intx_resolver(test_route);
+        let hit = pci::Bdf { segment: 0, bus: 0, device: 2, function: 0 };
+        let miss = pci::Bdf { device: 3, ..hit };
+        assert_eq!(resolved_intx(hit, 1), Some(IntxRoute { gsi: 19, level: true, active_low: true }));
+        assert_eq!(resolved_intx(miss, 1), None);
     }
 }

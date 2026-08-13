@@ -51,11 +51,33 @@ fn register_pci_model_drivers() {
     drv::register_driver(&drv_e1000::E1000E_DRIVER);
     drv::register_driver(&drv_igc::IGC_DRIVER);
     drv::register_driver(&drv_rtl8125::RTL8125_DRIVER);
+    drv::register_driver(&drv_atlantic::ATLANTIC_DRIVER);
     #[cfg(target_arch = "x86_64")]
     drv::register_driver(&drv_bochs::BOCHS_DRIVER);
     drv::register_driver(&drv_xhci::XHCI_DRIVER);
     virtio_drv::register_model_drivers();
 }
+
+fn resolve_firmware_intx(bdf: pci::Bdf, pin: u8) -> Option<pci_irq::IntxRoute> {
+    let route = firmware::acpi::pci_intx_route(bdf, pin)?;
+    Some(pci_irq::IntxRoute { gsi: route.gsi, level: route.level, active_low: route.active_low })
+}
+
+/// Map every firmware-published I/O APIC before IRQ-enabled PCI probing.
+/// # C: O(N_IOAPIC)
+#[cfg(target_arch = "x86_64")]
+fn map_firmware_ioapics() -> bool {
+    for index in 0..firmware::ioapic_count() {
+        let Some(ioapic) = firmware::ioapic(index) else { return false; };
+        // SAFETY: MADT supplied a page-aligned controller MMIO PA; PCI boot owns permanent mappings before STI.
+        let va = unsafe { mmio_map::map_pages(ioapic.pa, 1) };
+        if !hal_x86_64::ioapic::set_gsi_base_va(ioapic.id, ioapic.gsi_base, va) { return false; }
+    }
+    true
+}
+
+#[cfg(target_arch = "aarch64")]
+fn map_firmware_ioapics() -> bool { true }
 
 /// Activate VT-d through the architecture's live ECAM reader before driver probing.
 /// # C: O(units + requesters + RAM leaves)
@@ -140,6 +162,7 @@ fn pci_resources_arch(d: &pci::PciDevice) -> alloc::vec::Vec<drv::Resource> {
 /// # C: O(N_bdfs probed)
 pub fn enumerate_and_log() {
     config_access::install_hooks();
+    pci_irq::set_intx_resolver(resolve_firmware_intx);
     let devs = scan_devices();
     debug_boot! {
         klog::write_raw(b"[INFO]  pci: devices=");
@@ -162,6 +185,17 @@ pub fn enumerate_and_log() {
     if activate_vtd_arch(&requesters, &aliases) == iommu::VtdActivation::Failed { return; }
     if !iommu::enable_vtd_interrupt_remapping() { return; }
     iommu::admit_boot_requesters(&requesters);
+    if !map_firmware_ioapics() { return; }
+    let _ = firmware::acpi::prepare_pci_intx_routes();
+    // Linux probes interrupt-driven PCI functions with local IRQ delivery
+    // enabled.  Every requester remains bus-master quiesced until its driver
+    // has installed a handler and explicitly admits DMA above.
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: the GIC is live and all unowned PCI requesters remain quiesced.
+    unsafe { core::arch::asm!("msr daifclr, #2", options(nomem, nostack)); }
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: the LAPIC/IDT are live and all unowned PCI requesters remain quiesced.
+    unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
     register_pci_model_drivers();
     for d in devs.iter() {
         debug_boot! {
@@ -181,16 +215,21 @@ pub fn enumerate_and_log() {
         }
         trace::bar_dump_arch(d.bdf);
         trace::cap_dump_arch(d);
-        publish_scanned_device(d);
+        #[cfg(feature = "debug-boot")]
+        let bound = publish_scanned_device(d).and_then(|dev| dev.bound());
+        #[cfg(not(feature = "debug-boot"))]
+        let _ = publish_scanned_device(d);
+        debug_boot! {
+            klog::write_raw(b"[INFO]  pci driver=");
+            klog::write_raw(bound.unwrap_or("none").as_bytes());
+            klog::write_raw(b"\n");
+        }
     }
 
-    // F40 + F57: brief IRQ unmask window so any MSIs queued during
-    // the closed-loop drain through the per-arch IRQ dispatcher.
+    // F40 + F57: drain any MSIs queued during model probing through the
+    // per-architecture IRQ dispatcher, then restore the boot-mask state.
     #[cfg(target_arch = "aarch64")]
     {
-        // SAFETY: boot phase, GIC enabled by smoke_device_map_arm; brief
-        // unmask window mirrors arm-timer smoke; restore boot-mask state.
-        unsafe { core::arch::asm!("msr daifclr, #2", options(nomem, nostack)); }
         for _ in 0..2_000_000 { core::hint::spin_loop(); }
         // SAFETY: privileged DAIF write at EL1, restoring the boot-mask state
         // this block opened two lines above; no scheduler runs yet.
@@ -198,9 +237,6 @@ pub fn enumerate_and_log() {
     }
     #[cfg(target_arch = "x86_64")]
     {
-        // SAFETY: boot phase; LAPIC enabled by device_map_smoke; brief STI
-        // window drains queued MSI IRRs into the IDT vec=0x50 stub.
-        unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
         for _ in 0..2_000_000 { core::hint::spin_loop(); }
         debug_boot! {
             let pre = arch_irq::MSI_FIRES.load(core::sync::atomic::Ordering::Acquire);
@@ -222,7 +258,7 @@ pub fn enumerate_and_log() {
             klog::write_dec_u64((post - pre) as u64);
             klog::write_raw(b"\n");
         }
-        // SAFETY: pairs with sti above; restores canary's boot-mask state.
+        // SAFETY: pairs with the pre-probe STI; restores boot-mask state.
         unsafe { core::arch::asm!("cli", options(nomem, nostack)); }
     }
     debug_boot! {
@@ -417,6 +453,18 @@ fn publish_scanned_device(d: &pci::PciDevice) -> Option<alloc::sync::Arc<drv::De
 pub fn rescan() {
     for d in scan_devices().iter() {
         publish_scanned_device(d);
+    }
+}
+
+/// Retry firmware-gated built-in PCI functions after the root filesystem is mounted.
+/// # C: O(N_devices + probe)
+pub fn retry_firmware_gated_drivers() {
+    for dev in drv::devices() {
+        if dev.bus == "pci" && dev.bound().is_none()
+            && dev.vendor_id == drv_rtl8125::regs::VENDOR_REALTEK
+            && dev.device_id == drv_rtl8125::regs::DEVICE_RTL8125 {
+            let _ = drv::bind(&dev, "r8169");
+        }
     }
 }
 

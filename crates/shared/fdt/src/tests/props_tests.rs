@@ -93,6 +93,62 @@ fn pl011_clock_absent_returns_none() {
     assert_eq!(pl011_clock_hz(&blob), None);
 }
 
+#[test]
+fn simple_framebuffer_reads_validated_scanout() {
+    let mut reg = Vec::new();
+    reg.extend_from_slice(&0x4000_0000u64.to_be_bytes());
+    reg.extend_from_slice(&0x0080_0000u64.to_be_bytes());
+    let blob = Fdt::new().begin("").prop_u32("#address-cells", 2).prop_u32("#size-cells", 2).begin("chosen")
+        .begin("framebuffer@40000000").prop("reg", &reg).prop_u32("width", 1024).prop_u32("height", 768)
+        .prop_u32("stride", 4096).prop_str("format", "x8r8g8b8").prop_str("compatible", "simple-framebuffer")
+        .end().end().end().finish();
+    let fb = simple_framebuffer(&blob).unwrap();
+    assert_eq!((fb.base_pa, fb.width, fb.height, fb.stride, fb.bpp), (0x4000_0000, 1024, 768, 4096, 32));
+    assert_eq!(fb.red, (16, 8));
+}
+
+#[test]
+fn simple_framebuffer_rejects_short_resource_or_unknown_format() {
+    let mut reg = Vec::new();
+    reg.extend_from_slice(&0x4000_0000u64.to_be_bytes());
+    reg.extend_from_slice(&4095u64.to_be_bytes());
+    let short = Fdt::new().begin("").begin("framebuffer").prop("reg", &reg).prop_u32("width", 1024)
+        .prop_u32("height", 1).prop_u32("stride", 4096).prop_str("format", "x8r8g8b8")
+        .prop_str("compatible", "simple-framebuffer").end().end().finish();
+    assert_eq!(simple_framebuffer(&short), None);
+}
+
+#[test]
+fn simple_framebuffer_requires_enabled_chosen_child() {
+    let mut reg = Vec::new();
+    reg.extend_from_slice(&0x4000_0000u64.to_be_bytes());
+    reg.extend_from_slice(&0x0080_0000u64.to_be_bytes());
+    let outside = Fdt::new().begin("").begin("framebuffer@40000000").prop("reg", &reg).prop_u32("width", 1024)
+        .prop_u32("height", 768).prop_u32("stride", 4096).prop_str("format", "x8r8g8b8")
+        .prop_str("compatible", "simple-framebuffer").end().end().finish();
+    assert_eq!(simple_framebuffer(&outside), None);
+    let disabled = Fdt::new().begin("").begin("chosen").begin("framebuffer@40000000").prop("reg", &reg)
+        .prop_u32("width", 1024).prop_u32("height", 768).prop_u32("stride", 4096).prop_str("format", "x8r8g8b8")
+        .prop_str("compatible", "simple-framebuffer").prop_str("status", "disabled").end().end().end().finish();
+    assert_eq!(simple_framebuffer(&disabled), None);
+}
+
+#[test]
+fn simple_framebuffer_memory_region_overrides_reg() {
+    let mut reg = Vec::new();
+    reg.extend_from_slice(&0x5000_0000u64.to_be_bytes());
+    reg.extend_from_slice(&0x0080_0000u64.to_be_bytes());
+    let mut stale = Vec::new();
+    stale.extend_from_slice(&0x4000_0000u64.to_be_bytes());
+    stale.extend_from_slice(&0x0080_0000u64.to_be_bytes());
+    let blob = Fdt::new().begin("").prop_u32("#address-cells", 2).prop_u32("#size-cells", 2).begin("chosen")
+        .begin("framebuffer@40000000").prop("reg", &stale).prop_u32("memory-region", 7).prop_u32("width", 1024)
+        .prop_u32("height", 768).prop_u32("stride", 4096).prop_str("format", "x8r8g8b8").prop_str("compatible", "simple-framebuffer")
+        .end().end().begin("reserved-memory").begin("framebuffer@50000000").prop_u32("phandle", 7).prop("reg", &reg)
+        .end().end().end().finish();
+    assert_eq!(simple_framebuffer(&blob).map(|fb| fb.base_pa), Some(0x5000_0000));
+}
+
 /// `compatible` is a NUL-delimited string list; a substring match would accept
 /// a different device (`arm,pl011-extended`) and reprogram the wrong baud.
 #[test]
