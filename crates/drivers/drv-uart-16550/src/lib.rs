@@ -313,7 +313,7 @@ mod imp {
                 let active_low = (ovr & 0x3) == 3;
                 let level = ((ovr >> 2) & 0x3) == 3;
                 // SAFETY: I/O APIC mapped; vec has a handler; single-CPU pre-init.
-                if !unsafe { arch_irq::program_x86_ioapic(pin, vec, bsp_apic, level, active_low) } {
+                if !unsafe { arch_irq::program_x86_ioapic(pin, vec, u32::from(bsp_apic), level, active_low) } {
                     let _ = arch_irq::free_x86_vector(vec);
                     BASE.store(0, Ordering::Release);
                     PRESENT.store(false, Ordering::Release);
