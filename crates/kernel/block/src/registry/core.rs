@@ -262,6 +262,7 @@ impl DiskQuiesce {
         // SAFETY: DiskQuiesce owns the lifecycle exclusion, in process context.
         unsafe { disk.life.lock() }.detached = true;
         disk.mapping.invalidate_clean();
+        super::partition::unpublish_partitions(&disk);
         crate::devbridge::unpublish(disk.number);
         release_number(disk.driver, disk.number);
         if let Some(dev) = drv::devices().into_iter().find(|d| d.bus == "block" && d.addr == name) { drv::device_del(&dev); }
