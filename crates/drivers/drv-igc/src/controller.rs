@@ -103,7 +103,7 @@ impl Controller {
 
     /// Releases DMA memory and MMIO after caller stopped the device.
     /// # C: O(1)
-    pub fn release(mut self) { self.stop(); self.rings.release(); self.map.unmap(); }
+    pub fn release(mut self) { self.stop(); self.release_firmware(); self.rings.release(); self.map.unmap(); }
 
     fn reset(&self) {
         self.write(regs::IMC, u32::MAX); self.write(regs::RCTL, 0); self.write(regs::TCTL, regs::TCTL_PSP); let _ = self.read(regs::TCTL);
@@ -115,6 +115,7 @@ impl Controller {
         self.write(regs::IMC, u32::MAX); let _ = self.read(regs::ICR);
     }
     fn claim_firmware(&self) { self.write(regs::CTRL_EXT, self.read(regs::CTRL_EXT) | regs::CTRL_EXT_DRV_LOAD); }
+    fn release_firmware(&self) { self.write(regs::CTRL_EXT, regs::release_driver_control(self.read(regs::CTRL_EXT))); }
     fn program_queues(&self) {
         self.write(regs::RXDCTL0, 0); self.write(regs::RDBAL0, self.plan.rx_dma as u32); self.write(regs::RDBAH0, (self.plan.rx_dma >> 32) as u32); self.write(regs::RDLEN0, self.plan.rx_bytes()); self.write(regs::RDH0, 0); self.write(regs::RDT0, 0);
         self.write(regs::SRRCTL0, self.plan.srrctl(self.read(regs::SRRCTL0))); self.write(regs::RXDCTL0, self.plan.rxdctl());
