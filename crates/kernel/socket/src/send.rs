@@ -1,6 +1,4 @@
-use alloc::sync::Arc;
-#[cfg(target_os = "oxide-kernel")]
-use alloc::boxed::Box;
+use alloc::{boxed::Box, sync::Arc};
 #[cfg(target_os = "oxide-kernel")]
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
@@ -136,7 +134,7 @@ fn send_netlink(socket: &netlink::NetlinkSocket, message: &Message, dest: netlin
 
 pub(crate) enum InetPrepared {
     Packet,
-    Unix(crate::control::UnixScm),
+    Unix(Box<crate::control::UnixScm>),
     /// The settled transmit overrides live on the heap, not in this enum: the
     /// value would otherwise be copied into three stack frames that all sit
     /// under the deepest send path in the tree, once each.
@@ -180,7 +178,7 @@ pub(crate) fn prepare(ctx: &SendContext<'_>, target: &SendFile, message: &Messag
         }
         SendKind::Inet(socket) => {
             if let Some(result) = crate::control::prepare_unix(ctx, socket, message, flags) {
-                return result.map(|scm| PreparedSend::Inet(InetPrepared::Unix(scm)));
+                return result.map(|scm| PreparedSend::Inet(InetPrepared::Unix(Box::new(scm))));
             }
             if matches!(*socket.kind.lock(), net::sock::SockKind::Packet { .. }) {
                 crate::packet::validate(message.name.as_deref())?;
@@ -262,7 +260,7 @@ fn send_inet(ctx: &SendContext<'_>, target: &SendFile, socket: &Arc<net::sock::I
         InetPrepared::Packet =>
             return crate::packet::send(socket, &message.payload, message.name.as_deref()),
         InetPrepared::Unix(scm) =>
-            return send_unix_blocking(ctx, target, socket, message, flags, scm),
+            return send_unix_blocking(ctx, target, socket, message, flags, *scm),
         InetPrepared::Transport(address, control) => (address.remote(), control),
     };
     let nonblock = target.nonblock() || flags as u64 & net::uapi::MSG_DONTWAIT != 0;
