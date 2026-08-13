@@ -27,7 +27,7 @@ fn port_stage(port: u8, stage: &'static [u8]) {
 pub(crate) struct UsbDeviceState {
     pub(crate) device: Box<AddressDeviceDma>,
     pub(crate) slot: u8,
-    pub(crate) decoder: Option<crate::hid_report::ReportDecoder>,
+    pub(crate) decoder: Option<Box<crate::hid_report::ReportDecoder>>,
     pub(crate) evdev: Option<u32>,
     pub(crate) input_platform: Option<u32>,
     pub(crate) storage_name: Option<block::ScsiDiskName>,
@@ -42,7 +42,7 @@ impl UsbDevice {
         let layout = device.hid_layout();
         let evdev = crate::probe_input::install_hid_input(controller.bdf, slot, layout);
         let input_platform = evdev.map(|_| crate::probe_input::platform_id(controller.bdf, slot));
-        Arc::new(Self { _controller: Arc::downgrade(controller), state: Spinlock::new(UsbDeviceState { device, slot, decoder: layout.map(crate::hid_report::ReportDecoder::new), evdev, input_platform, storage_name: None }) })
+        Arc::new(Self { _controller: Arc::downgrade(controller), state: Spinlock::new(UsbDeviceState { device, slot, decoder: layout.map(|layout| Box::new(crate::hid_report::ReportDecoder::new(layout))), evdev, input_platform, storage_name: None }) })
     }
 
     pub(crate) fn with_transport<T>(&self, f: impl FnOnce(&Mmio, Binding, &CommandTransport, &mut UsbDeviceState) -> T) -> Option<T> {
