@@ -31,7 +31,7 @@ pub(super) const BLK_STS_RESOURCE: u8 = 1;
 pub(super) const BLK_STS_AGAIN: u8 = 2;
 pub(super) const BLK_STS_IOERR: u8 = 10;
 pub(super) const MAX_HW_SECTORS: u32 = 1024;
-pub(super) const MAX_SEGMENTS: u32 = 128;
+pub(super) const MAX_SEGMENTS: u16 = 128;
 pub(super) const RQ_END_IO_NONE: i32 = 0;
 pub(super) const RQ_END_IO_FREE: i32 = 1;
 pub(super) const LINUX_OK: i32 = 0;
@@ -165,15 +165,66 @@ impl LinuxTagSetLifecycle {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
+pub(super) struct LinuxBlkIntegrity {
+    pub(super) flags: u8,
+    pub(super) csum_type: u8,
+    pub(super) metadata_size: u8,
+    pub(super) pi_offset: u8,
+    pub(super) interval_exp: u8,
+    pub(super) tag_size: u8,
+    pub(super) pi_tuple_size: u8,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
 pub(super) struct LinuxQueueLimits {
-    pub(super) logical_block_size: u32,
+    pub(super) features: u32,
+    pub(super) flags: u32,
+    pub(super) seg_boundary_mask: usize,
+    pub(super) virt_boundary_mask: usize,
+    pub(super) max_hw_sectors: u32,
+    pub(super) max_dev_sectors: u32,
+    pub(super) chunk_sectors: u32,
+    pub(super) max_sectors: u32,
+    pub(super) max_user_sectors: u32,
+    pub(super) max_segment_size: u32,
+    pub(super) max_fast_segment_size: u32,
     pub(super) physical_block_size: u32,
+    pub(super) logical_block_size: u32,
+    pub(super) alignment_offset: u32,
     pub(super) io_min: u32,
     pub(super) io_opt: u32,
-    pub(super) max_hw_sectors: u32,
-    pub(super) max_segments: u32,
+    pub(super) max_discard_sectors: u32,
+    pub(super) max_hw_discard_sectors: u32,
+    pub(super) max_user_discard_sectors: u32,
+    pub(super) max_secure_erase_sectors: u32,
+    pub(super) max_write_zeroes_sectors: u32,
+    pub(super) max_wzeroes_unmap_sectors: u32,
+    pub(super) max_hw_wzeroes_unmap_sectors: u32,
+    pub(super) max_user_wzeroes_unmap_sectors: u32,
+    pub(super) max_hw_zone_append_sectors: u32,
+    pub(super) max_zone_append_sectors: u32,
     pub(super) discard_granularity: u32,
     pub(super) discard_alignment: u32,
+    pub(super) zone_write_granularity: u32,
+    pub(super) atomic_write_hw_max: u32,
+    pub(super) atomic_write_max_sectors: u32,
+    pub(super) atomic_write_hw_boundary: u32,
+    pub(super) atomic_write_boundary_sectors: u32,
+    pub(super) atomic_write_hw_unit_min: u32,
+    pub(super) atomic_write_unit_min: u32,
+    pub(super) atomic_write_hw_unit_max: u32,
+    pub(super) atomic_write_unit_max: u32,
+    pub(super) max_segments: u16,
+    pub(super) max_integrity_segments: u16,
+    pub(super) max_discard_segments: u16,
+    pub(super) max_write_streams: u16,
+    pub(super) write_stream_granularity: u32,
+    pub(super) max_open_zones: u32,
+    pub(super) max_active_zones: u32,
+    pub(super) dma_alignment: u32,
+    pub(super) dma_pad_mask: u32,
+    pub(super) integrity: LinuxBlkIntegrity,
 }
 
 #[repr(C)]
@@ -273,5 +324,14 @@ mod tests {
         assert_eq!(offset_of!(LinuxRequest, rq_next), 104);
         assert_eq!(size_of::<LinuxIoCompBatch>(), 40);
         assert_eq!(offset_of!(LinuxIoCompBatch, complete), 24);
+    }
+
+    #[test]
+    fn queue_limits_layout_matches_the_supported_module_abi() {
+        assert_eq!(size_of::<LinuxBlkIntegrity>(), 7);
+        assert_eq!(size_of::<LinuxQueueLimits>(), 192);
+        assert_eq!(offset_of!(LinuxQueueLimits, logical_block_size), 56);
+        assert_eq!(offset_of!(LinuxQueueLimits, max_segments), 156);
+        assert_eq!(offset_of!(LinuxQueueLimits, integrity), 184);
     }
 }
