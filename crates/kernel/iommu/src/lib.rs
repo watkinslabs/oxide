@@ -26,7 +26,7 @@ pub use amd_vi_ir::{AmdViIrMode, AmdViIrTable};
 pub use admission::{admit_boot_requesters, bus_master_admitted};
 pub use dma_owner::{map_dma, map_dma_below, unmap_dma};
 pub use amd_vi_bootstrap::AmdViBootstrap;
-pub use amd_vi_manager::{AmdViActivation, AmdViIoapic, AmdViMsi, activate_amd_vi, allocate_amd_vi_ioapic, allocate_amd_vi_msi, poll_amd_vi_events};
+pub use amd_vi_manager::{AmdViActivation, AmdViIoapic, AmdViMsi, activate_amd_vi, allocate_amd_vi_ioapic, allocate_amd_vi_msi, amd_vi_event_records, disable_amd_vi_event_interrupts, enable_amd_vi_event_interrupts, handle_amd_vi_event_interrupt, poll_amd_vi_events};
 pub use amd_vi_pt::{AmdViPte, iova_indices};
 pub use amd_vi_pt_tree::AmdViPageTable;
 pub use domain::{AmdViDomain, Domain, Mapping, amd_vi_unit_for_bdf};

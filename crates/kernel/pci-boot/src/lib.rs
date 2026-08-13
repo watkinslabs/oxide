@@ -33,6 +33,7 @@ mod trace;
 #[cfg(feature = "debug-boot")]
 mod virtio_trace;
 mod virtio_transport;
+mod amd_vi_events;
 
 /// Monotonic virtio-bus sequence (`virtioN` naming) assigned in
 /// enumeration order, mirroring Linux's virtio-pci registration.
@@ -150,6 +151,8 @@ pub fn enumerate_and_log() {
     let iommu_activation = unsafe { iommu::activate_amd_vi(&requesters,
         pmm::user_as::hhdm_offset(), pmm::setup::usable_regions()) };
     if iommu_activation == iommu::AmdViActivation::Failed { return; }
+    if iommu_activation == iommu::AmdViActivation::Enabled
+        && !amd_vi_events::install(&requesters) { return; }
     if activate_vtd_arch(&requesters) == iommu::VtdActivation::Failed { return; }
     if !iommu::enable_vtd_interrupt_remapping() { return; }
     iommu::admit_boot_requesters(&requesters);
