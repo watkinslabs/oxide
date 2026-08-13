@@ -33,6 +33,8 @@ impl HardwareProfile {
             Self::Default if selector == Some("e1000e") =>
                 "e1000e,netdev=net0,bus=pcie.0",
             Self::Default => "virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on",
+            Self::NativePci if selector == Some("e1000e") =>
+                "e1000e,netdev=net0,bus=pcie.0",
             Self::NativePci => "e1000,netdev=net0,bus=pcie.0",
         }
     }
@@ -363,8 +365,9 @@ mod tests {
     use super::{HardwareProfile, x86_grub_cfg};
 
     #[test]
-    fn native_profile_selects_the_native_pci_e1000() {
+    fn native_profile_selects_the_native_pci_nic() {
         assert_eq!(HardwareProfile::NativePci.nic_device(), "e1000,netdev=net0,bus=pcie.0");
+        assert_eq!(HardwareProfile::NativePci.nic_device_for(Some("e1000e")), "e1000e,netdev=net0,bus=pcie.0");
     }
 
     #[test]
