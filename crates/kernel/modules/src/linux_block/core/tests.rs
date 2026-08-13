@@ -1,6 +1,6 @@
 extern crate alloc;
 use super::bio::{bio_add_page, bio_alloc, bio_put, copy_bio_to_slice, copy_slice_to_bio, BIO_ADD_REJECTED};
-use super::disk::{add_disk, alloc_disk, disk_live, mark_disk_dead, put_disk, write_disk_name, DEFAULT_MINORS};
+use super::disk::{add_disk, alloc_disk, disk_live, mark_disk_dead, put_disk, set_capacity, set_capacity_and_notify, write_disk_name, DEFAULT_MINORS, GENHD_FL_HIDDEN};
 use super::queue::{blk_alloc_queue, blk_cleanup_queue, blk_queue_logical_block_size, blk_queue_make_request, GFP_KERNEL};
 use crate::linux_block::types::*;
 use alloc::vec::Vec;
@@ -65,9 +65,34 @@ fn export_symbols_registers_block_surface() {
         "blk_alloc_queue", "blk_cleanup_queue", "blk_queue_make_request",
         "blk_queue_logical_block_size", "alloc_disk", "add_disk",
         "del_gendisk", "submit_bio", "bio_alloc", "bio_put",
-        "blk_mq_alloc_tag_set", "blk_mq_init_queue",
+        "blk_mq_alloc_tag_set", "blk_mq_init_queue", "set_capacity_and_notify",
     ] {
         assert!(crate::symtab::is_exported(name));
+    }
+}
+
+#[test]
+fn capacity_notification_only_announces_visible_live_nonempty_transitions() {
+    let _modules = crate::test_serial::claim();
+    let q = blk_alloc_queue(GFP_KERNEL);
+    let disk = alloc_disk(DEFAULT_MINORS);
+    write_disk_name(disk, b"kblkresize0");
+    // SAFETY: disk and queue are fresh test-owned allocations; each transition keeps the gendisk live until cleanup.
+    unsafe {
+        (*disk).queue = q;
+        set_capacity(disk, 8);
+        assert!(!set_capacity_and_notify(disk, 8));
+        assert!(!set_capacity_and_notify(disk, 16));
+        add_disk(disk);
+        let before = crate::linux_device::core::uevent_sequence(&mut (*disk).dev);
+        assert!(set_capacity_and_notify(disk, 32));
+        assert_eq!(crate::linux_device::core::uevent_sequence(&mut (*disk).dev), before + 1);
+        assert!(!set_capacity_and_notify(disk, 0));
+        assert!(!set_capacity_and_notify(disk, 8));
+        (*disk).flags |= GENHD_FL_HIDDEN;
+        assert!(!set_capacity_and_notify(disk, 16));
+        put_disk(disk);
+        blk_cleanup_queue(q);
     }
 }
 

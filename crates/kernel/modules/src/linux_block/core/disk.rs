@@ -14,6 +14,7 @@ use sync::{Modules as ModulesLockClass, Spinlock};
 pub(super) const DEFAULT_MINORS: i32 = 1;
 const DEFAULT_NODE_ID: i32 = 0;
 const DISK_DEAD_FLAG: u32 = 1 << 31;
+pub(super) const GENHD_FL_HIDDEN: u32 = 1 << 1;
 const REGISTERED_NO: u32 = 0;
 const REGISTERED_YES: u32 = 1;
 static BLOCK_KSET: Spinlock<usize, ModulesLockClass> = Spinlock::new(0);
@@ -28,6 +29,7 @@ pub(super) fn export_symbols() {
     export("add_disk",        add_disk        as *const () as usize, false);
     export("del_gendisk",     del_gendisk     as *const () as usize, false);
     export("set_capacity",    set_capacity    as *const () as usize, false);
+    export("set_capacity_and_notify", set_capacity_and_notify as *const () as usize, true);
     export("get_capacity",    get_capacity    as *const () as usize, false);
     export("disk_live",       disk_live       as *const () as usize, false);
 }
@@ -129,11 +131,29 @@ unsafe extern "C" fn del_gendisk(disk: *mut LinuxGendisk) {
     }
 }
 
-unsafe extern "C" fn set_capacity(disk: *mut LinuxGendisk, sectors: u64) {
+/// Store a gendisk sector count without sending a device event.
+/// # C: O(1)
+pub(super) unsafe extern "C" fn set_capacity(disk: *mut LinuxGendisk, sectors: u64) {
     if disk.is_null() { return; }
     // SAFETY: disk is null-checked and owned by the calling module between alloc_disk and put_disk; capacity
     // is a u64 field of that allocation, read back only through get_capacity/capacity_blocks.
     unsafe { (*disk).capacity = sectors; }
+}
+
+/// Store capacity and announce a visible nonempty live resize.
+/// # C: O(name depth)
+pub(super) unsafe extern "C" fn set_capacity_and_notify(disk: *mut LinuxGendisk, sectors: u64) -> bool {
+    if disk.is_null() { return false; }
+    // SAFETY: disk is null-checked and remains the caller-owned gendisk throughout this capacity transition.
+    let previous = unsafe { (*disk).capacity };
+    // SAFETY: same live gendisk; setting capacity precedes every visibility decision just as it does for all callers.
+    unsafe { set_capacity(disk, sectors); }
+    // SAFETY: same live gendisk; liveness and flags are its canonical publication state and visibility flags.
+    if sectors == previous || !unsafe { disk_live(disk) } || unsafe { (*disk).flags & GENHD_FL_HIDDEN != 0 } { return false; }
+    if previous == 0 || sectors == 0 { return false; }
+    // SAFETY: the disk is live and its embedded device was initialized and published before the block registry.
+    unsafe { crate::linux_device::core::device_resize_uevent(&mut (*disk).dev); }
+    true
 }
 
 unsafe extern "C" fn get_capacity(disk: *const LinuxGendisk) -> u64 {

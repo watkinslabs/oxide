@@ -7,7 +7,7 @@ use core::ffi::{c_char, CStr};
 
 const KOBJ_REMOVE: u32 = 1;
 const KOBJ_ADD: u32 = 0;
-const KOBJ_CHANGE: u32 = 2;
+pub(super) const KOBJ_CHANGE: u32 = 2;
 const KOBJ_UNBIND: u32 = 7;
 const KOBJ_ACTIONS: [&str; 8] = ["add", "remove", "change", "move", "online", "offline", "bind", "unbind"];
 const STATE_INITIALIZED: u32 = 1;
@@ -90,7 +90,7 @@ extern "C" fn kobject_uevent(kobj: *mut LinuxKobject, action: u32) -> i32 {
     kobject_uevent_env(kobj, action, core::ptr::null_mut())
 }
 
-extern "C" fn kobject_uevent_env(kobj: *mut LinuxKobject, action: u32, envp_ext: *mut *mut c_char) -> i32 {
+pub(super) extern "C" fn kobject_uevent_env(kobj: *mut LinuxKobject, action: u32, envp_ext: *mut *mut c_char) -> i32 {
     if kobj.is_null() || action as usize >= KOBJ_ACTIONS.len() { return -LINUX_EINVAL; }
     // SAFETY: kobj was null-checked and is caller-owned live kobject storage for this event call.
     unsafe {

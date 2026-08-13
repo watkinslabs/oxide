@@ -278,6 +278,12 @@ pub(super) fn kobject_attr_count(kobj: usize) -> usize {
     g.iter().flatten().find(|r| r.ptr == kobj).map_or(0, |r| r.attr_count)
 }
 
+#[cfg(test)]
+pub(super) fn kobject_uevent_sequence(kobj: usize) -> u64 {
+    let g = KOBJECT_STATE.lock();
+    g.iter().flatten().find(|record| record.ptr == kobj).map_or(0, |record| record.uevent_seq)
+}
+
 pub(super) fn insert_class(ptr: usize) -> i32 { insert(&CLASSES, ptr) }
 pub(super) fn remove_class(ptr: usize) { remove(&CLASSES, ptr); }
 pub(super) fn insert_bus(ptr: usize) -> i32 { insert(&BUSES, ptr) }
