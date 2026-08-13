@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use sync::{Spinlock, TaskList as DriverLockClass};
 
-use crate::{profile::ResetProfile, regs};
+use crate::regs;
 
 const MAX_DEVICES: usize = 8;
 const PAGE: u64 = 4096;
