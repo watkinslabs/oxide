@@ -27,6 +27,7 @@ use super::state::*;
 /// # C: O(spin) bounded by the controller's response latency.
 pub(super) unsafe fn bringup() -> bool {
     AUX_PRESENT.store(false, Ordering::Release);
+    AUX_WHEEL.store(false, Ordering::Release);
     AUX_IRQ_ENABLED.store(false, Ordering::Release);
     // SAFETY: bounded CPL=0 port I/O to the i8042 in the documented order; single-CPU boot, no concurrent accessor.
     unsafe {
@@ -93,11 +94,24 @@ pub(super) unsafe fn bringup() -> bool {
             let _ = aux_cmd(AUX_RESET);
             let _ = read_blocking();
             let _ = read_blocking();
+            AUX_WHEEL.store(enable_aux_wheel(), Ordering::Release);
             let _ = aux_cmd(AUX_ENABLE_STREAM);
         }
         flush_output();
         true
     }
+}
+
+/// Negotiate the standard four-byte IntelliMouse-compatible packet stream
+/// while auxiliary IRQ delivery remains masked. # SAFETY: caller exclusively
+/// owns the disabled auxiliary port during controller bring-up. # C: O(spin)
+unsafe fn enable_aux_wheel() -> bool {
+    for rate in AUX_WHEEL_RATE_SEQUENCE {
+        // SAFETY: caller owns the pre-IRQ i8042 auxiliary port exclusively.
+        if !unsafe { aux_cmd(AUX_SET_SAMPLE_RATE) } || !unsafe { aux_cmd(rate) } { return false; }
+    }
+    // SAFETY: the same pre-IRQ ownership serializes the device-ID reply.
+    (unsafe { aux_cmd(AUX_GET_ID) }) && (unsafe { read_blocking() }) == Some(AUX_WHEEL_ID)
 }
 
 /// Enable or disable the controller's port-1 IRQ bit while preserving the
@@ -210,6 +224,7 @@ pub(super) unsafe fn bringdown() {
     take_and_free_aux_vector();
     super::mouse::remove_device();
     AUX_PRESENT.store(false, Ordering::Release);
+    AUX_WHEEL.store(false, Ordering::Release);
     PRESENT.store(false, Ordering::Release);
 }
 
