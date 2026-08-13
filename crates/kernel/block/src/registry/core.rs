@@ -31,6 +31,8 @@ use super::partition::Partition;
 pub const DYNAMIC_MAJOR_FIRST: u32 = 240;
 /// Inclusive end of Linux's preferred dynamic block-major range.
 pub const DYNAMIC_MAJOR_LAST: u32 = 254;
+/// Whole disks reserve the Linux-compatible first partition-minor range.
+pub const PARTITION_MINOR_COUNT: u32 = 16;
 
 /// A driver's request for a block major. Fixed majors are Linux UAPI values
 /// owned by the respective driver; dynamic majors are allocated once per
@@ -397,7 +399,7 @@ pub(crate) fn allocate_number(driver: BlockDriver) -> Option<DevNum> {
     if let Some(d) = ds.iter_mut().find(|d| d.driver.name == driver.name) {
         if d.driver.major != driver.major { return None; }
         let minor = d.next_minor;
-        d.next_minor = d.next_minor.checked_add(1)?;
+        d.next_minor = d.next_minor.checked_add(PARTITION_MINOR_COUNT)?;
         return Some(DevNum { major: d.major, minor });
     }
     let major = match driver.major {
@@ -408,14 +410,14 @@ pub(crate) fn allocate_number(driver: BlockDriver) -> Option<DevNum> {
         MajorRequest::Dynamic => (DYNAMIC_MAJOR_FIRST..=DYNAMIC_MAJOR_LAST)
             .rev().find(|major| !ds.iter().any(|d| d.major == *major))?,
     };
-    ds.push(DriverState { driver, major, next_minor: 1 });
+    ds.push(DriverState { driver, major, next_minor: PARTITION_MINOR_COUNT });
     Some(DevNum { major, minor: 0 })
 }
 
 pub(crate) fn release_number(driver: BlockDriver, number: DevNum) {
     // SAFETY: driver-number release is process-context lifecycle work.
     let mut ds = unsafe { DRIVERS.lock() };
-    if let Some(pos) = ds.iter().position(|d| d.driver == driver && d.major == number.major && d.next_minor == number.minor.saturating_add(1)) {
+    if let Some(pos) = ds.iter().position(|d| d.driver == driver && d.major == number.major && d.next_minor == number.minor.saturating_add(PARTITION_MINOR_COUNT)) {
         ds[pos].next_minor = number.minor;
         if number.minor == 0 { ds.remove(pos); }
     }
@@ -565,7 +567,7 @@ pub fn by_dev(dev_t: u32) -> Option<Arc<Disk>> {
     unsafe { TABLE.lock() }.iter().find(|d| d.number == DevNum { major, minor }).cloned()
 }
 
-fn decode_dev(dev_t: u32) -> (u32, u32) {
+pub(crate) fn decode_dev(dev_t: u32) -> (u32, u32) {
     ((dev_t & 0x000f_ff00) >> 8, (dev_t & 0xff) | ((dev_t >> 12) & 0x000f_ff00))
 }
 /// Encode a major/minor pair only when it round-trips through the canonical
