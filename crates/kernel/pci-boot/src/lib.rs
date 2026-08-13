@@ -148,6 +148,10 @@ pub fn enumerate_and_log() {
     }
     let requesters = devs.iter().map(|d| d.bdf).collect::<alloc::vec::Vec<_>>();
     quiesce_bus_masters(&requesters);
+    // Keep every quiesced requester denied until its DMA owner has attached it.
+    // This policy must be visible before activation so a failed activation
+    // cannot leave a later probe able to restore Bus Master by default.
+    pci::set_bus_master_admission(Some(iommu::bus_master_admitted));
     // SAFETY: all discovered PCI requesters have been quiesced and no driver is registered yet.
     let iommu_activation = unsafe { iommu::activate_amd_vi(&requesters,
         pmm::user_as::hhdm_offset(), pmm::setup::usable_regions()) };
@@ -157,7 +161,6 @@ pub fn enumerate_and_log() {
     if activate_vtd_arch(&requesters) == iommu::VtdActivation::Failed { return; }
     if !iommu::enable_vtd_interrupt_remapping() { return; }
     iommu::admit_boot_requesters(&requesters);
-    pci::set_bus_master_admission(Some(iommu::bus_master_admitted));
     register_pci_model_drivers();
     for d in devs.iter() {
         debug_boot! {
