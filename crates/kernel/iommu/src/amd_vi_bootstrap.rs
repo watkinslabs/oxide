@@ -100,4 +100,6 @@ impl AmdViBootstrap {
     pub const fn segment(&self) -> u16 { self.unit.segment }
     /// Check whether this unit can be considered for a requester. # C: O(1)
     pub const fn matches_segment(&self, bdf: Bdf) -> bool { bdf.segment == self.unit.segment }
+    /// Whether this unit can route remapped interrupts to a full x2APIC ID. # C: O(1)
+    pub const fn x2apic_capable(&self) -> bool { self.unit.ir_mode().x2apic_capable() }
 }
