@@ -51,7 +51,7 @@ struct block_device_operations {
     struct module *owner;
     int (*open)(struct block_device *bdev, unsigned int mode);
     void (*release)(struct gendisk *disk, unsigned int mode);
-    int (*ioctl)(struct block_device *bdev, unsigned int cmd, unsigned long arg);
+    int (*ioctl)(struct block_device *bdev, unsigned int mode, unsigned int cmd, unsigned long arg);
 };
 
 struct request {
@@ -107,6 +107,7 @@ struct blk_mq_tag_set {
 };
 
 struct request_queue *blk_alloc_queue(gfp_t gfp_mask);
+int blkdev_compat_ptr_ioctl(struct block_device *bdev, unsigned int mode, unsigned int cmd, unsigned long arg);
 void blk_cleanup_queue(struct request_queue *q);
 void blk_queue_make_request(struct request_queue *q, make_request_fn fn);
 void blk_queue_logical_block_size(struct request_queue *q, unsigned int size);
