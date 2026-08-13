@@ -1,6 +1,6 @@
 // Module manifest: mem owns byte operations, cstr owns C-string operations,
 // parse owns kstrto/simple conversions, format owns bounded printf exports,
-// bitops owns scan helpers, match_parser owns parser.h helpers, unicode owns
+// bitops owns scan helpers, match_parser owns parser.h helpers, uuid owns UUID ABI objects, unicode owns
 // utf8/utf16 conversion, diagnostics owns dump helpers, runtime owns guards.
 
 use core::ffi::VaList;
@@ -14,6 +14,7 @@ mod mem;
 mod parse;
 mod runtime;
 mod unicode;
+mod uuid;
 
 /// Register Linux string/lib/runtime KPI symbols.
 /// # C: O(1)
@@ -27,6 +28,7 @@ pub fn export_symbols() {
     format::export_symbols();
     diagnostics::export_symbols();
     runtime::export_symbols();
+    uuid::export_symbols();
 }
 
 pub(crate) unsafe fn vscnprintf(buf: *mut u8, size: usize, fmt: *const u8, ap: &mut VaList) -> i32 {
