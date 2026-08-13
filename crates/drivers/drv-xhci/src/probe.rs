@@ -2,7 +2,7 @@
 
 extern crate alloc;
 
-use alloc::sync::{Arc, Weak};
+use alloc::{boxed::Box, sync::{Arc, Weak}};
 use alloc::vec::Vec;
 use sync::{Spinlock, TaskList as DriverLockClass};
 
@@ -25,7 +25,7 @@ fn port_stage(port: u8, stage: &'static [u8]) {
 }
 
 pub(crate) struct UsbDeviceState {
-    pub(crate) device: AddressDeviceDma,
+    pub(crate) device: Box<AddressDeviceDma>,
     pub(crate) slot: u8,
     pub(crate) decoder: Option<crate::hid_report::ReportDecoder>,
     pub(crate) evdev: Option<u32>,
@@ -42,7 +42,7 @@ impl UsbDevice {
         let layout = device.hid_layout();
         let evdev = crate::probe_input::install_hid_input(controller.bdf, slot, layout);
         let input_platform = evdev.map(|_| crate::probe_input::platform_id(controller.bdf, slot));
-        Arc::new(Self { _controller: Arc::downgrade(controller), state: Spinlock::new(UsbDeviceState { device, slot, decoder: layout.map(crate::hid_report::ReportDecoder::new), evdev, input_platform, storage_name: None }) })
+        Arc::new(Self { _controller: Arc::downgrade(controller), state: Spinlock::new(UsbDeviceState { device: Box::new(device), slot, decoder: layout.map(crate::hid_report::ReportDecoder::new), evdev, input_platform, storage_name: None }) })
     }
 
     pub(crate) fn with_transport<T>(&self, f: impl FnOnce(&Mmio, Binding, &CommandTransport, &mut UsbDeviceState) -> T) -> Option<T> {
