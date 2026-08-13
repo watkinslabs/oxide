@@ -96,12 +96,6 @@ fn hard_handler() {
                     endpoint.complete.store(true, Ordering::Release);
                     endpoint.wake.store(true, Ordering::Release);
                     endpoint.irq_count.fetch_add(1, Ordering::Relaxed);
-                    #[cfg(feature = "debug-boot")]
-                    {
-                        klog::write_raw(b"[INFO]  ahci: irq terminal port=");
-                        klog::write_dec_u64(port as u64);
-                        klog::write_raw(b"\n");
-                    }
                     // Scheduler wake placement can take a remote runqueue
                     // path after SMP.  Publish only from hard-IRQ context;
                     // the registered BlockIo completion bottom half performs
@@ -119,8 +113,6 @@ fn hard_handler() {
         // level latch only after that complete host-wide pass.
         unsafe { core::ptr::write_volatile((*abar_va + regs::HBA_IS) as *mut u32, *hba_is); }
     }
-    #[cfg(feature = "debug-boot")]
-    if raise { klog::write_raw(b"[INFO]  ahci: irq host acked\n"); }
     // If the synchronous owner has not published a sleeping waiter, its
     // acquire-loaded completion bit is sufficient and there is no bottom-half
     // work to run from this IRQ tail.
@@ -128,12 +120,8 @@ fn hard_handler() {
     // machinery before the request owner has reached the wait protocol.
     let wake_waiter = raise && ENDPOINTS.iter().any(|endpoint|
         endpoint.waiters.has_waiters());
-    #[cfg(feature = "debug-boot")]
-    if raise && !wake_waiter { klog::write_raw(b"[INFO]  ahci: irq no waiter\n"); }
     if wake_waiter {
         block::completion::raise();
-        #[cfg(feature = "debug-boot")]
-        klog::write_raw(b"[INFO]  ahci: irq softirq raised\n");
     }
 }
 

@@ -61,11 +61,7 @@ fn can_sleep() -> bool {
 pub(crate) fn poll_enabled(mut done: impl FnMut() -> bool, _deadline: u64) -> bool {
     let irq = irq_save_enable();
     let complete = done();
-    #[cfg(feature = "debug-boot")]
-    klog::write_raw(b"[INFO]  ahci: poll sampled\n");
     irq_restore(irq);
-    #[cfg(feature = "debug-boot")]
-    klog::write_raw(b"[INFO]  ahci: poll restored\n");
     complete
 }
 
