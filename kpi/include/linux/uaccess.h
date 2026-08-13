@@ -10,6 +10,7 @@
 #define VERIFY_WRITE 1
 
 bool access_ok(const void __user *addr, size_t size);
+unsigned long _copy_from_user(void *to, const void __user *from, unsigned long n);
 unsigned long copy_from_user(void *to, const void __user *from, unsigned long n);
 unsigned long copy_to_user(void __user *to, const void *from, unsigned long n);
 unsigned long clear_user(void __user *to, unsigned long n);
