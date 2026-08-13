@@ -78,11 +78,40 @@ impl Task {
 /// `signal_pending_state(state, current)` distinguishes them.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum WaitState {
+    /// `TASK_UNINTERRUPTIBLE` — ordinary signals do not wake this wait.
+    Uninterruptible,
     /// `TASK_INTERRUPTIBLE` — any deliverable signal ends the wait.
     Interruptible,
     /// `TASK_KILLABLE` (`TASK_WAKEKILL | TASK_UNINTERRUPTIBLE`) — only a
     /// fatal signal does.
     Killable,
+}
+
+impl WaitState {
+    const STATE_MASK: u8 = 0x30;
+    const UNINTERRUPTIBLE_BIT: u8 = 0x00;
+    const INTERRUPTIBLE_BIT: u8 = 0x10;
+    const KILLABLE_BIT: u8 = 0x20;
+
+    /// Encode the Linux sleep mask inside the task-state word.
+    /// # C: O(1)
+    pub const fn state_bits(self) -> u8 {
+        match self {
+            Self::Uninterruptible => Self::UNINTERRUPTIBLE_BIT,
+            Self::Interruptible => Self::INTERRUPTIBLE_BIT,
+            Self::Killable => Self::KILLABLE_BIT,
+        }
+    }
+
+    /// Decode the signal wake mask from a task-state word.
+    /// # C: O(1)
+    pub const fn from_state_bits(bits: u8) -> Self {
+        match bits & Self::STATE_MASK {
+            Self::INTERRUPTIBLE_BIT => Self::Interruptible,
+            Self::KILLABLE_BIT => Self::Killable,
+            _ => Self::Uninterruptible,
+        }
+    }
 }
 
 /// The three exits of `___wait_event`. A typed outcome rather than a bare
@@ -119,12 +148,14 @@ impl WaitOutcome {
 /// a killable sleeper must stay asleep across a job-control stop.
 /// # C: O(N_sig)
 pub fn signal_pending_state(task: &Task, state: WaitState) -> bool {
+    if matches!(state, WaitState::Uninterruptible) { return false; }
     if task.notify_signal.load(core::sync::atomic::Ordering::Acquire) {
         return matches!(state, WaitState::Interruptible);
     }
     let deliverable = task.deliverable_signals();
     if deliverable == 0 { return false; }
     match state {
+        WaitState::Uninterruptible => false,
         WaitState::Interruptible => true,
         WaitState::Killable => deliverable & Signum::Sigkill.bit() != 0,
     }

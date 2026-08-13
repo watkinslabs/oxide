@@ -61,7 +61,7 @@ pub unsafe fn wait_event(wq: &WaitList, state: WaitState, deadline_ns: u64,
         // this waiter instead of losing the event.
         // SAFETY: forwarded fn-level contract — process context, runqueue
         // installed, no waker-held lock owned by this caller.
-        unsafe { wq.park_with_deadline(deadline_ns); }
+        unsafe { wq.park_with_wait_state(deadline_ns, state); }
         if cond() { break; }
         if signal_pending_state_current(state) {
             // Dequeue, THEN report the restart, so an

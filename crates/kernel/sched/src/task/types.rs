@@ -121,9 +121,12 @@ pub enum TaskState {
 }
 
 impl TaskState {
+    /// Low lifecycle bits of the Linux-shaped task state word.  Sleep masks
+    /// occupy the upper bits without changing the task descriptor layout.
+    pub const LIFECYCLE_MASK: u8 = 0x0f;
     /// # C: O(1)
     pub const fn from_u8(v: u8) -> Option<Self> {
-        match v {
+        match v & Self::LIFECYCLE_MASK {
             0 => Some(Self::Runnable),
             1 => Some(Self::Sleeping),
             2 => Some(Self::Stopped),
