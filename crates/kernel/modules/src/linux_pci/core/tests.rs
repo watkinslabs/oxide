@@ -346,6 +346,14 @@ fn pcie_aspm_is_disabled_without_a_link_state_owner() {
 }
 
 #[test]
+fn sriov_simple_configuration_refuses_without_a_physical_function_owner() {
+    let _modules = crate::test_serial::claim();
+    let mut dev = test_dev();
+    assert_eq!(super::pci_sriov_configure_simple(&mut dev, 0), -LINUX_ENODEV);
+    assert_eq!(super::pci_sriov_configure_simple(&mut dev, 8), -LINUX_ENODEV);
+}
+
+#[test]
 fn driver_registration_and_drvdata_round_trip() {
     let _modules = crate::test_serial::claim();
     let mut dev = test_dev();
