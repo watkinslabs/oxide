@@ -10,6 +10,7 @@ extern const unsigned char _ctype[];
 void *memcpy(void *dst, const void *src, size_t n);
 void *memset(void *dst, int c, size_t n);
 int memcmp(const void *a, const void *b, size_t n);
+void *memchr_inv(const void *start, int c, size_t bytes);
 void *memcpy_and_pad(void *dst, size_t dst_len, const void *src, size_t count, int pad);
 size_t strlen(const char *s);
 size_t strnlen(const char *s, size_t max);
