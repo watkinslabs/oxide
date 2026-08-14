@@ -190,6 +190,11 @@ pub fn enqueue_zombie(task: Arc<Task>) {
         let _ = super::send::send_signal(&p, signo,
             crate::sigsend::SigSource::Info(info), crate::sigsend::SigTarget::Process);
     }
+    // `exit_notify` made the child waitable before publishing SIGCHLD.  The
+    // parent may already have consumed the signal's first epoll edge while it
+    // observed the pre-publication state, so force the level-ready rescan only
+    // after the waitable zombie is visible.
+    super::bump_epoll_gen();
     // Seam: publication and the SIGCHLD send are done, the waiter wake is not.
     // A reaper released here is the parent that wakes one instruction later.
     #[cfg(test)] crate::tests::interleave::point("exit:pre-wake");
