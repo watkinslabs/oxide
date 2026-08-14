@@ -176,6 +176,87 @@ fn quiesce_waits_for_previously_admitted_async_submission() {
 }
 
 #[test]
+fn reset_freeze_keeps_live_identity_and_drains_after_admission_stops() {
+    const NAME: &str = "registry-live-reset";
+    let inner = DeferredDevice::new();
+    let dev: Arc<dyn BlockDevice> = inner.clone();
+    let index = register(NAME, dev);
+    let dev_t = dev_t_of(NAME, index).expect("published dev_t");
+    let disk = by_name(NAME).expect("registered disk");
+    assert!(claim(NAME));
+    assert!(open_by_dev(dev_t));
+    disk.dev.submit(BlockRequest::new_flush(), Box::new(|_, result| assert_eq!(result, Ok(()))));
+
+    let gate = try_freeze_for_reset(NAME).expect("reset freezes a live disk with users");
+    assert_eq!(holder_count(NAME), Some(1));
+    assert_eq!(opener_count(NAME), Some(1));
+    assert_eq!(dev_t_of(NAME, index), Some(dev_t), "reset retains the published dev_t");
+    assert!(!gate.is_drained(), "the freeze observes its pre-existing request");
+    let mut request = BlockRequest::new_flush();
+    assert_eq!(disk.dev.submit_sync(&mut request), Err(BlockError::Ebusy), "freeze closes later I/O admission");
+    assert!(try_quiesce(NAME).is_none(), "removal cannot overlap a live reset");
+
+    inner.finish();
+    assert!(gate.is_drained(), "completion drains the frozen request population");
+    gate.wait_for_drain();
+    drop(gate);
+    assert!(close_by_dev(dev_t));
+    assert!(release(NAME));
+    assert!(unregister(NAME));
+}
+
+#[test]
+fn reset_freeze_serializes_competing_lifecycle_owners_without_evicting_users() {
+    const NAME: &str = "registry-reset-owner-contention";
+    let index = register(NAME, MemDisk::<TaskList>::new(512, 8));
+    let dev_t = dev_t_of(NAME, index).expect("published dev_t");
+    assert!(claim(NAME));
+
+    let reset = try_freeze_for_reset(NAME).expect("first reset owns queue freeze");
+    assert!(try_freeze_for_reset(NAME).is_none(), "a second reset cannot overlap the owner");
+    assert!(try_quiesce(NAME).is_none(), "destructive removal cannot overlap reset");
+    assert!(open_by_dev(dev_t), "a reset preserves live VFS users");
+    assert_eq!(holder_count(NAME), Some(1));
+    assert_eq!(opener_count(NAME), Some(1));
+
+    drop(reset);
+    assert!(close_by_dev(dev_t));
+    assert!(release(NAME));
+    assert!(unregister(NAME));
+}
+
+#[test]
+fn forced_detach_unlinks_immediately_and_waits_only_preexisting_io() {
+    const NAME: &str = "registry-forced-detach";
+    let inner = DeferredDevice::new();
+    let dev: Arc<dyn BlockDevice> = inner.clone();
+    let index = register(NAME, dev);
+    let dev_t = dev_t_of(NAME, index).expect("published dev_t");
+    let disk = by_name(NAME).expect("registered disk");
+    assert!(claim(NAME));
+    assert!(open_by_dev(dev_t));
+    assert_eq!(disk.mapping.write_at(0, &[0x7a]), Ok(1), "fixture leaves one buffered raw write");
+    disk.dev.submit(BlockRequest::new_flush(), Box::new(|_, result| assert_eq!(result, Ok(()))));
+
+    let detach = begin_forced_detach(NAME).expect("surprise removal owns live disk");
+    assert_eq!(detach.name(), NAME);
+    assert!(by_name(NAME).is_none(), "new name lookups are unlinked immediately");
+    assert!(by_dev(dev_t).is_none(), "new dev_t lookups are unlinked immediately");
+    assert!(!claim(NAME), "new holders cannot enter a dead disk");
+    assert!(!open_by_dev(dev_t), "new VFS opens cannot enter a dead disk");
+    let mut later = BlockRequest::new_flush();
+    assert_eq!(disk.dev.submit_sync(&mut later), Err(BlockError::Eio), "retained handles reject later I/O");
+    let mut cached = [0u8; 1];
+    assert_eq!(disk.mapping.read_at(0, &mut cached), Err(BlockError::Eio), "cached reads cannot outlive media");
+    assert_eq!(disk.mapping.write_at(0, &[0x23]), Err(BlockError::Eio), "cached writes cannot outlive media");
+    assert!(!detach.is_drained(), "the detach observes its pre-existing request");
+
+    inner.finish();
+    detach.wait_for_drain();
+    assert!(detach.is_drained(), "driver DMA release follows the last admitted completion");
+}
+
+#[test]
 fn registry_splits_discard_at_canonical_queue_limit() {
     const NAME: &str = "registry-discard-limit";
     const REQUEST_BLOCKS: u32 = 5;

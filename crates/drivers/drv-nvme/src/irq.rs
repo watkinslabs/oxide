@@ -123,6 +123,23 @@ impl IrqBinding {
         }
     }
 
+    /// Stop completion handling and drain a handler that was already running.
+    /// The PCI vector remains allocated for a live controller reset. # C: O(handler)
+    pub(crate) fn suspend(&self) {
+        self.begin_release();
+        let endpoint = &ENDPOINTS[self.endpoint];
+        while endpoint.in_handler.load(Ordering::Acquire) != 0 { core::hint::spin_loop(); }
+        endpoint.wake.store(false, Ordering::Release);
+        endpoint.cq_pa.store(0, Ordering::Release);
+    }
+
+    /// Resume completion handling after the rebuilt queue cursor is installed.
+    /// # C: O(1)
+    pub(crate) fn resume(&self) {
+        let endpoint = &ENDPOINTS[self.endpoint];
+        let _ = endpoint.state.compare_exchange(ENDPOINT_SETUP, ENDPOINT_ACTIVE, Ordering::AcqRel, Ordering::Acquire);
+    }
+
     /// Drain the hard handler, release the PCI-owned vector, then free the endpoint. # C: O(handler)
     pub(crate) fn synchronize_and_release(self) {
         let endpoint = &ENDPOINTS[self.endpoint];

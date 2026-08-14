@@ -14,7 +14,7 @@ pub mod model;
 pub mod pci_dev;
 mod path;
 pub use pci_dev::{
-    pci_config_read, pci_config_write, pci_rescan, set_pci_config_hooks, set_pci_rescan_hook,
+    pci_config_read, pci_config_write, pci_rescan, set_pci_config_hooks, set_pci_remove_hook, set_pci_rescan_hook,
     PciIdent,
 };
 pub use path::{
@@ -24,6 +24,7 @@ pub use model::{
     bind, BindEvent, Device, Driver, NodeFactory, Resource, IORESOURCE_IO, IORESOURCE_MEM,
     NUMA_NODE_NONE, PCI_DEFAULT_DMA_MASK,
     IORESOURCE_PREFETCH,
+    bound_pci_error_handlers, with_bound_pci_error_handlers, PciChannelState, PciErrorHandlers, PciErsResult,
     register_driver, unregister_driver, devices, device_count, find_matching_device_identity,
     try_device_add, try_device_add_with_parent, device_del, rollback_devices, driver_names,
     driver_names_for_bus, driver_count, match_driver, bind_addr, unbind,

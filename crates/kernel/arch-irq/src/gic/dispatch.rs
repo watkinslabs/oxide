@@ -185,34 +185,41 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
             sched::membarrier::service();
         }
     }
-    // Linux `irq_exit`: drop the hardirq field FIRST, then drain softirqs
-    // (Linux `invoke_softirq`) — `do_softirq`'s `in_interrupt` guard must see
-    // only the softirq field, so a nested IRQ inside an in-progress drain
-    // still refuses to re-enter. Runs on the spurious path too, so the
-    // hardirq count can never leak.
+    // Linux `irq_exit`: drop the hardirq field before returning to the
+    // interrupted stack. The vector calls the softirq handoff only after that
+    // return, so `call_on_irq_stack` starts from an empty hard-IRQ stack.
+    // Runs on the spurious path too, so the hardirq count can never leak.
     sched::preempt::irq_exit();
-    // Linux `irq_exit` -> `invoke_softirq` -> `do_softirq_own_stack`: arm64
-    // sets `CONFIG_HAVE_SOFTIRQ_ON_OWN_STACK`, so the drain runs HERE, still on
-    // the per-CPU IRQ stack, and never on the interrupted task stack.
-    // SAFETY: EOI issued above; still on this CPU's IRQ stack with IRQs masked.
-    unsafe { oxide_arm_softirq_drain(); }
     // The actual switch happens at IRQ exit via
     // `oxide_irq_exit_to_user` → the return-to-user work loop (one engine);
     // only requested it by setting need_resched above.
 }
 
-/// Softirq drain (Linux `invoke_softirq` -> `do_softirq_own_stack`), run from
-/// the dispatcher tail while still on the per-CPU IRQ stack.
+/// Invoke the softirq drain after the vector restored the interrupted stack.
+/// `call_on_irq_stack` now starts at the hard-IRQ stack top instead of adding
+/// NET_RX below the still-live hard-IRQ dispatcher frame.
 ///
-/// That IS upstream's placement: arm64 selects `CONFIG_HAVE_SOFTIRQ_ON_OWN_STACK`
-/// and routes `__do_softirq` through `call_on_irq_stack`, and x86 keeps it on the
-/// IRQ stack via `HAVE_IRQ_EXIT_ON_IRQ_STACK`. Draining on the interrupted task
-/// stack instead — which this briefly did, on the mistaken reading that
-/// `irq_stack_exit` precedes `invoke_softirq` — charges the whole softirq tree to
-/// whatever task happened to be interrupted. Measured: the virtio-net RX handler
-/// subtree alone is 14,480 B, and landing it on a task already 5.6 KiB deep
-/// inside `execve`'s `build_user_stack` overflowed a 16 KiB kernel stack exactly
-/// at `stack_lo` (`scratch/arm-smp2-fault.md`).
+/// # SAFETY: vector assembly calls only after EOI, `irq_exit`, and restoring
+/// the interrupted frame stack; local IRQ state remains masked.
+/// # C: O(pending softirqs)
+/// # Ctx: IRQ-exit, interrupted stack
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+#[no_mangle]
+unsafe extern "C" fn oxide_arm_irq_after_dispatch() {
+    // SAFETY: `oxide_arm_softirq_drain` neither sleeps nor returns through the
+    // interrupted frame; the HAL trampoline preserves the caller stack/DAIF.
+    unsafe { hal_aarch64::call_on_irq_stack(oxide_arm_softirq_drain); }
+}
+
+/// Softirq drain (Linux `invoke_softirq` -> `do_softirq_own_stack`) on a fresh
+/// per-CPU IRQ stack after the hard-IRQ dispatcher returned to the interrupted
+/// stack.
+///
+/// Arm64 runs `__do_softirq` through a fresh IRQ-stack invocation. Draining on
+/// the interrupted task stack instead charges the full NET_RX tree to a deep
+/// syscall or fault frame; draining before the vector restores that stack adds
+/// it below a still-live hard-IRQ frame. This callback is therefore entered
+/// only through the post-dispatch trampoline.
 ///
 /// The hazard that motivated moving it — the dispatcher spills `x19`, the frame
 /// base the vector's `mov sp, x19` consumes, at the FIXED `irq_stack_top - 8`,
@@ -220,8 +227,8 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
 /// `schedule()`: a request made on this shared stack is carried by
 /// `TIF_NEED_RESCHED` to IRQ return, where the interrupted task stack is active.
 ///
-/// # SAFETY: called from the dispatcher tail, on this CPU's IRQ stack, IRQs
-/// masked, after EOI was issued.
+/// # SAFETY: called only by the post-dispatch IRQ-stack trampoline, with IRQs
+/// masked and after EOI was issued.
 /// # C: O(pending softirqs)
 /// # Ctx: IRQ-exit, on the per-CPU IRQ stack
 unsafe extern "C" fn oxide_arm_softirq_drain() {
@@ -242,14 +249,9 @@ unsafe extern "C" fn oxide_arm_softirq_drain() {
     // Re-entrancy is what we are guarding, and `do_softirq`'s `SOFTIRQ_OFFSET`
     // is what reports it.
     if sched::preempt::in_interrupt() { return; }
-    // Drain with IRQs MASKED. Linux `__do_softirq` unmasks around handler
-    // invocation, which is safe there because its handlers are shallow; ours are
-    // not. Measured subtrees: `oxide_arm_irq_dispatch` 13,888 B and the
-    // virtio-net RX handler 14,480 B, against a 32 KiB per-CPU IRQ stack — so a
-    // single nesting level does not fit. Unmasking here let the periodic timer
-    // (10,000 ticks ~ 160 us, shorter than the drain) re-enter on every level:
-    // ~68 nested `oxide_irq_vector_handler` frames were counted on the IRQ stack
-    // at the point it ran into its guard page.
+    // Drain with IRQs MASKED. The callback owns the fresh IRQ stack, but the
+    // packet path can still use most of its 16 KiB budget; unmasking would let
+    // the periodic timer nest another full vector below it.
     //
     // Masking bounds IRQ-stack usage to max(dispatcher, drain) instead of their
     // sum times the nesting depth. Once the frame sizes come down to Linux's

@@ -14,6 +14,8 @@ const TEST_BUFFER_LEN: usize = 4;
 const TEST_IOCTL_CMD: u32 = 0x5843_4445;
 const TEST_IOCTL_ARG: usize = 0x1234;
 const TEST_IOCTL_RET: isize = 0x55;
+const TEST_COMPAT_ARG: usize = 0x7fff_fff0;
+const TEST_COMPAT_ARG_WITH_HIGH_BITS: usize = (usize::MAX & !(u32::MAX as usize)) | TEST_COMPAT_ARG;
 const TEST_PRIVATE_OPEN: usize = 0xabc0;
 const TEST_PRIVATE_RW: usize = 0xdef0;
 const READ_BYTE: u8 = b'R';
@@ -24,6 +26,10 @@ static RELEASE_COUNT: AtomicUsize = AtomicUsize::new(0);
 static POLL_COUNT: AtomicUsize = AtomicUsize::new(0);
 static MMAP_COUNT: AtomicUsize = AtomicUsize::new(0);
 static IOCTL_COUNT: AtomicUsize = AtomicUsize::new(0);
+static COMPAT_IOCTL_CMD: AtomicUsize = AtomicUsize::new(0);
+static COMPAT_IOCTL_ARG: AtomicUsize = AtomicUsize::new(0);
+static URING_CMD_PTR: AtomicUsize = AtomicUsize::new(0);
+static URING_CMD_FLAGS: AtomicUsize = AtomicUsize::new(0);
 
 unsafe extern "C" fn sample_open(_inode: *mut LinuxInode, file: *mut LinuxFile) -> i32 {
     if file.is_null() { return -LINUX_EINVAL; }
@@ -46,6 +52,18 @@ unsafe extern "C" fn sample_write(_file: *mut LinuxFile, buf: *const c_char, cou
 
 unsafe extern "C" fn sample_ioctl(_file: *mut LinuxFile, cmd: u32, arg: usize) -> isize {
     if cmd == TEST_IOCTL_CMD && arg == TEST_IOCTL_ARG { TEST_IOCTL_RET } else { -LINUX_EINVAL as isize }
+}
+
+unsafe extern "C" fn compat_ioctl(_file: *mut LinuxFile, cmd: u32, arg: usize) -> isize {
+    COMPAT_IOCTL_CMD.store(cmd as usize, Ordering::SeqCst);
+    COMPAT_IOCTL_ARG.store(arg, Ordering::SeqCst);
+    TEST_IOCTL_RET
+}
+
+unsafe extern "C" fn uring_cmd(cmd: *mut core::ffi::c_void, flags: u32) -> i32 {
+    URING_CMD_PTR.store(cmd as usize, Ordering::SeqCst);
+    URING_CMD_FLAGS.store(flags as usize, Ordering::SeqCst);
+    LINUX_OK
 }
 
 static FOPS: LinuxFileOperations = LinuxFileOperations::new(Some(sample_open), Some(sample_read), Some(sample_write), Some(sample_ioctl), None, None, None);
@@ -120,15 +138,75 @@ fn external_file_callback_abi_uses_the_linux_object_offsets() {
     assert_eq!(offset_of!(LinuxFileOperations, read), 24);
     assert_eq!(offset_of!(LinuxFileOperations, poll), 72);
     assert_eq!(offset_of!(LinuxFileOperations, unlocked_ioctl), 80);
+    assert_eq!(offset_of!(LinuxFileOperations, _compat_ioctl), 88);
     assert_eq!(offset_of!(LinuxFileOperations, mmap), 96);
     assert_eq!(offset_of!(LinuxFileOperations, open), 104);
     assert_eq!(offset_of!(LinuxFileOperations, release), 120);
+    assert_eq!(offset_of!(LinuxFileOperations, uring_cmd), 248);
     assert_eq!(size_of::<LinuxFile>(), 184);
     assert_eq!(offset_of!(LinuxFile, f_mapping), 16);
     assert_eq!(offset_of!(LinuxFile, private_data), 24);
     assert_eq!(offset_of!(LinuxFile, f_flags), 40);
     assert_eq!(size_of::<LinuxInode>(), 616);
     assert_eq!(offset_of!(LinuxInode, i_rdev), 76);
+}
+
+#[test]
+fn external_uring_command_callback_uses_the_open_description() {
+    let _modules = crate::test_serial::claim();
+    URING_CMD_PTR.store(0, Ordering::SeqCst);
+    URING_CMD_FLAGS.store(0, Ordering::SeqCst);
+    // SAFETY: an all-zero function table means all optional callbacks are absent before this test installs uring_cmd.
+    let mut fops = unsafe { core::mem::zeroed::<LinuxFileOperations>() };
+    fops.uring_cmd = Some(uring_cmd);
+    let mut cdev = new_cdev();
+    cdev_init(&mut cdev, &fops);
+    let dev = mkdev(904, 1);
+    assert_eq!(register_chrdev_region(dev, 1, core::ptr::null()), LINUX_OK);
+    assert_eq!(cdev_add(&mut cdev, dev, 1), LINUX_OK);
+    let inode = vfs::make_device_node_inode(0x6641, vfs::FileType::CharDev, Devt::from_kdev(dev), 0o600, alloc::sync::Weak::new());
+    let dentry = vfs::Dentry::new(None, "linux-uring-char".into(), Arc::clone(&inode));
+    let file = vfs::File::new(inode, dentry, vfs::OpenFlags::O_RDONLY);
+    assert_eq!(file.open_hook(), Ok(()));
+    let mut cmd = 0x54u8;
+    assert_eq!(vfs::opened_chrdev_uring_cmd(&file, (&mut cmd as *mut u8).cast(), 0x100), Some(Ok(LINUX_OK)));
+    assert_eq!(URING_CMD_PTR.load(Ordering::SeqCst), &mut cmd as *mut u8 as usize);
+    assert_eq!(URING_CMD_FLAGS.load(Ordering::SeqCst), 0x100);
+    drop(file);
+    cdev_del(&mut cdev);
+    unregister_chrdev_region(dev, 1);
+}
+
+#[test]
+fn compat_ptr_ioctl_zero_extends_arg_and_forwards_the_live_file() {
+    let _modules = crate::test_serial::claim();
+    COMPAT_IOCTL_CMD.store(0, Ordering::SeqCst);
+    COMPAT_IOCTL_ARG.store(0, Ordering::SeqCst);
+    // SAFETY: every ABI field begins zeroed; this test initializes the only callback field compat_ptr_ioctl reads.
+    let mut ops = unsafe { core::mem::zeroed::<LinuxFileOperations>() };
+    ops.unlocked_ioctl = Some(compat_ioctl);
+    let mut file = LinuxFile::new(null_mut());
+    file.f_op = &ops;
+    assert_eq!(unsafe { compat_ptr_ioctl(&mut file, TEST_IOCTL_CMD, TEST_COMPAT_ARG_WITH_HIGH_BITS) }, TEST_IOCTL_RET);
+    assert_eq!(COMPAT_IOCTL_CMD.load(Ordering::SeqCst), TEST_IOCTL_CMD as usize);
+    assert_eq!(COMPAT_IOCTL_ARG.load(Ordering::SeqCst), TEST_COMPAT_ARG);
+}
+
+#[test]
+fn compat_ptr_ioctl_without_an_unlocked_handler_returns_linux_no_ioctl() {
+    let _modules = crate::test_serial::claim();
+    // SAFETY: all-zero ABI storage represents a file_operations table with no callbacks installed.
+    let ops = unsafe { core::mem::zeroed::<LinuxFileOperations>() };
+    let mut file = LinuxFile::new(null_mut());
+    file.f_op = &ops;
+    assert_eq!(unsafe { compat_ptr_ioctl(&mut file, TEST_IOCTL_CMD, TEST_COMPAT_ARG) }, -(LINUX_ENOIOCTLCMD as isize));
+}
+
+#[test]
+fn compat_ptr_ioctl_is_exported_for_native_modules() {
+    let _modules = crate::test_serial::claim();
+    export_symbols();
+    assert!(crate::symtab::is_exported("compat_ptr_ioctl"));
 }
 
 #[test]

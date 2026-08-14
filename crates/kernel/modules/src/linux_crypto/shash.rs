@@ -71,6 +71,11 @@ extern "C" fn crypto_free_shash(tfm: *mut CryptoShash) {
     unsafe { drop(Box::from_raw(tfm)); }
 }
 
+pub(crate) fn destroy_from_tfm(mem: *mut u8) {
+    // SAFETY: crypto_destroy_tfm reaches this branch only for the allocation returned by crypto_alloc_shash.
+    unsafe { drop(Box::from_raw(mem.cast::<CryptoShash>())); }
+}
+
 extern "C" fn crypto_shash_digestsize(tfm: *mut CryptoShash) -> u32 {
     alg(tfm).map(|a| digest_size(a) as u32).unwrap_or(0)
 }

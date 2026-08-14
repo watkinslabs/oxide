@@ -39,6 +39,10 @@ fn hub_event_work(_arg: usize) {
                 if status.connection_changed() && !port_feature(controller, &device, port,
                     crate::usb::HUB_PORT_FEATURE_C_CONNECTION, false)
                 { continue; }
+                if status.connection_changed() {
+                    let Some(topology) = device.state.lock_bh::<XhciBh>().device.topology().child(port) else { continue; };
+                    if !crate::detach::branch(controller, topology) { continue; }
+                }
                 if !status.connected() { continue; }
                 let Some(topology) = device.state.lock_bh::<XhciBh>().device.topology().child(port) else { continue; };
                 if !port_feature(controller, &device, port, crate::usb::HUB_PORT_FEATURE_RESET, true) { continue; }

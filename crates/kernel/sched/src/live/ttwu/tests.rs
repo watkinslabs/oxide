@@ -25,6 +25,8 @@ use crate::TaskState;
 use crate::task::SchedClass;
 use alloc::vec::Vec;
 
+mod current;
+
 /// Two installed runqueues, indexed by CPU id.
 struct Cpus {
     rqs: Vec<(u32, Runqueue)>,
@@ -240,6 +242,75 @@ fn drained_wake_of_a_still_running_task_is_re_deferred() {
     assert!(matches!(t.pending_wake(core::ptr::null_mut()), PendingWake::Ready),
         "once switched off it becomes enqueueable");
 }
+
+/// A deferred wake is deliberately shown as unlinked between the lock-free
+/// list drain and destination activation.  `on_wake_list` names list
+/// membership, not wake ownership: the `Waking` state retains that ownership
+/// until `RunqueueInner::enqueue` commits the task.  Keep this transient
+/// explicit so a task dump does not turn it into evidence of a lost wake.
+#[test]
+fn drained_waking_task_is_unlinked_until_destination_activation() {
+    const CPU: u32 = 60;
+    let cpus = Cpus::new(&[CPU]);
+    let rq = cpus.get(CPU).expect("test cpu installed");
+    let t = settled_sleeper(2009, CPU);
+    assert!(t.claim_wake());
+    wake_list_push(CPU, Arc::clone(&t));
+    #[cfg(feature = "debug-watchdog")]
+    assert_eq!(crate::task::WakeDiagPhase::from_u8(t.wake_diag_phase.load(Ordering::Acquire)),
+        crate::task::WakeDiagPhase::Listed);
+
+    let mut drained = wake_list_drain(CPU);
+    assert_eq!(drained.len(), 1);
+    assert_eq!(t.state(), TaskState::Waking);
+    assert!(!t.on_rq.load(Ordering::Acquire));
+    assert!(!t.on_cpu.load(Ordering::Acquire));
+    assert!(!t.on_wake_list.load(Ordering::Acquire),
+        "the drain releases list membership before the destination rq lock");
+    #[cfg(feature = "debug-watchdog")]
+    assert_eq!(crate::task::WakeDiagPhase::from_u8(t.wake_diag_phase.load(Ordering::Acquire)),
+        crate::task::WakeDiagPhase::Drained);
+
+    wake_list_push(CPU, drained.pop().expect("one drained wake"));
+    let current = rq.current.load(Ordering::Acquire);
+    assert!(sched_ttwu_pending(CPU, current, rq));
+    assert_eq!(t.state(), TaskState::Runnable,
+        "destination activation must complete the retained wake claim");
+    assert!(t.on_rq.load(Ordering::Acquire));
+    assert!(!t.on_wake_list.load(Ordering::Acquire));
+    #[cfg(feature = "debug-watchdog")]
+    assert_eq!(crate::task::WakeDiagPhase::from_u8(t.wake_diag_phase.load(Ordering::Acquire)),
+        crate::task::WakeDiagPhase::None);
+}
+
+/// `sched_ttwu_pending` consumes the target's claimed wake list; it must not
+/// wait for the producer-side wake lock after unlinking it.  The old shape
+/// acquired `task_wake_lock` between `wake_list_drain` and activation, so this
+/// exact handoff left a Waking task detached indefinitely whenever the waker
+/// was delayed while still holding its publication lock.  Linux walks the
+/// claimed llist under the target rq lock without reacquiring `p->pi_lock`.
+#[test]
+fn target_drain_activates_a_claimed_wake_while_producer_lock_is_held() {
+    const CPU: u32 = 61;
+    let cpus = Cpus::new(&[CPU]);
+    let rq = cpus.get(CPU).expect("test cpu installed");
+    let t = settled_sleeper(2010, CPU);
+
+    // Model the producer between claiming/listing the wake and dropping its
+    // task-side serialization lock.  A pre-fix target drain self-spins here.
+    let _producer = t.task_wake_lock.lock_irqsave::<RqIrq>();
+    assert!(t.claim_wake());
+    wake_list_push(CPU, Arc::clone(&t));
+
+    let current = rq.current.load(Ordering::Acquire);
+    assert!(sched_ttwu_pending(CPU, current, rq),
+        "the target must activate the claimed list without waiting on its producer");
+    assert_eq!(t.state(), TaskState::Runnable);
+    assert!(t.on_rq.load(Ordering::Acquire));
+    assert!(!t.on_wake_list.load(Ordering::Acquire));
+    assert_eq!(cpus.trees_holding(t.tid), 1, "the wake must activate exactly once");
+}
+
 
 /// `select_task_rq_with` honours `cpus_allowed`; a mask that excludes the
 /// caller must not resolve to the caller.

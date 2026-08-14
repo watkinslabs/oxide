@@ -223,7 +223,10 @@ pub unsafe fn init_exports() {
     crate::linux_input::export_symbols();
     crate::linux_module::export_symbols();
     crate::linux_mempool::export_symbols();
+    crate::linux_nvme_auth::export_symbols();
+    crate::linux_opal::export_symbols();
     crate::linux_io::export_symbols();
+    crate::linux_io_uring::export_symbols();
     crate::linux_ida::export_symbols();
     crate::linux_irq::export_symbols();
     crate::linux_led::export_symbols();

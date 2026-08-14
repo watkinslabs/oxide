@@ -13,6 +13,7 @@
 use alloc::{string::String, sync::Arc};
 
 use crate::host::AhciHost;
+use crate::lifecycle::{self, RuntimeRecoveryStep};
 use crate::regs;
 
 /// HHDM base for the running arch (PA→VA for HBA DMA structures + data run).
@@ -87,7 +88,7 @@ impl Ahci {
             return;
         }
         // SAFETY: the caller has stopped/quiesced the port. These frames are
-        // command/FIS/table frames returned by alloc_one_frame during bring-up.
+        // command/FIS/table frames returned by alloc_raw_frame during bring-up.
         unsafe { pmm::setup::free_one_frame(*pa); }
         *pa = 0;
     }
@@ -97,7 +98,7 @@ impl Ahci {
         let names = ["alloc clb", "alloc fb", "alloc ct"];
         let mut i = 0usize;
         while i < frames.len() {
-            match pmm::setup::alloc_one_frame() {
+            match pmm::setup::alloc_raw_frame() {
                 Some(pa) => frames[i] = pa,
                 None => {
                     for pa in frames.iter_mut() {
@@ -186,8 +187,22 @@ impl Ahci {
     /// Offset from the owned mapping base to BAR5. # C: O(1)
     pub(crate) fn abar_offset(&self) -> u64 { self.host.abar_offset() }
 
+    /// Retain the controller while this port changes between media watcher and
+    /// published-disk ownership. # C: O(1)
+    pub(crate) fn host_clone(&self) -> Arc<AhciHost> { self.host.clone() }
+
+    /// Controller retained by this port. # C: O(1)
+    pub(crate) fn host(&self) -> &AhciHost { &self.host }
+
     /// Selected SATA port index. # C: O(1)
     pub(crate) fn port_index(&self) -> u32 { self.port }
+
+    /// Sample the SATA PHY state after a connect/PHY-ready notification.
+    /// The caller decides media lifecycle from this live register value rather
+    /// than inferring removal from an interrupt cause alone. # C: O(1)
+    pub(crate) fn link_is_online(&self) -> bool {
+        regs::link_is_online(self.pr(regs::P_SSTS))
+    }
 
     /// W1C the selected port cause before its global level latch. # C: O(1)
     pub(crate) fn clear_command_interrupts(&self) {
@@ -207,6 +222,49 @@ impl Ahci {
         self.pw(regs::P_IE, 0);
         let _ = self.pr(regs::P_IE);
         self.host.disable_interrupts(1 << self.port);
+    }
+
+    fn comreset_link(&self) -> bool {
+        let s = self.pr(regs::P_SCTL);
+        self.pw(regs::P_SCTL, (s & !regs::SSTS_DET_MASK) | 1);
+        let hold = now_ns().saturating_add(2_000_000);
+        while now_ns() < hold { core::hint::spin_loop(); }
+        let s = self.pr(regs::P_SCTL);
+        self.pw(regs::P_SCTL, s & !regs::SSTS_DET_MASK);
+        let deadline = now_ns().saturating_add(LINK_TIMEOUT_NS);
+        loop {
+            if self.link_is_online() { return true; }
+            if now_ns() >= deadline { return false; }
+            core::hint::spin_loop();
+        }
+    }
+
+    /// Freeze a failed runtime command, reset its PHY, and thaw only if the
+    /// same ATA disk re-identifies with the published geometry. # C: O(reset)
+    pub(crate) fn recover_runtime(&mut self, capacity: u64, blk_size: u32) -> bool {
+        let mut ok = true;
+        for step in lifecycle::runtime_recovery_steps() {
+            if !ok { break; }
+            ok = match step {
+                RuntimeRecoveryStep::FreezePortIrq => { self.disable_interrupts(); true }
+                RuntimeRecoveryStep::StopEngine => self.stop_port(),
+                RuntimeRecoveryStep::Comreset => self.comreset_link(),
+                RuntimeRecoveryStep::ClearError => {
+                    self.pw(regs::P_SERR, u32::MAX);
+                    self.pw(regs::P_IS, u32::MAX);
+                    true
+                }
+                RuntimeRecoveryStep::StartEngine => self.start_port(),
+                RuntimeRecoveryStep::Reidentify => {
+                    self.pr(regs::P_SIG) == regs::SIG_SATA_DISK
+                        && self.identify()
+                        && self.sectors == capacity
+                        && self.blk_size == blk_size
+                }
+                RuntimeRecoveryStep::ThawPortIrq => { self.enable_interrupts(); true }
+            };
+        }
+        ok
     }
 
     /// Zero a freshly-PMM-allocated frame via HHDM. # C: O(page)
@@ -237,26 +295,12 @@ impl Ahci {
         // sequence (AHCI §10.1.2 / SATA §). Bounded so an empty port can't
         // stall boot.
         {
-            let n = port;
-            let sctl_off = regs::port_reg(n, regs::P_SCTL);
-            let ssts_off = regs::port_reg(n, regs::P_SSTS);
-            let s = host.r32(sctl_off);
-            host.w32(sctl_off, (s & !0xF) | 0x1);
-            let hold = now_ns().saturating_add(2_000_000); // ≥1ms COMRESET hold
-            while now_ns() < hold { core::hint::spin_loop(); }
-            let s = host.r32(sctl_off);
-            host.w32(sctl_off, s & !0xF);
-            let deadline = now_ns().saturating_add(LINK_TIMEOUT_NS);
-            let mut ssts;
-            loop {
-                // SAFETY: Device-attr HBA register file; per-port PxSSTS within
-                // the mapped window; aligned 32-bit load of the SATA status.
-                ssts = host.r32(ssts_off);
-                if ssts & regs::SSTS_DET_MASK == regs::SSTS_DET_READY { break; }
-                if now_ns() >= deadline { break; }
-                core::hint::spin_loop();
-            }
-            if ssts & regs::SSTS_DET_MASK != regs::SSTS_DET_READY { return Err("no SATA disk"); }
+            let a = Ahci {
+                host: host.clone(), port,
+                clb_pa: 0, clb_dma: 0, fb_pa: 0, fb_dma: 0, ctba_pa: 0, ctba_dma: 0, data_pa: 0, data_dma: 0,
+                sectors: 0, blk_size: 512, serial: None,
+            };
+            if !a.comreset_link() { return Err("no SATA disk"); }
             // Device present + PHY up. Do NOT gate on PxSIG here: the signature
             // register is only populated from the device's first D2H register
             // FIS, which arrives after FRE is enabled (in start_port below) —

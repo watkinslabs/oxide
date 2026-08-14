@@ -1,0 +1,4 @@
+# `_start` arrives on the multiboot trampoline's private stack, explicitly
+# writes KERNEL_STACK's top to RSP, then calls `_start_rust`. Their frames
+# cannot coexist on one physical stack; verify and sever only that direct edge.
+_start	_start_rust

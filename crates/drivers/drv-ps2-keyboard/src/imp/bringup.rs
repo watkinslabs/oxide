@@ -6,6 +6,7 @@ use core::sync::atomic::Ordering;
 use super::ports::*;
 use super::regs::*;
 use super::state::*;
+use crate::ps2_mouse::PacketMode;
 
 /// Inner bring-up. Returns true iff the keyboard answered the self-test
 /// + reset handshake.
@@ -27,7 +28,7 @@ use super::state::*;
 /// # C: O(spin) bounded by the controller's response latency.
 pub(super) unsafe fn bringup() -> bool {
     AUX_PRESENT.store(false, Ordering::Release);
-    AUX_WHEEL.store(false, Ordering::Release);
+    set_aux_mode(PacketMode::Bare);
     AUX_IRQ_ENABLED.store(false, Ordering::Release);
     // SAFETY: bounded CPL=0 port I/O to the i8042 in the documented order; single-CPU boot, no concurrent accessor.
     unsafe {
@@ -68,8 +69,7 @@ pub(super) unsafe fn bringup() -> bool {
         // a missing port remains non-fatal for keyboard-only hardware.
         write_cmd(CMD_ENABLE_PORT2);
         write_cmd(CMD_TEST_PORT2);
-        let aux_present = matches!(read_blocking(), Some(0));
-        AUX_PRESENT.store(aux_present, Ordering::Release);
+        let aux_port_works = matches!(read_blocking(), Some(0));
         flush_output();
 
         // Keyboard reset + BAT (basic-assurance-test) self-check.
@@ -90,28 +90,52 @@ pub(super) unsafe fn bringup() -> bool {
 
         // Enable scanning so keypresses start streaming.
         let _ = kbd_cmd(KBD_ENABLE_SCAN);
-        if aux_present {
-            let _ = aux_cmd(AUX_RESET);
-            let _ = read_blocking();
-            let _ = read_blocking();
-            AUX_WHEEL.store(enable_aux_wheel(), Ordering::Release);
-            let _ = aux_cmd(AUX_ENABLE_STREAM);
+        if aux_port_works {
+            if let Some(mode) = init_aux_mouse() {
+                set_aux_mode(mode);
+                AUX_PRESENT.store(true, Ordering::Release);
+                if !aux_cmd(AUX_ENABLE_STREAM) { AUX_PRESENT.store(false, Ordering::Release); }
+            }
         }
         flush_output();
         true
     }
 }
 
-/// Negotiate the standard four-byte IntelliMouse-compatible packet stream
-/// while auxiliary IRQ delivery remains masked. # SAFETY: caller exclusively
-/// owns the disabled auxiliary port during controller bring-up. # C: O(spin)
-unsafe fn enable_aux_wheel() -> bool {
+/// Verify AUX reset/BAT before publication, then select the highest standard
+/// packet extension explicitly accepted by the device while IRQ delivery is
+/// masked. # SAFETY: caller exclusively owns the disabled auxiliary port
+/// during controller bring-up. # C: O(spin)
+unsafe fn init_aux_mouse() -> Option<PacketMode> {
+    // SAFETY: caller owns the pre-IRQ i8042 auxiliary port exclusively.
+    if !unsafe { aux_cmd(AUX_RESET) } { return None; }
+    // Reset is the mouse-presence proof: a controller port-test only proves
+    // the controller's second channel, not that a mouse is attached.
+    // SAFETY: the reset response is owned by this command transaction.
+    if unsafe { read_blocking() } != Some(AUX_BAT_OK) { return None; }
+    // SAFETY: the reset device-ID is the next byte in the same transaction.
+    match unsafe { read_blocking() } {
+        Some(AUX_BARE_ID | AUX_WHEEL_ID | AUX_EXPLORER_ID) => {}
+        _ => return None,
+    }
     for rate in AUX_WHEEL_RATE_SEQUENCE {
         // SAFETY: caller owns the pre-IRQ i8042 auxiliary port exclusively.
-        if !unsafe { aux_cmd(AUX_SET_SAMPLE_RATE) } || !unsafe { aux_cmd(rate) } { return false; }
+        if !unsafe { aux_cmd(AUX_SET_SAMPLE_RATE) } || !unsafe { aux_cmd(rate) } { return Some(PacketMode::Bare); }
     }
     // SAFETY: the same pre-IRQ ownership serializes the device-ID reply.
-    (unsafe { aux_cmd(AUX_GET_ID) }) && (unsafe { read_blocking() }) == Some(AUX_WHEEL_ID)
+    if !unsafe { aux_cmd(AUX_GET_ID) } || unsafe { read_blocking() } != Some(AUX_WHEEL_ID) {
+        return Some(PacketMode::Bare);
+    }
+    for rate in AUX_EXPLORER_RATE_SEQUENCE {
+        // SAFETY: caller owns the pre-IRQ i8042 auxiliary port exclusively.
+        if !unsafe { aux_cmd(AUX_SET_SAMPLE_RATE) } || !unsafe { aux_cmd(rate) } { return Some(PacketMode::Wheel); }
+    }
+    // SAFETY: the same pre-IRQ ownership serializes the device-ID reply.
+    if unsafe { aux_cmd(AUX_GET_ID) } && unsafe { read_blocking() } == Some(AUX_EXPLORER_ID) {
+        Some(PacketMode::Explorer)
+    } else {
+        Some(PacketMode::Wheel)
+    }
 }
 
 /// Enable or disable the controller's port-1 IRQ bit while preserving the
@@ -225,7 +249,7 @@ pub(super) unsafe fn bringdown() {
     super::mouse::remove_device();
     super::keyboard::remove_device();
     AUX_PRESENT.store(false, Ordering::Release);
-    AUX_WHEEL.store(false, Ordering::Release);
+    set_aux_mode(PacketMode::Bare);
     PRESENT.store(false, Ordering::Release);
 }
 

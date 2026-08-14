@@ -2,12 +2,14 @@
 // the IRQ setup needs. All published with release stores / acquire loads so the
 // IRQ handler never observes a half-built driver.
 
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+
+use crate::ps2_mouse::PacketMode;
 
 pub(super) static PRESENT: AtomicBool = AtomicBool::new(false);
 pub(super) static IRQ_ENABLED: AtomicBool = AtomicBool::new(false);
 pub(super) static AUX_PRESENT: AtomicBool = AtomicBool::new(false);
-pub(super) static AUX_WHEEL: AtomicBool = AtomicBool::new(false);
+pub(super) static AUX_MODE: AtomicU8 = AtomicU8::new(AUX_MODE_BARE);
 pub(super) static AUX_IRQ_ENABLED: AtomicBool = AtomicBool::new(false);
 pub(super) static BSP_APIC_ID: AtomicU64 = AtomicU64::new(0);
 pub(super) static DEVICE_WINDOW_BASE: AtomicU64 = AtomicU64::new(0);
@@ -32,8 +34,28 @@ pub fn present() -> bool { PRESENT.load(Ordering::Acquire) }
 /// # C: O(1)
 pub fn irq_enabled() -> bool { IRQ_ENABLED.load(Ordering::Acquire) }
 
-/// True when the auxiliary mouse accepted four-byte wheel packet mode. # C: O(1)
-pub(super) fn aux_wheel() -> bool { AUX_WHEEL.load(Ordering::Acquire) }
+const AUX_MODE_BARE: u8 = 0;
+const AUX_MODE_WHEEL: u8 = 1;
+const AUX_MODE_EXPLORER: u8 = 2;
+
+/// Persist the hardware-negotiated PS/2 packet layout before AUX IRQ delivery. # C: O(1)
+pub(super) fn set_aux_mode(mode: PacketMode) {
+    let value = match mode {
+        PacketMode::Bare => AUX_MODE_BARE,
+        PacketMode::Wheel => AUX_MODE_WHEEL,
+        PacketMode::Explorer => AUX_MODE_EXPLORER,
+    };
+    AUX_MODE.store(value, Ordering::Release);
+}
+
+/// Read the hardware-negotiated PS/2 packet layout. # C: O(1)
+pub(super) fn aux_mode() -> PacketMode {
+    match AUX_MODE.load(Ordering::Acquire) {
+        AUX_MODE_WHEEL => PacketMode::Wheel,
+        AUX_MODE_EXPLORER => PacketMode::Explorer,
+        _ => PacketMode::Bare,
+    }
+}
 
 /// Boot-time platform data used by the driver's IRQ setup.
 /// # C: O(1)

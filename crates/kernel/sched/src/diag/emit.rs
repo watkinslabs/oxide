@@ -123,6 +123,13 @@ fn dump_tasks_emit() {
         klog::write_raw(if t.on_wake_list.load(Ordering::Relaxed) { b"y   " } else { b"n   " });
         let cpu = t.cpu.load(Ordering::Relaxed);
         if cpu == u16::MAX { klog::write_raw(b"  -"); } else { col_dec(cpu as u64, 3); }
+        if matches!(t.state(), crate::TaskState::Waking) {
+            let phase = crate::task::WakeDiagPhase::from_u8(t.wake_diag_phase.load(Ordering::Acquire));
+            let marked = t.wake_diag_ns.load(Ordering::Acquire);
+            let age = if marked == 0 { 0 } else { timekeeper::monotonic_ns().saturating_sub(marked) / 1_000_000 };
+            klog::write_raw(b" wake="); klog::write_raw(phase.label());
+            klog::write_raw(b" wake_age_ms="); klog::write_dec_u64(age);
+        }
         klog::write_raw(b"  ");
         col_syscall(t.last_syscall_nr.load(Ordering::Relaxed));
         klog::write_raw(b" ");

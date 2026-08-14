@@ -3,6 +3,7 @@
 
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
+use pci::ConfigSpaceReader;
 use sync::{Devices, Spinlock};
 
 const LEGACY_CONFIG_ADDRESS: u16 = 0xCF8;
@@ -110,6 +111,31 @@ impl EcamPci {
         // SAFETY: selected ECAM window was mapped Device-uncacheable before publication.
         unsafe { core::ptr::write_volatile(a as *mut u32, val) }
     }
+    /// Perform one naturally aligned AML PCI configuration transaction. # C: O(1)
+    pub fn operation_region_access(&self, bdf: pci::Bdf, offset: u16, width: u64,
+        write: Option<u64>) -> Option<u64> {
+        let bytes = operation_region_bytes(offset, width)?;
+        if self.legacy {
+            legacy_address(bdf, offset)?;
+        } else {
+            self.ecam_addr(bdf, offset)?;
+        }
+        Some(match (bytes, write) {
+            (1, None) => u64::from(self.read8_ext(bdf, offset)),
+            (2, None) => u64::from(self.read16_ext(bdf, offset)),
+            (4, None) => u64::from(self.read32_ext(bdf, offset)),
+            (1, Some(value)) => { self.write8_ext(bdf, offset, value as u8); 0 }
+            (2, Some(value)) => { self.write16_ext(bdf, offset, value as u16); 0 }
+            (4, Some(value)) => { self.write32_ext(bdf, offset, value as u32); 0 }
+            _ => return None,
+        })
+    }
+}
+
+fn operation_region_bytes(offset: u16, width: u64) -> Option<u16> {
+    let bytes = match width { 8 => 1, 16 => 2, 32 => 4, _ => return None };
+    if offset % bytes != 0 || offset.checked_add(bytes)? > pci::uapi::CFG_SPACE_SIZE as u16 { return None; }
+    Some(bytes)
 }
 
 impl pci::ConfigSpaceReader for EcamPci {
@@ -259,5 +285,13 @@ mod tests {
         assert_eq!(legacy_address(bdf, 0x03), Some(0x8012_ff00));
         assert_eq!(legacy_address(bdf, 0x100), None);
         assert_eq!(legacy_address(pci::Bdf { segment: 1, ..bdf }, 0), None);
+    }
+
+    #[test]
+    fn operation_region_width_stays_aligned_and_in_config_space() {
+        assert_eq!(operation_region_bytes(0xffc, 32), Some(4));
+        assert_eq!(operation_region_bytes(0xffd, 16), None);
+        assert_eq!(operation_region_bytes(0xfff, 16), None);
+        assert_eq!(operation_region_bytes(0, 64), None);
     }
 }

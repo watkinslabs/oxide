@@ -53,6 +53,7 @@ mod notify;
 mod ops;
 mod perm;
 mod procfs;
+pub mod native;
 mod report;
 mod store;
 mod trace;

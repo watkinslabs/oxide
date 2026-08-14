@@ -2,8 +2,8 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use vfs::VfsError;
-use vfs::Ino;
+use vfs::{Ino, PollSubscribers, VfsError};
+use alloc::sync::Arc;
 
 use super::bpf_types::CgroupBpfState;
 use super::controllers::ALL;
@@ -172,6 +172,10 @@ pub struct Node {
     /// Inode numbers owned by the control-file nodes already exposed through
     /// this directory.  Names remain the canonical control-file identity.
     pub file_inos: BTreeMap<String, Ino>,
+    /// Persistent `cgroup.events` notification object.  Synthesized inode
+    /// wrappers borrow this one source so a
+    /// cgroup population transition wakes every existing open description.
+    pub events_poll: Arc<PollSubscribers>,
     pub name: String,
     pub parent: Option<u64>,
     pub children: BTreeMap<String, u64>,
@@ -253,7 +257,8 @@ pub struct Node {
 impl Node {
     pub(super) fn new(cgid: u64, ino: Ino, name: String, parent: Option<u64>, avail: u8) -> Self {
         Self {
-            dir_ino: ino, file_inos: BTreeMap::new(), name, parent, children: BTreeMap::new(), procs: BTreeSet::new(),
+            dir_ino: ino, file_inos: BTreeMap::new(), events_poll: Arc::new(PollSubscribers::new()),
+            name, parent, children: BTreeMap::new(), procs: BTreeSet::new(),
             uid: 0, gid: 0, file_uid: 0, file_gid: 0, file_owner: BTreeMap::new(),
             threads: 0,
             subtree_control: 0, avail, frozen: false,
@@ -321,6 +326,11 @@ impl Tree {
     /// Borrow a node by id.
     /// # C: O(log n)
     pub fn node(&self, id: u64) -> Option<&Node> { self.nodes.get(&id) }
+
+    /// Shared `cgroup.events` readiness source for one live cgroup. # C: O(log n)
+    pub fn events_poll(&self, id: u64) -> Option<Arc<PollSubscribers>> {
+        self.nodes.get(&id).map(|n| Arc::clone(&n.events_poll))
+    }
 }
 
 #[cfg(test)]

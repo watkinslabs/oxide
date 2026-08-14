@@ -23,6 +23,8 @@ pub struct InputField {
     pub usage_page: u16,
     pub usage_min: u32,
     pub usage_max: u32,
+    pub usages: [u32; MAX_VALUES],
+    pub usage_count: u8,
     pub logical_min: i32,
     pub logical_max: i32,
     pub flags: u16,
@@ -36,12 +38,21 @@ impl ReportLayout {
     pub const fn len(&self) -> usize { self.count }
     pub fn field(&self, index: usize) -> Option<InputField> { self.fields.get(index).copied().flatten() }
 }
+impl InputField {
+    /// Usage associated with one variable control. # C: O(1)
+    pub(crate) fn usage(&self, index: usize) -> u32 {
+        if self.usage_count == 0 { return self.usage_min.saturating_add(index as u32); }
+        self.usages[index.min(usize::from(self.usage_count) - 1)]
+    }
+}
 
 /// Stateful HID input decoder. Values are retained per descriptor field so
 /// variable controls and array-key reports emit only transitions.
 pub struct ReportDecoder { layout: Box<ReportLayout>, values: Box<[[i32; MAX_VALUES]; MAX_FIELDS]> }
 impl ReportDecoder {
     pub fn new(layout: Box<ReportLayout>) -> Self { Self { layout, values: Box::new([[0; MAX_VALUES]; MAX_FIELDS]) } }
+    /// Validated report geometry retained for input-device publication. # C: O(1)
+    pub fn layout(&self) -> &ReportLayout { &self.layout }
     /// Decode one interrupt report into changed Linux input events. # C: O(fields * values)
     pub fn decode(&mut self, report: &[u8]) -> [Option<crate::hid::Event>; MAX_FIELDS] {
         let mut events = [None; MAX_FIELDS]; let mut out = 0usize;
@@ -57,7 +68,7 @@ impl ReportDecoder {
                 self.values[index][entry] = value;
                 if out == events.len() { return events; }
                 if field.flags & 2 != 0 {
-                    let usage = field.usage_min.saturating_add(entry as u32);
+                    let usage = field.usage(entry);
                     if let Some(event) = event_for(field, usage, value) { events[out] = Some(event); out += 1; }
                 } else {
                     if previous != 0 { if let Some(event) = event_for(field, previous as u32, 0) { events[out] = Some(event); out += 1; } }
@@ -75,8 +86,16 @@ struct Global { usage_page: u16, logical_min: i32, logical_max: i32, report_size
 impl Global { const fn new() -> Self { Self { usage_page: 0, logical_min: 0, logical_max: 0, report_size: 0, report_count: 0, report_id: 0 } } }
 
 #[derive(Copy, Clone)]
-struct Local { usage: Option<u32>, usage_min: Option<u32>, usage_max: Option<u32> }
-impl Local { const fn new() -> Self { Self { usage: None, usage_min: None, usage_max: None } } }
+struct Local { usages: [u32; MAX_VALUES], usage_count: u8, usage_min: Option<u32>, usage_max: Option<u32> }
+impl Local {
+    const fn new() -> Self { Self { usages: [0; MAX_VALUES], usage_count: 0, usage_min: None, usage_max: None } }
+    fn add_usage(&mut self, usage: u32) -> Option<()> {
+        let index = usize::from(self.usage_count);
+        *self.usages.get_mut(index)? = usage;
+        self.usage_count += 1;
+        Some(())
+    }
+}
 
 /// Parse standard short HID items and retain every non-constant Input item.
 /// Long items and malformed/truncated descriptors are rejected. # C: O(bytes + fields)
@@ -118,7 +137,7 @@ pub fn parse_report_descriptor(bytes: &[u8]) -> Option<Box<ReportLayout>> {
                 global_depth -= 1;
                 globals = global_stack[global_depth];
             }
-            (2, 0) => locals.usage = Some(value),
+            (2, 0) => locals.add_usage(value)?,
             (2, 1) => locals.usage_min = Some(value),
             (2, 2) => locals.usage_max = Some(value),
             // Main Input: constant fields still consume report bits but create no input event field.
@@ -128,12 +147,15 @@ pub fn parse_report_descriptor(bytes: &[u8]) -> Option<Box<ReportLayout>> {
                 let start = bits[id]; bits[id] = start.checked_add(width)?;
                 if value & 1 == 0 {
                     if layout.count == MAX_FIELDS || globals.report_size == 0 || globals.report_count == 0 || globals.report_count as usize > MAX_VALUES { return None; }
-                    let minimum = locals.usage_min.or(locals.usage).unwrap_or(0);
-                    let maximum = locals.usage_max.or(locals.usage).unwrap_or(minimum);
+                    let (first_usage, last_usage) = if locals.usage_count == 0 { (None, None) } else {
+                        (Some(locals.usages[0]), Some(locals.usages[usize::from(locals.usage_count) - 1]))
+                    };
+                    let minimum = locals.usage_min.or(first_usage).unwrap_or(0);
+                    let maximum = locals.usage_max.or(last_usage).unwrap_or(minimum);
                     if maximum < minimum { return None; }
                     layout.fields[layout.count] = Some(InputField { report_id: globals.report_id, bit_offset: start,
                         bit_size: globals.report_size, count: globals.report_count, usage_page: globals.usage_page,
-                        usage_min: minimum, usage_max: maximum, logical_min: globals.logical_min,
+                        usage_min: minimum, usage_max: maximum, usages: locals.usages, usage_count: locals.usage_count, logical_min: globals.logical_min,
                         logical_max: globals.logical_max, flags: value as u16 });
                     layout.count += 1;
                 }
@@ -182,6 +204,20 @@ mod tests {
         let report = [0x05, 0x01, 0x09, 0x38, 0x15, 0x81, 0x25, 0x7f, 0x75, 8, 0x95, 1, 0x81, 6];
         let mut decoder = ReportDecoder::new(parse_report_descriptor(&report).unwrap());
         assert_eq!(decoder.decode(&[0xfe])[0], Some(crate::hid::Event::Relative { code: 8, value: -2 }));
+    }
+    #[test]
+    fn decoder_keeps_consecutive_x_and_y_usages() {
+        let report = [
+            0x05, 0x01, 0x09, 0x02, 0xa1, 0x01, 0x09, 0x01, 0xa1, 0x00,
+            0x05, 0x09, 0x19, 0x01, 0x29, 0x03, 0x15, 0x00, 0x25, 0x01,
+            0x95, 0x03, 0x75, 0x01, 0x81, 0x02, 0x95, 0x01, 0x75, 0x05,
+            0x81, 0x01, 0x05, 0x01, 0x09, 0x30, 0x09, 0x31, 0x15, 0x81,
+            0x25, 0x7f, 0x75, 0x08, 0x95, 0x02, 0x81, 0x06, 0xc0, 0xc0,
+        ];
+        let mut decoder = ReportDecoder::new(parse_report_descriptor(&report).unwrap());
+        let events = decoder.decode(&[0, 5, 0xfe]);
+        assert_eq!(events[0], Some(crate::hid::Event::Relative { code: 0, value: 5 }));
+        assert_eq!(events[1], Some(crate::hid::Event::Relative { code: 1, value: -2 }));
     }
     #[test]
     fn global_push_pop_restores_usage_page_and_bit_geometry() {

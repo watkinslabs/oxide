@@ -2,6 +2,7 @@ use alloc::{boxed::Box, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::{VtdIrTable, VtdQiQueue, VtdRegisters, VtdTables, intel_vtd_hpet_source, intel_vtd_ioapic_source, intel_vtd_rmrr_count, intel_vtd_rmrr_for_bdf, intel_vtd_unit_for_bdf, remapped_msi, vtd_dma_groups};
+use crate::vtd_cache::maintenance_available;
 use firmware::acpi::{IommuKind, IommuUnit};
 use pci::{Bdf, ConfigSpaceReader};
 use sync::{Devices, Spinlock};
@@ -31,6 +32,47 @@ static EIM_CAPABLE: AtomicBool = AtomicBool::new(false);
 static INTERRUPT_REMAP_ENABLED: AtomicBool = AtomicBool::new(false);
 static FAULT_RECORDS: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(feature = "debug-boot")]
+fn trace_failure(stage: &'static [u8]) {
+    klog::write_raw(b"[WARN] vtd: "); klog::write_raw(stage); klog::write_raw(b"\n");
+}
+#[cfg(not(feature = "debug-boot"))]
+fn trace_failure(_: &'static [u8]) {}
+#[cfg(feature = "debug-boot")]
+fn trace_stage(stage: &'static [u8]) {
+    klog::write_raw(b"[INFO]  vtd: "); klog::write_raw(stage); klog::write_raw(b"\n");
+}
+#[cfg(not(feature = "debug-boot"))]
+fn trace_stage(_: &'static [u8]) {}
+#[cfg(feature = "debug-boot")]
+fn trace_queue_errors(errors: Option<u32>) {
+    klog::write_raw(b"[WARN] vtd: qi-errors=");
+    match errors { Some(value) => klog::write_hex_u64(u64::from(value)), None => klog::write_raw(b"unreadable") }
+    klog::write_raw(b"\n");
+}
+#[cfg(not(feature = "debug-boot"))]
+fn trace_queue_errors(_: Option<u32>) {}
+#[cfg(feature = "debug-boot")]
+fn trace_queue_progress(regs: &VtdRegisters, queue: &VtdQiQueue) {
+    let (head, tail) = regs.queued_invalidation_positions().unwrap_or((u64::MAX, u64::MAX));
+    klog::write_raw(b"[WARN] vtd: qi head="); klog::write_hex_u64(head);
+    klog::write_raw(b" tail="); klog::write_hex_u64(tail);
+    klog::write_raw(b" completion="); klog::write_hex_u64(u64::from(queue.completion_value().unwrap_or(u32::MAX)));
+    klog::write_raw(b"\n");
+}
+#[cfg(not(feature = "debug-boot"))]
+fn trace_queue_progress(_: &VtdRegisters, _: &VtdQiQueue) {}
+#[cfg(feature = "debug-boot")]
+fn trace_dma_map(requester: Bdf, pa: u64, iova: u64) {
+    klog::write_raw(b"[INFO]  vtd: dma bdf=");
+    klog::write_dec_u64(u64::from(requester.bus)); klog::write_raw(b":");
+    klog::write_dec_u64(u64::from(requester.device)); klog::write_raw(b".");
+    klog::write_dec_u64(u64::from(requester.function)); klog::write_raw(b" pa=");
+    klog::write_hex_u64(pa); klog::write_raw(b" iova="); klog::write_hex_u64(iova); klog::write_raw(b"\n");
+}
+#[cfg(not(feature = "debug-boot"))]
+fn trace_dma_map(_: Bdf, _: u64, _: u64) {}
+
 /// Build, publish, and invalidate one VT-d identity domain per hardware unit.
 ///
 /// # SAFETY
@@ -43,74 +85,86 @@ pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf],
     INTERRUPT_REMAP_ENABLED.store(false, Ordering::Release);
     let units = published_vtd_units();
     if units.is_empty() { return VtdActivation::Bypass; }
-    if units.iter().any(|unit| unit.kind != IommuKind::IntelVtd) { return VtdActivation::Failed; }
+    if units.iter().any(|unit| unit.kind != IommuKind::IntelVtd) { trace_failure(b"mixed unit"); return VtdActivation::Failed; }
 
     let mut manager = Vec::new();
     for unit in units {
-        let Some(regs) = (unsafe { VtdRegisters::map(unit.register_base, unit.register_pages) }) else { return VtdActivation::Failed; };
-        let Some(tables) = VtdTables::new(hhdm_offset) else { return VtdActivation::Failed; };
-        if !regs.cache_coherent() || !regs.supports_address_width(tables.address_width()) { return VtdActivation::Failed; }
+        trace_stage(b"unit setup");
+        let Some(regs) = (unsafe { VtdRegisters::map(unit.register_base, unit.register_pages) }) else { trace_failure(b"register map"); return VtdActivation::Failed; };
+        let coherent = regs.cache_coherent();
+        if !maintenance_available(coherent) { trace_failure(b"cache maintenance"); return VtdActivation::Failed; }
+        let Some(address_width) = regs.select_address_width(VtdTables::maximum_address_width()) else { trace_failure(b"address width"); return VtdActivation::Failed; };
+        let Some(tables) = VtdTables::new(hhdm_offset, coherent, address_width, regs.page_sizes()) else { trace_failure(b"table allocation"); return VtdActivation::Failed; };
         // Linux disables firmware-pre-enabled IR/translation/QI state before
         // it replaces their table bases.  Do this only after replacement
         // allocations and mappings succeeded, so an allocation failure leaves
         // the firmware configuration intact.
-        if !regs.quiesce_firmware_state() { return activation_failed(&mut manager); }
+        if !regs.quiesce_firmware_state() { trace_failure(b"firmware quiesce"); return activation_failed(&mut manager); }
         let ir = if regs.supports_interrupt_remapping() && regs.supports_queued_invalidation() {
-            let Some(table) = VtdIrTable::new(hhdm_offset, false) else { return activation_failed(&mut manager); };
+            let Some(table) = VtdIrTable::new(hhdm_offset, coherent, false) else { trace_failure(b"interrupt table"); return activation_failed(&mut manager); };
             Some(Box::new(table))
         } else { None };
         let qi = if regs.supports_queued_invalidation() {
-            let Some(queue) = VtdQiQueue::new(hhdm_offset) else { return activation_failed(&mut manager); };
+            let Some(queue) = VtdQiQueue::new(hhdm_offset, coherent) else { trace_failure(b"queued invalidation allocation"); return activation_failed(&mut manager); };
             if !regs.enable_queued_invalidation(&queue) {
                 let _ = regs.disable_queued_invalidation();
-                return activation_failed(&mut manager);
+                trace_failure(b"queued invalidation enable"); return activation_failed(&mut manager);
             }
             Some(queue)
         } else { None };
         manager.push(VtdBootUnit { unit, regs, requesters: Vec::new(), ioapic_sources: Vec::new(), hpet_source: None, tables, qi, ir });
     }
+    trace_stage(b"domain setup");
     for entry in manager.iter_mut() {
         let unit_requesters: Vec<Bdf> = requesters.iter().copied().filter(|bdf|
             intel_vtd_unit_for_bdf(reader, *bdf) == Some(entry.unit)).collect();
         for (index, group) in vtd_dma_groups(reader, &unit_requesters, aliases).iter().enumerate() {
-            let Some(domain_id) = u16::try_from(index).ok().and_then(|id| FIRST_DOMAIN_ID.checked_add(id)) else { return activation_failed(&mut manager); };
-            if !entry.tables.install_group(domain_id, group, regions) { return activation_failed(&mut manager); }
+            let Some(domain_id) = u16::try_from(index).ok().and_then(|id| FIRST_DOMAIN_ID.checked_add(id)) else { trace_failure(b"domain identifier"); return activation_failed(&mut manager); };
+            if !entry.tables.install_group(domain_id, group, regions) { trace_failure(b"domain install"); return activation_failed(&mut manager); }
             entry.requesters.extend_from_slice(group);
         }
         for requester in &unit_requesters {
             for index in 0..intel_vtd_rmrr_count() {
                 let Some(rmrr) = intel_vtd_rmrr_for_bdf(reader, *requester, index) else { continue; };
-                let Some(len) = rmrr.end.checked_sub(rmrr.base).and_then(|bytes| bytes.checked_add(1)) else { return activation_failed(&mut manager); };
-                if !entry.tables.map_identity_range(*requester, rmrr.base, len) { return activation_failed(&mut manager); }
+                let Some(len) = rmrr.end.checked_sub(rmrr.base).and_then(|bytes| bytes.checked_add(1)) else { trace_failure(b"reserved range length"); return activation_failed(&mut manager); };
+                if !entry.tables.map_identity_range(*requester, rmrr.base, len) { trace_failure(b"reserved range map"); return activation_failed(&mut manager); }
             }
         }
         for requester in &unit_requesters {
-            if !entry.tables.attach_requester(*requester) { return activation_failed(&mut manager); }
+            if !entry.tables.attach_requester(*requester) { trace_failure(b"requester attach"); return activation_failed(&mut manager); }
             for alias in aliases.for_requester(*requester) {
-                if !entry.tables.attach_alias(*requester, alias) { return activation_failed(&mut manager); }
+                if !entry.tables.attach_alias(*requester, alias) { trace_failure(b"alias attach"); return activation_failed(&mut manager); }
             }
         }
     }
+    trace_stage(b"platform scopes");
     for index in 0..firmware::ioapic_count() {
         let Some(ioapic_id) = firmware::ioapic(index).map(|ioapic| ioapic.id) else { continue; };
         if let Some((unit, source_id)) = intel_vtd_ioapic_source(reader, ioapic_id) {
-            let Some(entry) = manager.iter_mut().find(|entry| entry.unit == unit) else { return activation_failed(&mut manager); };
+            let Some(entry) = manager.iter_mut().find(|entry| entry.unit == unit) else { trace_failure(b"ioapic unit"); return activation_failed(&mut manager); };
             entry.ioapic_sources.push((ioapic_id, source_id));
         }
     }
     if let Some(hpet_id) = firmware::hpet_id() {
         if let Some((unit, source_id)) = intel_vtd_hpet_source(reader, hpet_id) {
-            let Some(entry) = manager.iter_mut().find(|entry| entry.unit == unit) else { return activation_failed(&mut manager); };
+            let Some(entry) = manager.iter_mut().find(|entry| entry.unit == unit) else { trace_failure(b"hpet unit"); return activation_failed(&mut manager); };
             entry.hpet_source = Some(source_id);
         }
     }
+    trace_stage(b"hardware enable");
     for entry in manager.iter_mut() {
-        if !entry.regs.set_root_table(entry.tables.root_pa()) || !invalidate(entry)
-            || !entry.regs.enable_translation() { return activation_failed(&mut manager); }
+        if !entry.regs.set_root_table(entry.tables.root_pa()) { trace_failure(b"root table"); return activation_failed(&mut manager); }
+        if !invalidate(entry) { trace_failure(b"translation invalidate"); return activation_failed(&mut manager); }
+        if !entry.regs.enable_translation() { trace_failure(b"translation enable"); return activation_failed(&mut manager); }
         if let Some(ir) = entry.ir.as_ref() {
-            if !entry.regs.set_interrupt_remap_table(ir.irta()) { return activation_failed(&mut manager); }
+            if !entry.regs.set_interrupt_remap_table(ir.irta()) { trace_failure(b"interrupt table install"); return activation_failed(&mut manager); }
+            if !entry.regs.supports_enhanced_irta_invalidation() {
+                let Some(queue) = entry.qi.as_mut() else { trace_failure(b"interrupt cache queue"); return activation_failed(&mut manager); };
+                if !entry.regs.invalidate_interrupt_entries(queue) { trace_queue_errors(entry.regs.queued_invalidation_errors()); trace_queue_progress(&entry.regs, queue); trace_failure(b"interrupt cache invalidate"); return activation_failed(&mut manager); }
+            }
         }
     }
+    trace_stage(b"ready");
     let eim_capable = !firmware::acpi::dmar_x2apic_opt_out() && all_vtd_units_support_eim();
     *MANAGER.lock() = manager;
     EIM_CAPABLE.store(eim_capable, Ordering::Release);
@@ -279,7 +333,9 @@ pub fn map_dma_below(requester: Bdf, pa: u64, len: usize, mask: u64) -> Option<u
         }
         return None;
     }
-    map.iova.start.checked_add(offset)
+    let iova = map.iova.start.checked_add(offset)?;
+    trace_dma_map(requester, pa, iova);
+    Some(iova)
 }
 
 /// Remove one exact VT-d mapping only after the IOTLB has consumed its removal. # C: O(pages * levels + poll limit)

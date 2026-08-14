@@ -315,7 +315,7 @@ pub(super) unsafe fn schedule_once() {
         prev_ref.debug_check_canary("schedule_prev_update");
         update_curr(prev_ref, &inner, now);
         if !matches!(prev_ref.sched_class(), SchedClass::Idle)
-            && prev_ref.state() == TaskState::Runnable
+            && matches!(prev_ref.state(), TaskState::Runnable | TaskState::Waking)
         {
             if prev_ref.yield_pending.swap(false, Ordering::AcqRel) {
                 inner.yield_current_task(prev_ref);
@@ -569,6 +569,8 @@ pub(super) unsafe fn schedule_once() {
     {
         // SAFETY: rq.current was just updated to the new Arc<Task> by swap_current; its strong ref is held in the AtomicPtr.
         let now = unsafe { rq.current_ref() };
+        // SAFETY: rq.current now owns `now`; this CPU is in the preempt-disabled switch window.
+        unsafe { hal_x86_64::set_linux_current_task(now as *const _ as *const ()); }
         let top = now.kernel_stack.load(Ordering::Acquire);
         if !top.is_null() {
             // SAFETY: top is the next task's top-of-stack; set_rsp0 writes the RSP0 field of the live TSS used by ring-3->ring-0 transitions per `14§3`; set_syscall_kstack updates the per-task syscall scratch stack so the next `syscall` instruction lands here.
@@ -665,23 +667,12 @@ pub(super) unsafe fn schedule_once() {
     // SAFETY: next_ctx_ptr aliases the incoming task's arch_ctx, live for this preempt-off scope; read-only.
     super::ctxprobe::note_restore(unsafe { rq.current_ref() }.tid, unsafe { &*next_ctx_ptr });
 
-    // `preempt_count` is per-TASK (Linux `thread_info`); the per-CPU slot is
-    // only a cache of the running task's value, which x86 Linux swaps in
-    // `__switch_to`. Swap it here, immediately around the register switch, so a
-    // task that parked mid-`do_softirq` carries its SOFTIRQ field away with it
-    // instead of leaving it set for whatever runs next — which pinned
-    // `in_interrupt()` true on that CPU forever, silently stopping its softirq
-    // drain and its reschedules, and eventually underflowing on the sub.
-    // One swap, on the switch-OUT side only. Whoever later switches back to
-    // this task performs the matching load of its saved count, so no restore is
-    // owed here — and doing one would be racy: between storing on `prev` and
-    // reloading it, another CPU can pick `prev` up and update it, and a stale
-    // reload would clobber that.
-    let outgoing_pc = crate::preempt::preempt_count_swap(
-        // SAFETY: `rq.current` is the incoming task published by `swap_current`,
-        // borrowed preempt-off, so the runqueue's Arc outlives this read.
-        unsafe { rq.current_ref() }.preempt_count.load(Ordering::Acquire));
-    prev_ref.preempt_count.store(outgoing_pc, Ordering::Release);
+    // Linux keeps `__preempt_count` strictly per CPU (`pcpu_hot`), not in
+    // `task_struct` and not in `__switch_to`. In particular hardirq nesting
+    // belongs to the CPU's entry/exit pair. Transferring it to the incoming
+    // task can erase HARDIRQ before the outer dispatcher's `irq_exit`, causing
+    // an underflow that pins `in_interrupt()` forever. Keep the local count
+    // intact across the register switch.
 
     // SAFETY: prev_ctx_ptr aliases prev's arch_ctx buffer (kept alive by `prev_arc` until after switch returns); next_ctx_ptr aliases next's arch_ctx (kept alive by the new `current` Arc); both buffers were init'd via `new_kernel_with_irq_frame`.
     unsafe { ArchCtx::switch(prev_ctx_ptr, next_ctx_ptr); }

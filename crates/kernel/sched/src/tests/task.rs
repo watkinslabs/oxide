@@ -39,6 +39,12 @@ fn task_cas_state_transitions() {
 }
 
 #[test]
+fn waking_state_is_not_reported_as_running() {
+    assert_eq!(TaskState::Waking.linux_char(), b'W');
+    assert_eq!(TaskState::Waking.linux_status_label(), "W (waking)");
+}
+
+#[test]
 fn interruptible_sleep_state_preserves_wake_mask_until_claimed() {
     let t = Task::new(1, "t", SchedClass::Normal { weight: 1024 });
     t.set_sleep_state(WaitState::Interruptible);

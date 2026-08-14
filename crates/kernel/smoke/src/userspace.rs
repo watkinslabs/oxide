@@ -193,7 +193,7 @@ pub unsafe fn drop_to_ring3(
     hhdm_offset: u64,
     fault_handler: hal_x86_64::FaultHandler,
 ) -> ! {
-    let kstack_pa = match pmm::setup::alloc_one_frame() {
+    let kstack_pa = match pmm::setup::alloc_raw_frame() {
         Some(p) => p,
         None => {
             debug_irq! { klog::kerror!("drop_to_ring3: kstack alloc failed"); }

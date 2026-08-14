@@ -43,9 +43,9 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
 .PHONY: all build x86 arm kpi-layout \
         build-debug x86-debug arm-debug \
         test lint lint-ratchet lint-ratchet-update audit-counts profile-policy warnings-control stats ci \
-        qemu-x86 qemu-arm qemu-x86-debug qemu-arm-debug qemu-mcp smoke-native-pci-x86 smoke-native-pci-e1000e-x86 \
+        qemu-x86 qemu-arm qemu-x86-image qemu-arm-image qemu-x86-existing qemu-arm-existing qemu-x86-debug qemu-arm-debug qemu-mcp verify-native-q35 smoke-native-pci-x86 smoke-native-pci-e1000-x86 \
         hardware-audit-image-x86 \
-        boot-debug-x86 boot-debug-arm smoke-debug smoke-debug-x86 smoke-debug-arm \
+        boot-debug-x86 boot-debug-arm smoke-debug smoke-debug-x86 smoke-debug-arm smoke-taskdump-arm \
         qemu-x86-grub qemu-x86-uefi smoke-uefi-x86 \
         smoke-up smoke-up-x86 smoke-up-arm \
         smoke-cmdline-x86 smoke-cmdline-arm smoke-cmdline \
@@ -58,7 +58,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
         irq-gate irq-gate-x86 irq-gate-arm \
         feature-gate feature-gate-x86 feature-gate-arm feature-gate-atexit \
         hosted-gate test-build-gate \
-        smoke-ping smoke-ping-x86 smoke-ping-arm \
+        smoke-ping smoke-ping-x86 smoke-ping-arm smoke-network-native-pci-x86 \
         stack-gate-baseline-x86 stack-gate-baseline-arm stack-report \
         clean clean-builds help
 
@@ -238,6 +238,22 @@ qemu-arm:
 	$(TRIM_ROOTFS_CACHE)
 	$(XTASK) grub --arch aarch64 --smp $(SMP) $(if $(QEMU_FEATURES_ARM),--features "$(QEMU_FEATURES_ARM)",)
 
+# Split image preparation from launching an existing image. boot-smoke uses
+# these so SMOKE_TIMEOUT measures guest runtime, never a feature build.
+qemu-x86-image:
+	$(TRIM_ROOTFS_CACHE)
+	$(XTASK) image --arch x86_64 $(if $(QEMU_FEATURES_X86),--features "$(QEMU_FEATURES_X86)",)
+
+qemu-arm-image:
+	$(TRIM_ROOTFS_CACHE)
+	$(XTASK) image --arch aarch64 $(if $(QEMU_FEATURES_ARM),--features "$(QEMU_FEATURES_ARM)",)
+
+qemu-x86-existing:
+	$(XTASK) grub --arch x86_64 --smp $(SMP) --id default --run-existing
+
+qemu-arm-existing:
+	$(XTASK) grub --arch aarch64 --smp $(SMP) --id default --run-existing
+
 # Compatibility spelling for the former bootloader-specific target. Keep one
 # canonical recipe so `FEATURES=` has identical meaning on both spellings.
 qemu-x86-grub: qemu-x86
@@ -291,21 +307,35 @@ boot-debug-arm:
 # question is "what did the slow one do differently", not "did it fail".
 BOOT_LOG_DIR ?= target/boot-logs
 
-smoke-debug-x86: x86
+smoke-debug-x86:
 	@mkdir -p $(BOOT_LOG_DIR)
 	OXIDE_CMDLINE_DEBUG=1 SMOKE_KEEP_LOG=$(BOOT_LOG_DIR)/x86.log \
 	    SMOKE_KEEP_LOG_DIR=$(BOOT_LOG_DIR) ./tools/boot-smoke.sh x86 $(SMOKE_TIMEOUT)
 	@echo "serial log kept: $(BOOT_LOG_DIR)/x86.log"
 
-smoke-debug-arm: arm
+smoke-debug-arm:
 	@mkdir -p $(BOOT_LOG_DIR)
 	OXIDE_CMDLINE_DEBUG=1 SMOKE_KEEP_LOG=$(BOOT_LOG_DIR)/arm.log \
 	    SMOKE_KEEP_LOG_DIR=$(BOOT_LOG_DIR) ./tools/boot-smoke.sh arm $(SMOKE_TIMEOUT)
 	@echo "serial log kept: $(BOOT_LOG_DIR)/arm.log"
 
+# One retained ARM diagnostic boot.  The distro sysctl unit deliberately
+# replaces the boot-line SysRq mask with its production-safe policy; masking
+# that unit HERE leaves serial task/CPU dumps available only to this image.
+# Normal smoke targets retain the distribution policy.  The feature list is
+# passed to image preparation through the boot-smoke child make, so the
+# periodic task dump and wake-placement trace are in the built kernel.
+smoke-taskdump-arm:
+	@mkdir -p $(BOOT_LOG_DIR)
+	OXIDE_SMOKE_ATTEMPTS=1 FEATURES="$(strip $(FEATURES) debug-taskdump debug-watchdog)" OXIDE_CMDLINE_DEBUG=1 \
+	    OXIDE_CMDLINE_EXTRA="$(strip $(OXIDE_CMDLINE_EXTRA) systemd.mask=systemd-sysctl.service)" \
+	    SMOKE_KEEP_LOG=$(BOOT_LOG_DIR)/arm.log SMOKE_KEEP_LOG_DIR=$(BOOT_LOG_DIR) \
+	    ./tools/boot-smoke.sh arm $(SMOKE_TIMEOUT)
+	@echo "serial log kept: $(BOOT_LOG_DIR)/arm.log"
+
 # Both arches concurrently, same rationale as `smoke`: they contend for
 # nothing, and running them back to back doubles the wall clock for no answer.
-smoke-debug: x86 arm
+smoke-debug:
 	@mkdir -p $(BOOT_LOG_DIR); rc=0; \
 	OXIDE_CMDLINE_DEBUG=1 SMOKE_KEEP_LOG=$(BOOT_LOG_DIR)/x86.log SMOKE_KEEP_LOG_DIR=$(BOOT_LOG_DIR) ./tools/boot-smoke.sh x86 $(SMOKE_TIMEOUT) & p1=$$!; \
 	OXIDE_CMDLINE_DEBUG=1 SMOKE_KEEP_LOG=$(BOOT_LOG_DIR)/arm.log SMOKE_KEEP_LOG_DIR=$(BOOT_LOG_DIR) ./tools/boot-smoke.sh arm $(SMOKE_TIMEOUT) & p2=$$!; \
@@ -319,20 +349,27 @@ smoke-debug: x86 arm
 # 600). PR-time CI uses these; locally a 30-60s dev-box boot is
 # typical, but TCG on a hosted runner needs 5-15min, hence the
 # higher default. Override via `make smoke-x86 SMOKE_TIMEOUT=900`.
-smoke-x86: x86
+smoke-x86:
 	./tools/boot-smoke.sh x86 $(SMOKE_TIMEOUT)
 
-# Q35 with a legacy Intel e1000 plus AHCI-root disks, NVMe and a physical
-# framebuffer handoff. This contains no virtio device on the boot path.
-smoke-native-pci-x86: x86
+# Q35 with the PCIe Intel e1000e model, AHCI-root disks, NVMe, xHCI USB HID,
+# VT-d interrupt remapping and a physical framebuffer handoff. This contains
+# no virtio device on the boot path.
+smoke-native-pci-x86:
 	OXIDE_QEMU_PROFILE=native-pci ./tools/boot-smoke.sh x86 $(SMOKE_TIMEOUT)
 
-# Same non-virtio storage/input/framebuffer profile, using QEMU's discrete
-# Intel 82574L PCIe model to exercise the native e1000e path.
-smoke-native-pci-e1000e-x86: x86
-	OXIDE_QEMU_PROFILE=native-pci OXIDE_QEMU_NIC=e1000e ./tools/boot-smoke.sh x86 $(SMOKE_TIMEOUT)
+# Construct the complete native-Q35 graph, then stop QEMU before guest code
+# executes. This validates QEMU accepts the actual AHCI/NVMe/e1000e/xHCI/VT-d
+# contract without turning a device-argument change into a boot loop.
+verify-native-q35:
+	./tools/qemu-native-q35-accept.sh
 
-smoke-arm: arm
+# Same topology with QEMU's older discrete Intel e1000 model. Keep this as a
+# separate compatibility smoke; the primary native profile is e1000e.
+smoke-native-pci-e1000-x86:
+	OXIDE_QEMU_PROFILE=native-pci OXIDE_QEMU_NIC=e1000 ./tools/boot-smoke.sh x86 $(SMOKE_TIMEOUT)
+
+smoke-arm:
 	./tools/boot-smoke.sh arm $(SMOKE_TIMEOUT)
 
 # The UEFI half of the x86 boot contract. Identical kernel, identical ISO,
@@ -340,17 +377,13 @@ smoke-arm: arm
 # handoff regression and nothing else. Kept separate from `smoke` because it
 # boots the same kernel a second time; run it when the boot path, the ISO
 # builder or the multiboot2 header changes.
-smoke-uefi-x86: x86
+smoke-uefi-x86:
 	OXIDE_QEMU_UEFI=1 ./tools/boot-smoke.sh x86 $(SMOKE_TIMEOUT)
 
-# Both arches at once. The builds are prerequisites, so they finish first
-# (cargo serialises them through its own lock anyway); only the two BOOTS
-# overlap, and they contend for nothing — separate build namespaces, separate
-# root images, separate qemu instances. Running them back to back doubles the
-# wall clock of every lockstep check for no benefit, which is the whole cost of
-# this gate. Both exit statuses are collected: a failure on either arch fails
-# the target, and neither cancels the other, so one run reports both answers.
-smoke: x86 arm
+# Both arches at once. Each smoke prepares its image first, then only the two
+# QEMU runs overlap. Both exit statuses are collected: a failure on either arch
+# fails the target, and neither cancels the other, so one run reports both answers.
+smoke:
 	@rc=0; \
 	./tools/boot-smoke.sh x86 $(SMOKE_TIMEOUT) & p1=$$!; \
 	./tools/boot-smoke.sh arm $(SMOKE_TIMEOUT) & p2=$$!; \
@@ -461,6 +494,7 @@ stack-gate-x86: x86
 	python3 tools/stack-depth-gate.py --self-test
 	python3 tools/stack-depth-gate.py $(KERNEL_ELF_x86_64) \
 	  --arch x86_64 --fail $(STACK_DEPTH_CEILING) \
+	  --stack-switch-map tools/stack-switches-x86_64.tsv \
 	  --allowlist tools/stack-depth-allow-x86_64.txt
 stack-gate-arm: arm
 	python3 tools/stack-depth-gate.py $(KERNEL_ELF_aarch64) \
@@ -684,21 +718,12 @@ smoke-login-arm: arm
 	./tools/boot-smoke-login.sh arm $(LOGIN_SMOKE_TIMEOUT)
 smoke-login: smoke-login-x86 smoke-login-arm
 
-# F155: end-to-end DHCP path smoke. Boots with OXIDE_UDHCPC_ENABLE=1
-# so udhcpc, online_smoke, tcp_smoke run from rcS; checks for the
-# lease confirmation line on serial. ARM TCG can't reach login
-# inside a 180s window with the full chain, so default to 600s.
-DHCP_SMOKE_TIMEOUT ?= 600
-smoke-dhcp-x86: x86
-	OXIDE_UDHCPC_ENABLE=1 ./tools/boot-smoke-dhcp.sh x86 $(DHCP_SMOKE_TIMEOUT)
-smoke-dhcp-arm: arm
-	OXIDE_UDHCPC_ENABLE=1 ./tools/boot-smoke-dhcp.sh arm $(DHCP_SMOKE_TIMEOUT)
-# `smoke-dhcp` aggregate runs x86 only. ARM TCG is too slow under
-# the boot+udhcpc+default.script chain to land the lease inside a
-# reasonable CI window; run `make smoke-dhcp-arm` explicitly when
-# needed (still completes the lease per F152, just not the
-# default.script echo confirmation).
-smoke-dhcp: smoke-dhcp-x86
+# Native-Q35 traffic gate. Fedora's production image uses NetworkManager, so
+# this waits for a real eth0 IPv4 lease and then pings the QEMU gateway over
+# the 82574L/e1000e path. It stages the image before the guest deadline.
+NETWORK_SMOKE_TIMEOUT ?= 600
+smoke-network-native-pci-x86:
+	OXIDE_QEMU_PROFILE=native-pci python3 tools/guest-network-check.py x86 $(NETWORK_SMOKE_TIMEOUT)
 
 # F210 end-to-end ssh smoke. Boots qemu, waits for sshd Server
 # listening line + oxide login, then runs N back-to-back ssh

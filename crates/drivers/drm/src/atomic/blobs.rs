@@ -70,8 +70,25 @@ pub fn get_blob(blob_id: u32, ulen: u32, data_ptr: u64) -> Option<i64> {
     Some(len as i64)
 }
 
-/// Test whether a blob is exactly one `drm_mode_modeinfo`. # C: O(n)
-pub fn mode_blob(blob_id: u32) -> bool {
-    BLOBS.lock().iter().any(|blob| blob.id == blob_id
-        && blob.bytes.len() == core::mem::size_of::<crate::DrmModeModeinfo>())
+/// Decode a user-created mode blob. The exact-size check is part of mode-blob
+/// validation; a property blob of another shape cannot become a CRTC mode.
+/// # C: O(n)
+pub fn mode_blob(blob_id: u32) -> Option<crate::DrmModeModeinfo> {
+    let blobs = BLOBS.lock();
+    let blob = blobs.iter().find(|blob| blob.id == blob_id)?;
+    if blob.bytes.len() != core::mem::size_of::<crate::DrmModeModeinfo>() { return None; }
+    // SAFETY: the byte vector has exactly the repr(C) modeinfo size and the
+    // unaligned read copies it into an owned value without borrowing bytes.
+    Some(unsafe { core::ptr::read_unaligned(blob.bytes.as_ptr() as *const crate::DrmModeModeinfo) })
+}
+
+#[cfg(test)]
+pub(crate) fn insert_mode_for_tests(mode: crate::DrmModeModeinfo) -> u32 {
+    let id = NEXT_BLOB_ID.fetch_add(1, Ordering::AcqRel).max(0x100);
+    let len = core::mem::size_of::<crate::DrmModeModeinfo>();
+    // SAFETY: `mode` is an initialized repr(C) value; copying its exact byte
+    // extent into owned storage preserves the UAPI payload for this test blob.
+    let bytes = unsafe { core::slice::from_raw_parts(&mode as *const _ as *const u8, len) };
+    BLOBS.lock().push(Blob { id, bytes: bytes.to_vec() });
+    id
 }

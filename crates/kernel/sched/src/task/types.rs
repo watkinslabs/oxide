@@ -148,7 +148,7 @@ impl TaskState {
             Self::Sleeping => b'S',
             Self::Stopped  => b'T',
             Self::Zombie   => b'Z',
-            Self::Waking   => b'R',
+            Self::Waking   => b'W',
         }
     }
 
@@ -160,7 +160,55 @@ impl TaskState {
             Self::Sleeping => "S (sleeping)",
             Self::Stopped  => "T (stopped)",
             Self::Zombie   => "Z (zombie)",
-            Self::Waking   => "R (running)",
+            Self::Waking   => "W (waking)",
+        }
+    }
+}
+
+/// Debug-only progress markers for a claimed wake.  They distinguish the
+/// lock-free transfer intervals that all present as `W (waking)` in a task
+/// dump without participating in scheduler ownership or placement.
+#[cfg(feature = "debug-watchdog")]
+#[repr(u8)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum WakeDiagPhase {
+    None       = 0,
+    Claimed    = 1,
+    Listed     = 2,
+    Drained    = 3,
+    Waiting    = 4,
+    Activating = 5,
+}
+
+#[cfg(feature = "debug-watchdog")]
+impl WakeDiagPhase {
+    pub const CLAIMED_RAW: u8 = Self::Claimed as u8;
+    pub const LISTED_RAW: u8 = Self::Listed as u8;
+    pub const DRAINED_RAW: u8 = Self::Drained as u8;
+    pub const WAITING_RAW: u8 = Self::Waiting as u8;
+    pub const ACTIVATING_RAW: u8 = Self::Activating as u8;
+
+    /// # C: O(1)
+    pub const fn from_u8(v: u8) -> Self {
+        match v {
+            Self::CLAIMED_RAW => Self::Claimed,
+            Self::LISTED_RAW => Self::Listed,
+            Self::DRAINED_RAW => Self::Drained,
+            Self::WAITING_RAW => Self::Waiting,
+            Self::ACTIVATING_RAW => Self::Activating,
+            _ => Self::None,
+        }
+    }
+
+    /// # C: O(1)
+    pub const fn label(self) -> &'static [u8] {
+        match self {
+            Self::None       => b"none",
+            Self::Claimed    => b"claimed",
+            Self::Listed     => b"listed",
+            Self::Drained    => b"drained",
+            Self::Waiting    => b"waiting",
+            Self::Activating => b"activating",
         }
     }
 }

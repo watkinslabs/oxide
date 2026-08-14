@@ -1,11 +1,14 @@
-//! AHCI completion endpoints backed by PCI-core-owned interrupt bindings.
+//! AHCI completion endpoints and host-scoped PCI interrupt bindings.
 
 #![cfg(target_os = "oxide-kernel")]
 
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 
 use sched::live::wait_list::WaitList;
+use sync::{Spinlock, TaskList as DriverLockClass};
 
+use crate::host::AhciHost;
 use crate::port::Ahci;
 use crate::regs;
 
@@ -19,7 +22,7 @@ const ENDPOINT_HANDLING: u8 = 3;
 
 struct Endpoint {
     state: AtomicU8, abar_va: AtomicU64, port: AtomicU32, in_handler: AtomicU32,
-    pis: AtomicU32, tfd: AtomicU32, complete: AtomicBool, wake: AtomicBool, waiters: WaitList,
+    pis: AtomicU32, tfd: AtomicU32, complete: AtomicBool, wake: AtomicBool, link_change: AtomicBool, waiters: WaitList,
     irq_count: AtomicU64,
 }
 
@@ -27,7 +30,7 @@ impl Endpoint {
     const fn new() -> Self {
         Self { state: AtomicU8::new(ENDPOINT_FREE), abar_va: AtomicU64::new(0), port: AtomicU32::new(0),
             in_handler: AtomicU32::new(0), pis: AtomicU32::new(0), tfd: AtomicU32::new(0),
-            complete: AtomicBool::new(false), wake: AtomicBool::new(false), waiters: WaitList::new(),
+            complete: AtomicBool::new(false), wake: AtomicBool::new(false), link_change: AtomicBool::new(false), waiters: WaitList::new(),
             irq_count: AtomicU64::new(0) }
     }
 }
@@ -35,18 +38,28 @@ impl Endpoint {
 static ENDPOINTS: [Endpoint; MAX_ENDPOINTS] = [const { Endpoint::new() }; MAX_ENDPOINTS];
 
 #[derive(Clone, Copy)]
-pub(crate) struct IrqBinding { endpoint: usize, binding: Option<pci_irq::Binding> }
+pub(crate) struct IrqBinding { endpoint: usize, host: usize }
 
-fn claim_endpoint(ctrl: &Ahci) -> Option<usize> {
+struct HostIrq {
+    abar_va: u64,
+    binding: Option<pci_irq::Binding>,
+    refs: u32,
+    active: u32,
+}
+
+static HOST_IRQS: Spinlock<Vec<HostIrq>, DriverLockClass> = Spinlock::new(Vec::new());
+
+fn claim_endpoint(abar_va: u64, port: u32) -> Option<usize> {
     for (idx, endpoint) in ENDPOINTS.iter().enumerate() {
         if endpoint.state.compare_exchange(ENDPOINT_FREE, ENDPOINT_SETUP, Ordering::AcqRel, Ordering::Acquire).is_err() { continue; }
-        endpoint.abar_va.store(ctrl.abar_va(), Ordering::Release);
-        endpoint.port.store(ctrl.port_index(), Ordering::Release);
+        endpoint.abar_va.store(abar_va, Ordering::Release);
+        endpoint.port.store(port, Ordering::Release);
         endpoint.in_handler.store(0, Ordering::Release);
         endpoint.pis.store(0, Ordering::Release);
         endpoint.tfd.store(0, Ordering::Release);
         endpoint.complete.store(false, Ordering::Release);
         endpoint.wake.store(false, Ordering::Release);
+        endpoint.link_change.store(false, Ordering::Release);
         endpoint.irq_count.store(0, Ordering::Release);
         return Some(idx);
     }
@@ -59,11 +72,59 @@ fn release_endpoint(idx: usize) {
     endpoint.port.store(0, Ordering::Release);
     endpoint.complete.store(false, Ordering::Release);
     endpoint.wake.store(false, Ordering::Release);
+    endpoint.link_change.store(false, Ordering::Release);
     endpoint.state.store(ENDPOINT_FREE, Ordering::Release);
+}
+
+fn host_retain(abar_va: u64) -> Option<usize> {
+    let mut hosts = HOST_IRQS.lock();
+    let idx = hosts.iter().position(|host| host.refs != 0 && host.abar_va == abar_va)?;
+    let refs = hosts[idx].refs.checked_add(1)?;
+    let active = hosts[idx].active.checked_add(1)?;
+    hosts[idx].refs = refs;
+    hosts[idx].active = active;
+    Some(idx)
+}
+
+fn host_insert(abar_va: u64, binding: pci_irq::Binding) -> Option<usize> {
+    let mut hosts = HOST_IRQS.lock();
+    if let Some(idx) = hosts.iter().position(|host| host.refs != 0 && host.abar_va == abar_va) {
+        let Some(refs) = hosts[idx].refs.checked_add(1) else { return None; };
+        let Some(active) = hosts[idx].active.checked_add(1) else { return None; };
+        hosts[idx].refs = refs;
+        hosts[idx].active = active;
+        drop(hosts);
+        binding.release();
+        return Some(idx);
+    }
+    if let Some(idx) = hosts.iter().position(|host| host.refs == 0) {
+        hosts[idx] = HostIrq { abar_va, binding: Some(binding), refs: 1, active: 1 };
+        return Some(idx);
+    }
+    if hosts.len() == MAX_ENDPOINTS { return None; }
+    hosts.push(HostIrq { abar_va, binding: Some(binding), refs: 1, active: 1 });
+    Some(hosts.len() - 1)
+}
+
+fn host_begin_release(idx: usize) -> bool {
+    let mut hosts = HOST_IRQS.lock();
+    let Some(host) = hosts.get_mut(idx) else { return false; };
+    if host.active == 0 { return false; }
+    host.active -= 1;
+    host.active == 0
+}
+
+fn host_release(idx: usize) -> Option<pci_irq::Binding> {
+    let mut hosts = HOST_IRQS.lock();
+    let host = hosts.get_mut(idx)?;
+    if host.refs == 0 { return None; }
+    host.refs -= 1;
+    if host.refs == 0 { host.binding.take() } else { None }
 }
 
 fn hard_handler() {
     let mut raise = false;
+    let mut media_event = false;
     let mut hosts = [(0u64, 0u32); MAX_ENDPOINTS];
     let mut host_count = 0usize;
     for endpoint in &ENDPOINTS {
@@ -92,6 +153,11 @@ fn hard_handler() {
                 core::ptr::write_volatile((port_base + regs::P_IS) as *mut u32, pis);
                 endpoint.pis.fetch_or(pis, Ordering::AcqRel);
                 endpoint.tfd.store(tfd, Ordering::Release);
+                if regs::irq_reports_link_change(pis) {
+                    endpoint.link_change.store(true, Ordering::Release);
+                    media_event = true;
+                    raise = true;
+                }
                 if regs::irq_finishes_slot(pis, ci, tfd) {
                     endpoint.complete.store(true, Ordering::Release);
                     endpoint.wake.store(true, Ordering::Release);
@@ -118,37 +184,61 @@ fn hard_handler() {
     // work to run from this IRQ tail.
     // Running BlockIo in that window re-enters scheduler-facing completion
     // machinery before the request owner has reached the wait protocol.
-    let wake_waiter = raise && ENDPOINTS.iter().any(|endpoint|
-        endpoint.waiters.has_waiters());
-    if wake_waiter {
+    let wake_waiter = ENDPOINTS.iter().any(|endpoint| endpoint.waiters.has_waiters());
+    if raise && (media_event || wake_waiter) {
         block::completion::raise();
     }
 }
 
 /// Bind one AHCI controller through the PCI IRQ owner. # C: O(N_caps)
 pub(crate) fn bind(bdf: pci::Bdf, ctrl: &Ahci) -> Option<IrqBinding> {
-    let shared = ENDPOINTS.iter().any(|endpoint|
-        endpoint.state.load(Ordering::Acquire) != ENDPOINT_FREE
-            && endpoint.abar_va.load(Ordering::Acquire) == ctrl.abar_va());
-    let endpoint = claim_endpoint(ctrl)?;
-    if shared {
+    let endpoint = claim_endpoint(ctrl.abar_va(), ctrl.port_index())?;
+    if let Some(host) = host_retain(ctrl.abar_va()) {
         ENDPOINTS[endpoint].state.store(ENDPOINT_ACTIVE, Ordering::Release);
         ctrl.enable_interrupts();
-        return Some(IrqBinding { endpoint, binding: None });
+        return Some(IrqBinding { endpoint, host });
     }
     let table = pci_irq::BarMapping { bar: 5, base_va: ctrl.abar_va(), bytes: ctrl.abar_map_bytes(), offset: ctrl.abar_offset() };
     let Some(binding) = pci_irq::request(bdf, table, arch_irq::DeviceAction::Ahci, hard_handler) else {
         release_endpoint(endpoint);
         return None;
     };
+    let Some(host) = host_insert(ctrl.abar_va(), binding) else {
+        binding.release();
+        release_endpoint(endpoint);
+        return None;
+    };
     ENDPOINTS[endpoint].state.store(ENDPOINT_ACTIVE, Ordering::Release);
     ctrl.enable_interrupts();
-    Some(IrqBinding { endpoint, binding: Some(binding) })
+    Some(IrqBinding { endpoint, host })
+}
+
+/// Bind an empty physical port solely for connect/PHY-ready notifications.
+/// The watcher owns no command or data DMA and converts to a disk endpoint
+/// before IDENTIFY on insertion. # C: O(N_caps)
+pub(crate) fn bind_watcher(bdf: pci::Bdf, host: &AhciHost, port: u32) -> Option<IrqBinding> {
+    let endpoint = claim_endpoint(host.abar_va(), port)?;
+    if let Some(index) = host_retain(host.abar_va()) {
+        ENDPOINTS[endpoint].state.store(ENDPOINT_ACTIVE, Ordering::Release);
+        host.enable_interrupts(1 << port);
+        return Some(IrqBinding { endpoint, host: index });
+    }
+    let table = pci_irq::BarMapping { bar: 5, base_va: host.abar_va(), bytes: host.abar_map_bytes(), offset: host.abar_offset() };
+    let Some(binding) = pci_irq::request(bdf, table, arch_irq::DeviceAction::Ahci, hard_handler) else {
+        release_endpoint(endpoint);
+        return None;
+    };
+    let Some(index) = host_insert(host.abar_va(), binding) else {
+        binding.release();
+        release_endpoint(endpoint);
+        return None;
+    };
+    ENDPOINTS[endpoint].state.store(ENDPOINT_ACTIVE, Ordering::Release);
+    host.enable_interrupts(1 << port);
+    Some(IrqBinding { endpoint, host: index })
 }
 
 impl IrqBinding {
-    /// Whether this endpoint owns the function-level PCI interrupt binding. # C: O(1)
-    pub(crate) const fn owns_host_irq(self) -> bool { self.binding.is_some() }
     /// Reset software completion state before a new doorbell. # C: O(1)
     pub(crate) fn prepare_command(self) {
         let endpoint = &ENDPOINTS[self.endpoint];
@@ -170,31 +260,45 @@ impl IrqBinding {
     /// Consume one hard-handler bottom-half wake request. # C: O(1)
     pub(crate) fn take_wake(self) -> bool { ENDPOINTS[self.endpoint].wake.swap(false, Ordering::AcqRel) }
 
+    /// Consume one connect/PHY-ready-change observation for this port. # C: O(1)
+    pub(crate) fn take_link_change(self) -> bool {
+        ENDPOINTS[self.endpoint].link_change.swap(false, Ordering::AcqRel)
+    }
+
     /// Command-completion wait queue owned by this IRQ endpoint. # C: O(1)
     pub(crate) fn waiters(self) -> &'static WaitList { &ENDPOINTS[self.endpoint].waiters }
 
-    #[cfg(feature = "debug-boot")]
-    /// Count terminal IRQ observations. # C: O(1)
-    pub(crate) fn completion_count(self) -> u64 { ENDPOINTS[self.endpoint].irq_count.load(Ordering::Acquire) }
-
     /// Mask AHCI sources and prevent a new hard-handler acquisition. # C: O(N_slots)
-    pub(crate) fn begin_release(self, ctrl: &Ahci) {
-        if self.owns_host_irq() { ctrl.disable_interrupts(); }
+    pub(crate) fn begin_release(self, host: &AhciHost, port: u32) {
         let endpoint = &ENDPOINTS[self.endpoint];
+        let mut transitioned = false;
         loop {
             match endpoint.state.compare_exchange(ENDPOINT_ACTIVE, ENDPOINT_SETUP, Ordering::AcqRel, Ordering::Acquire) {
-                Ok(_) | Err(ENDPOINT_SETUP) => break,
+                Ok(_) => { transitioned = true; break; }
+                Err(ENDPOINT_SETUP) => break,
                 Err(ENDPOINT_HANDLING) => core::hint::spin_loop(),
                 Err(_) => break,
             }
         }
+        if !transitioned { return; }
+        if host_begin_release(self.host) { host.disable_interrupts(1 << port); }
+        else { host.disable_port_interrupts(port); }
     }
 
     /// Drain the hard handler, release the PCI-owned vector, then free the endpoint. # C: O(handler)
     pub(crate) fn synchronize_and_release(self) {
         let endpoint = &ENDPOINTS[self.endpoint];
         while endpoint.in_handler.load(Ordering::Acquire) != 0 { core::hint::spin_loop(); }
-        if let Some(binding) = self.binding { binding.release(); }
+        let abar_va = endpoint.abar_va.load(Ordering::Acquire);
+        if let Some(binding) = host_release(self.host) {
+            while ENDPOINTS.iter().any(|other|
+                other.abar_va.load(Ordering::Acquire) == abar_va
+                    && other.in_handler.load(Ordering::Acquire) != 0)
+            {
+                core::hint::spin_loop();
+            }
+            binding.release();
+        }
         release_endpoint(self.endpoint);
     }
 }

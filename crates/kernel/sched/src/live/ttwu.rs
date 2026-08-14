@@ -6,120 +6,34 @@
 // idle CPUs at wake time so the idle AP picks it up without waiting a tick.
 
 use alloc::sync::Arc;
-use alloc::vec::Vec;
-use core::sync::atomic::{AtomicPtr, Ordering};
+use core::sync::atomic::Ordering;
 
 use crate::sched_enc::wakeup::{cand_of, wakeup_preempt};
 use crate::task::PendingWake;
 use crate::live::runqueue::{RqIrq, Runqueue};
 use crate::Task;
+#[cfg(feature = "debug-watchdog")]
+use crate::task::WakeDiagPhase;
 use super::runqueue::global_for;
 
-/// Per-CPU deferred-wake list (Linux `ttwu_queue` / `wake_list` +
-/// `sched_ttwu_pending`). A waker that must NOT place a task directly on a
-/// runqueue pushes it here and IPIs the target; the target enqueues it on its
-/// next `schedule()` drain. Used when:
-///   - the task is still finishing its switch-OFF on another CPU (`on_cpu`) —
-///     a direct enqueue could run it on two CPUs at once; or
-///   - the target is a REMOTE CPU — a waker must not take a peer's rq lock; or
-///   - the waker is the timer ISR (IF=0) — it must never block on a contended
-///     rq lock (the BSP-tick freeze).
-/// Never held across the rq inner lock or a context switch: the drain claims
-/// the whole chain in one atomic swap and is done, then `schedule()` takes
-/// `inner`.
-///
-/// Head of each CPU's lock-free wake list (Linux `llist_head`). A bare
-/// `AtomicPtr` chained through `Task::wake_next`; each linked node owns one
-/// strong reference, transferred in by `Arc::into_raw` and back out by
-/// `Arc::from_raw`.
-///
-/// This was a `Spinlock<Vec<Arc<Task>>>`, and both halves of that were wrong
-/// for the contexts involved. The timer ISR pushes here (`tick_poll_ktimers`
-/// waking `ktimers`), while `place_runnable` pushes and `schedule()` drains
-/// from process context — all taking the lock PLAINLY. A tick landing on a CPU
-/// whose process-context push already held the lock spins forever with IRQs
-/// masked, and it held that lock across `Vec::push`, i.e. across a possible
-/// allocation, which widened the window and took the allocator lock from hard
-/// IRQ as well (`06§3.1`; lockdep's `Runqueue` and `KMalloc` classes,
-/// `skizm.md` 3.1 #4 and 3.0).
-///
-/// Linux uses an `llist` here for exactly this reason: push is one cmpxchg and
-/// drain is one xchg, so neither side can block the other and no allocation is
-/// involved.
-static WAKE_LISTS: [AtomicPtr<Task>; cpu::MAX_CPUS] =
-    [const { AtomicPtr::new(core::ptr::null_mut()) }; cpu::MAX_CPUS];
+mod wake_list;
+pub use wake_list::wake_list_push;
+use wake_list::{wake_list_finish, wake_list_take};
+#[cfg(any(test, feature = "hosted"))]
+pub use wake_list::wake_list_drain;
 
-/// Push `task` onto CPU `cpu`'s deferred-wake list (Linux `llist_add` +
-/// `ttwu_queue_wakelist`). Caller IPIs `cpu` after. Lock-free and
-/// allocation-free, so it is safe from the timer ISR.
-///
-/// A task already linked is NOT pushed again: the pending drain will enqueue
-/// it, and the second waker set it Runnable before attempting this, so the
-/// drain that follows delivers that wake too — coalescing, not losing it. This
-/// is Linux's `llist_add` returning false, and it is what stops a double push
-/// from overwriting `wake_next` and cycling the list.
-/// # C: O(1)
-/// # Ctx: any, including hard IRQ
-pub fn wake_list_push(cpu: u32, task: Arc<Task>) {
-    let i = cpu as usize;
-    if i >= cpu::MAX_CPUS { return; }
-    if task
-        .on_wake_list
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        return; // already linked — its pending drain covers this wake
-    }
-    // Ownership of one strong ref moves into the list here; the drain takes it
-    // back out. Nothing else may drop it in between.
-    let raw = Arc::into_raw(task) as *mut Task;
-    loop {
-        let head = WAKE_LISTS[i].load(Ordering::Acquire);
-        // SAFETY: `raw` came from `Arc::into_raw` above and is not yet visible to any drain, so this CPU has exclusive access to its `wake_next`.
-        unsafe { (*raw).wake_next.store(head, Ordering::Relaxed); }
-        if WAKE_LISTS[i]
-            .compare_exchange_weak(head, raw, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-        {
-            return;
-        }
-    }
+#[cfg(feature = "debug-watchdog")]
+#[inline]
+pub(super) fn wake_diag_now_ns() -> u64 {
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+    { use hal::TimerOps; hal_x86_64::X86TimerOps::monotonic_ns().0 }
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+    { use hal::TimerOps; hal_aarch64::ArmTimerOps::monotonic_ns().0 }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    { 0 }
 }
 
-/// Drain CPU `cpu`'s deferred-wake list (Linux `llist_del_all` /
-/// `sched_ttwu_pending`). Called from `schedule()` on that CPU. Returns the
-/// claimed tasks; the empty fast path allocates nothing.
-///
-/// Order is LIFO, as Linux's `llist_del_all` also yields — the wake list is a
-/// staging area whose members are all made runnable together, so relative order
-/// carries no scheduling meaning (the CFS tree re-orders by vruntime anyway).
-/// # C: O(deferred)
-pub fn wake_list_drain(cpu: u32) -> Vec<Arc<Task>> {
-    let i = cpu as usize;
-    if i >= cpu::MAX_CPUS { return Vec::new(); }
-    let mut node = WAKE_LISTS[i].swap(core::ptr::null_mut(), Ordering::AcqRel);
-    if node.is_null() { return Vec::new(); }
-    let mut out = Vec::new();
-    while !node.is_null() {
-        // SAFETY: the swap above claimed the whole chain exclusively, so no other CPU can observe or free these nodes; `next` is read before the Arc is reconstituted.
-        let next = unsafe { (*node).wake_next.load(Ordering::Relaxed) };
-        // SAFETY: each linked node holds exactly one strong ref put there by `Arc::into_raw` in `wake_list_push`; this takes it back out, once.
-        let task = unsafe { Arc::from_raw(node as *const Task) };
-        // Released only now that the task is out of the list, so a waker racing
-        // here either lost the claim (and the enqueue below carries its wake)
-        // or wins it after this and pushes normally.
-        task.on_wake_list.store(false, Ordering::Release);
-        out.push(task);
-        node = next;
-    }
-    out
-}
 
-/// Linux `sched_ttwu_pending`: consume this CPU's wake-list after switch
-/// ownership is settled and enqueue each task exactly once. Called both before
-/// a pick and from `finish_task_switch`; the latter closes a wake arriving
-/// after the pre-pick drain but before the outgoing task clears `on_cpu`.
-///
 /// The per-task decision is made INSIDE the rq lock, immediately before the
 /// enqueue it authorises — Linux's structure exactly:
 ///
@@ -138,68 +52,87 @@ pub fn wake_list_drain(cpu: u32) -> Vec<Arc<Task>> {
 /// context switches, so a task cleared as "not executing" could be executing by
 /// the time the enqueue landed. That is precisely the `WARN_ON_ONCE(p->on_cpu)`
 /// Linux places at the activation point, and here it was fatal — `schedule()`
-/// then picks a task another CPU owns. Where Linux waits the switch out with
-/// `smp_cond_load_acquire`, this defers to the owner's wake-list instead: an
-/// unbounded cross-CPU spin under a held rq lock AB-BA's against a peer
-/// balancer wanting this same lock (the `-smp` hang this module's wake-list
-/// exists to avoid). Deferral loses no wake — the owner drains it once its own
-/// switch settles.
+/// then picks a task another CPU owns. The target waits for switch-off under
+/// its rq lock before activating the claimed task.
+///
+/// The producer-side `task_wake_lock` ends at the list publication.  Taking
+/// it again after `llist_del_all` would turn the claimed list into a detached
+/// local `Vec` while the target spins behind a waker: the task is no longer
+/// linked, but it has not reached activation.  Linux's pending callback does
+/// not reacquire `p->pi_lock`; its claimed llist is consumed under the target
+/// rq lock.  Affinity writers already serialize their mask update and
+/// relocation at the producer side, so the target consumes the published
+/// target snapshot without reopening that handoff.
 /// # C: O(deferred * log N)
 pub fn sched_ttwu_pending(cpu: u32, current: *mut Task, rq: &Runqueue) -> bool {
-    let drained = wake_list_drain(cpu);
-    if drained.is_empty() { return false; }
-    let mut deferred: Vec<Arc<Task>> = Vec::new();
-    let mut reroute: Vec<Arc<Task>> = Vec::new();
+    let mut node = wake_list_take(cpu);
+    if node.is_null() { return false; }
+    let mut requeue = [false; cpu::MAX_CPUS];
     let mut placed = false;
     let mut preempt = false;
-    for task in drained {
+    // Linux acquires the target rq once and walks the claimed llist under it.
+    // In particular, do not reacquire the producer's task-side wake lock here:
+    // it protects claim/CPU selection before publication, not target-side
+    // activation after the list transfer.
+    let mut inner = rq.inner.lock_irqsave::<RqIrq>();
+    while !node.is_null() {
+        // SAFETY: wake_list_take claimed this chain exclusively; read the next
+        // raw link before Arc::from_raw retakes this node's strong reference.
+        let next = unsafe { (*node).wake_next.load(Ordering::Relaxed) };
+        // SAFETY: wake_list_push transferred exactly one strong reference into
+        // each node, and this detached-chain walk consumes it exactly once.
+        let task = unsafe { Arc::from_raw(node as *const Task) };
+        task.on_wake_list.store(false, Ordering::Release);
+        #[cfg(feature = "debug-watchdog")]
+        task.wake_diag_mark(WakeDiagPhase::Drained, wake_diag_now_ns());
         // A task can sit on the remote wake list while an affinity writer
-        // narrows its mask. Take the same task lock as ttwu and test the
-        // target before acquiring this rq, preserving TaskWake -> Runqueue.
-        let _wake = task.task_wake_lock.lock_irqsave::<RqIrq>();
+        // narrows its mask. Its producer/affinity-side critical section
+        // publishes the selected target before list insertion; a later change
+        // is repaired by the affinity relocation path after this activation.
         let allowed = task.cpus_allowed.load(Ordering::Acquire);
         if !allowed.contains(cpu as usize) {
-            reroute.push(Arc::clone(&task));
+            let target = select_task_rq(&task) as usize;
+            requeue[target] |= wake_list_push(target as u32, task);
+            node = next;
             continue;
         }
-        let mut inner = rq.inner.lock_irqsave::<RqIrq>();
+        if core::ptr::eq(Arc::as_ptr(&task), current as *const Task) {
+            task.complete_wake();
+            node = next;
+            continue;
+        }
+        #[cfg(feature = "debug-watchdog")]
+        task.wake_diag_mark(WakeDiagPhase::Waiting, wake_diag_now_ns());
+        while matches!(task.pending_wake(current), PendingWake::Defer) {
+            core::hint::spin_loop();
+        }
         match task.pending_wake(current) {
             PendingWake::Drop  => {}
-            PendingWake::Defer => deferred.push(Arc::clone(&task)),
+            PendingWake::Defer => unreachable!(),
             PendingWake::Ready => {
                 // SAFETY: `current` is this CPU's running task, kept alive by
                 // the runqueue's strong reference for this locked decision.
                 let raw = rq.current.load(Ordering::Acquire);
                 let curr = if raw.is_null() { None } else { Some(cand_of(unsafe { &*raw })) };
+                #[cfg(feature = "debug-watchdog")]
+                task.wake_diag_mark(WakeDiagPhase::Activating, wake_diag_now_ns());
                 task.set_vruntime_to_floor(inner.cfs.min_vruntime());
                 preempt |= curr.is_none_or(|c| wakeup_preempt(cand_of(&task), c));
                 inner.enqueue(Arc::clone(&task));
                 placed = true;
             }
         }
-        rq.publish_nr_running(inner.nr_running());
+        node = next;
     }
-    // This wake was claimed while its old target was eligible, but an affinity
-    // change won before activation. It remains Runnable and unqueued, so the
-    // normal task-locked placement path may select its new eligible CPU.
-    for task in reroute {
-        // SAFETY: the task remains the sole claimed wake and is neither queued
-        // nor executing; the held task wake lock serializes CPU selection.
-        unsafe { place_runnable(Arc::clone(&task), false); }
+    rq.publish_nr_running(inner.nr_running());
+    let more = wake_list_finish(cpu);
+    drop(inner);
+    // Requeue wake-list work only after dropping the target rq lock. Linux's
+    // pending callback likewise never sends a reschedule IPI under rq lock.
+    for (target, queued) in requeue.into_iter().enumerate() {
+        if queued { resched_curr(target as u32); }
     }
-    // Re-queue still-executing tasks to their owner CPU, outside the rq lock so
-    // no reschedule IPI is ever sent from under it.
-    for task in deferred {
-        let owner = task.cpu.load(Ordering::Acquire) as u32;
-        let target = if owner < cpu::MAX_CPUS as u32
-            // SAFETY: `global_for` is sound for any index and returns `None` for
-            // a CPU that has not completed `install_global`; the range check
-            // above keeps the probe bounded.
-            && unsafe { global_for(owner) }.is_some() { owner } else { cpu };
-        wake_list_push(target, task);
-        resched_curr(target);
-    }
-    if placed && preempt { resched_curr(cpu); }
+    if more || (placed && preempt) { resched_curr(cpu); }
     placed
 }
 
@@ -415,6 +348,8 @@ unsafe fn ttwu_inner(task: Arc<Task>, force_defer: bool) -> bool {
         // this race at the state claim and performs no second placement.
         return false;
     }
+    #[cfg(feature = "debug-watchdog")]
+    task.wake_diag_mark(WakeDiagPhase::Claimed, wake_diag_now_ns());
     // Explicit wake clears any SO_*TIMEO deadline so the scanner doesn't re-rouse it.
     task.wakeup_deadline_ns.store(0, Ordering::Release);
     // debug-wakelat: stamp the exclusive wake claim + source so a later
@@ -481,14 +416,14 @@ where F: Fn(u32) -> Option<&'a Runqueue> {
         // Pick a real, installed CPU to own the deferred task; fall back to local.
         let tcpu = if get_rq(target).is_some() { target }
                    else if get_rq(me).is_some() { me }
-                   else { wake_list_push(target, task); return; };
-        wake_list_push(tcpu, task);
+                   else { let _ = wake_list_push(target, task); return; };
+        let kick = wake_list_push(tcpu, task);
         // Unconditional, and NOT a preemption decision: the target drains its
         // wake list from `schedule()`, so without this the task would never
         // reach a runqueue at all. The preemption decision is made on the
         // drain side, once the task is enqueued and `curr` is known there
         // (`sched_ttwu_pending`).
-        resched_curr(tcpu);
+        if kick { resched_curr(tcpu); }
         return;
     }
     // Local, settled (`on_cpu == false`, target == this CPU): direct enqueue —
@@ -512,6 +447,8 @@ where F: Fn(u32) -> Option<&'a Runqueue> {
             // SCHED_FIFO lose the CPU to an equal-priority peer and let a
             // SCHED_BATCH / SCHED_IDLE wakee preempt a SCHED_NORMAL task.
             preempt = curr.is_none_or(|c| wakeup_preempt(cand_of(&task), c));
+            #[cfg(feature = "debug-watchdog")]
+            task.wake_diag_mark(WakeDiagPhase::Activating, wake_diag_now_ns());
             inner.enqueue(task);
             rq.publish_nr_running(inner.nr_running());
         }

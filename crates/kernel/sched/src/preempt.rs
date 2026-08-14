@@ -1,7 +1,8 @@
 // Preempt-count machinery per `13§9`. `preempt_count` is per-CPU — a
-// `[_; MAX_CPUS]` slot indexed by the current CPU (`13§9`/`06§4`), swapped with
-// the incoming task's value at each switch, exactly as x86 Linux treats
-// `pcpu_hot.preempt_count`. `TIF_NEED_RESCHED` is NOT per-CPU: it lives on the
+// `[_; MAX_CPUS]` slot indexed by the current CPU (`13§9`/`06§4`), exactly as
+// current x86 Linux keeps `__preempt_count` in per-CPU `pcpu_hot` state. It is
+// never transferred between tasks in `__switch_to`: IRQ nesting belongs to the
+// CPU executing the entry/exit pair. `TIF_NEED_RESCHED` is NOT per-CPU: it lives on the
 // TASK (`resched`), because Linux stamps it on `rq->curr` and clears it on
 // `prev` at every `__schedule`.
 //
@@ -81,25 +82,6 @@ fn hosted_preempt<R>(f: impl FnOnce(&core::cell::Cell<u32>) -> R) -> R {
 /// `PREEMPT_DISABLED`.
 pub const PREEMPT_DISABLED: u32 = 1;
 
-/// The count every task carries THROUGH a context switch, and therefore the
-/// count a never-run task must start with — Linux `FORK_PREEMPT_COUNT`, and
-/// the invariant `finish_task_switch` asserts (`preempt_count() ==
-/// 2*PREEMPT_DISABLE_OFFSET`). TWO levels, because a switching task is inside
-/// both:
-///
-/// ```text
-///   schedule()
-///     preempt_disable()          // 1
-///     rq.inner.lock()            // 2  (spin_lock disables preemption)
-/// ```
-///
-/// The incoming task pays both back: `raw_unlock` of the forgotten rq guard
-/// drops one, and the switcher's own enable drops the other. A first-run task
-/// reaches that same tail without having taken either, so starting it at one
-/// level makes its very first switch underflow the count — which pins
-/// `preemptible()` false forever and stops that CPU rescheduling.
-pub const FORK_PREEMPT_COUNT: u32 = 2 * PREEMPT_DISABLED;
-
 /// `CONFIG_DEBUG_PREEMPT` subset — the two count-leak detectors.
 #[cfg(feature = "debug-preempt")]
 pub mod debug;
@@ -120,13 +102,6 @@ fn preempt_count_load() -> u32 {
     { return hosted_preempt(core::cell::Cell::get); }
     #[cfg(target_os = "oxide-kernel")]
     { preempt_count_slot().load(Ordering::Acquire) }
-}
-
-fn preempt_count_swap_local(incoming: u32) -> u32 {
-    #[cfg(not(target_os = "oxide-kernel"))]
-    { return hosted_preempt(|count| count.replace(incoming)); }
-    #[cfg(target_os = "oxide-kernel")]
-    { preempt_count_slot().swap(incoming, Ordering::AcqRel) }
 }
 
 fn preempt_count_add_local(n: u32) {
@@ -178,15 +153,6 @@ pub unsafe fn set_schedule_hook(hook: unsafe fn()) {
 /// Current preempt count on this CPU.
 /// # C: O(1)
 pub fn preempt_count() -> u32 { preempt_count_load() }
-
-/// Swap this CPU's live count for the incoming task's, returning the outgoing
-/// task's value to be stored on it. Called from `schedule()` around the context
-/// switch — the per-CPU slot is a cache of the *running* task's count, exactly
-/// as x86 Linux treats `pcpu_hot.preempt_count` and swaps it in `__switch_to`.
-/// # C: O(1)
-pub fn preempt_count_swap(incoming: u32) -> u32 {
-    preempt_count_swap_local(incoming)
-}
 
 /// Replace this CPU's live count after a diagnosed accounting violation.
 /// The scheduler and softirq runner are the only recovery owners; ordinary

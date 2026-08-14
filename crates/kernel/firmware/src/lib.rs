@@ -62,6 +62,7 @@ pub unsafe fn fire_add_cpu(id: u32, flags: u32) -> bool {
 
 pub use acpi::try_log_acpi;
 pub use acpi::RsdpStatus;
+pub use acpi::poweroff_action;
 
 // ---- I/O APIC + legacy-IRQ routing captured from the MADT ----------
 // x86 only in practice; arm has no I/O APIC. Populated by decode_madt
@@ -242,6 +243,9 @@ pub(crate) fn set_reset_action(a: acpi::ResetAction) {
         RESET_VALUE.store(value as u32, Ordering::Release);
     }
 }
+
+/// Retain the validated FADT registers used to build the terminal S5 action. # C: O(1)
+pub(crate) fn set_power_registers(registers: acpi::PowerRegisters) { acpi::set_power_registers(registers); }
 
 /// Record one I/O APIC from the MADT in firmware enumeration order. # C: O(1)
 pub(crate) fn set_ioapic(id: u8, pa: u32, gsi_base: u32) {

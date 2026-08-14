@@ -479,13 +479,8 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
         klog::write_raw(b"\n");
     }
     #[cfg(feature = "debug-execload")]
-    {
-        klog::write_raw(b"[EXECLOAD ready tid=");
-        klog::write_dec_u64(cur.tid as u64);
-        klog::write_raw(b" entry=");
-        klog::write_hex_u64(img.entry.as_u64());
-        klog::write_raw(b"]\n");
-    }
+    super::trace::ready(cur.tid, new_root, img.entry.as_u64(), img.phdr_va,
+                         img.interp_base, new_sp);
     #[cfg(feature = "debug-heappoison")]
     if let Some(bad) = kalloc::validate_global() {
         klog::write_raw(b"[KALLOC-BISECT] free list broke by tid=");

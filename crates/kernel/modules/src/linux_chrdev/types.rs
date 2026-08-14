@@ -7,6 +7,7 @@ pub(super) const LINUX_ENODEV: i32 = 19;
 pub(super) const LINUX_ENOMEM: i32 = 12;
 pub(super) const LINUX_EBUSY: i32 = 16;
 pub(super) const LINUX_ENXIO: i32 = 6;
+pub(super) const LINUX_ENOIOCTLCMD: i32 = 515;
 
 pub(super) const LINUX_MINORBITS: u32 = 20;
 pub(super) const LINUX_MINORMASK: u32 = (1 << LINUX_MINORBITS) - 1;
@@ -54,6 +55,7 @@ pub(super) type LinuxWrite = unsafe extern "C" fn(*mut LinuxFile, *const c_char,
 pub(super) type LinuxIoctl = unsafe extern "C" fn(*mut LinuxFile, u32, usize) -> isize;
 pub(super) type LinuxPoll = unsafe extern "C" fn(*mut LinuxFile, *mut c_void) -> u32;
 pub(super) type LinuxMmap = unsafe extern "C" fn(*mut LinuxFile, *mut c_void) -> i32;
+pub(super) type LinuxUringCmd = unsafe extern "C" fn(*mut c_void, u32) -> i32;
 
 #[repr(C)]
 pub(super) struct LinuxFileOperations {
@@ -69,18 +71,21 @@ pub(super) struct LinuxFileOperations {
     _iterate_shared: *mut c_void,
     pub(super) poll: Option<LinuxPoll>,
     pub(super) unlocked_ioctl: Option<LinuxIoctl>,
-    _compat_ioctl: *mut c_void,
+    pub(super) _compat_ioctl: *mut c_void,
     pub(super) mmap: Option<LinuxMmap>,
     pub(super) open: Option<LinuxOpen>,
     _flush: *mut c_void,
     pub(super) release: Option<LinuxRelease>,
-    _tail: [u8; 144],
+    _tail_before_uring: [u8; 120],
+    pub(super) uring_cmd: Option<LinuxUringCmd>,
+    _uring_cmd_iopoll: *mut c_void,
+    _mmap_prepare: *mut c_void,
 }
 
 impl LinuxFileOperations {
     #[cfg(test)]
     pub(super) const fn new(open: Option<LinuxOpen>, read: Option<LinuxRead>, write: Option<LinuxWrite>, ioctl: Option<LinuxIoctl>, release: Option<LinuxRelease>, poll: Option<LinuxPoll>, mmap: Option<LinuxMmap>) -> Self {
-        Self { owner: core::ptr::null_mut(), fop_flags: 0, _owner_pad: 0, llseek: core::ptr::null_mut(), read, write, _read_iter: core::ptr::null_mut(), _write_iter: core::ptr::null_mut(), _iopoll: core::ptr::null_mut(), _iterate_shared: core::ptr::null_mut(), poll, unlocked_ioctl: ioctl, _compat_ioctl: core::ptr::null_mut(), mmap, open, _flush: core::ptr::null_mut(), release, _tail: [0; 144] }
+        Self { owner: core::ptr::null_mut(), fop_flags: 0, _owner_pad: 0, llseek: core::ptr::null_mut(), read, write, _read_iter: core::ptr::null_mut(), _write_iter: core::ptr::null_mut(), _iopoll: core::ptr::null_mut(), _iterate_shared: core::ptr::null_mut(), poll, unlocked_ioctl: ioctl, _compat_ioctl: core::ptr::null_mut(), mmap, open, _flush: core::ptr::null_mut(), release, _tail_before_uring: [0; 120], uring_cmd: None, _uring_cmd_iopoll: core::ptr::null_mut(), _mmap_prepare: core::ptr::null_mut() }
     }
 }
 

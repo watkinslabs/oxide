@@ -15,7 +15,7 @@ klog = { path = "../../shared/klog" }
 sync = { path = "../../shared/sync" }
 pci  = { path = "../../drivers/pci" }
 ext4 = { path = "../ext4" }
-aml = "0.16.4"
+aml = { path = "../../../vendor/rust/aml-0.16.4" }
 
 [features]
 default = []

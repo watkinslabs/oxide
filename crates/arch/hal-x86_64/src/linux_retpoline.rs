@@ -37,6 +37,12 @@ core::arch::global_asm!(
     "    jmp rdx",
     ".size __x86_indirect_thunk_rdx, . - __x86_indirect_thunk_rdx",
 
+    ".globl __x86_indirect_thunk_rsi",
+    ".type  __x86_indirect_thunk_rsi, @function",
+    "__x86_indirect_thunk_rsi:",
+    "    jmp rsi",
+    ".size __x86_indirect_thunk_rsi, . - __x86_indirect_thunk_rsi",
+
     ".globl __x86_indirect_thunk_r8",
     ".type  __x86_indirect_thunk_r8, @function",
     "__x86_indirect_thunk_r8:",
@@ -54,6 +60,12 @@ core::arch::global_asm!(
     "__x86_indirect_thunk_r12:",
     "    jmp r12",
     ".size __x86_indirect_thunk_r12, . - __x86_indirect_thunk_r12",
+
+    ".globl __x86_indirect_thunk_r13",
+    ".type  __x86_indirect_thunk_r13, @function",
+    "__x86_indirect_thunk_r13:",
+    "    jmp r13",
+    ".size __x86_indirect_thunk_r13, . - __x86_indirect_thunk_r13",
 
     ".globl __x86_indirect_thunk_r14",
     ".type  __x86_indirect_thunk_r14, @function",

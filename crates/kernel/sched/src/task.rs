@@ -67,6 +67,8 @@ pub use restart::RestartBlock;
 pub use signals::{SaHandler, SigActions, SignalPending, SA_IMMUTABLE, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK};
 pub use sigwake::{SleepWake, WaitOutcome, WaitState, signal_pending_state};
 pub use types::{SchedClass, SchedPolicy, SigInfo, TaskState, RT_QUEUE_CAP};
+#[cfg(feature = "debug-watchdog")]
+pub use types::WakeDiagPhase;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PendingWake { Drop, Ready, Defer }
@@ -98,6 +100,12 @@ pub struct Task {
     /// the subsequent CPU-selection/enqueue decision. This is the task wake
     /// serialization boundary; it is acquired before a runqueue lock.
     pub task_wake_lock: Spinlock<(), TaskWakeClass>,
+    /// Diagnostic-only phase/timestamp for a claimed wake.  Absent outside
+    /// watchdog builds so it cannot alter the scheduler's steady-state layout.
+    #[cfg(feature = "debug-watchdog")]
+    pub wake_diag_phase: AtomicU8,
+    #[cfg(feature = "debug-watchdog")]
+    pub wake_diag_ns: AtomicU64,
     pub on_rq:    AtomicBool,
     /// SMP `on_cpu` (Linux): true while executing on a CPU; set on switch-to,
     /// cleared in finish_task_switch after register save; remote ttwu spins on it.
@@ -795,23 +803,6 @@ pub struct Task {
     /// through to this field rather than to `class_enc`, so the new base takes
     /// effect at deboost instead of being clobbered by it.
     pub pi_base_class: AtomicU64,
-
-    /// Saved `preempt_count` while this task is NOT running (Linux keeps it in
-    /// `thread_info`; x86 caches it per-CPU and swaps it in `__switch_to`, which
-    /// is the model used here).
-    ///
-    /// It must be per-task or the fields leak between tasks: anything that parks
-    /// inside `do_softirq` — between the `SOFTIRQ_OFFSET` add and its matching
-    /// sub — left the softirq field set for whatever ran next on that CPU.
-    /// `in_interrupt()` then reported true there forever, so that CPU silently
-    /// stopped draining softirqs and stopped rescheduling, and the eventual
-    /// `preempt_count_sub` underflowed. Measured as an idle CPU pinned at
-    /// `preempt_count=0x00010000` with nothing runnable.
-    ///
-    /// Live value lives in the per-CPU slot while the task runs; `schedule()`
-    /// saves it here on switch-out and restores the incoming task's on
-    /// switch-in.
-    pub preempt_count: AtomicU32,
 
     /// Linux `PR_SET_NO_NEW_PRIVS` flag. Once set, the task and its
     /// descendants can no longer gain privileges via setuid binaries

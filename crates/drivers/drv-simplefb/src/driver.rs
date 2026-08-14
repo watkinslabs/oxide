@@ -3,7 +3,7 @@ use boot_info::BootFramebuffer;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use sync::{Spinlock, TaskList as DriverLockClass};
 
-use crate::format;
+use crate::{format, mode};
 
 const PLATFORM_BUS: &str = "platform";
 const DEVICE_ADDR: &str = "simple-framebuffer.0";
@@ -116,9 +116,8 @@ impl drv::Driver for SimpleFbDriver {
 
     fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
         let fb = *CONFIG.lock();
-        let bytes = fb.byte_len().ok_or(drv::Error::Invalid)?;
-        let end = fb.base_pa.checked_add(bytes - 1).ok_or(drv::Error::Invalid)?;
-        if !dev.resources.iter().any(|r| r.flags & drv::IORESOURCE_MEM != 0 && r.start <= fb.base_pa && r.end >= end) {
+        let (base, end) = fb.aperture().ok_or(drv::Error::Invalid)?;
+        if !dev.resources.iter().any(|r| r.flags & drv::IORESOURCE_MEM != 0 && r.start <= base && r.end >= end) {
             return Err(drv::Error::Invalid);
         }
         attach_firmware_scanout(fb, dev)
@@ -205,7 +204,11 @@ impl drm::DrmDriver for SimpleDrm {
     fn connector_ids(&self) -> Vec<u32> { alloc::vec![drm::connector_id_for(0)] }
     fn encoder_ids(&self) -> Vec<u32> { alloc::vec![drm::encoder_id_for(0)] }
     fn plane_ids(&self) -> Vec<u32> { alloc::vec![drm::plane_id_for(0)] }
-    fn mode_for(&self, _idx: usize) -> drm::DrmModeModeinfo { drm::mode_from_rect(self.width, self.height) }
+    fn scanout_formats(&self) -> Vec<u32> { alloc::vec![drm::DRM_FORMAT_XRGB8888] }
+    fn mode_for(&self, _idx: usize) -> drm::DrmModeModeinfo { mode::firmware_mode(self.width, self.height) }
+    fn mode_valid(&self, idx: usize, requested: &drm::DrmModeModeinfo) -> bool {
+        idx == 0 && mode::fixed_mode_valid(requested, self.width, self.height)
+    }
     fn connector_info(&self, idx: usize) -> Option<drm::ConnectorInfo> {
         (idx == 0).then_some(drm::ConnectorInfo { connection: drm::DRM_MODE_CONNECTED,
             connector_type: drm::DRM_MODE_CONNECTOR_UNKNOWN, encoder_id: drm::encoder_id_for(0), mm_width: 0, mm_height: 0 })
@@ -225,7 +228,7 @@ impl drm::DrmDriver for SimpleDrm {
 fn create_from_pa(_key: drm::node::ScanoutDriverKey, pa: u64, width: u32, height: u32, pitch: u32, format: u32) -> Option<u32> {
     let live = LIVE.lock();
     if width != live.as_ref()?.fb.width || height != live.as_ref()?.fb.height || pitch < width.checked_mul(4)?
-        || !matches!(format, drm::DRM_FORMAT_XRGB8888 | drm::DRM_FORMAT_ARGB8888) { return None; }
+        || format != drm::DRM_FORMAT_XRGB8888 { return None; }
     drop(live);
     let id = NEXT_RESOURCE.fetch_add(1, Ordering::AcqRel);
     if id == 0 { return None; }
@@ -243,7 +246,7 @@ fn destroy_resource(_key: drm::node::ScanoutDriverKey, id: u32) -> bool {
 fn present_drm(_key: drm::node::ScanoutDriverKey, id: u32, width: u32, height: u32, damage: drm::node::DamageRect) -> bool {
     let resources = RESOURCES.lock();
     let Some(resource) = resources.iter().find(|resource| resource.id == id && resource.width == width && resource.height == height
-        && matches!(resource.format, drm::DRM_FORMAT_XRGB8888 | drm::DRM_FORMAT_ARGB8888)) else { return false; };
+        && resource.format == drm::DRM_FORMAT_XRGB8888) else { return false; };
     let bytes = match u64::from(resource.pitch).checked_mul(u64::from(resource.height)) { Some(bytes) => bytes, None => return false };
     let src_va = match pmm::user_as::hhdm_offset().checked_add(resource.pa) { Some(va) => va, None => return false };
     // SAFETY: the DRM dumb-buffer lifetime owns this contiguous PMM range until

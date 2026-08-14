@@ -101,15 +101,15 @@ impl SndProbeFrames {
             rx_scratch_pa: 0,
             owned: true,
         };
-        frames.scratch_pa = pmm::setup::alloc_one_frame()?;
-        frames.event_buf_pa = pmm::setup::alloc_one_frame()?;
+        frames.scratch_pa = pmm::setup::alloc_raw_frame()?;
+        frames.event_buf_pa = pmm::setup::alloc_raw_frame()?;
         if need_tx {
-            frames.tx_buf_pa = pmm::setup::alloc_one_frame()?;
-            frames.tx_scratch_pa = pmm::setup::alloc_one_frame()?;
+            frames.tx_buf_pa = pmm::setup::alloc_raw_frame()?;
+            frames.tx_scratch_pa = pmm::setup::alloc_raw_frame()?;
         }
         if need_rx {
-            frames.rx_buf_pa = pmm::setup::alloc_one_frame()?;
-            frames.rx_scratch_pa = pmm::setup::alloc_one_frame()?;
+            frames.rx_buf_pa = pmm::setup::alloc_raw_frame()?;
+            frames.rx_scratch_pa = pmm::setup::alloc_raw_frame()?;
         }
         Some(frames)
     }

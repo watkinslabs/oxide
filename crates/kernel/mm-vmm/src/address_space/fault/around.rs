@@ -79,20 +79,16 @@ impl AddressSpace {
                 }
             };
             if !frame.map_ref_held { inc_ref(frame.pa); }
-            // Revalidate after acquiring the cache reference. The lookup is
-            // nonblocking, but a peer fault may have populated this mm.
-            if M::translate(Va(va)).is_some() {
+            // The backing lookup can race a normal fault.  Its final PTE
+            // recheck must be serialized with the install, otherwise M::map
+            // would replace a peer's leaf.
+            let installed = unsafe {
+                self.map_if_absent::<M>(Va(va), Pa(frame.pa), flags, PageSize::P4K)
+            };
+            if installed {
+                self.accounting.install_pte(vma);
+            } else {
                 dec_ref(frame.pa);
-                va += PAGE_SIZE_BYTES;
-                continue;
-            }
-            // SAFETY: va is page-aligned and inside the cloned VMA; the
-            // backing supplied a retained, page-aligned cache frame.
-            let replaced = unsafe { M::map(Va(va), Pa(frame.pa), flags, PageSize::P4K) };
-            if replaced.is_none() { self.accounting.install_pte(vma); }
-            if let Some(old) = replaced {
-                hal::tlb::shootdown_others_va(va, self.cpumask_full().as_words());
-                dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
             }
             va += PAGE_SIZE_BYTES;
         }

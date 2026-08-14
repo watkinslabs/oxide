@@ -26,7 +26,7 @@ use crate::io_uring_abi::enter::sq_index_valid;
 use crate::io_uring_abi::link::{disables_drain, posts_cqe, wants_drain, Action, Chain};
 use crate::io_uring_abi::ops::*;
 use crate::io_uring_abi::uapi::IORING_SETUP_SUBMIT_ALL;
-use crate::io_uring_sqe::{Sqe, SQE_BYTES};
+use crate::io_uring_sqe::{Sqe, SQE_BYTES, SQE_MAX_BYTES};
 
 use super::cqe::Cqe;
 use super::ctx::{state, IoUringInode};
@@ -61,15 +61,17 @@ fn next_sqe(inode: &IoUringInode, cursor: &mut u32) -> Option<(Sqe, u32, u32)> {
             continue;
         }
         let at = r.sqe_at(idx);
-        let mut b = [0u8; SQE_BYTES];
+        let mut b = [0u8; SQE_MAX_BYTES];
         // SAFETY: sqe_at masks the index into the SQE region, which is HHDM-mapped for the ring's lifetime; the ring lock serialises kernel readers.
         unsafe { core::ptr::copy_nonoverlapping(at as *const u8, b.as_mut_ptr(), SQE_BYTES); }
-        // Decoded here rather than in the caller so the 64-byte wire image
-        // does not sit in the frame that every operation runs beneath. Only
-        // the first 64 bytes are decoded on any ring: no operation reads the
-        // second half of a 128-byte entry yet, and the entries ladder is what
-        // decides whether that half exists at all.
-        return Some((Sqe::from_bytes(&b), idx, r.sq_entries));
+        if crate::io_uring_abi::sqe_slot::op_is_128(b[0]) {
+            let tail = if r.sqe_size as usize == SQE_MAX_BYTES { at + SQE_BYTES as u64 } else { r.sqe_at(idx.wrapping_add(1)) };
+            // SAFETY: admission checks the continuation slot before it can execute; the selected tail is the adjacent half of this SQE128 image.
+            unsafe { core::ptr::copy_nonoverlapping(tail as *const u8, b.as_mut_ptr().add(SQE_BYTES), SQE_BYTES); }
+        }
+        // Decoded here rather than in the caller so the complete command wire
+        // image does not sit in the frame that every operation runs beneath.
+        return Some((Sqe::from_wire(&b), idx, r.sq_entries));
     }
 }
 

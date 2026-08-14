@@ -66,6 +66,7 @@ pub mod poll;
 pub mod mshot;
 pub mod cancel;
 pub mod iopoll;
+pub mod linux_cmd;
 
 pub use ctx::IoUringInode;
 pub use ring::{make_io_uring_inode, mmap_backing, ring_ctx, ring_of, IoUring};

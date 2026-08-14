@@ -123,6 +123,27 @@ pub fn register_pci_msi_handler(irq: u32, action: crate::irqstat::DeviceAction, 
     }
 }
 
+/// Install one PCI MSI handler with the binding-owned context argument.
+/// # C: O(N_irq_slots)
+pub fn register_pci_msi_context_handler(irq: u32, action: crate::irqstat::DeviceAction,
+    handler: fn(usize), arg: usize) -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let installed = u8::try_from(irq).ok().is_some_and(|vector|
+            super::msi_context::register_x86(vector, handler, arg).is_ok());
+        if installed { let _ = crate::irqstat::register_msi(irq, action); }
+        return installed;
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        let installed = super::msi_context::register_arm(irq, handler, arg).is_ok();
+        if installed { let _ = crate::irqstat::register_msi(irq, action); }
+        return installed;
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    { let _ = (irq, action, handler, arg); false }
+}
+
 /// Remove the handler and release one PCI message ID.
 /// # C: O(N_irq_slots)
 pub fn free_pci_msi(irq: u32) {
@@ -242,7 +263,7 @@ mod arm {
             {
                 continue;
             }
-            let itt_pa = match pmm::setup::alloc_one_frame() {
+            let itt_pa = match pmm::setup::alloc_raw_frame() {
                 Some(pa) => pa,
                 None => {
                     DEVICE_IDS[i].store(0, Ordering::Release);

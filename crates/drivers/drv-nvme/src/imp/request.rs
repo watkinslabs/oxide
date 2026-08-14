@@ -11,7 +11,30 @@ pub(super) struct Requests {
 
 impl Requests {
     pub(super) const fn new() -> Self { Self { pending: Vec::new(), deferred: Vec::new(), dispatching: false } }
+
+    fn has_expired_pending(&self, now_ns: u64) -> bool {
+        self.pending.iter().any(|request| crate::lifecycle::async_deadline_expired(now_ns, request.deadline_ns))
+    }
+
+    fn timeout_action(&mut self, now_ns: u64) -> Option<TimeoutAction> {
+        let request = self.pending.iter_mut().find(|request|
+            crate::lifecycle::async_timeout_action(now_ns, request.deadline_ns, request.abort_started).is_some())?;
+        match crate::lifecycle::async_timeout_action(now_ns, request.deadline_ns, request.abort_started)? {
+            crate::lifecycle::AsyncTimeoutAction::Abort => {
+                request.abort_started = true;
+                request.deadline_ns = now_ns.saturating_add(wait::IO_TIMEOUT_NS);
+                Some(TimeoutAction::Abort(request.cid))
+            }
+            crate::lifecycle::AsyncTimeoutAction::Reset => Some(TimeoutAction::Reset),
+        }
+    }
+
+    fn abort_owner_still_live(&self, cid: u16) -> bool {
+        self.pending.iter().any(|request| request.cid == cid && request.abort_started)
+    }
 }
+
+pub(super) enum TimeoutAction { Abort(u16), Reset }
 
 struct PendingRequest {
     cid: u16,
@@ -20,6 +43,8 @@ struct PendingRequest {
     completion: BlockCompletion,
     write: bool,
     len: usize,
+    deadline_ns: u64,
+    abort_started: bool,
 }
 
 struct DeferredRequest {
@@ -136,7 +161,11 @@ impl NvmeBlk {
         // The controller lock stays held from doorbell publication through this
         // insertion. CQ draining takes this same lock first, so a fast CQE can
         // never be retired before its CID owns this canonical record.
-        requests.pending.push(PendingRequest { cid, dma: dma.take(), request, completion, write: plan.write, len: plan.len });
+        let deadline_ns = wait::now_ns().saturating_add(wait::IO_TIMEOUT_NS);
+        requests.pending.push(PendingRequest {
+            cid, dma: dma.take(), request, completion, write: plan.write, len: plan.len,
+            deadline_ns, abort_started: false,
+        });
         Ok(())
     }
 
@@ -207,6 +236,7 @@ impl NvmeBlk {
 
     fn take_completed(&self) -> Result<Option<(PendingRequest, u16)>, ()> {
         let mut ctrl = self.ctrl.lock();
+        if self.unavailable() { return Ok(None); }
         let Some(cqe) = ctrl.reap_io() else { return Ok(None); };
         let (cq_pa, cq_head, cq_phase) = ctrl.io_cq_cursor();
         self.irq.configure_cq(cq_pa, cq_head, cq_phase);
@@ -243,9 +273,43 @@ impl NvmeBlk {
         for deferred in deferred { (deferred.completion)(deferred.request, Err(BlockError::Eio)); }
     }
 
+    /// Whether the canonical CID owner has crossed its asynchronous deadline.
+    /// # C: O(in-flight commands)
+    pub(super) fn has_expired_async_request(&self, now_ns: u64) -> bool {
+        self.requests.lock().has_expired_pending(now_ns)
+    }
+
+    /// Timeout-worker decision after a completion poll. It marks a first
+    /// expiry before the Admin Abort is posted, so duplicate workers cannot
+    /// publish two aborts for one CID.
+    /// # C: O(in-flight commands)
+    pub(super) fn timeout_action(&self, now_ns: u64) -> Option<TimeoutAction> {
+        self.requests.lock().timeout_action(now_ns)
+    }
+
+    /// Submit an Admin Abort only while the CID remains canonically owned.
+    /// The controller lock excludes CQ retirement between that recheck and
+    /// doorbell publication; completion holds the same lock before dropping
+    /// the owner.
+    /// # C: O(one bounded admin command)
+    pub(super) fn abort_owned_request(&self, cid: u16) -> bool {
+        let mut ctrl = self.ctrl.lock();
+        if self.unavailable() { return true; }
+        if !self.requests.lock().abort_owner_still_live(cid) { return true; }
+        ctrl.abort_io(cid)
+    }
+
     /// Drain every CQE that the hard IRQ made visible. # C: O(completions)
     pub(crate) fn completion_bottom_half(&self) {
         if !self.irq.take_wake() { return; }
+        self.drain_completions();
+    }
+
+    /// Timeout recovery first polls the CQ before treating a request as lost.
+    /// # C: O(completions)
+    pub(super) fn poll_completions(&self) { self.drain_completions(); }
+
+    fn drain_completions(&self) {
         loop {
             match self.take_completed() {
                 Ok(Some((pending, status))) => {
@@ -254,8 +318,7 @@ impl NvmeBlk {
                 }
                 Ok(None) => return,
                 Err(()) => {
-                    self.poisoned.store(true, Ordering::Release);
-                    self.quiesce_and_free();
+                    self.recover_terminal_failure();
                     return;
                 }
             }
@@ -272,8 +335,11 @@ impl NvmeBlk {
         }));
         let deadline = wait::now_ns().saturating_add(wait::IO_TIMEOUT_NS);
         while !state.done.load(Ordering::Acquire) {
-            if self.unavailable() || wait::now_ns() >= deadline {
-                self.poisoned.store(true, Ordering::Release);
+            if self.unavailable() {
+                return Err(BlockError::Eio);
+            }
+            if crate::lifecycle::deadline_expired(state.done.load(Ordering::Acquire), wait::now_ns(), deadline) {
+                self.mark_recovery_required();
                 return Err(BlockError::Eio);
             }
             if !wait::poll_enabled(|| state.done.load(Ordering::Acquire), deadline) {

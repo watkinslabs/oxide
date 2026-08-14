@@ -52,6 +52,26 @@ impl DeviceTopology {
         if hub_port == 0 || hub_port > 15 || self.route & 0xf0000 != 0 { return None; }
         Some(Self { root_port: self.root_port, route: (self.route << 4) | hub_port as u32 })
     }
+
+    /// Whether `self` names `candidate` or one of its physical descendants.
+    /// # C: O(hub depth)
+    pub const fn contains(self, candidate: Self) -> bool {
+        if self.root_port != candidate.root_port { return false; }
+        let mut route = candidate.route;
+        loop {
+            if route == self.route { return true; }
+            if route == 0 { return false; }
+            route >>= 4;
+        }
+    }
+
+    /// Number of downstream-hub links below the root port. # C: O(hub depth)
+    pub const fn depth(self) -> u8 {
+        let mut route = self.route;
+        let mut depth = 0;
+        while route != 0 { depth += 1; route >>= 4; }
+        depth
+    }
 }
 
 /// Endpoint transfer type represented by an xHCI endpoint context. # C: O(1)
@@ -249,6 +269,20 @@ mod tests {
         assert_eq!(words[1], ContextWord { offset: 64, value: SLOT_LAST_CONTEXT_EP0 | (3 << SLOT_SPEED_SHIFT) | 0x42 });
         assert_eq!(words[2], ContextWord { offset: 68, value: 3 << SLOT_ROOT_HUB_PORT_SHIFT });
         assert!(DeviceTopology::root(1).unwrap().child(16).is_none());
+    }
+
+    #[test]
+    fn topology_contains_exact_branch_and_orders_descendants() {
+        let root = DeviceTopology::root(3).unwrap();
+        let hub = root.child(4).unwrap();
+        let child = hub.child(2).unwrap();
+        assert!(root.contains(root));
+        assert!(root.contains(child));
+        assert!(hub.contains(child));
+        assert!(!child.contains(hub));
+        assert!(!hub.contains(DeviceTopology::root(4).unwrap()));
+        assert_eq!(root.depth(), 0);
+        assert_eq!(child.depth(), 2);
     }
 
     #[test]

@@ -40,9 +40,7 @@ impl UsbDevice {
     pub(crate) fn new(controller: &Arc<Controller>, mut device: Box<AddressDeviceDma>) -> Arc<Self> {
         let slot = device.slot();
         let layout = device.take_hid_layout();
-        let evdev = crate::probe_input::install_hid_input(controller.bdf, slot, layout.as_deref().copied());
-        let input_platform = evdev.map(|_| crate::probe_input::platform_id(controller.bdf, slot));
-        Arc::new(Self { _controller: Arc::downgrade(controller), state: Spinlock::new(UsbDeviceState { device, slot, decoder: layout.map(|layout| Box::new(crate::hid_report::ReportDecoder::new(layout))), evdev, input_platform, storage_name: None }) })
+        Arc::new(Self { _controller: Arc::downgrade(controller), state: Spinlock::new(UsbDeviceState { device, slot, decoder: layout.map(|layout| Box::new(crate::hid_report::ReportDecoder::new(layout))), evdev: None, input_platform: None, storage_name: None }) })
     }
 
     pub(crate) fn with_transport<T>(&self, f: impl FnOnce(&Mmio, Binding, &CommandTransport, &mut UsbDeviceState) -> T) -> Option<T> {
@@ -74,6 +72,9 @@ pub(crate) type XhciBh = sync::NoopBh;
 pub(crate) fn add_usb_device(state: &mut ControllerState, device: Arc<UsbDevice>) -> Arc<UsbDevice> {
     state.devices.push(Arc::clone(&device));
     if device.state.lock_bh::<XhciBh>().device.hub_events_pending() { crate::probe_hub::queue_hub_work(); }
+    if device.state.lock_bh::<XhciBh>().decoder.is_some() && !crate::hid_input_work::queue_hid_input_work() {
+        let _ = crate::root_hub::queue_root_work();
+    }
     device
 }
 
@@ -273,13 +274,6 @@ fn configure_hub_device(mmio: &Mmio, command: &CommandTransport, irq: Binding, d
     irq.wait_command_completion(command_pa, 1_000_000_000).is_some_and(|completion| completion.completion_code == crate::ring::COMPLETION_SUCCESS && completion.slot == slot)
 }
 
-fn arm_hid_interrupt_in(mmio: &Mmio, device: &mut AddressDeviceDma, slot: u8) -> bool {
-    let armed = device.hid_configuration().is_none() || device.submit_hid_report(mmio, slot).is_some();
-    #[cfg(feature = "debug-boot")]
-    if armed { probe_stage(b"[INFO]  xhci: hid interrupt armed\n"); }
-    armed
-}
-
 fn arm_hub_interrupt_in(mmio: &Mmio, device: &mut AddressDeviceDma, slot: u8) -> bool {
     device.hub_configuration().is_none() || device.submit_hub_status(mmio, slot).is_some()
 }
@@ -379,7 +373,7 @@ fn address_enabled_device(bdf: pci::Bdf, mmio: &Mmio, command: &CommandTransport
             probe_stage(b"[INFO]  xhci: device descriptor\n");
             if let Some(descriptor) = device.device_descriptor() {
                 match device.prepare_evaluate_ep0(descriptor.max_packet0) {
-                    Some(false) => if fetch_first_configuration(mmio, irq, &mut device, slot) && configure_device_endpoint(mmio, command, irq, &mut device, slot) && set_device_configuration(mmio, irq, &mut device, slot) && set_hid_idle(mmio, irq, &mut device, slot) && fetch_hid_report_descriptor(mmio, irq, &mut device, slot) && configure_hub_device(mmio, command, irq, &mut device, slot) && arm_hid_interrupt_in(mmio, &mut device, slot) && arm_hub_interrupt_in(mmio, &mut device, slot) { return Some(device); },
+                    Some(false) => if fetch_first_configuration(mmio, irq, &mut device, slot) && configure_device_endpoint(mmio, command, irq, &mut device, slot) && set_device_configuration(mmio, irq, &mut device, slot) && set_hid_idle(mmio, irq, &mut device, slot) && fetch_hid_report_descriptor(mmio, irq, &mut device, slot) && configure_hub_device(mmio, command, irq, &mut device, slot) && arm_hub_interrupt_in(mmio, &mut device, slot) { return Some(device); },
                     Some(true) => {
                         #[cfg(feature = "debug-boot")]
                         probe_stage(b"[INFO]  xhci: ep0 evaluate submit\n");
@@ -388,7 +382,7 @@ fn address_enabled_device(bdf: pci::Bdf, mmio: &Mmio, command: &CommandTransport
                                 if irq.wait_command_completion(evaluate_pa, 1_000_000_000).is_some_and(|completion| completion.completion_code == crate::ring::COMPLETION_SUCCESS && completion.slot == slot) {
                                     #[cfg(feature = "debug-boot")]
                                     probe_stage(b"[INFO]  xhci: ep0 evaluate complete\n");
-                                    if fetch_first_configuration(mmio, irq, &mut device, slot) && configure_device_endpoint(mmio, command, irq, &mut device, slot) && set_device_configuration(mmio, irq, &mut device, slot) && set_hid_idle(mmio, irq, &mut device, slot) && fetch_hid_report_descriptor(mmio, irq, &mut device, slot) && configure_hub_device(mmio, command, irq, &mut device, slot) && arm_hid_interrupt_in(mmio, &mut device, slot) && arm_hub_interrupt_in(mmio, &mut device, slot) { return Some(device); }
+                                    if fetch_first_configuration(mmio, irq, &mut device, slot) && configure_device_endpoint(mmio, command, irq, &mut device, slot) && set_device_configuration(mmio, irq, &mut device, slot) && set_hid_idle(mmio, irq, &mut device, slot) && fetch_hid_report_descriptor(mmio, irq, &mut device, slot) && configure_hub_device(mmio, command, irq, &mut device, slot) && arm_hub_interrupt_in(mmio, &mut device, slot) { return Some(device); }
                                 }
                             }
                         }

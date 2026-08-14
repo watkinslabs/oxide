@@ -78,7 +78,23 @@ pub trait DrmDriver: Send + Sync {
     fn connector_ids(&self) -> Vec<u32> { Vec::new() }
     fn encoder_ids(&self) -> Vec<u32> { Vec::new() }
     fn plane_ids(&self) -> Vec<u32> { Vec::new() }
+    /// Formats accepted by every primary scanout plane, in driver preference
+    /// order. The KMS object and its IN_FORMATS blob are derived from this one
+    /// driver-owned list.
+    /// # C: O(formats)
+    fn scanout_formats(&self) -> Vec<u32> {
+        alloc::vec![crate::DRM_FORMAT_XRGB8888, crate::DRM_FORMAT_ARGB8888]
+    }
     fn mode_for(&self, _idx: usize) -> DrmModeModeinfo { DrmModeModeinfo::default() }
+    /// Validate a requested CRTC mode before a modeset commits it. The
+    /// default implements the mode-config dimensions contract; fixed-output
+    /// drivers override it with their one hardware geometry.
+    /// # C: O(1)
+    fn mode_valid(&self, _crtc_idx: usize, mode: &DrmModeModeinfo) -> bool {
+        let (min_w, max_w, min_h, max_h) = self.dim_bounds();
+        let (width, height) = (u32::from(mode.hdisplay), u32::from(mode.vdisplay));
+        width >= min_w && width <= max_w && height >= min_h && height <= max_h
+    }
     /// Every mode the connector offers, preferred one first. Drivers with a
     /// real mode table override this; the default publishes only the current
     /// mode, which is what a connector with no alternatives reports.
@@ -105,6 +121,14 @@ pub fn mode_from_rect(w: u32, h: u32) -> DrmModeModeinfo {
 
 /// Refresh rate a synthesised mode carries when none was asserted.
 pub const DEFAULT_REFRESH_HZ: u32 = 60;
+
+/// Validate dimensions against a fixed scanout geometry. Timing values are
+/// deliberately not compared: fixed-output KMS validation constrains the
+/// display size while preserving the mode's timing metadata.
+/// # C: O(1)
+pub fn fixed_mode_dimensions_valid(mode: &DrmModeModeinfo, width: u32, height: u32) -> bool {
+    u32::from(mode.hdisplay) == width && u32::from(mode.vdisplay) == height
+}
 
 /// A mode of the given size at the given refresh rate, with blanking and sync
 /// in the usual proportions. For sizes asserted without timings — a standard

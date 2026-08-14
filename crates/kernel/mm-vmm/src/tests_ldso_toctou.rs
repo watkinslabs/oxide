@@ -32,7 +32,7 @@ use std::thread_local;
 use hal::{MmuOps, Pa, PageFlags, PageSize, Va};
 
 use crate::address_space::AddressSpace;
-use crate::vma::{FaultAccess, FaultKind, VmaBacking, VmaFlags, VmaProt};
+use crate::vma::{FaultAccess, FaultKind, FileBacking, FileBackingError, VmaBacking, VmaFlags, VmaProt};
 
 const PAGE: u64 = 0x1000;
 const FILL: u8 = 0xAB; // sentinel backing byte — a zero-over-file bug reads 0.
@@ -129,6 +129,45 @@ fn map_kernelbytes_rw(mm: &AddressSpace) -> u64 {
     va.as_u64()
 }
 
+/// A deterministic peer-fault model: `read_at` represents the interval where
+/// this fault dropped the page-table lock for backing I/O, and installs the
+/// winner's page before returning data to the losing filler.
+struct PeerWinsBacking { peer_pa: u64 }
+
+impl FileBacking for PeerWinsBacking {
+    fn read_at(&self, _off: u64, dst: &mut [u8]) -> Result<usize, FileBackingError> {
+        LEAF.with(|l| {
+            l.borrow_mut().insert(0x40_0000, (self.peer_pa, PageFlags::USER.bits()));
+        });
+        dst.fill(FILL);
+        Ok(dst.len())
+    }
+
+    fn size_hint(&self) -> u64 { PAGE }
+    fn ino(&self) -> u64 { 0x5045_4552 }
+}
+
+#[test]
+fn file_fill_never_replaces_a_peer_install_after_io() {
+    reset();
+    let mm = AddressSpace::new(0x3_0000_0000).expect("AS::new");
+    let peer = fresh_pa();
+    let va = mm.mmap(
+        Some(hal::UserVirtAddr::new(0x40_0000).unwrap()),
+        PAGE as usize,
+        VmaProt::READ,
+        VmaFlags::PRIVATE,
+        VmaBacking::File { backing: Arc::new(PeerWinsBacking { peer_pa: peer }), off: 0 },
+        true,
+    ).expect("mmap file").as_u64();
+
+    drive(&mm, va, FaultKind::NotPresent { access: FaultAccess::Read });
+
+    let (installed, _) = LEAF.with(|l| l.borrow().get(&va).copied()).expect("peer leaf");
+    assert_eq!(installed, peer,
+        "fault fill replaced a peer PTE installed while backing I/O slept");
+}
+
 /// THE REPRODUCTION: a write-protection fault whose leaf is zapped between the
 /// normalization translate and the CoW re-read must NOT install a zero page
 /// over the KernelBytes backing; a clean refault must restore FILL bytes.
@@ -194,4 +233,38 @@ fn protection_cow_copies_source_bytes() {
     // SAFETY: hhdm=0 → pa is a valid host frame pointer.
     let bytes = unsafe { core::slice::from_raw_parts(pa as *const u8, 4) };
     assert_eq!(bytes, &[0xCD; 4], "CoW copy lost the source bytes");
+}
+
+/// The COW source must stay PTE-owned through the copy and replacement.  A
+/// peer that changes the leaf after the initial source lookup wins; the stale
+/// writer must release its new page and retry rather than restore the old
+/// source over the peer's mapping.
+#[test]
+fn protection_cow_never_replaces_a_peer_commit_after_source_lookup() {
+    reset();
+    let mm = AddressSpace::new(0x4_0000_0000).expect("AS::new");
+    let va = map_kernelbytes_rw(&mm);
+    let source = fresh_pa();
+    let peer = fresh_pa();
+    // SAFETY: both are fresh 4 KiB host frames used by the hosted HHDM model.
+    unsafe { core::ptr::write_bytes(source as *mut u8, 0xCD, PAGE as usize); }
+    LEAF.with(|l| { l.borrow_mut().insert(va, (source, PageFlags::empty().bits())); });
+
+    let result = unsafe {
+        mm.handle_page_fault_cow_rmap::<ToctouMmu, _, _, _, _, _, _, _, _, _>(
+            hal::UserVirtAddr::new(va).unwrap(),
+            FaultKind::Protection { access: FaultAccess::Write }, 0, false,
+            || {
+                // This models the peer's completed PTE-locked replacement
+                // while the current fault is allocating its private target.
+                LEAF.with(|l| { l.borrow_mut().insert(va, (peer, PageFlags::WRITE.bits())); });
+                Some(fresh_pa())
+            },
+            |_pa| 2, |_pa| {}, |_pa, _av, _i| {}, |_pa| {}, |_pa| false,
+            || Ok(()), || {}, |_pa| {},
+        )
+    };
+    assert!(result.is_ok());
+    let (winner, _) = LEAF.with(|l| l.borrow().get(&va).copied()).expect("peer leaf");
+    assert_eq!(winner, peer, "stale COW copy replaced the peer's PTE commit");
 }

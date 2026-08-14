@@ -4,11 +4,11 @@ use super::*;
 fn probe_never_claims_an_opcode_dispatch_would_reject() {
     // Real opcodes the engine does not run. Reporting one as supported makes
     // a caller submit an SQE that comes back -EINVAL.
-    for op in [IORING_OP_SPLICE, IORING_OP_URING_CMD,
+    for op in [IORING_OP_SPLICE,
                IORING_OP_READ_MULTISHOT, IORING_OP_WAITID,
                IORING_OP_FUTEX_WAIT, IORING_OP_FUTEX_WAKE, IORING_OP_FUTEX_WAITV,
                IORING_OP_EPOLL_WAIT, IORING_OP_READV_FIXED,
-               IORING_OP_WRITEV_FIXED, IORING_OP_URING_CMD128] {
+               IORING_OP_WRITEV_FIXED] {
         assert!(!op_supported(op), "op {op}");
     }
 }
@@ -70,6 +70,12 @@ fn probe_claims_every_dispatched_opcode() {
                IORING_OP_FIXED_FD_INSTALL] {
         assert!(op_supported(op), "op {op}");
     }
+}
+
+#[test]
+fn probe_claims_external_driver_commands() {
+    assert!(op_supported(IORING_OP_URING_CMD));
+    assert!(op_supported(IORING_OP_URING_CMD128));
 }
 
 #[test]

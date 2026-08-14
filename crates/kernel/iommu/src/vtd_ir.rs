@@ -1,6 +1,7 @@
 // VT-d interrupt-remapping table ownership and MSI message encoding.
 
-use crate::vtd_hw::VtdQiDesc;
+use crate::VtdQiDesc;
+use crate::vtd_cache::publish;
 
 const IRTE_BYTES: usize = 16;
 const IRTE_COUNT: usize = 65536;
@@ -11,6 +12,10 @@ const IRTA_X2APIC_MODE: u64 = 1 << 11;
 const MSI_REMAP_ADDRESS: u64 = 0xFEE0_0000;
 const MSI_REMAP_FORMAT: u64 = 1 << 4;
 const MSI_REMAP_HANDLE_SHIFT: u32 = 5;
+const IRTE_SOURCE_QUALIFIER_SHIFT: u32 = 16;
+const IRTE_SOURCE_VALIDATION_SHIFT: u32 = 18;
+const IRTE_SOURCE_VALIDATE_ID: u64 = 1;
+const IRTE_SOURCE_QUALIFIER_IGNORE_LOW_THREE: u64 = 3;
 
 /// Hardware-format 16-byte remapped-mode VT-d interrupt entry.
 #[repr(C)]
@@ -23,7 +28,7 @@ impl VtdIrte {
         extended_mode: bool) -> Self {
         let destination = if extended_mode { destination_apic_id } else { destination_apic_id << 8 };
         let low = 1 | (1 << 3) | ((vector as u64) << 16) | ((destination as u64) << 32);
-        let high = requester_id as u64 | (2 << 18);
+        let high = requester_id as u64 | (IRTE_SOURCE_VALIDATE_ID << IRTE_SOURCE_VALIDATION_SHIFT);
         Self { words: [low, high] }
     }
 
@@ -34,7 +39,9 @@ impl VtdIrte {
         extended_mode: bool) -> Self {
         let destination = if extended_mode { destination_apic_id } else { destination_apic_id << 8 };
         let low = 1 | (1 << 3) | ((vector as u64) << 16) | ((destination as u64) << 32);
-        let high = source_id as u64 | (3 << 16) | (2 << 18);
+        let high = source_id as u64
+            | (IRTE_SOURCE_QUALIFIER_IGNORE_LOW_THREE << IRTE_SOURCE_QUALIFIER_SHIFT)
+            | (IRTE_SOURCE_VALIDATE_ID << IRTE_SOURCE_VALIDATION_SHIFT);
         Self { words: [low, high] }
     }
 
@@ -45,17 +52,18 @@ impl VtdIrte {
 
 /// Allocated VT-d interrupt-remapping table.  A 64K-entry table is the
 /// architected maximum and matches the IRTA size encoding used by Linux.
-pub struct VtdIrTable { pa: u64, hhdm_offset: u64, used: [u64; IRTE_COUNT / 64], extended_mode: bool }
+pub struct VtdIrTable { pa: u64, hhdm_offset: u64, coherent: bool, used: [u64; IRTE_COUNT / 64], extended_mode: bool }
 
 impl VtdIrTable {
     /// Allocate a zeroed 64K-entry table in physically contiguous memory.
     /// # C: O(table bytes)
-    pub fn new(hhdm_offset: u64, extended_mode: bool) -> Option<Self> {
+    pub fn new(hhdm_offset: u64, coherent: bool, extended_mode: bool) -> Option<Self> {
         if hhdm_offset == 0 { return None; }
         let pa = pmm::setup::alloc_contig(IRTE_TABLE_ORDER)?;
         // SAFETY: the allocated 1MiB block is exclusively owned by this table.
         unsafe { core::ptr::write_bytes(hhdm_offset.checked_add(pa)? as *mut u8, 0, IRTE_TABLE_BYTES); }
-        Some(Self { pa, hhdm_offset, used: [0; IRTE_COUNT / 64], extended_mode })
+        publish(hhdm_offset, pa, IRTE_TABLE_BYTES as u64, coherent);
+        Some(Self { pa, hhdm_offset, coherent, used: [0; IRTE_COUNT / 64], extended_mode })
     }
 
     /// IRTA register value including table size and EIM selection. # C: O(1)
@@ -88,7 +96,7 @@ impl VtdIrTable {
             let va = self.hhdm_offset.checked_add(self.pa)?.checked_add((index * IRTE_BYTES) as u64)? as *mut VtdIrte;
             // SAFETY: index is newly reserved and lies within the exclusively owned table.
             unsafe { core::ptr::write_volatile(va, entry); }
-            core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+            publish(self.hhdm_offset, self.pa + (index * IRTE_BYTES) as u64, IRTE_BYTES as u64, self.coherent);
             return u16::try_from(index).ok();
         }
         None
@@ -104,7 +112,7 @@ impl VtdIrTable {
             let va = self.hhdm_offset.checked_add(self.pa)?.checked_add((index * IRTE_BYTES) as u64)? as *mut VtdIrte;
             // SAFETY: index is newly reserved and lies within the exclusively owned table.
             unsafe { core::ptr::write_volatile(va, entry); }
-            core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+            publish(self.hhdm_offset, self.pa + (index * IRTE_BYTES) as u64, IRTE_BYTES as u64, self.coherent);
             return u16::try_from(index).ok();
         }
         None
@@ -123,7 +131,7 @@ impl VtdIrTable {
         };
         // SAFETY: index belongs to this table and is not reused until this clear completes.
         unsafe { core::ptr::write_volatile(va, VtdIrte { words: [0, 0] }); }
-        core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+        publish(self.hhdm_offset, self.pa + (index * IRTE_BYTES) as u64, IRTE_BYTES as u64, self.coherent);
         self.used[word] &= !(1u64 << bit);
         true
     }
@@ -148,7 +156,7 @@ mod tests {
     fn irte_layout_pins_destination_and_source_verification() {
         let entry = VtdIrte::msi(0x51, 0x1234, 0x9abc, true);
         assert_eq!(core::mem::size_of::<VtdIrte>(), 16);
-        assert_eq!(entry.words(), [0x0000_1234_0051_0009, 0x0000_0000_0008_9abc]);
+        assert_eq!(entry.words(), [0x0000_1234_0051_0009, 0x0000_0000_0004_9abc]);
     }
 
     #[test]
@@ -159,6 +167,6 @@ mod tests {
     #[test]
     fn hpet_irte_uses_the_firmware_source_qualifier_encoding() {
         assert_eq!(VtdIrte::hpet(0x51, 0x1234, 0x9abc, true).words(),
-            [0x0000_1234_0051_0009, 0x0000_0000_000b_9abc]);
+            [0x0000_1234_0051_0009, 0x0000_0000_0007_9abc]);
     }
 }

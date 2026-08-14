@@ -22,8 +22,8 @@ impl IoDma {
             unsafe { pmm::setup::free_contig(data_pa, DATA_ORDER); }
             return None;
         };
-        let Some(list_pa) = (if dma_mask == u64::MAX { pmm::setup::alloc_one_frame() }
-            else { pmm::setup::alloc_one_frame_below(dma_mask.checked_add(1)?) }) else {
+        let Some(list_pa) = (if dma_mask == u64::MAX { pmm::setup::alloc_raw_frame() }
+            else { pmm::setup::alloc_raw_frame_below(dma_mask.checked_add(1)?) }) else {
             let _ = iommu::unmap_dma(bdf, data_dma, data_bytes);
             // SAFETY: the unposted private data run has no device owner.
             unsafe { pmm::setup::free_contig(data_pa, DATA_ORDER); }

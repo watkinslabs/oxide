@@ -70,8 +70,19 @@ impl BootFramebuffer {
         if r & g != 0 || r & b != 0 || g & b != 0 { return None; }
         let len = u64::from(self.pitch).checked_mul(u64::from(self.height))?;
         if len > u64::from(u32::MAX) { return None; }
-        self.base_pa.checked_add(len)?;
+        self.base_pa.checked_add(len.checked_sub(1)?)?;
         Some(len)
+    }
+
+    /// Inclusive physical aperture occupied by this validated scanout.
+    ///
+    /// Resource registries use inclusive ends, whereas mappings use a byte
+    /// count. Keeping that conversion beside validation prevents a firmware
+    /// mode from claiming one byte beyond its checked extent.
+    /// # C: O(1)
+    pub fn aperture(self) -> Option<(u64, u64)> {
+        let len = self.byte_len()?;
+        Some((self.base_pa, self.base_pa.checked_add(len.checked_sub(1)?)?))
     }
 }
 
@@ -107,5 +118,21 @@ mod tests {
         fb.pitch = 4096;
         fb.green.offset = 16;
         assert_eq!(fb.byte_len(), None);
+    }
+
+    #[test]
+    fn aperture_is_the_inclusive_validated_extent() {
+        let fb = xrgb();
+        assert_eq!(fb.aperture(), Some((0xfd00_0000, 0xfd2f_ffff)));
+
+        let mut edge = fb;
+        edge.base_pa = u64::MAX - 15;
+        edge.pitch = 16;
+        edge.width = 4;
+        edge.height = 1;
+        assert_eq!(edge.aperture(), Some((u64::MAX - 15, u64::MAX)));
+
+        edge.height = 2;
+        assert_eq!(edge.aperture(), None);
     }
 }

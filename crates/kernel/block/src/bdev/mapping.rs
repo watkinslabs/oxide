@@ -17,7 +17,7 @@ use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use sync::{Inode as InodeClass, Spinlock};
 use vfs::mapping::DirtyPages;
@@ -54,6 +54,9 @@ pub struct BdevMapping {
     pub(super) nr: AtomicUsize,
     /// Pages currently under writeback, for the same lock-free reason.
     pub(super) inflight: AtomicUsize,
+    /// Surprise removal permanently rejects cached I/O from retained block
+    /// file descriptions after the registry unlinks the disk.
+    pub(super) dead: AtomicBool,
 }
 
 impl BdevMapping {
@@ -66,12 +69,31 @@ impl BdevMapping {
             }),
             nr: AtomicUsize::new(0),
             inflight: AtomicUsize::new(0),
+            dead: AtomicBool::new(false),
         })
     }
 
     /// `mapping->nrpages` — resident page count. `sync(2)`'s device pass skips
     /// a mapping reporting zero, exactly as the reference does. # C: O(1)
     pub fn nrpages(&self) -> usize { self.nr.load(Ordering::Acquire) }
+
+    /// Make retained raw block-device mappings fail I/O after surprise removal
+    /// and discard their cache without attempting writeback to absent media.
+    /// # C: O(resident pages)
+    pub fn mark_dead(&self) {
+        self.dead.store(true, Ordering::Release);
+        let mut g = self.st.lock_bh::<crate::bh_gate::BlockBh>();
+        g.pages.clear();
+        g.dirty = DirtyPages::new();
+        g.writeback.clear();
+        drop(g);
+        self.nr.store(0, Ordering::Release);
+    }
+
+    pub(super) fn check_live(&self) -> KResult<()> {
+        if self.dead.load(Ordering::Acquire) { return Err(BlockError::Eio); }
+        Ok(())
+    }
 
     /// Pages handed to the driver whose completion has not run. # C: O(1)
     pub fn writeback_pages(&self) -> usize { self.inflight.load(Ordering::Acquire) }
@@ -112,6 +134,7 @@ impl BdevMapping {
         if self.st.lock_bh::<crate::bh_gate::BlockBh>().pages.contains_key(&idx) { return Ok(()); }
         let page = if whole_page_write { vec![0u8; PAGE_BYTES] } else { self.fill_page(idx)? };
         let mut g = self.st.lock_bh::<crate::bh_gate::BlockBh>();
+        if self.dead.load(Ordering::Acquire) { return Ok(()); }
         // Never overwrite: a concurrent writer may have inserted and DIRTIED
         // this page while the fill above ran with no lock held, and clobbering
         // it with the medium's older bytes would silently lose that write.
@@ -137,6 +160,7 @@ impl BdevMapping {
     /// medium. A read past the end is EOF (`0`), never an error.
     /// # C: O(len / PG) page fills
     pub fn read_at(&self, off: u64, dst: &mut [u8]) -> KResult<usize> {
+        self.check_live()?;
         let Some(len) = self.clamp(off, dst.len()) else { return Ok(0); };
         let mut done = 0usize;
         while done < len {
@@ -146,6 +170,7 @@ impl BdevMapping {
             let take = core::cmp::min(PAGE_BYTES - inner, len - done);
             self.resident(idx, false)?;
             let g = self.st.lock_bh::<crate::bh_gate::BlockBh>();
+            if self.dead.load(Ordering::Acquire) { return Err(BlockError::Eio); }
             let page = g.pages.get(&idx).ok_or(BlockError::Eio)?;
             dst[done..done + take].copy_from_slice(&page[inner..inner + take]);
             drop(g);
@@ -160,6 +185,7 @@ impl BdevMapping {
     /// what gives `sync(2)`'s device pass something to submit.
     /// # C: O(len / PG)
     pub fn write_at(&self, off: u64, data: &[u8]) -> KResult<usize> {
+        self.check_live()?;
         let Some(len) = self.clamp(off, data.len()) else { return Ok(0); };
         let mut done = 0usize;
         while done < len {
@@ -171,6 +197,7 @@ impl BdevMapping {
             let whole = take == PAGE_BYTES && (idx + 1) * PG <= self.size();
             self.resident(idx, whole)?;
             let mut g = self.st.lock_bh::<crate::bh_gate::BlockBh>();
+            if self.dead.load(Ordering::Acquire) { return Err(BlockError::Eio); }
             let page = g.pages.get_mut(&idx).ok_or(BlockError::Eio)?;
             page[inner..inner + take].copy_from_slice(&data[done..done + take]);
             g.dirty.set_dirty(idx);

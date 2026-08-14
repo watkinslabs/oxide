@@ -92,6 +92,30 @@ fn bridge_bus_window_requires_a_live_pci_to_pci_bridge() {
 }
 
 #[test]
+fn parent_bridge_uses_the_narrowest_unambiguous_window() {
+    let root = Bdf { segment: 0, bus: 0, device: 1, function: 0 };
+    let downstream = Bdf { segment: 0, bus: 4, device: 2, function: 0 };
+    let child = Bdf { segment: 0, bus: 7, device: 3, function: 0 };
+    let bridges = [
+        (root, BridgeBuses { primary: 0, secondary: 2, subordinate: 8 }),
+        (downstream, BridgeBuses { primary: 4, secondary: 6, subordinate: 7 }),
+    ];
+    assert_eq!(parent_bridge(&bridges, child), Some(downstream));
+}
+
+#[test]
+fn parent_bridge_rejects_ambiguous_peer_windows() {
+    let first = Bdf { segment: 0, bus: 0, device: 1, function: 0 };
+    let second = Bdf { segment: 0, bus: 0, device: 2, function: 0 };
+    let child = Bdf { segment: 0, bus: 4, device: 0, function: 0 };
+    let bridges = [
+        (first, BridgeBuses { primary: 0, secondary: 4, subordinate: 5 }),
+        (second, BridgeBuses { primary: 0, secondary: 4, subordinate: 6 }),
+    ];
+    assert_eq!(parent_bridge(&bridges, child), None);
+}
+
+#[test]
 fn intx_swizzle_reaches_the_root_bridge_pin() {
     let r = MapReader { m: Mutex::new(HashMap::new()) };
     let bridge = Bdf { segment: 0, bus: 0, device: 5, function: 0 };

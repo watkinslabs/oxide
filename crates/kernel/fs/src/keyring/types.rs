@@ -126,6 +126,9 @@ static TYPES: &[KeyType] = &[
     KeyType { name: DNS_RESOLVER_KEY_TYPE, readable: true, updatable: false, is_keyring: false,
               vet_colon: false, restrictable: false, payload_rule: PayloadRule::UserDefined,
               describes_itself: false, net_domain: true },
+    KeyType { name: "psk", readable: true, updatable: true, is_keyring: false,
+              vet_colon: false, restrictable: false, payload_rule: PayloadRule::UserDefined,
+              describes_itself: false, net_domain: true },
 ];
 
 /// The authorisation-token type, for the paths that mint one directly.

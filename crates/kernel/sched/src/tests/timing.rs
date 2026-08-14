@@ -273,46 +273,19 @@ fn hardirq_tick_paths_perform_no_registry_lookup() {
         after - before);
 }
 
-/// `preempt_count` must travel WITH the task, not stay on the CPU.
-///
-/// The regression this pins: the count was per-CPU and never swapped, so a task
-/// that parked inside `do_softirq` — between the `SOFTIRQ_OFFSET` add and its
-/// matching sub — left the softirq field set for whatever ran next on that CPU.
-/// `in_interrupt()` then reported true there forever, so that CPU silently
-/// stopped draining softirqs and stopped rescheduling, and the eventual
-/// `preempt_count_sub` underflowed. Measured as an idle CPU pinned at
-/// `preempt_count=0x00010000` with nothing runnable.
-///
-/// Linux keeps it in `thread_info`; x86 caches it per-CPU and swaps it in
-/// `__switch_to`, which is the model here.
+/// `preempt_count` is CPU-local, never task state. Current x86 Linux defines
+/// `__preempt_count` in per-CPU `pcpu_hot` state and leaves it untouched by
+/// `__switch_to`; IRQ entry and exit must observe the same field.
 #[test]
-fn preempt_count_travels_with_the_task_across_a_switch() {
-    use core::sync::atomic::Ordering;
-    use crate::preempt::{preempt_count, preempt_count_swap, SOFTIRQ_OFFSET};
+fn irq_nesting_stays_cpu_local_across_task_creation() {
+    use crate::preempt::{hardirq_count, irq_enter, irq_exit, HARDIRQ_OFFSET};
 
-    let parked = alloc::sync::Arc::new(crate::Task::new(
-        0x7200, "parked", crate::SchedClass::Normal { weight: 1024 }));
-    let fresh = alloc::sync::Arc::new(crate::Task::new(
-        0x7201, "fresh", crate::SchedClass::Normal { weight: 1024 }));
-
-    // A task parked mid-drain: preempt-off plus an in-progress softirq.
-    let mid_drain = crate::preempt::PREEMPT_DISABLED + SOFTIRQ_OFFSET;
-    parked.preempt_count.store(mid_drain, Ordering::Release);
-
-    // Switch TO the parked task: the CPU picks up its count...
-    let outgoing = preempt_count_swap(parked.preempt_count.load(Ordering::Acquire));
-    assert_eq!(preempt_count(), mid_drain, "incoming task's count must become live");
-
-    // ...and switching away hands it back to that task, not to the next one.
-    let live = preempt_count_swap(fresh.preempt_count.load(Ordering::Acquire));
-    parked.preempt_count.store(live, Ordering::Release);
-    assert_eq!(parked.preempt_count.load(Ordering::Acquire), mid_drain,
-        "the parked task must carry its own softirq field away with it");
-    assert_eq!(preempt_count(), crate::preempt::FORK_PREEMPT_COUNT,
-        "the incoming task must NOT inherit the previous task's softirq field");
-    assert_eq!(preempt_count() & SOFTIRQ_OFFSET, 0,
-        "a never-run task carries only the switch tail's two preempt levels");
-
-    // Restore whatever the harness was at so sibling tests are unaffected.
-    preempt_count_swap(outgoing);
+    crate::preempt::_test_reset();
+    irq_enter();
+    let _other = crate::Task::new(0x7200, "other", crate::SchedClass::Normal { weight: 1024 });
+    assert_eq!(hardirq_count(), HARDIRQ_OFFSET,
+        "creating or selecting another task must not replace this CPU's IRQ nesting");
+    irq_exit();
+    assert_eq!(hardirq_count(), 0);
+    crate::preempt::_test_reset();
 }

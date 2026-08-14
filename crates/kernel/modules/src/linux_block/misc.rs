@@ -32,6 +32,7 @@ pub(super) fn export_symbols() {
         ("blk_steal_bios",           blk_steal_bios           as *const () as usize),
         ("blk_zone_cond_str",        blk_zone_cond_str        as *const () as usize),
     ] { export(name, addr, false); }
+    export("disk_report_zone", disk_report_zone as *const () as usize, true);
     export("fs_bio_set", &FS_BIO_SET as *const usize as usize, false);
 }
 
@@ -101,6 +102,28 @@ extern "C" fn blk_zone_cond_str(_cond: u8) -> *const u8 {
     b"not-wp\0".as_ptr()
 }
 
+/// Report a single zone, normalising an uncached active report before calling its consumer.
+/// # C: O(1) plus callback
+unsafe extern "C" fn disk_report_zone(disk: *mut LinuxGendisk, zone: *mut LinuxBlkZone, idx: u32,
+    args: *mut LinuxBlkReportZonesArgs) -> i32 {
+    // SAFETY: disk and zone have the live driver-report lifetime required by this KPI.
+    unsafe { crate::linux_block::core::sync_reported_zone(disk, zone); }
+    if !args.is_null() {
+        // SAFETY: the driver's report_zones operation receives this live core-owned argument record;
+        // its zone descriptor is live for the call by the disk_report_zone KPI contract.
+        unsafe {
+            if (*args).report_active {
+                match (*zone).cond {
+                    BLK_ZONE_COND_IMP_OPEN | BLK_ZONE_COND_EXP_OPEN | BLK_ZONE_COND_CLOSED => (*zone).cond = BLK_ZONE_COND_ACTIVE,
+                    _ => {}
+                }
+            }
+            if let Some(cb) = (*args).cb { return cb(zone, idx, (*args).data); }
+        }
+    }
+    LINUX_OK
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,6 +132,15 @@ mod tests {
     static COMPAT_MODE: AtomicU32 = AtomicU32::new(0);
     static COMPAT_CMD: AtomicU32 = AtomicU32::new(0);
     static COMPAT_ARG: AtomicUsize = AtomicUsize::new(0);
+    static REPORT_IDX: AtomicU32 = AtomicU32::new(0);
+    static REPORT_DATA: AtomicUsize = AtomicUsize::new(0);
+    static REPORT_COND: AtomicU32 = AtomicU32::new(0);
+
+    unsafe extern "C" fn report_zone_cb(zone: *mut LinuxBlkZone, idx: u32, data: *mut c_void) -> i32 {
+        // SAFETY: disk_report_zone gives the callback the live zone descriptor supplied by this test.
+        unsafe { REPORT_COND.store((*zone).cond as u32, Ordering::SeqCst); }
+        REPORT_IDX.store(idx, Ordering::SeqCst); REPORT_DATA.store(data as usize, Ordering::SeqCst); 71
+    }
 
     unsafe extern "C" fn compat_ioctl(_bdev: *mut LinuxBlockDevice, mode: u32, cmd: u32, arg: usize) -> i32 {
         COMPAT_MODE.store(mode, Ordering::SeqCst); COMPAT_CMD.store(cmd, Ordering::SeqCst); COMPAT_ARG.store(arg, Ordering::SeqCst); 37
@@ -140,5 +172,59 @@ mod tests {
         let _modules = crate::test_serial::claim();
         let mut bdev = LinuxBlockDevice::new();
         assert_eq!(unsafe { blkdev_compat_ptr_ioctl(&mut bdev, 0, 0, 0) }, -LINUX_ENOIOCTLCMD);
+    }
+
+    #[test]
+    fn disk_report_zone_normalizes_active_reports_before_the_callback() {
+        let mut zone = LinuxBlkZone { start: 0, len: 0, wp: 0, zone_type: 0, cond: BLK_ZONE_COND_EXP_OPEN,
+            non_seq: 0, reset: 0, resv: [0; 4], capacity: 0, reserved: [0; 24] };
+        let data = 0x1234usize as *mut c_void;
+        let mut args = LinuxBlkReportZonesArgs { cb: Some(report_zone_cb), data, report_active: true };
+        // SAFETY: zone and args are live ABI records throughout this direct helper call.
+        assert_eq!(unsafe { disk_report_zone(null_mut(), &mut zone, 9, &mut args) }, 71);
+        assert_eq!(zone.cond, BLK_ZONE_COND_ACTIVE);
+        assert_eq!(REPORT_COND.load(Ordering::SeqCst), BLK_ZONE_COND_ACTIVE as u32);
+        assert_eq!(REPORT_IDX.load(Ordering::SeqCst), 9);
+        assert_eq!(REPORT_DATA.load(Ordering::SeqCst), data as usize);
+    }
+
+    #[test]
+    fn disk_report_zone_preserves_regular_condition_and_returns_zero_without_a_callback() {
+        let mut zone = LinuxBlkZone { start: 0, len: 0, wp: 0, zone_type: 0, cond: BLK_ZONE_COND_CLOSED,
+            non_seq: 0, reset: 0, resv: [0; 4], capacity: 0, reserved: [0; 24] };
+        let mut args = LinuxBlkReportZonesArgs { cb: None, data: null_mut(), report_active: false };
+        // SAFETY: zone and args are live ABI records throughout this direct helper call.
+        assert_eq!(unsafe { disk_report_zone(null_mut(), &mut zone, 0, &mut args) }, LINUX_OK);
+        assert_eq!(zone.cond, BLK_ZONE_COND_CLOSED);
+        // SAFETY: a null args pointer is an explicitly supported no-callback report form.
+        assert_eq!(unsafe { disk_report_zone(null_mut(), &mut zone, 0, null_mut()) }, LINUX_OK);
+    }
+
+    #[test]
+    fn disk_report_zone_active_normalization_leaves_other_conditions_unchanged() {
+        for cond in [0, 1, 0xd, 0xe, 0xf, BLK_ZONE_COND_ACTIVE] {
+            let mut zone = LinuxBlkZone { start: 0, len: 0, wp: 0, zone_type: 0, cond,
+                non_seq: 0, reset: 0, resv: [0; 4], capacity: 0, reserved: [0; 24] };
+            let mut args = LinuxBlkReportZonesArgs { cb: None, data: null_mut(), report_active: true };
+            // SAFETY: zone and args are live ABI records throughout this direct helper call.
+            assert_eq!(unsafe { disk_report_zone(null_mut(), &mut zone, 0, &mut args) }, LINUX_OK);
+            assert_eq!(zone.cond, cond);
+        }
+    }
+
+    #[test]
+    fn disk_report_zone_synchronizes_a_pending_write_plug_without_a_callback() {
+        let mut disk: LinuxGendisk = unsafe { core::mem::zeroed() };
+        disk.zoned.nr_zones = 1; disk.zoned.zone_capacity = 100; disk.zoned.last_zone_capacity = 100;
+        // SAFETY: this test owns the gendisk and installs its only canonical plug before reporting.
+        unsafe { crate::linux_block::core::install_test_wplug(&mut disk, 0); }
+        let mut zone = LinuxBlkZone { start: 0, len: 100, wp: 33, zone_type: 0, cond: BLK_ZONE_COND_IMP_OPEN,
+            non_seq: 0, reset: 0, resv: [0; 4], capacity: 100, reserved: [0; 24] };
+        // SAFETY: disk, the installed plug, and zone are live for this no-callback report.
+        assert_eq!(unsafe { disk_report_zone(&mut disk, &mut zone, 0, null_mut()) }, LINUX_OK);
+        // SAFETY: exactly one test plug is still owned by the gendisk.
+        assert_eq!(unsafe { crate::linux_block::core::test_wplug(&mut disk) }, (33, BLK_ZONE_COND_ACTIVE, 0));
+        // SAFETY: the test plug has no users after the report returned.
+        unsafe { crate::linux_block::core::drop_test_wplug(&mut disk); }
     }
 }

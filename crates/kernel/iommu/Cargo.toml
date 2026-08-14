@@ -13,6 +13,10 @@ mmio-map = { path = "../mmio-map" }
 firmware = { path = "../firmware" }
 pmm = { path = "../mm-pmm" }
 sync = { path = "../../shared/sync" }
+klog = { path = "../../shared/klog" }
+
+[features]
+debug-boot = []
 
 [lints]
 workspace = true

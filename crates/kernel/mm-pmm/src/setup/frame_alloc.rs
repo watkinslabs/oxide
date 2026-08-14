@@ -154,6 +154,13 @@ pub fn alloc_raw_frame() -> Option<u64> {
     alloc_frame_with_meta(0, 0)
 }
 
+/// Allocate a raw kernel frame whose complete DMA span lies below `max_pa`.
+/// The caller owns it outright and must return it through `free_one_frame`.
+/// # C: O(retries)
+pub fn alloc_raw_frame_below(max_pa: u64) -> Option<u64> {
+    alloc_frame_with_meta_below(0, 0, max_pa)
+}
+
 /// Kernel/hosted pointer for a frame owned by the caller.
 ///
 /// In the kernel this resolves through the HHDM-backed PMM; in hosted tests it

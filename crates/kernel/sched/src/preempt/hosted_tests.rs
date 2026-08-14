@@ -128,24 +128,13 @@ fn a_refused_preempt_check_leaves_need_resched_pending() {
     assert!(!need_resched());
 }
 
-/// The context-switch count invariant (Linux: `preempt_count() ==
-/// 2*PREEMPT_DISABLE_OFFSET` in `finish_task_switch`, and `FORK_PREEMPT_COUNT`
-/// so a first-run task satisfies it too).
-///
-/// A switching task is inside `schedule()`'s own `preempt_disable` AND the
-/// runqueue spinlock it forgot, so it carries exactly two levels; the incoming
-/// task pays both back — one at the forgotten guard's `raw_unlock`, one at the
-/// switcher's enable. A never-run task reaches the same tail having taken
-/// neither, so it must ARRIVE with both or its first switch underflows the
-/// count and pins that CPU unpreemptible for good.
+/// Context-switch accounting is per CPU: x86 Linux's `__preempt_count` remains
+/// in `pcpu_hot` across `__switch_to`, so a newly allocated task has no saved
+/// IRQ/preemption nesting to inherit.
 #[test]
-fn a_never_run_task_starts_owing_exactly_what_the_switch_tail_pays_back() {
-    assert_eq!(crate::preempt::FORK_PREEMPT_COUNT, 2 * PREEMPT_DISABLED);
+fn new_task_has_no_saved_preempt_count() {
     let fresh = crate::Task::new(4242, "fresh", crate::SchedClass::Normal { weight: 1024 });
-    assert_eq!(fresh.preempt_count.load(Ordering::Acquire), crate::preempt::FORK_PREEMPT_COUNT,
-        "a first-run task must arrive owing the switch tail's two decrements");
-
-    // The two the tail pays: the rq lock's release, then the switcher's enable.
-    let paid = crate::preempt::FORK_PREEMPT_COUNT - 1 - 1;
-    assert_eq!(paid, 0, "the tail must land the incoming task at a schedule point");
+    let _ = fresh;
+    assert_eq!(crate::preempt::preempt_count(), 0,
+        "task creation must not alter the current CPU's preempt count");
 }

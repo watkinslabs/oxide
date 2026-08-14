@@ -5,6 +5,10 @@ use sync::{Spinlock, TaskList as DriverLockClass};
 
 use crate::regs;
 
+// Module manifest: `irq` owns PCI message-table mapping and teardown order.
+mod irq;
+use irq::{bind_pci_message, release_irq};
+
 const MAX_DEVICES: usize = 8;
 const PAGE: u64 = 4096;
 const DMA32_LIMIT: u64 = 1 << 32;
@@ -17,9 +21,9 @@ const ENDPOINT_ACTIVE: u8 = 2;
 #[cfg_attr(target_arch = "aarch64", allow(dead_code))]
 const ENDPOINT_HANDLING: u8 = 3;
 
-struct Endpoint { state: AtomicU8, mmio: AtomicU64, in_handler: AtomicU32, polling: AtomicBool }
+struct Endpoint { state: AtomicU8, mmio: AtomicU64, in_handler: AtomicU32, polling: AtomicBool, link_change: AtomicBool }
 impl Endpoint {
-    const fn new() -> Self { Self { state: AtomicU8::new(ENDPOINT_FREE), mmio: AtomicU64::new(0), in_handler: AtomicU32::new(0), polling: AtomicBool::new(false) } }
+    const fn new() -> Self { Self { state: AtomicU8::new(ENDPOINT_FREE), mmio: AtomicU64::new(0), in_handler: AtomicU32::new(0), polling: AtomicBool::new(false), link_change: AtomicBool::new(false) } }
 }
 static ENDPOINTS: [Endpoint; MAX_DEVICES] = [const { Endpoint::new() }; MAX_DEVICES];
 
@@ -28,11 +32,13 @@ pub(crate) struct Controller {
     rx_desc_pa: u64, tx_desc_pa: u64, rx_data_pa: u64, tx_data_pa: u64,
     rx_desc_dma: u64, tx_desc_dma: u64, rx_data_dma: u64, tx_data_dma: u64,
     bdf: pci::Bdf,
+    e1000e_nvm_phy: bool, pch: bool, pch2: bool, lpt: bool,
     rx_next: usize, tx_next: usize,
 }
 
 impl Controller {
     fn va(pa: u64) -> u64 { pmm::user_as::hhdm_offset().wrapping_add(pa) }
+    pub(crate) fn pch2(&self) -> bool { self.pch2 }
     pub(crate) fn read(&self, off: u64) -> u32 {
         // SAFETY: controller holds the owned MMIO mapping and `off` is an aligned register ABI offset.
         unsafe { core::ptr::read_volatile((self.mmio.base_va() + off) as *const u32) }
@@ -40,6 +46,14 @@ impl Controller {
     pub(crate) fn write(&self, off: u64, value: u32) {
         // SAFETY: controller holds the owned MMIO mapping and `off` is an aligned register ABI offset.
         unsafe { core::ptr::write_volatile((self.mmio.base_va() + off) as *mut u32, value); }
+    }
+    pub(crate) fn read16(&self, off: u64) -> u16 {
+        // SAFETY: PCH flash sequencer owns aligned 16-bit registers in this controller MMIO mapping.
+        unsafe { core::ptr::read_volatile((self.mmio.base_va() + off) as *const u16) }
+    }
+    pub(crate) fn write16(&self, off: u64, value: u16) {
+        // SAFETY: PCH flash sequencer owns aligned 16-bit registers in this controller MMIO mapping.
+        unsafe { core::ptr::write_volatile((self.mmio.base_va() + off) as *mut u16, value); }
     }
     fn rx_desc(&self, idx: usize) -> *mut regs::RxDesc {
         (Self::va(self.rx_desc_pa) as *mut regs::RxDesc).wrapping_add(idx)
@@ -166,6 +180,10 @@ impl net::NetDev for E1000NetDev {
         net::ethernet::EthHdr::write_to(dst, self.mac, pkt.proto, &mut frame[..14]);
         frame[14..].copy_from_slice(body); observe(&frame, pkt.proto, 14); self.xmit_frame(&frame)
     }
+    /// Linux `ndo_start_xmit` receives an AF_PACKET frame with its Ethernet
+    /// header already built; do not feed that L2 frame back through L3 route
+    /// and neighbour resolution.
+    fn xmit_raw(&self, frame: &[u8]) -> net::NetResult<()> { self.xmit_frame(frame) }
 }
 
 fn decode_bars(bdf: pci::Bdf) -> [pci::Bar; 6] {
@@ -213,7 +231,7 @@ fn alloc_dma(order: pmm::Order, dma_mask: u64) -> Option<u64> {
     else { pmm::setup::alloc_contig(order) }
 }
 
-fn configure_rings(mmio: mmio_map::Mapping, io_base: Option<u16>, bdf: pci::Bdf, dma_mask: u64, profile: crate::profile::ResetProfile) -> Option<(Controller, net::MacAddr)> {
+fn configure_rings(mmio: mmio_map::Mapping, io_base: Option<u16>, bdf: pci::Bdf, dma_mask: u64, profile: crate::profile::ResetProfile, flash: Option<crate::pch::FlashBar>) -> Option<(Controller, net::MacAddr)> {
     let rx_desc_pa = match alloc_dma(pmm::Order(0), dma_mask) { Some(pa) => pa, None => { trace("[INFO]  e1000: no rx desc\n"); return None; } };
     let tx_desc_pa = match alloc_dma(pmm::Order(0), dma_mask) { Some(pa) => pa, None => {
         trace("[INFO]  e1000: no tx desc\n");
@@ -244,11 +262,22 @@ fn configure_rings(mmio: mmio_map::Mapping, io_base: Option<u16>, bdf: pci::Bdf,
         unsafe { pmm::setup::free_contig(rx_desc_pa, pmm::Order(0)); pmm::setup::free_contig(tx_desc_pa, pmm::Order(0)); pmm::setup::free_contig(rx_data_pa, RX_ORDER); pmm::setup::free_contig(tx_data_pa, TX_ORDER); }
         return None;
     }
-    let mut c = Controller { mmio, rx_desc_pa, tx_desc_pa, rx_data_pa, tx_data_pa, rx_desc_dma, tx_desc_dma, rx_data_dma, tx_data_dma, bdf, rx_next: 0, tx_next: 0 };
+    let mut c = Controller { mmio, rx_desc_pa, tx_desc_pa, rx_data_pa, tx_data_pa, rx_desc_dma, tx_desc_dma, rx_data_dma, tx_data_dma, bdf, e1000e_nvm_phy: profile.e1000e_nvm_phy, pch: profile.pch, pch2: profile.pch2, lpt: profile.lpt, rx_next: 0, tx_next: 0 };
     trace("[INFO]  e1000: dma allocated\n");
-    if !crate::reset::apply(&c, io_base, profile) { c.free(); return None; }
+    if (profile.lpt && !crate::pch::reset_lpt(&c)) || (profile.pch2 && !crate::pch::reset_pch2(&c)) || (profile.pch && !profile.pch2 && !crate::pch::reset(&c)) || (!profile.pch && !crate::reset::apply(&c, io_base, profile)) { c.free(); return None; }
+    if profile.e1000e_nvm_phy && !crate::e1000e_init::prepare(&c) { c.free(); return None; }
+    if profile.lpt && !crate::pch::LptFlash::new(&c).validate_nvm() { c.free(); return None; }
+    if profile.pch && !profile.lpt && !flash.as_ref().is_some_and(|flash| flash.validate_nvm()) { c.free(); return None; }
+    if profile.lpt && crate::pch::initialize_lpt_addrs(&c).is_none() { c.free(); return None; }
+    if profile.pch && !(if profile.pch2 { crate::pch::initialize_pch2(&c) } else { crate::pch::initialize(&c) }) { c.free(); return None; }
     trace("[INFO]  e1000: reset done\n");
-    let mac = match regs::mac_from_rar(c.read(regs::RAL0), c.read(regs::RAH0)) { Some(mac) => net::MacAddr(mac), None => { trace("[INFO]  e1000: no mac\n"); c.free(); return None; } };
+    let mac = if profile.lpt { crate::pch::LptFlash::new(&c).read_mac() } else if profile.pch { flash.as_ref().and_then(|flash| flash.read_mac()) } else { regs::mac_from_rar(c.read(regs::RAL0), c.read(regs::RAH0)).map(net::MacAddr) };
+    let mac = match mac { Some(mac) => mac, None => { trace("[INFO]  e1000: no mac\n"); c.free(); return None; } };
+    if profile.pch && !profile.lpt {
+        let low = u32::from_le_bytes([mac.0[0], mac.0[1], mac.0[2], mac.0[3]]);
+        let high = u16::from_le_bytes([mac.0[4], mac.0[5]]) as u32 | (1 << 31);
+        c.write(regs::RAL0, low); c.write(regs::RAH0, high);
+    }
     for i in 0..regs::RING_COUNT {
         // SAFETY: every index is inside its freshly allocated ring before device DMA is enabled.
         unsafe {
@@ -266,6 +295,9 @@ fn configure_rings(mmio: mmio_map::Mapping, io_base: Option<u16>, bdf: pci::Bdf,
 }
 
 fn start(c: &Controller) {
+    if c.e1000e_nvm_phy && !crate::e1000e_init::activate(c) { return; }
+    if c.lpt && !crate::pch::activate_lpt(c) { return; }
+    if c.pch && !c.lpt && !crate::pch::activate(c) { return; }
     c.write(regs::RCTL, regs::RCTL_EN | regs::RCTL_BAM | regs::RCTL_SECRC | regs::RCTL_SZ_2048);
     c.write(regs::TCTL, regs::TCTL_EN | regs::TCTL_PSP | (15 << regs::TCTL_CT_SHIFT) | (0x40 << regs::TCTL_COLD_SHIFT));
     // e1000_open configures hardware before e1000_irq_enable; only then may
@@ -279,17 +311,7 @@ fn enable_interrupts(c: &Controller) {
     let _ = c.read(regs::IMS);
 }
 
-fn hard_msi() { let _ = hard_irq(); }
-
-fn bind_pci_message(bdf: pci::Bdf, endpoint: usize, ctrl: &Controller) -> Option<pci_irq::Binding> {
-    let binding = pci_irq::request(bdf, pci_irq::BarMapping {
-        bar: 0, base_va: ctrl.mmio.base_va(), bytes: ctrl.mmio.bytes(), offset: 0,
-    }, arch_irq::DeviceAction::E1000, hard_msi)?;
-    ENDPOINTS[endpoint].state.store(ENDPOINT_ACTIVE, Ordering::Release);
-    Some(binding)
-}
-
-struct Record { bdf: pci::Bdf, command_orig: u16, endpoint: usize, irq: pci_irq::Binding, dev: Arc<E1000NetDev> }
+struct Record { bdf: pci::Bdf, command_orig: u16, endpoint: usize, irq: pci_irq::Binding, msix: Option<mmio_map::Mapping>, dev: Arc<E1000NetDev> }
 static DEVICES: Spinlock<Vec<Record>, DriverLockClass> = Spinlock::new(Vec::new());
 static POLL_INSTALLED: AtomicBool = AtomicBool::new(false);
 static NEXT_NAME: AtomicU32 = AtomicU32::new(0);
@@ -302,11 +324,11 @@ fn trace(_stage: &'static str) {}
 fn endpoint_claim(mmio: u64) -> Option<usize> {
     for (i, e) in ENDPOINTS.iter().enumerate() {
         if e.state.compare_exchange(ENDPOINT_FREE, ENDPOINT_SETUP, Ordering::AcqRel, Ordering::Acquire).is_ok() {
-            e.mmio.store(mmio, Ordering::Release); e.in_handler.store(0, Ordering::Release); e.polling.store(false, Ordering::Release); return Some(i);
+            e.mmio.store(mmio, Ordering::Release); e.in_handler.store(0, Ordering::Release); e.polling.store(false, Ordering::Release); e.link_change.store(false, Ordering::Release); return Some(i);
         }
     } None
 }
-fn endpoint_release(i: usize) { let e = &ENDPOINTS[i]; e.mmio.store(0, Ordering::Release); e.polling.store(false, Ordering::Release); e.state.store(ENDPOINT_FREE, Ordering::Release); }
+fn endpoint_release(i: usize) { let e = &ENDPOINTS[i]; e.mmio.store(0, Ordering::Release); e.polling.store(false, Ordering::Release); e.link_change.store(false, Ordering::Release); e.state.store(ENDPOINT_FREE, Ordering::Release); }
 #[cfg_attr(target_arch = "aarch64", allow(dead_code))]
 fn hard_irq() -> bool {
     let mut pending = false;
@@ -317,6 +339,7 @@ fn hard_irq() -> bool {
         // SAFETY: ACTIVE owns this MMIO identity; removal waits for in_handler before unmapping it.
         // SAFETY: ACTIVE owns the live controller MMIO identity until this handler drains.
         let cause = unsafe { core::ptr::read_volatile((mmio + regs::ICR) as *const u32) };
+        if cause & regs::IMS_LSC != 0 { e.link_change.store(true, Ordering::Release); }
         if cause != 0 && e.polling.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok() {
             // SAFETY: ACTIVE publishes the MMIO mapping; mask before deferred poll owns RX cleanup.
             unsafe { core::ptr::write_volatile((mmio + regs::IMC) as *mut u32, u32::MAX); }
@@ -326,12 +349,6 @@ fn hard_irq() -> bool {
     }
     if pending { net::backlog::net_rx_schedule_ingress(); }
     pending
-}
-
-fn release_irq(irq: pci_irq::Binding, endpoint: usize) {
-    while ENDPOINTS[endpoint].in_handler.load(Ordering::Acquire) != 0 { core::hint::spin_loop(); }
-    endpoint_release(endpoint);
-    irq.release();
 }
 
 /// Finish a bounded device poll without losing an interrupt that arrived while
@@ -354,7 +371,16 @@ fn poll_rx() {
         let raw = dev.iface.load(Ordering::Acquire); if raw == 0 { continue; }
         let iface = net::NetIfaceId::from_raw(raw as u32);
         let generation = dev.generation.load(Ordering::Acquire);
-        let (frames, more) = dev.ctrl.lock_bh::<sched::bh::SchedBh>().take_rx();
+        let (frames, more) = {
+            let mut ctrl = dev.ctrl.lock_bh::<sched::bh::SchedBh>();
+            let result = ctrl.take_rx();
+            if ENDPOINTS[dev.endpoint].link_change.swap(false, Ordering::AcqRel) {
+                if ctrl.e1000e_nvm_phy { let _ = crate::e1000e_init::reconcile(&ctrl); }
+                if ctrl.lpt { let _ = crate::pch::reconcile_lpt(&ctrl); }
+                else if ctrl.pch { let _ = crate::pch::reconcile(&ctrl); }
+            }
+            result
+        };
         for frame in frames {
             let mut pkt = net::Pkt::new_with_headroom(net::DEFAULT_HEADROOM, frame.len());
             pkt.data_mut().copy_from_slice(&frame);
@@ -367,16 +393,22 @@ fn poll_rx() {
     }
 }
 
-const INTEL_VENDOR: u16 = 0x8086;
-const ETHERNET_CLASS: u32 = 0x02_00_00;
 fn supported(dev: &drv::Device) -> bool {
-    dev.bus == "pci" && dev.class == ETHERNET_CLASS && dev.vendor_id == INTEL_VENDOR
-        && regs::LEGACY_PCI_IDS.contains(&dev.device_id)
+    dev.bus == "pci" && regs::legacy_pci_match(dev.vendor_id, dev.class, dev.device_id)
 }
-pub(crate) fn supports_e1000e_82574(dev: &drv::Device) -> bool {
-    dev.bus == "pci" && dev.class == ETHERNET_CLASS && dev.vendor_id == INTEL_VENDOR
-        && regs::E1000E_82574_PCI_IDS.contains(&dev.device_id)
+pub(crate) fn supports_e1000e_82571_bm(dev: &drv::Device) -> bool {
+    dev.bus == "pci" && dev.class == regs::ETHERNET_CLASS && dev.vendor_id == regs::INTEL_VENDOR
+        && regs::e1000e_82571_bm_pci_id_supported(dev.device_id)
 }
+pub(crate) fn supports_e1000e_pch_m(dev: &drv::Device) -> bool {
+    dev.bus == "pci" && dev.class == regs::ETHERNET_CLASS && dev.vendor_id == regs::INTEL_VENDOR
+        && regs::e1000e_pch_m_pci_id_supported(dev.device_id)
+}
+pub(crate) fn supports_e1000e_pch2(dev: &drv::Device) -> bool {
+    dev.bus == "pci" && dev.class == regs::ETHERNET_CLASS && dev.vendor_id == regs::INTEL_VENDOR
+        && regs::e1000e_pch2_pci_id_supported(dev.device_id)
+}
+pub(crate) fn supports_e1000e_pch_lpt_i217(dev: &drv::Device) -> bool { dev.bus == "pci" && dev.class == regs::ETHERNET_CLASS && dev.vendor_id == regs::INTEL_VENDOR && regs::e1000e_pch_lpt_i217_pci_id_supported(dev.device_id) }
 
 fn remove_bdf(bdf: pci::Bdf) {
     let record = {
@@ -388,7 +420,7 @@ fn remove_bdf(bdf: pci::Bdf) {
     let iface = record.dev.iface.swap(0, Ordering::AcqRel);
     if iface != 0 { let _ = net::sock::stack().unregister_iface_current(net::NetIfaceId::from_raw(iface as u32)); }
     record.dev.ctrl.lock_bh::<sched::bh::SchedBh>().stop();
-    release_irq(record.irq, record.endpoint);
+    release_irq(record.irq, record.endpoint, record.msix);
     record.dev.ctrl.lock_bh::<sched::bh::SchedBh>().free();
     restore_bus_master(record.bdf, record.command_orig);
     if DEVICES.lock_bh::<sched::bh::SchedBh>().is_empty() && POLL_INSTALLED.swap(false, Ordering::AcqRel) {
@@ -398,7 +430,6 @@ fn remove_bdf(bdf: pci::Bdf) {
 pub(crate) fn remove_device(dev: &drv::Device) {
     if let Some(bdf) = pci::parse_bdf_addr(&dev.addr) { remove_bdf(bdf); }
 }
-
 pub(crate) fn probe_common(parent: &Arc<drv::Device>, dma_mask: u64, profile: crate::profile::ResetProfile) -> drv::KResult<()> {
         trace("[INFO]  e1000: probe begin\n");
         let bdf = pci::parse_bdf_addr(&parent.addr).ok_or(drv::Error::ProbeFailed)?;
@@ -413,15 +444,16 @@ pub(crate) fn probe_common(parent: &Arc<drv::Device>, dma_mask: u64, profile: cr
         let bytes = resource.end.checked_sub(resource.start).and_then(|bytes| bytes.checked_add(1)).ok_or(drv::Error::ProbeFailed)?;
         let pages = (bar & (PAGE - 1)).checked_add(bytes).and_then(|bytes| bytes.checked_add(PAGE - 1)).and_then(|bytes| bytes.checked_div(PAGE)).ok_or(drv::Error::ProbeFailed)?;
         let mmio = unsafe { mmio_map::map_owned(bar & !(PAGE - 1), pages) };
-        let (controller, mac) = match configure_rings(mmio, io_base, bdf, dma_mask, profile) { Some(value) => value, None => { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); } };
+        let flash = if profile.pch && !profile.lpt { match crate::pch::FlashBar::map(parent) { Some(flash) => Some(flash), None => { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); } } } else { None };
+        let (controller, mac) = match configure_rings(mmio, io_base, bdf, dma_mask, profile, flash) { Some(value) => value, None => { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); } };
         trace("[INFO]  e1000: rings ready\n");
         let endpoint = match endpoint_claim(controller.mmio.base_va()) { Some(endpoint) => endpoint, None => { let mut controller = controller; controller.free(); restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); } };
         // Linux permits an INTx fallback because ACPI _PRT supplies its exact
         // GSI routing. Oxide has no AML/_PRT interpreter, so pretending the
         // PCI interrupt-line byte is routable would deliver a vector to the
         // wrong pin on real firmware. Require PCI core MSI/MSI-X instead.
-        let irq = bind_pci_message(bdf, endpoint, &controller);
-        let irq = match irq { Some(irq) => irq, None => { endpoint_release(endpoint); let mut controller = controller; controller.free(); restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); } };
+        let irq = bind_pci_message(parent, bdf, endpoint, &controller);
+        let (irq, msix) = match irq { Some(irq) => irq, None => { endpoint_release(endpoint); let mut controller = controller; controller.free(); restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); } };
         trace("[INFO]  e1000: irq ready\n");
         let dev = Arc::new(E1000NetDev {
             name: alloc::format!("eth{}", NEXT_NAME.fetch_add(1, Ordering::Relaxed)), mac,
@@ -432,16 +464,16 @@ pub(crate) fn probe_common(parent: &Arc<drv::Device>, dma_mask: u64, profile: cr
         let namespace = net::net_ns::initial_namespace();
         let owner = dev.clone() as Arc<dyn net::NetDev>;
         let Some(reg) = stack.prepare_parented_iface(owner, parent.clone(), &namespace) else {
-            release_irq(irq, endpoint); dev.ctrl.lock_bh::<sched::bh::SchedBh>().free(); restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed);
+            release_irq(irq, endpoint, msix); dev.ctrl.lock_bh::<sched::bh::SchedBh>().free(); restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed);
         };
         dev.iface.store(reg.id().raw() as u64, Ordering::Release); dev.generation.store(reg.generation(), Ordering::Release);
         if !stack.publish_iface(reg) {
-            dev.iface.store(0, Ordering::Release); release_irq(irq, endpoint); dev.ctrl.lock_bh::<sched::bh::SchedBh>().free(); restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed);
+            dev.iface.store(0, Ordering::Release); release_irq(irq, endpoint, msix); dev.ctrl.lock_bh::<sched::bh::SchedBh>().free(); restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed);
         }
         if !POLL_INSTALLED.swap(true, Ordering::AcqRel) && !net::backlog::register_poll(poll_rx) {
-            POLL_INSTALLED.store(false, Ordering::Release); let _ = stack.unregister_iface_current(net::NetIfaceId::from_raw(dev.iface.swap(0, Ordering::AcqRel) as u32)); release_irq(irq, endpoint); dev.ctrl.lock_bh::<sched::bh::SchedBh>().free(); restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed);
+            POLL_INSTALLED.store(false, Ordering::Release); let _ = stack.unregister_iface_current(net::NetIfaceId::from_raw(dev.iface.swap(0, Ordering::AcqRel) as u32)); release_irq(irq, endpoint, msix); dev.ctrl.lock_bh::<sched::bh::SchedBh>().free(); restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed);
         }
-        DEVICES.lock_bh::<sched::bh::SchedBh>().push(Record { bdf, command_orig, endpoint, irq, dev: dev.clone() });
+        DEVICES.lock_bh::<sched::bh::SchedBh>().push(Record { bdf, command_orig, endpoint, irq, msix, dev: dev.clone() });
         // `register_netdev` leaves IFF_UP clear. The NetDev lifecycle hook
         // performs the Linux ndo_open equivalent when userspace brings it up.
         trace("[INFO]  e1000: registered down\n");

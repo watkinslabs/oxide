@@ -1,9 +1,12 @@
 //! AML namespace ownership for PCI INTx routing.
 
 use alloc::{boxed::Box, vec::Vec};
-use aml::{AmlContext, AmlName, DebugVerbosity, Handler, pci_routing::{PciRoutingTable, Pin}, resource::{InterruptPolarity, InterruptTrigger}};
+use aml::{AmlContext, AmlName, DebugVerbosity, value::{AmlValue, Args}, pci_routing::{PciRoutingTable, Pin}, resource::{InterruptPolarity, InterruptTrigger}};
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use sync::{Devices, Spinlock};
+use super::aml_handler::FirmwareHandler;
+use super::pci_osc::{self, PciOscControl};
+use super::{fadt, power_action};
 
 const MAX_AML_TABLES: usize = 32;
 const ACPI_HEADER_BYTES: usize = 36;
@@ -13,38 +16,16 @@ const MAX_AML_TABLE_BYTES: usize = 1024 * 1024;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PciIntxRoute { pub gsi: u32, pub level: bool, pub active_low: bool }
 
-struct NullHandler;
-
-impl Handler for NullHandler {
-    fn read_u8(&self, _: usize) -> u8 { 0 }
-    fn read_u16(&self, _: usize) -> u16 { 0 }
-    fn read_u32(&self, _: usize) -> u32 { 0 }
-    fn read_u64(&self, _: usize) -> u64 { 0 }
-    fn write_u8(&mut self, _: usize, _: u8) {}
-    fn write_u16(&mut self, _: usize, _: u16) {}
-    fn write_u32(&mut self, _: usize, _: u32) {}
-    fn write_u64(&mut self, _: usize, _: u64) {}
-    fn read_io_u8(&self, _: u16) -> u8 { 0 }
-    fn read_io_u16(&self, _: u16) -> u16 { 0 }
-    fn read_io_u32(&self, _: u16) -> u32 { 0 }
-    fn write_io_u8(&self, _: u16, _: u8) {}
-    fn write_io_u16(&self, _: u16, _: u16) {}
-    fn write_io_u32(&self, _: u16, _: u32) {}
-    fn read_pci_u8(&self, _: u16, _: u8, _: u8, _: u8, _: u16) -> u8 { 0 }
-    fn read_pci_u16(&self, _: u16, _: u8, _: u8, _: u8, _: u16) -> u16 { 0 }
-    fn read_pci_u32(&self, _: u16, _: u8, _: u8, _: u8, _: u16) -> u32 { 0 }
-    fn write_pci_u8(&self, _: u16, _: u8, _: u8, _: u8, _: u16, _: u8) {}
-    fn write_pci_u16(&self, _: u16, _: u8, _: u8, _: u8, _: u16, _: u16) {}
-    fn write_pci_u32(&self, _: u16, _: u8, _: u8, _: u8, _: u16, _: u32) {}
-}
-
 struct Tables { ssdt_count: AtomicU32, hhdm: AtomicU64, dsdt_pa: AtomicU64, ssdt_pa: [AtomicU64; MAX_AML_TABLES] }
 static TABLES: Tables = Tables {
     ssdt_count: AtomicU32::new(0), hhdm: AtomicU64::new(0), dsdt_pa: AtomicU64::new(0),
     ssdt_pa: [const { AtomicU64::new(0) }; MAX_AML_TABLES],
 };
-struct RootRoutes { segment: u16, bus: u8, table: PciRoutingTable }
-struct RouteContext { aml: AmlContext, roots: Vec<RootRoutes> }
+struct RootRoutes { segment: u16, bus: u8, table: PciRoutingTable, osc: Option<PciOscControl> }
+/// The AML parser owns heap-backed namespace state already; keep its handle
+/// heap-resident too so constructing the boot-time route cache does not copy
+/// a multi-KiB parser object through the BSP kernel stack.
+struct RouteContext { aml: Box<AmlContext>, roots: Vec<RootRoutes> }
 static CONTEXT: Spinlock<Option<RouteContext>, Devices> = Spinlock::new(None);
 
 /// Retain the DSDT table for later namespace construction.
@@ -75,7 +56,7 @@ fn build_context() -> Option<RouteContext> {
     let hhdm = TABLES.hhdm.load(Ordering::Acquire);
     let dsdt = TABLES.dsdt_pa.load(Ordering::Acquire);
     if dsdt == 0 || hhdm == 0 { return None; }
-    let mut context = AmlContext::new(Box::new(NullHandler), DebugVerbosity::None);
+    let mut context = Box::new(AmlContext::new(Box::new(FirmwareHandler), DebugVerbosity::None));
     let table = unsafe { aml_table(dsdt, hhdm)? };
     if context.parse_table(table).is_err() { return None; }
     for slot in 0..count {
@@ -84,15 +65,28 @@ fn build_context() -> Option<RouteContext> {
         let table = unsafe { aml_table(pa, hhdm)? };
         if context.parse_table(table).is_err() { return None; }
     }
+    if let (Some(registers), Some((type_a, type_b))) = (power_action::power_registers(), s5_types(&context)) {
+        if let Some(action) = fadt::poweroff_action(registers, type_a, type_b) { power_action::set_poweroff_action(action); }
+    }
     let mut roots = Vec::new();
     for scope in prt_scopes(&mut context) {
         let segment = integer_at(&context, &scope, "_SEG").unwrap_or(0) as u16;
         let bus = integer_at(&context, &scope, "_BBN").unwrap_or(0) as u8;
         let path = AmlName::from_str("_PRT").ok()?.resolve(&scope).ok()?;
         let table = PciRoutingTable::from_prt_path(&path, &mut context).ok()?;
-        roots.push(RootRoutes { segment, bus, table });
+        let osc = pci_osc::negotiate(|cap| eval_osc(&mut context, &scope, cap)).ok();
+        roots.push(RootRoutes { segment, bus, table, osc });
     }
     Some(RouteContext { aml: context, roots })
+}
+
+fn s5_types(context: &AmlContext) -> Option<(u8, u8)> {
+    let path = AmlName::from_str("\\_S5").ok()?;
+    let AmlValue::Package(values) = context.namespace.get_by_path(&path).ok()? else { return None; };
+    let first = values.first()?.as_integer(context).ok()? as u8;
+    let second = if values.len() == 1 { (values.first()?.as_integer(context).ok()? >> 8) as u8 }
+        else { values.get(1)?.as_integer(context).ok()? as u8 };
+    Some((first, second))
 }
 
 /// # SAFETY: caller supplies one HHDM-mapped AML SDT whose header and declared
@@ -114,6 +108,33 @@ fn integer_at(context: &AmlContext, scope: &AmlName, name: &str) -> Option<u64> 
     let name = AmlName::from_str(name).ok()?;
     let (_, handle) = context.namespace.search(&name, scope).ok()?;
     context.namespace.get(handle).ok()?.as_integer(context).ok()
+}
+
+fn aml_buffer(bytes: &[u8]) -> AmlValue {
+    let value = AmlValue::Buffer(alloc::sync::Arc::new(Default::default()));
+    if let AmlValue::Buffer(buffer) = &value { buffer.lock().extend_from_slice(bytes); }
+    value
+}
+
+/// Evaluate one root bridge's `_OSC` method outside the route-collector
+/// closure frame. AML invocation is stack-heavy, so this remains a distinct
+/// early-firmware phase rather than being inlined under table collection.
+#[inline(never)]
+fn eval_osc(context: &mut AmlContext, scope: &AmlName, cap: [u32; 3]) -> Result<[u32; 3], ()> {
+    let path = AmlName::from_str("_OSC").map_err(|_| ())?.resolve(scope).map_err(|_| ())?;
+    let mut bytes = [0u8; 12];
+    for (index, word) in cap.iter().enumerate() { bytes[index * 4..index * 4 + 4].copy_from_slice(&word.to_le_bytes()); }
+    let args = Args::from_list(alloc::vec![aml_buffer(&pci_osc::PCI_OSC_UUID), AmlValue::Integer(1),
+        AmlValue::Integer(cap.len() as u64), aml_buffer(&bytes)]).map_err(|_| ())?;
+    let value = context.invoke_method(&path, args).map_err(|_| ())?;
+    let buffer = value.as_buffer(context).map_err(|_| ())?;
+    let bytes = buffer.lock();
+    if bytes.len() != 12 { return Err(()); }
+    let mut result = [0u32; 3];
+    for (index, word) in result.iter_mut().enumerate() {
+        *word = u32::from_le_bytes(bytes[index * 4..index * 4 + 4].try_into().map_err(|_| ())?);
+    }
+    Ok(result)
 }
 
 fn prt_scopes(context: &mut AmlContext) -> Vec<AmlName> {
@@ -144,10 +165,20 @@ pub fn pci_intx_route(bdf: pci::Bdf, pin: u8) -> Option<PciIntxRoute> {
     route_in_context(context.as_mut()?, bdf, pin)
 }
 
+/// Return PCI root firmware ownership retained for `segment:bus`. # C: O(root routes)
+pub fn pci_osc_control(segment: u16, bus: u8) -> Option<PciOscControl> {
+    CONTEXT.lock().as_ref()?.roots.iter().find(|root| root.segment == segment && root.bus == bus)?.osc
+}
+
 /// Parse AML and cache every root-bridge routing table before drivers attach.
 /// The result reports whether a complete namespace became available; PCI may
 /// still operate with MSI/MSI-X when firmware publishes no usable INTx table.
 /// # C: O(AML table bytes)
+///
+/// Keep the parser's deep temporary state out of the caller's boot frame.
+/// This is the same stack-phase boundary Linux uses around early firmware
+/// table interpretation before driver publication.
+#[inline(never)]
 pub fn prepare_pci_intx_routes() -> bool {
     let mut context = CONTEXT.lock();
     if context.is_none() { *context = build_context(); }
@@ -162,5 +193,18 @@ mod tests {
         assert_eq!(pin(1), Some(Pin::IntA));
         assert_eq!(pin(4), Some(Pin::IntD));
         assert_eq!(pin(5), None);
+    }
+
+    #[test]
+    fn s5_uses_packed_single_or_first_two_package_values() {
+        let context = AmlContext::new(Box::new(FirmwareHandler), DebugVerbosity::None);
+        let types = |values: &[AmlValue]| {
+            let first = values.first()?.as_integer(&context).ok()? as u8;
+            let second = if values.len() == 1 { (values.first()?.as_integer(&context).ok()? >> 8) as u8 }
+                else { values.get(1)?.as_integer(&context).ok()? as u8 };
+            Some((first, second))
+        };
+        assert_eq!(types(&[AmlValue::Integer(0x0605)]), Some((5, 6)));
+        assert_eq!(types(&[AmlValue::Integer(5), AmlValue::Integer(6), AmlValue::Integer(7)]), Some((5, 6)));
     }
 }

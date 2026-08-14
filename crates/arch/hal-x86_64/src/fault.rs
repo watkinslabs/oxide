@@ -7,9 +7,11 @@
 // exception handling.
 
 pub mod paranoid;
+mod frame;
 mod stubs;
 
 pub use stubs::vector_stub_addr;
+pub use frame::current_fault_frame;
 
 use crate::pt_regs::PtRegs;
 
@@ -148,27 +150,6 @@ fn current_handler() -> FaultHandler {
     unsafe { core::mem::transmute::<*mut (), FaultHandler>(p) }
 }
 
-/// F158: stash for the live `PtRegs` pointer while
-/// `oxide_fault_print_rust` is on the stack. Lets the kernel-side
-/// FaultHandler (which doesn't get the frame as an arg) reach over
-/// and rewrite RIP/RSP/etc. to deliver a Linux-style catchable
-/// SIGSEGV via a user-installed signal handler, and lets the SIGSEGV
-/// terminator dump every GPR (B45). Cleared on exit from the
-/// rust-side print fn.
-static CUR_FAULT_FRAME: core::sync::atomic::AtomicPtr<PtRegs>
-    = core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
-
-/// Snapshot of the live `*mut PtRegs` while in fault context.
-/// Returns null if no fault is active (i.e., not called from a
-/// FaultHandler invocation). Used by the kernel SIGSEGV path to
-/// rewrite the iretq frame for catchable signal delivery, and by the
-/// diagnostics that name the bad register on a user-mode #GP / #UD.
-/// # SAFETY: caller is in synchronous fault dispatch on the faulting task.
-/// # C: O(1)
-pub fn current_fault_frame() -> *mut PtRegs {
-    CUR_FAULT_FRAME.load(core::sync::atomic::Ordering::Acquire)
-}
-
 /// NMI backtrace: dump this CPU's id + RIP/RSP/RFLAGS + GPRs. Called from
 /// the vector-2 path on a cross-CPU backtrace poke. Print-only (caller
 /// resumes). hal-x86_64 can't read the sched task (would be a dep cycle),
@@ -211,14 +192,7 @@ unsafe extern "C" fn oxide_fault_print_rust(regs: *mut PtRegs) -> bool {
     let f = unsafe { &mut *regs };
     // F158: publish the live frame so the kernel SIGSEGV delivery path
     // can rewrite it for catchable user signals.
-    CUR_FAULT_FRAME.store(regs, core::sync::atomic::Ordering::Release);
-    struct ClearOnDrop;
-    impl Drop for ClearOnDrop {
-        fn drop(&mut self) {
-            CUR_FAULT_FRAME.store(core::ptr::null_mut(), core::sync::atomic::Ordering::Release);
-        }
-    }
-    let _guard = ClearOnDrop;
+    let _frame_guard = frame::publish(regs);
     // NMI (vector 2): cross-CPU backtrace poke from the hard-lockup
     // detector / sysrq. NMI is delivered through IF=0, so this lands even
     // on a CPU spinning in a spinlock deadlock with interrupts masked.
@@ -461,7 +435,7 @@ unsafe extern "C" fn oxide_fault_print_rust(regs: *mut PtRegs) -> bool {
 /// structure is up — a fault during early boot is exactly when it must.
 /// # C: O(1)
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-fn fault_cpu() -> usize { hal::fault_reentry::slot(crate::cpuid::initial_apic_id() as u64) }
+pub(crate) fn fault_cpu() -> usize { hal::fault_reentry::slot(crate::cpuid::initial_apic_id() as u64) }
 
 /// What makes two faults "the same" for the runaway guard: a #PF repeats on its
 /// faulting ADDRESS, everything else on the instruction that raised it.

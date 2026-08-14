@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Boot-smoke gate. Boots the kernel under qemu headless and waits
-# for `oxide login:` on serial within $SMOKE_TIMEOUT seconds. Exit
-# 0 on success, 1 on timeout, 2 on argument / build error.
+# for `oxide login:` on serial within $SMOKE_TIMEOUT seconds. Image
+# preparation is intentionally outside that runtime deadline. Exit 0 on
+# success, 1 on guest failure, 2 on argument / image-build error.
 #
 # Usage:
 #   tools/boot-smoke.sh x86            # default 600s timeout
@@ -24,15 +25,17 @@ EOF
 
 ARCH="${1:-}"
 case "$ARCH" in
-    x86)  MAKE_TARGET=qemu-x86 ;;
-    arm)  MAKE_TARGET=qemu-arm ;;
+    x86)  IMAGE_TARGET=qemu-x86-image; RUN_TARGET=qemu-x86-existing; QEMU_ARCH=x86_64 ;;
+    arm)  IMAGE_TARGET=qemu-arm-image; RUN_TARGET=qemu-arm-existing; QEMU_ARCH=aarch64 ;;
     *)    usage ;;
 esac
 TIMEOUT="${2:-${SMOKE_TIMEOUT:-600}}"
+MAKE_BIN="${SMOKE_MAKE:-make}"
 
 # Vendor preflight, shared with every other harness that boots a guest so the
 # fix cannot go missing from one entry point (`tools/vendor-preflight.sh`).
 SMOKE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+QEMU_PIDFILE="${SMOKE_QEMU_PIDFILE:-$SMOKE_ROOT/target/builds/default/qemu-${QEMU_ARCH}.pid}"
 . "$SMOKE_ROOT/tools/vendor-preflight.sh"
 vendor_preflight || exit 2
 
@@ -59,12 +62,12 @@ MARKER="${SMOKE_MARKER:-Reached target basic.target}"
 #
 # So the gate ALSO asks the guest a question and waits for its answer. The
 # serial line already has a writable FIFO ($SYSRQ_WFD, used for the sysrq RX
-# probe below) and the boot command line already carries
-# `systemd.debug_shell=ttyS0`, so typing a shell command and matching its
-# output proves — with no dependence on any log routing — that init ran, that
-# a service started, that fork/exec works, and that the tty carries bytes in
-# BOTH directions. A boot that reaches a desktop always answers it; a boot
-# whose userspace is broken cannot.
+# probe below). The boot line puts `systemd.debug_shell=` on that same UART.
+# Once the shell prints its prompt, one typed command and its output prove —
+# with no dependence on log routing — that init ran, that a
+# service started, that fork/exec works, and that the tty carries bytes in BOTH
+# directions. A boot that reaches a desktop always answers it; a boot whose
+# userspace is broken cannot.
 #
 # Either proof passes the attempt. Set SMOKE_ALIVE_PROBE='' to require the
 # passive marker alone (a profile with no debug shell), or override the
@@ -82,6 +85,11 @@ ALIVE_PROBE="${SMOKE_ALIVE_PROBE-1}"
 ALIVE_NONCE="OXIDE-ALIVE-OK"
 ALIVE_CMD="${SMOKE_ALIVE_CMD:-echo OXIDE-AL\"IVE\"-OK}"
 ALIVE_MARKER="${SMOKE_ALIVE_MARKER:-$ALIVE_NONCE}"
+# The image's journal does not forward unit-completion messages after it takes
+# over the serial log. The prompt is emitted only after the configured shell
+# has opened the serial TTY and entered its input loop, making it a stronger
+# admission condition than a unit status line.
+ALIVE_READY_MARKER="${SMOKE_ALIVE_READY_MARKER:-sh-5.2#}"
 
 # Failure marker: an unrecoverable kernel fault. The boot is dead the moment this
 # appears — the fault handler parks the PE and nothing further will be printed, so
@@ -134,7 +142,7 @@ kill_boot() {
 keep_log_copy() {
     local attempt="$1"
     local status="$2"
-    [ -s "$LOG" ] || return 0
+    [ -f "$LOG" ] || return 0
     if [ -n "${SMOKE_KEEP_LOG:-}" ]; then
         cp "$LOG" "$SMOKE_KEEP_LOG" 2>/dev/null || true
     fi
@@ -271,31 +279,52 @@ check_serial_rx() {
     return 1
 }
 
-# Type a command at the guest's serial debug shell and report whether its
-# output came back. Called once per poll cycle; each call types the command
-# again, so a shell that starts late (or a typing corrupted by the known serial
-# echo defect) is simply retried on the next cycle rather than failing the run.
-#
-# Cheap by construction: one short write per 2s cycle, and the match is the
-# same `grep` over the same log the passive marker uses. # Returns 0 once the
-# guest has answered.
+# Type exactly one command after the serial debug-shell prompt, then report
+# whether its evaluated output came back. Waiting for the prompt makes the
+# write a transaction with a known reader, rather
+# than repeatedly injecting bytes into a UART before an interactive endpoint
+# exists. # Returns 0 once the guest has answered.
+ALIVE_SENT=""
 probe_userspace_alive() {
     [ -n "$ALIVE_PROBE" ] || return 1
     [ -n "${SYSRQ_WFD:-}" ] || return 1
-    # Nothing to talk to until the kernel has handed off to userspace; typing
-    # into the kernel's own console before that just adds noise to the log.
-    grep -qa '^\[[0-9]' "$LOG" 2>/dev/null || return 1
-    printf '%s\n' "$ALIVE_CMD" >&"$SYSRQ_WFD" 2>/dev/null || return 1
+    grep -qaF "$ALIVE_READY_MARKER" "$LOG" 2>/dev/null || return 1
+    if [ -z "$ALIVE_SENT" ]; then
+        printf '%s\n' "$ALIVE_CMD" >&"$SYSRQ_WFD" 2>/dev/null || return 1
+        ALIVE_SENT=1
+    fi
     grep -qaE "$ALIVE_MARKER" "$LOG" 2>/dev/null
 }
 
-# Run one boot; return 0 if the guest proves itself alive within TIMEOUT.
+# Build the image once before any runtime clock starts. This is deliberately
+# separate from attempt_boot: feature-enabled kernel builds can take longer
+# than a healthy guest's runtime budget, and must never be reported as a boot
+# timeout. The same log-retention contract applies to this failure path.
+prepare_image() {
+    LOG="$(mktemp /tmp/oxide-boot-smoke-${ARCH}-XXXXXX.log)"
+    echo "boot-smoke: arch=$ARCH preparing image target=$IMAGE_TARGET log=$LOG"
+    if ! "$MAKE_BIN" "$IMAGE_TARGET" >"$LOG" 2>&1; then
+        echo "boot-smoke: FAIL — image preparation failed before QEMU started" >&2
+        echo "------ last 60 lines of image-build log ------" >&2
+        tail -n 60 "$LOG" >&2
+        keep_log_copy "prepare" "build-failed"
+        return 1
+    fi
+    echo "boot-smoke: image preparation complete; runtime deadline begins when QEMU launches"
+    rm -f "$LOG"
+    LOG=""
+}
+
+# Run one prebuilt-image boot; return 0 if the guest proves itself alive
+# within TIMEOUT. The deadline starts only after the QEMU launcher exists.
 attempt_boot() {
     # Before anything opens the image: release it if a killed predecessor is
     # still holding it, or this attempt fails with no kernel output at all.
     reap_stale_image_holders
     LOG="$(mktemp /tmp/oxide-boot-smoke-${ARCH}-XXXXXX.log)"
-    echo "boot-smoke: arch=$ARCH attempt=$1/$ATTEMPTS timeout=${TIMEOUT}s log=$LOG"
+    rm -f "$QEMU_PIDFILE"
+    ALIVE_SENT=""
+    echo "boot-smoke: arch=$ARCH attempt=$1/$ATTEMPTS runtime_timeout=${TIMEOUT}s log=$LOG"
     # Writable stdin: a FIFO held open by our own RDWR fd ($SYSRQ_WFD) so
     # it never EOFs and we can inject sysrq on timeout. Equivalent to the
     # old `< /dev/null` for a clean boot (no bytes sent until timeout).
@@ -307,13 +336,32 @@ attempt_boot() {
         # attempt's log so the markers below inspect the guest stream, not
         # merely `make`/xtask narration. This also makes SMOKE_KEEP_LOG retain
         # the actual boot evidence on both success and failure.
-        OXIDE_QEMU_HEADLESS=1 OXIDE_SERIAL_LOG="$LOG" setsid bash -c "exec make SMP='$OXIDE_SMP' '$MAKE_TARGET' > '$LOG' 2>&1 < '$SYSRQ_FIFO'" &
+        setsid env OXIDE_QEMU_HEADLESS=1 OXIDE_SERIAL_LOG="$LOG" "$MAKE_BIN" SMP="$OXIDE_SMP" "$RUN_TARGET" <"$SYSRQ_FIFO" >"$LOG" 2>&1 &
     else
         SYSRQ_WFD=""
-        OXIDE_QEMU_HEADLESS=1 OXIDE_SERIAL_LOG="$LOG" setsid bash -c "exec make SMP='$OXIDE_SMP' '$MAKE_TARGET' > '$LOG' 2>&1 < /dev/null" &
+        setsid env OXIDE_QEMU_HEADLESS=1 OXIDE_SERIAL_LOG="$LOG" "$MAKE_BIN" SMP="$OXIDE_SMP" "$RUN_TARGET" </dev/null >"$LOG" 2>&1 &
     fi
     echo $! > "$PIDFILE"
-    local deadline
+    local deadline qemu_pid
+    # xtask gives QEMU its own PID file. Do not start the guest budget merely
+    # because the launcher shell exists: setup failures must be early exits,
+    # while a successfully spawned QEMU gets the full runtime allowance.
+    while :; do
+        qemu_pid="$(cat "$QEMU_PIDFILE" 2>/dev/null || true)"
+        if [ -n "$qemu_pid" ] && kill -0 "$qemu_pid" 2>/dev/null; then break; fi
+        local pid
+        pid="$(cat "$PIDFILE" 2>/dev/null || true)"
+        if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+            echo "boot-smoke: attempt $1 — qemu exited before it started" >&2
+            echo "------ last 60 lines of log ------" >&2
+            tail -n 60 "$LOG" >&2
+            keep_log_copy "$1" "qemu-exited"
+            close_sysrq
+            return 1
+        fi
+        sleep 1
+    done
+    echo "boot-smoke: QEMU pid=$qemu_pid started; runtime deadline=${TIMEOUT}s"
     deadline=$(( $(date +%s) + TIMEOUT ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
         local pid
@@ -386,6 +434,10 @@ diagnose_empty_log() {
     echo "boot-smoke:   This is a harness/build/image-lock failure, NOT a kernel failure." >&2
     echo "boot-smoke:   Check the log for an image lock, a build error, or a GRUB stall." >&2
 }
+
+if ! prepare_image; then
+    exit 2
+fi
 
 a=1
 while [ "$a" -le "$ATTEMPTS" ]; do

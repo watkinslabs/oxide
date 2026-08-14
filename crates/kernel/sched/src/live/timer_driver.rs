@@ -97,7 +97,9 @@ pub fn tick_poll_ktimers(now_ns: u64) {
     unsafe { Arc::increment_strong_count(p as *const Task); }
     // SAFETY: matches the increment above; hands the fresh Arc to the wake list.
     let arc = unsafe { Arc::from_raw(p as *const Task) };
-    super::ttwu::wake_list_push(this_cpu(), arc);
+    if super::ttwu::wake_list_push(this_cpu(), arc) {
+        super::ttwu::resched_curr(this_cpu());
+    }
 }
 
 /// Spawn the timer-driver kthread. Boot, once, after the runqueue installs.

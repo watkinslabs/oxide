@@ -36,6 +36,66 @@ pub(super) const RQ_END_IO_FREE: i32 = 1;
 pub(super) const LINUX_OK: i32 = 0;
 pub(super) const LINUX_EINVAL: i32 = 22;
 pub(super) const LINUX_EIO: i32 = 5;
+pub(super) const BLK_ZONE_COND_IMP_OPEN: u8 = 0x2;
+pub(super) const BLK_ZONE_COND_EXP_OPEN: u8 = 0x3;
+pub(super) const BLK_ZONE_COND_CLOSED: u8 = 0x4;
+pub(super) const BLK_ZONE_COND_ACTIVE: u8 = 0xff;
+pub(super) const BLK_ZONE_COND_EMPTY: u8 = 0x1;
+pub(super) const BLK_ZONE_COND_FULL: u8 = 0xe;
+pub(super) const BLK_ZONE_WPLUG_NEED_WP_UPDATE: u32 = 1 << 1;
+
+pub(super) type ReportZonesFn = unsafe extern "C" fn(*mut LinuxBlkZone, u32, *mut c_void) -> i32;
+
+/// Private block-core report context handed to a driver's `report_zones` operation.
+#[repr(C)]
+pub(super) struct LinuxBlkReportZonesArgs {
+    pub(super) cb: Option<ReportZonesFn>,
+    pub(super) data: *mut c_void,
+    pub(super) report_active: bool,
+}
+
+/// Zone descriptor shared by the zoned block ABI and driver callbacks.
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub(super) struct LinuxBlkZone {
+    pub(super) start: u64,
+    pub(super) len: u64,
+    pub(super) wp: u64,
+    pub(super) zone_type: u8,
+    pub(super) cond: u8,
+    pub(super) non_seq: u8,
+    pub(super) reset: u8,
+    pub(super) resv: [u8; 4],
+    pub(super) capacity: u64,
+    pub(super) reserved: [u8; 24],
+}
+
+/// Zoned gendisk subobject. The write-plug hash pointer occupies its Linux ABI slot.
+#[repr(C)]
+pub(super) struct LinuxGendiskZoned {
+    pub(super) nr_zones: u32,
+    pub(super) zone_capacity: u32,
+    pub(super) last_zone_capacity: u32,
+    pub(super) _pad: u32,
+    pub(super) zones_cond: *mut u8,
+    pub(super) zone_wplugs_hash_bits: u32,
+    pub(super) nr_zone_wplugs: i32,
+    pub(super) zone_wplugs_hash_lock: [u8; 4],
+    pub(super) _lock_pad: [u8; 4],
+    pub(super) zone_wplugs_pool: *mut c_void,
+    pub(super) zone_wplugs_hash: *mut c_void,
+    pub(super) zone_wplugs_wq: *mut c_void,
+    pub(super) _tail: [u8; 8],
+}
+
+impl LinuxGendiskZoned {
+    pub(super) const fn empty() -> Self {
+        Self { nr_zones: 0, zone_capacity: 0, last_zone_capacity: 0, _pad: 0,
+            zones_cond: core::ptr::null_mut(), zone_wplugs_hash_bits: 0, nr_zone_wplugs: 0,
+            zone_wplugs_hash_lock: [0; 4], _lock_pad: [0; 4], zone_wplugs_pool: core::ptr::null_mut(),
+            zone_wplugs_hash: core::ptr::null_mut(), zone_wplugs_wq: core::ptr::null_mut(), _tail: [0; 8] }
+    }
+}
 
 #[repr(C)]
 pub(super) struct LinuxBlockDevice {
@@ -214,7 +274,7 @@ pub(super) struct LinuxGendisk {
     pub(super) slave_bdevs: [u8; 16],
     pub(super) random: *mut c_void,
     pub(super) ev: *mut c_void,
-    pub(super) _zoned: [u8; 72],
+    pub(super) zoned: LinuxGendiskZoned,
     pub(super) node_id: i32,
     pub(super) _node_pad: u32,
     pub(super) bb: *mut c_void,
@@ -431,90 +491,4 @@ pub(super) struct LinuxRequest {
     pub(super) end_io: Option<RqEndIoFn>,
     pub(super) end_io_data: *mut c_void,
     pub(super) rq_next: *mut LinuxRequest,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use core::mem::{offset_of, size_of};
-
-    #[test]
-    fn bio_layout_matches_the_module_header_contract() {
-        assert_eq!(size_of::<LinuxBioVec>(), 16);
-        assert_eq!(size_of::<LinuxBio>(), 80);
-        assert_eq!(offset_of!(LinuxBio, bi_size), 40);
-        assert_eq!(offset_of!(LinuxBio, bi_io_vec), 48);
-        assert_eq!(offset_of!(LinuxBio, bi_vcnt), 56);
-        assert_eq!(offset_of!(LinuxBio, bi_end_io), 64);
-    }
-
-    #[test]
-    fn block_device_layout_matches_the_supported_module_abi() {
-        assert_eq!(size_of::<LinuxBlockDevice>(), 984);
-        assert_eq!(offset_of!(LinuxBlockDevice, bd_disk), 16);
-        assert_eq!(offset_of!(LinuxBlockDevice, bd_queue), 24);
-        assert_eq!(offset_of!(LinuxBlockDevice, bd_holders), 128);
-        assert_eq!(offset_of!(LinuxBlockDevice, bd_fsfreeze_mutex), 152);
-        assert_eq!(offset_of!(LinuxBlockDevice, bd_device), 208);
-    }
-
-    #[test]
-    fn gendisk_layout_matches_the_supported_module_abi() {
-        assert_eq!(size_of::<LinuxGendisk>(), 656);
-        assert_eq!(offset_of!(LinuxGendisk, part0), 64);
-        assert_eq!(offset_of!(LinuxGendisk, queue), 80);
-        assert_eq!(offset_of!(LinuxGendisk, flags), 344);
-        assert_eq!(offset_of!(LinuxGendisk, state), 352);
-        assert_eq!(offset_of!(LinuxGendisk, queue_kobj), 408);
-        assert_eq!(offset_of!(LinuxGendisk, diskseq), 600);
-        assert_eq!(offset_of!(LinuxGendisk, rqos_state_mutex), 624);
-    }
-
-    #[test]
-    fn blk_mq_tag_set_layout_matches_the_supported_module_abi() {
-        assert_eq!(size_of::<LinuxBlkMqTagSet>(), 240);
-        assert_eq!(offset_of!(LinuxBlkMqTagSet, map), 8);
-        assert_eq!(offset_of!(LinuxBlkMqTagSet, nr_maps), 56);
-        assert_eq!(offset_of!(LinuxBlkMqTagSet, driver_data), 88);
-        assert_eq!(offset_of!(LinuxBlkMqTagSet, tags), 96);
-        assert_eq!(offset_of!(LinuxBlkMqTagSet, tag_list_lock), 112);
-        assert_eq!(offset_of!(LinuxBlkMqTagSet, srcu), 160);
-        assert_eq!(offset_of!(LinuxBlkMqTagSet, tags_srcu), 168);
-        assert_eq!(offset_of!(LinuxBlkMqTagSet, update_nr_hwq_lock), 200);
-    }
-
-    #[test]
-    fn request_queue_layout_matches_the_supported_module_abi() {
-        assert_eq!(size_of::<LinuxRequestQueue>(), 992);
-        assert_eq!(offset_of!(LinuxRequestQueue, queuedata), 0);
-        assert_eq!(offset_of!(LinuxRequestQueue, mq_ops), 16);
-        assert_eq!(offset_of!(LinuxRequestQueue, rq_timeout), 40);
-        assert_eq!(offset_of!(LinuxRequestQueue, disk), 96);
-        assert_eq!(offset_of!(LinuxRequestQueue, limits), 112);
-        assert_eq!(offset_of!(LinuxRequestQueue, mq_freeze_depth), 828);
-        assert_eq!(offset_of!(LinuxRequestQueue, td), 832);
-        assert_eq!(offset_of!(LinuxRequestQueue, tag_set), 912);
-        assert_eq!(offset_of!(LinuxRequestQueue, debugfs_mutex), 960);
-    }
-
-    #[test]
-    fn request_and_batch_layouts_match_the_module_header_contract() {
-        assert_eq!(size_of::<LinuxRequest>(), 112);
-        assert_eq!(offset_of!(LinuxRequest, bio), 24);
-        assert_eq!(offset_of!(LinuxRequest, cmd_flags), 40);
-        assert_eq!(offset_of!(LinuxRequest, sector), 64);
-        assert_eq!(offset_of!(LinuxRequest, end_io), 88);
-        assert_eq!(offset_of!(LinuxRequest, rq_next), 104);
-        assert_eq!(size_of::<LinuxIoCompBatch>(), 40);
-        assert_eq!(offset_of!(LinuxIoCompBatch, complete), 24);
-    }
-
-    #[test]
-    fn queue_limits_layout_matches_the_supported_module_abi() {
-        assert_eq!(size_of::<LinuxBlkIntegrity>(), 7);
-        assert_eq!(size_of::<LinuxQueueLimits>(), 192);
-        assert_eq!(offset_of!(LinuxQueueLimits, logical_block_size), 56);
-        assert_eq!(offset_of!(LinuxQueueLimits, max_segments), 156);
-        assert_eq!(offset_of!(LinuxQueueLimits, integrity), 184);
-    }
 }

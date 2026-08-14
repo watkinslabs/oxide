@@ -98,6 +98,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import rust_symbol_identity as rsi        # noqa: E402
@@ -456,6 +457,42 @@ def read_edge_map(path, frames):
     return edges, unresolved
 
 
+def remove_stack_switches(path, frames, calls):
+    """Remove verified direct edges that install a different physical stack.
+
+    A `<caller>\\t<callee>` entry is not an allowlist: it is accepted only
+    when the linked image contains that exact direct call. The caller runs on
+    the old stack and the callee starts with a fresh stack, so summing their
+    frames would report an impossible overlap.
+    """
+    by_ident = index_by_identity(frames)
+    removed, unresolved = 0, []
+    with open(path) as f:
+        for n, raw_line in enumerate(f, 1):
+            line = raw_line.split("#", 1)[0].strip()
+            if not line:
+                continue
+            parts = [p.strip() for p in line.split("\t") if p.strip()]
+            if len(parts) != 2:
+                raise SystemExit(f"{path}:{n}: expected `<caller>\\t<callee>`, got {line!r}")
+            caller, callee = parts
+            callers, callees = by_ident.get(caller), by_ident.get(callee)
+            if not callers:
+                unresolved.append((n, "caller", caller))
+                continue
+            if not callees:
+                unresolved.append((n, "callee", callee))
+                continue
+            for source in callers:
+                for target in callees:
+                    if target not in calls[source]:
+                        unresolved.append((n, "direct edge", f"{caller} -> {callee}"))
+                        continue
+                    calls[source].remove(target)
+                    removed += 1
+    return removed, unresolved
+
+
 def read_roots(path, frames):
     """-> ([raw symbols], [(line, identity) unresolved]) from a file of
     demangled identities, one per line."""
@@ -520,6 +557,9 @@ def main():
                     help="file of `<caller>\\t<callee>` demangled identities naming the "
                          "targets of function-pointer dispatch sites, so the walker can "
                          "see past them (see read_edge_map)")
+    ap.add_argument("--stack-switch-map",
+                    help="file of `<caller>\\t<callee>` direct calls that explicitly "
+                         "switch to a fresh physical stack before entering the callee")
     ap.add_argument("--irq-roots",
                     help="file of demangled identities that run on the per-CPU hardirq "
                          "stack rather than a task stack — a SECOND budget domain")
@@ -559,6 +599,19 @@ def main():
         for caller, callees in edges.items():
             calls[caller].update(callees)
             resolved_edges += len(callees)
+
+    stack_switches = 0
+    if args.stack_switch_map:
+        stack_switches, unresolved = remove_stack_switches(
+            args.stack_switch_map, frames, calls)
+        if unresolved:
+            print(f"stack-depth-gate: FAIL — {len(unresolved)} stack switch entr(y/ies) "
+                  f"in {args.stack_switch_map} do not name a linked direct call:",
+                  file=sys.stderr)
+            for n, which, identity in unresolved:
+                print(f"    {args.stack_switch_map}:{n}  {which}: {identity}",
+                      file=sys.stderr)
+            return 1
 
     tails = {}
     if not args.no_blocking_tail:
@@ -613,6 +666,9 @@ def main():
     if args.indirect_map:
         print(f"  dispatch resolved  : {resolved_edges} edge(s) from {args.indirect_map} "
               "— interrupt handlers the walker would otherwise stop at")
+    if args.stack_switch_map:
+        print(f"  stack switches     : {stack_switches} verified edge(s) from "
+              f"{args.stack_switch_map} — caller/callee use distinct stacks")
     print(f"  recursive          : {len(w.recursive)} function(s) — depth is a lower bound")
     for point, tail in tails.items():
         print(f"  blocking tail      : {tail} B charged once to every path reaching "
@@ -824,6 +880,17 @@ def self_test():
     assert "indirect_caller" in w.crosses_indirect
     # A cycle must be REPORTED, not silently collapsed to zero depth.
     assert "loop_a" in w.recursive and "loop_b" in w.recursive, w.recursive
+
+    with tempfile.NamedTemporaryFile("w", delete=False) as switch_map:
+        switch_map.write("root\tmid\n")
+        switch_path = switch_map.name
+    switched = {name: set(edges) for name, edges in cx.items()}
+    removed, unresolved = remove_stack_switches(switch_path, fx, switched)
+    os.unlink(switch_path)
+    assert (removed, unresolved) == (1, []), (removed, unresolved)
+    switched_walker = Walker(fx, switched, ix)
+    switched_walker.walk_all()
+    assert switched_walker.depth["root"] == fx["root"], switched_walker.depth["root"]
 
     fa, ca, _ = parse(SELF_TEST_ARM, "aarch64")
     # aarch64 adds no return-address byte: the pre-index stp already saved lr.

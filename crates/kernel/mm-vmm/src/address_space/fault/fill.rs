@@ -116,28 +116,14 @@ impl AddressSpace {
                 if (0x7ffff6000000..0x7ffff8000000).contains(&va_page) {
                     crate::tailwatch::log_install(b"kbytes", 1, off as u64, va_page, pa, self.root_pa);
                 }
-                // SAFETY: va_page page-aligned per find_containing; pa is fresh PMM frame; flags carry USER per `11§5`.
-                // F157-A1: dec_ref any frame displaced by a stale present leaf.
-                let replaced = unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K) };
-                if replaced.is_none() { self.accounting.install_pte(&vma); }
-                if let Some(old) = replaced {
-                    // LOST-WRITE (kbytes/file arm, ALL ranges incl brk + ld.so
-                    // .bss): a demand fault installed over a PRESENT leaf → the
-                    // displaced page's live content was dropped. va identifies
-                    // the range (0x1000_0000 exe/brk, 0x4003_xxxx ld.so .bss).
-                    #[cfg(feature = "debug-watchdog")]
-                    { klog::write_raw(b"[LOSTWRITE] demand-install displaced present va=");
-                      klog::write_hex_u64(va_page); klog::write_raw(b" old_pa=");
-                      klog::write_hex_u64(old.0 & !(PAGE_SIZE_BYTES - 1)); klog::write_raw(b"\n"); }
-                    // GAP-1 (displaced-frame UAF): this fault displaced a
-                    // present leaf; dec_ref below may free `old`. A peer CPU
-                    // of the same mm with a stale TLB entry for va_page->old
-                    // could touch a freed+realloc'd frame. Flush peers (this
-                    // mm's cpumask only) BEFORE dropping our reference. No-op
-                    // on UP / aarch64 / hosted.
-                    hal::tlb::shootdown_others_va(va_page, self.cpumask_full().as_words());
-                    dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
+                let installed = unsafe {
+                    self.map_if_absent::<M>(Va(va_page), Pa(pa), pte_flags, PageSize::P4K)
+                };
+                if !installed {
+                    dec_ref(pa);
+                    return Ok(());
                 }
+                self.accounting.install_pte(&vma);
                 Ok(())
             }
             VmaBacking::File { backing, off: backing_off } => {
@@ -173,8 +159,8 @@ impl AddressSpace {
                 let huge_bytes = backing.huge_page_size();
                 if huge_bytes != 0 {
                     // SAFETY: forwards the live MMU and the PMM refcount callback unchanged; no page-table lock is held here.
-                    return unsafe { self.fill_huge_not_present::<M, _>(
-                        va, access, &vma, backing, *backing_off, huge_bytes, wp, inc_ref,
+                    return unsafe { self.fill_huge_not_present::<M, _, _>(
+                        va, access, &vma, backing, *backing_off, huge_bytes, wp, dec_ref, inc_ref,
                     ) };
                 }
                 // Device mappings install their owner frame for both mapping
@@ -208,15 +194,14 @@ impl AddressSpace {
                         mark_referenced(spa);
                     }
                     let pte_flags = vma.page_flags() | wp;
-                    // SAFETY: va_page is page aligned; spa is the owner-backed
-                    // frame whose refcount was bumped; flags carry USER.
-                    let replaced = unsafe { M::map(Va(va_page), Pa(spa), pte_flags, PageSize::P4K) };
-                    if replaced.is_none() { self.accounting.install_pte(&vma); }
-                    if let Some(old) = replaced {
-                        // Flush peers before releasing a displaced private frame.
-                        hal::tlb::shootdown_others_va(va_page, self.cpumask_full().as_words());
-                        dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
+                    let installed = unsafe {
+                        self.map_if_absent::<M>(Va(va_page), Pa(spa), pte_flags, PageSize::P4K)
+                    };
+                    if !installed {
+                        dec_ref(spa);
+                        return Ok(());
                     }
+                    self.accounting.install_pte(&vma);
                     if around_ok && !matches!(access, FaultAccess::Write) {
                         // SAFETY: the demand leaf is committed and the same
                         // live MMU/PMM callbacks govern adjacent PTE installs.
@@ -482,49 +467,14 @@ impl AddressSpace {
                     klog::write_raw(b"\n");
                 }
                 let pte_flags = vma.page_flags() | wp;
-                // Linux's post-fault pte_same/!pte_none re-check:
-                // `backing.read_at` above SLEEPS on the block device (ext4 ->
-                // virtio-blk park_blk -> schedule()), so a PEER THREAD of this
-                // same mm (CLONE_VM) can fault the SAME va while we sleep,
-                // ALSO fill a frame, and install FIRST. Linux re-takes the pte
-                // lock after the sleeping ->fault and, if a racer already
-                // populated the slot, FREES its own page and does NOT install.
-                // Oxide has no ptl; the minimal correct equivalent is: if the
-                // slot is now present, back off — the racer's frame (identical
-                // file content) stands, and clobbering it would (a) revert the
-                // racer's retired user store and (b) free the racer's live
-                // frame (the libcap `.bss` lock-byte lost-write / frame-reuse
-                // bug). Only install into a still-empty slot.
-                // Privileged PT read of the running task's active root.
-                if M::translate(Va(va_page)).is_some() {
-                    // A racer won while we slept in read_at — free our unused
-                    // fill frame and adopt the racer's install (retry the
-                    // faulting instruction, which will now hit the present PTE).
+                let installed = unsafe {
+                    self.map_if_absent::<M>(Va(va_page), Pa(pa), pte_flags, PageSize::P4K)
+                };
+                if !installed {
                     dec_ref(pa);
                     return Ok(());
                 }
-                // SAFETY: va_page page-aligned per find_containing; pa is fresh PMM frame; flags carry USER per `11§5`.
-                // F157-A1: dec_ref any frame displaced by a stale present leaf.
-                let replaced = unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K) };
-                if replaced.is_none() { self.accounting.install_pte(&vma); }
-                if let Some(old) = replaced {
-                    // LOST-WRITE (kbytes/file arm, ALL ranges incl brk + ld.so
-                    // .bss): a demand fault installed over a PRESENT leaf → the
-                    // displaced page's live content was dropped. va identifies
-                    // the range (0x1000_0000 exe/brk, 0x4003_xxxx ld.so .bss).
-                    #[cfg(feature = "debug-watchdog")]
-                    { klog::write_raw(b"[LOSTWRITE] demand-install displaced present va=");
-                      klog::write_hex_u64(va_page); klog::write_raw(b" old_pa=");
-                      klog::write_hex_u64(old.0 & !(PAGE_SIZE_BYTES - 1)); klog::write_raw(b"\n"); }
-                    // GAP-1 (displaced-frame UAF): this fault displaced a
-                    // present leaf; dec_ref below may free `old`. A peer CPU
-                    // of the same mm with a stale TLB entry for va_page->old
-                    // could touch a freed+realloc'd frame. Flush peers (this
-                    // mm's cpumask only) BEFORE dropping our reference. No-op
-                    // on UP / aarch64 / hosted.
-                    hal::tlb::shootdown_others_va(va_page, self.cpumask_full().as_words());
-                    dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
-                }
+                self.accounting.install_pte(&vma);
                 if around_ok && !matches!(access, FaultAccess::Write) {
                     // SAFETY: the demand leaf is committed and the same live
                     // MMU/PMM callbacks govern adjacent PTE installs.

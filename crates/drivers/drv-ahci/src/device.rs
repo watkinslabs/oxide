@@ -9,6 +9,7 @@ use sched::live::wait_list::WaitList;
 use sync::{Spinlock, TaskList as DriverLockClass};
 
 use crate::irq::IrqBinding;
+use crate::host::AhciHost;
 use crate::lifecycle::{self, ControllerCleanupStep};
 use crate::port::Ahci;
 use crate::wait;
@@ -21,6 +22,8 @@ pub struct AhciBlk {
     blk_size:   u32,
     capacity:   u64,
     removed:    AtomicBool,
+    media_offline: AtomicBool,
+    teardown:   AtomicBool,
     poisoned:   AtomicBool,
 }
 
@@ -40,6 +43,8 @@ impl AhciBlk {
             blk_size,
             capacity,
             removed: AtomicBool::new(false),
+            media_offline: AtomicBool::new(false),
+            teardown: AtomicBool::new(false),
             poisoned: AtomicBool::new(false),
         }
     }
@@ -54,7 +59,6 @@ impl AhciBlk {
     }
 
     fn acquire_turn(&self) -> bool {
-        let deadline = wait::now_ns().saturating_add(wait::IO_TIMEOUT_NS);
         loop {
             if self.unavailable() { return false; }
             if self
@@ -66,19 +70,13 @@ impl AhciBlk {
                 self.release_turn();
                 return false;
             }
-            if wait::now_ns() >= deadline {
-                self.poisoned.store(true, Ordering::Release);
-                return false;
-            }
             if !wait::poll_enabled(
                 || self.unavailable() || !self.turn_busy.load(Ordering::Acquire),
-                deadline,
+                crate::limits::QUEUE_WAIT_DEADLINE_NS,
             ) {
-                if wait::now_ns() >= deadline {
-                    self.poisoned.store(true, Ordering::Release);
-                    return false;
-                }
-                wait::park_checked(&self.turn_wait, deadline, || {
+                // Arbitration is not a hardware command.  Its wait ends only
+                // when the current owner releases the port or removal wakes us.
+                wait::park_checked(&self.turn_wait, crate::limits::QUEUE_WAIT_DEADLINE_NS, || {
                     self.unavailable() || !self.turn_busy.load(Ordering::Acquire)
                 });
             }
@@ -91,7 +89,7 @@ impl AhciBlk {
     }
 
     fn wait_for_irq(&self) -> bool {
-        let deadline = wait::now_ns().saturating_add(wait::IO_TIMEOUT_NS);
+        let deadline = wait::now_ns().saturating_add(crate::limits::COMMAND_TIMEOUT_NS);
         loop {
             if self.unavailable() { return false; }
             if self.irq.completed() { return !self.irq.failed(); }
@@ -120,6 +118,14 @@ impl AhciBlk {
         }
     }
 
+    fn recover_failed_command(&self) -> bool {
+        if self.unavailable() { return false; }
+        self.irq.prepare_command();
+        let mut ctrl = self.ctrl.lock();
+        if self.unavailable() { return false; }
+        ctrl.recover_runtime(self.capacity, self.blk_size)
+    }
+
     fn rw_chunk(
         &self,
         req: &mut BlockRequest,
@@ -131,7 +137,7 @@ impl AhciBlk {
     ) -> bool {
         if !self.acquire_turn() { return false; }
         self.irq.prepare_command();
-        let deadline = wait::now_ns().saturating_add(wait::IO_TIMEOUT_NS);
+        let deadline = wait::now_ns().saturating_add(crate::limits::COMMAND_TIMEOUT_NS);
         let waiter_prepared = wait::prepare_command_wait(self.irq.waiters(), deadline);
         let (started, bootstrap_complete) = {
             let mut ctrl = self.ctrl.lock();
@@ -184,7 +190,9 @@ impl AhciBlk {
                 }
             }
         }
-        if started && !ok { self.poisoned.store(true, Ordering::Release); }
+        if started && !ok && !self.recover_failed_command() {
+            self.poisoned.store(true, Ordering::Release);
+        }
         self.release_turn();
         ok
     }
@@ -192,7 +200,7 @@ impl AhciBlk {
     fn flush_command(&self) -> bool {
         if !self.acquire_turn() { return false; }
         self.irq.prepare_command();
-        let deadline = wait::now_ns().saturating_add(wait::IO_TIMEOUT_NS);
+        let deadline = wait::now_ns().saturating_add(crate::limits::COMMAND_TIMEOUT_NS);
         let waiter_prepared = wait::prepare_command_wait(self.irq.waiters(), deadline);
         let (started, bootstrap_complete) = {
             let mut ctrl = self.ctrl.lock();
@@ -210,31 +218,57 @@ impl AhciBlk {
             let ctrl = self.ctrl.lock();
             ok = !self.unavailable() && ctrl.command_finished_ok();
         }
-        if started && !ok { self.poisoned.store(true, Ordering::Release); }
+        if started && !ok && !self.recover_failed_command() {
+            self.poisoned.store(true, Ordering::Release);
+        }
         self.release_turn();
         ok
     }
 
-    /// Wake the command owner when its hard handler requested fanout. # C: O(waiters)
-    pub(crate) fn completion_bottom_half(&self) {
-        if self.irq.take_wake() { self.irq.waiters().wake_all(); }
+    fn take_offline_link_change(&self) -> bool {
+        if !self.irq.take_link_change() { return false; }
+        let offline = !self.ctrl.lock().link_is_online();
+        if offline {
+            self.media_offline.store(true, Ordering::Release);
+            self.removed.store(true, Ordering::Release);
+            self.irq.waiters().wake_all();
+            self.turn_wait.wake_all();
+        }
+        offline
     }
 
-    #[cfg(feature = "debug-boot")]
-    /// Count terminal hardware IRQ completions for boot verification. # C: O(1)
-    pub(crate) fn irq_completion_count(&self) -> u64 {
-        self.irq.completion_count()
+    /// True after the PHY-change worker confirmed this disk departed. # C: O(1)
+    pub(crate) fn media_offline(&self) -> bool {
+        self.media_offline.load(Ordering::Acquire)
+    }
+
+    /// Controller and port retained for the replacement empty-port watcher.
+    /// # C: O(1)
+    pub(crate) fn watch_identity(&self) -> (alloc::sync::Arc<AhciHost>, u32) {
+        let ctrl = self.ctrl.lock();
+        (ctrl.host_clone(), ctrl.port_index())
+    }
+
+    /// Consume a port link-change event and wake command waiters. A true
+    /// result means the live SATA status confirmed departure; the driver
+    /// registry owner must then force-detach publication before teardown.
+    /// # C: O(waiters)
+    pub(crate) fn completion_bottom_half(&self) -> bool {
+        let offline = self.take_offline_link_change();
+        if self.irq.take_wake() { self.irq.waiters().wake_all(); }
+        offline
     }
 
     fn quiesce_and_free(&self) {
-        if self.removed.swap(true, Ordering::AcqRel) { return; }
+        if self.teardown.swap(true, Ordering::AcqRel) { return; }
+        self.removed.store(true, Ordering::Release);
         self.irq.waiters().wake_all();
         self.turn_wait.wake_all();
         let mut ctrl = self.ctrl.lock();
         for step in lifecycle::controller_cleanup_steps() {
             match step {
                 ControllerCleanupStep::MaskAndFreeIrq => {
-                    self.irq.begin_release(&ctrl);
+                    self.irq.begin_release(ctrl.host(), ctrl.port_index());
                 }
                 ControllerCleanupStep::SynchronizeIrq => {
                     self.irq.synchronize_and_release();

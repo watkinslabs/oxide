@@ -54,7 +54,7 @@ pub(in crate::linux_block) extern "C" fn alloc_disk_node(minors: i32, _node_id: 
         open_mutex: [0; 32], open_partitions: 0, _bdi_pad: 0, bdi: null_mut(),
         queue_kobj: LinuxKobject { name: null_mut(), entry: [null_mut(); 2], parent: null_mut(),
             kset: null_mut(), ktype: core::ptr::null(), sd: null_mut(), kref: 1, state: 0 },
-        slave_dir: null_mut(), slave_bdevs: [0; 16], random: null_mut(), ev: null_mut(), _zoned: [0; 72],
+        slave_dir: null_mut(), slave_bdevs: [0; 16], random: null_mut(), ev: null_mut(), zoned: LinuxGendiskZoned::empty(),
         node_id: _node_id, _node_pad: 0, bb: null_mut(), diskseq: 0, open_mode: 0, _open_mode_pad: 0,
         ia_ranges: null_mut(), rqos_state_mutex: [0; 32],
     });

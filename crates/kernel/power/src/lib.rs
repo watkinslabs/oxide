@@ -22,6 +22,10 @@ pub mod decide;
 pub mod cad;
 pub mod machine;
 pub mod reset;
+#[cfg(any(test, all(target_os = "oxide-kernel", target_arch = "x86_64")))]
+mod poweroff_plan;
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+mod poweroff;
 
 pub use uapi::*;
 pub use decide::{check_magic, classify_cmd, pid_ns_reboot, reboot_precheck, restart2_cmd_len,

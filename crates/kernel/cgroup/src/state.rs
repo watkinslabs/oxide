@@ -143,7 +143,7 @@ pub(crate) fn memory_pressure_hook() -> Option<fn(u64, MemoryPressure) -> Memory
 /// `cgid` can flip an ancestor's `populated` bit.
 /// # C: O(depth) + O(inotify) per node
 pub(crate) fn notify_events_chain(cgid: u64) {
-    let hook = match *NOTIFY_HOOK.lock() { Some(h) => h, None => return };
+    let hook = *NOTIFY_HOOK.lock();
     let ids = {
         let t = TREE.lock();
         let mut v = alloc::vec::Vec::new();
@@ -155,8 +155,15 @@ pub(crate) fn notify_events_chain(cgid: u64) {
         v
     };
     for id in ids {
-        let inode = make_cg_file(id, "cgroup.events");
-        hook(&inode);
+        // Wake poll/select/epoll users of the persistent control-file object.
+        // The synthesized inode wrapper is not the lifetime owner.
+        if let Some(poll) = crate::node_events_poll(id) {
+            poll.notify_mask(vfs::POLL_PRI | vfs::POLL_ERR);
+        }
+        if let Some(hook) = hook {
+            let inode = make_cg_file(id, "cgroup.events");
+            hook(&inode);
+        }
     }
 }
 
@@ -164,9 +171,13 @@ pub(crate) fn notify_events_chain(cgid: u64) {
 /// is per-node, not a subtree aggregate, so no ancestor walk).
 /// # C: O(inotify)
 pub(crate) fn notify_events_self(cgid: u64) {
-    let hook = match *NOTIFY_HOOK.lock() { Some(h) => h, None => return };
-    let inode = make_cg_file(cgid, "cgroup.events");
-    hook(&inode);
+    if let Some(poll) = crate::node_events_poll(cgid) {
+        poll.notify_mask(vfs::POLL_PRI | vfs::POLL_ERR);
+    }
+    if let Some(hook) = *NOTIFY_HOOK.lock() {
+        let inode = make_cg_file(cgid, "cgroup.events");
+        hook(&inode);
+    }
 }
 
 /// Translate a userspace-written pid (writer's ns) to the canonical

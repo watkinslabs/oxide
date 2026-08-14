@@ -26,6 +26,8 @@ pub(crate) unsafe fn map_mmio_pages(pa: u64, n_pages: u64) -> u64 {
 // the external `virtio` crate dependency referenced elsewhere in this
 // file (cap_dump_arch reads `virtio::is_modern`, etc.).
 mod config_access;
+mod aer;
+mod topology;
 mod virtio_bus;
 mod virtio_child;
 mod virtio_drv;
@@ -47,6 +49,7 @@ fn virtio_seq() -> u32 { VIRTIO_SEQ.fetch_add(1, core::sync::atomic::Ordering::R
 /// driver-core attachment from `register_driver` and `device_add`.
 /// # C: O(N_drivers)
 fn register_pci_model_drivers() {
+    drv::register_driver(&aer::AER_DRIVER);
     drv::register_driver(&drv_nvme::NVME_DRIVER);
     drv::register_driver(&drv_ahci::AHCI_DRIVER);
     drv::register_driver(&drv_e1000::E1000_DRIVER);
@@ -110,7 +113,8 @@ fn quiesce_bus_masters(requesters: &[pci::Bdf]) {
     }
 }
 
-fn pci_resources_arch(d: &pci::PciDevice) -> alloc::vec::Vec<drv::Resource> {
+/// Read PCI function resources through the active architecture ECAM. # C: O(BARs)
+pub(crate) fn pci_resources_arch(d: &pci::PciDevice) -> alloc::vec::Vec<drv::Resource> {
     let bars = {
         #[cfg(target_arch = "x86_64")]
         {
@@ -164,19 +168,20 @@ fn pci_resources_arch(d: &pci::PciDevice) -> alloc::vec::Vec<drv::Resource> {
 /// # C: O(N_bdfs probed)
 pub fn enumerate_and_log() {
     config_access::install_hooks();
-    let devs = scan_devices();
+    enumerate_scanned(scan_devices());
+}
+
+#[inline(never)]
+fn enumerate_scanned(devs: alloc::vec::Vec<pci::PciDevice>) {
     debug_boot! {
         klog::write_raw(b"[INFO]  pci: devices=");
         klog::write_dec_u64(devs.len() as u64);
         klog::write_raw(b"\n");
     }
-    let requesters = devs.iter().map(|d| d.bdf).collect::<alloc::vec::Vec<_>>();
-    let aliases = dma_aliases(&requesters, &devs);
-    if !activate_dma_and_interrupt_ownership(&requesters, &aliases) { return; }
-    let _ = firmware::acpi::prepare_pci_intx_routes();
-    pci_irq::set_intx_resolver(resolve_firmware_intx);
+    if !prepare_dma_and_interrupt_ownership(&devs) { return; }
+    prepare_firmware_routing();
     register_pci_model_drivers();
-    publish_scanned_devices(&devs);
+    topology::publish_scanned_devices(&devs);
 
     // F40 + F57: drain any MSIs queued during model probing through the
     // per-architecture IRQ dispatcher, then restore the boot-mask state.
@@ -185,6 +190,25 @@ pub fn enumerate_and_log() {
     // F59-15: install the default L2/netlink route state for every netdev
     // already registered by virtio-net's model probe.
     seed_boot_network_defaults();
+}
+
+/// Establish firmware routing before model-driver publication.
+///
+/// This is a separate stack phase from the device-vector-owning publisher:
+/// AML method evaluation can recurse deeply, but it neither needs model-driver
+/// registration's temporary state nor the scanned PCI vector beneath it.
+#[inline(never)]
+fn prepare_firmware_routing() {
+    config_access::install_aml_region_backend();
+    let _ = firmware::acpi::prepare_pci_intx_routes();
+    pci_irq::set_intx_resolver(resolve_firmware_intx);
+}
+
+#[inline(never)]
+fn prepare_dma_and_interrupt_ownership(devs: &[pci::PciDevice]) -> bool {
+    let requesters = devs.iter().map(|d| d.bdf).collect::<alloc::vec::Vec<_>>();
+    let aliases = dma_aliases(&requesters, devs);
+    activate_dma_and_interrupt_ownership(&requesters, &aliases)
 }
 
 #[inline(never)]
@@ -197,16 +221,16 @@ fn activate_dma_and_interrupt_ownership(requesters: &[pci::Bdf], aliases: &pci::
     // SAFETY: all discovered PCI requesters have been quiesced and no driver is registered yet.
     let iommu_activation = unsafe { iommu::activate_amd_vi(requesters, aliases,
         pmm::user_as::hhdm_offset(), pmm::setup::usable_regions()) };
-    if iommu_activation == iommu::AmdViActivation::Failed { return false; }
+    if iommu_activation == iommu::AmdViActivation::Failed { debug_boot! { klog::write_raw(b"[WARN]  iommu: amd-vi activation failed\n"); } return false; }
     if iommu_activation == iommu::AmdViActivation::Enabled
-        && !amd_vi_events::install(requesters) { return false; }
+        && !amd_vi_events::install(requesters) { return rollback_amd_vi(); }
     let vtd_activation = activate_vtd_arch(requesters, aliases);
-    if vtd_activation == iommu::VtdActivation::Failed { return false; }
+    if vtd_activation == iommu::VtdActivation::Failed { debug_boot! { klog::write_raw(b"[WARN]  iommu: vtd activation failed\n"); } return rollback_amd_vi(); }
     #[cfg(target_arch = "x86_64")]
     if vtd_activation == iommu::VtdActivation::Enabled && !vtd_faults::install() { return false; }
-    if !iommu::enable_vtd_interrupt_remapping() { return false; }
+    if !iommu::enable_vtd_interrupt_remapping() { debug_boot! { klog::write_raw(b"[WARN]  iommu: interrupt remapping failed\n"); } return false; }
     iommu::admit_boot_requesters(requesters);
-    if !map_firmware_ioapics() { return false; }
+    if !map_firmware_ioapics() { debug_boot! { klog::write_raw(b"[WARN]  iommu: ioapic mapping failed\n"); } return false; }
     // Linux probes interrupt-driven PCI functions with local IRQ delivery
     // enabled.  Every requester remains bus-master quiesced until its driver
     // has installed a handler and explicitly admits DMA above.
@@ -219,37 +243,12 @@ fn activate_dma_and_interrupt_ownership(requesters: &[pci::Bdf], aliases: &pci::
     true
 }
 
-#[inline(never)]
-fn publish_scanned_devices(devs: &[pci::PciDevice]) {
-    for d in devs.iter() {
-        debug_boot! {
-            klog::write_raw(b"[INFO]  pci ");
-            klog::write_dec_u64(d.bdf.bus as u64);
-            klog::write_raw(b":");
-            klog::write_dec_u64(d.bdf.device as u64);
-            klog::write_raw(b".");
-            klog::write_dec_u64(d.bdf.function as u64);
-            klog::write_raw(b" vendor=");
-            klog::write_hex_u64(d.vendor_id as u64);
-            klog::write_raw(b" device=");
-            klog::write_hex_u64(d.device_id as u64);
-            klog::write_raw(b" class=");
-            klog::write_hex_u64(d.class_code as u64);
-            klog::write_raw(b"\n");
-        }
-        trace::bar_dump_arch(d.bdf);
-        trace::cap_dump_arch(d);
-        #[cfg(feature = "debug-boot")]
-        let bound = publish_scanned_device(d).and_then(|dev| dev.bound());
-        #[cfg(not(feature = "debug-boot"))]
-        let _ = publish_scanned_device(d);
-        debug_boot! {
-            klog::write_raw(b"[INFO]  pci driver=");
-            klog::write_raw(bound.unwrap_or("none").as_bytes());
-            klog::write_raw(b"\n");
-        }
-    }
-
+/// Undo an already-published AMD-Vi activation when the remaining global
+/// IOMMU transaction cannot be completed. # C: O(units)
+fn rollback_amd_vi() -> bool {
+    if !amd_vi_events::uninstall() { return false; }
+    let _ = iommu::deactivate_amd_vi();
+    false
 }
 
 #[inline(never)]
@@ -423,7 +422,7 @@ fn dma_aliases(requesters: &[pci::Bdf], devices: &[pci::PciDevice]) -> pci::DmaA
             && bdf.raw() >= record.first_requester && bdf.raw() <= record.last_requester) {
             let canonical = pci::Bdf { segment: requester.segment, bus: (record.canonical_requester >> 8) as u8,
                 device: ((record.canonical_requester >> 3) & 0x1f) as u8, function: (record.canonical_requester & 7) as u8 };
-            if requesters.contains(&canonical) { let _ = aliases.add(requester, canonical); }
+            let _ = aliases.add(requester, canonical);
         }
     }
     #[cfg(target_arch = "x86_64")]
@@ -444,6 +443,7 @@ fn dma_aliases(requesters: &[pci::Bdf], devices: &[pci::PciDevice]) -> pci::DmaA
 }
 
 /// Walk every addressable config-space bus. # C: O(N_bdfs probed)
+#[inline(never)]
 fn scan_devices() -> alloc::vec::Vec<pci::PciDevice> {
     #[cfg(target_arch = "x86_64")]
     {
@@ -465,23 +465,10 @@ fn scan_devices() -> alloc::vec::Vec<pci::PciDevice> {
     }
 }
 
-/// Register one scanned function with the driver model. Already-registered
-/// functions resolve to their live object, so a rescan only adds what appeared.
-/// # C: O(N_devices)
-fn publish_scanned_device(d: &pci::PciDevice) -> Option<alloc::sync::Arc<drv::Device>> {
-    let class24 = ((d.class_code as u32) << 16)
-        | ((d.subclass as u32) << 8) | (d.prog_if as u32);
-    let addr = alloc::format!("{:04x}:{:02x}:{:02x}.{}",
-        d.bdf.segment, d.bdf.bus, d.bdf.device, d.bdf.function);
-    publish_pci_model_device(d, addr, class24)
-}
-
 /// Re-enumerate the PCI hierarchy and publish functions that appeared since
 /// the last scan (sysfs `rescan`). # C: O(N_bdfs probed)
 pub fn rescan() {
-    for d in scan_devices().iter() {
-        publish_scanned_device(d);
-    }
+    topology::publish_scanned_devices(&scan_devices());
 }
 
 /// Retry firmware-gated built-in PCI functions after the root filesystem is mounted.
@@ -493,28 +480,5 @@ pub fn retry_firmware_gated_drivers() {
             && dev.device_id == drv_rtl8125::regs::DEVICE_RTL8125 {
             let _ = drv::bind(&dev, "r8169");
         }
-    }
-}
-
-fn publish_pci_model_device(
-    d: &pci::PciDevice,
-    addr: alloc::string::String,
-    class24: u32,
-) -> Option<alloc::sync::Arc<drv::Device>> {
-    let dev = alloc::sync::Arc::new(
-        drv::Device::new("pci", addr.clone(), d.vendor_id, d.device_id, class24)
-            .with_pci_ident(config_access::pci_ident(d))
-            .with_resources(pci_resources_arch(d)),
-    );
-    match drv::try_device_add(dev) {
-        Ok(dev) => Some(dev),
-        Err(drv::Error::Busy) => drv::devices().into_iter().find(|dev| {
-            dev.bus == "pci"
-                && dev.addr.as_str() == addr.as_str()
-                && dev.vendor_id == d.vendor_id
-                && dev.device_id == d.device_id
-                && dev.class == class24
-        }),
-        Err(_) => None,
     }
 }

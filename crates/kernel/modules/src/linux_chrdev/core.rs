@@ -84,6 +84,7 @@ pub(super) fn export_symbols() {
         ("unregister_chrdev_region", unregister_chrdev_region as *const () as usize),
         ("register_chrdev",          register_chrdev          as *const () as usize),
         ("unregister_chrdev",        unregister_chrdev        as *const () as usize),
+        ("compat_ptr_ioctl",         compat_ptr_ioctl         as *const () as usize),
         ("noop_llseek",              noop_llseek              as *const () as usize),
         ("nonseekable_open",         nonseekable_open         as *const () as usize),
     ] { export(name, addr, false); }
@@ -251,6 +252,17 @@ extern "C" fn unregister_chrdev(major: u32, _name: *const c_char) {
     unregister_chrdev_region(mkdev(major, LINUX_MINOR_FIRST), LINUX_MINOR_SPAN);
 }
 
+/// Generic compat ioctl adapter for pointer-compatible unlocked operations.
+/// # C: O(1)
+unsafe extern "C" fn compat_ptr_ioctl(file: *mut LinuxFile, cmd: u32, arg: usize) -> isize {
+    // SAFETY: Linux's file-operation ABI requires file to point at the live file that selected this callback.
+    let ops = unsafe { (*file).f_op };
+    // SAFETY: f_op belongs to that live file and is a valid file_operations table for its lifetime.
+    let Some(ioctl) = (unsafe { (*ops).unlocked_ioctl }) else { return -(LINUX_ENOIOCTLCMD as isize); };
+    // SAFETY: unlocked_ioctl belongs to the same file_operations table and receives the unchanged live file context.
+    unsafe { ioctl(file, cmd, arg as u32 as usize) }
+}
+
 extern "C" fn noop_llseek(_file: *mut LinuxFile, offset: i64, _whence: i32) -> i64 { offset }
 
 extern "C" fn nonseekable_open(_inode: *mut LinuxInode, _file: *mut LinuxFile) -> i32 { LINUX_OK }
@@ -294,6 +306,24 @@ impl CharDevOps for LinuxCharOps {
         let rc = checked_size(unsafe { ioctl(&mut lf, cmd, arg) });
         store_file_private(file, &lf);
         rc
+    }
+
+    fn uring_cmd_file(&self, _devt: Devt, file: &File, cmd: *mut c_void, issue_flags: u32) -> vfs::KResult<i32> {
+        let uring_cmd = self.ops().and_then(|o| o.uring_cmd).ok_or(VfsError::Eopnotsupp)?;
+        let _ = file;
+        // SAFETY: callback pointer comes from the registered Linux file_operations table and cmd is the live io_uring command storage owned by its issuer.
+        let rc = unsafe { uring_cmd(cmd, issue_flags) };
+        Ok(rc)
+    }
+
+    fn uring_file_new(&self, _devt: Devt, file: &File) -> Option<*mut c_void> {
+        Some(Box::into_raw(Box::new(self.file_for_call(Some(file)))).cast())
+    }
+
+    unsafe fn uring_file_drop(&self, _devt: Devt, file: *mut c_void) {
+        if file.is_null() { return; }
+        // SAFETY: uring_file_new allocated exactly one LinuxFile for this external command.
+        unsafe { drop(Box::from_raw(file.cast::<LinuxFile>())); }
     }
 
     /// The registered `file_operations` answers directly: a module that left

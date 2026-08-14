@@ -34,6 +34,7 @@ pub const IOCQES_LOG2: u32 = 4;
 pub const ADMIN_CREATE_IO_SQ: u8 = 0x01;
 pub const ADMIN_CREATE_IO_CQ: u8 = 0x05;
 pub const ADMIN_IDENTIFY:     u8 = 0x06;
+pub const ADMIN_ABORT:        u8 = 0x08;
 
 /// NVM I/O command opcodes (§6).
 pub const IO_FLUSH: u8 = 0x00;
@@ -77,6 +78,18 @@ pub fn prp_second(bytes: u64) -> Option<PrpSecond> {
 pub const CNS_NAMESPACE:  u32 = 0x00;
 pub const CNS_CONTROLLER: u32 = 0x01;
 pub const CNS_ACTIVE_NAMESPACE_LIST: u32 = 0x02;
+
+/// Byte containing the controller's 0-based Abort Command Limit in an
+/// Identify-Controller payload. The host may have this many Abort commands
+/// outstanding, so a serialized timeout worker always stays within it.
+pub const ID_CTRL_ACL_BYTE: usize = 258;
+
+/// Return the controller's concurrent Admin-Abort limit. A valid controller
+/// encodes this as a zero-based value, so even zero permits one command.
+/// # C: O(1)
+pub fn abort_limit_from_identify(bytes: &[u8]) -> Option<u16> {
+    bytes.get(ID_CTRL_ACL_BYTE).map(|acl| u16::from(*acl) + 1)
+}
 
 /// Return the first nonzero namespace ID from one active-namespace list page.
 /// # C: O(namespace-list entries)
@@ -209,6 +222,15 @@ mod tests {
         assert_eq!(dma_mask(0x1d0f, 0xcd02), DMA_MASK_48);
         assert_eq!(dma_mask(0x1d0f, 0x0062), DMA_MASK_64);
         assert_eq!(dma_mask(0x1b36, 0x0010), DMA_MASK_64);
+    }
+
+    #[test]
+    fn identify_abort_limit_is_zero_based_and_requires_the_acl_byte() {
+        let mut identify = [0u8; ID_CTRL_ACL_BYTE + 1];
+        assert_eq!(abort_limit_from_identify(&identify[..ID_CTRL_ACL_BYTE]), None);
+        assert_eq!(abort_limit_from_identify(&identify), Some(1));
+        identify[ID_CTRL_ACL_BYTE] = 7;
+        assert_eq!(abort_limit_from_identify(&identify), Some(8));
     }
 
     #[test]

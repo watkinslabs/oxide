@@ -12,6 +12,7 @@ mod huge;
 mod around;
 mod device;
 mod anon;
+mod commit;
 mod write;
 
 impl AddressSpace {

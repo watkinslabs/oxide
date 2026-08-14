@@ -57,6 +57,20 @@ fn a_second_push_of_a_linked_task_is_coalesced_not_duplicated() {
 }
 
 #[test]
+fn one_notification_covers_one_target_wake_batch() {
+    const CPU: u32 = 5;
+    let a = normal(9031, 0, 1024);
+    let b = normal(9032, 0, 1024);
+    assert!(wake_list_push(CPU, Arc::clone(&a)), "first publication owns the target IPI");
+    assert!(!wake_list_push(CPU, Arc::clone(&b)), "a pending target batch suppresses duplicate IPIs");
+    drop(wake_list_drain(CPU));
+    assert!(wake_list_push(CPU, Arc::clone(&a)), "target completion re-arms the next batch");
+    drop(wake_list_drain(CPU));
+    assert_eq!(Arc::strong_count(&a), 1);
+    assert_eq!(Arc::strong_count(&b), 1);
+}
+
+#[test]
 fn drain_claims_every_pushed_task() {
     let a = normal(9010, 0, 1024);
     let b = normal(9011, 0, 1024);

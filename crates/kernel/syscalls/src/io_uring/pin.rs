@@ -21,6 +21,7 @@ use alloc::vec::Vec;
 use syscall::errno::Errno;
 
 use crate::io_uring_abi::acct::{Charge, Ledgers, RingAcct};
+use pmm::native_bvec::{NativeBioVec, NativeBvecPin};
 
 /// Bytes per pinned page.
 const PAGE: u64 = hal::PAGE_SIZE_BYTES;
@@ -62,6 +63,8 @@ pub struct PinnedRange {
     pub base: u64,
     pub len: u64,
     /// Frames covering `[base & !(PAGE-1), base + len)`, in order.
+    native_pin: Option<NativeBvecPin<'static>>,
+    native: Vec<NativeBioVec>,
     pages: Vec<u64>,
     /// The per-user memory-lock charge these pages cost, given back with them.
     _charge: Charge,
@@ -122,6 +125,21 @@ fn unpin_pages(pages: &[u64]) {
     }
 }
 
+fn native_table(pages: &[u64]) -> Result<(Vec<NativeBioVec>, NativeBvecPin<'static>), Errno> {
+    let mut native = Vec::new();
+    if native.try_reserve_exact(pages.len()).is_err() { return Err(Errno::Enomem); }
+    for &pa in pages {
+        let page = pmm::setup::native_page_for_pa(pa);
+        if page.is_null() { return Err(Errno::Efault); }
+        native.push(NativeBioVec::new(page, PAGE as u32, 0));
+    }
+    let pin = pmm::native_bvec::NativeBvecPin::acquire(&native).map_err(|_| Errno::Efault)?;
+    // SAFETY: Vec's backing allocation is stable while PinnedRange owns it;
+    // native_pin is declared before native and therefore drops first.
+    let pin = unsafe { core::mem::transmute::<NativeBvecPin<'_>, NativeBvecPin<'static>>(pin) };
+    Ok((native, pin))
+}
+
 #[cfg(target_arch = "x86_64")]
 fn translate(root: u64, va: u64, hhdm: u64) -> Option<u64> {
     // SAFETY: root is the running task's live top-level table and HHDM covers page-table memory; the walk only reads entries.
@@ -143,7 +161,7 @@ impl PinnedRange {
     /// holding the memory down; both tokens are dropped by `?` if the pinning
     /// itself then fails. # C: O(len / PAGE)
     pub fn pin(base: u64, len: u64, acct: RingAcct, ledgers: Ledgers) -> Result<Self, Errno> {
-        let empty = |c: Charge| Self { base: 0, len: 0, pages: Vec::new(), _charge: c, _mm: MmPin::take(ledgers, 0) };
+        let empty = |c: Charge| Self { base: 0, len: 0, native_pin: None, native: Vec::new(), pages: Vec::new(), _charge: c, _mm: MmPin::take(ledgers, 0) };
         if base == 0 && len == 0 { return Ok(empty(Charge::none())); }
         if len == 0 { return Err(Errno::Efault); }
         base.checked_add(len).ok_or(Errno::Efault)?;
@@ -151,11 +169,41 @@ impl PinnedRange {
         let charge = super::acct::charge_pages(acct, n)?;
         let mm = MmPin::take(ledgers, n);
         let pages = pin_pages(base, len)?;
-        Ok(Self { base, len, pages, _charge: charge, _mm: mm })
+        let (native, native_pin) = match native_table(&pages) {
+            Ok(v) => v,
+            Err(e) => { unpin_pages(&pages); return Err(e); }
+        };
+        Ok(Self { base, len, native_pin: Some(native_pin), native, pages, _charge: charge, _mm: mm })
     }
 
     /// Whether this is the empty slot. # C: O(1)
     pub fn is_empty(&self) -> bool { self.len == 0 }
+
+    /// Build native page-vector entries for an in-range registered subrange.
+    /// The range's registration reference remains the lifetime owner.
+    /// # C: O(len / PAGE)
+    pub fn native_bvecs(&self, off: u64, len: u64) -> Result<Vec<NativeBioVec>, Errno> {
+        let end = off.checked_add(len).ok_or(Errno::Efault)?;
+        if end > self.len { return Err(Errno::Efault); }
+        let mut out = Vec::new();
+        if len == 0 { return Ok(out); }
+        let first = self.base.checked_add(off).ok_or(Errno::Efault)?;
+        let last = first.checked_add(len - 1).ok_or(Errno::Efault)?;
+        let count = ((last & !(PAGE - 1)) - (first & !(PAGE - 1))) / PAGE + 1;
+        if out.try_reserve_exact(count as usize).is_err() { return Err(Errno::Enomem); }
+        let mut va = first;
+        let mut left = len;
+        while left != 0 {
+            let ix = ((va & !(PAGE - 1)) - (self.base & !(PAGE - 1))) / PAGE;
+            let page = self.native.get(ix as usize).ok_or(Errno::Efault)?.bv_page;
+            let in_page = va & (PAGE - 1);
+            let take = core::cmp::min(PAGE - in_page, left);
+            out.push(NativeBioVec::new(page, take as u32, in_page as u32));
+            va += take;
+            left -= take;
+        }
+        Ok(out)
+    }
 
     /// Direct-map address of the byte `off` bytes into the range.
     ///

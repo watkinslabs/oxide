@@ -12,6 +12,7 @@ mod config_space;
 mod scan;
 mod layout;
 mod iova;
+mod quiesce;
 mod types;
 pub mod uapi;
 
@@ -24,22 +25,23 @@ pub use bars::{
     IORESOURCE_PREFETCH,
 };
 pub use caps::{
-    acs_isolation_enabled, capabilities, decode_msi_cap, decode_msix_cap, device_serial_number, disable_msi, emit_msix_teardown_steps, extended_capability,
+    acs_isolation_enabled, aer_message_number, capabilities, decode_msi_cap, decode_msix_cap, device_serial_number, disable_msi, emit_msix_teardown_steps, extended_capability,
     heapless_caps, msi_single_control_value, msix_control_enable_masked, msix_control_value,
     msix_table_entry_offset, program_msi_single, MsiCap, MsixCap, MsixTeardownStep, PciCap,
     pcie_type, PcieType,
-    ACS_ISOLATION_FLAGS, CAP_ID_MSI, CAP_ID_MSIX, CAP_ID_PCIE, CAP_ID_VENDOR, EXT_CAP_ID_ACS, MSI_ENABLE, MSIX_ENABLE,
+    ACS_ISOLATION_FLAGS, CAP_ID_MSI, CAP_ID_MSIX, CAP_ID_PCIE, CAP_ID_VENDOR, EXT_CAP_ID_ACS, EXT_CAP_ID_AER, MSI_ENABLE, MSIX_ENABLE,
     MSIX_FUNCTION_MASK, MSIX_MESSAGE_ADDR_HIGH_OFF, MSIX_MESSAGE_ADDR_LOW_OFF,
     MSIX_MESSAGE_DATA_OFF, MSIX_TABLE_ENTRY_BYTES, MSIX_VECTOR_CONTROL_MASKED,
     MSIX_VECTOR_CONTROL_OFF,
 };
 pub use scan::{enumerate, enumerate_buses, enumerate_segment_buses};
+pub use quiesce::quiesce_function;
 pub use iova::{IovaRange, IovaSpace, IOVA_PAGE_SIZE};
 pub use types::{
     clear_bus_master, disable_mem_bus_master, enable_mem_decode, enable_mem_bus_master, intx_command_value, parse_bdf_addr,
     read_command, restore_intx_disabled, restore_mem_bus_master, set_intx_disabled,
     write_command, add_topology_dma_aliases, Bdf, BridgeBuses, BusMasterAdmissionFn, ConfigSpaceReader, DmaAlias, DmaAliases, Error, KResult, PciDevice, bridge_buses, bus_master_admitted, set_bus_master_admission, swizzle_intx_to_root, COMMAND_BUS_MASTER,
-    COMMAND_INTX_DISABLE, COMMAND_IO, COMMAND_MEMORY, MAX_ECAM_WINDOWS,
+    COMMAND_INTX_DISABLE, COMMAND_IO, COMMAND_MEMORY, MAX_ECAM_WINDOWS, parent_bridge,
 };
 
 #[cfg(test)]

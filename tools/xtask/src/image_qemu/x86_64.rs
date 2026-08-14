@@ -33,9 +33,28 @@ impl HardwareProfile {
             Self::Default if selector == Some("e1000e") =>
                 "e1000e,netdev=net0,bus=pcie.0",
             Self::Default => "virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on",
-            Self::NativePci if selector == Some("e1000e") =>
-                "e1000e,netdev=net0,bus=pcie.0",
-            Self::NativePci => "e1000,netdev=net0,bus=pcie.0",
+            // The native profile is specifically the PCIe e1000e/82574L
+            // regression topology.  e1000 remains selectable for the older
+            // PCI model, but must never be the accidental default here.
+            Self::NativePci if selector == Some("e1000") =>
+                "e1000,netdev=net0,bus=pcie.0",
+            Self::NativePci => "e1000e,netdev=net0,bus=pcie.0",
+        }
+    }
+
+    fn machine(self) -> &'static str {
+        match self {
+            Self::Default => "q35",
+            // VT-d interrupt remapping needs userspace APIC routing under KVM.
+            // This is the Q35 configuration paired with the Intel IOMMU device.
+            Self::NativePci => "q35,kernel_irqchip=split",
+        }
+    }
+
+    fn iommu_device(self) -> Option<&'static str> {
+        match self {
+            Self::Default => None,
+            Self::NativePci => Some("intel-iommu,intremap=on,caching-mode=on,pt=off"),
         }
     }
 
@@ -121,8 +140,8 @@ fn x86_grub_cfg(arch: &str, args: &str) -> String {
 
 /// Boot the GRUB ISO under QEMU. `OXIDE_QEMU_UEFI=1` selects OVMF; the
 /// default is SeaBIOS. Both firmware paths enter the same GRUB multiboot2
-/// handoff. `native-pci` boots the ext4 rootfs from AHCI and uses e1000 plus
-/// an emulated PCI xHCI controller with standard USB keyboard and tablet.
+/// handoff. `native-pci` boots the ext4 rootfs from AHCI and uses the PCIe
+/// e1000e model plus an emulated PCI xHCI controller with standard USB HID.
 pub(super) fn qemu_run_grub_x86_64(
     repo: &std::path::Path,
     id: Option<&str>,
@@ -240,7 +259,7 @@ pub(super) fn qemu_run_grub_x86_64(
     }
     c.args(&pcap_args);
     c.args([
-        "-machine", "q35",
+        "-machine", profile.machine(),
         "-accel", accel,
         "-cpu", "Haswell-v4",
         "-smp", &smp_str,
@@ -267,6 +286,9 @@ pub(super) fn qemu_run_grub_x86_64(
         "-no-reboot",
     ]);
     for device in profile.input_devices() {
+        c.args(["-device", device]);
+    }
+    if let Some(device) = profile.iommu_device() {
         c.args(["-device", device]);
     }
     match profile {
@@ -368,7 +390,8 @@ mod tests {
 
     #[test]
     fn native_profile_selects_the_native_pci_nic() {
-        assert_eq!(HardwareProfile::NativePci.nic_device(), "e1000,netdev=net0,bus=pcie.0");
+        assert_eq!(HardwareProfile::NativePci.nic_device(), "e1000e,netdev=net0,bus=pcie.0");
+        assert_eq!(HardwareProfile::NativePci.nic_device_for(Some("e1000")), "e1000,netdev=net0,bus=pcie.0");
         assert_eq!(HardwareProfile::NativePci.nic_device_for(Some("e1000e")), "e1000e,netdev=net0,bus=pcie.0");
     }
 
@@ -390,6 +413,15 @@ mod tests {
             "usb-kbd,bus=xhci.0",
             "usb-tablet,bus=xhci.0",
         ]);
+    }
+
+    #[test]
+    fn native_profile_exposes_q35_vtd_with_interrupt_remapping() {
+        assert_eq!(HardwareProfile::Default.machine(), "q35");
+        assert_eq!(HardwareProfile::Default.iommu_device(), None);
+        assert_eq!(HardwareProfile::NativePci.machine(), "q35,kernel_irqchip=split");
+        assert_eq!(HardwareProfile::NativePci.iommu_device(),
+            Some("intel-iommu,intremap=on,caching-mode=on,pt=off"));
     }
 
     #[test]

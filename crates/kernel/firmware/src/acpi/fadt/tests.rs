@@ -216,6 +216,30 @@ fn a_port_reset_register_beyond_the_io_space_is_refused() {
 }
 
 #[test]
+fn s5_legacy_action_keeps_pm1a_pm1b_and_distinct_sleep_types() {
+    let mut t = blank(V2_LEN);
+    t[OFF_REVISION] = 2;
+    put_u32(&mut t, OFF_PM1A_CNT32, 0x0404);
+    put_u32(&mut t, OFF_PM1B_CNT32, 0x0408);
+    t[OFF_PM1_CNT_LEN] = 2;
+    let action = poweroff_action(power_registers(&parse_fadt(&t[..V2_LEN]).unwrap()), 5, 6);
+    assert_eq!(action, Some(PowerOffAction::Legacy { pm1a_control: port_gas(0x0404, 2),
+        pm1b_control: Some(port_gas(0x0408, 2)), sleep_type_a: 5, sleep_type_b: 6 }));
+}
+
+#[test]
+fn s5_reduced_action_requires_both_registers_and_uses_type_a() {
+    let mut t = blank(V6_LEN);
+    t[OFF_REVISION] = 6;
+    put_u32(&mut t, OFF_FLAGS, FADT_HW_REDUCED);
+    put_gas(&mut t, OFF_SLEEP_CONTROL, Gas { space_id: SPACE_SYSTEM_MEMORY, bit_width: 8, bit_offset: 0, access_width: 1, address: 0x9000 });
+    put_gas(&mut t, OFF_SLEEP_STATUS, Gas { space_id: SPACE_SYSTEM_MEMORY, bit_width: 8, bit_offset: 0, access_width: 1, address: 0x9001 });
+    let registers = power_registers(&parse_fadt(&t[..V6_LEN]).unwrap());
+    assert!(matches!(poweroff_action(registers, 7, 0), Some(PowerOffAction::Reduced { sleep_type: 7, .. })));
+    assert_eq!(poweroff_action(registers, 8, 0), None);
+}
+
+#[test]
 fn an_implausible_declared_bit_width_does_not_withhold_a_reset() {
     // Firmware fills these fields wrongly often enough that honouring them
     // would refuse resets the hardware performs. Pinned so a later lane does

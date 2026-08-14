@@ -15,11 +15,15 @@ use mmio_map::Mapping;
 
 mod commands;
 mod dma;
+mod observe;
 pub(crate) use dma::IoDma;
 
 /// Worst-case wait for an admin/IO completion. CAP.TO bounds RDY transitions;
 /// this caps a genuinely-lost completion to EIO. 5 s is generous for QEMU.
 const IO_TIMEOUT_NS: u64 = 5_000_000_000;
+/// Bounded completion wait for one Admin Abort. It deliberately shares the
+/// controller's finite command timeout instead of waiting behind a dead I/O.
+const ADMIN_ABORT_TIMEOUT_NS: u64 = IO_TIMEOUT_NS;
 
 /// Desired queue depth. 32 fits one 4 KiB SQ frame (32×64=2 KiB) and one CQ
 /// frame (32×16=512 B). Admin uses it directly; I/O is clamped to CAP.MQES.
@@ -65,6 +69,9 @@ pub struct Nvme {
     /// Selected namespace geometry harvested at IDENTIFY.
     pub ns_blocks: u64,
     pub blk_size:  u32,
+    /// Identify Controller ACL plus one. The serialized timeout worker never
+    /// submits more than this number of Admin Abort commands concurrently.
+    abort_limit: u16,
 }
 
 // SAFETY justification: Nvme holds raw PAs/VAs into HHDM/MMIO stable for the
@@ -93,7 +100,7 @@ impl Nvme {
             return;
         }
         // SAFETY: the caller owns controller teardown/quiesce. These frames
-        // are the single-page queue/PRP allocations returned by alloc_one_frame
+        // are the single-page queue/PRP allocations returned by alloc_raw_frame
         // during bring-up and are no longer reachable by live DMA.
         unsafe { pmm::setup::free_one_frame(*pa); }
         *pa = 0;
@@ -101,8 +108,8 @@ impl Nvme {
     }
 
     fn alloc_frame(dma_mask: u64) -> Option<u64> {
-        if dma_mask == u64::MAX { pmm::setup::alloc_one_frame() }
-        else { pmm::setup::alloc_one_frame_below(dma_mask.checked_add(1)?) }
+        if dma_mask == u64::MAX { pmm::setup::alloc_raw_frame() }
+        else { pmm::setup::alloc_raw_frame_below(dma_mask.checked_add(1)?) }
     }
 
     fn alloc_frames(bdf: pci::Bdf, dma_mask: u64) -> Option<([u64; 5], [u64; 5])> {
@@ -131,13 +138,23 @@ impl Nvme {
             self.w32(regs::REG_CC, 0);
             let _ = self.wait_rdy(false, 2_000);
         }
+        self.free_frames();
+        self.bar0_va = 0;
+        self.mmio.unmap();
+    }
+
+    fn free_frames(&mut self) {
         Self::free_frame(self.bdf, &mut self.admin.sq_pa, &mut self.admin.sq_dma);
         Self::free_frame(self.bdf, &mut self.admin.cq_pa, &mut self.admin.cq_dma);
         Self::free_frame(self.bdf, &mut self.io.sq_pa, &mut self.io.sq_dma);
         Self::free_frame(self.bdf, &mut self.io.cq_pa, &mut self.io.cq_dma);
         Self::free_frame(self.bdf, &mut self.admin_data_pa, &mut self.admin_data_dma);
-        self.bar0_va = 0;
-        self.mmio.unmap();
+    }
+
+    fn failed_bring_up(mut self) -> Mapping {
+        if self.bar0_va != 0 { self.w32(regs::REG_CC, 0); let _ = self.wait_rdy(false, 2_000); }
+        self.free_frames();
+        self.mmio
     }
 
     /// Read a 32-bit controller register. # C: O(1)
@@ -175,12 +192,12 @@ impl Nvme {
     }
 
     /// Build the controller, reset it, set up the admin queues, run IDENTIFY,
-    /// create the I/O queue pair. Returns None on any timeout/alloc failure.
+    /// create the I/O queue pair. Returns the still-owned BAR mapping on failure.
     /// `bar0_va` is the HHDM-independent register-file VA from map_mmio_pages.
     /// # C: O(reset + 2 admin cmds + 2 create-queue cmds)
-    pub fn bring_up(bdf: pci::Bdf, dma_mask: u64, mmio: Mapping, bar0_off: u64, io_vector: u16) -> Option<Nvme> {
+    pub fn bring_up(bdf: pci::Bdf, dma_mask: u64, mmio: Mapping, bar0_off: u64, io_vector: u16) -> Result<Nvme, Mapping> {
         // Queue and admin-IDENTIFY frames are controller-owned; posted I/O owns its PRPs.
-        let ([asq, acq, isq, icq, admin_data], [asq_dma, acq_dma, isq_dma, icq_dma, admin_data_dma]) = Self::alloc_frames(bdf, dma_mask)?;
+        let Some(([asq, acq, isq, icq, admin_data], [asq_dma, acq_dma, isq_dma, icq_dma, admin_data_dma])) = Self::alloc_frames(bdf, dma_mask) else { return Err(mmio); };
         for f in [asq, acq, isq, icq, admin_data] { Self::zero_frame(f); }
         let bar0_va = mmio.base_va() + bar0_off;
 
@@ -212,15 +229,14 @@ impl Nvme {
 
         let mut nv = Nvme {
             bdf, dma_mask, mmio, bar0_va, admin, io, admin_data_pa: admin_data, admin_data_dma,
-            nsid: 0, ns_blocks: 0, blk_size: 512,
+            nsid: 0, ns_blocks: 0, blk_size: 512, abort_limit: 1,
         };
         let to_ms = regs::cap_to_ms(cap).max(2_000);
 
         // 1. Disable: CC.EN=0, wait CSTS.RDY==0.
         nv.w32(regs::REG_CC, 0);
         if !nv.wait_rdy(false, to_ms) {
-            nv.shutdown_and_free();
-            return None;
+            return Err(observe::bring_up_failed(nv, b"disable-rdy"));
         }
 
         // 2. Program admin queue attributes + base addresses.
@@ -231,33 +247,70 @@ impl Nvme {
         // 3. Enable: CC with IOSQES/IOCQES + EN, wait CSTS.RDY==1.
         nv.w32(regs::REG_CC, regs::cc_enable());
         if !nv.wait_rdy(true, to_ms) {
-            nv.shutdown_and_free();
-            return None;
+            return Err(observe::bring_up_failed(nv, b"enable-rdy"));
         }
 
         // 4. IDENTIFY controller (confirm the controller answers admin cmds).
-        if nv.identify(regs::CNS_CONTROLLER, 0).is_none() {
-            nv.shutdown_and_free();
-            return None;
+        if !nv.identify_controller() {
+            return Err(observe::bring_up_failed(nv, b"identify-controller"));
         }
 
         // 5. Select one active namespace, then harvest its capacity and LBA format.
         if !nv.identify_active_namespace() {
-            nv.shutdown_and_free();
-            return None;
+            return Err(observe::bring_up_failed(nv, b"identify-namespace"));
         }
 
         // 6. Create the I/O completion + submission queue (qid=1).
         if !nv.create_io_cq(io_vector) {
-            nv.shutdown_and_free();
-            return None;
+            return Err(observe::bring_up_failed(nv, b"create-io-cq"));
         }
         if !nv.create_io_sq() {
-            nv.shutdown_and_free();
-            return None;
+            return Err(observe::bring_up_failed(nv, b"create-io-sq"));
         }
 
-        Some(nv)
+        Ok(nv)
+    }
+
+    /// Rebuild this controller's queues in place after a live reset. The BAR
+    /// mapping and DMA frames remain owned by this controller throughout.
+    /// # C: O(reset + 2 admin cmds + 2 create-queue cmds)
+    pub(crate) fn reinitialize(&mut self, io_vector: u16) -> bool {
+        if self.bar0_va == 0 { return false; }
+        self.w32(regs::REG_CC, 0);
+        if !self.wait_rdy(false, 2_000) { return false; }
+
+        for pa in [self.admin.sq_pa, self.admin.cq_pa, self.io.sq_pa, self.io.cq_pa, self.admin_data_pa] {
+            Self::zero_frame(pa);
+        }
+        let cap = self.r32(regs::REG_CAP) as u64 | ((self.r32(regs::REG_CAP + 4) as u64) << 32);
+        let dstrd = regs::cap_dstrd(cap);
+        self.admin.entries = Q_ENTRIES;
+        self.admin.sq_tail = 0;
+        self.admin.cq_head = 0;
+        self.admin.cq_phase = true;
+        self.admin.cid = 0;
+        self.admin.sq_db_va = self.bar0_va + regs::doorbell_off(0, false, dstrd);
+        self.admin.cq_db_va = self.bar0_va + regs::doorbell_off(0, true, dstrd);
+        self.io.entries = regs::io_queue_entries(cap, Q_ENTRIES);
+        self.io.sq_tail = 0;
+        self.io.cq_head = 0;
+        self.io.cq_phase = true;
+        self.io.cid = 0;
+        self.io.sq_db_va = self.bar0_va + regs::doorbell_off(1, false, dstrd);
+        self.io.cq_db_va = self.bar0_va + regs::doorbell_off(1, true, dstrd);
+        self.nsid = 0;
+        self.ns_blocks = 0;
+        self.blk_size = 512;
+
+        self.w32(regs::REG_AQA, regs::aqa(self.admin.entries));
+        self.w64(regs::REG_ASQ, self.admin.sq_dma);
+        self.w64(regs::REG_ACQ, self.admin.cq_dma);
+        self.w32(regs::REG_CC, regs::cc_enable());
+        let to_ms = regs::cap_to_ms(cap).max(2_000);
+        if !self.wait_rdy(true, to_ms) { return false; }
+        if !self.identify_controller() { return false; }
+        if !self.identify_active_namespace() { return false; }
+        self.create_io_cq(io_vector) && self.create_io_sq()
     }
 
     /// Poll CSTS.RDY until it equals `want`, bounded by `to_ms`. Fails on
@@ -279,7 +332,11 @@ impl Nvme {
     /// opcode in dword0 byte 0 (CID is stamped here). Returns the 16-bit
     /// status code (0 = success) or None on timeout/fatal.
     /// # C: O(poll until completion)
-    fn submit(&mut self, qid_is_io: bool, mut cmd: [u32; 16]) -> Option<u16> {
+    fn submit(&mut self, qid_is_io: bool, cmd: [u32; 16]) -> Option<u16> {
+        self.submit_with_timeout(qid_is_io, cmd, IO_TIMEOUT_NS)
+    }
+
+    fn submit_with_timeout(&mut self, qid_is_io: bool, mut cmd: [u32; 16], timeout_ns: u64) -> Option<u16> {
         // Stamp CID into dword0 bits 31:16, advance the queue's rolling CID.
         let (sq_pa, slot, cid) = {
             let q = if qid_is_io { &mut self.io } else { &mut self.admin };
@@ -314,7 +371,7 @@ impl Nvme {
         // aligned 32-bit store of the new SQ tail index rings the controller.
         unsafe { core::ptr::write_volatile(sq_db as *mut u32, self.sq_tail_of(qid_is_io)); }
 
-        self.poll_cq(qid_is_io, cq_pa, cq_db, h, cid)
+        self.poll_cq(qid_is_io, cq_pa, cq_db, h, cid, timeout_ns)
     }
 
     /// Current SQ tail of the selected queue (post-advance). # C: O(1)
@@ -326,9 +383,9 @@ impl Nvme {
     /// Poll the completion queue for the entry whose CID matches `cid` and
     /// whose phase bit matches the expected phase, then advance + ring the CQ
     /// head doorbell. Returns the status code. # C: O(poll until completion)
-    fn poll_cq(&mut self, qid_is_io: bool, cq_pa: u64, cq_db: u64, h: u64, cid: u16) -> Option<u16> {
+    fn poll_cq(&mut self, qid_is_io: bool, cq_pa: u64, cq_db: u64, h: u64, cid: u16, timeout_ns: u64) -> Option<u16> {
         let cq = h.wrapping_add(cq_pa) as *const u32;
-        let deadline = now_ns().saturating_add(IO_TIMEOUT_NS);
+        let deadline = now_ns().saturating_add(timeout_ns);
         loop {
             let (head, phase, entries) = {
                 let q = if qid_is_io { &self.io } else { &self.admin };
@@ -359,7 +416,7 @@ impl Nvme {
                 if cqe_cid != cid { return Some(0xFFFF); } // out-of-order: treat as error
                 return Some(status_code);
             }
-            if now_ns() >= deadline { return None; }
+            if now_ns() >= deadline { observe::cq_timeout(qid_is_io, cid, d2, d3); return None; }
             core::hint::spin_loop();
         }
     }

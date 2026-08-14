@@ -22,6 +22,13 @@ fn syscall_kstack_size_is_4k() {
 }
 
 #[test]
+fn current_task_slot_has_the_native_module_offset() {
+    assert_eq!(LINUX_CURRENT_TASK_OFFSET, 32);
+    // SAFETY: host build does not emit the GS-relative instruction.
+    unsafe { set_linux_current_task(core::ptr::null()); }
+}
+
+#[test]
 fn the_entry_stub_pushes_exactly_one_pt_regs() {
     // 22 `push`es in `oxide_syscall_entry`; the frame it leaves is what
     // `current_pt_regs()` re-derives from the kstack top.

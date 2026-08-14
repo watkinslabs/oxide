@@ -17,6 +17,10 @@ impl ConfigSpaceReader for LinuxPciConfig {
     fn write32(&self, _bdf: Bdf, off: u8, value: u32) {
         super::config::write32(self.dev as *mut LinuxPciDev, off, value);
     }
+
+    fn write16_ext(&self, _bdf: Bdf, off: u16, value: u16) {
+        super::config::write16(self.dev as *mut LinuxPciDev, off as u8, value);
+    }
 }
 
 /// Allocate Linux PCI IRQ vectors.
