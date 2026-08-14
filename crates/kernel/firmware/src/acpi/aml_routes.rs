@@ -6,6 +6,7 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use sync::{Devices, Spinlock};
 use super::aml_handler::FirmwareHandler;
 use super::pci_osc::{self, PciOscControl};
+use super::{fadt, power_action};
 
 const MAX_AML_TABLES: usize = 32;
 const ACPI_HEADER_BYTES: usize = 36;
@@ -61,6 +62,9 @@ fn build_context() -> Option<RouteContext> {
         let table = unsafe { aml_table(pa, hhdm)? };
         if context.parse_table(table).is_err() { return None; }
     }
+    if let (Some(registers), Some((type_a, type_b))) = (power_action::power_registers(), s5_types(&context)) {
+        if let Some(action) = fadt::poweroff_action(registers, type_a, type_b) { power_action::set_poweroff_action(action); }
+    }
     let mut roots = Vec::new();
     for scope in prt_scopes(&mut context) {
         let segment = integer_at(&context, &scope, "_SEG").unwrap_or(0) as u16;
@@ -71,6 +75,15 @@ fn build_context() -> Option<RouteContext> {
         roots.push(RootRoutes { segment, bus, table, osc });
     }
     Some(RouteContext { aml: context, roots })
+}
+
+fn s5_types(context: &AmlContext) -> Option<(u8, u8)> {
+    let path = AmlName::from_str("\\_S5").ok()?;
+    let AmlValue::Package(values) = context.namespace.get_by_path(&path).ok()? else { return None; };
+    let first = values.first()?.as_integer(context).ok()? as u8;
+    let second = if values.len() == 1 { (values.first()?.as_integer(context).ok()? >> 8) as u8 }
+        else { values.get(1)?.as_integer(context).ok()? as u8 };
+    Some((first, second))
 }
 
 /// # SAFETY: caller supplies one HHDM-mapped AML SDT whose header and declared
@@ -168,5 +181,18 @@ mod tests {
         assert_eq!(pin(1), Some(Pin::IntA));
         assert_eq!(pin(4), Some(Pin::IntD));
         assert_eq!(pin(5), None);
+    }
+
+    #[test]
+    fn s5_uses_packed_single_or_first_two_package_values() {
+        let context = AmlContext::new(Box::new(FirmwareHandler), DebugVerbosity::None);
+        let types = |values: &[AmlValue]| {
+            let first = values.first()?.as_integer(&context).ok()? as u8;
+            let second = if values.len() == 1 { (values.first()?.as_integer(&context).ok()? >> 8) as u8 }
+                else { values.get(1)?.as_integer(&context).ok()? as u8 };
+            Some((first, second))
+        };
+        assert_eq!(types(&[AmlValue::Integer(0x0605)]), Some((5, 6)));
+        assert_eq!(types(&[AmlValue::Integer(5), AmlValue::Integer(6), AmlValue::Integer(7)]), Some((5, 6)));
     }
 }

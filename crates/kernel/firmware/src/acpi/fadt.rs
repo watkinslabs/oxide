@@ -29,6 +29,8 @@ pub const SPACE_PCI_CONFIG: u8 = 2;
 
 /// FADT flag bit 10: the RESET_REG field is meaningful.
 pub const FADT_RESET_REGISTER: u32 = 1 << 10;
+/// FADT flag: platform implements the reduced-hardware sleep register pair.
+pub const FADT_HW_REDUCED: u32 = 1 << 20;
 
 /// Smallest FADT that carries `flags` — anything shorter predates the
 /// reset register entirely.
@@ -77,6 +79,23 @@ pub enum ResetAction {
     Mmio { pa: u64, value: u8 },
     /// Write `value` to bus-0 PCI config space at device/function/offset.
     PciConfig { device: u8, function: u8, offset: u16, value: u8 },
+}
+
+/// Firmware PM register ownership used to derive one S5 transition.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct PowerRegisters {
+    pub flags: u32,
+    pub pm1a_control: Gas,
+    pub pm1b_control: Gas,
+    pub sleep_control: Gas,
+    pub sleep_status: Gas,
+}
+
+/// Firmware-authorised S5 write sequence.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum PowerOffAction {
+    Legacy { pm1a_control: Gas, pm1b_control: Option<Gas>, sleep_type_a: u8, sleep_type_b: u8 },
+    Reduced { sleep_control: Gas, sleep_status: Gas, sleep_type: u8 },
 }
 
 /// Decode a GAS at `off`. Returns the default (all-zero, space 0) when the
@@ -172,6 +191,33 @@ pub fn reset_action(f: &Fadt) -> Option<ResetAction> {
     }
 }
 
+/// Extract only the FADT state consumed by the S5 action builder. # C: O(1)
+pub fn power_registers(f: &Fadt) -> PowerRegisters {
+    PowerRegisters { flags: f.flags, pm1a_control: f.pm1a_control, pm1b_control: f.pm1b_control,
+        sleep_control: f.sleep_control, sleep_status: f.sleep_status }
+}
+
+fn system_register(gas: Gas) -> Option<Gas> {
+    if gas.address == 0 { return None; }
+    match gas.space_id {
+        SPACE_SYSTEM_MEMORY => Some(gas),
+        SPACE_SYSTEM_IO if gas.address <= u16::MAX as u64 => Some(gas),
+        _ => None,
+    }
+}
+
+/// Combine FADT register ownership with AML `_S5` types. # C: O(1)
+pub fn poweroff_action(registers: PowerRegisters, sleep_type_a: u8, sleep_type_b: u8) -> Option<PowerOffAction> {
+    if sleep_type_a > 7 || sleep_type_b > 7 { return None; }
+    if registers.flags & FADT_HW_REDUCED != 0 {
+        return Some(PowerOffAction::Reduced { sleep_control: system_register(registers.sleep_control)?,
+            sleep_status: system_register(registers.sleep_status)?, sleep_type: sleep_type_a });
+    }
+    let pm1a_control = system_register(registers.pm1a_control)?;
+    let pm1b_control = if registers.pm1b_control.address == 0 { None } else { Some(system_register(registers.pm1b_control)?) };
+    Some(PowerOffAction::Legacy { pm1a_control, pm1b_control, sleep_type_a, sleep_type_b })
+}
+
 /// Copy the firmware FADT out of the HHDM, parse it, and publish the
 /// derived reset action for the power subsystem.
 ///
@@ -210,6 +256,7 @@ pub unsafe fn decode_fadt(pa: u64, hhdm_offset: u64) {
     // SAFETY: the FADT-derived DSDT address names an AML table retained by
     // firmware memory for this boot, under the same HHDM contract as FADT.
     unsafe { crate::acpi::install_dsdt(f.dsdt_pa, hhdm_offset); }
+    crate::set_power_registers(power_registers(&f));
     match reset_action(&f) {
         Some(a) => {
             crate::set_reset_action(a);

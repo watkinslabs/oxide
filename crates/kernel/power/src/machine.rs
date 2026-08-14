@@ -85,24 +85,14 @@ pub unsafe fn restart() -> ! {
     unsafe { halt() }
 }
 
-/// Power off the machine. v1 uses QEMU isa-debug-exit (port 0x604,
-/// value 0x2000) on x86 — production hardware would walk ACPI FADT
-/// PM1A_CNT and write SLP_TYP=_S5 SLP_EN; that is a follow-up. arm64
+/// Power off the machine. x86 consumes the FADT-plus-AML S5 action; arm64
 /// uses PSCI SYSTEM_OFF.
 /// # SAFETY: irreversible; clobbers I/O ports / EL2 state.
 /// # C: O(1)
 pub unsafe fn power_off() -> ! {
     #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
     {
-        // SAFETY: QEMU + Bochs honor port 0x604 = 0x2000 = ACPI shutdown; on bare metal this is a harmless I/O write that falls through to halt.
-        unsafe {
-            core::arch::asm!(
-                "mov dx, 0x604",
-                "mov ax, 0x2000",
-                "out dx, ax",
-                options(nostack, preserves_flags)
-            );
-        }
+        crate::poweroff::enter_s5();
     }
     #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
     {
