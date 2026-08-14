@@ -43,7 +43,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
 .PHONY: all build x86 arm kpi-layout \
         build-debug x86-debug arm-debug \
         test lint lint-ratchet lint-ratchet-update audit-counts profile-policy warnings-control stats ci \
-        qemu-x86 qemu-arm qemu-x86-debug qemu-arm-debug qemu-mcp smoke-native-pci-x86 smoke-native-pci-e1000e-x86 \
+        qemu-x86 qemu-arm qemu-x86-debug qemu-arm-debug qemu-mcp verify-native-q35 smoke-native-pci-x86 smoke-native-pci-e1000-x86 \
         hardware-audit-image-x86 \
         boot-debug-x86 boot-debug-arm smoke-debug smoke-debug-x86 smoke-debug-arm \
         qemu-x86-grub qemu-x86-uefi smoke-uefi-x86 \
@@ -322,15 +322,22 @@ smoke-debug: x86 arm
 smoke-x86: x86
 	./tools/boot-smoke.sh x86 $(SMOKE_TIMEOUT)
 
-# Q35 with a legacy Intel e1000 plus AHCI-root disks, NVMe and a physical
-# framebuffer handoff. This contains no virtio device on the boot path.
+# Q35 with the PCIe Intel e1000e model, AHCI-root disks, NVMe, xHCI USB HID,
+# VT-d interrupt remapping and a physical framebuffer handoff. This contains
+# no virtio device on the boot path.
 smoke-native-pci-x86: x86
 	OXIDE_QEMU_PROFILE=native-pci ./tools/boot-smoke.sh x86 $(SMOKE_TIMEOUT)
 
-# Same non-virtio storage/input/framebuffer profile, using QEMU's discrete
-# Intel 82574L PCIe model to exercise the native e1000e path.
-smoke-native-pci-e1000e-x86: x86
-	OXIDE_QEMU_PROFILE=native-pci OXIDE_QEMU_NIC=e1000e ./tools/boot-smoke.sh x86 $(SMOKE_TIMEOUT)
+# Construct the complete native-Q35 graph, then stop QEMU before guest code
+# executes. This validates QEMU accepts the actual AHCI/NVMe/e1000e/xHCI/VT-d
+# contract without turning a device-argument change into a boot loop.
+verify-native-q35:
+	./tools/qemu-native-q35-accept.sh
+
+# Same topology with QEMU's older discrete Intel e1000 model. Keep this as a
+# separate compatibility smoke; the primary native profile is e1000e.
+smoke-native-pci-e1000-x86: x86
+	OXIDE_QEMU_PROFILE=native-pci OXIDE_QEMU_NIC=e1000 ./tools/boot-smoke.sh x86 $(SMOKE_TIMEOUT)
 
 smoke-arm: arm
 	./tools/boot-smoke.sh arm $(SMOKE_TIMEOUT)

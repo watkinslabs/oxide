@@ -33,9 +33,12 @@ impl HardwareProfile {
             Self::Default if selector == Some("e1000e") =>
                 "e1000e,netdev=net0,bus=pcie.0",
             Self::Default => "virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on",
-            Self::NativePci if selector == Some("e1000e") =>
-                "e1000e,netdev=net0,bus=pcie.0",
-            Self::NativePci => "e1000,netdev=net0,bus=pcie.0",
+            // The native profile is specifically the PCIe e1000e/82574L
+            // regression topology.  e1000 remains selectable for the older
+            // PCI model, but must never be the accidental default here.
+            Self::NativePci if selector == Some("e1000") =>
+                "e1000,netdev=net0,bus=pcie.0",
+            Self::NativePci => "e1000e,netdev=net0,bus=pcie.0",
         }
     }
 
@@ -137,8 +140,8 @@ fn x86_grub_cfg(arch: &str, args: &str) -> String {
 
 /// Boot the GRUB ISO under QEMU. `OXIDE_QEMU_UEFI=1` selects OVMF; the
 /// default is SeaBIOS. Both firmware paths enter the same GRUB multiboot2
-/// handoff. `native-pci` boots the ext4 rootfs from AHCI and uses e1000 plus
-/// an emulated PCI xHCI controller with standard USB keyboard and tablet.
+/// handoff. `native-pci` boots the ext4 rootfs from AHCI and uses the PCIe
+/// e1000e model plus an emulated PCI xHCI controller with standard USB HID.
 pub(super) fn qemu_run_grub_x86_64(
     repo: &std::path::Path,
     id: Option<&str>,
@@ -387,7 +390,8 @@ mod tests {
 
     #[test]
     fn native_profile_selects_the_native_pci_nic() {
-        assert_eq!(HardwareProfile::NativePci.nic_device(), "e1000,netdev=net0,bus=pcie.0");
+        assert_eq!(HardwareProfile::NativePci.nic_device(), "e1000e,netdev=net0,bus=pcie.0");
+        assert_eq!(HardwareProfile::NativePci.nic_device_for(Some("e1000")), "e1000,netdev=net0,bus=pcie.0");
         assert_eq!(HardwareProfile::NativePci.nic_device_for(Some("e1000e")), "e1000e,netdev=net0,bus=pcie.0");
     }
 
