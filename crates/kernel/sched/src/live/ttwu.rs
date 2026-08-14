@@ -52,12 +52,8 @@ pub(super) fn wake_diag_now_ns() -> u64 {
 /// context switches, so a task cleared as "not executing" could be executing by
 /// the time the enqueue landed. That is precisely the `WARN_ON_ONCE(p->on_cpu)`
 /// Linux places at the activation point, and here it was fatal — `schedule()`
-/// then picks a task another CPU owns. Where Linux waits the switch out with
-/// `smp_cond_load_acquire`, this defers to the owner's wake-list instead: an
-/// unbounded cross-CPU spin under a held rq lock AB-BA's against a peer
-/// balancer wanting this same lock (the `-smp` hang this module's wake-list
-/// exists to avoid). Deferral loses no wake — the owner drains it once its own
-/// switch settles.
+/// then picks a task another CPU owns. The target waits for switch-off under
+/// its rq lock before activating the claimed task.
 ///
 /// The producer-side `task_wake_lock` ends at the list publication.  Taking
 /// it again after `llist_del_all` would turn the claimed list into a detached
@@ -101,6 +97,8 @@ pub fn sched_ttwu_pending(cpu: u32, current: *mut Task, rq: &Runqueue) -> bool {
             node = next;
             continue;
         }
+        #[cfg(feature = "debug-watchdog")]
+        task.wake_diag_mark(WakeDiagPhase::Waiting, wake_diag_now_ns());
         while matches!(task.pending_wake(current), PendingWake::Defer) {
             core::hint::spin_loop();
         }

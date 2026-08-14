@@ -176,7 +176,8 @@ pub enum WakeDiagPhase {
     Claimed    = 1,
     Listed     = 2,
     Drained    = 3,
-    Activating = 4,
+    Waiting    = 4,
+    Activating = 5,
 }
 
 #[cfg(feature = "debug-watchdog")]
@@ -184,6 +185,7 @@ impl WakeDiagPhase {
     pub const CLAIMED_RAW: u8 = Self::Claimed as u8;
     pub const LISTED_RAW: u8 = Self::Listed as u8;
     pub const DRAINED_RAW: u8 = Self::Drained as u8;
+    pub const WAITING_RAW: u8 = Self::Waiting as u8;
     pub const ACTIVATING_RAW: u8 = Self::Activating as u8;
 
     /// # C: O(1)
@@ -192,6 +194,7 @@ impl WakeDiagPhase {
             Self::CLAIMED_RAW => Self::Claimed,
             Self::LISTED_RAW => Self::Listed,
             Self::DRAINED_RAW => Self::Drained,
+            Self::WAITING_RAW => Self::Waiting,
             Self::ACTIVATING_RAW => Self::Activating,
             _ => Self::None,
         }
@@ -204,6 +207,7 @@ impl WakeDiagPhase {
             Self::Claimed    => b"claimed",
             Self::Listed     => b"listed",
             Self::Drained    => b"drained",
+            Self::Waiting    => b"waiting",
             Self::Activating => b"activating",
         }
     }
