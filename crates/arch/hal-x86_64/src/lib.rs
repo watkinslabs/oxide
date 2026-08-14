@@ -87,6 +87,7 @@ pub use signal::{build_signal_frame, min_sigstksz, current_user_sp, sigframe_bas
 pub use syscall::{
     boot_syscall_kstack_top, current_kstack_top, current_pt_regs,
     init_percpu_syscall_kstack, install_syscall_msrs, set_linux_current_task, set_syscall_kstack,
+    LINUX_CURRENT_TASK_OFFSET,
 };
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub use timer::{calibrate_tsc_khz, read_rtc_unix_secs};
