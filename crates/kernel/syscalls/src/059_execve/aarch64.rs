@@ -313,10 +313,7 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
     // SAFETY: the task-owned pointer remains tied to this exec even if loading
     // blocked and another task entered SVC on the same CPU.
     let frame = unsafe { &mut *crate::arch_frame::current_svc_frame() };
-    frame.elr_el1 = img.user_ip();
-    frame.sp_el0 = new_sp;
-    frame.spsr_el1 = 0;
-    frame.retval = 0;
+    frame.install_exec_state(img.user_ip(), new_sp);
     // A vfork parent shares this mm and user stack until exec completes.
     // Publish completion only after the child has its final user return
     // frame, so the parent cannot resume and alter that shared stack while

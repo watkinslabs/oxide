@@ -277,6 +277,25 @@ pub struct SvcFrame {
     pub x19_x28:   [u64; 10],   // x19..x28                     (offset 0xd0..0x120)
 }
 
+impl SvcFrame {
+    /// Install the architecturally clean EL0 register state for exec.
+    /// # C: O(1)
+    pub fn install_exec_state(&mut self, pc: u64, sp: u64) {
+        // Exec replaces the complete user register image; retaining syscall
+        // arguments or callee-saved state crosses an image boundary and lets
+        // the dynamic linker inherit invalid state.
+        self.gp = [0; 18];
+        self.x18_x29 = [0; 2];
+        self.x30 = 0;
+        self._pad_x30 = 0;
+        self.elr_el1 = pc;
+        self.spsr_el1 = 0;
+        self.sp_el0 = sp;
+        self.retval = 0;
+        self.x19_x28 = [0; 10];
+    }
+}
+
 const _: () = {
     assert!(core::mem::offset_of!(SvcFrame, gp) == 0x00);
     assert!(core::mem::offset_of!(SvcFrame, x18_x29) == 0x90);
@@ -572,5 +591,24 @@ mod tests {
         assert!(sysreg_iss_is_read(esr));
         assert_eq!(sysreg_iss_rt(esr), 2);
         assert!(sysreg_iss_reg(esr) == SYSREG_CNTVCT_EL0);
+    }
+
+    #[test]
+    fn exec_state_discards_every_inherited_user_register() {
+        let mut f = SvcFrame {
+            gp: [0x11; 18], x18_x29: [0x22; 2], x30: 0x33,
+            _pad_x30: 0x44, elr_el1: 0x55, spsr_el1: 0x66,
+            sp_el0: 0x77, retval: 0x88, x19_x28: [0x99; 10],
+        };
+        f.install_exec_state(0x1234_5000, 0x7fff_f000);
+        assert_eq!(f.gp, [0; 18]);
+        assert_eq!(f.x18_x29, [0; 2]);
+        assert_eq!(f.x30, 0);
+        assert_eq!(f._pad_x30, 0);
+        assert_eq!(f.x19_x28, [0; 10]);
+        assert_eq!(f.elr_el1, 0x1234_5000);
+        assert_eq!(f.spsr_el1, 0);
+        assert_eq!(f.sp_el0, 0x7fff_f000);
+        assert_eq!(f.retval, 0);
     }
 }

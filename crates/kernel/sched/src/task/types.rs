@@ -148,7 +148,7 @@ impl TaskState {
             Self::Sleeping => b'S',
             Self::Stopped  => b'T',
             Self::Zombie   => b'Z',
-            Self::Waking   => b'R',
+            Self::Waking   => b'W',
         }
     }
 
@@ -160,7 +160,7 @@ impl TaskState {
             Self::Sleeping => "S (sleeping)",
             Self::Stopped  => "T (stopped)",
             Self::Zombie   => "Z (zombie)",
-            Self::Waking   => "R (running)",
+            Self::Waking   => "W (waking)",
         }
     }
 }
