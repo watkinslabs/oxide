@@ -58,10 +58,32 @@ pub const TDH: u64 = 0x03810;
 pub const TDT: u64 = 0x03818;
 pub const RAL0: u64 = 0x05400;
 pub const RAH0: u64 = 0x05404;
+pub const EECD: u64 = 0x00010;
+pub const EERD: u64 = 0x00014;
+pub const MDIC: u64 = 0x00020;
 pub const EXTCNF_CTRL: u64 = 0x00f00;
 
 pub const CTRL_RST: u32 = 1 << 26;
 pub const EXTCNF_CTRL_MDIO_SW_OWNERSHIP: u32 = 1 << 5;
+pub const EECD_NVM_REQUEST: u32 = 1 << 6;
+pub const EECD_NVM_GRANT: u32 = 1 << 7;
+pub const EERD_START: u32 = 1;
+pub const EERD_DONE: u32 = 1 << 1;
+pub const EERD_ADDRESS_SHIFT: u32 = 2;
+pub const EERD_DATA_SHIFT: u32 = 16;
+pub const MDIC_REGISTER_SHIFT: u32 = 16;
+pub const MDIC_PHY_SHIFT: u32 = 21;
+pub const MDIC_WRITE: u32 = 1 << 26;
+pub const MDIC_READ: u32 = 1 << 27;
+pub const MDIC_READY: u32 = 1 << 28;
+pub const MDIC_ERROR: u32 = 1 << 30;
+pub const MDIC_REGISTER_MASK: u32 = 0x1f << MDIC_REGISTER_SHIFT;
+pub const NVM_CHECKSUM_WORD: u16 = 0x003f;
+pub const NVM_CHECKSUM_SUM: u16 = 0xbaba;
+pub const BM_PHY_ADDRESS: u32 = 1;
+pub const BM_PHY_ID_HIGH: u8 = 2;
+pub const BM_PHY_ID_LOW: u8 = 3;
+pub const BM_PHY_ID_R2: u32 = 0x0141_0cb1;
 pub const TCTL_PSP: u32 = 1 << 3;
 pub const RCTL_EN: u32 = 1 << 1;
 pub const RCTL_BAM: u32 = 1 << 15;
@@ -133,6 +155,21 @@ pub fn mac_from_rar(low: u32, high: u32) -> Option<[u8; 6]> {
     (mac != [0; 6] && mac != [0xff; 6]).then_some(mac)
 }
 
+/// Encode one bounded EERD request. # C: O(1)
+pub const fn eerd_command(word: u16) -> u32 { ((word as u32) << EERD_ADDRESS_SHIFT) | EERD_START }
+/// Extract one completed EERD response word. # C: O(1)
+pub const fn eerd_data(value: u32) -> u16 { (value >> EERD_DATA_SHIFT) as u16 }
+/// Encode one MDIC transaction for the fixed BM PHY address. # C: O(1)
+pub const fn mdic_command(register: u8, write: Option<u16>) -> u32 {
+    let op = if write.is_some() { MDIC_WRITE } else { MDIC_READ };
+    let data = match write { Some(value) => value, None => 0 };
+    (data as u32) | ((register as u32) << MDIC_REGISTER_SHIFT) | (BM_PHY_ADDRESS << MDIC_PHY_SHIFT) | op
+}
+/// Accept the 64-word NVM checksum contract. # C: O(n)
+pub fn nvm_checksum_valid(words: &[u16]) -> bool {
+    words.len() == NVM_CHECKSUM_WORD as usize + 1 && words.iter().fold(0u16, |sum, word| sum.wrapping_add(*word)) == NVM_CHECKSUM_SUM
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,6 +206,9 @@ mod tests {
         assert!(!LEGACY_PCI_IDS.contains(&0x150e));
         assert!(E1000E_82574_PCI_IDS.contains(&0x10d3));
         assert!(!E1000E_82574_PCI_IDS.contains(&0x10ea));
+        // The 82583 shares the e1000e PCI family but requires the BM PHY and
+        // NVM initialization path before it may enter the generic ring path.
+        assert!(!E1000E_82574_PCI_IDS.contains(&0x150c));
         assert_eq!(dma_mask(false), u32::MAX as u64);
         assert_eq!(dma_mask(true), u64::MAX);
         assert_eq!(E1000E_82574_RESET_NS, 25_000_000);
@@ -180,5 +220,17 @@ mod tests {
         assert!(!legacy_pci_match(0x1234, ETHERNET_CLASS, E1000_82540EP_LP));
         assert!(!legacy_pci_match(INTEL_VENDOR, 0x01_08_02, E1000_82540EP_LP));
         assert!(!legacy_pci_match(INTEL_VENDOR, ETHERNET_CLASS, 0x1539));
+    }
+    #[test]
+    fn e1000e_nvm_and_bm_phy_commands_preserve_the_hardware_abi() {
+        assert_eq!(eerd_command(NVM_CHECKSUM_WORD), 0xfd);
+        assert_eq!(eerd_data(0x1234_0002), 0x1234);
+        assert_eq!(mdic_command(BM_PHY_ID_HIGH, None), 0x0822_0000);
+        assert_eq!(mdic_command(BM_PHY_ID_LOW, Some(0xabcd)), 0x0423_abcd);
+        let mut nvm = [0u16; NVM_CHECKSUM_WORD as usize + 1];
+        nvm[NVM_CHECKSUM_WORD as usize] = NVM_CHECKSUM_SUM;
+        assert!(nvm_checksum_valid(&nvm));
+        nvm[0] = 1;
+        assert!(!nvm_checksum_valid(&nvm));
     }
 }

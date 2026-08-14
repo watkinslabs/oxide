@@ -247,6 +247,7 @@ fn configure_rings(mmio: mmio_map::Mapping, io_base: Option<u16>, bdf: pci::Bdf,
     let mut c = Controller { mmio, rx_desc_pa, tx_desc_pa, rx_data_pa, tx_data_pa, rx_desc_dma, tx_desc_dma, rx_data_dma, tx_data_dma, bdf, rx_next: 0, tx_next: 0 };
     trace("[INFO]  e1000: dma allocated\n");
     if !crate::reset::apply(&c, io_base, profile) { c.free(); return None; }
+    if profile.e1000e_nvm_phy && !crate::e1000e_init::prepare(&c) { c.free(); return None; }
     trace("[INFO]  e1000: reset done\n");
     let mac = match regs::mac_from_rar(c.read(regs::RAL0), c.read(regs::RAH0)) { Some(mac) => net::MacAddr(mac), None => { trace("[INFO]  e1000: no mac\n"); c.free(); return None; } };
     for i in 0..regs::RING_COUNT {
