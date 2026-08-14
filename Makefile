@@ -43,7 +43,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
 .PHONY: all build x86 arm kpi-layout \
         build-debug x86-debug arm-debug \
         test lint lint-ratchet lint-ratchet-update audit-counts profile-policy warnings-control stats ci \
-        qemu-x86 qemu-arm qemu-x86-debug qemu-arm-debug qemu-mcp verify-native-q35 smoke-native-pci-x86 smoke-native-pci-e1000-x86 \
+        qemu-x86 qemu-arm qemu-x86-image qemu-arm-image qemu-x86-existing qemu-arm-existing qemu-x86-debug qemu-arm-debug qemu-mcp verify-native-q35 smoke-native-pci-x86 smoke-native-pci-e1000-x86 \
         hardware-audit-image-x86 \
         boot-debug-x86 boot-debug-arm smoke-debug smoke-debug-x86 smoke-debug-arm \
         qemu-x86-grub qemu-x86-uefi smoke-uefi-x86 \
@@ -238,6 +238,22 @@ qemu-arm:
 	$(TRIM_ROOTFS_CACHE)
 	$(XTASK) grub --arch aarch64 --smp $(SMP) $(if $(QEMU_FEATURES_ARM),--features "$(QEMU_FEATURES_ARM)",)
 
+# Split image preparation from launching an existing image. boot-smoke uses
+# these so SMOKE_TIMEOUT measures guest runtime, never a feature build.
+qemu-x86-image:
+	$(TRIM_ROOTFS_CACHE)
+	$(XTASK) image --arch x86_64 $(if $(QEMU_FEATURES_X86),--features "$(QEMU_FEATURES_X86)",)
+
+qemu-arm-image:
+	$(TRIM_ROOTFS_CACHE)
+	$(XTASK) image --arch aarch64 $(if $(QEMU_FEATURES_ARM),--features "$(QEMU_FEATURES_ARM)",)
+
+qemu-x86-existing:
+	$(XTASK) grub --arch x86_64 --smp $(SMP) --run-existing
+
+qemu-arm-existing:
+	$(XTASK) grub --arch aarch64 --smp $(SMP) --run-existing
+
 # Compatibility spelling for the former bootloader-specific target. Keep one
 # canonical recipe so `FEATURES=` has identical meaning on both spellings.
 qemu-x86-grub: qemu-x86
@@ -291,13 +307,13 @@ boot-debug-arm:
 # question is "what did the slow one do differently", not "did it fail".
 BOOT_LOG_DIR ?= target/boot-logs
 
-smoke-debug-x86: x86
+smoke-debug-x86:
 	@mkdir -p $(BOOT_LOG_DIR)
 	OXIDE_CMDLINE_DEBUG=1 SMOKE_KEEP_LOG=$(BOOT_LOG_DIR)/x86.log \
 	    SMOKE_KEEP_LOG_DIR=$(BOOT_LOG_DIR) ./tools/boot-smoke.sh x86 $(SMOKE_TIMEOUT)
 	@echo "serial log kept: $(BOOT_LOG_DIR)/x86.log"
 
-smoke-debug-arm: arm
+smoke-debug-arm:
 	@mkdir -p $(BOOT_LOG_DIR)
 	OXIDE_CMDLINE_DEBUG=1 SMOKE_KEEP_LOG=$(BOOT_LOG_DIR)/arm.log \
 	    SMOKE_KEEP_LOG_DIR=$(BOOT_LOG_DIR) ./tools/boot-smoke.sh arm $(SMOKE_TIMEOUT)
@@ -305,7 +321,7 @@ smoke-debug-arm: arm
 
 # Both arches concurrently, same rationale as `smoke`: they contend for
 # nothing, and running them back to back doubles the wall clock for no answer.
-smoke-debug: x86 arm
+smoke-debug:
 	@mkdir -p $(BOOT_LOG_DIR); rc=0; \
 	OXIDE_CMDLINE_DEBUG=1 SMOKE_KEEP_LOG=$(BOOT_LOG_DIR)/x86.log SMOKE_KEEP_LOG_DIR=$(BOOT_LOG_DIR) ./tools/boot-smoke.sh x86 $(SMOKE_TIMEOUT) & p1=$$!; \
 	OXIDE_CMDLINE_DEBUG=1 SMOKE_KEEP_LOG=$(BOOT_LOG_DIR)/arm.log SMOKE_KEEP_LOG_DIR=$(BOOT_LOG_DIR) ./tools/boot-smoke.sh arm $(SMOKE_TIMEOUT) & p2=$$!; \
@@ -319,13 +335,13 @@ smoke-debug: x86 arm
 # 600). PR-time CI uses these; locally a 30-60s dev-box boot is
 # typical, but TCG on a hosted runner needs 5-15min, hence the
 # higher default. Override via `make smoke-x86 SMOKE_TIMEOUT=900`.
-smoke-x86: x86
+smoke-x86:
 	./tools/boot-smoke.sh x86 $(SMOKE_TIMEOUT)
 
 # Q35 with the PCIe Intel e1000e model, AHCI-root disks, NVMe, xHCI USB HID,
 # VT-d interrupt remapping and a physical framebuffer handoff. This contains
 # no virtio device on the boot path.
-smoke-native-pci-x86: x86
+smoke-native-pci-x86:
 	OXIDE_QEMU_PROFILE=native-pci ./tools/boot-smoke.sh x86 $(SMOKE_TIMEOUT)
 
 # Construct the complete native-Q35 graph, then stop QEMU before guest code
@@ -336,10 +352,10 @@ verify-native-q35:
 
 # Same topology with QEMU's older discrete Intel e1000 model. Keep this as a
 # separate compatibility smoke; the primary native profile is e1000e.
-smoke-native-pci-e1000-x86: x86
+smoke-native-pci-e1000-x86:
 	OXIDE_QEMU_PROFILE=native-pci OXIDE_QEMU_NIC=e1000 ./tools/boot-smoke.sh x86 $(SMOKE_TIMEOUT)
 
-smoke-arm: arm
+smoke-arm:
 	./tools/boot-smoke.sh arm $(SMOKE_TIMEOUT)
 
 # The UEFI half of the x86 boot contract. Identical kernel, identical ISO,
@@ -347,17 +363,13 @@ smoke-arm: arm
 # handoff regression and nothing else. Kept separate from `smoke` because it
 # boots the same kernel a second time; run it when the boot path, the ISO
 # builder or the multiboot2 header changes.
-smoke-uefi-x86: x86
+smoke-uefi-x86:
 	OXIDE_QEMU_UEFI=1 ./tools/boot-smoke.sh x86 $(SMOKE_TIMEOUT)
 
-# Both arches at once. The builds are prerequisites, so they finish first
-# (cargo serialises them through its own lock anyway); only the two BOOTS
-# overlap, and they contend for nothing — separate build namespaces, separate
-# root images, separate qemu instances. Running them back to back doubles the
-# wall clock of every lockstep check for no benefit, which is the whole cost of
-# this gate. Both exit statuses are collected: a failure on either arch fails
-# the target, and neither cancels the other, so one run reports both answers.
-smoke: x86 arm
+# Both arches at once. Each smoke prepares its image first, then only the two
+# QEMU runs overlap. Both exit statuses are collected: a failure on either arch
+# fails the target, and neither cancels the other, so one run reports both answers.
+smoke:
 	@rc=0; \
 	./tools/boot-smoke.sh x86 $(SMOKE_TIMEOUT) & p1=$$!; \
 	./tools/boot-smoke.sh arm $(SMOKE_TIMEOUT) & p2=$$!; \
