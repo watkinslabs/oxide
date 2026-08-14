@@ -416,7 +416,7 @@ impl Nvme {
                 if cqe_cid != cid { return Some(0xFFFF); } // out-of-order: treat as error
                 return Some(status_code);
             }
-            if now_ns() >= deadline { return None; }
+            if now_ns() >= deadline { observe::cq_timeout(qid_is_io, cid, d2, d3); return None; }
             core::hint::spin_loop();
         }
     }
