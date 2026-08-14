@@ -474,7 +474,7 @@ unsafe fn lifecycle(q: *mut LinuxRequestQueue) -> Option<&'static LinuxQueueLife
 unsafe fn tagset_lifecycle(set: *mut LinuxBlkMqTagSet) -> Option<&'static LinuxTagSetLifecycle> {
     if set.is_null() { return None; }
     // SAFETY: tag-set lifecycle is initialized before queues attach and freed only after every queue detaches.
-    let lifecycle = unsafe { (*set).lifecycle };
+    let lifecycle = unsafe { (*set).srcu };
     if lifecycle.is_null() { None } else { Some(unsafe { &*lifecycle }) }
 }
 
@@ -552,7 +552,7 @@ mod tests {
         // SAFETY: LinuxBlkMqTagSet is a plain C-layout owner supplied by the driver; zero is a valid initial
         // state for its scalar/raw-pointer fields and this test initializes its lifecycle before attaching q.
         let mut set: LinuxBlkMqTagSet = unsafe { ::core::mem::zeroed() };
-        set.lifecycle = Box::into_raw(Box::new(LinuxTagSetLifecycle::new()));
+        set.srcu = Box::into_raw(Box::new(LinuxTagSetLifecycle::new()));
         // SAFETY: the initialized tag set and default limits are owned by this test for q's full lifetime.
         let q = unsafe { blk_mq_alloc_queue(&mut set, ::core::ptr::null(), ::core::ptr::null_mut()) };
         assert!(!q.is_null());
@@ -581,7 +581,7 @@ mod tests {
             assert!(queue_begin_dispatch(q));
             queue_end_dispatch(q);
             core::blk_cleanup_queue(q);
-            drop(Box::from_raw(set.lifecycle));
+            drop(Box::from_raw(set.srcu));
         }
     }
 
@@ -591,7 +591,7 @@ mod tests {
         DRAINED.store(false, Ordering::Release);
         // SAFETY: the test owns this zero-initialized driver tag-set and initializes its lifecycle first.
         let mut set: LinuxBlkMqTagSet = unsafe { ::core::mem::zeroed() };
-        set.lifecycle = Box::into_raw(Box::new(LinuxTagSetLifecycle::new()));
+        set.srcu = Box::into_raw(Box::new(LinuxTagSetLifecycle::new()));
         // SAFETY: q is attached to the initialized tag set and remains owned until the waiter has joined.
         let q = unsafe { blk_mq_alloc_queue(&mut set, ::core::ptr::null(), ::core::ptr::null_mut()) };
         assert!(!q.is_null());
@@ -615,7 +615,7 @@ mod tests {
         // SAFETY: q is detached before its tag-set lifecycle allocation is reclaimed.
         unsafe {
             core::blk_cleanup_queue(q);
-            drop(Box::from_raw(set.lifecycle));
+            drop(Box::from_raw(set.srcu));
         }
     }
 }

@@ -155,6 +155,11 @@ SUPPORTED_KPI_ABI: dict[str, AbiType] = {
         ("slave_dir", 472), ("slave_bdevs", 480), ("random", 496), ("ev", 504),
         ("node_id", 584), ("bb", 592), ("diskseq", 600), ("open_mode", 608),
         ("ia_ranges", 616), ("rqos_state_mutex", 624))),
+    "blk_mq_tag_set": AbiType("blk_mq_tag_set", 240, (("ops", 0), ("map", 8),
+        ("nr_maps", 56), ("nr_hw_queues", 60), ("queue_depth", 64), ("reserved_tags", 68),
+        ("cmd_size", 72), ("numa_node", 76), ("timeout", 80), ("flags", 84),
+        ("driver_data", 88), ("tags", 96), ("shared_tags", 104), ("tag_list_lock", 112),
+        ("tag_list", 144), ("srcu", 160), ("tags_srcu", 168), ("update_nr_hwq_lock", 200))),
 }
 
 ABI_TYPES: tuple[str, ...] = (
