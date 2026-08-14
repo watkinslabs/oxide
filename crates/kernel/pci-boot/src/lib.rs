@@ -26,6 +26,7 @@ pub(crate) unsafe fn map_mmio_pages(pa: u64, n_pages: u64) -> u64 {
 // the external `virtio` crate dependency referenced elsewhere in this
 // file (cap_dump_arch reads `virtio::is_modern`, etc.).
 mod config_access;
+mod aer;
 mod virtio_bus;
 mod virtio_child;
 mod virtio_drv;
@@ -47,6 +48,7 @@ fn virtio_seq() -> u32 { VIRTIO_SEQ.fetch_add(1, core::sync::atomic::Ordering::R
 /// driver-core attachment from `register_driver` and `device_add`.
 /// # C: O(N_drivers)
 fn register_pci_model_drivers() {
+    drv::register_driver(&aer::AER_DRIVER);
     drv::register_driver(&drv_nvme::NVME_DRIVER);
     drv::register_driver(&drv_ahci::AHCI_DRIVER);
     drv::register_driver(&drv_e1000::E1000_DRIVER);
@@ -524,6 +526,7 @@ fn publish_pci_model_device(
 /// Capability reads retain firmware state; AER control and status are owned by
 /// the eventual AER service driver. # C: O(capabilities)
 fn publish_port_service_children(d: &pci::PciDevice, parent: &alloc::sync::Arc<drv::Device>) {
+    if !firmware::acpi::pci_osc_control(d.bdf.segment, d.bdf.bus).is_some_and(|osc| osc.control != 0) { return; }
     let message = {
         #[cfg(target_arch = "x86_64")]
         { hal_x86_64::pci::EcamPci::from_published().and_then(|reader| pci::aer_message_number(&reader, d.bdf)) }

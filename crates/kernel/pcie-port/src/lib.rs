@@ -76,6 +76,12 @@ pub fn find(root_bdf: pci::Bdf) -> Option<Arc<Port>> {
     PORTS.lock().iter().find(|port| port.root_bdf == root_bdf).cloned()
 }
 
+/// Return the canonical port that owns the named service child. # C: O(ports)
+pub fn service_port(child: &drv::Device, service: Service) -> Option<Arc<Port>> {
+    PORTS.lock().iter().find(|port| port.children.iter().any(|entry|
+        entry.service == service && core::ptr::eq(entry.device.as_ref(), child))).cloned()
+}
+
 /// Remove children in reverse creation order, then release every vector
 /// binding retained by the port. # C: O(services + vectors)
 pub fn remove(port: &Arc<Port>) {
