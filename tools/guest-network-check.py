@@ -27,6 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 STAMP = f"{ARCH}-network-{os.getpid()}"
 SOCK = f"/tmp/oxide-{STAMP}.sock"
 LOG = Path(os.environ.get("NETWORK_KEEP_LOG", ROOT / "target/boot-logs" / f"{STAMP}.log"))
+NIC_MARKER = "OXIDE-NIC-PRESENT"
 MARKER = "OXIDE-NETWORK-OK"
 READY = re.compile(r"sh-5\.2#")
 
@@ -98,6 +99,7 @@ def main():
         if conn is None:
             die("UART socket never appeared", qemu)
         buf = bytearray()
+        command_sent = False
         while time.monotonic() < deadline:
             if qemu.poll() is not None:
                 die("QEMU exited before network proof", qemu)
@@ -105,15 +107,24 @@ def main():
             text = buf.decode("utf-8", "replace")
             if not READY.search(text):
                 continue
-            start = len(buf)
-            command = "ip -4 -o addr show dev eth0 scope global | grep -Eq 'inet [1-9][0-9]*\\.' && ping -c1 -W3 10.0.2.2 >/dev/null && printf '%s\\n' OXIDE-NET\"WORK\"-OK"
-            conn.sendall(("\n" + command + "\n").encode())
-            if not pump(conn, buf, serial, 5):
-                die("UART closed during network proof", qemu)
+            if not command_sent:
+                start = len(buf)
+                command = (
+                    "if ip link show dev eth0 >/dev/null 2>&1; then "
+                    "printf '%s\\n' OXIDE-NIC\"-PRESENT\"; "
+                    "ip link set dev eth0 up && dhclient -1 -v eth0 && "
+                    "ip -4 -o addr show dev eth0 scope global | grep -Eq 'inet [1-9][0-9]*\\.' && "
+                    "ping -c1 -W3 10.0.2.2 >/dev/null && "
+                    "printf '%s\\n' OXIDE-NET\"WORK\"-OK; "
+                    "else printf '%s\\n' OXIDE-NIC-ABSENT; fi"
+                )
+                conn.sendall(("\n" + command + "\n").encode())
+                command_sent = True
             if MARKER in buf[start:].decode("utf-8", "replace"):
                 print("guest-network-check: PASS — eth0 acquired IPv4 and pinged QEMU gateway", flush=True)
                 return
-        die(f"timeout after {TIMEOUT}s without DHCP/gateway proof", qemu)
+        diagnosis = "NIC present but DHCP/gateway proof failed" if NIC_MARKER in buf.decode("utf-8", "replace") else "eth0 did not appear"
+        die(f"timeout after {TIMEOUT}s: {diagnosis}", qemu)
     finally:
         if conn is not None:
             conn.close()
