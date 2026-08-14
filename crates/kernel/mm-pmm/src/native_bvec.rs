@@ -29,6 +29,14 @@ pub struct NativeBioVec {
     pub bv_offset: u32,
 }
 
+// SAFETY: NativeBioVec is immutable descriptor data after publication; its
+// page pointer targets PMM's stable descriptor array and NativeBvecPin holds
+// the matching atomic page/object references for every cross-thread user.
+unsafe impl Send for NativeBioVec {}
+// SAFETY: NativeBioVec exposes no mutable page access; PMM refcounts are
+// atomic and descriptor lifetime is retained by NativeBvecPin ownership.
+unsafe impl Sync for NativeBioVec {}
+
 impl NativeBioVec {
     /// Build one native page-vector entry.  The caller supplies a descriptor
     /// from PMM's published native-page array.
@@ -51,6 +59,13 @@ pub struct NativeIovIter {
     pub count:       usize,
     pub nr_segs:     usize,
 }
+
+// SAFETY: NativeIovIter only borrows immutable NativeBioVec storage.  The
+// owner retains that storage and its NativeBvecPin for its complete lifetime.
+unsafe impl Send for NativeIovIter {}
+// SAFETY: NativeIovIter carries no mutable cursor state across the ABI; each
+// native request owns its own iterator instance and retained bvec storage.
+unsafe impl Sync for NativeIovIter {}
 
 impl NativeIovIter {
     /// An empty BVEC iterator.  It carries the real BVEC tag even though no
@@ -192,6 +207,13 @@ mod tests {
         assert_eq!(core::mem::offset_of!(NativeIovIter, iov_offset), 8);
         assert_eq!(core::mem::offset_of!(NativeIovIter, bvec), 16);
         assert_eq!(ITER_BVEC, 2);
+    }
+
+    #[test]
+    fn native_abi_descriptors_cross_the_registered_buffer_owner() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<NativeBioVec>();
+        assert_send_sync::<NativeIovIter>();
     }
 
     #[test]
