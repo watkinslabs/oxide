@@ -50,6 +50,12 @@ pub struct Port {
 }
 
 static PORTS: Spinlock<Vec<Arc<Port>>, DriverListClass> = Spinlock::new(Vec::new());
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+type PortIrq = hal_x86_64::X86IrqGate;
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+type PortIrq = hal_aarch64::ArmIrqGate;
+#[cfg(not(target_os = "oxide-kernel"))]
+type PortIrq = sync::NoopIrq;
 
 /// Publish every enabled port-service child under `parent`. `messages` is
 /// indexed by [`Service`] and must be read from the owning PCIe capability;
@@ -57,7 +63,7 @@ static PORTS: Spinlock<Vec<Arc<Port>>, DriverListClass> = Spinlock::new(Vec::new
 pub fn publish(root_bdf: pci::Bdf, parent: Arc<drv::Device>, service_mask: ServiceMask,
     messages: [u8; 5]) -> Result<Arc<Port>, drv::Error> {
     if parent.bus != "pci" || service_mask & !SERVICE_MASK_ALL != 0 { return Err(drv::Error::Invalid); }
-    if PORTS.lock().iter().any(|port| port.root_bdf == root_bdf) { return Err(drv::Error::Busy); }
+    if PORTS.lock_irqsave::<PortIrq>().iter().any(|port| port.root_bdf == root_bdf) { return Err(drv::Error::Busy); }
     let mut children = Vec::new();
     for service in SERVICES {
         if service_mask & service.bit() == 0 { continue; }
@@ -72,7 +78,7 @@ pub fn publish(root_bdf: pci::Bdf, parent: Arc<drv::Device>, service_mask: Servi
     let port = Arc::new(Port { root_bdf, parent, service_mask, children, bindings: Spinlock::new(Vec::new()),
         aer_status: AtomicU32::new(0), aer_source: AtomicU32::new(0), aer_state: AtomicU8::new(AER_ACTIVE) });
     let inserted = {
-        let mut ports = PORTS.lock();
+        let mut ports = PORTS.lock_irqsave::<PortIrq>();
         if ports.iter().any(|entry| entry.root_bdf == root_bdf) { false }
         else { ports.push(Arc::clone(&port)); true }
     };
@@ -85,12 +91,12 @@ pub fn publish(root_bdf: pci::Bdf, parent: Arc<drv::Device>, service_mask: Servi
 
 /// Return the canonical live port owner for `root_bdf`. # C: O(ports)
 pub fn find(root_bdf: pci::Bdf) -> Option<Arc<Port>> {
-    PORTS.lock().iter().find(|port| port.root_bdf == root_bdf).cloned()
+    PORTS.lock_irqsave::<PortIrq>().iter().find(|port| port.root_bdf == root_bdf).cloned()
 }
 
 /// Return the canonical port that owns the named service child. # C: O(ports)
 pub fn service_port(child: &drv::Device, service: Service) -> Option<Arc<Port>> {
-    PORTS.lock().iter().find(|port| port.children.iter().any(|entry|
+    PORTS.lock_irqsave::<PortIrq>().iter().find(|port| port.children.iter().any(|entry|
         entry.service == service && core::ptr::eq(entry.device.as_ref(), child))).cloned()
 }
 
@@ -99,7 +105,7 @@ pub fn service_port(child: &drv::Device, service: Service) -> Option<Arc<Port>> 
 pub fn remove(port: &Arc<Port>) {
     port.stop_aer();
     let removed = {
-        let mut ports = PORTS.lock();
+        let mut ports = PORTS.lock_irqsave::<PortIrq>();
         let Some(index) = ports.iter().position(|entry| Arc::ptr_eq(entry, port)) else { return; };
         ports.remove(index)
     };

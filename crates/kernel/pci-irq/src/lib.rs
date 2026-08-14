@@ -109,6 +109,26 @@ pub fn request_msi_only(bdf: pci::Bdf, action: arch_irq::DeviceAction, handler: 
     { let _ = (bdf, action, handler); None }
 }
 
+/// Request one MSI vector whose hard handler receives the binding-owned
+/// context argument. # C: O(capabilities)
+pub fn request_msi_only_context(bdf: pci::Bdf, action: arch_irq::DeviceAction,
+    handler: fn(usize), arg: usize) -> Option<Binding> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let reader = hal_x86_64::pci::EcamPci::from_published()?;
+        let cap = pci::capabilities(&reader, bdf).find(pci::CAP_ID_MSI)?;
+        request_msi_context(&reader, bdf, cap.cfg_off, action, handler, arg)
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        let reader = hal_aarch64::pci::EcamPci::from_published()?;
+        let cap = pci::capabilities(&reader, bdf).find(pci::CAP_ID_MSI)?;
+        request_msi_context(&reader, bdf, cap.cfg_off, action, handler, arg)
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    { let _ = (bdf, action, handler, arg); None }
+}
+
 /// Request a legacy INTx vector from a route already resolved by the PCI
 /// root-complex owner. This is intentionally separate from the PCI
 /// interrupt-line byte, which is not a routable interrupt-controller input.
@@ -288,6 +308,22 @@ fn request_msi<R: pci::ConfigSpaceReader>(r: &R, bdf: pci::Bdf, cap_off: u8,
     action: arch_irq::DeviceAction, handler: fn()) -> Option<Binding> {
     let message = arch_irq::alloc_pci_msi(bdf, 0)?;
     if !arch_irq::register_pci_msi_handler(message.irq, action, handler) {
+        arch_irq::free_pci_msi(message.irq);
+        return None;
+    }
+    let prior_command = pci::set_intx_disabled(r, bdf, true);
+    if !pci::program_msi_single(r, bdf, cap_off, message.address, message.data) {
+        let _ = pci::restore_intx_disabled(r, bdf, prior_command);
+        arch_irq::free_pci_msi(message.irq);
+        return None;
+    }
+    Some(Binding { bdf, irq: message.irq, prior_command, mode: Mode::Msi { cap_off } })
+}
+
+fn request_msi_context<R: pci::ConfigSpaceReader>(r: &R, bdf: pci::Bdf, cap_off: u8,
+    action: arch_irq::DeviceAction, handler: fn(usize), arg: usize) -> Option<Binding> {
+    let message = arch_irq::alloc_pci_msi(bdf, 0)?;
+    if !arch_irq::register_pci_msi_context_handler(message.irq, action, handler, arg) {
         arch_irq::free_pci_msi(message.irq);
         return None;
     }

@@ -25,13 +25,14 @@ mod gic_lpi_layout;
 mod gic_trigger;
 mod line;
 mod msi;
+mod msi_context;
 #[cfg(target_arch = "x86_64")]
 mod ioapic;
 mod spurious;
 
 pub use line::{irq_line_disabled, LineHandler};
 pub use irqstat::DeviceAction;
-pub use msi::{alloc_pci_msi, free_pci_msi, free_platform_msi, register_pci_msi_handler, request_platform_msi, MsiMessage};
+pub use msi::{alloc_pci_msi, free_pci_msi, free_platform_msi, register_pci_msi_context_handler, register_pci_msi_handler, request_platform_msi, MsiMessage};
 #[cfg(target_arch = "x86_64")]
 pub use ioapic::{program_x86_intx_gsi, program_x86_ioapic};
 pub use spurious::{IrqReport, IrqRet};
@@ -42,6 +43,8 @@ pub use line::{
     free_arm_irq_line_handler, free_msi_line_handler, invoke_arm_irq_line_handler,
     invoke_arm_spi_line_handler, register_msi_line_handler, request_arm_irq_line_handler,
 };
+#[cfg(target_arch = "aarch64")]
+pub use msi_context::invoke_arm_spi_handler;
 
 #[cfg(target_arch = "x86_64")]
 use core::sync::atomic::AtomicBool;
@@ -137,6 +140,7 @@ pub fn free_x86_vector(vector: u8) -> Result<(), ()> {
     // recycled IDT vector during teardown.
     unsafe { hal_x86_64::ioapic::mask_vector(vector); }
     MSI_HANDLERS[idx].store(core::ptr::null_mut(), Ordering::Release);
+    msi_context::clear_x86(vector);
     let _ = line::free_irq_line_handler(vector as u32);
     hal_x86_64::ioapic::unroute_vector(vector);
     MSI_VEC_USED[idx].store(false, Ordering::Release);
@@ -286,6 +290,7 @@ pub fn free_arm_spi(spi: u32) -> Result<(), ()> {
     for i in 0..ARM_MSI_SLOTS {
         if ARM_MSI_SPIS[i].load(Ordering::Acquire) == spi {
             ARM_MSI_HANDS[i].store(core::ptr::null_mut(), Ordering::Release);
+            msi_context::clear_arm(i);
             let _ = line::free_msi_line_handler(spi);
             ARM_MSI_SPIS[i].store(0, Ordering::Release);
             return Ok(());
@@ -294,30 +299,6 @@ pub fn free_arm_spi(spi: u32) -> Result<(), ()> {
     Err(())
 }
 
-/// Dispatch path. Returns true iff a handler was found + invoked.
-/// Called by the GIC dispatcher on every recognised MSI INTID.
-/// # C: O(N) atomic scan
-#[cfg(target_arch = "aarch64")]
-pub fn invoke_arm_spi_handler(intid: u32) -> bool {
-    for i in 0..ARM_MSI_SLOTS {
-        if ARM_MSI_SPIS[i].load(Ordering::Acquire) == intid {
-            let raw = ARM_MSI_HANDS[i].load(Ordering::Acquire);
-            if !raw.is_null() {
-                // SAFETY: raw was installed via `register_msi_handler` with the documented `fn()` signature; reverse cast restores the ABI-compatible fn pointer.
-                let f: fn() = unsafe { core::mem::transmute(raw) };
-                f();
-                return true;
-            }
-            return false;
-        }
-    }
-    false
-}
-
-// Stub for non-aarch64 builds so unconditional callers compile.
-/// # C: O(1)
-#[cfg(not(target_arch = "aarch64"))]
-pub fn invoke_arm_spi_handler(_intid: u32) -> bool { false }
 
 /// Allocate one SPI from the GICv2m frame's range. Returns `None`
 /// when the range is unconfigured or the driver's handler table is full.

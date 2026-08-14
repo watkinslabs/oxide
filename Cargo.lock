@@ -1523,6 +1523,8 @@ name = "pcie-port"
 version = "0.1.0"
 dependencies = [
  "drv",
+ "hal-aarch64",
+ "hal-x86_64",
  "pci",
  "pci-irq",
  "sync",

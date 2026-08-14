@@ -29,7 +29,8 @@ impl drv::Driver for AerDriver {
         if port.child(pcie_port::Service::Aer).is_none_or(|child| child.message_number != 0) {
             return Err(drv::Error::ProbeFailed);
         }
-        let binding = pci_irq::request_msi_only(port.root_bdf(), arch_irq::DeviceAction::PcieAer, aer_irq)
+        let binding = pci_irq::request_msi_only_context(port.root_bdf(), arch_irq::DeviceAction::PcieAer,
+            aer_irq, bdf_key(port.root_bdf()))
             .ok_or(drv::Error::ProbeFailed)?;
         enable(port.root_bdf());
         port.retain_binding(binding);
@@ -42,17 +43,16 @@ impl drv::Driver for AerDriver {
     }
 }
 
-fn aer_irq() {
-    for dev in drv::devices() {
-        let Some(port) = pcie_port::service_port(&dev, pcie_port::Service::Aer) else { continue; };
-        if !port.begin_aer() { continue; }
-        let Some((status, source)) = acknowledge(port.root_bdf()) else { let _ = port.cancel_aer(); continue; };
-        mask_reporting(port.root_bdf());
-        port.publish_aer(status, source);
-        if !sched::live::workqueue::queue_work(recover_work, bdf_key(port.root_bdf())) {
-            if port.cancel_aer() { unmask_reporting(port.root_bdf()); }
-            klog::write_raw(b"pcie_aer_workqueue_full\n");
-        }
+fn aer_irq(key: usize) {
+    let bdf = bdf_from_key(key);
+    let Some(port) = pcie_port::find(bdf) else { return; };
+    if !port.begin_aer() { return; }
+    let Some((status, source)) = acknowledge(bdf) else { let _ = port.cancel_aer(); return; };
+    mask_reporting(bdf);
+    port.publish_aer(status, source);
+    if !sched::live::workqueue::queue_work(recover_work, key) {
+        if port.cancel_aer() { unmask_reporting(bdf); }
+        klog::write_raw(b"pcie_aer_workqueue_full\n");
     }
 }
 
