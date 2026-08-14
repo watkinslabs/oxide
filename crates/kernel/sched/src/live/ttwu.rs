@@ -101,15 +101,12 @@ pub fn sched_ttwu_pending(cpu: u32, current: *mut Task, rq: &Runqueue) -> bool {
             node = next;
             continue;
         }
+        while matches!(task.pending_wake(current), PendingWake::Defer) {
+            core::hint::spin_loop();
+        }
         match task.pending_wake(current) {
             PendingWake::Drop  => {}
-            PendingWake::Defer => {
-                let owner = task.cpu.load(Ordering::Acquire) as u32;
-                let target = if owner < cpu::MAX_CPUS as u32
-                    && unsafe { global_for(owner) }.is_some() { owner } else { cpu };
-                wake_list_push(target, task);
-                requeue[target as usize] = true;
-            }
+            PendingWake::Defer => unreachable!(),
             PendingWake::Ready => {
                 // SAFETY: `current` is this CPU's running task, kept alive by
                 // the runqueue's strong reference for this locked decision.
