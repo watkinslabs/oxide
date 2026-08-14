@@ -139,12 +139,32 @@ pub unsafe extern "C" fn import_fixed(addr: u64, len: usize, rw: i32, iter: *mut
 /// # C: O(N_vec + bytes / PAGE)
 pub unsafe extern "C" fn import_fixed_vec(cmd: *mut LinuxIoUringCmd, vec: *const LinuxUserIovec, nr: usize, rw: i32, iter: *mut NativeIovIter, _flags: u32) -> i32 {
     let Some(s) = (unsafe { state(cmd) }) else { return -Errno::Einval.as_i32(); };
-    if nr != 1 || vec.is_null() { return -Errno::Einval.as_i32(); }
-    let mut raw = [0u8; core::mem::size_of::<LinuxUserIovec>()];
-    if uaccess::copy_from_user(&mut raw, vec as u64).is_err() { return -Errno::Efault.as_i32(); }
-    let addr = u64::from_ne_bytes(raw[..8].try_into().unwrap());
-    let len = usize::from_ne_bytes(raw[8..].try_into().unwrap());
-    import_range(s, addr, len, rw, iter).map_or_else(|e| -e.as_i32(), |_| 0)
+    if iter.is_null() || (nr != 0 && vec.is_null()) { return -Errno::Efault.as_i32(); }
+    if s.cmd.flags & IORING_URING_CMD_FIXED == 0 { return -Errno::Einval.as_i32(); }
+    let Ok(dir) = direction(rw) else { return -Errno::Einval.as_i32(); };
+    let Ok(buf) = super::dispatch::fdres::reg_buf(&s.req.ring, s.req.sqe.buf_index as u32) else { return -Errno::Efault.as_i32(); };
+    let mut bvecs = Vec::new();
+    let mut total = 0usize;
+    for i in 0..nr {
+        let Some(at) = (vec as u64).checked_add((i * core::mem::size_of::<LinuxUserIovec>()) as u64) else { return -Errno::Efault.as_i32(); };
+        let mut raw = [0u8; core::mem::size_of::<LinuxUserIovec>()];
+        if uaccess::copy_from_user(&mut raw, at).is_err() { return -Errno::Efault.as_i32(); }
+        let addr = u64::from_ne_bytes(raw[..8].try_into().unwrap());
+        let len = usize::from_ne_bytes(raw[8..].try_into().unwrap());
+        let Some(off) = addr.checked_sub(buf.base) else { return -Errno::Efault.as_i32(); };
+        let Ok(mut one) = buf.native_bvecs(off, len as u64) else { return -Errno::Efault.as_i32(); };
+        let Some(sum) = total.checked_add(len) else { return -Errno::Efault.as_i32(); };
+        if bvecs.try_reserve(one.len()).is_err() { return -Errno::Enomem.as_i32(); }
+        bvecs.append(&mut one);
+        total = sum;
+    }
+    let mut abi = NativeIovIter::empty(dir);
+    if !bvecs.is_empty() { abi.bvec = bvecs.as_ptr(); abi.count = total; abi.nr_segs = bvecs.len(); }
+    let mut retained = s.bvecs.lock();
+    *retained = bvecs;
+    // SAFETY: the command owns the bvec allocation until its sole terminal completion.
+    unsafe { iter.write(abi); }
+    0
 }
 
 /// Queue a driver task-work callback against the retained command.
