@@ -25,6 +25,13 @@ pub(crate) fn firmware_mode(width: u32, height: u32) -> DrmModeModeinfo {
     mode
 }
 
+/// Firmware scanout has one handed-off geometry. A valid KMS request may
+/// retain different timing metadata, but it cannot select a different size.
+/// # C: O(1)
+pub(crate) fn fixed_mode_valid(mode: &DrmModeModeinfo, width: u32, height: u32) -> bool {
+    drm::fixed_mode_dimensions_valid(mode, width, height)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -39,5 +46,16 @@ mod tests {
         assert_eq!(mode.flags, 0);
         assert_eq!(mode.ty, DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED);
         assert_eq!(&mode.name[..10], b"1920x1080\0");
+    }
+
+    #[test]
+    fn fixed_mode_validation_accepts_same_geometry_and_rejects_resize() {
+        let mut timing_variant = firmware_mode(1920, 1080);
+        timing_variant.clock = 148_500;
+        timing_variant.hsync_start = 2008;
+        timing_variant.htotal = 2200;
+        assert!(fixed_mode_valid(&timing_variant, 1920, 1080));
+        timing_variant.vdisplay = 720;
+        assert!(!fixed_mode_valid(&timing_variant, 1920, 1080));
     }
 }

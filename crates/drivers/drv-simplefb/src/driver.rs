@@ -205,6 +205,9 @@ impl drm::DrmDriver for SimpleDrm {
     fn encoder_ids(&self) -> Vec<u32> { alloc::vec![drm::encoder_id_for(0)] }
     fn plane_ids(&self) -> Vec<u32> { alloc::vec![drm::plane_id_for(0)] }
     fn mode_for(&self, _idx: usize) -> drm::DrmModeModeinfo { mode::firmware_mode(self.width, self.height) }
+    fn mode_valid(&self, idx: usize, requested: &drm::DrmModeModeinfo) -> bool {
+        idx == 0 && mode::fixed_mode_valid(requested, self.width, self.height)
+    }
     fn connector_info(&self, idx: usize) -> Option<drm::ConnectorInfo> {
         (idx == 0).then_some(drm::ConnectorInfo { connection: drm::DRM_MODE_CONNECTED,
             connector_type: drm::DRM_MODE_CONNECTOR_UNKNOWN, encoder_id: drm::encoder_id_for(0), mm_width: 0, mm_height: 0 })

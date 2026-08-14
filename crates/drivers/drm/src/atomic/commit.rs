@@ -41,7 +41,10 @@ pub fn commit(card_id: u32, card: &Arc<dyn DrmDriver>, token: u64, flags: u32, u
                 active = Some(value != 0); mode_change = true;
             }
             (id, props::PROP_CRTC_MODE_ID) if id == crtc => {
-                if value != 0 && !mode_blob(value as u32) { return einval(); }
+                if value != 0 {
+                    let Some(mode) = mode_blob(value as u32) else { return einval(); };
+                    if !card.mode_valid(0, &mode) { return einval(); }
+                }
                 mode_id = Some(value as u32); mode_change = true;
             }
             // The virtio GPU has no variable refresh; only the reported value
@@ -67,4 +70,63 @@ pub fn commit(card_id: u32, card: &Arc<dyn DrmDriver>, token: u64, flags: u32, u
         crate::crtc::queue_flip_event(card_id, token, crtc, user_data);
     }
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ConnectorInfo, CrtcInfo, EncoderInfo, PlaneInfo, DrmModeModeinfo,
+                connector_id_for, crtc_id_for, encoder_id_for, fixed_mode_dimensions_valid,
+                mode_from_rect, plane_id_for, DRM_MODE_ATOMIC_ALLOW_MODESET,
+                DRM_MODE_ATOMIC_TEST_ONLY, DRM_MODE_CONNECTED, DRM_MODE_CONNECTOR_UNKNOWN,
+                DRM_MODE_ENCODER_NONE};
+
+    struct FixedScanout;
+
+    impl DrmDriver for FixedScanout {
+        fn name(&self) -> &'static str { "fixed" }
+        fn version(&self) -> (u32, u32, u32) { (1, 0, 0) }
+        fn date(&self) -> &'static str { "20260813" }
+        fn desc(&self) -> &'static str { "fixed scanout test" }
+        fn unique(&self) -> &str { "fixed" }
+        fn resource_counts(&self) -> (u32, u32, u32, u32) { (0, 1, 1, 1) }
+        fn dim_bounds(&self) -> (u32, u32, u32, u32) { (1920, 1920, 1080, 1080) }
+        fn cap(&self, cap: u64) -> u64 { crate::default_cap(cap) }
+        fn crtc_ids(&self) -> alloc::vec::Vec<u32> { alloc::vec![crtc_id_for(0)] }
+        fn connector_ids(&self) -> alloc::vec::Vec<u32> { alloc::vec![connector_id_for(0)] }
+        fn encoder_ids(&self) -> alloc::vec::Vec<u32> { alloc::vec![encoder_id_for(0)] }
+        fn plane_ids(&self) -> alloc::vec::Vec<u32> { alloc::vec![plane_id_for(0)] }
+        fn mode_for(&self, _idx: usize) -> DrmModeModeinfo { mode_from_rect(1920, 1080) }
+        fn mode_valid(&self, idx: usize, mode: &DrmModeModeinfo) -> bool {
+            idx == 0 && fixed_mode_dimensions_valid(mode, 1920, 1080)
+        }
+        fn connector_info(&self, idx: usize) -> Option<ConnectorInfo> {
+            (idx == 0).then_some(ConnectorInfo { connection: DRM_MODE_CONNECTED,
+                connector_type: DRM_MODE_CONNECTOR_UNKNOWN, encoder_id: encoder_id_for(0), mm_width: 0, mm_height: 0 })
+        }
+        fn crtc_info(&self, idx: usize) -> Option<CrtcInfo> {
+            (idx == 0).then_some(CrtcInfo { mode_valid: 1, fb_id: 0, x: 0, y: 0, gamma_size: 0,
+                mode: mode_from_rect(1920, 1080) })
+        }
+        fn encoder_info(&self, idx: usize) -> Option<EncoderInfo> {
+            (idx == 0).then_some(EncoderInfo { encoder_type: DRM_MODE_ENCODER_NONE,
+                crtc_id: crtc_id_for(0), possible_crtcs: 1, possible_clones: 0 })
+        }
+        fn plane_info(&self, idx: usize) -> Option<PlaneInfo> {
+            (idx == 0).then_some(PlaneInfo { crtc_id: crtc_id_for(0), fb_id: 0, possible_crtcs: 1 })
+        }
+    }
+
+    fn commit_mode(mode: DrmModeModeinfo) -> i64 {
+        let card: Arc<dyn DrmDriver> = Arc::new(FixedScanout);
+        let blob = super::super::blobs::insert_mode_for_tests(mode);
+        commit(0, &card, 1, DRM_MODE_ATOMIC_ALLOW_MODESET | DRM_MODE_ATOMIC_TEST_ONLY, 0,
+            &[(crtc_id_for(0), props::PROP_CRTC_MODE_ID, blob as u64)])
+    }
+
+    #[test]
+    fn fixed_scanout_rejects_resized_atomic_mode_blob() {
+        assert_eq!(commit_mode(mode_from_rect(1920, 1080)), 0);
+        assert_eq!(commit_mode(mode_from_rect(1280, 720)), einval());
+    }
 }

@@ -64,10 +64,11 @@ pub fn set_crtc(card_id: u32, card: &alloc::sync::Arc<dyn crate::DrmDriver>, arg
     klog::write_raw(b"\n");
     // Validate the crtc id against the registered card.
     let count = card.crtc_ids().len();
-    if crtc_idx_of(c.crtc_id, count).is_none() {
+    let Some(crtc_idx) = crtc_idx_of(c.crtc_id, count) else {
         klog::write_raw(b"[DRM-SETCRTC] -> EINVAL bad crtc_id (count="); klog::write_hex_u64(count as u64); klog::write_raw(b")\n");
         return einval();
-    }
+    };
+    if c.mode_valid != 0 && !card.mode_valid(crtc_idx, &c.mode) { return einval(); }
     let ops = match scanout_ops(card_id) { Some(o) => o, None => { klog::write_raw(b"[DRM-SETCRTC] -> EINVAL no scanout backend for card\n"); return einval(); } };
 
     if c.fb_id == 0 {
