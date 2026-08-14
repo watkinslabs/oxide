@@ -188,6 +188,13 @@ pub(crate) fn initialize(c: &Controller) -> bool {
     configure_link(c, phy)
 }
 
+pub(crate) fn activate(c: &Controller) -> bool { phy_id(c).is_some_and(|phy| configure_link(c, phy)) }
+
+pub(crate) fn reconcile(c: &Controller) -> bool {
+    let Some(phy) = phy_id(c) else { return false; };
+    hv_read(c, phy, regs::MII_BMSR as u32).is_some()
+}
+
 pub(crate) fn reset(c: &Controller) -> bool {
     c.write(regs::IMC, u32::MAX);
     c.write(regs::RCTL, 0);

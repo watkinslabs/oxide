@@ -28,7 +28,7 @@ pub(crate) struct Controller {
     rx_desc_pa: u64, tx_desc_pa: u64, rx_data_pa: u64, tx_data_pa: u64,
     rx_desc_dma: u64, tx_desc_dma: u64, rx_data_dma: u64, tx_data_dma: u64,
     bdf: pci::Bdf,
-    e1000e_nvm_phy: bool,
+    e1000e_nvm_phy: bool, pch: bool,
     rx_next: usize, tx_next: usize,
 }
 
@@ -245,7 +245,7 @@ fn configure_rings(mmio: mmio_map::Mapping, io_base: Option<u16>, bdf: pci::Bdf,
         unsafe { pmm::setup::free_contig(rx_desc_pa, pmm::Order(0)); pmm::setup::free_contig(tx_desc_pa, pmm::Order(0)); pmm::setup::free_contig(rx_data_pa, RX_ORDER); pmm::setup::free_contig(tx_data_pa, TX_ORDER); }
         return None;
     }
-    let mut c = Controller { mmio, rx_desc_pa, tx_desc_pa, rx_data_pa, tx_data_pa, rx_desc_dma, tx_desc_dma, rx_data_dma, tx_data_dma, bdf, e1000e_nvm_phy: profile.e1000e_nvm_phy, rx_next: 0, tx_next: 0 };
+    let mut c = Controller { mmio, rx_desc_pa, tx_desc_pa, rx_data_pa, tx_data_pa, rx_desc_dma, tx_desc_dma, rx_data_dma, tx_data_dma, bdf, e1000e_nvm_phy: profile.e1000e_nvm_phy, pch: profile.pch, rx_next: 0, tx_next: 0 };
     trace("[INFO]  e1000: dma allocated\n");
     if (profile.pch && !crate::pch::reset(&c)) || (!profile.pch && !crate::reset::apply(&c, io_base, profile)) { c.free(); return None; }
     if profile.e1000e_nvm_phy && !crate::e1000e_init::prepare(&c) { c.free(); return None; }
@@ -277,6 +277,7 @@ fn configure_rings(mmio: mmio_map::Mapping, io_base: Option<u16>, bdf: pci::Bdf,
 
 fn start(c: &Controller) {
     if c.e1000e_nvm_phy && !crate::e1000e_init::activate(c) { return; }
+    if c.pch && !crate::pch::activate(c) { return; }
     c.write(regs::RCTL, regs::RCTL_EN | regs::RCTL_BAM | regs::RCTL_SECRC | regs::RCTL_SZ_2048);
     c.write(regs::TCTL, regs::TCTL_EN | regs::TCTL_PSP | (15 << regs::TCTL_CT_SHIFT) | (0x40 << regs::TCTL_COLD_SHIFT));
     // e1000_open configures hardware before e1000_irq_enable; only then may
@@ -369,7 +370,10 @@ fn poll_rx() {
         let (frames, more) = {
             let mut ctrl = dev.ctrl.lock_bh::<sched::bh::SchedBh>();
             let result = ctrl.take_rx();
-            if ENDPOINTS[dev.endpoint].link_change.swap(false, Ordering::AcqRel) && ctrl.e1000e_nvm_phy { let _ = crate::e1000e_init::reconcile(&ctrl); }
+            if ENDPOINTS[dev.endpoint].link_change.swap(false, Ordering::AcqRel) {
+                if ctrl.e1000e_nvm_phy { let _ = crate::e1000e_init::reconcile(&ctrl); }
+                if ctrl.pch { let _ = crate::pch::reconcile(&ctrl); }
+            }
             result
         };
         for frame in frames {
@@ -390,6 +394,10 @@ fn supported(dev: &drv::Device) -> bool {
 pub(crate) fn supports_e1000e_82571_bm(dev: &drv::Device) -> bool {
     dev.bus == "pci" && dev.class == regs::ETHERNET_CLASS && dev.vendor_id == regs::INTEL_VENDOR
         && regs::e1000e_82571_bm_pci_id_supported(dev.device_id)
+}
+pub(crate) fn supports_e1000e_pch_m(dev: &drv::Device) -> bool {
+    dev.bus == "pci" && dev.class == regs::ETHERNET_CLASS && dev.vendor_id == regs::INTEL_VENDOR
+        && regs::e1000e_pch_m_pci_id_supported(dev.device_id)
 }
 
 fn remove_bdf(bdf: pci::Bdf) {

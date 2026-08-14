@@ -16,6 +16,7 @@ pub const LEGACY_PCI_IDS: &[u16] = &[
 ];
 pub const E1000E_82583V: u16 = 0x150c;
 pub const E1000E_82571_BM_PCI_IDS: &[u16] = &[0x10d3, 0x10f6, E1000E_82583V];
+pub const E1000E_PCH_M_PCI_IDS: &[u16] = &[0x10ea, 0x10eb, 0x10ef, 0x10f0];
 
 /// Match an Intel Ethernet function owned by the 82540 reset and DMA path. # C: O(n)
 #[inline]
@@ -38,6 +39,15 @@ pub const fn e1000e_82571_bm_pci_id_supported(device_id: u16) -> bool {
     let mut index = 0;
     while index < E1000E_82571_BM_PCI_IDS.len() {
         if E1000E_82571_BM_PCI_IDS[index] == device_id { return true; }
+        index += 1;
+    }
+    false
+}
+/// Admit only PCH-M functions using the BAR1 hardware-flash profile. # C: O(n)
+pub const fn e1000e_pch_m_pci_id_supported(device_id: u16) -> bool {
+    let mut index = 0;
+    while index < E1000E_PCH_M_PCI_IDS.len() {
+        if E1000E_PCH_M_PCI_IDS[index] == device_id { return true; }
         index += 1;
     }
     false
@@ -339,6 +349,9 @@ mod tests {
         assert!(E1000E_82571_BM_PCI_IDS.contains(&0x10d3));
         assert!(e1000e_82571_bm_pci_id_supported(E1000E_82583V));
         assert!(!e1000e_82571_bm_pci_id_supported(0x10ea));
+        assert!(e1000e_pch_m_pci_id_supported(0x10ea));
+        assert!(e1000e_pch_m_pci_id_supported(0x10f0));
+        assert!(!e1000e_pch_m_pci_id_supported(0x1502));
         assert_eq!(dma_mask(false), u32::MAX as u64);
         assert_eq!(dma_mask(true), u64::MAX);
         assert_eq!(E1000E_82571_BM_RESET_NS, 25_000_000);

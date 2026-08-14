@@ -6,9 +6,10 @@ pub struct E1000eDriver;
 
 impl drv::Driver for E1000eDriver {
     fn name(&self) -> &'static str { "e1000e" }
-    fn matches(&self, dev: &drv::Device) -> bool { imp::supports_e1000e_82571_bm(dev) }
+    fn matches(&self, dev: &drv::Device) -> bool { imp::supports_e1000e_82571_bm(dev) || imp::supports_e1000e_pch_m(dev) }
     fn probe(&self, parent: &Arc<drv::Device>) -> drv::KResult<()> {
-        imp::probe_common(parent, regs::dma_mask(true), ResetProfile::E1000E_82571_BM)
+        let profile = if imp::supports_e1000e_pch_m(parent) { ResetProfile::E1000E_PCH } else { ResetProfile::E1000E_82571_BM };
+        imp::probe_common(parent, regs::dma_mask(true), profile)
     }
     fn remove(&self, dev: &drv::Device) { imp::remove_device(dev); }
     fn shutdown(&self, dev: &drv::Device) { imp::remove_device(dev); }
