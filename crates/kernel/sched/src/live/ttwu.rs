@@ -18,7 +18,7 @@ use super::runqueue::global_for;
 
 mod wake_list;
 pub use wake_list::wake_list_push;
-use wake_list::wake_list_take;
+use wake_list::{wake_list_finish, wake_list_take};
 #[cfg(any(test, feature = "hosted"))]
 pub use wake_list::wake_list_drain;
 
@@ -92,8 +92,7 @@ pub fn sched_ttwu_pending(cpu: u32, current: *mut Task, rq: &Runqueue) -> bool {
         let allowed = task.cpus_allowed.load(Ordering::Acquire);
         if !allowed.contains(cpu as usize) {
             let target = select_task_rq(&task) as usize;
-            wake_list_push(target as u32, task);
-            requeue[target] = true;
+            requeue[target] |= wake_list_push(target as u32, task);
             node = next;
             continue;
         }
@@ -126,13 +125,14 @@ pub fn sched_ttwu_pending(cpu: u32, current: *mut Task, rq: &Runqueue) -> bool {
         node = next;
     }
     rq.publish_nr_running(inner.nr_running());
+    let more = wake_list_finish(cpu);
     drop(inner);
     // Requeue wake-list work only after dropping the target rq lock. Linux's
     // pending callback likewise never sends a reschedule IPI under rq lock.
     for (target, queued) in requeue.into_iter().enumerate() {
         if queued { resched_curr(target as u32); }
     }
-    if placed && preempt { resched_curr(cpu); }
+    if more || (placed && preempt) { resched_curr(cpu); }
     placed
 }
 
@@ -416,14 +416,14 @@ where F: Fn(u32) -> Option<&'a Runqueue> {
         // Pick a real, installed CPU to own the deferred task; fall back to local.
         let tcpu = if get_rq(target).is_some() { target }
                    else if get_rq(me).is_some() { me }
-                   else { wake_list_push(target, task); return; };
-        wake_list_push(tcpu, task);
+                   else { let _ = wake_list_push(target, task); return; };
+        let kick = wake_list_push(tcpu, task);
         // Unconditional, and NOT a preemption decision: the target drains its
         // wake list from `schedule()`, so without this the task would never
         // reach a runqueue at all. The preemption decision is made on the
         // drain side, once the task is enqueued and `curr` is known there
         // (`sched_ttwu_pending`).
-        resched_curr(tcpu);
+        if kick { resched_curr(tcpu); }
         return;
     }
     // Local, settled (`on_cpu == false`, target == this CPU): direct enqueue —
