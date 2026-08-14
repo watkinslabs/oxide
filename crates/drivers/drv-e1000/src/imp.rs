@@ -5,6 +5,10 @@ use sync::{Spinlock, TaskList as DriverLockClass};
 
 use crate::regs;
 
+// Module manifest: `irq` owns PCI message-table mapping and teardown order.
+mod irq;
+use irq::{bind_pci_message, release_irq};
+
 const MAX_DEVICES: usize = 8;
 const PAGE: u64 = 4096;
 const DMA32_LIMIT: u64 = 1 << 32;
@@ -303,32 +307,6 @@ fn enable_interrupts(c: &Controller) {
     let _ = c.read(regs::IMS);
 }
 
-fn hard_msi() { let _ = hard_irq(); }
-
-fn msix_bir(bdf: pci::Bdf) -> Option<u8> {
-    #[cfg(target_arch = "x86_64")]
-    { hal_x86_64::pci::EcamPci::from_published().and_then(|r| pci::capabilities(&r, bdf).find(pci::CAP_ID_MSIX).and_then(|cap| pci::decode_msix_cap(&r, bdf, cap.cfg_off))).map(|cap| cap.table_bir) }
-    #[cfg(target_arch = "aarch64")]
-    { hal_aarch64::pci::EcamPci::from_published().and_then(|r| pci::capabilities(&r, bdf).find(pci::CAP_ID_MSIX).and_then(|cap| pci::decode_msix_cap(&r, bdf, cap.cfg_off))).map(|cap| cap.table_bir) }
-}
-fn bind_pci_message(parent: &Arc<drv::Device>, bdf: pci::Bdf, endpoint: usize, ctrl: &Controller) -> Option<(pci_irq::Binding, Option<mmio_map::Mapping>)> {
-    let (table, table_map) = if msix_bir(bdf).is_none_or(|bir| bir == 0) {
-        (pci_irq::BarMapping { bar: 0, base_va: ctrl.mmio.base_va(), bytes: ctrl.mmio.bytes(), offset: 0 }, None)
-    } else {
-        let bir = msix_bir(bdf)?;
-        let resource = parent.resources.iter().find(|resource| resource.bar == bir && resource.flags & drv::IORESOURCE_MEM != 0)?;
-        let bytes = resource.end.checked_sub(resource.start)?.checked_add(1)?;
-        let off = resource.start & (PAGE - 1);
-        let pages = off.checked_add(bytes)?.checked_add(PAGE - 1)?.checked_div(PAGE)?;
-        // SAFETY: MSI-X table BAR belongs to the matched function and is retained until binding teardown.
-        let map = unsafe { mmio_map::map_owned(resource.start & !(PAGE - 1), pages) };
-        (pci_irq::BarMapping { bar: bir, base_va: map.base_va(), bytes: map.bytes(), offset: off }, Some(map))
-    };
-    let binding = pci_irq::request(bdf, table, arch_irq::DeviceAction::E1000, hard_msi)?;
-    ENDPOINTS[endpoint].state.store(ENDPOINT_ACTIVE, Ordering::Release);
-    Some((binding, table_map))
-}
-
 struct Record { bdf: pci::Bdf, command_orig: u16, endpoint: usize, irq: pci_irq::Binding, msix: Option<mmio_map::Mapping>, dev: Arc<E1000NetDev> }
 static DEVICES: Spinlock<Vec<Record>, DriverLockClass> = Spinlock::new(Vec::new());
 static POLL_INSTALLED: AtomicBool = AtomicBool::new(false);
@@ -367,12 +345,6 @@ fn hard_irq() -> bool {
     }
     if pending { net::backlog::net_rx_schedule_ingress(); }
     pending
-}
-
-fn release_irq(irq: pci_irq::Binding, endpoint: usize) {
-    while ENDPOINTS[endpoint].in_handler.load(Ordering::Acquire) != 0 { core::hint::spin_loop(); }
-    endpoint_release(endpoint);
-    irq.release();
 }
 
 /// Finish a bounded device poll without losing an interrupt that arrived while
@@ -444,8 +416,7 @@ fn remove_bdf(bdf: pci::Bdf) {
     let iface = record.dev.iface.swap(0, Ordering::AcqRel);
     if iface != 0 { let _ = net::sock::stack().unregister_iface_current(net::NetIfaceId::from_raw(iface as u32)); }
     record.dev.ctrl.lock_bh::<sched::bh::SchedBh>().stop();
-    release_irq(record.irq, record.endpoint);
-    drop(record.msix);
+    release_irq(record.irq, record.endpoint, record.msix);
     record.dev.ctrl.lock_bh::<sched::bh::SchedBh>().free();
     restore_bus_master(record.bdf, record.command_orig);
     if DEVICES.lock_bh::<sched::bh::SchedBh>().is_empty() && POLL_INSTALLED.swap(false, Ordering::AcqRel) {
@@ -489,14 +460,14 @@ pub(crate) fn probe_common(parent: &Arc<drv::Device>, dma_mask: u64, profile: cr
         let namespace = net::net_ns::initial_namespace();
         let owner = dev.clone() as Arc<dyn net::NetDev>;
         let Some(reg) = stack.prepare_parented_iface(owner, parent.clone(), &namespace) else {
-            release_irq(irq, endpoint); dev.ctrl.lock_bh::<sched::bh::SchedBh>().free(); restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed);
+            release_irq(irq, endpoint, msix); dev.ctrl.lock_bh::<sched::bh::SchedBh>().free(); restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed);
         };
         dev.iface.store(reg.id().raw() as u64, Ordering::Release); dev.generation.store(reg.generation(), Ordering::Release);
         if !stack.publish_iface(reg) {
-            dev.iface.store(0, Ordering::Release); release_irq(irq, endpoint); dev.ctrl.lock_bh::<sched::bh::SchedBh>().free(); restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed);
+            dev.iface.store(0, Ordering::Release); release_irq(irq, endpoint, msix); dev.ctrl.lock_bh::<sched::bh::SchedBh>().free(); restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed);
         }
         if !POLL_INSTALLED.swap(true, Ordering::AcqRel) && !net::backlog::register_poll(poll_rx) {
-            POLL_INSTALLED.store(false, Ordering::Release); let _ = stack.unregister_iface_current(net::NetIfaceId::from_raw(dev.iface.swap(0, Ordering::AcqRel) as u32)); release_irq(irq, endpoint); dev.ctrl.lock_bh::<sched::bh::SchedBh>().free(); restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed);
+            POLL_INSTALLED.store(false, Ordering::Release); let _ = stack.unregister_iface_current(net::NetIfaceId::from_raw(dev.iface.swap(0, Ordering::AcqRel) as u32)); release_irq(irq, endpoint, msix); dev.ctrl.lock_bh::<sched::bh::SchedBh>().free(); restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed);
         }
         DEVICES.lock_bh::<sched::bh::SchedBh>().push(Record { bdf, command_orig, endpoint, irq, msix, dev: dev.clone() });
         // `register_netdev` leaves IFF_UP clear. The NetDev lifecycle hook

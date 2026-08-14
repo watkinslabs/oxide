@@ -220,11 +220,14 @@ pub fn read_command<R: ConfigSpaceReader>(r: &R, bdf: Bdf) -> u16 {
     (r.read32(bdf, 0x04) & 0xFFFF) as u16
 }
 
-/// Write the low 16-bit PCI command register while preserving status bits.
+/// Write the low 16-bit PCI command register with a native word transaction.
+///
+/// PCI Status occupies the upper half of the same dword and has write-one-to-
+/// clear bits, including the capability-list indication.  A dword read/modify/
+/// write would therefore acknowledge live status bits while changing Command.
 /// # C: O(1)
 pub fn write_command<R: ConfigSpaceReader>(r: &R, bdf: Bdf, command: u16) {
-    let cur = r.read32(bdf, 0x04);
-    r.write32(bdf, 0x04, (cur & 0xFFFF_0000) | command as u32);
+    r.write16_ext(bdf, u16::from(crate::uapi::COMMAND_OFF), command);
 }
 
 /// Enable Memory Space decoding without granting DMA bus mastering.
@@ -382,6 +385,18 @@ fn scan_parent_bridge<R: ConfigSpaceReader>(r: &R, segment: u16, child_bus: u8) 
 #[cfg(test)]
 mod command_tests {
     use super::*;
+    use core::sync::atomic::{AtomicU16, Ordering};
+
+    struct NativeWordConfig { command: AtomicU16 }
+
+    impl ConfigSpaceReader for NativeWordConfig {
+        fn read32(&self, _: Bdf, _: u8) -> u32 { unreachable!("command write must not read/modify/write status") }
+        fn write32(&self, _: Bdf, _: u8, _: u32) { unreachable!("command write must use a native word transaction") }
+        fn write16_ext(&self, _: Bdf, off: u16, value: u16) {
+            assert_eq!(off, u16::from(crate::uapi::COMMAND_OFF));
+            self.command.store(value, Ordering::Release);
+        }
+    }
 
     #[test]
     fn intx_transition_changes_only_owned_command_bit() {
@@ -394,6 +409,13 @@ mod command_tests {
             intx_command_value(original | COMMAND_INTX_DISABLE, false),
             original,
         );
+    }
+
+    #[test]
+    fn command_write_never_rewrites_status() {
+        let r = NativeWordConfig { command: AtomicU16::new(0) };
+        write_command(&r, Bdf { segment: 0, bus: 0, device: 0, function: 0 }, COMMAND_MEMORY | COMMAND_BUS_MASTER);
+        assert_eq!(r.command.load(Ordering::Acquire), COMMAND_MEMORY | COMMAND_BUS_MASTER);
     }
 
     #[test]
