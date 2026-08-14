@@ -1325,6 +1325,7 @@ dependencies = [
  "kernfs",
  "klog",
  "mmio-map",
+ "mpi",
  "net",
  "netlink",
  "pci",
