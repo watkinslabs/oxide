@@ -59,12 +59,12 @@ MARKER="${SMOKE_MARKER:-Reached target basic.target}"
 #
 # So the gate ALSO asks the guest a question and waits for its answer. The
 # serial line already has a writable FIFO ($SYSRQ_WFD, used for the sysrq RX
-# probe below) and the boot command line already carries
-# `systemd.debug_shell=ttyS0`, so typing a shell command and matching its
-# output proves — with no dependence on any log routing — that init ran, that
-# a service started, that fork/exec works, and that the tty carries bytes in
-# BOTH directions. A boot that reaches a desktop always answers it; a boot
-# whose userspace is broken cannot.
+# probe below). The boot line puts `systemd.debug_shell=` on that same UART.
+# Once systemd reports the shell service started, one typed command and its
+# output prove — with no dependence on log routing — that init ran, that a
+# service started, that fork/exec works, and that the tty carries bytes in BOTH
+# directions. A boot that reaches a desktop always answers it; a boot whose
+# userspace is broken cannot.
 #
 # Either proof passes the attempt. Set SMOKE_ALIVE_PROBE='' to require the
 # passive marker alone (a profile with no debug shell), or override the
@@ -82,6 +82,7 @@ ALIVE_PROBE="${SMOKE_ALIVE_PROBE-1}"
 ALIVE_NONCE="OXIDE-ALIVE-OK"
 ALIVE_CMD="${SMOKE_ALIVE_CMD:-echo OXIDE-AL\"IVE\"-OK}"
 ALIVE_MARKER="${SMOKE_ALIVE_MARKER:-$ALIVE_NONCE}"
+ALIVE_READY_MARKER="${SMOKE_ALIVE_READY_MARKER:-Started debug-shell.service}"
 
 # Failure marker: an unrecoverable kernel fault. The boot is dead the moment this
 # appears — the fault handler parks the PE and nothing further will be printed, so
@@ -271,21 +272,20 @@ check_serial_rx() {
     return 1
 }
 
-# Type a command at the guest's serial debug shell and report whether its
-# output came back. Called once per poll cycle; each call types the command
-# again, so a shell that starts late (or a typing corrupted by the known serial
-# echo defect) is simply retried on the next cycle rather than failing the run.
-#
-# Cheap by construction: one short write per 2s cycle, and the match is the
-# same `grep` over the same log the passive marker uses. # Returns 0 once the
-# guest has answered.
+# Type exactly one command after systemd has reported the serial debug shell
+# started, then report whether its evaluated output came back. Waiting for the
+# service marker makes the write a transaction with a known reader, rather
+# than repeatedly injecting bytes into a UART before an interactive endpoint
+# exists. # Returns 0 once the guest has answered.
+ALIVE_SENT=""
 probe_userspace_alive() {
     [ -n "$ALIVE_PROBE" ] || return 1
     [ -n "${SYSRQ_WFD:-}" ] || return 1
-    # Nothing to talk to until the kernel has handed off to userspace; typing
-    # into the kernel's own console before that just adds noise to the log.
-    grep -qa '^\[[0-9]' "$LOG" 2>/dev/null || return 1
-    printf '%s\n' "$ALIVE_CMD" >&"$SYSRQ_WFD" 2>/dev/null || return 1
+    grep -qaF "$ALIVE_READY_MARKER" "$LOG" 2>/dev/null || return 1
+    if [ -z "$ALIVE_SENT" ]; then
+        printf '%s\n' "$ALIVE_CMD" >&"$SYSRQ_WFD" 2>/dev/null || return 1
+        ALIVE_SENT=1
+    fi
     grep -qaE "$ALIVE_MARKER" "$LOG" 2>/dev/null
 }
 
@@ -295,6 +295,7 @@ attempt_boot() {
     # still holding it, or this attempt fails with no kernel output at all.
     reap_stale_image_holders
     LOG="$(mktemp /tmp/oxide-boot-smoke-${ARCH}-XXXXXX.log)"
+    ALIVE_SENT=""
     echo "boot-smoke: arch=$ARCH attempt=$1/$ATTEMPTS timeout=${TIMEOUT}s log=$LOG"
     # Writable stdin: a FIFO held open by our own RDWR fd ($SYSRQ_WFD) so
     # it never EOFs and we can inject sysrq on timeout. Equivalent to the
