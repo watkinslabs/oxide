@@ -189,7 +189,7 @@ impl AmlContext {
         use value::MethodCode;
 
         match self.namespace.get_by_path(path)?.clone() {
-            AmlValue::Method { flags, code } => {
+            AmlValue::Method { flags: _, code } => {
                 /*
                  * First, set up the state we expect to enter the method with, but clearing local
                  * variables to "null" and setting the arguments. Save the current method state and scope, so if we're
