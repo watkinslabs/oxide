@@ -245,6 +245,26 @@ impl<'a> LptFlash<'a> {
         }
         None
     }
+    fn valid_bank(&self, layout: regs::PchFlashLayout) -> Option<u32> {
+        let bank_words = layout.bytes.checked_div(4)?;
+        if bank_words <= PCH_NVM_SIGNATURE_WORD { return None; }
+        for bank in [0, bank_words] {
+            if self.read_word(layout, bank.checked_add(PCH_NVM_SIGNATURE_WORD)?)? & PCH_NVM_SIGNATURE_MASK == PCH_NVM_SIGNATURE_VALUE { return Some(bank); }
+        }
+        None
+    }
+    pub(crate) fn validate_nvm(&self) -> bool {
+        let Some(layout) = self.descriptor() else { return false; };
+        let Some(bank) = self.valid_bank(layout) else { return false; };
+        let mut words = [0u16; regs::NVM_CHECKSUM_WORD as usize + 1];
+        for (index, word) in words.iter_mut().enumerate() { let Some(value) = self.read_word(layout, bank + index as u32) else { return false; }; *word = value; }
+        regs::nvm_checksum_valid(&words)
+    }
+    pub(crate) fn read_mac(&self) -> Option<net::MacAddr> {
+        let layout = self.descriptor()?; let bank = self.valid_bank(layout)?;
+        let low = self.read_word(layout, bank)? as u32 | ((self.read_word(layout, bank + 1)? as u32) << 16);
+        regs::mac_from_rar(low, self.read_word(layout, bank + 2)? as u32).map(net::MacAddr)
+    }
 }
 
 pub(crate) fn reset(c: &Controller) -> bool {
