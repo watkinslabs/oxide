@@ -791,6 +791,10 @@ core::arch::global_asm!(
     ".Lirq_dispatch_sp:",
     "    bl   oxide_arm_irq_dispatch",
     "    mov  sp, x19",                    // restore interrupted frame base (no-op if nested/unarmed)
+    // `do_softirq_own_stack` must begin with a fresh hard-IRQ stack. The
+    // dispatcher above ran on that stack, so invoke the post-dispatch handoff
+    // only after its frame is gone and the interrupted stack is active again.
+    "    bl   oxide_arm_irq_after_dispatch",
     // -- return-to-user work loop (Linux `irqentry_exit`). The WHOLE 288 B
     //    entry frame goes to Rust as `*mut SvcFrame`: the loop needs the saved
     //    SPSR to decide user-vs-kernel return, the saved ELR for the rseq
