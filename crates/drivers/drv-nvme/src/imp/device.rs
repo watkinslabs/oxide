@@ -14,6 +14,18 @@ impl NvmeBlk {
     /// # C: O(1)
     pub(super) fn mark_recovery_required(&self) { self.poisoned.store(true, Ordering::Release); }
 
+    /// Coalesce periodic timeout observations into one process-context worker.
+    /// # C: O(1)
+    pub(super) fn claim_timeout_worker(&self) -> bool {
+        self.timeout_worker_queued.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok()
+    }
+
+    /// Let a later periodic observation queue the next timeout stage.
+    /// # C: O(1)
+    pub(super) fn release_timeout_worker(&self) {
+        self.timeout_worker_queued.store(false, Ordering::Release);
+    }
+
     /// Stop a controller with corrupt completion ownership. This is not a
     /// reset path: it releases the terminal controller resources once.
     /// # C: O(controller shutdown + owned request completions)

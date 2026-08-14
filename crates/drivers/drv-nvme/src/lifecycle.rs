@@ -26,6 +26,20 @@ pub(crate) const fn async_deadline_expired(now_ns: u64, deadline_ns: u64) -> boo
     now_ns >= deadline_ns
 }
 
+/// The timeout worker sends one Admin Abort for a live I/O owner, then resets
+/// only if that same owner survives its renewed deadline. `None` means the
+/// CID completed while timeout work was being queued.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AsyncTimeoutAction { Abort, Reset }
+
+/// Select the bounded timeout action for one canonical CID owner. # C: O(1)
+pub(crate) const fn async_timeout_action(
+    now_ns: u64, deadline_ns: u64, abort_started: bool,
+) -> Option<AsyncTimeoutAction> {
+    if !async_deadline_expired(now_ns, deadline_ns) { return None; }
+    if abort_started { Some(AsyncTimeoutAction::Reset) } else { Some(AsyncTimeoutAction::Abort) }
+}
+
 /// Run remove/shutdown cleanup in Linux teardown order: quiesce owned hardware
 /// and drop BAR mappings before disabling PCI command decode.
 /// # C: O(release + disable)
@@ -59,7 +73,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{async_deadline_expired, deadline_expired, run_probe_failure_cleanup, run_remove_cleanup};
+    use super::{AsyncTimeoutAction, async_deadline_expired, async_timeout_action, deadline_expired, run_probe_failure_cleanup, run_remove_cleanup};
 
     #[test]
     fn deadline_recovery_waits_for_an_uncompleted_request() {
@@ -74,6 +88,13 @@ mod tests {
         assert!(!async_deadline_expired(15, 16));
         assert!(async_deadline_expired(16, 16));
         assert!(async_deadline_expired(17, 16));
+    }
+
+    #[test]
+    fn timed_out_io_gets_one_abort_then_a_second_expiry_resets() {
+        assert_eq!(async_timeout_action(15, 16, false), None);
+        assert_eq!(async_timeout_action(16, 16, false), Some(AsyncTimeoutAction::Abort));
+        assert_eq!(async_timeout_action(16, 16, true), Some(AsyncTimeoutAction::Reset));
     }
 
     #[test]

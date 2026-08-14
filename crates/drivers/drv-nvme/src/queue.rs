@@ -20,6 +20,9 @@ pub(crate) use dma::IoDma;
 /// Worst-case wait for an admin/IO completion. CAP.TO bounds RDY transitions;
 /// this caps a genuinely-lost completion to EIO. 5 s is generous for QEMU.
 const IO_TIMEOUT_NS: u64 = 5_000_000_000;
+/// Bounded completion wait for one Admin Abort. It deliberately shares the
+/// controller's finite command timeout instead of waiting behind a dead I/O.
+const ADMIN_ABORT_TIMEOUT_NS: u64 = IO_TIMEOUT_NS;
 
 /// Desired queue depth. 32 fits one 4 KiB SQ frame (32×64=2 KiB) and one CQ
 /// frame (32×16=512 B). Admin uses it directly; I/O is clamped to CAP.MQES.
@@ -65,6 +68,9 @@ pub struct Nvme {
     /// Selected namespace geometry harvested at IDENTIFY.
     pub ns_blocks: u64,
     pub blk_size:  u32,
+    /// Identify Controller ACL plus one. The serialized timeout worker never
+    /// submits more than this number of Admin Abort commands concurrently.
+    abort_limit: u16,
 }
 
 // SAFETY justification: Nvme holds raw PAs/VAs into HHDM/MMIO stable for the
@@ -212,7 +218,7 @@ impl Nvme {
 
         let mut nv = Nvme {
             bdf, dma_mask, mmio, bar0_va, admin, io, admin_data_pa: admin_data, admin_data_dma,
-            nsid: 0, ns_blocks: 0, blk_size: 512,
+            nsid: 0, ns_blocks: 0, blk_size: 512, abort_limit: 1,
         };
         let to_ms = regs::cap_to_ms(cap).max(2_000);
 
@@ -236,7 +242,7 @@ impl Nvme {
         }
 
         // 4. IDENTIFY controller (confirm the controller answers admin cmds).
-        if nv.identify(regs::CNS_CONTROLLER, 0).is_none() {
+        if !nv.identify_controller() {
             nv.shutdown_and_free();
             return None;
         }
@@ -297,7 +303,7 @@ impl Nvme {
         self.w32(regs::REG_CC, regs::cc_enable());
         let to_ms = regs::cap_to_ms(cap).max(2_000);
         if !self.wait_rdy(true, to_ms) { return false; }
-        if self.identify(regs::CNS_CONTROLLER, 0).is_none() { return false; }
+        if !self.identify_controller() { return false; }
         if !self.identify_active_namespace() { return false; }
         self.create_io_cq(io_vector) && self.create_io_sq()
     }
@@ -321,7 +327,11 @@ impl Nvme {
     /// opcode in dword0 byte 0 (CID is stamped here). Returns the 16-bit
     /// status code (0 = success) or None on timeout/fatal.
     /// # C: O(poll until completion)
-    fn submit(&mut self, qid_is_io: bool, mut cmd: [u32; 16]) -> Option<u16> {
+    fn submit(&mut self, qid_is_io: bool, cmd: [u32; 16]) -> Option<u16> {
+        self.submit_with_timeout(qid_is_io, cmd, IO_TIMEOUT_NS)
+    }
+
+    fn submit_with_timeout(&mut self, qid_is_io: bool, mut cmd: [u32; 16], timeout_ns: u64) -> Option<u16> {
         // Stamp CID into dword0 bits 31:16, advance the queue's rolling CID.
         let (sq_pa, slot, cid) = {
             let q = if qid_is_io { &mut self.io } else { &mut self.admin };
@@ -356,7 +366,7 @@ impl Nvme {
         // aligned 32-bit store of the new SQ tail index rings the controller.
         unsafe { core::ptr::write_volatile(sq_db as *mut u32, self.sq_tail_of(qid_is_io)); }
 
-        self.poll_cq(qid_is_io, cq_pa, cq_db, h, cid)
+        self.poll_cq(qid_is_io, cq_pa, cq_db, h, cid, timeout_ns)
     }
 
     /// Current SQ tail of the selected queue (post-advance). # C: O(1)
@@ -368,9 +378,9 @@ impl Nvme {
     /// Poll the completion queue for the entry whose CID matches `cid` and
     /// whose phase bit matches the expected phase, then advance + ring the CQ
     /// head doorbell. Returns the status code. # C: O(poll until completion)
-    fn poll_cq(&mut self, qid_is_io: bool, cq_pa: u64, cq_db: u64, h: u64, cid: u16) -> Option<u16> {
+    fn poll_cq(&mut self, qid_is_io: bool, cq_pa: u64, cq_db: u64, h: u64, cid: u16, timeout_ns: u64) -> Option<u16> {
         let cq = h.wrapping_add(cq_pa) as *const u32;
-        let deadline = now_ns().saturating_add(IO_TIMEOUT_NS);
+        let deadline = now_ns().saturating_add(timeout_ns);
         loop {
             let (head, phase, entries) = {
                 let q = if qid_is_io { &self.io } else { &self.admin };

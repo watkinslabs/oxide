@@ -3,6 +3,31 @@
 use super::*;
 
 impl Nvme {
+    /// Identify the controller and retain the finite Admin-Abort command
+    /// limit before any namespace command can overwrite the admin payload.
+    /// # C: O(one admin cmd)
+    pub(super) fn identify_controller(&mut self) -> bool {
+        let Some(va) = self.identify(regs::CNS_CONTROLLER, 0) else { return false; };
+        // SAFETY: Identify Controller just DMA-completed into the controller's
+        // owned admin frame, whose one-page lifetime is held by this Nvme.
+        let bytes = unsafe { core::slice::from_raw_parts(va as *const u8, PAGE as usize) };
+        let Some(limit) = regs::abort_limit_from_identify(bytes) else { return false; };
+        self.abort_limit = limit;
+        true
+    }
+
+    /// Submit one serialized Admin Abort for a still-owned I/O CID. The
+    /// timeout worker has no concurrent abort issuer, so this stays within
+    /// Identify Controller's ACL-derived bound.
+    /// # C: O(one bounded admin command)
+    pub(crate) fn abort_io(&mut self, cid: u16) -> bool {
+        if self.abort_limit == 0 { return false; }
+        let mut cmd = [0u32; 16];
+        cmd[0] = regs::ADMIN_ABORT as u32;
+        cmd[10] = (u32::from(cid) << 16) | 1;
+        self.submit_with_timeout(false, cmd, ADMIN_ABORT_TIMEOUT_NS) == Some(0)
+    }
+
     fn submit_io(&mut self, cid: u16, mut cmd: [u32; 16]) -> bool {
         let q = &mut self.io;
         cmd[0] = (cmd[0] & 0x0000_FFFF) | ((cid as u32) << 16);

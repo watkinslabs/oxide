@@ -66,6 +66,7 @@ mod imp {
         removed:  AtomicBool,
         poisoned: AtomicBool,
         resetting: AtomicBool,
+        timeout_worker_queued: AtomicBool,
     }
 
     impl NvmeBlk {
@@ -187,6 +188,7 @@ mod imp {
             removed: AtomicBool::new(false),
             poisoned: AtomicBool::new(false),
             resetting: AtomicBool::new(false),
+            timeout_worker_queued: AtomicBool::new(false),
         });
 
         let name = nvme_name(NEXT_DISK_INDEX.fetch_add(1, Ordering::Relaxed), nsid);
