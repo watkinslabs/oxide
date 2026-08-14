@@ -400,6 +400,8 @@ fn free_binding_irqs(binding: &Binding) {
 
 fn request_msix<R: pci::ConfigSpaceReader>(r: &R, bdf: pci::Bdf, msi_cap: Option<u8>,
     cap_off: u8, entry_va: u64, action: arch_irq::DeviceAction, handler: fn()) -> Option<Binding> {
+    #[cfg(feature = "debug-boot")]
+    { klog::write_raw(b"[INFO]  pci-irq: msix entry="); klog::write_hex_u64(entry_va); klog::write_raw(b"\n"); }
     let message = arch_irq::alloc_pci_msi(bdf, 0)?;
     if !arch_irq::register_pci_msi_handler(message.irq, action, handler) {
         arch_irq::free_pci_msi(message.irq);
@@ -420,6 +422,8 @@ fn release_with<R: pci::ConfigSpaceReader>(r: &R, binding: Binding) {
     match binding.mode {
         Mode::Msi { cap_off } => { let _ = pci::disable_msi(r, binding.bdf, cap_off); }
         Mode::Msix { cap_off, entry_va } => {
+            #[cfg(feature = "debug-boot")]
+            { klog::write_raw(b"[INFO]  pci-irq: msix release entry="); klog::write_hex_u64(entry_va); klog::write_raw(b"\n"); }
             write_msix_mask(entry_va);
             let cfg = cap_off & 0xfc;
             r.write32(binding.bdf, cfg, pci::msix_control_value(r.read32(binding.bdf, cfg), false));

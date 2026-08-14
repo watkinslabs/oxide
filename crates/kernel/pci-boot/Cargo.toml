@@ -51,7 +51,7 @@ hal-x86_64 = { path = "../../arch/hal-x86_64" }
 hal-aarch64 = { path = "../../arch/hal-aarch64" }
 
 [features]
-debug-boot  = ["kmacros/debug-boot", "iommu/debug-boot", "drv-nvme/debug-boot", "drv-ahci/debug-boot", "drv-e1000/debug-boot", "drv-xhci/debug-boot", "drv-virtio-input/debug-boot", "drv-virtio-blk/debug-boot", "drv-virtio-net/debug-boot"]
+debug-boot  = ["kmacros/debug-boot", "iommu/debug-boot", "pci-irq/debug-boot", "drv-nvme/debug-boot", "drv-ahci/debug-boot", "drv-e1000/debug-boot", "drv-xhci/debug-boot", "drv-virtio-input/debug-boot", "drv-virtio-blk/debug-boot", "drv-virtio-net/debug-boot"]
 debug-trace = ["kmacros/debug-trace"]
 
 [lints]

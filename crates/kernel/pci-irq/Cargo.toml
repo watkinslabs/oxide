@@ -10,6 +10,10 @@ path = "src/lib.rs"
 [dependencies]
 pci = { path = "../../drivers/pci" }
 arch-irq = { path = "../arch-irq" }
+klog = { path = "../../shared/klog" }
+
+[features]
+debug-boot = []
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64 = { path = "../../arch/hal-x86_64" }
