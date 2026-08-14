@@ -1,6 +1,6 @@
 // VT-d interrupt-remapping table ownership and MSI message encoding.
 
-use crate::vtd_hw::VtdQiDesc;
+use crate::VtdQiDesc;
 use crate::vtd_cache::publish;
 
 const IRTE_BYTES: usize = 16;

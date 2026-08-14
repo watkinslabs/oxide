@@ -1,3 +1,5 @@
+use core::cell::Cell;
+
 const PAGE_BYTES: u64 = 4096;
 const RTADDR: u64 = 0x20;
 const IQH: u64 = 0x80;
@@ -19,6 +21,7 @@ const GCMD_SET_INTERRUPT_REMAP_TABLE: u32 = 1 << 24;
 const GCMD_INTERRUPT_REMAP_ENABLE: u32 = 1 << 25;
 const GCMD_COMPATIBILITY_FORMAT_INTERRUPT: u32 = 1 << 23;
 const GCMD_TRANSLATION_ENABLE: u32 = 1 << 31;
+const GCMD_STATE_BITS: u32 = GCMD_QUEUED_INVALIDATION_ENABLE | GCMD_INTERRUPT_REMAP_ENABLE | GCMD_COMPATIBILITY_FORMAT_INTERRUPT | GCMD_TRANSLATION_ENABLE;
 const GSTS_ROOT_TABLE_PRESENT: u32 = 1 << 30;
 const GSTS_QUEUED_INVALIDATION_ENABLED: u32 = 1 << 26;
 const GSTS_INTERRUPT_REMAP_TABLE_PRESENT: u32 = 1 << 24;
@@ -50,103 +53,19 @@ const FSTS_PRIMARY_PENDING: u32 = 1 << 1;
 const FSTS_PAGE_REQUEST_OVERFLOW: u32 = 1 << 7;
 const FSTS_PRIMARY_INDEX_SHIFT: u32 = 8;
 const FSTS_PRIMARY_INDEX_MASK: u32 = 0xff;
+const FSTS_QUEUED_INVALIDATION_ERROR: u32 = 1 << 4;
+const FSTS_INVALIDATION_COMPLETION_ERROR: u32 = 1 << 5;
+const FSTS_INVALIDATION_TIMEOUT_ERROR: u32 = 1 << 6;
+const FSTS_INVALIDATION_ERRORS: u32 = FSTS_QUEUED_INVALIDATION_ERROR | FSTS_INVALIDATION_COMPLETION_ERROR | FSTS_INVALIDATION_TIMEOUT_ERROR;
 const FAULT_RECORD_VALID: u32 = 1 << 31;
 const FAULT_RECORD_BYTES: u64 = 16;
-const QI_DESC_BYTES: u64 = core::mem::size_of::<VtdQiDesc>() as u64;
-const QI_DESC_COUNT: u16 = (PAGE_BYTES / QI_DESC_BYTES) as u16;
-const QI_DONE: u32 = 2;
+use crate::vtd_qi::{VtdQiDesc, VtdQiQueue};
 
 fn primary_fault_layout(cap: u64, aperture_bytes: u64) -> Option<(u64, u16)> {
     let base = ((cap >> 24) & 0x3ff).checked_mul(FAULT_RECORD_BYTES)?;
     let count = u16::try_from(((cap >> 40) & 0xff) + 1).ok()?;
     base.checked_add(u64::from(count).checked_mul(FAULT_RECORD_BYTES)?)
         .filter(|end| *end <= aperture_bytes).map(|_| (base, count))
-}
-
-/// Hardware-format 16-byte VT-d queued-invalidation descriptor.
-#[repr(C)]
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct VtdQiDesc { words: [u64; 2] }
-impl VtdQiDesc {
-    /// Build a global context-cache invalidation descriptor. # C: O(1)
-    pub const fn global_context() -> Self { Self { words: [1 | (1 << 4), 0] } }
-    /// Build a global IOTLB invalidation descriptor. # C: O(1)
-    pub const fn global_iotlb(read_drain: bool, write_drain: bool) -> Self {
-        let drains = (read_drain as u64) << 7 | (write_drain as u64) << 6;
-        Self { words: [(2u64) | (1 << 4) | drains, 0] }
-    }
-    /// Build a completion-writing wait descriptor for a synchronized submission. # C: O(1)
-    pub const fn wait(status_pa: u64) -> Option<Self> {
-        if status_pa & 3 != 0 || status_pa & !ROOT_TABLE_MASK != 0 { return None; }
-        Some(Self { words: [(5u64) | (1 << 5) | ((QI_DONE as u64) << 32), status_pa] })
-    }
-    /// Build a global interrupt-entry-cache invalidation descriptor. # C: O(1)
-    pub const fn global_interrupt_entry() -> Self { Self { words: [4, 0] } }
-    /// Build a selective interrupt-entry-cache invalidation descriptor. # C: O(1)
-    pub const fn interrupt_entry(index: u16, mask: u8) -> Self {
-        Self { words: [4 | (1 << 4) | ((mask as u64 & 0x1f) << 27) | ((index as u64) << 32), 0] }
-    }
-    /// Return the little-endian hardware words. # C: O(1)
-    #[cfg(test)]
-    pub const fn words(self) -> [u64; 2] { self.words }
-}
-
-/// One permanent 256-entry queued-invalidation ring.  Its single page uses
-/// IQA.QS=0, the VT-d encoding for 2^8 16-byte descriptors.
-pub struct VtdQiQueue { pa: u64, status_pa: u64, hhdm_offset: u64, coherent: bool, tail: u16 }
-impl VtdQiQueue {
-    /// Allocate and clear an IQA.QS=0 queue. # C: O(1)
-    pub fn new(hhdm_offset: u64, coherent: bool) -> Option<Self> {
-        if hhdm_offset == 0 { return None; }
-        let pa = pmm::setup::alloc_contig(pmm::Order(0))?;
-        let status_pa = match pmm::setup::alloc_contig(pmm::Order(0)) {
-            Some(pa) => pa,
-            None => {
-                // SAFETY: this queue has not published or shared its first owned frame.
-                unsafe { pmm::setup::free_one_frame(pa); }
-                return None;
-            }
-        };
-        // SAFETY: this page is permanently and exclusively owned as a VT-d QI ring.
-        unsafe { core::ptr::write_bytes(hhdm_offset.wrapping_add(pa) as *mut u8, 0, PAGE_BYTES as usize); }
-        publish(hhdm_offset, pa, PAGE_BYTES, coherent);
-        // SAFETY: this permanent page has one completion word owned by this serialized queue.
-        unsafe { core::ptr::write_bytes(hhdm_offset.wrapping_add(status_pa) as *mut u8, 0, PAGE_BYTES as usize); }
-        publish(hhdm_offset, status_pa, PAGE_BYTES, coherent);
-        Some(Self { pa, status_pa, hhdm_offset, coherent, tail: 0 })
-    }
-    /// Physical IQA base. # C: O(1)
-    pub const fn pa(&self) -> u64 { self.pa }
-    fn publish(&mut self, descs: &[VtdQiDesc]) -> Option<u64> {
-        if descs.is_empty() || descs.len() >= QI_DESC_COUNT as usize { return None; }
-        let start = self.tail;
-        for desc in descs {
-            let slot = self.tail as u64;
-            let va = self.hhdm_offset.checked_add(self.pa)?.checked_add(slot * QI_DESC_BYTES)? as *mut VtdQiDesc;
-            // SAFETY: tail is always reduced modulo QI_DESC_COUNT and this QI page is exclusive.
-            unsafe { core::ptr::write_volatile(va, *desc); }
-            publish(self.hhdm_offset, self.pa + slot * QI_DESC_BYTES, QI_DESC_BYTES, self.coherent);
-            self.tail = (self.tail + 1) % QI_DESC_COUNT;
-        }
-        Some(u64::from(self.tail) * QI_DESC_BYTES).filter(|_| start != self.tail)
-    }
-    /// Publish invalidations plus a wait completion record. # C: O(descriptors)
-    pub fn submit_sync(&mut self, descs: &[VtdQiDesc]) -> Option<u64> {
-        if descs.len().checked_add(1)? >= QI_DESC_COUNT as usize { return None; }
-        // SAFETY: this queue owns the completion word and serializes every submission.
-        unsafe { core::ptr::write_volatile(self.hhdm_offset.wrapping_add(self.status_pa) as *mut u32, 0); }
-        publish(self.hhdm_offset, self.status_pa, core::mem::size_of::<u32>() as u64, self.coherent);
-        let wait = VtdQiDesc::wait(self.status_pa)?;
-        let start = self.tail;
-        for desc in descs { self.publish(core::slice::from_ref(desc))?; }
-        self.publish(core::slice::from_ref(&wait)).filter(|_| start != self.tail)
-    }
-    /// Return whether the wait descriptor has observed terminal completion. # C: O(1)
-    pub fn completed(&self) -> bool {
-        pmm::dma::invalidate_from_device(self.hhdm_offset.wrapping_add(self.status_pa), core::mem::size_of::<u32>());
-        // SAFETY: this queue owns the completion word until the next serialized submission resets it.
-        unsafe { core::ptr::read_volatile(self.hhdm_offset.wrapping_add(self.status_pa) as *const u32) == QI_DONE }
-    }
 }
 
 /// Hardware-format 16-byte VT-d root-table entry.
@@ -180,7 +99,7 @@ impl VtdContextEntry {
 }
 
 /// Owned VT-d register aperture used by the initial root-table transition.
-pub struct VtdRegisters { map: mmio_map::Mapping, bytes: u64 }
+pub struct VtdRegisters { map: mmio_map::Mapping, bytes: u64, gcmd: Cell<u32> }
 impl VtdRegisters {
     /// Map the exact firmware-advertised VT-d register aperture.
     ///
@@ -191,7 +110,10 @@ impl VtdRegisters {
         let bytes = pages.checked_mul(PAGE_BYTES)?;
         if mmio_pa & (PAGE_BYTES - 1) != 0 || pages == 0 { return None; }
         // SAFETY: caller validated this aligned VT-d register aperture from firmware.
-        Some(Self { map: unsafe { mmio_map::map_owned(mmio_pa, pages) }, bytes })
+        let map = unsafe { mmio_map::map_owned(mmio_pa, pages) };
+        // SAFETY: map owns the aperture and GSTS is a naturally aligned read-only register.
+        let status = unsafe { core::ptr::read_volatile((map.base_va() + GSTS) as *const u32) };
+        Some(Self { map, bytes, gcmd: Cell::new(gcmd_state_from_status(status)) })
     }
     /// Quiesce firmware-owned remapping state before replacement tables are
     /// programmed.
@@ -242,8 +164,7 @@ impl VtdRegisters {
     pub fn set_root_table(&self, root_pa: u64) -> bool {
         if root_pa & (PAGE_BYTES - 1) != 0 || root_pa & !ROOT_TABLE_MASK != 0 { return false; }
         if !self.write64(RTADDR, root_pa) { return false; }
-        let Some(command) = self.read32(GCMD) else { return false; };
-        if !self.write32(GCMD, command | GCMD_SET_ROOT_TABLE) { return false; }
+        if !self.write_gcmd(self.gcmd.get(), GCMD_SET_ROOT_TABLE) { return false; }
         self.wait_status(GSTS_ROOT_TABLE_PRESENT, true)
     }
     /// Return whether the hardware advertises this adjusted guest address width. # C: O(1)
@@ -258,6 +179,10 @@ impl VtdRegisters {
     pub fn supports_queued_invalidation(&self) -> bool {
         self.read64(ECAP).is_some_and(|ecap| ecap & ECAP_QUEUED_INVALIDATION != 0)
     }
+    /// Return latched queued-invalidation error causes without clearing them. # C: O(1)
+    pub fn queued_invalidation_errors(&self) -> Option<u32> { self.read32(FSTS).map(|status| status & FSTS_INVALIDATION_ERRORS) }
+    #[cfg(feature = "debug-boot")]
+    pub(crate) fn queued_invalidation_positions(&self) -> Option<(u64, u64)> { Some((self.read64(IQH)?, self.read64(IQT)?)) }
     /// Return whether this unit supports interrupt remapping. # C: O(1)
     pub fn supports_interrupt_remapping(&self) -> bool { self.read64(ECAP).is_some_and(|ecap| ecap & ECAP_INTERRUPT_REMAP != 0) }
     /// Return whether IRTA replacement eliminates the required global IEC flush. # C: O(1)
@@ -268,25 +193,21 @@ impl VtdRegisters {
     pub fn enable_queued_invalidation(&self, queue: &VtdQiQueue) -> bool {
         if !self.supports_queued_invalidation() || queue.pa() & (PAGE_BYTES - 1) != 0 { return false; }
         if !self.write64(IQA, queue.pa()) || !self.write64(IQH, 0) || !self.write64(IQT, 0) { return false; }
-        let Some(command) = self.read32(GCMD) else { return false; };
-        if !self.write32(GCMD, command | GCMD_QUEUED_INVALIDATION_ENABLE) { return false; }
+        if !self.write_gcmd(self.gcmd.get() | GCMD_QUEUED_INVALIDATION_ENABLE, 0) { return false; }
         self.wait_status(GSTS_QUEUED_INVALIDATION_ENABLED, true)
     }
     /// Program IRTA and wait for the hardware to latch it. # C: O(poll limit)
     pub fn set_interrupt_remap_table(&self, irta: u64) -> bool {
         if !self.supports_interrupt_remapping() || irta & 0xfff != 0xf { return false; }
         if !self.write64(0xb8, irta) { return false; }
-        let Some(command) = self.read32(GCMD) else { return false; };
-        if !self.write32(GCMD, command | GCMD_SET_INTERRUPT_REMAP_TABLE) { return false; }
+        if !self.write_gcmd(self.gcmd.get(), GCMD_SET_INTERRUPT_REMAP_TABLE) { return false; }
         self.wait_status(GSTS_INTERRUPT_REMAP_TABLE_PRESENT, true)
     }
     /// Enable IR and block compatibility-format messages. # C: O(poll limit)
     pub fn enable_interrupt_remapping(&self) -> bool {
         if self.read32(GSTS).is_none_or(|status| status & GSTS_INTERRUPT_REMAP_TABLE_PRESENT == 0) { return false; }
-        let Some(command) = self.read32(GCMD) else { return false; };
-        if !self.write32(GCMD, command | GCMD_INTERRUPT_REMAP_ENABLE) || !self.wait_status(GSTS_INTERRUPT_REMAP_ENABLED, true) { return false; }
-        let Some(command) = self.read32(GCMD) else { return false; };
-        if !self.write32(GCMD, command & !GCMD_COMPATIBILITY_FORMAT_INTERRUPT) { return false; }
+        if !self.write_gcmd(self.gcmd.get() | GCMD_INTERRUPT_REMAP_ENABLE, 0) || !self.wait_status(GSTS_INTERRUPT_REMAP_ENABLED, true) { return false; }
+        if !self.write_gcmd(self.gcmd.get() & !GCMD_COMPATIBILITY_FORMAT_INTERRUPT, 0) { return false; }
         self.wait_status(GSTS_COMPATIBILITY_FORMAT_INTERRUPT, false)
     }
     /// Disable interrupt remapping after an unsuccessful boot-path transition.
@@ -297,8 +218,7 @@ impl VtdRegisters {
         if !self.supports_interrupt_remapping() { return true; }
         let Some(status) = self.read32(GSTS) else { return false; };
         if status & GSTS_INTERRUPT_REMAP_ENABLED == 0 { return true; }
-        let Some(command) = self.read32(GCMD) else { return false; };
-        if !self.write32(GCMD, command & !GCMD_INTERRUPT_REMAP_ENABLE) { return false; }
+        if !self.write_gcmd(self.gcmd.get() & !GCMD_INTERRUPT_REMAP_ENABLE, 0) { return false; }
         self.wait_status(GSTS_INTERRUPT_REMAP_ENABLED, false)
     }
     /// Complete the global context and IOTLB invalidations required after root installation. # C: O(poll limit)
@@ -353,8 +273,7 @@ impl VtdRegisters {
     /// Enable DMA translation after a root/context tree has been acknowledged. # C: O(poll limit)
     pub fn enable_translation(&self) -> bool {
         if self.read32(GSTS).is_none_or(|status| status & GSTS_ROOT_TABLE_PRESENT == 0) { return false; }
-        let Some(command) = self.read32(GCMD) else { return false; };
-        if !self.write32(GCMD, command | GCMD_TRANSLATION_ENABLE) { return false; }
+        if !self.write_gcmd(self.gcmd.get() | GCMD_TRANSLATION_ENABLE, 0) { return false; }
         self.wait_status(GSTS_TRANSLATION_ENABLED, true)
     }
     /// Disable DMA translation before discarding boot-owned root and context tables.
@@ -363,8 +282,7 @@ impl VtdRegisters {
     pub fn disable_translation(&self) -> bool {
         let Some(status) = self.read32(GSTS) else { return false; };
         if status & GSTS_TRANSLATION_ENABLED == 0 { return true; }
-        let Some(command) = self.read32(GCMD) else { return false; };
-        if !self.write32(GCMD, command & !GCMD_TRANSLATION_ENABLE) { return false; }
+        if !self.write_gcmd(self.gcmd.get() & !GCMD_TRANSLATION_ENABLE, 0) { return false; }
         self.wait_status(GSTS_TRANSLATION_ENABLED, false)
     }
     /// Drain and disable queued invalidation before its permanent ring is discarded.
@@ -379,8 +297,7 @@ impl VtdRegisters {
             if head == tail { break; }
             core::hint::spin_loop();
         }
-        let Some(command) = self.read32(GCMD) else { return false; };
-        if !self.write32(GCMD, command & !GCMD_QUEUED_INVALIDATION_ENABLE) { return false; }
+        if !self.write_gcmd(self.gcmd.get() & !GCMD_QUEUED_INVALIDATION_ENABLE, 0) { return false; }
         self.wait_status(GSTS_QUEUED_INVALIDATION_ENABLED, false)
     }
     fn wait_status(&self, bit: u32, wanted: bool) -> bool {
@@ -409,6 +326,11 @@ impl VtdRegisters {
         // SAFETY: offset is aligned and bounded within this device mapping.
         unsafe { core::ptr::write_volatile((self.map.base_va() + offset) as *mut u32, value) }; true
     }
+    fn write_gcmd(&self, state: u32, trigger: u32) -> bool {
+        let state = state & GCMD_STATE_BITS;
+        if !self.write32(GCMD, state | trigger) { return false; }
+        self.gcmd.set(state); true
+    }
     fn write64(&self, offset: u64, value: u64) -> bool {
         if offset & 7 != 0 || offset.checked_add(8).is_none_or(|end| end > self.bytes) { return false; }
         // SAFETY: offset is aligned and bounded within this device mapping.
@@ -422,6 +344,7 @@ impl VtdRegisters {
 }
 
 fn address_width_bits(address_width: u8) -> Option<u8> { 30u8.checked_add(address_width.checked_mul(9)?) }
+const fn gcmd_state_from_status(status: u32) -> u32 { status & GCMD_STATE_BITS }
 fn address_width_supported(cap: u64, address_width: u8) -> bool {
     if address_width > 4 || cap >> 8 & (1 << address_width) == 0 { return false; }
     let mgaw = ((cap >> 16) & 0x3f) as u8 + 1;
@@ -473,13 +396,7 @@ mod fault_tests {
     #[test] fn queued_invalidation_register_and_descriptor_layout_matches_vtd() {
         assert_eq!((IQH, IQT, IQA), (0x80, 0x88, 0x90));
         assert_eq!(GCMD_QUEUED_INVALIDATION_ENABLE, GSTS_QUEUED_INVALIDATION_ENABLED);
-        assert_eq!(core::mem::size_of::<VtdQiDesc>(), 16);
-        assert_eq!(VtdQiDesc::global_context().words(), [1 | (1 << 4), 0]);
-        assert_eq!(VtdQiDesc::global_iotlb(true, true).words(), [0xd2, 0]);
-        assert_eq!(VtdQiDesc::global_iotlb(false, false).words(), [0x12, 0]);
-        assert_eq!(VtdQiDesc::wait(0x1234_5000).unwrap().words(), [0x0000_0002_0000_0025, 0x1234_5000]);
-        assert_eq!(VtdQiDesc::global_interrupt_entry().words(), [4, 0]);
-        assert_eq!(QI_DESC_COUNT, 256);
+        assert_eq!(FSTS_INVALIDATION_ERRORS, 0x70);
+        assert_eq!(gcmd_state_from_status(GSTS_QUEUED_INVALIDATION_ENABLED | GSTS_TRANSLATION_ENABLED), GCMD_QUEUED_INVALIDATION_ENABLE | GCMD_TRANSLATION_ENABLE);
     }
 }
-use crate::vtd_cache::publish;

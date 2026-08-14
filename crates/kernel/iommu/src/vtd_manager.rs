@@ -45,6 +45,24 @@ fn trace_stage(stage: &'static [u8]) {
 #[cfg(not(feature = "debug-boot"))]
 fn trace_stage(_: &'static [u8]) {}
 #[cfg(feature = "debug-boot")]
+fn trace_queue_errors(errors: Option<u32>) {
+    klog::write_raw(b"[WARN] vtd: qi-errors=");
+    match errors { Some(value) => klog::write_hex_u64(u64::from(value)), None => klog::write_raw(b"unreadable") }
+    klog::write_raw(b"\n");
+}
+#[cfg(not(feature = "debug-boot"))]
+fn trace_queue_errors(_: Option<u32>) {}
+#[cfg(feature = "debug-boot")]
+fn trace_queue_progress(regs: &VtdRegisters, queue: &VtdQiQueue) {
+    let (head, tail) = regs.queued_invalidation_positions().unwrap_or((u64::MAX, u64::MAX));
+    klog::write_raw(b"[WARN] vtd: qi head="); klog::write_hex_u64(head);
+    klog::write_raw(b" tail="); klog::write_hex_u64(tail);
+    klog::write_raw(b" completion="); klog::write_hex_u64(u64::from(queue.completion_value().unwrap_or(u32::MAX)));
+    klog::write_raw(b"\n");
+}
+#[cfg(not(feature = "debug-boot"))]
+fn trace_queue_progress(_: &VtdRegisters, _: &VtdQiQueue) {}
+#[cfg(feature = "debug-boot")]
 fn trace_dma_map(requester: Bdf, pa: u64, iova: u64) {
     klog::write_raw(b"[INFO]  vtd: dma bdf=");
     klog::write_dec_u64(u64::from(requester.bus)); klog::write_raw(b":");
@@ -142,7 +160,7 @@ pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf],
             if !entry.regs.set_interrupt_remap_table(ir.irta()) { trace_failure(b"interrupt table install"); return activation_failed(&mut manager); }
             if !entry.regs.supports_enhanced_irta_invalidation() {
                 let Some(queue) = entry.qi.as_mut() else { trace_failure(b"interrupt cache queue"); return activation_failed(&mut manager); };
-                if !entry.regs.invalidate_interrupt_entries(queue) { trace_failure(b"interrupt cache invalidate"); return activation_failed(&mut manager); }
+                if !entry.regs.invalidate_interrupt_entries(queue) { trace_queue_errors(entry.regs.queued_invalidation_errors()); trace_queue_progress(&entry.regs, queue); trace_failure(b"interrupt cache invalidate"); return activation_failed(&mut manager); }
             }
         }
     }
