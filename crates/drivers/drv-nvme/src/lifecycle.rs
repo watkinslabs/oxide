@@ -13,6 +13,14 @@ const PROBE_FAILURE_CLEANUP_STEPS: [CleanupStep; 1] = [
     CleanupStep::DisablePciCommand,
 ];
 
+/// A synchronous wait may recover only after its completion predicate remains
+/// false at the deadline. Equality is expired so a clock read at the deadline
+/// cannot leave a dead controller's request permanently owned.
+/// # C: O(1)
+pub(crate) const fn deadline_expired(completed: bool, now_ns: u64, deadline_ns: u64) -> bool {
+    !completed && now_ns >= deadline_ns
+}
+
 /// Run remove/shutdown cleanup in Linux teardown order: quiesce owned hardware
 /// and drop BAR mappings before disabling PCI command decode.
 /// # C: O(release + disable)
@@ -46,7 +54,15 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{run_probe_failure_cleanup, run_remove_cleanup};
+    use super::{deadline_expired, run_probe_failure_cleanup, run_remove_cleanup};
+
+    #[test]
+    fn deadline_recovery_waits_for_an_uncompleted_request() {
+        assert!(!deadline_expired(true, 17, 16));
+        assert!(!deadline_expired(false, 15, 16));
+        assert!(deadline_expired(false, 16, 16));
+        assert!(deadline_expired(false, 17, 16));
+    }
 
     #[test]
     fn remove_cleanup_releases_controller_before_pci_command_disable() {

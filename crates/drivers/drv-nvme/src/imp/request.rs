@@ -254,8 +254,7 @@ impl NvmeBlk {
                 }
                 Ok(None) => return,
                 Err(()) => {
-                    self.poisoned.store(true, Ordering::Release);
-                    self.quiesce_and_free();
+                    self.recover_terminal_failure();
                     return;
                 }
             }
@@ -272,8 +271,11 @@ impl NvmeBlk {
         }));
         let deadline = wait::now_ns().saturating_add(wait::IO_TIMEOUT_NS);
         while !state.done.load(Ordering::Acquire) {
-            if self.unavailable() || wait::now_ns() >= deadline {
-                self.poisoned.store(true, Ordering::Release);
+            if self.unavailable() {
+                return Err(BlockError::Eio);
+            }
+            if crate::lifecycle::deadline_expired(state.done.load(Ordering::Acquire), wait::now_ns(), deadline) {
+                self.recover_terminal_failure();
                 return Err(BlockError::Eio);
             }
             if !wait::poll_enabled(|| state.done.load(Ordering::Acquire), deadline) {
