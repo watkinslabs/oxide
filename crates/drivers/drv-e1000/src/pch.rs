@@ -52,6 +52,9 @@ const PCH_82579_EMI_ADDR: u32 = 0x10;
 const PCH_82579_EMI_DATA: u32 = 0x11;
 const PCH_82579_MSE_THRESHOLD: u16 = 0x084f;
 const PCH_82579_MSE_LINK_DOWN: u16 = 0x2411;
+const PCH_I217_TIMEOUTS: u32 = (770 << 5) | 21;
+const PCH_I217_TIMEOUTS_K1_MASK: u16 = 0x0fc0;
+const PCH_I217_TIMEOUTS_K1_DEFAULT: u16 = 0x0f00;
 
 static PCH_SHARED: Spinlock<(), DriverLockClass> = Spinlock::new(());
 
@@ -172,6 +175,12 @@ fn configure_link(c: &Controller, phy: HvPhy) -> bool {
     if !hv_write(c, phy, regs::MII_CTRL1000 as u32, (gigabit & !regs::MII_CTRL1000_HALF) | regs::MII_CTRL1000_FULL) { return false; }
     let Some(control) = hv_read(c, phy, regs::MII_BMCR as u32) else { return false; };
     if !hv_write(c, phy, regs::MII_BMCR as u32, control | regs::MII_BMCR_AN_ENABLE | regs::MII_BMCR_AN_RESTART) { return false; }
+    if matches!(phy, HvPhy::I217) {
+        let Some(timeouts) = hv_read(c, phy, PCH_I217_TIMEOUTS) else { return false; };
+        if !hv_write(c, phy, PCH_I217_TIMEOUTS, (timeouts & !PCH_I217_TIMEOUTS_K1_MASK) | PCH_I217_TIMEOUTS_K1_DEFAULT) { return false; }
+        let pwr = c.read(regs::FEXTNVM12);
+        c.write(regs::FEXTNVM12, (pwr & !regs::FEXTNVM12_PHYPD_CTRL) | regs::FEXTNVM12_PHYPD_CTRL_P1);
+    }
     c.write(regs::FCT, regs::FLOW_CONTROL_TYPE); c.write(regs::FCAH, regs::FLOW_CONTROL_ADDRESS_HIGH); c.write(regs::FCAL, regs::FLOW_CONTROL_ADDRESS_LOW);
     c.write(regs::FCTTV, regs::FLOW_CONTROL_PAUSE_TIME); c.write(regs::FCRTL, 0); c.write(regs::FCRTH, 0);
     c.write(regs::CTRL, (c.read(regs::CTRL) & !(regs::CTRL_RFCE | regs::CTRL_TFCE)) | regs::CTRL_RFCE);
@@ -278,12 +287,13 @@ impl<'a> LptFlash<'a> {
     }
 }
 
-pub(crate) fn reset(c: &Controller) -> bool {
+fn reset_with_phy(c: &Controller, phy_reset: bool) -> bool {
     c.write(regs::IMC, u32::MAX);
     c.write(regs::RCTL, 0);
     c.write(regs::TCTL, c.read(regs::TCTL) & !regs::TCTL_EN);
     wait_ns(10_000_000);
-    if with_shared(c, |c| { c.write(regs::CTRL, c.read(regs::CTRL) | regs::CTRL_PHY_RST | regs::CTRL_RST); Some(()) }).is_none() { return false; }
+    let reset = if phy_reset { regs::CTRL_PHY_RST | regs::CTRL_RST } else { regs::CTRL_RST };
+    if with_shared(c, |c| { c.write(regs::CTRL, c.read(regs::CTRL) | reset); Some(()) }).is_none() { return false; }
     wait_ns(20_000_000);
     let deadline = sched::deadline::clock::now_ns().saturating_add(regs::NVM_AUTO_READ_TIMEOUT_NS);
     while !regs::e1000e_auto_read_done(c.read(regs::EECD)) {
@@ -293,6 +303,7 @@ pub(crate) fn reset(c: &Controller) -> bool {
     let _ = c.read(regs::ICR);
     true
 }
+pub(crate) fn reset(c: &Controller) -> bool { reset_with_phy(c, true) }
 
 pub(crate) fn reset_pch2(c: &Controller) -> bool {
     let managed = c.read(regs::FWSM) & regs::FWSM_FW_VALID != 0;
@@ -302,6 +313,52 @@ pub(crate) fn reset_pch2(c: &Controller) -> bool {
     c.write(regs::FEXTNVM3, (counter & !regs::FEXTNVM3_PHY_CFG_COUNTER) | regs::FEXTNVM3_PHY_CFG_COUNTER_50MS);
     if !managed { wait_ns(10_000_000); c.write(regs::EXTCNF_CTRL, c.read(regs::EXTCNF_CTRL) & !regs::EXTCNF_CTRL_GATE_PHY_CFG); }
     true
+}
+
+fn lpt_phy_accessible(c: &Controller) -> bool { matches!(phy_id(c), Some(HvPhy::I217)) }
+
+fn lpt_toggle_lanphypc(c: &Controller) -> bool {
+    let counter = c.read(regs::FEXTNVM3);
+    c.write(regs::FEXTNVM3, (counter & !regs::FEXTNVM3_PHY_CFG_COUNTER) | regs::FEXTNVM3_PHY_CFG_COUNTER_50MS);
+    let ctrl = c.read(regs::CTRL);
+    c.write(regs::CTRL, (ctrl | regs::CTRL_LANPHYPC_OVERRIDE) & !regs::CTRL_LANPHYPC_VALUE);
+    let _ = c.read(regs::CTRL);
+    wait_ns(20_000);
+    c.write(regs::CTRL, ctrl & !regs::CTRL_LANPHYPC_OVERRIDE);
+    let _ = c.read(regs::CTRL);
+    for _ in 0..20 {
+        if c.read(regs::CTRL_EXT) & regs::CTRL_EXT_LPCD != 0 { wait_ns(30_000_000); return true; }
+        wait_ns(5_000_000);
+    }
+    false
+}
+
+fn lpt_prepare_phy(c: &Controller) -> bool {
+    if lpt_phy_accessible(c) { return true; }
+    let fwsm = c.read(regs::FWSM);
+    if fwsm & (regs::FWSM_FW_VALID | regs::FWSM_RSPCIPHY) != 0 { return false; }
+    c.write(regs::CTRL_EXT, c.read(regs::CTRL_EXT) | regs::CTRL_EXT_FORCE_SMBUS);
+    wait_ns(50_000_000);
+    if lpt_phy_accessible(c) { c.write(regs::CTRL_EXT, c.read(regs::CTRL_EXT) & !regs::CTRL_EXT_FORCE_SMBUS); return true; }
+    if !lpt_toggle_lanphypc(c) { return false; }
+    c.write(regs::CTRL_EXT, c.read(regs::CTRL_EXT) & !regs::CTRL_EXT_FORCE_SMBUS);
+    lpt_phy_accessible(c)
+}
+
+/// Reset LPT only after the I217 transport is accessible and firmware allows a PHY reset. # C: O(retries)
+pub(crate) fn reset_lpt(c: &Controller) -> bool { lpt_prepare_phy(c) && reset_with_phy(c, c.read(regs::FWSM) & regs::FWSM_RSPCIPHY == 0) }
+
+/// Reopen I217 through its dedicated PHY accessibility and copper autonegotiation path. # C: O(retries)
+pub(crate) fn activate_lpt(c: &Controller) -> bool {
+    if !lpt_prepare_phy(c) { return false; }
+    activate(c)
+}
+
+/// Consume both latched I217 BMSR samples before reporting a link-transition completion. # C: O(retries)
+pub(crate) fn reconcile_lpt(c: &Controller) -> bool {
+    let Some(phy) = phy_id(c) else { return false; };
+    let _ = hv_read(c, phy, regs::MII_BMSR as u32);
+    hv_read(c, phy, regs::MII_BMSR as u32).is_some_and(|status| status & regs::MII_BMSR_LINK != 0 || status & regs::MII_BMSR_AN_COMPLETE == 0)
 }
 
 pub(crate) fn configure_pch2_lv(c: &Controller) -> bool {

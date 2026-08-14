@@ -18,6 +18,7 @@ pub const E1000E_82583V: u16 = 0x150c;
 pub const E1000E_82571_BM_PCI_IDS: &[u16] = &[0x10d3, 0x10f6, E1000E_82583V];
 pub const E1000E_PCH_M_PCI_IDS: &[u16] = &[0x10ea, 0x10eb, 0x10ef, 0x10f0];
 pub const E1000E_PCH2_PCI_IDS: &[u16] = &[0x1502, 0x1503];
+pub const E1000E_PCH_LPT_I217_PCI_IDS: &[u16] = &[0x153a, 0x153b];
 
 /// Match an Intel Ethernet function owned by the 82540 reset and DMA path. # C: O(n)
 #[inline]
@@ -58,6 +59,15 @@ pub const fn e1000e_pch2_pci_id_supported(device_id: u16) -> bool {
     let mut index = 0;
     while index < E1000E_PCH2_PCI_IDS.len() {
         if E1000E_PCH2_PCI_IDS[index] == device_id { return true; }
+        index += 1;
+    }
+    false
+}
+/// Admit only I217 LPT functions after the BAR0 flash and shared-RAR lifecycle exists. # C: O(n)
+pub const fn e1000e_pch_lpt_i217_pci_id_supported(device_id: u16) -> bool {
+    let mut index = 0;
+    while index < E1000E_PCH_LPT_I217_PCI_IDS.len() {
+        if E1000E_PCH_LPT_I217_PCI_IDS[index] == device_id { return true; }
         index += 1;
     }
     false
@@ -133,12 +143,20 @@ pub const GCR2_COMPLETION_WORKAROUND: u32 = 1;
 pub const EXTCNF_CTRL_MDIO_SW_OWNERSHIP: u32 = 1 << 5;
 pub const EXTCNF_CTRL_GATE_PHY_CFG: u32 = 1 << 7;
 pub const FEXTNVM3: u64 = 0x0003c;
+pub const FEXTNVM12: u64 = 0x000fc;
 pub const FWSM: u64 = 0x05b54;
 pub const FWSM_FW_VALID: u32 = 1 << 15;
 pub const FWSM_WLOCK_MAC: u32 = 0x0380;
 pub const FWSM_WLOCK_MAC_SHIFT: u32 = 7;
 pub const FEXTNVM3_PHY_CFG_COUNTER: u32 = 0x0c00_0000;
 pub const FEXTNVM3_PHY_CFG_COUNTER_50MS: u32 = 0x0800_0000;
+pub const FEXTNVM12_PHYPD_CTRL: u32 = 0x00c0_0000;
+pub const FEXTNVM12_PHYPD_CTRL_P1: u32 = 0x0080_0000;
+pub const CTRL_EXT_LPCD: u32 = 1 << 2;
+pub const CTRL_EXT_FORCE_SMBUS: u32 = 1 << 11;
+pub const CTRL_LANPHYPC_OVERRIDE: u32 = 1 << 16;
+pub const CTRL_LANPHYPC_VALUE: u32 = 1 << 17;
+pub const FWSM_RSPCIPHY: u32 = 1 << 6;
 pub const EECD_NVM_REQUEST: u32 = 1 << 6;
 pub const EECD_NVM_GRANT: u32 = 1 << 7;
 pub const EECD_AUTO_READ_DONE: u32 = 1 << 9;
@@ -176,6 +194,7 @@ pub const MII_CTRL1000: u8 = 9;
 pub const MII_BMCR_AN_ENABLE: u16 = 0x1000;
 pub const MII_BMCR_AN_RESTART: u16 = 0x0200;
 pub const MII_BMSR_AN_COMPLETE: u16 = 0x0020;
+pub const MII_BMSR_LINK: u16 = 0x0004;
 pub const MII_ADVERTISE_10_HALF: u16 = 0x0020;
 pub const MII_ADVERTISE_10_FULL: u16 = 0x0040;
 pub const MII_ADVERTISE_100_HALF: u16 = 0x0080;
@@ -386,6 +405,9 @@ mod tests {
         assert!(e1000e_pch_m_pci_id_supported(0x10ea));
         assert!(e1000e_pch_m_pci_id_supported(0x10f0));
         assert!(!e1000e_pch_m_pci_id_supported(0x1502));
+        assert!(e1000e_pch_lpt_i217_pci_id_supported(0x153a));
+        assert!(e1000e_pch_lpt_i217_pci_id_supported(0x153b));
+        assert!(!e1000e_pch_lpt_i217_pci_id_supported(0x155a));
         assert_eq!(dma_mask(false), u32::MAX as u64);
         assert_eq!(dma_mask(true), u64::MAX);
         assert_eq!(E1000E_82571_BM_RESET_NS, 25_000_000);
