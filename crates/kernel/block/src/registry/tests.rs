@@ -176,6 +176,36 @@ fn quiesce_waits_for_previously_admitted_async_submission() {
 }
 
 #[test]
+fn reset_freeze_keeps_live_identity_and_drains_after_admission_stops() {
+    const NAME: &str = "registry-live-reset";
+    let inner = DeferredDevice::new();
+    let dev: Arc<dyn BlockDevice> = inner.clone();
+    let index = register(NAME, dev);
+    let dev_t = dev_t_of(NAME, index).expect("published dev_t");
+    let disk = by_name(NAME).expect("registered disk");
+    assert!(claim(NAME));
+    assert!(open_by_dev(dev_t));
+    disk.dev.submit(BlockRequest::new_flush(), Box::new(|_, result| assert_eq!(result, Ok(()))));
+
+    let gate = try_freeze_for_reset(NAME).expect("reset freezes a live disk with users");
+    assert_eq!(holder_count(NAME), Some(1));
+    assert_eq!(opener_count(NAME), Some(1));
+    assert_eq!(dev_t_of(NAME, index), Some(dev_t), "reset retains the published dev_t");
+    assert!(!gate.is_drained(), "the freeze observes its pre-existing request");
+    let mut request = BlockRequest::new_flush();
+    assert_eq!(disk.dev.submit_sync(&mut request), Err(BlockError::Ebusy), "freeze closes later I/O admission");
+    assert!(try_quiesce(NAME).is_none(), "removal cannot overlap a live reset");
+
+    inner.finish();
+    assert!(gate.is_drained(), "completion drains the frozen request population");
+    gate.wait_for_drain();
+    drop(gate);
+    assert!(close_by_dev(dev_t));
+    assert!(release(NAME));
+    assert!(unregister(NAME));
+}
+
+#[test]
 fn registry_splits_discard_at_canonical_queue_limit() {
     const NAME: &str = "registry-discard-limit";
     const REQUEST_BLOCKS: u32 = 5;
