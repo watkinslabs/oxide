@@ -249,10 +249,10 @@ qemu-arm-image:
 	$(XTASK) image --arch aarch64 $(if $(QEMU_FEATURES_ARM),--features "$(QEMU_FEATURES_ARM)",)
 
 qemu-x86-existing:
-	$(XTASK) grub --arch x86_64 --smp $(SMP) --run-existing
+	$(XTASK) grub --arch x86_64 --smp $(SMP) --id default --run-existing
 
 qemu-arm-existing:
-	$(XTASK) grub --arch aarch64 --smp $(SMP) --run-existing
+	$(XTASK) grub --arch aarch64 --smp $(SMP) --id default --run-existing
 
 # Compatibility spelling for the former bootloader-specific target. Keep one
 # canonical recipe so `FEATURES=` has identical meaning on both spellings.
