@@ -53,7 +53,7 @@ const FAULT_RECORD_VALID: u32 = 1 << 31;
 const FAULT_RECORD_BYTES: u64 = 16;
 const QI_DESC_BYTES: u64 = core::mem::size_of::<VtdQiDesc>() as u64;
 const QI_DESC_COUNT: u16 = (PAGE_BYTES / QI_DESC_BYTES) as u16;
-const QI_DONE: u32 = 1;
+const QI_DONE: u32 = 2;
 
 fn primary_fault_layout(cap: u64, aperture_bytes: u64) -> Option<(u64, u16)> {
     let base = ((cap >> 24) & 0x3ff).checked_mul(FAULT_RECORD_BYTES)?;
@@ -461,7 +461,7 @@ mod fault_tests {
         assert_eq!(VtdQiDesc::global_context().words(), [1 | (1 << 4), 0]);
         assert_eq!(VtdQiDesc::global_iotlb(true, true).words(), [0xd2, 0]);
         assert_eq!(VtdQiDesc::global_iotlb(false, false).words(), [0x12, 0]);
-        assert_eq!(VtdQiDesc::wait(0x1234_5000).unwrap().words(), [0x0000_0001_0000_0025, 0x1234_5000]);
+        assert_eq!(VtdQiDesc::wait(0x1234_5000).unwrap().words(), [0x0000_0002_0000_0025, 0x1234_5000]);
         assert_eq!(QI_DESC_COUNT, 256);
     }
 }
