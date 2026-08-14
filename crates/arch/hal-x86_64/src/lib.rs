@@ -18,6 +18,7 @@ mod fpu;
 mod gdt;
 mod idt;
 pub mod ioapic;
+pub mod io;
 mod irq;
 mod irq_gate;
 // LDTR programming for `modify_ldt(2)`: per-CPU GDT LDT descriptor + `lldt`.

@@ -173,6 +173,7 @@ pub fn enumerate_and_log() {
     let requesters = devs.iter().map(|d| d.bdf).collect::<alloc::vec::Vec<_>>();
     let aliases = dma_aliases(&requesters, &devs);
     if !activate_dma_and_interrupt_ownership(&requesters, &aliases) { return; }
+    config_access::install_aml_region_backend();
     let _ = firmware::acpi::prepare_pci_intx_routes();
     pci_irq::set_intx_resolver(resolve_firmware_intx);
     register_pci_model_drivers();

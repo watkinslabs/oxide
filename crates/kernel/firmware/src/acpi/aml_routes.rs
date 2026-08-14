@@ -1,9 +1,10 @@
 //! AML namespace ownership for PCI INTx routing.
 
 use alloc::{boxed::Box, vec::Vec};
-use aml::{AmlContext, AmlError, AmlName, DebugVerbosity, Handler, RegionAccess, pci_routing::{PciRoutingTable, Pin}, resource::{InterruptPolarity, InterruptTrigger}};
+use aml::{AmlContext, AmlName, DebugVerbosity, pci_routing::{PciRoutingTable, Pin}, resource::{InterruptPolarity, InterruptTrigger}};
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use sync::{Devices, Spinlock};
+use super::aml_handler::FirmwareHandler;
 
 const MAX_AML_TABLES: usize = 32;
 const ACPI_HEADER_BYTES: usize = 36;
@@ -12,12 +13,6 @@ const MAX_AML_TABLE_BYTES: usize = 1024 * 1024;
 /// One interrupt-controller route evaluated from the AML namespace.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PciIntxRoute { pub gsi: u32, pub level: bool, pub active_low: bool }
-
-struct UnavailableHandler;
-
-impl Handler for UnavailableHandler {
-    fn access(&self, _: RegionAccess, _: u64) -> Result<u64, AmlError> { Err(AmlError::RegionAccessUnavailable) }
-}
 
 struct Tables { ssdt_count: AtomicU32, hhdm: AtomicU64, dsdt_pa: AtomicU64, ssdt_pa: [AtomicU64; MAX_AML_TABLES] }
 static TABLES: Tables = Tables {
@@ -56,7 +51,7 @@ fn build_context() -> Option<RouteContext> {
     let hhdm = TABLES.hhdm.load(Ordering::Acquire);
     let dsdt = TABLES.dsdt_pa.load(Ordering::Acquire);
     if dsdt == 0 || hhdm == 0 { return None; }
-    let mut context = AmlContext::new(Box::new(UnavailableHandler), DebugVerbosity::None);
+    let mut context = AmlContext::new(Box::new(FirmwareHandler), DebugVerbosity::None);
     let table = unsafe { aml_table(dsdt, hhdm)? };
     if context.parse_table(table).is_err() { return None; }
     for slot in 0..count {
