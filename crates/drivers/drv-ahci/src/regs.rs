@@ -81,6 +81,10 @@ pub const PIS_ERROR: u32 =
     PIS_UFS | PIS_PCS | PIS_PRCS | PIS_IPMS | PIS_IFS | PIS_HBDS | PIS_HBFS | PIS_TFES;
 pub const PIS_ENABLE: u32 =
     PIS_ERROR | PIS_DPS | PIS_SDBS | PIS_DSS | PIS_PSS | PIS_DHRS;
+/// Link-state-change causes that require process-context media inspection.
+/// Mechanical-presence and power-management causes do not prove a SATA
+/// device departed, so they are deliberately excluded.
+pub const PIS_LINK_CHANGE: u32 = PIS_PCS | PIS_PRCS;
 
 /// PxSIG value for a non-port-multiplier SATA disk (AHCI §3.3.9).
 pub const SIG_SATA_DISK: u32 = 0x0000_0101;
@@ -88,6 +92,19 @@ pub const SIG_SATA_DISK: u32 = 0x0000_0101;
 /// PxSSTS DET (device detection) in bits 3:0: 3 = device present + PHY up.
 pub const SSTS_DET_MASK:  u32 = 0xF;
 pub const SSTS_DET_READY: u32 = 0x3;
+
+/// Whether a sampled SATA status reports an online physical link. # C: O(1)
+#[inline]
+pub const fn link_is_online(sstatus: u32) -> bool {
+    sstatus & SSTS_DET_MASK == SSTS_DET_READY
+}
+
+/// Whether an acknowledged port interrupt requires a live link inspection.
+/// # C: O(1)
+#[inline]
+pub const fn irq_reports_link_change(pis: u32) -> bool {
+    pis & PIS_LINK_CHANGE != 0
+}
 
 /// H2D Register FIS type byte (SATA spec §10.3.4).
 pub const FIS_TYPE_H2D: u8 = 0x27;
@@ -310,6 +327,18 @@ mod tests {
         assert!(irq_finishes_slot(PIS_DHRS, 1, TFD_ERR));
         assert!(!irq_status_failed(PIS_DHRS, 0));
         assert!(irq_status_failed(PIS_HBFS, 0));
+    }
+
+    #[test]
+    fn link_change_is_limited_to_ahci_connect_and_phy_ready_causes() {
+        assert!(irq_reports_link_change(PIS_PCS));
+        assert!(irq_reports_link_change(PIS_PRCS));
+        assert!(irq_reports_link_change(PIS_PCS | PIS_DHRS));
+        assert!(!irq_reports_link_change(PIS_IPMS));
+        assert!(!irq_reports_link_change(PIS_TFES));
+        assert!(link_is_online(SSTS_DET_READY));
+        assert!(!link_is_online(1));
+        assert!(!link_is_online(0));
     }
 
     #[test]

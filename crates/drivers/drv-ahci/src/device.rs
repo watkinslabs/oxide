@@ -21,6 +21,8 @@ pub struct AhciBlk {
     blk_size:   u32,
     capacity:   u64,
     removed:    AtomicBool,
+    media_offline: AtomicBool,
+    teardown:   AtomicBool,
     poisoned:   AtomicBool,
 }
 
@@ -40,6 +42,8 @@ impl AhciBlk {
             blk_size,
             capacity,
             removed: AtomicBool::new(false),
+            media_offline: AtomicBool::new(false),
+            teardown: AtomicBool::new(false),
             poisoned: AtomicBool::new(false),
         }
     }
@@ -227,9 +231,31 @@ impl AhciBlk {
         ok
     }
 
-    /// Wake the command owner when its hard handler requested fanout. # C: O(waiters)
-    pub(crate) fn completion_bottom_half(&self) {
+    fn take_offline_link_change(&self) -> bool {
+        if !self.irq.take_link_change() { return false; }
+        let offline = !self.ctrl.lock().link_is_online();
+        if offline {
+            self.media_offline.store(true, Ordering::Release);
+            self.removed.store(true, Ordering::Release);
+            self.irq.waiters().wake_all();
+            self.turn_wait.wake_all();
+        }
+        offline
+    }
+
+    /// True after the PHY-change worker confirmed this disk departed. # C: O(1)
+    pub(crate) fn media_offline(&self) -> bool {
+        self.media_offline.load(Ordering::Acquire)
+    }
+
+    /// Consume a port link-change event and wake command waiters. A true
+    /// result means the live SATA status confirmed departure; the driver
+    /// registry owner must then force-detach publication before teardown.
+    /// # C: O(waiters)
+    pub(crate) fn completion_bottom_half(&self) -> bool {
+        let offline = self.take_offline_link_change();
         if self.irq.take_wake() { self.irq.waiters().wake_all(); }
+        offline
     }
 
     #[cfg(feature = "debug-boot")]
@@ -239,7 +265,8 @@ impl AhciBlk {
     }
 
     fn quiesce_and_free(&self) {
-        if self.removed.swap(true, Ordering::AcqRel) { return; }
+        if self.teardown.swap(true, Ordering::AcqRel) { return; }
+        self.removed.store(true, Ordering::Release);
         self.irq.waiters().wake_all();
         self.turn_wait.wake_all();
         let mut ctrl = self.ctrl.lock();

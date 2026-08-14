@@ -45,6 +45,7 @@ mod imp {
     use alloc::sync::Arc;
     use alloc::string::String;
     use alloc::vec::Vec;
+    use core::sync::atomic::{AtomicBool, Ordering};
     use sync::{Spinlock, TaskList as DriverLockClass};
     #[cfg(feature = "debug-boot")]
     use block::{BlockDevice, BlockRequest};
@@ -64,6 +65,8 @@ mod imp {
     }
 
     static DEVICES: Spinlock<Vec<AhciRecord>, DriverLockClass> = Spinlock::new(Vec::new());
+    static MEDIA_WORK_PENDING: AtomicBool = AtomicBool::new(false);
+    static MEDIA_WORK_QUEUED: AtomicBool = AtomicBool::new(false);
 /// Bottom-half gate for the completion/drain-softirq-shared lock: real
 /// exclusion in the kernel, a no-op under hosted tests. Every acquisition of
 /// the lock goes through `lock_bh`, softirq context included — the disable
@@ -83,7 +86,59 @@ type AhciBh = sync::NoopBh;
             .iter()
             .map(|record| record.dev.clone())
             .collect();
-        for dev in devices { dev.completion_bottom_half(); }
+        let mut departed = false;
+        for dev in devices {
+            departed |= dev.completion_bottom_half();
+        }
+        if departed || MEDIA_WORK_PENDING.load(Ordering::Acquire) { queue_media_work(); }
+    }
+
+    /// Queue the sleepable SATA-media lifecycle path. Workqueue saturation
+    /// keeps the pending bit set and re-raises the already-installed block
+    /// softirq, so a confirmed departure is never silently discarded.
+    /// # C: O(1)
+    fn queue_media_work() {
+        MEDIA_WORK_PENDING.store(true, Ordering::Release);
+        if MEDIA_WORK_QUEUED.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() { return; }
+        if !sched::live::workqueue::queue_work(media_work, 0) {
+            MEDIA_WORK_QUEUED.store(false, Ordering::Release);
+            block::completion::raise();
+        }
+    }
+
+    /// Process confirmed SATA departures in kworker context. # Ctx: process
+    /// # Sleeps: yes
+    fn media_work(_arg: usize) {
+        loop {
+            MEDIA_WORK_PENDING.store(false, Ordering::Release);
+            let departed: Vec<String> = DEVICES.lock_bh::<AhciBh>().iter()
+                .filter(|record| record.dev.media_offline())
+                .map(|record| String::from(record.name.as_str()))
+                .collect();
+            for name in departed { remove_departed_disk(&name); }
+            MEDIA_WORK_QUEUED.store(false, Ordering::Release);
+            if !MEDIA_WORK_PENDING.load(Ordering::Acquire)
+                || MEDIA_WORK_QUEUED.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err()
+            {
+                return;
+            }
+        }
+    }
+
+    /// Detach one SATA disk after the endpoint sampled an offline PHY. The
+    /// block registry closes publication and admission before the AHCI port
+    /// can stop DMA; only requests admitted before that transition are
+    /// drained. # C: O(N_disks + drain + port shutdown) # Ctx: process
+    fn remove_departed_disk(name: &str) {
+        let Some(detach) = block::registry::begin_forced_detach(name) else { return; };
+        detach.wait_for_drain();
+        let record = {
+            let mut devices = DEVICES.lock_bh::<AhciBh>();
+            devices.iter().position(|record| record.name.as_str() == name)
+                .map(|idx| devices.remove(idx))
+        };
+        if let Some(record) = record { record.dev.remove(); }
+        unregister_completion_if_idle();
     }
 
     fn unregister_completion_if_idle() {

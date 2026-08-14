@@ -190,6 +190,13 @@ impl Ahci {
     /// Selected SATA port index. # C: O(1)
     pub(crate) fn port_index(&self) -> u32 { self.port }
 
+    /// Sample the SATA PHY state after a connect/PHY-ready notification.
+    /// The caller decides media lifecycle from this live register value rather
+    /// than inferring removal from an interrupt cause alone. # C: O(1)
+    pub(crate) fn link_is_online(&self) -> bool {
+        regs::link_is_online(self.pr(regs::P_SSTS))
+    }
+
     /// W1C the selected port cause before its global level latch. # C: O(1)
     pub(crate) fn clear_command_interrupts(&self) {
         self.pw(regs::P_IS, u32::MAX);
@@ -210,6 +217,14 @@ impl Ahci {
         self.host.disable_interrupts(1 << self.port);
     }
 
+    /// Mask and acknowledge this port while another port retains the shared
+    /// function IRQ. It must not touch the HBA-global interrupt gate. # C: O(1)
+    pub(crate) fn disable_port_interrupts(&self) {
+        self.pw(regs::P_IE, 0);
+        let _ = self.pr(regs::P_IE);
+        self.clear_command_interrupts();
+    }
+
     fn comreset_link(&self) -> bool {
         let s = self.pr(regs::P_SCTL);
         self.pw(regs::P_SCTL, (s & !regs::SSTS_DET_MASK) | 1);
@@ -219,7 +234,7 @@ impl Ahci {
         self.pw(regs::P_SCTL, s & !regs::SSTS_DET_MASK);
         let deadline = now_ns().saturating_add(LINK_TIMEOUT_NS);
         loop {
-            if self.pr(regs::P_SSTS) & regs::SSTS_DET_MASK == regs::SSTS_DET_READY { return true; }
+            if self.link_is_online() { return true; }
             if now_ns() >= deadline { return false; }
             core::hint::spin_loop();
         }
