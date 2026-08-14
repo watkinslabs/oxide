@@ -21,6 +21,8 @@ use crate::KResult;
 
 mod lifecycle_state;
 pub use lifecycle_state::{device_del, try_device_add, try_device_add_with_parent};
+mod error;
+pub use error::{bound_pci_error_handlers, PciChannelState, PciErrorHandlers, PciErsResult};
 
 /// Factory that mints the `/dev` node inode for a device (devtmpfs path).
 /// Boxed + `Arc` so the registry, the `Device`, and the `DEVTMPFS_HOOK`
@@ -232,6 +234,9 @@ pub trait Driver: Sync {
     fn matches(&self, dev: &Device) -> bool;
     /// Bind `dev`. Default Ok for passive/pseudo drivers. # C: driver-defined
     fn probe(&self, _dev: &Arc<Device>) -> KResult<()> { Ok(()) }
+    /// PCI error-recovery callbacks for this bound PCI driver. Drivers without
+    /// a complete recovery implementation return `None`. # C: O(1)
+    fn pci_error_handlers(&self) -> Option<&'static PciErrorHandlers> { None }
     /// Release `dev` (hot-unplug). Default no-op. # C: driver-defined
     fn remove(&self, _dev: &Device) {}
     /// Quiesce `dev` for reboot/poweroff. Default no-op. # C: driver-defined

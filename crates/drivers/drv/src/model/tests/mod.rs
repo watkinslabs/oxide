@@ -2,8 +2,10 @@
 // - `binding`: driver matching, override, bus scoping, and parent identity tests.
 // - `hooks`: devtmpfs, sysfs, and bind-event ordering tests.
 // - `lifecycle`: registration, probe failure, unbind, remove, and shutdown tests.
+// - `error`: PCI error callback binding and lifecycle tests.
 
 mod binding;
+mod error;
 mod hooks;
 mod lifecycle;
 

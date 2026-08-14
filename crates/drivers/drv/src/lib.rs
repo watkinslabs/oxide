@@ -24,6 +24,7 @@ pub use model::{
     bind, BindEvent, Device, Driver, NodeFactory, Resource, IORESOURCE_IO, IORESOURCE_MEM,
     NUMA_NODE_NONE, PCI_DEFAULT_DMA_MASK,
     IORESOURCE_PREFETCH,
+    bound_pci_error_handlers, PciChannelState, PciErrorHandlers, PciErsResult,
     register_driver, unregister_driver, devices, device_count, find_matching_device_identity,
     try_device_add, try_device_add_with_parent, device_del, rollback_devices, driver_names,
     driver_names_for_bus, driver_count, match_driver, bind_addr, unbind,
