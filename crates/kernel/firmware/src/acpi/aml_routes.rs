@@ -1,10 +1,11 @@
 //! AML namespace ownership for PCI INTx routing.
 
 use alloc::{boxed::Box, vec::Vec};
-use aml::{AmlContext, AmlName, DebugVerbosity, pci_routing::{PciRoutingTable, Pin}, resource::{InterruptPolarity, InterruptTrigger}};
+use aml::{AmlContext, AmlName, DebugVerbosity, value::{AmlValue, Args}, pci_routing::{PciRoutingTable, Pin}, resource::{InterruptPolarity, InterruptTrigger}};
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use sync::{Devices, Spinlock};
 use super::aml_handler::FirmwareHandler;
+use super::pci_osc::{self, PciOscControl};
 
 const MAX_AML_TABLES: usize = 32;
 const ACPI_HEADER_BYTES: usize = 36;
@@ -19,7 +20,7 @@ static TABLES: Tables = Tables {
     ssdt_count: AtomicU32::new(0), hhdm: AtomicU64::new(0), dsdt_pa: AtomicU64::new(0),
     ssdt_pa: [const { AtomicU64::new(0) }; MAX_AML_TABLES],
 };
-struct RootRoutes { segment: u16, bus: u8, table: PciRoutingTable }
+struct RootRoutes { segment: u16, bus: u8, table: PciRoutingTable, osc: Option<PciOscControl> }
 struct RouteContext { aml: AmlContext, roots: Vec<RootRoutes> }
 static CONTEXT: Spinlock<Option<RouteContext>, Devices> = Spinlock::new(None);
 
@@ -66,7 +67,8 @@ fn build_context() -> Option<RouteContext> {
         let bus = integer_at(&context, &scope, "_BBN").unwrap_or(0) as u8;
         let path = AmlName::from_str("_PRT").ok()?.resolve(&scope).ok()?;
         let table = PciRoutingTable::from_prt_path(&path, &mut context).ok()?;
-        roots.push(RootRoutes { segment, bus, table });
+        let osc = pci_osc::negotiate(|cap| eval_osc(&mut context, &scope, cap)).ok();
+        roots.push(RootRoutes { segment, bus, table, osc });
     }
     Some(RouteContext { aml: context, roots })
 }
@@ -90,6 +92,29 @@ fn integer_at(context: &AmlContext, scope: &AmlName, name: &str) -> Option<u64> 
     let name = AmlName::from_str(name).ok()?;
     let (_, handle) = context.namespace.search(&name, scope).ok()?;
     context.namespace.get(handle).ok()?.as_integer(context).ok()
+}
+
+fn aml_buffer(bytes: &[u8]) -> AmlValue {
+    let value = AmlValue::Buffer(alloc::sync::Arc::new(Default::default()));
+    if let AmlValue::Buffer(buffer) = &value { buffer.lock().extend_from_slice(bytes); }
+    value
+}
+
+fn eval_osc(context: &mut AmlContext, scope: &AmlName, cap: [u32; 3]) -> Result<[u32; 3], ()> {
+    let path = AmlName::from_str("_OSC").map_err(|_| ())?.resolve(scope).map_err(|_| ())?;
+    let mut bytes = [0u8; 12];
+    for (index, word) in cap.iter().enumerate() { bytes[index * 4..index * 4 + 4].copy_from_slice(&word.to_le_bytes()); }
+    let args = Args::from_list(alloc::vec![aml_buffer(&pci_osc::PCI_OSC_UUID), AmlValue::Integer(1),
+        AmlValue::Integer(cap.len() as u64), aml_buffer(&bytes)]).map_err(|_| ())?;
+    let value = context.invoke_method(&path, args).map_err(|_| ())?;
+    let buffer = value.as_buffer(context).map_err(|_| ())?;
+    let bytes = buffer.lock();
+    if bytes.len() != 12 { return Err(()); }
+    let mut result = [0u32; 3];
+    for (index, word) in result.iter_mut().enumerate() {
+        *word = u32::from_le_bytes(bytes[index * 4..index * 4 + 4].try_into().map_err(|_| ())?);
+    }
+    Ok(result)
 }
 
 fn prt_scopes(context: &mut AmlContext) -> Vec<AmlName> {
@@ -118,6 +143,11 @@ fn route_in_context(context: &mut RouteContext, bdf: pci::Bdf, pin_number: u8) -
 pub fn pci_intx_route(bdf: pci::Bdf, pin: u8) -> Option<PciIntxRoute> {
     let mut context = CONTEXT.lock();
     route_in_context(context.as_mut()?, bdf, pin)
+}
+
+/// Return PCI root firmware ownership retained for `segment:bus`. # C: O(root routes)
+pub fn pci_osc_control(segment: u16, bus: u8) -> Option<PciOscControl> {
+    CONTEXT.lock().as_ref()?.roots.iter().find(|root| root.segment == segment && root.bus == bus)?.osc
 }
 
 /// Parse AML and cache every root-bridge routing table before drivers attach.
