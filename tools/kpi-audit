@@ -147,6 +147,14 @@ SUPPORTED_KPI_ABI: dict[str, AbiType] = {
         ("bd_holder_dir", 136), ("bd_fsfreeze_count", 144),
         ("bd_fsfreeze_mutex", 152), ("bd_meta_info", 184), ("bd_writers", 192),
         ("bd_security", 200), ("bd_device", 208))),
+    "gendisk": AbiType("gendisk", 656, (("major", 0), ("first_minor", 4), ("minors", 8),
+        ("disk_name", 12), ("events", 44), ("event_flags", 46), ("part_tbl", 48),
+        ("part0", 64), ("fops", 72), ("queue", 80), ("private_data", 88),
+        ("bio_split", 96), ("flags", 344), ("state", 352), ("open_mutex", 360),
+        ("open_partitions", 392), ("bdi", 400), ("queue_kobj", 408),
+        ("slave_dir", 472), ("slave_bdevs", 480), ("random", 496), ("ev", 504),
+        ("node_id", 584), ("bb", 592), ("diskseq", 600), ("open_mode", 608),
+        ("ia_ranges", 616), ("rqos_state_mutex", 624))),
 }
 
 ABI_TYPES: tuple[str, ...] = (

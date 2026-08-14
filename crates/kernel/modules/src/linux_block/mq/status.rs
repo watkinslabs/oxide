@@ -64,7 +64,8 @@ unsafe extern "C" fn device_add_disk(parent: *mut c_void, disk: *mut LinuxGendis
     // SAFETY: disk is a live gendisk and parent, when non-null, is the caller's Linux device pointer; the
     // embedded device records that same parent before add_disk publishes its device/core and block lifetimes.
     unsafe {
-        (*disk).dev.parent = parent as *mut crate::linux_device::types::LinuxDevice;
+        if (*disk).part0.is_null() { return -LINUX_EINVAL; }
+        (*(*disk).part0).bd_device.parent = parent as *mut crate::linux_device::types::LinuxDevice;
         core::add_disk(disk);
     }
     LINUX_OK

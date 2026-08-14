@@ -1,5 +1,5 @@
 use crate::linux_alloc::LinuxPage;
-use crate::linux_device::types::LinuxDevice;
+use crate::linux_device::types::{LinuxDevice, LinuxKobject};
 use alloc::vec::Vec;
 use core::ffi::{c_char, c_void};
 use core::sync::atomic::AtomicU32;
@@ -131,13 +131,37 @@ pub(super) struct LinuxGendisk {
     pub(super) first_minor: i32,
     pub(super) minors: i32,
     pub(super) disk_name: [c_char; DISK_NAME_LEN],
+    pub(super) events: u16,
+    pub(super) event_flags: u16,
+    /// Inline `struct xarray part_tbl` (16 bytes), as in Linux `struct gendisk`.
+    pub(super) part_tbl: [u8; 16],
+    pub(super) part0: *mut LinuxBlockDevice,
     pub(super) fops: *const LinuxBlockDeviceOperations,
     pub(super) queue: *mut LinuxRequestQueue,
     pub(super) private_data: *mut c_void,
-    pub(super) capacity: u64,
+    pub(super) bio_split: *mut c_void,
+    pub(super) _pre_flags: [u8; 240],
     pub(super) flags: u32,
+    pub(super) _state_pad: u32,
     pub(super) state: usize,
-    pub(super) dev: LinuxDevice,
+    pub(super) open_mutex: [u8; 32],
+    pub(super) open_partitions: u32,
+    pub(super) _bdi_pad: u32,
+    pub(super) bdi: *mut c_void,
+    pub(super) queue_kobj: LinuxKobject,
+    pub(super) slave_dir: *mut c_void,
+    pub(super) slave_bdevs: [u8; 16],
+    pub(super) random: *mut c_void,
+    pub(super) ev: *mut c_void,
+    pub(super) _zoned: [u8; 72],
+    pub(super) node_id: i32,
+    pub(super) _node_pad: u32,
+    pub(super) bb: *mut c_void,
+    pub(super) diskseq: u64,
+    pub(super) open_mode: u32,
+    pub(super) _open_mode_pad: u32,
+    pub(super) ia_ranges: *mut c_void,
+    pub(super) rqos_state_mutex: [u8; 32],
 }
 
 #[repr(C)]
@@ -359,6 +383,18 @@ mod tests {
         assert_eq!(offset_of!(LinuxBlockDevice, bd_holders), 128);
         assert_eq!(offset_of!(LinuxBlockDevice, bd_fsfreeze_mutex), 152);
         assert_eq!(offset_of!(LinuxBlockDevice, bd_device), 208);
+    }
+
+    #[test]
+    fn gendisk_layout_matches_the_supported_module_abi() {
+        assert_eq!(size_of::<LinuxGendisk>(), 656);
+        assert_eq!(offset_of!(LinuxGendisk, part0), 64);
+        assert_eq!(offset_of!(LinuxGendisk, queue), 80);
+        assert_eq!(offset_of!(LinuxGendisk, flags), 344);
+        assert_eq!(offset_of!(LinuxGendisk, state), 352);
+        assert_eq!(offset_of!(LinuxGendisk, queue_kobj), 408);
+        assert_eq!(offset_of!(LinuxGendisk, diskseq), 600);
+        assert_eq!(offset_of!(LinuxGendisk, rqos_state_mutex), 624);
     }
 
     #[test]
