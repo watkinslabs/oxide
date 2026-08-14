@@ -53,6 +53,17 @@ fn config_write(addr: &str, off: usize, buf: &[u8]) -> bool {
     }
 }
 
+/// Shut the generic PCI transport gates after the bound driver has released
+/// its device state, before the driver model removes the function.
+/// # C: O(N_caps)
+fn quiesce_after_driver_remove(dev: &drv::Device) {
+    let Some(bdf) = pci::parse_bdf_addr(&dev.addr) else { return; };
+    #[cfg(target_arch = "x86_64")]
+    if let Some(r) = hal_x86_64::pci::EcamPci::from_published() { pci::quiesce_function(&r, bdf); }
+    #[cfg(target_arch = "aarch64")]
+    if let Some(r) = hal_aarch64::pci::EcamPci::from_published() { pci::quiesce_function(&r, bdf); }
+}
+
 /// PCI identity of `bdf` that only config space carries. # C: O(1)
 pub(crate) fn pci_ident(d: &pci::PciDevice) -> drv::PciIdent {
     let mut ident = drv::PciIdent {
@@ -78,5 +89,6 @@ pub(crate) fn pci_ident(d: &pci::PciDevice) -> drv::PciIdent {
 /// # C: O(1)
 pub(crate) fn install_hooks() {
     drv::set_pci_config_hooks(config_read, config_write);
+    drv::set_pci_remove_hook(Some(quiesce_after_driver_remove));
     drv::set_pci_rescan_hook(super::rescan);
 }

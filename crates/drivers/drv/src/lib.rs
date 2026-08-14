@@ -14,7 +14,7 @@ pub mod model;
 pub mod pci_dev;
 mod path;
 pub use pci_dev::{
-    pci_config_read, pci_config_write, pci_rescan, set_pci_config_hooks, set_pci_rescan_hook,
+    pci_config_read, pci_config_write, pci_rescan, set_pci_config_hooks, set_pci_remove_hook, set_pci_rescan_hook,
     PciIdent,
 };
 pub use path::{

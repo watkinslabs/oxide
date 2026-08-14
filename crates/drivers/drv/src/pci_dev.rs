@@ -32,10 +32,13 @@ pub type PciConfigReadHook = fn(&str, usize, &mut [u8]) -> bool;
 pub type PciConfigWriteHook = fn(&str, usize, &[u8]) -> bool;
 /// Re-enumerate the PCI hierarchy, publishing functions not yet registered.
 pub type PciRescanHook = fn();
+/// Quiesce PCI transport state after a driver's remove callback.
+pub type PciRemoveHook = fn(&crate::Device);
 
 static CONFIG_READ_HOOK:  Spinlock<Option<PciConfigReadHook>,  DriverListClass> = Spinlock::new(None);
 static CONFIG_WRITE_HOOK: Spinlock<Option<PciConfigWriteHook>, DriverListClass> = Spinlock::new(None);
 static RESCAN_HOOK:       Spinlock<Option<PciRescanHook>,      DriverListClass> = Spinlock::new(None);
+static REMOVE_HOOK:       Spinlock<Option<PciRemoveHook>,      DriverListClass> = Spinlock::new(None);
 
 /// Install the config-space accessors (the kernel wires the arch ECAM
 /// reader). # C: O(1)
@@ -46,6 +49,9 @@ pub fn set_pci_config_hooks(read: PciConfigReadHook, write: PciConfigWriteHook) 
 
 /// Install the bus-rescan hook. # C: O(1)
 pub fn set_pci_rescan_hook(f: PciRescanHook) { *RESCAN_HOOK.lock() = Some(f); }
+
+/// Install or clear the PCI transport quiesce hook. # C: O(1)
+pub fn set_pci_remove_hook(f: Option<PciRemoveHook>) { *REMOVE_HOOK.lock() = f; }
 
 /// Read config space of the function at `addr`. # C: O(n)
 pub fn pci_config_read(addr: &str, off: usize, buf: &mut [u8]) -> bool {
@@ -63,4 +69,11 @@ pub fn pci_config_write(addr: &str, off: usize, buf: &[u8]) -> bool {
 pub fn pci_rescan() -> bool {
     let hook = *RESCAN_HOOK.lock();
     match hook { Some(h) => { h(); true } None => false }
+}
+
+/// Quiesce a just-unbound PCI function before its model object disappears.
+/// # C: O(transport teardown)
+pub(crate) fn pci_remove_after_driver(dev: &crate::Device) {
+    if dev.bus != "pci" { return; }
+    if let Some(hook) = *REMOVE_HOOK.lock() { hook(dev); }
 }

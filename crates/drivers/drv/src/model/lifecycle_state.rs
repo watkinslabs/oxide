@@ -111,6 +111,7 @@ pub fn device_del(d: &Arc<Device>) {
     if d.bound().is_some() {
         let _ = unbind(d);
     }
+    crate::pci_dev::pci_remove_after_driver(d);
     if let Some(hook) = *SYSFS_REMOVE_HOOK.lock() { hook(d); }
     if let Some(name) = d.devname.clone() {
         if let Some(hook) = *DEVTMPFS_DEL_HOOK.lock() { hook(&name); }
