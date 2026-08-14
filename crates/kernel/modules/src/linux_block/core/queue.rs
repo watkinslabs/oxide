@@ -74,7 +74,7 @@ extern "C" fn blk_mq_alloc_tag_set(set: *mut LinuxBlkMqTagSet) -> i32 {
     // SAFETY: set is non-null and owned by the driver; lifecycle is exclusively initialized by this setup
     // entry before any queue may attach to the tag set.
     unsafe {
-        if (*set).lifecycle.is_null() { (*set).lifecycle = Box::into_raw(Box::new(LinuxTagSetLifecycle::new())); }
+        if (*set).srcu.is_null() { (*set).srcu = Box::into_raw(Box::new(LinuxTagSetLifecycle::new())); }
     }
     LINUX_OK
 }
@@ -84,8 +84,8 @@ unsafe extern "C" fn blk_mq_free_tag_set(set: *mut LinuxBlkMqTagSet) {
     // SAFETY: a driver frees its tag set only after it has destroyed attached queues; the lifecycle pointer
     // came from blk_mq_alloc_tag_set and is consumed exactly once here.
     unsafe {
-        let lifecycle = (*set).lifecycle;
-        if !lifecycle.is_null() { drop(Box::from_raw(lifecycle)); (*set).lifecycle = null_mut(); }
+        let lifecycle = (*set).srcu;
+        if !lifecycle.is_null() { drop(Box::from_raw(lifecycle)); (*set).srcu = null_mut(); }
     }
 }
 

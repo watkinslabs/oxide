@@ -191,13 +191,25 @@ pub(super) struct LinuxBio {
 #[repr(C)]
 pub(super) struct LinuxBlkMqTagSet {
     pub(super) ops: *const LinuxBlkMqOps,
+    /// Three inline `blk_mq_queue_map` records owned by the block core.
+    pub(super) map: [u8; 48],
+    pub(super) nr_maps: u32,
     pub(super) nr_hw_queues: u32,
     pub(super) queue_depth: u32,
-    pub(super) numa_node: i32,
+    pub(super) reserved_tags: u32,
     pub(super) cmd_size: u32,
+    pub(super) numa_node: i32,
+    pub(super) timeout: u32,
     pub(super) flags: u32,
     pub(super) driver_data: *mut c_void,
-    pub(super) lifecycle: *mut LinuxTagSetLifecycle,
+    pub(super) tags: *mut *mut c_void,
+    pub(super) shared_tags: *mut c_void,
+    pub(super) tag_list_lock: [u8; 32],
+    pub(super) tag_list: [u8; 16],
+    /// Block-core SRCU owner; Oxide's lifecycle bridge is allocated here.
+    pub(super) srcu: *mut LinuxTagSetLifecycle,
+    pub(super) tags_srcu: [u8; 32],
+    pub(super) update_nr_hwq_lock: [u8; 40],
 }
 
 pub(super) struct LinuxTagSetLifecycle {
@@ -395,6 +407,19 @@ mod tests {
         assert_eq!(offset_of!(LinuxGendisk, queue_kobj), 408);
         assert_eq!(offset_of!(LinuxGendisk, diskseq), 600);
         assert_eq!(offset_of!(LinuxGendisk, rqos_state_mutex), 624);
+    }
+
+    #[test]
+    fn blk_mq_tag_set_layout_matches_the_supported_module_abi() {
+        assert_eq!(size_of::<LinuxBlkMqTagSet>(), 240);
+        assert_eq!(offset_of!(LinuxBlkMqTagSet, map), 8);
+        assert_eq!(offset_of!(LinuxBlkMqTagSet, nr_maps), 56);
+        assert_eq!(offset_of!(LinuxBlkMqTagSet, driver_data), 88);
+        assert_eq!(offset_of!(LinuxBlkMqTagSet, tags), 96);
+        assert_eq!(offset_of!(LinuxBlkMqTagSet, tag_list_lock), 112);
+        assert_eq!(offset_of!(LinuxBlkMqTagSet, srcu), 160);
+        assert_eq!(offset_of!(LinuxBlkMqTagSet, tags_srcu), 168);
+        assert_eq!(offset_of!(LinuxBlkMqTagSet, update_nr_hwq_lock), 200);
     }
 
     #[test]
