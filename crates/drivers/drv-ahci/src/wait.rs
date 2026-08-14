@@ -4,8 +4,6 @@
 
 use sched::live::wait_list::WaitList;
 
-pub(crate) const IO_TIMEOUT_NS: u64 = 5_000_000_000;
-
 /// Monotonic wait clock. # C: O(1)
 pub(crate) fn now_ns() -> u64 { crate::port::now_ns() }
 

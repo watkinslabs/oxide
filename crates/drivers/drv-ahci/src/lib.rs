@@ -27,6 +27,7 @@ extern crate alloc;
 mod regs;
 #[cfg(any(target_os = "oxide-kernel", test))]
 mod lifecycle;
+mod limits;
 #[cfg(target_os = "oxide-kernel")]
 mod command;
 #[cfg(target_os = "oxide-kernel")]

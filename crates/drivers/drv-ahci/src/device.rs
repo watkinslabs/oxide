@@ -59,7 +59,6 @@ impl AhciBlk {
     }
 
     fn acquire_turn(&self) -> bool {
-        let deadline = wait::now_ns().saturating_add(wait::IO_TIMEOUT_NS);
         loop {
             if self.unavailable() { return false; }
             if self
@@ -71,19 +70,13 @@ impl AhciBlk {
                 self.release_turn();
                 return false;
             }
-            if wait::now_ns() >= deadline {
-                self.poisoned.store(true, Ordering::Release);
-                return false;
-            }
             if !wait::poll_enabled(
                 || self.unavailable() || !self.turn_busy.load(Ordering::Acquire),
-                deadline,
+                crate::limits::QUEUE_WAIT_DEADLINE_NS,
             ) {
-                if wait::now_ns() >= deadline {
-                    self.poisoned.store(true, Ordering::Release);
-                    return false;
-                }
-                wait::park_checked(&self.turn_wait, deadline, || {
+                // Arbitration is not a hardware command.  Its wait ends only
+                // when the current owner releases the port or removal wakes us.
+                wait::park_checked(&self.turn_wait, crate::limits::QUEUE_WAIT_DEADLINE_NS, || {
                     self.unavailable() || !self.turn_busy.load(Ordering::Acquire)
                 });
             }
@@ -96,7 +89,7 @@ impl AhciBlk {
     }
 
     fn wait_for_irq(&self) -> bool {
-        let deadline = wait::now_ns().saturating_add(wait::IO_TIMEOUT_NS);
+        let deadline = wait::now_ns().saturating_add(crate::limits::COMMAND_TIMEOUT_NS);
         loop {
             if self.unavailable() { return false; }
             if self.irq.completed() { return !self.irq.failed(); }
@@ -144,7 +137,7 @@ impl AhciBlk {
     ) -> bool {
         if !self.acquire_turn() { return false; }
         self.irq.prepare_command();
-        let deadline = wait::now_ns().saturating_add(wait::IO_TIMEOUT_NS);
+        let deadline = wait::now_ns().saturating_add(crate::limits::COMMAND_TIMEOUT_NS);
         let waiter_prepared = wait::prepare_command_wait(self.irq.waiters(), deadline);
         let (started, bootstrap_complete) = {
             let mut ctrl = self.ctrl.lock();
@@ -207,7 +200,7 @@ impl AhciBlk {
     fn flush_command(&self) -> bool {
         if !self.acquire_turn() { return false; }
         self.irq.prepare_command();
-        let deadline = wait::now_ns().saturating_add(wait::IO_TIMEOUT_NS);
+        let deadline = wait::now_ns().saturating_add(crate::limits::COMMAND_TIMEOUT_NS);
         let waiter_prepared = wait::prepare_command_wait(self.irq.waiters(), deadline);
         let (started, bootstrap_complete) = {
             let mut ctrl = self.ctrl.lock();
