@@ -8,6 +8,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use sched::live::wait_list::WaitList;
 use sync::{Spinlock, TaskList as DriverLockClass};
 
+use crate::host::AhciHost;
 use crate::port::Ahci;
 use crate::regs;
 
@@ -48,11 +49,11 @@ struct HostIrq {
 
 static HOST_IRQS: Spinlock<Vec<HostIrq>, DriverLockClass> = Spinlock::new(Vec::new());
 
-fn claim_endpoint(ctrl: &Ahci) -> Option<usize> {
+fn claim_endpoint(abar_va: u64, port: u32) -> Option<usize> {
     for (idx, endpoint) in ENDPOINTS.iter().enumerate() {
         if endpoint.state.compare_exchange(ENDPOINT_FREE, ENDPOINT_SETUP, Ordering::AcqRel, Ordering::Acquire).is_err() { continue; }
-        endpoint.abar_va.store(ctrl.abar_va(), Ordering::Release);
-        endpoint.port.store(ctrl.port_index(), Ordering::Release);
+        endpoint.abar_va.store(abar_va, Ordering::Release);
+        endpoint.port.store(port, Ordering::Release);
         endpoint.in_handler.store(0, Ordering::Release);
         endpoint.pis.store(0, Ordering::Release);
         endpoint.tfd.store(0, Ordering::Release);
@@ -191,7 +192,7 @@ fn hard_handler() {
 
 /// Bind one AHCI controller through the PCI IRQ owner. # C: O(N_caps)
 pub(crate) fn bind(bdf: pci::Bdf, ctrl: &Ahci) -> Option<IrqBinding> {
-    let endpoint = claim_endpoint(ctrl)?;
+    let endpoint = claim_endpoint(ctrl.abar_va(), ctrl.port_index())?;
     if let Some(host) = host_retain(ctrl.abar_va()) {
         ENDPOINTS[endpoint].state.store(ENDPOINT_ACTIVE, Ordering::Release);
         ctrl.enable_interrupts();
@@ -210,6 +211,31 @@ pub(crate) fn bind(bdf: pci::Bdf, ctrl: &Ahci) -> Option<IrqBinding> {
     ENDPOINTS[endpoint].state.store(ENDPOINT_ACTIVE, Ordering::Release);
     ctrl.enable_interrupts();
     Some(IrqBinding { endpoint, host })
+}
+
+/// Bind an empty physical port solely for connect/PHY-ready notifications.
+/// The watcher owns no command or data DMA and converts to a disk endpoint
+/// before IDENTIFY on insertion. # C: O(N_caps)
+pub(crate) fn bind_watcher(bdf: pci::Bdf, host: &AhciHost, port: u32) -> Option<IrqBinding> {
+    let endpoint = claim_endpoint(host.abar_va(), port)?;
+    if let Some(index) = host_retain(host.abar_va()) {
+        ENDPOINTS[endpoint].state.store(ENDPOINT_ACTIVE, Ordering::Release);
+        host.enable_interrupts(1 << port);
+        return Some(IrqBinding { endpoint, host: index });
+    }
+    let table = pci_irq::BarMapping { bar: 5, base_va: host.abar_va(), bytes: host.abar_map_bytes(), offset: host.abar_offset() };
+    let Some(binding) = pci_irq::request(bdf, table, arch_irq::DeviceAction::Ahci, hard_handler) else {
+        release_endpoint(endpoint);
+        return None;
+    };
+    let Some(index) = host_insert(host.abar_va(), binding) else {
+        binding.release();
+        release_endpoint(endpoint);
+        return None;
+    };
+    ENDPOINTS[endpoint].state.store(ENDPOINT_ACTIVE, Ordering::Release);
+    host.enable_interrupts(1 << port);
+    Some(IrqBinding { endpoint, host: index })
 }
 
 impl IrqBinding {
@@ -242,12 +268,8 @@ impl IrqBinding {
     /// Command-completion wait queue owned by this IRQ endpoint. # C: O(1)
     pub(crate) fn waiters(self) -> &'static WaitList { &ENDPOINTS[self.endpoint].waiters }
 
-    #[cfg(feature = "debug-boot")]
-    /// Count terminal IRQ observations. # C: O(1)
-    pub(crate) fn completion_count(self) -> u64 { ENDPOINTS[self.endpoint].irq_count.load(Ordering::Acquire) }
-
     /// Mask AHCI sources and prevent a new hard-handler acquisition. # C: O(N_slots)
-    pub(crate) fn begin_release(self, ctrl: &Ahci) {
+    pub(crate) fn begin_release(self, host: &AhciHost, port: u32) {
         let endpoint = &ENDPOINTS[self.endpoint];
         let mut transitioned = false;
         loop {
@@ -259,8 +281,8 @@ impl IrqBinding {
             }
         }
         if !transitioned { return; }
-        if host_begin_release(self.host) { ctrl.disable_interrupts(); }
-        else { ctrl.disable_port_interrupts(); }
+        if host_begin_release(self.host) { host.disable_interrupts(1 << port); }
+        else { host.disable_port_interrupts(port); }
     }
 
     /// Drain the hard handler, release the PCI-owned vector, then free the endpoint. # C: O(handler)

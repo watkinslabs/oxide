@@ -9,6 +9,7 @@ use sched::live::wait_list::WaitList;
 use sync::{Spinlock, TaskList as DriverLockClass};
 
 use crate::irq::IrqBinding;
+use crate::host::AhciHost;
 use crate::lifecycle::{self, ControllerCleanupStep};
 use crate::port::Ahci;
 use crate::wait;
@@ -248,6 +249,13 @@ impl AhciBlk {
         self.media_offline.load(Ordering::Acquire)
     }
 
+    /// Controller and port retained for the replacement empty-port watcher.
+    /// # C: O(1)
+    pub(crate) fn watch_identity(&self) -> (alloc::sync::Arc<AhciHost>, u32) {
+        let ctrl = self.ctrl.lock();
+        (ctrl.host_clone(), ctrl.port_index())
+    }
+
     /// Consume a port link-change event and wake command waiters. A true
     /// result means the live SATA status confirmed departure; the driver
     /// registry owner must then force-detach publication before teardown.
@@ -256,12 +264,6 @@ impl AhciBlk {
         let offline = self.take_offline_link_change();
         if self.irq.take_wake() { self.irq.waiters().wake_all(); }
         offline
-    }
-
-    #[cfg(feature = "debug-boot")]
-    /// Count terminal hardware IRQ completions for boot verification. # C: O(1)
-    pub(crate) fn irq_completion_count(&self) -> u64 {
-        self.irq.completion_count()
     }
 
     fn quiesce_and_free(&self) {
@@ -273,7 +275,7 @@ impl AhciBlk {
         for step in lifecycle::controller_cleanup_steps() {
             match step {
                 ControllerCleanupStep::MaskAndFreeIrq => {
-                    self.irq.begin_release(&ctrl);
+                    self.irq.begin_release(ctrl.host(), ctrl.port_index());
                 }
                 ControllerCleanupStep::SynchronizeIrq => {
                     self.irq.synchronize_and_release();

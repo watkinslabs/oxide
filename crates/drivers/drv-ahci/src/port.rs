@@ -187,6 +187,13 @@ impl Ahci {
     /// Offset from the owned mapping base to BAR5. # C: O(1)
     pub(crate) fn abar_offset(&self) -> u64 { self.host.abar_offset() }
 
+    /// Retain the controller while this port changes between media watcher and
+    /// published-disk ownership. # C: O(1)
+    pub(crate) fn host_clone(&self) -> Arc<AhciHost> { self.host.clone() }
+
+    /// Controller retained by this port. # C: O(1)
+    pub(crate) fn host(&self) -> &AhciHost { &self.host }
+
     /// Selected SATA port index. # C: O(1)
     pub(crate) fn port_index(&self) -> u32 { self.port }
 
@@ -215,14 +222,6 @@ impl Ahci {
         self.pw(regs::P_IE, 0);
         let _ = self.pr(regs::P_IE);
         self.host.disable_interrupts(1 << self.port);
-    }
-
-    /// Mask and acknowledge this port while another port retains the shared
-    /// function IRQ. It must not touch the HBA-global interrupt gate. # C: O(1)
-    pub(crate) fn disable_port_interrupts(&self) {
-        self.pw(regs::P_IE, 0);
-        let _ = self.pr(regs::P_IE);
-        self.clear_command_interrupts();
     }
 
     fn comreset_link(&self) -> bool {

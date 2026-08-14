@@ -84,6 +84,15 @@ impl AhciHost {
         self.clear_interrupts(port_map);
     }
 
+    /// Mask and acknowledge one port without touching the shared HBA-global
+    /// interrupt gate. # C: O(1)
+    pub(crate) fn disable_port_interrupts(&self, port: u32) {
+        let map = 1u32 << port;
+        self.w32(regs::port_reg(port, regs::P_IE), 0);
+        let _ = self.r32(regs::port_reg(port, regs::P_IE));
+        self.clear_interrupts(map);
+    }
+
     fn read_at(abar_va: u64, off: u64) -> u32 {
         // SAFETY: the caller owns a device mapping covering this aligned AHCI offset.
         unsafe { core::ptr::read_volatile((abar_va + off) as *const u32) }

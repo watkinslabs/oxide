@@ -39,34 +39,31 @@ mod irq;
 mod port;
 #[cfg(target_os = "oxide-kernel")]
 mod wait;
+#[cfg(target_os = "oxide-kernel")]
+mod hotplug;
 
 #[cfg(target_os = "oxide-kernel")]
-mod imp {
+pub(crate) mod imp {
     use alloc::sync::Arc;
-    use alloc::string::String;
     use alloc::vec::Vec;
-    use core::sync::atomic::{AtomicBool, Ordering};
     use sync::{Spinlock, TaskList as DriverLockClass};
-    #[cfg(feature = "debug-boot")]
-    use block::{BlockDevice, BlockRequest};
     use crate::device::AhciBlk;
     use crate::host::AhciHost;
-    use crate::port::Ahci;
 
     /// PCI class for an AHCI controller: base 0x01 (mass storage), subclass
     /// 0x06 (SATA), prog-if 0x01 (AHCI 1.0). # C: O(1)
     pub const AHCI_CLASS24: u32 = 0x01_06_01;
 
-    struct AhciRecord {
-        device_key: pci::Bdf,
-        command_orig: u16,
-        name:       block::ScsiDiskName,
-        dev:        Arc<AhciBlk>,
+    pub(crate) struct AhciRecord {
+        pub(crate) device_key: pci::Bdf,
+        pub(crate) command_orig: u16,
+        pub(crate) port:       u32,
+        pub(crate) name:       block::ScsiDiskName,
+        pub(crate) dev:        Arc<AhciBlk>,
     }
 
-    static DEVICES: Spinlock<Vec<AhciRecord>, DriverLockClass> = Spinlock::new(Vec::new());
-    static MEDIA_WORK_PENDING: AtomicBool = AtomicBool::new(false);
-    static MEDIA_WORK_QUEUED: AtomicBool = AtomicBool::new(false);
+    pub(crate) static DEVICES: Spinlock<Vec<AhciRecord>, DriverLockClass> = Spinlock::new(Vec::new());
+    use crate::hotplug::{self, run_completion_bottom_half, unregister_completion_if_idle};
 /// Bottom-half gate for the completion/drain-softirq-shared lock: real
 /// exclusion in the kernel, a no-op under hosted tests. Every acquisition of
 /// the lock goes through `lock_bh`, softirq context included — the disable
@@ -75,84 +72,10 @@ mod imp {
 /// one-CPU deadlock B2007/B2008 fixed: the softirq spins on an owner it
 /// interrupted.
 #[cfg(target_os = "oxide-kernel")]
-type AhciBh = sched::bh::SchedBh;
+pub(crate) type AhciBh = sched::bh::SchedBh;
 #[cfg(not(target_os = "oxide-kernel"))]
-type AhciBh = sync::NoopBh;
+pub(crate) type AhciBh = sync::NoopBh;
 
-
-    fn run_completion_bottom_half() {
-        let devices: Vec<Arc<AhciBlk>> = DEVICES
-            .lock_bh::<AhciBh>()
-            .iter()
-            .map(|record| record.dev.clone())
-            .collect();
-        let mut departed = false;
-        for dev in devices {
-            departed |= dev.completion_bottom_half();
-        }
-        if departed || MEDIA_WORK_PENDING.load(Ordering::Acquire) { queue_media_work(); }
-    }
-
-    /// Queue the sleepable SATA-media lifecycle path. Workqueue saturation
-    /// keeps the pending bit set and re-raises the already-installed block
-    /// softirq, so a confirmed departure is never silently discarded.
-    /// # C: O(1)
-    fn queue_media_work() {
-        MEDIA_WORK_PENDING.store(true, Ordering::Release);
-        if MEDIA_WORK_QUEUED.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() { return; }
-        if !sched::live::workqueue::queue_work(media_work, 0) {
-            MEDIA_WORK_QUEUED.store(false, Ordering::Release);
-            block::completion::raise();
-        }
-    }
-
-    /// Process confirmed SATA departures in kworker context. # Ctx: process
-    /// # Sleeps: yes
-    fn media_work(_arg: usize) {
-        loop {
-            MEDIA_WORK_PENDING.store(false, Ordering::Release);
-            let departed: Vec<String> = DEVICES.lock_bh::<AhciBh>().iter()
-                .filter(|record| record.dev.media_offline())
-                .map(|record| String::from(record.name.as_str()))
-                .collect();
-            for name in departed { remove_departed_disk(&name); }
-            MEDIA_WORK_QUEUED.store(false, Ordering::Release);
-            if !MEDIA_WORK_PENDING.load(Ordering::Acquire)
-                || MEDIA_WORK_QUEUED.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err()
-            {
-                return;
-            }
-        }
-    }
-
-    /// Detach one SATA disk after the endpoint sampled an offline PHY. The
-    /// block registry closes publication and admission before the AHCI port
-    /// can stop DMA; only requests admitted before that transition are
-    /// drained. # C: O(N_disks + drain + port shutdown) # Ctx: process
-    fn remove_departed_disk(name: &str) {
-        let Some(detach) = block::registry::begin_forced_detach(name) else { return; };
-        detach.wait_for_drain();
-        let record = {
-            let mut devices = DEVICES.lock_bh::<AhciBh>();
-            devices.iter().position(|record| record.name.as_str() == name)
-                .map(|idx| devices.remove(idx))
-        };
-        if let Some(record) = record { record.dev.remove(); }
-        unregister_completion_if_idle();
-    }
-
-    fn unregister_completion_if_idle() {
-        if DEVICES.lock_bh::<AhciBh>().is_empty() {
-            let _ = block::completion::unregister(run_completion_bottom_half);
-        }
-    }
-
-    #[cfg(feature = "debug-boot")]
-    fn key_bus(key: pci::Bdf) -> u8 { key.bus }
-    #[cfg(feature = "debug-boot")]
-    fn key_device(key: pci::Bdf) -> u8 { key.device }
-    #[cfg(feature = "debug-boot")]
-    fn key_function(key: pci::Bdf) -> u8 { key.function }
 
     pub fn device_key_from_bdf(bdf: pci::Bdf) -> pci::Bdf {
         bdf
@@ -169,7 +92,7 @@ type AhciBh = sync::NoopBh;
         mmio: mmio_map::Mapping,
         abar_off: u64,
     ) -> u32 {
-        if DEVICES.lock_bh::<AhciBh>().iter().any(|rec| rec.device_key == device_key) {
+        if hotplug::controller_bound(device_key) {
             return 0;
         }
         let host = match AhciHost::bring_up(device_key, mmio, abar_off) { Ok(host) => Arc::new(host), Err(reason) => {
@@ -189,83 +112,31 @@ type AhciBh = sync::NoopBh;
             return 0;
         }
         let mut first_idx = 0u32;
+        let mut bound = false;
         for port in 0..32 {
             if host.ports() & (1 << port) == 0 { continue; }
-            let Ok(mut a) = Ahci::bring_up(host.clone(), port) else { continue; };
-            let blk_size = a.blk_size;
-            let capacity = a.sectors;
-            let serial = a.serial.clone();
-            let Some(binding) = crate::irq::bind(device_key, &a) else { a.shutdown_and_free(); continue; };
-            let dev = Arc::new(AhciBlk::new(a, binding, blk_size, capacity));
-            let Some(name) = block::reserve_scsi_disk_name() else { dev.remove(); continue; };
-            let name_text = String::from(name.as_str());
-            let existed = block::registry::by_name(&name_text).is_some();
-            let idx = block::registry::register_with_driver(
-                block::registry::BlockDriver::fixed("sd", block::uapi::SCSI_DISK_MAJOR), &name_text, serial.as_deref(), dev.clone());
-            if idx == 0 || existed {
-                if idx != 0 { let _ = block::registry::unregister(&name_text); }
-                dev.remove();
+            if let Some(idx) = hotplug::publish_port(device_key, command_orig, host.clone(), port) {
+                bound = true;
+                if first_idx == 0 { first_idx = idx; }
                 continue;
             }
-            DEVICES.lock_bh::<AhciBh>().push(AhciRecord { device_key, command_orig, name, dev: dev.clone() });
-            if first_idx == 0 { first_idx = idx; }
-            #[cfg(feature = "debug-boot")]
-            {
-                klog::write_raw(b"[INFO]  ahci: port=");
-                klog::write_dec_u64(port as u64);
-                klog::write_raw(b" sectors=");
-                klog::write_dec_u64(capacity);
-                klog::write_raw(b" bsz=");
-                klog::write_dec_u64(blk_size as u64);
-                klog::write_raw(b"\n");
-            }
-            // Run after DEVICES publication so the shared BlockIo bottom half
-            // can find and wake this port's completion waiter.
-            #[cfg(feature = "debug-boot")]
-            {
-                let before = dev.irq_completion_count();
-                let mut req = BlockRequest::new_read(0, 1, blk_size);
-                let ok = dev.submit_sync(&mut req).is_ok();
-                let irqs = dev.irq_completion_count().saturating_sub(before);
-                klog::write_raw(b"[INFO]  ahci: lba0 read selftest=");
-                klog::write_dec_u64(ok as u64);
-                klog::write_raw(b" irq_completions=");
-                klog::write_dec_u64(irqs);
-                klog::write_raw(b"\n");
-            }
-        #[cfg(feature = "debug-boot")]
-        {
-            klog::write_raw(b"[INFO]  ahci ");
-            klog::write_dec_u64(key_bus(device_key) as u64);
-            klog::write_raw(b":");
-            klog::write_dec_u64(key_device(device_key) as u64);
-            klog::write_raw(b".");
-            klog::write_dec_u64(key_function(device_key) as u64);
-            klog::write_raw(b" block dev registered idx=");
-            klog::write_dec_u64(idx as u64);
-            klog::write_raw(b"\n");
-            }
+            bound |= hotplug::install_watcher(device_key, command_orig, host.clone(), port);
         }
-        if first_idx == 0 { unregister_completion_if_idle(); }
-        first_idx
+        if !bound {
+            unregister_completion_if_idle();
+            return 0;
+        }
+        first_idx.max(1)
     }
 
     /// Remove the registered AHCI disk and release controller-owned resources.
     /// # C: O(N_ahci + N_disks + port shutdown)
     pub fn remove(device_key: pci::Bdf) -> bool {
-        let records = {
-            let mut devices = DEVICES.lock_bh::<AhciBh>();
-            let mut records = Vec::new();
-            let mut i = 0;
-            while i < devices.len() {
-                if devices[i].device_key == device_key { records.push(devices.remove(i)); }
-                else { i += 1; }
-            }
-            records
-        };
-        if records.is_empty() { return false; }
+        let (records, watches) = hotplug::remove_controller(device_key);
+        if records.is_empty() && watches.is_empty() { return false; }
         for rec in &records { let _ = block::registry::unregister(rec.name.as_str()); }
         for rec in records.into_iter().rev() { rec.dev.remove(); }
+        for watch in watches.into_iter().rev() { watch.release(); }
         unregister_completion_if_idle();
         true
     }
@@ -280,19 +151,18 @@ type AhciBh = sync::NoopBh;
             .filter(|rec| rec.device_key == device_key)
             .map(|rec| rec.dev.clone())
             .collect();
-        if devices.is_empty() { return false; }
+        let (_records, watches) = hotplug::remove_controller(device_key);
+        if devices.is_empty() && watches.is_empty() { return false; }
         for dev in devices.into_iter().rev() { dev.shutdown(); }
+        for watch in watches.into_iter().rev() { watch.release(); }
+        unregister_completion_if_idle();
         true
     }
 
     /// Original PCI command bits saved before this driver enabled decode.
     /// # C: O(N_ahci)
     pub fn command_orig_for(device_key: pci::Bdf) -> Option<u16> {
-        DEVICES
-            .lock_bh::<AhciBh>()
-            .iter()
-            .find(|rec| rec.device_key == device_key)
-            .map(|rec| rec.command_orig)
+        hotplug::controller_command_orig(device_key)
     }
 }
 
