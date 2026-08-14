@@ -80,10 +80,8 @@ unsafe extern "C" {
     pub fn __x86_indirect_thunk_rbx();
     pub fn __x86_indirect_thunk_rcx();
     pub fn __x86_indirect_thunk_rdx();
-    pub fn __x86_indirect_thunk_rsi();
     pub fn __x86_indirect_thunk_r8();
     pub fn __x86_indirect_thunk_r10();
     pub fn __x86_indirect_thunk_r12();
-    pub fn __x86_indirect_thunk_r13();
     pub fn __x86_indirect_thunk_r14();
 }

@@ -87,17 +87,21 @@ pub fn export_symbols() {
 fn export_arch_symbols() {
     use crate::symtab::export;
     use hal_x86_64::linux_retpoline;
+    unsafe extern "C" {
+        fn __x86_indirect_thunk_rsi();
+        fn __x86_indirect_thunk_r13();
+    }
     for (name, addr) in [
         ("__x86_return_thunk", linux_retpoline::__x86_return_thunk as *const () as usize),
         ("__x86_indirect_thunk_rax", linux_retpoline::__x86_indirect_thunk_rax as *const () as usize),
         ("__x86_indirect_thunk_rbx", linux_retpoline::__x86_indirect_thunk_rbx as *const () as usize),
         ("__x86_indirect_thunk_rcx", linux_retpoline::__x86_indirect_thunk_rcx as *const () as usize),
         ("__x86_indirect_thunk_rdx", linux_retpoline::__x86_indirect_thunk_rdx as *const () as usize),
-        ("__x86_indirect_thunk_rsi", linux_retpoline::__x86_indirect_thunk_rsi as *const () as usize),
+        ("__x86_indirect_thunk_rsi", __x86_indirect_thunk_rsi as *const () as usize),
         ("__x86_indirect_thunk_r8", linux_retpoline::__x86_indirect_thunk_r8 as *const () as usize),
         ("__x86_indirect_thunk_r10", linux_retpoline::__x86_indirect_thunk_r10 as *const () as usize),
         ("__x86_indirect_thunk_r12", linux_retpoline::__x86_indirect_thunk_r12 as *const () as usize),
-        ("__x86_indirect_thunk_r13", linux_retpoline::__x86_indirect_thunk_r13 as *const () as usize),
+        ("__x86_indirect_thunk_r13", __x86_indirect_thunk_r13 as *const () as usize),
         ("__x86_indirect_thunk_r14", linux_retpoline::__x86_indirect_thunk_r14 as *const () as usize),
     ] { export(name, addr, false); }
 }
