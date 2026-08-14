@@ -42,6 +42,14 @@ impl Controller {
         // SAFETY: controller holds the owned MMIO mapping and `off` is an aligned register ABI offset.
         unsafe { core::ptr::write_volatile((self.mmio.base_va() + off) as *mut u32, value); }
     }
+    pub(crate) fn read16(&self, off: u64) -> u16 {
+        // SAFETY: PCH flash sequencer owns aligned 16-bit registers in this controller MMIO mapping.
+        unsafe { core::ptr::read_volatile((self.mmio.base_va() + off) as *const u16) }
+    }
+    pub(crate) fn write16(&self, off: u64, value: u16) {
+        // SAFETY: PCH flash sequencer owns aligned 16-bit registers in this controller MMIO mapping.
+        unsafe { core::ptr::write_volatile((self.mmio.base_va() + off) as *mut u16, value); }
+    }
     fn rx_desc(&self, idx: usize) -> *mut regs::RxDesc {
         (Self::va(self.rx_desc_pa) as *mut regs::RxDesc).wrapping_add(idx)
     }

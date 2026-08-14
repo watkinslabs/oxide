@@ -204,6 +204,49 @@ pub(crate) fn reconcile(c: &Controller) -> bool {
     hv_read(c, phy, regs::MII_BMSR as u32).is_some()
 }
 
+pub(crate) fn write_lpt_rar(c: &Controller, mac: net::MacAddr, index: usize) -> bool {
+    let low = u32::from_le_bytes([mac.0[0], mac.0[1], mac.0[2], mac.0[3]]);
+    let high = u16::from_le_bytes([mac.0[4], mac.0[5]]) as u32 | (1 << 31);
+    if index == 0 { c.write(regs::RAL0, low); let _ = c.read(regs::RAL0); c.write(regs::RAH0, high); let _ = c.read(regs::RAH0); return true; }
+    if index >= regs::pch_lpt_rar_count(c.read(regs::FWSM)) { return false; }
+    let Some((low_off, high_off)) = regs::pch_lpt_shra_offset(index - 1) else { return false; };
+    with_shared(c, |c| {
+        c.write(low_off, low); let _ = c.read(low_off); c.write(high_off, high); let _ = c.read(high_off);
+        (c.read(low_off) == low && c.read(high_off) == high).then_some(())
+    }).is_some()
+}
+
+pub(crate) struct LptFlash<'a> { c: &'a Controller }
+impl<'a> LptFlash<'a> {
+    pub(crate) fn new(c: &'a Controller) -> Self { Self { c } }
+    fn read(&self, offset: u64) -> Option<u32> { Some(self.c.read(regs::pch_lpt_flash_offset(offset)?)) }
+    fn read16(&self, offset: u64) -> Option<u16> { Some(self.c.read16(regs::pch_lpt_flash_offset(offset)?)) }
+    fn write(&self, offset: u64, value: u32) -> bool { let Some(offset) = regs::pch_lpt_flash_offset(offset) else { return false; }; self.c.write(offset, value); true }
+    fn write16(&self, offset: u64, value: u16) -> bool { let Some(offset) = regs::pch_lpt_flash_offset(offset) else { return false; }; self.c.write16(offset, value); true }
+    pub(crate) fn descriptor(&self) -> Option<regs::PchFlashLayout> { regs::pch_flash_layout(self.read(PCH_FLASH_GFPREG)?) }
+    pub(crate) fn read_word(&self, layout: regs::PchFlashLayout, word: u32) -> Option<u16> {
+        let offset = word.checked_mul(2)?;
+        if offset.checked_add(2)? > layout.bytes { return None; }
+        let address = layout.base.checked_add(offset)?;
+        if address > PCH_FLASH_LINEAR_MASK { return None; }
+        for _ in 0..PCH_FLASH_RETRIES {
+            let status = self.read16(PCH_FLASH_HSFSTS)?;
+            if status & PCH_FLASH_DESCRIPTOR_VALID == 0 || status & PCH_FLASH_IN_PROGRESS != 0 { return None; }
+            if !self.write16(PCH_FLASH_HSFSTS, status & (PCH_FLASH_ERROR | PCH_FLASH_ACCESS_ERROR | PCH_FLASH_DONE)) { return None; }
+            let control = self.read16(PCH_FLASH_HSFCTL)?;
+            if !self.write16(PCH_FLASH_HSFCTL, (control & !(PCH_FLASH_BYTE_COUNT_MASK | PCH_FLASH_CYCLE_MASK)) | PCH_FLASH_BYTE_COUNT) { return None; }
+            if !self.write(PCH_FLASH_FADDR, address) || !self.write16(PCH_FLASH_HSFCTL, (control & !(PCH_FLASH_BYTE_COUNT_MASK | PCH_FLASH_CYCLE_MASK)) | PCH_FLASH_BYTE_COUNT | PCH_FLASH_GO) { return None; }
+            let deadline = sched::deadline::clock::now_ns().saturating_add(PCH_FLASH_TIMEOUT_NS);
+            while sched::deadline::clock::now_ns() < deadline {
+                let status = self.read16(PCH_FLASH_HSFSTS)?;
+                if status & PCH_FLASH_DONE != 0 { if status & PCH_FLASH_ERROR == 0 { return Some(self.read(PCH_FLASH_FDATA0)? as u16); } break; }
+                core::hint::spin_loop();
+            }
+        }
+        None
+    }
+}
+
 pub(crate) fn reset(c: &Controller) -> bool {
     c.write(regs::IMC, u32::MAX);
     c.write(regs::RCTL, 0);
