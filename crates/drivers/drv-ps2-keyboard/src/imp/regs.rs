@@ -42,8 +42,12 @@ pub(super) const AUX_DISABLE_STREAM: u8 = 0xF5;
 pub(super) const AUX_SET_SAMPLE_RATE: u8 = 0xF3;
 pub(super) const AUX_GET_ID: u8 = 0xF2;
 pub(super) const AUX_ACK: u8 = 0xFA;
+pub(super) const AUX_BAT_OK: u8 = 0xAA;
+pub(super) const AUX_BARE_ID: u8 = 0;
 pub(super) const AUX_WHEEL_ID: u8 = 3;
+pub(super) const AUX_EXPLORER_ID: u8 = 4;
 pub(super) const AUX_WHEEL_RATE_SEQUENCE: [u8; 3] = [200, 100, 80];
+pub(super) const AUX_EXPLORER_RATE_SEQUENCE: [u8; 3] = [200, 200, 80];
 
 // Config byte bits (controller "command byte").
 pub(super) const CFG_PORT1_IRQ: u8 = 1 << 0; // first-port interrupt (IRQ1) enable

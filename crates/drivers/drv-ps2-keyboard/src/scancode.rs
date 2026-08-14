@@ -12,7 +12,7 @@
 //! time; it returns `Some((linux_keycode, pressed))` once a full key is
 //! assembled, `None` while consuming a prefix or an unmapped code.
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 const SCANCODE_EXTENDED: u8 = 0xE0;
 const SCANCODE_PAUSE: u8 = 0xE1;
@@ -20,12 +20,38 @@ const CONTROLLER_ACK: u8 = 0xFA;
 const CONTROLLER_RESEND: u8 = 0xFE;
 const CONTROLLER_BAT_OK: u8 = 0xAA;
 const SCANCODE_SET1_LAST: u8 = 0x58;
+const KEY_PAUSE: u16 = 119;
 
 /// Set true after a 0xE0 byte; the next byte is an extended make/break.
 static E0_PENDING: AtomicBool = AtomicBool::new(false);
-/// Set true after a 0xE1 byte (Pause/Break 6-byte sequence); we swallow
-/// the following bytes rather than decode the multi-byte Pause code.
-static E1_SWALLOW: AtomicBool = AtomicBool::new(false);
+/// Progress through `E1 1D 45 E1 9D C5`, the translated set-1 Pause make
+/// and break sequence. A complete sequence produces one matching key pair;
+/// partial input never leaks NumLock or Ctrl into the input stream.
+static PAUSE_PROGRESS: AtomicU8 = AtomicU8::new(0);
+
+const PAUSE_1: u8 = 1;
+const PAUSE_2: u8 = 2;
+const PAUSE_3: u8 = 3;
+const PAUSE_4: u8 = 4;
+const PAUSE_5: u8 = 5;
+
+fn decode_pause(byte: u8) -> Option<Option<(u16, bool)>> {
+    let state = PAUSE_PROGRESS.load(Ordering::Relaxed);
+    let next = match (state, byte) {
+        (PAUSE_1, 0x1d) => Some((PAUSE_2, None)),
+        (PAUSE_2, 0x45) => Some((PAUSE_3, Some((KEY_PAUSE, true)))),
+        (PAUSE_3, SCANCODE_PAUSE) => Some((PAUSE_4, None)),
+        (PAUSE_4, 0x9d) => Some((PAUSE_5, None)),
+        (PAUSE_5, 0xc5) => Some((0, Some((KEY_PAUSE, false)))),
+        _ => None,
+    };
+    if let Some((state, event)) = next {
+        PAUSE_PROGRESS.store(state, Ordering::Relaxed);
+        return Some(event);
+    }
+    PAUSE_PROGRESS.store(0, Ordering::Relaxed);
+    None
+}
 
 /// Extended (0xE0-prefixed) set-1 make code → Linux keycode. Covers the
 /// grey navigation cluster, keypad Enter/slash, right Ctrl/Alt, Meta/Menu
@@ -70,10 +96,8 @@ const fn build_e0_table() -> [u16; 0x80] {
 /// `pressed=false` is a key release (break code, bit7 set).
 /// # C: O(1)
 pub fn decode_byte(byte: u8) -> Option<(u16, bool)> {
-    // A 0xE1 sequence (Pause) is 6 bytes; swallow the rest after the lead
-    // byte. We approximate by dropping the next two bytes (E1 1D 45 …).
-    if E1_SWALLOW.swap(false, Ordering::Relaxed) {
-        return None;
+    if PAUSE_PROGRESS.load(Ordering::Relaxed) != 0 {
+        if let Some(event) = decode_pause(byte) { return event; }
     }
     match byte {
         SCANCODE_EXTENDED => {
@@ -81,7 +105,7 @@ pub fn decode_byte(byte: u8) -> Option<(u16, bool)> {
             None
         }
         SCANCODE_PAUSE => {
-            E1_SWALLOW.store(true, Ordering::Relaxed);
+            PAUSE_PROGRESS.store(PAUSE_1, Ordering::Relaxed);
             None
         }
         // 0xFA (ACK) / 0xFE (resend) / 0xAA (BAT) can leak into the stream
@@ -151,9 +175,12 @@ mod tests {
     }
 
     #[test]
-    fn pause_e1_sequence_swallowed() {
-        // E1 1D 45 … — lead byte sets swallow, next byte dropped.
+    fn pause_e1_sequence_is_one_key_pair() {
         assert_eq!(decode_byte(0xE1), None);
-        assert_eq!(decode_byte(0x1D), None); // swallowed
+        assert_eq!(decode_byte(0x1D), None);
+        assert_eq!(decode_byte(0x45), Some((KEY_PAUSE, true)));
+        assert_eq!(decode_byte(0xE1), None);
+        assert_eq!(decode_byte(0x9D), None);
+        assert_eq!(decode_byte(0xC5), Some((KEY_PAUSE, false)));
     }
 }
