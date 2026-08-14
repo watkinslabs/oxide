@@ -12,6 +12,39 @@ use crate::{boot_debug, boot_info_build};
 #[cfg(target_os = "oxide-kernel")]
 #[no_mangle]
 unsafe extern "C" fn _start_rust() -> ! {
+    // Keep the bootstrap setup and main-kernel initialization in distinct
+    // stack phases.  The boot preparation has completed before this call,
+    // so none of its calibration/console locals remain live under the much
+    // deeper runtime initialization path.
+    // SAFETY: the entry contract is preserved by `prepare_boot_info`.
+    let info = unsafe { prepare_boot_info() };
+    // Linux's x86 entry similarly tail-handoffs into generic kernel init.
+    // Drop this bootstrap frame before the jump: preparation is complete and
+    // `kernel_main` never returns, so retaining a return address needlessly
+    // overlaps two otherwise independent boot stack phases.
+    // SAFETY: `info` is the first SysV argument; `leave` discards exactly
+    // this function's established frame, and kernel_main's entry contract is
+    // satisfied by the completed single-CPU, IRQ-off boot preparation.
+    unsafe {
+        core::arch::asm!(
+            "leave",
+            "jmp {main}",
+            main = sym kmain::kernel_main,
+            in("rdi") info,
+            options(noreturn),
+        );
+    }
+}
+
+/// Complete the pre-runtime x86 bootstrap and return its boot-owned record.
+///
+/// This is deliberately a separate, non-inlined stack phase: Linux similarly
+/// keeps early architecture setup out of the later generic boot call chain.
+/// # SAFETY: called only by `_start_rust` under its single-CPU, IRQ-off entry
+/// contract.
+#[cfg(target_os = "oxide-kernel")]
+#[inline(never)]
+unsafe fn prepare_boot_info() -> &'static boot_info::BootInfo {
     // SAFETY: single-CPU boot, IRQs masked; install_kernel_gdt populates a kernel-owned GDT (KERNEL_CS=0x28 / KERNEL_DS=0x30) and reloads CS via far return + DS/ES/SS/FS/GS via mov. Replaces the bootloader's GDT before any IDT entry could fire.
     unsafe { hal_x86_64::install_kernel_gdt(); }
     // SAFETY: single-CPU boot, IRQs masked; GDT just installed with TSS descriptor populated at TSS_SEL=0x48 (avail 64-bit TSS, type=9). install_tss issues `ltr 0x48` which marks the descriptor busy and binds CR0.TR to the kernel-wide TSS. RSP0 stays zero until first userspace task; pre-userspace IRQs (Phase 1 path) ignore RSP0 since they take from CPL=0.
@@ -80,11 +113,7 @@ unsafe extern "C" fn _start_rust() -> ! {
     debug_boot! { boot_debug::log_cpu_info(); }
     // SAFETY: boot path per fn contract; build_boot_info reads
     // bootloader-owned state and returns the boot-owned static BootInfo.
-    let info = unsafe { boot_info_build::build_boot_info() };
-    // SAFETY: kernel_main's safety contract is satisfied by the
-    // boot environment we just established (kernel stack installed,
-    // IRQs masked, single CPU, `info` valid).
-    unsafe { kmain::kernel_main(info) }
+    unsafe { boot_info_build::build_boot_info() }
 }
 
 /// This platform's boot UART: an 8250 behind port I/O at COM1. What a bare

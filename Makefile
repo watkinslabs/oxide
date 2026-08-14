@@ -494,6 +494,7 @@ stack-gate-x86: x86
 	python3 tools/stack-depth-gate.py --self-test
 	python3 tools/stack-depth-gate.py $(KERNEL_ELF_x86_64) \
 	  --arch x86_64 --fail $(STACK_DEPTH_CEILING) \
+	  --stack-switch-map tools/stack-switches-x86_64.tsv \
 	  --allowlist tools/stack-depth-allow-x86_64.txt
 stack-gate-arm: arm
 	python3 tools/stack-depth-gate.py $(KERNEL_ELF_aarch64) \

@@ -22,7 +22,10 @@ static TABLES: Tables = Tables {
     ssdt_pa: [const { AtomicU64::new(0) }; MAX_AML_TABLES],
 };
 struct RootRoutes { segment: u16, bus: u8, table: PciRoutingTable, osc: Option<PciOscControl> }
-struct RouteContext { aml: AmlContext, roots: Vec<RootRoutes> }
+/// The AML parser owns heap-backed namespace state already; keep its handle
+/// heap-resident too so constructing the boot-time route cache does not copy
+/// a multi-KiB parser object through the BSP kernel stack.
+struct RouteContext { aml: Box<AmlContext>, roots: Vec<RootRoutes> }
 static CONTEXT: Spinlock<Option<RouteContext>, Devices> = Spinlock::new(None);
 
 /// Retain the DSDT table for later namespace construction.
@@ -53,7 +56,7 @@ fn build_context() -> Option<RouteContext> {
     let hhdm = TABLES.hhdm.load(Ordering::Acquire);
     let dsdt = TABLES.dsdt_pa.load(Ordering::Acquire);
     if dsdt == 0 || hhdm == 0 { return None; }
-    let mut context = AmlContext::new(Box::new(FirmwareHandler), DebugVerbosity::None);
+    let mut context = Box::new(AmlContext::new(Box::new(FirmwareHandler), DebugVerbosity::None));
     let table = unsafe { aml_table(dsdt, hhdm)? };
     if context.parse_table(table).is_err() { return None; }
     for slot in 0..count {
@@ -113,6 +116,10 @@ fn aml_buffer(bytes: &[u8]) -> AmlValue {
     value
 }
 
+/// Evaluate one root bridge's `_OSC` method outside the route-collector
+/// closure frame. AML invocation is stack-heavy, so this remains a distinct
+/// early-firmware phase rather than being inlined under table collection.
+#[inline(never)]
 fn eval_osc(context: &mut AmlContext, scope: &AmlName, cap: [u32; 3]) -> Result<[u32; 3], ()> {
     let path = AmlName::from_str("_OSC").map_err(|_| ())?.resolve(scope).map_err(|_| ())?;
     let mut bytes = [0u8; 12];
@@ -167,6 +174,11 @@ pub fn pci_osc_control(segment: u16, bus: u8) -> Option<PciOscControl> {
 /// The result reports whether a complete namespace became available; PCI may
 /// still operate with MSI/MSI-X when firmware publishes no usable INTx table.
 /// # C: O(AML table bytes)
+///
+/// Keep the parser's deep temporary state out of the caller's boot frame.
+/// This is the same stack-phase boundary Linux uses around early firmware
+/// table interpretation before driver publication.
+#[inline(never)]
 pub fn prepare_pci_intx_routes() -> bool {
     let mut context = CONTEXT.lock();
     if context.is_none() { *context = build_context(); }

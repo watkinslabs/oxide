@@ -1,14 +1,9 @@
 use crate::{BootInfo, tick_poll_combined};
 use super::entry::step;
 
-/// Runtime hook, console, device, and SMP bring-up.
-///
-/// Out of line for the same reason as `early::init` — see that function.
-/// # SAFETY: caller must satisfy `kernel_main` boot-entry contract.
-/// # C: not measured (one-shot init)
 #[cfg(target_os = "oxide-kernel")]
 #[inline(never)]
-pub unsafe fn init(info: &BootInfo) {
+pub(crate) fn init_prefix(info: &BootInfo) {
     arch_irq::set_tick_poll_hook(tick_poll_combined);
     step("arch_irq::install_timer_deadline_hook", || arch_irq::install_timer_deadline_hook());
     step("arch_irq::install_diag_nmi_hook", || arch_irq::install_diag_nmi_hook());
@@ -31,7 +26,11 @@ pub unsafe fn init(info: &BootInfo) {
     // RTM_NEWLINK. Installing the notifier afterward (the old rootfs-phase
     // install) dropped that event on the floor (control_event.rs notifier=None).
     net::control_event::set_notifier(netlink::mcast::notify_control_event);
-    step("init_network_and_pci", init_network_and_pci);
+}
+
+#[cfg(target_os = "oxide-kernel")]
+#[inline(never)]
+pub(crate) fn init_suffix(info: &BootInfo) {
     step("init_x2apic_and_smp", || init_smp(info));
     // Generic firmware framebuffer is a fallback, not a competitor to a
     // native scanout. PCI probing runs first so virtio-gpu remains fb0 in the
@@ -304,11 +303,20 @@ fn install_drv_sysfs_hooks() {
 }
 
 #[cfg(target_os = "oxide-kernel")]
-fn init_network_and_pci() {
+#[inline(never)]
+pub(crate) fn init_network_and_pci() {
+    init_network_sockets();
+    // PCI enumeration owns its own phase logging. Avoid retaining `step`'s
+    // formatting closure across firmware AML evaluation on the BSP stack.
+    crate::pci_boot::enumerate_and_log();
+}
+
+#[cfg(target_os = "oxide-kernel")]
+#[inline(never)]
+fn init_network_sockets() {
     // SAFETY: boot-path-only one-shot init on the boot CPU, before any task can
     // create a socket, so the protocol tables have no concurrent reader.
     step("net::sock::init", || unsafe { net::sock::init() });
-    step("pci_boot::enumerate_and_log", crate::pci_boot::enumerate_and_log);
 }
 
 #[cfg(target_os = "oxide-kernel")]

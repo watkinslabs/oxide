@@ -23,18 +23,19 @@ pub(super) fn step<T>(name: &'static str, f: impl FnOnce() -> T) -> T { klog::in
 #[cfg(target_os = "oxide-kernel")]
 pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     klog::initcall::level("early");
-    let t = klog::initcall::start("early::init");
     // SAFETY: `kernel_main`'s own boot-entry contract (valid kernel stack and
     // per-CPU base, IRQs off, single CPU, `info` a valid BootInfo) is exactly
     // what these two phases require, and it is forwarded unchanged.
     unsafe { super::early::init(info); }
-    klog::initcall::finish("early::init", t, 0);
     klog::initcall::level("runtime");
-    let t = klog::initcall::start("runtime::init");
-    // SAFETY: forwarded boot-entry contract; `early::init` has additionally run,
-    // which is `runtime::init`'s ordering precondition.
-    unsafe { super::runtime::init(info); }
-    klog::initcall::finish("runtime::init", t, 0);
+    // Keep runtime's strict phases as separate call frames. The PCI/AML phase
+    // can recurse deeply, so it must not retain the setup or SMP/display
+    // phase frame beneath it.
+    super::runtime::init_prefix(info);
+    super::runtime::init_network_and_pci();
+    super::runtime::init_suffix(info);
+    // Runtime emits stage-level `step` timing itself. Do not retain an outer
+    // timestamp under the deepest firmware/PCI initialization call chain.
     spawn_kthreads();
     klog::initcall::level("rootfs");
     let t = klog::initcall::start("rootfs::init");

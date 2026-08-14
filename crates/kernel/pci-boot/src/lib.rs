@@ -168,18 +168,18 @@ pub(crate) fn pci_resources_arch(d: &pci::PciDevice) -> alloc::vec::Vec<drv::Res
 /// # C: O(N_bdfs probed)
 pub fn enumerate_and_log() {
     config_access::install_hooks();
-    let devs = scan_devices();
+    enumerate_scanned(scan_devices());
+}
+
+#[inline(never)]
+fn enumerate_scanned(devs: alloc::vec::Vec<pci::PciDevice>) {
     debug_boot! {
         klog::write_raw(b"[INFO]  pci: devices=");
         klog::write_dec_u64(devs.len() as u64);
         klog::write_raw(b"\n");
     }
-    let requesters = devs.iter().map(|d| d.bdf).collect::<alloc::vec::Vec<_>>();
-    let aliases = dma_aliases(&requesters, &devs);
-    if !activate_dma_and_interrupt_ownership(&requesters, &aliases) { return; }
-    config_access::install_aml_region_backend();
-    let _ = firmware::acpi::prepare_pci_intx_routes();
-    pci_irq::set_intx_resolver(resolve_firmware_intx);
+    if !prepare_dma_and_interrupt_ownership(&devs) { return; }
+    prepare_firmware_routing();
     register_pci_model_drivers();
     topology::publish_scanned_devices(&devs);
 
@@ -190,6 +190,25 @@ pub fn enumerate_and_log() {
     // F59-15: install the default L2/netlink route state for every netdev
     // already registered by virtio-net's model probe.
     seed_boot_network_defaults();
+}
+
+/// Establish firmware routing before model-driver publication.
+///
+/// This is a separate stack phase from the device-vector-owning publisher:
+/// AML method evaluation can recurse deeply, but it neither needs model-driver
+/// registration's temporary state nor the scanned PCI vector beneath it.
+#[inline(never)]
+fn prepare_firmware_routing() {
+    config_access::install_aml_region_backend();
+    let _ = firmware::acpi::prepare_pci_intx_routes();
+    pci_irq::set_intx_resolver(resolve_firmware_intx);
+}
+
+#[inline(never)]
+fn prepare_dma_and_interrupt_ownership(devs: &[pci::PciDevice]) -> bool {
+    let requesters = devs.iter().map(|d| d.bdf).collect::<alloc::vec::Vec<_>>();
+    let aliases = dma_aliases(&requesters, devs);
+    activate_dma_and_interrupt_ownership(&requesters, &aliases)
 }
 
 #[inline(never)]
@@ -424,6 +443,7 @@ fn dma_aliases(requesters: &[pci::Bdf], devices: &[pci::PciDevice]) -> pci::DmaA
 }
 
 /// Walk every addressable config-space bus. # C: O(N_bdfs probed)
+#[inline(never)]
 fn scan_devices() -> alloc::vec::Vec<pci::PciDevice> {
     #[cfg(target_arch = "x86_64")]
     {
