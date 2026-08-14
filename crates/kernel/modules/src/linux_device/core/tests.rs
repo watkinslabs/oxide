@@ -183,6 +183,7 @@ fn export_symbols_registers_device_surface() {
         "dev_get_drvdata", "dev_name", "device_get_match_data", "devm_kmalloc", "devm_kfree",
         "__class_create", "bus_register", "driver_register", "sysfs_emit", "sysfs_emit_at", "_dev_info",
         "__dynamic_dev_dbg", "kobject_init", "kobject_put", "kobject_uevent", "sysfs_create_file",
+        "sysfs_create_link", "sysfs_remove_link", "sysfs_add_link_to_group", "sysfs_remove_link_from_group",
     ] {
         assert!(crate::symtab::is_exported(name));
     }

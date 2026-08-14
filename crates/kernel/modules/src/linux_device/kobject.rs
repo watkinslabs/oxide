@@ -30,6 +30,10 @@ pub(super) fn export_symbols() {
         ("add_uevent_var",    add_uevent_var    as *const () as usize),
         ("sysfs_create_file", sysfs_create_file as *const () as usize),
         ("sysfs_remove_file", sysfs_remove_file as *const () as usize),
+        ("sysfs_create_link", sysfs_create_link as *const () as usize),
+        ("sysfs_remove_link", sysfs_remove_link as *const () as usize),
+        ("sysfs_add_link_to_group", sysfs_add_link_to_group as *const () as usize),
+        ("sysfs_remove_link_from_group", sysfs_remove_link_from_group as *const () as usize),
     ] { export(name, addr, false); }
 }
 
@@ -223,6 +227,26 @@ extern "C" fn sysfs_remove_file(kobj: *mut LinuxKobject, attr: *const LinuxAttri
     registry::remove_kobject_attr(kobj as usize, attr as usize);
 }
 
+extern "C" fn sysfs_create_link(kobj: *mut LinuxKobject, target: *mut LinuxKobject, name: *const c_char) -> i32 {
+    if kobj.is_null() || target.is_null() { return -LINUX_EINVAL; }
+    registry::add_kobject_link(kobj as usize, target as usize, core::ptr::null(), name)
+}
+
+extern "C" fn sysfs_remove_link(kobj: *mut LinuxKobject, name: *const c_char) {
+    if kobj.is_null() { return; }
+    registry::remove_kobject_link(kobj as usize, core::ptr::null(), name);
+}
+
+extern "C" fn sysfs_add_link_to_group(kobj: *mut LinuxKobject, group: *const c_char, target: *mut LinuxKobject, name: *const c_char) -> i32 {
+    if kobj.is_null() || target.is_null() || group.is_null() { return -LINUX_EINVAL; }
+    registry::add_kobject_link(kobj as usize, target as usize, group, name)
+}
+
+extern "C" fn sysfs_remove_link_from_group(kobj: *mut LinuxKobject, group: *const c_char, name: *const c_char) {
+    if kobj.is_null() || group.is_null() { return; }
+    registry::remove_kobject_link(kobj as usize, group, name);
+}
+
 #[cfg(test)]
 pub(super) fn attr_count(kobj: *mut LinuxKobject) -> usize {
     registry::kobject_attr_count(kobj as usize)
@@ -276,6 +300,18 @@ mod tests {
         assert_eq!(attr_count(&mut kobj), 1);
         sysfs_remove_file(&mut kobj, &attr);
         assert_eq!(attr_count(&mut kobj), 0);
+        let mut target = LinuxKobject::new();
+        kobject_init(&mut target, &ktype);
+        assert_eq!(sysfs_create_link(&mut kobj, &mut target, c"device".as_ptr()), LINUX_OK);
+        assert_eq!(registry::kobject_link_count(&mut kobj as *mut _ as usize), 1);
+        assert_eq!(registry::kobject_link_target(&mut kobj as *mut _ as usize), &mut target as *mut _ as usize);
+        sysfs_remove_link(&mut kobj, c"device".as_ptr());
+        assert_eq!(registry::kobject_link_count(&mut kobj as *mut _ as usize), 0);
+        let group_create = [b'h' as c_char, b'o' as c_char, b'l' as c_char, b'd' as c_char, b'e' as c_char, b'r' as c_char, b's' as c_char, 0];
+        let group_remove = [b'h' as c_char, b'o' as c_char, b'l' as c_char, b'd' as c_char, b'e' as c_char, b'r' as c_char, b's' as c_char, 0];
+        assert_eq!(sysfs_add_link_to_group(&mut kobj, group_create.as_ptr(), &mut target, c"nvme0n1".as_ptr()), LINUX_OK);
+        sysfs_remove_link_from_group(&mut kobj, group_remove.as_ptr(), c"nvme0n1".as_ptr());
+        assert_eq!(registry::kobject_link_count(&mut kobj as *mut _ as usize), 0);
         CALLBACK_ENV_ENTRIES.store(0, Ordering::Relaxed);
         let mut extra = [c"RESIZE=1".as_ptr() as *mut c_char, core::ptr::null_mut()];
         assert_eq!(kobject_uevent_env(&mut kobj, KOBJ_CHANGE, extra.as_mut_ptr()), LINUX_OK);
