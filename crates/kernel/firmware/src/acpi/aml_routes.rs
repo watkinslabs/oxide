@@ -1,7 +1,7 @@
 //! AML namespace ownership for PCI INTx routing.
 
 use alloc::{boxed::Box, vec::Vec};
-use aml::{AmlContext, AmlName, DebugVerbosity, Handler, pci_routing::{PciRoutingTable, Pin}, resource::{InterruptPolarity, InterruptTrigger}};
+use aml::{AmlContext, AmlError, AmlName, DebugVerbosity, Handler, RegionAccess, pci_routing::{PciRoutingTable, Pin}, resource::{InterruptPolarity, InterruptTrigger}};
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use sync::{Devices, Spinlock};
 
@@ -13,29 +13,10 @@ const MAX_AML_TABLE_BYTES: usize = 1024 * 1024;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PciIntxRoute { pub gsi: u32, pub level: bool, pub active_low: bool }
 
-struct NullHandler;
+struct UnavailableHandler;
 
-impl Handler for NullHandler {
-    fn read_u8(&self, _: usize) -> u8 { 0 }
-    fn read_u16(&self, _: usize) -> u16 { 0 }
-    fn read_u32(&self, _: usize) -> u32 { 0 }
-    fn read_u64(&self, _: usize) -> u64 { 0 }
-    fn write_u8(&mut self, _: usize, _: u8) {}
-    fn write_u16(&mut self, _: usize, _: u16) {}
-    fn write_u32(&mut self, _: usize, _: u32) {}
-    fn write_u64(&mut self, _: usize, _: u64) {}
-    fn read_io_u8(&self, _: u16) -> u8 { 0 }
-    fn read_io_u16(&self, _: u16) -> u16 { 0 }
-    fn read_io_u32(&self, _: u16) -> u32 { 0 }
-    fn write_io_u8(&self, _: u16, _: u8) {}
-    fn write_io_u16(&self, _: u16, _: u16) {}
-    fn write_io_u32(&self, _: u16, _: u32) {}
-    fn read_pci_u8(&self, _: u16, _: u8, _: u8, _: u8, _: u16) -> u8 { 0 }
-    fn read_pci_u16(&self, _: u16, _: u8, _: u8, _: u8, _: u16) -> u16 { 0 }
-    fn read_pci_u32(&self, _: u16, _: u8, _: u8, _: u8, _: u16) -> u32 { 0 }
-    fn write_pci_u8(&self, _: u16, _: u8, _: u8, _: u8, _: u16, _: u8) {}
-    fn write_pci_u16(&self, _: u16, _: u8, _: u8, _: u8, _: u16, _: u16) {}
-    fn write_pci_u32(&self, _: u16, _: u8, _: u8, _: u8, _: u16, _: u32) {}
+impl Handler for UnavailableHandler {
+    fn access(&self, _: RegionAccess, _: u64) -> Result<u64, AmlError> { Err(AmlError::RegionAccessUnavailable) }
 }
 
 struct Tables { ssdt_count: AtomicU32, hhdm: AtomicU64, dsdt_pa: AtomicU64, ssdt_pa: [AtomicU64; MAX_AML_TABLES] }
@@ -75,7 +56,7 @@ fn build_context() -> Option<RouteContext> {
     let hhdm = TABLES.hhdm.load(Ordering::Acquire);
     let dsdt = TABLES.dsdt_pa.load(Ordering::Acquire);
     if dsdt == 0 || hhdm == 0 { return None; }
-    let mut context = AmlContext::new(Box::new(NullHandler), DebugVerbosity::None);
+    let mut context = AmlContext::new(Box::new(UnavailableHandler), DebugVerbosity::None);
     let table = unsafe { aml_table(dsdt, hhdm)? };
     if context.parse_table(table).is_err() { return None; }
     for slot in 0..count {
