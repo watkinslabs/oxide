@@ -161,6 +161,15 @@ pub fn wake_list_drain(cpu: u32) -> Vec<Arc<Task>> {
 /// balancer wanting this same lock (the `-smp` hang this module's wake-list
 /// exists to avoid). Deferral loses no wake — the owner drains it once its own
 /// switch settles.
+///
+/// The producer-side `task_wake_lock` ends at the list publication.  Taking
+/// it again after `llist_del_all` would turn the claimed list into a detached
+/// local `Vec` while the target spins behind a waker: the task is no longer
+/// linked, but it has not reached activation.  Linux's pending callback does
+/// not reacquire `p->pi_lock`; its claimed llist is consumed under the target
+/// rq lock.  Affinity writers already serialize their mask update and
+/// relocation at the producer side, so the target consumes the published
+/// target snapshot without reopening that handoff.
 /// # C: O(deferred * log N)
 pub fn sched_ttwu_pending(cpu: u32, current: *mut Task, rq: &Runqueue) -> bool {
     let drained = wake_list_drain(cpu);
@@ -169,17 +178,21 @@ pub fn sched_ttwu_pending(cpu: u32, current: *mut Task, rq: &Runqueue) -> bool {
     let mut reroute: Vec<Arc<Task>> = Vec::new();
     let mut placed = false;
     let mut preempt = false;
+    // Linux acquires the target rq once and walks the claimed llist under it.
+    // In particular, do not reacquire the producer's task-side wake lock here:
+    // it protects claim/CPU selection before publication, not target-side
+    // activation after the list transfer.
+    let mut inner = rq.inner.lock_irqsave::<RqIrq>();
     for task in drained {
         // A task can sit on the remote wake list while an affinity writer
-        // narrows its mask. Take the same task lock as ttwu and test the
-        // target before acquiring this rq, preserving TaskWake -> Runqueue.
-        let _wake = task.task_wake_lock.lock_irqsave::<RqIrq>();
+        // narrows its mask. Its producer/affinity-side critical section
+        // publishes the selected target before list insertion; a later change
+        // is repaired by the affinity relocation path after this activation.
         let allowed = task.cpus_allowed.load(Ordering::Acquire);
         if !allowed.contains(cpu as usize) {
             reroute.push(Arc::clone(&task));
             continue;
         }
-        let mut inner = rq.inner.lock_irqsave::<RqIrq>();
         match task.pending_wake(current) {
             PendingWake::Drop  => {}
             PendingWake::Defer => deferred.push(Arc::clone(&task)),
@@ -196,8 +209,9 @@ pub fn sched_ttwu_pending(cpu: u32, current: *mut Task, rq: &Runqueue) -> bool {
                 placed = true;
             }
         }
-        rq.publish_nr_running(inner.nr_running());
     }
+    rq.publish_nr_running(inner.nr_running());
+    drop(inner);
     // This wake was claimed while its old target was eligible, but an affinity
     // change won before activation. It remains Runnable and unqueued, so the
     // normal task-locked placement path may select its new eligible CPU.
