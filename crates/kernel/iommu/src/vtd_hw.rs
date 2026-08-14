@@ -30,6 +30,7 @@ const CCMD_GLOBAL: u64 = 1 << 61;
 const IOTLB_INVALIDATE: u64 = 1 << 63;
 const IOTLB_GLOBAL: u64 = 1 << 60;
 const IOTLB_WRITE_DRAIN: u64 = 1 << 48;
+const IOTLB_READ_DRAIN: u64 = 1 << 49;
 const POLL_LIMIT: usize = 1_000_000;
 const ROOT_TABLE_MASK: u64 = 0x000f_ffff_ffff_f000;
 const ROOT_PRESENT: u64 = 1;
@@ -40,6 +41,8 @@ const CONTEXT_DOMAIN_ID_SHIFT: u64 = 8;
 const ECAP_QUEUED_INVALIDATION: u64 = 1 << 1;
 const ECAP_INTERRUPT_REMAP: u64 = 1 << 3;
 const ECAP_EXTENDED_INTERRUPT_MODE: u64 = 1 << 4;
+const CAP_WRITE_DRAIN: u64 = 1 << 54;
+const CAP_READ_DRAIN: u64 = 1 << 55;
 const FECTL_INTERRUPT_MASK: u32 = 1 << 31;
 const FSTS_PRIMARY_OVERFLOW: u32 = 1 << 0;
 const FSTS_PRIMARY_PENDING: u32 = 1 << 1;
@@ -66,7 +69,10 @@ impl VtdQiDesc {
     /// Build a global context-cache invalidation descriptor. # C: O(1)
     pub const fn global_context() -> Self { Self { words: [1 | (1 << 4), 0] } }
     /// Build a global IOTLB invalidation descriptor. # C: O(1)
-    pub const fn global_iotlb() -> Self { Self { words: [(2u64) | (1 << 4), 0] } }
+    pub const fn global_iotlb(read_drain: bool, write_drain: bool) -> Self {
+        let drains = (read_drain as u64) << 7 | (write_drain as u64) << 6;
+        Self { words: [(2u64) | (1 << 4) | drains, 0] }
+    }
     /// Build a selective interrupt-entry-cache invalidation descriptor. # C: O(1)
     pub const fn interrupt_entry(index: u16, mask: u8) -> Self {
         Self { words: [4 | (1 << 4) | ((mask as u64 & 0x1f) << 27) | ((index as u64) << 32), 0] }
@@ -262,8 +268,10 @@ impl VtdRegisters {
         if !self.write64(CCMD, CCMD_INVALIDATE | CCMD_GLOBAL) || !self.wait64_clear(CCMD, CCMD_INVALIDATE) { return false; }
         let iotlb = (ecap >> 8 & 0x3ff) * 16;
         if iotlb.checked_add(16).is_none_or(|end| end > self.bytes) { return false; }
-        let write_drain = self.read64(CAP).is_some_and(|cap| cap >> 54 & 1 != 0);
-        let command = IOTLB_INVALIDATE | IOTLB_GLOBAL | if write_drain { IOTLB_WRITE_DRAIN } else { 0 };
+        let Some(cap) = self.read64(CAP) else { return false; };
+        let command = IOTLB_INVALIDATE | IOTLB_GLOBAL
+            | if cap & CAP_WRITE_DRAIN != 0 { IOTLB_WRITE_DRAIN } else { 0 }
+            | if cap & CAP_READ_DRAIN != 0 { IOTLB_READ_DRAIN } else { 0 };
         if !self.write64(iotlb + 8, command) || !self.wait64_clear(iotlb + 8, IOTLB_INVALIDATE) { return false; }
         self.read64(iotlb + 8).is_some_and(|value| (value >> 57 & 0x3) == 1)
     }
@@ -272,7 +280,8 @@ impl VtdRegisters {
     /// Submit global context and IOTLB invalidations to the enabled QI ring. # C: O(poll limit)
     pub fn invalidate_queued(&self, queue: &mut VtdQiQueue) -> bool {
         if self.read32(GSTS).is_none_or(|status| status & GSTS_QUEUED_INVALIDATION_ENABLED == 0) { return false; }
-        let Some(tail) = queue.publish(&[VtdQiDesc::global_context(), VtdQiDesc::global_iotlb()]) else { return false; };
+        let Some(cap) = self.read64(CAP) else { return false; };
+        let Some(tail) = queue.publish(&[VtdQiDesc::global_context(), VtdQiDesc::global_iotlb(cap & CAP_READ_DRAIN != 0, cap & CAP_WRITE_DRAIN != 0)]) else { return false; };
         if !self.write64(IQT, tail) { return false; }
         for _ in 0..POLL_LIMIT {
             if self.read64(IQH).is_some_and(|head| head == tail) { return true; }
@@ -416,7 +425,8 @@ mod fault_tests {
         assert_eq!(GCMD_QUEUED_INVALIDATION_ENABLE, GSTS_QUEUED_INVALIDATION_ENABLED);
         assert_eq!(core::mem::size_of::<VtdQiDesc>(), 16);
         assert_eq!(VtdQiDesc::global_context().words(), [1 | (1 << 4), 0]);
-        assert_eq!(VtdQiDesc::global_iotlb().words(), [0x12, 0]);
+        assert_eq!(VtdQiDesc::global_iotlb(true, true).words(), [0xd2, 0]);
+        assert_eq!(VtdQiDesc::global_iotlb(false, false).words(), [0x12, 0]);
         assert_eq!(QI_DESC_COUNT, 256);
     }
 }
