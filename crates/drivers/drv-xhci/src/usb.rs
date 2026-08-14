@@ -1,11 +1,17 @@
 //! Strict USB descriptor validation shared by physical xHCI enumeration.
 
+use usb_core::control::{self, ControlSetup};
+
+fn setup_stage(setup: ControlSetup) -> crate::ring::Trb {
+    crate::ring::Trb::setup_stage(setup.request_type, setup.request, setup.value, setup.index, setup.length)
+}
+
 /// USB device descriptor type. # C: O(1)
-pub const DESC_DEVICE: u8 = 1;
+pub use usb_core::control::DESC_DEVICE;
 /// Exact USB device descriptor byte length. # C: O(1)
 pub const DEVICE_DESC_BYTES: usize = 18;
 /// USB configuration descriptor type. # C: O(1)
-pub const DESC_CONFIGURATION: u8 = 2;
+pub use usb_core::control::DESC_CONFIGURATION;
 /// Exact USB configuration descriptor header byte length. # C: O(1)
 pub const CONFIG_DESC_HEADER_BYTES: usize = 9;
 /// Largest configuration descriptor accepted by the one-page enumeration buffer. # C: O(1)
@@ -13,23 +19,11 @@ pub const CONFIG_DESC_MAX_BYTES: usize = 4096;
 /// Maximum report descriptor fitting the xHCI-owned enumeration page. # C: O(1)
 pub const HID_REPORT_DESC_MAX_BYTES: usize = 4096;
 /// USB hub descriptor type. # C: O(1)
-pub const DESC_HUB: u8 = 0x29;
+pub use usb_core::control::DESC_HUB;
 /// USB hub class code. # C: O(1)
 pub const USB_CLASS_HUB: u8 = 9;
 /// Hub descriptor bytes before the variable port-removability bitmaps. # C: O(1)
 pub const HUB_DESC_HEADER_BYTES: usize = 7;
-/// USB hub GET_DESCRIPTOR request type: IN, class, device. # C: O(1)
-pub const HUB_GET_DESCRIPTOR_REQUEST_TYPE: u8 = 0xa0;
-/// USB hub port recipient request type: OUT, class, other. # C: O(1)
-pub const HUB_PORT_REQUEST_TYPE: u8 = 0x23;
-/// USB hub port recipient request type: IN, class, other. # C: O(1)
-pub const HUB_PORT_STATUS_REQUEST_TYPE: u8 = 0xa3;
-/// USB GET_STATUS request code. # C: O(1)
-pub const USB_REQUEST_GET_STATUS: u8 = 0;
-/// USB CLEAR_FEATURE request code. # C: O(1)
-pub const USB_REQUEST_CLEAR_FEATURE: u8 = 1;
-/// USB SET_FEATURE request code. # C: O(1)
-pub const USB_REQUEST_SET_FEATURE: u8 = 3;
 /// Hub-port status reply length. # C: O(1)
 pub const HUB_PORT_STATUS_BYTES: usize = 4;
 /// Hub-port power feature selector. # C: O(1)
@@ -110,14 +104,13 @@ pub fn hub_port_status(bytes: &[u8]) -> Option<HubPortStatus> {
 
 /// Build an IN class-port GET_STATUS EP0 TD. # C: O(1)
 pub fn get_hub_port_status_trbs(buffer_pa: u64, port: u8) -> Option<[crate::ring::Trb; 3]> {
-    if port == 0 { return None; }
-    Some([crate::ring::Trb::setup_stage(HUB_PORT_STATUS_REQUEST_TYPE, USB_REQUEST_GET_STATUS, 0, u16::from(port), HUB_PORT_STATUS_BYTES as u16), crate::ring::Trb::data_stage(buffer_pa, HUB_PORT_STATUS_BYTES as u32, true)?, crate::ring::Trb::status_stage(true)])
+    let setup = control::get_hub_port_status(port, HUB_PORT_STATUS_BYTES as u16)?;
+    Some([setup_stage(setup), crate::ring::Trb::data_stage(buffer_pa, HUB_PORT_STATUS_BYTES as u32, true)?, crate::ring::Trb::status_stage(true)])
 }
 
 /// Build a class-port SET_FEATURE or CLEAR_FEATURE EP0 TD. # C: O(1)
 pub fn hub_port_feature_trbs(port: u8, feature: u16, set: bool) -> Option<[crate::ring::Trb; 2]> {
-    if port == 0 { return None; }
-    Some([crate::ring::Trb::setup_stage(HUB_PORT_REQUEST_TYPE, if set { USB_REQUEST_SET_FEATURE } else { USB_REQUEST_CLEAR_FEATURE }, feature, u16::from(port), 0), crate::ring::Trb::status_stage(false)])
+    Some([setup_stage(control::hub_port_feature(port, feature, set)?), crate::ring::Trb::status_stage(false)])
 }
 
 /// Validated USB 2 hub descriptor facts used to construct child topology.
@@ -149,7 +142,7 @@ pub fn hub_descriptor(bytes: &[u8]) -> Option<HubDescriptor> {
 pub fn get_hub_descriptor_trbs(buffer_pa: u64, length: usize) -> Option<[crate::ring::Trb; 3]> {
     if !(HUB_DESC_HEADER_BYTES..=CONFIG_DESC_MAX_BYTES).contains(&length) { return None; }
     Some([
-        crate::ring::Trb::setup_stage(HUB_GET_DESCRIPTOR_REQUEST_TYPE, 6, (DESC_HUB as u16) << 8, 0, length as u16),
+        setup_stage(control::get_hub_descriptor(length as u16)),
         crate::ring::Trb::data_stage(buffer_pa, length as u32, true)?,
         crate::ring::Trb::status_stage(true),
     ])
@@ -307,7 +300,7 @@ pub fn hid_interface(bytes: &[u8]) -> Option<HidInterface> {
 /// Build the standard IN GET_DESCRIPTOR(Device, index 0) EP0 TD. # C: O(1)
 pub fn get_device_descriptor_trbs(buffer_pa: u64) -> Option<[crate::ring::Trb; 3]> {
     Some([
-        crate::ring::Trb::setup_stage(0x80, 6, (DESC_DEVICE as u16) << 8, 0, DEVICE_DESC_BYTES as u16),
+        setup_stage(control::get_device_descriptor(DEVICE_DESC_BYTES as u16)),
         crate::ring::Trb::data_stage(buffer_pa, DEVICE_DESC_BYTES as u32, true)?,
         crate::ring::Trb::status_stage(true),
     ])
@@ -317,7 +310,7 @@ pub fn get_device_descriptor_trbs(buffer_pa: u64) -> Option<[crate::ring::Trb; 3
 pub fn get_configuration_descriptor_trbs(buffer_pa: u64, index: u8, length: usize) -> Option<[crate::ring::Trb; 3]> {
     if !(CONFIG_DESC_HEADER_BYTES..=CONFIG_DESC_MAX_BYTES).contains(&length) { return None; }
     Some([
-        crate::ring::Trb::setup_stage(0x80, 6, ((DESC_CONFIGURATION as u16) << 8) | u16::from(index), 0, length as u16),
+        setup_stage(control::get_configuration_descriptor(index, length as u16)),
         crate::ring::Trb::data_stage(buffer_pa, length as u32, true)?,
         crate::ring::Trb::status_stage(true),
     ])
@@ -326,21 +319,21 @@ pub fn get_configuration_descriptor_trbs(buffer_pa: u64, index: u8, length: usiz
 /// Build HID interface GET_DESCRIPTOR(Report) into the descriptor DMA page. # C: O(1)
 pub fn get_hid_report_descriptor_trbs(buffer_pa: u64, interface: u8, length: usize) -> Option<[crate::ring::Trb; 3]> {
     if !(1..=HID_REPORT_DESC_MAX_BYTES).contains(&length) { return None; }
-    Some([crate::ring::Trb::setup_stage(0x81, 6, 0x2200, u16::from(interface), length as u16), crate::ring::Trb::data_stage(buffer_pa, length as u32, true)?, crate::ring::Trb::status_stage(true)])
+    Some([setup_stage(control::get_hid_report_descriptor(interface, length as u16)), crate::ring::Trb::data_stage(buffer_pa, length as u32, true)?, crate::ring::Trb::status_stage(true)])
 }
 
 /// Build HID class SET_IDLE(report=0, duration=0) for one interface. # C: O(1)
 pub fn set_hid_idle_trbs(interface: u8) -> [crate::ring::Trb; 2] {
     [
-        crate::ring::Trb::setup_stage(0x21, 10, 0, u16::from(interface), 0),
+        setup_stage(control::set_hid_idle(interface)),
         crate::ring::Trb::status_stage(false),
     ]
 }
 
 /// Build standard OUT SET_CONFIGURATION with no data stage. # C: O(1)
 pub fn set_configuration_trbs(value: u8) -> Option<[crate::ring::Trb; 2]> {
-    (value != 0).then_some([
-        crate::ring::Trb::setup_stage(0, 9, u16::from(value), 0, 0),
+    control::set_configuration(value).map(|setup| [
+        setup_stage(setup),
         crate::ring::Trb::status_stage(false),
     ])
 }
@@ -348,7 +341,7 @@ pub fn set_configuration_trbs(value: u8) -> Option<[crate::ring::Trb; 2]> {
 /// Build HID class OUT SET_PROTOCOL(Boot) for one selected interface. # C: O(1)
 pub fn set_hid_boot_protocol_trbs(interface: u8) -> [crate::ring::Trb; 2] {
     [
-        crate::ring::Trb::setup_stage(0x21, 0x0b, 0, u16::from(interface), 0),
+        setup_stage(control::set_hid_boot_protocol(interface)),
         crate::ring::Trb::status_stage(false),
     ]
 }
@@ -432,10 +425,10 @@ mod tests {
         assert_eq!(hub_port_status(&[1, 0, 1, 0]), Some(HubPortStatus { status: 1, change: 1 }));
         assert!(hub_port_status(&[0; 3]).is_none());
         let status = get_hub_port_status_trbs(0x90_000, 2).unwrap();
-        assert_eq!(status[0].dword[0], (HUB_PORT_STATUS_REQUEST_TYPE as u32) | ((USB_REQUEST_GET_STATUS as u32) << 8));
+        assert_eq!(status[0].dword[0], 0x0000_00a3);
         assert_eq!(status[0].dword[1], 2 | ((HUB_PORT_STATUS_BYTES as u32) << 16));
         let power = hub_port_feature_trbs(2, HUB_PORT_FEATURE_POWER, true).unwrap();
-        assert_eq!(power[0].dword[0], (HUB_PORT_REQUEST_TYPE as u32) | ((USB_REQUEST_SET_FEATURE as u32) << 8) | ((HUB_PORT_FEATURE_POWER as u32) << 16));
+        assert_eq!(power[0].dword[0], 0x0008_0323);
         assert_eq!(hub_port_changed(&[0b0000_0010], 1), Some(true));
         assert_eq!(hub_port_changed(&[0b0000_0010], 2), Some(false));
         assert_eq!(hub_port_changed(&[0], 8), None);
