@@ -12,7 +12,7 @@ pub const SQE_BYTES: usize = 64;
 pub const SQE_MAX_BYTES: usize = 128;
 
 /// Decoded submission-queue entry.
-#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Sqe {
     /// Immutable wire image retained for in-kernel consumers whose command
     /// payload begins in the normal 64-byte SQE body.
@@ -44,6 +44,17 @@ pub struct Sqe {
     pub addr3: u64,
     /// `__pad2[0]` — reserved; several opcodes refuse a non-zero value.
     pub pad2: u64,
+}
+
+impl Default for Sqe {
+    fn default() -> Self {
+        Self {
+            raw: [0; SQE_MAX_BYTES], opcode: 0, flags: 0, ioprio: 0, fd: 0,
+            off: 0, addr: 0, len: 0, op_flags: 0, user_data: 0, buf_index: 0,
+            personality: 0, zcrx_ifq_idx: 0, splice_fd_in: 0, addr_len: 0,
+            addr3: 0, pad2: 0,
+        }
+    }
 }
 
 impl Sqe {
