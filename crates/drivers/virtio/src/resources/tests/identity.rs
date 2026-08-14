@@ -386,6 +386,14 @@ impl VirtioChildDriverOps<ModelFaultSession> for ModelFaultOps {
         Ok(())
     }
 
+    fn child_published(device_key: VirtioChildDeviceKey) {
+        model_fault_state()
+            .lock()
+            .unwrap()
+            .events
+            .push(("post-publish", device_key.raw() as u64));
+    }
+
     fn remove_child(device_key: VirtioChildDeviceKey) {
         model_fault_state()
             .lock()
@@ -441,6 +449,7 @@ fn child_model_driver_faults_release_without_transport_publish() {
             ("begin", MODEL_FAULT_FEATURES),
             ("probe", MODEL_FAULT_KEY_RAW),
             ("publish", MODEL_FAULT_KEY_RAW),
+            ("post-publish", MODEL_FAULT_KEY_RAW),
         ]);
 
     reset_model_fault_state(ModelFaultMode::Success);
