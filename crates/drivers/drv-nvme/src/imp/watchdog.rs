@@ -28,7 +28,7 @@ fn scan(now_ns: u64) {
         .iter().map(|record| record.dev.clone()).collect();
     for dev in devices {
         if dev.has_expired_async_request(now_ns) {
-            dev.recover_terminal_failure();
+            let _ = super::reset::for_device(&dev);
         }
     }
 }

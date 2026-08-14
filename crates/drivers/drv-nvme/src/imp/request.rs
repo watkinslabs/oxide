@@ -287,7 +287,7 @@ impl NvmeBlk {
                 return Err(BlockError::Eio);
             }
             if crate::lifecycle::deadline_expired(state.done.load(Ordering::Acquire), wait::now_ns(), deadline) {
-                self.recover_terminal_failure();
+                self.mark_recovery_required();
                 return Err(BlockError::Eio);
             }
             if !wait::poll_enabled(|| state.done.load(Ordering::Acquire), deadline) {

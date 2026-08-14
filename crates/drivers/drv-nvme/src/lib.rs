@@ -48,6 +48,7 @@ mod imp {
 
     mod device;
     mod request;
+    mod reset;
     mod watchdog;
 
     /// PCI class for an NVMe controller: base 0x01 (mass storage), subclass
@@ -64,6 +65,7 @@ mod imp {
         capacity: u64,
         removed:  AtomicBool,
         poisoned: AtomicBool,
+        resetting: AtomicBool,
     }
 
     impl NvmeBlk {
@@ -99,6 +101,7 @@ mod imp {
         device_key: pci::Bdf,
         command_orig: u16,
         name:       String,
+        nsid:       u32,
         dev:        Arc<NvmeBlk>,
     }
 
@@ -183,6 +186,7 @@ mod imp {
             blk_size, capacity,
             removed: AtomicBool::new(false),
             poisoned: AtomicBool::new(false),
+            resetting: AtomicBool::new(false),
         });
 
         let name = nvme_name(NEXT_DISK_INDEX.fetch_add(1, Ordering::Relaxed), nsid);
@@ -201,6 +205,7 @@ mod imp {
                     device_key,
                     command_orig,
                     name: name.clone(),
+                    nsid,
                     dev: dev.clone(),
                 });
                 true
@@ -275,6 +280,17 @@ mod imp {
         true
     }
 
+    /// Reset one published controller without changing its disk identity.
+    /// # C: O(N_nvme + controller reset)
+    pub fn reset(device_key: pci::Bdf) -> bool {
+        let record = DEVICES.lock_bh::<NvmeBh>()
+            .iter()
+            .find(|record| record.device_key == device_key)
+            .map(|record| (record.name.clone(), record.nsid, record.dev.clone()));
+        let Some((name, nsid, dev)) = record else { return false; };
+        reset::live(&name, nsid, &dev)
+    }
+
     /// Original PCI command bits saved before this driver enabled decode.
     /// # C: O(N_nvme)
     pub fn command_orig_for(device_key: pci::Bdf) -> Option<u16> {
@@ -287,7 +303,7 @@ mod imp {
 }
 
 #[cfg(target_os = "oxide-kernel")]
-pub use imp::{command_orig_for, device_key_from_bdf, init, remove, shutdown, NvmeBlk, NVME_CLASS24};
+pub use imp::{command_orig_for, device_key_from_bdf, init, remove, reset, shutdown, NvmeBlk, NVME_CLASS24};
 
 #[cfg(target_os = "oxide-kernel")]
 fn restore_pci_bus_master(dev: &drv::Device, command_orig: u16) {

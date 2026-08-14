@@ -260,6 +260,48 @@ impl Nvme {
         Some(nv)
     }
 
+    /// Rebuild this controller's queues in place after a live reset. The BAR
+    /// mapping and DMA frames remain owned by this controller throughout.
+    /// # C: O(reset + 2 admin cmds + 2 create-queue cmds)
+    pub(crate) fn reinitialize(&mut self, io_vector: u16) -> bool {
+        if self.bar0_va == 0 { return false; }
+        self.w32(regs::REG_CC, 0);
+        if !self.wait_rdy(false, 2_000) { return false; }
+
+        for pa in [self.admin.sq_pa, self.admin.cq_pa, self.io.sq_pa, self.io.cq_pa, self.admin_data_pa] {
+            Self::zero_frame(pa);
+        }
+        let cap = self.r32(regs::REG_CAP) as u64 | ((self.r32(regs::REG_CAP + 4) as u64) << 32);
+        let dstrd = regs::cap_dstrd(cap);
+        self.admin.entries = Q_ENTRIES;
+        self.admin.sq_tail = 0;
+        self.admin.cq_head = 0;
+        self.admin.cq_phase = true;
+        self.admin.cid = 0;
+        self.admin.sq_db_va = self.bar0_va + regs::doorbell_off(0, false, dstrd);
+        self.admin.cq_db_va = self.bar0_va + regs::doorbell_off(0, true, dstrd);
+        self.io.entries = regs::io_queue_entries(cap, Q_ENTRIES);
+        self.io.sq_tail = 0;
+        self.io.cq_head = 0;
+        self.io.cq_phase = true;
+        self.io.cid = 0;
+        self.io.sq_db_va = self.bar0_va + regs::doorbell_off(1, false, dstrd);
+        self.io.cq_db_va = self.bar0_va + regs::doorbell_off(1, true, dstrd);
+        self.nsid = 0;
+        self.ns_blocks = 0;
+        self.blk_size = 512;
+
+        self.w32(regs::REG_AQA, regs::aqa(self.admin.entries));
+        self.w64(regs::REG_ASQ, self.admin.sq_dma);
+        self.w64(regs::REG_ACQ, self.admin.cq_dma);
+        self.w32(regs::REG_CC, regs::cc_enable());
+        let to_ms = regs::cap_to_ms(cap).max(2_000);
+        if !self.wait_rdy(true, to_ms) { return false; }
+        if self.identify(regs::CNS_CONTROLLER, 0).is_none() { return false; }
+        if !self.identify_active_namespace() { return false; }
+        self.create_io_cq(io_vector) && self.create_io_sq()
+    }
+
     /// Poll CSTS.RDY until it equals `want`, bounded by `to_ms`. Fails on
     /// CSTS.CFS (controller fatal). # C: O(poll until RDY flips)
     fn wait_rdy(&self, want: bool, to_ms: u64) -> bool {

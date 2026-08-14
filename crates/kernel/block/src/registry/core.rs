@@ -13,11 +13,11 @@ use sync::{Spinlock, Devices as DevicesClass};
 #[cfg(any(target_os = "oxide-kernel", feature = "hosted"))]
 use sched::live::Mutex as LifecycleMutex;
 #[cfg(not(any(target_os = "oxide-kernel", feature = "hosted")))]
-struct LifecycleMutex<T> { inner: Spinlock<T, DevicesClass> }
+pub(super) struct LifecycleMutex<T> { inner: Spinlock<T, DevicesClass> }
 #[cfg(not(any(target_os = "oxide-kernel", feature = "hosted")))]
 impl<T> LifecycleMutex<T> {
     const fn new(value: T) -> Self { Self { inner: Spinlock::new(value) } }
-    unsafe fn lock(&self) -> sync::Guard<'_, T, DevicesClass> { self.inner.lock() }
+    pub(super) unsafe fn lock(&self) -> sync::Guard<'_, T, DevicesClass> { self.inner.lock() }
 }
 
 use crate::blockdev::BlockDevice;
