@@ -48,6 +48,7 @@ mod imp {
 
     mod device;
     mod request;
+    mod watchdog;
 
     /// PCI class for an NVMe controller: base 0x01 (mass storage), subclass
     /// 0x08 (non-volatile memory), prog-if 0x02 (NVMe). # C: O(1)
@@ -215,6 +216,7 @@ mod imp {
             unregister_completion_if_idle();
             return 0;
         }
+        watchdog::register();
         // The completion softirq finds its waiter through DEVICES, so run the
         // optional end-to-end read only after publication.
         #[cfg(feature = "debug-boot")]
@@ -252,6 +254,7 @@ mod imp {
         };
         let _ = block::registry::unregister(&rec.name);
         rec.dev.remove();
+        watchdog::unregister_if_idle();
         true
     }
 

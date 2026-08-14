@@ -430,6 +430,7 @@ dependencies = [
  "pmm",
  "sched",
  "sync",
+ "timer",
 ]
 
 [[package]]

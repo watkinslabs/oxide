@@ -11,6 +11,10 @@ pub(super) struct Requests {
 
 impl Requests {
     pub(super) const fn new() -> Self { Self { pending: Vec::new(), deferred: Vec::new(), dispatching: false } }
+
+    fn has_expired_pending(&self, now_ns: u64) -> bool {
+        self.pending.iter().any(|request| crate::lifecycle::async_deadline_expired(now_ns, request.deadline_ns))
+    }
 }
 
 struct PendingRequest {
@@ -20,6 +24,7 @@ struct PendingRequest {
     completion: BlockCompletion,
     write: bool,
     len: usize,
+    deadline_ns: u64,
 }
 
 struct DeferredRequest {
@@ -136,7 +141,8 @@ impl NvmeBlk {
         // The controller lock stays held from doorbell publication through this
         // insertion. CQ draining takes this same lock first, so a fast CQE can
         // never be retired before its CID owns this canonical record.
-        requests.pending.push(PendingRequest { cid, dma: dma.take(), request, completion, write: plan.write, len: plan.len });
+        let deadline_ns = wait::now_ns().saturating_add(wait::IO_TIMEOUT_NS);
+        requests.pending.push(PendingRequest { cid, dma: dma.take(), request, completion, write: plan.write, len: plan.len, deadline_ns });
         Ok(())
     }
 
@@ -241,6 +247,12 @@ impl NvmeBlk {
         };
         for pending in pending { (pending.completion)(pending.request, Err(BlockError::Eio)); }
         for deferred in deferred { (deferred.completion)(deferred.request, Err(BlockError::Eio)); }
+    }
+
+    /// Whether the canonical CID owner has crossed its asynchronous deadline.
+    /// # C: O(in-flight commands)
+    pub(super) fn has_expired_async_request(&self, now_ns: u64) -> bool {
+        self.requests.lock().has_expired_pending(now_ns)
     }
 
     /// Drain every CQE that the hard IRQ made visible. # C: O(completions)
