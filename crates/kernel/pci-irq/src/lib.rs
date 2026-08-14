@@ -10,6 +10,8 @@ use core::ptr::{read_volatile, write_volatile};
 #[cfg(target_arch = "x86_64")]
 use core::sync::atomic::{AtomicPtr, Ordering};
 
+mod multi_msi;
+
 /// One BAR mapping that contains an MSI-X table. Drivers retain ownership of
 /// the mapping until [`Binding::release`] returns. # C: O(1)
 #[derive(Clone, Copy)]
@@ -52,7 +54,16 @@ pub fn set_intx_resolver(resolver: IntxResolver) {
 /// One PCI-core-owned interrupt message. A driver only owns its handler and
 /// synchronizes it before releasing this binding. # C: O(1)
 #[derive(Clone, Copy)]
-pub struct Binding { bdf: pci::Bdf, irq: u32, prior_command: u16, mode: Mode }
+pub struct Binding {
+    bdf: pci::Bdf,
+    irq: u32,
+    prior_command: u16,
+    mode: Mode,
+    irqs: [u32; MSI_MAX_MESSAGES],
+    irq_count: u8,
+}
+
+const MSI_MAX_MESSAGES: usize = 32;
 
 /// Caller-retained mapping of one MSI-X table entry. The PCI IRQ owner
 /// validates the table BAR and vector index before programming this address.
@@ -129,6 +140,27 @@ pub fn request_msi_only_context(bdf: pci::Bdf, action: arch_irq::DeviceAction,
     { let _ = (bdf, action, handler, arg); None }
 }
 
+/// Request the exact device-relative MSI message selected by a PCIe port
+/// capability. The binding owns every lower message in its MSI block and
+/// dispatches only `message_number`. # C: O(messages * irq_slots)
+pub fn request_msi_only_context_message(bdf: pci::Bdf, message_number: u8,
+    action: arch_irq::DeviceAction, handler: fn(usize), arg: usize) -> Option<Binding> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let reader = hal_x86_64::pci::EcamPci::from_published()?;
+        let cap = pci::capabilities(&reader, bdf).find(pci::CAP_ID_MSI)?;
+        request_msi_context_message(&reader, bdf, cap.cfg_off, message_number, action, handler, arg)
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        let reader = hal_aarch64::pci::EcamPci::from_published()?;
+        let cap = pci::capabilities(&reader, bdf).find(pci::CAP_ID_MSI)?;
+        request_msi_context_message(&reader, bdf, cap.cfg_off, message_number, action, handler, arg)
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    { let _ = (bdf, message_number, action, handler, arg); None }
+}
+
 /// Request a legacy INTx vector from a route already resolved by the PCI
 /// root-complex owner. This is intentionally separate from the PCI
 /// interrupt-line byte, which is not a routable interrupt-controller input.
@@ -165,14 +197,14 @@ impl Binding {
     pub fn release(self) {
         #[cfg(target_arch = "x86_64")]
         if matches!(self.mode, Mode::Intx) {
-            arch_irq::free_pci_msi(self.irq);
+            free_binding_irqs(&self);
             return;
         }
         #[cfg(target_arch = "x86_64")]
         if let Some(r) = hal_x86_64::pci::EcamPci::from_published() { release_with(&r, self); }
         #[cfg(target_arch = "aarch64")]
         if let Some(r) = hal_aarch64::pci::EcamPci::from_published() { release_with(&r, self); }
-        arch_irq::free_pci_msi(self.irq);
+        free_binding_irqs(&self);
     }
 }
 
@@ -301,7 +333,7 @@ fn request_intx_x86(bdf: pci::Bdf, route: IntxRoute, action: arch_irq::DeviceAct
         arch_irq::free_pci_msi(u32::from(vector));
         return None;
     }
-    Some(Binding { bdf, irq: u32::from(vector), prior_command: 0, mode: Mode::Intx })
+    Some(single_binding(bdf, u32::from(vector), 0, Mode::Intx))
 }
 
 fn request_msi<R: pci::ConfigSpaceReader>(r: &R, bdf: pci::Bdf, cap_off: u8,
@@ -317,7 +349,7 @@ fn request_msi<R: pci::ConfigSpaceReader>(r: &R, bdf: pci::Bdf, cap_off: u8,
         arch_irq::free_pci_msi(message.irq);
         return None;
     }
-    Some(Binding { bdf, irq: message.irq, prior_command, mode: Mode::Msi { cap_off } })
+    Some(single_binding(bdf, message.irq, prior_command, Mode::Msi { cap_off }))
 }
 
 fn request_msi_context<R: pci::ConfigSpaceReader>(r: &R, bdf: pci::Bdf, cap_off: u8,
@@ -333,7 +365,37 @@ fn request_msi_context<R: pci::ConfigSpaceReader>(r: &R, bdf: pci::Bdf, cap_off:
         arch_irq::free_pci_msi(message.irq);
         return None;
     }
-    Some(Binding { bdf, irq: message.irq, prior_command, mode: Mode::Msi { cap_off } })
+    Some(single_binding(bdf, message.irq, prior_command, Mode::Msi { cap_off }))
+}
+
+fn request_msi_context_message<R: pci::ConfigSpaceReader>(r: &R, bdf: pci::Bdf, cap_off: u8,
+    message_number: u8, action: arch_irq::DeviceAction, handler: fn(usize), arg: usize) -> Option<Binding> {
+    let cap = pci::decode_msi_cap(r, bdf, cap_off)?;
+    let block = multi_msi::allocate(bdf, message_number, cap.multiple_message_capable)?;
+    let target = block.message(message_number as usize)?;
+    if !arch_irq::register_pci_msi_context_handler(target.irq, action, handler, arg) {
+        block.release();
+        return None;
+    }
+    let prior_command = pci::set_intx_disabled(r, bdf, true);
+    if !block.program(r, bdf, cap_off, cap, message_number as usize) {
+        let _ = pci::restore_intx_disabled(r, bdf, prior_command);
+        block.release();
+        return None;
+    }
+    let mut irqs = [0; MSI_MAX_MESSAGES];
+    for index in 0..block.count() { irqs[index] = block.message(index)?.irq; }
+    Some(Binding { bdf, irq: target.irq, prior_command, mode: Mode::Msi { cap_off }, irqs, irq_count: block.count() as u8 })
+}
+
+fn single_binding(bdf: pci::Bdf, irq: u32, prior_command: u16, mode: Mode) -> Binding {
+    let mut irqs = [0; MSI_MAX_MESSAGES];
+    irqs[0] = irq;
+    Binding { bdf, irq, prior_command, mode, irqs, irq_count: 1 }
+}
+
+fn free_binding_irqs(binding: &Binding) {
+    for irq in &binding.irqs[..binding.irq_count as usize] { arch_irq::free_pci_msi(*irq); }
 }
 
 fn request_msix<R: pci::ConfigSpaceReader>(r: &R, bdf: pci::Bdf, msi_cap: Option<u8>,
@@ -351,7 +413,7 @@ fn request_msix<R: pci::ConfigSpaceReader>(r: &R, bdf: pci::Bdf, msi_cap: Option
     write_msix_entry(entry_va, message.address, message.data);
     r.write32(bdf, cfg, pci::msix_control_value(r.read32(bdf, cfg), true));
     let _ = r.read32(bdf, cfg);
-    Some(Binding { bdf, irq: message.irq, prior_command, mode: Mode::Msix { cap_off, entry_va } })
+    Some(single_binding(bdf, message.irq, prior_command, Mode::Msix { cap_off, entry_va }))
 }
 
 fn release_with<R: pci::ConfigSpaceReader>(r: &R, binding: Binding) {

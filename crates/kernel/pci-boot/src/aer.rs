@@ -24,13 +24,10 @@ impl drv::Driver for AerDriver {
     }
     fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
         let port = pcie_port::service_port(dev, pcie_port::Service::Aer).ok_or(drv::Error::NoMatch)?;
-        // The current PCI IRQ owner programs one MSI message. A nonzero AER
-        // message needs a multi-message allocation, so leave it fully inert.
-        if port.child(pcie_port::Service::Aer).is_none_or(|child| child.message_number != 0) {
-            return Err(drv::Error::ProbeFailed);
-        }
-        let binding = pci_irq::request_msi_only_context(port.root_bdf(), arch_irq::DeviceAction::PcieAer,
-            aer_irq, bdf_key(port.root_bdf()))
+        let message = port.child(pcie_port::Service::Aer)
+            .map(|child| child.message_number).ok_or(drv::Error::NoMatch)?;
+        let binding = pci_irq::request_msi_only_context_message(port.root_bdf(), message,
+            arch_irq::DeviceAction::PcieAer, aer_irq, bdf_key(port.root_bdf()))
             .ok_or(drv::Error::ProbeFailed)?;
         enable(port.root_bdf());
         port.retain_binding(binding);
