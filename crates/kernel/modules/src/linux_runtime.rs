@@ -108,6 +108,7 @@ fn export_arch_symbols() {
         fn __x86_indirect_thunk_r13();
     }
     for (name, addr) in [
+        ("const_current_task", hal_x86_64::LINUX_CURRENT_TASK_OFFSET),
         ("__x86_return_thunk", linux_retpoline::__x86_return_thunk as *const () as usize),
         ("__x86_indirect_thunk_rax", linux_retpoline::__x86_indirect_thunk_rax as *const () as usize),
         ("__x86_indirect_thunk_rbx", linux_retpoline::__x86_indirect_thunk_rbx as *const () as usize),

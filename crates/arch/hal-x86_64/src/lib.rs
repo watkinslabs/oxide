@@ -86,7 +86,7 @@ pub use regs::{clear_cr4_fsgsbase, enable_cpu_features, enable_sse, read_cr0, re
 pub use signal::{build_signal_frame, min_sigstksz, current_user_sp, sigframe_base, sigframe_range, restart_ignored_syscall, restart_via_restart_syscall, restore_signal_frame, rt_sigreturn_frame_range};
 pub use syscall::{
     boot_syscall_kstack_top, current_kstack_top, current_pt_regs,
-    init_percpu_syscall_kstack, install_syscall_msrs, set_syscall_kstack,
+    init_percpu_syscall_kstack, install_syscall_msrs, set_linux_current_task, set_syscall_kstack,
 };
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub use timer::{calibrate_tsc_khz, read_rtc_unix_secs};

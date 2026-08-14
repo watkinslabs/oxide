@@ -569,6 +569,8 @@ pub(super) unsafe fn schedule_once() {
     {
         // SAFETY: rq.current was just updated to the new Arc<Task> by swap_current; its strong ref is held in the AtomicPtr.
         let now = unsafe { rq.current_ref() };
+        // SAFETY: rq.current now owns `now`; this CPU is in the preempt-disabled switch window.
+        unsafe { hal_x86_64::set_linux_current_task(now as *const _ as *const ()); }
         let top = now.kernel_stack.load(Ordering::Acquire);
         if !top.is_null() {
             // SAFETY: top is the next task's top-of-stack; set_rsp0 writes the RSP0 field of the live TSS used by ring-3->ring-0 transitions per `14§3`; set_syscall_kstack updates the per-task syscall scratch stack so the next `syscall` instruction lands here.

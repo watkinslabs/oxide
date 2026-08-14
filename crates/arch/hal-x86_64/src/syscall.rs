@@ -84,9 +84,12 @@ static SYSCALL_KSTACK: SyscallKStack = SyscallKStack(UnsafeCell::new([0u8; 4096]
 //             OXIDE_SYSCALL_USER_RSP_SAVE)
 const PERCPU_SYSCALL_KSTACK_OFF: usize = 8;
 const PERCPU_SYSCALL_USER_RSP_OFF: usize = 16;
+/// Native module ABI slot for the running task pointer.
+pub const LINUX_CURRENT_TASK_OFFSET: usize = 32;
 // The global_asm entry stub hardcodes `gs:[8]`/`gs:[16]` (it can't reference
 // a Rust const); this pins the coupling so a layout change fails to compile.
-const _: () = assert!(PERCPU_SYSCALL_KSTACK_OFF == 8 && PERCPU_SYSCALL_USER_RSP_OFF == 16);
+const _: () = assert!(PERCPU_SYSCALL_KSTACK_OFF == 8 && PERCPU_SYSCALL_USER_RSP_OFF == 16
+    && LINUX_CURRENT_TASK_OFFSET == 32);
 
 /// Read this CPU's syscall kstack top (gs:[8]). Host build → 0.
 /// # C: O(1)
@@ -399,6 +402,18 @@ pub unsafe fn set_syscall_kstack(top: u64) {
     unsafe { core::arch::asm!("mov gs:[8], {v}", v = in(reg) top, options(nostack, preserves_flags)); }
     #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
     { let _ = top; }
+}
+
+/// Publish the running task in this CPU's native module ABI slot.
+/// # SAFETY: caller owns this CPU's scheduler switch with preemption disabled.
+/// # C: O(1)
+pub unsafe fn set_linux_current_task(task: *const ()) {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    // SAFETY: kernel GS addresses this CPU's page; the switch owns its current-task publication.
+    unsafe { core::arch::asm!("mov gs:[{off}], {task}", off = const LINUX_CURRENT_TASK_OFFSET,
+        task = in(reg) task, options(nostack, preserves_flags)); }
+    #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+    { let _ = task; }
 }
 
 /// Initialise THIS CPU's syscall-kstack slot (gs:[8]) to a known stack —
