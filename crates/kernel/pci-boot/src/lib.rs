@@ -202,16 +202,16 @@ fn activate_dma_and_interrupt_ownership(requesters: &[pci::Bdf], aliases: &pci::
     // SAFETY: all discovered PCI requesters have been quiesced and no driver is registered yet.
     let iommu_activation = unsafe { iommu::activate_amd_vi(requesters, aliases,
         pmm::user_as::hhdm_offset(), pmm::setup::usable_regions()) };
-    if iommu_activation == iommu::AmdViActivation::Failed { return false; }
+    if iommu_activation == iommu::AmdViActivation::Failed { debug_boot! { klog::write_raw(b"[WARN]  iommu: amd-vi activation failed\n"); } return false; }
     if iommu_activation == iommu::AmdViActivation::Enabled
         && !amd_vi_events::install(requesters) { return rollback_amd_vi(); }
     let vtd_activation = activate_vtd_arch(requesters, aliases);
-    if vtd_activation == iommu::VtdActivation::Failed { return rollback_amd_vi(); }
+    if vtd_activation == iommu::VtdActivation::Failed { debug_boot! { klog::write_raw(b"[WARN]  iommu: vtd activation failed\n"); } return rollback_amd_vi(); }
     #[cfg(target_arch = "x86_64")]
     if vtd_activation == iommu::VtdActivation::Enabled && !vtd_faults::install() { return false; }
-    if !iommu::enable_vtd_interrupt_remapping() { return false; }
+    if !iommu::enable_vtd_interrupt_remapping() { debug_boot! { klog::write_raw(b"[WARN]  iommu: interrupt remapping failed\n"); } return false; }
     iommu::admit_boot_requesters(requesters);
-    if !map_firmware_ioapics() { return false; }
+    if !map_firmware_ioapics() { debug_boot! { klog::write_raw(b"[WARN]  iommu: ioapic mapping failed\n"); } return false; }
     // Linux probes interrupt-driven PCI functions with local IRQ delivery
     // enabled.  Every requester remains bus-master quiesced until its driver
     // has installed a handler and explicitly admits DMA above.
