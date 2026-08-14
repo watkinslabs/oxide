@@ -7,6 +7,8 @@ pub const CAP_ID_PCIE: u8 = 0x10;
 pub const CAP_ID_MSIX: u8 = 0x11;
 /// PCIe extended capability ID for a Device Serial Number.
 pub const EXT_CAP_ID_DSN: u16 = 0x0003;
+/// PCIe extended capability ID for Advanced Error Reporting.
+pub const EXT_CAP_ID_AER: u16 = 0x0001;
 /// PCIe Access Control Services extended capability ID.
 pub const EXT_CAP_ID_ACS: u16 = 0x000d;
 /// Source Validation, request/completion redirection, and upstream forwarding.
@@ -14,6 +16,9 @@ pub const ACS_ISOLATION_FLAGS: u16 = 0x001d;
 const EXT_CAP_FIRST: u16 = 0x100;
 const EXT_CAP_NEXT_MASK: u32 = 0xFFF << 20;
 const EXT_CAP_MAX_STEPS: usize = 960;
+const AER_ROOT_STATUS_OFF: u16 = 0x30;
+const AER_ROOT_STATUS_IRQ_SHIFT: u32 = 27;
+const AER_ROOT_STATUS_IRQ_MASK: u32 = 0x1f;
 pub const MSI_ENABLE: u32 = 1u32 << 16;
 pub const MSIX_ENABLE: u32 = 1u32 << 31;
 pub const MSIX_FUNCTION_MASK: u32 = 1u32 << 30;
@@ -88,6 +93,14 @@ pub fn extended_capability<R: ConfigSpaceReader>(r: &R, bdf: Bdf, id: u16) -> Op
         off = next;
     }
     None
+}
+
+/// Read the root-port AER interrupt message number without changing AER
+/// enable or status state. # C: O(capabilities)
+pub fn aer_message_number<R: ConfigSpaceReader>(r: &R, bdf: Bdf) -> Option<u8> {
+    let off = extended_capability(r, bdf, EXT_CAP_ID_AER)?;
+    Some(((r.read32_ext(bdf, off + AER_ROOT_STATUS_OFF) >> AER_ROOT_STATUS_IRQ_SHIFT)
+        & AER_ROOT_STATUS_IRQ_MASK) as u8)
 }
 
 /// Return whether a PCIe function enables the isolation ACS controls. # C: O(capabilities)

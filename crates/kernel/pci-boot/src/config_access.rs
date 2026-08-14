@@ -59,6 +59,7 @@ fn config_write(addr: &str, off: usize, buf: &[u8]) -> bool {
 /// # C: O(N_caps)
 fn quiesce_after_driver_remove(dev: &drv::Device) {
     let Some(bdf) = pci::parse_bdf_addr(&dev.addr) else { return; };
+    if let Some(port) = pcie_port::find(bdf) { pcie_port::remove(&port); }
     #[cfg(target_arch = "x86_64")]
     if let Some(r) = hal_x86_64::pci::EcamPci::from_published() { pci::quiesce_function(&r, bdf); }
     #[cfg(target_arch = "aarch64")]

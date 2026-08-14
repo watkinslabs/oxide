@@ -508,7 +508,7 @@ fn publish_pci_model_device(
             .with_resources(pci_resources_arch(d)),
     );
     match drv::try_device_add(dev) {
-        Ok(dev) => Some(dev),
+        Ok(dev) => { publish_port_service_children(d, &dev); Some(dev) },
         Err(drv::Error::Busy) => drv::devices().into_iter().find(|dev| {
             dev.bus == "pci"
                 && dev.addr.as_str() == addr.as_str()
@@ -518,4 +518,25 @@ fn publish_pci_model_device(
         }),
         Err(_) => None,
     }
+}
+
+/// Publish the AER service child for a root port or root event collector.
+/// Capability reads retain firmware state; AER control and status are owned by
+/// the eventual AER service driver. # C: O(capabilities)
+fn publish_port_service_children(d: &pci::PciDevice, parent: &alloc::sync::Arc<drv::Device>) {
+    let message = {
+        #[cfg(target_arch = "x86_64")]
+        { hal_x86_64::pci::EcamPci::from_published().and_then(|reader| pci::aer_message_number(&reader, d.bdf)) }
+        #[cfg(target_arch = "aarch64")]
+        { hal_aarch64::pci::EcamPci::from_published().and_then(|reader| pci::aer_message_number(&reader, d.bdf)) }
+    };
+    let port_type = {
+        #[cfg(target_arch = "x86_64")]
+        { hal_x86_64::pci::EcamPci::from_published().and_then(|reader| pci::pcie_type(&reader, d.bdf)) }
+        #[cfg(target_arch = "aarch64")]
+        { hal_aarch64::pci::EcamPci::from_published().and_then(|reader| pci::pcie_type(&reader, d.bdf)) }
+    };
+    if !matches!(port_type, Some(pci::PcieType::RootPort | pci::PcieType::RootComplexEvent)) { return; }
+    let Some(message) = message else { return; };
+    let _ = pcie_port::publish(d.bdf, alloc::sync::Arc::clone(parent), pcie_port::Service::Aer.bit(), [0, message, 0, 0, 0]);
 }

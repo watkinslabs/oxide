@@ -1500,6 +1500,7 @@ dependencies = [
  "netlink",
  "pci",
  "pci-irq",
+ "pcie-port",
  "pmm",
  "softirq",
  "sync",
@@ -1514,6 +1515,16 @@ dependencies = [
  "hal-aarch64",
  "hal-x86_64",
  "pci",
+]
+
+[[package]]
+name = "pcie-port"
+version = "0.1.0"
+dependencies = [
+ "drv",
+ "pci",
+ "pci-irq",
+ "sync",
 ]
 
 [[package]]

@@ -19,6 +19,7 @@ virtio  = { path = "../../drivers/virtio" }
 drv     = { path = "../../drivers/drv" }
 arch-irq = { path = "../arch-irq" }
 pci-irq = { path = "../pci-irq" }
+pcie-port = { path = "../pcie-port" }
 softirq = { path = "../softirq" }
 net     = { path = "../net" }
 netlink = { path = "../netlink" }
