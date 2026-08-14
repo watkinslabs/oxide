@@ -12,6 +12,10 @@ const IRTA_X2APIC_MODE: u64 = 1 << 11;
 const MSI_REMAP_ADDRESS: u64 = 0xFEE0_0000;
 const MSI_REMAP_FORMAT: u64 = 1 << 4;
 const MSI_REMAP_HANDLE_SHIFT: u32 = 5;
+const IRTE_SOURCE_QUALIFIER_SHIFT: u32 = 16;
+const IRTE_SOURCE_VALIDATION_SHIFT: u32 = 18;
+const IRTE_SOURCE_VALIDATE_ID: u64 = 1;
+const IRTE_SOURCE_QUALIFIER_IGNORE_LOW_THREE: u64 = 3;
 
 /// Hardware-format 16-byte remapped-mode VT-d interrupt entry.
 #[repr(C)]
@@ -24,7 +28,7 @@ impl VtdIrte {
         extended_mode: bool) -> Self {
         let destination = if extended_mode { destination_apic_id } else { destination_apic_id << 8 };
         let low = 1 | (1 << 3) | ((vector as u64) << 16) | ((destination as u64) << 32);
-        let high = requester_id as u64 | (2 << 18);
+        let high = requester_id as u64 | (IRTE_SOURCE_VALIDATE_ID << IRTE_SOURCE_VALIDATION_SHIFT);
         Self { words: [low, high] }
     }
 
@@ -35,7 +39,9 @@ impl VtdIrte {
         extended_mode: bool) -> Self {
         let destination = if extended_mode { destination_apic_id } else { destination_apic_id << 8 };
         let low = 1 | (1 << 3) | ((vector as u64) << 16) | ((destination as u64) << 32);
-        let high = source_id as u64 | (3 << 16) | (2 << 18);
+        let high = source_id as u64
+            | (IRTE_SOURCE_QUALIFIER_IGNORE_LOW_THREE << IRTE_SOURCE_QUALIFIER_SHIFT)
+            | (IRTE_SOURCE_VALIDATE_ID << IRTE_SOURCE_VALIDATION_SHIFT);
         Self { words: [low, high] }
     }
 
@@ -150,7 +156,7 @@ mod tests {
     fn irte_layout_pins_destination_and_source_verification() {
         let entry = VtdIrte::msi(0x51, 0x1234, 0x9abc, true);
         assert_eq!(core::mem::size_of::<VtdIrte>(), 16);
-        assert_eq!(entry.words(), [0x0000_1234_0051_0009, 0x0000_0000_0008_9abc]);
+        assert_eq!(entry.words(), [0x0000_1234_0051_0009, 0x0000_0000_0004_9abc]);
     }
 
     #[test]
@@ -161,6 +167,6 @@ mod tests {
     #[test]
     fn hpet_irte_uses_the_firmware_source_qualifier_encoding() {
         assert_eq!(VtdIrte::hpet(0x51, 0x1234, 0x9abc, true).words(),
-            [0x0000_1234_0051_0009, 0x0000_0000_000b_9abc]);
+            [0x0000_1234_0051_0009, 0x0000_0000_0007_9abc]);
     }
 }
