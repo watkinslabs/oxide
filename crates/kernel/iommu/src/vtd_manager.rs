@@ -38,6 +38,12 @@ fn trace_failure(stage: &'static [u8]) {
 }
 #[cfg(not(feature = "debug-boot"))]
 fn trace_failure(_: &'static [u8]) {}
+#[cfg(feature = "debug-boot")]
+fn trace_stage(stage: &'static [u8]) {
+    klog::write_raw(b"[INFO]  vtd: "); klog::write_raw(stage); klog::write_raw(b"\n");
+}
+#[cfg(not(feature = "debug-boot"))]
+fn trace_stage(_: &'static [u8]) {}
 
 /// Build, publish, and invalidate one VT-d identity domain per hardware unit.
 ///
@@ -55,6 +61,7 @@ pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf],
 
     let mut manager = Vec::new();
     for unit in units {
+        trace_stage(b"unit setup");
         let Some(regs) = (unsafe { VtdRegisters::map(unit.register_base, unit.register_pages) }) else { trace_failure(b"register map"); return VtdActivation::Failed; };
         let coherent = regs.cache_coherent();
         if !maintenance_available(coherent) { trace_failure(b"cache maintenance"); return VtdActivation::Failed; }
@@ -79,6 +86,7 @@ pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf],
         } else { None };
         manager.push(VtdBootUnit { unit, regs, requesters: Vec::new(), ioapic_sources: Vec::new(), hpet_source: None, tables, qi, ir });
     }
+    trace_stage(b"domain setup");
     for entry in manager.iter_mut() {
         let unit_requesters: Vec<Bdf> = requesters.iter().copied().filter(|bdf|
             intel_vtd_unit_for_bdf(reader, *bdf) == Some(entry.unit)).collect();
@@ -101,6 +109,7 @@ pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf],
             }
         }
     }
+    trace_stage(b"platform scopes");
     for index in 0..firmware::ioapic_count() {
         let Some(ioapic_id) = firmware::ioapic(index).map(|ioapic| ioapic.id) else { continue; };
         if let Some((unit, source_id)) = intel_vtd_ioapic_source(reader, ioapic_id) {
@@ -114,6 +123,7 @@ pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf],
             entry.hpet_source = Some(source_id);
         }
     }
+    trace_stage(b"hardware enable");
     for entry in manager.iter_mut() {
         if !entry.regs.set_root_table(entry.tables.root_pa()) { trace_failure(b"root table"); return activation_failed(&mut manager); }
         if !invalidate(entry) { trace_failure(b"translation invalidate"); return activation_failed(&mut manager); }
@@ -122,6 +132,7 @@ pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf],
             if !entry.regs.set_interrupt_remap_table(ir.irta()) { trace_failure(b"interrupt table install"); return activation_failed(&mut manager); }
         }
     }
+    trace_stage(b"ready");
     let eim_capable = !firmware::acpi::dmar_x2apic_opt_out() && all_vtd_units_support_eim();
     *MANAGER.lock() = manager;
     EIM_CAPABLE.store(eim_capable, Ordering::Release);
