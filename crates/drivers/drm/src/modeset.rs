@@ -13,7 +13,6 @@ use crate::{
     DrmModeGetEncoder, DrmModeGetPlane, DrmModeGetPlaneRes, DrmModeModeinfo,
     crtc_idx_of, connector_idx_of, encoder_idx_of,
     DRM_MODE_SUBPIXEL_UNKNOWN, DRM_MODE_CONNECTOR_VIRTUAL,
-    DRM_FORMAT_XRGB8888, DRM_FORMAT_ARGB8888,
 };
 
 fn einval() -> i64 { -(Errno::Einval.as_i32() as i64) }
@@ -30,6 +29,14 @@ fn write_ids(ptr: u64, ids: &[u32], cap: u32) {
     for i in 0..n {
         if crate::uarg::write_arg(ptr + (i as u64) * 4, ids[i]).is_err() { return; }
     }
+}
+
+/// One driver-owned format vector shared by MODE_GETPLANE and the immutable
+/// IN_FORMATS blob. A modifier mask has 64 format bits, so formats past that
+/// representation boundary cannot be advertised.
+/// # C: O(formats)
+fn scanout_formats(card: &Arc<dyn DrmDriver>) -> alloc::vec::Vec<u32> {
+    card.scanout_formats().into_iter().take(64).collect()
 }
 
 /// Copy a connector's mode array out, following the same 2-pass rule as every
@@ -188,7 +195,7 @@ pub fn get_plane(card: &Arc<dyn DrmDriver>, arg: u64) -> i64 {
     let Ok(mut p) = crate::uarg::read_arg::<DrmModeGetPlane>(arg) else { return efault() };
     let idx = match card.plane_ids().iter().position(|id| *id == p.plane_id) { Some(i) => i, None => return einval() };
     let info = match card.plane_info(idx) { Some(i) => i, None => return einval() };
-    let fmts: [u32; 2] = [DRM_FORMAT_XRGB8888, DRM_FORMAT_ARGB8888];
+    let fmts = scanout_formats(card);
     if p.format_type_ptr != 0 && p.count_format_types >= fmts.len() as u32 {
         write_ids(p.format_type_ptr, &fmts, p.count_format_types);
     }
@@ -213,29 +220,30 @@ fn efault() -> i64 { -(Errno::Efault.as_i32() as i64) }
 // `atomic::props::table`, so nothing below re-declares a property id.
 use crate::atomic::IN_FORMATS_BLOB_ID;
 
-/// Build the plane `IN_FORMATS` blob (`struct drm_format_modifier_blob`,
-/// DRM/KMS modesetting UAPI): header(24) + formats[2](8) + modifiers[1](24) = 56 bytes.
-/// Advertises XRGB8888/ARGB8888 with the LINEAR modifier — the only layout our
-/// PMM-contiguous dumb buffers use. This is the exact structure mutter's native
-/// KMS backend parses to learn a plane's supported formats. # C: O(1)
-fn in_formats_blob() -> [u8; 56] {
-    let mut b = [0u8; 56];
+/// Build the plane `IN_FORMATS` blob (`struct drm_format_modifier_blob`) from
+/// the same ordered list MODE_GETPLANE reports. Every listed format has the
+/// only supported modifier: LINEAR.
+/// # C: O(formats)
+fn in_formats_blob(formats: &[u32]) -> alloc::vec::Vec<u8> {
+    let modifier_off = (24 + formats.len() * 4 + 7) & !7;
+    let mut b = alloc::vec![0u8; modifier_off + 24];
     // header (struct drm_format_modifier_blob)
     b[0..4].copy_from_slice(&1u32.to_le_bytes());   // version = FORMAT_BLOB_CURRENT
     b[4..8].copy_from_slice(&0u32.to_le_bytes());   // flags
-    b[8..12].copy_from_slice(&2u32.to_le_bytes());  // count_formats
+    b[8..12].copy_from_slice(&(formats.len() as u32).to_le_bytes()); // count_formats
     b[12..16].copy_from_slice(&24u32.to_le_bytes()); // formats_offset
     b[16..20].copy_from_slice(&1u32.to_le_bytes());  // count_modifiers
-    b[20..24].copy_from_slice(&32u32.to_le_bytes()); // modifiers_offset
-    // formats[] (u32 fourcc each)
-    b[24..28].copy_from_slice(&DRM_FORMAT_XRGB8888.to_le_bytes());
-    b[28..32].copy_from_slice(&DRM_FORMAT_ARGB8888.to_le_bytes());
+    b[20..24].copy_from_slice(&(modifier_off as u32).to_le_bytes()); // modifiers_offset
+    for (idx, format) in formats.iter().enumerate() {
+        let at = 24 + idx * 4;
+        b[at..at + 4].copy_from_slice(&format.to_le_bytes());
+    }
     // modifiers[0] (struct drm_format_modifier: formats@0 u64, offset@8 u32,
     // pad@12 u32, modifier@16 u64). formats bitmask 0b11 = applies to both.
-    b[32..40].copy_from_slice(&0b11u64.to_le_bytes()); // formats bitmask
-    b[40..44].copy_from_slice(&0u32.to_le_bytes());    // offset
-    b[44..48].copy_from_slice(&0u32.to_le_bytes());    // pad
-    b[48..56].copy_from_slice(&0u64.to_le_bytes());    // modifier = LINEAR (0)
+    let format_mask = if formats.len() == 64 { u64::MAX } else { (1u64 << formats.len()) - 1 };
+    b[modifier_off..modifier_off + 8].copy_from_slice(&format_mask.to_le_bytes());
+    b[modifier_off + 8..modifier_off + 12].copy_from_slice(&0u32.to_le_bytes());
+    b[modifier_off + 16..modifier_off + 24].copy_from_slice(&0u64.to_le_bytes());
     b
 }
 
@@ -264,7 +272,8 @@ pub fn get_prop_blob(card: Option<&Arc<dyn DrmDriver>>, arg: u64) -> i64 {
     { klog::write_raw(b"[DRMPROP getblob id="); klog::write_dec_u64(blob_id as u64);
       klog::write_raw(b" ulen="); klog::write_dec_u64(ulen as u64); klog::write_raw(b"]\n"); }
     if blob_id == IN_FORMATS_BLOB_ID {
-        return copy_driver_blob(arg, ulen, data_ptr, &in_formats_blob());
+        let Some(card) = card else { return einval(); };
+        return copy_driver_blob(arg, ulen, data_ptr, &in_formats_blob(&scanout_formats(card)));
     }
     if let Some(bytes) = card.and_then(|c| crate::atomic::edid_blob_bytes(c, blob_id)) {
         return copy_driver_blob(arg, ulen, data_ptr, &bytes);
@@ -357,5 +366,16 @@ mod tests {
         assert!(c.encoder_info(0).is_some());
         assert!(c.plane_info(0).is_some());
         assert!(c.crtc_info(1).is_none());
+    }
+
+    #[test]
+    fn in_formats_blob_uses_the_same_single_format_as_plane_advertisement() {
+        let blob = in_formats_blob(&[crate::DRM_FORMAT_XRGB8888]);
+        assert_eq!(blob.len(), 56);
+        assert_eq!(u32::from_le_bytes(blob[8..12].try_into().unwrap()), 1);
+        assert_eq!(u32::from_le_bytes(blob[12..16].try_into().unwrap()), 24);
+        assert_eq!(u32::from_le_bytes(blob[20..24].try_into().unwrap()), 32);
+        assert_eq!(u32::from_le_bytes(blob[24..28].try_into().unwrap()), crate::DRM_FORMAT_XRGB8888);
+        assert_eq!(u64::from_le_bytes(blob[32..40].try_into().unwrap()), 1);
     }
 }

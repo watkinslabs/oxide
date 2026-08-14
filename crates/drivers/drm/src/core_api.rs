@@ -78,6 +78,13 @@ pub trait DrmDriver: Send + Sync {
     fn connector_ids(&self) -> Vec<u32> { Vec::new() }
     fn encoder_ids(&self) -> Vec<u32> { Vec::new() }
     fn plane_ids(&self) -> Vec<u32> { Vec::new() }
+    /// Formats accepted by every primary scanout plane, in driver preference
+    /// order. The KMS object and its IN_FORMATS blob are derived from this one
+    /// driver-owned list.
+    /// # C: O(formats)
+    fn scanout_formats(&self) -> Vec<u32> {
+        alloc::vec![crate::DRM_FORMAT_XRGB8888, crate::DRM_FORMAT_ARGB8888]
+    }
     fn mode_for(&self, _idx: usize) -> DrmModeModeinfo { DrmModeModeinfo::default() }
     /// Validate a requested CRTC mode before a modeset commits it. The
     /// default implements the mode-config dimensions contract; fixed-output
