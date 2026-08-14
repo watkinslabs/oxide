@@ -44,6 +44,16 @@ fn trace_stage(stage: &'static [u8]) {
 }
 #[cfg(not(feature = "debug-boot"))]
 fn trace_stage(_: &'static [u8]) {}
+#[cfg(feature = "debug-boot")]
+fn trace_dma_map(requester: Bdf, pa: u64, iova: u64) {
+    klog::write_raw(b"[INFO]  vtd: dma bdf=");
+    klog::write_dec_u64(u64::from(requester.bus)); klog::write_raw(b":");
+    klog::write_dec_u64(u64::from(requester.device)); klog::write_raw(b".");
+    klog::write_dec_u64(u64::from(requester.function)); klog::write_raw(b" pa=");
+    klog::write_hex_u64(pa); klog::write_raw(b" iova="); klog::write_hex_u64(iova); klog::write_raw(b"\n");
+}
+#[cfg(not(feature = "debug-boot"))]
+fn trace_dma_map(_: Bdf, _: u64, _: u64) {}
 
 /// Build, publish, and invalidate one VT-d identity domain per hardware unit.
 ///
@@ -301,7 +311,9 @@ pub fn map_dma_below(requester: Bdf, pa: u64, len: usize, mask: u64) -> Option<u
         }
         return None;
     }
-    map.iova.start.checked_add(offset)
+    let iova = map.iova.start.checked_add(offset)?;
+    trace_dma_map(requester, pa, iova);
+    Some(iova)
 }
 
 /// Remove one exact VT-d mapping only after the IOTLB has consumed its removal. # C: O(pages * levels + poll limit)
