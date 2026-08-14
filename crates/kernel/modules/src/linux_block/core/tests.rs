@@ -67,10 +67,13 @@ fn export_symbols_registers_block_surface() {
         "del_gendisk", "submit_bio", "bio_alloc", "bio_put",
         "blk_mq_alloc_tag_set", "blk_mq_init_queue", "set_capacity_and_notify", "set_disk_ro", "disk_uevent",
         "blk_set_stacking_limits", "queue_limits_commit_update", "queue_limits_stack_bdev",
+        "disk_report_zone",
         "__SCK__tp_func_block_bio_complete", "__SCT__tp_func_block_bio_complete", "__tracepoint_block_bio_complete",
     ] {
         assert!(crate::symtab::is_exported(name));
     }
+    assert_eq!(crate::symtab::resolve("disk_report_zone", false), Err(crate::SymError::Eacces));
+    assert!(crate::symtab::resolve("disk_report_zone", true).is_ok());
 }
 
 #[test]

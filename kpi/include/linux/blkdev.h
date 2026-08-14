@@ -2,6 +2,7 @@
 #define OXIDE_LINUX_BLKDEV_H
 
 #include <linux/bio.h>
+#include <linux/blkzoned.h>
 #include <linux/fs.h>
 #include <linux/genhd.h>
 #include <linux/module.h>
@@ -14,6 +15,7 @@ typedef u32 blk_mq_req_flags_t;
 struct blk_mq_ops;
 struct blk_mq_tag_set;
 struct io_comp_batch;
+struct blk_report_zones_args;
 
 struct queue_limits {
     u32 features;
@@ -173,6 +175,8 @@ void blk_queue_rq_timeout(struct request_queue *q, unsigned int timeout);
 void blk_sync_queue(struct request_queue *q);
 void blk_set_stacking_limits(struct queue_limits *lim);
 int blk_revalidate_disk_zones(struct gendisk *disk, void *report);
+int disk_report_zone(struct gendisk *disk, struct blk_zone *zone,
+                     unsigned int idx, struct blk_report_zones_args *args);
 const char *blk_op_str(unsigned int op);
 int blk_status_to_errno(blk_status_t status);
 blk_status_t errno_to_blk_status(int error);

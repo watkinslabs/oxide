@@ -36,6 +36,66 @@ pub(super) const RQ_END_IO_FREE: i32 = 1;
 pub(super) const LINUX_OK: i32 = 0;
 pub(super) const LINUX_EINVAL: i32 = 22;
 pub(super) const LINUX_EIO: i32 = 5;
+pub(super) const BLK_ZONE_COND_IMP_OPEN: u8 = 0x2;
+pub(super) const BLK_ZONE_COND_EXP_OPEN: u8 = 0x3;
+pub(super) const BLK_ZONE_COND_CLOSED: u8 = 0x4;
+pub(super) const BLK_ZONE_COND_ACTIVE: u8 = 0xff;
+pub(super) const BLK_ZONE_COND_EMPTY: u8 = 0x1;
+pub(super) const BLK_ZONE_COND_FULL: u8 = 0xe;
+pub(super) const BLK_ZONE_WPLUG_NEED_WP_UPDATE: u32 = 1 << 1;
+
+pub(super) type ReportZonesFn = unsafe extern "C" fn(*mut LinuxBlkZone, u32, *mut c_void) -> i32;
+
+/// Private block-core report context handed to a driver's `report_zones` operation.
+#[repr(C)]
+pub(super) struct LinuxBlkReportZonesArgs {
+    pub(super) cb: Option<ReportZonesFn>,
+    pub(super) data: *mut c_void,
+    pub(super) report_active: bool,
+}
+
+/// Zone descriptor shared by the zoned block ABI and driver callbacks.
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub(super) struct LinuxBlkZone {
+    pub(super) start: u64,
+    pub(super) len: u64,
+    pub(super) wp: u64,
+    pub(super) zone_type: u8,
+    pub(super) cond: u8,
+    pub(super) non_seq: u8,
+    pub(super) reset: u8,
+    pub(super) resv: [u8; 4],
+    pub(super) capacity: u64,
+    pub(super) reserved: [u8; 24],
+}
+
+/// Zoned gendisk subobject. The write-plug hash pointer occupies its Linux ABI slot.
+#[repr(C)]
+pub(super) struct LinuxGendiskZoned {
+    pub(super) nr_zones: u32,
+    pub(super) zone_capacity: u32,
+    pub(super) last_zone_capacity: u32,
+    pub(super) _pad: u32,
+    pub(super) zones_cond: *mut u8,
+    pub(super) zone_wplugs_hash_bits: u32,
+    pub(super) nr_zone_wplugs: i32,
+    pub(super) zone_wplugs_hash_lock: [u8; 4],
+    pub(super) _lock_pad: [u8; 4],
+    pub(super) zone_wplugs_pool: *mut c_void,
+    pub(super) zone_wplugs_hash: *mut c_void,
+    pub(super) zone_wplugs_wq: *mut c_void,
+    pub(super) _tail: [u8; 8],
+}
+
+impl LinuxGendiskZoned {
+    pub(super) const fn empty() -> Self {
+        Self { nr_zones: 0, zone_capacity: 0, last_zone_capacity: 0, _pad: 0,
+            zones_cond: core::ptr::null_mut(), zone_wplugs_hash_bits: 0, nr_zone_wplugs: 0,
+            zone_wplugs_hash_lock: [0; 4], _lock_pad: [0; 4], zone_wplugs_pool: core::ptr::null_mut(),
+            zone_wplugs_hash: core::ptr::null_mut(), zone_wplugs_wq: core::ptr::null_mut(), _tail: [0; 8] }
+    }
+}
 
 #[repr(C)]
 pub(super) struct LinuxBlockDevice {
@@ -214,7 +274,7 @@ pub(super) struct LinuxGendisk {
     pub(super) slave_bdevs: [u8; 16],
     pub(super) random: *mut c_void,
     pub(super) ev: *mut c_void,
-    pub(super) _zoned: [u8; 72],
+    pub(super) zoned: LinuxGendiskZoned,
     pub(super) node_id: i32,
     pub(super) _node_pad: u32,
     pub(super) bb: *mut c_void,
@@ -468,6 +528,7 @@ mod tests {
         assert_eq!(offset_of!(LinuxGendisk, queue_kobj), 408);
         assert_eq!(offset_of!(LinuxGendisk, diskseq), 600);
         assert_eq!(offset_of!(LinuxGendisk, rqos_state_mutex), 624);
+        assert_eq!(offset_of!(LinuxGendisk, zoned), 512);
     }
 
     #[test]
@@ -516,5 +577,20 @@ mod tests {
         assert_eq!(offset_of!(LinuxQueueLimits, logical_block_size), 56);
         assert_eq!(offset_of!(LinuxQueueLimits, max_segments), 156);
         assert_eq!(offset_of!(LinuxQueueLimits, integrity), 184);
+    }
+
+    #[test]
+    fn zoned_report_layout_matches_the_module_header_contract() {
+        assert_eq!(size_of::<LinuxBlkZone>(), 64);
+        assert_eq!(offset_of!(LinuxBlkZone, start), 0);
+        assert_eq!(offset_of!(LinuxBlkZone, wp), 16);
+        assert_eq!(offset_of!(LinuxBlkZone, zone_type), 24);
+        assert_eq!(offset_of!(LinuxBlkZone, capacity), 32);
+        assert_eq!(size_of::<LinuxBlkReportZonesArgs>(), 24);
+        assert_eq!(offset_of!(LinuxBlkReportZonesArgs, cb), 0);
+        assert_eq!(offset_of!(LinuxBlkReportZonesArgs, data), 8);
+        assert_eq!(offset_of!(LinuxBlkReportZonesArgs, report_active), 16);
+        assert_eq!(size_of::<LinuxGendiskZoned>(), 72);
+        assert_eq!(offset_of!(LinuxGendiskZoned, zone_wplugs_hash), 48);
     }
 }
