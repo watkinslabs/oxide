@@ -135,6 +135,8 @@ pub const EXTCNF_CTRL_GATE_PHY_CFG: u32 = 1 << 7;
 pub const FEXTNVM3: u64 = 0x0003c;
 pub const FWSM: u64 = 0x05b54;
 pub const FWSM_FW_VALID: u32 = 1 << 15;
+pub const FWSM_WLOCK_MAC: u32 = 0x0380;
+pub const FWSM_WLOCK_MAC_SHIFT: u32 = 7;
 pub const FEXTNVM3_PHY_CFG_COUNTER: u32 = 0x0c00_0000;
 pub const FEXTNVM3_PHY_CFG_COUNTER_50MS: u32 = 0x0800_0000;
 pub const EECD_NVM_REQUEST: u32 = 1 << 6;
@@ -157,6 +159,9 @@ pub const PCH_PHY_ID_82577: u32 = 0x0154_0050;
 pub const PCH_PHY_ID_82578: u32 = 0x004d_d040;
 pub const PCH_PHY_ID_82579: u32 = 0x0154_0090;
 pub const PCH_PHY_ID_I217: u32 = 0x0154_00a0;
+pub const PCH_LPT_FLASH_BASE: u64 = 0x0000_e000;
+pub const PCH_LPT_SHRAL: u64 = 0x05408;
+pub const PCH_LPT_SHRAH: u64 = 0x0540c;
 pub const NVM_CHECKSUM_WORD: u16 = 0x003f;
 pub const NVM_CHECKSUM_SUM: u16 = 0xbaba;
 pub const BM_PHY_ADDRESS: u32 = 1;
@@ -299,6 +304,19 @@ pub const fn pch_hv_address(offset: u32) -> (u16, u8) {
     let reg = ((offset & 0x1f) | ((offset >> 16) & !0x1f)) as u8;
     (page, reg)
 }
+/// Return host-programmable LPT receive-address entries from FWSM lock state. # C: O(1)
+pub const fn pch_lpt_rar_count(fwsm: u32) -> usize {
+    let locked = (fwsm & FWSM_WLOCK_MAC) >> FWSM_WLOCK_MAC_SHIFT;
+    if locked == 1 { 1 } else if locked == 0 { 12 } else { locked as usize + 1 }
+}
+/// Return the LPT shared-address register pair for one host slot. # C: O(1)
+pub const fn pch_lpt_shra_offset(index: usize) -> Option<(u64, u64)> {
+    if index < 11 { Some((PCH_LPT_SHRAL + (index * 8) as u64, PCH_LPT_SHRAH + (index * 8) as u64)) } else { None }
+}
+/// Translate a validated LPT flash-sequencer offset into BAR0 space. # C: O(1)
+pub const fn pch_lpt_flash_offset(offset: u64) -> Option<u64> {
+    if offset <= 0x74 { PCH_LPT_FLASH_BASE.checked_add(offset) } else { None }
+}
 /// Accept the 64-word NVM checksum contract. # C: O(n)
 pub fn nvm_checksum_valid(words: &[u16]) -> bool {
     words.len() == NVM_CHECKSUM_WORD as usize + 1 && words.iter().fold(0u16, |sum, word| sum.wrapping_add(*word)) == NVM_CHECKSUM_SUM
@@ -413,5 +431,12 @@ mod tests {
         assert!(!pch_phy_id_supported(BM_PHY_ID_R2));
         assert_eq!(pch_hv_address((768 << 5) | 30), (768, 30));
         assert_eq!(pch_hv_address((3 << 5) | 0x13), (3, 0x13));
+        assert_eq!(pch_lpt_rar_count(0), 12);
+        assert_eq!(pch_lpt_rar_count(1 << FWSM_WLOCK_MAC_SHIFT), 1);
+        assert_eq!(pch_lpt_rar_count(3 << FWSM_WLOCK_MAC_SHIFT), 4);
+        assert_eq!(pch_lpt_shra_offset(0), Some((PCH_LPT_SHRAL, PCH_LPT_SHRAH)));
+        assert_eq!(pch_lpt_shra_offset(11), None);
+        assert_eq!(pch_lpt_flash_offset(0x10), Some(0xe010));
+        assert_eq!(pch_lpt_flash_offset(0x75), None);
     }
 }
