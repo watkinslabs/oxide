@@ -9,8 +9,8 @@ const CONTEXT_ENTRIES: usize = 256;
 const ROOT_ENTRY_BYTES: u64 = core::mem::size_of::<VtdRootEntry>() as u64;
 const CONTEXT_ENTRY_BYTES: u64 = core::mem::size_of::<VtdContextEntry>() as u64;
 const PRESENT: u64 = 1;
-const IOVA_START: u64 = 0;
-const IOVA_BYTES: u64 = 1u64 << 48;
+const IOVA_START: u64 = pci::IOVA_PAGE_SIZE;
+const IOVA_BYTES: u64 = (1u64 << 48) - IOVA_START;
 
 struct VtdDomain { id: u16, requesters: Vec<Bdf>, space: IovaSpace, maps: Vec<MappingRecord>, page_table: VtdPageTable }
 
@@ -173,5 +173,11 @@ fn write64(hhdm_offset: u64, pa: u64, value: u64) {
         let bdf = Bdf { segment: 0, bus: 1, device: 31, function: 7 };
         assert_eq!((usize::from(bdf.device) << 3) | usize::from(bdf.function), 255);
         assert_eq!(CONTEXT_ENTRIES * core::mem::size_of::<VtdContextEntry>(), PAGE_BYTES as usize);
+    }
+    #[test] fn dynamic_iova_reserves_the_dma_zero_sentinel() {
+        let mut space = IovaSpace::new(IOVA_START, IOVA_BYTES).expect("valid DMA aperture");
+        assert_eq!(space.alloc(pci::IOVA_PAGE_SIZE, pci::IOVA_PAGE_SIZE)
+            .expect("first dynamic DMA mapping").start, pci::IOVA_PAGE_SIZE);
+        assert_eq!(IOVA_START.checked_add(IOVA_BYTES), Some(1u64 << 48));
     }
 }

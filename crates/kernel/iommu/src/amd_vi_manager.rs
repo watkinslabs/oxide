@@ -7,8 +7,8 @@ use pci::Bdf;
 use sync::{Devices, Spinlock};
 
 const INITIAL_DOMAIN_ID: u16 = 1;
-const IOVA_START: u64 = 0;
-const IOVA_BYTES: u64 = 1u64 << 48;
+const IOVA_START: u64 = pci::IOVA_PAGE_SIZE;
+const IOVA_BYTES: u64 = (1u64 << 48) - IOVA_START;
 
 /// Result of asking the AMD-Vi manager to own the scanned PCI requesters.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -301,5 +301,11 @@ fn firmware_aliases_share(left: Bdf, left_alias: Option<u16>, right: Bdf,
         assert!(aliases.add(first, translated));
         assert!(aliases.add(second, translated));
         assert_eq!(requester_groups(&[first, second], &aliases), alloc::vec![alloc::vec![first, second]]);
+    }
+    #[test] fn dynamic_iova_never_uses_the_dma_zero_sentinel() {
+        let mut space = pci::IovaSpace::new(IOVA_START, IOVA_BYTES).expect("valid DMA aperture");
+        assert_eq!(space.alloc(pci::IOVA_PAGE_SIZE, pci::IOVA_PAGE_SIZE)
+            .expect("first dynamic DMA mapping").start, pci::IOVA_PAGE_SIZE);
+        assert_eq!(IOVA_START.checked_add(IOVA_BYTES), Some(1u64 << 48));
     }
 }
