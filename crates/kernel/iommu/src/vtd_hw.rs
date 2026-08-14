@@ -53,6 +53,7 @@ const FAULT_RECORD_VALID: u32 = 1 << 31;
 const FAULT_RECORD_BYTES: u64 = 16;
 const QI_DESC_BYTES: u64 = core::mem::size_of::<VtdQiDesc>() as u64;
 const QI_DESC_COUNT: u16 = (PAGE_BYTES / QI_DESC_BYTES) as u16;
+const QI_DONE: u32 = 1;
 
 fn primary_fault_layout(cap: u64, aperture_bytes: u64) -> Option<(u64, u16)> {
     let base = ((cap >> 24) & 0x3ff).checked_mul(FAULT_RECORD_BYTES)?;
@@ -73,6 +74,11 @@ impl VtdQiDesc {
         let drains = (read_drain as u64) << 7 | (write_drain as u64) << 6;
         Self { words: [(2u64) | (1 << 4) | drains, 0] }
     }
+    /// Build a completion-writing wait descriptor for a synchronized submission. # C: O(1)
+    pub const fn wait(status_pa: u64) -> Option<Self> {
+        if status_pa & 3 != 0 || status_pa & !ROOT_TABLE_MASK != 0 { return None; }
+        Some(Self { words: [(5u64) | (1 << 5) | ((QI_DONE as u64) << 32), status_pa] })
+    }
     /// Build a selective interrupt-entry-cache invalidation descriptor. # C: O(1)
     pub const fn interrupt_entry(index: u16, mask: u8) -> Self {
         Self { words: [4 | (1 << 4) | ((mask as u64 & 0x1f) << 27) | ((index as u64) << 32), 0] }
@@ -84,16 +90,27 @@ impl VtdQiDesc {
 
 /// One permanent 256-entry queued-invalidation ring.  Its single page uses
 /// IQA.QS=0, the VT-d encoding for 2^8 16-byte descriptors.
-pub struct VtdQiQueue { pa: u64, hhdm_offset: u64, coherent: bool, tail: u16 }
+pub struct VtdQiQueue { pa: u64, status_pa: u64, hhdm_offset: u64, coherent: bool, tail: u16 }
 impl VtdQiQueue {
     /// Allocate and clear an IQA.QS=0 queue. # C: O(1)
     pub fn new(hhdm_offset: u64, coherent: bool) -> Option<Self> {
         if hhdm_offset == 0 { return None; }
         let pa = pmm::setup::alloc_contig(pmm::Order(0))?;
+        let status_pa = match pmm::setup::alloc_contig(pmm::Order(0)) {
+            Some(pa) => pa,
+            None => {
+                // SAFETY: this queue has not published or shared its first owned frame.
+                unsafe { pmm::setup::free_one_frame(pa); }
+                return None;
+            }
+        };
         // SAFETY: this page is permanently and exclusively owned as a VT-d QI ring.
         unsafe { core::ptr::write_bytes(hhdm_offset.wrapping_add(pa) as *mut u8, 0, PAGE_BYTES as usize); }
         publish(hhdm_offset, pa, PAGE_BYTES, coherent);
-        Some(Self { pa, hhdm_offset, coherent, tail: 0 })
+        // SAFETY: this permanent page has one completion word owned by this serialized queue.
+        unsafe { core::ptr::write_bytes(hhdm_offset.wrapping_add(status_pa) as *mut u8, 0, PAGE_BYTES as usize); }
+        publish(hhdm_offset, status_pa, PAGE_BYTES, coherent);
+        Some(Self { pa, status_pa, hhdm_offset, coherent, tail: 0 })
     }
     /// Physical IQA base. # C: O(1)
     pub const fn pa(&self) -> u64 { self.pa }
@@ -109,6 +126,23 @@ impl VtdQiQueue {
             self.tail = (self.tail + 1) % QI_DESC_COUNT;
         }
         Some(u64::from(self.tail) * QI_DESC_BYTES).filter(|_| start != self.tail)
+    }
+    /// Publish invalidations plus a wait completion record. # C: O(descriptors)
+    pub fn submit_sync(&mut self, descs: &[VtdQiDesc]) -> Option<u64> {
+        if descs.len().checked_add(1)? >= QI_DESC_COUNT as usize { return None; }
+        // SAFETY: this queue owns the completion word and serializes every submission.
+        unsafe { core::ptr::write_volatile(self.hhdm_offset.wrapping_add(self.status_pa) as *mut u32, 0); }
+        publish(self.hhdm_offset, self.status_pa, core::mem::size_of::<u32>() as u64, self.coherent);
+        let wait = VtdQiDesc::wait(self.status_pa)?;
+        let start = self.tail;
+        for desc in descs { self.publish(core::slice::from_ref(desc))?; }
+        self.publish(core::slice::from_ref(&wait)).filter(|_| start != self.tail)
+    }
+    /// Return whether the wait descriptor has observed terminal completion. # C: O(1)
+    pub fn completed(&self) -> bool {
+        pmm::dma::invalidate_from_device(self.hhdm_offset.wrapping_add(self.status_pa), core::mem::size_of::<u32>());
+        // SAFETY: this queue owns the completion word until the next serialized submission resets it.
+        unsafe { core::ptr::read_volatile(self.hhdm_offset.wrapping_add(self.status_pa) as *const u32) == QI_DONE }
     }
 }
 
@@ -281,10 +315,10 @@ impl VtdRegisters {
     pub fn invalidate_queued(&self, queue: &mut VtdQiQueue) -> bool {
         if self.read32(GSTS).is_none_or(|status| status & GSTS_QUEUED_INVALIDATION_ENABLED == 0) { return false; }
         let Some(cap) = self.read64(CAP) else { return false; };
-        let Some(tail) = queue.publish(&[VtdQiDesc::global_context(), VtdQiDesc::global_iotlb(cap & CAP_READ_DRAIN != 0, cap & CAP_WRITE_DRAIN != 0)]) else { return false; };
+        let Some(tail) = queue.submit_sync(&[VtdQiDesc::global_context(), VtdQiDesc::global_iotlb(cap & CAP_READ_DRAIN != 0, cap & CAP_WRITE_DRAIN != 0)]) else { return false; };
         if !self.write64(IQT, tail) { return false; }
         for _ in 0..POLL_LIMIT {
-            if self.read64(IQH).is_some_and(|head| head == tail) { return true; }
+            if queue.completed() { return true; }
             core::hint::spin_loop();
         }
         false
@@ -292,10 +326,10 @@ impl VtdRegisters {
     /// Invalidate one interrupt-entry-cache record after an IRTE publication. # C: O(poll limit)
     pub fn invalidate_interrupt_entry(&self, queue: &mut VtdQiQueue, index: u16) -> bool {
         if self.read32(GSTS).is_none_or(|status| status & GSTS_QUEUED_INVALIDATION_ENABLED == 0) { return false; }
-        let Some(tail) = queue.publish(&[VtdQiDesc::interrupt_entry(index, 0)]) else { return false; };
+        let Some(tail) = queue.submit_sync(&[VtdQiDesc::interrupt_entry(index, 0)]) else { return false; };
         if !self.write64(IQT, tail) { return false; }
         for _ in 0..POLL_LIMIT {
-            if self.read64(IQH).is_some_and(|head| head == tail) { return true; }
+            if queue.completed() { return true; }
             core::hint::spin_loop();
         }
         false
@@ -427,6 +461,7 @@ mod fault_tests {
         assert_eq!(VtdQiDesc::global_context().words(), [1 | (1 << 4), 0]);
         assert_eq!(VtdQiDesc::global_iotlb(true, true).words(), [0xd2, 0]);
         assert_eq!(VtdQiDesc::global_iotlb(false, false).words(), [0x12, 0]);
+        assert_eq!(VtdQiDesc::wait(0x1234_5000).unwrap().words(), [0x0000_0001_0000_0025, 0x1234_5000]);
         assert_eq!(QI_DESC_COUNT, 256);
     }
 }
