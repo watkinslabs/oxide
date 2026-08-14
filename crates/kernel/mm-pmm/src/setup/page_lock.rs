@@ -11,6 +11,11 @@ use super::metadata::page_meta;
 const PAGE_WAIT_TABLE_BITS: usize = 8;
 const PAGE_WAIT_TABLE_SIZE: usize = 1 << PAGE_WAIT_TABLE_BITS;
 const PAGE_WAIT_TABLE_MASK: usize = PAGE_WAIT_TABLE_SIZE - 1;
+// `hash_ptr(folio, PAGE_WAIT_TABLE_BITS)` in Linux uses the 64-bit golden
+// ratio multiplier and its high bits.  PFN is our stable page identity, so
+// hash it the same way rather than concentrating adjacent pages by masking
+// their low PFN bits.
+const GOLDEN_RATIO_64: u64 = 0x61C8_8646_80B5_83EB;
 
 static PAGE_WAIT_TABLE: [WaitList; PAGE_WAIT_TABLE_SIZE] =
     [const { WaitList::new() }; PAGE_WAIT_TABLE_SIZE];
@@ -18,7 +23,8 @@ static PAGE_WAIT_TABLE: [WaitList; PAGE_WAIT_TABLE_SIZE] =
 fn pfn(pa: u64) -> hal::Pfn { hal::Pfn(pa / hal::PAGE_SIZE_BYTES) }
 
 fn wait_bucket(pfn: hal::Pfn) -> &'static WaitList {
-    &PAGE_WAIT_TABLE[pfn.0 as usize & PAGE_WAIT_TABLE_MASK]
+    let index = pfn.0.wrapping_mul(GOLDEN_RATIO_64) >> (64 - PAGE_WAIT_TABLE_BITS);
+    &PAGE_WAIT_TABLE[index as usize & PAGE_WAIT_TABLE_MASK]
 }
 
 fn wait_for_lock(wait: &WaitList, meta: &crate::PageMetaArr, page: hal::Pfn,
@@ -97,7 +103,9 @@ mod tests {
     #[test]
     fn page_lock_table_is_bounded_and_stable() {
         assert_eq!(wait_bucket(hal::Pfn(7)) as *const _, wait_bucket(hal::Pfn(7)) as *const _);
-        assert_eq!(wait_bucket(hal::Pfn(7)) as *const _, wait_bucket(hal::Pfn(7 + PAGE_WAIT_TABLE_SIZE as u64)) as *const _);
+        assert!(PAGE_WAIT_TABLE_SIZE.is_power_of_two());
+        assert!((wait_bucket(hal::Pfn(7)) as *const _ as usize)
+            >= (PAGE_WAIT_TABLE.as_ptr() as usize));
     }
 
     #[test]
