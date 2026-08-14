@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use crate::{Mapping, VtdContextEntry, VtdPageTable, VtdRootEntry};
+use crate::{Mapping, VtdContextEntry, VtdPageSizes, VtdPageTable, VtdRootEntry};
 use crate::vtd_cache::publish;
 use crate::domain::MappingRecord;
 use pci::{Bdf, IovaSpace};
@@ -15,13 +15,13 @@ const IOVA_START: u64 = pci::IOVA_PAGE_SIZE;
 struct VtdDomain { id: u16, requesters: Vec<Bdf>, space: IovaSpace, maps: Vec<MappingRecord>, page_table: VtdPageTable }
 
 /// Permanent VT-d root/context tables and DMA domains selected by isolation group.
-pub struct VtdTables { hhdm_offset: u64, coherent: bool, address_width: u8, root_pa: u64, contexts: Vec<(u8, u64)>, domains: Vec<VtdDomain> }
+pub struct VtdTables { hhdm_offset: u64, coherent: bool, address_width: u8, page_sizes: VtdPageSizes, root_pa: u64, contexts: Vec<(u8, u64)>, domains: Vec<VtdDomain> }
 impl VtdTables {
     /// Allocate empty root/context ownership. # C: O(1)
-    pub fn new(hhdm_offset: u64, coherent: bool, address_width: u8) -> Option<Self> {
+    pub fn new(hhdm_offset: u64, coherent: bool, address_width: u8, page_sizes: VtdPageSizes) -> Option<Self> {
         if hhdm_offset == 0 || address_width > Self::maximum_address_width() { return None; }
         let root_pa = allocate_page(hhdm_offset, coherent)?;
-        Some(Self { hhdm_offset, coherent, address_width, root_pa, contexts: Vec::new(), domains: Vec::new() })
+        Some(Self { hhdm_offset, coherent, address_width, page_sizes, root_pa, contexts: Vec::new(), domains: Vec::new() })
     }
     /// Return the physical root table address for the VT-d RTADDR register. # C: O(1)
     pub const fn root_pa(&self) -> u64 { self.root_pa }
@@ -32,7 +32,7 @@ impl VtdTables {
     /// Create one isolated DMA domain and populate its RAM identity mappings. # C: O(regions * leaves * levels)
     pub fn install_group(&mut self, id: u16, requesters: &[Bdf], regions: &[pmm::UsableRegion]) -> bool {
         if id == 0 || requesters.is_empty() || self.domains.iter().any(|domain| domain.id == id || requesters.iter().any(|bdf| domain.requesters.contains(bdf))) { return false; }
-        let Some(mut domain) = VtdDomain::new(id, requesters, self.hhdm_offset, self.coherent, self.address_width) else { return false; };
+        let Some(mut domain) = VtdDomain::new(id, requesters, self.hhdm_offset, self.coherent, self.address_width, self.page_sizes) else { return false; };
         if !domain.map_identity_regions(regions) { return false; }
         self.domains.push(domain);
         true
@@ -49,11 +49,11 @@ impl VtdTables {
     }
 }
 impl VtdDomain {
-    fn new(id: u16, requesters: &[Bdf], hhdm_offset: u64, coherent: bool, address_width: u8) -> Option<Self> {
+    fn new(id: u16, requesters: &[Bdf], hhdm_offset: u64, coherent: bool, address_width: u8, page_sizes: VtdPageSizes) -> Option<Self> {
         let address_bits = 30u32.checked_add(u32::from(address_width).checked_mul(9)?)?;
         let limit = 1u64.checked_shl(address_bits)?;
         let bytes = limit.checked_sub(IOVA_START)?;
-        Some(Self { id, requesters: requesters.to_vec(), space: IovaSpace::new(IOVA_START, bytes)?, maps: Vec::new(), page_table: VtdPageTable::new(hhdm_offset, coherent, address_width)? })
+        Some(Self { id, requesters: requesters.to_vec(), space: IovaSpace::new(IOVA_START, bytes)?, maps: Vec::new(), page_table: VtdPageTable::new(hhdm_offset, coherent, address_width, page_sizes)? })
     }
     fn map_identity_regions(&mut self, regions: &[pmm::UsableRegion]) -> bool {
         for region in regions {

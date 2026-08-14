@@ -204,15 +204,11 @@ impl VtdRegisters {
         self.wait_status(GSTS_ROOT_TABLE_PRESENT, true)
     }
     /// Return whether the hardware advertises this adjusted guest address width. # C: O(1)
-    pub fn supports_address_width(&self, address_width: u8) -> bool {
-        if address_width > 4 { return false; }
-        self.read64(CAP).is_some_and(|cap| cap >> 8 & (1 << address_width) != 0)
-    }
+    pub fn supports_address_width(&self, address_width: u8) -> bool { self.read64(CAP).is_some_and(|cap| address_width_supported(cap, address_width)) }
     /// Select the widest supported second-level address width at or below `maximum`. # C: O(5)
-    pub fn select_address_width(&self, maximum: u8) -> Option<u8> {
-        let maximum = maximum.min(4);
-        (0..=maximum).rev().find(|width| self.supports_address_width(*width))
-    }
+    pub fn select_address_width(&self, maximum: u8) -> Option<u8> { self.read64(CAP).and_then(|cap| select_address_width(cap, maximum)) }
+    /// Return the second-level superpage sizes the active unit advertises. # C: O(1)
+    pub fn page_sizes(&self) -> crate::VtdPageSizes { self.read64(CAP).map_or(crate::VtdPageSizes::from_sllps(0), |cap| crate::VtdPageSizes::from_sllps(((cap >> 34) & 0xf) as u8)) }
     /// Return whether the unit observes ordinary CPU stores to its page tables coherently. # C: O(1)
     pub fn cache_coherent(&self) -> bool { self.read64(ECAP).is_some_and(|ecap| ecap & 1 != 0) }
     /// Return whether ECAP advertises queued invalidation. # C: O(1)
@@ -366,6 +362,21 @@ impl VtdRegisters {
     }
 }
 
+fn address_width_bits(address_width: u8) -> Option<u8> { 30u8.checked_add(address_width.checked_mul(9)?) }
+fn address_width_supported(cap: u64, address_width: u8) -> bool {
+    if address_width > 4 || cap >> 8 & (1 << address_width) == 0 { return false; }
+    let mgaw = ((cap >> 16) & 0x3f) as u8 + 1;
+    address_width_bits(address_width).is_some_and(|bits| bits <= mgaw)
+}
+fn select_address_width(cap: u64, maximum: u8) -> Option<u8> {
+    let mut width = maximum.min(4);
+    loop {
+        if address_width_supported(cap, width) { return Some(width); }
+        if width == 0 { return None; }
+        width -= 1;
+    }
+}
+
 #[cfg(test)]
 mod fault_tests {
     use super::*;
@@ -393,6 +404,12 @@ mod fault_tests {
         assert_eq!(root.words(), [0x1234_5001, 0]);
         assert_eq!(context.words(), [0x2345_6001, 0x702]);
         assert!(VtdContextEntry::translated(0x2345_6001, 2, 7).is_none());
+    }
+    #[test] fn second_level_layout_respects_mgaw_and_superpage_capability() {
+        let cap = (1u64 << 9) | (38u64 << 16) | (1u64 << 34);
+        assert_eq!(select_address_width(cap, 2), Some(1));
+        assert!(!address_width_supported(cap, 2));
+        assert_eq!(crate::VtdPageSizes::from_sllps(((cap >> 34) & 0xf) as u8), crate::VtdPageSizes::from_sllps(1));
     }
     #[test] fn queued_invalidation_register_and_descriptor_layout_matches_vtd() {
         assert_eq!((IQH, IQT, IQA), (0x80, 0x88, 0x90));

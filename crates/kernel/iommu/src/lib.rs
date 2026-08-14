@@ -36,7 +36,7 @@ pub use vtd::{intel_vtd_hpet_source, intel_vtd_ioapic_source, intel_vtd_rmrr_cou
 pub(crate) use vtd::vtd_dma_groups;
 pub use vtd_hw::{VtdContextEntry, VtdQiDesc, VtdQiQueue, VtdRegisters, VtdRootEntry};
 pub use vtd_pt::VtdPte;
-pub use vtd_pt_tree::VtdPageTable;
+pub use vtd_pt_tree::{VtdPageSizes, VtdPageTable};
 pub use vtd_tables::VtdTables;
 pub use vtd_ir::{VtdIrTable, VtdIrte, invalidate_irte, remapped_msi};
 pub use vtd_fault::VtdFault;
