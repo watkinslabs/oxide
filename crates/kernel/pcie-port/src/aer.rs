@@ -34,7 +34,9 @@ pub fn recover_aer(root_bdf: pci::Bdf, status: u32, source: u32) -> Recovery {
                 handlers.mmio_enabled.map(|callback| callback(dev))) { result = merge(result, vote); }
         }
     }
-    if result == drv::PciErsResult::NeedReset || state == drv::PciChannelState::Frozen {
+    if result == drv::PciErsResult::NeedReset {
+        result = slot_reset(&affected);
+    } else if state == drv::PciChannelState::Frozen {
         permanent_failure(&affected);
         return Recovery::ResetRequired;
     }
@@ -87,6 +89,15 @@ fn permanent_failure(affected: &[Arc<drv::Device>]) {
     }
 }
 
+fn slot_reset(affected: &[Arc<drv::Device>]) -> drv::PciErsResult {
+    let mut result = drv::PciErsResult::Recovered;
+    for dev in affected {
+        if let Some(Some(vote)) = drv::with_bound_pci_error_handlers(dev, |handlers|
+            handlers.slot_reset.map(|callback| callback(dev))) { result = merge(result, vote); }
+    }
+    result
+}
+
 fn merge(old: drv::PciErsResult, new: drv::PciErsResult) -> drv::PciErsResult {
     if new == drv::PciErsResult::NoAerDriver { return new; }
     if new == drv::PciErsResult::None { return old; }
@@ -108,6 +119,7 @@ mod tests {
     static MODE: AtomicU32 = AtomicU32::new(0);
     static DETECTED: AtomicU32 = AtomicU32::new(0);
     static MMIO: AtomicU32 = AtomicU32::new(0);
+    static SLOT_RESET: AtomicU32 = AtomicU32::new(0);
     static RESUME: AtomicU32 = AtomicU32::new(0);
 
     fn detected(_dev: &drv::Device, state: drv::PciChannelState) -> drv::PciErsResult {
@@ -115,9 +127,13 @@ mod tests {
         if MODE.load(Ordering::Acquire) == 0 { drv::PciErsResult::CanRecover } else { drv::PciErsResult::NeedReset }
     }
     fn mmio(_dev: &drv::Device) -> drv::PciErsResult { MMIO.fetch_add(1, Ordering::AcqRel); drv::PciErsResult::Recovered }
+    fn slot_reset(_dev: &drv::Device) -> drv::PciErsResult {
+        SLOT_RESET.fetch_add(1, Ordering::AcqRel);
+        if MODE.load(Ordering::Acquire) == 2 { drv::PciErsResult::Disconnect } else { drv::PciErsResult::Recovered }
+    }
     fn resume(_dev: &drv::Device) { RESUME.fetch_add(1, Ordering::AcqRel); }
     static HANDLERS: drv::PciErrorHandlers = drv::PciErrorHandlers {
-        error_detected: Some(detected), mmio_enabled: Some(mmio), slot_reset: None, resume: Some(resume),
+        error_detected: Some(detected), mmio_enabled: Some(mmio), slot_reset: Some(slot_reset), resume: Some(resume),
     };
     struct Driver;
     impl drv::Driver for Driver {
@@ -139,10 +155,11 @@ mod tests {
     fn format(bdf: pci::Bdf) -> String { alloc::format!("{:04x}:{:02x}:{:02x}.{}", bdf.segment, bdf.bus, bdf.device, bdf.function) }
 
     #[test]
-    fn recovery_walks_the_port_subtree_and_stops_before_an_unimplemented_reset() {
+    fn recovery_walks_the_port_subtree_through_slot_reset() {
         MODE.store(0, Ordering::Release);
         DETECTED.store(0, Ordering::Release);
         MMIO.store(0, Ordering::Release);
+        SLOT_RESET.store(0, Ordering::Release);
         RESUME.store(0, Ordering::Release);
         drv::register_driver(&DRIVER);
         let root_bdf = pci::Bdf { segment: 3, bus: 0, device: 1, function: 0 };
@@ -159,7 +176,13 @@ mod tests {
         assert_eq!(RESUME.load(Ordering::Acquire), 1);
         MODE.store(1, Ordering::Release);
         DETECTED.store(0, Ordering::Release);
-        assert_eq!(recover_aer(root_bdf, ROOT_UNCORRECTABLE_RECEIVED | ROOT_FATAL_RECEIVED, source), Recovery::ResetRequired);
+        assert_eq!(recover_aer(root_bdf, ROOT_UNCORRECTABLE_RECEIVED | ROOT_FATAL_RECEIVED, source), Recovery::Recovered);
+        assert_ne!(DETECTED.load(Ordering::Acquire) & (1 << drv::PciChannelState::Frozen as u8), 0);
+        assert_eq!(SLOT_RESET.load(Ordering::Acquire), 1);
+        assert_eq!(RESUME.load(Ordering::Acquire), 2);
+        MODE.store(2, Ordering::Release);
+        DETECTED.store(0, Ordering::Release);
+        assert_eq!(recover_aer(root_bdf, ROOT_UNCORRECTABLE_RECEIVED | ROOT_FATAL_RECEIVED, source), Recovery::Disconnected);
         assert_ne!(DETECTED.load(Ordering::Acquire) & (1 << drv::PciChannelState::PermanentFailure as u8), 0);
         super::super::remove(&port);
         drv::device_del(&leaf);

@@ -23,6 +23,8 @@ extern crate alloc;
 
 mod regs;
 #[cfg(any(target_os = "oxide-kernel", test))]
+mod error;
+#[cfg(any(target_os = "oxide-kernel", test))]
 mod lifecycle;
 #[cfg(any(target_os = "oxide-kernel", test))]
 mod irq;
@@ -293,6 +295,18 @@ mod imp {
         reset::live(&name, nsid, &dev)
     }
 
+    /// Refuse new I/O before PCI recovery resets or disconnects this controller.
+    /// # C: O(N_nvme)
+    pub fn mark_recovery_required(device_key: pci::Bdf) -> bool {
+        let dev = DEVICES.lock_bh::<NvmeBh>()
+            .iter()
+            .find(|record| record.device_key == device_key)
+            .map(|record| record.dev.clone());
+        let Some(dev) = dev else { return false; };
+        dev.mark_recovery_required();
+        true
+    }
+
     /// Original PCI command bits saved before this driver enabled decode.
     /// # C: O(N_nvme)
     pub fn command_orig_for(device_key: pci::Bdf) -> Option<u16> {
@@ -305,7 +319,7 @@ mod imp {
 }
 
 #[cfg(target_os = "oxide-kernel")]
-pub use imp::{command_orig_for, device_key_from_bdf, init, remove, reset, shutdown, NvmeBlk, NVME_CLASS24};
+pub use imp::{command_orig_for, device_key_from_bdf, init, mark_recovery_required, remove, reset, shutdown, NvmeBlk, NVME_CLASS24};
 
 #[cfg(target_os = "oxide-kernel")]
 fn restore_pci_bus_master(dev: &drv::Device, command_orig: u16) {
@@ -322,6 +336,46 @@ fn restore_pci_bus_master(dev: &drv::Device, command_orig: u16) {
             let _ = pci::restore_mem_bus_master(&r, bdf, command_orig);
         }
     }
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn enable_pci_bus_master(bdf: pci::Bdf) -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let Some(r) = hal_x86_64::pci::EcamPci::from_published() else { return false; };
+        let _ = pci::enable_mem_bus_master(&r, bdf);
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        let Some(r) = hal_aarch64::pci::EcamPci::from_published() else { return false; };
+        let _ = pci::enable_mem_bus_master(&r, bdf);
+    }
+    true
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn nvme_error_detected(dev: &drv::Device, state: drv::PciChannelState) -> drv::PciErsResult {
+    let Some(bdf) = pci::parse_bdf_addr(&dev.addr) else { return drv::PciErsResult::Disconnect; };
+    match error::detected_result(state) {
+        drv::PciErsResult::CanRecover => drv::PciErsResult::CanRecover,
+        drv::PciErsResult::NeedReset => {
+            if imp::mark_recovery_required(imp::device_key_from_bdf(bdf)) { drv::PciErsResult::NeedReset }
+            else { drv::PciErsResult::Disconnect }
+        }
+        drv::PciErsResult::Disconnect => {
+            let _ = imp::mark_recovery_required(imp::device_key_from_bdf(bdf));
+            drv::PciErsResult::Disconnect
+        }
+        _ => drv::PciErsResult::Disconnect,
+    }
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn nvme_slot_reset(dev: &drv::Device) -> drv::PciErsResult {
+    let Some(bdf) = pci::parse_bdf_addr(&dev.addr) else { return drv::PciErsResult::Disconnect; };
+    if !enable_pci_bus_master(bdf) { return drv::PciErsResult::Disconnect; }
+    if imp::reset(imp::device_key_from_bdf(bdf)) { drv::PciErsResult::Recovered }
+    else { drv::PciErsResult::Disconnect }
 }
 
 #[cfg(target_os = "oxide-kernel")]
@@ -342,6 +396,7 @@ impl drv::Driver for NvmeDriver {
     fn matches(&self, dev: &drv::Device) -> bool {
         dev.bus == "pci" && dev.class == imp::NVME_CLASS24
     }
+    fn pci_error_handlers(&self) -> Option<&'static drv::PciErrorHandlers> { Some(&error::HANDLERS) }
 
     fn probe(&self, dev: &alloc::sync::Arc<drv::Device>) -> drv::KResult<()> {
         let bdf = pci::parse_bdf_addr(&dev.addr).ok_or(drv::Error::ProbeFailed)?;
