@@ -18,7 +18,7 @@ use alloc::vec::Vec;
 use vfs::inode::{Inode, InodeBuilder, OwnerPersist};
 use vfs::inode_ops::{mk_mode, InodeOps};
 use vfs::file_ops::FileOps;
-use vfs::{CookieEntry, DirContext, FileType, Ino, InodeRef, KResult, VfsError};
+use vfs::{CookieEntry, DirContext, File, FileType, Ino, InodeRef, KResult, VfsError};
 
 /// Permission bits of a cgroup DIRECTORY inode. `0o755` (Linux cgroup2 dirs are
 /// `drwxr-xr-x`): the owner may create sub-cgroups (`mkdir`) — required for a
@@ -143,6 +143,24 @@ struct CgFileFileOps;
 impl FileOps for CgFileFileOps {
     /// kernfs / procfs attributes always install a `->poll`. # C: O(1)
     fn can_poll(&self, _file: &vfs::File) -> bool { true }
+    /// Regular control files retain their normal readable/writable mask, while
+    /// `cgroup.events` adds POLLPRI|POLLERR once
+    /// its persistent notification generation advances past this open file's
+    /// last observation.
+    fn poll_open_file(&self, file: &File) -> u32 {
+        let Some(d) = file.inode().private::<CgFileData>() else { return vfs::POLL_ERR; };
+        if d.file != "cgroup.events" { return vfs::POLL_IN | vfs::POLL_OUT; }
+        let Some(poll) = file.inode().poll_subscribers() else { return vfs::POLL_ERR; };
+        let now = poll.generation();
+        // Zero means this description has not sampled the source yet.  Seed
+        // it without reporting a synthetic initial edge, as kernfs does at
+        // open; `+1` preserves zero as the uninitialized marker.
+        let prior = file.private_data();
+        file.set_private_data(now.wrapping_add(1));
+        let changed = prior != 0 && prior.wrapping_sub(1) != now;
+        let event = if changed { vfs::POLL_PRI | vfs::POLL_ERR } else { 0 };
+        vfs::POLL_IN | vfs::POLL_OUT | event
+    }
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let d = inode.private::<CgFileData>().ok_or(VfsError::Einval)?;
         let data = crate::read_file(d.cgid, &d.file)?;
@@ -227,12 +245,15 @@ pub fn make_cg_dir(cgid: u64) -> InodeRef {
 pub fn make_cg_file(cgid: u64, file: &str) -> InodeRef {
     let size = crate::read_file(cgid, file).map(|d| d.len()).unwrap_or(0) as u64;
     let (uid, gid) = crate::node_file_owner(cgid, file);
-    InodeBuilder::new(file_ino(cgid, file), mk_mode(FileType::Regular, file_perm(file)),
-                      Arc::new(CgFileInodeOps), Arc::new(CgFileFileOps))
+    let mut b = InodeBuilder::new(file_ino(cgid, file), mk_mode(FileType::Regular, file_perm(file)),
+                                  Arc::new(CgFileInodeOps), Arc::new(CgFileFileOps))
         .fsid(crate::CGROUP2_SUPER_MAGIC)
         .owner(uid, gid)
         .owner_persist(Arc::new(CgFileOwner { cgid, file: file.to_string() }))
         .size(size)
-        .private(Arc::new(CgFileData { cgid, file: file.to_string() }))
-        .build()
+        .private(Arc::new(CgFileData { cgid, file: file.to_string() }));
+    if file == "cgroup.events" {
+        if let Some(poll) = crate::node_events_poll(cgid) { b = b.poll_subs_arc(poll); }
+    }
+    b.build()
 }

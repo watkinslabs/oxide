@@ -114,6 +114,12 @@ pub fn node_dir_ino(cgid: u64) -> Option<vfs::Ino> { TREE.lock().dir_ino(cgid) }
 /// Hierarchy-owned inode number of a live cgroup control file. # C: O(log n)
 pub fn node_file_ino(cgid: u64, file: &str) -> KResult<vfs::Ino> { TREE.lock().file_ino(cgid, file) }
 
+/// Persistent readiness source for a live `cgroup.events` control file.
+/// # C: O(log n)
+pub fn node_events_poll(cgid: u64) -> Option<alloc::sync::Arc<vfs::PollSubscribers>> {
+    TREE.lock().events_poll(cgid)
+}
+
 /// Live cgroup node addressed by an exported inode number. # C: O(nodes · files)
 pub fn node_ino_target(ino: vfs::Ino) -> Option<(u64, Option<String>)> { TREE.lock().ino_target(ino) }
 
@@ -485,3 +491,5 @@ pub fn proc_cgroup_line(path: &str) -> String {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod inode_tests;
