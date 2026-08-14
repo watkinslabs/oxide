@@ -51,3 +51,15 @@ pub fn bound_pci_error_handlers(dev: &Device) -> Option<&'static PciErrorHandler
     let name = dev.bound()?;
     find_driver_on_bus("pci", name)?.pci_error_handlers()
 }
+
+/// Resolve and invoke the current PCI recovery callback while excluding the
+/// device's hot-removal path. The callback observes a live, still-bound device
+/// for its full duration. # C: O(N_drivers + callback)
+pub fn with_bound_pci_error_handlers<T>(dev: &Device, f: impl FnOnce(&PciErrorHandlers) -> T) -> Option<T> {
+    if dev.bus != "pci" { return None; }
+    let _recovery = dev.recovery.lock();
+    if !dev.lifecycle.is_live() { return None; }
+    let driver = dev.driver.lock();
+    let handlers = find_driver_on_bus("pci", (*driver)?)?.pci_error_handlers()?;
+    Some(f(handlers))
+}

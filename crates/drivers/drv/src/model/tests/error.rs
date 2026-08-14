@@ -1,13 +1,19 @@
 use super::*;
+use core::sync::atomic::AtomicBool;
 
 const ERROR_DEVICE_ID: u16 = 0xea11;
 static ERROR_DETECTED: AtomicU32 = AtomicU32::new(0);
 static MMIO_ENABLED: AtomicU32 = AtomicU32::new(0);
 static SLOT_RESET: AtomicU32 = AtomicU32::new(0);
 static RESUMED: AtomicU32 = AtomicU32::new(0);
+static RECOVERY_HOLD: AtomicBool = AtomicBool::new(false);
+static RECOVERY_ENTERED: AtomicBool = AtomicBool::new(false);
+static REMOVE_FINISHED: AtomicBool = AtomicBool::new(false);
 
 fn error_detected(_dev: &Device, state: PciChannelState) -> PciErsResult {
     ERROR_DETECTED.store(state as u32, Ordering::Release);
+    RECOVERY_ENTERED.store(true, Ordering::Release);
+    while RECOVERY_HOLD.load(Ordering::Acquire) { std::thread::yield_now(); }
     PciErsResult::NeedReset
 }
 fn mmio_enabled(_dev: &Device) -> PciErsResult {
@@ -68,4 +74,30 @@ fn pci_error_handlers_do_not_escape_the_pci_bound_driver() {
     assert!(platform.bound().is_none());
     assert!(bound_pci_error_handlers(&platform).is_none());
     device_del(&platform);
+}
+
+#[test]
+fn recovery_callback_excludes_remove_until_the_callback_returns() {
+    let _model = crate::model::test_claim::claim_model();
+    RECOVERY_HOLD.store(true, Ordering::Release);
+    RECOVERY_ENTERED.store(false, Ordering::Release);
+    REMOVE_FINISHED.store(false, Ordering::Release);
+    register_driver(&ERROR_DRIVER);
+    let dev = try_device_add(Arc::new(Device::new(
+        "pci", String::from("0000:00:eb.0"), 0, ERROR_DEVICE_ID, 0))).unwrap();
+    let recovering = Arc::clone(&dev);
+    let recovery = std::thread::spawn(move || with_bound_pci_error_handlers(&recovering, |handlers|
+        handlers.error_detected.unwrap()(&recovering, PciChannelState::Frozen)));
+    while !RECOVERY_ENTERED.load(Ordering::Acquire) { std::thread::yield_now(); }
+    let removing = Arc::clone(&dev);
+    let remove = std::thread::spawn(move || {
+        device_del(&removing);
+        REMOVE_FINISHED.store(true, Ordering::Release);
+    });
+    for _ in 0..1_000 { std::thread::yield_now(); }
+    assert!(!REMOVE_FINISHED.load(Ordering::Acquire));
+    RECOVERY_HOLD.store(false, Ordering::Release);
+    assert_eq!(recovery.join().expect("recovery"), Some(PciErsResult::NeedReset));
+    remove.join().expect("remove");
+    assert!(REMOVE_FINISHED.load(Ordering::Acquire));
 }

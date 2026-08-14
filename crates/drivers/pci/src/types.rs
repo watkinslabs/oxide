@@ -72,6 +72,23 @@ pub fn add_topology_dma_aliases(
     }
 }
 
+/// Select the immediate upstream bridge window that contains `child`.
+/// Overlapping windows at the same nesting depth are ambiguous, so this
+/// rejects them rather than inventing a parent relationship. # C: O(N)
+pub fn parent_bridge(bridges: &[(Bdf, BridgeBuses)], child: Bdf) -> Option<Bdf> {
+    let mut selected: Option<(Bdf, BridgeBuses)> = None;
+    for &(bridge, buses) in bridges {
+        if bridge.segment != child.segment || child.bus < buses.secondary || child.bus > buses.subordinate { continue; }
+        match selected {
+            None => selected = Some((bridge, buses)),
+            Some((_, old)) if buses.secondary > old.secondary => selected = Some((bridge, buses)),
+            Some((_, old)) if buses.secondary == old.secondary => return None,
+            Some(_) => {}
+        }
+    }
+    selected.map(|(bridge, _)| bridge)
+}
+
 impl Bdf {
 /// 16-bit requester identifier. Segment remains a separate ownership key.
     /// # C: O(1)
@@ -338,7 +355,7 @@ pub fn bridge_buses<R: ConfigSpaceReader>(r: &R, bdf: Bdf) -> Option<BridgeBuses
 pub fn swizzle_intx_to_root<R: ConfigSpaceReader>(r: &R, mut device: Bdf, mut pin: u8) -> Option<(Bdf, u8)> {
     if !(1..=4).contains(&pin) { return None; }
     let mut hops = 0usize;
-    while let Some(parent) = parent_bridge(r, device.segment, device.bus) {
+    while let Some(parent) = scan_parent_bridge(r, device.segment, device.bus) {
         pin = ((pin - 1 + device.device) & 3) + 1;
         device = parent;
         hops += 1;
@@ -347,7 +364,7 @@ pub fn swizzle_intx_to_root<R: ConfigSpaceReader>(r: &R, mut device: Bdf, mut pi
     Some((device, pin))
 }
 
-fn parent_bridge<R: ConfigSpaceReader>(r: &R, segment: u16, child_bus: u8) -> Option<Bdf> {
+fn scan_parent_bridge<R: ConfigSpaceReader>(r: &R, segment: u16, child_bus: u8) -> Option<Bdf> {
     let mut selected: Option<(Bdf, BridgeBuses)> = None;
     for bus in 0..=u8::MAX {
         for device in 0..32u8 {

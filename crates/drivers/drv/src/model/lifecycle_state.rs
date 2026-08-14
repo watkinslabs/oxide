@@ -102,6 +102,7 @@ pub fn try_device_add_with_parent(
 /// teardown callbacks. Concurrent removers and new binds lose the state claim.
 /// # C: O(N_devices + remove)
 pub fn device_del(d: &Arc<Device>) {
+    let _recovery = d.recovery.lock();
     let owns_removal = {
         let devices = DEVICES.lock();
         devices.iter().any(|present| Arc::ptr_eq(present, d)) && d.lifecycle.begin_remove()
@@ -109,7 +110,7 @@ pub fn device_del(d: &Arc<Device>) {
     if !owns_removal { return; }
 
     if d.bound().is_some() {
-        let _ = unbind(d);
+        let _ = super::unbind_unlocked(d);
     }
     crate::pci_dev::pci_remove_after_driver(d);
     if let Some(hook) = *SYSFS_REMOVE_HOOK.lock() { hook(d); }

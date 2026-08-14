@@ -22,7 +22,7 @@ use crate::KResult;
 mod lifecycle_state;
 pub use lifecycle_state::{device_del, try_device_add, try_device_add_with_parent};
 mod error;
-pub use error::{bound_pci_error_handlers, PciChannelState, PciErrorHandlers, PciErsResult};
+pub use error::{bound_pci_error_handlers, with_bound_pci_error_handlers, PciChannelState, PciErrorHandlers, PciErsResult};
 
 /// Factory that mints the `/dev` node inode for a device (devtmpfs path).
 /// Boxed + `Arc` so the registry, the `Device`, and the `DEVTMPFS_HOOK`
@@ -72,9 +72,9 @@ pub struct Device {
     /// Parent bus address, paired with `parent_bus`.
     pub parent_addr: Option<String>,
     /// Exact live ancestor objects captured by device registration.
-    pub(crate) parent_chain: Spinlock<Vec<Arc<Device>>, DriverListClass>,
-    /// One-way registration lifecycle: new, live, then permanently removed.
-    pub(crate) lifecycle: lifecycle_state::Lifecycle,
+    pub(crate) parent_chain: Spinlock<Vec<Arc<Device>>, DriverListClass>, pub(crate) lifecycle: lifecycle_state::Lifecycle,
+    /// Serializes PCI recovery callback delivery against hot removal.
+    pub(crate) recovery: Spinlock<(), DriverListClass>,
     /// PCI vendor id (0 for synthetic virtio bus devices).
     pub vendor_id: u16,
     /// PCI device id, or virtio device-id on the virtio bus.
@@ -124,8 +124,7 @@ impl Device {
     pub fn new(bus: &'static str, addr: String, vendor_id: u16, device_id: u16, class: u32) -> Self {
         Self {
             bus, addr, sysfs_relpath: None, parent_bus: None, parent_addr: None,
-            parent_chain: Spinlock::new(Vec::new()),
-            lifecycle: lifecycle_state::Lifecycle::new(),
+            parent_chain: Spinlock::new(Vec::new()), lifecycle: lifecycle_state::Lifecycle::new(), recovery: Spinlock::new(()),
             vendor_id, device_id, class, pci: None,
             msi_allowed: core::sync::atomic::AtomicBool::new(true),
             broken_parity_status: core::sync::atomic::AtomicBool::new(false),
@@ -443,10 +442,13 @@ fn bind_inner(dev: &Arc<Device>, driver_name: &'static str, emit_bind_event: boo
     Ok(())
 }
 
-/// Unbind a device from its current driver. Calls `Driver::remove`, clears
-/// model state, then emits the same change hook used for bind so sysfs/udev
-/// observes a driver-link transition. # C: O(N_drivers + remove)
+/// Unbind a device from its current driver under recovery exclusion. # C: O(N_drivers + remove)
 pub fn unbind(dev: &Arc<Device>) -> KResult<()> {
+    let _recovery = dev.recovery.lock();
+    unbind_unlocked(dev)
+}
+
+pub(crate) fn unbind_unlocked(dev: &Arc<Device>) -> KResult<()> {
     let driver_name = dev.bound().ok_or(crate::Error::NoMatch)?;
     let driver = find_driver_on_bus(dev.bus, driver_name).ok_or(crate::Error::NotFound)?;
     driver.remove(dev);
@@ -454,7 +456,6 @@ pub fn unbind(dev: &Arc<Device>) -> KResult<()> {
     if let Some(h) = *BIND_HOOK.lock() { h(dev.bus, &dev.addr, driver_name, BindEvent::Unbound); }
     Ok(())
 }
-
 /// Quiesce every currently-bound device for reboot/poweroff. This is not
 /// hot-unplug: bindings, sysfs state, and devtmpfs nodes remain published
 /// because the machine is entering a terminal power transition. Devices are

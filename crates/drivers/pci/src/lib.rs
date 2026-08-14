@@ -41,7 +41,7 @@ pub use types::{
     clear_bus_master, disable_mem_bus_master, enable_mem_decode, enable_mem_bus_master, intx_command_value, parse_bdf_addr,
     read_command, restore_intx_disabled, restore_mem_bus_master, set_intx_disabled,
     write_command, add_topology_dma_aliases, Bdf, BridgeBuses, BusMasterAdmissionFn, ConfigSpaceReader, DmaAlias, DmaAliases, Error, KResult, PciDevice, bridge_buses, bus_master_admitted, set_bus_master_admission, swizzle_intx_to_root, COMMAND_BUS_MASTER,
-    COMMAND_INTX_DISABLE, COMMAND_IO, COMMAND_MEMORY, MAX_ECAM_WINDOWS,
+    COMMAND_INTX_DISABLE, COMMAND_IO, COMMAND_MEMORY, MAX_ECAM_WINDOWS, parent_bridge,
 };
 
 #[cfg(test)]

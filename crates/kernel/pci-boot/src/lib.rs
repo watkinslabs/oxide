@@ -27,6 +27,7 @@ pub(crate) unsafe fn map_mmio_pages(pa: u64, n_pages: u64) -> u64 {
 // file (cap_dump_arch reads `virtio::is_modern`, etc.).
 mod config_access;
 mod aer;
+mod topology;
 mod virtio_bus;
 mod virtio_child;
 mod virtio_drv;
@@ -112,7 +113,8 @@ fn quiesce_bus_masters(requesters: &[pci::Bdf]) {
     }
 }
 
-fn pci_resources_arch(d: &pci::PciDevice) -> alloc::vec::Vec<drv::Resource> {
+/// Read PCI function resources through the active architecture ECAM. # C: O(BARs)
+pub(crate) fn pci_resources_arch(d: &pci::PciDevice) -> alloc::vec::Vec<drv::Resource> {
     let bars = {
         #[cfg(target_arch = "x86_64")]
         {
@@ -179,7 +181,7 @@ pub fn enumerate_and_log() {
     let _ = firmware::acpi::prepare_pci_intx_routes();
     pci_irq::set_intx_resolver(resolve_firmware_intx);
     register_pci_model_drivers();
-    publish_scanned_devices(&devs);
+    topology::publish_scanned_devices(&devs);
 
     // F40 + F57: drain any MSIs queued during model probing through the
     // per-architecture IRQ dispatcher, then restore the boot-mask state.
@@ -220,39 +222,6 @@ fn activate_dma_and_interrupt_ownership(requesters: &[pci::Bdf], aliases: &pci::
     // SAFETY: the LAPIC/IDT are live and all unowned PCI requesters remain quiesced.
     unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
     true
-}
-
-#[inline(never)]
-fn publish_scanned_devices(devs: &[pci::PciDevice]) {
-    for d in devs.iter() {
-        debug_boot! {
-            klog::write_raw(b"[INFO]  pci ");
-            klog::write_dec_u64(d.bdf.bus as u64);
-            klog::write_raw(b":");
-            klog::write_dec_u64(d.bdf.device as u64);
-            klog::write_raw(b".");
-            klog::write_dec_u64(d.bdf.function as u64);
-            klog::write_raw(b" vendor=");
-            klog::write_hex_u64(d.vendor_id as u64);
-            klog::write_raw(b" device=");
-            klog::write_hex_u64(d.device_id as u64);
-            klog::write_raw(b" class=");
-            klog::write_hex_u64(d.class_code as u64);
-            klog::write_raw(b"\n");
-        }
-        trace::bar_dump_arch(d.bdf);
-        trace::cap_dump_arch(d);
-        #[cfg(feature = "debug-boot")]
-        let bound = publish_scanned_device(d).and_then(|dev| dev.bound());
-        #[cfg(not(feature = "debug-boot"))]
-        let _ = publish_scanned_device(d);
-        debug_boot! {
-            klog::write_raw(b"[INFO]  pci driver=");
-            klog::write_raw(bound.unwrap_or("none").as_bytes());
-            klog::write_raw(b"\n");
-        }
-    }
-
 }
 
 #[inline(never)]
@@ -468,23 +437,10 @@ fn scan_devices() -> alloc::vec::Vec<pci::PciDevice> {
     }
 }
 
-/// Register one scanned function with the driver model. Already-registered
-/// functions resolve to their live object, so a rescan only adds what appeared.
-/// # C: O(N_devices)
-fn publish_scanned_device(d: &pci::PciDevice) -> Option<alloc::sync::Arc<drv::Device>> {
-    let class24 = ((d.class_code as u32) << 16)
-        | ((d.subclass as u32) << 8) | (d.prog_if as u32);
-    let addr = alloc::format!("{:04x}:{:02x}:{:02x}.{}",
-        d.bdf.segment, d.bdf.bus, d.bdf.device, d.bdf.function);
-    publish_pci_model_device(d, addr, class24)
-}
-
 /// Re-enumerate the PCI hierarchy and publish functions that appeared since
 /// the last scan (sysfs `rescan`). # C: O(N_bdfs probed)
 pub fn rescan() {
-    for d in scan_devices().iter() {
-        publish_scanned_device(d);
-    }
+    topology::publish_scanned_devices(&scan_devices());
 }
 
 /// Retry firmware-gated built-in PCI functions after the root filesystem is mounted.
@@ -497,50 +453,4 @@ pub fn retry_firmware_gated_drivers() {
             let _ = drv::bind(&dev, "r8169");
         }
     }
-}
-
-fn publish_pci_model_device(
-    d: &pci::PciDevice,
-    addr: alloc::string::String,
-    class24: u32,
-) -> Option<alloc::sync::Arc<drv::Device>> {
-    let dev = alloc::sync::Arc::new(
-        drv::Device::new("pci", addr.clone(), d.vendor_id, d.device_id, class24)
-            .with_pci_ident(config_access::pci_ident(d))
-            .with_resources(pci_resources_arch(d)),
-    );
-    match drv::try_device_add(dev) {
-        Ok(dev) => { publish_port_service_children(d, &dev); Some(dev) },
-        Err(drv::Error::Busy) => drv::devices().into_iter().find(|dev| {
-            dev.bus == "pci"
-                && dev.addr.as_str() == addr.as_str()
-                && dev.vendor_id == d.vendor_id
-                && dev.device_id == d.device_id
-                && dev.class == class24
-        }),
-        Err(_) => None,
-    }
-}
-
-/// Publish the AER service child for a root port or root event collector.
-/// Capability reads retain firmware state; AER control and status are owned by
-/// the eventual AER service driver. # C: O(capabilities)
-fn publish_port_service_children(d: &pci::PciDevice, parent: &alloc::sync::Arc<drv::Device>) {
-    if !firmware::acpi::pci_osc_control(d.bdf.segment, d.bdf.bus)
-        .is_some_and(|osc| osc.control & firmware::acpi::OSC_PCIE_AER_CONTROL != 0) { return; }
-    let message = {
-        #[cfg(target_arch = "x86_64")]
-        { hal_x86_64::pci::EcamPci::from_published().and_then(|reader| pci::aer_message_number(&reader, d.bdf)) }
-        #[cfg(target_arch = "aarch64")]
-        { hal_aarch64::pci::EcamPci::from_published().and_then(|reader| pci::aer_message_number(&reader, d.bdf)) }
-    };
-    let port_type = {
-        #[cfg(target_arch = "x86_64")]
-        { hal_x86_64::pci::EcamPci::from_published().and_then(|reader| pci::pcie_type(&reader, d.bdf)) }
-        #[cfg(target_arch = "aarch64")]
-        { hal_aarch64::pci::EcamPci::from_published().and_then(|reader| pci::pcie_type(&reader, d.bdf)) }
-    };
-    if !matches!(port_type, Some(pci::PcieType::RootPort | pci::PcieType::RootComplexEvent)) { return; }
-    let Some(message) = message else { return; };
-    let _ = pcie_port::publish(d.bdf, alloc::sync::Arc::clone(parent), pcie_port::Service::Aer.bit(), [0, message, 0, 0, 0]);
 }
