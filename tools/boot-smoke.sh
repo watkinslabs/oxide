@@ -63,8 +63,8 @@ MARKER="${SMOKE_MARKER:-Reached target basic.target}"
 # So the gate ALSO asks the guest a question and waits for its answer. The
 # serial line already has a writable FIFO ($SYSRQ_WFD, used for the sysrq RX
 # probe below). The boot line puts `systemd.debug_shell=` on that same UART.
-# Once systemd reports the shell service started, one typed command and its
-# output prove — with no dependence on log routing — that init ran, that a
+# Once the shell prints its prompt, one typed command and its output prove —
+# with no dependence on log routing — that init ran, that a
 # service started, that fork/exec works, and that the tty carries bytes in BOTH
 # directions. A boot that reaches a desktop always answers it; a boot whose
 # userspace is broken cannot.
@@ -85,7 +85,11 @@ ALIVE_PROBE="${SMOKE_ALIVE_PROBE-1}"
 ALIVE_NONCE="OXIDE-ALIVE-OK"
 ALIVE_CMD="${SMOKE_ALIVE_CMD:-echo OXIDE-AL\"IVE\"-OK}"
 ALIVE_MARKER="${SMOKE_ALIVE_MARKER:-$ALIVE_NONCE}"
-ALIVE_READY_MARKER="${SMOKE_ALIVE_READY_MARKER:-Started debug-shell.service}"
+# The image's journal does not forward unit-completion messages after it takes
+# over the serial log. The prompt is emitted only after the configured shell
+# has opened the serial TTY and entered its input loop, making it a stronger
+# admission condition than a unit status line.
+ALIVE_READY_MARKER="${SMOKE_ALIVE_READY_MARKER:-sh-5.2#}"
 
 # Failure marker: an unrecoverable kernel fault. The boot is dead the moment this
 # appears — the fault handler parks the PE and nothing further will be printed, so
@@ -275,9 +279,9 @@ check_serial_rx() {
     return 1
 }
 
-# Type exactly one command after systemd has reported the serial debug shell
-# started, then report whether its evaluated output came back. Waiting for the
-# service marker makes the write a transaction with a known reader, rather
+# Type exactly one command after the serial debug-shell prompt, then report
+# whether its evaluated output came back. Waiting for the prompt makes the
+# write a transaction with a known reader, rather
 # than repeatedly injecting bytes into a UART before an interactive endpoint
 # exists. # Returns 0 once the guest has answered.
 ALIVE_SENT=""
