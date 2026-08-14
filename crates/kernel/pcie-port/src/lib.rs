@@ -3,9 +3,14 @@
 #![no_std]
 
 extern crate alloc;
+#[cfg(test)] extern crate std;
 
 use alloc::{format, sync::Arc, vec::Vec};
+use core::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 use sync::{Spinlock, TaskList as DriverListClass};
+
+mod aer;
+pub use aer::{recover_aer, Recovery};
 
 /// PCIe port services represented by child devices. # C: O(1)
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -23,6 +28,9 @@ pub type ServiceMask = u32;
 pub const SERVICE_MASK_ALL: ServiceMask = Service::Pme.bit() | Service::Aer.bit()
     | Service::Hotplug.bit() | Service::Dpc.bit() | Service::Bandwidth.bit();
 const SERVICES: [Service; 5] = [Service::Pme, Service::Aer, Service::Hotplug, Service::Dpc, Service::Bandwidth];
+const AER_ACTIVE: u8 = 0;
+const AER_PENDING: u8 = 1;
+const AER_REMOVING: u8 = 2;
 
 /// An enabled service child, retaining the hardware interrupt message number
 /// selected by the port capability. # C: O(1)
@@ -36,6 +44,9 @@ pub struct Port {
     service_mask: ServiceMask,
     children: Vec<Child>,
     bindings: Spinlock<Vec<pci_irq::Binding>, DriverListClass>,
+    aer_status: AtomicU32,
+    aer_source: AtomicU32,
+    aer_state: AtomicU8,
 }
 
 static PORTS: Spinlock<Vec<Arc<Port>>, DriverListClass> = Spinlock::new(Vec::new());
@@ -58,7 +69,8 @@ pub fn publish(root_bdf: pci::Bdf, parent: Arc<drv::Device>, service_mask: Servi
         }
     }
     if children.is_empty() { return Err(drv::Error::Invalid); }
-    let port = Arc::new(Port { root_bdf, parent, service_mask, children, bindings: Spinlock::new(Vec::new()) });
+    let port = Arc::new(Port { root_bdf, parent, service_mask, children, bindings: Spinlock::new(Vec::new()),
+        aer_status: AtomicU32::new(0), aer_source: AtomicU32::new(0), aer_state: AtomicU8::new(AER_ACTIVE) });
     let inserted = {
         let mut ports = PORTS.lock();
         if ports.iter().any(|entry| entry.root_bdf == root_bdf) { false }
@@ -85,6 +97,7 @@ pub fn service_port(child: &drv::Device, service: Service) -> Option<Arc<Port>> 
 /// Remove children in reverse creation order, then release every vector
 /// binding retained by the port. # C: O(services + vectors)
 pub fn remove(port: &Arc<Port>) {
+    port.stop_aer();
     let removed = {
         let mut ports = PORTS.lock();
         let Some(index) = ports.iter().position(|entry| Arc::ptr_eq(entry, port)) else { return; };
@@ -106,6 +119,27 @@ impl Port {
     /// Retain a PCI-core vector binding until port removal. The caller must
     /// bind a handler before transferring it here. # C: O(1)
     pub fn retain_binding(&self, binding: pci_irq::Binding) { self.bindings.lock().push(binding); }
+    /// Claim the sole AER recovery slot before reading root status. # C: O(1)
+    pub fn begin_aer(&self) -> bool {
+        self.aer_state.compare_exchange(AER_ACTIVE, AER_PENDING, Ordering::AcqRel, Ordering::Acquire).is_ok()
+    }
+    /// Publish one acknowledged root event after [`Self::begin_aer`]. # C: O(1)
+    pub fn publish_aer(&self, status: u32, source: u32) {
+        self.aer_status.store(status, Ordering::Release);
+        self.aer_source.store(source, Ordering::Release);
+    }
+    /// Release an AER slot whose root read did not yield an event. # C: O(1)
+    pub fn cancel_aer(&self) -> bool {
+        self.aer_state.compare_exchange(AER_PENDING, AER_ACTIVE, Ordering::AcqRel, Ordering::Acquire).is_ok()
+    }
+    /// Read the AER event retained by [`Self::publish_aer`]. # C: O(1)
+    pub fn take_aer(&self) -> Option<(u32, u32)> {
+        if self.aer_state.load(Ordering::Acquire) != AER_PENDING { return None; }
+        Some((self.aer_status.load(Ordering::Acquire), self.aer_source.load(Ordering::Acquire)))
+    }
+    /// End recovery and return whether the root remains live to unmask. # C: O(1)
+    pub fn finish_aer(&self) -> bool { self.cancel_aer() }
+    fn stop_aer(&self) { self.aer_state.store(AER_REMOVING, Ordering::Release); }
 }
 
 fn child_addr(bdf: pci::Bdf, service: Service) -> alloc::string::String {

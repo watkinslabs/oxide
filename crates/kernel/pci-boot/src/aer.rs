@@ -45,7 +45,14 @@ impl drv::Driver for AerDriver {
 fn aer_irq() {
     for dev in drv::devices() {
         let Some(port) = pcie_port::service_port(&dev, pcie_port::Service::Aer) else { continue; };
-        acknowledge(port.root_bdf());
+        if !port.begin_aer() { continue; }
+        let Some((status, source)) = acknowledge(port.root_bdf()) else { let _ = port.cancel_aer(); continue; };
+        mask_reporting(port.root_bdf());
+        port.publish_aer(status, source);
+        if !sched::live::workqueue::queue_work(recover_work, bdf_key(port.root_bdf())) {
+            if port.cancel_aer() { unmask_reporting(port.root_bdf()); }
+            klog::write_raw(b"pcie_aer_workqueue_full\n");
+        }
     }
 }
 
@@ -83,19 +90,59 @@ fn disable_with<R: pci::ConfigSpaceReader>(r: &R, bdf: pci::Bdf) {
         r.write32_ext(bdf, aer + ROOT_STATUS_OFF, root);
 }
 
-fn acknowledge(bdf: pci::Bdf) {
+fn acknowledge(bdf: pci::Bdf) -> Option<(u32, u32)> {
     #[cfg(target_arch = "x86_64")]
-    if let Some(r) = hal_x86_64::pci::EcamPci::from_published() { acknowledge_with(&r, bdf); }
+    if let Some(r) = hal_x86_64::pci::EcamPci::from_published() { return acknowledge_with(&r, bdf); }
     #[cfg(target_arch = "aarch64")]
-    if let Some(r) = hal_aarch64::pci::EcamPci::from_published() { acknowledge_with(&r, bdf); }
+    if let Some(r) = hal_aarch64::pci::EcamPci::from_published() { return acknowledge_with(&r, bdf); }
+    None
 }
 
-fn acknowledge_with<R: pci::ConfigSpaceReader>(r: &R, bdf: pci::Bdf) {
-        let Some(aer) = pci::extended_capability(r, bdf, pci::EXT_CAP_ID_AER) else { return; };
+fn acknowledge_with<R: pci::ConfigSpaceReader>(r: &R, bdf: pci::Bdf) -> Option<(u32, u32)> {
+        let Some(aer) = pci::extended_capability(r, bdf, pci::EXT_CAP_ID_AER) else { return None; };
         let root = r.read32_ext(bdf, aer + ROOT_STATUS_OFF);
-        if root & ROOT_STATUS_ERROR_MASK == 0 { return; }
-        let _source = r.read32_ext(bdf, aer + ROOT_ERROR_SOURCE_OFF);
+        if root & ROOT_STATUS_ERROR_MASK == 0 { return None; }
+        let source = r.read32_ext(bdf, aer + ROOT_ERROR_SOURCE_OFF);
         r.write32_ext(bdf, aer + ROOT_STATUS_OFF, root);
+        Some((root, source))
+}
+
+fn mask_reporting(bdf: pci::Bdf) {
+    #[cfg(target_arch = "x86_64")]
+    if let Some(r) = hal_x86_64::pci::EcamPci::from_published() { report_mask_with(&r, bdf, false); }
+    #[cfg(target_arch = "aarch64")]
+    if let Some(r) = hal_aarch64::pci::EcamPci::from_published() { report_mask_with(&r, bdf, false); }
+}
+
+fn unmask_reporting(bdf: pci::Bdf) {
+    #[cfg(target_arch = "x86_64")]
+    if let Some(r) = hal_x86_64::pci::EcamPci::from_published() { report_mask_with(&r, bdf, true); }
+    #[cfg(target_arch = "aarch64")]
+    if let Some(r) = hal_aarch64::pci::EcamPci::from_published() { report_mask_with(&r, bdf, true); }
+}
+
+fn report_mask_with<R: pci::ConfigSpaceReader>(r: &R, bdf: pci::Bdf, enable: bool) {
+    let Some(aer) = pci::extended_capability(r, bdf, pci::EXT_CAP_ID_AER) else { return; };
+    let command = r.read32_ext(bdf, aer + ROOT_COMMAND_OFF);
+    let command = if enable { command | ROOT_COMMAND_MESSAGE_MASK } else { command & !ROOT_COMMAND_MESSAGE_MASK };
+    r.write32_ext(bdf, aer + ROOT_COMMAND_OFF, command);
+}
+
+fn recover_work(key: usize) {
+    let bdf = bdf_from_key(key);
+    let Some(port) = pcie_port::find(bdf) else { return; };
+    let Some((status, source)) = port.take_aer() else { return; };
+    let _ = pcie_port::recover_aer(bdf, status, source);
+    if port.finish_aer() { unmask_reporting(bdf); }
+}
+
+fn bdf_key(bdf: pci::Bdf) -> usize { ((u32::from(bdf.segment) << 16) | u32::from(bdf.raw())) as usize }
+
+fn bdf_from_key(key: usize) -> pci::Bdf {
+    let raw = key as u32;
+    let requester = raw as u16;
+    pci::Bdf { segment: (raw >> 16) as u16, bus: (requester >> 8) as u8,
+        device: ((requester >> 3) & 0x1f) as u8, function: (requester & 7) as u8 }
 }
 
 fn clear_status<R: pci::ConfigSpaceReader>(r: &R, bdf: pci::Bdf, aer: u16) {

@@ -21,6 +21,7 @@ arch-irq = { path = "../arch-irq" }
 pci-irq = { path = "../pci-irq" }
 pcie-port = { path = "../pcie-port" }
 softirq = { path = "../softirq" }
+sched = { path = "../sched" }
 net     = { path = "../net" }
 netlink = { path = "../netlink" }
 firmware = { path = "../firmware" }

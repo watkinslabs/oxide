@@ -1502,6 +1502,7 @@ dependencies = [
  "pci-irq",
  "pcie-port",
  "pmm",
+ "sched",
  "softirq",
  "sync",
  "virtio",
