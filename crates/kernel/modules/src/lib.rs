@@ -80,6 +80,7 @@ pub mod linux_firmware;
 pub mod linux_input;
 pub mod linux_module;
 pub mod linux_mempool;
+pub mod linux_nvme_auth;
 pub mod linux_crypto;
 pub mod linux_configfs;
 pub mod linux_debugfs;
