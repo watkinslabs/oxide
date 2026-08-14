@@ -54,7 +54,7 @@ impl HardwareProfile {
     fn iommu_device(self) -> Option<&'static str> {
         match self {
             Self::Default => None,
-            Self::NativePci => Some("intel-iommu,intremap=on,caching-mode=on"),
+            Self::NativePci => Some("intel-iommu,intremap=on,caching-mode=on,pt=off"),
         }
     }
 
@@ -421,7 +421,7 @@ mod tests {
         assert_eq!(HardwareProfile::Default.iommu_device(), None);
         assert_eq!(HardwareProfile::NativePci.machine(), "q35,kernel_irqchip=split");
         assert_eq!(HardwareProfile::NativePci.iommu_device(),
-            Some("intel-iommu,intremap=on,caching-mode=on"));
+            Some("intel-iommu,intremap=on,caching-mode=on,pt=off"));
     }
 
     #[test]
