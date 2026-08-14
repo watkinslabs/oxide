@@ -49,21 +49,18 @@ impl AddressSpace {
         if (0x7ffff6000000..0x7ffff8000000).contains(&va_page) {
             crate::tailwatch::log_install(b"anon", 0, 0, va_page, pa, self.root_pa);
         }
-        // SAFETY: VA and PA are page-aligned and flags carry the user mapping rights.
-        let replaced = unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K) };
-        if replaced.is_none() { self.accounting.install_pte(vma); }
-        if let Some(old) = replaced {
-            #[cfg(feature = "debug-watchdog")]
-            {
-                klog::write_raw(b"[LOSTWRITE] anon-zero displaced present leaf va=");
-                klog::write_hex_u64(va_page);
-                klog::write_raw(b" old_pa="); klog::write_hex_u64(old.0 & !(PAGE_SIZE_BYTES - 1));
-                klog::write_raw(b" newzero_pa="); klog::write_hex_u64(pa);
-                klog::write_raw(b"\n");
-            }
-            hal::tlb::shootdown_others_va(va_page, self.cpumask_full().as_words());
-            dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
+        // A sibling can win the same first-touch while this task allocates and
+        // zeroes its frame.  Preserve that page; a zero-fill must never replace
+        // a live anonymous write.
+        let installed = unsafe {
+            self.map_if_absent::<M>(Va(va_page), Pa(pa), pte_flags, PageSize::P4K)
+        };
+        if !installed {
+            dec_ref(pa);
+            uncharge_anon();
+            return Ok(());
         }
+        self.accounting.install_pte(vma);
         let idx = ((va_page - vma.start.as_u64()) / PAGE_SIZE_BYTES) as u32;
         set_rmap(pa, av, idx);
         self.mark_anon_page(va)?;

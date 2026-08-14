@@ -32,7 +32,7 @@ use std::thread_local;
 use hal::{MmuOps, Pa, PageFlags, PageSize, Va};
 
 use crate::address_space::AddressSpace;
-use crate::vma::{FaultAccess, FaultKind, VmaBacking, VmaFlags, VmaProt};
+use crate::vma::{FaultAccess, FaultKind, FileBacking, FileBackingError, VmaBacking, VmaFlags, VmaProt};
 
 const PAGE: u64 = 0x1000;
 const FILL: u8 = 0xAB; // sentinel backing byte — a zero-over-file bug reads 0.
@@ -127,6 +127,45 @@ fn map_kernelbytes_rw(mm: &AddressSpace) -> u64 {
         false,
     ).expect("mmap kernelbytes");
     va.as_u64()
+}
+
+/// A deterministic peer-fault model: `read_at` represents the interval where
+/// this fault dropped the page-table lock for backing I/O, and installs the
+/// winner's page before returning data to the losing filler.
+struct PeerWinsBacking { peer_pa: u64 }
+
+impl FileBacking for PeerWinsBacking {
+    fn read_at(&self, _off: u64, dst: &mut [u8]) -> Result<usize, FileBackingError> {
+        LEAF.with(|l| {
+            l.borrow_mut().insert(0x40_0000, (self.peer_pa, PageFlags::USER.bits()));
+        });
+        dst.fill(FILL);
+        Ok(dst.len())
+    }
+
+    fn size_hint(&self) -> u64 { PAGE }
+    fn ino(&self) -> u64 { 0x5045_4552 }
+}
+
+#[test]
+fn file_fill_never_replaces_a_peer_install_after_io() {
+    reset();
+    let mm = AddressSpace::new(0x3_0000_0000).expect("AS::new");
+    let peer = fresh_pa();
+    let va = mm.mmap(
+        Some(hal::UserVirtAddr::new(0x40_0000).unwrap()),
+        PAGE as usize,
+        VmaProt::READ,
+        VmaFlags::PRIVATE,
+        VmaBacking::File { backing: Arc::new(PeerWinsBacking { peer_pa: peer }), off: 0 },
+        true,
+    ).expect("mmap file").as_u64();
+
+    drive(&mm, va, FaultKind::NotPresent { access: FaultAccess::Read });
+
+    let (installed, _) = LEAF.with(|l| l.borrow().get(&va).copied()).expect("peer leaf");
+    assert_eq!(installed, peer,
+        "fault fill replaced a peer PTE installed while backing I/O slept");
 }
 
 /// THE REPRODUCTION: a write-protection fault whose leaf is zapped between the

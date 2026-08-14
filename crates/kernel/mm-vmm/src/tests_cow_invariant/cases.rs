@@ -225,24 +225,15 @@ fn fork_shares_shmem_anon_mapping() {
     BUG.with(|b| { if let Some(m) = b.borrow().as_ref() { panic!("invariant: {}", m); } });
 }
 
-// ---- RANK-1 regression: map-over-present must account the displaced frame --
+// ---- RANK-1 regression: demand faults never replace a present leaf --------
 //
-// The randomized proptest gates demand faults to empty slots (`pte_at == None`)
-// and only exercises map-over-present through the COW arm (which always dec'd
-// the displaced frame). The NON-COW installers (anon/file/kernelbytes/
-// kernelframe demand) used `M::map` over a possibly-present leaf and SILENTLY
-// dropped the displaced frame — refcount/mapcount > live-PTE count → leak, then
-// realloc-while-mapped aliasing → the non-deterministic boot SIGSEGV. This test
-// drives the REAL anon demand-fault path over an already-present leaf and
-// asserts the displaced frame is fully released.
-//
-// FAIL-BEFORE / PASS-AFTER: with the displaced-PTE return wired
-// (`MmuOps::map -> Option<Pa>` + the `if let Some(old)=… { dec_ref(old) }` at
-// the anon install site), `check_invariant` is clean. Revert EITHER the
-// `MultiMmu::map` displaced return OR the anon-site `dec_ref` and this test
-// panics with `MAPCOUNT-LEAK` / `over-count` on the displaced frame.
+// Linux rechecks `pte_none()` under the PTE lock after any sleeping fault
+// work. A second first-touch of an already-present page adopts the first
+// winner; it must not turn a demand fault into a MAP_FIXED-like replacement.
+// This drives the real anonymous fill twice and pins both PTE ownership and
+// refcount/mapcount preservation.
 #[test]
-fn anon_demand_over_present_leaf_accounts_displaced() {
+fn anon_demand_over_present_leaf_keeps_first_winner() {
     reset();
     let root = 0x7_0000_0000u64;
     let mm = AddressSpace::new(root).expect("AS::new");
@@ -260,25 +251,22 @@ fn anon_demand_over_present_leaf_accounts_displaced() {
     let a = pte_at(root, va).expect("A mapped").0 & !(PAGE - 1);
     assert_eq!(rc_get(a), 1, "A: alloc refcount 1");
 
-    // Second demand fault at the SAME (now PRESENT) va: the anon arm allocs a
-    // fresh frame B and installs it OVER the present leaf A. The displaced A
-    // must be dec_ref'd (refcount AND mapcount → 0), else over-count / leak.
+    // A stale concurrent first-touch at the SAME now-present VA must discard
+    // its speculative zero frame and retain A unchanged.
     do_fault(&slot.mm, va, DEMAND_WRITE);
-    let b = pte_at(root, va).expect("B mapped").0 & !(PAGE - 1);
-    assert_ne!(a, b, "second demand fault installed a fresh frame over the present leaf");
+    let winner = pte_at(root, va).expect("A remains mapped").0 & !(PAGE - 1);
+    assert_eq!(winner, a, "second demand fault replaced the present winner");
 
-    check_invariant("over-present");
+    check_invariant("present-winner");
     BUG.with(|bug| {
         if let Some(m) = bug.borrow().as_ref() {
-            panic!("map-over-present displaced-frame accounting bug: {}", m);
+            panic!("present-winner accounting bug: {}", m);
         }
     });
-    // A is displaced with no remaining mapping → fully released.
-    assert_eq!(rc_get(a), 0, "displaced frame A refcount returns to 0");
+    // The original leaf remains the one live mapping.
+    assert_eq!(rc_get(a), 1, "winner A keeps its PTE reference");
     let a_mc = MC.with(|m| *m.borrow().get(&a).unwrap_or(&0));
-    assert_eq!(a_mc, 0, "displaced frame A mapcount returns to 0");
-    // B is the sole live mapping.
-    assert_eq!(rc_get(b), 1, "B: sole live mapping refcount 1");
+    assert_eq!(a_mc, 1, "winner A keeps exactly one mapcount");
 }
 
 // ---- A3 PageAnonExclusive: wp_page_reuse fires iff exclusive ----------

@@ -184,7 +184,7 @@ impl AddressSpace {
     /// # SAFETY: caller supplies the live MMU and the PMM refcount callbacks,
     /// and holds no page-table lock across this call.
     /// # C: O(walk depth)
-    pub(super) unsafe fn fill_huge_not_present<M, IR>(
+    pub(super) unsafe fn fill_huge_not_present<M, DR, IR>(
         &self,
         va: UserVirtAddr,
         access: FaultAccess,
@@ -193,9 +193,13 @@ impl AddressSpace {
         backing_off: u64,
         huge_bytes: u64,
         wp: hal::PageFlags,
+        dec_ref: &mut DR,
         inc_ref: &mut IR,
     ) -> KResult<()>
-    where M: MmuOps, IR: FnMut(u64)
+    where
+        M: MmuOps,
+        DR: FnMut(u64),
+        IR: FnMut(u64),
     {
         let Some(t) = huge_fault_target(va.as_u64(), vma.start.as_u64(), backing_off, huge_bytes)
             else { return Err(Error::Inval) };
@@ -231,8 +235,18 @@ impl AddressSpace {
         // SAFETY: `t.va` and `frame.pa` are both aligned to the granule the
         // backing reports, which `huge_fault_target` proved the page tables
         // express as one leaf; flags carry USER per `11§5`.
-        let replaced = unsafe { M::map(Va(t.va), Pa(frame.pa), pte_flags, t.size) };
-        if replaced.is_none() { self.accounting.install_pte(vma); }
+        let installed = unsafe {
+            self.map_if_absent::<M>(Va(t.va), Pa(frame.pa), pte_flags, t.size)
+        };
+        if !installed {
+            if frame.map_ref_held {
+                backing.huge_put_frame(frame.pa);
+            } else {
+                dec_ref(frame.pa);
+            }
+            return Ok(());
+        }
+        self.accounting.install_pte(vma);
         Ok(())
     }
 }
