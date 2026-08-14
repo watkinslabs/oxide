@@ -180,6 +180,10 @@ impl net::NetDev for E1000NetDev {
         net::ethernet::EthHdr::write_to(dst, self.mac, pkt.proto, &mut frame[..14]);
         frame[14..].copy_from_slice(body); observe(&frame, pkt.proto, 14); self.xmit_frame(&frame)
     }
+    /// Linux `ndo_start_xmit` receives an AF_PACKET frame with its Ethernet
+    /// header already built; do not feed that L2 frame back through L3 route
+    /// and neighbour resolution.
+    fn xmit_raw(&self, frame: &[u8]) -> net::NetResult<()> { self.xmit_frame(frame) }
 }
 
 fn decode_bars(bdf: pci::Bdf) -> [pci::Bar; 6] {
