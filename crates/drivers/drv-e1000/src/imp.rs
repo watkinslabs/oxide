@@ -367,14 +367,11 @@ fn poll_rx() {
     }
 }
 
-const INTEL_VENDOR: u16 = 0x8086;
-const ETHERNET_CLASS: u32 = 0x02_00_00;
 fn supported(dev: &drv::Device) -> bool {
-    dev.bus == "pci" && dev.class == ETHERNET_CLASS && dev.vendor_id == INTEL_VENDOR
-        && regs::LEGACY_PCI_IDS.contains(&dev.device_id)
+    dev.bus == "pci" && regs::legacy_pci_match(dev.vendor_id, dev.class, dev.device_id)
 }
 pub(crate) fn supports_e1000e_82574(dev: &drv::Device) -> bool {
-    dev.bus == "pci" && dev.class == ETHERNET_CLASS && dev.vendor_id == INTEL_VENDOR
+    dev.bus == "pci" && dev.class == regs::ETHERNET_CLASS && dev.vendor_id == regs::INTEL_VENDOR
         && regs::E1000E_82574_PCI_IDS.contains(&dev.device_id)
 }
 

@@ -1,17 +1,37 @@
 // Register and descriptor ABI for the Intel legacy e1000 DMA register file.
 // All ring decisions stay host-testable in this module.
 
-/// PCI IDs owned by Linux's legacy `e1000` driver, not `e1000e` or `igb`.
+/// PCI IDs owned by the legacy `e1000` controller path, not `e1000e` or `igb`.
 ///
 /// The reset sequence in this crate is 82540-class-specific. PCH integrated
 /// NICs and 82580-class adapters have superficially similar descriptor
 /// registers but require Linux's separate `e1000e` and `igb` hardware paths,
 /// so they must remain unbound until those drivers exist. # C: O(1)
+pub const INTEL_VENDOR: u16 = 0x8086;
+pub const ETHERNET_CLASS: u32 = 0x02_00_00;
+pub const E1000_82540EP_LP: u16 = 0x101e;
 pub const LEGACY_PCI_IDS: &[u16] = &[
     0x100e, 0x100f, 0x1015, 0x1016, 0x1017, 0x1018, 0x1075, 0x1076,
-    0x1077, 0x1078, 0x1079, 0x107a, 0x10b5,
+    0x1077, 0x1078, 0x1079, 0x107a, E1000_82540EP_LP, 0x10b5,
 ];
 pub const E1000E_82574_PCI_IDS: &[u16] = &[0x10d3, 0x10f6];
+
+/// Match an Intel Ethernet function owned by the 82540 reset and DMA path. # C: O(n)
+#[inline]
+pub const fn legacy_pci_match(vendor_id: u16, class: u32, device_id: u16) -> bool {
+    vendor_id == INTEL_VENDOR && class == ETHERNET_CLASS && legacy_pci_id_supported(device_id)
+}
+
+/// Admit a PCI ID only when the legacy reset path programs its controller family. # C: O(n)
+#[inline]
+pub const fn legacy_pci_id_supported(device_id: u16) -> bool {
+    let mut index = 0;
+    while index < LEGACY_PCI_IDS.len() {
+        if LEGACY_PCI_IDS[index] == device_id { return true; }
+        index += 1;
+    }
+    false
+}
 
 /// Return the DMA aperture for one controller profile. # C: O(1)
 #[inline]
@@ -152,5 +172,13 @@ mod tests {
         assert_eq!(dma_mask(false), u32::MAX as u64);
         assert_eq!(dma_mask(true), u64::MAX);
         assert_eq!(E1000E_82574_RESET_NS, 25_000_000);
+    }
+    #[test]
+    fn e82540ep_lp_probe_match_requires_the_legacy_intel_ethernet_tuple() {
+        assert!(legacy_pci_id_supported(E1000_82540EP_LP));
+        assert!(legacy_pci_match(INTEL_VENDOR, ETHERNET_CLASS, E1000_82540EP_LP));
+        assert!(!legacy_pci_match(0x1234, ETHERNET_CLASS, E1000_82540EP_LP));
+        assert!(!legacy_pci_match(INTEL_VENDOR, 0x01_08_02, E1000_82540EP_LP));
+        assert!(!legacy_pci_match(INTEL_VENDOR, ETHERNET_CLASS, 0x1539));
     }
 }
