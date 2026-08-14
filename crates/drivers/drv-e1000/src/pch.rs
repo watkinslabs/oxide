@@ -55,6 +55,7 @@ const PCH_82579_MSE_LINK_DOWN: u16 = 0x2411;
 const PCH_I217_TIMEOUTS: u32 = (770 << 5) | 21;
 const PCH_I217_TIMEOUTS_K1_MASK: u16 = 0x0fc0;
 const PCH_I217_TIMEOUTS_K1_DEFAULT: u16 = 0x0f00;
+const PCH_BM_PORT_CTRL_PAUSE: u32 = (769 << 5) | 27;
 
 static PCH_SHARED: Spinlock<(), DriverLockClass> = Spinlock::new(());
 
@@ -182,7 +183,9 @@ fn configure_link(c: &Controller, phy: HvPhy) -> bool {
         c.write(regs::FEXTNVM12, (pwr & !regs::FEXTNVM12_PHYPD_CTRL) | regs::FEXTNVM12_PHYPD_CTRL_P1);
     }
     c.write(regs::FCT, regs::FLOW_CONTROL_TYPE); c.write(regs::FCAH, regs::FLOW_CONTROL_ADDRESS_HIGH); c.write(regs::FCAL, regs::FLOW_CONTROL_ADDRESS_LOW);
-    c.write(regs::FCTTV, regs::FLOW_CONTROL_PAUSE_TIME); c.write(regs::FCRTL, 0); c.write(regs::FCRTH, 0);
+    c.write(regs::FCTTV, regs::FLOW_CONTROL_PAUSE_TIME); c.write(regs::FCRTV_PCH, regs::FLOW_CONTROL_REFRESH_TIME);
+    if !hv_write(c, phy, PCH_BM_PORT_CTRL_PAUSE, regs::FLOW_CONTROL_PAUSE_TIME as u16) { return false; }
+    c.write(regs::FCRTL, 0); c.write(regs::FCRTH, 0);
     c.write(regs::CTRL, (c.read(regs::CTRL) & !(regs::CTRL_RFCE | regs::CTRL_TFCE)) | regs::CTRL_RFCE);
     true
 }
