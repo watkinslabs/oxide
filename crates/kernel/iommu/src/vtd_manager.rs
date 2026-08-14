@@ -31,6 +31,8 @@ static EIM_CAPABLE: AtomicBool = AtomicBool::new(false);
 /// has a source scope in an IR-capable unit.
 static INTERRUPT_REMAP_ENABLED: AtomicBool = AtomicBool::new(false);
 static FAULT_RECORDS: AtomicU64 = AtomicU64::new(0);
+static FAULT_REPORTS: AtomicU64 = AtomicU64::new(0);
+const MAX_FAULT_REPORTS: u64 = 16;
 
 #[cfg(feature = "debug-boot")]
 fn trace_failure(stage: &'static [u8]) {
@@ -83,6 +85,7 @@ pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf],
     regions: &[pmm::UsableRegion]) -> VtdActivation {
     EIM_CAPABLE.store(false, Ordering::Release);
     INTERRUPT_REMAP_ENABLED.store(false, Ordering::Release);
+    FAULT_REPORTS.store(0, Ordering::Release);
     let units = published_vtd_units();
     if units.is_empty() { return VtdActivation::Bypass; }
     if units.iter().any(|unit| unit.kind != IommuKind::IntelVtd) { trace_failure(b"mixed unit"); return VtdActivation::Failed; }
@@ -209,8 +212,23 @@ pub fn poll_vtd_faults(visitor: &mut impl FnMut(crate::VtdFault)) -> bool {
 
 /// Drain VT-d primary faults from the architecture MSI handler. # C: O(units + fault records)
 pub fn handle_vtd_fault_interrupt() {
-    let mut count = |_| { FAULT_RECORDS.fetch_add(1, Ordering::Relaxed); };
-    let _ = poll_vtd_faults(&mut count);
+    let mut report = |fault: crate::VtdFault| {
+        FAULT_RECORDS.fetch_add(1, Ordering::Relaxed);
+        if FAULT_REPORTS.fetch_add(1, Ordering::Relaxed) >= MAX_FAULT_REPORTS { return; }
+        let requester = fault.requester();
+        klog::write_raw(b"[VT-D-FAULT] bdf=");
+        klog::write_hex_u64(u64::from(requester >> 8));
+        klog::write_raw(b":");
+        klog::write_hex_u64(u64::from((requester >> 3) & 0x1f));
+        klog::write_raw(b".");
+        klog::write_hex_u64(u64::from(requester & 7));
+        klog::write_raw(b" addr=");
+        klog::write_hex_u64(fault.address());
+        klog::write_raw(b" reason=");
+        klog::write_hex_u64(u64::from(fault.reason()));
+        klog::write_raw(if fault.is_read() { b" read\n" } else { b" write\n" });
+    };
+    let _ = poll_vtd_faults(&mut report);
 }
 
 /// Return the number of primary fault records consumed from live VT-d units. # C: O(1)
