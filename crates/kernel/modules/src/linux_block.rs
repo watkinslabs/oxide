@@ -6,6 +6,8 @@ mod core;
 mod misc;
 mod mq;
 mod types;
+#[cfg(test)]
+mod types_tests;
 
 /// Register Linux block KPI symbols.
 /// # C: O(1)
