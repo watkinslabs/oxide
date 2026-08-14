@@ -40,6 +40,7 @@ pub(crate) fn publish_report(device: &mut UsbDeviceState, report: &[u8]) {
 }
 
 pub(crate) fn remove_hid_input(device: &UsbDeviceState) {
+    if let Some(platform) = device.input_platform { let _ = input::disconnect_device(input::InputDeviceKey::platform(platform)); }
     if let Some(evdev) = device.evdev { let _ = input::unpublish_evdev(evdev); }
     if let Some(platform) = device.input_platform { let _ = input::remove_device(input::InputDeviceKey::platform(platform)); }
 }

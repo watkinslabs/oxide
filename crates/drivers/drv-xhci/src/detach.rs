@@ -1,0 +1,52 @@
+//! Process-context USB topology teardown.
+
+extern crate alloc;
+
+use alloc::{string::String, sync::Arc, vec::Vec};
+
+use crate::context::DeviceTopology;
+use crate::probe::{disable_slot, Controller, UsbDevice, XhciBh};
+
+/// Disconnect every device below one physical root port. # Ctx: process # Sleeps: yes
+pub(crate) fn root_port(controller: &Arc<Controller>, port: u8) -> bool {
+    detach(controller, |topology| topology.root_port == port)
+}
+
+/// Disconnect one hub-port child and every device below that child. # Ctx: process # Sleeps: yes
+pub(crate) fn branch(controller: &Arc<Controller>, topology: DeviceTopology) -> bool {
+    detach(controller, |candidate| topology.contains(candidate))
+}
+
+fn detach(controller: &Arc<Controller>, matches: impl Fn(DeviceTopology) -> bool) -> bool {
+    let mut devices: Vec<Arc<UsbDevice>> = controller.state.lock_bh::<XhciBh>().devices.iter()
+        .filter(|device| matches(device.state.lock_bh::<XhciBh>().device.topology()))
+        .cloned().collect();
+    devices.sort_unstable_by_key(|device| core::cmp::Reverse(device.state.lock_bh::<XhciBh>().device.topology().depth()));
+    for device in devices {
+        if !detach_one(controller, &device) { return false; }
+    }
+    true
+}
+
+fn detach_one(controller: &Arc<Controller>, device: &Arc<UsbDevice>) -> bool {
+    let name = device.state.lock_bh::<XhciBh>().storage_name.as_ref().map(|name| String::from(name.as_str()));
+    let detach = match name.as_deref() {
+        Some(name) => match block::registry::begin_forced_detach(name) {
+            Some(detach) => Some(detach),
+            None => return false,
+        },
+        None => None,
+    };
+    if let Some(detach) = detach {
+        device.state.lock_bh::<XhciBh>().storage_name.take();
+        detach.wait_for_drain();
+    }
+    crate::probe_input::remove_hid_input(&device.state.lock_bh::<XhciBh>());
+    let mut state = controller.state.lock_bh::<XhciBh>();
+    let Some(index) = state.devices.iter().position(|present| Arc::ptr_eq(present, device)) else { return true; };
+    let device = state.devices.remove(index);
+    let slot = device.state.lock_bh::<XhciBh>().slot;
+    let crate::probe::ControllerState { mmio, command, irq, .. } = &mut *state;
+    disable_slot(mmio, command, *irq, slot);
+    true
+}

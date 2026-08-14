@@ -8,7 +8,7 @@ use alloc::{boxed::Box, sync::Arc};
 use alloc::vec::Vec;
 
 use crate::irq::PORT_CHANGE_WORDS;
-use crate::probe::{add_usb_device, address_port_device, disable_slot, Controller, UsbDevice, XhciBh, CONTROLLERS};
+use crate::probe::{add_usb_device, address_port_device, Controller, UsbDevice, XhciBh, CONTROLLERS};
 
 static ROOT_WORK_QUEUED: AtomicBool = AtomicBool::new(false);
 static ROOT_WORK_RESCAN: AtomicBool = AtomicBool::new(false);
@@ -66,27 +66,14 @@ fn root_hub_work(_arg: usize) {
 fn service_port_change(controller: &Arc<Controller>, port: u8) -> Option<Arc<UsbDevice>> {
     #[cfg(feature = "debug-boot")]
     klog::write_raw(b"[INFO]  xhci: root port\n");
-    let connected = controller.state.lock_bh::<XhciBh>().mmio.port_status(port)
-        .is_some_and(|status| status & crate::ports::PORT_CONNECT != 0);
+    let status = controller.state.lock_bh::<XhciBh>().mmio.port_status(port)?;
+    let connected = status & crate::ports::PORT_CONNECT != 0;
     #[cfg(feature = "debug-boot")]
     klog::write_raw(b"[INFO]  xhci: root status\n");
-    if !connected {
-        let mut state = controller.state.lock_bh::<XhciBh>();
-        if let Some(index) = state.devices.iter().position(|device| device.state.lock_bh::<XhciBh>().device.port() == port) {
-                let device = Arc::clone(&state.devices[index]);
-                let storage_name = device.state.lock_bh::<XhciBh>().storage_name.take();
-                if let Some(name) = storage_name {
-                    if !block::unregister(name.as_str()) { device.state.lock_bh::<XhciBh>().storage_name = Some(name); return None; }
-                }
-                let device = state.devices.remove(index);
-                let device_state = device.state.lock_bh::<XhciBh>();
-                let irq = state.irq;
-                let crate::probe::ControllerState { mmio, command, .. } = &mut *state;
-                disable_slot(mmio, command, irq, device_state.slot);
-                crate::probe_input::remove_hid_input(&device_state);
-        }
-        return None;
-        }
+    if !connected || status & crate::ports::PORT_CONNECT_CHANGE != 0 {
+        if !crate::detach::root_port(controller, port) { return None; }
+        if !connected { return None; }
+    }
     {
         let state = controller.state.lock_bh::<XhciBh>();
         if state.devices.iter().any(|device| device.state.lock_bh::<XhciBh>().device.port() == port) { return None; }

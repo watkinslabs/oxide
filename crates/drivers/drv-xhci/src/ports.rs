@@ -6,6 +6,8 @@ pub const PORTSC_BASE: u64 = 0x400;
 pub const PORT_STRIDE: u64 = 0x10;
 /// PORTSC connection status. # C: O(1)
 pub const PORT_CONNECT: u32 = 1;
+/// PORTSC physical connection-state change. # C: O(1)
+pub const PORT_CONNECT_CHANGE: u32 = 1 << 17;
 /// PORTSC enabled status. # C: O(1)
 pub const PORT_ENABLED: u32 = 1 << 1;
 /// PORTSC initiate USB 2.0 reset bit. # C: O(1)
@@ -86,8 +88,8 @@ mod tests {
 
     #[test]
     fn port_ack_only_contains_w1c_change_bits() {
-        let portsc = PORT_CONNECT | PORT_ENABLED | PORT_SPEED_MASK | (1 << 17) | (1 << 21);
-        assert_eq!(acknowledge_changes(portsc), (1 << 17) | (1 << 21));
+        let portsc = PORT_CONNECT | PORT_ENABLED | PORT_SPEED_MASK | PORT_CONNECT_CHANGE | PORT_RESET_CHANGE;
+        assert_eq!(acknowledge_changes(portsc), PORT_CONNECT_CHANGE | PORT_RESET_CHANGE);
         assert_eq!(portsc_offset(0x40, 1, 8), Some(0x440));
         assert_eq!(portsc_offset(0x40, 8, 8), Some(0x4b0));
         assert_eq!(portsc_offset(0x40, 0, 8), None);
