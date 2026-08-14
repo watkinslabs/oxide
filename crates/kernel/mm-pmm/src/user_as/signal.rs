@@ -41,9 +41,11 @@ pub fn force_user_fault_x86(vec: u64, err: u64, pc: u64, cr2: u64,
     let (arch_cls, addr) = if vec == fc::TRAP_PF { (fc::page_fault(err), cr2) }
                            else { (fc::trap(vec), fc::trap_addr(vec, pc)) };
     let Some(cls) = resolver_signal(failure, arch_cls) else { return true; };
-    let fp = hal_x86_64::current_fault_frame();
-    // SAFETY: stub-built PtRegs on the kernel stack; read-only, and the stub does not pop it until the Rust dispatcher returns, so the slot is live here.
-    let sp = if fp.is_null() { 0 } else { unsafe { (*fp).rsp } };
+    // The entry publisher snapshots RSP with the live frame. Never
+    // dereference the CPU-global frame pointer here: a fault resolver may
+    // switch tasks before signal reporting, and a stale pointer can name a
+    // released task stack.
+    let sp = hal_x86_64::current_fault_rsp();
     sched::signal_report::report_user_fault(signum_from(cls.signo).as_u8() as u32, addr, pc, sp, err, vma_at(pc));
     raise(cls, addr);
     true
