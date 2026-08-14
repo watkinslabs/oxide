@@ -140,8 +140,10 @@ pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf],
         if !entry.regs.enable_translation() { trace_failure(b"translation enable"); return activation_failed(&mut manager); }
         if let Some(ir) = entry.ir.as_ref() {
             if !entry.regs.set_interrupt_remap_table(ir.irta()) { trace_failure(b"interrupt table install"); return activation_failed(&mut manager); }
-            let Some(queue) = entry.qi.as_mut() else { trace_failure(b"interrupt cache queue"); return activation_failed(&mut manager); };
-            if !entry.regs.invalidate_interrupt_entries(queue) { trace_failure(b"interrupt cache invalidate"); return activation_failed(&mut manager); }
+            if !entry.regs.supports_enhanced_irta_pointer() {
+                let Some(queue) = entry.qi.as_mut() else { trace_failure(b"interrupt cache queue"); return activation_failed(&mut manager); };
+                if !entry.regs.invalidate_interrupt_entries(queue) { trace_failure(b"interrupt cache invalidate"); return activation_failed(&mut manager); }
+            }
         }
     }
     trace_stage(b"ready");

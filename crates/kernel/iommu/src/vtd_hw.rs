@@ -43,6 +43,7 @@ const ECAP_INTERRUPT_REMAP: u64 = 1 << 3;
 const ECAP_EXTENDED_INTERRUPT_MODE: u64 = 1 << 4;
 const CAP_WRITE_DRAIN: u64 = 1 << 54;
 const CAP_READ_DRAIN: u64 = 1 << 55;
+const CAP_ENHANCED_IRTA_POINTER: u64 = 1 << 63;
 const FECTL_INTERRUPT_MASK: u32 = 1 << 31;
 const FSTS_PRIMARY_OVERFLOW: u32 = 1 << 0;
 const FSTS_PRIMARY_PENDING: u32 = 1 << 1;
@@ -259,6 +260,8 @@ impl VtdRegisters {
     }
     /// Return whether this unit supports interrupt remapping. # C: O(1)
     pub fn supports_interrupt_remapping(&self) -> bool { self.read64(ECAP).is_some_and(|ecap| ecap & ECAP_INTERRUPT_REMAP != 0) }
+    /// Return whether the unit atomically switches IRTA without a global IEC flush. # C: O(1)
+    pub fn supports_enhanced_irta_pointer(&self) -> bool { self.read64(CAP).is_some_and(|cap| cap & CAP_ENHANCED_IRTA_POINTER != 0) }
     /// Return whether this unit supports x2APIC extended interrupt mode. # C: O(1)
     pub fn supports_extended_interrupt_mode(&self) -> bool { self.read64(ECAP).is_some_and(|ecap| ecap & ECAP_EXTENDED_INTERRUPT_MODE != 0) }
     /// Program IQA and enable queued invalidation. # C: O(poll limit)
