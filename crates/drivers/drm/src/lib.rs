@@ -10,7 +10,7 @@ mod ids;
 mod registry;
 
 pub use core_api::{
-    mode_from_rect, ConnectorInfo, CrtcInfo, DrmDriver, EncoderInfo, Error, KResult, PlaneInfo,
+    fixed_mode_dimensions_valid, mode_from_rect, ConnectorInfo, CrtcInfo, DrmDriver, EncoderInfo, Error, KResult, PlaneInfo,
     VirtgpuCaps,
 };
 pub use ids::{

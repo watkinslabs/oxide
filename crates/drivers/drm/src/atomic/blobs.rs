@@ -89,6 +89,6 @@ pub(crate) fn insert_mode_for_tests(mode: crate::DrmModeModeinfo) -> u32 {
     // SAFETY: `mode` is an initialized repr(C) value; copying its exact byte
     // extent into owned storage preserves the UAPI payload for this test blob.
     let bytes = unsafe { core::slice::from_raw_parts(&mode as *const _ as *const u8, len) };
-    BLOBS.lock().push(Blob { id, bytes.to_vec() });
+    BLOBS.lock().push(Blob { id, bytes: bytes.to_vec() });
     id
 }
