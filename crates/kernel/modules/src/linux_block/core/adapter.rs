@@ -31,7 +31,7 @@ impl BlockDevice for LinuxBlockAdapter {
         if q.is_null() { return DEFAULT_LOGICAL_BLOCK_SIZE; }
         // SAFETY: q is the non-null queue the live gendisk above points at; logical_block_size is a u32
         // field blk_alloc_queue initialises, and the zero case falls back to the default below.
-        let bs = unsafe { (*q).logical_block_size };
+        let bs = unsafe { (*q).limits.logical_block_size };
         if bs == 0 { DEFAULT_LOGICAL_BLOCK_SIZE } else { bs }
     }
     fn capacity_blocks(&self) -> u64 {
@@ -53,7 +53,7 @@ impl BlockDevice for LinuxBlockAdapter {
         if q.is_null() { return Err(BlockError::Enxio); }
         // SAFETY: q is the non-null queue of the live gendisk; make_request_fn is an Option<fn> field
         // that blk_alloc_queue initialises to None and only blk_queue_make_request overwrites.
-        let make = unsafe { (*q).make_request_fn };
+        let make = unsafe { queue_private(q) }.and_then(|p| p.make_request_fn);
         let make = match make { Some(f) => f, None => return Err(BlockError::Eopnotsupp) };
         let sectors = blocks_to_sectors(req.start_block, self.block_size());
         let op = match req.op {

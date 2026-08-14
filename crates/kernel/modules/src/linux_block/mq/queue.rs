@@ -226,7 +226,7 @@ unsafe fn apply_limits(q: *mut LinuxRequestQueue, lim: *const LinuxQueueLimits) 
     // fields. The zero substitution keeps logical_block_size non-zero, which sectors_to_blocks divides by.
     unsafe {
         (*q).limits = limits;
-        (*q).logical_block_size = if limits.logical_block_size == 0 { DEFAULT_LOGICAL_BLOCK_SIZE } else { limits.logical_block_size };
+        (*q).limits.logical_block_size = if limits.logical_block_size == 0 { DEFAULT_LOGICAL_BLOCK_SIZE } else { limits.logical_block_size };
     }
 }
 
@@ -256,7 +256,7 @@ pub(in crate::linux_block) unsafe fn queue_begin_use(q: *mut LinuxRequestQueue) 
     let Some(lifecycle) = (unsafe { lifecycle(q) }) else { return false; };
     let _gate = lifecycle.gate.lock();
     // SAFETY: lifecycle belongs to q and its gate serializes freeze_depth with this admission decision.
-    if unsafe { (*q).freeze_depth } != 0 { return false; }
+    if unsafe { (*q).mq_freeze_depth } != 0 { return false; }
     lifecycle.users.fetch_add(1, ::core::sync::atomic::Ordering::AcqRel);
     true
 }
@@ -315,7 +315,7 @@ pub(super) unsafe fn queue_begin_dispatch(q: *mut LinuxRequestQueue) -> bool {
     let Some(lifecycle) = (unsafe { lifecycle(q) }) else { return false; };
     let _gate = lifecycle.gate.lock();
     // SAFETY: queue lifecycle gate serializes both depth counters with dispatch admission.
-    if unsafe { (*q).freeze_depth != 0 || (*q).quiesce_depth != 0 } { return false; }
+    if unsafe { (*q).mq_freeze_depth != 0 || (*q).quiesce_depth != 0 } { return false; }
     lifecycle.users.fetch_add(1, ::core::sync::atomic::Ordering::AcqRel);
     // SAFETY: q remains retained by the added user reference while the dispatch counter is published.
     let set = unsafe { (*q).tag_set };
@@ -403,7 +403,7 @@ unsafe fn bump_depth(q: *mut LinuxRequestQueue, freeze: bool) {
     // SAFETY: q/lifecycle are live and this gate is the sole synchronization for the externally visible
     // depth counters, so the first freeze becomes visible before queue_begin_use can admit another caller.
     unsafe {
-        if freeze { (*q).freeze_depth = (*q).freeze_depth.saturating_add(1); }
+        if freeze { (*q).mq_freeze_depth = (*q).mq_freeze_depth.saturating_add(1); }
         else { (*q).quiesce_depth = (*q).quiesce_depth.saturating_add(1); }
     }
 }
@@ -414,7 +414,7 @@ unsafe fn drop_depth(q: *mut LinuxRequestQueue, freeze: bool) {
     // SAFETY: q/lifecycle are live and this gate serializes the depth decrement with admission. Releasing
     // the last freeze permits new users only after the counter has become visibly zero.
     unsafe {
-        if freeze { (*q).freeze_depth = (*q).freeze_depth.saturating_sub(1); }
+        if freeze { (*q).mq_freeze_depth = (*q).mq_freeze_depth.saturating_sub(1); }
         else { (*q).quiesce_depth = (*q).quiesce_depth.saturating_sub(1); }
     }
     if freeze {
@@ -467,8 +467,7 @@ unsafe fn lifecycle(q: *mut LinuxRequestQueue) -> Option<&'static LinuxQueueLife
     if q.is_null() { return None; }
     // SAFETY: q is non-null and comes from blk_alloc_queue; its lifecycle allocation is constructed before q
     // escapes and destroyed only after freeze_and_wait has observed zero users during queue cleanup.
-    let lifecycle = unsafe { (*q).lifecycle };
-    if lifecycle.is_null() { None } else { Some(unsafe { &*lifecycle }) }
+    unsafe { queue_private(q) }.map(|p| &p.lifecycle)
 }
 
 unsafe fn tagset_lifecycle(set: *mut LinuxBlkMqTagSet) -> Option<&'static LinuxTagSetLifecycle> {

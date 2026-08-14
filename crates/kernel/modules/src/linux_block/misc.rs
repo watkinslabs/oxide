@@ -54,7 +54,7 @@ unsafe extern "C" fn blk_mq_tagset_busy_iter(_set: *mut LinuxBlkMqTagSet, _f: Op
 unsafe extern "C" fn blk_mq_unfreeze_queue_non_owner(q: *mut LinuxRequestQueue) {
     if q.is_null() { return; }
     // SAFETY: q points to a live request queue supplied by the caller.
-    unsafe { (*q).freeze_depth = (*q).freeze_depth.saturating_sub(1); }
+    unsafe { (*q).mq_freeze_depth = (*q).mq_freeze_depth.saturating_sub(1); }
 }
 
 unsafe extern "C" fn blkdev_compat_ptr_ioctl(bdev: *mut LinuxBlockDevice, mode: u32, cmd: u32, arg: usize) -> i32 {
