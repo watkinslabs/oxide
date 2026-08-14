@@ -35,6 +35,16 @@ const PCH_EXTCNF_SWFLAG: u32 = 1 << 5;
 const PCH_NVM_SIGNATURE_WORD: u32 = 0x13;
 const PCH_NVM_SIGNATURE_MASK: u16 = 0xc000;
 const PCH_NVM_SIGNATURE_VALUE: u16 = 0x8000;
+const PCH_KMRN_TIMEOUTS: u32 = 4;
+const PCH_KMRN_INBAND: u32 = 9;
+const PCH_RAR_ENTRIES: usize = 7;
+const PCH_MTA_ENTRIES: usize = 32;
+const PCH_82577_CONFIG: u32 = 22;
+const PCH_82577_CTRL2: u32 = 18;
+const PCH_82577_ASSERT_CRS: u16 = 1 << 15;
+const PCH_82577_DOWNSHIFT: u16 = 3 << 10;
+const PCH_82577_MDIX: u16 = 0x0600;
+const PCH_82577_AUTO_MDIX: u16 = 0x0400;
 
 static PCH_SHARED: Spinlock<(), DriverLockClass> = Spinlock::new(());
 
@@ -116,6 +126,67 @@ fn hv_access(c: &Controller, phy: HvPhy, offset: u32, write: Option<u16>) -> Opt
 
 pub(crate) fn hv_read(c: &Controller, phy: HvPhy, offset: u32) -> Option<u16> { with_shared(c, |c| hv_access(c, phy, offset, None)) }
 pub(crate) fn hv_write(c: &Controller, phy: HvPhy, offset: u32, value: u16) -> bool { with_shared(c, |c| hv_access(c, phy, offset, Some(value))).is_some() }
+
+fn phy_id(c: &Controller) -> Option<HvPhy> {
+    with_shared(c, |c| {
+        let high = mdic(c, regs::PCH_PHY_DEBUG_ADDRESS, regs::BM_PHY_ID_HIGH, None)?;
+        let low = mdic(c, regs::PCH_PHY_DEBUG_ADDRESS, regs::BM_PHY_ID_LOW, None)?;
+        HvPhy::from_id(((high as u32) << 16) | low as u32)
+    })
+}
+
+fn kmrn_read(c: &Controller, reg: u32) -> u16 {
+    c.write(regs::KMRNCTRLSTA, (reg << regs::KMRN_OFFSET_SHIFT) | regs::KMRN_READ);
+    let _ = c.read(regs::KMRNCTRLSTA); wait_ns(2_000);
+    c.read(regs::KMRNCTRLSTA) as u16
+}
+
+fn kmrn_write(c: &Controller, reg: u32, value: u16) {
+    c.write(regs::KMRNCTRLSTA, (reg << regs::KMRN_OFFSET_SHIFT) | value as u32);
+    let _ = c.read(regs::KMRNCTRLSTA); wait_ns(2_000);
+}
+
+fn configure_link(c: &Controller, phy: HvPhy) -> bool {
+    let ctrl = c.read(regs::CTRL);
+    c.write(regs::CTRL, (ctrl | regs::CTRL_SLU) & !(regs::CTRL_FRCSPD | regs::CTRL_FRCDPX));
+    kmrn_write(c, PCH_KMRN_TIMEOUTS, u16::MAX);
+    kmrn_write(c, PCH_KMRN_INBAND, kmrn_read(c, PCH_KMRN_INBAND) | 0x003f);
+    if !matches!(phy, HvPhy::I82578) {
+        let Some(config) = hv_read(c, phy, PCH_82577_CONFIG) else { return false; };
+        if !hv_write(c, phy, PCH_82577_CONFIG, config | PCH_82577_ASSERT_CRS | PCH_82577_DOWNSHIFT) { return false; }
+        let Some(ctrl2) = hv_read(c, phy, PCH_82577_CTRL2) else { return false; };
+        if !hv_write(c, phy, PCH_82577_CTRL2, (ctrl2 & !PCH_82577_MDIX) | PCH_82577_AUTO_MDIX) { return false; }
+    }
+    let Some(advertisement) = hv_read(c, phy, regs::MII_ADVERTISE as u32) else { return false; };
+    let advertisement = (advertisement & !(regs::MII_ADVERTISE_SPEEDS | regs::MII_ADVERTISE_PAUSE | regs::MII_ADVERTISE_ASYM_PAUSE))
+        | regs::MII_ADVERTISE_SPEEDS | regs::MII_ADVERTISE_PAUSE | regs::MII_ADVERTISE_ASYM_PAUSE;
+    if !hv_write(c, phy, regs::MII_ADVERTISE as u32, advertisement) { return false; }
+    let Some(gigabit) = hv_read(c, phy, regs::MII_CTRL1000 as u32) else { return false; };
+    if !hv_write(c, phy, regs::MII_CTRL1000 as u32, (gigabit & !regs::MII_CTRL1000_HALF) | regs::MII_CTRL1000_FULL) { return false; }
+    let Some(control) = hv_read(c, phy, regs::MII_BMCR as u32) else { return false; };
+    if !hv_write(c, phy, regs::MII_BMCR as u32, control | regs::MII_BMCR_AN_ENABLE | regs::MII_BMCR_AN_RESTART) { return false; }
+    c.write(regs::FCT, regs::FLOW_CONTROL_TYPE); c.write(regs::FCAH, regs::FLOW_CONTROL_ADDRESS_HIGH); c.write(regs::FCAL, regs::FLOW_CONTROL_ADDRESS_LOW);
+    c.write(regs::FCTTV, regs::FLOW_CONTROL_PAUSE_TIME); c.write(regs::FCRTL, 0); c.write(regs::FCRTH, 0);
+    c.write(regs::CTRL, (c.read(regs::CTRL) & !(regs::CTRL_RFCE | regs::CTRL_TFCE)) | regs::CTRL_RFCE);
+    true
+}
+
+pub(crate) fn initialize(c: &Controller) -> bool {
+    let Some(phy) = phy_id(c) else { return false; };
+    for index in 1..PCH_RAR_ENTRIES {
+        let Some((low, high)) = regs::rar_offset(index) else { return false; };
+        c.write(low, 0); c.write(high, 0);
+    }
+    for index in 0..PCH_MTA_ENTRIES {
+        let Some(offset) = regs::table_offset(regs::MTA, index) else { return false; };
+        c.write(offset, 0);
+    }
+    for offset in [regs::TXDCTL0, regs::TXDCTL1] {
+        let value = c.read(offset);
+        c.write(offset, (value & !(regs::TXDCTL_WTHRESH | regs::TXDCTL_PTHRESH)) | regs::TXDCTL_WRITEBACK | regs::TXDCTL_MAX_PREFETCH);
+    }
+    configure_link(c, phy)
+}
 
 pub(crate) fn reset(c: &Controller) -> bool {
     c.write(regs::IMC, u32::MAX);

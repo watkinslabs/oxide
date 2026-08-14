@@ -250,6 +250,7 @@ fn configure_rings(mmio: mmio_map::Mapping, io_base: Option<u16>, bdf: pci::Bdf,
     if (profile.pch && !crate::pch::reset(&c)) || (!profile.pch && !crate::reset::apply(&c, io_base, profile)) { c.free(); return None; }
     if profile.e1000e_nvm_phy && !crate::e1000e_init::prepare(&c) { c.free(); return None; }
     if profile.pch && !flash.as_ref().is_some_and(|flash| flash.validate_nvm()) { c.free(); return None; }
+    if profile.pch && !crate::pch::initialize(&c) { c.free(); return None; }
     trace("[INFO]  e1000: reset done\n");
     let mac = if profile.pch { flash.as_ref().and_then(|flash| flash.read_mac()) } else { regs::mac_from_rar(c.read(regs::RAL0), c.read(regs::RAH0)).map(net::MacAddr) };
     let mac = match mac { Some(mac) => mac, None => { trace("[INFO]  e1000: no mac\n"); c.free(); return None; } };
