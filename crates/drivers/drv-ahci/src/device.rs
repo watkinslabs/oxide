@@ -120,6 +120,14 @@ impl AhciBlk {
         }
     }
 
+    fn recover_failed_command(&self) -> bool {
+        if self.unavailable() { return false; }
+        self.irq.prepare_command();
+        let mut ctrl = self.ctrl.lock();
+        if self.unavailable() { return false; }
+        ctrl.recover_runtime(self.capacity, self.blk_size)
+    }
+
     fn rw_chunk(
         &self,
         req: &mut BlockRequest,
@@ -184,7 +192,9 @@ impl AhciBlk {
                 }
             }
         }
-        if started && !ok { self.poisoned.store(true, Ordering::Release); }
+        if started && !ok && !self.recover_failed_command() {
+            self.poisoned.store(true, Ordering::Release);
+        }
         self.release_turn();
         ok
     }
@@ -210,7 +220,9 @@ impl AhciBlk {
             let ctrl = self.ctrl.lock();
             ok = !self.unavailable() && ctrl.command_finished_ok();
         }
-        if started && !ok { self.poisoned.store(true, Ordering::Release); }
+        if started && !ok && !self.recover_failed_command() {
+            self.poisoned.store(true, Ordering::Release);
+        }
         self.release_turn();
         ok
     }

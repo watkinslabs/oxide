@@ -11,10 +11,33 @@ pub(crate) enum ControllerCleanupStep {
     ReleaseController,
 }
 
+/// Ordered runtime recovery operations for one failed command.  The final
+/// thaw is legal only after every preceding hardware and media check passed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RuntimeRecoveryStep {
+    FreezePortIrq,
+    StopEngine,
+    Comreset,
+    ClearError,
+    StartEngine,
+    Reidentify,
+    ThawPortIrq,
+}
+
 const CONTROLLER_CLEANUP_STEPS: [ControllerCleanupStep; 3] = [
     ControllerCleanupStep::MaskAndFreeIrq,
     ControllerCleanupStep::SynchronizeIrq,
     ControllerCleanupStep::ReleaseController,
+];
+
+const RUNTIME_RECOVERY_STEPS: [RuntimeRecoveryStep; 7] = [
+    RuntimeRecoveryStep::FreezePortIrq,
+    RuntimeRecoveryStep::StopEngine,
+    RuntimeRecoveryStep::Comreset,
+    RuntimeRecoveryStep::ClearError,
+    RuntimeRecoveryStep::StartEngine,
+    RuntimeRecoveryStep::Reidentify,
+    RuntimeRecoveryStep::ThawPortIrq,
 ];
 
 const REMOVE_CLEANUP_STEPS: [CleanupStep; 2] = [
@@ -29,6 +52,11 @@ const PROBE_FAILURE_CLEANUP_STEPS: [CleanupStep; 1] = [
 /// AHCI-owned teardown order before PCI command restoration. # C: O(1)
 pub(crate) fn controller_cleanup_steps() -> [ControllerCleanupStep; 3] {
     CONTROLLER_CLEANUP_STEPS
+}
+
+/// Runtime timeout/error recovery order for a single AHCI port. # C: O(1)
+pub(crate) fn runtime_recovery_steps() -> [RuntimeRecoveryStep; 7] {
+    RUNTIME_RECOVERY_STEPS
 }
 
 /// Run remove/shutdown cleanup in Linux teardown order: quiesce owned hardware
@@ -66,7 +94,7 @@ where
 mod tests {
     use super::{
         controller_cleanup_steps, run_probe_failure_cleanup, run_remove_cleanup,
-        ControllerCleanupStep,
+        runtime_recovery_steps, ControllerCleanupStep, RuntimeRecoveryStep,
     };
 
     #[test]
@@ -96,5 +124,21 @@ mod tests {
         let mut disabled = false;
         run_probe_failure_cleanup(|| { disabled = true; });
         assert!(disabled);
+    }
+
+    #[test]
+    fn runtime_recovery_thaws_only_after_reset_and_media_validation() {
+        assert_eq!(
+            runtime_recovery_steps(),
+            [
+                RuntimeRecoveryStep::FreezePortIrq,
+                RuntimeRecoveryStep::StopEngine,
+                RuntimeRecoveryStep::Comreset,
+                RuntimeRecoveryStep::ClearError,
+                RuntimeRecoveryStep::StartEngine,
+                RuntimeRecoveryStep::Reidentify,
+                RuntimeRecoveryStep::ThawPortIrq,
+            ],
+        );
     }
 }
