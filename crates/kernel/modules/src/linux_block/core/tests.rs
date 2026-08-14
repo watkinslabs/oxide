@@ -66,6 +66,7 @@ fn export_symbols_registers_block_surface() {
         "blk_queue_logical_block_size", "alloc_disk", "add_disk",
         "del_gendisk", "submit_bio", "bio_alloc", "bio_put",
         "blk_mq_alloc_tag_set", "blk_mq_init_queue", "set_capacity_and_notify", "set_disk_ro", "disk_uevent",
+        "blk_set_stacking_limits", "queue_limits_commit_update", "queue_limits_stack_bdev",
         "__SCK__tp_func_block_bio_complete", "__SCT__tp_func_block_bio_complete", "__tracepoint_block_bio_complete",
     ] {
         assert!(crate::symtab::is_exported(name));

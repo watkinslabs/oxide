@@ -38,7 +38,6 @@ pub(super) fn export_symbols() {
         ("blk_mq_map_hw_queues",          blk_mq_map_hw_queues          as *const () as usize),
         ("blk_queue_rq_timeout",          blk_queue_rq_timeout          as *const () as usize),
         ("blk_sync_queue",                blk_sync_queue                as *const () as usize),
-        ("blk_set_stacking_limits",       blk_set_stacking_limits       as *const () as usize),
     ] { export(name, addr, false); }
 }
 
@@ -203,13 +202,6 @@ unsafe extern "C" fn blk_queue_rq_timeout(q: *mut LinuxRequestQueue, timeout: u3
 }
 
 unsafe extern "C" fn blk_sync_queue(_q: *mut LinuxRequestQueue) {}
-
-unsafe extern "C" fn blk_set_stacking_limits(lim: *mut LinuxQueueLimits) {
-    if !lim.is_null() {
-        // SAFETY: lim points to caller-owned queue limits.
-        unsafe { *lim = core::default_limits(); }
-    }
-}
 
 // Precondition: q is null or a live LinuxRequestQueue; lim is null or points to a readable LinuxQueueLimits.
 unsafe fn apply_limits(q: *mut LinuxRequestQueue, lim: *const LinuxQueueLimits) {

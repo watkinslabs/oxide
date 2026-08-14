@@ -4,6 +4,7 @@
 
 mod bio;
 mod queue;
+mod queue_limits;
 mod request;
 mod status;
 #[cfg(test)]
@@ -15,6 +16,7 @@ pub(super) use queue::{attach_queue, detach_queue, freeze_and_wait, queue_begin_
 /// # C: O(1)
 pub(super) fn export_symbols() {
     queue::export_symbols();
+    queue_limits::export_symbols();
     request::export_symbols();
     bio::export_symbols();
     status::export_symbols();

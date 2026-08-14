@@ -144,7 +144,7 @@ pub(in crate::linux_block) fn default_limits() -> LinuxQueueLimits {
         atomic_write_unit_max: 0,
         max_open_zones: 0,
         max_active_zones: 0,
-        dma_alignment: u32::MAX,
+        dma_alignment: LINUX_SECTOR_SIZE - 1,
         dma_pad_mask: 0,
         integrity: LinuxBlkIntegrity { flags: 0, csum_type: 0, metadata_size: 0, pi_offset: 0,
             interval_exp: 0, tag_size: 0, pi_tuple_size: 0 },
