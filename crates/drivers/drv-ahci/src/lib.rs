@@ -208,6 +208,8 @@ impl drv::Driver for AhciDriver {
     }
 
     fn probe(&self, dev: &alloc::sync::Arc<drv::Device>) -> drv::KResult<()> {
+        #[cfg(feature = "debug-boot")]
+        klog::write_raw(b"[INFO]  ahci: pci probe\n");
         let bdf = pci::parse_bdf_addr(&dev.addr).ok_or(drv::Error::ProbeFailed)?;
         #[cfg(target_arch = "x86_64")]
         let command_orig = {
@@ -226,6 +228,8 @@ impl drv::Driver for AhciDriver {
             }
         };
         let Some(resource) = dev.resources.iter().find(|resource| resource.bar == 5 && resource.flags & drv::IORESOURCE_MEM != 0) else {
+            #[cfg(feature = "debug-boot")]
+            klog::write_raw(b"[WARN]  ahci: missing abar\n");
             restore_pci_bus_master(dev, command_orig);
             return Err(drv::Error::ProbeFailed);
         };
@@ -237,6 +241,8 @@ impl drv::Driver for AhciDriver {
         let mmio = unsafe { mmio_map::map_owned(abar_pa & BAR_PAGE_BASE_MASK, pages) };
         let device_key = imp::device_key_from_bdf(bdf);
         if imp::init(device_key, command_orig, mmio, abar_pa & BAR_PAGE_OFFSET_MASK) == 0 {
+            #[cfg(feature = "debug-boot")]
+            klog::write_raw(b"[WARN]  ahci: no published port\n");
             lifecycle::run_probe_failure_cleanup(|| restore_pci_bus_master(dev, command_orig));
             return Err(drv::Error::ProbeFailed);
         }
