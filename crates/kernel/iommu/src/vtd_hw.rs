@@ -79,6 +79,8 @@ impl VtdQiDesc {
         if status_pa & 3 != 0 || status_pa & !ROOT_TABLE_MASK != 0 { return None; }
         Some(Self { words: [(5u64) | (1 << 5) | ((QI_DONE as u64) << 32), status_pa] })
     }
+    /// Build a global interrupt-entry-cache invalidation descriptor. # C: O(1)
+    pub const fn global_interrupt_entry() -> Self { Self { words: [4, 0] } }
     /// Build a selective interrupt-entry-cache invalidation descriptor. # C: O(1)
     pub const fn interrupt_entry(index: u16, mask: u8) -> Self {
         Self { words: [4 | (1 << 4) | ((mask as u64 & 0x1f) << 27) | ((index as u64) << 32), 0] }
@@ -334,6 +336,17 @@ impl VtdRegisters {
         }
         false
     }
+    /// Invalidate the whole interrupt-entry cache after an IRTA replacement. # C: O(poll limit)
+    pub fn invalidate_interrupt_entries(&self, queue: &mut VtdQiQueue) -> bool {
+        if self.read32(GSTS).is_none_or(|status| status & GSTS_QUEUED_INVALIDATION_ENABLED == 0) { return false; }
+        let Some(tail) = queue.submit_sync(&[VtdQiDesc::global_interrupt_entry()]) else { return false; };
+        if !self.write64(IQT, tail) { return false; }
+        for _ in 0..POLL_LIMIT {
+            if queue.completed() { return true; }
+            core::hint::spin_loop();
+        }
+        false
+    }
     /// Enable DMA translation after a root/context tree has been acknowledged. # C: O(poll limit)
     pub fn enable_translation(&self) -> bool {
         if self.read32(GSTS).is_none_or(|status| status & GSTS_ROOT_TABLE_PRESENT == 0) { return false; }
@@ -462,6 +475,7 @@ mod fault_tests {
         assert_eq!(VtdQiDesc::global_iotlb(true, true).words(), [0xd2, 0]);
         assert_eq!(VtdQiDesc::global_iotlb(false, false).words(), [0x12, 0]);
         assert_eq!(VtdQiDesc::wait(0x1234_5000).unwrap().words(), [0x0000_0002_0000_0025, 0x1234_5000]);
+        assert_eq!(VtdQiDesc::global_interrupt_entry().words(), [4, 0]);
         assert_eq!(QI_DESC_COUNT, 256);
     }
 }
