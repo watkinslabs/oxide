@@ -206,6 +206,26 @@ fn reset_freeze_keeps_live_identity_and_drains_after_admission_stops() {
 }
 
 #[test]
+fn reset_freeze_serializes_competing_lifecycle_owners_without_evicting_users() {
+    const NAME: &str = "registry-reset-owner-contention";
+    let index = register(NAME, MemDisk::<TaskList>::new(512, 8));
+    let dev_t = dev_t_of(NAME, index).expect("published dev_t");
+    assert!(claim(NAME));
+
+    let reset = try_freeze_for_reset(NAME).expect("first reset owns queue freeze");
+    assert!(try_freeze_for_reset(NAME).is_none(), "a second reset cannot overlap the owner");
+    assert!(try_quiesce(NAME).is_none(), "destructive removal cannot overlap reset");
+    assert!(open_by_dev(dev_t), "a reset preserves live VFS users");
+    assert_eq!(holder_count(NAME), Some(1));
+    assert_eq!(opener_count(NAME), Some(1));
+
+    drop(reset);
+    assert!(close_by_dev(dev_t));
+    assert!(release(NAME));
+    assert!(unregister(NAME));
+}
+
+#[test]
 fn registry_splits_discard_at_canonical_queue_limit() {
     const NAME: &str = "registry-discard-limit";
     const REQUEST_BLOCKS: u32 = 5;

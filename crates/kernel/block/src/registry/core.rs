@@ -6,19 +6,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
 use sync::{Spinlock, Devices as DevicesClass};
-
-// The running kernel uses the scheduler's sleepable mutex for lifecycle work.
-// Host dependency builds have no runqueue, so retain a same-shaped local guard
-// there; it exists only to keep model tests from manufacturing a scheduler.
-#[cfg(any(target_os = "oxide-kernel", feature = "hosted"))]
 use sched::live::Mutex as LifecycleMutex;
-#[cfg(not(any(target_os = "oxide-kernel", feature = "hosted")))]
-pub(super) struct LifecycleMutex<T> { inner: Spinlock<T, DevicesClass> }
-#[cfg(not(any(target_os = "oxide-kernel", feature = "hosted")))]
-impl<T> LifecycleMutex<T> {
-    const fn new(value: T) -> Self { Self { inner: Spinlock::new(value) } }
-    pub(super) unsafe fn lock(&self) -> sync::Guard<'_, T, DevicesClass> { self.inner.lock() }
-}
 
 use crate::blockdev::BlockDevice;
 use crate::queue_limits::QueueLimits;

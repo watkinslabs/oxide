@@ -29,5 +29,11 @@ crc      = { path = "../../shared/crc" }
 default = []
 hosted  = ["sched/hosted"]
 
+# Non-kernel builds exercise the same sleeping lifecycle lock as the running
+# kernel.  Registry publication and VFS open/close are process-context work;
+# a spinlock model would hide scheduling-while-atomic regressions.
+[target.'cfg(not(target_os = "oxide-kernel"))'.dependencies]
+sched = { path = "../sched", features = ["hosted"] }
+
 [lints]
 workspace = true
