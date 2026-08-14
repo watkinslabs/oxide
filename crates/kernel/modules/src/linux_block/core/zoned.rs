@@ -1,8 +1,8 @@
 // Canonical disk-owned zone write-plug state used while a driver reports a zone.
 use crate::linux_block::types::*;
-use alloc::boxed::Box;
 use alloc::vec::Vec;
-use core::ffi::c_void;
+#[cfg(test)] use alloc::boxed::Box;
+#[cfg(test)] use core::ffi::c_void;
 use sync::{Modules as ModulesLockClass, Spinlock};
 
 struct ZoneWplug { start: u64, flags: u32, wp_offset: u32, cond: u8 }

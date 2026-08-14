@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 use core::ffi::c_char;
-use core::ptr;
+#[cfg(test)] use core::ptr;
 use super::hmac::{cstr, hash_len, hmac_once, slice, EINVAL, NVME_AUTH_HASH_SHA512};
 
 const ENOMEM: i32 = 12;
