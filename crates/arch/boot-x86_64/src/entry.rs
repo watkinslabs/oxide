@@ -18,22 +18,12 @@ unsafe extern "C" fn _start_rust() -> ! {
     // deeper runtime initialization path.
     // SAFETY: the entry contract is preserved by `prepare_boot_info`.
     let info = unsafe { prepare_boot_info() };
-    // Linux's x86 entry similarly tail-handoffs into generic kernel init.
-    // Drop this bootstrap frame before the jump: preparation is complete and
-    // `kernel_main` never returns, so retaining a return address needlessly
-    // overlaps two otherwise independent boot stack phases.
-    // SAFETY: `info` is the first SysV argument; `leave` discards exactly
-    // this function's established frame, and kernel_main's entry contract is
-    // satisfied by the completed single-CPU, IRQ-off boot preparation.
-    unsafe {
-        core::arch::asm!(
-            "leave",
-            "jmp {main}",
-            main = sym kmain::kernel_main,
-            in("rdi") info,
-            options(noreturn),
-        );
-    }
+    // Keep the ordinary call ABI at the boot-to-generic boundary. The
+    // preparation frame is already out of line; inventing an epilogue/jump
+    // handoff here makes the compiler's entry-frame contract implicit.
+    // SAFETY: kernel_main's boot-entry contract is satisfied by the completed
+    // single-CPU, IRQ-off preparation above.
+    unsafe { kmain::kernel_main(info) }
 }
 
 /// Complete the pre-runtime x86 bootstrap and return its boot-owned record.
