@@ -49,7 +49,7 @@ pub(in crate::linux_block) unsafe extern "C" fn submit_bio(bio: *mut LinuxBio) -
     // reference only while it is not frozen, preventing a racing freeze from missing this submission.
     if !unsafe { queue_begin_use(q) } { return -LINUX_EIO; }
     // SAFETY: q is the live request queue and make_request_fn is an initialised optional callback field.
-    let make = unsafe { (*q).make_request_fn };
+    let make = unsafe { queue_private(q) }.and_then(|p| p.make_request_fn);
     let Some(f) = make else {
         // SAFETY: this path owns the successful queue_begin_use reference above and releases it before return.
         unsafe { queue_end_use(q); }
@@ -206,7 +206,7 @@ fn request_bytes(disk: *const LinuxGendisk, req: &BlockRequest) -> Option<usize>
         let q = unsafe { (*disk).queue };
         if q.is_null() { DEFAULT_LOGICAL_BLOCK_SIZE } else {
             // SAFETY: q belongs to disk and logical_block_size is initialised queue data.
-            let n = unsafe { (*q).logical_block_size };
+            let n = unsafe { (*q).limits.logical_block_size };
             if n == 0 { DEFAULT_LOGICAL_BLOCK_SIZE } else { n }
         }
     };

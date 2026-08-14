@@ -6,7 +6,6 @@ use core::sync::atomic::AtomicU32;
 use sync::{Modules as ModulesLockClass, Spinlock};
 
 pub(super) type MakeRequestFn = unsafe extern "C" fn(*mut LinuxRequestQueue, *mut LinuxBio) -> i32;
-pub(super) type RequestFn = unsafe extern "C" fn(*mut LinuxRequestQueue);
 pub(super) type BioEndIoFn = unsafe extern "C" fn(*mut LinuxBio);
 pub(super) type RqEndIoFn = unsafe extern "C" fn(*mut LinuxRequest, u8, *const LinuxIoCompBatch) -> i32;
 pub(super) type IoCompCompleteFn = unsafe extern "C" fn(*mut LinuxIoCompBatch);
@@ -84,19 +83,81 @@ impl LinuxBlockDevice {
 
 #[repr(C)]
 pub(super) struct LinuxRequestQueue {
-    pub(super) make_request_fn: Option<MakeRequestFn>,
-    pub(super) request_fn: Option<RequestFn>,
     pub(super) queuedata: *mut c_void,
-    pub(super) logical_block_size: u32,
+    pub(super) elevator: *mut c_void,
     pub(super) mq_ops: *const LinuxBlkMqOps,
-    pub(super) tag_set: *mut LinuxBlkMqTagSet,
-    pub(super) disk: *mut LinuxGendisk,
+    pub(super) queue_ctx: *mut c_void,
+    pub(super) queue_flags: usize,
     pub(super) rq_timeout: u32,
+    pub(super) queue_depth: u32,
+    pub(super) refs: u32,
     pub(super) nr_hw_queues: u32,
-    pub(super) freeze_depth: u32,
-    pub(super) quiesce_depth: u32,
+    pub(super) queue_hw_ctx: *mut c_void,
+    pub(super) _pre_last_merge: [u8; 16],
+    pub(super) last_merge: *mut c_void,
+    pub(super) queue_lock: u32,
+    pub(super) quiesce_depth: i32,
+    pub(super) disk: *mut LinuxGendisk,
+    pub(super) mq_kobj: *mut LinuxKobject,
     pub(super) limits: LinuxQueueLimits,
-    pub(super) lifecycle: *mut LinuxQueueLifecycle,
+    pub(super) dev: *mut c_void,
+    pub(super) rpm_status: u32,
+    pub(super) pm_only: u32,
+    pub(super) stats: *mut c_void,
+    pub(super) rq_qos: *mut c_void,
+    pub(super) rq_qos_mutex: [u8; 32],
+    pub(super) id: i32,
+    pub(super) _id_pad: u32,
+    pub(super) nr_requests: u32,
+    pub(super) async_depth: u32,
+    pub(super) crypto_profile: *mut c_void,
+    pub(super) crypto_kobject: *mut LinuxKobject,
+    pub(super) timeout: [u8; 40],
+    pub(super) timeout_work: [u8; 32],
+    pub(super) nr_active_requests_shared_tags: u32,
+    pub(super) _active_pad: u32,
+    pub(super) sched_shared_tags: *mut c_void,
+    pub(super) icq_list: [u8; 16],
+    pub(super) blkcg_pols: [u8; 8],
+    pub(super) root_blkg: *mut c_void,
+    pub(super) blkg_list: [u8; 16],
+    pub(super) blkcg_mutex: [u8; 32],
+    pub(super) node: i32,
+    pub(super) requeue_lock: u32,
+    pub(super) requeue_list: [u8; 16],
+    pub(super) requeue_work: [u8; 88],
+    pub(super) blk_trace: *mut c_void,
+    pub(super) fq: *mut c_void,
+    pub(super) flush_list: [u8; 16],
+    pub(super) elevator_lock: [u8; 32],
+    pub(super) sysfs_lock: [u8; 32],
+    pub(super) limits_lock: [u8; 32],
+    pub(super) unused_hctx_list: [u8; 16],
+    pub(super) unused_hctx_lock: u32,
+    pub(super) mq_freeze_depth: i32,
+    /// Block-core throttle-data slot; owns Oxide's queue-private bridge state.
+    pub(super) td: *mut LinuxQueuePrivate,
+    pub(super) callback_head: [u8; 16],
+    pub(super) mq_freeze_wq: [u8; 24],
+    pub(super) mq_freeze_lock: [u8; 32],
+    pub(super) tag_set: *mut LinuxBlkMqTagSet,
+    pub(super) tag_set_list: [u8; 16],
+    pub(super) debugfs_dir: *mut c_void,
+    pub(super) sched_debugfs_dir: *mut c_void,
+    pub(super) rqos_debugfs_dir: *mut c_void,
+    pub(super) debugfs_mutex: [u8; 32],
+}
+
+pub(super) struct LinuxQueuePrivate {
+    pub(super) make_request_fn: Option<MakeRequestFn>,
+    pub(super) lifecycle: LinuxQueueLifecycle,
+}
+
+pub(super) unsafe fn queue_private(q: *mut LinuxRequestQueue) -> Option<&'static mut LinuxQueuePrivate> {
+    if q.is_null() { return None; }
+    // SAFETY: td is installed before the queue escapes and reclaimed only after its users are drained.
+    let p = unsafe { (*q).td };
+    if p.is_null() { None } else { Some(unsafe { &mut *p }) }
 }
 
 pub(super) struct LinuxQueueLifecycle {
@@ -420,6 +481,20 @@ mod tests {
         assert_eq!(offset_of!(LinuxBlkMqTagSet, srcu), 160);
         assert_eq!(offset_of!(LinuxBlkMqTagSet, tags_srcu), 168);
         assert_eq!(offset_of!(LinuxBlkMqTagSet, update_nr_hwq_lock), 200);
+    }
+
+    #[test]
+    fn request_queue_layout_matches_the_supported_module_abi() {
+        assert_eq!(size_of::<LinuxRequestQueue>(), 992);
+        assert_eq!(offset_of!(LinuxRequestQueue, queuedata), 0);
+        assert_eq!(offset_of!(LinuxRequestQueue, mq_ops), 16);
+        assert_eq!(offset_of!(LinuxRequestQueue, rq_timeout), 40);
+        assert_eq!(offset_of!(LinuxRequestQueue, disk), 96);
+        assert_eq!(offset_of!(LinuxRequestQueue, limits), 112);
+        assert_eq!(offset_of!(LinuxRequestQueue, mq_freeze_depth), 828);
+        assert_eq!(offset_of!(LinuxRequestQueue, td), 832);
+        assert_eq!(offset_of!(LinuxRequestQueue, tag_set), 912);
+        assert_eq!(offset_of!(LinuxRequestQueue, debugfs_mutex), 960);
     }
 
     #[test]

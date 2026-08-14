@@ -19,21 +19,13 @@ pub(super) fn export_symbols() {
 }
 
 pub(in crate::linux_block) extern "C" fn blk_alloc_queue(_gfp_mask: u32) -> *mut LinuxRequestQueue {
-    Box::into_raw(Box::new(LinuxRequestQueue {
-        make_request_fn: None,
-        request_fn: None,
-        queuedata: null_mut(),
-        logical_block_size: DEFAULT_LOGICAL_BLOCK_SIZE,
-        mq_ops: core::ptr::null(),
-        tag_set: null_mut(),
-        disk: null_mut(),
-        rq_timeout: 0,
-        nr_hw_queues: 1,
-        freeze_depth: 0,
-        quiesce_depth: 0,
-        limits: default_limits(),
-        lifecycle: Box::into_raw(Box::new(LinuxQueueLifecycle::new())),
-    }))
+    // SAFETY: every visible queue field is integer/pointer storage; initialized fields below establish the
+    // block-core contract before the allocation is returned to a module.
+    let mut q: LinuxRequestQueue = unsafe { core::mem::zeroed() };
+    q.limits = default_limits(); q.nr_hw_queues = 1;
+    q.td = Box::into_raw(Box::new(LinuxQueuePrivate { make_request_fn: None,
+        lifecycle: LinuxQueueLifecycle::new() }));
+    Box::into_raw(Box::new(q))
 }
 
 pub(in crate::linux_block) unsafe extern "C" fn blk_cleanup_queue(q: *mut LinuxRequestQueue) {
@@ -47,8 +39,8 @@ pub(in crate::linux_block) unsafe extern "C" fn blk_cleanup_queue(q: *mut LinuxR
     // SAFETY: q is frozen with no users; lifecycle was allocated together with this queue and is no longer
     // reachable once the queue Box is reclaimed below, so each allocation is released exactly once.
     unsafe {
-        let lifecycle = (*q).lifecycle;
-        if !lifecycle.is_null() { drop(Box::from_raw(lifecycle)); }
+        let private = (*q).td;
+        if !private.is_null() { drop(Box::from_raw(private)); }
         drop(Box::from_raw(q));
     }
 }
@@ -58,7 +50,7 @@ pub(super) unsafe extern "C" fn blk_queue_make_request(q: *mut LinuxRequestQueue
     // SAFETY: q is null-checked above, and the only queues a module can hold come from blk_alloc_queue /
     // blk_mq_init_queue below, which Box::into_raw a fully initialised LinuxRequestQueue; make_request_fn
     // is a plain Option<fn> field of that allocation, so the store cannot observe uninitialised memory.
-    unsafe { (*q).make_request_fn = f; }
+    if let Some(private) = unsafe { queue_private(q) } { private.make_request_fn = f; }
 }
 
 pub(super) unsafe extern "C" fn blk_queue_logical_block_size(q: *mut LinuxRequestQueue, size: u32) {
@@ -66,7 +58,7 @@ pub(super) unsafe extern "C" fn blk_queue_logical_block_size(q: *mut LinuxReques
     // SAFETY: q is null-checked above and originates from blk_alloc_queue's Box, which is only released by
     // blk_cleanup_queue; logical_block_size is a u32 field of that allocation. size != 0 is enforced here so
     // the divisors in sectors_to_blocks/blocks_to_sectors never see a zero block size.
-    unsafe { (*q).logical_block_size = size; }
+    unsafe { (*q).limits.logical_block_size = size; }
 }
 
 extern "C" fn blk_mq_alloc_tag_set(set: *mut LinuxBlkMqTagSet) -> i32 {

@@ -160,6 +160,22 @@ SUPPORTED_KPI_ABI: dict[str, AbiType] = {
         ("cmd_size", 72), ("numa_node", 76), ("timeout", 80), ("flags", 84),
         ("driver_data", 88), ("tags", 96), ("shared_tags", 104), ("tag_list_lock", 112),
         ("tag_list", 144), ("srcu", 160), ("tags_srcu", 168), ("update_nr_hwq_lock", 200))),
+    "request_queue": AbiType("request_queue", 992, (("queuedata", 0), ("elevator", 8),
+        ("mq_ops", 16), ("queue_ctx", 24), ("queue_flags", 32), ("rq_timeout", 40),
+        ("queue_depth", 44), ("refs", 48), ("nr_hw_queues", 52), ("queue_hw_ctx", 56),
+        ("last_merge", 80), ("queue_lock", 88), ("quiesce_depth", 92), ("disk", 96),
+        ("mq_kobj", 104), ("limits", 112), ("dev", 304), ("rpm_status", 312),
+        ("pm_only", 316), ("stats", 320), ("rq_qos", 328), ("rq_qos_mutex", 336),
+        ("id", 368), ("nr_requests", 376), ("crypto_profile", 384), ("crypto_kobject", 392),
+        ("timeout", 400), ("timeout_work", 440), ("nr_active_requests_shared_tags", 472),
+        ("sched_shared_tags", 480), ("icq_list", 488), ("blkcg_pols", 504), ("root_blkg", 512),
+        ("blkg_list", 520), ("blkcg_mutex", 536), ("node", 568), ("requeue_lock", 572),
+        ("requeue_list", 576), ("requeue_work", 592), ("blk_trace", 680), ("fq", 688),
+        ("flush_list", 696), ("elevator_lock", 712), ("sysfs_lock", 744), ("limits_lock", 776),
+        ("unused_hctx_list", 808), ("unused_hctx_lock", 824), ("mq_freeze_depth", 828),
+        ("td", 832), ("callback_head", 840), ("mq_freeze_wq", 856), ("mq_freeze_lock", 880),
+        ("tag_set", 912), ("tag_set_list", 920), ("debugfs_dir", 936),
+        ("sched_debugfs_dir", 944), ("rqos_debugfs_dir", 952), ("debugfs_mutex", 960))),
 }
 
 ABI_TYPES: tuple[str, ...] = (
