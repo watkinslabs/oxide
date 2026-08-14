@@ -137,25 +137,29 @@ impl Ahci {
         self.stage_command(&fis, false, 0, true)
     }
 
+    /// Return terminal task-file status only after slot zero stopped. # C: O(1)
+    pub(crate) fn command_terminal_tfd(&self) -> Option<u32> {
+        if self.pr(regs::P_CI) & COMMAND_SLOT_ZERO != 0 { return None; }
+        Some(self.pr(regs::P_TFD))
+    }
+
     /// Validate slot-zero terminal hardware state after an IRQ. # C: O(1)
     pub(crate) fn command_finished_ok(&self) -> bool {
-        self.pr(regs::P_CI) & COMMAND_SLOT_ZERO == 0
-            && self.pr(regs::P_TFD) & regs::TFD_ERR == 0
+        self.command_terminal_tfd().is_some_and(|tfd| tfd & regs::TFD_ERR == 0)
     }
 
     /// Poll a previously issued slot-zero command when no schedulable task
     /// exists yet (early root mount).  This is the same bounded PxCI/PxTFD
     /// completion predicate used for IDENTIFY before runtime IRQ activation.
     /// # C: O(command)
-    pub(crate) fn poll_command_completion(&self) -> bool {
+    pub(crate) fn poll_command_completion(&self) -> Option<u32> {
         let deadline = now_ns().saturating_add(IO_TIMEOUT_NS);
         loop {
-            if self.pr(regs::P_TFD) & regs::TFD_ERR != 0 { return false; }
-            if self.pr(regs::P_CI) & COMMAND_SLOT_ZERO == 0 {
+            if let Some(tfd) = self.command_terminal_tfd() {
                 self.clear_command_interrupts();
-                return self.pr(regs::P_TFD) & regs::TFD_ERR == 0;
+                return Some(tfd);
             }
-            if now_ns() >= deadline { return false; }
+            if now_ns() >= deadline { return None; }
             core::hint::spin_loop();
         }
     }

@@ -22,14 +22,14 @@ const ENDPOINT_HANDLING: u8 = 3;
 
 struct Endpoint {
     state: AtomicU8, abar_va: AtomicU64, port: AtomicU32, in_handler: AtomicU32,
-    pis: AtomicU32, tfd: AtomicU32, complete: AtomicBool, wake: AtomicBool, link_change: AtomicBool, waiters: WaitList,
+    pis: AtomicU32, tfd: AtomicU32, issued: AtomicBool, complete: AtomicBool, wake: AtomicBool, link_change: AtomicBool, waiters: WaitList,
     irq_count: AtomicU64,
 }
 
 impl Endpoint {
     const fn new() -> Self {
         Self { state: AtomicU8::new(ENDPOINT_FREE), abar_va: AtomicU64::new(0), port: AtomicU32::new(0),
-            in_handler: AtomicU32::new(0), pis: AtomicU32::new(0), tfd: AtomicU32::new(0),
+            in_handler: AtomicU32::new(0), pis: AtomicU32::new(0), tfd: AtomicU32::new(0), issued: AtomicBool::new(false),
             complete: AtomicBool::new(false), wake: AtomicBool::new(false), link_change: AtomicBool::new(false), waiters: WaitList::new(),
             irq_count: AtomicU64::new(0) }
     }
@@ -57,6 +57,7 @@ fn claim_endpoint(abar_va: u64, port: u32) -> Option<usize> {
         endpoint.in_handler.store(0, Ordering::Release);
         endpoint.pis.store(0, Ordering::Release);
         endpoint.tfd.store(0, Ordering::Release);
+        endpoint.issued.store(false, Ordering::Release);
         endpoint.complete.store(false, Ordering::Release);
         endpoint.wake.store(false, Ordering::Release);
         endpoint.link_change.store(false, Ordering::Release);
@@ -71,6 +72,7 @@ fn release_endpoint(idx: usize) {
     endpoint.abar_va.store(0, Ordering::Release);
     endpoint.port.store(0, Ordering::Release);
     endpoint.complete.store(false, Ordering::Release);
+    endpoint.issued.store(false, Ordering::Release);
     endpoint.wake.store(false, Ordering::Release);
     endpoint.link_change.store(false, Ordering::Release);
     endpoint.state.store(ENDPOINT_FREE, Ordering::Release);
@@ -158,7 +160,10 @@ fn hard_handler() {
                     media_event = true;
                     raise = true;
                 }
-                if regs::irq_finishes_slot(pis, ci, tfd) {
+                if regs::irq_finishes_issued_slot(
+                    endpoint.issued.load(Ordering::Acquire), pis, ci, tfd,
+                ) {
+                    endpoint.issued.store(false, Ordering::Release);
                     endpoint.complete.store(true, Ordering::Release);
                     endpoint.wake.store(true, Ordering::Release);
                     endpoint.irq_count.fetch_add(1, Ordering::Relaxed);
@@ -244,8 +249,24 @@ impl IrqBinding {
         let endpoint = &ENDPOINTS[self.endpoint];
         endpoint.pis.store(0, Ordering::Release);
         endpoint.tfd.store(0, Ordering::Release);
+        endpoint.issued.store(false, Ordering::Release);
         endpoint.wake.store(false, Ordering::Release);
         endpoint.complete.store(false, Ordering::Release);
+    }
+
+    /// Publish ownership only after PxCI has been rung. This prevents a stale
+    /// port interrupt from completing the next request before its doorbell.
+    pub(crate) fn command_issued(self) {
+        ENDPOINTS[self.endpoint].issued.store(true, Ordering::Release);
+    }
+
+    /// Close the tiny doorbell-to-owner window if PxCI was already terminal
+    /// before the issuer published its ownership state.
+    pub(crate) fn complete_from_poll(self, tfd: u32) {
+        let endpoint = &ENDPOINTS[self.endpoint];
+        endpoint.tfd.store(tfd, Ordering::Release);
+        endpoint.issued.store(false, Ordering::Release);
+        endpoint.complete.store(true, Ordering::Release);
     }
 
     /// Observe terminal IRQ state for the current command. # C: O(1)

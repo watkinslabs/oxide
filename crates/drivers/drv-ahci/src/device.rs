@@ -162,8 +162,18 @@ impl AhciBlk {
                         pmm::dma::clean_to_device(ctrl.data_va(), len);
                     }
                     let started = ctrl.start_rw(write, lba, count);
-                    let complete = started && !waiter_prepared
-                        && ctrl.poll_command_completion();
+                    if started {
+                        self.irq.command_issued();
+                        if let Some(tfd) = ctrl.command_terminal_tfd() {
+                            self.irq.complete_from_poll(tfd);
+                        }
+                    }
+                    let complete = started && !waiter_prepared && ctrl
+                        .poll_command_completion()
+                        .is_some_and(|tfd| {
+                            self.irq.complete_from_poll(tfd);
+                            tfd & crate::regs::TFD_ERR == 0
+                        });
                     (started, complete)
                 }
             }
@@ -205,8 +215,18 @@ impl AhciBlk {
         let (started, bootstrap_complete) = {
             let mut ctrl = self.ctrl.lock();
             let started = !self.unavailable() && ctrl.start_flush();
-            let complete = started && !waiter_prepared
-                && ctrl.poll_command_completion();
+            if started {
+                self.irq.command_issued();
+                if let Some(tfd) = ctrl.command_terminal_tfd() {
+                    self.irq.complete_from_poll(tfd);
+                }
+            }
+            let complete = started && !waiter_prepared && ctrl
+                .poll_command_completion()
+                .is_some_and(|tfd| {
+                    self.irq.complete_from_poll(tfd);
+                    tfd & crate::regs::TFD_ERR == 0
+                });
             (started, complete)
         };
         if started && waiter_prepared && !self.irq.completed() {
