@@ -28,7 +28,7 @@ pub(crate) struct Controller {
     rx_desc_pa: u64, tx_desc_pa: u64, rx_data_pa: u64, tx_data_pa: u64,
     rx_desc_dma: u64, tx_desc_dma: u64, rx_data_dma: u64, tx_data_dma: u64,
     bdf: pci::Bdf,
-    e1000e_nvm_phy: bool, pch: bool,
+    e1000e_nvm_phy: bool, pch: bool, pch2: bool,
     rx_next: usize, tx_next: usize,
 }
 
@@ -245,12 +245,12 @@ fn configure_rings(mmio: mmio_map::Mapping, io_base: Option<u16>, bdf: pci::Bdf,
         unsafe { pmm::setup::free_contig(rx_desc_pa, pmm::Order(0)); pmm::setup::free_contig(tx_desc_pa, pmm::Order(0)); pmm::setup::free_contig(rx_data_pa, RX_ORDER); pmm::setup::free_contig(tx_data_pa, TX_ORDER); }
         return None;
     }
-    let mut c = Controller { mmio, rx_desc_pa, tx_desc_pa, rx_data_pa, tx_data_pa, rx_desc_dma, tx_desc_dma, rx_data_dma, tx_data_dma, bdf, e1000e_nvm_phy: profile.e1000e_nvm_phy, pch: profile.pch, rx_next: 0, tx_next: 0 };
+    let mut c = Controller { mmio, rx_desc_pa, tx_desc_pa, rx_data_pa, tx_data_pa, rx_desc_dma, tx_desc_dma, rx_data_dma, tx_data_dma, bdf, e1000e_nvm_phy: profile.e1000e_nvm_phy, pch: profile.pch, pch2: profile.pch2, rx_next: 0, tx_next: 0 };
     trace("[INFO]  e1000: dma allocated\n");
-    if (profile.pch && !crate::pch::reset(&c)) || (!profile.pch && !crate::reset::apply(&c, io_base, profile)) { c.free(); return None; }
+    if (profile.pch2 && !crate::pch::reset_pch2(&c)) || (profile.pch && !profile.pch2 && !crate::pch::reset(&c)) || (!profile.pch && !crate::reset::apply(&c, io_base, profile)) { c.free(); return None; }
     if profile.e1000e_nvm_phy && !crate::e1000e_init::prepare(&c) { c.free(); return None; }
     if profile.pch && !flash.as_ref().is_some_and(|flash| flash.validate_nvm()) { c.free(); return None; }
-    if profile.pch && !crate::pch::initialize(&c) { c.free(); return None; }
+    if profile.pch && !(if profile.pch2 { crate::pch::initialize_pch2(&c) } else { crate::pch::initialize(&c) }) { c.free(); return None; }
     trace("[INFO]  e1000: reset done\n");
     let mac = if profile.pch { flash.as_ref().and_then(|flash| flash.read_mac()) } else { regs::mac_from_rar(c.read(regs::RAL0), c.read(regs::RAH0)).map(net::MacAddr) };
     let mac = match mac { Some(mac) => mac, None => { trace("[INFO]  e1000: no mac\n"); c.free(); return None; } };
@@ -398,6 +398,10 @@ pub(crate) fn supports_e1000e_82571_bm(dev: &drv::Device) -> bool {
 pub(crate) fn supports_e1000e_pch_m(dev: &drv::Device) -> bool {
     dev.bus == "pci" && dev.class == regs::ETHERNET_CLASS && dev.vendor_id == regs::INTEL_VENDOR
         && regs::e1000e_pch_m_pci_id_supported(dev.device_id)
+}
+pub(crate) fn supports_e1000e_pch2(dev: &drv::Device) -> bool {
+    dev.bus == "pci" && dev.class == regs::ETHERNET_CLASS && dev.vendor_id == regs::INTEL_VENDOR
+        && regs::e1000e_pch2_pci_id_supported(dev.device_id)
 }
 
 fn remove_bdf(bdf: pci::Bdf) {

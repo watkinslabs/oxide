@@ -38,6 +38,7 @@ const PCH_NVM_SIGNATURE_VALUE: u16 = 0x8000;
 const PCH_KMRN_TIMEOUTS: u32 = 4;
 const PCH_KMRN_INBAND: u32 = 9;
 const PCH_RAR_ENTRIES: usize = 7;
+const PCH2_RAR_ENTRIES: usize = 5;
 const PCH_MTA_ENTRIES: usize = 32;
 const PCH_82577_CONFIG: u32 = 22;
 const PCH_82577_CTRL2: u32 = 18;
@@ -177,9 +178,9 @@ fn configure_link(c: &Controller, phy: HvPhy) -> bool {
     true
 }
 
-pub(crate) fn initialize(c: &Controller) -> bool {
+fn initialize_mac(c: &Controller, rar_entries: usize) -> bool {
     let Some(phy) = phy_id(c) else { return false; };
-    for index in 1..PCH_RAR_ENTRIES {
+    for index in 1..rar_entries {
         let Some((low, high)) = regs::rar_offset(index) else { return false; };
         c.write(low, 0); c.write(high, 0);
     }
@@ -193,6 +194,8 @@ pub(crate) fn initialize(c: &Controller) -> bool {
     }
     configure_link(c, phy)
 }
+pub(crate) fn initialize(c: &Controller) -> bool { initialize_mac(c, PCH_RAR_ENTRIES) }
+pub(crate) fn initialize_pch2(c: &Controller) -> bool { configure_pch2_lv(c) && initialize_mac(c, PCH2_RAR_ENTRIES) }
 
 pub(crate) fn activate(c: &Controller) -> bool { phy_id(c).is_some_and(|phy| configure_link(c, phy)) }
 

@@ -53,6 +53,15 @@ pub const fn e1000e_pch_m_pci_id_supported(device_id: u16) -> bool {
     }
     false
 }
+/// Admit only PCH2 functions using the 82579 LV profile. # C: O(n)
+pub const fn e1000e_pch2_pci_id_supported(device_id: u16) -> bool {
+    let mut index = 0;
+    while index < E1000E_PCH2_PCI_IDS.len() {
+        if E1000E_PCH2_PCI_IDS[index] == device_id { return true; }
+        index += 1;
+    }
+    false
+}
 
 /// Return the DMA aperture for one controller profile. # C: O(1)
 #[inline]
