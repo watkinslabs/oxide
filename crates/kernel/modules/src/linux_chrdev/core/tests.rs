@@ -14,6 +14,8 @@ const TEST_BUFFER_LEN: usize = 4;
 const TEST_IOCTL_CMD: u32 = 0x5843_4445;
 const TEST_IOCTL_ARG: usize = 0x1234;
 const TEST_IOCTL_RET: isize = 0x55;
+const TEST_COMPAT_ARG: usize = 0x7fff_fff0;
+const TEST_COMPAT_ARG_WITH_HIGH_BITS: usize = (usize::MAX & !(u32::MAX as usize)) | TEST_COMPAT_ARG;
 const TEST_PRIVATE_OPEN: usize = 0xabc0;
 const TEST_PRIVATE_RW: usize = 0xdef0;
 const READ_BYTE: u8 = b'R';
@@ -24,6 +26,8 @@ static RELEASE_COUNT: AtomicUsize = AtomicUsize::new(0);
 static POLL_COUNT: AtomicUsize = AtomicUsize::new(0);
 static MMAP_COUNT: AtomicUsize = AtomicUsize::new(0);
 static IOCTL_COUNT: AtomicUsize = AtomicUsize::new(0);
+static COMPAT_IOCTL_CMD: AtomicUsize = AtomicUsize::new(0);
+static COMPAT_IOCTL_ARG: AtomicUsize = AtomicUsize::new(0);
 
 unsafe extern "C" fn sample_open(_inode: *mut LinuxInode, file: *mut LinuxFile) -> i32 {
     if file.is_null() { return -LINUX_EINVAL; }
@@ -46,6 +50,12 @@ unsafe extern "C" fn sample_write(_file: *mut LinuxFile, buf: *const c_char, cou
 
 unsafe extern "C" fn sample_ioctl(_file: *mut LinuxFile, cmd: u32, arg: usize) -> isize {
     if cmd == TEST_IOCTL_CMD && arg == TEST_IOCTL_ARG { TEST_IOCTL_RET } else { -LINUX_EINVAL as isize }
+}
+
+unsafe extern "C" fn compat_ioctl(_file: *mut LinuxFile, cmd: u32, arg: usize) -> isize {
+    COMPAT_IOCTL_CMD.store(cmd as usize, Ordering::SeqCst);
+    COMPAT_IOCTL_ARG.store(arg, Ordering::SeqCst);
+    TEST_IOCTL_RET
 }
 
 static FOPS: LinuxFileOperations = LinuxFileOperations::new(Some(sample_open), Some(sample_read), Some(sample_write), Some(sample_ioctl), None, None, None);
@@ -120,6 +130,7 @@ fn external_file_callback_abi_uses_the_linux_object_offsets() {
     assert_eq!(offset_of!(LinuxFileOperations, read), 24);
     assert_eq!(offset_of!(LinuxFileOperations, poll), 72);
     assert_eq!(offset_of!(LinuxFileOperations, unlocked_ioctl), 80);
+    assert_eq!(offset_of!(LinuxFileOperations, _compat_ioctl), 88);
     assert_eq!(offset_of!(LinuxFileOperations, mmap), 96);
     assert_eq!(offset_of!(LinuxFileOperations, open), 104);
     assert_eq!(offset_of!(LinuxFileOperations, release), 120);
@@ -129,6 +140,38 @@ fn external_file_callback_abi_uses_the_linux_object_offsets() {
     assert_eq!(offset_of!(LinuxFile, f_flags), 40);
     assert_eq!(size_of::<LinuxInode>(), 616);
     assert_eq!(offset_of!(LinuxInode, i_rdev), 76);
+}
+
+#[test]
+fn compat_ptr_ioctl_zero_extends_arg_and_forwards_the_live_file() {
+    let _modules = crate::test_serial::claim();
+    COMPAT_IOCTL_CMD.store(0, Ordering::SeqCst);
+    COMPAT_IOCTL_ARG.store(0, Ordering::SeqCst);
+    // SAFETY: every ABI field begins zeroed; this test initializes the only callback field compat_ptr_ioctl reads.
+    let mut ops = unsafe { core::mem::zeroed::<LinuxFileOperations>() };
+    ops.unlocked_ioctl = Some(compat_ioctl);
+    let mut file = LinuxFile::new(null_mut());
+    file.f_op = &ops;
+    assert_eq!(unsafe { compat_ptr_ioctl(&mut file, TEST_IOCTL_CMD, TEST_COMPAT_ARG_WITH_HIGH_BITS) }, TEST_IOCTL_RET);
+    assert_eq!(COMPAT_IOCTL_CMD.load(Ordering::SeqCst), TEST_IOCTL_CMD as usize);
+    assert_eq!(COMPAT_IOCTL_ARG.load(Ordering::SeqCst), TEST_COMPAT_ARG);
+}
+
+#[test]
+fn compat_ptr_ioctl_without_an_unlocked_handler_returns_linux_no_ioctl() {
+    let _modules = crate::test_serial::claim();
+    // SAFETY: all-zero ABI storage represents a file_operations table with no callbacks installed.
+    let ops = unsafe { core::mem::zeroed::<LinuxFileOperations>() };
+    let mut file = LinuxFile::new(null_mut());
+    file.f_op = &ops;
+    assert_eq!(unsafe { compat_ptr_ioctl(&mut file, TEST_IOCTL_CMD, TEST_COMPAT_ARG) }, -(LINUX_ENOIOCTLCMD as isize));
+}
+
+#[test]
+fn compat_ptr_ioctl_is_exported_for_native_modules() {
+    let _modules = crate::test_serial::claim();
+    export_symbols();
+    assert!(crate::symtab::is_exported("compat_ptr_ioctl"));
 }
 
 #[test]

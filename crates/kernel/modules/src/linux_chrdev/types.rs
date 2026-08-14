@@ -7,6 +7,7 @@ pub(super) const LINUX_ENODEV: i32 = 19;
 pub(super) const LINUX_ENOMEM: i32 = 12;
 pub(super) const LINUX_EBUSY: i32 = 16;
 pub(super) const LINUX_ENXIO: i32 = 6;
+pub(super) const LINUX_ENOIOCTLCMD: i32 = 515;
 
 pub(super) const LINUX_MINORBITS: u32 = 20;
 pub(super) const LINUX_MINORMASK: u32 = (1 << LINUX_MINORBITS) - 1;
@@ -69,7 +70,7 @@ pub(super) struct LinuxFileOperations {
     _iterate_shared: *mut c_void,
     pub(super) poll: Option<LinuxPoll>,
     pub(super) unlocked_ioctl: Option<LinuxIoctl>,
-    _compat_ioctl: *mut c_void,
+    pub(super) _compat_ioctl: *mut c_void,
     pub(super) mmap: Option<LinuxMmap>,
     pub(super) open: Option<LinuxOpen>,
     _flush: *mut c_void,
