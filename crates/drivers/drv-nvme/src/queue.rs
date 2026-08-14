@@ -15,6 +15,7 @@ use mmio_map::Mapping;
 
 mod commands;
 mod dma;
+mod observe;
 pub(crate) use dma::IoDma;
 
 /// Worst-case wait for an admin/IO completion. CAP.TO bounds RDY transitions;
@@ -235,7 +236,7 @@ impl Nvme {
         // 1. Disable: CC.EN=0, wait CSTS.RDY==0.
         nv.w32(regs::REG_CC, 0);
         if !nv.wait_rdy(false, to_ms) {
-            return Err(nv.failed_bring_up());
+            return Err(observe::bring_up_failed(nv, b"disable-rdy"));
         }
 
         // 2. Program admin queue attributes + base addresses.
@@ -246,25 +247,25 @@ impl Nvme {
         // 3. Enable: CC with IOSQES/IOCQES + EN, wait CSTS.RDY==1.
         nv.w32(regs::REG_CC, regs::cc_enable());
         if !nv.wait_rdy(true, to_ms) {
-            return Err(nv.failed_bring_up());
+            return Err(observe::bring_up_failed(nv, b"enable-rdy"));
         }
 
         // 4. IDENTIFY controller (confirm the controller answers admin cmds).
         if !nv.identify_controller() {
-            return Err(nv.failed_bring_up());
+            return Err(observe::bring_up_failed(nv, b"identify-controller"));
         }
 
         // 5. Select one active namespace, then harvest its capacity and LBA format.
         if !nv.identify_active_namespace() {
-            return Err(nv.failed_bring_up());
+            return Err(observe::bring_up_failed(nv, b"identify-namespace"));
         }
 
         // 6. Create the I/O completion + submission queue (qid=1).
         if !nv.create_io_cq(io_vector) {
-            return Err(nv.failed_bring_up());
+            return Err(observe::bring_up_failed(nv, b"create-io-cq"));
         }
         if !nv.create_io_sq() {
-            return Err(nv.failed_bring_up());
+            return Err(observe::bring_up_failed(nv, b"create-io-sq"));
         }
 
         Ok(nv)
