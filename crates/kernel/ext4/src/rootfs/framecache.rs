@@ -305,7 +305,7 @@ impl Ext4FrameStore {
                 // until this transient I/O reference has been acquired.
                 unsafe { pmm::setup::inc_object_ref(pa); }
             }
-            while !pmm::setup::try_lock_page(pa) { core::hint::spin_loop(); }
+            if !pmm::setup::lock_page(pa) { continue; }
             if self.pages.lock().get(&idx).map(|page| page.pa) == Some(pa) { return Ok(pa); }
             let _ = pmm::setup::unlock_page(pa);
             // SAFETY: release the transient non-PTE pin acquired above.

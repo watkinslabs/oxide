@@ -313,11 +313,11 @@ pub fn page_index_for_pa(pa: u64) -> u32 {
 /// the final mapping disappears. Wraps `dec_and_maybe_free_frame` for COW,
 /// munmap, and address-space teardown.
 /// # SAFETY: same as `dec_and_maybe_free_frame`.
+/// # Ctx: process
+/// # Sleeps: yes
 /// # C: O(1)
 pub unsafe fn rmap_aware_dec_and_maybe_free(pa: u64) {
     const FINAL_PTE_MAPCOUNT: u32 = 1;
-    #[cfg(feature = "debug-watchdog")]
-    const LOCK_SPIN_REPORT_THRESHOLD: u32 = 1 << 20;
     let pfn = hal::Pfn(pa / hal::PAGE_SIZE_BYTES);
     let managed = page_meta().and_then(|meta| meta.get(pfn)).is_some();
     if !managed {
@@ -328,18 +328,7 @@ pub unsafe fn rmap_aware_dec_and_maybe_free(pa: u64) {
         unsafe { dec_and_maybe_free_frame(pa); }
         return;
     }
-    #[cfg(feature = "debug-watchdog")] let mut spins = 0u32;
-    while !try_lock_page(pa) {
-        core::hint::spin_loop();
-        #[cfg(feature = "debug-watchdog")] {
-            spins = spins.saturating_add(1);
-            if spins == LOCK_SPIN_REPORT_THRESHOLD {
-                klog::write_raw(b"[PMM-PAGELOCK] waiter-pa="); klog::write_hex_u64(pa);
-                klog::write_raw(b" owner-tid="); klog::write_dec_u64(page_lock_owner(pa) as u64);
-                klog::write_raw(b"\n");
-            }
-        }
-    }
+    if !super::page_lock::lock_page(pa) { return; }
     let is_final_mapping = page_meta()
         .and_then(|meta| meta.mapcount(pfn))
         == Some(FINAL_PTE_MAPCOUNT);
@@ -349,43 +338,13 @@ pub unsafe fn rmap_aware_dec_and_maybe_free(pa: u64) {
     // SAFETY: caller has removed one PTE and the page lock serializes its
     // mapcount transition with every other rmap-aware release.
     unsafe { dec_and_maybe_free_frame(pa); }
-    let _ = unlock_page(pa);
+    let _ = super::page_lock::unlock_page(pa);
     if let Some(owner) = detached {
         // SAFETY: the matching owner was detached under the page lock above;
         // release occurs only after that lock is visible as free.
         unsafe { super::rmap::release_detached(owner); }
     }
 }
-
-/// Try to acquire a PMM-managed page's migration/I/O lock. A missing metadata
-/// slot is not a managed anonymous page and therefore cannot participate in
-/// swap migration.
-/// # C: O(1)
-pub fn try_lock_page(pa: u64) -> bool {
-    let pfn = hal::Pfn(pa / hal::PAGE_SIZE_BYTES); let Some(meta) = page_meta() else { return false; };
-    let locked = meta.try_lock_page(pfn).unwrap_or(false);
-    #[cfg(feature = "debug-watchdog")]
-    if locked {
-        meta.note_page_lock_owner(pfn, sched::live::current().map(|task| task.tid).unwrap_or(0));
-    }
-    locked
-}
-
-/// Release the migration/I/O lock for a PMM-managed page. Returns `false` if
-/// metadata is absent or the caller did not own the lock.
-/// # C: O(1)
-pub fn unlock_page(pa: u64) -> bool {
-    let pfn = hal::Pfn(pa / hal::PAGE_SIZE_BYTES); let Some(meta) = page_meta() else { return false; };
-    #[cfg(feature = "debug-watchdog")]
-    meta.clear_page_lock_owner(pfn);
-    meta.unlock_page(pfn).unwrap_or(false)
-}
-
-/// Debug-watchdog owner of a locked page, or zero when the holder is boot or
-/// interrupt context, the PFN is unmanaged, or no holder was recorded.
-/// # C: O(1)
-#[cfg(feature = "debug-watchdog")]
-fn page_lock_owner(pa: u64) -> u32 { page_meta().and_then(|meta| meta.page_lock_owner(hal::Pfn(pa / hal::PAGE_SIZE_BYTES))).unwrap_or(0) }
 
 /// Revoke single-mapper write reuse before a page is shared with swap.
 /// # C: O(1)
