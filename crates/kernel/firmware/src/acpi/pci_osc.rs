@@ -12,6 +12,8 @@ const OSC_INVALID_REVISION: u32 = 1 << 3;
 const OSC_CAPABILITY_MASK: u32 = 1 << 4;
 const OSC_ERROR_MASK: u32 = OSC_REQUEST_ERROR | OSC_INVALID_UUID | OSC_INVALID_REVISION | OSC_CAPABILITY_MASK;
 const OSC_SUPPORT: u32 = (1 << 0) | (1 << 3) | (1 << 4) | (1 << 8);
+/// PCI firmware ownership bit for native Advanced Error Reporting.
+pub const OSC_PCIE_AER_CONTROL: u32 = 1 << 3;
 const OSC_PCIE_CAPABILITY_CONTROL: u32 = 1 << 4;
 
 /// Firmware-granted PCI root ownership retained with its root context.
@@ -22,11 +24,11 @@ pub struct PciOscControl { pub support: u32, pub control: u32 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum OscError { Evaluate, QueryError, InvalidUuid }
 
-/// Negotiate the one PCIe capability-ownership bit currently consumed by the
-/// PCI root owner. Port-service, AER, hotplug, PME, LTR, and DPC control stay
-/// unrequested until their owners exist. # C: O(1)
+/// Negotiate the PCIe capability and native AER ownership bits consumed by
+/// the PCI root owner. Hotplug, PME, LTR, and DPC stay unrequested until
+/// their owners exist. # C: O(1)
 pub(super) fn negotiate<E>(mut eval: impl FnMut([u32; 3]) -> Result<[u32; 3], E>) -> Result<PciOscControl, OscError> {
-    let query = [OSC_QUERY_ENABLE, OSC_SUPPORT, OSC_PCIE_CAPABILITY_CONTROL];
+    let query = [OSC_QUERY_ENABLE, OSC_SUPPORT, OSC_PCIE_CAPABILITY_CONTROL | OSC_PCIE_AER_CONTROL];
     let returned = eval(query).map_err(|_| OscError::Evaluate)?;
     let errors = returned[0] & OSC_ERROR_MASK & !OSC_CAPABILITY_MASK;
     if errors & OSC_INVALID_UUID != 0 { return Err(OscError::InvalidUuid); }
@@ -44,18 +46,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn query_prunes_then_control_claims_only_pcie_capability() {
+    fn query_prunes_then_control_claims_native_aer() {
         let mut calls = [[0; 3]; 2];
         let mut count = 0;
         let result = negotiate(|input| {
             calls[count] = input; count += 1;
-            Ok::<_, ()>(if count == 1 { [OSC_CAPABILITY_MASK, OSC_SUPPORT, OSC_PCIE_CAPABILITY_CONTROL] }
-                else { [0, OSC_SUPPORT, OSC_PCIE_CAPABILITY_CONTROL] })
+            Ok::<_, ()>(if count == 1 { [OSC_CAPABILITY_MASK, OSC_SUPPORT, OSC_PCIE_CAPABILITY_CONTROL | OSC_PCIE_AER_CONTROL] }
+                else { [0, OSC_SUPPORT, OSC_PCIE_CAPABILITY_CONTROL | OSC_PCIE_AER_CONTROL] })
         });
-        assert_eq!(result, Ok(PciOscControl { support: OSC_SUPPORT, control: OSC_PCIE_CAPABILITY_CONTROL }));
+        assert_eq!(result, Ok(PciOscControl { support: OSC_SUPPORT, control: OSC_PCIE_CAPABILITY_CONTROL | OSC_PCIE_AER_CONTROL }));
         assert_eq!(count, 2);
-        assert_eq!(calls[0], [OSC_QUERY_ENABLE, OSC_SUPPORT, OSC_PCIE_CAPABILITY_CONTROL]);
-        assert_eq!(calls[1], [0, OSC_SUPPORT, OSC_PCIE_CAPABILITY_CONTROL]);
+        assert_eq!(calls[0], [OSC_QUERY_ENABLE, OSC_SUPPORT, OSC_PCIE_CAPABILITY_CONTROL | OSC_PCIE_AER_CONTROL]);
+        assert_eq!(calls[1], [0, OSC_SUPPORT, OSC_PCIE_CAPABILITY_CONTROL | OSC_PCIE_AER_CONTROL]);
     }
 
     #[test]

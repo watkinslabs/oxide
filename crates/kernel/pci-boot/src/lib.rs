@@ -526,7 +526,8 @@ fn publish_pci_model_device(
 /// Capability reads retain firmware state; AER control and status are owned by
 /// the eventual AER service driver. # C: O(capabilities)
 fn publish_port_service_children(d: &pci::PciDevice, parent: &alloc::sync::Arc<drv::Device>) {
-    if !firmware::acpi::pci_osc_control(d.bdf.segment, d.bdf.bus).is_some_and(|osc| osc.control != 0) { return; }
+    if !firmware::acpi::pci_osc_control(d.bdf.segment, d.bdf.bus)
+        .is_some_and(|osc| osc.control & firmware::acpi::OSC_PCIE_AER_CONTROL != 0) { return; }
     let message = {
         #[cfg(target_arch = "x86_64")]
         { hal_x86_64::pci::EcamPci::from_published().and_then(|reader| pci::aer_message_number(&reader, d.bdf)) }
