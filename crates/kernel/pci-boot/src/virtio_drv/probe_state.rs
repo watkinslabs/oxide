@@ -248,9 +248,9 @@ impl VirtioProbeState {
         if kick_va == 0 {
             return (0, fallback_status);
         }
-        for _ in 0..1_000_000 {
-            core::hint::spin_loop();
-        }
+        // The notify only publishes queue ownership; no status transition is
+        // promised by it. Read the common status directly instead of imposing
+        // an arbitrary delay on every live virtio function.
         (kick_va, virtio::read_status(self.cfg_va))
     }
 
