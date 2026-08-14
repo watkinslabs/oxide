@@ -51,11 +51,16 @@ impl HardwareProfile {
         }
     }
 
-    fn iommu_device(self) -> Option<&'static str> {
+    fn iommu_device_for(self, enabled: bool) -> Option<&'static str> {
         match self {
             Self::Default => None,
-            Self::NativePci => Some("intel-iommu,intremap=on,caching-mode=on,pt=off"),
+            Self::NativePci if enabled => Some("intel-iommu,intremap=on,caching-mode=on,pt=off"),
+            Self::NativePci => None,
         }
+    }
+
+    fn iommu_device(self) -> Option<&'static str> {
+        self.iommu_device_for(std::env::var_os("OXIDE_QEMU_DISABLE_IOMMU").is_none())
     }
 
     /// Non-virtio input devices supplied by this hardware profile.
@@ -422,6 +427,8 @@ mod tests {
         assert_eq!(HardwareProfile::NativePci.machine(), "q35,kernel_irqchip=split");
         assert_eq!(HardwareProfile::NativePci.iommu_device(),
             Some("intel-iommu,intremap=on,caching-mode=on,pt=off"));
+        assert_eq!(HardwareProfile::NativePci.iommu_device_for(false), None,
+            "the otherwise-identical native topology can isolate DMA translation");
     }
 
     #[test]
