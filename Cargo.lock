@@ -1021,6 +1021,7 @@ name = "iommu"
 version = "0.1.0"
 dependencies = [
  "firmware",
+ "klog",
  "mmio-map",
  "pci",
  "pmm",
