@@ -241,6 +241,37 @@ fn drained_wake_of_a_still_running_task_is_re_deferred() {
         "once switched off it becomes enqueueable");
 }
 
+/// A deferred wake is deliberately shown as unlinked between the lock-free
+/// list drain and destination activation.  `on_wake_list` names list
+/// membership, not wake ownership: the `Waking` state retains that ownership
+/// until `RunqueueInner::enqueue` commits the task.  Keep this transient
+/// explicit so a task dump does not turn it into evidence of a lost wake.
+#[test]
+fn drained_waking_task_is_unlinked_until_destination_activation() {
+    const CPU: u32 = 60;
+    let cpus = Cpus::new(&[CPU]);
+    let rq = cpus.get(CPU).expect("test cpu installed");
+    let t = settled_sleeper(2009, CPU);
+    assert!(t.claim_wake());
+    wake_list_push(CPU, Arc::clone(&t));
+
+    let mut drained = wake_list_drain(CPU);
+    assert_eq!(drained.len(), 1);
+    assert_eq!(t.state(), TaskState::Waking);
+    assert!(!t.on_rq.load(Ordering::Acquire));
+    assert!(!t.on_cpu.load(Ordering::Acquire));
+    assert!(!t.on_wake_list.load(Ordering::Acquire),
+        "the drain releases list membership before the destination rq lock");
+
+    wake_list_push(CPU, drained.pop().expect("one drained wake"));
+    let current = rq.current.load(Ordering::Acquire);
+    assert!(sched_ttwu_pending(CPU, current, rq));
+    assert_eq!(t.state(), TaskState::Runnable,
+        "destination activation must complete the retained wake claim");
+    assert!(t.on_rq.load(Ordering::Acquire));
+    assert!(!t.on_wake_list.load(Ordering::Acquire));
+}
+
 /// `select_task_rq_with` honours `cpus_allowed`; a mask that excludes the
 /// caller must not resolve to the caller.
 #[test]
