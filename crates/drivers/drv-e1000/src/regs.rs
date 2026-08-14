@@ -118,6 +118,12 @@ pub const MDIC_READ: u32 = 1 << 27;
 pub const MDIC_READY: u32 = 1 << 28;
 pub const MDIC_ERROR: u32 = 1 << 30;
 pub const MDIC_REGISTER_MASK: u32 = 0x1f << MDIC_REGISTER_SHIFT;
+pub const PCH_PHY_ADDRESS: u32 = 1;
+pub const PCH_PHY_DEBUG_ADDRESS: u32 = 2;
+pub const PCH_PHY_ID_82577: u32 = 0x0154_0050;
+pub const PCH_PHY_ID_82578: u32 = 0x004d_d040;
+pub const PCH_PHY_ID_82579: u32 = 0x0154_0090;
+pub const PCH_PHY_ID_I217: u32 = 0x0154_00a0;
 pub const NVM_CHECKSUM_WORD: u16 = 0x003f;
 pub const NVM_CHECKSUM_SUM: u16 = 0xbaba;
 pub const BM_PHY_ADDRESS: u32 = 1;
@@ -181,6 +187,9 @@ pub const E1000E_82571_BM_RESET_NS: u64 = 25_000_000;
 pub const NVM_AUTO_READ_TIMEOUT_NS: u64 = 10_000_000;
 pub const RESET_STATUS_POLL_NS: u64 = 1_000_000;
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PchFlashLayout { pub base: u32, pub bytes: u32 }
+
 #[repr(C)]
 #[derive(Copy, Clone, Default)]
 pub struct RxDesc {
@@ -233,6 +242,29 @@ pub const fn mdic_command(register: u8, write: Option<u16>) -> u32 {
     let op = if write.is_some() { MDIC_WRITE } else { MDIC_READ };
     let data = match write { Some(value) => value, None => 0 };
     (data as u32) | ((register as u32) << MDIC_REGISTER_SHIFT) | (BM_PHY_ADDRESS << MDIC_PHY_SHIFT) | op
+}
+/// Encode one MDIC transaction for a selected PHY address. # C: O(1)
+pub const fn mdic_command_at(phy: u32, register: u8, write: Option<u16>) -> u32 {
+    let op = if write.is_some() { MDIC_WRITE } else { MDIC_READ };
+    let data = match write { Some(value) => value, None => 0 };
+    (data as u32) | ((register as u32) << MDIC_REGISTER_SHIFT) | (phy << MDIC_PHY_SHIFT) | op
+}
+/// Decode and bound the PCH GbE flash descriptor region. # C: O(1)
+pub const fn pch_flash_layout(gfpreg: u32) -> Option<PchFlashLayout> {
+    let base = (gfpreg & 0x1fff) << 12;
+    let limit = ((gfpreg >> 16) & 0x1fff).wrapping_add(1) << 12;
+    if limit <= base { return None; }
+    Some(PchFlashLayout { base, bytes: limit - base })
+}
+/// Recognize a PCH integrated PHY identity. # C: O(1)
+pub const fn pch_phy_id_supported(id: u32) -> bool {
+    id == PCH_PHY_ID_82577 || id == PCH_PHY_ID_82578 || id == PCH_PHY_ID_82579 || id == PCH_PHY_ID_I217
+}
+/// Extract the page and register selectors encoded in an HV PHY address. # C: O(1)
+pub const fn pch_hv_address(offset: u32) -> (u16, u8) {
+    let page = ((offset >> 5) & 0xffff) as u16;
+    let reg = ((offset & 0x1f) | ((offset >> 16) & !0x1f)) as u8;
+    (page, reg)
 }
 /// Accept the 64-word NVM checksum contract. # C: O(n)
 pub fn nvm_checksum_valid(words: &[u16]) -> bool {
@@ -318,6 +350,7 @@ mod tests {
         assert_eq!(eerd_data(0x1234_0002), 0x1234);
         assert_eq!(mdic_command(BM_PHY_ID_HIGH, None), 0x0822_0000);
         assert_eq!(mdic_command(BM_PHY_ID_LOW, Some(0xabcd)), 0x0423_abcd);
+        assert_eq!(mdic_command_at(PCH_PHY_DEBUG_ADDRESS, BM_PHY_ID_LOW, Some(0xabcd)), 0x0443_abcd);
         let mut nvm = [0u16; NVM_CHECKSUM_WORD as usize + 1];
         nvm[NVM_CHECKSUM_WORD as usize] = NVM_CHECKSUM_SUM;
         assert!(nvm_checksum_valid(&nvm));
@@ -333,5 +366,16 @@ mod tests {
         assert_eq!(rar_offset(RAR_ENTRIES), None);
         assert_eq!(table_offset(MTA, FILTER_TABLE_ENTRIES - 1), Some(MTA + 508));
         assert_eq!(table_offset(VFTA, FILTER_TABLE_ENTRIES), None);
+    }
+    #[test]
+    fn pch_flash_and_hv_phy_contracts_are_bounded() {
+        assert_eq!(pch_flash_layout(0x0001_0000), Some(PchFlashLayout { base: 0, bytes: 8192 }));
+        assert_eq!(pch_flash_layout(0), Some(PchFlashLayout { base: 0, bytes: 4096 }));
+        assert_eq!(pch_flash_layout(0x0000_0001), None);
+        assert!(pch_phy_id_supported(PCH_PHY_ID_82577));
+        assert!(pch_phy_id_supported(PCH_PHY_ID_I217));
+        assert!(!pch_phy_id_supported(BM_PHY_ID_R2));
+        assert_eq!(pch_hv_address((768 << 5) | 30), (768, 30));
+        assert_eq!(pch_hv_address((3 << 5) | 0x13), (3, 0x13));
     }
 }

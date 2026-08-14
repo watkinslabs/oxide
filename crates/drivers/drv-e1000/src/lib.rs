@@ -3,6 +3,7 @@
 // - `imp`: PCI probe, DMA ownership, transmit, and NET_RX polling.
 // - `e1000e`: discrete 82571-family BM PCI driver binding.
 // - `e1000e_init`: NVM and BM-PHY admission for the 82571 controller family.
+// - `pch`: PCH flash, shared-resource, and HV-PHY transport contracts.
 // - `profile`: controller reset and DMA contracts.
 // - `reset`: controller-specific reset sequencing.
 
@@ -20,6 +21,8 @@ mod imp;
 mod e1000e;
 #[cfg(target_os = "oxide-kernel")]
 mod e1000e_init;
+#[cfg(target_os = "oxide-kernel")]
+mod pch;
 #[cfg(target_os = "oxide-kernel")]
 mod reset;
 
