@@ -11,7 +11,7 @@ mod frame;
 mod stubs;
 
 pub use stubs::vector_stub_addr;
-pub use frame::current_fault_frame;
+pub use frame::{current_fault_frame, current_fault_rsp};
 
 use crate::pt_regs::PtRegs;
 

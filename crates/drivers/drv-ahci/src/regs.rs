@@ -160,6 +160,15 @@ pub fn irq_finishes_slot(pis: u32, ci: u32, tfd: u32) -> bool {
         || (pis & PIS_ENABLE != 0 && ci & 1 == 0)
 }
 
+/// Whether an interrupt terminates a command this driver has actually issued.
+/// PxCI being idle does not itself imply ownership: an old port interrupt can
+/// arrive after the next request prepared its wait state but before its
+/// doorbell. Completion therefore requires explicit command ownership. # C: O(1)
+#[inline]
+pub fn irq_finishes_issued_slot(issued: bool, pis: u32, ci: u32, tfd: u32) -> bool {
+    issued && irq_finishes_slot(pis, ci, tfd)
+}
+
 /// Whether completion state carries a terminal command error. # C: O(1)
 pub fn irq_status_failed(pis: u32, tfd: u32) -> bool {
     pis & PIS_ERROR != 0 || tfd & TFD_ERR != 0
@@ -327,6 +336,12 @@ mod tests {
         assert!(irq_finishes_slot(PIS_DHRS, 1, TFD_ERR));
         assert!(!irq_status_failed(PIS_DHRS, 0));
         assert!(irq_status_failed(PIS_HBFS, 0));
+    }
+
+    #[test]
+    fn stale_port_irq_cannot_complete_an_unissued_command() {
+        assert!(!irq_finishes_issued_slot(false, PIS_DHRS, 0, 0));
+        assert!(irq_finishes_issued_slot(true, PIS_DHRS, 0, 0));
     }
 
     #[test]
