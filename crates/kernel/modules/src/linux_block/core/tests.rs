@@ -60,12 +60,13 @@ unsafe extern "C" fn test_make_request(_q: *mut LinuxRequestQueue, bio: *mut Lin
 #[test]
 fn export_symbols_registers_block_surface() {
     let _modules = crate::test_serial::claim();
-    super::export_symbols();
+    crate::linux_block::export_symbols();
     for name in [
         "blk_alloc_queue", "blk_cleanup_queue", "blk_queue_make_request",
         "blk_queue_logical_block_size", "alloc_disk", "add_disk",
         "del_gendisk", "submit_bio", "bio_alloc", "bio_put",
         "blk_mq_alloc_tag_set", "blk_mq_init_queue", "set_capacity_and_notify", "set_disk_ro", "disk_uevent",
+        "__SCK__tp_func_block_bio_complete", "__SCT__tp_func_block_bio_complete", "__tracepoint_block_bio_complete",
     ] {
         assert!(crate::symtab::is_exported(name));
     }

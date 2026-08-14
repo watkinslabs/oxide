@@ -22,8 +22,11 @@ pub(super) fn export_symbols() {
         ("zero_fill_bio_iter",  zero_fill_bio_iter  as *const () as usize),
         ("__SCK__tp_func_block_bio_remap", trace_block_bio_remap as *const () as usize),
         ("__SCT__tp_func_block_bio_remap", trace_block_bio_remap as *const () as usize),
+        ("__SCK__tp_func_block_bio_complete", trace_block_bio_complete as *const () as usize),
+        ("__SCT__tp_func_block_bio_complete", trace_block_bio_complete as *const () as usize),
     ] { export(name, addr, false); }
     export("__tracepoint_block_bio_remap", &TRACEPOINT_BLOCK_BIO_REMAP as *const usize as usize, false);
+    export("__tracepoint_block_bio_complete", &TRACEPOINT_BLOCK_BIO_COMPLETE as *const usize as usize, false);
 }
 
 unsafe extern "C" fn submit_bio_noacct(bio: *mut LinuxBio) {
@@ -87,3 +90,5 @@ unsafe extern "C" fn zero_fill_bio_iter(bio: *mut LinuxBio) {
 
 extern "C" fn trace_block_bio_remap() {}
 static TRACEPOINT_BLOCK_BIO_REMAP: usize = 0;
+extern "C" fn trace_block_bio_complete() {}
+static TRACEPOINT_BLOCK_BIO_COMPLETE: usize = 0;
