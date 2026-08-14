@@ -39,6 +39,22 @@ impl HardwareProfile {
         }
     }
 
+    fn machine(self) -> &'static str {
+        match self {
+            Self::Default => "q35",
+            // VT-d interrupt remapping needs userspace APIC routing under KVM.
+            // This is the Q35 configuration paired with the Intel IOMMU device.
+            Self::NativePci => "q35,kernel_irqchip=split",
+        }
+    }
+
+    fn iommu_device(self) -> Option<&'static str> {
+        match self {
+            Self::Default => None,
+            Self::NativePci => Some("intel-iommu,intremap=on,caching-mode=on"),
+        }
+    }
+
     /// Non-virtio input devices supplied by this hardware profile.
     fn input_devices(self) -> &'static [&'static str] {
         match self {
@@ -240,7 +256,7 @@ pub(super) fn qemu_run_grub_x86_64(
     }
     c.args(&pcap_args);
     c.args([
-        "-machine", "q35",
+        "-machine", profile.machine(),
         "-accel", accel,
         "-cpu", "Haswell-v4",
         "-smp", &smp_str,
@@ -267,6 +283,9 @@ pub(super) fn qemu_run_grub_x86_64(
         "-no-reboot",
     ]);
     for device in profile.input_devices() {
+        c.args(["-device", device]);
+    }
+    if let Some(device) = profile.iommu_device() {
         c.args(["-device", device]);
     }
     match profile {
@@ -390,6 +409,15 @@ mod tests {
             "usb-kbd,bus=xhci.0",
             "usb-tablet,bus=xhci.0",
         ]);
+    }
+
+    #[test]
+    fn native_profile_exposes_q35_vtd_with_interrupt_remapping() {
+        assert_eq!(HardwareProfile::Default.machine(), "q35");
+        assert_eq!(HardwareProfile::Default.iommu_device(), None);
+        assert_eq!(HardwareProfile::NativePci.machine(), "q35,kernel_irqchip=split");
+        assert_eq!(HardwareProfile::NativePci.iommu_device(),
+            Some("intel-iommu,intremap=on,caching-mode=on"));
     }
 
     #[test]
