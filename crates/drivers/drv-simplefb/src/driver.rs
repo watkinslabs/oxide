@@ -3,7 +3,7 @@ use boot_info::BootFramebuffer;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use sync::{Spinlock, TaskList as DriverLockClass};
 
-use crate::format;
+use crate::{format, mode};
 
 const PLATFORM_BUS: &str = "platform";
 const DEVICE_ADDR: &str = "simple-framebuffer.0";
@@ -204,7 +204,7 @@ impl drm::DrmDriver for SimpleDrm {
     fn connector_ids(&self) -> Vec<u32> { alloc::vec![drm::connector_id_for(0)] }
     fn encoder_ids(&self) -> Vec<u32> { alloc::vec![drm::encoder_id_for(0)] }
     fn plane_ids(&self) -> Vec<u32> { alloc::vec![drm::plane_id_for(0)] }
-    fn mode_for(&self, _idx: usize) -> drm::DrmModeModeinfo { drm::mode_from_rect(self.width, self.height) }
+    fn mode_for(&self, _idx: usize) -> drm::DrmModeModeinfo { mode::firmware_mode(self.width, self.height) }
     fn connector_info(&self, idx: usize) -> Option<drm::ConnectorInfo> {
         (idx == 0).then_some(drm::ConnectorInfo { connection: drm::DRM_MODE_CONNECTED,
             connector_type: drm::DRM_MODE_CONNECTOR_UNKNOWN, encoder_id: drm::encoder_id_for(0), mm_width: 0, mm_height: 0 })
