@@ -6,6 +6,10 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 const CPU_MASK_WORDS: usize = 1;
 const TRACE_EVENT_ENABLED: i32 = 0;
 const TRACE_EVENT_IGNORED: i32 = 0;
+const LOCAL_DISTANCE: i32 = 10;
+const REMOTE_DISTANCE: i32 = 20;
+const NODE_STATE_COUNT: usize = 7;
+const NODEMASK_WORDS: usize = 16;
 
 #[repr(C, align(64))]
 struct NativeSoftnetData([u8; cpu::LINUX_SOFTNET_DATA_BYTES]);
@@ -15,6 +19,13 @@ const _: () = assert!(core::mem::size_of::<NativeSoftnetData>() == cpu::LINUX_SO
 struct CpuMask {
     bits: [usize; CPU_MASK_WORDS],
 }
+
+#[repr(C, align(8))]
+struct NativeNodeMask {
+    bits: [usize; NODEMASK_WORDS],
+}
+
+const NODE0: NativeNodeMask = NativeNodeMask { bits: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] };
 
 #[unsafe(no_mangle)]
 static __preempt_count: i32 = 0;
@@ -26,6 +37,8 @@ static nr_cpu_ids: u32 = 1;
 static __cpu_online_mask: CpuMask = CpuMask { bits: [1] };
 #[unsafe(no_mangle)]
 static __cpu_possible_mask: CpuMask = CpuMask { bits: [1] };
+#[unsafe(no_mangle)]
+static node_states: [NativeNodeMask; NODE_STATE_COUNT] = [NODE0, NODE0, NODE0, NODE0, NODE0, NODE0, NODE0];
 #[unsafe(no_mangle)]
 static __per_cpu_offset: [usize; cpu::MAX_CPUS] = [0; cpu::MAX_CPUS];
 #[unsafe(no_mangle)]
@@ -68,12 +81,15 @@ pub fn export_symbols() {
         ("bpf_trace_run1", bpf_trace_run as *const () as usize),
         ("bpf_trace_run2", bpf_trace_run as *const () as usize),
         ("bpf_trace_run3", bpf_trace_run as *const () as usize),
+        ("__node_distance", node_distance as *const () as usize),
+        ("capable", capable as *const () as usize),
     ] { export(name, addr, false); }
     export("__preempt_count", &__preempt_count as *const _ as usize, false);
     export("__num_online_cpus", &__num_online_cpus as *const _ as usize, false);
     export("nr_cpu_ids", &nr_cpu_ids as *const _ as usize, false);
     export("__cpu_online_mask", &__cpu_online_mask as *const _ as usize, false);
     export("__cpu_possible_mask", &__cpu_possible_mask as *const _ as usize, false);
+    export("node_states", &node_states as *const _ as usize, false);
     export("__per_cpu_offset", __per_cpu_offset.as_ptr() as usize, false);
     export("this_cpu_off", cpu::LINUX_MODULE_PERCPU_OFFSET, false);
     export("numa_node", cpu::LINUX_NUMA_NODE_OFFSET, false);
@@ -140,6 +156,12 @@ extern "C" fn trace_print_seq(_p: *mut c_void, _seq: *mut c_void) -> i32 { 0 }
 extern "C" fn perf_trace_buf_alloc(_size: i32, _rctxp: *mut i32) -> *mut c_void { core::ptr::null_mut() }
 extern "C" fn perf_trace_run_bpf_submit() {}
 extern "C" fn bpf_trace_run() {}
+extern "C" fn node_distance(from: i32, to: i32) -> i32 {
+    if from == to { LOCAL_DISTANCE } else { REMOTE_DISTANCE }
+}
+extern "C" fn capable(cap: i32) -> bool {
+    u32::try_from(cap).ok().is_some_and(|cap| sched::current().is_some_and(|task| task.has_cap(cap)))
+}
 
 #[cfg(test)]
 mod tests {
@@ -176,5 +198,17 @@ mod tests {
         preempt_schedule();
         assert!(list_valid_or_report(core::ptr::null(), core::ptr::null(), core::ptr::null()));
         assert_eq!(net_ratelimit(), 1);
+    }
+
+    #[test]
+    fn numa_and_capability_exports_preserve_single_node_and_current_task_contracts() {
+        let _modules = crate::test_serial::claim();
+        export_symbols();
+        assert!(crate::symtab::is_exported("__node_distance"));
+        assert!(crate::symtab::is_exported("node_states"));
+        assert!(crate::symtab::is_exported("capable"));
+        assert_eq!(node_distance(0, 0), LOCAL_DISTANCE);
+        assert_eq!(node_distance(0, 1), REMOTE_DISTANCE);
+        assert!(!capable(-1));
     }
 }
