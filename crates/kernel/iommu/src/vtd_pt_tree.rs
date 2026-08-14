@@ -1,6 +1,7 @@
 use alloc::vec::Vec;
 
 use crate::VtdPte;
+use crate::vtd_cache::publish;
 
 const PAGE_BYTES: u64 = 4096;
 const LARGE_PAGE_BYTES: u64 = 2 * 1024 * 1024;
@@ -11,13 +12,13 @@ const PTE_ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
 const LEVEL_SHIFTS: [u8; 4] = [39, 30, 21, 12];
 
 /// Owned four-level VT-d second-level identity page-table tree.
-pub struct VtdPageTable { hhdm_offset: u64, root_pa: u64, pages: Vec<u64> }
+pub struct VtdPageTable { hhdm_offset: u64, coherent: bool, root_pa: u64, pages: Vec<u64> }
 impl VtdPageTable {
     /// Allocate an empty four-level second-level translation tree. # C: O(1)
-    pub fn new(hhdm_offset: u64) -> Option<Self> {
+    pub fn new(hhdm_offset: u64, coherent: bool) -> Option<Self> {
         if hhdm_offset == 0 { return None; }
-        let root_pa = allocate_table(hhdm_offset)?;
-        Some(Self { hhdm_offset, root_pa, pages: alloc::vec![root_pa] })
+        let root_pa = allocate_table(hhdm_offset, coherent)?;
+        Some(Self { hhdm_offset, coherent, root_pa, pages: alloc::vec![root_pa] })
     }
     /// Return the page-aligned context root physical address. # C: O(1)
     pub const fn root_pa(&self) -> u64 { self.root_pa }
@@ -44,7 +45,7 @@ impl VtdPageTable {
         while current != end {
             let Some((leaf_pa, bytes)) = self.leaf_entry(current) else { return false; };
             if bytes > end - current || current & (bytes - 1) != 0 { return false; }
-            write_entry(self.hhdm_offset, leaf_pa, 0);
+            write_entry(self.hhdm_offset, leaf_pa, 0, self.coherent);
             current += bytes;
         }
         true
@@ -57,9 +58,9 @@ impl VtdPageTable {
             let entry_pa = entry_pa(table_pa, indices[level]);
             let entry = read_entry(self.hhdm_offset, entry_pa);
             if entry & PTE_PRESENT == 0 {
-                let Some(next_pa) = allocate_table(self.hhdm_offset) else { return false; };
+                let Some(next_pa) = allocate_table(self.hhdm_offset, self.coherent) else { return false; };
                 let Some(next) = VtdPte::table(next_pa) else { return false; };
-                write_entry(self.hhdm_offset, entry_pa, next.word());
+                write_entry(self.hhdm_offset, entry_pa, next.word(), self.coherent);
                 self.pages.push(next_pa);
                 table_pa = next_pa;
             } else {
@@ -75,22 +76,22 @@ impl VtdPageTable {
         let prior = read_entry(self.hhdm_offset, leaf_pa);
         if prior & PTE_PRESENT != 0 { return prior & PTE_ADDRESS_MASK == pa; }
         let Some(leaf) = VtdPte::leaf(pa, bytes != PAGE_BYTES) else { return false; };
-        write_entry(self.hhdm_offset, leaf_pa, leaf.word());
+        write_entry(self.hhdm_offset, leaf_pa, leaf.word(), self.coherent);
         true
     }
     fn split_large_leaf(&mut self, level: usize, parent_pa: u64, prior: u64) -> Option<u64> {
         let parent_bytes = level_page_bytes(level);
         let child_bytes = level_page_bytes(level + 1);
         if parent_bytes == 0 || child_bytes == 0 || parent_bytes != child_bytes.checked_mul(512)? { return None; }
-        let child_pa = allocate_table(self.hhdm_offset)?;
+        let child_pa = allocate_table(self.hhdm_offset, self.coherent)?;
         let base = prior & PTE_ADDRESS_MASK;
         for index in 0..512u64 {
             let pa = base.checked_add(index.checked_mul(child_bytes)?)?;
             let leaf = VtdPte::leaf(pa, child_bytes != PAGE_BYTES)?;
-            write_entry(self.hhdm_offset, entry_pa(child_pa, index as usize), leaf.word());
+            write_entry(self.hhdm_offset, entry_pa(child_pa, index as usize), leaf.word(), self.coherent);
         }
         let table = VtdPte::table(child_pa)?;
-        write_entry(self.hhdm_offset, parent_pa, table.word());
+        write_entry(self.hhdm_offset, parent_pa, table.word(), self.coherent);
         self.pages.push(child_pa);
         Some(child_pa)
     }
@@ -125,20 +126,21 @@ const fn indices(iova: u64) -> [usize; 4] {
         ((iova >> LEVEL_SHIFTS[2]) & 0x1ff) as usize, ((iova >> LEVEL_SHIFTS[3]) & 0x1ff) as usize]
 }
 const fn entry_pa(table_pa: u64, index: usize) -> u64 { table_pa + index as u64 * core::mem::size_of::<u64>() as u64 }
-fn allocate_table(hhdm_offset: u64) -> Option<u64> {
+fn allocate_table(hhdm_offset: u64, coherent: bool) -> Option<u64> {
     let pa = pmm::setup::alloc_contig(pmm::Order(0))?;
     // SAFETY: this one-page PMM allocation is exclusively owned by the new VT-d page table.
     unsafe { core::ptr::write_bytes(hhdm_offset.wrapping_add(pa) as *mut u8, 0, PAGE_BYTES as usize); }
+    publish(hhdm_offset, pa, PAGE_BYTES, coherent);
     Some(pa)
 }
 fn read_entry(hhdm_offset: u64, pa: u64) -> u64 {
     // SAFETY: `pa` names a bounded entry in an owned VT-d page-table allocation.
     unsafe { core::ptr::read_volatile(hhdm_offset.wrapping_add(pa) as *const u64) }
 }
-fn write_entry(hhdm_offset: u64, pa: u64, value: u64) {
+fn write_entry(hhdm_offset: u64, pa: u64, value: u64, coherent: bool) {
     // SAFETY: `pa` names a bounded entry in an owned VT-d page-table allocation.
     unsafe { core::ptr::write_volatile(hhdm_offset.wrapping_add(pa) as *mut u64, value); }
-    core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+    publish(hhdm_offset, pa, core::mem::size_of::<u64>() as u64, coherent);
 }
 
 #[cfg(test)] mod tests {

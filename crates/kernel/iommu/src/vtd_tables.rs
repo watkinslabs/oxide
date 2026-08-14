@@ -1,6 +1,7 @@
 use alloc::vec::Vec;
 
 use crate::{Mapping, VtdContextEntry, VtdPageTable, VtdRootEntry};
+use crate::vtd_cache::publish;
 use crate::domain::MappingRecord;
 use pci::{Bdf, IovaSpace};
 
@@ -15,13 +16,13 @@ const IOVA_BYTES: u64 = (1u64 << 48) - IOVA_START;
 struct VtdDomain { id: u16, requesters: Vec<Bdf>, space: IovaSpace, maps: Vec<MappingRecord>, page_table: VtdPageTable }
 
 /// Permanent VT-d root/context tables and DMA domains selected by isolation group.
-pub struct VtdTables { hhdm_offset: u64, root_pa: u64, contexts: Vec<(u8, u64)>, domains: Vec<VtdDomain> }
+pub struct VtdTables { hhdm_offset: u64, coherent: bool, root_pa: u64, contexts: Vec<(u8, u64)>, domains: Vec<VtdDomain> }
 impl VtdTables {
     /// Allocate empty root/context ownership. # C: O(1)
-    pub fn new(hhdm_offset: u64) -> Option<Self> {
+    pub fn new(hhdm_offset: u64, coherent: bool) -> Option<Self> {
         if hhdm_offset == 0 { return None; }
-        let root_pa = allocate_page(hhdm_offset)?;
-        Some(Self { hhdm_offset, root_pa, contexts: Vec::new(), domains: Vec::new() })
+        let root_pa = allocate_page(hhdm_offset, coherent)?;
+        Some(Self { hhdm_offset, coherent, root_pa, contexts: Vec::new(), domains: Vec::new() })
     }
     /// Return the physical root table address for the VT-d RTADDR register. # C: O(1)
     pub const fn root_pa(&self) -> u64 { self.root_pa }
@@ -30,7 +31,7 @@ impl VtdTables {
     /// Create one isolated DMA domain and populate its RAM identity mappings. # C: O(regions * leaves * levels)
     pub fn install_group(&mut self, id: u16, requesters: &[Bdf], regions: &[pmm::UsableRegion]) -> bool {
         if id == 0 || requesters.is_empty() || self.domains.iter().any(|domain| domain.id == id || requesters.iter().any(|bdf| domain.requesters.contains(bdf))) { return false; }
-        let Some(mut domain) = VtdDomain::new(id, requesters, self.hhdm_offset) else { return false; };
+        let Some(mut domain) = VtdDomain::new(id, requesters, self.hhdm_offset, self.coherent) else { return false; };
         if !domain.map_identity_regions(regions) { return false; }
         self.domains.push(domain);
         true
@@ -47,8 +48,8 @@ impl VtdTables {
     }
 }
 impl VtdDomain {
-    fn new(id: u16, requesters: &[Bdf], hhdm_offset: u64) -> Option<Self> {
-        Some(Self { id, requesters: requesters.to_vec(), space: IovaSpace::new(IOVA_START, IOVA_BYTES)?, maps: Vec::new(), page_table: VtdPageTable::new(hhdm_offset)? })
+    fn new(id: u16, requesters: &[Bdf], hhdm_offset: u64, coherent: bool) -> Option<Self> {
+        Some(Self { id, requesters: requesters.to_vec(), space: IovaSpace::new(IOVA_START, IOVA_BYTES)?, maps: Vec::new(), page_table: VtdPageTable::new(hhdm_offset, coherent)? })
     }
     fn map_identity_regions(&mut self, regions: &[pmm::UsableRegion]) -> bool {
         for region in regions {
@@ -133,38 +134,40 @@ impl VtdTables {
         if old_lo & PRESENT != 0 {
             return old_lo == lo && read64(self.hhdm_offset, entry_pa + core::mem::size_of::<u64>() as u64) == hi;
         }
-        write64(self.hhdm_offset, entry_pa + core::mem::size_of::<u64>() as u64, hi);
-        write64(self.hhdm_offset, entry_pa, lo & !PRESENT);
+        write64(self.hhdm_offset, entry_pa + core::mem::size_of::<u64>() as u64, hi, self.coherent);
+        write64(self.hhdm_offset, entry_pa, lo & !PRESENT, self.coherent);
         core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
-        write64(self.hhdm_offset, entry_pa, lo);
+        write64(self.hhdm_offset, entry_pa, lo, self.coherent);
         true
     }
     fn context_for_bus(&mut self, bus: u8) -> Option<u64> {
         if let Some((_, pa)) = self.contexts.iter().find(|(current, _)| *current == bus) { return Some(*pa); }
-        let context_pa = allocate_page(self.hhdm_offset)?;
+        let context_pa = allocate_page(self.hhdm_offset, self.coherent)?;
         let root = VtdRootEntry::context_table(context_pa)?;
         let [lo, hi] = root.words();
         let entry_pa = self.root_pa + u64::from(bus) * ROOT_ENTRY_BYTES;
-        write64(self.hhdm_offset, entry_pa + core::mem::size_of::<u64>() as u64, hi);
-        write64(self.hhdm_offset, entry_pa, lo);
+        write64(self.hhdm_offset, entry_pa + core::mem::size_of::<u64>() as u64, hi, self.coherent);
+        write64(self.hhdm_offset, entry_pa, lo, self.coherent);
         self.contexts.push((bus, context_pa));
         Some(context_pa)
     }
 }
 
-fn allocate_page(hhdm_offset: u64) -> Option<u64> {
+fn allocate_page(hhdm_offset: u64, coherent: bool) -> Option<u64> {
     let pa = pmm::setup::alloc_contig(pmm::Order(0))?;
     // SAFETY: this permanent IOMMU table page is exclusively owned by VtdTables.
     unsafe { core::ptr::write_bytes(hhdm_offset.wrapping_add(pa) as *mut u8, 0, PAGE_BYTES as usize); }
+    publish(hhdm_offset, pa, PAGE_BYTES, coherent);
     Some(pa)
 }
 fn read64(hhdm_offset: u64, pa: u64) -> u64 {
     // SAFETY: `pa` is a bounded word inside an owned VT-d root or context table page.
     unsafe { core::ptr::read_volatile(hhdm_offset.wrapping_add(pa) as *const u64) }
 }
-fn write64(hhdm_offset: u64, pa: u64, value: u64) {
+fn write64(hhdm_offset: u64, pa: u64, value: u64, coherent: bool) {
     // SAFETY: `pa` is a bounded word inside an owned VT-d root or context table page.
     unsafe { core::ptr::write_volatile(hhdm_offset.wrapping_add(pa) as *mut u64, value); }
+    publish(hhdm_offset, pa, core::mem::size_of::<u64>() as u64, coherent);
 }
 
 #[cfg(test)] mod tests {

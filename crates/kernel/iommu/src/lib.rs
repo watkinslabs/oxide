@@ -13,6 +13,7 @@ mod amd_vi_pt;
 mod amd_vi_pt_tree;
 mod domain;
 mod vtd;
+mod vtd_cache;
 mod vtd_hw;
 mod vtd_pt;
 mod vtd_pt_tree;

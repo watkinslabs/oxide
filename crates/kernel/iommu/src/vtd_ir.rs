@@ -1,6 +1,7 @@
 // VT-d interrupt-remapping table ownership and MSI message encoding.
 
 use crate::vtd_hw::VtdQiDesc;
+use crate::vtd_cache::publish;
 
 const IRTE_BYTES: usize = 16;
 const IRTE_COUNT: usize = 65536;
@@ -45,17 +46,18 @@ impl VtdIrte {
 
 /// Allocated VT-d interrupt-remapping table.  A 64K-entry table is the
 /// architected maximum and matches the IRTA size encoding used by Linux.
-pub struct VtdIrTable { pa: u64, hhdm_offset: u64, used: [u64; IRTE_COUNT / 64], extended_mode: bool }
+pub struct VtdIrTable { pa: u64, hhdm_offset: u64, coherent: bool, used: [u64; IRTE_COUNT / 64], extended_mode: bool }
 
 impl VtdIrTable {
     /// Allocate a zeroed 64K-entry table in physically contiguous memory.
     /// # C: O(table bytes)
-    pub fn new(hhdm_offset: u64, extended_mode: bool) -> Option<Self> {
+    pub fn new(hhdm_offset: u64, coherent: bool, extended_mode: bool) -> Option<Self> {
         if hhdm_offset == 0 { return None; }
         let pa = pmm::setup::alloc_contig(IRTE_TABLE_ORDER)?;
         // SAFETY: the allocated 1MiB block is exclusively owned by this table.
         unsafe { core::ptr::write_bytes(hhdm_offset.checked_add(pa)? as *mut u8, 0, IRTE_TABLE_BYTES); }
-        Some(Self { pa, hhdm_offset, used: [0; IRTE_COUNT / 64], extended_mode })
+        publish(hhdm_offset, pa, IRTE_TABLE_BYTES as u64, coherent);
+        Some(Self { pa, hhdm_offset, coherent, used: [0; IRTE_COUNT / 64], extended_mode })
     }
 
     /// IRTA register value including table size and EIM selection. # C: O(1)
@@ -88,7 +90,7 @@ impl VtdIrTable {
             let va = self.hhdm_offset.checked_add(self.pa)?.checked_add((index * IRTE_BYTES) as u64)? as *mut VtdIrte;
             // SAFETY: index is newly reserved and lies within the exclusively owned table.
             unsafe { core::ptr::write_volatile(va, entry); }
-            core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+            publish(self.hhdm_offset, self.pa + (index * IRTE_BYTES) as u64, IRTE_BYTES as u64, self.coherent);
             return u16::try_from(index).ok();
         }
         None
@@ -104,7 +106,7 @@ impl VtdIrTable {
             let va = self.hhdm_offset.checked_add(self.pa)?.checked_add((index * IRTE_BYTES) as u64)? as *mut VtdIrte;
             // SAFETY: index is newly reserved and lies within the exclusively owned table.
             unsafe { core::ptr::write_volatile(va, entry); }
-            core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+            publish(self.hhdm_offset, self.pa + (index * IRTE_BYTES) as u64, IRTE_BYTES as u64, self.coherent);
             return u16::try_from(index).ok();
         }
         None
@@ -123,7 +125,7 @@ impl VtdIrTable {
         };
         // SAFETY: index belongs to this table and is not reused until this clear completes.
         unsafe { core::ptr::write_volatile(va, VtdIrte { words: [0, 0] }); }
-        core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+        publish(self.hhdm_offset, self.pa + (index * IRTE_BYTES) as u64, IRTE_BYTES as u64, self.coherent);
         self.used[word] &= !(1u64 << bit);
         true
     }

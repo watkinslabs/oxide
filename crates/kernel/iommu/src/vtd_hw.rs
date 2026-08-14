@@ -78,15 +78,16 @@ impl VtdQiDesc {
 
 /// One permanent 256-entry queued-invalidation ring.  Its single page uses
 /// IQA.QS=0, the VT-d encoding for 2^8 16-byte descriptors.
-pub struct VtdQiQueue { pa: u64, hhdm_offset: u64, tail: u16 }
+pub struct VtdQiQueue { pa: u64, hhdm_offset: u64, coherent: bool, tail: u16 }
 impl VtdQiQueue {
     /// Allocate and clear an IQA.QS=0 queue. # C: O(1)
-    pub fn new(hhdm_offset: u64) -> Option<Self> {
+    pub fn new(hhdm_offset: u64, coherent: bool) -> Option<Self> {
         if hhdm_offset == 0 { return None; }
         let pa = pmm::setup::alloc_contig(pmm::Order(0))?;
         // SAFETY: this page is permanently and exclusively owned as a VT-d QI ring.
         unsafe { core::ptr::write_bytes(hhdm_offset.wrapping_add(pa) as *mut u8, 0, PAGE_BYTES as usize); }
-        Some(Self { pa, hhdm_offset, tail: 0 })
+        publish(hhdm_offset, pa, PAGE_BYTES, coherent);
+        Some(Self { pa, hhdm_offset, coherent, tail: 0 })
     }
     /// Physical IQA base. # C: O(1)
     pub const fn pa(&self) -> u64 { self.pa }
@@ -98,9 +99,9 @@ impl VtdQiQueue {
             let va = self.hhdm_offset.checked_add(self.pa)?.checked_add(slot * QI_DESC_BYTES)? as *mut VtdQiDesc;
             // SAFETY: tail is always reduced modulo QI_DESC_COUNT and this QI page is exclusive.
             unsafe { core::ptr::write_volatile(va, *desc); }
+            publish(self.hhdm_offset, self.pa + slot * QI_DESC_BYTES, QI_DESC_BYTES, self.coherent);
             self.tail = (self.tail + 1) % QI_DESC_COUNT;
         }
-        core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
         Some(u64::from(self.tail) * QI_DESC_BYTES).filter(|_| start != self.tail)
     }
 }
@@ -397,3 +398,4 @@ mod fault_tests {
         assert_eq!(QI_DESC_COUNT, 256);
     }
 }
+use crate::vtd_cache::publish;

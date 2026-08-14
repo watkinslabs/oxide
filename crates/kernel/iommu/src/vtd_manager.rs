@@ -2,6 +2,7 @@ use alloc::{boxed::Box, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::{VtdIrTable, VtdQiQueue, VtdRegisters, VtdTables, intel_vtd_hpet_source, intel_vtd_ioapic_source, intel_vtd_rmrr_count, intel_vtd_rmrr_for_bdf, intel_vtd_unit_for_bdf, remapped_msi, vtd_dma_groups};
+use crate::vtd_cache::maintenance_available;
 use firmware::acpi::{IommuKind, IommuUnit};
 use pci::{Bdf, ConfigSpaceReader};
 use sync::{Devices, Spinlock};
@@ -55,19 +56,21 @@ pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf],
     let mut manager = Vec::new();
     for unit in units {
         let Some(regs) = (unsafe { VtdRegisters::map(unit.register_base, unit.register_pages) }) else { trace_failure(b"register map"); return VtdActivation::Failed; };
-        let Some(tables) = VtdTables::new(hhdm_offset) else { trace_failure(b"table allocation"); return VtdActivation::Failed; };
-        if !regs.cache_coherent() || !regs.supports_address_width(tables.address_width()) { trace_failure(b"capability"); return VtdActivation::Failed; }
+        let coherent = regs.cache_coherent();
+        if !maintenance_available(coherent) { trace_failure(b"cache maintenance"); return VtdActivation::Failed; }
+        let Some(tables) = VtdTables::new(hhdm_offset, coherent) else { trace_failure(b"table allocation"); return VtdActivation::Failed; };
+        if !regs.supports_address_width(tables.address_width()) { trace_failure(b"address width"); return VtdActivation::Failed; }
         // Linux disables firmware-pre-enabled IR/translation/QI state before
         // it replaces their table bases.  Do this only after replacement
         // allocations and mappings succeeded, so an allocation failure leaves
         // the firmware configuration intact.
         if !regs.quiesce_firmware_state() { trace_failure(b"firmware quiesce"); return activation_failed(&mut manager); }
         let ir = if regs.supports_interrupt_remapping() && regs.supports_queued_invalidation() {
-            let Some(table) = VtdIrTable::new(hhdm_offset, false) else { trace_failure(b"interrupt table"); return activation_failed(&mut manager); };
+            let Some(table) = VtdIrTable::new(hhdm_offset, coherent, false) else { trace_failure(b"interrupt table"); return activation_failed(&mut manager); };
             Some(Box::new(table))
         } else { None };
         let qi = if regs.supports_queued_invalidation() {
-            let Some(queue) = VtdQiQueue::new(hhdm_offset) else { trace_failure(b"queued invalidation allocation"); return activation_failed(&mut manager); };
+            let Some(queue) = VtdQiQueue::new(hhdm_offset, coherent) else { trace_failure(b"queued invalidation allocation"); return activation_failed(&mut manager); };
             if !regs.enable_queued_invalidation(&queue) {
                 let _ = regs.disable_queued_invalidation();
                 trace_failure(b"queued invalidation enable"); return activation_failed(&mut manager);
