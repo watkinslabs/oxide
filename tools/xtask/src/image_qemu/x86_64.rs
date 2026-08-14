@@ -79,6 +79,28 @@ impl HardwareProfile {
     }
 }
 
+/// Select the native profile's root transport without changing its remaining
+/// PCI topology. The alternate is a regression discriminator for root-media
+/// data integrity, not a second default hardware profile.
+fn native_root_uses_ahci_for(value: Option<&str>) -> Result<bool, u8> {
+    match value {
+        None | Some("ahci") => Ok(true),
+        Some("virtio") => Ok(false),
+        Some(other) => {
+            eprintln!("xtask grub: unknown OXIDE_QEMU_NATIVE_ROOT={other}; expected ahci or virtio");
+            Err(2)
+        }
+    }
+}
+
+fn root_path(profile: HardwareProfile) -> Result<(&'static str, bool), u8> {
+    if profile == HardwareProfile::NativePci {
+        let ahci = native_root_uses_ahci_for(std::env::var("OXIDE_QEMU_NATIVE_ROOT").ok().as_deref())?;
+        return Ok((if ahci { "/dev/sda" } else { "/dev/vda" }, ahci));
+    }
+    Ok(("/dev/vda", false))
+}
+
 fn validate_nic_selector() -> Result<(), u8> {
     match std::env::var("OXIDE_QEMU_NIC").as_deref() {
         Err(_) | Ok("virtio") | Ok("e1000") | Ok("e1000e") => Ok(()),
@@ -115,7 +137,7 @@ pub(super) fn build_grub_iso(
     fs::create_dir_all(stage.join("boot/grub")).map_err(|_| 1u8)?;
     fs::copy(kernel_elf, stage.join(format!("boot/oxide-{arch}"))).map_err(|_| 1u8)?;
     let profile = HardwareProfile::from_env()?;
-    let root = match profile { HardwareProfile::Default => "/dev/vda", HardwareProfile::NativePci => "/dev/sda" };
+    let (root, _) = root_path(profile)?;
     let args = super::bootargs::kernel_cmdline_for_root(arch, &format!("/boot/oxide-{arch}"), root);
     let cfg = x86_grub_cfg(arch, &args);
     fs::write(stage.join("boot/grub/grub.cfg"), cfg).map_err(|_| 1u8)?;
@@ -154,6 +176,7 @@ pub(super) fn qemu_run_grub_x86_64(
     smp: u32,
 ) -> Result<(), u8> {
     let profile = HardwareProfile::from_env()?;
+    let (_, native_root_ahci) = root_path(profile)?;
     validate_nic_selector()?;
     let blobs = crate::buildns::blobs_dir(repo, id);
     let uefi = std::env::var_os("OXIDE_QEMU_UEFI").is_some();
@@ -314,12 +337,19 @@ pub(super) fn qemu_run_grub_x86_64(
             "-audiodev", "none,id=snd0",
             "-device", "virtio-sound-pci,audiodev=snd0,disable-legacy=on,bus=pcie.0",
         ]),
-        HardwareProfile::NativePci => c.args([
+        HardwareProfile::NativePci if native_root_ahci => c.args([
             "-device", "ich9-ahci,id=boot-ahci,bus=pcie.0",
             "-drive", &format!("if=none,id=root,format=raw,file={}", root_img.display()),
             "-device", "ide-hd,drive=root,bus=boot-ahci.0,serial=oxide-root",
             "-drive", &format!("if=none,id=home,format=raw,file={}", home_img.display()),
             "-device", "ide-hd,drive=home,bus=boot-ahci.1,serial=oxide-home",
+        ]),
+        HardwareProfile::NativePci => c.args([
+            "-device", "ich9-ahci,id=boot-ahci,bus=pcie.0",
+            "-drive", &format!("if=none,id=home,format=raw,file={}", home_img.display()),
+            "-device", "ide-hd,drive=home,bus=boot-ahci.0,serial=oxide-home",
+            "-drive", &format!("if=none,id=root,format=raw,file={}", root_img.display()),
+            "-device", "virtio-blk-pci,drive=root,bus=pcie.0,serial=oxide-root,disable-legacy=on,num-queues=2",
         ]),
     };
     if !simplefb_only {
@@ -390,7 +420,7 @@ pub(super) fn qemu_run_grub_x86_64(
 
 #[cfg(test)]
 mod tests {
-    use super::{HardwareProfile, x86_grub_cfg};
+    use super::{HardwareProfile, native_root_uses_ahci_for, x86_grub_cfg};
     use crate::image_qemu::bootargs::kernel_cmdline_for_root;
 
     #[test]
@@ -403,6 +433,8 @@ mod tests {
     #[test]
     fn native_profile_uses_its_first_ahci_disk_as_root() {
         assert!(kernel_cmdline_for_root("x86_64", "/img", "/dev/sda").contains("root=/dev/sda"));
+        assert_eq!(native_root_uses_ahci_for(None), Ok(true));
+        assert_eq!(native_root_uses_ahci_for(Some("virtio")), Ok(false));
     }
 
     #[test]
