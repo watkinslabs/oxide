@@ -66,6 +66,7 @@ fn wait_ns(ns: u64) {
 
 fn mdic(c: &Controller, phy: u32, reg: u8, write: Option<u16>) -> Option<u16> {
     c.write(regs::MDIC, regs::mdic_command_at(phy, reg, write));
+    if c.pch2() { wait_ns(regs::PCH2_MDIC_SETTLE_NS); }
     for _ in 0..PCH_MDIC_RETRIES {
         let value = c.read(regs::MDIC);
         if value & regs::MDIC_READY == 0 { wait_ns(PCH_MDIC_WAIT_NS); continue; }
@@ -110,6 +111,7 @@ impl HvPhy {
         match self { Self::I82578 => PCH_HV_DEBUG_82578, Self::I82577 | Self::I82579 | Self::I217 => PCH_HV_DEBUG_82577 }
     }
     pub(crate) fn from_id(id: u32) -> Option<Self> {
+        if !regs::pch_phy_id_supported(id) { return None; }
         match id {
             regs::PCH_PHY_ID_82577 => Some(Self::I82577), regs::PCH_PHY_ID_82578 => Some(Self::I82578),
             regs::PCH_PHY_ID_82579 => Some(Self::I82579), regs::PCH_PHY_ID_I217 => Some(Self::I217), _ => None,

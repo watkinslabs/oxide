@@ -19,6 +19,7 @@ pub const E1000E_82571_BM_PCI_IDS: &[u16] = &[0x10d3, 0x10f6, E1000E_82583V];
 pub const E1000E_PCH_M_PCI_IDS: &[u16] = &[0x10ea, 0x10eb, 0x10ef, 0x10f0];
 pub const E1000E_PCH2_PCI_IDS: &[u16] = &[0x1502, 0x1503];
 pub const E1000E_PCH_LPT_I217_PCI_IDS: &[u16] = &[0x153a, 0x153b];
+pub const PCH2_MDIC_SETTLE_NS: u64 = 100_000;
 
 /// Match an Intel Ethernet function owned by the 82540 reset and DMA path. # C: O(n)
 #[inline]
@@ -453,6 +454,7 @@ mod tests {
         assert!(pch_phy_id_supported(PCH_PHY_ID_82577));
         assert!(pch_phy_id_supported(PCH_PHY_ID_I217));
         assert!(!pch_phy_id_supported(BM_PHY_ID_R2));
+        assert_eq!(PCH2_MDIC_SETTLE_NS, 100_000);
         assert_eq!(pch_hv_address((768 << 5) | 30), (768, 30));
         assert_eq!(pch_hv_address((3 << 5) | 0x13), (3, 0x13));
         assert_eq!(pch_lpt_rar_count(0), 12);

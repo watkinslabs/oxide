@@ -34,6 +34,7 @@ pub(crate) struct Controller {
 
 impl Controller {
     fn va(pa: u64) -> u64 { pmm::user_as::hhdm_offset().wrapping_add(pa) }
+    pub(crate) fn pch2(&self) -> bool { self.pch2 }
     pub(crate) fn read(&self, off: u64) -> u32 {
         // SAFETY: controller holds the owned MMIO mapping and `off` is an aligned register ABI offset.
         unsafe { core::ptr::read_volatile((self.mmio.base_va() + off) as *const u32) }
