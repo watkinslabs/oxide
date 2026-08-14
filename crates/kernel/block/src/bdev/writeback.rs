@@ -31,10 +31,12 @@ impl BdevMapping {
     /// `__filemap_fdatawrite_range` — the byte-range-limited submit half.
     /// `end == u64::MAX` means "to the end of the device". # C: O(N_dirty in range)
     pub fn fdatawrite_range(self: &Arc<Self>, start: u64, end: u64) {
+        if self.dead.load(Ordering::Acquire) { return; }
         if self.nrpages() == 0 { return; }
         let (lo, hi) = page_span(start, end);
         let batch: Vec<(u64, Vec<u8>)> = {
             let mut g = self.st.lock_bh::<crate::bh_gate::BlockBh>();
+            if self.dead.load(Ordering::Acquire) { return; }
             let idxs = g.dirty.take_writeback_range(lo, hi);
             let mut batch = Vec::with_capacity(idxs.len());
             for idx in idxs {
@@ -79,9 +81,11 @@ impl BdevMapping {
         {
             let mut g = self.st.lock_bh::<crate::bh_gate::BlockBh>();
             g.writeback.remove(&idx);
-            if let Err(e) = result {
-                g.dirty.set_dirty(idx);
-                g.dirty.set_error(e as i32);
+            if !self.dead.load(Ordering::Acquire) {
+                if let Err(e) = result {
+                    g.dirty.set_dirty(idx);
+                    g.dirty.set_error(e as i32);
+                }
             }
         }
         self.inflight.fetch_sub(1, Ordering::AcqRel);
@@ -105,6 +109,7 @@ impl BdevMapping {
     /// `fsync`/last-close path, which reports a writeback failure exactly
     /// once). # C: O(N_dirty)
     pub fn write_and_wait(self: &Arc<Self>) -> KResult<()> {
+        self.check_live()?;
         self.fdatawrite();
         self.wait_for_writeback();
         match self.st.lock_bh::<crate::bh_gate::BlockBh>().dirty.check_errors() {

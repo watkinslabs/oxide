@@ -182,6 +182,37 @@ impl DiskQuiesce {
         true
     }
 }
+
+/// Irreversible surprise-removal state for one published disk.  Construction
+/// rejects all future opens, holders, and submissions before unlinking its
+/// publication; retained file descriptions then observe `EIO` through the
+/// admission wrapper.  The caller waits only for requests admitted before
+/// this transition before releasing controller DMA state.
+pub struct ForcedDetach { disk: Arc<Disk> }
+impl ForcedDetach {
+    /// Name retained for the driver's removal record. # C: O(1)
+    pub fn name(&self) -> &str { &self.disk.name }
+    /// True after every request admitted before detach has completed. # C: O(1)
+    pub fn is_drained(&self) -> bool {
+        self.disk.io.lock_bh::<crate::bh_gate::BlockBh>().in_flight == 0
+    }
+    /// Wait until the pre-detach request population has completed. # Ctx: process # Sleeps: yes
+    pub fn wait_for_drain(&self) {
+        #[cfg(target_os = "oxide-kernel")]
+        {
+            let wait = Arc::clone(&self.disk.io.lock_bh::<crate::bh_gate::BlockBh>().drain_wait);
+            // SAFETY: detach closed admission before this process-context wait and holds no queue lock.
+            unsafe { sched::live::wait_event_uninterruptible(&wait, || self.is_drained()); }
+        }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        while !self.is_drained() {
+            #[cfg(any(test, feature = "hosted"))]
+            std::thread::yield_now();
+            #[cfg(not(any(test, feature = "hosted")))]
+            core::hint::spin_loop();
+        }
+    }
+}
 impl Drop for DiskQuiesce {
     fn drop(&mut self) {
         if !self.active { return; }
@@ -229,4 +260,43 @@ pub fn try_freeze_for_reset(name: &str) -> Option<DiskQuiesce> {
     drop(life);
     disk.io.lock_bh::<crate::bh_gate::BlockBh>().closed = true;
     Some(DiskQuiesce { disk, active: true, kind: GateKind::Reset })
+}
+
+/// Mark a surprise-removed disk dead and unlink its block publication.  This
+/// does not wait for arbitrary open file descriptions: retained handles stay
+/// releasable and every later I/O fails.  Drivers must call
+/// [`ForcedDetach::wait_for_drain`] before stopping DMA or freeing queues.
+/// # C: O(N_disks + N_partitions)
+pub fn begin_forced_detach(name: &str) -> Option<ForcedDetach> {
+    let disk = by_name(name)?;
+    {
+        // SAFETY: surprise removal serializes against open, reset, and normal removal in process context.
+        let mut life = unsafe { disk.life.lock() };
+        if life.lifecycle_held || life.reset_frozen || life.detached { return None; }
+        life.detached = true;
+    }
+    {
+        let mut io = disk.io.lock_bh::<crate::bh_gate::BlockBh>();
+        io.closed = true;
+        io.detached = true;
+    }
+    let removed = {
+        // SAFETY: this disk's detached lifecycle bit makes its publication uniquely removable.
+        let mut table = unsafe { TABLE.lock() };
+        let pos = table.iter().position(|entry| Arc::ptr_eq(entry, &disk))?;
+        table.remove(pos);
+        true
+    };
+    if !removed { return None; }
+    disk.mapping.mark_dead();
+    super::partition::unpublish_partitions(&disk);
+    crate::devbridge::unpublish(disk.number);
+    release_number(disk.driver, disk.number);
+    if let Some(dev) = drv::devices().into_iter().find(|dev| dev.bus == "block" && dev.addr == disk.name) {
+        drv::device_del(&dev);
+    }
+    // SAFETY: removal copies the process-context hook before calling it unlocked.
+    let hook = *unsafe { DISK_REMOVE_HOOK.lock() };
+    if let Some(f) = hook { f(&disk.name); }
+    Some(ForcedDetach { disk })
 }
