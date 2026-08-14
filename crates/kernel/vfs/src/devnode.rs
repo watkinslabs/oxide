@@ -155,6 +155,17 @@ pub trait CharDevOps: Send + Sync {
     fn ioctl_file(&self, devt: Devt, file: &File, cmd: u32, arg: usize) -> KResult<usize> {
         let _ = file; self.ioctl(devt, cmd, arg)
     }
+    /// `file_operations->uring_cmd` with the exact open description.
+    /// # C: driver-dependent
+    fn uring_cmd_file(&self, devt: Devt, file: &File, cmd: *mut core::ffi::c_void, issue_flags: u32) -> KResult<i32> {
+        let _ = (devt, file, cmd, issue_flags); Err(VfsError::Eopnotsupp)
+    }
+    /// Build the ABI `struct file` retained by one external io_uring command.
+    /// # C: driver-dependent
+    fn uring_file_new(&self, devt: Devt, file: &File) -> Option<*mut core::ffi::c_void> { let _ = (devt, file); None }
+    /// Release storage returned by [`Self::uring_file_new`].
+    /// # C: driver-dependent
+    unsafe fn uring_file_drop(&self, devt: Devt, file: *mut core::ffi::c_void) { let _ = (devt, file); }
     /// `cdev->poll`. # C: driver-dependent
     fn poll(&self, devt: Devt) -> KResult<u32> { let _ = devt; Ok(crate::inode::POLL_IN | crate::inode::POLL_OUT) }
     /// `cdev->poll` with per-open state. # C: driver-dependent
@@ -442,6 +453,25 @@ pub fn opened_chrdev(file: &File) -> Option<(Devt, Arc<dyn CharDevOps>)> {
 pub fn opened_chrdev_ioctl(file: &File, cmd: u32, arg: usize) -> Option<KResult<usize>> {
     let (devt, ops) = opened_chrdev(file)?;
     Some(ops.ioctl_file(devt, file, cmd, arg))
+}
+/// Invoke a character driver's asynchronous command hook through its exact open description.
+/// # C: driver-dependent
+pub fn opened_chrdev_uring_cmd(file: &File, cmd: *mut core::ffi::c_void, issue_flags: u32) -> Option<KResult<i32>> {
+    let (devt, ops) = opened_chrdev(file)?;
+    Some(ops.uring_cmd_file(devt, file, cmd, issue_flags))
+}
+/// Allocate the external ABI file object for an io_uring command.
+/// # C: driver-dependent
+pub fn opened_chrdev_uring_file_new(file: &File) -> Option<*mut core::ffi::c_void> {
+    let (devt, ops) = opened_chrdev(file)?;
+    ops.uring_file_new(devt, file)
+}
+/// Drop an external ABI file object created for an io_uring command.
+/// # C: driver-dependent
+pub unsafe fn opened_chrdev_uring_file_drop(file: &File, raw: *mut core::ffi::c_void) {
+    let Some((devt, ops)) = opened_chrdev(file) else { return; };
+    // SAFETY: raw came from this exact open description's uring_file_new callback.
+    unsafe { ops.uring_file_drop(devt, raw); }
 }
 /// Build the retained character driver's mapping object for this exact open.
 /// # C: driver-dependent

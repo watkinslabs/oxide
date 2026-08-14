@@ -8,10 +8,15 @@
 
 /// `sizeof(struct io_uring_sqe)`.
 pub const SQE_BYTES: usize = 64;
+/// Largest command wire image carried by an SQE128 command.
+pub const SQE_MAX_BYTES: usize = 128;
 
 /// Decoded submission-queue entry.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub struct Sqe {
+    /// Immutable wire image retained for in-kernel consumers whose command
+    /// payload begins in the normal 64-byte SQE body.
+    pub raw: [u8; SQE_MAX_BYTES],
     pub opcode: u8,
     pub flags: u8,
     /// `ioprio`; also the per-op flags half of `recv`/`accept` multishot.
@@ -50,6 +55,7 @@ impl Sqe {
             let mut v = [0u8; 8]; v.copy_from_slice(&b[o..o + 8]); u64::from_le_bytes(v)
         };
         Self {
+            raw: wire64(b),
             opcode: b[0], flags: b[1], ioprio: g16(2), fd: g32(4) as i32,
             off: g64(8), addr: g64(16), len: g32(24), op_flags: g32(28),
             user_data: g64(32), buf_index: g16(40), personality: g16(42),
@@ -57,6 +63,15 @@ impl Sqe {
             splice_fd_in: g32(44) as i32, addr_len: g16(44), addr3: g64(48),
             pad2: g64(56),
         }
+    }
+
+    /// Decode a normal SQE plus its optional 64-byte command continuation.
+    /// # C: O(1)
+    pub fn from_wire(b: &[u8; SQE_MAX_BYTES]) -> Self {
+        let mut first = [0u8; SQE_BYTES]; first.copy_from_slice(&b[..SQE_BYTES]);
+        let mut sqe = Self::from_bytes(&first);
+        sqe.raw = *b;
+        sqe
     }
 
     /// `file_index` — the same word as `splice_fd_in`, read unsigned. A direct
@@ -71,6 +86,10 @@ impl Sqe {
             a0: fd as u64, a1: self.addr, a2: self.off, a3: self.op_flags as u64, a4: 0, a5: 0,
         }
     }
+}
+
+fn wire64(b: &[u8; SQE_BYTES]) -> [u8; SQE_MAX_BYTES] {
+    let mut raw = [0u8; SQE_MAX_BYTES]; raw[..SQE_BYTES].copy_from_slice(b); raw
 }
 
 #[cfg(test)]

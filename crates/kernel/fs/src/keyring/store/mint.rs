@@ -47,7 +47,15 @@ impl Store {
     pub fn mint_not_in_quota(&mut self, ty: &'static KeyType, desc: &str, uid: u32, gid: u32,
         perm: u32, ns: KeyNs) -> Result<i32, Errno>
     {
-        let serial = self.alloc(ty, desc, Vec::new(), uid, gid, perm, 0, Quota::Overrun, KEY_IS_POSITIVE, ns)?;
+        self.mint_payload_not_in_quota(ty, desc, Vec::new(), uid, gid, perm, ns)
+    }
+
+    /// Built-in key allocation with owned payload and no user quota charge.
+    /// # C: O(log N)
+    pub fn mint_payload_not_in_quota(&mut self, ty: &'static KeyType, desc: &str, payload: Vec<u8>, uid: u32, gid: u32,
+        perm: u32, ns: KeyNs) -> Result<i32, Errno>
+    {
+        let serial = self.alloc(ty, desc, payload, uid, gid, perm, 0, Quota::Overrun, KEY_IS_POSITIVE, ns)?;
         let k = self.keys.get_mut(&serial).expect("just inserted under the held lock");
         k.in_quota = false;
         k.quotalen = 0;

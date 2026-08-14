@@ -46,6 +46,16 @@ fn personality_does_not_alias_the_buffer_index() {
 }
 
 #[test]
+fn command_wire_keeps_the_second_sqe128_half() {
+    let mut b = [0u8; SQE_MAX_BYTES];
+    b[0] = 64;
+    b[SQE_BYTES..].fill(0xa5);
+    let s = Sqe::from_wire(&b);
+    assert_eq!(s.opcode, 64);
+    assert_eq!(s.raw, b);
+}
+
+#[test]
 fn accept_uses_addr2_for_addrlen_and_accept_flags_for_descriptor_state() {
     let flags = SOCK_CLOEXEC | SOCK_NONBLOCK;
     let mut s = Sqe::default();

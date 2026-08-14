@@ -73,6 +73,7 @@ mod linux_dma_sgl;
 #[cfg(test)]
 mod linux_dma_tests;
 pub mod linux_io;
+pub mod linux_io_uring;
 pub mod linux_ida;
 pub mod linux_irq;
 pub mod linux_led;
@@ -81,6 +82,7 @@ pub mod linux_input;
 pub mod linux_module;
 pub mod linux_mempool;
 pub mod linux_nvme_auth;
+pub mod linux_opal;
 pub mod linux_crypto;
 pub mod linux_configfs;
 pub mod linux_debugfs;

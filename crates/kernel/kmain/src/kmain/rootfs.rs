@@ -68,6 +68,8 @@ unsafe fn mount_root() {
         install_network_hooks();
         net::sock::set_iface_primary_ip_hook(crate::syscalls::siocgif::iface_primary_ip_hook);
         modules::linux_time::set_now_hook(module_time_now_ns);
+        modules::linux_nvme_auth::install_keyring_hooks(fs::keyring::native::key_put,
+            fs::keyring::native::key_revoke, fs::keyring::native::nvme_tls_psk_refresh);
         modules::registry::init_exports();
         crate::syscalls::mount::install_vfs_hooks();
         crate::syscalls::ensure_mount_filesystems_registered();

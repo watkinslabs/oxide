@@ -308,6 +308,24 @@ impl CharDevOps for LinuxCharOps {
         rc
     }
 
+    fn uring_cmd_file(&self, _devt: Devt, file: &File, cmd: *mut c_void, issue_flags: u32) -> vfs::KResult<i32> {
+        let uring_cmd = self.ops().and_then(|o| o.uring_cmd).ok_or(VfsError::Eopnotsupp)?;
+        let _ = file;
+        // SAFETY: callback pointer comes from the registered Linux file_operations table and cmd is the live io_uring command storage owned by its issuer.
+        let rc = unsafe { uring_cmd(cmd, issue_flags) };
+        Ok(rc)
+    }
+
+    fn uring_file_new(&self, _devt: Devt, file: &File) -> Option<*mut c_void> {
+        Some(Box::into_raw(Box::new(self.file_for_call(Some(file)))).cast())
+    }
+
+    unsafe fn uring_file_drop(&self, _devt: Devt, file: *mut c_void) {
+        if file.is_null() { return; }
+        // SAFETY: uring_file_new allocated exactly one LinuxFile for this external command.
+        unsafe { drop(Box::from_raw(file.cast::<LinuxFile>())); }
+    }
+
     /// The registered `file_operations` answers directly: a module that left
     /// `.poll` NULL is not epoll-able. # C: O(1)
     fn can_poll(&self, _devt: Devt) -> bool { self.ops().and_then(|o| o.poll).is_some() }
