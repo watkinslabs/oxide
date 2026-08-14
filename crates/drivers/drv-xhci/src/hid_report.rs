@@ -51,6 +51,8 @@ impl InputField {
 pub struct ReportDecoder { layout: Box<ReportLayout>, values: Box<[[i32; MAX_VALUES]; MAX_FIELDS]> }
 impl ReportDecoder {
     pub fn new(layout: Box<ReportLayout>) -> Self { Self { layout, values: Box::new([[0; MAX_VALUES]; MAX_FIELDS]) } }
+    /// Validated report geometry retained for input-device publication. # C: O(1)
+    pub fn layout(&self) -> &ReportLayout { &self.layout }
     /// Decode one interrupt report into changed Linux input events. # C: O(fields * values)
     pub fn decode(&mut self, report: &[u8]) -> [Option<crate::hid::Event>; MAX_FIELDS] {
         let mut events = [None; MAX_FIELDS]; let mut out = 0usize;

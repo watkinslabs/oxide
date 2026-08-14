@@ -21,7 +21,7 @@ fn advertise_field(dev: &mut input::VirtioInputDev, field: crate::hid_report::In
 pub(crate) fn platform_id(bdf: pci::Bdf, slot: u8) -> u32 { crate::identity::input_platform_id(bdf, slot) }
 
 #[inline(never)]
-pub(crate) fn install_hid_input(bdf: pci::Bdf, slot: u8, layout: Option<crate::hid_report::ReportLayout>) -> Option<u32> {
+pub(crate) fn install_hid_input(bdf: pci::Bdf, slot: u8, layout: Option<&crate::hid_report::ReportLayout>) -> Option<u32> {
     let layout = layout?;
     let mut dev = input::VirtioInputDev::empty_platform_boxed(platform_id(bdf, slot));
     for index in 0..layout.len() {

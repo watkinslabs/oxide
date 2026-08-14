@@ -34,6 +34,8 @@ pub(crate) mod probe;
 #[cfg(target_os = "oxide-kernel")]
 mod probe_input;
 #[cfg(target_os = "oxide-kernel")]
+mod hid_input_work;
+#[cfg(target_os = "oxide-kernel")]
 mod detach;
 #[cfg(target_os = "oxide-kernel")]
 mod probe_hub;
