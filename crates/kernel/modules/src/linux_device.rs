@@ -9,6 +9,7 @@ pub(crate) mod core;
 pub(crate) mod devres;
 mod format;
 mod kobject;
+mod hwmon;
 mod registry;
 pub(crate) mod types;
 
@@ -16,4 +17,5 @@ pub(crate) mod types;
 /// # C: O(1)
 pub fn export_symbols() {
     core::export_symbols();
+    hwmon::export_symbols();
 }
