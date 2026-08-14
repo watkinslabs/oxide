@@ -319,7 +319,7 @@ mod imp {
 }
 
 #[cfg(target_os = "oxide-kernel")]
-pub use imp::{command_orig_for, device_key_from_bdf, init, mark_recovery_required, remove, reset, shutdown, NvmeBlk, NVME_CLASS24};
+pub use imp::{command_orig_for, device_key_from_bdf, init, remove, reset, shutdown, NvmeBlk, NVME_CLASS24};
 
 #[cfg(target_os = "oxide-kernel")]
 fn restore_pci_bus_master(dev: &drv::Device, command_orig: u16) {
