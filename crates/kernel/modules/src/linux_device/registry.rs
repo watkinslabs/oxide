@@ -11,7 +11,9 @@ const MAX_CLASS_RECORDS: usize = 32;
 const MAX_BUS_RECORDS: usize = 32;
 const MAX_DRIVER_RECORDS: usize = 32;
 const MAX_DEVICE_ATTRS: usize = 16;
+const MAX_KOBJECT_LINKS: usize = 16;
 const MAX_BIND_BATCH: usize = 32;
+const LINUX_EEXIST: i32 = 17;
 
 #[derive(Copy, Clone)]
 struct PtrRecord { ptr: usize }
@@ -49,6 +51,15 @@ struct KobjectRecord {
     attrs: [usize; MAX_DEVICE_ATTRS],
     attr_count: usize,
     uevent_seq: u64,
+    links: [Option<LinkRecord>; MAX_KOBJECT_LINKS],
+}
+
+#[derive(Copy, Clone)]
+struct LinkRecord {
+    #[cfg_attr(not(test), expect(dead_code, reason = "the retained target is the sysfs link resolution state"))]
+    target: usize,
+    group: [c_char; crate::linux_device::types::DEVICE_NAME_LEN],
+    name: [c_char; crate::linux_device::types::DEVICE_NAME_LEN],
 }
 
 static DEVICES: Spinlock<[Option<PtrRecord>; MAX_DEVICE_RECORDS], ModulesLockClass> =
@@ -267,6 +278,54 @@ pub(super) fn remove_kobject_attr(kobj: usize, attr: usize) {
     }
 }
 
+pub(super) fn add_kobject_link(kobj: usize, target: usize, group: *const c_char, name: *const c_char) -> i32 {
+    if target == 0 || name.is_null() { return -LINUX_EINVAL; }
+    let Some(name) = copy_link_component(name, false) else { return -LINUX_EINVAL; };
+    let Some(group) = copy_link_component(group, true) else { return -LINUX_EINVAL; };
+    let mut state = KOBJECT_STATE.lock();
+    if !state.iter().flatten().any(|record| record.ptr == target) { return -LINUX_EINVAL; }
+    let Some(record) = state.iter_mut().flatten().find(|record| record.ptr == kobj) else { return -LINUX_EINVAL; };
+    if record.links.iter().flatten().any(|link| link.group == group && link.name == name) { return -LINUX_EEXIST; }
+    let Some(slot) = record.links.iter_mut().find(|slot| slot.is_none()) else { return -LINUX_ENOMEM; };
+    *slot = Some(LinkRecord { target, group, name });
+    record.uevent_seq = record.uevent_seq.saturating_add(1);
+    LINUX_OK
+}
+
+pub(super) fn remove_kobject_link(kobj: usize, group: *const c_char, name: *const c_char) {
+    let Some(name) = copy_link_component(name, false) else { return; };
+    let Some(group) = copy_link_component(group, true) else { return; };
+    let mut state = KOBJECT_STATE.lock();
+    let Some(record) = state.iter_mut().flatten().find(|record| record.ptr == kobj) else { return; };
+    if let Some(slot) = record.links.iter_mut().find(|slot| slot.is_some_and(|link| link.group == group && link.name == name)) {
+        *slot = None;
+        record.uevent_seq = record.uevent_seq.saturating_add(1);
+    }
+}
+
+fn copy_link_component(ptr: *const c_char, nullable: bool) -> Option<[c_char; crate::linux_device::types::DEVICE_NAME_LEN]> {
+    let mut copied = [0; crate::linux_device::types::DEVICE_NAME_LEN];
+    if ptr.is_null() { return nullable.then_some(copied); }
+    // SAFETY: sysfs link KPI callers pass a NUL-terminated component for this synchronous copy.
+    let bytes = unsafe { core::ffi::CStr::from_ptr(ptr).to_bytes() };
+    if (!nullable && bytes.is_empty()) || bytes.len() >= copied.len() { return None; }
+    for (index, byte) in bytes.iter().enumerate() { copied[index] = *byte as c_char; }
+    Some(copied)
+}
+
+#[cfg(test)]
+pub(super) fn kobject_link_count(kobj: usize) -> usize {
+    let state = KOBJECT_STATE.lock();
+    state.iter().flatten().find(|record| record.ptr == kobj).map_or(0, |record| record.links.iter().flatten().count())
+}
+
+#[cfg(test)]
+pub(super) fn kobject_link_target(kobj: usize) -> usize {
+    let state = KOBJECT_STATE.lock();
+    state.iter().flatten().find(|record| record.ptr == kobj)
+        .and_then(|record| record.links.iter().flatten().next()).map_or(0, |link| link.target)
+}
+
 pub(super) fn record_kobject_uevent(kobj: usize) {
     let mut g = KOBJECT_STATE.lock();
     if let Some(rec) = g.iter_mut().flatten().find(|r| r.ptr == kobj) {
@@ -313,7 +372,8 @@ impl DeviceRecord {
 
 impl KobjectRecord {
     fn new(ptr: usize) -> Self {
-        Self { ptr, refs: 1, name: 0, attrs: [0; MAX_DEVICE_ATTRS], attr_count: 0, uevent_seq: 0 }
+        Self { ptr, refs: 1, name: 0, attrs: [0; MAX_DEVICE_ATTRS], attr_count: 0, uevent_seq: 0,
+            links: [None; MAX_KOBJECT_LINKS] }
     }
 }
 
