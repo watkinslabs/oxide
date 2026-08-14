@@ -17,9 +17,9 @@ const ENDPOINT_ACTIVE: u8 = 2;
 #[cfg_attr(target_arch = "aarch64", allow(dead_code))]
 const ENDPOINT_HANDLING: u8 = 3;
 
-struct Endpoint { state: AtomicU8, mmio: AtomicU64, in_handler: AtomicU32, polling: AtomicBool }
+struct Endpoint { state: AtomicU8, mmio: AtomicU64, in_handler: AtomicU32, polling: AtomicBool, link_change: AtomicBool }
 impl Endpoint {
-    const fn new() -> Self { Self { state: AtomicU8::new(ENDPOINT_FREE), mmio: AtomicU64::new(0), in_handler: AtomicU32::new(0), polling: AtomicBool::new(false) } }
+    const fn new() -> Self { Self { state: AtomicU8::new(ENDPOINT_FREE), mmio: AtomicU64::new(0), in_handler: AtomicU32::new(0), polling: AtomicBool::new(false), link_change: AtomicBool::new(false) } }
 }
 static ENDPOINTS: [Endpoint; MAX_DEVICES] = [const { Endpoint::new() }; MAX_DEVICES];
 
@@ -28,6 +28,7 @@ pub(crate) struct Controller {
     rx_desc_pa: u64, tx_desc_pa: u64, rx_data_pa: u64, tx_data_pa: u64,
     rx_desc_dma: u64, tx_desc_dma: u64, rx_data_dma: u64, tx_data_dma: u64,
     bdf: pci::Bdf,
+    e1000e_nvm_phy: bool,
     rx_next: usize, tx_next: usize,
 }
 
@@ -244,7 +245,7 @@ fn configure_rings(mmio: mmio_map::Mapping, io_base: Option<u16>, bdf: pci::Bdf,
         unsafe { pmm::setup::free_contig(rx_desc_pa, pmm::Order(0)); pmm::setup::free_contig(tx_desc_pa, pmm::Order(0)); pmm::setup::free_contig(rx_data_pa, RX_ORDER); pmm::setup::free_contig(tx_data_pa, TX_ORDER); }
         return None;
     }
-    let mut c = Controller { mmio, rx_desc_pa, tx_desc_pa, rx_data_pa, tx_data_pa, rx_desc_dma, tx_desc_dma, rx_data_dma, tx_data_dma, bdf, rx_next: 0, tx_next: 0 };
+    let mut c = Controller { mmio, rx_desc_pa, tx_desc_pa, rx_data_pa, tx_data_pa, rx_desc_dma, tx_desc_dma, rx_data_dma, tx_data_dma, bdf, e1000e_nvm_phy: profile.e1000e_nvm_phy, rx_next: 0, tx_next: 0 };
     trace("[INFO]  e1000: dma allocated\n");
     if !crate::reset::apply(&c, io_base, profile) { c.free(); return None; }
     if profile.e1000e_nvm_phy && !crate::e1000e_init::prepare(&c) { c.free(); return None; }
@@ -267,6 +268,7 @@ fn configure_rings(mmio: mmio_map::Mapping, io_base: Option<u16>, bdf: pci::Bdf,
 }
 
 fn start(c: &Controller) {
+    if c.e1000e_nvm_phy && !crate::e1000e_init::activate(c) { return; }
     c.write(regs::RCTL, regs::RCTL_EN | regs::RCTL_BAM | regs::RCTL_SECRC | regs::RCTL_SZ_2048);
     c.write(regs::TCTL, regs::TCTL_EN | regs::TCTL_PSP | (15 << regs::TCTL_CT_SHIFT) | (0x40 << regs::TCTL_COLD_SHIFT));
     // e1000_open configures hardware before e1000_irq_enable; only then may
@@ -303,11 +305,11 @@ fn trace(_stage: &'static str) {}
 fn endpoint_claim(mmio: u64) -> Option<usize> {
     for (i, e) in ENDPOINTS.iter().enumerate() {
         if e.state.compare_exchange(ENDPOINT_FREE, ENDPOINT_SETUP, Ordering::AcqRel, Ordering::Acquire).is_ok() {
-            e.mmio.store(mmio, Ordering::Release); e.in_handler.store(0, Ordering::Release); e.polling.store(false, Ordering::Release); return Some(i);
+            e.mmio.store(mmio, Ordering::Release); e.in_handler.store(0, Ordering::Release); e.polling.store(false, Ordering::Release); e.link_change.store(false, Ordering::Release); return Some(i);
         }
     } None
 }
-fn endpoint_release(i: usize) { let e = &ENDPOINTS[i]; e.mmio.store(0, Ordering::Release); e.polling.store(false, Ordering::Release); e.state.store(ENDPOINT_FREE, Ordering::Release); }
+fn endpoint_release(i: usize) { let e = &ENDPOINTS[i]; e.mmio.store(0, Ordering::Release); e.polling.store(false, Ordering::Release); e.link_change.store(false, Ordering::Release); e.state.store(ENDPOINT_FREE, Ordering::Release); }
 #[cfg_attr(target_arch = "aarch64", allow(dead_code))]
 fn hard_irq() -> bool {
     let mut pending = false;
@@ -318,6 +320,7 @@ fn hard_irq() -> bool {
         // SAFETY: ACTIVE owns this MMIO identity; removal waits for in_handler before unmapping it.
         // SAFETY: ACTIVE owns the live controller MMIO identity until this handler drains.
         let cause = unsafe { core::ptr::read_volatile((mmio + regs::ICR) as *const u32) };
+        if cause & regs::IMS_LSC != 0 { e.link_change.store(true, Ordering::Release); }
         if cause != 0 && e.polling.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok() {
             // SAFETY: ACTIVE publishes the MMIO mapping; mask before deferred poll owns RX cleanup.
             unsafe { core::ptr::write_volatile((mmio + regs::IMC) as *mut u32, u32::MAX); }
@@ -355,7 +358,12 @@ fn poll_rx() {
         let raw = dev.iface.load(Ordering::Acquire); if raw == 0 { continue; }
         let iface = net::NetIfaceId::from_raw(raw as u32);
         let generation = dev.generation.load(Ordering::Acquire);
-        let (frames, more) = dev.ctrl.lock_bh::<sched::bh::SchedBh>().take_rx();
+        let (frames, more) = {
+            let mut ctrl = dev.ctrl.lock_bh::<sched::bh::SchedBh>();
+            let result = ctrl.take_rx();
+            if ENDPOINTS[dev.endpoint].link_change.swap(false, Ordering::AcqRel) && ctrl.e1000e_nvm_phy { let _ = crate::e1000e_init::reconcile(&ctrl); }
+            result
+        };
         for frame in frames {
             let mut pkt = net::Pkt::new_with_headroom(net::DEFAULT_HEADROOM, frame.len());
             pkt.data_mut().copy_from_slice(&frame);

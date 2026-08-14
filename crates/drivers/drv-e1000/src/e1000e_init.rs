@@ -100,10 +100,70 @@ fn validate_and_configure_bm_phy(c: &Controller) -> bool {
     mdic(c, BM_PHY_CONTROL_REGISTER, Some(BM_PHY_RESET)).is_some()
 }
 
+fn configure_flow_control(c: &Controller, mode: regs::PauseMode) {
+    c.write(regs::FCT, regs::FLOW_CONTROL_TYPE);
+    c.write(regs::FCAH, regs::FLOW_CONTROL_ADDRESS_HIGH);
+    c.write(regs::FCAL, regs::FLOW_CONTROL_ADDRESS_LOW);
+    c.write(regs::FCTTV, regs::FLOW_CONTROL_PAUSE_TIME);
+    let (low, high, ctrl_bits) = match mode {
+        regs::PauseMode::None => (0, 0, 0),
+        regs::PauseMode::Rx => (0, 0, regs::CTRL_RFCE),
+        regs::PauseMode::Tx => (regs::FLOW_CONTROL_LOW_WATER | regs::FCRTL_XON, regs::FLOW_CONTROL_HIGH_WATER, regs::CTRL_TFCE),
+        regs::PauseMode::Full => (regs::FLOW_CONTROL_LOW_WATER | regs::FCRTL_XON, regs::FLOW_CONTROL_HIGH_WATER, regs::CTRL_RFCE | regs::CTRL_TFCE),
+    };
+    c.write(regs::FCRTL, low);
+    c.write(regs::FCRTH, high);
+    let ctrl = c.read(regs::CTRL) & !(regs::CTRL_RFCE | regs::CTRL_TFCE);
+    c.write(regs::CTRL, ctrl | ctrl_bits);
+}
+
+fn configure_autoneg(c: &Controller) -> bool {
+    let Some(advertisement) = mdic(c, regs::MII_ADVERTISE, None) else { return false; };
+    let advertisement = (advertisement & !(regs::MII_ADVERTISE_SPEEDS | regs::MII_ADVERTISE_PAUSE | regs::MII_ADVERTISE_ASYM_PAUSE))
+        | regs::MII_ADVERTISE_SPEEDS | regs::MII_ADVERTISE_PAUSE | regs::MII_ADVERTISE_ASYM_PAUSE;
+    if mdic(c, regs::MII_ADVERTISE, Some(advertisement)).is_none() { return false; }
+    let Some(gigabit) = mdic(c, regs::MII_CTRL1000, None) else { return false; };
+    if mdic(c, regs::MII_CTRL1000, Some((gigabit & !regs::MII_CTRL1000_HALF) | regs::MII_CTRL1000_FULL)).is_none() { return false; }
+    let Some(control) = mdic(c, regs::MII_BMCR, None) else { return false; };
+    mdic(c, regs::MII_BMCR, Some(control | regs::MII_BMCR_AN_ENABLE | regs::MII_BMCR_AN_RESTART)).is_some()
+}
+
+fn negotiated_pause(c: &Controller) -> Option<regs::PauseMode> {
+    let _ = mdic(c, regs::MII_BMSR, None)?;
+    if mdic(c, regs::MII_BMSR, None)? & regs::MII_BMSR_AN_COMPLETE == 0 { return None; }
+    let advertisement = mdic(c, regs::MII_ADVERTISE, None)?;
+    let partner = mdic(c, regs::MII_LPA, None)?;
+    Some(regs::resolve_pause(advertisement, partner))
+}
+
+fn setup_copper_link(c: &Controller) -> bool {
+    let ctrl = c.read(regs::CTRL);
+    c.write(regs::CTRL, (ctrl | regs::CTRL_SLU) & !(regs::CTRL_FRCSPD | regs::CTRL_FRCDPX));
+    if !configure_autoneg(c) { return false; }
+    configure_flow_control(c, negotiated_pause(c).unwrap_or(regs::PauseMode::Full));
+    true
+}
+
 pub(crate) fn prepare(c: &Controller) -> bool {
     let _serial = BM_SERIAL.lock();
     if !acquire_mdio(c) { return false; }
     let result = validate_nvm(c) && validate_and_configure_bm_phy(c);
+    release_mdio(c);
+    result
+}
+
+pub(crate) fn activate(c: &Controller) -> bool {
+    let _serial = BM_SERIAL.lock();
+    if !acquire_mdio(c) { return false; }
+    let result = setup_copper_link(c);
+    release_mdio(c);
+    result
+}
+
+pub(crate) fn reconcile(c: &Controller) -> bool {
+    let _serial = BM_SERIAL.lock();
+    if !acquire_mdio(c) { return false; }
+    let result = match negotiated_pause(c) { Some(mode) => { configure_flow_control(c, mode); true }, None => true };
     release_mdio(c);
     result
 }

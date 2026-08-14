@@ -62,11 +62,23 @@ pub const EECD: u64 = 0x00010;
 pub const EERD: u64 = 0x00014;
 pub const MDIC: u64 = 0x00020;
 pub const EXTCNF_CTRL: u64 = 0x00f00;
+pub const FCT: u64 = 0x00030;
+pub const FCAH: u64 = 0x00028;
+pub const FCAL: u64 = 0x0002c;
+pub const FCTTV: u64 = 0x00170;
+pub const FCRTL: u64 = 0x02160;
+pub const FCRTH: u64 = 0x02168;
 
 pub const CTRL_RST: u32 = 1 << 26;
+pub const CTRL_SLU: u32 = 1 << 6;
+pub const CTRL_FRCSPD: u32 = 1 << 11;
+pub const CTRL_FRCDPX: u32 = 1 << 12;
+pub const CTRL_RFCE: u32 = 1 << 27;
+pub const CTRL_TFCE: u32 = 1 << 28;
 pub const EXTCNF_CTRL_MDIO_SW_OWNERSHIP: u32 = 1 << 5;
 pub const EECD_NVM_REQUEST: u32 = 1 << 6;
 pub const EECD_NVM_GRANT: u32 = 1 << 7;
+pub const EECD_AUTO_READ_DONE: u32 = 1 << 9;
 pub const EERD_START: u32 = 1;
 pub const EERD_DONE: u32 = 1 << 1;
 pub const EERD_ADDRESS_SHIFT: u32 = 2;
@@ -84,6 +96,31 @@ pub const BM_PHY_ADDRESS: u32 = 1;
 pub const BM_PHY_ID_HIGH: u8 = 2;
 pub const BM_PHY_ID_LOW: u8 = 3;
 pub const BM_PHY_ID_R2: u32 = 0x0141_0cb1;
+pub const MII_BMCR: u8 = 0;
+pub const MII_BMSR: u8 = 1;
+pub const MII_ADVERTISE: u8 = 4;
+pub const MII_LPA: u8 = 5;
+pub const MII_CTRL1000: u8 = 9;
+pub const MII_BMCR_AN_ENABLE: u16 = 0x1000;
+pub const MII_BMCR_AN_RESTART: u16 = 0x0200;
+pub const MII_BMSR_AN_COMPLETE: u16 = 0x0020;
+pub const MII_ADVERTISE_10_HALF: u16 = 0x0020;
+pub const MII_ADVERTISE_10_FULL: u16 = 0x0040;
+pub const MII_ADVERTISE_100_HALF: u16 = 0x0080;
+pub const MII_ADVERTISE_100_FULL: u16 = 0x0100;
+pub const MII_ADVERTISE_PAUSE: u16 = 0x0400;
+pub const MII_ADVERTISE_ASYM_PAUSE: u16 = 0x0800;
+pub const MII_ADVERTISE_SPEEDS: u16 = MII_ADVERTISE_10_HALF | MII_ADVERTISE_10_FULL | MII_ADVERTISE_100_HALF | MII_ADVERTISE_100_FULL;
+pub const MII_CTRL1000_FULL: u16 = 0x0200;
+pub const MII_CTRL1000_HALF: u16 = 0x0100;
+pub const FLOW_CONTROL_TYPE: u32 = 0x8808;
+pub const FLOW_CONTROL_ADDRESS_HIGH: u32 = 0x0000_0100;
+pub const FLOW_CONTROL_ADDRESS_LOW: u32 = 0x00c2_8001;
+pub const FLOW_CONTROL_PAUSE_TIME: u32 = 0x0680;
+pub const FLOW_CONTROL_PBA_BYTES: u32 = 32 << 10;
+pub const FLOW_CONTROL_HIGH_WATER: u32 = (FLOW_CONTROL_PBA_BYTES * 9 / 10) & !7;
+pub const FLOW_CONTROL_LOW_WATER: u32 = FLOW_CONTROL_HIGH_WATER - 8;
+pub const FCRTL_XON: u32 = 1 << 31;
 pub const TCTL_PSP: u32 = 1 << 3;
 pub const RCTL_EN: u32 = 1 << 1;
 pub const RCTL_BAM: u32 = 1 << 15;
@@ -111,6 +148,8 @@ pub const ETH_MAX_FRAME: usize = 1518;
 /// 82540-class EEPROM auto-read window after a global reset. # C: O(1)
 pub const RESET_AUTO_READ_NS: u64 = 5_000_000;
 pub const E1000E_82574_RESET_NS: u64 = 25_000_000;
+pub const NVM_AUTO_READ_TIMEOUT_NS: u64 = 10_000_000;
+pub const RESET_STATUS_POLL_NS: u64 = 1_000_000;
 
 #[repr(C)]
 #[derive(Copy, Clone, Default)]
@@ -168,6 +207,22 @@ pub const fn mdic_command(register: u8, write: Option<u16>) -> u32 {
 /// Accept the 64-word NVM checksum contract. # C: O(n)
 pub fn nvm_checksum_valid(words: &[u16]) -> bool {
     words.len() == NVM_CHECKSUM_WORD as usize + 1 && words.iter().fold(0u16, |sum, word| sum.wrapping_add(*word)) == NVM_CHECKSUM_SUM
+}
+/// Decide whether the reset NVM auto-read completed. # C: O(1)
+pub const fn e1000e_auto_read_done(eecd: u32) -> bool { eecd & EECD_AUTO_READ_DONE != 0 }
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub(crate) enum PauseMode { None, Rx, Tx, Full }
+/// Resolve copper pause capability after auto-negotiation. # C: O(1)
+pub(crate) const fn resolve_pause(advertisement: u16, partner: u16) -> PauseMode {
+    let local_pause = advertisement & MII_ADVERTISE_PAUSE != 0;
+    let local_asym = advertisement & MII_ADVERTISE_ASYM_PAUSE != 0;
+    let peer_pause = partner & MII_ADVERTISE_PAUSE != 0;
+    let peer_asym = partner & MII_ADVERTISE_ASYM_PAUSE != 0;
+    if local_pause && peer_pause { PauseMode::Full }
+    else if !local_pause && local_asym && peer_pause && peer_asym { PauseMode::Tx }
+    else if local_pause && local_asym && !peer_pause && peer_asym { PauseMode::Rx }
+    else { PauseMode::None }
 }
 
 #[cfg(test)]
@@ -232,5 +287,11 @@ mod tests {
         assert!(nvm_checksum_valid(&nvm));
         nvm[0] = 1;
         assert!(!nvm_checksum_valid(&nvm));
+        assert!(e1000e_auto_read_done(EECD_AUTO_READ_DONE));
+        assert!(!e1000e_auto_read_done(0));
+        assert_eq!(resolve_pause(MII_ADVERTISE_PAUSE, MII_ADVERTISE_PAUSE), PauseMode::Full);
+        assert_eq!(resolve_pause(MII_ADVERTISE_ASYM_PAUSE, MII_ADVERTISE_PAUSE | MII_ADVERTISE_ASYM_PAUSE), PauseMode::Tx);
+        assert_eq!(resolve_pause(MII_ADVERTISE_PAUSE | MII_ADVERTISE_ASYM_PAUSE, MII_ADVERTISE_ASYM_PAUSE), PauseMode::Rx);
+        assert_eq!(resolve_pause(0, MII_ADVERTISE_PAUSE | MII_ADVERTISE_ASYM_PAUSE), PauseMode::None);
     }
 }

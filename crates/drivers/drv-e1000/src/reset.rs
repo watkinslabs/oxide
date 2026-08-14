@@ -28,6 +28,15 @@ fn release_mdio(c: &Controller) {
     c.write(regs::EXTCNF_CTRL, c.read(regs::EXTCNF_CTRL) & !regs::EXTCNF_CTRL_MDIO_SW_OWNERSHIP);
 }
 
+fn wait_auto_read(c: &Controller) -> bool {
+    let auto_deadline = sched::deadline::clock::now_ns().saturating_add(regs::NVM_AUTO_READ_TIMEOUT_NS);
+    while !regs::e1000e_auto_read_done(c.read(regs::EECD)) {
+        if sched::deadline::clock::now_ns() >= auto_deadline { return false; }
+        wait_ns(regs::RESET_STATUS_POLL_NS);
+    }
+    true
+}
+
 pub(crate) fn apply(c: &Controller, io_base: Option<u16>, profile: ResetProfile) -> bool {
     c.write(regs::IMC, u32::MAX);
     c.write(regs::RCTL, 0);
@@ -44,6 +53,7 @@ pub(crate) fn apply(c: &Controller, io_base: Option<u16>, profile: ResetProfile)
     #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
     { let _ = io_base; c.write(regs::CTRL, ctrl | regs::CTRL_RST); }
     if profile.mdio_ownership { release_mdio(c); }
+    if profile.e1000e_nvm_phy && !wait_auto_read(c) { return false; }
     wait_ns(profile.reset_ns);
     let _ = c.read(regs::ICR);
     true
