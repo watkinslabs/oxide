@@ -1,7 +1,7 @@
 // Module manifest:
 // - `regs`: descriptor ABI, register offsets, and ring contracts.
 // - `imp`: PCI probe, DMA ownership, transmit, and NET_RX polling.
-// - `e1000e`: discrete 82574 PCI driver binding.
+// - `e1000e`: discrete 82571-family BM PCI driver binding.
 // - `e1000e_init`: NVM and BM-PHY admission for the 82571 controller family.
 // - `profile`: controller reset and DMA contracts.
 // - `reset`: controller-specific reset sequencing.

@@ -379,9 +379,9 @@ fn poll_rx() {
 fn supported(dev: &drv::Device) -> bool {
     dev.bus == "pci" && regs::legacy_pci_match(dev.vendor_id, dev.class, dev.device_id)
 }
-pub(crate) fn supports_e1000e_82574(dev: &drv::Device) -> bool {
+pub(crate) fn supports_e1000e_82571_bm(dev: &drv::Device) -> bool {
     dev.bus == "pci" && dev.class == regs::ETHERNET_CLASS && dev.vendor_id == regs::INTEL_VENDOR
-        && regs::E1000E_82574_PCI_IDS.contains(&dev.device_id)
+        && regs::e1000e_82571_bm_pci_id_supported(dev.device_id)
 }
 
 fn remove_bdf(bdf: pci::Bdf) {

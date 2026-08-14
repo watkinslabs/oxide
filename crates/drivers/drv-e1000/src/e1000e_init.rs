@@ -100,6 +100,29 @@ fn validate_and_configure_bm_phy(c: &Controller) -> bool {
     mdic(c, BM_PHY_CONTROL_REGISTER, Some(BM_PHY_RESET)).is_some()
 }
 
+fn initialize_mac(c: &Controller) {
+    for index in 1..regs::RAR_ENTRIES {
+        let Some((low, high)) = regs::rar_offset(index) else { return; };
+        c.write(low, 0);
+        c.write(high, 0);
+    }
+    for index in 0..regs::FILTER_TABLE_ENTRIES {
+        let Some(mta) = regs::table_offset(regs::MTA, index) else { return; };
+        let Some(vfta) = regs::table_offset(regs::VFTA, index) else { return; };
+        c.write(mta, 0);
+        c.write(vfta, 0);
+    }
+    let txdctl = c.read(regs::TXDCTL0);
+    c.write(regs::TXDCTL0, (txdctl & !regs::TXDCTL_WTHRESH) | regs::TXDCTL_WRITEBACK | regs::TXDCTL_COUNT_DESC);
+    let tarc = c.read(regs::TARC0);
+    c.write(regs::TARC0, (tarc & !regs::TARC0_RESERVED) | regs::TARC0_82574);
+    c.write(regs::CTRL, c.read(regs::CTRL) & !regs::CTRL_82574_CLEAR);
+    c.write(regs::CTRL_EXT, (c.read(regs::CTRL_EXT) & !regs::CTRL_EXT_DRV_LOAD) | regs::CTRL_EXT_IAME);
+    c.write(regs::GCR, c.read(regs::GCR) | regs::GCR_QUEUE_WORKAROUND | regs::GCR_L1_ACTIVE_RX);
+    c.write(regs::GCR2, c.read(regs::GCR2) | regs::GCR2_COMPLETION_WORKAROUND);
+    let _ = c.read(regs::GCR2);
+}
+
 fn configure_flow_control(c: &Controller, mode: regs::PauseMode) {
     c.write(regs::FCT, regs::FLOW_CONTROL_TYPE);
     c.write(regs::FCAH, regs::FLOW_CONTROL_ADDRESS_HIGH);
@@ -148,6 +171,7 @@ pub(crate) fn prepare(c: &Controller) -> bool {
     let _serial = BM_SERIAL.lock();
     if !acquire_mdio(c) { return false; }
     let result = validate_nvm(c) && validate_and_configure_bm_phy(c);
+    if result { initialize_mac(c); }
     release_mdio(c);
     result
 }

@@ -14,7 +14,8 @@ pub const LEGACY_PCI_IDS: &[u16] = &[
     0x100e, 0x100f, 0x1015, 0x1016, 0x1017, 0x1018, 0x1075, 0x1076,
     0x1077, 0x1078, 0x1079, 0x107a, E1000_82540EP_LP, 0x10b5,
 ];
-pub const E1000E_82574_PCI_IDS: &[u16] = &[0x10d3, 0x10f6];
+pub const E1000E_82583V: u16 = 0x150c;
+pub const E1000E_82571_BM_PCI_IDS: &[u16] = &[0x10d3, 0x10f6, E1000E_82583V];
 
 /// Match an Intel Ethernet function owned by the 82540 reset and DMA path. # C: O(n)
 #[inline]
@@ -28,6 +29,15 @@ pub const fn legacy_pci_id_supported(device_id: u16) -> bool {
     let mut index = 0;
     while index < LEGACY_PCI_IDS.len() {
         if LEGACY_PCI_IDS[index] == device_id { return true; }
+        index += 1;
+    }
+    false
+}
+/// Admit an Intel Ethernet function only when it uses the 82571 BM profile. # C: O(n)
+pub const fn e1000e_82571_bm_pci_id_supported(device_id: u16) -> bool {
+    let mut index = 0;
+    while index < E1000E_82571_BM_PCI_IDS.len() {
+        if E1000E_82571_BM_PCI_IDS[index] == device_id { return true; }
         index += 1;
     }
     false
@@ -68,6 +78,13 @@ pub const FCAL: u64 = 0x0002c;
 pub const FCTTV: u64 = 0x00170;
 pub const FCRTL: u64 = 0x02160;
 pub const FCRTH: u64 = 0x02168;
+pub const MTA: u64 = 0x05200;
+pub const VFTA: u64 = 0x05600;
+pub const GCR: u64 = 0x05b00;
+pub const GCR2: u64 = 0x05b64;
+pub const CTRL_EXT: u64 = 0x00018;
+pub const TXDCTL0: u64 = 0x03828;
+pub const TARC0: u64 = 0x03840;
 
 pub const CTRL_RST: u32 = 1 << 26;
 pub const CTRL_SLU: u32 = 1 << 6;
@@ -75,6 +92,17 @@ pub const CTRL_FRCSPD: u32 = 1 << 11;
 pub const CTRL_FRCDPX: u32 = 1 << 12;
 pub const CTRL_RFCE: u32 = 1 << 27;
 pub const CTRL_TFCE: u32 = 1 << 28;
+pub const CTRL_EXT_IAME: u32 = 1 << 22;
+pub const CTRL_EXT_DRV_LOAD: u32 = 1 << 23;
+pub const CTRL_82574_CLEAR: u32 = 1 << 29;
+pub const TXDCTL_COUNT_DESC: u32 = 1 << 22;
+pub const TXDCTL_WRITEBACK: u32 = 0x0101_0000;
+pub const TXDCTL_WTHRESH: u32 = 0x003f_0000;
+pub const TARC0_82574: u32 = 1 << 26;
+pub const TARC0_RESERVED: u32 = 0x7800_0000;
+pub const GCR_L1_ACTIVE_RX: u32 = 1 << 27;
+pub const GCR_QUEUE_WORKAROUND: u32 = 1 << 22;
+pub const GCR2_COMPLETION_WORKAROUND: u32 = 1;
 pub const EXTCNF_CTRL_MDIO_SW_OWNERSHIP: u32 = 1 << 5;
 pub const EECD_NVM_REQUEST: u32 = 1 << 6;
 pub const EECD_NVM_GRANT: u32 = 1 << 7;
@@ -121,6 +149,8 @@ pub const FLOW_CONTROL_PBA_BYTES: u32 = 32 << 10;
 pub const FLOW_CONTROL_HIGH_WATER: u32 = (FLOW_CONTROL_PBA_BYTES * 9 / 10) & !7;
 pub const FLOW_CONTROL_LOW_WATER: u32 = FLOW_CONTROL_HIGH_WATER - 8;
 pub const FCRTL_XON: u32 = 1 << 31;
+pub const RAR_ENTRIES: usize = 15;
+pub const FILTER_TABLE_ENTRIES: usize = 128;
 pub const TCTL_PSP: u32 = 1 << 3;
 pub const RCTL_EN: u32 = 1 << 1;
 pub const RCTL_BAM: u32 = 1 << 15;
@@ -147,7 +177,7 @@ pub const BUFFER_BYTES: usize = 2048;
 pub const ETH_MAX_FRAME: usize = 1518;
 /// 82540-class EEPROM auto-read window after a global reset. # C: O(1)
 pub const RESET_AUTO_READ_NS: u64 = 5_000_000;
-pub const E1000E_82574_RESET_NS: u64 = 25_000_000;
+pub const E1000E_82571_BM_RESET_NS: u64 = 25_000_000;
 pub const NVM_AUTO_READ_TIMEOUT_NS: u64 = 10_000_000;
 pub const RESET_STATUS_POLL_NS: u64 = 1_000_000;
 
@@ -210,6 +240,14 @@ pub fn nvm_checksum_valid(words: &[u16]) -> bool {
 }
 /// Decide whether the reset NVM auto-read completed. # C: O(1)
 pub const fn e1000e_auto_read_done(eecd: u32) -> bool { eecd & EECD_AUTO_READ_DONE != 0 }
+/// Return one receive-address register pair offset. # C: O(1)
+pub const fn rar_offset(index: usize) -> Option<(u64, u64)> {
+    if index < RAR_ENTRIES { Some((RAL0 + (index * 8) as u64, RAH0 + (index * 8) as u64)) } else { None }
+}
+/// Return one 32-bit table register offset. # C: O(1)
+pub const fn table_offset(base: u64, index: usize) -> Option<u64> {
+    if index < FILTER_TABLE_ENTRIES { Some(base + (index * 4) as u64) } else { None }
+}
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) enum PauseMode { None, Rx, Tx, Full }
@@ -259,14 +297,12 @@ mod tests {
         assert!(!LEGACY_PCI_IDS.contains(&0x1502));
         // igb: 82580 devices.
         assert!(!LEGACY_PCI_IDS.contains(&0x150e));
-        assert!(E1000E_82574_PCI_IDS.contains(&0x10d3));
-        assert!(!E1000E_82574_PCI_IDS.contains(&0x10ea));
-        // The 82583 shares the e1000e PCI family but requires the BM PHY and
-        // NVM initialization path before it may enter the generic ring path.
-        assert!(!E1000E_82574_PCI_IDS.contains(&0x150c));
+        assert!(E1000E_82571_BM_PCI_IDS.contains(&0x10d3));
+        assert!(e1000e_82571_bm_pci_id_supported(E1000E_82583V));
+        assert!(!e1000e_82571_bm_pci_id_supported(0x10ea));
         assert_eq!(dma_mask(false), u32::MAX as u64);
         assert_eq!(dma_mask(true), u64::MAX);
-        assert_eq!(E1000E_82574_RESET_NS, 25_000_000);
+        assert_eq!(E1000E_82571_BM_RESET_NS, 25_000_000);
     }
     #[test]
     fn e82540ep_lp_probe_match_requires_the_legacy_intel_ethernet_tuple() {
@@ -293,5 +329,9 @@ mod tests {
         assert_eq!(resolve_pause(MII_ADVERTISE_ASYM_PAUSE, MII_ADVERTISE_PAUSE | MII_ADVERTISE_ASYM_PAUSE), PauseMode::Tx);
         assert_eq!(resolve_pause(MII_ADVERTISE_PAUSE | MII_ADVERTISE_ASYM_PAUSE, MII_ADVERTISE_ASYM_PAUSE), PauseMode::Rx);
         assert_eq!(resolve_pause(0, MII_ADVERTISE_PAUSE | MII_ADVERTISE_ASYM_PAUSE), PauseMode::None);
+        assert_eq!(rar_offset(0), Some((RAL0, RAH0)));
+        assert_eq!(rar_offset(RAR_ENTRIES), None);
+        assert_eq!(table_offset(MTA, FILTER_TABLE_ENTRIES - 1), Some(MTA + 508));
+        assert_eq!(table_offset(VFTA, FILTER_TABLE_ENTRIES), None);
     }
 }
