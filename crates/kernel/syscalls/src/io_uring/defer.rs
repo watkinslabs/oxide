@@ -36,7 +36,8 @@ pub enum Armed {
 
 /// Whether this opcode can only ever be deferred. # C: O(1)
 pub fn always_async(op: u8) -> bool {
-    matches!(op, IORING_OP_TIMEOUT | IORING_OP_LINK_TIMEOUT | IORING_OP_POLL_ADD)
+    matches!(op, IORING_OP_TIMEOUT | IORING_OP_LINK_TIMEOUT | IORING_OP_POLL_ADD
+        | IORING_OP_URING_CMD | IORING_OP_URING_CMD128)
 }
 
 /// Whether the submitter asked for this entry to be handed to a worker

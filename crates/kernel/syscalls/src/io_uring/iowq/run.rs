@@ -149,6 +149,10 @@ pub fn issue(req: &Arc<IoReq>) {
     if crate::io_uring_abi::recvsend::multishot(req.opcode(), req.sqe.flags, req.sqe.ioprio) {
         return crate::io_uring::mshot::run_multishot(req);
     }
+    if matches!(req.opcode(), crate::io_uring_abi::ops::IORING_OP_URING_CMD | crate::io_uring_abi::ops::IORING_OP_URING_CMD128) {
+        if let Some(out) = crate::io_uring::linux_cmd::issue(req) { complete_out(req, out); }
+        return;
+    }
     let out = crate::io_uring::dispatch::dispatch_op(&req.ring, &req.sqe);
     // A pollable description that is not ready yet is not a failure: the
     // request goes back to waiting on that description instead of reporting an

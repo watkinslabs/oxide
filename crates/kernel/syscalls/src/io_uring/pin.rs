@@ -21,6 +21,7 @@ use alloc::vec::Vec;
 use syscall::errno::Errno;
 
 use crate::io_uring_abi::acct::{Charge, Ledgers, RingAcct};
+use pmm::native_bvec::NativeBioVec;
 
 /// Bytes per pinned page.
 const PAGE: u64 = hal::PAGE_SIZE_BYTES;
@@ -156,6 +157,34 @@ impl PinnedRange {
 
     /// Whether this is the empty slot. # C: O(1)
     pub fn is_empty(&self) -> bool { self.len == 0 }
+
+    /// Build native page-vector entries for an in-range registered subrange.
+    /// The range's registration reference remains the lifetime owner.
+    /// # C: O(len / PAGE)
+    pub fn native_bvecs(&self, off: u64, len: u64) -> Result<Vec<NativeBioVec>, Errno> {
+        let end = off.checked_add(len).ok_or(Errno::Efault)?;
+        if end > self.len { return Err(Errno::Efault); }
+        let mut out = Vec::new();
+        if len == 0 { return Ok(out); }
+        let first = self.base.checked_add(off).ok_or(Errno::Efault)?;
+        let last = first.checked_add(len - 1).ok_or(Errno::Efault)?;
+        let count = ((last & !(PAGE - 1)) - (first & !(PAGE - 1))) / PAGE + 1;
+        if out.try_reserve_exact(count as usize).is_err() { return Err(Errno::Enomem); }
+        let mut va = first;
+        let mut left = len;
+        while left != 0 {
+            let ix = ((va & !(PAGE - 1)) - (self.base & !(PAGE - 1))) / PAGE;
+            let pa = *self.pages.get(ix as usize).ok_or(Errno::Efault)?;
+            let page = pmm::setup::native_page_for_pa(pa);
+            if page.is_null() { return Err(Errno::Efault); }
+            let in_page = va & (PAGE - 1);
+            let take = core::cmp::min(PAGE - in_page, left);
+            out.push(NativeBioVec::new(page, take as u32, in_page as u32));
+            va += take;
+            left -= take;
+        }
+        Ok(out)
+    }
 
     /// Direct-map address of the byte `off` bytes into the range.
     ///

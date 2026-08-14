@@ -164,7 +164,8 @@ pub fn op_supported(op: u8) -> bool {
         | IORING_OP_FIXED_FD_INSTALL
         | IORING_OP_TIMEOUT | IORING_OP_TIMEOUT_REMOVE | IORING_OP_LINK_TIMEOUT
         | IORING_OP_ASYNC_CANCEL | IORING_OP_POLL_ADD | IORING_OP_POLL_REMOVE
-        | IORING_OP_NOP128 | IORING_OP_SEND_ZC | IORING_OP_SENDMSG_ZC)
+        | IORING_OP_NOP128 | IORING_OP_SEND_ZC | IORING_OP_SENDMSG_ZC
+        | IORING_OP_URING_CMD | IORING_OP_URING_CMD128)
 }
 
 /// Whether the opcode takes its buffer from a provided-buffer group when the

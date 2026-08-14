@@ -3,10 +3,14 @@
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::ffi::c_void;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use modules::linux_io_uring::LinuxIoUringCmd;
+use modules::linux_io_uring::{LinuxIoUringCmd, LinuxUserIovec};
+use pmm::native_bvec::{ITER_DEST, ITER_SOURCE, NativeBioVec, NativeIovIter};
+use sync::{Spinlock, TaskList as CmdLockClass};
+use syscall::errno::Errno;
 
 use super::req::IoReq;
 
@@ -24,6 +28,8 @@ pub struct ExternalCmd {
     file: Arc<vfs::File>,
     abi_file: *mut c_void,
     task: AtomicUsize,
+    done: AtomicBool,
+    bvecs: Spinlock<Vec<NativeBioVec>, CmdLockClass>,
 }
 
 impl ExternalCmd {
@@ -31,10 +37,48 @@ impl ExternalCmd {
     /// # C: O(1)
     pub fn new(req: Arc<IoReq>, file: Arc<vfs::File>, abi_file: *mut c_void) -> Box<Self> {
         Box::new(Self {
-            cmd: LinuxIoUringCmd { file: abi_file, sqe: req.sqe.raw.as_ptr(), cmd_op: 0,
-                flags: 0, pdu: [0; 32], unused: [0; 8] },
-            req, file, abi_file, task: AtomicUsize::new(0),
+            cmd: LinuxIoUringCmd { file: abi_file, sqe: req.sqe.raw.as_ptr(), cmd_op: req.sqe.off as u32,
+                flags: req.sqe.op_flags, pdu: [0; 32], unused: [0; 8] },
+            req, file, abi_file, task: AtomicUsize::new(0), done: AtomicBool::new(false),
+            bvecs: Spinlock::new(Vec::new()),
         })
+    }
+}
+
+const EIOCBQUEUED: i32 = 529;
+
+/// Issue the retained external command; `None` means the driver owns its completion.
+/// # C: driver-dependent
+pub fn issue(req: &Arc<IoReq>) -> Option<super::dispatch::OpOutcome> {
+    static INSTALLED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+    if !INSTALLED.swap(true, Ordering::AcqRel) {
+        modules::linux_io_uring::install_cmd_hooks(do_in_task, done, import_fixed, import_fixed_vec);
+    }
+    let file = if req.sqe.flags & crate::io_uring_abi::ops::IOSQE_FIXED_FILE != 0 {
+        match super::dispatch::fdres::fixed_file(&req.ring, req.sqe.fd as u32) { Ok(f) => f, Err(e) => return Some(super::dispatch::OpOutcome::res(e)) }
+    } else {
+        let Some(cur) = sched::live::current() else { return Some(super::dispatch::OpOutcome::res(-(Errno::Ebadf.as_i32() as i64))); };
+        // SAFETY: the worker borrowed this request's owner, so this is the submitter's live descriptor table.
+        let Some(fdt) = (unsafe { cur.fd_table_ref() }) else { return Some(super::dispatch::OpOutcome::res(-(Errno::Ebadf.as_i32() as i64))); };
+        match fdt.get(req.sqe.fd) { Ok(f) => f, Err(_) => return Some(super::dispatch::OpOutcome::res(-(Errno::Ebadf.as_i32() as i64))) }
+    };
+    let Some(abi_file) = vfs::opened_chrdev_uring_file_new(&file) else { return Some(super::dispatch::OpOutcome::res(-(Errno::Eopnotsupp.as_i32() as i64))); };
+    let state = ExternalCmd::new(Arc::clone(req), Arc::clone(&file), abi_file);
+    let raw = Box::into_raw(state);
+    // SAFETY: raw names the retained ExternalCmd whose first member is the driver ABI command.
+    let ret = unsafe { vfs::opened_chrdev_uring_cmd(&file, (&mut (*raw).cmd as *mut LinuxIoUringCmd).cast(), 0) };
+    match ret {
+        Some(Ok(r)) if r == -EIOCBQUEUED => None,
+        Some(Ok(r)) => {
+            // SAFETY: a synchronously returned command never transferred completion ownership to its driver.
+            unsafe { drop(Box::from_raw(raw)); vfs::opened_chrdev_uring_file_drop(&file, abi_file); }
+            Some(super::dispatch::OpOutcome::res(r as i64))
+        }
+        Some(Err(_)) | None => {
+            // SAFETY: the driver declined the command without retaining its ABI object.
+            unsafe { drop(Box::from_raw(raw)); vfs::opened_chrdev_uring_file_drop(&file, abi_file); }
+            Some(super::dispatch::OpOutcome::res(-(Errno::Eopnotsupp.as_i32() as i64)))
+        }
     }
 }
 
@@ -51,7 +95,7 @@ unsafe fn state(cmd: *mut LinuxIoUringCmd) -> Option<&'static ExternalCmd> {
 pub unsafe extern "C" fn done(cmd: *mut LinuxIoUringCmd, ret: i32, res2: u64, _flags: u32, cqe32: bool) {
     let Some(s) = (unsafe { state(cmd) }) else { return; };
     let req = Arc::clone(&s.req);
-    if !req.claim() { return; }
+    if s.done.swap(true, Ordering::AcqRel) { return; }
     let file = Arc::clone(&s.file);
     let abi_file = s.abi_file;
     let out = if cqe32 { super::dispatch::OpOutcome::wide(ret as i64, [res2, 0]) }
@@ -61,6 +105,46 @@ pub unsafe extern "C" fn done(cmd: *mut LinuxIoUringCmd, ret: i32, res2: u64, _f
     unsafe { drop(Box::from_raw(cmd.cast::<ExternalCmd>())); }
     // SAFETY: the command allocation retained the matching open file and ABI object until terminal completion.
     unsafe { vfs::opened_chrdev_uring_file_drop(&file, abi_file); }
+}
+
+const IORING_URING_CMD_FIXED: u32 = 1;
+
+fn direction(rw: i32) -> Result<u8, Errno> {
+    match rw { 0 => Ok(ITER_DEST), 1 => Ok(ITER_SOURCE), _ => Err(Errno::Einval) }
+}
+
+fn import_range(s: &ExternalCmd, addr: u64, len: usize, rw: i32, iter: *mut NativeIovIter) -> Result<(), Errno> {
+    if s.cmd.flags & IORING_URING_CMD_FIXED == 0 { return Err(Errno::Einval); }
+    if iter.is_null() { return Err(Errno::Efault); }
+    let buf = super::dispatch::fdres::reg_buf(&s.req.ring, s.req.sqe.buf_index as u32).map_err(|_| Errno::Efault)?;
+    let off = addr.checked_sub(buf.base).ok_or(Errno::Efault)?;
+    let mut bvecs = buf.native_bvecs(off, len as u64)?;
+    let mut abi = NativeIovIter::empty(direction(rw)?);
+    if !bvecs.is_empty() { abi.bvec = bvecs.as_ptr(); abi.count = len; abi.nr_segs = bvecs.len(); }
+    let mut retained = s.bvecs.lock();
+    *retained = core::mem::take(&mut bvecs);
+    // SAFETY: caller supplied the ABI output iterator and the command retains its backing bvec vector until completion.
+    unsafe { iter.write(abi); }
+    Ok(())
+}
+
+/// Import a byte range from the SQE-selected registered buffer.
+/// # C: O(len / PAGE)
+pub unsafe extern "C" fn import_fixed(addr: u64, len: usize, rw: i32, iter: *mut NativeIovIter, cmd: *mut LinuxIoUringCmd, _flags: u32) -> i32 {
+    let Some(s) = (unsafe { state(cmd) }) else { return -Errno::Einval.as_i32(); };
+    import_range(s, addr, len, rw, iter).map_or_else(|e| -e.as_i32(), |_| 0)
+}
+
+/// Import each user vector through the SQE-selected registered buffer.
+/// # C: O(N_vec + bytes / PAGE)
+pub unsafe extern "C" fn import_fixed_vec(cmd: *mut LinuxIoUringCmd, vec: *const LinuxUserIovec, nr: usize, rw: i32, iter: *mut NativeIovIter, _flags: u32) -> i32 {
+    let Some(s) = (unsafe { state(cmd) }) else { return -Errno::Einval.as_i32(); };
+    if nr != 1 || vec.is_null() { return -Errno::Einval.as_i32(); }
+    let mut raw = [0u8; core::mem::size_of::<LinuxUserIovec>()];
+    if uaccess::copy_from_user(&mut raw, vec as u64).is_err() { return -Errno::Efault.as_i32(); }
+    let addr = u64::from_ne_bytes(raw[..8].try_into().unwrap());
+    let len = usize::from_ne_bytes(raw[8..].try_into().unwrap());
+    import_range(s, addr, len, rw, iter).map_or_else(|e| -e.as_i32(), |_| 0)
 }
 
 /// Queue a driver task-work callback against the retained command.
