@@ -216,6 +216,17 @@ pub(crate) fn write_lpt_rar(c: &Controller, mac: net::MacAddr, index: usize) -> 
     }).is_some()
 }
 
+pub(crate) fn initialize_lpt_addrs(c: &Controller) -> Option<net::MacAddr> {
+    let flash = LptFlash::new(c);
+    if !flash.validate_nvm() { return None; }
+    let mac = flash.read_mac()?;
+    if !write_lpt_rar(c, mac, 0) { return None; }
+    let clear = net::MacAddr::ZERO;
+    let count = regs::pch_lpt_rar_count(c.read(regs::FWSM));
+    for index in 1..count { if !write_lpt_rar(c, clear, index) { return None; } }
+    Some(mac)
+}
+
 pub(crate) struct LptFlash<'a> { c: &'a Controller }
 impl<'a> LptFlash<'a> {
     pub(crate) fn new(c: &'a Controller) -> Self { Self { c } }
