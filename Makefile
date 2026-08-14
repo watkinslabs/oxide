@@ -327,7 +327,7 @@ smoke-debug-arm:
 # periodic task dump and wake-placement trace are in the built kernel.
 smoke-taskdump-arm:
 	@mkdir -p $(BOOT_LOG_DIR)
-	FEATURES="$(strip $(FEATURES) debug-taskdump debug-watchdog)" OXIDE_CMDLINE_DEBUG=1 \
+	OXIDE_SMOKE_ATTEMPTS=1 FEATURES="$(strip $(FEATURES) debug-taskdump debug-watchdog)" OXIDE_CMDLINE_DEBUG=1 \
 	    OXIDE_CMDLINE_EXTRA="$(strip $(OXIDE_CMDLINE_EXTRA) systemd.mask=systemd-sysctl.service)" \
 	    SMOKE_KEEP_LOG=$(BOOT_LOG_DIR)/arm.log SMOKE_KEEP_LOG_DIR=$(BOOT_LOG_DIR) \
 	    ./tools/boot-smoke.sh arm $(SMOKE_TIMEOUT)
