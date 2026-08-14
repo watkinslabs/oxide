@@ -427,14 +427,7 @@ pub fn default_driver_features() -> u64 {
 /// bits it is prepared to consume.
 /// # C: O(1)
 pub fn wanted_features() -> u64 {
-    // Linux submits GET_EDID asynchronously and lets its virtqueue completion
-    // callback wake `resp_wq`; it never makes initial KMS availability depend
-    // on an EDID response.  Our early boot probe has no live process-context
-    // completion owner yet, so it must not negotiate an optional feature whose
-    // only implementation is the retired spin-poll path.  Scanout uses the
-    // fixed display-info response and remains fully functional; EDID comes
-    // back when the completion-owned runtime transaction path is present.
-    default_driver_features() & !(1u64 << VIRTIO_GPU_F_EDID)
+    default_driver_features()
 }
 
 /// Transport contract for the virtio-gpu child driver. The virtio bus
