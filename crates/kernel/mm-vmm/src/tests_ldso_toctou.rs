@@ -234,3 +234,37 @@ fn protection_cow_copies_source_bytes() {
     let bytes = unsafe { core::slice::from_raw_parts(pa as *const u8, 4) };
     assert_eq!(bytes, &[0xCD; 4], "CoW copy lost the source bytes");
 }
+
+/// The COW source must stay PTE-owned through the copy and replacement.  A
+/// peer that changes the leaf after the initial source lookup wins; the stale
+/// writer must release its new page and retry rather than restore the old
+/// source over the peer's mapping.
+#[test]
+fn protection_cow_never_replaces_a_peer_commit_after_source_lookup() {
+    reset();
+    let mm = AddressSpace::new(0x4_0000_0000).expect("AS::new");
+    let va = map_kernelbytes_rw(&mm);
+    let source = fresh_pa();
+    let peer = fresh_pa();
+    // SAFETY: both are fresh 4 KiB host frames used by the hosted HHDM model.
+    unsafe { core::ptr::write_bytes(source as *mut u8, 0xCD, PAGE as usize); }
+    LEAF.with(|l| { l.borrow_mut().insert(va, (source, PageFlags::empty().bits())); });
+
+    let result = unsafe {
+        mm.handle_page_fault_cow_rmap::<ToctouMmu, _, _, _, _, _, _, _, _, _>(
+            hal::UserVirtAddr::new(va).unwrap(),
+            FaultKind::Protection { access: FaultAccess::Write }, 0, false,
+            || {
+                // This models the peer's completed PTE-locked replacement
+                // while the current fault is allocating its private target.
+                LEAF.with(|l| { l.borrow_mut().insert(va, (peer, PageFlags::WRITE.bits())); });
+                Some(fresh_pa())
+            },
+            |_pa| 2, |_pa| {}, |_pa, _av, _i| {}, |_pa| {}, |_pa| false,
+            || Ok(()), || {}, |_pa| {},
+        )
+    };
+    assert!(result.is_ok());
+    let (winner, _) = LEAF.with(|l| l.borrow().get(&va).copied()).expect("peer leaf");
+    assert_eq!(winner, peer, "stale COW copy replaced the peer's PTE commit");
+}

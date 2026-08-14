@@ -110,14 +110,18 @@ impl AddressSpace {
                     let cur_pa = src_pa.0 & !(PAGE_SIZE_BYTES - 1);
                     if reuse_ok(cur_pa) {
                         let pte_flags = vma.page_flags();
-                        // SAFETY: va_page page-aligned per find_containing; cur_pa is the
-                        // sole-owned anon frame already mapped here (mapcount==1, exclusive);
-                        // flags carry USER+WRITE since vma.prot.WRITE checked above. No
-                        // refcount/mapcount change: the same frame keeps its single mapping.
-                        unsafe {
-                            M::map(Va(va_page), Pa(cur_pa), pte_flags, PageSize::P4K);
-                            M::flush_va(Va(va_page));
-                        }
+                        let restored = {
+                            let _pt = self.lock_page_table();
+                            let still_current = M::translate(Va(va_page))
+                                .map(|(pa, _)| pa.0 & !(PAGE_SIZE_BYTES - 1)) == Some(cur_pa);
+                            if still_current {
+                                // SAFETY: the held per-mm PTE lock validates and rewrites
+                                // the same leaf without admitting a peer replacement.
+                                unsafe { M::map(Va(va_page), Pa(cur_pa), pte_flags, PageSize::P4K); }
+                            }
+                            still_current
+                        };
+                        if !restored { return Ok(()); }
                         // debug-cow: the frame is now writable + exclusively
                         // owned (Linux wp_page_reuse) — it will legitimately be
                         // mutated, so drop any RO-shared snapshot to avoid a
@@ -151,13 +155,18 @@ impl AddressSpace {
                     }
                     if matches_current {
                         let pte_flags = vma.page_flags();
-                        // SAFETY: va_page page-aligned per find_containing; cur_pa is the
-                        // inode-owned shared frame already mapped here (refcount held);
-                        // flags carry USER+WRITE since vma.prot.WRITE checked above.
-                        unsafe {
-                            M::map(Va(va_page), Pa(cur_pa), pte_flags, PageSize::P4K);
-                            M::flush_va(Va(va_page));
-                        }
+                        let restored = {
+                            let _pt = self.lock_page_table();
+                            let still_current = M::translate(Va(va_page))
+                                .map(|(pa, _)| pa.0 & !(PAGE_SIZE_BYTES - 1)) == Some(cur_pa);
+                            if still_current {
+                                // SAFETY: validation and permission rewrite are serialized
+                                // with all other writers of this mm's leaf.
+                                unsafe { M::map(Va(va_page), Pa(cur_pa), pte_flags, PageSize::P4K); }
+                            }
+                            still_current
+                        };
+                        if !restored { return Ok(()); }
                         return Ok(());
                     }
                 }
@@ -214,23 +223,43 @@ impl AddressSpace {
                     return Err(Error::NoMem);
                 }
             };
-            // SAFETY: dst is the freshly-allocated PMM frame's HHDM mirror; src is the previously-mapped frame's HHDM mirror; 4 KiB non-overlapping copy.
-            unsafe {
-                let dst = (hhdm_offset + new_pa) as *mut u8;
-                let src = (hhdm_offset + (src_pa.0 & !(PAGE_SIZE_BYTES - 1))) as *const u8;
-                core::ptr::copy_nonoverlapping(src, dst, PAGE_SIZE_BYTES as usize);
-            }
             let pte_flags = vma.page_flags();
             #[cfg(feature = "debug-atexit")]
             if let VmaBacking::File { backing, off } = &vma.backing {
                 let foff = off.wrapping_add(va_page - vma.start.as_u64());
                 crate::tailwatch::log_install(b"cowcopy", backing.ino(), foff, va_page, new_pa, 0);
             }
-            // SAFETY: va_page page-aligned in user-half; new_pa fresh PMM frame; flags carry USER + WRITE since vma.prot.WRITE checked above.
-            let displaced = unsafe {
-                let d = M::map(Va(va_page), Pa(new_pa), pte_flags, PageSize::P4K);
-                M::flush_va(Va(va_page));
-                d
+            let source_pa = src_pa.0 & !(PAGE_SIZE_BYTES - 1);
+            // The source PTE is our only ownership proof for this raw HHDM
+            // copy.  Revalidate it and perform the copy while holding the
+            // per-mm PTE lock; otherwise a peer may retire/reuse source_pa
+            // between the lockless `cur` read and the copy, or get replaced by
+            // this stale COW result.  Allocation and all backing work happened
+            // before this short non-sleeping critical section.
+            let displaced = {
+                let _pt = self.lock_page_table();
+                let still_current = M::translate(Va(va_page))
+                    .map(|(pa, _)| pa.0 & !(PAGE_SIZE_BYTES - 1)) == Some(source_pa);
+                if !still_current {
+                    None
+                } else {
+                    // SAFETY: source_pa remains PTE-owned until this lock is
+                    // released; new_pa is private to this fault and both HHDM
+                    // ranges are one page, non-overlapping mappings.
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(
+                            (hhdm_offset + source_pa) as *const u8,
+                            (hhdm_offset + new_pa) as *mut u8,
+                            PAGE_SIZE_BYTES as usize,
+                        );
+                        Some(M::map(Va(va_page), Pa(new_pa), pte_flags, PageSize::P4K))
+                    }
+                }
+            };
+            let Some(displaced) = displaced else {
+                dec_ref(new_pa);
+                uncharge_anon();
+                return Ok(());
             };
             // F156-rmap: bind new private page to the VMA's anon_vma
             // family with the page-offset index per Linux
