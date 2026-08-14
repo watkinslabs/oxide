@@ -95,6 +95,12 @@ fn driver_features_include_virgl_and_edid() {
 }
 
 #[test]
+fn early_probe_does_not_negotiate_edid_without_a_completion_owner() {
+    assert_eq!(wanted_features() & (1u64 << VIRTIO_GPU_F_EDID), 0);
+    assert_ne!(wanted_features() & (1u64 << VIRTIO_GPU_F_VIRGL), 0);
+}
+
+#[test]
 fn bpp_for_known_formats() {
     assert_eq!(
         VirtioGpuDev::bytes_per_pixel(VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM),
