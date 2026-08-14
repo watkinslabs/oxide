@@ -1,0 +1,81 @@
+//! CPU-local live exception-frame handoff.
+
+use core::sync::atomic::{AtomicPtr, Ordering};
+
+use crate::PtRegs;
+
+// A trap can sleep in the fault resolver while other CPUs take faults. The
+// slot key must work before GS is live, because exceptions can arrive during
+// per-CPU bring-up.
+static LIVE: [AtomicPtr<PtRegs>; hal::MAX_SMP_CPUS] =
+    [const { AtomicPtr::new(core::ptr::null_mut()) }; hal::MAX_SMP_CPUS];
+
+#[inline]
+fn cpu_slot() -> usize {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    { super::fault_cpu() }
+    #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+    { 0 }
+}
+
+/// Publish this CPU's active exception frame and restore the prior nested
+/// frame when the synchronous handler returns.
+#[allow(dead_code)] // Referenced only by the x86 kernel exception entry.
+pub(crate) fn publish(regs: *mut PtRegs) -> FrameGuard {
+    publish_at(cpu_slot(), regs)
+}
+
+#[allow(dead_code)] // Used by the kernel publisher and hosted nested-frame test.
+fn publish_at(slot: usize, regs: *mut PtRegs) -> FrameGuard {
+    let prior = LIVE[slot].swap(regs, Ordering::AcqRel);
+    FrameGuard { slot, prior }
+}
+
+#[allow(dead_code)] // Its value keeps the live frame installed until trap return.
+pub(crate) struct FrameGuard { slot: usize, prior: *mut PtRegs }
+
+impl Drop for FrameGuard {
+    fn drop(&mut self) { LIVE[self.slot].store(self.prior, Ordering::Release); }
+}
+
+/// The live `PtRegs` for this CPU's synchronous exception, if any.
+///
+/// Callers run in the exception path with preemption disabled at entry; nested
+/// exceptions restore their predecessor through [`FrameGuard`].
+pub fn current_fault_frame() -> *mut PtRegs {
+    LIVE[cpu_slot()].load(Ordering::Acquire)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cpu_slots_never_cross_publish_live_frames() {
+        let a = 0x1000usize as *mut PtRegs;
+        let b = 0x2000usize as *mut PtRegs;
+        LIVE[1].store(a, Ordering::Release);
+        LIVE[2].store(b, Ordering::Release);
+        assert_eq!(LIVE[1].load(Ordering::Acquire), a);
+        assert_eq!(LIVE[2].load(Ordering::Acquire), b);
+        LIVE[1].store(core::ptr::null_mut(), Ordering::Release);
+        LIVE[2].store(core::ptr::null_mut(), Ordering::Release);
+    }
+
+    #[test]
+    fn nested_fault_restores_its_predecessor() {
+        let slot = 3;
+        let outer = 0x3000usize as *mut PtRegs;
+        let inner = 0x4000usize as *mut PtRegs;
+        let outer_guard = publish_at(slot, outer);
+        {
+            let inner_guard = publish_at(slot, inner);
+            assert_eq!(LIVE[slot].load(Ordering::Acquire), inner);
+            drop(inner_guard);
+        }
+        assert_eq!(LIVE[slot].load(Ordering::Acquire), outer);
+        drop(outer_guard);
+        assert!(LIVE[slot].load(Ordering::Acquire).is_null());
+        LIVE[slot].store(core::ptr::null_mut(), Ordering::Release);
+    }
+}
