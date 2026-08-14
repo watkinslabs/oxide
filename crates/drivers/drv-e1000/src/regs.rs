@@ -87,6 +87,7 @@ pub const TXDCTL0: u64 = 0x03828;
 pub const TARC0: u64 = 0x03840;
 
 pub const CTRL_RST: u32 = 1 << 26;
+pub const CTRL_PHY_RST: u32 = 1 << 31;
 pub const CTRL_SLU: u32 = 1 << 6;
 pub const CTRL_FRCSPD: u32 = 1 << 11;
 pub const CTRL_FRCDPX: u32 = 1 << 12;

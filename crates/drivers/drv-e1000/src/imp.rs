@@ -214,7 +214,7 @@ fn alloc_dma(order: pmm::Order, dma_mask: u64) -> Option<u64> {
     else { pmm::setup::alloc_contig(order) }
 }
 
-fn configure_rings(mmio: mmio_map::Mapping, io_base: Option<u16>, bdf: pci::Bdf, dma_mask: u64, profile: crate::profile::ResetProfile) -> Option<(Controller, net::MacAddr)> {
+fn configure_rings(mmio: mmio_map::Mapping, io_base: Option<u16>, bdf: pci::Bdf, dma_mask: u64, profile: crate::profile::ResetProfile, flash: Option<crate::pch::FlashBar>) -> Option<(Controller, net::MacAddr)> {
     let rx_desc_pa = match alloc_dma(pmm::Order(0), dma_mask) { Some(pa) => pa, None => { trace("[INFO]  e1000: no rx desc\n"); return None; } };
     let tx_desc_pa = match alloc_dma(pmm::Order(0), dma_mask) { Some(pa) => pa, None => {
         trace("[INFO]  e1000: no tx desc\n");
@@ -247,10 +247,17 @@ fn configure_rings(mmio: mmio_map::Mapping, io_base: Option<u16>, bdf: pci::Bdf,
     }
     let mut c = Controller { mmio, rx_desc_pa, tx_desc_pa, rx_data_pa, tx_data_pa, rx_desc_dma, tx_desc_dma, rx_data_dma, tx_data_dma, bdf, e1000e_nvm_phy: profile.e1000e_nvm_phy, rx_next: 0, tx_next: 0 };
     trace("[INFO]  e1000: dma allocated\n");
-    if !crate::reset::apply(&c, io_base, profile) { c.free(); return None; }
+    if (profile.pch && !crate::pch::reset(&c)) || (!profile.pch && !crate::reset::apply(&c, io_base, profile)) { c.free(); return None; }
     if profile.e1000e_nvm_phy && !crate::e1000e_init::prepare(&c) { c.free(); return None; }
+    if profile.pch && !flash.as_ref().is_some_and(|flash| flash.validate_nvm()) { c.free(); return None; }
     trace("[INFO]  e1000: reset done\n");
-    let mac = match regs::mac_from_rar(c.read(regs::RAL0), c.read(regs::RAH0)) { Some(mac) => net::MacAddr(mac), None => { trace("[INFO]  e1000: no mac\n"); c.free(); return None; } };
+    let mac = if profile.pch { flash.as_ref().and_then(|flash| flash.read_mac()) } else { regs::mac_from_rar(c.read(regs::RAL0), c.read(regs::RAH0)).map(net::MacAddr) };
+    let mac = match mac { Some(mac) => mac, None => { trace("[INFO]  e1000: no mac\n"); c.free(); return None; } };
+    if profile.pch {
+        let low = u32::from_le_bytes([mac.0[0], mac.0[1], mac.0[2], mac.0[3]]);
+        let high = u16::from_le_bytes([mac.0[4], mac.0[5]]) as u32 | (1 << 31);
+        c.write(regs::RAL0, low); c.write(regs::RAH0, high);
+    }
     for i in 0..regs::RING_COUNT {
         // SAFETY: every index is inside its freshly allocated ring before device DMA is enabled.
         unsafe {
@@ -419,7 +426,8 @@ pub(crate) fn probe_common(parent: &Arc<drv::Device>, dma_mask: u64, profile: cr
         let bytes = resource.end.checked_sub(resource.start).and_then(|bytes| bytes.checked_add(1)).ok_or(drv::Error::ProbeFailed)?;
         let pages = (bar & (PAGE - 1)).checked_add(bytes).and_then(|bytes| bytes.checked_add(PAGE - 1)).and_then(|bytes| bytes.checked_div(PAGE)).ok_or(drv::Error::ProbeFailed)?;
         let mmio = unsafe { mmio_map::map_owned(bar & !(PAGE - 1), pages) };
-        let (controller, mac) = match configure_rings(mmio, io_base, bdf, dma_mask, profile) { Some(value) => value, None => { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); } };
+        let flash = if profile.pch { match crate::pch::FlashBar::map(parent) { Some(flash) => Some(flash), None => { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); } } } else { None };
+        let (controller, mac) = match configure_rings(mmio, io_base, bdf, dma_mask, profile, flash) { Some(value) => value, None => { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); } };
         trace("[INFO]  e1000: rings ready\n");
         let endpoint = match endpoint_claim(controller.mmio.base_va()) { Some(endpoint) => endpoint, None => { let mut controller = controller; controller.free(); restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); } };
         // Linux permits an INTx fallback because ACPI _PRT supplies its exact

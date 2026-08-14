@@ -32,6 +32,9 @@ const PCH_FLASH_LINEAR_MASK: u32 = 0x00ff_ffff;
 const PCH_FLASH_RETRIES: usize = 10;
 const PCH_FLASH_TIMEOUT_NS: u64 = 10_000_000_000;
 const PCH_EXTCNF_SWFLAG: u32 = 1 << 5;
+const PCH_NVM_SIGNATURE_WORD: u32 = 0x13;
+const PCH_NVM_SIGNATURE_MASK: u16 = 0xc000;
+const PCH_NVM_SIGNATURE_VALUE: u16 = 0x8000;
 
 static PCH_SHARED: Spinlock<(), DriverLockClass> = Spinlock::new(());
 
@@ -114,6 +117,22 @@ fn hv_access(c: &Controller, phy: HvPhy, offset: u32, write: Option<u16>) -> Opt
 pub(crate) fn hv_read(c: &Controller, phy: HvPhy, offset: u32) -> Option<u16> { with_shared(c, |c| hv_access(c, phy, offset, None)) }
 pub(crate) fn hv_write(c: &Controller, phy: HvPhy, offset: u32, value: u16) -> bool { with_shared(c, |c| hv_access(c, phy, offset, Some(value))).is_some() }
 
+pub(crate) fn reset(c: &Controller) -> bool {
+    c.write(regs::IMC, u32::MAX);
+    c.write(regs::RCTL, 0);
+    c.write(regs::TCTL, c.read(regs::TCTL) & !regs::TCTL_EN);
+    wait_ns(10_000_000);
+    if with_shared(c, |c| { c.write(regs::CTRL, c.read(regs::CTRL) | regs::CTRL_PHY_RST | regs::CTRL_RST); Some(()) }).is_none() { return false; }
+    wait_ns(20_000_000);
+    let deadline = sched::deadline::clock::now_ns().saturating_add(regs::NVM_AUTO_READ_TIMEOUT_NS);
+    while !regs::e1000e_auto_read_done(c.read(regs::EECD)) {
+        if sched::deadline::clock::now_ns() >= deadline { return false; }
+        wait_ns(PCH_SHARED_WAIT_NS);
+    }
+    let _ = c.read(regs::ICR);
+    true
+}
+
 pub(crate) struct FlashBar { mmio: mmio_map::Mapping, offset: u64 }
 
 impl FlashBar {
@@ -178,5 +197,31 @@ impl FlashBar {
             if self.cycle() { return Some(self.read32(PCH_FLASH_FDATA0) as u16); }
         }
         None
+    }
+    fn valid_bank(&self, layout: regs::PchFlashLayout) -> Option<u32> {
+        let bank_words = layout.bytes.checked_div(4)?;
+        if bank_words <= PCH_NVM_SIGNATURE_WORD { return None; }
+        for bank in [0, bank_words] {
+            let word = self.read_word(layout, bank.checked_add(PCH_NVM_SIGNATURE_WORD)?)?;
+            if word & PCH_NVM_SIGNATURE_MASK == PCH_NVM_SIGNATURE_VALUE { return Some(bank); }
+        }
+        None
+    }
+    pub(crate) fn validate_nvm(&self) -> bool {
+        let Some(layout) = self.layout() else { return false; };
+        let Some(bank) = self.valid_bank(layout) else { return false; };
+        let mut words = [0u16; regs::NVM_CHECKSUM_WORD as usize + 1];
+        for (index, word) in words.iter_mut().enumerate() {
+            let Some(value) = self.read_word(layout, bank + index as u32) else { return false; };
+            *word = value;
+        }
+        regs::nvm_checksum_valid(&words)
+    }
+    pub(crate) fn read_mac(&self) -> Option<net::MacAddr> {
+        let layout = self.layout()?;
+        let bank = self.valid_bank(layout)?;
+        let low = self.read_word(layout, bank)? as u32 | ((self.read_word(layout, bank + 1)? as u32) << 16);
+        let high = self.read_word(layout, bank + 2)? as u32;
+        regs::mac_from_rar(low, high).map(net::MacAddr)
     }
 }
