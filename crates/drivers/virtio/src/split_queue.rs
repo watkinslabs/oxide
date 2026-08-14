@@ -136,7 +136,14 @@ impl VirtioSplitQueue {
         // avail entries. Order publication before reading that field.
         core::sync::atomic::fence(Ordering::SeqCst);
         let notify = if self.event_idx {
-            vring_need_event(self.read_used_event(), new, old)
+            // `avail_event` lives at the end of the device-owned used ring.
+            // It is the device's requested threshold for *driver-to-device*
+            // kicks.  `used_event`, at the end of the avail ring, has the
+            // opposite ownership/direction: the driver writes it to request
+            // completion interrupts.  Linux's
+            // `virtqueue_kick_prepare_split()` likewise reads
+            // `vring_avail_event()` here.
+            vring_need_event(self.read_avail_event(), new, old)
         } else {
             self.read_used_flags() & VRING_USED_F_NO_NOTIFY == 0
         };
@@ -212,11 +219,14 @@ impl VirtioSplitQueue {
         unsafe { core::ptr::read_volatile(self.used_u16_ptr()) }
     }
 
-    fn read_used_event(&self) -> u16 {
-        let offset = AVAIL_RING_OFF + self.resource.size as usize;
+    fn read_avail_event(&self) -> u16 {
+        // `struct vring_used` has flags and idx (two u16s), then `size`
+        // eight-byte used elements, then the device-owned `avail_event` u16.
+        // This is `vring_avail_event()` in Linux's virtio_ring.h.
+        let offset = 2 + self.resource.size as usize * 4;
         // SAFETY: event-index negotiation makes the u16 immediately after the
-        // avail ring device-owned; queue size bounds the calculated location.
-        unsafe { core::ptr::read_volatile(self.avail_ptr().add(offset)) }
+        // used ring device-owned; queue size bounds the calculated location.
+        unsafe { core::ptr::read_volatile(self.used_u16_ptr().add(offset)) }
     }
 
     fn read_desc_word(&self, index: u16) -> u64 {
@@ -323,15 +333,38 @@ mod tests {
         let avail = Page([0; 4096]);
         let used = Page([0; 4096]);
         let mut notify = 0;
-        let event = unsafe { (avail.0.as_ptr() as *mut u16).add(AVAIL_RING_OFF + 8) };
-        // SAFETY: test emulates the device-owned used_event field after an
-        // eight-entry avail ring in its private driver frame.
+        let event = unsafe { (used.0.as_ptr() as *mut u16).add(2 + 8 * 4) };
+        // SAFETY: test emulates the device-owned avail_event field after an
+        // eight-entry used ring in its private device frame.
         unsafe { core::ptr::write_volatile(event, 1); }
         let mut queue = VirtioSplitQueue::new_with_features(
             resource(&desc, &avail, &used, &mut notify), 0, crate::VIRTIO_F_RING_EVENT_IDX,
         ).unwrap();
         queue.submit(&[SplitQueueSeg { dma: 0x9000_1000, len: 8, device_writes: true }]).unwrap();
         assert_eq!(notify, 0);
+        queue.submit(&[SplitQueueSeg { dma: 0x9000_2000, len: 8, device_writes: true }]).unwrap();
+        assert_eq!(notify, 3);
+    }
+
+    #[test]
+    fn device_avail_event_does_not_suppress_the_next_required_kick() {
+        let desc = Page([0; 4096]);
+        let avail = Page([0; 4096]);
+        let used = Page([0; 4096]);
+        let mut notify = 0;
+        let mut queue = VirtioSplitQueue::new_with_features(
+            resource(&desc, &avail, &used, &mut notify), 0, crate::VIRTIO_F_RING_EVENT_IDX,
+        ).unwrap();
+
+        queue.submit(&[SplitQueueSeg { dma: 0x9000_1000, len: 8, device_writes: true }]).unwrap();
+        assert_eq!(notify, 3);
+        // The device consumed avail index 1 and asks to be kicked for the
+        // next one. This is written to the used ring, not to used_event.
+        let event = unsafe { (used.0.as_ptr() as *mut u16).add(2 + 8 * 4) };
+        // SAFETY: test owns the private device ring and emulates its event
+        // index update after consuming the first submission.
+        unsafe { core::ptr::write_volatile(event, 1); }
+
         queue.submit(&[SplitQueueSeg { dma: 0x9000_2000, len: 8, device_writes: true }]).unwrap();
         assert_eq!(notify, 3);
     }
