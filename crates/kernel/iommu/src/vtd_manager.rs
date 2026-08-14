@@ -58,8 +58,8 @@ pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf],
         let Some(regs) = (unsafe { VtdRegisters::map(unit.register_base, unit.register_pages) }) else { trace_failure(b"register map"); return VtdActivation::Failed; };
         let coherent = regs.cache_coherent();
         if !maintenance_available(coherent) { trace_failure(b"cache maintenance"); return VtdActivation::Failed; }
-        let Some(tables) = VtdTables::new(hhdm_offset, coherent) else { trace_failure(b"table allocation"); return VtdActivation::Failed; };
-        if !regs.supports_address_width(tables.address_width()) { trace_failure(b"address width"); return VtdActivation::Failed; }
+        let Some(address_width) = regs.select_address_width(VtdTables::maximum_address_width()) else { trace_failure(b"address width"); return VtdActivation::Failed; };
+        let Some(tables) = VtdTables::new(hhdm_offset, coherent, address_width) else { trace_failure(b"table allocation"); return VtdActivation::Failed; };
         // Linux disables firmware-pre-enabled IR/translation/QI state before
         // it replaces their table bases.  Do this only after replacement
         // allocations and mappings succeeded, so an allocation failure leaves

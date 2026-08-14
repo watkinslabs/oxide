@@ -11,27 +11,28 @@ const ROOT_ENTRY_BYTES: u64 = core::mem::size_of::<VtdRootEntry>() as u64;
 const CONTEXT_ENTRY_BYTES: u64 = core::mem::size_of::<VtdContextEntry>() as u64;
 const PRESENT: u64 = 1;
 const IOVA_START: u64 = pci::IOVA_PAGE_SIZE;
-const IOVA_BYTES: u64 = (1u64 << 48) - IOVA_START;
 
 struct VtdDomain { id: u16, requesters: Vec<Bdf>, space: IovaSpace, maps: Vec<MappingRecord>, page_table: VtdPageTable }
 
 /// Permanent VT-d root/context tables and DMA domains selected by isolation group.
-pub struct VtdTables { hhdm_offset: u64, coherent: bool, root_pa: u64, contexts: Vec<(u8, u64)>, domains: Vec<VtdDomain> }
+pub struct VtdTables { hhdm_offset: u64, coherent: bool, address_width: u8, root_pa: u64, contexts: Vec<(u8, u64)>, domains: Vec<VtdDomain> }
 impl VtdTables {
     /// Allocate empty root/context ownership. # C: O(1)
-    pub fn new(hhdm_offset: u64, coherent: bool) -> Option<Self> {
-        if hhdm_offset == 0 { return None; }
+    pub fn new(hhdm_offset: u64, coherent: bool, address_width: u8) -> Option<Self> {
+        if hhdm_offset == 0 || address_width > Self::maximum_address_width() { return None; }
         let root_pa = allocate_page(hhdm_offset, coherent)?;
-        Some(Self { hhdm_offset, coherent, root_pa, contexts: Vec::new(), domains: Vec::new() })
+        Some(Self { hhdm_offset, coherent, address_width, root_pa, contexts: Vec::new(), domains: Vec::new() })
     }
     /// Return the physical root table address for the VT-d RTADDR register. # C: O(1)
     pub const fn root_pa(&self) -> u64 { self.root_pa }
     /// Return the hardware-selected adjusted guest address width. # C: O(1)
-    pub const fn address_width(&self) -> u8 { 2 }
+    pub const fn address_width(&self) -> u8 { self.address_width }
+    /// Return the widest second-level table depth this implementation can build. # C: O(1)
+    pub const fn maximum_address_width() -> u8 { 2 }
     /// Create one isolated DMA domain and populate its RAM identity mappings. # C: O(regions * leaves * levels)
     pub fn install_group(&mut self, id: u16, requesters: &[Bdf], regions: &[pmm::UsableRegion]) -> bool {
         if id == 0 || requesters.is_empty() || self.domains.iter().any(|domain| domain.id == id || requesters.iter().any(|bdf| domain.requesters.contains(bdf))) { return false; }
-        let Some(mut domain) = VtdDomain::new(id, requesters, self.hhdm_offset, self.coherent) else { return false; };
+        let Some(mut domain) = VtdDomain::new(id, requesters, self.hhdm_offset, self.coherent, self.address_width) else { return false; };
         if !domain.map_identity_regions(regions) { return false; }
         self.domains.push(domain);
         true
@@ -48,8 +49,11 @@ impl VtdTables {
     }
 }
 impl VtdDomain {
-    fn new(id: u16, requesters: &[Bdf], hhdm_offset: u64, coherent: bool) -> Option<Self> {
-        Some(Self { id, requesters: requesters.to_vec(), space: IovaSpace::new(IOVA_START, IOVA_BYTES)?, maps: Vec::new(), page_table: VtdPageTable::new(hhdm_offset, coherent)? })
+    fn new(id: u16, requesters: &[Bdf], hhdm_offset: u64, coherent: bool, address_width: u8) -> Option<Self> {
+        let address_bits = 30u32.checked_add(u32::from(address_width).checked_mul(9)?)?;
+        let limit = 1u64.checked_shl(address_bits)?;
+        let bytes = limit.checked_sub(IOVA_START)?;
+        Some(Self { id, requesters: requesters.to_vec(), space: IovaSpace::new(IOVA_START, bytes)?, maps: Vec::new(), page_table: VtdPageTable::new(hhdm_offset, coherent, address_width)? })
     }
     fn map_identity_regions(&mut self, regions: &[pmm::UsableRegion]) -> bool {
         for region in regions {
@@ -178,9 +182,9 @@ fn write64(hhdm_offset: u64, pa: u64, value: u64, coherent: bool) {
         assert_eq!(CONTEXT_ENTRIES * core::mem::size_of::<VtdContextEntry>(), PAGE_BYTES as usize);
     }
     #[test] fn dynamic_iova_reserves_the_dma_zero_sentinel() {
-        let mut space = IovaSpace::new(IOVA_START, IOVA_BYTES).expect("valid DMA aperture");
+        let mut space = IovaSpace::new(IOVA_START, (1u64 << 48) - IOVA_START).expect("valid DMA aperture");
         assert_eq!(space.alloc(pci::IOVA_PAGE_SIZE, pci::IOVA_PAGE_SIZE)
             .expect("first dynamic DMA mapping").start, pci::IOVA_PAGE_SIZE);
-        assert_eq!(IOVA_START.checked_add(IOVA_BYTES), Some(1u64 << 48));
+        assert_eq!(IOVA_START.checked_add((1u64 << 48) - IOVA_START), Some(1u64 << 48));
     }
 }

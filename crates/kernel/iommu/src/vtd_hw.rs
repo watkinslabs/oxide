@@ -208,6 +208,11 @@ impl VtdRegisters {
         if address_width > 4 { return false; }
         self.read64(CAP).is_some_and(|cap| cap >> 8 & (1 << address_width) != 0)
     }
+    /// Select the widest supported second-level address width at or below `maximum`. # C: O(5)
+    pub fn select_address_width(&self, maximum: u8) -> Option<u8> {
+        let maximum = maximum.min(4);
+        (0..=maximum).rev().find(|width| self.supports_address_width(*width))
+    }
     /// Return whether the unit observes ordinary CPU stores to its page tables coherently. # C: O(1)
     pub fn cache_coherent(&self) -> bool { self.read64(ECAP).is_some_and(|ecap| ecap & 1 != 0) }
     /// Return whether ECAP advertises queued invalidation. # C: O(1)
