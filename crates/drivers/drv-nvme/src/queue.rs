@@ -137,13 +137,23 @@ impl Nvme {
             self.w32(regs::REG_CC, 0);
             let _ = self.wait_rdy(false, 2_000);
         }
+        self.free_frames();
+        self.bar0_va = 0;
+        self.mmio.unmap();
+    }
+
+    fn free_frames(&mut self) {
         Self::free_frame(self.bdf, &mut self.admin.sq_pa, &mut self.admin.sq_dma);
         Self::free_frame(self.bdf, &mut self.admin.cq_pa, &mut self.admin.cq_dma);
         Self::free_frame(self.bdf, &mut self.io.sq_pa, &mut self.io.sq_dma);
         Self::free_frame(self.bdf, &mut self.io.cq_pa, &mut self.io.cq_dma);
         Self::free_frame(self.bdf, &mut self.admin_data_pa, &mut self.admin_data_dma);
-        self.bar0_va = 0;
-        self.mmio.unmap();
+    }
+
+    fn failed_bring_up(mut self) -> Mapping {
+        if self.bar0_va != 0 { self.w32(regs::REG_CC, 0); let _ = self.wait_rdy(false, 2_000); }
+        self.free_frames();
+        self.mmio
     }
 
     /// Read a 32-bit controller register. # C: O(1)
@@ -181,12 +191,12 @@ impl Nvme {
     }
 
     /// Build the controller, reset it, set up the admin queues, run IDENTIFY,
-    /// create the I/O queue pair. Returns None on any timeout/alloc failure.
+    /// create the I/O queue pair. Returns the still-owned BAR mapping on failure.
     /// `bar0_va` is the HHDM-independent register-file VA from map_mmio_pages.
     /// # C: O(reset + 2 admin cmds + 2 create-queue cmds)
-    pub fn bring_up(bdf: pci::Bdf, dma_mask: u64, mmio: Mapping, bar0_off: u64, io_vector: u16) -> Option<Nvme> {
+    pub fn bring_up(bdf: pci::Bdf, dma_mask: u64, mmio: Mapping, bar0_off: u64, io_vector: u16) -> Result<Nvme, Mapping> {
         // Queue and admin-IDENTIFY frames are controller-owned; posted I/O owns its PRPs.
-        let ([asq, acq, isq, icq, admin_data], [asq_dma, acq_dma, isq_dma, icq_dma, admin_data_dma]) = Self::alloc_frames(bdf, dma_mask)?;
+        let Some(([asq, acq, isq, icq, admin_data], [asq_dma, acq_dma, isq_dma, icq_dma, admin_data_dma])) = Self::alloc_frames(bdf, dma_mask) else { return Err(mmio); };
         for f in [asq, acq, isq, icq, admin_data] { Self::zero_frame(f); }
         let bar0_va = mmio.base_va() + bar0_off;
 
@@ -225,8 +235,7 @@ impl Nvme {
         // 1. Disable: CC.EN=0, wait CSTS.RDY==0.
         nv.w32(regs::REG_CC, 0);
         if !nv.wait_rdy(false, to_ms) {
-            nv.shutdown_and_free();
-            return None;
+            return Err(nv.failed_bring_up());
         }
 
         // 2. Program admin queue attributes + base addresses.
@@ -237,33 +246,28 @@ impl Nvme {
         // 3. Enable: CC with IOSQES/IOCQES + EN, wait CSTS.RDY==1.
         nv.w32(regs::REG_CC, regs::cc_enable());
         if !nv.wait_rdy(true, to_ms) {
-            nv.shutdown_and_free();
-            return None;
+            return Err(nv.failed_bring_up());
         }
 
         // 4. IDENTIFY controller (confirm the controller answers admin cmds).
         if !nv.identify_controller() {
-            nv.shutdown_and_free();
-            return None;
+            return Err(nv.failed_bring_up());
         }
 
         // 5. Select one active namespace, then harvest its capacity and LBA format.
         if !nv.identify_active_namespace() {
-            nv.shutdown_and_free();
-            return None;
+            return Err(nv.failed_bring_up());
         }
 
         // 6. Create the I/O completion + submission queue (qid=1).
         if !nv.create_io_cq(io_vector) {
-            nv.shutdown_and_free();
-            return None;
+            return Err(nv.failed_bring_up());
         }
         if !nv.create_io_sq() {
-            nv.shutdown_and_free();
-            return None;
+            return Err(nv.failed_bring_up());
         }
 
-        Some(nv)
+        Ok(nv)
     }
 
     /// Rebuild this controller's queues in place after a live reset. The BAR

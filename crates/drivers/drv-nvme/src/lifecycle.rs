@@ -71,9 +71,19 @@ where
     }
 }
 
+/// Release interrupt state before the BAR mapping holding its table is dropped.
+/// # C: O(release + drop)
+pub(crate) fn release_probe_irq_then_drop<M, R>(mut release_irq: R, mapping: M)
+where
+    R: FnMut(),
+{
+    release_irq();
+    drop(mapping);
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{AsyncTimeoutAction, async_deadline_expired, async_timeout_action, deadline_expired, run_probe_failure_cleanup, run_remove_cleanup};
+    use super::{AsyncTimeoutAction, async_deadline_expired, async_timeout_action, deadline_expired, release_probe_irq_then_drop, run_probe_failure_cleanup, run_remove_cleanup};
 
     #[test]
     fn deadline_recovery_waits_for_an_uncompleted_request() {
@@ -112,5 +122,14 @@ mod tests {
         let mut disabled = false;
         run_probe_failure_cleanup(|| { disabled = true; });
         assert!(disabled);
+    }
+
+    #[test]
+    fn failed_probe_releases_irq_before_bar_drop() {
+        struct Bar<'a>(&'a core::cell::Cell<u8>);
+        impl Drop for Bar<'_> { fn drop(&mut self) { assert_eq!(self.0.get(), 1); self.0.set(2); } }
+        let order = core::cell::Cell::new(0);
+        release_probe_irq_then_drop(|| { order.set(1); }, Bar(&order));
+        assert_eq!(order.get(), 2);
     }
 }

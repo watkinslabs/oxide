@@ -48,6 +48,8 @@ unsafe fn map_pages_with_flags(pa: u64, n_pages: u64, flags: PageFlags) -> u64 {
     #[cfg(target_arch = "x86_64")]
     // SAFETY: pure PML4 kernel-half copy active→master; safe at any point post-map.
     unsafe { hal_x86_64::mmu_ops::resync_kernel_master(); }
+    #[cfg(feature = "debug-boot")]
+    { klog::write_raw(b"[INFO]  mmio: map="); klog::write_hex_u64(base); klog::write_raw(b"\n"); }
     base
 }
 
@@ -167,6 +169,8 @@ pub unsafe fn map_owned_wc(pa: u64, n_pages: u64) -> Mapping {
 /// further MMIO through it.
 /// # C: O(n_pages * page-table depth)
 pub unsafe fn unmap_pages(base_va: u64, n_pages: u64) {
+    #[cfg(feature = "debug-boot")]
+    { klog::write_raw(b"[INFO]  mmio: unmap="); klog::write_hex_u64(base_va); klog::write_raw(b"\n"); }
     for i in 0..n_pages {
         let va = base_va + i * PAGE_BYTES;
         // SAFETY: upheld by this function's caller; every VA is page-aligned

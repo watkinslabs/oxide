@@ -159,9 +159,8 @@ mod imp {
             unregister_completion_if_idle();
             return 0;
         };
-        let nv = match Nvme::bring_up(device_key, regs::dma_mask(vendor_id, device_id), mmio, bar0_off, irq.vector()) { Some(n) => n, None => {
-            irq.begin_release();
-            irq.synchronize_and_release();
+        let nv = match Nvme::bring_up(device_key, regs::dma_mask(vendor_id, device_id), mmio, bar0_off, irq.vector()) { Ok(n) => n, Err(mmio) => {
+            crate::lifecycle::release_probe_irq_then_drop(|| { irq.begin_release(); irq.synchronize_and_release(); }, mmio);
             unregister_completion_if_idle();
             #[cfg(feature = "debug-boot")]
             { klog::write_raw(b"[WARN]  nvme: controller bring-up failed\n"); }

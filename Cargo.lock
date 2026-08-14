@@ -1299,6 +1299,7 @@ dependencies = [
  "hal",
  "hal-aarch64",
  "hal-x86_64",
+ "klog",
 ]
 
 [[package]]
@@ -1514,6 +1515,7 @@ name = "pci-irq"
 version = "0.1.0"
 dependencies = [
  "arch-irq",
+ "hal",
  "hal-aarch64",
  "hal-x86_64",
  "klog",
