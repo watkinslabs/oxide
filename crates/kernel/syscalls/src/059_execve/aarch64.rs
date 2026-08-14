@@ -58,6 +58,14 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
     };
     // Linux runs this before `alloc_bprm`, so a refused exec touches nothing.
     if let Some(rc) = crate::execve_common::nproc_admits(&cur) { return rc; }
+    #[cfg(feature = "debug-execload")]
+    {
+        klog::write_raw(b"[EXECLOAD begin tid=");
+        klog::write_dec_u64(cur.tid as u64);
+        klog::write_raw(b" path=");
+        klog::write_raw(&path_owned);
+        klog::write_raw(b"]\n");
+    }
     // Linux `do_open_execat`: the MAY_EXEC / noexec / file-type gate runs HERE,
     // before anything is committed, and `exec_vp` carries the very inode+mount
     // it ran against into the credential transition below.
@@ -319,6 +327,14 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
     // frame, so the parent cannot resume and alter that shared stack while
     // this task is still constructing its new image.
     sched::live::vfork_done(cur);
+    #[cfg(feature = "debug-execload")]
+    {
+        klog::write_raw(b"[EXECLOAD ready tid=");
+        klog::write_dec_u64(cur.tid as u64);
+        klog::write_raw(b" entry=");
+        klog::write_hex_u64(img.entry.as_u64());
+        klog::write_raw(b"]\n");
+    }
     debug_sched! {
         klog::write_raw(b"[INFO]  sys_execve(arm): argc=");
         klog::write_dec_u64(argc as u64);
