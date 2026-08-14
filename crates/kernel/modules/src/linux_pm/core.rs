@@ -1,5 +1,6 @@
 use super::types::*;
 use crate::linux_device::types::LinuxDevice;
+use alloc::boxed::Box;
 use core::sync::atomic::AtomicU32;
 
 /// ABI storage read directly by Linux suspend-aware drivers.
@@ -48,7 +49,59 @@ pub(super) fn export_symbols() {
         ("pm_wakeup_event",                      pm_wakeup_event                      as *const () as usize),
         ("pm_stay_awake",                        pm_stay_awake                        as *const () as usize),
         ("pm_relax",                             pm_relax                             as *const () as usize),
+        ("dev_pm_qos_update_user_latency_tolerance", dev_pm_qos_update_user_latency_tolerance as *const () as usize),
+        ("dev_pm_qos_expose_latency_tolerance",  dev_pm_qos_expose_latency_tolerance  as *const () as usize),
+        ("dev_pm_qos_hide_latency_tolerance",    dev_pm_qos_hide_latency_tolerance    as *const () as usize),
     ] { export(name, addr, false); }
+}
+
+struct LinuxLatencyTolerance { value: i32, exposed: bool }
+
+unsafe fn latency_qos(dev: *mut LinuxDevice) -> Option<&'static mut LinuxLatencyTolerance> {
+    if dev.is_null() { return None; }
+    // SAFETY: power.qos is assigned only by the functions below and reclaimed only on a negative request.
+    let qos = unsafe { (*dev).power.qos as *mut LinuxLatencyTolerance };
+    if qos.is_null() { None } else { Some(unsafe { &mut *qos }) }
+}
+
+unsafe extern "C" fn dev_pm_qos_update_user_latency_tolerance(dev: *mut LinuxDevice, value: i32) -> i32 {
+    if dev.is_null() { return -LINUX_EINVAL; }
+    let qos = unsafe { latency_qos(dev) };
+    if value < 0 {
+        if value != -1 { return -LINUX_EINVAL; }
+        if let Some(qos) = qos {
+            // SAFETY: qos came from this device's power.qos allocation and is consumed once for removal.
+            unsafe { drop(Box::from_raw(qos)); (*dev).power.qos = core::ptr::null_mut(); }
+        }
+        return LINUX_OK;
+    }
+    let qos = match qos {
+        Some(qos) => qos,
+        None => {
+            let qos = Box::into_raw(Box::new(LinuxLatencyTolerance { value, exposed: false }));
+            // SAFETY: dev was null-checked and the allocation is now owned by its power.qos slot.
+            unsafe { (*dev).power.qos = qos.cast(); &mut *qos }
+        }
+    };
+    qos.value = value;
+    // SAFETY: the callback pointer uses the Linux device/s32 ABI and is read only after the request is live.
+    if !unsafe { (*dev).power.set_latency_tolerance }.is_null() {
+        let callback: unsafe extern "C" fn(*mut LinuxDevice, i32) = unsafe { core::mem::transmute((*dev).power.set_latency_tolerance) };
+        unsafe { callback(dev, value); }
+    }
+    LINUX_OK
+}
+
+unsafe extern "C" fn dev_pm_qos_expose_latency_tolerance(dev: *mut LinuxDevice) -> i32 {
+    if dev.is_null() || unsafe { (*dev).power.set_latency_tolerance }.is_null() { return -LINUX_EINVAL; }
+    if let Some(qos) = unsafe { latency_qos(dev) } { qos.exposed = true; }
+    LINUX_OK
+}
+
+unsafe extern "C" fn dev_pm_qos_hide_latency_tolerance(dev: *mut LinuxDevice) {
+    if dev.is_null() { return; }
+    if let Some(qos) = unsafe { latency_qos(dev) } { qos.exposed = false; }
+    let _ = unsafe { dev_pm_qos_update_user_latency_tolerance(dev, -1) };
 }
 
 extern "C" fn dev_pm_suspend(dev: *mut LinuxDevice) -> i32 {

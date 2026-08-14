@@ -7,6 +7,7 @@ static RUNTIME_SUSPENDS: AtomicUsize = AtomicUsize::new(0);
 static RUNTIME_RESUMES: AtomicUsize = AtomicUsize::new(0);
 static SYSTEM_SUSPENDS: AtomicUsize = AtomicUsize::new(0);
 static SYSTEM_RESUMES: AtomicUsize = AtomicUsize::new(0);
+static LATENCY_VALUES: AtomicUsize = AtomicUsize::new(0);
 
 unsafe extern "C" fn runtime_suspend(_dev: *mut LinuxDevice) -> i32 {
     RUNTIME_SUSPENDS.fetch_add(1, Ordering::Relaxed);
@@ -26,6 +27,10 @@ unsafe extern "C" fn system_suspend(_dev: *mut LinuxDevice) -> i32 {
 unsafe extern "C" fn system_resume(_dev: *mut LinuxDevice) -> i32 {
     SYSTEM_RESUMES.fetch_add(1, Ordering::Relaxed);
     LINUX_OK
+}
+
+unsafe extern "C" fn latency_tolerance(_dev: *mut LinuxDevice, value: i32) {
+    LATENCY_VALUES.store(value as usize, Ordering::Relaxed);
 }
 
 fn test_dev(ops: &LinuxDevPmOps, driver: &mut LinuxDeviceDriver) -> LinuxDevice {
@@ -65,6 +70,21 @@ fn runtime_pm_get_put_drives_callbacks_and_state() {
     assert_eq!(pm_runtime_put_sync(&mut dev), LINUX_OK);
     assert_eq!(RUNTIME_SUSPENDS.load(Ordering::Relaxed), 1);
     assert!(pm_runtime_suspended(&mut dev));
+}
+
+#[test]
+fn latency_tolerance_qos_updates_the_registered_device_callback() {
+    let _modules = crate::test_serial::claim();
+    LATENCY_VALUES.store(0, Ordering::Relaxed);
+    let ops = test_ops();
+    let mut driver = test_driver();
+    let mut dev = test_dev(&ops, &mut driver);
+    dev.power.set_latency_tolerance = latency_tolerance as *mut core::ffi::c_void;
+    assert_eq!(unsafe { dev_pm_qos_update_user_latency_tolerance(&mut dev, 77) }, LINUX_OK);
+    assert_eq!(LATENCY_VALUES.load(Ordering::Relaxed), 77);
+    assert_eq!(unsafe { dev_pm_qos_expose_latency_tolerance(&mut dev) }, LINUX_OK);
+    unsafe { dev_pm_qos_hide_latency_tolerance(&mut dev); }
+    assert!(dev.power.qos.is_null());
 }
 
 #[test]
@@ -126,6 +146,8 @@ fn export_symbols_registers_pm_surface() {
         "pm_runtime_enable", "pm_runtime_get_sync", "pm_runtime_put_sync",
         "pm_runtime_set_suspended", "device_init_wakeup", "device_set_wakeup_enable",
         "__pm_runtime_idle", "__pm_runtime_resume", "dev_pm_suspend", "pm_suspend_global_flags",
+        "dev_pm_qos_update_user_latency_tolerance", "dev_pm_qos_expose_latency_tolerance",
+        "dev_pm_qos_hide_latency_tolerance",
     ] {
         assert!(crate::symtab::is_exported(name));
     }
