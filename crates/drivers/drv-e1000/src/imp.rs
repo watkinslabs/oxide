@@ -305,15 +305,31 @@ fn enable_interrupts(c: &Controller) {
 
 fn hard_msi() { let _ = hard_irq(); }
 
-fn bind_pci_message(bdf: pci::Bdf, endpoint: usize, ctrl: &Controller) -> Option<pci_irq::Binding> {
-    let binding = pci_irq::request(bdf, pci_irq::BarMapping {
-        bar: 0, base_va: ctrl.mmio.base_va(), bytes: ctrl.mmio.bytes(), offset: 0,
-    }, arch_irq::DeviceAction::E1000, hard_msi)?;
+fn msix_bir(bdf: pci::Bdf) -> Option<u8> {
+    #[cfg(target_arch = "x86_64")]
+    { hal_x86_64::pci::EcamPci::from_published().and_then(|r| pci::capabilities(&r, bdf).find(pci::CAP_ID_MSIX).and_then(|cap| pci::decode_msix_cap(&r, bdf, cap.cfg_off))).map(|cap| cap.table_bir) }
+    #[cfg(target_arch = "aarch64")]
+    { hal_aarch64::pci::EcamPci::from_published().and_then(|r| pci::capabilities(&r, bdf).find(pci::CAP_ID_MSIX).and_then(|cap| pci::decode_msix_cap(&r, bdf, cap.cfg_off))).map(|cap| cap.table_bir) }
+}
+fn bind_pci_message(parent: &Arc<drv::Device>, bdf: pci::Bdf, endpoint: usize, ctrl: &Controller) -> Option<(pci_irq::Binding, Option<mmio_map::Mapping>)> {
+    let (table, table_map) = if msix_bir(bdf).is_none_or(|bir| bir == 0) {
+        (pci_irq::BarMapping { bar: 0, base_va: ctrl.mmio.base_va(), bytes: ctrl.mmio.bytes(), offset: 0 }, None)
+    } else {
+        let bir = msix_bir(bdf)?;
+        let resource = parent.resources.iter().find(|resource| resource.bar == bir && resource.flags & drv::IORESOURCE_MEM != 0)?;
+        let bytes = resource.end.checked_sub(resource.start)?.checked_add(1)?;
+        let off = resource.start & (PAGE - 1);
+        let pages = off.checked_add(bytes)?.checked_add(PAGE - 1)?.checked_div(PAGE)?;
+        // SAFETY: MSI-X table BAR belongs to the matched function and is retained until binding teardown.
+        let map = unsafe { mmio_map::map_owned(resource.start & !(PAGE - 1), pages) };
+        (pci_irq::BarMapping { bar: bir, base_va: map.base_va(), bytes: map.bytes(), offset: off }, Some(map))
+    };
+    let binding = pci_irq::request(bdf, table, arch_irq::DeviceAction::E1000, hard_msi)?;
     ENDPOINTS[endpoint].state.store(ENDPOINT_ACTIVE, Ordering::Release);
-    Some(binding)
+    Some((binding, table_map))
 }
 
-struct Record { bdf: pci::Bdf, command_orig: u16, endpoint: usize, irq: pci_irq::Binding, dev: Arc<E1000NetDev> }
+struct Record { bdf: pci::Bdf, command_orig: u16, endpoint: usize, irq: pci_irq::Binding, msix: Option<mmio_map::Mapping>, dev: Arc<E1000NetDev> }
 static DEVICES: Spinlock<Vec<Record>, DriverLockClass> = Spinlock::new(Vec::new());
 static POLL_INSTALLED: AtomicBool = AtomicBool::new(false);
 static NEXT_NAME: AtomicU32 = AtomicU32::new(0);
@@ -429,6 +445,7 @@ fn remove_bdf(bdf: pci::Bdf) {
     if iface != 0 { let _ = net::sock::stack().unregister_iface_current(net::NetIfaceId::from_raw(iface as u32)); }
     record.dev.ctrl.lock_bh::<sched::bh::SchedBh>().stop();
     release_irq(record.irq, record.endpoint);
+    drop(record.msix);
     record.dev.ctrl.lock_bh::<sched::bh::SchedBh>().free();
     restore_bus_master(record.bdf, record.command_orig);
     if DEVICES.lock_bh::<sched::bh::SchedBh>().is_empty() && POLL_INSTALLED.swap(false, Ordering::AcqRel) {
@@ -460,8 +477,8 @@ pub(crate) fn probe_common(parent: &Arc<drv::Device>, dma_mask: u64, profile: cr
         // GSI routing. Oxide has no AML/_PRT interpreter, so pretending the
         // PCI interrupt-line byte is routable would deliver a vector to the
         // wrong pin on real firmware. Require PCI core MSI/MSI-X instead.
-        let irq = bind_pci_message(bdf, endpoint, &controller);
-        let irq = match irq { Some(irq) => irq, None => { endpoint_release(endpoint); let mut controller = controller; controller.free(); restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); } };
+        let irq = bind_pci_message(parent, bdf, endpoint, &controller);
+        let (irq, msix) = match irq { Some(irq) => irq, None => { endpoint_release(endpoint); let mut controller = controller; controller.free(); restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); } };
         trace("[INFO]  e1000: irq ready\n");
         let dev = Arc::new(E1000NetDev {
             name: alloc::format!("eth{}", NEXT_NAME.fetch_add(1, Ordering::Relaxed)), mac,
@@ -481,7 +498,7 @@ pub(crate) fn probe_common(parent: &Arc<drv::Device>, dma_mask: u64, profile: cr
         if !POLL_INSTALLED.swap(true, Ordering::AcqRel) && !net::backlog::register_poll(poll_rx) {
             POLL_INSTALLED.store(false, Ordering::Release); let _ = stack.unregister_iface_current(net::NetIfaceId::from_raw(dev.iface.swap(0, Ordering::AcqRel) as u32)); release_irq(irq, endpoint); dev.ctrl.lock_bh::<sched::bh::SchedBh>().free(); restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed);
         }
-        DEVICES.lock_bh::<sched::bh::SchedBh>().push(Record { bdf, command_orig, endpoint, irq, dev: dev.clone() });
+        DEVICES.lock_bh::<sched::bh::SchedBh>().push(Record { bdf, command_orig, endpoint, irq, msix, dev: dev.clone() });
         // `register_netdev` leaves IFF_UP clear. The NetDev lifecycle hook
         // performs the Linux ndo_open equivalent when userspace brings it up.
         trace("[INFO]  e1000: registered down\n");
