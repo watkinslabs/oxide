@@ -31,6 +31,14 @@ pub(super) fn install(requesters: &[Bdf]) -> bool {
     if iommu::enable_amd_vi_event_interrupts() { true } else { let _ = iommu::disable_amd_vi_event_interrupts(); release(&mut bindings); false }
 }
 
+/// Mask AMD-Vi event delivery and release its PCI MSI bindings before the
+/// IOMMU owner tears down translation. # C: O(units)
+pub(super) fn uninstall() -> bool {
+    if !iommu::disable_amd_vi_event_interrupts() { return false; }
+    release(&mut BINDINGS.lock());
+    true
+}
+
 fn release(bindings: &mut Vec<pci_irq::Binding>) {
     while let Some(binding) = bindings.pop() { binding.release(); }
 }

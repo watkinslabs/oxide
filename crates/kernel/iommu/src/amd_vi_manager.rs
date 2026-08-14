@@ -106,6 +106,21 @@ fn activation_failed(manager: &mut [AmdViBootUnit]) -> AmdViActivation {
     AmdViActivation::Failed
 }
 
+/// Disable every active AMD-Vi unit when a later global IOMMU transition
+/// rejects PCI driver admission.  Keep the manager and its table ownership
+/// intact if any hardware disable handshake fails: forgetting that state
+/// would let a later caller treat a still-live unit as bypassed.
+/// # C: O(units)
+pub fn deactivate_amd_vi() -> bool {
+    let mut manager = MANAGER.lock();
+    let mut complete = true;
+    for entry in manager.iter_mut() { complete &= entry.bootstrap.disable(); }
+    if !complete { return false; }
+    manager.clear();
+    X2APIC_CAPABLE.store(false, Ordering::Release);
+    true
+}
+
 /// Return whether this manager owns the full PCI requester identity. # C: O(units)
 pub fn owns(requester: Bdf) -> bool {
     MANAGER.lock().iter().any(|entry| entry.groups.iter().any(|group| group.requesters.iter().any(|candidate| *candidate == requester)))

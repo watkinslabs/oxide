@@ -204,9 +204,9 @@ fn activate_dma_and_interrupt_ownership(requesters: &[pci::Bdf], aliases: &pci::
         pmm::user_as::hhdm_offset(), pmm::setup::usable_regions()) };
     if iommu_activation == iommu::AmdViActivation::Failed { return false; }
     if iommu_activation == iommu::AmdViActivation::Enabled
-        && !amd_vi_events::install(requesters) { return false; }
+        && !amd_vi_events::install(requesters) { return rollback_amd_vi(); }
     let vtd_activation = activate_vtd_arch(requesters, aliases);
-    if vtd_activation == iommu::VtdActivation::Failed { return false; }
+    if vtd_activation == iommu::VtdActivation::Failed { return rollback_amd_vi(); }
     #[cfg(target_arch = "x86_64")]
     if vtd_activation == iommu::VtdActivation::Enabled && !vtd_faults::install() { return false; }
     if !iommu::enable_vtd_interrupt_remapping() { return false; }
@@ -222,6 +222,14 @@ fn activate_dma_and_interrupt_ownership(requesters: &[pci::Bdf], aliases: &pci::
     // SAFETY: the LAPIC/IDT are live and all unowned PCI requesters remain quiesced.
     unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
     true
+}
+
+/// Undo an already-published AMD-Vi activation when the remaining global
+/// IOMMU transaction cannot be completed. # C: O(units)
+fn rollback_amd_vi() -> bool {
+    if !amd_vi_events::uninstall() { return false; }
+    let _ = iommu::deactivate_amd_vi();
+    false
 }
 
 #[inline(never)]
