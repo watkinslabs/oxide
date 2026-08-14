@@ -99,6 +99,10 @@ bitflags::bitflags! {
 pub struct PageMeta {
     pub refcount:   AtomicU32,
     pub flags:      AtomicU32,
+    /// Diagnostic-only holder for `LOCKED`. Zero means boot/interrupt context
+    /// or no recorded task; normal lock semantics remain solely in `flags`.
+    #[cfg(feature = "debug-watchdog")]
+    pub lock_owner: AtomicU32,
     pub mapping:    AtomicPtr<()>,
     pub page_index: AtomicU32,
     /// Live user-PTE count (Linux `page->_mapcount`). Distinct from
@@ -144,6 +148,8 @@ impl PageMeta {
         Self {
             refcount:   AtomicU32::new(0),
             flags:      AtomicU32::new(0),
+            #[cfg(feature = "debug-watchdog")]
+            lock_owner: AtomicU32::new(0),
             mapping:    AtomicPtr::new(core::ptr::null_mut()),
             page_index: AtomicU32::new(0),
             mapcount:   AtomicU32::new(0),
@@ -295,6 +301,29 @@ impl PageMetaArr {
         Some(previous & PageFlags::LOCKED.bits() != 0)
     }
 
+    /// Record the task that acquired a page lock for the debug-watchdog
+    /// diagnostic path. The bit in `flags` remains the sole lock authority.
+    /// # C: O(1)
+    #[cfg(feature = "debug-watchdog")]
+    pub fn note_page_lock_owner(&self, pfn: Pfn, tid: u32) {
+        if let Some(page) = self.get(pfn) { page.lock_owner.store(tid, Ordering::Release); }
+    }
+
+    /// Clear the debug-only page-lock ownership record before publishing the
+    /// unlocked bit. The record never participates in acquisition.
+    /// # C: O(1)
+    #[cfg(feature = "debug-watchdog")]
+    pub fn clear_page_lock_owner(&self, pfn: Pfn) {
+        if let Some(page) = self.get(pfn) { page.lock_owner.store(0, Ordering::Release); }
+    }
+
+    /// Read the debug-only page-lock owner, if this PFN has metadata.
+    /// # C: O(1)
+    #[cfg(feature = "debug-watchdog")]
+    pub fn page_lock_owner(&self, pfn: Pfn) -> Option<u32> {
+        Some(self.get(pfn)?.lock_owner.load(Ordering::Acquire))
+    }
+
     /// Set the mapping pointer (typed `MappingId` once VFS lands).
     /// # C: O(1)
     pub fn set_mapping(&self, pfn: Pfn, ptr: *mut ()) -> Option<*mut ()> {
@@ -343,158 +372,5 @@ impl PageMetaArr {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    extern crate alloc;
-    use alloc::boxed::Box;
-    use alloc::vec::Vec;
-    use std::sync::Arc;
-    use std::thread;
-
-    fn leak_arr(base_pfn: u64, count: usize) -> PageMetaArr {
-        let v: Vec<PageMeta> = (0..count).map(|_| PageMeta::new()).collect();
-        let s: &'static [PageMeta] = Box::leak(v.into_boxed_slice());
-        PageMetaArr::new(base_pfn, s)
-    }
-
-    #[test]
-    fn new_empty() {
-        let a = leak_arr(0, 0);
-        assert!(a.is_empty());
-        assert_eq!(a.len(), 0);
-        assert!(a.get(Pfn(0)).is_none());
-    }
-
-    #[test]
-    fn out_of_range_pfn_returns_none() {
-        let a = leak_arr(100, 16);
-        assert!(a.get(Pfn(99)).is_none());
-        assert!(a.get(Pfn(116)).is_none());
-        assert!(a.get(Pfn(100)).is_some());
-        assert!(a.get(Pfn(115)).is_some());
-    }
-
-    #[test]
-    fn refcount_inc_dec_roundtrip() {
-        let a = leak_arr(0, 8);
-        assert_eq!(a.refcount(Pfn(3)), Some(0));
-        assert_eq!(a.inc_ref(Pfn(3)), Some(0)); // returns old
-        assert_eq!(a.refcount(Pfn(3)), Some(1));
-        assert_eq!(a.inc_ref(Pfn(3)), Some(1));
-        assert_eq!(a.refcount(Pfn(3)), Some(2));
-        assert_eq!(a.dec_ref(Pfn(3)), Some(1)); // returns new
-        assert_eq!(a.dec_ref(Pfn(3)), Some(0));
-        assert_eq!(a.refcount(Pfn(3)), Some(0));
-    }
-
-    #[test]
-    fn flag_set_clear() {
-        let a = leak_arr(0, 4);
-        assert_eq!(a.flags(Pfn(0)), Some(PageFlags::empty()));
-        a.set_flags(Pfn(0), PageFlags::DIRTY | PageFlags::REFERENCED).unwrap();
-        let f = a.flags(Pfn(0)).unwrap();
-        assert!(f.contains(PageFlags::DIRTY));
-        assert!(f.contains(PageFlags::REFERENCED));
-        a.clear_flags(Pfn(0), PageFlags::DIRTY).unwrap();
-        let f = a.flags(Pfn(0)).unwrap();
-        assert!(!f.contains(PageFlags::DIRTY));
-        assert!(f.contains(PageFlags::REFERENCED));
-    }
-
-    #[test]
-    fn page_lock_has_one_winner_and_releases() {
-        const BASE_PFN: u64 = 0;
-        const PAGE_COUNT: usize = 1;
-        const LOCKED_PAGE_PFN: u64 = BASE_PFN;
-        let a = leak_arr(BASE_PFN, PAGE_COUNT);
-        let page = Pfn(LOCKED_PAGE_PFN);
-        assert_eq!(a.try_lock_page(page), Some(true));
-        assert_eq!(a.try_lock_page(page), Some(false));
-        assert_eq!(a.unlock_page(page), Some(true));
-        assert_eq!(a.unlock_page(page), Some(false));
-        assert_eq!(a.try_lock_page(page), Some(true));
-    }
-
-    #[test]
-    fn mapping_pointer_swap() {
-        let a = leak_arr(0, 4);
-        let p1: *mut () = 0xdead_beef as *mut ();
-        let p2: *mut () = 0x1234_5678 as *mut ();
-        assert_eq!(a.mapping(Pfn(2)), Some(core::ptr::null_mut()));
-        assert_eq!(a.set_mapping(Pfn(2), p1), Some(core::ptr::null_mut()));
-        assert_eq!(a.mapping(Pfn(2)), Some(p1));
-        assert_eq!(a.set_mapping(Pfn(2), p2), Some(p1));
-        assert_eq!(a.mapping(Pfn(2)), Some(p2));
-    }
-
-    #[test]
-    fn concurrent_inc_dec_preserves_count() {
-        // 8 threads × 1000 inc/dec on the same pfn; final count must be 0.
-        let a: &'static PageMetaArr = Box::leak(Box::new(leak_arr(0, 1)));
-        let arc: Arc<&'static PageMetaArr> = Arc::new(a);
-        let mut handles = Vec::new();
-        for _ in 0..8 {
-            let arc = Arc::clone(&arc);
-            handles.push(thread::spawn(move || {
-                for _ in 0..1_000 {
-                    arc.inc_ref(Pfn(0));
-                    arc.dec_ref(Pfn(0));
-                }
-            }));
-        }
-        for h in handles { h.join().unwrap(); }
-        assert_eq!(a.refcount(Pfn(0)), Some(0));
-    }
-
-    #[test]
-    fn refcount_only_affects_target_pfn() {
-        let a = leak_arr(0, 4);
-        a.inc_ref(Pfn(1)).unwrap();
-        a.inc_ref(Pfn(1)).unwrap();
-        a.inc_ref(Pfn(2)).unwrap();
-        assert_eq!(a.refcount(Pfn(0)), Some(0));
-        assert_eq!(a.refcount(Pfn(1)), Some(2));
-        assert_eq!(a.refcount(Pfn(2)), Some(1));
-        assert_eq!(a.refcount(Pfn(3)), Some(0));
-    }
-
-    #[test]
-    fn mapcount_inc_dec_roundtrip() {
-        let a = leak_arr(0, 8);
-        assert_eq!(a.mapcount(Pfn(5)), Some(0));
-        assert_eq!(a.inc_map(Pfn(5)), Some(0)); // returns old
-        assert_eq!(a.mapcount(Pfn(5)), Some(1));
-        assert_eq!(a.inc_map(Pfn(5)), Some(1));
-        assert_eq!(a.mapcount(Pfn(5)), Some(2));
-        assert_eq!(a.dec_map(Pfn(5)), Some(1)); // returns new
-        assert_eq!(a.dec_map(Pfn(5)), Some(0));
-        assert_eq!(a.mapcount(Pfn(5)), Some(0));
-        // mapcount and refcount are independent fields.
-        a.inc_ref(Pfn(5)).unwrap();
-        assert_eq!(a.refcount(Pfn(5)), Some(1));
-        assert_eq!(a.mapcount(Pfn(5)), Some(0));
-    }
-
-    #[test]
-    fn meta_size_matches_spec() {
-        // `11§8`: refcount(4) + flags(4) + mapping(8) + page_index(4) +
-        // mapcount(4) + memcg(8) + reclaim links(16) = 48 B/page, about 1.2%
-        // of RAM. Linux likewise embeds reclaim-list links in `struct page`.
-        assert_eq!(core::mem::size_of::<PageMeta>(), 48);
-    }
-
-    #[test]
-    fn pagetable_context_uses_mapping_slot_without_layout_growth() {
-        let a = leak_arr(0, 1);
-        let pfn = Pfn(0);
-        let root_pa = 0x20_000u64;
-        a.set_flags(pfn, PageFlags::PAGETABLE).unwrap();
-        a.set_mapping(pfn, root_pa as usize as *mut ()).unwrap();
-        assert!(a.flags(pfn).unwrap().contains(PageFlags::PAGETABLE));
-        assert_eq!(a.mapping(pfn).unwrap() as usize as u64, root_pa);
-        a.clear_flags(pfn, PageFlags::PAGETABLE).unwrap();
-        a.set_mapping(pfn, core::ptr::null_mut()).unwrap();
-        assert!(!a.flags(pfn).unwrap().contains(PageFlags::PAGETABLE));
-        assert!(a.mapping(pfn).unwrap().is_null());
-    }
-}
+#[path = "page_meta/tests.rs"]
+mod tests;
