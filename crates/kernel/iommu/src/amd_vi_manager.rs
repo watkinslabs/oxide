@@ -52,8 +52,7 @@ pub unsafe fn activate_amd_vi(requesters: &[Bdf], aliases: &pci::DmaAliases, hhd
     for entry in manager.iter_mut() {
         let unit_requesters: Vec<Bdf> = requesters.iter().copied().filter(|bdf|
             crate::amd_vi_unit_for_bdf(*bdf) == Some(entry.unit)).collect();
-        for (_, group_requesters) in requester_groups(&unit_requesters, |bdf|
-            group_key(bdf, firmware::acpi::amd_vi_alias_for_requester(bdf.segment, bdf.raw()))) {
+        for group_requesters in requester_groups(&unit_requesters, aliases) {
             let Some(domain_id) = u16::try_from(entry.groups.len()).ok().and_then(|n| INITIAL_DOMAIN_ID.checked_add(n)) else { return activation_failed(&mut manager); };
             let Some(mut domain) = AmdViDomain::new(IOVA_START, IOVA_BYTES, hhdm_offset) else { return activation_failed(&mut manager); };
             if !domain.map_identity_regions(regions) || !map_ivmd_regions(&mut domain, entry.unit, &group_requesters) { return activation_failed(&mut manager); }
@@ -218,17 +217,45 @@ fn push_unique_unit(units: &mut Vec<IommuUnit>, unit: IommuUnit) {
     if !units.iter().any(|current| *current == unit) { units.push(unit); }
 }
 
-fn group_key(bdf: Bdf, alias: Option<u16>) -> u16 { alias.unwrap_or(bdf.raw()) }
-
-fn requester_groups(requesters: &[Bdf], key_for: impl Fn(Bdf) -> u16) -> Vec<(u16, Vec<Bdf>)> {
-    let mut groups = Vec::new();
+fn requester_groups(requesters: &[Bdf], aliases: &pci::DmaAliases) -> Vec<Vec<Bdf>> {
+    let mut groups: Vec<Vec<Bdf>> = Vec::new();
     for requester in requesters {
-        let key = key_for(*requester);
-        if groups.iter().any(|(existing, _)| *existing == key) { continue; }
-        let members = requesters.iter().copied().filter(|candidate| key_for(*candidate) == key).collect();
-        groups.push((key, members));
+        if groups.iter().flatten().any(|member| *member == *requester) { continue; }
+        let mut group = alloc::vec![*requester];
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for candidate in requesters {
+                if group.contains(candidate) { continue; }
+                if group.iter().copied().any(|member| same_dma_group(member, *candidate, aliases)) {
+                    group.push(*candidate);
+                    changed = true;
+                }
+            }
+        }
+        group.sort_unstable();
+        groups.push(group);
     }
     groups
+}
+
+/// Keep every enumerated function which can issue an indistinguishable
+/// requester ID in one AMD-Vi domain before any DTE becomes visible. # C: O(aliases)
+fn same_dma_group(left: Bdf, right: Bdf, aliases: &pci::DmaAliases) -> bool {
+    if left.segment != right.segment { return false; }
+    let left_firmware = firmware::acpi::amd_vi_alias_for_requester(left.segment, left.raw());
+    let right_firmware = firmware::acpi::amd_vi_alias_for_requester(right.segment, right.raw());
+    firmware_aliases_share(left, left_firmware, right, right_firmware)
+        || aliases.for_requester(left).any(|alias| alias == right)
+        || aliases.for_requester(right).any(|alias| alias == left)
+        || aliases.for_requester(left).any(|left_alias| aliases.for_requester(right)
+            .any(|right_alias| left_alias == right_alias))
+}
+
+fn firmware_aliases_share(left: Bdf, left_alias: Option<u16>, right: Bdf,
+    right_alias: Option<u16>) -> bool {
+    left_alias == Some(right.raw()) || right_alias == Some(left.raw())
+        || left_alias.is_some() && left_alias == right_alias
 }
 
 #[cfg(test)] mod tests {
@@ -245,17 +272,34 @@ fn requester_groups(requesters: &[Bdf], key_for: impl Fn(Bdf) -> u16) -> Vec<(u1
     #[test] fn alias_and_canonical_requesters_select_one_group_key() {
         let canonical = Bdf { segment: 0, bus: 0x12, device: 3, function: 1 };
         let alias = Bdf { segment: 0, bus: 0x12, device: 4, function: 0 };
-        assert_eq!(group_key(canonical, None), canonical.raw());
-        assert_eq!(group_key(alias, Some(canonical.raw())), canonical.raw());
+        let mut aliases = pci::DmaAliases::new();
+        assert!(aliases.add(alias, canonical));
+        assert_eq!(requester_groups(&[alias, canonical], &aliases), alloc::vec![alloc::vec![canonical, alias]]);
+    }
+    #[test] fn firmware_aliases_merge_their_canonical_requesters() {
+        let canonical = Bdf { segment: 0, bus: 0x12, device: 3, function: 1 };
+        let alias = Bdf { segment: 0, bus: 0x12, device: 4, function: 0 };
+        assert!(firmware_aliases_share(alias, Some(canonical.raw()), canonical, None));
+        assert!(firmware_aliases_share(alias, Some(canonical.raw()),
+            Bdf { segment: 0, bus: 0x12, device: 5, function: 0 }, Some(canonical.raw())));
+        assert!(!firmware_aliases_share(alias, None, canonical, None));
     }
     #[test] fn aliases_form_the_complete_group_before_domain_setup() {
         let canonical = Bdf { segment: 0, bus: 0x12, device: 3, function: 1 };
         let alias = Bdf { segment: 0, bus: 0x12, device: 4, function: 0 };
         let unrelated = Bdf { segment: 0, bus: 0x12, device: 5, function: 0 };
-        let groups = requester_groups(&[alias, unrelated, canonical], |bdf| {
-            if bdf == alias { canonical.raw() } else { bdf.raw() }
-        });
-        assert_eq!(groups, alloc::vec![(canonical.raw(), alloc::vec![alias, canonical]),
-            (unrelated.raw(), alloc::vec![unrelated])]);
+        let mut aliases = pci::DmaAliases::new();
+        assert!(aliases.add(alias, canonical));
+        assert_eq!(requester_groups(&[alias, unrelated, canonical], &aliases),
+            alloc::vec![alloc::vec![canonical, alias], alloc::vec![unrelated]]);
+    }
+    #[test] fn shared_topology_alias_forms_one_domain_before_dte_attach() {
+        let first = Bdf { segment: 0, bus: 4, device: 1, function: 0 };
+        let second = Bdf { segment: 0, bus: 4, device: 2, function: 0 };
+        let translated = Bdf { segment: 0, bus: 9, device: 0, function: 0 };
+        let mut aliases = pci::DmaAliases::new();
+        assert!(aliases.add(first, translated));
+        assert!(aliases.add(second, translated));
+        assert_eq!(requester_groups(&[first, second], &aliases), alloc::vec![alloc::vec![first, second]]);
     }
 }

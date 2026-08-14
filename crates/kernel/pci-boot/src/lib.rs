@@ -403,7 +403,7 @@ fn dma_aliases(requesters: &[pci::Bdf], devices: &[pci::PciDevice]) -> pci::DmaA
             && bdf.raw() >= record.first_requester && bdf.raw() <= record.last_requester) {
             let canonical = pci::Bdf { segment: requester.segment, bus: (record.canonical_requester >> 8) as u8,
                 device: ((record.canonical_requester >> 3) & 0x1f) as u8, function: (record.canonical_requester & 7) as u8 };
-            if requesters.contains(&canonical) { let _ = aliases.add(requester, canonical); }
+            let _ = aliases.add(requester, canonical);
         }
     }
     #[cfg(target_arch = "x86_64")]
