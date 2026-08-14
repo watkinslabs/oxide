@@ -67,6 +67,8 @@ pub use restart::RestartBlock;
 pub use signals::{SaHandler, SigActions, SignalPending, SA_IMMUTABLE, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK};
 pub use sigwake::{SleepWake, WaitOutcome, WaitState, signal_pending_state};
 pub use types::{SchedClass, SchedPolicy, SigInfo, TaskState, RT_QUEUE_CAP};
+#[cfg(feature = "debug-watchdog")]
+pub use types::WakeDiagPhase;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PendingWake { Drop, Ready, Defer }
@@ -98,6 +100,12 @@ pub struct Task {
     /// the subsequent CPU-selection/enqueue decision. This is the task wake
     /// serialization boundary; it is acquired before a runqueue lock.
     pub task_wake_lock: Spinlock<(), TaskWakeClass>,
+    /// Diagnostic-only phase/timestamp for a claimed wake.  Absent outside
+    /// watchdog builds so it cannot alter the scheduler's steady-state layout.
+    #[cfg(feature = "debug-watchdog")]
+    pub wake_diag_phase: AtomicU8,
+    #[cfg(feature = "debug-watchdog")]
+    pub wake_diag_ns: AtomicU64,
     pub on_rq:    AtomicBool,
     /// SMP `on_cpu` (Linux): true while executing on a CPU; set on switch-to,
     /// cleared in finish_task_switch after register save; remote ttwu spins on it.

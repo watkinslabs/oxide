@@ -13,7 +13,20 @@ use crate::sched_enc::wakeup::{cand_of, wakeup_preempt};
 use crate::task::PendingWake;
 use crate::live::runqueue::{RqIrq, Runqueue};
 use crate::Task;
+#[cfg(feature = "debug-watchdog")]
+use crate::task::WakeDiagPhase;
 use super::runqueue::global_for;
+
+#[cfg(feature = "debug-watchdog")]
+#[inline]
+fn wake_diag_now_ns() -> u64 {
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+    { use hal::TimerOps; hal_x86_64::X86TimerOps::monotonic_ns().0 }
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+    { use hal::TimerOps; hal_aarch64::ArmTimerOps::monotonic_ns().0 }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    { 0 }
+}
 
 /// Per-CPU deferred-wake list (Linux `ttwu_queue` / `wake_list` +
 /// `sched_ttwu_pending`). A waker that must NOT place a task directly on a
@@ -70,6 +83,8 @@ pub fn wake_list_push(cpu: u32, task: Arc<Task>) {
     {
         return; // already linked — its pending drain covers this wake
     }
+    #[cfg(feature = "debug-watchdog")]
+    task.wake_diag_mark(WakeDiagPhase::Listed, wake_diag_now_ns());
     // Ownership of one strong ref moves into the list here; the drain takes it
     // back out. Nothing else may drop it in between.
     let raw = Arc::into_raw(task) as *mut Task;
@@ -109,6 +124,8 @@ pub fn wake_list_drain(cpu: u32) -> Vec<Arc<Task>> {
         // here either lost the claim (and the enqueue below carries its wake)
         // or wins it after this and pushes normally.
         task.on_wake_list.store(false, Ordering::Release);
+        #[cfg(feature = "debug-watchdog")]
+        task.wake_diag_mark(WakeDiagPhase::Drained, wake_diag_now_ns());
         out.push(task);
         node = next;
     }
@@ -171,6 +188,8 @@ pub fn sched_ttwu_pending(cpu: u32, current: *mut Task, rq: &Runqueue) -> bool {
                 // the runqueue's strong reference for this locked decision.
                 let raw = rq.current.load(Ordering::Acquire);
                 let curr = if raw.is_null() { None } else { Some(cand_of(unsafe { &*raw })) };
+                #[cfg(feature = "debug-watchdog")]
+                task.wake_diag_mark(WakeDiagPhase::Activating, wake_diag_now_ns());
                 task.set_vruntime_to_floor(inner.cfs.min_vruntime());
                 preempt |= curr.is_none_or(|c| wakeup_preempt(cand_of(&task), c));
                 inner.enqueue(Arc::clone(&task));
@@ -415,6 +434,8 @@ unsafe fn ttwu_inner(task: Arc<Task>, force_defer: bool) -> bool {
         // this race at the state claim and performs no second placement.
         return false;
     }
+    #[cfg(feature = "debug-watchdog")]
+    task.wake_diag_mark(WakeDiagPhase::Claimed, wake_diag_now_ns());
     // Explicit wake clears any SO_*TIMEO deadline so the scanner doesn't re-rouse it.
     task.wakeup_deadline_ns.store(0, Ordering::Release);
     // debug-wakelat: stamp the exclusive wake claim + source so a later
@@ -512,6 +533,8 @@ where F: Fn(u32) -> Option<&'a Runqueue> {
             // SCHED_FIFO lose the CPU to an equal-priority peer and let a
             // SCHED_BATCH / SCHED_IDLE wakee preempt a SCHED_NORMAL task.
             preempt = curr.is_none_or(|c| wakeup_preempt(cand_of(&task), c));
+            #[cfg(feature = "debug-watchdog")]
+            task.wake_diag_mark(WakeDiagPhase::Activating, wake_diag_now_ns());
             inner.enqueue(task);
             rq.publish_nr_running(inner.nr_running());
         }

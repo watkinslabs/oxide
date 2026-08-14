@@ -11,6 +11,8 @@ use vmm::AddressSpace;
 use crate::ARCH_CTX_SIZE;
 
 use super::{ArchCtxBuf, ArchFpuBuf, Creds, PendingWake, SigActions, SignalPending, SchedClass, Task, TaskState, WaitState};
+#[cfg(feature = "debug-watchdog")]
+use super::WakeDiagPhase;
 use super::namespaces::TaskNamespaces;
 use crate::signum::Signum;
 
@@ -344,6 +346,10 @@ impl Task {
             }),
             mempolicy: [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)],
             task_wake_lock: Spinlock::new(()),
+            #[cfg(feature = "debug-watchdog")]
+            wake_diag_phase: AtomicU8::new(WakeDiagPhase::None as u8),
+            #[cfg(feature = "debug-watchdog")]
+            wake_diag_ns: AtomicU64::new(0),
             cpus_allowed: cpu::AtomicCpuMask::all(),
             user_cpus_allowed: cpu::AtomicCpuMask::new(),
             cpuset_cpus_allowed: cpu::AtomicCpuMask::all(),
@@ -614,6 +620,18 @@ impl Task {
     /// # C: O(1)
     pub fn complete_wake(&self) {
         let _ = self.cas_state(TaskState::Waking, TaskState::Runnable);
+        #[cfg(feature = "debug-watchdog")]
+        self.wake_diag_phase.store(WakeDiagPhase::None as u8, Ordering::Release);
+    }
+
+    /// Record a diagnostic-only wake-placement milestone.  The timestamp is
+    /// published before its phase so a task dump that sees a phase also sees
+    /// the age for that same or a later milestone.
+    #[cfg(feature = "debug-watchdog")]
+    /// # C: O(1)
+    pub fn wake_diag_mark(&self, phase: WakeDiagPhase, now_ns: u64) {
+        self.wake_diag_ns.store(now_ns, Ordering::Release);
+        self.wake_diag_phase.store(phase as u8, Ordering::Release);
     }
 
     /// Atomically publish both `TASK_*` wake mask and Sleeping lifecycle
