@@ -1,7 +1,7 @@
 use crate::{imp::Controller, profile::ResetProfile, regs};
 
-const MDIO_OWNERSHIP_RETRIES: usize = 10;
-const MDIO_OWNERSHIP_WAIT_NS: u64 = 2_000_000;
+const SWSM_RETRIES: usize = regs::NVM_CHECKSUM_WORD as usize + 1;
+const SWSM_WAIT_NS: u64 = 100_000;
 const PRE_RESET_WAIT_NS: u64 = 10_000_000;
 
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
@@ -15,17 +15,25 @@ fn wait_ns(ns: u64) {
     while sched::deadline::clock::now_ns() < deadline { core::hint::spin_loop(); }
 }
 
-fn acquire_mdio(c: &Controller) -> bool {
-    for _ in 0..MDIO_OWNERSHIP_RETRIES {
-        c.write(regs::EXTCNF_CTRL, c.read(regs::EXTCNF_CTRL) | regs::EXTCNF_CTRL_MDIO_SW_OWNERSHIP);
-        if c.read(regs::EXTCNF_CTRL) & regs::EXTCNF_CTRL_MDIO_SW_OWNERSHIP != 0 { return true; }
-        wait_ns(MDIO_OWNERSHIP_WAIT_NS);
+/// Linux `e1000_get_hw_semaphore_82574`: 82574/82583 own PHY and NVM through
+/// SWSM, not the 82573-only EXTCNF MDIO ownership bit.
+fn acquire_hw_semaphore(c: &Controller) -> bool {
+    for _ in 0..SWSM_RETRIES {
+        if c.read(regs::SWSM) & regs::SWSM_SMBI == 0 { break; }
+        wait_ns(SWSM_WAIT_NS);
     }
+    for _ in 0..SWSM_RETRIES {
+        let swsm = c.read(regs::SWSM);
+        c.write(regs::SWSM, swsm | regs::SWSM_SWESMBI);
+        if c.read(regs::SWSM) & regs::SWSM_SWESMBI != 0 { return true; }
+        wait_ns(SWSM_WAIT_NS);
+    }
+    release_hw_semaphore(c);
     false
 }
 
-fn release_mdio(c: &Controller) {
-    c.write(regs::EXTCNF_CTRL, c.read(regs::EXTCNF_CTRL) & !regs::EXTCNF_CTRL_MDIO_SW_OWNERSHIP);
+fn release_hw_semaphore(c: &Controller) {
+    c.write(regs::SWSM, c.read(regs::SWSM) & !(regs::SWSM_SMBI | regs::SWSM_SWESMBI));
 }
 
 fn wait_auto_read(c: &Controller) -> bool {
@@ -43,7 +51,7 @@ pub(crate) fn apply(c: &Controller, io_base: Option<u16>, profile: ResetProfile)
     c.write(regs::TCTL, c.read(regs::TCTL) & !regs::TCTL_EN);
     let _ = c.read(regs::ICR);
     wait_ns(PRE_RESET_WAIT_NS);
-    if profile.mdio_ownership && !acquire_mdio(c) { return false; }
+    if profile.mdio_ownership && !acquire_hw_semaphore(c) { return false; }
     let ctrl = c.read(regs::CTRL);
     #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
     if let Some(port) = io_base.filter(|_| profile.legacy_io_reset) {
@@ -52,7 +60,7 @@ pub(crate) fn apply(c: &Controller, io_base: Option<u16>, profile: ResetProfile)
     } else { c.write(regs::CTRL, ctrl | regs::CTRL_RST); }
     #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
     { let _ = io_base; c.write(regs::CTRL, ctrl | regs::CTRL_RST); }
-    if profile.mdio_ownership { release_mdio(c); }
+    if profile.mdio_ownership { release_hw_semaphore(c); }
     if profile.e1000e_nvm_phy && !wait_auto_read(c) { return false; }
     wait_ns(profile.reset_ns);
     let _ = c.read(regs::ICR);

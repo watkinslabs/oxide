@@ -103,6 +103,8 @@ pub const EECD: u64 = 0x00010;
 pub const EERD: u64 = 0x00014;
 pub const MDIC: u64 = 0x00020;
 pub const EXTCNF_CTRL: u64 = 0x00f00;
+/// 82574/82583 PHY and NVM hardware semaphore (`E1000_SWSM`).
+pub const SWSM: u64 = 0x05b50;
 pub const FCT: u64 = 0x00030;
 pub const FCAH: u64 = 0x00028;
 pub const FCAL: u64 = 0x0002c;
@@ -142,8 +144,9 @@ pub const KMRN_READ: u32 = 1 << 21;
 pub const GCR_L1_ACTIVE_RX: u32 = 1 << 27;
 pub const GCR_QUEUE_WORKAROUND: u32 = 1 << 22;
 pub const GCR2_COMPLETION_WORKAROUND: u32 = 1;
-pub const EXTCNF_CTRL_MDIO_SW_OWNERSHIP: u32 = 1 << 5;
 pub const EXTCNF_CTRL_GATE_PHY_CFG: u32 = 1 << 7;
+pub const SWSM_SMBI: u32 = 1 << 0;
+pub const SWSM_SWESMBI: u32 = 1 << 1;
 pub const FEXTNVM3: u64 = 0x0003c;
 pub const FEXTNVM12: u64 = 0x000fc;
 pub const FWSM: u64 = 0x05b54;
@@ -159,8 +162,6 @@ pub const CTRL_EXT_FORCE_SMBUS: u32 = 1 << 11;
 pub const CTRL_LANPHYPC_OVERRIDE: u32 = 1 << 16;
 pub const CTRL_LANPHYPC_VALUE: u32 = 1 << 17;
 pub const FWSM_RSPCIPHY: u32 = 1 << 6;
-pub const EECD_NVM_REQUEST: u32 = 1 << 6;
-pub const EECD_NVM_GRANT: u32 = 1 << 7;
 pub const EECD_AUTO_READ_DONE: u32 = 1 << 9;
 pub const EERD_START: u32 = 1;
 pub const EERD_DONE: u32 = 1 << 1;
@@ -425,6 +426,8 @@ mod tests {
     }
     #[test]
     fn e1000e_nvm_and_bm_phy_commands_preserve_the_hardware_abi() {
+        assert_eq!(SWSM, 0x05b50);
+        assert_eq!(SWSM_SMBI | SWSM_SWESMBI, 0b11);
         assert_eq!(eerd_command(NVM_CHECKSUM_WORD), 0xfd);
         assert_eq!(eerd_data(0x1234_0002), 0x1234);
         assert_eq!(mdic_command(BM_PHY_ID_HIGH, None), 0x0822_0000);

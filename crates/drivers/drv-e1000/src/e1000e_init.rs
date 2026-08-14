@@ -2,10 +2,8 @@ use sync::{Spinlock, TaskList as DriverLockClass};
 
 use crate::{imp::Controller, regs};
 
-const MDIO_RETRIES: usize = 10;
-const MDIO_WAIT_NS: u64 = 2_000_000;
-const NVM_GRANT_RETRIES: usize = 1000;
-const NVM_GRANT_WAIT_NS: u64 = 5_000;
+const SWSM_RETRIES: usize = regs::NVM_CHECKSUM_WORD as usize + 1;
+const SWSM_WAIT_NS: u64 = 100_000;
 const MDIC_RETRIES: usize = 300;
 const MDIC_WAIT_NS: u64 = 50_000;
 const BM_PHY_SPEC_CTRL: u8 = 0x10;
@@ -25,31 +23,25 @@ fn wait_ns(ns: u64) {
     while sched::deadline::clock::now_ns() < deadline { core::hint::spin_loop(); }
 }
 
-fn acquire_mdio(c: &Controller) -> bool {
-    for _ in 0..MDIO_RETRIES {
-        c.write(regs::EXTCNF_CTRL, c.read(regs::EXTCNF_CTRL) | regs::EXTCNF_CTRL_MDIO_SW_OWNERSHIP);
-        if c.read(regs::EXTCNF_CTRL) & regs::EXTCNF_CTRL_MDIO_SW_OWNERSHIP != 0 { return true; }
-        wait_ns(MDIO_WAIT_NS);
+/// Linux `e1000_get_hw_semaphore_82574`: one SWSM semaphore covers both
+/// PHY and NVM access on 82574/82583.  EXTCNF MDIO ownership is 82573-only.
+fn acquire_hw_semaphore(c: &Controller) -> bool {
+    for _ in 0..SWSM_RETRIES {
+        if c.read(regs::SWSM) & regs::SWSM_SMBI == 0 { break; }
+        wait_ns(SWSM_WAIT_NS);
     }
+    for _ in 0..SWSM_RETRIES {
+        let swsm = c.read(regs::SWSM);
+        c.write(regs::SWSM, swsm | regs::SWSM_SWESMBI);
+        if c.read(regs::SWSM) & regs::SWSM_SWESMBI != 0 { return true; }
+        wait_ns(SWSM_WAIT_NS);
+    }
+    release_hw_semaphore(c);
     false
 }
 
-fn release_mdio(c: &Controller) {
-    c.write(regs::EXTCNF_CTRL, c.read(regs::EXTCNF_CTRL) & !regs::EXTCNF_CTRL_MDIO_SW_OWNERSHIP);
-}
-
-fn acquire_nvm(c: &Controller) -> bool {
-    c.write(regs::EECD, c.read(regs::EECD) | regs::EECD_NVM_REQUEST);
-    for _ in 0..NVM_GRANT_RETRIES {
-        if c.read(regs::EECD) & regs::EECD_NVM_GRANT != 0 { return true; }
-        wait_ns(NVM_GRANT_WAIT_NS);
-    }
-    c.write(regs::EECD, c.read(regs::EECD) & !regs::EECD_NVM_REQUEST);
-    false
-}
-
-fn release_nvm(c: &Controller) {
-    c.write(regs::EECD, c.read(regs::EECD) & !regs::EECD_NVM_REQUEST);
+fn release_hw_semaphore(c: &Controller) {
+    c.write(regs::SWSM, c.read(regs::SWSM) & !(regs::SWSM_SMBI | regs::SWSM_SWESMBI));
 }
 
 fn read_eerd(c: &Controller, word: u16) -> Option<u16> {
@@ -63,13 +55,11 @@ fn read_eerd(c: &Controller, word: u16) -> Option<u16> {
 }
 
 fn validate_nvm(c: &Controller) -> bool {
-    if !acquire_nvm(c) { return false; }
     let mut words = [0u16; regs::NVM_CHECKSUM_WORD as usize + 1];
     for (index, word) in words.iter_mut().enumerate() {
-        let Some(value) = read_eerd(c, index as u16) else { release_nvm(c); return false; };
+        let Some(value) = read_eerd(c, index as u16) else { return false; };
         *word = value;
     }
-    release_nvm(c);
     regs::nvm_checksum_valid(&words)
 }
 
@@ -169,25 +159,25 @@ fn setup_copper_link(c: &Controller) -> bool {
 
 pub(crate) fn prepare(c: &Controller) -> bool {
     let _serial = BM_SERIAL.lock();
-    if !acquire_mdio(c) { return false; }
+    if !acquire_hw_semaphore(c) { return false; }
     let result = validate_nvm(c) && validate_and_configure_bm_phy(c);
     if result { initialize_mac(c); }
-    release_mdio(c);
+    release_hw_semaphore(c);
     result
 }
 
 pub(crate) fn activate(c: &Controller) -> bool {
     let _serial = BM_SERIAL.lock();
-    if !acquire_mdio(c) { return false; }
+    if !acquire_hw_semaphore(c) { return false; }
     let result = setup_copper_link(c);
-    release_mdio(c);
+    release_hw_semaphore(c);
     result
 }
 
 pub(crate) fn reconcile(c: &Controller) -> bool {
     let _serial = BM_SERIAL.lock();
-    if !acquire_mdio(c) { return false; }
+    if !acquire_hw_semaphore(c) { return false; }
     let result = match negotiated_pause(c) { Some(mode) => { configure_flow_control(c, mode); true }, None => true };
-    release_mdio(c);
+    release_hw_semaphore(c);
     result
 }
