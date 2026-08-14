@@ -17,6 +17,7 @@ pub const LEGACY_PCI_IDS: &[u16] = &[
 pub const E1000E_82583V: u16 = 0x150c;
 pub const E1000E_82571_BM_PCI_IDS: &[u16] = &[0x10d3, 0x10f6, E1000E_82583V];
 pub const E1000E_PCH_M_PCI_IDS: &[u16] = &[0x10ea, 0x10eb, 0x10ef, 0x10f0];
+pub const E1000E_PCH2_PCI_IDS: &[u16] = &[0x1502, 0x1503];
 
 /// Match an Intel Ethernet function owned by the 82540 reset and DMA path. # C: O(n)
 #[inline]
@@ -121,6 +122,12 @@ pub const GCR_L1_ACTIVE_RX: u32 = 1 << 27;
 pub const GCR_QUEUE_WORKAROUND: u32 = 1 << 22;
 pub const GCR2_COMPLETION_WORKAROUND: u32 = 1;
 pub const EXTCNF_CTRL_MDIO_SW_OWNERSHIP: u32 = 1 << 5;
+pub const EXTCNF_CTRL_GATE_PHY_CFG: u32 = 1 << 7;
+pub const FEXTNVM3: u64 = 0x0003c;
+pub const FWSM: u64 = 0x05b54;
+pub const FWSM_FW_VALID: u32 = 1 << 15;
+pub const FEXTNVM3_PHY_CFG_COUNTER: u32 = 0x0c00_0000;
+pub const FEXTNVM3_PHY_CFG_COUNTER_50MS: u32 = 0x0800_0000;
 pub const EECD_NVM_REQUEST: u32 = 1 << 6;
 pub const EECD_NVM_GRANT: u32 = 1 << 7;
 pub const EECD_AUTO_READ_DONE: u32 = 1 << 9;

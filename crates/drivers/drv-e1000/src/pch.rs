@@ -45,6 +45,12 @@ const PCH_82577_ASSERT_CRS: u16 = 1 << 15;
 const PCH_82577_DOWNSHIFT: u16 = 3 << 10;
 const PCH_82577_MDIX: u16 = 0x0600;
 const PCH_82577_AUTO_MDIX: u16 = 0x0400;
+const PCH_HV_KMRN_MODE_CTRL: u32 = (769 << 5) | 16;
+const PCH_HV_KMRN_MDIO_SLOW: u16 = 0x0400;
+const PCH_82579_EMI_ADDR: u32 = 0x10;
+const PCH_82579_EMI_DATA: u32 = 0x11;
+const PCH_82579_MSE_THRESHOLD: u16 = 0x084f;
+const PCH_82579_MSE_LINK_DOWN: u16 = 0x2411;
 
 static PCH_SHARED: Spinlock<(), DriverLockClass> = Spinlock::new(());
 
@@ -209,6 +215,30 @@ pub(crate) fn reset(c: &Controller) -> bool {
     }
     let _ = c.read(regs::ICR);
     true
+}
+
+pub(crate) fn reset_pch2(c: &Controller) -> bool {
+    let managed = c.read(regs::FWSM) & regs::FWSM_FW_VALID != 0;
+    if !managed { c.write(regs::EXTCNF_CTRL, c.read(regs::EXTCNF_CTRL) | regs::EXTCNF_CTRL_GATE_PHY_CFG); }
+    if !reset(c) { return false; }
+    let counter = c.read(regs::FEXTNVM3);
+    c.write(regs::FEXTNVM3, (counter & !regs::FEXTNVM3_PHY_CFG_COUNTER) | regs::FEXTNVM3_PHY_CFG_COUNTER_50MS);
+    if !managed { wait_ns(10_000_000); c.write(regs::EXTCNF_CTRL, c.read(regs::EXTCNF_CTRL) & !regs::EXTCNF_CTRL_GATE_PHY_CFG); }
+    true
+}
+
+pub(crate) fn configure_pch2_lv(c: &Controller) -> bool {
+    with_shared(c, |c| {
+        let slow = hv_access(c, HvPhy::I82579, PCH_HV_KMRN_MODE_CTRL, None)?;
+        hv_access(c, HvPhy::I82579, PCH_HV_KMRN_MODE_CTRL, Some(slow | PCH_HV_KMRN_MDIO_SLOW))?;
+        let high = mdic(c, regs::PCH_PHY_DEBUG_ADDRESS, regs::BM_PHY_ID_HIGH, None)?;
+        let low = mdic(c, regs::PCH_PHY_DEBUG_ADDRESS, regs::BM_PHY_ID_LOW, None)?;
+        if ((high as u32) << 16) | low as u32 != regs::PCH_PHY_ID_82579 { return None; }
+        hv_access(c, HvPhy::I82579, PCH_82579_EMI_ADDR, Some(PCH_82579_MSE_THRESHOLD))?;
+        hv_access(c, HvPhy::I82579, PCH_82579_EMI_DATA, Some(0x0034))?;
+        hv_access(c, HvPhy::I82579, PCH_82579_EMI_ADDR, Some(PCH_82579_MSE_LINK_DOWN))?;
+        hv_access(c, HvPhy::I82579, PCH_82579_EMI_DATA, Some(0x0005))
+    }).is_some()
 }
 
 pub(crate) struct FlashBar { mmio: mmio_map::Mapping, offset: u64 }
