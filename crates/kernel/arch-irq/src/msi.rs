@@ -263,7 +263,7 @@ mod arm {
             {
                 continue;
             }
-            let itt_pa = match pmm::setup::alloc_one_frame() {
+            let itt_pa = match pmm::setup::alloc_raw_frame() {
                 Some(pa) => pa,
                 None => {
                     DEVICE_IDS[i].store(0, Ordering::Release);

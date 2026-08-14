@@ -202,6 +202,9 @@ pub unsafe fn free_one_frame(pa: u64) {
                     klog::write_raw(b" mapcount="); klog::write_dec_u64(mc as u64);
                     klog::write_raw(b" refcount="); klog::write_dec_u64(rc as u64);
                     klog::write_raw(b" flags="); klog::write_hex_u64(fl as u64);
+                    let loc = core::panic::Location::caller();
+                    klog::write_raw(b" caller="); klog::write_raw(loc.file().as_bytes());
+                    klog::write_raw(b":"); klog::write_dec_u64(loc.line() as u64);
                     klog::write_raw(b"\n");
                     // Sampled rmap cross-check: name a concrete still-mapping VA
                     // (the O(1) mapcount may itself be under-counted; the rmap

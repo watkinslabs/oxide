@@ -14,7 +14,7 @@ pub struct VirtioProbeFrameSet {
 /// Allocate one PMM frame and establish the BDF-scoped DMA mapping before a
 /// child can publish its IOVA in a virtqueue descriptor. # C: O(1)
 pub fn allocate_dma_frame(bdf: pci::Bdf, len: usize) -> Option<VirtioDmaFrame> {
-    let pa = pmm::setup::alloc_one_frame()?;
+    let pa = pmm::setup::alloc_raw_frame()?;
     let Some(dma) = iommu::map_dma(bdf, pa, len) else {
         // SAFETY: map_dma failed before the frame reached device-visible state.
         unsafe { pmm::setup::free_one_frame(pa); }

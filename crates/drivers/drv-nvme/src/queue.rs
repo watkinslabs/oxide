@@ -100,7 +100,7 @@ impl Nvme {
             return;
         }
         // SAFETY: the caller owns controller teardown/quiesce. These frames
-        // are the single-page queue/PRP allocations returned by alloc_one_frame
+        // are the single-page queue/PRP allocations returned by alloc_raw_frame
         // during bring-up and are no longer reachable by live DMA.
         unsafe { pmm::setup::free_one_frame(*pa); }
         *pa = 0;
@@ -108,8 +108,8 @@ impl Nvme {
     }
 
     fn alloc_frame(dma_mask: u64) -> Option<u64> {
-        if dma_mask == u64::MAX { pmm::setup::alloc_one_frame() }
-        else { pmm::setup::alloc_one_frame_below(dma_mask.checked_add(1)?) }
+        if dma_mask == u64::MAX { pmm::setup::alloc_raw_frame() }
+        else { pmm::setup::alloc_raw_frame_below(dma_mask.checked_add(1)?) }
     }
 
     fn alloc_frames(bdf: pci::Bdf, dma_mask: u64) -> Option<([u64; 5], [u64; 5])> {

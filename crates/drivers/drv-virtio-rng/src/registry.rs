@@ -49,7 +49,7 @@ pub fn install(
         Ok(queue) => queue,
         Err(_) => return None,
     };
-    let bounce_pa = pmm::setup::alloc_one_frame()?;
+    let bounce_pa = pmm::setup::alloc_raw_frame()?;
     let Some(bounce_dma) = iommu::map_dma(bdf, bounce_pa, BOUNCE_FRAME_BYTES) else {
         // SAFETY: mapping failed before a virtqueue descriptor could name the frame.
         unsafe { pmm::setup::free_one_frame(bounce_pa); }

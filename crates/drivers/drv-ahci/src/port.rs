@@ -88,7 +88,7 @@ impl Ahci {
             return;
         }
         // SAFETY: the caller has stopped/quiesced the port. These frames are
-        // command/FIS/table frames returned by alloc_one_frame during bring-up.
+        // command/FIS/table frames returned by alloc_raw_frame during bring-up.
         unsafe { pmm::setup::free_one_frame(*pa); }
         *pa = 0;
     }
@@ -98,7 +98,7 @@ impl Ahci {
         let names = ["alloc clb", "alloc fb", "alloc ct"];
         let mut i = 0usize;
         while i < frames.len() {
-            match pmm::setup::alloc_one_frame() {
+            match pmm::setup::alloc_raw_frame() {
                 Some(pa) => frames[i] = pa,
                 None => {
                     for pa in frames.iter_mut() {

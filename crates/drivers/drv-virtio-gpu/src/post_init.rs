@@ -16,7 +16,7 @@ struct ProbeCommandBuffer {
 
 impl ProbeCommandBuffer {
     fn alloc(hhdm: u64, bdf: pci::Bdf) -> Option<Self> {
-        let pa = pmm::setup::alloc_one_frame()?;
+        let pa = pmm::setup::alloc_raw_frame()?;
         let Some(dma) = iommu::map_dma(bdf, pa, hal::PAGE_SIZE_BYTES as usize) else {
             // SAFETY: no device mapping exists for this failed allocation.
             unsafe { pmm::setup::free_one_frame(pa); }
