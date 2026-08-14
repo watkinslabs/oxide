@@ -64,7 +64,7 @@ fn primary_fault_layout(cap: u64, aperture_bytes: u64) -> Option<(u64, u16)> {
 pub struct VtdQiDesc { words: [u64; 2] }
 impl VtdQiDesc {
     /// Build a global context-cache invalidation descriptor. # C: O(1)
-    pub const fn global_context() -> Self { Self { words: [1, 0] } }
+    pub const fn global_context() -> Self { Self { words: [1 | (1 << 4), 0] } }
     /// Build a global IOTLB invalidation descriptor. # C: O(1)
     pub const fn global_iotlb() -> Self { Self { words: [(2u64) | (1 << 4), 0] } }
     /// Build a selective interrupt-entry-cache invalidation descriptor. # C: O(1)
@@ -398,7 +398,7 @@ mod fault_tests {
         assert_eq!((IQH, IQT, IQA), (0x80, 0x88, 0x90));
         assert_eq!(GCMD_QUEUED_INVALIDATION_ENABLE, GSTS_QUEUED_INVALIDATION_ENABLED);
         assert_eq!(core::mem::size_of::<VtdQiDesc>(), 16);
-        assert_eq!(VtdQiDesc::global_context().words(), [1, 0]);
+        assert_eq!(VtdQiDesc::global_context().words(), [1 | (1 << 4), 0]);
         assert_eq!(VtdQiDesc::global_iotlb().words(), [0x12, 0]);
         assert_eq!(QI_DESC_COUNT, 256);
     }
