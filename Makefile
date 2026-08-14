@@ -45,7 +45,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
         test lint lint-ratchet lint-ratchet-update audit-counts profile-policy warnings-control stats ci \
         qemu-x86 qemu-arm qemu-x86-image qemu-arm-image qemu-x86-existing qemu-arm-existing qemu-x86-debug qemu-arm-debug qemu-mcp verify-native-q35 smoke-native-pci-x86 smoke-native-pci-e1000-x86 \
         hardware-audit-image-x86 \
-        boot-debug-x86 boot-debug-arm smoke-debug smoke-debug-x86 smoke-debug-arm \
+        boot-debug-x86 boot-debug-arm smoke-debug smoke-debug-x86 smoke-debug-arm smoke-taskdump-arm \
         qemu-x86-grub qemu-x86-uefi smoke-uefi-x86 \
         smoke-up smoke-up-x86 smoke-up-arm \
         smoke-cmdline-x86 smoke-cmdline-arm smoke-cmdline \
@@ -317,6 +317,20 @@ smoke-debug-arm:
 	@mkdir -p $(BOOT_LOG_DIR)
 	OXIDE_CMDLINE_DEBUG=1 SMOKE_KEEP_LOG=$(BOOT_LOG_DIR)/arm.log \
 	    SMOKE_KEEP_LOG_DIR=$(BOOT_LOG_DIR) ./tools/boot-smoke.sh arm $(SMOKE_TIMEOUT)
+	@echo "serial log kept: $(BOOT_LOG_DIR)/arm.log"
+
+# One retained ARM diagnostic boot.  The distro sysctl unit deliberately
+# replaces the boot-line SysRq mask with its production-safe policy; masking
+# that unit HERE leaves serial task/CPU dumps available only to this image.
+# Normal smoke targets retain the distribution policy.  The feature list is
+# passed to image preparation through the boot-smoke child make, so the
+# periodic task dump and wake-placement trace are in the built kernel.
+smoke-taskdump-arm:
+	@mkdir -p $(BOOT_LOG_DIR)
+	FEATURES="$(strip $(FEATURES) debug-taskdump debug-watchdog)" OXIDE_CMDLINE_DEBUG=1 \
+	    OXIDE_CMDLINE_EXTRA="$(strip $(OXIDE_CMDLINE_EXTRA) systemd.mask=systemd-sysctl.service)" \
+	    SMOKE_KEEP_LOG=$(BOOT_LOG_DIR)/arm.log SMOKE_KEEP_LOG_DIR=$(BOOT_LOG_DIR) \
+	    ./tools/boot-smoke.sh arm $(SMOKE_TIMEOUT)
 	@echo "serial log kept: $(BOOT_LOG_DIR)/arm.log"
 
 # Both arches concurrently, same rationale as `smoke`: they contend for
