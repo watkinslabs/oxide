@@ -449,11 +449,6 @@ impl Task {
             robust_list_len:  AtomicU64::new(0),
             sysvsem_undo:     AtomicU64::new(0),
             pi_base_class: AtomicU64::new(u64::MAX),
-            // Linux `FORK_PREEMPT_COUNT`: a never-run task arrives at
-            // `finish_task_switch` owing the SAME two levels a switched-out
-            // task would — `schedule()`'s own disable and the rq lock the
-            // switcher forgot — and pays both back there.
-            preempt_count: AtomicU32::new(crate::preempt::FORK_PREEMPT_COUNT),
             no_new_privs:   AtomicBool::new(false),
             tsc_sigsegv:    AtomicBool::new(false),
             tagged_addr:    AtomicBool::new(false),
