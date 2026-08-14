@@ -58,7 +58,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
         irq-gate irq-gate-x86 irq-gate-arm \
         feature-gate feature-gate-x86 feature-gate-arm feature-gate-atexit \
         hosted-gate test-build-gate \
-        smoke-ping smoke-ping-x86 smoke-ping-arm \
+        smoke-ping smoke-ping-x86 smoke-ping-arm smoke-network-native-pci-x86 \
         stack-gate-baseline-x86 stack-gate-baseline-arm stack-report \
         clean clean-builds help
 
@@ -717,21 +717,12 @@ smoke-login-arm: arm
 	./tools/boot-smoke-login.sh arm $(LOGIN_SMOKE_TIMEOUT)
 smoke-login: smoke-login-x86 smoke-login-arm
 
-# F155: end-to-end DHCP path smoke. Boots with OXIDE_UDHCPC_ENABLE=1
-# so udhcpc, online_smoke, tcp_smoke run from rcS; checks for the
-# lease confirmation line on serial. ARM TCG can't reach login
-# inside a 180s window with the full chain, so default to 600s.
-DHCP_SMOKE_TIMEOUT ?= 600
-smoke-dhcp-x86: x86
-	OXIDE_UDHCPC_ENABLE=1 ./tools/boot-smoke-dhcp.sh x86 $(DHCP_SMOKE_TIMEOUT)
-smoke-dhcp-arm: arm
-	OXIDE_UDHCPC_ENABLE=1 ./tools/boot-smoke-dhcp.sh arm $(DHCP_SMOKE_TIMEOUT)
-# `smoke-dhcp` aggregate runs x86 only. ARM TCG is too slow under
-# the boot+udhcpc+default.script chain to land the lease inside a
-# reasonable CI window; run `make smoke-dhcp-arm` explicitly when
-# needed (still completes the lease per F152, just not the
-# default.script echo confirmation).
-smoke-dhcp: smoke-dhcp-x86
+# Native-Q35 traffic gate. Fedora's production image uses NetworkManager, so
+# this waits for a real eth0 IPv4 lease and then pings the QEMU gateway over
+# the 82574L/e1000e path. It stages the image before the guest deadline.
+NETWORK_SMOKE_TIMEOUT ?= 600
+smoke-network-native-pci-x86:
+	OXIDE_QEMU_PROFILE=native-pci python3 tools/guest-network-check.py x86 $(NETWORK_SMOKE_TIMEOUT)
 
 # F210 end-to-end ssh smoke. Boots qemu, waits for sshd Server
 # listening line + oxide login, then runs N back-to-back ssh
