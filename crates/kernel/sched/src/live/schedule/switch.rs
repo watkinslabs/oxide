@@ -315,7 +315,7 @@ pub(super) unsafe fn schedule_once() {
         prev_ref.debug_check_canary("schedule_prev_update");
         update_curr(prev_ref, &inner, now);
         if !matches!(prev_ref.sched_class(), SchedClass::Idle)
-            && prev_ref.state() == TaskState::Runnable
+            && matches!(prev_ref.state(), TaskState::Runnable | TaskState::Waking)
         {
             if prev_ref.yield_pending.swap(false, Ordering::AcqRel) {
                 inner.yield_current_task(prev_ref);

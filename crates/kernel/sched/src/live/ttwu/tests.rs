@@ -25,6 +25,8 @@ use crate::TaskState;
 use crate::task::SchedClass;
 use alloc::vec::Vec;
 
+mod current;
+
 /// Two installed runqueues, indexed by CPU id.
 struct Cpus {
     rqs: Vec<(u32, Runqueue)>,
@@ -308,6 +310,7 @@ fn target_drain_activates_a_claimed_wake_while_producer_lock_is_held() {
     assert!(!t.on_wake_list.load(Ordering::Acquire));
     assert_eq!(cpus.trees_holding(t.tid), 1, "the wake must activate exactly once");
 }
+
 
 /// `select_task_rq_with` honours `cpus_allowed`; a mask that excludes the
 /// caller must not resolve to the caller.

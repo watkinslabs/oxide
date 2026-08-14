@@ -97,6 +97,11 @@ pub fn sched_ttwu_pending(cpu: u32, current: *mut Task, rq: &Runqueue) -> bool {
             node = next;
             continue;
         }
+        if core::ptr::eq(Arc::as_ptr(&task), current as *const Task) {
+            task.complete_wake();
+            node = next;
+            continue;
+        }
         #[cfg(feature = "debug-watchdog")]
         task.wake_diag_mark(WakeDiagPhase::Waiting, wake_diag_now_ns());
         while matches!(task.pending_wake(current), PendingWake::Defer) {
