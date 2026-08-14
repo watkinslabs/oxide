@@ -311,6 +311,8 @@ fn handle(va_raw: u64, fault: FaultKind, user_mode: bool, ip: u64)
     if !matches!(&r, Some(Ok(()))) {
         klog::write_raw(b"[FAULT-RESOLVE] va=");
         klog::write_hex_u64(va_raw);
+        klog::write_raw(b" tid=");
+        klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));
         klog::write_raw(b" rip=");
         let frame = hal_x86_64::current_fault_frame();
         if frame.is_null() {
@@ -319,6 +321,8 @@ fn handle(va_raw: u64, fault: FaultKind, user_mode: bool, ip: u64)
             // SAFETY: the architecture publishes the live fault frame for
             // the duration of this synchronous fault dispatch.
             klog::write_hex_u64(unsafe { (*frame).rip });
+            klog::write_raw(b" sp=");
+            klog::write_hex_u64(unsafe { (*frame).rsp });
         }
         match fault {
             FaultKind::NotPresent { access: _ } => klog::write_raw(b" kind=np"),
