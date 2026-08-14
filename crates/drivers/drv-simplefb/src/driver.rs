@@ -116,9 +116,8 @@ impl drv::Driver for SimpleFbDriver {
 
     fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
         let fb = *CONFIG.lock();
-        let bytes = fb.byte_len().ok_or(drv::Error::Invalid)?;
-        let end = fb.base_pa.checked_add(bytes - 1).ok_or(drv::Error::Invalid)?;
-        if !dev.resources.iter().any(|r| r.flags & drv::IORESOURCE_MEM != 0 && r.start <= fb.base_pa && r.end >= end) {
+        let (base, end) = fb.aperture().ok_or(drv::Error::Invalid)?;
+        if !dev.resources.iter().any(|r| r.flags & drv::IORESOURCE_MEM != 0 && r.start <= base && r.end >= end) {
             return Err(drv::Error::Invalid);
         }
         attach_firmware_scanout(fb, dev)

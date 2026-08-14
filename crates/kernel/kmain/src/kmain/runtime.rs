@@ -315,8 +315,7 @@ fn init_network_and_pci() {
 fn init_simple_framebuffer(info: &BootInfo) {
     if fbdev::count() != 0 { return; }
     let fb = info.framebuffer;
-    let Some(bytes) = fb.byte_len() else { return };
-    let Some(end) = fb.base_pa.checked_add(bytes - 1) else { return };
+    let Some((base, end)) = fb.aperture() else { return };
     drv_simplefb::configure_probe(fb);
     let candidate = alloc::sync::Arc::new(
         drv::Device::new(
@@ -327,7 +326,7 @@ fn init_simple_framebuffer(info: &BootInfo) {
             BOOT_PLATFORM_CLASS,
         ).with_resources(alloc::vec![drv::Resource {
             bar: 0,
-            start: fb.base_pa,
+            start: base,
             end,
             flags: drv::IORESOURCE_MEM | drv::IORESOURCE_PREFETCH,
         }]),
