@@ -1,10 +1,9 @@
 use alloc::vec::Vec;
 use core::ffi::c_char;
 #[cfg(test)] use core::ptr;
-use super::hmac::{cstr, hash_len, hmac_once, slice, EINVAL, NVME_AUTH_HASH_SHA512};
+use super::hmac::{cstr, hash_len, hmac_once, slice, EINVAL, FABRICS_LABEL, NVME_AUTH_HASH_SHA512};
 
 const ENOMEM: i32 = 12;
-const ENOKEY: i32 = 126;
 const MAX_DIGEST: usize = 64;
 
 /// Register generated-PSK, identity digest and TLS PSK derivation symbols.
@@ -31,7 +30,7 @@ extern "C" fn nvme_auth_generate_psk(id: u8, skey: *const u8, skey_len: usize, c
 extern "C" fn nvme_auth_generate_digest(id: u8, psk: *const u8, psk_len: usize, subsys: *const c_char, host: *const c_char, ret: *mut *mut c_char) -> i32 {
     if ret.is_null() || id == NVME_AUTH_HASH_SHA512 { return -EINVAL; } let n = hash_len(id); if n == 0 { return -EINVAL; }
     let (Some(psk), Some(subsys), Some(host)) = (slice(psk, psk_len), cstr(subsys), cstr(host)) else { return -EINVAL; };
-    let mut msg = Vec::with_capacity(host.len() + subsys.len() + 19); msg.extend_from_slice(host); msg.push(b' '); msg.extend_from_slice(subsys); msg.extend_from_slice(b" NVMe-over-Fabrics");
+    let mut msg = Vec::with_capacity(host.len() + subsys.len() + FABRICS_LABEL.len() + 2); msg.extend_from_slice(host); msg.push(b' '); msg.extend_from_slice(subsys); msg.push(b' '); msg.extend_from_slice(FABRICS_LABEL);
     let mut digest = [0u8; MAX_DIGEST]; let r = hmac_once(id, Some(psk), Some(&msg), digest.as_mut_ptr()); if r != 0 { return r; }
     let enc_len = if n == 32 { 44 } else { 64 }; let out = crate::linux_alloc::alloc_bytes(enc_len + 1, core::mem::align_of::<usize>(), true); if out.is_null() { return -ENOMEM; }
     // SAFETY: output has enc_len + NUL bytes and source contains n bytes.

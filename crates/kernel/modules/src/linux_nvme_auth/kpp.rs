@@ -3,7 +3,6 @@ use core::ptr;
 use crate::linux_dma::{self, ScatterList};
 
 const EINVAL: i32 = 22;
-const ENOMEM: i32 = 12;
 const KPP_TFM_BASE_OFF: usize = 8;
 const KPP_ALG_OFF: usize = KPP_TFM_BASE_OFF + 32;
 const ASYNC_TFM_OFF: usize = 24;

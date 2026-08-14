@@ -20,6 +20,7 @@ const KPP_REQUEST_DST_OFF: usize = KPP_REQUEST_SRC_OFF + size_of::<*mut ScatterL
 const KPP_REQUEST_SRC_LEN_OFF: usize = KPP_REQUEST_DST_OFF + size_of::<*mut ScatterList>();
 const KPP_REQUEST_DST_LEN_OFF: usize = KPP_REQUEST_SRC_LEN_OFF + size_of::<u32>();
 const KPP_REQUEST_SIZE: usize = KPP_REQUEST_DST_LEN_OFF + size_of::<u32>();
+const _: () = assert!(KPP_REQUEST_SIZE == 72);
 
 #[repr(C)]
 struct CryptoTfm {

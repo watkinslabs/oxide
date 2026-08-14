@@ -13,7 +13,7 @@ pub const NVME_AUTH_DHGROUP_INVALID: u8 = u8::MAX;
 pub const EINVAL: i32 = 22;
 const HMAC_CTX_SIZE: usize = 280;
 const CSTR_MAX: usize = 4096;
-const FABRICS_LABEL: &[u8] = b"NVMe-over-Fabrics";
+pub(crate) const FABRICS_LABEL: &[u8] = b"NVMe-over-Fabrics";
 const SHA384_IV: [u64; 8] = [0xcbbb9d5dc1059ed8, 0x629a292a367cd507, 0x9159015a3070dd17, 0x152fecd8f70e5939, 0x67332667ffc00b31, 0x8eb44a8768581511, 0xdb0c2e0d64f98fa7, 0x47b5481dbefa4fa4];
 static SEQNUM: AtomicU32 = AtomicU32::new(0);
 static DH_NAMES: [&[u8]; 6] = [b"null\0", b"ffdhe2048\0", b"ffdhe3072\0", b"ffdhe4096\0", b"ffdhe6144\0", b"ffdhe8192\0"];
@@ -39,6 +39,9 @@ pub(super) fn export_symbols() {
         ("nvme_auth_digest_name", nvme_auth_digest_name as *const () as usize),
         ("nvme_auth_hmac_id", nvme_auth_hmac_id as *const () as usize),
         ("nvme_auth_hmac_hash_len", nvme_auth_hmac_hash_len as *const () as usize),
+        ("nvme_auth_hmac_init", nvme_auth_hmac_init as *const () as usize),
+        ("nvme_auth_hmac_update", nvme_auth_hmac_update as *const () as usize),
+        ("nvme_auth_hmac_final", nvme_auth_hmac_final as *const () as usize),
         ("nvme_auth_augmented_challenge", nvme_auth_augmented_challenge as *const () as usize),
     ] { export(name, addr, true); }
 }
