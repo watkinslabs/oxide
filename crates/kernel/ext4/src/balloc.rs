@@ -145,6 +145,7 @@ impl Mount {
         } else {
             let bitmap = self.read_meta_byte_range(bbm_byte_off, self.sb.block_size as usize)?;
             if !crate::csum::verify_block_bitmap_csum_at(&self.sb, &self.state.lock().gdt_buf, group, &bitmap) {
+                crate::mount::first_csum_failure(b"block-bitmap-alloc", group as u64, bbm_byte_off);
                 return Err(MountError::BadChecksum);
             }
             bitmap

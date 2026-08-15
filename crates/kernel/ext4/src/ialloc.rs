@@ -152,6 +152,7 @@ impl Mount {
         } else {
             let bm = self.read_meta_byte_range(ibm_byte_off, self.sb.block_size as usize)?;
             if !crate::csum::verify_inode_bitmap_csum_at(&self.sb, &self.state.lock().gdt_buf, group, &bm) {
+                crate::mount::first_csum_failure(b"inode-bitmap-alloc", group as u64, ibm_byte_off);
                 return Err(MountError::BadChecksum);
             }
             bm
@@ -221,6 +222,7 @@ impl Mount {
             let ibm_byte_off = gd_orig.inode_bitmap * (m.sb.block_size as u64);
             let mut bitmap = m.read_meta_byte_range(ibm_byte_off, m.sb.block_size as usize)?;
             if !crate::csum::verify_inode_bitmap_csum_at(&m.sb, &m.state.lock().gdt_buf, group, &bitmap) {
+                crate::mount::first_csum_failure(b"inode-bitmap-free", group as u64, ibm_byte_off);
                 return Err(MountError::BadChecksum);
             }
             let bidx = bit as usize;

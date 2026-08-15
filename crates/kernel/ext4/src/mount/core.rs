@@ -106,6 +106,7 @@ impl Mount {
         // s_checksum does not match (Linux ext4_superblock_csum_verify → EFSBADCRC).
         // No-op without metadata_csum.
         if !crate::csum::verify_superblock_csum(&sb, &sb_bytes) {
+            super::first_csum_failure(b"superblock", SUPERBLOCK_OFFSET, 0);
             return Err(MountError::BadChecksum);
         }
         let groups = sb.group_count() as usize;
@@ -121,6 +122,7 @@ impl Mount {
                 let off = n * dsize;
                 if off + dsize > gdt_buf.len()
                     || !crate::csum::verify_group_desc_csum(&sb, n as u32, &gdt_buf[off..off + dsize]) {
+                    super::first_csum_failure(b"group-desc", n as u64, gdt_byte_offset + off as u64);
                     return Err(MountError::BadChecksum);
                 }
             }

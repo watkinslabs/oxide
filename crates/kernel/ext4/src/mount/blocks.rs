@@ -24,6 +24,7 @@ impl Mount {
         // refuse a slot whose stored i_checksum does not match a recompute rather
         // than silently trusting corrupt bytes. No-op without metadata_csum.
         if !crate::csum::verify_inode_csum(&self.sb, ino, &buf) {
+            super::first_csum_failure(b"inode", ino as u64, byte_off);
             return Err(MountError::BadChecksum);
         }
         let mut node = Inode::parse(&buf, &self.sb)?;
@@ -100,7 +101,10 @@ impl Mount {
             let buf = self.read_metadata_block(child_lba)?;
             if inode.ino != 0
                 && !crate::csum::verify_extent_block_csum(&self.sb, inode.ino, inode.generation, &buf)
-            { return Err(MountError::BadChecksum); }
+            {
+                super::first_csum_failure(b"extent", inode.ino as u64, child_lba);
+                return Err(MountError::BadChecksum);
+            }
             let chdr = inode::parse_extent_header_slice(&buf)?;
             if !inode::extent_child_depth_ok(expected_depth, chdr.depth) {
                 return Err(MountError::CorruptExtentTree);
@@ -173,6 +177,7 @@ impl Mount {
             if inode.ino != 0
                 && !crate::csum::verify_extent_block_csum(&self.sb, inode.ino, inode.generation, &buf)
             {
+                super::first_csum_failure(b"extent", inode.ino as u64, child_lba);
                 return Err(MountError::BadChecksum);
             }
             let chdr = inode::parse_extent_header_slice(&buf)?;

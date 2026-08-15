@@ -65,6 +65,7 @@ impl Mount {
             let bbm_byte_off = gd_orig.block_bitmap * (m.sb.block_size as u64);
             let mut bitmap = m.read_meta_byte_range(bbm_byte_off, m.sb.block_size as usize)?;
             if !crate::csum::verify_block_bitmap_csum_at(&m.sb, &m.state.lock().gdt_buf, group, &bitmap) {
+                crate::mount::first_csum_failure(b"block-bitmap-free", group as u64, bbm_byte_off);
                 return Err(MountError::BadChecksum);
             }
             let bidx = bit as usize;
