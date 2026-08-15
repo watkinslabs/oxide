@@ -24,7 +24,7 @@
 // subsequent tick — an unlatched detector floods the serial log it exists to
 // produce, and the flood is what would push the boot past its timeout.
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use cpu::MAX_CPUS;
 
@@ -32,6 +32,10 @@ use super::{HARDIRQ_MASK, this_cpu};
 
 /// One-shot latch per CPU for the `irq_exit` underflow report.
 static IRQ_EXIT_REPORTED: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
+/// Debug witness for the `irq_enter` / `irq_exit` pairing on each CPU.
+/// It is independent of `preempt_count`, so an underflow can distinguish a
+/// duplicate exit from accounting that changed between a real entry and exit.
+static IRQ_ENTRY_DEPTH: [AtomicU8; MAX_CPUS] = [const { AtomicU8::new(0) }; MAX_CPUS];
 /// One-shot latch per CPU for the idle-with-count report.
 static IDLE_LEAK_REPORTED: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
 
@@ -46,14 +50,44 @@ fn take(latch: &[AtomicBool; MAX_CPUS], cpu: usize) -> bool {
 /// # C: O(1)
 pub fn is_irq_exit_underflow(pc: u32) -> bool { (pc & HARDIRQ_MASK) == 0 }
 
+/// Record one hard-IRQ entry before its count increment. # C: O(1)
+pub fn note_irq_enter() {
+    let cpu = this_cpu();
+    if let Some(depth) = IRQ_ENTRY_DEPTH.get(cpu) {
+        let prior = depth.fetch_add(1, Ordering::AcqRel);
+        debug_assert!(prior != u8::MAX, "irq entry witness overflow");
+    }
+}
+
+/// Consume one independent entry witness and return its depth before the
+/// consume. `None` proves this logical CPU reached an exit with no matching
+/// dispatcher entry.
+fn take_irq_entry(cpu: usize) -> Option<u8> {
+    let depth = IRQ_ENTRY_DEPTH.get(cpu)?;
+    let mut prior = depth.load(Ordering::Acquire);
+    loop {
+        if prior == 0 { return None; }
+        match depth.compare_exchange_weak(prior, prior - 1, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return Some(prior),
+            Err(next) => prior = next,
+        }
+    }
+}
+
 /// Called from `irq_exit` BEFORE the subtract, with the live count.
+/// Kept as a debugger boundary in diagnostic builds: a stopped CPU here has
+/// both the pre-subtract count and the independent entry witness intact.
+#[inline(never)]
 /// # C: O(1)
 pub fn check_irq_exit(pc: u32) {
-    if !is_irq_exit_underflow(pc) { return; }
     let cpu = this_cpu();
+    let entry_depth = take_irq_entry(cpu);
+    if !is_irq_exit_underflow(pc) { return; }
     if !take(&IRQ_EXIT_REPORTED, cpu) { return; }
     klog::write_raw(b"\n[PREEMPT-LEAK] irq_exit underflow cpu=");
     klog::write_dec_u64(cpu as u64);
+    klog::write_raw(b" entry_depth=");
+    klog::write_dec_u64(entry_depth.unwrap_or(0) as u64);
     klog::write_raw(b" preempt_count=0x");
     klog::write_hex_u64(pc as u64);
     klog::write_raw(b" (HARDIRQ field already clear: the sub borrows into SOFTIRQ and pins in_interrupt() true)\n");
@@ -79,6 +113,7 @@ pub fn check_idle(pc: u32) {
 #[cfg(any(test, feature = "hosted"))]
 pub fn _test_reset() {
     for l in IRQ_EXIT_REPORTED.iter()  { l.store(false, Ordering::Release); }
+    for d in IRQ_ENTRY_DEPTH.iter() { d.store(0, Ordering::Release); }
     for l in IDLE_LEAK_REPORTED.iter() { l.store(false, Ordering::Release); }
 }
 
@@ -97,6 +132,20 @@ mod tests {
         assert!(!is_irq_exit_underflow(HARDIRQ_OFFSET));
         assert!(!is_irq_exit_underflow(HARDIRQ_OFFSET * 2));
         assert!(!is_irq_exit_underflow(HARDIRQ_OFFSET | SOFTIRQ_OFFSET | 1));
+    }
+
+    #[test]
+    fn entry_witness_separates_double_exit_from_lost_accounting() {
+        _test_reset();
+        assert_eq!(take_irq_entry(0), None, "an exit without entry has no witness");
+        note_irq_enter();
+        assert_eq!(take_irq_entry(0), Some(1), "a real entry remains visible at exit");
+        assert_eq!(take_irq_entry(0), None, "the matched exit consumes exactly one witness");
+        note_irq_enter();
+        note_irq_enter();
+        assert_eq!(take_irq_entry(0), Some(2), "nested entry preserves depth");
+        assert_eq!(take_irq_entry(0), Some(1), "nested exits unwind in order");
+        assert_eq!(take_irq_entry(0), None);
     }
 
     #[test]

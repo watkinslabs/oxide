@@ -213,7 +213,10 @@ pub fn hardirq_count() -> u32 { preempt_count() & HARDIRQ_MASK }
 /// the next IRQ reused the stack and the suspended context resumed on
 /// garbage — SP observed at irq-stack top+224 and even inside `.text`.)
 /// # C: O(1)
-pub fn irq_enter() { preempt_count_add(HARDIRQ_OFFSET); }
+pub fn irq_enter() {
+    #[cfg(feature = "debug-preempt")] debug::note_irq_enter();
+    preempt_count_add(HARDIRQ_OFFSET);
+}
 
 /// Linux `irq_exit` (accounting half): drop the hard-IRQ field. The caller
 /// (arch dispatcher tail) then drains softirqs exactly as Linux's
