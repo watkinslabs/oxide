@@ -25,6 +25,7 @@
 use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use crate::{CacheLine, KMalloc, Spinlock, MAX_CPUS};
@@ -67,8 +68,9 @@ type RcuWakeFn = fn();
 static WAIT_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 static WAKE_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
-/// Outstanding (queued, not yet run) callback count — drives the
-/// high-water fallback and `rcu_barrier`.
+/// Outstanding (queued, not yet run) callback count. Diagnostics only: an
+/// RCU barrier uses an entrained callback, not a global-empty test, so new
+/// callbacks cannot prolong an already-started barrier.
 static PENDING: AtomicUsize = AtomicUsize::new(0);
 
 // ---- MPSC incoming ring (Treiber stack) -----------------------------------
@@ -77,21 +79,110 @@ struct Node {
     gp: u64,
     f: RcuCallback,
 }
-static INCOMING: AtomicPtr<Node> = AtomicPtr::new(core::ptr::null_mut());
 
-fn push_incoming(gp: u64, f: RcuCallback) {
+struct Incoming {
+    head: AtomicPtr<Node>,
+    /// A producer has selected this generation but has not published its
+    /// node. A barrier seals a generation, waits for this short critical
+    /// section to finish, then entrains its marker behind every prior node.
+    publishing: AtomicUsize,
+}
+
+impl Incoming {
+    const fn new() -> Self {
+        Self { head: AtomicPtr::new(core::ptr::null_mut()), publishing: AtomicUsize::new(0) }
+    }
+}
+
+/// Barriers flip the producer generation, seal the old queue, and append a
+/// marker behind it; new callbacks immediately use the other queue.
+static INCOMING: [Incoming; 2] = [const { Incoming::new() }; 2];
+static INCOMING_GENERATION: AtomicUsize = AtomicUsize::new(0);
+static BARRIER_ACTIVE: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+/// Even outside the short generation-flip/marker-install transaction, odd
+/// while it is in progress. Drainers sample it before and after selecting an
+/// incoming generation so they cannot pull post-barrier callbacks ahead of a
+/// still-unpublished marker.
+static BARRIER_INSTALL: AtomicUsize = AtomicUsize::new(0);
+static DRAIN_ACTIVE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+struct DrainRun;
+impl Drop for DrainRun { fn drop(&mut self) { DRAIN_ACTIVE.store(false, Ordering::Release); } }
+
+fn push_incoming(incoming: &Incoming, gp: u64, f: RcuCallback) {
     let node = Box::into_raw(Box::new(Node { next: core::ptr::null_mut(), gp, f }));
     loop {
-        let head = INCOMING.load(Ordering::Acquire);
+        let head = incoming.head.load(Ordering::Acquire);
         // SAFETY: `node` is a fresh unique Box::into_raw pointer not yet
         // published; sole writer of its `next` until the CAS publishes it.
         unsafe { (*node).next = head; }
-        if INCOMING
+        if incoming.head
             .compare_exchange_weak(head, node, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
         {
             return;
         }
+    }
+}
+
+/// Publish one callback to whichever generation was current at the call's
+/// linearization point. The retry only covers an atomic generation flip; it
+/// is a short lock-free producer critical section and remains callable from
+/// interrupt context.
+fn enqueue_callback(gp: u64, f: RcuCallback) {
+    loop {
+        let generation = INCOMING_GENERATION.load(Ordering::Acquire);
+        let incoming = &INCOMING[generation & 1];
+        incoming.publishing.fetch_add(1, Ordering::AcqRel);
+        if INCOMING_GENERATION.load(Ordering::Acquire) == generation {
+            push_incoming(incoming, gp, f);
+            incoming.publishing.fetch_sub(1, Ordering::Release);
+            return;
+        }
+        incoming.publishing.fetch_sub(1, Ordering::Release);
+        crate::spin_relax::relax();
+    }
+}
+
+/// Seal the current producer generation. Producers that began before the
+/// flip either published to `old` or retry into the new generation; after
+/// `publishing` reaches zero, an entrained marker is strictly after every
+/// callback that was present at barrier entry.
+fn seal_incoming() -> &'static Incoming {
+    loop {
+        let old = INCOMING_GENERATION.load(Ordering::Acquire);
+        if INCOMING_GENERATION.compare_exchange_weak(old, old ^ 1,
+            Ordering::AcqRel, Ordering::Acquire).is_ok()
+        {
+            let incoming = &INCOMING[old & 1];
+            while incoming.publishing.load(Ordering::Acquire) != 0 {
+                crate::spin_relax::relax();
+            }
+            return incoming;
+        }
+        crate::spin_relax::relax();
+    }
+}
+
+/// Detach one Treiber stack and append it in publication order. This is
+/// required for the barrier marker: `push` makes the newest node the head,
+/// while a Linux RCU barrier callback is entrained *after* existing callbacks.
+fn drain_incoming(incoming: &Incoming, waiting: &mut Vec<(u64, RcuCallback)>) {
+    let mut node = incoming.head.swap(core::ptr::null_mut(), Ordering::AcqRel);
+    let mut reversed = core::ptr::null_mut();
+    while !node.is_null() {
+        // SAFETY: this detached node is solely owned by the drain; rewriting
+        // `next` reverses the private list before Box ownership is recovered.
+        let next = unsafe { (*node).next };
+        unsafe { (*node).next = reversed; }
+        reversed = node;
+        node = next;
+    }
+    while !reversed.is_null() {
+        // SAFETY: each node was published exactly once then detached above.
+        let n = unsafe { Box::from_raw(reversed) };
+        reversed = n.next;
+        waiting.push((n.gp, n.f));
     }
 }
 
@@ -218,8 +309,8 @@ pub fn note_qs() {
 /// # C: O(1) amortized
 pub fn call_rcu(f: RcuCallback) {
     let target = GP_SEQ.load(Ordering::Acquire) + 2;
-    push_incoming(target, f);
     PENDING.fetch_add(1, Ordering::AcqRel);
+    enqueue_callback(target, f);
 }
 
 /// True iff every online CPU has passed a QS since `snap` was taken.
@@ -271,32 +362,35 @@ pub fn rcu_process_callbacks() {
 }
 
 fn drain_once() -> usize {
+    if DRAIN_ACTIVE.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
+        return 0;
+    }
+    let _run = DrainRun;
     let mut ready: Vec<RcuCallback> = Vec::new();
     let advanced = {
         let mut st = match STATE.try_lock() {
             Some(g) => g,
             None => return 0,
         };
-        // 1. pull the incoming MPSC ring into the waiting list.
-        let mut node = INCOMING.swap(core::ptr::null_mut(), Ordering::AcqRel);
-        while !node.is_null() {
-            // SAFETY: `node` came from `Box::into_raw` in push_incoming and
-            // was just detached from the shared ring; sole owner now.
-            let n = unsafe { Box::from_raw(node) };
-            node = n.next;
-            st.waiting.push((n.gp, n.f));
-        }
+        // 1. Pull sealed work before current-generation work. A barrier
+        // marker is therefore behind every callback it sealed, while later
+        // callbacks may keep arriving on the current generation.
+        let install = BARRIER_INSTALL.load(Ordering::Acquire);
+        if install & 1 != 0 { return 0; }
+        let generation = INCOMING_GENERATION.load(Ordering::Acquire);
+        if BARRIER_INSTALL.load(Ordering::Acquire) != install { return 0; }
+        drain_incoming(&INCOMING[(generation ^ 1) & 1], &mut st.waiting);
+        drain_incoming(&INCOMING[generation & 1], &mut st.waiting);
         // 2. advance the grace machine.
         let advanced = advance_locked(&mut st);
         // 3. collect callbacks whose grace period has elapsed.
         let seq = GP_SEQ.load(Ordering::Acquire);
-        let mut i = 0;
-        while i < st.waiting.len() {
-            if st.waiting[i].0 <= seq {
-                let (_, f) = st.waiting.swap_remove(i);
+        let mut waiting = core::mem::take(&mut st.waiting);
+        for (target, f) in waiting.drain(..) {
+            if target <= seq {
                 ready.push(f);
             } else {
-                i += 1;
+                st.waiting.push((target, f));
             }
         }
         advanced
@@ -331,12 +425,35 @@ pub fn synchronize_rcu() {
 /// # Sleeps: y
 /// # C: O(queued grace periods)
 pub fn rcu_barrier() {
-    while PENDING.load(Ordering::Acquire) > 0 {
+    // Linux serializes concurrent barriers and entrains one callback behind
+    // the callbacks visible at entry. Do the same without holding a lock
+    // across the sleeping grace-period wait: new `call_rcu` producers flip to
+    // the other incoming generation immediately.
+    loop {
+        if BARRIER_ACTIVE.compare_exchange(false, true, Ordering::AcqRel,
+            Ordering::Acquire).is_ok() { break; }
+        let epoch = wait_epoch();
+        if BARRIER_ACTIVE.load(Ordering::Acquire) { wait_for_progress(epoch); }
+    }
+
+    BARRIER_INSTALL.fetch_add(1, Ordering::AcqRel);
+    let sealed = seal_incoming();
+    let done = Arc::new(core::sync::atomic::AtomicBool::new(false));
+    let marker = done.clone();
+    let target = GP_SEQ.load(Ordering::Acquire) + 2;
+    PENDING.fetch_add(1, Ordering::AcqRel);
+    push_incoming(sealed, target, Box::new(move || {
+        marker.store(true, Ordering::Release);
+    }));
+    BARRIER_INSTALL.fetch_add(1, Ordering::Release);
+    while !done.load(Ordering::Acquire) {
         note_qs();
         let epoch = wait_epoch();
         rcu_process_callbacks();
-        if PENDING.load(Ordering::Acquire) != 0 { wait_for_progress(epoch); }
+        if !done.load(Ordering::Acquire) { wait_for_progress(epoch); }
     }
+    BARRIER_ACTIVE.store(false, Ordering::Release);
+    notify_waiters();
 }
 
 /// Outstanding (queued, not-yet-run) callback count. # C: O(1)
@@ -349,11 +466,14 @@ pub fn pending_callbacks() -> usize {
 #[cfg(any(test, feature = "hosted"))]
 pub fn _test_reset() {
     // Drain (and drop) any queued callbacks.
-    let mut node = INCOMING.swap(core::ptr::null_mut(), Ordering::AcqRel);
-    while !node.is_null() {
-        // SAFETY: detached ring node from Box::into_raw; sole owner.
-        let n = unsafe { Box::from_raw(node) };
-        node = n.next;
+    for incoming in &INCOMING {
+        let mut node = incoming.head.swap(core::ptr::null_mut(), Ordering::AcqRel);
+        while !node.is_null() {
+            // SAFETY: detached ring node from Box::into_raw; sole owner.
+            let n = unsafe { Box::from_raw(node) };
+            node = n.next;
+        }
+        incoming.publishing.store(0, Ordering::Release);
     }
     if let Some(mut st) = STATE.try_lock() {
         st.active = false;
@@ -362,6 +482,10 @@ pub fn _test_reset() {
     GP_SEQ.store(0, Ordering::Release);
     GP_REQUESTED.store(0, Ordering::Release);
     PENDING.store(0, Ordering::Release);
+    INCOMING_GENERATION.store(0, Ordering::Release);
+    BARRIER_ACTIVE.store(false, Ordering::Release);
+    BARRIER_INSTALL.store(0, Ordering::Release);
+    DRAIN_ACTIVE.store(false, Ordering::Release);
     WAIT_EPOCH.store(0, Ordering::Release);
     WAIT_HOOK.store(core::ptr::null_mut(), Ordering::Release);
     WAKE_HOOK.store(core::ptr::null_mut(), Ordering::Release);
@@ -371,105 +495,6 @@ pub fn _test_reset() {
     CUR_CPU_HOOK.store(core::ptr::null_mut(), Ordering::Release);
     ONLINE_HOOK.store(core::ptr::null_mut(), Ordering::Release);
 }
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use core::sync::atomic::AtomicBool;
-    use std::sync::Arc as StdArc;
-
-    // Tests share process-global RCU state; serialize them.
-    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    fn guard() -> std::sync::MutexGuard<'static, ()> {
-        let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        _test_reset();
-        g
-    }
-
-    #[test]
-    fn callback_runs_only_after_a_grace_period() {
-        let _g = guard();
-        let ran = StdArc::new(AtomicBool::new(false));
-        let r2 = ran.clone();
-        call_rcu(Box::new(move || r2.store(true, Ordering::Release)));
-        // Enqueued: target = GP_SEQ(0)+2. Not yet run.
-        rcu_process_callbacks(); // opens the first grace period (no QS yet)
-        assert!(!ran.load(Ordering::Acquire), "callback ran before any QS");
-        assert_eq!(pending_callbacks(), 1);
-
-        // Drive grace periods by simulating QS at the ctxsw point.
-        for _ in 0..6 {
-            note_qs();
-            rcu_process_callbacks();
-        }
-        assert!(ran.load(Ordering::Acquire), "callback must run after a grace period");
-        assert_eq!(pending_callbacks(), 0, "no leak: callback dequeued");
-    }
-
-    #[test]
-    fn synchronize_rcu_waits_for_a_full_period() {
-        let _g = guard();
-        let seq0 = GP_SEQ.load(Ordering::Acquire);
-        synchronize_rcu();
-        assert!(GP_SEQ.load(Ordering::Acquire) > seq0, "synchronize_rcu advanced a grace period");
-    }
-
-    #[test]
-    fn rcu_barrier_flushes_all_pending() {
-        let _g = guard();
-        let n = StdArc::new(AtomicUsize::new(0));
-        for _ in 0..10 {
-            let nn = n.clone();
-            call_rcu(Box::new(move || { nn.fetch_add(1, Ordering::AcqRel); }));
-        }
-        assert_eq!(pending_callbacks(), 10);
-        rcu_barrier();
-        assert_eq!(n.load(Ordering::Acquire), 10, "every queued callback ran");
-        assert_eq!(pending_callbacks(), 0, "no leak after barrier");
-    }
-
-    #[test]
-    fn callback_backlog_remains_deferred_until_a_grace_period() {
-        let _g = guard();
-        let ran = StdArc::new(AtomicUsize::new(0));
-        const CALLBACKS: usize = 64;
-        for _ in 0..CALLBACKS {
-            let r = ran.clone();
-            call_rcu(Box::new(move || { r.fetch_add(1, Ordering::AcqRel); }));
-        }
-        rcu_process_callbacks();
-        assert_eq!(ran.load(Ordering::Acquire), 0, "callbacks cannot bypass a grace period");
-        assert_eq!(pending_callbacks(), CALLBACKS);
-        rcu_barrier();
-        assert_eq!(ran.load(Ordering::Acquire), CALLBACKS);
-    }
-
-    #[test]
-    fn stalled_period_retains_callbacks_until_the_missing_cpu_quiesces() {
-        let _g = guard();
-        let ran = StdArc::new(AtomicBool::new(false));
-        let r2 = ran.clone();
-        call_rcu(Box::new(move || r2.store(true, Ordering::Release)));
-        for _ in 0..4 { drain_once(); }
-        assert!(!ran.load(Ordering::Acquire), "a stalled CPU keeps its protected callback alive");
-        assert_eq!(pending_callbacks(), 1);
-        for _ in 0..2 {
-            note_qs();
-            drain_once();
-        }
-        assert!(ran.load(Ordering::Acquire));
-        assert_eq!(pending_callbacks(), 0);
-    }
-
-    #[test]
-    fn grace_period_includes_an_online_cpu_above_the_first_mask_word() {
-        let _g = guard();
-        let cpu = u64::BITS as usize + 2;
-        let mut online = [0u64; CPU_MASK_WORDS];
-        online[cpu / u64::BITS as usize] = 1u64 << (cpu % u64::BITS as usize);
-        let snap = [0u64; MAX_CPUS];
-        assert!(!all_quiesced(&snap, online));
-        CPU_QS[cpu].0.store(1, Ordering::Release);
-        assert!(all_quiesced(&snap, online));
-    }
-}
+#[path = "rcu_tests.rs"]
+mod tests;
