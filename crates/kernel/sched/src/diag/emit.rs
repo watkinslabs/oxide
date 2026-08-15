@@ -55,8 +55,15 @@ fn emit_lockup_context() {
     }
     #[cfg(feature = "debug-preempt")]
     {
+        let (rank, depth, overflow) = sync::preempt_gate::held_trace();
         klog::write_raw(b" held_lock_rank=");
-        klog::write_dec_u64(sync::preempt_gate::held_rank() as u64);
+        klog::write_dec_u64(rank as u64);
+        klog::write_raw(b" held_lock_depth=");
+        klog::write_dec_u64(depth as u64);
+        if overflow != 0 {
+            klog::write_raw(b" held_lock_overflow=");
+            klog::write_dec_u64(overflow as u64);
+        }
     }
 }
 
