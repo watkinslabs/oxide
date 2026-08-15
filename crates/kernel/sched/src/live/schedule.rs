@@ -12,6 +12,7 @@
 
 mod active_mm;
 mod atomic;
+mod cond;
 #[cfg(all(target_arch = "aarch64", feature = "debug-armctx"))]
 pub mod ctxprobe;
 mod hooks;
@@ -22,6 +23,7 @@ mod ownership;
 mod switch;
 
 pub use active_mm::park_active_mm;
+pub use cond::cond_resched;
 pub(crate) use active_mm::sched_current_cpu;
 pub use hooks::{install_sched_switch_hook, RunStats, SchedSwitchFn};
 pub use lifecycle::{

@@ -22,37 +22,6 @@ pub fn set_ctx_id_hook(f: fn() -> u64) {
     CTX_ID_HOOK.store(f as usize as u64, ::core::sync::atomic::Ordering::Release);
 }
 
-/// Kernel: cooperative-yield the CPU while a transaction-gate waiter spins, so
-/// the current gate OWNER (which sleeps on block I/O — reads/writes/flush —
-/// while holding the gate) can be scheduled and release it. A pure busy-spin
-/// here deadlocks: the owner parks on I/O, the waiter pins the CPU, and the
-/// owner never runs to release (observed: `[CPU-STALL]` in truncate_inode).
-#[cfg(target_os = "oxide-kernel")]
-static YIELD_HOOK: ::core::sync::atomic::AtomicU64 = ::core::sync::atomic::AtomicU64::new(0);
-
-/// Register the gate's spin-yield source. kmain sets this to `tick_yield`
-/// (yields + opens the IRQ window so the owner's I/O completion lands).
-/// # C: O(1)
-#[cfg(target_os = "oxide-kernel")]
-pub fn set_yield_hook(f: fn()) {
-    YIELD_HOOK.store(f as usize as u64, ::core::sync::atomic::Ordering::Release);
-}
-
-#[cfg(target_os = "oxide-kernel")]
-fn txn_yield() {
-    let raw = YIELD_HOOK.load(::core::sync::atomic::Ordering::Acquire);
-    if raw == 0 { ::core::hint::spin_loop(); return; } // pre-registration boot
-    // SAFETY: `raw` is a `fn()` pointer stored only by set_yield_hook (tick_yield).
-    let f: fn() = unsafe { ::core::mem::transmute(raw as usize) };
-    f();
-}
-
-/// Hosted: hand the OS scheduler the CPU so the gate owner thread can run.
-#[cfg(not(target_os = "oxide-kernel"))]
-fn txn_yield() { std::thread::yield_now(); }
-
-pub(crate) fn cooperative_yield() { txn_yield(); }
-
 /// Unique-per-concurrent-context id for the transaction gate.
 #[cfg(target_os = "oxide-kernel")]
 fn ctx_id() -> u64 {

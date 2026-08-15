@@ -49,11 +49,6 @@ unsafe fn mount_root() {
         // group-bitmap csum mismatches + unattached inodes). Registered before
         // the first mount so every ext4 op is serialized.
         ext4::mount::set_ctx_id_hook(|| sched::current().map(|t| t.tid as u64).unwrap_or(0));
-        // A gate waiter must YIELD (not busy-spin): the owner sleeps on block I/O
-        // while holding the gate. tick_yield reschedules + opens the IRQ window so
-        // the owner's completion lands and it can release. Without this the boot
-        // deadlocks in truncate_inode (CPU-STALL, nr_running=1).
-        ext4::mount::set_yield_hook(|| sched::live::tick_yield());
         let root_spec = crate::boot_cmdline::parameter_value(b"root")
             .expect("boot command line has no root=");
         let root_dev = block::registry::resolve_root_spec(root_spec)

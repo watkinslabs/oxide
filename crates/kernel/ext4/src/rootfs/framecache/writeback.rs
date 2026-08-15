@@ -18,7 +18,7 @@ use super::{Ext4FrameStore, PG};
 struct WritebackGuard<'a> { store: &'a Ext4FrameStore }
 
 impl Drop for WritebackGuard<'_> {
-    fn drop(&mut self) { self.store.active_writebacks.fetch_sub(1, Ordering::Release); }
+    fn drop(&mut self) { self.store.finish_writeback(); }
 }
 
 fn start_writeback(dirty: &mut BTreeSet<u64>, writeback: &mut BTreeMap<u64, u32>, idxs: Vec<u64>) -> Vec<u64> {
@@ -38,6 +38,12 @@ fn finish_writeback(writeback: &mut BTreeMap<u64, u32>, idxs: &[u64]) {
 }
 
 impl Ext4FrameStore {
+    fn finish_writeback(&self) {
+        if self.active_writebacks.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.writeback_wait.wake_all();
+        }
+    }
+
     /// Enter writeback unless final eviction has started.  The second flag
     /// test closes `false read -> eviction publishes -> counter increment`:
     /// eviction may observe zero in that window, but this entrant then sees
@@ -46,7 +52,7 @@ impl Ext4FrameStore {
         if self.evicting.load(Ordering::Acquire) { return None; }
         self.active_writebacks.fetch_add(1, Ordering::AcqRel);
         if self.evicting.load(Ordering::Acquire) {
-            self.active_writebacks.fetch_sub(1, Ordering::Release);
+            self.finish_writeback();
             return None;
         }
         Some(WritebackGuard { store: self })
@@ -128,7 +134,7 @@ impl Ext4FrameStore {
                     // Linux writeback paths contain cond_resched() points; a
                     // large fsync must not monopolize the CPU while flushing
                     // hundreds of dirty pages from one address_space.
-                    crate::mount::cooperative_yield();
+                    let _ = sched::live::cond_resched();
                 }
                 let (_, page_start, _, _) = plan[cursor];
                 let mut cluster = Vec::with_capacity(crate::extent_rw::DATA_WRITE_CLUSTER_BYTES);

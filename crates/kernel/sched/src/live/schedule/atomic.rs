@@ -5,14 +5,12 @@ use crate::preempt::{self, PREEMPT_DISABLED};
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum Recovery {
     Clean,
-    Normalize,
-    DeferSharedStack,
+    DeferAtomic,
 }
 
-fn classify(count: u32, shared_stack: bool) -> Recovery {
-    if shared_stack { Recovery::DeferSharedStack }
-    else if count != PREEMPT_DISABLED { Recovery::Normalize }
-    else { Recovery::Clean }
+fn classify(count: u32, shared_stack: bool, in_interrupt: bool) -> Recovery {
+    if count == PREEMPT_DISABLED && !shared_stack && !in_interrupt { Recovery::Clean }
+    else { Recovery::DeferAtomic }
 }
 
 fn defer_schedule(task: Option<&crate::Task>) {
@@ -68,25 +66,19 @@ fn report(count: u32, shared_stack: bool) {
     klog::write_raw(b"\n");
 }
 
-/// Validate the scheduler-owned preempt-disable level. A bad count on a task
-/// stack is normalized so the switch proceeds; the softirq dispatcher repairs
-/// its expected count when the handler returns. A shared IRQ stack cannot be
-/// saved in a task context, so the switch is deferred to the IRQ-return path,
-/// which reaches the same schedule decision on the interrupted task's stack.
+/// Validate the scheduler-owned preempt-disable level.  An interrupt, bottom
+/// half, lock, or shared-IRQ-stack count is not switchable state.  Preserve it
+/// and defer the request to the owner that will drop that count, rather than
+/// rewriting CPU-local accounting under the interrupted caller.
 /// # C: O(1)
 #[track_caller]
 pub(super) fn recover() -> bool {
     let count = preempt::preempt_count();
     let shared_stack = preempt::on_irq_stack();
-    match classify(count, shared_stack) {
+    match classify(count, shared_stack, preempt::in_interrupt()) {
         Recovery::Clean => true,
-        Recovery::Normalize => {
-            report(count, false);
-            preempt::preempt_count_set(PREEMPT_DISABLED);
-            true
-        }
-        Recovery::DeferSharedStack => {
-            report(count, true);
+        Recovery::DeferAtomic => {
+            report(count, shared_stack);
             defer_schedule(crate::live::current());
             false
         }
@@ -99,19 +91,19 @@ mod tests {
 
     #[test]
     fn expected_schedule_disable_is_clean() {
-        assert_eq!(classify(PREEMPT_DISABLED, false), Recovery::Clean);
+        assert_eq!(classify(PREEMPT_DISABLED, false, false), Recovery::Clean);
     }
 
     #[test]
-    fn task_stack_atomic_count_is_normalized() {
-        assert_eq!(classify(preempt::SOFTIRQ_OFFSET + PREEMPT_DISABLED, false),
-                   Recovery::Normalize);
+    fn bottom_half_disabled_count_is_deferred() {
+        assert_eq!(classify(preempt::SOFTIRQ_DISABLE_OFFSET + PREEMPT_DISABLED, false, true),
+                   Recovery::DeferAtomic);
     }
 
     #[test]
     fn shared_irq_stack_schedule_is_deferred() {
-        assert_eq!(classify(preempt::SOFTIRQ_OFFSET + PREEMPT_DISABLED, true),
-                   Recovery::DeferSharedStack);
+        assert_eq!(classify(preempt::SOFTIRQ_OFFSET + PREEMPT_DISABLED, true, true),
+                   Recovery::DeferAtomic);
         let task = crate::Task::new(1857, "atomic-defer",
             crate::SchedClass::Normal { weight: 1024 });
         task.set_state(crate::TaskState::Sleeping);
@@ -123,11 +115,11 @@ mod tests {
     }
 
     #[test]
-    fn recovery_replaces_softirq_count_with_schedule_disable() {
+    fn recovery_preserves_softirq_count_and_defers() {
         preempt::_test_reset();
-        preempt::preempt_count_add(preempt::SOFTIRQ_OFFSET + PREEMPT_DISABLED);
-        assert!(recover());
-        assert_eq!(preempt::preempt_count(), PREEMPT_DISABLED);
+        preempt::preempt_count_add(preempt::SOFTIRQ_DISABLE_OFFSET + PREEMPT_DISABLED);
+        assert!(!recover());
+        assert_eq!(preempt::preempt_count(), preempt::SOFTIRQ_DISABLE_OFFSET + PREEMPT_DISABLED);
         preempt::_test_reset();
     }
 }

@@ -11,9 +11,10 @@ impl Ext4FrameStore {
     /// truncating and freeing the inode slot. # C: O(N_pages + active I/O)
     pub(crate) fn discard_for_eviction(&self) {
         self.evicting.store(true, Ordering::Release);
-        while self.active_writebacks.load(Ordering::Acquire) != 0 {
-            crate::mount::cooperative_yield();
-        }
+        // SAFETY: eviction runs in process context after it has closed new
+        // writeback admission and holds no page-cache lock across the wait.
+        let _ = unsafe { sched::live::wait_event_uninterruptible(&self.writeback_wait,
+            || self.active_writebacks.load(Ordering::Acquire) == 0) };
         self.invalidate_range(0, u64::MAX);
     }
 }
