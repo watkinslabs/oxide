@@ -48,7 +48,11 @@ impl PmmInner {
         self.bitmaps[order as usize][word].fetch_and(!(1u64 << bit), Ordering::Relaxed);
     }
 
-    /// Stamp poison + order on every page of the order-o block at `pfn`.
+    /// Stamp the FreeNode into the head page of the order-o block at `pfn`.
+    ///
+    /// Tail pages are not free-list nodes.  Linux records buddy state in the
+    /// head `struct page`; keeping this header head-only has the same shape
+    /// and avoids faulting every usable RAM page into the boot working set.
     ///
     /// # SAFETY: block is order-aligned, in-range, currently NOT on any
     /// free-list; pages are PMM-owned at call site; backing is the live
@@ -61,23 +65,17 @@ impl PmmInner {
         head_next: u64,
         head_prev: u64,
     ) {
-        let span = 1u64 << order;
-        for k in 0..span {
-            // SAFETY: page within the order-o block; PMM-owned per fn contract.
-            let p = unsafe { backing.page_ptr(Pfn(pfn + k)) };
-            // SAFETY: write 16-byte header (poison+order) inside the page.
-            unsafe {
-                write_u64(p, OFF_POISON, POISON_MAGIC);
-                write_u8(p, OFF_ORDER, order);
-                for i in 1..8 { write_u8(p, OFF_ORDER + i, 0); }
-            }
-            if k == 0 {
-                // SAFETY: write next/prev into the head page's header.
-                unsafe {
-                    write_u64(p, OFF_NEXT, head_next);
-                    write_u64(p, OFF_PREV, head_prev);
-                }
-            }
+        // SAFETY: `pfn` is the block head and therefore names one complete
+        // PMM-owned page in which this intrusive header resides.
+        let p = unsafe { backing.page_ptr(Pfn(pfn)) };
+        // SAFETY: write the complete 32-byte head-node header.  No tail-page
+        // state exists for a free block.
+        unsafe {
+            write_u64(p, OFF_POISON, POISON_MAGIC);
+            write_u8(p, OFF_ORDER, order);
+            for i in 1..8 { write_u8(p, OFF_ORDER + i, 0); }
+            write_u64(p, OFF_NEXT, head_next);
+            write_u64(p, OFF_PREV, head_prev);
         }
     }
 
@@ -183,18 +181,15 @@ impl PmmInner {
         }
     }
 
-    /// Verify poison on every page of the order-o block at `pfn`.
+    /// Verify the free-node poison on the head page of a buddy block.
     ///
     /// # SAFETY: block is order-aligned, in-range, PMM-owned at call.
-    pub(super) unsafe fn verify_poison<B: PageBacking>(&self, backing: &B, pfn: u64, order: u8) {
-        let span = 1u64 << order;
-        for k in 0..span {
-            // SAFETY: page within the order-o block; PMM-owned at call.
-            let p = unsafe { backing.page_ptr(Pfn(pfn + k)) };
-            // SAFETY: read 16B header from PMM-owned page.
-            let m = unsafe { read_u64(p, OFF_POISON) };
-            kassert!(m == POISON_MAGIC, "pmm poison mismatch on alloc");
-        }
+    pub(super) unsafe fn verify_poison<B: PageBacking>(&self, backing: &B, pfn: u64) {
+        // SAFETY: `pfn` is the known free block head at this call site.
+        let p = unsafe { backing.page_ptr(Pfn(pfn)) };
+        // SAFETY: read the head-node poison before its block leaves the list.
+        let m = unsafe { read_u64(p, OFF_POISON) };
+        kassert!(m == POISON_MAGIC, "pmm poison mismatch on alloc");
     }
 
     /// Greedy seed: place largest aligned blocks at `cur..end` onto

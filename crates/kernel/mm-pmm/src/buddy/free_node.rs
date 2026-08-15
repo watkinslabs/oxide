@@ -9,8 +9,10 @@
 //   next:  u64     @ 16
 //   prev:  u64     @ 24
 //
-// On secondary pages of an order-o block we only stamp the first 16
-// bytes (poison + order). Alloc verifies poison on every page.
+// A free buddy block is represented only by its head page, like Linux's
+// PageBuddy/page_private pair. Tail pages carry no allocator header: touching
+// them while seeding RAM turns PMM bring-up into an O(total-RAM) cold-memory
+// sweep before the scheduler can run.
 
 pub(super) const OFF_POISON: usize = 0;
 pub(super) const OFF_ORDER: usize = 8;
@@ -36,4 +38,3 @@ pub(super) unsafe fn write_u8(base: *mut u8, off: usize, v: u8) {
     // SAFETY: `base + off` is inside a PMM-owned 4 KiB page at call site.
     unsafe { core::ptr::write(base.add(off), v) }
 }
-

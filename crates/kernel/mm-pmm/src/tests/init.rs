@@ -88,6 +88,29 @@ fn init_reverse_order_regions_ok() {
     assert_eq!(pmm.free_pages(), 512);
 }
 
+#[test]
+fn seed_only_writes_the_free_block_head() {
+    let fill = 0xa5;
+    let backing = HostedBacking::filled(8, fill);
+    let pmm = Pmm::<HostedBacking>::init(
+        backing,
+        &[UsableRegion { start: Pfn(0), len_pfn: 8 }],
+    )
+    .unwrap();
+
+    // One order-3 block is seeded.  Its head gains the intrusive FreeNode;
+    // the seven tails must remain untouched until a caller allocates them.
+    for pfn in 1..8 {
+        // SAFETY: this hosted backing remains live for the test and page_ptr
+        // names the first byte of the untouched tail page.
+        let tail = unsafe { pmm.page_ptr(Pfn(pfn)) };
+        assert_eq!(unsafe { core::ptr::read(tail) }, fill, "tail pfn {pfn} was touched at seed");
+    }
+    // SAFETY: the head is a live free-list node and contains its poison word.
+    let head = unsafe { pmm.page_ptr(Pfn(0)) };
+    assert_eq!(unsafe { core::ptr::read_unaligned(head.cast::<u64>()) }, POISON_MAGIC);
+}
+
 // ---------------------------------------------------------------------------
 // (3) Boundary sizes.
 // ---------------------------------------------------------------------------
@@ -160,4 +183,3 @@ fn bitmap_word_boundary_pfn_63_64() {
     // SAFETY: hosted single-thread; audit takes its own lock.
     unsafe { pmm.audit() };
 }
-
