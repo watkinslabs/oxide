@@ -20,9 +20,10 @@ pub(super) fn console_owner_key() -> Option<virtio::VirtioChildDeviceKey> {
 ///
 /// Scope is the whole cost here. Every console write reaches this path, and
 /// uploading the whole frame for one changed line meant a multi-megabyte copy
-/// under the `CTX` spinlock (interrupts masked) plus two whole-screen device
-/// commands, each of which spin-waits for the used ring. The console tells us
-/// which scanlines actually changed, so all three shrink together.
+/// under the `CTX` spinlock plus two whole-screen device commands. Commands
+/// are now admitted to the dedicated process-context queue worker, so this
+/// softirq never waits for a used-ring entry. The console tells us which
+/// scanlines actually changed, so all three shrink together.
 ///
 /// An earlier fix cut the copy's constant factor — it had been a byte-by-byte
 /// `write_volatile` loop whose IRQ-masked window stalled the timer tick for
@@ -50,21 +51,11 @@ pub fn fbcon_flush_pixels(pixels: &[u8], rect: fbcon::kernel::FlushRect) {
     unsafe { copy_damage(pixels, ctx.fb_va as *mut u8, &plan); }
     let res_id = ctx.res_id;
     let (x, y, w, h, off) = (plan.x, plan.y, plan.w, plan.h, plan.dst_off);
-    // The rectangle is `plan_copy`'s, already clipped to `ctx.w`/`ctx.h`, so the
-    // device is asked to transfer only bytes the copy above actually wrote.
-    // SAFETY: `submit_one`'s contract — `CTX` is held, so this ctx's command
-    // frame and CTRLQ are live and single-producer for the whole call, and the
-    // frame was allocated 4 KiB by the probe that installed the ctx.
-    unsafe {
-        let retired = super::runtime::submit_ctrl(ctx,
-            |buf| crate::encode_transfer_to_host_2d(buf, res_id, x, y, w, h, off));
-        if !super::runtime::retain_ctx_after_submit(ctx, retired) {
-            return;
-        }
-        let retired = super::runtime::submit_ctrl(ctx,
-            |buf| crate::encode_resource_flush(buf, res_id, x, y, w, h));
-        let _ = super::runtime::retain_ctx_after_submit(ctx, retired);
-    }
+    drop(g);
+    let _ = runtime_queue::enqueue_ctrl_from_softirq(owner, &[
+        runtime_queue::RuntimeCmd::Transfer { res_id, x, y, w, h, off },
+        runtime_queue::RuntimeCmd::Flush { res_id, x, y, w, h },
+    ]);
 }
 
 /// Copy the planned scanlines from `src` into the resource backing at `dst`.
@@ -116,19 +107,11 @@ pub fn blank_scanout_for_key(driver_key: fbdev::FbDriverKey) {
     // (and its run) cannot be torn down underneath this write.
     unsafe { core::ptr::write_bytes(ctx.fb_va as *mut u8, 0, ctx.fb_bytes as usize); }
     let (res_id, w, h) = (ctx.res_id, ctx.w, ctx.h);
-    // SAFETY: `submit_one`'s contract — `CTX` is held, so this ctx's command
-    // frame and CTRLQ are live and single-producer for the whole call, and the
-    // frame was allocated 4 KiB by the probe that installed the ctx.
-    unsafe {
-        let retired = super::runtime::submit_ctrl(ctx,
-            |buf| crate::encode_transfer_to_host_2d(buf, res_id, 0, 0, w, h, 0));
-        if !super::runtime::retain_ctx_after_submit(ctx, retired) {
-            return;
-        }
-        let retired = super::runtime::submit_ctrl(ctx,
-            |buf| crate::encode_resource_flush(buf, res_id, 0, 0, w, h));
-        let _ = super::runtime::retain_ctx_after_submit(ctx, retired);
-    }
+    drop(g);
+    let _ = runtime_queue::enqueue_ctrl(owner, &[
+        runtime_queue::RuntimeCmd::Transfer { res_id, x: 0, y: 0, w, h, off: 0 },
+        runtime_queue::RuntimeCmd::Flush { res_id, x: 0, y: 0, w, h },
+    ]);
 }
 
 pub fn unblank_scanout_for_key(driver_key: fbdev::FbDriverKey) {
@@ -143,13 +126,16 @@ pub(super) fn install_scanout_ctx(
     ctrlq: Option<virtio::VirtioSplitQueue>, cursorq: Option<virtio::VirtioSplitQueue>,
     cmd_buf_va: u64, cmd_buf_pa: u64, cmd_buf_dma: u64, bdf: pci::Bdf, hhdm: u64,
 ) -> bool {
+    if !runtime_queue::install(device_key) { return false; }
     let mut ctxs = ctx_lock();
     if ctxs.iter().any(|ctx| ctx.device_key == device_key) {
+        drop(ctxs);
+        runtime_queue::cancel(device_key);
         return false;
     }
     ctxs.push(ScanoutCtx {
         device_key, cfg_va, w, h, fb_va, fb_dma, fb_map_bytes, fb_bytes, fb_order, res_id,
-        ctrlq, cursorq, cmd_buf_va, cmd_buf_pa, cmd_buf_dma, bdf, hhdm, fbdev_idx: None, quiesced: false, bound: None,
+        ctrlq, cursorq, cmd_buf_va, cmd_buf_pa, cmd_buf_dma, bdf, hhdm, fbdev_idx: None, quiesced: false,
     });
     true
 }
@@ -208,6 +194,7 @@ fn commit_console_owner_key(device_key: virtio::VirtioChildDeviceKey, idx: u32) 
 }
 
 pub fn uninstall_scanout(device_key: virtio::VirtioChildDeviceKey) -> bool {
+    runtime_queue::cancel(device_key);
     let ctx = {
         let mut guard = ctx_lock();
         match guard.iter().position(|ctx| ctx.device_key == device_key) {
@@ -257,6 +244,7 @@ fn release_scanout_dma(ctx: &ScanoutCtx, reset_confirmed: bool) {
 }
 
 pub fn shutdown_scanout(device_key: virtio::VirtioChildDeviceKey) -> bool {
+    runtime_queue::cancel(device_key);
     let cfg_va = {
         let mut guard = ctx_lock();
         let Some(ctx) = guard.iter_mut().find(|ctx| ctx.device_key == device_key) else {
@@ -270,6 +258,7 @@ pub fn shutdown_scanout(device_key: virtio::VirtioChildDeviceKey) -> bool {
 }
 
 pub fn uninstall_scanout_after_failed_probe(device_key: virtio::VirtioChildDeviceKey) -> bool {
+    runtime_queue::cancel(device_key);
     let ctx = {
         let mut guard = ctx_lock();
         match guard.iter().position(|ctx| ctx.device_key == device_key) {

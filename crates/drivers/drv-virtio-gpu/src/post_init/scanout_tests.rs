@@ -8,7 +8,7 @@ fn ctx(device_key: virtio::VirtioChildDeviceKey) -> ScanoutCtx {
         fb_order: pmm::Order(0), res_id: BOOT_SCANOUT_RES_ID, ctrlq: None, cursorq: None,
         cmd_buf_va: 0, cmd_buf_pa: 0, cmd_buf_dma: 0,
         bdf: pci::Bdf { segment: 0, bus: 0, device: 0, function: 0 }, hhdm: 0,
-        fbdev_idx: None, quiesced: false, bound: None,
+        fbdev_idx: None, quiesced: false,
     }
 }
 

@@ -1,3 +1,2 @@
-/// Spin iterations a probe-time submission waits for device retirement.
-/// Exceeding it leaves the descriptor device-owned, so its DMA frame leaks.
-pub(super) const SUBMIT_POLL_BUDGET: u32 = 1_000_000;
+/// One command completion may wait as long as the standard display probe.
+pub(super) const BOOT_COMPLETION_TIMEOUT_NS: u64 = 5_000_000_000;

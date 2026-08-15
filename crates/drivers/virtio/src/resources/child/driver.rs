@@ -30,6 +30,14 @@ pub trait VirtioChildDriverOps<S: VirtioChildTransportSession>: Sync {
     /// # C: O(1)
     fn profile() -> VirtioTransportProfile;
 
+    /// Transport profile for one stable child instance. Drivers that need
+    /// context-carrying IRQs override this to bind the child key before PCI
+    /// programs the vector; ordinary drivers retain the static profile.
+    /// # C: O(1)
+    fn profile_for(_device_key: VirtioChildDeviceKey) -> VirtioTransportProfile {
+        Self::profile()
+    }
+
     /// Install child runtime state before the transport becomes visible.
     /// # C: O(child_probe)
     fn probe_child(parent: &Arc<drv::Device>, session: &mut S) -> drv::KResult<()>;
@@ -74,7 +82,8 @@ where
     }
 
     fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
-        let session = B::begin_session(dev, O::profile())?;
+        let device_key = B::parent_key(dev).ok_or(drv::Error::ProbeFailed)?;
+        let session = B::begin_session(dev, O::profile_for(device_key))?;
         run_child_probe_after_publish(
             session,
             |session| O::probe_child(dev, session),
