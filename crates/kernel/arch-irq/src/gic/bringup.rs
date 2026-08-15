@@ -80,6 +80,9 @@ pub unsafe fn enable(gicd_va: u64, gicr_va: u64) -> GicStatus {
 
         GICD_VA.store(gicd_va, Ordering::Release);
         GICR_VA.store(gicr_va, Ordering::Release);
+        // SAFETY: CPU0's redistributor is the just-configured `gicr_va`.
+        super::sgi::enable_sgi_on(gicr_va, super::sgi::RESCHED_SGI);
+        super::sgi::enable_sgi_on(gicr_va, super::sgi::CALL_FUNCTION_SGI);
 
         GicStatus::Enabled { typer, gicd_iidr, gicr_typer_lo }
     }

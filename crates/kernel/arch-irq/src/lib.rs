@@ -382,6 +382,9 @@ pub use deadline::install as install_timer_deadline_hook;
 /// UNGATED decision half — queue protocol, target set, stuck bookkeeping —
 /// lives in `cpu::call_fn`, where tests actually compile.
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))] pub mod call_fn;
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+#[path = "call_fn_arm.rs"]
+pub mod call_fn;
 pub mod irqstat;
 
 /// Hook for BSP timer work that belongs above the arch IRQ layer.

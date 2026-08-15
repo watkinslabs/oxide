@@ -1,22 +1,9 @@
 // `membarrier(2)` work fns.
 //
-// WHAT THE EXPEDITED COMMANDS ACTUALLY NEED. Linux's `ipi_mb()` is nothing
-// but `smp_mb()`: the ordering comes from the TARGET entering the kernel and
-// executing a full barrier, not from a private vector. So the poke rides the
-// existing cross-CPU resched IPI (`live::send_resched_ipi` — x86 `VEC_RESCHED`,
-// arm `SGI 0`), which is already installed, already enabled on every PE, and
-// already delivered through both dispatchers; each dispatcher calls `service()`
-// on entry. A spurious `need_resched` on a target is the same cost Linux pays
-// for every wake-up IPI, and this needs no new IDT stub / per-redistributor SGI
-// enable — the two places an arch-lockstep gap would otherwise open.
-//
-// PROTOCOL (single in-flight, mirrors `arch-irq::tlb`):
-//   sender: fence -> publish KIND -> publish PENDING(targets) -> IPI each ->
-//           spin till 0 -> fence
-//   target: IRQ entry -> `service()`: fence, do KIND's extra work, clear own bit
-// The target's fence is ordered AFTER it observed the sender's `PENDING`
-// store, which is ordered after the sender's pre-syscall user writes. That is
-// exactly the (a)/(b)/(c) pairing the barrier scenarios require.
+// The expedited commands use the one generic cross-CPU call transport. It
+// records completion per sender/target descriptor, so no membarrier-private
+// IPI vector, pending bitset, or acknowledgement spin protocol can disagree
+// with the rest of the kernel's cross-CPU work.
 //
 // THREE ROUND KINDS, because the barrier alone is not the whole contract:
 // a plain round only orders memory; SYNC_CORE additionally makes every target
@@ -25,9 +12,8 @@
 // registration gates which kind, and `arch` owns the serializing instruction —
 // both ungated, so the rules are hosted-tested rather than boot-tested.
 //
-// Callers run in syscall context with IRQs ON, so a target can always take the
-// IPI; a second would-be sender spins on `OWNER` while calling `service()`, so
-// it still ACKs the in-flight round and sender-vs-sender cannot deadlock.
+// Callers run in syscall context and serialize overlapping rounds with the
+// scheduler's sleeping mutex, never a private atomic spin owner.
 
 // Module manifest:
 //   `policy` — ungated decision logic: which READY bit gates which command,
@@ -49,4 +35,5 @@ pub use policy::{Kind, Ready, FLAG_RSEQ, FLAG_SYNC_CORE};
 pub use arch::sync_core_before_usermode;
 #[cfg(target_os = "oxide-kernel")]
 pub use work::{global, global_expedited, private_expedited, register_global_expedited,
-               register_private_expedited, registrations, service};
+               register_private_expedited, registrations, service_global,
+               service_private_mb, service_private_rseq, service_private_sync_core};

@@ -117,6 +117,10 @@ fn init_smp(info: &BootInfo) {
         // SAFETY: BSP boot path, sole writer of the AP entry state, and the
         // per-CPU alloc hook the APs need was installed on the line above.
         let _started = unsafe { hal_aarch64::smp::bring_up_aps_psci() };
+        // SAFETY: every online PE enabled the call-function SGI during its
+        // GIC bring-up, so this one-time hook publication cannot expose a
+        // queue with no receiving transport.
+        unsafe { arch_irq::call_fn::install(); }
         debug_boot! {
             klog::write_raw(b"[INFO]  smp: aps_started=");
             klog::write_dec_u64(_started as u64);

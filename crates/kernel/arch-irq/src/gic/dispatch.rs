@@ -179,10 +179,9 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
             // switch is what drains this CPU's deferred wake list — so the
             // request is (re)asserted here rather than inferred from a tick.
             sched::preempt::set_need_resched();
-            // `membarrier(2)` rides the resched SGI (Linux `ipi_mb` is just a
-            // full barrier — no private SGI to enable per-redistributor).
-            // No-op unless this CPU is a target of an in-flight round.
-            sched::membarrier::service();
+        }
+        if intid == super::sgi::CALL_FUNCTION_SGI {
+            crate::call_fn::service();
         }
     }
     // Linux `irq_exit`: drop the hardirq field before returning to the

@@ -69,6 +69,10 @@ fn exec(kind: u32, arg: u64) {
             }
         }
         Some(CallKind::LdtReload) => sched::ldt::flush_ldt_remote(arg),
+        Some(CallKind::MembarrierGlobalMb) => sched::membarrier::service_global(),
+        Some(CallKind::MembarrierPrivateMb) => sched::membarrier::service_private_mb(arg),
+        Some(CallKind::MembarrierPrivateSyncCore) => sched::membarrier::service_private_sync_core(arg),
+        Some(CallKind::MembarrierPrivateRseq) => sched::membarrier::service_private_rseq(arg),
         Some(CallKind::Stop) => {
             // Publish BEFORE parking: the waiter frees nothing, but it does
             // proceed to overwrite the pages this CPU was running out of, so
@@ -138,7 +142,10 @@ fn call_function_many(mask: &[u64], kind: u32, arg: u64, wait: bool) {
             // Take this sender's descriptor for `t`, draining our own queue
             // while a previous call on it is outstanding: without that, two
             // CPUs each waiting to send to the other never progress.
-            QUEUES.lock_slot(me, t, service);
+            QUEUES.lock_slot(me, t, || {
+                service();
+                sync::spin_relax::relax();
+            });
             let need_ipi = QUEUES.push(me, t, kind, arg);
             // SAFETY: LAPIC enabled post-boot; target is an online CPU.
             if need_ipi && !unsafe { send_ipi(c as u32) } {
@@ -180,7 +187,7 @@ fn wait_for(me: usize, pending: cpu::CpuMask) {
         // Service our own queue: the CPU we are waiting for may in turn be
         // waiting for us.
         service();
-        core::hint::spin_loop();
+        sync::spin_relax::relax();
         spins = spins.wrapping_add(1);
         let now = now_ns();
         if escalation_due(now, next_warn, spins, next_spin_warn) {

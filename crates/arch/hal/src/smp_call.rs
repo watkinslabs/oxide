@@ -18,9 +18,9 @@
 // Adding a kind is a one-line change plus a handler that meets the
 // contract above.
 //
-// The hook is unset on aarch64 and in the hosted harness, where every call
-// is a no-op: arm64 broadcasts TLB invalidation in hardware and has no
-// LDT, and the harness is single-CPU.
+// The hook is unset only before arch bring-up and in the hosted harness.
+// Arm64 still bypasses queued TLB invalidations because its broadcast TLBI
+// reaches every CPU in hardware, but other call kinds use its SGI transport.
 
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
@@ -48,6 +48,17 @@ pub enum CallKind {
     /// waits on [`stopped_words`] instead, which the handler publishes BEFORE
     /// it parks.
     Stop = 3,
+    /// Full memory barrier for a globally registered membarrier target.
+    MembarrierGlobalMb = 4,
+    /// Full memory barrier for a target still running the address space named
+    /// by `arg`.
+    MembarrierPrivateMb = 5,
+    /// Private membarrier barrier plus core serialization for `arg`'s current
+    /// address space.
+    MembarrierPrivateSyncCore = 6,
+    /// Private membarrier barrier plus restartable-sequence fixup for `arg`'s
+    /// current address space.
+    MembarrierPrivateRseq = 7,
 }
 
 impl CallKind {
@@ -63,6 +74,10 @@ impl CallKind {
             1 => Some(CallKind::TlbFlush),
             2 => Some(CallKind::LdtReload),
             3 => Some(CallKind::Stop),
+            4 => Some(CallKind::MembarrierGlobalMb),
+            5 => Some(CallKind::MembarrierPrivateMb),
+            6 => Some(CallKind::MembarrierPrivateSyncCore),
+            7 => Some(CallKind::MembarrierPrivateRseq),
             _ => None,
         }
     }
@@ -131,7 +146,7 @@ pub fn available() -> bool { HOOK.load(Ordering::Acquire) != 0 }
 /// resource the handler was told to stop using. Without it the call is only
 /// a request.
 ///
-/// No-op before `set_call_hook` (UP boot, hosted harness) and on aarch64.
+/// No-op before `set_call_hook` (UP boot or hosted harness).
 /// # C: O(popcount(mask)) + IPI round-trip
 #[inline]
 pub fn call_function_many(mask: &[u64], kind: CallKind, arg: u64, wait: bool) {

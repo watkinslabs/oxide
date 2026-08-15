@@ -44,6 +44,9 @@ pub unsafe fn send_sgi(target_aff0: u32, intid: u32) {
 /// SGI INTID used as the cross-CPU resched IPI (`13§9`/§11).
 #[cfg(target_arch = "aarch64")]
 pub const RESCHED_SGI: u32 = 0;
+/// SGI INTID carrying generic cross-CPU function calls.
+#[cfg(target_arch = "aarch64")]
+pub const CALL_FUNCTION_SGI: u32 = 1;
 
 /// arm resched-IPI: send the resched SGI to CPU `cpu` (affinity-0 ==
 /// `cpu` on QEMU virt). Matches the `SendReschedIpiFn` ABI so it can be
@@ -56,6 +59,15 @@ pub unsafe fn send_resched_ipi(cpu: u32) -> bool {
     // SAFETY: per fn contract; SGI write via ICC_SGI1R_EL1.
     unsafe { send_sgi(cpu, RESCHED_SGI); }
     true
+}
+
+/// Send the generic call-function SGI to `cpu`.
+/// # SAFETY: caller asserts the GIC CPU interface is enabled on the sender.
+/// # C: O(1)
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+pub unsafe fn send_call_function_ipi(cpu: u32) {
+    // SAFETY: this SGI is enabled per CPU before the call transport installs.
+    unsafe { send_sgi(cpu, CALL_FUNCTION_SGI); }
 }
 
 /// Install arm diag hooks. The cross-CPU heartbeat detector

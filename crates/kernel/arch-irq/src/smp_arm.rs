@@ -37,6 +37,7 @@ pub unsafe fn ap_init(aff0: u32) {
         <ArmMmu as MmuOps>::map(Va(ap_va + 0x1_0000), Pa(ap_pa + 0x1_0000), device_flags(), PageSize::P4K);
         crate::gic::ap_cpu_interface_enable(ap_va);
         crate::gic::enable_sgi_on(ap_va, crate::gic::RESCHED_SGI);
+        crate::gic::enable_sgi_on(ap_va, crate::gic::CALL_FUNCTION_SGI);
         // Enable this AP's CNTV virtual-timer PPI (INTID 27) + arm it
         // periodic so the AP preempts on its own tick, not just resched
         // SGIs. The dispatcher's UART/softirq work is BSP-gated; an AP
