@@ -11,7 +11,9 @@ use vfs::FileType;
 pub(crate) static NEXT_FSCTX_INO: AtomicU64 = AtomicU64::new(0x4600_0000);
 
 /// # C: O(1)
-fn resolve_ext4_source(
+/// Resolve a `source=` pathname to the block device it names. Shared by
+/// every filesystem that requires one.
+fn resolve_block_source(
     source: &str,
     access: u32,
 ) -> vfs::KResult<(Arc<dyn block::BlockDevice>, Option<u64>)> {
@@ -155,13 +157,36 @@ fn register_filesystems() {
         let source = source.ok_or(vfs::VfsError::Enoent)?;
         let access = vfs::MAY_READ
             | if sb_flags & vfs::superblock::SB_RDONLY == 0 { vfs::MAY_WRITE } else { 0 };
-        let (dev, dev_t) = resolve_ext4_source(source, access)?;
+        let (dev, dev_t) = resolve_block_source(source, access)?;
         // Honour the `-o usrquota/grpquota/prjquota/usrjquota=/grpjquota=/
         // jqfmt=/quota/noquota` option string. Was: dropped on the floor, so
         // every quota mount option was silently accepted and did nothing.
         let fs: Arc<dyn vfs::fs::FileSystem> = ext4::rootfs::Ext4Mount::open_with_data(dev, dev_t, d)?;
         mounted(ty, fs, None, source, sb_flags)
     }), Some(ext4::rootfs::EXT4_PARAMS)));
+    // FAT is what the EFI system partition and almost every removable medium
+    // carry. `vfat` and `msdos` are separate types upstream — the second reads
+    // only 8.3 names — and this registers the long-name one under both spellings
+    // rather than claiming a type it does not implement: a mount asking for
+    // `msdos` gets long names it did not expect, which is strictly more
+    // information, where refusing the name would fail an `/etc/fstab` that
+    // mounts elsewhere.
+    fn vfat_ctor(ty: Arc<dyn vfs::FileSystemType>, source: Option<&str>, _t: &str, _d: &str,
+                 sb_flags: u64, _p: &[vfs::fs::FsParameter]) -> R {
+        let source = source.ok_or(vfs::VfsError::Enoent)?;
+        let (dev, _dev_t) = resolve_block_source(source, vfs::MAY_READ)?;
+        let fatfs = fatfs::FatFs::open(dev, source)?;
+        let root = fatfs.root_inode();
+        let fs: Arc<dyn vfs::fs::FileSystem> = fatfs;
+        // Read-only whatever was asked: this filesystem has no write path, and
+        // a mount that reported itself writable would fail every write at the
+        // first one rather than at the mount.
+        mounted(ty, fs, Some(root), source, sb_flags | vfs::superblock::SB_RDONLY)
+    }
+    for name in ["vfat", "msdos"] {
+        let _ = register_fs(FsType::new(name, fatfs::MSDOS_SUPER_MAGIC,
+            FsFlags::FS_REQUIRES_DEV, Box::new(vfat_ctor)));
+    }
     // procfs declares the three options it ENFORCES (`gid=`, `hidepid=`,
     // `subset=`) and builds a per-mount root that carries them. The table was an
     // empty list while the root inode was a process-global singleton — there was
