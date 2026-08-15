@@ -23,7 +23,7 @@
 
 
 use alloc::sync::Arc;
-use alloc::vec::Vec;
+use alloc::collections::VecDeque;
 use core::sync::atomic::Ordering;
 #[cfg(feature = "debug-desktop")]
 use core::sync::atomic::AtomicU32;
@@ -53,7 +53,7 @@ macro_rules! waiters_lock {
 /// FIFO wait list. Holds strong refs to parked tasks; drops them
 /// on wake (after enqueueing on the runqueue).
 pub struct WaitList {
-    waiters: Spinlock<Vec<Arc<Task>>, WaitClass>,
+    waiters: Spinlock<VecDeque<Arc<Task>>, WaitClass>,
 }
 
 impl WaitList {
@@ -130,7 +130,7 @@ impl WaitList {
 
     /// # C: O(1)
     pub const fn new() -> Self {
-        Self { waiters: Spinlock::new(Vec::new()) }
+        Self { waiters: Spinlock::new(VecDeque::new()) }
     }
 
     /// Park the running task on this list, marking it Sleeping.
@@ -235,7 +235,7 @@ impl WaitList {
         // bump. See the Sleeping-guard in enqueue_runnable.
         let cur = raw as *const Task;
         g.retain(|a| Arc::as_ptr(a) != cur);
-        g.push(arc);
+        g.push_back(arc);
         timer_arc.set_sleep_state(state);
         drop(g);
         // Timer setup follows publication because its lock ranks below the
@@ -274,7 +274,7 @@ impl WaitList {
         loop {
             let popped: Option<Arc<Task>> = {
                 let mut g = waiters_lock!(self);
-                if g.is_empty() { None } else { Some(g.remove(0)) }
+                g.pop_front()
             };
             match popped {
                 None => return,
@@ -290,12 +290,22 @@ impl WaitList {
     /// # C: O(N_waiters)
     /// # Lk: WaitList.waiters then runqueue.inner (per task)
     pub fn wake_all(&self) {
-        let drained: Vec<Arc<Task>> = {
-            let mut g = waiters_lock!(self);
-            if g.is_empty() { return; }
-            g.drain(..).collect()
-        };
-        for t in drained { let _ = Self::enqueue_runnable(t); }
+        // Wake sites can run from a hard IRQ.  Do not materialize a temporary
+        // vector there: Linux walks its wake queue directly, drops the
+        // wait-queue lock before each scheduler wake, and never allocates in
+        // that path. The FIFO deque makes every removal constant time.
+        // Keep the same lock-drop rule as wake_one so ttwu may take the target
+        // runqueue lock without nesting it under WaitList.waiters.
+        loop {
+            let popped: Option<Arc<Task>> = {
+                let mut g = waiters_lock!(self);
+                g.pop_front()
+            };
+            match popped {
+                None => return,
+                Some(t) => { let _ = Self::enqueue_runnable(t); }
+            }
+        }
     }
 
     /// True if any task is currently parked.

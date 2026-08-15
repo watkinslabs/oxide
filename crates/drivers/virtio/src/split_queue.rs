@@ -83,6 +83,7 @@ impl VirtioSplitQueue {
         queue.avail_idx = used_seen;
         queue.used_seen = used_seen;
         queue.last_kick_avail = used_seen;
+        queue.arm_completion_event();
         Ok(queue)
     }
 
@@ -172,6 +173,7 @@ impl VirtioSplitQueue {
         if id >= self.resource.size as u32 { return Err(SplitQueueError::BadUsedId); }
         self.release_chain(id as u16)?;
         self.used_seen = self.used_seen.wrapping_add(1);
+        self.arm_completion_event();
         Ok(Some(SplitUsed { head: id as u16, len }))
     }
 
@@ -227,6 +229,20 @@ impl VirtioSplitQueue {
         // SAFETY: event-index negotiation makes the u16 immediately after the
         // used ring device-owned; queue size bounds the calculated location.
         unsafe { core::ptr::read_volatile(self.used_u16_ptr().add(offset)) }
+    }
+
+    /// Ask an event-index device to interrupt when it advances past the used
+    /// entry this owner has already retired. The value is driver-owned and
+    /// lives after the avail-ring heads.
+    fn arm_completion_event(&self) {
+        if !self.event_idx { return; }
+        let offset = AVAIL_RING_OFF + self.resource.size as usize;
+        // SAFETY: event-index negotiation adds one aligned u16 immediately
+        // after this queue's `size` avail-ring heads; this queue exclusively
+        // owns driver-area publication and the selected index is in bounds.
+        unsafe { core::ptr::write_volatile(self.avail_ptr().add(offset), self.used_seen); }
+        crate::dma::clean_to_device(self.hhdm.wrapping_add(self.resource.driver_pa)
+            .wrapping_add((offset * core::mem::size_of::<u16>()) as u64), core::mem::size_of::<u16>());
     }
 
     fn read_desc_word(&self, index: u16) -> u64 {
@@ -367,5 +383,30 @@ mod tests {
 
         queue.submit(&[SplitQueueSeg { dma: 0x9000_2000, len: 8, device_writes: true }]).unwrap();
         assert_eq!(notify, 3);
+    }
+
+    #[test]
+    fn retiring_event_index_completion_arms_the_next_notification() {
+        let desc = Page([0; 4096]);
+        let avail = Page([0; 4096]);
+        let used = Page([0; 4096]);
+        let mut notify = 0;
+        let mut queue = VirtioSplitQueue::new_with_features(
+            resource(&desc, &avail, &used, &mut notify), 0, crate::VIRTIO_F_RING_EVENT_IDX,
+        ).unwrap();
+        let head = queue.submit(&[SplitQueueSeg { dma: 0x9000_1000, len: 8, device_writes: true }]).unwrap();
+        let used_words = used.0.as_ptr() as *mut u32;
+        // SAFETY: test owns the private used ring and publishes exactly the
+        // descriptor head submitted above before advancing its used index.
+        unsafe {
+            core::ptr::write_volatile(used_words.add(USED_RING_OFF), head as u32);
+            core::ptr::write_volatile(used_words.add(USED_RING_OFF + 1), 8);
+            core::ptr::write_volatile((used.0.as_ptr() as *mut u16).add(1), 1);
+        }
+        assert_eq!(queue.pop_used(), Ok(Some(SplitUsed { head, len: 8 })));
+        let used_event = unsafe { (avail.0.as_ptr() as *const u16).add(AVAIL_RING_OFF + 8) };
+        // SAFETY: `used_event` is the driver-owned event-index u16 immediately
+        // after this test queue's eight avail-ring heads.
+        assert_eq!(unsafe { core::ptr::read_volatile(used_event) }, 1);
     }
 }
