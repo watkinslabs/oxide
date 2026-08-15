@@ -3,13 +3,25 @@ use crate::netdev::{NetError, NetResult};
 const OPS_CLOSED: usize = 1usize << (usize::BITS - 1);
 const OPS_ACTIVE: usize = !OPS_CLOSED;
 
-pub(crate) struct SocketMcastGate { state: core::sync::atomic::AtomicUsize }
+pub(crate) struct SocketMcastGate {
+    state: core::sync::atomic::AtomicUsize,
+    #[cfg(target_os = "oxide-kernel")]
+    wait: sched::live::WaitList,
+}
 
-pub(crate) struct SocketMcastLease<'a> { state: &'a core::sync::atomic::AtomicUsize }
+pub(crate) struct SocketMcastLease<'a> {
+    state: &'a core::sync::atomic::AtomicUsize,
+    #[cfg(target_os = "oxide-kernel")]
+    wait: &'a sched::live::WaitList,
+}
 
 impl SocketMcastGate {
     pub(crate) const fn new() -> Self {
-        Self { state: core::sync::atomic::AtomicUsize::new(0) }
+        Self {
+            state: core::sync::atomic::AtomicUsize::new(0),
+            #[cfg(target_os = "oxide-kernel")]
+            wait: sched::live::WaitList::new(),
+        }
     }
 
     pub(crate) fn enter(&self, released: &core::sync::atomic::AtomicBool)
@@ -22,39 +34,53 @@ impl SocketMcastGate {
             }
             if current & OPS_ACTIVE == OPS_ACTIVE { return Err(NetError::Einval); }
             if self.state.compare_exchange_weak(current, current + 1, Ordering::AcqRel,
-                Ordering::Acquire).is_ok() { return Ok(SocketMcastLease { state: &self.state }); }
+                Ordering::Acquire).is_ok() {
+                return Ok(SocketMcastLease {
+                    state: &self.state,
+                    #[cfg(target_os = "oxide-kernel")]
+                    wait: &self.wait,
+                });
+            }
+            sync::spin_relax::relax();
         }
     }
 
     pub(crate) fn close_wait(&self) {
         use core::sync::atomic::Ordering;
         self.state.fetch_or(OPS_CLOSED, Ordering::AcqRel);
+        if self.state.load(Ordering::Acquire) == OPS_CLOSED { return; }
+        #[cfg(target_os = "oxide-kernel")]
+        if !sched::preempt::in_interrupt() {
+            // The network-close path is process context. Use a canonical
+            // predicate wait: lease drop publishes the count then wakes.
+            // SAFETY: close from VFS file release has no socket operation lock
+            // held and is in schedulable process context (checked above).
+            let _ = unsafe {
+                sched::live::wait_event_uninterruptible(&self.wait,
+                    || self.state.load(Ordering::Acquire) == OPS_CLOSED)
+            };
+            return;
+        }
+        // A last `Arc<InetSocket>` can presently fall out of AF_PACKET RX
+        // softirq. A live lease holds a borrow from a separate strong Arc, so
+        // this branch is an invariant backstop, not a valid wait context. It
+        // must nevertheless use the one shared relax step while that broader
+        // lifetime mismatch remains.
         while self.state.load(Ordering::Acquire) != OPS_CLOSED {
-            // B1409: `InetSocket::release_file()` can now run from softirq
-            // (`packet.rs::deliver()`'s Weak-upgraded temp clone dropping the
-            // last ref). `tick_yield()` calls `schedule()` and is documented
-            // process/kthread-only (`# Ctx: process|kthread; preempt-off;
-            // IRQs-on`) — a softirq/hard-IRQ caller must never reach it, so
-            // fall back to a bare spin exactly like the hosted/non-kernel
-            // path already does below. An in-flight lease implies a live
-            // `Arc<InetSocket>` elsewhere, which by construction cannot
-            // overlap this socket's OWN last-ref Drop; this is defense in
-            // depth, not the expected case.
-            #[cfg(target_os = "oxide-kernel")]
-            if sched::preempt::in_interrupt() { core::hint::spin_loop(); continue; }
-            #[cfg(target_os = "oxide-kernel")]
-            {
-                // SAFETY: final socket release runs in schedulable process context (checked above).
-                unsafe { sched::live::tick_yield(); }
-            }
-            #[cfg(not(target_os = "oxide-kernel"))]
-            core::hint::spin_loop();
+            sync::spin_relax::relax();
         }
     }
 }
 
 impl Drop for SocketMcastLease<'_> {
     fn drop(&mut self) {
-        self.state.fetch_sub(1, core::sync::atomic::Ordering::Release);
+        use core::sync::atomic::Ordering;
+        #[cfg(target_os = "oxide-kernel")]
+        {
+            let before = self.state.fetch_sub(1, Ordering::Release);
+            if before == OPS_CLOSED + 1 { self.wait.wake_all(); }
+        }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        self.state.fetch_sub(1, Ordering::Release);
     }
 }
