@@ -156,12 +156,13 @@ pub(super) fn build_grub_iso(
 /// GRUB configuration shared by BIOS and UEFI x86 images.
 ///
 /// The Multiboot framebuffer request remains optional so a broken GOP never
-/// blocks serial recovery, but `gfxpayload=keep` makes a valid firmware mode
+/// blocks serial recovery, but `gfxterm` selects a firmware graphics mode and
+/// `gfxpayload=keep` makes that valid mode
 /// an explicit handoff contract for simpledrm rather than an accidental GRUB
 /// default. # C: O(config bytes)
 fn x86_grub_cfg(arch: &str, args: &str) -> String {
     format!(
-        "set timeout=0\nset default=0\nset gfxpayload=keep\nserial --unit=0 --speed=115200\nterminal_input serial console\nterminal_output serial console\n\n\
+        "set timeout=0\nset default=0\ninsmod all_video\nset gfxmode=auto\nset gfxpayload=keep\nserial --unit=0 --speed=115200\nterminal_input serial console\nterminal_output serial gfxterm\n\n\
          menuentry \"oxide (multiboot2)\" {{\n    \
          multiboot2 /boot/oxide-{arch} {args}\n    \
          boot\n}}\n")
@@ -480,9 +481,11 @@ mod tests {
     #[test]
     fn x86_grub_keeps_the_firmware_framebuffer_but_retains_serial_recovery() {
         let cfg = x86_grub_cfg("x86_64", "root=/dev/root");
+        assert!(cfg.contains("insmod all_video"));
+        assert!(cfg.contains("set gfxmode=auto"));
         assert!(cfg.contains("set gfxpayload=keep"));
         assert!(cfg.contains("terminal_input serial console"));
-        assert!(cfg.contains("terminal_output serial console"));
+        assert!(cfg.contains("terminal_output serial gfxterm"));
         assert!(cfg.contains("multiboot2 /boot/oxide-x86_64 root=/dev/root"));
     }
 }
