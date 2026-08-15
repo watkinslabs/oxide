@@ -1,0 +1,16 @@
+[package]
+name = "fatfs"
+version = "0.1.0"
+edition = "2021"
+publish = false
+[lib]
+path = "src/lib.rs"
+[dependencies]
+syscall = { path = "../syscall" }
+
+[features]
+default = []
+hosted = []
+
+[lints]
+workspace = true
