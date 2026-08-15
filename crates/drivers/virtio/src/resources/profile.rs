@@ -5,6 +5,30 @@ pub const VIRTIO_MSI_NO_VECTOR: u16 = 0xFFFF;
 /// default queues keep the low indexes; with one of each that tail is index 1.
 pub const POLL_QUEUE_INDEX: u16 = 1;
 
+/// Queue interrupt callback requested by a virtio child. A context callback
+/// receives the transport-owned instance token, so a hard handler can reach
+/// its exact queue owner without a global device scan.
+#[derive(Copy, Clone)]
+pub enum VirtioQueueIrq {
+    Bare(fn()),
+    Context { handler: fn(usize), arg: usize },
+}
+
+impl VirtioQueueIrq {
+    pub const fn bare(handler: fn()) -> Self { Self::Bare(handler) }
+
+    pub const fn context(handler: fn(usize), arg: usize) -> Self {
+        Self::Context { handler, arg }
+    }
+
+    pub fn call(self) {
+        match self {
+            Self::Bare(handler) => handler(),
+            Self::Context { handler, arg } => handler(arg),
+        }
+    }
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct VirtioChildRequirements {
     pub required_queues: [bool; MAX_RESOURCE_QUEUES],
@@ -60,7 +84,7 @@ impl VirtioChildRequirements {
 #[derive(Copy, Clone)]
 pub struct VirtioQueuePlan {
     pub index: u16,
-    pub msix_handler: Option<fn()>,
+    pub msix_handler: Option<VirtioQueueIrq>,
     pub msix_vec: u16,
     pub map_notify: bool,
     pub slow_path: bool,
@@ -68,6 +92,10 @@ pub struct VirtioQueuePlan {
 
 impl VirtioQueuePlan {
     pub const fn new(index: u16, msix_handler: Option<fn()>, map_notify: bool) -> Self {
+        let msix_handler = match msix_handler {
+            Some(handler) => Some(VirtioQueueIrq::bare(handler)),
+            None => None,
+        };
         Self { index, msix_handler, msix_vec: VIRTIO_MSI_NO_VECTOR, map_notify, slow_path: false }
     }
 
@@ -104,10 +132,10 @@ pub struct VirtioTransportProfile {
     /// Queue-zero completion callback.  The PCI transport assigns this an
     /// independently allocated queue vector; it is never the configuration
     /// vector by convention.
-    pub q0_handler: Option<fn()>,
+    pub q0_handler: Option<VirtioQueueIrq>,
     /// Device-configuration-change callback.  This is programmed through
     /// `msix_config`, separately from every `queue_msix_vector`.
-    pub config_handler: Option<fn()>,
+    pub config_handler: Option<VirtioQueueIrq>,
     pub queue_plans: [Option<VirtioQueuePlan>; MAX_RESOURCE_QUEUES],
     pub early_payload_policy: VirtioEarlyPayloadPolicy,
     pub child_requirements: VirtioChildRequirements,
@@ -123,7 +151,10 @@ impl VirtioTransportProfile {
     ) -> Self {
         Self {
             drv_features,
-            q0_handler,
+            q0_handler: match q0_handler {
+                Some(handler) => Some(VirtioQueueIrq::bare(handler)),
+                None => None,
+            },
             config_handler: None,
             queue_plans,
             early_payload_policy,
@@ -133,7 +164,28 @@ impl VirtioTransportProfile {
 
     /// Request a distinct configuration-change interrupt. # C: O(1)
     pub const fn with_config_handler(mut self, handler: Option<fn()>) -> Self {
-        self.config_handler = handler;
+        self.config_handler = match handler {
+            Some(handler) => Some(VirtioQueueIrq::bare(handler)),
+            None => None,
+        };
+        self
+    }
+
+    /// Bind queue zero with a transport-owned instance token. # C: O(1)
+    pub const fn with_q0_context_handler(mut self, handler: fn(usize), arg: usize) -> Self {
+        self.q0_handler = Some(VirtioQueueIrq::context(handler, arg));
+        self
+    }
+
+    /// Bind a planned queue with a transport-owned instance token. # C: O(1)
+    pub const fn with_queue_context_handler(mut self, index: usize,
+        handler: fn(usize), arg: usize) -> Self {
+        if index < MAX_RESOURCE_QUEUES {
+            if let Some(mut plan) = self.queue_plans[index] {
+                plan.msix_handler = Some(VirtioQueueIrq::context(handler, arg));
+                self.queue_plans[index] = Some(plan);
+            }
+        }
         self
     }
 

@@ -55,7 +55,7 @@ impl VirtioProbeState {
         d: &pci::PciDevice,
         _caps: &pci::heapless_caps::CapVec,
         bars: &[pci::Bar; 6],
-        handler: Option<fn()>,
+        handler: Option<virtio::VirtioQueueIrq>,
     ) -> Option<u16> {
         let Some(handler) = handler else {
             return None;
@@ -79,7 +79,7 @@ impl VirtioProbeState {
         d: &pci::PciDevice,
         caps: &pci::heapless_caps::CapVec,
         bars: &[pci::Bar; 6],
-        handler: Option<fn()>,
+        handler: Option<virtio::VirtioQueueIrq>,
     ) -> Option<u16> {
         match handler {
             Some(handler) => self.bind_msix_queue(d, caps, bars, Some(handler)),
@@ -109,7 +109,8 @@ impl VirtioProbeState {
         bars: &[pci::Bar; 6],
         profile: &virtio::VirtioTransportProfile,
     ) -> Option<(u16, [Option<virtio::VirtioQueuePlan>; virtio::MAX_RESOURCE_QUEUES])> {
-        let mut handlers = [None; virtio::MAX_RESOURCE_QUEUES + 1];
+        let mut handlers: [Option<virtio::VirtioQueueIrq>; virtio::MAX_RESOURCE_QUEUES + 1] =
+            [None; virtio::MAX_RESOURCE_QUEUES + 1];
         handlers[0] = profile.q0_handler;
         let mut resolved = profile.queue_plans;
         for (index, plan) in resolved.iter().enumerate() {
@@ -138,7 +139,8 @@ impl VirtioProbeState {
         bars: &[pci::Bar; 6],
         profile: &virtio::VirtioTransportProfile,
     ) -> Option<(u16, u16, [Option<virtio::VirtioQueuePlan>; virtio::MAX_RESOURCE_QUEUES])> {
-        let mut slow_handlers = [None; virtio::MAX_RESOURCE_QUEUES + 1];
+        let mut slow_handlers: [Option<virtio::VirtioQueueIrq>; virtio::MAX_RESOURCE_QUEUES + 1] =
+            [None; virtio::MAX_RESOURCE_QUEUES + 1];
         slow_handlers[0] = profile.config_handler;
         let mut resolved = profile.queue_plans;
         for (index, plan) in resolved.iter().enumerate() {
