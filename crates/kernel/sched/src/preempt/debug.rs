@@ -75,6 +75,9 @@ fn take_irq_entry(cpu: usize) -> Option<u8> {
 }
 
 /// Called from `irq_exit` BEFORE the subtract, with the live count.
+/// Kept as a debugger boundary in diagnostic builds: a stopped CPU here has
+/// both the pre-subtract count and the independent entry witness intact.
+#[inline(never)]
 /// # C: O(1)
 pub fn check_irq_exit(pc: u32) {
     let cpu = this_cpu();
