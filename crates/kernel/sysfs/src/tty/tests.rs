@@ -32,15 +32,46 @@ fn tty0_active_reports_foreground_vt() {
     assert_eq!(file.poll(), vfs::POLL_IN);
 }
 
-/// `/sys/class/tty/console/active` reports the VT console master `tty0`.
+/// `/sys/class/tty/console/active` reports EVERY registered console, preferred
+/// last — not the VT alone. `systemd-getty-generator` reads this file and
+/// starts `serial-getty@<name>` for each non-VC entry; while it read `tty0`
+/// this kernel could not have a serial login prompt, whatever the boot line
+/// said. The hosted line is empty, which is the arch default pair.
 #[test]
-fn console_active_reports_vt_console_master() {
+fn console_active_reports_every_registered_console() {
     let root = make_sys_devices_virtual_tty_inode();
     let dir = root.lookup("console").expect("console device dir");
     let active = dir.lookup("active").expect("console/active attr");
-    let mut buf = [0u8; 16];
+    let mut buf = [0u8; 32];
     let n = active.read(0, &mut buf).expect("read active");
-    assert_eq!(&buf[..n], b"tty0\n");
+    assert_eq!(&buf[..n], b"ttyS0 tty0\n");
+}
+
+/// Every reported name is a tty this kernel publishes a device node for: a
+/// getty generated from a name with no node dies on `No such file or
+/// directory`. The aarch64 PL011 is published as `ttyS0`, so the reported name
+/// is the NODE's, not the `console=` class name (`ttyAMA0`).
+#[test]
+fn every_reported_console_names_a_published_tty() {
+    let root = make_sys_devices_virtual_tty_inode();
+    let dir = root.lookup("console").expect("console device dir");
+    let active = dir.lookup("active").expect("console/active attr");
+    let mut buf = [0u8; 32];
+    let n = active.read(0, &mut buf).expect("read active");
+    let body = core::str::from_utf8(&buf[..n]).expect("utf8").trim_end();
+    assert!(!body.is_empty(), "console/active must never be empty");
+    for name in body.split(' ') {
+        assert!(tty_dev(name).is_some(), "reported console {name} has no tty device node");
+    }
+}
+
+/// The name each console class is reported under. `tty0` stays literal because
+/// consumers match on it; the serial line takes the published node name.
+#[test]
+fn console_line_names_match_the_published_nodes() {
+    assert_eq!(console_line_name(cmdline::ConsoleKind::Serial), "ttyS0");
+    assert_eq!(console_line_name(cmdline::ConsoleKind::Vt(0)), "tty0");
+    assert_eq!(console_line_name(cmdline::ConsoleKind::Vt(3)), "tty3");
 }
 
 /// Ordinary ttys (e.g. `ttyS0`) expose no `active` attribute — matching Linux,

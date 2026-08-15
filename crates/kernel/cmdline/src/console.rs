@@ -107,6 +107,67 @@ pub fn serial_options_in(line: &[u8]) -> Option<ConsoleOptions> {
     entries(line).filter(|(k, _)| *k == ConsoleKind::Serial).map(|(_, o)| o).last()
 }
 
+/// Upper bound on consoles reported by `/sys/class/tty/console/active`.
+/// Linux collects at most 16 there; this kernel drives two classes, so a
+/// smaller bound still cannot truncate a real line.
+pub const MAX_ACTIVE_CONSOLES: usize = 8;
+
+/// The registered, enabled consoles in the order
+/// `/sys/class/tty/console/active` prints them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ActiveConsoles { items: [ConsoleKind; MAX_ACTIVE_CONSOLES], n: usize }
+
+impl ActiveConsoles {
+    /// Consoles in print order: the preferred one LAST. # C: O(1)
+    pub fn as_slice(&self) -> &[ConsoleKind] { &self.items[..self.n] }
+}
+
+/// Which consoles `/sys/class/tty/console/active` reports, in Linux's print
+/// order.
+///
+/// The consumer is `systemd-getty-generator`: it reads this file and starts
+/// `serial-getty@<name>` for every entry that is not a virtual console, which
+/// is how a serial line gets a login prompt. Reporting only the VT is why this
+/// kernel had none, and why a debug shell stood in for it.
+///
+/// Order is load-bearing and is NOT command-line order. A console registers
+/// per `console=` entry; the preferred one (the LAST entry, the one backing
+/// `/dev/console`) goes to the HEAD of the console list and every other goes to
+/// the tail in registration order. The attribute walks that list backwards, so
+/// the preferred console prints last and the rest print in reverse
+/// command-line order. Consumers reading only the FIRST word — dracut's
+/// plymouth hook does — depend on this.
+///
+/// A line naming no console registers the arch default pair, matching
+/// [`console_classes_in`]. # C: O(line length)
+pub fn active_consoles_in(line: &[u8]) -> ActiveConsoles {
+    let mut items = [ConsoleKind::Vt(0); MAX_ACTIVE_CONSOLES];
+    let mut n = 0usize;
+    let push = |k: ConsoleKind, items: &mut [ConsoleKind; MAX_ACTIVE_CONSOLES], n: &mut usize| {
+        if items[..*n].contains(&k) || *n == MAX_ACTIVE_CONSOLES { return; }
+        items[*n] = k;
+        *n += 1;
+    };
+    let preferred = preferred_console_in(line);
+    // Non-preferred consoles, in reverse command-line order...
+    let mut rev = [ConsoleKind::Vt(0); MAX_ACTIVE_CONSOLES];
+    let mut rn = 0usize;
+    for (k, _) in entries(line) {
+        if k == preferred || rn == MAX_ACTIVE_CONSOLES { continue; }
+        rev[rn] = k;
+        rn += 1;
+    }
+    while rn > 0 { rn -= 1; push(rev[rn], &mut items, &mut n); }
+    // ...then the preferred console, which is what `/dev/console` follows.
+    let any = entries(line).next().is_some();
+    if !any { push(ConsoleKind::Serial, &mut items, &mut n); }
+    push(preferred, &mut items, &mut n);
+    ActiveConsoles { items, n }
+}
+
+/// Global-line form of [`active_consoles_in`]. # C: O(cmdline length)
+pub fn active_consoles() -> ActiveConsoles { active_consoles_in(crate::get()) }
+
 /// Does the cmdline request a printk console of each class? A `struct
 /// console` is registered per `console=` entry; a class NOT named gets no
 /// printk (its `/dev` tty still works). `(serial, vt)`. With NO parseable
