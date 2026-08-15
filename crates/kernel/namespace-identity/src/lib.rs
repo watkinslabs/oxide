@@ -2,7 +2,6 @@
 // - identity: namespace kinds, IDs, and immutable Arc-owned identity objects.
 // - registry: canonical allocation and active global/kind/direct-owner indexes.
 // - pid_numbers: per-PID-namespace number space (allocate/reserve/free).
-// - sync: dependency-neutral registry lock.
 // - uapi: Linux initial nsfs inode constants.
 
 #![no_std]
@@ -15,7 +14,6 @@ extern crate std;
 mod identity;
 mod pid_numbers;
 mod registry;
-mod sync;
 mod uapi;
 
 pub use identity::{Namespace, NamespaceFinalizer, NamespaceHandle, NamespaceId, NamespaceKind,

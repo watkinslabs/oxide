@@ -5,7 +5,7 @@
 use alloc::collections::BTreeSet;
 
 use crate::identity::NamespaceKind;
-use crate::sync::SpinLock;
+use sync::{Namespace, Spinlock};
 
 /// Default ceiling a fresh PID namespace numbers under, matching the value
 /// `/proc/sys/kernel/pid_max` reports. Allocated numbers are `1..pid_max`.
@@ -43,7 +43,7 @@ struct State {
 
 /// Numbering authority of one PID namespace. Inert for every other kind.
 pub struct PidNumberSpace {
-    state: SpinLock<Option<State>>,
+    state: Spinlock<Option<State>, Namespace>,
 }
 
 impl PidNumberSpace {
@@ -52,14 +52,14 @@ impl PidNumberSpace {
     /// held, because that task is stamped by the boot path rather than
     /// allocated. # C: O(1)
     pub(crate) fn for_kind(kind: NamespaceKind, initial: bool) -> Self {
-        if kind != NamespaceKind::Pid { return Self { state: SpinLock::new(None) }; }
+        if kind != NamespaceKind::Pid { return Self { state: Spinlock::new(None) }; }
         let mut used = BTreeSet::new();
         let mut cursor = INITIAL_TASK_NR;
         if initial {
             used.insert(INITIAL_TASK_NR);
             cursor = INITIAL_TASK_NR + 1;
         }
-        Self { state: SpinLock::new(Some(State { cursor, max: PID_MAX_DEFAULT, used })) }
+        Self { state: Spinlock::new(Some(State { cursor, max: PID_MAX_DEFAULT, used })) }
     }
 
     /// Ceiling this namespace numbers under. # C: O(1)

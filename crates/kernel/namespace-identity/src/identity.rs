@@ -143,7 +143,7 @@ pub struct Namespace {
     /// `struct pid_namespace`'s number space; inert for non-PID kinds.
     pub(crate) pid_numbers: crate::pid_numbers::PidNumberSpace,
     pub(crate) active: AtomicUsize,
-    pub(crate) finalizers: crate::sync::SpinLock<Vec<NamespaceFinalizer>>,
+    pub(crate) finalizers: sync::Spinlock<Vec<NamespaceFinalizer>, sync::Namespace>,
 }
 
 impl Namespace {
