@@ -28,7 +28,9 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
 # `make stats`           — `xtask stats` (use `STATS_ARGS=...` for flags).
 # `make ci`              — what PR gate runs: spec-lint, test, both arches default + debug-all.
 # `make qemu-x86 / qemu-arm` — boot under QEMU with NO debug features;
-#                          `qemu-*-debug` is the firehose.
+#                          x86 defaults to the firmware framebuffer.
+# `make qemu-x86-virtio-gpu` — primary virtio-GPU driver validation topology.
+# `qemu-*-debug` is the firehose.
 # `make boot-debug-x86 / boot-debug-arm` — boot with the narrating cmdline
 #                          (keep_bootcon + initcall_debug + ignore_loglevel) on
 #                          top of the console parameters every boot carries.
@@ -43,7 +45,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
 .PHONY: all build x86 arm kpi-layout \
         build-debug x86-debug arm-debug \
         test lint lint-ratchet lint-ratchet-update audit-counts profile-policy warnings-control stats ci \
-        qemu-x86 qemu-arm qemu-x86-image qemu-arm-image qemu-x86-existing qemu-arm-existing qemu-x86-debug qemu-arm-debug qemu-mcp verify-native-q35 smoke-native-pci-x86 smoke-native-pci-e1000-x86 \
+        qemu-x86 qemu-arm qemu-x86-virtio-gpu qemu-x86-image qemu-arm-image qemu-x86-existing qemu-arm-existing qemu-x86-debug qemu-arm-debug qemu-mcp verify-native-q35 smoke-native-pci-x86 smoke-native-pci-e1000-x86 \
         hardware-audit-image-x86 \
         boot-debug-x86 boot-debug-arm smoke-debug smoke-debug-x86 smoke-debug-arm smoke-taskdump-arm \
         qemu-x86-grub qemu-x86-uefi smoke-uefi-x86 \
@@ -233,6 +235,12 @@ SMP ?= 1
 qemu-x86:
 	$(TRIM_ROOTFS_CACHE)
 	$(XTASK) grub --arch x86_64  --smp $(SMP) $(if $(QEMU_FEATURES_X86),--features "$(QEMU_FEATURES_X86)",)
+
+# The native virtio-GPU path intentionally has no firmware scanout fallback.
+# Keep it opt-in so ordinary QEMU boots immediately show the generic console.
+qemu-x86-virtio-gpu:
+	$(TRIM_ROOTFS_CACHE)
+	OXIDE_QEMU_VIRTIO_GPU=1 $(XTASK) grub --arch x86_64 --smp $(SMP) $(if $(QEMU_FEATURES_X86),--features "$(QEMU_FEATURES_X86)",)
 
 qemu-arm:
 	$(TRIM_ROOTFS_CACHE)

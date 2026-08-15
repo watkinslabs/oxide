@@ -33,9 +33,8 @@ pub(crate) fn init_prefix(info: &BootInfo) {
 pub(crate) fn init_suffix(info: &BootInfo) {
     step("init_x2apic_and_smp", || init_smp(info));
     // Generic firmware framebuffer is a fallback, not a competitor to a
-    // native scanout. PCI probing runs first so virtio-gpu remains fb0 in the
-    // desktop VM; physical machines without a supported display driver bind
-    // the bootloader surface here.
+    // native scanout. PCI probing runs first so any native display driver can
+    // claim its hardware before the bootloader surface is published here.
     step("init_simple_framebuffer", || init_simple_framebuffer(info));
     // NB: the AP master page-table gets each device's MMIO mapping propagated
     // eagerly inside `mmio_map::map_pages` (resync per splice), so APs can't #PF

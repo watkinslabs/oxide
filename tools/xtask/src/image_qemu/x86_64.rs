@@ -3,6 +3,8 @@ use std::process::Command;
 use crate::run;
 
 use super::common::{ensure_ahci_extra_img, ensure_ahci_img, ensure_nvme_extra_img, ensure_nvme_img, ensure_virtio_blk_extra_img, ssh_fwd_netdev, which};
+#[path = "x86_display.rs"] mod x86_display;
+use x86_display::display_plan;
 
 const X86_OVMF_CODE: &str = "/usr/share/OVMF/OVMF_CODE.fd";
 const X86_OVMF_VARS: &str = "/usr/share/OVMF/OVMF_VARS.fd";
@@ -202,12 +204,16 @@ pub(super) fn qemu_run_grub_x86_64(
     // line-buffers + handles signals and drops scripted keystrokes.
     // Interactive: mux=on so Ctrl-A C reaches the QEMU monitor.
     let headless = std::env::var("OXIDE_QEMU_HEADLESS").is_ok();
-    let gpu_dev = super::common::virtio_gpu_device_arg(None);
-    // Local physical-framebuffer proof: make std-VGA the firmware display and
-    // omit virtio-gpu so the kernel must consume GRUB's framebuffer handoff.
-    // Ordinary desktop/smoke launches keep their unchanged virtio-gpu path.
-    let simplefb_only = profile == HardwareProfile::NativePci || std::env::var_os("OXIDE_QEMU_SIMPLEFB").is_some();
-    let legacy_vga = if simplefb_only { "std" } else { "none" };
+    // A boot console starts from the firmware framebuffer and is then adopted
+    // by the fixed framebuffer driver. Primary virtio-GPU is a
+    // separate native-driver validation topology: it deliberately removes the
+    // firmware fallback and therefore must be requested, not accidental.
+    let display = display_plan(
+        profile,
+        std::env::var_os("OXIDE_QEMU_VIRTIO_GPU").is_some(),
+        std::env::var_os("OXIDE_QEMU_SIMPLEFB").is_some(),
+    );
+    let gpu_dev = display.primary_virtio_gpu.then(|| super::common::virtio_gpu_device_arg(None));
     let uart_chardev = match std::env::var("OXIDE_QEMU_UART_SOCK") {
         Ok(p) if !p.is_empty() => {
             let _ = std::fs::remove_file(&p);
@@ -296,20 +302,15 @@ pub(super) fn qemu_run_grub_x86_64(
         "-boot", "d",
         "-netdev", netdev.as_str(),
         "-device", nic_device,
-        // -vga none: q35 otherwise adds a default std-VGA that becomes the
-        // PRIMARY display, so the GTK window shows that (blank — we never
-        // drive it) and the virtio-gpu console is a hidden secondary. Removing
-        // it makes virtio-gpu THE display, so fbcon's rendered console is what
-        // the window shows. (Verified: virtio-gpu fb carries the glyphs.)
-        "-vga", legacy_vga,
+        "-vga", display.legacy_vga,
         // D3.5: NVMe controller + its scratch backing disk (drv-nvme brings
         // it up, registers nvme0n1, self-tests an LBA-0 read).
         "-drive", nvme_drive.as_str(),
         "-device", "nvme,serial=oxnvme,drive=nvm0,bus=pcie.0",
         "-chardev", uart_chardev.as_str(),
         "-serial", "chardev:ser0",
-        // GTK window by default so the virtio-gpu console is visible +
-        // responsive; OXIDE_QEMU_HEADLESS=1 suppresses for CI/smoke.
+        // GTK shows the firmware framebuffer by default. OXIDE_QEMU_HEADLESS=1
+        // suppresses graphics for CI/smoke.
         "-display", if headless { "none" } else { "gtk" },
         "-no-reboot",
     ]);
@@ -352,7 +353,7 @@ pub(super) fn qemu_run_grub_x86_64(
             "-device", "virtio-blk-pci,drive=root,bus=pcie.0,serial=oxide-root,disable-legacy=on,num-queues=2",
         ]),
     };
-    if !simplefb_only {
+    if let Some(gpu_dev) = gpu_dev {
         c.args(["-device", gpu_dev.as_str()]);
     }
     if std::env::var_os("OXIDE_VIRTIO_NET_MULTIDEV_SMOKE").is_some() {
@@ -420,7 +421,8 @@ pub(super) fn qemu_run_grub_x86_64(
 
 #[cfg(test)]
 mod tests {
-    use super::{HardwareProfile, native_root_uses_ahci_for, x86_grub_cfg};
+    use super::{HardwareProfile, display_plan, native_root_uses_ahci_for, x86_grub_cfg};
+    use super::x86_display::DisplayPlan;
     use crate::image_qemu::bootargs::kernel_cmdline_for_root;
 
     #[test]
@@ -450,6 +452,18 @@ mod tests {
             "usb-kbd,bus=xhci.0",
             "usb-tablet,bus=xhci.0",
         ]);
+    }
+
+    #[test]
+    fn default_display_keeps_the_firmware_framebuffer_until_native_gpu_is_requested() {
+        assert_eq!(display_plan(HardwareProfile::Default, false, false),
+            DisplayPlan { legacy_vga: "std", primary_virtio_gpu: false });
+        assert_eq!(display_plan(HardwareProfile::Default, true, false),
+            DisplayPlan { legacy_vga: "none", primary_virtio_gpu: true });
+        assert_eq!(display_plan(HardwareProfile::Default, true, true),
+            DisplayPlan { legacy_vga: "std", primary_virtio_gpu: false });
+        assert_eq!(display_plan(HardwareProfile::NativePci, true, false),
+            DisplayPlan { legacy_vga: "std", primary_virtio_gpu: false });
     }
 
     #[test]
