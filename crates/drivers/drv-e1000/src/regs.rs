@@ -3,10 +3,11 @@
 
 /// PCI IDs owned by the legacy `e1000` controller path, not `e1000e` or `igb`.
 ///
-/// The reset sequence in this crate is 82540-class-specific. PCH integrated
-/// NICs and 82580-class adapters have superficially similar descriptor
-/// registers but require Linux's separate `e1000e` and `igb` hardware paths,
-/// so they must remain unbound until those drivers exist. # C: O(1)
+/// The legacy profile is 82540-class-specific. PCH integrated NICs and
+/// 82580-class adapters have superficially similar descriptor registers but
+/// require separate `e1000e` and `igb` hardware paths. The supported PCH
+/// `e1000e` profiles are listed below; every other family remains unbound.
+/// # C: O(1)
 pub const INTEL_VENDOR: u16 = 0x8086;
 pub const ETHERNET_CLASS: u32 = 0x02_00_00;
 pub const E1000_82540EP_LP: u16 = 0x101e;

@@ -42,6 +42,7 @@ device 0000:00:0b.0 0x8086 0x125c 0x02000000
 device 0000:00:0c.0 0x8086 0x153a 0x02000000
 device 0000:00:0d.0 0x8086 0x10d3 0x02000000 e1000e
 device 0000:00:0e.0 0x1022 0x14c9 0x0c033000 xhci_hcd
+device 0000:00:0f.0 0x8086 0x10ea 0x02000000 e1000e
 
 out=$(OXIDE_HARDWARE_AUDIT_ROOT="$root" sh "$audit")
 printf '%s\n' "$out" | grep -Fx 'OXIDE_HARDWARE_AUDIT|v1|driver-assessment|BOUND|bdf=0000:00:01.0|driver=nvme'
@@ -50,14 +51,15 @@ printf '%s\n' "$out" | grep -Fx 'OXIDE_HARDWARE_AUDIT|v1|driver-assessment|WRONG
 printf '%s\n' "$out" | grep -Fx 'OXIDE_HARDWARE_AUDIT|v1|driver-assessment|BOUND|bdf=0000:00:04.0|driver=e1000'
 printf '%s\n' "$out" | grep -Fx 'OXIDE_HARDWARE_AUDIT|v1|driver-assessment|NEEDS-DRIVER|bdf=0000:00:05.0|driver=r8169|reason=firmware-load-and-retry-required'
 printf '%s\n' "$out" | grep -Fx 'OXIDE_HARDWARE_AUDIT|v1|driver-assessment|NEEDS-DRIVER|bdf=0000:00:06.0|driver=r8169|reason=firmware-load-and-retry-required'
-printf '%s\n' "$out" | grep -Fx 'OXIDE_HARDWARE_AUDIT|v1|driver-assessment|NEEDS-DRIVER|bdf=0000:00:07.0|driver=e1000e|reason=linux-e1000e-family'
+printf '%s\n' "$out" | grep -Fx 'OXIDE_HARDWARE_AUDIT|v1|driver-assessment|UNBOUND|bdf=0000:00:07.0|expected=e1000e'
 printf '%s\n' "$out" | grep -Fx 'OXIDE_HARDWARE_AUDIT|v1|driver-assessment|NEEDS-DRIVER|bdf=0000:00:08.0|driver=igb|reason=linux-igb-family'
 printf '%s\n' "$out" | grep -Fx 'OXIDE_HARDWARE_AUDIT|v1|driver-assessment|BOUND|bdf=0000:00:09.0|driver=atlantic'
 printf '%s\n' "$out" | grep -Fx 'OXIDE_HARDWARE_AUDIT|v1|driver-assessment|BOUND|bdf=0000:00:0a.0|driver=igc'
 printf '%s\n' "$out" | grep -Fx 'OXIDE_HARDWARE_AUDIT|v1|driver-assessment|UNBOUND|bdf=0000:00:0b.0|expected=igc'
-printf '%s\n' "$out" | grep -Fx 'OXIDE_HARDWARE_AUDIT|v1|driver-assessment|NEEDS-DRIVER|bdf=0000:00:0c.0|driver=e1000e|reason=linux-e1000e-family'
+printf '%s\n' "$out" | grep -Fx 'OXIDE_HARDWARE_AUDIT|v1|driver-assessment|UNBOUND|bdf=0000:00:0c.0|expected=e1000e'
 printf '%s\n' "$out" | grep -Fx 'OXIDE_HARDWARE_AUDIT|v1|driver-assessment|BOUND|bdf=0000:00:0d.0|driver=e1000e'
 printf '%s\n' "$out" | grep -Fx 'OXIDE_HARDWARE_AUDIT|v1|driver-assessment|BOUND|bdf=0000:00:0e.0|driver=xhci_hcd'
+printf '%s\n' "$out" | grep -Fx 'OXIDE_HARDWARE_AUDIT|v1|driver-assessment|BOUND|bdf=0000:00:0f.0|driver=e1000e'
 printf '%s\n' "$out" | grep -Fx 'OXIDE_HARDWARE_AUDIT|v1|display-card|FIRMWARE-FALLBACK|card=card0|driver=simpledrm'
 printf '%s\n' "$out" | grep -Fx 'OXIDE_HARDWARE_AUDIT|v1|display-card|NEEDS-DRIVER|card=card1|vendor=0x10de|device=0x2684|driver=nvidia-drm'
 printf '%s\n' "$out" | grep -Fx 'OXIDE_HARDWARE_AUDIT|v1|display|PRESENT|cards=2'
