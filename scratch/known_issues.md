@@ -51,13 +51,13 @@ Hand-adjustment is what made the previous table wrong by 70 rows: it read 339
 against an actual 409, and understated `MISSING high` and `INFRA high` by
 exactly the rows a lane would have picked up first. D551 regenerated it.
 
-| Class \ Sev | blocker | high | med | low | Total |
-|---|---:|---:|---:|---:|---:|
-| `DEFECT` | 7 | 12 | 38 | 53 | 110 |
-| `MISSING` | 1 | 24 | 82 | 69 | 176 |
-| `COVERAGE` | 0 | 6 | 52 | 50 | 108 |
-| `INFRA` | 0 | 1 | 24 | 32 | 57 |
-| **Total** | **8** | **43** | **196** | **204** | **451** |
+| Class \ Sev | blocker | critical | high | med | low | Total |
+|---|---:|---:|---:|---:|---:|---:|
+| `DEFECT` | 1 | 7 | 14 | 38 | 54 | 114 |
+| `MISSING` | 1 | 0 | 24 | 83 | 69 | 177 |
+| `COVERAGE` | 0 | 0 | 6 | 51 | 50 | 107 |
+| `INFRA` | 0 | 0 | 1 | 26 | 32 | 59 |
+| **Total** | **2** | **7** | **45** | **198** | **205** | **457** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -323,6 +323,7 @@ row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
 | OPEN | INFRA | med | `FEAT_S1POE` could not be exercised on real silicon or emulation: QEMU 9.2.4 implements it on neither `cortex-a72` nor `max`, so the aarch64 boot proves only that `setup_poe` correctly does nothing and does not fault on a CPU without the feature. The x86 half WAS proven — `-cpu host` on a Ryzen 7960X reports PKU/OSPKE and the boot logs the detection line. The arm enable path stays unproven until a QEMU with S1POE or real ARMv8.9 hardware is available. | F788; `qemu-system-aarch64 --version` 9.2.4, no `detected:` line under either CPU model. | — |
 | OPEN | INFRA | med | `docs/30` R01 recorded an io_uring implementation subset (register = silent-0, no shared ring mmap, opcode list) that contradicts the `30` body, which specifies the full Linux surface. Block deleted as stale status, not spec. Whether the code still matches that subset is unverified by this lane. | `30§2` invariants + `30§?` register-buffers text vs the deleted R01 text | unowned |
 | OPEN | INFRA | med | `docs/27` R02 recorded a cBPF-only `bpf(2)` subset with "eBPF + verifier + JIT tracked as phase 23"; `27§5` body still says seccomp filter mode returns ENOSYS with BPF "phase 23". Deferral framing survives in the body and conflicts with the no-v2 rule (`02§9` rule 8). Not fixed here (spec-content change, out of scope for a flattening PR). | `27§5` lines "Now: returns ENOSYS for filter mode (BPF tracked as phase 23)" | unowned |
+| OPEN | INFRA | med | **Project scope is internally contradictory.** `docs/00§3,§9` says every Linux subsystem is in scope except 32-bit and big-endian support; `docs/03§2,§5,§6` explicitly drops many syscall, filesystem, protocol, and architecture families. `scratch/system-compat.md` can therefore identify present and absent systems, but cannot truthfully classify all absences as either required work or deliberate exclusions until one authority wins. | D553 source audit: `docs/00` lists full Linux scope, while `docs/03` excludes cgroup v1, many address families/protocols, legacy filesystems, 32-bit ABI, and more. | unowned |
 | OPEN | INFRA | med | `git stash` is shared across ALL worktrees of this clone, so two lanes stashing/popping concurrently swap trees: B1654's stash was popped into another lane's worktree and a raw-IP lane's WIP landed in B1654's. Recovered via `git fsck` dangling commits + `git stash store`. Lanes must never use `git stash` on this box; commit temporarily on the lane branch instead. | Observed 2026-08-01: `git stash pop` in the B1654 worktree restored 16 unrelated `raw4`/`sol_ip` files and dropped B1654's tracked edits. Damage still visible in `git stash list`. | — |
 | OPEN | INFRA | low | Citation debt: repository text must not name/path-link/quote external implementation sources. 273 files carry `.c:NNN`, 113 mention `include/uapi`, 50 carry `.h:NNN`, 10 name the local reference tree by path. | Pre-existing tree-wide; B1641 added zero. | — |
 | OPEN | INFRA | low | `debug-atexit` is excluded from the routine gate: it is mutually exclusive with `debug-stderr` by design (`020_writev` selects the richer `[DYNERR]` tracer when atexit is on), so enabling both hides the `debug-stderr` writev block from the type checker. Covered by the separate non-routine `make feature-gate-atexit`. | Cfg is `all(feature = "debug-stderr", not(feature = "debug-atexit"))`. | — |
