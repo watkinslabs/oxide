@@ -13,6 +13,8 @@
 //! - `dirent`:   the 32-byte records, and the long name spread across several.
 //! - `chain`:    the allocation table, and walking a file's clusters through it.
 //! - `volume`:   a mounted volume: name resolution and file reads over the rest.
+//! - `ident`:    what an inode number is on a filesystem that has none.
+//! - `mount`:    the VFS-facing filesystem, its inodes and their operations.
 //!
 //! Both are pure functions over bytes, so the whole layout contract — the
 //! validation order, the cluster-count rule that decides FAT12 from FAT16, the
@@ -25,9 +27,13 @@ pub mod geometry;
 pub mod dirent;
 pub mod chain;
 pub mod volume;
+pub mod ident;
+pub mod mount;
 
 pub use bpb::{Bpb, BpbError};
 pub use chain::{classify, clusters_for_size, read_entry, walk, ChainError, Link};
+pub use ident::{inode_number, location_of, DirLocation};
+pub use mount::{FatFs, MSDOS_SUPER_MAGIC};
 pub use volume::{DirEntry, SectorSource, Volume};
 pub use dirent::{checksum, short_name, Entry, LongName, ShortEntry};
 pub use geometry::{Geometry, GeometryError, FatWidth};

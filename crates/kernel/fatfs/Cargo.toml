@@ -7,6 +7,8 @@ publish = false
 path = "src/lib.rs"
 [dependencies]
 syscall = { path = "../syscall" }
+vfs     = { path = "../vfs" }
+block   = { path = "../block" }
 
 [features]
 default = []
