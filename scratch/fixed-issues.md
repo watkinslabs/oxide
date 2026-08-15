@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2211-virtio-gpu-wait-handoff
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 94f216300 | DEFECT | high | **Virtio-GPU runtime CTRLQ/CURSORQ submission directly spun on used-ring completion for up to one million iterations, including fbcon softirq flushes.** That made completion latency consume a CPU and let an unavailable queue visibly stall the desktop. Linux virtio-GPU IRQ acknowledgement schedules completion work; process context reaps completions and waits on the queue predicate. Oxide now has one per-device asynchronous command owner: softirq only enqueues; a workqueue worker submits/reaps; its IRQ callback queues completion work or wakes the generic wait list; and every blocking path uses the shared publish/recheck/schedule wait contract outside `CTX`. | Compared with `../linux-master/drivers/gpu/drm/virtio/virtgpu_vq.c`; `cargo test -p virtio --lib -- --test-threads=1` (73), `cargo test -p drv-virtio-gpu --lib -- --test-threads=1` (89), `cargo test -p pci-irq --lib -- --test-threads=1` (5), `cargo check -p pci-boot`, `make x86`, and `make arm` pass. `git grep core::hint::spin_loop -- crates/drivers/drv-virtio-gpu` returns no driver busy wait. | B2211-virtio-gpu-wait-handoff |
+
 ### F1098-partition-4kn
 
 | Status | Class | Sev | Issue | Evidence | Owner |
