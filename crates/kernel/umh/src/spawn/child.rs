@@ -140,30 +140,31 @@ fn load_image(mm: &Arc<vmm::AddressSpace>, program: &[u8], info: &SubprocessInfo
         Err(_) => { release_borrow(); return Err(-(Errno::Enoexec.as_i32())); }
     };
 
-    // The stack is written from kernel context through user addresses, so it is
-    // mapped up front rather than demand-faulted: the fault handler resolves
-    // against the RUNNING task's address space, and the running task here is
-    // the worker, not the helper.
     stage!(b"image-loaded");
-    pmm::user_as::prefault_stack(mm, stack_top, HELPER_STACK_BYTES);
-
-    stage!(b"stack-prefaulted");
     let mut random16 = [0u8; 16];
     crng::fill(&mut random16);
     let argv = flatten(&info.argv);
     let envp = flatten(&info.envp);
     let argv_slices: Vec<&[u8]> = argv.iter().map(|v| v.as_slice()).collect();
     let envp_slices: Vec<&[u8]> = envp.iter().map(|v| v.as_slice()).collect();
-    // SAFETY: the helper's address space is the installed one and its stack is mapped above, so every write lands in it.
-    let layout = unsafe {
-        elf_load::stack::build_user_stack(
-            stack_top, HELPER_STACK_BYTES, &argv_slices, &envp_slices, &img,
+    let stack_plan = match elf_load::stack::plan_initial_stack(
+        stack_top, HELPER_STACK_BYTES, &argv_slices, &envp_slices, &rnd,
+    ) {
+        Some(p) => p,
+        None => { release_borrow(); return Err(-(Errno::Enomem.as_i32())); }
+    };
+    if pmm::user_as::prefault_user_range(mm, stack_plan.start(), stack_plan.write_len()).is_err() {
+        release_borrow();
+        return Err(-(Errno::Enomem.as_i32()));
+    }
+    stage!(b"stack-prefaulted");
+    let layout = elf_load::stack::build_user_stack(
+            stack_plan, &argv_slices, &envp_slices, &img,
             &random16, info.path_bytes(), 0, arch::cpu_hwcap(), arch::cpu_hwcap2(),
             // A helper runs with the full kernel credential set and gains no
             // privilege by being exec'd, so the secure-execution flag is clear.
             elf_load::stack::AuxCreds::default(),
-            arch::cpu_min_sigstksz(), &rnd)
-    };
+            arch::cpu_min_sigstksz());
     let Some(layout) = layout else { release_borrow(); return Err(-(Errno::Enomem.as_i32())); };
     stage!(b"stack-built");
     elf_load::commit_mm_layout(mm, &img, &layout);

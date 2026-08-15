@@ -363,6 +363,22 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
     let random16 = crate::auxrandom::at_random_bytes();
     let argv_slices: alloc::vec::Vec<&[u8]> = argv_vec.iter().map(|v| v.as_slice()).collect();
     let envp_slices: alloc::vec::Vec<&[u8]> = envp_vec.iter().map(|v| v.as_slice()).collect();
+    let stack_plan = match elf_load::stack::plan_initial_stack(
+        exec_user_stack_top, exec_user_stack_len as u64,
+        &argv_slices[..argc], &envp_slices[..envc], &rnd,
+    ) {
+        Some(p) => p,
+        None => return -(Errno::Enomem.as_i32() as i64),
+    };
+    // Populate only the bytes the initial-stack writer will touch. This is
+    // after the CR3/mm swap, so the resolver installs leaves in this new mm.
+    let mm = match unsafe { cur.mm_ref() } {
+        Some(mm) => mm,
+        None => return -(Errno::Enomem.as_i32() as i64),
+    };
+    if pmm::user_as::prefault_user_range(mm, stack_plan.start(), stack_plan.write_len()).is_err() {
+        return -(Errno::Enomem.as_i32() as i64);
+    }
     cur.set_cmdline(Some(sched::argv_to_cmdline(&argv_slices[..argc])));
     cur.set_environ(Some(sched::argv_to_cmdline(&envp_slices[..envc])));
     // SAFETY: the block borrows only `path_owned`, a kernel-side copy of the
@@ -419,13 +435,8 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
     let vdso_ehdr = crate::vdso::map_into_current().unwrap_or(0);
     #[cfg(feature = "debug-swap")]
     trace_swap_exec_stage(&path_owned, b"after-vdso-map");
-    // SAFETY: `build_user_stack` writes through the mm this task just installed
-    // and activated on this CPU, into the freshly mapped stack VMA whose top and
-    // length are passed here; no other task can reach that address space yet.
-    let layout = match unsafe {
-        elf_load::stack::build_user_stack(
-            exec_user_stack_top,
-            exec_user_stack_len as u64,
+    let layout = match elf_load::stack::build_user_stack(
+            stack_plan,
             &argv_slices[..argc],
             &envp_slices[..envc],
             &img,
@@ -440,9 +451,7 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
                 secure: creds.secure_exec,
             },
             <hal_x86_64::X86CpuOps as hal::CpuOps>::cpu_min_sigstksz(),
-            &rnd,
-        )
-    } {
+        ) {
         Some(l) => l,
         None => return -(Errno::Enomem.as_i32() as i64),
     };

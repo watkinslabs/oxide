@@ -265,19 +265,23 @@ unsafe fn spawn_user_blob_with_vpid(
     // source hands the most privileged process on the system a guessable canary.
     let mut random16 = [0u8; 16];
     crng::fill(&mut random16);
-    // setup_arg_pages: eagerly map the initial stack into the new AS so the
-    // stack build below doesn't demand-fault in boot context (current()==None).
-    pmm::user_as::prefault_stack(&mm, stack_top, USER_STACK_LEN);
-    #[cfg(feature = "debug-boot")]
-    klog::write_raw(b"[INFO]  user-blob: stack prefault ok\n");
     // Default argv = ['/init']; otherwise caller-provided.
     let default_argv: &[&[u8]] = &[b"/init"];
     let argv_ref: &[&[u8]] = if argv.is_empty() { default_argv } else { argv };
-    // SAFETY: per-task AS just activated; build_user_stack writes through it; demand-fault resolves the new stack page.
-    let layout = match unsafe {
-        elf_load::stack::build_user_stack(
-            stack_top,
-            USER_STACK_LEN,
+    let stack_plan = match elf_load::stack::plan_initial_stack(
+        stack_top, USER_STACK_LEN, argv_ref, &[b"TERM=vt100" as &[u8]], &rnd,
+    ) {
+        Some(p) => p,
+        None => { debug_irq! { klog::kerror!("user-blob: stack plan failed"); } return; }
+    };
+    if pmm::user_as::prefault_user_range(&mm, stack_plan.start(), stack_plan.write_len()).is_err() {
+        debug_irq! { klog::kerror!("user-blob: stack populate failed"); }
+        return;
+    }
+    #[cfg(feature = "debug-boot")]
+    klog::write_raw(b"[INFO]  user-blob: stack prefault ok\n");
+    let layout = match elf_load::stack::build_user_stack(
+            stack_plan,
             argv_ref, &[b"TERM=vt100" as &[u8]],
             &img,
             &random16,
@@ -289,9 +293,7 @@ unsafe fn spawn_user_blob_with_vpid(
             // no privilege gained, so AT_SECURE is 0 (Linux's plain-exec case).
             elf_load::stack::AuxCreds::default(),
             <hal_x86_64::X86CpuOps as hal::CpuOps>::cpu_min_sigstksz(),
-            &rnd,
-        )
-    } {
+        ) {
         Some(layout) => layout,
         None => {
             debug_irq! { klog::kerror!("user-blob: stack build failed"); }

@@ -4,13 +4,11 @@
 // structure at the top of the user stack VMA, returns the new SP
 // for the syscall epilogue's `sysretq` / `eret`.
 //
-// Caller must ACTIVATE the new AS (CR3 / TTBR0 = new_root) before
-// calling so the kernel-side direct writes against user VAs land
-// in the new AS's PT. Pages demand-fault via `user_fault_handler`
-// on first kernel write per `11§5`.
+// Callers plan and populate the written range before activating the
+// direct-write half. A kernel fault must never be the mechanism that
+// creates an initial-stack page.
 
-#![cfg(target_os = "oxide-kernel")]
-
+#[cfg(target_os = "oxide-kernel")]
 use crate::{uapi::*, LoadedImage};
 
 /// SysV auxv keys (subset). Full set in the SysV auxiliary-vector UAPI.
@@ -19,6 +17,62 @@ use crate::{uapi::*, LoadedImage};
 const PLATFORM: &[u8] = b"x86_64\0";
 #[cfg(target_arch = "aarch64")]
 const PLATFORM: &[u8] = b"aarch64\0";
+
+/// Plan the exact initial-stack byte range that the kernel will write.
+///
+/// `write_top` excludes the ASLR shuffle gap above the string area. The
+/// planner therefore lets `execve` materialize only the pages it will touch,
+/// not the whole mapped stack limit.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct InitialStackPlan {
+    sp:        u64,
+    write_top: u64,
+}
+
+impl InitialStackPlan {
+    /// Lowest initial-stack address the writer can touch.
+    /// # C: O(1)
+    pub fn start(self) -> u64 { self.sp }
+
+    /// Bytes in the writer interval `[sp, write_top)`.
+    /// # C: O(1)
+    pub fn write_len(self) -> u64 { self.write_top - self.sp }
+}
+
+/// Maximum argv or envp vector entries the fixed initial-stack builder owns.
+pub const MAX_STACK_VECTOR: usize = 256;
+
+const AUXV_PAIRS: usize = 20;
+
+/// Compute the initial-stack cursor and vector base without writing a user
+/// address. This mirrors every decrement the writer performs below.
+/// # C: O(argc + envc)
+pub fn plan_initial_stack(
+    stack_top: u64,
+    stack_len: u64,
+    argv: &[&[u8]],
+    envp: &[&[u8]],
+    rnd: &aslr::ExecRnd,
+) -> Option<InitialStackPlan> {
+    if argv.len() > MAX_STACK_VECTOR || envp.len() > MAX_STACK_VECTOR { return None; }
+    let mut cursor = rnd.align_stack(stack_top);
+    let execfn = if argv.is_empty() { b"\0".as_slice() } else { argv[0] };
+    for len in [16usize, PLATFORM.len(), execfn.len().checked_add(1)?] {
+        cursor = cursor.checked_sub(len as u64)?;
+    }
+    for s in envp.iter().rev().chain(argv.iter().rev()) {
+        cursor = cursor.checked_sub(s.len().checked_add(1)? as u64)?;
+    }
+    let n_auxv = AUXV_PAIRS.checked_add(1)?;
+    let n_argv = argv.len().checked_add(1)?;
+    let n_envp = envp.len().checked_add(1)?;
+    let words = 1usize.checked_add(n_argv)?.checked_add(n_envp)?
+        .checked_add(n_auxv.checked_mul(2)?)?;
+    let bytes = words.checked_mul(core::mem::size_of::<u64>())?;
+    let sp = cursor.checked_sub(bytes as u64)? & !0xfu64;
+    if sp < stack_top.checked_sub(stack_len)? { return None; }
+    Some(InitialStackPlan { sp, write_top: rnd.align_stack(stack_top) })
+}
 
 /// Result of `build_user_stack`: the initial user SP plus the argv/env
 /// string-block bounds the caller feeds to `AddressSpace::set_arg_env_stack`
@@ -35,6 +89,7 @@ const PLATFORM: &[u8] = b"aarch64\0";
 /// `LD_*` tunables set, and glibc drops `MALLOC_*`, `GCONV_PATH`,
 /// `RESOLV_HOST_CONF` and friends. A hardcoded 0 there is a privilege
 /// escalation the moment anything on the system is setuid.
+#[cfg(target_os = "oxide-kernel")]
 #[derive(Copy, Clone, Debug, Default)]
 pub struct AuxCreds {
     pub uid: u32,
@@ -44,6 +99,7 @@ pub struct AuxCreds {
     pub secure: bool,
 }
 
+#[cfg(target_os = "oxide-kernel")]
 #[derive(Copy, Clone, Debug, Default)]
 pub struct StackLayout {
     pub sp:        u64,
@@ -60,13 +116,14 @@ pub struct StackLayout {
 }
 
 /// Entries `build_user_stack` can carry into `StackLayout::auxv`.
+#[cfg(target_os = "oxide-kernel")]
 pub const AUXV_SLOTS: usize = 24;
 
-/// Build the initial user stack in `[stack_top - stack_len, stack_top)`.
+/// Build the initial user stack from a populated `plan`.
 /// `argv`/`envp` are slices of NUL-free byte strings; the builder
 /// adds the trailing NUL. Returns the new SP (16-byte aligned,
 /// pointing at the `argc` slot) on success, `None` if the
-/// computed layout would not fit in a single 4 KiB page.
+/// computed layout would not fit in the mapped stack range.
 ///
 /// Layout (high → low):
 /// ```text
@@ -85,13 +142,12 @@ pub const AUXV_SLOTS: usize = 24;
 ///                         │ argv[argc-1] ... argv[0]
 ///   sp →                  │ argc
 /// ```
-/// # SAFETY: caller activated the destination AS (`MmuOps::activate`)
-/// so the kernel-side direct writes land in the user PT; user_fault_handler
-/// resolves any not-present stack pages.
+/// Caller populated `plan` in the destination AS and activated it before the
+/// fault-aware user copies begin.
 /// # C: O(strings_total + auxv_count)
-pub unsafe fn build_user_stack(
-    stack_top: u64,
-    stack_len: u64,
+#[cfg(target_os = "oxide-kernel")]
+pub fn build_user_stack(
+    plan: InitialStackPlan,
     argv: &[&[u8]],
     envp: &[&[u8]],
     img:  &LoadedImage,
@@ -102,29 +158,20 @@ pub unsafe fn build_user_stack(
     hwcap2: u64,
     creds: AuxCreds,
     min_sigstksz: u64,
-    rnd: &aslr::ExecRnd,
 ) -> Option<StackLayout> {
-    // Linux `create_elf_tables` opens with `p = arch_align_stack(p)`
-    // — a sub-page shuffle of the string area so
-    // sibling processes on an SMT pair do not share L1 cache sets, then a hard
-    // 16-byte align for the SysV ABI. Applied to the cursor before the first
-    // push, which is exactly where Linux applies it.
-    let mut cursor = rnd.align_stack(stack_top);
+    let mut cursor = plan.write_top;
 
     // 1. Strings region (top-down): random, platform, execfn,
     //    argv[*], envp[*]. Track the user VA each lands at.
-    // SAFETY: caller activated the destination AS so each push lands in the active CR3's user PT; user_fault_handler resolves the stack page on demand.
-    let random_va  = unsafe { push_bytes(&mut cursor, random16) }?;
-    // SAFETY: same as above; PLATFORM is a 'static byte slice, in-bounds writes only.
-    let platform_va = unsafe { push_bytes(&mut cursor, PLATFORM) }?;
+    let random_va  = push_bytes(&mut cursor, random16)?;
+    let platform_va = push_bytes(&mut cursor, PLATFORM)?;
 
     // F62 attempted to set AT_EXECFN to the real exec path — but that
     // broke the shell's startup path. Revert to the legacy argv[0]
     // value while we investigate.
     let _ = exec_path;
     let execfn_bytes: &[u8] = if !argv.is_empty() { argv[0] } else { b"\0" };
-    // SAFETY: same as above; bytes len is bounded by caller-supplied argv slice.
-    let execfn_va = unsafe { push_cstr(&mut cursor, execfn_bytes) }?;
+    let execfn_va = push_cstr(&mut cursor, execfn_bytes)?;
 
     // Push envp then argv, each from the LAST element to the FIRST. The
     // cursor moves top-down, so pushing last→first makes the WITHIN-block
@@ -137,22 +184,20 @@ pub unsafe fn build_user_stack(
     // underflows to a huge size_t and the memset faults. VAs are stored at
     // their ORIGINAL index so the pointer vectors below stay forward
     // (argv[0] pointer first).
-    if argv.len() > 256 || envp.len() > 256 { return None; }
-    let mut envp_vas = [0u64; 256];
+    if argv.len() > MAX_STACK_VECTOR || envp.len() > MAX_STACK_VECTOR { return None; }
+    let mut envp_vas = [0u64; MAX_STACK_VECTOR];
     for i in (0..envp.len()).rev() {
-        // SAFETY: same as above; envp element pushed onto stack.
-        envp_vas[i] = unsafe { push_cstr(&mut cursor, envp[i]) }?;
+        envp_vas[i] = push_cstr(&mut cursor, envp[i])?;
     }
-    let mut argv_vas = [0u64; 256];
+    let mut argv_vas = [0u64; MAX_STACK_VECTOR];
     for i in (0..argv.len()).rev() {
-        // SAFETY: same as above; argv element pushed onto stack.
-        argv_vas[i] = unsafe { push_cstr(&mut cursor, argv[i]) }?;
+        argv_vas[i] = push_cstr(&mut cursor, argv[i])?;
     }
 
     // 2. Compute total size of the pointer/auxv vector area, then
     //    align the resulting SP down to 16. The vector area is
     //    written bottom-up (low → high) starting at `vec_base`.
-    let auxv: [(u64, u64); 20] = [
+    let auxv: [(u64, u64); AUXV_PAIRS] = [
         (AT_PHDR,    img.phdr_va),
         (AT_PHENT,   img.phentsize as u64),
         (AT_PHNUM,   img.phnum as u64),
@@ -186,31 +231,21 @@ pub unsafe fn build_user_stack(
     // bottom byte. Reserve `bytes` below it, aligned down to 16.
     let raw_sp = cursor.checked_sub(bytes as u64)?;
     let sp = raw_sp & !0xfu64;
-
-    // Linux `setup_arg_pages` fails the exec with E2BIG when the argument
-    // block will not fit under `RLIMIT_STACK`. `stack_len` is what the caller
-    // actually mapped at `[stack_top - stack_len, stack_top)`; writing below it
-    // faults in kernel context, where no handler can demand-page it. A fixed
-    // 64 KiB bound lived here before and silently capped every process's
-    // argv+env at 64 KiB regardless of its real stack limit.
-    if sp < stack_top.saturating_sub(stack_len) { return None; }
+    if sp != plan.sp { return None; }
 
     // 3. Write the vector area at sp, low → high.
     let mut w = sp;
-    // SAFETY: caller activated the destination AS; sp is computed within the reserved range; each write_u64 advances by 8 bytes within bounds tracked above.
-    unsafe {
-        write_u64(&mut w, argv.len() as u64);   // argc
-        for i in 0..argv.len() { write_u64(&mut w, argv_vas[i]); }
-        write_u64(&mut w, 0);                    // argv NULL
-        for i in 0..envp.len() { write_u64(&mut w, envp_vas[i]); }
-        write_u64(&mut w, 0);                    // envp NULL
-        for &(k, v) in auxv.iter() {
-            write_u64(&mut w, k);
-            write_u64(&mut w, v);
-        }
-        write_u64(&mut w, AT_NULL);
-        write_u64(&mut w, 0);
+    write_u64(&mut w, argv.len() as u64)?;   // argc
+    for i in 0..argv.len() { write_u64(&mut w, argv_vas[i])?; }
+    write_u64(&mut w, 0)?;                    // argv NULL
+    for i in 0..envp.len() { write_u64(&mut w, envp_vas[i])?; }
+    write_u64(&mut w, 0)?;                    // envp NULL
+    for &(k, v) in auxv.iter() {
+        write_u64(&mut w, k)?;
+        write_u64(&mut w, v)?;
     }
+    write_u64(&mut w, AT_NULL)?;
+    write_u64(&mut w, 0)?;
 
     let _ = AT_IGNORE;                       // silence unused
 
@@ -219,7 +254,7 @@ pub unsafe fn build_user_stack(
     // the highest; arg_end = past argv[last]'s NUL. Same for env. So
     // `/proc/<pid>/cmdline` reads [arg_start,arg_end) = argv[0]\0…argv[last]\0
     // in order, exactly like Linux. 0/0 when the vector is empty.
-    let bounds = |vas: &[u64; 256], v: &[&[u8]]| -> (u64, u64) {
+    let bounds = |vas: &[u64; MAX_STACK_VECTOR], v: &[&[u8]]| -> (u64, u64) {
         if v.is_empty() { return (0, 0); }
         let n = v.len();
         let lo = vas[0];
@@ -236,31 +271,29 @@ pub unsafe fn build_user_stack(
 
 /// Push a byte slice to the user stack at `*cursor`, decrementing
 /// `*cursor`. No NUL added. Returns the user VA the bytes start at.
-unsafe fn push_bytes(cursor: &mut u64, bytes: &[u8]) -> Option<u64> {
+#[cfg(target_os = "oxide-kernel")]
+fn push_bytes(cursor: &mut u64, bytes: &[u8]) -> Option<u64> {
     let n = bytes.len() as u64;
     let dst = cursor.checked_sub(n)?;
-    // SAFETY: caller activated the destination AS so the user VA is the active CR3's translation; CPL=0 writes through user pages directly per `15§3`; user_fault_handler resolves any not-present stack page on demand.
-    unsafe {
-        for i in 0..bytes.len() {
-            core::ptr::write_volatile((dst + i as u64) as *mut u8, bytes[i]);
-        }
-    }
+    uaccess::copy_to_user(dst, bytes).ok()?;
     *cursor = dst;
     Some(dst)
 }
 
 /// Like `push_bytes` but appends a trailing NUL.
-unsafe fn push_cstr(cursor: &mut u64, bytes: &[u8]) -> Option<u64> {
-    // SAFETY: each byte write is bounded; cursor decremented sequentially per push_bytes contract; both push_bytes calls share the same active-AS precondition.
-    unsafe {
-        let _ = push_bytes(cursor, &[0u8])?;
-        push_bytes(cursor, bytes)
-    }
+#[cfg(target_os = "oxide-kernel")]
+fn push_cstr(cursor: &mut u64, bytes: &[u8]) -> Option<u64> {
+    let _ = push_bytes(cursor, &[0u8])?;
+    push_bytes(cursor, bytes)
 }
 
 /// Write a u64 at `*w`, advancing.
-unsafe fn write_u64(w: &mut u64, val: u64) {
-    // SAFETY: caller activated the destination AS; user_fault_handler resolves any not-present stack page; 8-byte aligned write into user mapping.
-    unsafe { core::ptr::write_volatile(*w as *mut u64, val); }
+#[cfg(target_os = "oxide-kernel")]
+fn write_u64(w: &mut u64, val: u64) -> Option<()> {
+    uaccess::copy_to_user(*w, &val.to_ne_bytes()).ok()?;
     *w += 8;
+    Some(())
 }
+
+#[cfg(test)]
+mod tests;

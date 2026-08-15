@@ -369,39 +369,6 @@ fn spawn_init_from_rootfs_arm() {
         Err(_) => { debug_irq! { klog::kerror!("init-arm: load_static_blob failed"); } return; }
     };
 
-    // Pre-fault every stack page so kernel-side `build_user_stack`
-    // writes don't take EL1 same-EL data aborts. The boot fault
-    // handler routes through `pmm::user_as::with(|as_| …)` which serves
-    // the GLOBAL boot AS, not the per-task `mm` we just activated;
-    // a faulting kernel write here therefore can't be demand-paged.
-    // Mirrors the x86 path (which sidesteps the issue by mapping the
-    // stack into the global AS); arm uses a fresh per-task L0 so we
-    // walk + install leaves explicitly.
-    {
-        use hal::{Pa, PageSize, Va};
-        let prot = (VmaProt::READ | VmaProt::WRITE).to_page_flags();
-        let mut va = stack_va;
-        while va < stack_top {
-            let pa = match pmm::setup::alloc_one_frame() {
-                Some(p) => p,
-                None    => {
-                    debug_irq! { klog::kerror!("init-arm: stack page alloc failed"); }
-                    return;
-                }
-            };
-            // Zero through HHDM mirror.
-            // SAFETY: pa is a freshly-allocated PMM frame; HHDM mirror is mapped writable in the kernel L0 captured at boot; 4 KiB owned exclusively until the M::map below.
-            unsafe {
-                let dst = (pmm::user_as::hhdm_offset() + pa) as *mut u8;
-                core::ptr::write_bytes(dst, 0, hal::PAGE_SIZE_BYTES as usize);
-                <hal_aarch64::mmu_ops::ArmMmu as MmuOps>::map(
-                    Va(va), Pa(pa), prot, PageSize::P4K,
-                );
-            }
-            va += hal::PAGE_SIZE_BYTES;
-        }
-    }
-
     // F153-1: build a real SysV initial stack with argv[0]=selected init.
     // Same shape and init selection order as the x86 PID1 path.
     // Linux `create_elf_tables`: 16 `get_random_bytes()` bytes. Replaces the
@@ -410,11 +377,18 @@ fn spawn_init_from_rootfs_arm() {
     let mut random16 = [0u8; 16];
     crng::fill(&mut random16);
     let argv0: &[&[u8]] = &[init_path];
-    // SAFETY: per-AS just activated; build_user_stack writes via active TTBR0; demand-fault resolves the new stack page.
-    let layout = match unsafe {
-        elf_load::stack::build_user_stack(
-            stack_top,
-            INIT_STACK_LEN,
+    let stack_plan = match elf_load::stack::plan_initial_stack(
+        stack_top, INIT_STACK_LEN, argv0, &[b"TERM=vt100" as &[u8]], &rnd,
+    ) {
+        Some(p) => p,
+        None => { debug_irq! { klog::kerror!("init-arm: stack plan failed"); } return; }
+    };
+    if pmm::user_as::prefault_user_range(&mm, stack_plan.start(), stack_plan.write_len()).is_err() {
+        debug_irq! { klog::kerror!("init-arm: stack populate failed"); }
+        return;
+    }
+    let layout = match elf_load::stack::build_user_stack(
+            stack_plan,
             argv0, &[b"TERM=vt100" as &[u8]],
             &img,
             &random16,
@@ -426,9 +400,7 @@ fn spawn_init_from_rootfs_arm() {
             // no privilege gained, so AT_SECURE is 0 (Linux's plain-exec case).
             elf_load::stack::AuxCreds::default(),
             <hal_aarch64::ArmCpuOps as hal::CpuOps>::cpu_min_sigstksz(),
-            &rnd,
-        )
-    } {
+        ) {
         Some(layout) => layout,
         None => {
             debug_irq! { klog::kerror!("init-arm: stack build failed"); }
