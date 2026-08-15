@@ -203,14 +203,6 @@ impl Mount {
         let last_blk_excl = (last_byte + bs - 1) / bs;
         let n_blocks = (last_blk_excl - first_blk) as u32;
         let inner_off = (byte_off - first_blk * bs) as usize;
-        // A write must never leave an old clean buffer visible after its
-        // journal shadow is drained.  Reads inside the transaction select the
-        // shadow first; once committed, the next read refills the clean cache
-        // from the new on-disk block.
-        {
-            let mut s = self.state.lock();
-            for i in 0..n_blocks as u64 { s.metadata_cache.remove(&(first_blk + i)); }
-        }
         let mut full_buf: Vec<u8> = Vec::with_capacity((n_blocks as usize) * bs as usize);
         for i in 0..n_blocks as u64 {
             let lba = first_blk + i;
@@ -253,8 +245,21 @@ impl Mount {
                 data:       full_buf[lo..hi].to_vec(),
             });
         }
-        let _ = self.commit_metadata(staged)?;
+        self.commit_metadata(staged.clone())?;
+        self.cache_committed(&staged);
         Ok(())
+    }
+
+    /// Publish checkpointed metadata into the clean buffer cache. The running
+    /// transaction's shadow remains the only source for uncheckpointed bytes.
+    /// # C: O(N staged blocks)
+    pub(super) fn cache_committed(&self, staged: &[StagedBlock]) {
+        const META_CACHE_MAX_BLOCKS: usize = 8192;
+        let mut s = self.state.lock();
+        if s.metadata_cache.len().saturating_add(staged.len()) > META_CACHE_MAX_BLOCKS {
+            s.metadata_cache.clear();
+        }
+        for block in staged { s.metadata_cache.insert(block.target_lba, block.data.clone()); }
     }
 
     /// Read one fs-block from the transaction shadow, then the clean metadata
@@ -274,8 +279,8 @@ impl Mount {
         // Metadata is bounded by the mount image in the normal boot path.  A
         // cap prevents a streaming metadata workload from pinning unlimited
         // memory; clear only clean entries, never a live journal shadow.
-        const META_CACHE_MAX_BLOCKS: usize = 8192;
         let mut s = self.state.lock();
+        const META_CACHE_MAX_BLOCKS: usize = 8192;
         if s.metadata_cache.len() >= META_CACHE_MAX_BLOCKS { s.metadata_cache.clear(); }
         s.metadata_cache.insert(lba, buf.clone());
         Ok(buf)
@@ -360,7 +365,8 @@ impl Mount {
                         let staged: Vec<StagedBlock> = shadow.into_iter()
                             .map(|(target_lba, data)| StagedBlock { target_lba, data })
                             .collect();
-                        let _ = self.commit_metadata(staged)?;
+                        self.commit_metadata(staged.clone())?;
+                        self.cache_committed(&staged);
                     }
                     Ok(v)
                 }

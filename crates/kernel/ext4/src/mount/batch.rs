@@ -57,7 +57,10 @@ impl Mount {
                 .map(|(&target_lba, data)| StagedBlock { target_lba, data: data.clone() })
                 .collect()
         };
-        if !staged.is_empty() { let _ = self.commit_metadata(staged)?; }
+        if !staged.is_empty() {
+            self.commit_metadata(staged.clone())?;
+            self.cache_committed(&staged);
+        }
         // Dirty metadata remains shadow-visible until every journal/home write
         // succeeds. Readers therefore see one coherent version throughout
         // writeback; the transaction gate excludes mutators from adding a newer

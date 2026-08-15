@@ -51,13 +51,13 @@ Hand-adjustment is what made the previous table wrong by 70 rows: it read 339
 against an actual 409, and understated `MISSING high` and `INFRA high` by
 exactly the rows a lane would have picked up first. D551 regenerated it.
 
-| Class \ Sev | blocker | high | med | low | Total |
-|---|---:|---:|---:|---:|---:|
-| `DEFECT` | 4 | 11 | 38 | 53 | 106 |
-| `MISSING` | 1 | 24 | 81 | 69 | 175 |
-| `COVERAGE` | 0 | 6 | 52 | 50 | 108 |
-| `INFRA` | 0 | 1 | 24 | 32 | 57 |
-| **Total** | **5** | **42** | **195** | **204** | **446** |
+| Class \ Sev | blocker | critical | high | med | low | Total |
+|---|---:|---:|---:|---:|---:|---:|
+| `DEFECT` | 1 | 4 | 11 | 38 | 53 | 107 |
+| `MISSING` | 1 | 0 | 24 | 82 | 69 | 176 |
+| `COVERAGE` | 0 | 0 | 6 | 52 | 50 | 108 |
+| `INFRA` | 0 | 0 | 1 | 24 | 32 | 57 |
+| **Total** | **2** | **4** | **42** | **196** | **204** | **448** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -95,6 +95,7 @@ row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
+| IN-PROGRESS B2209-ext4-metadata-cache-coherency | DEFECT | blocker | **Ext4’s clean metadata cache can retain a pre-transaction bitmap after the transaction has committed its replacement.** `metadata_write` evicts a cache entry, re-reads and thereby re-inserts the old block for its RMW, then `commit_metadata` writes the new block without replacing or invalidating that cache entry. The next inode/block allocation can select the same clear bit, producing duplicate inode ownership and on-disk directory/link-count corruption; userspace then sees EIO/segfaults before the graphical session starts. Linux keeps the dirty buffer authoritative through JBD2 and does not serve a clean preimage after checkpoint. | Reproduced now: current `concurrent_creates_never_double_allocate_an_inode` reports **118 duplicates of 236** successful creates. GDB shows unique worker transaction context ids 3–10, ruling out owner conflation. A/B: the same test passes at `106acfcde^`, fails after `106acfcde` introduced `metadata_cache`. `e2fsck -fn target/builds/default/root-x86_64.img` reports a bad directory checksum, wrong `..` parent and link-count errors; retained B2207 boot shows journald/systemd EIO/fault cascade. | B2209-ext4-metadata-cache-coherency |
 | OPEN | COVERAGE | low | **STILL UNATTRIBUTED after a second campaign: `fs::keyring::tests::payload::big_key_accepts_payloads_past_the_user_ceiling`.** One observation, ever. B2043 re-hunted it with the load profile that DID surface this binary's other flakes — eight concurrent copies of the `fs` lib binary, 2000 runs, plus 600 runs at `--test-threads=32` and 1500 runs at default parallelism — and it did not reproduce once in ~4100 further runs. That same campaign found and closed three OTHER families in this binary (perf sideband task ids, the perf wheel/registry walk, the timerfd clock step), measured 6/2000 -> 0/2000, so the load profile is known to expose contamination in this binary. Candidates unchanged and neither confirmed: the case shares quota uid 0 with the only other uid-0 case, and a sibling writes all four global quota knobs and restores them. What is still needed is the failing return value, which the assertion prints and no run has yet captured. | B2043. `crates/kernel/fs/src/keyring/tests/payload.rs:55`; `crates/kernel/fs/src/keyring/report/tests.rs`. | fs / keyring lane |
 | OPEN | COVERAGE | med | **Nine cases in `syscalls/src/siocgif/tests.rs` are still phantom, and the file now says so.** B2043 moved the pure decisions (the command table, the ABI sizes, the user-range check) into the ungated `siocgif_decide`, where five cases run and were each shown able to fail. The nine that remain drive entry points taking a raw user address the shim copies through the exception table, which a hosted build has no equivalent of. Closing them means giving each entry point an inner form that takes an already-copied request structure and returns the bytes to copy back, leaving the gated function as copy in, call, copy out. | B2043. `crates/kernel/syscalls/src/siocgif/tests.rs` header. | syscalls lane |
 | OPEN | COVERAGE | low | **`syscalls/src/016_ioctl/core.rs` declares a `#[cfg(test)]` helper and no test.** It is not a phantom test — it is a fixture for cases nobody wrote, compiled out of every build that runs tests and dead in the kernel build. Either the cases it was written for get written, or the helper goes. | B2043, re-checked: the file's only `#[cfg(test)]` item is a `current_cred` stand-in. | syscalls lane |

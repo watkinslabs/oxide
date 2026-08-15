@@ -65,3 +65,15 @@ fn concurrent_creates_never_double_allocate_an_inode() {
         assert!(node.is_dir(), "inode {ino} should be a directory");
     }
 }
+
+/// A checkpoint must replace a bitmap's clean cache image. Without that
+/// publication, the next serial allocator call reuses the just-allocated bit;
+/// concurrency only makes the resulting on-disk damage arrive faster.
+#[test]
+fn successive_inode_allocations_see_checkpointed_bitmap() {
+    let disk = fresh_disk();
+    let m = ext4::Mount::open(disk as Arc<dyn BlockDevice>).unwrap();
+    let first = m.alloc_inode(0).expect("first inode allocation");
+    let second = m.alloc_inode(0).expect("second inode allocation");
+    assert_ne!(first, second, "the second allocation must observe the first committed bitmap bit");
+}
