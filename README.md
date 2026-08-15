@@ -72,7 +72,7 @@ The immediate project goal is not generic feature growth; it is closing the pre-
 
 Near-term working rule: each subsystem fix should include a hosted/unit proof where possible and a boot-facing probe when it touches runtime behavior. Do not use repeated cold boots as the inner loop; add targeted probes, tracepoints, or serial/journal extraction first. The pre-GUI execution plan is tracked in `work/pre-gui-subsystem-plan.md`.
 
-The active handoff state is tracked in `state.md`; recent merged work is best read from `git log --oneline --decorate -40`.
+The active handoff state is tracked in `handoff2.md` — one file, complete on its own; recent merged work is best read from `git log --oneline --decorate -40`.
 
 ## Quick start
 
@@ -90,7 +90,7 @@ cargo run -p xtask -- qemu --arch x86_64 --features debug-all
 - `docs/08-ai-density.md`
 - `docs/40-ci.md`
 - `docs/42-test-strategy.md`
-- `state.md`
+- `handoff2.md`
 
 ## License
 
