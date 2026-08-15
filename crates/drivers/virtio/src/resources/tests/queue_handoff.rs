@@ -234,8 +234,8 @@ fn queue_plans_default_to_named_no_vector_sentinel() {
 fn fake_config_irq() {}
 fn fake_event_irq() {}
 
-fn same_fn(left: Option<fn()>, right: fn()) -> bool {
-    left.map(|f| core::ptr::fn_addr_eq(f, right)).unwrap_or(false)
+fn same_fn(left: Option<VirtioQueueIrq>, right: fn()) -> bool {
+    matches!(left, Some(VirtioQueueIrq::Bare(f)) if core::ptr::fn_addr_eq(f, right))
 }
 
 #[test]
@@ -269,6 +269,24 @@ fn profile_can_request_a_distinct_config_vector() {
         .with_config_handler(Some(fake_config_irq));
     assert!(same_fn(profile.q0_handler, fake_event_irq));
     assert!(same_fn(profile.config_handler, fake_config_irq));
+}
+
+static CONTEXT_IRQ_ARG: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+fn context_irq(arg: usize) { CONTEXT_IRQ_ARG.store(arg, core::sync::atomic::Ordering::Release); }
+
+#[test]
+fn profile_keeps_context_bound_to_each_queue() {
+    CONTEXT_IRQ_ARG.store(0, core::sync::atomic::Ordering::Release);
+    let profile = VirtioTransportProfile::q0_q1(0x55, None)
+        .with_q0_context_handler(context_irq, 7)
+        .with_queue_context_handler(1, context_irq, 11);
+
+    let q0 = profile.q0_handler.expect("q0 context handler");
+    let q1 = profile.queue_plans[1].and_then(|q| q.msix_handler).expect("q1 context handler");
+    q0.call();
+    assert_eq!(CONTEXT_IRQ_ARG.load(core::sync::atomic::Ordering::Acquire), 7);
+    q1.call();
+    assert_eq!(CONTEXT_IRQ_ARG.load(core::sync::atomic::Ordering::Acquire), 11);
 }
 
 #[test]
