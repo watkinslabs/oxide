@@ -17,6 +17,7 @@
 //! - `registry`: which devices exist, and their published block identity.
 //! - `backing`:  the `vfs::File` adapter the published devices read through.
 //! - `ioctl`:    the work behind each loop ioctl, over already-resolved inputs.
+//! - `dispatch`: which node a request arrived on, and which commands are ours.
 //!
 //! Everything except `device` is pure and hosted-tested: the whole ABI
 //! contract can fail a test without a kernel, a disk or a mount.
@@ -31,10 +32,12 @@ pub mod device;
 pub mod registry;
 pub mod backing;
 pub mod ioctl;
+pub mod dispatch;
 
 pub use config::{flags_after_configure, flags_after_set_status, info64_from_old, old_from_info64,
                  window_changed, window_from_info, Window};
 pub use control::{add, get_free, remove, Action, Entry, State};
+pub use dispatch::{classify, is_control_command, is_device_command, Node};
 pub use backing::FileBacking;
 pub use device::{Backing, LoopDevice};
 pub use registry::{device, index, init, LOOP_DRIVER};

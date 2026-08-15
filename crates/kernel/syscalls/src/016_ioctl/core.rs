@@ -7,6 +7,7 @@ use crate::ioctl_user as user;
 
 use super::autofs::handle_autofs_dev_ioctl;
 use super::blk::handle_blk_ioctl;
+use super::loop_dev::{handle_loop_control_ioctl, handle_loop_ioctl};
 use super::common::{handle_common_ioctl, handle_nonchar_queue_ioctl, handle_socket_owner_ioctl};
 use super::tty_ioctl::handle_tty_ioctl;
 
@@ -117,6 +118,15 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     // ALSA /dev/snd/* + OSS /dev/dsp,/dev/mixer — the `sound` ALSA core.
     if let Some(rv) = sound::handle_ioctl(&file, req, arg) { return rv; }
     if let Some(rv) = handle_autofs_dev_ioctl(file.inode(), req, arg) {
+        return rv;
+    }
+    // `/dev/loop-control` owns every command sent to it; a `/dev/loopN` owns
+    // only the loop commands, so its size and discard ioctls still reach the
+    // block handler below.
+    if let Some(rv) = handle_loop_control_ioctl(file.inode(), req, arg) {
+        return rv;
+    }
+    if let Some(rv) = handle_loop_ioctl(&file, req, arg) {
         return rv;
     }
     // The filesystem's own `unlocked_ioctl` (`ext4_ioctl`): inode version,

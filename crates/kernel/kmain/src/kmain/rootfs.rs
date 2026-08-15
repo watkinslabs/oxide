@@ -53,6 +53,11 @@ unsafe fn mount_root() {
         // there defer their partition-table I/O. Drain it now, with workers
         // live, before `root=` may resolve a partition or PARTUUID.
         step("block::start_deferred_partition_scans", block::registry::start_deferred_partition_scans);
+        // Loop devices exist before anything asks for one: a distribution
+        // opens /dev/loop0 directly during early boot, before it has spoken to
+        // /dev/loop-control. They hold no backing file until one is bound, so
+        // publishing them costs a registry entry each and no I/O.
+        step("drv_loop::init", drv_loop::registry::init);
         let root_spec = crate::boot_cmdline::parameter_value(b"root")
             .expect("boot command line has no root=");
         let root_dev = block::registry::resolve_root_spec(root_spec)

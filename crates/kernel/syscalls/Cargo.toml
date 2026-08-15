@@ -13,6 +13,7 @@ landlock = { path = "../landlock" }
 crng = { path = "../crng" }
 aslr = { path = "../aslr" }
 block   = { path = "../block" }
+drv-loop = { path = "../../drivers/drv-loop" }
 boot-info = { path = "../../shared/boot-info" }
 cpu       = { path = "../cpu" }
 devfs     = { path = "../devfs" }

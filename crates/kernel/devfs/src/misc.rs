@@ -273,6 +273,15 @@ pub fn make_hwrng_inode() -> InodeRef { char_inode(crate::uapi::INO_HWRNG, 0o644
 /// # C: O(1)
 pub fn make_autofs_inode() -> InodeRef { char_inode(crate::uapi::INO_AUTOFS, 0o600, crate::uapi::DEV_MISC_AUTOFS, default_file_ops()) }
 
+/// `/dev/loop-control` — the node loop devices are created and freed through.
+/// Root-only, like the reference's: creating a block device is not something
+/// an unprivileged caller does. It carries no file operations of its own; its
+/// whole surface is the three index ioctls, answered by the ioctl shim from
+/// the device number below. # C: O(1)
+pub fn make_loop_control_inode() -> InodeRef {
+    char_inode(crate::uapi::INO_LOOP_CONTROL, 0o600, crate::uapi::DEV_MISC_LOOP_CONTROL, default_file_ops())
+}
+
 /// Fill `b` from the kernel CSPRNG — the shared `/dev/random`,
 /// `/dev/urandom` and `sys_getrandom` body (`crng`). # C: O(b.len())
 pub fn random_fill(b: &mut [u8]) { crng::fill(b); }
