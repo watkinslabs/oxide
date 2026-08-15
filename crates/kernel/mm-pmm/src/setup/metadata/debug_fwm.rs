@@ -1,5 +1,3 @@
-use super::super::*;
-
 /// Count live address spaces other than `exclude_root` that still map `va` to
 /// `pa`; the diagnostic free-while-mapped backstop owns this expensive walk.
 /// # C: O(N_tasks)
