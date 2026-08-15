@@ -12,7 +12,8 @@ mod stubs;
 
 pub use stubs::vector_stub_addr;
 #[allow(unused_imports)]
-pub use frame::{current_fault_frame, current_fault_rip, current_fault_rsp};
+pub use frame::{capture_current_fault_frame, current_fault_frame, current_fault_rip,
+    current_fault_rsp, restore_current_fault_frame};
 
 use crate::pt_regs::PtRegs;
 

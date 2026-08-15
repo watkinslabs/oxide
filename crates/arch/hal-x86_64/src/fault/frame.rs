@@ -81,6 +81,28 @@ pub fn current_fault_rip() -> u64 {
     LIVE_RIP[slot].load(Ordering::Acquire)
 }
 
+/// Capture this CPU's active synchronous fault frame for the outgoing task.
+/// # C: O(1)
+pub fn capture_current_fault_frame() -> (u64, u64, u64) { capture_at(cpu_slot()) }
+
+/// Restore the incoming task's active synchronous fault frame on this CPU.
+/// # C: O(1)
+pub fn restore_current_fault_frame(frame: u64, rsp: u64, rip: u64) {
+    restore_at(cpu_slot(), frame, rsp, rip);
+}
+
+fn capture_at(slot: usize) -> (u64, u64, u64) {
+    let frame = LIVE[slot].load(Ordering::Acquire);
+    if frame.is_null() { return (0, 0, 0); }
+    (frame as usize as u64, LIVE_RSP[slot].load(Ordering::Acquire), LIVE_RIP[slot].load(Ordering::Acquire))
+}
+
+fn restore_at(slot: usize, frame: u64, rsp: u64, rip: u64) {
+    LIVE_RSP[slot].store(rsp, Ordering::Release);
+    LIVE_RIP[slot].store(rip, Ordering::Release);
+    LIVE[slot].store(frame as usize as *mut PtRegs, Ordering::Release);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,5 +162,24 @@ mod tests {
         let sti = forward + asm[forward..].find("    sti").unwrap();
         let dispatch = sti + asm[sti..].find("call oxide_fault_print_rust").unwrap();
         assert!(capture < forward && forward < sti && sti < dispatch);
+    }
+
+    #[test]
+    fn task_handoff_restores_the_fault_frame_and_scalars_together() {
+        const SLOT: usize = 4;
+        let a = 0x6000usize as *mut PtRegs;
+        let b = 0x7000usize as *mut PtRegs;
+        let a_guard = publish_at(SLOT, a, 0xa000, 0xa001);
+        let a_state = capture_at(SLOT);
+        restore_at(SLOT, 0, 0, 0);
+        let b_guard = publish_at(SLOT, b, 0xb000, 0xb001);
+        let b_state = capture_at(SLOT);
+        restore_at(SLOT, a_state.0, a_state.1, a_state.2);
+        assert_eq!(capture_at(SLOT), a_state);
+        restore_at(SLOT, b_state.0, b_state.1, b_state.2);
+        assert_eq!(capture_at(SLOT), b_state);
+        drop(b_guard);
+        drop(a_guard);
+        restore_at(SLOT, 0, 0, 0);
     }
 }
