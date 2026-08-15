@@ -52,7 +52,8 @@ pub use debugreg::{validate_addr as validate_dr_addr, validate_dr7, DebugRegs, D
     Dr7Error, HBP_NUM};
 pub use fault::{
     fault_key, fixup_eligible, VEC_GP, VEC_PF,
-    current_fault_frame, current_fault_rip, current_fault_rsp, install_fault_handler, install_stack_name_hook, StackReport, install_user_trap_hook,
+    capture_current_fault_frame, current_fault_frame, current_fault_rip, current_fault_rsp,
+    install_fault_handler, install_stack_name_hook, restore_current_fault_frame, StackReport, install_user_trap_hook,
     vector_stub_addr, FaultHandler, UserTrapHook,
 };
 pub use fpu::{

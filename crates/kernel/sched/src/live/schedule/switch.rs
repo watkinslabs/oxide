@@ -448,6 +448,8 @@ pub(super) unsafe fn schedule_once() {
     // SAFETY: next_arc aliases the next Task's arch_ctx; will be active on this CPU after swap_current; size fits per compile-time assert.
     let next_ctx_ptr: *const ArchCtx = unsafe { next_arc.arch_ctx_ptr::<ArchCtx>() };
 
+    super::entry_frame::save_outgoing(prev_ref);
+
     // SAFETY: caller asserts preempt-off; we are about to context-switch off this Task. Until that completes the prev Arc must remain alive - store it in a function-local where its destructor runs only on the eventual return.
     let prev_arc = unsafe { rq.swap_current(next_arc) };
     // SAFETY: rq.current now owns the incoming Task and schedule remains
@@ -673,6 +675,9 @@ pub(super) unsafe fn schedule_once() {
     // task can erase HARDIRQ before the outer dispatcher's `irq_exit`, causing
     // an underflow that pins `in_interrupt()` forever. Keep the local count
     // intact across the register switch.
+
+    // SAFETY: the runqueue owns the incoming task throughout this preempt-off switch window.
+    super::entry_frame::restore_incoming(unsafe { rq.current_ref() });
 
     // SAFETY: prev_ctx_ptr aliases prev's arch_ctx buffer (kept alive by `prev_arc` until after switch returns); next_ctx_ptr aliases next's arch_ctx (kept alive by the new `current` Arc); both buffers were init'd via `new_kernel_with_irq_frame`.
     unsafe { ArchCtx::switch(prev_ctx_ptr, next_ctx_ptr); }

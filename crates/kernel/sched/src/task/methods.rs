@@ -441,6 +441,12 @@ impl Task {
             shstk_locked:   AtomicU64::new(0),
             #[cfg(target_arch = "aarch64")]
             svc_frame:     core::sync::atomic::AtomicU64::new(0),
+            #[cfg(target_arch = "x86_64")]
+            fault_frame:   AtomicU64::new(0),
+            #[cfg(target_arch = "x86_64")]
+            fault_rsp:     AtomicU64::new(0),
+            #[cfg(target_arch = "x86_64")]
+            fault_rip:     AtomicU64::new(0),
             io_uring_filters: Spinlock::new(None),
             io_uring_restrict: Spinlock::new(None),
             seccomp_filters: Spinlock::new(alloc::vec::Vec::new()),

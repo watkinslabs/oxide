@@ -9,10 +9,12 @@
 // - `ownership` owns the post-mortem for the `on_cpu` ownership assertion.
 // - `ctxprobe` (aarch64, debug-armctx) owns the fatal-fault register-corruption
 //   post-mortem: the context save/restore ring + the hal fault-dump hook.
+// - `entry_frame` owns task-local x86 fault-frame handoff across task switches.
 
 mod active_mm;
 mod atomic;
 mod cond;
+mod entry_frame;
 #[cfg(all(target_arch = "aarch64", feature = "debug-armctx"))]
 pub mod ctxprobe;
 mod hooks;

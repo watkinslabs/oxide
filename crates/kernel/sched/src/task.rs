@@ -752,6 +752,13 @@ pub struct Task {
     /// F206 aarch64 per-task SVC-frame ptr; deliver_arm reads here.
     #[cfg(target_arch = "aarch64")]
     pub svc_frame: core::sync::atomic::AtomicU64,
+    /// Recoverable x86 fault frame preserved while this task is descheduled.
+    #[cfg(target_arch = "x86_64")]
+    pub fault_frame: AtomicU64,
+    #[cfg(target_arch = "x86_64")]
+    pub fault_rsp: AtomicU64,
+    #[cfg(target_arch = "x86_64")]
+    pub fault_rip: AtomicU64,
     /// Per-task seccomp cBPF chain per `13§5`. Drop on task exit.
     ///
     /// LOCKED, not `UnsafeCell`: `SECCOMP_FILTER_FLAG_TSYNC` publishes the
