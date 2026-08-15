@@ -1,0 +1,19 @@
+[package]
+name = "drv-loop"
+version = "0.1.0"
+edition = "2021"
+publish = false
+[lib]
+path = "src/lib.rs"
+[dependencies]
+block = { path = "../../kernel/block" }
+vfs   = { path = "../../kernel/vfs" }
+sync  = { path = "../../shared/sync" }
+syscall = { path = "../../kernel/syscall" }
+
+[features]
+default = []
+hosted = []
+
+[lints]
+workspace = true
