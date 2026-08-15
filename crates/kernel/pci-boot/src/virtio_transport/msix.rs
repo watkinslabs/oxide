@@ -25,6 +25,16 @@ impl SharedMsixSlot {
 static SHARED_DISPATCH: Spinlock<[SharedMsixSlot; SHARED_MSIX_SLOTS], VirtioTransportLockClass> =
     Spinlock::new([const { SharedMsixSlot::empty() }; SHARED_MSIX_SLOTS]);
 
+/// `SHARED_DISPATCH` is read from the hard MSI-X path.  Process-context
+/// installation and removal must therefore disable local IRQ delivery while
+/// acquiring it; the hard handler itself arrives with IRQs already masked.
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+type SharedDispatchIrq = hal_x86_64::X86IrqGate;
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+type SharedDispatchIrq = hal_aarch64::ArmIrqGate;
+#[cfg(not(target_os = "oxide-kernel"))]
+type SharedDispatchIrq = sync::NoopIrq;
+
 fn dispatch_shared(slot: usize) {
     let handlers = SHARED_DISPATCH.lock()[slot].handlers;
     for handler in handlers.into_iter().flatten() { handler.call(); }
@@ -46,7 +56,7 @@ shared_dispatchers!(
 
 fn reserve_shared_dispatch(handlers: &[Option<virtio::VirtioQueueIrq>]) -> Option<usize> {
     if handlers.len() > SHARED_MSIX_HANDLERS || !handlers.iter().any(Option::is_some) { return None; }
-    let mut slots = SHARED_DISPATCH.lock();
+    let mut slots = SHARED_DISPATCH.lock_irqsave::<SharedDispatchIrq>();
     let slot = slots.iter().position(|slot| !slot.used)?;
     slots[slot].used = true;
     slots[slot].handlers[..handlers.len()].copy_from_slice(handlers);
@@ -54,7 +64,7 @@ fn reserve_shared_dispatch(handlers: &[Option<virtio::VirtioQueueIrq>]) -> Optio
 }
 
 fn release_shared_dispatch(slot: usize) {
-    let mut slots = SHARED_DISPATCH.lock();
+    let mut slots = SHARED_DISPATCH.lock_irqsave::<SharedDispatchIrq>();
     if let Some(entry) = slots.get_mut(slot) { *entry = SharedMsixSlot::empty(); }
 }
 
