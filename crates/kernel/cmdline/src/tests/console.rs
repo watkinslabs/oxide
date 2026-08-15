@@ -72,6 +72,73 @@ fn last_serial_entry_supplies_the_line_settings() {
     assert_eq!(serial_options_in(b"console=tty0"), None);
 }
 
+/// The property `systemd-getty-generator` acts on: with the boot line this
+/// image ships, the serial line IS reported, so a serial login prompt is
+/// generated. Reporting the VT alone is what left the serial line with no
+/// getty and a debug shell standing in for it.
+#[test]
+fn the_boot_line_reports_the_serial_console_so_a_getty_is_generated() {
+    for line in [&b"root=/dev/vda rw console=ttyS0,115200 console=tty0"[..],
+                 &b"root=/dev/vda rw console=ttyAMA0,115200 console=tty0"[..]] {
+        let a = active_consoles_in(line);
+        assert_eq!(a.as_slice(), &[ConsoleKind::Serial, ConsoleKind::Vt(0)], "{:?}", a);
+    }
+}
+
+/// Print order is the console LIST walked backwards: the preferred console
+/// (last `console=`) prints last, the rest in reverse command-line order.
+/// A consumer reading the first word (dracut's plymouth hook) depends on it.
+#[test]
+fn the_preferred_console_prints_last_and_the_rest_reversed() {
+    let a = active_consoles_in(b"console=tty0 console=ttyS0");
+    assert_eq!(a.as_slice(), &[ConsoleKind::Vt(0), ConsoleKind::Serial]);
+    let a = active_consoles_in(b"console=tty1 console=ttyS0 console=tty0");
+    assert_eq!(a.as_slice(), &[ConsoleKind::Serial, ConsoleKind::Vt(1), ConsoleKind::Vt(0)]);
+}
+
+/// A class named twice registered ONE console, so it is reported once.
+#[test]
+fn a_repeated_entry_is_reported_once() {
+    let a = active_consoles_in(b"console=ttyS0,115200 console=ttyS0 console=tty0");
+    assert_eq!(a.as_slice(), &[ConsoleKind::Serial, ConsoleKind::Vt(0)]);
+}
+
+/// A single entry is both the only console and the preferred one.
+#[test]
+fn a_single_entry_is_reported_alone() {
+    assert_eq!(active_consoles_in(b"console=ttyS0").as_slice(), &[ConsoleKind::Serial]);
+    assert_eq!(active_consoles_in(b"console=tty0").as_slice(), &[ConsoleKind::Vt(0)]);
+}
+
+/// No `console=` registers the arch default pair — the same answer
+/// `console_classes_in` gives, from the same line.
+#[test]
+fn no_entry_reports_the_arch_default_pair() {
+    let a = active_consoles_in(b"root=/dev/vda ro");
+    assert_eq!(a.as_slice(), &[ConsoleKind::Serial, ConsoleKind::Vt(0)]);
+    assert_eq!(console_classes_in(b"root=/dev/vda ro"), (true, true));
+}
+
+/// A name no console is driven for takes no slot, and cannot displace one.
+#[test]
+fn an_undriven_name_is_not_reported() {
+    let a = active_consoles_in(b"console=ttynull console=ttyS0 console=tty0");
+    assert_eq!(a.as_slice(), &[ConsoleKind::Serial, ConsoleKind::Vt(0)]);
+}
+
+/// The reported set is exactly the classes that register printk consoles —
+/// two answers derived from one line must not disagree.
+#[test]
+fn the_reported_set_matches_the_registered_classes() {
+    for line in [&b"console=ttyS0 console=tty0"[..], &b"console=ttyS0"[..],
+                 &b"console=tty0"[..], &b"root=/dev/vda"[..], &b"console=tty1 console=ttyAMA0"[..]] {
+        let (serial, vt) = console_classes_in(line);
+        let a = active_consoles_in(line);
+        assert_eq!(a.as_slice().iter().any(|k| *k == ConsoleKind::Serial), serial, "{line:?}");
+        assert_eq!(a.as_slice().iter().any(|k| matches!(k, ConsoleKind::Vt(_))), vt, "{line:?}");
+    }
+}
+
 #[test]
 fn entries_are_yielded_in_command_line_order() {
     let mut got = [ConsoleKind::Vt(9); 3];

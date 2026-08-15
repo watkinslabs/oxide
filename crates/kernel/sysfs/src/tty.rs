@@ -187,10 +187,39 @@ impl FileOps for TtyDeviceOps {
 }
 
 /// `f_op` for `/sys/class/tty/{tty0,console}/active`. `tty0/active` reports the
-/// live foreground VT (`ttyN`); `console/active` reports the VT console master
-/// (`tty0`). Linux serves the `active` attr fresh on each read (VT switches
+/// live foreground VT (`ttyN`); `console/active` reports every registered
+/// console. Linux serves the `active` attr fresh on each read (VT switches
 /// change it), so the body is formatted per-read. # C: O(1)
 struct TtyActiveData { is_vt: bool }
+
+/// Device name a registered console is reported under by `console/active`.
+///
+/// Linux resolves the console through its tty driver and prints the DRIVER's
+/// line name, except for `tty0`, which it deliberately leaves unresolved
+/// because consumers match on it. The serial line's driver name is the node
+/// this kernel publishes — `ttyS0` on both arches, the aarch64 one being the
+/// PL011 — so a getty generated from this file opens a path that exists.
+/// # C: O(1)
+fn console_line_name(k: cmdline::ConsoleKind) -> String {
+    match k {
+        cmdline::ConsoleKind::Serial => String::from("ttyS0"),
+        cmdline::ConsoleKind::Vt(0) => String::from("tty0"),
+        cmdline::ConsoleKind::Vt(n) => alloc::format!("tty{}", n),
+    }
+}
+
+/// Body of `/sys/class/tty/console/active`: the registered consoles,
+/// space-separated, preferred last, one trailing newline. # C: O(consoles)
+fn console_active_body() -> Vec<u8> {
+    let active = cmdline::active_consoles();
+    let mut out = String::new();
+    for (i, k) in active.as_slice().iter().enumerate() {
+        if i != 0 { out.push(' '); }
+        out.push_str(&console_line_name(*k));
+    }
+    out.push('\n');
+    out.into_bytes()
+}
 
 struct TtyActiveFileOps;
 impl FileOps for TtyActiveFileOps {
@@ -199,7 +228,7 @@ impl FileOps for TtyActiveFileOps {
         let body: Vec<u8> = if d.is_vt {
             alloc::format!("tty{}\n", active_vt()).into_bytes()
         } else {
-            b"tty0\n".to_vec()
+            console_active_body()
         };
         #[cfg(feature = "debug-displaystack")]
         if d.is_vt && off == 0 {

@@ -13,12 +13,14 @@ pub(super) fn serial_console(arch: &str) -> &'static str {
     if arch == "aarch64" { "ttyAMA0" } else { "ttyS0" }
 }
 
-/// Device node name of the boot serial line as this kernel actually publishes
-/// it. The serial tty is `/dev/ttyS0` on BOTH arches — on aarch64 that node is
-/// the PL011 — so parameters naming a *path* (rather than a console class)
-/// must use this, not [`serial_console`]. Pointing one at `ttyAMA0` gets
-/// `No such file or directory` from anything that opens it.
-fn serial_devnode(_arch: &str) -> &'static str { "ttyS0" }
+/// VT the early root shell runs on.
+///
+/// Upstream systemd's default, and it is the default for a reason: the serial
+/// line gets a `serial-getty` generated from `/sys/class/tty/console/active`,
+/// and two units cannot own one line. The shell stays one Alt-F9 away on the
+/// screen, and the serial line carries the kernel log plus a normal login —
+/// which is what a serial-console machine looks like.
+const DEBUG_SHELL_TTY: &str = "tty9";
 
 /// Does the bootloader prepend `BOOT_IMAGE=<path>` to the line by itself?
 ///
@@ -112,7 +114,7 @@ pub(super) fn kernel_cmdline(arch: &str, image_path: &str) -> String {
 /// # C: O(command-line length)
 pub(super) fn kernel_cmdline_for_root(arch: &str, image_path: &str, root: &str) -> String {
     let ser = serial_console(arch);
-    let dev = serial_devnode(arch);
+    let dev = DEBUG_SHELL_TTY;
     let boot_image = if bootloader_supplies_boot_image(arch) {
         String::new()
     } else {
@@ -172,18 +174,36 @@ mod tests {
         assert_eq!(x_rest.replace("console=ttyS0", "console=ttyAMA0"), a);
     }
 
-    /// A parameter naming a device PATH must use the node the kernel actually
-    /// publishes (`ttyS0` on both arches), not the console class name — the
-    /// arm debug shell died with `No such file or directory` on `ttyAMA0`.
+    /// A parameter naming a device PATH must use a node the kernel actually
+    /// publishes, not a console class name — the arm debug shell died with
+    /// `No such file or directory` on `ttyAMA0`. `/dev/tty1..63` exist on both
+    /// arches, so the VT the shell runs on needs no arch spelling at all.
     #[test]
     fn path_valued_parameters_use_the_published_devnode() {
         let _env = env_held();
         for arch in ["x86_64", "aarch64"] {
             let line = kernel_cmdline(arch, "/img");
-            assert!(line.contains("systemd.debug_shell=ttyS0"), "{arch}: {line}");
+            assert!(line.contains("systemd.debug_shell=tty9"), "{arch}: {line}");
         }
         // ...while the console CLASS stays arch-correct.
         assert!(kernel_cmdline("aarch64", "/img").contains("console=ttyAMA0,115200"));
+    }
+
+    /// The early root shell must not sit on the serial line. The kernel reports
+    /// that line in `/sys/class/tty/console/active`, so systemd generates a
+    /// `serial-getty` for it; one tty cannot have two owners, and the shell
+    /// squatting there is why the serial line had no login prompt.
+    #[test]
+    fn the_debug_shell_does_not_squat_on_the_serial_line() {
+        let _env = env_held();
+        for (arch, ser) in [("x86_64", "ttyS0"), ("aarch64", "ttyAMA0")] {
+            let line = kernel_cmdline(arch, "/img");
+            for name in [ser, "ttyS0"] {
+                assert!(!line.contains(&format!("systemd.debug_shell={name}")),
+                    "{arch}: the generated serial-getty owns this line: {line}");
+            }
+            assert!(line.contains("systemd.debug_shell="), "{arch}: {line}");
+        }
     }
 
     /// `BOOT_IMAGE=` comes from exactly one place per arch, never both: the

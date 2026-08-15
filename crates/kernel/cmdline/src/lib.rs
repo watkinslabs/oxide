@@ -28,7 +28,8 @@ pub mod faults;
 pub mod init_path;
 
 pub use slot::{get, install_arch_default, is_set, set};
-pub use console::{console_classes, console_classes_in, preferred_console, preferred_console_in, ConsoleKind};
+pub use console::{active_consoles, active_consoles_in, console_classes, console_classes_in,
+                  preferred_console, preferred_console_in, ActiveConsoles, ConsoleKind};
 pub use earlycon::{earlycon_request, keep_bootcon, ArchDefaults, Driver, EarlyconSpec, IoType};
 pub use init_path::{init_path, init_path_in};
 
