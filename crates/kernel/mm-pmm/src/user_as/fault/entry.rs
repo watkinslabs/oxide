@@ -5,67 +5,9 @@
 use super::super::*;
 use super::resolve::do_handle;
 
+/// Feature-gated x86 page-fault diagnostics.
 #[cfg(all(feature = "debug-faultdiag", target_arch = "x86_64"))]
-const PLT_JMP_INDIRECT: [u8; 2] = [0xff, 0x25];
-
-/// Decode x86-64's RIP-relative indirect PLT jump without reading user VA.
-/// # C: O(1)
-#[cfg(all(feature = "debug-faultdiag", target_arch = "x86_64"))]
-fn plt_got_slot(rip: u64, insn: [u8; 6]) -> Option<u64> {
-    if insn[..2] != PLT_JMP_INDIRECT { return None; }
-    let disp = i32::from_le_bytes([insn[2], insn[3], insn[4], insn[5]]) as i64;
-    rip.checked_add(insn.len() as u64)?.checked_add_signed(disp)
-}
-
-#[cfg(all(feature = "debug-faultdiag", target_arch = "x86_64"))]
-fn trace_plt_got(root: u64, rip: u64, hhdm: u64) {
-    use hal::pt_walker::translate_4k_at_root;
-    let code = unsafe {
-        translate_4k_at_root::<hal_x86_64::vmm::PtWalkerX86>(root, rip, hhdm)
-    };
-    let Some(code) = code else {
-        klog::write_raw(b" [PLT-GOT] code-unmapped");
-        return;
-    };
-    let code_pa = code.0 & !super::PAGE_MASK;
-    let off = (rip & super::PAGE_MASK) as usize;
-    if off + 6 > super::PAGE_BYTES as usize {
-        klog::write_raw(b" [PLT-GOT] code-page-end");
-        return;
-    }
-    // SAFETY: explicit-root translation proved this instruction page present;
-    // HHDM maps managed RAM and this reads six in-page instruction bytes.
-    let insn = unsafe { core::ptr::read((hhdm + code_pa + off as u64) as *const [u8; 6]) };
-    let Some(slot) = plt_got_slot(rip, insn) else {
-        klog::write_raw(b" [PLT-GOT] opcode=");
-        klog::write_hex_u64(insn[0] as u64);
-        klog::write_raw(b":");
-        klog::write_hex_u64(insn[1] as u64);
-        klog::write_raw(b" code-pa="); klog::write_hex_u64(code_pa);
-        klog::write_raw(b" rc="); klog::write_dec_u64(crate::setup::frame_refcount(code_pa) as u64);
-        klog::write_raw(b" mc="); klog::write_dec_u64(crate::setup::frame_mapcount(code_pa) as u64);
-        klog::write_raw(b" leaf="); klog::write_hex_u64(code.1);
-        return;
-    };
-    let got = unsafe {
-        translate_4k_at_root::<hal_x86_64::vmm::PtWalkerX86>(root, slot, hhdm)
-    };
-    let Some((got_pa, leaf)) = got else {
-        klog::write_raw(b" [PLT-GOT] slot-unmapped="); klog::write_hex_u64(slot);
-        return;
-    };
-    let page = got_pa & !super::PAGE_MASK;
-    let word = hhdm + page + (slot & super::PAGE_MASK);
-    // SAFETY: explicit-root translation proved the aligned GOT word's page
-    // present; x86-64 PLT slots are eight-byte aligned within that page.
-    let value = unsafe { core::ptr::read_volatile(word as *const u64) };
-    klog::write_raw(b" [PLT-GOT] slot="); klog::write_hex_u64(slot);
-    klog::write_raw(b" value="); klog::write_hex_u64(value);
-    klog::write_raw(b" pa="); klog::write_hex_u64(page);
-    klog::write_raw(b" rc="); klog::write_dec_u64(crate::setup::frame_refcount(page) as u64);
-    klog::write_raw(b" mc="); klog::write_dec_u64(crate::setup::frame_mapcount(page) as u64);
-    klog::write_raw(b" leaf="); klog::write_hex_u64(leaf);
-}
+mod faultdiag;
 
 #[cfg(all(feature = "debug-mount", target_arch = "x86_64"))]
 use crate::user_as::debug::{STEP_ROOT, STEP_RIP, STEP_VA};
@@ -383,6 +325,16 @@ fn handle(va_raw: u64, fault: FaultKind, user_mode: bool, ip: u64)
             klog::write_hex_u64(rip);
             klog::write_raw(b" sp=");
             klog::write_hex_u64(hal_x86_64::current_fault_rsp());
+            let frame = hal_x86_64::current_fault_frame();
+            if !frame.is_null() {
+                // SAFETY: the non-null current fault frame is published for
+                // this synchronous x86 fault handler and is read only here.
+                let frame = unsafe { &*frame };
+                klog::write_raw(b" r10=");
+                klog::write_hex_u64(frame.r10);
+                klog::write_raw(b" rdx=");
+                klog::write_hex_u64(frame.rdx);
+            }
         }
         match fault {
             FaultKind::NotPresent { access: _ } => klog::write_raw(b" kind=np"),
@@ -425,7 +377,7 @@ fn handle(va_raw: u64, fault: FaultKind, user_mode: bool, ip: u64)
             Some(mm) => {
                 klog::write_raw(b" mm=");
                 klog::write_hex_u64(mm.root_pa());
-                trace_plt_got(mm.root_pa(), ip, hhdm);
+                faultdiag::trace_plt_got(mm.root_pa(), ip, hhdm);
                 if let Some(vma) = mm.find_vma(uva) {
                     klog::write_raw(b" vma=");
                     klog::write_hex_u64(vma.start.as_u64());
@@ -447,6 +399,35 @@ fn handle(va_raw: u64, fault: FaultKind, user_mode: bool, ip: u64)
                         klog::write_hex_u64(vma.end.as_u64());
                         shown += 1;
                         if shown == 4 { break; }
+                    }
+                    if faultdiag::claim_first_missing_vma() {
+                        if let Some(task) = sched::live::current() {
+                            klog::write_raw(b"\n[FAULT-OWNER tid=");
+                            klog::write_dec_u64(task.tid as u64);
+                            klog::write_raw(b" path=");
+                            task.with_exe_path(|path| klog::write_raw(path.unwrap_or("none").as_bytes()));
+                            klog::write_raw(b" mm-path=");
+                            if let Some(path) = mm.exe_path() {
+                                klog::write_raw(path.as_bytes());
+                            } else {
+                                klog::write_raw(b"none");
+                            }
+                            klog::write_raw(b"]");
+                        }
+                        let mut count = 0usize;
+                        mm.debug_visit_vmas(&mut |vma| {
+                            if count >= 32 { return; }
+                            klog::write_raw(b"\n[FAULT-VMA root=");
+                            klog::write_hex_u64(mm.root_pa());
+                            klog::write_raw(b" range=");
+                            klog::write_hex_u64(vma.start.as_u64());
+                            klog::write_raw(b"-");
+                            klog::write_hex_u64(vma.end.as_u64());
+                            klog::write_raw(b" prot=");
+                            klog::write_hex_u64(vma.prot.bits() as u64);
+                            klog::write_raw(b"]");
+                            count += 1;
+                        });
                     }
                 }
             }

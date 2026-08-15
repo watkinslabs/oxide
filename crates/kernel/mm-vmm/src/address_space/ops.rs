@@ -104,6 +104,16 @@ impl AddressSpace {
         g.find_containing(va).cloned()
     }
 
+    /// Visit the live VMA tree while retaining its read lock.  Fault
+    /// diagnostics use this instead of allocating a snapshot from the fault
+    /// path, where an allocation would perturb the failure being observed.
+    /// # C: O(N_vmas)
+    #[cfg(feature = "debug-faultdiag")]
+    pub fn debug_visit_vmas(&self, f: &mut dyn FnMut(&Vma)) {
+        let tree = self.vmas.read();
+        for vma in tree.iter() { f(vma); }
+    }
+
     /// Try to extend a `MAP_GROWSDOWN` VMA, Linux `expand_downwards`.
     ///
     /// `max_size` is the largest the WHOLE post-growth VMA may be and
