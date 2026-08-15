@@ -12,7 +12,7 @@ use alloc::vec::Vec;
 
 use aslr::ExecRnd;
 use hal::UserVirtAddr;
-use vmm::{AddressSpace, FileBacking, FileBackingError, VmaBacking};
+use vmm::{AddressSpace, FileBacking, FileBackingError, VmaBacking, VmaProt};
 
 use crate::{load_image, load_image_reporting, load_static_blob, Image};
 
@@ -91,7 +91,11 @@ fn two_segment_elf(et_dyn: bool) -> Vec<u8> {
 }
 
 fn ramp() -> Arc<dyn FileBacking> {
-    Arc::new(RampFile { len: DATA_OFF + DATA_FILE_SZ, ino: 4242, mode: 0o755 })
+    ramp_with_len(DATA_OFF + DATA_FILE_SZ)
+}
+
+fn ramp_with_len(len: u64) -> Arc<dyn FileBacking> {
+    Arc::new(RampFile { len, ino: 4242, mode: 0o755 })
 }
 
 fn fresh_as() -> Arc<AddressSpace> {
@@ -264,4 +268,59 @@ fn the_report_counts_the_mappings_actually_installed() {
                          None, &as_, &rnd_fixed(), &mut maps).expect("load");
     let file_backed = maps.iter().filter(|m| m.file.is_some()).count();
     assert_eq!(file_backed, 2, "one per PT_LOAD with file content");
+}
+
+/// A real PIE's final PT_LOAD can start in the middle of a page and carry a
+/// short `.bss` tail.  The dynamic linker immediately changes the containing
+/// RELRO page to read-only.  Keep that page live across both loader mapping
+/// and `mprotect`: losing it makes the first writable global access fault as
+/// an unmapped address, exactly the failure an ELF loader must never create.
+#[test]
+fn remount_style_data_survives_relro_protection() {
+    const DATA_PAGE: u64 = BASE + 0x4000;
+    const DATA_BYTE: u64 = BASE + 0x4d48;
+    let phoff = EHDR;
+    let mut blob = alloc::vec![0u8; 0x4010];
+    for (i, byte) in blob.iter_mut().enumerate() { *byte = i as u8; }
+    blob[..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
+    blob[4] = 2;
+    blob[5] = 1;
+    blob[6] = 1;
+    blob[16..18].copy_from_slice(&2u16.to_le_bytes());
+    blob[18..20].copy_from_slice(&crate::ARCH_MACHINE.to_le_bytes());
+    blob[20..24].copy_from_slice(&1u32.to_le_bytes());
+    blob[24..32].copy_from_slice(&(BASE + 0xfc0).to_le_bytes());
+    blob[32..40].copy_from_slice(&(phoff as u64).to_le_bytes());
+    blob[52..54].copy_from_slice(&(EHDR as u16).to_le_bytes());
+    blob[54..56].copy_from_slice(&(PHENT as u16).to_le_bytes());
+    blob[56..58].copy_from_slice(&3u16.to_le_bytes());
+    let mut ph = |i: usize, flags: u32, off: u64, va: u64, fsz: u64, msz: u64| {
+        let p = phoff + i * PHENT;
+        blob[p..p + 4].copy_from_slice(&1u32.to_le_bytes());
+        blob[p + 4..p + 8].copy_from_slice(&flags.to_le_bytes());
+        blob[p + 8..p + 16].copy_from_slice(&off.to_le_bytes());
+        blob[p + 16..p + 24].copy_from_slice(&va.to_le_bytes());
+        blob[p + 24..p + 32].copy_from_slice(&va.to_le_bytes());
+        blob[p + 32..p + 40].copy_from_slice(&fsz.to_le_bytes());
+        blob[p + 40..p + 48].copy_from_slice(&msz.to_le_bytes());
+        blob[p + 48..p + 56].copy_from_slice(&PAGE.to_le_bytes());
+    };
+    ph(0, 5, 0, BASE, 0x13dd, 0x13dd);
+    ph(1, 4, 0x2000, BASE + 0x2000, 0x1424, 0x1424);
+    ph(2, 6, 0x3c10, BASE + 0x4c10, 0x3f8, 0x410);
+
+    let as_ = fresh_as();
+    let img = load_image(
+        Image { blob: &blob, file: Some(ramp_with_len(blob.len() as u64)), dev: 0 },
+        None, &as_, &rnd_fixed(),
+    ).expect("load remount-shaped ELF");
+    assert!(matches!(at(&as_, DATA_BYTE).0, VmaBacking::File { .. }));
+    assert!(matches!(at(&as_, img.brk.as_u64()).0, VmaBacking::Anonymous));
+
+    as_.mprotect(
+        UserVirtAddr::new(DATA_PAGE).expect("data page"), PAGE as usize, VmaProt::READ,
+    ).expect("protect RELRO page");
+    let (backing, end) = at(&as_, DATA_BYTE);
+    assert!(matches!(backing, VmaBacking::File { .. }));
+    assert_eq!(end, DATA_PAGE + PAGE, "RELRO is the protected first data page");
 }
