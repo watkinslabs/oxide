@@ -42,6 +42,8 @@ fn profile_assigns_separate_queue_and_config_handlers() {
     let profile = transport_profile();
     let queue = profile.q0_handler.expect("net profile must bind queue zero");
     let config = profile.config_handler.expect("net profile must bind config vector");
-    assert_eq!(queue as *const (), super::super::raise_rx as *const ());
-    assert_eq!(config as *const (), config_changed as *const ());
+    assert!(matches!(queue, virtio::VirtioQueueIrq::Bare(handler)
+        if core::ptr::fn_addr_eq(handler, super::super::raise_rx as fn())));
+    assert!(matches!(config, virtio::VirtioQueueIrq::Bare(handler)
+        if core::ptr::fn_addr_eq(handler, config_changed as fn())));
 }
