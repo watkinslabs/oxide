@@ -43,6 +43,7 @@ mod parent_arc;
 mod proc_strings;
 mod rlimits;
 mod fd_table;
+mod mm_slot;
 mod fs_context;
 mod io_context;
 pub mod io_uring;
