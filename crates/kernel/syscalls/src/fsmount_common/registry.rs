@@ -174,14 +174,20 @@ fn register_filesystems() {
     fn vfat_ctor(ty: Arc<dyn vfs::FileSystemType>, source: Option<&str>, _t: &str, _d: &str,
                  sb_flags: u64, _p: &[vfs::fs::FsParameter]) -> R {
         let source = source.ok_or(vfs::VfsError::Enoent)?;
-        let (dev, _dev_t) = resolve_block_source(source, vfs::MAY_READ)?;
-        let fatfs = fatfs::FatFs::open(dev, source)?;
+        let write = sb_flags & vfs::superblock::SB_RDONLY == 0;
+        let access = vfs::MAY_READ | if write { vfs::MAY_WRITE } else { 0 };
+        let (dev, _dev_t) = resolve_block_source(source, access)?;
+        let fatfs = fatfs::FatFs::open_with_access(dev, source, write)?;
+        // A mount that asked to write and could not — a medium that refuses
+        // writes — mounts READ-ONLY rather than failing, and the superblock
+        // says so, because reporting writable when the volume is not fails
+        // every write at the first one instead of at the mount. A volume left
+        // DIRTY is not that case: it mounts read-write with a warning, exactly
+        // as the reference does.
+        let sb_flags = if fatfs.is_writable() { sb_flags } else { sb_flags | vfs::superblock::SB_RDONLY };
         let root = fatfs.root_inode();
         let fs: Arc<dyn vfs::fs::FileSystem> = fatfs;
-        // Read-only whatever was asked: this filesystem has no write path, and
-        // a mount that reported itself writable would fail every write at the
-        // first one rather than at the mount.
-        mounted(ty, fs, Some(root), source, sb_flags | vfs::superblock::SB_RDONLY)
+        mounted(ty, fs, Some(root), source, sb_flags)
     }
     for name in ["vfat", "msdos"] {
         let _ = register_fs(FsType::new(name, fatfs::MSDOS_SUPER_MAGIC,
