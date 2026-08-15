@@ -32,6 +32,8 @@
 use core::sync::atomic::{AtomicPtr, Ordering};
 #[cfg(feature = "debug-preempt")]
 use core::sync::atomic::{AtomicU16, AtomicU8};
+#[cfg(feature = "debug-preempt")]
+use core::panic::Location;
 
 /// The scheduler's preempt-count pair, as this crate's locks use it.
 /// `disable` must raise the count by exactly one and `enable` must lower it by
@@ -66,16 +68,26 @@ static HELD_DEPTH: [AtomicU8; crate::MAX_CPUS] = [const { AtomicU8::new(0) }; cr
 #[cfg(feature = "debug-preempt")]
 static HELD_OVERFLOW: [AtomicU8; crate::MAX_CPUS] = [const { AtomicU8::new(0) }; crate::MAX_CPUS];
 
+/// Where each held frame was acquired, as a `&'static Location` the compiler
+/// supplies through `#[track_caller]`. A rank names a lock CLASS, and a class
+/// has many call sites — the site is what turns "something at rank 100" into
+/// the line to read. Captured with no stack walking: a frame-pointer walk from
+/// inside the allocator faulted the guest twice before this shape replaced it.
+#[cfg(feature = "debug-preempt")]
+static HELD_SITES: [[AtomicPtr<Location<'static>>; HELD_LOCK_DEPTH]; crate::MAX_CPUS] =
+    [const { [const { AtomicPtr::new(core::ptr::null_mut()) }; HELD_LOCK_DEPTH] }; crate::MAX_CPUS];
+
 #[cfg(feature = "debug-preempt")]
 fn cpu_slot(cpu: usize) -> usize { cpu.min(crate::MAX_CPUS - 1) }
 
 #[cfg(feature = "debug-preempt")]
 #[inline(never)]
-fn trace_push(cpu: usize, rank: u16) {
+fn trace_push(cpu: usize, rank: u16, site: &'static Location<'static>) {
     let cpu = cpu_slot(cpu);
     let depth = HELD_DEPTH[cpu].load(Ordering::Relaxed) as usize;
     if depth < HELD_LOCK_DEPTH {
         HELD_RANKS[cpu][depth].store(rank, Ordering::Relaxed);
+        HELD_SITES[cpu][depth].store(site as *const _ as *mut _, Ordering::Relaxed);
         HELD_DEPTH[cpu].store((depth + 1) as u8, Ordering::Relaxed);
     } else {
         HELD_OVERFLOW[cpu].fetch_add(1, Ordering::Relaxed);
@@ -112,6 +124,34 @@ pub fn held_rank() -> u16 {
     let depth = HELD_DEPTH[cpu].load(Ordering::Relaxed);
     if depth == 0 { return 0; }
     HELD_RANKS[cpu][(depth - 1) as usize].load(Ordering::Relaxed)
+}
+
+/// Print every held frame on this CPU as `rank@file:line`, outermost first.
+///
+/// The innermost rank alone cannot answer "which two locks is this path
+/// holding" — that is the question every sleep-while-atomic report raises, and
+/// the one that cost a whole session of guessing. # C: O(depth)
+#[cfg(feature = "debug-preempt")]
+pub fn write_held_stack() {
+    let cpu = cpu_slot(installed_cpu());
+    let depth = HELD_DEPTH[cpu].load(Ordering::Relaxed) as usize;
+    klog::write_raw(b" held=[");
+    for i in 0..depth.min(HELD_LOCK_DEPTH) {
+        if i != 0 { klog::write_raw(b" "); }
+        klog::write_dec_u64(HELD_RANKS[cpu][i].load(Ordering::Relaxed) as u64);
+        let site = HELD_SITES[cpu][i].load(Ordering::Relaxed);
+        if site.is_null() { continue; }
+        // SAFETY: the slot only ever holds a `&'static Location` the compiler
+        // materialised for a `#[track_caller]` call site, which lives for the
+        // program's lifetime; it is never freed and never rewritten to a
+        // non-Location value.
+        let site = unsafe { &*site };
+        klog::write_raw(b"@");
+        klog::write_raw(site.file().as_bytes());
+        klog::write_raw(b":");
+        klog::write_dec_u64(site.line() as u64);
+    }
+    klog::write_raw(b"]");
 }
 
 /// Snapshot the current CPU's diagnostic lock trace: innermost rank, tracked
@@ -169,10 +209,12 @@ pub(crate) fn acquire(_rank: u16) -> PreemptToken {
 /// same current-CPU slot without enlarging every guard. # C: O(1)
 #[cfg(feature = "debug-preempt")]
 #[inline]
+#[track_caller]
 pub(crate) fn acquire(rank: u16) -> PreemptToken {
+    let site = Location::caller();
     let p = OPS.load(Ordering::Acquire);
     if p.is_null() {
-        trace_push(0, rank);
+        trace_push(0, rank, site);
         return PreemptToken { enable: None };
     }
     // SAFETY: OPS is only ever written by set_preempt_ops from a &'static
@@ -181,7 +223,7 @@ pub(crate) fn acquire(rank: u16) -> PreemptToken {
     let ops = unsafe { *p };
     (ops.disable)();
     let cpu = cpu_slot(installed_cpu());
-    trace_push(cpu, rank);
+    trace_push(cpu, rank, site);
     PreemptToken { enable: Some(ops.enable) }
 }
 

@@ -1,5 +1,9 @@
+use core::marker::PhantomData;
+
 use hal::Pfn;
-use sync::{Spinlock, TaskList};
+use sync::{IrqGate, Spinlock, TaskList};
+
+use crate::irq_gate::PmmIrq;
 
 use crate::{reclaim_state, PageFlags, PageMetaArr, ReclaimPageState};
 
@@ -221,20 +225,31 @@ impl Queues {
 
 /// Canonical PMM reclaim-LRU index. The `TaskList` lock is acquired after
 /// PageTable/AddressSpace locks (`06§3.6`) and never while the Buddy lock is
-/// held. Stage 0 owns no allocator or pageout call sites, so this establishes
-/// the ordering boundary before any reclaim wiring exists.
-pub struct Reclaim { q: Spinlock<Queues, TaskList> }
+/// held.
+///
+/// It masks local interrupts for its whole critical section, for the reason
+/// the buddy lock does: `free_one_frame` unlinks a page from its LRU on the
+/// way to the free list, and that path runs in interrupt context too. Taken
+/// plainly, an interrupt arriving on the CPU that already holds it spins for
+/// it forever with interrupts masked — a one-CPU deadlock that stops the whole
+/// machine, observed as a soft lockup inside `free_one_frame` a few seconds
+/// into boot. The reference masks interrupts across every LRU mutation for the
+/// same reason.
+///
+/// The gate is a parameter so a test can watch it: a probe gate counts the
+/// masked sections and proves the lock is not being taken plainly.
+pub struct Reclaim<I: IrqGate = PmmIrq> { q: Spinlock<Queues, TaskList>, _irq: PhantomData<I> }
 
-impl Reclaim {
+impl<I: IrqGate> Reclaim<I> {
     /// Empty LRU index. # C: O(1)
-    pub fn new() -> Self { Self { q: Spinlock::new(Queues::new()) } }
+    pub fn new() -> Self { Self { q: Spinlock::new(Queues::new()), _irq: PhantomData } }
 
     /// Admit one classified page to exactly one LRU. The PageMeta flag
     /// transition and queue insertion are serialized by this LRU lock.
     /// # C: O(1); # Lk: TaskList
     pub fn add(&self, meta: &PageMetaArr, pfn: Pfn, lru: Lru) -> Result<(), ReclaimError> {
         let page = meta.get(pfn).ok_or(ReclaimError::OutOfRange)?;
-        let mut q = self.q.lock();
+        let mut q = self.q.lock_irqsave::<I>();
         let flags = PageFlags::from_bits_retain(page.flags.load(core::sync::atomic::Ordering::Acquire));
         if reclaim_state(flags) != ReclaimPageState::NotOnLru { return Err(ReclaimError::State); }
         if !lru.class_matches(flags) { return Err(ReclaimError::Class); }
@@ -252,7 +267,7 @@ impl Reclaim {
     /// # C: O(1); # Lk: TaskList
     pub fn mark_referenced(&self, meta: &PageMetaArr, pfn: Pfn) -> Result<(), ReclaimError> {
         let page = meta.get(pfn).ok_or(ReclaimError::OutOfRange)?;
-        let _q = self.q.lock();
+        let _q = self.q.lock_irqsave::<I>();
         let flags = PageFlags::from_bits_retain(page.flags.load(core::sync::atomic::Ordering::Acquire));
         if !Lru::InactiveAnon.class_matches(flags) && !Lru::InactiveFile.class_matches(flags) {
             return Err(ReclaimError::Class);
@@ -289,7 +304,7 @@ impl Reclaim {
     }
 
     fn age_pair(&self, meta: &PageMetaArr, inactive: Lru, active: Lru, budget: usize) -> Result<Aging, ReclaimError> {
-        let mut q = self.q.lock();
+        let mut q = self.q.lock_irqsave::<I>();
         let mut aging = Aging::default();
         // Snapshot both generations before either is touched: promotions made
         // while scanning inactive must wait until the next aging generation.
@@ -350,7 +365,7 @@ impl Reclaim {
     /// # C: O(1); # Lk: TaskList
     pub fn set_unevictable(&self, meta: &PageMetaArr, pfn: Pfn, enabled: bool) -> Result<(), ReclaimError> {
         let page = meta.get(pfn).ok_or(ReclaimError::OutOfRange)?;
-        let mut q = self.q.lock();
+        let mut q = self.q.lock_irqsave::<I>();
         let flags = PageFlags::from_bits_retain(page.flags.load(core::sync::atomic::Ordering::Acquire));
         let state = reclaim_state(flags);
         let source = match state {
@@ -395,7 +410,7 @@ impl Reclaim {
     /// # C: O(1); # Lk: TaskList
     pub fn unlink_for_free(&self, meta: &PageMetaArr, pfn: Pfn) -> Result<(), ReclaimError> {
         let page = meta.get(pfn).ok_or(ReclaimError::OutOfRange)?;
-        let mut q = self.q.lock();
+        let mut q = self.q.lock_irqsave::<I>();
         let flags = PageFlags::from_bits_retain(page.flags.load(core::sync::atomic::Ordering::Acquire));
         match reclaim_state(flags) {
             ReclaimPageState::NotOnLru => return Ok(()),
@@ -422,7 +437,7 @@ impl Reclaim {
     /// both terminal transitions, preventing a PFN from being put on another
     /// queue by mistake. # C: O(1); # Lk: TaskList
     pub fn isolate(&self, meta: &PageMetaArr, lru: Lru) -> Result<Option<Isolation>, ReclaimError> {
-        let mut q = self.q.lock();
+        let mut q = self.q.lock_irqsave::<I>();
         let Some(pfn) = q.q[lru.index()].pop_front(meta)? else { return Ok(None); };
         q.scanned += 1;
         let page = meta.get(pfn).ok_or(ReclaimError::OutOfRange)?;
@@ -448,7 +463,7 @@ impl Reclaim {
     /// must never reclaim an unrelated cgroup merely because it happened to
     /// be older on the global LRU. # C: O(N_lru); # Lk: TaskList
     pub fn isolate_memcg(&self, meta: &PageMetaArr, lru: Lru, memcg: u64) -> Result<Option<Isolation>, ReclaimError> {
-        let mut q = self.q.lock();
+        let mut q = self.q.lock_irqsave::<I>();
         let entries = q.q[lru.index()].len();
         for _ in 0..entries {
             let Some(pfn) = q.q[lru.index()].pop_front(meta)? else { break; };
@@ -481,7 +496,7 @@ impl Reclaim {
     /// range and has identified a resident target. # C: O(1); # Lk: TaskList
     pub fn isolate_anon_pfn(&self, meta: &PageMetaArr, pfn: Pfn) -> Result<Option<Isolation>, ReclaimError> {
         let page = meta.get(pfn).ok_or(ReclaimError::OutOfRange)?;
-        let mut q = self.q.lock();
+        let mut q = self.q.lock_irqsave::<I>();
         let flags = PageFlags::from_bits_retain(page.flags.load(core::sync::atomic::Ordering::Acquire));
         let lru = match reclaim_state(flags) {
             ReclaimPageState::OnLru { active, unevictable: false }
@@ -507,7 +522,7 @@ impl Reclaim {
     /// Requeue an isolated page at the tail of its original LRU. # C: O(1); # Lk: TaskList
     pub fn putback(&self, meta: &PageMetaArr, isolated: Isolation) -> Result<(), ReclaimError> {
         let page = meta.get(isolated.pfn).ok_or(ReclaimError::OutOfRange)?;
-        let mut q = self.q.lock();
+        let mut q = self.q.lock_irqsave::<I>();
         let flags = PageFlags::from_bits_retain(page.flags.load(core::sync::atomic::Ordering::Acquire));
         if !isolated.lru.class_matches(flags) { return Err(ReclaimError::Class); }
         if reclaim_state(flags) != (ReclaimPageState::Isolated { active: isolated.lru.active() }) { return Err(ReclaimError::State); }
@@ -528,7 +543,7 @@ impl Reclaim {
     /// # C: O(1); # Lk: TaskList
     pub fn release(&self, meta: &PageMetaArr, isolated: Isolation) -> Result<(), ReclaimError> {
         let page = meta.get(isolated.pfn).ok_or(ReclaimError::OutOfRange)?;
-        let mut q = self.q.lock();
+        let mut q = self.q.lock_irqsave::<I>();
         let flags = PageFlags::from_bits_retain(page.flags.load(core::sync::atomic::Ordering::Acquire));
         if !isolated.lru.class_matches(flags) { return Err(ReclaimError::Class); }
         if reclaim_state(flags) != (ReclaimPageState::Isolated { active: isolated.lru.active() }) { return Err(ReclaimError::State); }
@@ -544,10 +559,10 @@ impl Reclaim {
     }
 
     /// Number of PFNs indexed by one LRU. # C: O(1); # Lk: TaskList
-    pub fn len(&self, lru: Lru) -> usize { self.q.lock().q[lru.index()].len() }
+    pub fn len(&self, lru: Lru) -> usize { self.q.lock_irqsave::<I>().q[lru.index()].len() }
 
     /// Snapshot canonical reclaim populations and transition events. # C: O(1); # Lk: TaskList
-    pub fn snapshot(&self) -> ReclaimSnapshot { self.q.lock().snapshot() }
+    pub fn snapshot(&self) -> ReclaimSnapshot { self.q.lock_irqsave::<I>().snapshot() }
 }
 
-impl Default for Reclaim { fn default() -> Self { Self::new() } }
+impl<I: IrqGate> Default for Reclaim<I> { fn default() -> Self { Self::new() } }
