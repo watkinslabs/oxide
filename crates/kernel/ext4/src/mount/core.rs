@@ -153,6 +153,7 @@ impl Mount {
                        faults: super::faults::HostedFaults::new(),
                        txn_owner: ::core::sync::atomic::AtomicU64::new(0),
                        txn_depth: ::core::sync::atomic::AtomicU32::new(0),
+                       txn_wait: sched::live::WaitList::new(),
                        creating: ::core::sync::atomic::AtomicBool::new(false),
                        opts: sync::Spinlock::new(crate::mount_opts::Ext4SbOpts {
                            behaviour, ..Default::default() }),
@@ -311,22 +312,35 @@ impl Mount {
         r
     }
 
-    /// Reentrant transaction-gate acquire keyed on `ctx_id()`. Nested calls on
-    /// the same context bump the depth; a different context spins until free.
-    /// # C: O(contention)
-    pub(super) fn txn_acquire(&self) {
+    /// Try to claim the transaction gate, retaining same-context reentrancy.
+    /// # C: O(1)
+    fn try_txn_acquire(&self, me: u64) -> bool {
         use ::core::sync::atomic::Ordering;
-        let me = ctx_id();
         if self.txn_owner.load(Ordering::Acquire) == me {
             self.txn_depth.fetch_add(1, Ordering::Relaxed);
-            return;
+            return true;
         }
-        while self.txn_owner.compare_exchange_weak(0, me, Ordering::AcqRel, Ordering::Relaxed).is_err() {
-            // Yield (not busy-spin): the gate owner sleeps on block I/O while
-            // holding the gate, so it must be able to run and release it.
-            txn_yield();
+        if self.txn_owner.compare_exchange(0, me, Ordering::AcqRel, Ordering::Relaxed).is_err() {
+            return false;
         }
         self.txn_depth.store(1, Ordering::Relaxed);
+        true
+    }
+
+    /// Reentrant transaction-gate acquire keyed on `ctx_id()`. A contender
+    /// publishes on the mount's wait queue, rechecks the atomic claim, then
+    /// sleeps until the releasing owner wakes it.
+    /// # Ctx: process
+    /// # Sleeps: yes on contention
+    /// # C: O(N wakeups)
+    pub(super) fn txn_acquire(&self) {
+        let me = ctx_id();
+        if self.try_txn_acquire(me) { return; }
+        // SAFETY: this process-context waiter holds neither the transaction
+        // gate nor the state lock; release publishes owner=0 before wake_all.
+        let _ = unsafe {
+            sched::live::wait_event_uninterruptible(&self.txn_wait, || self.try_txn_acquire(me))
+        };
     }
 
     /// Release one level of the transaction gate; frees it at depth 0.
@@ -335,6 +349,7 @@ impl Mount {
         use ::core::sync::atomic::Ordering;
         if self.txn_depth.fetch_sub(1, Ordering::AcqRel) == 1 {
             self.txn_owner.store(0, Ordering::Release);
+            self.txn_wait.wake_all();
         }
     }
 

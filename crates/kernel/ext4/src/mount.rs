@@ -153,10 +153,14 @@ pub struct Mount {
     /// the shared `MountState.shadow` transaction lifecycle. `run_journaled`
     /// acquires it at the OUTERMOST scope keyed on the current context
     /// (`ctx_id`); nested same-context calls bump `txn_depth` and join without
-    /// re-locking; concurrent contexts spin until free. `txn_owner`==0 ⇒ free.
+    /// re-locking; concurrent contexts wait until free. `txn_owner`==0 ⇒ free.
     /// # Lk: outermost (held across the whole `run_journaled` scope + commit).
     pub(crate) txn_owner: ::core::sync::atomic::AtomicU64,
     pub(crate) txn_depth: ::core::sync::atomic::AtomicU32,
+    /// Sleep queue for contexts blocked behind [`Self::txn_owner`]. Release
+    /// clears the owner before waking so every resumed waiter retries the same
+    /// atomic claim predicate.
+    pub(crate) txn_wait: sched::live::WaitList,
     /// True while a create op holds `op_lock`. The size-triggered batch commit
     /// (`maybe_commit_batch` → `dev.flush`, which SLEEPS on the virtio
     /// completion) must NOT fire while `op_lock` is held: `op_lock` is a
