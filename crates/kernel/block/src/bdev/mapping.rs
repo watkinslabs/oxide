@@ -54,6 +54,9 @@ pub struct BdevMapping {
     pub(super) nr: AtomicUsize,
     /// Pages currently under writeback, for the same lock-free reason.
     pub(super) inflight: AtomicUsize,
+    /// Process-context waiters for the mapping writeback predicate.
+    #[cfg(target_os = "oxide-kernel")]
+    pub(super) writeback_wait: sched::live::WaitList,
     /// Surprise removal permanently rejects cached I/O from retained block
     /// file descriptions after the registry unlinks the disk.
     pub(super) dead: AtomicBool,
@@ -69,6 +72,8 @@ impl BdevMapping {
             }),
             nr: AtomicUsize::new(0),
             inflight: AtomicUsize::new(0),
+            #[cfg(target_os = "oxide-kernel")]
+            writeback_wait: sched::live::WaitList::new(),
             dead: AtomicBool::new(false),
         })
     }

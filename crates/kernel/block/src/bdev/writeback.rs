@@ -88,12 +88,25 @@ impl BdevMapping {
                 }
             }
         }
-        self.inflight.fetch_sub(1, Ordering::AcqRel);
+        let last = self.inflight.fetch_sub(1, Ordering::AcqRel) == 1;
+        #[cfg(target_os = "oxide-kernel")]
+        if last { self.writeback_wait.wake_all(); }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        let _ = last;
     }
 
     /// Wait for every page this mapping has under writeback. # C: O(in-flight)
     fn wait_for_writeback(&self) {
-        while self.inflight.load(Ordering::Acquire) != 0 { core::hint::spin_loop(); }
+        #[cfg(target_os = "oxide-kernel")]
+        // SAFETY: callers run the writeback wait half in process context with
+        // no mapping or driver lock held; completion wakes this predicate when
+        // the final in-flight page retires.
+        unsafe {
+            let _ = sched::live::wait_event_uninterruptible(&self.writeback_wait,
+                || self.inflight.load(Ordering::Acquire) == 0);
+        }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        while self.inflight.load(Ordering::Acquire) != 0 { sync::spin_relax::relax(); }
     }
 
     /// `filemap_fdatawait_keep_errors` — the wait half of `sync(2)`'s device

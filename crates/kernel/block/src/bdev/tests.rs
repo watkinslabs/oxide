@@ -153,6 +153,30 @@ fn submit_half_starts_io_and_the_page_stays_under_writeback() {
     assert_eq!(on_medium(dev.inner.as_ref(), 0, 64), vec![0x11; 64]);
 }
 
+#[test]
+fn wait_half_does_not_finish_before_deferred_writeback_completes() {
+    let dev = DeferredDisk::new(64);
+    let mapping = mapping_over(dev.clone());
+    mapping.write_at(0, &[0x3C; 64]).unwrap();
+    mapping.fdatawrite();
+    let started = Arc::new(AtomicBool::new(false));
+    let done = Arc::new(AtomicBool::new(false));
+    let wait_mapping = Arc::clone(&mapping);
+    let wait_started = Arc::clone(&started);
+    let wait_done = Arc::clone(&done);
+    let waiter = std::thread::spawn(move || {
+        wait_started.store(true, Ordering::Release);
+        assert_eq!(wait_mapping.fdatawait_keep_errors(), 0);
+        wait_done.store(true, Ordering::Release);
+    });
+    while !started.load(Ordering::Acquire) { std::thread::yield_now(); }
+    for _ in 0..1_024 { std::thread::yield_now(); }
+    assert!(!done.load(Ordering::Acquire), "writeback wait returned before completion");
+    dev.complete_all();
+    waiter.join().unwrap();
+    assert!(done.load(Ordering::Acquire));
+}
+
 /// A device whose writes fail, for the error-latch contract.
 struct FailingDisk { blocks: u64, fail: AtomicBool }
 impl BlockDevice for FailingDisk {
