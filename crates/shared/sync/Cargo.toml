@@ -17,7 +17,7 @@ debug-smp = []
 # Records the innermost held lock-class rank, so a `[BUG] scheduling while
 # atomic` report can name the lock its owner is about to carry off-CPU instead
 # of only the schedule site. Prod-inert; kernel forwards via `sched/debug-preempt`.
-debug-preempt = []
+debug-preempt = ["dep:klog"]
 # lockdep, IRQ-state subset (Linux CONFIG_PROVE_LOCKING usage bits): records the
 # context of every lock acquisition and reports any class used in hard-IRQ
 # context that is also taken plain in process context (`06§3.1`). Prod-inert.

@@ -397,6 +397,7 @@ impl<T, C: LockClass> Spinlock<T, C> {
     /// Block until lock acquired. Suitable for non-IRQ-shared contexts.
     /// # C: O(contention)
     /// # Lk: this lock acquired
+    #[cfg_attr(feature = "debug-preempt", track_caller)]
     pub fn lock(&self) -> Guard<'_, T, C> {
         // lockdep: a bare acquisition. Recorded BEFORE the spin so a lock that
         // deadlocks here is still attributed — the report is the reason we are
@@ -488,6 +489,7 @@ impl<T, C: LockClass> Spinlock<T, C> {
     /// spins for the lock. Restores on `Drop`.
     /// # C: O(contention)
     /// # Lk: this lock acquired; IRQs off
+    #[cfg_attr(feature = "debug-preempt", track_caller)]
     pub fn lock_irqsave<I: IrqGate>(&self) -> IrqGuard<'_, T, C, I> {
         // lockdep: the correct pattern for an ISR-shared lock; recorded so a
         // class fixed at every site stops being reported.
@@ -525,6 +527,7 @@ impl<T, C: LockClass> Spinlock<T, C> {
     /// multi-second I/O stalls — see `skizm.md` 3.0b).
     /// # C: O(contention)
     /// # Lk: this lock acquired; softirqs off on this CPU
+    #[cfg_attr(feature = "debug-preempt", track_caller)]
     pub fn lock_bh<B: BhGate>(&self) -> LockBhGuard<'_, T, C, B> {
         // lockdep: BH-disabled is the correct pattern for a softirq-shared
         // lock, so record it as gated — same as irqsave — or a class fixed at

@@ -61,6 +61,26 @@ fn alloc_extra(value: &str) -> String { format!("{value} ") }
 /// a normal boot is a default that hides the bugs only a normal boot has.
 pub(super) const KERNEL_CONSOLE_PARAMS: &str = "earlycon printk.time=1";
 
+/// What makes the serial log carry the WHOLE boot, not just the kernel's half.
+///
+/// `/dev/console` is one device, and on this image it is the VT — the screen
+/// is where a person watches a boot. Every userspace log line therefore goes
+/// to the screen and NOTHING userspace writes reaches the serial line, which
+/// is why a serial capture goes quiet the moment journald takes over from
+/// early kmsg logging: measured at 3.5 s of boot, with the machine still
+/// running perfectly. `log_target=console` does not change that — it selects
+/// which device, and that device is still the VT.
+///
+/// Routing the journal through `/dev/kmsg` instead puts userspace records into
+/// the kernel ring, and the ring fans out to EVERY registered console. The
+/// screen keeps its status output and the serial capture becomes the complete
+/// boot: kernel and userspace, one ordered stream, timestamped, greppable
+/// after the fact. That is the property every diagnosis in this repository
+/// depends on, so it is a permanent part of the line rather than a debug
+/// preset a caller has to remember.
+pub(super) const USERSPACE_CONSOLE_PARAMS: &str =
+    "systemd.log_target=kmsg systemd.journald.forward_to_kmsg=1";
+
 /// The magic-SysRq enable mask this image runs with.
 ///
 /// The kernel now ENFORCES `kernel.sysrq`, and the distribution configuration
@@ -125,7 +145,8 @@ pub(super) fn kernel_cmdline_for_root(arch: &str, image_path: &str, root: &str) 
     // silence while every consumer expects a talkative boot is a line that
     // lies. A boot that wants it can pass it through OXIDE_CMDLINE_EXTRA.
     format!(
-        "{boot_image}root={root} rw {KERNEL_CONSOLE_PARAMS} {SYSRQ_PARAMS} {extra}\
+        "{boot_image}root={root} rw {KERNEL_CONSOLE_PARAMS} {USERSPACE_CONSOLE_PARAMS} \
+         {SYSRQ_PARAMS} {extra}\
          console={ser},115200 console=tty0 \
          systemd.mask=firewalld.service systemd.mask=chronyd.service \
          systemd.mask=ModemManager.service systemd.mask=plymouth-start.service \
@@ -137,7 +158,8 @@ pub(super) fn kernel_cmdline_for_root(arch: &str, image_path: &str, root: &str) 
 
 #[cfg(test)]
 mod tests {
-    use super::{kernel_cmdline, serial_console, KERNEL_CONSOLE_PARAMS, KERNEL_DEBUG_PARAMS, USERSPACE_DEBUG_PARAMS};
+    use super::{kernel_cmdline, serial_console, KERNEL_CONSOLE_PARAMS, KERNEL_DEBUG_PARAMS,
+                USERSPACE_CONSOLE_PARAMS, USERSPACE_DEBUG_PARAMS};
     use std::sync::Mutex;
 
     // The composer reads process environment; these tests mutate it.
@@ -303,6 +325,29 @@ mod tests {
                 assert!(line.split(' ').any(|t| t == "sysctl.kernel.sysrq=1"), "{arch}: {line}");
             }
         });
+    }
+
+    /// The other half of that property: the serial log must carry USERSPACE
+    /// too. `/dev/console` is the VT, so a userspace record only reaches the
+    /// serial line by going through the kernel ring, which fans out to every
+    /// registered console. Without this the capture goes quiet at ~3.5 s, the
+    /// moment journald takes over from early kmsg logging — with the machine
+    /// still running, which reads exactly like a hang and is not one.
+    #[test]
+    fn every_boot_routes_userspace_logging_through_the_kernel_ring() {
+        with_env(&[("OXIDE_CMDLINE_DEBUG", None), ("OXIDE_CMDLINE_EXTRA", None)], || {
+            for arch in ["x86_64", "aarch64"] {
+                let line = kernel_cmdline(arch, "/img");
+                for p in ["systemd.log_target=kmsg", "systemd.journald.forward_to_kmsg=1"] {
+                    assert!(line.split(' ').any(|t| t == p), "{arch} lost {p}: {line}");
+                }
+                // ...without moving /dev/console off the screen to get it.
+                let last = line.rmatch_indices("console=").next().unwrap().0;
+                assert!(line[last..].starts_with("console=tty0 "), "{arch}: {line}");
+            }
+        });
+        assert_eq!(USERSPACE_CONSOLE_PARAMS.split(' ').count(), 2,
+            "a parameter joined the always-on userspace set without being declared here");
     }
 
     /// The property the whole console configuration exists for: a boot nobody

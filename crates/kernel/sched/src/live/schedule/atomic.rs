@@ -55,6 +55,9 @@ fn report(count: u32, shared_stack: bool) {
         // off-CPU, which is the cause.
         klog::write_raw(b" held_lock_rank=");
         klog::write_dec_u64(sync::preempt_gate::held_rank() as u64);
+        // ...and every frame under it, with the line each was taken on. A rank
+        // names a class; the sleep is caused by a specific acquisition.
+        sync::preempt_gate::write_held_stack();
         if let Some(task) = crate::live::current() {
             klog::write_raw(b" current_tid=");
             klog::write_dec_u64(task.tid as u64);
