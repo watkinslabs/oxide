@@ -3,7 +3,6 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use sync::{Spinlock, TaskList as TaskListClass};
 use vfs::PollSubscribers;
-use vmm::AddressSpace;
 
 use super::Task;
 use crate::signum::{self, DefaultAction, Signum};
@@ -388,32 +387,6 @@ impl Task {
         }
     }
 
-    /// Borrow `mm` (the `Arc<AddressSpace>` if set). Read-only;
-    /// callers must observe the single-mutator invariant per the
-    /// `mm` field doc.
-    /// # SAFETY: caller is in IRQ-off / preempt-off context, OR
-    /// holds a guarantee that no concurrent execve runs against
-    /// this task on another CPU.
-    /// # C: O(1)
-    pub unsafe fn mm_ref(&self) -> Option<&Arc<AddressSpace>> {
-        self.debug_check_canary("mm_ref");
-        // SAFETY: caller asserts no concurrent writer; UnsafeCell::get is the supported deref pattern for shared interior mutability under documented external synchronization.
-        unsafe { (&*self.mm.get()).as_ref() }
-    }
-
-    /// Pin this task's current user mm for a cross-task observer. The pin lock
-    /// closes concurrent exec/exit replacement before cloning the Arc, so the
-    /// returned mm remains valid after the task resumes or exits.
-    /// # C: O(1); # Lk: TaskList
-    pub fn clone_mm(&self) -> Option<Arc<AddressSpace>> {
-        let _pin = self.mm_pin_lock.lock();
-        // SAFETY: mm_pin_lock serializes this observer with replace_mm below.
-        unsafe { (&*self.mm.get()).as_ref().map(Arc::clone) }
-    }
-
-    /// OOM compatibility spelling for [`Self::clone_mm`].
-    /// # C: O(1); # Lk: TaskList
-    pub fn clone_mm_for_oom(&self) -> Option<Arc<AddressSpace>> { self.clone_mm() }
 
     /// Soft `RLIMIT_NOFILE` — the per-task fd ceiling the fd-alloc path
     /// enforces (Linux `rlimit(RLIMIT_NOFILE)`); fd installs beyond it
@@ -431,82 +404,6 @@ impl Task {
         self.seccomp_filters.lock().len()
     }
 
-    /// Atomically replace `mm` with `new`. The displaced Arc is NOT dropped
-    /// here — it is parked in this CPU's `active_mm` slot (Linux `exit_mm`
-    /// keeps `active_mm`+`mm_count`; `mmdrop` runs after the next switch):
-    /// on exit/signal-death the caller clears `mm` BEFORE the final
-    /// `schedule()`, so an in-place drop of the last Arc would free the
-    /// page-table root while it is still live in CR3/TTBR0 (GAP-2
-    /// use-after-free → random exec/ld.so corruption). `execve` is safe by
-    /// ordering (it `activate`s the new root BEFORE calling this) but parks
-    /// through the same choke-point.
-    /// # SAFETY: caller is the running task on its CPU OR holds
-    /// the runqueue invariant for this task; preempt-off. Not safe
-    /// to call on an actively-scheduled task from another CPU.
-    /// # C: O(1)
-    pub unsafe fn replace_mm(&self, new: Option<Arc<AddressSpace>>) {
-        // Owning a user address space is what makes a task a user-mode thread:
-        // a helper started from the kernel that reaches `execve` stops being a
-        // kernel thread at exactly this point, and from here on its exit
-        // notifies a real parent instead of auto-reaping. The borrowed-mm
-        // sibling below deliberately does NOT clear the bit — a kernel thread
-        // that borrows someone else's mm is still a kernel thread.
-        if new.is_some() { self.kernel_thread.store(false, core::sync::atomic::Ordering::Release); }
-        // SAFETY: this fn is itself `unsafe` and forwards its contract
-        // unchanged — caller is the running task on its own CPU (or holds the
-        // runqueue invariant for it) with preempt off, so the mm slot has a
-        // single mutator across the swap.
-        unsafe { self.replace_mm_inner(new, true); }
-    }
-
-    /// The same swap for an mm this task only BORROWED (a kernel thread
-    /// running `kthread_use_mm`). Releasing a borrow must not latch the lent
-    /// address space's resident-set peak onto the borrower: the peak belongs
-    /// to the process that owns the pages, and folding it into a kernel
-    /// thread's own accounting invents a residency that thread never had.
-    /// # SAFETY: same contract as [`Self::replace_mm`].
-    /// # C: O(1)
-    pub unsafe fn replace_borrowed_mm(&self, new: Option<Arc<AddressSpace>>) {
-        // SAFETY: this fn is itself `unsafe` and forwards `replace_mm`'s
-        // contract unchanged — caller is the running task on its own CPU with
-        // preempt off, so the mm slot has a single mutator across the swap.
-        unsafe { self.replace_mm_inner(new, false); }
-    }
-
-    unsafe fn replace_mm_inner(&self, new: Option<Arc<AddressSpace>>, latch_rss: bool) {
-        self.debug_check_canary("replace_mm");
-        let _pin = self.mm_pin_lock.lock();
-        // Publish before changing the slot. A concurrent reader sees this
-        // candidate either before it shares `new` (and filters it out during
-        // revalidation) or after the swap; it cannot miss an existing sharer.
-        if let Some(mm) = new.as_ref() { crate::registry::track_mm_before_replace(self, mm); }
-        // SAFETY: `mm_pin_lock` held above serializes this read with every
-        // replacement, so it is a stable comparison with the incoming Arc.
-        let keeps_old_membership = unsafe {
-            (&*self.mm.get()).as_ref().is_some_and(|old| new.as_ref().is_some_and(|next| Arc::ptr_eq(old, next)))
-        };
-        // SAFETY: see fn-level contract; single-mutator on this CPU.
-        let old = unsafe { core::mem::replace(&mut *self.mm.get(), new) };
-        // Now the authoritative slot no longer names `old`, so dropping that
-        // bucket membership cannot hide a current sharer. Keeping this inside
-        // the same pin closes the interval in the other direction too.
-        if !keeps_old_membership {
-            if let Some(mm) = old.as_ref() { crate::registry::untrack_mm_after_replace(self, mm); }
-        }
-        // Linux latches `signal_struct::maxrss` from the departing mm, so an
-        // `execve(2)` does not reset the process's `ru_maxrss` to the new
-        // image's residency.
-        if let (true, Some(m)) = (latch_rss, old.as_ref()) {
-            crate::rusage_charge::latch_hiwater_rss(self, m.accounting_snapshot().hiwater_rss_pages);
-        }
-        #[cfg(target_os = "oxide-kernel")]
-        if let Some(m) = old {
-            m.debug_lifetime_event(b"task-replace-mm-old");
-            crate::live::schedule::park_active_mm(m);
-        }
-        #[cfg(not(target_os = "oxide-kernel"))]
-        drop(old); // hosted: no live CR3 to protect
-    }
 }
 
 #[cfg(test)]
