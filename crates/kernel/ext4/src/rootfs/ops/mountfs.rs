@@ -241,16 +241,19 @@ impl Ext4Mount {
         dev: Arc<dyn block::BlockDevice>,
         dev_t: Option<u64>,
     ) -> block::types::KResult<Arc<Self>> {
-        Self::open_with_behaviour(dev, dev_t, Default::default())
+        let st = RootfsState::open(dev)?;
+        Self::finish_open(st, dev_t)
     }
 
     /// Open with the behavioural options already decided. # C: O(N_groups)
-    fn open_with_behaviour(
-        dev: Arc<dyn block::BlockDevice>,
-        dev_t: Option<u64>,
-        behaviour: crate::mount_opts::Ext4Behaviour,
-    ) -> block::types::KResult<Arc<Self>> {
+    fn open_with_behaviour(dev: Arc<dyn block::BlockDevice>, dev_t: Option<u64>,
+        behaviour: crate::mount_opts::Ext4Behaviour) -> block::types::KResult<Arc<Self>> {
         let st = RootfsState::open_with_behaviour(dev, behaviour)?;
+        Self::finish_open(st, dev_t)
+    }
+
+    /// Shared VFS-facing post-open lifecycle. # C: O(1)
+    fn finish_open(st: Arc<RootfsState>, dev_t: Option<u64>) -> block::types::KResult<Arc<Self>> {
         // ext4_setup_super: a rw mount marks the fs not-cleanly-unmounted +
         // bumps the mount count, so a crash before Drop is fsck-visible.
         // Best-effort — a marginal SB write must not fail an otherwise-good
@@ -282,7 +285,9 @@ impl Ext4Mount {
         dev_t: Option<u64>,
         data: &str,
     ) -> vfs::KResult<Arc<Self>> {
-        let mut ctx = crate::mount_opts::parse_data(data, Default::default())?;
+        let defaults = crate::Mount::behaviour_from_device(&*dev)
+            .map_err(|_| vfs::VfsError::Einval)?;
+        let mut ctx = crate::mount_opts::parse_data(data, defaults)?;
         let fs = Self::open_with_behaviour(dev, dev_t, ctx.behaviour)
             .map_err(|_| vfs::VfsError::Einval)?;
         fs.st.apply_parsed_mount_opts(&mut ctx)?;
@@ -453,6 +458,24 @@ mod tests {
         assert!(Ext4Mount::open_with_data(dev.clone(), None, "journal_ioprio=8").is_err());
         assert!(Ext4Mount::open_with_data(dev.clone(), None, "commit=notanumber").is_err());
         assert!(Ext4Mount::open_with_data(dev, None, "errors=panic").is_ok());
+    }
+
+    /// Linux seeds ext4's active error handling from `s_errors`, then lets an
+    /// explicit `errors=` mount option replace only that policy.  The shipped
+    /// image says `continue`; silently replacing it with the Rust default
+    /// `remount-ro` turns one failed metadata operation into a dead rootfs.
+    #[test]
+    fn on_disk_error_policy_is_the_mount_baseline_and_errors_option_overrides_it() {
+        let inherited = Ext4Mount::open(fresh_dev() as Arc<dyn BlockDevice>)
+            .expect("mount inherits mini-j s_errors=continue");
+        assert_eq!(inherited.state().opts().behaviour.errors,
+            crate::mount_opts::ErrorsPolicy::Continue);
+
+        let overridden = Ext4Mount::open_with_data(
+            fresh_dev() as Arc<dyn BlockDevice>, None, "errors=remount-ro")
+            .expect("explicit errors=remount-ro mounts");
+        assert_eq!(overridden.state().opts().behaviour.errors,
+            crate::mount_opts::ErrorsPolicy::RemountRo);
     }
 
     /// The options a root filesystem is actually mounted with reach the state

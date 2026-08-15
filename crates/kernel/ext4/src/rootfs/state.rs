@@ -138,7 +138,8 @@ impl RootfsState {
     /// Open `dev` as a fresh ext4 mount + state.
     /// # C: O(N_groups + 1024)
     pub fn open(dev: Arc<dyn BlockDevice>) -> KResult<Arc<Self>> {
-        Self::open_with_behaviour(dev, Default::default())
+        let mount = Mount::open_with_orphan_cleanup(dev, false).map_err(|_| BlockError::Eio)?;
+        Ok(Self::new(Arc::new(mount)))
     }
 
     /// Open `dev` with the behavioural options already decided, so the open

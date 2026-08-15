@@ -110,6 +110,10 @@ pub struct Superblock {
     pub blocks_per_group: u32,
     pub inodes_per_group: u32,
     pub magic:           u16,
+    /// `s_errors` (0x3C) — the filesystem's persisted error policy.  This is
+    /// a mount default, not just e2fsck metadata: Linux seeds `s_mount_opt`
+    /// from it before applying explicit `errors=` mount options.
+    pub errors:          u16,
     pub feature_compat:   u32,
     pub feature_incompat: u32,
     pub feature_ro_compat: u32,
@@ -183,6 +187,8 @@ pub const SB_OFF_WTIME:          usize = 0x30;
 pub const SB_OFF_MNT_COUNT:      usize = 0x34;
 /// `s_state` (__le16 @0x3A): filesystem state bitmask.
 pub const SB_OFF_STATE:          usize = 0x3A;
+/// `s_errors` (__le16 @0x3C): on-disk ext4 error policy.
+pub const SB_OFF_ERRORS:         usize = 0x3C;
 /// `s_feature_incompat` (__le32 @0x60): incompatible-feature bitmask.
 pub const SB_OFF_FEATURE_INCOMPAT: usize = 0x60;
 
@@ -244,6 +250,7 @@ impl Superblock {
             blocks_per_group:  rd_u32(buf, 0x20),
             inodes_per_group:  rd_u32(buf, 0x28),
             magic,
+            errors:            rd_u16(buf, SB_OFF_ERRORS),
             feature_compat:    rd_u32(buf, 0x5C),
             feature_incompat:  rd_u32(buf, SB_OFF_FEATURE_INCOMPAT),
             feature_ro_compat: rd_u32(buf, 0x64),

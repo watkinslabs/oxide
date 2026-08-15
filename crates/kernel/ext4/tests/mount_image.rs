@@ -45,6 +45,8 @@ fn open_parses_superblock() {
     assert_eq!(m.sb.magic, ext4::EXT4_SUPER_MAGIC);
     assert_eq!(m.sb.block_size, 1024, "mke2fs picked 1 KiB blocks for 1 MiB fs");
     assert!(m.sb.has_extents(), "ext4 default has extents");
+    assert_eq!(m.behaviour().errors, ext4::mount_opts::ErrorsPolicy::Continue,
+        "an open without errors= must inherit this image's s_errors=continue");
 }
 
 #[test]

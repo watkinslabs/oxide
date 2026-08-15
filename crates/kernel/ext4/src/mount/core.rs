@@ -88,7 +88,24 @@ impl Mount {
     /// Open the filesystem, optionally deferring orphan cleanup to the caller.
     /// # C: O(N_groups * desc_size + 1024)
     pub(crate) fn open_with_orphan_cleanup(dev: alloc::sync::Arc<dyn block::BlockDevice>, cleanup_orphans: bool) -> Result<Self, MountError> {
-        Self::open_with_behaviour(dev, cleanup_orphans, Default::default())
+        let behaviour = Self::behaviour_from_device(&*dev)?;
+        Self::open_with_behaviour(dev, cleanup_orphans, behaviour)
+    }
+
+    /// Read the on-disk ext4 error policy which supplies the default behaviour
+    /// for this mount.  Linux's `ext4_fill_super()` seeds `s_mount_opt` from
+    /// `es->s_errors` before it parses an explicit `errors=` override.
+    ///
+    /// Kept as a small pre-parse helper because options such as `noload` must
+    /// be parsed before the full open/journal-recovery phase.  The full open
+    /// parses and validates the same superblock again as its normal first step.
+    /// # C: O(1024-byte read)
+    pub(crate) fn behaviour_from_device(dev: &dyn block::BlockDevice)
+        -> Result<crate::mount_opts::Ext4Behaviour, MountError>
+    {
+        let sb_bytes = read_byte_range(dev, SUPERBLOCK_OFFSET, SUPERBLOCK_LEN)?;
+        let sb = Superblock::parse(&sb_bytes)?;
+        Ok(crate::mount_opts::Ext4Behaviour::for_sb_errors(sb.errors))
     }
 
     /// Open the filesystem with its behavioural options ALREADY decided.
