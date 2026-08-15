@@ -12,7 +12,7 @@
 //   `place` — the two Linux placement strategies and the phdr scans they need.
 //   `brk`     — `start_brk` selection and the heap window.
 //   `persona` — the `MMAP_PAGE_ZERO` SVr4 emulation at the tail of the load.
-//   `stack` — initial stack, argv/envp/auxv (kernel-only).
+//   `stack` — initial-stack planning plus kernel-side argv/envp/auxv writes.
 //   `uapi`  — auxv keys.
 //
 // Address randomisation is `aslr::ExecRnd`, drawn once per exec by the execve
@@ -375,7 +375,7 @@ use load::place_image;
 use place::Placement;
 
 
-#[cfg(target_os = "oxide-kernel")] pub mod stack;
+pub mod stack;
 
 /// Publish the Linux `mm_struct` layout produced by one ELF load and its
 /// initial stack build. Every exec entry path, including the kernel's PID 1

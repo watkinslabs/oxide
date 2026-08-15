@@ -732,6 +732,7 @@ dependencies = [
  "hal",
  "klog",
  "syscall",
+ "uaccess",
  "vmm",
 ]
 
