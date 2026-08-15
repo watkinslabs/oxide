@@ -103,7 +103,7 @@ impl<T, C: LockClass> RwLock<T, C> {
 
 pub struct RwReadGuard<'a, T, C: LockClass> {
     lock: &'a RwLock<T, C>,
-    preempt: Option<fn()>,
+    preempt: crate::preempt_gate::PreemptToken,
 }
 
 impl<T, C: LockClass> Deref for RwReadGuard<'_, T, C> {
@@ -125,7 +125,7 @@ impl<T, C: LockClass> Drop for RwReadGuard<'_, T, C> {
 
 pub struct RwWriteGuard<'a, T, C: LockClass> {
     lock: &'a RwLock<T, C>,
-    preempt: Option<fn()>,
+    preempt: crate::preempt_gate::PreemptToken,
 }
 
 impl<T, C: LockClass> Deref for RwWriteGuard<'_, T, C> {

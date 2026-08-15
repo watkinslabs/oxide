@@ -478,6 +478,9 @@ impl<T, C: LockClass> Spinlock<T, C> {
         // rq lock once and performs exactly one `raw_unlock`, so the per-task
         // count balances; omitting this leaks one level per context switch and
         // the CPU stops rescheduling entirely.
+        #[cfg(feature = "debug-preempt")]
+        crate::preempt_gate::release_forgotten();
+        #[cfg(not(feature = "debug-preempt"))]
         crate::preempt_gate::release(crate::preempt_gate::installed_release());
     }
 
@@ -547,7 +550,7 @@ pub struct Guard<'a, T, C: LockClass> {
     lock: &'a Spinlock<T, C>,
     /// The release half of the gate this acquisition used, so an installation
     /// that lands mid-section can never produce an unmatched decrement.
-    preempt: Option<fn()>,
+    preempt: crate::preempt_gate::PreemptToken,
 }
 
 impl<T, C: LockClass> Deref for Guard<'_, T, C> {
@@ -581,7 +584,7 @@ impl<T, C: LockClass> Drop for Guard<'_, T, C> {
 pub struct IrqGuard<'a, T, C: LockClass, I: IrqGate> {
     lock: &'a Spinlock<T, C>,
     flags: u64,
-    preempt: Option<fn()>,
+    preempt: crate::preempt_gate::PreemptToken,
     _g: PhantomData<I>,
 }
 

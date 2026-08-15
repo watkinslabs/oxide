@@ -85,6 +85,9 @@ pub const PREEMPT_DISABLED: u32 = 1;
 /// `CONFIG_DEBUG_PREEMPT` subset — the two count-leak detectors.
 #[cfg(feature = "debug-preempt")]
 pub mod debug;
+/// Module manifest: spinlock-gate installation owns the scheduler→sync bridge.
+mod gate;
+pub use gate::install_spinlock_gate;
 
 /// `TIF_NEED_RESCHED` — per-TASK, exactly as Linux keeps it. Owns every
 /// set / read / take of the reschedule request.
@@ -274,26 +277,6 @@ pub fn irqs_disabled() -> bool {
     #[cfg(not(target_os = "oxide-kernel"))]
     { false }
 }
-
-/// The preempt pair every spinning lock in `sync` takes, so a lock owner
-/// cannot be descheduled inside its critical section (Linux `spin_lock` =
-/// `preempt_disable` + acquire, `spin_unlock` = release + `preempt_enable`).
-///
-/// The release half is the NO-CHECK enable: a spin-lock release is not a
-/// schedule point in this kernel, and firing `schedule()` out of an arbitrary
-/// guard `Drop` would put a switch in every unlock site in the tree. The
-/// request survives (`take_need_resched` is only consulted by the checking
-/// forms) and is taken at the next natural point — return-to-user,
-/// `local_bh_enable`, or a real `preempt_enable`.
-static SPINLOCK_PREEMPT: sync::PreemptOps = sync::PreemptOps {
-    disable: preempt_disable,
-    enable: preempt_enable_no_check,
-};
-
-/// Install that gate. Boot path, once, after per-CPU is up and before the
-/// scheduler takes its first reschedule.
-/// # C: O(1)
-pub fn install_spinlock_gate() { sync::set_preempt_ops(&SPINLOCK_PREEMPT); }
 
 /// Install the lockdep context reporter. Boot path, before secondary CPUs.
 /// # C: O(1)
