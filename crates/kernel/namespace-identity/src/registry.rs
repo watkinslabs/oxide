@@ -6,7 +6,7 @@ use core::sync::atomic::Ordering;
 
 use crate::identity::{Namespace, NamespaceId, NamespaceKind, NamespacePin, NamespaceRef, NsId,
     Owner};
-use crate::sync::SpinLock;
+use sync::{Namespace as NamespaceClass, Spinlock};
 use crate::uapi::{FIRST_DYNAMIC_NSFS_INO, FIRST_DYNAMIC_NS_ID};
 
 const INIT_ID: NamespaceId = NamespaceId(0);
@@ -80,7 +80,15 @@ impl Registry {
     }
 }
 
-static REGISTRY: SpinLock<Registry> = SpinLock::new(Registry::new());
+static REGISTRY: Spinlock<Registry, NamespaceClass> = Spinlock::new(Registry::new());
+
+#[cfg(test)]
+pub(crate) struct TestRegistryGuard { _guard: sync::Guard<'static, Registry, NamespaceClass> }
+
+#[cfg(test)]
+pub(crate) fn test_registry_guard() -> TestRegistryGuard {
+    TestRegistryGuard { _guard: REGISTRY.lock() }
+}
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum AllocError { IdExhausted, OwnerNotUserNamespace, ParentKindMismatch }
@@ -94,7 +102,7 @@ fn initialize(registry: &mut Registry) {
         owner_user_namespace: Owner::InitialUser, parent: None,
         pid_memfd_noexec_scope: core::sync::atomic::AtomicU8::new(0),
         pid_numbers: crate::pid_numbers::PidNumberSpace::for_kind(NamespaceKind::User, true),
-        active: core::sync::atomic::AtomicUsize::new(1), finalizers: SpinLock::new(Vec::new()),
+        active: core::sync::atomic::AtomicUsize::new(1), finalizers: Spinlock::new(Vec::new()),
     });
     registry.publish_lifetime(&user);
     registry.publish_active(&user);
@@ -107,7 +115,7 @@ fn initialize(registry: &mut Registry) {
             parent: None, pid_memfd_noexec_scope: core::sync::atomic::AtomicU8::new(0),
             pid_numbers: crate::pid_numbers::PidNumberSpace::for_kind(kind, true),
             active: core::sync::atomic::AtomicUsize::new(1),
-            finalizers: SpinLock::new(Vec::new()),
+            finalizers: Spinlock::new(Vec::new()),
         });
         registry.publish_lifetime(&namespace);
         registry.publish_active(&namespace);
@@ -241,7 +249,7 @@ fn allocate_inactive_inner(kind: NamespaceKind, owner: NamespacePin,
             pid_memfd_noexec_scope),
         pid_numbers: crate::pid_numbers::PidNumberSpace::for_kind(kind, false),
         active: core::sync::atomic::AtomicUsize::new(0),
-        finalizers: SpinLock::new(Vec::new()),
+        finalizers: Spinlock::new(Vec::new()),
     });
     registry.publish_lifetime(&namespace);
     Ok(NamespacePin::from_arc(namespace))

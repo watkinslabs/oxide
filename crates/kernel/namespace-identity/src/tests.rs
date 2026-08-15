@@ -1,6 +1,7 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Barrier, Mutex};
+use std::time::Duration;
 
 use super::*;
 
@@ -33,13 +34,21 @@ fn all_eight_initial_kinds_are_canonical() {
 fn cloning_an_active_namespace_does_not_enter_the_global_registry() {
     let _serial = SERIAL.lock().unwrap();
     let namespace = allocate(NamespaceKind::Uts, initial(NamespaceKind::User), None).unwrap();
+    let expected = namespace.pin();
+    let registry = crate::registry::test_registry_guard();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let clone = namespace.clone();
+        done_tx.send(()).unwrap();
+        clone
+    });
 
-    crate::sync::reset_lock_calls();
-    let clone = namespace.clone();
+    let direct = done_rx.recv_timeout(Duration::from_millis(20)).is_ok();
+    drop(registry);
+    let clone = worker.join().unwrap();
 
-    assert_eq!(crate::sync::lock_calls(), 0,
-        "a live namespace reference must be refcounted directly, not through the registry");
-    assert!(NamespaceRef::ptr_eq(&namespace, &clone));
+    assert!(direct, "a live namespace reference must be refcounted directly, not through the registry");
+    assert!(NamespacePin::ptr_eq(&expected, &clone.pin()));
     drop(clone);
 }
 
