@@ -14,6 +14,13 @@
 #   tools/boot-smoke-fs.sh arm [timeout_seconds]
 set -uo pipefail
 
+# This harness drives the guest through systemd's root debug shell over the
+# serial FIFO: it types a command and waits for the output. The boot line's
+# default puts that shell on a VT and a LOGIN on the serial line, which would
+# swallow every command as a username, so ask for the serial control plane —
+# the boot-line builder moves the shell and masks the login together.
+export OXIDE_SERIAL_SHELL="${OXIDE_SERIAL_SHELL:-1}"
+
 usage() {
     cat >&2 <<EOF
 usage: $0 <x86|arm> [timeout_seconds]

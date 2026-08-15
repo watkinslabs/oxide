@@ -13,7 +13,7 @@ pub(super) fn serial_console(arch: &str) -> &'static str {
     if arch == "aarch64" { "ttyAMA0" } else { "ttyS0" }
 }
 
-/// VT the early root shell runs on.
+/// VT the early root shell runs on by default.
 ///
 /// Upstream systemd's default, and it is the default for a reason: the serial
 /// line gets a `serial-getty` generated from `/sys/class/tty/console/active`,
@@ -21,6 +21,35 @@ pub(super) fn serial_console(arch: &str) -> &'static str {
 /// screen, and the serial line carries the kernel log plus a normal login —
 /// which is what a serial-console machine looks like.
 const DEBUG_SHELL_TTY: &str = "tty9";
+
+/// Device node the serial line publishes as, on both arches.
+const SERIAL_DEVNODE: &str = "ttyS0";
+
+/// The `serial-getty` instance the kernel's console list makes systemd
+/// generate. A run that wants the serial line for something else has to say
+/// so, because that generator will otherwise start a login on it.
+const SERIAL_GETTY_UNIT: &str = "serial-getty@ttyS0.service";
+
+/// Does this run want the root shell on the SERIAL line instead of a VT?
+///
+/// Every in-guest probe harness in `tools/` drives that shell over the serial
+/// FIFO — typing a command and waiting for its output is how they ask the
+/// running system anything. A login prompt there instead swallows the command
+/// as a username, so a run that needs the control plane asks for it and gets
+/// the getty masked in the same breath: one line, one owner.
+fn serial_shell_requested() -> bool {
+    std::env::var("OXIDE_SERIAL_SHELL").is_ok_and(|v| !v.is_empty() && v != "0")
+}
+
+/// The debug-shell parameters this run carries: which tty, and whether the
+/// login that would otherwise own it is masked. # C: O(1)
+fn debug_shell_params() -> String {
+    if serial_shell_requested() {
+        format!("systemd.debug_shell={SERIAL_DEVNODE} systemd.mask={SERIAL_GETTY_UNIT}")
+    } else {
+        format!("systemd.debug_shell={DEBUG_SHELL_TTY}")
+    }
+}
 
 /// Does the bootloader prepend `BOOT_IMAGE=<path>` to the line by itself?
 ///
@@ -134,7 +163,7 @@ pub(super) fn kernel_cmdline(arch: &str, image_path: &str) -> String {
 /// # C: O(command-line length)
 pub(super) fn kernel_cmdline_for_root(arch: &str, image_path: &str, root: &str) -> String {
     let ser = serial_console(arch);
-    let dev = DEBUG_SHELL_TTY;
+    let shell = debug_shell_params();
     let boot_image = if bootloader_supplies_boot_image(arch) {
         String::new()
     } else {
@@ -152,7 +181,7 @@ pub(super) fn kernel_cmdline_for_root(arch: &str, image_path: &str, root: &str) 
          systemd.mask=ModemManager.service systemd.mask=plymouth-start.service \
          systemd.mask=NetworkManager-wait-online.service \
          systemd.mask=flatpak-add-fedora-repos.service \
-         systemd.debug_shell={dev} oxide.bootargs=grub"
+         {shell} oxide.bootargs=grub"
     )
 }
 
@@ -202,13 +231,45 @@ mod tests {
     /// arches, so the VT the shell runs on needs no arch spelling at all.
     #[test]
     fn path_valued_parameters_use_the_published_devnode() {
-        let _env = env_held();
-        for arch in ["x86_64", "aarch64"] {
-            let line = kernel_cmdline(arch, "/img");
-            assert!(line.contains("systemd.debug_shell=tty9"), "{arch}: {line}");
-        }
-        // ...while the console CLASS stays arch-correct.
-        assert!(kernel_cmdline("aarch64", "/img").contains("console=ttyAMA0,115200"));
+        with_env(&[("OXIDE_SERIAL_SHELL", None), ("OXIDE_CMDLINE_DEBUG", None), ("OXIDE_CMDLINE_EXTRA", None)], || {
+            for arch in ["x86_64", "aarch64"] {
+                let line = kernel_cmdline(arch, "/img");
+                assert!(line.contains("systemd.debug_shell=tty9"), "{arch}: {line}");
+            }
+            // ...while the console CLASS stays arch-correct.
+            assert!(kernel_cmdline("aarch64", "/img").contains("console=ttyAMA0,115200"));
+        });
+    }
+
+    /// A run that asks for the serial control plane gets the shell there AND
+    /// the login that would otherwise own that line masked, in the same line.
+    /// Every in-guest probe harness types into that shell; a getty answering
+    /// instead swallows the command as a username, and the harness waits for
+    /// output that never comes.
+    #[test]
+    fn the_serial_control_plane_moves_the_shell_and_masks_the_login() {
+        with_env(&[("OXIDE_SERIAL_SHELL", Some("1")), ("OXIDE_CMDLINE_DEBUG", None), ("OXIDE_CMDLINE_EXTRA", None)], || {
+            for arch in ["x86_64", "aarch64"] {
+                let line = kernel_cmdline(arch, "/img");
+                assert!(line.split(' ').any(|t| t == "systemd.debug_shell=ttyS0"), "{arch}: {line}");
+                assert!(line.split(' ').any(|t| t == "systemd.mask=serial-getty@ttyS0.service"),
+                    "{arch}: the login must be masked or it takes the line: {line}");
+                // The console configuration is unchanged: this moves a shell,
+                // not the console.
+                assert!(line.contains("console=tty0 "), "{arch}: {line}");
+            }
+        });
+    }
+
+    /// ...and an explicit zero is a request for the default, not a truthy
+    /// string that happens to be set.
+    #[test]
+    fn an_explicit_zero_keeps_the_login_on_the_serial_line() {
+        with_env(&[("OXIDE_SERIAL_SHELL", Some("0")), ("OXIDE_CMDLINE_DEBUG", None), ("OXIDE_CMDLINE_EXTRA", None)], || {
+            let line = kernel_cmdline("x86_64", "/img");
+            assert!(line.contains("systemd.debug_shell=tty9"), "{line}");
+            assert!(!line.contains("systemd.mask=serial-getty"), "{line}");
+        });
     }
 
     /// The early root shell must not sit on the serial line. The kernel reports
@@ -217,15 +278,16 @@ mod tests {
     /// squatting there is why the serial line had no login prompt.
     #[test]
     fn the_debug_shell_does_not_squat_on_the_serial_line() {
-        let _env = env_held();
-        for (arch, ser) in [("x86_64", "ttyS0"), ("aarch64", "ttyAMA0")] {
-            let line = kernel_cmdline(arch, "/img");
-            for name in [ser, "ttyS0"] {
-                assert!(!line.contains(&format!("systemd.debug_shell={name}")),
-                    "{arch}: the generated serial-getty owns this line: {line}");
+        with_env(&[("OXIDE_SERIAL_SHELL", None), ("OXIDE_CMDLINE_DEBUG", None), ("OXIDE_CMDLINE_EXTRA", None)], || {
+            for (arch, ser) in [("x86_64", "ttyS0"), ("aarch64", "ttyAMA0")] {
+                let line = kernel_cmdline(arch, "/img");
+                for name in [ser, "ttyS0"] {
+                    assert!(!line.contains(&format!("systemd.debug_shell={name}")),
+                        "{arch}: the generated serial-getty owns this line: {line}");
+                }
+                assert!(line.contains("systemd.debug_shell="), "{arch}: {line}");
             }
-            assert!(line.contains("systemd.debug_shell="), "{arch}: {line}");
-        }
+        });
     }
 
     /// `BOOT_IMAGE=` comes from exactly one place per arch, never both: the
