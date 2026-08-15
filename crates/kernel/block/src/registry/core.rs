@@ -171,7 +171,7 @@ pub fn register_with_driver(driver: BlockDriver, name: &str, serial: Option<&str
             .with_devnode("block", name.to_string(), Some((number.major, number.minor))))) {
         Ok(_) => {
             crate::devbridge::publish(number, bridge_disk);
-            let _ = super::partition::rescan_partitions(name);
+            super::partition::scan_after_registration(name);
             index
         }
         Err(_) => {

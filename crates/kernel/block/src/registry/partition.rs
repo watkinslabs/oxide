@@ -3,6 +3,8 @@
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+#[cfg(target_os = "oxide-kernel")]
+use sched::live::Mutex as LifecycleMutex;
 
 use crate::partitions::{self, PartitionDevice};
 use crate::BlockDevice;
@@ -21,6 +23,58 @@ pub struct Partition {
     pub label: Option<String>,
     pub dev: Arc<dyn BlockDevice>,
 }
+
+/// One-shot partition scans admitted before block completions can run.
+#[cfg(any(target_os = "oxide-kernel", test))]
+#[derive(Default)]
+struct DeferredRegistrationScans { names: Vec<String> }
+
+#[cfg(any(target_os = "oxide-kernel", test))]
+impl DeferredRegistrationScans {
+    fn record(&mut self, name: &str) {
+        if !self.names.iter().any(|pending| pending == name) { self.names.push(String::from(name)); }
+    }
+
+    fn drain(&mut self) -> Vec<String> { core::mem::take(&mut self.names) }
+}
+
+// PCI enumeration precedes scheduler/worker installation. A partition scan
+// issues real block I/O, so pre-scheduler disks are recorded until completion
+// IRQ handling and the root-device resolution phase are both available.
+#[cfg(target_os = "oxide-kernel")]
+static DEFERRED_REGISTRATION_SCANS: LifecycleMutex<DeferredRegistrationScans> = LifecycleMutex::new(DeferredRegistrationScans { names: Vec::new() });
+
+/// Scan a newly registered disk when its registration context can service
+/// block completions. Pre-scheduler boot registration is deferred to the
+/// post-worker startup pass. # C: O(partition table) or O(N deferred names)
+pub(crate) fn scan_after_registration(name: &str) {
+    #[cfg(target_os = "oxide-kernel")]
+    if !sched::live::runqueue_active() {
+        // SAFETY: PCI boot is process context and the registry lifecycle lock
+        // serializes this one-shot handoff with the post-worker drain.
+        let mut deferred = unsafe { DEFERRED_REGISTRATION_SCANS.lock() };
+        deferred.record(name);
+        return;
+    }
+    let _ = rescan_partitions(name);
+}
+
+/// Drain partition scans deferred by pre-scheduler disk registration.
+///
+/// The root mount resolves partition-backed root specifications only after
+/// this synchronous drain, never through a later asynchronous scan.
+/// # C: O(N deferred disks * partition table)
+#[cfg(target_os = "oxide-kernel")]
+pub fn start_deferred_partition_scans() {
+    if !sched::live::runqueue_active() { return; }
+    // SAFETY: this phase runs after early registration and moves the one-shot
+    // list while holding its lifecycle lock; no lock is held across I/O.
+    let names = unsafe { DEFERRED_REGISTRATION_SCANS.lock() }.drain();
+    for name in names { let _ = rescan_partitions(&name); }
+}
+
+#[cfg(not(target_os = "oxide-kernel"))]
+pub fn start_deferred_partition_scans() {}
 
 /// Scan a whole disk then replace its complete, disk-owned partition set.
 /// A malformed table and a valid unpartitioned disk both publish an empty set.
@@ -116,6 +170,16 @@ mod tests {
     const CLIP_NAME: &str = "partition-scan-clip-fixture";
     const REMOVE_NAME: &str = "partition-scan-remove-fixture";
     const BLOCK_BYTES: u32 = 512;
+
+    #[test]
+    fn deferred_registration_scans_deduplicate_and_drain_once() {
+        let mut pending = DeferredRegistrationScans::default();
+        pending.record("vda");
+        pending.record("vdb");
+        pending.record("vda");
+        assert_eq!(pending.drain(), vec![String::from("vda"), String::from("vdb")]);
+        assert!(pending.drain().is_empty(), "root resolution cannot rescan a consumed boot handoff");
+    }
 
     #[test]
     fn rescan_publishes_bounded_disk_owned_children() {
