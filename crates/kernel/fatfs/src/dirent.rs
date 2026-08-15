@@ -176,6 +176,25 @@ pub fn short_name(entry: &ShortEntry) -> String {
     out
 }
 
+/// Encode a short entry back into its 32-byte record.
+///
+/// Only the fields this filesystem owns are written: the name, attribute,
+/// cluster halves and size. Everything else in the record — the creation and
+/// access timestamps, the reserved byte — is left as it was, because it
+/// belongs to whoever wrote it and this filesystem has no better value for it.
+/// # C: O(1)
+pub fn encode_short(entry: &ShortEntry) -> [u8; ENTRY_BYTES] {
+    let mut r = [0u8; ENTRY_BYTES];
+    r[short::NAME..short::NAME + short::NAME_LEN].copy_from_slice(&entry.raw_name);
+    r[short::ATTR] = entry.attr;
+    r[short::CLUSTER_HI..short::CLUSTER_HI + 2]
+        .copy_from_slice(&((entry.cluster >> 16) as u16).to_le_bytes());
+    r[short::CLUSTER_LO..short::CLUSTER_LO + 2]
+        .copy_from_slice(&(entry.cluster as u16).to_le_bytes());
+    r[short::SIZE..short::SIZE + 4].copy_from_slice(&entry.size.to_le_bytes());
+    r
+}
+
 /// Assembles long names from the slots preceding each short entry.
 ///
 /// Fed records in on-disk order. The rules it enforces are the reference's,

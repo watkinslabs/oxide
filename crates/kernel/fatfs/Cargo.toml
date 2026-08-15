@@ -6,7 +6,9 @@ publish = false
 [lib]
 path = "src/lib.rs"
 [dependencies]
+sync    = { path = "../../shared/sync" }
 syscall = { path = "../syscall" }
+klog    = { path = "../../shared/klog" }
 vfs     = { path = "../vfs" }
 block   = { path = "../block" }
 
