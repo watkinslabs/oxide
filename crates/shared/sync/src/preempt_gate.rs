@@ -227,6 +227,29 @@ pub(crate) fn acquire(rank: u16) -> PreemptToken {
     PreemptToken { enable: Some(ops.enable) }
 }
 
+/// Join the held-lock trace WITHOUT touching the count.
+///
+/// A `lock_bh` acquisition raises only the softirq field — the reference's
+/// `spin_lock_bh` does the same, and adding a preempt level here would make
+/// this kernel's count disagree with it. But a diagnostic that cannot see the
+/// section is worse than useless: a sleep taken inside one reported `held=[]`
+/// and named no lock at all, which is the report the boot wedge produces.
+/// The returned token carries no enable half, so its release pops the trace
+/// and nothing else.
+/// # C: O(1)
+#[cfg(feature = "debug-preempt")]
+#[inline]
+#[track_caller]
+pub(crate) fn acquire_trace_only(rank: u16) -> PreemptToken {
+    trace_push(cpu_slot(installed_cpu()), rank, Location::caller());
+    PreemptToken { enable: None }
+}
+
+/// Without the diagnostic there is no trace to join. # C: O(1)
+#[cfg(not(feature = "debug-preempt"))]
+#[inline]
+pub(crate) fn acquire_trace_only(_rank: u16) -> PreemptToken { None }
+
 /// Leave a spinning-lock critical section with the release half `acquire`
 /// returned. Called after the lock word is released, so a reschedule taken at
 /// the next natural point never finds this lock held.
