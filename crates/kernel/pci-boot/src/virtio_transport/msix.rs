@@ -267,7 +267,7 @@ fn release_transport_record(rec: TransportRecord) {
 /// must not free this probe's DMA frames on `false` — see
 /// `virtio::reset_device`'s contract.
 pub(crate) fn reset_failed_probe(cfg_va: u64) -> bool {
-    virtio::reset_device(cfg_va)
+    virtio::reset_device_with_wait(cfg_va, super::wait_one_ms)
 }
 
 pub(crate) fn release_failed_probe_frames(bdf: pci::Bdf, frames: &virtio::VirtioProbeFrameSet) {

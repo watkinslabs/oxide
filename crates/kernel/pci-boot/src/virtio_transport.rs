@@ -9,6 +9,7 @@ use alloc::vec::Vec;
 
 mod msix;
 mod devres;
+mod reset_wait;
 
 const VIRTIO_FRAME_BYTES: usize = hal::PAGE_SIZE_BYTES as usize;
 const VIRTQ_DESC_BYTES: usize = 16;
@@ -25,6 +26,7 @@ pub(super) use msix::{
     restore_pci_command, unmask_msix_bindings, unpublish_transport_record,
     unpublish_transport_record_by_bdf,
 };
+pub(crate) use reset_wait::wait_one_ms;
 pub(super) use virtio::{ProgrammedQueues, QueueRing};
 
 struct BootQueueAllocator {

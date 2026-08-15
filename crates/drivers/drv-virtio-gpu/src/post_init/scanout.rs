@@ -206,7 +206,9 @@ pub fn uninstall_scanout(device_key: virtio::VirtioChildDeviceKey) -> bool {
         Some(ctx) => ctx,
         None => return false,
     };
-    release_scanout_dma(&ctx, virtio::reset_device(ctx.cfg_va));
+    // SAFETY: ctx was removed from the scanout registry before reset.
+    let reset = unsafe { virtio::reset_device_sleepable(ctx.cfg_va) };
+    release_scanout_dma(&ctx, reset);
     true
 }
 
@@ -253,7 +255,8 @@ pub fn shutdown_scanout(device_key: virtio::VirtioChildDeviceKey) -> bool {
         ctx.quiesced = true;
         ctx.cfg_va
     };
-    let _ = virtio::reset_device(cfg_va);
+    // SAFETY: only the local shutdown marker was held, never the ctx lock.
+    let _ = unsafe { virtio::reset_device_sleepable(cfg_va) };
     true
 }
 
@@ -275,7 +278,9 @@ pub fn uninstall_scanout_after_failed_probe(device_key: virtio::VirtioChildDevic
     // sent. Reset first and honour its confirmation, exactly as the orderly
     // removal path does — freeing here unconditionally handed a physical
     // address the device may still write into back to the buddy allocator.
-    release_scanout_dma(&ctx, virtio::reset_device(ctx.cfg_va));
+    // SAFETY: failed-probe unwind owns the removed ctx and holds no lock.
+    let reset = unsafe { virtio::reset_device_sleepable(ctx.cfg_va) };
+    release_scanout_dma(&ctx, reset);
     true
 }
 

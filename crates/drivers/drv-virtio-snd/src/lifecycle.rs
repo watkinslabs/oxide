@@ -233,7 +233,9 @@ pub(super) fn stop_reset_free(mut ctx: Ctx) {
             let _ = pcm_ctl(&mut ctx, VIRTIO_SND_R_PCM_RELEASE, stream);
         }
     }
-    let _ = virtio::reset_device(ctx.cfg_va);
+    // SAFETY: ctx is private after remove_ctx and no sound/softirq lock spans
+    // this terminal transport reset delay.
+    let _ = unsafe { virtio::reset_device_sleepable(ctx.cfg_va) };
     free_frame(ctx.event_buf_pa);
     free_frame(ctx.rx_buf_pa);
     free_frame(ctx.rx_scratch_pa);

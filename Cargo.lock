@@ -2434,6 +2434,8 @@ dependencies = [
  "iommu",
  "pci",
  "pmm",
+ "sched",
+ "sync",
 ]
 
 [[package]]

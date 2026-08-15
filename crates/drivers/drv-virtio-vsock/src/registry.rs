@@ -193,7 +193,8 @@ pub fn uninstall(device_key: virtio::VirtioChildDeviceKey) -> bool {
     if empty_after {
         clear_rx_softirq_handler();
     }
-    let _ = virtio::reset_device(ctx.cfg_va);
+    // SAFETY: ctx was removed from the BH registry before this sleepable reset.
+    let _ = unsafe { virtio::reset_device_sleepable(ctx.cfg_va) };
     free_rx_bufs(ctx.bdf, &mut ctx.rx_bufs);
     let _ = virtio::release_dma_frame(ctx.bdf, &mut ctx.tx_buf, FRAME_BYTES);
     true
@@ -209,7 +210,8 @@ pub fn shutdown(device_key: virtio::VirtioChildDeviceKey) -> bool {
     if empty_after {
         clear_rx_softirq_handler();
     }
-    let _ = virtio::reset_device(ctx.cfg_va);
+    // SAFETY: ctx was removed from the BH registry before this sleepable reset.
+    let _ = unsafe { virtio::reset_device_sleepable(ctx.cfg_va) };
     free_rx_bufs(ctx.bdf, &mut ctx.rx_bufs);
     let _ = virtio::release_dma_frame(ctx.bdf, &mut ctx.tx_buf, FRAME_BYTES);
     true

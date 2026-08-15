@@ -5,6 +5,7 @@ use super::{
     NetRxBootBuffer, ProgrammedQueues, TransportMappings, VirtioProbeDevres, Vec,
     VIRTIO_PCI_PAGE_BASE_MASK,
 };
+use crate::virtio_transport::wait_one_ms;
 
 pub(super) struct VirtioProbeState {
     bdf: pci::Bdf,
@@ -200,7 +201,7 @@ impl VirtioProbeState {
         profile: virtio::VirtioTransportProfile,
         runtime: VirtioPciRuntime,
     ) -> virtio::CommonCfgBringup<ProgrammedQueues> {
-        let bringup = virtio::bring_up_common_cfg(self.cfg_va, profile.drv_features, || {
+        let bringup = virtio::bring_up_common_cfg_with_wait(self.cfg_va, profile.drv_features, wait_one_ms, || {
             let (config_msix_vec, q0_msix_vec, queue_plans) = self.resolve_msix(d, caps, bars, &profile)?;
             if virtio::set_config_msix_vector(self.cfg_va, config_msix_vec) != config_msix_vec {
                 return None;
