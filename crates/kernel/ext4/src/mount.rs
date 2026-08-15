@@ -2,6 +2,7 @@
 //
 // Module manifest:
 // - core: mount open path, cached state, metadata shadowing, and GDT access.
+// - csum_trace: one-shot debug origin record for a rejected metadata checksum.
 // - blocks: inode reads, extent walks, file-block I/O, and inode flag helpers.
 // - dirs: directory mutation, directory lookup, and absolute path walk.
 // - io: raw byte-range block-device helpers shared by sibling modules.
@@ -23,9 +24,11 @@ use crate::superblock::{Superblock, SuperblockError};
 mod blocks;
 mod batch;
 mod core;
+mod csum_trace;
 /// Register the current-context id source for the transaction gate (kernel).
 #[cfg(target_os = "oxide-kernel")]
 pub use core::set_ctx_id_hook;
+pub(crate) use csum_trace::first_csum_failure;
 mod dirs;
 #[cfg(not(target_os = "oxide-kernel"))]
 mod faults;

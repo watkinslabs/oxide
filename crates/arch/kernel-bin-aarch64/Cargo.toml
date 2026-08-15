@@ -16,6 +16,7 @@ klog         = { path = "../../shared/klog" }
 [features]
 debug-getdents = ["boot-aarch64/debug-getdents"]
 debug-getdents-detail = ["boot-aarch64/debug-getdents-detail"]
+debug-csum-origin = ["boot-aarch64/debug-csum-origin"]
 debug-syscall-return = ["boot-aarch64/debug-syscall-return"]
 debug-taskdump = ["boot-aarch64/debug-taskdump"]
 debug-umh = ["boot-aarch64/debug-umh"]

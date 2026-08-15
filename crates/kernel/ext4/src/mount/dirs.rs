@@ -183,6 +183,7 @@ impl Mount {
             if verify_tail
                 && !crate::csum::verify_dirent_tail(&self.sb, dir_inode.ino, dir_inode.generation, &blk)
             {
+                super::first_csum_failure(b"directory", dir_inode.ino as u64, fb as u64);
                 return Err(MountError::BadChecksum);
             }
             match dir::lookup(&blk, name)? {
