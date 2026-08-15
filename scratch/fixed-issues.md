@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2212-buddy-head-only-free-node
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2212 | DEFECT | high | **PMM boot seeded every free buddy block by writing a `FreeNode` poison/order header into every page in the block, then allocation reread every page's poison. On a 4 GiB guest this cold-touched approximately one million 4 KiB pages before the scheduler or display driver could run, producing a long apparently-dead black boot. Linux represents a free buddy block in its head `struct page` (`PageBuddy`/`page_private`); tail pages are not free-list nodes. Oxide now keeps its intrusive free-list header and its integrity check at that head only.** | `pmm::tests::init::seed_only_writes_the_free_block_head` proves seven tails of an order-3 block retain their pre-seed bytes while the head receives the free-node poison; full `cargo test -p pmm --lib` (211 passed), `make x86`, and `make arm` passed. One B2212 KVM boot reached systemd at guest 8.787 s after kernel entry at 1.427 s; it was stopped at the 20 s measurement bound. Compared with `../linux-master/include/linux/mm_types.h::struct page` and buddy free-page head representation. | B2212-buddy-head-only-free-node |
+
 ### F1098-partition-4kn
 
 | Status | Class | Sev | Issue | Evidence | Owner |

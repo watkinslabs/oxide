@@ -3,6 +3,7 @@ use crate::kassert;
 
 mod api;
 mod accounting;
+mod audit;
 mod double_free;
 mod free_node;
 mod inner;

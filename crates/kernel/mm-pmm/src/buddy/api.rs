@@ -1,8 +1,8 @@
 use super::*;
 use super::double_free::{df_dump, df_note};
-use super::free_node::{read_u64, OFF_NEXT, OFF_POISON};
+use super::free_node::{read_u64, OFF_NEXT};
 #[cfg(feature = "debug-pmm")]
-use super::free_node::{OFF_PREV, OFF_ORDER};
+use super::free_node::{OFF_ORDER, OFF_POISON, OFF_PREV};
 use super::inner::PmmInner;
 
 /// PMM owner. Single-instance kernel-wide; constructed in the boot path
@@ -17,8 +17,8 @@ pub struct Pmm<B: PageBacking, I: IrqGate = NoopIrq> {
     /// callers see the same address. Higher-rank consumers (slab at
     /// rank Slab=10) can safely call `page_ptr` while holding their
     /// own spinlock without violating `06§3.6` partial order.
-    backing: B,
-    inner: Spinlock<PmmInner, Buddy>,
+    pub(super) backing: B,
+    pub(super) inner: Spinlock<PmmInner, Buddy>,
     _i: PhantomData<fn() -> I>,
 }
 
@@ -146,7 +146,7 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
 
     /// Allocate one buddy block of `order`. Returns the base PFN.
     /// Always picks lower half on split (deterministic) per `10§6.1`.
-    /// Verifies poison inside lock; zeros pages outside lock.
+    /// Verifies the head free-node inside lock; zeros pages outside lock.
     ///
     /// # C: O(MAX_ORDER) bounded
     /// # Ctx: any; brief IRQ-off
@@ -214,7 +214,7 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
                 g.free_count[k as usize] += 1;
             }
             // SAFETY: the selected block is no longer on a free list and is exclusively PMM-owned.
-            unsafe { g.verify_poison(&self.backing, pfn, order.0) };
+            unsafe { g.verify_poison(&self.backing, pfn) };
             g.allocated += span;
             g.alloc_events += 1;
             g.alloc_event_pages += span;
@@ -272,9 +272,9 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
                 g.bitmap_set(k, buddy >> k);
                 g.free_count[k as usize] += 1;
             }
-            // SAFETY: pfn is the popped (and possibly split-down) order-o
-            // block; PMM-owned; verify poison before releasing the lock.
-            unsafe { g.verify_poison(&self.backing, pfn, o) };
+            // SAFETY: pfn is the popped (and possibly split-down) free block
+            // head; verify its node before releasing the lock.
+            unsafe { g.verify_poison(&self.backing, pfn) };
             let pages = 1u64 << o;
             g.allocated += pages;
             g.alloc_events += 1;
@@ -477,39 +477,4 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
         unsafe { self.backing.page_ptr(pfn) }
     }
 
-    /// Walk every order's bitmap + free-list; panic on invariant
-    /// violation. Verifies I1, I3, I4, I6, I7. I2 and I5 are guaranteed
-    /// by I1 + I4 + the construction algorithm (no separate check).
-    ///
-    /// # SAFETY: walks every populated bitmap word and every free-list
-    /// node; reads 16B header from each free node's first page.
-    /// # C: O(N)
-    pub unsafe fn audit(&self) {
-        let g = self.inner.lock_irqsave::<I>();
-        let mut total_free = 0u64;
-        for o in 0..ORDERS {
-            let order = o as u8;
-            let mut n = 0u64;
-            let mut cur = g.free_heads[o];
-            while cur != PFN_NULL {
-                kassert!(g.bitmap_get(order, cur >> o), "I3: free-list node not in bitmap");
-                kassert!(cur & ((1u64 << o) - 1) == 0, "I4: free-list node misaligned");
-                n += 1;
-                // SAFETY: cur on free_list[o] ⇒ PMM-owned page; backing
-                // accessed lock-free per the Pmm.backing field invariant.
-                let p = unsafe { self.backing.page_ptr(Pfn(cur)) };
-                // SAFETY: read 16B header from PMM-owned page.
-                let m = unsafe { read_u64(p, OFF_POISON) };
-                kassert!(m == POISON_MAGIC, "I7: poison missing on free node");
-                // SAFETY: read next field inside header.
-                cur = unsafe { read_u64(p, OFF_NEXT) };
-            }
-            kassert!(n == g.free_count[o], "I3: free_count vs list-length mismatch");
-            let mut bits = 0u64;
-            for w in g.bitmaps[o].iter() { bits += w.load(Ordering::Relaxed).count_ones() as u64; }
-            kassert!(bits == g.free_count[o], "I1: bitmap pop vs free_count mismatch");
-            total_free += g.free_count[o] << o;
-        }
-        kassert!(total_free + g.allocated == g.initial_free, "I6: total accounting violated");
-    }
 }

@@ -38,7 +38,11 @@ unsafe impl Sync for HostedBacking {}
 
 impl HostedBacking {
     fn new(n_pages: u64) -> Self {
-        let buf = vec![0u8; (n_pages.max(1) as usize) * PAGE].into_boxed_slice();
+        Self::filled(n_pages, 0)
+    }
+
+    fn filled(n_pages: u64, fill: u8) -> Self {
+        let buf = vec![fill; (n_pages.max(1) as usize) * PAGE].into_boxed_slice();
         let pages = Box::leak(buf).as_mut_ptr();
         let mut bitmaps = [&[][..]; ORDERS];
         for o in 0..ORDERS {
