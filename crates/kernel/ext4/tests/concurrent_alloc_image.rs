@@ -66,8 +66,9 @@ fn concurrent_creates_never_double_allocate_an_inode() {
     }
 }
 
-/// A checkpoint must replace a bitmap's clean cache image. Otherwise the next
-/// allocator verifies stale uninitialized bytes against the new descriptor.
+/// A checkpoint must replace a bitmap's clean cache image. Without that
+/// publication, the next serial allocator call reuses the just-allocated bit;
+/// concurrency only makes the resulting on-disk damage arrive faster.
 #[test]
 fn successive_inode_allocations_see_checkpointed_bitmap() {
     let disk = fresh_disk();
