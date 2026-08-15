@@ -104,6 +104,7 @@ fn init_smp(info: &BootInfo) {
             sched::live::set_send_resched_ipi_hook(arch_irq::lapic::send_resched_ipi);
             arch_irq::call_fn::install();
         }
+        sched::live::rcu_wait::install();
         if started > 0 { smp_ipi_smoke(); }
     }
     #[cfg(target_arch = "aarch64")]
@@ -111,6 +112,7 @@ fn init_smp(info: &BootInfo) {
         // SAFETY: BSP boot path is the sole writer before scheduler workers
         // are spawned; APs install their own runqueues in the AP init hook.
         unsafe { sched::live::install_default_runqueue(); }
+        sched::live::rcu_wait::install();
         arch_irq::smp_arm::install_hooks();
         arch_irq::smp_arm::publish_madt_mpidrs();
         hal_aarch64::smp::set_percpu_alloc_hook(pmm::setup::alloc_percpu_page);

@@ -18,10 +18,9 @@
 // (`rcu_process_callbacks`) runs in process context from `ksoftirqd` and
 // as a bounded fallback from the timer tick; it `try_lock`s the drain
 // state so it can never deadlock a lock-free enqueuer. Reliability nets
-// against a stalled drain: (1) a per-grace age backstop force-completes a
-// period that never observes a QS; (2) `call_rcu` past a high-water mark
-// runs the callback SYNCHRONOUSLY (bounded immediate-drain) so a wedged
-// drain can never OOM.
+// A stalled CPU delays reclamation; it never licenses reclaiming objects the
+// CPU might still read. Blocking callers park on the scheduler-owned wait
+// hook until grace-period progress or callback retirement changes the epoch.
 
 use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
@@ -34,23 +33,6 @@ use crate::{CacheLine, KMalloc, Spinlock, MAX_CPUS};
 /// different CPU than the `call_rcu`; `'static` because it outlives the
 /// caller by (at least) a grace period.
 pub type RcuCallback = Box<dyn FnOnce() + Send + 'static>;
-
-/// High-water mark on outstanding callbacks. Past this `call_rcu` runs
-/// the callback synchronously instead of deferring — the bounded
-/// immediate-drain fallback that makes a stalled drain leak-safe.
-const HIGH_WATER: usize = 1024;
-
-/// Grace-period age backstop (advance-call count). A period that has not
-/// observed the required QS after this many `advance` passes is
-/// force-completed so the drain can never wedge / leak. ctxsw QS makes
-/// real completion happen in ~1 pass; this is a pure safety net.
-const STALL_LIMIT: u32 = 4096;
-
-/// Bound on spin iterations in the blocking `synchronize_rcu` /
-/// `rcu_barrier` before force-completing — keeps them from ever hanging
-/// on a CPU that never reports a QS (e.g. a parked AP wrongly in the
-/// online set).
-const BLOCK_STALL: u64 = 1 << 20;
 
 // ---- per-CPU quiescent-state counters -------------------------------------
 // Cacheline-padded atomic per CPU (`percpu.rs` `CacheLine`/`MAX_CPUS`). The
@@ -72,6 +54,18 @@ const CPU_MASK_WORDS: usize = MAX_CPUS.div_ceil(u64::BITS as usize);
 /// snapshot may predate the enqueue, so the FOLLOWING full period is the
 /// first guaranteed to span it).
 static GP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Highest full-period sequence a synchronous caller has requested. A grace
+/// period already underway can predate that caller, so request two sequence
+/// advances and keep opening periods until this target is reached.
+static GP_REQUESTED: AtomicU64 = AtomicU64::new(0);
+
+/// Changes when an RCU waiter must recheck its predicate.
+static WAIT_EPOCH: AtomicU64 = AtomicU64::new(0);
+type RcuWaitFn = fn(u64);
+type RcuWakeFn = fn();
+static WAIT_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+static WAKE_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
 /// Outstanding (queued, not yet run) callback count — drives the
 /// high-water fallback and `rcu_barrier`.
@@ -105,8 +99,6 @@ fn push_incoming(gp: u64, f: RcuCallback) {
 struct DrainState {
     /// A grace period is in flight.
     active: bool,
-    /// Advance-pass age of the in-flight period (backstop counter).
-    age: u32,
     /// Per-CPU QS snapshot at period start; completion needs every online
     /// CPU's `CPU_QS` to have advanced past its snapshot value.
     snap: [u64; MAX_CPUS],
@@ -116,7 +108,6 @@ struct DrainState {
 
 static STATE: Spinlock<DrainState, KMalloc> = Spinlock::new(DrainState {
     active: false,
-    age: 0,
     snap: [0; MAX_CPUS],
     waiting: Vec::new(),
 });
@@ -169,6 +160,41 @@ pub fn set_cpu_hooks(cur: CurCpuFn, on: OnlineFn) {
     ONLINE_HOOK.store(on as *mut (), Ordering::Release);
 }
 
+/// Install the scheduler-owned RCU wait/wake bridge after the runqueue is
+/// live. The wait callback must block until `wait_epoch() != epoch`; the wake
+/// callback may run from process or softirq callback retirement.
+/// # C: O(1)
+pub fn set_wait_hooks(wait: RcuWaitFn, wake: RcuWakeFn) {
+    WAIT_HOOK.store(wait as *mut (), Ordering::Release);
+    WAKE_HOOK.store(wake as *mut (), Ordering::Release);
+}
+
+/// Epoch used by the scheduler-owned RCU wait predicate. # C: O(1)
+pub fn wait_epoch() -> u64 { WAIT_EPOCH.load(Ordering::Acquire) }
+
+fn notify_waiters() {
+    WAIT_EPOCH.fetch_add(1, Ordering::AcqRel);
+    let hook = WAKE_HOOK.load(Ordering::Acquire);
+    if hook.is_null() { return; }
+    // SAFETY: boot installs only a matching non-blocking wake function whose
+    // code remains resident for the kernel lifetime.
+    let wake: RcuWakeFn = unsafe { core::mem::transmute(hook) };
+    wake();
+}
+
+fn wait_for_progress(epoch: u64) {
+    if wait_epoch() != epoch { return; }
+    let hook = WAIT_HOOK.load(Ordering::Acquire);
+    if hook.is_null() {
+        crate::spin_relax::relax();
+        return;
+    }
+    // SAFETY: boot installs only a matching process-context wait function;
+    // callers hold no RCU drain lock while it may park.
+    let wait: RcuWaitFn = unsafe { core::mem::transmute(hook) };
+    wait(epoch);
+}
+
 // ---- read side ------------------------------------------------------------
 // `rcu_read_lock`/`rcu_read_unlock` are `sched::preempt::preempt_disable`/
 // `_enable` aliases (the preempt count lives in `sched`, which depends on
@@ -187,19 +213,10 @@ pub fn note_qs() {
 // ---- write side -----------------------------------------------------------
 
 /// Defer `f` to after a full RCU grace period (Linux `call_rcu`). Lock-free
-/// enqueue; callable from any context. Past `HIGH_WATER` outstanding
-/// callbacks it runs `f` synchronously (bounded immediate-drain) so a
-/// stalled drain can never OOM.
+/// enqueue; callable from any context. A stalled grace period retains the
+/// callback rather than running reclamation before its readers quiesce.
 /// # C: O(1) amortized
 pub fn call_rcu(f: RcuCallback) {
-    if PENDING.load(Ordering::Acquire) >= HIGH_WATER {
-        // Backlog: try to clear it in-line, then fall back to synchronous.
-        rcu_process_callbacks();
-        if PENDING.load(Ordering::Acquire) >= HIGH_WATER {
-            f();
-            return;
-        }
-    }
     let target = GP_SEQ.load(Ordering::Acquire) + 2;
     push_incoming(target, f);
     PENDING.fetch_add(1, Ordering::AcqRel);
@@ -220,25 +237,26 @@ fn all_quiesced(snap: &[u64; MAX_CPUS], mask: [u64; CPU_MASK_WORDS]) -> bool {
 }
 
 /// Advance the grace-period state machine one step (caller holds STATE).
-/// Completes the in-flight period if all online CPUs quiesced (or the age
-/// backstop fires), then opens a new period if callbacks are waiting.
-fn advance_locked(st: &mut DrainState, force: bool) {
+/// Completes an in-flight period only after every online CPU quiesces, then
+/// opens another when callbacks or a synchronous waiter require one.
+fn advance_locked(st: &mut DrainState) -> bool {
     let mask = online();
+    let mut advanced = false;
     if st.active {
-        st.age = st.age.saturating_add(1);
-        if force || st.age >= STALL_LIMIT || all_quiesced(&st.snap, mask) {
+        if all_quiesced(&st.snap, mask) {
             GP_SEQ.fetch_add(1, Ordering::AcqRel);
             st.active = false;
-            st.age = 0;
+            advanced = true;
         }
     }
-    if !st.active && !st.waiting.is_empty() {
+    if !st.active && (!st.waiting.is_empty()
+        || GP_SEQ.load(Ordering::Acquire) < GP_REQUESTED.load(Ordering::Acquire)) {
         for c in 0..MAX_CPUS {
             st.snap[c] = CPU_QS[c].0.load(Ordering::Acquire);
         }
         st.active = true;
-        st.age = 0;
     }
+    advanced
 }
 
 /// Drain ready callbacks: pull the incoming ring, advance the grace
@@ -249,12 +267,12 @@ fn advance_locked(st: &mut DrainState, force: bool) {
 /// # C: O(queued)
 /// # Ctx: process / softirq
 pub fn rcu_process_callbacks() {
-    let _ = drain_once(false);
+    let _ = drain_once();
 }
 
-fn drain_once(force: bool) -> usize {
+fn drain_once() -> usize {
     let mut ready: Vec<RcuCallback> = Vec::new();
-    {
+    let advanced = {
         let mut st = match STATE.try_lock() {
             Some(g) => g,
             None => return 0,
@@ -269,7 +287,7 @@ fn drain_once(force: bool) -> usize {
             st.waiting.push((n.gp, n.f));
         }
         // 2. advance the grace machine.
-        advance_locked(&mut st, force);
+        let advanced = advance_locked(&mut st);
         // 3. collect callbacks whose grace period has elapsed.
         let seq = GP_SEQ.load(Ordering::Acquire);
         let mut i = 0;
@@ -281,12 +299,14 @@ fn drain_once(force: bool) -> usize {
                 i += 1;
             }
         }
-    }
+        advanced
+    };
     let n = ready.len();
     for f in ready {
         f();
         PENDING.fetch_sub(1, Ordering::AcqRel);
     }
+    if advanced || n != 0 { notify_waiters(); }
     n
 }
 
@@ -297,26 +317,13 @@ fn drain_once(force: bool) -> usize {
 /// # Sleeps: y
 /// # C: O(grace)
 pub fn synchronize_rcu() {
-    let mask = online();
-    let mut snap = [0u64; MAX_CPUS];
-    for c in 0..MAX_CPUS {
-        snap[c] = CPU_QS[c].0.load(Ordering::Acquire);
-    }
-    note_qs(); // the calling CPU quiesces
-    let mut spins = 0u64;
-    while !all_quiesced(&snap, mask) {
+    let target = GP_SEQ.load(Ordering::Acquire).saturating_add(2);
+    GP_REQUESTED.fetch_max(target, Ordering::AcqRel);
+    while GP_SEQ.load(Ordering::Acquire) < target {
         note_qs();
         rcu_process_callbacks();
-        spins += 1;
-        if spins >= BLOCK_STALL {
-            break; // bounded: a non-reporting online CPU must not hang us
-        }
-        crate::spin_relax::relax();
+        if GP_SEQ.load(Ordering::Acquire) < target { wait_for_progress(wait_epoch()); }
     }
-    // A full grace period has elapsed: publish it (monotonic GP advance) and
-    // run any callbacks it now satisfies.
-    GP_SEQ.fetch_add(1, Ordering::AcqRel);
-    rcu_process_callbacks();
 }
 
 /// Wait until every callback queued before this call has run (Linux
@@ -324,19 +331,11 @@ pub fn synchronize_rcu() {
 /// # Sleeps: y
 /// # C: O(queued grace periods)
 pub fn rcu_barrier() {
-    let mut spins = 0u64;
     while PENDING.load(Ordering::Acquire) > 0 {
         note_qs();
-        let force = spins >= BLOCK_STALL / 2;
-        drain_once(force);
-        spins += 1;
-        if spins >= BLOCK_STALL {
-            // Ultimate backstop: force-complete everything outstanding.
-            drain_once(true);
-            drain_once(true);
-            break;
-        }
-        crate::spin_relax::relax();
+        let epoch = wait_epoch();
+        rcu_process_callbacks();
+        if PENDING.load(Ordering::Acquire) != 0 { wait_for_progress(epoch); }
     }
 }
 
@@ -358,11 +357,14 @@ pub fn _test_reset() {
     }
     if let Some(mut st) = STATE.try_lock() {
         st.active = false;
-        st.age = 0;
         st.waiting.clear();
     }
     GP_SEQ.store(0, Ordering::Release);
+    GP_REQUESTED.store(0, Ordering::Release);
     PENDING.store(0, Ordering::Release);
+    WAIT_EPOCH.store(0, Ordering::Release);
+    WAIT_HOOK.store(core::ptr::null_mut(), Ordering::Release);
+    WAKE_HOOK.store(core::ptr::null_mut(), Ordering::Release);
     for c in 0..MAX_CPUS {
         CPU_QS[c].0.store(0, Ordering::Release);
     }
@@ -427,32 +429,35 @@ mod tests {
     }
 
     #[test]
-    fn high_water_runs_synchronously_no_leak() {
+    fn callback_backlog_remains_deferred_until_a_grace_period() {
         let _g = guard();
-        // Without ever driving a QS, push past the high-water mark; the
-        // bounded immediate-drain must keep PENDING from running away.
         let ran = StdArc::new(AtomicUsize::new(0));
-        for _ in 0..(HIGH_WATER + 64) {
+        const CALLBACKS: usize = 64;
+        for _ in 0..CALLBACKS {
             let r = ran.clone();
             call_rcu(Box::new(move || { r.fetch_add(1, Ordering::AcqRel); }));
         }
-        assert!(pending_callbacks() <= HIGH_WATER,
-            "pending must stay bounded by the high-water fallback");
-        // Flush the remainder; total runs == total queued (no loss/leak).
+        rcu_process_callbacks();
+        assert_eq!(ran.load(Ordering::Acquire), 0, "callbacks cannot bypass a grace period");
+        assert_eq!(pending_callbacks(), CALLBACKS);
         rcu_barrier();
-        assert_eq!(ran.load(Ordering::Acquire), HIGH_WATER + 64);
+        assert_eq!(ran.load(Ordering::Acquire), CALLBACKS);
     }
 
     #[test]
-    fn age_backstop_force_completes_a_stalled_period() {
+    fn stalled_period_retains_callbacks_until_the_missing_cpu_quiesces() {
         let _g = guard();
         let ran = StdArc::new(AtomicBool::new(false));
         let r2 = ran.clone();
         call_rcu(Box::new(move || r2.store(true, Ordering::Release)));
-        // Never call note_qs(); rely purely on the STALL_LIMIT backstop
-        // via force drains (what the timer-tick fallback does).
-        for _ in 0..4 { drain_once(true); }
-        assert!(ran.load(Ordering::Acquire), "stalled period force-completed → callback ran");
+        for _ in 0..4 { drain_once(); }
+        assert!(!ran.load(Ordering::Acquire), "a stalled CPU keeps its protected callback alive");
+        assert_eq!(pending_callbacks(), 1);
+        for _ in 0..2 {
+            note_qs();
+            drain_once();
+        }
+        assert!(ran.load(Ordering::Acquire));
         assert_eq!(pending_callbacks(), 0);
     }
 

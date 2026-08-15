@@ -45,6 +45,7 @@ pub mod mutex;
 pub mod workqueue;
 pub mod wait_event;
 pub mod wait_list;
+pub mod rcu_wait;
 pub mod zombies;
 pub mod send;
 pub mod sigpend;
