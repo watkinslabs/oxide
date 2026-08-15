@@ -23,9 +23,7 @@ const LINUX_ERANGE: i32 = 34;
 const FW_ACTION_NOUEVENT: i32 = 0;
 const FW_ACTION_UEVENT: i32 = 1;
 const PATH_MAX: usize = 4096;
-const FW_NAME_MAX: usize = 255;
 const CSTR_SCAN_MAX: usize = PATH_MAX;
-const FW_PREFIXES: [&[u8]; 3] = [b"/lib/firmware/updates/", b"/lib/firmware/", b"/usr/lib/firmware/"];
 
 type FirmwareReader = fn(&[u8]) -> Option<Vec<u8>>;
 type FirmwareCont = extern "C" fn(*const LinuxFirmware, *mut c_void);
@@ -291,12 +289,7 @@ fn cache_put(name: &[u8], bytes: &[u8]) {
 }
 
 fn read_named_firmware(name: &[u8]) -> Option<Vec<u8>> {
-    for prefix in FW_PREFIXES {
-        if let Some(path) = build_path(prefix, name) {
-            if let Some(bytes) = read_path(&path) { return Some(bytes); }
-        }
-    }
-    None
+    firmware::driver_blob::read_with(name, read_path)
 }
 
 fn read_path(path: &[u8]) -> Option<Vec<u8>> {
@@ -304,15 +297,6 @@ fn read_path(path: &[u8]) -> Option<Vec<u8>> {
         if let Some(bytes) = reader(path) { return Some(bytes); }
     }
     ext4::rootfs::read_file(path)
-}
-
-fn build_path(prefix: &[u8], name: &[u8]) -> Option<Vec<u8>> {
-    let len = prefix.len().checked_add(name.len())?;
-    if len >= PATH_MAX { return None; }
-    let mut path = Vec::with_capacity(len);
-    path.extend_from_slice(prefix);
-    path.extend_from_slice(name);
-    Some(path)
 }
 
 fn cstr_bytes(ptr: *const c_char) -> Option<Vec<u8>> {
@@ -330,12 +314,7 @@ fn cstr_bytes(ptr: *const c_char) -> Option<Vec<u8>> {
 }
 
 fn valid_fw_name(name: &[u8]) -> bool {
-    if name.is_empty() || name.len() > FW_NAME_MAX { return false; }
-    if name[0] == b'/' { return false; }
-    for part in name.split(|b| *b == b'/') {
-        if part.is_empty() || part == b"." || part == b".." { return false; }
-    }
-    true
+    firmware::driver_blob::valid_name(name)
 }
 
 #[cfg(test)]

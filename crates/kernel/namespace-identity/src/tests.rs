@@ -30,6 +30,20 @@ fn all_eight_initial_kinds_are_canonical() {
 }
 
 #[test]
+fn cloning_an_active_namespace_does_not_enter_the_global_registry() {
+    let _serial = SERIAL.lock().unwrap();
+    let namespace = allocate(NamespaceKind::Uts, initial(NamespaceKind::User), None).unwrap();
+
+    crate::sync::reset_lock_calls();
+    let clone = namespace.clone();
+
+    assert_eq!(crate::sync::lock_calls(), 0,
+        "a live namespace reference must be refcounted directly, not through the registry");
+    assert!(NamespaceRef::ptr_eq(&namespace, &clone));
+    drop(clone);
+}
+
+#[test]
 fn pid_memfd_scope_is_inherited_and_retained_when_parent_lowers() {
     let _serial = SERIAL.lock().unwrap();
     let user = initial(NamespaceKind::User);

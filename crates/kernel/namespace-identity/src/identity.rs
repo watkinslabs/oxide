@@ -71,7 +71,20 @@ impl NamespaceRef {
     pub fn strong_count(owner: &Self) -> usize { Arc::strong_count(&owner.inner) }
 }
 
-impl Clone for NamespaceRef { fn clone(&self) -> Self { registry::clone_active(self) } }
+impl Clone for NamespaceRef {
+    fn clone(&self) -> Self {
+        // Linux takes a namespace reference while holding task_lock with a
+        // direct refcount operation (get_ns()/get_nsproxy()); it does not
+        // enter the global namespace-tree writer path.  A NamespaceRef is
+        // itself one active reference, so this increment cannot perform the
+        // inactive-to-active transition that publication serializes.
+        if !self.inner.is_initial() {
+            let previous = self.inner.active.fetch_add(1, Ordering::Relaxed);
+            debug_assert!(previous != 0, "NamespaceRef must retain activity");
+        }
+        Self::new(Arc::clone(&self.inner))
+    }
+}
 impl Deref for NamespaceRef { type Target = Namespace; fn deref(&self) -> &Namespace { &self.inner } }
 impl Drop for NamespaceRef { fn drop(&mut self) { registry::release_active(&self.inner); } }
 

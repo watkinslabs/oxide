@@ -699,6 +699,7 @@ pub(super) unsafe fn schedule_once() {
 ///
 /// # SAFETY: caller satisfies the scheduler safe-point contract.
 /// # C: O(log N) per scheduling round
+#[track_caller]
 pub unsafe fn schedule() {
     loop {
         // SAFETY: forwarded from this function's scheduler safe-point contract.
@@ -722,6 +723,7 @@ pub unsafe fn schedule() {
 /// latency. # C: O(log N) + O(1) ctxsw + O(IRQ_latency)
 /// # SAFETY: per `schedule()`.
 /// # Ctx: process|kthread; preempt-off; IRQs-on
+#[track_caller]
 pub unsafe fn tick_yield() {
     // SAFETY: caller satisfies `schedule()`'s contract (process / kthread context, preempt-off, single-CPU); delegated wholesale.
     unsafe { schedule(); }
@@ -732,6 +734,7 @@ pub unsafe fn tick_yield() {
 /// Linux `sched_yield(2)`: class-specific yield then schedule. # C: O(log N)
 /// # SAFETY: per `schedule()`.
 /// # Ctx: process|kthread; preempt-off
+#[track_caller]
 pub unsafe fn sched_yield() {
     if let Some(rq) = global() {
         // SAFETY: current_ref borrow is bounded to this preempt-off syscall path.
@@ -751,6 +754,7 @@ pub unsafe fn sched_yield() {
 /// condition (and re-park) after this returns.
 /// # C: O(log N) + O(1) ctxsw
 /// # Ctx: process|kthread; preempt-off; caller Sleeping
+#[track_caller]
 pub unsafe fn park_yield() {
     // SAFETY: caller satisfies `schedule()`'s contract and has parked Sleeping; delegated wholesale.
     unsafe { schedule(); }

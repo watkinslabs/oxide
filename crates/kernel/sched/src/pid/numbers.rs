@@ -13,13 +13,16 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-use namespace_identity::{NamespaceKind, NamespacePin, NamespaceRef, NamespaceWeak, PidNumberError};
+use namespace_identity::{NamespaceKind, NamespacePin, NamespaceRef, PidNumberError};
 
 use super::identity::PidIdentity;
 
 /// One namespace's number for a PID identity.
 pub struct PidMapping {
-    pub(super) namespace: NamespaceWeak,
+    // A PID identity keeps every namespace it is numbered in alive.  This is
+    // lifetime ownership only: unlike NamespaceRef, it does not retain active
+    // namespace-tree membership.
+    pub(super) namespace: NamespacePin,
     pub(super) nr: u32,
     /// Whether dropping the identity returns `nr` to the namespace. False for
     /// a number the identity recorded but did not take (the initial task's
@@ -69,7 +72,7 @@ impl PidIdentity {
         }
         let numbers: Box<[u32]> = taken.iter().map(|(_, nr)| *nr).collect();
         let mappings = taken.into_iter().map(|(owner, nr)| PidMapping {
-            namespace: NamespacePin::downgrade(&owner), nr, owned: true }).collect();
+            namespace: owner, nr, owned: true }).collect();
         self.install_mappings(mappings).map_err(|error| {
             self.free_pending(&chain, &numbers);
             error
@@ -94,7 +97,7 @@ impl PidIdentity {
         for (owner, nr) in chain.iter().zip(numbers.iter()) {
             let owned = owner.pid_numbers().reserve(*nr).is_ok();
             mappings.push(PidMapping {
-                namespace: NamespacePin::downgrade(owner), nr: *nr, owned });
+                namespace: owner.clone(), nr: *nr, owned });
         }
         let reclaim: Vec<(usize, u32)> = mappings.iter().enumerate()
             .filter(|(_, mapping)| mapping.owned)
@@ -113,8 +116,7 @@ impl PidIdentity {
         let Some(mappings) = guard.as_ref() else { return 0 };
         let want = namespace.pin();
         for mapping in mappings.iter() {
-            let Some(owner) = mapping.namespace.upgrade() else { continue };
-            if NamespacePin::ptr_eq(&owner, &want) { return mapping.nr; }
+            if NamespacePin::ptr_eq(&mapping.namespace, &want) { return mapping.nr; }
         }
         0
     }
@@ -134,28 +136,25 @@ impl PidIdentity {
         let want = namespace.pin();
         let mut index = None;
         for (position, mapping) in mappings.iter().enumerate() {
-            let Some(owner) = mapping.namespace.upgrade() else { continue };
-            if NamespacePin::ptr_eq(&owner, &want) { index = Some(position); break; }
+            if NamespacePin::ptr_eq(&mapping.namespace, &want) {
+                index = Some(position);
+                break;
+            }
         }
         let Some(index) = index else { return Vec::new() };
         (0..=index).rev().map(|position| mappings[position].nr).collect()
     }
 
-    /// Live namespace owners this identity is numbered in, innermost first.
+    /// Namespace owners this identity is numbered in, innermost first.
     /// # C: O(depth)
     pub fn namespaces(&self) -> Vec<NamespacePin> {
         let guard = self.mappings.lock();
         let Some(mappings) = guard.as_ref() else { return Vec::new() };
-        let mut live = Vec::new();
+        let mut owners = Vec::with_capacity(mappings.len());
         for mapping in mappings.iter() {
-            // Seam: the window a concurrent namespace teardown must not be able
-            // to open — between deciding a level is live and using it.
-            #[cfg(test)] crate::tests::interleave::point("pidns:before-upgrade");
-            let Some(owner) = mapping.namespace.upgrade() else { continue };
-            #[cfg(test)] crate::tests::interleave::point("pidns:after-upgrade");
-            live.push(owner);
+            owners.push(mapping.namespace.clone());
         }
-        live
+        owners
     }
 
     /// Depth of the namespace chain this identity is numbered in; 0 before any
@@ -175,11 +174,7 @@ impl PidIdentity {
         let Some(mappings) = self.mappings.lock().take() else { return };
         for mapping in mappings.iter() {
             if !mapping.owned { continue }
-            // Seam: a number is about to be returned to a namespace that may be
-            // going away underneath this walk.
-            #[cfg(test)] crate::tests::interleave::point("pidns:before-release");
-            let Some(owner) = mapping.namespace.upgrade() else { continue };
-            owner.pid_numbers().free(mapping.nr);
+            mapping.namespace.pid_numbers().free(mapping.nr);
         }
     }
 

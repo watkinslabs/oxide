@@ -15,7 +15,7 @@ const SHARED_MSIX_HANDLERS: usize = virtio::MAX_RESOURCE_QUEUES + 1;
 #[derive(Clone, Copy)]
 struct SharedMsixSlot {
     used: bool,
-    handlers: [Option<fn()>; SHARED_MSIX_HANDLERS],
+    handlers: [Option<virtio::VirtioQueueIrq>; SHARED_MSIX_HANDLERS],
 }
 
 impl SharedMsixSlot {
@@ -25,9 +25,19 @@ impl SharedMsixSlot {
 static SHARED_DISPATCH: Spinlock<[SharedMsixSlot; SHARED_MSIX_SLOTS], VirtioTransportLockClass> =
     Spinlock::new([const { SharedMsixSlot::empty() }; SHARED_MSIX_SLOTS]);
 
+/// `SHARED_DISPATCH` is read from the hard MSI-X path.  Process-context
+/// installation and removal must therefore disable local IRQ delivery while
+/// acquiring it; the hard handler itself arrives with IRQs already masked.
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+type SharedDispatchIrq = hal_x86_64::X86IrqGate;
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+type SharedDispatchIrq = hal_aarch64::ArmIrqGate;
+#[cfg(not(target_os = "oxide-kernel"))]
+type SharedDispatchIrq = sync::NoopIrq;
+
 fn dispatch_shared(slot: usize) {
     let handlers = SHARED_DISPATCH.lock()[slot].handlers;
-    for handler in handlers.into_iter().flatten() { handler(); }
+    for handler in handlers.into_iter().flatten() { handler.call(); }
 }
 
 macro_rules! shared_dispatchers {
@@ -44,9 +54,9 @@ shared_dispatchers!(
     shared_24:24, shared_25:25, shared_26:26, shared_27:27, shared_28:28, shared_29:29, shared_30:30, shared_31:31,
 );
 
-fn reserve_shared_dispatch(handlers: &[Option<fn()>]) -> Option<usize> {
+fn reserve_shared_dispatch(handlers: &[Option<virtio::VirtioQueueIrq>]) -> Option<usize> {
     if handlers.len() > SHARED_MSIX_HANDLERS || !handlers.iter().any(Option::is_some) { return None; }
-    let mut slots = SHARED_DISPATCH.lock();
+    let mut slots = SHARED_DISPATCH.lock_irqsave::<SharedDispatchIrq>();
     let slot = slots.iter().position(|slot| !slot.used)?;
     slots[slot].used = true;
     slots[slot].handlers[..handlers.len()].copy_from_slice(handlers);
@@ -54,7 +64,7 @@ fn reserve_shared_dispatch(handlers: &[Option<fn()>]) -> Option<usize> {
 }
 
 fn release_shared_dispatch(slot: usize) {
-    let mut slots = SHARED_DISPATCH.lock();
+    let mut slots = SHARED_DISPATCH.lock_irqsave::<SharedDispatchIrq>();
     if let Some(entry) = slots.get_mut(slot) { *entry = SharedMsixSlot::empty(); }
 }
 
@@ -87,7 +97,7 @@ pub(crate) fn bind_msix_vector(
     mappings: &mut TransportMappings,
     bindings: &mut Vec<MsixBinding>,
     queue_vector: u16,
-    handler: fn(),
+    handler: virtio::VirtioQueueIrq,
 ) -> Option<u16> {
     bind_msix_vector_with_slot(d, bars, mappings, bindings, queue_vector, handler, None)
 }
@@ -98,11 +108,12 @@ pub(crate) fn bind_shared_msix_vector(
     mappings: &mut TransportMappings,
     bindings: &mut Vec<MsixBinding>,
     queue_vector: u16,
-    handlers: &[Option<fn()>],
+    handlers: &[Option<virtio::VirtioQueueIrq>],
 ) -> Option<u16> {
     let slot = reserve_shared_dispatch(handlers)?;
     let bound = bind_msix_vector_with_slot(
-        d, bars, mappings, bindings, queue_vector, SHARED_DISPATCHERS[slot], Some(slot),
+        d, bars, mappings, bindings, queue_vector,
+        virtio::VirtioQueueIrq::Bare(SHARED_DISPATCHERS[slot]), Some(slot),
     );
     if bound.is_none() { release_shared_dispatch(slot); }
     bound
@@ -114,7 +125,7 @@ fn bind_msix_vector_with_slot(
     mappings: &mut TransportMappings,
     bindings: &mut Vec<MsixBinding>,
     queue_vector: u16,
-    handler: fn(),
+    handler: virtio::VirtioQueueIrq,
     shared_slot: Option<usize>,
 ) -> Option<u16> {
     if !msi_admitted(d.bdf) { return None; }
@@ -141,8 +152,17 @@ fn bind_msix_vector_with_slot(
         Some(va) => va,
         None => { if new_group { group.release(); } else { bindings.first_mut()?.group = Some(group); } return None; }
     };
-    if group.bind(pci_irq::MsixEntry { bar, vector: queue_vector, entry_va },
-        arch_irq::DeviceAction::VirtioPci, handler).is_none() {
+    let bound = match handler {
+        virtio::VirtioQueueIrq::Bare(handler) => group.bind(
+            pci_irq::MsixEntry { bar, vector: queue_vector, entry_va },
+            arch_irq::DeviceAction::VirtioPci, handler,
+        ),
+        virtio::VirtioQueueIrq::Context { handler, arg } => group.bind_context(
+            pci_irq::MsixEntry { bar, vector: queue_vector, entry_va },
+            arch_irq::DeviceAction::VirtioPci, handler, arg,
+        ),
+    };
+    if bound.is_none() {
         if new_group { group.release(); } else { bindings.first_mut()?.group = Some(group); }
         return None;
     }

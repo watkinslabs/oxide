@@ -4,6 +4,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use vfs::{FileType, Inode};
 use vfs::xattr::XattrError;
+use sched::live::WaitList;
 
 use super::super::state::RootfsState;
 
@@ -27,6 +28,8 @@ pub(crate) struct Ext4FileData {
     /// swapfile is deliberately NOT recorded here: that lives only in the
     /// inode flag, which is what the generic gate above the filesystem reads.
     pub(crate) swap_mutations: Arc<AtomicU64>,
+    /// Waiters for every mutation admitted before swapfile activation.
+    pub(crate) swap_wait: WaitList,
 }
 
 /// A mutation admitted before swap activation. Dropping it makes a pending
@@ -34,10 +37,16 @@ pub(crate) struct Ext4FileData {
 pub(crate) struct SwapMutation<'a> { file: &'a Ext4FileData }
 
 impl Drop for SwapMutation<'_> {
-    fn drop(&mut self) { self.file.swap_mutations.fetch_sub(1, Ordering::Release); }
+    fn drop(&mut self) { self.file.finish_swap_mutation(); }
 }
 
 impl Ext4FileData {
+    fn finish_swap_mutation(&self) {
+        if self.swap_mutations.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.swap_wait.wake_all();
+        }
+    }
+
     /// Admit one data/extent mutation unless the inode is a live swapfile.
     /// The increment-before-test order closes the activation race: an activator
     /// that publishes `S_SWAPFILE` waits for every earlier admission, while a
@@ -51,7 +60,7 @@ impl Ext4FileData {
     pub(crate) fn begin_swap_mutation(&self, inode: &Inode) -> Result<SwapMutation<'_>, vfs::VfsError> {
         self.swap_mutations.fetch_add(1, Ordering::AcqRel);
         if inode.is_swapfile() {
-            self.swap_mutations.fetch_sub(1, Ordering::Release);
+            self.finish_swap_mutation();
             return Err(vfs::VfsError::Etxtbsy);
         }
         Ok(SwapMutation { file: self })
@@ -62,9 +71,10 @@ impl Ext4FileData {
     /// claim if its subsequent validation or persistence step fails.
     pub(crate) fn begin_swap_activation(&self, inode: &Inode) -> Result<(), vfs::VfsError> {
         inode.claim_swapfile()?;
-        while self.swap_mutations.load(Ordering::Acquire) != 0 {
-            crate::mount::cooperative_yield();
-        }
+        // SAFETY: activation is process context, the inode claim closes later
+        // admissions, and the predicate holds no lock a mutation completion uses.
+        let _ = unsafe { sched::live::wait_event_uninterruptible(&self.swap_wait,
+            || self.swap_mutations.load(Ordering::Acquire) == 0) };
         Ok(())
     }
     /// Re-read just the on-disk size into the hint after a mutating op

@@ -28,7 +28,7 @@ pub use resources::{
     VirtioChildDriverOps, VirtioChildModelIdentity, VirtioChildProbeFacts,
     VirtioChildRequirements, VirtioChildResourceState, VirtioChildTransportSession,
     VirtioNetBootPayloads, VirtioNetRxBuffer, VirtioProbeFrameSet, VirtioProbeLease, VirtioProbeOwnedFrames,
-    VirtioQueueNotifyMappings, VirtioQueuePlan, VirtioResources, VirtioRuntimeHandoff,
+    VirtioQueueIrq, VirtioQueueNotifyMappings, VirtioQueuePlan, VirtioResources, VirtioRuntimeHandoff,
     VirtioRuntimeHandoffInput, VirtioTransportLocation, VirtioTransportProbeResult,
     VirtioTransportProfile, VirtQueueResource, MAX_RESOURCE_QUEUES, VIRTIO_CHILD_BUS,
     VIRTIO_CHILD_CLASS, VIRTIO_MSI_NO_VECTOR, VIRTIO_NET_RX_BOOT_POOL, VIRTIO_VENDOR_ID,

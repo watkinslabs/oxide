@@ -6,10 +6,11 @@
 // A pidfd deliberately outlives what it names: it retains the PID identity
 // after the task is released, so poll can report the exit and `PIDFD_GET_INFO`
 // can still answer. That retention is what makes the boundaries sharp. The
-// identity holds only WEAK references to the namespaces that number it, so a
-// namespace torn down under a live pidfd must make its level disappear rather
-// than answer with a number nothing owns; and a reap must make the target
-// unresolvable, because every `pidfd_getfd` ESRCH arm rests on exactly that.
+// identity holds lifetime references to the namespaces that number it.  A
+// namespace may leave the active tree when its last task exits, but its PID
+// number table remains valid until the retained identity is released; a reap
+// must still make the target unresolvable, because every `pidfd_getfd` ESRCH
+// arm rests on exactly that.
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -53,16 +54,11 @@ fn tear_down(ns: NamespaceRef, target: &Arc<Task>) {
     interleave::point("ns:torn-down");
 }
 
-/// A pidfd holder walking the identity's namespace levels while the namespace
-/// is torn down UNDER the walk. The level it already resolved stays coherent —
-/// the pin it took keeps the namespace object alive for as long as it is
-/// looking at it — and nothing in the walk observes a half-destroyed namespace.
-///
-/// Catches: a resolution that keeps a bare pointer or id across the seam
-/// instead of a reference, which would read a namespace whose last owner has
-/// gone.
+/// The retained PID identity keeps its numbered namespace alive after the
+/// task's active namespace membership has gone.  This matches a PID number
+/// table retaining its namespace until the PID itself is released.
 #[test]
-fn a_teardown_under_a_live_pidfd_walk_cannot_pull_the_level_out_from_under_it() {
+fn a_live_pidfd_keeps_its_numbered_namespace_after_task_teardown() {
     let _g = registry_test_lock();
     registry::clear_for_tests();
     let ns = nested_pid_ns();
@@ -71,37 +67,21 @@ fn a_teardown_under_a_live_pidfd_walk_cannot_pull_the_level_out_from_under_it() 
         .expect("the pidfd names a live leader");
     let dead_id = ns.ns_id().as_u64();
 
-    let schedule = interleave::schedule(&[
-        ("reader",    "pidns:before-upgrade"),  // enters the innermost level
-        ("reader",    "pidns:after-upgrade"),   // ...and has pinned it; parks here
-        ("destroyer", "ns:go"),                 // teardown runs against that pin
-        ("destroyer", "ns:torn-down"),
-        ("reader",    "pidns:before-upgrade"),  // walk resumes on the next level
-    ]);
-
-    let walk = { let identity = Arc::clone(&identity);
-        interleave::spawn("reader", move || identity.namespaces()) };
-    let destroyer = { let target = Arc::clone(&target);
-        interleave::spawn("destroyer", move || tear_down(ns, &target)) };
-    let levels = walk.join().unwrap();
-    destroyer.join().unwrap();
-    schedule.assert_complete();
+    tear_down(ns, &target);
+    let levels = identity.namespaces();
 
     let ids: Vec<u64> = levels.iter().map(|pin| pin.ns_id().as_u64()).collect();
     assert!(ids.contains(&dead_id),
-        "a level resolved before the teardown stays readable through it");
+        "a retained PID keeps its number-table namespace alive");
     assert_eq!(levels.len(), 2, "both levels of the chain answered");
+    assert!(identity.task().is_some(), "tearing down a namespace does not reap its task");
 }
 
-/// The mirror order: the namespace is gone before the pidfd holder looks. The
-/// level must DISAPPEAR — a pidfd may not report a number in a namespace no
-/// longer alive, because nothing owns that number any more and the next
-/// namespace to be created can hand it out.
-///
-/// Catches: dropping the liveness test from namespace resolution, which makes
-/// a torn-down namespace keep answering for as long as any weak holder exists.
+/// The reader sees the same retained number table whether it starts before or
+/// after active namespace teardown; the PID identity, not active-tree lookup,
+/// owns that lifetime.
 #[test]
-fn a_namespace_torn_down_before_the_walk_stops_numbering_the_pidfd() {
+fn a_pidfd_walk_after_task_teardown_keeps_the_numbered_level() {
     let _g = registry_test_lock();
     registry::clear_for_tests();
     let ns = nested_pid_ns();
@@ -110,28 +90,15 @@ fn a_namespace_torn_down_before_the_walk_stops_numbering_the_pidfd() {
         .expect("the pidfd names a live leader");
     let dead_id = ns.ns_id().as_u64();
 
-    let schedule = interleave::schedule(&[
-        ("destroyer", "ns:go"),
-        ("destroyer", "ns:torn-down"),
-        ("reader",    "pidns:before-upgrade"),
-    ]);
-
-    let destroyer = { let target = Arc::clone(&target);
-        interleave::spawn("destroyer", move || tear_down(ns, &target)) };
-    let walk = { let identity = Arc::clone(&identity);
-        interleave::spawn("reader", move || identity.namespaces()) };
-    let levels = walk.join().unwrap();
-    destroyer.join().unwrap();
-    schedule.assert_complete();
+    tear_down(ns, &target);
+    let levels = identity.namespaces();
 
     let ids: Vec<u64> = levels.iter().map(|pin| pin.ns_id().as_u64()).collect();
-    assert!(!ids.contains(&dead_id),
-        "a destroyed namespace must not keep numbering a retained identity");
-    assert_eq!(levels.len(), 1, "only the initial namespace still numbers it");
-    // The pidfd itself is unharmed: the identity is what it holds, and the
-    // identity outliving its namespace is the whole point of the retention.
-    assert!(!identity.reaped(), "losing a namespace is not a reap");
-    assert!(identity.task().is_some(), "and does not release the task either");
+    assert!(ids.contains(&dead_id),
+        "the retained identity owns the namespace needed to render its PID");
+    assert_eq!(levels.len(), 2, "the full number table remains available");
+    assert!(!identity.reaped(), "teardown does not reap the task");
+    assert!(identity.task().is_some(), "and the task remains resolvable");
 }
 
 /// `pidfd_getfd`'s first ESRCH arm is `identity.task()` returning nothing. This

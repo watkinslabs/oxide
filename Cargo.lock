@@ -1319,6 +1319,7 @@ dependencies = [
  "elf",
  "ext4",
  "fbdev",
+ "firmware",
  "hal",
  "hal-aarch64",
  "hal-x86_64",

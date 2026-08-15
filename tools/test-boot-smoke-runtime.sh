@@ -21,6 +21,7 @@ case "$target" in
         ;;
     qemu-x86-existing)
         printf 'mock qemu launched\n'
+        [ -z "${MOCK_QEMU_LOG:-}" ] || printf '%s\n' "$MOCK_QEMU_LOG"
         [ "${MOCK_QEMU_EARLY_EXIT:-0}" != 1 ] || exit 18
         printf '%s\n' "$$" >"$SMOKE_QEMU_PIDFILE"
         sleep "${MOCK_QEMU_SLEEP:-0}"
@@ -75,5 +76,13 @@ run_smoke build-failure MOCK_BUILD_FAIL=1
 [ "$RUN_STATUS" -eq 2 ]
 grep -q 'image preparation failed before QEMU started' "$RUN_OUT"
 grep -q 'mock make target=qemu-x86-image' "$RUN_LOG"
+
+# A serial debug shell may answer before PID 1 later dies. That is never a
+# usable boot, so the harness must fail on the init-fatal marker rather than
+# accept any earlier liveness proof.
+run_smoke init-fatal MOCK_QEMU_LOG='systemd[1]: segfault at deadbeef' MOCK_QEMU_SLEEP=3
+[ "$RUN_STATUS" -eq 1 ]
+grep -q 'KERNEL FAULT' "$RUN_OUT"
+grep -q 'systemd\[1\]: segfault' "$RUN_LOG"
 
 echo 'test-boot-smoke-runtime: PASS'

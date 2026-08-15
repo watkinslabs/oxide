@@ -22,37 +22,6 @@ pub fn set_ctx_id_hook(f: fn() -> u64) {
     CTX_ID_HOOK.store(f as usize as u64, ::core::sync::atomic::Ordering::Release);
 }
 
-/// Kernel: cooperative-yield the CPU while a transaction-gate waiter spins, so
-/// the current gate OWNER (which sleeps on block I/O — reads/writes/flush —
-/// while holding the gate) can be scheduled and release it. A pure busy-spin
-/// here deadlocks: the owner parks on I/O, the waiter pins the CPU, and the
-/// owner never runs to release (observed: `[CPU-STALL]` in truncate_inode).
-#[cfg(target_os = "oxide-kernel")]
-static YIELD_HOOK: ::core::sync::atomic::AtomicU64 = ::core::sync::atomic::AtomicU64::new(0);
-
-/// Register the gate's spin-yield source. kmain sets this to `tick_yield`
-/// (yields + opens the IRQ window so the owner's I/O completion lands).
-/// # C: O(1)
-#[cfg(target_os = "oxide-kernel")]
-pub fn set_yield_hook(f: fn()) {
-    YIELD_HOOK.store(f as usize as u64, ::core::sync::atomic::Ordering::Release);
-}
-
-#[cfg(target_os = "oxide-kernel")]
-fn txn_yield() {
-    let raw = YIELD_HOOK.load(::core::sync::atomic::Ordering::Acquire);
-    if raw == 0 { ::core::hint::spin_loop(); return; } // pre-registration boot
-    // SAFETY: `raw` is a `fn()` pointer stored only by set_yield_hook (tick_yield).
-    let f: fn() = unsafe { ::core::mem::transmute(raw as usize) };
-    f();
-}
-
-/// Hosted: hand the OS scheduler the CPU so the gate owner thread can run.
-#[cfg(not(target_os = "oxide-kernel"))]
-fn txn_yield() { std::thread::yield_now(); }
-
-pub(crate) fn cooperative_yield() { txn_yield(); }
-
 /// Unique-per-concurrent-context id for the transaction gate.
 #[cfg(target_os = "oxide-kernel")]
 fn ctx_id() -> u64 {
@@ -153,6 +122,7 @@ impl Mount {
                        faults: super::faults::HostedFaults::new(),
                        txn_owner: ::core::sync::atomic::AtomicU64::new(0),
                        txn_depth: ::core::sync::atomic::AtomicU32::new(0),
+                       txn_wait: sched::live::WaitList::new(),
                        creating: ::core::sync::atomic::AtomicBool::new(false),
                        opts: sync::Spinlock::new(crate::mount_opts::Ext4SbOpts {
                            behaviour, ..Default::default() }),
@@ -203,14 +173,6 @@ impl Mount {
         let last_blk_excl = (last_byte + bs - 1) / bs;
         let n_blocks = (last_blk_excl - first_blk) as u32;
         let inner_off = (byte_off - first_blk * bs) as usize;
-        // A write must never leave an old clean buffer visible after its
-        // journal shadow is drained.  Reads inside the transaction select the
-        // shadow first; once committed, the next read refills the clean cache
-        // from the new on-disk block.
-        {
-            let mut s = self.state.lock();
-            for i in 0..n_blocks as u64 { s.metadata_cache.remove(&(first_blk + i)); }
-        }
         let mut full_buf: Vec<u8> = Vec::with_capacity((n_blocks as usize) * bs as usize);
         for i in 0..n_blocks as u64 {
             let lba = first_blk + i;
@@ -253,8 +215,21 @@ impl Mount {
                 data:       full_buf[lo..hi].to_vec(),
             });
         }
-        let _ = self.commit_metadata(staged)?;
+        self.commit_metadata(staged.clone())?;
+        self.cache_committed(&staged);
         Ok(())
+    }
+
+    /// Publish checkpointed metadata into the clean buffer cache. The running
+    /// transaction's shadow remains the only source for uncheckpointed bytes.
+    /// # C: O(N staged blocks)
+    pub(super) fn cache_committed(&self, staged: &[StagedBlock]) {
+        const META_CACHE_MAX_BLOCKS: usize = 8192;
+        let mut s = self.state.lock();
+        if s.metadata_cache.len().saturating_add(staged.len()) > META_CACHE_MAX_BLOCKS {
+            s.metadata_cache.clear();
+        }
+        for block in staged { s.metadata_cache.insert(block.target_lba, block.data.clone()); }
     }
 
     /// Read one fs-block from the transaction shadow, then the clean metadata
@@ -274,8 +249,8 @@ impl Mount {
         // Metadata is bounded by the mount image in the normal boot path.  A
         // cap prevents a streaming metadata workload from pinning unlimited
         // memory; clear only clean entries, never a live journal shadow.
-        const META_CACHE_MAX_BLOCKS: usize = 8192;
         let mut s = self.state.lock();
+        const META_CACHE_MAX_BLOCKS: usize = 8192;
         if s.metadata_cache.len() >= META_CACHE_MAX_BLOCKS { s.metadata_cache.clear(); }
         s.metadata_cache.insert(lba, buf.clone());
         Ok(buf)
@@ -306,22 +281,35 @@ impl Mount {
         r
     }
 
-    /// Reentrant transaction-gate acquire keyed on `ctx_id()`. Nested calls on
-    /// the same context bump the depth; a different context spins until free.
-    /// # C: O(contention)
-    pub(super) fn txn_acquire(&self) {
+    /// Try to claim the transaction gate, retaining same-context reentrancy.
+    /// # C: O(1)
+    fn try_txn_acquire(&self, me: u64) -> bool {
         use ::core::sync::atomic::Ordering;
-        let me = ctx_id();
         if self.txn_owner.load(Ordering::Acquire) == me {
             self.txn_depth.fetch_add(1, Ordering::Relaxed);
-            return;
+            return true;
         }
-        while self.txn_owner.compare_exchange_weak(0, me, Ordering::AcqRel, Ordering::Relaxed).is_err() {
-            // Yield (not busy-spin): the gate owner sleeps on block I/O while
-            // holding the gate, so it must be able to run and release it.
-            txn_yield();
+        if self.txn_owner.compare_exchange(0, me, Ordering::AcqRel, Ordering::Relaxed).is_err() {
+            return false;
         }
         self.txn_depth.store(1, Ordering::Relaxed);
+        true
+    }
+
+    /// Reentrant transaction-gate acquire keyed on `ctx_id()`. A contender
+    /// publishes on the mount's wait queue, rechecks the atomic claim, then
+    /// sleeps until the releasing owner wakes it.
+    /// # Ctx: process
+    /// # Sleeps: yes on contention
+    /// # C: O(N wakeups)
+    pub(super) fn txn_acquire(&self) {
+        let me = ctx_id();
+        if self.try_txn_acquire(me) { return; }
+        // SAFETY: this process-context waiter holds neither the transaction
+        // gate nor the state lock; release publishes owner=0 before wake_all.
+        let _ = unsafe {
+            sched::live::wait_event_uninterruptible(&self.txn_wait, || self.try_txn_acquire(me))
+        };
     }
 
     /// Release one level of the transaction gate; frees it at depth 0.
@@ -330,6 +318,7 @@ impl Mount {
         use ::core::sync::atomic::Ordering;
         if self.txn_depth.fetch_sub(1, Ordering::AcqRel) == 1 {
             self.txn_owner.store(0, Ordering::Release);
+            self.txn_wait.wake_all();
         }
     }
 
@@ -360,7 +349,8 @@ impl Mount {
                         let staged: Vec<StagedBlock> = shadow.into_iter()
                             .map(|(target_lba, data)| StagedBlock { target_lba, data })
                             .collect();
-                        let _ = self.commit_metadata(staged)?;
+                        self.commit_metadata(staged.clone())?;
+                        self.cache_committed(&staged);
                     }
                     Ok(v)
                 }

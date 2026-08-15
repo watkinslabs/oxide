@@ -75,6 +75,37 @@ pub const LVT_MODE_NMI: u32 = 4 << 8;
 /// Delivery mode 111 — ExtINT, i.e. take the vector off the legacy PIC.
 pub const LVT_MODE_EXTINT: u32 = 7 << 8;
 
+/// LVT timer mode field (bits 18:17).
+#[cfg(target_arch = "x86_64")]
+pub const LVT_TIMER_MODE_MASK: u32 = 3 << 17;
+/// LVT timer TSC-deadline mode encoding.
+#[cfg(target_arch = "x86_64")]
+pub const LVT_TIMER_MODE_TSC_DEADLINE: u32 = 2 << 17;
+
+/// Hardware register that stops the active LAPIC timer mode.
+///
+/// Linux's `lapic_timer_shutdown()` clears `IA32_TSC_DEADLINE` when the
+/// LVT is in deadline mode, and clears `APIC_TMICT` for every other mode.
+/// Writing TMICT after deadline mode has been selected is not a valid
+/// transition on every x2APIC implementation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg(target_arch = "x86_64")]
+pub(crate) enum TimerStopRegister {
+    InitialCount,
+    TscDeadline,
+}
+
+/// Select the architecturally valid LAPIC timer stop register from the live
+/// LVT value. # C: O(1)
+#[cfg(target_arch = "x86_64")]
+pub(crate) const fn timer_stop_register(lvt: u32) -> TimerStopRegister {
+    if lvt & LVT_TIMER_MODE_MASK == LVT_TIMER_MODE_TSC_DEADLINE {
+        TimerStopRegister::TscDeadline
+    } else {
+        TimerStopRegister::InitialCount
+    }
+}
+
 /// Spurious-vector register bit 8 — APIC software enable.
 pub const SPURIOUS_ENABLE: u32 = 1 << 8;
 /// Vector field of any LVT or of the spurious-vector register.
@@ -269,6 +300,14 @@ mod tests {
         assert_eq!(LVT_MODE_EXTINT, 0x700);
         assert_eq!(LVT_MODE_NMI & !LVT_MODE_MASK, 0);
         assert_eq!(LVT_MODE_EXTINT & !LVT_MODE_MASK, 0);
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn timer_deadline_shutdown_never_writes_initial_count() {
+        assert_eq!(timer_stop_register(0x40), TimerStopRegister::InitialCount);
+        assert_eq!(timer_stop_register(1 << 17 | 0x40), TimerStopRegister::InitialCount);
+        assert_eq!(timer_stop_register(LVT_TIMER_MODE_TSC_DEADLINE | 0x40), TimerStopRegister::TscDeadline);
     }
 
     #[test]

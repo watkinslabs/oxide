@@ -45,6 +45,7 @@ pub mod mutex;
 pub mod workqueue;
 pub mod wait_event;
 pub mod wait_list;
+pub mod rcu_wait;
 pub mod zombies;
 pub mod send;
 pub mod sigpend;
@@ -70,7 +71,7 @@ pub use ttwu::{try_to_wake_up, ttwu_deferred, select_task_rq, resched_curr, relo
 pub use runqueue::{global, Runqueue};
 pub use schedule::{
     current, current_mount_ns, current_chroot_root, mark_done, schedule,
-    oxide_finish_task_switch, park_yield, preempt_schedule_irq, sched_yield, tick_yield,
+    cond_resched, oxide_finish_task_switch, park_yield, preempt_schedule_irq, sched_yield, tick_yield,
     install_default_runqueue, runqueue_active, RunStats,
     install_sched_switch_hook, SchedSwitchFn,
 };

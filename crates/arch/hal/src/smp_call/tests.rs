@@ -6,7 +6,15 @@ use super::*;
 
 #[test]
 fn every_kind_round_trips_through_its_wire_value() {
-    for k in [CallKind::TlbFlush, CallKind::LdtReload, CallKind::Stop] {
+    for k in [
+        CallKind::TlbFlush,
+        CallKind::LdtReload,
+        CallKind::Stop,
+        CallKind::MembarrierGlobalMb,
+        CallKind::MembarrierPrivateMb,
+        CallKind::MembarrierPrivateSyncCore,
+        CallKind::MembarrierPrivateRseq,
+    ] {
         assert_eq!(CallKind::from_u32(k.as_u32()), Some(k), "round trip failed for {:?}", k);
     }
 }
@@ -15,6 +23,9 @@ fn every_kind_round_trips_through_its_wire_value() {
 fn kinds_have_distinct_wire_values() {
     assert_ne!(CallKind::TlbFlush.as_u32(), CallKind::LdtReload.as_u32());
     assert_ne!(CallKind::LdtReload.as_u32(), CallKind::Stop.as_u32());
+    assert_ne!(CallKind::MembarrierGlobalMb.as_u32(), CallKind::MembarrierPrivateMb.as_u32());
+    assert_ne!(CallKind::MembarrierPrivateMb.as_u32(), CallKind::MembarrierPrivateSyncCore.as_u32());
+    assert_ne!(CallKind::MembarrierPrivateSyncCore.as_u32(), CallKind::MembarrierPrivateRseq.as_u32());
 }
 
 #[test]

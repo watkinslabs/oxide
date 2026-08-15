@@ -5,7 +5,8 @@
 // `frame_alloc` owns single-frame allocation entry points and alloc-time checks.
 // `refs` owns PageMeta refcount/mapcount transitions.
 // `metadata` owns PageMeta installation, reclaim metadata, debug attribution.
-// `rmap` owns the tagged PageMeta mapping owner and page-lock protocol.
+// `page_lock` owns the blocking per-page lock slow path and bounded wait table.
+// `rmap` owns the tagged PageMeta mapping owner.
 // `contig` owns contiguous allocation and final frame free paths.
 // `direct_map` owns kernel linear-map granularity and translation-validity control.
 // `alloc_integrity` owns debug-cow shadow allocation tracking.
@@ -25,6 +26,7 @@ mod boot_init;
 mod frame_alloc;
 mod refs;
 mod metadata;
+mod page_lock;
 mod rmap;
 mod contig;
 mod direct_map;
@@ -40,7 +42,8 @@ pub use boot_init::{HhdmBacking, MAX_REGIONS, SetupError, direct_map_base, init_
 pub use fwmap::{firmware_regions, FirmwareRegion, MAX_FIRMWARE_REGIONS};
 pub use frame_alloc::{alloc_one_frame, alloc_one_frame_below, alloc_object_frame, alloc_movable_object_frame, alloc_raw_frame, alloc_raw_frame_below, frame_ptr, migrate_movable_object_frame, release_movable_object_frame, release_object_frame};
 pub use refs::{can_reuse_anon_exclusive, dec_and_maybe_free_frame, dec_object_ref_and_maybe_free_frame, dec_ref_no_free, frame_refcount, inc_object_ref, inc_ref};
-pub use metadata::{admit_anon_lru, admit_file_lru, admit_shmem_lru, classify_file_page, classify_shmem_page, clear_anon_exclusive, frame_mapcount, init_page_meta, init_page_meta_from_storage, init_page_meta_with_native_storage, isolate_anon_lru_pfn, isolate_inactive_anon_lru, isolate_inactive_anon_lru_memcg, isolate_inactive_file_lru, mark_lru_referenced, memcg_for_pa, native_page_base, native_page_for_pa, native_page_pa, page_index_for_pa, pfn_max_from_boot_info, putback_isolated_lru, reclaim_snapshot, release_isolated_lru, rmap_aware_dec_and_maybe_free, set_lru_unevictable, set_memcg_for_pa, try_lock_page, unlink_lru_for_final_free, unlock_page};
+pub use metadata::{admit_anon_lru, admit_file_lru, admit_shmem_lru, classify_file_page, classify_shmem_page, clear_anon_exclusive, frame_mapcount, init_page_meta, init_page_meta_from_storage, init_page_meta_with_native_storage, isolate_anon_lru_pfn, isolate_inactive_anon_lru, isolate_inactive_anon_lru_memcg, isolate_inactive_file_lru, mark_lru_referenced, memcg_for_pa, native_page_base, native_page_for_pa, native_page_pa, page_index_for_pa, pfn_max_from_boot_info, putback_isolated_lru, reclaim_snapshot, release_isolated_lru, rmap_aware_dec_and_maybe_free, set_lru_unevictable, set_memcg_for_pa, unlink_lru_for_final_free};
+pub use page_lock::{lock_page, try_lock_page, unlock_page};
 pub use rmap::{anon_vma_for_pa, clear_anon_rmap_for_pa, clear_file_rmap_for_pa, file_rmap_for_pa, set_anon_rmap_for_pa, set_file_rmap_for_pa};
 // free-while-mapped peer-scan repair: opt-in DIAG only. The always-on
 // never-free-a-mapped-page invariant lives in `refs::release_frame_on_zero`

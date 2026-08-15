@@ -31,7 +31,7 @@ pub use percpu::{
 pub use seqlock::SeqLock;
 pub use rcu::{
     call_rcu, note_qs, pending_callbacks, rcu_barrier, rcu_process_callbacks, set_cpu_hooks,
-    synchronize_rcu, RcuCallback,
+    set_wait_hooks, synchronize_rcu, wait_epoch, RcuCallback,
 };
 pub use rwlock::{RwLock, RwReadGuard, RwWriteGuard};
 

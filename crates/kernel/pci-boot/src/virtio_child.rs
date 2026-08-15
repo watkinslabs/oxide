@@ -31,6 +31,10 @@ impl virtio::VirtioChildDriverOps<VirtioChildSession> for VirtioGpuOps {
         drv_virtio_gpu::transport_profile()
     }
 
+    fn profile_for(device_key: virtio::VirtioChildDeviceKey) -> virtio::VirtioTransportProfile {
+        drv_virtio_gpu::transport_profile_for(device_key)
+    }
+
     fn probe_child(
         parent: &alloc::sync::Arc<drv::Device>,
         session: &mut VirtioChildSession,
@@ -40,25 +44,18 @@ impl virtio::VirtioChildDriverOps<VirtioChildSession> for VirtioGpuOps {
         let Some(resources) = session.child_resources() else {
             return Err(drv::Error::ProbeFailed);
         };
-        let ok = drv_virtio_gpu::post_init::get_display_info(
-            device_key,
-            pci_bdf,
-            parent,
-            session.drv_features(),
-            resources,
-        );
-        if !ok {
-            return Err(drv::Error::ProbeFailed);
-        }
-        debug_boot! {
-            klog::write_raw(b"[INFO]  virtio-gpu installed feat=");
-            klog::write_hex_u64(session.drv_features());
-            klog::write_raw(b"\n");
-        }
+        if !drv_virtio_gpu::post_init::prepare_deferred_init(
+            device_key, pci_bdf, parent, session.drv_features(), resources,
+        ) { return Err(drv::Error::ProbeFailed); }
         Ok(())
     }
 
+    fn child_published(device_key: virtio::VirtioChildDeviceKey) {
+        drv_virtio_gpu::post_init::start_deferred_init(device_key);
+    }
+
     fn remove_child(device_key: virtio::VirtioChildDeviceKey) {
+        let _ = drv_virtio_gpu::post_init::cancel_deferred_init(device_key);
         let result = drv_virtio_gpu::hot_remove(device_key);
         let removed = result.device_removed;
         let scanout = result.scanout_removed;
@@ -75,6 +72,7 @@ impl virtio::VirtioChildDriverOps<VirtioChildSession> for VirtioGpuOps {
     }
 
     fn shutdown_child(device_key: virtio::VirtioChildDeviceKey) {
+        let _ = drv_virtio_gpu::post_init::cancel_deferred_init(device_key);
         let _ = drv_virtio_gpu::shutdown(device_key);
     }
 }

@@ -350,7 +350,7 @@ extern "C" fn read_seqbegin(s: *mut LinuxSeqLock) -> u32 {
     loop {
         let v = seq_u32(s).load(Ordering::Acquire);
         if v & 1 == 0 { return v; }
-        core::hint::spin_loop();
+        sync::spin_relax::relax();
     }
 }
 extern "C" fn read_seqretry(s: *mut LinuxSeqLock, start: u32) -> i32 {
@@ -494,12 +494,12 @@ extern "C" fn lockdep_set_class(_lock: *mut u8, _key: *mut u8) {}
 extern "C" fn lockdep_set_class_and_name(_lock: *mut u8, _key: *mut u8, _name: *const u8) {}
 
 fn lock_u32(a: &AtomicU32) {
-    while a.compare_exchange_weak(0, 1, Ordering::Acquire, Ordering::Relaxed).is_err() { core::hint::spin_loop(); }
+    while a.compare_exchange_weak(0, 1, Ordering::Acquire, Ordering::Relaxed).is_err() { sync::spin_relax::relax(); }
 }
 fn try_lock_u32(a: &AtomicU32) -> bool { a.compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed).is_ok() }
 fn unlock_u32(a: &AtomicU32) { a.store(0, Ordering::Release); }
 fn load_u32(a: &AtomicU32) -> u32 { a.load(Ordering::Acquire) }
-fn read_take(a: &AtomicI32) { while !read_try(a) { core::hint::spin_loop(); } }
+fn read_take(a: &AtomicI32) { while !read_try(a) { sync::spin_relax::relax(); } }
 fn read_try(a: &AtomicI32) -> bool {
     loop {
         let v = a.load(Ordering::Acquire);
@@ -508,7 +508,7 @@ fn read_try(a: &AtomicI32) -> bool {
     }
 }
 fn read_drop(a: &AtomicI32) { a.fetch_sub(1, Ordering::Release); }
-fn write_take(a: &AtomicI32) { while !write_try(a) { core::hint::spin_loop(); } }
+fn write_take(a: &AtomicI32) { while !write_try(a) { sync::spin_relax::relax(); } }
 fn write_try(a: &AtomicI32) -> bool { a.compare_exchange(0, WRITER, Ordering::Acquire, Ordering::Relaxed).is_ok() }
 fn write_drop(a: &AtomicI32) { a.store(0, Ordering::Release); }
 fn field_u32(p: *mut LinuxSpinlock) -> &'static AtomicU32 { atomic_u32(unsafe_field_u32(p.cast())) }

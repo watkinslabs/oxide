@@ -10,8 +10,8 @@ usage() {
 ARCH="${1:-}"
 TIMEOUT="${2:-${SMOKE_TIMEOUT:-900}}"
 case "$ARCH" in
-    x86) MT=qemu-x86 ;;
-    arm) MT=qemu-arm ;;
+    x86) IMAGE_MT=qemu-x86-image; RUN_MT=qemu-x86-existing ;;
+    arm) IMAGE_MT=qemu-arm-image; RUN_MT=qemu-arm-existing ;;
     *) usage ;;
 esac
 
@@ -41,9 +41,19 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "drm-render-smoke: arch=$ARCH timeout=${TIMEOUT}s uart=$UART log=$LOG"
-OXIDE_DRM_RENDER_SMOKE=1 OXIDE_QEMU_HEADLESS=1 OXIDE_QEMU_UART_SOCK="$UART" OXIDE_QEMU_KVM="${OXIDE_QEMU_KVM:-1}" \
-    setsid bash -c "exec make '$MT' > '$LOG' 2>&1 < /dev/null" &
+echo "drm-render-smoke: arch=$ARCH preparing image target=$IMAGE_MT log=$LOG"
+if ! OXIDE_DRM_RENDER_SMOKE=1 make "$IMAGE_MT" >"$LOG" 2>&1; then
+    echo "drm-render-smoke: FAIL - image preparation failed before QEMU started" >&2
+    tail -n 80 "$LOG" >&2
+    exit 1
+fi
+
+# Image preparation can legitimately take longer than a healthy guest boot.
+# Start the deadline only after the run-existing launcher has created its UART
+# endpoint, exactly as the generic boot-smoke does.
+echo "drm-render-smoke: arch=$ARCH runtime_timeout=${TIMEOUT}s uart=$UART log=$LOG"
+OXIDE_QEMU_HEADLESS=1 OXIDE_QEMU_UART_SOCK="$UART" OXIDE_QEMU_KVM="${OXIDE_QEMU_KVM:-1}" \
+    setsid bash -c "exec make '$RUN_MT' >> '$LOG' 2>&1 < /dev/null" &
 echo $! > "$PIDFILE"
 for _ in $(seq 1 600); do
     [ -S "$UART" ] && break

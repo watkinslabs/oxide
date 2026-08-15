@@ -15,7 +15,7 @@ pub use identity::{
 
 mod profile;
 pub use profile::{
-    VirtioChildRequirements, VirtioEarlyPayloadPolicy, VirtioQueuePlan, VirtioTransportProfile,
+    VirtioChildRequirements, VirtioEarlyPayloadPolicy, VirtioQueueIrq, VirtioQueuePlan, VirtioTransportProfile,
     VIRTIO_MSI_NO_VECTOR, MAX_RESOURCE_QUEUES, POLL_QUEUE_INDEX,
 };
 
@@ -37,10 +37,10 @@ pub use dma_frame::{allocate_dma_frame, device_dma_addr, push_unique_dma_frame, 
 
 mod child;
 pub use child::{
-    push_unique_frame, run_child_probe, run_child_remove, run_child_shutdown, VirtioChildBus,
-    VirtioChildDriver, VirtioChildDriverOps, VirtioChildProbeFacts, VirtioChildResourceState,
-    VirtioChildTransportSession, VirtioProbeLease, VirtioProbeOwnedFrames,
-    VirtioTransportProbeResult,
+    push_unique_frame, run_child_probe, run_child_probe_after_publish, run_child_remove,
+    run_child_shutdown, VirtioChildBus, VirtioChildDriver, VirtioChildDriverOps,
+    VirtioChildProbeFacts, VirtioChildResourceState, VirtioChildTransportSession,
+    VirtioProbeLease, VirtioProbeOwnedFrames, VirtioTransportProbeResult,
 };
 
 #[cfg(test)]

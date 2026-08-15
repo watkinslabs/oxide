@@ -1,15 +1,31 @@
-use super::regs::{read_register, write_register, REG_LVT_TIMER, REG_TIMER_CUR, REG_TIMER_DIV, REG_TIMER_INIT};
+use super::regs::{read_register, write_register, wrmsr, REG_LVT_TIMER, REG_TIMER_CUR, REG_TIMER_DIV, REG_TIMER_INIT};
+use crate::lapic_shutdown::{timer_stop_register, TimerStopRegister};
 
 const TIMER_VECTOR: u32 = hal_x86_64::VEC_TIMER as u32;
 const LVT_MODE_DEADLINE: u32 = 2 << 17;
+const IA32_TSC_DEADLINE: u32 = 0x6e0;
 
-/// Disarm the LAPIC timer (write 0 to the Initial Count reg).
+/// Disarm the LAPIC timer through the register for its current LVT mode.
+///
+/// Linux's `lapic_timer_shutdown()` clears `IA32_TSC_DEADLINE` after the
+/// LVT has entered deadline mode; it must not write the Initial Count
+/// register in that state.  QEMU/KVM reports that invalid transition as #GP.
 /// # SAFETY: `enable` ran; LAPIC mapped Device-attr.
 /// # C: O(1)
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub unsafe fn timer_disarm() {
     // SAFETY: caller owns this enabled LAPIC timer register transition.
-    let _ = unsafe { write_register(REG_TIMER_INIT, 0) };
+    let Some(lvt) = (unsafe { read_register(REG_LVT_TIMER) }) else { return };
+    match timer_stop_register(lvt) {
+        TimerStopRegister::InitialCount => {
+            // SAFETY: non-deadline LVT modes stop through TMICT.
+            let _ = unsafe { write_register(REG_TIMER_INIT, 0) };
+        }
+        TimerStopRegister::TscDeadline => {
+            // SAFETY: deadline LVT mode stops through its paired deadline MSR.
+            unsafe { wrmsr(IA32_TSC_DEADLINE, 0) };
+        }
+    }
 }
 
 /// Configure the LAPIC timer in periodic mode unmasked at vector
@@ -33,9 +49,10 @@ pub unsafe fn timer_periodic(initial_count: u32) -> bool {
 /// # Ctx: local CPU, IRQ-off or timer IRQ
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub unsafe fn timer_deadline_mode() -> bool {
+    // Linux writes LVTT first when entering deadline mode.  TMICT is ignored
+    // in this mode and must not be touched again after the transition.
     // SAFETY: caller owns this enabled LAPIC timer register transition.
-    unsafe { write_register(REG_TIMER_INIT, 0)
-        && write_register(REG_LVT_TIMER, TIMER_VECTOR | LVT_MODE_DEADLINE) }
+    unsafe { write_register(REG_LVT_TIMER, TIMER_VECTOR | LVT_MODE_DEADLINE) }
 }
 
 /// Configure the LAPIC timer in one-shot mode, masked (no IRQ

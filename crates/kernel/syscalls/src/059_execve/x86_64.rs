@@ -291,6 +291,23 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
         Ok(i) => i,
         Err(_) => return -(Errno::Enoexec.as_i32() as i64),
     };
+    #[cfg(feature = "debug-faultdiag")]
+    {
+        klog::write_raw(b"[exec-vma] data=");
+        klog::write_hex_u64(img.start_data);
+        klog::write_raw(b"..");
+        klog::write_hex_u64(img.end_data);
+        klog::write_raw(b" root=");
+        klog::write_hex_u64(new_as.root_pa());
+        klog::write_raw(b" tid=");
+        klog::write_dec_u64(cur.tid as u64);
+        klog::write_raw(b" present=");
+        klog::write_raw(if UserVirtAddr::new(img.start_data)
+            .and_then(|va| new_as.find_vma(va)).is_some() { b"yes" } else { b"no" });
+        klog::write_raw(b" n=");
+        klog::write_dec_u64(new_as.vma_count() as u64);
+        klog::write_raw(b"\n");
+    }
     // The stack is mapped by this shim, not the loader, so it is reported here.
     exec_maps.push(elf_load::ImageMapping {
         addr: exec_user_stack_va, len: exec_user_stack_len as u64, pgoff: 0,

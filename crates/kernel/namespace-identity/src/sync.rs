@@ -3,6 +3,18 @@ use core::hint::spin_loop;
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicBool, Ordering};
 
+#[cfg(test)]
+use core::sync::atomic::AtomicUsize;
+
+#[cfg(test)]
+static LOCK_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+pub(crate) fn reset_lock_calls() { LOCK_CALLS.store(0, Ordering::Relaxed); }
+
+#[cfg(test)]
+pub(crate) fn lock_calls() -> usize { LOCK_CALLS.load(Ordering::Relaxed) }
+
 pub(crate) struct SpinLock<T> {
     held: AtomicBool,
     value: UnsafeCell<T>,
@@ -18,6 +30,8 @@ impl<T> SpinLock<T> {
 
     /// Acquire exclusive registry access. # C: O(1) uncontended
     pub(crate) fn lock(&self) -> Guard<'_, T> {
+        #[cfg(test)]
+        LOCK_CALLS.fetch_add(1, Ordering::Relaxed);
         while self.held.compare_exchange_weak(false, true,
             Ordering::Acquire, Ordering::Relaxed).is_err()
         {

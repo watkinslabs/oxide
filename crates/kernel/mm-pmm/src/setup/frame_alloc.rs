@@ -191,12 +191,12 @@ pub fn release_movable_object_frame(owner: movable::OwnerId, pa: u64) -> bool {
 
 /// Migrate one registered movable object page to a fresh PMM frame. # C: O(pages)
 pub fn migrate_movable_object_frame(pa: u64, mode: movable::Mode) -> Result<u64, movable::MoveError> {
-    if !super::metadata::try_lock_page(pa) { return Err(movable::MoveError::Busy); }
-    let Some(destination) = alloc_object_frame() else { let _ = super::metadata::unlock_page(pa); return Err(movable::MoveError::Busy); };
-    if !super::metadata::try_lock_page(destination) { release_object_frame(destination); let _ = super::metadata::unlock_page(pa); return Err(movable::MoveError::Busy); }
+    if !super::page_lock::try_lock_page(pa) { return Err(movable::MoveError::Busy); }
+    let Some(destination) = alloc_object_frame() else { let _ = super::page_lock::unlock_page(pa); return Err(movable::MoveError::Busy); };
+    if !super::page_lock::try_lock_page(destination) { release_object_frame(destination); let _ = super::page_lock::unlock_page(pa); return Err(movable::MoveError::Busy); }
     let result = crate::movable::migrate(pa, destination, mode);
-    let _ = super::metadata::unlock_page(destination);
-    let _ = super::metadata::unlock_page(pa);
+    let _ = super::page_lock::unlock_page(destination);
+    let _ = super::page_lock::unlock_page(pa);
     match result {
         Ok(()) => { release_object_frame(pa); Ok(destination) }
         Err(error) => { release_object_frame(destination); Err(error) }

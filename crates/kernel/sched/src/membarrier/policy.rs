@@ -2,6 +2,7 @@
 // below is host-unit-tested. The work fns in the parent module bind these
 // answers to real mm state and real IPIs; nothing here touches either.
 
+use hal::smp_call::CallKind;
 use syscall::errno::Errno;
 
 /// Linux `MEMBARRIER_FLAG_SYNC_CORE`.
@@ -47,6 +48,16 @@ impl Kind {
     /// # C: O(1)
     pub fn from_u32(v: u32) -> Kind {
         match v { 1 => Kind::SyncCore, 2 => Kind::Rseq, _ => Kind::Mb }
+    }
+
+    /// The one generic cross-CPU call that carries this private operation.
+    /// # C: O(1)
+    pub const fn private_call_kind(self) -> CallKind {
+        match self {
+            Kind::Mb       => CallKind::MembarrierPrivateMb,
+            Kind::SyncCore => CallKind::MembarrierPrivateSyncCore,
+            Kind::Rseq     => CallKind::MembarrierPrivateRseq,
+        }
     }
 }
 
@@ -172,6 +183,9 @@ mod tests {
         for k in [Kind::Mb, Kind::SyncCore, Kind::Rseq] {
             assert_eq!(Kind::from_u32(k.as_u32()), k);
         }
+        assert_eq!(Kind::Mb.private_call_kind(), CallKind::MembarrierPrivateMb);
+        assert_eq!(Kind::SyncCore.private_call_kind(), CallKind::MembarrierPrivateSyncCore);
+        assert_eq!(Kind::Rseq.private_call_kind(), CallKind::MembarrierPrivateRseq);
         // An encoding no sender writes must degrade to the strongest-ordering
         // safe default rather than silently skipping a target's barrier.
         assert_eq!(Kind::from_u32(7), Kind::Mb);

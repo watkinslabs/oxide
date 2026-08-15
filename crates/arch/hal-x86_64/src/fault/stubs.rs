@@ -202,12 +202,16 @@ core::arch::global_asm!(
 
     ".type  oxide_fault_body, @function",
     "oxide_fault_body:",
-    // Linux `exc_page_fault` inherits the interrupted process IRQ state before
-    // running the memory-fault handler. Enable only for #PF frames whose saved
-    // RFLAGS had IF set: a fault in hard-IRQ/IRQ-off kernel context must remain
-    // atomic, while user faults and uaccess faults from syscalls may sleep.
+    // Capture CR2 while entry still excludes maskable IRQs. A nested fault can
+    // replace CR2, so the resolver must never read it after STI.
+    "    xor  esi, esi",                 // arg 1 = zero for non-#PF traps
     "    cmp  qword ptr [rsp + 0x78], 14",
     "    jne  4f",
+    "    call oxide_fault_capture_cr2",
+    "    mov  rsi, rax",                 // arg 1 = preserved #PF address
+    // A page-fault handler inherits the interrupted IF state. A fault in
+    // hard-IRQ/IRQ-off kernel context remains atomic; user and uaccess faults
+    // may sleep once their fault address has been preserved above.
     "    test qword ptr [rsp + 0x98], 0x200",
     "    jz   4f",
     "    sti",

@@ -436,3 +436,18 @@ pub fn wanted_features() -> u64 {
 pub fn transport_profile() -> virtio::VirtioTransportProfile {
     virtio::VirtioTransportProfile::q0_q1(wanted_features(), None).with_ring_event_idx()
 }
+
+/// Per-instance GPU transport profile: each queue IRQ carries the child key
+/// needed to wake exactly that device's completion waiters.
+/// # C: O(1)
+#[cfg(any(target_os = "oxide-kernel", test))]
+pub fn transport_profile_for(device_key: DeviceKey) -> virtio::VirtioTransportProfile {
+    transport_profile()
+        .with_q0_context_handler(crate::post_init::ctrlq_irq, device_key.raw() as usize)
+        .with_queue_context_handler(1, crate::post_init::cursorq_irq, device_key.raw() as usize)
+}
+
+#[cfg(not(any(target_os = "oxide-kernel", test)))]
+pub fn transport_profile_for(_device_key: DeviceKey) -> virtio::VirtioTransportProfile {
+    transport_profile()
+}

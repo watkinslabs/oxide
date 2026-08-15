@@ -22,6 +22,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use sync::{Spinlock, TaskList as TaskListClass};
 use vfs::{KResult, VfsError};
+use sched::live::WaitList;
 
 use super::state::RootfsState;
 
@@ -115,6 +116,8 @@ pub(crate) struct Ext4FrameStore {
     /// waits for this count to drain before discarding pages and freeing the
     /// orphan's blocks, mirroring `inode_wait_for_writeback`.
     active_writebacks: AtomicU32,
+    /// Waiters for the final active writeback completion.
+    writeback_wait: WaitList,
     /// Eviction shadows (Linux workingset shadow entries in the mapping
     /// xarray): `page_idx -> nonresident-age stamp` for a page reclaim dropped.
     /// The index stays *present* in the cache's index space with no frame, so
@@ -144,6 +147,7 @@ impl Ext4FrameStore {
             registered: AtomicBool::new(false),
             evicting: AtomicBool::new(false),
             active_writebacks: AtomicU32::new(0),
+            writeback_wait: WaitList::new(),
             shadows: Spinlock::new(BTreeMap::new()),
             #[cfg(feature = "debug-fillverify")]
             sums: Spinlock::new(BTreeMap::new()),
@@ -305,7 +309,7 @@ impl Ext4FrameStore {
                 // until this transient I/O reference has been acquired.
                 unsafe { pmm::setup::inc_object_ref(pa); }
             }
-            while !pmm::setup::try_lock_page(pa) { core::hint::spin_loop(); }
+            if !pmm::setup::lock_page(pa) { continue; }
             if self.pages.lock().get(&idx).map(|page| page.pa) == Some(pa) { return Ok(pa); }
             let _ = pmm::setup::unlock_page(pa);
             // SAFETY: release the transient non-PTE pin acquired above.

@@ -104,7 +104,12 @@ pub fn sched_ttwu_pending(cpu: u32, current: *mut Task, rq: &Runqueue) -> bool {
         #[cfg(feature = "debug-watchdog")]
         task.wake_diag_mark(WakeDiagPhase::Waiting, wake_diag_now_ns());
         while matches!(task.pending_wake(current), PendingWake::Defer) {
-            core::hint::spin_loop();
+            // This lock-held conditional `on_cpu` handoff is not a scheduler
+            // wait: parking while the target rq is held would deadlock
+            // activation. Route each relax step through the one generic spin
+            // path so a masked-IRQ waiter still services cross-CPU work that
+            // can release its peer.
+            sync::spin_relax::relax();
         }
         match task.pending_wake(current) {
             PendingWake::Drop  => {}

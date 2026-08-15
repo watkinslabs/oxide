@@ -11,22 +11,10 @@ mod frame;
 mod stubs;
 
 pub use stubs::vector_stub_addr;
-pub use frame::{current_fault_frame, current_fault_rsp};
+#[allow(unused_imports)]
+pub use frame::{current_fault_frame, current_fault_rip, current_fault_rsp};
 
 use crate::pt_regs::PtRegs;
-
-/// Read CR2 (page-fault linear address). Only meaningful for vec 14.
-/// # SAFETY: privileged read; legal at CPL=0.
-/// # C: O(1)
-#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-unsafe fn read_cr2() -> u64 {
-    let v: u64;
-    // SAFETY: `mov rax, cr2` is privileged; legal at CPL=0; pure read.
-    unsafe {
-        core::arch::asm!("mov {}, cr2", out(reg) v, options(nomem, nostack, preserves_flags));
-    }
-    v
-}
 
 /// Optional fault handler. Default is `default_handler` which
 /// returns `false` (= asm halts). Kernel installs a real handler
@@ -177,17 +165,28 @@ fn nmi_backtrace(f: &PtRegs) {
     klog::write_raw(b"\n");
 }
 
-/// Rust side of the fault handler. Called from `oxide_fault_common`
-/// with `regs = rsp after the 15 GPR pushes`. Emits a one-line fault
-/// summary on the boot UART then returns to the asm halt loop.
-///
-/// # SAFETY: caller (asm stub) passes a valid pointer to a
-/// `PtRegs` on the kernel stack.
+/// Snapshot the page-fault linear address while entry still masks IRQs.
+/// # C: O(1)
+/// # Ctx: synchronous x86 page-fault entry
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+#[no_mangle]
+pub extern "C" fn oxide_fault_capture_cr2() -> u64 {
+    let value: u64;
+    // SAFETY: x86 #PF entry invokes this with maskable IRQs disabled; CR2 is a privileged read.
+    unsafe {
+        core::arch::asm!("mov {}, cr2", out(reg) value, options(nomem, nostack, preserves_flags));
+    }
+    value
+}
+
+/// Rust side of the fault handler. Entry assembly passes its saved frame and
+/// a CR2 snapshot before it permits nested interrupts.
+/// # SAFETY: entry assembly passes a valid `PtRegs` and its pre-IRQ CR2 snapshot.
 /// # C: O(constant)
 /// # Ctx: synchronous exception; process page faults inherit IRQs enabled
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 #[no_mangle]
-unsafe extern "C" fn oxide_fault_print_rust(regs: *mut PtRegs) -> bool {
+unsafe extern "C" fn oxide_fault_print_rust(regs: *mut PtRegs, cr2: u64) -> bool {
     // SAFETY: stub-built PtRegs on the kernel stack, valid for read+write.
     let f = unsafe { &mut *regs };
     // F158: publish the live frame so the kernel SIGSEGV delivery path
@@ -252,11 +251,6 @@ unsafe extern "C" fn oxide_fault_print_rust(regs: *mut PtRegs) -> bool {
             return true;
         }
     }
-    let cr2 = if f.vector == 14 {
-        // SAFETY: read_cr2 is a privileged register read, legal at CPL=0.
-        unsafe { read_cr2() }
-    } else { 0 };
-
     // Runaway guard, BEFORE the resolver is consulted. A fault already in
     // flight at this address on this kernel stack cannot be resolved by running
     // the same resolver again; doing so is what walked the stack down into its

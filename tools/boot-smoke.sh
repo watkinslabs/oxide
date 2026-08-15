@@ -91,12 +91,11 @@ ALIVE_MARKER="${SMOKE_ALIVE_MARKER:-$ALIVE_NONCE}"
 # admission condition than a unit status line.
 ALIVE_READY_MARKER="${SMOKE_ALIVE_READY_MARKER:-sh-5.2#}"
 
-# Failure marker: an unrecoverable kernel fault. The boot is dead the moment this
-# appears — the fault handler parks the PE and nothing further will be printed, so
-# waiting out the remaining timeout gains nothing and costs a pegged core per
-# attempt (a TCG arm boot that faulted at 11s used to burn the full 600s x 3).
-# Fail the attempt immediately and print the fault instead. Override/disable with
-# SMOKE_FAIL_MARKER='' if a profile legitimately expects a recoverable oops.
+# Failure marker: an unrecoverable kernel fault OR a dead init. The serial
+# debug shell can answer briefly before PID 1's later crash reaches the log;
+# that is not a usable boot. Fail immediately rather than accepting one shell
+# reply while the process that owns every desktop service is gone. Override or
+# disable only for a deliberately crash-testing profile.
 # Markers that mean "this boot is dead, stop waiting". Extended-regex,
 # matched with grep -aE so binary serial bytes cannot silence it:
 #   [FAULT]    unrecoverable fault oops
@@ -104,7 +103,7 @@ ALIVE_READY_MARKER="${SMOKE_ALIVE_READY_MARKER:-sh-5.2#}"
 #              handler PARKS that CPU, so without this the run burns the whole
 #              timeout with a wedged guest instead of failing in seconds
 #   [BUG]      scheduling while atomic (sched refused to switch)
-FAIL_MARKER="${SMOKE_FAIL_MARKER-\[FAULT\]|\[BADSTACK\]|\[BUG\]}"
+FAIL_MARKER="${SMOKE_FAIL_MARKER-\[FAULT\]|\[BADSTACK\]|\[BUG\]|systemd\[1\]: segfault|Attempted to kill init}"
 
 # Bounded retry. SMP=2 boot has a known intermittent late-boot timing
 # race (~25%: reaches deep into rcS but the getty/login prompt doesn't
@@ -168,47 +167,32 @@ esac
 
 # Reap a QEMU left holding THIS TREE'"'"'S boot image.
 #
-# A smoke that is killed (a harness timeout, a cancelled run) can leave its
-# QEMU alive, and it keeps the image open. The next boot then dies with
-# `Is another process using the image [...]` and writes a log containing ZERO
-# kernel output — which reads exactly like a boot failure and is not one. That
-# has already produced retracted before/after claims.
-#
-# The image path is the discriminator, and it is safe precisely because it is
-# specific: `$SMOKE_ROOT` is this worktree, so a QEMU holding it cannot be
-# another lane'"'"'s live boot, which runs out of a different tree. A blanket
-# `pkill qemu-system` would kill those, so it is never used. Anything that is
-# not a `qemu-system-*` holding one of OUR images is left strictly alone.
+# A killed smoke can leave QEMU holding the image. The next launch would then
+# produce no kernel output and look like a boot failure. The namespace pidfile
+# is the exact owner record; a missing or stale file deliberately does nothing
+# rather than searching or touching unrelated host processes.
 reap_stale_image_holders() {
-    local img pid exe found=0
+    # `xtask` records the QEMU PID for this exact build namespace.  Scanning
+    # every host FD to rediscover it can delay smoke startup indefinitely.
+    [ -s "$QEMU_PIDFILE" ] || return 0
+    local pid exe img fd holds=0
+    pid="$(cat "$QEMU_PIDFILE" 2>/dev/null || true)"
+    case "$pid" in ''|*[!0-9]*) return 0 ;; esac
+    kill -0 "$pid" 2>/dev/null || return 0
+    exe="$(basename "$(readlink -f "/proc/$pid/exe" 2>/dev/null)" 2>/dev/null || true)"
+    case "$exe" in qemu-system-*) ;; *) return 0 ;; esac
     for img in $IMG_GLOB; do
         [ -e "$img" ] || continue
-        for fd in /proc/[0-9]*/fd/*; do
+        for fd in /proc/"$pid"/fd/*; do
             [ -e "$fd" ] || continue
-            [ "$(readlink -f "$fd" 2>/dev/null)" = "$img" ] || continue
-            pid="${fd#/proc/}"; pid="${pid%%/*}"
-            exe="$(basename "$(readlink -f "/proc/$pid/exe" 2>/dev/null)" 2>/dev/null || true)"
-            case "$exe" in qemu-system-*) ;; *) continue ;; esac
-            echo "boot-smoke: reaping stale $exe pid=$pid still holding $img" >&2
-            echo "boot-smoke:   (a previous smoke was killed without releasing it; NOT a kernel failure)" >&2
-            kill -TERM "$pid" 2>/dev/null || true
-            found=1
+            if [ "$(readlink -f "$fd" 2>/dev/null)" = "$img" ]; then holds=1; break 2; fi
         done
     done
-    [ "$found" -eq 0 ] && return 0
+    [ "$holds" -eq 1 ] || return 0
+    echo "boot-smoke: reaping stale $exe pid=$pid holding this namespace image" >&2
+    kill -TERM "$pid" 2>/dev/null || true
     sleep 2
-    for img in $IMG_GLOB; do
-        [ -e "$img" ] || continue
-        for fd in /proc/[0-9]*/fd/*; do
-            [ -e "$fd" ] || continue
-            [ "$(readlink -f "$fd" 2>/dev/null)" = "$img" ] || continue
-            pid="${fd#/proc/}"; pid="${pid%%/*}"
-            exe="$(basename "$(readlink -f "/proc/$pid/exe" 2>/dev/null)" 2>/dev/null || true)"
-            case "$exe" in qemu-system-*) ;; *) continue ;; esac
-            kill -KILL "$pid" 2>/dev/null || true
-        done
-    done
-    return 0
+    kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null || true
 }
 
 # Headless + no-stdin: feed /dev/null so qemu's stdio chardev

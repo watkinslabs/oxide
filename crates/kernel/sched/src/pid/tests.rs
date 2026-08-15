@@ -146,6 +146,25 @@ fn dropping_an_identity_returns_every_number_it_took() {
 }
 
 #[test]
+fn pid_mappings_keep_a_passive_namespace_alive_without_reactivating_it() {
+    let root = initial(NamespaceKind::Pid);
+    let child = nested(&root);
+    let weak = NamespaceRef::downgrade(&child);
+    let pid = identity(1);
+
+    pid.configure_mappings(&child, &[1, 2]).unwrap();
+    drop(child);
+
+    // The mapping is the PID's direct lifetime reference, but it is not an
+    // active namespace reference and therefore cannot republish the namespace.
+    assert!(weak.is_alive());
+    assert!(weak.upgrade().is_none());
+
+    drop(pid);
+    assert!(!weak.is_alive());
+}
+
+#[test]
 fn a_freed_number_is_reissued_once_the_namespace_cycles() {
     let (_root, _mid, inner) = three_level();
     inner.pid_numbers().set_max(3).unwrap();

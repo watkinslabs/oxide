@@ -178,10 +178,6 @@ unsafe extern "C" fn oxide_irq_dispatch(regs: *mut hal_x86_64::PtRegs) {
             // conversely refused the reschedule the sender asked for when the
             // running task was SCHED_FIFO.
             sched::preempt::set_need_resched();
-            // `membarrier(2)` rides this same IPI (Linux `ipi_mb` is just a
-            // full barrier — no private vector needed). No-op unless this CPU
-            // is a target of an in-flight round.
-            sched::membarrier::service();
         }
         hal_x86_64::VEC_CALL_FUNCTION => {
             // Cross-CPU call function: another CPU queued work for us —

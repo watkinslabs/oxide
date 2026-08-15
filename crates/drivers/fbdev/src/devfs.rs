@@ -238,18 +238,6 @@ pub fn handle_fbdev_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
             }
             Some(0)
         }
-        crate::FBIOGET_VBLANK => {
-            // Report the real, tick-driven pseudo-vblank counter (the honest
-            // virtual-GPU vsync cadence). count = VBLANK_SEQ; flags advertise a
-            // valid frame count + vsync source.
-            if !user_ok(arg, 32) { return efault(); }
-            let mut vb = crate::FbVblank::default();
-            vb.flags = crate::FB_VBLANK_HAVE_COUNT | crate::FB_VBLANK_HAVE_VSYNC;
-            vb.count = crate::vblank_seq() as u32;
-            // SAFETY: arg validated for 32 B; FbVblank is 32 B; aligned write into the caller's AS.
-            if write_user(arg, &vb).is_err() { return efault(); }
-            Some(0)
-        }
         // ---- by-value-arg ioctls (arg is NOT a pointer) ----
         crate::FBIOBLANK => {
             // arg = FB_BLANK_* level (0..4) by value. Validate, then apply a
@@ -263,13 +251,9 @@ pub fn handle_fbdev_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
             Some(0)
         }
         crate::FBIO_WAITFORVSYNC => {
-            // Real wait on the tick-driven pseudo-vblank: read the current seq,
-            // block (cooperative yield) until it advances or the bounded
-            // deadline elapses, flush the scanout, return 0. NOT an immediate
-            // fake — it returns only after a vsync tick actually happened.
-            let start = crate::vblank_seq();
-            let _ = crate::wait_vblank(start);
-            crate::flush(idx);
+            // fbdev's generic DRM bridge accepts this legacy request even
+            // when its fixed firmware scanout has no hardware vblank source.
+            // A physical KMS driver owns any actual vblank implementation.
             Some(0)
         }
         _ => None,

@@ -71,6 +71,9 @@ bitflags::bitflags! {
         /// slot in `[0, pfn_max)` unconditionally, gaps included), which a
         /// bare `page_meta().get(pfn)` hit cannot tell apart.
         const MANAGED        = 1 << 15;
+        /// A blocking page-lock waiter has published on the corresponding
+        /// bounded wait bucket. Unlock tests this before entering that bucket.
+        const WAITERS        = 1 << 17;
     }
 }
 
@@ -299,6 +302,26 @@ impl PageMetaArr {
     pub fn unlock_page(&self, pfn: Pfn) -> Option<bool> {
         let previous = self.get(pfn)?.flags.fetch_and(!PageFlags::LOCKED.bits(), Ordering::Release);
         Some(previous & PageFlags::LOCKED.bits() != 0)
+    }
+
+    /// Publish that a blocking page-lock waiter may need a wakeup.
+    /// # C: O(1)
+    pub fn set_page_waiters(&self, pfn: Pfn) -> Option<()> {
+        self.get(pfn)?.flags.fetch_or(PageFlags::WAITERS.bits(), Ordering::Release);
+        Some(())
+    }
+
+    /// Whether the page's bounded wait bucket may contain a blocking waiter.
+    /// # C: O(1)
+    pub fn page_has_waiters(&self, pfn: Pfn) -> Option<bool> {
+        Some(self.get(pfn)?.flags.load(Ordering::Acquire) & PageFlags::WAITERS.bits() != 0)
+    }
+
+    /// Retire a stale page-lock waiter marker after its bucket is empty.
+    /// # C: O(1)
+    pub fn clear_page_waiters(&self, pfn: Pfn) -> Option<()> {
+        self.get(pfn)?.flags.fetch_and(!PageFlags::WAITERS.bits(), Ordering::Release);
+        Some(())
     }
 
     /// Record the task that acquired a page lock for the debug-watchdog

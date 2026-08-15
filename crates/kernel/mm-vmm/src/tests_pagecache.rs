@@ -316,6 +316,53 @@ fn private_write_does_not_touch_cache() {
     assert!(vma.anon_vma.is_some() && vma.anon_pages.load(core::sync::atomic::Ordering::Acquire));
 }
 
+/// A populated MAP_PRIVATE file page stays private across fork: each side
+/// receives the other's pre-fork bytes, then each first write splits from the
+/// shared snapshot without modifying the inode cache or its peer.
+#[test]
+fn forked_private_file_page_splits_for_each_writer() {
+    reset();
+    let (pr, cr) = (0x1000, 0x2000);
+    let va = 0x44_0000u64;
+    let inode = MockMapping::new();
+    let cache = inode.frame(0);
+    let parent = mmap_file(pr, va, inode.clone(), VmaFlags::PRIVATE);
+
+    // A normal private read fault starts from a copy of the inode page, then
+    // ordinary parent activity makes that private page writable before fork.
+    fault(&parent, pr, va, RD);
+    fault(&parent, pr, va, WR);
+    write_tag(cur_pa(pr, va), b"PAR0");
+    let parent_pre_fork = cur_pa(pr, va);
+    assert_ne!(parent_pre_fork, cache);
+
+    // fork must W-strip both PTEs over the same private snapshot.
+    activate_root(pr);
+    let child = parent.fork_cow_pages::<MultiMmu, _>(cr, 0, rc_inc).expect("fork");
+    assert_eq!(cur_pa(pr, va), parent_pre_fork);
+    assert_eq!(cur_pa(cr, va), parent_pre_fork);
+    let (_, pflags) = MultiMmu::translate(Va(va)).expect("parent pte");
+    activate_root(cr);
+    let (_, cflags) = MultiMmu::translate(Va(va)).expect("child pte");
+    assert!(!pflags.contains(PageFlags::WRITE));
+    assert!(!cflags.contains(PageFlags::WRITE));
+
+    // A child write copies from the parent's private bytes, never the inode.
+    fault(&child, cr, va, WR);
+    write_tag(cur_pa(cr, va), b"CHLD");
+    assert_ne!(cur_pa(cr, va), parent_pre_fork);
+    activate_root(pr);
+    assert_eq!(&read_tag(cur_pa(pr, va)), b"PAR0");
+    assert_eq!(&read_tag(cache), &[0xCC; 4]);
+
+    // The parent's later write gets a separate copy too; neither side leaks.
+    fault(&parent, pr, va, WR);
+    write_tag(cur_pa(pr, va), b"PAR1");
+    activate_root(cr);
+    assert_eq!(&read_tag(cur_pa(cr, va)), b"CHLD");
+    assert_eq!(&read_tag(cache), &[0xCC; 4]);
+}
+
 /// A failed memcg admission is not a missing cache page.  In particular it
 /// must not fall through to the MAP_PRIVATE copy path, which would create an
 /// uncharged frame and split the truth between cgroup and page cache.

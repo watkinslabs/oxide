@@ -172,7 +172,7 @@ fn signum_from(signo: u8) -> sched::signum::Signum {
 #[cfg(target_arch = "x86_64")]
 pub(super) fn trace_user_fault_x86(vec: u64, err: u64, rip: u64, cr2: u64) {
     let _ = (vec, err, rip, cr2); // consumed only by the cfg-gated dumps below
-    #[cfg(feature = "debug-irq")]
+    #[cfg(any(feature = "debug-irq", feature = "debug-faultdiag"))]
     {
         klog::write_raw(b"[FAULT] sigsegv: kill tid=");
         if let Some(c) = sched::live::current() { klog::write_dec_u64(c.tid as u64); }
@@ -207,72 +207,6 @@ pub(super) fn trace_user_fault_x86(vec: u64, err: u64, rip: u64, cr2: u64) {
             klog::write_raw(b" r14=");          klog::write_hex_u64(g.r14);
             klog::write_raw(b" r15=");          klog::write_hex_u64(g.r15);
             klog::write_raw(b"\n");
-            // B47: walk the frame-pointer chain via [rbp]=prev_rbp,
-            // [rbp+8]=return_addr per SysV. Up to 12 frames; stop
-            // at non-canonical / out-of-range rbp.
-            let mut bp = g.rbp;
-            for _ in 0..12 {
-                if bp == 0 || bp >= hal::USER_VA_END || (bp & 7) != 0 { break; }
-                // SAFETY: bp validated < USER_VA_END and 8-byte aligned; CPL=0 read through caller's AS. Any unmapped page faults to user_fault_handler which can deliver a second SIGSEGV — but we're already terminating, so the recursion is bounded.
-                let prev_bp = unsafe { core::ptr::read_volatile(bp as *const u64) };
-                // SAFETY: same range/alignment guarantees; +8 stays within the same frame slot.
-                let ret_rip = unsafe { core::ptr::read_volatile((bp + 8) as *const u64) };
-                klog::write_raw(b"[FAULT] frame rbp=");
-                klog::write_hex_u64(bp);
-                klog::write_raw(b" ret=");
-                klog::write_hex_u64(ret_rip);
-                klog::write_raw(b"\n");
-                if prev_bp <= bp { break; }
-                bp = prev_bp;
-            }
-            // B53: frame-pointer-omitting libs (musl mallocng is built
-            // -fomit-frame-pointer) defeat the rbp chain — the walk above
-            // stops after one frame. Scan the raw user stack from rsp and
-            // print any quadword that lands in a known code range so the
-            // real call chain (python text + ld-musl text) is recoverable
-            // without gdb. Ranges are the observed mmap layout; over-broad
-            // is fine (we just want return addresses to name functions).
-            let fp = hal_x86_64::current_fault_frame();
-            if !fp.is_null() {
-                // SAFETY: live PtRegs on the kernel stack; read-only rsp.
-                let mut sp = unsafe { (*fp).rsp };
-                klog::write_raw(b"[FAULT] user rsp="); klog::write_hex_u64(sp);
-                klog::write_raw(b"\n");
-                let mut printed = 0u32;
-                let mut scanned = 0u32;
-                while scanned < 512 && printed < 24 {
-                    if sp == 0 || sp >= hal::USER_VA_END || (sp & 7) != 0 { break; }
-                    // SAFETY: sp validated < USER_VA_END and aligned; CPL=0 read through the faulting AS. Unmapped slots fault into user_fault_handler which re-terminates — bounded since we already diverge.
-                    let w = unsafe { core::ptr::read_volatile(sp as *const u64) };
-                    // python ET_EXEC text ~[0x400000,0x900000); ld-musl text
-                    // ~[0x40000000,0x40100000). Print stack slots holding such.
-                    let in_exec = w >= 0x400000 && w < 0x900000;
-                    let in_lib  = w >= 0x4000_0000 && w < 0x4010_0000;
-                    if in_exec || in_lib {
-                        klog::write_raw(b"[FAULT] stk+"); klog::write_hex_u64(scanned as u64 * 8);
-                        klog::write_raw(b" ret="); klog::write_hex_u64(w);
-                        klog::write_raw(b"\n");
-                        printed += 1;
-                    }
-                    sp += 8;
-                    scanned += 1;
-                }
-                // Dump 32 bytes around the faulting rax (mallocng's in-band
-                // slot header it asserted on) so we can see stale vs zero.
-                let a = g.rax;
-                if a >= 0x1000 && a < hal::USER_VA_END {
-                    let base = (a & !7).saturating_sub(16);
-                    klog::write_raw(b"[FAULT] rax-mem @"); klog::write_hex_u64(base);
-                    for i in 0..4u64 {
-                        let p = base + i * 8;
-                        if p >= hal::USER_VA_END { break; }
-                        // SAFETY: p validated user-half + aligned; CPL=0 read, refaults handled as above.
-                        let w = unsafe { core::ptr::read_volatile(p as *const u64) };
-                        klog::write_raw(b" "); klog::write_hex_u64(w);
-                    }
-                    klog::write_raw(b"\n");
-                }
-            }
         }
     }
 }

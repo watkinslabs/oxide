@@ -151,7 +151,7 @@ impl Dentry {
         loop {
             let s = self.d_seq.load(Ordering::Acquire);
             if s & 1 == 0 { return s; }
-            core::hint::spin_loop();
+            sync::spin_relax::relax();
         }
     }
 

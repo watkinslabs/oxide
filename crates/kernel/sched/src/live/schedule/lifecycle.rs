@@ -109,7 +109,11 @@ unsafe fn schedule_hook_trampoline() {
 /// stack, with IRQs masked, no hardirq/softirq nesting, and no rq lock held.
 /// # C: O(log N) per actual switch
 pub unsafe fn preempt_schedule_irq<G: IrqGate>() {
-    if !crate::preempt::should_resched() { return; }
+    // An IRQ can be used during architectural bring-up before this CPU has
+    // installed its idle task.  Linux brings its boot idle task online before
+    // enabling scheduler-driving interrupts; do not let a diagnostic or
+    // firmware IRQ turn that pre-scheduler state into a context switch.
+    if !irq_return_may_schedule(runqueue_active(), crate::preempt::should_resched) { return; }
     debug_assert_eq!(crate::preempt::preempt_count(), 0,
         "IRQ-return schedule with nonzero preempt count");
     debug_assert!(crate::preempt::irqs_disabled(),
@@ -132,6 +136,32 @@ pub unsafe fn preempt_schedule_irq<G: IrqGate>() {
 /// True iff the global runqueue is installed.
 /// # C: O(1)
 pub fn runqueue_active() -> bool { global().is_some() }
+
+/// Admit IRQ-return scheduling only after this CPU has an idle/current task.
+/// # C: O(1)
+#[inline]
+fn irq_return_may_schedule(runqueue: bool, requested: impl FnOnce() -> bool) -> bool {
+    runqueue && requested()
+}
+
+#[cfg(test)]
+mod tests {
+    use core::cell::Cell;
+
+    #[test]
+    fn irq_return_never_schedules_before_the_idle_task_exists() {
+        // The runqueue-owning idle task is the scheduler's first `current`.
+        // A pre-init timer may request rescheduling, but cannot consume it.
+        let queried = Cell::new(false);
+        assert!(!super::irq_return_may_schedule(false, || {
+            queried.set(true);
+            true
+        }));
+        assert!(!queried.get(), "pre-init must not read pre-task reschedule state");
+        assert!(!super::irq_return_may_schedule(true, || false));
+        assert!(super::irq_return_may_schedule(true, || true));
+    }
+}
 
 /// Borrow `current` task. Returns `None` if no runqueue is up
 /// (boot phase before `install_default_runqueue`).

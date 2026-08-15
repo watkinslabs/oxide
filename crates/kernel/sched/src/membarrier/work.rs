@@ -6,63 +6,67 @@
 use super::{arch, policy};
 use super::policy::{Kind, Ready};
 
-use core::sync::atomic::{fence, AtomicU32, Ordering};
+use core::sync::atomic::{fence, Ordering};
 
 use syscall::errno::Errno;
 
-/// `OWNER` value meaning "no round in flight".
-const OWNER_FREE: u32 = u32::MAX;
-/// Spin bound before a stuck round is force-completed + named. Never reached
-/// in correct operation; converts a protocol bug into a logged missed barrier
-/// instead of a wedged CPU.
-const SPIN_CAP: u64 = 1_000_000_000;
+/// Serialize whole-machine expedited rounds. The owner may wait for remote
+/// CPUs, so this must be a sleeping mutex rather than a spinlock.
+static IPI_MUTEX: crate::live::Mutex<()> = crate::live::Mutex::new(());
+/// A CPU-targeted round serializes only with another round for that target.
+static CPU_IPI_MUTEX: [crate::live::Mutex<()>; cpu::MAX_CPUS] =
+    [const { crate::live::Mutex::new(()) }; cpu::MAX_CPUS];
 
-/// Logical CPU owning the in-flight round.
-static OWNER: AtomicU32 = AtomicU32::new(OWNER_FREE);
-/// CPU set of logical CPUs that must still ACK the in-flight round.
-static PENDING: cpu::AtomicCpuMask = cpu::AtomicCpuMask::new();
-/// `Kind::as_u32` of the in-flight round. Published BEFORE `PENDING`, so a
-/// target that observes its own bit has necessarily observed the kind that
-/// tells it what work the round owes.
-static KIND: AtomicU32 = AtomicU32::new(0);
-
-#[inline]
-fn this_cpu() -> usize {
-    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-    { use hal::CpuOps; (hal_x86_64::X86CpuOps::current_cpu() as usize).min(cpu::MAX_CPUS - 1) }
-    #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
-    { use hal::CpuOps; (hal_aarch64::ArmCpuOps::current_cpu() as usize).min(cpu::MAX_CPUS - 1) }
-    #[cfg(not(target_os = "oxide-kernel"))]
-    { 0 }
-}
-
-/// Execute this CPU's half of an in-flight membarrier round: a full memory
-/// barrier, then clear our ACK bit. Idempotent — a no-op when this CPU is not
-/// a target, which is the common case since it is called from the shared
-/// resched-IPI arm of both arch dispatchers.
+/// True when this CPU is still running the address space selected by a
+/// private round. A task can switch after the sender took its mask snapshot;
+/// that new task owes nothing, while the old one is covered before it next
+/// returns to user mode.
 /// # C: O(1)
 /// # Ctx: IRQ
-pub fn service() {
-    let me = this_cpu();
-    if !PENDING.load(Ordering::Acquire).contains(me) { return; }
-    // Linux `ipi_mb`. Ordered after the Acquire load above, so every user
-    // access this CPU performed before entering the kernel is complete.
+fn private_target(root_pa: u64) -> bool {
+    let Some(cur) = crate::live::current() else { return false; };
+    // SAFETY: an IRQ or spin-relax handler runs against this CPU's current
+    // task; that task cannot replace its own mm concurrently with this read.
+    let Some(mm) = (unsafe { cur.mm_ref() }) else { return false; };
+    mm.root_pa() == root_pa
+}
+
+/// Run the global expedited barrier for this CPU when its current address
+/// space registered the command.
+/// # C: O(1)
+/// # Ctx: IRQ or spin-relax drain
+pub fn service_global() {
+    let Some(cur) = crate::live::current() else { return; };
+    // SAFETY: this handler cannot switch away from its current task while it
+    // observes the task-owned address-space reference.
+    let Some(mm) = (unsafe { cur.mm_ref() }) else { return; };
+    if mm.membarrier_global_expedited_ready() { fence(Ordering::SeqCst); }
+}
+
+/// Run the plain private expedited barrier for `root_pa` when it remains
+/// current on this CPU.
+/// # C: O(1)
+/// # Ctx: IRQ or spin-relax drain
+pub fn service_private_mb(root_pa: u64) {
+    if private_target(root_pa) { fence(Ordering::SeqCst); }
+}
+
+/// Run the private expedited core-serialization operation for `root_pa`.
+/// # C: O(1)
+/// # Ctx: IRQ or spin-relax drain
+pub fn service_private_sync_core(root_pa: u64) {
+    if !private_target(root_pa) { return; }
     fence(Ordering::SeqCst);
-    // The kind was published before `PENDING`, so the Acquire load above
-    // already ordered it; every round is at least a full barrier and the
-    // stronger kinds add their own work on top.
-    match Kind::from_u32(KIND.load(Ordering::Relaxed)) {
-        Kind::Mb => {}
-        // Linux `ipi_sync_core`: the barrier alone does not discard
-        // instructions this CPU already fetched from code the caller rewrote.
-        Kind::SyncCore => arch::sync_core(),
-        // Linux `ipi_rseq`: force the return-to-user path to evaluate this
-        // thread's critical section, so a restartable sequence cannot straddle
-        // the barrier. Unlike the preemption-driven abort, this is owed even
-        // when the round caused no reschedule at all.
-        Kind::Rseq => crate::rseq::force_fixup(),
-    }
-    PENDING.clear_cpu(me, Ordering::AcqRel);
+    arch::sync_core();
+}
+
+/// Run the private expedited restartable-sequence operation for `root_pa`.
+/// # C: O(1)
+/// # Ctx: IRQ or spin-relax drain
+pub fn service_private_rseq(root_pa: u64) {
+    if !private_target(root_pa) { return; }
+    fence(Ordering::SeqCst);
+    crate::rseq::force_fixup();
 }
 
 /// Barrier every online CPU named in `mask` except this one, and wait.
@@ -70,7 +74,7 @@ pub fn service() {
 /// missed one is a broken guarantee).
 /// # C: O(popcount(targets)) + IPI round trip
 /// # Ctx: process (IRQs on)
-fn ipi_barrier(mask: cpu::CpuMask, kind: Kind) {
+fn ipi_barrier(mask: cpu::CpuMask, kind: Kind, root_pa: u64, global: bool) {
     // A SYNC_CORE round owes the CALLING CPU a serializing instruction even
     // when it is the only CPU online — the caller is the thread that rewrote
     // the code it is about to execute. Every other kind is fully implied by
@@ -79,69 +83,43 @@ fn ipi_barrier(mask: cpu::CpuMask, kind: Kind) {
         if policy::includes_self(kind) { arch::sync_core(); }
         return;
     }
-    // Pin to this CPU: `this_cpu()` must stay valid across publish + wait,
-    // and Linux holds `preempt_disable()` across `smp_call_function_many`.
+    // Pin to this CPU across queue publication and completion; the generic
+    // transport owns the sender descriptor by the current CPU id.
     crate::preempt::preempt_disable();
-    let me = this_cpu() as u32;
-    let targets = mask.intersect(cpu::smp::online_cpumask())
-        .without(cpu::CpuMask::of(me as usize));
+    let targets = mask.intersect(cpu::smp::online_cpumask());
     // Linux dispatches a SYNC_CORE round with `on_each_cpu_mask` rather than
     // the many-variant that skips the caller: if we migrate around the barrier
     // and a sibling thread of the same mm takes our place, that thread would
     // otherwise resume having never serialized.
     if policy::includes_self(kind) { arch::sync_core(); }
-    if !targets.is_empty() {
-        while OWNER
-            .compare_exchange(OWNER_FREE, me, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            service();
-            core::hint::spin_loop();
-        }
-        // (a) Linux's leading `smp_mb()`: our pre-call stores must precede
-        // the IPI-induced barrier on every target.
-        fence(Ordering::SeqCst);
-        // Publish the kind first: a target reads it only after an Acquire load
-        // of `PENDING` saw its own bit, so this Release store is what makes it
-        // visible. Reversing these two lines lets a target run a plain barrier
-        // for a SYNC_CORE round and silently drop the guarantee.
-        KIND.store(kind.as_u32(), Ordering::Release);
-        PENDING.store(targets, Ordering::Release);
-        let mut c = 0usize;
-        while c < cpu::MAX_CPUS {
-            if targets.contains(c) {
-                // SAFETY: `send_resched_ipi` is the boot-installed non-blocking
-                // cross-CPU poke (LAPIC ICR / ICC_SGI1R_EL1); `c` is an online
-                // logical CPU taken from the online mask above.
-                unsafe { let _ = crate::live::send_resched_ipi(c as u32); }
-            }
-            c += 1;
-        }
-        let mut spins = 0u64;
-        while !PENDING.load(Ordering::Acquire).is_empty() {
-            service();
-            core::hint::spin_loop();
-            spins = spins.wrapping_add(1);
-            if spins > SPIN_CAP {
-                // A target never ACKed: the caller's ordering guarantee was
-                // not delivered. Named under the liveness-diagnostic feature
-                // (`04§3` R06 keeps klog off the steady-state path); the cap
-                // itself always applies, so a protocol bug degrades to a
-                // logged stall instead of a wedged CPU.
-                #[cfg(feature = "debug-watchdog")]
-                {
-                    klog::kerror!("membarrier: target CPU never ACKed the barrier IPI");
-                }
-                PENDING.store(cpu::CpuMask::empty(), Ordering::Release);
-                break;
-            }
-        }
-        // (c) Linux's trailing `smp_mb()`: remote stores that preceded the
-        // IPI must be visible to our post-syscall loads.
-        fence(Ordering::SeqCst);
-        OWNER.store(OWNER_FREE, Ordering::Release);
-    }
+    // The leading and trailing barriers pair caller memory with the target
+    // handler; the call transport supplies the completion handoff.
+    fence(Ordering::SeqCst);
+    let call = if global { hal::smp_call::CallKind::MembarrierGlobalMb }
+        else { kind.private_call_kind() };
+    hal::smp_call::call_function_many(targets.as_words(), call, root_pa, true);
+    fence(Ordering::SeqCst);
     crate::preempt::preempt_enable_no_check();
+}
+
+/// Hold the matching sleeping serialization lock across one expedited round.
+/// # C: O(1) uncontended + round trip
+/// # Sleeps: yes, while another round owns the same serialization domain
+fn serialize_ipi(cpu: Option<usize>, f: impl FnOnce()) {
+    match cpu {
+        Some(cpu) => {
+            // SAFETY: membarrier syscalls run in process context before this
+            // function; no spinlock or IRQ context reaches this path.
+            let _guard = unsafe { CPU_IPI_MUTEX[cpu].lock() };
+            f();
+        }
+        None => {
+            // SAFETY: membarrier syscalls run in process context before this
+            // function; no spinlock or IRQ context reaches this path.
+            let _guard = unsafe { IPI_MUTEX.lock() };
+            f();
+        }
+    }
 }
 
 /// `MEMBARRIER_CMD_GLOBAL`. Linux: `synchronize_rcu()` when more than one CPU
@@ -165,7 +143,7 @@ pub fn global() -> Result<(), Errno> {
 /// that could disagree with the mm itself.
 /// # C: O(online CPUs) + IPI round trip
 pub fn global_expedited() -> Result<(), Errno> {
-    ipi_barrier(cpu::CpuMask::all(), Kind::Mb);
+    serialize_ipi(None, || ipi_barrier(cpu::CpuMask::all(), Kind::Mb, 0, true));
     Ok(())
 }
 
@@ -210,7 +188,9 @@ pub fn private_expedited(kind: Kind, cpu_id: i32) -> Result<(), Errno> {
             if !policy::cpu_id_targetable(cpu_id, cpu::MAX_CPUS) { return Ok(()); }
             mask = mask.intersect(cpu::CpuMask::of(cpu_id as usize));
         }
-        ipi_barrier(mask, kind);
+        let root_pa = mm.root_pa();
+        let target_cpu = (cpu_id >= 0).then_some(cpu_id as usize);
+        serialize_ipi(target_cpu, || ipi_barrier(mask, kind, root_pa, false));
         Ok(())
     })
 }

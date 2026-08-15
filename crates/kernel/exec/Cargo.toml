@@ -16,6 +16,7 @@ vmm      = { path = "../mm-vmm" }
 
 [features]
 debug-boot = []
+debug-faultdiag = []  # compare exec file pages against parsed ELF bytes
 debug-execload = []  # per-exec ELF-loader trace (interp resolve/place); split from debug-boot per B1474
 
 [lints]

@@ -25,10 +25,6 @@ pub unsafe fn tick_poll_combined(_from_user: bool) {
         // IRQ can self-deadlock the CPU when the tick preempts a reader (`06§3.1`).
     }
     fbcon::kernel::tick_drain();
-    // D6: advance the pseudo-vblank counter at the tick rate — the honest
-    // virtual-GPU vsync cadence that FBIO_WAITFORVSYNC blocks on and
-    // FBIOGET_VBLANK reports as the running frame count.
-    fbdev::vblank_tick();
     // B1344: `reap_orphans` (B14 zombie subreap) and `tick_wake_expired`
     // (F169/B20 SO_*TIMEO + alarm/itimer deadline walker) moved OFF this
     // hard-IRQ tick into the ktimers process-context kthread

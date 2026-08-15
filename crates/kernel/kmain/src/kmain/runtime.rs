@@ -33,9 +33,8 @@ pub(crate) fn init_prefix(info: &BootInfo) {
 pub(crate) fn init_suffix(info: &BootInfo) {
     step("init_x2apic_and_smp", || init_smp(info));
     // Generic firmware framebuffer is a fallback, not a competitor to a
-    // native scanout. PCI probing runs first so virtio-gpu remains fb0 in the
-    // desktop VM; physical machines without a supported display driver bind
-    // the bootloader surface here.
+    // native scanout. PCI probing runs first so any native display driver can
+    // claim its hardware before the bootloader surface is published here.
     step("init_simple_framebuffer", || init_simple_framebuffer(info));
     // NB: the AP master page-table gets each device's MMIO mapping propagated
     // eagerly inside `mmio_map::map_pages` (resync per splice), so APs can't #PF
@@ -104,6 +103,7 @@ fn init_smp(info: &BootInfo) {
             sched::live::set_send_resched_ipi_hook(arch_irq::lapic::send_resched_ipi);
             arch_irq::call_fn::install();
         }
+        sched::live::rcu_wait::install();
         if started > 0 { smp_ipi_smoke(); }
     }
     #[cfg(target_arch = "aarch64")]
@@ -111,12 +111,17 @@ fn init_smp(info: &BootInfo) {
         // SAFETY: BSP boot path is the sole writer before scheduler workers
         // are spawned; APs install their own runqueues in the AP init hook.
         unsafe { sched::live::install_default_runqueue(); }
+        sched::live::rcu_wait::install();
         arch_irq::smp_arm::install_hooks();
         arch_irq::smp_arm::publish_madt_mpidrs();
         hal_aarch64::smp::set_percpu_alloc_hook(pmm::setup::alloc_percpu_page);
         // SAFETY: BSP boot path, sole writer of the AP entry state, and the
         // per-CPU alloc hook the APs need was installed on the line above.
         let _started = unsafe { hal_aarch64::smp::bring_up_aps_psci() };
+        // SAFETY: every online PE enabled the call-function SGI during its
+        // GIC bring-up, so this one-time hook publication cannot expose a
+        // queue with no receiving transport.
+        unsafe { arch_irq::call_fn::install(); }
         debug_boot! {
             klog::write_raw(b"[INFO]  smp: aps_started=");
             klog::write_dec_u64(_started as u64);

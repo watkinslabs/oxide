@@ -139,10 +139,6 @@ pub(crate) fn acquire_active(inner: Arc<Namespace>) -> NamespaceRef {
     acquire_locked(&mut REGISTRY.lock(), inner)
 }
 
-pub(crate) fn clone_active(owner: &NamespaceRef) -> NamespaceRef {
-    acquire_active(Arc::clone(&owner.inner))
-}
-
 pub(crate) fn get_active(inner: &Arc<Namespace>) -> Option<NamespaceRef> {
     let mut registry = REGISTRY.lock();
     if !inner.is_initial() && inner.active.load(Ordering::Relaxed) == 0 { return None; }

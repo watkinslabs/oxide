@@ -111,6 +111,23 @@ fn real_rootfs_metadata_stress_then_journal_mkdir() {
         Err(ref e) if is_capacity(e) => { eprintln!("SKIP: no room for /stress"); return; }
         Err(e) => panic!("mkdir /stress -> {e:?}"),
     };
+    // A created directory must be readable before any later operation uses it
+    // as a parent. This isolates a bad newly-written inode checksum from the
+    // later allocator, directory-link, and batching paths.
+    let base_inode = m.read_inode(base)
+        .unwrap_or_else(|e| panic!("new /stress inode {base} is unreadable -> {e:?}"));
+    assert_eq!(m.lookup_in_dir(&base_inode, b"missing").unwrap_err(), ext4::MountError::NotFound,
+        "new /stress directory must have a valid checksum before it becomes a parent");
+    let group = (base - 1) / m.sb.inodes_per_group;
+    let gd = m.group_desc(group).expect("new directory group descriptor");
+    let bitmap = m.read_meta_byte_range(gd.inode_bitmap * m.sb.block_size as u64, m.sb.block_size as usize)
+        .expect("new directory inode bitmap");
+    let dsize = ext4::gdt::desc_size_for(&m.sb) as usize;
+    let gdt = m.read_meta_byte_range(m.gdt_byte_offset(), (group as usize + 1) * dsize)
+        .expect("new directory group descriptor bytes");
+    let slot = &gdt[group as usize * dsize..(group as usize + 1) * dsize];
+    assert!(ext4::csum::verify_inode_bitmap_csum(&m.sb, slot, &bitmap),
+        "new directory allocation must leave its inode bitmap checksum valid");
     m.begin_batch();
     let mut dirs: alloc::vec::Vec<u32> = alloc::vec![base];
     let mut made = 0usize;
