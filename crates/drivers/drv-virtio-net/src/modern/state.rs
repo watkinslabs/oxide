@@ -399,7 +399,9 @@ fn reset_transport(_cfg_va: u64) -> bool {
 
 #[cfg(not(test))]
 fn reset_transport(cfg_va: u64) -> bool {
-    virtio::reset_device(cfg_va)
+    // SAFETY: terminal net teardown removed the state from every runtime
+    // registry before reaching this helper, so no driver lock is held.
+    unsafe { virtio::reset_device_sleepable(cfg_va) }
 }
 
 /// Remember the net stack ifindex registered for this transport.

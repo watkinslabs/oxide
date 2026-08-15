@@ -218,7 +218,9 @@ fn free_owned_frames(ctx: &QueueCtx) {
 /// # C: O(1)
 pub fn shutdown_eventq(device_key: virtio::VirtioChildDeviceKey) -> bool {
     let Some((ctx, last_queue)) = take_eventq(device_key) else { return false; };
-    let reset = virtio::reset_device(ctx.cfg_va);
+    // SAFETY: take_eventq removed ctx from the BH registry before this path;
+    // handler teardown follows, so no input lock spans the reset delay.
+    let reset = unsafe { virtio::reset_device_sleepable(ctx.cfg_va) };
     release_handler_if_last(last_queue);
     if !reset {
         return false;

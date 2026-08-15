@@ -405,7 +405,8 @@ pub fn shutdown(device_key: DeviceKey) -> bool {
         };
         dev.cfg_va
     };
-    let _ = virtio::reset_device(cfg_va);
+    // SAFETY: DEVICES was unlocked before the terminal transport reset.
+    let _ = unsafe { virtio::reset_device_sleepable(cfg_va) };
     true
 }
 

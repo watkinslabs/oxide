@@ -179,6 +179,24 @@ pub unsafe fn wait_event_uninterruptible_until(wq: &WaitList, deadline_ns: u64,
     WaitOutcome::Ready
 }
 
+/// Sleep once until an absolute monotonic deadline.
+///
+/// This is the scheduler-owned counterpart of an uninterruptible timeout:
+/// hardware polling re-reads its condition after this returns, while
+/// producer-backed conditions use the predicate wait above.
+///
+/// # SAFETY: process context on a running task with no lock held that can
+/// block the scheduler or deadline wakeup path.
+/// # Ctx: process
+/// # Sleeps: yes
+/// # C: O(1) plus scheduler wakeup
+pub unsafe fn sleep_uninterruptible_until(deadline_ns: u64, now: impl Fn() -> u64) {
+    let wait = WaitList::new();
+    // SAFETY: the local wait list lives through its sole deadline wait; the
+    // caller satisfies the shared timed-wait process-context contract.
+    let _ = unsafe { wait_event_uninterruptible_until(&wait, deadline_ns, now, || false) };
+}
+
 /// Linux `wait_event_interruptible_timeout(wq, cond, timeout)`, on an ABSOLUTE
 /// monotonic deadline rather than a relative jiffy count so a restarted wait
 /// resumes the REMAINDER (`13§8`).
@@ -254,5 +272,19 @@ mod tests {
         assert_eq!(out, WaitOutcome::Ready);
         assert_eq!(clock_reads.load(Ordering::Relaxed), 0);
         assert!(!wait.has_waiters());
+    }
+
+    #[test]
+    fn deadline_sleep_uses_the_existing_timed_wait_owner() {
+        let reads = AtomicU32::new(0);
+        // Hosted has no current task, so the timed wait performs its terminal
+        // deadline recheck synchronously instead of trying to schedule.
+        unsafe {
+            sleep_uninterruptible_until(7, || {
+                reads.fetch_add(1, Ordering::Relaxed);
+                7
+            });
+        }
+        assert_eq!(reads.load(Ordering::Relaxed), 1);
     }
 }

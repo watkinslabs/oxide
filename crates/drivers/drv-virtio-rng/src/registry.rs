@@ -153,7 +153,7 @@ pub fn uninstall(device_key: virtio::VirtioChildDeviceKey) -> bool {
         let ctx = record.lock();
         (ctx.cfg_va, if was_active { Some(Arc::clone(&ctx.hwrng_dev)) } else { None })
     };
-    let _ = virtio::reset_device(cfg_va);
+    let _ = reset_transport(cfg_va);
     disarm_and_free(&record);
     if let Some(hwrng_dev) = removed_hwrng_dev {
         drv::device_del(&hwrng_dev);
@@ -175,7 +175,7 @@ pub fn shutdown(device_key: virtio::VirtioChildDeviceKey) -> bool {
         }
         ctx.cfg_va
     };
-    let _ = virtio::reset_device(cfg_va);
+    let _ = reset_transport(cfg_va);
     disarm_and_free(&record);
     true
 }
@@ -197,6 +197,12 @@ pub(crate) fn disarm_and_free(record: &RngHandle) {
             core::mem::replace(&mut ctx.bounce_dma, 0))
     };
     free_dma_frame(bdf, bounce_pa, bounce_dma);
+}
+
+fn reset_transport(cfg_va: u64) -> bool {
+    // SAFETY: record ownership was dropped before reset, and this path keeps
+    // no registry or per-device lock across the scheduler delay.
+    unsafe { virtio::reset_device_sleepable(cfg_va) }
 }
 
 pub(crate) fn free_dma_frame(bdf: pci::Bdf, pa: u64, dma: u64) {

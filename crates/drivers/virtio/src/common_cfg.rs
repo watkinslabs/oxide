@@ -37,7 +37,11 @@ pub struct CommonCfgBringup<Q> {
 /// the modern common-cfg window.
 /// # SAFETY: caller mapped `cfg_va` as a Device-attr virtio common-cfg window.
 /// # C: O(1)
-pub fn negotiate_features(cfg_va: u64, wanted_features: u64) -> FeatureNegotiation {
+pub fn negotiate_features_with_wait(
+    cfg_va: u64,
+    wanted_features: u64,
+    mut wait_one_ms: impl FnMut(),
+) -> FeatureNegotiation {
     let r32 = |off: u64| -> u32 {
         // SAFETY: cfg_va is the Device-attr-mapped common-cfg window; aligned
         // u32 load of a common-cfg register.
@@ -59,18 +63,7 @@ pub fn negotiate_features(cfg_va: u64, wanted_features: u64) -> FeatureNegotiati
     // discarded read let a device still mid-DMA on a warm re-probe return stale
     // feature bits or fail FEATURES_OK — a flaky-only-on-reboot init hazard.
     w8(CFG_DEVICE_STATUS, 0);
-    let mut reset_ok = false;
-    for _ in 0..RESET_POLL_SPINS {
-        if (r32(CFG_DEVICE_STATUS) & 0xFF) == 0 { reset_ok = true; break; }
-        core::hint::spin_loop();
-    }
-    if !reset_ok {
-        return FeatureNegotiation {
-            dev_features: 0, drv_features: 0,
-            post_status: crate::VIRTIO_STATUS_FAILED as u32,
-            features_ok: false, msix_cfg: 0, num_queues: 0,
-        };
-    }
+    wait_for_reset(|| (r32(CFG_DEVICE_STATUS) & 0xFF) as u8, &mut wait_one_ms);
     w8(CFG_DEVICE_STATUS, crate::VIRTIO_STATUS_ACKNOWLEDGE);
     w8(
         CFG_DEVICE_STATUS,
@@ -154,15 +147,17 @@ pub fn scan_queue_sizes(
 /// `program_queues`.
 /// # SAFETY: caller mapped `cfg_va` as a Device-attr virtio common-cfg window.
 /// # C: O(min(num_queues, MAX_RESOURCE_QUEUES) + program_queues)
-pub fn bring_up_common_cfg<Q, F>(
+pub fn bring_up_common_cfg_with_wait<Q, F, W>(
     cfg_va: u64,
     wanted_features: u64,
+    wait_one_ms: W,
     program_queues: F,
 ) -> CommonCfgBringup<Q>
 where
     F: FnOnce() -> Option<Q>,
+    W: FnMut(),
 {
-    let negotiated = negotiate_features(cfg_va, wanted_features);
+    let negotiated = negotiate_features_with_wait(cfg_va, wanted_features, wait_one_ms);
     let (queues, queues_len) = scan_queue_sizes(cfg_va, negotiated.num_queues);
     let programmed_queues = if negotiated.features_ok {
         program_queues()
@@ -205,10 +200,15 @@ pub fn set_config_msix_vector(cfg_va: u64, vector: u16) -> u16 {
     }
 }
 
-/// Bounded spin budget for `reset_device`'s status-readback poll. Real
-/// hardware and QEMU's emulated backends complete a reset near-instantly;
-/// this only guards against a genuinely wedged device, not normal latency.
-const RESET_POLL_SPINS: u32 = 1_000_000;
+/// One virtio reset status re-read interval. Runtime callers sleep for this
+/// interval; early probe callers supply the equivalent calibrated hardware
+/// delay before the scheduler has a running task.
+#[cfg(target_os = "oxide-kernel")]
+const RESET_POLL_INTERVAL_NS: u64 = 1_000_000;
+
+fn wait_for_reset(mut read_status: impl FnMut() -> u8, mut wait_one_ms: impl FnMut()) {
+    while read_status() != 0 { wait_one_ms(); }
+}
 
 /// Reset a modern virtio device through the common-cfg status register.
 /// Per virtio 1.2 §4.1.4.3.1/§2.4: the driver MUST write 0 to device status
@@ -222,29 +222,48 @@ const RESET_POLL_SPINS: u32 = 1_000_000;
 /// unrelated kernel memory (found this session tracing `drv-virtio-blk`'s
 /// `cancel_owned_requests`, which frees DMA bounce buffers on exactly this
 /// unconfirmed assumption; state.md).
-/// Returns `true` once status readback confirmed 0 (device quiesced),
-/// `false` if `cfg_va` is absent or the poll exhausted without a
-/// confirming readback. Callers that free DMA memory after a reset MUST
-/// check this: on `false`, the device's actual quiescence is unconfirmed,
-/// and freeing is unsafe (see this fn's doc comment) — leak the buffer
-/// instead (matches the "consume off the free list, leave to its real
-/// owner" philosophy `mm-pmm`'s own allocator-integrity retry already
-/// uses for the same in-use-frame hazard).
+/// Returns `true` once status readback confirmed 0 (device quiesced), or
+/// `false` only when the common-cfg mapping is absent. Callers that free DMA
+/// memory after a reset MUST check this: without a confirming readback,
+/// freeing is unsafe and the buffer stays with its real owner.
 /// # SAFETY: caller mapped `cfg_va` as a Device-attr virtio common-cfg window.
-/// # C: O(RESET_POLL_SPINS) worst case
+/// # C: O(reset completion latency / poll interval)
 #[must_use]
-pub fn reset_device(cfg_va: u64) -> bool {
+pub fn reset_device_with_wait(cfg_va: u64, wait_one_ms: impl FnMut()) -> bool {
     if cfg_va == 0 {
         return false;
     }
     // SAFETY: cfg_va is the Device-attr-mapped common-cfg window; status is
     // the u8 field at CFG_DEVICE_STATUS.
     unsafe { core::ptr::write_volatile((cfg_va + CFG_DEVICE_STATUS) as *mut u8, 0u8); }
-    for _ in 0..RESET_POLL_SPINS {
-        if read_status(cfg_va) == 0 { return true; }
-        core::hint::spin_loop();
-    }
-    false
+    wait_for_reset(|| read_status(cfg_va), wait_one_ms);
+    true
+}
+
+/// Reset a live virtio device through the scheduler's millisecond delay.
+///
+/// Pre-scheduler PCI probe must use `reset_device_with_wait` with its
+/// calibrated bootstrap delay instead.  The split is intentional: a device
+/// status register has no event producer that can wake a generic wait queue.
+/// # SAFETY: process context on a running task, with no driver lock held.
+/// # Ctx: process
+/// # Sleeps: yes
+/// # C: O(reset completion latency / 1 ms)
+#[cfg(target_os = "oxide-kernel")]
+pub unsafe fn reset_device_sleepable(cfg_va: u64) -> bool {
+    reset_device_with_wait(cfg_va, || {
+        let deadline = sched::deadline::clock::now_ns().saturating_add(RESET_POLL_INTERVAL_NS);
+        // SAFETY: forwarded function contract; the local scheduler delay owns
+        // its wait-list registration and wakes from the deadline scanner.
+        unsafe {
+            sched::live::sleep_uninterruptible_until(deadline, sched::deadline::clock::now_ns);
+        }
+    })
+}
+
+#[cfg(not(target_os = "oxide-kernel"))]
+pub unsafe fn reset_device_sleepable(cfg_va: u64) -> bool {
+    reset_device_with_wait(cfg_va, sync::spin_relax::relax)
 }
 
 /// Publish FAILED when the transport cannot complete feature or mandatory
@@ -295,6 +314,7 @@ pub fn complete_driver_status(cfg_va: u64, features_ok: bool, queues_programmed:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::cell::Cell;
 
     #[repr(align(8))]
     struct Regs([u32; 16]);
@@ -309,6 +329,22 @@ mod tests {
     }
 
     #[test]
+    fn reset_rechecks_status_after_each_poll_delay() {
+        let reads = Cell::new(0usize);
+        let delays = Cell::new(0usize);
+        wait_for_reset(
+            || {
+                let index = reads.get();
+                reads.set(index + 1);
+                [1u8, 1, 0][index]
+            },
+            || delays.set(delays.get() + 1),
+        );
+        assert_eq!(reads.get(), 3);
+        assert_eq!(delays.get(), 2);
+    }
+
+    #[test]
     fn common_cfg_bringup_programs_queues_before_driver_ok() {
         let mut regs = Regs([0; 16]);
         regs.0[(CFG_DEVICE_FEATURE / 4) as usize] = crate::VIRTIO_F_VERSION_1 as u32;
@@ -317,7 +353,7 @@ mod tests {
 
         let cfg_va = regs.0.as_mut_ptr() as u64;
         let mut programmed = false;
-        let bringup = bring_up_common_cfg(cfg_va, crate::VIRTIO_F_VERSION_1, || {
+        let bringup = bring_up_common_cfg_with_wait(cfg_va, crate::VIRTIO_F_VERSION_1, || {}, || {
             programmed = true;
             Some(0x55u32)
         });
@@ -345,7 +381,9 @@ mod tests {
         regs.0[(CFG_QUEUE_SIZE / 4) as usize] = 8;
 
         let cfg_va = regs.0.as_mut_ptr() as u64;
-        let bringup = bring_up_common_cfg::<u32, _>(cfg_va, crate::VIRTIO_F_VERSION_1, || None);
+        let bringup = bring_up_common_cfg_with_wait::<u32, _, _>(
+            cfg_va, crate::VIRTIO_F_VERSION_1, || {}, || None,
+        );
 
         assert!(bringup.negotiated.features_ok);
         assert_eq!(bringup.programmed_queues, None);

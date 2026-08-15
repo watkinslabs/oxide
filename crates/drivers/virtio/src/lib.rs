@@ -40,7 +40,8 @@ pub use resources::{
 
 pub mod common_cfg;
 pub use common_cfg::{
-    bring_up_common_cfg, complete_driver_status, negotiate_features, read_status, reset_device,
+    bring_up_common_cfg_with_wait, complete_driver_status, negotiate_features_with_wait,
+    read_status, reset_device_sleepable, reset_device_with_wait,
     scan_queue_sizes, set_driver_ok, set_failed, CommonCfgBringup, FeatureNegotiation,
     set_config_msix_vector,
 };

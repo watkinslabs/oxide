@@ -88,7 +88,9 @@ impl BlkState {
 
     #[must_use]
     fn reset_common_cfg(&self) -> bool {
-        virtio::reset_device(self.cfg_va)
+        // SAFETY: removal runs in process context after queue ownership is
+        // frozen; this method holds no queue lock across the reset delay.
+        unsafe { virtio::reset_device_sleepable(self.cfg_va) }
     }
 
     /// After transport reset the device cannot access the request DMA areas
