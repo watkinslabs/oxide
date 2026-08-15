@@ -1,55 +1,6 @@
 use super::*;
+use crate::testing::Mem;
 use alloc::sync::Arc;
-use sync::Spinlock;
-
-/// A backing store in memory, so every rule below is exercised with no
-/// filesystem, no mount and no disk.
-struct Mem {
-    bytes: Spinlock<Vec<u8>, LoopLockClass>,
-    writable: bool,
-    /// Bytes beyond this read as nothing at all — a sparse or truncated file.
-    readable_len: Option<usize>,
-    flushes: core::sync::atomic::AtomicU32,
-}
-
-impl Mem {
-    fn new(len: usize) -> Arc<Self> { Self::with(vec![0u8; len], true) }
-    fn with(bytes: Vec<u8>, writable: bool) -> Arc<Self> {
-        Arc::new(Mem { bytes: Spinlock::new(bytes), writable, readable_len: None,
-                       flushes: core::sync::atomic::AtomicU32::new(0) })
-    }
-    fn truncated(len: usize, readable: usize) -> Arc<Self> {
-        Arc::new(Mem { bytes: Spinlock::new(vec![0xAA; len]), writable: true,
-                       readable_len: Some(readable),
-                       flushes: core::sync::atomic::AtomicU32::new(0) })
-    }
-}
-
-impl Backing for Mem {
-    fn size_bytes(&self) -> u64 { self.bytes.lock().len() as u64 }
-    fn read_at(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let src = self.bytes.lock();
-        let limit = self.readable_len.unwrap_or(src.len());
-        let start = off as usize;
-        if start >= limit { return Ok(0); }
-        let n = core::cmp::min(buf.len(), limit - start);
-        buf[..n].copy_from_slice(&src[start..start + n]);
-        Ok(n)
-    }
-    fn write_at(&self, off: u64, buf: &[u8]) -> KResult<usize> {
-        if !self.writable { return Err(BlockError::Eio); }
-        let mut dst = self.bytes.lock();
-        let start = off as usize;
-        if start + buf.len() > dst.len() { return Err(BlockError::Enospc); }
-        dst[start..start + buf.len()].copy_from_slice(buf);
-        Ok(buf.len())
-    }
-    fn flush(&self) -> KResult<()> {
-        self.flushes.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        Ok(())
-    }
-    fn writable(&self) -> bool { self.writable }
-}
 
 fn window(offset: u64, sizelimit: u64) -> Window { Window { offset, sizelimit, ..Window::default() } }
 
@@ -105,7 +56,7 @@ fn binding_publishes_capacity_and_refuses_a_second_bind() {
 fn the_window_bounds_every_access() {
     let mem = Mem::new(8192);
     // Mark the byte just past the window so a leak is visible as data.
-    mem.bytes.lock()[2048] = 0x5A;
+    mem.poke(2048, 0x5A, 1);
     let dev = LoopDevice::new(0);
     dev.bind(mem.clone(), window(1024, 1024), 0, 512).expect("bind");
     assert_eq!(dev.capacity_blocks(), 2, "1 KiB window is two sectors");
@@ -117,14 +68,14 @@ fn the_window_bounds_every_access() {
     assert_eq!(read(&dev, 1, 2), Err(BlockError::Eio), "straddling the end is refused whole");
     // Nor can a write escape it.
     assert_eq!(write(&dev, 2, vec![0xFF; 512]), Err(BlockError::Eio));
-    assert_eq!(mem.bytes.lock()[2048], 0x5A, "the byte past the window is untouched");
+    assert_eq!(mem.peek(2048), 0x5A, "the byte past the window is untouched");
 }
 
 /// Device offset zero is the window's start, not the file's.
 #[test]
 fn device_offset_zero_is_the_window_start() {
     let mem = Mem::new(4096);
-    mem.bytes.lock()[1024] = 0xC3;
+    mem.poke(1024, 0xC3, 1);
     let dev = LoopDevice::new(0);
     dev.bind(mem, window(1024, 0), 0, 512).expect("bind");
     assert_eq!(read(&dev, 0, 1).unwrap()[0], 0xC3);
@@ -136,8 +87,8 @@ fn a_write_reaches_the_backing_store_through_the_window() {
     let (dev, mem) = bound(4096, window(512, 0));
     write(&dev, 1, vec![0x42; 512]).expect("write");
     // Device block 1 with a 512-byte offset is file byte 1024.
-    assert_eq!(mem.bytes.lock()[1024], 0x42);
-    assert_eq!(mem.bytes.lock()[1023], 0, "nothing before it moved");
+    assert_eq!(mem.peek(1024), 0x42);
+    assert_eq!(mem.peek(1023), 0, "nothing before it moved");
     assert_eq!(read(&dev, 1, 1).unwrap()[0], 0x42);
 }
 
@@ -164,7 +115,7 @@ fn a_read_only_device_or_backing_refuses_writes() {
     assert!(read(&dev, 0, 1).is_ok(), "reads still work");
 
     let ro_backing = LoopDevice::new(1);
-    ro_backing.bind(Mem::with(vec![0; 4096], false), window(0, 0), 0, 512).expect("bind");
+    ro_backing.bind(Mem::with(alloc::vec![0; 4096], false), window(0, 0), 0, 512).expect("bind");
     assert_eq!(write(&ro_backing, 0, vec![1; 512]), Err(BlockError::Eio));
 }
 
@@ -187,7 +138,7 @@ fn moving_the_window_resizes_the_device() {
 fn refreshing_capacity_notices_a_grown_backing_store() {
     let (dev, mem) = bound(4096, window(0, 0));
     assert_eq!(dev.capacity_blocks(), 8);
-    mem.bytes.lock().resize(8192, 0);
+    mem.resize(8192);
     assert_eq!(dev.capacity_blocks(), 8, "not noticed until asked");
     assert_eq!(dev.refresh_capacity(), Ok(16));
     assert_eq!(dev.capacity_blocks(), 16);
@@ -198,10 +149,10 @@ fn refreshing_capacity_notices_a_grown_backing_store() {
 #[test]
 fn write_zeroes_writes_zeroes_and_discard_is_refused() {
     let (dev, mem) = bound(4096, window(0, 0));
-    mem.bytes.lock()[0..512].fill(0xEE);
+    mem.poke(0, 0xEE, 512);
     let mut req = BlockRequest { op: BlockOp::WriteZeroes { no_unmap: false }, start_block: 0, len_blocks: 1, ..Default::default() };
     dev.submit_sync(&mut req).expect("write zeroes");
-    assert!(mem.bytes.lock()[0..512].iter().all(|b| *b == 0));
+    assert!((0..512).all(|i| mem.peek(i) == 0));
 
     assert!(!dev.supports_discard());
     let mut req = BlockRequest { op: BlockOp::Discard, start_block: 0, len_blocks: 1, ..Default::default() };
@@ -216,7 +167,7 @@ fn a_flush_reaches_the_backing_store() {
     let mut req = BlockRequest { op: BlockOp::Flush, ..Default::default() };
     dev.submit_sync(&mut req).expect("flush");
     dev.flush().expect("flush");
-    assert_eq!(mem.flushes.load(core::sync::atomic::Ordering::Relaxed), 2);
+    assert_eq!(mem.flushes(), 2);
 }
 
 /// A request whose sector arithmetic overflows is refused rather than
