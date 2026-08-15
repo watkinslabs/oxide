@@ -160,11 +160,11 @@ impl LdtState {
     pub fn view(&self) -> LdtView {
         loop {
             let s1 = self.seq.load(Ordering::Acquire);
-            if s1 & 1 != 0 { core::hint::spin_loop(); continue; }
+            if s1 & 1 != 0 { sync::spin_relax::relax(); continue; }
             let nr = self.nr_entries.load(Ordering::Acquire);
             let base = self.base.load(Ordering::Acquire);
             let generation = self.generation.load(Ordering::Acquire);
-            if self.seq.load(Ordering::Acquire) != s1 { core::hint::spin_loop(); continue; }
+            if self.seq.load(Ordering::Acquire) != s1 { sync::spin_relax::relax(); continue; }
             if nr == 0 { return LdtView::NONE; }
             return LdtView { base, nr_entries: nr, generation };
         }

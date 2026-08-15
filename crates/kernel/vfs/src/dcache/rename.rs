@@ -26,7 +26,7 @@ pub fn rename_lock_read_begin() -> u32 {
     loop {
         let s = RENAME_LOCK.load(Ordering::Acquire);
         if s & 1 == 0 { return s; }
-        core::hint::spin_loop();
+        sync::spin_relax::relax();
     }
 }
 
