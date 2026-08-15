@@ -106,7 +106,21 @@ impl AddressSpace {
         for vma in src.iter() {
             // MADV_DONTFORK (Linux VM_DONTCOPY): the child does not
             // inherit this VMA at all.
-            if vma.flags.contains(VmaFlags::DONTFORK) { continue; }
+            if vma.flags.contains(VmaFlags::DONTFORK) {
+                #[cfg(feature = "debug-faultdiag")]
+                {
+                    klog::write_raw(b"[fork-dontfork] parent=");
+                    klog::write_hex_u64(self.root_pa);
+                    klog::write_raw(b" child=");
+                    klog::write_hex_u64(new_root_pa);
+                    klog::write_raw(b" range=");
+                    klog::write_hex_u64(vma.start.as_u64());
+                    klog::write_raw(b"..");
+                    klog::write_hex_u64(vma.end.as_u64());
+                    klog::write_raw(b"\n");
+                }
+                continue;
+            }
             dst.insert(child_vma(vma)).map_err(|_| Error::NoMem)?;
         }
         // A child PTE owns a separate reference to the canonical swap slot.

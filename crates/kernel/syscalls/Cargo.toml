@@ -92,6 +92,7 @@ sched = { path = "../sched", features = ["hosted"] }
 debug-eager-fork = []  # TEST: eager-copy fork instead of COW
 debug-tcprx = []  # [TCPRX] shim receive-loop enter/park/wake trace for restarted recv(2)
 debug-boot = ["kmacros/debug-boot", "net/debug-boot", "drm/debug-boot"]
+debug-faultdiag = []  # [exec-vma]/[mprotect-vma] ELF data-VMA lifetime trace
 # B1474: campaign traces that used to ride debug-boot. `make qemu-*` turns
 # debug-boot on unconditionally, so anything per-syscall / per-signal /
 # per-fault there changes the guest's timing instead of measuring it.

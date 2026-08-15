@@ -25,6 +25,27 @@ impl FileBacking for ZeroTailBacking {
     fn object_id(&self) -> u64 { self.inner.object_id() }
 }
 
+#[cfg(feature = "debug-faultdiag")]
+fn trace_file_mismatch(backing: &Arc<dyn FileBacking>, off: u64, bytes: &[u8]) {
+    let mut at = 0usize;
+    let mut page = alloc::vec![0u8; PAGE as usize];
+    while at < bytes.len() {
+        let want = (bytes.len() - at).min(page.len());
+        let got = backing.read_at(off + at as u64, &mut page[..want]);
+        if !matches!(got, Ok(n) if n == want) || page[..want] != bytes[at..at + want] {
+            klog::write_raw(b"[exec-file-mismatch] ino=");
+            klog::write_hex_u64(backing.ino());
+            klog::write_raw(b" off=");
+            klog::write_hex_u64(off + at as u64);
+            klog::write_raw(b" want=");
+            klog::write_hex_u64(want as u64);
+            klog::write_raw(b"\n");
+            return;
+        }
+        at += want;
+    }
+}
+
 pub(crate) fn place_image(
     blob: &[u8],
     as_: &AddressSpace,
@@ -57,6 +78,8 @@ pub(crate) fn place_image(
         let raw_data = blob
             .get(file_off..file_off.checked_add(file_sz).ok_or(LoadError::Einval)?)
             .ok_or(LoadError::Einval)?;
+        #[cfg(feature = "debug-faultdiag")]
+        if let Some(backing) = file { trace_file_mismatch(backing, seg.file_off, raw_data); }
         let head_pad = (vaddr - vstart) as usize;
         let buf_len = (vend - vstart) as usize;
         let sp = crate::layout::split(

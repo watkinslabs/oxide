@@ -72,6 +72,24 @@ pub fn do_mprotect_pkey(args: &SyscallArgs, pkey: i32) -> i64 {
         Ok(outcome) => outcome,
         Err(_) => return -(Errno::Enomem.as_i32() as i64),
     };
+    #[cfg(feature = "debug-faultdiag")]
+    {
+        klog::write_raw(b"[mprotect-vma] addr=");
+        klog::write_hex_u64(ua.as_u64());
+        klog::write_raw(b" root=");
+        klog::write_hex_u64(mm.root_pa());
+        klog::write_raw(b" tid=");
+        klog::write_dec_u64(cur.tid as u64);
+        klog::write_raw(b" len=");
+        klog::write_hex_u64(len as u64);
+        klog::write_raw(b" steps=");
+        klog::write_dec_u64(outcome.steps.len() as u64);
+        klog::write_raw(b" err=");
+        klog::write_raw(if outcome.error.is_some() { b"yes" } else { b"no" });
+        klog::write_raw(b" n=");
+        klog::write_dec_u64(mm.vma_count() as u64);
+        klog::write_raw(b"\n");
+    }
     for step in &outcome.steps {
         // SAFETY: each step was committed under this mm's VMA write lock; the
         // active page tables belong to the running task and the PMM walker
