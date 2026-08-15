@@ -709,29 +709,20 @@ closes a row, and no deferral status.** Every row is work this project WILL do.
 - Never delete a row to make the list look shorter, and never downgrade a severity
   without new evidence.
 
-## handoff2.md is the ONE hand-off file
+## handoff2.md is short-lived session memory, not history
 
-`handoff2.md` is the hand-off note from the previous session — what was worked
-on, what is open, what to pick up next. It is NOT a running log, NOT a session
-journal, NOT a place to accumulate session-by-session reports.
-
-It replaced a split between `HANDOVER.md` and `state.md`. That split was the
-problem it exists to fix: a reader had to merge two files in their head to
-learn one thing, and the two drifted. There is one file. Do not add a second.
+`handoff2.md` is the hand-off note from the previous session — what
+was worked on, what's open, what to pick up next. It is NOT a
+running log, NOT a session journal, NOT a place to accumulate
+session-by-session reports.
 
 Rules:
 - **Hard cap 200 lines.** If it grows past that, you're doing it wrong.
-- **Overwrite, don't append.** Each session replaces the file with a fresh
-  hand-off — no "below this line is session N-1" appendix.
-- **Lead with what is NOT done.** A hand-off that opens with achievements
-  buries the thing the next session needs first.
-- **Separate what is known from what is assumed.** If two symptoms might be one
-  fault, say that nobody has established it.
-- **End with the literal first command**, not a plan.
+- **Overwrite, don't append.** Each session replaces the file with a fresh hand-off — no "Below this line is session N-1" appendix.
+- **Headline + open work + first task.** Branch + PR, what got done, what's still open, the literal first command for next session. Nothing else.
 - **No "session 53/54/55" archaeology.** Git log is the archaeology.
-- **No commit-message duplication.** Cite SHAs and PR numbers, don't restate.
-- Persistent project knowledge (architecture decisions, conventions, gotchas
-  that survive across sessions) goes in CLAUDE.md or auto-memory, not here.
+- **No commit-message duplication.** Cite SHAs, don't restate.
+- Persistent project knowledge (architecture decisions, conventions, gotchas that survive across sessions) goes in CLAUDE.md or auto-memory, not handoff2.md.
 
 ## When in doubt
 
