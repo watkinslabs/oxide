@@ -536,6 +536,10 @@ impl<T, C: LockClass> Spinlock<T, C> {
         crate::lockdep::note_acquire(C::rank(), C::name(), true, self as *const _ as usize);
         // SAFETY: paired with B::enable in LockBhGuard::drop, after the release.
         unsafe { B::disable(); }
+        // Join the held-lock trace without touching the count: this section
+        // is otherwise invisible to every sleep-while-atomic report, which is
+        // why one of them names no lock at all.
+        let preempt = crate::preempt_gate::acquire_trace_only(C::rank());
         while self
             .locked
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -545,7 +549,7 @@ impl<T, C: LockClass> Spinlock<T, C> {
         }
         #[cfg(feature = "debug-smp")]
         self.owner.store(spin_probe::current_owner(), Ordering::Relaxed);
-        LockBhGuard { lock: self, _g: PhantomData }
+        LockBhGuard { lock: self, preempt, _g: PhantomData }
     }
 }
 
@@ -624,6 +628,9 @@ impl<T, C: LockClass, I: IrqGate> Drop for IrqGuard<'_, T, C, I> {
 /// Guard for `lock_bh` (Linux `spin_unlock_bh` on drop).
 pub struct LockBhGuard<'a, T, C: LockClass, B: BhGate> {
     lock: &'a Spinlock<T, C>,
+    /// The trace half this acquisition joined, carried so a gate installed
+    /// mid-section can never produce an unmatched pop.
+    preempt: crate::preempt_gate::PreemptToken,
     _g: PhantomData<B>,
 }
 
@@ -651,6 +658,7 @@ impl<T, C: LockClass, B: BhGate> Drop for LockBhGuard<'_, T, C, B> {
         #[cfg(feature = "debug-smp")]
         self.lock.owner.store(0, Ordering::Relaxed);
         self.lock.locked.store(false, Ordering::Release);
+        crate::preempt_gate::release(self.preempt);
         // SAFETY: pairs the B::disable in lock_bh; the lock is released, so a drain here may take it.
         unsafe { B::enable(); }
     }
@@ -675,6 +683,41 @@ mod tests {
     }
 
     fn bh_disabled() -> bool { BH_DEPTH.load(Ordering::Acquire) > 0 }
+
+    /// A `lock_bh` section must be VISIBLE to the held-lock trace.
+    ///
+    /// Every sleep-while-atomic report inside one printed `held=[]` and named
+    /// no lock, because this was the single acquisition that never joined the
+    /// trace. The report exists to turn a count into a call site; blind to the
+    /// bh path it could not.
+    #[cfg(feature = "debug-preempt")]
+    #[test]
+    fn a_bh_section_is_visible_to_the_held_lock_trace() {
+        let s: Spinlock<u32, Buddy> = Spinlock::new(0);
+        let outside = crate::preempt_gate::held_trace().1;
+        {
+            let _g = s.lock_bh::<CountingBh>();
+            let (rank, depth, _) = crate::preempt_gate::held_trace();
+            assert_eq!(depth, outside + 1, "the bh section must appear in the trace");
+            assert_eq!(rank, Buddy::rank(), "and name the class it locked");
+        }
+        assert_eq!(crate::preempt_gate::held_trace().1, outside, "and leave when it does");
+    }
+
+    /// ...while changing NOTHING about the count. The reference's
+    /// `spin_lock_bh` raises only the softirq field; adding a preempt level
+    /// here would make this kernel's accounting disagree with it, and a
+    /// diagnostic must not move the state it observes.
+    #[test]
+    fn joining_the_trace_does_not_change_the_bottom_half_accounting() {
+        BH_DEPTH.store(0, Ordering::Release);
+        let s: Spinlock<u32, Buddy> = Spinlock::new(0);
+        {
+            let _g = s.lock_bh::<CountingBh>();
+            assert_eq!(BH_DEPTH.load(Ordering::Acquire), 1, "exactly one bh disable");
+        }
+        assert_eq!(BH_DEPTH.load(Ordering::Acquire), 0, "and exactly one enable");
+    }
 
     #[test]
     fn lock_bh_excludes_softirqs_for_the_whole_critical_section() {
