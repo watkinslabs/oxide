@@ -94,6 +94,7 @@ pub fn try_populate_defaults() -> drv::KResult<()> {
     add_pseudo_dev("mem", "random",  uapi::MEM_RANDOM, Arc::new(|| crate::misc::make_random_inode()))?;
     add_pseudo_dev("mem", "urandom", uapi::MEM_URANDOM, Arc::new(|| crate::misc::make_urandom_inode()))?;
     add_pseudo_dev("misc", "autofs", uapi::MISC_AUTOFS, Arc::new(|| crate::misc::make_autofs_inode()))?;
+    add_pseudo_dev("misc", "loop-control", uapi::MISC_LOOP_CONTROL, Arc::new(|| crate::misc::make_loop_control_inode()))?;
     let sym = |target: &'static [u8], ino: u64| -> InodeRef {
         crate::misc::make_symlink_inode(target, ino)
     };

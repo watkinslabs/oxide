@@ -11,6 +11,7 @@ path = "src/kmain.rs"
 [dependencies]
 audit   = { path = "../audit" }
 block   = { path = "../block" }
+drv-loop = { path = "../../drivers/drv-loop" }
 boot-info = { path = "../../shared/boot-info" }
 cpu       = { path = "../cpu" }
 devfs     = { path = "../devfs" }

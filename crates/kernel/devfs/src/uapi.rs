@@ -10,6 +10,8 @@ pub const MEM_URANDOM: (u32, u32) = (MEM_MAJOR, 9);
 pub const MEM_KMSG: (u32, u32) = (MEM_MAJOR, 11);
 pub const MISC_HWRNG: (u32, u32) = (MISC_MAJOR, 183);
 pub const MISC_AUTOFS: (u32, u32) = (MISC_MAJOR, 235);
+/// `/dev/loop-control`, the node loop devices are created and freed through.
+pub const MISC_LOOP_CONTROL: (u32, u32) = (MISC_MAJOR, 237);
 pub const DEV_MEM_NULL: u32 = 0x0103;
 pub const DEV_MEM_ZERO: u32 = 0x0105;
 pub const DEV_MEM_FULL: u32 = 0x0107;
@@ -18,6 +20,7 @@ pub const DEV_MEM_URANDOM: u32 = 0x0109;
 pub const DEV_MEM_KMSG: u32 = 0x010b;
 pub const DEV_MISC_HWRNG: u32 = 0x0ab7;
 pub const DEV_MISC_AUTOFS: u32 = 0x0aec;
+pub const DEV_MISC_LOOP_CONTROL: u32 = 0x0aed;
 
 pub const INO_NULL: u64 = 0x2000_0001;
 pub const INO_ZERO: u64 = 0x2000_0002;
@@ -25,6 +28,7 @@ pub const INO_FULL: u64 = 0x2000_0003;
 pub const INO_RANDOM: u64 = 0x2000_0004;
 pub const INO_HWRNG: u64 = 0x2000_0005;
 pub const INO_AUTOFS: u64 = 0x2000_0006;
+pub const INO_LOOP_CONTROL: u64 = 0x2000_0007;
 pub const INO_URANDOM: u64 = 0x2000_0007;
 pub const INO_KMSG: u64 = 0x2000_000a;
 pub const INO_STDIN: u64 = 0x2000_0010;
