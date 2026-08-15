@@ -202,12 +202,16 @@ core::arch::global_asm!(
 
     ".type  oxide_fault_body, @function",
     "oxide_fault_body:",
-    // Linux `exc_page_fault` inherits the interrupted process IRQ state before
-    // running the memory-fault handler. Enable only for #PF frames whose saved
-    // RFLAGS had IF set: a fault in hard-IRQ/IRQ-off kernel context must remain
-    // atomic, while user faults and uaccess faults from syscalls may sleep.
+    // Capture CR2 while entry still excludes maskable IRQs. A nested fault can
+    // replace CR2, so the resolver must never read it after STI.
+    "    xor  esi, esi",                 // arg 1 = zero for non-#PF traps
     "    cmp  qword ptr [rsp + 0x78], 14",
     "    jne  4f",
+    "    call oxide_fault_capture_cr2",
+    "    mov  rsi, rax",                 // arg 1 = preserved #PF address
+    // A page-fault handler inherits the interrupted IF state. A fault in
+    // hard-IRQ/IRQ-off kernel context remains atomic; user and uaccess faults
+    // may sleep once their fault address has been preserved above.
     "    test qword ptr [rsp + 0x98], 0x200",
     "    jz   4f",
     "    sti",
@@ -262,6 +266,20 @@ core::arch::global_asm!(
     ".size oxide_fault_body, . - oxide_fault_body",
     msr_gs_base = const crate::msr::IA32_GS_BASE,
 );
+
+/// Snapshot the page-fault linear address while entry still masks IRQs.
+/// # C: O(1)
+/// # Ctx: synchronous x86 page-fault entry
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+#[no_mangle]
+pub extern "C" fn oxide_fault_capture_cr2() -> u64 {
+    let value: u64;
+    // SAFETY: x86 #PF entry invokes this before STI; CR2 is a privileged read.
+    unsafe {
+        core::arch::asm!("mov {}, cr2", out(reg) value, options(nomem, nostack, preserves_flags));
+    }
+    value
+}
 
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 extern "C" {
@@ -323,5 +341,21 @@ pub fn vector_stub_addr(vec: u8) -> u64 {
     {
         let _ = vec;
         0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn page_fault_entry_snapshots_cr2_before_interrupt_enable() {
+        let asm = include_str!("stubs.rs");
+        let start = asm.find("\"oxide_fault_body:\"").unwrap();
+        let end = start + asm[start..].find(".size oxide_fault_body").unwrap();
+        let body = &asm[start..end];
+        let capture = body.find("call oxide_fault_capture_cr2").unwrap();
+        let forward = capture + body[capture..].find("mov  rsi, rax").unwrap();
+        let sti = forward + body[forward..].find("\"    sti\"").unwrap();
+        let dispatch = sti + body[sti..].find("call oxide_fault_print_rust").unwrap();
+        assert!(capture < forward && forward < sti && sti < dispatch);
     }
 }
