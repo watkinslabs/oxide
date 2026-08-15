@@ -18,6 +18,7 @@ crc  = { path = "../../shared/crc" }
 crypt = { path = "../../shared/crypt" }
 mpi = { path = "../../shared/mpi" }
 ext4 = { path = "../ext4" }
+firmware = { path = "../firmware" }
 pmm  = { path = "../mm-pmm" }
 cgroup = { path = "../cgroup" }
 cpu = { path = "../cpu" }

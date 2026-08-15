@@ -149,7 +149,7 @@ audit_pci()
                     0x1d6a:0x04c0)
                         audit_pci_driver "$bdf" "$driver" atlantic ;;
                     0x10ec:0x8125)
-                        emit driver-assessment NEEDS-DRIVER "bdf=$bdf" driver=r8169 "reason=firmware-load-and-retry-required" ;;
+                        audit_rtl8125 "$bdf" "$driver" ;;
                     *) emit driver-assessment NEEDS-SELECTION "bdf=$bdf" driver=physical-nic \
                         "reason=no-matched-native-driver" ;;
                 esac ;;
@@ -172,6 +172,23 @@ audit_pci_driver()
         -) emit driver-assessment UNBOUND "bdf=$bdf" "expected=$expected" ;;
         *) emit driver-assessment WRONG-DRIVER "bdf=$bdf" "expected=$expected" "driver=$actual" ;;
     esac
+}
+
+# RTL8125 has a native r8169-shaped driver. It is retried only after rootfs is
+# mounted because its revision selects a firmware file at runtime. A successful
+# binding is decisive; when unbound, distinguish an absent firmware tree from
+# a driver probe failure without guessing which revision is installed.
+audit_rtl8125()
+{
+    bdf=$1
+    actual=$2
+    if [ "$actual" != - ]; then
+        audit_pci_driver "$bdf" "$actual" r8169
+    elif [ -d "$(path /lib/firmware/rtl_nic)" ] || [ -d "$(path /usr/lib/firmware/rtl_nic)" ]; then
+        emit driver-assessment UNBOUND "bdf=$bdf" expected=r8169
+    else
+        emit driver-assessment NEEDS-FIRMWARE "bdf=$bdf" driver=r8169 "reason=rtl8125-payload-unavailable"
+    fi
 }
 
 audit_block()
