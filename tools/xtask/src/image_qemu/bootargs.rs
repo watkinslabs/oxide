@@ -128,6 +128,7 @@ pub(super) fn kernel_cmdline_for_root(arch: &str, image_path: &str, root: &str) 
          systemd.mask=firewalld.service systemd.mask=chronyd.service \
          systemd.mask=ModemManager.service systemd.mask=plymouth-start.service \
          systemd.mask=NetworkManager-wait-online.service \
+         systemd.mask=flatpak-add-fedora-repos.service \
          systemd.debug_shell={dev} oxide.bootargs=grub"
     )
 }
@@ -221,6 +222,16 @@ mod tests {
         let _env = env_held();
         for arch in ["x86_64", "aarch64"] {
             assert!(kernel_cmdline(arch, "/img").contains("oxide.bootargs=grub"));
+        }
+    }
+
+    #[test]
+    fn disposable_boot_image_does_not_wait_for_flatpak_network_setup() {
+        let _env = env_held();
+        for arch in ["x86_64", "aarch64"] {
+            let line = kernel_cmdline(arch, "/img");
+            assert!(line.contains("systemd.mask=flatpak-add-fedora-repos.service"),
+                "{arch}: disposable image must not block boot on a remote add: {line}");
         }
     }
 
