@@ -82,24 +82,6 @@ fn pan_check_validates_against_virtual() {
 }
 
 #[test]
-fn vblank_wait_returns_when_seq_advances() {
-    let _fbdev = crate::test_claim::claim_fbdev();
-    let start = VBLANK_SEQ.load(Ordering::Relaxed);
-    vblank_tick();
-    let got = wait_vblank(start);
-    assert_ne!(got, start);
-    assert!(got >= start + 1);
-}
-
-#[test]
-fn vblank_wait_bounded_when_no_advance() {
-    let _fbdev = crate::test_claim::claim_fbdev();
-    let start = VBLANK_SEQ.load(Ordering::Relaxed);
-    let got = wait_vblank(start);
-    assert!(got >= start);
-}
-
-#[test]
 fn line_length_alignment() {
     let _fbdev = crate::test_claim::claim_fbdev();
     assert_eq!(line_length(800, 32), 3200);
@@ -292,10 +274,9 @@ fn fbdev_ioctls_route_flush_blank_by_fb_inode_record() {
     assert_eq!(devfs::handle_fbdev_ioctl(&fb1_inode, FBIOBLANK, FB_BLANK_NORMAL as u64), Some(0));
     assert_eq!(LAST_BLANK.load(AtomicOrdering::SeqCst), 44);
 
-    set_yield_hook(vblank_tick);
     assert_eq!(devfs::handle_fbdev_ioctl(&fb1_inode, FBIO_WAITFORVSYNC, 0), Some(0));
-    clear_wait_hooks();
-    assert_eq!(LAST_FLUSH.load(AtomicOrdering::SeqCst), 44);
+    assert_eq!(devfs::handle_fbdev_ioctl(&fb1_inode, FBIOGET_VBLANK, 0), None);
+    assert_eq!(LAST_FLUSH.load(AtomicOrdering::SeqCst), u32::MAX);
     assert_eq!(LAST_UNBLANK.load(AtomicOrdering::SeqCst), u32::MAX);
 
 }

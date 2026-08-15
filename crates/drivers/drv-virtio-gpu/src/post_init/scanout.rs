@@ -312,8 +312,6 @@ pub fn publish_console_scanout(device_key: virtio::VirtioChildDeviceKey) {
     if !commit_console_owner_key(device_key, idx) { return; }
 
     fbcon::kernel::kernel_init(w, h, fbcon_flush_pixels);
-    fbdev::set_yield_hook(fbdev_vsync_yield);
-    fbdev::set_now_hook(monotonic_now_ns);
     // Register the fbcon printk console only if a `console=tty<n>` token asked
     // for it (Linux `register_console` per `console=`). The VT ttys + scanout
     // are set up regardless; this gates only klog fan-out to the framebuffer.
@@ -342,7 +340,6 @@ pub fn unpublish_console_scanout(device_key: virtio::VirtioChildDeviceKey) {
     klog::clear_aux_sink();
     tty::live::clear_vt_mode_queries();
     fbcon::kernel::kernel_unregister();
-    fbdev::clear_wait_hooks();
     if let Some(idx) = fbdev_idx {
         let _ = fbdev::unregister(idx);
     }
@@ -350,28 +347,6 @@ pub fn unpublish_console_scanout(device_key: virtio::VirtioChildDeviceKey) {
 
 #[cfg(not(target_os = "oxide-kernel"))]
 pub fn unpublish_console_scanout(_device_key: virtio::VirtioChildDeviceKey) {}
-
-#[cfg(target_os = "oxide-kernel")]
-fn fbdev_vsync_yield() {
-    // SAFETY: fbdev calls its yield hook from process context while waiting on
-    // vsync, holding no spinlock — the precondition `tick_yield` needs to run
-    // the scheduler and return to this task.
-    unsafe { sched::live::tick_yield(); }
-}
-
-#[cfg(target_os = "oxide-kernel")]
-fn monotonic_now_ns() -> u64 {
-    #[cfg(target_arch = "x86_64")]
-    {
-        use hal::TimerOps;
-        hal_x86_64::X86TimerOps::monotonic_ns().0
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        use hal::TimerOps;
-        hal_aarch64::ArmTimerOps::monotonic_ns().0
-    }
-}
 
 #[cfg(test)]
 #[path = "scanout_tests.rs"]

@@ -32,14 +32,6 @@ pub use aperture::{
     ApertureResult,
 };
 
-mod vblank;
-pub use vblank::{
-    clear_wait_hooks, set_now_hook, set_yield_hook, vblank_seq, vblank_tick, wait_vblank,
-    VSYNC_DEADLINE_NS,
-};
-#[cfg(test)]
-use vblank::VBLANK_SEQ;
-
 #[cfg(test)]
 mod test_claim;
 
