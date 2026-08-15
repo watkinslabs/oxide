@@ -1,15 +1,21 @@
 use super::*;
 
-/// Submit `CMD_GET_DISPLAY_INFO` on q0; spin-poll used.idx for
-/// completion; parse the response and re-install the device with
-/// real DisplayInfo.
-/// # C: O(spin-poll bound = 1e6)
+/// Process-context completion queues for one deferred GPU initialization.
+pub(super) struct CompletionWaits<'a> {
+    pub(super) wake: &'a sched::live::WaitList,
+    pub(super) cancelled: &'a core::sync::atomic::AtomicBool,
+}
+
+/// Submit `CMD_GET_DISPLAY_INFO` on q0; wait for its used-ring completion,
+/// then parse the response and install the device with real DisplayInfo.
+/// # C: O(command completion)
 pub fn get_display_info(
     device_key: virtio::VirtioChildDeviceKey,
     bdf: pci::Bdf,
     parent: &alloc::sync::Arc<drv::Device>,
     drv_features: u64,
     resources: virtio::VirtioResources,
+    waits: &CompletionWaits<'_>,
 ) -> bool {
     let Some(ctrlq_resource) = resources.require_queue_at_least(0, 4) else { return false };
     let Some(cursorq_resource) = resources.require_queue_at_least(1, 2) else { return false };
@@ -43,7 +49,7 @@ pub fn get_display_info(
     }
     // SAFETY: the frame is exclusively owned by this synchronous probe.  The
     // shared queue owns descriptor allocation, publication, and retirement.
-    let retired = unsafe { submit_raw(cmd_buf.dma, 24, 408, ctrlq.as_mut().unwrap()) };
+    let retired = unsafe { submit_raw_wait(cmd_buf.dma, 24, 408, ctrlq.as_mut().unwrap(), waits) };
     if !retired {
         // The device never retired the descriptor, so it may still write the
         // reply into this frame. Freeing it would hand a physical address the
@@ -77,7 +83,7 @@ pub fn get_display_info(
     // flight on this queue — `fetch`'s documented contract.
     let edid = unsafe {
         super::edid::fetch(drv_features, cmd_buf.va, cmd_buf.dma, ctrlq.as_mut().unwrap(),
-            &mut edid_timed_out)
+            waits, &mut edid_timed_out)
     };
     if edid_timed_out {
         // Same reasoning as the display-info timeout: an unretired descriptor
@@ -119,6 +125,7 @@ pub fn get_display_info(
                 device_key,
                 info.modes[0].r.width, info.modes[0].r.height,
                 cfg_va, &mut ctrlq, &mut cursorq, cmd_buf.va, cmd_buf.pa, cmd_buf.dma, bdf, hhdm,
+                waits,
             )
         };
         if !scanout_ok {
@@ -161,6 +168,7 @@ unsafe fn setup_scanout(
     cursorq: &mut Option<virtio::VirtioSplitQueue>,
     cmd_buf_va: *mut u8, cmd_buf_pa: u64, cmd_buf_dma: u64, bdf: pci::Bdf,
     hhdm: u64,
+    waits: &CompletionWaits<'_>,
 ) -> bool {
     let pitch = w as u64 * 4;
     let fb_bytes = pitch * h as u64;
@@ -210,7 +218,7 @@ unsafe fn setup_scanout(
         {
             // SAFETY: RESP_OFF (0x200) in the caller's 4 KiB command frame is a
             // 4-byte-aligned offset with 0xE00 bytes behind it, so this reads the
-            // reply header's `type` word in bounds; the preceding `submit_one`
+            // reply header's `type` word in bounds; the preceding `submit_one_wait`
             // saw the descriptor retired, so the device is done writing it.
             let resp = unsafe { core::ptr::read_volatile(cmd_buf_va.add(0x200) as *const u32) };
             klog::write_raw(b"[INFO]  virtio-gpu resp ");
@@ -222,26 +230,28 @@ unsafe fn setup_scanout(
         #[cfg(not(feature = "debug-boot"))]
         let _ = tag;
     };
-    // SAFETY: `submit_one`'s contract — this fn's own caller guarantees the
+    // SAFETY: `submit_one_wait`'s contract — this fn's own caller guarantees the
     // command frame is live and ≥ RESP_OFF + NODATA_RESP_LEN, CTRLQ's VAs are
     // valid, and the probe is single-threaded, so the previous submission was
     // already retired and no other producer touches the queue.
-    if unsafe { !submit_one(cmd_buf_va, cmd_buf_dma,
+    if unsafe { !submit_one_wait(cmd_buf_va, cmd_buf_dma,
         |buf| crate::encode_resource_create_2d(buf, res_id,
             crate::VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM, w, h),
         ctrlq.as_mut().unwrap(),
+        waits,
     ) } {
         return false;
     }
     log_resp(b"create");
-    // SAFETY: `submit_one`'s contract — this fn's own caller guarantees the
+    // SAFETY: `submit_one_wait`'s contract — this fn's own caller guarantees the
     // command frame is live and ≥ RESP_OFF + NODATA_RESP_LEN, CTRLQ's VAs are
     // valid, and the probe is single-threaded, so the previous submission was
     // already retired and no other producer touches the queue.
-    if unsafe { !submit_one(cmd_buf_va, cmd_buf_dma,
+    if unsafe { !submit_one_wait(cmd_buf_va, cmd_buf_dma,
         |buf| crate::encode_resource_attach_backing_one(
             buf, res_id, base_dma, fb_bytes as u32),
         ctrlq.as_mut().unwrap(),
+        waits,
     ) } {
         return false;
     }
@@ -260,35 +270,38 @@ unsafe fn setup_scanout(
     // of framebuffer memory rather than risking corrupting whatever gets
     // handed that page next.
     fb_run.disarm();
-    // SAFETY: `submit_one`'s contract — this fn's own caller guarantees the
+    // SAFETY: `submit_one_wait`'s contract — this fn's own caller guarantees the
     // command frame is live and ≥ RESP_OFF + NODATA_RESP_LEN, CTRLQ's VAs are
     // valid, and the probe is single-threaded, so the previous submission was
     // already retired and no other producer touches the queue.
-    if unsafe { !submit_one(cmd_buf_va, cmd_buf_dma,
+    if unsafe { !submit_one_wait(cmd_buf_va, cmd_buf_dma,
         |buf| crate::encode_set_scanout(buf, 0, res_id, 0, 0, w, h),
         ctrlq.as_mut().unwrap(),
+        waits,
     ) } {
         return false;
     }
     log_resp(b"setscanout");
-    // SAFETY: `submit_one`'s contract — this fn's own caller guarantees the
+    // SAFETY: `submit_one_wait`'s contract — this fn's own caller guarantees the
     // command frame is live and ≥ RESP_OFF + NODATA_RESP_LEN, CTRLQ's VAs are
     // valid, and the probe is single-threaded, so the previous submission was
     // already retired and no other producer touches the queue.
-    if unsafe { !submit_one(cmd_buf_va, cmd_buf_dma,
+    if unsafe { !submit_one_wait(cmd_buf_va, cmd_buf_dma,
         |buf| crate::encode_transfer_to_host_2d(buf, res_id, 0, 0, w, h, 0),
         ctrlq.as_mut().unwrap(),
+        waits,
     ) } {
         return false;
     }
     log_resp(b"transfer");
-    // SAFETY: `submit_one`'s contract — this fn's own caller guarantees the
+    // SAFETY: `submit_one_wait`'s contract — this fn's own caller guarantees the
     // command frame is live and ≥ RESP_OFF + NODATA_RESP_LEN, CTRLQ's VAs are
     // valid, and the probe is single-threaded, so the previous submission was
     // already retired and no other producer touches the queue.
-    if unsafe { !submit_one(cmd_buf_va, cmd_buf_dma,
+    if unsafe { !submit_one_wait(cmd_buf_va, cmd_buf_dma,
         |buf| crate::encode_resource_flush(buf, res_id, 0, 0, w, h),
         ctrlq.as_mut().unwrap(),
+        waits,
     ) } {
         return false;
     }
@@ -315,27 +328,24 @@ unsafe fn setup_scanout(
     true
 }
 
-/// Submit a single CTRLQ command via the encoder closure.
-pub(super) unsafe fn submit_one<F: FnOnce(&mut [u8]) -> usize>(
+/// Submit one CTRLQ command from the deferred boot probe and sleep until the
+/// per-device IRQ says a used entry may be reaped.
+/// # SAFETY: same frame and queue ownership contract as the prior direct
+/// submit path, plus
+/// process context with no driver lock held while this function can sleep.
+pub(super) unsafe fn submit_one_wait<F: FnOnce(&mut [u8]) -> usize>(
     buf_va: *mut u8, buf_dma: u64, encode: F,
-    ctrlq: &mut virtio::VirtioSplitQueue,
+    ctrlq: &mut virtio::VirtioSplitQueue, waits: &CompletionWaits<'_>,
 ) -> bool {
-    // Scrubbing the reply area first stops a stale header from an earlier
-    // command being read back as this one's status.
-    // SAFETY: caller's contract gives a live 4 KiB command frame; request area
-    // 0..0x100 and reply area RESP_OFF..+0x30 are inside it and disjoint from
-    // the cursor area at 0x100; no descriptor names it until `submit_raw` below.
+    // SAFETY: caller gives the same exclusive 4 KiB frame contract as the
+    // direct submission path; this substitutes the completion wait primitive.
     unsafe {
         for k in 0..0x100usize { core::ptr::write_volatile(buf_va.add(k), 0); }
         for k in 0x200..0x230usize { core::ptr::write_volatile(buf_va.add(k), 0); }
         let req = core::slice::from_raw_parts_mut(buf_va, 0x100);
         let _ = encode(req);
+        submit_raw_wait(buf_dma, 64, NODATA_RESP_LEN, ctrlq, waits)
     }
-    // SAFETY: `buf_dma` is the device-visible mapped address of the frame just encoded into,
-    // whose request area is 0x100 bytes (≥ the 64 described) and whose reply
-    // area at RESP_OFF has room for NODATA_RESP_LEN; CTRLQ's VAs come from the
-    // caller's validated queue resource.
-    unsafe { submit_raw(buf_dma, 64, NODATA_RESP_LEN, ctrlq) }
 }
 
 /// Response descriptor length for a command whose reply is a bare ctrl header.
@@ -343,12 +353,13 @@ const NODATA_RESP_LEN: usize = 24;
 /// Offset of the device-writable response area inside the probe command frame.
 pub(super) const RESP_OFF: u64 = 0x200;
 
-/// Submit one data-only CURSORQ command and wait until the device has consumed
-/// it before reusing the serialized command buffer. Cursor queue commands have
-/// no response descriptor by specification.
-pub(super) unsafe fn submit_cursor_one<F: FnOnce(&mut [u8]) -> usize>(
+/// Submit one data-only CURSORQ command and sleep until it retires. Cursor
+/// commands have no response descriptor by specification.
+pub(super) unsafe fn submit_cursor_one_wait<F: FnOnce(&mut [u8]) -> usize>(
     buf_va: *mut u8, buf_dma: u64, encode: F,
     cursorq: &mut virtio::VirtioSplitQueue,
+    wake: &sched::live::WaitList,
+    cancelled: &core::sync::atomic::AtomicBool,
 ) -> bool {
     let cursor_off = 0x100usize;
     // The cursor area 0x100..0x200 is disjoint from the CTRLQ request (0..0x100)
@@ -363,34 +374,62 @@ pub(super) unsafe fn submit_cursor_one<F: FnOnce(&mut [u8]) -> usize>(
         let req = core::slice::from_raw_parts_mut(buf_va.add(cursor_off), 0x100);
         let req_len = encode(req);
         if req_len == 0 || req_len > 0x100 { return false; }
-        submit_cursor_raw(buf_dma + cursor_off as u64, req_len, cursorq)
+        submit_cursor_raw_wait(buf_dma + cursor_off as u64, req_len, cursorq, wake, cancelled)
     }
 }
 
-/// Post one request/response descriptor pair on CTRLQ and spin until the device
-/// consumes it. `resp_len` sizes the device-writable descriptor; a command whose
-/// reply is larger than a bare header must say so or the device truncates it.
-pub(super) unsafe fn submit_raw(
+/// Post one CTRLQ descriptor pair, then use the generic publish/recheck wait.
+/// # SAFETY: caller owns `ctrlq` and the complete mapped request/reply frame;
+/// this call is process context and holds no driver lock while it parks.
+pub(super) unsafe fn submit_raw_wait(
     buf_dma: u64, req_len: usize, resp_len: usize,
-    ctrlq: &mut virtio::VirtioSplitQueue,
+    ctrlq: &mut virtio::VirtioSplitQueue, waits: &CompletionWaits<'_>,
 ) -> bool {
     if ctrlq.submit(&[
         virtio::SplitQueueSeg { dma: buf_dma, len: req_len as u32, device_writes: false },
         virtio::SplitQueueSeg { dma: buf_dma + RESP_OFF, len: resp_len as u32, device_writes: true },
     ]).is_err() { return false; }
-    for _ in 0..SUBMIT_POLL_BUDGET {
-        match ctrlq.pop_used() { Ok(Some(_)) => return true, Ok(None) => core::hint::spin_loop(), Err(_) => return false }
-    }
-    false
+    let deadline = sched::deadline::clock::now_ns().saturating_add(super::limits::BOOT_COMPLETION_TIMEOUT_NS);
+    let mut retired = false;
+    // SAFETY: deferred init runs from kworker process context after transport
+    // publication and no spinlock survives from descriptor submission to wait.
+    let _ = unsafe {
+        sched::live::wait_event_uninterruptible_until(
+            waits.wake, deadline, sched::deadline::clock::now_ns, || {
+                if waits.cancelled.load(core::sync::atomic::Ordering::Acquire) { return true; }
+                match ctrlq.pop_used() {
+                    Ok(Some(_)) => { retired = true; true }
+                    Ok(None) => false,
+                    Err(_) => true,
+                }
+            },
+        )
+    };
+    retired
 }
 
-unsafe fn submit_cursor_raw(
+unsafe fn submit_cursor_raw_wait(
     buf_dma: u64, req_len: usize,
     cursorq: &mut virtio::VirtioSplitQueue,
+    wake: &sched::live::WaitList,
+    cancelled: &core::sync::atomic::AtomicBool,
 ) -> bool {
     if cursorq.submit(&[virtio::SplitQueueSeg { dma: buf_dma, len: req_len as u32, device_writes: false }]).is_err() { return false; }
-    for _ in 0..SUBMIT_POLL_BUDGET {
-        match cursorq.pop_used() { Ok(Some(_)) => return true, Ok(None) => core::hint::spin_loop(), Err(_) => return false }
-    }
-    false
+    let deadline = sched::deadline::clock::now_ns().saturating_add(super::limits::BOOT_COMPLETION_TIMEOUT_NS);
+    let mut retired = false;
+    // SAFETY: the worker owns this cursor queue and command frame while the
+    // generic wait publishes, sleeps, and rechecks the used-ring predicate.
+    let _ = unsafe {
+        sched::live::wait_event_uninterruptible_until(
+            wake, deadline, sched::deadline::clock::now_ns, || {
+                if cancelled.load(core::sync::atomic::Ordering::Acquire) { return true; }
+                match cursorq.pop_used() {
+                    Ok(Some(_)) => { retired = true; true }
+                    Ok(None) => false,
+                    Err(_) => true,
+                }
+            },
+        )
+    };
+    retired
 }

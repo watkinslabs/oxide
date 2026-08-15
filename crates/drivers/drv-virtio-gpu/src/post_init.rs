@@ -121,9 +121,6 @@ struct ScanoutCtx {
     hhdm: u64,
     fbdev_idx: Option<u32>,
     quiesced: bool,
-    /// What scanout 0 is currently bound to, or `None` before the first bind.
-    /// Owning it here is what lets a redundant SET_SCANOUT be skipped.
-    bound: Option<present::Binding>,
 }
 
 static CTX: Spinlock<Vec<ScanoutCtx>, DriverLockClass> = Spinlock::new(Vec::new());
@@ -159,12 +156,12 @@ pub const BOOT_SCANOUT_RES_ID: u32 = 1;
 /// resources start at 2 so they never collide with the console fb.
 static NEXT_RUNTIME_RES_ID: AtomicU32 = AtomicU32::new(2);
 
+mod init;
+pub use init::{cancel_deferred_init, prepare_deferred_init, start_deferred_init};
+
 mod probe;
-pub use probe::get_display_info;
-use probe::submit_one;
 
 mod limits;
-use limits::SUBMIT_POLL_BUDGET;
 
 mod damage;
 mod edid;
@@ -192,6 +189,7 @@ pub use scanout::{
 use scanout::install_scanout_ctx;
 
 mod runtime;
+mod runtime_queue;
 pub use runtime::{
     boot_scanout_res_id_for_key,
     create_scanout_from_pa_for_key,
@@ -202,6 +200,26 @@ pub use runtime::{
     unregister_drm_hooks,
     unref_scanout_resource_for_key,
 };
+
+/// CTRLQ hard IRQ. The early boot owner is present until scanout publication;
+/// the persistent runtime owner takes over afterwards. Both paths defer all
+/// queue reclamation to process work.
+/// # C: O(N_devices)
+pub fn ctrlq_irq(raw_key: usize) {
+    let key = virtio::VirtioChildDeviceKey::from_raw(raw_key as u32);
+    // Publication overlaps for one short handoff: scanout runtime state is
+    // installed before deferred init drops its own completion owner.  Deliver
+    // this edge to both owners so a first runtime request cannot lose its
+    // completion to the still-visible boot waiter.
+    let _ = init::queue_ctrl_completion(key);
+    runtime_queue::ctrlq_irq(key);
+}
+
+/// CURSORQ hard IRQ. Cursor commands exist only after runtime ownership.
+/// # C: O(N_devices)
+pub fn cursorq_irq(raw_key: usize) {
+    runtime_queue::cursorq_irq(virtio::VirtioChildDeviceKey::from_raw(raw_key as u32));
+}
 
 #[cfg(test)]
 mod tests;
