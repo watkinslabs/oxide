@@ -55,6 +55,10 @@ fn report(count: u32, shared_stack: bool) {
         // off-CPU, which is the cause.
         klog::write_raw(b" held_lock_rank=");
         klog::write_dec_u64(sync::preempt_gate::held_rank() as u64);
+        if let Some(task) = crate::live::current() {
+            klog::write_raw(b" current_tid=");
+            klog::write_dec_u64(task.tid as u64);
+        }
         let caller = core::panic::Location::caller();
         klog::write_raw(b" caller=");
         klog::write_raw(caller.file().as_bytes());
