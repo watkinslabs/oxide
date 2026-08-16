@@ -25,6 +25,7 @@ use alloc::vec::Vec;
 use vfs::{default_file_ops, mk_mode, FileOps, FileType, Ino, Inode,
           InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
 
+pub mod backlight;
 pub mod block;
 pub mod bus;
 pub mod char_class;
@@ -37,11 +38,13 @@ pub mod mm;
 pub mod kobject;
 pub mod modules;
 mod net_class;
+pub mod power_supply;
 pub mod net_stats;
 mod readdir;
 pub mod root;
 mod subsystem;
 pub mod tty;
+mod virtual_class;
 pub mod zram;
 
 #[cfg(test)]
@@ -189,6 +192,8 @@ pub fn init() {
     char_class::init();
     drm::init();
     input::init();
+    power_supply::init();
+    backlight::init();
     dmi::init();
     // Device tree, when the firmware provided one (arm64 DT boots).
     devicetree::init();

@@ -16,6 +16,10 @@ sync = { path = "../../shared/sync" }
 pci  = { path = "../../drivers/pci" }
 ext4 = { path = "../ext4" }
 aml = { path = "../../../vendor/rust/aml-0.16.4" }
+vfs = { path = "../vfs" }
+timekeeper = { path = "../timekeeper" }
+power-supply = { path = "../power-supply" }
+backlight = { path = "../backlight" }
 
 [features]
 default = []

@@ -79,6 +79,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
+name = "backlight"
+version = "0.1.0"
+dependencies = [
+ "kstrtox",
+ "sync",
+ "vfs",
+]
+
+[[package]]
 name = "bit-set"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -851,13 +860,17 @@ name = "firmware"
 version = "0.1.0"
 dependencies = [
  "aml",
+ "backlight",
  "crc",
  "ext4",
  "fdt",
  "hal",
  "klog",
  "pci",
+ "power-supply",
  "sync",
+ "timekeeper",
+ "vfs",
 ]
 
 [[package]]
@@ -1214,6 +1227,10 @@ dependencies = [
  "vmm",
  "vt",
 ]
+
+[[package]]
+name = "kstrtox"
+version = "0.1.0"
 
 [[package]]
 name = "landlock"
@@ -1618,6 +1635,15 @@ dependencies = [
  "klog",
  "mmio-map",
  "sync",
+]
+
+[[package]]
+name = "power-supply"
+version = "0.1.0"
+dependencies = [
+ "kstrtox",
+ "sync",
+ "vfs",
 ]
 
 [[package]]
@@ -2181,6 +2207,7 @@ dependencies = [
 name = "sysfs"
 version = "0.1.0"
 dependencies = [
+ "backlight",
  "block",
  "cmdline",
  "cpu",
@@ -2202,6 +2229,7 @@ dependencies = [
  "network-namespace",
  "pci",
  "pmm",
+ "power-supply",
  "sched",
  "sync",
  "vfs",

@@ -10,7 +10,7 @@ Halt, reboot, poweroff. Cpu idle. Frequency scaling stub.
 
 1. `reboot()` syscall requires `CAP_SYS_BOOT`.
 2. Shutdown sequence quiesces every CPU before invoking firmware reset path.
-3. No AML interpreter yet (phase 35); power mgmt limited to halt + reset via UEFI Runtime Services or platform reset register.
+3. Power management acts through the firmware namespace where one exists (`33`): the terminal S5 action, and the ACPI power supplies of `32§13`. Platforms describing no AML fall back to halt + reset via UEFI Runtime Services or the platform reset register.
 
 ## 3 Public ifc
 
@@ -107,3 +107,66 @@ Shutdown is single-threaded by design; one CPU coordinates, others halt on IPI.
 ## 12 Cross-spec
 
 `15` (reboot syscall), `20`/`21` (cpu halt instructions), `33` (UEFI/PSCI), `13` (kthread of init shutdown).
+
+## 13 Power-supply class
+
+Battery and adapter reporting. A desktop power daemon reads this tree and
+nothing else; an absent or wrongly-scaled attribute is a wrong battery
+indicator, not a missing feature.
+
+Ownership: `crates/kernel/power-supply` owns the class (registered supplies,
+the property contract, attribute visibility, the change path).
+`crates/kernel/sysfs` projects it. Providers register into it; they never
+publish a second registry (`52§5`).
+
+### 13.1 Units (frozen)
+
+| Property family | Unit |
+|---|---|
+| `voltage_*` | microvolts |
+| `current_*`, `precharge_current`, `charge_term_current` | microamps |
+| `power_*` | microwatts |
+| `charge_*` | microamp-hours |
+| `energy_*` | microwatt-hours |
+| `time_to_*` | seconds |
+| `temp*` | tenths of a degree Celsius |
+| `capacity`, `capacity_alert_*`, `capacity_error_margin`, `charge_control_*_threshold` | percent |
+
+### 13.2 Invariants (frozen)
+
+1. A supply publishes exactly the attributes it declares. An undeclared
+   property has no file — not an unreadable one. `type` is the sole exception:
+   it is fixed at registration and always published read-only.
+2. A writable property adds the owner-write bit; nothing else is writable.
+3. Property read errors are distinct: `EINVAL` = the supply does not have this
+   property, `ENODEV` = the value is not reported, `EAGAIN` = registration has
+   not finished, `ENODEV` after teardown began.
+4. Enum labels render with spaces replaced by underscores, so a uevent
+   variable stays one token.
+5. `uevent` names the supply first (`POWER_SUPPLY_NAME=`), then the category,
+   then each declared property as `POWER_SUPPLY_<ATTR>=`. A property whose
+   value is unavailable is skipped, never emitted empty.
+6. A change fans out to every supply that draws from the changed one before
+   the event reaches userspace.
+7. Registration refuses a duplicate name (`EEXIST`) and a supply with no
+   declared properties (`EINVAL`).
+
+### 13.3 ACPI provider
+
+`crates/kernel/firmware` publishes the firmware-described supplies: the
+control-method battery (`PNP0C0A`, `_STA`/`_BIX`/`_BIF`/`_BST`/`_BTP`) and the
+AC adapter (`ACPI0003`, `_PSR`). Firmware reports milli-units; the provider
+converts at read time. Which capacity family a battery publishes follows the
+unit firmware reports in, and a battery with no usable full-charge reference
+publishes neither the percentage nor the level, in place of computing one.
+Supply names come from the firmware object name, never from a kernel counter.
+
+### 13.4 Test contract (frozen)
+
+- Unit scaling, attribute visibility, the status ladder, the percentage
+  arithmetic, the capacity level ladder and the uevent environment are hosted
+  tests over ungated modules.
+- A `_BIF` and a `_BIX` package decode to the same fields from their differing
+  offsets; a short package is refused.
+- An absent battery answers `present` and reports `ENODEV` for every other
+  property.
