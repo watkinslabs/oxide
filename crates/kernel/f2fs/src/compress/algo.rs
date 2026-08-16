@@ -98,6 +98,8 @@ pub enum CompressError {
     Decode,
     /// The codec produced something other than a whole cluster.
     ShortOutput,
+    /// A writer offered something other than a whole cluster to compress.
+    NotAWholeCluster,
 }
 
 impl CompressError {
@@ -111,6 +113,9 @@ impl CompressError {
         match self {
             CompressError::UnsupportedAlgorithm(_) => Errno::Eopnotsupp,
             CompressError::Decode | CompressError::ShortOutput => Errno::Eio,
+            // Not a property of the volume: the caller handed over the wrong
+            // number of bytes, which is a defect here rather than there.
+            CompressError::NotAWholeCluster => Errno::Einval,
             _ => Errno::Euclean,
         }
     }

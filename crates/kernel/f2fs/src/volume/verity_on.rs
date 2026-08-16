@@ -25,6 +25,7 @@ use sectors::SectorSource;
 use crate::uapi::{BLKSIZE, XATTR_INDEX_VERITY};
 use crate::verity::descriptor::Descriptor;
 use crate::verity::merkle::{self, MAX_DIGEST_SIZE};
+use crate::verity::walk::digest_array;
 use crate::verity::uapi::{LOCATION_VERSION, MAX_ROOT_HASH, MAX_SALT, XATTR_NAME};
 use crate::verity::{self, VerityError};
 use crate::xattr::{self, Attr};
@@ -41,6 +42,18 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(file bytes) hashed, O(file bytes / arity) written
     pub fn enable_verity(&mut self, ino: u32, hash_alg: u8, log_blocksize: u8, salt: &[u8])
         -> Result<Vec<u8>, Errno> {
+        self.enable_verity_signed(ino, hash_alg, log_blocksize, salt, &[])
+    }
+
+    /// Seal `ino`, appending a built-in signature over the descriptor.
+    ///
+    /// The signature is checked HERE, against the same policy a later read
+    /// checks it against. Writing one that would be refused on the next read
+    /// produces a file nobody can open, so the refusal happens while the
+    /// metadata can still be taken back off the file.
+    /// # C: O(file bytes) hashed, O(chain * rsa)
+    pub fn enable_verity_signed(&mut self, ino: u32, hash_alg: u8, log_blocksize: u8,
+                                salt: &[u8], sig: &[u8]) -> Result<Vec<u8>, Errno> {
         self.writable_or_err()?;
         let inode = self.read_inode(ino)?;
         verity::access::enable(inode.flags).map_err(verity::access::errno)?;
@@ -55,20 +68,28 @@ impl<S: SectorSource> Volume<S> {
         let tree_at = verity::metadata_pos(inode.size);
         let root = self.build_tree(&inode, ino, &p, tree_at)?;
 
+        if salt.len() > MAX_SALT { return Err(Errno::Einval); }
         let mut d = Descriptor {
             version: crate::verity::uapi::DESCRIPTOR_VERSION,
             hash_algorithm: hash_alg,
             log_blocksize,
             salt_size: salt.len() as u8,
-            sig_size: 0,
+            sig_size: sig.len() as u32,
             data_size: inode.size,
             root_hash: [0u8; MAX_ROOT_HASH],
             salt: [0u8; MAX_SALT],
         };
-        if salt.len() > MAX_SALT { return Err(Errno::Einval); }
         d.root_hash[..root.len()].copy_from_slice(&root);
         d.salt[..salt.len()].copy_from_slice(salt);
-        let bytes = verity::descriptor::encode(&d, &[]);
+        // Build the info from the finished descriptor exactly as a reader
+        // would, before anything points at it: the same code path that will
+        // accept or refuse this file later decides now, while the metadata
+        // can still be taken back off.
+        let info = match verity::Info::open(&d, sig, inode.size, &self.verity_policy) {
+            Ok(i) => i,
+            Err(e) => { self.unwrite_metadata(ino, inode.size)?; return Err(e.errno()); }
+        };
+        let bytes = verity::descriptor::encode(&d, sig);
         let desc_at = tree_at + p.tree_size;
         self.write_metadata(ino, desc_at, &bytes)?;
 
@@ -85,7 +106,23 @@ impl<S: SectorSource> Volume<S> {
             b[crate::uapi::I_FLAGS..crate::uapi::I_FLAGS + 4]
                 .copy_from_slice(&(cur | crate::flags::F2FS_VERITY_FL).to_le_bytes());
         })?;
+        // The inode number now names a different thing than it did a moment
+        // ago, so whatever was held for it is stale by construction. The
+        // fresh info replaces it rather than being left to be re-derived,
+        // because it was just built and is known to be the one a read wants.
+        self.verity_cache.borrow_mut().insert(ino, info);
         Ok(root)
+    }
+
+    /// Take the metadata back off a file whose sealing did not complete.
+    ///
+    /// Nothing points at those blocks — the attribute and the flag go down
+    /// last — so leaving them would only charge the file for space no reader
+    /// will ever look at, and would put stale metadata under a second attempt.
+    /// # C: O(blocks freed)
+    fn unwrite_metadata(&mut self, ino: u32, size: u64) -> Result<(), Errno> {
+        self.verity_cache.borrow_mut().forget(ino);
+        self.truncate_file(ino, size)
     }
 
     /// Hash the data, then each level in turn, writing every block as it is
@@ -166,14 +203,6 @@ impl<S: SectorSource> Volume<S> {
         });
         self.store_xattrs(ino, &attrs)
     }
-}
-
-/// Carry a digest by value so the level buffers hold no allocations.
-/// # C: O(1)
-fn digest_array(d: &merkle::Digest) -> [u8; MAX_DIGEST_SIZE] {
-    let mut out = [0u8; MAX_DIGEST_SIZE];
-    out[..d.as_bytes().len()].copy_from_slice(d.as_bytes());
-    out
 }
 
 #[cfg(test)]

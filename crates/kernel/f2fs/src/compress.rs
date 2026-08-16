@@ -26,16 +26,30 @@
 //! - `lz4`:        LZ4 block decoding.
 //! - `lzo`:        LZO1X block decoding, with the zero-run extension.
 //! - `decompress`: a cluster's stored blocks into its plain bytes.
+//! - `lz4_enc`:    LZ4 block encoding.
+//! - `lzo_enc`:    LZO1X block encoding, both variants.
+//! - `encode`:     a cluster's plain bytes into the image the medium stores.
+//! - `plan`:       what a rewritten cluster's slots become, and the two counts.
+//! - `policy`:     which codec, which level, and which files get compressed.
+//! - `writeback`:  writing and shortening a compressed file, cluster at a time.
 
 pub mod algo;
 pub mod cluster;
 pub mod lz4;
 pub mod lzo;
 pub mod decompress;
+pub mod lz4_enc;
+pub mod lzo_enc;
+pub mod encode;
+pub mod plan;
+pub mod policy;
+pub mod writeback;
 
 pub use algo::{Algorithm, CompressError};
 pub use cluster::{data_blocks, Geometry, Header, COMPRESS_HEADER_SIZE};
 pub use decompress::{decompress_cluster, Chksum, Cluster};
+pub use encode::{compress_cluster, max_clen, Image, Stored};
+pub use plan::Slot;
 
 #[cfg(test)]
 #[path = "tests/compress.rs"]

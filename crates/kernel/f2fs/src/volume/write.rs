@@ -106,6 +106,11 @@ impl<S: SectorSource> Volume<S> {
             let block = self.curseg[log].sum.clone();
             self.write_block(at, &block)?;
         }
+        // A segment the log is leaving empty is not free: the checkpoint on
+        // the medium still names what was in it. Held here rather than at the
+        // release that emptied it, because until now a log was appending to
+        // it and it was nobody else's to take.
+        self.retire_segment(old);
         let hint = if old == NULL_SEGNO { 0 } else { old };
         // Recycling is asked for by the mount and only possible when a
         // partly-used segment exists; otherwise a fresh one is opened, which

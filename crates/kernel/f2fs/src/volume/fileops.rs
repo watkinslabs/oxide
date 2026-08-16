@@ -42,7 +42,12 @@ impl<S: SectorSource> Volume<S> {
         if data.len() > MAX_IO_BYTES { return Err(Errno::Efbig); }
         if data.is_empty() { return Ok(0); }
         let inode = self.read_inode(ino)?;
-        if inode.compressed() || inode.encrypted() { return Err(Errno::Eopnotsupp); }
+        if inode.compressed() { return Err(Errno::Eopnotsupp); }
+        // Writing an encrypted file needs its key: the bytes that reach the
+        // medium are ciphertext, and there is no plaintext form of a block on
+        // an encrypted volume.
+        let crypt = self.crypt_info(&inode, ino)?;
+        if inode.encrypted() && crypt.is_none() { return Err(Errno::Enokey); }
         // A verity file is sealed: its contents are what its hash tree attests
         // to, so changing them would leave the attestation describing bytes
         // that are no longer there.
@@ -151,8 +156,23 @@ impl<S: SectorSource> Volume<S> {
         } else {
             self.read_main_block(old)?
         };
-        page[skew..skew + data.len()].copy_from_slice(data);
         let inode = self.read_inode(ino)?;
+        // A read-modify-write of an encrypted block happens over PLAINTEXT:
+        // the block on the medium is ciphertext, so it is decrypted, patched
+        // and encrypted again. Patching the ciphertext in place would corrupt
+        // every byte of the unit the write lands in, not just the bytes it
+        // meant to change.
+        let crypt = self.crypt_info(&inode, ino)?;
+        if inode.encrypted() && crypt.is_none() { return Err(Errno::Enokey); }
+        if let (Some(c), false) = (&crypt, crate::node::is_hole(old)) {
+            let per = (BLKSIZE / c.data_unit_size()) as u64;
+            c.crypt_contents(index * per, &mut page, false).map_err(|e| e.errno())?;
+        }
+        page[skew..skew + data.len()].copy_from_slice(data);
+        if let Some(c) = &crypt {
+            let per = (BLKSIZE / c.data_unit_size()) as u64;
+            c.crypt_contents(index * per, &mut page, true).map_err(|e| e.errno())?;
+        }
         let is_dir = inode.mode & mode_ifmt() == mode_ifdir();
         let owner = match holder { Holder::Inode => ino, Holder::Direct(nid) => nid };
         let addr = self.write_data(owner, ofs as u16, is_dir, old, &page)?;

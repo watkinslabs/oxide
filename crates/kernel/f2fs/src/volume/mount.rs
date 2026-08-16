@@ -64,6 +64,9 @@ impl<S: SectorSource> Volume<S> {
             cp.valid_inode_count,
             cp.next_free_nid.max(RESERVED_NODE_NUM),
         );
+        // Read before the checkpoint is moved into the volume: it is the age
+        // every segment timestamp this mount writes counts from.
+        let segstate = super::segmap::SegState::at_mount(cp.elapsed_time);
         let mut vol = Self {
             source,
             sb,
@@ -75,12 +78,14 @@ impl<S: SectorSource> Volume<S> {
             sit_journal,
             inode_seed,
             casefold,
+            fscrypt_keys: alloc::collections::BTreeMap::new(),
             opts,
             access,
             writable,
             curseg,
             nat_dirty: alloc::collections::BTreeMap::new(),
             sit: None,
+            segstate,
             sit_dirty: alloc::collections::BTreeSet::new(),
             valid_block_count,
             valid_node_count,
@@ -96,6 +101,8 @@ impl<S: SectorSource> Volume<S> {
             opens: alloc::collections::BTreeMap::new(),
             orphans: alloc::collections::BTreeSet::new(),
             pending_discard: alloc::vec::Vec::new(),
+            verity_cache: core::cell::RefCell::new(crate::verity::info::Cache::new()),
+            verity_policy: crate::verity::Policy::new(),
         };
         // Replay whatever an `fsync` promised since the last checkpoint,
         // before the mount is handed out — nothing may read the volume in the

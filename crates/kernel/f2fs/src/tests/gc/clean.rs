@@ -143,12 +143,17 @@ fn the_data_survives_the_cleaned_segment_being_written_over() {
 }
 
 #[test]
-fn the_cleaned_segment_is_free_and_is_what_the_allocator_hands_out_next() {
+fn the_cleaned_segment_is_what_the_allocator_hands_out_after_a_checkpoint() {
     let (mut v, ino, victim, _) = victim_volume();
     kill_block(&mut v, ino, 0, b"AAAA");
     assert_ne!(v.find_free_seg(victim - 1), Some(victim), "not free while it holds data");
     v.gc_segment(victim).unwrap();
     assert_eq!(v.seg_valid(victim), 0);
+    // Emptied is not free. The checkpoint on the medium still names the
+    // blocks that were in it, so the allocator may not have it until one that
+    // does not lands; `tests/gc/prefree.rs` holds that property.
+    assert_ne!(v.find_free_seg(victim - 1), Some(victim), "handed out before the checkpoint");
+    v.commit().unwrap();
     assert_eq!(v.find_free_seg(victim - 1), Some(victim));
 }
 
@@ -291,4 +296,56 @@ fn a_victim_that_will_not_empty_is_not_chosen_twice() {
     let freed = v.collect(v.free_segment_count() + 3).unwrap();
     assert_eq!(freed, 0);
     assert_eq!(v.seg_valid(victim), 1);
+}
+
+#[test]
+fn a_section_is_cleaned_whole_and_costed_whole() {
+    // A volume whose sections are two segments wide. Cleaning one segment of
+    // such a section leaves the section as unusable as it was, so the cleaner
+    // has to take both — and count both when asked what the section holds.
+    let (mut v, f, first, _) = victim_volume();
+    // Free the fixture file's segment so the log has somewhere to park later:
+    // an emptied segment is not free until a checkpoint says so.
+    v.truncate_file(f, 0).unwrap();
+    v.commit().unwrap();
+    assert_eq!(v.seg_valid(first), 0);
+    let lo = v.logs()[CURSEG_WARM_DATA].segno;
+    let g = v.create(ROOT_INO, b"g", &spec(), None).unwrap();
+    v.write_file(g, 0, &payload(2)).unwrap();
+    seal_log_elsewhere(&mut v, CURSEG_WARM_DATA);
+    let hi = v.logs()[CURSEG_WARM_DATA].segno;
+    let h = v.create(ROOT_INO, b"h", &spec(), None).unwrap();
+    v.write_file(h, 0, &payload(2)).unwrap();
+    seal_log_elsewhere(&mut v, CURSEG_WARM_DATA);
+    assert_eq!(hi, lo + 1, "the fixture put the two files in adjacent segments");
+    assert_eq!(lo % 2, 0, "which are a section once sections are two wide");
+    v.sb.segs_per_sec = 2;
+    assert!(!v.is_current(lo) && !v.is_current(hi));
+    let held = u32::from(v.seg_valid(lo)) + u32::from(v.seg_valid(hi));
+    assert_eq!(v.section_valid(lo), held, "the section holds both segments");
+    assert!(held > u32::from(v.seg_valid(lo)), "and more than its first alone");
+    let expect = (whole(&v, g), whole(&v, h));
+    let moved = v.gc_section(lo).unwrap();
+    assert_eq!(moved, held, "every live block in the section moves");
+    assert_eq!(v.seg_valid(lo), 0, "the first segment of the section");
+    assert_eq!(v.seg_valid(hi), 0, "and the one beside it");
+    assert_eq!(v.section_valid(lo), 0, "so the section is reclaimable");
+    let v = remount(v);
+    assert_eq!((whole(&v, g), whole(&v, h)), expect, "both files came through");
+}
+
+/// Move `log` off its segment the way a full log does — summary block written
+/// out, log moved on — without the allocator's own choice of replacement,
+/// which a volume this small cannot always satisfy.
+fn seal_log_elsewhere(v: &mut Volume<MemImage>, log: usize) {
+    let segno = v.logs()[log].segno;
+    v.curseg[log].seal(log >= NR_CURSEG_DATA_TYPE);
+    let block = v.curseg[log].sum.clone();
+    v.write_block(sum_block_addr(v.super_block().ssa_blkaddr, segno), &block).unwrap();
+    let free = v.find_free_seg(segno).expect("a spare segment for the log");
+    v.curseg[log].segno = free;
+    v.curseg[log].next_blkoff = 0;
+    v.curseg[log].alloc_type = ALLOC_LFS;
+    v.curseg[log].sum = vec![0u8; BLKSIZE];
+    v.retire_segment(segno);
 }

@@ -75,6 +75,11 @@ impl<S: SectorSource> Volume<S> {
         let mut sit_bitmap = self.sit_bitmap.clone();
         let nat_journal = self.flush_nat(&mut nat_bitmap)?;
         let sit_journal = self.flush_sit(&mut sit_bitmap)?;
+        // The segments held since the last checkpoint become free HERE, before
+        // the pack is built: this checkpoint is the one that retires the
+        // references they were being held against, and it must record the
+        // free count that includes them.
+        self.clear_prefree();
         let version = self.cp.version.wrapping_add(1);
         let pack = match self.cp.pack { Pack::First => Pack::Second, Pack::Second => Pack::First };
         let start = match pack {
@@ -163,7 +168,11 @@ impl<S: SectorSource> Volume<S> {
         p32(&mut c, CP_NEXT_FREE_NID, self.next_free_nid);
         p32(&mut c, CP_SIT_VER_BITMAP_BYTESIZE, sit_bitmap.len() as u32);
         p32(&mut c, CP_NAT_VER_BITMAP_BYTESIZE, nat_bitmap.len() as u32);
-        p64(&mut c, CP_ELAPSED_TIME, self.cp.elapsed_time);
+        // How old the volume is, not how old it was when this mount read it:
+        // segment ages are measured against this, so a checkpoint that
+        // carried the old value forward would restart every age at the next
+        // mount and make the whole volume look the same age.
+        p64(&mut c, CP_ELAPSED_TIME, self.seg_mtime_now());
         let large = flags & CP_LARGE_NAT_BITMAP_FLAG != 0;
         let base = CP_SIT_NAT_VERSION_BITMAP;
         let crc_off = if large { base } else { CP_MAX_CHKSUM_OFFSET };

@@ -1,6 +1,7 @@
 //! The on-disk numbers of verity metadata.
 
 /// Bytes of one little-endian field of each width these records use.
+pub const U16_LEN: usize = 2;
 pub const U32_LEN: usize = 4;
 pub const U64_LEN: usize = 8;
 

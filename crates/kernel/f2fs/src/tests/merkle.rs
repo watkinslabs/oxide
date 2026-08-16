@@ -147,6 +147,8 @@ fn a_root_of_the_wrong_width_is_refused_rather_than_compared() {
     let q = p(BLOCK * 2);
     let data = vec![0u8; BLOCK as usize];
     let short = [0u8; 8];
-    let r = verify_block(&q, &short, 0, &data, |_| Ok(vec![0u8; BLOCK as usize]));
+    let mut seen = crate::verity::info::Verified::new(1);
+    let r = crate::verity::walk::verify_block(&q, &short, &mut seen, 0, &data,
+                                              |_| Ok(vec![0u8; BLOCK as usize]));
     assert_eq!(r.err(), Some(VerityError::Corrupted));
 }

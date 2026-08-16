@@ -1,14 +1,26 @@
 //! What one mount was asked for, and what it reports back.
 //!
 //! Module manifest:
-//! - `parse`: one `-o` string into an option set.
-//! - `show`:  an option set back into the string the mount table carries.
+//! - `parse`:  one `-o` string into an option set.
+//! - `show`:   an option set back into the string the mount table carries.
+//! - `bounds`: the range each valued option's argument must fall in.
+//! - `crypt`:  the dummy policy, and where encryption happens.
+//! - `jquota`: quota files named on the mount line, and their format.
 
 pub mod parse;
 pub mod show;
+pub mod bounds;
+pub mod crypt;
+pub mod jquota;
 
 pub use parse::parse;
 pub use show::show;
+pub use crypt::DummyPolicy;
+pub use jquota::{JqFmt, Jquota, QKind, QfName};
+
+#[cfg(test)]
+#[path = "tests/opts/mod.rs"]
+mod tests;
 
 /// How a segment is picked for the next write.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -115,8 +127,17 @@ pub struct Options {
     /// Whether the read extent cache is maintained.
     pub extent_cache: bool,
     pub age_extent_cache: bool,
+    /// Whether the mount skips the work that only makes LATER mounts faster.
+    ///
+    /// A volume mounted this way is correct and slower to mount next time; the
+    /// option exists for a device that is about to be powered off anyway.
+    pub fastboot: bool,
     /// Blocks and identity reserved for the privileged caller.
     pub reserve_root: u32,
+    /// Node slots reserved for the same caller. A volume can exhaust either
+    /// axis, so reserving only blocks leaves the privileged caller unable to
+    /// create the file it needed the reserve for.
+    pub reserve_node: u32,
     pub resuid: u32,
     pub resgid: u32,
     pub mode: Mode,
@@ -126,6 +147,14 @@ pub struct Options {
     /// Whether checkpoints happen at all; disabling one makes the mount
     /// read-mostly and is why it is recorded rather than ignored.
     pub checkpoint_disabled: bool,
+    /// How much space the mount may leave unusable while checkpoints are off,
+    /// as an absolute number of blocks and as a percentage of the volume.
+    ///
+    /// Two fields, not one, because the mount line spells them differently and
+    /// a percentage cannot be resolved to blocks until the volume's size is
+    /// known — which is not here.
+    pub unusable_cap: u32,
+    pub unusable_cap_perc: u32,
     pub checkpoint_merge: bool,
     /// Whether timestamps may lag the medium.
     pub lazytime: bool,
@@ -141,6 +170,18 @@ pub struct Options {
     pub usrquota: bool,
     pub grpquota: bool,
     pub prjquota: bool,
+    /// Quota files named on the mount line, and the format they are in. The
+    /// other arrangement entirely: records in ordinary root files rather than
+    /// in the hidden inodes the superblock names.
+    pub jquota: Jquota,
+    /// How often, and at which sites, an operation is failed on purpose.
+    pub fault: crate::fault::Cfg,
+    /// The policy every new file is created under when the mount asked for the
+    /// well-known test key.
+    pub dummy_policy: Option<DummyPolicy>,
+    /// Whether encryption is asked to happen on the way to the device rather
+    /// than in the filesystem. Same ciphertext either way; different place.
+    pub inlinecrypt: bool,
 }
 
 /// How eagerly the cleaner runs.
@@ -173,7 +214,9 @@ impl Options {
             data_flush: false,
             extent_cache: true,
             age_extent_cache: false,
+            fastboot: false,
             reserve_root: 0,
+            reserve_node: 0,
             resuid: 0,
             resgid: 0,
             mode: Mode::Adaptive,
@@ -181,6 +224,8 @@ impl Options {
             fsync_mode: FsyncMode::Posix,
             errors: Errors::Continue,
             checkpoint_disabled: false,
+            unusable_cap: 0,
+            unusable_cap_perc: 0,
             checkpoint_merge: false,
             lazytime: false,
             nat_bits: true,
@@ -190,6 +235,10 @@ impl Options {
             usrquota: false,
             grpquota: false,
             prjquota: false,
+            jquota: Jquota { names: [None; jquota::QKINDS], fmt: None },
+            fault: crate::fault::Cfg { rate: None, types: None },
+            dummy_policy: None,
+            inlinecrypt: false,
         }
     }
 }

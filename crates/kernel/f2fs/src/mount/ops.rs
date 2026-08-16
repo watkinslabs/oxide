@@ -162,12 +162,12 @@ impl InodeOps for F2fsOps {
             None
         };
         if mode_bits.is_some() || owner.is_some() {
-            node.fs.volume.lock().set_attr(node.ino, mode_bits, owner, now())
+            node.fs.volume_now().set_attr(node.ino, mode_bits, owner, now())
                 .map_err(errno_to_vfs)?;
         }
         if ia.valid & (ATTR_ATIME | ATTR_MTIME) != 0 {
             let stamp = |t: vfs::timespec::Timespec64| (t.sec.max(0) as u64, t.nsec);
-            node.fs.volume.lock().set_times(node.ino, stamp(ia.atime), stamp(ia.mtime))
+            node.fs.volume_now().set_times(node.ino, stamp(ia.atime), stamp(ia.mtime))
                 .map_err(errno_to_vfs)?;
         }
         vfs::setattr::simple_setattr(inode, idmap, ia)
@@ -187,7 +187,7 @@ impl InodeOps for F2fsOps {
     fn removexattr(&self, inode: &Inode, name: &str) -> Result<(), XattrError> {
         let node = Self::node(inode).map_err(XattrError::Fs)?;
         if !node.fs.is_writable() { return Err(XattrError::Fs(VfsError::Erofs)); }
-        node.fs.volume.lock().remove_xattr(node.ino, name).map_err(xattr_errno)
+        node.fs.volume_now().remove_xattr(node.ino, name).map_err(xattr_errno)
     }
 
     fn readlink(&self, inode: &Inode) -> KResult<Vec<u8>> {

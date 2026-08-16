@@ -43,6 +43,20 @@ fn read_all(v: &Volume<MemImage>, ino: u32) -> Result<Vec<u8>, Errno> {
     Ok(buf)
 }
 
+/// Put the volume's bytes down and pick them up again.
+///
+/// A mount holds a verity file's metadata for as long as it holds the file,
+/// exactly as the reference does — so a change made to the METADATA under a
+/// live mount is not visible to it. Remounting is what a test of the metadata
+/// has to do to be a test of anything; without it the assertion passes on a
+/// cache hit and proves nothing about the bytes.
+fn remount(mut v: Volume<MemImage>) -> Volume<MemImage> {
+    v.commit().unwrap();
+    let bytes = v.into_source().snapshot();
+    Volume::mount_with(MemImage::from_bytes(BLKSIZE as u32, bytes), Options::defaults(), true)
+        .unwrap()
+}
+
 #[test]
 fn a_sealed_file_reads_back_its_own_bytes() {
     let data: Vec<u8> = (0..3 * BLKSIZE).map(|i| (i % 251) as u8).collect();
@@ -154,6 +168,67 @@ fn a_deep_tree_verifies_every_block() {
     }
 }
 
+#[test]
+fn a_tree_block_narrower_than_the_filesystems_seals_and_reads() {
+    // The reader claims one file block can carry several attested blocks.
+    // Driven here through the real sealing and the real read path at every
+    // admitted size, over a length that is a whole number of blocks at none
+    // of them — so the last block is partial and the tail past the data is
+    // covered by no hash at all.
+    let len = 40 * BLKSIZE + 777;
+    for log_bs in 10u8..=12 {
+        let data: Vec<u8> = (0..len).map(|i| ((i / 89 + i) % 251) as u8).collect();
+        let (mut v, ino) = with_data(&data);
+        v.enable_verity(ino, HASH_ALG_SHA256, log_bs, b"").unwrap();
+        assert_eq!(read_all(&v, ino).unwrap(), data, "log_bs {log_bs}");
+        // Every block individually, not just the whole file in one call.
+        let inode = v.read_inode(ino).unwrap();
+        for i in 0..len.div_ceil(BLKSIZE) {
+            let at = (i * BLKSIZE) as u64;
+            let n = (len - i * BLKSIZE).min(BLKSIZE);
+            let mut buf = vec![0u8; n];
+            v.read_file(&inode, ino, at, &mut buf).unwrap();
+            assert_eq!(&buf[..], &data[i * BLKSIZE..i * BLKSIZE + n], "log_bs {log_bs} blk {i}");
+        }
+    }
+}
+
+#[test]
+fn a_change_inside_one_sub_block_is_caught_at_every_tree_block_size() {
+    // The control for the size above. A reader that hashed the whole file
+    // block instead of each attested block would still be self-consistent and
+    // would still fail this — but one that checked only the FIRST sub-block
+    // would pass the test above and fail here.
+    let len = 40 * BLKSIZE + 777;
+    for log_bs in 10u8..=12 {
+        let bs = 1usize << log_bs;
+        let per = BLKSIZE / bs;
+        let data: Vec<u8> = (0..len).map(|i| ((i / 89 + i) % 251) as u8).collect();
+        for sub in 0..per {
+            let (mut v, ino) = with_data(&data);
+            v.enable_verity(ino, HASH_ALG_SHA256, log_bs, b"").unwrap();
+            let inode = v.read_inode(ino).unwrap();
+            let mut block = vec![0u8; BLKSIZE];
+            v.read_file(&inode, ino, 7 * BLKSIZE as u64, &mut block).unwrap();
+            block[sub * bs + 5] ^= 0x20;
+            v.write_one_block(ino, 7, 0, &block).unwrap();
+            assert_eq!(read_all(&v, ino).err(), Some(Errno::Eio),
+                       "log_bs {log_bs} sub-block {sub} went unchecked");
+        }
+    }
+}
+
+#[test]
+fn a_wider_digest_in_a_narrow_tree_block_seals_and_reads() {
+    // 1024 bytes holds sixteen SHA-512 digests, so the tree is far deeper and
+    // every level offset moves.
+    let len = 30 * BLKSIZE + 5;
+    let data: Vec<u8> = (0..len).map(|i| (i % 233) as u8).collect();
+    let (mut v, ino) = with_data(&data);
+    v.enable_verity(ino, HASH_ALG_SHA512, 10, b"brine").unwrap();
+    assert_eq!(read_all(&v, ino).unwrap(), data);
+}
+
 // ------------------------------------------------------- positive controls
 
 #[test]
@@ -206,6 +281,11 @@ fn a_root_from_another_file_is_caught() {
     let index = loc.pos / BLKSIZE as u64;
     let skew = (loc.pos % BLKSIZE as u64) as usize;
     v.write_one_block(ino, index, skew, &desc).unwrap();
+    // The mount that sealed the file still holds its metadata, and a verity
+    // file's metadata is read once — so this mount answers from what it
+    // already has, which is what the reference does too.
+    assert!(read_all(&v, ino).is_ok());
+    let v = remount(v);
     assert_eq!(read_all(&v, ino).err(), Some(Errno::Eio));
 }
 
@@ -223,5 +303,64 @@ fn a_missing_descriptor_refuses_the_read() {
         .filter(|a| !(a.index == XATTR_INDEX_VERITY && a.name == XATTR_NAME))
         .collect();
     v.store_xattrs(ino, &attrs).unwrap();
+    let v = remount(v);
     assert_eq!(read_all(&v, ino).err(), Some(Errno::Enodata));
+}
+
+#[test]
+fn the_metadata_is_read_once_and_not_per_block() {
+    // The point of holding it: a read of many blocks must not re-walk the
+    // index to the descriptor for each one. Removing the attribute under the
+    // live mount is the observable form of that — a reader that re-read the
+    // metadata per block would fail here, and a reader that holds it does not.
+    let data: Vec<u8> = (0..6 * BLKSIZE).map(|i| (i % 241) as u8).collect();
+    let (mut v, ino) = with_data(&data);
+    v.enable_verity(ino, HASH_ALG_SHA256, LOG_BS, b"").unwrap();
+    assert_eq!(read_all(&v, ino).unwrap(), data);
+    let inode = v.read_inode(ino).unwrap();
+    let area = v.xattr_area(&inode, ino).unwrap();
+    let attrs: Vec<_> = crate::xattr::list(&area)
+        .unwrap()
+        .into_iter()
+        .filter(|a| !(a.index == XATTR_INDEX_VERITY && a.name == XATTR_NAME))
+        .collect();
+    v.store_xattrs(ino, &attrs).unwrap();
+    assert_eq!(read_all(&v, ino).unwrap(), data, "the metadata was re-read");
+    // And it is not held past the file: a fresh mount has nothing.
+    let v = remount(v);
+    assert_eq!(read_all(&v, ino).err(), Some(Errno::Enodata));
+}
+
+#[test]
+fn a_flipped_data_byte_is_caught_even_with_the_metadata_already_held() {
+    // The cache must shorten the metadata walk and the tree climb, never the
+    // hashing of the data itself. A read that warmed everything first and
+    // then returned altered bytes is the failure this rules out.
+    let data: Vec<u8> = (0..8 * BLKSIZE).map(|i| (i % 251) as u8).collect();
+    let (mut v, ino) = with_data(&data);
+    v.enable_verity(ino, HASH_ALG_SHA256, LOG_BS, b"").unwrap();
+    assert_eq!(read_all(&v, ino).unwrap(), data);
+    let inode = v.read_inode(ino).unwrap();
+    let mut block = vec![0u8; BLKSIZE];
+    v.read_file(&inode, ino, 5 * BLKSIZE as u64, &mut block).unwrap();
+    block[3] ^= 0x40;
+    v.write_one_block(ino, 5, 0, &block).unwrap();
+    assert_eq!(read_all(&v, ino).err(), Some(Errno::Eio));
+}
+
+
+#[test]
+fn a_hole_inside_a_verity_files_data_is_attested_like_any_other_block() {
+    // A hole returns zeroes, and zeroes are content. The tree has a hash for
+    // that block, so an image that drops a block address must not turn a
+    // verified read into an unverified one.
+    let data: Vec<u8> = (0..6 * BLKSIZE).map(|i| (i % 251) as u8).collect();
+    let (mut v, ino) = with_data(&data);
+    v.enable_verity(ino, HASH_ALG_SHA256, LOG_BS, b"").unwrap();
+    // Drop the block's address, leaving a hole where the tree still holds a
+    // hash for real content.
+    let (holder, ofs) = v.dnode_for_write(ino, 2).unwrap();
+    v.set_holder_addr(ino, holder, ofs, crate::uapi::NULL_ADDR).unwrap();
+    let v = remount(v);
+    assert_eq!(read_all(&v, ino).err(), Some(Errno::Eio));
 }

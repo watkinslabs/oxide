@@ -62,6 +62,11 @@ impl<S: SectorSource> Volume<S> {
         let want = buf.len().min((inode.size - off) as usize).min(MAX_IO_BYTES);
         if want == 0 { return Ok(0); }
         if inode.inline_data() { return self.read_inline(inode, ino, off, &mut buf[..want]); }
+        // An encrypted file's blocks hold ciphertext. Without the key there is
+        // nothing to return but the ciphertext, which would be the wrong bytes
+        // rather than no bytes.
+        let crypt = self.crypt_info(inode, ino)?;
+        if inode.encrypted() && crypt.is_none() { return Err(Errno::Enokey); }
         let mut done = 0usize;
         while done < want {
             let pos = off + done as u64;
@@ -69,9 +74,32 @@ impl<S: SectorSource> Volume<S> {
             let skew = (pos % BLKSIZE as u64) as usize;
             let take = (BLKSIZE - skew).min(want - done);
             match self.map_block(inode, ino, index)? {
-                Mapped::Hole => { buf[done..done + take].fill(0); done += take; }
+                // A hole in a verity file's DATA is not padding: the tree
+                // holds a hash for that block, and the zeroes a hole returns
+                // have to match it. Serving them unchecked would let an image
+                // drop a block address and have the reader hand back zeroes
+                // the tree never attested to.
+                Mapped::Hole => {
+                    if inode.verity() {
+                        let zeroes = alloc::vec![0u8; BLKSIZE];
+                        if !self.verity_check(inode, ino, index, &zeroes)? {
+                            return Err(Errno::Eio);
+                        }
+                    }
+                    buf[done..done + take].fill(0);
+                    done += take;
+                }
                 Mapped::At(addr) => {
-                    let block = self.read_main_block(addr)?;
+                    let mut block = self.read_main_block(addr)?;
+                    // Contents are encrypted in UNITS, which may be smaller
+                    // than a block, and the index counts units from the start
+                    // of the file — not blocks. Decryption comes before the
+                    // verity check because the tree attests to the plaintext.
+                    if let Some(c) = &crypt {
+                        let per = (BLKSIZE / c.data_unit_size()) as u64;
+                        c.crypt_contents(index * per, &mut block, false)
+                            .map_err(|e| e.errno())?;
+                    }
                     // A verity file's bytes are attested, not merely located:
                     // the block is checked against the tree before any of it
                     // reaches the caller.

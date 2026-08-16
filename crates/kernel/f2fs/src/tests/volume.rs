@@ -4,6 +4,7 @@
 //! - `read`:  file bytes: inline, blocked, sparse, deep and symbolic.
 //! - `dirs`:  finding a name and listing a directory.
 //! - `space`: `statfs`, the segment table, and attribute regions.
+//! - `encrypted`: an encrypted directory, locked and unlocked.
 
 use super::*;
 use crate::features::Access;
@@ -18,6 +19,8 @@ mod read;
 mod dirs;
 #[path = "volume/space.rs"]
 mod space;
+#[path = "volume/encrypted.rs"]
+mod encrypted;
 
 #[test]
 fn a_fixture_volume_mounts() {

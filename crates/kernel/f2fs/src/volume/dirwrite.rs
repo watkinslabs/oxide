@@ -109,8 +109,19 @@ impl<S: SectorSource> Volume<S> {
         self.writable_or_err()?;
         if name.is_empty() || name.len() > NAME_LEN { return Err(Errno::Enametoolong); }
         let inode = self.read_inode(dir)?;
-        if inode.encrypted() { return Err(Errno::Eopnotsupp); }
-        let want = self.entry_hash(&inode, name)?;
+        // Creating an entry needs the plaintext to encrypt, so it is the one
+        // directory operation that cannot proceed without the key.
+        let crypt = self.crypt_info(&inode, dir)?;
+        if inode.encrypted() && crypt.is_none() { return Err(Errno::Enokey); }
+        let want = self.entry_hash_crypt(&inode, crypt.as_ref(), name)?;
+        // What lands in the entry is the ciphertext, and every length decision
+        // below is about THAT — a plaintext name and its stored form differ in
+        // length, so sizing the record from the plaintext overflows the slot.
+        let stored = match &crypt {
+            Some(c) => c.encrypt_name(name).map_err(|e| e.errno())?,
+            None => Vec::from(name),
+        };
+        let name: &[u8] = &stored;
         let slots = dentry_slots(name.len());
         if inode.inline_dentry() {
             let (at, len) = inode.inline_data_span();
@@ -201,8 +212,28 @@ impl<S: SectorSource> Volume<S> {
     pub(crate) fn remove_dentry(&mut self, dir: u32, name: &[u8]) -> Result<u32, Errno> {
         self.writable_or_err()?;
         let inode = self.read_inode(dir)?;
-        if inode.encrypted() { return Err(Errno::Eopnotsupp); }
-        let want = self.entry_hash(&inode, name)?;
+        // Removing an entry does NOT need the key: without it the caller
+        // passes back the encoded name a listing produced, which carries the
+        // stored hash and enough ciphertext to identify the entry. A locked
+        // directory that could not be emptied could never be removed either.
+        let crypt = self.crypt_info(&inode, dir)?;
+        let search = if inode.encrypted() {
+            Some(crate::crypto::setup(crypt.as_ref(), name, true).map_err(|e| e.errno())?)
+        } else { None };
+        let want = match &search {
+            Some(s) => match s.hash() {
+                Some(h) => h,
+                None => self.entry_hash_crypt(&inode, crypt.as_ref(), name)?,
+            },
+            None => self.entry_hash(&inode, name)?,
+        };
+        let stored: Vec<u8> = match &search {
+            // An abbreviated no-key name carries no full ciphertext, so there
+            // is nothing to compare byte for byte and the entry is not named.
+            Some(s) => Vec::from(s.disk_name().ok_or(Errno::Enoent)?),
+            None => Vec::from(name),
+        };
+        let name: &[u8] = &stored;
         if inode.inline_dentry() {
             let (at, len) = inode.inline_data_span();
             let l = Layout::inline(len);
@@ -249,9 +280,36 @@ impl<S: SectorSource> Volume<S> {
     /// the spelling it was created with.
     /// # C: O(name len)
     pub(crate) fn entry_hash(&self, dir: &crate::node::Inode, name: &[u8]) -> Result<u32, Errno> {
+        self.entry_hash_crypt(dir, None, name)
+    }
+
+    /// The same, for a directory that may also encrypt.
+    ///
+    /// A directory that folds AND encrypts hashes the folded PLAINTEXT under a
+    /// key derived from the master key: the ciphertext differs per spelling,
+    /// so hashing it would file two spellings of one name in two buckets. One
+    /// that only encrypts hashes the CIPHERTEXT, like any other directory —
+    /// which is what lets a lookup without the key find the entry from the
+    /// hash the record carries.
+    /// # C: O(len(name))
+    pub(crate) fn entry_hash_crypt(&self, dir: &crate::node::Inode,
+                                   crypt: Option<&crate::crypto::Info>, name: &[u8])
+        -> Result<u32, Errno> {
+        if crate::hash::is_dot_or_dotdot(name) { return Ok(0); }
         match (dir.casefolded(), self.casefold.as_ref()) {
-            (true, Some(cf)) => Ok(crate::casefold::Query::prepare(cf, name)?.hash()),
-            _ => Ok(hash::name_hash(name)),
+            (true, Some(cf)) => {
+                let q = crate::casefold::Query::prepare(cf, name)?;
+                let folded =
+                    if q.kind() == crate::casefold::Fold::Folded { q.folded() } else { name };
+                match crypt.and_then(|c| c.dirhash(folded)) {
+                    Some(h) => Ok(h),
+                    None => Ok(q.hash()),
+                }
+            }
+            _ => match crypt {
+                Some(c) => Ok(hash::name_hash(&c.encrypt_name(name).map_err(|e| e.errno())?)),
+                None => Ok(hash::name_hash(name)),
+            },
         }
     }
 }

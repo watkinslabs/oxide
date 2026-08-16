@@ -1,13 +1,12 @@
-//! Checking a data block against the hash tree that attests to it.
+//! The shape of a file's hash tree, and the digest of one block in it.
 //!
 //! Locating the tree, which `location` and `descriptor` do, only stops the
-//! tree being served AS data. It proves nothing about the data. Attestation is
-//! this: hash the block, walk from the root down comparing each level's hash
-//! block against the hash the level above holds for it, and require the leaf
-//! entry to equal the block's own hash.
+//! tree being served AS data. It proves nothing about the data. This file is
+//! the geometry and the hashing the proof is built from; the walk that
+//! performs it is `walk`.
 //!
-//! Three details decide whether the walk agrees with the writer, and each one
-//! silently produces a mismatch on every block if it is wrong:
+//! Three details decide whether the geometry agrees with the writer, and each
+//! one silently produces a mismatch on every block if it is wrong:
 //!
 //! - **The tree is stored ROOT FIRST.** Level `num_levels - 1` is the root and
 //!   sits at block zero; level 0, the one directly above the data, is stored
@@ -61,6 +60,10 @@ pub struct Params {
     pub level_start: [u64; MAX_LEVELS],
     /// Bytes the whole tree occupies.
     pub tree_size: u64,
+    /// Length the tree was built over. The geometry alone cannot say where
+    /// the data stops — the last level is rounded up to a whole block — and a
+    /// walk needs to know, because a block past the end is covered by no hash.
+    pub data_size: u64,
     pub salt: Vec<u8>,
 }
 
@@ -126,6 +129,7 @@ impl Params {
             num_levels,
             level_start,
             tree_size: offset << log_blocksize,
+            data_size,
             salt: salt.to_vec(),
         })
     }
@@ -182,36 +186,6 @@ impl Params {
         }
         out
     }
-}
-
-/// Whether `data` really is the content of data block `index`.
-///
-/// `read_tree_block` is handed a tree-block index and returns that block's
-/// bytes. The walk descends from the ROOT: each level's block is checked
-/// against the hash the level above holds for it before any hash inside it is
-/// believed, so a forged interior block is caught by its parent rather than
-/// trusted because it is well-formed.
-/// # C: O(levels) blocks hashed
-pub fn verify_block<F>(p: &Params, root: &[u8], index: u64, data: &[u8], mut read_tree_block: F)
-    -> Result<bool, VerityError>
-where
-    F: FnMut(u64) -> Result<Vec<u8>, VerityError>,
-{
-    if root.len() != p.digest_size { return Err(VerityError::Corrupted); }
-    if data.len() != p.block_size { return Err(VerityError::BadBlockSize); }
-    let path = p.path(index);
-    let mut want: Vec<u8> = root.to_vec();
-    for level in (0..p.num_levels).rev() {
-        let (hblock_idx, hoffset) = path[level];
-        let block = read_tree_block(hblock_idx)?;
-        if block.len() != p.block_size {
-            return Err(VerityError::BadBlockSize);
-        }
-        if p.hash_block(&block)?.as_bytes() != want.as_slice() { return Ok(false); }
-        let end = hoffset + p.digest_size;
-        want = block.get(hoffset..end).ok_or(VerityError::Corrupted)?.to_vec();
-    }
-    Ok(p.hash_block(data)?.as_bytes() == want.as_slice())
 }
 
 /// A file small enough to need no tree at all: its single block's hash IS the

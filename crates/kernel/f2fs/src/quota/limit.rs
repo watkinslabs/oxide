@@ -58,12 +58,21 @@ pub struct Ask {
     pub allocating: bool,
 }
 
-/// Whether adding `delta` bytes of space fits. # C: O(1)
+/// Whether adding `delta` bytes of space fits.
+///
+/// Measured against what the identity occupies AND what it has been promised:
+/// a promise that is not counted can be handed to two callers, and the second
+/// one to take it up puts the identity past a limit both were told they fit
+/// under. # C: O(1)
 pub fn space(d: &Dqblk, delta: u64, ask: &Ask) -> Verdict {
     if !ask.enforced { return Verdict::Allow; }
-    let total = d.curspace.saturating_add(delta);
+    let total = total_space(d).saturating_add(delta);
     decide(d.bhardlimit, d.bsoftlimit, total, d.btime, ask)
 }
+
+/// Space an identity holds: what it occupies plus what it is promised.
+/// # C: O(1)
+pub fn total_space(d: &Dqblk) -> u64 { d.curspace.saturating_add(d.rsvspace) }
 
 /// Whether adding `delta` inodes fits.
 ///
@@ -106,6 +115,16 @@ pub fn apply_space(d: &mut Dqblk, delta: u64, v: Verdict) -> bool {
     v.allowed()
 }
 
+/// Apply a verdict as a PROMISE rather than an allocation: the space is held
+/// against the identity's limits without anything occupying it yet, and is
+/// either taken up by [`claim_space`] or given back by [`release_reserved`].
+/// # C: O(1)
+pub fn apply_reserve(d: &mut Dqblk, delta: u64, v: Verdict) -> bool {
+    if let Verdict::AllowStartingGrace(t) = v { d.btime = t; }
+    if v.allowed() { d.rsvspace = d.rsvspace.saturating_add(delta); }
+    v.allowed()
+}
+
 /// Apply an inode verdict. # C: O(1)
 pub fn apply_inodes(d: &mut Dqblk, delta: u64, v: Verdict) -> bool {
     if let Verdict::AllowStartingGrace(t) = v { d.itime = t; }
@@ -113,12 +132,48 @@ pub fn apply_inodes(d: &mut Dqblk, delta: u64, v: Verdict) -> bool {
     v.allowed()
 }
 
+/// Take up `delta` bytes of a promise: the space is now occupied rather than
+/// promised, and the two together do not move.
+///
+/// A caller claiming more than it was promised is a bug in the caller, and
+/// the claim is clamped rather than allowed to wrap the count into an
+/// enormous one. # C: O(1)
+pub fn claim_space(d: &mut Dqblk, delta: u64) {
+    let n = delta.min(d.rsvspace);
+    d.rsvspace -= n;
+    d.curspace = d.curspace.saturating_add(n);
+}
+
+/// Turn occupied space back into a promise, for space that is being
+/// rewritten rather than released. # C: O(1)
+pub fn reclaim_space(d: &mut Dqblk, delta: u64) {
+    let n = delta.min(d.curspace);
+    d.curspace -= n;
+    d.rsvspace = d.rsvspace.saturating_add(n);
+}
+
+/// Give back a promise nothing took up. # C: O(1)
+pub fn release_reserved(d: &mut Dqblk, delta: u64) {
+    d.rsvspace = d.rsvspace.saturating_sub(delta);
+    stop_clock(d);
+}
+
 /// Give back `delta` bytes, clearing the grace once usage is back under the
 /// soft limit. A grace left set after the usage drops denies the identity's
 /// next allocation for a limit it is no longer over. # C: O(1)
 pub fn free_space(d: &mut Dqblk, delta: u64) {
     d.curspace = d.curspace.saturating_sub(delta);
-    if d.bsoftlimit == 0 || d.curspace <= d.bsoftlimit { d.btime = 0; }
+    stop_clock(d);
+}
+
+/// Stop the space grace once the identity is back under its soft limit.
+///
+/// Measured against occupied AND promised space, the same total the limit was
+/// measured against: stopping the clock while a promise still holds the
+/// identity over the limit restarts the whole grace when that promise is
+/// taken up. # C: O(1)
+fn stop_clock(d: &mut Dqblk) {
+    if total_space(d) <= d.bsoftlimit { d.btime = 0; }
 }
 
 /// Give back `delta` inodes, on the same rule. # C: O(1)
@@ -146,7 +201,7 @@ pub fn effective_limit(hard: u64, soft: u64) -> Option<u64> {
 /// unconstrained. # C: O(1)
 pub fn space_remaining(d: &Dqblk) -> Option<u64> {
     let limit = effective_limit(d.bhardlimit, d.bsoftlimit)?;
-    Some(limit.saturating_sub(d.curspace))
+    Some(limit.saturating_sub(total_space(d)))
 }
 
 /// Inodes still available to an identity. # C: O(1)

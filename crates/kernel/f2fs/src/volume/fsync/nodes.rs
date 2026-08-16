@@ -112,3 +112,7 @@ impl<S: SectorSource> Volume<S> {
         Ok(written)
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/fsync/deep.rs"]
+mod tests;

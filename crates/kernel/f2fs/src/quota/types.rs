@@ -15,6 +15,13 @@
 //! feature bit, because the identity it accounts against is stored in each
 //! inode. Asking for it on a volume without that bit is refused at mount
 //! rather than silently accounting everything to project zero.
+//!
+//! A volume with no quota inodes at all is not therefore unaccounted: the
+//! mount may NAME an ordinary file in the volume's root per kind, in a format
+//! it names too. Those files enforce from the moment they are opened — no
+//! option asked for them separately, so there is no tracking-only half — and
+//! the inode they live in is the caller's to resolve, because a name is
+//! resolved by a lookup and nothing here reads a medium.
 
 use crate::features;
 use crate::flags::{CP_QUOTA_NEED_FSCK_FLAG, FEATURE_QUOTA_INO};
@@ -22,6 +29,10 @@ use crate::opts::Options;
 
 use super::uapi::*;
 use super::QuotaError;
+
+/// The format a volume's own quota inodes are always in. The superblock names
+/// the files, so nothing on the mount line has to.
+pub const SYSFILE_FORMAT: u32 = vfs::QFMT_VFS_V1;
 
 /// How far accounting goes for one kind.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -37,9 +48,23 @@ pub enum Enforcement {
 /// What one kind resolves to on this mount.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct Setup {
-    /// The inode holding this kind's file, zero when there is none.
+    /// The inode holding this kind's file, zero when there is none — and
+    /// zero, with `named` set, when the mount gave a name the caller has yet
+    /// to look up.
     pub ino: u32,
     pub enforcement: Enforcement,
+    /// The format this kind's records are in. Zero when the kind is off.
+    pub fmt: u32,
+    /// Whether the file is the one the MOUNT named rather than the one the
+    /// superblock names. The caller resolves the name to an inode; until it
+    /// does, `ino` is zero and nothing can be read.
+    pub named: bool,
+}
+
+impl Setup {
+    /// A kind this volume does not account. # C: O(1)
+    pub const OFF: Self =
+        Self { ino: 0, enforcement: Enforcement::Off, fmt: 0, named: false };
 }
 
 /// Whether the volume stores its quota files as inodes named by the
@@ -73,17 +98,35 @@ pub fn resolve(
     if asked[PRJQUOTA] && !features::has_project_quota(feature) {
         return Err(QuotaError::NoProjectQuota);
     }
-    let off = [Setup { ino: 0, enforcement: Enforcement::Off }; MAX_QUOTAS];
+    let sysfiles = has_quota_ino(feature);
+    let off = [Setup::OFF; MAX_QUOTAS];
     if ckpt_flags & CP_QUOTA_NEED_FSCK_FLAG != 0 { return Ok(off); }
-    if !has_quota_ino(feature) { return Ok(off); }
 
     let mut out = off;
+    if !sysfiles {
+        // A named file is opened by name and enforces from the moment it is
+        // opened: nothing else asked for it, so there is no tracking-only
+        // half to fall back to.
+        let Some(fmt) = opts.jquota.fmt else { return Ok(out) };
+        for t in 0..MAX_QUOTAS {
+            if opts.jquota.names[t].is_none() { continue; }
+            out[t] = Setup {
+                ino: 0,
+                enforcement: Enforcement::UsageAndLimits,
+                fmt: fmt as u32,
+                named: true,
+            };
+        }
+        return Ok(out);
+    }
     for t in 0..MAX_QUOTAS {
         let ino = qf_ino[t];
         if ino == 0 { continue; }
         out[t] = Setup {
             ino,
             enforcement: if asked[t] { Enforcement::UsageAndLimits } else { Enforcement::Usage },
+            fmt: SYSFILE_FORMAT,
+            named: false,
         };
     }
     Ok(out)

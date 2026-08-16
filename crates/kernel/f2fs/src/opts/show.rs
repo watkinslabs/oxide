@@ -49,10 +49,12 @@ pub fn show(o: &Options) -> String {
     s.push_str(if o.inline_dentry { ",inline_dentry" } else { ",noinline_dentry" });
     if o.flush_merge { s.push_str(",flush_merge"); }
     if !o.barrier { s.push_str(",nobarrier"); }
+    if o.fastboot { s.push_str(",fastboot"); }
     if o.data_flush { s.push_str(",data_flush"); }
     s.push_str(if o.extent_cache { ",extent_cache" } else { ",noextent_cache" });
     if o.age_extent_cache { s.push_str(",age_extent_cache"); }
     if o.reserve_root != 0 { s.push_str(&format!(",reserve_root={}", o.reserve_root)); }
+    if o.reserve_node != 0 { s.push_str(&format!(",reserve_node={}", o.reserve_node)); }
     if o.resuid != 0 { s.push_str(&format!(",resuid={}", o.resuid)); }
     if o.resgid != 0 { s.push_str(&format!(",resgid={}", o.resgid)); }
     s.push_str(mode(o.mode));
@@ -67,7 +69,18 @@ pub fn show(o: &Options) -> String {
         FsyncMode::Strict => ",fsync_mode=strict",
         FsyncMode::Nobarrier => ",fsync_mode=nobarrier",
     });
-    if o.checkpoint_disabled { s.push_str(",checkpoint=disable"); }
+    // The cap is rendered in the spelling it was given in: rendering a
+    // percentage as blocks, or the other way round, would remount the volume
+    // under a different cap than it is running with.
+    if o.checkpoint_disabled {
+        if o.unusable_cap_perc != 0 {
+            s.push_str(&format!(",checkpoint=disable:{}%", o.unusable_cap_perc));
+        } else if o.unusable_cap != 0 {
+            s.push_str(&format!(",checkpoint=disable:{}", o.unusable_cap));
+        } else {
+            s.push_str(",checkpoint=disable");
+        }
+    }
     if o.checkpoint_merge { s.push_str(",checkpoint_merge"); }
     if o.lazytime { s.push_str(",lazytime"); }
     if o.gc_merge { s.push_str(",gc_merge"); }
@@ -78,6 +91,17 @@ pub fn show(o: &Options) -> String {
     if o.usrquota { s.push_str(",usrquota"); }
     if o.grpquota { s.push_str(",grpquota"); }
     if o.prjquota { s.push_str(",prjquota"); }
+    jquota(&mut s, o);
+    if let Some(p) = &o.dummy_policy { s.push_str(crate::opts::crypt::show_dummy(p)); }
+    if o.inlinecrypt { s.push_str(",inlinecrypt"); }
+    // Shown only when the mount asked, so an ordinary line stays short — and
+    // shown in FULL when it did, because a volume running with injected
+    // failures must never look like one that is not.
+    // Each field is rendered only if the mount named it: naming a rate alone
+    // and naming a rate with an empty site list are different requests, and
+    // rendering the second for the first would change what a remount arms.
+    if let Some(rate) = o.fault.rate { s.push_str(&format!(",fault_injection={rate}")); }
+    if let Some(ty) = o.fault.types { s.push_str(&format!(",fault_type={ty}")); }
     if o.errors != d.errors {
         s.push_str(match o.errors {
             Errors::Continue => ",errors=continue",
@@ -86,6 +110,25 @@ pub fn show(o: &Options) -> String {
         });
     }
     s
+}
+
+/// The legacy arrangement: the format first, then one name per kind.
+///
+/// The format leads because it is what makes the names readable at all; a line
+/// carrying names with no format describes files nothing can parse.
+/// # C: O(names)
+fn jquota(s: &mut String, o: &Options) {
+    if let Some(f) = o.jquota.fmt { s.push_str(&format!(",jqfmt={}", f.name())); }
+    const NAMES: [(crate::opts::QKind, &str); 3] = [
+        (crate::opts::QKind::User, "usrjquota"),
+        (crate::opts::QKind::Group, "grpjquota"),
+        (crate::opts::QKind::Project, "prjjquota"),
+    ];
+    for (kind, spelling) in NAMES {
+        if let Some(n) = &o.jquota.names[kind as usize] {
+            s.push_str(&format!(",{spelling}={}", n.as_str()));
+        }
+    }
 }
 
 /// # C: O(1)

@@ -109,3 +109,75 @@ fn has_quota_ino_reads_the_one_bit_it_names() {
     assert!(!types::has_quota_ino(FEATURE_PRJQUOTA));
     assert!(!types::has_quota_ino(0));
 }
+
+// ------------------------------------- files the mount names, not the volume
+
+use crate::opts::jquota::{JqFmt, Jquota, QKind, QfName};
+
+/// A mount naming one file per kind in `kinds`, in the format `fmt`.
+fn named(kinds: &[QKind], fmt: Option<JqFmt>) -> Options {
+    let mut j = Jquota { names: [None; MAX_QUOTAS], fmt };
+    for k in kinds { j.names[*k as usize] = Some(QfName::new("aquota.file").unwrap()); }
+    Options { jquota: j, ..Options::defaults() }
+}
+
+#[test]
+fn a_volume_with_no_quota_inodes_accounts_the_kinds_the_mount_named() {
+    let o = named(&[QKind::User, QKind::Group], Some(JqFmt::VfsV1));
+    let s = types::resolve(&[0; MAX_QUOTAS], 0, 0, &o).unwrap();
+    for t in [USRQUOTA, GRPQUOTA] {
+        assert_eq!(s[t].enforcement, Enforcement::UsageAndLimits,
+            "a named file was asked for by name, so it enforces");
+        assert!(s[t].named, "the caller must resolve the name to an inode");
+        assert_eq!(s[t].ino, 0, "and until it does there is no inode");
+        assert_eq!(s[t].fmt, JqFmt::VfsV1 as u32);
+        assert!(types::accounted(&s[t]));
+        assert!(types::enforced(&s[t]));
+    }
+    assert_eq!(s[PRJQUOTA].enforcement, Enforcement::Off, "no name, no accounting");
+    assert!(!s[PRJQUOTA].named);
+}
+
+#[test]
+fn the_format_the_mount_named_is_the_one_the_kind_carries() {
+    for fmt in [JqFmt::VfsOld, JqFmt::VfsV0, JqFmt::VfsV1] {
+        let s = types::resolve(&[0; MAX_QUOTAS], 0, 0, &named(&[QKind::User], Some(fmt))).unwrap();
+        assert_eq!(s[USRQUOTA].fmt, fmt as u32);
+    }
+}
+
+#[test]
+fn a_volume_that_keeps_its_own_quota_inodes_ignores_the_names() {
+    // The superblock already answers the question the names were asking, and
+    // opening both would keep two records for one identity.
+    let o = named(&[QKind::User], Some(JqFmt::VfsV1));
+    let s = types::resolve(&INOS, FEATURE_QUOTA_INO, 0, &o).unwrap();
+    assert_eq!(s[USRQUOTA].ino, INOS[USRQUOTA]);
+    assert!(!s[USRQUOTA].named);
+    assert_eq!(s[USRQUOTA].fmt, types::SYSFILE_FORMAT);
+    assert_eq!(s[USRQUOTA].enforcement, Enforcement::Usage, "the name is not an enforcement ask");
+}
+
+#[test]
+fn a_named_file_with_no_format_is_unreadable_and_so_accounts_nothing() {
+    let s = types::resolve(&[0; MAX_QUOTAS], 0, 0, &named(&[QKind::User], None)).unwrap();
+    assert_eq!(s[USRQUOTA].enforcement, Enforcement::Off);
+}
+
+#[test]
+fn a_checkpoint_that_marked_the_files_for_repair_suppresses_the_named_ones_too() {
+    let o = named(&[QKind::User], Some(JqFmt::VfsV1));
+    let s = types::resolve(&[0; MAX_QUOTAS], 0, CP_QUOTA_NEED_FSCK_FLAG, &o).unwrap();
+    assert_eq!(s[USRQUOTA].enforcement, Enforcement::Off);
+}
+
+#[test]
+fn every_kind_a_volume_offers_carries_the_format_it_is_read_with() {
+    let s = types::resolve(&INOS, FEATURE_QUOTA_INO, 0, &opts(true, false, false)).unwrap();
+    for t in 0..MAX_QUOTAS { assert_eq!(s[t].fmt, types::SYSFILE_FORMAT); }
+    // A kind that is off carries no format at all, so nothing can read a file
+    // for it by accident.
+    let none = types::resolve(&[0; MAX_QUOTAS], FEATURE_QUOTA_INO, 0, &opts(true, true, false))
+        .unwrap();
+    for t in 0..MAX_QUOTAS { assert_eq!(none[t].fmt, 0); }
+}

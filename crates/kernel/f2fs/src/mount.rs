@@ -94,6 +94,24 @@ impl F2fs {
     /// # C: O(1)
     pub fn is_writable(&self) -> bool { self.volume.lock().writable() }
 
+    /// The volume, with its clock set to this instant.
+    ///
+    /// Every mutation takes the lock through this rather than `volume.lock()`.
+    /// Two things are measured against that clock and both fail silently
+    /// without it: a segment's age, which decides which segment the cleaner
+    /// picks, and a soft quota limit's grace period, which is an absolute
+    /// expiry. A volume nobody tells the time to measures every grace against
+    /// zero, so none ever comes due, and every segment reads the same age, so
+    /// cost-benefit selection degenerates to lowest-numbered.
+    /// # C: O(1)
+    pub(crate) fn volume_now(&self)
+        -> sync::Guard<'_, Volume<BlockSource>, sync::TaskList>
+    {
+        let mut v = self.volume.lock();
+        v.set_clock(crate::mount::write::now().0);
+        v
+    }
+
     /// Push everything to the medium and leave the volume consistent.
     ///
     /// A checkpoint is what turns this mount's out-of-place writes into a

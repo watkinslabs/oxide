@@ -52,8 +52,11 @@ pub enum QuotaError {
     BlocksPastEnd,
     /// A reference points outside the blocks the header describes.
     BlockOutOfRange,
-    /// A leaf claims more records than one can hold.
+    /// A leaf claims more records than one can hold, or claims to hold none
+    /// while a record is being taken out of it.
     BadEntryCount,
+    /// A leaf offered as having a slot spare has none.
+    BlockFull,
     /// The tree is deeper than this build will walk.
     DepthTooBig,
     /// A block on the path points back to one already on it.
@@ -69,6 +72,14 @@ pub enum QuotaError {
     /// Project accounting was asked for on a volume that does not store
     /// project identities.
     NoProjectQuota,
+    /// A quota file was named by something that cannot name one: nothing, or
+    /// a path rather than a name in the volume's root.
+    BadQuotaName,
+    /// One kind's file was named by the mount while another was asked for out
+    /// of the superblock. The two are different files in different formats.
+    MixedQuotaFormats,
+    /// A quota file was named without saying what format its records are in.
+    NoJournalledFormat,
 }
 
 impl QuotaError {
@@ -80,9 +91,13 @@ impl QuotaError {
         match self {
             QuotaError::BadMagic | QuotaError::BadVersion | QuotaError::BadKind => Errno::Einval,
             QuotaError::NoProjectQuota => Errno::Einval,
+            QuotaError::BadQuotaName => Errno::Einval,
+            QuotaError::MixedQuotaFormats => Errno::Einval,
+            QuotaError::NoJournalledFormat => Errno::Einval,
             QuotaError::LimitTooWide => Errno::Erange,
             QuotaError::NoEntry => Errno::Enoent,
             QuotaError::Cycle | QuotaError::DanglingLeaf | QuotaError::DepthTooBig => Errno::Eio,
+            QuotaError::BlockFull => Errno::Eio,
             _ => Errno::Euclean,
         }
     }

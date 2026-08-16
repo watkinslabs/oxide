@@ -33,7 +33,7 @@ impl F2fs {
                 rdev: u32, body: Option<&[u8]>) -> KResult<InodeRef> {
         let spec = NewInode { mode: mode_word, uid, gid, rdev, now: now() };
         let ino = {
-            let mut v = self.volume.lock();
+            let mut v = self.volume_now();
             v.create(dir, name.as_bytes(), &spec, body).map_err(errno_to_vfs)?
         };
         node_inode(Arc::clone(self), ino)
@@ -49,7 +49,7 @@ impl F2fs {
 
     /// Give an existing inode a second name. # C: O(depth) blocks
     pub fn link(&self, dir: u32, name: &str, ino: u32) -> KResult<()> {
-        self.volume.lock().link(dir, name.as_bytes(), ino, now()).map_err(errno_to_vfs)
+        self.volume_now().link(dir, name.as_bytes(), ino, now()).map_err(errno_to_vfs)
     }
 
     /// Move a name. # C: O(depth) blocks
@@ -63,12 +63,12 @@ impl F2fs {
 
     /// Write into a file, reporting the bytes that landed. # C: O(bytes)
     pub fn write(&self, ino: u32, off: u64, data: &[u8]) -> KResult<usize> {
-        self.volume.lock().write_file(ino, off, data).map_err(errno_to_vfs)
+        self.volume_now().write_file(ino, off, data).map_err(errno_to_vfs)
     }
 
     /// Shorten or extend a file. # C: O(blocks released)
     pub fn truncate(&self, ino: u32, len: u64) -> KResult<()> {
-        self.volume.lock().truncate_file(ino, len).map_err(errno_to_vfs)
+        self.volume_now().truncate_file(ino, len).map_err(errno_to_vfs)
     }
 
     /// Read a whole file, for a caller with no open file. # C: O(bytes)

@@ -29,6 +29,13 @@ pub struct Dqblk {
     pub bsoftlimit: u64,
     /// Space it occupies, in bytes.
     pub curspace: u64,
+    /// Space PROMISED to it and not yet occupied, in bytes.
+    ///
+    /// Never stored: the medium records what an identity uses, and a promise
+    /// this mount made does not survive it. Every limit is measured against
+    /// the two added together, so a promise cannot be handed out twice, and a
+    /// promise that is never taken up is given back rather than counted.
+    pub rsvspace: u64,
     pub ihardlimit: u64,
     pub isoftlimit: u64,
     pub curinodes: u64,
@@ -95,6 +102,7 @@ pub fn parse(entry: &[u8], rev: Revision) -> Result<Dqblk, QuotaError> {
             curspace: le64(entry, R0_CURSPACE),
             btime: le64(entry, R0_BTIME),
             itime: le64(entry, R0_ITIME),
+            rsvspace: 0,
         },
         Revision::R1 => Dqblk {
             ihardlimit: le64(entry, R1_IHARDLIMIT),
@@ -105,6 +113,7 @@ pub fn parse(entry: &[u8], rev: Revision) -> Result<Dqblk, QuotaError> {
             curspace: le64(entry, R1_CURSPACE),
             btime: le64(entry, R1_BTIME),
             itime: le64(entry, R1_ITIME),
+            rsvspace: 0,
         },
     };
     if is_escaped_empty(&entry[..rev.entry_size()], rev) { d.itime = 0; }

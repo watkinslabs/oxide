@@ -269,8 +269,36 @@ fn a_non_folding_directory_is_still_case_sensitive() {
     assert_eq!(v.lookup(&root, ROOT_INO, b"readme").err(), Some(Errno::Enoent));
 }
 
+/// An encrypted directory whose stored name is shorter than the shortest
+/// message the name cipher produces cannot have been written by this
+/// construction — every ciphertext name is padded to at least sixteen bytes.
+/// That is a damaged directory, not a locked one, and the two answers are
+/// deliberately different: a locked directory lists (see `volume::encrypted`),
+/// a damaged one does not.
 #[test]
-fn an_encrypted_directory_refuses_rather_than_reporting_ciphertext_names() {
+fn an_encrypted_directory_with_an_impossible_name_is_damaged_not_locked() {
+    let mut b = Builder::new();
+    let mut s = nodes::Spec::dir(ROOT_INO);
+    s.flags = F2FS_ENCRYPT_FL;
+    s.inline |= INLINE_DENTRY | INLINE_DATA | DATA_EXIST;
+    let (at, len) = nodes::inline_span(&s);
+    let layout = crate::dirent::Layout::inline(len);
+    // A name no encryption could have produced: shorter than the minimum.
+    let area = nodes::dentry_area(&layout, &[nodes::ent("short", 10, FT_REG_FILE)]);
+    let mut block = nodes::inode_block(&s);
+    block[at..at + len].copy_from_slice(&area);
+    nodes::place_inode(&mut b, &s, block, 1);
+    let v = b.mount().unwrap();
+    let root = v.root().unwrap();
+    assert!(root.encrypted());
+    assert_eq!(v.read_dir(&root, ROOT_INO).err(), Some(Errno::Euclean));
+}
+
+/// An inode flagged encrypted with no context attribute is likewise damaged:
+/// nothing else on the medium records which key and which modes its bytes
+/// were written under, so there is no locked state to fall back to.
+#[test]
+fn an_encrypted_inode_with_no_context_is_damaged() {
     let mut b = Builder::new();
     let mut s = nodes::Spec::dir(ROOT_INO);
     s.flags = F2FS_ENCRYPT_FL;
@@ -280,7 +308,7 @@ fn an_encrypted_directory_refuses_rather_than_reporting_ciphertext_names() {
     let v = b.mount().unwrap();
     let root = v.root().unwrap();
     assert!(root.encrypted());
-    assert_eq!(v.read_dir(&root, ROOT_INO).err(), Some(Errno::Eopnotsupp));
+    assert_eq!(v.read_dir(&root, ROOT_INO).err(), Some(Errno::Euclean));
 }
 
 #[test]

@@ -20,7 +20,8 @@ use super::Builder;
 pub mod dir;
 
 #[allow(unused_imports)]
-pub use dir::{add_block_dir, add_inline_dir, add_xattr_block, dentry_area, ent, Ent};
+pub use dir::{add_block_dir, add_inline_dir, add_xattr_block, dentry_area, dots, ent,
+              inline_span, Ent};
 
 /// How much extra attribute a fixture inode carries, and how much of its
 /// address array it reserves for inline attributes.

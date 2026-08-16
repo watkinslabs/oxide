@@ -189,17 +189,50 @@ fn the_two_records_resolve_together_against_the_inode() {
 }
 
 #[test]
-fn a_descriptor_overlapping_its_own_tree_is_refused() {
+fn a_descriptor_overlapping_its_own_tree_still_resolves() {
+    // The pointer is bounded below by where the METADATA starts, not by where
+    // the tree ends. A descriptor overlapping the tree is a pointless place to
+    // put one and it is not a hole: the descriptor comes off unauthenticated
+    // blocks either way, and the bytes it overlaps are hash blocks that then
+    // fail to match their parents. Refusing it here would reject a file whose
+    // measurement is still computable and whose reads the reference answers.
     let size = 200_000;
     let d = descriptor::parse(&good(size)).unwrap();
     let tree = descriptor::tree_size(&d, size).unwrap();
     assert!(tree > 0);
     let at = location::metadata_pos(size);
     let attr = image::location(LOCATION_VERSION, DESCRIPTOR_SIZE as u32, at + tree - 1);
+    let v = crate::verity::resolve(&attr, &good(size), size, MAX_FILE).expect("resolves");
+    assert_eq!(v.location.pos, at + tree - 1);
+    // The lower bound that IS enforced: one byte below the metadata start.
+    let below = image::location(LOCATION_VERSION, DESCRIPTOR_SIZE as u32, at - 1);
     assert_eq!(
-        crate::verity::resolve(&attr, &good(size), size, MAX_FILE),
+        crate::verity::resolve(&below, &good(size), size, MAX_FILE),
         Err(VerityError::Corrupted)
     );
+}
+
+#[test]
+fn a_descriptor_with_no_signature_resolves_to_an_empty_one() {
+    let size = 200_000;
+    let d = descriptor::parse(&good(size)).unwrap();
+    let at = location::metadata_pos(size) + descriptor::tree_size(&d, size).unwrap();
+    let attr = image::location(LOCATION_VERSION, DESCRIPTOR_SIZE as u32, at);
+    let v = crate::verity::resolve(&attr, &good(size), size, MAX_FILE).unwrap();
+    assert!(v.signature.is_empty());
+}
+
+#[test]
+fn a_descriptor_carrying_a_signature_resolves_to_those_bytes() {
+    let size = 200_000;
+    let sig: alloc::vec::Vec<u8> = (0..64u16).map(|i| (i % 251) as u8).collect();
+    let bytes = image::with_signature(good(size), &sig);
+    let d = descriptor::parse(&bytes).unwrap();
+    assert_eq!(d.sig_size, sig.len() as u32);
+    let at = location::metadata_pos(size) + descriptor::tree_size(&d, size).unwrap();
+    let attr = image::location(LOCATION_VERSION, bytes.len() as u32, at);
+    let v = crate::verity::resolve(&attr, &bytes, size, MAX_FILE).unwrap();
+    assert_eq!(v.signature, sig);
 }
 
 #[test]

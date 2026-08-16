@@ -47,9 +47,11 @@
 //! - `mode`:       the stored mode word, and the device number beside it.
 //! - `compress`:   compressed clusters, and the codecs that unpack them.
 //! - `casefold`:   case-insensitive name resolution.
+//! - `crypto`:     file-name and file-contents encryption.
 //! - `quota`:      per-identity usage accounting.
 //! - `verity`:     the descriptor a verity-protected file carries.
 //! - `opts`:       what a mount was asked for, and what it reports back.
+//! - `fault`:      failures injected on purpose, at named sites and a rate.
 //! - `volume`:     a mounted volume, read and written against a real medium.
 //! - `mount`:      the VFS-facing filesystem, its inodes and their operations.
 
@@ -72,11 +74,16 @@ pub mod xattr;
 pub mod mode;
 pub mod compress;
 pub mod casefold;
+pub mod crypto;
 pub mod quota;
 pub mod verity;
 pub mod opts;
+pub mod fault;
 pub mod volume;
 pub mod mount;
+pub mod fsattr;
+pub mod procfs;
+pub mod sysfs;
 
 pub use checkpoint::Checkpoint;
 pub use features::{Access, Refusal};

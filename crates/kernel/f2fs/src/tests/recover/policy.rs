@@ -72,17 +72,20 @@ fn a_checkpoint_after_the_chain_leaves_nothing_to_replay() {
 }
 
 #[test]
-fn a_volume_closed_by_an_unmount_is_not_scanned() {
-    // The chain is really there — the read-only mount below still finds it —
-    // and the writable mount skips it purely on the checkpoint's word.
+fn a_volume_whose_checkpoint_claims_a_clean_shutdown_is_scanned_anyway() {
+    // The mark describes the checkpoint on the medium, not the time since. A
+    // mount that wrote a chain and never checkpointed leaves it standing, so
+    // skipping on it drops writes an `fsync` promised — silently, and for
+    // good, because the next checkpoint retires the chain's blocks.
     let (mut v, ino) = checkpointed_unmounted(b"f");
     append_block(&mut v, ino, 0xEE, true);
     let bytes = v.into_source().snapshot();
     let probe = remount(bytes.clone(), false);
-    assert!(probe.has_fsync_data().expect("probe"), "the fixture must leave a chain");
+    assert!(probe.checkpoint().has(crate::flags::CP_UMOUNT_FLAG), "the mark is set");
+    assert!(probe.has_fsync_data().expect("probe"), "and a chain follows it");
     let mut v = remount(bytes, true);
+    assert!(!v.has_fsync_data().expect("probe"), "consumed by the mount");
     assert_eq!(v.recover_at_mount().expect("mount hook"), Recovery::Clean);
-    assert!(v.has_fsync_data().expect("probe"), "skipped, not consumed");
 }
 
 #[test]

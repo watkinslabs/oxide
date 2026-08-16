@@ -49,6 +49,13 @@ pub fn errno(e: VerityError) -> Errno {
         VerityError::DescriptorTooLarge => Errno::Emsgsize,
         VerityError::Corrupted => Errno::Euclean,
         VerityError::NoDescriptor => Errno::Enodata,
+        // A file that must be signed and is not is a refusal of permission,
+        // not a claim that the file is malformed: the bytes are fine and this
+        // mount will not serve them.
+        VerityError::SignatureRequired => Errno::Eperm,
+        VerityError::NoKey => Errno::Enokey,
+        VerityError::BadSignature => Errno::Ekeyrejected,
+        VerityError::MalformedSignature => Errno::Ebadmsg,
         _ => Errno::Einval,
     }
 }

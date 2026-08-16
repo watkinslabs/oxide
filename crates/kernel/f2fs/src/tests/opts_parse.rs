@@ -109,9 +109,31 @@ fn the_checkpoint_setting_takes_a_percentage_form() {
     assert!(p("checkpoint=enable").unwrap().checkpoint_disabled == false);
     assert!(p("checkpoint=disable").unwrap().checkpoint_disabled);
     assert!(p("checkpoint=disable:50").unwrap().checkpoint_disabled);
-    assert_eq!(p("checkpoint=disable:101"), Err(Errno::Einval));
     assert_eq!(p("checkpoint=disable:x"), Err(Errno::Einval));
     assert_eq!(p("checkpoint=maybe"), Err(Errno::Einval));
+}
+
+#[test]
+fn the_cap_is_blocks_without_a_sign_and_a_percentage_with_one() {
+    // The two spellings differ by one character and mean entirely different
+    // quantities: reading `disable:5` as five percent caps a small volume at
+    // nothing, and reading `disable:5%` as five blocks caps a large one at
+    // five. Neither reports anything when it is wrong.
+    let o = p("checkpoint=disable:5").unwrap();
+    assert_eq!((o.unusable_cap, o.unusable_cap_perc), (5, 0));
+    let o = p("checkpoint=disable:5%").unwrap();
+    assert_eq!((o.unusable_cap, o.unusable_cap_perc), (0, 5));
+    // A block count has no upper bound; a percentage does.
+    assert!(p("checkpoint=disable:100000").is_ok());
+    assert_eq!(p("checkpoint=disable:101%"), Err(Errno::Einval));
+    assert!(p("checkpoint=disable:100%").is_ok());
+}
+
+#[test]
+fn re_enabling_checkpoints_clears_the_cap_it_was_disabled_under() {
+    let o = p("checkpoint=disable:40%,checkpoint=enable").unwrap();
+    assert!(!o.checkpoint_disabled);
+    assert_eq!((o.unusable_cap, o.unusable_cap_perc), (0, 0));
 }
 
 #[test]
@@ -164,14 +186,6 @@ fn a_name_this_build_cannot_deliver_is_refused_rather_than_dropped() {
         "compress_chksum",
         "compress_mode=fs",
         "compress_cache",
-        "test_dummy_encryption",
-        "inlinecrypt",
-        "fault_injection=1",
-        "fault_type=1",
-        "usrjquota=aquota.user",
-        "grpjquota=aquota.group",
-        "prjjquota=aquota.project",
-        "jqfmt=vfsv1",
     ] {
         assert_eq!(p(name), Err(Errno::Eopnotsupp), "{name} should be refused");
     }
@@ -214,4 +228,38 @@ fn several_options_apply_together() {
     assert_eq!(o.active_logs, 2);
     assert!(o.atgc);
     assert!(o.lazytime);
+}
+
+#[test]
+fn the_second_reserve_axis_is_taken_as_well_as_the_first() {
+    // A volume can exhaust either axis. Reserving only blocks leaves the
+    // privileged caller unable to create the file it needed the reserve for.
+    let o = p("reserve_root=128,reserve_node=64").unwrap();
+    assert_eq!(o.reserve_root, 128);
+    assert_eq!(o.reserve_node, 64);
+    assert_eq!(p("reserve_node"), Err(Errno::Einval));
+}
+
+#[test]
+fn skipping_the_work_that_only_helps_later_mounts_is_taken() {
+    assert!(p("fastboot").unwrap().fastboot);
+    assert!(!Options::defaults().fastboot);
+    assert_eq!(p("fastboot=1"), Err(Errno::Einval));
+}
+
+#[test]
+fn the_two_names_the_format_no_longer_acts_on_are_still_accepted() {
+    // Refusing them would break a mount line that has carried them for years.
+    // Letting them fall through as unknown would accept a value they never
+    // took, which is the difference between accepting a name and ignoring one.
+    assert_eq!(p("heap").unwrap(), Options::defaults());
+    assert_eq!(p("no_heap").unwrap(), Options::defaults());
+    assert_eq!(p("heap=3"), Err(Errno::Einval));
+    assert_eq!(p("no_heap=off"), Err(Errno::Einval));
+}
+
+#[test]
+fn the_new_options_round_trip_through_their_own_rendering() {
+    let o = p("fastboot,reserve_root=8,reserve_node=4,checkpoint=disable:12%").unwrap();
+    assert_eq!(parse(Options::defaults(), &crate::opts::show(&o)).unwrap(), o);
 }

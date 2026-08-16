@@ -40,7 +40,11 @@ fn greedy_picks_the_segment_with_the_fewest_live_blocks() {
 
 #[test]
 fn greedy_breaks_a_tie_on_the_lower_segment_number() {
-    let t = [seg(5, 9, 0), seg(2, 9, 0), seg(9, 9, 0)];
+    // A tie goes to whichever candidate the scan reaches first, and a scan
+    // from the start of a table in segment order reaches the lowest first.
+    // The order matters rather than the number, because a resumed search
+    // starts in the middle on purpose; `tests/gc/search.rs` holds that.
+    let t = [seg(2, 9, 0), seg(5, 9, 0), seg(9, 9, 0)];
     assert_eq!(pick(&t, PER, Policy::Greedy, &[]), Some(2));
 }
 
@@ -131,7 +135,8 @@ fn one_timestamp_everywhere_leaves_the_age_term_out() {
     // claimed and the cost is the ceiling for all of them.
     assert_eq!(cb_cost(10, 5, 5, 5, PER), COST_CEILING);
     assert_eq!(cb_cost(400, 5, 5, 5, PER), COST_CEILING);
-    let t = [seg(3, 400, 5), seg(1, 10, 5)];
+    // Equal costs, so the tie goes to the candidate the scan reaches first.
+    let t = [seg(1, 10, 5), seg(3, 400, 5)];
     assert_eq!(pick(&t, PER, Policy::CostBenefit, &[]), Some(1));
 }
 

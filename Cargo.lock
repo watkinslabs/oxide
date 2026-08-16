@@ -986,11 +986,14 @@ dependencies = [
 name = "f2fs"
 version = "0.1.0"
 dependencies = [
+ "aes",
  "block",
  "crc",
  "crypt",
  "klog",
+ "pkey",
  "sectors",
+ "siphash",
  "sync",
  "syscall",
  "utf8",

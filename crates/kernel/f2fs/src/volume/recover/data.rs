@@ -50,7 +50,17 @@ impl<S: SectorSource> Volume<S> {
             }
             return Ok(false);
         }
-        if !inode.inline_data() { self.truncate_file(ino, 0)?; }
+        if !inode.inline_data() {
+            // The BLOCKS go, the length stays. A file whose bytes moved into
+            // its inode still has the length the recovered inode records, and
+            // it was restored a step ago by the inode pass; shortening the
+            // file here would overwrite it with zero and hand the caller an
+            // empty file whose bytes are all present and unreachable.
+            self.truncate_tail(ino, 0)?;
+            let blocks = self.count_blocks(ino)?;
+            self.stamp_inode(ino, |b| Self::set_iblocks(b, blocks))?;
+            self.refresh_extent(ino)?;
+        }
         let inode = self.read_inode(ino)?;
         let (at, len) = inode.inline_data_span();
         if at + len > rec.len() { return Err(Errno::Eio); }
@@ -122,12 +132,15 @@ impl<S: SectorSource> Volume<S> {
                 if !keep_size && grown < end { grown = end; }
                 recovered += 1;
             }
-            // A reservation (`NEW_ADDR`) is carried through as it stands. It
-            // names no block, so it marks nothing live and grows no size; it
-            // reads as a hole and the next write allocates over it. It is also
-            // charged to nothing, which differs from a build that counts
-            // reservations against the volume — counting one here alone would
-            // leak the count, since nothing releases such a charge.
+            // A reservation (`NEW_ADDR`) is carried through as it stands: it
+            // names no block, so it marks nothing live and grows no size, and
+            // it reads as a hole until a write allocates over it. It still
+            // COSTS a block, because the write it is holding room for has to
+            // find one, so it is charged the moment it is installed and given
+            // back the moment the slot stops holding it — the two together are
+            // what keep the count from drifting either way.
+            if dest == NEW_ADDR { self.charge_reservation(); }
+            if src == NEW_ADDR { self.release_reservation(); }
             hblock[at..at + 4].copy_from_slice(&dest.to_le_bytes());
             if !crate::node::is_hole(src) { freed.push(src); }
         }
@@ -147,6 +160,21 @@ impl<S: SectorSource> Volume<S> {
         Ok(recovered)
     }
 
+    /// Count a reservation against the volume.
+    ///
+    /// A reservation occupies no block of the medium and so sets no bit in the
+    /// segment table, which is why this cannot go through the segment update:
+    /// the count and the table deliberately disagree by exactly the number of
+    /// reservations outstanding.
+    /// # C: O(1)
+    pub(crate) fn charge_reservation(&mut self) { self.valid_block_count += 1; }
+
+    /// Give a reservation's charge back, when the slot holding it stops
+    /// holding it. # C: O(1)
+    pub(crate) fn release_reservation(&mut self) {
+        self.valid_block_count = self.valid_block_count.saturating_sub(1);
+    }
+
     /// One address out of the recovered block, in the shape that block has.
     /// # C: O(1)
     fn recovered_addr(&self, inode: &crate::node::Inode, rec: &[u8], is_inode: bool, i: usize)
@@ -160,3 +188,7 @@ impl<S: SectorSource> Volume<S> {
         Ok(a)
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/recover/reserve.rs"]
+mod tests;

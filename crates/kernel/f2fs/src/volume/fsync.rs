@@ -18,6 +18,8 @@
 //! - `reason`: whether a checkpoint is unavoidable, as a pure decision.
 //! - `advise`: the inode hint bits that decision and replay both read.
 //! - `nodes`:  which node blocks go into the chain, and how they are stamped.
+//! - `dirty`:  what changed since the checkpoint, and on which side.
+//! - `fsynced`: whether the chain already states this file's name.
 
 use syscall::errno::Errno;
 
@@ -31,27 +33,20 @@ use super::Volume;
 pub mod reason;
 pub mod advise;
 pub mod nodes;
+pub mod dirty;
+pub mod fsynced;
 
+pub use dirty::Dirty;
 pub use reason::{need_checkpoint, CpReason, SyncState};
 
 impl<S: SectorSource> Volume<S> {
-    /// Whether the node `nid` names reached the last checkpoint.
-    ///
-    /// A node this mount has written is only in memory: the table on the
-    /// medium still names the block it replaced, so nothing a reader could do
-    /// after a crash would find it.
-    /// # C: O(1)
-    pub(crate) fn node_is_checkpointed(&self, nid: u32) -> bool {
-        !self.nat_dirty.contains_key(&nid)
-    }
-
     /// Everything the checkpoint decision reads, for one file.
-    /// # C: O(2 blocks)
+    /// # C: O(chain length) blocks for a file the checkpoint never saw
     pub(crate) fn sync_state(&self, ino: u32) -> Result<SyncState, Errno> {
         let inode = self.read_inode(ino)?;
         let pino = inode.pino;
         let parent_xattr_written = match self.read_inode(pino) {
-            Ok(p) => p.xattr_nid != 0 && !self.node_is_checkpointed(p.xattr_nid),
+            Ok(p) => p.xattr_nid != 0 && self.node_written_since_checkpoint(p.xattr_nid),
             Err(_) => false,
         };
         Ok(SyncState {
@@ -63,8 +58,8 @@ impl<S: SectorSource> Volume<S> {
             parent_checkpointed: self.node_is_checkpointed(pino),
             active_logs: self.opts.active_logs,
             strict: self.opts.fsync_mode == FsyncMode::Strict,
-            need_dentry_mark: !self.node_is_checkpointed(ino),
-            parent_dir_written: !self.node_is_checkpointed(pino),
+            need_dentry_mark: self.need_dentry_mark(ino)?,
+            parent_dir_written: self.node_written_since_checkpoint(pino),
             parent_xattr_written,
         })
     }
@@ -84,8 +79,26 @@ impl<S: SectorSource> Volume<S> {
     /// A mount that may not write reports success without writing: there is
     /// nothing it could have failed to persist.
     /// # C: O(nodes the file has) blocks, or O(a checkpoint)
-    pub fn fsync(&mut self, ino: u32) -> Result<CpReason, Errno> {
+    pub fn fsync(&mut self, ino: u32) -> Result<CpReason, Errno> { self.sync_file(ino, false) }
+
+    /// Make `ino`'s CONTENTS durable, and report which path it took.
+    ///
+    /// The difference from [`Volume::fsync`] is one state: a file whose only
+    /// change since the checkpoint is its times or its mode. That is durable
+    /// enough already for what this call promises, so it writes nothing —
+    /// which is the whole point of the call, since every read and every write
+    /// moves a timestamp.
+    /// # C: O(nodes the file has) blocks, or O(a checkpoint), or none
+    pub fn fdatasync(&mut self, ino: u32) -> Result<CpReason, Errno> { self.sync_file(ino, true) }
+
+    /// The path both calls take, parted only by what each promised.
+    /// # C: O(nodes the file has) blocks, or O(a checkpoint), or none
+    fn sync_file(&mut self, ino: u32, datasync: bool) -> Result<CpReason, Errno> {
         if !self.writable { return Ok(CpReason::None); }
+        // Nothing to make durable is answered before the ladder, not inside
+        // it: a checkpoint written for a file that has not changed makes the
+        // whole volume pay for a call that had nothing to do.
+        if !self.inode_dirty(ino)?.needs_sync(datasync) { return Ok(CpReason::None); }
         let state = self.sync_state(ino)?;
         let reason = need_checkpoint(&state);
         if reason.needed() {

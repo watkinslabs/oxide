@@ -11,7 +11,7 @@ use syscall::errno::Errno;
 
 use sectors::SectorSource;
 
-use crate::flags::CP_UMOUNT_FLAG;
+
 use crate::volume::Volume;
 
 use super::replay::Recovery;
@@ -19,15 +19,17 @@ use super::replay::Recovery;
 impl<S: SectorSource> Volume<S> {
     /// Deal with whatever the last mount left behind.
     ///
-    /// A volume the last mount unmounted costs nothing: the checkpoint states
-    /// it, and nothing can have been written after the checkpoint that ended
-    /// the mount. Anything else reads at least the log's next block.
-    /// # C: O(chain length) blocks, none after a clean unmount
+    /// The clean-unmount mark is NOT consulted, and reading it as "nothing
+    /// follows this checkpoint" loses data. It states how the checkpoint on
+    /// the medium was written, not what has happened since — and a mount that
+    /// writes a chain and never checkpoints leaves that mark exactly as it
+    /// found it. Skip on it and the next mount walks past everything an
+    /// `fsync` promised in between: a file created, written, made durable and
+    /// then lost to a crash simply is not there. What decides the question is
+    /// the walk itself, and after a genuine clean unmount it costs one block —
+    /// the log's next block belongs to an older generation and stops it.
+    /// # C: O(chain length) blocks, one after a clean unmount
     pub fn recover_at_mount(&mut self) -> Result<Recovery, Errno> {
-        // A volume the last mount closed cleanly has nothing past its
-        // checkpoint by construction, and says so in the checkpoint itself.
-        // Every other path below reads at least one block to find that out.
-        if self.cp.has(CP_UMOUNT_FLAG) { return Ok(Recovery::Clean); }
         if !self.opts.recovery {
             // Asked not to replay. A chain is then dropped — but only a mount
             // that cannot write may drop it, because a writable mount would go

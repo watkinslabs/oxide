@@ -13,6 +13,8 @@
 //! - `ct`: constant-time comparison, which every tag check goes through.
 //! - `cmac`: subkey derivation, the padding rule, and the MAC itself.
 //! - `ghash`: the polynomial hash the counter mode authenticates with.
+//! - `cbc`: cipher-block chaining, plain and with ciphertext stealing.
+//! - `xts`: the tweakable narrow-block mode storage encryption uses.
 //! - `ccm`: counter mode with a cipher-block-chaining check.
 //! - `gcm`: counter mode with the polynomial hash, and the MAC over no
 //!   payload that is a special case of it.
@@ -30,6 +32,8 @@ pub mod cipher;
 pub mod block;
 pub mod ct;
 pub mod cmac;
+pub mod cbc;
+pub mod xts;
 pub mod ghash;
 pub mod ccm;
 pub mod gcm;
@@ -37,6 +41,7 @@ pub mod gcm;
 pub use params::{AES_BLOCK_LEN, AES128_KEY_LEN, AES256_KEY_LEN};
 pub use block::{Aes128, Aes256, AesKey};
 pub use cmac::{Cmac, cmac};
+pub use xts::Xts;
 
 #[cfg(test)]
 #[path = "tests/mod.rs"]

@@ -31,6 +31,7 @@
 //! - `orphan`:  inodes unlinked while still open.
 //! - `recover`: replaying the log written since the last checkpoint.
 //! - `fsync`:   making one file durable without a whole checkpoint.
+//! - `crypto`:  the mount's master keys, and an inode's key when it has one.
 //! - `space`:  what `statfs` reports.
 
 use alloc::collections::{BTreeMap, BTreeSet};
@@ -74,6 +75,7 @@ pub mod gc;
 pub mod orphan;
 pub mod recover;
 pub mod fsync;
+pub mod crypto;
 
 pub use curseg::{Curseg, Kind, Summary};
 pub use dir::DirEntry;
@@ -101,6 +103,10 @@ pub struct Volume<S: SectorSource> {
     /// folds at all. Loaded once at mount: every lookup needs it, and it is
     /// the same table for the life of the mount.
     pub(crate) casefold: Option<crate::casefold::Casefold>,
+    /// Master keys this mount has been given, by the name a policy refers to
+    /// one by. Never on the medium: an inode whose key is absent stays
+    /// listable and removable, and only its contents and names are withheld.
+    pub(crate) fscrypt_keys: BTreeMap<crate::crypto::KeyId, crate::crypto::MasterKey>,
     pub(crate) opts: Options,
     pub(crate) access: Access,
     pub(crate) writable: bool,
@@ -112,6 +118,9 @@ pub struct Volume<S: SectorSource> {
     pub(crate) nat_dirty: BTreeMap<u32, NatEntry>,
     /// The segment table, loaded whole on the first write.
     pub(crate) sit: Option<Vec<SitEntry>>,
+    /// The segment-management state that is not on the medium: the prefree
+    /// map, the clock ages are measured against, and the cleaner's cursor.
+    pub(crate) segstate: segmap::SegState,
     pub(crate) sit_dirty: BTreeSet<u32>,
     pub(crate) valid_block_count: u64,
     pub(crate) valid_node_count: u32,
@@ -145,6 +154,14 @@ pub struct Volume<S: SectorSource> {
     /// checkpoint on the medium, so nothing may be announced to the device
     /// until one replaces it.
     pub(crate) pending_discard: Vec<u32>,
+    /// Verity metadata parsed once per inode, and the record of which of its
+    /// hash blocks are already known good. Rebuilding it per block would make
+    /// the metadata cost scale with the data. Interior mutability because a
+    /// read takes `&self` and the cache is what a read fills.
+    pub(crate) verity_cache: core::cell::RefCell<crate::verity::info::Cache>,
+    /// The certificates a built-in signature's chain must reach, and whether
+    /// an unsigned verity file may be read at all.
+    pub(crate) verity_policy: crate::verity::Policy,
 }
 
 impl<S: SectorSource> Volume<S> {
@@ -207,7 +224,13 @@ impl<S: SectorSource> Volume<S> {
     /// Nothing below this layer can read a clock, and a quota grace period is
     /// an absolute expiry: without it a soft limit could never come due.
     /// # C: O(1)
-    pub fn set_clock(&mut self, secs: u64) { self.clock = secs; }
+    pub fn set_clock(&mut self, secs: u64) {
+        // The first clock this mount is told is the one segment ages count
+        // from, so a volume's recorded age advances by how long it has been
+        // mounted rather than by where the wall clock happens to start.
+        if self.segstate.mounted_clock.is_none() { self.segstate.mounted_clock = Some(secs); }
+        self.clock = secs;
+    }
 
     /// Whether anything this mount changed is still only in memory. # C: O(1)
     pub fn is_dirty(&self) -> bool { self.dirty }

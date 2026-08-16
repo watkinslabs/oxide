@@ -103,6 +103,12 @@ impl<S: SectorSource> Volume<S> {
             // blocks live, which loses them until a checker runs.
             let (base, count) = if f.is_inode {
                 let Some(i) = crate::node::inode::parse(&rec, self.sb.feature) else { continue };
+                // An inode holding its file's BYTES has no address array: the
+                // same region holds the contents. Reading them as addresses
+                // marks live whatever the file's own text happens to decode
+                // to, which takes a block out of the allocator's hands and
+                // raises the count for a block nothing points at.
+                if i.inline_data() || i.inline_dentry() { continue; }
                 (i.addr_base(), i.addrs_per_inode())
             } else {
                 (0usize, DEF_ADDRS_PER_BLOCK)

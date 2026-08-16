@@ -121,6 +121,7 @@ fn the_walk_starts_at_the_log_a_files_nodes_are_written_to() {
     for logs in [4u8, 6] {
         let opts = Options { active_logs: logs, ..Options::defaults() };
         let (mut v, ino) = checkpointed_opts(b"f", opts);
+        v.write_file(ino, 0, b"x").expect("write");
         let start = v.fsync_chain_start();
         v.fsync(ino).expect("fsync");
         let block = v.read_block(start).expect("block");
@@ -145,18 +146,21 @@ fn a_block_fsynced_but_not_checkpointed_survives_a_crash() {
 
 #[test]
 fn the_report_counts_what_was_put_back() {
-    let (mut v, ino) = checkpointed_unmounted(b"f");
+    // The counters are read from the pass the MOUNT runs, which is the only
+    // pass there is: by the time a caller holds the volume the chain is gone.
+    let (mut v, ino, _) = checkpointed(b"f");
     append_block(&mut v, ino, 0xEE, true);
-    let mut v = crash(v);
-    let Recovery::Replayed(done) = v.recover().expect("recover") else { panic!("replayed") };
-    assert_eq!(done.nodes, 1);
-    assert_eq!(done.inodes, 1);
-    assert_eq!(done.dentries, 0);
-    assert_eq!(done.blocks, 1);
+    let mut v = crash_ro(v);
+    let found = v.scan_fsync_chain().expect("scan");
+    assert_eq!(found.len(), 1, "one marked block, the inode's");
+    let mut v = remount(v.into_source().snapshot(), true);
+    assert_eq!(v.recover().expect("second pass"), Recovery::Clean,
+               "the mount already put it back");
+    assert_eq!(v.read_inode(ino).expect("inode").size, (BODY + BLKSIZE) as u64);
 }
 
 #[test]
-fn the_report_counts_a_restored_entry() {
+fn an_entry_is_restored_by_the_mount_itself() {
     let mut v = test_image::with_root().mount_rw().expect("mount");
     let ino = v.create(ROOT_INO, b"n", &spec(), None).expect("create");
     let saved = v.inode_bytes(ino).expect("bytes");
@@ -164,9 +168,28 @@ fn the_report_counts_a_restored_entry() {
     v.commit_with(crate::volume::commit::CpReason::Umount).expect("commit");
     v.write_chained_node(ino, ino, saved, marks::flag_word(0, true, true, true)).expect("node");
     let mut v = crash(v);
-    let Recovery::Replayed(done) = v.recover().expect("recover") else { panic!("replayed") };
-    assert_eq!(done.dentries, 1);
-    assert_eq!(done.inodes, 1);
+    let root = v.read_inode(ROOT_INO).expect("root");
+    assert_eq!(v.lookup(&root, ROOT_INO, b"n").expect("entry").ino, ino);
+    assert_eq!(v.recover().expect("second pass"), Recovery::Clean);
+}
+
+#[test]
+fn a_chain_written_after_a_clean_unmount_is_still_replayed() {
+    // The mark on the checkpoint says how THAT checkpoint was written, not
+    // that nothing followed it. A mount that writes a chain and crashes
+    // without checkpointing leaves the mark exactly as it found it, so a
+    // recovery that trusts it walks past everything the fsync promised.
+    let mut v = test_image::with_root().mount_rw().expect("mount");
+    let ino = v.create(ROOT_INO, b"j", &spec(), None).expect("create");
+    v.write_file(ino, 0, b"committed").expect("write");
+    assert!(v.checkpoint().has(crate::flags::CP_UMOUNT_FLAG),
+            "the image was left by a clean unmount and nothing has replaced it");
+    assert_eq!(v.fsync(ino).expect("fsync"), crate::volume::fsync::CpReason::None);
+    let v = crash(v);
+    let root = v.read_inode(ROOT_INO).expect("root");
+    let hit = v.lookup(&root, ROOT_INO, b"j").expect("the promised file is there");
+    let inode = v.read_inode(hit.ino).expect("inode");
+    assert_eq!(v.read_whole(&inode, hit.ino).expect("read"), b"committed".to_vec());
 }
 
 #[test]
@@ -342,37 +365,74 @@ fn an_attribute_node_in_the_chain_is_adopted_by_its_inode() {
 }
 
 #[test]
-fn a_recovered_reservation_becomes_a_hole_and_frees_what_it_replaced() {
-    // A generation that reserved a block without writing it leaves `NEW_ADDR`
-    // in the slot. Replay keeps the reservation — a later read is a hole and a
-    // later write allocates — and releases the block it displaced.
-    let (mut v, ino, _) = checkpointed(b"f");
+fn an_inline_files_bytes_are_never_read_as_addresses() {
+    // The inline region and the address array are the same bytes. A pass that
+    // walks a recovered inode's array without asking whether the file's data
+    // lives there marks live whatever its text decodes to — a block taken out
+    // of the allocator's hands, and a count raised for a block nothing owns.
+    let mut v = test_image::with_root().mount_rw().expect("mount");
+    let ino = v.create(ROOT_INO, b"i", &spec(), None).expect("create");
+    v.write_file(ino, 0, b"before").expect("write");
+    v.commit().expect("commit");
+    let free = v.fsync_chain_start() + 50;
+    v.load_segments().expect("segments");
+    assert!(!v.addr_is_live(free), "the fixture must point at a free block");
     let inode = v.read_inode(ino).expect("inode");
-    let crate::volume::map::Mapped::At(old) = v.map_block(&inode, ino, 1).expect("map")
-        else { panic!("block one") };
+    let (at, _) = inode.inline_data_span();
     let mut block = v.inode_bytes(ino).expect("bytes");
-    put32(&mut block, inode.addr_base() + 4, NEW_ADDR);
+    put32(&mut block, at, free);
+    let before = v.checkpoint().valid_block_count;
     v.write_chained_node(ino, ino, block, marks::flag_word(0, true, false, true)).expect("node");
     let mut v = crash(v);
-    let inode = v.read_inode(ino).expect("inode");
-    assert_eq!(v.map_block(&inode, ino, 1).expect("map"), crate::volume::map::Mapped::Hole);
     v.load_segments().expect("segments");
-    assert!(!v.addr_is_live(old), "the displaced block goes back to the allocator");
+    assert!(!v.addr_is_live(free), "the file's own text is not an address");
+    assert_eq!(v.checkpoint().valid_block_count, before, "and nothing was charged for it");
+}
+
+// ------------------------------------------- the chain is not written over
+
+#[test]
+fn a_log_standing_over_the_chain_moves_before_the_replay_writes() {
+    // Replay WRITES, and the log it writes through is standing exactly where
+    // the crashed mount left the chain — so unless it is moved first, the
+    // first node replay puts back lands on a block replay has not read yet.
+    // The reference reaches the same end by another route: it writes nothing
+    // to the main area during the pass at all, holding every recovered node
+    // dirty in memory and allocating fresh segments only when the closing
+    // checkpoint flushes them. This build has no such cache; its writes go
+    // down as they are made, so the protection has to come first instead.
+    let (mut v, ino, _) = checkpointed(b"f");
+    let (data, node) = append_block(&mut v, ino, 0xEE, true);
+    let before = crash_ro(v);
+    let head = before.fsync_chain_start();
+    let seg = before.super_block().segno_of(head).expect("segment");
+    assert_eq!(before.super_block().segno_of(node), Some(seg), "the fixture puts it there");
+    let mut v = remount(before.into_source().snapshot(), true);
+    assert_ne!(v.logs()[CURSEG_WARM_NODE].segno, seg, "the log moved off the chain");
+    v.load_segments().expect("segments");
+    assert!(v.addr_is_live(data), "and the block it promised is still there");
 }
 
 #[test]
-fn a_recovered_reservation_is_not_charged_to_the_volume() {
-    // A reservation holds no block here and is counted nowhere, so replaying
-    // one only gives a block back. Charging it in recovery alone would leak
-    // the count, because nothing in this build ever releases such a charge.
-    let (mut v, ino, _) = checkpointed(b"f");
-    let before = v.checkpoint().valid_block_count;
-    let inode = v.read_inode(ino).expect("inode");
-    let mut block = v.inode_bytes(ino).expect("bytes");
-    put32(&mut block, inode.addr_base() + 4, NEW_ADDR);
-    v.write_chained_node(ino, ino, block, marks::flag_word(0, true, false, true)).expect("node");
+fn a_chain_of_several_promises_is_replayed_whole() {
+    // The one that fails if the log is left standing: replay reads the chain
+    // block by block and writes between the reads, so a log still pointing
+    // into the chain overwrites the blocks the later reads need.
+    let mut v = test_image::with_root().mount_rw().expect("mount");
+    let mut inos = alloc::vec::Vec::new();
+    for name in [b"a", b"b", b"c", b"d"] {
+        let ino = v.create(ROOT_INO, name, &spec(), None).expect("create");
+        v.write_file(ino, 0, &pattern(0x10)).expect("write");
+        inos.push(ino);
+    }
+    v.commit().expect("commit");
+    for (i, &ino) in inos.iter().enumerate() { append_block(&mut v, ino, 0xB0 + i as u8, true); }
     let v = crash(v);
-    assert_eq!(v.checkpoint().valid_block_count, before - 1);
+    for (i, &ino) in inos.iter().enumerate() {
+        let all = whole(&v, ino);
+        assert_eq!(all.len(), BODY + BLKSIZE, "file {i} came back short");
+        assert!(all[BODY..].iter().all(|&b| b == 0xB0 + i as u8), "file {i} holds other bytes");
+    }
 }
 
 // -------------------------------------------- a block another file still holds

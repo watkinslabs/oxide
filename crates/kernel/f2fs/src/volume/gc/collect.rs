@@ -1,4 +1,4 @@
-//! Cleaning a segment, and cleaning until there is room again.
+//! Cleaning a section, and cleaning until there is room again.
 //!
 //! Without this the volume runs out of space while reporting free blocks. Every
 //! write is out of place, so a file rewritten in place leaves its old block
@@ -6,6 +6,13 @@
 //! has nothing live in it — nor usable by the append allocator, which only ever
 //! opens empty segments. The dead blocks are real free space that nothing can
 //! reach until something moves the survivors out and hands the segment back.
+//!
+//! Handing it back takes a CHECKPOINT. A cleaned segment is prefree, not free:
+//! the checkpoint on the medium still names the blocks that were in it, so the
+//! allocator may not have it until one that does not lands. That is why this
+//! module writes a checkpoint when cleaning alone has not produced usable
+//! space — without it the cleaner would free segment after segment and the
+//! allocation that called it would still fail.
 
 use alloc::vec::Vec;
 
@@ -16,8 +23,40 @@ use sectors::SectorSource;
 use crate::uapi::*;
 
 use super::live;
-use super::victim::{self, Policy, SegInfo};
+use super::victim::{self, Found, Policy, Search, SegInfo, PERCENT};
 use crate::volume::Volume;
+
+/// What keeping the volume able to allocate calls for.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum Balance {
+    /// Room enough, and nothing worth a checkpoint on its own.
+    Nothing,
+    /// The space has been found already and only wants retiring, which is
+    /// far cheaper than finding more.
+    Checkpoint,
+    /// The space has to be found, which means moving live blocks.
+    Clean,
+}
+
+/// Which of the two answers an allocation-time check calls for.
+///
+/// Short of segments is the urgent case and takes precedence: a checkpoint
+/// alone cannot conjure space that no segment holds. The cleaner takes one
+/// anyway on its way, so the held segments are not left behind by choosing
+/// the harder answer.
+/// # C: O(1)
+pub fn balance_choice(free: u32, reserve: u32, excess_prefree: bool) -> Balance {
+    if free <= reserve { Balance::Clean }
+    else if excess_prefree { Balance::Checkpoint }
+    else { Balance::Nothing }
+}
+
+/// The share of the volume that may sit prefree before a checkpoint is worth
+/// taking just to hand it back.
+pub const RECLAIM_PREFREE_PERCENT: u32 = 5;
+/// The point past which that share stops growing: beyond it a checkpoint is
+/// due on volume in any case, and the share alone would defer one forever.
+pub const MAX_RECLAIM_PREFREE_SEGMENTS: u32 = 4096;
 
 impl<S: SectorSource> Volume<S> {
     /// The segment table as victim selection sees it. # C: O(main segments)
@@ -34,9 +73,19 @@ impl<S: SectorSource> Volume<S> {
             .collect()
     }
 
-    /// The segment worth cleaning next under `policy`. # C: O(main segments)
+    /// The section worth cleaning next under `search`, and where the search
+    /// after it should resume. # C: O(main segments)
+    pub fn search_victim(&self, search: Search, skip: &[u32]) -> Option<Found> {
+        let table = self.seg_table();
+        let units = victim::units(&table, self.sb.blks_per_seg() as u16, self.sb.segs_per_sec);
+        victim::pick_unit(&units, self.sb.blks_per_seg() as u16, self.sb.segs_per_sec,
+                          search, skip)
+    }
+
+    /// The section worth cleaning next for a caller that needs space now.
+    /// # C: O(main segments)
     pub fn pick_victim(&self, policy: Policy, skip: &[u32]) -> Option<u32> {
-        victim::pick(&self.seg_table(), self.sb.blks_per_seg() as u16, policy, skip)
+        self.search_victim(Search::foreground(policy), skip).map(|f| f.segno)
     }
 
     /// Clean `segno`: move out everything still live in it.
@@ -59,55 +108,186 @@ impl<S: SectorSource> Volume<S> {
         let base = self.sb.main_blkaddr + segno * per_seg;
         let mut moved = 0u32;
         let mut stale: Vec<u32> = Vec::new();
-        for off in 0..per_seg as usize {
-            let addr = base + off as u32;
-            let bit = self.segments().get(segno as usize).is_some_and(|e| e.is_valid(off));
-            let Some(s) = live::entry(&sum, off) else { continue };
-            let owner = if nodes { self.node_addr(s.nid).ok() } else { self.owner_addr(&s) };
-            if !live::alive(bit, &s, owner, addr) { continue; }
-            if nodes { self.migrate_node(s.nid)?; } else { self.migrate_data(addr, &s)?; stale.push(addr); }
-            moved += 1;
-        }
-        // Only now: while any of these bits stood the segment could not be
-        // opened by a log, which is what kept the copies above reading the
-        // blocks they meant to read.
-        for addr in stale { self.release_block(addr)?; }
+        // Everything written from here carries the victim's age rather than
+        // this instant's: the data is exactly as old as it was, and a cleaner
+        // that made its own output look freshly written would hide it from
+        // the policy that is trying to find old data.
+        self.segstate.gc_moving = true;
+        self.segstate.gc_src_mtime = self.seg_mtime(segno);
+        let outcome = self.move_live_blocks(segno, base, per_seg, nodes, &sum, &mut stale,
+                                            &mut moved)
+            // Only now: while any of these bits stood the segment could not be
+            // opened by a log, which is what kept the copies above reading the
+            // blocks they meant to read. Inside the flag, because emptying the
+            // victim is part of the migration and not a write either.
+            .and_then(|()| stale.into_iter().try_for_each(|a| self.release_block(a)));
+        self.segstate.gc_moving = false;
+        outcome?;
         Ok(moved)
     }
 
-    /// Clean the single best victim. # C: O(blocks per segment)
+    /// Move every live block of one segment out of it. # C: O(blocks)
+    #[allow(clippy::too_many_arguments)]
+    fn move_live_blocks(&mut self, segno: u32, base: u32, per_seg: u32, nodes: bool,
+                        sum: &[u8], stale: &mut Vec<u32>, moved: &mut u32)
+        -> Result<(), Errno> {
+        for off in 0..per_seg as usize {
+            let addr = base + off as u32;
+            let bit = self.segments().get(segno as usize).is_some_and(|e| e.is_valid(off));
+            let Some(s) = live::entry(sum, off) else { continue };
+            let owner = if nodes { self.node_addr(s.nid).ok() } else { self.owner_addr(&s) };
+            if !live::alive(bit, &s, owner, addr) { continue; }
+            if nodes { self.migrate_node(s.nid)?; } else { self.migrate_data(addr, &s)?; stale.push(addr); }
+            *moved += 1;
+        }
+        Ok(())
+    }
+
+    /// Clean a whole section, which is the unit the allocator hands out.
+    ///
+    /// A section half cleaned is a section still in use, so the space cleaning
+    /// it cost buys nothing until every segment in it is empty.
+    /// # C: O(blocks per section)
+    pub fn gc_section(&mut self, first: u32) -> Result<u32, Errno> {
+        self.load_segments()?;
+        let per_sec = self.sb.segs_per_sec.max(1);
+        let mut moved = 0u32;
+        for segno in first..(first + per_sec).min(self.sb.segment_count_main) {
+            // A log inside the section stops the section being reclaimable,
+            // but the segments beside it are still worth emptying.
+            if self.is_current(segno) { continue; }
+            moved += self.gc_segment(segno)?;
+        }
+        Ok(moved)
+    }
+
+    /// Clean the single best victim. # C: O(blocks per section)
     pub fn gc_one_segment(&mut self) -> Result<Option<u32>, Errno> {
         self.writable_or_err()?;
         self.load_segments()?;
         let Some(segno) = self.pick_victim(Policy::Greedy, &[]) else { return Ok(None) };
-        self.gc_segment(segno)?;
+        self.gc_section(segno)?;
         Ok(Some(segno))
     }
 
     /// Clean until `target` segments are free, or until nothing is worth
-    /// cleaning. Returns the segments emptied.
+    /// cleaning. Returns the sections emptied.
+    /// # C: O(sections cleaned * blocks per section)
+    pub fn collect(&mut self, target: u32) -> Result<u32, Errno> {
+        self.collect_with(Policy::Greedy, target)
+    }
+
+    /// The same, under a stated policy.
+    ///
+    /// Re-entry is refused rather than queued. The checkpoint this takes to
+    /// reclaim what it cleaned can itself allocate, and an allocation that
+    /// runs short calls the cleaner — a loop that would clean inside its own
+    /// checkpoint inside its own clean.
+    /// # C: O(sections cleaned * blocks per section)
+    pub fn collect_with(&mut self, policy: Policy, target: u32) -> Result<u32, Errno> {
+        self.writable_or_err()?;
+        if self.segstate.gc_running { return Ok(0); }
+        self.segstate.gc_running = true;
+        let outcome = self.collect_inner(policy, target);
+        self.segstate.gc_running = false;
+        outcome
+    }
+
+    /// Clean, then checkpoint what cleaning produced, then clean again.
     ///
     /// A victim is never tried twice in one call. One that would not empty —
     /// because a block in it is live by the table and disowned by every node —
     /// would otherwise be chosen again on the next pass and the cleaner would
     /// never stop.
-    /// # C: O(segments cleaned * blocks per segment)
-    pub fn collect(&mut self, target: u32) -> Result<u32, Errno> {
-        self.collect_with(Policy::Greedy, target)
-    }
-
-    /// The same, under a stated policy. # C: O(segments cleaned * blocks)
-    pub fn collect_with(&mut self, policy: Policy, target: u32) -> Result<u32, Errno> {
-        self.writable_or_err()?;
+    /// # C: O(sections cleaned * blocks per section)
+    fn collect_inner(&mut self, policy: Policy, target: u32) -> Result<u32, Errno> {
         self.load_segments()?;
         let mut skip: Vec<u32> = Vec::new();
         let mut freed = 0u32;
-        while self.free_segment_count() < target {
-            let Some(segno) = self.pick_victim(policy, &skip) else { break };
-            self.gc_segment(segno)?;
-            if self.seg_valid(segno) == 0 { freed += 1; }
-            skip.push(segno);
+        // Two rounds at most: clean, retire what was cleaned, clean again.
+        // A third would find the same sections the first two rejected.
+        for round in 0..2 {
+            freed += self.clean_round(policy, target, &mut skip)?;
+            if self.free_segment_count() >= target { break; }
+            // Everything cleaned so far is prefree and therefore useless to
+            // the caller. Only a checkpoint makes it space.
+            if round == 0 && self.prefree_count() > 0 { self.commit()?; }
         }
         Ok(freed)
+    }
+
+    /// One pass of cleaning: victims until the target is met or none is left.
+    /// # C: O(sections cleaned * blocks per section)
+    fn clean_round(&mut self, policy: Policy, target: u32, skip: &mut Vec<u32>)
+        -> Result<u32, Errno> {
+        let mut freed = 0u32;
+        while self.free_segment_count() < target {
+            let search = Search { offset: self.segstate.gc_cursor, ..Search::foreground(policy) };
+            let Some(found) = self.search_victim(search, skip) else { break };
+            self.segstate.gc_cursor = found.cursor;
+            self.gc_section(found.segno)?;
+            if self.section_valid(found.segno) == 0 { freed += 1; }
+            skip.push(found.segno);
+        }
+        Ok(freed)
+    }
+
+    /// Live blocks across the section `first` starts. # C: O(segments per section)
+    pub(crate) fn section_valid(&self, first: u32) -> u32 {
+        let per_sec = self.sb.segs_per_sec.max(1);
+        (first..(first + per_sec).min(self.sb.segment_count_main))
+            .map(|s| u32::from(self.seg_valid(s)))
+            .sum()
+    }
+
+    /// Clean ahead of demand: one bounded, resuming pass under cost-benefit.
+    ///
+    /// The policy differs from the foreground one deliberately. A caller that
+    /// needs space now wants the segment that costs least to empty; a caller
+    /// with time wants the one whose blocks are least likely to die on their
+    /// own, which is the old one.
+    /// # C: O(min(sections, max search) + blocks per section)
+    pub fn gc_background(&mut self) -> Result<Option<u32>, Errno> {
+        self.writable_or_err()?;
+        if self.segstate.gc_running { return Ok(None); }
+        self.load_segments()?;
+        let search = Search::background(Policy::CostBenefit, self.segstate.gc_cursor);
+        let Some(found) = self.search_victim(search, &[]) else { return Ok(None) };
+        self.segstate.gc_cursor = found.cursor;
+        self.segstate.gc_running = true;
+        let outcome = self.gc_section(found.segno);
+        self.segstate.gc_running = false;
+        outcome?;
+        Ok(Some(found.segno))
+    }
+
+    /// Keep the volume able to allocate, after an operation that used space.
+    ///
+    /// Two conditions, and each has a different answer. Not enough free
+    /// segments means the space must be found, which is cleaning. Too many
+    /// prefree ones means the space has already been found and is only
+    /// waiting for a checkpoint to become usable, which is far cheaper than
+    /// cleaning and must be tried first.
+    /// # C: O(main segments), plus a clean or a checkpoint when one is due
+    pub fn balance_segments(&mut self) -> Result<(), Errno> {
+        if !self.writable || self.recovering || self.segstate.gc_running { return Ok(()); }
+        self.load_segments()?;
+        let reserve = self.gc_reserve();
+        match balance_choice(self.free_segment_count(), reserve, self.excess_prefree()) {
+            Balance::Nothing => Ok(()),
+            Balance::Checkpoint => self.commit(),
+            Balance::Clean => self.collect(reserve + 1).map(|_| ()),
+        }
+    }
+
+    /// Whether enough segments are waiting on a checkpoint to be worth one.
+    ///
+    /// The threshold is a share of the volume rather than a count: on a small
+    /// volume a handful of held segments is most of the free space, and on a
+    /// large one it is noise not worth a checkpoint.
+    /// # C: O(1)
+    pub fn excess_prefree(&self) -> bool {
+        let share = self.sb.segment_count_main * RECLAIM_PREFREE_PERCENT / PERCENT as u32;
+        self.prefree_count() > share.min(MAX_RECLAIM_PREFREE_SEGMENTS)
     }
 }

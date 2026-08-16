@@ -76,6 +76,7 @@ pub mod hooks;
 #[cfg(any(test, feature = "hosted"))]
 extern crate std;
 
+pub mod fs_dir;
 pub mod paths;
 pub mod pseudo;
 pub mod reg;

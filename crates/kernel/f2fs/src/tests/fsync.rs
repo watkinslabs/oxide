@@ -2,7 +2,7 @@
 //! of the blocks the fast path leaves behind for the next mount to find.
 
 use super::*;
-use crate::mode::S_IFREG;
+use crate::mode::{S_IFDIR, S_IFREG};
 use crate::node::footer;
 use crate::opts::Options;
 use crate::test_image::{self, ROOT_INO};
@@ -15,6 +15,7 @@ use alloc::vec::Vec;
 use sectors::MemImage;
 
 const NOW: (u64, u32) = (1_800_000_000, 7);
+const LATER: (u64, u32) = (1_800_000_099, 3);
 const BODY: usize = 2 * BLKSIZE;
 
 fn spec() -> NewInode { NewInode { mode: S_IFREG | 0o644, uid: 0, gid: 0, rdev: 0, now: NOW } }
@@ -28,6 +29,16 @@ fn ready(opts: Options) -> (Volume<MemImage>, u32) {
     let ino = v.create(ROOT_INO, b"f", &spec(), None).expect("create");
     v.write_file(ino, 0, &body()).expect("write");
     v.commit().expect("commit");
+    (v, ino)
+}
+
+/// The same volume with one byte changed, which is the state in which there
+/// is something for a sync to make durable. A file nothing has touched since
+/// the checkpoint is already as durable as the chain could make it, and both
+/// calls answer it by writing nothing at all.
+fn dirtied(opts: Options) -> (Volume<MemImage>, u32) {
+    let (mut v, ino) = ready(opts);
+    v.write_file(ino, 0, b"x").expect("write");
     (v, ino)
 }
 
@@ -47,27 +58,44 @@ fn emitted(v: &Volume<MemImage>, before: (u32, u16), after: (u32, u16)) -> Vec<u
 
 #[test]
 fn a_checkpointed_regular_file_takes_the_chain() {
-    let (mut v, ino) = ready(Options::defaults());
+    let (mut v, ino) = dirtied(Options::defaults());
     assert_eq!(v.fsync(ino).expect("fsync"), CpReason::None);
 }
 
 #[test]
 fn a_directory_takes_the_checkpoint() {
     let (mut v, _) = ready(Options::defaults());
+    v.create(ROOT_INO, b"g", &spec(), None).expect("create");
     assert_eq!(v.fsync(ROOT_INO).expect("fsync"), CpReason::NonRegular);
 }
 
 #[test]
 fn a_file_whose_parent_is_not_yet_durable_takes_the_checkpoint() {
+    // The parent itself is new, so no entry could be restored under it: there
+    // is nothing on the medium for replay to add a name to.
+    let mut v = test_image::with_root().mount_rw().expect("mount");
+    let dir = NewInode { mode: S_IFDIR | 0o755, ..spec() };
+    let sub = v.create(ROOT_INO, b"d", &dir, None).expect("mkdir");
+    let ino = v.create(sub, b"new", &spec(), None).expect("create");
+    assert_eq!(v.fsync(ino).expect("fsync"), CpReason::ParentNotCheckpointed);
+}
+
+#[test]
+fn a_new_file_under_a_durable_parent_takes_the_chain() {
+    // The entry is not on the medium either — but the directory holding it is,
+    // so replay can put the name back from the marked block, which is what the
+    // dentry mark is for. Forcing a checkpoint here would make every file
+    // creation cost a whole pack.
     let mut v = test_image::with_root().mount_rw().expect("mount");
     let ino = v.create(ROOT_INO, b"new", &spec(), None).expect("create");
-    assert_eq!(v.fsync(ino).expect("fsync"), CpReason::ParentNotCheckpointed);
+    assert_eq!(v.fsync(ino).expect("fsync"), CpReason::None);
+    assert!(v.sync_state(ino).is_ok());
 }
 
 #[test]
 fn two_logs_take_the_checkpoint() {
     let opts = Options { active_logs: 2, ..Options::defaults() };
-    let (mut v, ino) = ready(opts);
+    let (mut v, ino) = dirtied(opts);
     assert_eq!(v.fsync(ino).expect("fsync"), CpReason::SpecLogNum);
 }
 
@@ -76,6 +104,7 @@ fn a_second_name_takes_the_checkpoint() {
     let (mut v, ino) = ready(Options::defaults());
     v.link(ROOT_INO, b"g", ino, NOW).expect("link");
     v.commit().expect("commit");
+    v.write_file(ino, 0, b"x").expect("write");
     assert_eq!(v.fsync(ino).expect("fsync"), CpReason::Hardlink);
 }
 
@@ -107,6 +136,7 @@ fn the_checkpoint_path_writes_one() {
     let (mut v, ino) = ready(Options::defaults());
     let before = v.checkpoint().version;
     v.write_file(ino, 0, b"x").expect("write");
+    v.create(ROOT_INO, b"g", &spec(), None).expect("create");
     assert!(v.fsync(ROOT_INO).expect("fsync").needed());
     assert_eq!(v.checkpoint().version, before + 1);
     assert!(!v.is_dirty());
@@ -116,7 +146,7 @@ fn the_checkpoint_path_writes_one() {
 
 #[test]
 fn the_chain_path_writes_one_block_per_node_of_the_file() {
-    let (mut v, ino) = ready(Options::defaults());
+    let (mut v, ino) = dirtied(Options::defaults());
     let inode = v.read_inode(ino).expect("inode");
     let expect = v.fsync_dnodes(ino, &inode).expect("nodes").len();
     let before = log_pos(&v);
@@ -136,7 +166,7 @@ fn a_small_file_has_only_its_inode_in_the_chain() {
 
 #[test]
 fn every_block_the_chain_path_writes_carries_the_fsync_mark() {
-    let (mut v, ino) = ready(Options::defaults());
+    let (mut v, ino) = dirtied(Options::defaults());
     let before = log_pos(&v);
     v.fsync(ino).expect("fsync");
     for addr in emitted(&v, before, log_pos(&v)) {
@@ -149,7 +179,7 @@ fn every_block_the_chain_path_writes_carries_the_fsync_mark() {
 
 #[test]
 fn the_inode_leads_the_chain() {
-    let (mut v, ino) = ready(Options::defaults());
+    let (mut v, ino) = dirtied(Options::defaults());
     let before = log_pos(&v);
     v.fsync(ino).expect("fsync");
     let got = emitted(&v, before, log_pos(&v));
@@ -161,9 +191,10 @@ fn the_inode_leads_the_chain() {
 
 #[test]
 fn each_link_names_the_block_that_follows_it() {
-    let (mut v, ino) = ready(Options::defaults());
+    let (mut v, ino) = dirtied(Options::defaults());
     let before = log_pos(&v);
     v.fsync(ino).expect("first");
+    v.write_file(ino, 0, b"y").expect("write");
     v.fsync(ino).expect("second");
     let got = emitted(&v, before, log_pos(&v));
     assert!(got.len() >= 2);
@@ -176,7 +207,7 @@ fn each_link_names_the_block_that_follows_it() {
 
 #[test]
 fn the_last_link_names_where_the_log_will_write_next() {
-    let (mut v, ino) = ready(Options::defaults());
+    let (mut v, ino) = dirtied(Options::defaults());
     let before = log_pos(&v);
     v.fsync(ino).expect("fsync");
     let got = emitted(&v, before, log_pos(&v));
@@ -187,7 +218,7 @@ fn the_last_link_names_where_the_log_will_write_next() {
 
 #[test]
 fn a_checkpointed_inode_needs_no_dentry_mark() {
-    let (mut v, ino) = ready(Options::defaults());
+    let (mut v, ino) = dirtied(Options::defaults());
     let before = log_pos(&v);
     v.fsync(ino).expect("fsync");
     let got = emitted(&v, before, log_pos(&v));
@@ -308,13 +339,55 @@ fn an_empty_slot_contributes_nothing() {
 // ------------------------------------------------------------- the state read
 
 #[test]
-fn a_node_written_since_the_checkpoint_is_not_checkpointed() {
+fn a_file_with_nothing_to_say_writes_nothing() {
+    // Both calls answer a clean file the same way, and neither costs a block.
+    // A build that wrote a chain here would put one in the log for every
+    // `fsync` a program makes in a loop over an untouched file.
     let (mut v, ino) = ready(Options::defaults());
-    assert!(v.node_is_checkpointed(ino));
-    v.write_file(ino, 0, b"x").expect("write");
-    assert!(!v.node_is_checkpointed(ino));
-    v.commit().expect("commit");
-    assert!(v.node_is_checkpointed(ino));
+    let before = log_pos(&v);
+    assert_eq!(v.fsync(ino).expect("fsync"), CpReason::None);
+    assert_eq!(v.fdatasync(ino).expect("fdatasync"), CpReason::None);
+    assert_eq!(log_pos(&v), before, "the log did not move");
+    assert_eq!(v.checkpoint().version, v.checkpoint().version);
+}
+
+#[test]
+fn a_data_sync_leaves_a_timestamp_where_it_found_it() {
+    // The one state the two calls part on: nothing changed but the times, so a
+    // data sync has nothing it promised to write, and a full sync has.
+    let (mut v, ino) = ready(Options::defaults());
+    v.set_times(ino, LATER, LATER).expect("times");
+    let before = log_pos(&v);
+    assert_eq!(v.fdatasync(ino).expect("fdatasync"), CpReason::None);
+    assert_eq!(log_pos(&v), before, "a data sync owes the caller nothing here");
+    assert_eq!(v.fsync(ino).expect("fsync"), CpReason::None);
+    assert_ne!(log_pos(&v), before, "a full sync owes it the time");
+}
+
+#[test]
+fn a_data_sync_writes_the_chain_when_the_contents_moved() {
+    let (mut v, ino) = dirtied(Options::defaults());
+    let before = log_pos(&v);
+    assert_eq!(v.fdatasync(ino).expect("fdatasync"), CpReason::None);
+    assert_ne!(log_pos(&v), before);
+}
+
+#[test]
+fn a_data_sync_takes_the_checkpoint_the_same_ladder_does() {
+    // The parting is over WHETHER to sync, never over how: once there is
+    // something to make durable, both calls answer to the same ladder.
+    let (mut v, _) = ready(Options::defaults());
+    v.create(ROOT_INO, b"g", &spec(), None).expect("create");
+    assert_eq!(v.fdatasync(ROOT_INO).expect("fdatasync"), CpReason::NonRegular);
+}
+
+#[test]
+fn a_mount_that_cannot_write_reports_success_from_the_data_sync_too() {
+    let v = test_image::with_root().mount_rw().expect("mount");
+    let bytes = v.into_source().snapshot();
+    let img = MemImage::from_bytes(BLKSIZE as u32, bytes);
+    let mut v = Volume::mount_with(img, Options::defaults(), false).expect("mount");
+    assert_eq!(v.fdatasync(ROOT_INO).expect("fdatasync"), CpReason::None);
 }
 
 #[test]

@@ -97,23 +97,23 @@ impl<S: SectorSource> Volume<S> {
         Ok(())
     }
 
-    /// Every node block of the current generation reachable from the chain
-    /// head, in the order the log wrote them.
+    /// Hand every marked block of the chain from `head` to `take`, in the
+    /// order the log wrote them, until it answers false.
     ///
     /// Blocks WITHOUT the fsync mark are part of the chain and are walked
-    /// through, but are not returned: they were written by ordinary activity
+    /// through, but are not offered: they were written by ordinary activity
     /// that no `fsync` promised, and replaying them would restore state the
     /// caller was never told was durable.
     /// # C: O(chain length) blocks
-    pub fn scan_fsync_chain(&self) -> Result<Vec<Found>, Errno> {
-        let mut out = Vec::new();
-        let mut slow = self.fsync_chain_start();
+    pub(crate) fn walk_chain(&self, head: u32, take: &mut dyn FnMut(Found) -> bool)
+        -> Result<(), Errno> {
+        let mut slow = head;
         let mut fast = slow;
         let mut detecting = true;
         loop {
-            let Some((f, next)) = self.chain_link(slow)? else { return Ok(out) };
+            let Some((f, next)) = self.chain_link(slow)? else { return Ok(()) };
             if f.is_fsync() {
-                out.push(Found {
+                let found = Found {
                     addr: slow,
                     nid: f.nid,
                     ino: f.ino,
@@ -121,17 +121,27 @@ impl<S: SectorSource> Volume<S> {
                     is_inode: f.is_inode(),
                     fsync: true,
                     dent: f.is_dent(),
-                });
+                };
+                if !take(found) { return Ok(()); }
             }
             // A pointer at the block's own address does not advance the log
             // and so cannot name a successor: the chain ends here. That is
             // distinct from a pointer that advances and later comes back,
             // which no append-only log can produce and which the fast pointer
             // below refuses.
-            if next == slow { return Ok(out); }
+            if next == slow { return Ok(()); }
             slow = next;
             self.chain_step_fast(slow, &mut fast, &mut detecting)?;
         }
+    }
+
+    /// Every node block of the current generation reachable from the chain
+    /// head, in the order the log wrote them.
+    /// # C: O(chain length) blocks
+    pub fn scan_fsync_chain(&self) -> Result<Vec<Found>, Errno> {
+        let mut out = Vec::new();
+        self.walk_chain(self.fsync_chain_start(), &mut |f| { out.push(f); true })?;
+        Ok(out)
     }
 
     /// Whether a crash left anything an `fsync` promised.

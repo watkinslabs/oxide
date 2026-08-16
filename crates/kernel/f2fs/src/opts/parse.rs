@@ -9,17 +9,24 @@
 
 use syscall::errno::Errno;
 
+use crate::fault::{ALL_TYPES};
+
+use super::bounds::{active_logs_ok, inline_xattr_ok, MAX_UNUSABLE_PERC};
+use super::crypt;
+use super::jquota::{self, JqFmt, QKind};
 use super::{AllocMode, BackgroundGc, DiscardUnit, Errors, Fragment, FsyncMode, MemoryMode,
             Mode, Options};
 
 const SEP: char = ',';
 const ASSIGN: char = '=';
 
-/// Log counts the format admits. Anything else would leave the checkpoint's
-/// current-segment array describing logs the volume does not have.
-const VALID_ACTIVE_LOGS: [u8; 3] = [2, 4, 6];
-
-/// Parse `data` on top of `base`. # C: O(len(data))
+/// Parse `data` on top of `base`.
+///
+/// The two quota arrangements are settled against each other once, at the end,
+/// rather than as each name arrives: `usrquota` and `usrjquota=` may appear in
+/// either order in one string, and whether they conflict is a property of the
+/// whole string.
+/// # C: O(len(data))
 pub fn parse(base: Options, data: &str) -> Result<Options, Errno> {
     let mut o = base;
     for token in data.split(SEP).map(str::trim).filter(|t| !t.is_empty()) {
@@ -29,6 +36,11 @@ pub fn parse(base: Options, data: &str) -> Result<Options, Errno> {
         };
         one(&mut o, key, val)?;
     }
+    let (mut usr, mut grp, mut prj) = (o.usrquota, o.grpquota, o.prjquota);
+    jquota::settle(&o.jquota, &mut usr, &mut grp, &mut prj)?;
+    o.usrquota = usr;
+    o.grpquota = grp;
+    o.prjquota = prj;
     Ok(o)
 }
 
@@ -47,14 +59,27 @@ fn one(o: &mut Options, key: &str, val: Option<&str>) -> Result<(), Errno> {
         "acl" => { flag(val)?; o.acl = true; }
         "noacl" => { flag(val)?; o.acl = false; }
         "active_logs" => {
-            let n = dec(val)? as u8;
-            if !VALID_ACTIVE_LOGS.contains(&n) { return Err(Errno::Einval); }
-            o.active_logs = n;
+            // Checked at full width BEFORE narrowing: a count that only fits
+            // after truncation is a different count, and `active_logs=258`
+            // would otherwise mount as two logs.
+            let n = dec(val)?;
+            if !active_logs_ok(n) { return Err(Errno::Einval); }
+            o.active_logs = n as u8;
         }
+        "fastboot" => { flag(val)?; o.fastboot = true; }
+        // Two names the format still accepts and no longer acts on. Refusing
+        // them would break a mount line that has carried them for years;
+        // treating them as unknown would accept `heap=3`, which they never
+        // took.
+        "heap" | "no_heap" => flag(val)?,
         "disable_ext_identify" => { flag(val)?; o.ext_identify = false; }
         "inline_xattr" => { flag(val)?; o.inline_xattr = true; }
         "noinline_xattr" => { flag(val)?; o.inline_xattr = false; }
-        "inline_xattr_size" => o.inline_xattr_size = Some(dec(val)? as u16),
+        "inline_xattr_size" => {
+            let n = dec(val)?;
+            if !inline_xattr_ok(n) { return Err(Errno::Einval); }
+            o.inline_xattr_size = Some(n as u16);
+        }
         "inline_data" => { flag(val)?; o.inline_data = true; }
         "noinline_data" => { flag(val)?; o.inline_data = false; }
         "inline_dentry" => { flag(val)?; o.inline_dentry = true; }
@@ -68,6 +93,7 @@ fn one(o: &mut Options, key: &str, val: Option<&str>) -> Result<(), Errno> {
         "noextent_cache" => { flag(val)?; o.extent_cache = false; }
         "age_extent_cache" => { flag(val)?; o.age_extent_cache = true; }
         "reserve_root" => o.reserve_root = dec(val)?,
+        "reserve_node" => o.reserve_node = dec(val)?,
         "resuid" => o.resuid = dec(val)?,
         "resgid" => o.resgid = dec(val)?,
         "mode" => o.mode = mode(need(val)?)?,
@@ -91,6 +117,28 @@ fn one(o: &mut Options, key: &str, val: Option<&str>) -> Result<(), Errno> {
         "grpquota" => { flag(val)?; o.grpquota = true; }
         "prjquota" => { flag(val)?; o.prjquota = true; }
         "noquota" => { flag(val)?; o.usrquota = false; o.grpquota = false; o.prjquota = false; }
+        // A bare spelling CLEARS the name rather than being refused: that is
+        // how a remount takes a quota file back out of the arrangement.
+        "usrjquota" => o.jquota.note(QKind::User, val)?,
+        "grpjquota" => o.jquota.note(QKind::Group, val)?,
+        "prjjquota" => o.jquota.note(QKind::Project, val)?,
+        "jqfmt" => o.jquota.fmt = Some(JqFmt::parse(need(val)?).ok_or(Errno::Einval)?),
+        "fault_injection" => o.fault.rate = Some(dec_signed(val)?),
+        "fault_type" => {
+            let n = dec(val)?;
+            // The bound the mount interface states is one wider than the set
+            // of sites: the single value past the last site is accepted here
+            // and dropped where the mask is stored.
+            if n > ALL_TYPES.wrapping_add(1) { return Err(Errno::Einval); }
+            o.fault.types = Some(n);
+        }
+        "test_dummy_encryption" => {
+            o.dummy_policy = Some(crypt::parse_dummy(o.dummy_policy, val)?);
+        }
+        // Accepted whether or not the path to the device can encrypt: it moves
+        // WHERE the same encryption happens, so a build without it encrypts in
+        // the filesystem instead and the caller gets what it asked for.
+        "inlinecrypt" => { flag(val)?; o.inlinecrypt = crypt::INLINE_CRYPT; }
         // Names the format defines that this build cannot deliver. Each one
         // changes what the caller gets, so accepting it silently would be a
         // promise nothing keeps.
@@ -100,15 +148,7 @@ fn one(o: &mut Options, key: &str, val: Option<&str>) -> Result<(), Errno> {
         | "nocompress_extension"
         | "compress_chksum"
         | "compress_mode"
-        | "compress_cache"
-        | "test_dummy_encryption"
-        | "inlinecrypt"
-        | "fault_injection"
-        | "fault_type"
-        | "usrjquota"
-        | "grpjquota"
-        | "prjjquota"
-        | "jqfmt" => return Err(Errno::Eopnotsupp),
+        | "compress_cache" => return Err(Errno::Eopnotsupp),
         _ => {}
     }
     Ok(())
@@ -126,6 +166,16 @@ fn flag(val: Option<&str>) -> Result<(), Errno> {
 /// A decimal value. # C: O(len)
 fn dec(val: Option<&str>) -> Result<u32, Errno> {
     need(val)?.parse::<u32>().map_err(|_| Errno::Einval)
+}
+
+/// A decimal value the interface carries as signed.
+///
+/// The sign is not decoration: a negative one is a value the mount interface
+/// accepts and the field it lands in refuses, which produces a mount with that
+/// field unset rather than a mount that fails.
+/// # C: O(len)
+fn dec_signed(val: Option<&str>) -> Result<i32, Errno> {
+    need(val)?.parse::<i32>().map_err(|_| Errno::Einval)
 }
 
 /// # C: O(1)
@@ -197,21 +247,37 @@ fn errors(v: &str) -> Result<Errors, Errno> {
     }
 }
 
-/// `checkpoint=` carries three spellings, one of which takes a percentage.
+/// `checkpoint=` carries four spellings, and two of them differ only by a
+/// trailing sign.
+///
+/// `disable:5` is five BLOCKS the mount may leave unusable; `disable:5%` is
+/// five percent of the volume. Reading the first as the second caps a large
+/// volume at five blocks, and reading the second as the first caps a small one
+/// at five percent of nothing — both leave the mount unable to write long
+/// before the caller expected, and neither reports anything.
 /// # C: O(len)
 fn checkpoint(o: &mut Options, v: &str) -> Result<(), Errno> {
     match v {
-        "enable" => { o.checkpoint_disabled = false; Ok(()) }
+        "enable" => {
+            o.checkpoint_disabled = false;
+            o.unusable_cap = 0;
+            o.unusable_cap_perc = 0;
+            Ok(())
+        }
         "disable" => { o.checkpoint_disabled = true; Ok(()) }
-        other => match other.strip_prefix("disable:") {
-            Some(pct) => {
-                let n: u32 = pct.parse().map_err(|_| Errno::Einval)?;
-                if n > 100 { return Err(Errno::Einval); }
-                o.checkpoint_disabled = true;
-                Ok(())
+        other => {
+            let arg = other.strip_prefix("disable:").ok_or(Errno::Einval)?;
+            match arg.strip_suffix('%') {
+                Some(pct) => {
+                    let n: u32 = pct.parse().map_err(|_| Errno::Einval)?;
+                    if n > MAX_UNUSABLE_PERC { return Err(Errno::Einval); }
+                    o.unusable_cap_perc = n;
+                }
+                None => o.unusable_cap = arg.parse().map_err(|_| Errno::Einval)?,
             }
-            None => Err(Errno::Einval),
-        },
+            o.checkpoint_disabled = true;
+            Ok(())
+        }
     }
 }
 

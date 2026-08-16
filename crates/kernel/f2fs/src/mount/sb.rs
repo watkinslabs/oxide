@@ -63,6 +63,8 @@ impl SuperOps for F2fsSuperOps {
         if self.fs.checkpoint().is_err() {
             klog::warn::warn_on(true, "f2fs: could not write a checkpoint at unmount; run fsck");
         }
+        // The reporting directories describe a volume that no longer exists.
+        crate::fsattr::run_teardown(&crate::fsattr::dev_id(self.fs.source()));
     }
 
     /// Freezing must leave the medium consistent, which for this filesystem

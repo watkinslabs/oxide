@@ -8,6 +8,8 @@
 #[path = "cmac256.rs"] mod cmac256;
 #[path = "ccm.rs"] mod ccm;
 #[path = "gcm.rs"] mod gcm;
+#[path = "cbc.rs"] mod cbc;
+#[path = "xts.rs"] mod xts;
 
 const fn hexval(c: u8) -> u8 {
     match c {
