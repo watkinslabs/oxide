@@ -992,6 +992,7 @@ dependencies = [
  "sectors",
  "sync",
  "syscall",
+ "utf8",
  "vfs",
 ]
 

@@ -13,6 +13,7 @@ vfs     = { path = "../vfs" }
 block   = { path = "../block" }
 sectors = { path = "../sectors" }
 crc     = { path = "../../shared/crc" }
+utf8    = { path = "../../shared/utf8" }
 
 
 [features]
