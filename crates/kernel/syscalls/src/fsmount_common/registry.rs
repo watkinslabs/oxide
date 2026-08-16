@@ -270,6 +270,7 @@ fn register_filesystems() {
         // the medium is not fails every write at the first one instead of at
         // the mount.
         let sb_flags = if fs.is_writable() { sb_flags } else { sb_flags | vfs::superblock::SB_RDONLY };
+        let root = fs.root_inode();
         let fs: Arc<dyn vfs::fs::FileSystem> = fs;
         mounted(ty, fs, Some(root), source, sb_flags)
     })));
