@@ -78,7 +78,72 @@ struct Mount {
 
 Impls `mount`/`umount2` + new mount API (`fsopen`/`fsconfig`/`fsmount`/`move_mount`).
 
-## 7 Concurrency
+## 7 Union mounts (frozen)
+
+One tree presented from several stacked ones, with writes landing in a single
+writable layer. Owner: `crates/kernel/overlayfs` (`52§5` rule 13). Registered as
+`overlay` and `overlayfs`; no source, every layer named in the option string.
+
+### 7.1 Layer stack
+
+| Term | Meaning |
+|---|---|
+| upper | writable layer; absent = mount is read-only |
+| lower | read-only layers, topmost first |
+| data-only | lower layer reachable only by an absolute redirect; no name resolves into it |
+| workdir | scratch on upper's filesystem; objects are built here and renamed into place |
+| indexdir | replaces workdir when `index=on`; keys copied-up objects by origin handle |
+
+Refused at mount: workdir inside upperdir or vice versa, a layer that is not a
+directory, a lower layer equal to upper or work, a lone lower layer with no
+upper, more than `500` layers.
+
+### 7.2 Records a layer carries
+
+Namespace `trusted.overlay.` (`user.overlay.` under `userxattr`); doubled
+namespace escapes an object's own attribute. Private records never appear in
+`listxattr` and are never copied up.
+
+| Record | On | Meaning |
+|---|---|---|
+| `opaque` | dir | `y` hides every lower dir of the name; `x` = holds marked whiteouts |
+| `redirect` | any | where the object's lower half lives (name, or path from layer root) |
+| `origin` | upper | file handle of the lower object it was copied from |
+| `impure` | dir | holds entries whose lower origin is not their name |
+| `metacopy` | reg | metadata only; data is still below |
+| `upper`,`nlink`,`uuid`,`protattr`,`whiteout` | per `overlayfs` uapi module | |
+
+Whiteout = character device, rdev 0. Second form (layers that hold no device
+nodes): empty regular file carrying `whiteout`, in a dir whose `opaque` is `x`.
+`mknod` of rdev-0 char inside the overlay: EPERM.
+
+### 7.3 Invariants
+
+1. Lookup order: upper, then each lower under the same parent, stopping at a
+   whiteout, an opaque dir, or a complete non-directory.
+2. A redirect is followed only when the mount asked for it (`redirect_dir`),
+   and a metacopy record only under `metacopy=on`; otherwise EPERM.
+3. Copy-up builds in workdir and renames into place LAST. Data before xattrs
+   (a write clears file capabilities); size before timestamps.
+4. Delete leaves a whiteout iff the name still resolves below.
+5. Merged readdir: one entry per name, whiteouts filtered and hiding lower
+   names, bottom layer's entries first in that layer's order.
+6. A copied-up object keeps the inode number it had; `xino` tags lower numbers
+   so two layers' objects never collide.
+7. `statfs` reports the upper layer's numbers (topmost lower when read-only),
+   with `f_type` = `OVERLAYFS_SUPER_MAGIC`.
+
+### 7.4 Options
+
+`lowerdir`,`lowerdir+`,`datadir+`,`upperdir`,`workdir`,`default_permissions`,
+`redirect_dir`,`index`,`uuid`,`nfs_export`,`userxattr`,`xino`,`metacopy`,
+`verity`,`fsync`,`volatile`,`override_creds`. Conflict resolution: two
+explicitly named options that contradict are EINVAL; a named one against a
+defaulted one wins silently. `userxattr` forces `redirect_dir=nofollow` and
+`metacopy=off`. Without privilege over `trusted.`, naming `redirect_dir`,
+`metacopy`, `verity` or a data-only layer is EPERM.
+
+## 8 Concurrency
 
 - Dentry cache: RCU read, spinlock insert, class `Dentry`.
 - Inode cache: same shape, class `Inode`.
@@ -87,7 +152,7 @@ Impls `mount`/`umount2` + new mount API (`fsopen`/`fsconfig`/`fsmount`/`move_mou
 - FD table: per-process spinlock, class `FdTable`.
 - Order: `MountTable` < `Dentry` < `Inode` < `FdTable` < `Superblock` (cross-FS rename).
 
-## 8 Perf budget
+## 9 Perf budget
 
 | Op | p99 cy |
 |---|---|
@@ -97,7 +162,7 @@ Impls `mount`/`umount2` + new mount API (`fsopen`/`fsconfig`/`fsmount`/`move_mou
 | `write` page-cache hit (no dirty propagation) | 2000 |
 | `fstat` cached | 600 |
 
-## 9 Test contract (frozen)
+## 10 Test contract (frozen)
 
 - Path resolution unit tests on synthetic tree: `..`, symlinks, depth limit, BENEATH, mount transitions, cross-mount `..`.
 - Property: random tree + random ops; verify dentry/inode invariants 2,3,4.
@@ -105,25 +170,31 @@ Impls `mount`/`umount2` + new mount API (`fsopen`/`fsconfig`/`fsmount`/`move_mou
 - QEMU: mount tmpfs + ext4 image, `find /` + `cp -a` between them; no errors.
 - PR-time gate uses `paranoid-ci` (`debug-vfs`) per `41§3`. Randomized fs_mark + find + concurrent touch/unlink workloads run in proptest harness; static counter reconciliation enforced at end.
 - Coverage ≥95%.
+- Union mounts (`§7`): hosted tests over in-memory layer stacks covering the
+  lookup order, both whiteout forms, opaque and redirect, copy-up of every
+  object type with its ordering, merged readdir order and deduplication, and
+  the option conflict table. Positive control required on the copy-up ordering
+  and on the whiteout-on-delete rule.
 
-## 10 Failure modes
+## 11 Failure modes
 
 - Symlink loop: ELOOP.
 - Cross-ns mount escape: EXDEV.
 - Inode op returns invariant-breaking value: panic in debug; error to user in release.
 
-## 11 Debug
+## 12 Debug
 
 `debug-vfs`: dentry+inode refcount audit per op.
 
-## 12 Log
+## 13 Log
 
 `target="vfs"`,`"vfs::lookup"`,`"vfs::mount"`. trace=per-lookup (debug only); debug=mount/unmount; warn=ELOOP retries.
 
-## 13 Cross-spec
+## 14 Cross-spec
 
-`12` (slab for inode/dentry alloc), `06` (RCU+seqlock+locks), `15` (file syscalls), `17` (page cache backing), `19` (procfs/sysfs/devtmpfs as Filesystems), `28` (devpts), `26` (mount-ns).
+`12` (slab for inode/dentry alloc), `06` (RCU+seqlock+locks), `15` (file syscalls), `17` (page cache backing), `19` (procfs/sysfs/devtmpfs as Filesystems), `28` (devpts), `26` (mount-ns), `52§5` (union-mount crate ownership).
 
-## 14 Changelog
+## 15 Changelog
 
-(none)
+- 2026-08-16: Added `## 7` union mounts (overlayfs): layer stack, layer
+  records, invariants, options. Owner crate recorded in `52§5` rule 13.

@@ -121,7 +121,7 @@ must use grouped paths from day one.
     controls built from that plan (`61`). It is the only routing policy for an
     HD-Audio codec; there is no second table deciding what a jack is for.
 
-11. Device-class ownership: `crates/kernel/power-supply` owns the power-supply
+13. Device-class ownership: `crates/kernel/power-supply` owns the power-supply
     class (registered supplies, the property/unit contract, per-supply
     attribute visibility, the change fan-out) and `crates/kernel/backlight`
     owns the backlight class (registered devices, brightness range and blank
@@ -133,7 +133,7 @@ must use grouped paths from day one.
     AML namespace: no other crate holds a parser handle, and `acpi::aml_eval`
     is the only read side of it.
 
-12. Power-management ownership: `crates/kernel/thermal` owns the thermal class
+14. Power-management ownership: `crates/kernel/thermal` owns the thermal class
     (zones, trips, cooling devices, governors, the polling cadence and the
     attribute contract), `crates/kernel/cpufreq` owns frequency scaling (the
     operating-point table, the policy with its limit aggregation, the
@@ -149,6 +149,17 @@ must use grouped paths from day one.
     `sched` in a host build. `crates/kernel/firmware` owns the ACPI providers.
     The terminal action for a critical thermal trip is installed by kernel
     init, because a device class does not own powering the machine down.
+15. `crates/kernel/overlayfs` owns union-mount semantics: the layer stack, the
+    merged lookup, whiteouts and opaque directories, copy-up, the merged
+    directory stream, and the four records a layer carries
+    (`trusted.overlay.{opaque,redirect,origin,metacopy,...}`, and their
+    `user.` form). It is the only place any of those is written or read; no
+    other crate may recognize a whiteout or a marker. It depends on `vfs` for
+    the inode surface it drives the layers through, `syscall` for the errno
+    type, `sync` and `klog`. `vfs` owns whiteout device number and rename-flag
+    constants (`fs::mknod`, `namei::may_rename`) and knows nothing of layers;
+    `syscalls::fsmount_common::registry` registers the type and resolves layer
+    paths, holding no stacking state of its own.
 
 ## 6 Naming rules (frozen)
 
@@ -203,6 +214,10 @@ Constraints:
     reverse; neither may depend on `firmware`, a driver crate, or a provider.
 12. `crates/shared/kstrtox` is dependency-free: the Linux `kstrto*` conversion
     every sysfs `store` needs, in one place, not one parser per class.
+13. `crates/kernel/overlayfs` is a leaf over `vfs`/`syscall`/`sync`/`klog`. It
+    depends on no other filesystem and no block layer — its layers are
+    directories reached through `vfs::Inode`, whatever holds them. The syscall
+    shim depends on it, never the reverse.
 
 ## 8 Change policy
 
@@ -248,6 +263,9 @@ Temporary exceptions are allowed only with:
 
 ## 12 Changelog
 
+- 2026-08-16: Added `crates/kernel/overlayfs` as the single owner of
+  union-mount semantics (layer stack, merged lookup, whiteouts, copy-up,
+  merged readdir, layer records).
 - 2026-08-15: Added the power-supply and backlight device-class ownership
   boundaries, their ACPI providers under `firmware`, and `crates/shared/kstrtox`.
 - 2026-08-15: Added `crates/kernel/thermal`, `crates/kernel/cpufreq` and
