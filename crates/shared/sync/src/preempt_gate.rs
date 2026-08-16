@@ -132,20 +132,44 @@ pub fn held_rank() -> u16 {
 /// holding" — that is the question every sleep-while-atomic report raises, and
 /// the one that cost a whole session of guessing. # C: O(depth)
 #[cfg(feature = "debug-preempt")]
-pub fn write_held_stack() {
-    let cpu = cpu_slot(installed_cpu());
-    let depth = HELD_DEPTH[cpu].load(Ordering::Relaxed) as usize;
+pub fn write_held_stack() { write_held_stack_on(installed_cpu()); }
+
+/// Frames held on `cpu`: `(rank, acquisition site)` outermost first, and the
+/// count of frames that overflowed the trace.
+///
+/// The trace is per-CPU state written only by its own CPU, so a PEER may read
+/// it while that CPU is wedged. That is the only readable evidence a
+/// cross-CPU stall report has: the stalled CPU cannot run its own reporter,
+/// and a soft-lockup report driven by the stalled CPU's own tick never fires
+/// when the tick is what stopped. # C: O(1)
+#[cfg(feature = "debug-preempt")]
+pub fn held_frame_on(cpu: usize, i: usize) -> Option<(u16, Option<&'static Location<'static>>)> {
+    let cpu = cpu_slot(cpu);
+    if i >= (HELD_DEPTH[cpu].load(Ordering::Relaxed) as usize).min(HELD_LOCK_DEPTH) { return None; }
+    let site = HELD_SITES[cpu][i].load(Ordering::Relaxed);
+    // SAFETY: held_frame_on reads HELD_SITES, whose slots only ever hold a
+    // `&'static Location` the compiler materialised for a `#[track_caller]`
+    // call site; such a value lives for the whole program and is never freed.
+    let site = if site.is_null() { None } else { Some(unsafe { &*site }) };
+    Some((HELD_RANKS[cpu][i].load(Ordering::Relaxed), site))
+}
+
+/// Tracked depth on `cpu`, clamped to the trace capacity. # C: O(1)
+#[cfg(feature = "debug-preempt")]
+pub fn held_depth_on(cpu: usize) -> usize {
+    (HELD_DEPTH[cpu_slot(cpu)].load(Ordering::Relaxed) as usize).min(HELD_LOCK_DEPTH)
+}
+
+/// Print every held frame on `cpu` as `rank@file:line`, outermost first.
+/// # C: O(depth)
+#[cfg(feature = "debug-preempt")]
+pub fn write_held_stack_on(cpu: usize) {
     klog::write_raw(b" held=[");
-    for i in 0..depth.min(HELD_LOCK_DEPTH) {
+    for i in 0..held_depth_on(cpu) {
+        let Some((rank, site)) = held_frame_on(cpu, i) else { break };
         if i != 0 { klog::write_raw(b" "); }
-        klog::write_dec_u64(HELD_RANKS[cpu][i].load(Ordering::Relaxed) as u64);
-        let site = HELD_SITES[cpu][i].load(Ordering::Relaxed);
-        if site.is_null() { continue; }
-        // SAFETY: the slot only ever holds a `&'static Location` the compiler
-        // materialised for a `#[track_caller]` call site, which lives for the
-        // program's lifetime; it is never freed and never rewritten to a
-        // non-Location value.
-        let site = unsafe { &*site };
+        klog::write_dec_u64(rank as u64);
+        let Some(site) = site else { continue };
         klog::write_raw(b"@");
         klog::write_raw(site.file().as_bytes());
         klog::write_raw(b":");
@@ -214,7 +238,11 @@ pub(crate) fn acquire(rank: u16) -> PreemptToken {
     let site = Location::caller();
     let p = OPS.load(Ordering::Acquire);
     if p.is_null() {
-        trace_push(0, rank, site);
+        // The same CPU the matching `release` will pop from. A literal 0 here
+        // pushed an uninstalled-gate acquisition onto CPU 0's stack while its
+        // release popped the acquiring CPU's, so one trace grew without bound
+        // and another underflowed.
+        trace_push(installed_cpu(), rank, site);
         return PreemptToken { enable: None };
     }
     // SAFETY: OPS is only ever written by set_preempt_ops from a &'static
@@ -297,142 +325,5 @@ pub(crate) fn release_forgotten() {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{Buddy, Spinlock};
-    #[cfg(feature = "debug-preempt")]
-    use crate::LockClass;
-
-    // Per-THREAD depth: `OPS` is global, so while these ops are installed every
-    // sibling test's lock traffic runs them too. A process-wide counter reads
-    // their acquisitions as this test's.
-    std::thread_local! {
-        static DEPTH: core::cell::Cell<i64> = const { core::cell::Cell::new(0) };
-        static MIN_DEPTH: core::cell::Cell<i64> = const { core::cell::Cell::new(0) };
-    }
-    fn up() { DEPTH.with(|d| d.set(d.get() + 1)); }
-    fn down() {
-        DEPTH.with(|d| {
-            let next = d.get() - 1;
-            d.set(next);
-            MIN_DEPTH.with(|m| if next < m.get() { m.set(next) });
-        });
-    }
-    fn depth() -> i64 { DEPTH.with(core::cell::Cell::get) }
-    #[cfg(feature = "debug-preempt")]
-    std::thread_local! {
-        static CPU: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
-    }
-    #[cfg(feature = "debug-preempt")]
-    fn current_cpu() -> usize { CPU.with(core::cell::Cell::get) }
-    #[cfg(feature = "debug-preempt")]
-    fn set_cpu(cpu: usize) { CPU.with(|c| c.set(cpu)); }
-
-    static COUNTING: PreemptOps = PreemptOps {
-        disable: up,
-        enable: down,
-    };
-
-    fn with_ops<R>(f: impl FnOnce() -> R) -> R {
-        DEPTH.with(|d| d.set(0));
-        MIN_DEPTH.with(|m| m.set(0));
-        #[cfg(feature = "debug-preempt")]
-        set_debug_cpu_hook(current_cpu);
-        set_preempt_ops(&COUNTING);
-        let r = f();
-        OPS.store(core::ptr::null_mut(), Ordering::Release);
-        #[cfg(feature = "debug-preempt")]
-        CPU_HOOK.store(core::ptr::null_mut(), Ordering::Release);
-        r
-    }
-
-    #[test]
-    fn a_held_spinlock_keeps_preemption_disabled_for_the_whole_section() {
-        with_ops(|| {
-            let lk: Spinlock<u32, Buddy> = Spinlock::new(0);
-            assert_eq!(depth(), 0);
-            {
-                let mut g = lk.lock();
-                assert_eq!(depth(), 1, "spin_lock must disable preemption");
-                *g = 5;
-                assert_eq!(depth(), 1);
-            }
-            assert_eq!(depth(), 0, "spin_unlock must re-enable preemption");
-            assert_eq!(MIN_DEPTH.with(core::cell::Cell::get), 0,
-                "the release ran before its matching disable");
-        });
-    }
-
-    #[test]
-    fn try_lock_gates_preemption_only_when_it_succeeds() {
-        with_ops(|| {
-            let lk: Spinlock<u32, Buddy> = Spinlock::new(0);
-            let held = lk.lock();
-            assert_eq!(depth(), 1);
-            assert!(lk.try_lock().is_none());
-            assert_eq!(depth(), 1, "a failed try_lock must not leave preemption off");
-            drop(held);
-            let got = lk.try_lock().expect("free lock");
-            assert_eq!(depth(), 1);
-            drop(got);
-            assert_eq!(depth(), 0);
-        });
-    }
-
-    #[test]
-    fn a_forgotten_guard_released_by_raw_unlock_still_balances() {
-        // The runqueue lock's cross-task handoff: acquire, forget the guard,
-        // and release from `raw_unlock`. The count must come back to zero, or
-        // every context switch leaks one preempt level and the CPU stops
-        // rescheduling for good.
-        with_ops(|| {
-            let lk: Spinlock<u32, crate::TaskList> = Spinlock::new(0);
-            core::mem::forget(lk.lock());
-            assert_eq!(depth(), 1);
-            #[cfg(feature = "debug-preempt")]
-            assert_eq!(held_rank(), crate::TaskList::rank());
-            // SAFETY: exactly one forgotten guard holds this lock.
-            unsafe { lk.raw_unlock(); }
-            assert_eq!(depth(), 0);
-            #[cfg(feature = "debug-preempt")]
-            assert_eq!(held_rank(), 0);
-            assert!(lk.try_lock().is_some());
-        });
-    }
-
-    #[test]
-    fn an_uninstalled_gate_is_inert() {
-        OPS.store(core::ptr::null_mut(), Ordering::Release);
-        DEPTH.with(|d| d.set(0));
-        let lk: Spinlock<u32, Buddy> = Spinlock::new(0);
-        drop(lk.lock());
-        assert_eq!(depth(), 0);
-    }
-
-    #[cfg(feature = "debug-preempt")]
-    #[test]
-    fn held_rank_is_per_cpu_and_restores_the_outer_lock() {
-        with_ops(|| {
-            set_cpu(0);
-            let outer: Spinlock<u32, crate::TaskList> = Spinlock::new(0);
-            let inner: Spinlock<u32, crate::TaskWake> = Spinlock::new(0);
-            let _outer = outer.lock();
-            assert_eq!(held_rank(), crate::TaskList::rank());
-            {
-                let _inner = inner.lock();
-                assert_eq!(held_rank(), crate::TaskWake::rank());
-            }
-            assert_eq!(held_rank(), crate::TaskList::rank());
-
-            let peer = std::thread::spawn(|| {
-                set_cpu(1);
-                let other: Spinlock<u32, crate::Tty> = Spinlock::new(0);
-                let _other = other.lock();
-                assert_eq!(held_rank(), crate::Tty::rank());
-            });
-            peer.join().unwrap();
-            assert_eq!(held_rank(), crate::TaskList::rank(),
-                "a peer CPU must not overwrite this CPU's diagnostic stack");
-        });
-    }
-}
+#[path = "preempt_gate/tests.rs"]
+mod tests;
