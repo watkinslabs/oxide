@@ -98,13 +98,20 @@ fn fill(device: &Arc<VideoDevice>, index: u32, format: &v4l2::format::PixFormat,
     if crate::tpg::render_line(format.pixelformat, format.width, shift, &mut line) == 0 {
         return 0;
     }
-    let state = device.state.lock();
-    let Some(buffer) = state.queue.buffer(index) else { return 0 };
-    let Some(plane) = buffer.planes.first() else { return 0 };
+    // The plane's page list is copied out and the device lock dropped before
+    // the pixels are written. A frame is up to a megabyte and a half; holding
+    // a spinlock across that copy would park every other caller of this
+    // device — and, at thirty frames a second, do it continuously.
+    let (frames, length) = {
+        let state = device.state.lock();
+        let Some(buffer) = state.queue.buffer(index) else { return 0 };
+        let Some(plane) = buffer.planes.first() else { return 0 };
+        (plane.frames.clone(), plane.length as usize)
+    };
     let mut written = 0usize;
     for _ in 0..format.height {
-        if written + stride > plane.length as usize { break; }
-        written += v4l2::node::write_plane(&plane.frames, written, &line);
+        if written + stride > length { break; }
+        written += v4l2::node::write_plane(&frames, written, &line);
     }
     written as u32
 }
