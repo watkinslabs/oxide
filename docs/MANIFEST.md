@@ -83,7 +83,7 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `62-removable-media-filesystems.md` | DRAFT | — | `01`,`02`,`07`,`08`,`09`,`16`,`17`,`52` |
 | `63-selinux-mac.md` | DRAFT | — | `01`,`02`,`06`,`08`,`13`,`15`,`16`,`19`,`24`,`25`,`27`,`29` |
 | `64-v4l2-video-capture.md` | DRAFT | — | `01`,`02`,`06`,`07`,`08`,`09`,`13`,`15`,`16`,`19`,`22`,`23`,`34`,`35`,`52`,`53`,`60` |
-| `62-bluetooth.md` | DRAFT | — | `01`,`02`,`07`,`08`,`15`,`16`,`19`,`25`,`27`,`28`,`35`,`52`,`53` |
+| `65-bluetooth.md` | DRAFT | — | `01`,`02`,`07`,`08`,`15`,`16`,`19`,`25`,`27`,`28`,`35`,`52`,`53` |
 | `44-phase-quick-reference.md` | DRAFT | — | `00`,`40`,`43` |
 
 ## Deleted

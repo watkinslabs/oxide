@@ -1,6 +1,6 @@
 #![no_std]
 
-//! Virtual HCI transport (`docs/62§4`).
+//! Virtual HCI transport (`docs/65§4`).
 //!
 //! A process opens the character device and presents a Bluetooth controller to
 //! the host stack through it: it writes the traffic a controller would report

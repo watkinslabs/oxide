@@ -1,4 +1,4 @@
-# 62 Bluetooth
+# 65 Bluetooth
 
 DRAFT. Dep:`01`,`02`,`07`,`08`,`15`,`16`,`19`,`25`,`27`,`28`,`35`,`52`,`53`. Provides:HCI core, `AF_BLUETOOTH` family, L2CAP, SMP, RFCOMM, SCO, management interface, transport contract.
 

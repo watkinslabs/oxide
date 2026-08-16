@@ -1,6 +1,6 @@
 #![no_std]
 
-//! Bluetooth subsystem (`docs/62`).
+//! Bluetooth subsystem (`docs/65`).
 //!
 //! Module manifest:
 //! - `uapi`: every wire and ABI constant, one module per protocol.
