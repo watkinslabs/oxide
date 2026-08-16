@@ -57,31 +57,32 @@ impl Ctx for KernelCtx {
 
     /// Park until a buffer completes, the stream stops, or a signal arrives.
     ///
-    /// The predicate is re-tested by the caller, not here: a wake-up does not
-    /// prove a buffer arrived, and it is the admission ladder that turns "the
-    /// stream stopped while you waited" into the error the caller must get.
-    /// # C: O(1), sleeps
+    /// The shared wait primitive owns publish, recheck and dequeue order. A
+    /// hand-rolled park that publishes the waiter and only then takes the
+    /// device lock to test readiness republishes the same task on every turn
+    /// of the caller's retry loop, and the wait list grows without bound until
+    /// walking it is the whole CPU. The predicate here takes the device lock,
+    /// which the primitive evaluates outside the parked window, and no waker
+    /// of this list holds that lock while waking.
+    /// # C: O(wakeups), sleeps
     fn wait_for_buffer(&self, device: &Arc<VideoDevice>) -> Result<(), Errno> {
         if signal_pending() { return Err(Errno::Eintr); }
         let waiters = super::publish::waiters(device);
-        // SAFETY: syscall process context inside VIDIOC_DQBUF with no device
-        // lock held across the park; the wait list outlives the device because
-        // it is owned by the same registration.
-        unsafe { waiters.prepare_to_wait_interruptible(); }
-        let ready = {
-            let state = device.state.lock();
-            !state.queue.done.is_empty() || !state.queue.streaming || state.queue.error
-                || state.queue.last_buffer_dequeued
+        let probe = device.clone();
+        // SAFETY: syscall process context inside VIDIOC_DQBUF holding no lock,
+        // and the wait list lives in the node registry for the whole life of
+        // the boot, so it outlives this wait.
+        let outcome = unsafe {
+            sched::live::wait_event_interruptible(&waiters, || {
+                let state = probe.state.lock();
+                !state.queue.done.is_empty() || !state.queue.streaming || state.queue.error
+                    || state.queue.last_buffer_dequeued
+            })
         };
-        if ready || signal_pending() {
-            waiters.cancel_current_park();
-            return if signal_pending() { Err(Errno::Eintr) } else { Ok(()) };
+        match outcome {
+            sched::WaitOutcome::Interrupted => Err(Errno::Eintr),
+            _ => Ok(()),
         }
-        // SAFETY: the wait list marked the running task sleeping and every
-        // lock taken above has been released.
-        unsafe { sched::live::schedule::schedule(); }
-        if signal_pending() { return Err(Errno::Eintr); }
-        Ok(())
     }
 
     /// # C: O(1)
