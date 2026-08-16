@@ -115,6 +115,9 @@ pub unsafe fn init(info: &BootInfo) {
     fs::coredump::register_limit_hooks();
     fs::acct::register_sysctl_hooks();
     fs::keyring::register_procfs_hooks();
+    // Mint `.fs-verity` and bind it in as the verity trust store, before any
+    // filesystem that could hold a signed file is mounted.
+    fs::keyring::init_verity_keyring();
     hal::zerotrap::set_tid_hook(zerotrap_tid);
     ::devfs::set_current_hooks(sched::live::current_mount_ns, sched::live::current_chroot_root);
     drv::set_devtmpfs_hook(devfs::add_device_node);
