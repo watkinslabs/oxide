@@ -83,6 +83,35 @@ pub fn generation_matches(inode: &Inode, encoded: u32) -> bool {
 /// # C: O(1)
 pub fn can_encode_fh(sb: &crate::SuperBlock) -> bool { sb.s_op.export_can_decode_fh() }
 
+/// Mint this filesystem's own handle payload for `inode`, as
+/// `(bytes, handle_type)`.
+///
+/// `name_to_handle_at` reaches the same hooks through the syscall layer; a
+/// kernel-internal caller that records an object's identity in another
+/// filesystem — a union filesystem writing where an object was copied from —
+/// needs them without a descriptor, and must use the SAME encoder or the
+/// handle it stores cannot be decoded back.
+/// # C: O(1)
+pub fn encode_fh(sb: &crate::SuperBlock, inode: &InodeRef, parent: Option<(Ino, u32)>)
+    -> Option<(alloc::vec::Vec<u8>, i32)>
+{
+    if !sb.s_op.export_can_decode_fh() { return None; }
+    let len = sb.s_op.export_fid_len(parent.is_some(), inode.file_type() == FileType::Directory);
+    let mut buf = alloc::vec![0u8; len as usize];
+    let (written, ty) = sb.s_op.export_encode_fh(inode, parent, &mut buf);
+    if ty < 0 { return None; }
+    buf.truncate(written as usize);
+    Some((buf, ty))
+}
+
+/// Turn a payload minted by [`encode_fh`] back into an inode on `sb`. `None`
+/// covers both a payload this filesystem cannot parse and an identity that no
+/// longer names anything. # C: O(log N_ino)
+pub fn decode_fh(sb: &crate::SuperBlock, bytes: &[u8], handle_type: i32) -> Option<InodeRef> {
+    let fid = sb.s_op.export_decode_fh(bytes, handle_type).ok()?;
+    sb.s_op.fh_to_dentry(sb, fid.ino, fid.generation)
+}
+
 /// The superblock whose export ops govern a resolved path: the one the path
 /// was reached THROUGH, and only then the inode's own back-pointer.
 ///

@@ -49,6 +49,16 @@ pub mod redirect;
 pub mod xino;
 pub mod fh;
 pub mod metacopy;
+pub mod err;
+pub mod marker;
+pub mod origin;
+pub mod whiteout;
+pub mod layers;
+pub mod lookup;
+#[cfg(test)]
+#[path = "testfs.rs"]
+mod testfs;
+
 pub use config::{Config, FsyncMode, RedirectMode, UuidMode, VerityMode, XinoMode};
 pub use params::{parse, verify};
 pub use uapi::{Marker, OVERLAYFS_SUPER_MAGIC};
