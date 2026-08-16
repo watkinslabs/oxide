@@ -14,6 +14,9 @@ pub(crate) fn init_prefix(info: &BootInfo) {
     // VT owns the canonical foreground console; sysfs only exposes it.
     sysfs::tty::set_active_vt_hook(vt::active);
     drv_serial::set_rx_prefilter(sched::diag::sysrq_rx);
+    // Before any userspace `sysctl.d` can lower `kernel.sysrq` out from under
+    // the one channel a wedged machine still answers on.
+    sched::diag::set_sysrq_always_enabled(crate::boot_cmdline::sysrq_always_enabled());
     drv_serial::configure_probe(info.bsp_lapic_id as u8, smoke::device_map::KERNEL_DEVICE_BASE);
     step("install_drv_sysfs_hooks", install_drv_sysfs_hooks);
     step("init_serial_console", init_serial_console);

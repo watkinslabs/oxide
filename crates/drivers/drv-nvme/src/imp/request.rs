@@ -94,7 +94,7 @@ impl Aggregate {
 
     fn finish_child(&self, child: BlockRequest, result: KResult<()>, offset: usize) {
         let completion = {
-            let mut state = self.state.lock();
+            let mut state = self.state.lock_bh::<crate::imp::NvmeBh>();
             if let Err(error) = result {
                 if state.error.is_none() { state.error = Some(error); }
             } else if state.request.op == BlockOp::Read {
@@ -123,7 +123,7 @@ impl NvmeBlk {
         &self, request: BlockRequest, completion: BlockCompletion, plan: Plan, deferred_head: bool,
     ) -> Result<(), (BlockRequest, BlockCompletion, BlockError)> {
         if self.unavailable() { return Err((request, completion, BlockError::Eio)); }
-        let (bdf, dma_mask) = { let ctrl = self.ctrl.lock(); (ctrl.bdf(), ctrl.dma_mask()) };
+        let (bdf, dma_mask) = { let ctrl = self.ctrl.lock_bh::<crate::imp::NvmeBh>(); (ctrl.bdf(), ctrl.dma_mask()) };
         let mut dma = if plan.count == 0 { None } else {
             match crate::queue::IoDma::allocate(bdf, dma_mask) {
                 Some(dma) => Some(dma),
@@ -137,8 +137,8 @@ impl NvmeBlk {
             unsafe { for (offset, byte) in request.buffer[..plan.len].iter().enumerate() { core::ptr::write_volatile(bounce.add(offset), *byte); } }
             pmm::dma::clean_to_device(bounce as u64, plan.len);
         }
-        let mut ctrl = self.ctrl.lock();
-        let mut requests = self.requests.lock();
+        let mut ctrl = self.ctrl.lock_bh::<crate::imp::NvmeBh>();
+        let mut requests = self.requests.lock_bh::<crate::imp::NvmeBh>();
         if self.unavailable() { return Err((request, completion, BlockError::Eio)); }
         if deferred_head { requests.dispatching = false; }
         if requests.pending.len() >= ctrl.io_capacity() || (!deferred_head && (!requests.deferred.is_empty() || requests.dispatching)) {
@@ -186,7 +186,7 @@ impl NvmeBlk {
         let chunks = total.div_ceil(per_command);
         let aggregate = Arc::new(Aggregate::new(request, completion, chunks));
         let (write, base, ioprio, polled) = {
-            let state = aggregate.state.lock();
+            let state = aggregate.state.lock_bh::<crate::imp::NvmeBh>();
             (state.request.op == BlockOp::Write, state.request.start_block, state.request.ioprio, state.request.polled)
         };
         for index in 0..chunks {
@@ -195,7 +195,7 @@ impl NvmeBlk {
             let byte_offset = block_offset * self.blk_size as usize;
             let bytes = count * self.blk_size as usize;
             let mut child = if write {
-                let data = aggregate.state.lock().request.buffer[byte_offset..byte_offset + bytes].to_vec();
+                let data = aggregate.state.lock_bh::<crate::imp::NvmeBh>().request.buffer[byte_offset..byte_offset + bytes].to_vec();
                 BlockRequest::new_write(base + block_offset as u64, count as u32, data)
             } else {
                 BlockRequest::new_read(base + block_offset as u64, count as u32, self.blk_size)
@@ -214,8 +214,8 @@ impl NvmeBlk {
     fn start_deferred_requests(&self) {
         loop {
             let deferred = {
-                let ctrl = self.ctrl.lock();
-                let mut requests = self.requests.lock();
+                let ctrl = self.ctrl.lock_bh::<crate::imp::NvmeBh>();
+                let mut requests = self.requests.lock_bh::<crate::imp::NvmeBh>();
                 if requests.deferred.is_empty() { return; }
                 if requests.pending.len() >= ctrl.io_capacity() { return; }
                 let now = wait::now_ns();
@@ -228,19 +228,19 @@ impl NvmeBlk {
             };
             let plan = Plan { write: deferred.write, lba: deferred.lba, count: deferred.count, len: deferred.len };
             if let Err((request, completion, error)) = self.enqueue_or_post(deferred.request, deferred.completion, plan, true) {
-                self.requests.lock().dispatching = false;
+                self.requests.lock_bh::<crate::imp::NvmeBh>().dispatching = false;
                 completion(request, Err(error));
             }
         }
     }
 
     fn take_completed(&self) -> Result<Option<(PendingRequest, u16)>, ()> {
-        let mut ctrl = self.ctrl.lock();
+        let mut ctrl = self.ctrl.lock_bh::<crate::imp::NvmeBh>();
         if self.unavailable() { return Ok(None); }
         let Some(cqe) = ctrl.reap_io() else { return Ok(None); };
         let (cq_pa, cq_head, cq_phase) = ctrl.io_cq_cursor();
         self.irq.configure_cq(cq_pa, cq_head, cq_phase);
-        let mut requests = self.requests.lock();
+        let mut requests = self.requests.lock_bh::<crate::imp::NvmeBh>();
         let Some(index) = requests.pending.iter().position(|request| request.cid == cqe.cid) else { return Err(()); };
         Ok(Some((requests.pending.remove(index), cqe.status)))
     }
@@ -266,7 +266,7 @@ impl NvmeBlk {
 
     pub(super) fn fail_owned_requests(&self) {
         let (pending, deferred) = {
-            let mut requests = self.requests.lock();
+            let mut requests = self.requests.lock_bh::<crate::imp::NvmeBh>();
             (core::mem::take(&mut requests.pending), core::mem::take(&mut requests.deferred))
         };
         for pending in pending { (pending.completion)(pending.request, Err(BlockError::Eio)); }
@@ -276,7 +276,7 @@ impl NvmeBlk {
     /// Whether the canonical CID owner has crossed its asynchronous deadline.
     /// # C: O(in-flight commands)
     pub(super) fn has_expired_async_request(&self, now_ns: u64) -> bool {
-        self.requests.lock().has_expired_pending(now_ns)
+        self.requests.lock_bh::<crate::imp::NvmeBh>().has_expired_pending(now_ns)
     }
 
     /// Timeout-worker decision after a completion poll. It marks a first
@@ -284,7 +284,7 @@ impl NvmeBlk {
     /// publish two aborts for one CID.
     /// # C: O(in-flight commands)
     pub(super) fn timeout_action(&self, now_ns: u64) -> Option<TimeoutAction> {
-        self.requests.lock().timeout_action(now_ns)
+        self.requests.lock_bh::<crate::imp::NvmeBh>().timeout_action(now_ns)
     }
 
     /// Submit an Admin Abort only while the CID remains canonically owned.
@@ -293,9 +293,9 @@ impl NvmeBlk {
     /// the owner.
     /// # C: O(one bounded admin command)
     pub(super) fn abort_owned_request(&self, cid: u16) -> bool {
-        let mut ctrl = self.ctrl.lock();
+        let mut ctrl = self.ctrl.lock_bh::<crate::imp::NvmeBh>();
         if self.unavailable() { return true; }
-        if !self.requests.lock().abort_owner_still_live(cid) { return true; }
+        if !self.requests.lock_bh::<crate::imp::NvmeBh>().abort_owner_still_live(cid) { return true; }
         ctrl.abort_io(cid)
     }
 
@@ -329,7 +329,7 @@ impl NvmeBlk {
         let state = Arc::new(SyncResult::new());
         let completion_state = state.clone();
         self.submit(request, alloc::boxed::Box::new(move |request, result| {
-            *completion_state.result.lock() = Some((request, result));
+            *completion_state.result.lock_bh::<crate::imp::NvmeBh>() = Some((request, result));
             completion_state.done.store(true, Ordering::Release);
             completion_state.waiters.wake_all();
         }));
@@ -346,7 +346,7 @@ impl NvmeBlk {
                 wait::park_checked(&state.waiters, deadline, || state.done.load(Ordering::Acquire));
             }
         }
-        let Some((request, result)) = state.result.lock().take() else { return Err(BlockError::Eio); };
+        let Some((request, result)) = state.result.lock_bh::<crate::imp::NvmeBh>().take() else { return Err(BlockError::Eio); };
         result.map(|()| request)
     }
 }

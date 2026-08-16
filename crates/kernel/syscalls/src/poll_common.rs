@@ -74,7 +74,7 @@ impl PollWaiter {
         let slack_ns = sched::hrtimeout::select_estimate_accuracy(deadline_ns);
         // SAFETY: caller holds the poll generation gate through publication,
         // then drops it before sleeping and always removes the prepared wait.
-        unsafe { self.wq.prepare_to_wait_with_deadline_range(deadline_ns, slack_ns); }
+        unsafe { self.wq.prepare_to_wait_interruptible_with_deadline_range(deadline_ns, slack_ns); }
         if self.generation.load(Ordering::Acquire) != observed {
             self.wq.wake_all();
         }

@@ -1,0 +1,239 @@
+[H[J[1;1H[H[J[1;1H  Booting `oxide (multiboot2)'
+
+MB2
+L64
+[XSTATE] xsave=on pre_osxsave=0 cpuid0d_eax=0000000000000007 xcr0=0000000000000007 area=832
+[0.935] Kernel command line: BOOT_IMAGE=/boot/oxide-x86_64 root=/dev/vda rw earlycon printk.time=1 systemd.log_target=kmsg systemd.journald.forward_to_kmsg=1 sysctl.kernel.sysrq=1 sysrq_always_enabled console=ttyS0,115200 console=tty0 systemd.mask=firewalld.service systemd.mask=chronyd.service systemd.mask=ModemManager.service systemd.mask=plymouth-start.service systemd.mask=NetworkManager-wait-online.service systemd.mask=flatpak-add-fedora-repos.service systemd.debug_shell=ttyS0 systemd.mask=serial-getty@ttyS0.ser
+[0.943] vice oxide.bootargs=grub
+[0.944] [sysrq] always enabled by the boot line
+[42.100] [BOOT-DEV-NULL] type=8192 fs=devtmpfs
+[42.188] systemd[1]: systemd 257.13-1.fc42 running in system mode (+PAM +AUDIT +SELINUX -APPARMOR +IMA +IPE +SMACK +SECCOMP -GCRYPT +GNUTLS +OPENSSL +ACL +BLKID +CURL +ELFUTILS +FIDO2 +IDN2 -IDN -IPTC +KMOD +LIBCRYPTSETUP +LIBCRYPTSETUP_PLUGINS +LIBFDISK +PCRE2 +PWQUALITY +P11KIT +QRENCODE +TPM2 +BZIP2 +LZ4 +XZ +ZLIB +ZSTD +BPF_FRAMEWORK +BTF +XKBCOMMON +UTMP +SYSVINIT +LIBARCHIVE)
+[42.193] systemd[1]: Detected virtualization kvm.
+[42.194] systemd[1]: Detected architecture x86-64.
+[42.206] systemd[1]: bpf-restrict-fs: BPF LSM hook not enabled in the kernel, BPF LSM not supported.
+[42.426] systemd[1]: Queued start job for default target graphical.target.
+[42.430] systemd[1]: Created slice system-getty.slice - Slice /system/getty.
+[42.430] systemd[1]: Created slice system-modprobe.slice - Slice /system/modprobe.
+[42.431] systemd[1]: Created slice system-sshd\x2dkeygen.slice - Slice /system/sshd-keygen.
+[42.432] systemd[1]: Created slice system-systemd\x2dzram\x2dsetup.slice - Slice /system/systemd-zram-setup.
+[42.432] systemd[1]: Created slice user.slice - User and Session Slice.
+[42.432] systemd[1]: Started systemd-ask-password-console.path - Dispatch Password Requests to Console Directory Watch.
+[42.433] systemd[1]: Started systemd-ask-password-wall.path - Forward Password Requests to Wall Directory Watch.
+[42.433] systemd[1]: Set up automount proc-sys-fs-binfmt_misc.automount - Arbitrary Executable File Formats File System Automount Point.
+[42.434] systemd[1]: Expecting device dev-zram0.device - /dev/zram0...
+[42.434] systemd[1]: Reached target cryptsetup.target - Local Encrypted Volumes.
+[42.435] systemd[1]: Reached target getty.target - Login Prompts.
+[42.435] systemd[1]: Reached target integritysetup.target - Local Integrity Protected Volumes.
+[42.435] systemd[1]: Reached target paths.target - Path Units.
+[42.436] systemd[1]: Reached target remote-fs.target - Remote File Systems.
+[42.436] systemd[1]: Reached target slices.target - Slice Units.
+[42.436] systemd[1]: Reached target veritysetup.target - Local Verity Protected Volumes.
+[42.447] systemd[1]: Listening on systemd-coredump.socket - Process Core Dump Socket.
+[42.449] systemd[1]: Listening on systemd-creds.socket - Credential Encryption/Decryption.
+[42.451] systemd[1]: Listening on systemd-initctl.socket - initctl Compatibility Named Pipe.
+[42.454] systemd[1]: Listening on systemd-journald-audit.socket - Journal Audit Socket.
+[42.457] systemd[1]: Listening on systemd-journald-dev-log.socket - Journal Socket (/dev/log).
+[42.459] systemd[1]: Listening on systemd-journald.socket - Journal Sockets.
+[42.462] systemd[1]: systemd-pcrextend.socket - TPM PCR Measurements skipped, unmet condition check ConditionSecurity=measured-uki
+[42.463] systemd[1]: systemd-pcrlock.socket - Make TPM PCR Policy skipped, unmet condition check ConditionSecurity=measured-uki
+[42.465] systemd[1]: Listening on systemd-udevd-control.socket - udev Control Socket.
+[42.467] systemd[1]: Listening on systemd-udevd-kernel.socket - udev Kernel Socket.
+[42.470] systemd[1]: Listening on systemd-userdbd.socket - User Database Manager Socket.
+[42.477] systemd[1]: Mounting dev-hugepages.mount - Huge Pages File System...
+[42.482] systemd[1]: Mounting dev-mqueue.mount - POSIX Message Queue File System...
+[42.484] systemd[1]: sys-kernel-debug.mount: Directory /sys/kernel/debug to mount over is not empty, mounting anyway.
+[42.488] systemd[1]: Mounting sys-kernel-debug.mount - Kernel Debug File System...
+[42.491] systemd[1]: sys-kernel-tracing.mount: Directory /sys/kernel/tracing to mount over is not empty, mounting anyway.
+[42.493] systemd[1]: Mounting sys-kernel-tracing.mount - Kernel Trace File System...
+[!p]104[?7h[42.498] systemd[1]: Started debug-shell.service - Early root shell on /dev/ttyS0 FOR DEBUGGING ONLY.
+[42.501] systemd[1]: fips-crypto-policy-overlay.service - Bind-mount FIPS crypto-policy in FIPS mode skipped, unmet condition check ConditionKernelCommandLine=fips=1
+[6n[32766;32766H[6n[42.503] systemd[1]: kmod-static-nodes.service - Create List of Static Device Nodes skipped, unmet condition check ConditionFileNotEmpty=/lib/modules/6.19.0-oxide/modules.devname
+[42.506] systemd[1]: Starting modprobe@configfs.service - Load Kernel Module configfs...
+[42.509] systemd[1]: Starting modprobe@dm_mod.service - Load Kernel Module dm_mod...
+[42.517] systemd[1]: Starting modprobe@drm.service - Load Kernel Module drm...
+[42.520] systemd[1]: Starting modprobe@fuse.service - Load Kernel Module fuse...
+[42.527] systemd[1]: Starting modprobe@loop.service - Load Kernel Module loop...
+[42.529] systemd[1]: systemd-hibernate-clear.service - Clear Stale Hibernate Storage Info skipped, unmet condition check ConditionPathExists=/sys/firmware/efi/efivars/HibernateLocation-8cf2644b-4b0b-428f-9387-6d876050dc67
+[42.532] systemd[1]: Starting systemd-journald.service - Journal Service...
+[42.540] systemd[1]: Starting systemd-modules-load.service - Load Kernel Modules...
+[42.542] systemd[1]: systemd-pcrmachine.service - TPM PCR Machine ID Measurement skipped, unmet condition check ConditionSecurity=measured-uki
+[42.547] systemd-modules-load[36]: Failed to find module 'i2c_dev'
+[42.550] systemd[1]: Starting systemd-remount-fs.service - Remount Root and Kernel File Systems...
+[42.556] systemd[1]: Starting systemd-tmpfiles-setup-dev-early.service - Create Static Device Nodes in /dev gracefully...
+[42.559] systemd-modules-load[36]: Failed to find module 'msr'
+[42.560] systemd[1]: systemd-tpm2-setup-early.service - Early TPM SRK Setup skipped, unmet condition check ConditionSecurity=measured-uki
+[42.563] systemd[1]: Starting systemd-udev-load-credentials.service - Load udev Rules from Credentials...
+[42.565] systemd-journald[35]: Collecting audit messages is enabled.
+[42.571] systemd[1]: Starting systemd-udev-trigger.service - Coldplug All udev Devices...
+[42.578] systemd[1]: Started systemd-journald.service - Journal Service.
+[42.582] systemd[1]: Mounted dev-hugepages.mount - Huge Pages File System.
+[42.585] systemd[1]: Mounted dev-mqueue.mount - POSIX Message Queue File System.
+[42.587] systemd[1]: Mounted sys-kernel-debug.mount - Kernel Debug File System.
+[42.591] systemd[1]: Mounted sys-kernel-tracing.mount - Kernel Trace File System.
+[42.600] systemd[1]: modprobe@dm_mod.service: Deactivated successfully.
+[42.601] systemd[1]: Finished modprobe@dm_mod.service - Load Kernel Module dm_mod.
+[42.605] systemd[1]: modprobe@configfs.service: Deactivated successfully.
+[42.607] systemd[1]: Finished modprobe@configfs.service - Load Kernel Module configfs.
+[42.610] systemd[1]: modprobe@drm.service: Deactivated successfully.
+[42.612] systemd[1]: Finished modprobe@drm.service - Load Kernel Module drm.
+[42.615] systemd[1]: modprobe@fuse.service: Deactivated successfully.
+[42.617] systemd[1]: Finished modprobe@fuse.service - Load Kernel Module fuse.
+[42.620] systemd[1]: modprobe@loop.service: Deactivated successfully.
+[42.622] systemd[1]: Finished modprobe@loop.service - Load Kernel Module loop.
+[42.625] systemd[1]: Finished systemd-remount-fs.service - Remount Root and Kernel File Systems.
+[42.628] systemd[1]: Finished systemd-modules-load.service - Load Kernel Modules.
+[42.631] systemd[1]: Finished systemd-udev-load-credentials.service - Load udev Rules from Credentials.
+[42.636] systemd[1]: Finished systemd-udev-trigger.service - Coldplug All udev Devices.
+[42.645] systemd[1]: sys-fs-fuse-connections.mount - FUSE Control File System skipped, unmet condition check ConditionPathExists=/sys/fs/fuse/connections
+[42.648] systemd[1]: Mounting sys-kernel-config.mount - Kernel Configuration File System...
+[42.651] systemd[1]: systemd-hwdb-update.service - Rebuild Hardware Database skipped, unmet condition check ConditionNeedsUpdate=/etc
+[42.656] systemd[1]: Starting systemd-journal-flush.service - Flush Journal to Persistent Storage...
+[42.661] systemd-journald[35]: Received client request to flush runtime journal.
+[42.664] systemd[1]: Starting systemd-random-seed.service - Load/Save OS Random Seed...
+[42.667] systemd[1]: systemd-repart.service - Repartition Root Disk skipped, no trigger condition checks were met.
+[42.670] systemd[1]: Starting systemd-sysctl.service - Apply Kernel Variables...
+[42.672] systemd[1]: systemd-tpm2-setup.service - TPM SRK Setup skipped, unmet condition check ConditionSecurity=measured-uki
+[42.682] systemd[1]: Starting systemd-userdbd.service - User Database Manager...
+[42.685] systemd[1]: Mounted sys-kernel-config.mount - Kernel Configuration File System.
+[42.707] systemd[1]: Started systemd-userdbd.service - User Database Manager.
+[42.785] systemd[1]: Finished systemd-journal-flush.service - Flush Journal to Persistent Storage.
+[42.793] systemd[1]: Finished systemd-random-seed.service - Load/Save OS Random Seed.
+[42.796] systemd[1]: Finished systemd-sysctl.service - Apply Kernel Variables.
+[42.819] systemd[1]: Finished systemd-tmpfiles-setup-dev-early.service - Create Static Device Nodes in /dev gracefully.
+[42.824] systemd[1]: systemd-sysusers.service - Create System Users skipped, no trigger condition checks were met.
+[42.828] systemd[1]: Starting systemd-tmpfiles-setup-dev.service - Create Static Device Nodes in /dev...
+[!p]104[?7h[6n[32766;32766H[6n[42.865] systemd[1]: Finished systemd-tmpfiles-setup-dev.service - Create Static Device Nodes in /dev.
+[42.870] systemd[1]: Reached target local-fs-pre.target - Preparation for Local File Systems.
+[42.874] systemd[1]: Reached target local-fs.target - Local File Systems.
+[42.878] systemd[1]: Listening on systemd-bootctl.socket - Boot Entries Service Socket.
+[42.882] systemd[1]: Listening on systemd-sysext.socket - System Extension Image Management.
+[42.887] systemd[1]: Starting plymouth-read-write.service - Tell Plymouth To Write Out Runtime Data...
+[42.892] systemd[1]: Starting selinux-autorelabel-mark.service - Mark the need to relabel after reboot...
+[42.895] systemd[1]: systemd-binfmt.service - Set Up Additional Binary Formats skipped, no trigger condition checks were met.
+[42.896] systemd[1]: systemd-boot-random-seed.service - Update Boot Loader Random Seed skipped, no trigger condition checks were met.
+[42.898] systemd[1]: systemd-confext.service - Merge System Configuration Images into /etc/ skipped, no trigger condition checks were met.
+[42.899] systemd[1]: systemd-sysext.service - Merge System Extension Images into /usr/ and /opt/ skipped, no trigger condition checks were met.
+[42.902] systemd[1]: Starting systemd-tmpfiles-setup.service - Create System Files and Directories...
+[42.913] systemd[1]: Starting systemd-udevd.service - Rule-based Manager for Device Events and Files...
+[42.916] systemd[1]: Finished plymouth-read-write.service - Tell Plymouth To Write Out Runtime Data.
+[42.920] systemd[1]: Finished selinux-autorelabel-mark.service - Mark the need to relabel after reboot.
+[42.932] systemd-udevd[81]: Using default interface naming scheme 'v257'.
+[42.995] systemd[1]: Started systemd-udevd.service - Rule-based Manager for Device Events and Files.
+[43.016] (udev-worker)[93]: sda: /usr/lib/udev/rules.d/60-block-scheduler.rules:5 Failed to write ATTR{/sys/devices/virtual/block/sda/queue/scheduler}="bfq", ignoring: No such file or directory
+[43.020] systemd[1]: Found device dev-zram0.device - /dev/zram0.
+[43.031] systemd[1]: Starting systemd-zram-setup@zram0.service - Create swap on /dev/zram0...
+[103.809] (udev-worker)[93]: sda: Spawned process 'scsi_id --export --allowlisted -d /dev/sda' [109] is taking longer than 59s to complete.
+[103.810] (udev-worker)[98]: lo: Spawned process '/bin/sh -c '/usr/sbin/ethtool -i $1 |/usr/bin/sed -n s/^driver:\ //p' -- lo' [106] is taking longer than 59s to complete.
+[113.809] (udev-worker)[89]: 0000:00:01.0: Spawned process '/usr/bin/touch /run/udev/gdm-machine-has-virtual-gpu' [112] is taking longer than 54s to complete.
+[201.528] [sysrq] task dump  switches=11512 current=tid:4199
+[201.529]   PID   TID name             ST onrq oncpu onwl cpu  last-sysc  nsysc      cputime_ms
+[201.530]  4096   4096 ktimers          W  n  n    y     0 wake=claimed wake_age_ms=158428  none                0          1 tgid=  4096 vtid=     0 ptid=     0
+[201.532]  4097   4097 ksoftirqd        S  n  n    n     0  none                0          0 tgid=  4097 vtid=     0 ptid=     0
+[201.533]  4098   4098 ksoftirqd        S  n  n    n     1  none                0          0 tgid=  4098 vtid=     0 ptid=     0
+[201.534]  4099   4099 kworker          S  n  n    n     0  none                0          0 tgid=  4099 vtid=     0 ptid=     0
+[201.535]  4100   4100 kworkermgr       S  n  n    n     0  none                0          0 tgid=  4100 vtid=     0 ptid=     0
+[201.537]  4101   4101 kworker          S  n  n    n     1  none                0          0 tgid=  4101 vtid=     0 ptid=     0
+[201.538]  4102   4102 kworkermgr       S  n  n    n     1  none                0          0 tgid=  4102 vtid=     0 ptid=     0
+[201.539]  4103   4103 khelper          S  n  n    n     0  none                0          0 tgid=  4103 vtid=     0 ptid=     0
+[201.540]  4104   4104 kswapd0          S  n  n    n     0  none                0          0 tgid=  4104 vtid=     0 ptid=     0
+[201.542]  4105   4105 oom_reaper       S  n  n    n     1  none                0          0 tgid=  4105 vtid=     0 ptid=     0 wake_dl_ns=202105092612
+[201.543]  4106   4106 netns_reaper     S  n  n    n     0  none                0          0 tgid=  4106 vtid=     0 ptid=     0
+[201.544]  4107   4107 sock-rtnl-reap   S  n  n    n     0  none                0          0 tgid=  4107 vtid=     0 ptid=     0
+[201.545]  4108   4108 fw_loader        S  n  n    n     0  none                0          0 tgid=  4108 vtid=     0 ptid=     0
+[201.547]    29   4136 sh               S  n  n    n     1  ioctl             777          5 tgid=  4136 vtid=    29 ptid=3235774466 exe=/bin/sh
+[201.548]    35   4142 systemd-journal  S  n  n    n     1  epoll_wait       3671        134 tgid=  4142 vtid=    35 ptid=3235774466 wake_dl_ns=342805126000 exe=/usr/lib/systemd/systemd-journald
+[201.549]    62   4169 systemd-userdbd  W  n  n    y     1 wake=listed wake_age_ms=108557  epoll_wait       2462         23 tgid=  4169 vtid=    62 ptid=3235774466 exe=/usr/lib/systemd/systemd-userdbd
+[201.551]    66   4173 systemd-userwor  Z  n  n    n     1  exit_group       7030         35 tgid=  4173 vtid=    66 ptid=  4169 exe=/usr/lib/systemd/systemd-userwork
+[201.552]    67   4174 systemd-userwor  W  n  n    y     1 wake=listed wake_age_ms=108560  accept4          3323         19 tgid=  4174 vtid=    67 ptid=  4169 exe=/usr/lib/systemd/systemd-userwork
+[201.553]    75   4182 systemd-userwor  S  n  n    n     1  accept4          2411         13 tgid=  4182 vtid=    75 ptid=  4169 wake_dl_ns=217993772810 exe=/usr/lib/systemd/systemd-userwork
+[201.554]    79   4186 systemd-tmpfile  S  n  n    n     1  openat           7374         24 tgid=  4186 vtid=    79 ptid=3235774466 exe=/usr/bin/systemd-tmpfiles
+[201.556]    81   4188 systemd-udevd    W  n  n    y     1 wake=listed wake_age_ms=138516  epoll_wait       9975         51 tgid=  4188 vtid=    81 ptid=3235774466 exe=/usr/lib/systemd/systemd-udevd
+[201.556]    84   4191 systemd-userwor  Z  n  n    n     1  exit_group       1319          8 tgid=  4191 vtid=    84 ptid=  4169 exe=/usr/lib/systemd/systemd-userwork
+[201.556]    85   4192 systemd-userwor  Z  n  n    n     1  exit_group       1216          8 tgid=  4192 vtid=    85 ptid=  4169 exe=/usr/lib/systemd/systemd-userwork
+[201.556]    86   4193 (udev-worker)    S  n  n    n     1  close             391          3 tgid=  4193 vtid=    86 ptid=  4188 exe=/usr/lib/systemd/systemd-udevd
+[201.556]    87   4194 (udev-worker)    S  n  n    n     1  getrandom         684          5 tgid=  4194 vtid=    87 ptid=  4188 exe=/usr/lib/systemd/systemd-udevd
+[201.556]    88   4195 (udev-worker)    S  n  n    n     1  epoll_wait        425          4 tgid=  4195 vtid=    88 ptid=  4188 exe=/usr/lib/systemd/systemd-udevd
+[201.556]    89   4196 (udev-worker)    S  n  n    n     1  epoll_wait        458          6 tgid=  4196 vtid=    89 ptid=  4188 wake_dl_ns=223805126000 exe=/usr/lib/systemd/systemd-udevd
+[201.556]    90   4197 (udev-worker)    S  n  n    n     1  epoll_wait        268          2 tgid=  4197 vtid=    90 ptid=  4188 exe=/usr/lib/systemd/systemd-udevd
+[201.556]    91   4198 (udev-worker)    S  n  n    n     1  access            192          1 tgid=  4198 vtid=    91 ptid=  4188 exe=/usr/lib/systemd/systemd-udevd
+[201.556]    92   4199 (udev-worker)    R  n  y    n     0  read              289          4 tgid=  4199 vtid=    92 ptid=  4188 exe=/usr/lib/systemd/systemd-udevd
+[201.556]    93   4200 (udev-worker)    S  n  n    n     1  epoll_wait        135          6 tgid=  4200 vtid=    93 ptid=  4188 wake_dl_ns=223805126000 exe=/usr/lib/systemd/systemd-udevd
+[201.556]    94   4201 (udev-worker)    S  n  n    n     1  read              132          2 tgid=  4201 vtid=    94 ptid=  4188 exe=/usr/lib/systemd/systemd-udevd
+[201.556]    95   4202 (udev-worker)    W  n  n    y     1 wake=listed wake_age_ms=153519  read              285          3 tgid=  4202 vtid=    95 ptid=  4188 exe=/usr/lib/systemd/systemd-udevd
+[201.556]    96   4203 (udev-worker)    S  n  n    n     1  epoll_wait        364          2 tgid=  4203 vtid=    96 ptid=  4188 exe=/usr/lib/systemd/systemd-udevd
+[201.556]    97   4204 (udev-worker)    S  n  n    n     1  epoll_wait        100          1 tgid=  4204 vtid=    97 ptid=  4188 exe=/usr/lib/systemd/systemd-udevd
+[201.556]    98   4205 (udev-worker)    S  n  n    n     1  epoll_wait        151          3 tgid=  4205 vtid=    98 ptid=  4188 wake_dl_ns=223805126000 exe=/usr/lib/systemd/systemd-udevd
+[201.556]    99   4206 (udev-worker)    S  n  n    n     1  access            136          0 tgid=  4206 vtid=    99 ptid=  4188 exe=/usr/lib/systemd/systemd-udevd
+[201.556]   100   4207 (udev-worker)    S  n  n    n     1  access            133          1 tgid=  4207 vtid=   100 ptid=  4188 exe=/usr/lib/systemd/systemd-udevd
+[201.556]   101   4208 (udev-worker)    S  n  n    n     1  access            217          1 tgid=  4208 vtid=   101 ptid=  4188 exe=/usr/lib/systemd/systemd-udevd
+[201.557]   102   4209 (udev-worker)    S  n  n    n     1  access            146          1 tgid=  4209 vtid=   102 ptid=  4188 exe=/usr/lib/systemd/systemd-udevd
+[201.559]   103   4210 (udev-worker)    S  n  n    n     1  access            109          1 tgid=  4210 vtid=   103 ptid=  4188 exe=/usr/lib/systemd/systemd-udevd
+[201.560]   104   4211 (udev-worker)    S  n  n    n     1  access             26          0 tgid=  4211 vtid=   104 ptid=  4188 exe=/usr/lib/systemd/systemd-udevd
+[201.561]   105   4212 (udev-worker)    S  n  n    n     1  access            109          1 tgid=  4212 vtid=   105 ptid=  4188 exe=/usr/lib/systemd/systemd-udevd
+[201.563]   106   4213 sh               S  n  n    n     1  wait4             209          2 tgid=  4213 vtid=   106 ptid=  4205 exe=/bin/sh
+[201.563]   107   4214 sh               S  n  n    n     1  execve             14          1 tgid=  4214 vtid=   107 ptid=  4213 wake_dl_ns=203047467873 exe=/bin/sh
+[201.563]   108   4215 sed              S  n  n    n     1  access             87          1 tgid=  4215 vtid=   108 ptid=  4213 exe=/usr/bin/sed
+[201.563]   109   4216 (spawn)          S  n  n    n     1  execve             95          0 tgid=  4216 vtid=   109 ptid=  4200 exe=/usr/lib/systemd/systemd-udevd
+[201.563]   110   4217 zram-generator   S  n  n    n     1  clone3            607         12 tgid=  4217 vtid=   110 ptid=3235774466 exe=/usr/lib/systemd/system-generators/zram-generator
+[201.563]   111   4218 zram-generator   S  n  n    n     1  execve              4          0 tgid=  4218 vtid=   111 ptid=  4217 exe=/usr/lib/systemd/system-generators/zram-generator
+[201.563]   112   4219 (udev-worker)    R  n  n    y     -  none                0          0 tgid=  4219 vtid=   112 ptid=  4196 exe=/usr/lib/systemd/systemd-udevd
+[201.563]     1 3235774466 systemd          S  n  n    n     1  epoll_wait      57786        508 tgid=3235774466 vtid=     1 ptid=     0 wake_dl_ns=202055126000
+[204.528] [sysrq] task dump  switches=11531 current=tid:4199
+[204.530]   PID   TID name             ST onrq oncpu onwl cpu  last-sysc  nsysc      cputime_ms
+[204.531]  4096   4096 ktimers          W  n  n    y     0 wake=claimed wake_age_ms=161429  none                0          1 tgid=  4096 vtid=     0 ptid=     0
+[204.532]  4097   4097 ksoftirqd        S  n  n    n     0  none                0          0 tgid=  4097 vtid=     0 ptid=     0
+[204.533]  4098   4098 ksoftirqd        S  n  n    n     1  none                0          0 tgid=  4098 vtid=     0 ptid=     0
+[204.534]  4099   4099 kworker          S  n  n    n     0  none                0          0 tgid=  4099 vtid=     0 ptid=     0
+[204.536]  4100   4100 kworkermgr       S  n  n    n     0  none                0          0 tgid=  4100 vtid=     0 ptid=     0
+[204.537]  4101   4101 kworker          S  n  n    n     1  none                0          0 tgid=  4101 vtid=     0 ptid=     0
+[204.538]  4102   4102 kworkermgr       S  n  n    n     1  none                0          0 tgid=  4102 vtid=     0 ptid=     0
+[204.539]  4103   4103 khelper          S  n  n    n     0  none                0          0 tgid=  4103 vtid=     0 ptid=     0
+[204.540]  4104   4104 kswapd0          S  n  n    n     0  none                0          0 tgid=  4104 vtid=     0 ptid=     0
+[204.542]  4105   4105 oom_reaper       S  n  n    n     1  none                0          0 tgid=  4105 vtid=     0 ptid=     0 wake_dl_ns=206105267821
+[204.543]  4106   4106 netns_reaper     S  n  n    n     0  none                0          0 tgid=  4106 vtid=     0 ptid=     0
+[204.544]  4107   4107 sock-rtnl-reap   S  n  n    n     0  none                0          0 tgid=  4107 vtid=     0 ptid=     0
+[204.545]  4108   4108 fw_loader        S  n  n    n     0  none                0          0 tgid=  4108 vtid=     0 ptid=     0
+[204.547]    29   4136 sh               S  n  n    n     1  ioctl             777          5 tgid=  4136 vtid=    29 ptid=3235774466 exe=/bin/sh
+[204.548]    35   4142 systemd-journal  S  n  n    n     1  epoll_wait       3671        134 tgid=  4142 vtid=    35 ptid=3235774466 wake_dl_ns=342805126000 exe=/usr/lib/systemd/systemd-journald
+[204.549]    62   4169 systemd-userdbd  W  n  n    y     1 wake=listed wake_age_ms=111557  epoll_wait       2462         23 tgid=  4169 vtid=    62 ptid=3235774466 exe=/usr/lib/systemd/systemd-userdbd
+[204.550]    66   4173 systemd-userwor  Z  n  n    n     1  exit_group       7030         35 tgid=  4173 vtid=    66 ptid=  4169 exe=/usr/lib/systemd/systemd-userwork
+[204.551]    67   4174 systemd-userwor  W  n  n    y     1 wake=listed wake_age_ms=111559  accept4          3323         19 tgid=  4174 vtid=    67 ptid=  4169 exe=/usr/lib/systemd/systemd-userwork
+[204.552]    75   4182 systemd-userwor  S  n  n    n     1  accept4          2411         13 tgid=  4182 vtid=    75 ptid=  4169 wake_dl_ns=217993772810 exe=/usr/lib/systemd/systemd-userwork
+[204.553]    79   4186 systemd-tmpfile  S  n  n    n     1  openat           7374         24 tgid=  4186 vtid=    79 ptid=3235774466 exe=/usr/bin/systemd-tmpfiles
+[204.555]    81   4188 systemd-udevd    W  n  n    y     1 wake=listed wake_age_ms=141515  epoll_wait       9975         51 tgid=  4188 vtid=    81 ptid=3235774466 exe=/usr/lib/systemd/systemd-udevd
+[204.556]    84   4191 systemd-userwor  Z  n  n    n     1  exit_group       1319          8 tgid=  4191 vtid=    84 ptid=  4169 exe=/usr/lib/systemd/systemd-userwork
+[204.556]    85   4192 systemd-userwor  Z  n  n    n     1  exit_group       1216          8 tgid=  4192 vtid=    85 ptid=  4169 exe=/usr/lib/systemd/systemd-userwork
+[204.556]    86   4193 (udev-worker)    S  n  n    n     1  close             391          3 tgid=  4193 vtid=    86 ptid=  4188 exe=/usr/lib/systemd/systemd-udevd
+[204.557]    87   4194 (udev-worker)    S  n  n    n     1  getrandom         684          5 tgid=  4194 vtid=    87 ptid=  4188 exe=/usr/lib/systemd/systemd-udevd
+[204.557]    88   4195 (udev-worker)    S  n  n    n     1  epoll_wait        425          4 tgid=  4195 vtid=    88 ptid=  4188 exe=/usr/lib/systemd/systemd-udevd
+[204.557]    89   4196 (udev-worker)    S  n  n    n     1  epoll_wait        458          6 tgid=  4196 vtid=    89 ptid=  4188 wake_dl_ns=223805126000 exe=/usr/lib/systemd/systemd-udevd
+[204.557]    90   4197 (udev-worker)    S  n  n    n     1  epoll_wait        268          2 tgid=  4197 vtid=    90 ptid=  4188 exe=/usr/lib/systemd/systemd-udevd
+[204.557]    91   4198 (udev-worker)    S  n  n    n     1  access            192          1 tgid=  4198 vtid=    91 ptid=  4188 exe=/usr/lib/systemd/systemd-udevd
+[204.557]    92   4199 (udev-worker)    R  n  y    n     0  read              289          4 tgid=  4199 vtid=    92 ptid=  4188 exe=/usr/lib/systemd/systemd-udevd
+[204.557]    93   4200 (udev-worker)    S  n  n    n     1  epoll_wait        135          6 tgid=  4200 vtid=    93 ptid=  4188 wake_dl_ns=223805126000 exe=/usr/lib/systemd/systemd-udevd
+[204.557]    94   4201 (udev-worker)    S  n  n    n     1  read              132          2 tgid=  4201 vtid=    94 ptid=  4188 exe=/usr/lib/systemd/systemd-udevd
+[204.557]    95   4202 (udev-worker)    W  n  n    y     1 wake=listed wake_age_ms=156520  read              285          3 tgid=  4202 vtid=    95 ptid=  4188 exe=/usr/lib/systemd/systemd-udevd
+[204.557]    96   4203 (udev-worker)    S  n  n    n     1  epoll_wait        364          2 tgid=  4203 vtid=    96 ptid=  4188 exe=/usr/lib/systemd/systemd-udevd
+[204.557]    97   4204 (udev-worker)    S  n  n    n     1  epoll_wait        100          1 tgid=  4204 vtid=    97 ptid=  4188 exe=/usr/lib/systemd/systemd-udevd
+[204.557]    98   4205 (udev-worker)    S  n  n    n     1  epoll_wait        151          3 tgid=  4205 vtid=    98 ptid=  4188 wake_dl_ns=223805126000 exe=/usr/lib/systemd/systemd-udevd
+[204.559]    99   4206 (udev-worker)    S  n  n    n     1  access            136          0 tgid=  4206 vtid=    99 ptid=  4188 exe=/usr/lib/systemd/systemd-udevd
+[204.559]   100   4207 (udev-worker)    S  n  n    n     1  access            133          1 tgid=  4207 vtid=   100 ptid=  4188 exe=/usr/lib/systemd/systemd-udevd
+[204.559]   101   4208 (udev-worker)    S  n  n    n     1  access            217          1 tgid=  4208 vtid=   101 ptid=  4188 exe=/usr/lib/systemd/systemd-udevd
+[204.559]   102   4209 (udev-worker)    S  n  n    n     1  access            146          1 tgid=  4209 vtid=   102 ptid=  4188 exe=/usr/lib/systemd/systemd-udevd
+[204.559]   103   4210 (udev-worker)    S  n  n    n     1  access            109          1 tgid=  4210 vtid=   103 ptid=  4188 exe=/usr/lib/systemd/systemd-udevd
+[204.559]   104   4211 (udev-worker)    S  n  n    n     1  access             26          0 tgid=  4211 vtid=   104 ptid=  4188 exe=/usr/lib/systemd/systemd-udevd
+[204.559]   105   4212 (udev-worker)    S  n  n    n     1  access            109          1 tgid=  4212 vtid=   105 ptid=  4188 exe=/usr/lib/systemd/systemd-udevd
+[204.559]   106   4213 sh               S  n  n    n     1  wait4             209          2 tgid=  4213 vtid=   106 ptid=  4205 exe=/bin/sh
+[204.559]   107   4214 sh               S  n  n    n     1  execve             14          1 tgid=  4214 vtid=   107 ptid=  4213 wake_dl_ns=208047638481 exe=/bin/sh
+[204.559]   108   4215 sed              S  n  n    n     1  access             87          1 tgid=  4215 vtid=   108 ptid=  4213 exe=/usr/bin/sed
+[204.561]   109   4216 (spawn)          S  n  n    n     1  execve             95          0 tgid=  4216 vtid=   109 ptid=  4200 exe=/usr/lib/systemd/systemd-udevd
+[204.561]   110   4217 zram-generator   S  n  n    n     1  clone3            607         12 tgid=  4217 vtid=   110 ptid=3235774466 exe=/usr/lib/systemd/system-generators/zram-generator
+[204.561]   111   4218 zram-generator   S  n  n    n     1  execve              4          0 tgid=  4218 vtid=   111 ptid=  4217 exe=/usr/lib/systemd/system-generators/zram-generator
+[204.562]   112   4219 (udev-worker)    R  n  n    y     -  none                0          0 tgid=  4219 vtid=   112 ptid=  4196 exe=/usr/lib/systemd/systemd-udevd
+[204.562]     1 3235774466 systemd          R  n  y    n     1  writev          57865        510 tgid=3235774466 vtid=     1 ptid=     0
+[206.529] [sysrq] crash requested
+
+[PANIC] crates/kernel/sched/src/diag/sysrq.rs:200: sysrq: crash requested from userspace
+[PANIC] halted
+qemu-system-x86_64: terminating on signal 15 from pid 3145097 (bash)
+make: *** [Makefile:261: qemu-x86-existing] Terminated

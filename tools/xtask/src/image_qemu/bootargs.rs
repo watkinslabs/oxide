@@ -119,7 +119,14 @@ pub(super) const USERSPACE_CONSOLE_PARAMS: &str =
 /// built to be debugged asks for all of them. A production configuration would
 /// not, which is exactly why this is a property of the boot line rather than
 /// of the kernel's default.
-pub(super) const SYSRQ_PARAMS: &str = "sysctl.kernel.sysrq=1";
+///
+/// `sysctl.kernel.sysrq=1` alone is NOT enough and was measured not to be: the
+/// image's own `/usr/lib/sysctl.d` runs after it and lowers the mask again, so
+/// a task dump typed at a wedged guest answered `[sysrq] this operation is
+/// disabled by kernel.sysrq`. `sysrq_always_enabled` is the kernel-side
+/// parameter userspace cannot overwrite, and it is what actually keeps the
+/// channel open.
+pub(super) const SYSRQ_PARAMS: &str = "sysctl.kernel.sysrq=1 sysrq_always_enabled";
 
 /// Kernel parameters that make a boot narrate itself, for the case the set
 /// exists to serve: a boot that never completes and produces nothing to
@@ -385,6 +392,9 @@ mod tests {
             for arch in ["x86_64", "aarch64"] {
                 let line = kernel_cmdline(arch, "/img");
                 assert!(line.split(' ').any(|t| t == "sysctl.kernel.sysrq=1"), "{arch}: {line}");
+                // The sysctl is overwritten by the image's own drop-ins; the
+                // kernel parameter is the half that survives them.
+                assert!(line.split(' ').any(|t| t == "sysrq_always_enabled"), "{arch}: {line}");
             }
         });
     }

@@ -92,6 +92,17 @@ pub fn mask_allows(mask: u32, cmd: Cmd) -> bool {
     mask == ENABLE_ALL || (mask & enable_bit(cmd)) != 0
 }
 
+/// The mask a key press is actually judged against.
+///
+/// `kernel.sysrq` is userspace policy, and a distribution's `sysctl.d` sets it
+/// after any value the boot line asked for — so on the one machine that needs
+/// the keys, the machine whose userspace has stopped answering, they are
+/// refused. The boot parameter is the setting userspace cannot overwrite, and
+/// the reference gives it exactly this meaning: enable everything, whatever
+/// the sysctl later holds.
+/// # C: O(1)
+pub fn effective_mask(mask: u32, always: bool) -> u32 { if always { ENABLE_ALL } else { mask } }
+
 /// Every bound key and the word the help line names it by, in key order.
 pub const KEYS: &[(u8, &[u8])] = &[
     (b'b', b"reboot"),
@@ -217,7 +228,7 @@ const SYSRQ_ARM: u8 = 0x00;
 /// # C: see `perform`
 pub fn rx(b: u8) -> bool {
     if super::emit::sysrq_disarm() {
-        perform(decode(b), mask_value());
+        perform(decode(b), effective_mask(mask_value(), always_enabled()));
         return true;
     }
     if b == SYSRQ_ARM { super::emit::sysrq_arm(); return true; }
@@ -233,6 +244,20 @@ static MASK: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(
 /// Publish a new `kernel.sysrq` value. # C: O(1)
 pub fn set_mask(v: u32) { MASK.store(v, Ordering::Relaxed); }
 
+static ALWAYS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Did the boot line ask for `sysrq_always_enabled`? # C: O(1)
+pub fn always_enabled() -> bool { ALWAYS.load(Ordering::Relaxed) }
+
+/// Record the boot line's `sysrq_always_enabled` request. Announced when set,
+/// because a machine whose keys answer regardless of `kernel.sysrq` is a
+/// deliberate configuration an operator should see stated once.
+/// # C: O(1)
+pub fn set_always_enabled(on: bool) {
+    ALWAYS.store(on, Ordering::Relaxed);
+    if on { klog::announce("[sysrq] always enabled by the boot line"); }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,6 +266,27 @@ mod tests {
     /// every other machine they will ever touch; this kernel bound `c` to a
     /// per-CPU dump and `b` to a backtrace, so both of the keys that take a
     /// machine down printed a table instead.
+    /// A distribution's `sysctl.d` lowers `kernel.sysrq` after the boot line
+    /// asked for it, and the keys are then refused on the one machine that
+    /// needs them. The boot parameter is what userspace cannot overwrite.
+    #[test]
+    fn the_boot_parameter_overrides_a_sysctl_that_refuses_everything() {
+        let refuse_all = 0;
+        assert!(!mask_allows(refuse_all, Cmd::ShowTasks), "the sysctl alone refuses the dump");
+        assert!(mask_allows(effective_mask(refuse_all, true), Cmd::ShowTasks));
+        assert!(mask_allows(effective_mask(refuse_all, true), Cmd::Crash));
+        assert!(mask_allows(effective_mask(refuse_all, true), Cmd::Reboot));
+    }
+
+    /// ...and without it the sysctl still decides, in both directions.
+    #[test]
+    fn without_the_boot_parameter_the_sysctl_still_decides() {
+        assert_eq!(effective_mask(ENABLE_DUMP, false), ENABLE_DUMP);
+        assert!(!mask_allows(effective_mask(ENABLE_DUMP, false), Cmd::Reboot));
+        assert!(mask_allows(effective_mask(ENABLE_DUMP, false), Cmd::ShowTasks));
+        assert_eq!(effective_mask(0, false), 0);
+    }
+
     #[test]
     fn the_keys_that_take_a_machine_down_are_the_reference_letters() {
         assert_eq!(decode(b'c'), Cmd::Crash);

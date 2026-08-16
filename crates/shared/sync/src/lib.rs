@@ -25,6 +25,10 @@ pub use spin_relax::{relax, set_spin_relax_hook, SpinRelaxFn};
 mod rcu;
 mod rwlock;
 mod seqlock;
+/// Serialisation for the tests that install or read the process-global
+/// preempt gate; see `test_serial::gate`.
+#[cfg(test)]
+mod test_serial;
 pub use percpu::{
     CacheLine, CpuLocalSource, NoopCpuLocal, PerCpu, CACHELINE_BYTES, MAX_CPUS,
 };
@@ -693,6 +697,7 @@ mod tests {
     #[cfg(feature = "debug-preempt")]
     #[test]
     fn a_bh_section_is_visible_to_the_held_lock_trace() {
+        let _serial = crate::test_serial::gate();
         let s: Spinlock<u32, Buddy> = Spinlock::new(0);
         let outside = crate::preempt_gate::held_trace().1;
         {

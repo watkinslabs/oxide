@@ -238,6 +238,14 @@ fn report_stall(x: u32, age_ns: u64, me: u32) {
     klog::write_hex_u64(crate::preempt::preempt_count_on(x as usize) as u64);
     klog::write_raw(b" resched=");
     klog::write_dec_u64(crate::preempt::need_resched_on(x as usize) as u64);
+    // A raised count says the wedged CPU cannot reschedule; it does not say
+    // WHY. Its held-lock trace does, and the trace is per-CPU state that only
+    // its owner writes, so reading it from here is safe while that CPU is
+    // stopped. This is the only site that can print it: the soft-lockup report
+    // is driven by the wedged CPU's own tick, which is exactly what a wedge
+    // stops.
+    #[cfg(feature = "debug-preempt")]
+    sync::preempt_gate::write_held_stack_on(x as usize);
     klog::write_raw(b"\n");
 }
 

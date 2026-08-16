@@ -21,6 +21,7 @@
 #![cfg_attr(not(target_os = "oxide-kernel"), allow(dead_code))]
 extern crate alloc;
 
+mod bh_contract;
 mod regs;
 #[cfg(any(target_os = "oxide-kernel", test))]
 mod error;
@@ -92,7 +93,7 @@ mod imp {
             self.irq.begin_release();
             self.irq.synchronize_and_release();
             self.fail_owned_requests();
-            self.ctrl.lock().shutdown_and_free();
+            self.ctrl.lock_bh::<NvmeBh>().shutdown_and_free();
         }
     }
 
@@ -110,7 +111,7 @@ mod imp {
 
     static DEVICES: Spinlock<Vec<NvmeRecord>, DriverLockClass> = Spinlock::new(Vec::new());
     #[cfg(target_os = "oxide-kernel")]
-    type NvmeBh = sched::bh::SchedBh;
+    pub(crate) type NvmeBh = sched::bh::SchedBh;
 
     fn run_completion_bottom_half() {
         let devices: Vec<Arc<NvmeBlk>> = DEVICES.lock_bh::<NvmeBh>()

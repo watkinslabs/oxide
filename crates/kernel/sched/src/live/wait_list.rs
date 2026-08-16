@@ -81,15 +81,31 @@ impl WaitList {
         unsafe { self.park_with_deadline(deadline_ns); }
     }
 
-    /// Timed [`prepare_to_wait`] with an explicit coalescing window.
+    /// The poll family's timed prepared wait, with the explicit coalescing
+    /// window poll/select/epoll spend (`select_estimate_accuracy`).
+    ///
+    /// Published INTERRUPTIBLE, as the reference sleeps every member of this
+    /// family. It published uninterruptible, which made
+    /// `signal_pending_state` refuse the sleeper outright and left
+    /// `ppoll(NULL, 0, NULL, NULL)` — glibc's `pause()` on aarch64 — unable to
+    /// be killed at all: see [`crate::wait_policy`].
     /// # SAFETY: the caller holds the condition gate while publishing, drops
     /// it before scheduling, and finishes/cancels the prepared wait on every
     /// return path. The timer may fire in `[deadline_ns, deadline_ns + slack_ns]`.
     /// # C: O(N armed)
-    pub unsafe fn prepare_to_wait_with_deadline_range(&self, deadline_ns: u64, slack_ns: u64) {
+    pub unsafe fn prepare_to_wait_interruptible_with_deadline_range(&self, deadline_ns: u64,
+                                                                    slack_ns: u64) {
         // SAFETY: forwards the named prepared-wait contract while preserving
         // the caller-selected timer coalescing range.
-        unsafe { self.park_with_deadline_range(deadline_ns, slack_ns); }
+        unsafe {
+            self.park_with_wait_state_range(deadline_ns, slack_ns,
+                                            crate::wait_policy::poll_family());
+        }
+        // A signal posted between the caller's own check and this publication
+        // finds the task still Runnable, so its `signal_wake_up` is a no-op.
+        // Re-checking after the task is visibly Sleeping is what closes that
+        // window — the reference closes it inside `__schedule` instead.
+        self.check_pending_after_park();
     }
 
     /// Interruptible [`prepare_to_wait`]. # SAFETY: see that method.
@@ -158,7 +174,7 @@ impl WaitList {
     /// timed wait (`hrtimer_nanosleep`, `futex_wait`, and
     /// `wait_event_hrtimeout` all pass exactly
     /// this). Callers that coalesce harder — poll/select/epoll, which spend
-    /// 0.1% of the remaining timeout — use `park_with_deadline_range` with
+    /// 0.1% of the remaining timeout — use `prepare_to_wait_interruptible_with_deadline_range` with
     /// `hrtimeout::select_estimate_accuracy`.
     /// # SAFETY: see `park`. Caller still owns the post-park
     /// `schedule()` call.
@@ -176,16 +192,6 @@ impl WaitList {
             .map(crate::hrtimeout::task_slack_ns).unwrap_or(0);
         // SAFETY: forwards the publication contract with the selected signal mask.
         unsafe { self.park_with_wait_state_range(deadline_ns, slack, state); }
-    }
-
-    /// [`park_with_deadline`] with an explicit coalescing window — Linux
-    /// `schedule_hrtimeout_range(expires, delta, ...)`. The wait may end any
-    /// time in `[deadline_ns, deadline_ns + slack_ns]`, never before.
-    /// # SAFETY: see `park`.
-    /// # C: O(N armed)
-    pub(crate) unsafe fn park_with_deadline_range(&self, deadline_ns: u64, slack_ns: u64) {
-        // SAFETY: default wait ignores ordinary signals.
-        unsafe { self.park_with_wait_state_range(deadline_ns, slack_ns, WaitState::Uninterruptible); }
     }
 
     /// Timed publication with an explicit signal wake mask.

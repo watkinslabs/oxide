@@ -1,0 +1,10 @@
+run=1 rc=0 klines=123 | boot-smoke: PASS — x86 proved alive by userspace answered 'echo OXIDE-AL"IVE"-OK' on serial in 48s (attempt 1) | last: [43.122] systemd[1]: Reached target swap.target - Swaps.
+run=2 rc=1 klines=119 |  | last: [206.545] [sysrq] this operation is disabled by kernel.sysrq
+run=3 rc=0 klines=218 | boot-smoke: PASS — x86 proved alive by marker 'Reached target basic.target' in 64s (attempt 1) | last: [63.636] alsactl[220]: alsa-lib main.c:1804:(snd_use_case_mgr_open) [error.ucm] failed to import hw:0 use case configura
+run=4 rc=0 klines=212 | boot-smoke: PASS — x86 proved alive by marker 'Reached target basic.target' in 44s (attempt 1) | last: [44.297] alsactl[223]: alsa-lib main.c:1804:(snd_use_case_mgr_open) [error.ucm] failed to import hw:0 use case configura
+run=5 rc=0 klines=213 | boot-smoke: PASS — x86 proved alive by marker 'Reached target basic.target' in 44s (attempt 1) | last: [43.955] alsactl[220]: alsa-lib main.c:1804:(snd_use_case_mgr_open) [error.ucm] failed to import hw:0 use case configura
+run=6 rc=0 klines=122 | boot-smoke: PASS — x86 proved alive by userspace answered 'echo OXIDE-AL"IVE"-OK' on serial in 46s (attempt 1) | last: [43.465] systemd[1]: Reached target swap.target - Swaps.
+run=7 rc=0 klines=120 | boot-smoke: PASS — x86 proved alive by userspace answered 'echo OXIDE-AL"IVE"-OK' on serial in 51s (attempt 1) | last: [43.307] systemd[1]: Activating swap dev-zram0.swap - Compressed Swap on /dev/zram0...
+run=8 rc=0 klines=120 | boot-smoke: PASS — x86 proved alive by userspace answered 'echo OXIDE-AL"IVE"-OK' on serial in 48s (attempt 1) | last: [48.286] systemd[1]: Activating swap dev-zram0.swap - Compressed Swap on /dev/zram0...
+run=9 rc=0 klines=214 | boot-smoke: PASS — x86 proved alive by marker 'Reached target basic.target' in 44s (attempt 1) | last: [44.057] alsactl[220]: alsa-lib main.c:1804:(snd_use_case_mgr_open) [error.ucm] failed to import hw:0 use case configura
+TOTAL 8/9 clean

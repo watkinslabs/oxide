@@ -18,7 +18,7 @@ pub(super) fn live(name: &str, expected_nsid: u32, dev: &Arc<NvmeBlk>) -> bool {
     dev.irq.suspend();
     dev.fail_owned_requests();
     let (nsid, blocks, block_size, cursor) = {
-        let mut ctrl = dev.ctrl.lock();
+        let mut ctrl = dev.ctrl.lock_bh::<crate::imp::NvmeBh>();
         if !ctrl.reinitialize(dev.irq.vector()) {
             dev.poisoned.store(true, Ordering::Release);
             dev.resetting.store(false, Ordering::Release);
