@@ -16,6 +16,8 @@
 // - `ap_cmd`:      access-point start and stop.
 // - `mgmt_cmd`:    management frame registration and transmission.
 // - `event`:       the multicast notifications the stack raises.
+// - `nest`:        writing a 64-bit value inside a nested attribute space.
+// - `chandef`:     the channel definition three command groups share.
 
 #[path = "nl80211/msg.rs"]
 pub mod msg;
@@ -25,6 +27,10 @@ pub mod policy;
 pub mod family;
 #[path = "nl80211/resolve.rs"]
 pub mod resolve;
+#[path = "nl80211/nest.rs"]
+pub mod nest;
+#[path = "nl80211/chandef.rs"]
+pub mod chandef;
 #[path = "nl80211/wiphy_cmd.rs"]
 pub mod wiphy_cmd;
 #[path = "nl80211/iface_cmd.rs"]
@@ -47,3 +53,27 @@ pub mod mgmt_cmd;
 pub mod event;
 
 pub use family::{family_id, init, mcast_group};
+
+// Hosted tests for the command handlers. Each child is declared with its own
+// explicit path: a bare declaration would bind the name to the implementation
+// file of the same name in this directory instead of to the test.
+#[cfg(test)]
+#[path = "nl80211/tests/support.rs"] mod tests_support;
+#[cfg(test)]
+#[path = "nl80211/tests/wiphy.rs"] mod tests_wiphy;
+#[cfg(test)]
+#[path = "nl80211/tests/iface.rs"] mod tests_iface;
+#[cfg(test)]
+#[path = "nl80211/tests/scan.rs"] mod tests_scan;
+#[cfg(test)]
+#[path = "nl80211/tests/key.rs"] mod tests_key;
+#[cfg(test)]
+#[path = "nl80211/tests/connect.rs"] mod tests_connect;
+#[cfg(test)]
+#[path = "nl80211/tests/station.rs"] mod tests_station;
+#[cfg(test)]
+#[path = "nl80211/tests/reg.rs"] mod tests_reg;
+#[cfg(test)]
+#[path = "nl80211/tests/ap.rs"] mod tests_ap;
+#[cfg(test)]
+#[path = "nl80211/tests/mgmt.rs"] mod tests_mgmt;

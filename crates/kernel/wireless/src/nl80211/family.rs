@@ -159,9 +159,11 @@ pub fn init() {
         ops: ops(),
         mcgrps: MCAST_GROUPS.to_vec(),
         netnsok: true,
-        // Every command this build serves predates strict header validation
-        // in the reference, so none of them opts into it.
-        resv_start_op: u8::MAX,
+        // Strict header validation begins one past the last command that
+        // predates it. Setting this higher would let a new command carry a
+        // non-zero reserved field and unexpected netlink flags; setting it
+        // lower would reject requests older userspace still sends.
+        resv_start_op: cmd::REMOVE_LINK_STA + 1,
     };
     if let Ok(id) = family::register_family(spec) { FAMILY_ID.store(id, Ordering::Release); }
 }
