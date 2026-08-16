@@ -24,6 +24,19 @@ fn current_user_ns() -> Option<namespace_identity::NamespacePin> {
         .map(|ns| ns.pin())
 }
 
+/// Label of the running thread, for a check taken below the task layer. A
+/// kernel thread and the pre-task boot window both answer with the kernel's
+/// own label, which is the label those contexts genuinely act under. # C: O(1)
+fn current_selinux_sid() -> selinux::sidtab::Sid {
+    sched::live::current().map_or_else(selinux_runtime::label::kernel_sid,
+                                       |c| c.selinux_label.lock().sid)
+}
+
+/// Label the running thread staged for the next file it creates. # C: O(1)
+fn current_fscreate_sid() -> Option<selinux::sidtab::Sid> {
+    sched::live::current().and_then(|c| c.selinux_label.lock().fscreate)
+}
+
 /// Linux `capable(CAP_SYS_RESOURCE)` for the quota limit ladder: the holder
 /// charges past hard limits and expired grace periods. # C: O(1)
 fn quota_has_sys_resource() -> bool {
@@ -43,6 +56,15 @@ pub fn install_vfs_hooks() {
         sched::live::sb_freeze::wake,
     );
     vfs::superblock::set_current_user_ns_hook(current_user_ns);
+    // Label-based access control over inodes. Installed beside the other VFS
+    // hooks so the mandatory decision and the discretionary one are taken on
+    // the same path; with no policy loaded it answers allow. The two readers
+    // are what make the SUBJECT of a check the running thread rather than the
+    // kernel: the label lives on the task, and this is the layer that can see
+    // both the task and the module.
+    selinux_runtime::task::set_current_sid_source(current_selinux_sid);
+    selinux_runtime::task::set_fscreate_sid_source(current_fscreate_sid);
+    fs::selinux::install();
     vfs::set_quota_sys_resource_hook(quota_has_sys_resource);
     vfs::set_quota_wait_hooks(
         sched::live::quota_wait::park,

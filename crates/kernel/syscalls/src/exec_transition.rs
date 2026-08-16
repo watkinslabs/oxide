@@ -139,6 +139,52 @@ pub(crate) fn decide(cur: &sched::Task, file: Option<&vfs::VfsPath>)
     exec_creds::transition(&cx)
 }
 
+/// Security label the image carries, or the unlabelled SID.
+///
+/// An image with no label is not refused: it is unlabelled, which a policy can
+/// still write rules about. Refusing would make every file a relabelling run
+/// has not reached unexecutable.
+/// # C: O(1)
+fn image_sid(file: Option<&vfs::VfsPath>) -> selinux::sidtab::Sid {
+    /// Longest written context read off an inode. A value past this is not a
+    /// context any policy can name.
+    const CONTEXT_MAX: usize = 256;
+    let Some(vp) = file else { return sched::selinux_label::image_sid(None) };
+    let name = selinux_runtime::label::XATTR_NAME_SELINUX;
+    let want = ::fs::xattr::query_len(&vp.inode, name);
+    if want == 0 || want > CONTEXT_MAX { return sched::selinux_label::image_sid(None); }
+    let mut buf = [0u8; CONTEXT_MAX];
+    if !::fs::xattr::query_into(&vp.inode, name, &mut buf[..want]) {
+        return sched::selinux_label::image_sid(None);
+    }
+    // A written context is stored as a C string; the terminator is not part of it.
+    let text = &buf[..want];
+    let text = match text.iter().position(|b| *b == 0) { Some(n) => &text[..n], None => text };
+    sched::selinux_label::image_sid(core::str::from_utf8(text).ok())
+}
+
+/// Decide the domain this image runs in (`62§9`).
+///
+/// Runs beside `decide` and for the same reason: before the point of no
+/// return, so a transition the policy refuses is still a returnable error.
+/// # C: O(rules)
+pub(crate) fn selinux_decide(cur: &sched::Task, file: Option<&vfs::VfsPath>)
+    -> Result<sched::selinux_label::ExecPlan, Errno>
+{
+    // Linux's `!mnt_may_suid(bprm->file->f_path.mnt)`: the same mount property
+    // that suppresses a set-user-ID bit gates a labelled domain change.
+    let nosuid = match file {
+        None => false,
+        Some(vp) => !vfs::mount::mount_by_id(vp.mnt_id).map(|m| m.may_suid()).unwrap_or(false),
+    };
+    sched::selinux_label::exec_plan(cur, image_sid(file), nosuid)
+}
+
+/// Install the decided domain. Called AFTER the point of no return. # C: O(1)
+pub(crate) fn selinux_commit(cur: &sched::Task, plan: &sched::selinux_label::ExecPlan) {
+    sched::selinux_label::exec_commit(cur, plan);
+}
+
 /// Install the decided credentials. Called AFTER the point of no return, so it
 /// cannot fail — Linux commits in `begin_new_exec` for the same reason.
 /// # C: O(1)

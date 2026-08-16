@@ -142,6 +142,7 @@ impl InodeBuilder {
             i_dquot: InodeDquots::new(),
             i_rwsem: super::rwsem::InodeRwsem::new(),
             i_flctx: super::file_lock::FileLockContext::new(),
+            i_security: AtomicU32::new(super::metadata::SECURITY_SID_UNSET),
         })
     }
 }

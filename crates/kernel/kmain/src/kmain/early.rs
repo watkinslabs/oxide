@@ -122,6 +122,17 @@ pub unsafe fn init(info: &BootInfo) {
     // SAFETY: boot-only single-writer, pre-userspace; install_arch_default is idempotent (no-op if the slot is set) and cannot race a procfs reader here.
     unsafe { crate::boot_cmdline::install_arch_default(); }
     log_boot_cmdline();
+    // The security server, once the command line it reads is installed and
+    // before the first user process needs a label (`62§10`). Installed even
+    // when the command line disables the module: userspace reads its state to
+    // decide what to do, and an absent interface reads as a broken kernel.
+    selinux_runtime::boot::init();
+    // The security server stores no per-task label — `sched` owns it — so the
+    // subject side of every check is read back through these two readers. A
+    // second copy there could answer a check with a label the task no longer
+    // carries.
+    selinux_runtime::task::set_current_sid_source(sched::selinux_label::current_sid);
+    selinux_runtime::task::set_fscreate_sid_source(sched::selinux_label::current_fscreate_sid);
     console::register_devnodes(); ::devfs::boot::populate_defaults(); procfs::init();
     syscalls::init_wall_clock_from_rtc();
     fs::tmpfs::init(); fs::fuse::register(); tracefs::init(); drv_virtio_input::devfs::init();

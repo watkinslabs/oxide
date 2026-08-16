@@ -15,6 +15,10 @@ use crate::types::{FileType, KResult, Umode, S_IFMT};
 use super::flags::{I_FREEING, I_WILL_FREE};
 use super::model::{Inode, SealCarrier};
 
+/// `i_security` value meaning no label has been resolved yet. No SID is zero,
+/// so the sentinel cannot collide with a real label.
+pub const SECURITY_SID_UNSET: u32 = 0;
+
 /// Read a `(sec, nsec)` inode-time field pair. Linux's fields are plain and
 /// read unlocked, so the pair is not observed atomically there either; Relaxed
 /// matches that contract exactly. # C: O(1)
@@ -149,6 +153,25 @@ impl Inode {
     pub fn i_generation(&self) -> u32 { self.i_generation }
     /// `i_sb` — owning superblock (if still live). # C: O(1)
     pub fn i_sb(&self) -> Option<Arc<SuperBlock>> { self.i_sb.read().upgrade() }
+    /// `inode->i_security` — the cached MAC label, or `None` before the label
+    /// owner has resolved one. # C: O(1)
+    pub fn security_sid(&self) -> Option<u32> {
+        match self.i_security.load(Ordering::Acquire) {
+            SECURITY_SID_UNSET => None,
+            sid => Some(sid),
+        }
+    }
+    /// Publish the resolved MAC label. # C: O(1)
+    ///
+    /// Release-ordered against [`Self::security_sid`]: a reader that observes
+    /// the label must observe every store the resolution made before it.
+    pub fn set_security_sid(&self, sid: u32) {
+        self.i_security.store(sid, Ordering::Release);
+    }
+    /// Discard the cached MAC label so the next use resolves it again. # C: O(1)
+    pub fn clear_security_sid(&self) {
+        self.i_security.store(SECURITY_SID_UNSET, Ordering::Release);
+    }
     /// Bind a synthesized inode to the superblock that instantiated it. An
     /// inode may be attached repeatedly through aliases of ONE instance, but
     /// must never migrate between live superblocks. # C: O(1)

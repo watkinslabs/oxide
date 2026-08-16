@@ -13,6 +13,7 @@ thermal = { path = "../thermal" }
 cpuidle = { path = "../cpuidle" }
 cpufreq = { path = "../cpufreq" }
 audit   = { path = "../audit" }
+selinux-runtime = { path = "../selinux-runtime" }
 block   = { path = "../block" }
 drv-loop = { path = "../../drivers/drv-loop" }
 boot-info = { path = "../../shared/boot-info" }

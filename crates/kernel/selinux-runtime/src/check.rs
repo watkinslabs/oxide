@@ -1,0 +1,94 @@
+// Permission-check entry points.
+//
+// Every kernel subsystem that mediates an operation calls one of these with
+// the two SIDs, the class and the permissions it wants. The decision, the
+// permissive handling and the audit record all happen here, in one place, so
+// no caller can accidentally act on a verdict without reporting it.
+
+use alloc::string::String;
+use alloc::vec::Vec;
+
+use selinux::sidtab::Sid;
+use selinux::uapi::classmap::{class_def, perm_names};
+use selinux::Verdict;
+
+/// Refusal returned to a caller whose operation the policy denies.
+pub const EACCES: i64 = -13;
+
+/// Ask whether a subject may exercise permissions on an object. # C: O(1) cached
+///
+/// Returns `Ok(())` when the operation proceeds. A denial in a permissive
+/// domain also returns `Ok(())` — and is still reported, because a permissive
+/// denial that is not reported is invisible, and reporting is the only thing
+/// permissive mode is for.
+pub fn has_perm(ssid: Sid, tsid: Sid, class: u16, requested: u32) -> Result<(), i64> {
+    let Some(verdict) = crate::with(|s| s.has_perm(ssid, tsid, class, requested)) else {
+        return Ok(());
+    };
+    if verdict.audit { report(ssid, tsid, class, &verdict); }
+    if verdict.allowed { Ok(()) } else { Err(EACCES) }
+}
+
+/// Ask without reporting, for a caller that will report the denial itself
+/// with more context than this layer has. # C: O(1) cached
+pub fn has_perm_noaudit(ssid: Sid, tsid: Sid, class: u16, requested: u32) -> Verdict {
+    crate::with(|s| s.has_perm(ssid, tsid, class, requested)).unwrap_or(Verdict::allow())
+}
+
+/// Whether a subject may act on the security server itself. # C: O(1) cached
+pub fn security_perm(ssid: Sid, permission: &str) -> Result<(), i64> {
+    let Some(class) = selinux::uapi::classmap::class_by_name("security") else {
+        return Ok(());
+    };
+    let Some(bit) = selinux::uapi::classmap::perm_bit(class, permission) else {
+        return Err(EACCES);
+    };
+    has_perm(ssid, crate::label::security_sid(), class, bit)
+}
+
+/// Emit the record describing one denial or audited grant.
+///
+/// The record names the permissions, the class and both contexts. Naming the
+/// SIDs alone would be useless: a SID is meaningful only against the policy
+/// that issued it, and the record outlives that policy.
+fn report(ssid: Sid, tsid: Sid, class: u16, verdict: &Verdict) {
+    let body = record_body(ssid, tsid, class, verdict);
+    let _ = audit::log_if_enabled(audit::uapi::AUDIT_AVC, body.as_bytes());
+}
+
+/// Build the text of one access-vector record. # C: O(permissions)
+pub fn record_body(ssid: Sid, tsid: Sid, class: u16, verdict: &Verdict) -> String {
+    let mut out = String::new();
+    out.push_str("avc:  ");
+    out.push_str(if verdict.allowed { "granted  { " } else { "denied  { " });
+    out.push_str(&permission_names(class, verdict.denied).join(" "));
+    out.push_str(" } for ");
+    push_context(&mut out, "scontext=", ssid);
+    out.push(' ');
+    push_context(&mut out, "tcontext=", tsid);
+    out.push_str(" tclass=");
+    out.push_str(class_def(class).map_or("?", |d| d.name));
+    if verdict.permissive { out.push_str(" permissive=1"); }
+    out
+}
+
+/// Names of the permissions a mask selects, in bit order. # C: O(permissions)
+pub fn permission_names(class: u16, mask: u32) -> Vec<&'static str> {
+    let Some(def) = class_def(class) else { return Vec::new() };
+    perm_names(def).enumerate()
+        .filter(|(i, _)| *i < u32::BITS as usize && mask & (1u32 << i) != 0)
+        .map(|(_, name)| name)
+        .collect()
+}
+
+fn push_context(out: &mut String, prefix: &str, sid: Sid) {
+    out.push_str(prefix);
+    match crate::with(|s| s.sid_to_context(sid)) {
+        Some(Ok(text)) => out.push_str(&text),
+        _ => out.push_str("unknown"),
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/check.rs"]
+mod tests;

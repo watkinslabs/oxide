@@ -13,6 +13,8 @@ klog = { path = "../../shared/klog" }
 sync = { path = "../../shared/sync" }
 vfs  = { path = "../../kernel/vfs" }
 landlock = { path = "../landlock" }
+selinux = { path = "../selinux" }
+selinux-runtime = { path = "../selinux-runtime" }
 cgroup = { path = "../cgroup" }
 timer = { path = "../timer" }
 softirq = { path = "../softirq" }

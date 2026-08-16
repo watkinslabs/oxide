@@ -96,10 +96,19 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
     // Linux `bprm_creds_from_file` — computed on the FINAL image (the
     // interpreter for a `#!` chain, which is why a setuid script confers
     // nothing) and BEFORE the point of no return, so EPERM is still returnable.
-    let creds = match crate::exec_transition::decide(cur, exec_vp.as_ref()) {
+    let mut creds = match crate::exec_transition::decide(cur, exec_vp.as_ref()) {
         Ok(t) => t,
         Err(e) => return -(e.as_i32() as i64),
     };
+    // The domain half of the same decision (`62§9`), taken at the same point
+    // and for the same reason: past this, a refusal has nowhere to go. A
+    // domain change is a privilege boundary unless the policy exempts it, so
+    // its verdict folds into the secure-exec flag the credential half set.
+    let selinux = match crate::exec_transition::selinux_decide(cur, exec_vp.as_ref()) {
+        Ok(p) => p,
+        Err(e) => return -(e.as_i32() as i64),
+    };
+    creds.secure_exec |= selinux.secure_exec;
     let blob: &[u8] = &blob_vec;
     let argc = argv_vec.len();
     let envc = envp_vec.len();
@@ -283,6 +292,7 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
     // Past the point of no return: install the credentials decided above
     // (Linux `commit_creds(bprm->cred)` inside `begin_new_exec`).
     crate::exec_transition::commit(cur, &creds);
+    crate::exec_transition::selinux_commit(cur, &selinux);
     if let Some(vp) = exec_vp.as_ref() { ::fs::inotify::fire_open_exec(&vp.inode); }
     if let Err(e) = crate::exec_time::promote_time_namespace_at_exec(cur) {
         return -(e.as_i32() as i64);

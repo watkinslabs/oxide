@@ -20,6 +20,8 @@
 // - registry: tid/vpid BTreeMap index correctness, scale, and concurrency (B1429).
 // - rlimit_cpu: RLIMIT_CPU/RLIMIT_RTTIME SIGXCPU-then-SIGKILL enforcement.
 // - rlimit_prio: getpriority(2) return bias, RLIMIT_NICE units, process-wide rlimits.
+// - selinux_label: per-task security label — fork inheritance, the execve
+//   domain decision, and the /proc/<pid>/attr/ parse and permission rules.
 // - session: setpgid/setsid/getpgid/getsid/getppid error ladder + personality query.
 // - sigpending: per-user RLIMIT_SIGPENDING charge/release symmetry.
 // - signals: per-signal queue depth, shared-vs-private pending, saved sigmask.
@@ -53,6 +55,7 @@ mod queues;
 mod registry;
 mod rlimit_cpu;
 mod rlimit_prio;
+mod selinux_label;
 mod session;
 mod send_signal;
 mod sigpending;

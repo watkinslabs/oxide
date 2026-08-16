@@ -977,6 +977,8 @@ dependencies = [
  "procfs",
  "sched",
  "security",
+ "selinux",
+ "selinux-runtime",
  "sync",
  "syscall",
  "timekeeper",
@@ -1278,6 +1280,7 @@ dependencies = [
  "pstore",
  "sched",
  "security",
+ "selinux-runtime",
  "smoke",
  "softirq",
  "sound",
@@ -1983,6 +1986,8 @@ dependencies = [
  "landlock",
  "namespace-identity",
  "network-namespace",
+ "selinux",
+ "selinux-runtime",
  "softirq",
  "sync",
  "syscall",
@@ -2030,6 +2035,33 @@ dependencies = [
  "sync",
  "syscall",
  "uaccess",
+ "vfs",
+]
+
+[[package]]
+name = "selinux"
+version = "0.1.0"
+
+[[package]]
+name = "selinux-runtime"
+version = "0.1.0"
+dependencies = [
+ "audit",
+ "cmdline",
+ "klog",
+ "selinux",
+ "sync",
+]
+
+[[package]]
+name = "selinuxfs"
+version = "0.1.0"
+dependencies = [
+ "audit",
+ "kernfs",
+ "selinux",
+ "selinux-runtime",
+ "sync",
  "vfs",
 ]
 
@@ -2299,6 +2331,9 @@ dependencies = [
  "pstore",
  "sched",
  "security",
+ "selinux",
+ "selinux-runtime",
+ "selinuxfs",
  "smoke",
  "socket",
  "softirq",
