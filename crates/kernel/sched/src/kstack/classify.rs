@@ -136,5 +136,34 @@ pub fn top_repeat(words: &[u64], text_lo: u64, text_hi: u64) -> (u64, u32) {
     (addr[best], cnt[best])
 }
 
+/// Return sites found on a stack, innermost first, consecutive repeats folded.
+///
+/// `top_repeat` answers "was one site repeated"; this answers "which chain
+/// filled the stack", which is the question a guard-page hit asks and the one
+/// no register dump can answer. Words are read low address first, so the
+/// innermost frame comes out first — the same order a backtrace prints.
+///
+/// Folding only CONSECUTIVE repeats keeps a genuine recursion visible (its
+/// frames are separated by the frame's other words) while dropping the same
+/// link register seen twice inside one frame.
+///
+/// Pure over a slice, so the walk is testable without a kernel; the caller
+/// supplies the stack words and the text bounds that make a word a return site.
+/// # C: O(words)
+pub fn text_frames(words: &[u64], text_lo: u64, text_hi: u64, out: &mut [u64]) -> usize {
+    let mut n = 0;
+    let mut prev = 0u64;
+    for &v in words {
+        if n == out.len() { break; }
+        let was = prev;
+        prev = v;
+        if v < text_lo || v >= text_hi { continue; }
+        if n > 0 && was == v { continue; }
+        out[n] = v;
+        n += 1;
+    }
+    n
+}
+
 #[cfg(test)]
 #[path = "classify/tests.rs"] mod tests;

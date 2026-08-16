@@ -1,0 +1,9 @@
+# Functions entered by a KERNEL-MODE exception on the INTERRUPTED TASK'S OWN
+# stack — the third budget domain (`--entry-roots`). Mirror of
+# `entry-roots-aarch64.txt`; see that file for what the domain is and why it is
+# a RESERVE rather than a stack.
+#
+# x86_64 shape: an ordinary `#PF` is NOT IST-routed (only the paranoid vectors
+# are), so `oxide_fault_print_rust` runs on whatever stack the faulting code was
+# already deep into — exactly as on the other arch, and with a larger chain.
+oxide_fault_print_rust

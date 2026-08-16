@@ -1,0 +1,10 @@
+# Targets of the function-pointer dispatch on the aarch64 kernel-exception
+# path. Same purpose as `irq-edges-aarch64.tsv`: the walker follows direct call
+# edges only, so it stops dead at every `blr` unless the target is named here.
+#
+# `oxide_fault_print_rust` consults ONE registered handler
+# (`hal_aarch64::install_fault_handler`, a single `AtomicPtr` with a single
+# production writer), so this domain has exactly one edge. Without it the entry
+# reserve measures its own 144-byte frame and reports a reassuring number that
+# describes nothing.
+oxide_fault_print_rust	smoke::elf_arm::elf_smoke_fault_handler

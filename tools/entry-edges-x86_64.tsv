@@ -1,0 +1,8 @@
+# Targets of the function-pointer dispatch on the x86_64 kernel-exception path.
+# Mirror of `entry-edges-aarch64.tsv`.
+#
+# `oxide_fault_print_rust` consults ONE registered handler
+# (`hal_x86_64::install_fault_handler`, a single `AtomicPtr` with a single
+# production writer). Without this edge the reserve measures the printer's own
+# frame and reports a number that describes nothing.
+oxide_fault_print_rust	smoke::elf::user_fault_handler

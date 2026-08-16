@@ -498,16 +498,39 @@ frame-gate: frame-gate-x86 frame-gate-arm
 # a reason in tools/stack-depth-allow-<arch>.txt and tolerated at or below the
 # recorded budget, so a NEW or DEEPER path fails.
 STACK_DEPTH_CEILING ?= 13000
+# THIRD budget domain: the exception-entry RESERVE (`--entry-roots`). A
+# kernel-mode exception is not dispatched on a stack of its own the way an
+# interrupt is — the vector pushes its 288-byte frame onto the INTERRUPTED
+# task's stack and calls the handler there — so its whole chain is spent on top
+# of whatever that path had already used. Measured 6032 B on aarch64 (the
+# demand-page resolver plus the blocking tail), ceiling 6100.
+#
+# It follows that the honest task ceiling is `16384 - 288 - 6100 = 9996`, not
+# the 13000 above: the deepest task paths measure 11904 B, so a maximal path
+# taking one demand page overflows by ~1800 B. That is the `[BADSTACK] BELOW-LO
+# by 32` class, and burning it down is tracked in `scratch/known_issues.md`.
+# Pinning the reserve here is what stops the OTHER half of the sum growing
+# while that work is outstanding.
+ENTRY_RESERVE_CEILING ?= 6100
+# x86_64 measures 7152 B for the same chain (an ordinary `#PF` is not IST-routed,
+# so it too runs on the interrupted task's stack). Its deepest task path is
+# 12720 B, so that arch is over the same sum by more — it has simply never been
+# unlucky enough to take a demand page at the bottom of a driver probe.
+ENTRY_RESERVE_CEILING_x86 ?= 7200
 stack-gate-x86: x86
 	python3 tools/stack-depth-gate.py --self-test
 	python3 tools/stack-depth-gate.py $(KERNEL_ELF_x86_64) \
 	  --arch x86_64 --fail $(STACK_DEPTH_CEILING) \
 	  --stack-switch-map tools/stack-switches-x86_64.tsv \
-	  --allowlist tools/stack-depth-allow-x86_64.txt
+	  --allowlist tools/stack-depth-allow-x86_64.txt \
+	  --indirect-map tools/entry-edges-x86_64.tsv \
+	  --entry-roots tools/entry-roots-x86_64.txt --entry-fail $(ENTRY_RESERVE_CEILING_x86)
 stack-gate-arm: arm
 	python3 tools/stack-depth-gate.py $(KERNEL_ELF_aarch64) \
 	  --arch aarch64 --fail $(STACK_DEPTH_CEILING) \
-	  --allowlist tools/stack-depth-allow-aarch64.txt
+	  --allowlist tools/stack-depth-allow-aarch64.txt \
+	  --indirect-map tools/entry-edges-aarch64.tsv \
+	  --entry-roots tools/entry-roots-aarch64.txt --entry-fail $(ENTRY_RESERVE_CEILING)
 stack-gate: stack-gate-x86 stack-gate-arm
 
 # Interrupt-stack DEPTH gate — a SECOND budget domain, and the only one that
