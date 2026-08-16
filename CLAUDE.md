@@ -554,6 +554,46 @@ Cost is not the only reason. A Sonnet lane told to report rather than fix return
 a finding you can act on; an Opus lane given the same brief tends to fix it, which
 is how a one-item lane becomes a five-item one.
 
+## A FAN-OUT MUST BE MEASURED, NOT ASSUMED (HARD RULE)
+
+**"Running" is not "making progress", and an orchestrator that cannot tell the
+difference will burn hours without noticing.** An agent blocked on a lock, a
+broken tree, or a missing file reports exactly the same status as one doing
+work. Nobody is coming to tell you; the lanes cannot see each other.
+
+Learned the expensive way: four lanes fanned out into ONE worktree, all
+sharing one cargo target directory. Every `cargo test` serialised on the
+build-directory lock, so a four-lane wave ran at the speed of one lane for
+~40 minutes. One lane's own harness had adapted with a 20-second retry loop —
+the contention was visible from inside and invisible from outside. The
+orchestrator's first diagnosis ("they are deadlocked on a broken tree") was
+also wrong, because it was inferred from silence rather than measured.
+
+- **Every lane gets its OWN `CARGO_TARGET_DIR`.** One target directory per
+  worktree is a global lock on every build in it. Tell each lane, in its
+  opening brief:
+  `CARGO_TARGET_DIR=<scratch>/tgt-<lane> cargo test -p <crate>`
+  The first build there is a full rebuild; every one after is uncontended.
+  This costs disk and buys back the parallelism the fan-out was for.
+- **Run `tools/lane-health.sh` before concluding anything about a lane.** It
+  reports build-lock contention, a tree that does not compile, modules declared
+  before their files, and source-tree silence while builds run. Exit 1 means
+  something is wrong, so it can gate a wait loop. Check it when a lane goes
+  quiet, and periodically when several are live.
+- **A declaration and the file it names land in the SAME write.** `mod foo;`
+  committed before `foo.rs` exists makes the whole crate uncompilable for every
+  other lane in the worktree, and none of them owns the broken file — so each
+  one waits for a build that cannot succeed. This happened twice in one wave.
+- **Never diagnose a lane from silence.** Check the process list, the source
+  tree's mtimes, and whether the crate compiles. State what you measured. A
+  confident wrong diagnosis sends the next twenty minutes in the wrong
+  direction — see `Never state a conclusion a proxy cannot support`.
+- **Prefer one worktree per lane when lanes will edit overlapping files.** A
+  shared worktree is right for a wave with strict file ownership and cheap
+  builds; it is wrong when every lane needs the same crate to compile in order
+  to test. When lanes must share, serialise the hook-application passes and say
+  so in each brief.
+
 ## Claim work before starting (HARD RULE — no duplicate lanes)
 
 Two agents independently rewrote the SAME mount subsystem item (the `mounted_mounts`
