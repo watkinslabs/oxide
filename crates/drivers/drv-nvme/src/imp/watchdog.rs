@@ -8,7 +8,7 @@ static WATCHDOG: Spinlock<Option<timer::TimerId>, DriverLockClass> = Spinlock::n
 
 /// Start the one shared scan after a controller becomes published. # C: O(1)
 pub(super) fn register() {
-    let mut watchdog = WATCHDOG.lock();
+    let mut watchdog = WATCHDOG.lock_bh::<crate::imp::NvmeBh>();
     if watchdog.is_none() {
         *watchdog = Some(timer::register_periodic(WATCHDOG_INTERVAL_NS, scan));
     }
@@ -19,7 +19,7 @@ pub(super) fn register() {
 pub(super) fn unregister_if_idle() {
     let empty = DEVICES.lock_bh::<NvmeBh>().is_empty();
     if !empty { return; }
-    let id = WATCHDOG.lock().take();
+    let id = WATCHDOG.lock_bh::<crate::imp::NvmeBh>().take();
     if let Some(id) = id { let _ = timer::unregister_periodic(id); }
 }
 

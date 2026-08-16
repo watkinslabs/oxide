@@ -216,8 +216,17 @@ OXIDE_SMP="${OXIDE_SMP:-2}"
 
 
 # On timeout, ask the wedged kernel to self-report before we kill it:
-# feed the serial-sysrq sequence (`<NUL> t` = task dump, `<NUL> w` =
-# current/switch summary, `<NUL> c` = per-CPU heartbeat) into qemu's stdin FIFO.
+# feed the serial-sysrq sequence (`<NUL> t` = task dump, `<NUL> w` = the
+# blocked tasks, `<NUL> p` = per-CPU heartbeat) into qemu's stdin FIFO.
+#
+# NOT `<NUL> c`. That was here when the serial path had a private key table in
+# which `c` printed per-CPU state; the table is now the reference's, where `c`
+# CRASHES THE MACHINE ON PURPOSE. It stayed harmless only because the composed
+# image's own sysctl refused every key, so the whole sequence answered
+# `disabled by kernel.sysrq` and did nothing. The moment the boot line carried
+# `sysrq_always_enabled` (B2244) the timeout handler panicked the guest it was
+# sent to diagnose, one line after the task dump it had just produced. The
+# per-CPU key is `p`.
 # UART RX is interrupt-driven and a parked late-boot wedge still takes
 # interrupts, so the drv-serial
 # prefilter fires and the (default-on) `debug-watchdog` dump lands in the
@@ -225,12 +234,12 @@ OXIDE_SMP="${OXIDE_SMP:-2}"
 # (who's Runnable/Sleeping, last syscall) for the SMP late-boot race.
 inject_sysrq() {
     [ -n "${SYSRQ_WFD:-}" ] || return 0
-    echo "boot-smoke: timeout — injecting serial-sysrq task/CPU dump (<NUL>t,<NUL>w,<NUL>c)" >&2
+    echo "boot-smoke: timeout — injecting serial-sysrq task/CPU dump (<NUL>t,<NUL>w,<NUL>p)" >&2
     printf '\000t' >&"$SYSRQ_WFD" 2>/dev/null || true
     sleep 3
     printf '\000w' >&"$SYSRQ_WFD" 2>/dev/null || true
     sleep 2
-    printf '\000c' >&"$SYSRQ_WFD" 2>/dev/null || true
+    printf '\000p' >&"$SYSRQ_WFD" 2>/dev/null || true
     sleep 2
 }
 
