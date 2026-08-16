@@ -164,6 +164,11 @@ impl<S: SectorSource> Volume<S> {
         self.bitmap = Bitmap::new(raw, self.geo.data_clusters());
         self.bitmap_chain = bitmap_chain;
         self.used_clusters = self.bitmap.used();
+        // The bitmap's OWN clusters must be marked in use in it. A bitmap that
+        // says its own storage is free is one the next allocation hands out,
+        // overwriting the record of what is allocated with a file's bytes.
+        let own = self.geo.clusters_for(bitmap_entry.size);
+        if !self.bitmap.range_set(bitmap_entry.start_cluster, own) { return Err(Errno::Einval); }
 
         // A volume with no up-case entry folds by the built-in rules; that is
         // a malformed volume, and refusing it would make a medium unreadable

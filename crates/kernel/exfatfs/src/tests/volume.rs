@@ -194,3 +194,25 @@ fn the_label_can_be_replaced() {
     // A label longer than the field holds is refused rather than truncated.
     assert!(v.set_label("FAR TOO LONG A LABEL").is_err());
 }
+
+#[test]
+fn a_bitmap_that_says_its_own_clusters_are_free_is_refused() {
+    // The next allocation would hand out the bitmap's own storage and
+    // overwrite the record of what is allocated with a file's bytes.
+    let image = {
+        let b = Builder::new();
+        let image = b.finish();
+        // Clear the bit standing for the bitmap's own cluster.
+        let at = (test_image::DATA_START as usize
+                  + (test_image::BITMAP_CLUSTER as usize - 2) * (CLUSTER / test_image::SECTOR))
+                 * test_image::SECTOR;
+        let index = test_image::BITMAP_CLUSTER as usize - 2;
+        let mut byte = image.peek(at + index / 8, 1);
+        byte[0] &= !(1 << (index % 8));
+        image.poke(at + index / 8, &byte);
+        image
+    };
+    let mut opts = Options::defaults();
+    opts.settle();
+    assert!(Volume::mount_with(image, opts).is_err());
+}
