@@ -1,0 +1,82 @@
+//! Event codes and the enumerations events carry. Codes 0x0028 and 0x0029 are
+//! unassigned: the sequence skips them and nothing may be given those numbers.
+
+pub const MGMT_EV_CMD_COMPLETE: u16 = 0x0001;
+pub const MGMT_EV_CMD_STATUS: u16 = 0x0002;
+pub const MGMT_EV_CONTROLLER_ERROR: u16 = 0x0003;
+pub const MGMT_EV_INDEX_ADDED: u16 = 0x0004;
+pub const MGMT_EV_INDEX_REMOVED: u16 = 0x0005;
+pub const MGMT_EV_NEW_SETTINGS: u16 = 0x0006;
+pub const MGMT_EV_CLASS_OF_DEV_CHANGED: u16 = 0x0007;
+pub const MGMT_EV_LOCAL_NAME_CHANGED: u16 = 0x0008;
+pub const MGMT_EV_NEW_LINK_KEY: u16 = 0x0009;
+pub const MGMT_EV_NEW_LONG_TERM_KEY: u16 = 0x000A;
+pub const MGMT_EV_DEVICE_CONNECTED: u16 = 0x000B;
+pub const MGMT_EV_DEVICE_DISCONNECTED: u16 = 0x000C;
+pub const MGMT_EV_CONNECT_FAILED: u16 = 0x000D;
+pub const MGMT_EV_PIN_CODE_REQUEST: u16 = 0x000E;
+pub const MGMT_EV_USER_CONFIRM_REQUEST: u16 = 0x000F;
+pub const MGMT_EV_USER_PASSKEY_REQUEST: u16 = 0x0010;
+pub const MGMT_EV_AUTH_FAILED: u16 = 0x0011;
+pub const MGMT_EV_DEVICE_FOUND: u16 = 0x0012;
+pub const MGMT_EV_DISCOVERING: u16 = 0x0013;
+pub const MGMT_EV_DEVICE_BLOCKED: u16 = 0x0014;
+pub const MGMT_EV_DEVICE_UNBLOCKED: u16 = 0x0015;
+pub const MGMT_EV_DEVICE_UNPAIRED: u16 = 0x0016;
+pub const MGMT_EV_PASSKEY_NOTIFY: u16 = 0x0017;
+pub const MGMT_EV_NEW_IRK: u16 = 0x0018;
+pub const MGMT_EV_NEW_CSRK: u16 = 0x0019;
+pub const MGMT_EV_DEVICE_ADDED: u16 = 0x001A;
+pub const MGMT_EV_DEVICE_REMOVED: u16 = 0x001B;
+pub const MGMT_EV_NEW_CONN_PARAM: u16 = 0x001C;
+pub const MGMT_EV_UNCONF_INDEX_ADDED: u16 = 0x001D;
+pub const MGMT_EV_UNCONF_INDEX_REMOVED: u16 = 0x001E;
+pub const MGMT_EV_NEW_CONFIG_OPTIONS: u16 = 0x001F;
+pub const MGMT_EV_EXT_INDEX_ADDED: u16 = 0x0020;
+pub const MGMT_EV_EXT_INDEX_REMOVED: u16 = 0x0021;
+pub const MGMT_EV_LOCAL_OOB_DATA_UPDATED: u16 = 0x0022;
+pub const MGMT_EV_ADVERTISING_ADDED: u16 = 0x0023;
+pub const MGMT_EV_ADVERTISING_REMOVED: u16 = 0x0024;
+pub const MGMT_EV_EXT_INFO_CHANGED: u16 = 0x0025;
+pub const MGMT_EV_PHY_CONFIGURATION_CHANGED: u16 = 0x0026;
+pub const MGMT_EV_EXP_FEATURE_CHANGED: u16 = 0x0027;
+pub const MGMT_EV_DEVICE_FLAGS_CHANGED: u16 = 0x002A;
+pub const MGMT_EV_ADV_MONITOR_ADDED: u16 = 0x002B;
+pub const MGMT_EV_ADV_MONITOR_REMOVED: u16 = 0x002C;
+pub const MGMT_EV_CONTROLLER_SUSPEND: u16 = 0x002D;
+pub const MGMT_EV_CONTROLLER_RESUME: u16 = 0x002E;
+pub const MGMT_EV_ADV_MONITOR_DEVICE_FOUND: u16 = 0x002F;
+pub const MGMT_EV_ADV_MONITOR_DEVICE_LOST: u16 = 0x0030;
+pub const MGMT_EV_MESH_DEVICE_FOUND: u16 = 0x0031;
+pub const MGMT_EV_MESH_PACKET_CMPLT: u16 = 0x0032;
+
+/// Reason byte of `DEVICE_DISCONNECTED`.
+pub const MGMT_DEV_DISCONN_UNKNOWN: u8 = 0x00;
+pub const MGMT_DEV_DISCONN_TIMEOUT: u8 = 0x01;
+pub const MGMT_DEV_DISCONN_LOCAL_HOST: u8 = 0x02;
+pub const MGMT_DEV_DISCONN_REMOTE: u8 = 0x03;
+pub const MGMT_DEV_DISCONN_AUTH_FAILURE: u8 = 0x04;
+pub const MGMT_DEV_DISCONN_LOCAL_HOST_SUSPEND: u8 = 0x05;
+
+/// Wake reason byte of `CONTROLLER_RESUME`.
+pub const MGMT_WAKE_REASON_NON_BT_WAKE: u8 = 0x00;
+pub const MGMT_WAKE_REASON_UNEXPECTED: u8 = 0x01;
+pub const MGMT_WAKE_REASON_REMOTE_WAKE: u8 = 0x02;
+
+/// `NEW_LONG_TERM_KEY` key type.
+pub const MGMT_LTK_UNAUTHENTICATED: u8 = 0x00;
+pub const MGMT_LTK_AUTHENTICATED: u8 = 0x01;
+pub const MGMT_LTK_P256_UNAUTH: u8 = 0x02;
+pub const MGMT_LTK_P256_AUTH: u8 = 0x03;
+pub const MGMT_LTK_P256_DEBUG: u8 = 0x04;
+
+/// `NEW_CSRK` key type: which side owns the key and whether it is authenticated.
+pub const MGMT_CSRK_LOCAL_UNAUTHENTICATED: u8 = 0x00;
+pub const MGMT_CSRK_REMOTE_UNAUTHENTICATED: u8 = 0x01;
+pub const MGMT_CSRK_LOCAL_AUTHENTICATED: u8 = 0x02;
+pub const MGMT_CSRK_REMOTE_AUTHENTICATED: u8 = 0x03;
+
+/// `EXT_INDEX_ADDED`/`EXT_INDEX_REMOVED` controller type: a configured
+/// controller reports zero, an unconfigured one reports one.
+pub const MGMT_EXT_INDEX_TYPE_CONFIGURED: u8 = 0x00;
+pub const MGMT_EXT_INDEX_TYPE_UNCONFIGURED: u8 = 0x01;
