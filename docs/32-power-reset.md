@@ -1,16 +1,17 @@
 # 32 Power + Reset
 
-FROZEN 2026-05-02. Dep:`01`,`02`,`15`,`20`,`21`,`33`. Provides:`reboot` syscall, `init` shutdown.
+FROZEN 2026-08-15. Dep:`01`,`02`,`15`,`20`,`21`,`33`. Provides:`reboot` syscall, `init` shutdown.
 
 ## 1 Purpose
 
-Halt, reboot, poweroff. Cpu idle. Frequency scaling stub.
+Halt, reboot, poweroff. Cpu idle. Frequency scaling stub. Reversible sleep states are `32a`.
 
 ## 2 Invariants (frozen)
 
 1. `reboot()` syscall requires `CAP_SYS_BOOT`.
 2. Shutdown sequence quiesces every CPU before invoking firmware reset path.
 3. Power management acts through the firmware namespace where one exists (`33`): the terminal S5 action, and the ACPI power supplies of `32§13`. Platforms describing no AML fall back to halt + reset via UEFI Runtime Services or the platform reset register.
+4. Terminal transitions are irreversible by construction: nothing after the firmware write may assume the machine still executes. Reversible transitions belong to `32a`.
 
 ## 3 Public ifc
 
@@ -31,7 +32,7 @@ pub fn cpu_poweroff_secondary();// shut down secondary CPUs at shutdown
 - x86: `sti; hlt; cli` if interrupts pending (loop until IRQ wakes us).
 - arm: `wfi`.
 
-C-states: not used yet (no AML). Phase 35 enables simple ACPI _CST table reading.
+C-states: not used yet. Phase 35 enables simple ACPI `_CST` table reading.
 
 ## 5 Reset / poweroff
 
@@ -55,9 +56,9 @@ exists here: this kernel exits boot services on both arches and retains no
 runtime-services pointer, and `36§2` forbids returning to real mode.
 
 x86_64 poweroff needs the S5 `SLP_TYP` value, which lives in the DSDT `_S5`
-object and requires AML evaluation (`§2` invariant 3). The FADT's PM1a/PM1b
-control blocks and the ACPI 5.0 sleep-control/sleep-status registers are parsed
-and available; the AML evaluation is the only missing input.
+object and is read by AML evaluation. The FADT's PM1a/PM1b control blocks and
+the ACPI 5.0 sleep-control/sleep-status registers supply the registers written.
+The sleep states share this decode path (`32a§9`).
 
 aarch64:
 - PSCI `SYSTEM_RESET` / `SYSTEM_OFF` — the platform's single authoritative
@@ -106,7 +107,7 @@ Shutdown is single-threaded by design; one CPU coordinates, others halt on IPI.
 
 ## 12 Cross-spec
 
-`15` (reboot syscall), `20`/`21` (cpu halt instructions), `33` (UEFI/PSCI), `13` (kthread of init shutdown).
+`15` (reboot syscall), `20`/`21` (cpu halt instructions), `33` (UEFI/PSCI), `13` (kthread of init shutdown), `32a` (suspend/resume).
 
 ## 13 Power-supply class
 
