@@ -128,6 +128,7 @@ impl VideoOps for Vivid {
     /// # C: O(handed)
     fn start_streaming(&self, handed: &[u32]) -> Result<(), Errno> {
         let mut state = self.state.lock();
+        if !state.streaming { crate::note_streaming(true); }
         state.streaming = true;
         state.sequence = 0;
         state.last_frame_ns = 0;
@@ -139,6 +140,7 @@ impl VideoOps for Vivid {
     /// # C: O(1)
     fn stop_streaming(&self) {
         let mut state = self.state.lock();
+        if state.streaming { crate::note_streaming(false); }
         state.streaming = false;
         state.handed.clear();
     }

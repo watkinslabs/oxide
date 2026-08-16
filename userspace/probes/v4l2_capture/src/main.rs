@@ -131,6 +131,7 @@ fn run() -> Verdict {
     if after == before { return fail("s_ctrl-did-not-take"); }
 
     // --- format ----------------------------------------------------------
+    line(&format!("{PROBE}: step=g_fmt"));
     let mut fmt = [0u8; FORMAT_SIZE];
     w32(&mut fmt, 0, V4L2_BUF_TYPE_VIDEO_CAPTURE);
     if ioctl(fd, VIDIOC_G_FMT, &mut fmt) < 0 { return fail_errno("g_fmt"); }
@@ -152,6 +153,11 @@ fn run() -> Verdict {
     }
 
     // --- buffers ---------------------------------------------------------
+    // Each step announces itself before the call it is about to make. A probe
+    // that only reports completed steps cannot distinguish a command that
+    // wedged from one whose result line never reached the console, and this
+    // gate has already had to tell those two apart once.
+    line(&format!("{PROBE}: step=reqbufs want={WANT_BUFFERS}"));
     let mut req = [0u8; REQUESTBUFFERS_SIZE];
     w32(&mut req, 0, WANT_BUFFERS);
     w32(&mut req, 4, V4L2_BUF_TYPE_VIDEO_CAPTURE);
@@ -171,6 +177,7 @@ fn run() -> Verdict {
         let offset = r64(&b, 64);
         let length = r32(&b, 72) as usize;
         if length < sizeimage { return fail("querybuf-buffer-smaller-than-the-image"); }
+        line(&format!("{PROBE}: step=mmap index={index} offset={offset:#x} length={length}"));
         // SAFETY: a shared read-only mapping of `length` bytes at the cookie
         // the device just reported; the mapping outlives every read below.
         let addr = unsafe {
@@ -184,6 +191,7 @@ fn run() -> Verdict {
     line(&format!("{PROBE}: mapped and queued {count} buffers"));
 
     // --- stream ----------------------------------------------------------
+    line(&format!("{PROBE}: step=streamon"));
     if ioctl_int(fd, VIDIOC_STREAMON, V4L2_BUF_TYPE_VIDEO_CAPTURE as i32) < 0 {
         return fail_errno("streamon");
     }
@@ -192,6 +200,7 @@ fn run() -> Verdict {
         let mut d = [0u8; BUFFER_SIZE];
         w32(&mut d, 4, V4L2_BUF_TYPE_VIDEO_CAPTURE);
         w32(&mut d, 60, V4L2_MEMORY_MMAP);
+        line(&format!("{PROBE}: step=dqbuf"));
         if ioctl(fd, VIDIOC_DQBUF, &mut d) < 0 { return fail_errno("dqbuf"); }
         let index = r32(&d, 0) as usize;
         let bytesused = r32(&d, 8);

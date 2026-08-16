@@ -3,6 +3,7 @@
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use sync::{Spinlock, TaskList};
 
 use v4l2::device::VideoDevice;
@@ -18,9 +19,27 @@ struct Registered {
 
 static CAMERAS: Spinlock<Vec<Registered>, TaskList> = Spinlock::new(Vec::new());
 
-/// How often the producer looks for work. Fast enough that the highest frame
-/// rate the device offers is paced by its own interval rather than by this.
-const TICK_NS: u64 = 1_000_000_000 / 120;
+/// How many cameras are streaming right now.
+///
+/// The producer runs on every tick for the whole life of the machine, and for
+/// almost all of it no camera is open. Reading one atomic and returning is the
+/// difference between a timer callback that costs nothing and one that takes
+/// two locks and allocates, sixty times a second, from boot.
+static STREAMING: AtomicUsize = AtomicUsize::new(0);
+
+/// How often the producer looks for work: twice the fastest frame rate the
+/// device offers, which is enough to pace it without the tick itself becoming
+/// the clock.
+const TICK_NS: u64 = 1_000_000_000 / 60;
+
+/// A camera started or stopped streaming. # C: O(1)
+pub fn note_streaming(started: bool) {
+    if started { STREAMING.fetch_add(1, Ordering::AcqRel); }
+    else {
+        let _ = STREAMING.fetch_update(Ordering::AcqRel, Ordering::Acquire,
+                                       |v| Some(v.saturating_sub(1)));
+    }
+}
 
 /// Register one virtual camera and publish its node.
 ///
@@ -64,6 +83,7 @@ pub fn register(index_hint: u32) -> bool {
 /// it may take the device lock and write into buffer pages.
 /// # C: O(cameras * pixels)
 fn tick(now: u64) {
+    if STREAMING.load(Ordering::Acquire) == 0 { return; }
     let cameras: Vec<(Arc<Vivid>, Arc<VideoDevice>)> = {
         let guard = CAMERAS.lock();
         guard.iter().map(|r| (r.vivid.clone(), r.device.clone())).collect()

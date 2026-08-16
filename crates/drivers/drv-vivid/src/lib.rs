@@ -24,6 +24,16 @@ pub mod tick;
 
 pub use device::Vivid;
 
+/// Tell the frame producer a camera started or stopped. Outside the kernel
+/// there is no producer, so the count is not kept.
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn note_streaming(started: bool) { tick::note_streaming(started); }
+
+/// # C: O(1)
+#[cfg(not(target_os = "oxide-kernel"))]
+pub(crate) fn note_streaming(_started: bool) {}
+
 /// Publish one virtual camera and start producing frames for it.
 /// # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
