@@ -9,10 +9,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
-name = "aes"
-version = "0.1.0"
-
-[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -148,15 +144,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "bluetooth"
+name = "bonding"
 version = "0.1.0"
 dependencies = [
- "aes",
- "crc",
- "p256",
+ "net",
+ "network-namespace",
+ "rtnl-link",
  "sync",
  "syscall",
- "vfs",
 ]
 
 [[package]]
@@ -244,6 +239,13 @@ name = "conformance"
 version = "0.1.0"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "conntrack"
+version = "0.1.0"
+dependencies = [
+ "sync",
 ]
 
 [[package]]
@@ -599,17 +601,6 @@ dependencies = [
  "drv",
  "hal-aarch64",
  "sync",
-]
-
-[[package]]
-name = "drv-vhci"
-version = "0.1.0"
-dependencies = [
- "bluetooth",
- "drv",
- "sync",
- "syscall",
- "vfs",
 ]
 
 [[package]]
@@ -1280,7 +1271,6 @@ dependencies = [
  "drv-ps2-keyboard",
  "drv-serial",
  "drv-simplefb",
- "drv-vhci",
  "drv-virtio-blk",
  "drv-virtio-gpu",
  "drv-virtio-input",
@@ -1513,11 +1503,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nat"
+version = "0.1.0"
+dependencies = [
+ "conntrack",
+ "sync",
+]
+
+[[package]]
 name = "net"
 version = "0.1.0"
 dependencies = [
  "bitflags",
- "bluetooth",
  "cgroup",
  "cpu",
  "crng",
@@ -1546,6 +1543,8 @@ dependencies = [
 name = "netfilter"
 version = "0.1.0"
 dependencies = [
+ "conntrack",
+ "nat",
  "net",
  "netlink",
  "sched",
@@ -1640,10 +1639,6 @@ dependencies = [
  "syscall",
  "vfs",
 ]
-
-[[package]]
-name = "p256"
-version = "0.1.0"
 
 [[package]]
 name = "pci"
@@ -1987,6 +1982,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
+name = "rtnl-link"
+version = "0.1.0"
+dependencies = [
+ "sync",
+ "syscall",
+]
+
+[[package]]
 name = "rustix"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2325,7 +2328,6 @@ dependencies = [
  "aslr",
  "audit",
  "block",
- "bluetooth",
  "boot-info",
  "cgroup",
  "conformance",
@@ -2717,6 +2719,18 @@ dependencies = [
  "pmm",
  "sched",
  "sync",
+]
+
+[[package]]
+name = "vlan"
+version = "0.1.0"
+dependencies = [
+ "net",
+ "network-namespace",
+ "rtnl-link",
+ "sched",
+ "sync",
+ "syscall",
 ]
 
 [[package]]

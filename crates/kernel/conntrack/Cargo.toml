@@ -1,0 +1,15 @@
+[package]
+name    = "conntrack"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Connection tracking per `25a`. Tuples, per-protocol trackers, the conntrack table, expectations, helpers, events, and the sysctl/proc surface. Leaf over shared synchronization: no netdev, no socket, no packet-path dependency."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+sync = { path = "../../shared/sync" }
+
+[lints]
+workspace = true

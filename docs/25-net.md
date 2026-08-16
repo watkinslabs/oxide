@@ -113,9 +113,8 @@ Per-iface neighbor cache: `BTreeMap<IpAddr, NeighEntry>`. States: NONE, INCOMPLE
 
 ## 12 Filtering
 
-We do **not** ship a netfilter clone. Instead: BPF-based hooks at NET_RX/NET_TX (lands with BPF in phase 23). Until then no filtering — incoming non-conntrack packets accepted; outgoing accepted. Full netfilter ride per phase 39.
-
-`iptables`/`nftables` userspace from Fedora needs netlink+netfilter and waits on phase 39. Current acceptance binaries (redis, nginx, openssh) don't need filtering.
+Netfilter hooks + nftables per `26§7`. Stateful filtering, NAT, VLAN interfaces and
+bonding per `25a`. BPF hooks at NET_RX/NET_TX ride phase 23 alongside, not instead.
 
 ## 13 AF_UNIX
 
