@@ -1,0 +1,12 @@
+[package]
+name = "p256"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "NIST P-256 scalar arithmetic and ECDH, as required by LE Secure Connections pairing."
+
+[lib]
+path = "src/lib.rs"
+
+[lints]
+workspace = true
