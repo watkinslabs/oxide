@@ -55,11 +55,11 @@ was 78 rows behind the file.
 
 | Class \ Sev | blocker | critical | high | med | low | Total |
 |---|---:|---:|---:|---:|---:|---:|
-| `DEFECT` | 1 | 7 | 18 | 46 | 57 | 129 |
-| `MISSING` | 1 | 0 | 29 | 103 | 93 | 226 |
-| `COVERAGE` | 0 | 0 | 7 | 58 | 52 | 117 |
-| `INFRA` | 0 | 0 | 1 | 29 | 33 | 63 |
-| **Total** | **2** | **7** | **55** | **236** | **235** | **535** |
+| `DEFECT` | 0 | 4 | 14 | 51 | 58 | 127 |
+| `MISSING` | 0 | 0 | 21 | 104 | 96 | 221 |
+| `COVERAGE` | 0 | 0 | 7 | 59 | 54 | 120 |
+| `INFRA` | 0 | 0 | 1 | 30 | 33 | 64 |
+| **Total** | **0** | **4** | **43** | **244** | **241** | **532** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
