@@ -100,6 +100,22 @@ pub fn handle(full_msg: &[u8], net_ns: u64, cred: GenlCred) -> Vec<u8> {
     }
     let attrs = &full_msg[Nlmsghdr::SIZE + Genlmsghdr::SIZE + fam.hdrsize as usize..];
     let dump = is_dump(&hdr);
+    // A family that supplied its own handler serves the command itself. The
+    // op was already selected by `admit`, so re-selecting here cannot
+    // disagree with the permission ladder that ran against it.
+    let own = fam.op(gh.cmd).and_then(|op| if dump { op.dumpit } else { op.doit });
+    if let Some(handler) = own {
+        let ctx = family::GenlCtx {
+            net_ns, portid: hdr.nlmsg_pid, family_id: fam.id,
+            init_ns_net_admin: cred.init_ns_net_admin,
+            sock_ns_net_admin: cred.sock_ns_net_admin,
+        };
+        let mut reply = handler(&hdr, attrs, ctx);
+        if hdr.nlmsg_flags & flags::NLM_F_ACK != 0 && !is_error_reply(&reply) {
+            reply.extend_from_slice(&message::error(&hdr, Ok(())));
+        }
+        return reply;
+    }
     let mut reply = match (fam.id, gh.cmd, dump) {
         (GENL_ID_CTRL, ctrl_cmd::CTRL_CMD_GETFAMILY, false) =>
             ctrl::getfamily(&hdr, attrs, net_ns),

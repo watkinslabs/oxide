@@ -101,3 +101,21 @@ pub fn genlmsg_multicast(
 /// Initial network namespace id — the `init_net` genetlink events target.
 /// # C: O(1)
 pub fn initial_net_ns() -> u64 { network_namespace::initial().id().as_u64() }
+
+/// `genlmsg_unicast`: deliver one family message to the single socket bound
+/// to `portid`. A family that delivers a received frame only to the socket
+/// that registered for it needs this; a multicast would hand the frame to
+/// every listener, including ones with no business seeing it.
+/// Reports `ESRCH` when no socket holds the port. # C: O(N_listeners)
+pub fn genlmsg_unicast(net_ns: u64, portid: u32, msg: &[u8]) -> Result<(), GenlMcastError> {
+    let target = {
+        let mut g = GENL_LISTENERS.lock();
+        g.retain(|w| w.strong_count() > 0);
+        g.iter().filter_map(Weak::upgrade)
+            .find(|s| s.port_id.load(Ordering::Acquire) == portid
+                   && s.net_ns.id().as_u64() == net_ns)
+    };
+    let Some(target) = target else { return Err(GenlMcastError::Esrch); };
+    if target.enqueue_multicast(msg.to_vec(), 0, None) { Ok(()) }
+    else { Err(GenlMcastError::Esrch) }
+}

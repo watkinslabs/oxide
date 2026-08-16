@@ -99,12 +99,28 @@ pub mod policy_attr {
     pub const NL_POLICY_TYPE_ATTR_MAX_LENGTH:  u16 = 7;
 }
 
-/// `NL_ATTR_TYPE_*` wire kinds reported by a policy dump.
+/// `NL_ATTR_TYPE_*` wire kinds reported by a policy dump. The numbering runs
+/// consecutively from the invalid slot, so a value here is only correct
+/// relative to every other value in the same enumeration.
 pub mod policy_type {
-    pub const NL_ATTR_TYPE_U16:        u32 = 4;
-    pub const NL_ATTR_TYPE_U32:        u32 = 5;
-    pub const NL_ATTR_TYPE_BINARY:     u32 = 13;
-    pub const NL_ATTR_TYPE_NUL_STRING: u32 = 11;
+    pub const NL_ATTR_TYPE_INVALID:      u32 = 0;
+    pub const NL_ATTR_TYPE_FLAG:         u32 = 1;
+    pub const NL_ATTR_TYPE_U8:           u32 = 2;
+    pub const NL_ATTR_TYPE_U16:          u32 = 3;
+    pub const NL_ATTR_TYPE_U32:          u32 = 4;
+    pub const NL_ATTR_TYPE_U64:          u32 = 5;
+    pub const NL_ATTR_TYPE_S8:           u32 = 6;
+    pub const NL_ATTR_TYPE_S16:          u32 = 7;
+    pub const NL_ATTR_TYPE_S32:          u32 = 8;
+    pub const NL_ATTR_TYPE_S64:          u32 = 9;
+    pub const NL_ATTR_TYPE_BINARY:       u32 = 10;
+    pub const NL_ATTR_TYPE_STRING:       u32 = 11;
+    pub const NL_ATTR_TYPE_NUL_STRING:   u32 = 12;
+    pub const NL_ATTR_TYPE_NESTED:       u32 = 13;
+    pub const NL_ATTR_TYPE_NESTED_ARRAY: u32 = 14;
+    pub const NL_ATTR_TYPE_BITFIELD32:   u32 = 15;
+    pub const NL_ATTR_TYPE_SINT:         u32 = 16;
+    pub const NL_ATTR_TYPE_UINT:         u32 = 17;
 }
 
 /// `CTRL_ATTR_OP_POLICY` sub-attributes: which policy index a command's

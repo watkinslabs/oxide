@@ -163,6 +163,26 @@ fn nmi_backtrace(f: &PtRegs) {
     klog::write_raw(b" r13=");           klog::write_hex_u64(f.r13);
     klog::write_raw(b" r14=");           klog::write_hex_u64(f.r14);
     klog::write_raw(b" r15=");           klog::write_hex_u64(f.r15);
+    // When the poke lands with the CPU already in the kernel, the interrupted
+    // RIP only ever names the syscall entry path — true of any task that is
+    // spinning on a syscall, which is exactly the case worth diagnosing. The
+    // frame the entry saved is this CPU's, at a fixed offset below its armed
+    // syscall stack top, and it carries the USER instruction pointer: the
+    // address of the `syscall` in the loop, which is what names the caller.
+    if !f.from_user() {
+        let regs = crate::current_pt_regs();
+        if !regs.is_null() {
+            // SAFETY: nmi_backtrace runs on the CPU whose per-CPU syscall
+            // stack top this frame is derived from, and the interrupted task
+            // owns that stack until it returns to user mode.
+            let u = unsafe { &*regs };
+            if u.from_user() {
+                klog::write_raw(b"\n[NMI-BT] user rip="); klog::write_hex_u64(u.rip);
+                klog::write_raw(b" rsp=");                klog::write_hex_u64(u.rsp);
+                klog::write_raw(b" nr=");                 klog::write_hex_u64(u.rax);
+            }
+        }
+    }
     klog::write_raw(b"\n");
 }
 

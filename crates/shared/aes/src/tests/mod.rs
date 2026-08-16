@@ -3,6 +3,11 @@
 #[path = "sbox.rs"] mod sbox;
 #[path = "block.rs"] mod block;
 #[path = "cmac.rs"] mod cmac;
+#[path = "vec_util.rs"] mod vec_util;
+#[path = "block256.rs"] mod block256;
+#[path = "cmac256.rs"] mod cmac256;
+#[path = "ccm.rs"] mod ccm;
+#[path = "gcm.rs"] mod gcm;
 
 const fn hexval(c: u8) -> u8 {
     match c {

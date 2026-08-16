@@ -33,3 +33,16 @@ pub const CMAC_POLY_REDUCE: u8 = 0x87;
 
 /// First byte of the CMAC padding, followed by zeros to a block boundary.
 pub const CMAC_PAD_BYTE: u8 = 0x80;
+
+/// AES-256 key width, bytes.
+pub const AES256_KEY_LEN: usize = 32;
+
+/// Rounds an AES-256 block takes.
+pub const AES256_ROUNDS: usize = 14;
+
+/// Expanded key bytes for the widest schedule this crate builds.
+pub const MAX_SCHEDULE_LEN: usize = AES_BLOCK_LEN * (AES256_ROUNDS + 1);
+
+/// Round constants for the widest schedule. AES-128 consumes ten of them and
+/// AES-256 consumes seven, so one table covers both.
+pub const RCON_MAX: [u8; 10] = RCON;

@@ -118,3 +118,74 @@ fn a_boot_without_enforcing_starts_permissive() {
     let s = SecurityState::new(BootConfig { enabled: true, enforcing: None });
     assert_eq!(s.enforcing, Enforcing::Permissive);
 }
+
+// The status page's seqlock. The reference increments `status->sequence`
+// ONCE before writing the page's fields and ONCE after, so the value is even
+// whenever the page is readable and odd only inside the update. Userspace
+// reads that word first and, per the reference's own comment, waits while it
+// is odd — `libselinux` does so by yielding the CPU in a loop.
+//
+// Publishing the policy sequence number there instead left it at 1 after a
+// single policy load — permanently odd — and PID 1 yielded 5.7 million times
+// a second for the rest of the boot. Nothing could observe that: the page is
+// rendered from state nobody asserted the parity of.
+
+/// The one invariant: readable means even. Checked at rest and after every
+/// kind of update, because one odd value at any point wedges the machine.
+#[test]
+fn the_status_seqlock_is_even_whenever_the_page_is_readable() {
+    let mut s = SecurityState::new(BootConfig::default());
+    assert_eq!(s.status_seq % 2, 0, "a page that has never been updated is readable");
+    for round in 1..=4 {
+        s.note_policy_load();
+        assert_eq!(s.status_seq % 2, 0, "readable after policy load {round}");
+        s.note_bool_commit();
+        assert_eq!(s.status_seq % 2, 0, "readable after boolean commit {round}");
+    }
+}
+
+/// A single policy load is the case that wedged every boot: it is the first
+/// update a real machine performs, and one increment leaves it odd.
+#[test]
+fn one_policy_load_leaves_the_page_readable() {
+    let mut s = SecurityState::new(BootConfig::default());
+    s.note_policy_load();
+    assert_eq!(s.status_seq % 2, 0, "odd after one load: userspace spins forever here");
+    assert_eq!(s.status_seq, STATUS_SEQ_PER_UPDATE, "one update is the reference's two bumps");
+}
+
+/// It must still ADVANCE, or a reader caching by sequence never re-reads.
+#[test]
+fn every_update_advances_the_status_seqlock() {
+    let mut s = SecurityState::new(BootConfig::default());
+    let start = s.status_seq;
+    s.note_policy_load();
+    let after_load = s.status_seq;
+    assert!(after_load > start, "a policy load must be visible as a change");
+    s.note_bool_commit();
+    let after_bool = s.status_seq;
+    assert!(after_bool > after_load, "a boolean commit must be visible as a change");
+    assert!(s.set_enforcing(Enforcing::Enforcing).is_ok());
+    assert!(s.status_seq > after_bool, "the page carries the mode, so setenforce updates it");
+    assert_eq!(s.status_seq % 2, 0, "readable after setenforce");
+}
+
+/// Setting the mode it already has changes nothing, so it is not an update.
+#[test]
+fn a_setenforce_that_changes_nothing_does_not_advance_the_seqlock() {
+    let mut s = SecurityState::new(BootConfig::default());
+    let before = s.status_seq;
+    assert!(s.set_enforcing(Enforcing::Permissive).is_ok());
+    assert_eq!(s.status_seq, before);
+}
+
+/// The seqlock is NOT the policy sequence number. They advance on the same
+/// events but mean different things, and the bug was publishing one as the
+/// other — so pin that they are different values.
+#[test]
+fn the_status_seqlock_is_not_the_policy_sequence_number() {
+    let mut s = SecurityState::new(BootConfig::default());
+    s.note_policy_load();
+    assert_eq!(s.seqno, 1, "the policy sequence counts updates one at a time");
+    assert_ne!(s.status_seq, s.seqno, "the page's seqlock is a different counter");
+}

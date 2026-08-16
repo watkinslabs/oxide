@@ -1,0 +1,22 @@
+[package]
+name    = "drv-mac80211-hwsim"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Virtual 802.11 radio driver per `62§10`: software radios registered with mac80211 that exchange frames over a shared simulated medium, so the wireless stack has a real driver on machines with no wireless hardware."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+sync      = { path = "../../shared/sync" }
+mac80211  = { path = "../../kernel/mac80211" }
+wireless  = { path = "../../kernel/wireless" }
+klog      = { path = "../../shared/klog", optional = true }
+
+[features]
+default = []
+debug-hwsim = ["dep:klog"]
+
+[lints]
+workspace = true

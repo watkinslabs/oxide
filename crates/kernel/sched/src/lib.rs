@@ -49,6 +49,9 @@ pub mod loadavg;
 pub mod psi;
 pub mod wait_policy;
 pub mod diag;
+// Interrupt contract for the idle park. Ungated: the loop that uses it is
+// kernel-target only, so a test written beside it would never build.
+pub mod idle;
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-sched"))]
 pub mod kthread;
 pub mod kstack;
@@ -326,12 +329,51 @@ pub fn halt_forever() -> ! {
         diag::percpu::idle_enter();
         // cpuidle owns the choice of how deeply to park and the residency
         // accounting that follows; a machine whose platform published no state
-        // table has no driver registered and halts directly.
-        if !cpuidle::idle::enter_idle(cpustat::this_cpu(), posix_clock::TICK_NSEC) {
-            #[cfg(target_arch = "x86_64")] hal_x86_64::halt();
-            #[cfg(target_arch = "aarch64")] hal_aarch64::halt();
-        }
+        // table has no driver registered and halts directly. Either way the
+        // park must ADMIT INTERRUPTS — this loop is reached with them masked,
+        // and `idle::idle_park` is where that contract is stated and enforced.
+        idle::idle_park(&mut LiveIdleCpu);
         diag::percpu::idle_exit();
+    }
+}
+
+/// This machine's CPU, bound to the park contract in [`idle`].
+#[cfg(target_os = "oxide-kernel")]
+struct LiveIdleCpu;
+
+#[cfg(target_os = "oxide-kernel")]
+impl idle::IdleOps for LiveIdleCpu {
+    /// # C: O(1)
+    fn irqs_enabled(&self) -> bool { !preempt::irqs_disabled() }
+
+    /// # C: O(1) plus the park
+    fn cpuidle_park(&mut self) -> bool {
+        cpuidle::idle::enter_idle(cpustat::this_cpu(), posix_clock::TICK_NSEC)
+    }
+
+    /// # C: O(1) plus the park
+    fn safe_halt(&mut self) {
+        #[cfg(target_arch = "x86_64")] hal_x86_64::safe_halt();
+        #[cfg(target_arch = "aarch64")] hal_aarch64::safe_halt();
+    }
+
+    /// # C: O(1)
+    fn enable_irqs(&mut self) {
+        // SAFETY: the idle task holds no lock and owns no critical section
+        // here; admitting interrupts is the state every other path expects on
+        // return from a park.
+        #[cfg(target_arch = "x86_64")]
+        unsafe { use sync::IrqGate; let _ = hal_x86_64::X86IrqGate::save_enable(); }
+        // SAFETY: the idle task holds no lock and owns no critical section
+        // here; admitting interrupts is the state every other path expects on
+        // return from a park.
+        #[cfg(target_arch = "aarch64")]
+        unsafe { use sync::IrqGate; let _ = hal_aarch64::ArmIrqGate::save_enable(); }
+    }
+
+    /// # C: O(1)
+    fn report_masked_return(&mut self) {
+        klog::write_raw(b"[IDLE] park returned with interrupts masked; admitting them\n");
     }
 }
 

@@ -176,6 +176,30 @@ pub fn halt() {
     }
 }
 
+/// Unmask IRQs and park — the aarch64 half of Linux `raw_safe_halt`,
+/// `msr daifclr, #2` then `dsb sy; wfi`.
+///
+/// No interrupt shadow is needed and none exists: `wfi` completes on a pending
+/// interrupt whether or not `PSTATE.I` admits it, so a wakeup that lands
+/// between the unmask and the park is either taken as an exception first or
+/// ends the `wfi` immediately. What is NOT survivable is parking with the mask
+/// still closed — the core wakes from `wfi` on the pending interrupt, never
+/// takes it, and the idle loop spins on a wakeup it can never service, which
+/// silences the tick exactly as x86's masked `hlt` does.
+/// # C: O(1)
+/// # Ctx: idle path, entered with interrupts masked
+pub fn safe_halt() {
+    #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+    {
+        // SAFETY: unmasks the IRQ bit of DAIF at EL1 and parks the core until a
+        // wake event; `dsb sy` retires earlier accesses so a wakeup published
+        // by another CPU is observable before the park.
+        unsafe {
+            core::arch::asm!("msr daifclr, #2", "dsb sy", "wfi", options(nomem, nostack));
+        }
+    }
+}
+
 /// Memory barrier ordering MMIO writes per `06§2`.
 /// # C: O(1)
 pub fn mmio_barrier() {
@@ -258,6 +282,9 @@ impl CpuOps for ArmCpuOps {
 
     /// # C: O(1)
     fn halt() { halt(); }
+
+    /// # C: O(1)
+    fn safe_halt() { safe_halt(); }
 
     /// # C: O(1)
     fn mmio_barrier() { mmio_barrier(); }

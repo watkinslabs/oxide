@@ -31,8 +31,14 @@ struct Generic;
 impl IdleOps for Generic {
     /// # C: O(1)
     fn enter(&self, index: usize, _state: &IdleState) -> KResult<usize> {
-        #[cfg(target_arch = "x86_64")] hal_x86_64::halt();
-        #[cfg(target_arch = "aarch64")] hal_aarch64::halt();
+        // The idle path is reached with interrupts MASKED, so the park is what
+        // admits them — Linux `raw_safe_halt`, one instruction pair. The bare
+        // architectural halt was here, and it parked a core the tick, the
+        // reschedule IPI and every device interrupt could no longer reach; the
+        // stall scan excuses an idle-parked CPU, so the machine went silent
+        // with nothing logged.
+        #[cfg(target_arch = "x86_64")] hal_x86_64::safe_halt();
+        #[cfg(target_arch = "aarch64")] hal_aarch64::safe_halt();
         Ok(index)
     }
 }

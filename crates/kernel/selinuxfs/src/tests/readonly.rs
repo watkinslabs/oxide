@@ -29,7 +29,7 @@ fn the_policy_disposition_reports_read_as_flags() {
     assert_eq!(read_reject_unknown(&ops), "0");
     assert_eq!(read_deny_unknown(&ops), "0");
     ops.facts = PolicyFacts { loaded: true, mls: true, reject_unknown: true,
-                              deny_unknown: true, seqno: 3, policyload: 1 };
+                              deny_unknown: true, seqno: 3, policyload: 1, status_seq: 6 };
     assert_eq!(read_mls(&ops), "1");
     assert_eq!(read_reject_unknown(&ops), "1");
     assert_eq!(read_deny_unknown(&ops), "1");
@@ -147,15 +147,36 @@ fn a_relabel_validation_takes_four_fields_and_is_gated() {
 fn the_status_page_carries_one_consistent_sample_of_the_state() {
     let mut ops = FakeOps::allow_all();
     ops.enforcing = true;
+    // seqno and status_seq are deliberately different values here: the page
+    // must carry each in the word the reference puts it in, and this test
+    // previously asserted the POLICY sequence in the seqlock word — which is
+    // the defect it was meant to catch, encoded as the expectation.
     ops.facts = PolicyFacts { loaded: true, mls: false, reject_unknown: false,
-                              deny_unknown: true, seqno: 4, policyload: 2 };
+                              deny_unknown: true, seqno: 5, policyload: 2, status_seq: 4 };
     let page = read_status(&ops);
     let field = crate::format::response::STATUS_FIELD_BYTES;
     let word = |i: usize| u32::from_le_bytes(
         page[i * field..(i + 1) * field].try_into().unwrap());
     assert_eq!(word(0), crate::format::response::STATUS_VERSION, "layout version");
-    assert_eq!(word(1), 4, "sequence");
+    assert_eq!(word(1), 4, "seqlock, not the policy sequence number");
     assert_eq!(word(2), 1, "enforcing");
-    assert_eq!(word(3), 2, "policy loads");
+    assert_eq!(word(3), 5, "policy sequence number, as the reference writes here");
     assert_eq!(word(4), 1, "deny unknown");
+}
+
+/// The word userspace spins on must be even for any state the page can be
+/// read in. A reader that sees odd concludes the kernel is mid-update and
+/// waits — forever, if nothing is going to finish the update.
+#[test]
+fn the_status_page_never_publishes_an_odd_seqlock() {
+    let mut ops = FakeOps::allow_all();
+    let field = crate::format::response::STATUS_FIELD_BYTES;
+    for updates in 0..8u32 {
+        ops.facts = PolicyFacts { loaded: true, mls: false, reject_unknown: false,
+                                  deny_unknown: false, seqno: updates, policyload: updates,
+                                  status_seq: updates * selinux::status::STATUS_SEQ_PER_UPDATE };
+        let page = read_status(&ops);
+        let seq = u32::from_le_bytes(page[field..field * 2].try_into().unwrap());
+        assert_eq!(seq % 2, 0, "page readable after {updates} update(s) must publish an even seqlock");
+    }
 }

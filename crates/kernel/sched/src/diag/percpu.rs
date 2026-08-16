@@ -249,6 +249,15 @@ fn report_stall(x: u32, age_ns: u64, me: u32) {
     klog::write_raw(b"\n");
 }
 
+/// One CPU's deferred-wake state, `(owes an activation batch, tasks linked)`.
+/// The live scheduler owns the lists; a bare host build has none.
+/// # C: O(linked)
+#[cfg(all(feature = "debug-watchdog", any(target_os = "oxide-kernel", test, feature = "hosted")))]
+fn wake_list_state(cpu: u32) -> (bool, u32) { crate::live::ttwu::wake_list_debug(cpu) }
+/// # C: O(1)
+#[cfg(all(feature = "debug-watchdog", not(any(target_os = "oxide-kernel", test, feature = "hosted"))))]
+fn wake_list_state(_cpu: u32) -> (bool, u32) { (false, 0) }
+
 /// Live `rq(cpu)->curr` tid (0 when that runqueue is not installed).
 /// # C: O(1)
 #[cfg(feature = "debug-watchdog")]
@@ -307,7 +316,7 @@ pub fn dump_cpus() {
     // word, so a leaked HARDIRQ (0x10000) or SOFTIRQ (0x100) field means that
     // CPU is structurally unable to act on the reschedule it was asked for —
     // which presents as "everything idle, nothing runnable, no progress".
-    klog::write_raw(b"[sysrq] per-cpu heartbeats:\n  CPU  age_ms  last-tid  last-syscall  nr_run  preempt_count  resched\n");
+    klog::write_raw(b"[sysrq] per-cpu heartbeats:\n  CPU  age_ms  last-tid  last-syscall  nr_run  preempt_count  resched  ttwu_pending  wake_list\n");
     let mut any = false;
     for x in 0..MAX {
         if !HB_SEEN[x].load(Ordering::Relaxed) {
@@ -333,6 +342,15 @@ pub fn dump_cpus() {
         klog::write_hex_u64(crate::preempt::preempt_count_on(x) as u64);
         klog::write_raw(b"  ");
         klog::write_dec_u64(crate::preempt::need_resched_on(x) as u64);
+        // A task deferred to this CPU's wake list only reaches a runqueue when
+        // the CPU drains it. `ttwu_pending=1` with a standing `wake_list` count
+        // that never falls is a deferred wake nobody is going to activate — the
+        // shape a task dump reports as `W ... onwl=y` and cannot localise.
+        let (pending, linked) = wake_list_state(x as u32);
+        klog::write_raw(b"  ");
+        klog::write_dec_u64(pending as u64);
+        klog::write_raw(b"  ");
+        klog::write_dec_u64(linked as u64);
         klog::write_raw(b"\n");
     }
     if !any {
