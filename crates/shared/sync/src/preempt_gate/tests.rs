@@ -165,6 +165,27 @@ fn a_wedged_cpus_held_frames_are_readable_by_index_from_a_peer() {
     });
 }
 
+// A lock taken BEFORE the preempt gate is installed still has a CPU, and its
+// release pops that CPU's stack. Pushing it onto CPU 0 instead made one trace
+// grow without bound and another underflow, on the boot path where the gate is
+// not yet installed.
+#[cfg(feature = "debug-preempt")]
+#[test]
+fn an_acquisition_before_the_gate_is_installed_traces_on_its_own_cpu() {
+    let _serial = crate::test_serial::gate();
+    OPS.store(core::ptr::null_mut(), Ordering::Release);
+    let me = crate::test_serial::pinned(4);
+    set_cpu(me);
+    let before = held_depth_on(me);
+    let lk: Spinlock<u32, crate::Tty> = Spinlock::new(0);
+    {
+        let _g = lk.lock();
+        assert_eq!(held_depth_on(me), before + 1,
+            "an uninstalled-gate acquisition must trace on the CPU that took it");
+    }
+    assert_eq!(held_depth_on(me), before, "and its release must pop the same CPU");
+}
+
 // An out-of-range CPU index must clamp rather than index past the array: the
 // stall reporter is handed a raw CPU number from a diagnostic path.
 #[cfg(feature = "debug-preempt")]
