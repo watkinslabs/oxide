@@ -1,0 +1,27 @@
+[package]
+name    = "mac80211"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "mac80211 — the softmac 802.11 layer per `62`. Owns interface state, the RX/TX handler chains, the MLME, the station table, key installation with the link ciphers, block-ack aggregation, power save and rate control, and the driver-facing operations trait."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+sync      = { path = "../../shared/sync" }
+syscall   = { path = "../syscall" }
+wireless  = { path = "../wireless" }
+net       = { path = "../net" }
+crypt     = { path = "../../shared/crypt" }
+klog      = { path = "../../shared/klog", optional = true }
+
+[features]
+default = []
+debug-mac80211 = ["dep:klog"]
+
+[dev-dependencies]
+net = { path = "../net", features = ["hosted"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,22 @@
+[package]
+name    = "wireless"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "cfg80211 — the wireless configuration layer per `62`. Owns the wiphy registry, virtual interfaces, channels and regulatory state, the scan/BSS cache, the SME connect state machine, key and station bookkeeping, and the nl80211 generic-netlink family userspace speaks."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+sync    = { path = "../../shared/sync" }
+syscall = { path = "../syscall" }
+netlink = { path = "../netlink" }
+klog    = { path = "../../shared/klog", optional = true }
+
+[features]
+default = []
+debug-wireless = ["dep:klog"]
+
+[lints]
+workspace = true

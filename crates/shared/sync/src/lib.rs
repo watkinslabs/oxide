@@ -222,6 +222,20 @@ decl_lock_class! {
     // held.
     HciDev       = 137,
     Socket       = 140,
+    // The cfg80211 radio list. Ranked ABOVE `Socket` because the network stack
+    // enters a wireless interface's transmit path with its own lock held, so
+    // every wireless lock is the inner one; the receive path drops its
+    // wireless locks BEFORE handing a frame up, so the reverse order never
+    // occurs. Strictly below `Wiphy`: registration and a name lookup both hold
+    // the list while taking one radio's lock, and no path takes the list with
+    // a radio's lock already held.
+    WiphyList    = 141,
+    // One radio's own state: its name, configuration, virtual interfaces,
+    // regulatory domain and scan cache.
+    Wiphy        = 142,
+    // mac80211 per-station state: the station table and one station's
+    // aggregation, key and power-save records. Taken with a `Wiphy` lock held.
+    Sta80211     = 143,
     // Heap allocator leaf — independent of PMM/Slab, any subsystem may
     // call `KAlloc` with its own lock held; kalloc never calls back into
     // the kernel, so it's the final acquire in any chain.
