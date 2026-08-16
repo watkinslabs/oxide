@@ -15,14 +15,21 @@
 // installed once and never removed — the trace then behaves as it does on a
 // real machine, one stack per CPU. (2) is answered by `gate`.
 
+use std::sync::{Mutex, MutexGuard};
+#[cfg(feature = "debug-preempt")]
 use std::cell::Cell;
+#[cfg(feature = "debug-preempt")]
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard, Once};
+#[cfg(feature = "debug-preempt")]
+use std::sync::Once;
 
 static SERIAL: Mutex<()> = Mutex::new(());
+#[cfg(feature = "debug-preempt")]
 static NEXT: AtomicUsize = AtomicUsize::new(1);
+#[cfg(feature = "debug-preempt")]
 static INSTALL: Once = Once::new();
 
+#[cfg(feature = "debug-preempt")]
 std::thread_local! {
     static CPU: Cell<Option<usize>> = const { Cell::new(None) };
 }
@@ -30,6 +37,7 @@ std::thread_local! {
 /// Slots at or above this are handed out only by [`pinned`], so a test that
 /// names two CPUs can never draw one the lazy allocator also handed to a
 /// sibling thread.
+#[cfg(feature = "debug-preempt")]
 const PINNED_BASE: usize = crate::MAX_CPUS - 8;
 
 /// The `n`th slot reserved for a test that pins its own CPU identities.
@@ -40,6 +48,7 @@ pub(crate) fn pinned(n: usize) -> usize { PINNED_BASE + n % 8 }
 /// This thread's CPU slot, assigned on first ask. Slot 0 is left to threads
 /// that never ask, so a test that pins its own identity is never sharing with
 /// the unclaimed crowd. # C: O(1)
+#[cfg(feature = "debug-preempt")]
 pub(crate) fn cpu() -> usize {
     CPU.with(|c| match c.get() {
         Some(v) => v,
