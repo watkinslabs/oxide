@@ -165,19 +165,25 @@ fn register_filesystems() {
         mounted(ty, fs, None, source, sb_flags)
     }), Some(ext4::rootfs::EXT4_PARAMS)));
     // FAT is what the EFI system partition and almost every removable medium
-    // carry. `vfat` and `msdos` are separate types upstream — the second reads
-    // only 8.3 names — and this registers the long-name one under both spellings
-    // rather than claiming a type it does not implement: a mount asking for
-    // `msdos` gets long names it did not expect, which is strictly more
-    // information, where refusing the name would fail an `/etc/fstab` that
-    // mounts elsewhere.
-    fn vfat_ctor(ty: Arc<dyn vfs::FileSystemType>, source: Option<&str>, _t: &str, _d: &str,
-                 sb_flags: u64, _p: &[vfs::fs::FsParameter]) -> R {
+    // carry. `vfat` and `msdos` are two TYPES over one on-disk format, and the
+    // difference is the naming rules: `msdos` neither reads nor writes
+    // long-name slots, so a name it cannot spell in eleven bytes does not
+    // exist there. Sharing one constructor gave an `msdos` mount long names it
+    // did not ask for — strictly more information than the type promises, and
+    // not what the type means.
+    fn fat_ctor(ty: Arc<dyn vfs::FileSystemType>, source: Option<&str>, d: &str, sb_flags: u64,
+                type_name: &'static str, base: fatfs::Options) -> R {
         let source = source.ok_or(vfs::VfsError::Enoent)?;
         let write = sb_flags & vfs::superblock::SB_RDONLY == 0;
         let access = vfs::MAY_READ | if write { vfs::MAY_WRITE } else { 0 };
         let (dev, _dev_t) = resolve_block_source(source, access)?;
-        let fatfs = fatfs::FatFs::open_with_access(dev, source, write)?;
+        // The option string decides which characters a name spells
+        // (`codepage=`), whether a lowercase name round-trips (`shortname=`),
+        // and which instant every timestamp on the volume means (`tz=`), so a
+        // string that cannot be honoured fails the mount rather than mounting
+        // something that ignores it.
+        let opts = fatfs::opts::parse(base, d).map_err(fatfs::mount::errno_to_vfs)?;
+        let fatfs = fatfs::FatFs::open_typed(dev, source, write, type_name, opts)?;
         // A mount that asked to write and could not — a medium that refuses
         // writes — mounts READ-ONLY rather than failing, and the superblock
         // says so, because reporting writable when the volume is not fails
@@ -189,10 +195,14 @@ fn register_filesystems() {
         let fs: Arc<dyn vfs::fs::FileSystem> = fatfs;
         mounted(ty, fs, Some(root), source, sb_flags)
     }
-    for name in ["vfat", "msdos"] {
-        let _ = register_fs(FsType::new(name, fatfs::MSDOS_SUPER_MAGIC,
-            FsFlags::FS_REQUIRES_DEV, Box::new(vfat_ctor)));
-    }
+    let _ = register_fs(FsType::new("vfat", fatfs::MSDOS_SUPER_MAGIC, FsFlags::FS_REQUIRES_DEV,
+        Box::new(|ty, s: Option<&str>, _t: &str, d: &str, f: u64, _p: &[vfs::fs::FsParameter]| -> R {
+            fat_ctor(ty, s, d, f, "vfat", fatfs::Options::vfat())
+        })));
+    let _ = register_fs(FsType::new("msdos", fatfs::MSDOS_SUPER_MAGIC, FsFlags::FS_REQUIRES_DEV,
+        Box::new(|ty, s: Option<&str>, _t: &str, d: &str, f: u64, _p: &[vfs::fs::FsParameter]| -> R {
+            fat_ctor(ty, s, d, f, "msdos", fatfs::Options::msdos())
+        })));
     // procfs declares the three options it ENFORCES (`gid=`, `hidepid=`,
     // `subset=`) and builds a per-mount root that carries them. The table was an
     // empty list while the root inode was a process-global singleton — there was
