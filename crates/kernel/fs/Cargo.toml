@@ -27,6 +27,11 @@ procfs   = { path = "../procfs" }
 # the attach decision turns on; the program object lives in `security::bpf`,
 # which sits below this crate (`procfs` already depends on it).
 security = { path = "../security" }
+# Label-based MAC: the decision engine and its kernel-side owner. This crate
+# holds the objects the labels belong to, so the glue that reads one and asks
+# the other lives here.
+selinux         = { path = "../selinux" }
+selinux-runtime = { path = "../selinux-runtime" }
 nscg     = { path = "../nscg" }
 umh      = { path = "../umh" }
 pidfd    = { path = "../pidfd" }

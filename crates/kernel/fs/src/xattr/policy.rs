@@ -95,14 +95,38 @@ pub fn may_write_xattr(inode: &InodeRef) -> Result<(), i64> {
     Ok(())
 }
 
-/// `xattr_permission`. `security.*`/`system.*` are left entirely to the LSM +
-/// filesystem handler (no DAC); `trusted.*` is CAP_SYS_ADMIN only; `user.*` is
+/// The label-based gate on a READ of `security.selinux`. A write carries a
+/// value and is priced by [`lsm_set_gate`]; a removal by [`lsm_remove_gate`].
+/// # C: O(1) cached
+fn lsm_read_gate(inode: &InodeRef, name: &str, mask: u32) -> Result<(), i64> {
+    if mask & vfs::MAY_WRITE != 0 { return Ok(()); }
+    crate::selinux::xattr_gate(inode, name, selinux_runtime::inode::XattrOp::Get, None)
+}
+
+/// The label-based gate on a WRITE of `security.selinux`: relabelling the
+/// object off its old label, onto the new one, and into this filesystem.
+/// Runs where the VALUE is known, because that is what is being priced.
+/// # C: O(rules)
+pub fn lsm_set_gate(inode: &InodeRef, name: &str, value: &[u8]) -> Result<(), i64> {
+    crate::selinux::xattr_gate(inode, name, selinux_runtime::inode::XattrOp::Set, Some(value))
+}
+
+/// The label-based gate on DELETING `security.selinux`. # C: O(1)
+pub fn lsm_remove_gate(inode: &InodeRef, name: &str) -> Result<(), i64> {
+    crate::selinux::xattr_gate(inode, name, selinux_runtime::inode::XattrOp::Remove, None)
+}
+
+/// `xattr_permission`. `security.*` takes no DAC check and is decided by the
+/// label module ([`lsm_read_gate`], and the two value-aware gates above);
+/// `system.*` is left to the filesystem handler;
+/// `trusted.*` is CAP_SYS_ADMIN only; `user.*` is
 /// restricted by file type (and by ownership on a STICKY directory) and then
 /// takes the ordinary DAC check; every other namespace takes plain DAC and is
 /// rejected later by [`resolve_name`]. # C: O(ngroups)
 pub fn xattr_permission(inode: &InodeRef, name: &str, mask: u32, c: &XattrCred) -> Result<(), i64> {
     if mask & vfs::MAY_WRITE != 0 { may_write_xattr(inode)?; }
-    if name.starts_with(SECURITY_PREFIX) || name.starts_with(SYSTEM_PREFIX) { return Ok(()); }
+    if name.starts_with(SECURITY_PREFIX) { return lsm_read_gate(inode, name, mask); }
+    if name.starts_with(SYSTEM_PREFIX) { return Ok(()); }
     if name.starts_with(TRUSTED_PREFIX) {
         if !c.sys_admin { return Err(permission_error(mask)); }
         return Ok(());

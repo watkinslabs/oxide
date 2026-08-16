@@ -424,6 +424,14 @@ impl Task {
             ptrace_eventmsg: AtomicU64::new(0),
             ptrace_siginfo:  Spinlock::new(None),
             landlock_domain: Spinlock::new(None),
+            // A thread with no address space has never run user code and
+            // carries the kernel's own label; a user task starts in the
+            // policy's init domain until an execve transitions it. `62§5`.
+            selinux_label: Spinlock::new(if starts_in_user {
+                crate::selinux_label::TaskLabel::init()
+            } else {
+                crate::selinux_label::TaskLabel::kernel()
+            }),
             landlock_tsync_work: Spinlock::new(None),
             landlock_tsync_id: AtomicU64::new(0),
             landlock_log_state: AtomicU32::new(0),

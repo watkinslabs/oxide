@@ -977,6 +977,8 @@ dependencies = [
  "procfs",
  "sched",
  "security",
+ "selinux",
+ "selinux-runtime",
  "sync",
  "syscall",
  "timekeeper",
@@ -1278,6 +1280,7 @@ dependencies = [
  "pstore",
  "sched",
  "security",
+ "selinux-runtime",
  "smoke",
  "softirq",
  "sound",
@@ -2051,6 +2054,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "selinuxfs"
+version = "0.1.0"
+dependencies = [
+ "audit",
+ "kernfs",
+ "selinux",
+ "selinux-runtime",
+ "sync",
+ "vfs",
+]
+
+[[package]]
 name = "semver"
 version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2316,6 +2331,9 @@ dependencies = [
  "pstore",
  "sched",
  "security",
+ "selinux",
+ "selinux-runtime",
+ "selinuxfs",
  "smoke",
  "socket",
  "softirq",

@@ -60,6 +60,7 @@ pub mod ldt;
 pub mod exit_to_user;
 pub mod syscall_work;
 pub mod landlock_tsync;
+pub mod selinux_label;
 pub mod pid;
 pub mod thread_group;
 pub mod rusage_charge;

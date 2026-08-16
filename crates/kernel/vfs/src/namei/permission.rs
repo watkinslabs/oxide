@@ -160,7 +160,31 @@ pub fn inode_permission(inode: &InodeRef, mask: u32, cred: &Cred) -> KResult<()>
         return Err(VfsError::Eperm);
     }
     inode.permission(mask, cred)?;
-    super::device_permission(inode.file_type(), inode.rdev(), mask)
+    super::device_permission(inode.file_type(), inode.rdev(), mask)?;
+    // The label-based decision is SEPARATE from the discretionary one above and
+    // combined by refusing if either refuses. It runs last because a refusal it
+    // reports names an object the caller was otherwise entitled to reach, which
+    // is the only case worth an audit record.
+    mac_permission(inode, mask)
+}
+
+/// Label-based permission over an inode, decided by whichever mandatory-access
+/// module the kernel glue installed.
+pub type InodeMacHook = fn(&InodeRef, u32) -> KResult<()>;
+
+static INODE_MAC_HOOK: sync::Spinlock<Option<InodeMacHook>, sync::Inode> =
+    sync::Spinlock::new(None);
+
+/// Install the label-based inode permission check. Idempotent. # C: O(1)
+///
+/// A hook rather than a direct call because the module that answers needs the
+/// calling task's own label, and this crate sits below the task.
+pub fn set_inode_mac_hook(hook: InodeMacHook) { *INODE_MAC_HOOK.lock() = Some(hook); }
+
+/// Ask the installed module, or allow when none is installed. # C: O(1)
+fn mac_permission(inode: &InodeRef, mask: u32) -> KResult<()> {
+    let hook = *INODE_MAC_HOOK.lock();
+    match hook { Some(check) => check(inode, mask), None => Ok(()) }
 }
 
 /// `may_lookup` (Linux): search permission (MAY_EXEC) on a directory before

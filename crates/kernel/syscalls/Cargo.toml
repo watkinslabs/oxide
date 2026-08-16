@@ -10,6 +10,9 @@ path = "src/lib.rs"
 [dependencies]
 audit = { path = "../audit" }
 landlock = { path = "../landlock" }
+selinux = { path = "../selinux" }
+selinux-runtime = { path = "../selinux-runtime" }
+selinuxfs = { path = "../selinuxfs" }
 crng = { path = "../crng" }
 aslr = { path = "../aslr" }
 block   = { path = "../block" }

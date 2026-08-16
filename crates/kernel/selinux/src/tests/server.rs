@@ -251,3 +251,41 @@ fn the_same_denial_in_enforcing_mode_is_refused() {
         assert!(!v.permissive);
     }
 }
+
+#[test]
+fn a_policy_image_parses_without_a_server_at_all() {
+    // The expensive half of a load must be callable with no server in hand,
+    // because the caller that has one is holding its lock. If this ever needs
+    // a `SecurityServer` again, the parse has moved back under that lock and
+    // the boot storms `scheduling while atomic` on the first policy load.
+    let Some(image) = distro_image() else { return };
+    let staged = crate::StagedPolicy::parse(&image).expect("parse without a server");
+    assert_eq!(staged.version(), 34);
+}
+
+#[test]
+fn a_staged_policy_installs_and_is_indistinguishable_from_a_direct_load() {
+    let Some(image) = distro_image() else { return };
+    let mut split = server();
+    split.install_policy(crate::StagedPolicy::parse(&image).expect("parse")).expect("install");
+    let mut direct = server();
+    direct.load_policy(&image).expect("load");
+
+    assert_eq!(split.initialized(), direct.initialized());
+    assert_eq!(split.state().policyload, direct.state().policyload);
+    assert_eq!(split.policy().expect("policy").version,
+               direct.policy().expect("policy").version);
+    let sid = crate::uapi::initsid::InitSid::Init.sid();
+    assert_eq!(split.sid_to_context(sid).expect("split render"),
+               direct.sid_to_context(sid).expect("direct render"),
+               "splitting the load must not change what it produces");
+}
+
+#[test]
+fn a_malformed_image_is_refused_at_parse_and_never_reaches_a_server() {
+    let Some(image) = distro_image() else { return };
+    let mut broken = image.clone();
+    broken[0] ^= 0xff;
+    assert!(crate::StagedPolicy::parse(&broken).is_err(),
+            "a refused image must not survive to the point where a server would take it");
+}

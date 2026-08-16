@@ -50,4 +50,4 @@ pub use policydb::Policydb;
 pub use avc::{Avc, AvDecision, AVD_FLAGS_NEVERAUDIT, AVD_FLAGS_PERMISSIVE};
 pub use sidtab::{Sidtab, Sid};
 pub use status::{BootConfig, Enforcing, SecurityState};
-pub use server::{SecurityServer, Verdict};
+pub use server::{SecurityServer, StagedPolicy, Verdict};

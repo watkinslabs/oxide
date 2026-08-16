@@ -7,6 +7,7 @@
 //   render     — a context as the string userspace reads
 //   parse      — a string from userspace as a context
 //   objects    — genfs path contexts and the initial-SID table
+//   validtrans — whether an object may move from one label to another
 //   fixture    — synthetic policy every test module here builds on (test only)
 
 pub mod av;
@@ -15,6 +16,7 @@ pub mod transition;
 pub mod render;
 pub mod parse;
 pub mod objects;
+pub mod validtrans;
 
 #[cfg(test)]
 #[path = "tests/fixture_policy.rs"]
@@ -29,3 +31,4 @@ pub use transition::{change_sid, compute_sid, is_socket_class, member_sid, trans
 pub use render::{context_to_string, sid_to_context};
 pub use parse::{context_from_string, string_to_sid};
 pub use objects::{genfs_sid, initial_sid_context, load_initial_sids};
+pub use validtrans::validate_transition;

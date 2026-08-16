@@ -33,6 +33,8 @@ fn resolve_block_source(
 }
 
 const SECURITYFS_MAGIC: u64 = 0x7363_6673;
+/// `SELINUX_MAGIC` — the mandatory-access-control interface at `/sys/fs/selinux`.
+const SELINUXFS_MAGIC: u64 = selinuxfs::SELINUX_MAGIC;
 const EFIVARFS_MAGIC: u64 = 0xde5e_81e4;
 const PSTOREFS_MAGIC: u64 = 0x6165_676C;
 const BPF_FS_MAGIC: u64 = 0xcafe_4a11;
@@ -355,6 +357,13 @@ fn register_filesystems() {
         }), Some($params)));
     }; }
     pseudo_no_params!("securityfs", SECURITYFS_MAGIC);
+    // selinuxfs declares no parameter, and unlike the generic pseudo types
+    // its mount root is the policy interface's OWN tree — a fresh empty tree
+    // would mount and then answer every probe userspace makes with ENOENT.
+    let _ = register_fs(FsType::with_parameters("selinuxfs", SELINUXFS_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, d: &str, sb_flags, p: &[vfs::fs::FsParameter]| -> R {
+        crate::fsmount_pseudo_params::admit_no_params(d, p)?;
+        mounted(ty, Arc::new(selinuxfs::SelinuxFs), None, "selinuxfs", sb_flags)
+    }), Some(kernfs::mount_opts::NO_PARAMETERS)));
     // efivarfs takes `uid=`/`gid=` and NO `mode=`; the two-name table is why
     // `mount -t efivarfs -o mode=700` fails and the same line on tracefs does not.
     pseudo_root_attr!("efivarfs", EFIVARFS_MAGIC, crate::fsmount_pseudo_params::EFIVARFS_PARAMS);

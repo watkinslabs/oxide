@@ -144,6 +144,12 @@ pub struct Inode {
     pub(super) i_rwsem:        super::rwsem::InodeRwsem,
     /// `inode->i_flctx`: single owner for BSD flock and POSIX/OFD records.
     pub(super) i_flctx:        FileLockContext,
+    /// `inode->i_security`: the mandatory-access-control label this object
+    /// carries, cached here because the inode is the object the label belongs
+    /// to — a table elsewhere keyed by inode identity would outlive the inodes
+    /// it described and could disagree with them. Zero means "not resolved
+    /// yet"; the label owner resolves it on first use, and no SID is ever zero.
+    pub(super) i_security:     AtomicU32,
 }
 
 impl Inode {
@@ -199,6 +205,7 @@ impl Inode {
             i_dquot: InodeDquots::new(),
             i_rwsem: super::rwsem::InodeRwsem::new(),
             i_flctx: FileLockContext::new(),
+            i_security: AtomicU32::new(self.i_security.load(Ordering::Relaxed)),
         })
     }
 }

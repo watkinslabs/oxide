@@ -134,6 +134,12 @@ pub(super) fn inherit_from_parent(task: &mut Task) {
     // across execve — a Landlock-confined process's children stay confined.
     let parent_domain = parent.landlock_domain.lock().clone();
     *task.landlock_domain.lock() = parent_domain;
+    // The mandatory-access-control label carries across fork EXCEPT the domain
+    // staged for the next `execve`: that names one operation the parent was
+    // about to perform, and a child that inherited it would enter a domain
+    // nobody requested. The rule itself lives with the label.
+    let parent_label = *parent.selinux_label.lock();
+    *task.selinux_label.lock() = crate::selinux_label::TaskLabel::inherit(&parent_label);
 }
 
 /// Snapshot the running parent's architectural state, then give the child an

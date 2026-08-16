@@ -1,0 +1,19 @@
+[package]
+name = "selinuxfs"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+audit           = { path = "../audit" }
+kernfs          = { path = "../kernfs" }
+selinux         = { path = "../selinux" }
+selinux-runtime = { path = "../selinux-runtime" }
+sync            = { path = "../../shared/sync" }
+vfs             = { path = "../vfs" }
+
+[lints]
+workspace = true

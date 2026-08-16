@@ -681,6 +681,13 @@ pub struct Task {
     /// domain object is immutable, so a live check can never observe a policy
     /// being widened underneath it.
     pub landlock_domain: Spinlock<Option<alloc::sync::Arc<landlock::Domain>>, TaskListClass>,
+    /// Mandatory-access-control label: the domain this task runs in, the
+    /// labels staged for its next create/exec operations, and the domain it
+    /// came from. Stored by value because a SID is a handle into the policy's
+    /// table, not a reference to a policy object — the tables are replaced
+    /// under running tasks and the handle stays meaningful. Rules in
+    /// `crate::selinux_label`.
+    pub selinux_label: Spinlock<crate::selinux_label::TaskLabel, TaskListClass>,
     /// Linux `task_struct::task_works` subset used by Landlock TSYNC.  The
     /// target thread takes and executes this work on its own return-to-user
     /// path; a foreign CPU never writes that thread's credentials directly.

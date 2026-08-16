@@ -13,6 +13,8 @@
 //   boot  — command-line parsing and one-time initialisation
 //   check — the permission-check entry points kernel subsystems call
 //   label — SID storage helpers shared by the object owners
+//   inode — how a mount and its inodes acquire labels
+//   task  — the subject side of a check, read from the task owner
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -22,7 +24,9 @@ extern crate alloc;
 
 pub mod boot;
 pub mod check;
+pub mod inode;
 pub mod label;
+pub mod task;
 
 use sync::{Spinlock, SecurityPolicy};
 

@@ -62,6 +62,37 @@ pub struct SecurityServer {
     loaded: Option<Loaded>,
 }
 
+/// A policy image parsed into tables, not yet live.
+///
+/// Parsing an image is the single most expensive thing this module does: a
+/// distribution policy is megabytes and expands into hundreds of thousands of
+/// rules. Doing it while the live server is locked disables preemption for the
+/// whole parse, and an allocation that large can reach the block layer — which
+/// is a sleep, under a spinlock, on every policy load.
+///
+/// Splitting the load in two removes that entirely: build the new policy with
+/// no lock held and nothing live to disturb, then take the lock only long
+/// enough to swap it in. A failed parse never reaches the live server at all.
+pub struct StagedPolicy {
+    db: Policydb,
+    map: Mapping,
+}
+
+impl StagedPolicy {
+    /// Parse and index a policy image. # C: O(image)
+    ///
+    /// Deliberately takes no server and borrows nothing from one, so it cannot
+    /// be called with the server's lock held by construction.
+    pub fn parse(image: &[u8]) -> Result<Self> {
+        let db = crate::policydb::load(image)?;
+        let map = Mapping::build(&db)?;
+        Ok(Self { db, map })
+    }
+
+    /// Version of the parsed policy. # C: O(1)
+    pub fn version(&self) -> u32 { self.db.version }
+}
+
 impl SecurityServer {
     /// A server that has not yet loaded a policy. # C: O(cache slots)
     pub fn new(boot: BootConfig) -> Self {
@@ -101,14 +132,22 @@ impl SecurityServer {
 
     /// Load a policy image, replacing any policy already loaded. # C: O(image)
     ///
-    /// The image is parsed WHOLE before anything is replaced. A malformed
-    /// image leaves the previous policy in force rather than leaving the
-    /// system with half a policy, which would be neither the old rules nor the
-    /// new ones. Contexts already resolved are carried across and re-validated;
-    /// one that no longer resolves is retained verbatim, not dropped.
+    /// Convenience for a caller that holds no lock. A caller that DOES hold
+    /// the server's lock must use `StagedPolicy::parse` outside it and
+    /// `install_policy` inside; see `StagedPolicy` for why.
     pub fn load_policy(&mut self, image: &[u8]) -> Result<()> {
-        let db = crate::policydb::load(image)?;
-        let map = Mapping::build(&db)?;
+        self.install_policy(StagedPolicy::parse(image)?)
+    }
+
+    /// Replace the loaded policy with one already parsed. # C: O(existing SIDs)
+    ///
+    /// A malformed image leaves the previous policy in force rather than the
+    /// system with half a policy, which would be neither the old rules nor the
+    /// new ones — which is why parsing happens before this is called, not
+    /// inside it. Contexts already resolved are carried across and
+    /// re-validated; one that no longer resolves is retained verbatim.
+    pub fn install_policy(&mut self, staged: StagedPolicy) -> Result<()> {
+        let StagedPolicy { db, map } = staged;
         let mut sidtab = Sidtab::new();
         services::load_initial_sids(&db, &mut sidtab)?;
         self.carry_over_contexts(&db, &mut sidtab)?;
@@ -196,6 +235,24 @@ impl SecurityServer {
     pub fn member_sid(&mut self, ssid: Sid, tsid: Sid, kernel_class: u16) -> Result<Sid> {
         let l = self.loaded.as_mut().ok_or(Error::UnknownSid)?;
         services::member_sid(&l.db, &l.map, &mut l.sidtab, ssid, tsid, kernel_class)
+    }
+
+    /// Whether an object may move from one written label to another at the
+    /// request of a task. # C: O(constraints)
+    ///
+    /// The class's validate-transition constraints are the only thing guarding
+    /// a relabel, and nothing else in the engine reads them; resolving the
+    /// three contexts and stopping there would accept every move the policy
+    /// forbids.
+    pub fn validate_transition(&mut self, old: &str, new: &str, kernel_class: u16, task: &str)
+        -> Result<()>
+    {
+        let l = self.loaded.as_mut().ok_or(Error::InvalidContext)?;
+        let old_sid = services::string_to_sid(&l.db, &mut l.sidtab, old)?;
+        let new_sid = services::string_to_sid(&l.db, &mut l.sidtab, new)?;
+        let task_sid = services::string_to_sid(&l.db, &mut l.sidtab, task)?;
+        services::validate_transition(&l.db, &l.map, &l.sidtab,
+                                      old_sid, new_sid, task_sid, kernel_class)
     }
 
     /// Rendered context of a SID. # C: O(categories)

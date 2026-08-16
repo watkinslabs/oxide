@@ -41,6 +41,9 @@ pub fn vfs_setxattr(inode: &InodeRef, name: &str, value: Vec<u8>, flags: u32, c:
     if acl::is_acl_name(name) { return acl::set_acl(inode, name, value, c); }
     cap_set_gate(name, &value, c)?;
     xattr_permission(inode, name, vfs::MAY_WRITE, c)?;
+    // The label write is priced where the VALUE is known: which label the
+    // object is moving to decides two of the three permissions it costs.
+    super::policy::lsm_set_gate(inode, name, &value)?;
     resolve_name(name)?;
     inode.setxattr(name, value, flags & XATTR_CREATE != 0, flags & XATTR_REPLACE != 0)
         .map_err(xattr_errno)?;
@@ -81,6 +84,7 @@ pub fn vfs_removexattr(inode: &InodeRef, name: &str, c: &XattrCred) -> Result<()
     if acl::is_acl_name(name) { return acl::remove_acl(inode, name, c); }
     xattr_permission(inode, name, vfs::MAY_WRITE, c)?;
     cap_remove_gate(name, c)?;
+    super::policy::lsm_remove_gate(inode, name)?;
     resolve_name(name)?;
     inode.removexattr(name).map_err(xattr_errno)?;
     notify_xattr(inode);

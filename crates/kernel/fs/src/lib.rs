@@ -42,6 +42,7 @@ pub mod fallocate;
 pub mod readahead;
 /// `splice(2)`/`tee(2)`/`vmsplice(2)`/`copy_file_range(2)` work-fns.
 pub mod splice;
+pub mod selinux;
 pub mod xattr;
 /// `file_getattr(2)`/`file_setattr(2)` `struct file_attr` ABI.
 pub mod fileattr;
