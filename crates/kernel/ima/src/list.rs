@@ -13,11 +13,16 @@ use crate::hash::HashAlgo;
 use crate::limits::DEFAULT_MEASURE_PCR;
 use crate::template::TemplateEntry;
 
+/// The register could not be extended: no device, a wrong-width digest, or a
+/// bank of another algorithm.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct ExtendError;
+
 /// The PCR-extend operation, owned by the TPM subsystem. IMA computes what to
 /// extend and where; it does not implement the extend itself.
 pub trait PcrExtend {
     /// Extend `pcr` in the bank for `algo` with `digest`. # C: O(1)
-    fn extend(&mut self, pcr: u32, algo: HashAlgo, digest: &[u8]) -> Result<(), ()>;
+    fn extend(&mut self, pcr: u32, algo: HashAlgo, digest: &[u8]) -> Result<(), ExtendError>;
 }
 
 /// Why an append did not add a record.
@@ -48,6 +53,11 @@ pub struct MeasurementList {
     pub algo: HashAlgo,
     entries: Vec<ListEntry>,
     violations: u64,
+    /// Records whose extend the chip refused. The reference makes this
+    /// visible through an audit record carrying `TPM_error(n)`; until an audit
+    /// path exists here, a counter is what keeps a chip that refuses every
+    /// extend from producing a log that looks perfectly anchored.
+    tpm_failures: u64,
     suspended: bool,
     /// Deduplication is by (record digest, PCR); disabling it keeps every
     /// re-measurement in the log.
@@ -57,7 +67,7 @@ pub struct MeasurementList {
 impl MeasurementList {
     /// An empty list measuring with `algo`. # C: O(1)
     pub fn new(algo: HashAlgo) -> Self {
-        Self { algo, entries: Vec::new(), violations: 0, suspended: false, dedup: true }
+        Self { algo, entries: Vec::new(), violations: 0, tpm_failures: 0, suspended: false, dedup: true }
     }
 
     /// Records, in append order. # C: O(1)
@@ -68,6 +78,10 @@ impl MeasurementList {
     pub fn is_empty(&self) -> bool { self.entries.is_empty() }
     /// Violations counted since boot. # C: O(1)
     pub fn violations(&self) -> u64 { self.violations }
+
+    /// Records the chip refused to extend. Non-zero means the log is not
+    /// anchored to hardware for that many entries. # C: O(1)
+    pub fn tpm_failures(&self) -> u64 { self.tpm_failures }
     /// Stop accepting records, as at TPM shutdown. # C: O(1)
     pub fn suspend(&mut self) { self.suspended = true; }
     /// Keep every re-measurement rather than deduplicating. # C: O(1)
@@ -108,9 +122,10 @@ impl MeasurementList {
         let pcr = entry.pcr;
         self.entries.push(ListEntry { entry, template_digest: digest.clone(), violation });
         let extended = if violation { invalidating_digest(self.algo) } else { digest };
-        // A TPM error leaves the record in the list: the log must show what was
-        // measured even when the PCR could not be extended.
-        let _ = tpm.extend(pcr, self.algo, &extended);
+        // The record is kept even when the chip refuses, as the reference
+        // does — an unanchored log still records what ran. The failure is
+        // counted rather than dropped, so it cannot pass for an anchored one.
+        if tpm.extend(pcr, self.algo, &extended).is_err() { self.tpm_failures += 1; }
         Ok(())
     }
 }
@@ -134,13 +149,25 @@ pub fn bank_alg(algo: HashAlgo) -> Option<tpm::alg::Alg> {
     }
 }
 
-/// A measurement extends the platform registers through the TPM subsystem's
-/// own extend; nothing here re-implements it.
-impl PcrExtend for tpm::pcr::Bank {
-    /// # C: O(digest size)
-    fn extend(&mut self, pcr: u32, algo: HashAlgo, digest: &[u8]) -> Result<(), ()> {
-        if bank_alg(algo) != Some(self.alg()) { return Err(()); }
-        tpm::pcr::Bank::extend(self, pcr as usize, digest).map_err(|_| ())
+/// A measurement extends the registers **in the chip**, by sending it a
+/// command. There is deliberately no implementor here that extends a value the
+/// kernel holds: a PCR lives in hardware, and a measurement that only updated
+/// kernel memory would attest nothing while every test stayed green. The
+/// reference's IMA calls the TPM subsystem's chip extend and nothing else.
+///
+/// The implementor is `tpm::Chip`. Where no chip is present, `NoTpm` below
+/// records the measurement in the log and extends nothing, which is what the
+/// reference does when its chip pointer is null — the log is still useful,
+/// and it is honest about being unanchored.
+///
+/// A measurement with no TPM: logged, not extended, and reported as success,
+/// matching the reference's behaviour when no chip was found.
+pub struct NoTpm;
+
+impl PcrExtend for NoTpm {
+    /// # C: O(1)
+    fn extend(&mut self, _pcr: u32, _algo: HashAlgo, _digest: &[u8]) -> Result<(), ExtendError> {
+        Ok(())
     }
 }
 

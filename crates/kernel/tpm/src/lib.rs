@@ -43,7 +43,7 @@ pub mod chip;
 pub mod space;
 
 pub use alg::Alg;
-pub use pcr::{Bank, Banks, PcrError, ResetCause};
+pub use pcr::{AllocatedBanks, BankInfo, PcrError};
 pub use rc::Rc;
 
 #[cfg(test)]

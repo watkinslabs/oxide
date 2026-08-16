@@ -185,20 +185,18 @@ pub fn build_appraise_rules(cfg: &BuiltinConfig) -> Vec<Rule> {
 /// The secure-boot set: signatures required on everything the kernel loads.
 /// # C: O(1)
 pub fn secure_boot_rules() -> Vec<Rule> {
-    let mut v = Vec::new();
-    v.push(func_rule(APPRAISE, Hook::ModuleCheck,
-                     IMA_DIGSIG_REQUIRED | IMA_MODSIG_ALLOWED | IMA_CHECK_BLACKLIST));
-    v.push(func_rule(APPRAISE, Hook::FirmwareCheck, IMA_DIGSIG_REQUIRED));
-    v.push(func_rule(APPRAISE, Hook::KexecKernelCheck, IMA_DIGSIG_REQUIRED));
-    v.push(func_rule(APPRAISE, Hook::PolicyCheck, IMA_DIGSIG_REQUIRED));
-    v
+    alloc::vec![
+        func_rule(APPRAISE, Hook::ModuleCheck,
+                  IMA_DIGSIG_REQUIRED | IMA_MODSIG_ALLOWED | IMA_CHECK_BLACKLIST),
+        func_rule(APPRAISE, Hook::FirmwareCheck, IMA_DIGSIG_REQUIRED),
+        func_rule(APPRAISE, Hook::KexecKernelCheck, IMA_DIGSIG_REQUIRED),
+        func_rule(APPRAISE, Hook::PolicyCheck, IMA_DIGSIG_REQUIRED),
+    ]
 }
 
 /// Measure kernel-internal critical data. # C: O(1)
 pub fn critical_data_rules() -> Vec<Rule> {
-    let mut v = Vec::new();
-    v.push(func_rule(MEASURE, Hook::CriticalData, 0));
-    v
+    alloc::vec![func_rule(MEASURE, Hook::CriticalData, 0)]
 }
 
 /// Compose the initial rule list from a boot selection. # C: O(1)
@@ -235,7 +233,8 @@ pub fn select_from_cmdline(ima_tcb: bool, ima_appraise_tcb: bool, ima_policy: Op
         for tok in v.split([' ', '|', '\n']) {
             match tok {
                 "" => {}
-                "tcb" => if s.tcb == TcbPolicy::None { s.tcb = TcbPolicy::Default },
+                "tcb" if s.tcb == TcbPolicy::None => s.tcb = TcbPolicy::Default,
+                "tcb" => {}
                 "appraise_tcb" => s.appraise_tcb = true,
                 "secure_boot" => s.secure_boot = true,
                 "critical_data" => s.critical_data = true,

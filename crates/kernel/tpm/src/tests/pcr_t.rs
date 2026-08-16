@@ -1,20 +1,24 @@
-// PCR arithmetic. The known-answer vectors below are the digests of the
-// exact byte strings the extend operation must hash; a build that hashes
-// anything else — the operands in the other order, a differently sized
-// operand, or only the first bank — fails at least one of them.
+// PCR arithmetic and the bank inventory a driver validates against.
+//
+// The known-answer vectors below are the digests of the exact byte strings the
+// extend chain must hash; a build that hashes anything else — the operands in
+// the other order, or a differently sized operand — fails at least one.
+//
+// There is deliberately NO test here for register contents, reset values or
+// resettability. The kernel holds no register contents: a PCR lives in the
+// chip, `extend_value` only predicts what one will hold so a log can be
+// replayed, and reset semantics are chip-internal behaviour the reference
+// never models. Tests for those things previously existed and passed against a
+// simulator that no measurement ever left.
 
 use alloc::vec;
-use alloc::vec::Vec;
 
 use super::support::hex;
 use crate::alg::Alg;
 use crate::limits::PLATFORM_PCR;
-use crate::pcr::{
-    extend_value, is_resettable, reset_fill, Bank, Banks, PcrError, ResetCause, APPLICATION_PCR,
-    DEBUG_PCR, DRTM_LOCALITY, DRTM_PCR_FIRST, DRTM_PCR_LAST,
-};
+use crate::pcr::{extend_value, AllocatedBanks, PcrError};
 
-/// SHA-256 of 64 zero bytes: a reset SHA-256 register extended once with an
+/// SHA-256 of 64 zero bytes: a zeroed SHA-256 register extended once with an
 /// all-zero measurement.
 const SHA256_EXTEND_ZERO_ONCE: &str = "f5a5fd42d16a20302798ef6ed309979b43003d2320d9f0e8ea9831a92759fb4b";
 /// The same register extended a second time with an all-zero measurement.
@@ -32,184 +36,121 @@ const SHA384_EXTEND_ZERO_ONCE: &str =
 const SHA512_EXTEND_ZERO_ONCE: &str = "ab942f526272e456ed68a979f50202905ca903a141ed98443567b11ef0bf25a552d639051a01be58558122c58e3de07d749ee59ded36acf0c55cd91924d6ba11";
 
 #[test]
-fn extend_from_reset_matches_known_vector_sha256() {
-    let mut b = Bank::new(Alg::Sha256);
-    b.extend(0, &[0u8; 32]).unwrap();
-    assert_eq!(b.read(0).unwrap(), hex(SHA256_EXTEND_ZERO_ONCE).as_slice());
+fn extend_from_zero_matches_known_vector_sha256() {
+    let v = extend_value(Alg::Sha256, &[0u8; 32], &[0u8; 32]).unwrap();
+    assert_eq!(v, hex(SHA256_EXTEND_ZERO_ONCE));
 }
 
 #[test]
 fn extend_chains_matches_known_vector_sha256() {
-    let mut b = Bank::new(Alg::Sha256);
-    b.extend(0, &[0u8; 32]).unwrap();
-    b.extend(0, &[0u8; 32]).unwrap();
-    assert_eq!(b.read(0).unwrap(), hex(SHA256_EXTEND_ZERO_TWICE).as_slice());
+    let once = extend_value(Alg::Sha256, &[0u8; 32], &[0u8; 32]).unwrap();
+    let twice = extend_value(Alg::Sha256, &once, &[0u8; 32]).unwrap();
+    assert_eq!(twice, hex(SHA256_EXTEND_ZERO_TWICE));
 }
 
 #[test]
 fn extend_hashes_old_then_measurement_not_the_reverse() {
-    // The two orders are both 32-byte SHA-256 digests; only one is the PCR
-    // contract, and swapping them is what makes a log forgeable.
-    let old = [0u8; 32];
-    let m = [0xffu8; 32];
-    let got = extend_value(Alg::Sha256, &old, &m).unwrap();
-    assert_eq!(got, hex(SHA256_ZERO_THEN_ONES));
-    assert_ne!(got, hex(SHA256_ONES_THEN_ZERO));
+    // The one asymmetric vector. Every all-zero vector above is symmetric in
+    // its operands and cannot catch a swap; this is the test that pins the
+    // order, and with it the forgery argument.
+    let v = extend_value(Alg::Sha256, &[0x00u8; 32], &[0xffu8; 32]).unwrap();
+    assert_eq!(v, hex(SHA256_ZERO_THEN_ONES));
+    assert_ne!(v, hex(SHA256_ONES_THEN_ZERO));
 }
 
 #[test]
-fn extend_from_reset_matches_known_vector_sha1() {
-    let mut b = Bank::new(Alg::Sha1);
-    b.extend(0, &[0u8; 20]).unwrap();
-    assert_eq!(b.read(0).unwrap(), hex(SHA1_EXTEND_ZERO_ONCE).as_slice());
+fn extend_from_zero_matches_known_vector_sha1() {
+    let v = extend_value(Alg::Sha1, &[0u8; 20], &[0u8; 20]).unwrap();
+    assert_eq!(v, hex(SHA1_EXTEND_ZERO_ONCE));
 }
 
 #[test]
-fn extend_from_reset_matches_known_vector_sha384_and_sha512() {
-    let mut b = Bank::new(Alg::Sha384);
-    b.extend(0, &[0u8; 48]).unwrap();
-    assert_eq!(b.read(0).unwrap(), hex(SHA384_EXTEND_ZERO_ONCE).as_slice());
-    let mut b = Bank::new(Alg::Sha512);
-    b.extend(0, &[0u8; 64]).unwrap();
-    assert_eq!(b.read(0).unwrap(), hex(SHA512_EXTEND_ZERO_ONCE).as_slice());
+fn extend_from_zero_matches_known_vector_sha384_and_sha512() {
+    let v384 = extend_value(Alg::Sha384, &[0u8; 48], &[0u8; 48]).unwrap();
+    assert_eq!(v384, hex(SHA384_EXTEND_ZERO_ONCE));
+    let v512 = extend_value(Alg::Sha512, &[0u8; 64], &[0u8; 64]).unwrap();
+    assert_eq!(v512, hex(SHA512_EXTEND_ZERO_ONCE));
 }
 
 #[test]
 fn extend_refuses_a_measurement_of_the_wrong_width() {
-    let mut b = Bank::new(Alg::Sha256);
-    assert_eq!(b.extend(0, &[0u8; 20]), Err(PcrError::BadDigestLen { expected: 32, got: 20 }));
-    assert_eq!(b.extend(0, &[0u8; 64]), Err(PcrError::BadDigestLen { expected: 32, got: 64 }));
-    assert_eq!(b.extend(0, &[]), Err(PcrError::BadDigestLen { expected: 32, got: 0 }));
-    // A refused extend leaves the register at its reset value.
-    assert_eq!(b.read(0).unwrap(), [0u8; 32]);
+    assert_eq!(extend_value(Alg::Sha256, &[0u8; 32], &[0u8; 20]),
+               Err(PcrError::BadDigestLen { expected: 32, got: 20 }));
+    assert_eq!(extend_value(Alg::Sha256, &[0u8; 20], &[0u8; 32]),
+               Err(PcrError::BadDigestLen { expected: 32, got: 20 }));
 }
 
 #[test]
-fn extend_touches_only_the_named_register() {
-    let mut b = Bank::new(Alg::Sha256);
-    b.extend(10, &[0u8; 32]).unwrap();
-    assert_eq!(b.read(10).unwrap(), hex(SHA256_EXTEND_ZERO_ONCE).as_slice());
-    for i in 0..PLATFORM_PCR {
-        if i == 10 { continue; }
-        assert_eq!(b.read(i).unwrap(), &vec![reset_fill(i); 32][..], "register {i} moved");
-    }
+fn an_unsupported_algorithm_is_refused_rather_than_substituted() {
+    // A bank whose hash this kernel cannot compute must fail, not quietly
+    // produce a digest under some other algorithm.
+    assert_eq!(extend_value(Alg::Sm3, &[0u8; 32], &[0u8; 32]),
+               Err(PcrError::UnsupportedAlg(Alg::Sm3.id())));
 }
 
 #[test]
-fn extend_rejects_an_index_outside_the_platform_range() {
-    let mut b = Bank::new(Alg::Sha256);
-    assert_eq!(b.extend(PLATFORM_PCR, &[0u8; 32]), Err(PcrError::BadIndex(PLATFORM_PCR)));
-    assert_eq!(b.read(PLATFORM_PCR + 5), Err(PcrError::BadIndex(PLATFORM_PCR + 5)));
+fn an_extend_must_carry_a_digest_for_every_allocated_bank() {
+    let banks = AllocatedBanks::new(&[Alg::Sha1, Alg::Sha256]).unwrap();
+    let sha256 = [0u8; 32];
+    // SHA-1 allocated but absent from the request: the chip would extend it
+    // anyway, so a partial request is refused rather than sent.
+    assert_eq!(banks.check_extend(10, &[(Alg::Sha256.id(), &sha256[..])]),
+               Err(PcrError::MissingBank(Alg::Sha1.id())));
 }
 
 #[test]
-fn reset_values_distinguish_dynamic_registers() {
-    let b = Bank::new(Alg::Sha256);
-    for i in 0..PLATFORM_PCR {
-        let want = if (DRTM_PCR_FIRST..=DRTM_PCR_LAST).contains(&i) { 0xff } else { 0x00 };
-        assert_eq!(reset_fill(i), want, "fill for register {i}");
-        assert!(b.read(i).unwrap().iter().all(|x| *x == want), "register {i} reset value");
-    }
+fn an_extend_naming_an_unallocated_bank_is_refused() {
+    let banks = AllocatedBanks::new(&[Alg::Sha256]).unwrap();
+    let sha256 = [0u8; 32];
+    let sha384 = [0u8; 48];
+    assert_eq!(banks.check_extend(10, &[(Alg::Sha256.id(), &sha256[..]),
+                                        (Alg::Sha384.id(), &sha384[..])]),
+               Err(PcrError::UnknownBank(Alg::Sha384.id())));
 }
 
 #[test]
-fn resettability_follows_the_platform_profile() {
-    for i in 0..=15 {
-        for loc in 0..=4 { assert!(!is_resettable(i, loc), "static register {i} must not be resettable"); }
-    }
-    for loc in 0..=4u8 {
-        assert!(is_resettable(DEBUG_PCR, loc));
-        assert!(is_resettable(APPLICATION_PCR, loc));
-    }
-    for i in DRTM_PCR_FIRST..=DRTM_PCR_LAST {
-        for loc in 0..=3u8 { assert!(!is_resettable(i, loc), "dynamic register {i} from locality {loc}"); }
-        assert!(is_resettable(i, DRTM_LOCALITY));
-    }
-    assert!(!is_resettable(PLATFORM_PCR, DRTM_LOCALITY));
+fn an_extend_with_a_digest_sized_for_another_bank_is_refused() {
+    let banks = AllocatedBanks::new(&[Alg::Sha256]).unwrap();
+    let wrong = [0u8; 20];
+    assert_eq!(banks.check_extend(10, &[(Alg::Sha256.id(), &wrong[..])]),
+               Err(PcrError::BadDigestLen { expected: 32, got: 20 }));
 }
 
 #[test]
-fn command_reset_is_refused_from_the_wrong_locality() {
-    let mut b = Bank::new(Alg::Sha256);
-    b.extend(DEBUG_PCR, &[1u8; 32]).unwrap();
-    assert_eq!(b.reset(0, ResetCause::Command(0)), Err(PcrError::NotResettable { index: 0, locality: 0 }));
-    assert_eq!(b.reset(DRTM_PCR_FIRST, ResetCause::Command(0)),
-               Err(PcrError::NotResettable { index: DRTM_PCR_FIRST, locality: 0 }));
-    b.reset(DEBUG_PCR, ResetCause::Command(0)).unwrap();
-    assert_eq!(b.read(DEBUG_PCR).unwrap(), [0u8; 32]);
-    b.reset(DRTM_PCR_FIRST, ResetCause::Command(DRTM_LOCALITY)).unwrap();
-    assert_eq!(b.read(DRTM_PCR_FIRST).unwrap(), [0u8; 32]);
+fn an_extend_outside_the_platform_range_is_refused() {
+    let banks = AllocatedBanks::new(&[Alg::Sha256]).unwrap();
+    let d = [0u8; 32];
+    assert_eq!(banks.check_extend(PLATFORM_PCR, &[(Alg::Sha256.id(), &d[..])]),
+               Err(PcrError::BadIndex(PLATFORM_PCR)));
 }
 
 #[test]
-fn measured_launch_zeroes_only_the_dynamic_registers() {
-    let mut b = Bank::new(Alg::Sha256);
-    b.extend(0, &[0u8; 32]).unwrap();
-    let static_before = b.read(0).unwrap().to_vec();
-    b.reset_all(ResetCause::DrtmStart);
-    assert_eq!(b.read(0).unwrap(), static_before.as_slice());
-    for i in DRTM_PCR_FIRST..=DRTM_PCR_LAST { assert_eq!(b.read(i).unwrap(), [0u8; 32]); }
-}
-
-#[test]
-fn agile_extend_updates_every_allocated_bank() {
-    let mut banks = Banks::new(&[Alg::Sha1, Alg::Sha256]).unwrap();
-    let d1 = [0u8; 20];
-    let d256 = [0u8; 32];
-    banks.extend(7, &[(Alg::Sha1.id(), &d1[..]), (Alg::Sha256.id(), &d256[..])]).unwrap();
-    assert_eq!(banks.read(Alg::Sha1, 7).unwrap(), hex(SHA1_EXTEND_ZERO_ONCE).as_slice());
-    assert_eq!(banks.read(Alg::Sha256, 7).unwrap(), hex(SHA256_EXTEND_ZERO_ONCE).as_slice());
-    // and only register 7 moved, in both banks
-    assert_eq!(banks.read(Alg::Sha1, 6).unwrap(), [0u8; 20]);
-    assert_eq!(banks.read(Alg::Sha256, 6).unwrap(), [0u8; 32]);
-}
-
-#[test]
-fn agile_extend_refuses_to_leave_a_bank_behind() {
-    let mut banks = Banks::new(&[Alg::Sha1, Alg::Sha256]).unwrap();
-    let d256 = [0u8; 32];
-    // Only the SHA-256 digest supplied: the SHA-1 bank would keep a history
-    // that no longer matches the SHA-256 one.
-    assert_eq!(banks.extend(7, &[(Alg::Sha256.id(), &d256[..])]), Err(PcrError::MissingBank(Alg::Sha1.id())));
-    assert_eq!(banks.read(Alg::Sha1, 7).unwrap(), [0u8; 20]);
-    assert_eq!(banks.read(Alg::Sha256, 7).unwrap(), [0u8; 32]);
-}
-
-#[test]
-fn agile_extend_refuses_a_bank_that_is_not_allocated() {
-    let mut banks = Banks::new(&[Alg::Sha256]).unwrap();
-    let d256 = [0u8; 32];
-    let d1 = [0u8; 20];
-    assert_eq!(banks.extend(7, &[(Alg::Sha256.id(), &d256[..]), (Alg::Sha1.id(), &d1[..])]),
-               Err(PcrError::UnknownBank(Alg::Sha1.id())));
-}
-
-#[test]
-fn agile_extend_refuses_a_digest_sized_for_another_bank() {
-    let mut banks = Banks::new(&[Alg::Sha1, Alg::Sha256]).unwrap();
-    let wrong = [0u8; 32];
-    let right = [0u8; 32];
-    // A 32-byte value offered to the SHA-1 bank: right length for the other
-    // bank, wrong for this one.
-    assert_eq!(banks.extend(7, &[(Alg::Sha1.id(), &wrong[..]), (Alg::Sha256.id(), &right[..])]),
-               Err(PcrError::BadDigestLen { expected: 20, got: 32 }));
-    // Nothing moved: validation completes before any bank is written.
-    assert_eq!(banks.read(Alg::Sha1, 7).unwrap(), [0u8; 20]);
-    assert_eq!(banks.read(Alg::Sha256, 7).unwrap(), [0u8; 32]);
+fn a_well_formed_agile_extend_is_admitted() {
+    let banks = AllocatedBanks::new(&[Alg::Sha1, Alg::Sha256]).unwrap();
+    let sha1 = [0u8; 20];
+    let sha256 = [0u8; 32];
+    assert_eq!(banks.check_extend(10, &[(Alg::Sha1.id(), &sha1[..]),
+                                        (Alg::Sha256.id(), &sha256[..])]), Ok(()));
 }
 
 #[test]
 fn bank_sets_are_bounded_and_unique() {
-    assert_eq!(Banks::new(&[]).err(), Some(PcrError::BadBankSet));
-    assert_eq!(Banks::new(&[Alg::Sha256, Alg::Sha256]).err(), Some(PcrError::BadBankSet));
-    let many: Vec<Alg> = vec![Alg::Sha1, Alg::Sha256, Alg::Sha384, Alg::Sha512, Alg::Sm3];
-    assert!(Banks::new(&many).is_ok());
+    assert_eq!(AllocatedBanks::new(&[]).err(), Some(PcrError::BadBankSet));
+    assert_eq!(AllocatedBanks::new(&[Alg::Sha256, Alg::Sha256]).err(), Some(PcrError::BadBankSet));
+    let b = AllocatedBanks::new(&[Alg::Sha256, Alg::Sha1]).unwrap();
+    assert_eq!(b.len(), 2);
+    assert_eq!(b.algs(), vec![Alg::Sha256, Alg::Sha1]);
+    assert_eq!(b.bank(Alg::Sha256).unwrap().digest_size(), 32);
+    assert_eq!(b.bank(Alg::Sha384).err(), Some(PcrError::UnknownBank(Alg::Sha384.id())));
 }
 
 #[test]
-fn an_unsupported_bank_cannot_be_extended_silently() {
-    let mut banks = Banks::new(&[Alg::Sm3]).unwrap();
-    let d = [0u8; 32];
-    assert_eq!(banks.extend(0, &[(Alg::Sm3.id(), &d[..])]), Err(PcrError::UnsupportedAlg(Alg::Sm3.id())));
-    assert_eq!(extend_value(Alg::Sm3, &d, &d), Err(PcrError::UnsupportedAlg(Alg::Sm3.id())));
+fn the_inventory_records_width_and_never_a_value() {
+    // The bank record is metadata. If a future change gives it storage, this
+    // is the test that should have to be deleted first.
+    let b = AllocatedBanks::new(&[Alg::Sha256]).unwrap();
+    let info = b.bank(Alg::Sha256).unwrap();
+    assert_eq!(info.alg_id(), Alg::Sha256.id());
+    assert_eq!(info.digest_size(), 32);
+    assert_eq!(core::mem::size_of_val(info), core::mem::size_of::<Alg>());
 }

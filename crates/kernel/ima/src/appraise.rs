@@ -116,12 +116,19 @@ pub fn xattr_hash_algo(xattr: Option<&[u8]>, default: HashAlgo) -> HashAlgo {
         },
         // The digest is preceded by its algorithm id.
         Some(XattrType::ImaDigestNg) => HashAlgo::from_id(v[1]).unwrap_or(default),
-        // The legacy digest form is identified by its total length.
-        Some(XattrType::ImaDigest) => match v.len() {
-            21 => if v[17..21] == [0, 0, 0, 0] { HashAlgo::Md5 } else { HashAlgo::Sha1 },
-            17 => HashAlgo::Md5,
-            _ => default,
-        },
+        // The legacy digest form carries no algorithm byte, so it is
+        // identified by its total length: a tag plus one of two digest widths.
+        // A short digest stored in the wide form leaves its tail zeroed.
+        Some(XattrType::ImaDigest) => {
+            let wide = 1 + HashAlgo::Sha1.size();
+            let narrow = 1 + HashAlgo::Md5.size();
+            match v.len() {
+                n if n == wide =>
+                    if v[narrow..wide] == [0, 0, 0, 0] { HashAlgo::Md5 } else { HashAlgo::Sha1 },
+                n if n == narrow => HashAlgo::Md5,
+                _ => default,
+            }
+        }
         _ => default,
     }
 }

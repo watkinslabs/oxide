@@ -14,7 +14,7 @@ struct FakeTpm {
 }
 
 impl PcrExtend for FakeTpm {
-    fn extend(&mut self, pcr: u32, algo: HashAlgo, digest: &[u8]) -> Result<(), ()> {
+    fn extend(&mut self, pcr: u32, algo: HashAlgo, digest: &[u8]) -> Result<(), ExtendError> {
         self.ops.push((pcr, algo, digest.to_vec()));
         Ok(())
     }
@@ -22,7 +22,7 @@ impl PcrExtend for FakeTpm {
 
 struct DeadTpm;
 impl PcrExtend for DeadTpm {
-    fn extend(&mut self, _p: u32, _a: HashAlgo, _d: &[u8]) -> Result<(), ()> { Err(()) }
+    fn extend(&mut self, _p: u32, _a: HashAlgo, _d: &[u8]) -> Result<(), ExtendError> { Err(ExtendError) }
 }
 
 fn entry(name: &str, digest: &[u8], pcr: u32) -> TemplateEntry {
@@ -136,41 +136,57 @@ fn a_list_using_an_algorithm_with_no_engine_measures_nothing() {
 }
 
 #[test]
-fn the_extend_goes_through_the_platform_register_implementation() {
-    // The arithmetic belongs to the TPM subsystem; this asserts the record's
-    // digest reaches it and lands in the register the rule named.
-    use tpm::pcr::Bank;
-    const PLATFORM_PCR: usize = 24;
+fn the_records_own_digest_and_register_reach_the_extend() {
+    // A measurement must arrive at the chip carrying the record's template
+    // digest, in the register the rule named. The seam is `PcrExtend`; there
+    // is no kernel-side register to inspect, because a PCR lives in hardware.
     let d: Vec<u8> = (0u8..32).collect();
     let e = entry("/bin/sh", &d, 10);
     let td = e.template_digest(HashAlgo::Sha256).unwrap();
 
-    let mut bank = Bank::new(tpm::alg::Alg::Sha256);
-    let before = bank.read(10).unwrap().to_vec();
-    let want = tpm::pcr::extend_value(tpm::alg::Alg::Sha256, &before, &td).unwrap();
-
+    let mut tpm = FakeTpm::default();
     let mut list = MeasurementList::new(HashAlgo::Sha256);
-    list.add(e, &mut bank).unwrap();
-    assert_eq!(bank.read(10).unwrap(), &want[..]);
-    // No other register moved.
-    for i in 0..PLATFORM_PCR {
-        if i == 10 { continue; }
-        let untouched = vec![tpm::pcr::reset_fill(i); 32];
-        assert_eq!(bank.read(i).unwrap(), &untouched[..], "register {i} moved");
-    }
+    list.add(e, &mut tpm).unwrap();
+
+    assert_eq!(tpm.ops.len(), 1, "exactly one extend per record");
+    assert_eq!(tpm.ops[0].0, 10, "extended the register the rule named");
+    assert_eq!(tpm.ops[0].1, HashAlgo::Sha256);
+    assert_eq!(tpm.ops[0].2, td, "extended the record's own template digest");
 }
 
 #[test]
-fn a_record_never_extends_a_bank_of_another_algorithm() {
+fn a_measurement_with_no_chip_is_logged_and_not_extended() {
+    // The reference logs the measurement and returns success when no chip was
+    // found. The log is still useful; it is simply unanchored, and saying so
+    // is better than failing every measurement on a machine without a TPM.
     let d: Vec<u8> = (0u8..32).collect();
     let e = entry("/bin/sh", &d, 10);
-    let mut bank = tpm::pcr::Bank::new(tpm::alg::Alg::Sha1);
-    let before = bank.read(10).unwrap().to_vec();
     let mut list = MeasurementList::new(HashAlgo::Sha256);
-    list.add(e, &mut bank).unwrap();
-    assert_eq!(bank.read(10).unwrap(), &before[..]);
-    assert_eq!(bank_alg(HashAlgo::Sha256), Some(tpm::alg::Alg::Sha256));
-    assert_eq!(bank_alg(HashAlgo::Md5), None);
+    assert!(list.add(e, &mut NoTpm).is_ok());
+    assert_eq!(list.len(), 1, "the record is still in the log");
+}
+
+#[test]
+fn a_chip_that_refuses_the_extend_keeps_the_record_and_counts_the_failure() {
+    // The reference keeps the entry and reports the TPM failure separately —
+    // the add succeeds, because an unanchored log still records what ran. What
+    // must NOT happen is the failure vanishing: a chip refusing every extend
+    // would then produce a log indistinguishable from an anchored one.
+    let d: Vec<u8> = (0u8..32).collect();
+    let e = entry("/bin/sh", &d, 10);
+    let mut list = MeasurementList::new(HashAlgo::Sha256);
+    assert!(list.add(e, &mut DeadTpm).is_ok(), "the record is kept");
+    assert_eq!(list.len(), 1);
+    assert_eq!(list.tpm_failures(), 1, "the refused extend is visible");
+}
+
+#[test]
+fn an_anchored_measurement_counts_no_failure() {
+    let d: Vec<u8> = (0u8..32).collect();
+    let e = entry("/bin/sh", &d, 10);
+    let mut list = MeasurementList::new(HashAlgo::Sha256);
+    list.add(e, &mut FakeTpm::default()).unwrap();
+    assert_eq!(list.tpm_failures(), 0);
 }
 
 // --- violations ----------------------------------------------------------

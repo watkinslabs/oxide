@@ -41,7 +41,7 @@ pub fn verify_label(
             // Attributes present but no label: the label was removed.
             return if protected_count > 0 { Status::NoLabel } else { Status::NoXattrs };
         }
-        Some(v) if v.is_empty() => return Status::Fail,
+        Some([]) => return Status::Fail,
         Some(v) => v,
     };
     let ty = match XattrType::from_tag(v[0]) { Some(t) => t, None => return Status::Fail };
@@ -50,7 +50,10 @@ pub fn verify_label(
             if v.len() != EVM_HMAC_XATTR_LEN { return Status::Fail; }
             match ops.compute(ty, HashAlgo::Sha1) {
                 None => Status::Fail,
-                Some(d) => if d.len() >= 20 && d[..20] == v[1..] { Status::Pass } else { Status::Fail },
+                Some(d) => {
+                    let n = HashAlgo::Sha1.size();
+                    if d.len() >= n && d[..n] == v[1..] { Status::Pass } else { Status::Fail }
+                }
             }
         }
         XattrType::EvmImaDigsig | XattrType::EvmPortableDigsig => {

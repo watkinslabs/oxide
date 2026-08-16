@@ -6,7 +6,6 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::appraise::*;
-use crate::flags::*;
 use crate::hash::HashAlgo;
 use crate::uapi::{Hook, SigV2Hdr, Status, XattrType};
 
