@@ -87,6 +87,12 @@ pub use nodes::NodeRef;
 pub struct Volume<S: SectorSource> {
     pub(crate) source: S,
     pub(crate) sb: SuperBlock,
+    /// The believed copy's own bytes, where it sits, and whether the other
+    /// copy is owed a repair. A superblock change is a patch to these rather
+    /// than a re-encode, so a field this build does not parse survives it.
+    pub(crate) sb_raw: crate::sbwrite::RawSuper,
+    /// Every volume-wide condition this mount is in.
+    pub(crate) sbi: crate::sbflags::SbFlags,
     pub(crate) cp: Checkpoint,
     /// The checkpoint's head block and its payload blocks, joined, because
     /// the version bitmaps run from one into the next.
@@ -175,6 +181,26 @@ pub struct Volume<S: SectorSource> {
 impl<S: SectorSource> Volume<S> {
     /// The volume's superblock. # C: O(1)
     pub fn super_block(&self) -> &SuperBlock { &self.sb }
+
+    /// Every volume-wide condition, as the one word the status file reports.
+    /// Two of the seventeen are the volume's own live state rather than stored
+    /// flags, and are folded in here so a second copy of them cannot exist.
+    /// # C: O(1)
+    pub fn sb_status(&self) -> u64 {
+        self.sbi.word(crate::sbflags::Derived { dirty: self.dirty, recovering: self.recovering })
+    }
+
+    /// The conditions this mount is in. # C: O(1)
+    pub fn sbi_flags(&self) -> &crate::sbflags::SbFlags { &self.sbi }
+
+    /// Take the edited superblock bytes as the volume's own fields.
+    ///
+    /// Every superblock change ends here, so the parsed view cannot drift from
+    /// the bytes that were written. # C: O(superblock bytes)
+    pub(crate) fn adopt_super(&mut self) -> Result<(), Errno> {
+        self.sb = self.sb_raw.parse().ok_or(Errno::Einval)?;
+        Ok(())
+    }
 
     /// The checkpoint this mount is reading through. # C: O(1)
     pub fn checkpoint(&self) -> &Checkpoint { &self.cp }

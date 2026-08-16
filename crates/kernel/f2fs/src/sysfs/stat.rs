@@ -49,10 +49,7 @@ pub fn status_word(dirty: bool, recovering: bool, writable: bool, cp_disabled: b
 }
 
 /// # C: O(1)
-fn sb_status(v: &mut Vol) -> Result<u64, Errno> {
-    Ok(status_word(v.is_dirty(), v.recovering, v.writable(),
-                   v.options().checkpoint_disabled, v.checkpoint().flags))
-}
+fn sb_status(v: &mut Vol) -> Result<u64, Errno> { Ok(v.sb_status()) }
 
 /// Blocks released since the last checkpoint that the device has not been
 /// told about yet. # C: O(1)

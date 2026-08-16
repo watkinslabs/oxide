@@ -33,10 +33,15 @@ impl<S: SectorSource> Volume<S> {
     /// is perfectly readable, and the mount reports what it settled on.
     /// # C: O(checkpoint + journal bytes)
     pub fn mount_with(source: S, opts: Options, want_write: bool) -> Result<Self, Errno> {
-        let sb = read_super(&source)?;
+        let (sb_raw, sb) = crate::sbwrite::read_raw(&source)?;
         let access = sb::sanity::access(&sb).map_err(|_| Errno::Einval)?;
         let writable = want_write && access == Access::ReadWrite && source.writable();
         let (cp, cp_raw) = read_checkpoint(&source, &sb)?;
+        // Seeded from the checkpoint, then owned by the mount: the live flags
+        // are what WRITE the checkpoint's, never the other way round, or a
+        // clean checkpoint would retire a mark this mount is still raising.
+        let mut sbi = crate::sbflags::SbFlags::at_mount(cp.flags);
+        if opts.checkpoint_disabled { sbi.disable_checkpoint(false); }
         let payload = sb.cp_payload;
         let nat_bitmap = checkpoint::nat_bitmap(&cp, &cp_raw, payload)
             .ok_or(Errno::Einval)?
@@ -70,6 +75,8 @@ impl<S: SectorSource> Volume<S> {
         let mut vol = Self {
             source,
             sb,
+            sb_raw,
+            sbi,
             cp,
             cp_raw,
             nat_bitmap,

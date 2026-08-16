@@ -55,6 +55,10 @@ impl<S: SectorSource> Volume<S> {
     pub fn enable_verity_signed(&mut self, ino: u32, hash_alg: u8, log_blocksize: u8,
                                 salt: &[u8], sig: &[u8]) -> Result<Vec<u8>, Errno> {
         self.writable_or_err()?;
+        // A file with an atomic-write span open is about to have its contents
+        // replaced, so a tree built over them now would attest to bytes the
+        // commit is going to move out from under it.
+        crate::atomic::policy::enable_verity(self.is_atomic_file(ino))?;
         let inode = self.read_inode(ino)?;
         verity::access::enable(inode.flags).map_err(verity::access::errno)?;
         // The tree is addressed through the file's own block index, so a file

@@ -195,14 +195,23 @@ fn the_status_word_raises_one_bit_per_live_condition() {
                (1 << 0) | (1 << 2) | (1 << 3) | (1 << 8) | (1 << 15));
 }
 
-/// A writable mount says so; the bit is not decoration.
+/// An ordinary read-write mount does NOT raise the "writable" bit.
+///
+/// The bit does not mean "this mount can be written to". It marks the window
+/// in which a READ-ONLY mount has been made writable transiently so it can
+/// repair itself, and it is cleared again as soon as that window closes. This
+/// test previously asserted the opposite and passed, because the bit was fed
+/// from `writable()` — so a monitoring tool reading it was told the inverse of
+/// what it means, on every mount.
 #[test]
-fn sb_status_reports_the_mount_as_writable() {
+fn sb_status_does_not_call_an_ordinary_mount_transiently_writable() {
     let fs = mounted("/dev/vda");
     let attrs = mount_attrs(&fs);
     let word = u64::from_str_radix(show(&attrs, "vda/stat", "sb_status").trim(), 16)
         .expect("hex");
-    assert!(word & (1 << 15) != 0, "a read-write mount must raise the writable bit");
+    assert!(fs.is_writable(), "the fixture is a read-write mount");
+    assert!(word & (1 << 15) == 0,
+            "an ordinary read-write mount is not in a transient-writable window");
 }
 
 /// `feature_list` answers about the VOLUME, so a bit the volume does not

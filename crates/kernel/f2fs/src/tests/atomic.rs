@@ -426,3 +426,14 @@ fn a_commit_that_fails_part_way_puts_every_block_it_moved_back() {
     let v = remount(v);
     assert_eq!(whole(&v, ino), body);
 }
+
+#[test]
+fn verity_may_not_be_turned_on_over_an_open_span_at_the_volume_either() {
+    let (mut v, ino, _) = with_two_blocks();
+    v.start_atomic_write(ino, false).unwrap();
+    assert_eq!(v.enable_verity(ino, crate::verity::uapi::HASH_ALG_SHA256, 12, &[]),
+               Err(Errno::Eopnotsupp));
+    v.abort_atomic_write(ino).unwrap();
+    // And it is allowed again once the span is gone.
+    assert!(v.enable_verity(ino, crate::verity::uapi::HASH_ALG_SHA256, 12, &[]).is_ok());
+}

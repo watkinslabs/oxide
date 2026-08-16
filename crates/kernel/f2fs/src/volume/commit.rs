@@ -123,6 +123,7 @@ impl<S: SectorSource> Volume<S> {
         self.nat_dirty.clear();
         self.sit_dirty.clear();
         self.dirty = false;
+        self.sbi.checkpointed();
         Ok(())
     }
 
@@ -140,6 +141,11 @@ impl<S: SectorSource> Volume<S> {
         // and there would be nothing to distinguish one that did.
         let mut flags = self.cp.flags & !(CP_COMPACT_SUM_FLAG | CP_ERROR_FLAG | CP_UMOUNT_FLAG);
         if reason == CpReason::Umount { flags |= CP_UMOUNT_FLAG; }
+        // The conditions this mount is in are what the checkpoint RECORDS.
+        // Reading the fsck mark back out of the word the checkpoint already
+        // carries would let a clean checkpoint retire a mark the mount is
+        // still raising, and the volume would forget it needs checking.
+        let flags = self.sbi.cp_flags(flags);
         // Set AND cleared from the CURRENT list: a stale bit sends the next
         // mount looking for orphan blocks a pack no longer carries.
         let flags = self.orphan_flag(flags);
