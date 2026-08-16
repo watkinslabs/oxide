@@ -11,6 +11,7 @@
 //! - `curseg`: the six open logs, and which one a write appends to.
 //! - `segmap`: which blocks are live and which segments are free.
 //! - `write`:  allocating a block and putting a node or a page in it.
+//! - `nids`:   taking a node id, giving one back, and the cache that holds them.
 //! - `dnode`:  reaching — and creating — the node holding a block's address.
 //! - `trim`:   freeing the nodes a shortened file no longer needs.
 //! - `commit`: writing a checkpoint to the other pack.
@@ -60,6 +61,7 @@ pub mod dir;
 pub mod xattrs;
 pub mod space;
 pub mod write;
+pub mod nids;
 pub mod dnode;
 pub mod trim;
 pub mod commit;

@@ -11,7 +11,6 @@ use sectors::MemImage;
 use syscall::errno::Errno;
 
 use crate::ioctl::entry::{handle, Answer};
-use crate::ioctl::exec::Unbuilt;
 use crate::ioctl::perm::Ctx;
 use crate::ioctl::req::Extra;
 use crate::ioctl::uapi::*;
@@ -25,7 +24,7 @@ fn root() -> Ctx {
     Ctx {
         cap_sys_admin: true, fmode_read: true, fmode_write: true, o_direct: false,
         owner_or_capable: true, mnt_writable: true, writecount: 1, dirty_pages: 0,
-        mmapped: false,
+        mmapped: false, dst: crate::ioctl::DstFd::Unusable,
     }
 }
 
@@ -244,22 +243,40 @@ fn the_password_salt_command_answers_sixteen_stable_bytes() {
 
 // ---- what is admitted and not yet built ----------------------------------
 
-/// The commands whose volume operation is not built report themselves as
-/// such, never as an errno the contract defines. This test enumerates them,
-/// so the list can only shrink on purpose — building one and forgetting to
-/// remove its arm here goes red.
+/// EVERY command this filesystem's own handler owns is answered — with a
+/// reply or with an errno the contract defines — and none reports its volume
+/// operation as missing.
+///
+/// Stated as a sweep of the whole command set rather than as a list of the
+/// ones that are missing. A list shrinks to nothing and then cannot fail; the
+/// sweep goes red the moment any command starts reporting itself unbuilt, and
+/// it needs no maintenance when a command is built.
 #[test]
-fn the_commands_whose_volume_operation_is_not_built_are_exactly_these() {
+fn no_command_this_handler_owns_reports_its_volume_operation_as_missing() {
     let (mut v, ino) = one_file();
-    let expect: &[(u32, Unbuilt)] = &[
-        (DEFRAGMENT, Unbuilt::Defragment),
-        (MOVE_RANGE, Unbuilt::MoveRange),
-    ];
-    for (cmd, want) in expect {
-        let n = crate::ioctl::spec::payload_len(*cmd) as usize;
-        let a = send(&mut v, ino, *cmd, &vec![0u8; n]);
-        assert_eq!(a, Ok(Answer::NotBuilt(*want)), "{cmd:#x}");
+    let mut seen = 0usize;
+    for &cmd in crate::ioctl::spec::ALL {
+        if !crate::ioctl::spec::owns(cmd) { continue; }
+        seen += 1;
+        let n = crate::ioctl::spec::payload_len(cmd) as usize;
+        if let Ok(Answer::NotBuilt(u)) = send(&mut v, ino, cmd, &vec![0u8; n]) {
+            panic!("{cmd:#x} is admitted and not built: {u:?}");
+        }
     }
+    // A sweep over an empty set proves nothing.
+    assert!(seen > 20, "only {seen} commands reached the sweep");
+}
+
+/// The one operation that is still missing is unreachable on a volume of one
+/// device, which is why the sweep above does not meet it: the ladder refuses
+/// the command before it is carried out. Stated here so the gap stays visible
+/// rather than looking like a command that works.
+#[test]
+fn emptying_one_device_of_a_single_device_volume_is_refused_by_the_ladder() {
+    let (mut v, ino) = one_file();
+    let n = crate::ioctl::spec::payload_len(FLUSH_DEVICE) as usize;
+    assert_eq!(send(&mut v, ino, FLUSH_DEVICE, &vec![0u8; n]).map(|_| ()),
+               Err(Errno::Einval));
 }
 
 /// The volatile-write commands are refused BY THE CONTRACT, not because

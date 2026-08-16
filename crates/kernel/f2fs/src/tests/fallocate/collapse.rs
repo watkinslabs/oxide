@@ -93,3 +93,4 @@ fn a_collapse_across_a_direct_node_boundary_keeps_every_byte() {
     assert_eq!(got.len(), want.len());
     assert_eq!(got, want);
 }
+

@@ -112,9 +112,15 @@ pub fn spec(cmd: u32) -> Option<Spec> {
         GET_ENCRYPTION_PWSALT => out(PWSALT_SIZE),
         GET_ENCRYPTION_NONCE => out(FILE_NONCE_SIZE),
 
+        // The move's argument travels IN only. Its number encodes both
+        // directions and the handler never writes a byte back, so a layer that
+        // copied by the encoded direction would hand the caller bytes the
+        // interface does not define — and a caller that reads them back would
+        // be reading whatever its own request left there.
+        MOVE_RANGE => r#in(MOVE_RANGE_SIZE),
+
         // Structures that travel both ways.
         DEFRAGMENT => inout(DEFRAGMENT_SIZE),
-        MOVE_RANGE => inout(MOVE_RANGE_SIZE),
         FITRIM => inout(FSTRIM_RANGE_SIZE),
 
         // Encryption. The two oldest carry inverted direction bits; the real
@@ -206,6 +212,34 @@ pub fn writes_payload(cmd: u32) -> bool {
 /// meaning at all? # C: O(1)
 pub fn takes_no_argument(cmd: u32) -> bool {
     matches!(spec(cmd).map(|s| s.payload), Some(Payload::None))
+}
+
+/// Where the bytes of a command's INDIRECT reply go in the caller's memory.
+///
+/// `arg` is the caller's argument address and `payload` its fixed argument as
+/// it was read. `None` says this command has no indirect reply, and a command
+/// that produced one anyway is a mistake in the surface rather than an address
+/// to guess at — writing to a guessed address is a write to whatever the
+/// caller happens to have there.
+///
+/// Stated here, beside the direction, rather than in the layer that does the
+/// copying: it is the one piece of that layer that DECIDES something, and a
+/// decision reached only through a caller's address space cannot be checked.
+/// # C: O(1)
+pub fn indirect_out(i: Indirect, arg: u64, payload: &[u8]) -> Option<u64> {
+    match i {
+        // The digest follows the head, inside the caller's own argument.
+        Indirect::VerityMeasure => Some(arg.wrapping_add(VD_DIGEST as u64)),
+        // The metadata goes to the buffer the argument named by pointer.
+        Indirect::VerityReadMetadata => {
+            let at = VRM_BUF_PTR;
+            let b = payload.get(at..at + 8)?;
+            let mut w = [0u8; 8];
+            w.copy_from_slice(b);
+            Some(u64::from_le_bytes(w))
+        }
+        _ => None,
+    }
 }
 
 /// The commands this filesystem answers, for the checks that must enumerate

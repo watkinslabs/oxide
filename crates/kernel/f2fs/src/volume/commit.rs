@@ -130,6 +130,13 @@ impl<S: SectorSource> Volume<S> {
         self.sit_dirty.clear();
         self.dirty = false;
         self.sbi.checkpointed();
+        // A volume mounted younger than the age threshold has no section that
+        // could clear it, so the age policy started off. The checkpoint is
+        // what advances the volume's recorded age, so it is also the only
+        // point at which a volume can have grown into the policy — and
+        // without this the mount would carry the option and never obey it.
+        let (atgc, elapsed) = (self.opts.atgc, self.cp.elapsed_time);
+        if self.atgc.may_reinit(atgc, elapsed) { self.atgc.enabled = true; }
         Ok(())
     }
 

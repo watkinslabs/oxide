@@ -159,7 +159,13 @@ fn f2fs_publish_surfaces(fs: &Arc<f2fs::F2fs>) {
                                                    a.show, a.store);
         }
     }
-    if !procfs::fs_dir::is_claimed(f2p::FS_NAME) { let _ = procfs::fs_dir::claim(f2p::FS_NAME); }
+    if !procfs::fs_dir::is_claimed(f2p::FS_NAME) {
+        let _ = procfs::fs_dir::claim(f2p::FS_NAME);
+        // The status report is ONE file describing every mount, so it is
+        // claimed with the subsystem rather than per mount.
+        tracefs::register_debug_show(f2fs::stats::STATUS_PATH, f2fs::fsattr::RO,
+                                     f2fs::stats::status_show());
+    }
     f2fs::fsattr::set_teardown(f2fs_withdraw_surfaces);
     for a in f2s::mount_attrs(fs) {
         let _ = sysfs::fs_subsys::publish_attr(f2s::SUBSYS, &a.dir, a.name, a.mode,
@@ -168,6 +174,12 @@ fn f2fs_publish_surfaces(fs: &Arc<f2fs::F2fs>) {
     for f in f2p::mount_files(fs) {
         let _ = procfs::fs_dir::publish_file(f2p::FS_NAME, &f.dir, f.name, f.mode, f.show);
     }
+    // The counters this mount accumulates are reported through the one status
+    // file; the volume lock is taken inside f2fs, so a reader of a debug file
+    // never decides how long the filesystem is held.
+    let me = Arc::clone(fs);
+    f2fs::stats::register(&f2s::mount_dir(fs.source()),
+                          Arc::new(move |i: usize| me.render_status(i)));
 }
 
 /// Withdraw one mount's surfaces at unmount: they report on a volume that no
@@ -175,6 +187,7 @@ fn f2fs_publish_surfaces(fs: &Arc<f2fs::F2fs>) {
 fn f2fs_withdraw_surfaces(dev: &str) {
     let _ = sysfs::fs_subsys::withdraw(f2fs::sysfs::SUBSYS, dev);
     let _ = procfs::fs_dir::withdraw(f2fs::procfs::FS_NAME, dev);
+    f2fs::stats::unregister(dev);
 }
 
 fn register_filesystems() {
@@ -367,8 +380,15 @@ fn register_filesystems() {
         f2fs_publish_surfaces(&fs);
         let sb_flags = if fs.is_writable() { sb_flags } else { sb_flags | vfs::superblock::SB_RDONLY };
         let root = fs.root_inode()?;
+        let quota_fs = Arc::clone(&fs);
         let fs: Arc<dyn vfs::fs::FileSystem> = fs;
-        mounted(ty, fs, Some(root), source, sb_flags)
+        let sb = mounted(ty, fs, Some(root), source, sb_flags)?;
+        // `quotactl` resolves a record through the hooks a filesystem installs
+        // on its superblock. Without them every command answers ESRCH on a
+        // volume whose quota files are present and being accounted, so this is
+        // what makes the volume's own quota machinery reachable at all.
+        f2fs::mount::quota::install(&sb, &quota_fs);
+        Ok(sb)
     })));
     // procfs declares the three options it ENFORCES (`gid=`, `hidepid=`,
     // `subset=`) and builds a per-mount root that carries them. The table was an

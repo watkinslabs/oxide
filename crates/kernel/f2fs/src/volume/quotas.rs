@@ -301,6 +301,24 @@ impl<S: SectorSource> Volume<S> {
         self.dq_get(kind, id)
     }
 
+    /// Replace one identity's record, for a caller setting limits rather than
+    /// allocating.
+    ///
+    /// The cache is the truth this mount charges against, so a record changed
+    /// here takes effect on the very next allocation; the medium catches up at
+    /// the next checkpoint with everything else the counts describe. Writing
+    /// the file directly instead would leave the cache still enforcing the old
+    /// limits until something evicted it.
+    /// # C: O(1)
+    pub fn set_quota_record(&mut self, kind: usize, id: u32, d: Dqblk) -> Result<(), Errno> {
+        if kind >= MAX_QUOTAS { return Err(Errno::Einval); }
+        if !quota::types::accounted(&self.quota_setup[kind]) { return Err(Errno::Esrch); }
+        self.dquots.insert((kind, id), d);
+        self.dq_dirty.insert((kind, id));
+        self.dirty = true;
+        Ok(())
+    }
+
     /// The next identity at or after `id` this kind holds a record for, and
     /// that record.
     ///

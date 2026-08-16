@@ -75,6 +75,40 @@ fn the_policy_is_off_on_a_volume_too_young_for_it() {
     assert_eq!(v.search_victim_by_age(&[]), None);
 }
 
+/// A volume mounted too young for the policy grows into it, and the only
+/// event that advances its recorded age is a checkpoint. Without that the
+/// mount would carry the option for the rest of its life and never obey it.
+#[test]
+fn a_volume_that_ages_into_the_policy_turns_it_on_at_the_next_checkpoint() {
+    let bytes = test_image::with_root().finish();
+    let mut opts = crate::opts::Options::defaults();
+    opts.atgc = true;
+    let mut v = Volume::mount_with(MemImage::from_bytes(BLKSIZE as u32, bytes), opts, true)
+        .unwrap();
+    v.set_clock(1_000);
+    let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
+    v.write_file(ino, 0, &vec![1u8; BLKSIZE]).unwrap();
+    v.commit().unwrap();
+    assert!(!v.atgc_enabled(), "a volume seconds old is not old enough");
+    // Long enough for the format's own threshold to be reached.
+    v.set_clock(1_000 + crate::atgc::DEF_AGE_THRESHOLD + 1);
+    v.write_file(ino, 0, &vec![2u8; BLKSIZE]).unwrap();
+    v.commit().unwrap();
+    assert!(v.atgc_enabled(), "the volume aged past the threshold and the policy stayed off");
+}
+
+/// A mount that did not ask for the policy never grows into it.
+#[test]
+fn a_mount_that_did_not_ask_for_the_policy_never_turns_it_on() {
+    let mut v = test_image::with_root().mount_rw().unwrap();
+    v.set_clock(1_000);
+    let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
+    v.write_file(ino, 0, &vec![1u8; BLKSIZE]).unwrap();
+    v.set_clock(1_000 + crate::atgc::DEF_AGE_THRESHOLD + 1);
+    v.commit().unwrap();
+    assert!(!v.atgc_enabled());
+}
+
 #[test]
 fn the_age_policy_finds_the_section_the_ordinary_search_would_have_to_cost() {
     let (mut v, _, victim) = victim_volume();

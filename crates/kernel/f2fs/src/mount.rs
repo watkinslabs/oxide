@@ -9,6 +9,7 @@
 //! Module manifest:
 //! - `node`: what an inode of this filesystem is, built from a stored one.
 //! - `ops`:  the inode and file operations.
+//! - `quota`: the hooks `quotactl(2)` reaches this filesystem through.
 //! - `sb`:   `statfs` and the option tail.
 //! - `write`: the mutating operations, and the clock they share.
 //! - `remount`: reconfiguring a live mount from a new option line.
@@ -31,6 +32,7 @@ use crate::volume::Volume;
 pub mod node;
 pub mod devs;
 pub mod ops;
+pub mod quota;
 pub mod sb;
 pub mod write;
 pub mod remount;
@@ -266,6 +268,20 @@ impl F2fs {
 
     /// The device this filesystem was mounted from. # C: O(1)
     pub fn source(&self) -> &str { &self.source }
+
+    /// This mount's section of the status report.
+    ///
+    /// Rendered here rather than by the caller so the volume lock is taken and
+    /// dropped inside this crate: the report samples live counters, and a
+    /// caller holding the guard across the render would decide how long a
+    /// reader of a debug file holds the filesystem.
+    /// # C: O(segments)
+    pub fn render_status(&self, index: usize) -> KResult<String> {
+        let mut v = self.volume.lock();
+        let counters = v.counters();
+        let g = crate::stats::General::sample(&mut v, &counters).map_err(errno_to_vfs)?;
+        Ok(crate::stats::partition(&g, &self.source, index, crate::mount::write::now().0))
+    }
 }
 
 /// # C: O(1)

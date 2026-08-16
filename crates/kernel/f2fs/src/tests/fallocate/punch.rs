@@ -97,16 +97,41 @@ fn a_file_living_inside_its_inode_moves_out_before_it_is_punched() {
 }
 
 #[test]
-fn the_blocks_a_punch_frees_can_be_used_again() {
-    // The proof that the space actually came back rather than being leaked
-    // into a segment nothing will ever reclaim.
+fn the_volumes_own_count_says_the_space_came_back() {
+    // The count the checkpoint carries, not the inode's. Clearing the slots
+    // alone makes the FILE report fewer blocks while the volume still counts
+    // them as occupied — a block that no file names and nothing will ever
+    // reclaim. Only the volume-wide count can tell the two apart.
     let (mut v, ino) = with_file(4);
+    v.commit().expect("commit");
+    let before = v.space().free;
     v.fallocate(ino, P, 0, 4 * B).expect("punch it all");
     v.commit().expect("commit");
-    let free = v.space().free;
-    let (mut v, _) = (v, ());
-    let other = v.create(ROOT_INO, b"g", &spec(), None).expect("create");
-    v.write_file(other, 0, &pattern(3)).expect("write");
+    assert_eq!(v.space().free, before + 4, "four blocks came back to the volume");
+}
+
+#[test]
+fn the_freed_run_is_reachable_through_a_remount() {
+    // And the count survives the medium, so what came back was recorded
+    // rather than only decremented in memory.
+    let (mut v, ino) = with_file(4);
     v.commit().expect("commit");
-    assert!(v.space().free >= free - 5, "the freed run was reusable");
+    let before = v.space().free;
+    v.fallocate(ino, P, 0, 4 * B).expect("punch it all");
+    let (v, got) = settled(v, ino);
+    assert_eq!(got, vec![0u8; 4 * BLKSIZE], "and reads as zeroes");
+    assert_eq!(v.space().free, before + 4);
+}
+
+#[test]
+fn punching_the_ragged_ends_leaks_nothing_either() {
+    // The mixed path: two edges rewritten in place and a middle freed. Each
+    // rewrite allocates a fresh block and releases the one it replaced, so a
+    // release missed anywhere shows as a count that did not come back.
+    let (mut v, ino) = with_file(4);
+    v.commit().expect("commit");
+    let before = v.space().free;
+    v.fallocate(ino, P, B / 2, 3 * B).expect("punch");
+    v.commit().expect("commit");
+    assert_eq!(v.space().free, before + 2, "the two whole blocks, and no more");
 }

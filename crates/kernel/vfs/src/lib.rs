@@ -62,6 +62,7 @@ pub mod fsnotify;
 pub mod epoll_limits;
 pub mod pipe_limits;
 pub mod quota;
+pub mod verity_keys;
 pub mod xattr;
 
 pub use dcache::{d_add, d_add_negative, d_alloc, d_drop, d_drop_child, d_instantiate, d_invalidate, d_lookup, d_make_root, d_move, d_obtain_alias, d_splice_alias, dget, dput};

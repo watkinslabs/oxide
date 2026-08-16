@@ -131,7 +131,7 @@ fn a_signed_file_is_unreadable_on_a_mount_that_trusts_no_one() {
     let (mut v, ino) = with_file();
     v.set_verity_policy(trusting(CA_DER));
     v.enable_verity_signed(ino, HASH_ALG_SHA256, LOG_BS, SALT, &unhex(SEALED_SIG)).unwrap();
-    let v = remount(v, Policy::new());
+    let v = remount(v, Policy::trusting_nothing());
     assert_eq!(read_all(&v, ino).err(), Some(Errno::Enokey));
 }
 
@@ -169,7 +169,7 @@ fn an_unsigned_file_is_unreadable_where_signatures_are_required() {
     let (mut v, ino) = with_file();
     v.enable_verity(ino, HASH_ALG_SHA256, LOG_BS, SALT).unwrap();
     let mut demanding = trusting(CA_DER);
-    demanding.require = true;
+    demanding.set_require(true);
     let v = remount(v, demanding);
     assert_eq!(read_all(&v, ino).err(), Some(Errno::Eperm));
     // The same file reads where they are not.
@@ -182,8 +182,8 @@ fn requiring_signatures_leaves_an_ordinary_file_alone() {
     // The requirement is about verity files. A file with no seal is not a
     // file with a missing signature.
     let (mut v, ino) = with_file();
-    let mut demanding = Policy::new();
-    demanding.require = true;
+    let mut demanding = Policy::trusting_nothing();
+    demanding.set_require(true);
     v.set_verity_policy(demanding);
     assert!(!v.read_inode(ino).unwrap().verity());
     assert_eq!(read_all(&v, ino).unwrap(), contents());

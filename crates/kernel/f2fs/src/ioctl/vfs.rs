@@ -22,7 +22,7 @@ use crate::mount::node::F2fsNode;
 
 use super::entry::Answer;
 use super::fileattr::{self, Kind, View};
-use super::perm::Ctx;
+use super::perm::{Ctx, DstFd};
 use super::req::Extra;
 
 /// Is this inode one of ours?
@@ -32,6 +32,63 @@ use super::req::Extra;
 /// no such operation on another backend's behalf.
 /// # C: O(1)
 pub fn is_f2fs(inode: &Inode) -> bool { inode.private::<F2fsNode>().is_some() }
+
+/// What the second descriptor a move names is, as the ladder needs it.
+///
+/// The three outcomes are not interchangeable and the caller cannot collapse
+/// them: a descriptor that cannot be written is refused before the mount's
+/// write reference and one naming another volume after it, so which one this
+/// returns decides which errno the caller sees. `None` for the descriptor
+/// itself — no such file — is the same answer as one that cannot be written,
+/// because neither is a destination.
+///
+/// Both halves of the reference's test are made: the same MOUNT and the same
+/// SUPERBLOCK. Two mounts of one volume are two mounts, and a move across
+/// them is not this operation.
+/// # C: O(1)
+pub fn resolve_dst(src: &vfs::File, dst: Option<&vfs::File>) -> DstFd {
+    let Some(dst) = dst else { return dst_of(None) };
+    let facts = DstFacts {
+        writable: dst.f_mode().contains(vfs::Fmode::WRITE),
+        same_mount: dst.mnt_id() == src.mnt_id(),
+        same_volume: match (src.inode().private::<F2fsNode>(),
+                            dst.inode().private::<F2fsNode>()) {
+            (Some(a), Some(b)) => Arc::ptr_eq(&a.fs, &b.fs),
+            _ => false,
+        },
+        ino: dst.inode().private::<F2fsNode>().map_or(0, |n| n.ino),
+    };
+    dst_of(Some(facts))
+}
+
+/// What the layer above can see about the second description.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct DstFacts {
+    /// The description was opened for writing.
+    pub writable: bool,
+    /// It is on the same mount as the source.
+    pub same_mount: bool,
+    /// It is a file of the same volume.
+    pub same_volume: bool,
+    /// Its inode number, meaningful only when it is one of ours.
+    pub ino: u32,
+}
+
+/// The decision itself, over stated facts.
+///
+/// Both halves of the reference's test are made — the same MOUNT and the same
+/// volume — because two mounts of one volume are two mounts and a move across
+/// them is not this operation.
+/// # C: O(1)
+pub fn dst_of(f: Option<DstFacts>) -> DstFd {
+    // No such descriptor and one that cannot be written are the same answer:
+    // neither is a destination, and both are refused before the mount's write
+    // reference rather than after it.
+    let Some(f) = f else { return DstFd::Unusable };
+    if !f.writable { return DstFd::Unusable; }
+    if !f.same_mount || !f.same_volume { return DstFd::Foreign; }
+    DstFd::Ours(f.ino)
+}
 
 /// The node behind an inode, or the refusal a foreign inode gets. # C: O(1)
 fn node(inode: &Inode) -> KResult<&F2fsNode> {
@@ -145,3 +202,7 @@ pub fn raw(file: &Arc<vfs::File>, cmd: u32, payload: &[u8], extra: &Extra, c: &C
     Some(super::entry::handle(&mut v, n.ino, cmd, payload, extra, c)
         .map_err(crate::mount::errno_to_vfs))
 }
+
+#[cfg(test)]
+#[path = "../tests/ioctl/dst.rs"]
+mod tests;

@@ -92,6 +92,18 @@ impl SuperOps for F2fsSuperOps {
         Ok(st)
     }
 
+    /// This filesystem keeps its quota records on the medium, so the whole
+    /// `quotactl` surface applies to it — the hooks that answer are installed
+    /// on the superblock at mount.
+    fn quota_supported(&self) -> bool { true }
+
+    /// A kind the volume has no file for is not supported, which is what
+    /// tells a caller "this filesystem does not account that" apart from
+    /// "that identity has no record".
+    fn quota_type_supported(&self, kind: vfs::QuotaType) -> bool {
+        super::quota::accounts(&self.fs, kind)
+    }
+
     fn show_options(&self) -> String { crate::opts::show(self.fs.volume.lock().options()) }
 
     /// Write a checkpoint.

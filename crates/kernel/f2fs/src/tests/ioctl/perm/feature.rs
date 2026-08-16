@@ -19,7 +19,7 @@ fn root() -> Ctx {
     Ctx {
         cap_sys_admin: true, fmode_read: true, fmode_write: true, o_direct: false,
         owner_or_capable: true, mnt_writable: true, writecount: 1, dirty_pages: 0,
-        mmapped: false,
+        mmapped: false, dst: crate::ioctl::DstFd::Unusable,
     }
 }
 
@@ -210,11 +210,40 @@ fn defragmenting_reports_the_wrong_kind_ahead_of_the_read_only_volume() {
 #[test]
 fn moving_a_range_needs_a_description_open_both_ways() {
     let r = Req::MoveRange { dst_fd: 3, pos_in: 0, pos_out: 0, len: 4096 };
-    assert_eq!(admit(&r, &root(), &vol(), &reg()), Ok(()));
-    assert_eq!(admit(&r, &Ctx { fmode_read: false, ..root() }, &vol(), &reg()),
+    let ok = Ctx { dst: crate::ioctl::DstFd::Ours(9), ..root() };
+    assert_eq!(admit(&r, &ok, &vol(), &reg()), Ok(()));
+    assert_eq!(admit(&r, &Ctx { fmode_read: false, ..ok }, &vol(), &reg()),
                Err(Errno::Ebadf));
-    assert_eq!(admit(&r, &Ctx { fmode_write: false, ..root() }, &vol(), &reg()),
+    assert_eq!(admit(&r, &Ctx { fmode_write: false, ..ok }, &vol(), &reg()),
                Err(Errno::Ebadf));
+}
+
+/// The two ways a destination can be wrong are refused at DIFFERENT rungs, and
+/// which rung decides which errno the caller is told.
+///
+/// A descriptor that cannot be written is not a destination at all and is
+/// refused before the mount's write reference is taken — so a read-only MOUNT
+/// with a bad destination still reports the bad descriptor. One naming another
+/// mount is a good descriptor pointing somewhere else, and is refused after,
+/// so the same read-only mount reports the mount instead.
+#[test]
+fn a_destination_that_cannot_be_written_is_refused_ahead_of_the_mount() {
+    use crate::ioctl::DstFd;
+    let r = Req::MoveRange { dst_fd: 3, pos_in: 0, pos_out: 0, len: 4096 };
+    let ro = Ctx { mnt_writable: false, ..root() };
+
+    assert_eq!(admit(&r, &Ctx { dst: DstFd::Unusable, ..root() }, &vol(), &reg()),
+               Err(Errno::Ebadf));
+    assert_eq!(admit(&r, &Ctx { dst: DstFd::Unusable, ..ro }, &vol(), &reg()),
+               Err(Errno::Ebadf), "a bad descriptor outranks the mount");
+
+    assert_eq!(admit(&r, &Ctx { dst: DstFd::Foreign, ..root() }, &vol(), &reg()),
+               Err(Errno::Exdev));
+    assert_eq!(admit(&r, &Ctx { dst: DstFd::Foreign, ..ro }, &vol(), &reg()),
+               Err(Errno::Erofs), "the mount outranks a destination elsewhere");
+
+    assert_eq!(admit(&r, &Ctx { dst: DstFd::Ours(9), ..ro }, &vol(), &reg()),
+               Err(Errno::Erofs));
 }
 
 /// Emptying a device needs another device to empty it onto, which a

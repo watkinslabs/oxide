@@ -27,7 +27,7 @@ fn root() -> Ctx {
     Ctx {
         cap_sys_admin: true, fmode_read: true, fmode_write: true, o_direct: false,
         owner_or_capable: true, mnt_writable: true, writecount: 1, dirty_pages: 0,
-        mmapped: false,
+        mmapped: false, dst: crate::ioctl::DstFd::Unusable,
     }
 }
 
