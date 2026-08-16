@@ -26,8 +26,13 @@ pub(super) fn inject(root_img: &Path, arch: &str) -> Result<(), u8> {
 
 fn build_probe(arch: &str) -> Result<PathBuf, u8> { super::probe_cargo(arch, PROBE_NAME) }
 
-/// The unit runs after `/dev` is populated, because the probe opens a device
-/// node the kernel publishes at boot rather than a file the image carries.
+/// The unit waits for the root filesystem and nothing else.
+///
+/// The node it opens is published by the kernel into devtmpfs before userspace
+/// starts, so ordering after the device manager buys nothing and can cost
+/// everything: a guest whose udev is stuck retrying a spawned helper would
+/// hold the probe behind it and the gate would report a camera fault for a
+/// network rule that timed out.
 fn write_service() -> Result<PathBuf, u8> {
     let dir = PathBuf::from("target").join("smoke");
     std::fs::create_dir_all(&dir).map_err(|e| { eprintln!("xtask rootfs: mkdir smoke dir failed: {e}"); 1u8 })?;
@@ -35,7 +40,7 @@ fn write_service() -> Result<PathBuf, u8> {
     let body = "[Unit]\n\
 Description=Oxide V4L2 capture smoke\n\
 DefaultDependencies=no\n\
-After=systemd-udev-settle.service local-fs.target\n\
+After=local-fs.target\n\
 Before=basic.target\n\
 \n\
 [Service]\n\
