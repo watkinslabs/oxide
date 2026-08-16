@@ -1,0 +1,305 @@
+//! Writing a checkpoint: making everything this mount changed durable.
+//!
+//! A checkpoint is what turns a pile of out-of-place writes into a filesystem
+//! state. Until one is written the medium still describes the PREVIOUS state
+//! and a crash loses the work — which is the reference's behaviour too, and
+//! why an unmount and a sync both write one.
+//!
+//! The pack alternates. A checkpoint is never written over the one being
+//! replaced: it goes to the other of the two packs with the version raised by
+//! one, so a machine that dies mid-write still has the older pack whole. That
+//! is the single property that makes this filesystem recoverable, and writing
+//! in place would destroy it.
+//!
+//! Order inside the pack matters and is not free choice: head block, payload,
+//! the three data summaries, the three node summaries, then the head block
+//! again as the tail. A reader locates the summaries by counting BACK from the
+//! pack's end, so a pack whose length disagrees with what it wrote hands out
+//! the wrong block as a journal.
+
+use alloc::vec;
+use alloc::vec::Vec;
+
+use syscall::errno::Errno;
+
+use sectors::SectorSource;
+
+use crate::checkpoint::Pack;
+use crate::flags::*;
+use crate::summary::{NatEntry, SitEntry};
+use crate::uapi::*;
+
+use super::segmap;
+use super::Volume;
+
+/// Write a little-endian value into a buffer.
+fn p16(b: &mut [u8], at: usize, v: u16) { b[at..at + 2].copy_from_slice(&v.to_le_bytes()); }
+fn p32(b: &mut [u8], at: usize, v: u32) { b[at..at + 4].copy_from_slice(&v.to_le_bytes()); }
+fn p64(b: &mut [u8], at: usize, v: u64) { b[at..at + 8].copy_from_slice(&v.to_le_bytes()); }
+
+impl<S: SectorSource> Volume<S> {
+    /// Make everything this mount has changed durable.
+    ///
+    /// A mount with nothing dirty writes nothing: a checkpoint costs the whole
+    /// pack, and writing one per sync on an idle filesystem burns the medium
+    /// for no state change.
+    /// # C: O(dirty table blocks + pack blocks)
+    pub fn commit(&mut self) -> Result<(), Errno> {
+        if !self.writable { return Ok(()); }
+        if !self.dirty { return Ok(()); }
+        self.load_segments()?;
+        let mut nat_bitmap = self.nat_bitmap.clone();
+        let mut sit_bitmap = self.sit_bitmap.clone();
+        let nat_journal = self.flush_nat(&mut nat_bitmap)?;
+        let sit_journal = self.flush_sit(&mut sit_bitmap)?;
+        let version = self.cp.version.wrapping_add(1);
+        let pack = match self.cp.pack { Pack::First => Pack::Second, Pack::Second => Pack::First };
+        let start = match pack {
+            Pack::First => self.sb.cp_blkaddr,
+            Pack::Second => self.sb.cp_blkaddr + self.sb.blks_per_seg(),
+        };
+        let payload = self.sb.cp_payload;
+        let total = CP_PACKS + payload + NR_CURSEG_PERSIST_TYPE as u32;
+        let head = self.build_cp(version, payload, total, &nat_bitmap, &sit_bitmap)?;
+        self.write_block(start, &head)?;
+        for i in 1..=payload { self.write_block(start + i, &vec![0u8; BLKSIZE])?; }
+        self.write_summaries(start, total, &nat_journal, &sit_journal)?;
+        // The tail goes last. Until it lands the pack reads as torn and the
+        // other pack stays current, which is exactly the guarantee wanted.
+        self.write_block(start + total - 1, &head)?;
+        self.adopt(head, pack, payload, nat_bitmap, sit_bitmap, nat_journal, sit_journal)
+    }
+
+    /// Take the checkpoint just written as this mount's own state. # C: O(1)
+    #[allow(clippy::too_many_arguments)]
+    fn adopt(&mut self, head: Vec<u8>, pack: Pack, payload: u32, nat_bitmap: Vec<u8>,
+             sit_bitmap: Vec<u8>, nat_journal: Vec<(u32, NatEntry)>,
+             sit_journal: Vec<(u32, SitEntry)>) -> Result<(), Errno> {
+        let cp = crate::checkpoint::parse(&head, pack).ok_or(Errno::Eio)?;
+        self.cp_raw = crate::checkpoint::joined(&head, &vec![vec![0u8; BLKSIZE]; payload as usize]);
+        self.cp = cp;
+        self.nat_bitmap = nat_bitmap;
+        self.sit_bitmap = sit_bitmap;
+        self.nat_journal = nat_journal;
+        self.sit_journal = sit_journal;
+        self.nat_dirty.clear();
+        self.sit_dirty.clear();
+        self.dirty = false;
+        Ok(())
+    }
+
+    /// The checkpoint header block, checksum included. # C: O(BLKSIZE)
+    fn build_cp(&self, version: u64, payload: u32, total: u32, nat_bitmap: &[u8],
+                sit_bitmap: &[u8]) -> Result<Vec<u8>, Errno> {
+        let mut c = vec![0u8; BLKSIZE];
+        // The summaries are written in full, so the compact form is cleared
+        // and the clean-unmount mark set: both say where a reader will find
+        // the journals, and a flag that disagrees sends it to another block.
+        let flags = (self.cp.flags & !(CP_COMPACT_SUM_FLAG | CP_ERROR_FLAG)) | CP_UMOUNT_FLAG;
+        p64(&mut c, CP_CHECKPOINT_VER, version);
+        p64(&mut c, CP_USER_BLOCK_COUNT, self.cp.user_block_count);
+        p64(&mut c, CP_VALID_BLOCK_COUNT, self.valid_block_count);
+        p32(&mut c, CP_RSVD_SEGMENT_COUNT, self.cp.rsvd_segment_count);
+        p32(&mut c, CP_OVERPROV_SEGMENT_COUNT, self.cp.overprov_segment_count);
+        p32(&mut c, CP_FREE_SEGMENT_COUNT, self.free_segment_count());
+        for (log, seg) in self.curseg.iter().enumerate() {
+            let (node, i) = super::curseg::cp_slot(log);
+            let (segno_at, blkoff_at) = if node {
+                (CP_CUR_NODE_SEGNO + i * 4, CP_CUR_NODE_BLKOFF + i * 2)
+            } else {
+                (CP_CUR_DATA_SEGNO + i * 4, CP_CUR_DATA_BLKOFF + i * 2)
+            };
+            p32(&mut c, segno_at, seg.segno);
+            p16(&mut c, blkoff_at, seg.next_blkoff);
+            c[CP_ALLOC_TYPE + log] = seg.alloc_type;
+        }
+        p32(&mut c, CP_CKPT_FLAGS, flags);
+        p32(&mut c, CP_PACK_TOTAL_BLOCK_COUNT, total);
+        p32(&mut c, CP_PACK_START_SUM, 1 + payload);
+        p32(&mut c, CP_VALID_NODE_COUNT, self.valid_node_count);
+        p32(&mut c, CP_VALID_INODE_COUNT, self.valid_inode_count);
+        p32(&mut c, CP_NEXT_FREE_NID, self.next_free_nid);
+        p32(&mut c, CP_SIT_VER_BITMAP_BYTESIZE, sit_bitmap.len() as u32);
+        p32(&mut c, CP_NAT_VER_BITMAP_BYTESIZE, nat_bitmap.len() as u32);
+        p64(&mut c, CP_ELAPSED_TIME, self.cp.elapsed_time);
+        let large = flags & CP_LARGE_NAT_BITMAP_FLAG != 0;
+        let base = CP_SIT_NAT_VERSION_BITMAP;
+        let crc_off = if large { base } else { CP_MAX_CHKSUM_OFFSET };
+        p32(&mut c, CP_CHECKSUM_OFFSET_FIELD, crc_off as u32);
+        let (nat_at, sit_at) = if large {
+            (base + 4, base + 4 + nat_bitmap.len())
+        } else {
+            (base + sit_bitmap.len(), base)
+        };
+        if nat_at + nat_bitmap.len() > BLKSIZE || sit_at + sit_bitmap.len() > BLKSIZE {
+            return Err(Errno::Enospc);
+        }
+        c[nat_at..nat_at + nat_bitmap.len()].copy_from_slice(nat_bitmap);
+        c[sit_at..sit_at + sit_bitmap.len()].copy_from_slice(sit_bitmap);
+        let crc = crate::checksum::crc32(&c[..crc_off]);
+        p32(&mut c, crc_off, crc);
+        Ok(c)
+    }
+
+    /// The six summary blocks, with the two journals ridden along.
+    /// # C: O(6 blocks)
+    fn write_summaries(&mut self, start: u32, total: u32, nat: &[(u32, NatEntry)],
+                       sit: &[(u32, SitEntry)]) -> Result<(), Errno> {
+        for log in 0..NR_CURSEG_PERSIST_TYPE {
+            let node = log >= NR_CURSEG_DATA_TYPE;
+            self.curseg[log].seal(node);
+            let mut block = self.curseg[log].sum.clone();
+            if log == CURSEG_HOT_DATA { write_nat_journal(&mut block, nat); }
+            if log == CURSEG_COLD_DATA { write_sit_journal(&mut block, sit); }
+            if log == CURSEG_HOT_DATA || log == CURSEG_COLD_DATA {
+                // The footer sits past the journal, so resealing after the
+                // journal goes in is what keeps the two consistent.
+                let at = BLKSIZE - SUM_FOOTER_SIZE;
+                let crc = crate::checksum::crc32(&block[..at]);
+                block[at + 1..at + 5].copy_from_slice(&crc.to_le_bytes());
+            }
+            let addr =
+                crate::summary::normal_sum_addr(start, total, NR_CURSEG_PERSIST_TYPE, log);
+            self.write_block(addr, &block)?;
+        }
+        Ok(())
+    }
+
+    /// Push the changed node-table entries: journal what fits, rewrite the
+    /// rest into the OTHER copy of their table block.
+    ///
+    /// The bit flip is the commit. A block rewritten without flipping its bit
+    /// is written where nothing will read it, and every entry in it silently
+    /// keeps its old value.
+    /// # C: O(dirty table blocks)
+    fn flush_nat(&mut self, bitmap: &mut [u8]) -> Result<Vec<(u32, NatEntry)>, Errno> {
+        let mut journal: Vec<(u32, NatEntry)> = Vec::new();
+        let mut groups: Vec<(u32, Vec<(u32, NatEntry)>)> = Vec::new();
+        for (&nid, e) in self.nat_dirty.iter() {
+            // An id claimed but never written names no block; recording it
+            // would hand a reader an address that was never allocated.
+            if e.block_addr == NEW_ADDR { continue; }
+            let (block_off, _) = crate::nat::locate(nid);
+            match groups.iter_mut().find(|(o, _)| *o == block_off) {
+                Some((_, v)) => v.push((nid, *e)),
+                None => groups.push((block_off, alloc::vec![(nid, *e)])),
+            }
+        }
+        // Carry forward journalled entries this mount did not change; dropping
+        // them would revert whatever the previous checkpoint parked there.
+        for (nid, e) in self.nat_journal.clone() {
+            if !self.nat_dirty.contains_key(&nid) { journal.push((nid, e)); }
+        }
+        for (block_off, entries) in groups {
+            if journal.len() + entries.len() <= NAT_JOURNAL_ENTRIES {
+                for (nid, e) in entries { journal.retain(|(n, _)| *n != nid); journal.push((nid, e)); }
+                continue;
+            }
+            journal.retain(|(n, _)| crate::nat::locate(*n).0 != block_off);
+            self.rewrite_nat_block(block_off, &entries, bitmap)?;
+        }
+        Ok(journal)
+    }
+
+    /// Rewrite one node-table block into its other copy. # C: O(BLKSIZE)
+    fn rewrite_nat_block(&mut self, block_off: u32, entries: &[(u32, NatEntry)],
+                         bitmap: &mut [u8]) -> Result<(), Errno> {
+        let per_seg = self.sb.blks_per_seg();
+        let base = self.sb.nat_blkaddr + (block_off << 1) - (block_off & (per_seg - 1));
+        let was_second = crate::checkpoint::test_bit(&self.nat_bitmap, block_off as usize);
+        let (cur, other) =
+            if was_second { (base + per_seg, base) } else { (base, base + per_seg) };
+        let mut block = self.read_block(cur)?;
+        for (nid, e) in entries {
+            let (_, off) = crate::nat::locate(*nid);
+            block[off + NAT_VERSION] = e.version;
+            p32(&mut block, off + NAT_INO, e.ino);
+            p32(&mut block, off + NAT_BLOCK_ADDR, e.block_addr);
+        }
+        self.write_block(other, &block)?;
+        let byte = block_off as usize / 8;
+        if byte < bitmap.len() { bitmap[byte] ^= 1 << (block_off % 8); }
+        Ok(())
+    }
+
+    /// The same for the segment table. # C: O(dirty table blocks)
+    fn flush_sit(&mut self, bitmap: &mut [u8]) -> Result<Vec<(u32, SitEntry)>, Errno> {
+        let dirty = self.dirty_segments();
+        let mut journal: Vec<(u32, SitEntry)> = Vec::new();
+        for (segno, e) in self.sit_journal.clone() {
+            if !self.sit_dirty.contains(&segno) { journal.push((segno, e)); }
+        }
+        let mut groups: Vec<(u32, Vec<(u32, SitEntry)>)> = Vec::new();
+        for (segno, e) in dirty {
+            let (block_off, _) = crate::sit::locate(segno);
+            match groups.iter_mut().find(|(o, _)| *o == block_off) {
+                Some((_, v)) => v.push((segno, e)),
+                None => groups.push((block_off, alloc::vec![(segno, e)])),
+            }
+        }
+        for (block_off, entries) in groups {
+            if journal.len() + entries.len() <= SIT_JOURNAL_ENTRIES {
+                for (segno, e) in entries {
+                    journal.retain(|(s, _)| *s != segno);
+                    journal.push((segno, e));
+                }
+                continue;
+            }
+            journal.retain(|(s, _)| crate::sit::locate(*s).0 != block_off);
+            self.rewrite_sit_block(block_off, &entries, bitmap)?;
+        }
+        Ok(journal)
+    }
+
+    /// Rewrite one segment-table block into its other copy. # C: O(BLKSIZE)
+    fn rewrite_sit_block(&mut self, block_off: u32, entries: &[(u32, SitEntry)],
+                         bitmap: &mut [u8]) -> Result<(), Errno> {
+        let blocks = crate::sit::area_blocks(self.sb.segment_count_sit, self.sb.blks_per_seg());
+        let base = self.sb.sit_blkaddr + block_off;
+        let was_second = crate::checkpoint::test_bit(&self.sit_bitmap, block_off as usize);
+        let (cur, other) = if was_second { (base + blocks, base) } else { (base, base + blocks) };
+        let mut block = self.read_block(cur)?;
+        let patch = segmap::sit_block(entries);
+        for (segno, _) in entries {
+            let (_, off) = crate::sit::locate(*segno);
+            block[off..off + SIT_ENTRY_SIZE].copy_from_slice(&patch[off..off + SIT_ENTRY_SIZE]);
+        }
+        self.write_block(other, &block)?;
+        let byte = block_off as usize / 8;
+        if byte < bitmap.len() { bitmap[byte] ^= 1 << (block_off % 8); }
+        Ok(())
+    }
+}
+
+/// Lay a node-table journal into a summary block. # C: O(entries)
+pub fn write_nat_journal(block: &mut [u8], entries: &[(u32, NatEntry)]) {
+    let off = crate::summary::at::NORMAL;
+    let n = entries.len().min(NAT_JOURNAL_ENTRIES);
+    p16(block, off, n as u16);
+    for (i, (nid, e)) in entries.iter().take(n).enumerate() {
+        let at = off + 2 + i * NAT_JOURNAL_ENTRY_SIZE;
+        p32(block, at, *nid);
+        block[at + 4 + NAT_VERSION] = e.version;
+        p32(block, at + 4 + NAT_INO, e.ino);
+        p32(block, at + 4 + NAT_BLOCK_ADDR, e.block_addr);
+    }
+}
+
+/// Lay a segment-table journal into a summary block. # C: O(entries)
+pub fn write_sit_journal(block: &mut [u8], entries: &[(u32, SitEntry)]) {
+    let off = crate::summary::at::NORMAL;
+    let n = entries.len().min(SIT_JOURNAL_ENTRIES);
+    p16(block, off, n as u16);
+    for (i, (segno, e)) in entries.iter().take(n).enumerate() {
+        let at = off + 2 + i * SIT_JOURNAL_ENTRY_SIZE;
+        p32(block, at, *segno);
+        p16(block, at + 4 + SIT_VBLOCKS, e.vblocks);
+        block[at + 4 + SIT_VALID_MAP..at + 4 + SIT_VALID_MAP + SIT_VBLOCK_MAP_SIZE]
+            .copy_from_slice(&e.valid_map);
+        p64(block, at + 4 + SIT_MTIME, e.mtime);
+    }
+}
+
+#[cfg(test)]
+#[path = "../tests/commitv.rs"]
+mod tests;

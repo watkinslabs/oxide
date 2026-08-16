@@ -41,6 +41,9 @@ impl<S: SectorSource> Volume<S> {
             nid,
             &self.nat_bitmap,
         );
+        // The dirty set first: an address this mount has just written is not
+        // on the medium yet, and the table still names the block it replaced.
+        if let Some(e) = self.nat_dirty.get(&nid) { return Ok(e.block_addr); }
         if let Some(e) = nat::journalled(&self.nat_journal, nid) { return Ok(e.block_addr); }
         let block = self.read_block(addr)?;
         let entry = nat::resolve(&self.nat_journal, &block, nid).ok_or(Errno::Eio)?;

@@ -16,6 +16,7 @@ use crate::checkpoint::{self, Checkpoint, Pack};
 use crate::checksum;
 use crate::features::{self, Access};
 use crate::flags::CP_COMPACT_SUM_FLAG;
+use crate::volume::curseg::Curseg;
 use crate::opts::Options;
 use crate::sb::{self, SuperBlock};
 use crate::summary::{self, at, NatJournal, SitJournal};
@@ -44,7 +45,14 @@ impl<S: SectorSource> Volume<S> {
             .ok_or(Errno::Einval)?
             .to_vec();
         let (nat_journal, sit_journal) = read_journals(&source, &sb, &cp)?;
+        let curseg = read_cursegs(&source, &sb, &cp)?;
         let inode_seed = checksum::inode_seed(&sb.uuid);
+        let (valid_block_count, valid_node_count, valid_inode_count, next_free_nid) = (
+            cp.valid_block_count,
+            cp.valid_node_count,
+            cp.valid_inode_count,
+            cp.next_free_nid.max(RESERVED_NODE_NUM),
+        );
         Ok(Self {
             source,
             sb,
@@ -58,6 +66,15 @@ impl<S: SectorSource> Volume<S> {
             opts,
             access,
             writable,
+            curseg,
+            nat_dirty: alloc::collections::BTreeMap::new(),
+            sit: None,
+            sit_dirty: alloc::collections::BTreeSet::new(),
+            valid_block_count,
+            valid_node_count,
+            valid_inode_count,
+            next_free_nid,
+            dirty: false,
         })
     }
 }
@@ -149,6 +166,32 @@ pub fn read_journals<S: SectorSource>(source: &S, sb: &SuperBlock, cp: &Checkpoi
         return Err(Errno::Einval);
     }
     Ok((nat, sit))
+}
+
+/// The six open logs, as the checkpoint left them.
+///
+/// A pack written compactly holds no per-log summary block, so those logs
+/// start with an empty entry array; the next checkpoint writes them out in
+/// full, which is what the reference does whenever the compact form no longer
+/// fits. The segment numbers and offsets come from the checkpoint either way —
+/// losing those would make the next write land in a segment already in use.
+/// # C: O(6 blocks)
+pub fn read_cursegs<S: SectorSource>(source: &S, sb: &SuperBlock, cp: &Checkpoint)
+    -> Result<[Curseg; NR_CURSEG_PERSIST_TYPE], Errno> {
+    let start = cp.start(sb.cp_blkaddr, sb.blks_per_seg());
+    let compact = cp.has(CP_COMPACT_SUM_FLAG);
+    let base = if cp.node_summaries_present() { NR_CURSEG_PERSIST_TYPE } else { NR_CURSEG_DATA_TYPE };
+    let mut out = core::array::from_fn(|_| Curseg::empty());
+    for (log, seg) in out.iter_mut().enumerate() {
+        let (node, i) = crate::volume::curseg::cp_slot(log);
+        seg.segno = if node { cp.cur_node_segno[i] } else { cp.cur_data_segno[i] };
+        seg.next_blkoff = if node { cp.cur_node_blkoff[i] } else { cp.cur_data_blkoff[i] };
+        seg.alloc_type = cp.alloc_type[log];
+        if compact && log < NR_CURSEG_DATA_TYPE { continue; }
+        let addr = summary::normal_sum_addr(start, cp.pack_total_block_count, base, log);
+        if let Ok(block) = read_one(source, addr) { seg.sum = block; }
+    }
+    Ok(out)
 }
 
 /// What a volume's features permit, without mounting it. # C: O(1)

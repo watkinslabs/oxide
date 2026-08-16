@@ -36,17 +36,17 @@ pub const SEG_CKPT: u32 = 2;
 pub const SEG_SIT: u32 = 2;
 pub const SEG_NAT: u32 = 2;
 pub const SEG_SSA: u32 = 1;
-pub const SEG_MAIN: u32 = 2;
+pub const SEG_MAIN: u32 = 8;
 pub const SIT_BLKADDR: u32 = CP_BLKADDR + SEG_CKPT * BLKS_PER_SEG;
 pub const NAT_BLKADDR: u32 = SIT_BLKADDR + SEG_SIT * BLKS_PER_SEG;
 pub const SSA_BLKADDR: u32 = NAT_BLKADDR + SEG_NAT * BLKS_PER_SEG;
 pub const MAIN_BLKADDR: u32 = SSA_BLKADDR + SEG_SSA * BLKS_PER_SEG;
 pub const SEGMENT_COUNT: u32 = SEG_CKPT + SEG_SIT + SEG_NAT + SEG_SSA + SEG_MAIN;
 pub const BLOCK_COUNT: u64 = CP_BLKADDR as u64 + (SEGMENT_COUNT as u64 * BLKS_PER_SEG as u64);
-/// Blocks the image actually holds. The main area's tail is never touched by
-/// a fixture, so the image stops short of it rather than carrying megabytes of
-/// zeroes into every test.
-pub const IMAGE_BLOCKS: u32 = MAIN_BLKADDR + 160;
+/// Blocks the image actually holds: the whole volume, because a write opens
+/// segments a fixture never touched and a short image would fail the write
+/// rather than the check it was written for.
+pub const IMAGE_BLOCKS: u32 = MAIN_BLKADDR + SEG_MAIN * BLKS_PER_SEG;
 /// Bytes of each version bitmap: one bit per block of one table copy.
 pub const BITMAP_BYTES: u32 = (SEG_SIT / 2) * BLKS_PER_SEG / 8;
 /// Blocks one checkpoint pack occupies: a head, six summaries, a tail.
@@ -132,8 +132,14 @@ impl Builder {
     /// Set the checkpoint flag word. # C: O(1)
     pub fn cp_flags(mut self, f: u32) -> Self { self.cp_flags = f; self }
 
-    /// Take the next free main-area block. # C: O(1)
+    /// Take the next free main-area block.
+    ///
+    /// Fixtures allocate out of the FIRST main segment only; the rest are the
+    /// open logs' and the allocator's, and a fixture straying into one would
+    /// hand the same block out twice.
+    /// # C: O(1)
     pub fn alloc_block(&mut self) -> u32 {
+        assert!(self.next_main < MAIN_BLKADDR + BLKS_PER_SEG, "fixture overflows segment zero");
         let addr = self.next_main;
         self.next_main += 1;
         let segno = (addr - MAIN_BLKADDR) / BLKS_PER_SEG;
@@ -149,6 +155,10 @@ impl Builder {
     pub fn use_ino(&mut self, ino: u32) {
         if self.next_nid <= ino { self.next_nid = ino + 1; }
     }
+
+    /// Blocks the fixture has put in the first main segment, which is where
+    /// the hot-data log resumes from. # C: O(1)
+    pub fn used_in_seg0(&self) -> u16 { (self.next_main - MAIN_BLKADDR) as u16 }
 
     /// Take the next free node id. # C: O(1)
     pub fn alloc_nid(&mut self) -> u32 {
@@ -190,9 +200,19 @@ impl Builder {
     /// The finished image as a medium. # C: O(image bytes)
     pub fn image(self) -> MemImage { MemImage::from_bytes(BLKSIZE as u32, self.finish()) }
 
-    /// The finished image, mounted. # C: O(image bytes)
+    /// The finished image, mounted read-only. # C: O(image bytes)
     pub fn mount(self) -> Result<Volume<MemImage>, syscall::errno::Errno> {
         Volume::mount_with(self.image(), Options::defaults(), false)
+    }
+
+    /// The finished image, mounted read-WRITE. # C: O(image bytes)
+    pub fn mount_rw(self) -> Result<Volume<MemImage>, syscall::errno::Errno> {
+        Volume::mount_with(self.image(), Options::defaults(), true)
+    }
+
+    /// The finished image, mounted read-write under `opts`. # C: O(image bytes)
+    pub fn mount_opts(self, opts: Options) -> Result<Volume<MemImage>, syscall::errno::Errno> {
+        Volume::mount_with(self.image(), opts, true)
     }
 }
 

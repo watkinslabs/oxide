@@ -2,13 +2,15 @@
 //! operations.
 //!
 //! Everything below this file is pure and already tested against images in
-//! memory. This is the adapter, and the only layer that reaches the block
-//! layer.
+//! memory — including the write path, which is proved by writing an image and
+//! mounting its bytes again. This is the adapter, and the only layer that
+//! reaches the block layer.
 //!
 //! Module manifest:
 //! - `node`: what an inode of this filesystem is, built from a stored one.
 //! - `ops`:  the inode and file operations.
 //! - `sb`:   `statfs` and the option tail.
+//! - `write`: the mutating operations, and the clock they share.
 
 use alloc::string::{String, ToString};
 use alloc::sync::{Arc, Weak};
@@ -26,6 +28,7 @@ use crate::volume::Volume;
 pub mod node;
 pub mod ops;
 pub mod sb;
+pub mod write;
 
 /// The one name this filesystem is registered under.
 pub const F2FS_NAME: &str = "f2fs";
@@ -77,11 +80,22 @@ impl F2fs {
 
     /// Whether this mount ended up writable.
     ///
-    /// Always false for now: the write path is not implemented, and a mount
-    /// that claimed otherwise would fail at the first write rather than at the
-    /// mount, which is the failure this reports away.
+    /// A mount that asked to write a volume whose own features forbid it, or
+    /// a medium that refuses writes, reports false here so the superblock can
+    /// be marked read-only — failing every write at the first one instead of
+    /// at the mount is the outcome this avoids.
     /// # C: O(1)
     pub fn is_writable(&self) -> bool { self.volume.lock().writable() }
+
+    /// Push everything to the medium and leave the volume consistent.
+    ///
+    /// A checkpoint is what turns this mount's out-of-place writes into a
+    /// filesystem state; without one the medium still describes the state the
+    /// mount started from.
+    /// # C: O(dirty blocks)
+    pub fn mark_clean(&self) -> KResult<()> {
+        self.volume.lock().commit().map_err(errno_to_vfs)
+    }
 
     /// The root inode. # C: O(1 block)
     pub fn root_inode(self: &Arc<Self>) -> KResult<InodeRef> {

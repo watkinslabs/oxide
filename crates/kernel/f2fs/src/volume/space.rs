@@ -58,6 +58,11 @@ impl<S: SectorSource> Volume<S> {
     pub fn seg_entry(&self, segno: u32) -> Result<SitEntry, syscall::errno::Errno> {
         use syscall::errno::Errno;
         if segno >= self.sb.segment_count_main { return Err(Errno::Einval); }
+        // The loaded table is this mount's own truth once a write has touched
+        // it; the medium still holds the state the mount started from.
+        if let Some(t) = self.sit.as_ref() {
+            if let Some(e) = t.get(segno as usize) { return Ok(e.clone()); }
+        }
         if let Some(e) = sit::journalled(&self.sit_journal, segno) { return Ok(e); }
         let blocks = sit::area_blocks(self.sb.segment_count_sit, self.sb.blks_per_seg());
         let addr = sit::block_addr(self.sb.sit_blkaddr, blocks, segno, &self.sit_bitmap);

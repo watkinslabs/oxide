@@ -3,21 +3,27 @@
 //! One vector serves both: every operation needs the same two things, the
 //! inode this object was built from and the volume's lock.
 //!
-//! The mutating operations are absent. This mount is READ-ONLY, so their
-//! defaults answer for them — a mount that offered them and failed at the
-//! first byte would be worse than one that says so at the interface.
+//! The mutating operations refuse before they touch anything when the mount
+//! is read-only, rather than failing partway through: a create that had
+//! already allocated an inode when it discovered it could not write would
+//! leave the volume with an unreachable one.
 
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use vfs::xattr::XattrError;
-use vfs::{DirContext, FileType, Inode, InodeOps, InodeRef, FileOps, KResult, VfsError};
+use vfs::idmap::Idmap;
+use vfs::namei::RENAME_NOREPLACE;
+use vfs::setattr::{Iattr, ATTR_ATIME, ATTR_GID, ATTR_MODE, ATTR_MTIME, ATTR_SIZE, ATTR_UID};
+use vfs::{CreateCtx, DirContext, FileType, FileOps, Inode, InodeOps, InodeRef, KResult,
+          VfsError};
 
 use crate::flags::*;
 use crate::mode;
 
 use super::node::{node_inode, F2fsNode};
+use super::write::{mk_mode, mknod_type, now};
 use super::errno_to_vfs;
 
 /// The operations, for every inode of this filesystem.
@@ -37,6 +43,25 @@ impl F2fsOps {
         }
         Ok(node)
     }
+
+    /// The node behind a directory inode, refusing early when the mount
+    /// cannot write. # C: O(1)
+    fn writable_dir(inode: &Inode) -> KResult<&F2fsNode> {
+        let node = Self::dir_of(inode)?;
+        if !node.fs.is_writable() { return Err(VfsError::Erofs); }
+        Ok(node)
+    }
+
+    /// Make something under `inode`, with the owner the caller's context
+    /// names. # C: O(depth) blocks
+    fn make(inode: &Inode, name: &str, ftype: FileType, perm: u32, rdev: u32,
+            body: Option<&[u8]>, ctx: &CreateCtx) -> KResult<InodeRef> {
+        let node = Self::writable_dir(inode)?;
+        // The umask is applied here and not in the volume: it is a property of
+        // the caller, not of the medium.
+        let perm = perm & !u32::from(ctx.umask);
+        node.fs.make(node.ino, name, mk_mode(ftype, perm), ctx.fsuid(), ctx.fsgid(), rdev, body)
+    }
 }
 
 impl InodeOps for F2fsOps {
@@ -53,6 +78,116 @@ impl InodeOps for F2fsOps {
         let Ok(node) = Self::dir_of(inode) else { return true };
         let v = node.fs.volume.lock();
         v.dir_is_empty(&node.inode, node.ino).unwrap_or(false)
+    }
+
+    fn create(&self, inode: &Inode, name: &str, mode_bits: u32, ctx: &CreateCtx)
+        -> KResult<InodeRef> {
+        Self::make(inode, name, FileType::Regular, mode_bits, 0, None, ctx)
+    }
+
+    fn mkdir(&self, inode: &Inode, name: &str, mode_bits: u32, ctx: &CreateCtx)
+        -> KResult<InodeRef> {
+        Self::make(inode, name, FileType::Directory, mode_bits, 0, None, ctx)
+    }
+
+    fn mknod(&self, inode: &Inode, name: &str, mode_bits: u16, rdev: u32, ctx: &CreateCtx)
+        -> KResult<()> {
+        let ftype = mknod_type(u32::from(mode_bits))?;
+        let rdev = if matches!(ftype, FileType::CharDev | FileType::BlockDev) { rdev } else { 0 };
+        Self::make(inode, name, ftype, u32::from(mode_bits), rdev, None, ctx)?;
+        Ok(())
+    }
+
+    /// A link's target is its CONTENT, so it is created with the target as the
+    /// file's initial bytes rather than through a field of its own.
+    fn symlink(&self, inode: &Inode, name: &str, target: &[u8], ctx: &CreateCtx) -> KResult<()> {
+        if target.is_empty() || target.len() > crate::limits::MAX_SYMLINK_BYTES {
+            return Err(VfsError::Enametoolong);
+        }
+        Self::make(inode, name, FileType::Symlink, 0o777, 0, Some(target), ctx)?;
+        Ok(())
+    }
+
+    fn link(&self, inode: &Inode, target: &InodeRef, name: &str, _ctx: &CreateCtx)
+        -> KResult<()> {
+        let node = Self::writable_dir(inode)?;
+        let other = Self::node(target)?;
+        if !Arc::ptr_eq(&node.fs, &other.fs) { return Err(VfsError::Exdev); }
+        node.fs.link(node.ino, name, other.ino)
+    }
+
+    fn unlink(&self, inode: &Inode, name: &str) -> KResult<()> {
+        let node = Self::writable_dir(inode)?;
+        node.fs.remove(node.ino, name, false)
+    }
+
+    fn rmdir(&self, inode: &Inode, name: &str) -> KResult<()> {
+        let node = Self::writable_dir(inode)?;
+        node.fs.remove(node.ino, name, true)
+    }
+
+    fn rename(&self, inode: &Inode, old_name: &str, new_dir: &Inode, new_name: &str, flags: u32,
+              _ctx: &CreateCtx) -> KResult<()> {
+        let node = Self::writable_dir(inode)?;
+        let target = Self::dir_of(new_dir)?;
+        // Both directories are on one volume by construction: a rename across
+        // filesystems never reaches a backend.
+        if !Arc::ptr_eq(&node.fs, &target.fs) { return Err(VfsError::Exdev); }
+        node.fs.rename(node.ino, old_name, target.ino, new_name, flags & RENAME_NOREPLACE != 0)
+    }
+
+    fn truncate(&self, inode: &Inode, len: u64) -> KResult<()> {
+        let node = Self::node(inode)?;
+        if !node.fs.is_writable() { return Err(VfsError::Erofs); }
+        if mode::file_type(node.inode.mode) == FileType::Directory {
+            return Err(VfsError::Eisdir);
+        }
+        node.fs.truncate(node.ino, len)?;
+        inode.set_size(len);
+        Ok(())
+    }
+
+    /// The stored fields are changed on the medium and then on the cached
+    /// inode; doing only the latter would lose every change at unmount.
+    fn setattr(&self, inode: &Inode, idmap: &Idmap, ia: &Iattr) -> KResult<()> {
+        let node = Self::node(inode)?;
+        if !node.fs.is_writable() { return Err(VfsError::Erofs); }
+        if ia.valid & ATTR_SIZE != 0 { node.fs.truncate(node.ino, ia.size)?; }
+        let mode_bits = if ia.valid & ATTR_MODE != 0 { Some(ia.mode) } else { None };
+        let owner = if ia.valid & (ATTR_UID | ATTR_GID) != 0 {
+            let uid = if ia.valid & ATTR_UID != 0 { ia.uid } else { inode.uid().unwrap_or(0) };
+            let gid = if ia.valid & ATTR_GID != 0 { ia.gid } else { inode.gid().unwrap_or(0) };
+            Some((uid, gid))
+        } else {
+            None
+        };
+        if mode_bits.is_some() || owner.is_some() {
+            node.fs.volume.lock().set_attr(node.ino, mode_bits, owner, now())
+                .map_err(errno_to_vfs)?;
+        }
+        if ia.valid & (ATTR_ATIME | ATTR_MTIME) != 0 {
+            let stamp = |t: vfs::timespec::Timespec64| (t.sec.max(0) as u64, t.nsec);
+            node.fs.volume.lock().set_times(node.ino, stamp(ia.atime), stamp(ia.mtime))
+                .map_err(errno_to_vfs)?;
+        }
+        vfs::setattr::simple_setattr(inode, idmap, ia)
+    }
+
+    fn setxattr(&self, inode: &Inode, name: &str, value: Vec<u8>, create: bool, replace: bool)
+        -> Result<(), XattrError> {
+        let node = Self::node(inode).map_err(XattrError::Fs)?;
+        if !node.fs.is_writable() { return Err(XattrError::Fs(VfsError::Erofs)); }
+        node.fs
+            .volume
+            .lock()
+            .set_xattr(node.ino, name, Some(&value), create, replace)
+            .map_err(xattr_errno)
+    }
+
+    fn removexattr(&self, inode: &Inode, name: &str) -> Result<(), XattrError> {
+        let node = Self::node(inode).map_err(XattrError::Fs)?;
+        if !node.fs.is_writable() { return Err(XattrError::Fs(VfsError::Erofs)); }
+        node.fs.volume.lock().remove_xattr(node.ino, name).map_err(xattr_errno)
     }
 
     fn readlink(&self, inode: &Inode) -> KResult<Vec<u8>> {
@@ -86,6 +221,17 @@ impl FileOps for F2fsOps {
         }
         let v = node.fs.volume.lock();
         v.read_file(&node.inode, node.ino, off, buf).map_err(errno_to_vfs)
+    }
+
+    fn write(&self, inode: &Inode, off: u64, buf: &[u8]) -> KResult<usize> {
+        let node = F2fsOps::node(inode)?;
+        if !node.fs.is_writable() { return Err(VfsError::Erofs); }
+        if mode::file_type(node.inode.mode) == FileType::Directory {
+            return Err(VfsError::Eisdir);
+        }
+        let size = node.fs.write(node.ino, off, buf)?;
+        inode.set_size(size);
+        Ok(buf.len())
     }
 
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
@@ -126,10 +272,11 @@ pub fn vfs_type(ft: u8) -> FileType {
 }
 
 /// # C: O(1)
-fn xattr_errno(e: syscall::errno::Errno) -> XattrError {
+pub(crate) fn xattr_errno(e: syscall::errno::Errno) -> XattrError {
     match e {
         syscall::errno::Errno::Enodata => XattrError::NotFound,
         syscall::errno::Errno::Eopnotsupp => XattrError::NotSup,
+        syscall::errno::Errno::Eexist => XattrError::Exists,
         other => XattrError::Fs(errno_to_vfs(other)),
     }
 }

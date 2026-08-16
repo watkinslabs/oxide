@@ -44,8 +44,13 @@ impl SuperOps for F2fsSuperOps {
 
     fn show_options(&self) -> String { crate::opts::show(self.fs.volume.lock().options()) }
 
-    /// Nothing is buffered: this mount does not write, so there is nothing a
-    /// sync could push. Reporting success is what a read-only mount does —
-    /// failing would make every `sync(2)` on the machine fail.
-    fn sync_fs(&self, _wait: bool) -> KResult<()> { Ok(()) }
+    /// Write a checkpoint.
+    ///
+    /// Until one is written the medium still describes the state this mount
+    /// started from: every out-of-place write is invisible, because nothing
+    /// points at the new blocks. A read-only mount has nothing to push and
+    /// reports success rather than failing every `sync(2)` on the machine.
+    fn sync_fs(&self, _wait: bool) -> KResult<()> {
+        self.fs.volume.lock().commit().map_err(super::errno_to_vfs)
+    }
 }

@@ -94,7 +94,20 @@ pub fn cp_bytes(b: &Builder, version: u64) -> Vec<u8> {
     put64(&mut c, CP_CHECKPOINT_VER, version);
     put64(&mut c, CP_USER_BLOCK_COUNT, u64::from(SEG_MAIN * BLKS_PER_SEG));
     put64(&mut c, CP_VALID_BLOCK_COUNT, b.valid_block_count);
-    put32(&mut c, CP_FREE_SEGMENT_COUNT, SEG_MAIN - 1);
+    put32(&mut c, CP_FREE_SEGMENT_COUNT, SEG_MAIN - NR_CURSEG_PERSIST_TYPE as u32);
+    // Each log gets a segment of its own, the way a formatter leaves them:
+    // six logs sharing one segment would hand the same block to all six.
+    for i in 0..NR_CURSEG_DATA_TYPE {
+        put32(&mut c, CP_CUR_DATA_SEGNO + i * 4, i as u32);
+        put16(&mut c, CP_CUR_DATA_BLKOFF + i * 2, if i == 0 { b.used_in_seg0() } else { 0 });
+        c[CP_ALLOC_TYPE + i] = ALLOC_LFS;
+    }
+    for i in 0..NR_CURSEG_NODE_TYPE {
+        let log = NR_CURSEG_DATA_TYPE + i;
+        put32(&mut c, CP_CUR_NODE_SEGNO + i * 4, log as u32);
+        put16(&mut c, CP_CUR_NODE_BLKOFF + i * 2, 0);
+        c[CP_ALLOC_TYPE + log] = ALLOC_LFS;
+    }
     put32(&mut c, CP_CKPT_FLAGS, b.cp_flags);
     put32(&mut c, CP_PACK_TOTAL_BLOCK_COUNT, CP_PACK_BLOCKS + b.cp_payload);
     put32(&mut c, CP_PACK_START_SUM, PACK_START_SUM + b.cp_payload);

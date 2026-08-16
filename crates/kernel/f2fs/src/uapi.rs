@@ -266,10 +266,27 @@ pub const SIT_JOURNAL_ENTRIES: usize = (SUM_JOURNAL_SIZE - 2) / SIT_JOURNAL_ENTR
 
 /// Current-segment logs, in the order the checkpoint records them.
 pub const CURSEG_HOT_DATA: usize = 0;
+pub const CURSEG_WARM_DATA: usize = 1;
 pub const CURSEG_COLD_DATA: usize = 2;
+pub const CURSEG_HOT_NODE: usize = 3;
+pub const CURSEG_WARM_NODE: usize = 4;
+pub const CURSEG_COLD_NODE: usize = 5;
 pub const NR_CURSEG_DATA_TYPE: usize = 3;
 pub const NR_CURSEG_NODE_TYPE: usize = 3;
 pub const NR_CURSEG_PERSIST_TYPE: usize = NR_CURSEG_DATA_TYPE + NR_CURSEG_NODE_TYPE;
+
+/// The segment number that means "no segment": a log with nothing open.
+pub const NULL_SEGNO: u32 = u32::MAX;
+
+/// How a log picks the next block inside its segment.
+pub const ALLOC_LFS: u8 = 0;
+pub const ALLOC_SSR: u8 = 1;
+
+/// Byte offset of summary entry `n` inside a summary block.
+pub const fn summary_off(n: usize) -> usize { n * SUMMARY_SIZE }
+
+/// Where a segment's summary block lives in the summary area. # C: O(1)
+pub const fn sum_block_addr(ssa_blkaddr: u32, segno: u32) -> u32 { ssa_blkaddr + segno }
 
 // -------------------------------------------------------------- directories
 

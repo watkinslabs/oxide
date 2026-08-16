@@ -21,10 +21,13 @@
 //!   tail, both per inode. Getting either wrong reads attribute bytes as block
 //!   addresses.
 //!
-//! This mount is READ-ONLY. That is a statement about what is implemented, not
-//! about the volume: the write path — segment allocation, table writeback,
-//! checkpointing — is not here, and a mount that claimed to write would fail
-//! at the first byte rather than at the mount.
+//! Writing follows the same idea and is the same trap. Nothing is updated in
+//! place: a changed byte takes a fresh block from one of six open logs,
+//! releases the old one, and rewrites every node above it — so one write moves
+//! the direct node and the inode too. None of it is visible until a CHECKPOINT
+//! is written, to the OTHER of the two packs, with the version raised by one.
+//! Writing a checkpoint over the pack it replaces is the one thing that would
+//! make a crash unrecoverable.
 //!
 //! Module manifest:
 //! - `uapi`:       the on-disk numbers, offsets and derived sizes.
@@ -43,7 +46,7 @@
 //! - `xattr`:      the attribute region, assembled from its two halves.
 //! - `mode`:       the stored mode word, and the device number beside it.
 //! - `opts`:       what a mount was asked for, and what it reports back.
-//! - `volume`:     a mounted volume, driven against a real medium.
+//! - `volume`:     a mounted volume, read and written against a real medium.
 //! - `mount`:      the VFS-facing filesystem, its inodes and their operations.
 
 extern crate alloc;
