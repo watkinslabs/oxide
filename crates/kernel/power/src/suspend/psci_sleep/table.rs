@@ -7,7 +7,7 @@
 use hal_aarch64::psci_probe::SuspendSupport;
 
 use crate::decide::{Error, KResult};
-use crate::suspend::ops::{suspend_set_ops, PlatformSuspendOps};
+use crate::suspend::ops::PlatformSuspendOps;
 use crate::suspend::state::SuspendState;
 use super::admit;
 
@@ -67,7 +67,7 @@ pub unsafe fn init() -> bool {
         // SAFETY: per fn contract — boot path, single CPU, conduit configured; both probe calls only read firmware state.
         let support = unsafe { hal_aarch64::psci::probe_system_suspend() };
         if !support.admits_mem() { return false; }
-        suspend_set_ops(&PSCI_SUSPEND_OPS);
+        crate::suspend::ops::suspend_set_ops(&PSCI_SUSPEND_OPS);
         return true;
     }
     #[cfg(not(all(target_arch = "aarch64", target_os = "oxide-kernel")))]

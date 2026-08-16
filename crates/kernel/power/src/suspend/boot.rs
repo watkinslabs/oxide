@@ -12,6 +12,22 @@ use super::wire::{self, SuspendHooks};
 /// Filesystem sync before the freeze (`32a§5` step 0).
 fn sync_filesystems() -> KResult<()> { Ok(()) }
 
+/// Install this arch's platform sleep table, if its firmware supplies one.
+///
+/// A platform that supplies none registers nothing, and `/sys/power/state`
+/// correctly offers `freeze` alone (`32a§9`) — an empty table is a reading of
+/// the firmware, not a gap to be papered over.
+fn install_platform_ops() {
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+    // SAFETY: `boot::init` runs once on the boot path, single-CPU, after the
+    // ACPI table walk, which is exactly the ACPI sleep init's contract.
+    unsafe { super::acpi_sleep::init(); }
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+    // SAFETY: `boot::init` runs once on the boot path, single-CPU, with the
+    // PSCI conduit configured, which is the probe's contract.
+    unsafe { let _ = super::psci_sleep::init(); }
+}
+
 /// Install the scheduler-side and device-side halves of the sequence, and the
 /// suspend-to-idle blocking primitives.
 ///
@@ -20,6 +36,10 @@ fn sync_filesystems() -> KResult<()> { Ok(()) }
 /// # C: O(1)
 /// # Ctx: boot path, single-CPU
 pub fn init() {
+    // The platform sleep table first: `mem_sleep`'s default is the deepest
+    // state the platform admits, and it cannot be read before the table that
+    // answers `valid` is installed.
+    install_platform_ops();
     super::s2idle_wait::init();
     wire::set_hooks(SuspendHooks {
         sync_filesystems: Some(sync_filesystems),
