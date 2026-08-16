@@ -1663,6 +1663,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nfs"
+version = "0.1.0"
+dependencies = [
+ "sunrpc",
+ "sync",
+ "syscall",
+]
+
+[[package]]
 name = "ninep"
 version = "0.1.0"
 dependencies = [
@@ -2393,6 +2402,15 @@ dependencies = [
 [[package]]
 name = "structured-zstd"
 version = "0.0.49"
+
+[[package]]
+name = "sunrpc"
+version = "0.1.0"
+dependencies = [
+ "sched",
+ "sync",
+ "syscall",
+]
 
 [[package]]
 name = "syn"
