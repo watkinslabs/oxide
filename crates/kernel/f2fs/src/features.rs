@@ -1,0 +1,113 @@
+//! What a volume's feature word means for this mount.
+//!
+//! Three answers, and the difference between them is what a wrong one costs:
+//!
+//! - **Mount.** The bit changes nothing this build reads, or names something
+//!   it reads correctly.
+//! - **Read-only.** The bit is readable but not writable here, so the mount
+//!   proceeds and refuses writes — which is what the reference does for a
+//!   volume marked read-only at format time.
+//! - **Refuse.** The bit changes how bytes are laid out or how a name
+//!   resolves, and this build would produce wrong answers with no error. A
+//!   filesystem that misreads is worse than one that refuses.
+//!
+//! An UNKNOWN bit lands in the third group. That is deliberate and is the one
+//! place this differs from the reference, which ignores bits it does not
+//! recognise: a bit from a later format revision is by definition one whose
+//! layout consequences are unknown here, and guessing is the failure mode this
+//! module exists to prevent.
+
+use crate::flags::*;
+
+/// What this mount may do with a volume, once its features are read.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum Access {
+    /// Both directions.
+    ReadWrite,
+    /// Reads only, and the superblock says so.
+    ReadOnly,
+}
+
+/// Why a volume was refused.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum Refusal {
+    /// A bit outside every one this build knows.
+    Unknown(u32),
+    /// Names resolve through a case-folding table this build does not carry,
+    /// so a lookup would miss names that exist.
+    Casefold,
+    /// The volume spans several devices, or aliases one; only the device it
+    /// was mounted from is reachable here.
+    MultiDevice,
+    /// Segment placement is dictated by the drive's zones, which a plain
+    /// block device does not expose.
+    Zoned,
+}
+
+/// Every bit this build recognises.
+pub const KNOWN: u32 = FEATURE_ENCRYPT
+    | FEATURE_BLKZONED
+    | FEATURE_ATOMIC_WRITE
+    | FEATURE_EXTRA_ATTR
+    | FEATURE_PRJQUOTA
+    | FEATURE_INODE_CHKSUM
+    | FEATURE_FLEXIBLE_INLINE_XATTR
+    | FEATURE_QUOTA_INO
+    | FEATURE_INODE_CRTIME
+    | FEATURE_LOST_FOUND
+    | FEATURE_VERITY
+    | FEATURE_SB_CHKSUM
+    | FEATURE_CASEFOLD
+    | FEATURE_COMPRESSION
+    | FEATURE_RO
+    | FEATURE_DEVICE_ALIAS
+    | FEATURE_PACKED_SSA;
+
+/// Decide what `feature` permits.
+///
+/// `multi_device` is separate from the feature word because a volume may list
+/// several devices without setting any bit at all; the list is what makes the
+/// rest of it unreachable.
+/// # C: O(1)
+pub fn access(feature: u32, multi_device: bool) -> Result<Access, Refusal> {
+    let unknown = feature & !KNOWN;
+    if unknown != 0 { return Err(Refusal::Unknown(unknown)); }
+    if feature & FEATURE_CASEFOLD != 0 { return Err(Refusal::Casefold); }
+    if feature & FEATURE_BLKZONED != 0 { return Err(Refusal::Zoned); }
+    if feature & FEATURE_DEVICE_ALIAS != 0 || multi_device {
+        return Err(Refusal::MultiDevice);
+    }
+    if feature & FEATURE_RO != 0 { return Ok(Access::ReadOnly); }
+    Ok(Access::ReadWrite)
+}
+
+/// Whether inode checksums are stored and therefore checkable. # C: O(1)
+pub fn has_inode_chksum(feature: u32) -> bool { feature & FEATURE_INODE_CHKSUM != 0 }
+
+/// Whether the superblock carries its own checksum. # C: O(1)
+pub fn has_sb_chksum(feature: u32) -> bool { feature & FEATURE_SB_CHKSUM != 0 }
+
+/// Whether inodes may carry the extra attribute region. # C: O(1)
+pub fn has_extra_attr(feature: u32) -> bool { feature & FEATURE_EXTRA_ATTR != 0 }
+
+/// Whether an inode states its own inline-attribute reservation, rather than
+/// taking the fixed default. # C: O(1)
+pub fn has_flexible_inline_xattr(feature: u32) -> bool {
+    feature & FEATURE_FLEXIBLE_INLINE_XATTR != 0
+}
+
+/// Whether inodes may carry a creation time. # C: O(1)
+pub fn has_inode_crtime(feature: u32) -> bool { feature & FEATURE_INODE_CRTIME != 0 }
+
+/// Whether project ids are stored. # C: O(1)
+pub fn has_project_quota(feature: u32) -> bool { feature & FEATURE_PRJQUOTA != 0 }
+
+/// Whether any file on the volume may be stored compressed. # C: O(1)
+pub fn has_compression(feature: u32) -> bool { feature & FEATURE_COMPRESSION != 0 }
+
+/// Whether any file on the volume may be stored encrypted. # C: O(1)
+pub fn has_encrypt(feature: u32) -> bool { feature & FEATURE_ENCRYPT != 0 }
+
+#[cfg(test)]
+#[path = "tests/features.rs"]
+mod tests;

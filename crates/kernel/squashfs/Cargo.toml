@@ -15,6 +15,7 @@ sectors = { path = "../sectors" }
 crc     = { path = "../../shared/crc" }
 zstd = { path = "../../shared/zstd" }
 miniz_oxide = { version = "0.8.9", default-features = false, features = ["with-alloc"] }
+lz4_flex = { version = "0.14.0", default-features = false, features = ["safe-decode"] }
 lzokay = { version = "2.0.1", default-features = false, features = ["decompress", "alloc"] }
 
 [features]
