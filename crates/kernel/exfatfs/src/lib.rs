@@ -67,7 +67,7 @@ pub use upcase::UpCase;
 pub use volume::{DirEntry, DirHandle, Volume};
 
 /// The boot sector every test volume starts from, shared so one layout change
-/// does not have to be made in a dozen fixtures.
+/// does not have to be made in a dozen fixtures. # C: O(1)
 #[cfg(test)]
 pub(crate) fn tests_boot_sector() -> alloc::vec::Vec<u8> { boot::tests::sector() }
 

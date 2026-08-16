@@ -273,6 +273,26 @@ fn register_filesystems() {
         let fs: Arc<dyn vfs::fs::FileSystem> = fs;
         mounted(ty, fs, Some(root), source, sb_flags)
     })));
+    // NTFS is what a disk shared with Windows carries. A volume left DIRTY
+    // mounts READ-ONLY here rather than read-write with a warning, which is
+    // the opposite of what FAT and exFAT do and is deliberate: this filesystem
+    // has a journal, and writing to a volume whose journal has not been
+    // replayed loses whatever the journal was about to redo.
+    let _ = register_fs(FsType::new("ntfs3", ntfs3::NTFS_SUPER_MAGIC, FsFlags::FS_REQUIRES_DEV,
+        Box::new(|ty, source: Option<&str>, _t: &str, d: &str, sb_flags: u64,
+                  _p: &[vfs::fs::FsParameter]| -> R {
+        let source = source.ok_or(vfs::VfsError::Enoent)?;
+        let write = sb_flags & vfs::superblock::SB_RDONLY == 0;
+        let access = vfs::MAY_READ | if write { vfs::MAY_WRITE } else { 0 };
+        let (dev, _dev_t) = resolve_block_source(source, access)?;
+        let opts = ntfs3::opts::parse(ntfs3::Options::defaults(), d)
+            .map_err(ntfs3::mount::errno_to_vfs)?;
+        let fs = ntfs3::NtfsFs::open_with(dev, source, write, opts)?;
+        let sb_flags = if fs.is_writable() { sb_flags } else { sb_flags | vfs::superblock::SB_RDONLY };
+        let root = fs.root_inode()?;
+        let fs: Arc<dyn vfs::fs::FileSystem> = fs;
+        mounted(ty, fs, Some(root), source, sb_flags)
+    })));
     // procfs declares the three options it ENFORCES (`gid=`, `hidepid=`,
     // `subset=`) and builds a per-mount root that carries them. The table was an
     // empty list while the root inode was a process-global singleton — there was
