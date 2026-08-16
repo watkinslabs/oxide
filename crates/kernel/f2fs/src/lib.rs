@@ -45,6 +45,10 @@
 //! - `dirent`:     entries, their four parallel arrays, and bucket addressing.
 //! - `xattr`:      the attribute region, assembled from its two halves.
 //! - `mode`:       the stored mode word, and the device number beside it.
+//! - `compress`:   compressed clusters, and the codecs that unpack them.
+//! - `casefold`:   case-insensitive name resolution.
+//! - `quota`:      per-identity usage accounting.
+//! - `verity`:     the descriptor a verity-protected file carries.
 //! - `opts`:       what a mount was asked for, and what it reports back.
 //! - `volume`:     a mounted volume, read and written against a real medium.
 //! - `mount`:      the VFS-facing filesystem, its inodes and their operations.
@@ -66,6 +70,10 @@ pub mod hash;
 pub mod dirent;
 pub mod xattr;
 pub mod mode;
+pub mod compress;
+pub mod casefold;
+pub mod quota;
+pub mod verity;
 pub mod opts;
 pub mod volume;
 pub mod mount;

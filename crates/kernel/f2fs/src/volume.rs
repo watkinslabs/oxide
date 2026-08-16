@@ -23,6 +23,10 @@
 //! - `dirwrite`: adding and removing directory entries.
 //! - `namei`:  creating, removing and renaming names.
 //! - `xattr_write`: setting and removing attributes.
+//! - `gc`:      cleaning a segment so its space comes back.
+//! - `orphan`:  inodes unlinked while still open.
+//! - `recover`: replaying the log written since the last checkpoint.
+//! - `fsync`:   making one file durable without a whole checkpoint.
 //! - `space`:  what `statfs` reports.
 
 use alloc::collections::{BTreeMap, BTreeSet};
@@ -58,6 +62,10 @@ pub mod fileops;
 pub mod dirwrite;
 pub mod namei;
 pub mod xattr_write;
+pub mod gc;
+pub mod orphan;
+pub mod recover;
+pub mod fsync;
 
 pub use curseg::{Curseg, Kind, Summary};
 pub use dir::DirEntry;
