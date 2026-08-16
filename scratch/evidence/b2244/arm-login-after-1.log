@@ -1,0 +1,129 @@
+UEFI firmware (version  built at 01:01:27 on May  2 2026)
+[2J[001;001H[=3h[2J[001;001H[2J[001;001H[8;042;160t[2J[001;001HBdsDxe: failed to load Boot0002 "UEFI Misc Device" from PciRoot(0x0)/Pci(0x1,0x0): Not Found
+BdsDxe: failed to load Boot0003 "UEFI Misc Device 2" from PciRoot(0x0)/Pci(0x2,0x0): Not Found
+BdsDxe: failed to load Boot0004 "UEFI QEMU NVMe Ctrl oxnvme 1" from PciRoot(0x0)/Pci(0xC,0x0)/NVMe(0x1,00-00-00-00-00-00-00-00): Not Found
+BdsDxe: loading Boot0005 "UEFI Misc Device 3" from PciRoot(0x0)/Pci(0xE,0x0)
+BdsDxe: starting Boot0005 "UEFI Misc Device 3" from PciRoot(0x0)/Pci(0xE,0x0)
+  Booting `oxide (EFI-stub)'
+
+A1BCDE[6.036] Kernel command line: BOOT_IMAGE=/boot/oxide-aarch64.Image root=/dev/vda rw earlycon printk.time=1 systemd.log_target=kmsg systemd.journald.forward_to_kmsg=1 sysctl.kernel.sysrq=1 sysrq_always_enabled console=ttyAMA0,115200 console=tty0 systemd.mask=firewalld.service systemd.mask=chronyd.service systemd.mask=ModemManager.service systemd.mask=plymouth-start.service systemd.mask=NetworkManager-wait-online.service systemd.mask=flatpak-add-fedora-repos.service systemd.debug_shell=tty9 oxide.bootargs=grub
+[6.057] [sysrq] always enabled by the boot line
+[46.269] [BOOT-DEV-NULL] type=8192 fs=devtmpfs
+[46.578] systemd[1]: System time advanced to built-in epoch: Fri 2026-03-13 00:00:00 UTC
+[46.662] systemd[1]: systemd 257.13-1.fc42 running in system mode (+PAM +AUDIT +SELINUX -APPARMOR +IMA +IPE +SMACK +SECCOMP -GCRYPT +GNUTLS +OPENSSL +ACL +BLKID +CURL +ELFUTILS +FIDO2 +IDN2 -IDN -IPTC +KMOD +LIBCRYPTSETUP +LIBCRYPTSETUP_PLUGINS +LIBFDISK +PCRE2 +PWQUALITY +P11KIT +QRENCODE +TPM2 +BZIP2 +LZ4 +XZ +ZLIB +ZSTD +BPF_FRAMEWORK +BTF +XKBCOMMON +UTMP +SYSVINIT +LIBARCHIVE)
+[46.664] systemd[1]: Detected architecture arm64.
+[46.767] systemd[1]: bpf-restrict-fs: BPF LSM hook not enabled in the kernel, BPF LSM not supported.
+[48.982] systemd[1]: Queued start job for default target graphical.target.
+[49.010] systemd[1]: Created slice system-getty.slice - Slice /system/getty.
+[49.017] systemd[1]: Created slice system-modprobe.slice - Slice /system/modprobe.
+[49.023] systemd[1]: Created slice system-serial\x2dgetty.slice - Slice /system/serial-getty.
+[49.029] systemd[1]: Created slice system-sshd\x2dkeygen.slice - Slice /system/sshd-keygen.
+[49.034] systemd[1]: Created slice system-systemd\x2dzram\x2dsetup.slice - Slice /system/systemd-zram-setup.
+[49.040] systemd[1]: Created slice user.slice - User and Session Slice.
+[49.044] systemd[1]: Started systemd-ask-password-console.path - Dispatch Password Requests to Console Directory Watch.
+[49.047] systemd[1]: Started systemd-ask-password-wall.path - Forward Password Requests to Wall Directory Watch.
+[49.055] systemd[1]: Set up automount proc-sys-fs-binfmt_misc.automount - Arbitrary Executable File Formats File System Automount Point.
+[49.058] systemd[1]: Expecting device dev-ttyS0.device - /dev/ttyS0...
+[49.060] systemd[1]: Expecting device dev-zram0.device - /dev/zram0...
+[49.062] systemd[1]: Reached target cryptsetup.target - Local Encrypted Volumes.
+[49.065] systemd[1]: Reached target integritysetup.target - Local Integrity Protected Volumes.
+[49.068] systemd[1]: Reached target paths.target - Path Units.
+[49.071] systemd[1]: Reached target remote-fs.target - Remote File Systems.
+[49.074] systemd[1]: Reached target slices.target - Slice Units.
+[49.077] systemd[1]: Reached target veritysetup.target - Local Verity Protected Volumes.
+[49.092] systemd[1]: Listening on systemd-coredump.socket - Process Core Dump Socket.
+[49.102] systemd[1]: Listening on systemd-creds.socket - Credential Encryption/Decryption.
+[49.106] systemd[1]: Listening on systemd-initctl.socket - initctl Compatibility Named Pipe.
+[49.136] systemd[1]: Listening on systemd-journald-audit.socket - Journal Audit Socket.
+[49.164] systemd[1]: Listening on systemd-journald-dev-log.socket - Journal Socket (/dev/log).
+[49.192] systemd[1]: Listening on systemd-journald.socket - Journal Sockets.
+[49.221] systemd[1]: systemd-pcrextend.socket - TPM PCR Measurements skipped, unmet condition check ConditionSecurity=measured-uki
+[49.232] systemd[1]: systemd-pcrlock.socket - Make TPM PCR Policy skipped, unmet condition check ConditionSecurity=measured-uki
+[49.247] systemd[1]: Listening on systemd-udevd-control.socket - udev Control Socket.
+[49.274] systemd[1]: Listening on systemd-udevd-kernel.socket - udev Kernel Socket.
+[49.301] systemd[1]: Listening on systemd-userdbd.socket - User Database Manager Socket.
+[49.363] systemd[1]: Mounting dev-hugepages.mount - Huge Pages File System...
+[49.420] systemd[1]: Mounting dev-mqueue.mount - POSIX Message Queue File System...
+[49.467] systemd[1]: sys-kernel-debug.mount: Directory /sys/kernel/debug to mount over is not empty, mounting anyway.
+[49.498] systemd[1]: Mounting sys-kernel-debug.mount - Kernel Debug File System...
+[49.541] systemd[1]: sys-kernel-tracing.mount: Directory /sys/kernel/tracing to mount over is not empty, mounting anyway.
+[49.570] systemd[1]: Mounting sys-kernel-tracing.mount - Kernel Trace File System...
+[49.626] systemd[1]: Started debug-shell.service - Early root shell on /dev/tty9 FOR DEBUGGING ONLY.
+[49.672] systemd[1]: fips-crypto-policy-overlay.service - Bind-mount FIPS crypto-policy in FIPS mode skipped, unmet condition check ConditionKernelCommandLine=fips=1
+[49.695] systemd[1]: kmod-static-nodes.service - Create List of Static Device Nodes skipped, unmet condition check ConditionFileNotEmpty=/lib/modules/6.19.0-oxide/modules.devname
+[49.721] systemd[1]: Starting modprobe@configfs.service - Load Kernel Module configfs...
+[49.767] systemd[1]: Starting modprobe@dm_mod.service - Load Kernel Module dm_mod...
+[49.837] systemd[1]: Starting modprobe@drm.service - Load Kernel Module drm...
+[49.893] systemd[1]: Starting modprobe@fuse.service - Load Kernel Module fuse...
+[49.946] systemd[1]: Starting modprobe@loop.service - Load Kernel Module loop...
+[49.981] systemd[1]: systemd-hibernate-clear.service - Clear Stale Hibernate Storage Info skipped, unmet condition check ConditionPathExists=/sys/firmware/efi/efivars/HibernateLocation-8cf2644b-4b0b-428f-9387-6d876050dc67
+[50.033] systemd[1]: Starting systemd-journald.service - Journal Service...
+[50.097] systemd[1]: Starting systemd-modules-load.service - Load Kernel Modules...
+[50.154] systemd[1]: systemd-pcrmachine.service - TPM PCR Machine ID Measurement skipped, unmet condition check ConditionSecurity=measured-uki
+[50.205] systemd[1]: Starting systemd-remount-fs.service - Remount Root and Kernel File Systems...
+[50.308] systemd[1]: Starting systemd-tmpfiles-setup-dev-early.service - Create Static Device Nodes in /dev gracefully...
+[50.385] systemd[1]: systemd-tpm2-setup-early.service - Early TPM SRK Setup skipped, unmet condition check ConditionSecurity=measured-uki
+[50.437] systemd-journald[35]: Collecting audit messages is enabled.
+[50.487] systemd[1]: Starting systemd-udev-load-credentials.service - Load udev Rules from Credentials...
+[50.583] systemd-modules-load[36]: Failed to find module 'i2c_dev'
+[50.615] systemd[1]: Starting systemd-udev-trigger.service - Coldplug All udev Devices...
+[50.810] systemd[1]: Mounted dev-mqueue.mount - POSIX Message Queue File System.
+[50.908] systemd[1]: Started systemd-journald.service - Journal Service.
+[51.040] systemd[1]: Mounted sys-kernel-debug.mount - Kernel Debug File System.
+[51.096] systemd[1]: Mounted dev-hugepages.mount - Huge Pages File System.
+[51.156] systemd[1]: Mounted sys-kernel-tracing.mount - Kernel Trace File System.
+[51.203] systemd[1]: modprobe@dm_mod.service: Deactivated successfully.
+[51.221] systemd[1]: Finished modprobe@dm_mod.service - Load Kernel Module dm_mod.
+[51.257] systemd[1]: modprobe@configfs.service: Deactivated successfully.
+[51.272] systemd[1]: Finished modprobe@configfs.service - Load Kernel Module configfs.
+[51.306] systemd[1]: modprobe@drm.service: Deactivated successfully.
+[51.321] systemd[1]: Finished modprobe@drm.service - Load Kernel Module drm.
+[51.356] systemd[1]: modprobe@fuse.service: Deactivated successfully.
+[51.372] systemd[1]: Finished modprobe@fuse.service - Load Kernel Module fuse.
+[51.407] systemd[1]: modprobe@loop.service: Deactivated successfully.
+[51.421] systemd[1]: Finished modprobe@loop.service - Load Kernel Module loop.
+[51.452] systemd[1]: Finished systemd-remount-fs.service - Remount Root and Kernel File Systems.
+[51.484] systemd[1]: Finished systemd-modules-load.service - Load Kernel Modules.
+[51.515] systemd[1]: Finished systemd-udev-load-credentials.service - Load udev Rules from Credentials.
+[51.549] systemd[1]: Finished systemd-udev-trigger.service - Coldplug All udev Devices.
+[51.785] systemd[1]: sys-fs-fuse-connections.mount - FUSE Control File System skipped, unmet condition check ConditionPathExists=/sys/fs/fuse/connections
+[51.808] systemd[1]: Mounting sys-kernel-config.mount - Kernel Configuration File System...
+[51.844] systemd[1]: systemd-hwdb-update.service - Rebuild Hardware Database skipped, unmet condition check ConditionNeedsUpdate=/etc
+[51.875] systemd[1]: Starting systemd-journal-flush.service - Flush Journal to Persistent Storage...
+[51.922] systemd[1]: Starting systemd-random-seed.service - Load/Save OS Random Seed...
+[51.966] systemd[1]: systemd-repart.service - Repartition Root Disk skipped, no trigger condition checks were met.
+[51.977] systemd-journald[35]: Received client request to flush runtime journal.
+[52.009] systemd[1]: Starting systemd-sysctl.service - Apply Kernel Variables...
+[52.043] systemd[1]: systemd-tpm2-setup.service - TPM SRK Setup skipped, unmet condition check ConditionSecurity=measured-uki
+[52.070] systemd[1]: Starting systemd-userdbd.service - User Database Manager...
+[52.108] systemd[1]: Mounted sys-kernel-config.mount - Kernel Configuration File System.
+[52.743] systemd[1]: Finished systemd-journal-flush.service - Flush Journal to Persistent Storage.
+[52.811] systemd[1]: Finished systemd-random-seed.service - Load/Save OS Random Seed.
+[52.913] systemd[1]: Finished systemd-sysctl.service - Apply Kernel Variables.
+[52.991] systemd[1]: Started systemd-userdbd.service - User Database Manager.
+[53.301] systemd[1]: Finished systemd-tmpfiles-setup-dev-early.service - Create Static Device Nodes in /dev gracefully.
+[53.346] systemd[1]: systemd-sysusers.service - Create System Users skipped, no trigger condition checks were met.
+[53.370] systemd[1]: Starting systemd-tmpfiles-setup-dev.service - Create Static Device Nodes in /dev...
+[53.746] systemd[1]: Finished systemd-tmpfiles-setup-dev.service - Create Static Device Nodes in /dev.
+[53.792] systemd[1]: Reached target local-fs-pre.target - Preparation for Local File Systems.
+[53.818] systemd[1]: Reached target local-fs.target - Local File Systems.
+[53.853] systemd[1]: Listening on systemd-bootctl.socket - Boot Entries Service Socket.
+[53.888] systemd[1]: Listening on systemd-sysext.socket - System Extension Image Management.
+[53.925] systemd[1]: Starting plymouth-read-write.service - Tell Plymouth To Write Out Runtime Data...
+[53.973] systemd[1]: Starting selinux-autorelabel-mark.service - Mark the need to relabel after reboot...
+[54.009] systemd[1]: systemd-binfmt.service - Set Up Additional Binary Formats skipped, no trigger condition checks were met.
+[54.023] systemd[1]: systemd-boot-random-seed.service - Update Boot Loader Random Seed skipped, no trigger condition checks were met.
+[54.041] systemd[1]: systemd-confext.service - Merge System Configuration Images into /etc/ skipped, no trigger condition checks were met.
+[54.056] systemd[1]: systemd-sysext.service - Merge System Extension Images into /usr/ and /opt/ skipped, no trigger condition checks were met.
+[54.080] systemd[1]: Starting systemd-tmpfiles-setup.service - Create System Files and Directories...
+[54.130] systemd[1]: Starting systemd-udevd.service - Rule-based Manager for Device Events and Files...
+[54.190] systemd[1]: Finished plymouth-read-write.service - Tell Plymouth To Write Out Runtime Data.
+[54.235] systemd[1]: Finished selinux-autorelabel-mark.service - Mark the need to relabel after reboot.
+[54.387] systemd-udevd[80]: Using default interface naming scheme 'v257'.
+[54.920] systemd[1]: Started systemd-udevd.service - Rule-based Manager for Device Events and Files.
+[55.079] (udev-worker)[88]: sda: /usr/lib/udev/rules.d/60-block-scheduler.rules:5 Failed to write ATTR{/sys/devices/virtual/block/sda/queue/scheduler}="bfq", ignoring: No such file or directory
+[55.170] systemd[1]: Found device dev-zram0.device - /dev/zram0.
+[65.244] 
+[65.256] [CPU-STALL] cpu=0 no heartbeat for 10s (seen by cpu=1) last: tid=4193 syscall=read nr_running=5 now: tid=4193 syscall=read preempt_count=0x0000000000000103 resched=1 held=[100@crates/drivers/drv-nvme/src/imp/request.rs:140 100@crates/drivers/drv-nvme/src/imp/request.rs:141 100@crates/drivers/drv-nvme/src/imp/request.rs:238]
+qemu-system-aarch64: terminating on signal 15 from pid 3147619 (bash)
+make: *** [Makefile:264: qemu-arm-existing] Terminated

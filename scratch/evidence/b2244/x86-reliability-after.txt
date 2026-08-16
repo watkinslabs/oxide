@@ -1,0 +1,10 @@
+run=1 rc=0 klines=213 | boot-smoke: PASS — x86 proved alive by userspace answered 'echo OXIDE-AL"IVE"-OK' on serial in 82s (attempt 1) | last: [83.731] systemd[1]: Reached target sound.target - Sound Card.
+run=2 rc=0 klines=142 | boot-smoke: PASS — x86 proved alive by userspace answered 'echo OXIDE-AL"IVE"-OK' on serial in 46s (attempt 1) | last: [43.136] systemd[1]: Starting systemd-resolved.service - Network Name Resolution...
+run=3 rc=0 klines=125 | boot-smoke: PASS — x86 proved alive by userspace answered 'echo OXIDE-AL"IVE"-OK' on serial in 48s (attempt 1) | last: [43.267] systemd[1]: Activating swap dev-zram0.swap - Compressed Swap on /dev/zram0...
+run=4 rc=0 klines=215 | boot-smoke: PASS — x86 proved alive by marker 'Reached target basic.target' in 44s (attempt 1) | last: [44.172] alsactl[227]: alsa-lib main.c:1804:(snd_use_case_mgr_open) [error.ucm] failed to import hw:0 use case configura
+run=5 rc=0 klines=214 | boot-smoke: PASS — x86 proved alive by marker 'Reached target basic.target' in 44s (attempt 1) | last: [44.025] alsactl[219]: alsa-lib main.c:1804:(snd_use_case_mgr_open) [error.ucm] failed to import hw:0 use case configura
+run=6 rc=1 klines=226 |  | last: [206.529] [sysrq] crash requested
+run=7 rc=0 klines=122 | boot-smoke: PASS — x86 proved alive by userspace answered 'echo OXIDE-AL"IVE"-OK' on serial in 48s (attempt 1) | last: [43.209] systemd-tmpfiles[79]: ACL operation on "/var/log/journal" failed: Invalid argument
+run=8 rc=0 klines=213 | boot-smoke: PASS — x86 proved alive by marker 'Reached target basic.target' in 44s (attempt 1) | last: [44.154] alsactl[223]: alsa-lib main.c:1804:(snd_use_case_mgr_open) [error.ucm] failed to import hw:0 use case configura
+run=9 rc=0 klines=119 | boot-smoke: PASS — x86 proved alive by userspace answered 'echo OXIDE-AL"IVE"-OK' on serial in 64s (attempt 1) | last: [48.157] systemd-tmpfiles[79]: ACL operation on "/var/log/journal" failed: Invalid argument
+TOTAL 8/9 clean

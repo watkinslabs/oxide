@@ -1,0 +1,10 @@
+run=1 rc=0 klines=214 | boot-smoke: PASS — x86 proved alive by marker 'Reached target basic.target' in 44s (attempt 1) | last: [44.762] alsactl[224]: alsa-lib main.c:1804:(snd_use_case_mgr_open) [error.ucm] failed to import hw:0 use case configura
+run=2 rc=0 klines=214 | boot-smoke: PASS — x86 proved alive by marker 'Reached target basic.target' in 44s (attempt 1) | last: [44.945] alsactl[219]: alsa-lib main.c:1804:(snd_use_case_mgr_open) [error.ucm] failed to import hw:0 use case configura
+run=3 rc=0 klines=214 | boot-smoke: PASS — x86 proved alive by marker 'Reached target basic.target' in 44s (attempt 1) | last: [45.285] alsactl[219]: alsa-lib main.c:1804:(snd_use_case_mgr_open) [error.ucm] failed to import hw:0 use case configura
+run=4 rc=0 klines=216 | boot-smoke: PASS — x86 proved alive by marker 'Reached target basic.target' in 44s (attempt 1) | last: [44.199] alsactl[216]: alsa-lib main.c:1804:(snd_use_case_mgr_open) [error.ucm] failed to import hw:0 use case configura
+run=5 rc=1 klines=55 |  | last: [43.065] systemd-journald[35]: Collecting audit messages is enabled.
+run=6 rc=0 klines=123 | boot-smoke: PASS — x86 proved alive by userspace answered 'echo OXIDE-AL"IVE"-OK' on serial in 48s (attempt 1) | last: [43.376] systemd[1]: Reached target swap.target - Swaps.
+run=7 rc=0 klines=135 | boot-smoke: PASS — x86 proved alive by userspace answered 'echo OXIDE-AL"IVE"-OK' on serial in 48s (attempt 1) | last: [43.206] systemd[1]: Finished systemd-tmpfiles-setup.service - Create System Files and Directories.
+run=8 rc=0 klines=123 | boot-smoke: PASS — x86 proved alive by userspace answered 'echo OXIDE-AL"IVE"-OK' on serial in 54s (attempt 1) | last: [56.172] systemd[1]: Reached target swap.target - Swaps.
+run=9 rc=0 klines=135 | boot-smoke: PASS — x86 proved alive by userspace answered 'echo OXIDE-AL"IVE"-OK' on serial in 48s (attempt 1) | last: [43.980] systemd[1]: Activating swap dev-zram0.swap - Compressed Swap on /dev/zram0...
+TOTAL 8/9 clean

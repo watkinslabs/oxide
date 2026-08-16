@@ -1,0 +1,63 @@
+[H[J[1;1H[H[J[1;1H  Booting `oxide (multiboot2)'
+
+MB2
+L64
+[XSTATE] xsave=on pre_osxsave=0 cpuid0d_eax=0000000000000007 xcr0=0000000000000007 area=832
+[1.349] Kernel command line: BOOT_IMAGE=/boot/oxide-x86_64 root=/dev/vda rw earlycon printk.time=1 systemd.log_target=kmsg systemd.journald.forward_to_kmsg=1 sysctl.kernel.sysrq=1 sysrq_always_enabled console=ttyS0,115200 console=tty0 systemd.mask=firewalld.service systemd.mask=chronyd.service systemd.mask=ModemManager.service systemd.mask=plymouth-start.service systemd.mask=NetworkManager-wait-online.service systemd.mask=flatpak-add-fedora-repos.service systemd.debug_shell=ttyS0 systemd.mask=serial-getty@ttyS0.ser
+[1.358] vice oxide.bootargs=grub
+[1.360] [sysrq] always enabled by the boot line
+[42.540] [BOOT-DEV-NULL] type=8192 fs=devtmpfs
+[42.624] systemd[1]: systemd 257.13-1.fc42 running in system mode (+PAM +AUDIT +SELINUX -APPARMOR +IMA +IPE +SMACK +SECCOMP -GCRYPT +GNUTLS +OPENSSL +ACL +BLKID +CURL +ELFUTILS +FIDO2 +IDN2 -IDN -IPTC +KMOD +LIBCRYPTSETUP +LIBCRYPTSETUP_PLUGINS +LIBFDISK +PCRE2 +PWQUALITY +P11KIT +QRENCODE +TPM2 +BZIP2 +LZ4 +XZ +ZLIB +ZSTD +BPF_FRAMEWORK +BTF +XKBCOMMON +UTMP +SYSVINIT +LIBARCHIVE)
+[42.624] systemd[1]: Detected virtualization kvm.
+[42.624] systemd[1]: Detected architecture x86-64.
+[42.641] systemd[1]: bpf-restrict-fs: BPF LSM hook not enabled in the kernel, BPF LSM not supported.
+[42.907] systemd[1]: Queued start job for default target graphical.target.
+[42.911] systemd[1]: Created slice system-getty.slice - Slice /system/getty.
+[42.912] systemd[1]: Created slice system-modprobe.slice - Slice /system/modprobe.
+[42.913] systemd[1]: Created slice system-sshd\x2dkeygen.slice - Slice /system/sshd-keygen.
+[42.913] systemd[1]: Created slice system-systemd\x2dzram\x2dsetup.slice - Slice /system/systemd-zram-setup.
+[42.914] systemd[1]: Created slice user.slice - User and Session Slice.
+[42.915] systemd[1]: Started systemd-ask-password-console.path - Dispatch Password Requests to Console Directory Watch.
+[42.915] systemd[1]: Started systemd-ask-password-wall.path - Forward Password Requests to Wall Directory Watch.
+[42.916] systemd[1]: Set up automount proc-sys-fs-binfmt_misc.automount - Arbitrary Executable File Formats File System Automount Point.
+[42.916] systemd[1]: Expecting device dev-zram0.device - /dev/zram0...
+[42.917] systemd[1]: Reached target cryptsetup.target - Local Encrypted Volumes.
+[42.917] systemd[1]: Reached target getty.target - Login Prompts.
+[42.918] systemd[1]: Reached target integritysetup.target - Local Integrity Protected Volumes.
+[42.918] systemd[1]: Reached target paths.target - Path Units.
+[42.919] systemd[1]: Reached target remote-fs.target - Remote File Systems.
+[42.919] systemd[1]: Reached target slices.target - Slice Units.
+[42.919] systemd[1]: Reached target veritysetup.target - Local Verity Protected Volumes.
+[42.931] systemd[1]: Listening on systemd-coredump.socket - Process Core Dump Socket.
+[42.933] systemd[1]: Listening on systemd-creds.socket - Credential Encryption/Decryption.
+[42.936] systemd[1]: Listening on systemd-initctl.socket - initctl Compatibility Named Pipe.
+[42.939] systemd[1]: Listening on systemd-journald-audit.socket - Journal Audit Socket.
+[42.942] systemd[1]: Listening on systemd-journald-dev-log.socket - Journal Socket (/dev/log).
+[42.945] systemd[1]: Listening on systemd-journald.socket - Journal Sockets.
+[42.948] systemd[1]: systemd-pcrextend.socket - TPM PCR Measurements skipped, unmet condition check ConditionSecurity=measured-uki
+[42.949] systemd[1]: systemd-pcrlock.socket - Make TPM PCR Policy skipped, unmet condition check ConditionSecurity=measured-uki
+[42.951] systemd[1]: Listening on systemd-udevd-control.socket - udev Control Socket.
+[42.954] systemd[1]: Listening on systemd-udevd-kernel.socket - udev Kernel Socket.
+[42.957] systemd[1]: Listening on systemd-userdbd.socket - User Database Manager Socket.
+[42.963] systemd[1]: Mounting dev-hugepages.mount - Huge Pages File System...
+[42.969] systemd[1]: Mounting dev-mqueue.mount - POSIX Message Queue File System...
+[42.973] systemd[1]: sys-kernel-debug.mount: Directory /sys/kernel/debug to mount over is not empty, mounting anyway.
+[42.978] systemd[1]: Mounting sys-kernel-debug.mount - Kernel Debug File System...
+[42.982] systemd[1]: sys-kernel-tracing.mount: Directory /sys/kernel/tracing to mount over is not empty, mounting anyway.
+[42.988] systemd[1]: Mounting sys-kernel-tracing.mount - Kernel Trace File System...
+[42.993] systemd[1]: Started debug-shell.service - Early root shell on /dev/ttyS0 FOR DEBUGGING ONLY.
+[!p]104[?7h[6n[32766;32766H[6n[42.998] systemd[1]: fips-crypto-policy-overlay.service - Bind-mount FIPS crypto-policy in FIPS mode skipped, unmet condition check ConditionKernelCommandLine=fips=1
+[43.002] systemd[1]: kmod-static-nodes.service - Create List of Static Device Nodes skipped, unmet condition check ConditionFileNotEmpty=/lib/modules/6.19.0-oxide/modules.devname
+[43.007] systemd[1]: Starting modprobe@configfs.service - Load Kernel Module configfs...
+[43.014] systemd[1]: Starting modprobe@dm_mod.service - Load Kernel Module dm_mod...
+[43.019] systemd[1]: Starting modprobe@drm.service - Load Kernel Module drm...
+[43.028] systemd[1]: Starting modprobe@fuse.service - Load Kernel Module fuse...
+[43.032] systemd[1]: Starting modprobe@loop.service - Load Kernel Module loop...
+[43.035] systemd[1]: systemd-hibernate-clear.service - Clear Stale Hibernate Storage Info skipped, unmet condition check ConditionPathExists=/sys/firmware/efi/efivars/HibernateLocation-8cf2644b-4b0b-428f-9387-6d876050dc67
+[43.041] systemd[1]: Starting systemd-journald.service - Journal Service...
+[43.048] systemd[1]: Starting systemd-modules-load.service - Load Kernel Modules...
+[43.050] systemd[1]: systemd-pcrmachine.service - TPM PCR Machine ID Measurement skipped, unmet condition check ConditionSecurity=measured-uki
+[43.056] systemd[1]: Starting systemd-remount-fs.service - Remount Root and Kernel File Systems...
+[43.065] systemd-journald[35]: Collecting audit messages is enabled.
+[!p]104[?7h[6n[32766;32766H[6nqemu-system-x86_64: terminating on signal 15 from pid 3769667 (bash)
+make: *** [Makefile:261: qemu-x86-existing] Terminated

@@ -1,0 +1,4 @@
+run=1 rc=1 | journald: [50.033] systemd[1]: Starting systemd-journald.service - Journal Service... [50.908] systemd[1]: Started systemd-journald.service - Journal Service. 
+run=2 rc=1 | journald: [50.986] systemd[1]: Starting systemd-journald.service - Journal Service... [51.732] systemd[1]: Started systemd-journald.service - Journal Service. 
+run=3 rc=0 | journald: [50.884] systemd[1]: Starting systemd-journald.service - Journal Service... [51.501] systemd[1]: Started systemd-journald.service - Journal Service. 
+TOTAL 1/3 reached a login prompt
