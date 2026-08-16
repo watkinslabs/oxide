@@ -106,6 +106,15 @@ must use grouped paths from day one.
     handoff, WC mapping, format conversion, and fbdev/fbcon lifetime. Boot
     parsers only populate `BootInfo.framebuffer`; `kmain` only sequences the
     post-PCI fallback platform-device registration.
+10a. On-disk filesystems for media formatted elsewhere live one crate per
+   FORMAT, never one per mount type: `crates/kernel/fatfs` serves both `vfat` and
+   `msdos`, `crates/kernel/exfatfs` serves `exfat`, `crates/kernel/ntfs3` serves
+   `ntfs3` (`62§1`). Each is layered pure-decision / `Volume` / `mount`; only
+   its `mount` module reaches the block layer. A mechanism two of them genuinely
+   share has ONE owner, never a copy each: `crates/kernel/sectors` owns the
+   volume-sector adapter over a block device and its read-modify-write rule, and
+   `crates/shared/dostime` owns the 1980-epoch date/time word pair that FAT and
+   exFAT both store. Registration is `syscalls::fsmount_common::registry` only.
 11. `crates/kernel/sound` owns the user-visible ALSA and OSS surface for every
     sound card: card numbering and node publication, the PCM substream state
     machine and its ioctl ABI, the control-element registry and its event
@@ -266,6 +275,9 @@ Temporary exceptions are allowed only with:
 - 2026-08-16: Added `crates/kernel/overlayfs` as the single owner of
   union-mount semantics (layer stack, merged lookup, whiteouts, copy-up,
   merged readdir, layer records).
+- 2026-08-16: Added the removable-media filesystem ownership boundary (`62`),
+  `crates/kernel/sectors` as the single owner of the volume-sector adapter, and
+  `crates/shared/dostime` as the single owner of the 1980-epoch date/time pair.
 - 2026-08-15: Added the power-supply and backlight device-class ownership
   boundaries, their ACPI providers under `firmware`, and `crates/shared/kstrtox`.
 - 2026-08-15: Added `crates/kernel/thermal`, `crates/kernel/cpufreq` and

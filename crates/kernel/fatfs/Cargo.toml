@@ -11,6 +11,8 @@ syscall = { path = "../syscall" }
 klog    = { path = "../../shared/klog" }
 vfs     = { path = "../vfs" }
 block   = { path = "../block" }
+sectors = { path = "../sectors" }
+dostime = { path = "../../shared/dostime" }
 
 [features]
 default = []

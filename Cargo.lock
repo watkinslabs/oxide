@@ -326,6 +326,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "dostime"
+version = "0.1.0"
+
+[[package]]
 name = "drm"
 version = "0.1.0"
 dependencies = [
@@ -826,6 +830,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "exfatfs"
+version = "0.1.0"
+dependencies = [
+ "block",
+ "dostime",
+ "klog",
+ "sectors",
+ "sync",
+ "syscall",
+ "vfs",
+]
+
+[[package]]
 name = "ext4"
 version = "0.1.0"
 dependencies = [
@@ -856,7 +873,9 @@ name = "fatfs"
 version = "0.1.0"
 dependencies = [
  "block",
+ "dostime",
  "klog",
+ "sectors",
  "sync",
  "syscall",
  "vfs",
@@ -1531,6 +1550,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ntfs3"
+version = "0.1.0"
+dependencies = [
+ "block",
+ "dostime",
+ "klog",
+ "sectors",
+ "sync",
+ "syscall",
+ "vfs",
+]
+
+[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1977,6 +2009,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
+name = "sectors"
+version = "0.1.0"
+dependencies = [
+ "block",
+ "sync",
+ "syscall",
+]
+
+[[package]]
 name = "security"
 version = "0.1.0"
 dependencies = [
@@ -2223,6 +2264,7 @@ dependencies = [
  "drv-virtio-snd",
  "elf",
  "elf-load",
+ "exfatfs",
  "ext4",
  "fatfs",
  "fbcon",
@@ -2247,6 +2289,7 @@ dependencies = [
  "netlink",
  "network-namespace",
  "nscg",
+ "ntfs3",
  "overlayfs",
  "pci",
  "pidfd",

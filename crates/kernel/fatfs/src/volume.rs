@@ -31,23 +31,10 @@ pub mod dirops;
 
 pub use dirops::DirHandle;
 
-/// Where a volume's bytes come from.
-pub trait SectorSource {
-    /// Read `buf.len()` bytes starting at sector `sector`. A short read is an
-    /// error here: unlike a backing file, a volume's own sectors either exist
-    /// or the volume is truncated.
-    fn read_sectors(&self, sector: u64, buf: &mut [u8]) -> Result<(), Errno>;
-
-    /// Write `buf` starting at sector `sector`.
-    ///
-    /// The default refuses. A medium that cannot be written is not an error
-    /// to be discovered halfway through a file: a mount asks first, through
-    /// [`Self::writable`], and refuses to mount writable at all.
-    fn write_sectors(&self, _sector: u64, _buf: &[u8]) -> Result<(), Errno> { Err(Errno::Erofs) }
-
-    /// Whether this medium accepts writes at all. # C: O(1)
-    fn writable(&self) -> bool { false }
-}
+// A volume's bytes come from `sectors::SectorSource`, which FAT, exFAT and
+// NTFS all read through: the read-modify-write rule for a write narrower than
+// a device block has one owner rather than one copy per filesystem.
+pub use sectors::SectorSource;
 
 /// One name in a directory, with the entry it names.
 #[derive(Clone, PartialEq, Eq, Debug)]
