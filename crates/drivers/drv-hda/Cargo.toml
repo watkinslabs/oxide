@@ -1,0 +1,31 @@
+[package]
+name = "drv-hda"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+sound    = { path = "../../kernel/sound" }
+hal      = { path = "../../arch/hal" }
+klog     = { path = "../../shared/klog" }
+drv      = { path = "../../drivers/drv" }
+pci      = { path = "../../drivers/pci" }
+pci-irq  = { path = "../../kernel/pci-irq" }
+arch-irq = { path = "../../kernel/arch-irq" }
+mmio-map = { path = "../../kernel/mmio-map" }
+sync     = { path = "../../shared/sync" }
+pmm      = { path = "../../kernel/mm-pmm" }
+sched    = { path = "../../kernel/sched" }
+syscall  = { path = "../../kernel/syscall" }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+hal-x86_64  = { path = "../../arch/hal-x86_64" }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+hal-aarch64 = { path = "../../arch/hal-aarch64" }
+
+[features]
+default = []
