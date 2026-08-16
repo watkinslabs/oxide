@@ -43,6 +43,18 @@ pub const AUDIT_SECCOMP:         u16 = 1326;
 pub const AUDIT_FEATURE_CHANGE:  u16 = 1328;
 pub const AUDIT_FANOTIFY:        u16 = 1331;
 pub const AUDIT_EVENT_LISTENER:  u16 = 1335;
+/// Access-vector decision reported by the mandatory-access-control module.
+pub const AUDIT_AVC:             u16 = 1400;
+/// Internal error raised by the mandatory-access-control module.
+pub const AUDIT_SELINUX_ERR:     u16 = 1401;
+/// Path supplementing a preceding access-vector record.
+pub const AUDIT_AVC_PATH:        u16 = 1402;
+/// A mandatory-access-control policy was loaded.
+pub const AUDIT_MAC_POLICY_LOAD: u16 = 1403;
+/// Mandatory-access-control enforcement state changed.
+pub const AUDIT_MAC_STATUS:      u16 = 1404;
+/// A mandatory-access-control boolean was committed.
+pub const AUDIT_MAC_CONFIG_CHANGE: u16 = 1405;
 pub const AUDIT_LANDLOCK_ACCESS: u16 = 1423;
 pub const AUDIT_LANDLOCK_DOMAIN: u16 = 1424;
 

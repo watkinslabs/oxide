@@ -235,6 +235,15 @@ decl_lock_class! {
     // leaf. PROCESS CONTEXT ONLY: the softirq RX path must not take it, which
     // is why `net_secret` itself is lock-free atomics rather than living here.
     NetSecret    = 145,
+    // Loaded mandatory-access-control policy, SID table, decision cache and
+    // enforcement state (`selinux::SecurityServer`). Ranked above every
+    // subsystem lock a check can be taken under — inode, dentry, mount, fd
+    // table, task list, socket — because a permission check happens deep
+    // inside those paths with their locks already held. Ranked below the
+    // allocator leaves because resolving a new context allocates. The engine
+    // under it takes no tracked lock of its own, so it is a leaf apart from
+    // allocation.
+    SecurityPolicy = 150,
     // Kernel CSPRNG state (`crng::pool`). A strict LEAF: the ChaCha20 rekey and
     // output run entirely inside it and take no nested tracked lock, so any
     // consumer (getrandom, /dev/urandom, AT_RANDOM, uuid, socket cookies) may
