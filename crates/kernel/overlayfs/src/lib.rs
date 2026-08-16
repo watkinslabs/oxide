@@ -58,10 +58,14 @@ pub mod lookup;
 pub mod copyup;
 pub mod readdir;
 pub mod dirops;
+pub mod inode;
+pub mod mount;
 #[cfg(test)]
 #[path = "testfs.rs"]
 mod testfs;
 
 pub use config::{Config, FsyncMode, RedirectMode, UuidMode, VerityMode, XinoMode};
 pub use params::{parse, verify};
+pub use layers::{Layer, LayerStack, OvlEntry, OvlPath, PathType};
+pub use mount::{OverlayFs, FS_NAME, FS_NAME_LEGACY};
 pub use uapi::{Marker, OVERLAYFS_SUPER_MAGIC};

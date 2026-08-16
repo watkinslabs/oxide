@@ -2247,6 +2247,7 @@ dependencies = [
  "netlink",
  "network-namespace",
  "nscg",
+ "overlayfs",
  "pci",
  "pidfd",
  "pmm",

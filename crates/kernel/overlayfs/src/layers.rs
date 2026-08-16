@@ -79,6 +79,9 @@ pub struct LayerStack {
     /// A layer refused to store an attribute, so every feature that needs one
     /// is off for the rest of this mount's life.
     pub noxattr: AtomicBool,
+    /// The mount root's own object list. An absolute redirect restarts its
+    /// walk here, so it is kept once rather than rebuilt per lookup.
+    pub root: OvlEntry,
 }
 
 impl LayerStack {
