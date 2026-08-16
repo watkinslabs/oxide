@@ -95,7 +95,7 @@ impl Store {
             asymmetric_ids: Vec::new(), asymmetric_name_id: None, perm, uid, gid,
             quotalen, in_quota: true,
             expiry_ns: 0, revoked: false, invalidated: false,
-            members: Vec::new(), restriction: None,
+            members: Vec::new(), restriction: None, kernel_held: false,
             state, under_construction: false, auth: None,
             watchers: crate::watch_queue::WatchList::new(),
         });

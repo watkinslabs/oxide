@@ -81,10 +81,16 @@ pub extern "C" fn nvme_tls_psk_refresh(keyring: *mut c_void, hostnqn: *const c_c
     handle(serial).cast()
 }
 
+/// The canonical NVMe keyring, created on first use. It hangs off no other
+/// keyring and no task owns it, so it carries the kernel's own reference —
+/// without it the collector reaps the ring, and every PSK in it, the first
+/// time anything in the system triggers a collection.
 fn default_ring(g: &mut Store) -> Result<i32, i32> {
     if let Some(s) = g.keys.iter().find_map(|(&s, k)| (k.is_keyring() && k.description == ".nvme").then_some(s)) { return Ok(s); }
-    g.mint_not_in_quota(types::keyring_type(), ".nvme", 0, 0, NATIVE_ROOT_PERM,
-        KeyNs::of(&TaskIds::default(), types::keyring_type())).map_err(|_| ENOMEM)
+    let s = g.mint_not_in_quota(types::keyring_type(), ".nvme", 0, 0, NATIVE_ROOT_PERM,
+        KeyNs::of(&TaskIds::default(), types::keyring_type())).map_err(|_| ENOMEM)?;
+    g.keys.get_mut(&s).expect("just minted under the held lock").kernel_held = true;
+    Ok(s)
 }
 
 fn keyring_serial(g: &Store, p: *mut c_void) -> Option<i32> {

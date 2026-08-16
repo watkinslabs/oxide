@@ -26,6 +26,9 @@
 // - report:  `/proc/keys` and `/proc/key-users` rendering.
 // - procfs:  the boot binding that hands those renderers, and the
 //            `/proc/sys/kernel/keys/` values, to the procfs leaf crate.
+// - verity:  the machine's `.fs-verity` keyring — the one place a certificate
+//            becomes trusted for an fs-verity built-in signature, and the
+//            binding that hands its membership to the verifier below.
 //
 // This file owns only the syscall entry points, the user-memory helpers they
 // share, and the one place `sched::current()` is turned into a `Ctx`.
@@ -58,6 +61,7 @@ mod report;
 mod store;
 mod trace;
 mod types;
+mod verity;
 // The complete keyring UAPI number space:
 // KEY_SPEC_* special ids, KEYCTL_* opcodes, KEY_REQKEY_DEFL_* defaults,
 // KEY_NEED_*/KEY_{POS,USR,GRP,OTH}_* permission bits and the
@@ -72,6 +76,7 @@ mod uapi;
 
 pub use keyctl::sys_keyctl;
 pub use procfs::register_procfs_hooks;
+pub use verity::init as init_verity_keyring;
 pub use lifecycle::{exec as exec_keys, exit as exit_keys, fork as fork_keys, fsids_changed};
 pub use store::{persistent_expiry, quota_limit, set_persistent_expiry, set_quota_limit,
     QuotaKnob, TaskIds};
