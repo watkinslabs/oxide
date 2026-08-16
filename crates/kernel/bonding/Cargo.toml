@@ -1,0 +1,18 @@
+[package]
+name    = "bonding"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Link aggregation master per `25`. Transmit-hash policies, per-mode slave selection, MII/ARP link monitoring, active-slave reselection, the option table, 802.3ad LACP, TLB/ALB load balancing, and the IFLA_BOND_* attribute surface."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+rtnl-link = { path = "../rtnl-link" }
+net     = { path = "../net" }
+sync    = { path = "../../shared/sync" }
+syscall = { path = "../syscall" }
+
+[lints]
+workspace = true

@@ -1,0 +1,21 @@
+[package]
+name    = "vlan"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "802.1Q / 802.1ad VLAN interfaces: tag encode/decode, priority maps, per-VLAN device, tag->interface demux table, and the IFLA_VLAN_* rtnetlink link-kind surface."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+rtnl-link = { path = "../rtnl-link" }
+sync    = { path = "../../shared/sync" }
+net     = { path = "../net" }
+syscall = { path = "../syscall" }
+
+[dev-dependencies]
+sched = { path = "../sched", features = ["hosted"] }
+
+[lints]
+workspace = true
