@@ -56,9 +56,19 @@ pub fn read_sidtab_hash_stats(ops: &dyn PolicyOps) -> String {
 /// A caller polls this instead of re-reading `enforce` and the load counter,
 /// so the two must come from ONE read of the state: sampling them separately
 /// can report an enforcing mode from before a load with a count from after.
+///
+/// The SEQUENCE word is the page's seqlock, not the policy sequence number.
+/// Userspace spins — yielding the CPU — for as long as it reads odd, so the
+/// value published here must be even whenever the page is readable.
+///
+/// The POLICYLOAD word carries the policy sequence number, which is what the
+/// reference writes there (`status->policyload = seqno`) and not a count of
+/// loads: a boolean commit advances the sequence too, and a reader that
+/// compares this word against its cached copy is how it learns to flush after
+/// one. A load counter would sit still through every boolean change.
 pub fn read_status(ops: &dyn PolicyOps) -> [u8; STATUS_PAGE_BYTES] {
     let facts = ops.facts();
-    status_page(facts.seqno, ops.enforcing(), facts.policyload, facts.deny_unknown)
+    status_page(facts.status_seq, ops.enforcing(), facts.seqno, facts.deny_unknown)
 }
 
 /// Build the `status` node. # C: O(1)
