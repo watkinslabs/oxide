@@ -15,24 +15,30 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
         for o in 0..ORDERS {
             let order = o as u8;
             let mut n = 0u64;
-            let mut cur = g.free_heads[o];
-            while cur != PFN_NULL {
-                kassert!(g.bitmap_get(order, cur >> o), "I3: free-list node not in bitmap");
-                kassert!(cur & ((1u64 << o) - 1) == 0, "I4: free-list node misaligned");
-                n += 1;
-                // SAFETY: `cur` is a head node on the free list.
-                let p = unsafe { self.backing.page_ptr(Pfn(cur)) };
-                // SAFETY: read that head node's stable intrusive header.
-                let m = unsafe { read_u64(p, OFF_POISON) };
-                kassert!(m == POISON_MAGIC, "I7: poison missing on free node");
-                // SAFETY: `next` resides in the same head-node header.
-                cur = unsafe { read_u64(p, OFF_NEXT) };
+            for zi in 0..NR_ZONES {
+                let mut cur = g.free_heads[zi][o];
+                while cur != PFN_NULL {
+                    kassert!(g.bitmap_get(order, cur >> o), "I3: free-list node not in bitmap");
+                    kassert!(cur & ((1u64 << o) - 1) == 0, "I4: free-list node misaligned");
+                    // I9: a free block belongs to the zone whose list holds it.
+                    kassert!(g.zi(cur) == zi, "I9: free-list node in the wrong zone");
+                    n += 1;
+                    // SAFETY: `cur` is a head node on the free list.
+                    let p = unsafe { self.backing.page_ptr(Pfn(cur)) };
+                    // SAFETY: read that head node's stable intrusive header.
+                    let m = unsafe { read_u64(p, OFF_POISON) };
+                    kassert!(m == POISON_MAGIC, "I7: poison missing on free node");
+                    // SAFETY: `next` resides in the same head-node header.
+                    cur = unsafe { read_u64(p, OFF_NEXT) };
+                }
             }
-            kassert!(n == g.free_count[o], "I3: free_count vs list-length mismatch");
+            let mut counted = 0u64;
+            for zi in 0..NR_ZONES { counted += g.free_count[zi][o]; }
+            kassert!(n == counted, "I3: free_count vs list-length mismatch");
             let mut bits = 0u64;
             for w in g.bitmaps[o].iter() { bits += w.load(Ordering::Relaxed).count_ones() as u64; }
-            kassert!(bits == g.free_count[o], "I1: bitmap pop vs free_count mismatch");
-            total_free += g.free_count[o] << o;
+            kassert!(bits == counted, "I1: bitmap pop vs free_count mismatch");
+            total_free += counted << o;
         }
         kassert!(total_free + g.allocated == g.initial_free, "I6: total accounting violated");
     }

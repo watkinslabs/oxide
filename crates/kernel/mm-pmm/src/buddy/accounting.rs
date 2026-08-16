@@ -20,3 +20,34 @@ pub struct PmmSnapshot {
     pub free_events: u64,
     pub free_event_pages: u64,
 }
+
+/// Per-zone observation. `spanned_pages` counts the zone's whole PFN range,
+/// holes included; `present_pages` counts only what the firmware map made
+/// usable; `managed_pages` counts what actually reached the buddy lists.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct ZoneStat {
+    pub zone: super::ZoneType,
+    pub start_pfn: u64,
+    pub spanned_pages: u64,
+    pub present_pages: u64,
+    pub managed_pages: u64,
+    pub free_pages: u64,
+    pub free_orders: [u64; crate::ORDERS],
+    pub wmark: crate::watermark::ZoneWatermarks,
+    pub lowmem_reserve: [u64; super::NR_ZONES],
+}
+
+impl ZoneStat {
+    /// All-zero row for a zone slot that holds no memory. # C: O(1)
+    pub const EMPTY: Self = Self {
+        zone: super::ZoneType::Dma,
+        start_pfn: 0,
+        spanned_pages: 0,
+        present_pages: 0,
+        managed_pages: 0,
+        free_pages: 0,
+        free_orders: [0; crate::ORDERS],
+        wmark: crate::watermark::ZoneWatermarks { min: 0, low: 0, high: 0 },
+        lowmem_reserve: [0; super::NR_ZONES],
+    };
+}

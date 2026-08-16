@@ -1,0 +1,68 @@
+//! The per-zone allocation gate. A zone may serve an allocation only when the
+//! free pages it would still hold afterwards clear its watermark plus the
+//! reserve it owes to the narrower classes, and — for a high-order request —
+//! only when a block of that order actually exists.
+
+use super::reserve::LowmemReserve;
+use super::types::{ZoneType, NR_ZONES};
+use crate::ORDERS;
+
+/// Which watermark an attempt is measured against, and how much of the min
+/// reserve the calling context may dip into.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum AllocWmark {
+    /// First attempt: leave the low watermark intact.
+    Low,
+    /// Retry after the first attempt found nothing: the min watermark is the
+    /// floor below which reclaim, not allocation, is the answer.
+    Min,
+    /// A context permitted to dip into half the min reserve.
+    MinReserve,
+    /// A context permitted to dip further still because it cannot block.
+    MinNonBlock,
+}
+
+/// Per-order free-block counts for one zone.
+pub type ZoneFreeArea = [u64; ORDERS];
+
+/// Free base pages the area represents. # C: O(ORDERS)
+pub fn free_pages(area: &ZoneFreeArea) -> u64 {
+    let mut sum = 0u64;
+    for (o, n) in area.iter().enumerate() { sum = sum.saturating_add(n << o); }
+    sum
+}
+
+fn effective_min(mark: u64, wmark: AllocWmark) -> u64 {
+    match wmark {
+        AllocWmark::Low | AllocWmark::Min => mark,
+        // A context holding the reserve right gets half of it.
+        AllocWmark::MinReserve => mark - mark / 2,
+        // A non-blocking context cannot reclaim, so it gets more still.
+        AllocWmark::MinNonBlock => { let m = mark - mark / 2; m - m / 4 }
+    }
+}
+
+/// May `zone` serve an order-`order` allocation whose highest permitted zone
+/// is `highest_zoneidx`? `mark` is the zone's watermark for `wmark`.
+/// # C: O(ORDERS)
+pub fn zone_watermark_ok(
+    zone: ZoneType,
+    order: u8,
+    mark: u64,
+    wmark: AllocWmark,
+    reserve: &LowmemReserve,
+    highest_zoneidx: usize,
+    area: &ZoneFreeArea,
+) -> bool {
+    let min = effective_min(mark, wmark);
+    // Pages inside a block bigger than the request cannot all be handed out,
+    // so they do not count toward clearing the watermark.
+    let free = free_pages(area).saturating_sub((1u64 << order) - 1);
+    let idx = if highest_zoneidx < NR_ZONES { highest_zoneidx } else { NR_ZONES - 1 };
+    if free <= min.saturating_add(reserve[zone as usize][idx]) { return false; }
+    if order == 0 { return true; }
+    // A base-page surplus does not imply the contiguity a high-order request
+    // needs; require a block that can actually satisfy it.
+    for o in (order as usize)..ORDERS { if area[o] > 0 { return true; } }
+    false
+}
