@@ -105,6 +105,23 @@ fn cgroup_ns_root_of_caller() -> Option<alloc::string::String> {
     Some(nscg::cgroup_ns::root_of(&ns))
 }
 
+/// Is the caller mounting from the initial user namespace?
+///
+/// Stands for `capable(CAP_SYS_ADMIN)` at the point overlayfs asks it: the
+/// mount permission check has already run, so what is left to decide is
+/// whether this caller may write the private markers into the `trusted.`
+/// namespace, and only a mount from the initial namespace may.
+/// # C: O(1)
+fn in_initial_user_ns() -> bool {
+    let initial = namespace_identity::initial(namespace_identity::NamespaceKind::User);
+    match sched::live::current()
+        .and_then(|t| t.namespace_owner(namespace_identity::NamespaceKind::User)) {
+        Some(ns) => namespace_identity::NamespaceRef::ptr_eq(&ns, &initial),
+        // No task: an in-kernel mount, which runs with full privilege.
+        None => true,
+    }
+}
+
 fn register_filesystems() {
     use vfs::fs::{superblock_from_filesystem, FsFlags, FsType, register_fs};
     type R = vfs::fs::KResult<Arc<vfs::SuperBlock>>;
@@ -203,6 +220,32 @@ fn register_filesystems() {
         Box::new(|ty, s: Option<&str>, _t: &str, d: &str, f: u64, _p: &[vfs::fs::FsParameter]| -> R {
             fat_ctor(ty, s, d, f, "msdos", fatfs::Options::msdos())
         })));
+    // OverlayFS is what makes a container image runnable: its layers are
+    // ordinary directories rather than a device, so it takes no source and
+    // resolves every layer out of the option string. `FS_USERNS_MOUNT` because
+    // an unprivileged container runtime mounts it inside its own user
+    // namespace — and that is exactly the caller whose private markers have to
+    // go in the unprivileged attribute namespace, which is why the constructor
+    // has to know which namespace it is being mounted from.
+    fn overlay_ctor(ty: Arc<dyn vfs::FileSystemType>, d: &str, sb_flags: u64) -> R {
+        let resolve = |p: &str| -> Result<vfs::InodeRef, syscall::errno::Errno> {
+            vfs::resolve_abs(p).map_err(overlayfs::err::to_errno)
+        };
+        let fs = overlayfs::OverlayFs::open(d, &resolve, in_initial_user_ns())
+            .map_err(overlayfs::err::to_vfs)?;
+        let root = fs.root_inode();
+        // A mount with no writable layer reports itself read-only, so a write
+        // fails at `open` with `EROFS` rather than halfway through.
+        let sb_flags = if fs.writable() { sb_flags } else { sb_flags | vfs::superblock::SB_RDONLY };
+        let f: Arc<dyn vfs::fs::FileSystem> = fs;
+        mounted(ty, f, Some(root), overlayfs::FS_NAME, sb_flags)
+    }
+    for name in [overlayfs::FS_NAME, overlayfs::FS_NAME_LEGACY] {
+        let _ = register_fs(FsType::new(name, overlayfs::OVERLAYFS_SUPER_MAGIC,
+            FsFlags::FS_USERNS_MOUNT,
+            Box::new(|ty, _s: Option<&str>, _t: &str, d: &str, f: u64,
+                      _p: &[vfs::fs::FsParameter]| -> R { overlay_ctor(ty, d, f) })));
+    }
     // procfs declares the three options it ENFORCES (`gid=`, `hidepid=`,
     // `subset=`) and builds a per-mount root that carries them. The table was an
     // empty list while the root inode was a process-global singleton — there was

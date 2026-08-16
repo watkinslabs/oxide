@@ -1,0 +1,266 @@
+//! A whole mount, driven through the operations the VFS calls.
+//!
+//! These are the cases a container runtime produces: an image's layers below,
+//! a writable layer on top, and every write landing there while the image
+//! stays untouched. They go through the same entry points a syscall would,
+//! so a wiring mistake — an operation that reaches the wrong layer, or one
+//! that never copies up — fails here rather than on a boot.
+
+extern crate alloc;
+
+use alloc::collections::BTreeMap;
+use alloc::string::{String, ToString};
+use alloc::sync::Arc;
+use alloc::vec;
+use alloc::vec::Vec;
+use syscall::errno::Errno;
+use vfs::file_ops::{DirContext, DirEmit};
+use vfs::inode_ops::CreateCtx;
+use vfs::types::{FileType, S_IFREG};
+use vfs::InodeRef;
+
+use crate::config::Config;
+use crate::testfs::{layer, lookup as find_path, mkfile, mkpath, slurp};
+use crate::whiteout;
+
+use super::OverlayFs;
+
+/// A resolver over named layers, standing in for the path walk a real mount
+/// does.
+struct Layers(BTreeMap<String, InodeRef>);
+
+impl Layers {
+    fn resolve(&self) -> impl Fn(&str) -> Result<InodeRef, Errno> + '_ {
+        move |p: &str| self.0.get(p).cloned().ok_or(Errno::Enoent)
+    }
+}
+
+/// An image layer, a writable layer and a work base, as a runtime lays them
+/// out.
+fn image() -> (Layers, InodeRef, InodeRef) {
+    let up = layer(0);
+    let lo = layer(1);
+    let work = layer(2);
+    let mut m = BTreeMap::new();
+    m.insert("/upper".to_string(), up.clone());
+    m.insert("/lower".to_string(), lo.clone());
+    m.insert("/work".to_string(), work);
+    (Layers(m), up, lo)
+}
+
+/// The names a directory shows through the overlay.
+fn names(dir: &InodeRef) -> Vec<String> {
+    struct Sink(Vec<String>);
+    impl DirEmit for Sink {
+        fn emit(&mut self, name: &str, _i: u64, _t: FileType, _n: u64) -> bool {
+            self.0.push(name.to_string());
+            true
+        }
+    }
+    let mut sink = Sink(Vec::new());
+    let mut ctx = DirContext::new(0, &mut sink);
+    dir.readdir(&mut ctx).unwrap();
+    sink.0.sort();
+    sink.0
+}
+
+/// The option string a container runtime writes.
+const OPTS: &str = "lowerdir=/lower,upperdir=/upper,workdir=/work";
+
+#[test]
+fn the_merged_root_shows_both_layers() {
+    let (l, up, lo) = image();
+    mkfile(&lo, "from-image", b"x");
+    mkfile(&up, "from-writes", b"y");
+    let fs = OverlayFs::open(OPTS, &l.resolve(), true).unwrap();
+    assert_eq!(names(&fs.root_inode()), vec!["from-image", "from-writes"]);
+}
+
+#[test]
+fn a_lower_file_reads_through() {
+    let (l, _up, lo) = image();
+    mkfile(&lo, "f", b"image contents");
+    let fs = OverlayFs::open(OPTS, &l.resolve(), true).unwrap();
+    let f = fs.root_inode().lookup("f").unwrap();
+    let mut buf = [0u8; 32];
+    let n = f.read(0, &mut buf).unwrap();
+    assert_eq!(&buf[..n], b"image contents");
+}
+
+#[test]
+fn writing_a_lower_file_copies_it_up_and_leaves_the_image_alone() {
+    let (l, up, lo) = image();
+    mkfile(&lo, "f", b"image");
+    let fs = OverlayFs::open(OPTS, &l.resolve(), true).unwrap();
+    let f = fs.root_inode().lookup("f").unwrap();
+    f.write(0, b"local").unwrap();
+    assert_eq!(slurp(&find_path(&up, "f").expect("copied up")), b"local".to_vec());
+    assert_eq!(slurp(&find_path(&lo, "f").unwrap()), b"image".to_vec());
+    let mut buf = [0u8; 16];
+    let n = f.read(0, &mut buf).unwrap();
+    assert_eq!(&buf[..n], b"local");
+}
+
+#[test]
+fn creating_a_file_lands_in_the_writable_layer_only() {
+    let (l, up, lo) = image();
+    let fs = OverlayFs::open(OPTS, &l.resolve(), true).unwrap();
+    fs.root_inode().create_child("new", S_IFREG as u32 | 0o644, &CreateCtx::root()).unwrap();
+    assert!(find_path(&up, "new").is_some());
+    assert!(find_path(&lo, "new").is_none());
+}
+
+#[test]
+fn deleting_a_lower_file_hides_it_without_touching_the_image() {
+    let (l, up, lo) = image();
+    mkfile(&lo, "f", b"image");
+    let fs = OverlayFs::open(OPTS, &l.resolve(), true).unwrap();
+    fs.root_inode().unlink_child("f").unwrap();
+    assert!(fs.root_inode().lookup("f").is_err());
+    assert!(whiteout::is_device(&find_path(&up, "f").unwrap()));
+    assert!(find_path(&lo, "f").is_some(), "the image is read-only");
+    assert!(names(&fs.root_inode()).is_empty());
+}
+
+#[test]
+fn a_write_deep_in_the_image_copies_up_the_directories_above_it() {
+    // A container writing one configuration file must not copy the tree it
+    // sits in, but the directories themselves have to exist above it.
+    let (l, up, lo) = image();
+    mkfile(&lo, "etc/nested/conf", b"image");
+    let fs = OverlayFs::open(OPTS, &l.resolve(), true).unwrap();
+    let etc = fs.root_inode().lookup("etc").unwrap();
+    let nested = etc.lookup("nested").unwrap();
+    let conf = nested.lookup("conf").unwrap();
+    conf.write(0, b"local").unwrap();
+    assert_eq!(find_path(&up, "etc").unwrap().file_type(), FileType::Directory);
+    assert_eq!(slurp(&find_path(&up, "etc/nested/conf").unwrap()), b"local".to_vec());
+    assert_eq!(slurp(&find_path(&lo, "etc/nested/conf").unwrap()), b"image".to_vec());
+}
+
+#[test]
+fn a_merged_directory_lists_every_layer_and_hides_what_was_deleted() {
+    let (l, _up, lo) = image();
+    mkfile(&lo, "d/a", b"");
+    mkfile(&lo, "d/b", b"");
+    let fs = OverlayFs::open(OPTS, &l.resolve(), true).unwrap();
+    let d = fs.root_inode().lookup("d").unwrap();
+    d.create_child("c", S_IFREG as u32 | 0o644, &CreateCtx::root()).unwrap();
+    assert_eq!(names(&d), vec!["a", "b", "c"]);
+    d.unlink_child("a").unwrap();
+    assert_eq!(names(&d), vec!["b", "c"]);
+}
+
+#[test]
+fn the_overlays_own_markers_are_invisible_to_a_caller() {
+    // Listing one would make a `tar` of the overlay carry it into the archive,
+    // and restoring that produces a file nothing can see.
+    let (l, _up, lo) = image();
+    mkfile(&lo, "f", b"x");
+    let fs = OverlayFs::open(OPTS, &l.resolve(), true).unwrap();
+    let f = fs.root_inode().lookup("f").unwrap();
+    f.setxattr("user.mine", b"v".to_vec(), false, false).unwrap();
+    let listed = f.listxattr().unwrap();
+    assert!(listed.contains(&"user.mine".to_string()));
+    assert!(!listed.iter().any(|n| n.starts_with("trusted.overlay.")), "{listed:?}");
+    assert!(f.setxattr("trusted.overlay.opaque", b"y".to_vec(), false, false).is_err());
+}
+
+#[test]
+fn a_read_only_overlay_of_two_image_layers_merges_them() {
+    let up = layer(0);
+    let l1 = layer(1);
+    let l2 = layer(2);
+    mkfile(&l1, "a", b"one");
+    mkfile(&l2, "b", b"two");
+    let mut m = BTreeMap::new();
+    m.insert("/l1".to_string(), l1);
+    m.insert("/l2".to_string(), l2);
+    let l = Layers(m);
+    let fs = OverlayFs::open("lowerdir=/l1:/l2", &l.resolve(), true).unwrap();
+    assert!(!fs.writable());
+    assert_eq!(names(&fs.root_inode()), vec!["a", "b"]);
+    let _ = up;
+}
+
+#[test]
+fn a_work_directory_inside_the_writable_layer_is_refused() {
+    let (l, _up, _lo) = image();
+    let opts = "lowerdir=/lower,upperdir=/upper,workdir=/upper/work";
+    assert_eq!(OverlayFs::open(opts, &l.resolve(), true).err(), Some(Errno::Einval));
+}
+
+#[test]
+fn a_layer_that_is_not_a_directory_is_refused() {
+    let (mut l, _up, lo) = image();
+    let f = mkfile(&lo, "file", b"x");
+    l.0.insert("/notadir".to_string(), f);
+    let opts = "lowerdir=/notadir,upperdir=/upper,workdir=/work";
+    assert_eq!(OverlayFs::open(opts, &l.resolve(), true).err(), Some(Errno::Enotdir));
+}
+
+#[test]
+fn a_layer_that_does_not_exist_is_refused() {
+    let (l, _up, _lo) = image();
+    let opts = "lowerdir=/absent,upperdir=/upper,workdir=/work";
+    assert_eq!(OverlayFs::open(opts, &l.resolve(), true).err(), Some(Errno::Enoent));
+}
+
+#[test]
+fn a_single_lower_layer_with_nothing_to_write_to_is_refused() {
+    // It would present the layer unchanged and fail every write in a way the
+    // caller cannot tell from a broken mount.
+    let (l, _up, _lo) = image();
+    assert_eq!(OverlayFs::open("lowerdir=/lower", &l.resolve(), true).err(), Some(Errno::Einval));
+}
+
+#[test]
+fn a_mount_with_no_layers_at_all_is_refused() {
+    let (l, _up, _lo) = image();
+    assert_eq!(OverlayFs::open("", &l.resolve(), true).err(), Some(Errno::Einval));
+}
+
+#[test]
+fn the_work_directory_is_created_under_the_named_base() {
+    let (l, _up, _lo) = image();
+    OverlayFs::open(OPTS, &l.resolve(), true).unwrap();
+    let work = l.0.get("/work").unwrap();
+    assert!(find_path(work, "work").is_some());
+}
+
+#[test]
+fn the_mount_line_names_the_layers_back() {
+    let (l, _up, _lo) = image();
+    let fs = OverlayFs::open(OPTS, &l.resolve(), true).unwrap();
+    let line = vfs::fs::FileSystem::show_options(&*fs);
+    assert!(line.contains("lowerdir=/lower"), "{line}");
+    assert!(line.contains("upperdir=/upper"), "{line}");
+    assert!(line.contains("workdir=/work"), "{line}");
+}
+
+#[test]
+fn the_reported_filesystem_type_is_the_overlays() {
+    let (l, _up, _lo) = image();
+    let fs = OverlayFs::open(OPTS, &l.resolve(), true).unwrap();
+    let ops = vfs::fs::FileSystem::super_ops(&*fs).unwrap();
+    assert_eq!(ops.statfs().unwrap().f_type, super::OVERLAYFS_SUPER_MAGIC);
+    assert_eq!(vfs::fs::FileSystem::magic(&*fs), super::OVERLAYFS_SUPER_MAGIC);
+}
+
+#[test]
+fn a_copied_up_file_keeps_the_inode_number_it_had() {
+    // A program holding the file open across a write must not see its identity
+    // change under it.
+    let (l, _up, lo) = image();
+    mkfile(&lo, "f", b"image");
+    let fs = OverlayFs::open(OPTS, &l.resolve(), true).unwrap();
+    let before = fs.root_inode().lookup("f").unwrap().ino();
+    let f = fs.root_inode().lookup("f").unwrap();
+    f.write(0, b"local").unwrap();
+    let after = fs.root_inode().lookup("f").unwrap().ino();
+    assert_eq!(before, after);
+    let _ = mkpath(&lo, "unused");
+    let _ = Config::default();
+    let _ = Arc::new(());
+    let _ = vec![0u8; 0];
+}
