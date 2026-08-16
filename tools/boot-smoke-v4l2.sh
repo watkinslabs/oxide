@@ -34,6 +34,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$ROOT/tools/vendor-preflight.sh"
 vendor_preflight || exit 2
 TIMEOUT="${2:-${SMOKE_TIMEOUT:-600}}"
+# Two CPUs, as every other boot gate uses. A uniprocessor guest hits the
+# recorded early-userspace spinlock wedge on roughly half its boots, which
+# would report this subsystem as broken on a fault that has nothing to do
+# with it. Override with OXIDE_SMP=1 to reproduce that wedge deliberately.
+OXIDE_SMP="${OXIDE_SMP:-2}"
 PROBE="$ROOT/tools/v4l2-capture-probe.py"
 [ -r "$PROBE" ] || { echo "boot-smoke-v4l2: missing $PROBE" >&2; exit 2; }
 
@@ -57,7 +62,7 @@ trap cleanup EXIT
 
 echo "boot-smoke-v4l2: arch=$ARCH timeout=${TIMEOUT}s log=$LOG"
 exec 9<>"$QIN"
-OXIDE_QEMU_HEADLESS=1 setsid bash -c "exec make '$MAKE_TARGET' > '$LOG' 2>&1 < '$QIN'" &
+OXIDE_QEMU_HEADLESS=1 setsid bash -c "exec make SMP='$OXIDE_SMP' '$MAKE_TARGET' > '$LOG' 2>&1 < '$QIN'" &
 echo $! > "$PIDFILE"
 
 deadline=$(( $(date +%s) + TIMEOUT ))
