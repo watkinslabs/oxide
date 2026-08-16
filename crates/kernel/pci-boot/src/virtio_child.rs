@@ -367,6 +367,93 @@ impl virtio::VirtioChildDriverOps<VirtioChildSession> for VirtioSndOps {
 static VIRTIO_SND_DRV: virtio::VirtioChildDriver<PciVirtioChildBus, VirtioSndOps> =
     virtio::VirtioChildDriver::new();
 
+struct Virtio9pOps;
+impl virtio::VirtioChildDriverOps<VirtioChildSession> for Virtio9pOps {
+    const DRIVER_ID: virtio::VirtioChildDriverId = drv_virtio_9p::DRIVER_ID;
+
+    fn profile() -> virtio::VirtioTransportProfile {
+        drv_virtio_9p::transport_profile()
+    }
+
+    fn probe_child(
+        _parent: &alloc::sync::Arc<drv::Device>,
+        session: &mut VirtioChildSession,
+    ) -> drv::KResult<()> {
+        let Some(resources) = session.child_resources() else {
+            return Err(drv::Error::ProbeFailed);
+        };
+        let device_key = session.device_key();
+        if !drv_virtio_9p::install(device_key, session.pci_bdf(), resources, session.drv_features()) {
+            return Err(drv::Error::ProbeFailed);
+        }
+        // The transport becomes mountable only once a device carrying a tag is
+        // actually bound: publishing it earlier would let a mount resolve
+        // `trans=virtio` and then fail with "no such tag" on every box that has
+        // no such device at all.
+        drv_virtio_9p::register_transport();
+        debug_boot! {
+            klog::write_raw(b"[INFO]  virtio-9p installed tags=");
+            klog::write_dec_u64(drv_virtio_9p::tags().len() as u64);
+            klog::write_raw(b"\n");
+        }
+        Ok(())
+    }
+
+    fn remove_child(device_key: virtio::VirtioChildDeviceKey) {
+        let _ = drv_virtio_9p::uninstall(device_key);
+        if !drv_virtio_9p::present() { drv_virtio_9p::unregister_transport(); }
+    }
+
+    fn shutdown_child(device_key: virtio::VirtioChildDeviceKey) {
+        let _ = drv_virtio_9p::shutdown(device_key);
+    }
+}
+static VIRTIO_9P_DRV: virtio::VirtioChildDriver<PciVirtioChildBus, Virtio9pOps> =
+    virtio::VirtioChildDriver::new();
+
+struct VirtioFsOps;
+impl virtio::VirtioChildDriverOps<VirtioChildSession> for VirtioFsOps {
+    const DRIVER_ID: virtio::VirtioChildDriverId = drv_virtio_fs::DRIVER_ID;
+
+    fn profile() -> virtio::VirtioTransportProfile {
+        drv_virtio_fs::transport_profile()
+    }
+
+    fn probe_child(
+        _parent: &alloc::sync::Arc<drv::Device>,
+        session: &mut VirtioChildSession,
+    ) -> drv::KResult<()> {
+        let Some(resources) = session.child_resources() else {
+            return Err(drv::Error::ProbeFailed);
+        };
+        let device_key = session.device_key();
+        if !drv_virtio_fs::install(device_key, session.pci_bdf(), resources) {
+            return Err(drv::Error::ProbeFailed);
+        }
+        // Published only once a device carrying a tag is bound: registering
+        // earlier would make a virtiofs mount fail with "no such tag" on a box
+        // that has no such device at all, instead of "no virtiofs here".
+        fuse_transport::registry::register(drv_virtio_fs::open_tag);
+        debug_boot! {
+            klog::write_raw(b"[INFO]  virtio-fs installed tags=");
+            klog::write_dec_u64(drv_virtio_fs::tags().len() as u64);
+            klog::write_raw(b"\n");
+        }
+        Ok(())
+    }
+
+    fn remove_child(device_key: virtio::VirtioChildDeviceKey) {
+        let _ = drv_virtio_fs::uninstall(device_key);
+        if !drv_virtio_fs::present() { fuse_transport::registry::unregister(); }
+    }
+
+    fn shutdown_child(device_key: virtio::VirtioChildDeviceKey) {
+        let _ = drv_virtio_fs::shutdown(device_key);
+    }
+}
+static VIRTIO_FS_DRV: virtio::VirtioChildDriver<PciVirtioChildBus, VirtioFsOps> =
+    virtio::VirtioChildDriver::new();
+
 /// Register virtio child drivers whose bring-up is owned by `Driver::probe`.
 /// # C: O(N_drivers)
 pub(super) fn register_model_drivers() {
@@ -377,4 +464,6 @@ pub(super) fn register_model_drivers() {
     drv::register_driver(&VIRTIO_SND_DRV);
     drv::register_driver(&VIRTIO_INPUT_DRV);
     drv::register_driver(&VIRTIO_GPU_DRV);
+    drv::register_driver(&VIRTIO_9P_DRV);
+    drv::register_driver(&VIRTIO_FS_DRV);
 }

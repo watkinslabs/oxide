@@ -46,8 +46,17 @@ would have shipped a dead subsystem and an unexplained boot.
 ## The framing question (HARD RULE — ask it first, every time)
 
 **"Is this how Linux does it?"** Every feature, every fix, every plan starts there —
-before the design, not after the diff. The reference tree is `../linux-master`; read
-the actual implementation, not your memory of it.
+before the design, not after the diff. The reference tree is `../reference`; read
+the actual implementation, not your memory of it. It is a checked-out tree — read
+files from it directly, and confirm its version (`head -5 ../reference/Makefile`)
+before quoting anything, so a claim is anchored to a knowable revision.
+
+**`../linux-master` is GONE and a stale `../linux-master.zip` is still lying around.**
+This line named it until B2245, so a lane that trusted the line searched for
+`*linux*`, found the zip, extracted from it and cited it. That zip predates the
+checked-out tree; the file in question happened to be byte-identical, so the
+conclusion survived — by luck, not by method. A citation to a snapshot nobody
+pinned is not verification. Read `../reference`.
 
 - **Design.** Before writing code, find the structure Linux uses for this job and ask
   why. If our shape differs, the difference is a decision that needs a reason, not an
@@ -190,6 +199,7 @@ claiming errno values, error ordering, capability checks, layouts, or flag masks
 | Repo layout + crate ownership boundaries | `52` |
 | Syscall layering (ABI crate / work fns / shim) | `53` |
 | **Assembly + low-level ABI correctness checklist (x86_64 AND aarch64)** | **`54`** ← read BEFORE touching `crates/arch/hal-{x86_64,aarch64}` asm OR signal/syscall paths |
+| Wireless: cfg80211, mac80211, nl80211 | `62` |
 | Boot flow Mermaid | `boot-flow.md` |
 
 When user asks about a concept: check this table → read that spec → answer. Don't guess; read.

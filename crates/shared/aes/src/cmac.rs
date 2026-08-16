@@ -5,12 +5,17 @@
 //! depends only on whether the message length is a positive multiple of the
 //! block width — the empty message is padded like any other short one.
 
-use crate::block::Aes128;
+use crate::block::AesKey;
 use crate::params::{AES128_KEY_LEN, AES_BLOCK_LEN, CMAC_PAD_BYTE, CMAC_POLY_REDUCE};
+
+/// Full MAC width, bytes.
+pub const CMAC_LEN: usize = AES_BLOCK_LEN;
+/// Truncated width management-frame protection uses, bytes.
+pub const CMAC_LEN_8: usize = 8;
 
 /// A CMAC key: the block cipher plus the two derived subkeys.
 pub struct Cmac {
-    cipher: Aes128,
+    cipher: AesKey,
     /// Added to a final block that is exactly one block wide.
     k1: [u8; AES_BLOCK_LEN],
     /// Added to a padded final block.
@@ -40,11 +45,27 @@ fn xor_into(dst: &mut [u8; AES_BLOCK_LEN], src: &[u8]) {
 impl Cmac {
     /// Derive the subkeys for a key. # C: O(1)
     pub fn new(key: &[u8; AES128_KEY_LEN]) -> Cmac {
-        let cipher = Aes128::new(key);
-        let l = cipher.encrypt(&[0u8; AES_BLOCK_LEN]);
+        Cmac::with_key(AesKey::K128(crate::block::Aes128::new(key)))
+    }
+
+    /// Derive the subkeys for a key of either width. The wider key is what
+    /// the 256-bit integrity ciphers use, and it is the same construction —
+    /// only the block cipher underneath differs. # C: O(1)
+    pub fn with_key(cipher: AesKey) -> Cmac {
+        let mut l = [0u8; AES_BLOCK_LEN];
+        cipher.encrypt_block(&mut l);
         let k1 = dbl(&l);
         let k2 = dbl(&k1);
         Cmac { cipher, k1, k2 }
+    }
+
+    /// Authenticate into a caller's buffer, truncated to its length.
+    /// Truncation is the defined way to obtain a shorter tag, so an 8-byte
+    /// one is the first 8 bytes of the 16. # C: O(len)
+    pub fn mac_into(&self, msg: &[u8], out: &mut [u8]) {
+        let full = self.mac(msg);
+        let n = core::cmp::min(out.len(), AES_BLOCK_LEN);
+        out[..n].copy_from_slice(&full[..n]);
     }
 
     /// The first subkey, for a message that ends on a block boundary. # C: O(1)

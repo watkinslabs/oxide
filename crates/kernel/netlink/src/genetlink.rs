@@ -29,12 +29,12 @@ mod tests;
 pub use dispatch::{handle, GenlCred};
 pub use family::{
     find_by_id, find_by_name, mcast_ngroups, register_family, snapshot_families,
-    unregister_family, GenlFamily, GenlFamilySpec, GenlMcastGroup, GenlOp, GenlRegError,
-    PolicyEntry,
+    unregister_family, GenlCtx, GenlDoit, GenlFamily, GenlFamilySpec, GenlMcastGroup, GenlOp,
+    GenlRegError, PolicyEntry,
 };
 pub use mcast::{
-    genlmsg_multicast, genlmsg_multicast_allns, genlmsg_multicast_netns, register_genl_listener,
-    GenlMcastError,
+    genlmsg_multicast, genlmsg_multicast_allns, genlmsg_multicast_netns, genlmsg_unicast,
+    register_genl_listener, GenlMcastError,
 };
 pub use uapi::{ctrl_attr, ctrl_cmd, Genlmsghdr, CTRL_FAMILY_NAME, GENL_ID_CTRL};
 

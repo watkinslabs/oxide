@@ -1,0 +1,50 @@
+[H[J[1;1H[H[J[1;1H  Booting `oxide (multiboot2)'
+
+MB2
+L64
+[XSTATE] xsave=on pre_osxsave=0 cpuid0d_eax=0000000000000007 xcr0=0000000000000007 area=832
+[0.957] Kernel command line: BOOT_IMAGE=/boot/oxide-x86_64 root=/dev/vda rw earlycon printk.time=1 systemd.log_target=kmsg systemd.journald.forward_to_kmsg=1 sysctl.kernel.sysrq=1 sysrq_always_enabled enforcing=0 console=ttyS0,115200 console=tty0 systemd.mask=firewalld.service systemd.mask=chronyd.service systemd.mask=ModemManager.service systemd.mask=plymouth-start.service systemd.mask=NetworkManager-wait-online.service systemd.mask=flatpak-add-fedora-repos.service systemd.debug_shell=ttyS0 systemd.mask=serial-get
+[0.966] ty@ttyS0.service oxide.bootargs=grub
+[0.966] [INFO]  selinux: enabled, awaiting policy
+[0.968] [sysrq] always enabled by the boot line
+[42.123] [BOOT-DEV-NULL] type=8192 fs=devtmpfs
+[42.208] systemd[1]: Failed to compute init label, ignoring.
+[42.209] systemd[1]: Successfully loaded SELinux policy in 23.154ms.
+[201.518] [sysrq] task dump  switches=73012 current=tid:0
+[201.518]   PID   TID name             ST onrq oncpu onwl cpu  last-sysc  nsysc      cputime_ms
+[201.518]  4096   4096 ktimers          S  n  n    n     0  none                0         37 tgid=  4096 vtid=     0 ptid=     0 wake_dl_ns=201554630670
+[201.518]  4097   4097 ksoftirqd        S  n  n    n     0  none                0          0 tgid=  4097 vtid=     0 ptid=     0
+[201.518]  4098   4098 ksoftirqd        S  n  n    n     1  none                0          0 tgid=  4098 vtid=     0 ptid=     0
+[201.518]  4099   4099 kworker          S  n  n    n     0  none                0        142 tgid=  4099 vtid=     0 ptid=     0
+[201.518]  4100   4100 kworkermgr       S  n  n    n     0  none                0         57 tgid=  4100 vtid=     0 ptid=     0
+[201.518]  4101   4101 kworker          S  n  n    n     1  none                0          0 tgid=  4101 vtid=     0 ptid=     0
+[201.518]  4102   4102 kworkermgr       S  n  n    n     1  none                0          0 tgid=  4102 vtid=     0 ptid=     0
+[201.518]  4103   4103 khelper          S  n  n    n     0  none                0          0 tgid=  4103 vtid=     0 ptid=     0
+[201.518]  4104   4104 kswapd0          S  n  n    n     0  none                0          0 tgid=  4104 vtid=     0 ptid=     0
+[201.518]  4105   4105 oom_reaper       S  n  n    n     0  none                0          0 tgid=  4105 vtid=     0 ptid=     0 wake_dl_ns=202129192256
+[201.518]  4106   4106 netns_reaper     S  n  n    n     0  none                0          0 tgid=  4106 vtid=     0 ptid=     0
+[201.519]  4107   4107 sock-rtnl-reap   S  n  n    n     0  none                0          0 tgid=  4107 vtid=     0 ptid=     0
+[201.519]  4108   4108 fw_loader        S  n  n    n     0  none                0          0 tgid=  4108 vtid=     0 ptid=     0
+[201.519]     1 3235774466 systemd          R  n  y    n     1  sched_yiel  892133438     159337 tgid=3235774466 vtid=     1 ptid=     0
+[204.518] [sysrq] task dump  switches=74370 current=tid:0
+[204.518]   PID   TID name             ST onrq oncpu onwl cpu  last-sysc  nsysc      cputime_ms
+[204.518]  4096   4096 ktimers          S  n  n    n     0  none                0         38 tgid=  4096 vtid=     0 ptid=     0 wake_dl_ns=204557835706
+[204.519]  4097   4097 ksoftirqd        S  n  n    n     0  none                0          0 tgid=  4097 vtid=     0 ptid=     0
+[204.519]  4098   4098 ksoftirqd        S  n  n    n     1  none                0          0 tgid=  4098 vtid=     0 ptid=     0
+[204.519]  4099   4099 kworker          S  n  n    n     0  none                0        145 tgid=  4099 vtid=     0 ptid=     0
+[204.519]  4100   4100 kworkermgr       S  n  n    n     0  none                0         58 tgid=  4100 vtid=     0 ptid=     0
+[204.519]  4101   4101 kworker          S  n  n    n     1  none                0          0 tgid=  4101 vtid=     0 ptid=     0
+[204.519]  4102   4102 kworkermgr       S  n  n    n     1  none                0          0 tgid=  4102 vtid=     0 ptid=     0
+[204.519]  4103   4103 khelper          S  n  n    n     0  none                0          0 tgid=  4103 vtid=     0 ptid=     0
+[204.519]  4104   4104 kswapd0          S  n  n    n     0  none                0          0 tgid=  4104 vtid=     0 ptid=     0
+[204.519]  4105   4105 oom_reaper       S  n  n    n     0  none                0          0 tgid=  4105 vtid=     0 ptid=     0 wake_dl_ns=206129393192
+[204.519]  4106   4106 netns_reaper     S  n  n    n     0  none                0          0 tgid=  4106 vtid=     0 ptid=     0
+[204.519]  4107   4107 sock-rtnl-reap   S  n  n    n     0  none                0          0 tgid=  4107 vtid=     0 ptid=     0
+[204.519]  4108   4108 fw_loader        S  n  n    n     0  none                0          0 tgid=  4108 vtid=     0 ptid=     0
+[204.519]     1 3235774466 systemd          R  n  y    n     1  sched_yiel  909038734     162338 tgid=3235774466 vtid=     1 ptid=     0
+[206.519] [sysrq] per-cpu heartbeats:
+[206.519]   CPU  age_ms  last-tid  last-syscall  nr_run  preempt_count  resched
+[206.519]   0    7     0  none  0  0x0000000000010000  0
+[206.519]   1    4     3235774466  sched_yield  1  0x0000000000000002  0
+qemu-system-x86_64: terminating on signal 15 from pid 995429 (bash)
+make: *** [Makefile:262: qemu-x86-existing] Terminated

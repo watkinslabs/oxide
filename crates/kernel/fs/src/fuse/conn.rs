@@ -25,12 +25,16 @@ use alloc::sync::Weak;
 use sync::{Spinlock, Tty as FuseClass};
 use vfs::{Inode, InodeRef, PollSubscribers};
 
+use super::iqueue::{FuseReplySink, FuseTransportRef};
 use super::proto;
 use super::FUSE_WIRE_ENOTCONN;
 
 /// `negotiated` — what the channel has LEARNED about its peer: the `ENOSYS`
 /// per-opcode latches, the INIT feature answers, and the lock-owner key.
 mod negotiated;
+/// `sink` — the transport's return path and the wire-errno translation.
+mod sink;
+pub(crate) use sink::wire_err_to_vfs;
 
 fn copy_iov(bufs: &[&[u8]], mut skip: usize, mut out: &mut [u8]) -> bool {
     for buf in bufs {
@@ -171,6 +175,12 @@ pub struct FuseConn {
     /// [`super::flush::lock_owner_id`]). Random per connection so the mapping
     /// is unguessable and uncorrelatable across mounts.
     scramble_key: [u32; super::flush::SCRAMBLE_KEY_WORDS],
+    /// The transport an encoded request is handed to. `None` is the
+    /// `/dev/fuse` channel: the request is appended to `pending` for a daemon
+    /// to `read`. A transport installed here replaces that queue entirely — it
+    /// does NOT sit alongside it, because a request in both places would be
+    /// served twice.
+    transport: Spinlock<Option<FuseTransportRef>, FuseClass>,
 }
 
 impl FuseConn {
@@ -191,8 +201,25 @@ impl FuseConn {
             no_fsyncdir: AtomicBool::new(false),
             no_flush: AtomicBool::new(false),
             scramble_key: negotiated::random_scramble_key(),
+            transport: Spinlock::new(None),
         })
     }
+
+    /// Route this channel's requests through `t` instead of the `/dev/fuse`
+    /// pending queue, and bind this channel as the sink `t` returns replies to.
+    /// Called once, before the mount fires its `FUSE_INIT`. # C: O(1)
+    pub fn set_transport(self: &Arc<Self>, t: FuseTransportRef) {
+        let sink: Weak<dyn FuseReplySink> = {
+            let strong: Arc<dyn FuseReplySink> = self.clone();
+            Arc::downgrade(&strong)
+        };
+        t.attach_sink(sink);
+        *self.transport.lock() = Some(t);
+    }
+
+    /// The installed transport, if this channel is not a `/dev/fuse` one.
+    /// # C: O(1)
+    pub fn transport(&self) -> Option<FuseTransportRef> { self.transport.lock().clone() }
 
     /// Reuse the live inode already cached for `nodeid`, if any (Linux
     /// `fuse_iget` hit). # C: O(log N_nodes)
@@ -238,6 +265,13 @@ impl FuseConn {
         msg.extend_from_slice(body);
         let slot = RequestSlot::new(unique, opcode);
         self.slots.lock().insert(unique, slot.clone());
+        // The slot is filed BEFORE the send: a transport that completes
+        // synchronously would otherwise deliver a reply for a `unique` that is
+        // not yet in the table, and the reply would be dropped as unknown.
+        if let Some(t) = self.transport() {
+            if opcode == proto::FUSE_FORGET { t.send_forget(&msg); } else { t.send_req(&msg); }
+            return slot;
+        }
         self.pending.lock().push_back(msg);
         self.daemon_wait.wake_one();
         self.poll_subs.notify();
@@ -382,6 +416,7 @@ impl FuseConn {
             s.done.store(true, Ordering::Release);
         }
         self.pending.lock().clear();
+        if let Some(t) = self.transport.lock().take() { t.release(); }
         self.reply_wait.wake_all();
         self.daemon_wait.wake_all();
         self.poll_subs.notify();
@@ -426,45 +461,5 @@ impl FuseConn {
         // SAFETY: pending/abort is a pure predicate and both transitions wake
         // daemon_wait; no lock that an enqueuer needs is held here.
         unsafe { sched::live::wait_event_interruptible(&self.daemon_wait, || self.has_pending()) }
-    }
-}
-
-/// Map a NEGATIVE wire errno (`fuse_out_header.error`) back to a [`vfs::VfsError`]
-/// for the VFS caller. Unknown codes collapse to `Eio`. # C: O(1)
-fn wire_err_to_vfs(neg: i32) -> vfs::VfsError {
-    use vfs::VfsError::*;
-    match -neg {
-        1 => Eperm, 2 => Enoent, 5 => Eio, 9 => Ebadf, 13 => Eacces, 17 => Eexist,
-        20 => Enotdir, 21 => Eisdir, 22 => Einval, 38 => Enosys, 95 => Eopnotsupp,
-        107 => Enotconn, 116 => Estale, _ => Eio,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::wire_err_to_vfs;
-    use vfs::VfsError;
-
-    /// A daemon errno reaches the caller as ITSELF, not as a generic I/O error.
-    /// `ESTALE` in particular: it was folded into `EIO`, which both hid a real
-    /// server answer and made the one errno the path-resolution retry exists to
-    /// act on unreachable — the retry could never fire because nothing in the
-    /// tree could produce the error that triggers it. # C: O(1)
-    #[test]
-    fn daemon_errnos_survive_translation() {
-        let cases = [
-            (-1, VfsError::Eperm), (-2, VfsError::Enoent), (-5, VfsError::Eio),
-            (-9, VfsError::Ebadf), (-13, VfsError::Eacces), (-17, VfsError::Eexist),
-            (-20, VfsError::Enotdir), (-21, VfsError::Eisdir), (-22, VfsError::Einval),
-            (-38, VfsError::Enosys), (-95, VfsError::Eopnotsupp),
-            (-107, VfsError::Enotconn), (-116, VfsError::Estale),
-        ];
-        for (wire, want) in cases {
-            assert_eq!(wire_err_to_vfs(wire), want, "wire {wire}");
-        }
-        // A stale handle must be distinguishable from a generic failure.
-        assert_ne!(wire_err_to_vfs(-116), wire_err_to_vfs(-5));
-        // An errno with no mapping is still an error, never a success.
-        assert_eq!(wire_err_to_vfs(-4095), VfsError::Eio);
     }
 }

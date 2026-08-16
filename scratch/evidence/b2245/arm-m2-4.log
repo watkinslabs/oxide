@@ -1,0 +1,36 @@
+UEFI firmware (version  built at 01:01:27 on May  2 2026)
+[2J[001;001H[=3h[2J[001;001H[2J[001;001H[8;042;160t[2J[001;001HBdsDxe: failed to load Boot0002 "UEFI Misc Device" from PciRoot(0x0)/Pci(0x1,0x0): Not Found
+BdsDxe: failed to load Boot0003 "UEFI Misc Device 2" from PciRoot(0x0)/Pci(0x2,0x0): Not Found
+BdsDxe: failed to load Boot0004 "UEFI QEMU NVMe Ctrl oxnvme 1" from PciRoot(0x0)/Pci(0xC,0x0)/NVMe(0x1,00-00-00-00-00-00-00-00): Not Found
+BdsDxe: loading Boot0005 "UEFI Misc Device 3" from PciRoot(0x0)/Pci(0xE,0x0)
+BdsDxe: starting Boot0005 "UEFI Misc Device 3" from PciRoot(0x0)/Pci(0xE,0x0)
+  Booting `oxide (EFI-stub)'
+
+A1BCDE[6.041] Kernel command line: BOOT_IMAGE=/boot/oxide-aarch64.Image root=/dev/vda rw earlycon printk.time=1 systemd.log_target=kmsg systemd.journald.forward_to_kmsg=1 sysctl.kernel.sysrq=1 sysrq_always_enabled console=ttyAMA0,115200 console=tty0 systemd.mask=firewalld.service systemd.mask=chronyd.service systemd.mask=ModemManager.service systemd.mask=plymouth-start.service systemd.mask=NetworkManager-wait-online.service systemd.mask=flatpak-add-fedora-repos.service systemd.debug_shell=ttyS0 systemd.mask=serial-getty@
+[6.042] ttyS0.service oxide.bootargs=grub
+[6.064] [sysrq] always enabled by the boot line
+[46.289] [BOOT-DEV-NULL] type=8192 fs=devtmpfs
+[46.614] systemd[1]: System time advanced to built-in epoch: Fri 2026-03-13 00:00:00 UTC
+[46.704] systemd[1]: systemd 257.13-1.fc42 running in system mode (+PAM +AUDIT +SELINUX -APPARMOR +IMA +IPE +SMACK +SECCOMP -GCRYPT +GNUTLS +OPENSSL +ACL +BLKID +CURL +ELFUTILS +FIDO2 +IDN2 -IDN -IPTC +KMOD +LIBCRYPTSETUP +LIBCRYPTSETUP_PLUGINS +LIBFDISK +PCRE2 +PWQUALITY +P11KIT +QRENCODE +TPM2 +BZIP2 +LZ4 +XZ +ZLIB +ZSTD +BPF_FRAMEWORK +BTF +XKBCOMMON +UTMP +SYSVINIT +LIBARCHIVE)
+[46.706] systemd[1]: Detected architecture arm64.
+[46.815] systemd[1]: bpf-restrict-fs: BPF LSM hook not enabled in the kernel, BPF LSM not supported.
+[49.164] systemd[1]: Queued start job for default target graphical.target.
+[49.194] systemd[1]: Created slice system-getty.slice - Slice /system/getty.
+[49.202] systemd[1]: Created slice system-modprobe.slice - Slice /system/modprobe.
+[49.207] systemd[1]: Created slice system-sshd\x2dkeygen.slice - Slice /system/sshd-keygen.
+[49.213] systemd[1]: Created slice system-systemd\x2dzram\x2dsetup.slice - Slice /system/systemd-zram-setup.
+[49.218] systemd[1]: Created slice user.slice - User and Session Slice.
+[49.222] systemd[1]: Started systemd-ask-password-console.path - Dispatch Password Requests to Console Directory Watch.
+[49.226] systemd[1]: Started systemd-ask-password-wall.path - Forward Password Requests to Wall Directory Watch.
+[49.235] systemd[1]: Set up automount proc-sys-fs-binfmt_misc.automount - Arbitrary Executable File Formats File System Automount Point.
+[49.238] systemd[1]: Expecting device dev-zram0.device - /dev/zram0...
+[49.239] systemd[1]: Reached target cryptsetup.target - Local Encrypted Volumes.
+[49.241] systemd[1]: Reached target getty.target - Login Prompts.
+[49.244] [BADSTACK] exception entry with SP outside the current kernel stack site=0 spsr=00000000600003c5 from=EL1
+[49.245] [BADSTACK] sp_el1=fffffb0000055fd0 stack=[fffffb0000056000,fffffb000005a000] BELOW-LO by 48 (stack overflow)
+[49.245] [BADSTACK] esr=0000000096000047 elr=ffffffff805f23b8 far=fffffb0000055ffc
+[49.246] [BADSTACK] mpidr=0000000000000000 tpidr_el1=ffffffff852e68c0
+[49.247] [BADSTACK] preempt_count=0000000000000002 hardirq=0 softirq=0 kind=TASK slot=17 top_repeat=ffffffff81ad7d50 x127
+[49.248] [BADSTACK] chain innermost-first: ffffffff8063b2a0 ffffffff80909948 ffffffff8141d780 ffffffff8141d780 ffffffff8141d780 ffffffff8141d780 ffffffff805f2660 ffffffff8141d780 ffffffff81ad7d50 ffffffff8063b2a0 ffffffff80909948 ffffffff805ea474 ffffffff808bdd20 ffffffff80032160 ffffffff808bdd20 ffffffff80003eb0 ffffffff8141d790 ffffffff81ad7d50 ffffffff81ad7d50 ffffffff8143ffc0 ffffffff8144087c ffffffff805ebe0c ffffffff805ebe40 ffffffff805ebe0c
+qemu-system-aarch64: terminating on signal 15 from pid 885062 (bash)
+make: *** [Makefile:264: qemu-arm-existing] Terminated

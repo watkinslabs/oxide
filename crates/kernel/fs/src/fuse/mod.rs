@@ -13,6 +13,8 @@
 //   * `fops`   — the forwarding `i_op`/`i_fop` (LOOKUP/GETATTR/OPEN/READ/READDIR…).
 //   * `flush`  — FLUSH decisions: the lock-owner scramble, the skip rule, the body.
 //   * `params` — the mount-parameter table fuse options are admitted against.
+//   * `iqueue` — the transport seam: how an encoded request reaches the server.
+//   * `virtiofs` — the same connection over a virtio queue instead of a daemon.
 //
 // Scope: a REAL read-only browse+read filesystem (LOOKUP, GETATTR, OPEN/OPENDIR,
 // READ, READDIR, RELEASE/RELEASEDIR, FLUSH, INIT). The write/create/mutation
@@ -28,10 +30,13 @@ pub mod fs;
 pub mod fops;
 pub mod flush;
 pub mod fsync;
+pub mod iqueue;
+pub mod virtiofs;
 mod params;
 mod context;
 
 pub use context::FuseContextOps;
+pub use iqueue::{FuseTransportOps, FuseTransportRef};
 pub use params::{FUSE_FD_KEY, FUSE_PARAMS};
 
 #[cfg(test)]

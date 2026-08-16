@@ -33,8 +33,8 @@ fn a_registered_family_without_that_command_is_eopnotsupp() {
 #[test]
 fn a_do_only_command_refuses_a_dump_and_the_reverse() {
     let fam = register_test_family("split", alloc::vec![
-        GenlOp { cmd: 1, flags: op_flags::GENL_CMD_CAP_DO,   policy: &[] },
-        GenlOp { cmd: 2, flags: op_flags::GENL_CMD_CAP_DUMP, policy: &[] },
+        GenlOp { cmd: 1, flags: op_flags::GENL_CMD_CAP_DO,   policy: &[] , ..GenlOp::EMPTY},
+        GenlOp { cmd: 2, flags: op_flags::GENL_CMD_CAP_DUMP, policy: &[] , ..GenlOp::EMPTY},
     ], 0);
     let dump = flags::NLM_F_REQUEST | flags::NLM_F_DUMP;
     assert_eq!(reply_errno(&dispatch::handle(
@@ -48,7 +48,7 @@ fn a_do_only_command_refuses_a_dump_and_the_reverse() {
 fn admin_perm_is_checked_only_after_the_command_exists() {
     let fam = register_test_family("perm", alloc::vec![
         GenlOp { cmd: 1, flags: op_flags::GENL_CMD_CAP_DO | op_flags::GENL_ADMIN_PERM,
-                 policy: &[] },
+                 policy: &[] , ..GenlOp::EMPTY},
     ], 0);
     // An unprivileged caller naming a command the family does NOT have still
     // sees EOPNOTSUPP — the permission ladder never runs for a missing op.
@@ -64,7 +64,7 @@ fn admin_perm_is_checked_only_after_the_command_exists() {
 fn uns_admin_perm_accepts_the_socket_namespace_capability() {
     let fam = register_test_family("unsperm", alloc::vec![
         GenlOp { cmd: 1, flags: op_flags::GENL_CMD_CAP_DO | op_flags::GENL_UNS_ADMIN_PERM,
-                 policy: &[] },
+                 policy: &[] , ..GenlOp::EMPTY},
     ], 0);
     let ns_only = crate::genetlink::GenlCred { init_ns_net_admin: false, sock_ns_net_admin: true };
     // Passing the ladder leaves the request at "no in-kernel handler", not EPERM.
@@ -80,7 +80,7 @@ fn uns_admin_perm_accepts_the_socket_namespace_capability() {
 fn init_ns_admin_perm_is_not_satisfied_by_the_socket_namespace_alone() {
     let fam = register_test_family("initperm", alloc::vec![
         GenlOp { cmd: 1, flags: op_flags::GENL_CMD_CAP_DO | op_flags::GENL_ADMIN_PERM,
-                 policy: &[] },
+                 policy: &[] , ..GenlOp::EMPTY},
     ], 0);
     let ns_only = crate::genetlink::GenlCred { init_ns_net_admin: false, sock_ns_net_admin: true };
     assert_eq!(reply_errno(&dispatch::handle(
@@ -91,7 +91,7 @@ fn init_ns_admin_perm_is_not_satisfied_by_the_socket_namespace_alone() {
 #[test]
 fn a_truncated_message_is_einval_before_the_command_lookup() {
     let fam = register_test_family("short", alloc::vec![
-        GenlOp { cmd: 1, flags: op_flags::GENL_CMD_CAP_DO, policy: &[] },
+        GenlOp { cmd: 1, flags: op_flags::GENL_CMD_CAP_DO, policy: &[] , ..GenlOp::EMPTY},
     ], 0);
     // A netlink header with no family header behind it.
     let mut truncated: Vec<u8> = alloc::vec![0u8; crate::Nlmsghdr::SIZE];
@@ -109,7 +109,7 @@ fn a_family_header_declaring_more_than_the_message_holds_is_einval() {
     let fam = crate::genetlink::family::register_family(
         crate::genetlink::family::GenlFamilySpec {
             name: "oxide-t-hdrsize", version: 1, hdrsize: 8, maxattr: 0,
-            ops: alloc::vec![GenlOp { cmd: 1, flags: op_flags::GENL_CMD_CAP_DO, policy: &[] }],
+            ops: alloc::vec![GenlOp { cmd: 1, flags: op_flags::GENL_CMD_CAP_DO, policy: &[] , ..GenlOp::EMPTY}],
             mcgrps: Vec::new(), netnsok: true, resv_start_op: 0,
         }).unwrap();
     // The message carries nlmsghdr + genlmsghdr but not the family's 8-byte
@@ -127,7 +127,7 @@ fn a_family_header_declaring_more_than_the_message_holds_is_einval() {
 #[test]
 fn a_strictly_validated_command_rejects_a_dirty_reserved_field() {
     let fam = register_test_family("strict", alloc::vec![
-        GenlOp { cmd: 4, flags: op_flags::GENL_CMD_CAP_DO, policy: &[] },
+        GenlOp { cmd: 4, flags: op_flags::GENL_CMD_CAP_DO, policy: &[] , ..GenlOp::EMPTY},
     ], 0);
     let mut msg = request(fam.id, 4, flags::NLM_F_REQUEST, 1, &[]);
     // genlmsghdr.reserved is the two bytes after cmd/version.

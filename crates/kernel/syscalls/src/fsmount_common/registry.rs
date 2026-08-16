@@ -124,6 +124,24 @@ fn in_initial_user_ns() -> bool {
     }
 }
 
+/// The caller's filesystem identity — the id a 9P mount attaches under, and
+/// therefore the identity the SERVER checks every operation on this mount
+/// against. Not the real uid: `setfsuid(2)` exists precisely so a service can
+/// act on a filesystem as somebody else, and attaching as the real uid would
+/// ignore that. An in-kernel mount has no task and attaches as root.
+/// # C: O(1)
+fn caller_fsuid() -> u32 { caller_fsids().0 }
+
+/// The caller's filesystem uid and gid together, for a mount that reports both
+/// to its server. # C: O(1)
+fn caller_fsids() -> (u32, u32) {
+    use core::sync::atomic::Ordering;
+    match sched::live::current() {
+        Some(t) => (t.creds.fsuid.load(Ordering::Acquire), t.creds.fsgid.load(Ordering::Acquire)),
+        None => (0, 0),
+    }
+}
+
 fn register_filesystems() {
     use vfs::fs::{superblock_from_filesystem, FsFlags, FsType, register_fs};
     type R = vfs::fs::KResult<Arc<vfs::SuperBlock>>;
@@ -407,6 +425,37 @@ fn register_filesystems() {
         let fs: Arc<dyn vfs::fs::FileSystem> = ::fs::binfmt_misc::BinfmtMiscFs::new();
         mounted(ty, fs, None, "binfmt_misc", sb_flags)
     }), Some(kernfs::mount_opts::NO_PARAMETERS)));
+    // virtiofs is the same host share as 9P through a different protocol: a
+    // FUSE superblock whose courier is a virtio queue rather than a daemon on
+    // `/dev/fuse`. It reports itself as `virtiofs`, not as `fuse`, because
+    // `/proc/mounts` is how userspace decides what a mount is.
+    let _ = register_fs(FsType::with_parameters(
+        ::fs::fuse::virtiofs::VIRTIOFS_FS_NAME, FUSE_SUPER_MAGIC, FsFlags::empty(),
+        Box::new(|ty, source: Option<&str>, _t: &str, _d: &str, sb_flags: u64,
+                  _p: &[vfs::fs::FsParameter]| -> R {
+            let tag = source.ok_or(vfs::VfsError::Enoent)?;
+            let (uid, gid) = caller_fsids();
+            let fs = ::fs::fuse::virtiofs::mount_by_tag(tag, uid, gid)?;
+            let root = fs.root_inode();
+            let fs: Arc<dyn vfs::fs::FileSystem> = fs;
+            mounted(ty, fs, Some(root), tag, sb_flags)
+        }), Some(::fs::fuse::virtiofs::VIRTIOFS_PARAMS)));
+
+    // 9P is how a hypervisor exports a HOST directory into this guest, so a
+    // file can move in or out without rebuilding an image. The mount source is
+    // the transport's device name — a virtio mount tag — not a block device,
+    // which is why the type carries no `FS_REQUIRES_DEV`.
+    let _ = register_fs(FsType::with_parameters(
+        ::fs::ninep_fs::NINEP_FS_NAME, ninep::V9FS_MAGIC, FsFlags::FS_ALLOW_IDMAP,
+        Box::new(|ty, source: Option<&str>, _t: &str, d: &str, sb_flags: u64,
+                  _p: &[vfs::fs::FsParameter]| -> R {
+            let source = source.ok_or(vfs::VfsError::Enoent)?;
+            let fs = ::fs::ninep_fs::mount_9p(source, d, caller_fsuid())?;
+            let root = fs.root_inode();
+            let fs: Arc<dyn vfs::fs::FileSystem> = fs;
+            mounted(ty, fs, Some(root), source, sb_flags)
+        }), Some(::fs::ninep_fs::NINEP_PARAMS)));
+
     let _ = register_fs(FsType::with_context_parameters(
         "fuse", FUSE_SUPER_MAGIC, FsFlags::empty(),
         Arc::new(::fs::fuse::FuseContextOps), ::fs::fuse::FUSE_PARAMS,

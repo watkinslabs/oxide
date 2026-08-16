@@ -1,0 +1,13 @@
+run=1 rc=0 klines=121 | last: [43.784] systemd[1]: Activating swap dev-zram0.swap - Compressed Swap on /dev/zram0...
+run=2 rc=0 klines=142 | last: [43.901] systemd[1]: systemd-machine-id-commit.service - Save Transient machine-id to Disk skipped, unmet cond
+run=3 rc=0 klines=145 | last: [43.658] systemd[1]: Activating swap dev-zram0.swap - Compressed Swap on /dev/zram0...
+run=4 rc=0 klines=149 | last: [53.524] systemd[1]: Reached target swap.target - Swaps.
+run=5 rc=0 klines=220 | last: [64.118] alsactl[221]: alsa-lib main.c:1804:(snd_use_case_mgr_open) [error.ucm] failed to import hw:0 use case
+run=6 rc=0 klines=212 | last: [44.774] systemd[1]: Too many messages being logged to kmsg, ignoring
+run=7 rc=1 klines=134 | last: [122.282]   1    5     65536  none  0  0x0000000000000000  0  0  0
+run=8 rc=0 klines=226 | last: [65.047] systemd[1]: Started systemd-hostnamed.service - Hostname Service.
+run=9 rc=0 klines=119 | last: [44.173] systemd-tmpfiles[78]: ACL operation on "/var/log/journal" failed: Invalid argument
+run=10 rc=0 klines=214 | last: [44.213] alsactl[226]: alsa-lib main.c:1804:(snd_use_case_mgr_open) [error.ucm] failed to import hw:0 use case
+run=11 rc=0 klines=123 | last: [43.380] systemd[1]: Reached target swap.target - Swaps.
+run=12 rc=0 klines=144 | last: [48.293] systemd[1]: systemd-machine-id-commit.service - Save Transient machine-id to Disk skipped, unmet cond
+TOTAL 11/12 clean

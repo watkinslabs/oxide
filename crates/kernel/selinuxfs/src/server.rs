@@ -215,7 +215,8 @@ impl PolicyOps for KernelOps {
                 None => (false, false, false),
             };
             PolicyFacts { loaded: state.initialized, mls, reject_unknown, deny_unknown,
-                          seqno: state.seqno, policyload: state.policyload }
+                          seqno: state.seqno, policyload: state.policyload,
+                          status_seq: state.status_seq }
         }).unwrap_or_default()
     }
 

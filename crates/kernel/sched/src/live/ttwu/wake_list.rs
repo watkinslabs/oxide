@@ -53,6 +53,31 @@ pub(super) fn wake_list_take(cpu: u32) -> *mut Task {
     WAKE_LISTS[i].swap(core::ptr::null_mut(), Ordering::AcqRel)
 }
 
+/// Longest chain a diagnostic walk will follow.  A dump runs on a machine
+/// whose invariants are already suspect, so the walk is bounded rather than
+/// trusting the list's terminator.
+const WAKE_LIST_WALK_CAP: u32 = 512;
+
+/// Diagnostic snapshot of one CPU's deferred-wake state: whether the target
+/// still owes an activation batch (`ttwu_pending`) and how many tasks are
+/// linked behind it.  A non-zero count beside a cleared batch latch, or any
+/// count that does not fall, is a wake list nobody is draining.
+/// # C: O(min(linked, WAKE_LIST_WALK_CAP))
+pub fn wake_list_debug(cpu: u32) -> (bool, u32) {
+    let i = cpu as usize;
+    if i >= cpu::MAX_CPUS { return (false, 0); }
+    let pending = WAKE_PENDING[i].load(Ordering::Acquire);
+    let mut node = WAKE_LISTS[i].load(Ordering::Acquire);
+    let mut n = 0;
+    while !node.is_null() && n < WAKE_LIST_WALK_CAP {
+        // SAFETY: wake_list_debug walks a chain whose nodes each hold a list
+        // strong reference until a drain reclaims them; this read takes none.
+        node = unsafe { (*node).wake_next.load(Ordering::Relaxed) };
+        n += 1;
+    }
+    (pending, n)
+}
+
 /// Finish one target-side activation batch.  A concurrent producer which
 /// linked while the batch was owned suppressed its IPI, so leave the target
 /// with a local reschedule request when work appeared before this clear.

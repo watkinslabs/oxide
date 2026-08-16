@@ -66,3 +66,19 @@ pub static SBOX: [u8; 256] = build_sbox();
 
 /// Substitute one byte. # C: O(1)
 pub fn sub_byte(a: u8) -> u8 { SBOX[a as usize] }
+
+/// The inverse permutation, built by inverting the forward table rather than
+/// transcribed, so the two cannot disagree. Decryption needs it; a MAC does
+/// not, which is why it did not exist until a cipher mode wanted it.
+const fn build_inv_sbox(s: &[u8; 256]) -> [u8; 256] {
+    let mut t = [0u8; 256];
+    let mut i = 0usize;
+    while i < 256 { t[s[i] as usize] = i as u8; i += 1; }
+    t
+}
+
+/// The AES inverse substitution table.
+pub static INV_SBOX: [u8; 256] = build_inv_sbox(&build_sbox());
+
+/// Substitute one byte with the inverse table. # C: O(1)
+pub fn inv_sub_byte(a: u8) -> u8 { INV_SBOX[a as usize] }

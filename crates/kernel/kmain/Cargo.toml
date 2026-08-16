@@ -73,6 +73,10 @@ drv-virtio-input  = { path = "../../drivers/drv-virtio-input" }
 drv-virtio-net    = { path = "../../drivers/drv-virtio-net" }
 drv-virtio-blk    = { path = "../../drivers/drv-virtio-blk" }
 drv-virtio-rng    = { path = "../../drivers/drv-virtio-rng" }
+kstrtox           = { path = "../../shared/kstrtox" }
+wireless          = { path = "../wireless" }
+mac80211          = { path = "../mac80211" }
+drv-mac80211-hwsim = { path = "../../drivers/drv-mac80211-hwsim" }
 drv-virtio-vsock  = { path = "../../drivers/drv-virtio-vsock" }
 drv-virtio-snd    = { path = "../../drivers/drv-virtio-snd" }
 sound             = { path = "../sound" }
