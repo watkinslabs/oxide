@@ -56,6 +56,8 @@ pub mod whiteout;
 pub mod layers;
 pub mod lookup;
 pub mod copyup;
+pub mod readdir;
+pub mod dirops;
 #[cfg(test)]
 #[path = "testfs.rs"]
 mod testfs;

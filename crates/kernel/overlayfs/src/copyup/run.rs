@@ -35,7 +35,7 @@ use super::plan::{need_meta_copy_up, need_index, steps, Kind, Step};
 static TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 /// A name nothing else in the work directory uses. # C: O(1)
-fn tempname() -> String { format!("#{:x}", TEMP_ID.fetch_add(1, Ordering::Relaxed)) }
+pub fn tempname() -> String { format!("#{:x}", TEMP_ID.fetch_add(1, Ordering::Relaxed)) }
 
 /// Copy `entry` into the writable layer under `name` in `parent`.
 ///
