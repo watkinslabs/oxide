@@ -1,5 +1,4 @@
 use super::*;
-use crate::uapi::*;
 
 /// A boot sector a formatter would write: 512-byte sectors, 8 sectors per
 /// cluster, one table.

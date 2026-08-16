@@ -1,6 +1,5 @@
 use super::*;
 use crate::time::Stamp;
-use crate::uapi::*;
 
 fn stamp() -> Stamp {
     Stamp { fields: dostime::DosTime { time: (9 << 11) | (15 << 5) | 3, date: (30 << 9) | (4 << 5) | 8, cs: 40 },

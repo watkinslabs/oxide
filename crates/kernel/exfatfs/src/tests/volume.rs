@@ -1,7 +1,6 @@
 use super::*;
 use crate::test_image::{self, Builder, CLUSTER};
 use crate::time::Stamp;
-use crate::uapi::*;
 
 /// A timestamp every test writes with, so a comparison never depends on a
 /// clock.

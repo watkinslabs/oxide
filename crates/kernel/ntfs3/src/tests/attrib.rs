@@ -1,5 +1,4 @@
 use super::*;
-use crate::uapi::*;
 use crate::volume::edit;
 
 fn record_with(attrs: &[alloc::vec::Vec<u8>]) -> (alloc::vec::Vec<u8>, crate::record::RecordHeader) {

@@ -1,8 +1,7 @@
 use super::*;
 use crate::name::FileName;
 use crate::record::Reference;
-use crate::uapi::*;
-use crate::upcase::{self, UpCase};
+use crate::upcase::{self};
 use alloc::vec::Vec;
 use syscall::errno::Errno;
 

@@ -1,6 +1,5 @@
 use super::*;
 use crate::test_image::{self, Builder, CLUSTER};
-use crate::uapi::*;
 
 #[test]
 fn a_formatted_volume_mounts_and_finds_its_own_files() {
@@ -67,7 +66,7 @@ fn a_fragmented_file_reads_in_order() {
     let mut payload = alloc::vec::Vec::new();
     for (i, lcn) in [200u64, 260, 220].into_iter().enumerate() {
         let at = b.cluster_at(lcn);
-        let fill = alloc::vec![(i as u8 + 1); CLUSTER];
+        let fill = alloc::vec![i as u8 + 1 ; CLUSTER];
         b.bytes[at..at + CLUSTER].copy_from_slice(&fill);
         payload.extend_from_slice(&fill);
         runs.push(crate::run::Run { vcn: i as u64, lcn, len: 1 });

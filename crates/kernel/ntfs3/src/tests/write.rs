@@ -1,6 +1,6 @@
 //! The write paths, driven end to end against an image in memory.
 
-use crate::test_image::{self, Builder, CLUSTER};
+use crate::test_image::{self, CLUSTER};
 use crate::uapi::*;
 use crate::volume::dirops::{RENAME_EXCHANGE, RENAME_NOREPLACE};
 use crate::volume::Volume;

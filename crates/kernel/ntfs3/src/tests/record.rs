@@ -1,5 +1,4 @@
 use super::*;
-use crate::uapi::*;
 
 const SIZE: u32 = 1024;
 

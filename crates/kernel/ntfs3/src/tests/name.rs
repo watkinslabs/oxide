@@ -1,6 +1,5 @@
 use super::*;
 use crate::record::Reference;
-use crate::uapi::*;
 
 fn sample(name: &str, namespace: u8) -> FileName {
     FileName {
