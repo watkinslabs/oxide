@@ -95,11 +95,17 @@ pub fn read_entry(width: FatWidth, table: &[u8], cluster: u32) -> Option<Link> {
     Some(classify(width, raw))
 }
 
-/// What a raw entry value means. # C: O(1)
+/// What a raw entry value means.
+///
+/// Only two values are folded: zero is free, and everything at or above the
+/// bad mark ends the chain. Entry number one is NOT folded into an end — the
+/// reference hands it back as a link and lets the walker refuse it as out of
+/// range, which turns a corrupt table into an error rather than into a file
+/// that silently ends early.
+/// # C: O(1)
 pub fn classify(width: FatWidth, raw: u32) -> Link {
     if raw == 0 { return Link::Free; }
     if raw >= width.bad_mark() { return Link::End; }
-    if raw < FAT_START_ENT { return Link::End; }
     Link::Next(raw)
 }
 
