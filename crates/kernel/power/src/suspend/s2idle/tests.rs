@@ -49,3 +49,21 @@ fn without_a_platform_hook_the_generic_check_decides() {
     assert!(loop_breaks(Some(&o), true));
     assert!(!loop_breaks(Some(&o), false));
 }
+
+#[test]
+fn a_pass_with_no_blocking_primitive_reports_it_did_not_park() {
+    // Found the hard way: without this the loop below spins forever, with
+    // interrupts disabled, on a wait it can never take.
+    let _g = crate::suspend::test_lock();
+    assert!(!s2idle_enter(), "a machine with nowhere to park claimed it parked");
+}
+
+#[test]
+fn the_loop_returns_when_it_cannot_park() {
+    let _g = crate::suspend::test_lock();
+    crate::suspend::wakeup::SYSTEM.wakeup_clear(0);
+    crate::suspend::wakeup::SYSTEM.disarm();
+    // No wait hook is installed hosted, and no wakeup is pending, so the only
+    // thing that can end this call is the could-not-park exit.
+    s2idle_loop();
+}

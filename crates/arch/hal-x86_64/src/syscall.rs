@@ -42,13 +42,7 @@ const _: () = assert!(PT_REGS_VECTOR_SYSCALL_IMM as u64 == PT_REGS_VECTOR_SYSCAL
 // kernel-target-only; the two RFLAGS/EFER bit values below are additionally
 // pinned by the host unit tests in `syscall/tests.rs`.
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-const IA32_EFER:  u32 = 0xC000_0080;
-#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-const IA32_STAR:  u32 = 0xC000_0081;
-#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-const IA32_LSTAR: u32 = 0xC000_0082;
-#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-const IA32_FMASK: u32 = 0xC000_0084;
+use crate::msr::{IA32_EFER, IA32_FMASK, IA32_LSTAR, IA32_STAR};
 
 #[cfg(any(test, all(target_arch = "x86_64", target_os = "oxide-kernel")))]
 const EFER_SCE: u64 = 1 << 0;

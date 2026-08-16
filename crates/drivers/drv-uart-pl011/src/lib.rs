@@ -20,6 +20,8 @@
 #![cfg_attr(not(target_os = "oxide-kernel"), allow(dead_code))]
 extern crate alloc;
 
+/// Sleep callbacks (`32a§5` steps 6 and 8).
+pub mod pm;
 pub mod rx;
 
 use alloc::sync::Arc;
@@ -320,6 +322,8 @@ impl drv::Driver for UartPl011Drv {
         // SAFETY: driver-core remove owns the bound platform device teardown.
         unsafe { imp::remove(); }
     }
+
+    fn pm(&self) -> Option<&'static drv::DevPmOps> { Some(&pm::PM_OPS) }
 
     fn shutdown(&self, _dev: &drv::Device) {
         // SAFETY: driver-core shutdown owns terminal platform-device quiesce.

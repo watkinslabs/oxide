@@ -39,6 +39,16 @@ pub mod mmu_ops;
 pub mod pci;
 pub mod pl011;
 pub mod psci;
+// PSCI ABI numbers, status decode and the SYSTEM_SUSPEND admission ladder.
+// Ungated on purpose: `psci.rs` is aarch64-only, so a `#[cfg(test)]` block
+// there builds nothing on a hosted x86 run (`docs/53`).
+pub mod psci_uapi;
+pub mod psci_probe;
+// Saved EL1 processor state for system suspend: layout and restore order
+// (ungated, host-tested) beside the asm that implements them (aarch64 kernel).
+pub mod cpu_suspend_ctx;
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+pub mod cpu_suspend;
 pub mod smp;
 mod pt_regs;
 // aarch64-kernel only: pure EL1 system-register asm, and hal-aarch64 is also

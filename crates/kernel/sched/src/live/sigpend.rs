@@ -261,6 +261,16 @@ pub fn vfork_done(child: &crate::Task) {
 /// removing from the wrong tree left a frozen task runnable elsewhere.
 /// # C: O(N_cpus · N) runqueue remove
 pub fn freeze_task(task: &alloc::sync::Arc<crate::Task>) {
+    freeze_task_for(task, crate::freeze_reason::CGROUP);
+}
+
+/// Park `task` on behalf of `reason`, one bit of
+/// [`crate::freeze_reason`]. The task stays parked until every reason that
+/// claimed it has released it, so a system-sleep thaw does not resume a task
+/// the cgroup freezer still holds.
+/// # C: O(N_cpus · N) runqueue remove
+pub fn freeze_task_for(task: &alloc::sync::Arc<crate::Task>, reason: u8) {
+    task.freeze_reasons.fetch_or(reason, Ordering::AcqRel);
     task.frozen.store(true, Ordering::Release);
     let found = super::rq_locate::dequeue_from_owning_rq_with(
         // SAFETY: `global_for` is sound for any index; it yields `None` for a
@@ -359,6 +369,14 @@ pub fn install_sigio_hook() {
 /// already Runnable, so its Sleeping->Runnable claim would drop the placement.
 /// # C: O(N_cpus + log N)
 pub fn unfreeze_task(task: &alloc::sync::Arc<crate::Task>) {
+    unfreeze_task_for(task, crate::freeze_reason::CGROUP);
+}
+
+/// Release `reason`'s claim on `task` and resume it once no reason remains.
+/// # C: O(N_cpus + log N)
+pub fn unfreeze_task_for(task: &alloc::sync::Arc<crate::Task>, reason: u8) {
+    let before = task.freeze_reasons.fetch_and(!reason, Ordering::AcqRel);
+    if before & !reason != 0 { return; }
     task.frozen.store(false, Ordering::Release);
     if task.state() != crate::TaskState::Runnable { return; }
     // SAFETY: thaw site in process context; the caller's Arc keeps `task` alive

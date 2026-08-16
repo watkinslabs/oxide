@@ -272,6 +272,11 @@ fn init_runtime_subsystems() {
     // bind hooks the driver model publishes into are installed before it.
     let _ = step("drv::init", || unsafe { drv::init() });
     power::set_driver_shutdown_hook(drv::shutdown_all);
+    // System sleep (`32a`): the scheduler-side freeze passes and the
+    // suspend-to-idle block. The device-model and CPU halves install
+    // separately, from the layers that own them.
+    power::suspend::boot::init();
+    crate::kmain::suspend_wiring::init();
 }
 
 #[cfg(target_os = "oxide-kernel")]

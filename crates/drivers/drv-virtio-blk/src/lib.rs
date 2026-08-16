@@ -25,6 +25,8 @@ extern crate std;
 
 #[cfg(any(target_os = "oxide-kernel", test))]
 pub mod modern;
+/// Sleep callbacks (`32a§5` step 6): freeze and restore, not suspend/resume.
+pub mod pm;
 
 #[cfg(test)]
 mod tests;

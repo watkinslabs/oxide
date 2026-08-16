@@ -25,22 +25,48 @@ static CLOCK: SeqLock<ClockState, TimerLock> = SeqLock::new(ClockState::ZERO);
 /// Snapshot canonical timekeeper adjustment state. # C: O(1)
 pub fn snapshot() -> ClockSnapshot { CLOCK.read().snapshot() }
 
+/// The counter reading a clock computation should use: the raw counter while
+/// running, the reading frozen at suspend while asleep (`32a§7`).
+fn source_ns() -> u64 {
+    if crate::suspend::timekeeping_suspended() { crate::suspend::frozen_monotonic_ns() }
+    else { crate::platform::raw_monotonic_ns() }
+}
+
+/// Current CLOCK_MONOTONIC in nanoseconds.
+///
+/// Excludes every interval the machine spent asleep, which is what separates
+/// it from CLOCK_BOOTTIME. The raw counter keeps running across a sleep on
+/// this hardware, so the accumulated sleep is subtracted here rather than
+/// hoped away.
+/// # C: O(1)
+/// # Ctx: any, including hard IRQ (lock-free seqlock read)
+pub fn monotonic_ns() -> u64 { source_ns().saturating_sub(CLOCK.read().suspend_ns) }
+
 /// Current CLOCK_REALTIME in Unix-epoch nanoseconds. # C: O(1)
 /// # Ctx: any, including hard IRQ (lock-free seqlock read)
-pub fn realtime_ns() -> u64 { CLOCK.read().realtime(crate::platform::monotonic_ns()) }
+pub fn realtime_ns() -> u64 {
+    let c = CLOCK.read();
+    c.realtime(source_ns().saturating_sub(c.suspend_ns))
+}
 
 /// Current CLOCK_BOOTTIME including recorded suspend duration. # C: O(1)
-pub fn boottime_ns() -> u64 { CLOCK.read().boottime(crate::platform::monotonic_ns()) }
+pub fn boottime_ns() -> u64 {
+    let c = CLOCK.read();
+    c.boottime(source_ns().saturating_sub(c.suspend_ns))
+}
 
 /// Current CLOCK_TAI using the independently owned TAI-UTC offset. # C: O(1)
-pub fn tai_ns() -> u64 { CLOCK.read().tai(crate::platform::monotonic_ns()) }
+pub fn tai_ns() -> u64 {
+    let c = CLOCK.read();
+    c.tai(source_ns().saturating_sub(c.suspend_ns))
+}
 
 /// Step CLOCK_REALTIME and return its exact old-domain monotonic boundary.
 /// # C: O(1)
 pub fn set_realtime(target_ns: u64) -> u64 {
     // Sampled before the write so the monotonic read is not taken with IRQs
     // masked and the writer section stays as short as Linux keeps it.
-    let mono = crate::platform::monotonic_ns();
+    let mono = crate::monotonic_ns();
     CLOCK.write::<Irq>(|c| c.set_realtime(mono, target_ns));
     mono
 }
@@ -51,7 +77,7 @@ pub fn seed_realtime(target_ns: u64) { let _ = set_realtime(target_ns); }
 /// `ADJ_SETOFFSET`: shift CLOCK_REALTIME by a signed delta. A step, so
 /// callers must follow with the absolute-deadline reprojection. # C: O(1)
 pub fn inject_offset(delta_ns: i128) -> Result<u64, TimeError> {
-    let mono = crate::platform::monotonic_ns();
+    let mono = crate::monotonic_ns();
     CLOCK.write_with::<Irq, _>(|c| c.inject_offset(mono, delta_ns))?;
     Ok(mono)
 }
@@ -66,7 +92,11 @@ pub fn set_tai_offset(seconds: i32) -> Result<(), TimeError> {
     CLOCK.write_with::<Irq, _>(|c| c.set_tai_offset(seconds))
 }
 
-/// Add one completed suspend interval to CLOCK_BOOTTIME. # C: O(1)
+/// Inject one completed sleep interval (`32a§7`).
+///
+/// CLOCK_BOOTTIME and CLOCK_REALTIME advance by it; CLOCK_MONOTONIC does not.
+/// # C: O(1)
+/// # Ctx: IRQ-off, single-CPU
 pub fn account_suspend(elapsed_ns: u64) {
     CLOCK.write::<Irq>(|c| c.account_suspend(elapsed_ns));
 }

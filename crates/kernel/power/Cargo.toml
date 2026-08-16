@@ -12,6 +12,20 @@ hal      = { path = "../../arch/hal" }
 klog     = { path = "../../shared/klog" }
 sync     = { path = "../../shared/sync" }
 firmware = { path = "../firmware" }
+# The freeze passes and the suspend-to-idle block walk the task registry and
+# use the scheduler's park mechanism (`32a§8`, `32a§10`). `sched` cannot depend
+# on `power` in return — that closes a cycle through `firmware`->`ext4` — so
+# the walk lives here and the scheduler owns only the primitives it wraps.
+sched    = { path = "../sched" }
+timekeeper = { path = "../timekeeper" }
+cpu      = { path = "../cpu" }
+
+# The PSCI ABI numbers, the SYSTEM_SUSPEND admission ladder and the saved-EL1
+# layout live in this crate's ungated modules, and `suspend::psci_sleep` is
+# ungated too so its decisions stay hosted-testable (`docs/53`). Everything
+# arch-specific inside hal-aarch64 is cfg'd out on other targets, so a non-arm
+# build pulls in no code, only the decisions.
+hal-aarch64 = { path = "../../arch/hal-aarch64" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64 = { path = "../../arch/hal-x86_64" }

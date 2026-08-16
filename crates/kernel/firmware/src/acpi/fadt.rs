@@ -41,7 +41,14 @@ pub const FADT_V2_LEN: usize = 132;
 // Field offsets. The table is packed, so these are byte positions, not
 // naturally-aligned ones (`boot_flags` at 109 is the tell).
 const OFF_REVISION: usize = 8;
+const OFF_FACS32: usize = 36;
 const OFF_DSDT32: usize = 40;
+const OFF_PM1A_EVT32: usize = 56;
+const OFF_PM1B_EVT32: usize = 60;
+const OFF_PM1_EVT_LEN: usize = 88;
+const OFF_XFACS: usize = 132;
+const OFF_XPM1A_EVT: usize = 148;
+const OFF_XPM1B_EVT: usize = 160;
 const OFF_FLAGS: usize = 112;
 const OFF_RESET_REG: usize = 116;
 const OFF_RESET_VALUE: usize = 128;
@@ -64,8 +71,17 @@ pub struct Fadt {
     pub reset_register: Gas,
     pub reset_value: u8,
     pub dsdt_pa: u64,
+    /// FACS physical address. Zero on a hardware-reduced platform, which
+    /// has no FACS at all — and therefore no firmware waking vector.
+    pub facs_pa: u64,
     pub pm1a_control: Gas,
     pub pm1b_control: Gas,
+    /// PM1 event blocks: status half then enable half, `pm1_event_len`
+    /// bytes total. The wake-status bit a sleep entry clears lives in the
+    /// status half of `pm1a_event`.
+    pub pm1a_event: Gas,
+    pub pm1b_event: Gas,
+    pub pm1_event_len: u8,
     pub sleep_control: Gas,
     pub sleep_status: Gas,
 }
@@ -132,20 +148,34 @@ pub fn parse_fadt(t: &[u8]) -> Option<Fadt> {
     // falls back to the 32-bit field, which is all a version-1 table has.
     let x = u64_at(t, OFF_XDSDT);
     let dsdt_pa = if x != 0 { x } else { u32_at(t, OFF_DSDT32) as u64 };
+    // Same rule for the FACS pointer: a non-zero 64-bit field supersedes the
+    // 32-bit one, and a zero one falls back to it. The two disagreeing is a
+    // firmware defect the reference warns about and resolves the same way.
+    let xfacs = u64_at(t, OFF_XFACS);
+    let facs_pa = if xfacs != 0 { xfacs } else { u32_at(t, OFF_FACS32) as u64 };
     // Extended PM1 control blocks likewise supersede the 32-bit ports.
     let xa = gas_at(t, OFF_XPM1A_CNT);
     let xb = gas_at(t, OFF_XPM1B_CNT);
     let len32 = if t.len() > OFF_PM1_CNT_LEN { t[OFF_PM1_CNT_LEN] } else { 0 };
     let pm1a_control = if xa.address != 0 { xa } else { port_gas(u32_at(t, OFF_PM1A_CNT32) as u64, len32) };
     let pm1b_control = if xb.address != 0 { xb } else { port_gas(u32_at(t, OFF_PM1B_CNT32) as u64, len32) };
+    let evt_len = if t.len() > OFF_PM1_EVT_LEN { t[OFF_PM1_EVT_LEN] } else { 0 };
+    let xea = gas_at(t, OFF_XPM1A_EVT);
+    let xeb = gas_at(t, OFF_XPM1B_EVT);
+    let pm1a_event = if xea.address != 0 { xea } else { port_gas(u32_at(t, OFF_PM1A_EVT32) as u64, evt_len) };
+    let pm1b_event = if xeb.address != 0 { xeb } else { port_gas(u32_at(t, OFF_PM1B_EVT32) as u64, evt_len) };
     Some(Fadt {
         revision: t[OFF_REVISION],
         flags: u32_at(t, OFF_FLAGS),
         reset_register: gas_at(t, OFF_RESET_REG),
         reset_value: if t.len() > OFF_RESET_VALUE { t[OFF_RESET_VALUE] } else { 0 },
         dsdt_pa,
+        facs_pa,
         pm1a_control,
         pm1b_control,
+        pm1a_event,
+        pm1b_event,
+        pm1_event_len: evt_len,
         sleep_control: gas_at(t, OFF_SLEEP_CONTROL),
         sleep_status: gas_at(t, OFF_SLEEP_STATUS),
     })
@@ -257,6 +287,10 @@ pub unsafe fn decode_fadt(pa: u64, hhdm_offset: u64) {
     // firmware memory for this boot, under the same HHDM contract as FADT.
     unsafe { crate::acpi::install_dsdt(f.dsdt_pa, hhdm_offset); }
     crate::set_power_registers(power_registers(&f));
+    crate::acpi::sleep_types::set_sleep_registers(crate::acpi::sleep_types::sleep_registers(&f));
+    // SAFETY: the FADT-derived FACS address names a firmware table retained
+    // in firmware memory for this boot, under the same HHDM contract as FADT.
+    unsafe { crate::acpi::facs::install_facs(f.facs_pa, hhdm_offset); }
     match reset_action(&f) {
         Some(a) => {
             crate::set_reset_action(a);

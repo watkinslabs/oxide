@@ -9,7 +9,7 @@ mod dispatch;
 mod ids;
 mod lines;
 mod lpi;
-mod regs;
+pub(crate) mod regs;
 mod sgi;
 
 pub use bringup::{ap_cpu_interface_enable, enable, gicr_base, GicStatus, GICR_STRIDE};

@@ -101,7 +101,8 @@ pub use send::{force_fatal_sig, force_sig_fault, force_sig_pkey_fault, force_sig
 pub use sigpend::{
     deliverable_signals, deliverable_signals_self, fatal_kill_pending, fatal_kill_pending_self, frozen_self,
     send_signal_self, signal_wake_up,
-    wake_if_sleeping, vfork_done, freeze_task, unfreeze_task, zap_other_threads, Signum,
+    wake_if_sleeping, vfork_done, freeze_task, freeze_task_for, unfreeze_task, unfreeze_task_for,
+    zap_other_threads, Signum,
 };
 pub use tick_deadline::{post_expired_timer_signals, service_task_timers,
     tick_wake_expired};

@@ -67,19 +67,25 @@ pub fn enter_decision(pending: bool) -> S2idleState {
 pub fn wake_takes_effect(state: S2idleState) -> bool { state != S2idleState::None }
 
 /// One pass of the idle wait: commit under the lock, park, then close out.
-/// Returns without parking when a wakeup is already pending.
+///
+/// Returns whether the machine actually parked. It does not when a wakeup is
+/// already pending, and it does not when no blocking primitive is installed —
+/// a machine with nowhere to park cannot suspend to idle, and reporting that
+/// is what stops [`s2idle_loop`] spinning on a wait it can never take.
 /// # C: O(1) plus the park
-pub fn s2idle_enter() {
+pub fn s2idle_enter() -> bool {
+    let Some(wait) = HOOKS.lock().wait else { return false };
     {
         let mut s = STATE.lock();
         *s = enter_decision(super::wakeup::pm_wakeup_pending());
-        if *s == S2idleState::None { return; }
+        if *s == S2idleState::None { return false; }
     }
     kick_idle_cpus();
-    if let Some(w) = HOOKS.lock().wait { w(); }
+    wait();
     // Every CPU restarts its timers and re-reads the clock on the way out.
     kick_idle_cpus();
     *STATE.lock() = S2idleState::None;
+    true
 }
 
 /// Record a wakeup and release the waiter. Safe from interrupt context.
@@ -106,13 +112,17 @@ pub fn loop_breaks(ops: Option<&PlatformS2idleOps>, pending: bool) -> bool {
 }
 
 /// The suspend-to-idle loop: block in idle until something wakes the machine.
+///
+/// Exits when the wakeup check reports one, or when a pass could not park —
+/// without that second exit a machine with no blocking primitive spins here
+/// with interrupts disabled and never returns.
 /// # C: O(wakeups)
 pub fn s2idle_loop() {
     let ops = super::ops::s2idle_ops();
     loop {
         if loop_breaks(ops, super::wakeup::pm_wakeup_pending()) { return; }
         if let Some(c) = ops.and_then(|o| o.check) { c(); }
-        s2idle_enter();
+        if !s2idle_enter() { return; }
     }
 }
 

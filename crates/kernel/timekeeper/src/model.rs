@@ -78,8 +78,20 @@ impl ClockState {
         Ok(())
     }
 
+    /// Inject one sleep interval (`32a§7`).
+    ///
+    /// `suspend_ns` is what CLOCK_MONOTONIC subtracts from the free-running
+    /// counter, so it alone would hold monotonic still AND hold realtime still
+    /// — and realtime must move, a suspend is time passing. The matching bump
+    /// of the wall offset is what lets the two disagree, and it is one write
+    /// with the first so no reader can see half of it.
+    ///
+    /// A step, not a slew: the wall clock jumps, so absolute CLOCK_REALTIME
+    /// deadlines reproject.
     pub fn account_suspend(&mut self, elapsed_ns: u64) {
         self.suspend_ns = self.suspend_ns.saturating_add(elapsed_ns);
+        self.wall_offset_ns += i128::from(elapsed_ns);
+        self.realtime_generation = self.realtime_generation.wrapping_add(1);
     }
 }
 
@@ -119,11 +131,39 @@ mod tests {
     }
 
     #[test]
-    fn suspend_accounting_saturates_without_advancing_realtime() {
+    fn suspend_accounting_saturates_boottime_and_still_advances_realtime() {
         let mut state = ClockState::ZERO;
         state.account_suspend(u64::MAX - 5);
         state.account_suspend(10);
         assert_eq!(state.boottime(7), u64::MAX);
-        assert_eq!(state.realtime(7), 7);
+        // Realtime advanced by the full injected interval; only the boottime
+        // accumulator saturated.
+        assert_eq!(state.wall_offset_ns, i128::from(u64::MAX - 5) + 10);
+    }
+
+    #[test]
+    fn a_sleep_advances_realtime_and_boottime_but_not_monotonic() {
+        // The counter kept running: monotonic is the counter minus the sleep,
+        // so a caller sampling either side of the sleep sees no jump.
+        let mut state = ClockState::ZERO;
+        state.set_realtime(1_000, 5_000);
+        let before_real = state.realtime(1_000);
+        let before_boot = state.boottime(1_000);
+        const SLEEP: u64 = 7_000;
+        const RUNNING: u64 = 200;
+        state.account_suspend(SLEEP);
+        // Raw counter advanced by SLEEP + RUNNING; monotonic subtracts SLEEP.
+        let mono = 1_000 + SLEEP + RUNNING - SLEEP;
+        assert_eq!(mono, 1_000 + RUNNING, "monotonic excludes the sleep");
+        assert_eq!(state.realtime(mono), before_real + SLEEP + RUNNING);
+        assert_eq!(state.boottime(mono), before_boot + SLEEP + RUNNING);
+    }
+
+    #[test]
+    fn a_sleep_is_a_step_so_absolute_realtime_deadlines_reproject() {
+        let mut state = ClockState::ZERO;
+        let g = state.realtime_generation;
+        state.account_suspend(1);
+        assert_eq!(state.realtime_generation, g.wrapping_add(1));
     }
 }

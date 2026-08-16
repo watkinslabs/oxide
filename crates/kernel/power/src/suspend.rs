@@ -13,6 +13,12 @@
 // - `stats`:     the `suspend_stats` records.
 // - `tunables`:  the `/sys/power` booleans and the `mem_sleep` selection.
 // - `attrs`:     `/sys/power` attribute rendering and write parsing.
+// - `sysfs_api`: the `/sys/power` surface as data plus show/store.
+// - `wire`:      assembles the machine's backend from boot-installed hooks.
+// - `psci_sleep`: the aarch64 platform sleep table (PSCI `SYSTEM_SUSPEND`).
+// - `freezer_walk`: the freeze/thaw passes over the live task registry.
+// - `s2idle_wait`:  the blocking primitives the idle loop parks on.
+// - `boot`:      assembles the machine's wiring in one place.
 
 pub mod state;
 pub mod ops;
@@ -26,15 +32,27 @@ pub mod syscore;
 pub mod stats;
 pub mod tunables;
 pub mod attrs;
+pub mod sysfs_api;
+pub mod wire;
+#[cfg(any(test, all(target_os = "oxide-kernel", target_arch = "x86_64")))] pub mod acpi_sleep;
+// aarch64 deep sleep via PSCI SYSTEM_SUSPEND (`32a§9`). Ungated so its
+// admission decisions stay hosted-testable; the firmware calls inside carry the
+// arch gate.
+pub mod psci_sleep;
+pub mod freezer_walk;
+pub mod s2idle_wait;
+pub mod boot;
 
 pub use state::{SuspendState, StateSet};
 pub use run::{pm_suspend, SuspendBackend};
 pub use wakeup::{pm_system_wakeup, pm_system_irq_wakeup, pm_wakeup_pending};
+pub use wire::{set_hooks, SuspendHooks};
 
 /// Serialises tests that touch this subtree's module statics. `cargo test`
 /// runs test functions on parallel threads, and the statics under test are
 /// per-machine by design; without this the parallelism, not the code, decides
 /// what a test observes.
+/// # C: O(1)
 #[cfg(test)]
 pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

@@ -21,6 +21,8 @@ use crate::KResult;
 
 mod lifecycle_state;
 pub use lifecycle_state::{device_del, try_device_add, try_device_add_with_parent};
+mod driver;
+pub use driver::Driver;
 mod error;
 pub use error::{bound_pci_error_handlers, with_bound_pci_error_handlers, PciChannelState, PciErrorHandlers, PciErsResult};
 
@@ -217,31 +219,6 @@ impl Device {
     }
 }
 
-/// The driver contract (drivers-plan: Driver/DriverInstance/Device +
-/// probe/remove/shutdown symmetry). Object-safe (`&'static dyn Driver`).
-/// `matches` decides whether this driver claims `dev`; `probe` performs
-/// device bring-up and must leave no published partial state on failure;
-/// `remove`/`shutdown` are the teardown symmetry.
-pub trait Driver: Sync {
-    /// Bus this driver registers on. PCI is the default because the current
-    /// hardware model drivers mostly bind PCI functions; platform and future
-    /// virtio child drivers override this.
-    fn bus(&self) -> &'static str { "pci" }
-    /// Driver name (appears at `/sys/bus/<bus>/drivers/<name>`).
-    fn name(&self) -> &'static str;
-    /// True iff this driver claims `dev`.
-    fn matches(&self, dev: &Device) -> bool;
-    /// Bind `dev`. Default Ok for passive/pseudo drivers. # C: driver-defined
-    fn probe(&self, _dev: &Arc<Device>) -> KResult<()> { Ok(()) }
-    /// PCI error-recovery callbacks for this bound PCI driver. Drivers without
-    /// a complete recovery implementation return `None`. # C: O(1)
-    fn pci_error_handlers(&self) -> Option<&'static PciErrorHandlers> { None }
-    /// Release `dev` (hot-unplug). Default no-op. # C: driver-defined
-    fn remove(&self, _dev: &Device) {}
-    /// Quiesce `dev` for reboot/poweroff. Default no-op. # C: driver-defined
-    fn shutdown(&self, _dev: &Device) {}
-}
-
 static DEVICES: Spinlock<Vec<Arc<Device>>, DriverListClass> = Spinlock::new(Vec::new());
 static MODEL_DRIVERS: Spinlock<Vec<&'static dyn Driver>, DriverListClass> = Spinlock::new(Vec::new());
 static DEV_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -383,6 +360,13 @@ pub fn match_driver(dev: &Device) -> Option<&'static str> {
     drivers.iter()
         .find(|d| d.bus() == dev.bus && d.matches(dev))
         .map(|d| d.name())
+}
+
+/// The driver object presently bound to `dev`, if any. The PM phase walk
+/// (`crate::pm`) reaches a driver's callback table through this.
+/// # C: O(N_drivers)
+pub fn bound_driver(dev: &Device) -> Option<&'static dyn Driver> {
+    find_driver_on_bus(dev.bus, dev.bound()?)
 }
 
 fn find_driver_on_bus(bus: &str, driver_name: &str) -> Option<&'static dyn Driver> {
