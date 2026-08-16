@@ -5,6 +5,23 @@ use syscall::errno::Errno;
 
 use super::core::{FUTEX_BITSET_MATCH_ANY, current_key, load_user_u32, store_user_u32, wake_key, WAITERS};
 
+/// `get_futex_key`'s address contract for one futex word: naturally aligned
+/// (`EINVAL`) before reachable (`EFAULT`). Both requeue addresses go through
+/// it before either is used — a misaligned or unreachable DESTINATION used to
+/// pass unchecked, so waiters were re-keyed onto an address the kernel would
+/// then refuse to wake.
+/// # C: O(1)
+fn check_futex_addr(uaddr: u64) -> Result<(), i64> {
+    if !crate::futex_numa::addr_aligned(uaddr, U32_FUTEX_BYTES) {
+        return Err(-(Errno::Einval.as_i32() as i64));
+    }
+    if uaddr == 0 || uaddr >= hal::USER_VA_END { return Err(-(Errno::Efault.as_i32() as i64)); }
+    Ok(())
+}
+
+/// Width of the one futex word size class the contract serves.
+const U32_FUTEX_BYTES: u32 = 4;
+
 /// Requeue (slot 456): wake up to `nr_wake` waiters on `src_uaddr`, then move
 /// up to `nr_requeue` of the REMAINING `src` waiters onto `dst_uaddr` (re-key,
 /// no wake). Returns the number of waiters woken (Linux futex-requeue
@@ -15,6 +32,8 @@ pub fn requeue(src_uaddr: u64, dst_uaddr: u64, nr_wake: i64, nr_requeue: i64, pr
     // count type instead (the previous shape) turned `-1` into an unbounded
     // requeue that drained the whole wait queue.
     if nr_wake < 0 || nr_requeue < 0 { return -(Errno::Einval.as_i32() as i64); }
+    if let Err(rv) = check_futex_addr(src_uaddr) { return rv; }
+    if let Err(rv) = check_futex_addr(dst_uaddr) { return rv; }
     let (nr_wake, nr_requeue) = (nr_wake as usize, nr_requeue as usize);
     let src = match current_key(src_uaddr, private) { Some(k) => k, None => return -(Errno::Einval.as_i32() as i64) };
     let dst = match current_key(dst_uaddr, private) { Some(k) => k, None => return -(Errno::Einval.as_i32() as i64) };
@@ -46,9 +65,13 @@ pub fn requeue(src_uaddr: u64, dst_uaddr: u64, nr_wake: i64, nr_requeue: i64, pr
 /// This is what glibc's pthread_cond_broadcast / older condvars use to move
 /// waiters from the cond futex onto the associated mutex. # C: O(W)
 pub fn cmp_requeue(src_uaddr: u64, dst_uaddr: u64, nr_wake: i64, nr_requeue: i64, cmpval: u32, private: bool) -> i64 {
-    if src_uaddr == 0 || src_uaddr >= hal::USER_VA_END || (src_uaddr & 0x3) != 0 {
-        return -(Errno::Einval.as_i32() as i64);
-    }
+    // Both keys are set up before the compare word is read, and the
+    // destination is checked as strictly as the source. Reading the compare
+    // word first reported EAGAIN for a caller whose real error was a bad
+    // destination address.
+    if nr_wake < 0 || nr_requeue < 0 { return -(Errno::Einval.as_i32() as i64); }
+    if let Err(rv) = check_futex_addr(src_uaddr) { return rv; }
+    if let Err(rv) = check_futex_addr(dst_uaddr) { return rv; }
     // `get_futex_value_locked`: the compare word is fetched through the
     // exception table, so an in-range address with nothing mapped is EFAULT.
     let Ok(cur) = load_user_u32(src_uaddr) else { return -(Errno::Efault.as_i32() as i64) };

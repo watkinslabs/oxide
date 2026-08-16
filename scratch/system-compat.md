@@ -93,7 +93,7 @@ Without these a logged-in user has no working machine. `T1-a` and `T1-b` are ans
 | `T2-f` | `NOT FOUND` | SELinux | No MAC-policy owner. The composed image's distribution ships SELinux enforcing, so a boot has to disable it and diverge from the distribution it is built from | source-tree audit under `crates/kernel` | — |
 | `T2-g` | `NOT FOUND` | Bluetooth | No Bluetooth subsystem. Wireless keyboards, mice and headphones do not work | source-tree audit under `crates/kernel` and `crates/drivers` | — |
 | `T2-h` | `NOT FOUND` | Wi-Fi and mac80211 | No Wi-Fi subsystem. A laptop with no Ethernet port has no network at all | source-tree audit under `crates/kernel` and `crates/drivers` | — |
-| `T2-i` | `PARTIAL` | futex2 | Only 32-bit futex words; NUMA-keyed and memory-policy-keyed futexes are rejected. Broad userspace compatibility | `crates/kernel/ipc/src/futex2_flags.rs` | — |
+| `T2-i` | `OK` | futex2 | Full flag word. `FUTEX2_NUMA`/`FUTEX2_MPOL` accepted and served: doubled operand + 8-byte alignment, node-word read/validate/write-back, memory-policy derivation, applied identically by `futex_wait`/`futex_wake`/`futex_waitv`/`futex_requeue`. The 32-bit-word-only rule is the reference's own (`futex_flags_valid` refuses every other size class), not a subset. Node identity selects one queue set because the machine has one node — see the futex node row in `scratch/known_issues.md` | `crates/kernel/ipc/src/{futex2_flags,futex_numa}.rs`, `crates/kernel/ipc/src/live/futex/numa.rs`, `docs/24§5.1` | F1175 |
 | `T2-j` | `PARTIAL` | USB mass-storage block operations | Read, write and flush work; discard and write-zeroes return `EOPNOTSUPP` | `crates/drivers/drv-xhci/src/storage_block.rs` | — |
 
 ## Tier 3 — server, router and container features

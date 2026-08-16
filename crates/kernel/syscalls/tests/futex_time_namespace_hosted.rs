@@ -13,6 +13,18 @@ extern crate self as ipc;
 // The futex2 flag/operand validators the slot files consume. Real production
 // source: non-gated, so it compiles unchanged into this harness.
 #[path = "../../ipc/src/futex2_flags.rs"] pub mod futex2_flags;
+// The NUMA/mempolicy node ladder the slot files reach through the key
+// preflight. Real production source, same reason.
+#[path = "../../ipc/src/futex_numa.rs"] pub mod futex_numa;
+
+/// Node-id word the preflight stub below reads instead of user memory, and
+/// the value it wrote back (`None` = untouched). The slot files pass fake user
+/// addresses, so the transfer is injected here while the DECISION stays the
+/// production one.
+static NODE_WORD: AtomicU64 = AtomicU64::new(u32::MAX as u64);
+static NODE_WRITTEN: AtomicU64 = AtomicU64::new(NO_WRITE);
+/// Sentinel for "the preflight wrote nothing back".
+const NO_WRITE: u64 = u64::MAX;
 
 pub const USER_VA_END: u64 = u64::MAX;
 
@@ -50,6 +62,29 @@ pub mod live {
         #[derive(Copy, Clone, Debug, Eq, PartialEq)]
         pub struct WaitvEntry { pub uaddr: u64, pub val: u32, pub private: bool }
 
+        /// The production key preflight with its two user-memory transfers
+        /// injected: the alignment rule, the node ladder and the write-back
+        /// decision are the real ones, so a slot file that stops calling this
+        /// — or calls it with the wrong flags — fails a test.
+        pub fn futex2_key_preflight(uaddr: u64, f: &crate::futex2_flags::Futex2Flags)
+            -> Result<(), syscall::errno::Errno>
+        {
+            use crate::futex_numa::{addr_aligned, resolve_node, FUTEX_NO_NODE};
+            use core::sync::atomic::Ordering;
+            if !addr_aligned(uaddr, f.access_bytes()) {
+                return Err(syscall::errno::Errno::Einval);
+            }
+            let user_node = if f.numa {
+                Some(super::super::NODE_WORD.load(Ordering::SeqCst) as u32 as i32)
+            } else { None };
+            let out = resolve_node(f.numa, f.mpol, user_node, FUTEX_NO_NODE)
+                .map_err(|_| syscall::errno::Errno::Einval)?;
+            let _ = FUTEX_NO_NODE;
+            super::super::NODE_WRITTEN.store(
+                out.write_back.map(|n| n as u32 as u64).unwrap_or(super::super::NO_WRITE),
+                Ordering::SeqCst);
+            Ok(())
+        }
         pub fn requeue(_uaddr: u64, _uaddr2: u64, _wake: i64, _requeue: i64,
             _private: bool) -> i64 { 0 }
         pub fn cmp_requeue(_uaddr: u64, _uaddr2: u64, _wake: i64, _requeue: i64,
@@ -140,6 +175,8 @@ fn timespec(sec: i64) -> [i64; 2] { [sec, 0] }
 fn reset() {
     DEADLINE.store(0, Ordering::SeqCst);
     CONVERSIONS.store(0, Ordering::SeqCst);
+    NODE_WORD.store(futex_numa::FUTEX_NO_NODE as u32 as u64, Ordering::SeqCst);
+    NODE_WRITTEN.store(NO_WRITE, Ordering::SeqCst);
 }
 
 #[test]
@@ -234,9 +271,53 @@ fn futex_wait_rejects_a_value_wider_than_the_futex_word() {
     let sz = futex2_flags::FUTEX2_SIZE_U32 as u64;
     assert_eq!(s455_futex_wait::sys_futex_wait(&args(0x1000, 1u64 << 40, u32::MAX as u64, sz, 0, 0)), -22);
     assert_eq!(s455_futex_wait::sys_futex_wait(&args(0x1000, 7, 1u64 << 40, sz, 0, 0)), -22);
-    // NUMA / MPOL keying is rejected, not silently ignored.
-    assert_eq!(s455_futex_wait::sys_futex_wait(
-        &args(0x1000, 7, u32::MAX as u64, sz | futex2_flags::FUTEX2_NUMA as u64, 0, 0)), -22);
+}
+
+#[test]
+fn futex_wait_runs_the_node_ladder_for_a_numa_keyed_futex() {
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    reset();
+    let sz = futex2_flags::FUTEX2_SIZE_U32 as u64;
+    let numa = sz | futex2_flags::FUTEX2_NUMA as u64;
+    // A caller expressing no preference is told which node its futex landed
+    // on. The write-back is the whole point of the second word.
+    NODE_WORD.store(futex_numa::FUTEX_NO_NODE as u32 as u64, Ordering::SeqCst);
+    assert_eq!(s455_futex_wait::sys_futex_wait(&args(0x1000, 7, u32::MAX as u64, numa, 0, 0)), 0);
+    assert_eq!(NODE_WRITTEN.load(Ordering::SeqCst), futex_numa::current_node_id() as u64);
+
+    // A node this machine does not have is EINVAL, not a silent fallback.
+    reset();
+    NODE_WORD.store(1, Ordering::SeqCst);
+    assert_eq!(s455_futex_wait::sys_futex_wait(&args(0x1000, 7, u32::MAX as u64, numa, 0, 0)), -22);
+    assert_eq!(NODE_WRITTEN.load(Ordering::SeqCst), NO_WRITE);
+
+    // The node word doubles the operand, so a 4-aligned address that a plain
+    // futex accepts is EINVAL here.
+    reset();
+    assert_eq!(s455_futex_wait::sys_futex_wait(&args(0x1004, 7, u32::MAX as u64, numa, 0, 0)), -22);
+    assert_eq!(s455_futex_wait::sys_futex_wait(&args(0x1004, 7, u32::MAX as u64, sz, 0, 0)), 0);
+}
+
+#[test]
+fn futex_waitv_runs_the_node_ladder_per_entry() {
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    reset();
+    let numa = (futex2_flags::FUTEX2_SIZE_U32 | futex2_flags::FUTEX2_NUMA
+                | futex2_flags::FUTEX2_PRIVATE) as u64;
+    // A flag honoured by `futex_wait` and ignored by `futex_waitv` would be a
+    // split contract, so the array entries go through the same ladder.
+    NODE_WORD.store(1, Ordering::SeqCst);
+    let bad = [7u64, 0x1000, numa];
+    assert_eq!(s449_futex_waitv::sys_futex_waitv(&args(bad.as_ptr() as u64, 1, 0, 0, 0, 0)), -22);
+    reset();
+    NODE_WORD.store(futex_numa::FUTEX_NO_NODE as u32 as u64, Ordering::SeqCst);
+    let good = [7u64, 0x1000, numa];
+    assert_eq!(s449_futex_waitv::sys_futex_waitv(&args(good.as_ptr() as u64, 1, 0, 0, 0, 0)), 0);
+    assert_eq!(NODE_WRITTEN.load(Ordering::SeqCst), futex_numa::current_node_id() as u64);
+    // An unaligned entry is refused for the doubled operand too.
+    reset();
+    let misaligned = [7u64, 0x1004, numa];
+    assert_eq!(s449_futex_waitv::sys_futex_waitv(&args(misaligned.as_ptr() as u64, 1, 0, 0, 0, 0)), -22);
 }
 
 #[test]

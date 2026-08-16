@@ -40,11 +40,15 @@ pub fn dispatch(uaddr: u64, op_full: u32, val: u32) -> i64 {
 /// wakes on expiry and returns ETIMEDOUT instead of hanging forever.
 /// # C: O(W) waiters per WAKE; O(1) WAIT
 pub fn dispatch_timed(uaddr: u64, op_full: u32, val: u32, bitset: u32, deadline_ns: u64) -> i64 {
-    if uaddr == 0 || uaddr >= hal::USER_VA_END {
-        return -(Errno::Efault.as_i32() as i64);
-    }
+    // `get_futex_key` refuses an unaligned futex word BEFORE it checks the
+    // address is reachable at all, so an unaligned kernel-range address is
+    // EINVAL rather than EFAULT. The reverse order reported the second-order
+    // problem and hid the first.
     if (uaddr & 0x3) != 0 {
         return -(Errno::Einval.as_i32() as i64);
+    }
+    if uaddr == 0 || uaddr >= hal::USER_VA_END {
+        return -(Errno::Efault.as_i32() as i64);
     }
     let private = (op_full & FUTEX_PRIVATE_FLAG) != 0;
     match op_full & FUTEX_CMD_MASK {

@@ -13,7 +13,7 @@
 // a mutex the signaller had already released, and they would never be woken.
 
 use syscall::{errno::Errno, SyscallArgs};
-use ipc::futex2_flags::{validate_futex2_flags, validate_futex2_input};
+use ipc::futex2_flags::{Futex2Flags, validate_futex2_flags, validate_futex2_input};
 use crate::user_mem as um;
 
 /// `sizeof(struct futex_waitv)`; `val@0`, `uaddr@8`, `flags@16`, `__reserved@20`.
@@ -22,7 +22,7 @@ const OFF_UADDR: u64 = 8;
 const OFF_FLAGS: u64 = 16;
 const OFF_RESERVED: u64 = 20;
 
-struct Parsed { uaddr: u64, val: u64, flags: u32, private: bool }
+struct Parsed { uaddr: u64, val: u64, flags: u32, f: Futex2Flags }
 
 /// Read and validate one `struct futex_waitv` from an already-validated span.
 fn parse(base: u64) -> Result<Parsed, i64> {
@@ -35,7 +35,7 @@ fn parse(base: u64) -> Result<Parsed, i64> {
     if rsvd != 0 { return Err(einval); }
     let f = validate_futex2_flags(flags).map_err(|_| einval)?;
     if !validate_futex2_input(f.size_bytes, val) { return Err(einval); }
-    Ok(Parsed { uaddr, val, flags, private: f.private })
+    Ok(Parsed { uaddr, val, flags, f })
 }
 
 /// `sys_futex_requeue(waiters, flags, nr_wake, nr_requeue)` — slot 456.
@@ -54,6 +54,14 @@ pub fn sys_futex_requeue(args: &SyscallArgs) -> i64 {
     // cannot span two key derivations, and a mismatch is a caller bug rather
     // than something to silently resolve in one direction.
     if src.flags != dst.flags { return einval; }
+    // Both keys are set up before either is used, source first — the same
+    // order the requeue itself walks them in, so a bad destination node word
+    // is reported before any waiter has been moved.
+    for p in [&src, &dst] {
+        if let Err(e) = ::ipc::live::futex::futex2_key_preflight(p.uaddr, &p.f) {
+            return -(e.as_i32() as i64);
+        }
+    }
     ::ipc::live::futex::cmp_requeue(
-        src.uaddr, dst.uaddr, nr_wake, nr_requeue, src.val as u32, src.private)
+        src.uaddr, dst.uaddr, nr_wake, nr_requeue, src.val as u32, src.f.private)
 }

@@ -55,6 +55,13 @@ pub fn sys_futex_wait(args: &SyscallArgs) -> i64 {
         Ok(dl) => dl,
         Err(e) => return e,
     };
+    // Node keying happens at key setup, after the timeout is armed: the
+    // operand's alignment, the node-id word and its write-back are all part of
+    // `get_futex_key`, not of the flag word.
+    if let Err(e) = ::ipc::live::futex::futex2_key_preflight(uaddr, &f) {
+        return -(e.as_i32() as i64);
+    }
+
     // `mask` is the futex2 wait bitset (identical to classic FUTEX_WAIT_BITSET's
     // val3) — `dispatch_timed` rejects `mask == 0` with -EINVAL (Linux
     // `__futex_wait`) and only a FUTEX_WAKE_BITSET matching one of these bits

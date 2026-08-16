@@ -50,7 +50,21 @@ Per-system hash table `BTreeMap<(mm_id, uaddr), WaitQueue>` (or sharded; 256 buc
 
 Robust futex: `set_robust_list` registers a per-task list; on task exit, walk it and signal listed futexes.
 
-PI (priority inheritance) futex: defer to v2.
+PI (priority inheritance) futex: `FUTEX_LOCK_PI`/`LOCK_PI2`/`UNLOCK_PI`/`TRYLOCK_PI`/`WAIT_REQUEUE_PI`/`CMP_REQUEUE_PI`, full owner-death and `FUTEX_OWNER_DIED` handoff.
+
+### 5.1 futex2 flag word
+
+| Bits | Meaning | Contract |
+|---|---|---|
+| `[1:0]` size | `U8`/`U16`/`U32`/`U64` | `U32` only; the other three are `EINVAL`, never served at another width |
+| `0x04` `FUTEX2_NUMA` | node-id word follows the futex word | operand doubles: 8-byte natural alignment, both words accessible |
+| `0x08` `FUTEX2_MPOL` | node from the mapping's memory policy | consulted only when the caller expressed no preference |
+| `0x80` `FUTEX2_PRIVATE` | key on `(mm, addr)` | same value as `FUTEX_PRIVATE_FLAG` |
+| others | — | `EINVAL` |
+
+Node ladder, in order: node-id word (`FUTEX_NO_NODE` = no preference; any other id absent from the online set is `EINVAL`, outranking every later step) → memory policy (`MPOL_PREFERRED`'s node, or a mask-valued policy's home node) → the running node. With `FUTEX2_NUMA`, a node the kernel resolved (not one the caller named) is written back into the node-id word.
+
+Node identity selects a queue set, not a key: on a single-node machine (`01` node model) it never separates two futexes that would otherwise match, and every user-visible answer above still holds. `val`/`mask` wider than the futex word is `EINVAL`, never truncation. `futex_wait`/`futex_wake`/`futex_waitv`/`futex_requeue` apply this identically; `futex_requeue` additionally requires both entries' flag words to be equal.
 
 ## 6 eventfd
 

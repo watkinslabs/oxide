@@ -25,6 +25,12 @@ pub fn sys_futex_wake(args: &SyscallArgs) -> i64 {
         Ok(f) => f, Err(_) => return -(Errno::Einval.as_i32() as i64),
     };
     if !validate_futex2_input(f.size_bytes, mask) { return -(Errno::Einval.as_i32() as i64); }
+    // Node keying is part of key setup and applies to a wake exactly as to a
+    // wait — a flag honoured by one side and ignored by the other would be a
+    // split contract.
+    if let Err(e) = ::ipc::live::futex::futex2_key_preflight(uaddr, &f) {
+        return -(e.as_i32() as i64);
+    }
     // `mask` is the futex2 wake bitset (identical to classic FUTEX_WAKE_BITSET's
     // val3) — only waiters whose registered bitset intersects `mask` wake.
     // `dispatch_timed` rejects `mask == 0` with -EINVAL (Linux `futex_wake`).

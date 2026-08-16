@@ -20,6 +20,11 @@ pub mod futex_restart;
 // Non-gated so the reject ladder is hosted-tested; the slot files that consume
 // it are kernel-gated.
 pub mod futex2_flags;
+// futex2 NUMA/memory-policy node ladder (`FUTEX2_NUMA`, `FUTEX2_MPOL`).
+// Non-gated so the node-selection order and the write-back rule are
+// hosted-tested; `live::futex::numa` performs the user-memory transfers it
+// implies and holds no policy of its own.
+pub mod futex_numa;
 // PI-futex user-word transitions (`futex_lock_pi_atomic`, `wake_futex_pi`, the
 // owner-death handoff). Non-gated so every word transition and errno is
 // hosted-tested; `live::futex::pi` applies them.
