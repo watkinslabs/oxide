@@ -1,0 +1,9 @@
+# F1173 — aarch64 control run: HD-Audio device REMOVED from the QEMU line.
+# The pre-existing aarch64 kernel stack overflow still fires, so it is not this lane's.
+
+[10.590] systemd[1]: Reached target paths.target - Path Units.
+[10.592] systemd[1]: Reached target remote-fs.target - Remote File Systems.
+[10.597] [BADSTACK] exception entry with SP outside the current kernel stack site=0 spsr=00000000600003c5 from=EL1
+[10.598] [BADSTACK] sp_el1=fffffb0000041f80 stack=[fffffb0000042000,fffffb0000046000] BELOW-LO by 128 (stack overflow)
+[10.599] [BADSTACK] esr=0000000096000047 elr=ffffffff80593f30 far=fffffb0000041ff0
+[10.600] [BADSTACK] mpidr=0000000000000000 tpidr_el1=ffffffff852658c0
