@@ -361,6 +361,9 @@ mod futex;
 // The REAL restart rule `wait_loop` consults — `crate::futex_restart` inside
 // the included production source resolves here, so the harness exercises the
 // same table the kernel does.
+// The NUMA node ladder `ops.rs` reaches for its address contract. Real
+// production source: non-gated, so it compiles unchanged into this harness.
+#[path = "../src/futex_numa.rs"] pub mod futex_numa;
 #[path = "../src/futex_restart.rs"] pub mod futex_restart;
 // Same arrangement for the PI word-transition rules the included PI tree uses.
 #[path = "../src/futex_pi_rules.rs"] pub mod futex_pi_rules;

@@ -69,6 +69,8 @@ pub fn sys_futex_waitv(args: &SyscallArgs) -> i64 {
     };
     if let Err(rv) = crate::userbuf::validate_user_buf(ptr, n * ENTRY_BYTES, 1) { return rv; }
     let mut entries: ::alloc::vec::Vec<WaitvEntry> = ::alloc::vec::Vec::with_capacity(n as usize);
+    let mut flagv: ::alloc::vec::Vec<::ipc::futex2_flags::Futex2Flags> =
+        ::alloc::vec::Vec::with_capacity(n as usize);
     for i in 0..n {
         let base = ptr + i * ENTRY_BYTES;
         let (val, uaddr, flags, rsvd) = match (um::get_u64(base), um::get_u64(base + OFF_UADDR),
@@ -87,6 +89,15 @@ pub fn sys_futex_waitv(args: &SyscallArgs) -> i64 {
         // park the caller forever.
         if !validate_futex2_input(f.size_bytes, val) { return -(Errno::Einval.as_i32() as i64); }
         entries.push(WaitvEntry { uaddr, val: val as u32, private: f.private });
+        flagv.push(f);
+    }
+    // Key setup runs only once the whole array has parsed, so a malformed
+    // later entry outranks an earlier entry's node word — the array is
+    // accepted or rejected as a unit before any of it is acted on.
+    for (e, f) in entries.iter().zip(flagv.iter()) {
+        if let Err(err) = ::ipc::live::futex::futex2_key_preflight(e.uaddr, f) {
+            return -(err.as_i32() as i64);
+        }
     }
     ::ipc::live::futex::dispatch_waitv_timed(&entries, deadline_ns)
 }

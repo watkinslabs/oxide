@@ -38,6 +38,9 @@ pub use harness::*;
 // ---------------------------------------------------------------------------
 mod futex_pi;
 
+// The NUMA node ladder `ops.rs` reaches for its address contract. Real
+// production source: non-gated, so it compiles unchanged into this harness.
+#[path = "../src/futex_numa.rs"] pub mod futex_numa;
 #[path = "../src/futex_restart.rs"] pub mod futex_restart;
 #[path = "../src/futex_pi_rules.rs"] pub mod futex_pi_rules;
 #[path = "../src/robust_decode.rs"] pub mod robust_decode;
