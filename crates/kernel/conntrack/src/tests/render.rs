@@ -1,0 +1,144 @@
+// The proc and ctnetlink surfaces. Their layout is parsed positionally by
+// userspace, so a field in the wrong place is an ABI break, not cosmetics.
+
+extern crate alloc;
+use alloc::sync::Arc;
+
+use crate::ctnetlink;
+use crate::entry::Conn;
+use crate::procfs;
+use crate::tuple::{InetAddr, ProtoPart, Tuple, TupleEnd};
+use crate::uapi::*;
+use super::tuple::{v4_icmp, v4_tcp, v4_udp};
+
+fn entry(orig: Tuple) -> Arc<Conn> {
+    let c = Conn::new(42, orig, orig.invert().unwrap(), 0);
+    c.refresh(0, 100);
+    Arc::new(c)
+}
+
+#[test]
+fn a_tcp_line_carries_both_tuples_and_the_state() {
+    let c = entry(v4_tcp([10, 0, 0, 1], 1234, [10, 0, 0, 2], 80));
+    let line = procfs::render_entry(&c, 0, false);
+    assert!(line.contains("tcp"), "{line}");
+    assert!(line.contains("src=10.0.0.1 dst=10.0.0.2 sport=1234 dport=80"), "{line}");
+    assert!(line.contains("src=10.0.0.2 dst=10.0.0.1 sport=80 dport=1234"), "{line}");
+    assert!(line.contains("[UNREPLIED]"), "an unanswered flow is marked: {line}");
+    assert!(line.contains("100"), "the remaining timeout is reported: {line}");
+}
+
+#[test]
+fn a_replied_assured_flow_drops_unreplied_and_gains_assured() {
+    let c = entry(v4_udp([10, 0, 0, 1], 1234, [10, 0, 0, 2], 53));
+    c.set_status_bits(IPS_SEEN_REPLY | IPS_ASSURED);
+    let line = procfs::render_entry(&c, 0, false);
+    assert!(!line.contains("[UNREPLIED]"), "{line}");
+    assert!(line.contains("[ASSURED]"), "{line}");
+}
+
+#[test]
+fn icmp_reports_type_code_and_id_instead_of_ports() {
+    let c = entry(v4_icmp([10, 0, 0, 1], [10, 0, 0, 2], 0x1234, 8));
+    let line = procfs::render_entry(&c, 0, false);
+    assert!(line.contains("type=8 code=0 id=4660"), "{line}");
+    assert!(!line.contains("sport="), "an ICMP flow has no ports: {line}");
+    assert!(line.contains("type=0 "), "the reply half is the echo reply: {line}");
+}
+
+#[test]
+fn accounting_appears_only_when_enabled() {
+    let c = entry(v4_tcp([10, 0, 0, 1], 1234, [10, 0, 0, 2], 80));
+    c.counters[IP_CT_DIR_ORIGINAL as usize].account(1500);
+    c.counters[IP_CT_DIR_REPLY as usize].account(60);
+    assert!(!procfs::render_entry(&c, 0, false).contains("packets="));
+    let on = procfs::render_entry(&c, 0, true);
+    assert!(on.contains("packets=1 bytes=1500"), "{on}");
+    assert!(on.contains("packets=1 bytes=60"), "{on}");
+}
+
+#[test]
+fn an_ipv6_address_renders_in_its_own_family_form() {
+    let mut a = [0u8; 16]; a[0] = 0x20; a[1] = 0x01; a[15] = 1;
+    let mut b = [0u8; 16]; b[0] = 0x20; b[1] = 0x01; b[15] = 2;
+    let t = Tuple {
+        src: TupleEnd { addr: InetAddr::v6(a), proto: ProtoPart::port(1234) },
+        dst: TupleEnd { addr: InetAddr::v6(b), proto: ProtoPart::port(80) },
+        l3num: NFPROTO_IPV6, protonum: IPPROTO_TCP, zone: 0,
+    };
+    let line = procfs::render_entry(&entry(t), 0, false);
+    assert!(line.contains("ipv6"), "{line}");
+    assert!(line.contains("2001:0:0:0:0:0:0:1"), "{line}");
+}
+
+#[test]
+fn the_whole_body_is_one_line_per_entry() {
+    let a = entry(v4_tcp([10, 0, 0, 1], 1, [10, 0, 0, 2], 80));
+    let b = entry(v4_tcp([10, 0, 0, 1], 2, [10, 0, 0, 2], 80));
+    let body = procfs::render(&[a, b], 0, false);
+    assert_eq!(body.lines().count(), 2);
+    assert!(body.ends_with('\n'));
+}
+
+#[test]
+fn ctnetlink_nests_both_tuples_with_the_nested_bit() {
+    let c = entry(v4_tcp([10, 0, 0, 1], 1234, [10, 0, 0, 2], 80));
+    let buf = ctnetlink::encode_entry(&c, 0, false);
+    // Walk the top level and collect the attribute kinds.
+    let mut kinds = alloc::vec::Vec::new();
+    let mut off = 0;
+    while off + 4 <= buf.len() {
+        let len = u16::from_ne_bytes([buf[off], buf[off + 1]]) as usize;
+        let kind = u16::from_ne_bytes([buf[off + 2], buf[off + 3]]);
+        assert!(len >= 4 && off + len <= buf.len(), "attribute length must be sane");
+        kinds.push(kind);
+        off += (len + 3) & !3;
+    }
+    assert_eq!(off, buf.len(), "the walk must consume the buffer exactly");
+    assert!(kinds.contains(&(CTA_TUPLE_ORIG | ctnetlink::NLA_F_NESTED)));
+    assert!(kinds.contains(&(CTA_TUPLE_REPLY | ctnetlink::NLA_F_NESTED)));
+    assert!(kinds.contains(&CTA_STATUS));
+    assert!(kinds.contains(&CTA_TIMEOUT));
+    assert!(kinds.contains(&CTA_ID));
+}
+
+#[test]
+fn ports_are_encoded_in_network_order() {
+    let c = entry(v4_tcp([10, 0, 0, 1], 0x1234, [10, 0, 0, 2], 0x0050));
+    let buf = ctnetlink::encode_entry(&c, 0, false);
+    // 0x1234 big-endian is 12 34; little-endian would be 34 12.
+    let needle = [0x12u8, 0x34];
+    assert!(buf.windows(2).any(|w| w == needle),
+        "a host-order port would be read as a different port by userspace");
+}
+
+#[test]
+fn userspace_cannot_write_the_kernel_owned_status_bits() {
+    let requested = IPS_CONFIRMED | IPS_DYING | IPS_SRC_NAT | IPS_SRC_NAT_DONE
+        | IPS_EXPECTED | IPS_TEMPLATE | IPS_OFFLOAD | IPS_SEEN_REPLY | IPS_ASSURED;
+    let allowed = ctnetlink::writable_status(requested);
+    assert_eq!(allowed & IPS_CONFIRMED, 0);
+    assert_eq!(allowed & IPS_DYING, 0);
+    assert_eq!(allowed & IPS_SRC_NAT, 0);
+    assert_eq!(allowed & IPS_SRC_NAT_DONE, 0);
+    assert_eq!(allowed & IPS_EXPECTED, 0);
+    assert_eq!(allowed & IPS_TEMPLATE, 0);
+    assert_eq!(allowed & IPS_OFFLOAD, 0);
+    // These two are legitimately settable.
+    assert_eq!(allowed & IPS_SEEN_REPLY, IPS_SEEN_REPLY);
+    assert_eq!(allowed & IPS_ASSURED, IPS_ASSURED);
+}
+
+#[test]
+fn ctinfo_reflects_direction_and_relatedness() {
+    let c = entry(v4_tcp([10, 0, 0, 1], 1234, [10, 0, 0, 2], 80));
+    assert_eq!(c.ctinfo(IP_CT_DIR_ORIGINAL), IP_CT_NEW);
+    c.set_status_bits(IPS_SEEN_REPLY);
+    assert_eq!(c.ctinfo(IP_CT_DIR_ORIGINAL), IP_CT_ESTABLISHED);
+    assert_eq!(c.ctinfo(IP_CT_DIR_REPLY), IP_CT_ESTABLISHED_REPLY);
+    c.set_status_bits(IPS_EXPECTED);
+    assert_eq!(c.ctinfo(IP_CT_DIR_ORIGINAL), IP_CT_RELATED);
+    assert_eq!(c.ctinfo(IP_CT_DIR_REPLY), IP_CT_RELATED_REPLY);
+    assert_eq!(ctinfo2dir(IP_CT_NEW), IP_CT_DIR_ORIGINAL);
+    assert_eq!(ctinfo2dir(IP_CT_ESTABLISHED_REPLY), IP_CT_DIR_REPLY);
+}
