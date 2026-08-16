@@ -25,9 +25,9 @@ use crate::volume::Volume;
 use super::section;
 
 impl<S: SectorSource> Volume<S> {
-    /// Blocks one section holds. # C: O(1)
+    /// Blocks one section holds, ignoring any zone capacity. # C: O(1)
     pub(crate) fn blks_per_sec(&self) -> u32 {
-        self.sb.blks_per_seg() * self.sb.segs_per_sec.max(1)
+        crate::zoned::usable::blks_per_sec(&self.sb)
     }
 
     /// The first segment of the section `segno` belongs to. # C: O(1)

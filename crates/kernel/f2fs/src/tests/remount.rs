@@ -133,11 +133,12 @@ fn the_discard_unit_may_not_be_switched_under_a_running_mount() {
 
 #[test]
 fn a_line_mount_derives_its_defaults_from_the_volume() {
-    // The fixture is small and its device cannot discard, so both of those
-    // defaults must come out the volume's way rather than the build's.
+    // Every one of these is a default the reference derives from the volume or
+    // the device rather than picking build-wide, and each is wrong on some
+    // volume if it is picked build-wide.
     let fs = mounted();
     let o = fs.options();
-    assert!(!o.discard, "a device that cannot discard is not told to");
+    assert_eq!(o.discard, fs.supports_discard(), "discard follows the DEVICE");
     assert_eq!(o.active_logs, 6, "the volume is not marked read-only");
     assert!(o.flush_merge, "a writable mount merges");
     let segs = fs.volume.lock().super_block().segment_count_main;

@@ -13,7 +13,7 @@ fn the_bytes_after_the_range_move_down_to_take_its_place() {
     let (_, got) = settled(v, ino);
     // Blocks 1,2,3 of the pattern become blocks 0,1,2 minus the removed one.
     let mut want = Vec::new();
-    for i in [0u8, 2, 3] { want.extend(vec![i + 1; BLKSIZE]); }
+    for i in [0usize, 2, 3] { want.extend(vec![byte_for(i); BLKSIZE]); }
     assert_eq!(got, want);
 }
 
@@ -38,7 +38,7 @@ fn collapsing_the_head_leaves_the_tail_at_offset_zero() {
     let (mut v, ino) = with_file(4);
     v.fallocate(ino, C, 0, 3 * B).expect("collapse");
     let (_, got) = settled(v, ino);
-    assert_eq!(got, vec![4u8; BLKSIZE]);
+    assert_eq!(got, vec![byte_for(3); BLKSIZE]);
 }
 
 #[test]

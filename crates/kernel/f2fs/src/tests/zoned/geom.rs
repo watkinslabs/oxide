@@ -25,7 +25,7 @@ fn seq(n: u64, len: u32, cap: u32) -> DevZones {
 fn a_drive_that_reports_nothing_leaves_no_blocks_unusable() {
     let g = Geometry::build(ZONED, &[None], 6).expect("builds");
     assert_eq!(g.unusable_blocks_per_sec, 0);
-    assert!(!g.any_sequential());
+    assert!(!g.dev_is_zoned(0));
 }
 
 #[test]
@@ -33,7 +33,7 @@ fn an_empty_report_slice_is_the_same_answer_as_a_conventional_drive() {
     let a = Geometry::build(ZONED, &[], 6).expect("builds");
     let b = Geometry::build(ZONED, &[None], 6).expect("builds");
     assert_eq!(a.unusable_blocks_per_sec, b.unusable_blocks_per_sec);
-    assert_eq!(a.any_sequential(), b.any_sequential());
+    assert_eq!(a.dev_is_zoned(0), b.dev_is_zoned(0));
 }
 
 #[test]
@@ -41,7 +41,7 @@ fn a_short_capacity_becomes_the_unusable_figure() {
     let g = Geometry::build(ZONED, &[Some(seq(4, 512, 500))], 6).expect("builds");
     assert_eq!(g.unusable_blocks_per_sec, 12);
     assert_eq!(g.blocks_per_zone, 512);
-    assert!(g.any_sequential());
+    assert!(g.dev_is_zoned(0));
 }
 
 #[test]

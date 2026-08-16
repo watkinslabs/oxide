@@ -11,10 +11,10 @@ fn the_bytes_after_the_point_move_up_and_the_gap_reads_as_zeroes() {
     let (mut v, ino) = with_file(3);
     v.fallocate(ino, I, B, B).expect("insert");
     let (_, got) = settled(v, ino);
-    let mut want = vec![1u8; BLKSIZE];
+    let mut want = vec![byte_for(0); BLKSIZE];
     want.extend(vec![0u8; BLKSIZE]);
-    want.extend(vec![2u8; BLKSIZE]);
-    want.extend(vec![3u8; BLKSIZE]);
+    want.extend(vec![byte_for(1); BLKSIZE]);
+    want.extend(vec![byte_for(2); BLKSIZE]);
     assert_eq!(got, want);
 }
 

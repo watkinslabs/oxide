@@ -126,9 +126,4 @@ impl Geometry {
     pub fn dev_is_zoned(&self, dev: usize) -> bool {
         self.seq.get(dev).is_some_and(|b| b.iter().any(|&s| s))
     }
-
-    /// Whether any member reported a sequential zone. # C: O(zones)
-    pub fn any_sequential(&self) -> bool {
-        (0..self.seq.len()).any(|d| self.dev_is_zoned(d))
-    }
 }

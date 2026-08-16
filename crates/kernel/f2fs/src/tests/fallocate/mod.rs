@@ -41,12 +41,19 @@ pub fn with_file(blocks: usize) -> (Volume<MemImage>, u32) {
     (v, ino)
 }
 
-/// `blocks` blocks, block `i` filled with the byte `i + 1`.
+/// `blocks` blocks, block `i` filled with a byte that is never zero.
+///
+/// Never zero because zero is what a hole reads as: a pattern that put a zero
+/// block in the file would make a block LOST look exactly like a block moved
+/// correctly, which is the one thing these tests exist to tell apart.
 pub fn pattern(blocks: usize) -> Vec<u8> {
     let mut out = Vec::new();
-    for i in 0..blocks { out.extend(vec![(i as u8) + 1; BLKSIZE]); }
+    for i in 0..blocks { out.extend(vec![byte_for(i); BLKSIZE]); }
     out
 }
+
+/// The byte block `i` is filled with. # C: O(1)
+pub fn byte_for(i: usize) -> u8 { (i % 255) as u8 + 1 }
 
 /// The file's bytes as the MEDIUM holds them: written out, mounted again, and
 /// read back. A change that only reached memory is invisible here, which is

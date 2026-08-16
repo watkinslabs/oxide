@@ -203,3 +203,13 @@ fn a_volume_with_no_free_section_left_says_try_again() {
     assert_eq!(v.defragment_range(ino, 0, 3 * BLK), Err(Errno::Eagain));
     assert_eq!(addrs(&v, ino, 3), before);
 }
+
+#[test]
+fn the_state_refusals_come_before_the_range_is_looked_at() {
+    // An empty range on a file that could never be rewritten is told which
+    // of the two stopped it: a caller told "nothing moved" would try again
+    // with a bigger range and be told the same thing.
+    let (mut v, ino) = scattered();
+    v.start_atomic_write(ino, false).unwrap();
+    assert_eq!(v.defragment_range(ino, 8 * BLK, 4 * BLK), Err(Errno::Einval));
+}

@@ -24,3 +24,7 @@ pub use victim::{Found, Policy, Search, SegInfo, Unit};
 #[cfg(test)]
 #[path = "../tests/gc.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../tests/atgcwire.rs"]
+mod atgc_tests;

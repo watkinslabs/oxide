@@ -137,3 +137,34 @@ fn a_remount_keeps_what_no_default_names() {
     let again = Options::redefault(mounted, &plain(), true);
     assert!(again.atgc && again.nat_bits && again.age_extent_cache);
 }
+
+// --------------------------------------- the reservation reaches a new inode
+
+#[test]
+fn a_new_inode_reserves_what_the_mount_line_asked_for() {
+    // The wiring, not the value: an option parsed, bounded and reported that
+    // no inode ever read would be a number with no effect.
+    use crate::mode::S_IFREG;
+    use crate::test_image::{self, ROOT_INO};
+    use crate::volume::NewInode;
+    let spec = NewInode { mode: S_IFREG | 0o644, uid: 0, gid: 0, rdev: 0, now: (1, 0) };
+    let mut v = test_image::with_root()
+        .mount_opts(Options { inline_xattr_size: Some(40), ..Options::defaults() })
+        .expect("mount");
+    let ino = v.create(ROOT_INO, b"f", &spec, None).expect("create");
+    let sized = v.read_inode(ino).expect("inode").inline_xattr_addrs;
+
+    let mut v = test_image::with_root().mount_rw().expect("mount");
+    let ino = v.create(ROOT_INO, b"f", &spec, None).expect("create");
+    let unsized_ = v.read_inode(ino).expect("inode").inline_xattr_addrs;
+
+    // The fixture volume decides whether the reservation is per-inode at all.
+    // Where it is, the option must be what lands; where it is not, both are
+    // the same and the test says so rather than passing vacuously.
+    if unsized_ == 0 {
+        assert_eq!(sized, 0, "a volume without the flexible bit reserves nothing per inode");
+    } else {
+        assert_eq!(unsized_, DEFAULT_INLINE_XATTR_ADDRS, "unnamed takes the format's own");
+        assert_eq!(sized, 40, "and a named size is what the inode records");
+    }
+}

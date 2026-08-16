@@ -469,6 +469,14 @@ impl<S: SectorSource> Volume<S> {
          self.free_nids.available_nids())
     }
 
+    /// Whether the cache is holding `nid` as free — as against handed out, or
+    /// not held at all. What a caller checking that a released id came back
+    /// asks: it will be handed out once the ids ahead of it are, and the
+    /// question is whether it is in the order at all. # C: O(log ids)
+    pub fn nid_is_cached_free(&self, nid: u32) -> bool {
+        self.free_nids.state_of(nid) == Some(crate::freenid::NidState::Free)
+    }
+
     /// Bytes the free-id cache is holding. # C: O(1)
     pub fn free_nid_bytes(&self) -> u64 { self.free_nids.mem_bytes() }
 

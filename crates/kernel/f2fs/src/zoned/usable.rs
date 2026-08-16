@@ -17,7 +17,7 @@ use super::geom::Geometry;
 
 /// Blocks a section holds, ignoring capacity. # C: O(1)
 pub fn blks_per_sec(sb: &SuperBlock) -> u32 {
-    sb.segs_per_sec.saturating_mul(sb.blks_per_seg())
+    sb.segs_per_sec.max(1).saturating_mul(sb.blks_per_seg())
 }
 
 /// Blocks a section may hold. # C: O(1)

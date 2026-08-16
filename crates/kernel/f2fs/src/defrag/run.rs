@@ -29,7 +29,6 @@ impl<S: SectorSource> Volume<S> {
         // where the file has nothing.
         let end = start.saturating_add(len).min(u64::MAX - blk + 1) / blk;
         let end = end.min(inode.size.div_ceil(blk));
-        if first >= end { return Ok(0); }
 
         let facts = Facts {
             compress_released: inode.has(crate::flags::COMPRESS_RELEASED),
@@ -42,6 +41,10 @@ impl<S: SectorSource> Volume<S> {
                 crate::stats::policy::ipu_policy(self.options())),
         };
         plan::admit(&facts)?;
+        // The state refusals come first, whatever the range: a caller told
+        // its range is empty when the file could never be rewritten anyway
+        // would try again with a bigger one.
+        if first >= end { return Ok(0); }
 
         // The cheap answer first: the cached extent describes one contiguous
         // run, and a run that already spans the range is proof there is
