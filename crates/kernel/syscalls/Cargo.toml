@@ -60,6 +60,7 @@ timekeeper = { path = "../timekeeper" }
 uaccess = { path = "../uaccess" }
 tty     = { path = "../tty" }
 vfs     = { path = "../vfs" }
+ninep   = { path = "../ninep" }
 fs      = { path = "../fs" }
 vmm     = { path = "../mm-vmm" }
 power    = { path = "../power" }

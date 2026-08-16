@@ -21,6 +21,8 @@ pmm      = { path = "../mm-pmm" }
 vmm      = { path = "../mm-vmm" }
 syscall  = { path = "../syscall" }
 vfs      = { path = "../vfs" }
+ninep    = { path = "../ninep" }
+fuse-transport = { path = "../../shared/fuse-transport" }
 devfs    = { path = "../devfs" }
 procfs   = { path = "../procfs" }
 # `PERF_EVENT_IOC_SET_BPF` resolves a loaded program by fd and reads the facts

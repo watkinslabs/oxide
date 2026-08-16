@@ -211,6 +211,15 @@ must use grouped paths from day one.
     `net` and `aes`; it holds the only `Cfg80211Ops` implementation a softmac
     driver needs and the only `net::NetDev` a wireless interface presents.
     Wireless driver crates depend on `mac80211`, never on `wireless` directly.
+21. Host-share filesystem ownership (`67§3`): `crates/kernel/ninep` owns the 9P
+    protocol, its client and its mount options and depends only on `vfs`+`sync`;
+    `crates/kernel/fs/src/ninep_fs` is its VFS glue;
+    `crates/drivers/drv-virtio-9p` owns the virtio 9P device.
+    `crates/shared/fuse-transport` owns the FUSE transport traits and nothing
+    else; `crates/kernel/fs/src/fuse` owns the FUSE connection and the virtiofs
+    superblock; `crates/drivers/drv-virtio-fs` owns the virtio-fs device. A
+    virtiofs mount reuses the FUSE connection — a second FUSE implementation is
+    forbidden.
 
 ## 6 Naming rules (frozen)
 
@@ -273,26 +282,33 @@ Constraints:
     `aes` and `p256`. It may not depend on a driver crate: a transport driver
     depends on `bluetooth` and registers itself, never the reverse.
     `crates/shared/aes` and `crates/shared/p256` depend on nothing.
-14. `crates/kernel/conntrack` is a leaf over shared synchronization: it reads no
+15. `crates/kernel/conntrack` is a leaf over shared synchronization: it reads no
     netdev, no socket and no packet buffer, so its whole decision surface runs
     hosted. `nat`, `netfilter` and the syscall shims depend on it, never the
     reverse.
-15. `crates/kernel/nat` depends on `conntrack` for the flow a binding is recorded
+16. `crates/kernel/nat` depends on `conntrack` for the flow a binding is recorded
     on and on nothing else; `conntrack` never depends on it. Packet rewriting
     takes a buffer from its caller rather than reaching for one.
-16. `crates/kernel/netfilter` may depend on `conntrack` and `nat` — the
+17. `crates/kernel/netfilter` may depend on `conntrack` and `nat` — the
     connection-tracking expressions are the reason both exist. Neither depends on
     `netfilter`.
-17. `crates/kernel/vlan` and `crates/kernel/bonding` are leaves over `net`. Both
+18. `crates/kernel/vlan` and `crates/kernel/bonding` are leaves over `net`. Both
     register their devices in the one interface registry `net` already owns;
     neither may keep a second netdev registry, and neither depends on the other.
 
-15. The wireless lock order is `Socket` (140) then `WiphyList` (141) then
+19. The wireless lock order is `Socket` (140) then `WiphyList` (141) then
     `Wiphy` (142) then `Sta80211` (143). Wireless ranks ABOVE `Socket` because
     the network stack enters a wireless interface's transmit path holding its
     own lock, so every wireless lock is the inner one; the receive path drops
     its wireless locks before handing a frame up, so the reverse order never
     occurs.
+20. A transport crate and a filesystem crate never depend on each other. Each
+    transport publishes itself into a directory the filesystem resolves a mount
+    source through (`ninep::transport::registry` for `trans=`,
+    `fuse_transport::registry` for a virtiofs tag). `crates/shared/fuse-transport`
+    is dependency-free so both shores can name it; `crates/kernel/ninep` is a
+    leaf over `vfs`+`sync`. `crates/drivers/drv-virtio-9p` depends on `ninep`,
+    `crates/drivers/drv-virtio-fs` on `fuse-transport`, and neither on `fs`.
 
 ## 8 Change policy
 
@@ -338,7 +354,10 @@ Temporary exceptions are allowed only with:
 
 ## 12 Changelog
 
-<<<<<<< HEAD
+- 2026-08-16: Added `crates/kernel/wireless` (cfg80211 + nl80211),
+  `crates/kernel/mac80211` (softmac) and `crates/drivers/drv-mac80211-hwsim`,
+  with their dependency direction and lock order (`52§5` rule 20, `52§7` rule
+  15, `66§3`).
 - 2026-08-16: Added `crates/kernel/overlayfs` as the single owner of
   union-mount semantics (layer stack, merged lookup, whiteouts, copy-up,
   merged readdir, layer records).
@@ -349,12 +368,6 @@ Temporary exceptions are allowed only with:
   Bluetooth host stack, the `HciTransport` boundary that keeps transport
   drivers free of stack state, and the two primitive crates
   `crates/shared/aes` and `crates/shared/p256`.
-=======
-- 2026-08-16: Added `crates/kernel/wireless` (cfg80211 + nl80211),
-  `crates/kernel/mac80211` (softmac) and `crates/drivers/drv-mac80211-hwsim`,
-  with their dependency direction and lock order (`52§5` rule 20, `52§7` rule
-  15, `66§3`).
->>>>>>> 957c37412 (spec: 62 wireless; feat(crypt): AES with CCM, GCM and CMAC; test: cfg80211 core)
 - 2026-08-15: Added the power-supply and backlight device-class ownership
   boundaries, their ACPI providers under `firmware`, and `crates/shared/kstrtox`.
 - 2026-08-15: Added `crates/kernel/thermal`, `crates/kernel/cpufreq` and

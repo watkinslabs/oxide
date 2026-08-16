@@ -146,6 +146,24 @@ impl FileSystem for FuseFs {
 /// asynchronously by the daemon's channel writes) and builds the root inode from
 /// `rootmode` (the mount's `rootmode=` option, an `S_IF*|perm` word). # C: O(1)
 pub fn build_fuse_fs(conn: Arc<FuseConn>, opts: &MountOpts) -> Arc<FuseFs> {
+    let name = opts.subtype.as_ref().map_or_else(
+        || String::from("fuse"),
+        |subtype| alloc::format!("fuse.{subtype}"),
+    );
+    let options = opts.show_options();
+    build_named_fuse_fs(conn, opts, name, options)
+}
+
+/// [`build_fuse_fs`] with the reported type name and option tail supplied.
+///
+/// A virtiofs mount is this same connection with a different courier, and it
+/// must report itself as `virtiofs` rather than as `fuse`: `/proc/mounts` is
+/// how userspace decides what a mount IS, and a share that names itself `fuse`
+/// there sends every tool looking for a daemon that does not exist.
+/// # C: O(1)
+pub fn build_named_fuse_fs(conn: Arc<FuseConn>, opts: &MountOpts, name: String, options: String)
+    -> Arc<FuseFs>
+{
     conn.set_max_read(opts.max_read);
     conn.send_init();
     let root_attr = Attr {
@@ -154,11 +172,7 @@ pub fn build_fuse_fs(conn: Arc<FuseConn>, opts: &MountOpts) -> Arc<FuseFs> {
         nlink: 2, uid: opts.user_id, gid: opts.group_id, blksize: FUSE_BLKSIZE, ..Default::default()
     };
     let root = build_inode(&conn, proto::FUSE_ROOT_ID, &root_attr);
-    let name = opts.subtype.as_ref().map_or_else(
-        || String::from("fuse"),
-        |subtype| alloc::format!("fuse.{subtype}"),
-    );
-    Arc::new(FuseFs { conn, root, options: opts.show_options(), name })
+    Arc::new(FuseFs { conn, root, options, name })
 }
 
 /// Parsed FUSE mount options. # C: O(1)

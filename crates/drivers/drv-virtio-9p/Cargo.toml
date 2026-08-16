@@ -1,0 +1,23 @@
+[package]
+name = "drv-virtio-9p"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+hal     = { path = "../../arch/hal" }
+iommu   = { path = "../../kernel/iommu" }
+pci     = { path = "../../drivers/pci" }
+virtio  = { path = "../../drivers/virtio" }
+sync    = { path = "../../shared/sync" }
+pmm     = { path = "../../kernel/mm-pmm" }
+ninep   = { path = "../../kernel/ninep" }
+
+[features]
+default = []
+
+[lints]
+workspace = true

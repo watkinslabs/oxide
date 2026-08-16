@@ -62,6 +62,7 @@ pub mod secretmem;
 pub mod tmpfs;
 pub mod hugetlbfs;
 pub mod fuse;
+pub mod ninep_fs;
 pub mod autofs;
 pub mod binfmt_misc;
 pub mod coredump;

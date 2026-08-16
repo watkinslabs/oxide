@@ -9,6 +9,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "aes"
+version = "0.1.0"
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -140,6 +144,18 @@ dependencies = [
  "sched",
  "softirq",
  "sync",
+ "vfs",
+]
+
+[[package]]
+name = "bluetooth"
+version = "0.1.0"
+dependencies = [
+ "aes",
+ "crc",
+ "p256",
+ "sync",
+ "syscall",
  "vfs",
 ]
 
@@ -614,6 +630,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "drv-vhci"
+version = "0.1.0"
+dependencies = [
+ "bluetooth",
+ "drv",
+ "sync",
+ "syscall",
+ "vfs",
+]
+
+[[package]]
+name = "drv-virtio-9p"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "iommu",
+ "ninep",
+ "pci",
+ "pmm",
+ "sync",
+ "virtio",
+]
+
+[[package]]
 name = "drv-virtio-blk"
 version = "0.1.0"
 dependencies = [
@@ -629,6 +669,19 @@ dependencies = [
  "sched",
  "sync",
  "timekeeper",
+ "virtio",
+]
+
+[[package]]
+name = "drv-virtio-fs"
+version = "0.1.0"
+dependencies = [
+ "fuse-transport",
+ "hal",
+ "iommu",
+ "pci",
+ "pmm",
+ "sync",
  "virtio",
 ]
 
@@ -1002,6 +1055,7 @@ dependencies = [
  "crng",
  "crypt",
  "devfs",
+ "fuse-transport",
  "hal",
  "hal-aarch64",
  "hal-x86_64",
@@ -1009,6 +1063,7 @@ dependencies = [
  "mpi",
  "namespace-identity",
  "net",
+ "ninep",
  "nscg",
  "pidfd",
  "pkey",
@@ -1034,6 +1089,10 @@ name = "funty"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6d5a32815ae3f33302d95fdcb2ce17862f8c65363dcfd29360480ba1001fc9c"
+
+[[package]]
+name = "fuse-transport"
+version = "0.1.0"
 
 [[package]]
 name = "generator"
@@ -1282,6 +1341,7 @@ dependencies = [
  "drv-ps2-keyboard",
  "drv-serial",
  "drv-simplefb",
+ "drv-vhci",
  "drv-virtio-blk",
  "drv-virtio-gpu",
  "drv-virtio-input",
@@ -1541,6 +1601,7 @@ name = "net"
 version = "0.1.0"
 dependencies = [
  "bitflags",
+ "bluetooth",
  "cgroup",
  "cpu",
  "crng",
@@ -1569,8 +1630,6 @@ dependencies = [
 name = "netfilter"
 version = "0.1.0"
 dependencies = [
- "conntrack",
- "nat",
  "net",
  "netlink",
  "sched",
@@ -1601,6 +1660,15 @@ dependencies = [
  "loom",
  "namespace-identity",
  "sync",
+]
+
+[[package]]
+name = "ninep"
+version = "0.1.0"
+dependencies = [
+ "sched",
+ "sync",
+ "vfs",
 ]
 
 [[package]]
@@ -1667,6 +1735,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "p256"
+version = "0.1.0"
+
+[[package]]
 name = "pci"
 version = "0.1.0"
 dependencies = [
@@ -1690,7 +1762,9 @@ dependencies = [
  "drv-igc",
  "drv-nvme",
  "drv-rtl8125",
+ "drv-virtio-9p",
  "drv-virtio-blk",
+ "drv-virtio-fs",
  "drv-virtio-gpu",
  "drv-virtio-input",
  "drv-virtio-net",
@@ -1699,6 +1773,7 @@ dependencies = [
  "drv-virtio-vsock",
  "drv-xhci",
  "firmware",
+ "fuse-transport",
  "hal",
  "hal-aarch64",
  "hal-x86_64",
@@ -2354,6 +2429,7 @@ dependencies = [
  "aslr",
  "audit",
  "block",
+ "bluetooth",
  "boot-info",
  "cgroup",
  "conformance",
@@ -2395,6 +2471,7 @@ dependencies = [
  "netfilter",
  "netlink",
  "network-namespace",
+ "ninep",
  "nscg",
  "ntfs3",
  "overlayfs",
