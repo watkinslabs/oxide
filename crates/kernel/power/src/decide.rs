@@ -7,9 +7,18 @@
 
 use crate::uapi::*;
 
-/// Failure classes the reboot path reports at the ABI boundary.
+/// Failure classes the power paths report at the ABI boundary.
+///
+/// Everything past `Io` is reached only from the sleep states (`32a`);
+/// `reboot(2)` itself produces the first three.
+///
+/// `Nosys` and `Opnotsupp` are distinct on purpose: `Nosys` is this kernel
+/// declining a state it does not offer, `Opnotsupp` is firmware declining a
+/// call it does not implement. The reference reports the second as EOPNOTSUPP,
+/// and a caller can act on the difference — one means rebuild, the other means
+/// this machine.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum Error { Inval, Perm, Io }
+pub enum Error { Inval, Perm, Io, Busy, Nosys, Opnotsupp, Again, Intr, Nomem, Nodata }
 
 pub type KResult<T> = core::result::Result<T, Error>;
 

@@ -33,6 +33,7 @@ pub mod obsolete;
 // pinned slot numbers and their aarch64 routes. Ungated because both slot
 // files are kernel-only, so tests written inside them would never run.
 pub mod kexec_abi;
+pub mod power_errno;
 mod access_cred;
 // Stale-handle retry rule shared by every path-based syscall. Ungated because
 // the `*at` resolution layer that applies it is kernel-only, and an unbounded

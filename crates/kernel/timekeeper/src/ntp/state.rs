@@ -81,7 +81,7 @@ pub fn do_adjtimex(txc: &mut Timex, capable: bool) -> Result<AdjOutcome, AdjErro
 /// # Ctx: any, including the timer IRQ
 pub fn ntp_advance() {
     if !ARMED.load(Ordering::Acquire) { return; }
-    let mono = crate::platform::monotonic_ns();
+    let mono = crate::monotonic_ns();
     let wall_sec = (crate::state::realtime_ns() / NSEC_PER_SEC as u64) as i64;
     let delta = NTP.write_with::<Irq, _>(|n| n.advance(mono, wall_sec));
     if delta != 0 { crate::state::slew_realtime(delta); }

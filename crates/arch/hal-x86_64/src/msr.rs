@@ -19,6 +19,21 @@ pub const IA32_KERNEL_GS_BASE: u32 = 0xC000_0102;
 /// `IA32_CR_PAT` — eight 8-bit page-attribute entries.
 pub const IA32_CR_PAT: u32 = 0x0000_0277;
 
+/// `IA32_EFER` — long-mode enable, NX enable, `syscall` enable.
+pub const IA32_EFER: u32 = 0xC000_0080;
+
+/// `IA32_STAR` — the `syscall`/`sysret` CS/SS selector pair.
+pub const IA32_STAR: u32 = 0xC000_0081;
+
+/// `IA32_LSTAR` — the 64-bit `syscall` entry point.
+pub const IA32_LSTAR: u32 = 0xC000_0082;
+
+/// `IA32_CSTAR` — the compatibility-mode `syscall` entry point.
+pub const IA32_CSTAR: u32 = 0xC000_0083;
+
+/// `IA32_FMASK` — RFLAGS bits cleared on `syscall` entry.
+pub const IA32_FMASK: u32 = 0xC000_0084;
+
 /// `CR4.FSGSBASE` (bit 16) — enables the unprivileged `rdfsbase`,
 /// `wrfsbase`, `rdgsbase`, `wrgsbase` instructions at ALL privilege levels.
 ///

@@ -1,0 +1,19 @@
+boot-smoke: arch=x86 preparing image target=qemu-x86-image log=/tmp/oxide-boot-smoke-x86-LjnsK4.log
+boot-smoke: arch=arm preparing image target=qemu-arm-image log=/tmp/oxide-boot-smoke-arm-14HIFF.log
+boot-smoke: image preparation complete; runtime deadline begins when QEMU launches
+boot-smoke: arch=x86 attempt=1/3 runtime_timeout=600s log=/tmp/oxide-boot-smoke-x86-fzu4Ut.log
+boot-smoke: QEMU pid=1897768 started; runtime deadline=600s
+boot-smoke: x86 proved alive by marker 'Reached target basic.target' in 6s (attempt 1)
+boot-smoke: probing serial RX (<NUL>? -> '\[sysrq\] keys:')
+boot-smoke: serial RX OK — guest answered the typed sysrq probe
+boot-smoke: PASS — x86 proved alive by marker 'Reached target basic.target' in 6s (attempt 1)
+boot-smoke: image preparation complete; runtime deadline begins when QEMU launches
+boot-smoke: arch=arm attempt=1/3 runtime_timeout=600s log=/tmp/oxide-boot-smoke-arm-GPOAQj.log
+boot-smoke: QEMU pid=1928878 started; runtime deadline=600s
+boot-smoke: arm proved alive by userspace answered 'echo OXIDE-AL"IVE"-OK' on serial in 16s (attempt 1)
+boot-smoke: probing serial RX (<NUL>? -> '\[sysrq\] keys:')
+boot-smoke: serial RX OK — guest answered the typed sysrq probe
+boot-smoke: PASS — arm proved alive by userspace answered 'echo OXIDE-AL"IVE"-OK' on serial in 16s (attempt 1)
+
+Commit: e9273c754be6f8d09316d7e04ed195f93bef1fca
+Date:   2026-08-16T01:31:36Z

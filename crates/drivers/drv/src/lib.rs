@@ -2,6 +2,7 @@
 // - `model`: device/driver registries, lifecycle, binding, publication hooks.
 // - `path`: exact ancestry and canonical live-object paths.
 // - `pci_dev`: PCI-function identity + config-space/rescan indirection.
+// - `pm`: device sleep callbacks and the `32a§5` device phase walk.
 
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
@@ -12,7 +13,13 @@ extern crate std;
 
 pub mod model;
 pub mod pci_dev;
+pub mod pm;
 mod path;
+pub use pm::{
+    dpm_complete, dpm_failed_device, dpm_prepare, dpm_resume, dpm_resume_early,
+    dpm_resume_noirq, dpm_set_transition, dpm_suspend, dpm_suspend_late,
+    dpm_suspend_noirq, DevPmOps, PmTransition,
+};
 pub use pci_dev::{
     pci_config_read, pci_config_write, pci_rescan, set_pci_config_hooks, set_pci_remove_hook, set_pci_rescan_hook,
     PciIdent,
@@ -21,7 +28,7 @@ pub use path::{
     device_canon, device_canon_exact, device_parent_canon_exact, device_root_canon,
 };
 pub use model::{
-    bind, BindEvent, Device, Driver, NodeFactory, Resource, IORESOURCE_IO, IORESOURCE_MEM,
+    bind, bound_driver, BindEvent, Device, Driver, NodeFactory, Resource, IORESOURCE_IO, IORESOURCE_MEM,
     NUMA_NODE_NONE, PCI_DEFAULT_DMA_MASK,
     IORESOURCE_PREFETCH,
     bound_pci_error_handlers, with_bound_pci_error_handlers, PciChannelState, PciErrorHandlers, PciErsResult,

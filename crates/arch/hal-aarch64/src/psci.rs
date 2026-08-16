@@ -1,55 +1,24 @@
-// PSCI (Power State Coordination Interface) per ARM DEN 0022D.
-// v1: just CPU_ON, the entry point AP startup needs. Other PSCI
-// services (CPU_OFF, SYSTEM_RESET) ride alongside the power
-// subsystem in `docs/32`.
+// PSCI (Power State Coordination Interface) conduit per ARM DEN 0022.
 //
-// PSCI invocation: SMC #0 (or HVC depending on conduit). EDK2 +
-// QEMU virt expose SMC. Function ID 0xC4000003 = CPU_ON 64-bit.
-// Args: function_id, target_mpidr, entry_pa, context_id.
-// Return: status in x0 per ARM DEN 0022D Table 5.
+// This file owns the CONDUIT — the `smc`/`hvc` instruction and the thin call
+// wrappers around it. The ABI numbers, the status decode, the version gate and
+// the `SYSTEM_SUSPEND` admission ladder live in `psci_uapi` / `psci_probe`,
+// which carry no target gate so a hosted run can fail on them; this file is
+// `target_arch = "aarch64"` and everything in it compiles out on a host x86
+// test run.
+//
+// PSCI invocation: SMC #0 or HVC #0 depending on the conduit. QEMU `virt` runs
+// the guest at EL1 with no EL3, so HVC. Return: status in x0.
 
 #![cfg(target_arch = "aarch64")]
 
-/// SMC32 / SMC64 function IDs per ARM DEN 0022D Table 4.
-pub const PSCI_VERSION:    u32 = 0x8400_0000;
-pub const PSCI_CPU_OFF:    u32 = 0x8400_0002;
-pub const PSCI_CPU_ON_64:  u32 = 0xC400_0003;
-pub const PSCI_AFFINITY_INFO_64: u32 = 0xC400_0004;
+use core::sync::atomic::{AtomicU64, Ordering};
 
-/// Status codes per ARM DEN 0022D Table 5.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum PsciStatus {
-    Success           = 0,
-    NotSupported      = -1,
-    InvalidParameters = -2,
-    Denied            = -3,
-    AlreadyOn         = -4,
-    OnPending         = -5,
-    InternalFailure   = -6,
-    NotPresent        = -7,
-    Disabled          = -8,
-    InvalidAddress    = -9,
-    Other             = -100,
-}
-
-/// Decode an i32 PSCI status into the enum. Pure helper —
-/// hosted-testable.
-/// # C: O(1)
-pub fn decode_status(raw: i32) -> PsciStatus {
-    match raw {
-         0 => PsciStatus::Success,
-        -1 => PsciStatus::NotSupported,
-        -2 => PsciStatus::InvalidParameters,
-        -3 => PsciStatus::Denied,
-        -4 => PsciStatus::AlreadyOn,
-        -5 => PsciStatus::OnPending,
-        -6 => PsciStatus::InternalFailure,
-        -7 => PsciStatus::NotPresent,
-        -8 => PsciStatus::Disabled,
-        -9 => PsciStatus::InvalidAddress,
-        _  => PsciStatus::Other,
-    }
-}
+pub use crate::psci_uapi::{decode_status, psci_version, version_major, version_minor,
+    PsciStatus, PSCI_AFFINITY_INFO_64, PSCI_CPU_OFF, PSCI_CPU_ON_64, PSCI_FEATURES,
+    PSCI_SYSTEM_OFF, PSCI_SYSTEM_RESET, PSCI_SYSTEM_SUSPEND_64, PSCI_VERSION,
+    PSCI_VERSION_1_0};
+use crate::psci_probe::{classify_support, decode_support, encode_support, SuspendSupport};
 
 /// Issue an SMC instruction with up to 4 arguments and return x0.
 ///
@@ -152,21 +121,50 @@ pub unsafe fn cpu_on(target_mpidr: u64, entry_pa: u64, context_id: u64) -> PsciS
     decode_status(raw as i32)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Cached `SYSTEM_SUSPEND` probe result, encoded by `psci_probe`. Zero means
+/// unprobed, which admits nothing.
+static SUSPEND_SUPPORT: AtomicU64 = AtomicU64::new(0);
 
-    #[test]
-    fn decode_known_codes() {
-        assert_eq!(decode_status(0),  PsciStatus::Success);
-        assert_eq!(decode_status(-1), PsciStatus::NotSupported);
-        assert_eq!(decode_status(-4), PsciStatus::AlreadyOn);
-        assert_eq!(decode_status(-9), PsciStatus::InvalidAddress);
-    }
+/// `PSCI_VERSION`. Returns the raw major/minor word; 0 when no conduit answers.
+/// # SAFETY: caller asserts the platform conduit is configured.
+/// # C: O(one PSCI call)
+pub unsafe fn version() -> u32 {
+    // SAFETY: per fn contract — PSCI_VERSION takes no arguments and only reads firmware state.
+    let raw = unsafe { conduit_call(PSCI_VERSION, 0, 0, 0) };
+    raw as u32
+}
 
-    #[test]
-    fn decode_unknown_falls_to_other() {
-        assert_eq!(decode_status(-42),  PsciStatus::Other);
-        assert_eq!(decode_status(1234), PsciStatus::Other);
-    }
+/// `PSCI_FEATURES(fn_id)`. Returns the raw word: a non-negative feature-flags
+/// value when the function exists, `NOT_SUPPORTED` when it does not.
+/// # SAFETY: caller asserts the platform conduit is configured and that the
+/// firmware is PSCI 1.0 or later, where this function exists.
+/// # C: O(one PSCI call)
+pub unsafe fn features(fn_id: u32) -> i64 {
+    // SAFETY: per fn contract — PSCI_FEATURES queries firmware for a function ID and mutates no state.
+    unsafe { conduit_call(PSCI_FEATURES, fn_id as u64, 0, 0) }
+}
+
+/// Probe `SYSTEM_SUSPEND` and cache the answer: version first, then the feature
+/// query, because the query itself only exists from PSCI 1.0. Re-probing is
+/// harmless; the answer cannot change under a running kernel.
+/// # SAFETY: caller is the boot path, before `/sys/power/state` can be read;
+/// asserts the platform conduit is configured.
+/// # C: O(two PSCI calls)
+pub unsafe fn probe_system_suspend() -> SuspendSupport {
+    // SAFETY: per fn contract — both calls are read-only firmware queries on the configured conduit.
+    let support = unsafe {
+        let ver = version();
+        let feat = if crate::psci_probe::version_has_features(ver) {
+            features(PSCI_SYSTEM_SUSPEND_64) as i64
+        } else { 0 };
+        classify_support(ver, feat)
+    };
+    SUSPEND_SUPPORT.store(encode_support(support), Ordering::Release);
+    support
+}
+
+/// The cached probe result. `Unprobed` until `probe_system_suspend` has run.
+/// # C: O(1)
+pub fn system_suspend_support() -> SuspendSupport {
+    decode_support(SUSPEND_SUPPORT.load(Ordering::Acquire))
 }

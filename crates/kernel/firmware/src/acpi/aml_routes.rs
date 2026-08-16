@@ -6,7 +6,7 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use sync::{Devices, Spinlock};
 use super::aml_handler::FirmwareHandler;
 use super::pci_osc::{self, PciOscControl};
-use super::{fadt, power_action};
+use super::{fadt, power_action, sleep_types};
 
 const MAX_AML_TABLES: usize = 32;
 const ACPI_HEADER_BYTES: usize = 36;
@@ -74,6 +74,7 @@ fn build_context() -> Option<RouteContext> {
     if let (Some(registers), Some((type_a, type_b))) = (power_action::power_registers(), s5_types(&context)) {
         if let Some(action) = fadt::poweroff_action(registers, type_a, type_b) { power_action::set_poweroff_action(action); }
     }
+    publish_sleep_types(&context);
     let mut roots = Vec::new();
     for scope in prt_scopes(&mut context) {
         let segment = integer_at(&context, &scope, "_SEG").unwrap_or(0) as u16;
@@ -86,13 +87,26 @@ fn build_context() -> Option<RouteContext> {
     Some(RouteContext { aml: context, roots })
 }
 
-fn s5_types(context: &AmlContext) -> Option<(u8, u8)> {
-    let path = AmlName::from_str("\\_S5").ok()?;
+/// Evaluate one `_Sx` package into its PM1a/PM1b SLP_TYP pair. The DECODE
+/// (including the packed single-value form) belongs to `sleep_types`, so
+/// every state reads a package the same way; this only turns AML values
+/// into the integers that decision consumes.
+fn sx_types(context: &AmlContext, path: &str) -> Option<(u8, u8)> {
+    let path = AmlName::from_str(path).ok()?;
     let AmlValue::Package(values) = context.namespace.get_by_path(&path).ok()? else { return None; };
-    let first = values.first()?.as_integer(context).ok()? as u8;
-    let second = if values.len() == 1 { (values.first()?.as_integer(context).ok()? >> 8) as u8 }
-        else { values.get(1)?.as_integer(context).ok()? as u8 };
-    Some((first, second))
+    let mut integers = [0u64; 2];
+    let taken = values.len().min(integers.len());
+    for slot in 0..taken { integers[slot] = values.get(slot)?.as_integer(context).ok()?; }
+    sleep_types::sleep_type_pair(&integers[..taken])
+}
+
+fn s5_types(context: &AmlContext) -> Option<(u8, u8)> { sx_types(context, "\\_S5") }
+
+/// Publish the reversible sleep states' SLP_TYP pairs alongside `_S5`'s.
+fn publish_sleep_types(context: &AmlContext) {
+    for state in sleep_types::EVALUATED {
+        if let Some(types) = sx_types(context, state.aml_path()) { sleep_types::set_sleep_types(state, types); }
+    }
 }
 
 /// # SAFETY: caller supplies one HHDM-mapped AML SDT whose header and declared

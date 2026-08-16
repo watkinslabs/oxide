@@ -13,12 +13,19 @@
 // - `cad`:     the `C_A_D` global and `ctrl_alt_del()`'s rule.
 // - `machine`: driver shutdown + the per-arch irreversible transition.
 // - `reset`:   the x86 reset ladder's order and port encodings — host-tested.
+// - `suspend`: the reversible sleep states per `32a` — states, sequence,
+//              freezer, wakeup accounting, s2idle, core callbacks, sysfs.
 
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+extern crate alloc;
+#[cfg(test)]
+extern crate std;
+
 pub mod uapi;
 pub mod decide;
+pub mod suspend;
 pub mod cad;
 pub mod machine;
 pub mod reset;
@@ -34,3 +41,5 @@ pub use cad::{cad_action, cad_enabled, set_cad, CadAction};
 pub use machine::{halt, init, power_off, restart, restart_with_command,
     set_driver_shutdown_hook, terminal};
 pub use reset::{ladder, reset_control_writes, ResetRung};
+pub use suspend::{pm_suspend, pm_system_irq_wakeup, pm_system_wakeup, pm_wakeup_pending,
+    StateSet, SuspendBackend, SuspendState};

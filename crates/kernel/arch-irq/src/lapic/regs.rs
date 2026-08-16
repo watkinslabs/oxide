@@ -13,24 +13,16 @@ use core::arch::asm;
 #[cfg(target_arch = "x86_64")]
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+// Architectural offsets and field encodings live in `crate::apicdef`, ungated
+// so the suspend/resume state machine can be tested on the host. Re-exported
+// here under the names this module's callers already use.
 #[cfg(target_arch = "x86_64")]
-pub(super) const REG_ID:      usize = 0x020;
+pub(super) use crate::apicdef::{
+    REG_ID, REG_VERSION, REG_SVR, REG_LVT_TIMER, REG_TIMER_INIT, REG_TIMER_CUR,
+    REG_TIMER_DIV, SVR_ENABLE,
+};
 #[cfg(target_arch = "x86_64")]
-pub(super) const REG_VERSION: usize = 0x030;
-#[cfg(target_arch = "x86_64")]
-pub(super) const REG_SVR:     usize = 0x0F0;
-#[cfg(target_arch = "x86_64")]
-pub(super) const REG_LVT_TIMER:  usize = 0x320;
-#[cfg(target_arch = "x86_64")]
-pub(super) const REG_TIMER_INIT: usize = 0x380;
-#[cfg(target_arch = "x86_64")]
-pub(super) const REG_TIMER_CUR:  usize = 0x390;
-#[cfg(target_arch = "x86_64")]
-pub(super) const REG_TIMER_DIV:  usize = 0x3E0;
-
-/// SVR bit 8: APIC software enable.
-#[cfg(target_arch = "x86_64")]
-pub(super) const SVR_ENABLE:  u32 = 1 << 8;
+use crate::apicdef::{REG_EOI, REG_ICR_LO};
 
 /// Default spurious-interrupt vector. Lowest 4 bits must be 1 on
 /// pre-Pentium-4 hardware; we set 0xFF for compatibility.
@@ -52,10 +44,6 @@ const MSR_X2APIC_EOI: u32 = 0x80B;
 /// First x2APIC register MSR. Each 16-byte LAPIC register slot has one MSR.
 #[cfg(target_arch = "x86_64")]
 const MSR_X2APIC_ICR: u32 = 0x830;
-#[cfg(target_arch = "x86_64")]
-const REG_EOI: usize = 0x0B0;
-#[cfg(target_arch = "x86_64")]
-const REG_ICR_LO: usize = 0x300;
 /// xAPIC's ICR-high destination field is only eight bits wide.
 #[cfg(target_arch = "x86_64")]
 const XAPIC_DESTINATION_MAX: u32 = u8::MAX as u32;

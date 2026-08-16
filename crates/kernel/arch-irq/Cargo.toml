@@ -22,6 +22,9 @@ sync     = { path = "../../shared/sync" }
 softirq  = { path = "../softirq" }
 iommu    = { path = "../iommu" }
 pci      = { path = "../../drivers/pci" }
+# `32a§7`: the interrupt controllers have no device to hang from, so they
+# register core callbacks directly. `power` does not reach back here.
+power    = { path = "../power" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64 = { path = "../../arch/hal-x86_64" }

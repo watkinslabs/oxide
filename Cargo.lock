@@ -48,6 +48,7 @@ dependencies = [
  "klog",
  "pci",
  "pmm",
+ "power",
  "sched",
  "softirq",
  "sync",
@@ -1650,12 +1651,16 @@ dependencies = [
 name = "power"
 version = "0.1.0"
 dependencies = [
+ "cpu",
  "firmware",
  "hal",
+ "hal-aarch64",
  "hal-x86_64",
  "klog",
  "mmio-map",
+ "sched",
  "sync",
+ "timekeeper",
 ]
 
 [[package]]
@@ -2250,6 +2255,7 @@ dependencies = [
  "network-namespace",
  "pci",
  "pmm",
+ "power",
  "power-supply",
  "sched",
  "sync",

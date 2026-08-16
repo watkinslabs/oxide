@@ -50,6 +50,8 @@ pub mod diag;
 pub mod kthread;
 pub mod kstack;
 pub mod preempt;
+// Why a task is parked in the freezer — cgroup, system sleep, or both.
+pub mod freeze_reason;
 // Per-mm LDT <-> LDTR glue (Linux `switch_ldt`); no-op on aarch64.
 pub mod ldt;
 pub mod exit_to_user;

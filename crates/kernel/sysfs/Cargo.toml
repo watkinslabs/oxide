@@ -34,6 +34,7 @@ cmdline = { path = "../cmdline" }
 # `/sys/kernel/kexec_*` report the two image slots and the reserved crash region
 # the load and panic paths themselves use.
 kexec = { path = "../kexec" }
+power = { path = "../power" }
 
 [dev-dependencies]
 fdt = { path = "../../shared/fdt", features = ["alloc", "fixture"] }

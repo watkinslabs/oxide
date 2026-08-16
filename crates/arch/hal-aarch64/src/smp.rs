@@ -169,6 +169,19 @@ pub fn set_psci_ap_mpidrs(mpidrs: &[u64]) {
     PSCI_PARAMS_SET.store(1, Ordering::Release);
 }
 
+/// Physical root of the low identity translation table `boot-aarch64` publishes
+/// for PSCI entry points. Any code firmware enters with the MMU off — an AP
+/// trampoline, or the system-suspend resume entry (`32a§9`) — needs it in
+/// `TTBR0_EL1` across the MMU enable, because the PC is still physical for the
+/// instructions between `SCTLR_EL1.M` and the branch to the kernel half.
+/// Zero when the boot path never published it.
+/// # C: O(1)
+pub fn identity_ttbr0_pa() -> u64 {
+    if PSCI_PARAMS_SET.load(Ordering::Acquire) == 0 { return 0; }
+    // SAFETY: PSCI_PARAMS is written once by the boot CPU before PSCI_PARAMS_SET is released, and only read afterwards; this is a read of that published value.
+    unsafe { (*PSCI_PARAMS.0.get()).ap_l0_pa }
+}
+
 // PSCI AP trampoline. `CPU_ON` enters here MMU-OFF, EL2-or-EL1, with
 // x0 = phys(ApBootBlock). It reads the boot block, drops EL2->EL1, installs
 // the self-boot page tables, enables the MMU, jumps to the higher half, then

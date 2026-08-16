@@ -40,6 +40,7 @@ pub mod modules;
 mod net_class;
 pub mod power_supply;
 pub mod net_stats;
+pub mod power;
 mod readdir;
 pub mod root;
 mod subsystem;
@@ -180,6 +181,7 @@ pub fn init() {
     kernel::init();
     mm::init();
     modules::init();
+    power::init();
     register("/sys/class/net", net_class::make_sys_class_net_inode());
     register("/sys/devices/virtual/net", net_class::make_sys_devices_virtual_net_inode());
     #[cfg(target_os = "oxide-kernel")]

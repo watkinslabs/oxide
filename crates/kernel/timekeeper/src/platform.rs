@@ -6,9 +6,12 @@ pub type Irq = hal_x86_64::X86IrqGate;
 #[cfg(target_arch = "aarch64")]
 pub type Irq = hal_aarch64::ArmIrqGate;
 
-/// Architecture monotonic clock in nanoseconds. # C: O(1)
+/// Architecture monotonic clock in nanoseconds, straight from the counter.
+///
+/// Raw: it still contains any interval the machine spent asleep. Callers want
+/// [`crate::monotonic_ns`], which subtracts that. # C: O(1)
 #[inline]
-pub fn monotonic_ns() -> u64 {
+pub fn raw_monotonic_ns() -> u64 {
     use hal::TimerOps;
     #[cfg(target_arch = "x86_64")]
     { hal_x86_64::X86TimerOps::monotonic_ns().0 }

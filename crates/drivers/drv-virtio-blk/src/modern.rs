@@ -36,6 +36,8 @@ mod engine;
 mod post;
 mod queues;
 mod request;
+mod pm_impl;
+pub use pm_impl::{freeze_blk, BlkFreeze};
 mod teardown;
 mod wait;
 pub use queues::BlkQueue;

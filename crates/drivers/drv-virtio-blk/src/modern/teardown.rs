@@ -54,7 +54,7 @@ impl BlkState {
         })
     }
 
-    fn wait_idle_for_remove(&self) -> bool {
+    pub(super) fn wait_idle_for_remove(&self) -> bool {
         #[cfg(target_os = "oxide-kernel")]
         let deadline = now_ns().saturating_add(IO_TIMEOUT_NS);
         #[cfg(not(target_os = "oxide-kernel"))]
@@ -80,14 +80,14 @@ impl BlkState {
         }
     }
 
-    fn freeze_new_io(&self) {
+    pub(super) fn freeze_new_io(&self) {
         self.poisoned.store(true, core::sync::atomic::Ordering::Release);
         #[cfg(target_os = "oxide-kernel")]
         wake_all_blk_waiters();
     }
 
     #[must_use]
-    fn reset_common_cfg(&self) -> bool {
+    pub(super) fn reset_common_cfg(&self) -> bool {
         // SAFETY: removal runs in process context after queue ownership is
         // frozen; this method holds no queue lock across the reset delay.
         unsafe { virtio::reset_device_sleepable(self.cfg_va) }
@@ -100,7 +100,7 @@ impl BlkState {
     /// actually confirmed quiescent (state.md corruption hunt) — otherwise
     /// leak it rather than risk handing a still-live frame back to the
     /// buddy allocator.
-    fn cancel_owned_requests(&self, reset_confirmed: bool) {
+    pub(super) fn cancel_owned_requests(&self, reset_confirmed: bool) {
         for q in self.queues() {
             let (pending, deferred) = {
                 let mut ring = q.lock();

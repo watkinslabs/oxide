@@ -72,6 +72,10 @@ mod kmain {
     pub mod hooks;
     pub mod rootfs;
     pub mod runtime;
+    // Joins the device model and the interrupt controllers to the suspend
+    // sequence (`32a§5`, `32a§7`).
+    #[cfg(target_os = "oxide-kernel")]
+    pub mod suspend_wiring;
     #[cfg(test)]
     pub mod tests;
 }

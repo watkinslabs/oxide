@@ -16,6 +16,8 @@ extern crate alloc;
 
 #[cfg(any(target_arch = "x86_64", test))]
 mod tx;
+/// Sleep callbacks (`32a§5` steps 6 and 8).
+pub mod pm;
 
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -112,10 +114,9 @@ mod imp {
     const MCR: u16 = 4;
     const LSR: u16 = 5; // bit0 = RX data ready, bit5 = THR empty
     const SCR: u16 = 7; // scratch
-    const FCR_ENABLE: u8 = 0x01;
+    use super::pm::{FCR_ENABLE, FCR_RX_TRIGGER_8};
     const FCR_CLEAR_RX: u8 = 0x02;
     const FCR_CLEAR_TX: u8 = 0x04;
-    const FCR_RX_TRIGGER_8: u8 = 0x80;
     const IIR_NO_INTERRUPT: u8 = 1 << 0;
     const LSR_DATA_READY: u8 = 1 << 0;
     const LSR_THR_EMPTY: u8 = 1 << 5;
@@ -473,11 +474,15 @@ impl drv::Driver for Uart16550Drv {
         unsafe { imp::remove(); }
     }
 
+    fn pm(&self) -> Option<&'static drv::DevPmOps> { Some(&pm::PM_OPS) }
+
     fn shutdown(&self, _dev: &drv::Device) {
         // SAFETY: driver-core shutdown owns terminal platform-device quiesce.
         unsafe { imp::shutdown(); }
     }
 }
+
+
 
 /// Driver-model handle; name "8250-serial" matches the platform/serial0
 /// device kmain registers. Exposed so `drv-serial::init` registers the
@@ -485,11 +490,5 @@ impl drv::Driver for Uart16550Drv {
 pub static UART_DRIVER: &dyn drv::Driver = &Uart16550Drv;
 
 #[cfg(test)]
-mod tests {
-    use super::imp::fifo_mode;
-
-    #[test]
-    fn steady_fifo_mode_keeps_fifo_enabled_with_eight_byte_rx_trigger() {
-        assert_eq!(fifo_mode(), 0x81);
-    }
-}
+#[path = "tests.rs"]
+mod tests;

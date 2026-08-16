@@ -33,6 +33,8 @@ pub mod pci;
 mod pt_regs;
 mod regs;
 mod signal;
+// Deep-sleep CPU state save/restore + the resume trampoline (`32a§9`).
+pub mod suspend;
 mod syscall;
 mod timer;
 mod tsd;

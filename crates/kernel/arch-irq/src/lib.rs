@@ -17,6 +17,13 @@
 extern crate alloc;
 
 pub mod cache;
+/// Register layout for the x86 interrupt controllers, ungated so the
+/// suspend/resume state machines are testable on the host.
+pub mod apicdef;
+/// Register layout for the GIC, ungated for the same reason.
+pub mod gicdef;
+/// Interrupt-controller core callbacks (`32a§7`).
+pub mod pm;
 #[cfg(any(test, all(target_os = "oxide-kernel", target_arch = "aarch64")))]
 mod gic_group;
 #[cfg(any(test, all(target_os = "oxide-kernel", target_arch = "aarch64")))]
