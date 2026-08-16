@@ -28,7 +28,15 @@ pub enum BlockError {
     Ebusy   = 16,
     Einval  = 22,
     Enospc  = 28,
+    /// A drive refused because it already holds its limit of ACTIVE zones.
+    /// Not a media failure and not a permanent refusal: finishing or
+    /// resetting a zone makes the same request succeed, which is why this
+    /// stays distinct from `Eio`.
+    Eoverflow = 75,
     Eopnotsupp = 95,
+    /// A drive refused because it already holds its limit of OPEN zones.
+    /// Closing a zone makes the same request succeed.
+    Etoomanyrefs = 109,
 }
 
 pub type KResult<T> = core::result::Result<T, BlockError>;
