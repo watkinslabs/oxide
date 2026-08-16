@@ -112,6 +112,17 @@ impl<S: SectorSource> Volume<S> {
             let Some(s) = live::entry(sum, off) else { continue };
             let owner = if nodes { self.node_addr(s.nid).ok() } else { self.owner_addr(&s) };
             if !live::alive(bit, &s, owner, addr) { continue; }
+            // A pinned block stays where it is, whatever the cleaner wants:
+            // something outside the filesystem is holding its address, and
+            // moving it would leave that holder reading someone else's data.
+            // The collision is charged to the file that caused it, and a file
+            // that has cost too many of them loses its pin.
+            if !nodes {
+                if let Some(owner_ino) = self.pinned_owner_ino(&s)? {
+                    let _ = self.pin_file_control(owner_ino, true);
+                    continue;
+                }
+            }
             if nodes { self.migrate_node(s.nid)?; } else { self.migrate_data(addr, &s)?; stale.push(addr); }
             *moved += 1;
         }

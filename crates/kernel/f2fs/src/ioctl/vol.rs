@@ -6,7 +6,6 @@
 //! and a label nothing writes are the machinery-with-no-caller this project
 //! keeps finding, and putting them here makes the caller obvious.
 
-use alloc::string::String;
 use alloc::vec::Vec;
 
 use sectors::SectorSource;
@@ -67,12 +66,19 @@ impl<S: SectorSource> Volume<S> {
     pub fn set_label(&mut self, name: &str) -> Result<(), Errno> {
         self.writable_or_err()?;
         if name.encode_utf16().count() > SB_VOLUME_NAME_UNITS { return Err(Errno::Einval); }
-        let (mut raw, _) = crate::sbwrite::read_raw(&self.source)?;
-        crate::sbwrite::edit::set_volume_name(&mut raw, name)?;
-        let mut flags = crate::sbflags::SbFlags::new();
-        crate::sbwrite::commit_super(&self.source, &mut raw, false, !self.writable, &mut flags)?;
-        self.sb.volume_name = String::from(name);
-        Ok(())
+        // The mount's OWN copy, not a fresh read: a second copy of the
+        // superblock bytes could disagree with this one, and the flag word
+        // records a write the medium refused so a later remount can pay it.
+        crate::sbwrite::edit::set_volume_name(&mut self.sb_raw, name)?;
+        let ro = !self.writable;
+        if let Err(e) = crate::sbwrite::commit_super(&self.source, &mut self.sb_raw, false, ro,
+                                                     &mut self.sbi) {
+            // Put the edit back, so what the volume reports and what the
+            // medium holds cannot disagree.
+            let _ = crate::sbwrite::edit::set_volume_name(&mut self.sb_raw, &self.sb.volume_name);
+            return Err(e);
+        }
+        self.adopt_super()
     }
 
     /// The label as the fixed-size buffer the query command hands back: the
@@ -92,13 +98,19 @@ impl<S: SectorSource> Volume<S> {
     /// to open its own files after a remount.
     /// # C: O(1 block) per copy on first ask
     pub fn encryption_pwsalt(&mut self, fresh: [u8; 16]) -> Result<[u8; 16], Errno> {
-        let (mut raw, _) = crate::sbwrite::read_raw(&self.source)?;
-        let held = crate::sbwrite::edit::pw_salt(&raw);
+        let held = crate::sbwrite::edit::pw_salt(&self.sb_raw);
         if held.iter().any(|b| *b != 0) { return Ok(held); }
         self.writable_or_err()?;
-        if !crate::sbwrite::edit::set_pw_salt(&mut raw, &fresh) { return Err(Errno::Einval); }
-        let mut flags = crate::sbflags::SbFlags::new();
-        crate::sbwrite::commit_super(&self.source, &mut raw, false, !self.writable, &mut flags)?;
+        if !crate::sbwrite::edit::set_pw_salt(&mut self.sb_raw, &fresh) { return Err(Errno::Einval); }
+        let ro = !self.writable;
+        if let Err(e) = crate::sbwrite::commit_super(&self.source, &mut self.sb_raw, false, ro,
+                                                     &mut self.sbi) {
+            // A salt that is not on the medium must not exist: a caller would
+            // derive a key from it and lose every file after a remount.
+            let _ = crate::sbwrite::edit::set_pw_salt(&mut self.sb_raw, &[0u8; 16]);
+            return Err(e);
+        }
+        self.adopt_super()?;
         Ok(fresh)
     }
 

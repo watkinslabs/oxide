@@ -52,6 +52,9 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(bytes read)
     pub fn read_file(&self, inode: &Inode, ino: u32, off: u64, buf: &mut [u8])
         -> Result<usize, Errno> {
+        // The writer of an open span must see its own writes, which live in
+        // the shadow inode rather than in this one.
+        if self.is_atomic_file(ino) { return self.atomic_read_file(inode, ino, off, buf); }
         if off >= inode.size { return Ok(0); }
         // A verity file's stored size is its DATA size; its blocks run past it
         // and hold the hash tree and the descriptor. Every ordinary read is

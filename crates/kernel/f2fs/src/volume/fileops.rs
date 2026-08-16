@@ -51,6 +51,12 @@ impl<S: SectorSource> Volume<S> {
         // to, so changing them would leave the attestation describing bytes
         // that are no longer there.
         crate::verity::access::open_write(inode.flags).map_err(crate::verity::access::errno)?;
+        // A span holds its writes in a shadow inode until it is committed, and
+        // a pinned file is written in place because something outside the
+        // filesystem is holding its addresses. Both replace the block loop
+        // below rather than feeding it.
+        if self.is_atomic_file(ino) { return self.atomic_write_file(ino, off, data); }
+        if crate::pin::state::is_pinned(&inode) { return self.pinned_write(ino, off, data); }
         // A compressed file is written a whole CLUSTER at a time, so it cannot
         // go through the block-at-a-time path below at all. The two are not
         // combinable here: a compressed cluster is encrypted as its stored
@@ -240,6 +246,8 @@ impl<S: SectorSource> Volume<S> {
         self.writable_or_err()?;
         let inode = self.read_inode(ino)?;
         crate::verity::access::truncate(inode.flags).map_err(crate::verity::access::errno)?;
+        crate::pin::policy::truncate(crate::pin::state::is_pinned(&inode), inode.size, len,
+                                     u64::from(self.blks_per_sec()) * BLKSIZE as u64)?;
         // Blocks come off a compressed file a whole CLUSTER at a time: the
         // cluster the new end falls inside holds one image rather than one
         // block per block, so it is rewritten rather than shortened.

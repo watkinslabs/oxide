@@ -374,6 +374,28 @@ fn the_cleaner_is_told_a_pinned_files_blocks_belong_to_it() {
     assert_eq!(other, None);
 }
 
+/// The cleaner LEAVES a pinned file's blocks where they are.
+///
+/// The query above proves the cleaner can find out who owns a block. This
+/// proves it asks. The distinction matters because something outside the
+/// filesystem — a swap area — is holding these addresses: moving the block
+/// would leave that holder reading whatever landed there next, and nothing
+/// in the filesystem would look wrong afterwards.
+#[test]
+fn the_cleaner_leaves_a_pinned_files_blocks_where_they_are() {
+    let (mut v, ino, addrs) = pinned_section();
+    let before = addrs.to_vec();
+    let seg = v.super_block().segno_of(before[0]).expect("a main-area block");
+    // Ask the cleaner to empty the very segment the pinned blocks sit in.
+    let _ = v.gc_segment(seg);
+    let after = addresses(&v, ino, before.len() as u64);
+    assert_eq!(after, before, "a pinned file's blocks did not move");
+    // And the collision is charged to the file, which is what eventually
+    // takes the pin away from a file that keeps costing the cleaner work.
+    assert!(v.get_pin_file(ino).unwrap() > 0,
+            "the collision is recorded against the file that caused it");
+}
+
 // ------------------------------------------------------------------ sections
 
 /// A main area of `n` segments where the ones in `used` are not free.
