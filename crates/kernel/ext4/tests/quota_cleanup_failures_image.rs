@@ -104,12 +104,22 @@ fn pin_external_maxes(disk: &Arc<dyn BlockDevice>, sb: &ext4::Superblock,
     }
 }
 
-fn pin_tree_maxes(disk: &Arc<dyn BlockDevice>, sb: &ext4::Superblock,
+// `pin_external_maxes` writes straight to the backing `BlockDevice`, behind
+// `Mount`'s own metadata buffer cache (`crates/kernel/ext4/src/mount.rs`
+// `MountState::metadata_cache`, populated by `read_metadata_block`) — the
+// same hazard a live ext4 mount has against any out-of-band device write
+// (another node on shared storage, `debugfs -w`). A real mount only sees
+// such an edit after a remount or an explicit cache drop; the test's
+// `drop_metadata_cache_for_tests()` call plays that role so the next mount
+// op actually re-reads the shrunk `eh_max`, instead of insert/split logic
+// continuing to operate on the pre-poke cached copy.
+fn pin_tree_maxes(disk: &Arc<dyn BlockDevice>, m: &ext4::rootfs::Ext4Mount, sb: &ext4::Superblock,
                   ino: u32, gen: u32, i_block: &[u8], fs_bs: u32) {
     if extent_depth(i_block) == 0 { return; }
     for i in 0..extent_entries(i_block) as usize {
         pin_external_maxes(disk, sb, ino, gen, idx_lba(i_block, i), fs_bs);
     }
+    m.state().mount.drop_metadata_cache_for_tests();
 }
 
 fn assert_inode_quota_unchanged_after_cleanup_abort(
@@ -129,7 +139,7 @@ fn force_depth_two_tree(disk: &Arc<dyn BlockDevice>, m: &ext4::rootfs::Ext4Mount
     }
     for lb in [10u64, 12, 14, 16] {
         let raw = m.state().mount.read_inode(ino).expect("raw before depth grow");
-        pin_tree_maxes(disk, &m.state().mount.sb, ino, raw.generation, &raw.i_block, m.state().mount.sb.block_size);
+        pin_tree_maxes(disk, m, &m.state().mount.sb, ino, raw.generation, &raw.i_block, m.state().mount.sb.block_size);
         m.state().mount.write_at(ino, lb * bs, &[0xA2]).expect("grow depth two tree");
     }
     let raw = m.state().mount.read_inode(ino).expect("depth two raw");
@@ -296,7 +306,7 @@ fn external_leaf_split_inode_failure_cleanup_free_failure_preserves_quota_and_tr
     }
     let seeded = m.state().mount.read_inode(ino).expect("raw seeded");
     assert_eq!(ext4::parse_extent_header(&seeded.i_block).expect("extent header").depth, 1);
-    pin_tree_maxes(&disk, &m.state().mount.sb, ino, seeded.generation, &seeded.i_block, m.state().mount.sb.block_size);
+    pin_tree_maxes(&disk, &m, &m.state().mount.sb, ino, seeded.generation, &seeded.i_block, m.state().mount.sb.block_size);
 
     let before_free = m.state().mount.state_free_blocks();
     let before_map = m.state().mount.extent_map(ino).expect("extent map before");
@@ -373,7 +383,7 @@ fn external_leaf_split_metadata_failure_cleanup_free_failure_preserves_quota_and
     }
     let seeded = m.state().mount.read_inode(ino).expect("raw seeded");
     assert_eq!(ext4::parse_extent_header(&seeded.i_block).expect("extent header").depth, 1);
-    pin_tree_maxes(&disk, &m.state().mount.sb, ino, seeded.generation, &seeded.i_block, m.state().mount.sb.block_size);
+    pin_tree_maxes(&disk, &m, &m.state().mount.sb, ino, seeded.generation, &seeded.i_block, m.state().mount.sb.block_size);
 
     let before_free = m.state().mount.state_free_blocks();
     let before_raw = m.state().mount.read_inode(ino).expect("raw before");
@@ -401,7 +411,7 @@ fn depth_two_metadata_failure_cleanup_free_failure_preserves_quota_and_tree() {
 
     force_depth_two_tree(&disk, &m, ino, bs);
     let seeded = m.state().mount.read_inode(ino).expect("raw seeded");
-    pin_tree_maxes(&disk, &m.state().mount.sb, ino, seeded.generation, &seeded.i_block, m.state().mount.sb.block_size);
+    pin_tree_maxes(&disk, &m, &m.state().mount.sb, ino, seeded.generation, &seeded.i_block, m.state().mount.sb.block_size);
 
     let before_free = m.state().mount.state_free_blocks();
     let before_map = m.state().mount.extent_map(ino).expect("extent map before");
