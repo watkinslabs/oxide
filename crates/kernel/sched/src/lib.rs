@@ -47,6 +47,7 @@ pub mod yama;
 pub mod seccomp_filter;
 pub mod loadavg;
 pub mod psi;
+pub mod wait_policy;
 pub mod diag;
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-sched"))]
 pub mod kthread;
