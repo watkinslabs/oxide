@@ -141,3 +141,4 @@ and merged, then `F1183`, then `F1182`, then resume `F1184`.
 
 After that the file's remaining work is Tier 3 (14 rows) and Platform (5 rows),
 in file order.
+
