@@ -402,6 +402,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "drv-hda"
+version = "0.1.0"
+dependencies = [
+ "arch-irq",
+ "drv",
+ "hal",
+ "hal-aarch64",
+ "hal-x86_64",
+ "klog",
+ "mmio-map",
+ "pci",
+ "pci-irq",
+ "pmm",
+ "sched",
+ "sound",
+ "sync",
+ "syscall",
+]
+
+[[package]]
 name = "drv-igc"
 version = "0.1.0"
 dependencies = [
@@ -1524,6 +1544,7 @@ dependencies = [
  "drv-atlantic",
  "drv-bochs",
  "drv-e1000",
+ "drv-hda",
  "drv-igc",
  "drv-nvme",
  "drv-rtl8125",
