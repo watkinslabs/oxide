@@ -9,8 +9,17 @@ Pre-code. 46 specs in `docs/`, all DRAFT. Spec-lint tool (`tools/spec-lint/`) an
 ## The framing question (HARD RULE — ask it first, every time)
 
 **"Is this how Linux does it?"** Every feature, every fix, every plan starts there —
-before the design, not after the diff. The reference tree is `../linux-master`; read
-the actual implementation, not your memory of it.
+before the design, not after the diff. The reference tree is `../reference`; read
+the actual implementation, not your memory of it. It is a checked-out tree — read
+files from it directly, and confirm its version (`head -5 ../reference/Makefile`)
+before quoting anything, so a claim is anchored to a knowable revision.
+
+**`../linux-master` is GONE and a stale `../linux-master.zip` is still lying around.**
+This line named it until B2245, so a lane that trusted the line searched for
+`*linux*`, found the zip, extracted from it and cited it. That zip predates the
+checked-out tree; the file in question happened to be byte-identical, so the
+conclusion survived — by luck, not by method. A citation to a snapshot nobody
+pinned is not verification. Read `../reference`.
 
 - **Design.** Before writing code, find the structure Linux uses for this job and ask
   why. If our shape differs, the difference is a decision that needs a reason, not an

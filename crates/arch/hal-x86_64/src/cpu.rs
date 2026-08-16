@@ -121,6 +121,27 @@ pub fn halt() {
     }
 }
 
+/// Enable interrupts and park — Linux `native_safe_halt`, `sti; hlt`.
+///
+/// `sti` opens an interrupt shadow that covers exactly the following
+/// instruction, so the core is guaranteed to be halted before the first
+/// interrupt it just unmasked can be delivered. Writing the two as separate
+/// statements loses that guarantee in one direction (a wakeup consumed before
+/// the halt) and writing `hlt` alone loses it in the other, far worse one: the
+/// core parks with the mask closed and only a non-maskable interrupt can
+/// disturb it again — no tick, no IPI, no device.
+/// # C: O(1)
+/// # Ctx: idle path, entered with interrupts masked
+pub fn safe_halt() {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    {
+        // SAFETY: `sti; hlt` at CPL=0 unmasks interrupts and parks the core
+        // until one arrives; `preserves_flags` is deliberately absent because
+        // this writes IF.
+        unsafe { core::arch::asm!("sti; hlt", options(nomem, nostack)) };
+    }
+}
+
 /// Memory barrier ordering MMIO writes per `06§2`.
 /// # C: O(1)
 pub fn mmio_barrier() {
@@ -188,6 +209,9 @@ impl CpuOps for X86CpuOps {
 
     /// # C: O(1)
     fn halt() { halt(); }
+
+    /// # C: O(1)
+    fn safe_halt() { safe_halt(); }
 
     /// # C: O(1)
     fn mmio_barrier() { mmio_barrier(); }

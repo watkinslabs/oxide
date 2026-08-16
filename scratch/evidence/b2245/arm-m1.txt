@@ -1,0 +1,5 @@
+run=1 rc=0 klines=113 | last: [56.737] systemd[1]: Found device dev-zram0.device - /dev/zram0.
+run=2 rc=0 klines=110 | last: [56.942] (udev-worker)[90]: sda: /usr/lib/udev/rules.d/60-block-scheduler.rules:5 Failed to write ATTR{/sys/de
+run=3 rc=0 klines=115 | last: [57.037] (udev-worker)[105]: controlC1: /usr/lib/udev/rules.d/78-sound-card.rules:5 Failed to write ATTR{/sys/
+run=4 rc=0 klines=113 | last: [58.970] systemd[1]: Starting systemd-zram-setup@zram0.service - Create swap on /dev/zram0...
+run=5 rc=0 klines=109 | last: [56.621] systemd-udevd[81]: Using default interface naming scheme 'v257'.

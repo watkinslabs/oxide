@@ -234,10 +234,22 @@ OXIDE_SMP="${OXIDE_SMP:-2}"
 # (who's Runnable/Sleeping, last syscall) for the SMP late-boot race.
 inject_sysrq() {
     [ -n "${SYSRQ_WFD:-}" ] || return 0
-    echo "boot-smoke: timeout — injecting serial-sysrq task/CPU dump (<NUL>t,<NUL>w,<NUL>p)" >&2
+    echo "boot-smoke: timeout — injecting serial-sysrq task/CPU dump (<NUL>t,<NUL>w,<NUL>p,<NUL>l)" >&2
     printf '\000t' >&"$SYSRQ_WFD" 2>/dev/null || true
     sleep 3
     printf '\000w' >&"$SYSRQ_WFD" 2>/dev/null || true
+    sleep 2
+    printf '\000p' >&"$SYSRQ_WFD" 2>/dev/null || true
+    sleep 2
+    # `l` pokes every CPU with an NMI/FIQ and each prints its own instruction
+    # pointer. The task dump names WHICH task a wedged CPU is running; only
+    # this names WHERE in the kernel it is, which is the difference between
+    # "systemd is stuck in writev" and a call site to read.
+    printf '\000l' >&"$SYSRQ_WFD" 2>/dev/null || true
+    sleep 2
+    # A second round, so a spin shows as the same address twice and a slow
+    # advance shows as two different ones. One sample cannot tell them apart.
+    printf '\000l' >&"$SYSRQ_WFD" 2>/dev/null || true
     sleep 2
     printf '\000p' >&"$SYSRQ_WFD" 2>/dev/null || true
     sleep 2

@@ -376,10 +376,26 @@ pub trait CpuOps {
     /// # C: O(1)
     fn cpu_count() -> u32;
 
-    /// Halt this CPU until the next interrupt.
+    /// Halt this CPU until the next interrupt, WITHOUT touching the interrupt
+    /// mask. Only for a park nothing is expected to return from — the panic
+    /// stop and the offline park. The idle loop must use [`CpuOps::safe_halt`]:
+    /// the idle path is reached with interrupts masked, and halting a core in
+    /// that state parks it where no interrupt can reach it.
     /// # C: O(1)
-    /// # Ctx: idle path
+    /// # Ctx: panic / offline park
     fn halt();
+
+    /// Enable interrupts and halt, inseparably — Linux `raw_safe_halt`.
+    ///
+    /// The two halves cannot be separate statements. Enabling first leaves a
+    /// window in which the wakeup arrives, is handled, and the core then halts
+    /// with nothing left to wake it; halting first parks a core whose mask is
+    /// still closed. Each architecture has one instruction pair that closes the
+    /// window, and this is the only place either is written.
+    /// # C: O(1)
+    /// # Ctx: idle path, entered with interrupts masked
+    /// # Sleeps: parks until an interrupt
+    fn safe_halt();
 
     /// Memory barrier sufficient to order MMIO writes per 06.
     /// # C: O(1)
