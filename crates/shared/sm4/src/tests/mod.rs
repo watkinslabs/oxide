@@ -2,17 +2,7 @@
 
 #[path = "sbox.rs"] mod sbox;
 #[path = "block.rs"] mod block;
-#[path = "cmac.rs"] mod cmac;
-#[path = "vec_util.rs"] mod vec_util;
-#[path = "block256.rs"] mod block256;
-#[path = "cmac256.rs"] mod cmac256;
-#[path = "ccm.rs"] mod ccm;
-#[path = "gcm.rs"] mod gcm;
-#[path = "cbc.rs"] mod cbc;
-#[path = "xts.rs"] mod xts;
-#[path = "polyval.rs"] mod polyval;
-#[path = "xctr.rs"] mod xctr;
-#[path = "hctr2.rs"] mod hctr2;
+#[path = "ecb.rs"] mod ecb;
 
 const fn hexval(c: u8) -> u8 {
     match c {
@@ -35,3 +25,5 @@ pub(crate) const fn hex<const N: usize>(s: &str) -> [u8; N] {
     }
     out
 }
+#[path = "xts.rs"] mod xts;
+#[path = "cts.rs"] mod cts;

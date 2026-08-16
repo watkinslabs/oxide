@@ -3,6 +3,13 @@
 version = 4
 
 [[package]]
+name = "adiantum"
+version = "0.1.0"
+dependencies = [
+ "aes",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11,6 +18,9 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 [[package]]
 name = "aes"
 version = "0.1.0"
+dependencies = [
+ "blockcipher",
+]
 
 [[package]]
 name = "aho-corasick"
@@ -146,6 +156,10 @@ dependencies = [
  "sync",
  "vfs",
 ]
+
+[[package]]
+name = "blockcipher"
+version = "0.1.0"
 
 [[package]]
 name = "bluetooth"
@@ -986,18 +1000,22 @@ dependencies = [
 name = "f2fs"
 version = "0.1.0"
 dependencies = [
+ "adiantum",
  "aes",
  "block",
+ "blockcipher",
  "crc",
  "crypt",
  "klog",
  "pkey",
  "sectors",
  "siphash",
+ "sm4",
  "sync",
  "syscall",
  "utf8",
  "vfs",
+ "zstd",
 ]
 
 [[package]]
@@ -2348,6 +2366,13 @@ dependencies = [
  "pmm",
  "proptest",
  "sync",
+]
+
+[[package]]
+name = "sm4"
+version = "0.1.0"
+dependencies = [
+ "blockcipher",
 ]
 
 [[package]]
