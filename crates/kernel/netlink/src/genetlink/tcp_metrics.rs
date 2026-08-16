@@ -63,10 +63,10 @@ pub fn init() -> Result<u16, family::GenlRegError> {
         ops: alloc::vec![
             GenlOp { cmd: cmd::GET,
                 flags: op_flags::GENL_CMD_CAP_DO | op_flags::GENL_CMD_CAP_HASPOL,
-                policy: GET_POLICY },
+                policy: GET_POLICY , ..GenlOp::EMPTY},
             GenlOp { cmd: cmd::DEL,
                 flags: op_flags::GENL_CMD_CAP_DO | op_flags::GENL_CMD_CAP_HASPOL,
-                policy: GET_POLICY }],
+                policy: GET_POLICY , ..GenlOp::EMPTY}],
         mcgrps: Vec::new(), netnsok: true, resv_start_op: cmd::DEL + 1,
     })
 }

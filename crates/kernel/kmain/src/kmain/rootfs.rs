@@ -69,6 +69,11 @@ unsafe fn mount_root() {
         // Generic netlink: the nlctrl controller plus every in-kernel family
         // (VFS_DQUOT), registered before userspace can resolve one by name.
         netlink::genetlink::init();
+        // cfg80211 registers the nl80211 family before any radio can announce
+        // itself on it, so a radio that appears during this same pass has a
+        // family to announce on.
+        step("wireless::init", wireless::init);
+        start_virtual_radios();
         install_network_hooks();
         net::sock::set_iface_primary_ip_hook(crate::syscalls::siocgif::iface_primary_ip_hook);
         modules::linux_time::set_now_hook(module_time_now_ns);
@@ -365,4 +370,21 @@ fn boot_register_cgroup() {
     if let Some(d) = vfs::resolve_path_dentry(cgroup::MOUNT) {
         let _ = cgroup::mount_at(cgroup::MOUNT, Some(d));
     }
+}
+
+/// Bring up the virtual 802.11 radios the boot line asked for.
+///
+/// Off unless `mac80211_hwsim.radios=<n>` is on the command line, matching the
+/// reference, where the virtual radio is a module nobody loads by accident. A
+/// machine with real wireless hardware must not also grow two radios that are
+/// not there.
+/// # C: O(n)
+#[cfg(target_os = "oxide-kernel")]
+fn start_virtual_radios() {
+    let Some(value) = crate::boot_cmdline::parameter_value(b"mac80211_hwsim.radios")
+        else { return; };
+    let Ok(n) = kstrtox::kstrtoul(value, 10) else { return; };
+    if n == 0 { return; }
+    let n = n.min(drv_mac80211_hwsim::limits::MAX_RADIOS as u64) as u32;
+    let _ = drv_mac80211_hwsim::init(n);
 }

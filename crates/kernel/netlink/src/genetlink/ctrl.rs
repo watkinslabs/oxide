@@ -53,12 +53,12 @@ pub fn register() -> Result<u16, family::GenlRegError> {
             GenlOp {
                 cmd:    ctrl_cmd::CTRL_CMD_GETFAMILY,
                 flags:  op_flags::GENL_CMD_CAP_DO | op_flags::GENL_CMD_CAP_DUMP,
-                policy: CTRL_POLICY_FAMILY,
+                policy: CTRL_POLICY_FAMILY, ..GenlOp::EMPTY
             },
             GenlOp {
                 cmd:    ctrl_cmd::CTRL_CMD_GETPOLICY,
                 flags:  op_flags::GENL_CMD_CAP_DUMP,
-                policy: CTRL_POLICY_POLICY,
+                policy: CTRL_POLICY_POLICY, ..GenlOp::EMPTY
             },
         ],
         mcgrps:  alloc::vec![CTRL_GROUP_NOTIFY],

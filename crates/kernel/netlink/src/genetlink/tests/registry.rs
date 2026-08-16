@@ -71,7 +71,7 @@ fn an_op_without_do_or_dump_is_einval() {
     boot();
     let bad = family::register_family(GenlFamilySpec {
         name: "oxide-t-badop", version: 1, hdrsize: 0, maxattr: 0,
-        ops: alloc::vec![GenlOp { cmd: 1, flags: op_flags::GENL_ADMIN_PERM, policy: &[] }],
+        ops: alloc::vec![GenlOp { cmd: 1, flags: op_flags::GENL_ADMIN_PERM, policy: &[] , ..GenlOp::EMPTY}],
         mcgrps: Vec::new(), netnsok: true, resv_start_op: 0,
     });
     assert_eq!(bad, Err(GenlRegError::Einval));

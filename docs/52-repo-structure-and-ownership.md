@@ -201,6 +201,17 @@ must use grouped paths from day one.
     crates. Any consumer needing these primitives uses them; no crate carries
     a second copy.
 
+20. `crates/kernel/wireless` owns cfg80211 (`66`): the radio registry, channels,
+    regulatory state, the scan/BSS cache, the connect state machine, key rules,
+    station reporting, and the nl80211 family. It is a leaf over `netlink`,
+    `syscall` and `sync` and must NOT depend on `net` — the reference's
+    configuration layer owns no network device, and the reverse dependency would
+    put the radio registry out of reach of a host build.
+    `crates/kernel/mac80211` owns the softmac layer and depends on `wireless`,
+    `net` and `aes`; it holds the only `Cfg80211Ops` implementation a softmac
+    driver needs and the only `net::NetDev` a wireless interface presents.
+    Wireless driver crates depend on `mac80211`, never on `wireless` directly.
+
 ## 6 Naming rules (frozen)
 
 1. Prefer explicit names over compressed abbreviations.
@@ -276,6 +287,13 @@ Constraints:
     register their devices in the one interface registry `net` already owns;
     neither may keep a second netdev registry, and neither depends on the other.
 
+15. The wireless lock order is `Socket` (140) then `WiphyList` (141) then
+    `Wiphy` (142) then `Sta80211` (143). Wireless ranks ABOVE `Socket` because
+    the network stack enters a wireless interface's transmit path holding its
+    own lock, so every wireless lock is the inner one; the receive path drops
+    its wireless locks before handing a frame up, so the reverse order never
+    occurs.
+
 ## 8 Change policy
 
 1. Structural moves are spec-visible. Update this doc + `MANIFEST` in
@@ -320,6 +338,7 @@ Temporary exceptions are allowed only with:
 
 ## 12 Changelog
 
+<<<<<<< HEAD
 - 2026-08-16: Added `crates/kernel/overlayfs` as the single owner of
   union-mount semantics (layer stack, merged lookup, whiteouts, copy-up,
   merged readdir, layer records).
@@ -330,6 +349,12 @@ Temporary exceptions are allowed only with:
   Bluetooth host stack, the `HciTransport` boundary that keeps transport
   drivers free of stack state, and the two primitive crates
   `crates/shared/aes` and `crates/shared/p256`.
+=======
+- 2026-08-16: Added `crates/kernel/wireless` (cfg80211 + nl80211),
+  `crates/kernel/mac80211` (softmac) and `crates/drivers/drv-mac80211-hwsim`,
+  with their dependency direction and lock order (`52§5` rule 20, `52§7` rule
+  15, `66§3`).
+>>>>>>> 957c37412 (spec: 62 wireless; feat(crypt): AES with CCM, GCM and CMAC; test: cfg80211 core)
 - 2026-08-15: Added the power-supply and backlight device-class ownership
   boundaries, their ACPI providers under `firmware`, and `crates/shared/kstrtox`.
 - 2026-08-15: Added `crates/kernel/thermal`, `crates/kernel/cpufreq` and

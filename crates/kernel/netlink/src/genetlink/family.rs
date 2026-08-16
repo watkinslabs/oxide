@@ -15,14 +15,69 @@ use sync::{Socket as SockLockClass, Spinlock};
 
 use super::uapi::*;
 
+/// Context a command handler needs about the request it is serving, gathered
+/// by the transport so a handler never reaches for the current task.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct GenlCtx {
+    /// Network namespace the sending socket is in.
+    pub net_ns: u64,
+    /// Netlink port the request came from, and that a reply is addressed to.
+    pub portid: u32,
+    /// Family id serving the request.
+    pub family_id: u16,
+    /// Capability answers the permission ladder already consumed, so a
+    /// handler with a per-object check does not have to re-resolve them.
+    pub init_ns_net_admin: bool,
+    pub sock_ns_net_admin: bool,
+}
+
+/// A command handler. Returns the full reply — a message, an `NLMSG_ERROR`,
+/// or nothing.
+pub type GenlDoit = fn(&crate::Nlmsghdr, &[u8], GenlCtx) -> Vec<u8>;
+
 /// One command a family accepts, with its permission and capability flags.
-#[derive(Clone, Debug, Eq, PartialEq)]
+///
+/// A family whose handlers live outside this crate supplies them here, the
+/// way a generic-netlink family supplies its own `doit`. Without that the
+/// dispatcher would need to know every family by name, which is a second
+/// registry beside this one.
+#[derive(Clone, Debug)]
 pub struct GenlOp {
     pub cmd:   u8,
     /// `GENL_CMD_CAP_*` | `GENL_*ADMIN_PERM` bits.
     pub flags: u32,
     /// Attribute validation policy reported by `CTRL_CMD_GETPOLICY`.
     pub policy: &'static [PolicyEntry],
+    /// Handler for a non-dump request.
+    pub doit: Option<GenlDoit>,
+    /// Handler for a dump request.
+    pub dumpit: Option<GenlDoit>,
+}
+
+/// Two ops are the same command when they agree on the number, the flags and
+/// the policy, and on whether the family serves it itself. Handler ADDRESSES
+/// are deliberately not compared: a function's address is not stable across
+/// codegen units, so comparing them would make equality depend on the build.
+impl PartialEq for GenlOp {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmd == other.cmd && self.flags == other.flags && self.policy == other.policy
+            && self.doit.is_some() == other.doit.is_some()
+            && self.dumpit.is_some() == other.dumpit.is_some()
+    }
+}
+impl Eq for GenlOp {}
+
+impl GenlOp {
+    /// A command with no handler of its own — served by the controller, or by
+    /// nothing yet.
+    pub const EMPTY: GenlOp =
+        GenlOp { cmd: 0, flags: 0, policy: &[], doit: None, dumpit: None };
+
+    /// A command served by handlers this family supplies. # C: O(1)
+    pub const fn with_handlers(cmd: u8, flags: u32, policy: &'static [PolicyEntry],
+                               doit: Option<GenlDoit>, dumpit: Option<GenlDoit>) -> Self {
+        Self { cmd, flags, policy, doit, dumpit }
+    }
 }
 
 /// One attribute's validation rule inside an op policy.
