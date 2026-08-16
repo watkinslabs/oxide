@@ -1,0 +1,19 @@
+[package]
+name = "drv-vhci"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Virtual HCI transport (`docs/62§4`): a character device through which a userspace process presents a Bluetooth controller to the host stack."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+bluetooth = { path = "../../kernel/bluetooth" }
+syscall   = { path = "../../kernel/syscall" }
+sync      = { path = "../../shared/sync" }
+vfs       = { path = "../../kernel/vfs" }
+drv       = { path = "../drv" }
+
+[lints]
+workspace = true

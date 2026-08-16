@@ -37,6 +37,7 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `23-time.md` | FROZEN | 2026-05-02 | `01`,`02`,`06`,`07`,`14`,`20`,`21`,`22` |
 | `24-ipc.md` | FROZEN | 2026-05-02 | `01`,`02`,`06`,`12`,`13`,`16`,`23` |
 | `25-net.md` | FROZEN | 2026-05-02 | `01`,`02`,`06`,`12`,`13`,`16`,`24`,`33`,`34` |
+| `25a-conntrack-nat-vlan-bonding.md` | FROZEN | 2026-08-16 | `01`,`02`,`06`,`25`,`26`,`52` |
 | `26-namespaces-cgroups.md` | FROZEN | 2026-05-02 | `01`,`02`,`06`,`13`,`16`,`19`,`25`,`27` |
 | `27-security.md` | FROZEN | 2026-05-02 | `01`,`02`,`06`,`11`,`13`,`16`,`18`,`26`,`38` |
 | `28-tty-pty.md` | FROZEN | 2026-05-02 | `01`,`02`,`06`,`16`,`19`,`24` |
@@ -83,6 +84,7 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `62-removable-media-filesystems.md` | DRAFT | — | `01`,`02`,`07`,`08`,`09`,`16`,`17`,`52` |
 | `63-selinux-mac.md` | DRAFT | — | `01`,`02`,`06`,`08`,`13`,`15`,`16`,`19`,`24`,`25`,`27`,`29` |
 | `64-v4l2-video-capture.md` | DRAFT | — | `01`,`02`,`06`,`07`,`08`,`09`,`13`,`15`,`16`,`19`,`22`,`23`,`34`,`35`,`52`,`53`,`60` |
+| `65-bluetooth.md` | DRAFT | — | `01`,`02`,`07`,`08`,`15`,`16`,`19`,`25`,`27`,`28`,`35`,`52`,`53` |
 | `44-phase-quick-reference.md` | DRAFT | — | `00`,`40`,`43` |
 
 ## Deleted

@@ -29,6 +29,7 @@ arch-irq  = { path = "../arch-irq" }
 ipc       = { path = "../ipc" }
 elf     = { path = "../../shared/elf" }
 net     = { path = "../net" }
+bluetooth = { path = "../bluetooth" }
 modules = { path = "../modules" }
 pci     = { path = "../../drivers/pci" }
 virtio  = { path = "../../drivers/virtio" }

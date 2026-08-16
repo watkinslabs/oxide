@@ -210,6 +210,17 @@ decl_lock_class! {
     Tty          = 120,
     SocketTable  = 130,
     Devices      = 135,
+    // Bluetooth controller registry: which controller each index names
+    // (`bluetooth::hci::registry`). Above `Devices` because registration
+    // publishes a device, and below `HciDev` because the registry lock is
+    // taken first and dropped BEFORE a controller's own state is touched —
+    // the two are never held together.
+    HciRegistry  = 136,
+    // One Bluetooth controller's own state: its flags, command queue and
+    // connection table. Taken by the transport's receive path and by every
+    // socket operation on that controller, never while the registry lock is
+    // held.
+    HciDev       = 137,
     Socket       = 140,
     // Heap allocator leaf — independent of PMM/Slab, any subsystem may
     // call `KAlloc` with its own lock held; kalloc never calls back into

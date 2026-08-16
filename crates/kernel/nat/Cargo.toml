@@ -1,0 +1,16 @@
+[package]
+name    = "nat"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Network address translation per `25a`. Ranges, unique-tuple allocation, SNAT/DNAT/masquerade/redirect binding, and packet manipulation. Depends on `conntrack` for the flow the binding is recorded on; nothing depends on it in reverse."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+sync      = { path = "../../shared/sync" }
+conntrack = { path = "../conntrack" }
+
+[lints]
+workspace = true

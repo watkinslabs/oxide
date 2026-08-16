@@ -8,6 +8,7 @@ pub const AF_NETLINK: u32 = 16;
 /// `sockaddr`/netlink wire-width form of the canonical family ID.
 pub const AF_NETLINK_WIRE: u16 = AF_NETLINK as u16;
 pub const AF_PACKET:  u32 = 17;
+pub const AF_BLUETOOTH: u32 = 31;
 pub const AF_VSOCK:   u32 = 40;
 /// Linux `AF_MAX`: the first family value `__sock_create` rejects outright.
 pub const AF_MAX:     u32 = 46;
@@ -112,6 +113,7 @@ pub fn resolve_socket_args(identity: CreateIdentity, protocol: u32, has_net_raw:
         AF_NETLINK        => validate_netlink(typ, protocol)?,
         AF_PACKET         => validate_packet(typ, has_net_raw)?,
         AF_VSOCK          => validate_vsock(typ, protocol)?,
+        AF_BLUETOOTH      => validate_bluetooth(typ, protocol, has_net_raw)?,
         _                 => return Err(Errno::Eafnosupport),
     }
     Ok(SocketArgs { family, typ, protocol, cloexec, nonblock })
@@ -182,6 +184,13 @@ fn validate_packet(typ: u32, has_net_raw: bool) -> Result<(), Errno> {
     }
 }
 
+/// The Bluetooth family's create operation. The protocol selector and the type
+/// screens both live in the Bluetooth subsystem, which owns them; this is the
+/// registration point, not a second copy of the rules.
+fn validate_bluetooth(typ: u32, protocol: u32, has_net_raw: bool) -> Result<(), Errno> {
+    bluetooth::sock::plan_create(protocol, typ, has_net_raw).map(|_| ())
+}
+
 fn validate_vsock(typ: u32, protocol: u32) -> Result<(), Errno> {
     if protocol != 0 && protocol != AF_VSOCK { return Err(Errno::Eprotonosupport); }
     match typ {
@@ -193,6 +202,35 @@ fn validate_vsock(typ: u32, protocol: u32) -> Result<(), Errno> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The Bluetooth family is admitted through this one owner. A second
+    // registry beside it would let the two disagree about which protocols
+    // exist, which is the split source of truth the project forbids.
+    #[test]
+    fn the_bluetooth_family_is_admitted_through_this_owner() {
+        let a = parse_socket_args(AF_BLUETOOTH, SOCK_RAW, 1, false).unwrap();
+        assert_eq!((a.family, a.typ, a.protocol), (AF_BLUETOOTH, SOCK_RAW, 1));
+    }
+
+    #[test]
+    fn the_bluetooth_family_reports_its_own_screens_rather_than_a_generic_refusal() {
+        // Out-of-range protocol selector.
+        assert_eq!(parse_socket_args(AF_BLUETOOTH, SOCK_RAW, 9, true), Err(Errno::Einval));
+        // In range, served, but the wrong type for it.
+        assert_eq!(parse_socket_args(AF_BLUETOOTH, SOCK_STREAM, 1, true),
+            Err(Errno::Esocktnosupport));
+        // In range but not carried here.
+        assert_eq!(parse_socket_args(AF_BLUETOOTH, SOCK_STREAM, 4, true),
+            Err(Errno::Eprotonosupport));
+    }
+
+    // The family is below the range ceiling, so it is never refused as an
+    // unknown family before its own screens run.
+    #[test]
+    fn the_bluetooth_family_is_inside_the_family_range() {
+        assert!(AF_BLUETOOTH < AF_MAX);
+        assert!(create_identity(AF_BLUETOOTH, SOCK_RAW).is_ok());
+    }
 
     #[test]
     fn rejects_unknown_socket_flag_bits_before_type_lookup() {

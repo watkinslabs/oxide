@@ -1,0 +1,177 @@
+use super::*;
+
+// The packing rule is the whole reason a wire opcode can be split back into a
+// group and a command; a shift or mask that disagreed would send the right
+// command in the wrong group.
+#[test]
+fn a_group_and_command_round_trip_through_the_packed_opcode() {
+    for ogf in [OGF_LINK_CTL, OGF_LINK_POLICY, OGF_HOST_CTL, OGF_INFO_PARAM,
+        OGF_STATUS_PARAM, OGF_LE_CTL, OGF_VENDOR] {
+        for ocf in [0u16, 1, 0x1ff, OCF_MASK] {
+            let op = opcode_pack(ogf, ocf);
+            assert_eq!((opcode_ogf(op), opcode_ocf(op)), (ogf, ocf));
+        }
+    }
+}
+
+#[test]
+fn the_command_field_is_exactly_ten_bits() {
+    assert_eq!(OCF_BITS, 10);
+    assert_eq!(OCF_MASK, 0x03ff);
+}
+
+#[test]
+fn packing_discards_a_command_index_that_does_not_fit() {
+    assert_eq!(opcode_ocf(opcode_pack(OGF_HOST_CTL, 0xffff)), OCF_MASK);
+    assert_eq!(opcode_ogf(opcode_pack(OGF_HOST_CTL, 0xffff)), OGF_HOST_CTL);
+}
+
+// Every declared opcode must decompose into the group its number implies. A
+// constant typed into the wrong group is the silent bug this catches.
+#[test]
+fn every_declared_opcode_sits_in_the_group_its_number_implies() {
+    let by_group: [(u16, &[u16]); 6] = [
+        (OGF_LINK_CTL, &[HCI_OP_INQUIRY, HCI_OP_INQUIRY_CANCEL, HCI_OP_CREATE_CONN,
+            HCI_OP_DISCONNECT, HCI_OP_CREATE_CONN_CANCEL, HCI_OP_ACCEPT_CONN_REQ,
+            HCI_OP_REJECT_CONN_REQ, HCI_OP_LINK_KEY_REPLY, HCI_OP_LINK_KEY_NEG_REPLY,
+            HCI_OP_PIN_CODE_REPLY, HCI_OP_PIN_CODE_NEG_REPLY, HCI_OP_AUTH_REQUESTED,
+            HCI_OP_SET_CONN_ENCRYPT, HCI_OP_REMOTE_NAME_REQ, HCI_OP_READ_REMOTE_FEATURES,
+            HCI_OP_READ_REMOTE_EXT_FEATURES, HCI_OP_READ_REMOTE_VERSION,
+            HCI_OP_SETUP_SYNC_CONN, HCI_OP_ACCEPT_SYNC_CONN_REQ,
+            HCI_OP_IO_CAPABILITY_REPLY, HCI_OP_USER_CONFIRM_REPLY,
+            HCI_OP_USER_CONFIRM_NEG_REPLY, HCI_OP_USER_PASSKEY_REPLY,
+            HCI_OP_USER_PASSKEY_NEG_REPLY, HCI_OP_IO_CAPABILITY_NEG_REPLY]),
+        (OGF_LINK_POLICY, &[HCI_OP_SNIFF_MODE, HCI_OP_EXIT_SNIFF_MODE,
+            HCI_OP_ROLE_DISCOVERY, HCI_OP_SWITCH_ROLE, HCI_OP_READ_LINK_POLICY,
+            HCI_OP_WRITE_LINK_POLICY, HCI_OP_READ_DEF_LINK_POLICY,
+            HCI_OP_WRITE_DEF_LINK_POLICY]),
+        (OGF_HOST_CTL, &[HCI_OP_SET_EVENT_MASK, HCI_OP_RESET, HCI_OP_SET_EVENT_FLT,
+            HCI_OP_READ_STORED_LINK_KEY, HCI_OP_DELETE_STORED_LINK_KEY,
+            HCI_OP_WRITE_LOCAL_NAME, HCI_OP_READ_LOCAL_NAME, HCI_OP_WRITE_CA_TIMEOUT,
+            HCI_OP_WRITE_PAGE_TIMEOUT, HCI_OP_WRITE_SCAN_ENABLE,
+            HCI_OP_READ_PAGE_SCAN_ACTIVITY, HCI_OP_WRITE_PAGE_SCAN_ACTIVITY,
+            HCI_OP_READ_CLASS_OF_DEV, HCI_OP_WRITE_CLASS_OF_DEV,
+            HCI_OP_READ_VOICE_SETTING, HCI_OP_WRITE_VOICE_SETTING,
+            HCI_OP_WRITE_AUTH_ENABLE, HCI_OP_WRITE_SYNC_FLOWCTL,
+            HCI_OP_READ_NUM_SUPPORTED_IAC, HCI_OP_READ_CURRENT_IAC_LAP,
+            HCI_OP_WRITE_INQUIRY_MODE, HCI_OP_READ_PAGE_SCAN_TYPE, HCI_OP_WRITE_EIR,
+            HCI_OP_WRITE_SSP_MODE, HCI_OP_READ_INQ_RSP_TX_POWER,
+            HCI_OP_READ_DEF_ERR_DATA_REPORTING, HCI_OP_WRITE_DEF_ERR_DATA_REPORTING,
+            HCI_OP_SET_EVENT_MASK_PAGE_2, HCI_OP_WRITE_LE_HOST_SUPPORTED,
+            HCI_OP_READ_SYNC_TRAIN_PARAMS, HCI_OP_WRITE_SC_SUPPORT]),
+        (OGF_INFO_PARAM, &[HCI_OP_READ_LOCAL_VERSION, HCI_OP_READ_LOCAL_COMMANDS,
+            HCI_OP_READ_LOCAL_FEATURES, HCI_OP_READ_LOCAL_EXT_FEATURES,
+            HCI_OP_READ_BUFFER_SIZE, HCI_OP_READ_BD_ADDR, HCI_OP_READ_LOCAL_CODECS,
+            HCI_OP_READ_LOCAL_PAIRING_OPTS]),
+        (OGF_STATUS_PARAM, &[HCI_OP_READ_RSSI, HCI_OP_READ_CLOCK,
+            HCI_OP_GET_MWS_TRANSPORT_CONFIG]),
+        (OGF_LE_CTL, &[HCI_OP_LE_SET_EVENT_MASK, HCI_OP_LE_READ_BUFFER_SIZE,
+            HCI_OP_LE_READ_LOCAL_FEATURES, HCI_OP_LE_SET_RANDOM_ADDR,
+            HCI_OP_LE_SET_ADV_PARAM, HCI_OP_LE_READ_ADV_TX_POWER,
+            HCI_OP_LE_SET_ADV_DATA, HCI_OP_LE_SET_SCAN_RSP_DATA,
+            HCI_OP_LE_SET_ADV_ENABLE, HCI_OP_LE_SET_SCAN_PARAM,
+            HCI_OP_LE_SET_SCAN_ENABLE, HCI_OP_LE_CREATE_CONN,
+            HCI_OP_LE_CREATE_CONN_CANCEL, HCI_OP_LE_READ_ACCEPT_LIST_SIZE,
+            HCI_OP_LE_CLEAR_ACCEPT_LIST, HCI_OP_LE_ADD_TO_ACCEPT_LIST,
+            HCI_OP_LE_DEL_FROM_ACCEPT_LIST, HCI_OP_LE_CONN_UPDATE,
+            HCI_OP_LE_READ_REMOTE_FEATURES, HCI_OP_LE_START_ENC,
+            HCI_OP_LE_LTK_REPLY, HCI_OP_LE_LTK_NEG_REPLY,
+            HCI_OP_LE_READ_SUPPORTED_STATES, HCI_OP_LE_READ_DEF_DATA_LEN,
+            HCI_OP_LE_WRITE_DEF_DATA_LEN, HCI_OP_LE_CLEAR_RESOLV_LIST,
+            HCI_OP_LE_READ_RESOLV_LIST_SIZE, HCI_OP_LE_SET_RPA_TIMEOUT,
+            HCI_OP_LE_READ_MAX_DATA_LEN, HCI_OP_LE_SET_DEFAULT_PHY,
+            HCI_OP_LE_READ_NUM_SUPPORTED_ADV_SETS, HCI_OP_LE_READ_TRANSMIT_POWER,
+            HCI_OP_LE_READ_BUFFER_SIZE_V2, HCI_OP_LE_SET_HOST_FEATURE]),
+    ];
+    for (ogf, ops) in by_group {
+        for op in ops {
+            assert_eq!(opcode_ogf(*op), ogf, "opcode {op:#06x} is not in group {ogf:#x}");
+        }
+    }
+}
+
+// Two commands sharing an opcode would make one answer the other's completion.
+#[test]
+fn no_two_declared_opcodes_collide() {
+    let all = [HCI_OP_INQUIRY, HCI_OP_INQUIRY_CANCEL, HCI_OP_CREATE_CONN,
+        HCI_OP_DISCONNECT, HCI_OP_CREATE_CONN_CANCEL, HCI_OP_ACCEPT_CONN_REQ,
+        HCI_OP_REJECT_CONN_REQ, HCI_OP_LINK_KEY_REPLY, HCI_OP_LINK_KEY_NEG_REPLY,
+        HCI_OP_PIN_CODE_REPLY, HCI_OP_PIN_CODE_NEG_REPLY, HCI_OP_AUTH_REQUESTED,
+        HCI_OP_SET_CONN_ENCRYPT, HCI_OP_REMOTE_NAME_REQ, HCI_OP_READ_REMOTE_FEATURES,
+        HCI_OP_READ_REMOTE_EXT_FEATURES, HCI_OP_READ_REMOTE_VERSION,
+        HCI_OP_SETUP_SYNC_CONN, HCI_OP_ACCEPT_SYNC_CONN_REQ,
+        HCI_OP_IO_CAPABILITY_REPLY, HCI_OP_USER_CONFIRM_REPLY,
+        HCI_OP_USER_CONFIRM_NEG_REPLY, HCI_OP_USER_PASSKEY_REPLY,
+        HCI_OP_USER_PASSKEY_NEG_REPLY, HCI_OP_IO_CAPABILITY_NEG_REPLY,
+        HCI_OP_SET_EVENT_MASK, HCI_OP_RESET, HCI_OP_SET_EVENT_FLT,
+        HCI_OP_READ_STORED_LINK_KEY, HCI_OP_DELETE_STORED_LINK_KEY,
+        HCI_OP_WRITE_LOCAL_NAME, HCI_OP_READ_LOCAL_NAME, HCI_OP_WRITE_CA_TIMEOUT,
+        HCI_OP_WRITE_PAGE_TIMEOUT, HCI_OP_WRITE_SCAN_ENABLE,
+        HCI_OP_READ_PAGE_SCAN_ACTIVITY, HCI_OP_WRITE_PAGE_SCAN_ACTIVITY,
+        HCI_OP_READ_CLASS_OF_DEV, HCI_OP_WRITE_CLASS_OF_DEV,
+        HCI_OP_READ_VOICE_SETTING, HCI_OP_WRITE_VOICE_SETTING,
+        HCI_OP_WRITE_AUTH_ENABLE, HCI_OP_WRITE_SYNC_FLOWCTL,
+        HCI_OP_READ_NUM_SUPPORTED_IAC, HCI_OP_READ_CURRENT_IAC_LAP,
+        HCI_OP_WRITE_INQUIRY_MODE, HCI_OP_READ_PAGE_SCAN_TYPE, HCI_OP_WRITE_EIR,
+        HCI_OP_WRITE_SSP_MODE, HCI_OP_READ_INQ_RSP_TX_POWER,
+        HCI_OP_READ_DEF_ERR_DATA_REPORTING, HCI_OP_WRITE_DEF_ERR_DATA_REPORTING,
+        HCI_OP_SET_EVENT_MASK_PAGE_2, HCI_OP_WRITE_LE_HOST_SUPPORTED,
+        HCI_OP_READ_SYNC_TRAIN_PARAMS, HCI_OP_WRITE_SC_SUPPORT,
+        HCI_OP_READ_LOCAL_VERSION, HCI_OP_READ_LOCAL_COMMANDS,
+        HCI_OP_READ_LOCAL_FEATURES, HCI_OP_READ_LOCAL_EXT_FEATURES,
+        HCI_OP_READ_BUFFER_SIZE, HCI_OP_READ_BD_ADDR, HCI_OP_READ_LOCAL_CODECS,
+        HCI_OP_READ_LOCAL_PAIRING_OPTS, HCI_OP_READ_RSSI, HCI_OP_READ_CLOCK,
+        HCI_OP_GET_MWS_TRANSPORT_CONFIG, HCI_OP_LE_SET_EVENT_MASK,
+        HCI_OP_LE_READ_BUFFER_SIZE, HCI_OP_LE_READ_LOCAL_FEATURES,
+        HCI_OP_LE_SET_RANDOM_ADDR, HCI_OP_LE_SET_ADV_PARAM,
+        HCI_OP_LE_READ_ADV_TX_POWER, HCI_OP_LE_SET_ADV_DATA,
+        HCI_OP_LE_SET_SCAN_RSP_DATA, HCI_OP_LE_SET_ADV_ENABLE,
+        HCI_OP_LE_SET_SCAN_PARAM, HCI_OP_LE_SET_SCAN_ENABLE, HCI_OP_LE_CREATE_CONN,
+        HCI_OP_LE_CREATE_CONN_CANCEL, HCI_OP_LE_READ_ACCEPT_LIST_SIZE,
+        HCI_OP_LE_CLEAR_ACCEPT_LIST, HCI_OP_LE_ADD_TO_ACCEPT_LIST,
+        HCI_OP_LE_DEL_FROM_ACCEPT_LIST, HCI_OP_LE_CONN_UPDATE,
+        HCI_OP_LE_READ_REMOTE_FEATURES, HCI_OP_LE_START_ENC, HCI_OP_LE_LTK_REPLY,
+        HCI_OP_LE_LTK_NEG_REPLY, HCI_OP_LE_READ_SUPPORTED_STATES,
+        HCI_OP_LE_READ_DEF_DATA_LEN, HCI_OP_LE_WRITE_DEF_DATA_LEN,
+        HCI_OP_LE_CLEAR_RESOLV_LIST, HCI_OP_LE_READ_RESOLV_LIST_SIZE,
+        HCI_OP_LE_SET_RPA_TIMEOUT, HCI_OP_LE_READ_MAX_DATA_LEN,
+        HCI_OP_LE_SET_DEFAULT_PHY, HCI_OP_LE_READ_NUM_SUPPORTED_ADV_SETS,
+        HCI_OP_LE_READ_TRANSMIT_POWER, HCI_OP_LE_READ_BUFFER_SIZE_V2,
+        HCI_OP_LE_SET_HOST_FEATURE];
+    for (i, op) in all.iter().enumerate() {
+        assert!(!all[i + 1..].contains(op), "opcode {op:#06x} appears twice");
+    }
+    assert!(!all.contains(&HCI_OP_NOP));
+}
+
+// The no-op opcode is how a controller says an event answers no command; it
+// must not be a real command.
+#[test]
+fn the_no_command_opcode_is_zero() {
+    assert_eq!(HCI_OP_NOP, 0);
+    assert_eq!(opcode_ogf(HCI_OP_NOP), 0);
+    assert_eq!(opcode_ocf(HCI_OP_NOP), 0);
+}
+
+// The scan operands are independent bits, so a controller can be made
+// connectable without being discoverable.
+#[test]
+fn the_scan_operands_are_independent_bits() {
+    assert_eq!(SCAN_DISABLED, 0);
+    assert_eq!(SCAN_INQUIRY & SCAN_PAGE, 0);
+    assert_eq!(SCAN_INQUIRY | SCAN_PAGE, 0x03);
+}
+
+#[test]
+fn the_enable_operands_are_zero_for_off_and_one_for_on() {
+    assert_eq!((LE_SCAN_DISABLE, LE_SCAN_ENABLE), (0, 1));
+    assert_eq!((LE_ADV_DISABLE, LE_ADV_ENABLE), (0, 1));
+    assert_eq!((LE_SCAN_PASSIVE, LE_SCAN_ACTIVE), (0, 1));
+}
+
+#[test]
+fn the_inquiry_modes_are_distinct_and_start_at_the_standard_one() {
+    assert_eq!(HCI_INQUIRY_MODE_STANDARD, 0);
+    assert_eq!(HCI_INQUIRY_MODE_RSSI, 1);
+    assert_eq!(HCI_INQUIRY_MODE_EXTENDED, 2);
+}
