@@ -554,6 +554,46 @@ Cost is not the only reason. A Sonnet lane told to report rather than fix return
 a finding you can act on; an Opus lane given the same brief tends to fix it, which
 is how a one-item lane becomes a five-item one.
 
+## A FAN-OUT MUST BE MEASURED, NOT ASSUMED (HARD RULE)
+
+**"Running" is not "making progress", and an orchestrator that cannot tell the
+difference will burn hours without noticing.** An agent blocked on a lock, a
+broken tree, or a missing file reports exactly the same status as one doing
+work. Nobody is coming to tell you; the lanes cannot see each other.
+
+Learned the expensive way: four lanes fanned out into ONE worktree, all
+sharing one cargo target directory. Every `cargo test` serialised on the
+build-directory lock, so a four-lane wave ran at the speed of one lane for
+~40 minutes. One lane's own harness had adapted with a 20-second retry loop —
+the contention was visible from inside and invisible from outside. The
+orchestrator's first diagnosis ("they are deadlocked on a broken tree") was
+also wrong, because it was inferred from silence rather than measured.
+
+- **Every lane gets its OWN `CARGO_TARGET_DIR`.** One target directory per
+  worktree is a global lock on every build in it. Tell each lane, in its
+  opening brief:
+  `CARGO_TARGET_DIR=<scratch>/tgt-<lane> cargo test -p <crate>`
+  The first build there is a full rebuild; every one after is uncontended.
+  This costs disk and buys back the parallelism the fan-out was for.
+- **Run `tools/lane-health.sh` before concluding anything about a lane.** It
+  reports build-lock contention, a tree that does not compile, modules declared
+  before their files, and source-tree silence while builds run. Exit 1 means
+  something is wrong, so it can gate a wait loop. Check it when a lane goes
+  quiet, and periodically when several are live.
+- **A declaration and the file it names land in the SAME write.** `mod foo;`
+  committed before `foo.rs` exists makes the whole crate uncompilable for every
+  other lane in the worktree, and none of them owns the broken file — so each
+  one waits for a build that cannot succeed. This happened twice in one wave.
+- **Never diagnose a lane from silence.** Check the process list, the source
+  tree's mtimes, and whether the crate compiles. State what you measured. A
+  confident wrong diagnosis sends the next twenty minutes in the wrong
+  direction — see `Never state a conclusion a proxy cannot support`.
+- **Prefer one worktree per lane when lanes will edit overlapping files.** A
+  shared worktree is right for a wave with strict file ownership and cheap
+  builds; it is wrong when every lane needs the same crate to compile in order
+  to test. When lanes must share, serialise the hook-application passes and say
+  so in each brief.
+
 ## Claim work before starting (HARD RULE — no duplicate lanes)
 
 Two agents independently rewrote the SAME mount subsystem item (the `mounted_mounts`
@@ -571,6 +611,60 @@ Never again. Before writing ANY code for a ledger item / D-item / subsystem task
 6. **Fan out independent work immediately.** When a task has two or more independently-owned subsystem areas, assign them to separate agents before implementation: one owner per file area, one integration owner, and explicit handoff evidence (tests + file list). Do not serialize independent investigation, implementation, or test-design work while capacity is available; do not overlap ownership merely to increase agent count.
 7. **Delegated agents have no merge authority.** Only the primary/integration owner may create or merge a PR. A subagent must not run `gh pr merge` (or an equivalent API action), even for its own lane, and an instruction not to commit, push, create a PR, or merge is a hard boundary. Delegating implementation does not delegate integration authority.
 8. **A worktree belongs to its lane owner.** No agent may remove, prune, reset, or repurpose a worktree it did not create. The primary/integration owner may remove it only after the owning agent has handed it off or finished, `git status` confirms the exact worktree is clean, and the PR is merged (or the user explicitly abandoned the branch). Remove the worktree first, then delete its local branch.
+
+## A LANE IS NOT DONE UNTIL IT IS WIRED (HARD RULE)
+
+**Code that compiles and passes its own tests is not delivered work. It is
+delivered work when something in the running system CALLS it.** A lane that
+returns "complete, 113 tests green" while the feature it built is unreachable
+has produced a very well-tested subdirectory, and the user still cannot use the
+feature. This is the same defect class as `Machinery without callers` — the top
+defect class in this repo — arriving through the front door.
+
+Learned the expensive way, in one wave: six lanes built compression, casefold,
+a segment cleaner, orphan inodes, recovery and quota for f2fs. Every lane
+reported complete with hundreds of passing tests. Four of the six were dead
+code — `volume/io.rs` still answered `EOPNOTSUPP` for a compressed cluster,
+`features.rs` still refused a case-folded volume at mount, the cleaner was
+never called when the allocator ran out, and the checkpoint writer never wrote
+an orphan block. Every one of those lanes was *correct*; none of them did
+anything. The tests all passed because a lane's tests call the lane.
+
+**The orchestrator owns integration and does not get to delegate it.** Spawning
+the lanes is the cheap half. Applying the hooks, resolving the conflicts between
+them, and proving the feature is reachable is the work, and it is the
+orchestrator's — nobody else is positioned to do it, because no lane owns the
+call site.
+
+- **Never report a lane as complete on its own test count.** The lane's tests
+  prove the module works. They say nothing about whether the module is used.
+- **Prove reachability before claiming it.** Grep the call sites of the entry
+  point, from OUTSIDE the lane's own files and outside `#[cfg(test)]`. A module
+  whose only callers are its own tests is unwired, however green it is.
+- **Say the call site out loud.** A completion report names, per lane, the file
+  and function that reaches the new code. "Wired into `volume/io.rs::read_file`
+  at the `Mapped::Compressed` arm" is a claim that can be checked. "Lane
+  complete, 111 tests passing" is not.
+- **An integration test is the proof, not a unit test.** The test that would
+  have caught all four failures is one that drives the feature through the
+  interface the kernel actually uses, and there was none. Write it at the
+  boundary the lane crosses, in the integrating owner's files.
+- **A hook a lane reports is a task for the orchestrator, not a note.** Apply it
+  in the same session, re-run the whole suite, and run a positive control on the
+  hook itself — remove the call and confirm something goes red. A hook nobody
+  applies is a lane nobody shipped.
+- **Rows go in `scratch/known_issues.md` as they arrive, by the orchestrator.**
+  When lanes share one worktree they cannot each append to that file without
+  clobbering each other, so collecting rows and filing them is also the
+  orchestrator's job — done per lane on receipt, never batched to the end and
+  never left in a report. A row that exists only in an agent transcript does not
+  exist.
+
+**The completion bar for a fan-out:** every lane's hooks applied, the full suite
+green, a positive control per hook, the call site named for each, and the rows
+filed. Short of that the honest report is "built, not wired", with the
+unreachable features listed as such.
+
 
 ## NEVER WORK ON MAIN (HARD RULE)
 

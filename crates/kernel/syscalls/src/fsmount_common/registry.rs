@@ -142,6 +142,41 @@ fn caller_fsids() -> (u32, u32) {
     }
 }
 
+/// Publish one f2fs mount's `/proc/fs/f2fs/<dev>` and `/sys/fs/f2fs/<dev>`
+/// surfaces.
+///
+/// The reference claims the two subsystem directories in its module init and
+/// publishes the per-mount half when the superblock is registered. There is no
+/// module init here, so the claim happens once, on the first mount.
+/// # C: O(attributes)
+fn f2fs_publish_surfaces(fs: &Arc<f2fs::F2fs>) {
+    use f2fs::{procfs as f2p, sysfs as f2s};
+    if !sysfs::fs_subsys::is_claimed(f2s::SUBSYS) {
+        let _ = sysfs::fs_subsys::claim(f2s::SUBSYS);
+        for d in f2s::GLOBAL_DIRS { let _ = sysfs::fs_subsys::publish_dir(f2s::SUBSYS, d); }
+        for a in f2s::global_attrs() {
+            let _ = sysfs::fs_subsys::publish_attr(f2s::SUBSYS, &a.dir, a.name, a.mode,
+                                                   a.show, a.store);
+        }
+    }
+    if !procfs::fs_dir::is_claimed(f2p::FS_NAME) { let _ = procfs::fs_dir::claim(f2p::FS_NAME); }
+    f2fs::fsattr::set_teardown(f2fs_withdraw_surfaces);
+    for a in f2s::mount_attrs(fs) {
+        let _ = sysfs::fs_subsys::publish_attr(f2s::SUBSYS, &a.dir, a.name, a.mode,
+                                               a.show, a.store);
+    }
+    for f in f2p::mount_files(fs) {
+        let _ = procfs::fs_dir::publish_file(f2p::FS_NAME, &f.dir, f.name, f.mode, f.show);
+    }
+}
+
+/// Withdraw one mount's surfaces at unmount: they report on a volume that no
+/// longer exists. # C: O(attributes)
+fn f2fs_withdraw_surfaces(dev: &str) {
+    let _ = sysfs::fs_subsys::withdraw(f2fs::sysfs::SUBSYS, dev);
+    let _ = procfs::fs_dir::withdraw(f2fs::procfs::FS_NAME, dev);
+}
+
 fn register_filesystems() {
     use vfs::fs::{superblock_from_filesystem, FsFlags, FsType, register_fs};
     type R = vfs::fs::KResult<Arc<vfs::SuperBlock>>;
@@ -309,6 +344,27 @@ fn register_filesystems() {
         let opts = ntfs3::opts::parse(ntfs3::Options::defaults(), d)
             .map_err(ntfs3::mount::errno_to_vfs)?;
         let fs = ntfs3::NtfsFs::open_with(dev, source, write, opts)?;
+        let sb_flags = if fs.is_writable() { sb_flags } else { sb_flags | vfs::superblock::SB_RDONLY };
+        let root = fs.root_inode()?;
+        let fs: Arc<dyn vfs::fs::FileSystem> = fs;
+        mounted(ty, fs, Some(root), source, sb_flags)
+    })));
+    // F2FS is a log-structured filesystem: it never overwrites in place, so a
+    // volume whose last mount did not checkpoint carries writes the checkpoint
+    // does not name. Recovery replays those at mount from the node chain, which
+    // is why this mounts read-write on an unclean volume where NTFS above will
+    // not — replay is the designed path here, not a repair.
+    let _ = register_fs(FsType::new("f2fs", f2fs::F2FS_SUPER_MAGIC, FsFlags::FS_REQUIRES_DEV,
+        Box::new(|ty, source: Option<&str>, _t: &str, d: &str, sb_flags: u64,
+                  _p: &[vfs::fs::FsParameter]| -> R {
+        let source = source.ok_or(vfs::VfsError::Enoent)?;
+        let write = sb_flags & vfs::superblock::SB_RDONLY == 0;
+        let access = vfs::MAY_READ | if write { vfs::MAY_WRITE } else { 0 };
+        let (dev, _dev_t) = resolve_block_source(source, access)?;
+        let opts = f2fs::opts::parse(f2fs::Options::defaults(), d)
+            .map_err(f2fs::errno_to_vfs)?;
+        let fs = f2fs::F2fs::open_with(dev, source, write, opts)?;
+        f2fs_publish_surfaces(&fs);
         let sb_flags = if fs.is_writable() { sb_flags } else { sb_flags | vfs::superblock::SB_RDONLY };
         let root = fs.root_inode()?;
         let fs: Arc<dyn vfs::fs::FileSystem> = fs;

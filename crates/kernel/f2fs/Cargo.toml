@@ -1,0 +1,39 @@
+[package]
+name = "f2fs"
+version = "0.1.0"
+edition = "2021"
+publish = false
+[lib]
+path = "src/lib.rs"
+[dependencies]
+sync    = { path = "../../shared/sync" }
+syscall = { path = "../syscall" }
+klog    = { path = "../../shared/klog" }
+vfs     = { path = "../vfs" }
+block   = { path = "../block" }
+sectors = { path = "../sectors" }
+crc     = { path = "../../shared/crc" }
+crypt   = { path = "../../shared/crypt" }
+pkey    = { path = "../../shared/pkey" }
+aes     = { path = "../../shared/aes" }
+blockcipher = { path = "../../shared/blockcipher" }
+sm4     = { path = "../../shared/sm4" }
+adiantum = { path = "../../shared/adiantum" }
+zstd    = { path = "../../shared/zstd" }
+siphash = { path = "../../shared/siphash" }
+utf8    = { path = "../../shared/utf8" }
+
+
+# The background threads. Only the kernel build has a scheduler to park
+# against, and a hosted test build must not drag one in: the passes those
+# threads make are ungated and driven directly by the tests.
+[target.'cfg(target_os = "oxide-kernel")'.dependencies]
+sched      = { path = "../sched" }
+timekeeper = { path = "../timekeeper" }
+
+[features]
+default = []
+hosted = []
+
+[lints]
+workspace = true
