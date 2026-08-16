@@ -1630,6 +1630,8 @@ dependencies = [
 name = "netfilter"
 version = "0.1.0"
 dependencies = [
+ "conntrack",
+ "nat",
  "net",
  "netlink",
  "sched",
