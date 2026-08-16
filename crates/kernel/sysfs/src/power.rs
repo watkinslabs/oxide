@@ -18,7 +18,7 @@ use crate::{register, RO_PERM, RW_PERM};
 
 /// Map a `power::Error` onto the `VfsError` a syscall returns.
 ///
-/// Total over `power::decide::Error`'s nine variants — a new variant added
+/// Total over `power::decide::Error`'s ten variants — a new variant added
 /// there without a corresponding arm here is a compile error, not a silent
 /// `Einval` default. `Again`/`Nomem` have no closer VFS analogue than their
 /// own-named `Eagain`/`Enomem`.
@@ -30,6 +30,7 @@ fn map_err(e: power::Error) -> VfsError {
         power::Error::Io     => VfsError::Eio,
         power::Error::Busy   => VfsError::Ebusy,
         power::Error::Nosys  => VfsError::Enosys,
+        power::Error::Opnotsupp => VfsError::Eopnotsupp,
         power::Error::Again  => VfsError::Eagain,
         power::Error::Intr   => VfsError::Eintr,
         power::Error::Nomem  => VfsError::Enomem,
