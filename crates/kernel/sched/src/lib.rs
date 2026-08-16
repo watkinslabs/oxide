@@ -364,6 +364,9 @@ impl idle::IdleOps for LiveIdleCpu {
         // return from a park.
         #[cfg(target_arch = "x86_64")]
         unsafe { use sync::IrqGate; let _ = hal_x86_64::X86IrqGate::save_enable(); }
+        // SAFETY: the idle task holds no lock and owns no critical section
+        // here; admitting interrupts is the state every other path expects on
+        // return from a park.
         #[cfg(target_arch = "aarch64")]
         unsafe { use sync::IrqGate; let _ = hal_aarch64::ArmIrqGate::save_enable(); }
     }
