@@ -145,6 +145,7 @@ pub(super) fn qemu_run_aarch64_grub(
     let home_drive = format!("if=none,id=home,format=raw,file={}", home_img.display());
     let netdev = ssh_fwd_netdev();
     let pcap_args = super::common::pcap_filter_args();
+    let share_args = super::common::host_share_args();
     // Per-launch vhost-vsock guest CID (host-global — see qemu_vsock_cid), so
     // concurrent worktree boots don't collide on a hardcoded CID. cid / cid+1.
     let vsock_cid: u32 = std::env::var("OXIDE_QEMU_VSOCK_CID").ok()
@@ -178,6 +179,7 @@ pub(super) fn qemu_run_aarch64_grub(
         c.args(["-qmp", q.as_str()]);
     }
     c.args(&pcap_args);
+    c.args(&share_args);
     c.args([
         "-machine", "virt,gic-version=3,its=on",
         "-cpu", "cortex-a72",

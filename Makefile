@@ -62,6 +62,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
         smoke-hda smoke-hda-x86 smoke-hda-arm \
         smoke-v4l2 smoke-v4l2-x86 smoke-v4l2-arm \
         hosted-gate test-build-gate \
+        smoke-hostshare smoke-hostshare-x86 smoke-hostshare-arm \
         smoke-ping smoke-ping-x86 smoke-ping-arm smoke-network-native-pci-x86 \
         stack-gate-baseline-x86 stack-gate-baseline-arm stack-report \
         clean clean-builds help
@@ -735,6 +736,15 @@ smoke-fs-x86: x86
 smoke-fs-arm: arm
 	./tools/boot-smoke-fs.sh arm $(FS_SMOKE_TIMEOUT)
 smoke-fs: smoke-fs-x86 smoke-fs-arm
+
+# Host-share acceptance: the guest mounts a QEMU-exported host directory and
+# reads a file the host wrote. The only check that exercises a real descriptor
+# chain; everything above it is hosted (`63§9`).
+smoke-hostshare-x86: x86
+	./tools/boot-smoke-hostshare.sh x86 $(FS_SMOKE_TIMEOUT)
+smoke-hostshare-arm: arm
+	./tools/boot-smoke-hostshare.sh arm $(FS_SMOKE_TIMEOUT)
+smoke-hostshare: smoke-hostshare-x86 smoke-hostshare-arm
 
 KBD_LOGIN_SMOKE_TIMEOUT ?= 600
 smoke-kbd-login-x86: x86

@@ -51,6 +51,43 @@ pub(super) fn pcap_filter_args() -> Vec<String> {
     }
 }
 
+/// Optional host-directory shares, for testing the two host-share filesystems.
+///
+/// `OXIDE_QEMU_9P_SHARE=<hostdir>` exports `<hostdir>` over virtio-9p under the
+/// tag `OXIDE_QEMU_9P_TAG` (default `hostshare`); `OXIDE_QEMU_VIRTIOFS_SOCK=
+/// <sock>` attaches a running `virtiofsd` under `OXIDE_QEMU_VIRTIOFS_TAG`
+/// (default `hostfs`). Off by default: a share is a hole into the host
+/// filesystem and must be asked for explicitly, never present because a boot
+/// happened to inherit it.
+///
+/// `security_model=none` passes the guest's ids straight through, which is what
+/// a development share wants and why it is not a default.
+/// # C: O(1)
+pub(super) fn host_share_args() -> Vec<String> {
+    let mut out = Vec::new();
+    if let Ok(path) = std::env::var("OXIDE_QEMU_9P_SHARE") {
+        if !path.is_empty() {
+            let tag = std::env::var("OXIDE_QEMU_9P_TAG").unwrap_or_else(|_| "hostshare".to_string());
+            eprintln!("xtask qemu: 9p share {path} as mount tag {tag}");
+            out.push("-fsdev".to_string());
+            out.push(format!("local,id=ox9p,path={path},security_model=none"));
+            out.push("-device".to_string());
+            out.push(format!("virtio-9p-pci,fsdev=ox9p,mount_tag={tag}"));
+        }
+    }
+    if let Ok(sock) = std::env::var("OXIDE_QEMU_VIRTIOFS_SOCK") {
+        if !sock.is_empty() {
+            let tag = std::env::var("OXIDE_QEMU_VIRTIOFS_TAG").unwrap_or_else(|_| "hostfs".to_string());
+            eprintln!("xtask qemu: virtiofs socket {sock} as mount tag {tag}");
+            out.push("-chardev".to_string());
+            out.push(format!("socket,id=oxvfs,path={sock}"));
+            out.push("-device".to_string());
+            out.push(format!("vhost-user-fs-pci,queue-size=1024,chardev=oxvfs,tag={tag}"));
+        }
+    }
+    out
+}
+
 /// D3.5: ensure a small raw NVMe scratch disk exists at
 /// `target/builds/<id>/nvme-<arch>.img` (16 MiB, zeroed). Created if missing so the
 /// `nvme` QEMU device always has a backing file. Returns its path. # C: O(1)
