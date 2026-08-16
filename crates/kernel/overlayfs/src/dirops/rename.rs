@@ -16,7 +16,6 @@ use alloc::vec::Vec;
 use syscall::errno::Errno;
 use vfs::inode_ops::CreateCtx;
 use vfs::types::FileType;
-use vfs::InodeRef;
 
 use crate::err::to_errno;
 use crate::layers::{LayerStack, OvlEntry};

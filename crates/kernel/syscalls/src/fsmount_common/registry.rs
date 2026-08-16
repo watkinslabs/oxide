@@ -116,7 +116,7 @@ fn in_initial_user_ns() -> bool {
     let initial = namespace_identity::initial(namespace_identity::NamespaceKind::User);
     match sched::live::current()
         .and_then(|t| t.namespace_owner(namespace_identity::NamespaceKind::User)) {
-        Some(ns) => ns == initial,
+        Some(ns) => namespace_identity::NamespaceRef::ptr_eq(&ns, &initial),
         // No task: an in-kernel mount, which runs with full privilege.
         None => true,
     }

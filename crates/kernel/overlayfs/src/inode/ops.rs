@@ -13,7 +13,7 @@ use alloc::vec::Vec;
 use syscall::errno::Errno;
 use vfs::inode_ops::{CreateCtx, InodeOps};
 use vfs::setattr::Iattr;
-use vfs::types::{FileType, S_IFMT};
+use vfs::types::S_IFMT;
 use vfs::xattr::XattrError;
 use vfs::{Idmap, Inode, InodeRef, KResult, VfsError};
 
