@@ -1,4 +1,4 @@
-# 62 V4L2 video capture
+# 64 V4L2 video capture
 
 DRAFT 2026-08-16. Dep:`01`,`02`,`06`,`07`,`08`,`09`,`13`,`15`,`16`,`19`,`22`,`23`,`34`,`35`,`52`,`53`,`60`. Provides:`v4l2`, `/dev/videoN`, the `video4linux` class, `drv-vivid`.
 
