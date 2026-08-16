@@ -134,3 +134,53 @@ fn a_late_dominant_site_still_wins() {
     for _ in 0..500 { w.push(isr); }
     assert_eq!(top_repeat(&w, TL, TH).0, isr);
 }
+
+/// The chain comes out innermost first, because a stack is read low address up
+/// and the innermost frame is the lowest one.
+#[test]
+fn the_frame_chain_reads_innermost_first() {
+    let inner = TL + 0x10;
+    let outer = TL + 0x20;
+    let w = [0u64, inner, 0xdead_beef, outer, 0];
+    let mut out = [0u64; 8];
+    let n = text_frames(&w, TL, TH, &mut out);
+    assert_eq!(&out[..n], &[inner, outer]);
+}
+
+/// One frame's link register can appear twice in a row; that is one call site,
+/// not two frames.
+#[test]
+fn a_repeated_adjacent_word_is_one_frame() {
+    let site = TL + 0x40;
+    let w = [site, site, site];
+    let mut out = [0u64; 8];
+    assert_eq!(text_frames(&w, TL, TH, &mut out), 1);
+}
+
+/// Recursion must stay visible: the same site separated by other frame words is
+/// the signature that tells a runaway apart from a deep chain.
+#[test]
+fn a_recursive_site_is_not_folded_away() {
+    let site = TL + 0x40;
+    let w = [site, 0, site, 0, site];
+    let mut out = [0u64; 8];
+    assert_eq!(text_frames(&w, TL, TH, &mut out), 3);
+}
+
+/// The report runs on a ~4 KiB overflow stack, so the buffer is small and the
+/// walk must stop at it rather than write past.
+#[test]
+fn the_chain_stops_at_the_caller_s_buffer() {
+    let w: alloc::vec::Vec<u64> = (0..200).map(|i| TL + i * 0x40).collect();
+    let mut out = [0u64; 4];
+    assert_eq!(text_frames(&w, TL, TH, &mut out), 4);
+    assert_eq!(out[3], TL + 3 * 0x40);
+}
+
+/// Words outside kernel text are stack data, never return sites.
+#[test]
+fn non_text_words_are_not_frames() {
+    let w = [0u64, 1, TH, TL - 1, 0x7fff_ffff_ffff];
+    let mut out = [0u64; 8];
+    assert_eq!(text_frames(&w, TL, TH, &mut out), 0);
+}

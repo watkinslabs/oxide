@@ -1,0 +1,21 @@
+# Functions entered by a KERNEL-MODE exception on the INTERRUPTED TASK'S OWN
+# stack — the third budget domain (`--entry-roots`), and the one no task-path
+# number contains.
+#
+# An interrupt gets a stack of its own: the vector switches SP to this CPU's
+# hardirq stack before dispatching, which is why `irq-roots-aarch64.txt` is a
+# separate 16 KiB. A synchronous exception does NOT. `oxide_default_vector_handler`
+# pushes its 288-byte register frame at the interrupted SP and calls Rust there,
+# so every byte reachable from here is spent on whatever stack the faulting code
+# was already deep into.
+#
+# That makes this a RESERVE, not a stack: the honest task-stack ceiling is
+# `THREAD_SIZE - 288 - (the number this domain reports)`. Charging it as its own
+# domain is what stops it growing into headroom the task paths were budgeted
+# against — the failure mode is invisible from either side alone, because each
+# path is individually legal and only the sum overflows.
+#
+# The fault that motivated it: `[BADSTACK] ... BELOW-LO by 32` on aarch64, an
+# overflow of a few dozen bytes — the signature of a legal-but-maximal task path
+# taking one exception, not of a runaway.
+oxide_fault_print_rust

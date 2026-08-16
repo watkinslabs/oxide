@@ -442,6 +442,14 @@ fn init_pmm_and_arch(info: &BootInfo) {
         #[cfg(target_arch = "x86_64")]
         // SAFETY: installed once, pre-SMP, with a fn that lives for the kernel's lifetime and takes no locks.
         unsafe { hal_x86_64::install_stack_name_hook(stack_name_for_fault); }
+        // Same report on the other arch: the entry asm's `__bad_stack` path
+        // states the SP comparison, and this states what the scheduler owns —
+        // the slot's kind, the preempt fields, the chain still on the stack.
+        // The hook existed with no caller, so every aarch64 overflow so far was
+        // diagnosed from registers alone.
+        #[cfg(target_arch = "aarch64")]
+        // SAFETY: installed once, pre-SMP, with a 'static fn matching BadStackProbe that takes no locks.
+        unsafe { hal_aarch64::install_badstack_probe(::sched::kstack::badstack::report); }
         #[cfg(target_arch = "x86_64")]
         smoke::device_map::smoke_device_map_x86(info.hhdm_offset);
         #[cfg(target_arch = "aarch64")]

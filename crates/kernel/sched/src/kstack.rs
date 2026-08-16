@@ -51,6 +51,9 @@ pub(crate) const KSTACK_VA_BASE: u64 = 0xffff_fb00_0000_0000;
 pub(crate) const MAX_STACKS: usize = 16384;
 
 pub mod classify;
+/// aarch64 bad-stack probe body (`badstack::report`), installed by kmain.
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+pub mod badstack;
 pub use classify::{Span, StackKind, span_of};
 
 /// What each slot is, so a guard-page hit can NAME the stack.

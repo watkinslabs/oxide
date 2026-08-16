@@ -567,6 +567,14 @@ def main():
                     help="ceiling for the --irq-roots domain. The hardirq stack is the "
                          "same 16384 B, but a hardware interrupt nests into the softirq "
                          "drain, so the drain must leave room for a whole second entry")
+    ap.add_argument("--entry-roots",
+                    help="file of demangled identities entered by a KERNEL-mode exception "
+                         "on the interrupted task's own stack — a THIRD budget domain, and "
+                         "the one no task-path number includes")
+    ap.add_argument("--entry-fail", type=int, default=6100,
+                    help="ceiling for the --entry-roots domain. This is not a stack, it is "
+                         "the RESERVE every task path must leave: the whole chain runs on "
+                         "top of whatever the interrupted path had already spent")
     args = ap.parse_args()
 
     if args.self_test:
@@ -697,32 +705,61 @@ def main():
     # it, and the drain runs with interrupts unmasked, so a hardware interrupt
     # nests onto whatever the softirq drain has already spent. The budget is
     # therefore the stack MINUS a whole second entry, not the stack.
-    irq_failed = False
-    if args.irq_roots:
-        roots, unresolved = read_roots(args.irq_roots, frames)
+    def check_root_domain(roots_file, ceiling, banner, noun, advice):
+        """One root-file budget domain: report every root's depth, fail over `ceiling`."""
+        roots, unresolved = read_roots(roots_file, frames)
+        bad = False
         if unresolved:
             print(f"\nstack-depth-gate: FAIL — {len(unresolved)} root(s) in "
-                  f"{args.irq_roots} are not in {args.elf}:", file=sys.stderr)
+                  f"{roots_file} are not in {args.elf}:", file=sys.stderr)
             for n, ident in unresolved:
-                print(f"    {args.irq_roots}:{n}  {ident}", file=sys.stderr)
-            irq_failed = True
-        ranked_irq = sorted(((r, depth.get(r, 0)) for r in roots), key=lambda kv: -kv[1])
-        over_irq = [(r, d) for r, d in ranked_irq if d >= args.irq_fail]
-        print(f"\n  hardirq domain     : {len(roots)} root(s), ceiling {args.irq_fail} B "
-              f"of the {16 * 1024} B interrupt stack")
-        for raw, d in ranked_irq[: args.top]:
+                print(f"    {roots_file}:{n}  {ident}", file=sys.stderr)
+            bad = True
+        ranked = sorted(((r, depth.get(r, 0)) for r in roots), key=lambda kv: -kv[1])
+        over = [(r, d) for r, d in ranked if d >= ceiling]
+        print(f"\n  {banner}")
+        for raw, d in ranked[: args.top]:
             note = w.flags(raw)
             print(f"    {d:7d}  {rsi.identity(raw)}" + (f"   [{note}]" if note else ""))
-        if over_irq:
-            print(f"\nstack-depth-gate: FAIL — {len(over_irq)} interrupt-stack path(s) "
-                  f"reach >= {args.irq_fail} B:", file=sys.stderr)
-            for raw, d in over_irq:
+        if over:
+            print(f"\nstack-depth-gate: FAIL — {len(over)} {noun} reach >= {ceiling} B:",
+                  file=sys.stderr)
+            for raw, d in over:
                 print(f"    {d:7d}  {rsi.identity(raw)}", file=sys.stderr)
-            print("\nThis stack takes a nested hardware interrupt on top of whatever the "
-                  "softirq drain has already spent, so the headroom left here is what a "
-                  "second entry has to fit in. Shorten the chain; raising the ceiling "
-                  "spends headroom that the nesting needs.", file=sys.stderr)
-            irq_failed = True
+            print("\n" + advice, file=sys.stderr)
+            bad = True
+        return bad
+
+    irq_failed = False
+    if args.irq_roots:
+        irq_failed = check_root_domain(
+            args.irq_roots, args.irq_fail,
+            f"hardirq domain     : ceiling {args.irq_fail} B of the {16 * 1024} B "
+            f"interrupt stack",
+            "interrupt-stack path(s)",
+            "This stack takes a nested hardware interrupt on top of whatever the "
+            "softirq drain has already spent, so the headroom left here is what a "
+            "second entry has to fit in. Shorten the chain; raising the ceiling "
+            "spends headroom that the nesting needs.")
+    # THE EXCEPTION-ENTRY RESERVE — the budget no task-path number contains.
+    #
+    # A kernel-mode exception (a demand page taken by `copy_to_user`, a fault
+    # fixup, an FP trap) is NOT dispatched on a separate stack the way an
+    # interrupt is: the entry asm pushes its register frame onto the interrupted
+    # task's own stack and calls the handler there. So the true worst case for a
+    # task stack is `deepest task path + exception frame + this chain`, and the
+    # task ceiling is only meaningful as `THREAD_SIZE - that`. Measuring it as
+    # its own domain keeps the reserve honest: it cannot silently grow into the
+    # headroom the task paths were budgeted against.
+    if args.entry_roots:
+        irq_failed = check_root_domain(
+            args.entry_roots, args.entry_fail,
+            f"exception-entry res: ceiling {args.entry_fail} B reserved out of every "
+            f"task stack",
+            "kernel-exception path(s)",
+            "This chain runs on the INTERRUPTED task's stack, on top of whatever that "
+            "path had already spent — every byte here is a byte no task path may use. "
+            "Shorten it; raising the ceiling silently lowers the task budget.") or irq_failed
 
     # The two failures need OPPOSITE responses, so they are never merged into
     # one list: a NEW or WORSENED path is code to fix, a STALE entry is a line
