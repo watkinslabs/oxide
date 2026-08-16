@@ -7,7 +7,7 @@
 // the middle, which is exactly the shape a single-position test misses.
 
 use alloc::rc::Rc;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
