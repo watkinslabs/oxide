@@ -22,5 +22,5 @@ pub mod source;
 pub mod walk;
 pub mod compat;
 
-pub use walk::run_rule_ctx;
+pub use walk::{run_rule_ctx, run_rule_regs};
 pub use compat::{run_rule, run_rule_full, run_rule_full_with_mark, run_rule_with_lookup};

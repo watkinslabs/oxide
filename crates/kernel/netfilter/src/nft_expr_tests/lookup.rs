@@ -1,6 +1,8 @@
 extern crate alloc;
 use alloc::vec::Vec;
-use super::*;
+use crate::nft_expr::*;
+use super::wire::{build_immediate_drop, ipv4_pkt_with_src, nla, nla_nested,
+                  nla_str, nla_u32_be};
 
 fn build_lookup_rule(set_name: &str, invert: bool) -> Vec<u8> {
         // payload (NETWORK 12, 4) -> reg 1; lookup (set, reg 1); drop

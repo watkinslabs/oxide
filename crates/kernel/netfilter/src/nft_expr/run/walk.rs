@@ -102,8 +102,16 @@ fn step(expr: &Expr, ctx: &mut EvalCtx, regs: &mut Regs) -> Option<i32> {
 /// Walk one rule's expressions against `ctx`. # C: O(N exprs × expression cost)
 pub fn run_rule_ctx(exprs: &[Expr], ctx: &mut EvalCtx) -> RuleVerdict {
     let mut regs = Regs::new();
+    run_rule_regs(exprs, ctx, &mut regs)
+}
+
+/// Same walk over a caller-owned register file, so the bytes an expression
+/// wrote can be read back without a comparison expression standing between
+/// the value and the assertion.
+/// # C: O(N exprs × expression cost)
+pub fn run_rule_regs(exprs: &[Expr], ctx: &mut EvalCtx, regs: &mut Regs) -> RuleVerdict {
     for expr in exprs {
-        let Some(code) = step(expr, ctx, &mut regs) else { continue };
+        let Some(code) = step(expr, ctx, regs) else { continue };
         let chain = match expr {
             Expr::Immediate { dreg, chain, .. } if *dreg == NFT_REG_VERDICT => chain.clone(),
             _ => None,
