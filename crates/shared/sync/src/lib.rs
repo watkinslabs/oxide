@@ -269,6 +269,14 @@ decl_lock_class! {
     // under it takes no tracked lock of its own, so it is a leaf apart from
     // allocation.
     SecurityPolicy = 150,
+    // Security-module framework: the resolved module order, the per-object
+    // slot allocation and the hook lists (`lsm::registry`). Set once during
+    // early boot and read afterwards. Ranked just below the policy lock
+    // because a module is reached through the framework and only then takes
+    // its own policy lock inside — never the other way round. Nothing
+    // on a hot path takes it: a subsystem owning a hook list owns the lock
+    // over that list, and this one covers the framework itself.
+    LsmFramework = 149,
     // Kernel CSPRNG state (`crng::pool`). A strict LEAF: the ChaCha20 rekey and
     // output run entirely inside it and take no nested tracked lock, so any
     // consumer (getrandom, /dev/urandom, AT_RANDOM, uuid, socket cookies) may
