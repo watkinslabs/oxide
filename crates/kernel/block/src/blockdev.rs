@@ -195,10 +195,41 @@ pub trait BlockDevice: Send + Sync {
     /// the drive's write pointer, which a host-managed drive refuses and a
     /// host-aware drive silently relocates.
     ///
-    /// No driver in this tree answers yet, so every real device reports not
-    /// zoned; the callers above are live against that answer.
     /// # C: O(zones)
     fn zone_report(&self) -> Option<crate::zoned::ZoneReport> { None }
+
+    /// Ask the drive to move one zone between states.
+    ///
+    /// `start_block` names the zone by its FIRST block, which is how the
+    /// drive addresses it; a block inside the zone is refused rather than
+    /// rounded, because rounding would silently reset a neighbour.
+    /// [`crate::zoned::ZoneMgmtOp::ResetAll`] addresses the whole drive and
+    /// ignores `start_block`.
+    ///
+    /// The default refuses: a device with no zones has no zone to manage, and
+    /// answering `Ok(())` would tell a caller a transition happened that did
+    /// not. # C: one request
+    fn zone_mgmt(&self, _op: crate::zoned::ZoneMgmtOp, _start_block: u64) -> KResult<()> {
+        Err(BlockError::Eopnotsupp)
+    }
+
+    /// Write to a sequential zone WITHOUT naming the block, and learn where
+    /// the drive put it.
+    ///
+    /// This is the operation that makes a sequential zone usable by more than
+    /// one writer: an ordinary write has to name the write pointer, which two
+    /// writers cannot both do correctly, whereas an append lets the drive
+    /// choose and report back. The returned block is where the data landed —
+    /// the caller must record THAT, never the pointer it read beforehand.
+    ///
+    /// `start_block` names the target zone by its first block. The buffer's
+    /// length must be a whole number of blocks and within the drive's stated
+    /// append limit; a driver splits nothing here, because two appends are
+    /// two placements and the caller would only learn one of them.
+    /// # C: one request
+    fn zone_append(&self, _start_block: u64, _buffer: &[u8]) -> KResult<u64> {
+        Err(BlockError::Eopnotsupp)
+    }
 }
 
 /// In-memory block device for tests + future tmpfs backing. Exposes

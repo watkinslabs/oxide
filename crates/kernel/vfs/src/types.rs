@@ -231,6 +231,9 @@ pub enum VfsError {
     /// the filesystem's namespace, or any change to an inode whose existing
     /// owner has no mapping in the caller's view (Linux `notify_change`).
     Eoverflow = 75,
+    /// ETOOMANYREFS — a zoned drive already holds its limit of OPEN zones.
+    /// Closing one makes the same write succeed, which is why it is not EIO.
+    Etoomanyrefs = 109,
     /// `ERESTARTSYS` — NOT an errno, and it
     /// never reaches userspace. The interruptible-sleep wait primitive returns
     /// it for every interrupted wait, so it is
@@ -292,7 +295,7 @@ impl VfsError {
             89 => Edestaddrreq, 90 => Emsgsize, 92 => Enoprotoopt, 95 => Eopnotsupp,
             99 => Eaddrnotavail, 101 => Enetunreach, 103 => Econnaborted,
             104 => Econnreset, 105 => Enobufs, 107 => Enotconn, 110 => Etimedout,
-            111 => Econnrefused, 112 => Ehostdown, 113 => Ehostunreach,
+            109 => Etoomanyrefs, 111 => Econnrefused, 112 => Ehostdown, 113 => Ehostunreach,
             116 => Estale, 117 => Euclean, 122 => Edquot, 125 => Ecanceled,
             _ => Eio,
         }

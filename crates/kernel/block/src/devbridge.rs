@@ -40,6 +40,8 @@ fn block_err(e: BlockError) -> VfsError {
         BlockError::Einval     => VfsError::Einval,
         BlockError::Enospc     => VfsError::Enospc,
         BlockError::Eopnotsupp => VfsError::Eopnotsupp,
+        BlockError::Eoverflow  => VfsError::Eoverflow,
+        BlockError::Etoomanyrefs => VfsError::Etoomanyrefs,
         BlockError::Eio        => VfsError::Eio,
     }
 }

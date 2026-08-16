@@ -96,6 +96,9 @@ pub enum Errno {
     Eprotonosupport   = 93,
     Esocktnosupport   = 94,
     Enotconn          = 107,
+    /// A zoned block drive already holds its limit of OPEN zones; closing one
+    /// makes the same write succeed.
+    Etoomanyrefs      = 109,
     Etimedout         = 110,
     Econnrefused      = 111,
     Ehostunreach      = 113,

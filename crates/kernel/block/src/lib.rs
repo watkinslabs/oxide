@@ -3,9 +3,9 @@
 // `types.rs` — `BlockOp`, `BlockError`, `PageFlags`, `InodeId`, `PAGE_BYTES`.
 // `queue_limits.rs` — canonical block queue topology + sysfs leaf mapping.
 // `blockdev.rs` — `BlockDevice` trait + `BlockRequest` + `MemDisk` test backing.
-// `zoned.rs` — what a drive says about its zones, and the answer that means
-// "not a zoned drive". No driver answers yet; `BlockDevice::zone_report`
-// defaults to `None`.
+// `zoned.rs` — what a drive says about its zones, the answer that means
+// "not a zoned drive", and the sequential-write rule. virtio-blk answers for
+// a host-managed drive; every other driver takes the `None` default.
 // `completion.rs` — shared BlockIo softirq completion-handler registry.
 // `elevator.rs` — I/O-priority dispatch order for requests that had to wait.
 // `flags.rs` — the per-request op-flag word: what a submitter says about one
@@ -52,7 +52,7 @@ pub use flags::RequestFlags;
 pub use pagecache::{CachedPage, PageCache};
 pub use queue_limits::{QueueFeatures, QueueLimits, LINUX_SECTOR_BYTES, MAX_DISCARD_SECTORS};
 pub use registry::{Disk, Partition, ScsiDiskName, register, unregister, by_name, by_index, partition_by_dev, partition_by_label, partition_by_name, partition_by_uuid, partition_by_uuid_offset, rescan_partitions, reserve_scsi_disk_name, snapshot, start_deferred_partition_scans};
-pub use zoned::{Zone, ZoneReport, ZoneType};
+pub use zoned::{Zone, ZoneCond, ZoneMgmtOp, ZoneReport, ZoneType};
 pub use types::{BlockError, BlockOp, InodeId, KResult, PageFlags, PAGE_BYTES};
 
 #[cfg(target_os = "oxide-kernel")]
