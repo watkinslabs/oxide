@@ -78,6 +78,7 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `57-vt-emulator.md` | DRAFT | — | `01`,`02`,`07`,`08`,`28`,`49`,`50`,`55` |
 | `58-virtio-snd.md` | FROZEN | 2026-06-12 | `01`,`02`,`07`,`15`,`16`,`18`,`19`,`22`,`34`,`35`,`50` |
 | `60-udev-kernel-contract.md` | DRAFT | — | `01`,`02`,`03`,`06`,`13`,`15`,`19`,`24`,`27`,`35`,`47` |
+| `61-hda-audio.md` | FROZEN | 2026-08-15 | `01`,`02`,`07`,`15`,`16`,`19`,`22`,`34`,`35`,`52`,`58` |
 | `44-phase-quick-reference.md` | DRAFT | — | `00`,`40`,`43` |
 
 ## Deleted

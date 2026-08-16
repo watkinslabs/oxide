@@ -6,6 +6,7 @@ use crate::uapi::UserBuf;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
+/// # C: O(1)
 pub(crate) fn set_subdivision(owner: crate::SoundOwnerKey, subdivision: u32) -> i64 {
     if subdivision == 0 {
         let guard = OSS.lock();
@@ -25,6 +26,7 @@ pub(crate) fn set_subdivision(owner: crate::SoundOwnerKey, subdivision: u32) -> 
     i64::from(subdivision)
 }
 
+/// # C: O(1)
 pub(crate) fn set_fragment(owner: crate::SoundOwnerKey, val: u32) -> i64 {
     let mut fragshift = (val & 0xffff) as u8;
     if fragshift >= 25 { return err(Errno::Einval); }
@@ -46,6 +48,7 @@ pub(crate) fn set_fragment(owner: crate::SoundOwnerKey, val: u32) -> i64 {
 
 /// Stop + release both directions and disarm, so the next I/O re-applies
 /// params (SNDCTL_DSP_RESET / a param change).
+/// # C: O(1)
 pub(crate) fn reset(owner: crate::SoundOwnerKey) -> bool {
     let (running, cap_running) = {
         let mut guard = OSS.lock();

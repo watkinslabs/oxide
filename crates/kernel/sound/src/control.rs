@@ -53,6 +53,7 @@ fn from_percent(percent: u32, min: i64, max: i64) -> i64 {
 
 /// Owner-keyed OSS mixer bridge over the card's master element. No mixer
 /// exists until a driver registers real controls.
+/// # C: O(elements)
 pub fn mixer_level(owner: crate::SoundOwnerKey) -> Option<u32> {
     crate::elem::with_id(owner, 0, &ElemId::mixer(OSS_MASTER_NAME, 0), |_, desc| {
         let mut values = [0i64; MAX_ELEM_CHANNELS];
@@ -63,6 +64,7 @@ pub fn mixer_level(owner: crate::SoundOwnerKey) -> Option<u32> {
     })?
 }
 
+/// # C: O(elements)
 pub fn set_mixer_level(owner: crate::SoundOwnerKey, packed: u32) -> bool {
     crate::elem::with_id(owner, 0, &ElemId::mixer(OSS_MASTER_NAME, 0), |numid, desc| {
         let mut values = [0i64; MAX_ELEM_CHANNELS];
@@ -78,6 +80,7 @@ pub fn set_mixer_level(owner: crate::SoundOwnerKey, packed: u32) -> bool {
 
 /// Drop card-local ALSA/OSS control state when the owning sound card is
 /// removed or probe publication rolls back.
+/// # C: O(elements)
 pub(crate) fn unregister_card(owner: crate::SoundOwnerKey) {
     crate::elem::unregister_card(owner);
     events::unregister_card(owner);

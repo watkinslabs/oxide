@@ -105,9 +105,9 @@ fn control_read(file: &File, data: &SndData, b: &mut [u8], nonblock: bool) -> KR
     {
         // The shared wait-event primitive owns publish/recheck/dequeue order,
         // including removal of the wait-list entry on the interrupted exit.
+        let owner = data.owner;
         // SAFETY: syscall process context in snd_ctl_read, with no lock held
         // across the wait; the predicate only reads the card's event queue.
-        let owner = data.owner;
         let _ = unsafe {
             sched::live::wait_event_interruptible(&data.control_wait,
                 || crate::control::events::next_after(owner, cursor).is_some())
@@ -248,12 +248,14 @@ fn push_sound_node(
     }
 }
 
+/// # C: O(1)
 pub(crate) fn rollback_published_nodes(published: &[Arc<drv::Device>]) {
     for node in published.iter().rev() {
         drv::device_del(node);
     }
 }
 
+/// # C: O(1)
 pub(crate) fn publish_card_nodes(owner: crate::SoundOwnerKey, card: u32, has_playback: bool, has_capture: bool) -> Option<Vec<Arc<drv::Device>>> {
     let mut published = Vec::new();
     let control_name = alsa_node_name(card, MINOR_CONTROL);

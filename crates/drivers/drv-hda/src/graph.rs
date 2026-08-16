@@ -36,11 +36,17 @@ pub struct Widget {
 }
 
 impl Widget {
+    /// # C: O(1)
     pub fn kind(&self) -> WidgetType { widget::widget_type(self.wcaps) }
+    /// # C: O(1)
     pub fn is_pin(&self) -> bool { self.kind() == WidgetType::Pin }
+    /// # C: O(1)
     pub fn is_dac(&self) -> bool { self.kind() == WidgetType::AudioOut }
+    /// # C: O(1)
     pub fn is_adc(&self) -> bool { self.kind() == WidgetType::AudioIn }
+    /// # C: O(1)
     pub fn digital(&self) -> bool { self.wcaps & widget::WCAP_DIGITAL != 0 }
+    /// # C: O(1)
     pub fn stereo(&self) -> bool { self.wcaps & widget::WCAP_STEREO != 0 }
     /// Amplifier capabilities of a widget, falling back to the function
     /// group's when the widget does not override them. # C: O(1)

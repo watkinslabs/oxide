@@ -216,6 +216,10 @@ pub(super) fn qemu_run_aarch64_grub(
         // a wav backend to capture real PCM output.
         "-audiodev", "none,id=snd0",
         "-device", "virtio-sound-pci,audiodev=snd0,disable-legacy=on,bus=pcie.0",
+        // F1173: HD-Audio is a PCI class device, so it enumerates on this
+        // machine's PCIe root complex exactly as it does on x86.
+        "-device", "intel-hda,id=hda,bus=pcie.0",
+        "-device", "hda-duplex,bus=hda.0,audiodev=snd0",
         // D3.5: NVMe controller + scratch backing disk (lockstep with x86).
         "-drive", nvme_drive.as_str(),
         "-device", "nvme,serial=oxnvme,drive=nvm0,bus=pcie.0",

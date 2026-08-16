@@ -58,6 +58,7 @@ struct OpsBinding {
 
 static OPS: Spinlock<Vec<OpsBinding>, OpsLockClass> = Spinlock::new(Vec::new());
 
+/// # C: O(cards)
 pub fn register(owner: crate::SoundOwnerKey, ops: &'static SoundOps) -> bool {
     if crate::card_number(owner).is_none() {
         return false;
@@ -71,6 +72,7 @@ pub fn register(owner: crate::SoundOwnerKey, ops: &'static SoundOps) -> bool {
     true
 }
 
+/// # C: O(cards)
 pub fn clear(owner: crate::SoundOwnerKey) -> bool {
     let mut guard = OPS.lock();
     let before = guard.len();
@@ -78,6 +80,7 @@ pub fn clear(owner: crate::SoundOwnerKey) -> bool {
     guard.len() != before
 }
 
+/// # C: O(cards)
 pub fn ops_for(owner: crate::SoundOwnerKey) -> Option<&'static SoundOps> {
     OPS.lock()
         .iter()
@@ -85,91 +88,113 @@ pub fn ops_for(owner: crate::SoundOwnerKey) -> Option<&'static SoundOps> {
         .map(|binding| binding.ops)
 }
 
+/// # C: O(cards)
 pub fn ops() -> Option<&'static SoundOps> {
     ops_for(crate::owner()?)
 }
 
+/// # C: O(cards)
 pub fn config() -> Option<(u32, u32, u32, u32)> {
     let owner = crate::owner()?;
     ops_for(owner).and_then(|ops| (ops.config)(owner))
 }
 
+/// # C: O(cards)
 pub fn identity(owner: crate::SoundOwnerKey) -> Option<CardIdentity> {
     ops_for(owner).map(|ops| (ops.identity)(owner))
 }
 
+/// # C: O(cards)
 pub fn pcm_caps(owner: crate::SoundOwnerKey) -> Caps {
     ops_for(owner).and_then(|ops| (ops.pcm_caps)(owner))
 }
 
+/// # C: O(cards)
 pub fn cap_caps(owner: crate::SoundOwnerKey) -> Caps {
     ops_for(owner).and_then(|ops| (ops.cap_caps)(owner))
 }
 
+/// # C: O(cards)
 pub fn hw_limits(owner: crate::SoundOwnerKey) -> Option<HwLimits> {
     ops_for(owner).map(|ops| (ops.hw_limits)(owner)).filter(|(period, buffer)| *period != 0 && *buffer != 0)
 }
 
+/// # C: O(cards)
 pub fn info_flags(owner: crate::SoundOwnerKey) -> u32 {
     ops_for(owner).map(|ops| (ops.info_flags)(owner)).unwrap_or(0)
 }
 
+/// # C: O(cards)
 pub fn period_bytes(owner: crate::SoundOwnerKey) -> Option<usize> {
     ops_for(owner).map(|ops| (ops.period_bytes)(owner)).filter(|bytes| *bytes != 0)
 }
 
+/// # C: O(cards)
 pub fn pcm_hw_params(owner: crate::SoundOwnerKey, format: u32, rate_hz: u32, channels: u8, period_bytes: u32, buffer_bytes: u32) -> bool {
     ops_for(owner).map(|ops| (ops.pcm_hw_params)(owner, format, rate_hz, channels, period_bytes, buffer_bytes)).unwrap_or(false)
 }
 
+/// # C: O(cards)
 pub fn pcm_prepare(owner: crate::SoundOwnerKey) -> bool {
     ops_for(owner).map(|ops| (ops.pcm_prepare)(owner)).unwrap_or(false)
 }
 
+/// # C: O(cards)
 pub fn pcm_trigger(owner: crate::SoundOwnerKey, start: bool) -> bool {
     ops_for(owner).map(|ops| (ops.pcm_trigger)(owner, start)).unwrap_or(false)
 }
 
+/// # C: O(cards)
 pub fn pcm_pause(owner: crate::SoundOwnerKey, pause: bool) -> bool {
     ops_for(owner).map(|ops| (ops.pcm_pause)(owner, pause)).unwrap_or(false)
 }
 
+/// # C: O(cards)
 pub fn pcm_drain(owner: crate::SoundOwnerKey) -> bool {
     ops_for(owner).map(|ops| (ops.pcm_drain)(owner)).unwrap_or(false)
 }
 
+/// # C: O(cards)
 pub fn pcm_pointer(owner: crate::SoundOwnerKey) -> Option<u64> {
     ops_for(owner).and_then(|ops| (ops.pcm_pointer)(owner))
 }
 
+/// # C: O(cards)
 pub fn pcm_hw_free(owner: crate::SoundOwnerKey) -> bool {
     ops_for(owner).map(|ops| (ops.pcm_hw_free)(owner)).unwrap_or(false)
 }
 
+/// # C: O(cards)
 pub fn pcm_submit(owner: crate::SoundOwnerKey, bytes: &[u8]) -> usize {
     ops_for(owner).map(|ops| (ops.pcm_submit)(owner, bytes)).unwrap_or(0)
 }
 
+/// # C: O(cards)
 pub fn cap_hw_params(owner: crate::SoundOwnerKey, format: u32, rate_hz: u32, channels: u8, period_bytes: u32, buffer_bytes: u32) -> bool {
     ops_for(owner).map(|ops| (ops.cap_hw_params)(owner, format, rate_hz, channels, period_bytes, buffer_bytes)).unwrap_or(false)
 }
 
+/// # C: O(cards)
 pub fn cap_prepare(owner: crate::SoundOwnerKey) -> bool {
     ops_for(owner).map(|ops| (ops.cap_prepare)(owner)).unwrap_or(false)
 }
 
+/// # C: O(cards)
 pub fn cap_trigger(owner: crate::SoundOwnerKey, start: bool) -> bool {
     ops_for(owner).map(|ops| (ops.cap_trigger)(owner, start)).unwrap_or(false)
 }
 
+/// # C: O(cards)
 pub fn cap_pointer(owner: crate::SoundOwnerKey) -> Option<u64> {
     ops_for(owner).and_then(|ops| (ops.cap_pointer)(owner))
 }
 
+/// # C: O(cards)
 pub fn cap_hw_free(owner: crate::SoundOwnerKey) -> bool {
     ops_for(owner).map(|ops| (ops.cap_hw_free)(owner)).unwrap_or(false)
 }
 
+/// # C: O(cards)
 pub fn pcm_recv(owner: crate::SoundOwnerKey, out: &mut [u8]) -> usize {
     ops_for(owner).map(|ops| (ops.pcm_recv)(owner, out)).unwrap_or(0)
 }

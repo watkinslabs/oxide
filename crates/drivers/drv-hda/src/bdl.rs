@@ -22,6 +22,7 @@ pub struct Geometry {
 }
 
 impl Geometry {
+    /// # C: O(1)
     pub fn buffer_bytes(&self) -> u32 { self.period_bytes * self.periods }
 }
 

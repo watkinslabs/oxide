@@ -60,18 +60,20 @@ fn two_jacks_behind_one_converter_share_it_and_are_charged_for_it() {
 
 #[test]
 fn a_pin_with_exactly_one_possible_converter_claims_it_before_the_greedy_pass() {
-    // Converter 2 can reach both pins; converter 3 only reaches 0x15. The
-    // greedy order would give 2 to 0x14 first, so the forced pairing has to
-    // be made ahead of it for both pins to get their own converter.
+    // The first pin can take either converter; the second can only take
+    // converter 2. Assigning in order would hand 2 to the first pin and leave
+    // the second sharing it, so the forced pairing has to be made first.
     let mut builder = fixture::Builder::new(0x1af4_0011, 1, 2);
     builder.dac(2);
     builder.dac(3);
-    builder.pin(0x14, cfg(DEV_LINE_OUT, PORT_COMPLEX, LOC_REAR, 1, 0), widget::PINCAP_OUT, &[2]);
-    builder.pin(0x15, cfg(DEV_LINE_OUT, PORT_COMPLEX, LOC_REAR, 1, 1), widget::PINCAP_OUT, &[2, 3]);
+    builder.pin(0x14, cfg(DEV_LINE_OUT, PORT_COMPLEX, LOC_REAR, 1, 0), widget::PINCAP_OUT, &[2, 3]);
+    builder.pin(0x15, cfg(DEV_LINE_OUT, PORT_COMPLEX, LOC_REAR, 1, 1), widget::PINCAP_OUT, &[2]);
     let plan = plan_of(&builder.build());
     assert_eq!(plan.outputs.len(), 2);
-    assert_eq!(plan.outputs[0].dac, 2);
-    assert_eq!(plan.outputs[1].dac, 3);
+    assert_eq!(plan.outputs[0].pin, 0x14);
+    assert_eq!(plan.outputs[0].dac, 3);
+    assert_eq!(plan.outputs[1].pin, 0x15);
+    assert_eq!(plan.outputs[1].dac, 2);
     assert!(plan.outputs.iter().all(|route| !route.shared));
     assert_eq!(plan.badness, 0);
 }

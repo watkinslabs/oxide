@@ -28,9 +28,13 @@ pub struct NidPath {
 }
 
 impl NidPath {
+    /// # C: O(1)
     pub fn source(&self) -> Option<u8> { self.hops.first().map(|hop| hop.nid) }
+    /// # C: O(1)
     pub fn sink(&self) -> Option<u8> { self.hops.last().map(|hop| hop.nid) }
+    /// # C: O(1)
     pub fn len(&self) -> usize { self.hops.len() }
+    /// # C: O(1)
     pub fn is_empty(&self) -> bool { self.hops.is_empty() }
     /// Nodes from the sink back towards the source — the order the control
     /// search walks, because the widget nearest the jack owns the control.
@@ -38,6 +42,7 @@ impl NidPath {
     pub fn from_sink(&self) -> impl Iterator<Item = u8> + '_ {
         self.hops.iter().rev().map(|hop| hop.nid)
     }
+    /// # C: O(1)
     pub fn contains(&self, nid: u8) -> bool { self.hops.iter().any(|hop| hop.nid == nid) }
 }
 

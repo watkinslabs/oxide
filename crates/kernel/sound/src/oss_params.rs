@@ -16,18 +16,22 @@ const AFMT_MAP: [(u32, u32); 6] = [
     (AFMT_U8, FMT_U8), (AFMT_S16_LE, FMT_S16_LE), (AFMT_U16_LE, FMT_U16_LE),
 ];
 
+/// # C: O(1)
 pub(crate) fn afmt_to_alsa(a: u32) -> Option<u32> {
     AFMT_MAP.iter().find(|(oss, _)| *oss == a).map(|(_, alsa)| *alsa)
 }
 
+/// # C: O(1)
 pub(crate) fn alsa_to_afmt(f: u32) -> u32 {
     AFMT_MAP.iter().find(|(_, alsa)| *alsa == f).map(|(oss, _)| *oss).unwrap_or(AFMT_S16_LE)
 }
 
+/// # C: O(1)
 pub(crate) fn nearest_supported_rate_enum(hz: u32, rates: u64) -> Option<u8> {
     format::nearest_supported_rate_index(hz, rates)
 }
 
+/// # C: O(1)
 pub(crate) fn rate_enum_to_hz(e: u8) -> u32 { format::rate_hz(e) }
 
 fn first_supported_format(formats: u64) -> Option<u32> {
@@ -37,6 +41,7 @@ fn first_supported_format(formats: u64) -> Option<u32> {
         .find(|format| format::mask_has(formats, *format))
 }
 
+/// # C: O(1)
 pub(crate) fn formats_to_afmt(formats: u64) -> u32 {
     let mut out = 0;
     for (oss, alsa) in AFMT_MAP {
@@ -45,6 +50,7 @@ pub(crate) fn formats_to_afmt(formats: u64) -> u32 {
     out
 }
 
+/// # C: O(1)
 pub(crate) fn caps(owner: crate::SoundOwnerKey) -> Option<(u64, u64, u8, u8)> {
     match (crate::ops::pcm_caps(owner), crate::ops::cap_caps(owner)) {
         (Some((pf, pr, pcmin, pcmax)), Some((cf, cr, ccmin, ccmax))) => {
@@ -60,6 +66,7 @@ pub(crate) fn caps(owner: crate::SoundOwnerKey) -> Option<(u64, u64, u8, u8)> {
 }
 
 /// Default OSS geometry: 44.1 kHz stereo S16_LE where the card allows it.
+/// # C: O(1)
 pub(crate) fn initial_params(owner: crate::SoundOwnerKey) -> (u8, u32, u8) {
     const DEFAULT_RATE_INDEX: u8 = 6;
     let Some((formats, rates, ch_min, ch_max)) = caps(owner) else {
@@ -72,6 +79,7 @@ pub(crate) fn initial_params(owner: crate::SoundOwnerKey) -> (u8, u32, u8) {
     (rate, format, channels)
 }
 
+/// # C: O(1)
 pub(crate) fn fragment_geometry(o: &Oss) -> Option<(u32, u32)> {
     let period = if o.fragshift != 0 {
         1u32.checked_shl(o.fragshift as u32)?
@@ -84,6 +92,7 @@ pub(crate) fn fragment_geometry(o: &Oss) -> Option<(u32, u32)> {
     Some((period, maxfrags))
 }
 
+/// # C: O(1)
 pub(crate) fn oss_period_buffer(owner: crate::SoundOwnerKey) -> Option<(u32, u32)> {
     let guard = OSS.lock();
     let o = guard.iter().find(|o| o.owner == owner)?;

@@ -17,6 +17,7 @@ pub(crate) struct Pcm {
 
 pub(crate) static PCM: Spinlock<Vec<Pcm>, L> = Spinlock::new(Vec::new());
 
+/// # C: O(cards)
 pub(crate) fn initial(owner: crate::SoundOwnerKey) -> Pcm {
     Pcm {
         owner, state: crate::uapi::STATE_OPEN, format: crate::uapi::FMT_S16_LE, rate: 44100, channels: 2,
@@ -24,6 +25,7 @@ pub(crate) fn initial(owner: crate::SoundOwnerKey) -> Pcm {
     }
 }
 
+/// # C: O(cards)
 pub(crate) fn register_card(owner: crate::SoundOwnerKey) {
     let mut guard = PCM.lock();
     if !guard.iter().any(|p| p.owner == owner) {
@@ -31,21 +33,25 @@ pub(crate) fn register_card(owner: crate::SoundOwnerKey) {
     }
 }
 
+/// # C: O(cards)
 pub(crate) fn unregister_card(owner: crate::SoundOwnerKey) {
     let mut guard = PCM.lock();
     guard.retain(|p| p.owner != owner);
 }
 
+/// # C: O(cards)
 pub(crate) fn is_registered(owner: crate::SoundOwnerKey) -> bool {
     PCM.lock().iter().any(|p| p.owner == owner)
 }
 
 #[cfg(test)]
+/// # C: O(cards)
 pub(crate) fn registered_count() -> usize {
     PCM.lock().len()
 }
 
 #[cfg(test)]
+/// # C: O(cards)
 pub(crate) fn has_card(owner: crate::SoundOwnerKey) -> bool {
     is_registered(owner)
 }

@@ -67,13 +67,21 @@ pub enum PinAttr {
     Front,
 }
 
+/// # C: O(1)
 pub fn sequence(cfg: u32) -> u8 { (cfg & SEQUENCE_MASK) as u8 }
+/// # C: O(1)
 pub fn association(cfg: u32) -> u8 { ((cfg & ASSOC_MASK) >> ASSOC_SHIFT) as u8 }
+/// # C: O(1)
 pub fn misc(cfg: u32) -> u8 { ((cfg & MISC_MASK) >> MISC_SHIFT) as u8 }
+/// # C: O(1)
 pub fn color(cfg: u32) -> u8 { ((cfg & COLOR_MASK) >> COLOR_SHIFT) as u8 }
+/// # C: O(1)
 pub fn conn_type(cfg: u32) -> u8 { ((cfg & CONN_TYPE_MASK) >> CONN_TYPE_SHIFT) as u8 }
+/// # C: O(1)
 pub fn device(cfg: u32) -> u8 { ((cfg & DEVICE_MASK) >> DEVICE_SHIFT) as u8 }
+/// # C: O(1)
 pub fn location(cfg: u32) -> u8 { ((cfg & LOCATION_MASK) >> LOCATION_SHIFT) as u8 }
+/// # C: O(1)
 pub fn port_conn(cfg: u32) -> u8 { ((cfg & PORT_CONN_MASK) >> PORT_CONN_SHIFT) as u8 }
 
 /// A pin whose default configuration says nothing is wired to it. # C: O(1)

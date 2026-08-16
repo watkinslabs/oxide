@@ -31,6 +31,7 @@ fn initial(owner: crate::SoundOwnerKey) -> Cap {
     Cap { owner, state: STATE_OPEN, frame_bytes: 4, buffer_frames: 1024, appl_ptr: 0, hw_ptr: 0 }
 }
 
+/// # C: O(cards)
 pub(crate) fn register_card(owner: crate::SoundOwnerKey) {
     let mut guard = CAP.lock();
     if !guard.iter().any(|c| c.owner == owner) {
@@ -38,12 +39,14 @@ pub(crate) fn register_card(owner: crate::SoundOwnerKey) {
     }
 }
 
+/// # C: O(cards)
 pub(crate) fn unregister_card(owner: crate::SoundOwnerKey) {
     let mut guard = CAP.lock();
     guard.retain(|c| c.owner != owner);
 }
 
 #[cfg(test)]
+/// # C: O(cards)
 pub(crate) fn registered_count() -> usize {
     CAP.lock().len()
 }
@@ -53,6 +56,7 @@ fn is_registered(owner: crate::SoundOwnerKey) -> bool {
 }
 
 #[cfg(test)]
+/// # C: O(cards)
 pub(crate) fn has_card(owner: crate::SoundOwnerKey) -> bool { is_registered(owner) }
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
