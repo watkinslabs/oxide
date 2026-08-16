@@ -20,16 +20,18 @@ sched    = { path = "../sched" }
 timekeeper = { path = "../timekeeper" }
 cpu      = { path = "../cpu" }
 
-# The PSCI ABI numbers, the SYSTEM_SUSPEND admission ladder and the saved-EL1
-# layout live in this crate's ungated modules, and `suspend::psci_sleep` is
-# ungated too so its decisions stay hosted-testable (`docs/53`). Everything
-# arch-specific inside hal-aarch64 is cfg'd out on other targets, so a non-arm
-# build pulls in no code, only the decisions.
-hal-aarch64 = { path = "../../arch/hal-aarch64" }
-
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64 = { path = "../../arch/hal-x86_64" }
 mmio-map   = { path = "../mmio-map" }
+
+# The PSCI ABI numbers, the SYSTEM_SUSPEND admission ladder and the saved-EL1
+# layout live in hal-aarch64's ungated modules, so a hosted test run needs the
+# crate even on an x86 host — but a kernel build must NOT link both HALs. They
+# each define the fault-print entry point, and linking the pair makes that
+# symbol multiply defined, which fails the release build's LTO with an
+# unhelpful "failed to load bitcode" rather than a duplicate-symbol error.
+[target.'cfg(any(target_arch = "aarch64", not(target_os = "oxide-kernel")))'.dependencies]
+hal-aarch64 = { path = "../../arch/hal-aarch64" }
 
 [features]
 default = []

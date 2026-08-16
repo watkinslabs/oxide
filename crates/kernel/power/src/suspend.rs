@@ -35,9 +35,10 @@ pub mod attrs;
 pub mod sysfs_api;
 pub mod wire;
 #[cfg(any(test, all(target_os = "oxide-kernel", target_arch = "x86_64")))] pub mod acpi_sleep;
-// aarch64 deep sleep via PSCI SYSTEM_SUSPEND (`32a§9`). Ungated so its
-// admission decisions stay hosted-testable; the firmware calls inside carry the
-// arch gate.
+// aarch64 deep sleep via PSCI SYSTEM_SUSPEND (`32a§9`). Present on aarch64 and
+// in a hosted run, so its admission decisions stay testable; absent from an x86
+// kernel build, which must not link the aarch64 HAL alongside its own.
+#[cfg(any(target_arch = "aarch64", not(target_os = "oxide-kernel")))]
 pub mod psci_sleep;
 pub mod freezer_walk;
 pub mod s2idle_wait;
