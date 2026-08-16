@@ -185,6 +185,21 @@ must use grouped paths from day one.
     constants (`fs::mknod`, `namei::may_rename`) and knows nothing of layers;
     `syscalls::fsmount_common::registry` registers the type and resolves layer
     paths, holding no stacking state of its own.
+13. `crates/kernel/bluetooth` owns the whole Bluetooth host stack (`docs/62`):
+    the HCI controller abstraction and its transport contract, the
+    `AF_BLUETOOTH` family and its four protocols, L2CAP, SMP, RFCOMM, SCO, and
+    the management interface. It is a leaf over `vfs`, `sync`, `syscall`,
+    `crc`, `aes` and `p256`. A transport driver implements
+    `bluetooth::hci::HciTransport` and owns nothing above the frame; it may not
+    keep controller state, connection state, or a second device registry.
+    `crates/kernel/net` and `crates/kernel/socket` remain the only owners of
+    socket families and cross-family socket policy — Bluetooth registers
+    through them and never beside them. The RFCOMM TTY binding consumes
+    `crates/kernel/tty`; it does not implement a second line discipline.
+14. `crates/shared/aes` owns AES-128 and AES-CMAC; `crates/shared/p256` owns
+    NIST P-256 field arithmetic and ECDH. Both are dependency-free primitive
+    crates. Any consumer needing these primitives uses them; no crate carries
+    a second copy.
 
 ## 6 Naming rules (frozen)
 
@@ -243,6 +258,10 @@ Constraints:
     depends on no other filesystem and no block layer — its layers are
     directories reached through `vfs::Inode`, whatever holds them. The syscall
     shim depends on it, never the reverse.
+13. `crates/kernel/bluetooth` may depend on `vfs`, `sync`, `syscall`, `crc`,
+    `aes` and `p256`. It may not depend on a driver crate: a transport driver
+    depends on `bluetooth` and registers itself, never the reverse.
+    `crates/shared/aes` and `crates/shared/p256` depend on nothing.
 
 ## 8 Change policy
 
@@ -294,6 +313,10 @@ Temporary exceptions are allowed only with:
 - 2026-08-16: Added the removable-media filesystem ownership boundary (`62`),
   `crates/kernel/sectors` as the single owner of the volume-sector adapter, and
   `crates/shared/dostime` as the single owner of the 1980-epoch date/time pair.
+- 2026-08-16: Added `crates/kernel/bluetooth` as the single owner of the
+  Bluetooth host stack, the `HciTransport` boundary that keeps transport
+  drivers free of stack state, and the two primitive crates
+  `crates/shared/aes` and `crates/shared/p256`.
 - 2026-08-15: Added the power-supply and backlight device-class ownership
   boundaries, their ACPI providers under `firmware`, and `crates/shared/kstrtox`.
 - 2026-08-15: Added `crates/kernel/thermal`, `crates/kernel/cpufreq` and
