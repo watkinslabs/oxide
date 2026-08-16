@@ -34,6 +34,8 @@
 //! - `fsync`:   making one file durable without a whole checkpoint.
 //! - `crypto`:  the mount's master keys, and an inode's key when it has one.
 //! - `space`:  what `statfs` reports.
+//! - `ioprio`: the per-file write-priority hint, and the request flags a
+//!             write carries because of it.
 
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec;
@@ -78,6 +80,7 @@ pub mod orphan;
 pub mod recover;
 pub mod fsync;
 pub mod crypto;
+pub mod ioprio;
 
 pub use curseg::{Curseg, Kind, Summary};
 pub use dir::DirEntry;
@@ -210,6 +213,20 @@ pub struct Volume<S: SectorSource> {
     /// them. `None` everywhere else, and that `None` is what makes every
     /// usable-space answer collapse to the plain one.
     pub(crate) zoned: Option<crate::zoned::Geometry>,
+    /// The I/O-priority hint each open file has been given, by inode number.
+    ///
+    /// MOUNT state, never on the medium, and that is the contract: the hint
+    /// says how this mount should order one file's writes against the rest of
+    /// its traffic, which is a statement about this machine's queue and not
+    /// about the file's contents. Storing it would carry one machine's
+    /// scheduling opinion onto every other machine that mounts the volume, and
+    /// an unmount would have no way to retract it.
+    ///
+    /// Only files with a hint appear here. The default is the absent entry, so
+    /// a hint set back to zero is REMOVED rather than recorded as zero — a map
+    /// that accumulated an entry per file ever touched would grow with the
+    /// number of files rather than with the number of hints.
+    pub(crate) ioprio_hint: BTreeMap<u32, u32>,
     /// Failures this mount was asked to inject, and how many each site has
     /// been given. Live state rather than a copy of the option set: a knob
     /// rearms a site without remounting, and the counters are what the report
@@ -383,6 +400,13 @@ impl<S: SectorSource> Volume<S> {
     /// again. A change that only reached memory is invisible here, which is
     /// what makes a remount the proof that a write landed. # C: O(1)
     pub fn into_source(self) -> S { self.source }
+
+    /// The medium this volume sits on, without taking it.
+    ///
+    /// A caller that needs to ask the medium something — what it was asked
+    /// for, what it holds — must not have to consume the mount to do it.
+    /// # C: O(1)
+    pub fn source_ref(&self) -> &S { &self.source }
 
     /// The open logs, for a caller checking where a write landed. # C: O(1)
     pub fn logs(&self) -> &[Curseg] { &self.curseg }

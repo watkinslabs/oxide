@@ -234,7 +234,11 @@ impl<S: SectorSource> Volume<S> {
         }
         let is_dir = inode.mode & mode_ifmt() == mode_ifdir();
         let owner = match holder { Holder::Inode => ino, Holder::Direct(nid) => nid };
-        self.write_data(owner, ofs as u16, is_dir, old, &page)
+        // The hint belongs to the FILE, so it is read here — the one place a
+        // page is written on behalf of a named inode — and not further down,
+        // where `owner` may be a direct node and the file is no longer known.
+        let flags = self.data_write_flags(ino);
+        self.write_data_flags(owner, ofs as u16, is_dir, old, &page, flags)
     }
 
     /// Shorten (or extend) a file to `len`.

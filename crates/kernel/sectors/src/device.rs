@@ -69,6 +69,11 @@ impl SectorSource for BlockSource {
     }
 
     fn write_sectors(&self, sector: u64, buf: &[u8]) -> Result<(), Errno> {
+        self.write_sectors_flags(sector, buf, block::RequestFlags::NONE)
+    }
+
+    fn write_sectors_flags(&self, sector: u64, buf: &[u8], flags: block::RequestFlags)
+        -> Result<(), Errno> {
         if !self.writable { return Err(Errno::Erofs); }
         let (first, skew, blocks) = self.span(sector, buf.len())?;
         let span = skew + buf.len();
@@ -76,13 +81,19 @@ impl SectorSource for BlockSource {
         let mut payload = if skew == 0 && span == whole {
             alloc::vec![0u8; whole]
         } else {
-            let mut req = block::BlockRequest::new_read(first, blocks, self.dev.block_size());
+            // The read-modify-write read carries the write's own hints. It is
+            // not a read anybody asked for — it exists only because this write
+            // does not cover whole device blocks — so leaving it unhinted
+            // would let it queue behind ordinary traffic and delay the write
+            // it is part of by exactly the amount the hint was meant to save.
+            let mut req = block::BlockRequest::new_read(first, blocks, self.dev.block_size())
+                .with_flags(flags);
             self.dev.submit_sync(&mut req).map_err(|_| Errno::Eio)?;
             if req.buffer.len() < whole { return Err(Errno::Eio); }
             req.buffer
         };
         payload[skew..span].copy_from_slice(buf);
-        let mut req = block::BlockRequest::new_write(first, blocks, payload);
+        let mut req = block::BlockRequest::new_write(first, blocks, payload).with_flags(flags);
         self.dev.submit_sync(&mut req).map_err(|_| Errno::Eio)?;
         Ok(())
     }

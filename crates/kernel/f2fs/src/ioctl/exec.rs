@@ -172,7 +172,9 @@ pub fn exec<S: SectorSource>(v: &mut Volume<S>, ino: u32, c: &Ctx, r: &Req)
             let flags = v.read_inode(ino)?.flags;
             Outcome::Reply(Reply::u32(u32::from(crate::devices::alias::is_alias(flags))))
         }
-        Req::IoPrio(_) => Outcome::Reply(Reply::done()),
+        // The regular-file and level checks are the admission ladder's, so a
+        // refused level never reaches the mount state.
+        Req::IoPrio(level) => { v.set_io_prio(ino, *level)?; Outcome::Reply(Reply::done()) }
         Req::PrecacheExtents => {
             let inode = v.read_inode(ino)?;
             v.precache_extents(&inode, ino)?;

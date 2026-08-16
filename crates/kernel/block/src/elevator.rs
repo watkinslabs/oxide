@@ -48,6 +48,33 @@ pub struct Waiting {
     pub ioprio: i32,
     /// Monotonic nanosecond timestamp of when the request started waiting.
     pub queued_ns: u64,
+    /// The request's own urgency hint — [`crate::flags::RequestFlags::is_hiprio`].
+    ///
+    /// Breaks ties INSIDE a class and nowhere else, so a hint can reorder two
+    /// requests that would otherwise have gone in arrival order but can never
+    /// move one ahead of a more urgent class. A hint that could do that would
+    /// be a class change wearing a different name, and the class belongs to
+    /// the submitting task, not to one of its requests.
+    pub hiprio: bool,
+}
+
+/// The sort key one waiting request is chosen by. Smallest wins.
+///
+/// Four terms, in decreasing authority:
+///
+/// 1. Priority class — the submitting task's, and the only thing that can move
+///    a request past a whole class of others.
+/// 2. Whether it has already waited out `aging_ns`. A request that has is
+///    never passed over on the strength of another's hint: the hint is an
+///    ordering preference, and a preference that can defer a request forever
+///    is a stall, not a preference.
+/// 3. Its own urgency hint, which is where a per-request flag takes effect —
+///    inside one class, between requests that would otherwise have gone in
+///    arrival order.
+/// 4. Arrival order.
+/// # C: O(1)
+fn key(w: &Waiting, cutoff: u64) -> (DispatchPrio, bool, bool, u64) {
+    (dispatch_prio(w.ioprio), w.queued_ns > cutoff, !w.hiprio, w.queued_ns)
 }
 
 /// Pick the index of the next request to start from a queue of waiting ones.
@@ -56,40 +83,31 @@ pub struct Waiting {
 /// one class are waiting, the oldest request outside the real-time class that
 /// has waited longer than `aging_ns` is started next, so a real-time stream
 /// cannot starve the classes below it forever. Otherwise strict class order:
-/// the oldest request of the most urgent class present.
+/// the most urgent class present, ranked inside it by [`key`].
 ///
-/// Ties within a class are broken by arrival order, so a queue whose requests
-/// all share one priority dispatches in the order it received them.
+/// A queue whose requests share one priority and carry no hints dispatches in
+/// the order it received them.
 /// # C: O(N_waiting)
 pub fn select(queue: &[Waiting], now_ns: u64, aging_ns: u64) -> Option<usize> {
     if queue.is_empty() { return None; }
+    let cutoff = now_ns.saturating_sub(aging_ns);
     let mut classes = [false; PRIO_COUNT];
     for w in queue { classes[dispatch_prio(w.ioprio) as usize] = true; }
     if classes.iter().filter(|p| **p).count() >= 2 {
-        let cutoff = now_ns.saturating_sub(aging_ns);
-        let mut aged: Option<(usize, DispatchPrio, u64)> = None;
+        let mut aged: Option<(usize, (DispatchPrio, bool, bool, u64))> = None;
         for (i, w) in queue.iter().enumerate() {
-            let p = dispatch_prio(w.ioprio);
-            if p == DispatchPrio::Rt || w.queued_ns > cutoff { continue; }
-            // Most urgent aged class first, oldest within it.
-            let better = match aged {
-                None => true,
-                Some((_, bp, bt)) => p < bp || (p == bp && w.queued_ns < bt),
-            };
-            if better { aged = Some((i, p, w.queued_ns)); }
+            if dispatch_prio(w.ioprio) == DispatchPrio::Rt || w.queued_ns > cutoff { continue; }
+            let k = key(w, cutoff);
+            if aged.is_none_or(|(_, b)| k < b) { aged = Some((i, k)); }
         }
-        if let Some((i, _, _)) = aged { return Some(i); }
+        if let Some((i, _)) = aged { return Some(i); }
     }
-    let mut best: Option<(usize, DispatchPrio, u64)> = None;
+    let mut best: Option<(usize, (DispatchPrio, bool, bool, u64))> = None;
     for (i, w) in queue.iter().enumerate() {
-        let p = dispatch_prio(w.ioprio);
-        let better = match best {
-            None => true,
-            Some((_, bp, bt)) => p < bp || (p == bp && w.queued_ns < bt),
-        };
-        if better { best = Some((i, p, w.queued_ns)); }
+        let k = key(w, cutoff);
+        if best.is_none_or(|(_, b)| k < b) { best = Some((i, k)); }
     }
-    best.map(|(i, _, _)| i)
+    best.map(|(i, _)| i)
 }
 
 /// The effective I/O priority to stamp on a request being submitted.

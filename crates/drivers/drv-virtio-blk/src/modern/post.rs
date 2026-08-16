@@ -201,7 +201,8 @@ impl BlkState {
                 }
                 let now = timekeeper::monotonic_ns();
                 let waiting: alloc::vec::Vec<block::elevator::Waiting> = ring.deferred.iter()
-                    .map(|d| block::elevator::Waiting { ioprio: d.request.ioprio, queued_ns: d.queued_ns })
+                    .map(|d| block::elevator::Waiting { ioprio: d.request.ioprio, queued_ns: d.queued_ns,
+                                        hiprio: d.request.flags.is_hiprio() })
                     .collect();
                 let Some(idx) = block::elevator::select(&waiting, now,
                     block::elevator::PRIO_AGING_EXPIRE_NS) else { return; };
