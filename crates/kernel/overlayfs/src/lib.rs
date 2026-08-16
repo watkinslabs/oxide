@@ -55,6 +55,7 @@ pub mod origin;
 pub mod whiteout;
 pub mod layers;
 pub mod lookup;
+pub mod copyup;
 #[cfg(test)]
 #[path = "testfs.rs"]
 mod testfs;

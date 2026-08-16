@@ -14,7 +14,7 @@ extern crate alloc;
 
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -24,7 +24,9 @@ use vfs::inode::InodeBuilder;
 use vfs::inode_ops::{CreateCtx, InodeOps};
 use vfs::namei::{RENAME_EXCHANGE, RENAME_NOREPLACE, RENAME_WHITEOUT};
 use vfs::types::{FileType, Ino, S_IFCHR, S_IFDIR, S_IFLNK, S_IFMT, S_IFREG};
+use vfs::superblock::next_anon_dev;
 use vfs::xattr::SimpleXattrs;
+use vfs::{SimpleSuperOps, SuperBlock};
 use vfs::{Inode, InodeRef, KResult, VfsError};
 
 use crate::uapi::WHITEOUT_RDEV;
@@ -43,7 +45,11 @@ impl Node {
 }
 
 /// Inode numbering and identity shared by every inode of one layer.
-struct Alloc { next: AtomicU64, fsid: u64 }
+///
+/// The superblock is real, because the origin record a copy-up writes is the
+/// LAYER's own file handle: without one the record cannot be minted, and every
+/// test of shared identity would pass by doing nothing.
+struct Alloc { next: AtomicU64, fsid: u64, sb: Spinlock<Option<Weak<SuperBlock>>, TaskList> }
 
 /// Inode numbers start above the reserved low range so a zero in a test is
 /// obviously wrong rather than plausibly the root.
@@ -63,16 +69,35 @@ impl Ops {
             .xattrs(SimpleXattrs::new())
             .rdev(rdev)
             .fsid(alloc.fsid);
+        if let Some(sb) = alloc.sb.lock().as_ref() { b = b.sb(sb.clone()); }
         if let Some(l) = link { b = b.link(l.to_vec().into_boxed_slice()); }
-        b.build()
+        let inode = b.build();
+        if let Some(sb) = alloc.sb.lock().as_ref().and_then(|w| w.upgrade()) {
+            let made = inode.clone();
+            sb.iget(ino, move || made);
+        }
+        inode
     }
 }
 
 /// An empty layer, identified by `fsid`, with its root directory returned.
 /// # C: O(1)
 pub fn layer(fsid: u64) -> InodeRef {
-    let alloc = Arc::new(Alloc { next: AtomicU64::new(FIRST_INO), fsid });
-    Ops::make(&alloc, 1, S_IFDIR as u32 | 0o755, 0, None)
+    let alloc = Arc::new(Alloc { next: AtomicU64::new(FIRST_INO), fsid,
+                                 sb: Spinlock::new(None) });
+    let root = Ops::make(&alloc, 1, S_IFDIR as u32 | 0o755, 0, None);
+    let ty: Arc<dyn vfs::FileSystemType> = vfs::fs::FsType::new(
+        "overlay-test-layer", 0, Default::default(),
+        alloc::boxed::Box::new(|_, _, _, _, _, _| unreachable!("a test layer is never mounted")));
+    let sb = SuperBlock::from_ops(ty, Arc::new(SimpleSuperOps { magic: 0, block_size: 4096,
+                                                                options: String::new() }),
+                                  Some(root.clone()), 0, next_anon_dev(), 4096,
+                                  String::from("overlay-test-layer"), Arc::new(()));
+    *alloc.sb.lock() = Some(Arc::downgrade(&sb));
+    // The superblock outlives the test only through the root inode, which is
+    // what the caller keeps; leaking it here is what makes that true.
+    core::mem::forget(sb);
+    root
 }
 
 /// The private state of a layer inode. # C: O(1)
@@ -202,6 +227,10 @@ impl FileOps for Ops {
     }
 
     fn write(&self, inode: &Inode, off: u64, buf: &[u8]) -> KResult<usize> {
+        // A write clears the file's capabilities, as the real write path does.
+        // Modelling it is what lets a test see that copy-up writes the data
+        // BEFORE the attributes rather than after.
+        let _ = inode.removexattr(crate::xattr::NAME_CAPS);
         let mut d = node_of(inode).data.lock();
         let off = off as usize;
         if d.len() < off + buf.len() { d.resize(off + buf.len(), 0); }
