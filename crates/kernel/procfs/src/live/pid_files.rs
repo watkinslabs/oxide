@@ -189,6 +189,35 @@ use crate::pid_sched::pid_sched_body;
 pid_inode_ctor!(make_pid_sched, pid_sched_body, 0x27);
 pid_gated_ctor!(make_pid_personality, pid_personality_body, crate::ino::PID_INO_TAG_PERSONALITY, "personality");
 pid_gated_ctor!(make_pid_auxv, pid_auxv_body, 0x2f, "auxv");
+pid_inode_ctor!(make_pid_wchan, pid_wchan_body, crate::ino::PID_INO_TAG_WCHAN);
+
+/// Linux `proc_pid_wchan`: where a blocked task is parked. The reference
+/// unwinds the task's kernel stack past the scheduler frames and names the
+/// first caller through `kallsyms`, and prints a bare `0` whenever the task is
+/// not blocked, the caller fails `ptrace_may_access`, or the address has no
+/// symbol. This kernel has no symbol table to name an address with, so the
+/// blocking entry points record their own `file:line` (`sched::park_site`) and
+/// that source position is what is served — the same fact the reference
+/// reports, spelled as a position instead of a symbol. Every "0" case is the
+/// reference's.
+/// # C: O(1)
+fn pid_wchan_body(tid: u32) -> Vec<u8> {
+    const NOT_BLOCKED: &[u8] = b"0";
+    if super::pid_access::ptrace_may_access(tid).is_err() { return NOT_BLOCKED.to_vec(); }
+    let Some(task) = sched::live::registry::lookup(tid) else { return NOT_BLOCKED.to_vec() };
+    use core::sync::atomic::Ordering;
+    if !sched::park_site::reportable(task.state(), task.on_rq.load(Ordering::Relaxed),
+                                     task.on_cpu.load(Ordering::Relaxed)) {
+        return NOT_BLOCKED.to_vec();
+    }
+    let Some(site) = task.park_site.get() else { return NOT_BLOCKED.to_vec() };
+    // `seq_puts(m, symname)` — one value, no trailing newline.
+    let mut out = Vec::new();
+    out.extend_from_slice(site.file().as_bytes());
+    out.push(b':');
+    out.extend_from_slice(alloc::format!("{}", site.line()).as_bytes());
+    out
+}
 
 /// Linux `auxv_read`: serve the mm's `saved_auxv` array, truncated at the
 /// `AT_NULL` terminator (`do { nwords += 2; } while (saved_auxv[nwords-2])`).

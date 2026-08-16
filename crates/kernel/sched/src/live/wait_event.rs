@@ -22,6 +22,8 @@
 // caller, `tick_wake_expired`), so the timed variant takes the clock as a
 // closure rather than reaching for `hal_*` and inverting the dependency.
 
+use core::panic::Location;
+
 use crate::task::{WaitOutcome, WaitState, signal_pending_state};
 use super::wait_list::WaitList;
 
@@ -48,13 +50,26 @@ fn signal_pending_state_current(state: WaitState) -> bool {
 /// # Ctx: process
 /// # Sleeps: yes
 /// # C: O(N_wakeups) condition evaluations
+#[track_caller]
 pub unsafe fn wait_event(wq: &WaitList, state: WaitState, deadline_ns: u64,
-                         now: impl Fn() -> u64, mut cond: impl FnMut() -> bool) -> WaitOutcome {
+                         now: impl Fn() -> u64, cond: impl FnMut() -> bool) -> WaitOutcome {
+    // SAFETY: forwards this function's contract to the shared loop unchanged;
+    // only the recorded wait site is added.
+    unsafe { wait_event_at(Location::caller(), wq, state, deadline_ns, now, cond) }
+}
+
+/// [`wait_event`] with the wait site supplied by the caller, so a named wrapper
+/// records the SUBSYSTEM's line rather than its own. # SAFETY: see [`wait_event`].
+/// # C: O(N_wakeups) condition evaluations
+unsafe fn wait_event_at(site: &'static Location<'static>, wq: &WaitList, state: WaitState,
+                        deadline_ns: u64, now: impl Fn() -> u64,
+                        mut cond: impl FnMut() -> bool) -> WaitOutcome {
     let timed = deadline_ns != 0;
     // The public wait macros test before creating a waiter. Besides avoiding
     // needless state churn on the ready fast path, this keeps a current task
     // out of a self-wake/deferred-placement round when no sleep is required.
     if cond() { return WaitOutcome::Ready; }
+    crate::park_site::note(site);
     loop {
         // Publish Sleeping and enqueue before either condition or signal
         // recheck. A producer racing either check can therefore find and wake
@@ -89,9 +104,10 @@ pub unsafe fn wait_event(wq: &WaitList, state: WaitState, deadline_ns: u64,
 /// Linux `wait_event_interruptible(wq, cond)`.
 /// # SAFETY: see [`wait_event`].
 /// # C: O(N_wakeups)
+#[track_caller]
 pub unsafe fn wait_event_interruptible(wq: &WaitList, cond: impl FnMut() -> bool) -> WaitOutcome {
     // SAFETY: forwarded contract; untimed, so the clock is never consulted.
-    unsafe { wait_event(wq, WaitState::Interruptible, 0, || 0, cond) }
+    unsafe { wait_event_at(Location::caller(), wq, WaitState::Interruptible, 0, || 0, cond) }
 }
 
 /// Linux `wait_event(wq, cond)` for a wait which deliberately ignores signals.
@@ -99,11 +115,13 @@ pub unsafe fn wait_event_interruptible(wq: &WaitList, cond: impl FnMut() -> bool
 /// # SAFETY: process context on the running task's own CPU, with the runqueue
 /// installed; the caller must hold no lock that a waker of `wq` also takes.
 /// # C: O(N_wakeups) condition evaluations
+#[track_caller]
 pub unsafe fn wait_event_uninterruptible(wq: &WaitList, mut cond: impl FnMut() -> bool) -> WaitOutcome {
     // Linux's public wait_event macro tests before publishing a waiter. This
     // avoids a needless task-state transition when the predicate is already
     // true; the loop below still publishes before every sleeping recheck.
     if cond() { return WaitOutcome::Ready; }
+    crate::park_site::note(Location::caller());
     loop {
         // SAFETY: forwarded fn-level contract; plain publication intentionally
         // ignores signals, matching an uninterruptible worker/completion wait.
@@ -130,9 +148,11 @@ pub unsafe fn wait_event_uninterruptible(wq: &WaitList, mut cond: impl FnMut() -
 /// `prepare` and the predicate together must provide the condition's normal
 /// publication/recheck contract.
 /// # C: O(N_wakeups) condition evaluations
+#[track_caller]
 pub unsafe fn wait_event_uninterruptible_prepare(wq: &WaitList,
                                                  mut prepare: impl FnMut(),
                                                  mut cond: impl FnMut() -> bool) -> WaitOutcome {
+    crate::park_site::note(Location::caller());
     loop {
         // SAFETY: forwarded function contract; publish before enabling the
         // producer's wake doorbell, exactly as Linux's prepare_to_wait loop.
@@ -150,11 +170,23 @@ pub unsafe fn wait_event_uninterruptible_prepare(wq: &WaitList,
 /// Timed uninterruptible predicate wait. `deadline_ns == 0` disables timeout.
 /// # SAFETY: see [`wait_event_uninterruptible`].
 /// # C: O(N_wakeups)
+#[track_caller]
 pub unsafe fn wait_event_uninterruptible_until(wq: &WaitList, deadline_ns: u64,
                                                now: impl Fn() -> u64,
-                                               mut cond: impl FnMut() -> bool) -> WaitOutcome {
+                                               cond: impl FnMut() -> bool) -> WaitOutcome {
+    // SAFETY: forwards this function's contract to the shared timed loop.
+    unsafe { wait_event_uninterruptible_until_at(Location::caller(), wq, deadline_ns, now, cond) }
+}
+
+/// [`wait_event_uninterruptible_until`] with a caller-supplied wait site.
+/// # SAFETY: see [`wait_event_uninterruptible_until`].
+/// # C: O(N_wakeups)
+unsafe fn wait_event_uninterruptible_until_at(site: &'static Location<'static>, wq: &WaitList,
+                                              deadline_ns: u64, now: impl Fn() -> u64,
+                                              mut cond: impl FnMut() -> bool) -> WaitOutcome {
     let timed = deadline_ns != 0;
     if cond() { return WaitOutcome::Ready; }
+    crate::park_site::note(site);
     loop {
         // SAFETY: forwarded sleepable-context contract; this is the timed
         // prepared publication owned by the shared predicate-wait loop.
@@ -190,11 +222,14 @@ pub unsafe fn wait_event_uninterruptible_until(wq: &WaitList, deadline_ns: u64,
 /// # Ctx: process
 /// # Sleeps: yes
 /// # C: O(1) plus scheduler wakeup
+#[track_caller]
 pub unsafe fn sleep_uninterruptible_until(deadline_ns: u64, now: impl Fn() -> u64) {
     let wait = WaitList::new();
     // SAFETY: the local wait list lives through its sole deadline wait; the
     // caller satisfies the shared timed-wait process-context contract.
-    let _ = unsafe { wait_event_uninterruptible_until(&wait, deadline_ns, now, || false) };
+    let _ = unsafe {
+        wait_event_uninterruptible_until_at(Location::caller(), &wait, deadline_ns, now, || false)
+    };
 }
 
 /// Linux `wait_event_interruptible_timeout(wq, cond, timeout)`, on an ABSOLUTE
@@ -202,26 +237,93 @@ pub unsafe fn sleep_uninterruptible_until(deadline_ns: u64, now: impl Fn() -> u6
 /// resumes the REMAINDER (`13§8`).
 /// # SAFETY: see [`wait_event`].
 /// # C: O(N_wakeups)
+#[track_caller]
 pub unsafe fn wait_event_interruptible_until(wq: &WaitList, deadline_ns: u64,
                                              now: impl Fn() -> u64,
                                              cond: impl FnMut() -> bool) -> WaitOutcome {
     // SAFETY: this fn is itself `unsafe` and forwards `wait_event`'s contract
     // unchanged — sleepable context, `wq` outliving the wait.
-    unsafe { wait_event(wq, WaitState::Interruptible, deadline_ns, now, cond) }
+    unsafe { wait_event_at(Location::caller(), wq, WaitState::Interruptible, deadline_ns, now, cond) }
 }
 
 /// Linux `wait_event_killable(wq, cond)` — only a fatal signal ends the wait.
 /// # SAFETY: see [`wait_event`].
 /// # C: O(N_wakeups)
+#[track_caller]
 pub unsafe fn wait_event_killable(wq: &WaitList, cond: impl FnMut() -> bool) -> WaitOutcome {
     // SAFETY: forwarded contract; untimed, so the clock is never consulted.
-    unsafe { wait_event(wq, WaitState::Killable, 0, || 0, cond) }
+    unsafe { wait_event_at(Location::caller(), wq, WaitState::Killable, 0, || 0, cond) }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+    /// A predicate that is false on its first evaluation and true afterwards,
+    /// so the wait reaches its publication (and therefore records a site) and
+    /// still terminates in the host build, which installs no runqueue.
+    fn false_then_true(calls: &AtomicU32) -> impl FnMut() -> bool + '_ {
+        move || calls.fetch_add(1, Ordering::Relaxed) != 0
+    }
+
+    #[test]
+    fn a_killable_wait_records_its_callers_line_not_wait_events() {
+        let wait = WaitList::new();
+        let calls = AtomicU32::new(0);
+        let here = line!() + 2;
+        let out = unsafe {
+            wait_event_killable(&wait, false_then_true(&calls))
+        };
+        assert_eq!(out, WaitOutcome::Ready);
+        let site = crate::park_site::LAST_NOTE.get().expect("wait must record a site");
+        assert!(site.file().ends_with("wait_event.rs"));
+        assert_eq!(site.line(), here, "the recorded site must be the CALLER's line");
+    }
+
+    #[test]
+    fn every_public_wait_family_records_its_callers_line() {
+        let wait = WaitList::new();
+        let observed = [
+            {
+                let c = AtomicU32::new(0);
+                let at = line!() + 2;
+                let out = unsafe {
+                    wait_event_interruptible(&wait, false_then_true(&c))
+                };
+                ("interruptible", at, out, crate::park_site::LAST_NOTE.get())
+            },
+            {
+                let c = AtomicU32::new(0);
+                let at = line!() + 2;
+                let out = unsafe {
+                    wait_event_uninterruptible(&wait, false_then_true(&c))
+                };
+                ("uninterruptible", at, out, crate::park_site::LAST_NOTE.get())
+            },
+            {
+                let c = AtomicU32::new(0);
+                let at = line!() + 2;
+                let out = unsafe {
+                    wait_event_uninterruptible_until(&wait, 0, || 0, false_then_true(&c))
+                };
+                ("uninterruptible_until", at, out, crate::park_site::LAST_NOTE.get())
+            },
+            {
+                let c = AtomicU32::new(0);
+                let at = line!() + 2;
+                let out = unsafe {
+                    wait_event(&wait, WaitState::Interruptible, 0, || 0, false_then_true(&c))
+                };
+                ("wait_event", at, out, crate::park_site::LAST_NOTE.get())
+            },
+        ];
+        for (name, at, out, site) in observed {
+            assert_eq!(out, WaitOutcome::Ready, "{name}");
+            let site = site.expect("every family must record a site");
+            assert_eq!(site.line(), at, "{name} recorded the wrong line");
+        }
+    }
 
     #[test]
     fn prepared_predicate_arms_before_its_first_recheck() {

@@ -4,23 +4,31 @@ use super::{schedule, KeyedWaitQueues};
 static WAITERS: KeyedWaitQueues<(usize, bool)> = KeyedWaitQueues::new();
 
 /// Register current while VFS holds the rwsem registration gate. # C: O(log N)
+#[track_caller]
 pub fn park(key: usize) {
     park_reader(key);
+    crate::park_site::note(core::panic::Location::caller());
 }
 
 /// Register a rwsem reader while its registration gate is held. # C: O(log N)
+#[track_caller]
 pub fn park_reader(key: usize) {
     WAITERS.prepare((key, false));
+    crate::park_site::note(core::panic::Location::caller());
 }
 
 /// Register a rwsem writer while its registration gate is held. # C: O(log N)
+#[track_caller]
 pub fn park_writer(key: usize) {
     WAITERS.prepare((key, true));
+    crate::park_site::note(core::panic::Location::caller());
 }
 
 /// Register a rwsem waiter in its reader or writer FIFO. # C: O(log N)
+#[track_caller]
 pub fn park_rwsem(key: usize, writer: bool) {
     if writer { park_writer(key); } else { park_reader(key); }
+    crate::park_site::note(core::panic::Location::caller());
 }
 
 /// Schedule after VFS registered current and dropped the rwsem gate. # C: sleeps
