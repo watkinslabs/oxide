@@ -25,6 +25,14 @@ use super::fileattr::{self, Kind, View};
 use super::perm::Ctx;
 use super::req::Extra;
 
+/// Is this inode one of ours?
+///
+/// The dispatcher above asks before it does anything, so a foreign inode
+/// falls through this filesystem's handler untouched rather than being told
+/// no such operation on another backend's behalf.
+/// # C: O(1)
+pub fn is_f2fs(inode: &Inode) -> bool { inode.private::<F2fsNode>().is_some() }
+
 /// The node behind an inode, or the refusal a foreign inode gets. # C: O(1)
 fn node(inode: &Inode) -> KResult<&F2fsNode> {
     inode.private::<F2fsNode>().ok_or(VfsError::Einval)

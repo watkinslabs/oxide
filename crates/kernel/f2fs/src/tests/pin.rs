@@ -425,8 +425,12 @@ fn the_pinned_log_rolls_inside_its_section_and_stops_at_the_end() {
     assert_eq!(section::next_in_section(2, 4, 16), Some(3));
     // The last segment of a section has no next segment here.
     assert_eq!(section::next_in_section(3, 4, 16), None);
+    assert_eq!(section::next_in_section(14, 4, 16), Some(15));
     // Nor does the last segment of the main area.
-    assert_eq!(section::next_in_section(14, 4, 16), None);
+    assert_eq!(section::next_in_section(15, 4, 16), None);
+    // Nor one whose section runs past the end of a short main area.
+    assert_eq!(section::next_in_section(12, 4, 14), Some(13));
+    assert_eq!(section::next_in_section(13, 4, 14), None);
     // A one-segment section is always at its own end.
     assert_eq!(section::next_in_section(5, 1, 16), None);
 }

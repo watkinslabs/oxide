@@ -203,11 +203,20 @@ fn the_addresses_are_still_the_files_own_after_a_remount() {
 }
 
 #[test]
-fn a_file_with_a_hole_where_the_walk_starts_is_refused() {
+fn a_hole_at_a_section_boundary_is_refused() {
+    let (mut v, ino, sec) = swapfile();
+    // One whole section of blocks, then a second section of nothing: the walk
+    // reaches the hole exactly where it would otherwise start a fresh run, and
+    // there is no address to hand the paging code for it.
+    v.truncate_file(ino, sec * 2 * BLKSIZE as u64).unwrap();
+    assert_eq!(v.swap_activate(ino, NO_CEILING), Err(Errno::Einval));
+}
+
+#[test]
+fn a_file_that_begins_with_a_hole_is_refused() {
     let mut v = test_image::with_root().mount_rw().unwrap();
     let ino = v.create(ROOT_INO, b"sparse", &spec(), None).unwrap();
-    // Written past the front, so the file's first block has no address at all
-    // and there is nothing to hand the paging code for it.
+    // Written past the front, so the file's first block has no address at all.
     v.write_file(ino, BLKSIZE as u64 * 4, b"far out").unwrap();
     assert_eq!(v.swap_activate(ino, NO_CEILING), Err(Errno::Einval));
 }

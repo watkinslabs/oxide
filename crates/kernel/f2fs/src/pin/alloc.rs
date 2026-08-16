@@ -35,13 +35,6 @@ impl<S: SectorSource> Volume<S> {
         section::section_first(segno, self.sb.segs_per_sec)
     }
 
-    /// Whether every segment of the section starting at `first` is free.
-    /// # C: O(segments per section)
-    pub(crate) fn section_is_free(&self, first: u32) -> bool {
-        section::section_is_free(first, self.sb.segs_per_sec, self.sb.segment_count_main,
-                                 |s| self.seg_is_free(s))
-    }
-
     /// The first wholly free section, searching from `hint` onwards.
     /// # C: O(main segments)
     pub(crate) fn find_free_section(&self, hint: u32) -> Option<u32> {
