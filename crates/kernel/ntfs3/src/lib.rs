@@ -64,6 +64,9 @@ pub mod ident;
 pub mod opts;
 pub mod volume;
 pub mod mount;
+/// `/proc/fs/ntfs3` entry descriptions, in terms `/proc` does not have to know.
+pub mod fsattr;
+pub mod procfs;
 
 pub use attrib::Attribute;
 pub use boot::{Boot, BootError, Geometry};

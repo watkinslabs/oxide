@@ -8,7 +8,7 @@ use kernfs::PseudoDir;
 use sync::{Spinlock, TaskList as LockClass};
 use vfs::{InodeRef, KResult, VfsError};
 
-use super::file::{self, ShowFn};
+use super::file::{self, ShowFn, StoreFn};
 
 /// Filesystem names holding a directory under `/proc/fs`.
 static CLAIMED: Spinlock<Vec<String>, LockClass> = Spinlock::new(Vec::new());
@@ -91,11 +91,15 @@ pub fn publish_dir(fsname: &str, rel: &str) -> KResult<()> {
     Ok(())
 }
 
-/// Publish one seq file at `/proc/fs/<fsname>/<dir>/<name>`. # C: O(components)
-pub fn publish_file(fsname: &str, dir: &str, name: &str, mode: u16, show: ShowFn) -> KResult<()> {
+/// Publish one seq file at `/proc/fs/<fsname>/<dir>/<name>`.
+///
+/// `store` is `None` for a report, which then refuses writes; a control
+/// supplies one. # C: O(components)
+pub fn publish_file(fsname: &str, dir: &str, name: &str, mode: u16, show: ShowFn,
+                    store: Option<StoreFn>) -> KResult<()> {
     if !valid_component(name) { return Err(VfsError::Einval); }
     let parent = path_in(fsname, dir)?;
-    let inode = file::make(mode, show, crate::ino::next_ino());
+    let inode = file::make(mode, show, store, crate::ino::next_ino());
     let mut path = parent;
     path.push('/');
     path.push_str(name);

@@ -79,6 +79,8 @@ pub const SB_OFF_GRP_QUOTA_INUM: usize = 0x244;
 pub const SB_OFF_PRJ_QUOTA_INUM: usize = 0x26C;
 /// `s_checksum_seed` byte offset (when METADATA_CSUM_SEED feature on).
 pub const SB_OFF_CHECKSUM_SEED:  usize = 0x270;
+/// `s_kbytes_written` byte offset — lifetime kilobytes written to the volume.
+pub const SB_OFF_KBYTES_WRITTEN: usize = 0x178;
 /// `s_reserved_gdt_blocks` byte offset.
 pub const SB_OFF_RESERVED_GDT_BLOCKS: usize = 0xCE;
 /// `s_feature_ro_compat` METADATA_CSUM_SEED bit.
@@ -146,6 +148,11 @@ pub struct Superblock {
     /// `s_reserved_gdt_blocks`: resize_inode-reserved GDT blocks after each
     /// primary/backup descriptor table.
     pub reserved_gdt_blocks: u16,
+    /// `s_kbytes_written` — kilobytes written to this volume over its whole
+    /// life, across every mount, as of the last superblock update. What a
+    /// wear-watching tool reads; the current mount's own writes are counted
+    /// live and added to it.
+    pub kbytes_written: u64,
 }
 
 /// Field offsets we mutate when persisting counter updates back to
@@ -279,6 +286,11 @@ impl Superblock {
             ],
             def_hash_version: buf[0xFC],
             reserved_gdt_blocks: rd_u16(buf, SB_OFF_RESERVED_GDT_BLOCKS),
+            kbytes_written: {
+                let mut v = [0u8; 8];
+                v.copy_from_slice(&buf[SB_OFF_KBYTES_WRITTEN..SB_OFF_KBYTES_WRITTEN + 8]);
+                u64::from_le_bytes(v)
+            },
         })
     }
 

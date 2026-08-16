@@ -45,13 +45,13 @@ fn a_second_claim_of_one_name_is_refused() {
 #[test]
 fn publishing_into_an_unclaimed_filesystem_is_refused() {
     assert_eq!(publish_dir("neverpfs", "sda"), Err(VfsError::Enoent));
-    assert_eq!(publish_file("neverpfs", "", "x", 0o444, body("1\n")), Err(VfsError::Enoent));
+    assert_eq!(publish_file("neverpfs", "", "x", 0o444, body("1\n"), None), Err(VfsError::Enoent));
 }
 
 #[test]
 fn a_published_file_is_readable_at_its_path() {
     claim("readpfs").expect("claim");
-    publish_file("readpfs", "vda", "disk_map", 0o444, body("SB : 0/1024B\n")).expect("publish");
+    publish_file("readpfs", "vda", "disk_map", 0o444, body("SB : 0/1024B\n"), None).expect("publish");
     assert_eq!(read_all("readpfs/vda/disk_map").as_deref(), Some(&b"SB : 0/1024B\n"[..]));
     release("readpfs").expect("release");
 }
@@ -59,8 +59,8 @@ fn a_published_file_is_readable_at_its_path() {
 #[test]
 fn a_withdrawn_mount_directory_leaves_the_others_intact() {
     claim("umountpfs").expect("claim");
-    publish_file("umountpfs", "vda", "segment_info", 0o444, body("a\n")).expect("vda");
-    publish_file("umountpfs", "vdb", "segment_info", 0o444, body("b\n")).expect("vdb");
+    publish_file("umountpfs", "vda", "segment_info", 0o444, body("a\n"), None).expect("vda");
+    publish_file("umountpfs", "vdb", "segment_info", 0o444, body("b\n"), None).expect("vdb");
     assert_eq!(names_in("umountpfs", "").expect("list"), ["vda", "vdb"]);
 
     withdraw("umountpfs", "vda").expect("withdraw");
@@ -76,7 +76,7 @@ fn a_component_that_would_escape_the_filesystem_is_refused() {
     claim("escapepfs").expect("claim");
     assert_eq!(publish_dir("escapepfs", ".."), Err(VfsError::Einval));
     assert_eq!(publish_dir("escapepfs", "a/../b"), Err(VfsError::Einval));
-    assert_eq!(publish_file("escapepfs", "", "..", 0o444, body("x")), Err(VfsError::Einval));
+    assert_eq!(publish_file("escapepfs", "", "..", 0o444, body("x"), None), Err(VfsError::Einval));
     assert_eq!(claim("bad/name"), Err(VfsError::Einval));
     release("escapepfs").expect("release");
 }
@@ -98,8 +98,8 @@ fn releasing_a_name_nobody_claimed_is_enoent() {
 #[test]
 fn published_files_have_distinct_inode_numbers() {
     claim("inopfs").expect("claim");
-    publish_file("inopfs", "vda", "one", 0o444, body("1\n")).expect("one");
-    publish_file("inopfs", "vda", "two", 0o444, body("2\n")).expect("two");
+    publish_file("inopfs", "vda", "one", 0o444, body("1\n"), None).expect("one");
+    publish_file("inopfs", "vda", "two", 0o444, body("2\n"), None).expect("two");
     let a = proc_fs_root().lookup_path("inopfs/vda/one").expect("one").ino();
     let b = proc_fs_root().lookup_path("inopfs/vda/two").expect("two").ino();
     assert_ne!(a, b);

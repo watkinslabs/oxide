@@ -22,8 +22,16 @@ use vfs::{default_inode_ops, mk_mode, File, FileOps, FileType, Ino, Inode, Inode
 /// Renders a `/proc/fs` file's current bytes (upstream `seq_show`).
 pub type ShowFn = Arc<dyn Fn() -> KResult<Vec<u8>> + Send + Sync>;
 
-/// `i_private` of a `/proc/fs` file: the renderer the filesystem supplied.
-struct SeqData { show: ShowFn }
+/// Consumes a write to a `/proc/fs` file (upstream `proc_ops->proc_write`),
+/// returning the count accepted — what the caller's `write(2)` reports.
+///
+/// Most files here are reports and have none. A few are controls: a
+/// filesystem's label is set by writing the new one to the file that reads it
+/// back, and there is nowhere else that operation lives.
+pub type StoreFn = Arc<dyn Fn(&[u8]) -> KResult<usize> + Send + Sync>;
+
+/// `i_private` of a `/proc/fs` file: the callables the filesystem supplied.
+struct SeqData { show: ShowFn, store: Option<StoreFn> }
 
 struct SeqFileOps;
 
@@ -50,9 +58,14 @@ impl FileOps for SeqFileOps {
         Ok(window(body, off, buf))
     }
 
-    /// A `/proc/fs` file is a report, never a control. # C: O(1)
-    fn write(&self, _inode: &Inode, _off: u64, _buf: &[u8]) -> KResult<usize> {
-        Err(VfsError::Erofs)
+    /// A file with no `store` is a report, and refuses writes rather than
+    /// accepting and discarding them. # C: cost of the filesystem's own store
+    fn write(&self, inode: &Inode, _off: u64, buf: &[u8]) -> KResult<usize> {
+        let d = inode.private::<SeqData>().ok_or(VfsError::Einval)?;
+        match &d.store {
+            Some(store) => store(buf),
+            None => Err(VfsError::Erofs),
+        }
     }
 
     /// # C: cost of the filesystem's own renderer
@@ -86,10 +99,10 @@ fn window(body: &[u8], off: u64, buf: &mut [u8]) -> usize {
 }
 
 /// Build one `/proc/fs` seq-file inode. # C: O(1)
-pub(crate) fn make(mode: u16, show: ShowFn, ino: Ino) -> InodeRef {
+pub(crate) fn make(mode: u16, show: ShowFn, store: Option<StoreFn>, ino: Ino) -> InodeRef {
     InodeBuilder::new(ino, mk_mode(FileType::Regular, mode), default_inode_ops(),
                       Arc::new(SeqFileOps))
-        .private(Arc::new(SeqData { show }))
+        .private(Arc::new(SeqData { show, store }))
         .build()
 }
 
@@ -103,7 +116,7 @@ mod tests {
     #[test]
     fn a_read_windows_the_rendered_body() {
         let show: ShowFn = Arc::new(|| Ok(b"segment 0|3\n".to_vec()));
-        let inode = make(0o444, show, 0x3800_1000);
+        let inode = make(0o444, show, None, 0x3800_1000);
         let mut buf = [0u8; 4];
         let n = inode.read(8, &mut buf).expect("read");
         assert_eq!(&buf[..n], b"0|3\n");
@@ -114,17 +127,36 @@ mod tests {
     #[test]
     fn a_renderer_error_reaches_the_reader() {
         let show: ShowFn = Arc::new(|| Err(VfsError::Eio));
-        let inode = make(0o444, show, 0x3800_1001);
+        let inode = make(0o444, show, None, 0x3800_1001);
         let mut buf = [0u8; 4];
         assert_eq!(inode.read(0, &mut buf), Err(VfsError::Eio));
     }
 
-    /// A `/proc/fs` file reports, it does not accept commands.
+    /// A file with no store reports, and does not accept commands.
     #[test]
-    fn a_write_is_refused() {
+    fn a_write_to_a_report_is_refused() {
         let show: ShowFn = Arc::new(|| Ok(Vec::new()));
-        let inode = make(0o444, show, 0x3800_1002);
+        let inode = make(0o444, show, None, 0x3800_1002);
         assert_eq!(inode.write(0, b"x"), Err(VfsError::Erofs));
+    }
+
+    /// A control's write reaches the filesystem, and the count it accepted is
+    /// what the writer is told. A write that never arrived would leave the
+    /// name a volume answers to unchanged with nothing to show for it.
+    #[test]
+    fn a_write_to_a_control_reaches_the_filesystem() {
+        use sync::{Spinlock, TaskList};
+        static SEEN: Spinlock<Vec<u8>, TaskList> = Spinlock::new(Vec::new());
+        let show: ShowFn = Arc::new(|| Ok(SEEN.lock().clone()));
+        let store: StoreFn = Arc::new(|b: &[u8]| {
+            *SEEN.lock() = b.to_vec();
+            Ok(b.len())
+        });
+        let inode = make(0o644, show, Some(store), 0x3800_1004);
+        assert_eq!(inode.write(0, b"NEW-LABEL"), Ok(9));
+        let mut buf = [0u8; 16];
+        let n = inode.read(0, &mut buf).expect("read");
+        assert_eq!(&buf[..n], b"NEW-LABEL");
     }
 
     /// Every page of ONE open read must come from ONE render: a paginated
@@ -136,7 +168,7 @@ mod tests {
             let n = SEQ.fetch_add(1, Ordering::Relaxed);
             Ok(alloc::format!("{n}{n}{n}{n}{n}{n}").into_bytes())
         });
-        let inode = make(0o444, show, 0x3800_1003);
+        let inode = make(0o444, show, None, 0x3800_1003);
         let dentry = vfs::Dentry::new_root(Arc::clone(&inode));
         let fdt = vfs::FdTable::new();
         let fd = vfs::file::install_open_at(&fdt, inode, dentry, vfs::OpenFlags::O_RDONLY, 0,
