@@ -33,14 +33,32 @@ impl<S: SectorSource> Volume<S> {
 
     /// Put `data` at `addr`. # C: O(BLKSIZE)
     pub(crate) fn write_block(&self, addr: u32, data: &[u8]) -> Result<(), Errno> {
+        self.write_block_flags(addr, data, block::RequestFlags::NONE)
+    }
+
+    /// The same, telling the medium what kind of block this is and how urgent.
+    ///
+    /// One implementation with the flags defaulted rather than two write
+    /// paths: a second entry point is a second place for the fault site, the
+    /// length check and the address check to be got wrong.
+    /// # C: O(BLKSIZE)
+    pub(crate) fn write_block_flags(&self, addr: u32, data: &[u8], flags: block::RequestFlags)
+        -> Result<(), Errno> {
         if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::WriteIo) {
             return Err(Errno::Eio);
         }
         if data.len() != BLKSIZE { return Err(Errno::Einval); }
-        if !self.sb.valid_main_blkaddr(addr) && u64::from(addr) >= self.sb.max_blkaddr() {
-            return Err(Errno::Eio);
-        }
-        self.source.write_sectors(u64::from(addr), data)
+        let main = self.sb.valid_main_blkaddr(addr);
+        if !main && u64::from(addr) >= self.sb.max_blkaddr() { return Err(Errno::Eio); }
+        // Everything OUTSIDE the main area is metadata by the layout's own
+        // definition — the checkpoint packs, both tables, the summary area and
+        // the orphan list are the only things there — so the address answers
+        // the question and no caller has to remember to. Derived here rather
+        // than passed in from each writer because a metadata writer added
+        // later would otherwise have to know to say so, and the one that
+        // forgot would be indistinguishable from file data.
+        let flags = if main { flags } else { flags | block::flags::META };
+        self.source.write_sectors_flags(u64::from(addr), data, flags)
     }
 
     /// Segments held back from the allocator so the cleaner always has
@@ -253,7 +271,10 @@ impl<S: SectorSource> Volume<S> {
         block[f + FOOTER_NEXT_BLKADDR..f + FOOTER_NEXT_BLKADDR + 4]
             .copy_from_slice(&next.to_le_bytes());
         if nid == ino { self.seal_inode(&mut block); }
-        if let Err(e) = self.write_block(addr, &block) {
+        // A node block sits in the main area beside file data, so its address
+        // does not say what it is. It is metadata all the same: every data
+        // block under it is unreachable until the node naming it lands.
+        if let Err(e) = self.write_block_flags(addr, &block, block::flags::META) {
             if owed { self.release_reserved_space(ino, BLKSIZE as u64)?; }
             return Err(e);
         }
@@ -286,8 +307,15 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(BLKSIZE)
     pub(crate) fn write_data(&mut self, owner: u32, ofs: u16, dir: bool, old: u32, data: &[u8])
         -> Result<u32, Errno> {
+        self.write_data_flags(owner, ofs, dir, old, data, block::RequestFlags::NONE)
+    }
+
+    /// The same, with what the file this page belongs to has been told about
+    /// how urgent its writes are. # C: O(BLKSIZE)
+    pub(crate) fn write_data_flags(&mut self, owner: u32, ofs: u16, dir: bool, old: u32,
+                                   data: &[u8], flags: block::RequestFlags) -> Result<u32, Errno> {
         let kind = if dir { Kind::DirData } else { Kind::FileData };
-        self.write_data_kind(kind, owner, ofs, old, data)
+        self.write_data_kind_flags(kind, owner, ofs, old, data, flags)
     }
 
     /// The same, into a named log.
@@ -298,6 +326,13 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(BLKSIZE)
     pub(crate) fn write_data_kind(&mut self, kind: Kind, owner: u32, ofs: u16, old: u32,
                                   data: &[u8]) -> Result<u32, Errno> {
+        self.write_data_kind_flags(kind, owner, ofs, old, data, block::RequestFlags::NONE)
+    }
+
+    /// The same, carrying the hints this page's file was given. # C: O(BLKSIZE)
+    pub(crate) fn write_data_kind_flags(&mut self, kind: Kind, owner: u32, ofs: u16, old: u32,
+                                        data: &[u8], flags: block::RequestFlags)
+        -> Result<u32, Errno> {
         self.writable_or_err()?;
         // A page of data dropped on the way to the medium, while a checkpoint
         // is being re-enabled — the one window the reference arms this in.
@@ -310,7 +345,7 @@ impl<S: SectorSource> Volume<S> {
         let mut block = vec![0u8; BLKSIZE];
         let take = data.len().min(BLKSIZE);
         block[..take].copy_from_slice(&data[..take]);
-        self.write_block(addr, &block)?;
+        self.write_block_flags(addr, &block, flags)?;
         Ok(addr)
     }
 

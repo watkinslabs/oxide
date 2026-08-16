@@ -161,7 +161,9 @@ pub fn exec<S: SectorSource>(v: &mut Volume<S>, ino: u32, c: &Ctx, r: &Req)
         // A volume carrying the device-alias feature is refused at mount, so
         // no file on a mounted volume is one.
         Req::GetDevAliasFile => Outcome::Reply(Reply::u32(0)),
-        Req::IoPrio(_) => Outcome::Reply(Reply::done()),
+        // The regular-file and level checks are the admission ladder's
+        // (`perm`), so a refused level never reaches the mount state.
+        Req::IoPrio(level) => { v.set_io_prio(ino, *level)?; Outcome::Reply(Reply::done()) }
         Req::PrecacheExtents => {
             let inode = v.read_inode(ino)?;
             v.precache_extents(&inode, ino)?;

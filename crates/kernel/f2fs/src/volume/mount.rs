@@ -156,6 +156,7 @@ impl<S: SectorSource> Volume<S> {
             atgc,
             counters: core::cell::RefCell::new(crate::stats::Counters::new()),
             atomic: alloc::collections::BTreeMap::new(),
+            ioprio_hint: alloc::collections::BTreeMap::new(),
             fault: crate::fault::Info::new(),
             devs,
             zoned,

@@ -18,6 +18,25 @@ pub trait SectorSource {
     /// [`Self::writable`], and refuses to mount writable at all.
     fn write_sectors(&self, _sector: u64, _buf: &[u8]) -> Result<(), Errno> { Err(Errno::Erofs) }
 
+    /// The same write, saying what the filesystem knows about it: that it
+    /// carries metadata, that it should be started ahead of ordinary data.
+    ///
+    /// The flags are a HINT about ORDER and nothing else. A medium is free to
+    /// discard them entirely — the default does exactly that, forwarding to
+    /// [`Self::write_sectors`] — and the bytes that land are identical either
+    /// way, which is what makes ignoring them correct rather than lossy. A
+    /// medium with a queue behind it overrides this to pass them down; a
+    /// medium with no queue has nothing to order and no reason to.
+    ///
+    /// An implementor that overrides this must also make `write_sectors`
+    /// reach it, or the two entry points will disagree about the same write.
+    /// # C: as `write_sectors`
+    fn write_sectors_flags(&self, sector: u64, buf: &[u8], flags: block::RequestFlags)
+        -> Result<(), Errno> {
+        let _ = flags;
+        self.write_sectors(sector, buf)
+    }
+
     /// Tell the medium it may forget `count` sectors from `sector` on, erasing
     /// whatever they hold.
     ///

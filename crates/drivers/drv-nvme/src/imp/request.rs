@@ -220,7 +220,8 @@ impl NvmeBlk {
                 if requests.pending.len() >= ctrl.io_capacity() { return; }
                 let now = wait::now_ns();
                 let waiting: Vec<block::elevator::Waiting> = requests.deferred.iter()
-                    .map(|request| block::elevator::Waiting { ioprio: request.request.ioprio, queued_ns: request.queued_ns })
+                    .map(|request| block::elevator::Waiting { ioprio: request.request.ioprio, queued_ns: request.queued_ns,
+                                              hiprio: request.request.flags.is_hiprio() })
                     .collect();
                 let Some(index) = block::elevator::select(&waiting, now, block::elevator::PRIO_AGING_EXPIRE_NS) else { return; };
                 requests.dispatching = true;
