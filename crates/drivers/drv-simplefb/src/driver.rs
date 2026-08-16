@@ -148,7 +148,7 @@ fn attach_firmware_scanout(fb: BootFramebuffer, parent: &Arc<drv::Device>) -> dr
     let Some(key) = drm::node::ScanoutDriverKey::from_raw(SIMPLEDRM_KEY) else { unreachable!() };
     drm::node::set_scanout_ops(card, drm::node::ScanoutOps {
         driver_key: key, create_from_pa, destroy_resource, present: present_drm,
-        set_cursor: unsupported_cursor, move_cursor: unsupported_move_cursor,
+        set_cursor: None, move_cursor: None,
         restore_console, boot_res_id: no_boot_resource,
     });
     let mut live = LIVE.lock();
@@ -259,8 +259,6 @@ fn present_drm(_key: drm::node::ScanoutDriverKey, id: u32, width: u32, height: u
 fn present_drm(_key: drm::node::ScanoutDriverKey, _id: u32, _width: u32, _height: u32, _damage: drm::node::DamageRect) -> bool { false }
 
 fn restore_console(_key: drm::node::ScanoutDriverKey) -> bool { fbcon::kernel::force_repaint(); true }
-fn unsupported_cursor(_key: drm::node::ScanoutDriverKey, _id: u32, _w: u32, _h: u32, _x: i32, _y: i32, _hot_x: i32, _hot_y: i32) -> bool { false }
-fn unsupported_move_cursor(_key: drm::node::ScanoutDriverKey, _x: i32, _y: i32) -> bool { false }
 fn no_boot_resource(_key: drm::node::ScanoutDriverKey) -> u32 { 0 }
 
 static DRIVER: SimpleFbDriver = SimpleFbDriver;

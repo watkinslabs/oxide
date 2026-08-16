@@ -33,6 +33,7 @@ pub use uapi::*;
 mod tests;
 
 pub mod crtc;
+pub mod cursor_plan;
 pub mod damage;
 pub mod diag;
 pub mod atomic;
