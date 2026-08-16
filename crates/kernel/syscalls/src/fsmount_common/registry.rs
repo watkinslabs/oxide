@@ -314,6 +314,26 @@ fn register_filesystems() {
         let fs: Arc<dyn vfs::fs::FileSystem> = fs;
         mounted(ty, fs, Some(root), source, sb_flags)
     })));
+    // F2FS is a log-structured filesystem: it never overwrites in place, so a
+    // volume whose last mount did not checkpoint carries writes the checkpoint
+    // does not name. Recovery replays those at mount from the node chain, which
+    // is why this mounts read-write on an unclean volume where NTFS above will
+    // not — replay is the designed path here, not a repair.
+    let _ = register_fs(FsType::new("f2fs", f2fs::F2FS_SUPER_MAGIC, FsFlags::FS_REQUIRES_DEV,
+        Box::new(|ty, source: Option<&str>, _t: &str, d: &str, sb_flags: u64,
+                  _p: &[vfs::fs::FsParameter]| -> R {
+        let source = source.ok_or(vfs::VfsError::Enoent)?;
+        let write = sb_flags & vfs::superblock::SB_RDONLY == 0;
+        let access = vfs::MAY_READ | if write { vfs::MAY_WRITE } else { 0 };
+        let (dev, _dev_t) = resolve_block_source(source, access)?;
+        let opts = f2fs::opts::parse(f2fs::Options::defaults(), d)
+            .map_err(f2fs::errno_to_vfs)?;
+        let fs = f2fs::F2fs::open_with(dev, source, write, opts)?;
+        let sb_flags = if fs.is_writable() { sb_flags } else { sb_flags | vfs::superblock::SB_RDONLY };
+        let root = fs.root_inode()?;
+        let fs: Arc<dyn vfs::fs::FileSystem> = fs;
+        mounted(ty, fs, Some(root), source, sb_flags)
+    })));
     // procfs declares the three options it ENFORCES (`gid=`, `hidepid=`,
     // `subset=`) and builds a per-mount root that carries them. The table was an
     // empty list while the root inode was a process-global singleton — there was

@@ -2509,6 +2509,7 @@ dependencies = [
  "elf-load",
  "exfatfs",
  "ext4",
+ "f2fs",
  "fatfs",
  "fbcon",
  "fbdev",

@@ -76,6 +76,12 @@ fn the_registry_facing_surface_has_the_shape_the_registry_expects() {
     let _: fn(&crate::Options) -> String = crate::opts::show;
     let _: fn(syscall::errno::Errno) -> vfs::VfsError = crate::errno_to_vfs;
     let _: fn(&crate::F2fs) -> bool = crate::F2fs::is_writable;
+    // The registry takes the root through the Arc it just built and commits at
+    // unmount; both were absent here while the registry called them, so a
+    // rename would have broken the kernel build and nothing else.
+    let _: fn(&alloc::sync::Arc<crate::F2fs>) -> vfs::KResult<vfs::InodeRef> =
+        crate::F2fs::root_inode;
+    let _: fn(&crate::F2fs) -> vfs::KResult<()> = crate::F2fs::mark_clean;
     assert_eq!(crate::F2FS_SUPER_MAGIC, 0xF2F5_2010);
     assert_eq!(crate::F2FS_NAME, "f2fs");
 }
