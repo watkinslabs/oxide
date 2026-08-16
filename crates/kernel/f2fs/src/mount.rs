@@ -62,9 +62,17 @@ pub struct F2fs {
 }
 
 impl F2fs {
-    /// Mount the volume on `dev`, read-only. # C: O(checkpoint bytes)
+    /// Mount the volume on `dev`, read-only, naming no option.
+    ///
+    /// Naming nothing is NOT the build-wide default set: the right number of
+    /// logs, the right allocation mode, the right write mode and whether the
+    /// device is told about freed blocks all follow from the volume and the
+    /// device, and a build-wide answer gets each of them wrong on some volume
+    /// and gets it wrong silently. Resolving an empty line is what derives
+    /// them — the same path a caller naming options takes, with nothing named.
+    /// # C: O(checkpoint bytes)
     pub fn open(dev: Arc<dyn block::BlockDevice>, source: &str) -> KResult<Arc<Self>> {
-        Self::open_with(dev, source, false, Options::defaults())
+        Self::open_line(dev, source, false, "")
     }
 
     /// Mount under an option set.

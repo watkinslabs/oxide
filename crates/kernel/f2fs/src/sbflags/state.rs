@@ -21,6 +21,9 @@ pub struct Derived {
     pub dirty: bool,
     /// Whether a replay is running.
     pub recovering: bool,
+    /// Whether any quota record is waiting for the next checkpoint to write
+    /// it back.
+    pub quota_dirty: bool,
 }
 
 /// Every volume-wide condition this mount stores.
@@ -66,6 +69,7 @@ impl SbFlags {
         let mut w = self.0;
         if d.dirty { w |= bits::bit(bits::IS_DIRTY); }
         if d.recovering { w |= bits::bit(bits::POR_DOING); }
+        if d.quota_dirty { w |= bits::bit(bits::QUOTA_NEED_FLUSH); }
         w
     }
 
@@ -120,6 +124,20 @@ impl SbFlags {
     /// Whether this mount may still write at all. A volume shut down by ioctl
     /// may not, whatever the mount was opened as. # C: O(1)
     pub fn shutdown(&self) -> bool { self.is_set(bits::IS_SHUTDOWN) }
+
+    /// Record that this mount put something back that a crash had left —
+    /// orphans, a node chain, or both.
+    ///
+    /// A latch: it says what THIS mount did, so nothing lowers it. A tool
+    /// reading the word after the mount settled would otherwise see a volume
+    /// indistinguishable from one that came up clean. # C: O(1)
+    pub fn recovered(&mut self) { self.set(bits::IS_RECOVERED); }
+
+    /// Raise and lower the closing mark around a flush taken as if the volume
+    /// were going away — an unmount, or a mount going read-only. # C: O(1)
+    pub fn set_closing(&mut self, on: bool) {
+        if on { self.set(bits::IS_CLOSE); } else { self.clear(bits::IS_CLOSE); }
+    }
 }
 
 /// One flag, raised or lowered. # C: O(1)

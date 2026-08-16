@@ -52,7 +52,6 @@ use alloc::vec::Vec;
 use crate::fsattr::{dev_id, Attr};
 use crate::mount::F2fs;
 
-pub use stat::status_word;
 
 /// The name this filesystem claims under `/sys/fs`. # C: O(1)
 pub const SUBSYS: &str = crate::mount::F2FS_NAME;

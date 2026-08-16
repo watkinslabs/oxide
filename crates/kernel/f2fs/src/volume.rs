@@ -238,13 +238,22 @@ impl<S: SectorSource> Volume<S> {
     /// The volume's superblock. # C: O(1)
     pub fn super_block(&self) -> &SuperBlock { &self.sb }
 
-    /// Every volume-wide condition, as the one word the status file reports.
-    /// Two of the seventeen are the volume's own live state rather than stored
-    /// flags, and are folded in here so a second copy of them cannot exist.
+    /// Every volume-wide condition, as the one word every reporting surface
+    /// publishes. Three of the seventeen are the volume's own live state
+    /// rather than stored flags, and are folded in here so a second copy of
+    /// them cannot exist.
     /// # C: O(1)
     pub fn sb_status(&self) -> u64 {
-        self.sbi.word(crate::sbflags::Derived { dirty: self.dirty, recovering: self.recovering })
+        self.sbi.word(crate::sbflags::Derived {
+            dirty: self.dirty,
+            recovering: self.recovering,
+            quota_dirty: !self.dq_dirty.is_empty(),
+        })
     }
+
+    /// Raise or lower the closing mark, which a flush taken as if the volume
+    /// were going away runs under. # C: O(1)
+    pub fn set_closing(&mut self, on: bool) { self.sbi.set_closing(on); }
 
     /// The conditions this mount is in. # C: O(1)
     pub fn sbi_flags(&self) -> &crate::sbflags::SbFlags { &self.sbi }
@@ -380,6 +389,12 @@ impl<S: SectorSource> Volume<S> {
 
     /// Whether anything this mount changed is still only in memory. # C: O(1)
     pub fn is_dirty(&self) -> bool { self.dirty }
+
+    /// Say that something is owed a checkpoint even though nothing changed.
+    ///
+    /// One caller: a mount about to stop being able to write, which must
+    /// leave a checkpoint behind whatever it did. # C: O(1)
+    pub fn mark_dirty(&mut self) { self.dirty = true; }
 
     /// Give the medium back, for a caller that wants to mount its bytes
     /// again. A change that only reached memory is invisible here, which is

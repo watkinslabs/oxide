@@ -36,7 +36,7 @@ fn send(v: &mut Volume<MemImage>, ino: u32, cmd: u32, p: &[u8], x: &Extra)
 }
 
 fn done(a: Answer) -> crate::ioctl::Reply {
-    match a { Answer::Done(r) => r, Answer::NotBuilt(u) => panic!("not built: {u:?}") }
+    match a { Answer::Done(r) => r, Answer::NotBuilt(u) => match u {} }
 }
 
 /// A volume that admits sealing, holding one file of `bytes`.

@@ -7,6 +7,7 @@
 //! - `clean`:    cleaning a real volume, proved by remounting it.
 //! - `prefree`:  segments held back from the allocator until a checkpoint.
 //! - `mtime`:    when a segment was written, and the policy that reads it.
+//! - `flushdev`: emptying one member device of a spread volume onto the rest.
 
 #[path = "gc/victim.rs"]
 mod victim;
@@ -20,3 +21,5 @@ mod clean;
 mod prefree;
 #[path = "gc/mtime.rs"]
 mod mtime;
+#[path = "gc/flushdev.rs"]
+mod flushdev;

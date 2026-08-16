@@ -66,7 +66,31 @@ impl F2fs {
         let (opts, _) = resolve_remount(&sbi, data).map_err(errno_to_vfs)?;
         // Going read-only is a state change a reader must see, so what the
         // mount has done is pushed out BEFORE it stops being able to push.
-        if want_ro && !sbi.facts.mount_ro { self.checkpoint()?; }
+        //
+        // Whether it IS going read-only is asked of the mount, not of the
+        // facts the line was checked against: those already fold the request
+        // in (`mount_ro` is `want_ro ||` the volume's own answer), so testing
+        // them here asked "going read-only and not going read-only" and the
+        // flush never ran.
+        let going_ro = want_ro && self.volume.lock().writable();
+        if going_ro {
+            // The flush is taken as if the volume were going away, and says so
+            // for its duration: a reader watching the status word sees the
+            // same mark an unmount raises, which is what tells it the writes
+            // in flight are the last ones.
+            {
+                let mut v = self.volume.lock();
+                v.set_closing(true);
+                // Forced, as the reference forces it: the mount is about to
+                // stop being able to write, so the flush must happen even if
+                // nothing has changed since the last one — the checkpoint it
+                // leaves is what says the volume was put down cleanly.
+                v.mark_dirty();
+            }
+            let out = self.checkpoint();
+            self.volume.lock().set_closing(false);
+            out?;
+        }
         {
             let mut v = self.volume.lock();
             let permitted = v.access() == Access::ReadWrite;

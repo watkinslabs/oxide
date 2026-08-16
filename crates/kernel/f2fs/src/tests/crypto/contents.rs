@@ -88,9 +88,8 @@ fn the_narrow_inode_rule_adds_a_hash_and_wraps() {
     assert!(want < u64::from(u32::MAX));
 }
 
-/// The direct-key rule carries the file nonce beside the index. No mode this
-/// build carries has an IV wide enough for it, which is why the policy check
-/// refuses the combination — but the construction is exercised here.
+/// The direct-key rule carries the file nonce beside the index, which only
+/// the two 32-byte-tweak modes have room for.
 #[test]
 fn the_direct_key_rule_carries_the_nonce_in_the_iv() {
     let got = iv::generate(FLAG_DIRECT_KEY, &nonce(), 0x1234, 0, 7);

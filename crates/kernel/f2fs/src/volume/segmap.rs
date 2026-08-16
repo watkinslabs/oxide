@@ -84,6 +84,12 @@ pub struct SegState {
     /// periodic checkpoint is measured from here, so a mount that has just
     /// written one is not asked for another a moment later.
     pub last_cp_clock: u64,
+    /// Where the next request to empty a member device resumes. Separate
+    /// from the victim cursor above because the two sweep for different
+    /// reasons: one is looking for the cheapest segment anywhere, the other
+    /// is walking one member from end to end, and sharing a cursor would let
+    /// each restart the other.
+    pub flush_dev_cursor: u32,
     /// The first segment a resize is about to take away, while one is running.
     ///
     /// The allocator must not hand out a segment the volume is in the middle

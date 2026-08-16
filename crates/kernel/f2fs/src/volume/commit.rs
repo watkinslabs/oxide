@@ -61,7 +61,16 @@ impl<S: SectorSource> Volume<S> {
     /// pack, and writing one per sync on an idle filesystem burns the medium
     /// for no state change.
     /// # C: O(dirty table blocks + pack blocks)
-    pub fn commit(&mut self) -> Result<(), Errno> { self.commit_with(CpReason::Sync) }
+    /// The reason is read off the volume's own condition rather than taken
+    /// from the caller: a flush taken while the closing mark stands IS the
+    /// last one, and it is the mark — not the call site — that knows. A
+    /// caller that had to say so would get it wrong on every path that
+    /// reaches here indirectly, and the whole pack would be written as an
+    /// ordinary sync, telling the next mount the shutdown was not clean.
+    pub fn commit(&mut self) -> Result<(), Errno> {
+        let closing = self.sbi.is_set(crate::sbflags::bits::IS_CLOSE);
+        self.commit_with(if closing { CpReason::Umount } else { CpReason::Sync })
+    }
 
     /// The same, saying why.
     /// # C: O(dirty table blocks + pack blocks)

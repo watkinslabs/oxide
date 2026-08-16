@@ -101,6 +101,12 @@ pub struct Builder {
     pub sit_bitmap: Vec<u8>,
     /// Live block counts per main segment.
     pub sit_valid: Vec<u16>,
+    /// Segments held back from the allocator so the volume never fills
+    /// completely, and the reserve inside that the cleaner moves live blocks
+    /// into. A formatter always writes both; a volume with neither is refused
+    /// at mount.
+    pub overprov_segments: u32,
+    pub rsvd_segments: u32,
     pub valid_block_count: u64,
     pub valid_node_count: u32,
     pub valid_inode_count: u32,
@@ -134,6 +140,8 @@ impl Builder {
             nat_bitmap: vec![0u8; BITMAP_BYTES as usize],
             sit_bitmap: vec![0u8; BITMAP_BYTES as usize],
             sit_valid: vec![0u16; SEG_MAIN as usize],
+            overprov_segments: 1,
+            rsvd_segments: 1,
             valid_block_count: 0,
             valid_node_count: 0,
             valid_inode_count: 0,

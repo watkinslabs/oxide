@@ -64,11 +64,13 @@ impl<S: SectorSource> Volume<S> {
     /// Segments held back from the allocator so the cleaner always has
     /// somewhere to move live blocks to.
     ///
-    /// The checkpoint records what the volume was formatted with; the floor of
-    /// one is this build's own, because a cleaner with no destination is a
-    /// cleaner that cannot run at the only moment it is wanted.
+    /// What the volume was FORMATTED with, and nothing else. A volume that
+    /// reserves none is refused at mount rather than given a floor here: a
+    /// substituted one would report a reserve the volume does not have and
+    /// leave the cleaner with nowhere to move live blocks the first time the
+    /// volume filled.
     /// # C: O(1)
-    pub(crate) fn gc_reserve(&self) -> u32 { self.cp.rsvd_segment_count.max(1) }
+    pub(crate) fn gc_reserve(&self) -> u32 { self.cp.rsvd_segment_count }
 
     /// Whether the volume has room for one more block, and for one more node
     /// when the block is a node's.
