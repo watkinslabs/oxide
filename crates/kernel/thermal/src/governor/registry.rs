@@ -16,6 +16,7 @@ pub static GOVERNORS: &[&Governor] = &[&STEP_WISE, &BANG_BANG, &FAIR_SHARE, &USE
 /// The governor a zone gets when its provider names none. Stepping is the
 /// safe default: it works with a device of any depth, where the on/off
 /// governor would drive a multi-state device to its shallowest useful state.
+/// # C: O(1)
 pub fn default_governor() -> &'static Governor { &STEP_WISE }
 
 /// Resolve a governor by name, matching without regard to case and ignoring

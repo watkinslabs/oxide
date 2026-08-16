@@ -203,14 +203,14 @@ the provider boundary.
    of them asks for. A write to `cur_state` is a request aggregated with the
    rest, not a command that undercuts an active trip.
 6. A binding is refused where the device cannot satisfy the requested range,
-   rather than clamped. A device whose range later shrinks pulls the binding
+   instead of clamped. A device whose range later shrinks pulls the binding
    and any live request down with it; one bound to the whole device follows it
    upward.
 7. A zone polls at its passive cadence while any passive trip is engaged, and
    at its ordinary one otherwise.
 8. A sensor that reports "not ready" is retried at a fixed cadence forever. A
    sensor that fails is backed off and, once the backoff passes two minutes,
-   the zone is disabled rather than polled for the life of the machine.
+   the zone is disabled instead of polled for the life of the machine.
 9. The terminal trip powers the machine off. The hot trip notifies and does
    not.
 10. A governor never drives a terminal trip.
@@ -229,7 +229,7 @@ would drive a multi-state device to its shallowest useful state.
 
 `crates/kernel/firmware` publishes the firmware-described zones: `_TMP` for
 the reading, `_CRT`/`_HOT`/`_PSV`/`_ACx` for the ladder, `_TZP`/`_TSP` for the
-cadences, `_SCP` to ask the platform to react rather than throttle, and
+cadences, `_SCP` to ask the platform to react instead of throttling, and
 `_PSL`/`_ALx` for the devices each trip may drive. The kelvin offset firmware
 used is inferred from the critical trip. A zone whose ladder has no usable
 trip is not published: a zone that can never act is a temperature readout, and

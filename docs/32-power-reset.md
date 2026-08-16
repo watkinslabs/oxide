@@ -304,5 +304,5 @@ every pass without one. `schedutil` is the default.
 
 Thermal zones, cooling devices, and the binding between them, per `35§13`.
 The critical trip's terminal action is this subsystem's: the machine powers
-off rather than continuing to run past the temperature at which its hardware
+off instead of continuing to run past the temperature at which its hardware
 is damaged.

@@ -27,6 +27,7 @@ pub static GOVERNORS: &[Governor] = &[
 /// The governor a CPU runs when nothing selected one. Timer-event orientation
 /// is the modern default: it needs no duration prediction to be right, only a
 /// record of how the last sleeps ended.
+/// # C: O(1)
 pub fn default_governor() -> Governor { GOVERNORS[1] }
 
 /// Resolve a governor by name. # C: O(N_governors)

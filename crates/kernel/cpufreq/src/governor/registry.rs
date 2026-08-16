@@ -33,6 +33,7 @@ pub static GOVERNORS: &[Governor] = &[
 /// The governor a policy runs when nothing selected one. Utilisation-driven
 /// scaling is what a modern distribution selects, and it is the only one that
 /// can move the frequency on the wakeup that caused the demand.
+/// # C: O(1)
 pub fn default_governor() -> Governor {
     GOVERNORS[GOVERNORS.len() - 1]
 }
