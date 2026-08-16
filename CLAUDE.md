@@ -153,6 +153,7 @@ claiming errno values, error ordering, capability checks, layouts, or flag masks
 | Repo layout + crate ownership boundaries | `52` |
 | Syscall layering (ABI crate / work fns / shim) | `53` |
 | **Assembly + low-level ABI correctness checklist (x86_64 AND aarch64)** | **`54`** ← read BEFORE touching `crates/arch/hal-{x86_64,aarch64}` asm OR signal/syscall paths |
+| Wireless: cfg80211, mac80211, nl80211 | `62` |
 | Boot flow Mermaid | `boot-flow.md` |
 
 When user asks about a concept: check this table → read that spec → answer. Don't guess; read.

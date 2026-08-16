@@ -204,8 +204,11 @@ impl ChanDef {
             }
             // A wide channel's centre is offset from the primary by half the
             // width minus half a channel, and the primary must fall inside.
+            // A split channel is two eighty-megahertz segments that do not
+            // touch. Their centres sit on the same ten-megahertz offset grid
+            // the wide widths use, NOT on a twenty-megahertz boundary.
             ChanWidth::Width80P80 => {
-                self.contains_primary(80) && self.center_freq2 % 20 == 0
+                self.contains_primary(80) && self.center_freq2 % 10 == 0
                     && self.center_freq1.abs_diff(self.center_freq2) > 80
             }
             _ => self.contains_primary(bw_mhz),
