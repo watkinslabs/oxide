@@ -19,6 +19,8 @@ cpu   = { path = "../cpu" }
 namespace-identity = { path = "../namespace-identity" }
 drm   = { path = "../../drivers/drm" }
 input = { path = "../input" }
+backlight = { path = "../backlight" }
+power-supply = { path = "../power-supply" }
 modules = { path = "../modules" }
 firmware = { path = "../firmware" }
 fdt = { path = "../../shared/fdt", features = ["alloc"] }

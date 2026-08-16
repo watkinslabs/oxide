@@ -57,11 +57,17 @@ fn build_context() -> Option<RouteContext> {
     let dsdt = TABLES.dsdt_pa.load(Ordering::Acquire);
     if dsdt == 0 || hhdm == 0 { return None; }
     let mut context = Box::new(AmlContext::new(Box::new(FirmwareHandler), DebugVerbosity::None));
+    // SAFETY: `install_dsdt` recorded a validated FADT DSDT address whose
+    // header and declared extent this boot's HHDM offset maps for the
+    // lifetime of the kernel; `aml_table` re-checks the declared length.
     let table = unsafe { aml_table(dsdt, hhdm)? };
     if context.parse_table(table).is_err() { return None; }
     for slot in 0..count {
         let pa = TABLES.ssdt_pa[slot].load(Ordering::Acquire);
         if pa == 0 { continue; }
+        // SAFETY: `install_ssdt` recorded an XSDT-listed AML table address
+        // covered by the same HHDM offset and live for the lifetime of the
+        // kernel; `aml_table` re-checks the declared length.
         let table = unsafe { aml_table(pa, hhdm)? };
         if context.parse_table(table).is_err() { return None; }
     }
@@ -183,6 +189,18 @@ pub fn prepare_pci_intx_routes() -> bool {
     let mut context = CONTEXT.lock();
     if context.is_none() { *context = build_context(); }
     context.as_ref().is_some()
+}
+
+/// Run `f` against the firmware AML namespace, constructing it on first use.
+/// The namespace has one owner; this is the only way a device driver in this
+/// crate reaches it, so no second parser handle can exist. Returns `None`
+/// when the platform published no AML at all.
+/// # C: O(AML table bytes) on first call
+#[inline(never)]
+pub(crate) fn with_namespace<R>(f: impl FnOnce(&mut AmlContext) -> Option<R>) -> Option<R> {
+    let mut context = CONTEXT.lock();
+    if context.is_none() { *context = build_context(); }
+    f(&mut context.as_mut()?.aml)
 }
 
 #[cfg(test)]

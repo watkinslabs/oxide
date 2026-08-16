@@ -1,0 +1,17 @@
+[package]
+name = "power-supply"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "power_supply"
+path = "src/lib.rs"
+
+[dependencies]
+kstrtox = { path = "../../shared/kstrtox" }
+sync    = { path = "../../shared/sync" }
+vfs     = { path = "../vfs" }
+
+[lints]
+workspace = true

@@ -107,6 +107,18 @@ must use grouped paths from day one.
     parsers only populate `BootInfo.framebuffer`; `kmain` only sequences the
     post-PCI fallback platform-device registration.
 
+11. Device-class ownership: `crates/kernel/power-supply` owns the power-supply
+    class (registered supplies, the property/unit contract, per-supply
+    attribute visibility, the change fan-out) and `crates/kernel/backlight`
+    owns the backlight class (registered devices, brightness range and blank
+    rules, the attribute contract). Both depend only on `vfs` for the errno
+    type, `sync`, and `kstrtox`. `crates/kernel/sysfs` projects them and owns
+    no class state; providers register into them and may not keep a second
+    device list. `crates/kernel/firmware` owns the ACPI providers for both
+    (control-method battery, AC adapter, video backlight) because it owns the
+    AML namespace: no other crate holds a parser handle, and `acpi::aml_eval`
+    is the only read side of it.
+
 ## 6 Naming rules (frozen)
 
 1. Prefer explicit names over compressed abbreviations.
@@ -155,6 +167,11 @@ Constraints:
 10. `crates/kernel/security` may depend on `cgroup` to attach, query, and
     acquire effective cgroup BPF programs. `cgroup` stays independent of
     security policy and retains opaque VFS program objects.
+11. `crates/kernel/power-supply` and `crates/kernel/backlight` are leaves over
+    `vfs`/`sync`/`kstrtox`. `sysfs` and `firmware` depend on them, never the
+    reverse; neither may depend on `firmware`, a driver crate, or a provider.
+12. `crates/shared/kstrtox` is dependency-free: the Linux `kstrto*` conversion
+    every sysfs `store` needs, in one place, not one parser per class.
 
 ## 8 Change policy
 
@@ -200,6 +217,8 @@ Temporary exceptions are allowed only with:
 
 ## 12 Changelog
 
+- 2026-08-15: Added the power-supply and backlight device-class ownership
+  boundaries, their ACPI providers under `firmware`, and `crates/shared/kstrtox`.
 - 2026-08-01: Removed the `crates/user/*` layer — this repo builds no userspace;
   userland is Fedora RPMs composed by `../images` (`29a§2`).
 - 2026-07-29: Made `cgroup` the single owner of cgroup BPF attachment state;

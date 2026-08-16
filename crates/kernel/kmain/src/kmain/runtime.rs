@@ -314,6 +314,27 @@ pub(crate) fn init_network_and_pci() {
     // PCI enumeration owns its own phase logging. Avoid retaining `step`'s
     // formatting closure across firmware AML evaluation on the BSP stack.
     crate::pci_boot::enumerate_and_log();
+    // The AML namespace is built by PCI routing above, so the ACPI power and
+    // display devices can be published now. A machine that describes none
+    // registers none, which is the same answer Linux gives on the same
+    // firmware.
+    step("firmware::acpi::init_devices", publish_acpi_devices);
+}
+
+/// Publish the ACPI-described power supplies and backlights, reporting what
+/// the firmware actually described. # C: O(namespace + AML)
+#[cfg(target_os = "oxide-kernel")]
+#[inline(never)]
+fn publish_acpi_devices() {
+    let counts = firmware::acpi::init_devices();
+    if !counts.any() { return; }
+    klog::write_raw(b"[BOOT]  acpi devices: adapters=");
+    klog::write_dec_u64(counts.adapters as u64);
+    klog::write_raw(b" batteries=");
+    klog::write_dec_u64(counts.batteries as u64);
+    klog::write_raw(b" backlights=");
+    klog::write_dec_u64(counts.backlights as u64);
+    klog::write_raw(b"\n");
 }
 
 #[cfg(target_os = "oxide-kernel")]

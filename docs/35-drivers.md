@@ -115,3 +115,49 @@ No IOMMU yet: coherent uses uncached mapping (x86) / non-cacheable attr (arm). S
 ## 11 Cross-spec
 
 `16`/`19` (devfs/sysfs publishing), `22` (IRQ + DMA barriers), `25` (NetDev), `17` (BlockDevice), `28` (Tty), `34` (PCI).
+
+## 12 Backlight class
+
+Panel brightness control. Brightness keys and a desktop's slider act on this
+tree.
+
+Ownership: `crates/kernel/backlight` owns the class (registered devices, the
+brightness and power rules, the attribute contract).
+`crates/kernel/sysfs` projects it at `/sys/class/backlight/<name>/`.
+
+### 12.1 Invariants (frozen)
+
+1. Attributes: `bl_power` and `brightness` read-write, `actual_brightness`,
+   `max_brightness`, `scale` and `type` read-only.
+2. A brightness write above `max_brightness` is refused with `EINVAL`. The
+   class does not clamp: a clamped write is indistinguishable from an honoured
+   one.
+3. A write to a device whose driver has gone reports `ENXIO` and never reaches
+   the driver.
+4. A blanked device programs zero without losing the requested level. Blank is
+   `bl_power != 0` or either `state` bit set.
+5. `actual_brightness` prefers the driver readback; a driver with none reports
+   the requested level.
+6. An unchanged `bl_power` write does not call the driver; a failed change is
+   rolled back.
+7. A brightness write always produces a change notification, including one the
+   driver refused.
+8. Registration refuses a duplicate name (`EEXIST`) and coerces an
+   out-of-range type to `raw`.
+
+### 12.2 ACPI video provider
+
+`crates/kernel/firmware` publishes panels that declare a brightness-level list
+(`_BCL`), driving them through `_BCM` and reading back through `_BQC` after
+taking brightness ownership with `_DOS`. The firmware list is normalised once
+into a dense `0..max` index: repeats are dropped, a list that omits its
+mains/battery entries gains them back, and a descending list is sorted so a
+higher index is brighter. Whether `_BQC` returns a level or an index is
+settled at registration by programming a known level and reading it back.
+
+### 12.3 Test contract (frozen)
+
+- Range validation, the blank rules, the power rollback and the attribute
+  bodies are hosted tests over ungated modules.
+- `_BCL` normalisation and `_BQC` classification are hosted tests over the
+  raw package.
