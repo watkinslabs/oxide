@@ -6,7 +6,7 @@ Code audit: `2f197dfcf` (rows below carry their own evidence). This covers the i
 
 Two rules this file previously broke, restated so they are not broken again:
 
-- **`HAVE` means an owner exists in code. It does not mean the behaviour works.** Verified this session: TTY/console is `HAVE` and `serial-getty@ttyS0` still exits every 5.000 s and restart-loops 23 times in one boot. Code presence is a *necessary* condition and nothing more, so the queue starts with a behaviour tier that no inventory can express.
+- **`HAVE` means an owner exists in code. It does not mean the behaviour works.** The row that proved it: TTY/console was `HAVE` while `serial-getty@ttyS0` restart-looped 23 times in one boot — and the defect turned out to be in neither the tty nor the getty but in the pipe readiness mask (B2237). Code presence is a *necessary* condition and nothing more, so the queue starts with a behaviour tier that no inventory can express.
 - **A recorded gap is a hypothesis.** The previous revision's top P0 was stale — see `Corrected below`. Re-read the code before spending a lane on any row here.
 
 Device rows cover the kernel framework needed to use a driver, not a demand to reproduce Linux's driver catalog.
@@ -17,7 +17,7 @@ Not expressible as a code inventory, which is why the earlier revision had none 
 
 | Status | Gate | Where it stands | Branch |
 |---|---|---|---|
-| `BLOCKED` | A boot reaches a login prompt and stays there | `serial-getty@ttyS0` starts, exits successfully after exactly 5.000 s, and restart-loops; 23 restarts in one 129 s boot | — |
+| `FIXED B2237` | A boot reaches a login prompt and stays there | Was: `serial-getty@ttyS0` exits successfully every 5.000 s and restart-loops. Cause: a pipe reported readiness for the inode rather than per open END, so a read end could never report a hangup and systemd's `Type=idle` pre-exec wait always ran its 5 s timeout — agetty was never executed at all. Per-end mask implemented against the reference's `pipe_poll`; 11 hosted tests, positive control 10/11 RED on the old body. x86 boot after the fix: `oxide login:` at 7.3 s and it STAYS — zero restarts, zero `Deactivated successfully`, over the following 23 s (before: a restart every 5.4 s). aarch64 cannot confirm the same gate yet: it dies in the open `[BADSTACK]` kernel-stack overflow at 10.7 s, one line after the serial-getty slice is created, which is its own row | B2237-getty-restart-loop |
 | `BLOCKED` | Every boot reaches userspace | Intermittent silent wedge at ~3.3-3.6 s, 3 of 6 boots on one image, with no watchdog output at all | — |
 | `UNKNOWN` | A user can log in and get a shell | Never observed; blocked behind the two rows above | — |
 | `UNKNOWN` | A graphical session starts | Never observed | — |
