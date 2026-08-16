@@ -203,4 +203,16 @@ impl Mount {
             uid, gids: gids.to_vec(), cap_sys_resource,
         });
     }
+
+    /// Hosted-test hook: drop the clean-metadata-block cache. A test that
+    /// pokes the backing device directly (simulating an out-of-band edit —
+    /// `debugfs -w` on a mounted fs, or a second node in a shared-storage
+    /// setup) bypasses this mount's buffer cache the same way a real
+    /// out-of-band writer would; a real system reflects that only after a
+    /// remount or a cache drop. Without this, `read_metadata_block` keeps
+    /// serving the pre-poke bytes and the test's fault injection is racing
+    /// state the mount never actually re-read. # C: O(1)
+    pub fn drop_metadata_cache_for_tests(&self) {
+        self.state.lock().metadata_cache.clear();
+    }
 }
