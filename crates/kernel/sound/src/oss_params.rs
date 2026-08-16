@@ -1,11 +1,6 @@
+use crate::format::{self, RATE_HZ};
 use crate::oss::oss_state::{OSS, Oss};
-
-pub(crate) const V_MU_LAW: u8 = 1;
-pub(crate) const V_A_LAW: u8 = 2;
-pub(crate) const V_S8: u8 = 3;
-pub(crate) const V_U8: u8 = 4;
-pub(crate) const V_S16: u8 = 5;
-pub(crate) const V_U16: u8 = 6;
+use crate::uapi::*;
 
 pub(crate) const AFMT_MU_LAW: u32 = 0x0000_0001;
 pub(crate) const AFMT_A_LAW: u32 = 0x0000_0002;
@@ -14,52 +9,38 @@ pub(crate) const AFMT_S16_LE: u32 = 0x0000_0010;
 pub(crate) const AFMT_S8: u32 = 0x0000_0040;
 pub(crate) const AFMT_U16_LE: u32 = 0x0000_0080;
 
-const RATE_HZ: [u32; 14] = [5512, 8000, 11025, 16000, 22050, 32000, 44100,
-                            48000, 64000, 88200, 96000, 176400, 192000, 384000];
+/// OSS `AFMT_*` ↔ ALSA `SNDRV_PCM_FORMAT_*`. OSS has no 24/32-bit code, so
+/// those ALSA formats are simply absent from the OSS view of the card.
+const AFMT_MAP: [(u32, u32); 6] = [
+    (AFMT_MU_LAW, FMT_MU_LAW), (AFMT_A_LAW, FMT_A_LAW), (AFMT_S8, FMT_S8),
+    (AFMT_U8, FMT_U8), (AFMT_S16_LE, FMT_S16_LE), (AFMT_U16_LE, FMT_U16_LE),
+];
 
-pub(crate) fn afmt_to_virtio(a: u32) -> Option<u8> {
-    match a {
-        AFMT_MU_LAW => Some(V_MU_LAW), AFMT_A_LAW => Some(V_A_LAW), AFMT_S8 => Some(V_S8),
-        AFMT_U8 => Some(V_U8), AFMT_S16_LE => Some(V_S16), AFMT_U16_LE => Some(V_U16), _ => None,
-    }
+pub(crate) fn afmt_to_alsa(a: u32) -> Option<u32> {
+    AFMT_MAP.iter().find(|(oss, _)| *oss == a).map(|(_, alsa)| *alsa)
 }
 
-pub(crate) fn virtio_to_afmt(v: u8) -> u32 {
-    match v {
-        V_MU_LAW => AFMT_MU_LAW, V_A_LAW => AFMT_A_LAW, V_S8 => AFMT_S8,
-        V_U8 => AFMT_U8, V_U16 => AFMT_U16_LE, _ => AFMT_S16_LE,
-    }
+pub(crate) fn alsa_to_afmt(f: u32) -> u32 {
+    AFMT_MAP.iter().find(|(_, alsa)| *alsa == f).map(|(oss, _)| *oss).unwrap_or(AFMT_S16_LE)
 }
 
 pub(crate) fn nearest_supported_rate_enum(hz: u32, rates: u64) -> Option<u8> {
-    let mut best = None;
-    let mut best_delta = u32::MAX;
-    for (i, &rate_hz) in RATE_HZ.iter().enumerate() {
-        if (rates & (1u64 << i)) == 0 { continue; }
-        let delta = rate_hz.abs_diff(hz);
-        if delta < best_delta {
-            best = Some(i as u8);
-            best_delta = delta;
-        }
-    }
-    best
+    format::nearest_supported_rate_index(hz, rates)
 }
 
-pub(crate) fn rate_enum_to_hz(e: u8) -> u32 { RATE_HZ[(e as usize).min(RATE_HZ.len() - 1)] }
+pub(crate) fn rate_enum_to_hz(e: u8) -> u32 { format::rate_hz(e) }
 
-fn first_supported_format(formats: u64) -> Option<u8> {
-    [V_S16, V_U8, V_S8, V_U16, V_MU_LAW, V_A_LAW]
+fn first_supported_format(formats: u64) -> Option<u32> {
+    [FMT_S16_LE, FMT_U8, FMT_S8, FMT_U16_LE, FMT_MU_LAW, FMT_A_LAW]
         .iter()
         .copied()
-        .find(|format| (formats & (1u64 << *format)) != 0)
+        .find(|format| format::mask_has(formats, *format))
 }
 
 pub(crate) fn formats_to_afmt(formats: u64) -> u32 {
     let mut out = 0;
-    for format in [V_MU_LAW, V_A_LAW, V_S8, V_U8, V_S16, V_U16] {
-        if (formats & (1u64 << format)) != 0 {
-            out |= virtio_to_afmt(format);
-        }
+    for (oss, alsa) in AFMT_MAP {
+        if format::mask_has(formats, alsa) { out |= oss; }
     }
     out
 }
@@ -78,12 +59,15 @@ pub(crate) fn caps(owner: crate::SoundOwnerKey) -> Option<(u64, u64, u8, u8)> {
     }
 }
 
-pub(crate) fn initial_params(owner: crate::SoundOwnerKey) -> (u8, u8, u8) {
+/// Default OSS geometry: 44.1 kHz stereo S16_LE where the card allows it.
+pub(crate) fn initial_params(owner: crate::SoundOwnerKey) -> (u8, u32, u8) {
+    const DEFAULT_RATE_INDEX: u8 = 6;
     let Some((formats, rates, ch_min, ch_max)) = caps(owner) else {
-        return (6, V_S16, 2);
+        return (DEFAULT_RATE_INDEX, FMT_S16_LE, 2);
     };
-    let rate = nearest_supported_rate_enum(44_100, rates).unwrap_or(6);
-    let format = first_supported_format(formats).unwrap_or(V_S16);
+    let rate = nearest_supported_rate_enum(RATE_HZ[DEFAULT_RATE_INDEX as usize], rates)
+        .unwrap_or(DEFAULT_RATE_INDEX);
+    let format = first_supported_format(formats).unwrap_or(FMT_S16_LE);
     let channels = 2u8.clamp(ch_min, ch_max);
     (rate, format, channels)
 }

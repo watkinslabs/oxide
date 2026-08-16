@@ -4,7 +4,7 @@ use sync::{Spinlock, TaskList as L};
 pub(crate) struct Oss {
     pub owner: crate::SoundOwnerKey,
     pub rate: u8,
-    pub format: u8,
+    pub format: u32,
     pub channels: u8,
     pub subdivision: u8,
     pub fragshift: u8,

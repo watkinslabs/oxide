@@ -115,8 +115,10 @@ pub fn beep_diag(hz: u32, ms: u32) -> u8 {
 }
 
 pub fn pcm_hw_params(
-    owner: sound::SoundOwnerKey, rate: u8, format: u8, channels: u8, period_bytes: u32, buffer_bytes: u32,
+    owner: sound::SoundOwnerKey, alsa_format: u32, rate_hz: u32, channels: u8, period_bytes: u32, buffer_bytes: u32,
 ) -> bool {
+    let Some(format) = crate::fmt::alsa_to_virtio(alsa_format) else { return false; };
+    let rate = crate::fmt::hz_to_virtio_rate(rate_hz);
     let mut g = CTX.lock_bh::<crate::state::SndBh>();
     let ctx = match active_ctx_mut_for(&mut g, owner) { Some(c) => c, None => return false };
     let stream = match ctx.out_stream { Some(s) => s, None => return false };

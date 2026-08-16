@@ -9,5 +9,5 @@
 
 pub(crate) use pcm_state::{register_card, unregister_card};
 #[cfg(test)] pub(crate) use pcm_state::{has_card, registered_count};
-pub(crate) use pcm_refine::{fmt_alsa_to_virtio, rate_hz_to_enum, refine_params};
+pub(crate) use pcm_refine::{limits_for, refine_params};
 pub use pcm_ioctl::{handle, write_bytes};

@@ -1,6 +1,6 @@
 use syscall::errno::Errno;
 
-use crate::pcm::pcm_refine::{fmt_alsa_to_virtio, rate_hz_to_enum, refine_params};
+use crate::pcm::pcm_refine::{limits_for, refine_params};
 use crate::pcm::pcm_state::{is_registered, PCM};
 use crate::uapi::*;
 
@@ -12,10 +12,9 @@ fn caps(owner: crate::SoundOwnerKey) -> Option<(u64, u64, u8, u8)> { crate::ops:
 
 fn refine(owner: crate::SoundOwnerKey, b: &UserBuf, commit: bool) -> i64 {
     let Some((vf, vr, ch_min, ch_max)) = caps(owner) else { return err(Errno::Enodev); };
-    let r = match refine_params(b, vf, vr, ch_min, ch_max) { Ok(r) => r, Err(e) => return e };
+    let r = match refine_params(b, vf, vr, ch_min, ch_max, &limits_for(owner), crate::ops::info_flags(owner)) { Ok(r) => r, Err(e) => return e };
     if commit {
-        let Some(format) = fmt_alsa_to_virtio(r.format) else { return err(Errno::Einval); };
-        if !crate::ops::pcm_hw_params(owner, rate_hz_to_enum(r.rate), format, r.channels as u8, r.period_bytes, r.buffer_bytes) {
+        if !crate::ops::pcm_hw_params(owner, r.format, r.rate, r.channels as u8, r.period_bytes, r.buffer_bytes) {
             return err(Errno::Eio);
         }
         let mut guard = PCM.lock();
@@ -46,10 +45,12 @@ pub fn handle(owner: crate::SoundOwnerKey, card: u32, nr: u64, arg: u64) -> i64 
         PCM_SW_PARAMS => sw_params(owner, arg),
         PCM_PREPARE => prepare(owner),
         PCM_START => start(owner),
-        PCM_DROP | PCM_DRAIN => drop_stream(owner),
-        PCM_PAUSE => err(Errno::Enotty),
-        PCM_HWSYNC => 0,
-        PCM_DELAY => write_long(arg, 0),
+        PCM_DROP => drop_stream(owner),
+        PCM_DRAIN => drain(owner),
+        PCM_PAUSE => pause(owner, arg),
+        PCM_RESET => reset(owner),
+        PCM_HWSYNC => { sync_hw_ptr(owner); 0 }
+        PCM_DELAY => delay(owner, arg),
         PCM_STATUS => pcm_status(owner, arg),
         PCM_SYNC_PTR => sync_ptr(owner, arg),
         PCM_WRITEI => writei(owner, arg),
@@ -76,12 +77,70 @@ pub fn write_bytes(owner: crate::SoundOwnerKey, buf: &[u8]) -> usize {
     let n = crate::ops::pcm_submit(owner, buf);
     if n > 0 {
         let frames = n as u64 / fb.max(1);
+        let reported = crate::ops::pcm_pointer(owner);
         let mut guard = PCM.lock();
         let Some(p) = guard.iter_mut().find(|p| p.owner == owner) else { return n; };
         p.appl_ptr = p.appl_ptr.wrapping_add(frames) % BOUNDARY;
-        p.hw_ptr = p.appl_ptr;
+        p.hw_ptr = reported.map(|f| f % BOUNDARY).unwrap_or(p.appl_ptr);
     }
     n
+}
+
+/// Refresh `hw_ptr` from the card's real DMA position when it reports one.
+/// Without a reporting card the core keeps `hw_ptr` at `appl_ptr`, which is
+/// the truthful answer for a blocking submit path.
+/// # C: O(1)
+fn sync_hw_ptr(owner: crate::SoundOwnerKey) {
+    let Some(frames) = crate::ops::pcm_pointer(owner) else { return; };
+    let mut guard = PCM.lock();
+    let Some(p) = guard.iter_mut().find(|p| p.owner == owner) else { return; };
+    p.hw_ptr = frames % BOUNDARY;
+}
+
+/// SNDRV_PCM_IOCTL_DELAY: frames queued ahead of the hardware.
+fn delay(owner: crate::SoundOwnerKey, arg: u64) -> i64 {
+    sync_hw_ptr(owner);
+    let guard = PCM.lock();
+    let Some(p) = guard.iter().find(|p| p.owner == owner) else { return err(Errno::Enodev); };
+    write_long(arg, p.appl_ptr.saturating_sub(p.hw_ptr))
+}
+
+/// SNDRV_PCM_IOCTL_PAUSE: `arg` non-zero pauses, zero releases.
+fn pause(owner: crate::SoundOwnerKey, arg: u64) -> i64 {
+    let want_pause = arg != 0;
+    if crate::ops::info_flags(owner) & PCM_INFO_PAUSE == 0 { return err(Errno::Enosys); }
+    {
+        let guard = PCM.lock();
+        let Some(p) = guard.iter().find(|p| p.owner == owner) else { return err(Errno::Enodev); };
+        if want_pause && p.state != STATE_RUNNING { return err(Errno::Ebadfd); }
+        if !want_pause && p.state != STATE_PAUSED { return err(Errno::Ebadfd); }
+    }
+    if !crate::ops::pcm_pause(owner, want_pause) { return err(Errno::Enotty); }
+    let mut guard = PCM.lock();
+    let Some(p) = guard.iter_mut().find(|p| p.owner == owner) else { return err(Errno::Enodev); };
+    p.state = if want_pause { STATE_PAUSED } else { STATE_RUNNING };
+    0
+}
+
+/// SNDRV_PCM_IOCTL_DRAIN: play out what is queued, then stop.
+fn drain(owner: crate::SoundOwnerKey) -> i64 {
+    let state = {
+        let guard = PCM.lock();
+        let Some(p) = guard.iter().find(|p| p.owner == owner) else { return err(Errno::Enodev); };
+        p.state
+    };
+    if state == STATE_OPEN { return err(Errno::Ebadfd); }
+    if state == STATE_RUNNING && !crate::ops::pcm_drain(owner) { return err(Errno::Eio); }
+    drop_stream(owner)
+}
+
+/// SNDRV_PCM_IOCTL_RESET: zero the pointers without leaving PREPARED.
+fn reset(owner: crate::SoundOwnerKey) -> i64 {
+    let mut guard = PCM.lock();
+    let Some(p) = guard.iter_mut().find(|p| p.owner == owner) else { return err(Errno::Enodev); };
+    p.appl_ptr = 0;
+    p.hw_ptr = 0;
+    0
 }
 
 fn hw_free(owner: crate::SoundOwnerKey) -> i64 {
@@ -131,16 +190,9 @@ fn write_long(arg: u64, v: u64) -> i64 {
 fn pcm_info(owner: crate::SoundOwnerKey, card: u32, arg: u64) -> i64 {
     if caps(owner).is_none() || !is_registered(owner) { return err(Errno::Enodev); }
     let b = match UserBuf::new(arg, PCM_INFO_SIZE) { Some(b) => b, None => return err(Errno::Efault) };
-    b.zero(0, PCM_INFO_SIZE);
-    b.w32(PI_DEVICE, 0);
-    b.w32(PI_SUBDEVICE, 0);
-    b.w32(PI_STREAM, STREAM_PLAYBACK as u32);
-    b.w32(PI_CARD, card);
-    b.wstr(PI_ID, b"virtio-snd", 64);
-    b.wstr(PI_NAME, b"virtio-snd PCM", 80);
-    b.wstr(PI_SUBNAME, b"subdevice #0", 32);
-    b.w32(PI_SUBDEVICES_COUNT, 1);
-    b.w32(PI_SUBDEVICES_AVAIL, 1);
+    let Some(ident) = crate::ops::identity(owner) else { return err(Errno::Enodev); };
+    crate::pcm_info::write(&b, card, STREAM_PLAYBACK, &ident.id,
+                           &crate::identity::pcm_stream_name(&ident, false));
     0
 }
 
@@ -156,6 +208,7 @@ fn sw_params(owner: crate::SoundOwnerKey, arg: u64) -> i64 {
 
 fn pcm_status(owner: crate::SoundOwnerKey, arg: u64) -> i64 {
     let b = match UserBuf::new(arg, STATUS_SIZE) { Some(b) => b, None => return err(Errno::Efault) };
+    sync_hw_ptr(owner);
     let guard = PCM.lock();
     let Some(p) = guard.iter().find(|p| p.owner == owner) else { return err(Errno::Enodev); };
     let avail = p.buffer_frames as u64;
@@ -171,6 +224,7 @@ fn pcm_status(owner: crate::SoundOwnerKey, arg: u64) -> i64 {
 fn sync_ptr(owner: crate::SoundOwnerKey, arg: u64) -> i64 {
     let b = match UserBuf::new(arg, SYNC_PTR_SIZE) { Some(b) => b, None => return err(Errno::Efault) };
     let flags = b.r32(SP_FLAGS);
+    if flags & SYNC_PTR_HWSYNC != 0 { sync_hw_ptr(owner); }
     let mut guard = PCM.lock();
     let Some(p) = guard.iter_mut().find(|p| p.owner == owner) else { return err(Errno::Enodev); };
     if flags & SYNC_PTR_APPL == 0 {
@@ -224,10 +278,11 @@ fn writei(owner: crate::SoundOwnerKey, arg: u64) -> i64 {
     }
     let wrote_frames = done / fb;
     {
+        let reported = crate::ops::pcm_pointer(owner);
         let mut guard = PCM.lock();
         let Some(p) = guard.iter_mut().find(|p| p.owner == owner) else { return err(Errno::Enodev); };
         p.appl_ptr = p.appl_ptr.wrapping_add(wrote_frames) % BOUNDARY;
-        p.hw_ptr = p.appl_ptr;
+        p.hw_ptr = reported.map(|f| f % BOUNDARY).unwrap_or(p.appl_ptr);
     }
     xf.w64(XFERI_RESULT, wrote_frames);
     if wrote_frames == 0 { err(Errno::Eio) } else { wrote_frames as i64 }

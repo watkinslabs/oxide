@@ -38,7 +38,14 @@ fn cfg(_owner: crate::SoundOwnerKey) -> Option<(u32, u32, u32, u32)> { Some((0, 
 fn caps(_owner: crate::SoundOwnerKey) -> ops::Caps { Some((0, 0, 1, 2)) }
 fn no_caps(_owner: crate::SoundOwnerKey) -> ops::Caps { None }
 fn period(_owner: crate::SoundOwnerKey) -> usize { 2048 }
-fn hw_params(_owner: crate::SoundOwnerKey, _rate: u8, _format: u8, _channels: u8, _period_bytes: u32, _buffer_bytes: u32) -> bool { true }
+fn hw_params(_owner: crate::SoundOwnerKey, _format: u32, _rate_hz: u32, _channels: u8, _period_bytes: u32, _buffer_bytes: u32) -> bool { true }
+fn ident(_owner: crate::SoundOwnerKey) -> crate::CardIdentity {
+    crate::CardIdentity::new(b"test", b"test-drv", b"Test Card", b"Test Card at test bus", b"Test Mixer", b"TEST:0001", b"Test PCM")
+}
+fn limits(_owner: crate::SoundOwnerKey) -> ops::HwLimits { (4096, 16384) }
+fn info_flags(_owner: crate::SoundOwnerKey) -> u32 { 0 }
+fn pause(_owner: crate::SoundOwnerKey, _pause: bool) -> bool { true }
+fn no_pointer(_owner: crate::SoundOwnerKey) -> Option<u64> { None }
 fn yes(_owner: crate::SoundOwnerKey) -> bool { true }
 fn no(_owner: crate::SoundOwnerKey) -> bool { false }
 fn trigger(_owner: crate::SoundOwnerKey, _start: bool) -> bool { true }
@@ -46,48 +53,54 @@ fn fail_trigger(_owner: crate::SoundOwnerKey, _start: bool) -> bool { false }
 fn submit(_owner: crate::SoundOwnerKey, b: &[u8]) -> usize { b.len() }
 fn recv(_owner: crate::SoundOwnerKey, b: &mut [u8]) -> usize { b.len() }
 fn route_cfg(owner: crate::SoundOwnerKey) -> Option<(u32, u32, u32, u32)> { ROUTED.lock().push(owner); Some((0, 0, 0, 0)) }
-fn route_caps(owner: crate::SoundOwnerKey) -> ops::Caps { ROUTED.lock().push(owner); Some((1u64 << 5, 1u64 << 6, 1, 2)) }
+fn route_caps(owner: crate::SoundOwnerKey) -> ops::Caps { ROUTED.lock().push(owner); Some((1u64 << crate::uapi::FMT_S16_LE, 1u64 << 6, 1, 2)) }
 fn route_period(owner: crate::SoundOwnerKey) -> usize { ROUTED.lock().push(owner); 2048 }
 fn route_yes(owner: crate::SoundOwnerKey) -> bool { ROUTED.lock().push(owner); true }
 fn route_trigger(owner: crate::SoundOwnerKey, _start: bool) -> bool { ROUTED.lock().push(owner); true }
 fn route_submit(owner: crate::SoundOwnerKey, b: &[u8]) -> usize { ROUTED.lock().push(owner); b.len() }
 fn route_recv(owner: crate::SoundOwnerKey, b: &mut [u8]) -> usize { ROUTED.lock().push(owner); b.len() }
-fn route_hw_params(owner: crate::SoundOwnerKey, _rate: u8, _format: u8, _channels: u8, _period_bytes: u32, _buffer_bytes: u32) -> bool {
+fn route_hw_params(owner: crate::SoundOwnerKey, _format: u32, _rate_hz: u32, _channels: u8, _period_bytes: u32, _buffer_bytes: u32) -> bool {
     ROUTED.lock().push(owner);
     true
 }
 
 static TEST_OPS: ops::SoundOps = ops::SoundOps {
+    identity: ident, hw_limits: limits, info_flags: info_flags, pcm_pause: pause, pcm_drain: yes, pcm_pointer: no_pointer, cap_pointer: no_pointer,
     config: cfg, pcm_caps: caps, cap_caps: caps, period_bytes: period,
     pcm_hw_params: hw_params, pcm_prepare: yes, pcm_trigger: trigger, pcm_hw_free: yes, pcm_submit: submit,
     cap_hw_params: hw_params, cap_prepare: yes, cap_trigger: trigger, cap_hw_free: yes, pcm_recv: recv,
 };
 
 static PLAYBACK_ONLY_OPS: ops::SoundOps = ops::SoundOps {
+    identity: ident, hw_limits: limits, info_flags: info_flags, pcm_pause: pause, pcm_drain: yes, pcm_pointer: no_pointer, cap_pointer: no_pointer,
     config: cfg, pcm_caps: caps, cap_caps: no_caps, period_bytes: period,
     pcm_hw_params: hw_params, pcm_prepare: yes, pcm_trigger: trigger, pcm_hw_free: yes, pcm_submit: submit,
     cap_hw_params: hw_params, cap_prepare: yes, cap_trigger: trigger, cap_hw_free: yes, pcm_recv: recv,
 };
 
 static CAPTURE_ONLY_OPS: ops::SoundOps = ops::SoundOps {
+    identity: ident, hw_limits: limits, info_flags: info_flags, pcm_pause: pause, pcm_drain: yes, pcm_pointer: no_pointer, cap_pointer: no_pointer,
     config: cfg, pcm_caps: no_caps, cap_caps: caps, period_bytes: period,
     pcm_hw_params: hw_params, pcm_prepare: yes, pcm_trigger: trigger, pcm_hw_free: yes, pcm_submit: submit,
     cap_hw_params: hw_params, cap_prepare: yes, cap_trigger: trigger, cap_hw_free: yes, pcm_recv: recv,
 };
 
 static NO_PCM_OPS: ops::SoundOps = ops::SoundOps {
+    identity: ident, hw_limits: limits, info_flags: info_flags, pcm_pause: pause, pcm_drain: yes, pcm_pointer: no_pointer, cap_pointer: no_pointer,
     config: cfg, pcm_caps: no_caps, cap_caps: no_caps, period_bytes: period,
     pcm_hw_params: hw_params, pcm_prepare: yes, pcm_trigger: trigger, pcm_hw_free: yes, pcm_submit: submit,
     cap_hw_params: hw_params, cap_prepare: yes, cap_trigger: trigger, cap_hw_free: yes, pcm_recv: recv,
 };
 
 static FAIL_STOP_FREE_OPS: ops::SoundOps = ops::SoundOps {
+    identity: ident, hw_limits: limits, info_flags: info_flags, pcm_pause: pause, pcm_drain: yes, pcm_pointer: no_pointer, cap_pointer: no_pointer,
     config: cfg, pcm_caps: caps, cap_caps: caps, period_bytes: period,
     pcm_hw_params: hw_params, pcm_prepare: yes, pcm_trigger: fail_trigger, pcm_hw_free: no, pcm_submit: submit,
     cap_hw_params: hw_params, cap_prepare: yes, cap_trigger: fail_trigger, cap_hw_free: no, pcm_recv: recv,
 };
 
 static ROUTE_OPS: ops::SoundOps = ops::SoundOps {
+    identity: ident, hw_limits: limits, info_flags: info_flags, pcm_pause: pause, pcm_drain: yes, pcm_pointer: no_pointer, cap_pointer: no_pointer,
     config: route_cfg, pcm_caps: route_caps, cap_caps: route_caps, period_bytes: route_period,
     pcm_hw_params: route_hw_params, pcm_prepare: route_yes, pcm_trigger: route_trigger, pcm_hw_free: route_yes,
     pcm_submit: route_submit, cap_hw_params: route_hw_params, cap_prepare: route_yes, cap_trigger: route_trigger,
@@ -276,7 +289,9 @@ fn pcm_sync_ptr_does_not_fabricate_hardware_progress() {
     assert_eq!(get_u64(&sync, uapi::SP_CONTROL_APPL_PTR), 33);
     assert_eq!(get_u64(&sync, uapi::SP_STATUS_HW_PTR), 0);
 
-    assert_eq!(pcm::handle(owner_id, 0, uapi::PCM_PAUSE, 0), test_err(syscall::errno::Errno::Enotty));
+    // A card that does not advertise SNDRV_PCM_INFO_PAUSE refuses PAUSE
+    // before any state check, the way ALSA's pre-action does.
+    assert_eq!(pcm::handle(owner_id, 0, uapi::PCM_PAUSE, 0), test_err(syscall::errno::Errno::Enosys));
     assert_eq!(pcm::handle(owner_id, 0, uapi::PCM_TSTAMP, 0), test_err(syscall::errno::Errno::Enotty));
     assert_eq!(pcm::handle(owner_id, 0, uapi::PCM_TTSTAMP, 0), test_err(syscall::errno::Errno::Enotty));
     assert_eq!(capture::handle(owner_id, 0, uapi::PCM_TSTAMP, 0), test_err(syscall::errno::Errno::Enotty));

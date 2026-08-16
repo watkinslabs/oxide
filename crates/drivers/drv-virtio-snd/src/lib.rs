@@ -113,7 +113,42 @@ use lifecycle::{remove_ctx_and_release_event_handler, stop_reset_free};
 #[cfg(test)]
 use state::{clear_freed_frames_for_tests, freed_frames_for_tests, remove_ctx, test_frame_pa};
 
+mod fmt;
+
+/// Identity reported through SNDRV_CTL_IOCTL_CARD_INFO. # C: O(1)
+fn identity(_owner: sound::SoundOwnerKey) -> sound::CardIdentity {
+    sound::CardIdentity::new(b"virtio-snd", b"virtio_snd", b"virtio-snd",
+                             b"virtio sound card at virtio bus", b"virtio-snd", b"",
+                             b"virtio-snd PCM")
+}
+
+/// The TXQ/RXQ path stages one frame-sized period at a time and double
+/// buffers it. # C: O(1)
+fn hw_limits(_owner: sound::SoundOwnerKey) -> sound::ops::HwLimits {
+    (SND_FRAME_BYTES as u32, SND_FRAME_BYTES as u32 * 2)
+}
+
+/// Blocking submit/receive only: no pause, no mmap. # C: O(1)
+fn info_flags(_owner: sound::SoundOwnerKey) -> u32 { 0 }
+
+fn pcm_pause(_owner: sound::SoundOwnerKey, _pause: bool) -> bool { false }
+
+/// Every submitted period has already been handed to the device and
+/// acknowledged, so a drain has nothing left to wait for. # C: O(1)
+fn pcm_drain(_owner: sound::SoundOwnerKey) -> bool { true }
+
+/// The device reports no independent DMA position; the core's own accounting
+/// over the acknowledged periods is the truthful answer. # C: O(1)
+fn no_pointer(_owner: sound::SoundOwnerKey) -> Option<u64> { None }
+
 static SOUND_OPS: sound::ops::SoundOps = sound::ops::SoundOps {
+    identity,
+    hw_limits,
+    info_flags,
+    pcm_pause,
+    pcm_drain,
+    pcm_pointer: no_pointer,
+    cap_pointer: no_pointer,
     config,
     pcm_caps,
     cap_caps,

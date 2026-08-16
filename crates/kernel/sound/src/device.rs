@@ -59,9 +59,12 @@ impl FileOps for SndFileOps {
     fn poll_open_file(&self, file: &File) -> u32 {
         let Some(data) = file.inode().private::<SndData>() else { return 0 };
         if data.minor == MINOR_CONTROL {
-            // No driver-backed control elements means no events can be queued.
-            // A subscription changes admission, not readiness by itself.
-            return 0;
+            // A subscription changes admission, not readiness by itself: the
+            // fd is readable only once an event past this reader's cursor is
+            // queued.
+            let (subscribed, cursor) = crate::control::events::unpack(file.private_data());
+            if !subscribed { return 0; }
+            return if crate::control::events::next_after(data.owner, cursor).is_some() { vfs::POLL_IN } else { 0 };
         }
         vfs::POLL_IN | vfs::POLL_OUT
     }
@@ -84,33 +87,67 @@ impl FileOps for SndFileOps {
     }
 }
 
-/// Linux `snd_ctl_read` for the currently empty event implementation. The
-/// queue becomes real alongside driver-backed controls; until then the exact
-/// empty-queue contract is still observable and load-bearing: nonblocking
-/// readers get EAGAIN and blocking readers sleep interruptibly, never EOF.
+/// Linux `snd_ctl_read`: an unsubscribed description is EBADFD, a short
+/// buffer is EINVAL, an empty queue is EAGAIN for a nonblocking reader and an
+/// interruptible sleep otherwise — never EOF.
 fn control_read(file: &File, data: &SndData, b: &mut [u8], nonblock: bool) -> KResult<usize> {
-    if file.private_data() == 0 { return Err(VfsError::Ebadfd); }
+    let (subscribed, cursor) = crate::control::events::unpack(file.private_data());
+    if !subscribed { return Err(VfsError::Ebadfd); }
     if b.len() < crate::uapi::CTL_EVENT_SIZE { return Err(VfsError::Einval); }
+    if let Some(seq) = crate::control::read_event(data.owner, cursor, b) {
+        file.set_private_data(crate::control::events::pack(true, seq));
+        return Ok(crate::uapi::CTL_EVENT_SIZE);
+    }
     if nonblock { return Err(VfsError::Eagain); }
     #[cfg(not(target_os = "oxide-kernel"))]
     let _ = data;
     #[cfg(target_os = "oxide-kernel")]
     {
-        // No events exist yet, so only signal delivery can finish this wait.
         // The shared wait-event primitive owns publish/recheck/dequeue order,
         // including removal of the wait-list entry on the interrupted exit.
-        // SAFETY: syscall process context, with no lock held across the wait.
-        let _ = unsafe { sched::live::wait_event_interruptible(&data.control_wait, || false) };
-        Err(VfsError::Erestartsys)
+        // SAFETY: syscall process context in snd_ctl_read, with no lock held
+        // across the wait; the predicate only reads the card's event queue.
+        let owner = data.owner;
+        let _ = unsafe {
+            sched::live::wait_event_interruptible(&data.control_wait,
+                || crate::control::events::next_after(owner, cursor).is_some())
+        };
+        match crate::control::read_event(data.owner, cursor, b) {
+            Some(seq) => {
+                file.set_private_data(crate::control::events::pack(true, seq));
+                Ok(crate::uapi::CTL_EVENT_SIZE)
+            }
+            None => Err(VfsError::Erestartsys),
+        }
     }
     #[cfg(not(target_os = "oxide-kernel"))]
     Err(VfsError::Eagain)
 }
 
+/// Every live control inode, weakly held so an event can wake its readers and
+/// its epoll subscribers. Weak, so the registry never keeps an inode alive.
+static CONTROL_INODES: sync::Spinlock<Vec<(crate::SoundOwnerKey, alloc::sync::Weak<Inode>)>, sync::TaskList> =
+    sync::Spinlock::new(Vec::new());
+
+/// Wake control-fd readers and pollers of `owner` after an event is queued.
+/// # C: O(control inodes)
+pub(crate) fn wake_control(owner: crate::SoundOwnerKey) {
+    let live: Vec<InodeRef> = {
+        let mut guard = CONTROL_INODES.lock();
+        guard.retain(|(_, weak)| weak.strong_count() != 0);
+        guard.iter().filter(|(key, _)| *key == owner).filter_map(|(_, weak)| weak.upgrade()).collect()
+    };
+    for inode in live {
+        if let Some(subs) = inode.poll_subscribers() { subs.notify_mask(vfs::POLL_IN); }
+        #[cfg(target_os = "oxide-kernel")]
+        if let Some(data) = inode.private::<SndData>() { data.control_wait.wake_all(); }
+    }
+}
+
 /// Build a `/dev/snd/*` (or OSS) char-device inode for `minor`.
 /// # C: O(1)
 pub(crate) fn make_snd_inode(owner: crate::SoundOwnerKey, card: u32, minor: u64) -> InodeRef {
-    InodeBuilder::new(crate::ids::INO_TAG | ((card as Ino) << INO_CARD_SHIFT) | minor, mk_mode(FileType::CharDev, 0o666),
+    let inode = InodeBuilder::new(crate::ids::INO_TAG | ((card as Ino) << INO_CARD_SHIFT) | minor, mk_mode(FileType::CharDev, 0o666),
                       default_inode_ops(), Arc::new(SndFileOps))
         .private(Arc::new(SndData {
             owner, card, minor,
@@ -118,7 +155,13 @@ pub(crate) fn make_snd_inode(owner: crate::SoundOwnerKey, card: u32, minor: u64)
             control_wait: ControlWait::new(),
         }))
         .poll_subs(PollSubscribers::new())
-        .build()
+        .build();
+    if minor == MINOR_CONTROL {
+        let mut guard = CONTROL_INODES.lock();
+        guard.retain(|(_, weak)| weak.strong_count() != 0);
+        guard.push((owner, Arc::downgrade(&inode)));
+    }
+    inode
 }
 
 struct SoundNodeTemplate {
