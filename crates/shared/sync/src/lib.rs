@@ -209,6 +209,14 @@ decl_lock_class! {
     TtyTx        = 119,
     Tty          = 120,
     SocketTable  = 130,
+    // Stacked block-device state: the device-mapper type registry, mapped
+    // devices and their table slots (`device_mapper`), and MD arrays and their
+    // member sets (`md_raid`). Ranked strictly BELOW `Devices` because
+    // publishing or withdrawing a stacked device takes the block registry's
+    // lock while holding this one — a mapped device becomes a disk, so the
+    // nesting only ever runs in that direction. A stacked device's I/O path
+    // takes neither: it submits through an `Arc` it already holds.
+    StackedBlock = 134,
     Devices      = 135,
     // Bluetooth controller registry: which controller each index names
     // (`bluetooth::hci::registry`). Above `Devices` because registration
