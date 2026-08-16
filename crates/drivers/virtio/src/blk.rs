@@ -8,6 +8,9 @@
 
 use crate::queue::{VRING_DESC_F_NEXT, VRING_DESC_F_WRITE};
 
+/// Zoned wire shapes, the probe decision, and the report decode.
+pub mod zoned;
+
 /// Request type at byte 0 of the 16-byte `virtio_blk_req` header
 /// (spec §5.2.6). le32. T_GET_ID rides the read path (device-write
 /// data) — used next stage for root identity.
@@ -115,19 +118,38 @@ pub fn build_chain(
     data_len: u32,
     status_pa: u64,
 ) -> ([DescSpec; 3], usize) {
+    build_chain_with_in_header(is_in, hdr_pa, data_pa, data_len, status_pa, 1)
+}
+
+/// `build_chain` with an in-header wider than one status byte.
+///
+/// Zone append answers with the sector its data landed at ahead of the
+/// status, so its device-writable tail is 9 bytes rather than 1. The status
+/// stays the LAST byte of that descriptor, which is what lets one decode path
+/// read both widths. Every other request type passes `in_header_len == 1` and
+/// gets exactly the chain above.
+/// # C: O(1)
+pub fn build_chain_with_in_header(
+    is_in: bool,
+    hdr_pa: u64,
+    data_pa: u64,
+    data_len: u32,
+    status_pa: u64,
+    in_header_len: u32,
+) -> ([DescSpec; 3], usize) {
     let mut d = [DescSpec { addr: 0, len: 0, flags: 0, next: 0 }; 3];
     // Header: always device-readable (driver writes it), chained.
     d[0] = DescSpec { addr: hdr_pa, len: 16, flags: VRING_DESC_F_NEXT, next: 1 };
     if data_len == 0 {
-        // Flush: header → status (status device-writable, chain end).
-        d[1] = DescSpec { addr: status_pa, len: 1, flags: VRING_DESC_F_WRITE, next: 0 };
+        // Flush / zone management: header → status (device-writable, end).
+        d[1] = DescSpec { addr: status_pa, len: in_header_len, flags: VRING_DESC_F_WRITE, next: 0 };
         return (d, 2);
     }
     // Data: F_WRITE iff read (device fills it); cleared for write.
     let data_flags = VRING_DESC_F_NEXT | if is_in { VRING_DESC_F_WRITE } else { 0 };
     d[1] = DescSpec { addr: data_pa, len: data_len, flags: data_flags, next: 2 };
     // Status: device-writable, chain end.
-    d[2] = DescSpec { addr: status_pa, len: 1, flags: VRING_DESC_F_WRITE, next: 0 };
+    d[2] = DescSpec { addr: status_pa, len: in_header_len, flags: VRING_DESC_F_WRITE, next: 0 };
     (d, 3)
 }
 
@@ -246,38 +268,6 @@ pub fn sector_plan(
     let base = start_block.checked_mul(per)?;
     let total = (len_blocks as u64).checked_mul(per)?;
     Some((base, total))
-}
-
-/// Per-chunk plan for the engine's multi-sector loop. Given a sector
-/// run `(base_sector, total_sectors)` (from `sector_plan`) and a step
-/// index `chunk_idx` (0-based), return the next chunk as
-/// `(chunk_base_sector, chunk_sectors, byte_offset)`:
-///   * `chunk_base_sector` = base + chunk_idx*max — virtio sector the
-///     chunk header addresses,
-///   * `chunk_sectors` = min(max, remaining) — sectors this chunk moves,
-///     so the data descriptor length is `chunk_sectors*512`,
-///   * `byte_offset` = chunk_idx*max*512 — offset into the request
-///     buffer where this chunk's bytes start.
-/// `None` once the run is exhausted (`chunk_idx*max ≥ total_sectors`),
-/// terminating the loop. `max` is `BOUNCE_DATA_SECTORS` in the engine;
-/// passed in so the math is testable with small windows. `max == 0`
-/// guards to `None`.
-/// # C: O(1)
-pub fn chunk_plan(
-    base_sector: u64,
-    total_sectors: u64,
-    chunk_idx: u64,
-    max: u64,
-) -> Option<(u64, u64, usize)> {
-    if max == 0 { return None; }
-    let done = chunk_idx.checked_mul(max)?;
-    if done >= total_sectors { return None; }
-    let remaining = total_sectors - done;
-    let chunk_sectors = core::cmp::min(max, remaining);
-    let chunk_base = base_sector.checked_add(done)?;
-    let byte_offset =
-        done.checked_mul(VIRTIO_BLK_SECTOR_BYTES as u64)? as usize;
-    Some((chunk_base, chunk_sectors, byte_offset))
 }
 
 /// Linux virtio-blk disk name for a 0-based registration order index:

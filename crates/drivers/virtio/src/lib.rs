@@ -81,6 +81,7 @@ pub use blk::{
     BLK_SERIAL_LEN, validate_blk_size, capacity_blocks, trim_serial, vd_name,
     sector_plan,
 };
+pub use blk::zoned::VIRTIO_BLK_F_ZONED;
 
 /// Virtio device IDs per spec §5.1.
 pub const VIRTIO_DEV_NET:     u16 = 1;
