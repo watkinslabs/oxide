@@ -87,9 +87,11 @@ fn the_escaped_first_byte_decodes_back_to_its_real_value() {
     name[0] = 0x05;
     let r = short_record(&name, 0, 2, 0);
     let Some(Entry::Short(e)) = parse(&r) else { panic!() };
-    // The name is code-page bytes mapped one-to-one, so the first CHARACTER
-    // is the escaped byte's value — not its UTF-8 encoding's first byte.
-    assert_eq!(short_name(&e).chars().next(), Some(char::from(DELETED_FLAG)));
+    // The escape restores the BYTE; the mount's code page then says what that
+    // byte means, which on the default page is a small sigma — not the
+    // character of the same value, and not a UTF-8 decode of it.
+    assert_eq!(short_name(&e).chars().next(), Some('\u{3c3}'),
+               "the byte {DELETED_FLAG:#04x} under the default code page");
     assert!(short_name(&e).ends_with("ILE.TXT"), "and the rest of the name survives");
 }
 
@@ -265,3 +267,5 @@ fn a_short_record_is_refused() {
     assert_eq!(parse(&[]), None);
     assert_eq!(parse(&vec![0u8; ENTRY_BYTES - 1]), None);
 }
+
+#[path = "tests/record.rs"] mod record;

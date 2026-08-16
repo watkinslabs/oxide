@@ -146,42 +146,40 @@ pub fn parse(record: &[u8]) -> Option<Entry> {
     }))
 }
 
-/// The 8.3 name a short entry carries, as text.
+/// The 8.3 name a short entry carries, under this mount's code page and
+/// display rule.
 ///
-/// The bytes are NOT UTF-8. They are a code page, so each is mapped as a
-/// single character rather than decoded — decoding would fail outright on the
-/// first byte above 0x7F and lose the whole name, which is exactly what a
-/// name beginning with the escaped deleted-marker byte produces.
+/// The bytes are NOT UTF-8 and not characters either. They are a single-byte
+/// code page, and which one the mount says (`codepage=`) decides what a name
+/// holding a byte above 0x7F actually reads as. Decoding them as UTF-8
+/// instead fails outright on the first such byte and loses the whole name.
 ///
-/// That first byte's `0x05` escape stands for a real `0xE5`, which would
+/// The first byte's `0x05` escape stands for a real `0xE5`, which would
 /// otherwise read as the deleted marker. Padding spaces are dropped, and the
 /// extension is joined with a dot only when there is one.
+/// # C: O(SHORT_NAME_LEN)
+pub fn short_name_with(entry: &ShortEntry, lcase: u8, cp: &crate::name::CodePage, opts: u16)
+    -> String {
+    crate::name::short::decode(&entry.raw_name, lcase, cp, opts)
+}
+
+/// The 8.3 name under the defaults a mount that named neither option gets.
 ///
-/// Deviation: the reference maps these bytes through the mount's configured
-/// code page. Without one, each byte maps to the character of the same value,
-/// which is correct for ASCII and for the Latin-1 range and wrong for a name
-/// written under a different code page. Recorded in the issue ledger.
-/// # C: O(1)
+/// The case bits are not reachable from a [`ShortEntry`], which does not
+/// carry them; a caller holding the whole record passes them to
+/// [`short_name_with`] instead, and gets a mixed-case name back where this
+/// gets an uppercase one.
+/// # C: O(SHORT_NAME_LEN)
 pub fn short_name(entry: &ShortEntry) -> String {
-    let mut raw = entry.raw_name;
-    if raw[0] == 0x05 { raw[0] = DELETED_FLAG; }
-    let field = |bytes: &[u8]| -> String {
-        let end = bytes.iter().rposition(|b| *b != b' ').map_or(0, |i| i + 1);
-        bytes[..end].iter().map(|b| char::from(*b)).collect()
-    };
-    let base = field(&raw[..8]);
-    let ext = field(&raw[8..11]);
-    let mut out = base;
-    if !ext.is_empty() { out.push('.'); out.push_str(&ext); }
-    out
+    short_name_with(entry, 0, &crate::name::CP437, crate::name::SFN_DEFAULT)
 }
 
 /// Encode a short entry back into its 32-byte record.
 ///
-/// Only the fields this filesystem owns are written: the name, attribute,
-/// cluster halves and size. Everything else in the record — the creation and
-/// access timestamps, the reserved byte — is left as it was, because it
-/// belongs to whoever wrote it and this filesystem has no better value for it.
+/// Only the four fields a [`ShortEntry`] carries are written; the case bits
+/// and all three timestamps come out ZERO. That is destructive on an entry
+/// that already exists, so an update path uses [`record::Record::encode`],
+/// which carries every field of the record it parsed.
 /// # C: O(1)
 pub fn encode_short(entry: &ShortEntry) -> [u8; ENTRY_BYTES] {
     let mut r = [0u8; ENTRY_BYTES];
@@ -270,6 +268,13 @@ fn decode(chars: &[u16]) -> Option<String> {
         .map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER))
         .collect())
 }
+
+/// Module manifest:
+/// - `record`: the whole 32-byte short record, timestamps and case bits
+///   included, for the paths that must not zero what they did not read.
+pub mod record;
+
+pub use record::{Record, RecordTimes};
 
 #[cfg(test)]
 #[path = "dirent/tests.rs"]
