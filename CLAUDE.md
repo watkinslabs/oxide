@@ -6,6 +6,43 @@ Linux-class kernel + glibc-ABI userspace, in Rust. Kernel targets `x86_64-unknow
 
 Pre-code. 46 specs in `docs/`, all DRAFT. Spec-lint tool (`tools/spec-lint/`) and Phase 0 build infra are next.
 
+## NEVER BUILD A WORKAROUND (HARD RULE)
+
+**Diagnose. Read the reference. Never work from memory. Never route around a
+defect you have not explained.**
+
+A workaround is any change that makes a symptom stop without naming its cause:
+disabling the subsystem that fails, reverting a commit you have not read,
+widening a timeout, adding a retry, skipping a gate, pinning a boot parameter
+off. Every one of them converts a bug you could have fixed into a bug nobody
+can see, and it lies to the next person about the state of the tree.
+
+Learned the expensive way: `main` stopped booting mid-session. The response was
+to guess that a SELinux boot parameter caused it, revert that commit without
+reading it, watch the boot still fail, then write `selinux=0` onto the boot line
+to make it go away. Two workarounds, zero minutes spent in the reference.
+
+The actual bug, found by opening `security/selinux/status.c` once: the status
+page's `sequence` word is a **seqlock**, incremented twice per update so it is
+even whenever the page is readable, and the file's own comment states the
+reader contract. We published the policy sequence number there, so one policy
+load left it permanently odd, and `libselinux` spun `sched_yield` forever
+waiting for it to go even — 5.7 million calls a second in PID 1. A three-line
+fix with a positive control, reachable in one read, replaced by a disable that
+would have shipped a dead subsystem and an unexplained boot.
+
+- **The reference is the first move, not the last.** Before any hypothesis
+  about externally-defined behaviour, read the implementation. `../reference`
+  and `../linux-master` are right there and cost seconds.
+- **Memory is not evidence.** Neither is a ledger row, a hand-off note, a
+  comment, or what a subsystem's name suggests it does. Read the code.
+- **If you cannot explain the mechanism, you have not fixed it.** Say so, record
+  what you measured, and hand it on — an open row with a precise diagnosis is a
+  real deliverable. A green tree with a hidden disable is not.
+- **A revert is legitimate only when it is the diagnosis** — you have read the
+  change, you know why it breaks, and reverting is the correct repair. A revert
+  fired at a symptom to see what happens is a workaround wearing a suit.
+
 ## The framing question (HARD RULE — ask it first, every time)
 
 **"Is this how Linux does it?"** Every feature, every fix, every plan starts there —
