@@ -1,205 +1,127 @@
-# Handoff — 2026-08-15
+# Handoff — 2026-08-16
 
-The one handoff document. `HANDOVER.md` and `state.md` are removed; their
-content is here, whole, so nothing has to be merged out of two files.
+`main` = `40bf29711`. 22 PRs merged this session (#5471 – #5492).
 
-`main` = `0a0f89eca`. Working tree clean, no worktrees or branches left open,
-no stray QEMU processes. 17 PRs merged this session: #5452 – #5468.
-
----
-
-## 1. The goal is not met
-
-The goal is a machine a person can **log in to, use a desktop on, and run
-normal programs on**.
-
-**No boot has reached a login prompt.** Not this session, not before it.
-
-What changed is that the two deadlocks that were killing every boot are fixed,
-so the boot now runs far enough to expose the next layer of problems — and two
-missing filesystems landed.
+The whole session ran one directive: complete `scratch/system-compat.md` in
+file order, the Linux way, `../reference` as the authority, no deferrals.
 
 ---
 
-## 2. Where the boot actually is
+## 1. The goal moved
 
-Best observed x86 run: `basic.target`, dbus-broker, systemd-logind, rtkit and
-NetworkManager all up at ~5 s, still running at 129 s. Before this session the
-same image died at 14 s.
+**A boot now reaches a login prompt on both arches.** It never had before.
 
-Three things stand between that and a login prompt, in the order they bite.
+- x86_64: `oxide login:` at 7.3 s, holds — 0 restarts over the following 23 s.
+- aarch64: 3 of 4 boots, first time on that arch.
 
-### 2.1 `serial-getty@ttyS0` restart-loops — the nearest blocker
+Neither cause was what its row said, and that is the session's pattern.
 
-It starts, then exits **successfully** after exactly 5.000 s, 23 times in one
-129 s boot at a metronomic 5.4 s period. Exit status *success* and an interval
-that exact together say a timeout is expiring, not an error path being taken.
-
-Nobody has looked at what agetty is actually doing. This is deterministic and
-reproducible, which none of the others are.
-
-### 2.2 An intermittent silent wedge at ~3.3–3.6 s
-
-Roughly half of boots. The serial log stops mid-service-startup, nothing more
-is printed for the rest of the run, QEMU sits near zero CPU (parked, not
-spinning), and a typed serial sysrq gets no answer. **No watchdog fires at
-all**, which is worse than a wedge that spins — the soft-lockup and no-progress
-watchdogs both fired on the spinning variant.
-
-Measured over 6 boots of one image: silent at 3.58 / 3.29 / 3.5 s; progressed
-to 61 / 128 / 149 s.
-
-### 2.3 A `scheduling while atomic` storm
-
-From `sched/src/live/wait_event.rs:143`, `preempt_count=0x201` (one
-`local_bh_disable` plus one preempt level), `in_interrupt=1`, `held=[]`.
-
-That empty held-list was the blindness fixed in #5459 — `lock_bh` was the one
-acquisition that never joined the held-lock trace. **The fix landed after this
-last fired**, so what the trace prints on it is not yet observed.
-
-### What is NOT established
-
-2.2 and 2.3 may be the same fault seen from two sides. Nobody has shown that
-either way. Do not assume it.
-
----
-
-## 3. Next steps, in priority order
-
-**1. The getty restart loop.** Start here: it is the only deterministic one and
-the last thing before a login.
-
-```
-OXIDE_SERIAL_SHELL=1 tools/boot-smoke-fs.sh x86
-```
-
-That gives a root shell in the guest over serial (the harness repaired in
-#5465 — see §5). From it: `systemctl status serial-getty@ttyS0`, that unit's
-journal, and the tty's state. **Read what agetty does; do not infer it from the
-5-second interval.**
-
-**2. Confirm `vfat` reaches the guest's `/proc/filesystems`.** #5464 merged
-saying explicitly that this was never observed — only that registering it broke
-nothing. One probe through the same harness answers it.
-
-**3. FAT create / delete / rename.** Writing to a file that exists works;
-making one does not, so a volume's set of names is still whatever another
-system wrote. That is the gap between a readable medium and a usable one, and
-every layer beneath it is done and tested.
-
-**4. The Tier-1 desktop rows, none of which exist at all.** Suspend/resume
-(`crates/kernel/power/` is poweroff, reset, CAD and kexec only — no S3, no
-s2idle, no freeze), `power_supply`, backlight, HD audio.
-`scratch/system-compat.md` carries them with evidence.
-
----
-
-## 4. What merged, and why it mattered
-
-### Two boot deadlocks, root-caused
-
-| Fault | Found by | Result |
+| Blocker | The row said | It actually was |
 |---|---|---|
-| The reclaim LRU lock was taken plainly on the page-free path, which also runs in interrupt context — a one-CPU self-deadlock (#5452) | watchdog `kernel_pc` → disassembly → `addr2line -i` | Boot went from dying at 14 s to reaching dbus-broker, NetworkManager, resolved and udevd at 61 s |
-| `replace_mm` released the departing address space while holding `mm_pin_lock`, so **every `execve` slept under a spinlock** (#5454) | the held-lock trace added in #5452, which named `task/signals.rs:478` in one line | **29,889 → 0** atomic-schedule reports; `basic.target`, logind and rtkit at 5.3 s |
+| getty restart-loops every 5.000 s | a timeout in agetty | **agetty never ran.** The pipe computed one readiness mask per *inode* with the two ends' conditions crossed, so a read end could never report hangup and every systemd `Type=idle` unit burned its full 5 s |
+| aarch64 never reaches login | a kernel stack overflow | **No signal could reach a poll sleeper.** The whole poll family slept `Uninterruptible`, so `signal_pending_state` refused even SIGKILL. Only aarch64 hit it because glibc compiles `pause()` into `ppoll(NULL,0,NULL,NULL)` there |
+| `scheduling while atomic` storm | unknown, held-lock list empty | a bdev mapping copy to a user page held a rank-40 spinlock across a fault. **34,409 reports → 0** |
 
-Two diagnostics made those findable and are permanent: per-frame held-lock
-acquisition sites captured through `#[track_caller]` (#5452), and `lock_bh`
-sections joining that trace (#5459).
+---
 
-Worth not rebuilding: walking the frame-pointer chain from inside
-`preempt_count_add` faulted the guest twice, because RBP is not a frame base in
-entry paths.
+## 2. Tier state
 
-### Missing Linux features
+**Tier 0** — gate 1 met both arches. Gate 3 closed. Gate 2 (`every boot reaches
+userspace`) still `BLOCKED`, but no longer opaque: two of its recorded facts
+were wrong (it is at zram setup ~43 s, not 3.3–3.6 s) and it is two distinct
+failures — a livelock that answers SysRq, and a hard wedge that does not.
 
-- **Loop devices** (#5457, #5458) — `NOT FOUND` → `HAVE`. `/dev/loop0..7`,
-  `/dev/loop-control`, the `LOOP_*` ioctls, boot-time publication.
-  `modprobe@loop.service` now finishes instead of failing.
-- **FAT/VFAT** (#5460, #5461, #5462, #5463, #5464, #5466, #5467) —
-  `NOT FOUND` → `HAVE`, read **and** write. `mount -t vfat` works; files read,
-  write, grow and truncate; every copy of the table is updated; the dirty flag
-  is maintained. 117 hosted tests across seven layers, each written against
-  `fs/fat/` in the reference tree first.
+**Tier 1** — complete. HD-Audio (real codec enumerating under QEMU), suspend/
+resume (s2idle + ACPI S3 + PSCI, 20→203 tests, 25 controls, 6 defects found on
+the way), power_supply, backlight, thermal/cpuidle/cpufreq, DRM cursor errnos.
 
-### Record corrections
+**Tier 2** — OverlayFS, FAT (full read/write + create/delete/rename), exFAT +
+NTFS, V4L2 (real frames captured both arches), SELinux (parses the
+distribution's own 3.7 MB policy), futex2, Bluetooth. Wi-Fi is the one
+`NOT FOUND` left and is in flight.
 
-- `scratch/system-compat.md` re-ranked around "can a person use this machine"
-  (#5455). Its stale SMP P0 was removed — APs have not parked in `cli;hlt`
-  since that was replaced by the idle→schedule loop; what is true is duller,
-  `SMP ?= 1` in the Makefile. Seven systems a user meets in the first five
-  minutes were added as rows. A claim that `simpledrm` was missing was
-  **retracted** (#5456).
+**Tier 3 and Platform — untouched.** 14 Tier-3 rows, 5 platform rows.
 
-### One regression, mine
+Also cleared four red `ext4` test binaries that had been making
+`cargo test --workspace` red for every lane. All four were the same fixture
+hazard — raw device pokes bypassing the metadata cache — not kernel defects.
 
-#5448 moved the debug shell to a VT so `serial-getty` could own the serial
-line. That broke all three in-guest probe harnesses, which drive that shell
-over the serial FIFO — a login prompt was swallowing their commands as
-usernames. Fixed in #5465 with an explicit opt-in. Measured both ways:
+---
+
+## 3. In flight
+
+Three lanes were interrupted by an API session limit, resumed, and are running.
+Their work is committed on their own branches; nothing is at risk.
+
+| Branch | State |
+|---|---|
+| `B2245-boot-wedge-gate2` | **Root-caused gate 2.** Idle parked through bare `hlt`/`wfi` without admitting interrupts, so a core could halt with the mask closed and only an NMI would reach it — and the stall scan excused idle CPUs, which is why nothing reported it. Reference is `asm volatile("sti; hlt")`, verified. Fix committed, unpushed; a second wedge is exposed underneath it |
+| `F1182-wifi-mac80211-cfg80211` | mid-implementation, WIP commit `71578cb9b` |
+| `F1183-conntrack-nat-vlan-bonding` | partly pushed, WIP on top |
+| `F1184-9p-and-virtiofs` | **not resumed.** WIP commit `8384f80b3`. Found a real bug: the dirent iterator never terminates after an error |
+
+---
+
+## 4. Do not re-derive these
+
+- **`git ls-remote` can serve a stale replica.** It made landed pushes look
+  like silent no-ops for most of a session and caused retry storms that then
+  failed their own `--force-with-lease` check. Verify with
+  `git fetch && git rev-parse origin/<branch>`. The pre-push hook's `exit 141`
+  (SIGPIPE) is real but does **not** mean the push failed.
+- **Never resolve a code conflict by taking both sides and dropping identical
+  lines.** That deleted `let root = fs.root_inode();` from the exFAT mount
+  constructor because the overlay constructor beside it has the same statement.
+  The pre-push feature gate caught it. Deduping is correct for a ledger row
+  list and wrong for code — and it collapsed a section *header* in
+  `fixed-issues.md` the same way, which only the multiset count caught.
+- **Doc numbers and `docs/52` rule numbers collide constantly.** Four lanes
+  claimed doc `62` in one day. Taken: 60 udev, 61 HD-Audio, 62 removable-media
+  filesystems, 63 SELinux, 64 V4L2, 65 Bluetooth. `docs/52` §5 runs 1–19 and §7
+  runs 1–14, both contiguous as of `40bf29711`. **Append, never renumber**; if
+  you must, grep `52§N rule M` and fix the references — two silently pointed at
+  the wrong rule today.
+- **The open-work summary at the top of `known_issues.md` is hand-maintained
+  and was excluding three rows** whose status carries a suffix (`OPEN B2059`,
+  `OPEN (PARKED …)`), so two CRITICAL defects were missing from its critical
+  column. Recount from the rows when you touch it.
+- **`usb-core` is a 97-line packet builder with no class-driver plugin point.**
+  Both the V4L2 lane (UVC needs isochronous transfers, which `drv-xhci` lacks
+  entirely) and the Bluetooth lane (btusb) hit this independently. It blocks
+  the real-hardware path for both and is the highest-leverage unowned item.
+
+---
+
+## 5. Rows a recorded claim got wrong
+
+Roughly a third of what was checked. Worth reading before implementing any row.
+
+- **futex2 `T2-i` demanded work the reference refuses to do.** Upstream's
+  `futex_flags_valid` carries `/* Only 32bit futexes are implemented */` and
+  rejects every other size class. Implementing `U8`/`U16`/`U64` would have been
+  an oxide-invented divergence. The NUMA/MPOL half was real and is done.
+- **`T1-a2` was looking at the wrong axis.** Having no cursor plane matches the
+  reference; the divergence was refusing with one `EINVAL` where the reference
+  returns `ENOENT`, `ENXIO` and `EFAULT`.
+- **The FAT allocation row's premise was wrong** — the reference rolls back its
+  partial chain too. The real divergences were the side effects.
+- **`T2-a`'s VLAN clause** — the 802.1Q frame parser already exists; only the
+  VLAN *interface* is missing.
+- Row 106 claimed `vfat_ctor` forces `SB_RDONLY`; F1168 had already removed it.
+
+---
+
+## 6. First task next session
+
+Land what is in flight, in this order:
 
 ```
-OXIDE_SERIAL_SHELL=0  boot-smoke-fs: FAIL — timeout waiting for proc_uptime after 3 sends
-OXIDE_SERIAL_SHELL=1  boot-smoke-fs: PASS — x86 /proc /dev /sys sweep (63 steps) in 212s
+cd /home/nd/oxide/kernel-B2245 && git log --oneline -3
 ```
 
----
+`B2245` is the valuable one — the idle-park fix is a genuine kernel bug with a
+verified reference contract, and it is still unpushed. Get it measured, pushed
+and merged, then `F1183`, then `F1182`, then resume `F1184`.
 
-## 5. Do not re-derive these
-
-- **`simpledrm` exists** — `crates/drivers/drv-simplefb/src/driver.rs` registers
-  a DRM card named `simpledrm` with a full scanout backend, and `kmain` creates
-  its platform device every boot, so `/dev/dri/card0` exists on any machine with
-  a boot framebuffer. A grep of that crate's `lib.rs` and `format.rs` finds only
-  fbdev and is misleading. This cost a whole lane before it was retracted.
-- **The aarch64 target is QEMU `virt` and nothing else.** The GIC driver is
-  GICv3-only with its distributor and redistributor addresses compiled in
-  (`0x0800_0000` / `0x080A_0000` in `smoke/src/device_map/arm.rs`), and exactly
-  three properties are read from the device tree. **A Raspberry Pi needs four
-  separate pieces of work**: a GICv2/GIC-400 driver (every Pi 4/5 uses GIC-400),
-  FDT-driven device discovery replacing the fixed map, SDHCI/MMC, and BCM GENET
-  or RP1 Ethernet. Not polish. `scratch/system-compat.md` has the platform
-  section.
-- **The spec-lint ratchet is red on untouched `main`** — 55 regressions across
-  30+ crates, none from recent lanes. Every push this session used
-  `SKIP_LINT_RATCHET=1`. That is a filed `INFRA` row, not a lane failure.
-- **`tools/boot-smoke*.sh` need `OXIDE_SERIAL_SHELL=1`** to reach a guest shell.
-  They set it themselves now; a new harness must too.
-
----
-
-## 6. Working discipline that held
-
-- **Every PR carries a positive control**: the defect was reintroduced, the
-  tests confirmed RED, then restored GREEN, and the PR body names which and how
-  many. Without that a green test proves nothing.
-- **Read the reference before writing**, not after. Every FAT layer was built
-  against `../oxide/reference/fs/fat/` — the width boundary is `0xFF4` and not
-  `0xFFF`, the long-name checksum mismatch falls back to the short name rather
-  than failing, the allocator wraps from a hint. The tests encode those
-  contracts so they are re-checkable without citing the source.
-- **Deviations are rows, not comments.** Four for FAT alone: transactional
-  allocation, no create/delete/rename, no code-page translation for 8.3 names,
-  `msdos` registered as an alias.
-- **One boot per lane, at the end**, after the hosted gate is green. One
-  documented exception: the boot-vs-boot A/B that proved the harness
-  regression, where nothing cheaper could answer it.
-- **One item, one lane, one worktree**, removed on merge.
-
----
-
-## 7. Open rows worth knowing about
-
-`scratch/known_issues.md` is the ledger; `scratch/system-compat.md` is the
-compatibility surface. High-severity rows that are not the boot blockers above:
-
-- A sleeping lock (the PMM page lock) serializes rmap and mapcount
-  transitions, so unmap / COW / teardown sleeps under spinlocks. The reference
-  takes **no** folio lock on any of those paths.
-- Address-space teardown is attached to a refcount drop, so it inherits
-  whatever lock context the last drop happens in. The reference splits `mmput`
-  (sleeps, process context) from `mmdrop` (atomic-safe), with `mmput_async` for
-  callers that cannot sleep.
-- `mremap` relocates a mapping by **copying its bytes** where the reference
-  relocates its page-table entries, and no lock is held across the operation.
+After that the file's remaining work is Tier 3 (14 rows) and Platform (5 rows),
+in file order.
