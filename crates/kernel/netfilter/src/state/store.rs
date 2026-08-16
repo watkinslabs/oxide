@@ -1,3 +1,4 @@
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -193,11 +194,19 @@ pub fn chains_snapshot() -> Vec<NftChain> { chains_snapshot_in(0) }
 
 /// # C: O(N)
 pub fn rule_insert_in(namespace: u64, rule: NftRule) -> Result<u64, nft_expr::ParseError> {
-    let exprs: Vec<Expr> = nft_expr::parse_exprs_checked(&rule.raw_expr)?;
+    let exprs: Vec<Expr> = nft_expr::parse_exprs_in(&rule.raw_expr, rule.table_family)?;
     let handle = rule.handle;
     let mut control = CONTROL.lock();
     {
         let state = control.namespace(namespace);
+        // A rule on a base chain runs at exactly one hook, so an expression
+        // that cannot act from that hook would silently never fire.
+        if let Some(hook) = state.and_then(|state| state.chains.iter().find(|candidate| {
+            candidate.table_family == rule.table_family
+                && candidate.table_name == rule.table_name && candidate.name == rule.chain_name
+        })).and_then(|chain| chain.hook) {
+            nft_expr::validate_exprs(&exprs, rule.table_family, hook as u8)?;
+        }
         for expr in &exprs {
             let Expr::Lookup { sreg, set, .. } = expr else { continue };
             let Some(bound) = state.and_then(|state| state.sets.iter().find(|candidate| {
@@ -209,8 +218,9 @@ pub fn rule_insert_in(namespace: u64, rule: NftRule) -> Result<u64, nft_expr::Pa
             }
         }
     }
+    let states = Arc::new(nft_expr::ExprStates::for_exprs(&exprs));
     let state = control.namespace_mut(namespace);
-    state.rules.push(StoredRule { wire: rule, exprs });
+    state.rules.push(StoredRule { wire: rule, exprs, states });
     publish(&mut control, namespace);
     Ok(handle)
 }

@@ -1,4 +1,5 @@
 use crate::{NFT_CHAIN_POLICY_DROP, active_generation, nft_expr};
+use crate::nft_expr::{EvalCtx, uapi};
 
 /// Netfilter verdict.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -8,6 +9,7 @@ pub enum Verdict {
     Stolen,
     Queue(u16),
     Repeat,
+    Stop,
 }
 
 /// A hook verdict and the packet mark left by its ruleset.
@@ -21,12 +23,26 @@ impl Verdict {
     /// # C: O(1)
     pub fn as_u32(self) -> u32 {
         match self {
-            Verdict::Drop => 0,
-            Verdict::Accept => 1,
-            Verdict::Stolen => 2,
-            Verdict::Queue(q) => 3 | ((q as u32) << 16),
-            Verdict::Repeat => 4,
+            Verdict::Drop => uapi::NF_DROP as u32,
+            Verdict::Accept => uapi::NF_ACCEPT as u32,
+            Verdict::Stolen => uapi::NF_STOLEN as u32,
+            Verdict::Queue(q) => uapi::nf_queue_nr(q) as u32,
+            Verdict::Repeat => uapi::NF_REPEAT as u32,
+            Verdict::Stop => uapi::NF_STOP as u32,
         }
+    }
+
+    /// Verdict a rule's absolute code names. # C: O(1)
+    pub fn from_code(code: i32) -> Option<Self> {
+        Some(match code & uapi::NF_VERDICT_MASK {
+            uapi::NF_DROP => Verdict::Drop,
+            uapi::NF_ACCEPT => Verdict::Accept,
+            uapi::NF_STOLEN => Verdict::Stolen,
+            uapi::NF_QUEUE => Verdict::Queue(uapi::nf_verdict_qnum(code)),
+            uapi::NF_REPEAT => Verdict::Repeat,
+            uapi::NF_STOP => Verdict::Stop,
+            _ => return None,
+        })
     }
 }
 
@@ -60,29 +76,23 @@ pub fn eval_in_with_mark(namespace: u64, hook_id: u32, pkt: &[u8], family: u8,
             let lookup = |set_id: Option<usize>, _set_name: &str, register: &[u8]| {
                 state.set_contains(set_id.expect("compiled lookup has a set id"), register)
             };
-            let mut packets = 0u64;
-            let mut bytes = 0u64;
-            let verdict = nft_expr::run_rule_full_with_mark(
-                &rule.exprs,
-                pkt,
-                Some(&lookup),
-                family,
-                &mut mark,
-                &mut packets,
-                &mut bytes,
-            );
-            if packets != 0 { rule.counter.bump(packets, bytes); }
-            match verdict {
-                Some(nft_expr::NF_DROP) => { chain_verdict = Some(Verdict::Drop); break; }
-                Some(nft_expr::NF_ACCEPT) => { chain_verdict = Some(Verdict::Accept); break; }
-                _ => {}
+            let mut ctx = EvalCtx::new(pkt, family, &rule.states);
+            ctx.hook = hook_id as u8;
+            ctx.mark = mark;
+            ctx.set_lookup = Some(&lookup);
+            let verdict = nft_expr::run_rule_ctx(&rule.exprs, &mut ctx);
+            mark = ctx.mark;
+            if ctx.packets != 0 { rule.counter.bump(ctx.packets, ctx.bytes); }
+            if let Some(decided) = Verdict::from_code(verdict.code) {
+                chain_verdict = Some(decided);
+                break;
             }
         }
         let verdict = chain_verdict.unwrap_or_else(|| match chain.policy {
             NFT_CHAIN_POLICY_DROP => Verdict::Drop,
             _ => Verdict::Accept,
         });
-        if verdict == Verdict::Drop { return EvalResult { verdict, mark }; }
+        if verdict != Verdict::Accept { return EvalResult { verdict, mark }; }
     }
     EvalResult { verdict: Verdict::Accept, mark }
 }
