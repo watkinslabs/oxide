@@ -60,6 +60,7 @@ fn register_pci_model_drivers() {
     #[cfg(target_arch = "x86_64")]
     drv::register_driver(&drv_bochs::BOCHS_DRIVER);
     drv::register_driver(&drv_xhci::XHCI_DRIVER);
+    drv::register_driver(&drv_hda::HDA_DRIVER);
     virtio_drv::register_model_drivers();
 }
 

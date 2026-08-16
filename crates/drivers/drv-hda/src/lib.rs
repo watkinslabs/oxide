@@ -38,6 +38,18 @@ pub mod ctlname;
 pub mod stream_fmt;
 pub mod bdl;
 pub mod ring;
+pub mod elemkey;
+
+#[cfg(target_os = "oxide-kernel")] mod platform;
+#[cfg(target_os = "oxide-kernel")] pub mod regs;
+#[cfg(target_os = "oxide-kernel")] pub mod transport;
+#[cfg(target_os = "oxide-kernel")] pub mod stream;
+#[cfg(target_os = "oxide-kernel")] pub mod controller;
+#[cfg(target_os = "oxide-kernel")] pub mod card;
+#[cfg(target_os = "oxide-kernel")] mod probe;
+
+#[cfg(target_os = "oxide-kernel")]
+pub use probe::{HdaDriver, HDA_DRIVER};
 
 #[cfg(test)]
 #[path = "tests/fixture.rs"]
