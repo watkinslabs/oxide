@@ -1,7 +1,7 @@
-//! The `bond` entry in the rtnetlink link-kind table, and the `bond` slave
-//! kind that enslaves an interface into one. Without these the option parser,
-//! the modes and the monitors have no caller: `ip link add bond0 type bond`
-//! could not reach them.
+//! The `bond` entry in the rtnetlink link-kind table, plus the enslave and
+//! release entry points a master-attribute change drives. Without these the
+//! option table, the modes and the monitors have no caller: `ip link add bond0
+//! type bond` could not reach them.
 
 extern crate alloc;
 use alloc::sync::Arc;
@@ -47,6 +47,13 @@ fn resolve(ifindex: u32) -> Option<(NetIfaceId, Arc<dyn net::netdev::NetDev>)> {
     stack.ifaces.lookup_ifindex_in_ns(ifindex, ns)
 }
 
+/// Resolve a namespace id to the reference the registry publishes into.
+/// # C: O(N_namespaces)
+fn owner_of(ns: u64) -> Option<network_namespace::NetworkNamespaceRef> {
+    if ns == 0 { Some(network_namespace::initial()) }
+    else { network_namespace::lookup_u64(ns) }
+}
+
 /// The `bond` link kind.
 pub struct BondLinkKind;
 
@@ -77,7 +84,13 @@ impl LinkKindOps for BondLinkKind {
         }
         let stack = net::global_stack();
         let ns = net::netdev::current_net_ns();
-        let id = stack.ifaces.register_in_ns(bond.clone(), ns);
+        let owner = owner_of(ns).ok_or(Errno::Enodev)?;
+        if stack.ifaces.lookup_name_in_ns(name, ns).is_some() { return Err(Errno::Eexist); }
+        // Prepared hidden, indexed, then published: the bond is only findable
+        // as a bond once it is a live interface.
+        let reg = stack.prepare_iface(bond.clone(), &owner).ok_or(Errno::Enodev)?;
+        let id = reg.id();
+        if !stack.publish_iface(reg) { return Err(Errno::Enodev); }
         insert(id, bond);
         stack.ifaces.ifindex_in_ns(id, ns).ok_or(Errno::Enodev)
     }
@@ -104,12 +117,10 @@ impl LinkKindOps for BondLinkKind {
     }
 }
 
-/// The `bond` slave kind: enslaving an interface into a master.
-pub struct BondSlaveKind;
-
-/// The registration the slave side publishes.
-pub static BOND_SLAVE_KIND_OPS: BondSlaveKind = BondSlaveKind;
-
+/// Enslaving is not a link kind: userspace names the master on an existing
+/// interface rather than creating one, so these are the two entry points the
+/// link-message dispatch calls when it sees that attribute appear or clear.
+///
 /// Enslave `ifindex` into the bond named by `master_ifindex`.
 /// # C: O(N_ifaces)
 pub fn enslave(master_ifindex: u32, ifindex: u32) -> Result<(), Errno> {
@@ -138,7 +149,6 @@ fn apply(bond: &Arc<BondMaster>, writes: &[OptionWrite]) -> Result<(), Errno> {
     Ok(())
 }
 
-/// Publish both kinds. # C: O(N_kinds)
-pub fn init() -> bool {
-    rtnl_link::register(&BOND_LINK_KIND_OPS).is_ok()
-}
+/// Publish the kind. A second call is refused by the registry rather than
+/// shadowing the first. # C: O(N_kinds)
+pub fn init() -> bool { rtnl_link::register(&BOND_LINK_KIND_OPS).is_ok() }

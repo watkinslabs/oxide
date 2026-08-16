@@ -9,6 +9,7 @@ description = "802.1Q / 802.1ad VLAN interfaces: tag encode/decode, priority map
 path = "src/lib.rs"
 
 [dependencies]
+network-namespace = { path = "../network-namespace" }
 rtnl-link = { path = "../rtnl-link" }
 sync    = { path = "../../shared/sync" }
 net     = { path = "../net" }

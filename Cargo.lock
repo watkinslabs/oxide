@@ -148,6 +148,7 @@ name = "bonding"
 version = "0.1.0"
 dependencies = [
  "net",
+ "network-namespace",
  "rtnl-link",
  "sync",
  "syscall",
@@ -1542,6 +1543,8 @@ dependencies = [
 name = "netfilter"
 version = "0.1.0"
 dependencies = [
+ "conntrack",
+ "nat",
  "net",
  "netlink",
  "sched",
@@ -2723,6 +2726,7 @@ name = "vlan"
 version = "0.1.0"
 dependencies = [
  "net",
+ "network-namespace",
  "rtnl-link",
  "sched",
  "sync",

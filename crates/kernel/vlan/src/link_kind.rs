@@ -28,6 +28,13 @@ fn resolve_dev(ifindex: u32) -> Option<(NetIfaceId, Arc<dyn NetDev>, RealDevCaps
     Some((id, dev, caps))
 }
 
+/// Resolve a namespace id to the reference the registry publishes into.
+/// # C: O(N_namespaces)
+fn owner_of(ns: u64) -> Option<network_namespace::NetworkNamespaceRef> {
+    if ns == 0 { Some(network_namespace::initial()) }
+    else { network_namespace::lookup_u64(ns) }
+}
+
 /// The `vlan` link kind.
 pub struct VlanLinkKind;
 
@@ -104,6 +111,9 @@ fn install(req: &netlink::CreateRequest, name: &str, real: Arc<dyn NetDev>)
 {
     let stack = net::global_stack();
     let ns = net::netdev::current_net_ns();
+    let owner = owner_of(ns).ok_or(Errno::Enodev)?;
+    if stack.ifaces.lookup_name_in_ns(name, ns).is_some() { return Err(Errno::Eexist); }
+
     let dev = Arc::new(VlanDev::new(String::from(name), req.vlan_id, req.proto,
                                     req.real, real, req.caps, req.mac));
     dev.set_mtu(req.mtu).map_err(|_| Errno::Einval)?;
@@ -112,9 +122,20 @@ fn install(req: &netlink::CreateRequest, name: &str, real: Arc<dyn NetDev>)
         for e in &req.ingress { m.set_ingress(e.to, e.from); }
         for e in &req.egress { m.set_egress(e.from, e.to); }
     });
-    let id = stack.ifaces.register_in_ns(dev.clone(), ns);
+
+    // Prepared, then indexed, then published. The tag index is written while
+    // the generation is still hidden, so a frame can never reach an interface
+    // whose tag has not been claimed, and a duplicate tag aborts the
+    // registration instead of leaving a half-built interface behind.
+    let reg = stack.prepare_iface(dev.clone(), &owner).ok_or(Errno::Enodev)?;
+    let id = reg.id();
     if table().insert(id, dev).is_err() {
+        stack.abort_iface(reg);
         return Err(Errno::Eexist);
+    }
+    if !stack.publish_iface(reg) {
+        table().remove(id);
+        return Err(Errno::Enodev);
     }
     stack.ifaces.ifindex_in_ns(id, ns).ok_or(Errno::Enodev)
 }

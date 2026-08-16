@@ -9,6 +9,7 @@ description = "Link aggregation master per `25`. Transmit-hash policies, per-mod
 path = "src/lib.rs"
 
 [dependencies]
+network-namespace = { path = "../network-namespace" }
 rtnl-link = { path = "../rtnl-link" }
 net     = { path = "../net" }
 sync    = { path = "../../shared/sync" }

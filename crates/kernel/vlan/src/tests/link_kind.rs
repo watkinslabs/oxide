@@ -1,7 +1,6 @@
 // The kind is actually registered and resolvable by the string userspace
 // sends. Without this the whole crate is machinery no message can reach.
 
-use rtnl_link::LinkKindOps;
 
 use crate::link_kind::init;
 use crate::uapi::VLAN_LINK_KIND;
