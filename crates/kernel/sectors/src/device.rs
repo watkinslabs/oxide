@@ -1,4 +1,4 @@
-//! Reading and writing a volume's sectors through a block device.
+//! Reading and writing a volume's sectors through a registered block device.
 //!
 //! A volume's sector and a device's block need not be the same size, in either
 //! direction, so every request is expressed in the DEVICE's unit and the bytes
@@ -11,10 +11,10 @@ use alloc::sync::Arc;
 
 use syscall::errno::Errno;
 
-use crate::volume::SectorSource;
+use crate::source::SectorSource;
 
-/// The sector size every FAT volume's first sector is at least as large as.
-const PROBE_SECTOR: u32 = 512;
+/// The sector size every volume's first sector is at least as large as.
+pub const PROBE_SECTOR: u32 = 512;
 
 /// Reads a volume's sectors through a registered block device.
 pub struct BlockSource {
@@ -40,6 +40,9 @@ impl BlockSource {
         self.sector_size = sector_size;
         self
     }
+
+    /// The unit this source addresses in. # C: O(1)
+    pub fn sector_size(&self) -> u32 { self.sector_size }
 
     /// Byte offset and device-block span one volume-sector request covers.
     /// # C: O(1)

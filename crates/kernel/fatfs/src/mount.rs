@@ -10,7 +10,6 @@
 //! module reaches the block layer and would otherwise be untestable.
 //!
 //! Module manifest:
-//! - `source`: reading and writing a volume's sectors through a block device.
 //! - `node`:   what an inode of this filesystem is, and the mode it presents.
 //! - `ops`:    the inode and file operations, which are all one vector here.
 //! - `sb`:     `statfs`, the option tail, and flushing at unmount.
@@ -27,12 +26,13 @@ use crate::opts::Options;
 use crate::time::{from_unix, FatTime};
 use crate::volume::Volume;
 
-pub mod source;
 pub mod node;
 pub mod ops;
 pub mod sb;
 
-pub use source::BlockSource;
+// The adapter over a block device is shared with every other on-disk
+// filesystem; see `sectors::device`.
+pub use sectors::BlockSource;
 pub use node::FatNode;
 
 /// Linux's magic for a FAT superblock. Both types carry it: they are one
