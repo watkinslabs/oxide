@@ -6,7 +6,9 @@
 //! - `conn`: baseband connection tracking, keyed by handle and by peer.
 //! - `event`: event dispatch and the state each event changes.
 //! - `init`: the setup sequence a controller runs before it is usable.
-//! - `dev`: controller registry, the `hci` index, per-controller state.
+//! - `dev`: per-controller state, capability words, the index rule.
+//! - `registry`: the one machine-wide set of controllers, keyed by index.
+//! - `rx`: the receive and transmit path a transport driver calls.
 //! - `transport`: the contract a transport driver implements.
 //! - `filter`: the raw-socket packet and event filter.
 //! - `mon`: monitor framing, the record `btmon` reads.
@@ -17,6 +19,8 @@ pub mod conn;
 pub mod event;
 pub mod init;
 pub mod dev;
+pub mod registry;
+pub mod rx;
 pub mod transport;
 pub mod filter;
 pub mod mon;
@@ -24,3 +28,4 @@ pub mod mon;
 pub use conn::{Conn, ConnList, PeerId};
 pub use packet::{Frame, H4Decoder};
 pub use transport::HciTransport;
+pub use registry::HciDev;

@@ -81,6 +81,7 @@ drv-ps2-keyboard  = { path = "../../drivers/drv-ps2-keyboard" }
 drv-zram          = { path = "../../drivers/drv-zram" }
 drm               = { path = "../../drivers/drm" }
 fbdev             = { path = "../../drivers/fbdev" }
+drv-vhci          = { path = "../../drivers/drv-vhci" }
 fbcon             = { path = "../../drivers/fbcon" }
 vt                = { path = "../../drivers/vt" }
 
