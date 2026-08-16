@@ -16,6 +16,8 @@ audit   = { path = "../audit" }
 selinux-runtime = { path = "../selinux-runtime" }
 block   = { path = "../block" }
 drv-loop = { path = "../../drivers/drv-loop" }
+drv-vivid = { path = "../../drivers/drv-vivid" }
+v4l2 = { path = "../v4l2" }
 boot-info = { path = "../../shared/boot-info" }
 cpu       = { path = "../cpu" }
 devfs     = { path = "../devfs" }

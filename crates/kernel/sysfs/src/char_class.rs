@@ -27,6 +27,8 @@ const INO_VIRT_SOUND: Ino = crate::ids::CHAR_VIRT_SOUND;
 const INO_CLASS_SOUND: Ino = crate::ids::CHAR_CLASS_SOUND;
 const INO_VIRT_GRAPHICS: Ino = crate::ids::CHAR_VIRT_GRAPHICS;
 const INO_CLASS_GRAPHICS: Ino = crate::ids::CHAR_CLASS_GRAPHICS;
+const INO_VIRT_V4L: Ino = crate::ids::CHAR_VIRT_V4L;
+const INO_CLASS_V4L: Ino = crate::ids::CHAR_CLASS_V4L;
 const INO_CHAR_DIR: Ino = crate::ids::CHAR_DIR;
 const INO_CHAR_ATTR: Ino = crate::ids::CHAR_ATTR;
 const INO_CHAR_LINK: Ino = crate::ids::CHAR_LINK;
@@ -86,6 +88,7 @@ fn parent_root_leaf(bus: &str) -> &'static str {
         "misc" => "virtual/misc",
         "sound" => "virtual/sound",
         "graphics" => "virtual/graphics",
+        "video4linux" => "virtual/video4linux",
         "input" => "virtual/input",
         "drm" => "virtual/drm",
         _ => "platform",
@@ -304,6 +307,14 @@ pub fn init() {
     crate::register(
         "/sys/class/graphics",
         make_sys_class_inode("graphics", INO_CLASS_GRAPHICS),
+    );
+    crate::register(
+        "/sys/devices/virtual/video4linux",
+        make_virtual_class_inode("video4linux", INO_VIRT_V4L),
+    );
+    crate::register(
+        "/sys/class/video4linux",
+        make_sys_class_inode("video4linux", INO_CLASS_V4L),
     );
 }
 

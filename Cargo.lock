@@ -728,6 +728,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "drv-vivid"
+version = "0.1.0"
+dependencies = [
+ "klog",
+ "sync",
+ "syscall",
+ "timer",
+ "v4l2",
+]
+
+[[package]]
 name = "drv-xhci"
 version = "0.1.0"
 dependencies = [
@@ -1249,6 +1260,7 @@ dependencies = [
  "drv-virtio-rng",
  "drv-virtio-snd",
  "drv-virtio-vsock",
+ "drv-vivid",
  "drv-zram",
  "efence",
  "elf",
@@ -1294,6 +1306,7 @@ dependencies = [
  "tracefs",
  "tty",
  "umh",
+ "v4l2",
  "vfs",
  "virtio",
  "vmm",
@@ -2346,6 +2359,7 @@ dependencies = [
  "tty",
  "uaccess",
  "user-namespace",
+ "v4l2",
  "vfs",
  "virtio",
  "vmm",
@@ -2614,6 +2628,21 @@ dependencies = [
 [[package]]
 name = "utf8"
 version = "0.1.0"
+
+[[package]]
+name = "v4l2"
+version = "0.1.0"
+dependencies = [
+ "drv",
+ "klog",
+ "pmm",
+ "sched",
+ "sync",
+ "syscall",
+ "timekeeper",
+ "uaccess",
+ "vfs",
+]
 
 [[package]]
 name = "valuable"

@@ -129,6 +129,22 @@ must use grouped paths from day one.
     widget graph into a routing plan, stream DMA, and the mixer and jack
     controls built from that plan (`61`). It is the only routing policy for an
     HD-Audio codec; there is no second table deciding what a jack is for.
+13. `crates/kernel/v4l2` owns the user-visible V4L2 surface for every video
+    device: node publication and minor allocation, the file-handle model, the
+    `VIDIOC_*` dispatch and its error ordering, the buffer queue and its state
+    machine, the control registry and its query walk, the per-handle event
+    queues, priority arbitration, and the pixel-format and image-size
+    arithmetic every capture driver shares (`62`). It owns no transport. A
+    driver supplies its identity, its capability mask in V4L2 terms, its
+    format, frame-size and interval tables, its inputs, its controls and its
+    streaming callbacks through `v4l2::ops::VideoOps`; a transport-private
+    encoding stays in the driver crate that owns that transport. `sysfs`
+    projects the `video4linux` class through the same char-class mechanism
+    `sound` and `graphics` use and keeps no device list of its own.
+14. `crates/drivers/drv-vivid` owns the virtual capture device: the
+    test-pattern generator, the reported format and control tables, and the
+    frame pacing (`62§10`). It is a `v4l2` driver like any other and has no
+    private path into the device core.
 
 13. Device-class ownership: `crates/kernel/power-supply` owns the power-supply
     class (registered supplies, the property/unit contract, per-supply

@@ -78,6 +78,7 @@ fbdev             = { path = "../../drivers/fbdev" }
 fbcon             = { path = "../../drivers/fbcon" }
 vt                = { path = "../../drivers/vt" }
 sound             = { path = "../sound" }
+v4l2              = { path = "../v4l2" }
 drv-virtio-snd    = { path = "../../drivers/drv-virtio-snd" }
 
 [dev-dependencies]
