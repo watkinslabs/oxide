@@ -32,7 +32,8 @@ pub fn cpu_poweroff_secondary();// shut down secondary CPUs at shutdown
 - x86: `sti; hlt; cli` if interrupts pending (loop until IRQ wakes us).
 - arm: `wfi`.
 
-C-states: not used yet. Phase 35 enables simple ACPI `_CST` table reading.
+Idle-state selection is `32§14`; the scheduler's idle loop enters through it
+and halts directly only where no driver is registered.
 
 ## 5 Reset / poweroff
 
@@ -72,8 +73,7 @@ After all userspace dies (init exit triggers panic; or `reboot(_HALT)`):
 
 ## 7 Frequency scaling
 
-Now: nothing. CPU runs at firmware-set frequency.
-Later phase: simple cpufreq stub via MSR (x86) / SCMI (arm); userspace `cpufreq` daemon manages governors.
+Frequency scaling is `32§15`.
 
 ## 8 Concurrency
 
@@ -171,3 +171,138 @@ Supply names come from the firmware object name, never from a kernel counter.
   offsets; a short package is refused.
 - An absent battery answers `present` and reports `ENODEV` for every other
   property.
+
+## 14 CPU idle
+
+Which state an idle CPU is put into, and the accounting that says whether the
+choice was good. A CPU that never sleeps deeply costs power a laptop does not
+have; one that sleeps too deeply pays a wakeup cost on every request.
+
+Ownership: `crates/kernel/cpuidle` owns the state table, the governors, the
+per-CPU counters and the attribute contract. `crates/kernel/sched` enters one
+cycle per park from its idle loop. `crates/kernel/procfs` projects the tree.
+Providers register the state table; they never publish a second one (`52§5`).
+
+### 14.1 Units (frozen)
+
+| Field | Unit |
+|---|---|
+| `exit_latency_ns`, `target_residency_ns` | nanoseconds |
+| `latency`, `residency`, `time` attributes | microseconds |
+| `power` attribute | microwatts |
+
+Every decision is made on the nanosecond fields. The attributes report
+microseconds because that is what firmware, device trees and every reader
+speak; the conversion truncates.
+
+### 14.2 Invariants (frozen)
+
+1. One driver at a time. A platform provider that finds a real state ladder
+   withdraws the registered one before publishing its own; two tables would
+   leave two meanings for one state index, and every counter, attribute and
+   governor decision is keyed by that index.
+2. The state table is a ladder: target residency and exit latency both
+   non-decreasing with index, and a polling state only at index zero. A table
+   that is not is refused, not sorted.
+3. The two reasons a state is unavailable are recorded separately. A state the
+   driver declared unusable cannot be re-enabled by a write to `disable`.
+4. `above` counts a sleep shorter than the entered state's own target
+   residency, and only where a shallower state was enabled. `below` counts a
+   sleep whose length net of the entered state's exit latency would have
+   covered the next enabled deeper state's target residency.
+5. A refused entry counts against the state that was asked for, not against
+   whatever ran instead, and contributes no residency.
+6. A machine whose platform describes no ladder still gets one state: the
+   architecture halt. The accounting is the point, not the depth.
+7. The sleep-length estimate is bounded by the tick period. This kernel does
+   not suppress the tick, so a state whose residency exceeds it cannot pay for
+   itself, and a governor told otherwise would keep choosing one.
+
+### 14.3 Governors
+
+`menu` predicts a duration — the time to the next timer scaled by a
+correction factor learned per duration bucket, or a repeating interval
+detected in the recent history, whichever is shorter — and takes the deepest
+state that pays for it. `teo` predicts nothing and counts instead: per state,
+how often a sleep ran to the timer against how often something else cut it
+short, pulling the choice shallower as the interceptions outweigh the hits.
+`teo` is the default.
+
+### 14.4 Test contract (frozen)
+
+- Unit reconciliation, table validation, the two mispredict classifications,
+  both governors' selection and learning, the whole idle cycle against a
+  hand-moved clock, and every attribute's rendering are hosted tests over
+  ungated modules.
+- A microsecond declaration read as a nanosecond one, and a nanosecond
+  accumulator reported unconverted, each fail a named test.
+
+## 15 CPU frequency scaling
+
+The operating points a platform declares, every limit in force on them, and
+the governor that chooses between them.
+
+Ownership: `crates/kernel/cpufreq` owns the frequency table, the policy with
+its limit aggregation, the governors, the transition statistics and the
+attribute contract. `crates/kernel/sched` feeds the demand signal.
+`crates/kernel/procfs` projects the tree. Providers register the driver and
+the policies; they never publish a second registry (`52§5`).
+
+### 15.1 Units (frozen)
+
+| Field | Unit |
+|---|---|
+| every frequency | kilohertz |
+| `cpuinfo_transition_latency` | nanoseconds |
+| `time_in_state` | hundredths of a second |
+
+Firmware reports megahertz and device trees report hertz. Both convert at the
+provider boundary.
+
+### 15.2 Invariants (frozen)
+
+1. One driver, and one policy per clock domain. A CPU in two policies would
+   have two answers to what it may run at.
+2. Every limit source holds its own request and the effective pair is the
+   tightest of them. A write to `scaling_max_freq` cannot release a thermal
+   cap, and a cap lifting restores whatever the other sources still ask.
+3. The ceiling is resolved before the floor and the floor is held at or below
+   it. Inverted limits resolve toward the ceiling: exceeding a thermal or
+   platform cap damages hardware, running slower than asked does not.
+4. A resolution is clamped into the limits in force before the relation is
+   applied, so no relation can step outside them. A minimum constraint
+   resolves upward, a maximum downward.
+5. The efficiency preference is soft. Where honouring it leaves nothing inside
+   the limits, the resolution runs again without it.
+6. A boost point is reachable only while boost is enabled, and does not raise
+   the declared ceiling until it is.
+7. A limit change re-targets immediately. A cap that waits for the next
+   sampling window is a cap that is not in force.
+8. The frequency table is checked for duplicates at registration: two indexes
+   for one operating point make a resolution ambiguous.
+
+### 15.3 Governors
+
+`performance` and `powersave` sit at the ceiling and the floor. `userspace`
+follows what was written to `scaling_setspeed`, re-clamped on every pass.
+`ondemand` samples the busy fraction, jumps to the ceiling past a threshold
+and interpolates across the hardware range below it. `schedutil` scales from
+the scheduler's utilisation signal with a quarter of headroom, so an
+eighty-percent-busy CPU asks for its full ceiling, and applies a
+wait-for-IO boost that doubles on each consecutive such wakeup and halves on
+every pass without one. `schedutil` is the default.
+
+### 15.4 Test contract (frozen)
+
+- The resolution rule under every relation, the limit aggregation across
+  sources, each governor's decision, the boost state machine, the statistics
+  and every attribute's rendering are hosted tests over ungated modules.
+- A megahertz figure taken as kilohertz, and a nanosecond occupancy reported
+  unconverted, each fail a named test.
+
+## 16 Thermal
+
+Thermal zones, cooling devices, and the binding between them, per `35§13`.
+The critical trip's terminal action is this subsystem's: the machine powers
+off rather than continuing to run past the temperature at which its hardware
+is damaged.

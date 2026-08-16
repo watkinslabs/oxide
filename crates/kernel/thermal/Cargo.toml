@@ -1,0 +1,25 @@
+[package]
+name = "thermal"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+kstrtox = { path = "../../shared/kstrtox" }
+sync    = { path = "../../shared/sync" }
+vfs     = { path = "../vfs" }
+
+# The polling driver runs the zone update in process context on the kernel
+# workqueue, the way the reference backs a zone's poll with delayed work.
+# Hosted tests drive the same decisions directly, so neither dependency is
+# reachable from a host build.
+[target.'cfg(target_os = "oxide-kernel")'.dependencies]
+sched      = { path = "../sched" }
+timekeeper = { path = "../timekeeper" }
+klog       = { path = "../../shared/klog" }
+
+[lints]
+workspace = true

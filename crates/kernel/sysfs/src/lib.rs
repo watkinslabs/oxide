@@ -44,6 +44,7 @@ pub mod power;
 mod readdir;
 pub mod root;
 mod subsystem;
+pub mod thermal;
 pub mod tty;
 mod virtual_class;
 pub mod zram;
@@ -196,6 +197,7 @@ pub fn init() {
     input::init();
     power_supply::init();
     backlight::init();
+    thermal::init();
     dmi::init();
     // Device tree, when the firmware provided one (arm64 DT boots).
     devicetree::init();

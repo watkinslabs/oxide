@@ -140,6 +140,25 @@ static RUN_PHASE: AtomicUsize = AtomicUsize::new(PHASE_IDLE);
 /// `addr2line` against the booted kernel ELF to name it.
 static RUN_FN: AtomicUsize = AtomicUsize::new(0);
 
+/// Absolute deadline of the earliest registered timer, or `None` when nothing
+/// is armed. What an idle governor needs to know: a CPU may not sleep past the
+/// first callback that is due, so this is the ceiling on how long it may
+/// commit to. A periodic timer's deadline is its last run plus its interval;
+/// one already overdue reports `now_ns`, never a time in the past.
+/// # C: O(N registered)
+pub fn next_deadline_ns(now_ns: u64) -> Option<u64> {
+    let mut earliest: Option<u64> = None;
+    let mut consider = |deadline: u64| {
+        let deadline = deadline.max(now_ns);
+        earliest = Some(match earliest { None => deadline, Some(cur) => cur.min(deadline) });
+    };
+    for entry in TIMERS.lock().iter() {
+        consider(entry.last_ns.saturating_add(entry.interval_ns));
+    }
+    for entry in ONESHOTS.lock().iter() { consider(entry.deadline_ns); }
+    earliest
+}
+
 /// `(phase, callback address)` for the watchdog. # C: O(1)
 pub fn run_state() -> (usize, usize) {
     (RUN_PHASE.load(Ordering::Relaxed), RUN_FN.load(Ordering::Relaxed))

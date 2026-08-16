@@ -339,6 +339,8 @@ fn publish_acpi_devices() {
     klog::write_dec_u64(counts.batteries as u64);
     klog::write_raw(b" backlights=");
     klog::write_dec_u64(counts.backlights as u64);
+    klog::write_raw(b" thermal-zones=");
+    klog::write_dec_u64(counts.thermal_zones as u64);
     klog::write_raw(b"\n");
 }
 

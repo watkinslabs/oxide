@@ -9,6 +9,9 @@ name = "kmain"
 path = "src/kmain.rs"
 
 [dependencies]
+thermal = { path = "../thermal" }
+cpuidle = { path = "../cpuidle" }
+cpufreq = { path = "../cpufreq" }
 audit   = { path = "../audit" }
 block   = { path = "../block" }
 drv-loop = { path = "../../drivers/drv-loop" }

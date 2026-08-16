@@ -8,6 +8,9 @@ publish = false
 path = "src/lib.rs"
 
 [dependencies]
+cpufreq = { path = "../cpufreq" }
+timekeeper = { path = "../timekeeper" }
+cpuidle = { path = "../cpuidle" }
 aslr = { path = "../aslr" }
 hal  = { path = "../../arch/hal" }
 klog = { path = "../../shared/klog" }

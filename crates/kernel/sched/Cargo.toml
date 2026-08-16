@@ -25,6 +25,8 @@ user-namespace = { path = "../user-namespace" }
 ucounts = { path = "../ucounts" }
 time-namespace = { path = "../time-namespace" }
 timekeeper = { path = "../timekeeper" }
+cpuidle = { path = "../cpuidle" }
+cpufreq = { path = "../cpufreq" }
 
 # kthread coroutine smoke needs the per-arch Context concrete type
 # (52a B-0 staging — once the schedule() wiring also moves into

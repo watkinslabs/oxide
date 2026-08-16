@@ -21,6 +21,10 @@ drm   = { path = "../../drivers/drm" }
 input = { path = "../input" }
 backlight = { path = "../backlight" }
 power-supply = { path = "../power-supply" }
+thermal = { path = "../thermal" }
+cpufreq = { path = "../cpufreq" }
+cpuidle = { path = "../cpuidle" }
+timekeeper = { path = "../timekeeper" }
 modules = { path = "../modules" }
 firmware = { path = "../firmware" }
 fdt = { path = "../../shared/fdt", features = ["alloc"] }

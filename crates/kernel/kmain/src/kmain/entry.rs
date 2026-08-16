@@ -57,8 +57,24 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
 /// # C: not measured (one-shot init)
 #[cfg(target_os = "oxide-kernel")]
 #[inline(never)]
+/// The terminal thermal action: the hardware is past the temperature at which
+/// it is damaged, so the machine goes down rather than continuing to run.
+/// # C: O(1)
+fn thermal_critical(_zone: &str, _temp_mc: i32) {
+    klog::kerror!("thermal: critical temperature reached, powering off");
+    // SAFETY: `power::power_off` is the platform's irreversible S5 transition,
+    // which is exactly what a critical trip calls for; nothing needs unwinding
+    // because the machine does not continue past it.
+    unsafe { power::power_off() }
+}
+
 fn spawn_kthreads() {
     klog::initcall::level("kthreads");
+    // Idle: the architecture halt is what the hardware offers before any
+    // firmware description has been read, and registering it is what makes the
+    // residency accounting under `/sys/devices/system/cpu/cpu*/cpuidle` real.
+    // A platform provider that finds a deeper ladder replaces this table.
+    step("cpuidle::generic::init", || { cpuidle::idle::generic::init(cpu::MAX_CPUS); });
     if step("spawn_timer_driver", sched::live::spawn_timer_driver).is_err() {
         klog::kerror!("fatal: timer driver spawn failed");
         sched::halt_forever();
@@ -85,6 +101,15 @@ fn spawn_kthreads() {
     // Periodic lazytime sweep: bounds how long a `lazytime` mount may hold a
     // timestamp in memory. Needs the workqueue, so it arms right after it.
     step("fs::sync::start_dirtytime_writeback", fs::sync::start_dirtytime_writeback);
+    // Thermal: a zone read evaluates firmware and a cooling-device change
+    // writes it, so the sweep runs on the workqueue and arms here alongside
+    // the other periodic work. The terminal action is installed here because
+    // powering the machine down belongs to the power subsystem, not to the
+    // device class that decides when it is warranted.
+    thermal::set_critical_hook(thermal_critical);
+    step("thermal::poll::start", thermal::poll::start);
+    // Frequency scaling resamples the demand signal on the tick.
+    step("sched::cpufreq_hook::start", sched::cpufreq_hook::start);
     // The two reclaim kthreads. kswapd reclaims under pressure; the OOM reaper
     // drains a chosen victim's own private memory on its behalf and marks the
     // mm skippable when it cannot, which is what lets selection move past a

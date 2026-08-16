@@ -161,3 +161,87 @@ settled at registration by programming a known level and reading it back.
   bodies are hosted tests over ungated modules.
 - `_BCL` normalisation and `_BQC` classification are hosted tests over the
   raw package.
+
+## 13 Thermal class
+
+Thermal zones and the cooling devices bound to them. A laptop that never reads
+its sensors runs at a fixed operating point until the hardware protects itself,
+which is the last mechanism anyone wants relied on.
+
+Ownership: `crates/kernel/thermal` owns the class — the trip ladder with its
+hysteresis, the governors, the binding, the polling cadence and the attribute
+contract. `crates/kernel/sysfs` projects it at `/sys/class/thermal/`.
+`crates/kernel/firmware` owns the ACPI provider. The terminal action for a
+critical trip is installed by kernel init from `crates/kernel/power`, because
+powering the machine down is not a device class's decision to own (`32§16`).
+
+### 13.1 Units (frozen)
+
+| Field | Unit |
+|---|---|
+| every temperature and hysteresis | millidegrees Celsius |
+| polling cadences | milliseconds |
+| `time_in_state_ms` | milliseconds |
+
+Firmware reports tenths of a kelvin and tenths of a second; both convert at
+the provider boundary.
+
+### 13.2 Invariants (frozen)
+
+1. Zones and cooling devices share one class directory, distinguished by name
+   prefix. Both are named by the class, never by a provider.
+2. A trip is crossed upward at its temperature inclusive, and downward only
+   once the temperature is strictly below the whole hysteresis band. The
+   crossing state, not a re-comparison against the trip temperature, is what
+   the next reading is classified against.
+3. A trip crossing is reported once per crossing. A trip already reached does
+   not re-fire.
+4. Trip indexes are contiguous and stable: a level the provider did not
+   declare is left out, not held as a placeholder, and the declaration order
+   is fixed so a later boot does not rename every attribute.
+5. A cooling device shared between zones is driven to the deepest state any
+   of them asks for. A write to `cur_state` is a request aggregated with the
+   rest, not a command that undercuts an active trip.
+6. A binding is refused where the device cannot satisfy the requested range,
+   rather than clamped. A device whose range later shrinks pulls the binding
+   and any live request down with it; one bound to the whole device follows it
+   upward.
+7. A zone polls at its passive cadence while any passive trip is engaged, and
+   at its ordinary one otherwise.
+8. A sensor that reports "not ready" is retried at a fixed cadence forever. A
+   sensor that fails is backed off and, once the backoff passes two minutes,
+   the zone is disabled rather than polled for the life of the machine.
+9. The terminal trip powers the machine off. The hot trip notifies and does
+   not.
+10. A governor never drives a terminal trip.
+
+### 13.3 Governors
+
+`step_wise` moves each device one state per sample in the direction the
+temperature is going, and while a trip is still throttling it may not release
+its device entirely. `bang_bang` is on above the trip and off below the band.
+`fair_share` divides the work by weight across the devices bound to a zone.
+`user_space` publishes each crossing and cools nothing. `step_wise` is the
+default: it works with a device of any depth, where the two-valued governor
+would drive a multi-state device to its shallowest useful state.
+
+### 13.4 ACPI provider
+
+`crates/kernel/firmware` publishes the firmware-described zones: `_TMP` for
+the reading, `_CRT`/`_HOT`/`_PSV`/`_ACx` for the ladder, `_TZP`/`_TSP` for the
+cadences, `_SCP` to ask the platform to react rather than throttle, and
+`_PSL`/`_ALx` for the devices each trip may drive. The kelvin offset firmware
+used is inferred from the critical trip. A zone whose ladder has no usable
+trip is not published: a zone that can never act is a temperature readout, and
+publishing it as a zone tells a daemon the machine is protected when it is not.
+
+### 13.5 Test contract (frozen)
+
+- Crossing detection with its hysteresis, the interrupt window, cadence
+  selection, the sensor-failure backoff, every governor's decision, binding
+  and range reconciliation, aggregation across zones, and every attribute's
+  rendering are hosted tests over ungated modules.
+- A millidegree reported as a degree, and a nanosecond occupancy reported
+  unconverted, each fail a named test.
+- The firmware conversion is covered from both kelvin offsets, and a reading
+  outside what a sensor can report is refused.

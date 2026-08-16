@@ -1,0 +1,27 @@
+[package]
+name = "cpuidle"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+cpu     = { path = "../cpu" }
+kstrtox = { path = "../../shared/kstrtox" }
+sync    = { path = "../../shared/sync" }
+vfs     = { path = "../vfs" }
+
+[target.'cfg(target_os = "oxide-kernel")'.dependencies]
+timekeeper = { path = "../timekeeper" }
+timer      = { path = "../timer" }
+
+[target.'cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))'.dependencies]
+hal-x86_64 = { path = "../../arch/hal-x86_64" }
+
+[target.'cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))'.dependencies]
+hal-aarch64 = { path = "../../arch/hal-aarch64" }
+
+[lints]
+workspace = true

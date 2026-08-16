@@ -20,6 +20,7 @@ vfs = { path = "../vfs" }
 timekeeper = { path = "../timekeeper" }
 power-supply = { path = "../power-supply" }
 backlight = { path = "../backlight" }
+thermal = { path = "../thermal" }
 
 [features]
 default = []

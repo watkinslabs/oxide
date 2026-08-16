@@ -256,6 +256,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "cpufreq"
+version = "0.1.0"
+dependencies = [
+ "cpu",
+ "kstrtox",
+ "sync",
+ "timekeeper",
+ "vfs",
+]
+
+[[package]]
+name = "cpuidle"
+version = "0.1.0"
+dependencies = [
+ "cpu",
+ "hal-aarch64",
+ "hal-x86_64",
+ "kstrtox",
+ "sync",
+ "timekeeper",
+ "timer",
+ "vfs",
+]
+
+[[package]]
 name = "crc"
 version = "0.1.0"
 
@@ -890,6 +915,7 @@ dependencies = [
  "pci",
  "power-supply",
  "sync",
+ "thermal",
  "timekeeper",
  "vfs",
 ]
@@ -1185,6 +1211,8 @@ dependencies = [
  "cmdline",
  "console",
  "cpu",
+ "cpufreq",
+ "cpuidle",
  "devfs",
  "devpts",
  "drm",
@@ -1238,6 +1266,7 @@ dependencies = [
  "syscall",
  "syscalls",
  "sysfs",
+ "thermal",
  "timekeeper",
  "timer",
  "tracefs",
@@ -1709,6 +1738,8 @@ dependencies = [
  "block",
  "cgroup",
  "cpu",
+ "cpufreq",
+ "cpuidle",
  "crng",
  "devfs",
  "drv",
@@ -1736,6 +1767,7 @@ dependencies = [
  "sync",
  "syscall",
  "sysfs",
+ "timekeeper",
  "user-namespace",
  "vfs",
  "vmm",
@@ -1900,6 +1932,8 @@ version = "0.1.0"
 dependencies = [
  "cgroup",
  "cpu",
+ "cpufreq",
+ "cpuidle",
  "hal",
  "hal-aarch64",
  "hal-x86_64",
@@ -2237,6 +2271,8 @@ dependencies = [
  "block",
  "cmdline",
  "cpu",
+ "cpufreq",
+ "cpuidle",
  "drm",
  "drv",
  "drv-zram",
@@ -2259,6 +2295,8 @@ dependencies = [
  "power-supply",
  "sched",
  "sync",
+ "thermal",
+ "timekeeper",
  "vfs",
 ]
 
@@ -2279,6 +2317,18 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys",
+]
+
+[[package]]
+name = "thermal"
+version = "0.1.0"
+dependencies = [
+ "klog",
+ "kstrtox",
+ "sched",
+ "sync",
+ "timekeeper",
+ "vfs",
 ]
 
 [[package]]
