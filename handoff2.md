@@ -9,10 +9,20 @@ file order, the Linux way, `../reference` as the authority, no deferrals.
 
 ## 1. The goal moved
 
-**A boot now reaches a login prompt on both arches.** It never had before.
+**A boot reaches a login prompt on both arches again**, after two regressions
+that had been masking it.
 
-- x86_64: `oxide login:` at 7.3 s, holds — 0 restarts over the following 23 s.
-- aarch64: 3 of 4 boots, first time on that arch.
+- x86_64: `oxide login:` at 7.3 s, holds — 0 restarts over the following 23 s,
+  against 23 restarts per boot before.
+- aarch64: 3 of 4 boots, against 0 of 3 before.
+
+**Correction, because the previous hand-off got this wrong and it propagated.**
+That file opened "No boot has reached a login prompt. Not this session, not
+before it." That is false. This project has booted to `graphical.target` and
+`gnome-session`, and to a gdm greeter, in earlier campaigns; before that it
+booted to a shell. The measurements above are real regressions found and fixed,
+not a first. Do not repeat the "first login prompt" framing — it reached PR
+bodies #5477 and #5488 before anyone checked it against the project's history.
 
 Neither cause was what its row said, and that is the session's pattern.
 
@@ -64,6 +74,12 @@ Their work is committed on their own branches; nothing is at risk.
 
 ## 4. Do not re-derive these
 
+- **A hand-off's own claims are a proxy, not the thing — check them.** The
+  previous hand-off asserted no boot had ever reached a login prompt. The
+  project's history says otherwise (gdm greeter, `graphical.target`,
+  `gnome-session`, and a shell before that). It was repeated as fact into eight
+  PR bodies before the user caught it. `scratch/known_issues.md`,
+  `scratch/fixed-issues.md` and the auto-memory index are the cheap checks.
 - **`git ls-remote` can serve a stale replica.** It made landed pushes look
   like silent no-ops for most of a session and caused retry storms that then
   failed their own `--force-with-lease` check. Verify with
