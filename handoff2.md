@@ -1,6 +1,6 @@
 # Handoff — 2026-08-16
 
-`main` = `40bf29711`. 22 PRs merged this session (#5471 – #5492).
+`main` = `52b711c92`. 26 PRs merged this session (#5471 – #5496).
 
 The whole session ran one directive: complete `scratch/system-compat.md` in
 file order, the Linux way, `../reference` as the authority, no deferrals.
@@ -45,12 +45,15 @@ failures — a livelock that answers SysRq, and a hard wedge that does not.
 resume (s2idle + ACPI S3 + PSCI, 20→203 tests, 25 controls, 6 defects found on
 the way), power_supply, backlight, thermal/cpuidle/cpufreq, DRM cursor errnos.
 
-**Tier 2** — OverlayFS, FAT (full read/write + create/delete/rename), exFAT +
-NTFS, V4L2 (real frames captured both arches), SELinux (parses the
-distribution's own 3.7 MB policy), futex2, Bluetooth. Wi-Fi is the one
-`NOT FOUND` left and is in flight.
+**Tier 2 — complete.** OverlayFS, FAT (full read/write + create/delete/rename),
+exFAT + NTFS, V4L2 (real frames captured on both arches), SELinux (parses the
+distribution's own 3.7 MB policy), futex2, Bluetooth, and Wi-Fi — where two
+virtual radios run the real authenticate/associate exchange as frames across a
+shared medium.
 
-**Tier 3 and Platform — untouched.** 14 Tier-3 rows, 5 platform rows.
+**Tier 3 — started.** conntrack/NAT/VLAN/bonding and 9p/virtiofs merged;
+nftables expressions are on `F1185`, local-only, 199 tests and 33 controls,
+awaiting its last two. **11 Tier-3 rows and all 5 platform rows untouched.**
 
 Also cleared four red `ext4` test binaries that had been making
 `cargo test --workspace` red for every lane. All four were the same fixture
@@ -60,17 +63,11 @@ hazard — raw device pokes bypassing the metadata cache — not kernel defects.
 
 ## 3. In flight
 
-Three lanes were interrupted by an API session limit, resumed, and are running.
-Their work is committed on their own branches; nothing is at risk.
+Everything merged except one branch, which is local-only:
 
 | Branch | State |
 |---|---|
-| `B2245-boot-wedge-gate2` | **Root-caused gate 2.** Idle parked through bare `hlt`/`wfi` without admitting interrupts, so a core could halt with the mask closed and only an NMI would reach it — and the stall scan excused idle CPUs, which is why nothing reported it. Reference is `asm volatile("sti; hlt")`, verified. Fix committed, unpushed; a second wedge is exposed underneath it |
-| `F1182-wifi-mac80211-cfg80211` | mid-implementation, WIP commit `71578cb9b` |
-| `F1183-conntrack-nat-vlan-bonding` | partly pushed, WIP on top |
-| `F1184-9p-and-virtiofs` | **not resumed.** WIP commit `8384f80b3`. Found a real bug: the dirent iterator never terminates after an error |
-
----
+| `F1185-nftables-expressions` | **local-only, never pushed.** 28 expressions with a 199-test suite and 33 positive controls (30 red, one that stayed green and was fixed until it failed). Remaining: re-run two controls whose patterns missed, and file rows for the expressions that depend on subsystems this kernel lacks — `osf` has no fingerprint database, `synproxy` no cookie machinery, `xfrm` no IPsec, `tunnel` no metadata, `flow_offload` no flow table. Each parses, validates, and breaks at a named seam rather than silently no-opping. |
 
 ## 4. Do not re-derive these
 
@@ -129,16 +126,21 @@ Roughly a third of what was checked. Worth reading before implementing any row.
 
 ## 6. First task next session
 
-Land what is in flight, in this order:
-
 ```
-cd /home/nd/oxide/kernel-B2245 && git log --oneline -3
+cd /home/nd/oxide/kernel-F1183 && git log --oneline -3   # F1185 lives here
 ```
 
-`B2245` is the valuable one — the idle-park fix is a genuine kernel bug with a
-verified reference contract, and it is still unpushed. Get it measured, pushed
-and merged, then `F1183`, then `F1182`, then resume `F1184`.
+Finish and push `F1185-nftables-expressions` — it is the only unmerged work and
+it has never been on the remote. Then Tier 3's remaining 11 rows and the 5
+platform rows, in file order.
 
-After that the file's remaining work is Tier 3 (14 rows) and Platform (5 rows),
-in file order.
+Two things only the user can do, both filed:
 
+- **Delete `/home/nd/oxide/linux-master.zip`.** CLAUDE.md used to point at
+  `../linux-master`, which is that stale month-old archive rather than
+  `../reference`. A lane read it, quoted it as the reference, then caught
+  itself; the `diff` happened to be empty, so the fix held on luck. CLAUDE.md
+  now names `../reference`, but the zip is still there to be read again.
+- **Clear the agent scratchpads.** `/tmp` is a shared 32 GB tmpfs and throwaway
+  build directories reached 14 GB, which a lane traced to an ext4 `ENOSPC` it
+  hit mid-run.
