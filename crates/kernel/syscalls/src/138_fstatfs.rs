@@ -8,7 +8,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
 use crate::userbuf::validate_user_buf_writable;
-use crate::statfs_common::{statfs_for_magic, statfs_for_sb_at_mount, write_statfs, STATFS_BYTES};
+use crate::statfs_common::{statfs_for_magic, write_statfs, STATFS_BYTES};
 
 /// `sys_fstatfs(fd, buf)` — slot 138. Linux `fstatfs` is
 /// `vfs_statfs(&f->f_path)`: the accounting comes from the open file's OWN
@@ -47,7 +47,7 @@ pub fn sys_fstatfs(args: &SyscallArgs) -> i64 {
     // refusing" — and `udevadm trigger` coldplugged nothing for the whole boot.
     // The mount is consulted for `f_flags` regardless (`calculate_f_flags`).
     let st = match file.inode().i_sb().or_else(|| mount.as_ref().map(|m| Arc::clone(m.sb()))) {
-        Some(sb) => statfs_for_sb_at_mount(&sb, mnt_flags),
+        Some(sb) => crate::statfs_common::statfs_at_inode(&sb, &file.inode(), mnt_flags),
         None => statfs_for_magic(match file.inode().statfs_magic() {
             0 => crate::statfs_common::M_TMPFS,
             magic => magic,
