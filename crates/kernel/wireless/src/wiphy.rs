@@ -37,6 +37,9 @@ pub use registry::{
 /// registration, and a caller that could rewrite them could make the
 /// advertisement disagree with what the driver will accept.
 pub struct WiphyState {
+    /// `phy<n>` at registration, and whatever a rename made it since. The
+    /// registry allocates the first one; userspace owns it afterwards.
+    pub name: String,
     pub config: WiphyConfig,
     /// Interfaces created on this radio, in creation order.
     pub wdevs: Vec<alloc::sync::Arc<Wdev>>,
@@ -58,8 +61,6 @@ pub struct WiphyState {
 pub struct Wiphy {
     /// Index userspace addresses the radio by, and the number in its name.
     pub index: u32,
-    /// `phy<index>` — the name under `/sys/class/ieee80211`.
-    pub name: String,
     /// Permanent hardware address; every interface address is derived from it.
     pub perm_addr: MacAddr,
     /// Mask of the address bits a driver may vary per interface.
@@ -79,10 +80,11 @@ impl Wiphy {
     pub fn new(perm_addr: MacAddr, caps: WiphyCaps,
                ops: alloc::sync::Arc<dyn Cfg80211Ops>) -> Self {
         Self {
-            index: 0, name: String::new(), perm_addr, addr_mask: MacAddr::ZERO,
+            index: 0, perm_addr, addr_mask: MacAddr::ZERO,
             caps, ops,
             net_ns: core::sync::atomic::AtomicU64::new(0),
             state: Spinlock::new(WiphyState {
+                name: String::new(),
                 config: WiphyConfig::default(),
                 wdevs: Vec::new(),
                 regdom: RegDomain::world(),
@@ -97,6 +99,22 @@ impl Wiphy {
     /// Run `f` against the mutable state under the device lock. # C: O(f)
     pub fn with_state<R>(&self, f: impl FnOnce(&mut WiphyState) -> R) -> R {
         f(&mut self.state.lock())
+    }
+
+    /// Name under `/sys/class/ieee80211`. # C: O(len)
+    pub fn name(&self) -> String { self.state.lock().name.clone() }
+
+    /// Whether the radio is called this. Answered without allocating, so a
+    /// registry scan over every radio does not allocate once per radio.
+    /// # C: O(len)
+    pub fn is_named(&self, name: &str) -> bool { self.state.lock().name == name }
+
+    /// Rename the radio. # C: O(len)
+    pub fn set_name(&self, name: &str) {
+        let mut g = self.state.lock();
+        g.name.clear();
+        g.name.push_str(name);
+        g.generation = g.generation.wrapping_add(1);
     }
 
     /// Snapshot the configuration. # C: O(1)

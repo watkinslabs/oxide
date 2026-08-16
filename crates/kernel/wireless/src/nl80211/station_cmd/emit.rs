@@ -19,7 +19,7 @@ use crate::uapi::nested::{rate_info, sta_info, survey_info};
 use crate::wdev::Wdev;
 use crate::wiphy::Wiphy;
 
-use super::super::{msg, nest};
+use super::super::msg;
 
 /// `NL80211_STA_BSS_PARAM_*` — the network parameters inside a station report.
 mod bss_param {
@@ -46,7 +46,7 @@ const BITRATE16_LIMIT: u32 = 1 << 16;
 /// the nest. # C: O(N fields)
 pub fn put(out: &mut Vec<u8>, wiphy: &Arc<Wiphy>, wdev: &Arc<Wdev>, info: &StationInfo) {
     if let Some(ifindex) = wdev.ifindex() { attr::put_u32(out, a::IFINDEX, ifindex); }
-    msg::put_u64(out, a::WDEV, wdev.identifier);
+    msg::put_u64(out, a::WDEV, wdev.identifier, a::PAD);
     msg::put_mac(out, a::MAC, info.mac);
     attr::put_u32(out, a::GENERATION, info.generation);
 
@@ -71,20 +71,20 @@ fn put_counters(out: &mut Vec<u8>, info: &StationInfo) {
     if let Some(v) = info.connected_time { attr::put_u32(out, sta_info::CONNECTED_TIME, v); }
     if let Some(v) = info.inactive_time { attr::put_u32(out, sta_info::INACTIVE_TIME, v); }
     if let Some(v) = info.assoc_at_ns {
-        nest::put_u64(out, sta_info::ASSOC_AT_BOOTTIME, v, sta_info::PAD);
+        msg::put_u64(out, sta_info::ASSOC_AT_BOOTTIME, v, sta_info::PAD);
     }
     // The 32-bit byte counters predate the 64-bit ones and both go out: old
     // tools read only the narrow pair and would otherwise see no traffic.
     if let Some(v) = info.rx_bytes {
         attr::put_u32(out, sta_info::RX_BYTES, v as u32);
-        nest::put_u64(out, sta_info::RX_BYTES64, v, sta_info::PAD);
+        msg::put_u64(out, sta_info::RX_BYTES64, v, sta_info::PAD);
     }
     if let Some(v) = info.tx_bytes {
         attr::put_u32(out, sta_info::TX_BYTES, v as u32);
-        nest::put_u64(out, sta_info::TX_BYTES64, v, sta_info::PAD);
+        msg::put_u64(out, sta_info::TX_BYTES64, v, sta_info::PAD);
     }
-    if let Some(v) = info.rx_duration { nest::put_u64(out, sta_info::RX_DURATION, v, sta_info::PAD); }
-    if let Some(v) = info.tx_duration { nest::put_u64(out, sta_info::TX_DURATION, v, sta_info::PAD); }
+    if let Some(v) = info.rx_duration { msg::put_u64(out, sta_info::RX_DURATION, v, sta_info::PAD); }
+    if let Some(v) = info.tx_duration { msg::put_u64(out, sta_info::TX_DURATION, v, sta_info::PAD); }
     if let Some(v) = info.rx_packets { attr::put_u32(out, sta_info::RX_PACKETS, v); }
     if let Some(v) = info.tx_packets { attr::put_u32(out, sta_info::TX_PACKETS, v); }
     if let Some(v) = info.tx_retries { attr::put_u32(out, sta_info::TX_RETRIES, v); }
@@ -94,8 +94,8 @@ fn put_counters(out: &mut Vec<u8>, info: &StationInfo) {
     }
     if let Some(v) = info.beacon_loss_count { attr::put_u32(out, sta_info::BEACON_LOSS, v); }
     if let Some(v) = info.plink_state { msg::put_u8(out, sta_info::PLINK_STATE, v); }
-    if let Some(v) = info.rx_dropped_misc { nest::put_u64(out, sta_info::RX_DROP_MISC, v, sta_info::PAD); }
-    if let Some(v) = info.beacon_rx { nest::put_u64(out, sta_info::BEACON_RX, v, sta_info::PAD); }
+    if let Some(v) = info.rx_dropped_misc { msg::put_u64(out, sta_info::RX_DROP_MISC, v, sta_info::PAD); }
+    if let Some(v) = info.beacon_rx { msg::put_u64(out, sta_info::BEACON_RX, v, sta_info::PAD); }
 }
 
 /// The signal levels, which are only meaningful when the radio reports in a
@@ -190,10 +190,10 @@ fn put_tid_stats(out: &mut Vec<u8>, info: &StationInfo) {
     let all = attr::nest_start(out, sta_info::TID_STATS);
     for (tid, stats) in info.tid_stats.iter() {
         let one = attr::nest_start(out, *tid as u16 + 1);
-        nest::put_u64(out, tid_stats::RX_MSDU, stats.rx_msdu, tid_stats::PAD);
-        nest::put_u64(out, tid_stats::TX_MSDU, stats.tx_msdu, tid_stats::PAD);
-        nest::put_u64(out, tid_stats::TX_MSDU_RETRIES, stats.tx_msdu_retries, tid_stats::PAD);
-        nest::put_u64(out, tid_stats::TX_MSDU_FAILED, stats.tx_msdu_failed, tid_stats::PAD);
+        msg::put_u64(out, tid_stats::RX_MSDU, stats.rx_msdu, tid_stats::PAD);
+        msg::put_u64(out, tid_stats::TX_MSDU, stats.tx_msdu, tid_stats::PAD);
+        msg::put_u64(out, tid_stats::TX_MSDU_RETRIES, stats.tx_msdu_retries, tid_stats::PAD);
+        msg::put_u64(out, tid_stats::TX_MSDU_FAILED, stats.tx_msdu_failed, tid_stats::PAD);
         attr::nest_end(out, one);
     }
     attr::nest_end(out, all);
@@ -202,18 +202,18 @@ fn put_tid_stats(out: &mut Vec<u8>, info: &StationInfo) {
 /// One channel's occupancy report. # C: O(1)
 pub fn put_survey(out: &mut Vec<u8>, wdev: &Arc<Wdev>, s: &SurveyInfo) {
     if let Some(ifindex) = wdev.ifindex() { attr::put_u32(out, a::IFINDEX, ifindex); }
-    msg::put_u64(out, a::WDEV, wdev.identifier);
+    msg::put_u64(out, a::WDEV, wdev.identifier, a::PAD);
     let at = attr::nest_start(out, a::SURVEY_INFO);
     if s.freq != 0 { attr::put_u32(out, survey_info::FREQUENCY, s.freq); }
     if let Some(v) = s.noise { msg::put_u8(out, survey_info::NOISE, v as u8); }
     if s.in_use { msg::put_flag(out, survey_info::IN_USE); }
-    if let Some(v) = s.time_ms { nest::put_u64(out, survey_info::TIME, v, survey_info::PAD); }
-    if let Some(v) = s.time_busy_ms { nest::put_u64(out, survey_info::TIME_BUSY, v, survey_info::PAD); }
-    if let Some(v) = s.time_ext_busy_ms { nest::put_u64(out, survey_info::TIME_EXT_BUSY, v, survey_info::PAD); }
-    if let Some(v) = s.time_rx_ms { nest::put_u64(out, survey_info::TIME_RX, v, survey_info::PAD); }
-    if let Some(v) = s.time_tx_ms { nest::put_u64(out, survey_info::TIME_TX, v, survey_info::PAD); }
+    if let Some(v) = s.time_ms { msg::put_u64(out, survey_info::TIME, v, survey_info::PAD); }
+    if let Some(v) = s.time_busy_ms { msg::put_u64(out, survey_info::TIME_BUSY, v, survey_info::PAD); }
+    if let Some(v) = s.time_ext_busy_ms { msg::put_u64(out, survey_info::TIME_EXT_BUSY, v, survey_info::PAD); }
+    if let Some(v) = s.time_rx_ms { msg::put_u64(out, survey_info::TIME_RX, v, survey_info::PAD); }
+    if let Some(v) = s.time_tx_ms { msg::put_u64(out, survey_info::TIME_TX, v, survey_info::PAD); }
     if let Some(v) = s.time_scan_ms {
-        nest::put_u64(out, survey_info::TIME_SCAN, v, survey_info::PAD);
+        msg::put_u64(out, survey_info::TIME_SCAN, v, survey_info::PAD);
     }
     attr::nest_end(out, at);
 }

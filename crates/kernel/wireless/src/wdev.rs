@@ -38,6 +38,62 @@ impl MgmtRegistration {
     }
 }
 
+/// The beaconed BSS parameters an access-point interface advertises. Every
+/// field is a tri-state on the wire — absent, off, on — so a request that
+/// omits one must leave it alone rather than clear it.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct BssParams {
+    /// Protect high-rate frames with a request-to-send exchange.
+    pub cts_protection: bool,
+    pub short_preamble: bool,
+    pub short_slot_time: bool,
+    /// Rates a station must support to associate, in the on-air encoding.
+    pub basic_rates: Vec<u8>,
+    /// Refuse to bridge frames between two associated stations.
+    pub ap_isolate: bool,
+    /// High-throughput operation mode advertised in the beacon.
+    pub ht_opmode: Option<u16>,
+    /// Peer-to-peer client traffic window and opportunistic power save.
+    pub p2p_ctwindow: Option<u8>,
+    pub p2p_opp_ps: Option<bool>,
+}
+
+/// One field of a `SET_BSS`. Absent means "leave alone"; the wire spells that
+/// as a negative byte, which is why a parsed request carries `Option` and not
+/// a value with a sentinel. # C: O(1)
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct BssParamsRequest {
+    pub cts_protection: Option<bool>,
+    pub short_preamble: Option<bool>,
+    pub short_slot_time: Option<bool>,
+    pub basic_rates: Option<Vec<u8>>,
+    pub ap_isolate: Option<bool>,
+    pub ht_opmode: Option<u16>,
+    pub p2p_ctwindow: Option<u8>,
+    pub p2p_opp_ps: Option<bool>,
+}
+
+impl BssParamsRequest {
+    /// Whether the request asks for nothing. # C: O(1)
+    pub fn is_empty(&self) -> bool {
+        self.cts_protection.is_none() && self.short_preamble.is_none()
+            && self.short_slot_time.is_none() && self.basic_rates.is_none()
+            && self.ap_isolate.is_none() && self.ht_opmode.is_none()
+            && self.p2p_ctwindow.is_none() && self.p2p_opp_ps.is_none()
+    }
+    /// Apply the fields the request named, leaving the rest. # C: O(rates)
+    pub fn apply(&self, params: &mut BssParams) {
+        if let Some(v) = self.cts_protection { params.cts_protection = v; }
+        if let Some(v) = self.short_preamble { params.short_preamble = v; }
+        if let Some(v) = self.short_slot_time { params.short_slot_time = v; }
+        if let Some(v) = &self.basic_rates { params.basic_rates = v.clone(); }
+        if let Some(v) = self.ap_isolate { params.ap_isolate = v; }
+        if self.ht_opmode.is_some() { params.ht_opmode = self.ht_opmode; }
+        if self.p2p_ctwindow.is_some() { params.p2p_ctwindow = self.p2p_ctwindow; }
+        if self.p2p_opp_ps.is_some() { params.p2p_opp_ps = self.p2p_opp_ps; }
+    }
+}
+
 /// Connection-quality monitoring configuration for one interface.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CqmConfig {
@@ -90,6 +146,8 @@ pub struct WdevInner {
     pub mntr_flags: u32,
     /// Whether the interface is currently beaconing.
     pub beaconing: bool,
+    /// The beaconed parameters an access-point interface advertises.
+    pub bss: BssParams,
 }
 
 /// One virtual interface.
@@ -124,6 +182,7 @@ impl Wdev {
                 conn: ConnState::default(), keys: KeyRing::default(),
                 mgmt_regs: Vec::new(), cqm: CqmConfig::default(),
                 owner_portid: None, mntr_flags: 0, beaconing: false,
+                bss: BssParams::default(),
             }),
         }
     }
@@ -145,6 +204,9 @@ impl Wdev {
     pub fn chandef(&self) -> Option<ChanDef> { self.inner.lock().chandef }
     /// SSID currently in use. # C: O(len)
     pub fn ssid(&self) -> Vec<u8> { self.inner.lock().ssid.clone() }
+    /// Beaconed parameter snapshot. # C: O(rates)
+    pub fn bss(&self) -> BssParams { self.inner.lock().bss.clone() }
+
     /// Connection state snapshot. # C: O(1)
     pub fn conn(&self) -> ConnState { self.inner.lock().conn.clone() }
 

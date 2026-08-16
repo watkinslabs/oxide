@@ -33,7 +33,7 @@ const NUM_MGMT_STYPES: u32 = 16;
 /// Append the identity attributes every wiphy message starts with. # C: O(1)
 pub fn put_identity(out: &mut Vec<u8>, wiphy: &Arc<Wiphy>) {
     attr::put_u32(out, a::WIPHY, wiphy.index);
-    attr::put_str(out, a::WIPHY_NAME, &wiphy.name);
+    attr::put_str(out, a::WIPHY_NAME, &wiphy.name());
     attr::put_u32(out, a::GENERATION, wiphy.generation());
 }
 

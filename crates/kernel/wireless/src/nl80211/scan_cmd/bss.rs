@@ -18,7 +18,7 @@ use crate::uapi::nested::bss;
 use crate::wdev::Wdev;
 use crate::wiphy::Wiphy;
 
-use super::super::{msg, nest};
+use super::super::msg;
 
 /// Append one cached network, nested, with the identity attributes that say
 /// which radio and interface heard it outside the nest. # C: O(len)
@@ -26,16 +26,16 @@ pub fn put(out: &mut Vec<u8>, wiphy: &Arc<Wiphy>, wdev: &Arc<Wdev>, entry: &Bss,
            generation: u32, now_ns: u64) {
     attr::put_u32(out, a::GENERATION, generation);
     if let Some(ifindex) = wdev.ifindex() { attr::put_u32(out, a::IFINDEX, ifindex); }
-    msg::put_u64(out, a::WDEV, wdev.identifier);
+    msg::put_u64(out, a::WDEV, wdev.identifier, a::PAD);
     attr::put_u32(out, a::WIPHY, wiphy.index);
 
     let at = attr::nest_start(out, a::BSS);
     if !entry.bssid.is_zero() { msg::put_mac(out, bss::BSSID, entry.bssid); }
     if entry.presp_data { msg::put_flag(out, bss::PRESP_DATA); }
-    nest::put_u64(out, bss::TSF, entry.tsf, bss::PAD);
+    msg::put_u64(out, bss::TSF, entry.tsf, bss::PAD);
     if !entry.ies.is_empty() { attr::put(out, bss::INFORMATION_ELEMENTS, &entry.ies); }
     if !entry.beacon_ies.is_empty() && entry.beacon_ies != entry.ies {
-        nest::put_u64(out, bss::BEACON_TSF, entry.tsf, bss::PAD);
+        msg::put_u64(out, bss::BEACON_TSF, entry.tsf, bss::PAD);
         attr::put(out, bss::BEACON_IES, &entry.beacon_ies);
     }
     if entry.beacon_interval != 0 {
@@ -48,7 +48,7 @@ pub fn put(out: &mut Vec<u8>, wiphy: &Arc<Wiphy>, wdev: &Arc<Wdev>, entry: &Bss,
     }
     attr::put_u32(out, bss::SEEN_MS_AGO, entry.age_ms(now_ns));
     if entry.last_seen_ns != 0 {
-        nest::put_u64(out, bss::LAST_SEEN_BOOTTIME, entry.last_seen_ns, bss::PAD);
+        msg::put_u64(out, bss::LAST_SEEN_BOOTTIME, entry.last_seen_ns, bss::PAD);
     }
     attr::put_u32(out, bss::CHAN_WIDTH, entry.chan_width.as_u32());
     if wiphy.caps.signal_dbm { msg::put_i32(out, bss::SIGNAL_MBM, entry.signal_mbm); }

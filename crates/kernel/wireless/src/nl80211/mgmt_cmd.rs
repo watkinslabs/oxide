@@ -92,7 +92,7 @@ pub fn tx(hdr: &Nlmsghdr, attrs: &[u8], ctx: GenlCtx) -> Vec<u8> {
         Ok((cookie, wants_reply)) => {
             if !wants_reply { return msg::ack(hdr); }
             let mut out = msg::start(hdr, cmd::FRAME);
-            msg::put_u64(&mut out, a::COOKIE, cookie);
+            msg::put_u64(&mut out, a::COOKIE, cookie, a::PAD);
             msg::end(&mut out);
             out
         }

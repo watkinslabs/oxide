@@ -16,7 +16,6 @@
 // - `ap_cmd`:      access-point start and stop.
 // - `mgmt_cmd`:    management frame registration and transmission.
 // - `event`:       the multicast notifications the stack raises.
-// - `nest`:        writing a 64-bit value inside a nested attribute space.
 // - `chandef`:     the channel definition three command groups share.
 
 #[path = "nl80211/msg.rs"]
@@ -27,8 +26,6 @@ pub mod policy;
 pub mod family;
 #[path = "nl80211/resolve.rs"]
 pub mod resolve;
-#[path = "nl80211/nest.rs"]
-pub mod nest;
 #[path = "nl80211/chandef.rs"]
 pub mod chandef;
 #[path = "nl80211/wiphy_cmd.rs"]

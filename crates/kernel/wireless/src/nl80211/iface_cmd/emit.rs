@@ -31,7 +31,7 @@ pub fn put(out: &mut Vec<u8>, wiphy: &Arc<Wiphy>, wdev: &Arc<Wdev>) {
     }
     attr::put_u32(out, a::WIPHY, wiphy.index);
     attr::put_u32(out, a::IFTYPE, iftype.as_u32());
-    msg::put_u64(out, a::WDEV, wdev.identifier);
+    msg::put_u64(out, a::WDEV, wdev.identifier, a::PAD);
     msg::put_mac(out, a::MAC, addr);
     attr::put_u32(out, a::GENERATION, wiphy.generation());
     msg::put_u8(out, a::_4ADDR, u8::from(use_4addr));

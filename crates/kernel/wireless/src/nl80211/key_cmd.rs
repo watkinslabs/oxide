@@ -83,7 +83,7 @@ pub fn get(hdr: &Nlmsghdr, attrs: &[u8], ctx: GenlCtx) -> Vec<u8> {
 
     let mut out = msg::start(hdr, cmd::NEW_KEY);
     if let Some(ifindex) = wdev.ifindex() { attr::put_u32(&mut out, a::IFINDEX, ifindex); }
-    msg::put_u64(&mut out, a::WDEV, wdev.identifier);
+    msg::put_u64(&mut out, a::WDEV, wdev.identifier, a::PAD);
     msg::put_u8(&mut out, a::KEY_IDX, idx);
     if let Some(p) = peer { msg::put_mac(&mut out, a::MAC, p); }
     if let Some(seq) = &key.params.seq { attr::put(&mut out, a::KEY_SEQ, seq); }

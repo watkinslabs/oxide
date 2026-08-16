@@ -12,3 +12,4 @@
 #[path = "tests/bss_cache.rs"] mod bss_cache;
 #[path = "tests/connect.rs"] mod connect;
 #[path = "tests/keyring.rs"] mod keyring;
+#[path = "tests/state.rs"] mod state;

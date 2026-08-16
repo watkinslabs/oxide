@@ -56,7 +56,7 @@ impl Req {
         attr::put_u32(&mut self.attrs, ty, v); self
     }
     pub fn u64(&mut self, ty: u16, v: u64) -> &mut Self {
-        crate::nl80211::msg::put_u64(&mut self.attrs, ty, v); self
+        crate::nl80211::msg::put_u64(&mut self.attrs, ty, v, crate::uapi::attr::PAD); self
     }
     pub fn bytes(&mut self, ty: u16, v: &[u8]) -> &mut Self {
         attr::put(&mut self.attrs, ty, v); self

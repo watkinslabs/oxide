@@ -41,7 +41,7 @@ pub fn put_ids(out: &mut Vec<u8>, wiphy: &Arc<Wiphy>, wdev: Option<&Arc<Wdev>>) 
     attr::put_u32(out, a::WIPHY, wiphy.index);
     if let Some(d) = wdev {
         if let Some(ifindex) = d.ifindex() { attr::put_u32(out, a::IFINDEX, ifindex); }
-        super::msg::put_u64(out, a::WDEV, d.identifier);
+        super::msg::put_u64(out, a::WDEV, d.identifier, a::PAD);
     }
 }
 
@@ -64,7 +64,7 @@ pub fn send_to_port(wiphy: &Arc<Wiphy>, portid: u32, msg: &[u8]) {
 pub fn new_wiphy(wiphy: &Arc<Wiphy>) {
     let mut out = start(cmd::NEW_WIPHY);
     attr::put_u32(&mut out, a::WIPHY, wiphy.index);
-    attr::put_str(&mut out, a::WIPHY_NAME, &wiphy.name);
+    attr::put_str(&mut out, a::WIPHY_NAME, &wiphy.name());
     attr::put_u32(&mut out, a::GENERATION, wiphy.generation());
     end(&mut out);
     send(wiphy, GROUP_CONFIG, &out);
@@ -74,7 +74,7 @@ pub fn new_wiphy(wiphy: &Arc<Wiphy>) {
 pub fn del_wiphy(wiphy: &Arc<Wiphy>) {
     let mut out = start(cmd::DEL_WIPHY);
     attr::put_u32(&mut out, a::WIPHY, wiphy.index);
-    attr::put_str(&mut out, a::WIPHY_NAME, &wiphy.name);
+    attr::put_str(&mut out, a::WIPHY_NAME, &wiphy.name());
     end(&mut out);
     send(wiphy, GROUP_CONFIG, &out);
 }
@@ -210,7 +210,7 @@ pub fn mgmt_tx_status(wiphy: &Arc<Wiphy>, wdev: &Arc<Wdev>, cookie: u64, frame: 
                       acked: bool) {
     let mut out = start(cmd::FRAME_TX_STATUS);
     put_ids(&mut out, wiphy, Some(wdev));
-    super::msg::put_u64(&mut out, a::COOKIE, cookie);
+    super::msg::put_u64(&mut out, a::COOKIE, cookie, a::PAD);
     attr::put(&mut out, a::FRAME, frame);
     if acked { super::msg::put_flag(&mut out, a::ACK); }
     end(&mut out);

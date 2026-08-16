@@ -55,9 +55,15 @@ pub fn put_u8(out: &mut Vec<u8>, ty: u16, v: u8) { attr::put(out, ty, &[v]); }
 pub fn put_i32(out: &mut Vec<u8>, ty: u16, v: i32) { attr::put(out, ty, &v.to_ne_bytes()); }
 
 /// Append a `u64` attribute with the padding attribute netlink needs to keep
-/// the payload eight-byte aligned. # C: O(1)
-pub fn put_u64(out: &mut Vec<u8>, ty: u16, v: u64) {
-    attr::put_u64_64bit(out, ty, v, a::PAD);
+/// the payload eight-byte aligned.
+///
+/// The padding attribute's NUMBER is per-namespace: the top-level padding type
+/// is a different number inside the network report, the station report, the
+/// survey and the per-identifier counters. It is a parameter and not a
+/// constant because writing the top-level number inside a nest emits an
+/// attribute the reader interprets as something else entirely. # C: O(1)
+pub fn put_u64(out: &mut Vec<u8>, ty: u16, v: u64, pad_ty: u16) {
+    attr::put_u64_64bit(out, ty, v, pad_ty);
 }
 
 /// Append a flag attribute — present means true, absent means false. A flag

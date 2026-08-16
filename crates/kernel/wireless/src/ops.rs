@@ -171,6 +171,11 @@ pub trait Cfg80211Ops: Send + Sync {
     fn stop_ap(&self, _wiphy: &Arc<Wiphy>, _wdev: &Arc<Wdev>) -> Result<(), Errno> {
         Err(Errno::Eopnotsupp)
     }
+    /// Apply the beaconed BSS parameters after they changed. # C: driver-dependent
+    fn change_bss(&self, _wiphy: &Arc<Wiphy>, _wdev: &Arc<Wdev>,
+                  _params: &crate::wdev::BssParams) -> Result<(), Errno> {
+        Err(Errno::Eopnotsupp)
+    }
 
     /// Apply device configuration that changed. # C: driver-dependent
     fn set_wiphy_params(&self, _wiphy: &Arc<Wiphy>) -> Result<(), Errno> { Ok(()) }

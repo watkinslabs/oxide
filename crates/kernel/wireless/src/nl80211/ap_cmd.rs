@@ -10,6 +10,7 @@ use netlink::Nlmsghdr;
 use syscall::errno::Errno;
 
 use crate::ops::ApSettings;
+use crate::wdev::BssParamsRequest;
 use crate::uapi::attr as a;
 use crate::uapi::cmd;
 use crate::uapi::enums::{auth_type, feature_flags, hidden_ssid, IfType};
@@ -159,22 +160,53 @@ pub fn set_bss(hdr: &Nlmsghdr, attrs: &[u8], ctx: GenlCtx) -> Vec<u8> {
     }
 }
 
+/// One tri-state byte: absent, or the negative sentinel, both mean "leave
+/// alone". Anything above one is not a setting. # C: O(N attrs)
+fn tri_state(attrs: &[u8], ty: u16) -> Result<Option<bool>, Errno> {
+    let Some(v) = msg::get_u8(attrs, ty) else { return Ok(None); };
+    if v == u8::MAX { return Ok(None); }
+    if v > 1 { return Err(Errno::Einval); }
+    Ok(Some(v == 1))
+}
+
+/// Read the parameters a request asks to change. Nothing is applied.
+/// # C: O(N attrs)
+fn parse_bss(attrs: &[u8]) -> Result<BssParamsRequest, Errno> {
+    let basic_rates = match msg::get_bytes(attrs, a::BSS_BASIC_RATES) {
+        Some(rates) if rates.is_empty() => return Err(Errno::Einval),
+        Some(rates) => Some(rates.to_vec()),
+        None => None,
+    };
+    Ok(BssParamsRequest {
+        cts_protection: tri_state(attrs, a::BSS_CTS_PROT)?,
+        short_preamble: tri_state(attrs, a::BSS_SHORT_PREAMBLE)?,
+        short_slot_time: tri_state(attrs, a::BSS_SHORT_SLOT_TIME)?,
+        basic_rates,
+        ap_isolate: tri_state(attrs, a::AP_ISOLATE)?,
+        ht_opmode: msg::get_u16(attrs, a::BSS_HT_OPMODE),
+        p2p_ctwindow: msg::get_u8(attrs, a::P2P_CTWINDOW),
+        p2p_opp_ps: tri_state(attrs, a::P2P_OPPPS)?,
+    })
+}
+
 /// The decision `set_bss` makes. Each parameter is a tri-state on the wire —
-/// absent, off, on — so an absent one must not be read as off. # C: O(N attrs)
+/// absent, off, on — so an absent one must not be read as off.
+///
+/// The parameters are STORED as well as handed to the driver: a beacon this
+/// layer rebuilds, and a `GET_INTERFACE` reply, both have to say what the
+/// interface is actually advertising, and a driver call whose result went
+/// nowhere leaves them saying the default. # C: O(N attrs)
 fn set_bss_inner(attrs: &[u8], ctx: GenlCtx) -> Result<(), Errno> {
     let (wiphy, wdev) = resolve::wdev(attrs, ctx.net_ns)?;
     if !matches!(wdev.iftype(), IfType::Ap | IfType::P2pGo) { return Err(Errno::Eopnotsupp); }
-    for ty in [a::BSS_CTS_PROT, a::BSS_SHORT_PREAMBLE, a::BSS_SHORT_SLOT_TIME,
-               a::AP_ISOLATE] {
-        if let Some(v) = msg::get_u8(attrs, ty) {
-            // The wire carries a signed byte whose negative value means
-            // "leave alone"; anything above one is not a setting.
-            if v > 1 && v != u8::MAX { return Err(Errno::Einval); }
-        }
+    let req = parse_bss(attrs)?;
+    if req.is_empty() { return Ok(()); }
+    // The driver sees the whole resulting set, not the delta: a radio
+    // programs its beacon from all of it at once.
+    let params = wdev.with(|w| { req.apply(&mut w.bss); w.bss.clone() });
+    match wiphy.ops.change_bss(&wiphy, &wdev, &params) {
+        Ok(()) => Ok(()),
+        Err(Errno::Eopnotsupp) => Ok(()),
+        Err(e) => Err(e),
     }
-    if let Some(rates) = msg::get_bytes(attrs, a::BSS_BASIC_RATES) {
-        if rates.is_empty() { return Err(Errno::Einval); }
-    }
-    let _ = wiphy;
-    Ok(())
 }

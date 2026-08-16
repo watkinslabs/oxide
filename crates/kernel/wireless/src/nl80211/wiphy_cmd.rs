@@ -90,11 +90,10 @@ fn set_inner(attrs: &[u8], ctx: GenlCtx) -> Result<(), Errno> {
 fn rename(wiphy: &Arc<Wiphy>, attrs: &[u8]) -> Result<(), Errno> {
     let Some(name) = msg::get_str(attrs, a::WIPHY_NAME) else { return Ok(()); };
     if name.is_empty() { return Err(Errno::Einval); }
-    if name == wiphy.name { return Ok(()); }
+    if wiphy.is_named(name) { return Ok(()); }
     if registry::lookup_by_name(name).is_some() { return Err(Errno::Einval); }
-    // The registry owns the name and hands it out at registration; renaming a
-    // live radio is refused here rather than left half-applied.
-    Err(Errno::Eopnotsupp)
+    wiphy.set_name(name);
+    Ok(())
 }
 
 /// Read the configuration fields a request asks to change. # C: O(N attrs)

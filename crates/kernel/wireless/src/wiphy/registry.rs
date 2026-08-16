@@ -7,12 +7,15 @@ use alloc::format;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use sync::{Spinlock, Wiphy as WiphyLockClass};
+use sync::{Spinlock, WiphyList as WiphyListLockClass};
 use syscall::errno::Errno;
 
 use super::Wiphy;
 
-static RADIOS: Spinlock<Vec<Arc<Wiphy>>, WiphyLockClass> = Spinlock::new(Vec::new());
+/// The list is ranked below one radio's own lock: registration and a name
+/// lookup both hold the list while taking a radio's lock, and no path takes
+/// the list with a radio's lock already held.
+static RADIOS: Spinlock<Vec<Arc<Wiphy>>, WiphyListLockClass> = Spinlock::new(Vec::new());
 
 /// Lowest index no live radio holds. # C: O(N radios)
 pub fn next_index() -> u32 {
@@ -30,8 +33,8 @@ pub fn register(mut wiphy: Wiphy) -> Result<Arc<Wiphy>, Errno> {
     let mut idx = 0;
     while g.iter().any(|w| w.index == idx) { idx += 1; }
     wiphy.index = idx;
-    wiphy.name = format!("phy{idx}");
     let handle = Arc::new(wiphy);
+    handle.with_state(|s| s.name = format!("phy{idx}"));
     g.push(handle.clone());
     Ok(handle)
 }
@@ -53,7 +56,7 @@ pub fn lookup(index: u32) -> Option<Arc<Wiphy>> {
 
 /// Radio with this name. # C: O(N radios)
 pub fn lookup_by_name(name: &str) -> Option<Arc<Wiphy>> {
-    RADIOS.lock().iter().find(|w| w.name == name).cloned()
+    RADIOS.lock().iter().find(|w| w.is_named(name)).cloned()
 }
 
 /// Every radio, in registration order. # C: O(N radios)
