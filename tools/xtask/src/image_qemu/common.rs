@@ -72,7 +72,13 @@ pub(super) fn host_share_args() -> Vec<String> {
             out.push("-fsdev".to_string());
             out.push(format!("local,id=ox9p,path={path},security_model=none"));
             out.push("-device".to_string());
-            out.push(format!("virtio-9p-pci,fsdev=ox9p,mount_tag={tag}"));
+            // `disable-legacy=on,bus=pcie.0` is not decoration: without it QEMU
+            // presents a TRANSITIONAL function (device id in 0x1000..=0x103F),
+            // and this kernel binds modern-only virtio-pci on purpose. The
+            // device then appears on the bus, no driver claims it, and the
+            // mount fails `ENOPROTOOPT` — which reads exactly like a kernel
+            // that cannot do 9P at all.
+            out.push(format!("virtio-9p-pci,fsdev=ox9p,mount_tag={tag},disable-legacy=on,bus=pcie.0"));
         }
     }
     if let Ok(sock) = std::env::var("OXIDE_QEMU_VIRTIOFS_SOCK") {
@@ -82,7 +88,7 @@ pub(super) fn host_share_args() -> Vec<String> {
             out.push("-chardev".to_string());
             out.push(format!("socket,id=oxvfs,path={sock}"));
             out.push("-device".to_string());
-            out.push(format!("vhost-user-fs-pci,queue-size=1024,chardev=oxvfs,tag={tag}"));
+            out.push(format!("vhost-user-fs-pci,queue-size=1024,chardev=oxvfs,tag={tag},bus=pcie.0"));
         }
     }
     out

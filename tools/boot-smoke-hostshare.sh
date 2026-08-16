@@ -191,11 +191,34 @@ step remove_file    'rm -f /mnt/host/from-guest.txt'
 step unmount_share  'umount /mnt/host'
 step share_done     'echo hostshare-roundtrip-clean'
 
-# The host's own view is the check the guest cannot fake: a file the guest
-# claimed to create must exist on the host side.
-if [ ! -d "$SHARE/made-by-guest" ]; then
-    echo "boot-smoke-hostshare: FAIL — the guest's mkdir never reached the host" >&2
-    exit 1
+# A step's DONE marker only proves the command was TYPED: the serial line
+# echoes what is sent, so the marker appears whether or not the command
+# succeeded. Every real assertion is therefore made below, on the transcript
+# and on the host's own view of the share.
+fail=0
+note_fail() { echo "boot-smoke-hostshare: FAIL — $1" >&2; fail=1; }
+
+# The mount itself. `mount(8)` reports a refusal on stderr and the guest shell
+# happily carries on, so silence here is the only pass.
+if grep -aq "^mount: /mnt/host:" "$LOG"; then
+    note_fail "the mount was refused: $(grep -a '^mount: /mnt/host:' "$LOG" | head -1)"
+fi
+for marker in no-9p-type no-virtiofs-type nonce-mismatch missing-entry; do
+    grep -aq "^${marker}" "$LOG" && note_fail "guest reported ${marker}"
+done
+
+# The host's nonce must appear in the guest's output. It is generated per run,
+# so a stale mount or a cached page cannot produce it.
+if ! grep -aq "$NONCE" "$LOG"; then
+    note_fail "the guest never read back the host's nonce"
 fi
 
-echo "boot-smoke-hostshare: PASS — guest read the host's nonce and wrote back (${#TAGS[@]} steps)"
+# The host's own view is the check the guest cannot fake: a directory the guest
+# created must exist on the host side.
+[ -d "$SHARE/made-by-guest" ] || note_fail "the guest's mkdir never reached the host"
+
+if [ "$fail" -ne 0 ]; then
+    echo "boot-smoke-hostshare: see $LOG" >&2
+    exit 1
+fi
+echo "boot-smoke-hostshare: PASS — guest mounted the host share, read the nonce $NONCE and wrote back (${#TAGS[@]} steps)"

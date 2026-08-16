@@ -9,6 +9,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "aes"
+version = "0.1.0"
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -140,6 +144,18 @@ dependencies = [
  "sched",
  "softirq",
  "sync",
+ "vfs",
+]
+
+[[package]]
+name = "bluetooth"
+version = "0.1.0"
+dependencies = [
+ "aes",
+ "crc",
+ "p256",
+ "sync",
+ "syscall",
  "vfs",
 ]
 
@@ -601,6 +617,17 @@ dependencies = [
  "drv",
  "hal-aarch64",
  "sync",
+]
+
+[[package]]
+name = "drv-vhci"
+version = "0.1.0"
+dependencies = [
+ "bluetooth",
+ "drv",
+ "sync",
+ "syscall",
+ "vfs",
 ]
 
 [[package]]
@@ -1303,6 +1330,7 @@ dependencies = [
  "drv-ps2-keyboard",
  "drv-serial",
  "drv-simplefb",
+ "drv-vhci",
  "drv-virtio-blk",
  "drv-virtio-gpu",
  "drv-virtio-input",
@@ -1547,6 +1575,7 @@ name = "net"
 version = "0.1.0"
 dependencies = [
  "bitflags",
+ "bluetooth",
  "cgroup",
  "cpu",
  "crng",
@@ -1575,8 +1604,6 @@ dependencies = [
 name = "netfilter"
 version = "0.1.0"
 dependencies = [
- "conntrack",
- "nat",
  "net",
  "netlink",
  "sched",
@@ -1680,6 +1707,10 @@ dependencies = [
  "syscall",
  "vfs",
 ]
+
+[[package]]
+name = "p256"
+version = "0.1.0"
 
 [[package]]
 name = "pci"
@@ -2372,6 +2403,7 @@ dependencies = [
  "aslr",
  "audit",
  "block",
+ "bluetooth",
  "boot-info",
  "cgroup",
  "conformance",
