@@ -20,6 +20,7 @@ use crate::flags::*;
 use crate::uapi::*;
 
 pub mod bitmap;
+pub mod sanity;
 
 pub use bitmap::{nat_bitmap, sit_bitmap, test_bit};
 

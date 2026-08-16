@@ -170,10 +170,13 @@ fn the_condition_word_is_the_one_the_mount_publishes() {
     let mut v = test_image::with_root().mount().unwrap();
     let g = pic(&mut v, &Counters::new());
     assert!(!g.writable);
-    assert_eq!(g.sbi_flags,
-               crate::sysfs::status_word(v.is_dirty(), v.recovering, v.writable(),
-                                         v.options().checkpoint_disabled,
-                                         v.checkpoint().flags));
+    assert_eq!(g.sbi_flags, v.sb_status());
+    // And it is the composed word, not a handful of the volume's fields put
+    // together a second time: a bit nothing in that handful covers is in it.
+    v.set_closing(true);
+    assert_ne!(v.sb_status() & (1 << crate::sbflags::bits::IS_CLOSE), 0);
+    let g = pic(&mut v, &Counters::new());
+    assert_eq!(g.sbi_flags, v.sb_status());
 }
 
 /// Node slots left are what the table can name, less what is reserved and

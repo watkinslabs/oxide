@@ -48,10 +48,13 @@ pub const fn bit(pos: u32) -> u64 { 1u64 << pos }
 
 /// The positions that are NOT stored in the flag word.
 ///
-/// Both are the volume's own state already — the dirty mark a write leaves and
-/// the replay a mount runs — and storing a second copy would let the two
-/// disagree, which is the failure this mask exists to prevent.
-pub const DERIVED: u64 = bit(IS_DIRTY) | bit(POR_DOING);
+/// Each is the volume's own state already — the dirty mark a write leaves, the
+/// replay a mount runs, and the set of quota records waiting to be written —
+/// and storing a second copy would let the two disagree, which is the failure
+/// this mask exists to prevent. The quota one is the plainest case: the
+/// records themselves are the record of whether any is outstanding, and a bit
+/// beside them could say no while the set was not empty.
+pub const DERIVED: u64 = bit(IS_DIRTY) | bit(POR_DOING) | bit(QUOTA_NEED_FLUSH);
 
 /// Whether `pos` names a condition the flag word stores. # C: O(1)
 pub const fn stored(pos: u32) -> bool { bit(pos) & DERIVED == 0 }

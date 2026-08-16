@@ -23,6 +23,34 @@ fn mounted() -> Arc<F2fs> {
     F2fs::open_line(dev, "/dev/fake", true, "").expect("mount")
 }
 
+/// The flush a mount going read-only takes is taken as if the volume were
+/// going away — and the checkpoint it leaves SAYS so, because the reason a
+/// checkpoint is written is read off the closing mark rather than from the
+/// call site.
+///
+/// The mark itself is transient, so the durable consequence is what this
+/// asserts: the pack carries the clean-shutdown flag, which an ordinary sync
+/// never sets.
+#[test]
+fn going_read_only_writes_the_checkpoint_a_shutdown_writes() {
+    use crate::flags::CP_UMOUNT_FLAG;
+    use crate::sbflags::bits::IS_CLOSE;
+    let fs = mounted();
+    // An ordinary flush is not a shutdown. The fixture's own checkpoint was
+    // written by a clean shutdown, so one has to be forced to see the
+    // difference — a mount with nothing dirty writes nothing at all.
+    fs.volume.lock().mark_dirty();
+    fs.checkpoint().expect("sync");
+    assert_eq!(fs.volume.lock().checkpoint().flags & CP_UMOUNT_FLAG, 0);
+    fs.remount("", true).expect("remount ro");
+    assert!(!fs.is_writable());
+    let v = fs.volume.lock();
+    assert_ne!(v.checkpoint().flags & CP_UMOUNT_FLAG, 0,
+               "the last flush did not say the volume was put down cleanly");
+    // The mark is for the flush's duration, not for ever.
+    assert_eq!(v.sb_status() & (1 << IS_CLOSE), 0);
+}
+
 // -------------------------------------------------- the line reaches the mount
 
 #[test]

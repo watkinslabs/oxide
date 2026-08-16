@@ -42,7 +42,7 @@ fn send(v: &mut Volume<MemImage>, ino: u32, cmd: u32, p: &[u8], c: &Ctx)
 fn payload_of(a: &Answer) -> Vec<u8> {
     match a {
         Answer::Done(r) => r.payload.clone().expect("a payload"),
-        Answer::NotBuilt(u) => panic!("not built: {u:?}"),
+        Answer::NotBuilt(u) => match *u {},
     }
 }
 
@@ -200,7 +200,7 @@ fn the_move_command_writes_nothing_back_to_the_caller() {
     let a = send(&mut v, src, MOVE_RANGE, &move_payload(3, 0, 0, BLK), &c).unwrap();
     match a {
         Answer::Done(r) => assert!(r.payload.is_none(), "the move wrote bytes back"),
-        Answer::NotBuilt(u) => panic!("not built: {u:?}"),
+        Answer::NotBuilt(u) => match u {},
     }
 }
 

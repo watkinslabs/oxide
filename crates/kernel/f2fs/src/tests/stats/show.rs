@@ -278,11 +278,19 @@ fn the_reported_time_is_the_one_the_caller_supplied() {
     assert!(b.contains("Current Time Sec: 1234 / Mounted Time Sec: "), "{b}");
 }
 
-/// A mount in a reportable condition lists it by name.
+/// A mount in a reportable condition lists it by name — and a mount in none
+/// lists nothing, which is the answer an ordinary read-write mount gives.
+///
+/// The old spelling of this asserted `writable` on an ordinary mount, which
+/// was the report of a bit fed from the wrong thing: the position means a
+/// READ-ONLY mount made writable transiently to repair itself, not a mount
+/// that may be written to.
 #[test]
 fn the_conditions_a_mount_is_in_are_listed_by_name() {
     let mut v = vol();
     let g = General::sample(&mut v, &Counters::new()).unwrap();
-    let b = partition(&g, "vda", 0, 0);
-    assert!(b.contains("[SBI: writable]\n"), "{b}");
+    assert!(!partition(&g, "vda", 0, 0).contains("[SBI:"), "an ordinary mount is in none");
+    v.set_closing(true);
+    let g = General::sample(&mut v, &Counters::new()).unwrap();
+    assert!(partition(&g, "vda", 0, 0).contains("[SBI: closing]\n"));
 }

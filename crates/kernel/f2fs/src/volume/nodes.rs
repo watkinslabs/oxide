@@ -81,6 +81,17 @@ impl<S: SectorSource> Volume<S> {
         if !node::inode::checksum_ok(&inode, &n.block, self.inode_seed, self.sb.feature) {
             return Err(Errno::Eio);
         }
+        // A file that stands for a member device must stand for a REAL one.
+        // The flag's agreement with the volume's features and the file's
+        // pinning is settled by `sanity`, which sees neither the member table
+        // nor the zone reports; the extent's agreement with a member's span is
+        // settled here, where both are reachable. An extent matching no
+        // member, or member zero, or a zoned member, describes blocks that are
+        // not a device to hand out — and handing them out would give one span
+        // two owners.
+        if crate::devices::alias::is_alias(inode.flags) && self.alias_device(&inode).is_err() {
+            return Err(Errno::Eio);
+        }
         Ok((inode, n))
     }
 

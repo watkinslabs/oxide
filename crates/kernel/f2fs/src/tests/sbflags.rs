@@ -25,7 +25,6 @@ fn each_condition_owns_the_bit_its_reader_decodes() {
     assert_eq!(only(IS_RECOVERED), 1 << 7);
     assert_eq!(only(CP_DISABLED), 1 << 8);
     assert_eq!(only(CP_DISABLED_QUICK), 1 << 9);
-    assert_eq!(only(QUOTA_NEED_FLUSH), 1 << 10);
     assert_eq!(only(QUOTA_SKIP_FLUSH), 1 << 11);
     assert_eq!(only(QUOTA_NEED_REPAIR), 1 << 12);
     assert_eq!(only(IS_RESIZEFS), 1 << 13);
@@ -35,17 +34,22 @@ fn each_condition_owns_the_bit_its_reader_decodes() {
 }
 
 #[test]
-fn the_two_derived_conditions_own_their_bits_too() {
+fn the_derived_conditions_own_their_bits_too() {
     let f = SbFlags::new();
-    assert_eq!(f.word(Derived { dirty: true, recovering: false }), 1 << 0);
-    assert_eq!(f.word(Derived { dirty: false, recovering: true }), 1 << 3);
+    let none = Derived::default();
+    assert_eq!(f.word(Derived { dirty: true, ..none }), 1 << 0);
+    assert_eq!(f.word(Derived { recovering: true, ..none }), 1 << 3);
+    assert_eq!(f.word(Derived { quota_dirty: true, ..none }), 1 << QUOTA_NEED_FLUSH);
+    // Asserted through the constant here ONLY because the literal above
+    // already pins it: the position is 10 and the derived path must use it.
+    assert_eq!(QUOTA_NEED_FLUSH, 10);
 }
 
 #[test]
 fn the_word_covers_every_condition_the_format_names() {
     let mut f = SbFlags::new();
     for pos in 0..MAX_SBI_FLAG { f.set(pos); }
-    let all = f.word(Derived { dirty: true, recovering: true });
+    let all = f.word(Derived { dirty: true, recovering: true, quota_dirty: true });
     assert_eq!(all, (1u64 << MAX_SBI_FLAG) - 1, "a gap is a condition nothing can raise");
 }
 
@@ -54,9 +58,12 @@ fn a_derived_condition_is_not_stored_twice() {
     let mut f = SbFlags::new();
     f.set(IS_DIRTY);
     f.set(POR_DOING);
+    f.set(QUOTA_NEED_FLUSH);
     assert_eq!(f.stored(), 0, "the volume's own state is the one copy");
     assert!(!f.is_set(IS_DIRTY));
-    assert_eq!(f.word(Derived { dirty: true, recovering: true }), (1 << 0) | (1 << 3));
+    assert!(!f.is_set(QUOTA_NEED_FLUSH));
+    assert_eq!(f.word(Derived { dirty: true, recovering: true, quota_dirty: true }),
+               (1 << 0) | (1 << 3) | (1 << 10));
 }
 
 #[test]

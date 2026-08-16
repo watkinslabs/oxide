@@ -23,26 +23,44 @@ fn an_undefined_pairing_is_refused_even_though_both_modes_exist() {
     assert_eq!(check(&q, &reg(), &fs()).unwrap_err(), FscryptError::ModePairNotAllowed);
 }
 
-/// The newer pairings are v2 only; naming one in a v1 policy is refused.
+/// The newer pairings are v2 only; naming one in a v1 policy is refused —
+/// which is a statement about the POLICY VERSION, not about the ciphers: both
+/// SM4 modes are carried and the v2 spelling of the same pair is accepted.
 #[test]
 fn newer_pairings_are_not_available_to_the_older_version() {
-    let v2 = policy_v2(MODE_SM4_XTS, MODE_SM4_CTS, 0);
-    // Accepted as a policy, then refused for want of a cipher — a different
-    // answer from a pairing that was never defined.
-    assert_eq!(check(&v2, &reg(), &fs()).unwrap_err(),
-               FscryptError::UnsupportedMode(MODE_SM4_XTS));
+    check(&policy_v2(MODE_SM4_XTS, MODE_SM4_CTS, 0), &reg(), &fs()).unwrap();
+    check(&policy_v2(MODE_SM4_XTS, MODE_SM4_CTS, 0), &dir(), &fs()).unwrap();
     let v1 = policy_v1(MODE_SM4_XTS, MODE_SM4_CTS, 0);
     assert_eq!(check(&v1, &reg(), &fs()).unwrap_err(), FscryptError::ModePairNotAllowed);
 }
 
-/// A mode another kernel carries is not a corrupt volume, and the two answers
-/// are deliberately different errno values.
+/// Every mode number the format assigns is carried, so the pairings that name
+/// them are usable rather than refused for want of a cipher.
 #[test]
-fn a_mode_this_build_lacks_differs_from_a_mode_that_does_not_exist() {
-    let p = policy_v2(MODE_AES_256_XTS, MODE_AES_256_HCTR2, 0);
-    let e = check(&p, &dir(), &fs()).unwrap_err();
-    assert_eq!(e, FscryptError::UnsupportedMode(MODE_AES_256_HCTR2));
-    assert_eq!(e.errno(), syscall::errno::Errno::Enopkg);
+fn every_assigned_mode_is_carried() {
+    check(&policy_v2(MODE_AES_256_XTS, MODE_AES_256_HCTR2, 0), &dir(), &fs()).unwrap();
+    check(&policy_v2(MODE_AES_256_XTS, MODE_AES_256_HCTR2, 0), &reg(), &fs()).unwrap();
+    check(&policy_v2(MODE_ADIANTUM, MODE_ADIANTUM, 0), &reg(), &fs()).unwrap();
+    check(&policy_v1(MODE_ADIANTUM, MODE_ADIANTUM, 0), &reg(), &fs()).unwrap();
+    for n in 1..=MODE_MAX {
+        // 2 and 3 are holes in the numbering, never assigned.
+        if n == 2 || n == 3 { continue; }
+        crate::crypto::mode::by_number(n).unwrap();
+    }
+}
+
+/// A number the format does not assign is a corrupt policy, not a file some
+/// other kernel could open, and the two answers carry different errno values.
+#[test]
+fn an_unassigned_mode_number_is_a_corrupt_policy() {
+    let e = crate::crypto::mode::by_number(200).unwrap_err();
+    assert_eq!(e, FscryptError::UnknownMode(200));
+    assert_eq!(e.errno(), syscall::errno::Errno::Einval);
+    // A mode this build lacked would answer ENOPKG instead — the file is
+    // intact and a different reader could open it.
+    assert_eq!(FscryptError::UnsupportedMode(200).errno(), syscall::errno::Errno::Enopkg);
+    // The pairing check runs first, so a policy naming two of them never
+    // reaches the mode table at all.
     let q = policy_v2(200, 201, 0);
     assert_eq!(check(&q, &reg(), &fs()).unwrap_err(), FscryptError::ModePairNotAllowed);
 }
@@ -68,27 +86,46 @@ fn two_derivation_flags_at_once_are_refused() {
     assert_eq!(check(&q, &reg(), &fs()).unwrap_err(), FscryptError::MutuallyExclusiveFlags(d));
 }
 
-/// The direct-key flag needs the file nonce in the IV, and none of the block
-/// modes has room for it — which is why no policy this build can serve uses
-/// it, exactly as upstream.
+/// The direct-key flag needs the file nonce in the IV, so it belongs only to
+/// the one pairing that names a wide-tweak mode on both sides.
 #[test]
-fn direct_key_is_refused_for_every_mode_this_build_carries() {
-    for m in [MODE_AES_256_XTS, MODE_AES_128_CBC] {
-        let names = if m == MODE_AES_256_XTS { MODE_AES_256_CTS } else { MODE_AES_128_CTS };
+fn direct_key_belongs_only_to_the_wide_tweak_pairing() {
+    for m in [MODE_AES_256_XTS, MODE_AES_128_CBC, MODE_SM4_XTS] {
+        let names = match m {
+            MODE_AES_256_XTS => MODE_AES_256_CTS,
+            MODE_SM4_XTS => MODE_SM4_CTS,
+            _ => MODE_AES_128_CTS,
+        };
         let p = policy_v2(m, names, FLAG_DIRECT_KEY);
         // Different modes for contents and names is the first thing it fails.
         assert_eq!(check(&p, &reg(), &fs()).unwrap_err(), FscryptError::DirectKeyModesDiffer);
         let q = policy_v2(m, m, FLAG_DIRECT_KEY);
-        let e = check(&q, &reg(), &fs()).unwrap_err();
         // Same mode both sides is not a defined pairing for these, so it is
         // refused before the IV width is ever consulted.
-        assert_eq!(e, FscryptError::ModePairNotAllowed);
+        assert_eq!(check(&q, &reg(), &fs()).unwrap_err(), FscryptError::ModePairNotAllowed);
     }
-    // A pairing that IS defined with one mode on both sides reaches the IV
-    // width check and fails there.
-    let p = policy_v1(MODE_ADIANTUM, MODE_ADIANTUM, FLAG_DIRECT_KEY);
-    assert_eq!(check(&p, &reg(), &fs()).unwrap_err(),
-               FscryptError::UnsupportedMode(MODE_ADIANTUM));
+    // The pairing that IS defined with one mode on both sides has a 32-byte
+    // IV, which is the width the nonce needs, so it is accepted — under both
+    // policy versions.
+    check(&policy_v1(MODE_ADIANTUM, MODE_ADIANTUM, FLAG_DIRECT_KEY), &reg(), &fs()).unwrap();
+    check(&policy_v2(MODE_ADIANTUM, MODE_ADIANTUM, FLAG_DIRECT_KEY), &reg(), &fs()).unwrap();
+    // The width check is what admits it: the narrow modes fail it.
+    assert!(crate::crypto::mode::iv_holds_nonce(crate::crypto::mode::ADIANTUM));
+    assert!(crate::crypto::mode::iv_holds_nonce(crate::crypto::mode::AES_256_HCTR2));
+    for m in [crate::crypto::mode::AES_256_XTS, crate::crypto::mode::SM4_XTS,
+              crate::crypto::mode::SM4_CTS, crate::crypto::mode::AES_128_CBC] {
+        assert!(!crate::crypto::mode::iv_holds_nonce(m));
+    }
+}
+
+/// The other wide-tweak mode is only ever a FILENAMES mode, paired with a
+/// narrow contents mode, so the direct-key flag can never reach it.
+#[test]
+fn the_other_wide_mode_is_never_paired_with_itself() {
+    let p = policy_v2(MODE_AES_256_HCTR2, MODE_AES_256_HCTR2, FLAG_DIRECT_KEY);
+    assert_eq!(check(&p, &reg(), &fs()).unwrap_err(), FscryptError::ModePairNotAllowed);
+    let q = policy_v2(MODE_AES_256_XTS, MODE_AES_256_HCTR2, FLAG_DIRECT_KEY);
+    assert_eq!(check(&q, &reg(), &fs()).unwrap_err(), FscryptError::DirectKeyModesDiffer);
 }
 
 /// The inode-in-the-IV policies were only ever defined for one contents mode.

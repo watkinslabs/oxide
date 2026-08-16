@@ -28,11 +28,12 @@ use super::uapi::*;
 /// A command whose admission is complete and whose volume-layer operation is
 /// not built. Never an errno, so it can never be mistaken for a refusal the
 /// contract defines.
+///
+/// Empty: every command's operation is built. Kept as a type rather than
+/// deleted so the distinction stays available the moment a new command lands
+/// without one, and so the exhaustiveness of [`Outcome`] states it.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum Unbuilt {
-    /// Emptying one device of a multi-device volume onto the others.
-    FlushDevice,
-}
+pub enum Unbuilt {}
 
 /// The outcome of carrying out a request.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -75,7 +76,13 @@ pub fn exec<S: SectorSource>(v: &mut Volume<S>, ino: u32, c: &Ctx, r: &Req)
             v.move_file_range(ino, *pos_in, dst, *pos_out, *len)?;
             Outcome::Reply(Reply::done())
         }
-        Req::FlushDevice { .. } => Outcome::NotBuilt(Unbuilt::FlushDevice),
+        // The member index fits a `usize` by admission: it is smaller than
+        // the member count, which came from a table with one entry per
+        // superblock device slot.
+        Req::FlushDevice { dev_num, segments } => {
+            v.flush_device(*dev_num as usize, *segments)?;
+            Outcome::Reply(Reply::done())
+        }
         // Both report the blocks they moved through the caller's own argument
         // word, which is the count a caller distributing images checks against
         // what it expected to get back.
@@ -158,9 +165,13 @@ pub fn exec<S: SectorSource>(v: &mut Volume<S>, ino: u32, c: &Ctx, r: &Req)
             Outcome::Reply(Reply::u32(0))
         }
         Req::SetPinFile(pin) => { v.set_pinned(ino, *pin != 0)?; Outcome::Reply(Reply::u32(0)) }
-        // A volume carrying the device-alias feature is refused at mount, so
-        // no file on a mounted volume is one.
-        Req::GetDevAliasFile => Outcome::Reply(Reply::u32(0)),
+        // The answer is the FLAG, not whether the alias resolves: an inode
+        // whose extent matches no member never reaches a caller at all, being
+        // refused when it is read.
+        Req::GetDevAliasFile => {
+            let flags = v.read_inode(ino)?.flags;
+            Outcome::Reply(Reply::u32(u32::from(crate::devices::alias::is_alias(flags))))
+        }
         Req::IoPrio(_) => Outcome::Reply(Reply::done()),
         Req::PrecacheExtents => {
             let inode = v.read_inode(ino)?;

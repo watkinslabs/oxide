@@ -147,7 +147,11 @@ impl<S: SectorSource> Volume<S> {
             let decoded = block::decode(&raw).ok_or(Errno::Einval)?;
             inos.extend_from_slice(&decoded.inos);
         }
+        let any = !inos.is_empty();
         for ino in inos { self.free_inode(ino)?; }
+        // Reclaiming an orphan is a recovery as much as replaying a chain is,
+        // and the reference records both under the one condition.
+        if any { self.sbi.recovered(); }
         // The pack on the medium still says orphans are present. Clearing the
         // bit here is what stops the NEXT checkpoint from carrying it forward
         // and sending a later mount back to blocks that no longer exist.

@@ -302,8 +302,9 @@ impl General {
             discard: v.options().discard,
             large_section: segs_per_sec > 1,
         };
-        g.sbi_flags = crate::sysfs::status_word(v.is_dirty(), v.recovering, v.writable(),
-                                                v.options().checkpoint_disabled, cp_flags);
+        // The one composed word, off the volume — the same value the mount's
+        // own status attribute publishes.
+        g.sbi_flags = v.sb_status();
         for (i, log) in v.logs().iter().enumerate().take(NR_CURSEG_TYPE) {
             g.blkoff[i] = u32::from(log.next_blkoff);
             g.curseg[i] = log.segno;

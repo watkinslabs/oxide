@@ -44,7 +44,7 @@ fn send(v: &mut Volume<MemImage>, ino: u32, cmd: u32, payload: &[u8])
 fn payload_of(a: &Answer) -> &[u8] {
     match a {
         Answer::Done(r) => r.payload.as_deref().expect("a payload"),
-        Answer::NotBuilt(u) => panic!("not built: {u:?}"),
+        Answer::NotBuilt(u) => match *u {},
     }
 }
 
@@ -260,22 +260,46 @@ fn no_command_this_handler_owns_reports_its_volume_operation_as_missing() {
         seen += 1;
         let n = crate::ioctl::spec::payload_len(cmd) as usize;
         if let Ok(Answer::NotBuilt(u)) = send(&mut v, ino, cmd, &vec![0u8; n]) {
-            panic!("{cmd:#x} is admitted and not built: {u:?}");
+            match u {}
         }
     }
     // A sweep over an empty set proves nothing.
     assert!(seen > 20, "only {seen} commands reached the sweep");
 }
 
-/// The one operation that is still missing is unreachable on a volume of one
-/// device, which is why the sweep above does not meet it: the ladder refuses
-/// the command before it is carried out. Stated here so the gap stays visible
-/// rather than looking like a command that works.
+/// Emptying a member is meaningless on a volume with one: there is nowhere
+/// for the blocks to go, so the ladder refuses it before the work runs. The
+/// sweep above therefore never reaches the work, which is why the spread
+/// volume below exists.
 #[test]
 fn emptying_one_device_of_a_single_device_volume_is_refused_by_the_ladder() {
     let (mut v, ino) = one_file();
     let n = crate::ioctl::spec::payload_len(FLUSH_DEVICE) as usize;
     assert_eq!(send(&mut v, ino, FLUSH_DEVICE, &vec![0u8; n]).map(|_| ()),
+               Err(Errno::Einval));
+}
+
+/// The same command on a volume that HAS a second member runs — which is the
+/// only thing that shows the member count reaching the ladder from the volume
+/// rather than from a constant, and the work reaching the volume at all.
+#[test]
+fn emptying_a_member_of_a_spread_volume_is_carried_out() {
+    use crate::test_image::spread;
+    let split = [("/dev/a", 12u32), ("/dev/b", 3u32)];
+    let mut v = spread::mount(test_image::with_root().devices(&split)).expect("mounts");
+    let ino = v.create(ROOT_INO, b"f",
+                       &NewInode { mode: S_IFREG | 0o644, uid: 0, gid: 0, rdev: 0, now: NOW },
+                       None).unwrap();
+    let n = crate::ioctl::spec::payload_len(FLUSH_DEVICE) as usize;
+    let mut arg = vec![0u8; n];
+    // Member zero, two segments of it.
+    arg[4..8].copy_from_slice(&2u32.to_le_bytes());
+    let a = handle(&mut v, ino, FLUSH_DEVICE, &arg, &Extra::default(), &root()).expect("runs");
+    assert_eq!(a, Answer::Done(crate::ioctl::reply::Reply::done()));
+    // A member the volume does not have is still refused by the ladder.
+    let mut bad = vec![0u8; n];
+    bad[..4].copy_from_slice(&1u32.to_le_bytes());
+    assert_eq!(handle(&mut v, ino, FLUSH_DEVICE, &bad, &Extra::default(), &root()).map(|_| ()),
                Err(Errno::Einval));
 }
 

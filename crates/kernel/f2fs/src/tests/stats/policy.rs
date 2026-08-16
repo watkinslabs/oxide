@@ -42,15 +42,29 @@ fn the_conditions_are_listed_by_name_in_bit_order() {
 /// so the two surfaces cannot drift apart.
 #[test]
 fn the_named_positions_are_the_ones_the_status_attribute_sets() {
-    use crate::flags::CP_FSCK_FLAG;
-    let dirty = crate::sysfs::status_word(true, false, false, false, 0);
-    assert_eq!(policy::sbi_flag_text(dirty), "[SBI: fs_dirty]\n");
-    let fsck = crate::sysfs::status_word(false, false, false, false, CP_FSCK_FLAG);
-    assert_eq!(policy::sbi_flag_text(fsck), "[SBI: need_fsck]\n");
-    let recovering = crate::sysfs::status_word(false, true, false, false, 0);
-    assert_eq!(policy::sbi_flag_text(recovering), "[SBI: recovering]\n");
-    let disabled = crate::sysfs::status_word(false, false, false, true, 0);
-    assert_eq!(policy::sbi_flag_text(disabled), "[SBI: cp_disabled]\n");
-    let writable = crate::sysfs::status_word(false, false, true, false, 0);
-    assert_eq!(policy::sbi_flag_text(writable), "[SBI: writable]\n");
+    use crate::sbflags::{bits, Derived, SbFlags};
+    let none = Derived::default();
+    let word = |d: Derived| SbFlags::new().word(d);
+    assert_eq!(policy::sbi_flag_text(word(Derived { dirty: true, ..none })),
+               "[SBI: fs_dirty]\n");
+    assert_eq!(policy::sbi_flag_text(word(Derived { recovering: true, ..none })),
+               "[SBI: recovering]\n");
+    assert_eq!(policy::sbi_flag_text(word(Derived { quota_dirty: true, ..none })),
+               "[SBI: quota_need_flush]\n");
+    assert_eq!(policy::sbi_flag_text(
+                   SbFlags::at_mount(crate::flags::CP_FSCK_FLAG).word(none)),
+               "[SBI: need_fsck]\n");
+    let mut f = SbFlags::new();
+    f.disable_checkpoint(false);
+    assert_eq!(policy::sbi_flag_text(f.word(none)), "[SBI: cp_disabled]\n");
+    let mut g = SbFlags::new();
+    g.recovered();
+    assert_eq!(policy::sbi_flag_text(g.word(none)), "[SBI: recovered]\n");
+    let mut h = SbFlags::new();
+    h.set_closing(true);
+    assert_eq!(policy::sbi_flag_text(h.word(none)), "[SBI: closing]\n");
+    // Every name the report knows sits at a position `bits` names, and every
+    // position it names has a name.
+    for (pos, _) in policy::SBI_FLAG_NAMES { assert!(pos < bits::MAX_SBI_FLAG); }
+    assert_eq!(policy::SBI_FLAG_NAMES.len(), bits::MAX_SBI_FLAG as usize);
 }

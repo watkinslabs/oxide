@@ -10,12 +10,14 @@
 //!              the checkpoint that turns what was cleaned into space.
 //! - `resize`:  emptying the sections a shrinking volume gives up, and moving
 //!              the three accounts of its size together.
+//! - `flushdev`: emptying one member device of a spread volume onto the rest.
 
 pub mod victim;
 pub mod live;
 pub mod migrate;
 pub mod collect;
 pub mod resize;
+pub mod flushdev;
 
 pub use live::alive;
 pub use migrate::Owner;
