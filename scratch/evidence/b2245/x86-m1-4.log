@@ -1,0 +1,143 @@
+[H[J[1;1H[H[J[1;1H  Booting `oxide (multiboot2)'
+
+MB2
+L64
+[XSTATE] xsave=on pre_osxsave=0 cpuid0d_eax=0000000000000007 xcr0=0000000000000007 area=832
+[0.954] Kernel command line: BOOT_IMAGE=/boot/oxide-x86_64 root=/dev/vda rw earlycon printk.time=1 systemd.log_target=kmsg systemd.journald.forward_to_kmsg=1 sysctl.kernel.sysrq=1 sysrq_always_enabled console=ttyS0,115200 console=tty0 systemd.mask=firewalld.service systemd.mask=chronyd.service systemd.mask=ModemManager.service systemd.mask=plymouth-start.service systemd.mask=NetworkManager-wait-online.service systemd.mask=flatpak-add-fedora-repos.service systemd.debug_shell=ttyS0 systemd.mask=serial-getty@ttyS0.ser
+[0.963] vice oxide.bootargs=grub
+[0.964] [sysrq] always enabled by the boot line
+[42.126] [BOOT-DEV-NULL] type=8192 fs=devtmpfs
+[42.218] systemd[1]: systemd 257.13-1.fc42 running in system mode (+PAM +AUDIT +SELINUX -APPARMOR +IMA +IPE +SMACK +SECCOMP -GCRYPT +GNUTLS +OPENSSL +ACL +BLKID +CURL +ELFUTILS +FIDO2 +IDN2 -IDN -IPTC +KMOD +LIBCRYPTSETUP +LIBCRYPTSETUP_PLUGINS +LIBFDISK +PCRE2 +PWQUALITY +P11KIT +QRENCODE +TPM2 +BZIP2 +LZ4 +XZ +ZLIB +ZSTD +BPF_FRAMEWORK +BTF +XKBCOMMON +UTMP +SYSVINIT +LIBARCHIVE)
+[42.223] systemd[1]: Detected virtualization kvm.
+[42.224] systemd[1]: Detected architecture x86-64.
+[42.235] systemd[1]: bpf-restrict-fs: BPF LSM hook not enabled in the kernel, BPF LSM not supported.
+[42.492] systemd[1]: Queued start job for default target graphical.target.
+[42.496] systemd[1]: Created slice system-getty.slice - Slice /system/getty.
+[42.497] systemd[1]: Created slice system-modprobe.slice - Slice /system/modprobe.
+[42.497] systemd[1]: Created slice system-sshd\x2dkeygen.slice - Slice /system/sshd-keygen.
+[42.498] systemd[1]: Created slice system-systemd\x2dzram\x2dsetup.slice - Slice /system/systemd-zram-setup.
+[42.499] systemd[1]: Created slice user.slice - User and Session Slice.
+[42.499] systemd[1]: Started systemd-ask-password-console.path - Dispatch Password Requests to Console Directory Watch.
+[42.500] systemd[1]: Started systemd-ask-password-wall.path - Forward Password Requests to Wall Directory Watch.
+[42.500] systemd[1]: Set up automount proc-sys-fs-binfmt_misc.automount - Arbitrary Executable File Formats File System Automount Point.
+[42.501] systemd[1]: Expecting device dev-zram0.device - /dev/zram0...
+[42.501] systemd[1]: Reached target cryptsetup.target - Local Encrypted Volumes.
+[42.501] systemd[1]: Reached target getty.target - Login Prompts.
+[42.502] systemd[1]: Reached target integritysetup.target - Local Integrity Protected Volumes.
+[42.502] systemd[1]: Reached target paths.target - Path Units.
+[42.503] systemd[1]: Reached target remote-fs.target - Remote File Systems.
+[42.503] systemd[1]: Reached target slices.target - Slice Units.
+[42.503] systemd[1]: Reached target veritysetup.target - Local Verity Protected Volumes.
+[42.515] systemd[1]: Listening on systemd-coredump.socket - Process Core Dump Socket.
+[42.517] systemd[1]: Listening on systemd-creds.socket - Credential Encryption/Decryption.
+[42.520] systemd[1]: Listening on systemd-initctl.socket - initctl Compatibility Named Pipe.
+[42.523] systemd[1]: Listening on systemd-journald-audit.socket - Journal Audit Socket.
+[42.526] systemd[1]: Listening on systemd-journald-dev-log.socket - Journal Socket (/dev/log).
+[42.529] systemd[1]: Listening on systemd-journald.socket - Journal Sockets.
+[42.532] systemd[1]: systemd-pcrextend.socket - TPM PCR Measurements skipped, unmet condition check ConditionSecurity=measured-uki
+[42.533] systemd[1]: systemd-pcrlock.socket - Make TPM PCR Policy skipped, unmet condition check ConditionSecurity=measured-uki
+[42.534] systemd[1]: Listening on systemd-udevd-control.socket - udev Control Socket.
+[42.537] systemd[1]: Listening on systemd-udevd-kernel.socket - udev Kernel Socket.
+[42.540] systemd[1]: Listening on systemd-userdbd.socket - User Database Manager Socket.
+[42.547] systemd[1]: Mounting dev-hugepages.mount - Huge Pages File System...
+[42.554] systemd[1]: Mounting dev-mqueue.mount - POSIX Message Queue File System...
+[42.558] systemd[1]: sys-kernel-debug.mount: Directory /sys/kernel/debug to mount over is not empty, mounting anyway.
+[42.560] systemd[1]: Mounting sys-kernel-debug.mount - Kernel Debug File System...
+[42.563] systemd[1]: sys-kernel-tracing.mount: Directory /sys/kernel/tracing to mount over is not empty, mounting anyway.
+[42.566] systemd[1]: Mounting sys-kernel-tracing.mount - Kernel Trace File System...
+[!p]104[?7h[6n[32766;32766H[6n[42.573] systemd[1]: Started debug-shell.service - Early root shell on /dev/ttyS0 FOR DEBUGGING ONLY.
+[42.576] systemd[1]: fips-crypto-policy-overlay.service - Bind-mount FIPS crypto-policy in FIPS mode skipped, unmet condition check ConditionKernelCommandLine=fips=1
+[42.579] systemd[1]: kmod-static-nodes.service - Create List of Static Device Nodes skipped, unmet condition check ConditionFileNotEmpty=/lib/modules/6.19.0-oxide/modules.devname
+[42.581] systemd[1]: Starting modprobe@configfs.service - Load Kernel Module configfs...
+[42.586] systemd[1]: Starting modprobe@dm_mod.service - Load Kernel Module dm_mod...
+[42.593] systemd[1]: Starting modprobe@drm.service - Load Kernel Module drm...
+[42.597] systemd[1]: Starting modprobe@fuse.service - Load Kernel Module fuse...
+[42.605] systemd[1]: Starting modprobe@loop.service - Load Kernel Module loop...
+[42.608] systemd[1]: systemd-hibernate-clear.service - Clear Stale Hibernate Storage Info skipped, unmet condition check ConditionPathExists=/sys/firmware/efi/efivars/HibernateLocation-8cf2644b-4b0b-428f-9387-6d876050dc67
+[42.612] systemd[1]: Starting systemd-journald.service - Journal Service...
+[42.620] systemd[1]: Starting systemd-modules-load.service - Load Kernel Modules...
+[42.623] systemd[1]: systemd-pcrmachine.service - TPM PCR Machine ID Measurement skipped, unmet condition check ConditionSecurity=measured-uki
+[42.626] systemd[1]: Starting systemd-remount-fs.service - Remount Root and Kernel File Systems...
+[42.640] systemd-modules-load[38]: Failed to find module 'i2c_dev'
+[42.643] systemd-modules-load[38]: Failed to find module 'msr'
+[42.646] systemd-journald[35]: Collecting audit messages is enabled.
+[!p]104[?7h[6n[32766;32766H[6n[?2004hsh-5.2# [111.304] [sysrq] task dump  switches=5357 current=tid:0
+[111.305]   PID   TID name             ST onrq oncpu onwl cpu  last-sysc  nsysc      cputime_ms
+[111.306]  4096   4096 ktimers          S  n  n    n     0  none                0         36 tgid=  4096 vtid=     0 ptid=     0 wake_dl_ns=111327101345
+[111.308]  4097   4097 ksoftirqd        S  n  n    n     0  none                0          0 tgid=  4097 vtid=     0 ptid=     0
+[111.309]  4098   4098 ksoftirqd        S  n  n    n     1  none                0          0 tgid=  4098 vtid=     0 ptid=     0
+[111.310]  4099   4099 kworker          S  n  n    n     0  none                0          1 tgid=  4099 vtid=     0 ptid=     0
+[111.311]  4100   4100 kworkermgr       S  n  n    n     0  none                0          0 tgid=  4100 vtid=     0 ptid=     0
+[111.313]  4101   4101 kworker          S  n  n    n     1  none                0          0 tgid=  4101 vtid=     0 ptid=     0
+[111.314]  4102   4102 kworkermgr       S  n  n    n     1  none                0          0 tgid=  4102 vtid=     0 ptid=     0
+[111.315]  4103   4103 khelper          S  n  n    n     0  none                0          0 tgid=  4103 vtid=     0 ptid=     0
+[111.316]  4104   4104 kswapd0          S  n  n    n     0  none                0          0 tgid=  4104 vtid=     0 ptid=     0
+[111.318]  4105   4105 oom_reaper       S  n  n    n     0  none                0          0 tgid=  4105 vtid=     0 ptid=     0 wake_dl_ns=112129957164
+[111.319]  4106   4106 netns_reaper     S  n  n    n     0  none                0          0 tgid=  4106 vtid=     0 ptid=     0
+[111.320]  4107   4107 sock-rtnl-reap   S  n  n    n     0  none                0          0 tgid=  4107 vtid=     0 ptid=     0
+[111.322]  4108   4108 fw_loader        S  n  n    n     0  none                0          0 tgid=  4108 vtid=     0 ptid=     0
+[111.323]    25   4132 mount            Z  n  n    n     0  exit_group        688          7 tgid=  4132 vtid=    25 ptid=3235774466 exe=/usr/bin/mount
+[111.324]    26   4133 mount            Z  n  n    n     1  exit_group        688          4 tgid=  4133 vtid=    26 ptid=3235774466 exe=/usr/bin/mount
+[111.325]    27   4134 mount            Z  n  n    n     0  exit_group        690          8 tgid=  4134 vtid=    27 ptid=3235774466 exe=/usr/bin/mount
+[111.327]    28   4135 mount            Z  n  n    n     1  exit_group        690          4 tgid=  4135 vtid=    28 ptid=3235774466 exe=/usr/bin/mount
+[111.328]    29   4136 sh               S  n  n    n     0  pselect6          858         10 tgid=  4136 vtid=    29 ptid=3235774466 exe=/bin/sh
+[111.329]    30   4137 modprobe         Z  n  n    n     0  exit_group        642          6 tgid=  4137 vtid=    30 ptid=3235774466 exe=/sbin/modprobe
+[111.331]    31   4138 modprobe         Z  n  n    n     0  exit_group        642          5 tgid=  4138 vtid=    31 ptid=3235774466 exe=/sbin/modprobe
+[111.332]    32   4139 modprobe         Z  n  n    n     0  exit_group        642          4 tgid=  4139 vtid=    32 ptid=3235774466 exe=/sbin/modprobe
+[111.333]    33   4140 modprobe         Z  n  n    n     0  exit_group        643          5 tgid=  4140 vtid=    33 ptid=3235774466 exe=/sbin/modprobe
+[111.334]    34   4141 modprobe         Z  n  n    n     0  exit_group        643          5 tgid=  4141 vtid=    34 ptid=3235774466 exe=/sbin/modprobe
+[111.336]    35   4142 systemd-journal  S  n  n    n     1  epoll_wait       2724         26 tgid=  4142 vtid=    35 ptid=3235774466 wake_dl_ns=342831149000 exe=/usr/lib/systemd/systemd-journald
+[111.337]    38   4145 systemd-modules  Z  n  n    n     0  exit_group        964         18 tgid=  4145 vtid=    38 ptid=3235774466 exe=/usr/lib/systemd/systemd-modules-load
+[111.338]    39   4146 systemd-remount  Z  n  n    n     1  exit_group        759          8 tgid=  4146 vtid=    39 ptid=3235774466 exe=/usr/lib/systemd/systemd-remount-fs
+[111.339]    40   4147 systemd          S  n  n    n     1  execve              3          0 tgid=  4147 vtid=    40 ptid=3235774466
+[111.341]     1 3235774466 systemd          S  n  n    n     1  clone3          29510        216 tgid=3235774466 vtid=     1 ptid=     0
+[114.304] [sysrq] task dump  switches=5421 current=tid:0
+[114.305]   PID   TID name             ST onrq oncpu onwl cpu  last-sysc  nsysc      cputime_ms
+[114.307]  4096   4096 ktimers          S  n  n    n     0  none                0         38 tgid=  4096 vtid=     0 ptid=     0 wake_dl_ns=114399131230
+[114.308]  4097   4097 ksoftirqd        S  n  n    n     0  none                0          0 tgid=  4097 vtid=     0 ptid=     0
+[114.309]  4098   4098 ksoftirqd        S  n  n    n     1  none                0          0 tgid=  4098 vtid=     0 ptid=     0
+[114.311]  4099   4099 kworker          S  n  n    n     0  none                0          1 tgid=  4099 vtid=     0 ptid=     0
+[114.312]  4100   4100 kworkermgr       S  n  n    n     0  none                0          0 tgid=  4100 vtid=     0 ptid=     0
+[114.313]  4101   4101 kworker          S  n  n    n     1  none                0          0 tgid=  4101 vtid=     0 ptid=     0
+[114.314]  4102   4102 kworkermgr       S  n  n    n     1  none                0          0 tgid=  4102 vtid=     0 ptid=     0
+[114.316]  4103   4103 khelper          S  n  n    n     0  none                0          0 tgid=  4103 vtid=     0 ptid=     0
+[114.317]  4104   4104 kswapd0          S  n  n    n     0  none                0          0 tgid=  4104 vtid=     0 ptid=     0
+[114.318]  4105   4105 oom_reaper       S  n  n    n     0  none                0          0 tgid=  4105 vtid=     0 ptid=     0 wake_dl_ns=116130146150
+[114.319]  4106   4106 netns_reaper     S  n  n    n     0  none                0          0 tgid=  4106 vtid=     0 ptid=     0
+[114.321]  4107   4107 sock-rtnl-reap   S  n  n    n     0  none                0          0 tgid=  4107 vtid=     0 ptid=     0
+[114.322]  4108   4108 fw_loader        S  n  n    n     0  none                0          0 tgid=  4108 vtid=     0 ptid=     0
+[114.323]    25   4132 mount            Z  n  n    n     0  exit_group        688          7 tgid=  4132 vtid=    25 ptid=3235774466 exe=/usr/bin/mount
+[114.325]    26   4133 mount            Z  n  n    n     1  exit_group        688          4 tgid=  4133 vtid=    26 ptid=3235774466 exe=/usr/bin/mount
+[114.326]    27   4134 mount            Z  n  n    n     0  exit_group        690          8 tgid=  4134 vtid=    27 ptid=3235774466 exe=/usr/bin/mount
+[114.327]    28   4135 mount            Z  n  n    n     1  exit_group        690          4 tgid=  4135 vtid=    28 ptid=3235774466 exe=/usr/bin/mount
+[114.328]    29   4136 sh               S  n  n    n     0  pselect6          858         10 tgid=  4136 vtid=    29 ptid=3235774466 exe=/bin/sh
+[114.330]    30   4137 modprobe         Z  n  n    n     0  exit_group        642          6 tgid=  4137 vtid=    30 ptid=3235774466 exe=/sbin/modprobe
+[114.331]    31   4138 modprobe         Z  n  n    n     0  exit_group        642          5 tgid=  4138 vtid=    31 ptid=3235774466 exe=/sbin/modprobe
+[114.332]    32   4139 modprobe         Z  n  n    n     0  exit_group        642          4 tgid=  4139 vtid=    32 ptid=3235774466 exe=/sbin/modprobe
+[114.333]    33   4140 modprobe         Z  n  n    n     0  exit_group        643          5 tgid=  4140 vtid=    33 ptid=3235774466 exe=/sbin/modprobe
+[114.335]    34   4141 modprobe         Z  n  n    n     0  exit_group        643          5 tgid=  4141 vtid=    34 ptid=3235774466 exe=/sbin/modprobe
+[114.336]    35   4142 systemd-journal  S  n  n    n     1  epoll_wait       2724         26 tgid=  4142 vtid=    35 ptid=3235774466 wake_dl_ns=342831149000 exe=/usr/lib/systemd/systemd-journald
+[114.337]    38   4145 systemd-modules  Z  n  n    n     0  exit_group        964         18 tgid=  4145 vtid=    38 ptid=3235774466 exe=/usr/lib/systemd/systemd-modules-load
+[114.338]    39   4146 systemd-remount  Z  n  n    n     1  exit_group        759          8 tgid=  4146 vtid=    39 ptid=3235774466 exe=/usr/lib/systemd/systemd-remount-fs
+[114.340]    40   4147 systemd          S  n  n    n     1  execve              3          0 tgid=  4147 vtid=    40 ptid=3235774466
+[114.341]     1 3235774466 systemd          S  n  n    n     1  clone3          29510        216 tgid=3235774466 vtid=     1 ptid=     0
+[116.305] [sysrq] per-cpu heartbeats:
+[116.306]   CPU  age_ms  last-tid  last-syscall  nr_run  preempt_count  resched  ttwu_pending  wake_list
+[116.308]   0    0     0  none  0  0x0000000000010000  0  0  0
+[116.309]   1    73152     4142  epoll_wait  1  0x0000000000000001  0  0  0
+[118.306] [sysrq] backtrace: poking all CPUs (NMI/FIQ)
+[118.307] [NMI-BT] cpu=0000000000000000 rip=ffffffff80031e4f rsp=fffffb0000009d70 rflags=0000000000000056 cs=0000000000000028
+[118.309] [NMI-BT] rbp=fffffb0000009d70 rbx=0000000000000000 r12=ffffffff80a94401 r13=0000000000000000 r14=ffffffff809eaf98 r15=0000000000000002
+[118.310] [NMI-BT] cpu=0000000000000001 rip=ffffffff80694138 rsp=ffffffff81141770 rflags=0000000000000086 cs=0000000000000028
+[118.312] [NMI-BT] rbp=ffffffff811417a0 rbx=0000000000000003 r12=ffffffff809eaf98 r13=0000000000000086 r14=0000000000000003 r15=0000000000000001
+[120.307] [sysrq] backtrace: poking all CPUs (NMI/FIQ)
+[120.308] [NMI-BT] cpu=0000000000000000 rip=ffffffff80031e4f rsp=fffffb0000009d70 rflags=0000000000000056 cs=0000000000000028
+[120.309] [NMI-BT] rbp=fffffb0000009d70 rbx=0000000000000000 r12=ffffffff80a94401 r13=0000000000000000 r14=ffffffff809eaf98 r15=0000000000000002
+[120.311] [NMI-BT] cpu=0000000000000001 rip=ffffffff8067a0c2 rsp=ffffffff81141770 rflags=0000000000000012 cs=0000000000000028
+[120.312] [NMI-BT] rbp=ffffffff81141820 rbx=0000000000000001 r12=ffffffff85302970 r13=ffffffff809ee320 r14=ffffffff809eb573 r15=ffff800007049090
+[122.308] [sysrq] per-cpu heartbeats:
+[122.310]   CPU  age_ms  last-tid  last-syscall  nr_run  preempt_count  resched  ttwu_pending  wake_list
+[122.313]   0    2     0  none  0  0x0000000000010000  0  0  0
+[122.314]   1    79155     4142  epoll_wait  1  0x0000000000000002  0  0  0
+qemu-system-x86_64: terminating on signal 15 from pid 333303 (bash)
+make: *** [Makefile:261: qemu-x86-existing] Terminated

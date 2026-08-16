@@ -1,0 +1,235 @@
+[H[J[1;1H[H[J[1;1H  Booting `oxide (multiboot2)'
+
+MB2
+L64
+[XSTATE] xsave=on pre_osxsave=0 cpuid0d_eax=0000000000000007 xcr0=0000000000000007 area=832
+[1.197] Kernel command line: BOOT_IMAGE=/boot/oxide-x86_64 root=/dev/vda rw earlycon printk.time=1 systemd.log_target=kmsg systemd.journald.forward_to_kmsg=1 sysctl.kernel.sysrq=1 sysrq_always_enabled enforcing=0 console=ttyS0,115200 console=tty0 systemd.mask=firewalld.service systemd.mask=chronyd.service systemd.mask=ModemManager.service systemd.mask=plymouth-start.service systemd.mask=NetworkManager-wait-online.service systemd.mask=flatpak-add-fedora-repos.service systemd.debug_shell=ttyS0 systemd.mask=serial-get
+[1.205] ty@ttyS0.service oxide.bootargs=grub
+[1.206] [INFO]  selinux: enabled, awaiting policy
+[1.208] [sysrq] always enabled by the boot line
+[42.367] [BOOT-DEV-NULL] type=8192 fs=devtmpfs
+[42.463] systemd[1]: Failed to compute init label, ignoring.
+[42.463] systemd[1]: Successfully loaded SELinux policy in 23.876ms.
+[42.502] systemd[1]: Relabeled /dev/, /dev/shm/, /run/ in 7.430ms.
+[42.507] systemd[1]: systemd 257.13-1.fc42 running in system mode (+PAM +AUDIT +SELINUX -APPARMOR +IMA +IPE +SMACK +SECCOMP -GCRYPT +GNUTLS +OPENSSL +ACL +BLKID +CURL +ELFUTILS +FIDO2 +IDN2 -IDN -IPTC +KMOD +LIBCRYPTSETUP +LIBCRYPTSETUP_PLUGINS +LIBFDISK +PCRE2 +PWQUALITY +P11KIT +QRENCODE +TPM2 +BZIP2 +LZ4 +XZ +ZLIB +ZSTD +BPF_FRAMEWORK +BTF +XKBCOMMON +UTMP +SYSVINIT +LIBARCHIVE)
+[42.507] systemd[1]: Detected virtualization kvm.
+[42.508] systemd[1]: Detected architecture x86-64.
+[42.527] systemd[1]: bpf-restrict-fs: BPF LSM hook not enabled in the kernel, BPF LSM not supported.
+[42.728] systemd[1]: local-fs.target: Failed to read SELinux context of '/usr/lib/systemd/system/local-fs.target', ignoring: Operation not permitted
+[42.731] systemd[1]: systemd-remount-fs.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-remount-fs.service', ignoring: Operation not permitted
+[42.734] systemd[1]: systemd-journald.socket: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-journald.socket', ignoring: Operation not permitted
+[42.737] systemd[1]: systemd-journald.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-journald.service', ignoring: Operation not permitted
+[42.741] systemd[1]: systemd-soft-reboot.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-soft-reboot.service', ignoring: Operation not permitted
+[42.744] systemd[1]: final.target: Failed to read SELinux context of '/usr/lib/systemd/system/final.target', ignoring: Operation not permitted
+[42.746] systemd[1]: umount.target: Failed to read SELinux context of '/usr/lib/systemd/system/umount.target', ignoring: Operation not permitted
+[42.748] systemd[1]: soft-reboot.target: Failed to read SELinux context of '/usr/lib/systemd/system/soft-reboot.target', ignoring: Operation not permitted
+[42.750] systemd[1]: sysinit.target: Failed to read SELinux context of '/usr/lib/systemd/system/sysinit.target', ignoring: Operation not permitted
+[42.755] systemd[1]: veritysetup.target: Failed to read SELinux context of '/usr/lib/systemd/system/veritysetup.target', ignoring: Operation not permitted
+[42.757] systemd[1]: systemd-update-utmp.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-update-utmp.service', ignoring: Operation not permitted
+[42.760] systemd[1]: auditd.service: Failed to read SELinux context of '/usr/lib/systemd/system/auditd.service', ignoring: Operation not permitted
+[42.762] systemd[1]: audit-rules.service: Failed to read SELinux context of '/usr/lib/systemd/system/audit-rules.service', ignoring: Operation not permitted
+[42.765] systemd[1]: systemd-update-done.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-update-done.service', ignoring: Operation not permitted
+[42.768] systemd[1]: systemd-udevd.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-udevd.service', ignoring: Operation not permitted
+[42.770] systemd[1]: systemd-udevd-kernel.socket: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-udevd-kernel.socket', ignoring: Operation not permitted
+[42.773] systemd[1]: systemd-udevd-control.socket: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-udevd-control.socket', ignoring: Operation not permitted
+[42.776] systemd[1]: systemd-udev-load-credentials.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-udev-load-credentials.service', ignoring: Operation not permitted
+[42.781] systemd[1]: initrd-switch-root.target: Failed to read SELinux context of '/usr/lib/systemd/system/initrd-switch-root.target', ignoring: Operation not permitted
+[42.785] systemd[1]: plymouth-switch-root.service: Failed to read SELinux context of '/usr/lib/systemd/system/plymouth-switch-root.service', ignoring: Operation not permitted
+[42.789] systemd[1]: initrd-cleanup.service: Failed to read SELinux context of '/usr/lib/systemd/system/initrd-cleanup.service', ignoring: Operation not permitted
+[42.792] systemd[1]: initrd.target: Failed to read SELinux context of '/usr/lib/systemd/system/initrd.target', ignoring: Operation not permitted
+[42.796] systemd[1]: systemd-pcrphase-initrd.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-pcrphase-initrd.service', ignoring: Operation not permitted
+[42.800] systemd[1]: cryptsetup-pre.target: Failed to read SELinux context of '/usr/lib/systemd/system/cryptsetup-pre.target', ignoring: Operation not permitted
+[42.804] systemd[1]: tpm2.target: Failed to read SELinux context of '/usr/lib/systemd/system/tpm2.target', ignoring: Operation not permitted
+[42.807] systemd[1]: systemd-bsod.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-bsod.service', ignoring: Operation not permitted
+[42.811] systemd[1]: systemd-battery-check.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-battery-check.service', ignoring: Operation not permitted
+[42.815] systemd[1]: systemd-hibernate-resume.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-hibernate-resume.service', ignoring: Operation not permitted
+[42.820] systemd[1]: dracut-pre-udev.service: Failed to read SELinux context of '/usr/lib/systemd/system/dracut-pre-udev.service', ignoring: Operation not permitted
+[42.824] systemd[1]: dracut-pre-trigger.service: Failed to read SELinux context of '/usr/lib/systemd/system/dracut-pre-trigger.service', ignoring: Operation not permitted
+[42.828] systemd[1]: dracut-pre-pivot.service: Failed to read SELinux context of '/usr/lib/systemd/system/dracut-pre-pivot.service', ignoring: Operation not permitted
+[42.832] systemd[1]: remote-fs.target: Failed to read SELinux context of '/usr/lib/systemd/system/remote-fs.target', ignoring: Operation not permitted
+[42.836] systemd[1]: remote-fs-pre.target: Failed to read SELinux context of '/usr/lib/systemd/system/remote-fs-pre.target', ignoring: Operation not permitted
+[42.840] systemd[1]: dracut-pre-mount.service: Failed to read SELinux context of '/usr/lib/systemd/system/dracut-pre-mount.service', ignoring: Operation not permitted
+[42.844] systemd[1]: dracut-mount.service: Failed to read SELinux context of '/usr/lib/systemd/system/dracut-mount.service', ignoring: Operation not permitted
+[42.848] systemd[1]: dracut-initqueue.service: Failed to read SELinux context of '/usr/lib/systemd/system/dracut-initqueue.service', ignoring: Operation not permitted
+[42.851] systemd[1]: dracut-cmdline.service: Failed to read SELinux context of '/usr/lib/systemd/system/dracut-cmdline.service', ignoring: Operation not permitted
+[42.855] systemd[1]: rescue.target: Failed to read SELinux context of '/usr/lib/systemd/system/rescue.target', ignoring: Operation not permitted
+[42.859] systemd[1]: systemd-update-utmp-runlevel.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-update-utmp-runlevel.service', ignoring: Operation not permitted
+[42.863] systemd[1]: runlevel5.target: Failed to read SELinux context of '/usr/lib/systemd/system/graphical.target', ignoring: Operation not permitted
+[42.868] systemd[1]: upower.service: Failed to read SELinux context of '/usr/lib/systemd/system/upower.service', ignoring: Operation not permitted
+[42.871] systemd[1]: dbus.socket: Failed to read SELinux context of '/usr/lib/systemd/system/dbus.socket', ignoring: Operation not permitted
+[42.875] systemd[1]: dbus.service: Failed to read SELinux context of '/usr/lib/systemd/system/dbus-broker.service', ignoring: Operation not permitted
+[42.878] systemd[1]: udisks2.service: Failed to read SELinux context of '/usr/lib/systemd/system/udisks2.service', ignoring: Operation not permitted
+[42.882] systemd[1]: switcheroo-control.service: Failed to read SELinux context of '/usr/lib/systemd/system/switcheroo-control.service', ignoring: Operation not permitted
+[42.886] systemd[1]: alsa-state.service: Failed to read SELinux context of '/usr/lib/systemd/system/alsa-state.service', ignoring: Operation not permitted
+[42.889] systemd[1]: alsa-restore.service: Failed to read SELinux context of '/usr/lib/systemd/system/alsa-restore.service', ignoring: Operation not permitted
+[42.893] systemd[1]: rtkit-daemon.service: Failed to read SELinux context of '/usr/lib/systemd/system/rtkit-daemon.service', ignoring: Operation not permitted
+[42.897] systemd[1]: power-profiles-daemon.service: Failed to read SELinux context of '/usr/lib/systemd/system/power-profiles-daemon.service', ignoring: Operation not permitted
+[42.901] systemd[1]: debug-shell.service: Failed to read SELinux context of '/usr/lib/systemd/system/debug-shell.service', ignoring: Operation not permitted
+[42.905] systemd[1]: systemd-vconsole-setup.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-vconsole-setup.service', ignoring: Operation not permitted
+[42.909] systemd[1]: accounts-daemon.service: Failed to read SELinux context of '/usr/lib/systemd/system/accounts-daemon.service', ignoring: Operation not permitted
+[42.913] systemd[1]: nss-user-lookup.target: Failed to read SELinux context of '/usr/lib/systemd/system/nss-user-lookup.target', ignoring: Operation not permitted
+[42.916] systemd[1]: display-manager.service: Failed to read SELinux context of '/usr/lib/systemd/system/gdm.service', ignoring: Operation not permitted
+[42.920] systemd[1]: systemd-user-sessions.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-user-sessions.service', ignoring: Operation not permitted
+[42.924] systemd[1]: network.target: Failed to read SELinux context of '/usr/lib/systemd/system/network.target', ignoring: Operation not permitted
+[42.927] systemd[1]: network-pre.target: Failed to read SELinux context of '/usr/lib/systemd/system/network-pre.target', ignoring: Operation not permitted
+[42.931] systemd[1]: rc-local.service: Failed to read SELinux context of '/usr/lib/systemd/system/rc-local.service', ignoring: Operation not permitted
+[42.935] systemd[1]: plymouth-quit.service: Failed to read SELinux context of '/usr/lib/systemd/system/plymouth-quit.service', ignoring: Operation not permitted
+[42.939] systemd[1]: getty@tty1.service: Failed to read SELinux context of '/usr/lib/systemd/system/getty@.service', ignoring: Operation not permitted
+[42.943] systemd[1]: getty.target: Failed to read SELinux context of '/usr/lib/systemd/system/getty.target', ignoring: Operation not permitted
+[42.946] systemd[1]: getty-pre.target: Failed to read SELinux context of '/usr/lib/systemd/system/getty-pre.target', ignoring: Operation not permitted
+[42.950] systemd[1]: plymouth-quit-wait.service: Failed to read SELinux context of '/usr/lib/systemd/system/plymouth-quit-wait.service', ignoring: Operation not permitted
+[42.954] systemd[1]: multi-user.target: Failed to read SELinux context of '/usr/lib/systemd/system/multi-user.target', ignoring: Operation not permitted
+[42.959] systemd[1]: systemd-logind.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-logind.service', ignoring: Operation not permitted
+[42.964] systemd[1]: modprobe@drm.service: Failed to read SELinux context of '/usr/lib/systemd/system/modprobe@.service', ignoring: Operation not permitted
+[42.968] systemd[1]: user.slice: Failed to read SELinux context of '/usr/lib/systemd/system/user.slice', ignoring: Operation not permitted
+[42.971] systemd[1]: slices.target: Failed to read SELinux context of '/usr/lib/systemd/system/slices.target', ignoring: Operation not permitted
+[42.975] systemd[1]: systemd-ask-password-wall.path: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-ask-password-wall.path', ignoring: Operation not permitted
+[42.979] systemd[1]: systemd-ask-password-wall.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-ask-password-wall.service', ignoring: Operation not permitted
+[42.984] systemd[1]: paths.target: Failed to read SELinux context of '/usr/lib/systemd/system/paths.target', ignoring: Operation not permitted
+[42.987] systemd[1]: sysstat.service: Failed to read SELinux context of '/usr/lib/systemd/system/sysstat.service', ignoring: Operation not permitted
+[42.991] systemd[1]: sysstat-summary.timer: Failed to read SELinux context of '/usr/lib/systemd/system/sysstat-summary.timer', ignoring: Operation not permitted
+[42.995] systemd[1]: time-set.target: Failed to read SELinux context of '/usr/lib/systemd/system/time-set.target', ignoring: Operation not permitted
+[42.999] systemd[1]: time-sync.target: Failed to read SELinux context of '/usr/lib/systemd/system/time-sync.target', ignoring: Operation not permitted
+[43.002] systemd[1]: timers.target: Failed to read SELinux context of '/usr/lib/systemd/system/timers.target', ignoring: Operation not permitted
+[43.006] systemd[1]: systemd-tmpfiles-clean.timer: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-tmpfiles-clean.timer', ignoring: Operation not permitted
+[43.011] systemd[1]: systemd-tmpfiles-clean.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-tmpfiles-clean.service', ignoring: Operation not permitted
+[43.015] systemd[1]: raid-check.timer: Failed to read SELinux context of '/usr/lib/systemd/system/raid-check.timer', ignoring: Operation not permitted
+[43.019] systemd[1]: raid-check.service: Failed to read SELinux context of '/usr/lib/systemd/system/raid-check.service', ignoring: Operation not permitted
+[43.022] systemd[1]: fstrim.timer: Failed to read SELinux context of '/usr/lib/systemd/system/fstrim.timer', ignoring: Operation not permitted
+[43.026] systemd[1]: fstrim.service: Failed to read SELinux context of '/usr/lib/systemd/system/fstrim.service', ignoring: Operation not permitted
+[43.029] systemd[1]: dnf-makecache.timer: Failed to read SELinux context of '/usr/lib/systemd/system/dnf-makecache.timer', ignoring: Operation not permitted
+[43.033] systemd[1]: dnf5-makecache.service: Failed to read SELinux context of '/usr/lib/systemd/system/dnf-makecache.service', ignoring: Operation not permitted
+[43.037] systemd[1]: network-online.target: Failed to read SELinux context of '/usr/lib/systemd/system/network-online.target', ignoring: Operation not permitted
+[43.041] systemd[1]: sysstat-summary.service: Failed to read SELinux context of '/usr/lib/systemd/system/sysstat-summary.service', ignoring: Operation not permitted
+[43.045] systemd[1]: sysstat-rotate.timer: Failed to read SELinux context of '/usr/lib/systemd/system/sysstat-rotate.timer', ignoring: Operation not permitted
+[43.048] systemd[1]: sysstat-rotate.service: Failed to read SELinux context of '/usr/lib/systemd/system/sysstat-rotate.service', ignoring: Operation not permitted
+[43.052] systemd[1]: sysstat-collect.timer: Failed to read SELinux context of '/usr/lib/systemd/system/sysstat-collect.timer', ignoring: Operation not permitted
+[43.056] systemd[1]: sysstat-collect.service: Failed to read SELinux context of '/usr/lib/systemd/system/sysstat-collect.service', ignoring: Operation not permitted
+[43.060] systemd[1]: sssd.service: Failed to read SELinux context of '/usr/lib/systemd/system/sssd.service', ignoring: Operation not permitted
+[43.064] systemd[1]: sshd.service: Failed to read SELinux context of '/usr/lib/systemd/system/sshd.service', ignoring: Operation not permitted
+[43.067] systemd[1]: ssh-host-keys-migration.service: Failed to read SELinux context of '/usr/lib/systemd/system/ssh-host-keys-migration.service', ignoring: Operation not permitted
+[43.072] systemd[1]: sshd-keygen.target: Failed to read SELinux context of '/usr/lib/systemd/system/sshd-keygen.target', ignoring: Operation not permitted
+[43.075] systemd[1]: sshd-keygen@ed25519.service: Failed to read SELinux context of '/usr/lib/systemd/system/sshd-keygen@.service', ignoring: Operation not permitted
+[43.079] systemd[1]: sshd-keygen@ecdsa.service: Failed to read SELinux context of '/usr/lib/systemd/system/sshd-keygen@.service', ignoring: Operation not permitted
+[43.083] systemd[1]: sshd-keygen@rsa.service: Failed to read SELinux context of '/usr/lib/systemd/system/sshd-keygen@.service', ignoring: Operation not permitted
+[43.087] systemd[1]: mdmonitor.service: Failed to read SELinux context of '/usr/lib/systemd/system/mdmonitor.service', ignoring: Operation not permitted
+[43.091] systemd[1]: NetworkManager.service: Failed to read SELinux context of '/usr/lib/systemd/system/NetworkManager.service', ignoring: Operation not permitted
+[43.096] systemd[1]: rescue.service: Failed to read SELinux context of '/usr/lib/systemd/system/rescue.service', ignoring: Operation not permitted
+[43.100] systemd[1]: initrd-parse-etc.service: Failed to read SELinux context of '/usr/lib/systemd/system/initrd-parse-etc.service', ignoring: Operation not permitted
+[43.104] systemd[1]: initrd-usr-fs.target: Failed to read SELinux context of '/usr/lib/systemd/system/initrd-usr-fs.target', ignoring: Operation not permitted
+[43.107] systemd[1]: initrd-root-device.target: Failed to read SELinux context of '/usr/lib/systemd/system/initrd-root-device.target', ignoring: Operation not permitted
+[43.111] systemd[1]: remote-veritysetup.target: Failed to read SELinux context of '/usr/lib/systemd/system/remote-veritysetup.target', ignoring: Operation not permitted
+[43.115] systemd[1]: veritysetup-pre.target: Failed to read SELinux context of '/usr/lib/systemd/system/veritysetup-pre.target', ignoring: Operation not permitted
+[43.119] systemd[1]: remote-cryptsetup.target: Failed to read SELinux context of '/usr/lib/systemd/system/remote-cryptsetup.target', ignoring: Operation not permitted
+[43.123] systemd[1]: basic.target: Failed to read SELinux context of '/usr/lib/systemd/system/basic.target', ignoring: Operation not permitted
+[43.127] systemd[1]: rpmdb-rebuild.service: Failed to read SELinux context of '/usr/lib/systemd/system/rpmdb-rebuild.service', ignoring: Operation not permitted
+[43.131] systemd[1]: initrd-fs.target: Failed to read SELinux context of '/usr/lib/systemd/system/initrd-fs.target', ignoring: Operation not permitted
+[43.134] systemd[1]: initrd-root-fs.target: Failed to read SELinux context of '/usr/lib/systemd/system/initrd-root-fs.target', ignoring: Operation not permitted
+[43.138] systemd[1]: initrd-udevadm-cleanup-db.service: Failed to read SELinux context of '/usr/lib/systemd/system/initrd-udevadm-cleanup-db.service', ignoring: Operation not permitted
+[43.142] systemd[1]: systemd-udev-settle.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-udev-settle.service', ignoring: Operation not permitted
+[43.146] systemd[1]: initrd-switch-root.service: Failed to read SELinux context of '/usr/lib/systemd/system/initrd-switch-root.service', ignoring: Operation not permitted
+[43.150] systemd[1]: systemd-udev-trigger.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-udev-trigger.service', ignoring: Operation not permitted
+[43.154] systemd[1]: systemd-tpm2-setup.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-tpm2-setup.service', ignoring: Operation not permitted
+[43.158] systemd[1]: systemd-tpm2-setup-early.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-tpm2-setup-early.service', ignoring: Operation not permitted
+[43.162] systemd[1]: systemd-tmpfiles-setup.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-tmpfiles-setup.service', ignoring: Operation not permitted
+[43.166] systemd[1]: systemd-tmpfiles-setup-dev.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-tmpfiles-setup-dev.service', ignoring: Operation not permitted
+[43.170] systemd[1]: systemd-tmpfiles-setup-dev-early.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-tmpfiles-setup-dev-early.service', ignoring: Operation not permitted
+[43.174] systemd[1]: systemd-sysusers.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-sysusers.service', ignoring: Operation not permitted
+[43.178] systemd[1]: systemd-sysext.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-sysext.service', ignoring: Operation not permitted
+[43.181] systemd[1]: systemd-sysctl.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-sysctl.service', ignoring: Operation not permitted
+[43.185] systemd[1]: systemd-resolved.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-resolved.service', ignoring: Operation not permitted
+[43.189] systemd[1]: nss-lookup.target: Failed to read SELinux context of '/usr/lib/systemd/system/nss-lookup.target', ignoring: Operation not permitted
+[43.192] systemd[1]: systemd-repart.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-repart.service', ignoring: Operation not permitted
+[43.196] systemd[1]: modprobe@dm_mod.service: Failed to read SELinux context of '/usr/lib/systemd/system/modprobe@.service', ignoring: Operation not permitted
+[43.199] systemd[1]: modprobe@loop.service: Failed to read SELinux context of '/usr/lib/systemd/system/modprobe@.service', ignoring: Operation not permitted
+[43.202] systemd[1]: systemd-random-seed.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-random-seed.service', ignoring: Operation not permitted
+[43.206] systemd[1]: first-boot-complete.target: Failed to read SELinux context of '/usr/lib/systemd/system/first-boot-complete.target', ignoring: Operation not permitted
+[43.210] systemd[1]: systemd-pcrphase.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-pcrphase.service', ignoring: Operation not permitted
+[43.214] systemd[1]: systemd-pcrphase-sysinit.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-pcrphase-sysinit.service', ignoring: Operation not permitted
+[43.218] systemd[1]: systemd-pcrmachine.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-pcrmachine.service', ignoring: Operation not permitted
+[43.221] systemd[1]: systemd-modules-load.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-modules-load.service', ignoring: Operation not permitted
+[43.225] systemd[1]: systemd-machine-id-commit.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-machine-id-commit.service', ignoring: Operation not permitted
+[43.229] systemd[1]: systemd-journal-flush.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-journal-flush.service', ignoring: Operation not permitted
+[43.233] systemd[1]: systemd-quotacheck-root.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-quotacheck-root.service', ignoring: Operation not permitted
+[43.236] systemd[1]: systemd-journal-catalog-update.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-journal-catalog-update.service', ignoring: Operation not permitted
+[43.240] systemd[1]: systemd-hwdb-update.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-hwdb-update.service', ignoring: Operation not permitted
+[43.244] systemd[1]: systemd-hibernate-clear.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-hibernate-clear.service', ignoring: Operation not permitted
+[43.248] systemd[1]: systemd-firstboot.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-firstboot.service', ignoring: Operation not permitted
+[43.253] systemd[1]: systemd-confext.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-confext.service', ignoring: Operation not permitted
+[43.257] systemd[1]: systemd-boot-random-seed.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-boot-random-seed.service', ignoring: Operation not permitted
+[43.261] systemd[1]: systemd-binfmt.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-binfmt.service', ignoring: Operation not permitted
+[43.265] systemd[1]: proc-sys-fs-binfmt_misc.mount: Failed to read SELinux context of '/usr/lib/systemd/system/proc-sys-fs-binfmt_misc.mount', ignoring: Operation not permitted
+[43.269] systemd[1]: systemd-ask-password-console.path: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-ask-password-console.path', ignoring: Operation not permitted
+[43.273] systemd[1]: systemd-ask-password-console.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-ask-password-console.service', ignoring: Operation not permitted
+[43.277] systemd[1]: sys-kernel-tracing.mount: Failed to read SELinux context of '/usr/lib/systemd/system/sys-kernel-tracing.mount', ignoring: Operation not permitted
+[43.281] systemd[1]: sys-kernel-debug.mount: Failed to read SELinux context of '/usr/lib/systemd/system/sys-kernel-debug.mount', ignoring: Operation not permitted
+[43.285] systemd[1]: sys-kernel-config.mount: Failed to read SELinux context of '/usr/lib/systemd/system/sys-kernel-config.mount', ignoring: Operation not permitted
+[43.289] systemd[1]: modprobe@configfs.service: Failed to read SELinux context of '/usr/lib/systemd/system/modprobe@.service', ignoring: Operation not permitted
+[43.293] systemd[1]: sys-fs-fuse-connections.mount: Failed to read SELinux context of '/usr/lib/systemd/system/sys-fs-fuse-connections.mount', ignoring: Operation not permitted
+[43.297] systemd[1]: modprobe@fuse.service: Failed to read SELinux context of '/usr/lib/systemd/system/modprobe@.service', ignoring: Operation not permitted
+[43.301] systemd[1]: selinux-autorelabel-mark.service: Failed to read SELinux context of '/usr/lib/systemd/system/selinux-autorelabel-mark.service', ignoring: Operation not permitted
+[43.305] systemd[1]: proc-sys-fs-binfmt_misc.automount: Failed to read SELinux context of '/usr/lib/systemd/system/proc-sys-fs-binfmt_misc.automount', ignoring: Operation not permitted
+[43.309] systemd[1]: plymouth-read-write.service: Failed to read SELinux context of '/usr/lib/systemd/system/plymouth-read-write.service', ignoring: Operation not permitted
+[43.314] systemd[1]: ldconfig.service: Failed to read SELinux context of '/usr/lib/systemd/system/ldconfig.service', ignoring: Operation not permitted
+[43.318] systemd[1]: kmod-static-nodes.service: Failed to read SELinux context of '/usr/lib/systemd/system/kmod-static-nodes.service', ignoring: Operation not permitted
+[43.322] systemd[1]: integritysetup.target: Failed to read SELinux context of '/usr/lib/systemd/system/integritysetup.target', ignoring: Operation not permitted
+[43.325] systemd[1]: fips-crypto-policy-overlay.service: Failed to read SELinux context of '/usr/lib/systemd/system/fips-crypto-policy-overlay.service', ignoring: Operation not permitted
+[43.329] systemd[1]: dracut-shutdown.service: Failed to read SELinux context of '/usr/lib/systemd/system/dracut-shutdown.service', ignoring: Operation not permitted
+[43.342] systemd[1]: dracut-shutdown-onfailure.service: Failed to read SELinux context of '/usr/lib/systemd/system/dracut-shutdown-onfailure.service', ignoring: Operation not permitted
+[43.347] systemd[1]: dev-mqueue.mount: Failed to read SELinux context of '/usr/lib/systemd/system/dev-mqueue.mount', ignoring: Operation not permitted
+[43.350] systemd[1]: dev-hugepages.mount: Failed to read SELinux context of '/usr/lib/systemd/system/dev-hugepages.mount', ignoring: Operation not permitted
+[43.354] systemd[1]: cryptsetup.target: Failed to read SELinux context of '/usr/lib/systemd/system/cryptsetup.target', ignoring: Operation not permitted
+[43.357] systemd[1]: emergency.service: Failed to read SELinux context of '/usr/lib/systemd/system/emergency.service', ignoring: Operation not permitted
+[43.361] systemd[1]: swap.target: Failed to read SELinux context of '/usr/lib/systemd/system/swap.target', ignoring: Operation not permitted
+[43.364] systemd[1]: dev-zram0.swap: Failed to read SELinux context of '/run/systemd/generator/dev-zram0.swap', ignoring: Operation not permitted
+[43.368] systemd[1]: blockdev@dev-zram0.target: Failed to read SELinux context of '/usr/lib/systemd/system/blockdev@.target', ignoring: Operation not permitted
+[43.371] systemd[1]: systemd-zram-setup@zram0.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-zram-setup@.service', ignoring: Operation not permitted
+[43.375] systemd[1]: syslog.socket: Failed to read SELinux context of '/usr/lib/systemd/system/syslog.socket', ignoring: Operation not permitted
+[43.379] systemd[1]: systemd-journald-audit.socket: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-journald-audit.socket', ignoring: Operation not permitted
+[43.382] systemd[1]: systemd-journald-dev-log.socket: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-journald-dev-log.socket', ignoring: Operation not permitted
+[43.386] systemd[1]: sockets.target: Failed to read SELinux context of '/usr/lib/systemd/system/sockets.target', ignoring: Operation not permitted
+[43.390] systemd[1]: systemd-userdbd.socket: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-userdbd.socket', ignoring: Operation not permitted
+[43.394] systemd[1]: systemd-userdbd.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-userdbd.service', ignoring: Operation not permitted
+[43.398] systemd[1]: systemd-sysext.socket: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-sysext.socket', ignoring: Operation not permitted
+[43.401] systemd[1]: systemd-pcrlock.socket: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-pcrlock.socket', ignoring: Operation not permitted
+[43.405] systemd[1]: systemd-pcrextend.socket: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-pcrextend.socket', ignoring: Operation not permitted
+[43.408] systemd[1]: systemd-initctl.socket: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-initctl.socket', ignoring: Operation not permitted
+[43.411] systemd[1]: systemd-initctl.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-initctl.service', ignoring: Operation not permitted
+[43.415] systemd[1]: systemd-hostnamed.socket: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-hostnamed.socket', ignoring: Operation not permitted
+[43.419] systemd[1]: systemd-hostnamed.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-hostnamed.service', ignoring: Operation not permitted
+[43.422] systemd[1]: systemd-creds.socket: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-creds.socket', ignoring: Operation not permitted
+[43.426] systemd[1]: systemd-coredump.socket: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-coredump.socket', ignoring: Operation not permitted
+[43.429] systemd[1]: systemd-bootctl.socket: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-bootctl.socket', ignoring: Operation not permitted
+[43.433] systemd[1]: sssd-kcm.socket: Failed to read SELinux context of '/usr/lib/systemd/system/sssd-kcm.socket', ignoring: Operation not permitted
+[43.436] systemd[1]: sssd-kcm.service: Failed to read SELinux context of '/usr/lib/systemd/system/sssd-kcm.service', ignoring: Operation not permitted
+[43.439] systemd[1]: sshd-unix-local.socket: Failed to read SELinux context of '/run/systemd/generator/sshd-unix-local.socket', ignoring: Operation not permitted
+[43.443] systemd[1]: systemd-fsck-root.service: Failed to read SELinux context of '/usr/lib/systemd/system/systemd-fsck-root.service', ignoring: Operation not permitted
+[43.446] systemd[1]: emergency.target: Failed to read SELinux context of '/usr/lib/systemd/system/emergency.target', ignoring: Operation not permitted
+[43.450] systemd[1]: shutdown.target: Failed to read SELinux context of '/usr/lib/systemd/system/shutdown.target', ignoring: Operation not permitted
+[43.453] systemd[1]: local-fs-pre.target: Failed to read SELinux context of '/usr/lib/systemd/system/local-fs-pre.target', ignoring: Operation not permitted
+[43.457] systemd[1]: tmp.mount: Failed to read SELinux context of '/usr/lib/systemd/system/tmp.mount', ignoring: Operation not permitted
+[43.465] systemd[1]: Too many messages being logged to kmsg, ignoring
+[!p]104[?7h[6n[32766;32766H[6n[43.570] systemd-modules-load[39]: Failed to find module 'i2c_dev'
+[43.572] systemd-modules-load[39]: Failed to find module 'msr'
+[43.576] systemd-journald[36]: Collecting audit messages is enabled.
+[43.599] systemd-journald[36]: Failed to determine peer security context: Protocol not available
+[43.601] systemd-journald[36]: Failed to determine peer security context: Protocol not available
+[43.603] systemd-journald[36]: Failed to determine peer security context: Protocol not available
+[43.679] systemd-journald[36]: Received client request to flush runtime journal.
+[!p]104[?7h[6n[32766;32766H[6n[43.934] systemd-udevd[80]: Using default interface naming scheme 'v257'.
+[44.023] (udev-worker)[92]: sda: /usr/lib/udev/rules.d/60-block-scheduler.rules:5 Failed to write ATTR{/sys/devices/virtual/block/sda/queue/scheduler}="bfq", ignoring: No such file or directory
+[44.132] (udev-worker)[89]: controlC1: /usr/lib/udev/rules.d/78-sound-card.rules:5 Failed to write ATTR{/sys/devices/virtual/sound/controlC1/../uevent}="change", ignoring: No such file or directory
+[44.136] (udev-worker)[101]: controlC0: /usr/lib/udev/rules.d/78-sound-card.rules:5 Failed to write ATTR{/sys/devices/virtual/sound/controlC0/../uevent}="change", ignoring: No such file or directory
+[?2004hsh-5.2# [44.344] systemd-tmpfiles[79]: ACL operation on "/var/log/journal" failed: Invalid argument
+[44.415] auditd[131]: No plugins found, not dispatching events
+[44.455] systemd-update-utmp[137]: Failed to get timestamp, ignoring: No data available
+echo OXIDE-AL"IVE"-OK
+[?2004lOXIDE-ALIVE-OK
+[?2004hsh-5.2# [45.149] NetworkManager[155]: <warn>  [1786884534.9331] platform-linux: do-add-ip6-address[2: fe80::c089:fa32:cae9:a5bd]: failure 97 (Address family not supported by protocol)
+[45.154] NetworkManager[155]: <warn>  [1786884534.9332] l3cfg[fe3aed5ea5c16da3,ifindex=2]: unable to configure IPv6 route: type unicast fe80::/64 dev 2 metric 1024 mss 0 rt-src ipv6ll
+[45.158] alsactl[219]: /usr/sbin/alsactl: load_state:1745: Cannot open /var/lib/alsa/asound.state for reading: No such file or directory
+[45.165] NetworkManager[155]: <warn>  [1786884534.9347] platform-linux: do-add-ip6-address[2: fe80::c089:fa32:cae9:a5bd]: failure 97 (Address family not supported by protocol)
+[45.190] alsactl[219]: alsa-lib main.c:1804:(snd_use_case_mgr_open) [error.ucm] failed to import hw:0 use case configuration -2
+[sysrq] keys: b=reboot c=crash l=backtrace-all-cpus o=poweroff p=registers t=tasks w=blocked-tasks
+qemu-system-x86_64: terminating on signal 15 from pid 1417928 (bash)
+make: *** [Makefile:262: qemu-x86-existing] Terminated

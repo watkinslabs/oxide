@@ -1,0 +1,137 @@
+//! ctnetlink encoding. Entries are reported as nested attribute trees; the
+//! nesting depth and attribute numbers are the ABI `conntrack -L`/`-E` parse.
+
+extern crate alloc;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+
+use crate::entry::{Conn, ProtoState};
+use crate::tuple::Tuple;
+use crate::uapi::*;
+
+fn align4(n: usize) -> usize { (n + 3) & !3 }
+
+/// Append one attribute with a raw payload. # C: O(len(payload))
+pub fn put_attr(out: &mut Vec<u8>, kind: u16, payload: &[u8]) {
+    let len = 4 + payload.len();
+    out.extend_from_slice(&(len as u16).to_ne_bytes());
+    out.extend_from_slice(&kind.to_ne_bytes());
+    out.extend_from_slice(payload);
+    out.resize(align4(out.len()), 0);
+}
+
+/// Append a big-endian u16 attribute — ctnetlink carries ports and ids in
+/// network order, not host order. # C: O(1)
+pub fn put_be16(out: &mut Vec<u8>, kind: u16, v: u16) {
+    put_attr(out, kind, &v.to_be_bytes());
+}
+
+/// Append a big-endian u32 attribute. # C: O(1)
+pub fn put_be32(out: &mut Vec<u8>, kind: u16, v: u32) {
+    put_attr(out, kind, &v.to_be_bytes());
+}
+
+/// Append a big-endian u64 attribute. # C: O(1)
+pub fn put_be64(out: &mut Vec<u8>, kind: u16, v: u64) {
+    put_attr(out, kind, &v.to_be_bytes());
+}
+
+/// Append a u8 attribute. # C: O(1)
+pub fn put_u8(out: &mut Vec<u8>, kind: u16, v: u8) { put_attr(out, kind, &[v]); }
+
+/// Open a nested attribute; returns the offset its length must be patched at.
+/// # C: O(1)
+pub fn nest_start(out: &mut Vec<u8>, kind: u16) -> usize {
+    let at = out.len();
+    out.extend_from_slice(&0u16.to_ne_bytes());
+    // Nested attributes carry the NLA_F_NESTED bit; a parser that trusts the
+    // bit will skip a nest that lacks it.
+    out.extend_from_slice(&(kind | NLA_F_NESTED).to_ne_bytes());
+    at
+}
+
+/// Patch a nest's length. # C: O(1)
+pub fn nest_end(out: &mut Vec<u8>, at: usize) {
+    let len = (out.len() - at) as u16;
+    out[at..at + 2].copy_from_slice(&len.to_ne_bytes());
+}
+
+/// Netlink's nested-attribute marker bit.
+pub const NLA_F_NESTED: u16 = 1 << 15;
+
+/// Encode one tuple as `CTA_TUPLE_IP` + `CTA_TUPLE_PROTO`. # C: O(1)
+pub fn put_tuple(out: &mut Vec<u8>, kind: u16, t: &Tuple) {
+    let outer = nest_start(out, kind);
+    let ip = nest_start(out, CTA_TUPLE_IP);
+    if t.l3num == NFPROTO_IPV6 {
+        put_attr(out, CTA_IP_V6_SRC, &t.src.addr.0);
+        put_attr(out, CTA_IP_V6_DST, &t.dst.addr.0);
+    } else {
+        put_attr(out, CTA_IP_V4_SRC, &t.src.addr.0[..4]);
+        put_attr(out, CTA_IP_V4_DST, &t.dst.addr.0[..4]);
+    }
+    nest_end(out, ip);
+    let pr = nest_start(out, CTA_TUPLE_PROTO);
+    put_u8(out, CTA_PROTO_NUM, t.protonum);
+    if t.is_icmp() {
+        let (id, ty, code) = if t.l3num == NFPROTO_IPV6 {
+            (CTA_PROTO_ICMPV6_ID, CTA_PROTO_ICMPV6_TYPE, CTA_PROTO_ICMPV6_CODE)
+        } else {
+            (CTA_PROTO_ICMP_ID, CTA_PROTO_ICMP_TYPE, CTA_PROTO_ICMP_CODE)
+        };
+        put_be16(out, id, t.src.proto.port);
+        put_u8(out, ty, t.dst.proto.icmp_type);
+        put_u8(out, code, t.dst.proto.icmp_code);
+    } else {
+        put_be16(out, CTA_PROTO_SRC_PORT, t.src.proto.port);
+        put_be16(out, CTA_PROTO_DST_PORT, t.dst.proto.port);
+    }
+    nest_end(out, pr);
+    nest_end(out, outer);
+}
+
+fn put_counters(out: &mut Vec<u8>, kind: u16, packets: u64, bytes: u64) {
+    let n = nest_start(out, kind);
+    put_be64(out, CTA_COUNTERS_PACKETS, packets);
+    put_be64(out, CTA_COUNTERS_BYTES, bytes);
+    nest_end(out, n);
+}
+
+/// Encode one entry's attribute body. # C: O(1)
+pub fn encode_entry(c: &Arc<Conn>, now: u64, acct: bool) -> Vec<u8> {
+    let mut out = Vec::new();
+    put_tuple(&mut out, CTA_TUPLE_ORIG, &c.orig);
+    put_tuple(&mut out, CTA_TUPLE_REPLY, &c.reply);
+    put_be32(&mut out, CTA_STATUS, c.status());
+    put_be32(&mut out, CTA_TIMEOUT, c.expires_in(now) as u32);
+    put_be32(&mut out, CTA_MARK, c.mark.load(::core::sync::atomic::Ordering::Relaxed));
+    put_be32(&mut out, CTA_ID, c.id as u32);
+    put_be16(&mut out, CTA_ZONE, c.orig.zone);
+    if let ProtoState::Tcp(track) = *c.proto.lock() {
+        let pi = nest_start(&mut out, CTA_PROTOINFO);
+        let tcp = nest_start(&mut out, CTA_PROTOINFO_TCP);
+        put_u8(&mut out, CTA_PROTOINFO_TCP_STATE, track.state);
+        put_u8(&mut out, CTA_PROTOINFO_TCP_WSCALE_ORIGINAL, track.seen[0].td_scale);
+        put_u8(&mut out, CTA_PROTOINFO_TCP_WSCALE_REPLY, track.seen[1].td_scale);
+        nest_end(&mut out, tcp);
+        nest_end(&mut out, pi);
+    }
+    if let Some(h) = c.helper.lock().as_ref() {
+        let n = nest_start(&mut out, CTA_HELP);
+        put_attr(&mut out, 1, h.as_bytes());
+        nest_end(&mut out, n);
+    }
+    if acct {
+        let (p, b) = c.counters[IP_CT_DIR_ORIGINAL as usize].read();
+        put_counters(&mut out, CTA_COUNTERS_ORIG, p, b);
+        let (p, b) = c.counters[IP_CT_DIR_REPLY as usize].read();
+        put_counters(&mut out, CTA_COUNTERS_REPLY, p, b);
+    }
+    out
+}
+
+/// Bits a ctnetlink write may set on an existing entry. Everything the kernel
+/// owns is masked off: letting userspace clear `IPS_CONFIRMED` or set
+/// `IPS_SRC_NAT_DONE` would desynchronise the table from the entry.
+/// # C: O(1)
+pub fn writable_status(requested: u32) -> u32 { requested & !IPS_UNCHANGEABLE_MASK }

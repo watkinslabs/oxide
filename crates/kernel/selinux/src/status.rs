@@ -81,7 +81,26 @@ pub struct SecurityState {
     pub seqno: u32,
     /// Bumped on every policy load, for the userspace status page.
     pub policyload: u32,
+    /// SEQLOCK for the userspace status page — NOT [`SecurityState::seqno`].
+    ///
+    /// Userspace treats an ODD value as "the kernel is rewriting this page,
+    /// come back", and spins — the reference's reader yields the CPU until it
+    /// turns even. So this counter must be EVEN whenever the page is
+    /// readable, which means it advances by two per update: the reference
+    /// increments it once before writing the fields and once after, and this
+    /// port renders the whole page from one consistent snapshot, so the
+    /// in-progress half is never observable and both halves land together.
+    ///
+    /// Publishing `seqno` here instead is what wedged every boot that loaded a
+    /// policy: `seqno` counts updates one at a time, so a single policy load
+    /// left it at 1 — permanently odd — and `libselinux` yielded 5.7 million
+    /// times a second, forever, in PID 1.
+    pub status_seq: u32,
 }
+
+/// Amount [`SecurityState::status_seq`] advances per completed update: the
+/// reference's two seqlock increments, begin and end.
+pub const STATUS_SEQ_PER_UPDATE: u32 = 2;
 
 impl SecurityState {
     /// State of a security server that has not yet loaded a policy. # C: O(1)
@@ -93,7 +112,8 @@ impl SecurityState {
             // the real mode.
             None => Enforcing::Permissive,
         };
-        Self { enabled: boot.enabled, initialized: false, enforcing, seqno: 0, policyload: 0 }
+        Self { enabled: boot.enabled, initialized: false, enforcing, seqno: 0, policyload: 0,
+               status_seq: 0 }
     }
 
     /// Whether a check must be answered from policy rather than allowed. # C: O(1)
@@ -109,14 +129,24 @@ impl SecurityState {
         self.initialized = true;
         self.seqno = self.seqno.wrapping_add(1);
         self.policyload = self.policyload.wrapping_add(1);
+        self.status_seq = self.status_seq.wrapping_add(STATUS_SEQ_PER_UPDATE);
     }
 
     /// Record a boolean commit, invalidating every cached decision. # C: O(1)
-    pub fn note_bool_commit(&mut self) { self.seqno = self.seqno.wrapping_add(1); }
+    pub fn note_bool_commit(&mut self) {
+        self.seqno = self.seqno.wrapping_add(1);
+        self.status_seq = self.status_seq.wrapping_add(STATUS_SEQ_PER_UPDATE);
+    }
 
     /// Change the enforcement mode. # C: O(1)
+    ///
+    /// The status page carries the mode, so a change to it is an update of
+    /// that page and advances its seqlock — the reference has a dedicated
+    /// setenforce notifier for exactly this. Without the bump a reader that
+    /// caches by sequence keeps answering with the old mode.
     pub fn set_enforcing(&mut self, e: Enforcing) -> Result<()> {
         if !self.enabled { return Err(Error::InvalidContext); }
+        if self.enforcing != e { self.status_seq = self.status_seq.wrapping_add(STATUS_SEQ_PER_UPDATE); }
         self.enforcing = e;
         Ok(())
     }

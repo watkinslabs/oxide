@@ -273,6 +273,19 @@ Constraints:
     `aes` and `p256`. It may not depend on a driver crate: a transport driver
     depends on `bluetooth` and registers itself, never the reverse.
     `crates/shared/aes` and `crates/shared/p256` depend on nothing.
+14. `crates/kernel/conntrack` is a leaf over shared synchronization: it reads no
+    netdev, no socket and no packet buffer, so its whole decision surface runs
+    hosted. `nat`, `netfilter` and the syscall shims depend on it, never the
+    reverse.
+15. `crates/kernel/nat` depends on `conntrack` for the flow a binding is recorded
+    on and on nothing else; `conntrack` never depends on it. Packet rewriting
+    takes a buffer from its caller rather than reaching for one.
+16. `crates/kernel/netfilter` may depend on `conntrack` and `nat` — the
+    connection-tracking expressions are the reason both exist. Neither depends on
+    `netfilter`.
+17. `crates/kernel/vlan` and `crates/kernel/bonding` are leaves over `net`. Both
+    register their devices in the one interface registry `net` already owns;
+    neither may keep a second netdev registry, and neither depends on the other.
 
 15. The wireless lock order is `Socket` (140) then `WiphyList` (141) then
     `Wiphy` (142) then `Sta80211` (143). Wireless ranks ABOVE `Socket` because

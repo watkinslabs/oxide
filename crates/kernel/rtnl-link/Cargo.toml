@@ -1,0 +1,16 @@
+[package]
+name    = "rtnl-link"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "rtnetlink link-kind creation per `25a§7`. Owns the IFLA_LINKINFO envelope and the registry of link kinds (`vlan`, `bond`, …) that `ip link add ... type <kind>` dispatches through."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+sync    = { path = "../../shared/sync" }
+syscall = { path = "../syscall" }
+
+[lints]
+workspace = true

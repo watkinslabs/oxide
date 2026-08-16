@@ -37,7 +37,13 @@ pub struct PolicyFacts {
     pub deny_unknown: bool,
     /// Sequence number the last policy load or boolean commit produced.
     pub seqno: u32,
-    /// Policy loads since boot.
+    /// Seqlock for the status page. EVEN whenever the page is readable —
+    /// userspace spins while it is odd. Distinct from `seqno`, which counts
+    /// updates one at a time and is odd half the time.
+    pub status_seq: u32,
+    /// Policy loads since boot. NOT what the status page's `policyload` word
+    /// carries — the reference writes the policy SEQUENCE NUMBER into that
+    /// word, so a boolean commit moves it too and userspace knows to flush.
     pub policyload: u32,
 }
 
