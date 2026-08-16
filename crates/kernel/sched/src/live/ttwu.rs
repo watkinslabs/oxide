@@ -17,7 +17,7 @@ use crate::task::WakeDiagPhase;
 use super::runqueue::global_for;
 
 mod wake_list;
-pub use wake_list::wake_list_push;
+pub use wake_list::{wake_list_debug, wake_list_push};
 use wake_list::{wake_list_finish, wake_list_take};
 #[cfg(any(test, feature = "hosted"))]
 pub use wake_list::wake_list_drain;

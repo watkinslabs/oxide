@@ -1,0 +1,15 @@
+run=1 rc=0 klines=119 | last: [43.544] systemd-tmpfiles[79]: ACL operation on "/var/log/journal" failed: Invalid argument
+run=2 rc=143 klines=0
+0 | last: 
+run=3 rc=0 klines=214 | last: [44.646] alsactl[220]: alsa-lib main.c:1804:(snd_use_case_mgr_open) [error.ucm] failed to import hw:0 use case
+run=4 rc=1 klines=134 | last: [122.314]   1    79155     4142  epoll_wait  1  0x0000000000000002  0  0  0
+run=5 rc=143 klines=3 | last: [0.973] [sysrq] always enabled by the boot line
+run=6 rc=0 klines=214 | last: [44.819] alsactl[216]: alsa-lib main.c:1804:(snd_use_case_mgr_open) [error.ucm] failed to import hw:0 use case
+run=7 rc=0 klines=120 | last: [43.393] systemd-tmpfiles[79]: ACL operation on "/var/log/journal" failed: Invalid argument
+run=8 rc=2 klines=0
+0 | last: 
+run=9 rc=2 klines=0
+0 | last: 
+run=10 rc=2 klines=0
+0 | last: 
+TOTAL 4/10 clean
