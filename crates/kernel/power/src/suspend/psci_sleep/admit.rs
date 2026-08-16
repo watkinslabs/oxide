@@ -31,13 +31,17 @@ pub fn valid(support: SuspendSupport, state: SuspendState) -> bool {
 /// meaningful refusals are kept distinct: absent, malformed request, bad
 /// address, and refused by policy.
 ///
+/// `NotSupported` is EOPNOTSUPP, not ENOSYS: firmware declining a call it does
+/// not implement is a fact about this machine, and the reference keeps it
+/// distinct from the kernel declining a state it does not offer.
+///
 /// `Success` arrives here only when firmware returned from a call that should
 /// have suspended the machine, which is a firmware defect and is reported as an
 /// I/O failure rather than a completed sleep.
 /// # C: O(1)
 pub fn firmware_error(st: PsciStatus) -> Error {
     match st {
-        PsciStatus::NotSupported      => Error::Nosys,
+        PsciStatus::NotSupported      => Error::Opnotsupp,
         PsciStatus::InvalidParameters => Error::Inval,
         PsciStatus::InvalidAddress    => Error::Inval,
         PsciStatus::Denied            => Error::Perm,
@@ -52,7 +56,7 @@ pub fn firmware_error(st: PsciStatus) -> Error {
 /// # C: O(1)
 pub fn refusal_error(r: SuspendRefusal) -> Error {
     match r {
-        SuspendRefusal::Unsupported      => Error::Nosys,
+        SuspendRefusal::Unsupported      => Error::Opnotsupp,
         SuspendRefusal::NoResumeEntry    => Error::Io,
         SuspendRefusal::NoIdentityTable  => Error::Io,
         SuspendRefusal::NoContextAddress => Error::Io,

@@ -28,7 +28,7 @@ fn the_deep_table_claims_neither_freeze_nor_the_awake_state() {
 
 #[test]
 fn firmware_refusals_keep_their_distinctions() {
-    assert_eq!(firmware_error(PsciStatus::NotSupported),      Error::Nosys);
+    assert_eq!(firmware_error(PsciStatus::NotSupported),      Error::Opnotsupp);
     assert_eq!(firmware_error(PsciStatus::InvalidParameters), Error::Inval);
     assert_eq!(firmware_error(PsciStatus::InvalidAddress),    Error::Inval);
     assert_eq!(firmware_error(PsciStatus::Denied),            Error::Perm);
@@ -44,7 +44,7 @@ fn a_success_word_coming_back_out_of_the_call_is_a_failure() {
 
 #[test]
 fn only_the_unsupported_refusal_reports_no_such_facility() {
-    assert_eq!(refusal_error(SuspendRefusal::Unsupported),      Error::Nosys);
+    assert_eq!(refusal_error(SuspendRefusal::Unsupported),      Error::Opnotsupp);
     assert_eq!(refusal_error(SuspendRefusal::NoResumeEntry),    Error::Io);
     assert_eq!(refusal_error(SuspendRefusal::NoIdentityTable),  Error::Io);
     assert_eq!(refusal_error(SuspendRefusal::NoContextAddress), Error::Io);

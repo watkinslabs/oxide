@@ -244,6 +244,15 @@ unsafe fn clean_to_poc(va: u64, len: usize) {
     unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
 }
 
+/// Virtual address of the resume entry symbol.
+///
+/// Routed through a pointer rather than casting the function item straight to
+/// an integer: the direct cast is denied repo-wide, and it is denied because a
+/// function item's cast target is inferred, so a narrower integer type silently
+/// truncates the address.
+/// # C: O(1)
+fn resume_entry_va() -> u64 { oxide_arm_resume_entry as *const () as u64 }
+
 /// Enter the platform's deep sleep state.
 ///
 /// Saves EL1 state, hands firmware the physical resume entry and the physical
@@ -256,15 +265,6 @@ unsafe fn clean_to_poc(va: u64, len: usize) {
 /// on the caller's stack and must not be reused until this returns.
 /// # C: O(sleep) — returns on wakeup.
 /// # Ctx: IRQ-off, single-CPU
-/// Virtual address of the resume entry symbol.
-///
-/// Routed through a pointer rather than casting the function item straight to
-/// an integer: the direct cast is denied repo-wide, and it is denied because a
-/// function item's cast target is inferred, so a narrower integer type silently
-/// truncates the address.
-/// # C: O(1)
-fn resume_entry_va() -> u64 { oxide_arm_resume_entry as *const () as u64 }
-
 pub unsafe fn system_suspend(support: SuspendSupport) -> Result<(), SuspendError> {
     let mut ctx = SuspendCtx::new();
     ctx.ttbr0_identity_pa = crate::smp::identity_ttbr0_pa();

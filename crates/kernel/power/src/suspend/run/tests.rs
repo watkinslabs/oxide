@@ -366,6 +366,9 @@ fn errnos_are_the_linux_values() {
     assert_eq!(errno_of(Error::Inval), -22);
     assert_eq!(errno_of(Error::Busy), -16);
     assert_eq!(errno_of(Error::Nosys), -38);
+    // Firmware declining a call it does not implement, kept distinct from the
+    // kernel declining a state it does not offer.
+    assert_eq!(errno_of(Error::Opnotsupp), -95);
     assert_eq!(errno_of(Error::Intr), -4);
     assert_eq!(errno_of(Error::Perm), -1);
     assert_eq!(errno_of(Error::Io), -5);

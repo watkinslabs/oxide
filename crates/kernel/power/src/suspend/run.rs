@@ -228,7 +228,7 @@ pub fn pm_suspend(state: SuspendState, be: &SuspendBackend, t: Tables) -> KResul
 pub fn errno_of(e: Error) -> i32 {
     match e {
         Error::Inval => -22, Error::Perm => -1, Error::Io => -5, Error::Busy => -16,
-        Error::Nosys => -38, Error::Again => -11, Error::Intr => -4,
+        Error::Nosys => -38, Error::Opnotsupp => -95, Error::Again => -11, Error::Intr => -4,
         Error::Nomem => -12, Error::Nodata => -61,
     }
 }
