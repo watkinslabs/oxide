@@ -252,16 +252,6 @@ impl FileOps for Ops {
     }
 }
 
-/// `S_IFMT` bits to the VFS type enum. # C: O(1)
-fn file_type(mode: u32) -> FileType {
-    match mode & S_IFMT as u32 {
-        m if m == S_IFDIR as u32 => FileType::Directory,
-        m if m == S_IFLNK as u32 => FileType::Symlink,
-        m if m == S_IFCHR as u32 => FileType::CharDev,
-        _ => FileType::Regular,
-    }
-}
-
 /// Create every directory on `path` under `dir`, returning the last. # C: O(len(path))
 pub fn mkpath(dir: &InodeRef, path: &str) -> InodeRef {
     let mut cur = dir.clone();

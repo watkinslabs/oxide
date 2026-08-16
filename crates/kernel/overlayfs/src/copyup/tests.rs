@@ -7,9 +7,8 @@
 
 extern crate alloc;
 
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::sync::Arc;
-use alloc::vec;
 use alloc::vec::Vec;
 use syscall::errno::Errno;
 use vfs::inode_ops::CreateCtx;
