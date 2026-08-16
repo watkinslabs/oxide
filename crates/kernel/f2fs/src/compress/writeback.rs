@@ -133,7 +133,13 @@ impl<S: SectorSource> Volume<S> {
                 put < e && put + data.len() > s
             })
             .collect();
-        self.store_cluster(ino, g, first, &planebytes, size, &touched)
+        // Whether a write comes out compressed at all is the MOUNT's decision
+        // where the mount was given it, and the caller's where it was not: a
+        // volume mounted for caller-driven compression writes plain and stays
+        // plain until the rewrite command asks otherwise, which is the whole
+        // arrangement.
+        let compress = self.opts.compress_mode == crate::opts::CompressMode::Fs;
+        self.store_cluster_shaped(ino, g, first, &planebytes, size, &touched, compress)
     }
 
     /// Store one cluster's plain bytes, compressed if both rules allow it.
@@ -145,6 +151,21 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(cluster bytes)
     pub(crate) fn store_cluster(&mut self, ino: u32, g: &Geometry, first: u64, plainbytes: &[u8],
                                 size: u64, touched: &[bool]) -> Result<(), Errno> {
+        self.store_cluster_shaped(ino, g, first, plainbytes, size, touched, true)
+    }
+
+    /// The same, with the choice of shape taken away.
+    ///
+    /// `compress` false stores the cluster plain whatever the codec would have
+    /// managed, which is what a caller asking for a file to be decompressed in
+    /// place means — the two rules still decide the other direction, since a
+    /// cluster that cannot be compressed cannot be compressed on request
+    /// either.
+    /// # C: O(cluster bytes)
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn store_cluster_shaped(&mut self, ino: u32, g: &Geometry, first: u64,
+                                       plainbytes: &[u8], size: u64, touched: &[bool],
+                                       compress: bool) -> Result<(), Errno> {
         let inode = self.read_inode(ino)?;
         let old = self.cluster_addrs(&inode, ino, g, first)?;
         let was = plan::compressed_extent(&old);
@@ -152,7 +173,7 @@ impl<S: SectorSource> Volume<S> {
         // counts describe different states of the file, and an inode read in
         // that window is refused as inconsistent.
         let cur = self.compr_blocks(ino)?;
-        let stored = if plan::may_compress(first, g.blocks(), size, BLKSIZE) {
+        let stored = if compress && plan::may_compress(first, g.blocks(), size, BLKSIZE) {
             compress_cluster(g, plainbytes).map_err(errno)?
         } else {
             Stored::Plain
@@ -180,7 +201,11 @@ impl<S: SectorSource> Volume<S> {
                 (plan::plain(&live), plainbytes.to_vec(), None)
             }
         };
-        self.lay_out(ino, first, &old, &slots, &payload)?;
+        // A file whose saving has been handed back is no longer charged for
+        // its sentinels, so the slot that holds one must not be given back a
+        // second time. `cur` is the same test the reference makes: only a
+        // released file has a sentinel and no saving recorded.
+        self.lay_out(ino, first, &old, &slots, &payload, cur == 0)?;
         let after = plan::compr_blocks_after(cur, g.blocks(), was, now);
         self.stamp_counts(ino, Some(after))
     }
@@ -217,8 +242,9 @@ impl<S: SectorSource> Volume<S> {
     /// that does not exist; not released at all, it leaks the count for the
     /// life of the volume.
     /// # C: O(cluster bytes)
-    fn lay_out(&mut self, ino: u32, first: u64, old: &[u32], slots: &[Slot], payload: &[u8])
-        -> Result<(), Errno> {
+    #[allow(clippy::too_many_arguments)]
+    fn lay_out(&mut self, ino: u32, first: u64, old: &[u32], slots: &[Slot], payload: &[u8],
+               released: bool) -> Result<(), Errno> {
         // Quota is charged for the blocks the cluster is about to GAIN before
         // any of them is allocated: a refusal afterwards would leave them
         // charged to nobody and the file pointing at them.
@@ -242,7 +268,7 @@ impl<S: SectorSource> Volume<S> {
             let (holder, ofs) = self.dnode_for_write(ino, first + i as u64)?;
             let addr = match slot {
                 Slot::Data(n) => {
-                    if is_mark(was) { self.release_reservation(); }
+                    if is_mark(was) && !uncharged(was, released) { self.release_reservation(); }
                     let at = n * BLKSIZE;
                     let owner = match holder { Holder::Inode => ino, Holder::Direct(nid) => nid };
                     let page = payload.get(at..at + BLKSIZE).ok_or(Errno::Eio)?;
@@ -258,7 +284,7 @@ impl<S: SectorSource> Volume<S> {
                 }
                 Slot::Hole => {
                     if holds_block(was) { self.release_slot(ino, was)?; }
-                    if is_mark(was) { self.release_reservation(); }
+                    if is_mark(was) && !uncharged(was, released) { self.release_reservation(); }
                     target
                 }
             };
@@ -277,6 +303,12 @@ impl<S: SectorSource> Volume<S> {
     pub fn truncate_compressed(&mut self, ino: u32, len: u64) -> Result<(), Errno> {
         self.writable_or_err()?;
         let inode = self.read_inode(ino)?;
+        // A file truncated away entirely stops being a released file: there is
+        // no saving left that could have been handed back, and one that went
+        // on reading as released could never be written again.
+        if len == 0 && inode.has(crate::flags::COMPRESS_RELEASED) {
+            self.stamp_inode(ino, |b| b[crate::uapi::I_INLINE] &= !crate::flags::COMPRESS_RELEASED)?;
+        }
         let g = self.geometry(&inode)?;
         if inode.inline_data() { self.convert_inline(ino)?; }
         if len >= inode.size { return self.stamp_size(ino, len); }
@@ -312,7 +344,7 @@ impl<S: SectorSource> Volume<S> {
                 let was = plan::compressed_extent(&old);
                 let cur = self.compr_blocks(ino)?;
                 let slots = vec![Slot::Hole; g.blocks()];
-                self.lay_out(ino, first, &old, &slots, &[])?;
+                self.lay_out(ino, first, &old, &slots, &[], cur == 0)?;
                 let after = plan::compr_blocks_after(cur, g.blocks(), was, None);
                 self.stamp_counts(ino, Some(after))?;
             }
@@ -340,6 +372,16 @@ fn is_mark(addr: u32) -> bool { addr == NEW_ADDR || addr == COMPRESS_ADDR }
 
 /// # C: O(1)
 fn holds_block(addr: u32) -> bool { addr != NULL_ADDR && !is_mark(addr) }
+
+/// Whether this slot's mark is one the volume has ALREADY stopped counting.
+///
+/// The sentinel of a file whose saving was handed back is exactly that: the
+/// release gave its charge back and left the slot in place. Releasing it again
+/// when the cluster is rewritten lowers a count nothing raised, and the volume
+/// then believes it has more space than it does — free space that only ever
+/// grows, and a checker that reports the wrong number.
+/// # C: O(1)
+fn uncharged(addr: u32, released: bool) -> bool { released && addr == COMPRESS_ADDR }
 
 /// Whether the inode's extra attributes reach the saved-block count.
 ///

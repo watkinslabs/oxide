@@ -17,7 +17,11 @@ use crate::uapi::BLKSIZE;
 /// numbers, and reading them from one place is what makes the report a
 /// description of the volume instead of of the mount.
 /// # C: O(devices)
-pub fn disk_map_body(sb: &SuperBlock) -> String {
+pub fn disk_map_body(
+    sb: &SuperBlock,
+    table: &crate::devices::DevTable,
+    zones: Option<&crate::zoned::Geometry>,
+) -> String {
     let per_seg = u64::from(sb.blks_per_seg());
     let blk = BLKSIZE as u64;
     let mut s = format!("Address Layout   : {:5}B Block address (# of Segments)\n", blk);
@@ -41,15 +45,15 @@ pub fn disk_map_body(sb: &SuperBlock) -> String {
 
     if !sb.multi_device() { return s; }
 
-    // A multi-device volume names each member's segment span. This build
-    // refuses such a volume at mount, so the section is unreachable today and
-    // is here because the field it renders is on the medium either way.
+    // Each member's span, as the MOUNT computes it rather than as a second
+    // sum over the same fields: a report that tiles the members itself can
+    // disagree with the map the reads actually go through, and then names the
+    // wrong device for an address that is being served correctly.
     s.push_str("\nDisk Map for multi devices:\n");
-    let mut start = 0u32;
-    for (i, segs) in sb.device_segments.iter().enumerate() {
-        let end = start.saturating_add(segs.saturating_mul(sb.blks_per_seg()));
-        s.push_str(&format!("Disk:{:2}: 0x{:010x} - 0x{:010x}\n", i, start, end.saturating_sub(1)));
-        start = end;
+    for (i, d) in table.devs().iter().enumerate() {
+        let zoned = u8::from(zones.is_some_and(|g| g.dev_is_zoned(i)));
+        s.push_str(&format!("Disk:{:2} (zoned={}): 0x{:010x} - 0x{:010x} on {}\n",
+            i, zoned, d.start_blk, d.end_blk, d.path));
     }
     s
 }
@@ -58,6 +62,7 @@ pub fn disk_map_body(sb: &SuperBlock) -> String {
 pub(crate) fn file(fs: &Arc<F2fs>, dev: &str) -> Attr {
     let fs = Arc::clone(fs);
     Attr::ro(dev, "disk_map", Arc::new(move || {
-        Ok(disk_map_body(fs.volume.lock().super_block()).into_bytes())
+        let v = fs.volume.lock();
+        Ok(disk_map_body(v.super_block(), v.devices(), v.zones()).into_bytes())
     }))
 }

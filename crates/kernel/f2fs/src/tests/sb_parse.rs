@@ -104,7 +104,7 @@ fn an_absurd_extension_count_does_not_read_past_the_array() {
 #[test]
 fn a_volume_listing_no_devices_reports_none() {
     let s = parse(&bytes()).unwrap();
-    assert!(s.device_segments.is_empty());
+    assert!(s.devices.is_empty());
     assert!(!s.multi_device());
 }
 
@@ -117,7 +117,9 @@ fn a_two_device_list_reads_both_and_stops_at_the_empty_path() {
     b[at] = b'/';
     b[at + DEV_PATH_LEN..at + DEV_PATH_LEN + 4].copy_from_slice(&5u32.to_le_bytes());
     let s = parse(&b).unwrap();
-    assert_eq!(s.device_segments, [4, 5]);
+    assert_eq!(s.devices.iter().map(|d| d.total_segments).collect::<alloc::vec::Vec<_>>(),
+               [4, 5]);
+    assert_eq!(s.devices[0].path, "/");
     assert!(s.multi_device());
 }
 

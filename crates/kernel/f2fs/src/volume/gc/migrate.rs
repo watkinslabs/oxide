@@ -67,7 +67,14 @@ impl<S: SectorSource> Volume<S> {
         let inode = self.read_inode(o.ino)?;
         let dir = crate::mode::file_type(inode.mode) == vfs::FileType::Directory;
         let data = self.read_main_block(addr)?;
-        let new = self.write_data(s.nid, s.ofs_in_node, dir, NULL_ADDR, &data)?;
+        // An ahead-of-demand pass on a mount that places by age puts what it
+        // moves in a log of its own. These blocks are old — that is why they
+        // were chosen — and appending them to the log a live writer is filling
+        // would make that section look part-old and part-new, so neither age
+        // describes it and the next pass costs it wrongly.
+        let kind = if self.segstate.gc_atgc_log { Kind::AtgcData }
+                   else if dir { Kind::DirData } else { Kind::FileData };
+        let new = self.write_data_kind(kind, s.nid, s.ofs_in_node, NULL_ADDR, &data)?;
         self.set_holder_addr(o.ino, o.holder, ofs, new)
     }
 

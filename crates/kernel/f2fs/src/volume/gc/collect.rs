@@ -20,6 +20,7 @@ use syscall::errno::Errno;
 
 use sectors::SectorSource;
 
+use crate::stats::counters::gc_mode;
 use crate::uapi::*;
 
 use super::live;
@@ -46,6 +47,33 @@ impl<S: SectorSource> Volume<S> {
                 current: self.is_current(i as u32),
             })
             .collect()
+    }
+
+    /// The section worth cleaning next by AGE, or `None` when the policy is
+    /// off or no section is old enough.
+    ///
+    /// The candidate set is rebuilt per search rather than kept: a section's
+    /// age is its distance from the newest one seen, so a set carried across
+    /// searches would cost today's candidates against yesterday's span.
+    /// # C: O(main segments + min(candidates, the search bound))
+    pub fn search_victim_by_age(&mut self, skip: &[u32]) -> Option<Found> {
+        if !self.atgc.enabled { return None; }
+        let per_sec = self.sb.segs_per_sec.max(1);
+        let per_seg = self.sb.blks_per_seg() as u16;
+        let table = self.seg_table();
+        let units = victim::units(&table, per_seg, per_sec);
+        let cp_disabled = self.opts.checkpoint_disabled;
+        self.atgc.begin();
+        for u in units.iter() {
+            if !victim::unit_eligible(u) || skip.contains(&u.first) { continue; }
+            self.atgc.add_candidate(u.first, u.mtime, u.live, cp_disabled);
+        }
+        let live_of = |first: u32| units.iter().find(|u| u.first == first).map_or(0, |u| u.live);
+        let sec_blocks = u32::from(per_seg) * per_sec;
+        let pick = self.atgc.lookup_victim(sec_blocks, &live_of);
+        self.atgc.release();
+        let total = units.len() as u32 * per_sec;
+        pick.map(|p| Found { segno: p.segno, cursor: (p.segno + per_sec) % total.max(1) })
     }
 
     /// The section worth cleaning next under `search`, and where the search
@@ -98,6 +126,10 @@ impl<S: SectorSource> Volume<S> {
             .and_then(|()| stale.into_iter().try_for_each(|a| self.release_block(a)));
         self.segstate.gc_moving = false;
         outcome?;
+        // One segment cleaned, charged to the policy this pass is running
+        // under. Raised here rather than where the pass ends because a pass
+        // cleans several segments and the figure is per segment.
+        self.counters.borrow_mut().add_reclaimed_segs(self.segstate.gc_pass_mode, 1);
         Ok(moved)
     }
 
@@ -149,10 +181,20 @@ impl<S: SectorSource> Volume<S> {
 
     /// Clean the single best victim. # C: O(blocks per section)
     pub fn gc_one_segment(&mut self) -> Result<Option<u32>, Errno> {
+        self.gc_one_segment_as(Policy::Greedy, gc_mode::NORMAL)
+    }
+
+    /// The same, under a stated cost and charged to a stated policy.
+    /// # C: O(blocks per section)
+    pub fn gc_one_segment_as(&mut self, policy: Policy, mode: usize)
+        -> Result<Option<u32>, Errno> {
         self.writable_or_err()?;
         self.load_segments()?;
-        let Some(segno) = self.pick_victim(Policy::Greedy, &[]) else { return Ok(None) };
-        self.gc_section(segno)?;
+        let Some(segno) = self.pick_victim(policy, &[]) else { return Ok(None) };
+        self.segstate.gc_pass_mode = mode;
+        let outcome = self.gc_section(segno);
+        self.segstate.gc_pass_mode = gc_mode::NORMAL;
+        outcome?;
         Ok(Some(segno))
     }
 
@@ -171,10 +213,24 @@ impl<S: SectorSource> Volume<S> {
     /// checkpoint inside its own clean.
     /// # C: O(sections cleaned * blocks per section)
     pub fn collect_with(&mut self, policy: Policy, target: u32) -> Result<u32, Errno> {
+        self.collect_as(policy, target, gc_mode::NORMAL)
+    }
+
+    /// The same, charged to the policy the caller is running under.
+    ///
+    /// The mode is a property of the PASS, not of the volume: the user's knob
+    /// turns the cleaner thread's mode, and the thread states it here for the
+    /// figures rather than the volume keeping a second copy that could
+    /// disagree with the one being obeyed. Anything that is not the cleaner
+    /// thread cleans under the ordinary policy and is counted as such.
+    /// # C: O(sections cleaned * blocks per section)
+    pub fn collect_as(&mut self, policy: Policy, target: u32, mode: usize) -> Result<u32, Errno> {
         self.writable_or_err()?;
         if self.segstate.gc_running { return Ok(0); }
         self.segstate.gc_running = true;
+        self.segstate.gc_pass_mode = mode;
         let outcome = self.collect_inner(policy, target);
+        self.segstate.gc_pass_mode = gc_mode::NORMAL;
         self.segstate.gc_running = false;
         outcome
     }
@@ -234,14 +290,52 @@ impl<S: SectorSource> Volume<S> {
     /// own, which is the old one.
     /// # C: O(min(sections, max search) + blocks per section)
     pub fn gc_background(&mut self) -> Result<Option<u32>, Errno> {
+        self.gc_background_as(Policy::CostBenefit, gc_mode::NORMAL)
+    }
+
+    /// Clean ahead of demand, choosing the victim by AGE.
+    ///
+    /// Falls back to the ordinary ahead-of-demand pass when the age policy is
+    /// off or has no candidate old enough. Falling back rather than doing
+    /// nothing is the point: a volume whose sections are all young still needs
+    /// cleaning, and a cleaner that declined until something aged would let it
+    /// run out of space while reporting that it had nothing to do.
+    /// # C: O(main segments + blocks per section)
+    pub fn gc_background_age(&mut self, mode: usize) -> Result<Option<u32>, Errno> {
         self.writable_or_err()?;
         if self.segstate.gc_running { return Ok(None); }
         self.load_segments()?;
-        let search = Search::background(Policy::CostBenefit, self.segstate.gc_cursor);
+        let Some(found) = self.search_victim_by_age(&[]) else {
+            return self.gc_background_as(Policy::CostBenefit, mode);
+        };
+        self.segstate.gc_cursor = found.cursor;
+        self.segstate.gc_running = true;
+        self.segstate.gc_pass_mode = mode;
+        self.segstate.gc_atgc_log = self.atgc.enabled;
+        let outcome = self.gc_section(found.segno);
+        self.segstate.gc_atgc_log = false;
+        self.segstate.gc_pass_mode = gc_mode::NORMAL;
+        self.segstate.gc_running = false;
+        outcome?;
+        Ok(Some(found.segno))
+    }
+
+    /// The same, under a stated cost and charged to a stated policy.
+    /// # C: O(min(sections, max search) + blocks per section)
+    pub fn gc_background_as(&mut self, policy: Policy, mode: usize)
+        -> Result<Option<u32>, Errno> {
+        self.writable_or_err()?;
+        if self.segstate.gc_running { return Ok(None); }
+        self.load_segments()?;
+        let search = Search::background(policy, self.segstate.gc_cursor);
         let Some(found) = self.search_victim(search, &[]) else { return Ok(None) };
         self.segstate.gc_cursor = found.cursor;
         self.segstate.gc_running = true;
+        self.segstate.gc_pass_mode = mode;
+        self.segstate.gc_atgc_log = self.atgc.enabled;
         let outcome = self.gc_section(found.segno);
+        self.segstate.gc_atgc_log = false;
+        self.segstate.gc_pass_mode = gc_mode::NORMAL;
         self.segstate.gc_running = false;
         outcome?;
         Ok(Some(found.segno))

@@ -14,8 +14,9 @@ use crate::fault::{ALL_TYPES};
 use super::bounds::{active_logs_ok, inline_xattr_ok, MAX_UNUSABLE_PERC};
 use super::crypt;
 use super::jquota::{self, JqFmt, QKind};
-use super::{AllocMode, BackgroundGc, DiscardUnit, Errors, Fragment, FsyncMode, MemoryMode,
-            Mode, Options};
+use super::spec::Spec;
+use super::{AllocMode, BackgroundGc, CompressMode, DiscardUnit, Errors, Fragment, FsyncMode,
+            MemoryMode, Mode, Options};
 
 const SEP: char = ',';
 const ASSIGN: char = '=';
@@ -28,20 +29,71 @@ const ASSIGN: char = '=';
 /// whole string.
 /// # C: O(len(data))
 pub fn parse(base: Options, data: &str) -> Result<Options, Errno> {
+    let (mut o, _) = parse_spec(base, data)?;
+    settle_quotas(&mut o)?;
+    Ok(o)
+}
+
+/// Settle the two quota arrangements against each other, over one option set.
+///
+/// A remount does NOT go through here: what it may do depends on what the
+/// mount already has, and settling the new line alone would refuse a line that
+/// names a file while the running mount already carries the format.
+/// # C: O(1)
+pub fn settle_quotas(o: &mut Options) -> Result<(), Errno> {
+    let (mut usr, mut grp, mut prj) = (o.usrquota, o.grpquota, o.prjquota);
+    jquota::settle(&o.jquota, &mut usr, &mut grp, &mut prj)?;
+    o.usrquota = usr;
+    o.grpquota = grp;
+    o.prjquota = prj;
+    Ok(())
+}
+
+/// Parse, and report which keys the string named.
+///
+/// The second half is not derivable from the first: an option left at its
+/// default and an option explicitly set to that default are the same value and
+/// different requests, and the consistency pass answers them differently.
+/// # C: O(len(data))
+pub fn parse_spec(base: Options, data: &str) -> Result<(Options, Spec), Errno> {
     let mut o = base;
+    let mut spec = Spec::none();
     for token in data.split(SEP).map(str::trim).filter(|t| !t.is_empty()) {
         let (key, val) = match token.split_once(ASSIGN) {
             Some((k, v)) => (k, Some(v)),
             None => (token, None),
         };
         one(&mut o, key, val)?;
+        note(&mut spec, key);
     }
-    let (mut usr, mut grp, mut prj) = (o.usrquota, o.grpquota, o.prjquota);
-    jquota::settle(&o.jquota, &mut usr, &mut grp, &mut prj)?;
-    o.usrquota = usr;
-    o.grpquota = grp;
-    o.prjquota = prj;
-    Ok(o)
+    Ok((o, spec))
+}
+
+/// Record that `key` appeared. # C: O(1)
+fn note(s: &mut Spec, key: &str) {
+    match key {
+        "discard" | "nodiscard" => s.discard = true,
+        "discard_unit" => s.discard_unit = true,
+        "extent_cache" | "noextent_cache" => s.extent_cache = true,
+        "age_extent_cache" => s.age_extent_cache = true,
+        "reserve_root" => s.reserve_root = true,
+        "reserve_node" => s.reserve_node = true,
+        "mode" => s.mode = true,
+        "inline_xattr" | "noinline_xattr" => s.inline_xattr = true,
+        "inline_xattr_size" => s.inline_xattr_size = true,
+        "background_gc" => s.background_gc = true,
+        "atgc" => s.atgc = true,
+        "flush_merge" | "noflush_merge" => s.flush_merge = true,
+        "norecovery" | "disable_roll_forward" => s.recovery = true,
+        "nat_bits" => s.nat_bits = true,
+        "checkpoint" => s.checkpoint = true,
+        "test_dummy_encryption" => s.dummy_policy = true,
+        "usrjquota" => s.qname[QKind::User as usize] = true,
+        "grpjquota" => s.qname[QKind::Group as usize] = true,
+        "prjjquota" => s.qname[QKind::Project as usize] = true,
+        "jqfmt" => s.jqfmt = true,
+        _ => {}
+    }
 }
 
 /// Apply one key. # C: O(1)
@@ -49,7 +101,7 @@ fn one(o: &mut Options, key: &str, val: Option<&str>) -> Result<(), Errno> {
     match key {
         "background_gc" => o.background_gc = background_gc(need(val)?)?,
         "disable_roll_forward" => { flag(val)?; o.recovery = false; }
-        "norecovery" => { flag(val)?; o.recovery = false; }
+        "norecovery" => { flag(val)?; o.recovery = false; o.norecovery = true; }
         "discard" => { flag(val)?; o.discard = true; }
         "discard_unit" => o.discard_unit = discard_unit(need(val)?)?,
         "memory" => o.memory = memory(need(val)?)?,
@@ -142,12 +194,15 @@ fn one(o: &mut Options, key: &str, val: Option<&str>) -> Result<(), Errno> {
         // Names the format defines that this build cannot deliver. Each one
         // changes what the caller gets, so accepting it silently would be a
         // promise nothing keeps.
+        // Which side compresses is honoured rather than refused: this build
+        // writes compressed clusters and answers the two rewrite commands, and
+        // those commands mean nothing on a mount that never said `user`.
+        "compress_mode" => o.compress_mode = compress_mode(need(val)?)?,
         "compress_algorithm"
         | "compress_log_size"
         | "compress_extension"
         | "nocompress_extension"
         | "compress_chksum"
-        | "compress_mode"
         | "compress_cache" => return Err(Errno::Eopnotsupp),
         _ => {}
     }
@@ -233,6 +288,15 @@ fn memory(v: &str) -> Result<MemoryMode, Errno> {
     match v {
         "normal" => Ok(MemoryMode::Normal),
         "low" => Ok(MemoryMode::Low),
+        _ => Err(Errno::Einval),
+    }
+}
+
+/// # C: O(1)
+fn compress_mode(v: &str) -> Result<CompressMode, Errno> {
+    match v {
+        "fs" => Ok(CompressMode::Fs),
+        "user" => Ok(CompressMode::User),
         _ => Err(Errno::Einval),
     }
 }

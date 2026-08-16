@@ -276,6 +276,9 @@ pub const CURSEG_COLD_NODE: usize = 5;
 pub const NR_CURSEG_DATA_TYPE: usize = 3;
 pub const NR_CURSEG_NODE_TYPE: usize = 3;
 pub const NR_CURSEG_PERSIST_TYPE: usize = NR_CURSEG_DATA_TYPE + NR_CURSEG_NODE_TYPE;
+/// Logs a volume marked read-only at format time was written through, and
+/// therefore all the current-segment slots its checkpoint records.
+pub const NR_CURSEG_RO_TYPE: usize = 2;
 /// The log a PINNED file's blocks are taken from.
 ///
 /// Not one of the six the checkpoint records: it exists only while the volume
@@ -284,8 +287,17 @@ pub const NR_CURSEG_PERSIST_TYPE: usize = NR_CURSEG_DATA_TYPE + NR_CURSEG_NODE_T
 /// A pinned file's blocks must never be moved, so they may not share a section
 /// with blocks the cleaner is free to relocate.
 pub const CURSEG_COLD_DATA_PINNED: usize = 6;
+/// The log the age-threshold cleaner writes what it moves into.
+///
+/// Also not one of the six. It recycles a partly-used cold-data segment rather
+/// than opening an empty one, which is the point: blocks the cleaner moves are
+/// old and are being placed beside data of their own age, so the section they
+/// land in ages as a unit and becomes worth cleaning as a unit. Mixing them
+/// into the ordinary cold log would spread old blocks through segments that
+/// are still being appended to and defeat the age policy that chose them.
+pub const CURSEG_ALL_DATA_ATGC: usize = 7;
 /// Logs that exist in memory only.
-pub const NR_CURSEG_INMEM_TYPE: usize = 1;
+pub const NR_CURSEG_INMEM_TYPE: usize = 2;
 /// Logs a mount carries, persisted and in-memory together.
 pub const NR_CURSEG_TYPE: usize = NR_CURSEG_PERSIST_TYPE + NR_CURSEG_INMEM_TYPE;
 

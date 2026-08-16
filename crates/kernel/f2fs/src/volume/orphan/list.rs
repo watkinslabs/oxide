@@ -44,6 +44,9 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(log orphans)
     pub fn add_orphan(&mut self, ino: u32) -> Result<(), Errno> {
         self.writable_or_err()?;
+        if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::Orphan) {
+            return Err(Errno::Enospc);
+        }
         if self.orphans.contains(&ino) { return Ok(()); }
         if self.orphans.len() as u64 >= self.max_orphans() { return Err(Errno::Enospc); }
         self.orphans.insert(ino);

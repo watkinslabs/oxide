@@ -31,6 +31,39 @@ impl F2fsNode {
     pub(crate) fn live(&self) -> KResult<Inode> {
         self.fs.volume.lock().read_inode(self.ino).map_err(super::errno_to_vfs)
     }
+
+    /// Bring the cached shape back in line with the medium.
+    ///
+    /// The length and the block count are the two fields an operation on the
+    /// volume changes underneath a handle that is already open, and they do
+    /// not move together: converting an inline file out gives it a block
+    /// without changing a byte of its length, and a sparse write grows the
+    /// length by more blocks than it allocates. A handle that restamped only
+    /// the length would keep answering `stat` with the shape the file had
+    /// when it was opened.
+    /// # C: O(1 block)
+    pub(crate) fn restat(&self, inode: &vfs::Inode) -> KResult<()> {
+        apply_shape(inode, &self.live()?);
+        Ok(())
+    }
+}
+
+/// Put a stored inode's length and block count onto the cached one.
+///
+/// Separate from `restat` because this is the whole of the decision and it can
+/// be driven against a stored inode without a mounted filesystem, which
+/// `restat` cannot.
+/// # C: O(1)
+pub fn apply_shape(inode: &vfs::Inode, live: &Inode) {
+    inode.set_size(live.size);
+    inode.set_blocks(blocks_reported(live.blocks));
+}
+
+/// The stored block count as the interface reports it: the inode's own node
+/// block is not part of the count, and the unit is five hundred and twelve
+/// bytes rather than one block. # C: O(1)
+pub fn blocks_reported(stored: u64) -> u64 {
+    stored.saturating_sub(1) << (crate::uapi::BLKSIZE_BITS - 9)
 }
 
 /// Read the inode numbered `ino` and build the interface's object for it.
@@ -60,7 +93,7 @@ pub(crate) fn build(fs: Arc<F2fs>, ino: u32, inode: Inode, rdev: u32) -> InodeRe
     // The stored block count includes the inode's own node block, which the
     // interface's count does not; the reported size is in five-hundred-and-
     // twelve-byte units, which is the block shifted by three.
-    let blocks = inode.blocks.saturating_sub(1) << (crate::uapi::BLKSIZE_BITS - 9);
+    let blocks = blocks_reported(inode.blocks);
     let size = inode.size;
     let links = inode.links;
     let (uid, gid) = (inode.uid, inode.gid);
@@ -88,3 +121,8 @@ pub fn stamp((sec, nsec): (u64, u32)) -> Timespec64 { Timespec64::new(sec as i64
 #[cfg(test)]
 #[path = "../tests/stamp.rs"]
 mod tests;
+
+/// The cached shape a handle presents, and what brings it back in line.
+#[cfg(test)]
+#[path = "../tests/restat.rs"]
+mod restat_tests;

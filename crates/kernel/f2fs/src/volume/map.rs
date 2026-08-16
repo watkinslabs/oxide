@@ -34,13 +34,7 @@ impl<S: SectorSource> Volume<S> {
     /// another file's number is a table that has drifted.
     /// # C: O(indirection depth) blocks
     pub fn map_block(&self, inode: &Inode, ino: u32, index: u64) -> Result<Mapped, Errno> {
-        // The inode caches one extent. Consulting it saves the walk for the
-        // contiguous run most files are, and it is only consulted after it is
-        // checked against the main area — a stale one would otherwise hand
-        // back another file's blocks.
-        if let Some(addr) = inode.extent_addr(index) {
-            if self.extent_is_sane(inode) { return Ok(Mapped::At(addr)); }
-        }
+        if let Some(m) = self.cached_map(inode, ino, index) { return Ok(m); }
         let Some(addr) = self.map_block_raw(inode, ino, index)? else { return Ok(Mapped::Hole) };
         if node::is_compressed(addr) { return Ok(Mapped::Compressed); }
         if node::is_hole(addr) { return Ok(Mapped::Hole); }
@@ -115,6 +109,77 @@ impl<S: SectorSource> Volume<S> {
 }
 
 impl<S: SectorSource> Volume<S> {
+    /// What an inode is, as far as the caches are concerned. # C: O(1)
+    pub(crate) fn extent_gate(&self, inode: &Inode) -> crate::extent::Gate {
+        let ty = crate::mode::file_type(inode.mode);
+        crate::extent::Gate {
+            is_reg: ty == vfs::FileType::Regular,
+            is_dir: ty == vfs::FileType::Directory,
+            compressed: inode.compressed(),
+            cold: false,
+            readonly_volume: self.access == crate::features::Access::ReadOnly,
+        }
+    }
+
+    /// The run the inode itself records, when it describes real blocks.
+    ///
+    /// Both ends are checked, not just the start: a run whose length passes
+    /// the end of the main area would answer for offsets it cannot cover, and
+    /// the answer would be metadata read as file contents.
+    /// # C: O(1)
+    pub(crate) fn stored_extent(&self, inode: &Inode) -> Option<crate::extent::Info> {
+        let (fofs, blk, len) = inode.cached_extent()?;
+        if !self.extent_is_sane(inode) { return None; }
+        Some(crate::extent::Info::read(fofs, len, blk))
+    }
+
+    /// Make sure this inode's caches exist, seeded from what it carries.
+    ///
+    /// There is no live inode object in this build, so the equivalent of
+    /// instantiation is the first time a cache is asked about the inode. The
+    /// seed is idempotent — a tree that already holds runs is left alone — so
+    /// a later, finer answer is never thrown away by a re-seed.
+    /// # C: O(1)
+    pub(crate) fn open_extent_trees(&self, inode: &Inode, ino: u32) {
+        let g = self.extent_gate(inode);
+        let seed = self.stored_extent(inode);
+        self.extents.borrow_mut().init_trees(ino, g, seed);
+    }
+
+    /// The cached answer for one file block, or `None` when there is none.
+    ///
+    /// Every consulted lookup is counted whether or not it hit: a ratio taken
+    /// over hits alone says nothing about whether the cache is working.
+    /// # C: O(log runs)
+    fn cached_map(&self, inode: &Inode, ino: u32, index: u64) -> Option<Mapped> {
+        let fofs = u32::try_from(index).ok()?;
+        self.open_extent_trees(inode, ino);
+        let found = self.extents.borrow_mut().lookup_block(ino, fofs);
+        if found.consulted() {
+            self.counters.borrow_mut().inc_total_hit(crate::stats::counters::extent_of::READ);
+        }
+        let (addr, hit) = found.block(fofs)?;
+        // A remembered run is still checked against the main area before it
+        // answers. A run that has gone wrong must produce a walk, never a
+        // block belonging to something else.
+        if !self.sb.valid_main_blkaddr(addr) { return None; }
+        self.count_hit(hit);
+        Some(Mapped::At(addr))
+    }
+
+    /// Charge one answered lookup to the structure that answered it.
+    /// # C: O(1)
+    pub(crate) fn count_hit(&self, hit: crate::extent::Hit) {
+        use crate::extent::Hit;
+        use crate::stats::counters::extent_of::READ;
+        let mut c = self.counters.borrow_mut();
+        match hit {
+            Hit::Largest => c.inc_largest_hit(),
+            Hit::Cached => c.inc_cached_hit(READ),
+            Hit::Tree => c.inc_rbtree_hit(READ),
+        }
+    }
+
     /// Whether the inode's cached extent can describe real blocks.
     ///
     /// Both ends are checked, not just the start: an extent whose length runs
@@ -175,8 +240,29 @@ impl<S: SectorSource> Volume<S> {
         })
     }
 
+    /// Forget everything remembered about `ino` from file offset `first` on.
+    ///
+    /// A range rather than the whole file, because a shortened file's
+    /// surviving head is still described correctly and throwing it away would
+    /// make every later read of it walk the tree again.
+    /// # C: O(runs past the cut)
+    pub(crate) fn forget_extents_from(&self, ino: u32, first: u64) {
+        let Ok(fofs) = u32::try_from(first) else { return };
+        let len = u32::MAX - fofs;
+        if len == 0 { return; }
+        let mut caches = self.extents.borrow_mut();
+        caches.update_range(crate::extent::Kind::Read, ino,
+                            crate::extent::Info::invalidate(fofs, len));
+        caches.update_range(crate::extent::Kind::BlockAge, ino,
+                            crate::extent::Info::invalidate(fofs, len));
+    }
+
     /// Forget the cached extent. # C: O(1 block)
     pub(crate) fn clear_extent(&mut self, ino: u32) -> Result<(), Errno> {
+        // The runs in memory describe blocks this inode no longer has — its
+        // contents have moved inside it — so they go first, whether or not the
+        // stored run needs rewriting.
+        self.extents.borrow_mut().drop_trees(ino);
         if self.read_inode(ino)?.ext.2 == 0 { return Ok(()); }
         self.stamp_inode(ino, |b| {
             b[crate::uapi::I_EXT_LEN..crate::uapi::I_EXT_LEN + 4]
@@ -188,3 +274,7 @@ impl<S: SectorSource> Volume<S> {
 #[cfg(test)]
 #[path = "../tests/extent.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../tests/extwire.rs"]
+mod wire_tests;

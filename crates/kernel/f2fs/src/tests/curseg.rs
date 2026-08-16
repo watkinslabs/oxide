@@ -7,18 +7,18 @@ use crate::opts::AllocMode;
 fn a_log_with_nothing_open_has_no_room() {
     let c = Curseg::empty();
     assert_eq!(c.segno, NULL_SEGNO);
-    assert!(!c.has_room());
+    assert!(!c.has_room_within(BLKS_PER_SEG));
 }
 
 #[test]
 fn a_log_has_room_until_its_segment_is_full() {
     let mut c = Curseg::empty();
     c.segno = 3;
-    assert!(c.has_room());
+    assert!(c.has_room_within(BLKS_PER_SEG));
     c.next_blkoff = BLKS_PER_SEG as u16 - 1;
-    assert!(c.has_room());
+    assert!(c.has_room_within(BLKS_PER_SEG));
     c.next_blkoff = BLKS_PER_SEG as u16;
-    assert!(!c.has_room());
+    assert!(!c.has_room_within(BLKS_PER_SEG));
 }
 
 #[test]

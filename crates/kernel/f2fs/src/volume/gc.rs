@@ -8,11 +8,14 @@
 //! - `migrate`: moving one live block and repointing its owner.
 //! - `collect`: cleaning a section, cleaning until there is room, and taking
 //!              the checkpoint that turns what was cleaned into space.
+//! - `resize`:  emptying the sections a shrinking volume gives up, and moving
+//!              the three accounts of its size together.
 
 pub mod victim;
 pub mod live;
 pub mod migrate;
 pub mod collect;
+pub mod resize;
 
 pub use live::alive;
 pub use migrate::Owner;

@@ -57,7 +57,7 @@ pub fn parse(sb: &[u8]) -> Option<SuperBlock> {
         feature: le32(sb, SB_FEATURE)?,
         s_encoding: le16(sb, SB_S_ENCODING)?,
         s_encoding_flags: le16(sb, SB_S_ENCODING_FLAGS)?,
-        device_segments: device_segments(sb)?,
+        devices: devices(sb)?,
         qf_ino,
         crc: le32(sb, SB_CRC)?,
     })
@@ -97,17 +97,24 @@ fn extensions(sb: &[u8]) -> Option<Vec<String>> {
     Some(out)
 }
 
-/// Segments each listed device contributes.
+/// The member devices, each a path and the segments it contributes.
 ///
 /// The list ends at the first entry with an empty path, and an empty list
-/// means the volume is the one device it was mounted from.
-/// # C: O(MAX_DEVICES)
-fn device_segments(sb: &[u8]) -> Option<Vec<u32>> {
+/// means the volume is the one device it was mounted from. The path is read
+/// as well as the count because it is how the mount FINDS the member; a build
+/// that read only the counts could size the address space and not open it.
+/// # C: O(MAX_DEVICES * DEV_PATH_LEN)
+fn devices(sb: &[u8]) -> Option<Vec<crate::devices::DevSpec>> {
     let mut out = Vec::new();
     for i in 0..MAX_DEVICES {
         let at = SB_DEVS + i * DEV_ENTRY_SIZE;
         if *sb.get(at)? == 0 { break; }
-        out.push(le32(sb, at + DEV_PATH_LEN)?);
+        let raw = sb.get(at..at + DEV_PATH_LEN)?;
+        let end = raw.iter().position(|&b| b == 0).unwrap_or(DEV_PATH_LEN);
+        out.push(crate::devices::DevSpec {
+            path: String::from_utf8_lossy(&raw[..end]).into_owned(),
+            total_segments: le32(sb, at + DEV_PATH_LEN)?,
+        });
     }
     Some(out)
 }

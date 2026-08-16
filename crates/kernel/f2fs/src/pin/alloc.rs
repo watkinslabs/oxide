@@ -211,6 +211,12 @@ impl<S: SectorSource> Volume<S> {
     fn put_addrs(&mut self, ino: u32, holder: Holder, pairs: &[(usize, u32)])
         -> Result<(), Errno> {
         if pairs.is_empty() { return Ok(()); }
+        // This path writes addresses in a BATCH rather than one at a time, so
+        // it does not pass through the single-address funnel that tells the
+        // caches. Telling them here is not optional: every pair below moves a
+        // block, and a run left describing where the block used to be answers
+        // a later read with data that has been overwritten by something else.
+        for &(ofs, addr) in pairs { self.note_mapping_change(ino, holder, ofs, addr)?; }
         match holder {
             Holder::Inode => {
                 let inode = self.read_inode(ino)?;

@@ -59,9 +59,10 @@ pub struct SuperBlock {
     pub feature: u32,
     pub s_encoding: u16,
     pub s_encoding_flags: u16,
-    /// Segments each listed device contributes, empty when the volume is one
-    /// device.
-    pub device_segments: Vec<u32>,
+    /// The member devices the volume names, in the order they tile its block
+    /// address space. Empty when the volume names none, which is the ordinary
+    /// single-device case.
+    pub devices: Vec<crate::devices::DevSpec>,
     pub qf_ino: [u32; crate::uapi::MAX_QUOTAS],
     /// The stored CRC, whether or not the volume claims to maintain one.
     pub crc: u32,
@@ -95,5 +96,5 @@ impl SuperBlock {
 
     /// Whether the volume lists more than the device it was mounted from.
     /// # C: O(1)
-    pub fn multi_device(&self) -> bool { self.device_segments.len() > 1 }
+    pub fn multi_device(&self) -> bool { self.devices.len() > 1 }
 }

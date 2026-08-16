@@ -128,6 +128,12 @@ impl<S: SectorSource> Volume<S> {
     /// would make the first allocation by every new user fail.
     /// # C: O(file bytes) on the first touch, O(log ids) after
     pub(crate) fn dq_get(&mut self, kind: usize, id: u32) -> Result<Dqblk, Errno> {
+        // Bringing an identity's record in is what "initialise the quotas of
+        // this inode" means here, so it is where a mount asking for that step
+        // to fail gets its failure.
+        if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::DquotInit) {
+            return Err(Errno::Esrch);
+        }
         if let Some(d) = self.dquots.get(&(kind, id)) { return Ok(d.clone()); }
         let info = self.dq_info(kind)?;
         let file = self.read_quota_file(self.quota_setup[kind].ino)?;

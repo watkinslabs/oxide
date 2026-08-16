@@ -100,6 +100,21 @@ fn two_logs_take_the_checkpoint() {
 }
 
 #[test]
+fn a_fastboot_mount_takes_the_checkpoint() {
+    let opts = Options { fastboot: true, ..Options::defaults() };
+    let (mut v, ino) = dirtied(opts);
+    let before = v.checkpoint().version;
+    assert_eq!(v.fsync(ino).expect("fsync"), CpReason::Fastboot);
+    assert!(v.checkpoint().version > before, "the reason must have cost a pack");
+}
+
+#[test]
+fn the_same_file_without_fastboot_takes_the_chain() {
+    let (mut v, ino) = dirtied(Options::defaults());
+    assert_eq!(v.fsync(ino).expect("fsync"), CpReason::None);
+}
+
+#[test]
 fn a_second_name_takes_the_checkpoint() {
     let (mut v, ino) = ready(Options::defaults());
     v.link(ROOT_INO, b"g", ino, NOW).expect("link");

@@ -184,11 +184,29 @@ fn a_name_this_build_cannot_deliver_is_refused_rather_than_dropped() {
         "compress_extension=so",
         "nocompress_extension=txt",
         "compress_chksum",
-        "compress_mode=fs",
         "compress_cache",
     ] {
         assert_eq!(p(name), Err(Errno::Eopnotsupp), "{name} should be refused");
     }
+}
+
+#[test]
+fn which_side_compresses_is_honoured_and_survives_being_shown() {
+    // Refusing it would leave this build unable to be asked for caller-driven
+    // compression at all, and the two rewrite commands mean nothing without
+    // it. A remount reads the shown string back, so both spellings have to
+    // come out of `show` in a form `parse` accepts.
+    use crate::opts::CompressMode;
+    assert_eq!(Options::defaults().compress_mode, CompressMode::Fs);
+    assert_eq!(p("compress_mode=fs").unwrap().compress_mode, CompressMode::Fs);
+    let user = p("compress_mode=user").unwrap();
+    assert_eq!(user.compress_mode, CompressMode::User);
+    assert_eq!(p("compress_mode=maybe").map(|_| ()), Err(Errno::Einval));
+    assert_eq!(p("compress_mode").map(|_| ()), Err(Errno::Einval));
+    let shown = crate::opts::show(&user);
+    assert!(shown.contains(",compress_mode=user"), "{shown}");
+    assert_eq!(crate::opts::parse(Options::defaults(), &shown).unwrap().compress_mode,
+               CompressMode::User);
 }
 
 #[test]

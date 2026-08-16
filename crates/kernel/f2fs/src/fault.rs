@@ -19,3 +19,8 @@ pub use attr::{apply, build, time_to_inject, Cfg, Info, Which};
 #[cfg(test)]
 #[path = "tests/fault.rs"]
 mod tests;
+
+/// Every site driven through the operation that consults it.
+#[cfg(test)]
+#[path = "tests/faultsites.rs"]
+mod site_tests;

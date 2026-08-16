@@ -252,13 +252,8 @@ fn the_password_salt_command_answers_sixteen_stable_bytes() {
 fn the_commands_whose_volume_operation_is_not_built_are_exactly_these() {
     let (mut v, ino) = one_file();
     let expect: &[(u32, Unbuilt)] = &[
-        (START_ATOMIC_WRITE, Unbuilt::AtomicWrite),
-        (START_ATOMIC_REPLACE, Unbuilt::AtomicWrite),
-        (COMMIT_ATOMIC_WRITE, Unbuilt::AtomicWrite),
-        (ABORT_ATOMIC_WRITE, Unbuilt::AtomicWrite),
         (DEFRAGMENT, Unbuilt::Defragment),
         (MOVE_RANGE, Unbuilt::MoveRange),
-        (RESIZE_FS, Unbuilt::ResizeFs),
     ];
     for (cmd, want) in expect {
         let n = crate::ioctl::spec::payload_len(*cmd) as usize;

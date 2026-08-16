@@ -39,9 +39,16 @@ impl Curseg {
         Self { segno: NULL_SEGNO, next_blkoff: 0, alloc_type: ALLOC_LFS, sum: vec![0u8; BLKSIZE] }
     }
 
-    /// Whether the log has an open segment with room. # C: O(1)
-    pub fn has_room(&self) -> bool {
-        self.segno != NULL_SEGNO && u32::from(self.next_blkoff) < BLKS_PER_SEG
+    /// Whether the log has an open segment with room, given how many blocks
+    /// that segment may hold.
+    ///
+    /// The bound is passed in rather than taken as a segment's worth because
+    /// on a volume laid out for a drive's zones the last segments of a section
+    /// hold fewer blocks — or none — and appending past a zone's capacity is a
+    /// write the drive refuses.
+    /// # C: O(1)
+    pub fn has_room_within(&self, usable: u32) -> bool {
+        self.segno != NULL_SEGNO && u32::from(self.next_blkoff) < usable
     }
 
     /// The block address this log would hand out next. # C: O(1)
@@ -108,6 +115,15 @@ pub enum Kind {
     /// Its own log, whatever the volume's log count: a pinned block may not be
     /// moved, so it may not be mixed into a section the cleaner may choose.
     PinnedData,
+    /// A block the age-threshold cleaner is moving.
+    ///
+    /// Also its own log, and for the mirror-image reason: these blocks are OLD,
+    /// and the policy that chose them works by section age. Appending them to
+    /// the cold log would mix old data into a segment still taking fresh
+    /// writes, which raises that section's apparent youth and lowers the
+    /// victim's — so the very blocks the cleaner has just proved are cold stop
+    /// looking cold, and the next pass picks worse victims than the last.
+    AtgcData,
 }
 
 impl Kind {
@@ -129,6 +145,7 @@ pub fn log_for(kind: Kind, active_logs: u8) -> usize {
     // reach it: a two-log volume still keeps pinned blocks apart, because the
     // reason they are apart is the cleaner and not the temperature.
     if kind == Kind::PinnedData { return CURSEG_COLD_DATA_PINNED; }
+    if kind == Kind::AtgcData { return CURSEG_ALL_DATA_ATGC; }
     match active_logs {
         2 => if kind.is_node() { CURSEG_HOT_NODE } else { CURSEG_HOT_DATA },
         // With four logs the node side splits on TEMPERATURE, not on what the
@@ -140,6 +157,7 @@ pub fn log_for(kind: Kind, active_logs: u8) -> usize {
             Kind::FileNode => CURSEG_WARM_NODE,
             Kind::DirNode | Kind::IndirectNode => CURSEG_COLD_NODE,
             Kind::PinnedData => CURSEG_COLD_DATA_PINNED,
+            Kind::AtgcData => CURSEG_ALL_DATA_ATGC,
         },
         _ => match kind {
             Kind::DirData => CURSEG_HOT_DATA,
@@ -148,6 +166,7 @@ pub fn log_for(kind: Kind, active_logs: u8) -> usize {
             Kind::FileNode => CURSEG_WARM_NODE,
             Kind::IndirectNode => CURSEG_COLD_NODE,
             Kind::PinnedData => CURSEG_COLD_DATA_PINNED,
+            Kind::AtgcData => CURSEG_ALL_DATA_ATGC,
         },
     }
 }

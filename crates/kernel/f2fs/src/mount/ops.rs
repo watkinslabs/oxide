@@ -153,8 +153,7 @@ impl InodeOps for F2fsOps {
             return Err(VfsError::Eisdir);
         }
         node.fs.truncate(node.ino, len)?;
-        inode.set_size(len);
-        Ok(())
+        node.restat(inode)
     }
 
     /// The stored fields are changed on the medium and then on the cached
@@ -180,7 +179,12 @@ impl InodeOps for F2fsOps {
             node.fs.volume_now().set_times(node.ino, stamp(ia.atime), stamp(ia.mtime))
                 .map_err(errno_to_vfs)?;
         }
-        vfs::setattr::simple_setattr(inode, idmap, ia)
+        vfs::setattr::simple_setattr(inode, idmap, ia)?;
+        // A size change moves the block count too, and by a different amount:
+        // shortening a file frees the nodes that held its tail as well as the
+        // blocks themselves.
+        if ia.valid & ATTR_SIZE != 0 { node.restat(inode)?; }
+        Ok(())
     }
 
     fn setxattr(&self, inode: &Inode, name: &str, value: Vec<u8>, create: bool, replace: bool)
@@ -255,7 +259,7 @@ impl FileOps for F2fsOps {
         // full one: the caller resumes from where it stopped, which is the
         // only way a write that ran out of space part way can be completed.
         let n = node.fs.write(node.ino, off, buf)?;
-        inode.set_size(node.live()?.size);
+        node.restat(inode)?;
         Ok(n)
     }
 

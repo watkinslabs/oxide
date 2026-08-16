@@ -138,7 +138,10 @@ fn the_segment_reports_render_the_mounted_volume() {
 #[test]
 fn disk_map_reports_every_area_at_its_real_address() {
     let fs = mounted("/dev/vda");
-    let body = { disk_map_body(fs.volume.lock().super_block()) };
+    let body = {
+        let v = fs.volume.lock();
+        disk_map_body(v.super_block(), v.devices(), v.zones())
+    };
     let sb = fs.volume.lock();
     let sb = sb.super_block();
     assert!(body.contains(&alloc::format!(" seg0_blkaddr  : 0x{:010x}\n", sb.segment0_blkaddr)));

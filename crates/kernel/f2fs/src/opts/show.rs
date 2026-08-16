@@ -10,8 +10,8 @@
 use alloc::format;
 use alloc::string::String;
 
-use super::{AllocMode, BackgroundGc, DiscardUnit, Errors, Fragment, FsyncMode, MemoryMode,
-            Mode, Options};
+use super::{AllocMode, BackgroundGc, CompressMode, DiscardUnit, Errors, Fragment, FsyncMode,
+            MemoryMode, Mode, Options};
 
 /// Render `o`. # C: O(number of options)
 pub fn show(o: &Options) -> String {
@@ -24,7 +24,10 @@ pub fn show(o: &Options) -> String {
             BackgroundGc::Sync => ",background_gc=sync",
         });
     }
-    if !o.recovery { s.push_str(",disable_roll_forward"); }
+    // The two spellings are rendered apart, because only one of them is
+    // refused on a writable mount and a remount reads this string back.
+    if !o.recovery && !o.norecovery { s.push_str(",disable_roll_forward"); }
+    if o.norecovery { s.push_str(",norecovery"); }
     s.push_str(if o.discard { ",discard" } else { ",nodiscard" });
     if o.discard_unit != d.discard_unit {
         s.push_str(match o.discard_unit {
@@ -94,6 +97,9 @@ pub fn show(o: &Options) -> String {
     jquota(&mut s, o);
     if let Some(p) = &o.dummy_policy { s.push_str(crate::opts::crypt::show_dummy(p)); }
     if o.inlinecrypt { s.push_str(",inlinecrypt"); }
+    // Shown only when the caller was handed the decision: the mount doing it
+    // is the default, and a remount reads this string back.
+    if o.compress_mode == CompressMode::User { s.push_str(",compress_mode=user"); }
     // Shown only when the mount asked, so an ordinary line stays short — and
     // shown in FULL when it did, because a volume running with injected
     // failures must never look like one that is not.

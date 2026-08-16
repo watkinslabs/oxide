@@ -33,6 +33,9 @@ impl<S: SectorSource> Volume<S> {
 
     /// Put `data` at `addr`. # C: O(BLKSIZE)
     pub(crate) fn write_block(&self, addr: u32, data: &[u8]) -> Result<(), Errno> {
+        if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::WriteIo) {
+            return Err(Errno::Eio);
+        }
         if data.len() != BLKSIZE { return Err(Errno::Einval); }
         if !self.sb.valid_main_blkaddr(addr) && u64::from(addr) >= self.sb.max_blkaddr() {
             return Err(Errno::Eio);
@@ -49,6 +52,58 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(1)
     pub(crate) fn gc_reserve(&self) -> u32 { self.cp.rsvd_segment_count.max(1) }
 
+    /// Whether the volume has room for one more block, and for one more node
+    /// when the block is a node's.
+    ///
+    /// Both counts are VOLUME-wide, and both a new node and a new page of data
+    /// come out of the same one. A log that still has room inside its own open
+    /// segment must not be able to keep growing metadata on a volume with no
+    /// space left: the node logs and the data logs drain independently, so
+    /// without a shared count a full volume answers `ENOSPC` to every write
+    /// while still handing out node blocks.
+    ///
+    /// The root reserve comes off what is available here for the same reason
+    /// `statfs` reports it: it is space an ordinary allocation may not have.
+    /// # C: O(1)
+    pub(crate) fn volume_has_room(&self, node: bool) -> Result<(), Errno> {
+        if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::Block) {
+            return Err(Errno::Enospc);
+        }
+        let avail = self.cp.user_block_count.saturating_sub(u64::from(self.opts.reserve_root));
+        if self.valid_block_count + 1 > avail { return Err(Errno::Enospc); }
+        if node {
+            let ids = u64::from(self.max_nid()).saturating_sub(u64::from(RESERVED_NODE_NUM));
+            if u64::from(self.valid_node_count) + 1 > ids { return Err(Errno::Enospc); }
+        }
+        Ok(())
+    }
+
+    /// Take a block for something that did not occupy one before.
+    ///
+    /// A rewrite MOVES a block and needs no room; only a slot that held
+    /// nothing is a claim on the volume's remaining space, so the count is
+    /// consulted exactly where the occupancy grows.
+    /// # C: O(main segments) worst case
+    pub(crate) fn allocate_new_block(&mut self, kind: Kind, sum: Summary, old: u32, node: bool)
+        -> Result<u32, Errno> {
+        if crate::node::is_hole(old) { self.volume_has_room(node)?; }
+        self.allocate_block(kind, sum, old)
+    }
+
+    /// Give back a node the tree could not be made to reach.
+    ///
+    /// A node whose parent could not be rewritten is allocated, charged,
+    /// counted and unreachable — nothing can ever find it to free it, and the
+    /// space it holds never comes back. The reference cannot reach that state
+    /// because its parent link is a memory update that does not fail; here the
+    /// link is another out-of-place write, so the node is undone the moment
+    /// the link does not land.
+    /// # C: O(1)
+    pub(crate) fn undo_new_node(&mut self, ino: u32, nid: u32) -> Result<(), Errno> {
+        self.release_node(nid)?;
+        self.uncharge_space(ino, BLKSIZE as u64)
+    }
+
     /// Take the next block of the log `kind` belongs to, releasing `old`.
     ///
     /// The summary entry goes down BEFORE the log advances: it names the owner
@@ -59,8 +114,8 @@ impl<S: SectorSource> Volume<S> {
         -> Result<u32, Errno> {
         self.load_segments()?;
         let log = curseg::log_for(kind, self.opts.active_logs);
-        if !self.curseg[log].has_room() { self.open_segment(log)?; }
-        if !self.curseg[log].has_room() { return Err(Errno::Enospc); }
+        if !self.curseg_has_room(log) { self.open_segment(log)?; }
+        if !self.curseg_has_room(log) { return Err(Errno::Enospc); }
         let slot = self.curseg[log].next_blkoff as usize;
         let addr = self.curseg[log].next_addr(self.sb.main_blkaddr);
         self.curseg[log].set_summary(slot, sum);
@@ -68,7 +123,7 @@ impl<S: SectorSource> Volume<S> {
         self.update_seg(addr, true)?;
         self.update_seg(old, false)?;
         self.note_discard(old);
-        if !self.curseg[log].has_room() { self.open_segment(log)?; }
+        if !self.curseg_has_room(log) { self.open_segment(log)?; }
         self.dirty = true;
         Ok(addr)
     }
@@ -118,8 +173,11 @@ impl<S: SectorSource> Volume<S> {
         let hint = if old == NULL_SEGNO { 0 } else { old };
         // Recycling is asked for by the mount and only possible when a
         // partly-used segment exists; otherwise a fresh one is opened, which
-        // is what an append-only volume always does.
-        if curseg::wants_recycle(self.opts.alloc_mode) {
+        // is what an append-only volume always does. The age-threshold log
+        // ALWAYS recycles, whatever the mount asked for: it exists to put old
+        // blocks beside other old blocks, and a fresh empty segment is the one
+        // place with nothing to put them beside.
+        if curseg::wants_recycle(self.opts.alloc_mode) || log == CURSEG_ALL_DATA_ATGC {
             if let Some((segno, off)) = self.find_victim_seg(hint) {
                 let at = sum_block_addr(self.sb.ssa_blkaddr, segno);
                 let sum = self.read_block(at).unwrap_or_else(|_| vec![0u8; BLKSIZE]);
@@ -171,7 +229,7 @@ impl<S: SectorSource> Volume<S> {
         let owed = was_new && nid != ino;
         if owed { self.reserve_space(ino, BLKSIZE as u64)?; }
         let sum = Summary { nid, version: 0, ofs_in_node: 0 };
-        let addr = match self.allocate_block(kind, sum, old) {
+        let addr = match self.allocate_new_block(kind, sum, old, true) {
             Ok(addr) => addr,
             Err(e) => {
                 if owed { self.release_reserved_space(ino, BLKSIZE as u64)?; }
@@ -201,6 +259,10 @@ impl<S: SectorSource> Volume<S> {
         }
         self.nat_dirty.insert(nid, NatEntry { version: 0, ino, block_addr: addr });
         if was_new {
+            // The id is a live node now, so the cache stops holding it: an id
+            // left recorded as handed out is one the failure path could give
+            // back while a node is using it.
+            self.free_nids.alloc_done(nid);
             self.valid_node_count += 1;
             if owed { self.claim_space(ino, BLKSIZE as u64)?; }
         }
@@ -237,8 +299,14 @@ impl<S: SectorSource> Volume<S> {
     pub(crate) fn write_data_kind(&mut self, kind: Kind, owner: u32, ofs: u16, old: u32,
                                   data: &[u8]) -> Result<u32, Errno> {
         self.writable_or_err()?;
+        // A page of data dropped on the way to the medium, while a checkpoint
+        // is being re-enabled — the one window the reference arms this in.
+        if self.sbi.is_set(crate::sbflags::bits::ENABLE_CHECKPOINT)
+            && crate::fault::time_to_inject(&self.fault, crate::fault::Fault::SkipWrite) {
+            return Err(Errno::Einval);
+        }
         let sum = Summary { nid: owner, version: 0, ofs_in_node: ofs };
-        let addr = self.allocate_block(kind, sum, old)?;
+        let addr = self.allocate_new_block(kind, sum, old, false)?;
         let mut block = vec![0u8; BLKSIZE];
         let take = data.len().min(BLKSIZE);
         block[..take].copy_from_slice(&data[..take]);
@@ -265,6 +333,12 @@ impl<S: SectorSource> Volume<S> {
     /// nothing raised and hand the owner space it never spent.
     /// # C: O(1)
     pub(crate) fn release_slot(&mut self, ino: u32, addr: u32) -> Result<(), Errno> {
+        // The slot has already been cleared by the caller. Leaving the block
+        // behind is what makes this a block the segment table calls live and
+        // no file names — the inconsistency this site exists to produce.
+        if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::BlkaddrConsistence) {
+            return Ok(());
+        }
         if addr == NEW_ADDR { self.release_reservation(); return Ok(()); }
         if crate::node::is_hole(addr) { return Ok(()); }
         self.release_block(addr)?;
@@ -281,48 +355,128 @@ impl<S: SectorSource> Volume<S> {
         self.nat_dirty.insert(nid, NatEntry { version: 0, ino: 0, block_addr: NULL_ADDR });
         if live { self.valid_node_count = self.valid_node_count.saturating_sub(1); }
         if nid < self.next_free_nid { self.next_free_nid = nid; }
+        self.return_nid(nid);
         Ok(())
+    }
+
+    /// Give a node id back to the cache that handed it out.
+    ///
+    /// Which way depends on what the id was doing. One that was handed out and
+    /// never became a node goes back through the failure path, which returns
+    /// it to the TAIL of the order — something may still be holding it and it
+    /// is the last id that should be reused. One that WAS a live node is newly
+    /// free and joins the order like any other.
+    ///
+    /// `RAM_UNBOUNDED` is what the failure path is told about memory. Nothing
+    /// at this layer can ask the machine how much it has, and the honest
+    /// figure for "the question cannot be asked here" is the one that never
+    /// makes the cache drop an id it could have kept.
+    /// # C: O(log ids)
+    fn return_nid(&mut self, nid: u32) {
+        const RAM_UNBOUNDED: u64 = u64::MAX;
+        let max = self.max_nid();
+        match self.free_nids.state_of(nid) {
+            Some(crate::freenid::NidState::Prealloc) =>
+                self.free_nids.alloc_failed(nid, RAM_UNBOUNDED),
+            _ => { self.free_nids.add(nid, max, false, None); }
+        }
     }
 
     /// A node id nothing is using.
     ///
-    /// The search consults the dirty set, the journal and the table in that
-    /// order, so an id handed out earlier in this mount is never handed out
-    /// twice — which would make one node overwrite another.
-    /// # C: O(scanned ids)
+    /// Taken from the cache of known-free ids rather than by walking the table
+    /// from a cursor. The walk is what the cache replaces: it reads a table
+    /// block per id considered and the cursor only moves forward, so a volume
+    /// whose free ids sit behind the cursor reads the whole table — thousands
+    /// of blocks — to find one id, once per file created.
+    ///
+    /// Each refill folds in the journal AND this mount's own unwritten
+    /// changes, both of which override the table. Without that an id this
+    /// mount freed a moment ago would still read as in use, and — the failure
+    /// that matters — an id it has already handed out would read as free and
+    /// be handed out twice, making one node overwrite another.
+    /// # C: O(log ids), plus a bounded table read when the cache runs dry
     pub(crate) fn alloc_nid(&mut self) -> Result<u32, Errno> {
+        if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::AllocNid) {
+            return Err(Errno::Enospc);
+        }
         let max = self.max_nid();
-        let start = self.next_free_nid.max(RESERVED_NODE_NUM);
-        for nid in start..max {
-            if self.nid_is_free(nid)? {
+        // Bounded by the whole table: a pass advances the cursor over a fixed
+        // number of blocks, so this many have seen all of it and a further one
+        // would only repeat the first.
+        let per = crate::uapi::NAT_ENTRY_PER_BLOCK as u32;
+        let blocks = max.div_ceil(per.max(1));
+        let passes = blocks.div_ceil(crate::freenid::FREE_NID_PAGES as u32) + 1;
+        for _ in 0..passes {
+            if let Some(nid) = self.free_nids.alloc() {
                 self.next_free_nid = nid + 1;
-                // Claim it immediately: an id that is free but unrecorded
-                // would be handed out again by the very next call.
+                // Claimed the instant it is handed out: an id that is free but
+                // unrecorded would be handed out again by the very next call.
                 self.nat_dirty
                     .insert(nid, NatEntry { version: 0, ino: nid, block_addr: NEW_ADDR });
                 return Ok(nid);
             }
+            if self.free_nids.available_nids() == 0 { break; }
+            self.build_free_nids()?;
         }
         Err(Errno::Enospc)
     }
 
-    /// Whether `nid` currently names nothing. # C: O(1 block)
-    fn nid_is_free(&self, nid: u32) -> Result<bool, Errno> {
-        if let Some(e) = self.nat_dirty.get(&nid) { return Ok(e.block_addr == NULL_ADDR); }
-        if let Some(e) = crate::nat::journalled(&self.nat_journal, nid) {
-            return Ok(e.block_addr == NULL_ADDR);
+    /// Read the next few table blocks into the free-id cache.
+    ///
+    /// The free map is re-walked first because it costs nothing: it remembers
+    /// what earlier reads found, and ids it still calls free may since have
+    /// been handed back or shrunk away. Only when that produces too few is the
+    /// medium touched at all.
+    /// # C: O(FREE_NID_PAGES blocks)
+    pub(crate) fn build_free_nids(&mut self) -> Result<(), Errno> {
+        let max = self.max_nid();
+        self.free_nids.scan_free_nid_bits(max);
+        if self.free_nids.need_build() {
+            let plan = self.free_nids.build_plan(max);
+            for start in plan.reads {
+                let addr = crate::nat::block_addr(self.sb.nat_blkaddr, self.sb.blks_per_seg(),
+                                                  start, &self.nat_bitmap);
+                let block = self.read_block(addr)?;
+                self.free_nids.scan_nat_block(&block, start, max).map_err(|_| Errno::Eio)?;
+            }
+            self.free_nids.set_next_scan_nid(plan.next);
         }
-        let addr = crate::nat::block_addr(
-            self.sb.nat_blkaddr,
-            self.sb.blks_per_seg(),
-            nid,
-            &self.nat_bitmap,
-        );
-        let block = self.read_block(addr)?;
-        let (_, off) = crate::nat::locate(nid);
-        let e = crate::summary::nat_entry(&block, off).ok_or(Errno::Eio)?;
-        Ok(e.block_addr == NULL_ADDR)
+        self.fold_pending_nids(max);
+        Ok(())
     }
+
+    /// Fold in everything that overrides the table, freshest last.
+    ///
+    /// The journal holds entries the last checkpoint parked instead of writing
+    /// back; the dirty set holds what THIS mount has changed and has not
+    /// checkpointed at all. Both beat the table block, and the dirty set beats
+    /// the journal — the same order every read of a node id already uses.
+    /// # C: O(journalled + dirty entries, log ids each)
+    fn fold_pending_nids(&mut self, max: u32) {
+        let journal: alloc::vec::Vec<(u32, u32)> =
+            self.nat_journal.iter().map(|(n, e)| (*n, e.block_addr)).collect();
+        self.free_nids.scan_journal(journal.into_iter(), max);
+        let dirty: alloc::vec::Vec<(u32, u32)> =
+            self.nat_dirty.iter().map(|(n, e)| (*n, e.block_addr)).collect();
+        self.free_nids.scan_journal(dirty.into_iter(), max);
+    }
+
+    /// Ids held free, ids handed out and not yet settled, and ids the volume
+    /// has left — the three figures the report publishes. # C: O(1)
+    pub fn free_nid_counts(&self) -> (u32, u32, u32) {
+        (self.free_nids.free_count(), self.free_nids.alloc_count(),
+         self.free_nids.available_nids())
+    }
+
+    /// Bytes the free-id cache is holding. # C: O(1)
+    pub fn free_nid_bytes(&self) -> u64 { self.free_nids.mem_bytes() }
+
+    /// The share of memory the free-id cache is held within. # C: O(1)
+    pub fn nid_ram_thresh(&self) -> u32 { self.free_nids.ram_thresh }
+
+    /// # C: O(1)
+    pub fn set_nid_ram_thresh(&mut self, v: u32) { self.free_nids.ram_thresh = v; }
 }
 
 #[cfg(test)]

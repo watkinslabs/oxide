@@ -33,14 +33,41 @@ impl<S: SectorSource> Volume<S> {
     /// is perfectly readable, and the mount reports what it settled on.
     /// # C: O(checkpoint + journal bytes)
     pub fn mount_with(source: S, opts: Options, want_write: bool) -> Result<Self, Errno> {
+        Self::mount_devices(source, opts, want_write, &[])
+    }
+
+    /// Mount, with what each member device said about its zones.
+    ///
+    /// `reports` is one entry per member in the superblock's order, `None`
+    /// where the member is not a zoned drive; an empty slice is "nothing was
+    /// asked", which is the same answer a conventional drive gives and is
+    /// what every medium that cannot be asked produces.
+    ///
+    /// The zone figures are settled HERE rather than left to whoever needs
+    /// them, because a volume laid out for zones that cannot find them must
+    /// not mount at all — reading it as though the zones were not there
+    /// places blocks the drive will refuse.
+    /// # C: O(checkpoint + journal bytes)
+    pub fn mount_devices(
+        source: S,
+        opts: Options,
+        want_write: bool,
+        reports: &[Option<crate::zoned::DevZones>],
+    ) -> Result<Self, Errno> {
         let (sb_raw, sb) = crate::sbwrite::read_raw(&source)?;
         let access = sb::sanity::access(&sb).map_err(|_| Errno::Einval)?;
+        let devs = crate::devices::DevTable::scan(&sb);
+        let zoned = zone_geometry(&sb, &opts, reports)?;
         let writable = want_write && access == Access::ReadWrite && source.writable();
         let (cp, cp_raw) = read_checkpoint(&source, &sb)?;
         // Seeded from the checkpoint, then owned by the mount: the live flags
         // are what WRITE the checkpoint's, never the other way round, or a
         // clean checkpoint would retire a mark this mount is still raising.
         let mut sbi = crate::sbflags::SbFlags::at_mount(cp.flags);
+        // Seeded from the medium, never cleared: the arrays are cumulative,
+        // and a mount that started from zero would erase every kind an earlier
+        // mount recorded the first time it wrote one of its own.
+        let errrec = crate::errrec::ErrorRecord::from_super(sb_raw.bytes());
         if opts.checkpoint_disabled { sbi.disable_checkpoint(false); }
         let payload = sb.cp_payload;
         let nat_bitmap = checkpoint::nat_bitmap(&cp, &cp_raw, payload)
@@ -72,11 +99,24 @@ impl<S: SectorSource> Volume<S> {
         // Read before the checkpoint is moved into the volume: it is the age
         // every segment timestamp this mount writes counts from.
         let segstate = super::segmap::SegState::at_mount(cp.elapsed_time);
+        let (extent_read, extent_age) = (opts.extent_cache, opts.age_extent_cache);
+        // Ids the table can name, less the ones the format reserves and the
+        // ones already in use. Computed here rather than counted later: it is
+        // what an allocation is refused against, and a count that started at
+        // zero would refuse the first one.
+        let max_nid = crate::nat::max_nid(sb.segment_count_nat, sb.blks_per_seg());
+        let avail_nids = max_nid.saturating_sub(RESERVED_NODE_NUM)
+                                .saturating_sub(valid_node_count);
+        // Age-threshold cleaning needs the volume to have ages worth
+        // comparing, so the option alone does not turn it on.
+        let mut atgc = crate::atgc::Atgc::new();
+        atgc.enable_at_mount(opts.atgc, cp.elapsed_time);
         let mut vol = Self {
             source,
             sb,
             sb_raw,
             sbi,
+            errrec,
             cp,
             cp_raw,
             nat_bitmap,
@@ -110,8 +150,21 @@ impl<S: SectorSource> Volume<S> {
             pending_discard: alloc::vec::Vec::new(),
             verity_cache: core::cell::RefCell::new(crate::verity::info::Cache::new()),
             verity_policy: crate::verity::Policy::new(),
+            extents: core::cell::RefCell::new(
+                crate::extent::Caches::new(extent_read, extent_age)),
+            free_nids: crate::freenid::FreeNids::new(next_free_nid, avail_nids),
+            atgc,
+            counters: core::cell::RefCell::new(crate::stats::Counters::new()),
             atomic: alloc::collections::BTreeMap::new(),
+            fault: crate::fault::Info::new(),
+            devs,
+            zoned,
         };
+        // What the mount asked to have failed, armed before anything reads or
+        // writes: a mount that named sites and then replayed a log without
+        // them would exercise the healthy path and report the error path
+        // covered.
+        crate::fault::apply(&vol.fault, &vol.opts.fault);
         // Replay whatever an `fsync` promised since the last checkpoint,
         // before the mount is handed out — nothing may read the volume in the
         // state a crash left it in.
@@ -132,6 +185,58 @@ impl<S: SectorSource> Volume<S> {
         outcome?;
         Ok(vol)
     }
+
+    /// Mount `source` from an option LINE rather than a resolved option set.
+    ///
+    /// The order is the whole point and is the reference's. The superblock is
+    /// read first, the volume's own defaults are derived from it, the line is
+    /// parsed on top of those, and the pair is checked. A caller that parsed
+    /// the line against a build-wide default instead would mount a read-only
+    /// volume with six logs, a zoned volume in adaptive mode, and a small
+    /// volume that reports `ENOSPC` with most of the medium free — each of
+    /// them silently.
+    ///
+    /// `hw_support_discard` is the DEVICE's answer and cannot be read from
+    /// here: the medium this mounts through exposes reads and writes and
+    /// nothing else, deliberately.
+    /// # C: O(checkpoint + journal bytes)
+    pub fn mount_line(source: S, data: &str, want_write: bool, hw_support_discard: bool)
+        -> Result<Self, Errno> {
+        let sb = mount_facts(&source, want_write, hw_support_discard)?;
+        let (opts, _) = crate::consistency::resolve(&sb, data)?;
+        Self::mount_with(source, opts, want_write)
+    }
+
+    /// Take a reconfigured option set as this mount's own.
+    ///
+    /// The option set is read on every allocation, every placement decision
+    /// and every `show_options`, so a remount that changed the copy the mount
+    /// reports without changing the one it acts on would leave the two
+    /// disagreeing with nothing to notice it.
+    /// # C: O(1)
+    pub fn adopt_options(&mut self, opts: Options) { self.opts = opts; }
+
+    /// Say whether this mount may write from now on.
+    ///
+    /// Bounded by what the VOLUME permits: a mount cannot be made writable by
+    /// asking, only by the volume's own features and the medium allowing it.
+    /// # C: O(1)
+    pub fn set_writable(&mut self, want: bool) {
+        self.writable = want && self.access == Access::ReadWrite && self.source.writable();
+    }
+}
+
+/// What a volume's shape says about the defaults a mount of it should take.
+/// # C: O(2 blocks)
+pub fn mount_facts<S: SectorSource>(source: &S, want_write: bool, hw_support_discard: bool)
+    -> Result<crate::opts::Facts, Errno> {
+    let sb = read_super(source)?;
+    Ok(crate::opts::Facts {
+        feature: sb.feature,
+        segment_count_main: sb.segment_count_main,
+        hw_support_discard,
+        mount_ro: !want_write || !source.writable(),
+    })
 }
 
 /// Read whichever superblock copy validates, trying them in order.
@@ -266,5 +371,26 @@ pub fn read_cursegs<S: SectorSource>(source: &S, sb: &SuperBlock, cp: &Checkpoin
 
 /// What a volume's features permit, without mounting it. # C: O(1)
 pub fn probe_access(sb: &SuperBlock) -> Result<Access, features::Refusal> {
-    features::access(sb.feature, sb.multi_device())
+    features::access(sb.feature)
+}
+
+/// The zone figures for this volume, or `None` when it is not laid out for
+/// zones.
+///
+/// Three refusals live here and each is a wrong-placement bug if skipped: a
+/// zoned layout nothing can locate, a zoned drive under a conventional
+/// layout, and reports that do not agree with one another.
+/// # C: O(zones)
+fn zone_geometry(
+    sb: &SuperBlock,
+    opts: &Options,
+    reports: &[Option<crate::zoned::DevZones>],
+) -> Result<Option<crate::zoned::Geometry>, Errno> {
+    let mounted_zoned = matches!(reports.first(), Some(Some(_)));
+    crate::zoned::geom::paths_ok(sb.feature, !sb.devices.is_empty(), mounted_zoned)
+        .map_err(|_| Errno::Einval)?;
+    let geom = crate::zoned::Geometry::build(sb.feature, reports, u32::from(opts.active_logs))
+        .map_err(|_| Errno::Einval)?;
+    if !features::has_blkzoned(sb.feature) { return Ok(None); }
+    Ok(Some(geom))
 }

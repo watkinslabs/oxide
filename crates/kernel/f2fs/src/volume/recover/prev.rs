@@ -77,6 +77,14 @@ impl<S: SectorSource> Volume<S> {
         let mut block = node.block;
         if le32(&block, at) != Some(addr) { return Ok(false); }
         block[at..at + 4].copy_from_slice(&NULL_ADDR.to_le_bytes());
+        // Another address written outside the single-address funnel. Replay
+        // runs before anything reads the volume, so nothing is cached yet on
+        // the ordinary path — but the notification is what makes that a fact
+        // about the ORDER rather than an assumption, and a replay that ever
+        // ran later would otherwise leave a run describing a released block.
+        let h = if is_inode { crate::volume::Holder::Inode }
+                else { crate::volume::Holder::Direct(nid) };
+        self.note_mapping_change(owner_ino, h, slot, NULL_ADDR)?;
         if is_inode {
             self.put_inode(owner_ino, block)?;
         } else {

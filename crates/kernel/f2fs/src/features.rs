@@ -34,12 +34,6 @@ pub enum Refusal {
     /// Names resolve through a case-folding table this build cannot load, so
     /// a lookup would miss names that exist.
     Casefold,
-    /// The volume spans several devices, or aliases one; only the device it
-    /// was mounted from is reachable here.
-    MultiDevice,
-    /// Segment placement is dictated by the drive's zones, which a plain
-    /// block device does not expose.
-    Zoned,
 }
 
 /// Every bit this build recognises. Nothing is refused for being outside it;
@@ -64,18 +58,22 @@ pub const KNOWN: u32 = FEATURE_ENCRYPT
 
 /// Decide what `feature` permits.
 ///
-/// `multi_device` is separate from the feature word because a volume may list
-/// several devices without setting any bit at all; the list is what makes the
-/// rest of it unreachable.
+/// Spanning several devices, aliasing one, and being laid out for a drive's
+/// zones are NOT refusals: each changes where a block lives or how a segment
+/// is filled, and each is answered by the module that owns that question
+/// (`devices`, `zoned`) rather than by declining the volume.
 /// # C: O(1)
-pub fn access(feature: u32, multi_device: bool) -> Result<Access, Refusal> {
-    if feature & FEATURE_BLKZONED != 0 { return Err(Refusal::Zoned); }
-    if feature & FEATURE_DEVICE_ALIAS != 0 || multi_device {
-        return Err(Refusal::MultiDevice);
-    }
+pub fn access(feature: u32) -> Result<Access, Refusal> {
     if feature & FEATURE_RO != 0 { return Ok(Access::ReadOnly); }
     Ok(Access::ReadWrite)
 }
+
+/// Whether the volume's blocks are laid out for a drive's zones. # C: O(1)
+pub fn has_blkzoned(feature: u32) -> bool { feature & FEATURE_BLKZONED != 0 }
+
+/// Whether a file on the volume may stand for a whole member device.
+/// # C: O(1)
+pub fn has_device_alias(feature: u32) -> bool { feature & FEATURE_DEVICE_ALIAS != 0 }
 
 /// Whether inode checksums are stored and therefore checkable. # C: O(1)
 pub fn has_inode_chksum(feature: u32) -> bool { feature & FEATURE_INODE_CHKSUM != 0 }

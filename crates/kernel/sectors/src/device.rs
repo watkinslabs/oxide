@@ -87,5 +87,24 @@ impl SectorSource for BlockSource {
         Ok(())
     }
 
+    fn discard_sectors(&self, sector: u64, count: u64) -> Result<(), Errno> {
+        if !self.writable { return Err(Errno::Erofs); }
+        if !self.dev.supports_discard() { return Err(Errno::Eopnotsupp); }
+        let dev_block = u64::from(self.dev.block_size().max(1));
+        let byte = sector.checked_mul(u64::from(self.sector_size)).ok_or(Errno::Eio)?;
+        let bytes = count.checked_mul(u64::from(self.sector_size)).ok_or(Errno::Eio)?;
+        // A device erases whole blocks or nothing. Rounding a partial request
+        // outward would erase sectors either side that are still in use, and
+        // rounding it inward would report an erase the caller did not get.
+        if byte % dev_block != 0 || bytes % dev_block != 0 { return Err(Errno::Einval); }
+        let blocks = u32::try_from(bytes / dev_block).map_err(|_| Errno::Eio)?;
+        let mut req = block::BlockRequest::new_discard(byte / dev_block, blocks);
+        self.dev.submit_sync(&mut req).map_err(|_| Errno::Eio)
+    }
+
+    fn supports_discard(&self) -> bool { self.writable && self.dev.supports_discard() }
+
     fn writable(&self) -> bool { self.writable }
+
+    fn flush(&self) -> Result<(), Errno> { self.dev.flush().map_err(|_| Errno::Eio) }
 }

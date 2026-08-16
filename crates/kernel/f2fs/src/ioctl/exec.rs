@@ -30,22 +30,14 @@ use super::uapi::*;
 /// contract defines.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Unbuilt {
-    /// Staging writes in a shadow inode and swapping it in at commit.
-    AtomicWrite,
     /// Rewriting a range's blocks so they land contiguously.
     Defragment,
     /// Exchanging block ranges between two files.
     MoveRange,
     /// Emptying one device of a multi-device volume onto the others.
     FlushDevice,
-    /// Handing back, and later re-reserving, the blocks compression saved.
-    CompressBlockAccounting,
     /// Discarding or zeroing one file's blocks in place.
     SecTrimFile,
-    /// Rewriting every cluster of a file compressed or plain.
-    ClusterRewrite,
-    /// Growing the volume into space added behind it.
-    ResizeFs,
 }
 
 /// The outcome of carrying out a request.
@@ -61,16 +53,33 @@ pub fn exec<S: SectorSource>(v: &mut Volume<S>, ino: u32, _c: &Ctx, r: &Req)
     Ok(match r {
         Req::VolatileWrite => return Err(Errno::Eopnotsupp),
 
-        Req::StartAtomicWrite { .. } | Req::CommitAtomicWrite | Req::AbortAtomicWrite =>
-            Outcome::NotBuilt(Unbuilt::AtomicWrite),
+        // The handle-level ladder ran in admission, over the facts only a file
+        // description carries; the ladder the volume applies here is over the
+        // facts only the inode carries. Repeating either would be a second
+        // answer to a question already answered.
+        Req::StartAtomicWrite { replace } => {
+            v.start_atomic_write(ino, *replace)?;
+            Outcome::Reply(Reply::done())
+        }
+        Req::CommitAtomicWrite => { v.commit_atomic_write(ino)?; Outcome::Reply(Reply::done()) }
+        Req::AbortAtomicWrite => { v.abort_atomic_write(ino)?; Outcome::Reply(Reply::done()) }
         Req::Defragment { .. } => Outcome::NotBuilt(Unbuilt::Defragment),
         Req::MoveRange { .. } => Outcome::NotBuilt(Unbuilt::MoveRange),
         Req::FlushDevice { .. } => Outcome::NotBuilt(Unbuilt::FlushDevice),
-        Req::ReleaseCompressBlocks | Req::ReserveCompressBlocks =>
-            Outcome::NotBuilt(Unbuilt::CompressBlockAccounting),
+        // Both report the blocks they moved through the caller's own argument
+        // word, which is the count a caller distributing images checks against
+        // what it expected to get back.
+        Req::ReleaseCompressBlocks =>
+            Outcome::Reply(Reply::u64(v.release_compress_blocks(ino)?)),
+        Req::ReserveCompressBlocks =>
+            Outcome::Reply(Reply::u64(v.reserve_compress_blocks(ino)?)),
         Req::SecTrimFile { .. } => Outcome::NotBuilt(Unbuilt::SecTrimFile),
-        Req::CompressFile | Req::DecompressFile => Outcome::NotBuilt(Unbuilt::ClusterRewrite),
-        Req::ResizeFs(_) => Outcome::NotBuilt(Unbuilt::ResizeFs),
+        // The count of clusters rewritten is this build's own; the command
+        // reports success and nothing else, as the caller's argument word is
+        // unused in both directions.
+        Req::CompressFile => { v.compress_file(ino)?; Outcome::Reply(Reply::done()) }
+        Req::DecompressFile => { v.decompress_file(ino)?; Outcome::Reply(Reply::done()) }
+        Req::ResizeFs(blocks) => { v.resize_fs(*blocks)?; Outcome::Reply(Reply::done()) }
 
         Req::Shutdown(mode) => {
             // Every mode but the last two takes the volume's state to the
@@ -307,3 +316,19 @@ fn fresh_salt<S: SectorSource>(v: &Volume<S>, ino: u32) -> [u8; 16] {
 #[cfg(test)]
 #[path = "../tests/ioctl/exec.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../tests/ioctl/atomic.rs"]
+mod atomic_tests;
+
+#[cfg(test)]
+#[path = "../tests/ioctl/compress_blocks.rs"]
+mod compress_blocks_tests;
+
+#[cfg(test)]
+#[path = "../tests/ioctl/rewrite.rs"]
+mod rewrite_tests;
+
+#[cfg(test)]
+#[path = "../tests/ioctl/resize.rs"]
+mod resize_tests;

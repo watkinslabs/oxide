@@ -11,9 +11,12 @@
 //! - `ops`:  the inode and file operations.
 //! - `sb`:   `statfs` and the option tail.
 //! - `write`: the mutating operations, and the clock they share.
+//! - `remount`: reconfiguring a live mount from a new option line.
+//! - `devs`:  finding the member devices, and asking each about its zones.
 
 use alloc::string::{String, ToString};
 use alloc::sync::{Arc, Weak};
+use alloc::vec::Vec;
 
 use syscall::errno::Errno;
 
@@ -26,23 +29,26 @@ use crate::uapi::BLKSIZE;
 use crate::volume::Volume;
 
 pub mod node;
+pub mod devs;
 pub mod ops;
 pub mod sb;
 pub mod write;
+pub mod remount;
 
 /// The one name this filesystem is registered under.
 pub const F2FS_NAME: &str = "f2fs";
 
 /// A mounted F2FS filesystem.
 pub struct F2fs {
-    /// Kept so freed space can be announced to the device. The volume reads
-    /// and writes through a sector source that deliberately exposes only
-    /// those two operations; discard is a property of the DEVICE, not of the
-    /// medium abstraction, and belongs here.
-    dev: Arc<dyn block::BlockDevice>,
+    /// Every member device, in the superblock's order. Kept so freed space
+    /// can be announced to the one that holds it: the volume reads and writes
+    /// through a sector source that deliberately exposes only those two
+    /// operations, and discard is a property of the DEVICE rather than of the
+    /// medium abstraction.
+    devs: Vec<Arc<dyn block::BlockDevice>>,
     /// One lock: the volume caches the checkpoint and both journals, which
     /// every read consults.
-    pub(crate) volume: sync::Spinlock<Volume<BlockSource>, sync::TaskList>,
+    pub(crate) volume: sync::Spinlock<Volume<devs::Medium>, sync::TaskList>,
     source: String,
     /// Held so the superblock operations can reach the filesystem they belong
     /// to, which the `&self` those operations are asked for cannot.
@@ -72,11 +78,19 @@ impl F2fs {
         // The volume's own unit is the block, and the source is aimed at it
         // directly: a block address IS the sector number this reads through,
         // so no second unit exists to disagree.
-        let keep = Arc::clone(&dev);
-        let src = BlockSource::new(dev)
-            .with_sector_size(BLKSIZE as u32)
-            .writable(write);
-        let volume = Volume::mount_with(src, opts, write).map_err(errno_to_vfs)?;
+        //
+        // The superblock is read through the mounted device alone, because it
+        // is what NAMES the other members. Only then can the medium that spans
+        // them be built, and the superblock is read again through it — from
+        // the same blocks, since member zero's span begins at address zero.
+        let probe = BlockSource::new(Arc::clone(&dev)).with_sector_size(BLKSIZE as u32);
+        let sb = crate::volume::mount::read_super(&probe).map_err(errno_to_vfs)?;
+        let members = devs::open_members(dev, &sb)?;
+        let table = crate::devices::DevTable::scan(&sb);
+        let reports = devs::zone_reports(&members);
+        let src = devs::medium(&members, table, write)?;
+        let volume =
+            Volume::mount_devices(src, opts, write, &reports).map_err(errno_to_vfs)?;
         if volume.access() == Access::ReadOnly {
             klog::warn::warn_on(true, "f2fs: volume is marked read-only; mounting read-only");
         }
@@ -85,7 +99,7 @@ impl F2fs {
                                              volume.options().discard_unit,
                                              volume.super_block().segs_per_sec));
         let fs = Arc::new_cyclic(|me| Self {
-            dev: keep,
+            devs: members,
             volume: sync::Spinlock::new(volume),
             source,
             me: me.clone(),
@@ -97,8 +111,36 @@ impl F2fs {
         Ok(fs)
     }
 
+    /// Mount from an option LINE, which is what a caller actually has.
+    ///
+    /// The difference from [`Self::open_with`] is where the defaults come
+    /// from: this resolves them against the volume's own shape before the line
+    /// is read, so a mount that named nothing gets what THIS volume needs
+    /// rather than what the build guessed.
+    /// # C: O(checkpoint bytes)
+    pub fn open_line(dev: Arc<dyn block::BlockDevice>, source: &str, write: bool, data: &str)
+        -> KResult<Arc<Self>> {
+        let discard = dev.supports_discard();
+        let keep = Arc::clone(&dev);
+        let src = BlockSource::new(dev).with_sector_size(BLKSIZE as u32).writable(write);
+        let facts = crate::volume::mount::mount_facts(&src, write, discard)
+            .map_err(errno_to_vfs)?;
+        let (opts, _) = crate::consistency::resolve(&facts, data).map_err(errno_to_vfs)?;
+        Self::open_with(keep, source, write, opts)
+    }
+
     /// The background state this mount's threads share. # C: O(1)
     pub fn bg(&self) -> &Arc<crate::bg::Bg> { &self.bg }
+
+    /// Whether the DEVICE can be told that blocks are no longer needed.
+    ///
+    /// A property of the device rather than of the volume, which is why it is
+    /// read here and not in the volume: it is what decides whether `discard`
+    /// is a default worth taking and whether asking for it is a refusal.
+    /// # C: O(1)
+    pub fn supports_discard(&self) -> bool {
+        self.devs.iter().all(|d| d.supports_discard())
+    }
 
     /// Whether this mount ended up writable.
     ///
@@ -120,7 +162,7 @@ impl F2fs {
     /// cost-benefit selection degenerates to lowest-numbered.
     /// # C: O(1)
     pub(crate) fn volume_now(&self)
-        -> sync::Guard<'_, Volume<BlockSource>, sync::TaskList>
+        -> sync::Guard<'_, Volume<devs::Medium>, sync::TaskList>
     {
         let mut v = self.volume.lock();
         v.set_clock(crate::mount::write::now().0);
@@ -182,16 +224,34 @@ impl F2fs {
     /// to fail the checkpoint that already succeeded.
     /// # C: O(runs)
     pub(crate) fn announce_free(&self, runs: &[(u32, u32)]) {
-        if runs.is_empty() || !self.dev.supports_discard() { return; }
-        let dev_block = u64::from(self.dev.block_size().max(1));
-        for &(start, len) in runs {
-            let byte = u64::from(start) * BLKSIZE as u64;
+        if runs.is_empty() { return; }
+        // The addresses are the VOLUME's, and on a spread volume they mean
+        // nothing to any single member. A run handed to the wrong member
+        // erases whatever that member happens to hold at the same offset, so
+        // every run is split at the member boundaries first and each piece is
+        // aimed at the member that owns it.
+        let pieces = {
+            let v = self.volume.lock();
+            let table = v.devices();
+            let mut out: alloc::vec::Vec<(usize, u64, u32)> = alloc::vec::Vec::new();
+            for &(start, len) in runs {
+                let bytes = len as usize * BLKSIZE;
+                let Ok(split) = crate::devices::route::split_at(table, u64::from(start), bytes)
+                else { continue };
+                for r in split { out.push((r.member, r.local, (r.len / BLKSIZE) as u32)); }
+            }
+            out
+        };
+        for (i, first_blk, len) in pieces {
+            let Some(dev) = self.devs.get(i) else { continue };
+            if !dev.supports_discard() { continue; }
+            let dev_block = u64::from(dev.block_size().max(1));
+            let byte = first_blk * BLKSIZE as u64;
             let bytes = u64::from(len) * BLKSIZE as u64;
             if byte % dev_block != 0 || bytes % dev_block != 0 { continue; }
-            let first = byte / dev_block;
             let Ok(blocks) = u32::try_from(bytes / dev_block) else { continue };
-            let mut req = block::BlockRequest::new_discard(first, blocks);
-            let _ = self.dev.submit_sync(&mut req);
+            let mut req = block::BlockRequest::new_discard(byte / dev_block, blocks);
+            let _ = dev.submit_sync(&mut req);
         }
     }
 

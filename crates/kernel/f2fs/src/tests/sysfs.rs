@@ -104,8 +104,14 @@ fn a_mount_publishes_its_own_stat_and_feature_list_directories() {
 #[test]
 fn an_attribute_is_writable_exactly_when_something_reads_it() {
     let fs = mounted("/dev/vda");
-    let controls: alloc::vec::Vec<&str> =
+    // Two sets, because the machinery behind them lives in two places: the
+    // background threads own their intervals and modes, and the volume owns
+    // both extent caches, the free-id cache and age-threshold selection.
+    let mut controls: alloc::vec::Vec<&str> =
         crate::bg::knobs::ALL.iter().map(|&k| crate::bg::knobs::name(k)).collect();
+    controls.extend(crate::atgc::knobs::ALL.iter().map(|&k| crate::atgc::knobs::name(k)));
+    controls.extend(["ram_thresh", "max_read_extent_count", "last_age_weight",
+                     "hot_data_age_threshold", "warm_data_age_threshold"]);
     for a in mount_attrs(&fs).iter().chain(global_attrs().iter()) {
         let control = controls.contains(&a.name);
         assert_eq!(a.store.is_some(), control, "{}/{}", a.dir, a.name);

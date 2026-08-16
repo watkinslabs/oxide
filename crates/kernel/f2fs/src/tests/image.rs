@@ -11,6 +11,8 @@
 //! Module manifest:
 //! - `meta`:  the superblock, the checkpoint packs and the two tables.
 //! - `nodes`: node blocks, inodes, directories and file data.
+//! - `spread`: the same image split across several member media, and the
+//!             zone reports those members answer with.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -27,6 +29,8 @@ use crate::volume::Volume;
 pub mod meta;
 #[path = "image/nodes.rs"]
 pub mod nodes;
+#[path = "image/spread.rs"]
+pub mod spread;
 #[path = "quota_image.rs"]
 pub mod quota_image;
 
@@ -105,6 +109,9 @@ pub struct Builder {
     pub meta_ino: u32,
     /// Whether the superblock's first copy is deliberately left broken.
     pub break_super0: bool,
+    /// The member devices the superblock names: a path and a segment count
+    /// each. Empty for the ordinary single-device fixture.
+    pub devices: alloc::vec::Vec<(alloc::string::String, u32)>,
 }
 
 impl Builder {
@@ -134,6 +141,7 @@ impl Builder {
             node_ino: NODE_INO,
             meta_ino: META_INO,
             break_super0: false,
+            devices: Vec::new(),
         }
     }
 

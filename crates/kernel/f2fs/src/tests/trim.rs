@@ -170,10 +170,18 @@ fn freeing_an_inode_gives_its_node_id_back() {
     let (mut v, ino) = with_file();
     v.free_inode(ino).unwrap();
     assert_eq!(v.node_addr(ino).unwrap(), NULL_ADDR);
-    // The id is offered again rather than lost for the life of the volume.
+    // The id is offered again rather than lost for the life of the volume —
+    // but NOT necessarily next. A freed id joins the tail of the free order,
+    // so ids the cache was already holding are handed out ahead of it. That
+    // ordering is the contract: an id just released may still be named by
+    // something that has not noticed, so it is the last one reused.
     let spec = NewInode { mode: S_IFREG | 0o644, uid: 0, gid: 0, rdev: 0, now: NOW };
-    let next = v.create(ROOT_INO, b"g", &spec, None).unwrap();
-    assert_eq!(next, ino);
+    let mut seen = alloc::vec::Vec::new();
+    for i in 0..8u32 {
+        let name = [b'g', b'0' + i as u8];
+        seen.push(v.create(ROOT_INO, &name, &spec, None).unwrap());
+    }
+    assert!(seen.contains(&ino), "the freed id {ino} was never offered again: {seen:?}");
 }
 
 #[test]

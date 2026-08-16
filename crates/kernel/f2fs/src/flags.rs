@@ -65,6 +65,9 @@ pub const F2FS_DIRSYNC_FL: u32 = 0x0001_0000;
 pub const F2FS_PROJINHERIT_FL: u32 = 0x2000_0000;
 pub const F2FS_CASEFOLD_FL: u32 = 0x4000_0000;
 pub const F2FS_VERITY_FL: u32 = 0x0010_0000;
+/// The file stands for a whole member device rather than holding data of its
+/// own. Highest bit, so it is not one an ordinary attribute call can set.
+pub const F2FS_DEVICE_ALIAS_FL: u32 = 0x8000_0000;
 
 // ------------------------------------------------------------ node footer bit
 

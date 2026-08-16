@@ -14,7 +14,9 @@ use crate::volume::dnode::put32;
 use crate::volume::map::Mapped;
 use crate::volume::recover::fixture::*;
 use crate::volume::recover::marks;
-use crate::volume::Volume;
+use crate::opts::Options;
+use crate::test_image::{self, ROOT_INO};
+use crate::volume::{NewInode, Volume};
 use sectors::MemImage;
 
 /// Put `addr` in the file's second slot the way a crashed generation that had
@@ -140,4 +142,49 @@ fn a_reservation_the_file_already_had_is_left_where_it_is() {
     chain_slot(&mut v, ino, NEW_ADDR);
     let v = crash(v);
     assert_eq!(v.checkpoint().valid_block_count, before);
+}
+
+#[test]
+fn a_block_the_replay_adopts_is_counted_in_the_inode_it_joins() {
+    // A crashed generation's block becomes the file's, so it shows in the
+    // count the file reports. Left alone, every recovered file goes back with
+    // the shape it had before the crash, and a check reports the difference as
+    // a leak.
+    let (mut v, ino, _) = checkpointed(b"f");
+    let before = v.count_blocks(ino).expect("count");
+    append_block(&mut v, ino, 0xC3, true);
+    let mut v = crash(v);
+    let held = v.count_blocks(ino).expect("count");
+    assert_eq!(held, before + 1, "the adopted block is not in the tree");
+    assert_eq!(v.read_inode(ino).expect("inode").blocks, held,
+               "the inode still reports the shape it had before the crash");
+}
+
+#[test]
+fn a_block_the_replay_adopts_is_charged_to_the_identity_that_owns_it() {
+    // The charge can be REFUSED, which fails the replay and with it the mount:
+    // putting a volume back with blocks charged to nobody is the state a quota
+    // check reports and cannot repair.
+    const UID: u32 = 4242;
+    const QUOTA_INO: u32 = 9;
+    let file = crate::test_image::quota_image::user_file(UID, 0, 0);
+    let mut b = test_image::with_root();
+    b.feature |= crate::flags::FEATURE_QUOTA_INO;
+    b.qf_ino[crate::volume::quotas::USRQUOTA] = QUOTA_INO;
+    let blocks: alloc::vec::Vec<(u64, alloc::vec::Vec<u8>)> =
+        file.chunks(BLKSIZE).enumerate().map(|(i, c)| (i as u64, c.to_vec())).collect();
+    crate::test_image::nodes::add_sparse_file(&mut b, QUOTA_INO, file.len() as u64, &blocks);
+    let mut o = Options::defaults();
+    o.usrquota = true;
+    let mut v = b.mount_opts(o).expect("mount");
+    let owned = NewInode { mode: crate::mode::S_IFREG | 0o644, uid: UID, gid: UID, rdev: 0,
+                           now: NOW };
+    let ino = v.create(ROOT_INO, b"f", &owned, None).expect("create");
+    v.write_file(ino, 0, &pattern(0x5A)).expect("write");
+    v.commit().expect("commit");
+    let before = v.quota_record(crate::volume::quotas::USRQUOTA, UID).expect("record").curspace;
+    append_block(&mut v, ino, 0xC3, true);
+    let mut v = crash(v);
+    let after = v.quota_record(crate::volume::quotas::USRQUOTA, UID).expect("record").curspace;
+    assert_eq!(after, before + BLKSIZE as u64, "the adopted block was charged to nobody");
 }

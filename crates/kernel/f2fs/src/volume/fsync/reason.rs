@@ -35,6 +35,12 @@ pub enum CpReason {
     /// The parent directory's node has not been checkpointed, so the file's
     /// own directory entry is not durable yet.
     ParentNotCheckpointed,
+    /// The mount asked to skip the work that only makes LATER mounts faster.
+    ///
+    /// The chain is exactly that work moved to the next mount: it leaves blocks
+    /// the next mount has to go looking for. A mount that said it does not want
+    /// a replay to happen therefore pays for the checkpoint now instead.
+    Fastboot,
     /// Two logs put file nodes where the walk does not look.
     SpecLogNum,
     /// Strict mode, and the entry this file needs is itself only in the chain.
@@ -60,6 +66,8 @@ pub struct SyncState {
     pub space_for_roll_forward: bool,
     /// Whether the parent directory's node reached the last checkpoint.
     pub parent_checkpointed: bool,
+    /// Whether the mount asked to leave nothing for the next mount to replay.
+    pub fastboot: bool,
     pub active_logs: u8,
     pub strict: bool,
     /// Whether this inode's own entry may still need restoring.
@@ -86,6 +94,7 @@ pub fn need_checkpoint(s: &SyncState) -> CpReason {
     if !s.pino_ok { return CpReason::WrongPino; }
     if !s.space_for_roll_forward { return CpReason::NoSpaceRollForward; }
     if !s.parent_checkpointed { return CpReason::ParentNotCheckpointed; }
+    if s.fastboot { return CpReason::Fastboot; }
     if s.active_logs == SPEC_LOG_NUM { return CpReason::SpecLogNum; }
     if s.strict && s.need_dentry_mark && s.parent_dir_written { return CpReason::RecoverDir; }
     if s.parent_xattr_written { return CpReason::XattrDir; }

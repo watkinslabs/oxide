@@ -3,6 +3,9 @@
 // `types.rs` — `BlockOp`, `BlockError`, `PageFlags`, `InodeId`, `PAGE_BYTES`.
 // `queue_limits.rs` — canonical block queue topology + sysfs leaf mapping.
 // `blockdev.rs` — `BlockDevice` trait + `BlockRequest` + `MemDisk` test backing.
+// `zoned.rs` — what a drive says about its zones, and the answer that means
+// "not a zoned drive". No driver answers yet; `BlockDevice::zone_report`
+// defaults to `None`.
 // `completion.rs` — shared BlockIo softirq completion-handler registry.
 // `elevator.rs` — I/O-priority dispatch order for requests that had to wait.
 // `pagecache.rs` — `PageCache` (sync `read_page` / `write_page` /
@@ -38,12 +41,14 @@ pub mod stats;
 pub mod task_io;
 pub mod types;
 pub mod uapi;
+pub mod zoned;
 
 pub use bdev::{sync_bdevs, BdevMapping};
 pub use blockdev::{BlockCompletion, BlockDevice, BlockRequest, MemDisk};
 pub use pagecache::{CachedPage, PageCache};
 pub use queue_limits::{QueueFeatures, QueueLimits, LINUX_SECTOR_BYTES, MAX_DISCARD_SECTORS};
 pub use registry::{Disk, Partition, ScsiDiskName, register, unregister, by_name, by_index, partition_by_dev, partition_by_label, partition_by_name, partition_by_uuid, partition_by_uuid_offset, rescan_partitions, reserve_scsi_disk_name, snapshot, start_deferred_partition_scans};
+pub use zoned::{Zone, ZoneReport, ZoneType};
 pub use types::{BlockError, BlockOp, InodeId, KResult, PageFlags, PAGE_BYTES};
 
 #[cfg(target_os = "oxide-kernel")]
