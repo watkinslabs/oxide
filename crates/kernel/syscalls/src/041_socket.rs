@@ -43,7 +43,20 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
         Ok(s) => s,
         Err(e) => return -(e.as_i32() as i64),
     };
-    let inode: vfs::InodeRef = if spec.family == AF_VSOCK {
+    let inode: vfs::InodeRef = if spec.family == net::socket_args::AF_BLUETOOTH {
+        // The family's own admission already ran inside `plan`; this only
+        // builds the object it named. Only the raw controller protocol has a
+        // socket object today — the other three are refused by the family's
+        // create operation until their lanes land, and refusing here rather
+        // than handing back a socket that carries nothing is the honest
+        // failure.
+        match bluetooth::sock::plan_create(spec.protocol, spec.typ, env.has_net_raw) {
+            Ok(bluetooth::sock::BtSocket::Hci) => bluetooth::sock::make_hci_socket_inode(
+                Arc::new(bluetooth::sock::HciSocketFile::new())),
+            Ok(_) => return -(Errno::Eprotonosupport.as_i32() as i64),
+            Err(e) => return -(e.as_i32() as i64),
+        }
+    } else if spec.family == AF_VSOCK {
         net::vsock_socket::make_vsock_socket_inode(Arc::new(
             net::vsock_socket::VsockSocket::new_type_in(spec.typ, net_namespace.clone())))
     } else if spec.family == AF_NETLINK {

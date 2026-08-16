@@ -81,7 +81,7 @@ Impls `mount`/`umount2` + new mount API (`fsopen`/`fsconfig`/`fsmount`/`move_mou
 ## 7 Union mounts (frozen)
 
 One tree presented from several stacked ones, with writes landing in a single
-writable layer. Owner: `crates/kernel/overlayfs` (`52§5` rule 15). Registered as
+writable layer. Owner: `crates/kernel/overlayfs` (`52§5` rule 17). Registered as
 `overlay` and `overlayfs`; no source, every layer named in the option string.
 
 ### 7.1 Layer stack
@@ -197,4 +197,4 @@ defaulted one wins silently. `userxattr` forces `redirect_dir=nofollow` and
 ## 15 Changelog
 
 - 2026-08-16: Added `## 7` union mounts (overlayfs): layer stack, layer
-  records, invariants, options. Owner crate recorded in `52§5` rule 15.
+  records, invariants, options. Owner crate recorded in `52§5` rule 17.

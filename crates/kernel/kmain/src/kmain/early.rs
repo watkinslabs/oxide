@@ -138,6 +138,10 @@ pub unsafe fn init(info: &BootInfo) {
     fs::tmpfs::init(); fs::fuse::register(); tracefs::init(); drv_virtio_input::devfs::init();
     drv_virtio_input::procfs::init();
     fbdev::devfs::init(); devpts::init();
+    // Publishes /dev/vhci, through which a process presents a Bluetooth
+    // controller to the host stack (`docs/62§4`). Failure is not fatal: the
+    // rest of the machine boots without a Bluetooth transport.
+    let _ = drv_vhci::node::register();
     debug_boot_smokes();
 }
 

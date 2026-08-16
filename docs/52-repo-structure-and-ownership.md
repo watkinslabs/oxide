@@ -146,7 +146,7 @@ must use grouped paths from day one.
     frame pacing (`64§10`). It is a `v4l2` driver like any other and has no
     private path into the device core.
 
-13. Device-class ownership: `crates/kernel/power-supply` owns the power-supply
+15. Device-class ownership: `crates/kernel/power-supply` owns the power-supply
     class (registered supplies, the property/unit contract, per-supply
     attribute visibility, the change fan-out) and `crates/kernel/backlight`
     owns the backlight class (registered devices, brightness range and blank
@@ -158,7 +158,7 @@ must use grouped paths from day one.
     AML namespace: no other crate holds a parser handle, and `acpi::aml_eval`
     is the only read side of it.
 
-14. Power-management ownership: `crates/kernel/thermal` owns the thermal class
+16. Power-management ownership: `crates/kernel/thermal` owns the thermal class
     (zones, trips, cooling devices, governors, the polling cadence and the
     attribute contract), `crates/kernel/cpufreq` owns frequency scaling (the
     operating-point table, the policy with its limit aggregation, the
@@ -174,7 +174,7 @@ must use grouped paths from day one.
     `sched` in a host build. `crates/kernel/firmware` owns the ACPI providers.
     The terminal action for a critical thermal trip is installed by kernel
     init, because a device class does not own powering the machine down.
-15. `crates/kernel/overlayfs` owns union-mount semantics: the layer stack, the
+17. `crates/kernel/overlayfs` owns union-mount semantics: the layer stack, the
     merged lookup, whiteouts and opaque directories, copy-up, the merged
     directory stream, and the four records a layer carries
     (`trusted.overlay.{opaque,redirect,origin,metacopy,...}`, and their
@@ -185,6 +185,21 @@ must use grouped paths from day one.
     constants (`fs::mknod`, `namei::may_rename`) and knows nothing of layers;
     `syscalls::fsmount_common::registry` registers the type and resolves layer
     paths, holding no stacking state of its own.
+18. `crates/kernel/bluetooth` owns the whole Bluetooth host stack (`docs/65`):
+    the HCI controller abstraction and its transport contract, the
+    `AF_BLUETOOTH` family and its four protocols, L2CAP, SMP, RFCOMM, SCO, and
+    the management interface. It is a leaf over `vfs`, `sync`, `syscall`,
+    `crc`, `aes` and `p256`. A transport driver implements
+    `bluetooth::hci::HciTransport` and owns nothing above the frame; it may not
+    keep controller state, connection state, or a second device registry.
+    `crates/kernel/net` and `crates/kernel/socket` remain the only owners of
+    socket families and cross-family socket policy — Bluetooth registers
+    through them and never beside them. The RFCOMM TTY binding consumes
+    `crates/kernel/tty`; it does not implement a second line discipline.
+19. `crates/shared/aes` owns AES-128 and AES-CMAC; `crates/shared/p256` owns
+    NIST P-256 field arithmetic and ECDH. Both are dependency-free primitive
+    crates. Any consumer needing these primitives uses them; no crate carries
+    a second copy.
 
 ## 6 Naming rules (frozen)
 
@@ -243,6 +258,10 @@ Constraints:
     depends on no other filesystem and no block layer — its layers are
     directories reached through `vfs::Inode`, whatever holds them. The syscall
     shim depends on it, never the reverse.
+14. `crates/kernel/bluetooth` may depend on `vfs`, `sync`, `syscall`, `crc`,
+    `aes` and `p256`. It may not depend on a driver crate: a transport driver
+    depends on `bluetooth` and registers itself, never the reverse.
+    `crates/shared/aes` and `crates/shared/p256` depend on nothing.
 
 ## 8 Change policy
 
@@ -294,6 +313,10 @@ Temporary exceptions are allowed only with:
 - 2026-08-16: Added the removable-media filesystem ownership boundary (`62`),
   `crates/kernel/sectors` as the single owner of the volume-sector adapter, and
   `crates/shared/dostime` as the single owner of the 1980-epoch date/time pair.
+- 2026-08-16: Added `crates/kernel/bluetooth` as the single owner of the
+  Bluetooth host stack, the `HciTransport` boundary that keeps transport
+  drivers free of stack state, and the two primitive crates
+  `crates/shared/aes` and `crates/shared/p256`.
 - 2026-08-15: Added the power-supply and backlight device-class ownership
   boundaries, their ACPI providers under `firmware`, and `crates/shared/kstrtox`.
 - 2026-08-15: Added `crates/kernel/thermal`, `crates/kernel/cpufreq` and

@@ -159,6 +159,8 @@ pub const PSTORE: Region = tag_region("pstore", 0x5053_5452);
 pub const USERFAULTFD: Region = tag_region("userfaultfd", 0x5546_4644);
 /// `AF_VSOCK` sockets.
 pub const VSOCK: Region = tag_region("vsock", 0x5653_4F43);
+/// `AF_BLUETOOTH` sockets.
+pub const BLUETOOTH: Region = tag_region("bluetooth", 0x4254_4800);
 /// ext4: the low 32 bits carry a full on-disk inode number.
 pub const EXT4: Region = tag_region("ext4", 0x6E54_0000);
 
@@ -171,7 +173,7 @@ pub const REGIONS: &[Region] = &[
     DEVPTS, CONFIGFS, DEBUGFS, DEBUGFS_AUTOMOUNT, INOTIFY, SIGNALFD, TIMERFD,
     EPOLL, BPF, DMA_BUF, EVDEV, ZRAM_DEBUGFS, FBDEV, PROCFS_NET,
     PROCFS_PID, DRM_CARD, DRM_RENDER, IO_URING, NETLINK, PERF, INET_SOCK, SOUND,
-    PSTORE, USERFAULTFD, VSOCK, EXT4,
+    PSTORE, USERFAULTFD, VSOCK, BLUETOOTH, EXT4,
 ];
 
 /// Whether `a` and `b` reserve any number in common. # C: O(1)

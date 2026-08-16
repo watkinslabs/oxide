@@ -1,0 +1,12 @@
+[package]
+name = "aes"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "AES-128 block cipher and the AES-CMAC message authentication code, as required by Bluetooth link-layer key derivation."
+
+[lib]
+path = "src/lib.rs"
+
+[lints]
+workspace = true

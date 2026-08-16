@@ -1,0 +1,23 @@
+[package]
+name = "bluetooth"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Bluetooth subsystem (`docs/62`): HCI core and transport contract, the AF_BLUETOOTH socket family and its four protocols, L2CAP, SMP, RFCOMM, SCO, and the management interface."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+sync    = { path = "../../shared/sync" }
+syscall = { path = "../syscall" }
+vfs     = { path = "../vfs" }
+crc     = { path = "../../shared/crc" }
+aes     = { path = "../../shared/aes" }
+p256    = { path = "../../shared/p256" }
+
+[features]
+default = []
+
+[lints]
+workspace = true
