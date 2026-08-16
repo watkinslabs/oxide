@@ -60,6 +60,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
         irq-gate irq-gate-x86 irq-gate-arm \
         feature-gate feature-gate-x86 feature-gate-arm feature-gate-atexit \
         smoke-hda smoke-hda-x86 smoke-hda-arm \
+        smoke-v4l2 smoke-v4l2-x86 smoke-v4l2-arm \
         hosted-gate test-build-gate \
         smoke-ping smoke-ping-x86 smoke-ping-arm smoke-network-native-pci-x86 \
         stack-gate-baseline-x86 stack-gate-baseline-arm stack-report \
@@ -706,7 +707,22 @@ smoke-grub:
 # codec attached and asks the guest whether the second sound card's nodes
 # exist — they appear only after the controller reset, a codec answered, the
 # generic parser found a route and the ALSA card registered.
+V4L2_SMOKE_TIMEOUT ?= 900
 HDA_SMOKE_TIMEOUT ?= 900
+# V4L2 acceptance. The probe is injected into a disposable boot root and run
+# as a unit before basic.target, so the verdict lands on the serial console
+# without a shell in the loop. It captures real frames through /dev/video0 and
+# asserts the mapped pages are no longer zero — a node in /dev proves
+# publication and nothing else.
+smoke-v4l2-x86:
+	OXIDE_V4L2_SMOKE=1 SMOKE_ALIVE_PROBE= SMOKE_MARKER='v4l2_probe: PASS' ./tools/boot-smoke.sh x86 $(V4L2_SMOKE_TIMEOUT)
+smoke-v4l2-arm:
+	OXIDE_V4L2_SMOKE=1 SMOKE_ALIVE_PROBE= SMOKE_MARKER='v4l2_probe: PASS' ./tools/boot-smoke.sh arm $(V4L2_SMOKE_TIMEOUT)
+smoke-v4l2:
+	OXIDE_V4L2_SMOKE=1 SMOKE_ALIVE_PROBE= SMOKE_MARKER='v4l2_probe: PASS' ./tools/boot-smoke.sh x86 $(V4L2_SMOKE_TIMEOUT) & p1=$$!; \
+	OXIDE_V4L2_SMOKE=1 SMOKE_ALIVE_PROBE= SMOKE_MARKER='v4l2_probe: PASS' ./tools/boot-smoke.sh arm $(V4L2_SMOKE_TIMEOUT) & p2=$$!; \
+	rc=0; wait $$p1 || rc=1; wait $$p2 || rc=1; exit $$rc
+
 smoke-hda-x86: x86
 	./tools/boot-smoke-hda.sh x86 $(HDA_SMOKE_TIMEOUT)
 smoke-hda-arm: arm

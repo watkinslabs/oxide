@@ -1,0 +1,28 @@
+[package]
+name = "v4l2"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+vfs     = { path = "../vfs" }
+drv     = { path = "../../drivers/drv" }
+syscall = { path = "../syscall" }
+sync    = { path = "../../shared/sync" }
+klog    = { path = "../../shared/klog" }
+
+[target.'cfg(target_os = "oxide-kernel")'.dependencies]
+sched       = { path = "../sched" }
+uaccess     = { path = "../uaccess" }
+timekeeper  = { path = "../timekeeper" }
+pmm         = { path = "../mm-pmm" }
+
+[features]
+default = []
+debug-boot = []
+
+[lints]
+workspace = true

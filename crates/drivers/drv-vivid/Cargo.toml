@@ -1,0 +1,25 @@
+[package]
+name = "drv-vivid"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+v4l2    = { path = "../../kernel/v4l2" }
+syscall = { path = "../../kernel/syscall" }
+sync    = { path = "../../shared/sync" }
+klog    = { path = "../../shared/klog" }
+
+[target.'cfg(target_os = "oxide-kernel")'.dependencies]
+timer      = { path = "../../kernel/timer" }
+
+
+[features]
+default = []
+debug-boot = []
+
+[lints]
+workspace = true

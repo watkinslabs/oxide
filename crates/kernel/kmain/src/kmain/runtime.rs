@@ -327,6 +327,10 @@ pub(crate) fn init_network_and_pci() {
     // registers none, which is the same answer Linux gives on the same
     // firmware.
     step("firmware::acpi::init_devices", publish_acpi_devices);
+    // The virtual capture device. A machine with no camera on any bus still
+    // presents `/dev/video0`, so the whole V4L2 path — negotiation, buffers,
+    // controls, events — is real rather than machinery with no caller.
+    step("v4l2::vivid", drv_vivid::init);
 }
 
 /// Publish the ACPI-described power supplies and backlights, reporting what

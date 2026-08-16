@@ -117,6 +117,9 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     }
     // ALSA /dev/snd/* + OSS /dev/dsp,/dev/mixer — the `sound` ALSA core.
     if let Some(rv) = sound::handle_ioctl(&file, req, arg) { return rv; }
+    // `/dev/videoN` — the V4L2 device core. It recognises its own files by the
+    // backend state their inode owns, so a foreign inode never reaches it.
+    if let Some(rv) = v4l2::node::handle_ioctl(&file, req, arg) { return rv; }
     if let Some(rv) = handle_autofs_dev_ioctl(file.inode(), req, arg) {
         return rv;
     }
