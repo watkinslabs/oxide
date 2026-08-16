@@ -329,8 +329,11 @@ fn read_at(body: &[u8], off: u64, buf: &mut [u8]) -> usize {
 
 fn alloc_ino() -> Ino { NEXT_INO.alloc() }
 
-/// Allocate a tracefs-owned dynamic control inode number. # C: O(1)
-#[cfg(target_arch = "x86_64")]
+/// Allocate a tracefs-owned dynamic control inode number.
+///
+/// Not arch-specific: the gate here was only ever a reflection of its one
+/// caller being x86-only, and a debugfs file exists on both arches.
+/// # C: O(1)
 pub(crate) fn alloc_control_ino() -> Ino { alloc_ino() }
 
 /// Linux tracefs regular files use `tracefs_file_inode_operations` whose
