@@ -228,3 +228,7 @@ fn last_dentry_of(found: &[Found], live: &BTreeSet<u32>) -> BTreeMap<u32, u32> {
     }
     out
 }
+
+#[cfg(test)]
+#[path = "../../tests/recover/protect.rs"]
+mod tests;

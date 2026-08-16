@@ -136,6 +136,30 @@ impl F2fs {
         Ok(())
     }
 
+    /// Make one file durable, without a whole checkpoint where the volume's
+    /// state allows it.
+    ///
+    /// Which path is taken is not this layer's decision: the volume answers it
+    /// from state only it can see, and reports which one it took. The clock is
+    /// stamped first because this path can commit, and a checkpoint dates the
+    /// segments it writes.
+    /// # C: O(nodes the file has) blocks, or O(a checkpoint)
+    pub fn sync_file(&self, ino: u32, datasync: bool) -> KResult<()> {
+        let runs = {
+            let mut v = self.volume_now();
+            let r = if datasync { v.fdatasync(ino) } else { v.fsync(ino) };
+            let reason = r.map_err(errno_to_vfs)?;
+            // ONLY a checkpoint retires what a release freed. The chain path
+            // deliberately writes none, so every block this mount has freed is
+            // still part of the state a crash recovers to — announcing one to
+            // the device destroys exactly that state, and the loss lands on
+            // whichever file happened to own the block before it moved.
+            if reason.needed() { v.take_discards() } else { alloc::vec::Vec::new() }
+        };
+        self.announce_free(&runs);
+        Ok(())
+    }
+
     /// Tell the device it may forget these runs.
     ///
     /// Best effort by nature: a discard that fails costs nothing but the

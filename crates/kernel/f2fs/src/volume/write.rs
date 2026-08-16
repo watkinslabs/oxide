@@ -228,6 +228,21 @@ impl<S: SectorSource> Volume<S> {
         Ok(())
     }
 
+    /// Release whatever a file's slot held, block or reservation.
+    ///
+    /// A reservation occupies no block of the medium, so there is no bit for
+    /// the segment update to clear and no space charged to the owner — but it
+    /// was counted against the VOLUME when it was made, and that is what comes
+    /// back here. Releasing it as if it were a block would lower a count
+    /// nothing raised and hand the owner space it never spent.
+    /// # C: O(1)
+    pub(crate) fn release_slot(&mut self, ino: u32, addr: u32) -> Result<(), Errno> {
+        if addr == NEW_ADDR { self.release_reservation(); return Ok(()); }
+        if crate::node::is_hole(addr) { return Ok(()); }
+        self.release_block(addr)?;
+        self.uncharge_space(ino, BLKSIZE as u64)
+    }
+
     /// Release a whole node: its block, and its table entry. # C: O(1)
     pub(crate) fn release_node(&mut self, nid: u32) -> Result<(), Errno> {
         if nid == 0 { return Ok(()); }

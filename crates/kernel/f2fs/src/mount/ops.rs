@@ -242,12 +242,13 @@ impl FileOps for F2fsOps {
     /// Make one file durable.
     ///
     /// Writes here reach the medium out of place but are not REFERENCED until
-    /// a checkpoint names them, so reporting success without one would tell a
-    /// caller its data is safe when a crash would lose it. A checkpoint is
-    /// heavier than this needs to be — it makes the whole volume durable, not
-    /// one file — but it is the honest answer, and a wrong `fsync` is the one
-    /// failure a database cannot defend against.
-    fn fsync(&self, file: &vfs::File, _datasync: bool) -> KResult<()> {
+    /// something names them, so reporting success without writing would tell a
+    /// caller its data is safe when a crash would lose it. What names them is
+    /// the volume's decision: a chain of the file's own node blocks where the
+    /// state allows a later mount to replay it, and a whole checkpoint where
+    /// it does not. Answering every call with a checkpoint is honest but makes
+    /// one file's durability cost the whole volume's.
+    fn fsync(&self, file: &vfs::File, datasync: bool) -> KResult<()> {
         let inode = file.inode();
         match inode.file_type() {
             FileType::Regular | FileType::Directory => {}
@@ -255,7 +256,7 @@ impl FileOps for F2fsOps {
         }
         let node = F2fsOps::node(inode)?;
         if !node.fs.is_writable() { return Ok(()); }
-        node.fs.checkpoint()
+        node.fs.sync_file(node.ino, datasync)
     }
 
     /// This filesystem STORES `.` and `..` as ordinary entries, so the

@@ -166,6 +166,31 @@ fn fsync_makes_a_files_bytes_durable() {
 }
 
 #[test]
+fn fsync_costs_a_chain_and_not_a_checkpoint() {
+    // A checkpoint makes the WHOLE volume durable and rewrites both tables;
+    // paying one per `fsync` turns a database's every commit into a
+    // filesystem-wide flush. The cheaper promise is a chain of the file's own
+    // node blocks, which the next mount replays — so the test is that the
+    // pack does not move and the bytes come back anyway.
+    let (fs, dev) = mounted();
+    let root = fs.root_inode().unwrap();
+    let file = root.create_child("c", 0o644, &CreateCtx::root()).unwrap();
+    fs.checkpoint().unwrap();
+    file.write(0, b"promised").unwrap();
+    let before = fs.volume.lock().checkpoint().version;
+    let dentry = vfs::Dentry::new_root(file.clone());
+    let f = File::new(file.clone(), dentry, OpenFlags::empty());
+    crate::mount::ops::F2fsOps.fsync(&f, false).unwrap();
+    assert_eq!(fs.volume.lock().checkpoint().version, before, "a chain, not a pack");
+    let fs = remount(&dev);
+    let root = fs.root_inode().unwrap();
+    let found = root.lookup("c").unwrap();
+    let mut buf = [0u8; 8];
+    found.read(0, &mut buf).unwrap();
+    assert_eq!(&buf, b"promised");
+}
+
+#[test]
 fn a_directory_lists_its_own_stored_dots_exactly_once() {
     // The interface synthesises `.` and `..` for backends that lack them, so a
     // backend that stores them must say so or every listing shows them twice.

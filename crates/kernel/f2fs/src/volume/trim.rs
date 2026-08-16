@@ -51,16 +51,13 @@ impl<S: SectorSource> Volume<S> {
             for i in first_gone..apb {
                 let at = base_off + i as usize * 4;
                 let addr = le32(&block, at).unwrap_or(NULL_ADDR);
-                if crate::node::is_hole(addr) { continue; }
+                if addr == NULL_ADDR { continue; }
                 block[at..at + 4].copy_from_slice(&0u32.to_le_bytes());
                 freed.push(addr);
             }
             if !freed.is_empty() {
                 self.put_inode(ino, block)?;
-                for addr in freed {
-                    self.release_block(addr)?;
-                    self.uncharge_space(ino, BLKSIZE as u64)?;
-                }
+                for addr in freed { self.release_slot(ino, addr)?; }
             }
         }
         for slot in 0..2usize {
@@ -104,16 +101,13 @@ impl<S: SectorSource> Volume<S> {
             for i in 0..DEF_ADDRS_PER_BLOCK {
                 if base + (i as u64) < first_gone { continue; }
                 let addr = crate::node::direct_addr(&block, i).unwrap_or(NULL_ADDR);
-                if crate::node::is_hole(addr) { continue; }
+                if addr == NULL_ADDR { continue; }
                 block[i * 4..i * 4 + 4].copy_from_slice(&0u32.to_le_bytes());
                 freed.push(addr);
                 changed = true;
             }
             if changed { self.write_node(nid, ino, block, Kind::IndirectNode)?; }
-            for addr in freed {
-                self.release_block(addr)?;
-                self.uncharge_space(ino, BLKSIZE as u64)?;
-            }
+            for addr in freed { self.release_slot(ino, addr)?; }
             return Ok(());
         }
         let child_span = if depth == 1 { d } else { d * p };
@@ -157,9 +151,7 @@ impl<S: SectorSource> Volume<S> {
         if depth == 0 {
             for i in 0..DEF_ADDRS_PER_BLOCK {
                 let addr = crate::node::direct_addr(&node.block, i).unwrap_or(NULL_ADDR);
-                if crate::node::is_hole(addr) { continue; }
-                self.release_block(addr)?;
-                self.uncharge_space(ino, BLKSIZE as u64)?;
+                self.release_slot(ino, addr)?;
             }
         } else {
             for i in 0..NIDS_PER_BLOCK {
@@ -181,9 +173,7 @@ impl<S: SectorSource> Volume<S> {
             let base = inode.addr_base();
             for i in 0..inode.addrs_per_inode() {
                 let addr = le32(&block, base + i * 4).unwrap_or(NULL_ADDR);
-                if crate::node::is_hole(addr) { continue; }
-                self.release_block(addr)?;
-                self.uncharge_space(ino, BLKSIZE as u64)?;
+                self.release_slot(ino, addr)?;
             }
             for (slot, depth) in [(0usize, 0u8), (1, 0), (2, 1), (3, 1), (4, 2)] {
                 let nid = self.inode_slot(ino, slot)?;
@@ -222,8 +212,10 @@ impl<S: SectorSource> Volume<S> {
         let block = self.inode_bytes(ino)?;
         let base = inode.addr_base();
         for i in 0..inode.addrs_per_inode() {
+            // A reservation is space the file HOLDS: it names no block on the
+            // medium, and the write it is holding room for has one waiting.
             let addr = le32(&block, base + i * 4).unwrap_or(NULL_ADDR);
-            if !crate::node::is_hole(addr) { n += 1; }
+            if addr != NULL_ADDR { n += 1; }
         }
         for (slot, depth) in [(0usize, 0u8), (1, 0), (2, 1), (3, 1), (4, 2)] {
             let nid = self.inode_slot(ino, slot)?;
@@ -239,7 +231,7 @@ impl<S: SectorSource> Volume<S> {
         if depth == 0 {
             for i in 0..DEF_ADDRS_PER_BLOCK {
                 let addr = crate::node::direct_addr(&node.block, i).unwrap_or(NULL_ADDR);
-                if !crate::node::is_hole(addr) { n += 1; }
+                if addr != NULL_ADDR { n += 1; }
             }
         } else {
             for i in 0..NIDS_PER_BLOCK {

@@ -33,7 +33,7 @@ fn with_chain(blocks: &[Vec<u8>]) -> crate::volume::Volume<MemImage> {
     // Laid down AFTER the mount, which is where a crash leaves a chain: a
     // mount is the thing that has to survive reading one, and an image built
     // with a malformed chain already in it cannot be mounted to look at.
-    let mut v = test_image::with_root().mount_rw().expect("mount");
+    let v = test_image::with_root().mount_rw().expect("mount");
     for (i, blk) in blocks.iter().enumerate() {
         v.write_block(head() + i as u32, blk).expect("block");
     }

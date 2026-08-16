@@ -176,6 +176,8 @@ impl<S: SectorSource> Volume<S> {
         let is_dir = inode.mode & mode_ifmt() == mode_ifdir();
         let owner = match holder { Holder::Inode => ino, Holder::Direct(nid) => nid };
         let addr = self.write_data(owner, ofs as u16, is_dir, old, &page)?;
+        // The room a reservation was holding is the room this block just took.
+        if old == NEW_ADDR { self.release_reservation(); }
         self.set_holder_addr(ino, holder, ofs, addr)
     }
 
