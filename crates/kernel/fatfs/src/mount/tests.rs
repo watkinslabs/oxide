@@ -1,4 +1,6 @@
 use super::*;
+use alloc::vec;
+use vfs::FileType;
 use crate::dirent::{ATTR_ARCH, ATTR_DIR, ATTR_RO};
 use alloc::vec::Vec;
 use block::{BlockDevice, BlockError, BlockOp, BlockRequest};
@@ -180,4 +182,164 @@ fn the_filesystem_reports_the_reference_identity() {
 fn a_device_without_a_volume_is_refused() {
     let disk = Arc::new(Disk { bytes: vec![0u8; 4096], block_size: 512 });
     assert!(FatFs::open(disk as Arc<dyn BlockDevice>, "/dev/loop0").is_err());
+}
+
+/// The same image on a device that accepts writes, so the VFS operations can
+/// be driven end to end rather than only their refusals.
+struct RwDisk { bytes: sync::Spinlock<Vec<u8>, sync::TaskList>, block_size: u32 }
+
+impl BlockDevice for RwDisk {
+    fn block_size(&self) -> u32 { self.block_size }
+    fn capacity_blocks(&self) -> u64 {
+        self.bytes.lock().len() as u64 / u64::from(self.block_size)
+    }
+    fn submit_sync(&self, req: &mut BlockRequest) -> block::KResult<()> {
+        let bs = self.block_size as usize;
+        let at = req.start_block as usize * bs;
+        let len = req.len_blocks as usize * bs;
+        let mut bytes = self.bytes.lock();
+        if at + len > bytes.len() { return Err(BlockError::Eio); }
+        match req.op {
+            BlockOp::Read => { req.buffer = bytes[at..at + len].to_vec(); Ok(()) }
+            BlockOp::Write => {
+                if req.buffer.len() < len { return Err(BlockError::Eio); }
+                bytes[at..at + len].copy_from_slice(&req.buffer[..len]);
+                Ok(())
+            }
+            _ => Err(BlockError::Eopnotsupp),
+        }
+    }
+    fn flush(&self) -> block::KResult<()> { Ok(()) }
+}
+
+fn writable_mount(type_name: &'static str, opts: crate::opts::Options) -> Arc<FatFs> {
+    let disk = image(512);
+    let rw = Arc::new(RwDisk { bytes: sync::Spinlock::new(disk.bytes.clone()), block_size: 512 });
+    FatFs::open_typed(rw as Arc<dyn BlockDevice>, "/dev/loop0", true, type_name, opts)
+        .expect("mount")
+}
+
+fn ctx() -> vfs::CreateCtx<'static> { vfs::CreateCtx::root() }
+
+/// Every namei operation reaches the volume through the VFS vector a real
+/// `mount -t vfat` uses. Anything short of this is machinery with no caller.
+#[test]
+fn the_vfs_operations_create_remove_and_rename_on_the_medium() {
+    let fs = writable_mount("vfat", {
+        let mut o = crate::opts::Options::vfat();
+        o.settle();
+        o
+    });
+    let root = fs.root_inode();
+
+    let made = root.create_child("A New File.txt", 0o644, &ctx()).expect("create");
+    assert_eq!(made.file_type(), FileType::Regular);
+    assert_eq!(made.size(), 0);
+    made.write(0, b"contents").expect("write");
+    let found = root.lookup("A New File.txt").expect("lookup finds the long name");
+    let mut buf = [0u8; 16];
+    let got = found.read(0, &mut buf).expect("read");
+    assert_eq!(&buf[..got], b"contents");
+
+    let dir = root.mkdir("MADEDIR", 0o755, &ctx()).expect("mkdir");
+    assert_eq!(dir.file_type(), FileType::Directory);
+    dir.create_child("inner.txt", 0o644, &ctx()).expect("create inside it");
+    assert!(dir.lookup("inner.txt").is_ok());
+    // A directory with something in it is not removable.
+    assert_eq!(root.rmdir("MADEDIR").err(), Some(VfsError::Enotempty));
+    dir.unlink_child("inner.txt").expect("unlink");
+    root.rmdir("MADEDIR").expect("now it goes");
+    assert_eq!(root.lookup("MADEDIR").err(), Some(VfsError::Enoent));
+
+    root.rename_child("A New File.txt", &root, "renamed.txt", 0, &ctx()).expect("rename");
+    assert_eq!(root.lookup("A New File.txt").err(), Some(VfsError::Enoent));
+    let moved = root.lookup("renamed.txt").expect("under its new name");
+    let got = moved.read(0, &mut buf).expect("read");
+    assert_eq!(&buf[..got], b"contents");
+
+    root.unlink_child("renamed.txt").expect("unlink");
+    assert_eq!(root.lookup("renamed.txt").err(), Some(VfsError::Enoent));
+}
+
+/// FAT has no link count and no way to name one file twice, so the slot is
+/// absent and the answer is `EPERM` — what a filesystem without the operation
+/// reports, and not `EROFS`, which is the read-only-mount verdict.
+#[test]
+fn a_hard_link_is_refused_with_the_no_such_operation_errno() {
+    let fs = writable_mount("vfat", crate::opts::Options::vfat());
+    let root = fs.root_inode();
+    let target = root.lookup("HELLO.TXT").expect("lookup");
+    assert_eq!(root.link_child(&target, "SECOND.TXT", &ctx()).err(), Some(VfsError::Eperm));
+    assert_eq!(root.symlink_child("LINK", b"/somewhere", &ctx()).err(), Some(VfsError::Eperm));
+}
+
+/// `msdos` is a TYPE, not a spelling of `vfat`: it reads no long-name slot and
+/// writes none, so a name it cannot spell in eleven bytes does not exist there.
+#[test]
+fn the_two_types_are_not_one_type_under_two_names() {
+    let vfat = writable_mount("vfat", crate::opts::Options::vfat());
+    let msdos = writable_mount("msdos", crate::opts::Options::msdos());
+    use vfs::fs::FileSystem;
+    assert_eq!(vfat.name(), "vfat");
+    assert_eq!(msdos.name(), "msdos");
+    // The same call on each: one stores the long name, the other folds it.
+    vfat.root_inode().create_child("MixedCaseName.txt", 0o644, &ctx()).expect("create");
+    assert!(vfat.root_inode().lookup("MixedCaseName.txt").is_ok());
+    msdos.root_inode().create_child("MixedCaseName.txt", 0o644, &ctx()).expect("create");
+    // Folded to eleven bytes, and found under the folded spelling.
+    assert!(msdos.root_inode().lookup("MIXEDCAS.TXT").is_ok(),
+            "the 8.3-only type stored the folded name");
+    assert!(vfat.root_inode().lookup("MIXEDCAS.TXT").is_err(),
+            "and the long-name type did not");
+}
+
+/// The option tail reaches `/proc/mounts`, and it parses back. An empty tail
+/// tells a reader nothing about a mount whose whole behaviour is options.
+#[test]
+fn the_option_tail_is_reported_and_round_trips() {
+    let mut o = crate::opts::Options::vfat();
+    o.uid = 1000;
+    o.dmask = 0o022;
+    o.settle();
+    let fs = writable_mount("vfat", o);
+    use vfs::fs::FileSystem;
+    let line = fs.show_options();
+    assert!(line.contains(",uid=1000"), "{line}");
+    assert!(line.contains(",dmask=0022"), "{line}");
+    assert!(line.contains(",codepage=437"), "{line}");
+    let back = crate::opts::parse(crate::opts::Options::vfat(), &line).expect("its own output");
+    assert_eq!(crate::opts::show(&back), line);
+}
+
+/// `statfs` counts in CLUSTERS, which is what an allocation hands out, and the
+/// two types report the different longest components they accept.
+#[test]
+fn statfs_reports_clusters_and_the_types_name_length() {
+    use vfs::fs::FileSystem;
+    let fs = writable_mount("vfat", crate::opts::Options::vfat());
+    let ops = fs.super_ops().expect("a FAT mount owns its superblock operations");
+    let st = ops.statfs().expect("statfs");
+    assert_eq!(st.f_type, MSDOS_SUPER_MAGIC);
+    assert_eq!(u64::from(st.f_bsize), (SEC_PER_CLUS * VOL_SECTOR) as u64);
+    assert!(st.f_blocks > 0);
+    assert!(st.f_bfree > 0 && st.f_bfree <= st.f_blocks);
+    assert_eq!(st.f_bavail, st.f_bfree, "FAT reserves nothing for a privileged caller");
+    assert_eq!(st.f_namelen, crate::opts::VFAT_NAME_MAX);
+
+    let msdos = writable_mount("msdos", crate::opts::Options::msdos());
+    let st = msdos.super_ops().unwrap().statfs().expect("statfs");
+    assert_eq!(st.f_namelen, crate::opts::MSDOS_NAME_MAX);
+}
+
+/// Allocating really moves the reported free count, so the check above is
+/// reading a live number rather than a constant.
+#[test]
+fn statfs_free_count_falls_as_the_volume_fills() {
+    use vfs::fs::FileSystem;
+    let fs = writable_mount("vfat", crate::opts::Options::vfat());
+    let ops = fs.super_ops().unwrap();
+    let before = ops.statfs().unwrap().f_bfree;
+    let made = fs.root_inode().create_child("BIG.BIN", 0o644, &ctx()).expect("create");
+    made.write(0, &vec![0u8; SEC_PER_CLUS * VOL_SECTOR * 3]).expect("write");
+    assert!(ops.statfs().unwrap().f_bfree < before);
 }

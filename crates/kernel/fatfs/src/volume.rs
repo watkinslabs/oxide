@@ -5,6 +5,11 @@
 //! end against an image in memory. Every layer under this one is already
 //! tested in isolation; this is where they are tested TOGETHER, which is the
 //! only place an interface mistake between them shows up.
+//!
+//! Module manifest:
+//! - `write`:  changing a file's bytes, its length and its record.
+//! - `grow`:   giving a directory another cluster, cleared before use.
+//! - `dirops`: creating, deleting and renaming names.
 
 use alloc::string::String;
 use alloc::vec;
@@ -15,7 +20,16 @@ use syscall::errno::Errno;
 use crate::bpb;
 use crate::chain::{self, ChainError};
 use crate::dirent::{self, Entry, LongName, ShortEntry, ENTRY_BYTES};
+use crate::fatcache::{get_cluster, ChainCache, Seek};
+use crate::fsinfo::{self, FreeState};
 use crate::geometry::{self, FatWidth, Geometry, FAT_START_ENT};
+use crate::opts::Options;
+
+pub mod write;
+pub mod grow;
+pub mod dirops;
+
+pub use dirops::DirHandle;
 
 /// Where a volume's bytes come from.
 pub trait SectorSource {
@@ -48,6 +62,9 @@ pub struct DirEntry {
     /// it a writer has to search the directory again for a name it already
     /// found, and would rewrite whichever record matched second.
     pub slot: u64,
+    /// Records this name occupies, long-name slots included. A deletion must
+    /// free all of them, and a run left behind is a name half-removed.
+    pub nr_slots: usize,
 }
 
 impl DirEntry {
@@ -55,6 +72,10 @@ impl DirEntry {
     pub fn is_dir(&self) -> bool { self.entry.is_dir() }
     /// # C: O(1)
     pub fn size(&self) -> u64 { u64::from(self.entry.size) }
+    /// Offset of the FIRST record of this name's group. # C: O(1)
+    pub fn group_start(&self) -> u64 {
+        self.slot - ((self.nr_slots - 1) * ENTRY_BYTES) as u64
+    }
 }
 
 /// A mounted volume.
@@ -67,6 +88,13 @@ pub struct Volume<S: SectorSource> {
     fats: u32,
     /// The volume's own dirty flag as found at mount.
     dirty: bool,
+    /// What this mount was asked for.
+    opts: Options,
+    /// Free-cluster count and allocation hint, carried across every
+    /// allocation so the table is scanned once rather than per request.
+    free: FreeState,
+    /// Where the information sector lives, on a volume that has one.
+    fsinfo_sector: Option<u32>,
 }
 
 impl<S: SectorSource> Volume<S> {
@@ -75,7 +103,10 @@ impl<S: SectorSource> Volume<S> {
     /// The table is read whole rather than a sector at a time because a
     /// twelve-bit entry straddles the boundary between two of them.
     /// # C: O(table bytes)
-    pub fn mount(source: S) -> Result<Self, Errno> {
+    pub fn mount(source: S) -> Result<Self, Errno> { Self::mount_with(source, Options::vfat()) }
+
+    /// Mount under a named option set. # C: O(table bytes)
+    pub fn mount_with(source: S, opts: Options) -> Result<Self, Errno> {
         let mut boot = vec![0u8; 512];
         source.read_sectors(0, &mut boot)?;
         let parsed = bpb::parse(&boot).map_err(|e| e.errno())?;
@@ -94,7 +125,30 @@ impl<S: SectorSource> Volume<S> {
         let mut table = vec![0u8; table_bytes];
         source.read_sectors(u64::from(geo.fat_start), &mut table)?;
         let dirty = crate::volstate::is_dirty(&boot, geo.width).unwrap_or(false);
-        Ok(Self { source, geo, table, fats: parsed.fats, dirty })
+        // Only FAT32 keeps an information sector; on the narrower widths the
+        // field the sector number would come from is part of something else.
+        let fsinfo_sector = if geo.width == FatWidth::Fat32 {
+            Some(fsinfo::sector_number(parsed.fsinfo_sector))
+        } else {
+            None
+        };
+        let mut vol = Self { source, geo, table, fats: parsed.fats, dirty, opts,
+                             free: FreeState::new(), fsinfo_sector };
+        vol.adopt_fsinfo();
+        Ok(vol)
+    }
+
+    /// Take the information sector's two counters, when it has one.
+    ///
+    /// A failure to read it is not a mount failure: the counters are a hint,
+    /// and a volume whose information sector is unreadable still works from a
+    /// scan. # C: O(1 sector)
+    fn adopt_fsinfo(&mut self) {
+        let Some(sector) = self.fsinfo_sector else { return };
+        let mut buf = vec![0u8; self.geo.sector_size as usize];
+        if self.source.read_sectors(u64::from(sector), &mut buf).is_err() { return; }
+        if let Some(info) = fsinfo::parse(&buf) { self.free.adopt(&info, self.opts.usefree); }
+        self.free.sanitize(&self.geo);
     }
 
     /// # C: O(1)
@@ -102,6 +156,9 @@ impl<S: SectorSource> Volume<S> {
 
     /// # C: O(1)
     pub fn width(&self) -> FatWidth { self.geo.width }
+
+    /// What this mount was asked for. # C: O(1)
+    pub fn options(&self) -> &Options { &self.opts }
 
     /// Read one cluster's bytes. # C: O(cluster bytes)
     fn read_cluster(&self, cluster: u32, buf: &mut [u8]) -> Result<(), Errno> {
@@ -116,7 +173,7 @@ impl<S: SectorSource> Volume<S> {
     /// entry zero, which is the media descriptor, and follows it somewhere
     /// arbitrary.
     /// # C: O(directory bytes)
-    fn directory_bytes(&self, cluster: Option<u32>) -> Result<Vec<u8>, Errno> {
+    pub fn directory_bytes(&self, cluster: Option<u32>) -> Result<Vec<u8>, Errno> {
         match cluster {
             None => {
                 let bytes = usize::try_from(u64::from(self.geo.dir_entries) * ENTRY_BYTES as u64)
@@ -139,7 +196,7 @@ impl<S: SectorSource> Volume<S> {
 
     /// The first cluster of the root directory, or `None` when the volume
     /// keeps its root in a fixed region. # C: O(1)
-    fn root_cluster(&self) -> Option<u32> {
+    pub fn root_cluster(&self) -> Option<u32> {
         if self.geo.has_fixed_root() { None } else { Some(self.geo.root_cluster) }
     }
 
@@ -151,6 +208,11 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(directory bytes)
     pub fn read_dir(&self, cluster: Option<u32>) -> Result<Vec<DirEntry>, Errno> {
         let bytes = self.directory_bytes(cluster)?;
+        Ok(self.parse_dir(&bytes))
+    }
+
+    /// Decode a directory's bytes into its names. # C: O(directory bytes)
+    pub fn parse_dir(&self, bytes: &[u8]) -> Vec<DirEntry> {
         let mut out = Vec::new();
         let mut long = LongName::new();
         for (index, record) in bytes.chunks_exact(ENTRY_BYTES).enumerate() {
@@ -163,31 +225,50 @@ impl<S: SectorSource> Volume<S> {
                 Some(Entry::LongSlot { ordinal, last, checksum, chars }) =>
                     long.push(ordinal, last, checksum, &chars),
                 Some(Entry::Short(entry)) => {
-                    let name = long.take(&entry).unwrap_or_else(|| dirent::short_name(&entry));
+                    // Taken BEFORE the run is consumed: the count is what says
+                    // how many records a deletion of this name must free.
+                    let pending = long.pending_slots();
+                    let long_name = long.take(&entry);
+                    let nr_slots = if long_name.is_some() { pending + 1 } else { 1 };
+                    let name = long_name.unwrap_or_else(|| self.short_name(record, &entry));
                     let slot = (index * ENTRY_BYTES) as u64;
-                    if !entry.is_volume_label() { out.push(DirEntry { name, entry, slot }); }
+                    if !entry.is_volume_label() {
+                        out.push(DirEntry { name, entry, slot, nr_slots });
+                    }
                 }
             }
         }
-        Ok(out)
+        out
+    }
+
+    /// The 8.3 name a record spells under THIS mount's code page and display
+    /// rule, case bits included — which the short entry alone cannot carry.
+    /// # C: O(SHORT_NAME_LEN)
+    fn short_name(&self, record: &[u8], entry: &ShortEntry) -> String {
+        let lcase = dirent::Record::parse(record).map_or(0, |r| r.lcase);
+        dirent::short_name_with(entry, lcase, self.opts.codepage, self.opts.shortname)
     }
 
     /// List the root directory. # C: O(directory bytes)
     pub fn read_root(&self) -> Result<Vec<DirEntry>, Errno> { self.read_dir(self.root_cluster()) }
 
-    /// Resolve a slash-separated path from the root.
-    ///
-    /// Names compare case-insensitively over ASCII, which is what the
-    /// filesystem itself does: it has no notion of two files whose names
-    /// differ only in case.
-    /// # C: O(path components * directory bytes)
+    /// Whether `name` names `entry`, under this mount's matching rule.
+    /// # C: O(name length)
+    pub fn name_matches(&self, entry: &DirEntry, name: &str) -> bool {
+        if self.opts.long_names {
+            return crate::name::compare::eq(&entry.name, name, self.opts.case_sensitive());
+        }
+        crate::name::msdos::eq(entry.name.as_bytes(), name.as_bytes(), &self.opts.short_rules())
+    }
+
+    /// Resolve a slash-separated path from the root. # C: O(components * dir bytes)
     pub fn lookup(&self, path: &str) -> Result<DirEntry, Errno> {
         let mut cluster = self.root_cluster();
         let mut found: Option<DirEntry> = None;
         for component in path.split('/').filter(|c| !c.is_empty() && *c != ".") {
             let entries = self.read_dir(cluster)?;
             let hit = entries.into_iter()
-                .find(|e| e.name.eq_ignore_ascii_case(component))
+                .find(|e| self.name_matches(e, component))
                 .ok_or(Errno::Enoent)?;
             cluster = Some(hit.entry.cluster);
             found = Some(hit);
@@ -199,32 +280,45 @@ impl<S: SectorSource> Volume<S> {
     /// read. Reads stop at the file's declared size: the tail of the last
     /// cluster is not part of the file, and returning it would append whatever
     /// the medium last held there.
-    /// # C: O(bytes read)
-    pub fn read_file(&self, entry: &ShortEntry, offset: u64, buf: &mut [u8]) -> Result<usize, Errno> {
+    ///
+    /// `cache` remembers where the walk got to. A chain has no index, so the
+    /// Nth cluster costs N table reads from the start; reading a file
+    /// sequentially without one costs a walk per request, which is quadratic
+    /// in the file's length.
+    /// # C: O(bytes read), after the nearest remembered position
+    pub fn read_file_cached(&self, entry: &ShortEntry, cache: &mut ChainCache, offset: u64,
+                            buf: &mut [u8]) -> Result<usize, Errno> {
         if entry.is_dir() { return Err(Errno::Eisdir); }
         let size = u64::from(entry.size);
         if offset >= size { return Ok(0); }
         let want = core::cmp::min(buf.len() as u64, size - offset) as usize;
         if want == 0 { return Ok(0); }
-        // A zero-length file names no cluster at all, so there is nothing to
-        // walk; the early return above already covered it.
-        let clusters = chain::walk(&self.geo, &self.table, entry.cluster).map_err(chain_errno)?;
         let per = usize::try_from(self.geo.cluster_bytes()).map_err(|_| Errno::Einval)?;
         let mut scratch = vec![0u8; per];
         let mut done = 0usize;
         while done < want {
             let pos = offset + done as u64;
-            let index = usize::try_from(pos / per as u64).map_err(|_| Errno::Eio)?;
+            let index = u32::try_from(pos / per as u64).map_err(|_| Errno::Eio)?;
             let within = usize::try_from(pos % per as u64).map_err(|_| Errno::Eio)?;
             // The chain is shorter than the size claims: the entry and the
             // table disagree, and the table is the one that owns the data.
-            let cluster = *clusters.get(index).ok_or(Errno::Eio)?;
-            self.read_cluster(cluster, &mut scratch)?;
+            let Seek::At { dclus, .. } = get_cluster(&self.geo, &self.table, cache,
+                                                     entry.cluster, index)?
+                else { return Err(Errno::Eio) };
+            self.read_cluster(dclus, &mut scratch)?;
             let take = core::cmp::min(per - within, want - done);
             buf[done..done + take].copy_from_slice(&scratch[within..within + take]);
             done += take;
         }
         Ok(done)
+    }
+
+    /// Read without a remembered position, for a caller with no file to keep
+    /// one on. # C: O(offset + bytes read)
+    pub fn read_file(&self, entry: &ShortEntry, offset: u64, buf: &mut [u8])
+        -> Result<usize, Errno> {
+        let mut cache = ChainCache::new();
+        self.read_file_cached(entry, &mut cache, offset, buf)
     }
 
     /// Read a whole file. # C: O(file bytes)
@@ -236,190 +330,10 @@ impl<S: SectorSource> Volume<S> {
     }
 }
 
-impl<S: SectorSource> Volume<S> {
-    /// Whether this volume may be written — a question about the MEDIUM only.
-    ///
-    /// A volume its last owner left dirty is still written to. The reference
-    /// warns that it was not cleanly unmounted and that a check is due, then
-    /// mounts read-write anyway, and that is the usable behaviour: refusing
-    /// would leave a user unable to save anything to a stick that was pulled
-    /// once. The warning is the caller's to emit; [`Self::was_dirty`] is how
-    /// it knows. # C: O(1)
-    pub fn writable(&self) -> bool { self.source.writable() }
-
-    /// Was this volume left dirty by whoever had it last? # C: O(1)
-    pub fn was_dirty(&self) -> bool { self.dirty }
-
-    /// Free clusters on this volume, from the in-memory table. # C: O(clusters)
-    pub fn free_clusters(&self) -> u32 { crate::cluster_alloc::count_free(&self.geo, &self.table) }
-
-    /// One byte of the medium, for a caller checking what actually landed.
-    /// # C: O(1 sector)
-    pub fn source_bytes(&self, at: usize) -> u8 {
-        let sector = at as u64 / u64::from(self.geo.sector_size);
-        let within = at % self.geo.sector_size as usize;
-        let mut buf = vec![0u8; self.geo.sector_size as usize];
-        if self.source.read_sectors(sector, &mut buf).is_err() { return 0; }
-        buf[within]
-    }
-
-    /// Write one cluster's bytes. # C: O(cluster bytes)
-    fn write_cluster(&self, cluster: u32, buf: &[u8]) -> Result<(), Errno> {
-        let sector = self.geo.cluster_sector(cluster).ok_or(Errno::Eio)?;
-        self.source.write_sectors(u64::from(sector), buf)
-    }
-
-    /// Push the in-memory table to EVERY copy on the medium.
-    ///
-    /// All copies or none: a volume carrying two tables that disagree is one
-    /// every checker elsewhere reports, so a failure part-way through is
-    /// reported rather than swallowed.
-    /// # C: O(table bytes * copies)
-    pub fn flush_table(&self) -> Result<(), Errno> {
-        for start in crate::volstate::fat_copy_starts(&self.geo, self.fats) {
-            self.source.write_sectors(u64::from(start), &self.table)?;
-        }
-        Ok(())
-    }
-
-    /// Set or clear the volume's dirty flag on the medium.
-    ///
-    /// Marked before the first write and cleared at unmount, so a medium
-    /// pulled mid-write tells the next system that read it so.
-    ///
-    /// A volume ALREADY dirty is left alone, exactly as the reference leaves
-    /// it: the flag it carries is the one its last owner set, and clearing it
-    /// at this unmount would tell the next reader a check had happened when
-    /// none has.
-    /// # C: O(1 sector)
-    pub fn set_dirty(&self, dirty: bool) -> Result<(), Errno> {
-        if self.dirty { return Ok(()); }
-        let mut boot = vec![0u8; self.geo.sector_size as usize];
-        self.source.read_sectors(0, &mut boot)?;
-        crate::volstate::set_dirty(&mut boot, self.geo.width, dirty).ok_or(Errno::Eio)?;
-        self.source.write_sectors(0, &boot)
-    }
-
-    /// Rewrite one directory record in place.
-    ///
-    /// The record is written back where it was read from, which is what the
-    /// slot carried on every entry is for.
-    /// # C: O(cluster bytes)
-    fn write_dir_record(&self, dir: Option<u32>, slot: u64, record: &[u8; ENTRY_BYTES])
-        -> Result<(), Errno> {
-        let per = self.geo.cluster_bytes();
-        match dir {
-            None => {
-                // The fixed root is a flat region; the record's offset is its
-                // offset from the region's start.
-                let sector = u64::from(self.geo.dir_start) + slot / u64::from(self.geo.sector_size);
-                let within = usize::try_from(slot % u64::from(self.geo.sector_size)).map_err(|_| Errno::Eio)?;
-                let mut buf = vec![0u8; self.geo.sector_size as usize];
-                self.source.read_sectors(sector, &mut buf)?;
-                buf[within..within + ENTRY_BYTES].copy_from_slice(record);
-                self.source.write_sectors(sector, &buf)
-            }
-            Some(first) => {
-                let clusters = chain::walk(&self.geo, &self.table, first).map_err(chain_errno)?;
-                let index = usize::try_from(slot / per).map_err(|_| Errno::Eio)?;
-                let within = usize::try_from(slot % per).map_err(|_| Errno::Eio)?;
-                let cluster = *clusters.get(index).ok_or(Errno::Eio)?;
-                let mut buf = vec![0u8; usize::try_from(per).map_err(|_| Errno::Eio)?];
-                self.read_cluster(cluster, &mut buf)?;
-                buf[within..within + ENTRY_BYTES].copy_from_slice(record);
-                self.write_cluster(cluster, &buf)
-            }
-        }
-    }
-
-    /// Write `data` at `offset` in the file `hit` names, extending its chain
-    /// as needed and updating its directory record.
-    ///
-    /// Returns the file's new size. The order is chosen so that the states an
-    /// interrupted write can leave are ones a checker can repair: clusters are
-    /// claimed and the table written BEFORE any of the caller's bytes land in
-    /// them, and the directory record — which is what makes those bytes part
-    /// of the file — is written LAST. A file therefore never points at
-    /// clusters the table calls free; the reverse, clusters marked in use that
-    /// no file claims, is what `fsck` calls a lost chain and reclaims.
-    ///
-    /// This is ORDERING, not durability. Nothing here forces the device's own
-    /// cache, so a medium pulled mid-write can still have reordered what
-    /// reached it. The reference makes the same trade: FAT has no journal.
-    /// # C: O(bytes written)
-    pub fn write_file(&mut self, dir: Option<u32>, hit: &DirEntry, offset: u64, data: &[u8])
-        -> Result<u64, Errno> {
-        if !self.writable() { return Err(Errno::Erofs); }
-        if hit.entry.is_dir() { return Err(Errno::Eisdir); }
-        if data.is_empty() { return Ok(u64::from(hit.entry.size)); }
-        let per = self.geo.cluster_bytes();
-        let end = offset.checked_add(data.len() as u64).ok_or(Errno::Einval)?;
-        let need = usize::try_from(end.div_ceil(per)).map_err(|_| Errno::Einval)?;
-
-        let mut first = hit.entry.cluster;
-        let mut clusters = if first == 0 {
-            alloc::vec::Vec::new()
-        } else {
-            chain::walk(&self.geo, &self.table, first).map_err(chain_errno)?
-        };
-        if clusters.len() < need {
-            let want = need - clusters.len();
-            let hint = *clusters.last().unwrap_or(&0);
-            let more = crate::cluster_alloc::allocate(&self.geo, &mut self.table, hint, want,
-                                                      clusters.last().copied())?;
-            if clusters.is_empty() { first = more[0]; }
-            clusters.extend_from_slice(&more);
-            // The table reaches the medium before any byte does, so a
-            // half-written file never claims a cluster the table calls free.
-            self.flush_table()?;
-        }
-
-        let mut done = 0usize;
-        let mut scratch = vec![0u8; usize::try_from(per).map_err(|_| Errno::Einval)?];
-        while done < data.len() {
-            let pos = offset + done as u64;
-            let index = usize::try_from(pos / per).map_err(|_| Errno::Eio)?;
-            let within = usize::try_from(pos % per).map_err(|_| Errno::Eio)?;
-            let cluster = *clusters.get(index).ok_or(Errno::Eio)?;
-            let take = core::cmp::min(usize::try_from(per).map_err(|_| Errno::Eio)? - within,
-                                      data.len() - done);
-            // A partial cluster is read before it is written, so the bytes
-            // this write does not cover keep their old contents.
-            if take < scratch.len() { self.read_cluster(cluster, &mut scratch)?; }
-            scratch[within..within + take].copy_from_slice(&data[done..done + take]);
-            self.write_cluster(cluster, &scratch)?;
-            done += take;
-        }
-
-        let size = core::cmp::max(u64::from(hit.entry.size), end);
-        let mut updated = hit.entry;
-        updated.size = u32::try_from(size).map_err(|_| Errno::Efbig)?;
-        updated.cluster = first;
-        self.write_dir_record(dir, hit.slot, &dirent::encode_short(&updated))?;
-        Ok(size)
-    }
-
-    /// Release every cluster a file holds and zero its record's size and
-    /// first cluster — `truncate(2)` to nothing.
-    /// # C: O(chain length)
-    pub fn truncate_file(&mut self, dir: Option<u32>, hit: &DirEntry) -> Result<(), Errno> {
-        if !self.writable() { return Err(Errno::Erofs); }
-        if hit.entry.is_dir() { return Err(Errno::Eisdir); }
-        if hit.entry.cluster != 0 {
-            crate::cluster_alloc::free_chain(&self.geo, &mut self.table, hit.entry.cluster)?;
-            self.flush_table()?;
-        }
-        let mut updated = hit.entry;
-        updated.size = 0;
-        updated.cluster = 0;
-        self.write_dir_record(dir, hit.slot, &dirent::encode_short(&updated))
-    }
-}
-
 /// A chain failure, as an errno. Every one of them means the volume's own
 /// metadata is inconsistent, which is `EIO` rather than a bad request.
 /// # C: O(1)
-fn chain_errno(err: ChainError) -> Errno {
+pub(crate) fn chain_errno(err: ChainError) -> Errno {
     match err { ChainError::OutOfRange | ChainError::Cycle | ChainError::TableTooShort => Errno::Eio }
 }
 

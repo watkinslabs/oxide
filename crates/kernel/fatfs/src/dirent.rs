@@ -220,6 +220,18 @@ impl LongName {
     /// Discard any partial run. # C: O(1)
     pub fn reset(&mut self) { self.chars.clear(); self.active = false; }
 
+    /// Records the run in progress declared itself to occupy.
+    ///
+    /// Read BEFORE [`Self::take`], which discards the run. It is what a
+    /// DELETION needs: a name's slots and its short entry are removed
+    /// together, and a count taken from anywhere else can leave slots behind
+    /// that the next name to be created will skip past forever.
+    /// # C: O(1)
+    pub fn pending_slots(&self) -> usize {
+        if !self.active { return 0; }
+        self.chars.len() / CHARS_PER_SLOT
+    }
+
     /// Feed one long slot. # C: O(CHARS_PER_SLOT)
     pub fn push(&mut self, ordinal: u8, last: bool, checksum: u8, chars: &[u16; CHARS_PER_SLOT]) {
         if last {

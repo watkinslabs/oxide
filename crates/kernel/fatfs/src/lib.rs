@@ -17,7 +17,10 @@
 //! - `cluster_alloc`: changing that table: claiming, linking, releasing.
 //! - `fsinfo`:   the FAT32 information sector, and the free-cluster count.
 //! - `fatcache`: remembered chain positions, so a seek does not rewalk.
+//! - `attrs`:    the attribute byte, and the mode an entry presents as.
 //! - `volstate`: the dirty flag, and every copy of the table kept identical.
+//! - `namei`:    creating, deleting and renaming names, as pure decisions.
+//! - `opts`:     what a mount was asked for, and what it reports back.
 //! - `volume`:   a mounted volume: name resolution and file reads over the rest.
 //! - `ident`:    what an inode number is on a filesystem that has none.
 //! - `mount`:    the VFS-facing filesystem, its inodes and their operations.
@@ -37,7 +40,10 @@ pub mod chain;
 pub mod cluster_alloc;
 pub mod fsinfo;
 pub mod fatcache;
+pub mod attrs;
 pub mod volstate;
+pub mod namei;
+pub mod opts;
 pub mod volume;
 pub mod ident;
 pub mod mount;
@@ -46,6 +52,10 @@ pub use bpb::{Bpb, BpbError};
 pub use chain::{classify, clusters_for_size, read_entry, walk, ChainError, Link};
 pub use ident::{inode_number, location_of, DirLocation};
 pub use mount::{FatFs, MSDOS_SUPER_MAGIC};
+pub use namei::{build_group, dir_is_empty, dot_records, find_free_run, find_short, FreeRun, Group};
+pub use opts::{Options, MSDOS_NAME_MAX, VFAT_NAME_MAX};
+pub use volume::DirHandle;
+pub use attrs::{is_exec, make_attrs, make_mode};
 pub use cluster_alloc::{alloc_clusters, allocate, count_free, count_free_clusters, free_chain,
     free_chain_state, truncate_chain, truncate_chain_state, write_entry, NewCluster};
 pub use fsinfo::{FreeState, FsInfo};
