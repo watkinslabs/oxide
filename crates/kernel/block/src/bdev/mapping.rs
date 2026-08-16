@@ -29,8 +29,11 @@ use crate::types::{BlockError, KResult, PAGE_BYTES};
 pub(super) const PG: u64 = PAGE_BYTES as u64;
 
 /// Resident pages plus their writeback bookkeeping. One lock covers all three:
-/// a page, its dirty tag and its in-flight state change together, and no
-/// device I/O is issued while it is held (`06§3.6`).
+/// a page, its dirty tag and its in-flight state change together. It is a
+/// spinning lock, so nothing that can sleep runs inside it: no device I/O is
+/// issued while it is held, and no caller-supplied buffer is touched while it
+/// is held either — that copy normally lands in user memory and can fault
+/// (`06§3.6`).
 pub(super) struct MappingState {
     /// Resident pages, keyed by page index (Linux `mapping->i_pages`).
     pub(super) pages: BTreeMap<u64, Vec<u8>>,
@@ -160,13 +163,55 @@ impl BdevMapping {
         Some(core::cmp::min(len as u64, cap - off) as usize)
     }
 
+    /// Copy `out.len()` bytes of resident page `idx`, starting at `inner`, out
+    /// of the cache. The lock spans the page copy and nothing else.
+    /// # Lk: mapping lock
+    /// # Ctx: any
+    /// # Sleeps: no
+    /// # C: O(out.len())
+    fn stage_out(&self, idx: u64, inner: usize, out: &mut [u8]) -> KResult<()> {
+        let g = self.st.lock_bh::<crate::bh_gate::BlockBh>();
+        if self.dead.load(Ordering::Acquire) { return Err(BlockError::Eio); }
+        let page = g.pages.get(&idx).ok_or(BlockError::Eio)?;
+        out.copy_from_slice(&page[inner..inner + out.len()]);
+        Ok(())
+    }
+
+    /// Copy `src` into resident page `idx` at `inner` and tag it dirty. The
+    /// lock spans the page copy and its dirty tag together, per the
+    /// [`MappingState`] contract.
+    /// # Lk: mapping lock
+    /// # Ctx: any
+    /// # Sleeps: no
+    /// # C: O(src.len())
+    fn stage_in(&self, idx: u64, inner: usize, src: &[u8]) -> KResult<()> {
+        let mut g = self.st.lock_bh::<crate::bh_gate::BlockBh>();
+        if self.dead.load(Ordering::Acquire) { return Err(BlockError::Eio); }
+        let page = g.pages.get_mut(&idx).ok_or(BlockError::Eio)?;
+        page[inner..inner + src.len()].copy_from_slice(src);
+        g.dirty.set_dirty(idx);
+        Ok(())
+    }
+
     /// Cached `read(2)` on the block device (Linux `blkdev_read_iter` →
-    /// `filemap_read`): serve from resident pages, filling misses from the
-    /// medium. A read past the end is EOF (`0`), never an error.
+    /// `filemap_read`), handing each page's bytes to `sink` as
+    /// `(offset within the request, bytes)`.
+    ///
+    /// `sink` runs with NO mapping lock held, which is the whole reason this
+    /// shape exists: the caller's destination is normally a user address, so
+    /// the copy can take a fault, and resolving a fault can sleep. The
+    /// reference copies page-cache bytes out holding only a page REFERENCE —
+    /// never the page-tree lock — and reschedules voluntarily between pages.
+    /// A read past the end is EOF (`0`), never an error.
+    /// # Lk: mapping lock per page, dropped before `sink`
+    /// # Ctx: process
+    /// # Sleeps: yes (page fill, and whatever `sink` does)
     /// # C: O(len / PG) page fills
-    pub fn read_at(&self, off: u64, dst: &mut [u8]) -> KResult<usize> {
+    pub fn read_iter(&self, off: u64, len: usize,
+                     mut sink: impl FnMut(usize, &[u8]) -> KResult<()>) -> KResult<usize> {
         self.check_live()?;
-        let Some(len) = self.clamp(off, dst.len()) else { return Ok(0); };
+        let Some(len) = self.clamp(off, len) else { return Ok(0); };
+        let mut stage = vec![0u8; PAGE_BYTES];
         let mut done = 0usize;
         while done < len {
             let cur = off + done as u64;
@@ -174,24 +219,39 @@ impl BdevMapping {
             let inner = (cur % PG) as usize;
             let take = core::cmp::min(PAGE_BYTES - inner, len - done);
             self.resident(idx, false)?;
-            let g = self.st.lock_bh::<crate::bh_gate::BlockBh>();
-            if self.dead.load(Ordering::Acquire) { return Err(BlockError::Eio); }
-            let page = g.pages.get(&idx).ok_or(BlockError::Eio)?;
-            dst[done..done + take].copy_from_slice(&page[inner..inner + take]);
-            drop(g);
+            self.stage_out(idx, inner, &mut stage[..take])?;
+            sink(done, &stage[..take])?;
             done += take;
         }
         Ok(done)
+    }
+
+    /// [`Self::read_iter`] into a caller slice. # C: O(len / PG) page fills
+    pub fn read_at(&self, off: u64, dst: &mut [u8]) -> KResult<usize> {
+        let len = dst.len();
+        self.read_iter(off, len, |at, src| { dst[at..at + src.len()].copy_from_slice(src); Ok(()) })
     }
 
     /// Cached `write(2)` on the block device (Linux `blkdev_write_iter` →
     /// `iomap_file_buffered_write`): the bytes land in the cache and the page
     /// is tagged dirty. Nothing reaches the medium until writeback — which is
     /// what gives `sync(2)`'s device pass something to submit.
+    ///
+    /// `src` fills one page's worth of staging bytes with NO mapping lock
+    /// held, for the same reason [`Self::read_iter`]'s sink does: reading the
+    /// caller's source can fault, and a fault can sleep. The reference makes
+    /// the same statement the other way round — its in-place copy runs with
+    /// faults DISABLED and a short copy is retried after faulting the source
+    /// in outside the locked section.
+    /// # Lk: mapping lock per page, never across `src`
+    /// # Ctx: process
+    /// # Sleeps: yes (page fill, and whatever `src` does)
     /// # C: O(len / PG)
-    pub fn write_at(&self, off: u64, data: &[u8]) -> KResult<usize> {
+    pub fn write_iter(&self, off: u64, len: usize,
+                      mut src: impl FnMut(usize, &mut [u8]) -> KResult<()>) -> KResult<usize> {
         self.check_live()?;
-        let Some(len) = self.clamp(off, data.len()) else { return Ok(0); };
+        let Some(len) = self.clamp(off, len) else { return Ok(0); };
+        let mut stage = vec![0u8; PAGE_BYTES];
         let mut done = 0usize;
         while done < len {
             let cur = off + done as u64;
@@ -201,12 +261,8 @@ impl BdevMapping {
             // A full-page store within capacity needs no read-modify-write.
             let whole = take == PAGE_BYTES && (idx + 1) * PG <= self.size();
             self.resident(idx, whole)?;
-            let mut g = self.st.lock_bh::<crate::bh_gate::BlockBh>();
-            if self.dead.load(Ordering::Acquire) { return Err(BlockError::Eio); }
-            let page = g.pages.get_mut(&idx).ok_or(BlockError::Eio)?;
-            page[inner..inner + take].copy_from_slice(&data[done..done + take]);
-            g.dirty.set_dirty(idx);
-            drop(g);
+            src(done, &mut stage[..take])?;
+            self.stage_in(idx, inner, &stage[..take])?;
             done += take;
         }
         // A `write(2)` aimed straight at a block device is the caller's own
@@ -214,5 +270,10 @@ impl BdevMapping {
         // writeback actually submits the page.
         crate::task_io::account_write(done as u64);
         Ok(done)
+    }
+
+    /// [`Self::write_iter`] from a caller slice. # C: O(len / PG)
+    pub fn write_at(&self, off: u64, data: &[u8]) -> KResult<usize> {
+        self.write_iter(off, data.len(), |at, dst| { dst.copy_from_slice(&data[at..at + dst.len()]); Ok(()) })
     }
 }
