@@ -32,6 +32,8 @@ pub mod clock;
 pub mod cmdline;
 pub mod cputime;
 pub mod cpustat;
+#[cfg(target_os = "oxide-kernel")]
+pub mod cpufreq_hook;
 pub mod cputime_trace;
 /// Per-CPU software-event accumulators for CPU-context `perf_event_open`.
 pub mod perf_sw;
@@ -320,8 +322,13 @@ pub fn halt_forever() -> ! {
         // not read its silence as a wedge. Cleared the instant the park
         // returns, so everything else in this loop stays covered.
         diag::percpu::idle_enter();
-        #[cfg(target_arch = "x86_64")] hal_x86_64::halt();
-        #[cfg(target_arch = "aarch64")] hal_aarch64::halt();
+        // cpuidle owns the choice of how deeply to park and the residency
+        // accounting that follows; a machine whose platform published no state
+        // table has no driver registered and halts directly.
+        if !cpuidle::idle::enter_idle(cpustat::this_cpu(), posix_clock::TICK_NSEC) {
+            #[cfg(target_arch = "x86_64")] hal_x86_64::halt();
+            #[cfg(target_arch = "aarch64")] hal_aarch64::halt();
+        }
         diag::percpu::idle_exit();
     }
 }

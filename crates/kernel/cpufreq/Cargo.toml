@@ -1,0 +1,20 @@
+[package]
+name = "cpufreq"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+cpu     = { path = "../cpu" }
+kstrtox = { path = "../../shared/kstrtox" }
+sync    = { path = "../../shared/sync" }
+vfs     = { path = "../vfs" }
+
+[target.'cfg(target_os = "oxide-kernel")'.dependencies]
+timekeeper = { path = "../timekeeper" }
+
+[lints]
+workspace = true

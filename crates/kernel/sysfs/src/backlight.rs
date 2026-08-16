@@ -14,6 +14,7 @@ static CLASS: VirtualClass = VirtualClass {
     name: backlight::CLASS_NAME,
     devices: device_names,
     attrs: device_attrs,
+    links: no_links,
     show: device_show,
     store: device_store,
     uevent_env: device_uevent_env,
@@ -28,9 +29,12 @@ fn device_names() -> Vec<String> {
     backlight::devices().iter().map(|dev| String::from(dev.name())).collect()
 }
 
-fn device_attrs(name: &str) -> Option<Vec<(&'static str, u16)>> {
+fn no_links(_name: &str) -> Vec<(String, String)> { Vec::new() }
+
+fn device_attrs(name: &str) -> Option<Vec<(String, u16)>> {
     backlight::by_name(name)?;
-    Some(backlight::attrs::ATTRS.iter().map(|attr| (attr.name, attr.mode)).collect())
+    Some(backlight::attrs::ATTRS.iter()
+        .map(|attr| (String::from(attr.name), attr.mode)).collect())
 }
 
 fn device_show(name: &str, attr: &str) -> KResult<Vec<u8>> {

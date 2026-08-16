@@ -11,11 +11,19 @@
 // KEYSTONE struct-`Inode` model: each directory is a `vfs::Inode` whose
 // `i_op->lookup` + `i_fop->iterate` read the per-inode index off `i_private`;
 // leaf attributes are `dyn_file::make_owned_file` / `make_gen_file` inodes.
+//
+// Module manifest:
+// - `scaling`: the `cpufreq/` group and its `stats/` subgroup.
+// - `idle`: the `cpuidle/` group and its `state<M>/` subgroups.
+// - this file: the root, the per-CPU device dirs, and the topology group.
 #![cfg(target_os = "oxide-kernel")]
+
+pub mod scaling;
+pub mod idle;
 
 use alloc::string::String;
 use alloc::sync::Arc;
-const SYSCPU_DIR_MODE: u16 = 0o555;
+pub(crate) const SYSCPU_DIR_MODE: u16 = 0o555;
 /// Name prefix of a per-CPU device directory (`cpu0`, `cpu1`, …).
 const CPU_DIR_PREFIX: &str = "cpu";
 /// Per-CPU topology attribute group (Linux `topology_attr_group`).
@@ -123,6 +131,11 @@ fn cpu_n_lookup(c: usize, name: &str) -> KResult<InodeRef> {
         "online" => Ok(attr(crate::ids::CPU_ONLINE + c as Ino, String::from("1\n"))),
         "uevent" => Ok(attr(crate::ids::CPU_UEVENT + c as Ino, String::from("DRIVER=processor\n"))),
         CPU_TOPOLOGY_DIR => Ok(make_syscpu_topology(c)),
+        // The two power groups appear only where something published them: a
+        // machine with no scaling policy must not advertise an empty
+        // `cpufreq/`, which a governor daemon reads as a broken device.
+        scaling::DIR if scaling::present(c) => Ok(scaling::make_scaling_dir(c)),
+        idle::DIR if idle::present() => Ok(idle::make_idle_dir(c)),
         _ => Err(VfsError::Enoent),
     }
 }
@@ -139,8 +152,11 @@ impl FileOps for SysCpuNOps {
     fn can_poll(&self, _file: &vfs::File) -> bool { true }
     /// # C: O(N log N)
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
+        let d = inode.private::<SysCpuNInode>().ok_or(VfsError::Einval)?;
         let mut names = crate::readdir::typed(CPUN_FILES, FileType::Regular);
         names.push((String::from(CPU_TOPOLOGY_DIR), FileType::Directory));
+        if scaling::present(d.c) { names.push((String::from(scaling::DIR), FileType::Directory)); }
+        if idle::present() { names.push((String::from(idle::DIR), FileType::Directory)); }
         crate::readdir::emit_resolved(names, |n| inode.lookup(n).ok().map(|i| i.ino()), ctx)
     }
 }

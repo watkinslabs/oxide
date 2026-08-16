@@ -167,6 +167,46 @@ pub fn children_of(scope: &str, depth: usize) -> Vec<String> {
     .unwrap_or_default()
 }
 
+/// Absolute namespace paths of every thermal zone the firmware declares. A
+/// zone is its own namespace level rather than a device with an identifier, so
+/// the device scan cannot find one. # C: O(namespace)
+pub fn thermal_zones() -> Vec<String> {
+    aml_routes::with_namespace(|context| {
+        let mut zones = Vec::new();
+        let _ = context.namespace.traverse(|path, level| {
+            if level.typ == aml::LevelType::ThermalZone { zones.push(path.as_string()); }
+            Ok(true)
+        });
+        Some(zones)
+    })
+    .unwrap_or_default()
+}
+
+/// Absolute namespace paths of the devices a package of references names.
+///
+/// Firmware associates a cooling device with a trip point by listing it in a
+/// package of references; the elements arrive as names to be resolved against
+/// the declaring scope. An element the parser has already reduced to a value
+/// carries no path and is skipped, because binding by position instead would
+/// attach a fan to whichever trip happened to be listed alongside it.
+/// # C: O(AML)
+pub fn eval_reference_paths(scope: &str, name: &str) -> Vec<String> {
+    aml_routes::with_namespace(|context| {
+        let AmlValue::Package(entries) = eval(context, scope, name)? else { return None; };
+        let base = AmlName::from_str(scope).ok()?;
+        let mut paths = Vec::new();
+        for entry in entries.iter() {
+            let AmlValue::String(text) = entry else { continue; };
+            let Ok(relative) = AmlName::from_str(text) else { continue; };
+            if let Ok(resolved) = context.namespace.search_for_level(&relative, &base) {
+                paths.push(resolved.as_string());
+            }
+        }
+        Some(paths)
+    })
+    .unwrap_or_default()
+}
+
 /// Whether `scope` declares `name`. # C: O(AML)
 pub fn has_method(scope: &str, name: &str) -> bool {
     aml_routes::with_namespace(|context| {

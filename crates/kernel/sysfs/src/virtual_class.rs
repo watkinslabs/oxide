@@ -16,7 +16,7 @@ use alloc::vec::Vec;
 use vfs::{mk_mode, DirContext, FileOps, FileType, Ino, Inode, InodeBuilder, InodeOps, InodeRef,
           KResult, VfsError};
 
-use crate::kobject::{make_attr_inode, Attribute, SysfsOps};
+use crate::kobject::{make_named_attr_inode, SysfsOps};
 use crate::{DIR_PERM, RW_PERM};
 
 /// The class-specific half of the projection: how to enumerate devices, what
@@ -29,7 +29,13 @@ pub(crate) struct VirtualClass {
     /// Names of the currently registered devices.
     pub(crate) devices: fn() -> Vec<String>,
     /// Attribute files and modes for one device, or `None` when it is gone.
-    pub(crate) attrs: fn(&str) -> Option<Vec<(&'static str, u16)>>,
+    /// Owned names, because a class whose attribute set depends on what the
+    /// device declares cannot name them in a static table.
+    pub(crate) attrs: fn(&str) -> Option<Vec<(String, u16)>>,
+    /// Symlinks one device publishes, as `(name, target)` relative to the
+    /// device's own directory. A thermal zone links to each cooling device
+    /// bound to it this way.
+    pub(crate) links: fn(&str) -> Vec<(String, String)>,
     /// Render one attribute.
     pub(crate) show: fn(&str, &str) -> KResult<Vec<u8>>,
     /// Consume a write to one attribute.
@@ -129,10 +135,15 @@ impl InodeOps for DeviceDirOps {
                 data.class.ino_link,
             ));
         }
-        let (attr, mode) = attrs.into_iter().find(|(attr, _)| *attr == name)
+        if let Some((_, target)) = (data.class.links)(&data.device).into_iter()
+            .find(|(link, _)| link == name)
+        {
+            return Ok(crate::make_symlink_inode_ino(target.into_bytes(), data.class.ino_link));
+        }
+        let (attr, mode) = attrs.into_iter().find(|(attr, _)| attr == name)
             .ok_or(VfsError::Enoent)?;
-        Ok(make_attr_inode(
-            &Attribute { name: attr, mode },
+        Ok(make_named_attr_inode(
+            attr, mode,
             Arc::new(AttrOps { class: data.class, device: data.device.clone() }),
             data.class.ino_attr,
         ))
@@ -143,10 +154,13 @@ impl FileOps for DeviceDirOps {
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let data = inode.private::<DeviceDirData>().ok_or(VfsError::Einval)?;
         let attrs = (data.class.attrs)(&data.device).ok_or(VfsError::Enoent)?;
-        let mut entries: Vec<(&str, FileType)> = Vec::with_capacity(attrs.len() + 2);
+        let links = (data.class.links)(&data.device);
+        let mut entries: Vec<(&str, FileType)> =
+            Vec::with_capacity(attrs.len() + links.len() + 2);
         entries.push((UEVENT_ENTRY, FileType::Regular));
         entries.push((SUBSYSTEM_ENTRY, FileType::Symlink));
         for (attr, _) in attrs.iter() { entries.push((attr, FileType::Regular)); }
+        for (link, _) in links.iter() { entries.push((link, FileType::Symlink)); }
         crate::readdir::emit_table(inode, ctx, &entries)
     }
 }

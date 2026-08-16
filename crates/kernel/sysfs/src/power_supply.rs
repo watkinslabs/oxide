@@ -14,6 +14,7 @@ static CLASS: VirtualClass = VirtualClass {
     name: power_supply::CLASS_NAME,
     devices: supply_names,
     attrs: supply_attrs,
+    links: no_links,
     show: supply_show,
     store: supply_store,
     uevent_env: supply_uevent_env,
@@ -28,9 +29,12 @@ fn supply_names() -> Vec<String> {
     power_supply::supplies().iter().map(|psy| String::from(psy.name())).collect()
 }
 
-fn supply_attrs(name: &str) -> Option<Vec<(&'static str, u16)>> {
+fn no_links(_name: &str) -> Vec<(String, String)> { Vec::new() }
+
+fn supply_attrs(name: &str) -> Option<Vec<(String, u16)>> {
     let psy = power_supply::by_name(name)?;
-    Some(power_supply::attrs::visible_attrs(&psy))
+    Some(power_supply::attrs::visible_attrs(&psy).into_iter()
+        .map(|(attr, mode)| (String::from(attr), mode)).collect())
 }
 
 fn supply_show(name: &str, attr: &str) -> KResult<Vec<u8>> {

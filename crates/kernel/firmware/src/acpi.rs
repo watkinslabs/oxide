@@ -14,6 +14,7 @@
 // - `aml_eval`: namespace read side for the ACPI device drivers below.
 // - `battery`: control-method battery, published to the power-supply class.
 // - `ac`: AC adapter, published to the power-supply class.
+// - `thermal`: thermal zones, published to the thermal class.
 // - `video`: display brightness, published to the backlight class.
 
 pub use aml::{AmlError, RegionAccess, RegionAccessDirection, value::RegionSpace};
@@ -30,6 +31,7 @@ mod power_action;
 pub mod ac;
 pub mod aml_eval;
 pub mod battery;
+pub mod thermal;
 pub mod video;
 #[cfg(target_os = "oxide-kernel")]
 mod iort;

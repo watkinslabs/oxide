@@ -52,7 +52,7 @@ pub trait SysfsOps: Send + Sync {
 /// it represents. # C: n/a
 struct AttrFileData {
     ops:  Arc<dyn SysfsOps>,
-    name: &'static str,
+    name: alloc::string::String,
 }
 
 /// Sysfs attributes are regular-looking files whose writes are commands, not
@@ -83,7 +83,7 @@ impl FileOps for AttrFileOps {
     fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let d = inode.private::<AttrFileData>().ok_or(VfsError::Einval)?;
-        let body = d.ops.show(d.name)?;
+        let body = d.ops.show(&d.name)?;
         Ok(super::read_window(&body, off, buf))
     }
     fn read_file(&self, file: &File, off: u64, buf: &mut [u8]) -> KResult<usize> {
@@ -97,7 +97,7 @@ impl FileOps for AttrFileOps {
     }
     fn write(&self, inode: &Inode, _off: u64, buf: &[u8]) -> KResult<usize> {
         let d = inode.private::<AttrFileData>().ok_or(VfsError::Einval)?;
-        d.ops.store(d.name, buf)
+        d.ops.store(&d.name, buf)
     }
     fn on_open_file(&self, file: &File) -> KResult<()> {
         // A write-only sysfs attribute has no `show` method in Linux.  Do not
@@ -106,7 +106,7 @@ impl FileOps for AttrFileOps {
         // though a read is prohibited by the inode mode.
         if !file.f_mode().contains(vfs::Fmode::READ) { return Ok(()); }
         let d = file.inode().private::<AttrFileData>().ok_or(VfsError::Einval)?;
-        let body = Box::new(d.ops.show(d.name)?);
+        let body = Box::new(d.ops.show(&d.name)?);
         file.set_private_data(Box::into_raw(body) as u64);
         Ok(())
     }
@@ -123,8 +123,19 @@ impl FileOps for AttrFileOps {
 /// Build the attribute file inode for `attr` backed by `ops` (Linux
 /// `sysfs_add_file`). # C: O(1)
 pub fn make_attr_inode(attr: &Attribute, ops: Arc<dyn SysfsOps>, ino: Ino) -> InodeRef {
-    InodeBuilder::new(ino, mk_mode(FileType::Regular, attr.mode), Arc::new(AttrInodeOps), Arc::new(AttrFileOps))
-        .private(Arc::new(AttrFileData { ops, name: attr.name }))
+    make_named_attr_inode(alloc::string::String::from(attr.name), attr.mode, ops, ino)
+}
+
+/// Build an attribute file whose name is not known at compile time. A class
+/// whose attribute set depends on the device — a thermal zone publishes three
+/// attributes per declared trip point — cannot name them in a static table.
+/// # C: O(1)
+pub fn make_named_attr_inode(name: alloc::string::String, mode: u16, ops: Arc<dyn SysfsOps>,
+                             ino: Ino) -> InodeRef
+{
+    InodeBuilder::new(ino, mk_mode(FileType::Regular, mode), Arc::new(AttrInodeOps),
+                      Arc::new(AttrFileOps))
+        .private(Arc::new(AttrFileData { ops, name }))
         .build()
 }
 

@@ -133,6 +133,23 @@ must use grouped paths from day one.
     AML namespace: no other crate holds a parser handle, and `acpi::aml_eval`
     is the only read side of it.
 
+12. Power-management ownership: `crates/kernel/thermal` owns the thermal class
+    (zones, trips, cooling devices, governors, the polling cadence and the
+    attribute contract), `crates/kernel/cpufreq` owns frequency scaling (the
+    operating-point table, the policy with its limit aggregation, the
+    governors, the statistics) and `crates/kernel/cpuidle` owns idle-state
+    selection (the state table, the governors, the per-CPU accounting). All
+    three are leaves over `vfs`, `sync`, `kstrtox` and `cpu`; each carries a
+    kernel-only child for the one thing it cannot decide alone — thermal's
+    workqueue sweep, cpuidle's clock and generic halt driver, cpufreq's
+    scheduler hook. `crates/kernel/sysfs` projects the thermal class and
+    `crates/kernel/procfs` projects the two per-CPU trees under
+    `/sys/devices/system/cpu`. `crates/kernel/sched` calls into cpuidle from
+    its idle loop and feeds cpufreq the demand signal; neither may depend on
+    `sched` in a host build. `crates/kernel/firmware` owns the ACPI providers.
+    The terminal action for a critical thermal trip is installed by kernel
+    init, because a device class does not own powering the machine down.
+
 ## 6 Naming rules (frozen)
 
 1. Prefer explicit names over compressed abbreviations.
@@ -233,6 +250,9 @@ Temporary exceptions are allowed only with:
 
 - 2026-08-15: Added the power-supply and backlight device-class ownership
   boundaries, their ACPI providers under `firmware`, and `crates/shared/kstrtox`.
+- 2026-08-15: Added `crates/kernel/thermal`, `crates/kernel/cpufreq` and
+  `crates/kernel/cpuidle`, the ACPI thermal provider under `firmware`, and the
+  two scheduler entry points (idle-loop selection, demand signal).
 - 2026-08-01: Removed the `crates/user/*` layer — this repo builds no userspace;
   userland is Fedora RPMs composed by `../images` (`29a§2`).
 - 2026-07-29: Made `cgroup` the single owner of cgroup BPF attachment state;
