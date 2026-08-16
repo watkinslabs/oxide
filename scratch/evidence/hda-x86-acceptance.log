@@ -1,0 +1,25 @@
+# F1173 HD-Audio acceptance — x86_64, boot-smoke-hda.sh, PASS in 164s
+# QEMU: -device intel-hda,id=hda -device hda-duplex,bus=hda.0
+# Card 0 is virtio-snd; card 1 is the HD-Audio controller drv-hda claimed.
+
+===DONE_snd_ls===
+sh-5.2# test -c /dev/snd/controlC1 && echo hda-control-node-present; echo ===DONEE_snd_control1===
+hda-control-node-present
+===DONE_snd_control1===
+sh-5.2# test -c /dev/snd/pcmC1D0p && echo hda-playback-node-present; echo ===DONEE_snd_pcm1_play===
+hda-playback-node-present
+===DONE_snd_pcm1_play===
+sh-5.2# test -c /dev/snd/pcmC1D0c && echo hda-capture-node-present; echo ===DONE__snd_pcm1_cap===
+hda-capture-node-present
+===DONE_snd_pcm1_cap===
+; echo ===DONE_snd_class===[67.830] NetworkManager[154]: <warn>  [1786843929.5621] platform-linux: do-add-ip6-address[2: fe80::48cf:f7a0:237e:5a3b]: failure 97 (Address family not supported by protocol)
+===DONE_snd_class===
+sh-5.2# exec 7</dev/snd/controlC1 && echo hda-control-op[69.832] NetworkManager[154]: <warn>  [1786843931.5641] platform-linux: do-add-ip6-address[2: fe80::6e1b:b23f:c2f4:f8f6]: failure 97 (Address family not supported by protocol)
+en-ok && exec 7<&-; echo  ===DONE_snd_open===
+hda-control-open-ok
+===DONE_snd_open===
+hda-card-present
+
+# harness verdict:
+boot-smoke-hda: arch=x86 timeout=900s log=/tmp/oxide-hda-smoke-x86-7SS9dR.log
+boot-smoke-hda: PASS — x86 HD-Audio card enumerated (7 steps) in 164s
