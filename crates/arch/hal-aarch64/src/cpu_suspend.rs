@@ -256,6 +256,15 @@ unsafe fn clean_to_poc(va: u64, len: usize) {
 /// on the caller's stack and must not be reused until this returns.
 /// # C: O(sleep) — returns on wakeup.
 /// # Ctx: IRQ-off, single-CPU
+/// Virtual address of the resume entry symbol.
+///
+/// Routed through a pointer rather than casting the function item straight to
+/// an integer: the direct cast is denied repo-wide, and it is denied because a
+/// function item's cast target is inferred, so a narrower integer type silently
+/// truncates the address.
+/// # C: O(1)
+fn resume_entry_va() -> u64 { oxide_arm_resume_entry as *const () as u64 }
+
 pub unsafe fn system_suspend(support: SuspendSupport) -> Result<(), SuspendError> {
     let mut ctx = SuspendCtx::new();
     ctx.ttbr0_identity_pa = crate::smp::identity_ttbr0_pa();
@@ -263,7 +272,7 @@ pub unsafe fn system_suspend(support: SuspendSupport) -> Result<(), SuspendError
     ctx.self_va = ctx_va;
     // SAFETY: `ctx` is a live stack allocation in the kernel mapping, and the resume-entry symbol is linked into the kernel image; both are mapped VAs for AT S1E1R.
     let (ctx_pa, entry_pa) = unsafe {
-        (va_to_pa(ctx_va), va_to_pa(oxide_arm_resume_entry as usize as u64))
+        (va_to_pa(ctx_va), va_to_pa(resume_entry_va()))
     };
     ctx.self_pa = ctx_pa;
     if let Err(r) = preflight(support, entry_pa, ctx.ttbr0_identity_pa, ctx_pa) {
