@@ -572,6 +572,60 @@ Never again. Before writing ANY code for a ledger item / D-item / subsystem task
 7. **Delegated agents have no merge authority.** Only the primary/integration owner may create or merge a PR. A subagent must not run `gh pr merge` (or an equivalent API action), even for its own lane, and an instruction not to commit, push, create a PR, or merge is a hard boundary. Delegating implementation does not delegate integration authority.
 8. **A worktree belongs to its lane owner.** No agent may remove, prune, reset, or repurpose a worktree it did not create. The primary/integration owner may remove it only after the owning agent has handed it off or finished, `git status` confirms the exact worktree is clean, and the PR is merged (or the user explicitly abandoned the branch). Remove the worktree first, then delete its local branch.
 
+## A LANE IS NOT DONE UNTIL IT IS WIRED (HARD RULE)
+
+**Code that compiles and passes its own tests is not delivered work. It is
+delivered work when something in the running system CALLS it.** A lane that
+returns "complete, 113 tests green" while the feature it built is unreachable
+has produced a very well-tested subdirectory, and the user still cannot use the
+feature. This is the same defect class as `Machinery without callers` — the top
+defect class in this repo — arriving through the front door.
+
+Learned the expensive way, in one wave: six lanes built compression, casefold,
+a segment cleaner, orphan inodes, recovery and quota for f2fs. Every lane
+reported complete with hundreds of passing tests. Four of the six were dead
+code — `volume/io.rs` still answered `EOPNOTSUPP` for a compressed cluster,
+`features.rs` still refused a case-folded volume at mount, the cleaner was
+never called when the allocator ran out, and the checkpoint writer never wrote
+an orphan block. Every one of those lanes was *correct*; none of them did
+anything. The tests all passed because a lane's tests call the lane.
+
+**The orchestrator owns integration and does not get to delegate it.** Spawning
+the lanes is the cheap half. Applying the hooks, resolving the conflicts between
+them, and proving the feature is reachable is the work, and it is the
+orchestrator's — nobody else is positioned to do it, because no lane owns the
+call site.
+
+- **Never report a lane as complete on its own test count.** The lane's tests
+  prove the module works. They say nothing about whether the module is used.
+- **Prove reachability before claiming it.** Grep the call sites of the entry
+  point, from OUTSIDE the lane's own files and outside `#[cfg(test)]`. A module
+  whose only callers are its own tests is unwired, however green it is.
+- **Say the call site out loud.** A completion report names, per lane, the file
+  and function that reaches the new code. "Wired into `volume/io.rs::read_file`
+  at the `Mapped::Compressed` arm" is a claim that can be checked. "Lane
+  complete, 111 tests passing" is not.
+- **An integration test is the proof, not a unit test.** The test that would
+  have caught all four failures is one that drives the feature through the
+  interface the kernel actually uses, and there was none. Write it at the
+  boundary the lane crosses, in the integrating owner's files.
+- **A hook a lane reports is a task for the orchestrator, not a note.** Apply it
+  in the same session, re-run the whole suite, and run a positive control on the
+  hook itself — remove the call and confirm something goes red. A hook nobody
+  applies is a lane nobody shipped.
+- **Rows go in `scratch/known_issues.md` as they arrive, by the orchestrator.**
+  When lanes share one worktree they cannot each append to that file without
+  clobbering each other, so collecting rows and filing them is also the
+  orchestrator's job — done per lane on receipt, never batched to the end and
+  never left in a report. A row that exists only in an agent transcript does not
+  exist.
+
+**The completion bar for a fan-out:** every lane's hooks applied, the full suite
+green, a positive control per hook, the call site named for each, and the rows
+filed. Short of that the honest report is "built, not wired", with the
+unreachable features listed as such.
+
+
 ## NEVER WORK ON MAIN (HARD RULE)
 
 **Never work on `main`. Never commit to `main`. All work happens on a branch and
