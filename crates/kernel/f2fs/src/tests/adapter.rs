@@ -61,6 +61,28 @@ fn a_fixture_image_mounts_through_the_interface() {
     assert_eq!(vfs::fs::FileSystem::block_size(&*fs), BS);
 }
 
+/// Naming no option is not the same as taking the build-wide default set:
+/// the volume's own shape decides several of them, and a build-wide answer is
+/// wrong on some volume every time.
+#[test]
+fn a_mount_that_names_nothing_takes_the_volumes_defaults_not_the_builds() {
+    let dev = disk(&test_image::with_root().finish());
+    let can_discard = dev.supports_discard();
+    let fs = F2fs::open(dev, "/dev/fake").expect("mount");
+    let o = fs.options();
+    let build = Options::defaults();
+    // A volume this small runs out of whole free segments long before it runs
+    // out of space, so it reuses room inside a partly used one.
+    assert_eq!(o.alloc_mode, crate::opts::AllocMode::Reuse);
+    assert_ne!(o.alloc_mode, build.alloc_mode);
+    // Whether the device is told about freed blocks follows the DEVICE, not
+    // a build-wide guess.
+    assert_eq!(o.discard, can_discard);
+    // Merging flushes is a write-side optimisation and this mount cannot
+    // write.
+    assert!(!o.flush_merge);
+}
+
 #[test]
 fn a_mount_that_did_not_ask_to_write_is_not_writable() {
     let dev = disk(&test_image::with_root().finish());

@@ -13,6 +13,8 @@
 //! - `support`:  which policies may be used, and why each refusal exists.
 //! - `derive`:   every subkey the master key produces.
 //! - `contents`: file bytes under each mode, and the four IV rules.
+//! - `modes`:    the four modes beyond the AES pairings, against the
+//!               primitives driven directly.
 //! - `names`:    padding, name ciphertext, and the keyed directory hash.
 //! - `nokey`:    the name a locked directory shows, and finding it again.
 //! - `tree`:     inheritance, the same-policy rule, and symbolic links.
@@ -22,6 +24,7 @@
 #[path = "crypto/support.rs"] mod support;
 #[path = "crypto/derive.rs"] mod derive;
 #[path = "crypto/contents.rs"] mod contents;
+#[path = "crypto/modes.rs"] mod modes;
 #[path = "crypto/names.rs"] mod names;
 #[path = "crypto/nokey.rs"] mod nokey;
 #[path = "crypto/tree.rs"] mod tree;

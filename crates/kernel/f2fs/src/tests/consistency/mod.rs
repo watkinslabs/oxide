@@ -4,12 +4,14 @@
 //! - `mount`:   the clauses a fresh mount trips, one at a time.
 //! - `quota`:   the two accounting arrangements across a remount.
 //! - `remount`: what a running mount may and may not be reconfigured to.
+//! - `path`:    that the pass runs on every path a volume is mounted by.
 
 use super::*;
 
 mod mount;
 mod quota;
 mod remount;
+mod path;
 
 use crate::opts::facts::Facts;
 use crate::opts::{Options, Spec};

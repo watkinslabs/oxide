@@ -83,6 +83,10 @@ impl<S: SectorSource> Volume<S> {
             if f.ofs == marks::xattr_node_offset() { continue; }
             self.release_block(f.addr)?;
         }
+        // What this mount put back is a condition of the mount, not of the
+        // medium: a tool that came along afterwards would otherwise see a
+        // volume indistinguishable from one that came up clean.
+        self.sbi.recovered();
         self.dirty = true;
         self.commit()?;
         Ok(Recovery::Replayed(done))

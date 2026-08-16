@@ -129,9 +129,10 @@ impl Info {
     /// Bytes of one contents encryption unit. # C: O(1)
     pub fn data_unit_size(&self) -> usize { 1usize << self.du_bits }
 
-    /// The IV for data unit `index`. # C: O(1)
-    fn unit_iv(&self, index: u64) -> [u8; 16] {
-        iv::block_iv(&iv::generate(self.policy.flags, &self.nonce, self.ino, self.hashed_ino, index))
+    /// The IV for data unit `index`, at its widest; a narrow mode reads only
+    /// the low bytes of it. # C: O(1)
+    fn unit_iv(&self, index: u64) -> [u8; MAX_IV_SIZE] {
+        iv::generate(self.policy.flags, &self.nonce, self.ino, self.hashed_ino, index)
     }
 
     /// Encrypt one data unit of file contents in place.

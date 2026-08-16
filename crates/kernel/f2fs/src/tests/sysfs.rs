@@ -18,7 +18,7 @@ use crate::opts::Options;
 use crate::test_image;
 use crate::uapi::BLKSIZE;
 
-use super::{global_attrs, mount_attrs, mount_dir, status_word, GLOBAL_DIRS, SUBSYS};
+use super::{global_attrs, mount_attrs, mount_dir, GLOBAL_DIRS, SUBSYS};
 
 const BS: u32 = BLKSIZE as u32;
 
@@ -188,17 +188,32 @@ fn cp_status_is_the_checkpoints_flag_word_in_hex() {
 }
 
 /// The in-memory status word raises a bit per condition, at the bit position
-/// a reader decodes it by.
+/// a reader decodes it by — composed in ONE place, so there is one word to
+/// test rather than one per surface.
 #[test]
 fn the_status_word_raises_one_bit_per_live_condition() {
-    assert_eq!(status_word(false, false, false, false, 0), 0);
-    assert_eq!(status_word(true, false, false, false, 0), 1 << 0);
-    assert_eq!(status_word(false, false, false, false, crate::flags::CP_FSCK_FLAG), 1 << 2);
-    assert_eq!(status_word(false, true, false, false, 0), 1 << 3);
-    assert_eq!(status_word(false, false, false, true, 0), 1 << 8);
-    assert_eq!(status_word(false, false, true, false, 0), 1 << 15);
-    assert_eq!(status_word(true, true, true, true, crate::flags::CP_FSCK_FLAG),
-               (1 << 0) | (1 << 2) | (1 << 3) | (1 << 8) | (1 << 15));
+    use crate::sbflags::{bits, Derived, SbFlags};
+    let none = Derived::default();
+    assert_eq!(SbFlags::new().word(none), 0);
+    assert_eq!(SbFlags::new().word(Derived { dirty: true, ..none }), 1 << bits::IS_DIRTY);
+    assert_eq!(SbFlags::new().word(Derived { recovering: true, ..none }),
+               1 << bits::POR_DOING);
+    assert_eq!(SbFlags::new().word(Derived { quota_dirty: true, ..none }),
+               1 << bits::QUOTA_NEED_FLUSH);
+    let mut f = SbFlags::at_mount(crate::flags::CP_FSCK_FLAG);
+    assert_eq!(f.word(none), 1 << bits::NEED_FSCK);
+    f.disable_checkpoint(false);
+    f.recovered();
+    f.set_closing(true);
+    assert_eq!(f.word(Derived { dirty: true, recovering: true, quota_dirty: true }),
+               (1 << bits::IS_DIRTY) | (1 << bits::IS_CLOSE) | (1 << bits::NEED_FSCK)
+               | (1 << bits::POR_DOING) | (1 << bits::IS_RECOVERED)
+               | (1 << bits::CP_DISABLED) | (1 << bits::QUOTA_NEED_FLUSH));
+    f.set_closing(false);
+    assert_eq!(f.word(none) & (1 << bits::IS_CLOSE), 0);
+    // The latch is not lowered by anything: what this mount put back stays
+    // said.
+    assert_ne!(f.word(none) & (1 << bits::IS_RECOVERED), 0);
 }
 
 /// An ordinary read-write mount does NOT raise the "writable" bit.

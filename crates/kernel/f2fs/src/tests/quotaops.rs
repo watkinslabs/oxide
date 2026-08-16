@@ -111,6 +111,24 @@ fn a_record_set_through_the_interface_is_what_the_next_allocation_is_measured_ag
     assert!(v.is_dirty(), "a changed record left nothing for the checkpoint to write");
 }
 
+/// A record waiting for the next checkpoint is a condition the volume is in,
+/// and the status word says so. It is DERIVED from the outstanding records
+/// rather than stored beside them, so it cannot say "none" while some are
+/// waiting.
+#[test]
+fn an_outstanding_record_shows_in_the_condition_word() {
+    use crate::sbflags::bits::QUOTA_NEED_FLUSH;
+    let mut v = vol();
+    assert_eq!(v.sb_status() & (1 << QUOTA_NEED_FLUSH), 0, "nothing outstanding yet");
+    let mut d = v.quota_record(USRQUOTA, UID).unwrap();
+    d.bhardlimit = 16 * BLKSIZE as u64;
+    v.set_quota_record(USRQUOTA, UID, d).unwrap();
+    assert_ne!(v.sb_status() & (1 << QUOTA_NEED_FLUSH), 0);
+    // The checkpoint writes them, and the condition goes with them.
+    v.commit().unwrap();
+    assert_eq!(v.sb_status() & (1 << QUOTA_NEED_FLUSH), 0);
+}
+
 #[test]
 fn a_record_may_not_be_set_on_a_kind_the_volume_does_not_account() {
     let mut v = vol();
