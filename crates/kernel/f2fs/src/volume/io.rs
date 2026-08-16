@@ -73,7 +73,7 @@ impl<S: SectorSource> Volume<S> {
             let index = pos / BLKSIZE as u64;
             let skew = (pos % BLKSIZE as u64) as usize;
             let take = (BLKSIZE - skew).min(want - done);
-            match self.map_block(inode, ino, index)? {
+            match self.map_cluster_block(inode, ino, index)? {
                 // A hole in a verity file's DATA is not padding: the tree
                 // holds a hash for that block, and the zeroes a hole returns
                 // have to match it. Serving them unchecked would let an image
@@ -123,6 +123,37 @@ impl<S: SectorSource> Volume<S> {
             }
         }
         Ok(want)
+    }
+
+    /// Where a block lives, asked of its CLUSTER rather than of the block.
+    ///
+    /// Only the FIRST slot of a compressed cluster carries the sentinel. The
+    /// slots after it hold the compressed image, which are perfectly ordinary
+    /// addresses, so resolving one of those blocks on its own address hands
+    /// back a block of the IMAGE as if it were file content — plausible bytes,
+    /// no error anywhere, and only for a read that does not start at a cluster
+    /// boundary. A sequential read from the start of the file never asks,
+    /// because the sentinel it meets first serves the whole cluster, which is
+    /// why this survived: every read the tests did began at offset zero.
+    ///
+    /// A compressed file's clusters are not all compressed — one the file's
+    /// size stops part way through is stored plain — so the question is put to
+    /// the cluster's head rather than assumed from the inode's flag.
+    /// # C: O(indirection depth) blocks
+    fn map_cluster_block(&self, inode: &Inode, ino: u32, index: u64) -> Result<Mapped, Errno> {
+        if !inode.compressed() { return self.map_block(inode, ino, index); }
+        let g = crate::compress::Geometry::new(
+            inode.compress_algorithm,
+            inode.log_cluster_size,
+            inode.compress_flag,
+        )
+        .map_err(compress_errno)?;
+        let head = g.first_block(index);
+        if head == index { return self.map_block(inode, ino, index); }
+        if crate::node::is_compressed(self.stored_addr(inode, ino, head)?) {
+            return Ok(Mapped::Compressed);
+        }
+        self.map_block(inode, ino, index)
     }
 
     /// Unpack the compressed cluster that block `index` belongs to.

@@ -107,6 +107,13 @@ impl<S: SectorSource> Volume<S> {
         // Replay whatever an `fsync` promised since the last checkpoint,
         // before the mount is handed out — nothing may read the volume in the
         // state a crash left it in.
+        // A quota file the MOUNT named, rather than the superblock, is an
+        // ordinary entry in the volume's root and is resolved by a lookup
+        // like any other name — which is why it cannot happen until there is
+        // a volume to look it up in. A name that does not resolve leaves its
+        // kind unaccounted instead of failing the mount: refusing to mount
+        // over a missing quota file leaves nobody able to put one there.
+        vol.open_named_quota_files();
         // Before anything can allocate: a node id still owned by an
         // unreclaimed orphan handed to a new file would give two inodes one
         // number.

@@ -25,7 +25,7 @@ use syscall::errno::Errno;
 use sectors::SectorSource;
 
 use crate::node::Inode;
-use crate::uapi::{le64, BLKSIZE, COMPRESS_ADDR, I_BLOCKS, I_COMPR_BLOCKS, I_SIZE, NEW_ADDR,
+use crate::uapi::{BLKSIZE, COMPRESS_ADDR, I_BLOCKS, I_COMPR_BLOCKS, I_SIZE, NEW_ADDR,
                   NULL_ADDR, OFFSET_OF_END_OF_I_EXT};
 use crate::volume::dnode::{put64, Holder};
 use crate::volume::Volume;
@@ -81,10 +81,7 @@ impl<S: SectorSource> Volume<S> {
 
     /// The saved-block count the inode records. # C: O(1 block)
     pub fn compr_blocks(&self, ino: u32) -> Result<u64, Errno> {
-        let inode = self.read_inode(ino)?;
-        if !compr_blocks_fits(&inode) { return Ok(0); }
-        let block = self.inode_bytes(ino)?;
-        Ok(le64(&block, I_COMPR_BLOCKS).unwrap_or(0))
+        Ok(self.read_inode(ino)?.compr_blocks)
     }
 
     /// Write `data` into a compressed file at byte offset `off`.
@@ -151,6 +148,10 @@ impl<S: SectorSource> Volume<S> {
         let inode = self.read_inode(ino)?;
         let old = self.cluster_addrs(&inode, ino, g, first)?;
         let was = plan::compressed_extent(&old);
+        // Read BEFORE the slots move: between the move and the stamp the two
+        // counts describe different states of the file, and an inode read in
+        // that window is refused as inconsistent.
+        let cur = self.compr_blocks(ino)?;
         let stored = if plan::may_compress(first, g.blocks(), size, BLKSIZE) {
             compress_cluster(g, plainbytes).map_err(errno)?
         } else {
@@ -179,54 +180,86 @@ impl<S: SectorSource> Volume<S> {
                 (plan::plain(&live), plainbytes.to_vec(), None)
             }
         };
-        self.rebalance(ino, &old, &slots)?;
         self.lay_out(ino, first, &old, &slots, &payload)?;
-        let cur = self.compr_blocks(ino)?;
         let after = plan::compr_blocks_after(cur, g.blocks(), was, now);
-        self.stamp_compr_blocks(ino, after)
+        self.stamp_counts(ino, Some(after))
     }
 
-    /// Charge or refund the difference in slots the file owns.
+    /// Record the blocks the file holds and the saving it records, TOGETHER.
     ///
-    /// Before anything is written: a refusal after the blocks are allocated
-    /// leaves them charged to nobody and the file pointing at them.
-    /// # C: O(cluster blocks)
-    fn rebalance(&mut self, ino: u32, old: &[u32], slots: &[Slot]) -> Result<(), Errno> {
-        let before = plan::cluster_blocks(old) as u64;
-        let after = slots.iter().filter(|s| s.owned()).count() as u64;
-        if after > before { return self.charge_space(ino, (after - before) * BLKSIZE as u64); }
-        if before > after { return self.uncharge_space(ino, (before - after) * BLKSIZE as u64); }
-        Ok(())
+    /// The saving is bounded by the block count, so the pair is only ever
+    /// consistent as a pair. Written one at a time, whichever moves first
+    /// leaves the inode describing a file whose saving is larger than the
+    /// blocks it holds — and the very next read of that inode, including the
+    /// read the second stamp itself does, refuses it.
+    /// # C: O(file blocks)
+    fn stamp_counts(&mut self, ino: u32, compr: Option<u64>) -> Result<(), Errno> {
+        let blocks = self.count_blocks(ino)?;
+        let fits = compr_blocks_fits(&self.read_inode(ino)?);
+        self.stamp_inode(ino, |b| {
+            b[I_BLOCKS..I_BLOCKS + 8].copy_from_slice(&blocks.max(1).to_le_bytes());
+            if let (Some(n), true) = (compr, fits) { put64(b, I_COMPR_BLOCKS, n); }
+        })
     }
 
     /// Write the payload blocks and record every slot's new address.
+    ///
+    /// Three kinds of thing can sit in a slot and each is accounted its own
+    /// way. A real block holds a bit in the segment table, a block of the
+    /// volume's count and a block of the owner's quota. A MARK — the sentinel
+    /// or a reservation — holds none of the first and none of the last: it
+    /// names no block on the medium, so it sets no bit and costs no quota, but
+    /// it does hold the volume's count, because the write it is holding room
+    /// for has to find a block somewhere. An empty slot holds nothing.
+    ///
+    /// Getting the mark wrong in either direction is silent: released as if it
+    /// were a block, it lowers a count nothing raised and looks up a segment
+    /// that does not exist; not released at all, it leaks the count for the
+    /// life of the volume.
     /// # C: O(cluster bytes)
     fn lay_out(&mut self, ino: u32, first: u64, old: &[u32], slots: &[Slot], payload: &[u8])
         -> Result<(), Errno> {
+        // Quota is charged for the blocks the cluster is about to GAIN before
+        // any of them is allocated: a refusal afterwards would leave them
+        // charged to nobody and the file pointing at them.
+        let gained = slots
+            .iter()
+            .enumerate()
+            .filter(|(i, s)| matches!(s, Slot::Data(_)) && !holds_block(old[*i]))
+            .count() as u64;
+        if gained > 0 { self.charge_space(ino, gained * BLKSIZE as u64)?; }
         for (i, slot) in slots.iter().enumerate() {
+            let was = old[i];
+            let target = match slot {
+                Slot::Sentinel => COMPRESS_ADDR,
+                Slot::Reserved => NEW_ADDR,
+                Slot::Hole => NULL_ADDR,
+                Slot::Data(_) => NULL_ADDR,
+            };
+            // A slot that is not changing is left alone entirely: reaching for
+            // its node would CREATE the node a sparse file does not have.
+            if !matches!(slot, Slot::Data(_)) && target == was { continue; }
             let (holder, ofs) = self.dnode_for_write(ino, first + i as u64)?;
-            // The sentinel is a mark, not a block: handing it to the allocator
-            // as the address being replaced looks up a segment that does not
-            // exist.
-            let old_block = if old[i] == COMPRESS_ADDR { NULL_ADDR } else { old[i] };
             let addr = match slot {
-                Slot::Sentinel => {
-                    self.release_block(old_block)?;
-                    COMPRESS_ADDR
-                }
                 Slot::Data(n) => {
+                    if is_mark(was) { self.release_reservation(); }
                     let at = n * BLKSIZE;
                     let owner = match holder { Holder::Inode => ino, Holder::Direct(nid) => nid };
                     let page = payload.get(at..at + BLKSIZE).ok_or(Errno::Eio)?;
-                    self.write_data(owner, ofs as u16, false, old_block, page)?
+                    // Only a real block is handed to the allocator as the one
+                    // being replaced; a mark names no segment to clear.
+                    let carry = if holds_block(was) { was } else { NULL_ADDR };
+                    self.write_data(owner, ofs as u16, false, carry, page)?
                 }
-                Slot::Reserved => {
-                    self.release_block(old_block)?;
-                    NEW_ADDR
+                Slot::Sentinel | Slot::Reserved => {
+                    if holds_block(was) { self.release_slot(ino, was)?; }
+                    if !is_mark(was) { self.charge_reservation(); }
+                    target
                 }
                 Slot::Hole => {
-                    self.release_block(old_block)?;
-                    NULL_ADDR
+                    if holds_block(was) { self.release_slot(ino, was)?; }
+                    if is_mark(was) { self.release_reservation(); }
+                    target
                 }
             };
             self.set_holder_addr(ino, holder, ofs, addr)?;
@@ -277,60 +310,36 @@ impl<S: SectorSource> Volume<S> {
             let old = self.cluster_addrs(&inode, ino, g, first)?;
             if plan::cluster_blocks(&old) != 0 {
                 let was = plan::compressed_extent(&old);
-                let slots = vec![Slot::Hole; g.blocks()];
-                self.rebalance(ino, &old, &slots)?;
-                self.lay_out(ino, first, &old, &slots, &[])?;
                 let cur = self.compr_blocks(ino)?;
+                let slots = vec![Slot::Hole; g.blocks()];
+                self.lay_out(ino, first, &old, &slots, &[])?;
                 let after = plan::compr_blocks_after(cur, g.blocks(), was, None);
-                self.stamp_compr_blocks(ino, after)?;
+                self.stamp_counts(ino, Some(after))?;
             }
             at += span;
         }
         Ok(())
     }
 
-    /// The blocks a compressed file holds.
-    ///
-    /// The general count walks the address tree and skips the reservations a
-    /// compressed cluster leaves behind, because for every other kind of file
-    /// a reservation is a hole. Here they are space the file is charged for
-    /// and must be counted, or the recorded saving describes blocks the file
-    /// does not hold — which a checker reads as a corrupt inode.
-    /// # C: O(file blocks)
-    pub fn compressed_iblocks(&self, ino: u32) -> Result<u64, Errno> {
-        let inode = self.read_inode(ino)?;
-        let mut n = self.count_blocks(ino)?;
-        if inode.inline_data() { return Ok(n); }
-        let g = self.geometry(&inode)?;
-        let span = g.bytes() as u64;
-        let mut at = 0u64;
-        while at < inode.size {
-            let first = (at / span) * g.blocks() as u64;
-            let addrs = self.cluster_addrs(&inode, ino, &g, first)?;
-            n += addrs.iter().filter(|&&a| a == NEW_ADDR).count() as u64;
-            at += span;
-        }
-        Ok(n)
-    }
-
     /// Record the file's size and the blocks it now holds. # C: O(file blocks)
     fn stamp_size(&mut self, ino: u32, size: u64) -> Result<(), Errno> {
+        // The size goes down first: the block count is read back off the
+        // address tree, and the tree is what the size has to agree with.
         self.stamp_inode(ino, |b| put64(b, I_SIZE, size))?;
-        let blocks = self.compressed_iblocks(ino)?;
-        self.stamp_inode(ino, |b| {
-            put64(b, I_SIZE, size);
-            b[I_BLOCKS..I_BLOCKS + 8].copy_from_slice(&blocks.max(1).to_le_bytes());
-        })?;
+        self.stamp_counts(ino, None)?;
         self.refresh_extent(ino)
     }
-
-    /// Record the saved-block count, when the inode is wide enough to hold it.
-    /// # C: O(1 block)
-    fn stamp_compr_blocks(&mut self, ino: u32, n: u64) -> Result<(), Errno> {
-        if !compr_blocks_fits(&self.read_inode(ino)?) { return Ok(()); }
-        self.stamp_inode(ino, |b| put64(b, I_COMPR_BLOCKS, n))
-    }
 }
+
+/// Whether a slot names a block on the medium.
+///
+/// The sentinel and a reservation are MARKS: both occupy a slot and neither
+/// names a block, so neither has a bit in the segment table to clear.
+/// # C: O(1)
+fn is_mark(addr: u32) -> bool { addr == NEW_ADDR || addr == COMPRESS_ADDR }
+
+/// # C: O(1)
+fn holds_block(addr: u32) -> bool { addr != NULL_ADDR && !is_mark(addr) }
 
 /// Whether the inode's extra attributes reach the saved-block count.
 ///

@@ -52,6 +52,14 @@ pub struct Inode {
     pub log_cluster_size: u8,
     /// The checksum bit and the codec level, which the cluster reader needs.
     pub compress_flag: u16,
+    /// Blocks the file's compressed clusters did not need.
+    ///
+    /// A saving, not a count of anything stored: a compressed cluster is
+    /// charged the whole cluster and this says how much of that charge
+    /// compression has already made unnecessary. It is therefore bounded by
+    /// the block count, and an inode where it is not is one a checker has to
+    /// repair.
+    pub compr_blocks: u64,
 }
 
 impl Inode {
@@ -206,6 +214,7 @@ pub fn parse(block: &[u8], feature: u32) -> Option<Inode> {
         compress_algorithm: if fits(I_COMPRESS_FLAG, 2) { *block.get(I_COMPRESS_ALGORITHM)? } else { 0 },
         log_cluster_size: if fits(I_COMPRESS_FLAG, 2) { *block.get(I_LOG_CLUSTER_SIZE)? } else { 0 },
         compress_flag: if fits(I_COMPRESS_FLAG, 2) { le16(block, I_COMPRESS_FLAG)? } else { 0 },
+        compr_blocks: if fits(I_COMPR_BLOCKS, 8) { le64(block, I_COMPR_BLOCKS)? } else { 0 },
     })
 }
 
@@ -228,6 +237,39 @@ pub fn sanity(i: &Inode, ino: u32, feature: u32) -> Result<(), NodeError> {
         }
     }
     if i.inline_xattr_addrs > DEF_ADDRS_PER_INODE - i.extra_isize / 4 {
+        return Err(NodeError::Checksum);
+    }
+    compression(i, feature)?;
+    Ok(())
+}
+
+/// Whether a compressed inode's stored settings describe a file that can be
+/// read back.
+///
+/// Only asked of a volume that carries the feature and an inode wide enough to
+/// hold the fields: on any other volume those bytes are not compression
+/// settings at all, and reading them as such would reject inodes over the
+/// contents of some unrelated attribute.
+///
+/// The saving is checked against the block count because the two are written
+/// separately and a saving larger than the file is a count nothing can act on
+/// — the release that would hand those blocks back has none to hand back.
+/// # C: O(1)
+fn compression(i: &Inode, feature: u32) -> Result<(), NodeError> {
+    if !features::has_compression(feature) || !i.compressed() { return Ok(()); }
+    if I_COMPRESS_FLAG + 2 > OFFSET_OF_END_OF_I_EXT + i.extra_isize { return Ok(()); }
+    let Some(algorithm) = crate::compress::Algorithm::from_stored(i.compress_algorithm) else {
+        return Err(NodeError::Checksum);
+    };
+    if !crate::compress::policy::log_size_valid(i.log_cluster_size) {
+        return Err(NodeError::Checksum);
+    }
+    // A level a codec has no meaning for is a setting nothing can reproduce,
+    // so the file could not be rewritten the way it was written.
+    if !algorithm.level_valid(crate::compress::algo::level(i.compress_flag)) {
+        return Err(NodeError::Checksum);
+    }
+    if I_COMPR_BLOCKS + 8 <= OFFSET_OF_END_OF_I_EXT + i.extra_isize && i.compr_blocks > i.blocks {
         return Err(NodeError::Checksum);
     }
     Ok(())

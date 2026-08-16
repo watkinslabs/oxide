@@ -258,6 +258,11 @@ impl<S: SectorSource> Volume<S> {
                 // allocated: a directory that only ever grows never shrinks.
                 if area_is_empty(&area, &l) {
                     self.release_block(addr)?;
+                    // Charged to the directory's owner when the block was
+                    // first written, so a directory that shrinks has to give
+                    // that space back or it is paid for twice over a lifetime
+                    // of names arriving and leaving.
+                    self.uncharge_space(dir, BLKSIZE as u64)?;
                     let (holder, ofs) = self.dnode_for_write(dir, index)?;
                     self.set_holder_addr(dir, holder, ofs, NULL_ADDR)?;
                 } else {

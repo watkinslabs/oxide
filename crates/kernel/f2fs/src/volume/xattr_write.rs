@@ -115,6 +115,10 @@ impl<S: SectorSource> Volume<S> {
             self.write_node(nid, ino, xb, super::curseg::Kind::IndirectNode)?;
         } else if inode.xattr_nid != 0 {
             self.release_node(inode.xattr_nid)?;
+            // The attribute block was charged as space when it was written,
+            // so dropping it without giving that space back leaves the owner
+            // paying for a block nothing occupies.
+            self.uncharge_space(ino, BLKSIZE as u64)?;
         }
         let blocks = self.count_blocks(ino)?;
         self.stamp_inode(ino, |b| Self::set_iblocks(b, blocks))

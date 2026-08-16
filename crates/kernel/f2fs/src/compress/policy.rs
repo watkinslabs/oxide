@@ -19,6 +19,10 @@ use super::algo::{MAX_COMPRESS_LOG_SIZE, MIN_COMPRESS_LOG_SIZE};
 /// The wildcard entry, which matches every name. # C: O(1)
 pub const EXTENSION_ANY: &[u8] = b"*";
 
+/// The highest level Zstd names. Its floor is below zero and so below
+/// anything the stored byte can carry, which leaves zero inside the band.
+pub const ZSTD_MAX_LEVEL: u8 = 22;
+
 impl Algorithm {
     /// Whether this codec admits a level at all, and which.
     ///
@@ -26,11 +30,16 @@ impl Algorithm {
     /// carries no high-compression LZ4, so LZ4 takes level zero like the
     /// others; admitting a level it cannot honour would record a setting the
     /// file was not written with.
+    ///
+    /// Zstd's band runs from its own floor, which is below zero and so below
+    /// anything the stored byte can spell, up to its ceiling — which makes
+    /// level ZERO valid for it, the level a file written without asking for
+    /// one carries. Refusing that would reject an ordinary Zstd file.
     /// # C: O(1)
     pub fn level_valid(self, level: u8) -> bool {
         match self {
             Algorithm::Lzo | Algorithm::LzoRle | Algorithm::Lz4 => level == 0,
-            Algorithm::Zstd => (1..=22).contains(&level),
+            Algorithm::Zstd => level <= ZSTD_MAX_LEVEL,
         }
     }
 

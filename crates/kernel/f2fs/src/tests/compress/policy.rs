@@ -12,9 +12,11 @@ fn only_a_codec_with_a_high_compression_mode_takes_a_level() {
         assert!(a.level_valid(0), "{a:?}");
         for lvl in 1..=22u8 { assert!(!a.level_valid(lvl), "{a:?} level {lvl}"); }
     }
-    assert!(!Algorithm::Zstd.level_valid(0));
+    // Zstd's floor is below zero, so the level an unasked-for file carries is
+    // inside its band; refusing it would reject an ordinary Zstd file.
+    assert!(Algorithm::Zstd.level_valid(0));
     assert!(Algorithm::Zstd.level_valid(1) && Algorithm::Zstd.level_valid(22));
-    assert!(!Algorithm::Zstd.level_valid(23));
+    for lvl in 23..=255u8 { assert!(!Algorithm::Zstd.level_valid(lvl), "level {lvl}"); }
 }
 
 #[test]
@@ -48,7 +50,7 @@ fn settings_this_build_cannot_write_produce_no_context_at_all() {
     assert_eq!(context(COMPRESS_LZORLE, 8, true, 0), Some((COMPRESS_LZORLE, 8, 1)));
     // A codec this build cannot unpack, a level a codec has no meaning for,
     // and a width outside the format: each one is refused rather than stored.
-    assert_eq!(context(COMPRESS_ZSTD, 4, false, 3), None);
+    assert_eq!(context(COMPRESS_ZSTD, 4, false, 3), None, "no zstd encoder in this build");
     assert_eq!(context(COMPRESS_LZ4, 4, false, 3), None);
     assert_eq!(context(COMPRESS_LZ4, 1, false, 0), None);
     assert_eq!(context(9, 4, false, 0), None);
@@ -97,4 +99,115 @@ fn the_refusing_list_wins_over_the_allowing_one() {
     let any: [&[u8]; 1] = [b"*"];
     assert!(!wants_compression(b"a.log", &any, &refuse));
     assert!(wants_compression(b"a.bin", &any, &refuse));
+}
+
+// ---- what an inode's stored compression settings must satisfy -------------
+
+use crate::flags::{F2FS_COMPR_FL, FEATURE_COMPRESSION, FEATURE_EXTRA_ATTR};
+use crate::node::inode::{sanity, Inode};
+
+/// An inode carrying settings, wide enough to hold every one of them.
+/// # C: O(1)
+fn compressed_inode(algorithm: u8, log: u8, flag: u16, compr_blocks: u64) -> Inode {
+    Inode {
+        mode: crate::mode::S_IFREG | 0o644,
+        advise: 0,
+        inline: crate::flags::EXTRA_ATTR,
+        uid: 0,
+        gid: 0,
+        links: 1,
+        size: 0,
+        blocks: 8,
+        atime: (0, 0),
+        ctime: (0, 0),
+        mtime: (0, 0),
+        generation: 0,
+        current_depth: 0,
+        xattr_nid: 0,
+        flags: F2FS_COMPR_FL,
+        pino: 3,
+        dir_level: 0,
+        ext: (0, 0, 0),
+        extra_isize: crate::uapi::TOTAL_EXTRA_ATTR_SIZE,
+        inline_xattr_addrs: 0,
+        projid: 0,
+        inode_checksum: 0,
+        crtime: None,
+        compress_algorithm: algorithm,
+        log_cluster_size: log,
+        compress_flag: flag,
+        compr_blocks,
+    }
+}
+
+/// A volume that carries the compression feature, so an inode's compression
+/// fields ARE compression fields.
+const WITH: u32 = FEATURE_EXTRA_ATTR | FEATURE_COMPRESSION;
+/// The same volume without it, where those same bytes are something else.
+const WITHOUT: u32 = FEATURE_EXTRA_ATTR;
+
+#[test]
+fn a_compressed_inode_with_workable_settings_passes() {
+    for algo in [COMPRESS_LZO, COMPRESS_LZ4, COMPRESS_LZORLE] {
+        for log in 2u8..=8 {
+            assert_eq!(sanity(&compressed_inode(algo, log, 0, 4), 4, WITH), Ok(()), "{algo} {log}");
+        }
+    }
+    // Zstd is a codec the format names and this build cannot unpack, but the
+    // inode is still well formed: refusing it here would be a claim about the
+    // volume rather than about this build.
+    assert_eq!(sanity(&compressed_inode(COMPRESS_ZSTD, 4, 0, 4), 4, WITH), Ok(()));
+    assert_eq!(sanity(&compressed_inode(COMPRESS_ZSTD, 4, 7 << 8, 4), 4, WITH), Ok(()));
+}
+
+#[test]
+fn a_codec_number_the_format_does_not_name_is_refused() {
+    for algo in 4u8..=255 {
+        assert!(sanity(&compressed_inode(algo, 4, 0, 0), 4, WITH).is_err(), "codec {algo}");
+    }
+}
+
+#[test]
+fn a_cluster_width_outside_the_format_is_refused() {
+    for log in [0u8, 1, 9, 16, 255] {
+        assert!(sanity(&compressed_inode(COMPRESS_LZ4, log, 0, 0), 4, WITH).is_err(), "log {log}");
+    }
+}
+
+#[test]
+fn a_level_the_codec_has_no_meaning_for_is_refused() {
+    // Nothing could rewrite the file the way it was written.
+    for lvl in 1..=255u16 {
+        assert!(
+            sanity(&compressed_inode(COMPRESS_LZ4, 4, lvl << 8, 0), 4, WITH).is_err(),
+            "level {lvl}"
+        );
+    }
+    for lvl in 23..=255u16 {
+        assert!(sanity(&compressed_inode(COMPRESS_ZSTD, 4, lvl << 8, 0), 4, WITH).is_err());
+    }
+}
+
+#[test]
+fn a_saving_larger_than_the_file_is_refused() {
+    // The release that would hand those blocks back has none to hand back.
+    assert_eq!(sanity(&compressed_inode(COMPRESS_LZ4, 4, 0, 8), 4, WITH), Ok(()));
+    assert!(sanity(&compressed_inode(COMPRESS_LZ4, 4, 0, 9), 4, WITH).is_err());
+    assert!(sanity(&compressed_inode(COMPRESS_LZ4, 4, 0, u64::MAX), 4, WITH).is_err());
+}
+
+#[test]
+fn a_volume_without_the_feature_reads_those_bytes_as_something_else() {
+    // Without the feature they are not compression settings at all, so
+    // rejecting an inode over them would reject it over an unrelated field.
+    for algo in [9u8, 200] {
+        assert_eq!(sanity(&compressed_inode(algo, 0, 9 << 8, u64::MAX), 4, WITHOUT), Ok(()));
+    }
+}
+
+#[test]
+fn an_inode_without_the_flag_is_not_asked_about_its_settings() {
+    let mut i = compressed_inode(9, 0, 9 << 8, u64::MAX);
+    i.flags = 0;
+    assert_eq!(sanity(&i, 4, WITH), Ok(()));
 }

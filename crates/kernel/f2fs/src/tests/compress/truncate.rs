@@ -28,7 +28,11 @@ fn spec() -> NewInode {
 
 /// # C: O(1 image)
 fn with_compressed(log: u8) -> (Volume<MemImage>, u32) {
-    let mut v = test_image::with_root().mount_rw().unwrap();
+    let mut b = test_image::with_root();
+    // The volume must carry the feature, or the compression fields in an
+    // inode are not compression fields at all and nothing validates them.
+    b.feature |= crate::flags::FEATURE_COMPRESSION;
+    let mut v = b.mount_rw().unwrap();
     let ino = v.create(ROOT_INO, b"c", &spec(), None).unwrap();
     v.stamp_inode(ino, |b| {
         let f = le32(b, I_FLAGS).unwrap_or(0) | crate::flags::F2FS_COMPR_FL;

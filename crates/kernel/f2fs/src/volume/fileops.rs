@@ -42,7 +42,6 @@ impl<S: SectorSource> Volume<S> {
         if data.len() > MAX_IO_BYTES { return Err(Errno::Efbig); }
         if data.is_empty() { return Ok(0); }
         let inode = self.read_inode(ino)?;
-        if inode.compressed() { return Err(Errno::Eopnotsupp); }
         // Writing an encrypted file needs its key: the bytes that reach the
         // medium are ciphertext, and there is no plaintext form of a block on
         // an encrypted volume.
@@ -52,6 +51,17 @@ impl<S: SectorSource> Volume<S> {
         // to, so changing them would leave the attestation describing bytes
         // that are no longer there.
         crate::verity::access::open_write(inode.flags).map_err(crate::verity::access::errno)?;
+        // A compressed file is written a whole CLUSTER at a time, so it cannot
+        // go through the block-at-a-time path below at all. The two are not
+        // combinable here: a compressed cluster is encrypted as its stored
+        // IMAGE, which means the encryption has to happen inside the cluster
+        // writer rather than around it, and that writer does not do it yet.
+        // Refusing is the only honest answer — writing the image in the clear
+        // on an encrypted file would put the file's bytes on the medium.
+        if inode.compressed() {
+            if inode.encrypted() { return Err(Errno::Eopnotsupp); }
+            return self.write_compressed(ino, off, data);
+        }
         let end = off.checked_add(data.len() as u64).ok_or(Errno::Efbig)?;
         if inode.inline_data() {
             let (_, len) = inode.inline_data_span();
@@ -190,6 +200,12 @@ impl<S: SectorSource> Volume<S> {
         self.writable_or_err()?;
         let inode = self.read_inode(ino)?;
         crate::verity::access::truncate(inode.flags).map_err(crate::verity::access::errno)?;
+        // Blocks come off a compressed file a whole CLUSTER at a time: the
+        // cluster the new end falls inside holds one image rather than one
+        // block per block, so it is rewritten rather than shortened.
+        if inode.compressed() {
+            return self.truncate_compressed(ino, len);
+        }
         if inode.inline_data() {
             let (at, region) = inode.inline_data_span();
             let keep = (len as usize).min(region);
