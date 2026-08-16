@@ -102,6 +102,13 @@ pub fn cp_bytes(b: &Builder, version: u64) -> Vec<u8> {
     put64(&mut c, CP_USER_BLOCK_COUNT, u64::from(SEG_MAIN * BLKS_PER_SEG));
     put64(&mut c, CP_VALID_BLOCK_COUNT, b.valid_block_count);
     put32(&mut c, CP_FREE_SEGMENT_COUNT, SEG_MAIN - NR_CURSEG_PERSIST_TYPE as u32);
+    // A formatter always holds some of the main area back: over-provisioning
+    // so the volume never fills completely, and a reserve inside it that is
+    // the only place the cleaner can move live blocks to. A fixture with
+    // neither describes a volume no formatter produces, and the mount refuses
+    // it.
+    put32(&mut c, CP_OVERPROV_SEGMENT_COUNT, b.overprov_segments);
+    put32(&mut c, CP_RSVD_SEGMENT_COUNT, b.rsvd_segments);
     // Each log gets a segment of its own, the way a formatter leaves them:
     // six logs sharing one segment would hand the same block to all six.
     for i in 0..NR_CURSEG_DATA_TYPE {

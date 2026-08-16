@@ -31,11 +31,19 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(chain length) blocks, one after a clean unmount
     pub fn recover_at_mount(&mut self) -> Result<Recovery, Errno> {
         if !self.opts.recovery {
-            // Asked not to replay. A chain is then dropped — but only a mount
-            // that cannot write may drop it, because a writable mount would go
-            // on to checkpoint over the blocks and destroy the evidence.
+            // Asked not to replay, by either of the two options that say so.
+            // The chain is DROPPED, and on a writable mount the next
+            // checkpoint writes over its blocks — which is what the option is
+            // for, not an accident of it.
+            //
+            // The two are not the same request and are not conflated here.
+            // `disable_roll_forward` is legal on a writable mount and this is
+            // its whole effect; `norecovery` additionally demands a mount that
+            // cannot write, and that demand is settled by the option pass
+            // every mount runs, before anything reads a chain. Repeating it
+            // here would be a second answer to a question already answered —
+            // and a wrong one, since it would refuse the other option too.
             if !self.has_fsync_data()? { return Ok(Recovery::Clean); }
-            if self.writable { return Err(Errno::Einval); }
             return Ok(Recovery::Skipped);
         }
         if !self.writable {

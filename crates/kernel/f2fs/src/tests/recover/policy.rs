@@ -148,32 +148,90 @@ fn a_read_only_medium_without_a_chain_mounts() {
     assert_eq!(v.recover_at_mount().expect("mount hook"), Recovery::Clean);
 }
 
+/// The two options that suppress the replay are NOT the same request, and the
+/// difference is where each is settled.
+///
+/// `norecovery` demands a mount that cannot write, and the option pass every
+/// mount runs is what refuses it — before any chain is read, so the refusal
+/// does not depend on there being one.
 #[test]
-fn norecovery_refuses_a_writable_mount_over_a_chain() {
+fn norecovery_refuses_a_writable_mount_whether_or_not_there_is_a_chain() {
+    let opts = Options { recovery: false, norecovery: true, ..Options::defaults() };
     let (mut v, ino, _) = checkpointed(b"f");
     append_block(&mut v, ino, 0xEE, true);
-    let opts = Options { recovery: false, ..Options::defaults() };
-    assert_eq!(try_crash(v, true, opts).err(), Some(Errno::Einval),
-               "dropping a chain silently is not something a writable mount may do");
+    assert_eq!(try_crash(v, true, opts).err(), Some(Errno::Einval));
+    // Same answer on a volume with nothing to replay: it is the OPTION that
+    // is refused, not the chain.
+    let (v, _, _) = checkpointed(b"g");
+    let img = MemImage::from_bytes(BLKSIZE as u32, v.into_source().snapshot());
+    assert_eq!(Volume::mount_with(img, opts, true).err(), Some(Errno::Einval));
+}
+
+/// `disable_roll_forward` carries no such demand. It is legal on a writable
+/// mount and its whole effect is that the chain is dropped — refusing it
+/// would be refusing the option a caller reaches for precisely when it wants
+/// the tail gone.
+#[test]
+fn disable_roll_forward_drops_the_chain_on_a_writable_mount() {
+    let (mut v, ino, body) = checkpointed(b"f");
+    append_block(&mut v, ino, 0xEE, true);
+    let opts = Options { recovery: false, norecovery: false, ..Options::defaults() };
+    let mut v = try_crash(v, true, opts).expect("mount");
+    assert!(v.writable());
+    assert_eq!(v.recover_at_mount().expect("mount hook"), Recovery::Skipped);
+    // The file is as the last checkpoint left it: the tail is gone, which is
+    // what was asked for.
+    assert_eq!(whole(&v, ino), body);
 }
 
 #[test]
 fn norecovery_drops_the_chain_on_a_mount_that_cannot_write() {
     let (mut v, ino, body) = checkpointed(b"f");
     append_block(&mut v, ino, 0xEE, true);
-    let opts = Options { recovery: false, ..Options::defaults() };
+    let opts = Options { recovery: false, norecovery: true, ..Options::defaults() };
     let mut v = try_crash(v, false, opts).expect("mount");
     assert_eq!(v.recover_at_mount().expect("mount hook"), Recovery::Skipped);
     assert_eq!(whole(&v, ino), body);
 }
 
 #[test]
-fn norecovery_on_a_clean_volume_is_not_an_error() {
+fn disable_roll_forward_on_a_clean_volume_is_not_an_error() {
     let (v, _, _) = checkpointed(b"f");
     let opts = Options { recovery: false, ..Options::defaults() };
     let img = MemImage::from_bytes(BLKSIZE as u32, v.into_source().snapshot());
     let mut v = Volume::mount_with(img, opts, true).expect("mount");
     assert_eq!(v.recover_at_mount().expect("mount hook"), Recovery::Clean);
+}
+
+/// A mount that put a chain back says so in its condition word, and keeps
+/// saying it: a tool reading the word afterwards must be able to tell such a
+/// mount from one that came up clean.
+#[test]
+fn a_mount_that_replayed_a_chain_says_so_in_its_condition_word() {
+    use crate::sbflags::bits::IS_RECOVERED;
+    let (mut v, ino, _) = checkpointed(b"f");
+    append_block(&mut v, ino, 0xEE, true);
+    // The mount runs the replay itself, so the volume it hands back is one
+    // that has already recovered.
+    let mut v = crash(v);
+    assert_ne!(v.sb_status() & (1 << IS_RECOVERED), 0);
+    // A latch: a checkpoint written afterwards does not retire it.
+    v.commit().expect("commit");
+    assert_ne!(v.sb_status() & (1 << IS_RECOVERED), 0);
+    // And the NEXT mount, which put nothing back, does not inherit it.
+    let again = crash(v);
+    assert_eq!(again.sb_status() & (1 << IS_RECOVERED), 0);
+}
+
+/// A mount with nothing to put back does not claim it recovered anything.
+#[test]
+fn a_clean_mount_does_not_claim_a_recovery() {
+    use crate::sbflags::bits::IS_RECOVERED;
+    let (v, _, _) = checkpointed(b"f");
+    let mut v = crash(v);
+    assert_eq!(v.recover_at_mount().expect("hook"), Recovery::Clean);
+    assert_eq!(v.sb_status() & (1 << IS_RECOVERED), 0);
+    let _ = &mut v;
 }
 
 // ------------------------------------------------------------ what was walked

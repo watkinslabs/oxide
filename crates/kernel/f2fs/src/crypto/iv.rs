@@ -13,8 +13,8 @@
 //!   number to the index and wraps at 32 bits — hardware that cannot carry a
 //!   64-bit value needs the whole thing to fit in one word.
 //! - `DIRECT_KEY` shares the key across a mode, so the file's nonce travels in
-//!   the IV beside the index. That needs an IV at least 24 bytes wide, so no
-//!   mode this build carries can use it.
+//!   the IV beside the index. That needs an IV at least 24 bytes wide, which
+//!   only the two wide-block modes have.
 //!
 //! Every one of these produces a well-formed IV under the wrong rule; the
 //! symptom of choosing wrong is a file that decrypts to noise with no error.

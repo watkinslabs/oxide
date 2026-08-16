@@ -59,7 +59,28 @@ impl<S: SectorSource> Volume<S> {
         let devs = crate::devices::DevTable::scan(&sb);
         let zoned = zone_geometry(&sb, &opts, reports)?;
         let writable = want_write && access == Access::ReadWrite && source.writable();
+        // Whether the option set and THIS volume can both be true. Every mount
+        // reaches here, including the ones handed an already-resolved set, so
+        // this is the one place the pair is guaranteed to be checked — a caller
+        // that assembled options itself cannot mount a volume that cannot
+        // honour them.
+        //
+        // The spec is empty because nothing here knows what a line NAMED: the
+        // clauses that silently correct a named value have already run on the
+        // path that parsed one, and with nothing named they are vacuous. What
+        // is left is exactly the checks over the resolved set.
+        //
+        // `mount_ro` is the SETTLED answer rather than the request: a volume
+        // whose features permit only reads has already been downgraded above
+        // rather than refused, so the read-only clauses read that downgrade.
+        let opts = check_mount_options(&sb, &opts, writable)?;
         let (cp, cp_raw) = read_checkpoint(&source, &sb)?;
+        // The figures a formatter wrote have to add up before anything acts on
+        // them. A volume with no reserve is the one that matters: substituting
+        // a floor of one would mount it, report a reserve it does not have,
+        // and leave the cleaner with nowhere to move live blocks the first
+        // time the volume filled.
+        checkpoint::sanity::check(&cp, &sb).map_err(|_| Errno::Einval)?;
         // Seeded from the checkpoint, then owned by the mount: the live flags
         // are what WRITE the checkpoint's, never the other way round, or a
         // clean checkpoint would retire a mark this mount is still raising.
@@ -156,6 +177,7 @@ impl<S: SectorSource> Volume<S> {
             atgc,
             counters: core::cell::RefCell::new(crate::stats::Counters::new()),
             atomic: alloc::collections::BTreeMap::new(),
+            ioprio_hint: alloc::collections::BTreeMap::new(),
             fault: crate::fault::Info::new(),
             devs,
             zoned,
@@ -224,6 +246,29 @@ impl<S: SectorSource> Volume<S> {
     pub fn set_writable(&mut self, want: bool) {
         self.writable = want && self.access == Access::ReadWrite && self.source.writable();
     }
+}
+
+/// Whether an option set and a volume can both be true, at the point every
+/// mount passes through.
+///
+/// `hw_support_discard` is the DEVICE's answer and is not reachable from a
+/// medium that exposes reads and writes only. It is read by one clause, and
+/// that clause is gated on the line having NAMED discard — which nothing has
+/// here — so the value below cannot change an answer.
+/// # C: O(1)
+fn check_mount_options(sb: &SuperBlock, opts: &Options, writable: bool)
+    -> Result<Options, Errno> {
+    let facts = crate::opts::Facts {
+        feature: sb.feature,
+        segment_count_main: sb.segment_count_main,
+        hw_support_discard: opts.discard,
+        mount_ro: !writable,
+    };
+    let mut o = *opts;
+    let mut spec = crate::opts::Spec::default();
+    let sbi = crate::consistency::Sbi::at_mount(facts, *opts);
+    crate::consistency::check_opt_consistency(&sbi, &mut o, &mut spec)?;
+    Ok(o)
 }
 
 /// What a volume's shape says about the defaults a mount of it should take.

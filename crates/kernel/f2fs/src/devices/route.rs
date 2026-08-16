@@ -97,9 +97,20 @@ impl<S: SectorSource> SectorSource for DeviceSet<S> {
     }
 
     fn write_sectors(&self, sector: u64, buf: &[u8]) -> Result<(), Errno> {
+        self.write_sectors_flags(sector, buf, block::RequestFlags::NONE)
+    }
+
+    /// Each member's piece of the write carries the whole write's hints.
+    ///
+    /// Spreading a volume across devices must not change how any of it is
+    /// queued: a write the filesystem marked urgent is urgent on every member
+    /// it lands on, and the piece that arrived unhinted would be the one the
+    /// whole write then waits for.
+    fn write_sectors_flags(&self, sector: u64, buf: &[u8], flags: block::RequestFlags)
+        -> Result<(), Errno> {
         for r in self.split(sector, buf.len())? {
             let m = self.members.get(r.member).ok_or(Errno::Eio)?;
-            m.write_sectors(r.local, &buf[r.at..r.at + r.len])?;
+            m.write_sectors_flags(r.local, &buf[r.at..r.at + r.len], flags)?;
         }
         Ok(())
     }

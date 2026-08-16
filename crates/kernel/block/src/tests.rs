@@ -310,7 +310,7 @@ fn an_explicit_request_priority_survives_the_registry_submit_path() {
     let disk = crate::registry::by_name("prio-explicit").expect("registered disk");
     let want = sched::ioprio::prio_value(sched::ioprio::CLASS_RT, 2);
     let mut req = BlockRequest { op: BlockOp::Read, start_block: 0, len_blocks: 1,
-        buffer: vec![0u8; 512], ioprio: want, polled: false };
+        buffer: vec![0u8; 512], ioprio: want, ..BlockRequest::default() };
     disk.dev.submit_sync(&mut req).unwrap();
     // The submission path must not overwrite a priority its caller chose.
     assert_eq!(spy.seen.lock().as_slice(), &[want]);

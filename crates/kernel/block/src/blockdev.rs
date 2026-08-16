@@ -27,6 +27,14 @@ pub struct BlockRequest {
     /// effective priority when it is still unset, and read by the queue when
     /// it has to choose which of several waiting requests to start next.
     pub ioprio:       i32,
+    /// What the submitter said about this request beyond the operation: that
+    /// it carries metadata, that it should be boosted ahead of its stream.
+    ///
+    /// A SEPARATE axis from `ioprio`. That field is the submitting task's
+    /// priority class, which the whole task's I/O shares; this word is about
+    /// this one request. A submitter that folded a per-request hint into the
+    /// class would move every other request the task issues along with it.
+    pub flags:        crate::flags::RequestFlags,
     /// This request's completion will be REAPED BY A POLLER, so a driver with
     /// a separate interrupt-free queue must issue it there. Set by the direct
     /// submission path a polled ring drives, and by nothing else: a request
@@ -41,7 +49,8 @@ impl Default for BlockRequest {
     /// the request grows.
     /// # C: O(1)
     fn default() -> Self {
-        Self { op: BlockOp::Read, start_block: 0, len_blocks: 0, buffer: Vec::new(), ioprio: sched::ioprio::DEFAULT, polled: false }
+        Self { op: BlockOp::Read, start_block: 0, len_blocks: 0, buffer: Vec::new(), ioprio: sched::ioprio::DEFAULT,
+               flags: crate::flags::RequestFlags::NONE, polled: false }
     }
 }
 
@@ -69,6 +78,16 @@ impl BlockRequest {
     /// # C: O(1)
     pub fn new_write(start_block: u64, len_blocks: u32, buffer: Vec<u8>) -> Self {
         Self { op: BlockOp::Write, start_block, len_blocks, buffer, ..Default::default() }
+    }
+
+    /// The same request with `flags` also set on it.
+    ///
+    /// Additive rather than assigning, so a submitter that adds one hint does
+    /// not silently drop one a layer below it already asked for.
+    /// # C: O(1)
+    pub fn with_flags(mut self, flags: crate::flags::RequestFlags) -> Self {
+        self.flags |= flags;
+        self
     }
 
     /// Construct a Linux `WRITE_ZEROES` request. The operation has no data

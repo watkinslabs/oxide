@@ -8,6 +8,8 @@
 // a host-managed drive; every other driver takes the `None` default.
 // `completion.rs` — shared BlockIo softirq completion-handler registry.
 // `elevator.rs` — I/O-priority dispatch order for requests that had to wait.
+// `flags.rs` — the per-request op-flag word: what a submitter says about one
+// request beyond its operation, and the predicate a queue reads it through.
 // `pagecache.rs` — `PageCache` (sync `read_page` / `write_page` /
 // `fsync` / `invalidate`); `CachedPage` with `PG_*` flags.
 // `bdev.rs` — the BLOCK-DEVICE page cache: the address space a raw
@@ -33,6 +35,7 @@ pub mod completion;
 pub mod devbridge;
 pub mod direct;
 pub mod elevator;
+pub mod flags;
 pub mod pagecache;
 pub mod partitions;
 pub mod queue_limits;
@@ -45,6 +48,7 @@ pub mod zoned;
 
 pub use bdev::{sync_bdevs, BdevMapping};
 pub use blockdev::{BlockCompletion, BlockDevice, BlockRequest, MemDisk};
+pub use flags::RequestFlags;
 pub use pagecache::{CachedPage, PageCache};
 pub use queue_limits::{QueueFeatures, QueueLimits, LINUX_SECTOR_BYTES, MAX_DISCARD_SECTORS};
 pub use registry::{Disk, Partition, ScsiDiskName, register, unregister, by_name, by_index, partition_by_dev, partition_by_label, partition_by_name, partition_by_uuid, partition_by_uuid_offset, rescan_partitions, reserve_scsi_disk_name, snapshot, start_deferred_partition_scans};

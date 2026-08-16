@@ -30,9 +30,9 @@ pub fn vol_facts<S: SectorSource>(v: &Volume<S>) -> VolFacts {
         checkpoint_ready: cp.flags & crate::flags::CP_DISABLED_FLAG == 0
             || v.space().free > 0,
         supports_discard: v.discards(),
-        // A volume spanning more than one device is refused at mount, so a
-        // mounted one always spans exactly one.
-        device_count: 1,
+        // One entry per member, and a volume that names none still has one,
+        // so this is never zero.
+        device_count: u32::try_from(v.devices().len()).unwrap_or(u32::MAX),
         large_section: sb.segs_per_sec > 1,
         compress_mode_user: v.options().compress_mode == crate::opts::CompressMode::User,
         compress_backend_ready: true,
@@ -65,9 +65,10 @@ pub fn file_facts(i: &Inode) -> FileFacts {
         encrypted: i.encrypted(),
         immutable: i.flags & F2FS_IMMUTABLE_FL != 0,
         append_only: i.flags & F2FS_APPEND_FL != 0,
-        // A volume carrying the device-alias feature is refused at mount, so
-        // no mounted inode can be one.
-        device_alias: false,
+        // The flag alone, as the reference reads it. Whether the extent it
+        // carries matches a real member is settled when the inode is read;
+        // one that does not is never handed out.
+        device_alias: crate::devices::alias::is_alias(i.flags),
         no_extent: false,
         inline_data: i.inline_data(),
     }
