@@ -142,54 +142,6 @@ fn caller_fsids() -> (u32, u32) {
     }
 }
 
-/// Publish one f2fs mount's `/proc/fs/f2fs/<dev>` and `/sys/fs/f2fs/<dev>`
-/// surfaces.
-///
-/// The reference claims the two subsystem directories in its module init and
-/// publishes the per-mount half when the superblock is registered. There is no
-/// module init here, so the claim happens once, on the first mount.
-/// # C: O(attributes)
-fn f2fs_publish_surfaces(fs: &Arc<f2fs::F2fs>) {
-    use f2fs::{procfs as f2p, sysfs as f2s};
-    if !sysfs::fs_subsys::is_claimed(f2s::SUBSYS) {
-        let _ = sysfs::fs_subsys::claim(f2s::SUBSYS);
-        for d in f2s::GLOBAL_DIRS { let _ = sysfs::fs_subsys::publish_dir(f2s::SUBSYS, d); }
-        for a in f2s::global_attrs() {
-            let _ = sysfs::fs_subsys::publish_attr(f2s::SUBSYS, &a.dir, a.name, a.mode,
-                                                   a.show, a.store);
-        }
-    }
-    if !procfs::fs_dir::is_claimed(f2p::FS_NAME) {
-        let _ = procfs::fs_dir::claim(f2p::FS_NAME);
-        // The status report is ONE file describing every mount, so it is
-        // claimed with the subsystem rather than per mount.
-        tracefs::register_debug_show(f2fs::stats::STATUS_PATH, f2fs::fsattr::RO,
-                                     f2fs::stats::status_show());
-    }
-    f2fs::fsattr::set_teardown(f2fs_withdraw_surfaces);
-    for a in f2s::mount_attrs(fs) {
-        let _ = sysfs::fs_subsys::publish_attr(f2s::SUBSYS, &a.dir, a.name, a.mode,
-                                               a.show, a.store);
-    }
-    for f in f2p::mount_files(fs) {
-        let _ = procfs::fs_dir::publish_file(f2p::FS_NAME, &f.dir, f.name, f.mode, f.show);
-    }
-    // The counters this mount accumulates are reported through the one status
-    // file; the volume lock is taken inside f2fs, so a reader of a debug file
-    // never decides how long the filesystem is held.
-    let me = Arc::clone(fs);
-    f2fs::stats::register(&f2s::mount_dir(fs.source()),
-                          Arc::new(move |i: usize| me.render_status(i)));
-}
-
-/// Withdraw one mount's surfaces at unmount: they report on a volume that no
-/// longer exists. # C: O(attributes)
-fn f2fs_withdraw_surfaces(dev: &str) {
-    let _ = sysfs::fs_subsys::withdraw(f2fs::sysfs::SUBSYS, dev);
-    let _ = procfs::fs_dir::withdraw(f2fs::procfs::FS_NAME, dev);
-    f2fs::stats::unregister(dev);
-}
-
 fn register_filesystems() {
     use vfs::fs::{superblock_from_filesystem, FsFlags, FsType, register_fs};
     type R = vfs::fs::KResult<Arc<vfs::SuperBlock>>;
@@ -197,6 +149,10 @@ fn register_filesystems() {
     // One-time: give the cgroup crate its view of the caller's cgroup namespace
     // so `nsdelegate` can be enforced.
     cgroup::state::set_cgroup_ns_root_hook(cgroup_ns_root_of_caller);
+
+    // ext4's reports. The publisher goes in before the type is registered, and
+    // publishing whatever mounted earlier is part of installing it.
+    super::fs_surfaces::install_ext4_publisher();
 
     // Every registered constructor funnels its `sb_flags` word through here:
     // Linux stamps `s_flags` in `alloc_super()`, so the flags a `mount -o
@@ -357,6 +313,7 @@ fn register_filesystems() {
         let opts = ntfs3::opts::parse(ntfs3::Options::defaults(), d)
             .map_err(ntfs3::mount::errno_to_vfs)?;
         let fs = ntfs3::NtfsFs::open_with(dev, source, write, opts)?;
+        super::fs_surfaces::ntfs3_publish_surfaces(&fs);
         let sb_flags = if fs.is_writable() { sb_flags } else { sb_flags | vfs::superblock::SB_RDONLY };
         let root = fs.root_inode()?;
         let fs: Arc<dyn vfs::fs::FileSystem> = fs;
@@ -377,7 +334,7 @@ fn register_filesystems() {
         let opts = f2fs::opts::parse(f2fs::Options::defaults(), d)
             .map_err(f2fs::errno_to_vfs)?;
         let fs = f2fs::F2fs::open_with(dev, source, write, opts)?;
-        f2fs_publish_surfaces(&fs);
+        super::fs_surfaces::f2fs_publish_surfaces(&fs);
         let sb_flags = if fs.is_writable() { sb_flags } else { sb_flags | vfs::superblock::SB_RDONLY };
         let root = fs.root_inode()?;
         let quota_fs = Arc::clone(&fs);
@@ -527,6 +484,7 @@ fn register_filesystems() {
                   _p: &[vfs::fs::FsParameter]| -> R {
             let source = source.ok_or(vfs::VfsError::Enoent)?;
             let fs = ::fs::ninep_fs::mount_9p(source, d, caller_fsuid())?;
+            super::fs_surfaces::ninep_claim_subsys();
             let root = fs.root_inode();
             let fs: Arc<dyn vfs::fs::FileSystem> = fs;
             mounted(ty, fs, Some(root), source, sb_flags)

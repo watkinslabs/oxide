@@ -56,6 +56,10 @@ pub(crate) fn report(st: &RootfsState, e: MountError) -> vfs::VfsError {
     if bad { log_error(&e); }
     let mapped = super::inode::regular::vfs_error_from_mount(e);
     if bad {
+        // The volume's own history, before anything is done about the error:
+        // `errors=panic` never returns, and an event the machine went down
+        // over is exactly the one worth having recorded.
+        st.mount.record_error(&e);
         act_on_error(st);
         vfs::fire_fs_error(watcher_fsid(st), None, mapped as i32);
     }

@@ -28,6 +28,6 @@ mod tree;
 #[cfg(test)]
 mod tests;
 
-pub use file::ShowFn;
+pub use file::{ShowFn, StoreFn};
 pub use tree::{claim, is_claimed, fs_names, names_in, proc_fs_root, proc_fs_inode, publish_dir,
                publish_file, release, withdraw};
