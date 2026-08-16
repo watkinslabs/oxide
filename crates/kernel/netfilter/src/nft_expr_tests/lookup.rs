@@ -1,3 +1,5 @@
+extern crate alloc;
+use alloc::vec::Vec;
 use super::*;
 
 fn build_lookup_rule(set_name: &str, invert: bool) -> Vec<u8> {

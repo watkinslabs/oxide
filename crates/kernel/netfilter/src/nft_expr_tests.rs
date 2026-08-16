@@ -1,4 +1,7 @@
 use super::*;
+extern crate alloc;
+use alloc::vec;
+use alloc::vec::Vec;
 
     fn nla(buf: &mut Vec<u8>, ty: u16, payload: &[u8]) {
         let total = 4 + payload.len();
@@ -49,7 +52,7 @@ use super::*;
     #[test]
     fn unsupported_expression_rejects_the_complete_rule() {
         let mut expr = Vec::new();
-        nla_str(&mut expr, NFTA_EXPR_NAME, "ct");
+        nla_str(&mut expr, NFTA_EXPR_NAME, "nosuchexpr");
         nla_nested(&mut expr, NFTA_EXPR_DATA, &[]);
         let mut rule = Vec::new();
         nla_nested(&mut rule, NFTA_LIST_ELEM, &expr);
@@ -72,10 +75,11 @@ use super::*;
     #[test]
     fn meta_mark_set_persists_for_policy_routing() {
         let exprs = vec![
-            Expr::Immediate { dreg: 1, verdict: None, value: 0x20u32.to_be_bytes().to_vec() },
+            Expr::Immediate { dreg: 1, verdict: None, chain: None,
+                              value: 0x20u32.to_ne_bytes().to_vec() },
             Expr::Meta { dreg: None, sreg: Some(1), key: NFT_META_MARK },
             Expr::Meta { dreg: Some(2), sreg: None, key: NFT_META_MARK },
-            Expr::Cmp { sreg: 2, op: NFT_CMP_EQ, data: 0x20u32.to_be_bytes().to_vec() },
+            Expr::Cmp { sreg: 2, op: NFT_CMP_EQ, data: 0x20u32.to_ne_bytes().to_vec() },
         ];
         let mut mark = 0;
         let mut packets = 0;
@@ -88,7 +92,7 @@ use super::*;
     #[test]
     fn parses_nft_meta_mark_set_expression() {
         let mut value = Vec::new();
-        nla(&mut value, NFTA_DATA_VALUE, &0x20u32.to_be_bytes());
+        nla(&mut value, NFTA_DATA_VALUE, &0x20u32.to_ne_bytes());
         let mut immediate_data = Vec::new();
         nla_u32_be(&mut immediate_data, NFTA_IMMEDIATE_DREG, 1);
         nla_nested(&mut immediate_data, NFTA_IMMEDIATE_DATA, &value);
@@ -201,6 +205,7 @@ use super::*;
 
     fn ipv4_pkt_proto(proto: u8) -> Vec<u8> {
         let mut p = vec![0u8; 20];
+        p[0] = 0x45;
         p[9] = proto;
         p
     }
