@@ -80,6 +80,7 @@ Authoritative index of every spec. Per `02§6`. Status changes update both file 
 | `57-vt-emulator.md` | DRAFT | — | `01`,`02`,`07`,`08`,`28`,`49`,`50`,`55` |
 | `58-virtio-snd.md` | FROZEN | 2026-06-12 | `01`,`02`,`07`,`15`,`16`,`18`,`19`,`22`,`34`,`35`,`50` |
 | `60-udev-kernel-contract.md` | DRAFT | — | `01`,`02`,`03`,`06`,`13`,`15`,`19`,`24`,`27`,`35`,`47` |
+| `67-host-share-filesystems.md` | DRAFT | — | `01`,`02`,`07`,`08`,`15`,`16`,`19`,`34`,`35`,`52`,`53` |
 | `61-hda-audio.md` | FROZEN | 2026-08-15 | `01`,`02`,`07`,`15`,`16`,`19`,`22`,`34`,`35`,`52`,`58` |
 | `62-removable-media-filesystems.md` | DRAFT | — | `01`,`02`,`07`,`08`,`09`,`16`,`17`,`52` |
 | `63-selinux-mac.md` | DRAFT | — | `01`,`02`,`06`,`08`,`13`,`15`,`16`,`19`,`24`,`25`,`27`,`29` |

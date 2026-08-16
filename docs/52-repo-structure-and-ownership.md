@@ -201,6 +201,16 @@ must use grouped paths from day one.
     crates. Any consumer needing these primitives uses them; no crate carries
     a second copy.
 
+20. Host-share filesystem ownership (`67§3`): `crates/kernel/ninep` owns the 9P
+    protocol, its client and its mount options and depends only on `vfs`+`sync`;
+    `crates/kernel/fs/src/ninep_fs` is its VFS glue;
+    `crates/drivers/drv-virtio-9p` owns the virtio 9P device.
+    `crates/shared/fuse-transport` owns the FUSE transport traits and nothing
+    else; `crates/kernel/fs/src/fuse` owns the FUSE connection and the virtiofs
+    superblock; `crates/drivers/drv-virtio-fs` owns the virtio-fs device. A
+    virtiofs mount reuses the FUSE connection — a second FUSE implementation is
+    forbidden.
+
 ## 6 Naming rules (frozen)
 
 1. Prefer explicit names over compressed abbreviations.
@@ -275,6 +285,14 @@ Constraints:
 17. `crates/kernel/vlan` and `crates/kernel/bonding` are leaves over `net`. Both
     register their devices in the one interface registry `net` already owns;
     neither may keep a second netdev registry, and neither depends on the other.
+
+18. A transport crate and a filesystem crate never depend on each other. Each
+    transport publishes itself into a directory the filesystem resolves a mount
+    source through (`ninep::transport::registry` for `trans=`,
+    `fuse_transport::registry` for a virtiofs tag). `crates/shared/fuse-transport`
+    is dependency-free so both shores can name it; `crates/kernel/ninep` is a
+    leaf over `vfs`+`sync`. `crates/drivers/drv-virtio-9p` depends on `ninep`,
+    `crates/drivers/drv-virtio-fs` on `fuse-transport`, and neither on `fs`.
 
 ## 8 Change policy
 

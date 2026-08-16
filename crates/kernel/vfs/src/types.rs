@@ -265,6 +265,38 @@ impl VfsError {
             _ => VfsError::Eio,
         }
     }
+
+    /// Reconstruct the typed error for ANY positive POSIX errno a remote peer
+    /// reported — a FUSE daemon's `fuse_out_header.error`, a 9P server's
+    /// `Rlerror`, an `Rerror` string resolved to a number.
+    ///
+    /// Distinct from [`Self::from_errno`], which is the writeback-latch harvest
+    /// and deliberately recognises only the handful of codes a writeback can
+    /// produce. Using that one for a remote answer folds `ENOENT`, `EACCES` and
+    /// `ESTALE` all into `EIO`, which both hides what the peer said and makes
+    /// the one errno the revalidating re-walk exists to act on unreachable.
+    ///
+    /// An unrecognised code becomes `EIO`: a real failure with a cause this
+    /// kernel has no type for, never a success. # C: O(1)
+    pub fn from_posix_errno(e: i32) -> VfsError {
+        use VfsError::*;
+        match e {
+            1 => Eperm, 2 => Enoent, 3 => Esrch, 4 => Eintr, 5 => Eio, 6 => Enxio,
+            9 => Ebadf, 11 => Eagain, 12 => Enomem, 13 => Eacces, 14 => Efault,
+            15 => Enotblk, 16 => Ebusy, 17 => Eexist, 18 => Exdev, 19 => Enodev,
+            20 => Enotdir, 21 => Eisdir, 22 => Einval, 24 => Emfile, 25 => Enotty,
+            26 => Etxtbsy, 27 => Efbig, 28 => Enospc, 29 => Espipe, 30 => Erofs,
+            31 => Emlink, 32 => Epipe, 34 => Erange, 36 => Enametoolong,
+            38 => Enosys, 39 => Enotempty, 40 => Eloop, 52 => Ebade, 61 => Enodata,
+            64 => Enonet, 71 => Eproto, 75 => Eoverflow, 77 => Ebadfd,
+            89 => Edestaddrreq, 90 => Emsgsize, 92 => Enoprotoopt, 95 => Eopnotsupp,
+            99 => Eaddrnotavail, 101 => Enetunreach, 103 => Econnaborted,
+            104 => Econnreset, 105 => Enobufs, 107 => Enotconn, 110 => Etimedout,
+            111 => Econnrefused, 112 => Ehostdown, 113 => Ehostunreach,
+            116 => Estale, 117 => Euclean, 122 => Edquot, 125 => Ecanceled,
+            _ => Eio,
+        }
+    }
 }
 
 pub type KResult<T> = core::result::Result<T, VfsError>;
