@@ -13,6 +13,8 @@
 //! - `dirent`:   the 32-byte records, and the long name spread across several.
 //! - `chain`:    the allocation table, and walking a file's clusters through it.
 //! - `cluster_alloc`: changing that table: claiming, linking, releasing.
+//! - `fsinfo`:   the FAT32 information sector, and the free-cluster count.
+//! - `fatcache`: remembered chain positions, so a seek does not rewalk.
 //! - `volstate`: the dirty flag, and every copy of the table kept identical.
 //! - `volume`:   a mounted volume: name resolution and file reads over the rest.
 //! - `ident`:    what an inode number is on a filesystem that has none.
@@ -29,6 +31,8 @@ pub mod geometry;
 pub mod dirent;
 pub mod chain;
 pub mod cluster_alloc;
+pub mod fsinfo;
+pub mod fatcache;
 pub mod volstate;
 pub mod volume;
 pub mod ident;
@@ -38,7 +42,10 @@ pub use bpb::{Bpb, BpbError};
 pub use chain::{classify, clusters_for_size, read_entry, walk, ChainError, Link};
 pub use ident::{inode_number, location_of, DirLocation};
 pub use mount::{FatFs, MSDOS_SUPER_MAGIC};
-pub use cluster_alloc::{allocate, count_free, free_chain, truncate_chain, write_entry};
+pub use cluster_alloc::{alloc_clusters, allocate, count_free, count_free_clusters, free_chain,
+    free_chain_state, truncate_chain, truncate_chain_state, write_entry, NewCluster};
+pub use fsinfo::{FreeState, FsInfo};
+pub use fatcache::{get_cluster, ChainCache, Seek};
 pub use volstate::{fat_copy_starts, is_dirty, set_dirty, FAT_STATE_DIRTY};
 pub use volume::{DirEntry, SectorSource, Volume};
 pub use dirent::{checksum, short_name, Entry, LongName, ShortEntry};

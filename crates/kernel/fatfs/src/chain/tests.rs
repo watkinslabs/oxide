@@ -121,15 +121,20 @@ fn a_bad_cluster_mark_ends_the_chain_rather_than_failing_it() {
     }
 }
 
-/// Free, and the two reserved numbers below the first data cluster, are not
-/// next-cluster links.
+/// Zero is free. Entry number one is NOT folded into an end: the reference
+/// hands it back as a link and lets the walker refuse it as out of range, so a
+/// corrupt table errors rather than making a file silently end early.
 #[test]
-fn free_and_reserved_values_are_not_links() {
+fn free_is_free_and_the_reserved_number_is_a_refused_link() {
     for width in [FatWidth::Fat12, FatWidth::Fat16, FatWidth::Fat32] {
         assert_eq!(classify(width, 0), Link::Free);
-        assert_eq!(classify(width, 1), Link::End, "entry 1 names no cluster");
+        assert_eq!(classify(width, 1), Link::Next(1), "entry 1 is a link nobody may follow");
         assert_eq!(classify(width, 2), Link::Next(2), "the first data cluster");
     }
+    let g = geo(FatWidth::Fat16);
+    let mut t = vec![0u8; 128 * 512];
+    t[4..6].copy_from_slice(&1u16.to_le_bytes());
+    assert_eq!(walk(&g, &t, 2), Err(ChainError::OutOfRange), "and the walk refuses it");
 }
 
 /// An entry past the end of the bytes provided reads as nothing rather than
