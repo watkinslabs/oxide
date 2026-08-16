@@ -411,6 +411,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "drv-loop"
+version = "0.1.0"
+dependencies = [
+ "block",
+ "sync",
+ "syscall",
+ "vfs",
+]
+
+[[package]]
 name = "drv-nvme"
 version = "0.1.0"
 dependencies = [
@@ -787,6 +797,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
 
 [[package]]
+name = "fatfs"
+version = "0.1.0"
+dependencies = [
+ "block",
+ "klog",
+ "sync",
+ "syscall",
+ "vfs",
+]
+
+[[package]]
 name = "fbcon"
 version = "0.1.0"
 dependencies = [
@@ -1134,6 +1155,7 @@ dependencies = [
  "devpts",
  "drm",
  "drv",
+ "drv-loop",
  "drv-ps2-keyboard",
  "drv-serial",
  "drv-simplefb",
@@ -2098,6 +2120,7 @@ dependencies = [
  "devpts",
  "drm",
  "drv",
+ "drv-loop",
  "drv-virtio-gpu",
  "drv-virtio-input",
  "drv-virtio-net",
@@ -2105,6 +2128,7 @@ dependencies = [
  "elf",
  "elf-load",
  "ext4",
+ "fatfs",
  "fbcon",
  "fbdev",
  "firmware",
