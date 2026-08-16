@@ -114,9 +114,15 @@ impl CmdQueue {
         }
     }
 
-    /// Whichever deadline `now_ms` has passed, if either. The command deadline
-    /// outranks the no-credit one: a command still in flight names the failure
-    /// more precisely than a stalled allowance does. # C: O(1)
+    /// Whichever deadline `now_ms` has passed, if either.
+    ///
+    /// At most one is ever armed: arming the no-credit deadline happens only in
+    /// `on_event`, which clears the command deadline first, and re-arming the
+    /// command deadline needs a credit, which is exactly what disarms the
+    /// no-credit one. The ordering here states which would win if that
+    /// invariant were ever broken — the command deadline, because a command
+    /// still in flight names the failure more precisely than a stalled
+    /// allowance does. # C: O(1)
     pub fn expired(&self, now_ms: u64) -> Option<Expiry> {
         if let (Some(deadline), Some(opcode)) = (self.cmd_deadline, self.in_flight) {
             if now_ms >= deadline { return Some(Expiry::Command(opcode)); }
