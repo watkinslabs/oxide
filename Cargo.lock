@@ -1287,6 +1287,7 @@ dependencies = [
  "drm",
  "drv",
  "drv-loop",
+ "drv-mac80211-hwsim",
  "drv-ps2-keyboard",
  "drv-serial",
  "drv-simplefb",
@@ -1317,6 +1318,8 @@ dependencies = [
  "kexec",
  "klog",
  "kmacros",
+ "kstrtox",
+ "mac80211",
  "modules",
  "net",
  "netfilter",
@@ -1349,6 +1352,7 @@ dependencies = [
  "virtio",
  "vmm",
  "vt",
+ "wireless",
 ]
 
 [[package]]
@@ -1436,7 +1440,7 @@ dependencies = [
 name = "mac80211"
 version = "0.1.0"
 dependencies = [
- "crypt",
+ "aes",
  "klog",
  "net",
  "sync",

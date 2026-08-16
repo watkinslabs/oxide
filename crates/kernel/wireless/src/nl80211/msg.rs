@@ -14,7 +14,7 @@ use netlink::Nlmsghdr;
 use syscall::errno::Errno;
 
 use crate::ieee80211::MacAddr;
-use crate::uapi::{attr as a, cmd, NL80211_FAMILY_VERSION};
+use crate::uapi::{cmd, NL80211_FAMILY_VERSION};
 
 /// Start a reply carrying one command's attributes. # C: O(1)
 pub fn start(hdr: &Nlmsghdr, cmd: u8) -> Vec<u8> {

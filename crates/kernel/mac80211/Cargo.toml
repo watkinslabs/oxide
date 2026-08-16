@@ -13,7 +13,7 @@ sync      = { path = "../../shared/sync" }
 syscall   = { path = "../syscall" }
 wireless  = { path = "../wireless" }
 net       = { path = "../net" }
-crypt     = { path = "../../shared/crypt" }
+aes       = { path = "../../shared/aes" }
 klog      = { path = "../../shared/klog", optional = true }
 
 [features]

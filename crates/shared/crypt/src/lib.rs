@@ -20,7 +20,6 @@
 extern crate std;
 
 extern crate alloc;
-pub mod aes;
 pub mod digest;
 pub mod sha1;
 pub mod sha256;
