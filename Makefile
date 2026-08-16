@@ -60,6 +60,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
         irq-gate irq-gate-x86 irq-gate-arm \
         feature-gate feature-gate-x86 feature-gate-arm feature-gate-atexit \
         smoke-hda smoke-hda-x86 smoke-hda-arm \
+        smoke-v4l2 smoke-v4l2-x86 smoke-v4l2-arm \
         hosted-gate test-build-gate \
         smoke-ping smoke-ping-x86 smoke-ping-arm smoke-network-native-pci-x86 \
         stack-gate-baseline-x86 stack-gate-baseline-arm stack-report \
@@ -706,7 +707,14 @@ smoke-grub:
 # codec attached and asks the guest whether the second sound card's nodes
 # exist — they appear only after the controller reset, a codec answered, the
 # generic parser found a route and the ALSA card registered.
+V4L2_SMOKE_TIMEOUT ?= 900
 HDA_SMOKE_TIMEOUT ?= 900
+smoke-v4l2-x86: x86
+	./tools/boot-smoke-v4l2.sh x86 $(V4L2_SMOKE_TIMEOUT)
+smoke-v4l2-arm: arm
+	./tools/boot-smoke-v4l2.sh arm $(V4L2_SMOKE_TIMEOUT)
+smoke-v4l2: smoke-v4l2-x86 smoke-v4l2-arm
+
 smoke-hda-x86: x86
 	./tools/boot-smoke-hda.sh x86 $(HDA_SMOKE_TIMEOUT)
 smoke-hda-arm: arm
