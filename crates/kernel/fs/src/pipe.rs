@@ -27,6 +27,7 @@ use vfs::FileOps;
 pub mod eventfd;
 mod acct;
 pub mod limits;
+mod pollmask;
 mod ring;
 mod smoke;
 mod splice_ops;
@@ -152,6 +153,15 @@ impl FileOps for PipeFileOps {
         if let Some(q) = crate::watch_queue::queue_of(inode) { return crate::watch_queue::poll_mask(&q); }
         pipe_data(inode).map(|p| p.poll_mask()).unwrap_or(0)
     }
+    /// A pipe's readiness is per-END: the read end hangs up when its last
+    /// writer goes, the write end errors when its last reader goes, and only
+    /// the description says which end this is. # C: O(1)
+    fn poll_open_file(&self, file: &File) -> u32 {
+        let inode = file.inode();
+        if let Some(q) = crate::watch_queue::queue_of(inode) { return crate::watch_queue::poll_mask(&q); }
+        let fm = file.f_mode();
+        pipe_data(inode).map(|p| p.poll_mask_end(fm.contains(Fmode::READ), fm.contains(Fmode::WRITE))).unwrap_or(0)
+    }
     fn ioctl_int(&self, file: &File, cmd: vfs::IoctlIntCmd) -> KResult<u32> { match cmd { vfs::IoctlIntCmd::Fionread => Ok(pipe_data(file.inode()).ok_or(VfsError::Einval)?.queued_bytes() as u32), vfs::IoctlIntCmd::Siocoutq | vfs::IoctlIntCmd::Siocoutqnsd | vfs::IoctlIntCmd::Siocatmark => Err(VfsError::Enotty) } }
     fn fasync_file(&self, fd: i32, file: &Arc<File>, on: bool) -> KResult<()> { file.set_fasync_state(fd, on); Ok(()) }
 }
@@ -254,6 +264,12 @@ impl FileOps for FifoFileOps {
     /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
     fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn poll(&self, inode: &Inode) -> u32 { fifo_pipe_lookup(inode).map(|p| p.poll_mask()).unwrap_or(0) }
+    /// Per-end readiness, as for an anonymous pipe. A FIFO opened `O_RDWR`
+    /// carries both modes and reports both halves. # C: O(1)
+    fn poll_open_file(&self, file: &File) -> u32 {
+        let fm = file.f_mode();
+        fifo_pipe_lookup(file.inode()).map(|p| p.poll_mask_end(fm.contains(Fmode::READ), fm.contains(Fmode::WRITE))).unwrap_or(0)
+    }
     fn ioctl_int(&self, file: &File, cmd: vfs::IoctlIntCmd) -> KResult<u32> { match cmd { vfs::IoctlIntCmd::Fionread => Ok(fifo_pipe_lookup(file.inode()).ok_or(VfsError::Einval)?.queued_bytes() as u32), vfs::IoctlIntCmd::Siocoutq | vfs::IoctlIntCmd::Siocoutqnsd | vfs::IoctlIntCmd::Siocatmark => Err(VfsError::Enotty) } }
     fn fasync_file(&self, fd: i32, file: &Arc<File>, on: bool) -> KResult<()> { file.set_fasync_state(fd, on); Ok(()) }
     /// Last-close of THIS FIFO open description (Linux `pipe_release`): drop the

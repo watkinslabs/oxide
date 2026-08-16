@@ -367,17 +367,22 @@ impl PipeData {
         Err(VfsError::Eagain)
     }
 
-    /// `poll`/`select` readiness bitmask per pipe(7). # C: O(1)
-    pub(super) fn poll_mask(&self) -> u32 {
+    /// `poll`/`select` readiness for ONE open end — the reference computes the
+    /// read-side and write-side bits separately from the description's access
+    /// mode, and the decision table lives in `super::pollmask`. # C: O(1)
+    pub(super) fn poll_mask_end(&self, readable: bool, writable: bool) -> u32 {
         let (len, cap) = { let g = self.buf.lock(); (g.len, g.cap) };
-        let writers = self.writers.load(Ordering::Acquire);
-        let readers = self.readers.load(Ordering::Acquire);
-        let mut mask = 0u32;
-        if len > 0 || writers == 0 { mask |= vfs::POLL_IN; }
-        if readers == 0 { mask |= vfs::POLL_HUP; }
-        if len < cap && readers > 0 { mask |= vfs::POLL_OUT; }
-        mask
+        super::pollmask::pipe_poll_mask(
+            readable, writable, len, cap,
+            self.readers.load(Ordering::Acquire),
+            self.writers.load(Ordering::Acquire),
+        )
     }
+
+    /// Readiness with no description in hand: report as an end open both ways,
+    /// which is the union the inode-level `->poll` can honestly offer.
+    /// # C: O(1)
+    pub(super) fn poll_mask(&self) -> u32 { self.poll_mask_end(true, true) }
 
     /// Enqueue the running task on this pipe's read wait list without
     /// scheduling. The caller holds whatever lock makes its "nothing to read"
