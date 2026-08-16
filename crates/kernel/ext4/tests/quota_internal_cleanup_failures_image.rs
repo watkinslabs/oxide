@@ -104,12 +104,22 @@ fn pin_external_maxes(disk: &Arc<dyn BlockDevice>, sb: &ext4::Superblock,
     }
 }
 
-fn pin_tree_maxes(disk: &Arc<dyn BlockDevice>, sb: &ext4::Superblock,
+// `pin_external_maxes` writes straight to the backing `BlockDevice`, behind
+// `Mount`'s own metadata buffer cache (`crates/kernel/ext4/src/mount.rs`
+// `MountState::metadata_cache`, populated by `read_metadata_block`) — the
+// same hazard a live ext4 mount has against any out-of-band device write
+// (another node on shared storage, `debugfs -w`). A real mount only sees
+// such an edit after a remount or an explicit cache drop; the test's
+// `drop_metadata_cache_for_tests()` call plays that role so the next mount
+// op actually re-reads the shrunk `eh_max`, instead of insert/split logic
+// continuing to operate on the pre-poke cached copy.
+fn pin_tree_maxes(disk: &Arc<dyn BlockDevice>, m: &ext4::rootfs::Ext4Mount, sb: &ext4::Superblock,
                   ino: u32, gen: u32, i_block: &[u8], fs_bs: u32) {
     if extent_depth(i_block) == 0 { return; }
     for i in 0..extent_entries(i_block) as usize {
         pin_external_maxes(disk, sb, ino, gen, idx_lba(i_block, i), fs_bs);
     }
+    m.state().mount.drop_metadata_cache_for_tests();
 }
 
 fn force_depth_two_tree(disk: &Arc<dyn BlockDevice>, m: &ext4::rootfs::Ext4Mount, ino: u32, bs: u64) {
@@ -118,7 +128,7 @@ fn force_depth_two_tree(disk: &Arc<dyn BlockDevice>, m: &ext4::rootfs::Ext4Mount
     }
     for lb in [10u64, 12, 14, 16] {
         let raw = m.state().mount.read_inode(ino).expect("raw before depth grow");
-        pin_tree_maxes(disk, &m.state().mount.sb, ino, raw.generation, &raw.i_block, m.state().mount.sb.block_size);
+        pin_tree_maxes(disk, m, &m.state().mount.sb, ino, raw.generation, &raw.i_block, m.state().mount.sb.block_size);
         m.state().mount.write_at(ino, lb * bs, &[0xA2]).expect("grow depth two tree");
     }
     let raw = m.state().mount.read_inode(ino).expect("depth two raw");
@@ -171,7 +181,7 @@ fn inline_root_split_metadata_failure_cleanup_free_failure_preserves_quota_and_t
     }
     for lb in [10u64, 12, 14] {
         let raw = m.state().mount.read_inode(ino).expect("raw before root fill");
-        pin_tree_maxes(&disk, &m.state().mount.sb, ino, raw.generation, &raw.i_block, m.state().mount.sb.block_size);
+        pin_tree_maxes(&disk, &m, &m.state().mount.sb, ino, raw.generation, &raw.i_block, m.state().mount.sb.block_size);
         m.state().mount.write_at(ino, lb * bs, &[0x82]).expect("fill root indices");
     }
 
@@ -182,7 +192,7 @@ fn inline_root_split_metadata_failure_cleanup_free_failure_preserves_quota_and_t
     let hdr = ext4::parse_extent_header(&before_raw.i_block).expect("extent header");
     assert_eq!(hdr.depth, 1);
     assert_eq!(hdr.entries, 4);
-    pin_tree_maxes(&disk, &m.state().mount.sb, ino, before_raw.generation, &before_raw.i_block, m.state().mount.sb.block_size);
+    pin_tree_maxes(&disk, &m, &m.state().mount.sb, ino, before_raw.generation, &before_raw.i_block, m.state().mount.sb.block_size);
 
     m.state().mount.fail_extent_block_write_after_for_tests(2);
     m.state().mount.fail_free_block_after_for_tests(2);
@@ -213,7 +223,7 @@ fn inline_root_split_right_alloc_failure_cleanup_free_failure_preserves_quota_an
     }
     for lb in [10u64, 12, 14] {
         let raw = m.state().mount.read_inode(ino).expect("raw before root fill");
-        pin_tree_maxes(&disk, &m.state().mount.sb, ino, raw.generation, &raw.i_block, m.state().mount.sb.block_size);
+        pin_tree_maxes(&disk, &m, &m.state().mount.sb, ino, raw.generation, &raw.i_block, m.state().mount.sb.block_size);
         m.state().mount.write_at(ino, lb * bs, &[0x85]).expect("fill root indices");
     }
 
@@ -224,7 +234,7 @@ fn inline_root_split_right_alloc_failure_cleanup_free_failure_preserves_quota_an
     let hdr = ext4::parse_extent_header(&before_raw.i_block).expect("extent header");
     assert_eq!(hdr.depth, 1);
     assert_eq!(hdr.entries, 4);
-    pin_tree_maxes(&disk, &m.state().mount.sb, ino, before_raw.generation, &before_raw.i_block, m.state().mount.sb.block_size);
+    pin_tree_maxes(&disk, &m, &m.state().mount.sb, ino, before_raw.generation, &before_raw.i_block, m.state().mount.sb.block_size);
 
     m.state().mount.fail_alloc_block_after_for_tests(1);
     m.state().mount.fail_next_free_block_for_tests();
@@ -255,7 +265,7 @@ fn inline_root_split_second_root_alloc_failure_cleanup_free_failure_preserves_qu
     }
     for lb in [10u64, 12, 14] {
         let raw = m.state().mount.read_inode(ino).expect("raw before root fill");
-        pin_tree_maxes(&disk, &m.state().mount.sb, ino, raw.generation, &raw.i_block, m.state().mount.sb.block_size);
+        pin_tree_maxes(&disk, &m, &m.state().mount.sb, ino, raw.generation, &raw.i_block, m.state().mount.sb.block_size);
         m.state().mount.write_at(ino, lb * bs, &[0x8B]).expect("fill root indices");
     }
 
@@ -266,7 +276,7 @@ fn inline_root_split_second_root_alloc_failure_cleanup_free_failure_preserves_qu
     let hdr = ext4::parse_extent_header(&before_raw.i_block).expect("extent header");
     assert_eq!(hdr.depth, 1);
     assert_eq!(hdr.entries, 4);
-    pin_tree_maxes(&disk, &m.state().mount.sb, ino, before_raw.generation, &before_raw.i_block, m.state().mount.sb.block_size);
+    pin_tree_maxes(&disk, &m, &m.state().mount.sb, ino, before_raw.generation, &before_raw.i_block, m.state().mount.sb.block_size);
 
     m.state().mount.fail_alloc_block_after_for_tests(2);
     m.state().mount.fail_next_free_block_for_tests();
@@ -297,7 +307,7 @@ fn inline_root_split_right_metadata_failure_cleanup_free_failure_preserves_quota
     }
     for lb in [10u64, 12, 14] {
         let raw = m.state().mount.read_inode(ino).expect("raw before root fill");
-        pin_tree_maxes(&disk, &m.state().mount.sb, ino, raw.generation, &raw.i_block, m.state().mount.sb.block_size);
+        pin_tree_maxes(&disk, &m, &m.state().mount.sb, ino, raw.generation, &raw.i_block, m.state().mount.sb.block_size);
         m.state().mount.write_at(ino, lb * bs, &[0x88]).expect("fill root indices");
     }
 
@@ -308,7 +318,7 @@ fn inline_root_split_right_metadata_failure_cleanup_free_failure_preserves_quota
     let hdr = ext4::parse_extent_header(&before_raw.i_block).expect("extent header");
     assert_eq!(hdr.depth, 1);
     assert_eq!(hdr.entries, 4);
-    pin_tree_maxes(&disk, &m.state().mount.sb, ino, before_raw.generation, &before_raw.i_block, m.state().mount.sb.block_size);
+    pin_tree_maxes(&disk, &m, &m.state().mount.sb, ino, before_raw.generation, &before_raw.i_block, m.state().mount.sb.block_size);
 
     m.state().mount.fail_extent_block_write_after_for_tests(3);
     m.state().mount.fail_next_free_block_for_tests();
@@ -342,7 +352,7 @@ fn external_leaf_first_metadata_failure_cleanup_free_failure_preserves_quota_and
     let before_map = m.state().mount.extent_map(ino).expect("extent map before");
     let before_q = vfs::quota_getquota(&sb, qid).expect("quota before");
     assert_eq!(ext4::parse_extent_header(&before_raw.i_block).expect("extent header").depth, 1);
-    pin_tree_maxes(&disk, &m.state().mount.sb, ino, before_raw.generation, &before_raw.i_block, m.state().mount.sb.block_size);
+    pin_tree_maxes(&disk, &m, &m.state().mount.sb, ino, before_raw.generation, &before_raw.i_block, m.state().mount.sb.block_size);
 
     m.state().mount.fail_next_extent_block_write_for_tests();
     m.state().mount.fail_next_free_block_for_tests();
@@ -372,7 +382,7 @@ fn depth_two_child_right_metadata_failure_cleanup_free_failure_preserves_quota_a
     let before_raw = m.state().mount.read_inode(ino).expect("raw before");
     let before_map = m.state().mount.extent_map(ino).expect("extent map before");
     let before_q = vfs::quota_getquota(&sb, qid).expect("quota before");
-    pin_tree_maxes(&disk, &m.state().mount.sb, ino, before_raw.generation, &before_raw.i_block, m.state().mount.sb.block_size);
+    pin_tree_maxes(&disk, &m, &m.state().mount.sb, ino, before_raw.generation, &before_raw.i_block, m.state().mount.sb.block_size);
 
     m.state().mount.fail_next_extent_block_write_for_tests();
     m.state().mount.fail_next_free_block_for_tests();
@@ -403,7 +413,7 @@ fn depth_two_child_left_metadata_failure_cleanup_free_failure_preserves_quota_an
     let before_raw = m.state().mount.read_inode(ino).expect("raw before");
     let before_map = m.state().mount.extent_map(ino).expect("extent map before");
     let before_q = vfs::quota_getquota(&sb, qid).expect("quota before");
-    pin_tree_maxes(&disk, &m.state().mount.sb, ino, before_raw.generation, &before_raw.i_block, m.state().mount.sb.block_size);
+    pin_tree_maxes(&disk, &m, &m.state().mount.sb, ino, before_raw.generation, &before_raw.i_block, m.state().mount.sb.block_size);
 
     m.state().mount.fail_extent_block_write_after_for_tests(1);
     m.state().mount.fail_next_free_block_for_tests();
@@ -434,7 +444,7 @@ fn depth_two_parent_alloc_failure_cleanup_free_failure_preserves_quota_and_tree(
     let before_raw = m.state().mount.read_inode(ino).expect("raw before");
     let before_map = m.state().mount.extent_map(ino).expect("extent map before");
     let before_q = vfs::quota_getquota(&sb, qid).expect("quota before");
-    pin_tree_maxes(&disk, &m.state().mount.sb, ino, before_raw.generation, &before_raw.i_block, m.state().mount.sb.block_size);
+    pin_tree_maxes(&disk, &m, &m.state().mount.sb, ino, before_raw.generation, &before_raw.i_block, m.state().mount.sb.block_size);
 
     m.state().mount.fail_alloc_block_after_for_tests(2);
     m.state().mount.fail_next_free_block_for_tests();
@@ -465,7 +475,7 @@ fn depth_two_parent_left_metadata_failure_cleanup_free_failure_preserves_quota_a
     let before_raw = m.state().mount.read_inode(ino).expect("raw before");
     let before_map = m.state().mount.extent_map(ino).expect("extent map before");
     let before_q = vfs::quota_getquota(&sb, qid).expect("quota before");
-    pin_tree_maxes(&disk, &m.state().mount.sb, ino, before_raw.generation, &before_raw.i_block, m.state().mount.sb.block_size);
+    pin_tree_maxes(&disk, &m, &m.state().mount.sb, ino, before_raw.generation, &before_raw.i_block, m.state().mount.sb.block_size);
 
     m.state().mount.fail_extent_block_write_after_for_tests(3);
     m.state().mount.fail_next_free_block_for_tests();
