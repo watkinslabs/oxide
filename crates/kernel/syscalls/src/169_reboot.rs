@@ -55,9 +55,7 @@ pub fn sys_reboot(args: &SyscallArgs) -> i64 {
         // not return when it succeeds. EINVAL when nothing is loaded — which
         // is what `systemctl kexec` reads to fall back to a plain reboot.
         Ok(power::RebootAction::Kexec) => crate::kexec_abi::encode(kexec::kernel_kexec()),
-        Err(power::Error::Inval) => errno(Errno::Einval),
-        Err(power::Error::Perm)  => errno(Errno::Eperm),
-        Err(power::Error::Io)    => errno(Errno::Eio),
+        Err(e) => errno(crate::power_errno::of(e)),
     }
 }
 

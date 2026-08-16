@@ -7,9 +7,12 @@
 
 use crate::uapi::*;
 
-/// Failure classes the reboot path reports at the ABI boundary.
+/// Failure classes the power paths report at the ABI boundary.
+///
+/// `Busy`/`Nosys`/`Again`/`Intr`/`Nomem`/`Nodata` are reached only from the
+/// sleep states (`32a`); `reboot(2)` itself produces the first three.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum Error { Inval, Perm, Io }
+pub enum Error { Inval, Perm, Io, Busy, Nosys, Again, Intr, Nomem, Nodata }
 
 pub type KResult<T> = core::result::Result<T, Error>;
 
