@@ -20,6 +20,11 @@ pub struct Device {
     pub vendor_id: u32,
     /// Jack elements, so a presence change can name the control that moved.
     pub jack_elems: Vec<(u8, u32, sound::elem::ElemId)>,
+    /// `(physical address, order)` of every DMA frame this controller owns,
+    /// so removal frees exactly what the probe took.
+    pub frames: Vec<(u64, u8)>,
+    /// The BAR0 mapping, released with the device.
+    pub mapping: Option<mmio_map::Mapping>,
 }
 
 static DEVICES: Spinlock<Vec<Device>, HdaLockClass> = Spinlock::new(Vec::new());

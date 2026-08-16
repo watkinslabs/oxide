@@ -40,11 +40,14 @@ fn alloc_buffer(addr64: bool) -> Option<u64> {
     else { pmm::setup::alloc_contig_below(pmm::Order(BUFFER_ORDER as u8), DMA32_LIMIT) }
 }
 
+fn frame_list(frames: &Frames) -> alloc::vec::Vec<(u64, u8)> {
+    [(frames.ring, 0u8), (frames.playback_bdl, 0), (frames.capture_bdl, 0),
+     (frames.playback_buffer, BUFFER_ORDER as u8), (frames.capture_buffer, BUFFER_ORDER as u8)]
+        .into_iter().filter(|(pa, _)| *pa != 0).collect()
+}
+
 fn free_frames(frames: &Frames) {
-    for (pa, order) in [(frames.ring, 0u8), (frames.playback_bdl, 0), (frames.capture_bdl, 0),
-                        (frames.playback_buffer, BUFFER_ORDER as u8),
-                        (frames.capture_buffer, BUFFER_ORDER as u8)] {
-        if pa == 0 { continue; }
+    for (pa, order) in frame_list(frames) {
         // SAFETY: every address here came from this probe's own
         // `alloc_contig` at the same order and is unmapped from any device.
         unsafe { pmm::setup::free_contig(pa, pmm::Order(order)); }
@@ -75,7 +78,7 @@ fn hard_handler() {
     card::with_device(owner, |device| device.hda.handle_interrupt());
 }
 
-fn bring_up(bdf: pci::Bdf, mmio_base: u64) -> bool {
+fn bring_up(bdf: pci::Bdf, mmio_base: u64, mapping: mmio_map::Mapping) -> bool {
     let regs = Regs::new(mmio_base);
     let addr64 = regs.addr64();
     let Some(frames) = alloc_frames(addr64) else { return false; };
@@ -96,7 +99,9 @@ fn bring_up(bdf: pci::Bdf, mmio_base: u64) -> bool {
         playback: Stream::new(playback_index, playback_index + 1, frames.playback_bdl,
                               hhdm + frames.playback_bdl, frames.playback_buffer,
                               hhdm + frames.playback_buffer),
-        capture: Stream::new(0, 1 + streams, frames.capture_bdl, hhdm + frames.capture_bdl,
+        // Stream tags are one-based and live in a four-bit field; the two
+        // streams have distinct descriptor indices, so index+1 is distinct too.
+        capture: Stream::new(0, 1, frames.capture_bdl, hhdm + frames.capture_bdl,
                              frames.capture_buffer, hhdm + frames.capture_buffer),
         codec: None,
         plan: None,
@@ -131,7 +136,8 @@ fn bring_up(bdf: pci::Bdf, mmio_base: u64) -> bool {
         free_frames(&frames);
         return false;
     }
-    card::insert(Device { key: bdf, owner, hda, vendor_id, jack_elems: alloc::vec::Vec::new() });
+    card::insert(Device { key: bdf, owner, hda, vendor_id, jack_elems: alloc::vec::Vec::new(),
+                          frames: frame_list(&frames), mapping: Some(mapping) });
     if !sound::ops::register(owner, &card::SOUND_OPS) {
         teardown(bdf, &frames, irq);
         return false;
@@ -192,11 +198,10 @@ impl drv::Driver for HdaDriver {
         // mapping owns its complete page-rounded register aperture.
         let mmio = unsafe { mmio_map::map_owned(bar_pa & BAR_PAGE_BASE_MASK, pages as u64) };
         let base = mmio.base_va() + (bar_pa & BAR_PAGE_OFFSET_MASK);
-        if !bring_up(bdf, base) {
+        if !bring_up(bdf, base, mmio) {
             let _ = pci::restore_mem_bus_master(&reader, bdf, command_orig);
             return Err(drv::Error::ProbeFailed);
         }
-        core::mem::forget(mmio);
         Ok(())
     }
 
@@ -206,7 +211,16 @@ impl drv::Driver for HdaDriver {
             sound::unregister_card(owner);
             sound::elem::unregister_card(owner);
         }
-        if let Some(mut device) = card::remove(bdf) { device.hda.quiesce(); }
+        if let Some(mut device) = card::remove(bdf) {
+            device.hda.quiesce();
+            for (pa, order) in device.frames.iter() {
+                // SAFETY: each address came from this driver's own probe-time
+                // `alloc_contig` at the same order, and the controller was
+                // quiesced above so no engine still reads them.
+                unsafe { pmm::setup::free_contig(*pa, pmm::Order(*order)); }
+            }
+            if let Some(mut mapping) = device.mapping.take() { mapping.unmap(); }
+        }
     }
 
     fn shutdown(&self, dev: &drv::Device) {
