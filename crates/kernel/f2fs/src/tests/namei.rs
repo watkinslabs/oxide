@@ -145,6 +145,54 @@ fn a_long_name_placed_over_stale_slots_lists_once() {
     assert!(!names.contains(&b"bbbbbbbbbbb".to_vec()));
 }
 
+/// The raw inline dentry area of a directory, and its layout.
+fn inline_area(v: &Volume<MemImage>, ino: u32) -> (Vec<u8>, crate::dirent::Layout) {
+    let (inode, node) = v.read_inode_ref(ino).unwrap();
+    let (at, len) = inode.inline_data_span();
+    (node.block[at..at + len].to_vec(), crate::dirent::Layout::inline(len))
+}
+
+#[test]
+fn an_inserted_long_name_leaves_its_continuation_record_zeroed_on_the_medium() {
+    // Deleting an entry clears only its bitmap bits — the record bytes stay,
+    // exactly as the format leaves them. So a long name placed over a slot a
+    // short name used must zero that slot's record itself, or the medium
+    // carries a record for a name nobody created. Our own walker steps by the
+    // slot COUNT and would never read it; a checker, or another
+    // implementation that scans slot by slot, would.
+    let mut v = vol();
+    v.create(ROOT_INO, b"xx", &spec(S_IFREG | 0o644), None).unwrap();
+    v.create(ROOT_INO, b"yy", &spec(S_IFREG | 0o644), None).unwrap();
+    let (area, l) = inline_area(&v, ROOT_INO);
+    // `.` and `..` hold slots 0 and 1, so the two names took 2 and 3.
+    let victim = 3usize;
+    let at = l.dentry_off(victim);
+    assert_ne!(&area[at..at + SIZE_OF_DIR_ENTRY], &vec![0u8; SIZE_OF_DIR_ENTRY][..],
+               "fixture did not put a record where the test needs one");
+    v.remove(ROOT_INO, b"xx", false, NOW).unwrap();
+    v.remove(ROOT_INO, b"yy", false, NOW).unwrap();
+    // A name needing two slots now lands on slot 2 and covers slot 3.
+    v.create(ROOT_INO, b"123456789", &spec(S_IFREG | 0o644), None).unwrap();
+    let (area, l) = inline_area(&v, ROOT_INO);
+    let at = l.dentry_off(victim);
+    assert_eq!(&area[at..at + SIZE_OF_DIR_ENTRY], &vec![0u8; SIZE_OF_DIR_ENTRY][..],
+               "the continuation slot still carries the deleted entry's record");
+}
+
+#[test]
+fn deleting_an_entry_clears_only_its_bitmap_bits() {
+    // The record is left alone, which is what the format does.
+    let mut v = vol();
+    v.create(ROOT_INO, b"zz", &spec(S_IFREG | 0o644), None).unwrap();
+    let (before, l) = inline_area(&v, ROOT_INO);
+    let at = l.dentry_off(2);
+    let record = before[at..at + SIZE_OF_DIR_ENTRY].to_vec();
+    v.remove(ROOT_INO, b"zz", false, NOW).unwrap();
+    let (after, _) = inline_area(&v, ROOT_INO);
+    assert_eq!(&after[at..at + SIZE_OF_DIR_ENTRY], &record[..]);
+    assert!(!crate::dirent::layout::is_used(&after, 2), "the slot is still marked used");
+}
+
 #[test]
 fn a_directory_is_created_with_its_own_two_entries() {
     let mut v = vol();

@@ -10,7 +10,8 @@
 use alloc::format;
 use alloc::string::String;
 
-use super::{AllocMode, BackgroundGc, Errors, Fragment, FsyncMode, Mode, Options};
+use super::{AllocMode, BackgroundGc, DiscardUnit, Errors, Fragment, FsyncMode, MemoryMode,
+            Mode, Options};
 
 /// Render `o`. # C: O(number of options)
 pub fn show(o: &Options) -> String {
@@ -25,6 +26,19 @@ pub fn show(o: &Options) -> String {
     }
     if !o.recovery { s.push_str(",disable_roll_forward"); }
     s.push_str(if o.discard { ",discard" } else { ",nodiscard" });
+    if o.discard_unit != d.discard_unit {
+        s.push_str(match o.discard_unit {
+            DiscardUnit::Block => ",discard_unit=block",
+            DiscardUnit::Segment => ",discard_unit=segment",
+            DiscardUnit::Section => ",discard_unit=section",
+        });
+    }
+    if o.memory != d.memory {
+        s.push_str(match o.memory {
+            MemoryMode::Normal => ",memory=normal",
+            MemoryMode::Low => ",memory=low",
+        });
+    }
     s.push_str(if o.user_xattr { ",user_xattr" } else { ",nouser_xattr" });
     s.push_str(if o.acl { ",acl" } else { ",noacl" });
     if o.active_logs != d.active_logs { s.push_str(&format!(",active_logs={}", o.active_logs)); }
@@ -58,6 +72,9 @@ pub fn show(o: &Options) -> String {
     if o.lazytime { s.push_str(",lazytime"); }
     if o.gc_merge { s.push_str(",gc_merge"); }
     if o.atgc { s.push_str(",atgc"); }
+    if o.lookup_mode != d.lookup_mode {
+        s.push_str(&format!(",lookup_mode={}", o.lookup_mode.name()));
+    }
     if o.usrquota { s.push_str(",usrquota"); }
     if o.grpquota { s.push_str(",grpquota"); }
     if o.prjquota { s.push_str(",prjquota"); }

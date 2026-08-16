@@ -70,6 +70,23 @@ pub fn find(area: &[u8], l: &Layout, hash: u32, name: &[u8]) -> Result<Option<En
     Ok(hit)
 }
 
+/// The entry a caller's own predicate accepts.
+///
+/// A folding directory cannot use [`find`]: the hash it searches by is over
+/// the FOLDED name and the comparison is a fold-equality, neither of which is
+/// a byte comparison against the stored bytes.
+/// # C: O(area entries)
+pub fn find_with<F>(area: &[u8], l: &Layout, mut accept: F) -> Result<Option<Entry>, DirError>
+where
+    F: FnMut(u32, &[u8]) -> bool,
+{
+    let mut hit = None;
+    walk(area, l, |e| {
+        if accept(e.hash, &e.name) { hit = Some(e); false } else { true }
+    })?;
+    Ok(hit)
+}
+
 /// Walk `area`, handing each live entry to `f` until it returns false.
 /// # C: O(area entries)
 pub fn walk<F: FnMut(Entry) -> bool>(area: &[u8], l: &Layout, mut f: F)

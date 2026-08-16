@@ -44,16 +44,27 @@ impl<S: SectorSource> Volume<S> {
         let sit_bitmap = checkpoint::sit_bitmap(&cp, &cp_raw, payload)
             .ok_or(Errno::Einval)?
             .to_vec();
+        // A checkpoint that marked the quota files for repair suppresses all
+        // three kinds: accounting against a file known to be inconsistent
+        // writes the inconsistency deeper.
+        let quota_setup = crate::quota::types::resolve(&sb.qf_ino, sb.feature, cp.flags, &opts)
+            .map_err(|_| Errno::Einval)?;
         let (nat_journal, sit_journal) = read_journals(&source, &sb, &cp)?;
         let curseg = read_cursegs(&source, &sb, &cp)?;
         let inode_seed = checksum::inode_seed(&sb.uuid);
+        // Refused above unless it loads, so a folding volume always has one.
+        let casefold = if features::has_casefold(sb.feature) {
+            crate::casefold::Casefold::load(sb.s_encoding, sb.s_encoding_flags).ok()
+        } else {
+            None
+        };
         let (valid_block_count, valid_node_count, valid_inode_count, next_free_nid) = (
             cp.valid_block_count,
             cp.valid_node_count,
             cp.valid_inode_count,
             cp.next_free_nid.max(RESERVED_NODE_NUM),
         );
-        Ok(Self {
+        let mut vol = Self {
             source,
             sb,
             cp,
@@ -63,6 +74,7 @@ impl<S: SectorSource> Volume<S> {
             nat_journal,
             sit_journal,
             inode_seed,
+            casefold,
             opts,
             access,
             writable,
@@ -75,7 +87,28 @@ impl<S: SectorSource> Volume<S> {
             valid_inode_count,
             next_free_nid,
             dirty: false,
-        })
+            quota_setup,
+            quota_info: [const { None }; MAX_QUOTAS],
+            dquots: alloc::collections::BTreeMap::new(),
+            dq_dirty: alloc::collections::BTreeSet::new(),
+            clock: 0,
+            recovering: false,
+            opens: alloc::collections::BTreeMap::new(),
+            orphans: alloc::collections::BTreeSet::new(),
+            pending_discard: alloc::vec::Vec::new(),
+        };
+        // Replay whatever an `fsync` promised since the last checkpoint,
+        // before the mount is handed out — nothing may read the volume in the
+        // state a crash left it in.
+        // Before anything can allocate: a node id still owned by an
+        // unreclaimed orphan handed to a new file would give two inodes one
+        // number.
+        vol.recover_orphans()?;
+        vol.recovering = true;
+        let outcome = vol.recover_at_mount();
+        vol.recovering = false;
+        outcome?;
+        Ok(vol)
     }
 }
 
@@ -180,7 +213,11 @@ pub fn read_cursegs<S: SectorSource>(source: &S, sb: &SuperBlock, cp: &Checkpoin
     -> Result<[Curseg; NR_CURSEG_PERSIST_TYPE], Errno> {
     let start = cp.start(sb.cp_blkaddr, sb.blks_per_seg());
     let compact = cp.has(CP_COMPACT_SUM_FLAG);
-    let base = if cp.node_summaries_present() { NR_CURSEG_PERSIST_TYPE } else { NR_CURSEG_DATA_TYPE };
+    // Only a clean unmount puts the node logs' summaries in the pack. After an
+    // ordinary checkpoint they are in the summary area instead, and counting
+    // back from the pack's end for them would read past its tail.
+    let in_pack =
+        if cp.node_summaries_present() { NR_CURSEG_PERSIST_TYPE } else { NR_CURSEG_DATA_TYPE };
     let mut out = core::array::from_fn(|_| Curseg::empty());
     for (log, seg) in out.iter_mut().enumerate() {
         let (node, i) = crate::volume::curseg::cp_slot(log);
@@ -188,7 +225,13 @@ pub fn read_cursegs<S: SectorSource>(source: &S, sb: &SuperBlock, cp: &Checkpoin
         seg.next_blkoff = if node { cp.cur_node_blkoff[i] } else { cp.cur_data_blkoff[i] };
         seg.alloc_type = cp.alloc_type[log];
         if compact && log < NR_CURSEG_DATA_TYPE { continue; }
-        let addr = summary::normal_sum_addr(start, cp.pack_total_block_count, base, log);
+        let addr = if log < in_pack {
+            summary::normal_sum_addr(start, cp.pack_total_block_count, in_pack, log)
+        } else if seg.segno != NULL_SEGNO {
+            sum_block_addr(sb.ssa_blkaddr, seg.segno)
+        } else {
+            continue;
+        };
         if let Ok(block) = read_one(source, addr) { seg.sum = block; }
     }
     Ok(out)

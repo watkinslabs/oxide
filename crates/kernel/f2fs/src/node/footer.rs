@@ -1,6 +1,6 @@
 //! The twenty-four bytes every node block ends with.
 
-use crate::flags::{DENT_BIT_SHIFT, OFFSET_BIT_SHIFT};
+use crate::flags::{COLD_BIT_SHIFT, DENT_BIT_SHIFT, FSYNC_BIT_SHIFT, OFFSET_BIT_SHIFT};
 use crate::uapi::*;
 
 /// A node block's trailer.
@@ -31,6 +31,12 @@ impl Footer {
 
     /// Whether the node holds a directory's data. # C: O(1)
     pub fn is_dent(&self) -> bool { self.flag & (1 << DENT_BIT_SHIFT) != 0 }
+
+    /// Whether an `fsync` wrote this block for recovery to find. # C: O(1)
+    pub fn is_fsync(&self) -> bool { self.flag & (1 << FSYNC_BIT_SHIFT) != 0 }
+
+    /// Whether the block belongs to a file rather than a directory. # C: O(1)
+    pub fn is_cold(&self) -> bool { self.flag & (1 << COLD_BIT_SHIFT) != 0 }
 }
 
 /// Why a node block was rejected.

@@ -257,7 +257,11 @@ fn a_stored_address_outside_the_main_area_is_refused() {
 }
 
 #[test]
-fn a_compressed_cluster_head_is_reported_rather_than_read_as_data() {
+fn a_cluster_sentinel_on_a_file_with_no_valid_cluster_width_is_an_error() {
+    // The sentinel says "a compressed cluster starts here", but this inode
+    // carries no cluster geometry at all — its width is zero, which the
+    // format does not admit. Reading the following blocks as if they were a
+    // cluster would hand a codec whatever happened to be there.
     let mut b = test_image::with_root();
     let s = nodes::add_sparse_file(&mut b, 4, BLKSIZE as u64, &[]);
     let at = s.addr_base();
@@ -266,6 +270,29 @@ fn a_compressed_cluster_head_is_reported_rather_than_read_as_data() {
     let v = b.mount().unwrap();
     let i = v.read_inode(4).unwrap();
     assert_eq!(v.map_block(&i, 4, 0).unwrap(), Mapped::Compressed);
+    assert_eq!(v.read_whole(&i, 4).err(), Some(Errno::Eio));
+}
+
+#[test]
+fn a_cluster_naming_a_codec_this_build_cannot_unpack_says_so() {
+    // The data is intact and another reader could have it, so this is
+    // "not supported here", not "your filesystem is broken".
+    let mut b = test_image::with_root();
+    let mut s = nodes::Spec::file(4);
+    s.flags = crate::flags::F2FS_COMPR_FL;
+    // One cluster's worth, so the read reaches the sentinel at all.
+    s.size = 4 * BLKSIZE as u64;
+    let s = nodes::add_sparse_with(&mut b, s, &[]);
+    let at = s.addr_base();
+    let algo = crate::compress::Algorithm::Zstd as u8;
+    nodes::patch_inode(&mut b, 4, |blk| {
+        blk[at..at + 4].copy_from_slice(&COMPRESS_ADDR.to_le_bytes());
+        blk[I_COMPRESS_ALGORITHM] = algo;
+        blk[I_LOG_CLUSTER_SIZE] = 2;
+    });
+    let v = b.mount().unwrap();
+    let i = v.read_inode(4).unwrap();
+    assert_eq!(i.compress_algorithm, algo);
     assert_eq!(v.read_whole(&i, 4).err(), Some(Errno::Eopnotsupp));
 }
 

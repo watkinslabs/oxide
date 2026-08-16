@@ -38,13 +38,23 @@ pub fn dots(ino: u32, parent: u32) -> Vec<Ent> {
 /// advances one slot at a time go wrong.
 /// # C: O(entries)
 pub fn dentry_area(l: &Layout, entries: &[Ent]) -> Vec<u8> {
+    dentry_area_hashed(l, entries, hash::name_hash)
+}
+
+/// The same, hashing each name the way the directory would.
+///
+/// A folding directory stores the hash of the FOLDED name, so a fixture that
+/// used the raw hash would build a directory no correct lookup can search.
+/// # C: O(entries)
+pub fn dentry_area_hashed(l: &Layout, entries: &[Ent], hash_of: impl Fn(&[u8]) -> u32)
+    -> Vec<u8> {
     let mut area = vec![0u8; l.len];
     let mut slot = 0usize;
     for e in entries {
         let slots = dentry_slots(e.name.len());
         assert!(slot + slots <= l.max, "fixture directory overflows its area");
         let at = l.dentry_off(slot);
-        put32(&mut area, at + DE_HASH_CODE, hash::name_hash(&e.name));
+        put32(&mut area, at + DE_HASH_CODE, hash_of(&e.name));
         put32(&mut area, at + DE_INO, e.ino);
         put16(&mut area, at + DE_NAME_LEN, e.name.len() as u16);
         area[at + DE_FILE_TYPE] = e.file_type;

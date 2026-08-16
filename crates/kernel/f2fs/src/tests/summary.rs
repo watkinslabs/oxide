@@ -17,6 +17,44 @@ fn the_derived_sizes_are_what_the_format_defines() {
 }
 
 #[test]
+fn the_packed_summary_feature_changes_nothing_at_this_block_size() {
+    // The feature makes the summary block a fixed four kibibytes instead of
+    // the volume's block size. At a four-kibibyte block those are the same
+    // number, so every derived offset is identical and a volume carrying the
+    // bit is read correctly by the ordinary path. That is why the bit is
+    // ACCEPTED rather than refused — it is conformance, not a gap.
+    const PACKED_SUM_BLOCKSIZE: usize = 4096;
+    assert_eq!(BLKSIZE, PACKED_SUM_BLOCKSIZE);
+    let entries = |sum_blocksize: usize| sum_blocksize / 8;
+    let journal_off = |sum_blocksize: usize| SUMMARY_SIZE * entries(sum_blocksize);
+    let journal_size =
+        |sb: usize| sb - SUM_FOOTER_SIZE - journal_off(sb);
+    assert_eq!(entries(PACKED_SUM_BLOCKSIZE), ENTRIES_IN_SUM);
+    assert_eq!(journal_off(PACKED_SUM_BLOCKSIZE), SUM_JOURNAL_OFF);
+    assert_eq!(journal_size(PACKED_SUM_BLOCKSIZE), SUM_JOURNAL_SIZE);
+    assert_eq!((journal_size(PACKED_SUM_BLOCKSIZE) - 2) / NAT_JOURNAL_ENTRY_SIZE,
+               NAT_JOURNAL_ENTRIES);
+}
+
+#[test]
+fn a_wider_block_would_change_every_derived_offset() {
+    // The positive half of the claim above: at a block size this build does
+    // not accept, the packed form and the ordinary form genuinely differ — so
+    // the equality asserted above is a property of 4096, not of the formulas.
+    const WIDE: usize = 16384;
+    let entries = |sum_blocksize: usize| sum_blocksize / 8;
+    assert_ne!(entries(WIDE), entries(4096));
+    assert_ne!(SUMMARY_SIZE * entries(WIDE), SUM_JOURNAL_OFF);
+}
+
+#[test]
+fn one_summary_block_covers_exactly_one_segment() {
+    // The entry array is one slot per block of a segment; a mismatch would
+    // leave the tail of a segment with no owner recorded.
+    assert_eq!(ENTRIES_IN_SUM, BLKS_PER_SEG as usize);
+}
+
+#[test]
 fn the_entries_journal_and_footer_fill_the_block_exactly() {
     assert_eq!(SUM_JOURNAL_OFF + SUM_JOURNAL_SIZE + SUM_FOOTER_SIZE, BLKSIZE);
 }

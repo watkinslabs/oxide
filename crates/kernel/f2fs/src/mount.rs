@@ -35,6 +35,11 @@ pub const F2FS_NAME: &str = "f2fs";
 
 /// A mounted F2FS filesystem.
 pub struct F2fs {
+    /// Kept so freed space can be announced to the device. The volume reads
+    /// and writes through a sector source that deliberately exposes only
+    /// those two operations; discard is a property of the DEVICE, not of the
+    /// medium abstraction, and belongs here.
+    dev: Arc<dyn block::BlockDevice>,
     /// One lock: the volume caches the checkpoint and both journals, which
     /// every read consults.
     pub(crate) volume: sync::Spinlock<Volume<BlockSource>, sync::TaskList>,
@@ -63,6 +68,7 @@ impl F2fs {
         // The volume's own unit is the block, and the source is aimed at it
         // directly: a block address IS the sector number this reads through,
         // so no second unit exists to disagree.
+        let keep = Arc::clone(&dev);
         let src = BlockSource::new(dev)
             .with_sector_size(BLKSIZE as u32)
             .writable(write);
@@ -72,6 +78,7 @@ impl F2fs {
         }
         let source = source.to_string();
         Ok(Arc::new_cyclic(|me| Self {
+            dev: keep,
             volume: sync::Spinlock::new(volume),
             source,
             me: me.clone(),
@@ -93,8 +100,42 @@ impl F2fs {
     /// filesystem state; without one the medium still describes the state the
     /// mount started from.
     /// # C: O(dirty blocks)
-    pub fn mark_clean(&self) -> KResult<()> {
-        self.volume.lock().commit().map_err(errno_to_vfs)
+    pub fn mark_clean(&self) -> KResult<()> { self.checkpoint() }
+
+    /// Write a checkpoint, then announce what it freed.
+    ///
+    /// The order is the contract. Until the checkpoint lands, every released
+    /// block is still referenced by the checkpoint on the medium — announcing
+    /// one first destroys the state a crash would recover to.
+    /// # C: O(dirty blocks + freed runs)
+    pub fn checkpoint(&self) -> KResult<()> {
+        let runs = {
+            let mut v = self.volume.lock();
+            v.commit().map_err(errno_to_vfs)?;
+            v.take_discards()
+        };
+        self.announce_free(&runs);
+        Ok(())
+    }
+
+    /// Tell the device it may forget these runs.
+    ///
+    /// Best effort by nature: a discard that fails costs nothing but the
+    /// space staying marked used on the device, so a failure is not allowed
+    /// to fail the checkpoint that already succeeded.
+    /// # C: O(runs)
+    fn announce_free(&self, runs: &[(u32, u32)]) {
+        if runs.is_empty() || !self.dev.supports_discard() { return; }
+        let dev_block = u64::from(self.dev.block_size().max(1));
+        for &(start, len) in runs {
+            let byte = u64::from(start) * BLKSIZE as u64;
+            let bytes = u64::from(len) * BLKSIZE as u64;
+            if byte % dev_block != 0 || bytes % dev_block != 0 { continue; }
+            let first = byte / dev_block;
+            let Ok(blocks) = u32::try_from(bytes / dev_block) else { continue };
+            let mut req = block::BlockRequest::new_discard(first, blocks);
+            let _ = self.dev.submit_sync(&mut req);
+        }
     }
 
     /// The root inode. # C: O(1 block)
@@ -142,3 +183,7 @@ impl vfs::fs::FileSystem for F2fs {
             .map(|fs| Arc::new(sb::F2fsSuperOps { fs }) as Arc<dyn vfs::superblock::SuperOps>)
     }
 }
+
+#[cfg(test)]
+#[path = "tests/adapter.rs"]
+mod tests;

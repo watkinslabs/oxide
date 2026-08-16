@@ -133,6 +133,15 @@ fn areas(sb: &SuperBlock) -> Result<(), SbError> {
 /// What this mount may do with the volume, or why it may not.
 /// # C: O(1)
 pub fn access(sb: &SuperBlock) -> Result<features::Access, features::Refusal> {
+    // A folding volume is mountable exactly when its encoding is one this
+    // build can load: the table is what every lookup resolves through, and
+    // guessing at an encoding we do not have would report names absent that
+    // the directory would match.
+    if features::has_casefold(sb.feature)
+        && crate::casefold::Casefold::load(sb.s_encoding, sb.s_encoding_flags).is_err()
+    {
+        return Err(features::Refusal::Casefold);
+    }
     features::access(sb.feature, sb.multi_device())
 }
 

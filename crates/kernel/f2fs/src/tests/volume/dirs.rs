@@ -178,26 +178,95 @@ fn a_lookup_in_something_that_is_not_a_directory_finds_nothing() {
     assert!(v.lookup(&file, 4, b"x").is_err());
 }
 
-#[test]
-fn a_case_folding_directory_refuses_rather_than_mis_resolving() {
-    // Names resolve through a table this build does not carry, so answering
-    // from the stored bytes would report a name absent that would match.
+/// A volume whose names fold, holding `entries` in its root.
+fn folding_root(entries: &[Ent]) -> Volume<sectors::MemImage> {
     let mut b = Builder::new();
+    b.feature |= crate::flags::FEATURE_CASEFOLD;
+    b.s_encoding = crate::uapi::ENC_UTF8_12_1;
     let mut s = nodes::Spec::dir(ROOT_INO);
-    s.flags = F2FS_CASEFOLD_FL;
+    s.flags = crate::flags::F2FS_CASEFOLD_FL;
     s.inline |= INLINE_DENTRY | INLINE_DATA | DATA_EXIST;
     let (at, len) = (s.addr_base() + INLINE_RESERVED_SIZE * 4,
                      (s.addrs_per_inode() - INLINE_RESERVED_SIZE) * 4);
     let layout = crate::dirent::Layout::inline(len);
-    let area = nodes::dentry_area(&layout, &nodes::dir::dots(ROOT_INO, ROOT_INO));
+    let cf = crate::casefold::Casefold::load(crate::uapi::ENC_UTF8_12_1, 0).unwrap();
+    let mut all = nodes::dir::dots(ROOT_INO, ROOT_INO);
+    all.extend_from_slice(entries);
+    // A folding directory stores the hash of the FOLDED name.
+    let area = nodes::dir::dentry_area_hashed(&layout, &all, |n| {
+        crate::casefold::Query::prepare(&cf, n).unwrap().hash()
+    });
     let mut block = nodes::inode_block(&s);
     block[at..at + len].copy_from_slice(&area);
     nodes::place_inode(&mut b, &s, block, 1);
+    b.mount().unwrap()
+}
+
+#[test]
+fn a_folding_volume_mounts_when_its_encoding_is_one_we_carry() {
+    let v = folding_root(&[]);
+    assert!(v.casefold().is_some());
+    assert!(v.root().unwrap().casefolded());
+}
+
+#[test]
+fn a_folding_volume_whose_encoding_we_cannot_load_is_refused() {
+    // Guessing at a table we do not have would report names absent that the
+    // directory would match.
+    let mut b = Builder::new();
+    b.feature |= crate::flags::FEATURE_CASEFOLD;
+    b.s_encoding = 0xBEEF;
+    nodes::add_inline_dir(&mut b, ROOT_INO, &[]);
+    assert_eq!(b.mount().err(), Some(Errno::Einval));
+}
+
+#[test]
+fn a_name_is_found_by_any_spelling_of_its_case() {
+    let v = folding_root(&[ent("README", 10, FT_REG_FILE)]);
+    let root = v.root().unwrap();
+    for spelling in [b"README".as_slice(), b"readme", b"ReadMe", b"rEaDmE"] {
+        assert_eq!(v.lookup(&root, ROOT_INO, spelling).unwrap().ino, 10,
+                   "lost {:?}", core::str::from_utf8(spelling));
+    }
+}
+
+#[test]
+fn a_genuinely_different_name_is_still_absent() {
+    let v = folding_root(&[ent("README", 10, FT_REG_FILE)]);
+    let root = v.root().unwrap();
+    assert_eq!(v.lookup(&root, ROOT_INO, b"README2").err(), Some(Errno::Enoent));
+    assert_eq!(v.lookup(&root, ROOT_INO, b"READM").err(), Some(Errno::Enoent));
+}
+
+#[test]
+fn the_two_dot_names_are_compared_exactly_not_folded() {
+    let v = folding_root(&[]);
+    let root = v.root().unwrap();
+    assert_eq!(v.lookup(&root, ROOT_INO, b".").unwrap().ino, ROOT_INO);
+    assert_eq!(v.lookup(&root, ROOT_INO, b"..").unwrap().ino, ROOT_INO);
+}
+
+#[test]
+fn a_folding_directory_still_lists_the_bytes_it_stored() {
+    // Folding decides what MATCHES, never what is reported.
+    let v = folding_root(&[ent("README", 10, FT_REG_FILE)]);
+    let root = v.root().unwrap();
+    let names: Vec<Vec<u8>> =
+        v.read_dir(&root, ROOT_INO).unwrap().into_iter().map(|e| e.name).collect();
+    assert!(names.contains(&b"README".to_vec()));
+    assert!(!names.contains(&b"readme".to_vec()));
+}
+
+#[test]
+fn a_non_folding_directory_is_still_case_sensitive() {
+    // The fold must key on the directory's own flag, or every volume becomes
+    // case-insensitive the moment one directory is.
+    let mut b = Builder::new();
+    nodes::add_inline_dir(&mut b, ROOT_INO, &[ent("README", 10, FT_REG_FILE)]);
     let v = b.mount().unwrap();
     let root = v.root().unwrap();
-    assert!(root.casefolded());
-    assert_eq!(v.lookup(&root, ROOT_INO, b".").err(), Some(Errno::Eopnotsupp));
-    assert_eq!(v.read_dir(&root, ROOT_INO).err(), Some(Errno::Eopnotsupp));
+    assert_eq!(v.lookup(&root, ROOT_INO, b"README").unwrap().ino, 10);
+    assert_eq!(v.lookup(&root, ROOT_INO, b"readme").err(), Some(Errno::Enoent));
 }
 
 #[test]

@@ -223,9 +223,17 @@ fn access_reports_what_the_feature_word_permits() {
 }
 
 #[test]
-fn access_refuses_an_unknown_bit() {
+fn access_refuses_a_bit_that_changes_how_names_resolve() {
+    let mut b = good();
+    put32(&mut b, SB_FEATURE, crate::flags::FEATURE_CASEFOLD);
+    reseal(&mut b);
+    assert!(access(&parse(&b).unwrap()).is_err());
+}
+
+#[test]
+fn access_ignores_a_bit_it_does_not_recognise() {
     let mut b = good();
     put32(&mut b, SB_FEATURE, 1 << 25);
     reseal(&mut b);
-    assert!(access(&parse(&b).unwrap()).is_err());
+    assert_eq!(access(&parse(&b).unwrap()), Ok(crate::features::Access::ReadWrite));
 }

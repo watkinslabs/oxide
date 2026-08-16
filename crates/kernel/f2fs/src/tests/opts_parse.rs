@@ -168,9 +168,6 @@ fn a_name_this_build_cannot_deliver_is_refused_rather_than_dropped() {
         "inlinecrypt",
         "fault_injection=1",
         "fault_type=1",
-        "memory=low",
-        "discard_unit=block",
-        "lookup_mode=perf",
         "usrjquota=aquota.user",
         "grpjquota=aquota.group",
         "prjjquota=aquota.project",
@@ -178,6 +175,22 @@ fn a_name_this_build_cannot_deliver_is_refused_rather_than_dropped() {
     ] {
         assert_eq!(p(name), Err(Errno::Eopnotsupp), "{name} should be refused");
     }
+}
+
+#[test]
+fn the_two_policy_knobs_this_build_honours_are_accepted() {
+    // Both change what the mount actually does — which granularity freed
+    // space is announced at, and how much memory it may spend — so they are
+    // honoured rather than refused.
+    use crate::opts::{DiscardUnit, MemoryMode};
+    assert_eq!(p("discard_unit=segment").unwrap().discard_unit, DiscardUnit::Segment);
+    assert_eq!(p("memory=low").unwrap().memory, MemoryMode::Low);
+    assert_eq!(p("memory=huge"), Err(Errno::Einval));
+    assert_eq!(p("lookup_mode=perf").unwrap().lookup_mode, crate::casefold::LookupMode::Perf);
+    assert_eq!(p("lookup_mode=compat").unwrap().lookup_mode,
+               crate::casefold::LookupMode::Compat);
+    assert_eq!(p("lookup_mode=auto").unwrap().lookup_mode, crate::casefold::LookupMode::Auto);
+    assert_eq!(p("lookup_mode=fast"), Err(Errno::Einval));
 }
 
 #[test]

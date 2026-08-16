@@ -10,6 +10,7 @@ fn a_plain_volume_mounts_read_write() {
 #[test]
 fn every_readable_feature_mounts() {
     for f in [
+        FEATURE_CASEFOLD,
         FEATURE_EXTRA_ATTR,
         FEATURE_PRJQUOTA,
         FEATURE_INODE_CHKSUM,
@@ -34,28 +35,27 @@ fn a_volume_marked_read_only_mounts_read_only() {
 }
 
 #[test]
-fn an_unknown_bit_refuses_the_mount() {
-    // The bit above every one this build knows. A later format revision could
-    // change any layout, and mounting it would misread rather than fail.
-    let bit = 1u32 << 20;
-    assert_eq!(access(bit, false), Err(Refusal::Unknown(bit)));
+fn an_unrecognised_bit_is_ignored() {
+    // The feature word is not an incompatibility mask. Every bit that changes
+    // a layout is named and judged on its own; refusing a volume for a bit
+    // that means nothing here would refuse filesystems that read perfectly.
+    assert_eq!(access(1u32 << 20, false), Ok(Access::ReadWrite));
+    assert_eq!(access(1u32 << 31, false), Ok(Access::ReadWrite));
 }
 
 #[test]
-fn an_unknown_bit_beside_known_ones_still_refuses() {
-    let bit = 1u32 << 31;
-    assert_eq!(access(FEATURE_EXTRA_ATTR | bit, false), Err(Refusal::Unknown(bit)));
+fn an_unrecognised_bit_does_not_disturb_the_recognised_ones() {
+    let bit = 1u32 << 21;
+    assert_eq!(access(FEATURE_EXTRA_ATTR | bit, false), Ok(Access::ReadWrite));
+    assert_eq!(access(FEATURE_RO | bit, false), Ok(Access::ReadOnly));
+    assert_eq!(access(FEATURE_BLKZONED | bit, false), Err(Refusal::Zoned));
 }
 
 #[test]
-fn unknown_reports_only_the_unknown_bits() {
-    let bits = (1u32 << 20) | (1u32 << 21);
-    assert_eq!(access(KNOWN | bits, false), Err(Refusal::Unknown(bits)));
-}
-
-#[test]
-fn casefolding_refuses_because_names_would_resolve_differently() {
-    assert_eq!(access(FEATURE_CASEFOLD, false), Err(Refusal::Casefold));
+fn casefolding_alone_does_not_refuse_here() {
+    // Whether a folding volume mounts is decided by its ENCODING, which this
+    // predicate cannot see; `sb::sanity::access` makes that call.
+    assert_eq!(access(FEATURE_CASEFOLD, false), Ok(Access::ReadWrite));
 }
 
 #[test]
@@ -78,18 +78,23 @@ fn a_second_listed_device_refuses_without_any_feature_bit() {
 #[test]
 fn refusal_beats_read_only() {
     // A refused volume is refused whether or not it also asks to be read-only.
-    assert_eq!(access(FEATURE_RO | FEATURE_CASEFOLD, false), Err(Refusal::Casefold));
+    assert_eq!(access(FEATURE_RO | FEATURE_BLKZONED, false), Err(Refusal::Zoned));
 }
 
 #[test]
-fn unknown_beats_every_other_refusal() {
-    let bit = 1u32 << 24;
-    assert!(matches!(access(FEATURE_CASEFOLD | bit, false), Err(Refusal::Unknown(_))));
-}
-
-#[test]
-fn known_covers_every_named_bit_and_nothing_above_them() {
+fn the_recognised_set_covers_every_named_bit_and_nothing_above_them() {
     assert_eq!(KNOWN, 0x0001_FFFF);
+}
+
+#[test]
+fn only_the_bits_that_change_how_bytes_are_read_are_refused() {
+    // The whole refusal surface, stated once: a bit not in this list mounts.
+    for f in 0..17u32 {
+        let bit = 1u32 << f;
+        let refused = access(bit, false).is_err();
+        let should = matches!(bit, FEATURE_BLKZONED | FEATURE_DEVICE_ALIAS);
+        assert_eq!(refused, should, "feature {bit:#x}");
+    }
 }
 
 #[test]

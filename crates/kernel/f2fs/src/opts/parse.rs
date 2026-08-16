@@ -9,7 +9,8 @@
 
 use syscall::errno::Errno;
 
-use super::{AllocMode, BackgroundGc, Errors, Fragment, FsyncMode, Mode, Options};
+use super::{AllocMode, BackgroundGc, DiscardUnit, Errors, Fragment, FsyncMode, MemoryMode,
+            Mode, Options};
 
 const SEP: char = ',';
 const ASSIGN: char = '=';
@@ -38,6 +39,8 @@ fn one(o: &mut Options, key: &str, val: Option<&str>) -> Result<(), Errno> {
         "disable_roll_forward" => { flag(val)?; o.recovery = false; }
         "norecovery" => { flag(val)?; o.recovery = false; }
         "discard" => { flag(val)?; o.discard = true; }
+        "discard_unit" => o.discard_unit = discard_unit(need(val)?)?,
+        "memory" => o.memory = memory(need(val)?)?,
         "nodiscard" => { flag(val)?; o.discard = false; }
         "user_xattr" => { flag(val)?; o.user_xattr = true; }
         "nouser_xattr" => { flag(val)?; o.user_xattr = false; }
@@ -80,6 +83,10 @@ fn one(o: &mut Options, key: &str, val: Option<&str>) -> Result<(), Errno> {
         "gc_merge" => { flag(val)?; o.gc_merge = true; }
         "nogc_merge" => { flag(val)?; o.gc_merge = false; }
         "atgc" => { flag(val)?; o.atgc = true; }
+        "lookup_mode" => {
+            o.lookup_mode =
+                crate::casefold::LookupMode::parse(need(val)?.as_bytes()).ok_or(Errno::Einval)?;
+        }
         "quota" | "usrquota" => { flag(val)?; o.usrquota = true; }
         "grpquota" => { flag(val)?; o.grpquota = true; }
         "prjquota" => { flag(val)?; o.prjquota = true; }
@@ -98,9 +105,6 @@ fn one(o: &mut Options, key: &str, val: Option<&str>) -> Result<(), Errno> {
         | "inlinecrypt"
         | "fault_injection"
         | "fault_type"
-        | "memory"
-        | "discard_unit"
-        | "lookup_mode"
         | "usrjquota"
         | "grpjquota"
         | "prjjquota"
@@ -160,6 +164,25 @@ fn fsync_mode(v: &str) -> Result<FsyncMode, Errno> {
         "posix" => Ok(FsyncMode::Posix),
         "strict" => Ok(FsyncMode::Strict),
         "nobarrier" => Ok(FsyncMode::Nobarrier),
+        _ => Err(Errno::Einval),
+    }
+}
+
+/// # C: O(1)
+fn discard_unit(v: &str) -> Result<DiscardUnit, Errno> {
+    match v {
+        "block" => Ok(DiscardUnit::Block),
+        "segment" => Ok(DiscardUnit::Segment),
+        "section" => Ok(DiscardUnit::Section),
+        _ => Err(Errno::Einval),
+    }
+}
+
+/// # C: O(1)
+fn memory(v: &str) -> Result<MemoryMode, Errno> {
+    match v {
+        "normal" => Ok(MemoryMode::Normal),
+        "low" => Ok(MemoryMode::Low),
         _ => Err(Errno::Einval),
     }
 }

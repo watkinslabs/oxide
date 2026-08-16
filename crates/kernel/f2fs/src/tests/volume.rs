@@ -50,10 +50,12 @@ fn a_volume_marked_read_only_mounts_read_only_even_when_write_was_asked() {
 }
 
 #[test]
-fn an_unknown_feature_bit_refuses_the_mount() {
+fn an_unrecognised_feature_bit_still_mounts() {
+    // Matching the reference: the feature word is not an incompatibility mask.
     let mut b = test_image::with_root();
     b.feature |= 1 << 22;
-    assert_eq!(b.mount().err(), Some(Errno::Einval));
+    let v = b.mount().unwrap();
+    assert_eq!(v.root_ino(), ROOT_INO);
 }
 
 #[test]

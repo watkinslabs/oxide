@@ -191,9 +191,15 @@ fn the_next_free_block_starts_where_it_is_told() {
 fn the_free_segment_count_matches_the_table() {
     let mut v = vol();
     v.load_segments().unwrap();
-    let by_hand =
-        (0..test_image::SEG_MAIN).filter(|&s| v.seg_valid(s) == 0).count() as u32;
+    // A segment a log holds open is not free however empty it is: the log
+    // will fill it, and counting it would offer the allocator a segment that
+    // is already spoken for.
+    let by_hand = (0..test_image::SEG_MAIN)
+        .filter(|&s| v.seg_valid(s) == 0 && !v.is_current(s))
+        .count() as u32;
     assert_eq!(v.free_segment_count(), by_hand);
+    assert!((0..test_image::SEG_MAIN).any(|s| v.is_current(s) && v.seg_valid(s) == 0),
+            "no empty open segment, so the exclusion is untested");
 }
 
 #[test]

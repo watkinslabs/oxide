@@ -73,6 +73,8 @@ pub fn super_bytes(b: &Builder) -> Vec<u8> {
         .copy_from_slice(b"mp4");
     put32(&mut s, SB_CP_PAYLOAD, b.cp_payload);
     put32(&mut s, SB_FEATURE, b.feature);
+    put16(&mut s, SB_S_ENCODING, b.s_encoding);
+    for (i, ino) in b.qf_ino.iter().enumerate() { put32(&mut s, SB_QF_INO + i * 4, *ino); }
     let crc = checksum::crc32(&s[..SB_CRC]);
     put32(&mut s, SB_CRC, crc);
     s

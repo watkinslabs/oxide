@@ -94,8 +94,9 @@ fn four_logs_split_hot_from_cold_on_both_sides() {
     use crate::volume::curseg::log_for;
     assert_eq!(log_for(Kind::DirData, 4), CURSEG_HOT_DATA);
     assert_eq!(log_for(Kind::FileData, 4), CURSEG_COLD_DATA);
-    assert_eq!(log_for(Kind::DirNode, 4), CURSEG_HOT_NODE);
-    assert_eq!(log_for(Kind::FileNode, 4), CURSEG_HOT_NODE);
+    // The node side splits on temperature: only a file's own dnode is warm.
+    assert_eq!(log_for(Kind::FileNode, 4), CURSEG_WARM_NODE);
+    assert_eq!(log_for(Kind::DirNode, 4), CURSEG_COLD_NODE);
     assert_eq!(log_for(Kind::IndirectNode, 4), CURSEG_COLD_NODE);
 }
 

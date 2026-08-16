@@ -37,23 +37,54 @@ impl<S: SectorSource> Volume<S> {
     pub fn lookup(&self, inode: &Inode, ino: u32, name: &[u8])
         -> Result<DirEntry, Errno> {
         if name.is_empty() || name.len() > NAME_LEN { return Err(Errno::Enametoolong); }
-        // A case-folding directory resolves names through a table this build
-        // does not carry. Answering from the stored bytes would report a name
-        // absent that the directory would match, so it is refused.
-        if inode.casefolded() || inode.encrypted() { return Err(Errno::Eopnotsupp); }
-        let want = hash::name_hash(name);
+        // Names in an encrypted directory are ciphertext without a key, so
+        // answering from the stored bytes would report the wrong thing rather
+        // than nothing.
+        if inode.encrypted() { return Err(Errno::Eopnotsupp); }
+        let folding = inode.casefolded() && self.casefold.is_some();
+        let query = match (folding, self.casefold.as_ref()) {
+            (true, Some(cf)) => Some(crate::casefold::Query::prepare(cf, name)?),
+            _ => None,
+        };
+        // A folding directory buckets by the hash of the FOLDED name, so every
+        // spelling searches the one bucket the entry is in.
+        let want = match &query { Some(q) => q.hash(), None => hash::name_hash(name) };
+        let matches = |h: u32, de: &[u8], use_hash: bool| -> bool {
+            if use_hash && h != want { return false; }
+            match &query { Some(q) => q.matches(de), None => de == name }
+        };
         if inode.inline_dentry() {
             let (area, layout) = self.inline_dir(inode, ino)?;
-            let hit = deblock::find(&area, &layout, want, name).map_err(|_| Errno::Eio)?;
+            // One area: there is no bucket to pick, so the hash never gates.
+            let hit = deblock::find_with(&area, &layout, |h, de| matches(h, de, false))
+                .map_err(|_| Errno::Eio)?;
             return hit.map(into_entry).ok_or(Errno::Enoent);
         }
+        let plan = match self.casefold.as_ref() {
+            Some(cf) => crate::casefold::plan_for(folding, self.opts.lookup_mode, cf),
+            None => crate::casefold::Plan::HashOnly,
+        };
         let depth = inode.current_depth.min(MAX_LOOKUP_DEPTH);
-        for level in 0..depth {
-            for index in bucket::search_range(want, level, inode.dir_level) {
-                let Some(block) = self.dir_block(inode, ino, index)? else { continue };
-                let hit = deblock::find(&block, &Layout::block(), want, name)
-                    .map_err(|_| Errno::Eio)?;
-                if let Some(e) = hit { return Ok(into_entry(e)); }
+        for pass in plan.passes() {
+            let use_hash = *pass == crate::casefold::Pass::Hash;
+            for level in 0..depth {
+                // Without the hash there is no bucket to aim at, so the pass
+                // walks the level whole — that is what makes it a rescan and
+                // what finds an entry hashed under an older encoding.
+                let range = if use_hash {
+                    bucket::search_range(want, level, inode.dir_level)
+                } else {
+                    let n = bucket::dir_buckets(level, inode.dir_level);
+                    let start = bucket::dir_block_index(level, inode.dir_level, 0);
+                    start..start + u64::from(n) * u64::from(bucket::bucket_blocks(level))
+                };
+                for index in range {
+                    let Some(block) = self.dir_block(inode, ino, index)? else { continue };
+                    let hit = deblock::find_with(&block, &Layout::block(),
+                                                 |h, de| matches(h, de, use_hash))
+                        .map_err(|_| Errno::Eio)?;
+                    if let Some(e) = hit { return Ok(into_entry(e)); }
+                }
             }
         }
         Err(Errno::Enoent)
@@ -62,7 +93,8 @@ impl<S: SectorSource> Volume<S> {
     /// Every entry of a directory, in the order the medium holds them.
     /// # C: O(directory blocks)
     pub fn read_dir(&self, inode: &Inode, ino: u32) -> Result<Vec<DirEntry>, Errno> {
-        if inode.casefolded() || inode.encrypted() { return Err(Errno::Eopnotsupp); }
+        // Listing needs no fold: the stored bytes ARE the names to report.
+        if inode.encrypted() { return Err(Errno::Eopnotsupp); }
         if inode.inline_dentry() {
             let (area, layout) = self.inline_dir(inode, ino)?;
             let list = deblock::entries(&area, &layout).map_err(|_| Errno::Eio)?;

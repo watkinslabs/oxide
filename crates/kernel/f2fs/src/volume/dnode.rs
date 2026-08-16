@@ -20,6 +20,32 @@ use crate::uapi::*;
 use super::curseg::Kind;
 use super::Volume;
 
+/// Stamp a node block's own offset within its inode's node tree.
+///
+/// `write_node` deliberately leaves the flag word alone, so this is set by the
+/// caller that knows where in the tree the node sits — and it must be, because
+/// a node whose recorded offset is zero claims to BE the inode. The low mark
+/// bits are preserved: they carry the cold, fsync and dentry marks.
+/// # C: O(1)
+pub fn set_node_ofs(block: &mut [u8], ofs: u32) {
+    let at = NODE_FOOTER_OFF + FOOTER_FLAG;
+    let old = le32(block, at).unwrap_or(0);
+    let flag = (ofs << crate::flags::OFFSET_BIT_SHIFT) | (old & crate::flags::OFFSET_BIT_MASK);
+    block[at..at + 4].copy_from_slice(&flag.to_le_bytes());
+}
+
+/// Where each of the inode's five node slots sits in the tree. # C: O(1)
+pub fn slot_ofs(slot: usize) -> u32 {
+    let p = NIDS_PER_BLOCK as u32;
+    match slot {
+        0 => 1,
+        1 => 2,
+        2 => 3,
+        3 => 4 + p,
+        _ => 5 + 2 * p,
+    }
+}
+
 /// Which node carries a file block's address.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Holder {
@@ -69,7 +95,10 @@ impl<S: SectorSource> Volume<S> {
             }
             Step::DoubleIndirect { nid_slot, indirect, dnode, index } => {
                 let outer = self.ensure_inode_nid(ino, nid_slot, Kind::IndirectNode)?;
-                let mid = self.ensure_child_nid(outer, ino, indirect, Kind::IndirectNode)?;
+                // Each middle node costs its own block plus a block of leaves.
+                let stride = NIDS_PER_BLOCK as u32 + 1;
+                let mid =
+                    self.ensure_child_nid_at(outer, ino, indirect, Kind::IndirectNode, stride)?;
                 let d = self.ensure_child_nid(mid, ino, dnode, kind)?;
                 Ok((Holder::Direct(d), index))
             }
@@ -85,7 +114,9 @@ impl<S: SectorSource> Volume<S> {
         let existing = le32(&block, at).ok_or(Errno::Eio)?;
         if existing != 0 { return Ok(existing); }
         let nid = self.alloc_nid()?;
-        self.write_node(nid, ino, vec![0u8; BLKSIZE], kind)?;
+        let mut fresh = vec![0u8; BLKSIZE];
+        set_node_ofs(&mut fresh, slot_ofs(slot));
+        self.write_node(nid, ino, fresh, kind)?;
         block[at..at + 4].copy_from_slice(&nid.to_le_bytes());
         self.put_inode(ino, block)?;
         Ok(nid)
@@ -95,15 +126,29 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(1) blocks
     pub(crate) fn ensure_child_nid(&mut self, parent: u32, ino: u32, slot: usize, kind: Kind)
         -> Result<u32, Errno> {
+        self.ensure_child_nid_at(parent, ino, slot, kind, 1)
+    }
+
+    /// The same, saying how many tree offsets each child of `parent` spans.
+    ///
+    /// A leaf under an indirect node spans one; a middle node under a
+    /// double-indirect spans its own block plus a block of leaves, so the
+    /// offsets step by more than one and a node stamped with the wrong one
+    /// claims to be a different node of the same file.
+    /// # C: O(1) blocks
+    pub(crate) fn ensure_child_nid_at(&mut self, parent: u32, ino: u32, slot: usize, kind: Kind,
+                                      stride: u32) -> Result<u32, Errno> {
         let mut block = self.read_node(parent, Some(ino))?.block;
         let at = slot * 4;
         let existing = le32(&block, at).ok_or(Errno::Eio)?;
         if existing != 0 { return Ok(existing); }
+        let parent_ofs = crate::node::footer::parse(&block).map(|f| f.ofs_of_node()).unwrap_or(0);
         let nid = self.alloc_nid()?;
-        self.write_node(nid, ino, vec![0u8; BLKSIZE], kind)?;
+        let mut fresh = vec![0u8; BLKSIZE];
+        set_node_ofs(&mut fresh, parent_ofs + 1 + slot as u32 * stride);
+        self.write_node(nid, ino, fresh, kind)?;
         block[at..at + 4].copy_from_slice(&nid.to_le_bytes());
-        let parent_kind = Kind::IndirectNode;
-        self.write_node(parent, ino, block, parent_kind)?;
+        self.write_node(parent, ino, block, Kind::IndirectNode)?;
         Ok(nid)
     }
 
@@ -133,7 +178,15 @@ impl<S: SectorSource> Volume<S> {
                 if ofs >= inode.addrs_per_inode() { return Err(Errno::Efbig); }
                 let at = inode.addr_base() + ofs * 4;
                 block[at..at + 4].copy_from_slice(&addr.to_le_bytes());
-                self.put_inode(ino, block)
+                self.put_inode(ino, block)?;
+                // The cached extent is computed from exactly these addresses,
+                // and a write moves blocks. Left alone it keeps answering
+                // with the address the block used to have, and every read of
+                // that block returns the PREVIOUS contents — stale data, with
+                // nothing reporting an error. Only the inode's own array
+                // feeds the extent, so a direct node's addresses cannot
+                // invalidate it.
+                self.refresh_extent(ino)
             }
             Holder::Direct(nid) => {
                 let mut block = self.read_node(nid, Some(ino))?.block;

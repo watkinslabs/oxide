@@ -43,9 +43,22 @@ pub fn room_for(area: &[u8], l: &Layout, slots: usize) -> Option<usize> {
 
 /// Lay one entry into `area` at `slot`. # C: O(name len)
 pub fn place_entry(area: &mut [u8], l: &Layout, slot: usize, name: &[u8], ino: u32, ft: u8) {
+    place_entry_hashed(area, l, slot, name, hash::name_hash(name), ino, ft)
+}
+
+/// The same, under a hash the caller computed.
+///
+/// A folding directory stores the hash of the FOLDED name, so the bucket a
+/// later lookup searches is the one every spelling of the name lands in.
+/// Storing the raw hash there makes the entry findable only by the exact
+/// spelling it was created with.
+/// # C: O(name len)
+#[allow(clippy::too_many_arguments)]
+pub fn place_entry_hashed(area: &mut [u8], l: &Layout, slot: usize, name: &[u8], hash: u32,
+                          ino: u32, ft: u8) {
     let slots = dentry_slots(name.len());
     let at = l.dentry_off(slot);
-    put32(area, at + DE_HASH_CODE, hash::name_hash(name));
+    put32(area, at + DE_HASH_CODE, hash);
     put32(area, at + DE_INO, ino);
     put16(area, at + DE_NAME_LEN, name.len() as u16);
     area[at + DE_FILE_TYPE] = ft;
@@ -63,6 +76,12 @@ pub fn place_entry(area: &mut [u8], l: &Layout, slot: usize, name: &[u8], ino: u
 }
 
 /// Clear the entry starting at `slot`, and every slot it spans.
+///
+/// Only the BITMAP is cleared. The record itself is left exactly as it was,
+/// which is what the format does — and it is why an insert must zero the
+/// continuation slots it covers: the bytes a deleted entry leaves behind are
+/// still there, and a walker that steps one slot at a time reads them as an
+/// entry that no longer exists.
 /// # C: O(slots)
 pub fn clear_entry(area: &mut [u8], l: &Layout, slot: usize) -> Option<u32> {
     let at = l.dentry_off(slot);
@@ -74,7 +93,6 @@ pub fn clear_entry(area: &mut [u8], l: &Layout, slot: usize) -> Option<u32> {
         if s >= l.max { break; }
         area[s / 8] &= !(1 << (s % 8));
     }
-    area[at..at + SIZE_OF_DIR_ENTRY].fill(0);
     Some(ino)
 }
 
@@ -91,27 +109,28 @@ impl<S: SectorSource> Volume<S> {
         self.writable_or_err()?;
         if name.is_empty() || name.len() > NAME_LEN { return Err(Errno::Enametoolong); }
         let inode = self.read_inode(dir)?;
-        if inode.casefolded() || inode.encrypted() { return Err(Errno::Eopnotsupp); }
+        if inode.encrypted() { return Err(Errno::Eopnotsupp); }
+        let want = self.entry_hash(&inode, name)?;
         let slots = dentry_slots(name.len());
         if inode.inline_dentry() {
             let (at, len) = inode.inline_data_span();
             let l = Layout::inline(len);
             let mut block = self.inode_bytes(dir)?;
             if let Some(slot) = room_for(&block[at..at + len], &l, slots) {
-                place_entry(&mut block[at..at + len], &l, slot, name, ino, ft);
+                place_entry_hashed(&mut block[at..at + len], &l, slot, name, want, ino, ft);
                 self.put_inode(dir, block)?;
                 return Ok(());
             }
             self.convert_inline_dir(dir)?;
         }
-        self.add_regular_dentry(dir, name, ino, ft, slots)
+        self.add_regular_dentry(dir, name, ino, ft, slots, want)
     }
 
     /// Add to a directory whose entries live in blocks. # C: O(depth) blocks
-    fn add_regular_dentry(&mut self, dir: u32, name: &[u8], ino: u32, ft: u8, slots: usize)
-        -> Result<(), Errno> {
+    #[allow(clippy::too_many_arguments)]
+    fn add_regular_dentry(&mut self, dir: u32, name: &[u8], ino: u32, ft: u8, slots: usize,
+                          want: u32) -> Result<(), Errno> {
         let l = Layout::block();
-        let want = hash::name_hash(name);
         let inode = self.read_inode(dir)?;
         let dir_level = inode.dir_level;
         let mut depth = inode.current_depth.max(1);
@@ -123,7 +142,7 @@ impl<S: SectorSource> Volume<S> {
                     Mapped::Hole => vec![0u8; BLKSIZE],
                 };
                 let Some(slot) = room_for(&area, &l, slots) else { continue };
-                place_entry(&mut area, &l, slot, name, ino, ft);
+                place_entry_hashed(&mut area, &l, slot, name, want, ino, ft);
                 self.write_one_block(dir, index, 0, &area)?;
                 let size = ((index + 1) * BLKSIZE as u64).max(self.read_inode(dir)?.size);
                 if level + 1 > depth { depth = level + 1; }
@@ -182,8 +201,8 @@ impl<S: SectorSource> Volume<S> {
     pub(crate) fn remove_dentry(&mut self, dir: u32, name: &[u8]) -> Result<u32, Errno> {
         self.writable_or_err()?;
         let inode = self.read_inode(dir)?;
-        if inode.casefolded() || inode.encrypted() { return Err(Errno::Eopnotsupp); }
-        let want = hash::name_hash(name);
+        if inode.encrypted() { return Err(Errno::Eopnotsupp); }
+        let want = self.entry_hash(&inode, name)?;
         if inode.inline_dentry() {
             let (at, len) = inode.inline_data_span();
             let l = Layout::inline(len);
@@ -219,6 +238,21 @@ impl<S: SectorSource> Volume<S> {
             }
         }
         Err(Errno::Enoent)
+    }
+}
+
+impl<S: SectorSource> Volume<S> {
+    /// The hash an entry of `dir` is stored under.
+    ///
+    /// A folding directory hashes the FOLDED name, so every spelling reaches
+    /// the same bucket; storing the raw hash makes the entry findable only by
+    /// the spelling it was created with.
+    /// # C: O(name len)
+    pub(crate) fn entry_hash(&self, dir: &crate::node::Inode, name: &[u8]) -> Result<u32, Errno> {
+        match (dir.casefolded(), self.casefold.as_ref()) {
+            (true, Some(cf)) => Ok(crate::casefold::Query::prepare(cf, name)?.hash()),
+            _ => Ok(hash::name_hash(name)),
+        }
     }
 }
 

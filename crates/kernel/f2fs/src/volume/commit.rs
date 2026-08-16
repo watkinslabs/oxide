@@ -29,8 +29,25 @@ use crate::flags::*;
 use crate::summary::{NatEntry, SitEntry};
 use crate::uapi::*;
 
+use super::orphan;
 use super::segmap;
 use super::Volume;
+
+/// Why a checkpoint is being written.
+///
+/// It decides two things that must agree: whether the node logs' summaries go
+/// into the pack, and how long the pack therefore is. A reader locates the
+/// summaries by counting BACK from the pack's end, so a flag that disagrees
+/// with the length hands it the wrong block.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum CpReason {
+    /// An ordinary flush. The node logs' summaries stay where they are; a
+    /// mount reconstructs the open ones by reading their segments.
+    Sync,
+    /// The volume is going away. Everything goes in the pack, which is what
+    /// makes the next mount cheap and tells it the shutdown was clean.
+    Umount,
+}
 
 /// Write a little-endian value into a buffer.
 fn p16(b: &mut [u8], at: usize, v: u16) { b[at..at + 2].copy_from_slice(&v.to_le_bytes()); }
@@ -44,10 +61,16 @@ impl<S: SectorSource> Volume<S> {
     /// pack, and writing one per sync on an idle filesystem burns the medium
     /// for no state change.
     /// # C: O(dirty table blocks + pack blocks)
-    pub fn commit(&mut self) -> Result<(), Errno> {
+    pub fn commit(&mut self) -> Result<(), Errno> { self.commit_with(CpReason::Sync) }
+
+    /// The same, saying why.
+    /// # C: O(dirty table blocks + pack blocks)
+    pub fn commit_with(&mut self, reason: CpReason) -> Result<(), Errno> {
         if !self.writable { return Ok(()); }
         if !self.dirty { return Ok(()); }
         self.load_segments()?;
+        // Accounting becomes durable with everything else it describes.
+        self.flush_quotas()?;
         let mut nat_bitmap = self.nat_bitmap.clone();
         let mut sit_bitmap = self.sit_bitmap.clone();
         let nat_journal = self.flush_nat(&mut nat_bitmap)?;
@@ -59,11 +82,21 @@ impl<S: SectorSource> Volume<S> {
             Pack::Second => self.sb.cp_blkaddr + self.sb.blks_per_seg(),
         };
         let payload = self.sb.cp_payload;
-        let total = CP_PACKS + payload + NR_CURSEG_PERSIST_TYPE as u32;
-        let head = self.build_cp(version, payload, total, &nat_bitmap, &sit_bitmap)?;
+        let logs = summaries_in_pack(reason);
+        // The parked inodes ride in the pack, between the payload and the
+        // summaries. Both pack numbers move with them: a reader counts the
+        // summaries BACK from the pack's end and the orphan region FORWARD to
+        // where the summaries start, so a pack whose length or start-of-sum
+        // disagrees hands one of them the other's blocks.
+        let orphan_blocks = self.orphan_blocks();
+        let total = orphan::block::pack_total(payload, orphan_blocks, logs);
+        let start_sum = orphan::block::pack_start_sum(payload, orphan_blocks);
+        let head = self.build_cp(version, total, start_sum, reason,
+                                 &nat_bitmap, &sit_bitmap)?;
         self.write_block(start, &head)?;
         for i in 1..=payload { self.write_block(start + i, &vec![0u8; BLKSIZE])?; }
-        self.write_summaries(start, total, &nat_journal, &sit_journal)?;
+        self.write_orphans(start + 1 + payload)?;
+        self.write_summaries(start, total, logs, &nat_journal, &sit_journal)?;
         // The tail goes last. Until it lands the pack reads as torn and the
         // other pack stays current, which is exactly the guarantee wanted.
         self.write_block(start + total - 1, &head)?;
@@ -89,13 +122,22 @@ impl<S: SectorSource> Volume<S> {
     }
 
     /// The checkpoint header block, checksum included. # C: O(BLKSIZE)
-    fn build_cp(&self, version: u64, payload: u32, total: u32, nat_bitmap: &[u8],
-                sit_bitmap: &[u8]) -> Result<Vec<u8>, Errno> {
+    #[allow(clippy::too_many_arguments)]
+    fn build_cp(&self, version: u64, total: u32, start_sum: u32,
+                reason: CpReason, nat_bitmap: &[u8], sit_bitmap: &[u8])
+        -> Result<Vec<u8>, Errno> {
         let mut c = vec![0u8; BLKSIZE];
         // The summaries are written in full, so the compact form is cleared
         // and the clean-unmount mark set: both say where a reader will find
         // the journals, and a flag that disagrees sends it to another block.
-        let flags = (self.cp.flags & !(CP_COMPACT_SUM_FLAG | CP_ERROR_FLAG)) | CP_UMOUNT_FLAG;
+        // The clean-unmount mark is set ONLY for a real unmount. Setting it on
+        // every checkpoint would tell the next mount a crash never happened,
+        // and there would be nothing to distinguish one that did.
+        let mut flags = self.cp.flags & !(CP_COMPACT_SUM_FLAG | CP_ERROR_FLAG | CP_UMOUNT_FLAG);
+        if reason == CpReason::Umount { flags |= CP_UMOUNT_FLAG; }
+        // Set AND cleared from the CURRENT list: a stale bit sends the next
+        // mount looking for orphan blocks a pack no longer carries.
+        let flags = self.orphan_flag(flags);
         p64(&mut c, CP_CHECKPOINT_VER, version);
         p64(&mut c, CP_USER_BLOCK_COUNT, self.cp.user_block_count);
         p64(&mut c, CP_VALID_BLOCK_COUNT, self.valid_block_count);
@@ -115,7 +157,7 @@ impl<S: SectorSource> Volume<S> {
         }
         p32(&mut c, CP_CKPT_FLAGS, flags);
         p32(&mut c, CP_PACK_TOTAL_BLOCK_COUNT, total);
-        p32(&mut c, CP_PACK_START_SUM, 1 + payload);
+        p32(&mut c, CP_PACK_START_SUM, start_sum);
         p32(&mut c, CP_VALID_NODE_COUNT, self.valid_node_count);
         p32(&mut c, CP_VALID_INODE_COUNT, self.valid_inode_count);
         p32(&mut c, CP_NEXT_FREE_NID, self.next_free_nid);
@@ -143,9 +185,9 @@ impl<S: SectorSource> Volume<S> {
 
     /// The six summary blocks, with the two journals ridden along.
     /// # C: O(6 blocks)
-    fn write_summaries(&mut self, start: u32, total: u32, nat: &[(u32, NatEntry)],
-                       sit: &[(u32, SitEntry)]) -> Result<(), Errno> {
-        for log in 0..NR_CURSEG_PERSIST_TYPE {
+    fn write_summaries(&mut self, start: u32, total: u32, logs: usize,
+                       nat: &[(u32, NatEntry)], sit: &[(u32, SitEntry)]) -> Result<(), Errno> {
+        for log in 0..logs {
             let node = log >= NR_CURSEG_DATA_TYPE;
             self.curseg[log].seal(node);
             let mut block = self.curseg[log].sum.clone();
@@ -158,9 +200,18 @@ impl<S: SectorSource> Volume<S> {
                 let crc = crate::checksum::crc32(&block[..at]);
                 block[at + 1..at + 5].copy_from_slice(&crc.to_le_bytes());
             }
-            let addr =
-                crate::summary::normal_sum_addr(start, total, NR_CURSEG_PERSIST_TYPE, log);
+            let addr = crate::summary::normal_sum_addr(start, total, logs, log);
             self.write_block(addr, &block)?;
+        }
+        // A node log whose summary does not go in the pack still has to be
+        // recoverable, so it goes to the summary area instead — otherwise the
+        // segment's ownership record is simply lost.
+        for log in logs..NR_CURSEG_PERSIST_TYPE {
+            let segno = self.curseg[log].segno;
+            if segno == NULL_SEGNO { continue; }
+            self.curseg[log].seal(true);
+            let block = self.curseg[log].sum.clone();
+            self.write_block(sum_block_addr(self.sb.ssa_blkaddr, segno), &block)?;
         }
         Ok(())
     }
@@ -268,6 +319,14 @@ impl<S: SectorSource> Volume<S> {
         let byte = block_off as usize / 8;
         if byte < bitmap.len() { bitmap[byte] ^= 1 << (block_off % 8); }
         Ok(())
+    }
+}
+
+/// How many logs' summaries a pack of this kind carries. # C: O(1)
+pub fn summaries_in_pack(reason: CpReason) -> usize {
+    match reason {
+        CpReason::Umount => NR_CURSEG_PERSIST_TYPE,
+        CpReason::Sync => NR_CURSEG_DATA_TYPE,
     }
 }
 

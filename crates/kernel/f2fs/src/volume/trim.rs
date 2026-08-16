@@ -57,7 +57,10 @@ impl<S: SectorSource> Volume<S> {
             }
             if !freed.is_empty() {
                 self.put_inode(ino, block)?;
-                for addr in freed { self.release_block(addr)?; }
+                for addr in freed {
+                    self.release_block(addr)?;
+                    self.uncharge_space(ino, BLKSIZE as u64)?;
+                }
             }
         }
         for slot in 0..2usize {
@@ -107,7 +110,10 @@ impl<S: SectorSource> Volume<S> {
                 changed = true;
             }
             if changed { self.write_node(nid, ino, block, Kind::IndirectNode)?; }
-            for addr in freed { self.release_block(addr)?; }
+            for addr in freed {
+                self.release_block(addr)?;
+                self.uncharge_space(ino, BLKSIZE as u64)?;
+            }
             return Ok(());
         }
         let child_span = if depth == 1 { d } else { d * p };
@@ -151,7 +157,9 @@ impl<S: SectorSource> Volume<S> {
         if depth == 0 {
             for i in 0..DEF_ADDRS_PER_BLOCK {
                 let addr = crate::node::direct_addr(&node.block, i).unwrap_or(NULL_ADDR);
+                if crate::node::is_hole(addr) { continue; }
                 self.release_block(addr)?;
+                self.uncharge_space(ino, BLKSIZE as u64)?;
             }
         } else {
             for i in 0..NIDS_PER_BLOCK {
@@ -159,7 +167,9 @@ impl<S: SectorSource> Volume<S> {
                 if child != 0 { self.free_subtree(ino, child, depth - 1)?; }
             }
         }
-        self.release_node(nid)
+        self.release_node(nid)?;
+        // The node block itself was charged when it was created.
+        self.uncharge_space(ino, BLKSIZE as u64)
     }
 
     /// Free everything an inode owns: its data, its nodes, its attribute
@@ -171,7 +181,9 @@ impl<S: SectorSource> Volume<S> {
             let base = inode.addr_base();
             for i in 0..inode.addrs_per_inode() {
                 let addr = le32(&block, base + i * 4).unwrap_or(NULL_ADDR);
+                if crate::node::is_hole(addr) { continue; }
                 self.release_block(addr)?;
+                self.uncharge_space(ino, BLKSIZE as u64)?;
             }
             for (slot, depth) in [(0usize, 0u8), (1, 0), (2, 1), (3, 1), (4, 2)] {
                 let nid = self.inode_slot(ino, slot)?;
@@ -180,7 +192,14 @@ impl<S: SectorSource> Volume<S> {
         }
         // The attribute node holds attribute bytes, not addresses: walking it
         // as a direct node would release whatever those bytes decode to.
-        if inode.xattr_nid != 0 { self.release_node(inode.xattr_nid)?; }
+        if inode.xattr_nid != 0 {
+            self.release_node(inode.xattr_nid)?;
+            self.uncharge_space(ino, BLKSIZE as u64)?;
+        }
+        // Last: the identity is read off the inode, so it has to still be
+        // readable while the rest of its charges are returned. The inode's
+        // own block was never charged as space, so only the inode comes back.
+        self.uncharge_inode(ino)?;
         self.release_node(ino)?;
         self.valid_inode_count = self.valid_inode_count.saturating_sub(1);
         Ok(())

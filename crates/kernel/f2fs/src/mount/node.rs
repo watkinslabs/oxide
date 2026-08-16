@@ -15,10 +15,22 @@ use crate::node::Inode;
 use super::{ops::F2fsOps, F2fs};
 
 /// One inode of a mounted volume.
+///
+/// Only the NUMBER is kept. The stored inode changes under every write — its
+/// size, its inline flags, every address in it — and a snapshot taken when
+/// the handle was made goes stale the moment anything writes through it. A
+/// read that trusted such a snapshot would answer from the file as it was
+/// when it was opened.
 pub struct F2fsNode {
     pub(crate) fs: Arc<F2fs>,
     pub(crate) ino: u32,
-    pub(crate) inode: Inode,
+}
+
+impl F2fsNode {
+    /// The inode as it is NOW. # C: O(1 block)
+    pub(crate) fn live(&self) -> KResult<Inode> {
+        self.fs.volume.lock().read_inode(self.ino).map_err(super::errno_to_vfs)
+    }
 }
 
 /// Read the inode numbered `ino` and build the interface's object for it.
@@ -52,7 +64,7 @@ pub(crate) fn build(fs: Arc<F2fs>, ino: u32, inode: Inode, rdev: u32) -> InodeRe
     let size = inode.size;
     let links = inode.links;
     let (uid, gid) = (inode.uid, inode.gid);
-    let node = F2fsNode { fs, ino, inode };
+    let node = F2fsNode { fs, ino };
     let mut b = InodeBuilder::new(u64::from(ino), mode_word, inode_ops, file_ops)
         .size(size)
         .blocks(blocks)

@@ -23,6 +23,26 @@ use crate::uapi::BLKSIZE;
 use super::map::Mapped;
 use super::Volume;
 
+/// One unpacked cluster, and the file block its first byte belongs to.
+struct Plain {
+    first: u64,
+    data: Vec<u8>,
+}
+
+/// What a caller sees when a cluster cannot be unpacked.
+///
+/// A codec this build does not carry is `EOPNOTSUPP` — the data is intact and
+/// another reader could have it. Anything else means the cluster does not
+/// describe itself, which is an I/O error.
+/// # C: O(1)
+fn compress_errno(e: crate::compress::CompressError) -> Errno {
+    match e {
+        crate::compress::CompressError::UnsupportedAlgorithm(_)
+        | crate::compress::CompressError::UnknownAlgorithm(_) => Errno::Eopnotsupp,
+        _ => Errno::Eio,
+    }
+}
+
 impl<S: SectorSource> Volume<S> {
     /// Read from `inode` at byte offset `off` into `buf`.
     ///
@@ -33,6 +53,12 @@ impl<S: SectorSource> Volume<S> {
     pub fn read_file(&self, inode: &Inode, ino: u32, off: u64, buf: &mut [u8])
         -> Result<usize, Errno> {
         if off >= inode.size { return Ok(0); }
+        // A verity file's stored size is its DATA size; its blocks run past it
+        // and hold the hash tree and the descriptor. Every ordinary read is
+        // clamped to the data, or the tree is served as file content.
+        if inode.verity() && !crate::verity::location::is_data(inode.size, off, buf.len() as u64) {
+            return Err(Errno::Eio);
+        }
         let want = buf.len().min((inode.size - off) as usize).min(MAX_IO_BYTES);
         if want == 0 { return Ok(0); }
         if inode.inline_data() { return self.read_inline(inode, ino, off, &mut buf[..want]); }
@@ -43,16 +69,69 @@ impl<S: SectorSource> Volume<S> {
             let skew = (pos % BLKSIZE as u64) as usize;
             let take = (BLKSIZE - skew).min(want - done);
             match self.map_block(inode, ino, index)? {
-                Mapped::Hole => buf[done..done + take].fill(0),
-                Mapped::Compressed => return Err(Errno::Eopnotsupp),
+                Mapped::Hole => { buf[done..done + take].fill(0); done += take; }
                 Mapped::At(addr) => {
                     let block = self.read_main_block(addr)?;
+                    // A verity file's bytes are attested, not merely located:
+                    // the block is checked against the tree before any of it
+                    // reaches the caller.
+                    if inode.verity() && !self.verity_check(inode, ino, index, &block)? {
+                        return Err(Errno::Eio);
+                    }
                     buf[done..done + take].copy_from_slice(&block[skew..skew + take]);
+                    done += take;
+                }
+                // A compressed cluster unpacks as a whole, so as much of the
+                // request as falls inside it is served from one decompression
+                // rather than one per block.
+                Mapped::Compressed => {
+                    let plain = self.read_cluster(inode, ino, index)?;
+                    let at = (index - plain.first) as usize * BLKSIZE + skew;
+                    let n = (plain.data.len() - at).min(want - done);
+                    if n == 0 { return Err(Errno::Eio); }
+                    buf[done..done + n].copy_from_slice(&plain.data[at..at + n]);
+                    done += n;
                 }
             }
-            done += take;
         }
         Ok(want)
+    }
+
+    /// Unpack the compressed cluster that block `index` belongs to.
+    ///
+    /// The cluster's addresses are read RAW: the first is the sentinel that
+    /// marks the run, and interpreting it would hide the very thing that says
+    /// where the cluster starts. Everything the reference validates before
+    /// decoding — the codec, the cluster width, the layout of the run — is
+    /// checked by the geometry and the layout walk, so a malformed cluster is
+    /// an error rather than plausible bytes.
+    /// # C: O(cluster bytes)
+    fn read_cluster(&self, inode: &Inode, ino: u32, index: u64) -> Result<Plain, Errno> {
+        let g = crate::compress::Geometry::new(
+            inode.compress_algorithm,
+            inode.log_cluster_size,
+            inode.compress_flag,
+        )
+        .map_err(compress_errno)?;
+        let first = g.first_block(index);
+        let mut addrs = alloc::vec::Vec::with_capacity(g.blocks());
+        for i in 0..g.blocks() as u64 {
+            addrs.push(self.stored_addr(inode, ino, first + i)?);
+        }
+        let live = crate::compress::data_blocks(&addrs).map_err(compress_errno)?;
+        let mut image = alloc::vec::Vec::with_capacity(live.len() * BLKSIZE);
+        for &a in live {
+            if !self.sb.valid_main_blkaddr(a) { return Err(Errno::Eio); }
+            image.extend_from_slice(&self.read_main_block(a)?);
+        }
+        let cluster = crate::compress::decompress_cluster(&g, &image).map_err(compress_errno)?;
+        // A checksum the file asked for and that does not match means the
+        // bytes are not the bytes that were written; handing them back would
+        // be worse than refusing.
+        if let crate::compress::Chksum::Mismatch { .. } = cluster.chksum {
+            return Err(Errno::Eio);
+        }
+        Ok(Plain { first, data: cluster.data })
     }
 
     /// Read a file whose data lives in its own inode block.

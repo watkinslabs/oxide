@@ -138,10 +138,17 @@ impl<S: SectorSource> Volume<S> {
         (from..self.sb.blks_per_seg() as u16).find(|&i| !e.is_valid(i as usize))
     }
 
-    /// Segments with nothing live in them, which is what `statfs` counts as
-    /// free space and what the checkpoint records. # C: O(main segments)
+    /// Segments the allocator could still hand out, which is what the
+    /// checkpoint records and what the cleaner measures itself against.
+    ///
+    /// A segment a log holds open is NOT free however empty it is: the log
+    /// will fill it, and counting it would tell the cleaner there is room
+    /// where there is only a writer.
+    /// # C: O(main segments)
     pub(crate) fn free_segment_count(&self) -> u32 {
-        (0..self.sb.segment_count_main).filter(|&s| self.seg_valid(s) == 0).count() as u32
+        (0..self.sb.segment_count_main)
+            .filter(|&s| self.seg_valid(s) == 0 && !self.is_current(s))
+            .count() as u32
     }
 
     /// The segment table entries this mount has changed. # C: O(dirty)

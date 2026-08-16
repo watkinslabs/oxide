@@ -112,6 +112,7 @@ impl<S: SectorSource> Volume<S> {
         }
         self.write_node(ino, ino, block, self.node_kind(spec.mode))?;
         self.valid_inode_count += 1;
+        self.charge_inode(ino)?;
         if is_dir { self.init_dir(ino, dir)?; }
         if let Some(bytes) = body { self.write_file(ino, 0, bytes)?; }
         // The name goes down last: a crash before it leaves an unreachable
@@ -156,7 +157,10 @@ impl<S: SectorSource> Volume<S> {
         } else {
             let links = victim.links.saturating_sub(1);
             if links == 0 {
-                self.free_inode(hit.ino)?;
+                // The last name is gone, but a descriptor may still hold it.
+                // Freeing it now would pull the blocks from under a reader;
+                // parking it records the debt so a crash cannot lose it.
+                self.drop_last_link(hit.ino, now)?;
             } else {
                 self.stamp_inode(hit.ino, |b| {
                     put32(b, I_LINKS, links);

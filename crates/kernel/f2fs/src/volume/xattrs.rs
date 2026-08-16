@@ -37,6 +37,20 @@ impl<S: SectorSource> Volume<S> {
         xattr::get(&area, index, rest).map_err(|_| Errno::Eio)?.ok_or(Errno::Enodata)
     }
 
+    /// The verity location record an inode carries.
+    ///
+    /// Reached by INDEX, not by name: the format registers no prefix for it,
+    /// so it is deliberately invisible to `listxattr` and unreachable by any
+    /// name a caller could pass — which is what keeps a program from reading
+    /// or forging it through the ordinary attribute interface.
+    /// # C: O(region bytes)
+    pub fn verity_attr(&self, inode: &Inode, ino: u32) -> Result<Vec<u8>, Errno> {
+        let area = self.xattr_area(inode, ino)?;
+        xattr::get(&area, crate::uapi::XATTR_INDEX_VERITY, crate::verity::uapi::XATTR_NAME)
+            .map_err(|_| Errno::Eio)?
+            .ok_or(Errno::Enodata)
+    }
+
     /// Every attribute name, zero-terminated, in the order they are stored.
     /// # C: O(region bytes)
     pub fn list_xattr(&self, inode: &Inode, ino: u32) -> Result<Vec<u8>, Errno> {

@@ -27,6 +27,34 @@ pub enum FsyncMode {
     Nobarrier,
 }
 
+/// The smallest span the volume will tell the device it no longer needs.
+///
+/// Telling a device about single blocks is precise but chatty; telling it only
+/// about whole segments or sections is what flash controllers actually want,
+/// because a partial erase block cannot be erased at all.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum DiscardUnit {
+    Block,
+    Segment,
+    Section,
+}
+
+/// How much memory the mount may spend on caches.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum MemoryMode {
+    Normal,
+    Low,
+}
+
+/// Whether a lookup in a case-folding directory rescans without the hash when
+/// the hash-directed pass misses.
+///
+/// A volume written before its encoding changed holds entries hashed under the
+/// old rules, so the bucket a fold picks today can be the wrong one for an
+/// entry written yesterday. The rescan finds those; skipping it is faster and
+/// correct only for a volume that asserts it has none.
+pub use crate::casefold::LookupMode;
+
 /// What a mount does when it finds the volume inconsistent.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Errors {
@@ -60,8 +88,12 @@ pub struct Options {
     pub background_gc: BackgroundGc,
     /// Whether a crash's tail is replayed at mount.
     pub recovery: bool,
-    /// Whether freed blocks are discarded on the device.
+    /// Whether freed blocks are announced to the device as no longer needed.
     pub discard: bool,
+    /// The smallest span worth announcing.
+    pub discard_unit: DiscardUnit,
+    /// How much memory the mount may spend.
+    pub memory: MemoryMode,
     /// Whether extended attributes and access control are honoured.
     pub user_xattr: bool,
     pub acl: bool,
@@ -103,6 +135,8 @@ pub struct Options {
     pub gc_merge: bool,
     /// Whether the age-threshold cleaner runs.
     pub atgc: bool,
+    /// How a lookup in a folding directory handles a hash miss.
+    pub lookup_mode: LookupMode,
     /// Whether quota accounting is on, per kind.
     pub usrquota: bool,
     pub grpquota: bool,
@@ -124,6 +158,8 @@ impl Options {
             background_gc: BackgroundGc::On,
             recovery: true,
             discard: true,
+            discard_unit: DiscardUnit::Block,
+            memory: MemoryMode::Normal,
             user_xattr: true,
             acl: true,
             active_logs: 6,
@@ -150,6 +186,7 @@ impl Options {
             nat_bits: true,
             gc_merge: false,
             atgc: false,
+            lookup_mode: crate::casefold::DEFAULT_LOOKUP_MODE,
             usrquota: false,
             grpquota: false,
             prjquota: false,

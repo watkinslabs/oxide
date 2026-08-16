@@ -61,8 +61,8 @@ impl F2fs {
             .map_err(errno_to_vfs)
     }
 
-    /// Write into a file. # C: O(bytes)
-    pub fn write(&self, ino: u32, off: u64, data: &[u8]) -> KResult<u64> {
+    /// Write into a file, reporting the bytes that landed. # C: O(bytes)
+    pub fn write(&self, ino: u32, off: u64, data: &[u8]) -> KResult<usize> {
         self.volume.lock().write_file(ino, off, data).map_err(errno_to_vfs)
     }
 
@@ -79,9 +79,7 @@ impl F2fs {
     }
 
     /// Push everything this mount has changed to the medium. # C: O(dirty)
-    pub fn sync(&self) -> KResult<()> {
-        self.volume.lock().commit().map_err(errno_to_vfs)
-    }
+    pub fn sync(&self) -> KResult<()> { self.checkpoint() }
 }
 
 /// The mode word a creation asks for, with the type the caller meant.

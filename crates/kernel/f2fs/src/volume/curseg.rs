@@ -122,11 +122,14 @@ impl Kind {
 pub fn log_for(kind: Kind, active_logs: u8) -> usize {
     match active_logs {
         2 => if kind.is_node() { CURSEG_HOT_NODE } else { CURSEG_HOT_DATA },
+        // With four logs the node side splits on TEMPERATURE, not on what the
+        // node is: only a file's own dnode is warm, and a directory's dnode
+        // goes cold beside the indirection nodes.
         4 => match kind {
             Kind::DirData => CURSEG_HOT_DATA,
             Kind::FileData => CURSEG_COLD_DATA,
-            Kind::DirNode | Kind::FileNode => CURSEG_HOT_NODE,
-            Kind::IndirectNode => CURSEG_COLD_NODE,
+            Kind::FileNode => CURSEG_WARM_NODE,
+            Kind::DirNode | Kind::IndirectNode => CURSEG_COLD_NODE,
         },
         _ => match kind {
             Kind::DirData => CURSEG_HOT_DATA,

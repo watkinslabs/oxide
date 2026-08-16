@@ -55,6 +55,15 @@ fn a_name_with_bytes_no_encoder_should_have_produced_is_shown_rather_than_droppe
 }
 
 #[test]
+fn the_backend_declares_that_it_stores_its_own_dot_entries() {
+    // The interface synthesises `.` and `..` for backends that do not have
+    // them. This one does — they are real entries in the directory's own
+    // blocks — so a default answer here would list each name twice.
+    let ops = F2fsOps;
+    assert!(vfs::FileOps::iterate_emits_dots(&ops));
+}
+
+#[test]
 fn the_registry_facing_surface_has_the_shape_the_registry_expects() {
     // A compile-time check that the names and signatures the mount registry
     // binds against are the ones this crate exports; a rename here would

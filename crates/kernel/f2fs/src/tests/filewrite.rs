@@ -209,6 +209,83 @@ fn a_write_reaching_the_double_indirect_node_reads_back() {
     assert_eq!(&buf, b"dind");
 }
 
+/// The offset a node records for itself, read back off the medium.
+fn node_ofs(v: &Volume<MemImage>, nid: u32, ino: u32) -> u32 {
+    v.read_node(nid, Some(ino)).unwrap().footer.ofs_of_node()
+}
+
+#[test]
+fn every_node_records_where_it_sits_in_the_tree() {
+    // A node whose recorded offset is zero claims to BE the inode. It is what
+    // the cleaner and any recovery use to tell one node of a file from
+    // another, so a volume where every node says zero is a volume they cannot
+    // read correctly.
+    let (mut v, ino) = with_file();
+    let apb = v.read_inode(ino).unwrap().addrs_per_inode() as u64;
+    let d = DEF_ADDRS_PER_BLOCK as u64;
+    v.write_file(ino, 0, &vec![1u8; BLKSIZE]).unwrap();
+    v.write_file(ino, apb * BLKSIZE as u64, b"a").unwrap();
+    v.write_file(ino, (apb + d) * BLKSIZE as u64, b"b").unwrap();
+    assert_eq!(node_ofs(&v, ino, ino), 0, "the inode is offset zero");
+    assert_eq!(node_ofs(&v, v.inode_slot(ino, 0).unwrap(), ino), 1);
+    assert_eq!(node_ofs(&v, v.inode_slot(ino, 1).unwrap(), ino), 2);
+}
+
+#[test]
+fn a_nodes_recorded_offset_agrees_with_the_index_walk() {
+    // The two must agree or a reader that trusts one and a writer that used
+    // the other disagree about which node holds which block.
+    let (mut v, ino) = with_file();
+    let apb = v.read_inode(ino).unwrap().addrs_per_inode();
+    let d = DEF_ADDRS_PER_BLOCK as u64;
+    let index = apb as u64 + 2 * d;
+    v.write_file(ino, 0, &vec![1u8; BLKSIZE]).unwrap();
+    v.write_file(ino, index * BLKSIZE as u64, b"x").unwrap();
+    let p = crate::node::path::node_path(apb, index).unwrap();
+    let ind = v.inode_slot(ino, 2).unwrap();
+    assert_ne!(ind, 0);
+    assert_eq!(node_ofs(&v, ind, ino), p.noffset[1] as u32);
+    let leaf = crate::node::indirect_nid(&v.read_node(ind, Some(ino)).unwrap().block, 0).unwrap();
+    assert_eq!(node_ofs(&v, leaf, ino), p.noffset[2] as u32);
+}
+
+#[test]
+fn a_double_indirect_middle_node_steps_by_its_whole_span() {
+    // Each middle node costs its own block plus a block of leaves, so the
+    // offsets step by more than one; stamping them one apart makes two nodes
+    // of the same file claim the same offset.
+    let (mut v, ino) = with_file();
+    let apb = v.read_inode(ino).unwrap().addrs_per_inode();
+    let d = DEF_ADDRS_PER_BLOCK as u64;
+    let p_n = NIDS_PER_BLOCK as u64;
+    let index = apb as u64 + 2 * d + 2 * d * p_n;
+    v.write_file(ino, 0, &vec![1u8; BLKSIZE]).unwrap();
+    v.write_file(ino, index * BLKSIZE as u64, b"x").unwrap();
+    let p = crate::node::path::node_path(apb, index).unwrap();
+    let outer = v.inode_slot(ino, 4).unwrap();
+    assert_ne!(outer, 0);
+    assert_eq!(node_ofs(&v, outer, ino), p.noffset[1] as u32);
+    let mid = crate::node::indirect_nid(&v.read_node(outer, Some(ino)).unwrap().block, 0).unwrap();
+    assert_eq!(node_ofs(&v, mid, ino), p.noffset[2] as u32);
+    let leaf = crate::node::indirect_nid(&v.read_node(mid, Some(ino)).unwrap().block, 0).unwrap();
+    assert_eq!(node_ofs(&v, leaf, ino), p.noffset[3] as u32);
+}
+
+#[test]
+fn stamping_an_offset_keeps_the_mark_bits() {
+    // The low bits carry the cold, fsync and dentry marks; replacing the whole
+    // word would silently clear whatever an fsync had just set.
+    use crate::volume::dnode::set_node_ofs;
+    let mut block = vec![0u8; BLKSIZE];
+    let at = NODE_FOOTER_OFF + FOOTER_FLAG;
+    block[at..at + 4].copy_from_slice(&0b111u32.to_le_bytes());
+    set_node_ofs(&mut block, 9);
+    let f = crate::node::footer::parse(&block).unwrap();
+    assert_eq!(f.ofs_of_node(), 9);
+    assert!(f.is_cold() && f.is_fsync() && f.is_dent());
+}
+
+
 #[test]
 fn a_read_only_mount_refuses_to_write() {
     let mut v = test_image::with_root().mount().unwrap();
@@ -220,7 +297,7 @@ fn a_read_only_mount_refuses_to_write() {
 fn an_empty_write_changes_nothing() {
     let (mut v, ino) = with_file();
     v.write_file(ino, 0, b"abc").unwrap();
-    assert_eq!(v.write_file(ino, 99, b"").unwrap(), 3);
+    assert_eq!(v.write_file(ino, 99, b"").unwrap(), 0);
     assert_eq!(v.read_inode(ino).unwrap().size, 3);
 }
 

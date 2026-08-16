@@ -66,11 +66,24 @@ pub const F2FS_VERITY_FL: u32 = 0x0010_0000;
 
 // ------------------------------------------------------------ node footer bit
 
+/// The footer flag bit that marks a node block as belonging to a file rather
+/// than a directory.
+pub const COLD_BIT_SHIFT: u32 = 0;
+/// The footer flag bit that marks a node block as one an `fsync` made
+/// durable, which is what a recovery walk selects on.
+pub const FSYNC_BIT_SHIFT: u32 = 1;
 /// The footer flag bit that marks a node block as holding a directory's data.
 pub const DENT_BIT_SHIFT: u32 = 2;
 /// Bits above this one carry the node's offset within its inode.
 pub const OFFSET_BIT_SHIFT: u32 = 3;
 pub const OFFSET_BIT_MASK: u32 = (1 << OFFSET_BIT_SHIFT) - 1;
+
+// ------------------------------------------------------------- inode i_advise
+
+/// The inode has lost track of its parent, so a recovery cannot trust `i_pino`.
+pub const FADVISE_LOST_PINO_BIT: u8 = 0x02;
+/// The inode's size must not be changed by a write past its end.
+pub const FADVISE_KEEP_SIZE_BIT: u8 = 0x10;
 
 // ------------------------------------------------------------------ file type
 

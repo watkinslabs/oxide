@@ -27,38 +27,65 @@ use super::Volume;
 impl<S: SectorSource> Volume<S> {
     /// Write `data` into `ino` at byte offset `off`.
     ///
-    /// Returns the file's size afterwards. A write inside the file's existing
-    /// length does not shorten it, and a write past the end grows it — the
-    /// gap in between is a hole, not zeroes written out.
+    /// Returns the BYTES WRITTEN, which may be fewer than asked for. Space and
+    /// quota are charged one block at a time, so a write can run out part way
+    /// through; the blocks that landed have landed, and reporting the whole
+    /// call as failed would tell the caller its file is unchanged when it is
+    /// not. The error is reported only when nothing at all was written.
+    ///
+    /// A write inside the file's existing length does not shorten it, and a
+    /// write past the end grows it — the gap in between is a hole, not zeroes
+    /// written out.
     /// # C: O(bytes written)
-    pub fn write_file(&mut self, ino: u32, off: u64, data: &[u8]) -> Result<u64, Errno> {
+    pub fn write_file(&mut self, ino: u32, off: u64, data: &[u8]) -> Result<usize, Errno> {
         self.writable_or_err()?;
         if data.len() > MAX_IO_BYTES { return Err(Errno::Efbig); }
-        if data.is_empty() { return Ok(self.read_inode(ino)?.size); }
+        if data.is_empty() { return Ok(0); }
         let inode = self.read_inode(ino)?;
         if inode.compressed() || inode.encrypted() { return Err(Errno::Eopnotsupp); }
+        // A verity file is sealed: its contents are what its hash tree attests
+        // to, so changing them would leave the attestation describing bytes
+        // that are no longer there.
+        crate::verity::access::open_write(inode.flags).map_err(crate::verity::access::errno)?;
         let end = off.checked_add(data.len() as u64).ok_or(Errno::Efbig)?;
         if inode.inline_data() {
             let (_, len) = inode.inline_data_span();
-            if end <= len as u64 { return self.write_inline(ino, off, data); }
+            if end <= len as u64 {
+                self.write_inline(ino, off, data)?;
+                return Ok(data.len());
+            }
             self.convert_inline(ino)?;
         }
         let mut done = 0usize;
+        let mut stopped: Option<Errno> = None;
         while done < data.len() {
             let pos = off + done as u64;
             let index = pos / BLKSIZE as u64;
             let skew = (pos % BLKSIZE as u64) as usize;
             let take = (BLKSIZE - skew).min(data.len() - done);
-            self.write_one_block(ino, index, skew, &data[done..done + take])?;
+            if let Err(e) = self.write_one_block(ino, index, skew, &data[done..done + take]) {
+                stopped = Some(e);
+                break;
+            }
             done += take;
         }
-        let size = end.max(self.read_inode(ino)?.size);
-        let blocks = self.count_blocks(ino)?;
-        self.stamp_inode(ino, |b| {
-            put64(b, I_SIZE, size);
-            Self::set_iblocks(b, blocks);
-        })?;
-        Ok(size)
+        // What landed is recorded even when the rest did not: the size, the
+        // block count and the cached extent all describe blocks that now
+        // exist, and leaving them behind would make the file disagree with
+        // its own contents.
+        if done > 0 {
+            let size = (off + done as u64).max(self.read_inode(ino)?.size);
+            let blocks = self.count_blocks(ino)?;
+            self.stamp_inode(ino, |b| {
+                put64(b, I_SIZE, size);
+                Self::set_iblocks(b, blocks);
+            })?;
+            self.refresh_extent(ino)?;
+        }
+        match stopped {
+            Some(e) if done == 0 => Err(e),
+            _ => Ok(done),
+        }
     }
 
     /// Write into the region inside the inode itself. # C: O(BLKSIZE)
@@ -96,6 +123,12 @@ impl<S: SectorSource> Volume<S> {
             b[I_INLINE] &= !(INLINE_DATA | DATA_EXIST);
             let base = OFFSET_OF_END_OF_I_EXT + le16(b, I_EXTRA_ISIZE).unwrap_or(0) as usize;
             b[base..base + 4].copy_from_slice(&0u32.to_le_bytes());
+            // The WHOLE region, not just the first slot: those bytes are the
+            // address array, and every byte of file content left in them is
+            // read afterwards as a block address. A file of 0x01 bytes leaves
+            // 0x01010101 in a slot, which is either an I/O error or — worse —
+            // a live address belonging to some other file.
+            b[at..at + len].fill(0);
         })?;
         if !payload.is_empty() {
             let is_dir = self.read_inode(ino)?.mode & mode_ifmt() == mode_ifdir();
@@ -110,6 +143,9 @@ impl<S: SectorSource> Volume<S> {
         -> Result<(), Errno> {
         let (holder, ofs) = self.dnode_for_write(ino, index)?;
         let old = self.holder_addr(ino, holder, ofs)?;
+        // Before anything is written: a refusal after the allocation would
+        // leave the block charged to nobody and the file pointing at it.
+        if crate::node::is_hole(old) { self.charge_space(ino, BLKSIZE as u64)?; }
         let mut page = if crate::node::is_hole(old) {
             vec![0u8; BLKSIZE]
         } else {
@@ -131,6 +167,7 @@ impl<S: SectorSource> Volume<S> {
     pub fn truncate_file(&mut self, ino: u32, len: u64) -> Result<(), Errno> {
         self.writable_or_err()?;
         let inode = self.read_inode(ino)?;
+        crate::verity::access::truncate(inode.flags).map_err(crate::verity::access::errno)?;
         if inode.inline_data() {
             let (at, region) = inode.inline_data_span();
             let keep = (len as usize).min(region);
@@ -161,7 +198,8 @@ impl<S: SectorSource> Volume<S> {
         self.stamp_inode(ino, |b| {
             put64(b, I_SIZE, len);
             Self::set_iblocks(b, blocks);
-        })
+        })?;
+        self.refresh_extent(ino)
     }
 
 }

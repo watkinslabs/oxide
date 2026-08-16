@@ -43,6 +43,40 @@ fn a_write_marks_the_mount_dirty() {
 }
 
 #[test]
+fn an_unmount_checkpoint_marks_the_shutdown_clean_and_carries_every_summary() {
+    // The flag is what tells the next mount whether a crash happened, so it
+    // must mean something: set here, clear on an ordinary flush.
+    use crate::volume::commit::CpReason;
+    let mut v = vol();
+    v.create(ROOT_INO, b"f", &spec(), None).unwrap();
+    v.commit_with(CpReason::Umount).unwrap();
+    assert!(v.checkpoint().node_summaries_present());
+    assert_eq!(v.checkpoint().pack_total_block_count,
+               CP_PACKS + NR_CURSEG_PERSIST_TYPE as u32);
+    let v = reopen(v);
+    assert!(v.checkpoint().node_summaries_present());
+}
+
+#[test]
+fn the_open_logs_resume_after_an_ordinary_checkpoint_too() {
+    // The node summaries are not in that pack, so a reader has to find them
+    // in the summary area; counting back from the pack's end would land past
+    // its tail.
+    let mut v = vol();
+    v.create(ROOT_INO, b"f", &spec(), None).unwrap();
+    v.commit().unwrap();
+    let want: alloc::vec::Vec<(u32, u16)> =
+        v.logs().iter().map(|c| (c.segno, c.next_blkoff)).collect();
+    let v = reopen(v);
+    assert!(!v.checkpoint().node_summaries_present());
+    let got: alloc::vec::Vec<(u32, u16)> =
+        v.logs().iter().map(|c| (c.segno, c.next_blkoff)).collect();
+    assert_eq!(got, want);
+    let root = v.root().unwrap();
+    assert!(v.lookup(&root, ROOT_INO, b"f").is_ok());
+}
+
+#[test]
 fn a_checkpoint_raises_the_version_by_one() {
     let mut v = vol();
     let before = v.checkpoint().version;
@@ -107,10 +141,11 @@ fn the_pack_written_is_the_one_a_reader_validates() {
     let mut v = vol();
     v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     v.commit().unwrap();
-    assert!(v.checkpoint().node_summaries_present());
+    // An ordinary checkpoint is NOT a clean unmount, and says so: the node
+    // logs' summaries stay in the summary area and the pack is shorter.
+    assert!(!v.checkpoint().node_summaries_present());
     assert!(!v.checkpoint().has(CP_COMPACT_SUM_FLAG));
-    // A full-summary pack is two blocks plus the six summaries.
-    assert_eq!(v.checkpoint().pack_total_block_count, CP_PACKS + NR_CURSEG_PERSIST_TYPE as u32);
+    assert_eq!(v.checkpoint().pack_total_block_count, CP_PACKS + NR_CURSEG_DATA_TYPE as u32);
     assert_eq!(v.checkpoint().pack_start_sum, 1);
 }
 

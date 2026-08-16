@@ -40,6 +40,15 @@ impl<S: SectorSource> Volume<S> {
         self.source.write_sectors(u64::from(addr), data)
     }
 
+    /// Segments held back from the allocator so the cleaner always has
+    /// somewhere to move live blocks to.
+    ///
+    /// The checkpoint records what the volume was formatted with; the floor of
+    /// one is this build's own, because a cleaner with no destination is a
+    /// cleaner that cannot run at the only moment it is wanted.
+    /// # C: O(1)
+    pub(crate) fn gc_reserve(&self) -> u32 { self.cp.rsvd_segment_count.max(1) }
+
     /// Take the next block of the log `kind` belongs to, releasing `old`.
     ///
     /// The summary entry goes down BEFORE the log advances: it names the owner
@@ -58,6 +67,7 @@ impl<S: SectorSource> Volume<S> {
         self.advance(log);
         self.update_seg(addr, true)?;
         self.update_seg(old, false)?;
+        self.note_discard(old);
         if !self.curseg[log].has_room() { self.open_segment(log)?; }
         self.dirty = true;
         Ok(addr)
@@ -111,6 +121,15 @@ impl<S: SectorSource> Volume<S> {
                 return Ok(());
             }
         }
+        // Clean BEFORE the last segment goes, not after. The cleaner moves
+        // live blocks out of a victim, which needs somewhere to put them, so a
+        // volume with nothing free cannot clean at all — waiting until then
+        // strands the space permanently. A failure to clean is not reported
+        // here: it is only a failure if the allocation itself then fails.
+        let reserve = self.gc_reserve();
+        if !self.recovering && self.free_segment_count() <= reserve {
+            let _ = self.collect(reserve + 1);
+        }
         let segno = self.find_free_seg(hint).ok_or(Errno::Enospc)?;
         self.curseg[log].segno = segno;
         self.curseg[log].next_blkoff = 0;
@@ -137,8 +156,17 @@ impl<S: SectorSource> Volume<S> {
         block[f + FOOTER_INO..f + FOOTER_INO + 4].copy_from_slice(&ino.to_le_bytes());
         block[f + FOOTER_CP_VER..f + FOOTER_CP_VER + 8]
             .copy_from_slice(&self.cp.version.to_le_bytes());
+        // The chain a crash is recovered from is built here: each node names
+        // the block the log will hand out NEXT, so a walk forward from the
+        // checkpoint's position reaches everything written after it. Stamping
+        // the block's own address instead makes every chain one link long and
+        // no crash tail recoverable. Read after `allocate_block`, which has
+        // already advanced the log and opened a fresh segment if this write
+        // filled one.
+        let next = self.curseg[curseg::log_for(kind, self.opts.active_logs)]
+            .next_addr(self.sb.main_blkaddr);
         block[f + FOOTER_NEXT_BLKADDR..f + FOOTER_NEXT_BLKADDR + 4]
-            .copy_from_slice(&addr.to_le_bytes());
+            .copy_from_slice(&next.to_le_bytes());
         if nid == ino { self.seal_inode(&mut block); }
         self.write_block(addr, &block)?;
         // A node id claimed but not yet written reads as `NEW_ADDR`; counting
@@ -146,7 +174,14 @@ impl<S: SectorSource> Volume<S> {
         // uncounted, and the checkpoint would under-report the volume.
         let was_new = crate::node::is_hole(old);
         self.nat_dirty.insert(nid, NatEntry { version: 0, ino, block_addr: addr });
-        if was_new { self.valid_node_count += 1; }
+        if was_new {
+            self.valid_node_count += 1;
+            // A rewrite MOVES a block and costs nothing. A new INODE is
+            // charged as an inode and not as space — the reference counts the
+            // inode itself, never the block it occupies — while every other
+            // node reserves one block against the owner.
+            if nid != ino { self.charge_space(ino, BLKSIZE as u64)?; }
+        }
         Ok(addr)
     }
 
@@ -183,6 +218,7 @@ impl<S: SectorSource> Volume<S> {
         if crate::node::is_hole(addr) { return Ok(()); }
         self.load_segments()?;
         self.update_seg(addr, false)?;
+        self.note_discard(addr);
         self.dirty = true;
         Ok(())
     }
@@ -240,3 +276,7 @@ impl<S: SectorSource> Volume<S> {
         Ok(e.block_addr == NULL_ADDR)
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/gcwire.rs"]
+mod tests;

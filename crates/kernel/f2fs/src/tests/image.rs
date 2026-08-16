@@ -27,6 +27,8 @@ use crate::volume::Volume;
 pub mod meta;
 #[path = "image/nodes.rs"]
 pub mod nodes;
+#[path = "quota_image.rs"]
+pub mod quota_image;
 
 /// The geometry every fixture uses. Small, but every area is a real area with
 /// a real second copy: shrinking one to nothing would make the copy-selection
@@ -77,6 +79,10 @@ pub struct Builder {
     /// The second pack's version, when a test wants the two to differ.
     pub cp2_version: Option<u64>,
     pub uuid: [u8; SB_UUID_LEN],
+    /// The encoding a folding volume resolves names through.
+    pub s_encoding: u16,
+    /// The inodes holding each quota kind's file.
+    pub qf_ino: [u32; MAX_QUOTAS],
     pub cp_payload: u32,
     /// Where the next main-area block comes from.
     pub next_main: u32,
@@ -111,6 +117,8 @@ impl Builder {
             cp_version: 7,
             cp2_version: None,
             uuid: [0x5A; SB_UUID_LEN],
+            s_encoding: 0,
+            qf_ino: [0; MAX_QUOTAS],
             cp_payload: 0,
             next_main: MAIN_BLKADDR,
             next_nid: FIRST_NID,

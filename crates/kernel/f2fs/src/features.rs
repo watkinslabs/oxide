@@ -11,11 +11,11 @@
 //!   resolves, and this build would produce wrong answers with no error. A
 //!   filesystem that misreads is worse than one that refuses.
 //!
-//! An UNKNOWN bit lands in the third group. That is deliberate and is the one
-//! place this differs from the reference, which ignores bits it does not
-//! recognise: a bit from a later format revision is by definition one whose
-//! layout consequences are unknown here, and guessing is the failure mode this
-//! module exists to prevent.
+//! An UNRECOGNISED bit is IGNORED, which is what the reference does. This
+//! filesystem's feature word is not an incompatibility mask: every bit that
+//! changes how bytes are laid out or how a name resolves is one of the bits
+//! named below, and each is judged on its own. Refusing a volume for a bit
+//! that means nothing here would refuse filesystems that read perfectly.
 
 use crate::flags::*;
 
@@ -31,10 +31,8 @@ pub enum Access {
 /// Why a volume was refused.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Refusal {
-    /// A bit outside every one this build knows.
-    Unknown(u32),
-    /// Names resolve through a case-folding table this build does not carry,
-    /// so a lookup would miss names that exist.
+    /// Names resolve through a case-folding table this build cannot load, so
+    /// a lookup would miss names that exist.
     Casefold,
     /// The volume spans several devices, or aliases one; only the device it
     /// was mounted from is reachable here.
@@ -44,7 +42,8 @@ pub enum Refusal {
     Zoned,
 }
 
-/// Every bit this build recognises.
+/// Every bit this build recognises. Nothing is refused for being outside it;
+/// the set records what has been considered.
 pub const KNOWN: u32 = FEATURE_ENCRYPT
     | FEATURE_BLKZONED
     | FEATURE_ATOMIC_WRITE
@@ -70,9 +69,6 @@ pub const KNOWN: u32 = FEATURE_ENCRYPT
 /// rest of it unreachable.
 /// # C: O(1)
 pub fn access(feature: u32, multi_device: bool) -> Result<Access, Refusal> {
-    let unknown = feature & !KNOWN;
-    if unknown != 0 { return Err(Refusal::Unknown(unknown)); }
-    if feature & FEATURE_CASEFOLD != 0 { return Err(Refusal::Casefold); }
     if feature & FEATURE_BLKZONED != 0 { return Err(Refusal::Zoned); }
     if feature & FEATURE_DEVICE_ALIAS != 0 || multi_device {
         return Err(Refusal::MultiDevice);
@@ -101,6 +97,16 @@ pub fn has_inode_crtime(feature: u32) -> bool { feature & FEATURE_INODE_CRTIME !
 
 /// Whether project ids are stored. # C: O(1)
 pub fn has_project_quota(feature: u32) -> bool { feature & FEATURE_PRJQUOTA != 0 }
+
+/// Whether the volume keeps its quota files as ordinary inodes named by the
+/// superblock, rather than by mount option. # C: O(1)
+pub fn has_quota_ino(feature: u32) -> bool { feature & FEATURE_QUOTA_INO != 0 }
+
+/// Whether names on this volume resolve case-insensitively. # C: O(1)
+pub fn has_casefold(feature: u32) -> bool { feature & FEATURE_CASEFOLD != 0 }
+
+/// Whether the volume records a hash tree for any file. # C: O(1)
+pub fn has_verity(feature: u32) -> bool { feature & FEATURE_VERITY != 0 }
 
 /// Whether any file on the volume may be stored compressed. # C: O(1)
 pub fn has_compression(feature: u32) -> bool { feature & FEATURE_COMPRESSION != 0 }

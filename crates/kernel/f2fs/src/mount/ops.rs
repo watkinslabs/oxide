@@ -35,19 +35,19 @@ impl F2fsOps {
         inode.private::<F2fsNode>().ok_or(VfsError::Einval)
     }
 
-    /// The node behind a DIRECTORY inode. # C: O(1)
-    fn dir_of(inode: &Inode) -> KResult<&F2fsNode> {
+    /// The node behind a DIRECTORY inode, and the directory as it is now.
+    /// # C: O(1 block)
+    fn dir_of(inode: &Inode) -> KResult<(&F2fsNode, crate::Inode)> {
         let node = Self::node(inode)?;
-        if mode::file_type(node.inode.mode) != FileType::Directory {
-            return Err(VfsError::Enotdir);
-        }
-        Ok(node)
+        let live = node.live()?;
+        if mode::file_type(live.mode) != FileType::Directory { return Err(VfsError::Enotdir); }
+        Ok((node, live))
     }
 
     /// The node behind a directory inode, refusing early when the mount
     /// cannot write. # C: O(1)
     fn writable_dir(inode: &Inode) -> KResult<&F2fsNode> {
-        let node = Self::dir_of(inode)?;
+        let (node, _) = Self::dir_of(inode)?;
         if !node.fs.is_writable() { return Err(VfsError::Erofs); }
         Ok(node)
     }
@@ -66,18 +66,18 @@ impl F2fsOps {
 
 impl InodeOps for F2fsOps {
     fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
-        let node = Self::dir_of(inode)?;
+        let (node, dir) = Self::dir_of(inode)?;
         let hit = {
             let v = node.fs.volume.lock();
-            v.lookup(&node.inode, node.ino, name.as_bytes()).map_err(errno_to_vfs)?
+            v.lookup(&dir, node.ino, name.as_bytes()).map_err(errno_to_vfs)?
         };
         node_inode(Arc::clone(&node.fs), hit.ino)
     }
 
     fn dir_is_empty(&self, inode: &Inode) -> bool {
-        let Ok(node) = Self::dir_of(inode) else { return true };
+        let Ok((node, dir)) = Self::dir_of(inode) else { return true };
         let v = node.fs.volume.lock();
-        v.dir_is_empty(&node.inode, node.ino).unwrap_or(false)
+        v.dir_is_empty(&dir, node.ino).unwrap_or(false)
     }
 
     fn create(&self, inode: &Inode, name: &str, mode_bits: u32, ctx: &CreateCtx)
@@ -129,7 +129,7 @@ impl InodeOps for F2fsOps {
     fn rename(&self, inode: &Inode, old_name: &str, new_dir: &Inode, new_name: &str, flags: u32,
               _ctx: &CreateCtx) -> KResult<()> {
         let node = Self::writable_dir(inode)?;
-        let target = Self::dir_of(new_dir)?;
+        let (target, _) = Self::dir_of(new_dir)?;
         // Both directories are on one volume by construction: a rename across
         // filesystems never reaches a backend.
         if !Arc::ptr_eq(&node.fs, &target.fs) { return Err(VfsError::Exdev); }
@@ -139,7 +139,7 @@ impl InodeOps for F2fsOps {
     fn truncate(&self, inode: &Inode, len: u64) -> KResult<()> {
         let node = Self::node(inode)?;
         if !node.fs.is_writable() { return Err(VfsError::Erofs); }
-        if mode::file_type(node.inode.mode) == FileType::Directory {
+        if mode::file_type(node.live()?.mode) == FileType::Directory {
             return Err(VfsError::Eisdir);
         }
         node.fs.truncate(node.ino, len)?;
@@ -192,22 +192,25 @@ impl InodeOps for F2fsOps {
 
     fn readlink(&self, inode: &Inode) -> KResult<Vec<u8>> {
         let node = Self::node(inode)?;
-        if mode::file_type(node.inode.mode) != FileType::Symlink { return Err(VfsError::Einval); }
+        let live = node.live()?;
+        if mode::file_type(live.mode) != FileType::Symlink { return Err(VfsError::Einval); }
         let v = node.fs.volume.lock();
-        v.read_link(&node.inode, node.ino).map_err(errno_to_vfs)
+        v.read_link(&live, node.ino).map_err(errno_to_vfs)
     }
 
     fn getxattr(&self, inode: &Inode, name: &str) -> Result<Vec<u8>, XattrError> {
         let node = Self::node(inode).map_err(XattrError::Fs)?;
+        let live = node.live().map_err(XattrError::Fs)?;
         let v = node.fs.volume.lock();
-        v.get_xattr(&node.inode, node.ino, name).map_err(xattr_errno)
+        v.get_xattr(&live, node.ino, name).map_err(xattr_errno)
     }
 
     fn listxattr(&self, inode: &Inode) -> Result<Vec<String>, XattrError> {
         let node = Self::node(inode).map_err(XattrError::Fs)?;
+        let live = node.live().map_err(XattrError::Fs)?;
         let bytes = {
             let v = node.fs.volume.lock();
-            v.list_xattr(&node.inode, node.ino).map_err(xattr_errno)?
+            v.list_xattr(&live, node.ino).map_err(xattr_errno)?
         };
         Ok(split_names(&bytes))
     }
@@ -216,29 +219,56 @@ impl InodeOps for F2fsOps {
 impl FileOps for F2fsOps {
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let node = F2fsOps::node(inode)?;
-        if mode::file_type(node.inode.mode) == FileType::Directory {
-            return Err(VfsError::Eisdir);
-        }
+        let live = node.live()?;
+        if mode::file_type(live.mode) == FileType::Directory { return Err(VfsError::Eisdir); }
         let v = node.fs.volume.lock();
-        v.read_file(&node.inode, node.ino, off, buf).map_err(errno_to_vfs)
+        v.read_file(&live, node.ino, off, buf).map_err(errno_to_vfs)
     }
 
     fn write(&self, inode: &Inode, off: u64, buf: &[u8]) -> KResult<usize> {
         let node = F2fsOps::node(inode)?;
         if !node.fs.is_writable() { return Err(VfsError::Erofs); }
-        if mode::file_type(node.inode.mode) == FileType::Directory {
+        if mode::file_type(node.live()?.mode) == FileType::Directory {
             return Err(VfsError::Eisdir);
         }
-        let size = node.fs.write(node.ino, off, buf)?;
-        inode.set_size(size);
-        Ok(buf.len())
+        // A short write is reported as short, not as a failure and not as a
+        // full one: the caller resumes from where it stopped, which is the
+        // only way a write that ran out of space part way can be completed.
+        let n = node.fs.write(node.ino, off, buf)?;
+        inode.set_size(node.live()?.size);
+        Ok(n)
     }
 
+    /// Make one file durable.
+    ///
+    /// Writes here reach the medium out of place but are not REFERENCED until
+    /// a checkpoint names them, so reporting success without one would tell a
+    /// caller its data is safe when a crash would lose it. A checkpoint is
+    /// heavier than this needs to be — it makes the whole volume durable, not
+    /// one file — but it is the honest answer, and a wrong `fsync` is the one
+    /// failure a database cannot defend against.
+    fn fsync(&self, file: &vfs::File, _datasync: bool) -> KResult<()> {
+        let inode = file.inode();
+        match inode.file_type() {
+            FileType::Regular | FileType::Directory => {}
+            _ => return Err(VfsError::Einval),
+        }
+        let node = F2fsOps::node(inode)?;
+        if !node.fs.is_writable() { return Ok(()); }
+        node.fs.checkpoint()
+    }
+
+    /// This filesystem STORES `.` and `..` as ordinary entries, so the
+    /// listing already carries them. Leaving this at its default would have
+    /// the interface synthesise a second pair on top, and every directory
+    /// would list both names twice.
+    fn iterate_emits_dots(&self) -> bool { true }
+
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
-        let node = F2fsOps::dir_of(inode)?;
+        let (node, dir) = F2fsOps::dir_of(inode)?;
         let entries = {
             let v = node.fs.volume.lock();
-            v.read_dir(&node.inode, node.ino).map_err(errno_to_vfs)?
+            v.read_dir(&dir, node.ino).map_err(errno_to_vfs)?
         };
         // This filesystem STORES `.` and `..` as ordinary entries, so they are
         // emitted from the listing rather than synthesised: synthesising them

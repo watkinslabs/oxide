@@ -50,6 +50,8 @@ pub struct Inode {
     pub crtime: Option<(u64, u32)>,
     pub compress_algorithm: u8,
     pub log_cluster_size: u8,
+    /// The checksum bit and the codec level, which the cluster reader needs.
+    pub compress_flag: u16,
 }
 
 impl Inode {
@@ -67,6 +69,10 @@ impl Inode {
 
     /// Whether the file's contents and name are encrypted. # C: O(1)
     pub fn encrypted(&self) -> bool { self.flags & F2FS_ENCRYPT_FL != 0 }
+
+    /// Whether the file's contents are attested by a hash tree past its data.
+    /// # C: O(1)
+    pub fn verity(&self) -> bool { self.flags & F2FS_VERITY_FL != 0 }
 
     /// Whether the directory resolves names case-insensitively. # C: O(1)
     pub fn casefolded(&self) -> bool { self.flags & F2FS_CASEFOLD_FL != 0 }
@@ -106,6 +112,30 @@ impl Inode {
     pub fn addr(&self, block: &[u8], index: usize) -> Option<u32> {
         if index >= self.addrs_per_inode() { return None; }
         le32(block, self.addr_base() + index * 4)
+    }
+
+    /// The extent the inode caches, when it names one.
+    ///
+    /// It is a CACHE, not a second source of truth: a zero length means
+    /// nothing is cached, and any answer it gives must be one the node tree
+    /// would also give. A caller checks it lies in the main area before
+    /// trusting it, because trusting a stale one reads another file's blocks.
+    /// # C: O(1)
+    pub fn cached_extent(&self) -> Option<(u32, u32, u32)> {
+        let (fofs, blk, len) = self.ext;
+        if len == 0 { return None; }
+        let end = u64::from(fofs).checked_add(u64::from(len))?;
+        if end > u64::from(u32::MAX) { return None; }
+        blk.checked_add(len - 1)?;
+        Some((fofs, blk, len))
+    }
+
+    /// The address the cached extent gives for `index`, if it covers it.
+    /// # C: O(1)
+    pub fn extent_addr(&self, index: u64) -> Option<u32> {
+        let (fofs, blk, len) = self.cached_extent()?;
+        if index < u64::from(fofs) || index >= u64::from(fofs) + u64::from(len) { return None; }
+        Some(blk + (index - u64::from(fofs)) as u32)
     }
 
     /// One of the five node ids the inode carries. # C: O(1)
@@ -175,6 +205,7 @@ pub fn parse(block: &[u8], feature: u32) -> Option<Inode> {
         crtime,
         compress_algorithm: if fits(I_COMPRESS_FLAG, 2) { *block.get(I_COMPRESS_ALGORITHM)? } else { 0 },
         log_cluster_size: if fits(I_COMPRESS_FLAG, 2) { *block.get(I_LOG_CLUSTER_SIZE)? } else { 0 },
+        compress_flag: if fits(I_COMPRESS_FLAG, 2) { le16(block, I_COMPRESS_FLAG)? } else { 0 },
     })
 }
 
