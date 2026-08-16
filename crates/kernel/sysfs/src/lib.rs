@@ -175,6 +175,7 @@ pub fn init() {
     register_dir("/sys/fs/bpf");
     register_dir("/sys/fs/pstore");
     register_dir("/sys/kernel/security");
+    register_dir("/sys/fs/selinux");
     // tracefs/debugfs mount points (content lives in tracefs's own roots).
     register_dir("/sys/kernel/tracing");
     register_dir("/sys/kernel/debug");
