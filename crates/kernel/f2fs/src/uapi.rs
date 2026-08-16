@@ -81,6 +81,8 @@ pub const SB_INIT_VERSION: usize = 1924;
 pub const SB_FEATURE: usize = 2180;
 pub const SB_ENCRYPTION_LEVEL: usize = 2184;
 pub const SB_ENCRYPT_PW_SALT: usize = 2185;
+/// Bytes of that salt.
+pub const PW_SALT_LEN: usize = 16;
 pub const SB_DEVS: usize = 2201;
 pub const SB_QF_INO: usize = 2745;
 pub const SB_HOT_EXT_COUNT: usize = 2757;
@@ -274,6 +276,18 @@ pub const CURSEG_COLD_NODE: usize = 5;
 pub const NR_CURSEG_DATA_TYPE: usize = 3;
 pub const NR_CURSEG_NODE_TYPE: usize = 3;
 pub const NR_CURSEG_PERSIST_TYPE: usize = NR_CURSEG_DATA_TYPE + NR_CURSEG_NODE_TYPE;
+/// The log a PINNED file's blocks are taken from.
+///
+/// Not one of the six the checkpoint records: it exists only while the volume
+/// is mounted, is opened a whole SECTION at a time, and its segment is handed
+/// back or its summary written to the summary area when a checkpoint lands.
+/// A pinned file's blocks must never be moved, so they may not share a section
+/// with blocks the cleaner is free to relocate.
+pub const CURSEG_COLD_DATA_PINNED: usize = 6;
+/// Logs that exist in memory only.
+pub const NR_CURSEG_INMEM_TYPE: usize = 1;
+/// Logs a mount carries, persisted and in-memory together.
+pub const NR_CURSEG_TYPE: usize = NR_CURSEG_PERSIST_TYPE + NR_CURSEG_INMEM_TYPE;
 
 /// The segment number that means "no segment": a log with nothing open.
 pub const NULL_SEGNO: u32 = u32::MAX;

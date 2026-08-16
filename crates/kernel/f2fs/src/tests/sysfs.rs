@@ -98,16 +98,46 @@ fn a_mount_publishes_its_own_stat_and_feature_list_directories() {
     assert!(!fl.contains(&"atomic_write"), "not an on-disk property");
 }
 
-/// Upstream's writable attributes all drive machinery this build lacks, so
-/// nothing here accepts a write. A knob that took a value nothing reads would
-/// report a change it had not made.
+/// An attribute is writable exactly when machinery reads what is written to
+/// it. Everything else refuses the write rather than accepting and discarding
+/// it, which would report a change it had not made.
 #[test]
-fn every_published_attribute_is_read_only() {
+fn an_attribute_is_writable_exactly_when_something_reads_it() {
     let fs = mounted("/dev/vda");
+    let controls: alloc::vec::Vec<&str> =
+        crate::bg::knobs::ALL.iter().map(|&k| crate::bg::knobs::name(k)).collect();
     for a in mount_attrs(&fs).iter().chain(global_attrs().iter()) {
-        assert!(a.store.is_none(), "{}/{} accepts a write", a.dir, a.name);
-        assert_eq!(a.mode, crate::fsattr::RO, "{}/{}", a.dir, a.name);
+        let control = controls.contains(&a.name);
+        assert_eq!(a.store.is_some(), control, "{}/{}", a.dir, a.name);
+        assert_eq!(a.mode, if control { crate::fsattr::RW } else { crate::fsattr::RO },
+                   "{}/{}", a.dir, a.name);
     }
+}
+
+/// A control is only a control if the value reaches the thread that reads it.
+#[test]
+fn a_written_control_reaches_the_machinery_and_reads_back() {
+    let fs = mounted("/dev/vda");
+    let attrs = mount_attrs(&fs);
+    let a = attrs.iter().find(|a| a.name == "discard_granularity").expect("published");
+    let store = a.store.as_ref().expect("writable");
+    assert_eq!(store(b"64\n").expect("accepted"), 3, "the whole write was consumed");
+    assert_eq!(fs.bg().dcc.lock().granularity, 64, "the discard thread reads this");
+    assert_eq!((a.show)().unwrap(), b"64\n");
+    assert!(store(b"0\n").is_err(), "zero is not a granularity");
+    assert_eq!(fs.bg().dcc.lock().granularity, 64, "and a refusal changed nothing");
+}
+
+/// Setting the urgent mode through sysfs must actually start the cleaner,
+/// which is the only reason a tool writes it.
+#[test]
+fn the_urgency_control_asks_the_cleaner_for_a_pass() {
+    let fs = mounted("/dev/vda");
+    let attrs = mount_attrs(&fs);
+    let a = attrs.iter().find(|a| a.name == "gc_urgent").expect("published");
+    a.store.as_ref().unwrap()(b"1").expect("accepted");
+    assert_eq!(fs.bg().gc_mode(), crate::bg::GcMode::UrgentHigh);
+    assert!(fs.bg().gc.lock().gc_wake);
 }
 
 /// The layout attributes must report the volume's real geometry, not a

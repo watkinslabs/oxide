@@ -15,22 +15,25 @@
 //! `<dev>/features` (the comma-separated one) is the older form of the second
 //! list, kept because tools still read it.
 //!
-//! Every value here comes off the live volume. The attributes upstream makes
-//! WRITABLE are all knobs of machinery this build does not have — a garbage
-//! collector thread with sleep intervals, a discard thread with a policy, a
-//! node manager with a memory threshold — and a knob that accepts a value
-//! nothing reads is worse than one that is absent, so this surface is
-//! entirely read-only.
+//! Every value here comes off the live volume. An attribute is WRITABLE when
+//! the machinery behind it exists and reads the value on its next round — the
+//! cleaner's intervals and modes, the discard policy — and read-only when it
+//! reports something no knob can change or when a write would have to reach
+//! the medium, which this surface does not do. A knob that accepted a value
+//! nothing reads would be worse than an absent one.
 //!
 //! Module manifest:
 //! - `build`:        `features/`, and what this build actually implements.
-//! - `volume`:       the per-mount attributes, and the two whose text is not
+//! - `volume`:       the per-mount reports, and the two whose text is not
 //!                   a number.
+//! - `knobs`:        the per-mount controls, which turn the background
+//!                   threads.
 //! - `stat`:         `<dev>/stat/`, and the in-memory status word.
 //! - `feature_list`: `<dev>/feature_list/`, one entry per on-disk bit.
 
 mod build;
 mod feature_list;
+mod knobs;
 mod stat;
 pub(crate) mod volume;
 
@@ -70,6 +73,7 @@ pub fn mount_dir(source: &str) -> String { dev_id(source) }
 pub fn mount_attrs(fs: &Arc<F2fs>) -> Vec<Attr> {
     let dev = mount_dir(fs.source());
     let mut out = volume::attrs(fs, &dev);
+    out.extend(knobs::attrs(fs, &dev));
     out.extend(stat::attrs(fs, &dev));
     out.extend(feature_list::attrs(fs, &dev));
     out

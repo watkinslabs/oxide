@@ -2,6 +2,7 @@
 extern crate alloc;
 
 pub mod context;
+pub mod debug_file;
 pub mod eventfs;
 pub mod fs_impl;
 pub mod mount_opts;
@@ -16,6 +17,7 @@ pub mod zram;
 
 pub use eventfs::{register_dynamic_event, EventDesc};
 
+pub use debug_file::{register_debug_show, show_inode};
 pub use root::{config_root, debug_root, register, register_config, register_debug, trace_root};
 
 // Boot-time tracefs registration per `37§6` and v2-arch-plan §1.8.

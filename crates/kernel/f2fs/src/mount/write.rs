@@ -36,39 +36,50 @@ impl F2fs {
             let mut v = self.volume_now();
             v.create(dir, name.as_bytes(), &spec, body).map_err(errno_to_vfs)?
         };
+        // Every operation that used space asks, before it returns, whether the
+        // volume can still serve the next one. Asking afterwards is the point:
+        // the caller has its result, so a clean or a checkpoint here delays
+        // this operation rather than failing it.
+        self.balance(true)?;
         node_inode(Arc::clone(self), ino)
     }
 
     /// Remove a name. # C: O(depth) blocks
-    pub fn remove(&self, dir: u32, name: &str, expect_dir: bool) -> KResult<()> {
+    pub fn remove(self: &Arc<Self>, dir: u32, name: &str, expect_dir: bool) -> KResult<()> {
         self.volume
             .lock()
             .remove(dir, name.as_bytes(), expect_dir, now())
-            .map_err(errno_to_vfs)
+            .map_err(errno_to_vfs)?;
+        self.balance(true)
     }
 
     /// Give an existing inode a second name. # C: O(depth) blocks
-    pub fn link(&self, dir: u32, name: &str, ino: u32) -> KResult<()> {
-        self.volume_now().link(dir, name.as_bytes(), ino, now()).map_err(errno_to_vfs)
+    pub fn link(self: &Arc<Self>, dir: u32, name: &str, ino: u32) -> KResult<()> {
+        self.volume_now().link(dir, name.as_bytes(), ino, now()).map_err(errno_to_vfs)?;
+        self.balance(true)
     }
 
     /// Move a name. # C: O(depth) blocks
-    pub fn rename(&self, from: u32, old: &str, to: u32, new: &str, noreplace: bool)
+    pub fn rename(self: &Arc<Self>, from: u32, old: &str, to: u32, new: &str, noreplace: bool)
         -> KResult<()> {
         self.volume
             .lock()
             .rename(from, old.as_bytes(), to, new.as_bytes(), noreplace, now())
-            .map_err(errno_to_vfs)
+            .map_err(errno_to_vfs)?;
+        self.balance(true)
     }
 
     /// Write into a file, reporting the bytes that landed. # C: O(bytes)
-    pub fn write(&self, ino: u32, off: u64, data: &[u8]) -> KResult<usize> {
-        self.volume_now().write_file(ino, off, data).map_err(errno_to_vfs)
+    pub fn write(self: &Arc<Self>, ino: u32, off: u64, data: &[u8]) -> KResult<usize> {
+        let n = self.volume_now().write_file(ino, off, data).map_err(errno_to_vfs)?;
+        self.balance(true)?;
+        Ok(n)
     }
 
     /// Shorten or extend a file. # C: O(blocks released)
-    pub fn truncate(&self, ino: u32, len: u64) -> KResult<()> {
-        self.volume_now().truncate_file(ino, len).map_err(errno_to_vfs)
+    pub fn truncate(self: &Arc<Self>, ino: u32, len: u64) -> KResult<()> {
+        self.volume_now().truncate_file(ino, len).map_err(errno_to_vfs)?;
+        self.balance(true)
     }
 
     /// Read a whole file, for a caller with no open file. # C: O(bytes)

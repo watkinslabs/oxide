@@ -36,6 +36,8 @@
 //! - `checksum`:   the one CRC, its unusual convention, and what it seals.
 //! - `features`:   what a volume's feature word permits this mount to do.
 //! - `sb`:         the superblock, and whether its fields agree.
+//! - `sbwrite`:    changing the superblock, and putting both copies back.
+//! - `sbflags`:    the volume-wide conditions a mount is in, as one word.
 //! - `checkpoint`: which pack is current, and where its bitmaps are.
 //! - `summary`:    the summary block, and the two journals inside it.
 //! - `nat`:        a node id into the address of its node block.
@@ -52,8 +54,14 @@
 //! - `verity`:     the descriptor a verity-protected file carries.
 //! - `opts`:       what a mount was asked for, and what it reports back.
 //! - `fault`:      failures injected on purpose, at named sites and a rate.
+//! - `stats`:      what a mount has done, and what it looks like right now.
+//! - `atomic`:     writes that become visible together or not at all.
+//! - `pin`:        files whose blocks are promised never to move.
+//! - `swap`:       a file the paging code addresses by block.
 //! - `volume`:     a mounted volume, read and written against a real medium.
+//! - `bg`:         the cleaner and discard threads, and the balance path.
 //! - `mount`:      the VFS-facing filesystem, its inodes and their operations.
+//! - `ioctl`:      the commands a caller sends, who may send them, and what they do.
 
 extern crate alloc;
 
@@ -63,6 +71,8 @@ pub mod limits;
 pub mod checksum;
 pub mod features;
 pub mod sb;
+pub mod sbwrite;
+pub mod sbflags;
 pub mod checkpoint;
 pub mod summary;
 pub mod nat;
@@ -79,10 +89,16 @@ pub mod quota;
 pub mod verity;
 pub mod opts;
 pub mod fault;
+pub mod atomic;
+pub mod pin;
+pub mod swap;
 pub mod volume;
+pub mod bg;
 pub mod mount;
+pub mod ioctl;
 pub mod fsattr;
 pub mod procfs;
+pub mod stats;
 pub mod sysfs;
 
 pub use checkpoint::Checkpoint;

@@ -53,10 +53,12 @@ pub const COMPRESS_RELEASED: u8 = 0x80;
 // ------------------------------------------------------------- inode i_flags
 
 pub const F2FS_COMPR_FL: u32 = 0x0000_0004;
+pub const F2FS_SYNC_FL: u32 = 0x0000_0008;
 pub const F2FS_IMMUTABLE_FL: u32 = 0x0000_0010;
 pub const F2FS_APPEND_FL: u32 = 0x0000_0020;
 pub const F2FS_NODUMP_FL: u32 = 0x0000_0040;
 pub const F2FS_NOATIME_FL: u32 = 0x0000_0080;
+pub const F2FS_NOCOMP_FL: u32 = 0x0000_0400;
 pub const F2FS_ENCRYPT_FL: u32 = 0x0000_0800;
 pub const F2FS_INDEX_FL: u32 = 0x0000_1000;
 pub const F2FS_DIRSYNC_FL: u32 = 0x0001_0000;

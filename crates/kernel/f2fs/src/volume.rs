@@ -48,7 +48,7 @@ use crate::node::Inode;
 use crate::opts::Options;
 use crate::sb::SuperBlock;
 use crate::summary::{NatEntry, NatJournal, SitEntry, SitJournal};
-use crate::uapi::{BLKSIZE, NR_CURSEG_PERSIST_TYPE};
+use crate::uapi::{BLKSIZE, NR_CURSEG_TYPE};
 
 pub mod mount;
 pub mod curseg;
@@ -110,8 +110,9 @@ pub struct Volume<S: SectorSource> {
     pub(crate) opts: Options,
     pub(crate) access: Access,
     pub(crate) writable: bool,
-    /// The six open logs a write appends to.
-    pub(crate) curseg: [Curseg; NR_CURSEG_PERSIST_TYPE],
+    /// The open logs a write appends to: the six the checkpoint records, and
+    /// the pinned log past them, which exists only while mounted.
+    pub(crate) curseg: [Curseg; NR_CURSEG_TYPE],
     /// Node-table entries this mount has changed. These beat the journal and
     /// the table on every read: the medium still holds the old addresses
     /// until a checkpoint retires them.
@@ -162,6 +163,13 @@ pub struct Volume<S: SectorSource> {
     /// The certificates a built-in signature's chain must reach, and whether
     /// an unsigned verity file may be read at all.
     pub(crate) verity_policy: crate::verity::Policy,
+    /// Files between START and COMMIT of an atomic write, by inode number.
+    ///
+    /// Never on the medium, and that is the promise: an atomic span that a
+    /// crash interrupts leaves the file exactly as it was, because none of
+    /// what was written is reachable from it — the blocks belong to a COW
+    /// inode the checkpoint parks as an orphan.
+    pub(crate) atomic: BTreeMap<u32, crate::atomic::AtomicFile>,
 }
 
 impl<S: SectorSource> Volume<S> {

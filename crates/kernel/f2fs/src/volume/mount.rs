@@ -103,6 +103,7 @@ impl<S: SectorSource> Volume<S> {
             pending_discard: alloc::vec::Vec::new(),
             verity_cache: core::cell::RefCell::new(crate::verity::info::Cache::new()),
             verity_policy: crate::verity::Policy::new(),
+            atomic: alloc::collections::BTreeMap::new(),
         };
         // Replay whatever an `fsync` promised since the last checkpoint,
         // before the mount is handed out — nothing may read the volume in the
@@ -224,7 +225,7 @@ pub fn read_journals<S: SectorSource>(source: &S, sb: &SuperBlock, cp: &Checkpoi
 /// losing those would make the next write land in a segment already in use.
 /// # C: O(6 blocks)
 pub fn read_cursegs<S: SectorSource>(source: &S, sb: &SuperBlock, cp: &Checkpoint)
-    -> Result<[Curseg; NR_CURSEG_PERSIST_TYPE], Errno> {
+    -> Result<[Curseg; crate::uapi::NR_CURSEG_TYPE], Errno> {
     let start = cp.start(sb.cp_blkaddr, sb.blks_per_seg());
     let compact = cp.has(CP_COMPACT_SUM_FLAG);
     // Only a clean unmount puts the node logs' summaries in the pack. After an
@@ -232,8 +233,13 @@ pub fn read_cursegs<S: SectorSource>(source: &S, sb: &SuperBlock, cp: &Checkpoin
     // back from the pack's end for them would read past its tail.
     let in_pack =
         if cp.node_summaries_present() { NR_CURSEG_PERSIST_TYPE } else { NR_CURSEG_DATA_TYPE };
-    let mut out = core::array::from_fn(|_| Curseg::empty());
-    for (log, seg) in out.iter_mut().enumerate() {
+    let mut out: [Curseg; crate::uapi::NR_CURSEG_TYPE] =
+        core::array::from_fn(|_| Curseg::empty());
+    // Only the persisted logs are read back. The pinned log is not in the
+    // checkpoint at all — it opens a section on demand and is handed back at
+    // the next checkpoint — so reading a segment number for it would read the
+    // node array past its end.
+    for (log, seg) in out.iter_mut().enumerate().take(NR_CURSEG_PERSIST_TYPE) {
         let (node, i) = crate::volume::curseg::cp_slot(log);
         seg.segno = if node { cp.cur_node_segno[i] } else { cp.cur_data_segno[i] };
         seg.next_blkoff = if node { cp.cur_node_blkoff[i] } else { cp.cur_data_blkoff[i] };

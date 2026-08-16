@@ -26,31 +26,6 @@ use super::live;
 use super::victim::{self, Found, Policy, Search, SegInfo, PERCENT};
 use crate::volume::Volume;
 
-/// What keeping the volume able to allocate calls for.
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub enum Balance {
-    /// Room enough, and nothing worth a checkpoint on its own.
-    Nothing,
-    /// The space has been found already and only wants retiring, which is
-    /// far cheaper than finding more.
-    Checkpoint,
-    /// The space has to be found, which means moving live blocks.
-    Clean,
-}
-
-/// Which of the two answers an allocation-time check calls for.
-///
-/// Short of segments is the urgent case and takes precedence: a checkpoint
-/// alone cannot conjure space that no segment holds. The cleaner takes one
-/// anyway on its way, so the held segments are not left behind by choosing
-/// the harder answer.
-/// # C: O(1)
-pub fn balance_choice(free: u32, reserve: u32, excess_prefree: bool) -> Balance {
-    if free <= reserve { Balance::Clean }
-    else if excess_prefree { Balance::Checkpoint }
-    else { Balance::Nothing }
-}
-
 /// The share of the volume that may sit prefree before a checkpoint is worth
 /// taking just to hand it back.
 pub const RECLAIM_PREFREE_PERCENT: u32 = 5;
@@ -261,23 +236,26 @@ impl<S: SectorSource> Volume<S> {
         Ok(Some(found.segno))
     }
 
-    /// Keep the volume able to allocate, after an operation that used space.
+    /// Whether a cleaning pass is already under way. # C: O(1)
+    pub fn gc_is_running(&self) -> bool { self.segstate.gc_running }
+
+    /// Whether the volume holds enough dead space, and little enough free
+    /// space, for background cleaning to be worth the writes it costs.
     ///
-    /// Two conditions, and each has a different answer. Not enough free
-    /// segments means the space must be found, which is cleaning. Too many
-    /// prefree ones means the space has already been found and is only
-    /// waiting for a checkpoint to become usable, which is far cheaper than
-    /// cleaning and must be tried first.
-    /// # C: O(main segments), plus a clean or a checkpoint when one is due
-    pub fn balance_segments(&mut self) -> Result<(), Errno> {
-        if !self.writable || self.recovering || self.segstate.gc_running { return Ok(()); }
-        self.load_segments()?;
-        let reserve = self.gc_reserve();
-        match balance_choice(self.free_segment_count(), reserve, self.excess_prefree()) {
-            Balance::Nothing => Ok(()),
-            Balance::Checkpoint => self.commit(),
-            Balance::Clean => self.collect(reserve + 1).map(|_| ()),
-        }
+    /// Both halves are needed and the second is the one that is easy to drop.
+    /// Dead space alone is not a reason to clean: a volume with room to write
+    /// can go on writing, and the blocks a pass would move may be invalidated
+    /// by the next write anyway — which would make the cleaner's copies pure
+    /// loss, paid in exactly the writes flash has a finite number of.
+    /// # C: O(main segments)
+    pub fn worth_cleaning(&self) -> bool {
+        let per_seg = u64::from(self.sb.blks_per_seg());
+        crate::bg::gc::has_enough_invalid_blocks(
+            u64::from(self.cp.user_block_count),
+            self.valid_block_count,
+            u64::from(self.free_segment_count()) * per_seg,
+            u64::from(self.cp.overprov_segment_count) * per_seg,
+        )
     }
 
     /// Whether enough segments are waiting on a checkpoint to be worth one.

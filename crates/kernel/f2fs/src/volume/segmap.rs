@@ -66,6 +66,10 @@ pub struct SegState {
     /// Where the next victim search resumes, so successive searches sweep the
     /// volume instead of re-costing the same low-numbered segments.
     pub gc_cursor: u32,
+    /// The wall clock as it read when the last checkpoint landed. The
+    /// periodic checkpoint is measured from here, so a mount that has just
+    /// written one is not asked for another a moment later.
+    pub last_cp_clock: u64,
 }
 
 impl SegState {
@@ -225,13 +229,28 @@ impl<S: SectorSource> Volume<S> {
         if self.seg_valid(segno) == 0 { self.segstate.prefree.insert(segno); }
     }
 
-    /// Hand every prefree segment back to the allocator.
+    /// Hand every prefree segment back to the allocator, and restart the
+    /// periodic-checkpoint clock.
     ///
     /// Called by the checkpoint, and by nothing else: the checkpoint being
     /// written is exactly the event that retires the references those
-    /// segments were being held against.
+    /// segments were being held against, and the same event is what the
+    /// interval to the next periodic one is measured from. Both here so the
+    /// two cannot drift apart — an interval restarted anywhere else would be
+    /// restarted by something that is not a checkpoint.
     /// # C: O(prefree)
-    pub(crate) fn clear_prefree(&mut self) { self.segstate.prefree.clear(); }
+    pub(crate) fn clear_prefree(&mut self) {
+        self.segstate.prefree.clear();
+        self.segstate.last_cp_clock = self.clock;
+    }
+
+    /// The wall clock as this mount last read it, in seconds.
+    ///
+    /// Zero for a mount nobody has told the time to, which is the same answer
+    /// as a clock that has not started: every consumer here compares two
+    /// readings, so a mount with no clock reads as one that is not ageing.
+    /// # C: O(1)
+    pub fn now_secs(&self) -> u64 { self.clock }
 
     /// Live blocks in `segno`. # C: O(1)
     pub(crate) fn seg_valid(&self, segno: u32) -> u16 {

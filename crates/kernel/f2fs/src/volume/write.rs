@@ -98,6 +98,10 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(main segments)
     pub(crate) fn open_segment(&mut self, log: usize) -> Result<(), Errno> {
         self.load_segments()?;
+        // The pinned log opens a whole SECTION, never a recycled segment: a
+        // pinned block may not be moved, so it may not share a section with
+        // blocks the cleaner is free to relocate.
+        if log == crate::uapi::CURSEG_COLD_DATA_PINNED { return self.open_pinned_section(); }
         let old = self.curseg[log].segno;
         if old != NULL_SEGNO {
             let node = log >= NR_CURSEG_DATA_TYPE;
@@ -154,8 +158,26 @@ impl<S: SectorSource> Volume<S> {
         self.writable_or_err()?;
         if block.len() != BLKSIZE { return Err(Errno::Einval); }
         let old = self.node_addr(nid).unwrap_or(NULL_ADDR);
+        // A node id claimed but not yet written reads as `NEW_ADDR`; counting
+        // only the null case would leave every freshly created node
+        // uncounted, and the checkpoint would under-report the volume.
+        let was_new = crate::node::is_hole(old);
+        // A rewrite MOVES a block and costs nothing. A new INODE is charged as
+        // an inode and not as space — the reference counts the inode itself,
+        // never the block it occupies — while every other node costs its owner
+        // one block. That block is PROMISED here and taken up once the log has
+        // handed one out: a log with no room gives the promise back rather
+        // than leaving the owner charged for a node that does not exist.
+        let owed = was_new && nid != ino;
+        if owed { self.reserve_space(ino, BLKSIZE as u64)?; }
         let sum = Summary { nid, version: 0, ofs_in_node: 0 };
-        let addr = self.allocate_block(kind, sum, old)?;
+        let addr = match self.allocate_block(kind, sum, old) {
+            Ok(addr) => addr,
+            Err(e) => {
+                if owed { self.release_reserved_space(ino, BLKSIZE as u64)?; }
+                return Err(e);
+            }
+        };
         let f = NODE_FOOTER_OFF;
         block[f + FOOTER_NID..f + FOOTER_NID + 4].copy_from_slice(&nid.to_le_bytes());
         block[f + FOOTER_INO..f + FOOTER_INO + 4].copy_from_slice(&ino.to_le_bytes());
@@ -173,19 +195,14 @@ impl<S: SectorSource> Volume<S> {
         block[f + FOOTER_NEXT_BLKADDR..f + FOOTER_NEXT_BLKADDR + 4]
             .copy_from_slice(&next.to_le_bytes());
         if nid == ino { self.seal_inode(&mut block); }
-        self.write_block(addr, &block)?;
-        // A node id claimed but not yet written reads as `NEW_ADDR`; counting
-        // only the null case would leave every freshly created node
-        // uncounted, and the checkpoint would under-report the volume.
-        let was_new = crate::node::is_hole(old);
+        if let Err(e) = self.write_block(addr, &block) {
+            if owed { self.release_reserved_space(ino, BLKSIZE as u64)?; }
+            return Err(e);
+        }
         self.nat_dirty.insert(nid, NatEntry { version: 0, ino, block_addr: addr });
         if was_new {
             self.valid_node_count += 1;
-            // A rewrite MOVES a block and costs nothing. A new INODE is
-            // charged as an inode and not as space — the reference counts the
-            // inode itself, never the block it occupies — while every other
-            // node reserves one block against the owner.
-            if nid != ino { self.charge_space(ino, BLKSIZE as u64)?; }
+            if owed { self.claim_space(ino, BLKSIZE as u64)?; }
         }
         Ok(addr)
     }
@@ -207,8 +224,19 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(BLKSIZE)
     pub(crate) fn write_data(&mut self, owner: u32, ofs: u16, dir: bool, old: u32, data: &[u8])
         -> Result<u32, Errno> {
-        self.writable_or_err()?;
         let kind = if dir { Kind::DirData } else { Kind::FileData };
+        self.write_data_kind(kind, owner, ofs, old, data)
+    }
+
+    /// The same, into a named log.
+    ///
+    /// A pinned file's blocks must come out of the pinned log rather than the
+    /// one its temperature would pick, so the log is a parameter wherever the
+    /// caller knows something the block's contents do not say.
+    /// # C: O(BLKSIZE)
+    pub(crate) fn write_data_kind(&mut self, kind: Kind, owner: u32, ofs: u16, old: u32,
+                                  data: &[u8]) -> Result<u32, Errno> {
+        self.writable_or_err()?;
         let sum = Summary { nid: owner, version: 0, ofs_in_node: ofs };
         let addr = self.allocate_block(kind, sum, old)?;
         let mut block = vec![0u8; BLKSIZE];

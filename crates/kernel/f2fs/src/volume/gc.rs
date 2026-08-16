@@ -14,7 +14,6 @@ pub mod live;
 pub mod migrate;
 pub mod collect;
 
-pub use collect::{balance_choice, Balance};
 pub use live::alive;
 pub use migrate::Owner;
 pub use victim::{Found, Policy, Search, SegInfo, Unit};

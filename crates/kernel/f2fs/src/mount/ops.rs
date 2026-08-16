@@ -65,6 +65,16 @@ impl F2fsOps {
 }
 
 impl InodeOps for F2fsOps {
+    /// The generic ioctl stage's file-attribute pair, which is where the flag
+    /// commands land for every filesystem. # C: O(1 block)
+    fn fileattr_get(&self, inode: &Inode) -> KResult<vfs::FileAttr> {
+        crate::ioctl::vfs::fileattr_get(inode)
+    }
+
+    fn fileattr_set(&self, inode: &Inode, fa: &vfs::FileAttr) -> KResult<()> {
+        crate::ioctl::vfs::fileattr_set(inode, fa)
+    }
+
     fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
         let (node, dir) = Self::dir_of(inode)?;
         let hit = {
@@ -217,6 +227,16 @@ impl InodeOps for F2fsOps {
 }
 
 impl FileOps for F2fsOps {
+    /// The typed ioctl stage: the version, label and trim commands the
+    /// interface carries for every filesystem. This filesystem's OWN commands
+    /// do not come through here — they carry their own numbers and reach
+    /// `ioctl::vfs::raw` with those untouched.
+    /// # C: command-dependent
+    fn unlocked_ioctl(&self, file: &vfs::File, _idmap: &Idmap, cred: &vfs::Cred,
+                      cmd: vfs::FileIoctlCmd) -> KResult<vfs::FileIoctlReply> {
+        crate::ioctl::vfs::unlocked_ioctl(file, cred, cmd)
+    }
+
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let node = F2fsOps::node(inode)?;
         let live = node.live()?;

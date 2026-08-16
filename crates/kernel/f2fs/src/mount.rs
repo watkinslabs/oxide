@@ -47,6 +47,10 @@ pub struct F2fs {
     /// Held so the superblock operations can reach the filesystem they belong
     /// to, which the `&self` those operations are asked for cannot.
     me: Weak<F2fs>,
+    /// The cleaner and the discard thread, their knobs and their wake points.
+    /// Outside the volume lock deliberately: turning a knob must not have to
+    /// wait behind a read that is fetching a block.
+    bg: Arc<crate::bg::Bg>,
 }
 
 impl F2fs {
@@ -77,13 +81,24 @@ impl F2fs {
             klog::warn::warn_on(true, "f2fs: volume is marked read-only; mounting read-only");
         }
         let source = source.to_string();
-        Ok(Arc::new_cyclic(|me| Self {
+        let bg = Arc::new(crate::bg::Bg::new(volume.options().background_gc,
+                                             volume.options().discard_unit,
+                                             volume.super_block().segs_per_sec));
+        let fs = Arc::new_cyclic(|me| Self {
             dev: keep,
             volume: sync::Spinlock::new(volume),
             source,
             me: me.clone(),
-        }))
+            bg,
+        });
+        // After the mount is reachable, never during it: a thread that woke
+        // first would find a filesystem nothing could hand it work through.
+        fs.start_background();
+        Ok(fs)
     }
+
+    /// The background state this mount's threads share. # C: O(1)
+    pub fn bg(&self) -> &Arc<crate::bg::Bg> { &self.bg }
 
     /// Whether this mount ended up writable.
     ///
@@ -132,7 +147,7 @@ impl F2fs {
             v.commit().map_err(errno_to_vfs)?;
             v.take_discards()
         };
-        self.announce_free(&runs);
+        self.queue_discards(runs);
         Ok(())
     }
 
@@ -156,7 +171,7 @@ impl F2fs {
             // whichever file happened to own the block before it moved.
             if reason.needed() { v.take_discards() } else { alloc::vec::Vec::new() }
         };
-        self.announce_free(&runs);
+        self.queue_discards(runs);
         Ok(())
     }
 
@@ -166,7 +181,7 @@ impl F2fs {
     /// space staying marked used on the device, so a failure is not allowed
     /// to fail the checkpoint that already succeeded.
     /// # C: O(runs)
-    fn announce_free(&self, runs: &[(u32, u32)]) {
+    pub(crate) fn announce_free(&self, runs: &[(u32, u32)]) {
         if runs.is_empty() || !self.dev.supports_discard() { return; }
         let dev_block = u64::from(self.dev.block_size().max(1));
         for &(start, len) in runs {

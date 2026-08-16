@@ -36,7 +36,7 @@ pub struct NewInode {
 
 impl<S: SectorSource> Volume<S> {
     /// Build a fresh inode block for `ino`. # C: O(BLKSIZE)
-    fn blank_inode(&self, ino: u32, spec: &NewInode, links: u32) -> Vec<u8> {
+    pub(crate) fn blank_inode(&self, ino: u32, spec: &NewInode, links: u32) -> Vec<u8> {
         let mut b = vec![0u8; BLKSIZE];
         let extra = if crate::features::has_extra_attr(self.sb.feature) {
             TOTAL_EXTRA_ATTR_SIZE

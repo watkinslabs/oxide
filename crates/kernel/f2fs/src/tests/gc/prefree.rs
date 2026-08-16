@@ -198,34 +198,22 @@ fn a_checkpoint_is_worth_taking_once_enough_is_held() {
 }
 
 #[test]
-fn the_cheap_answer_is_taken_when_the_space_is_only_held() {
-    use crate::volume::gc::collect::{balance_choice, Balance};
-    // Held space wants retiring, which is a checkpoint. Missing space has to
-    // be found, which is a clean — and being short takes precedence, because
-    // no checkpoint can conjure space no segment holds.
-    assert_eq!(balance_choice(9, 2, false), Balance::Nothing);
-    assert_eq!(balance_choice(9, 2, true), Balance::Checkpoint);
-    assert_eq!(balance_choice(2, 2, false), Balance::Clean);
-    assert_eq!(balance_choice(1, 2, true), Balance::Clean, "short beats held");
-    assert_eq!(balance_choice(0, 0, false), Balance::Clean, "no room at all");
-}
-
-#[test]
 fn balancing_a_volume_short_of_room_finds_some_and_retires_it() {
     let (mut v, ino, victim, _) = committed_victim();
     v.write_file(ino, 0, b"AAAA").unwrap();
-    assert!(v.free_segment_count() <= v.gc_reserve(), "the fixture is at the reserve");
-    v.balance_segments().unwrap();
+    assert!(!v.has_enough_free_secs(0, 0), "the fixture is at the reserve");
+    v.balance_fs(true).unwrap();
     assert_eq!(v.seg_valid(victim), 0, "the cleaner emptied the best victim");
     assert_eq!(v.prefree_count(), 0, "and nothing was left held");
-    assert!(v.free_segment_count() > v.gc_reserve(), "there is room to allocate again");
+    assert!(v.has_enough_free_secs(0, 0), "there is room to allocate again");
 }
 
 #[test]
 fn a_read_only_mount_balances_nothing() {
     let mut v = test_image::with_root().mount().unwrap();
     assert!(!v.writable());
-    v.balance_segments().unwrap();
+    v.balance_fs(true).unwrap();
+    v.balance_fs_bg(true).unwrap();
     assert_eq!(v.prefree_count(), 0);
 }
 

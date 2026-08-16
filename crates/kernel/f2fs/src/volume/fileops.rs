@@ -147,20 +147,63 @@ impl<S: SectorSource> Volume<S> {
         })?;
         if !payload.is_empty() {
             let is_dir = self.read_inode(ino)?.mode & mode_ifmt() == mode_ifdir();
-            let addr = self.write_data(ino, 0, is_dir, NULL_ADDR, &payload)?;
+            // The bytes leave the inode for a block of their own. That block
+            // is one the owner did not hold a moment ago — an inline file
+            // occupies its inode and nothing else — so it is charged like any
+            // other block a file gains, and given back if it cannot be had.
+            self.reserve_space(ino, BLKSIZE as u64)?;
+            let addr = match self.write_data(ino, 0, is_dir, NULL_ADDR, &payload) {
+                Ok(addr) => addr,
+                Err(e) => {
+                    self.release_reserved_space(ino, BLKSIZE as u64)?;
+                    return Err(e);
+                }
+            };
+            self.claim_space(ino, BLKSIZE as u64)?;
             self.set_holder_addr(ino, Holder::Inode, 0, addr)?;
         }
         Ok(())
     }
 
-    /// Read-modify-write one block of a file. # C: O(BLKSIZE)
+    /// Read-modify-write one block of a file.
+    ///
+    /// The owner's quota is PROMISED before the block exists and taken up once
+    /// it does. The promise is what the limit refuses, so a write that is
+    /// going to be refused is refused before anything is allocated; and an
+    /// allocation that fails after the promise gives it straight back, which
+    /// is why a write that ends in `ENOSPC` leaves nothing charged to anybody.
+    /// # C: O(BLKSIZE)
     pub(crate) fn write_one_block(&mut self, ino: u32, index: u64, skew: usize, data: &[u8])
         -> Result<(), Errno> {
         let (holder, ofs) = self.dnode_for_write(ino, index)?;
         let old = self.holder_addr(ino, holder, ofs)?;
-        // Before anything is written: a refusal after the allocation would
-        // leave the block charged to nobody and the file pointing at it.
-        if crate::node::is_hole(old) { self.charge_space(ino, BLKSIZE as u64)?; }
+        // A reservation is a hole too: it holds room against the VOLUME's
+        // count and was never charged to the owner, so the block that lands
+        // on it is this owner's first charge for it.
+        let fresh = crate::node::is_hole(old);
+        if fresh { self.reserve_space(ino, BLKSIZE as u64)?; }
+        let addr = match self.write_page(ino, index, skew, data, (holder, ofs, old)) {
+            Ok(addr) => addr,
+            Err(e) => {
+                if fresh { self.release_reserved_space(ino, BLKSIZE as u64)?; }
+                return Err(e);
+            }
+        };
+        // The block exists now, so the promise becomes occupancy.
+        if fresh { self.claim_space(ino, BLKSIZE as u64)?; }
+        // The room a reservation was holding is the room this block just took.
+        if old == NEW_ADDR { self.release_reservation(); }
+        self.set_holder_addr(ino, holder, ofs, addr)
+    }
+
+    /// Build the page this write leaves behind and put it somewhere.
+    ///
+    /// Everything between the promise and the block existing lives here, so
+    /// the caller has one place to give the promise back from.
+    /// # C: O(BLKSIZE)
+    fn write_page(&mut self, ino: u32, index: u64, skew: usize, data: &[u8],
+                  slot: (Holder, usize, u32)) -> Result<u32, Errno> {
+        let (holder, ofs, old) = slot;
         let mut page = if crate::node::is_hole(old) {
             vec![0u8; BLKSIZE]
         } else {
@@ -185,10 +228,7 @@ impl<S: SectorSource> Volume<S> {
         }
         let is_dir = inode.mode & mode_ifmt() == mode_ifdir();
         let owner = match holder { Holder::Inode => ino, Holder::Direct(nid) => nid };
-        let addr = self.write_data(owner, ofs as u16, is_dir, old, &page)?;
-        // The room a reservation was holding is the room this block just took.
-        if old == NEW_ADDR { self.release_reservation(); }
-        self.set_holder_addr(ino, holder, ofs, addr)
+        self.write_data(owner, ofs as u16, is_dir, old, &page)
     }
 
     /// Shorten (or extend) a file to `len`.

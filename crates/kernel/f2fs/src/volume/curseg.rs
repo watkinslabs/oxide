@@ -103,6 +103,11 @@ pub enum Kind {
     FileNode,
     /// An indirect or double-indirect node.
     IndirectNode,
+    /// A block of a file that has been pinned.
+    ///
+    /// Its own log, whatever the volume's log count: a pinned block may not be
+    /// moved, so it may not be mixed into a section the cleaner may choose.
+    PinnedData,
 }
 
 impl Kind {
@@ -120,6 +125,10 @@ impl Kind {
 /// and pile everything into the hot ones.
 /// # C: O(1)
 pub fn log_for(kind: Kind, active_logs: u8) -> usize {
+    // The pinned log is not one of the volume's, so the log count does not
+    // reach it: a two-log volume still keeps pinned blocks apart, because the
+    // reason they are apart is the cleaner and not the temperature.
+    if kind == Kind::PinnedData { return CURSEG_COLD_DATA_PINNED; }
     match active_logs {
         2 => if kind.is_node() { CURSEG_HOT_NODE } else { CURSEG_HOT_DATA },
         // With four logs the node side splits on TEMPERATURE, not on what the
@@ -130,6 +139,7 @@ pub fn log_for(kind: Kind, active_logs: u8) -> usize {
             Kind::FileData => CURSEG_COLD_DATA,
             Kind::FileNode => CURSEG_WARM_NODE,
             Kind::DirNode | Kind::IndirectNode => CURSEG_COLD_NODE,
+            Kind::PinnedData => CURSEG_COLD_DATA_PINNED,
         },
         _ => match kind {
             Kind::DirData => CURSEG_HOT_DATA,
@@ -137,6 +147,7 @@ pub fn log_for(kind: Kind, active_logs: u8) -> usize {
             Kind::DirNode => CURSEG_HOT_NODE,
             Kind::FileNode => CURSEG_WARM_NODE,
             Kind::IndirectNode => CURSEG_COLD_NODE,
+            Kind::PinnedData => CURSEG_COLD_DATA_PINNED,
         },
     }
 }

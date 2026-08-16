@@ -222,6 +222,30 @@ impl<S: SectorSource> Volume<S> {
             let block = self.curseg[log].sum.clone();
             self.write_block(sum_block_addr(self.sb.ssa_blkaddr, segno), &block)?;
         }
+        self.save_pinned_curseg()?;
+        Ok(())
+    }
+
+    /// Put the pinned log's ownership record where a mount can find it.
+    ///
+    /// The pinned log is in no checkpoint, so the pack cannot carry its
+    /// summary and the next mount will not reopen it. A segment it filled must
+    /// therefore leave its summary in the summary area or the section becomes
+    /// uncleanable; a section it opened and never used is handed back instead,
+    /// because holding it across a checkpoint nothing records would strand it.
+    /// # C: O(1 block)
+    fn save_pinned_curseg(&mut self) -> Result<(), Errno> {
+        let log = crate::uapi::CURSEG_COLD_DATA_PINNED;
+        let segno = self.curseg[log].segno;
+        if segno == NULL_SEGNO { return Ok(()); }
+        if self.seg_valid(segno) > 0 {
+            self.curseg[log].seal(false);
+            let block = self.curseg[log].sum.clone();
+            self.write_block(sum_block_addr(self.sb.ssa_blkaddr, segno), &block)?;
+        } else {
+            self.retire_segment(segno);
+            self.curseg[log] = crate::volume::curseg::Curseg::empty();
+        }
         Ok(())
     }
 
