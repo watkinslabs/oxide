@@ -123,8 +123,8 @@ pub fn register_drm_hooks(card_id: u32, device_key: virtio::VirtioChildDeviceKey
         create_from_pa: create_scanout_from_pa_for_key,
         destroy_resource: unref_scanout_resource_for_key,
         present: present_for_key,
-        set_cursor: set_cursor_for_key,
-        move_cursor: move_cursor_for_key,
+        set_cursor: Some(set_cursor_for_key),
+        move_cursor: Some(move_cursor_for_key),
         restore_console: restore_console_scanout_for_key,
         boot_res_id: boot_scanout_res_id_for_key,
     });

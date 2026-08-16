@@ -110,8 +110,8 @@ fn record_boot(driver_key: ScanoutDriverKey) -> u32 {
             create_from_pa: record_create,
             destroy_resource: record_destroy,
             present: record_set_scanout,
-            set_cursor: record_set_cursor,
-            move_cursor: record_move_cursor,
+            set_cursor: Some(record_set_cursor),
+            move_cursor: Some(record_move_cursor),
             restore_console: record_restore,
             boot_res_id: record_boot,
         });
@@ -120,8 +120,8 @@ fn record_boot(driver_key: ScanoutDriverKey) -> u32 {
             create_from_pa: record_create,
             destroy_resource: record_destroy,
             present: record_set_scanout,
-            set_cursor: record_set_cursor,
-            move_cursor: record_move_cursor,
+            set_cursor: Some(record_set_cursor),
+            move_cursor: Some(record_move_cursor),
             restore_console: record_restore,
             boot_res_id: record_boot,
         });

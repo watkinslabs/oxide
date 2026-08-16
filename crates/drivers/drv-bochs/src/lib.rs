@@ -138,8 +138,6 @@ mod kernel {
     }
 
     fn restore_console(_key: drm::node::ScanoutDriverKey) -> bool { fbcon::kernel::force_repaint(); true }
-    fn unsupported_cursor(_key: drm::node::ScanoutDriverKey, _id: u32, _w: u32, _h: u32, _x: i32, _y: i32, _hot_x: i32, _hot_y: i32) -> bool { false }
-    fn unsupported_move_cursor(_key: drm::node::ScanoutDriverKey, _x: i32, _y: i32) -> bool { false }
     fn no_boot_resource(_key: drm::node::ScanoutDriverKey) -> u32 { 0 }
 
     #[inline]
@@ -243,7 +241,7 @@ mod kernel {
             };
             drm::node::set_scanout_ops(card_id, drm::node::ScanoutOps {
                 driver_key: key, create_from_pa, destroy_resource, present,
-                set_cursor: unsupported_cursor, move_cursor: unsupported_move_cursor,
+                set_cursor: None, move_cursor: None,
                 restore_console, boot_res_id: no_boot_resource,
             });
             DEVICES.lock().push(Record { bdf, command_orig, card_id, scanout_key });

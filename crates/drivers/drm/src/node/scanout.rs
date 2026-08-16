@@ -24,10 +24,14 @@ pub struct ScanoutOps {
     pub present: fn(driver_key: ScanoutDriverKey, res_id: u32, w: u32, h: u32,
                     damage: DamageRect) -> bool,
     /// Upload and publish a cursor resource on the driver's cursor queue.
-    pub set_cursor: fn(driver_key: ScanoutDriverKey, res_id: u32, w: u32, h: u32,
-                       x: i32, y: i32, hot_x: i32, hot_y: i32) -> bool,
-    /// Move the currently published cursor without re-uploading it.
-    pub move_cursor: fn(driver_key: ScanoutDriverKey, x: i32, y: i32) -> bool,
+    /// `None` on a card with no cursor plane, which is a distinct answer from a
+    /// present entry point that fails: absent refuses the ioctl with `ENXIO`,
+    /// present-and-failing with `EINVAL`.
+    pub set_cursor: Option<fn(driver_key: ScanoutDriverKey, res_id: u32, w: u32, h: u32,
+                              x: i32, y: i32, hot_x: i32, hot_y: i32) -> bool>,
+    /// Move the currently published cursor without re-uploading it. `None` on a
+    /// card that cannot move one, which refuses with `EFAULT`.
+    pub move_cursor: Option<fn(driver_key: ScanoutDriverKey, x: i32, y: i32) -> bool>,
     /// Restore the boot fbcon scanout + repaint the console.
     pub restore_console: fn(driver_key: ScanoutDriverKey) -> bool,
     /// The boot fbcon scanout resource id.

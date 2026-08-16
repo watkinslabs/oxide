@@ -14,12 +14,12 @@ use sync::{Spinlock, TaskList as CursorLockClass};
 
 use syscall::errno::Errno;
 
+use crate::cursor_plan::{self, CursorSupport};
 use crate::node::scanout_ops;
 use crate::{DrmDriver, crtc_idx_of};
 use crate::{DrmModeSetPlane, DrmModeFbDirtyCmd, DrmModeObjSetProperty,
             DrmModeConnectorSetProperty, DrmModeCrtcLut, DrmModeFbCmd,
-            DrmModeCursor, DrmModeCursor2, DRM_MODE_CURSOR_BO, DRM_MODE_CURSOR_MOVE,
-            DRM_FORMAT_ARGB8888};
+            DrmModeCursor, DrmModeCursor2, DRM_FORMAT_ARGB8888};
 
 /// XRGB8888/ARGB8888 are 32 bits-per-pixel with 24-bit color depth (the X/A
 /// byte is not counted in DRM "depth"). The only scanout formats we serve.
@@ -31,6 +31,7 @@ const GAMMA_ENTRY_MAX:   u64 = 0xFFFF;
 
 fn einval() -> i64 { -(Errno::Einval.as_i32() as i64) }
 fn efault() -> i64 { -(Errno::Efault.as_i32() as i64) }
+fn enxio()  -> i64 { -(Errno::Enxio.as_i32()  as i64) }
 
 /// `struct drm_clip_rect` ABI width — four `u16` corners.
 const CLIP_RECT_BYTES: u64 = core::mem::size_of::<crate::damage::DrmClipRect>() as u64;
@@ -89,8 +90,12 @@ pub fn set_plane(card_id: u32, card: &Arc<dyn DrmDriver>, arg: u64, token: u64) 
     // real virtio resource then publishes it through CURSORQ.
     if idx & 1 != 0 {
         if crtc_idx_of(p.crtc_id, card.crtc_ids().len()).is_none() || p.flags != 0 { return einval(); }
+        // A card with no cursor entry point advertises no cursor plane, so this
+        // arm is unreachable for it; a plane id that says otherwise is the
+        // driver contradicting itself, not a request worth serving.
+        let set_cursor = match ops.set_cursor { Some(f) => f, None => return einval() };
         if p.fb_id == 0 {
-            if !(ops.set_cursor)(ops.driver_key, 0, 0, 0, p.crtc_x, p.crtc_y, 0, 0) { return einval(); }
+            if !set_cursor(ops.driver_key, 0, 0, 0, p.crtc_x, p.crtc_y, 0, 0) { return einval(); }
             if let Some(old) = take_cursor(card_id) { release_cursor(card_id, old); }
             return 0;
         }
@@ -101,7 +106,7 @@ pub fn set_plane(card_id: u32, card: &Arc<dyn DrmDriver>, arg: u64, token: u64) 
             || p.src_x != 0 || p.src_y != 0 || p.src_w != w << 16 || p.src_h != h << 16 {
             return einval();
         }
-        return if (ops.set_cursor)(ops.driver_key, res_id, w, h, p.crtc_x, p.crtc_y, 0, 0) { 0 } else { einval() };
+        return if set_cursor(ops.driver_key, res_id, w, h, p.crtc_x, p.crtc_y, 0, 0) { 0 } else { einval() };
     }
     if idx != 0 { return einval(); }
     if p.fb_id == 0 {
@@ -152,19 +157,27 @@ pub fn atomic_primary(card_id: u32, card: &Arc<dyn DrmDriver>, crtc_id: u32, fb_
 /// as long as the device can scan it out.
 fn set_cursor(card_id: u32, card: &Arc<dyn DrmDriver>, token: u64, flags: u32, crtc_id: u32,
     x: i32, y: i32, width: u32, height: u32, handle: u32, hot_x: i32, hot_y: i32) -> i64 {
-    if flags == 0 || flags & !(DRM_MODE_CURSOR_BO | DRM_MODE_CURSOR_MOVE) != 0 {
-        return einval();
+    let crtc_known = crtc_idx_of(crtc_id, card.crtc_ids().len()).is_some();
+    // A card with no scanout backend installed publishes no cursor entry point
+    // at all, which is the same answer as a backend that has neither.
+    let ops = scanout_ops(card_id);
+    let support = CursorSupport {
+        set: ops.is_some_and(|o| o.set_cursor.is_some()),
+        mov: ops.is_some_and(|o| o.move_cursor.is_some()),
+    };
+    let plan = match cursor_plan::plan(flags, crtc_known, support) { Ok(p) => p, Err(e) => return e };
+    // `plan` admitted every operation below, so each entry point it needs is
+    // present and the unwraps cannot fire.
+    let ops = match ops { Some(ops) => ops, None => return einval() };
+    if !plan.set_bo {
+        let move_cursor = match ops.move_cursor { Some(f) => f, None => return efault() };
+        return if move_cursor(ops.driver_key, x, y) { 0 } else { einval() };
     }
-    if crtc_idx_of(crtc_id, card.crtc_ids().len()).is_none() { return einval(); }
-    let ops = match scanout_ops(card_id) { Some(ops) => ops, None => return einval() };
-    if flags & DRM_MODE_CURSOR_BO == 0 {
-        let active = CURSORS.lock().iter().any(|state| state.card_id == card_id);
-        return if active && (ops.move_cursor)(ops.driver_key, x, y) { 0 } else { einval() };
-    }
+    let set_cursor = match ops.set_cursor { Some(f) => f, None => return enxio() };
     if handle == 0 {
-        if !(ops.set_cursor)(ops.driver_key, 0, 0, 0, x, y, 0, 0) { return einval(); }
+        if !set_cursor(ops.driver_key, 0, 0, 0, x, y, 0, 0) { return einval(); }
         if let Some(old) = take_cursor(card_id) { release_cursor(card_id, old); }
-        return 0;
+        return move_after_image(&ops, plan.mov, x, y);
     }
     if width == 0 || height == 0 || width > 64 || height > 64 || hot_x < 0 || hot_y < 0
         || hot_x as u32 >= width || hot_y as u32 >= height {
@@ -184,7 +197,7 @@ fn set_cursor(card_id: u32, card: &Arc<dyn DrmDriver>, token: u64, flags: u32, c
         crate::dumb::unref_cursor_handle(card_id, handle);
         return einval();
     };
-    if !(ops.set_cursor)(ops.driver_key, res_id, width, height, x, y, hot_x, hot_y) {
+    if !set_cursor(ops.driver_key, res_id, width, height, x, y, hot_x, hot_y) {
         let _ = (ops.destroy_resource)(ops.driver_key, res_id);
         crate::dumb::unref_cursor_handle(card_id, handle);
         return einval();
@@ -196,7 +209,16 @@ fn set_cursor(card_id: u32, card: &Arc<dyn DrmDriver>, token: u64, flags: u32, c
         old
     };
     if let Some(old) = old { release_cursor(card_id, old); }
-    0
+    move_after_image(&ops, plan.mov, x, y)
+}
+
+/// Second half of a request that carried both flags: the image is published,
+/// now place it. A request asking for both must not silently drop the move.
+/// # C: O(1)
+fn move_after_image(ops: &crate::node::ScanoutOps, wanted: bool, x: i32, y: i32) -> i64 {
+    if !wanted { return 0; }
+    let move_cursor = match ops.move_cursor { Some(f) => f, None => return efault() };
+    if move_cursor(ops.driver_key, x, y) { 0 } else { einval() }
 }
 
 /// `MODE_CURSOR` legacy cursor ioctl. # C: O(n) table lookup + device work.
