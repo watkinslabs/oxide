@@ -356,6 +356,39 @@ Two lanes splitting one file for the size cap along different axes produce a con
 - **Verify by MULTISET count, not name set.** A set dedupes the very thing you are looking for: a set-based "nothing dropped" check reported clean while 8 tests were duplicated, 7 of the pairs with *different* bodies. Count declarations on both sides and after; none dropped, none duplicated.
 - Diff hook *bodies* across both sides. One resolution nearly re-introduced a bug `main` had just fixed (`set_ptrace_scope` losing its `EINVAL`).
 
+## `cargo check -p <crate>` IS A NULL GATE ON TARGET-GATED CRATES (HARD RULE)
+
+**A per-crate `cargo check` compiles NONE of a file that carries
+`#![cfg(target_os = "oxide-kernel")]`.** It is not a weak check on those files,
+it is no check at all — and it returns in two seconds, which is exactly what
+makes it feel trustworthy.
+
+Measured, with a positive control rather than asserted. A blatant
+`let _: u32 = "THIS IS NOT A u32";` inside `syscalls/src/fsmount_common/registry.rs`:
+
+| command | result |
+|---|---|
+| `cargo check -p syscalls` | **0 errors, 2.0s** |
+| `make feature-gate-x86` | `error[E0308]`, correct file and line |
+
+**Size of the blind spot: 354 of 871 files in `syscalls` carry the gate —
+34,557 of 106,266 lines, about a third of the crate.** It is not
+syscalls-specific: `procfs/src/ctl.rs` has the identical gate, and so does any
+crate holding kernel-only code. A real defect reached a pushed commit this way
+(a filesystem's quota ops installed against the wrong filesystem's type).
+
+- **Touching a target-gated file? The inner loop is**
+  `cargo run --quiet -p xtask -- kernel --arch x86_64 --check` — ~4s warm,
+  ~30s after a core crate changes. Run `--arch aarch64` too before reporting.
+- **`make feature-gate` remains the superset** — it also compiles the
+  `#[cfg(feature = "debug-*")]` blocks — and is what a lane reports against.
+- **Never report "cargo check is clean" as evidence for a gated file.** Say
+  which command you ran. A green `cargo check` on `registry.rs`, `ctl.rs`, the
+  syscall slot files or `kernel_body.rs` means nothing was compiled.
+- This is the same family as `Phantom tests`: there, a `#[cfg(test)]` block
+  inside a gated file silently compiles out; here, the whole file does. Both
+  produce a green result from an empty run.
+
 ## Verification must be able to fail (HARD RULE)
 
 A green check that does not exercise what it claims is worse than no check — it converts an unknown into a false assurance. Confirmed instances: `procfs/ctl.rs` is target-gated so `cargo check` compiled none of it (the break appeared only in the kernel build); a set-based duplicate check that structurally could not detect duplicates; a whole gate set that compiled no feature-gated code, so a branch that did not build passed everything.
