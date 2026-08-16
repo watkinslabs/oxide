@@ -1,0 +1,24 @@
+[package]
+name = "erofs"
+version = "0.1.0"
+edition = "2021"
+publish = false
+[lib]
+path = "src/lib.rs"
+[dependencies]
+sync    = { path = "../../shared/sync" }
+syscall = { path = "../syscall" }
+klog    = { path = "../../shared/klog" }
+vfs     = { path = "../vfs" }
+block   = { path = "../block" }
+sectors = { path = "../sectors" }
+crc     = { path = "../../shared/crc" }
+zstd = { path = "../../shared/zstd" }
+miniz_oxide = { version = "0.8.9", default-features = false, features = ["with-alloc"] }
+
+[features]
+default = []
+hosted = []
+
+[lints]
+workspace = true

@@ -213,6 +213,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "btrfs"
+version = "0.1.0"
+dependencies = [
+ "block",
+ "crc",
+ "klog",
+ "sectors",
+ "sync",
+ "syscall",
+ "vfs",
+]
+
+[[package]]
 name = "byteorder"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -904,6 +917,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
+name = "erofs"
+version = "0.1.0"
+dependencies = [
+ "block",
+ "crc",
+ "klog",
+ "miniz_oxide",
+ "sectors",
+ "sync",
+ "syscall",
+ "vfs",
+ "zstd",
+]
+
+[[package]]
 name = "err"
 version = "0.1.0"
 dependencies = [
@@ -951,6 +979,19 @@ dependencies = [
  "sched",
  "sync",
  "timer",
+ "vfs",
+]
+
+[[package]]
+name = "f2fs"
+version = "0.1.0"
+dependencies = [
+ "block",
+ "crc",
+ "klog",
+ "sectors",
+ "sync",
+ "syscall",
  "vfs",
 ]
 
@@ -2391,6 +2432,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "squashfs"
+version = "0.1.0"
+dependencies = [
+ "block",
+ "crc",
+ "klog",
+ "lzokay",
+ "miniz_oxide",
+ "sectors",
+ "sync",
+ "syscall",
+ "vfs",
+ "zstd",
+]
+
+[[package]]
 name = "structured-zstd"
 version = "0.0.49"
 
@@ -3074,6 +3131,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "05f360fc0b24296329c78fda852a1e9ae82de9cf7b27dae4b7f62f118f77b9ed"
 dependencies = [
  "tap",
+]
+
+[[package]]
+name = "xfs"
+version = "0.1.0"
+dependencies = [
+ "block",
+ "crc",
+ "klog",
+ "sectors",
+ "sync",
+ "syscall",
+ "vfs",
 ]
 
 [[package]]
