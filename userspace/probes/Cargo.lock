@@ -46,3 +46,11 @@ dependencies = [
  "libc",
  "support",
 ]
+
+[[package]]
+name = "v4l2_capture_probe"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "support",
+]

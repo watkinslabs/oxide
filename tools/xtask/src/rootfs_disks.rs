@@ -19,6 +19,7 @@ mod wait_diff;
 mod request_key;
 // - swapfile: Linux swapfile activation smoke over the mounted ext4 root.
 mod swapfile;
+mod v4l2_capture;
 // - gnome_input_classify: opt-in Linux input discovery/classification proof.
 mod gnome_input_classify;
 // - input_delivery: opt-in proof that injected host events reach the evdev nodes.
@@ -141,6 +142,9 @@ fn build_root(
     }
     if std::env::var_os("OXIDE_SWAPFILE_SMOKE").is_some() {
         swapfile::inject(&root_img, arch)?;
+    }
+    if std::env::var_os("OXIDE_V4L2_SMOKE").is_some() {
+        v4l2_capture::inject(&root_img, arch)?;
     }
     if std::env::var_os("OXIDE_GNOME_INPUT_CLASSIFY_SMOKE").is_some() {
         gnome_input_classify::inject(&root_img, arch)?;

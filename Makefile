@@ -709,11 +709,19 @@ smoke-grub:
 # generic parser found a route and the ALSA card registered.
 V4L2_SMOKE_TIMEOUT ?= 900
 HDA_SMOKE_TIMEOUT ?= 900
-smoke-v4l2-x86: x86
-	./tools/boot-smoke-v4l2.sh x86 $(V4L2_SMOKE_TIMEOUT)
-smoke-v4l2-arm: arm
-	./tools/boot-smoke-v4l2.sh arm $(V4L2_SMOKE_TIMEOUT)
-smoke-v4l2: smoke-v4l2-x86 smoke-v4l2-arm
+# V4L2 acceptance. The probe is injected into a disposable boot root and run
+# as a unit before basic.target, so the verdict lands on the serial console
+# without a shell in the loop. It captures real frames through /dev/video0 and
+# asserts the mapped pages are no longer zero — a node in /dev proves
+# publication and nothing else.
+smoke-v4l2-x86:
+	OXIDE_V4L2_SMOKE=1 SMOKE_ALIVE_PROBE= SMOKE_MARKER='v4l2_probe: PASS' ./tools/boot-smoke.sh x86 $(V4L2_SMOKE_TIMEOUT)
+smoke-v4l2-arm:
+	OXIDE_V4L2_SMOKE=1 SMOKE_ALIVE_PROBE= SMOKE_MARKER='v4l2_probe: PASS' ./tools/boot-smoke.sh arm $(V4L2_SMOKE_TIMEOUT)
+smoke-v4l2:
+	OXIDE_V4L2_SMOKE=1 SMOKE_ALIVE_PROBE= SMOKE_MARKER='v4l2_probe: PASS' ./tools/boot-smoke.sh x86 $(V4L2_SMOKE_TIMEOUT) & p1=$$!; \
+	OXIDE_V4L2_SMOKE=1 SMOKE_ALIVE_PROBE= SMOKE_MARKER='v4l2_probe: PASS' ./tools/boot-smoke.sh arm $(V4L2_SMOKE_TIMEOUT) & p2=$$!; \
+	rc=0; wait $$p1 || rc=1; wait $$p2 || rc=1; exit $$rc
 
 smoke-hda-x86: x86
 	./tools/boot-smoke-hda.sh x86 $(HDA_SMOKE_TIMEOUT)
