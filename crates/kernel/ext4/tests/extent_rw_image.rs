@@ -259,7 +259,7 @@ fn fallocate_keep_size_inserts_sparse_depth1_leaf_sorted() {
 #[test]
 fn fallocate_sparse_extents_promotes_full_root_to_depth3() {
     let disk = build_disk();
-    let m = ext4::Mount::open(disk.clone()).unwrap();
+    let mut m = ext4::Mount::open(disk.clone()).unwrap();
     let n = m.create_file(2, b"falloc_d3.bin", 0o644, 0, 0).unwrap();
     let bs = m.sb.block_size as usize;
     let mut logicals = std::vec::Vec::new();
@@ -273,8 +273,16 @@ fn fallocate_sparse_extents_promotes_full_root_to_depth3() {
     // mini.img has 1 KiB blocks, so real external extent nodes hold ~84
     // entries. Constrain only this test-created tree's external eh_max fields
     // to 4 so the same split propagation reaches depth 3 within the fixture.
+    // Poking `eh_max` writes straight to the backing device, behind the
+    // mount's own metadata buffer cache — the same hazard a real ext4 mount
+    // has against an out-of-band device write (e.g. `debugfs -w` on a live
+    // mount): the cache keeps serving the pre-poke bytes until something
+    // forces it to re-read. A real system would remount or drop caches;
+    // here that means reopening the `Mount` so the next read is a cold
+    // read of what's actually on disk.
     let inode0 = m.read_inode(n).unwrap();
     force_tree_external_maxes(&disk, &m.sb, n, inode0.generation, &inode0.i_block, m.sb.block_size, 4);
+    m = ext4::Mount::open(disk.clone()).unwrap();
 
     let mut next_lb = 10u32;
     while ext4::parse_extent_header(&m.read_inode(n).unwrap().i_block).unwrap().depth < 3 {
@@ -282,6 +290,7 @@ fn fallocate_sparse_extents_promotes_full_root_to_depth3() {
         logicals.push(next_lb);
         let ino_cur = m.read_inode(n).unwrap();
         force_tree_external_maxes(&disk, &m.sb, n, ino_cur.generation, &ino_cur.i_block, m.sb.block_size, 4);
+        m = ext4::Mount::open(disk.clone()).unwrap();
         next_lb += 2;
         assert!(logicals.len() < 96, "test should reach depth 3 with constrained fanout");
     }
