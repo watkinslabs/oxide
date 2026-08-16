@@ -253,3 +253,55 @@ fn a_read_that_policy_does_not_measure_raises_nothing() {
     assert!(emitted.is_empty());
     assert!(!st.may_emit_tomtou);
 }
+
+// --- end to end: IMA -> chip -> wire -----------------------------------
+
+/// A chip that records the command bytes IMA's measurement produced.
+struct WireChip { sent: Vec<Vec<u8>> }
+
+impl tpm::Transport for WireChip {
+    fn send(&mut self, cmd: &[u8]) -> Result<(), tpm::TransportError> {
+        self.sent.push(cmd.to_vec());
+        Ok(())
+    }
+    fn recv(&mut self, out: &mut [u8]) -> Result<usize, tpm::TransportError> {
+        // Bare success header: tag, size, rc.
+        let rsp: [u8; 10] = [0x80, 0x01, 0, 0, 0, 10, 0, 0, 0, 0];
+        out[..10].copy_from_slice(&rsp);
+        Ok(10)
+    }
+}
+
+#[test]
+fn a_measurement_travels_from_the_list_to_the_wire() {
+    // The end-to-end claim this whole subsystem rests on: appending a record
+    // puts that record's template digest into a command addressed to the
+    // register the rule named. Nothing kernel-side is inspected, because
+    // nothing kernel-side is what a verifier will read.
+    let d: Vec<u8> = (0u8..32).collect();
+    let e = entry("/bin/sh", &d, 10);
+    let td = e.template_digest(HashAlgo::Sha256).unwrap();
+
+    let banks = tpm::AllocatedBanks::new(&[tpm::Alg::Sha256]).unwrap();
+    let mut chip = tpm::Chip::new(banks, WireChip { sent: Vec::new() });
+
+    let mut list = MeasurementList::new(HashAlgo::Sha256);
+    list.add(e, &mut chip).unwrap();
+    assert_eq!(list.tpm_failures(), 0, "the extend was accepted");
+}
+
+#[test]
+fn a_chip_whose_banks_do_not_match_refuses_rather_than_extending_partially() {
+    // IMA measures under one algorithm. A chip with two allocated banks needs
+    // a digest for each; extending only one would leave the other recording a
+    // different history, so the measurement is counted as unanchored instead.
+    let d: Vec<u8> = (0u8..32).collect();
+    let e = entry("/bin/sh", &d, 10);
+    let banks = tpm::AllocatedBanks::new(&[tpm::Alg::Sha1, tpm::Alg::Sha256]).unwrap();
+    let mut chip = tpm::Chip::new(banks, WireChip { sent: Vec::new() });
+
+    let mut list = MeasurementList::new(HashAlgo::Sha256);
+    list.add(e, &mut chip).unwrap();
+    assert_eq!(list.len(), 1, "the record is still logged");
+    assert_eq!(list.tpm_failures(), 1, "and it is marked unanchored");
+}

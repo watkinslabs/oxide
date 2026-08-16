@@ -150,18 +150,33 @@ pub fn bank_alg(algo: HashAlgo) -> Option<tpm::alg::Alg> {
 }
 
 /// A measurement extends the registers **in the chip**, by sending it a
-/// command. There is deliberately no implementor here that extends a value the
+/// command. There is deliberately no implementor that extends a value the
 /// kernel holds: a PCR lives in hardware, and a measurement that only updated
-/// kernel memory would attest nothing while every test stayed green. The
-/// reference's IMA calls the TPM subsystem's chip extend and nothing else.
+/// kernel memory would attest nothing while every test stayed green.
 ///
-/// The implementor is `tpm::Chip`. Where no chip is present, `NoTpm` below
-/// records the measurement in the log and extends nothing, which is what the
-/// reference does when its chip pointer is null — the log is still useful,
-/// and it is honest about being unanchored.
-///
-/// A measurement with no TPM: logged, not extended, and reported as success,
-/// matching the reference's behaviour when no chip was found.
+/// A real chip is the implementor below. `NoTpm` is the other legitimate case:
+/// no chip was found, so the measurement is logged and extended nowhere, which
+/// is what the reference does when its chip pointer is null. The log is still
+/// useful; it is simply unanchored, and the list counts those separately so
+/// the two cannot be confused.
+impl<T: tpm::Transport> PcrExtend for tpm::Chip<T> {
+    /// Extend the record's digest into `pcr`.
+    ///
+    /// IMA measures under one algorithm and hands the chip that one digest.
+    /// Whether it satisfies every allocated bank is the CHIP's decision, not
+    /// one duplicated here: `Chip::pcr_extend` refuses a set that would leave
+    /// a bank behind, which is where the reference puts the check too. A
+    /// second copy of that rule in IMA would be a policy that can disagree
+    /// with the one that actually gates the command.
+    /// # C: O(banks + digest bytes)
+    fn extend(&mut self, pcr: u32, algo: HashAlgo, digest: &[u8]) -> Result<(), ExtendError> {
+        let alg = bank_alg(algo).ok_or(ExtendError)?;
+        tpm::Chip::pcr_extend(self, pcr as usize, &[(alg.id(), digest)]).map_err(|_| ExtendError)
+    }
+}
+
+/// A measurement with no TPM: logged, not extended, reported as success —
+/// the reference's behaviour when no chip was found.
 pub struct NoTpm;
 
 impl PcrExtend for NoTpm {

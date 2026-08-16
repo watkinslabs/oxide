@@ -40,9 +40,11 @@ pub mod tis;
 pub mod crb;
 pub mod eventlog;
 pub mod chip;
+pub mod device;
 pub mod space;
 
 pub use alg::Alg;
+pub use device::{Chip, ChipError, Transport, TransportError};
 pub use pcr::{AllocatedBanks, BankInfo, PcrError};
 pub use rc::Rc;
 
