@@ -90,7 +90,6 @@ pub fn attr(ty: u16, payload: &[u8]) -> Vec<u8> {
 
 pub fn attr_u16(ty: u16, v: u16) -> Vec<u8> { attr(ty, &v.to_ne_bytes()) }
 pub fn attr_be16(ty: u16, v: u16) -> Vec<u8> { attr(ty, &v.to_be_bytes()) }
-pub fn attr_u32(ty: u16, v: u32) -> Vec<u8> { attr(ty, &v.to_ne_bytes()) }
 
 pub fn attr_flags(ty: u16, flags: u32, mask: u32) -> Vec<u8> {
     let mut payload = Vec::new();
