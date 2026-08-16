@@ -32,6 +32,10 @@ pub enum Received {
 /// sending the next setup command — never does so with the lock held.
 /// # C: O(len)
 pub fn receive(dev: &Arc<HciDev>, frame: &[u8], now_ms: u64) -> Received {
+    // Every frame reaches the sockets watching this controller, malformed ones
+    // included: a trace that silently omitted the frame that broke the
+    // controller is the trace nobody can debug with.
+    crate::sock::fanout::deliver(dev.index, frame, crate::hci::mon::Dir::Rx);
     let Some(parsed) = parse_frame(frame) else {
         let mut st = dev.state.lock();
         st.stats.err_rx = st.stats.err_rx.saturating_add(1);
@@ -73,6 +77,7 @@ pub fn receive(dev: &Arc<HciDev>, frame: &[u8], now_ms: u64) -> Received {
 /// Send one built frame down a controller's transport, counting it. # C: O(len)
 pub fn transmit(dev: &Arc<HciDev>, frame: &[u8]) -> Result<(), syscall::errno::Errno> {
     dev.send(frame)?;
+    crate::sock::fanout::deliver(dev.index, frame, crate::hci::mon::Dir::Tx);
     let mut st = dev.state.lock();
     match frame.first().copied() {
         Some(crate::uapi::hci::HCI_COMMAND_PKT) => st.stats.cmd_tx = st.stats.cmd_tx.saturating_add(1),
