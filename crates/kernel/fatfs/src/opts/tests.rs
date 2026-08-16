@@ -9,7 +9,6 @@ use super::*;
 use syscall::errno::Errno;
 
 use crate::name::flags::{SFN_CREATE_WINNT, SFN_DISPLAY_WINNT};
-use crate::name::msdos::NameCheck;
 
 fn vfat(data: &str) -> Options { parse(Options::vfat(), data).expect("accepted") }
 

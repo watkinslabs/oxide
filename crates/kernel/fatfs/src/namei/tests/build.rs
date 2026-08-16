@@ -1,6 +1,5 @@
 //! The records a name becomes, under both naming rules.
 
-use super::*;
 
 use syscall::errno::Errno;
 

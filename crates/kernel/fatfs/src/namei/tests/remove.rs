@@ -4,7 +4,6 @@
 //! writes atomic, so what a reader sees between them is decided entirely by
 //! the order, and the order is the only thing worth pinning.
 
-use super::*;
 
 use crate::dirent::ENTRY_BYTES;
 use crate::namei::deletion_order;

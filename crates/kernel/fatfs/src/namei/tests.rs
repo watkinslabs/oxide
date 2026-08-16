@@ -26,14 +26,6 @@ pub fn deleted(bytes: &mut [u8], index: usize) {
     bytes[index * ENTRY_BYTES] = DELETED_FLAG;
 }
 
-/// The eleven bytes of the record at `index`.
-pub fn name_at(bytes: &[u8], index: usize) -> [u8; 11] {
-    let at = index * ENTRY_BYTES;
-    let mut out = [0u8; 11];
-    out.copy_from_slice(&bytes[at..at + 11]);
-    out
-}
-
 #[path = "tests/find.rs"] mod find;
 #[path = "tests/build.rs"] mod build;
 #[path = "tests/remove.rs"] mod remove;
