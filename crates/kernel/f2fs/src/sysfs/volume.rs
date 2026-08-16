@@ -5,7 +5,6 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use sectors::BlockSource;
 use syscall::errno::Errno;
 
 use crate::casefold::LookupMode;
@@ -14,7 +13,7 @@ use crate::mount::{errno_to_vfs, F2fs};
 use crate::volume::Volume;
 
 /// The volume a mount's attribute reads through.
-pub(crate) type Vol = Volume<BlockSource>;
+pub(crate) type Vol = Volume<crate::mount::devs::Medium>;
 
 /// A read-only attribute rendering one number off the live volume.
 /// # C: O(1)
@@ -28,6 +27,29 @@ pub(crate) fn num(fs: &Arc<F2fs>, dir: &str, name: &'static str,
 pub(crate) fn hex(fs: &Arc<F2fs>, dir: &str, name: &'static str,
                   f: fn(&mut Vol) -> Result<u64, Errno>) -> Attr {
     Attr::ro(dir, name, render(fs, f, line_hex))
+}
+
+/// A control over one number the VOLUME owns, as against one the background
+/// threads own.
+///
+/// Both halves take the volume lock and release it before anything leaves, so
+/// a refused value is refused before the lock is dropped and cannot be
+/// overtaken by the read that follows it.
+/// # C: O(1)
+pub(crate) fn num_rw(fs: &Arc<F2fs>, dir: &str, name: &'static str,
+                     get: fn(&Vol) -> u64, set: fn(&mut Vol, u64) -> Result<(), Errno>) -> Attr {
+    let show_fs = Arc::clone(fs);
+    let store_fs = Arc::clone(fs);
+    Attr::rw(
+        dir,
+        name,
+        Arc::new(move || Ok(line_u64(get(&show_fs.volume.lock())))),
+        Arc::new(move |bytes: &[u8]| {
+            let v = crate::bg::knobs::parse_value(bytes).map_err(errno_to_vfs)?;
+            set(&mut store_fs.volume.lock(), v).map_err(errno_to_vfs)?;
+            Ok(bytes.len())
+        }),
+    )
 }
 
 /// A read-only attribute whose value is text rather than a number.
@@ -59,7 +81,11 @@ pub(crate) fn attrs(fs: &Arc<F2fs>, dev: &str) -> Vec<Attr> {
         num(fs, dev, "reserved_segments", |v| Ok(u64::from(v.checkpoint().rsvd_segment_count))),
         num(fs, dev, "mounted_time_sec", |v| Ok(v.checkpoint().elapsed_time)),
         num(fs, dev, "pending_discard", pending_discard),
-        num(fs, dev, "atgc_enabled", |v| Ok(u64::from(v.options().atgc))),
+        // What the mount SETTLED ON, not what it asked for. A volume too young
+        // for age-threshold cleaning mounts with the option and the policy
+        // off, and reporting the option here would tell a tool the policy was
+        // running when no candidate can ever clear its threshold.
+        num(fs, dev, "atgc_enabled", |v| Ok(u64::from(v.atgc_enabled()))),
         hex(fs, dev, "encoding_flags", |v| Ok(u64::from(v.super_block().s_encoding_flags))),
         text(fs, dev, "encoding", encoding),
         text(fs, dev, "effective_lookup_mode", effective_lookup_mode),

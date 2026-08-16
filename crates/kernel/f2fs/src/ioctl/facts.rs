@@ -34,9 +34,7 @@ pub fn vol_facts<S: SectorSource>(v: &Volume<S>) -> VolFacts {
         // mounted one always spans exactly one.
         device_count: 1,
         large_section: sb.segs_per_sec > 1,
-        // Which side drives compression is a mount option this build parses
-        // and does not yet carry, so no mount reports caller-driven.
-        compress_mode_user: false,
+        compress_mode_user: v.options().compress_mode == crate::opts::CompressMode::User,
         compress_backend_ready: true,
         main_blkaddr: main,
         max_blkaddr: main

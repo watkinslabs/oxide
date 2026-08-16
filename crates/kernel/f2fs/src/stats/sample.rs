@@ -14,7 +14,7 @@
 use sectors::SectorSource;
 use syscall::errno::Errno;
 
-use crate::uapi::{BLKSIZE, NR_CURSEG_PERSIST_TYPE, NR_CURSEG_TYPE, RESERVED_NODE_NUM};
+use crate::uapi::{BLKSIZE, NR_CURSEG_PERSIST_TYPE, NR_CURSEG_TYPE};
 use crate::volume::Volume;
 
 use super::counters::{alloc_of, call, dirty_of, extent_of, gc_mode, gc_of, gc_when, meta, Counters};
@@ -121,6 +121,10 @@ pub struct General {
     pub hit_total: [u64; extent_of::MAX],
     pub total_ext: [u64; extent_of::MAX],
     pub allocated_data_blocks: u64,
+    /// What each cache is holding: trees, of which zombies, and nodes.
+    pub ext_tree: [u64; extent_of::MAX],
+    pub ext_zombie: [u64; extent_of::MAX],
+    pub ext_node: [u64; extent_of::MAX],
 
     pub undiscard_blks: u32,
     pub iostat: Iostat,
@@ -217,7 +221,12 @@ impl General {
         let rsvd_segs = cp.rsvd_segment_count;
         let mounted_time = cp.elapsed_time;
         let cp_flags = cp.flags;
-        let max_nid = v.max_nid();
+        // Straight off the cache that owns them. The remaining count is the
+        // cache's own rather than recomputed here: the cache is what refuses
+        // an allocation when it reaches zero, and a second derivation of the
+        // same number could report room the allocator would not give.
+        let (free_nids, alloc_nids, avail_nids) = v.free_nid_counts();
+        let (ext_tree, ext_zombie, ext_node) = v.extent_cache_counts();
 
         // Halves rather than percents: the distribution bar is drawn in
         // fiftieths so that the three parts fit one line, which is why each
@@ -247,10 +256,7 @@ impl General {
             dirty_nats: v.nat_dirty.len() as u32,
             sits: main_area_segs,
             dirty_sits: v.sit_dirty.len() as u32,
-            free_nids: 0,
-            avail_nids: max_nid.saturating_sub(RESERVED_NODE_NUM)
-                              .saturating_sub(v.valid_node_count),
-            alloc_nids: 0,
+            free_nids, avail_nids, alloc_nids,
             util_free, util_valid, util_invalid,
             blkoff: [0; NR_CURSEG_TYPE], curseg: [0; NR_CURSEG_TYPE],
             cursec: [0; NR_CURSEG_TYPE], curzone: [0; NR_CURSEG_TYPE],
@@ -282,6 +288,7 @@ impl General {
             hit_total: [c.hit_total(extent_of::READ), c.hit_total(extent_of::BLOCK_AGE)],
             total_ext: c.total_hit_ext,
             allocated_data_blocks: c.allocated_data_blocks,
+            ext_tree, ext_zombie, ext_node,
             undiscard_blks: v.pending_discard.len() as u32,
             iostat: c.iostat,
             mem: super::mem::Footprint::of(v, c),

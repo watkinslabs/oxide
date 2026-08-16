@@ -56,6 +56,7 @@ impl<S: SectorSource> Volume<S> {
             pino_ok: !advise::wrong_pino(inode.advise),
             space_for_roll_forward: self.space_for_roll_forward(),
             parent_checkpointed: self.node_is_checkpointed(pino),
+            fastboot: self.opts.fastboot,
             active_logs: self.opts.active_logs,
             strict: self.opts.fsync_mode == FsyncMode::Strict,
             need_dentry_mark: self.need_dentry_mark(ino)?,

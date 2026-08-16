@@ -15,6 +15,27 @@ use syscall::errno::Errno;
 use super::req::Req;
 use super::uapi::*;
 
+/// What the descriptor a move names turns out to be.
+///
+/// Three outcomes, not two, because the two ways a destination can be wrong
+/// are refused at DIFFERENT rungs: a descriptor that does not exist or cannot
+/// be written is not a usable descriptor at all and is refused before the
+/// mount's write reference is taken, while one that is perfectly good but
+/// names another mount or another volume is refused after it, with the errno
+/// that says "not on this filesystem". Collapsing the two reports the wrong
+/// one, and a caller branches on the difference.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub enum DstFd {
+    /// No such descriptor, or one not opened for writing.
+    #[default]
+    Unusable,
+    /// A descriptor on another mount, or on another volume of this
+    /// filesystem.
+    Foreign,
+    /// A file of the same volume, by inode number.
+    Ours(u32),
+}
+
 /// What the caller and its open description are, as the ladder reads them.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub struct Ctx {
@@ -37,6 +58,10 @@ pub struct Ctx {
     pub dirty_pages: u64,
     /// The inode is mapped by some address space.
     pub mmapped: bool,
+    /// What the second descriptor a move names resolved to. Meaningless for
+    /// every other command, and resolved by the layer that owns descriptors —
+    /// this one has none.
+    pub dst: DstFd,
 }
 
 /// What the volume is, as the ladder reads it.
@@ -211,7 +236,14 @@ pub fn admit(r: &Req, c: &Ctx, v: &VolFacts, f: &FileFacts) -> Result<(), Errno>
             // Bytes leave one description and arrive in another, so the
             // source must be readable as well as writable.
             if !c.fmode_read || !c.fmode_write { return Err(Errno::Ebadf); }
-            want_write(c)
+            // A destination that is missing or read-only is a bad descriptor,
+            // and that is decided BEFORE the mount's write reference; a
+            // destination on another mount or another volume is a good
+            // descriptor naming the wrong place, and that is decided after.
+            if c.dst == DstFd::Unusable { return Err(Errno::Ebadf); }
+            want_write(c)?;
+            if c.dst == DstFd::Foreign { return Err(Errno::Exdev); }
+            Ok(())
         }
 
         Req::GetFeatures | Req::GetPinFile | Req::GetDevAliasFile | Req::GetVersion
@@ -344,13 +376,14 @@ pub fn admit(r: &Req, c: &Ctx, v: &VolFacts, f: &FileFacts) -> Result<(), Errno>
                 || (flags & TRIM_FILE_ZEROOUT != 0 && f.encrypted && v.multi_device())
             { return Err(Errno::Eopnotsupp); }
             want_write(c)?;
-            if f.atomic || f.compressed || *start >= f.size { return Err(Errno::Einval); }
-            if *len == 0 { return Ok(()); }
-            let to_end = f.size - start <= *len;
-            let end = if to_end { f.size } else { start + len };
-            if start % BLKSIZE != 0 || (!to_end && end % BLKSIZE != 0) {
-                return Err(Errno::Einval);
-            }
+            if f.atomic || f.compressed { return Err(Errno::Einval); }
+            // Which blocks the request comes to — and whether it names any at
+            // all — is the trim's own arithmetic, asked here rather than
+            // restated. A second copy of it can admit a request the trim then
+            // refuses, or refuse one the trim would have carried out, and
+            // neither shows up until a caller hits the difference.
+            crate::sectrim::span::span(f.size, *start, *len,
+                                       v.max_file_blocks.saturating_mul(BLKSIZE))?;
             Ok(())
         }
 

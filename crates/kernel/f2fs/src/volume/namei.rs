@@ -60,12 +60,17 @@ impl<S: SectorSource> Volume<S> {
         put32(&mut b, I_GENERATION, ino);
         if extra > 0 {
             super::dnode::put16(&mut b, I_EXTRA_ISIZE, extra as u16);
+            // A volume carrying the flexible bit states the reservation PER
+            // INODE, so the mount line's `inline_xattr_size=` is what it means:
+            // reserving the format's own number regardless would make the
+            // option a value nothing reads. Without the bit the reservation is
+            // fixed and the option has nowhere to be recorded.
             let reserve = if crate::features::has_flexible_inline_xattr(self.sb.feature) {
-                DEFAULT_INLINE_XATTR_ADDRS
+                self.opts.inline_xattr_addrs()
             } else {
                 0
             };
-            super::dnode::put16(&mut b, I_INLINE_XATTR_SIZE, reserve as u16);
+            super::dnode::put16(&mut b, I_INLINE_XATTR_SIZE, reserve);
             put64(&mut b, I_CRTIME, spec.now.0);
             put32(&mut b, I_CRTIME_NSEC, spec.now.1);
         }

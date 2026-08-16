@@ -48,7 +48,8 @@ pub fn gc_pass(fs: &Arc<F2fs>) -> GcPass {
     let GcStep::Gc { sync, foreground } = step else {
         return GcPass { step, cleaned: false, wait_ms: wait_before };
     };
-    let cleaned = clean(fs, sync, foreground);
+    let mode = bg.gc.lock().mode;
+    let cleaned = clean(fs, sync, foreground, mode);
     {
         let mut th = bg.gc.lock();
         gc::after_gc(&mut th, cleaned, foreground);
@@ -84,22 +85,40 @@ fn conditions(fs: &Arc<F2fs>, foreground: bool, mode: GcMode) -> Conditions {
     Conditions { readonly, frozen: false, foreground, idle, boost, can_lock }
 }
 
-/// Do the cleaning the pass decided on. # C: O(blocks per section)
-fn clean(fs: &Arc<F2fs>, sync: bool, foreground: bool) -> bool {
+/// Do the cleaning the pass decided on.
+///
+/// The mode reaches the volume for two reasons and both matter. It says which
+/// COST to look for — an idle mode names one, and without this the knob that
+/// selects the cost was a knob nothing read — and it says which policy the
+/// segments this pass empties are charged to, which is the only way the
+/// reclaimed figures can ever be anything but one row.
+/// # C: O(blocks per section)
+fn clean(fs: &Arc<F2fs>, sync: bool, foreground: bool, mode: GcMode) -> bool {
     let mut v = fs.volume_now();
+    let slot = mode.as_u32() as usize;
     if foreground {
         // A blocked caller needs a section it can allocate out of, so the
         // target is stated in segments and the pass runs until it is met or
         // nothing is left worth cleaning.
         let target = v.free_segment_count() + v.super_block().segs_per_sec.max(1);
-        return v.collect_with(Policy::Greedy, target).map(|n| n > 0).unwrap_or(false);
+        let policy = mode.idle_policy().unwrap_or(Policy::Greedy);
+        return v.collect_as(policy, target, slot).map(|n| n > 0).unwrap_or(false);
     }
     if sync {
         // The volume was mounted asking for background cleaning to move
         // blocks the way the foreground does: cheapest section first.
-        return v.gc_one_segment().map(|s| s.is_some()).unwrap_or(false);
+        let policy = mode.idle_policy().unwrap_or(Policy::Greedy);
+        return v.gc_one_segment_as(policy, slot).map(|s| s.is_some()).unwrap_or(false);
     }
-    v.gc_background().map(|s| s.is_some()).unwrap_or(false)
+    // Ahead of demand is where the age policy belongs: it is the pass that has
+    // time to move blocks nothing is waiting for, and the one whose choice of
+    // victim decides how many writes the volume spends over its life. A caller
+    // that is blocked wants the cheapest section, not the oldest.
+    if v.atgc_enabled() && matches!(mode, GcMode::Normal | GcMode::IdleAt) {
+        return v.gc_background_age(slot).map(|s| s.is_some()).unwrap_or(false);
+    }
+    let policy = mode.idle_policy().unwrap_or(Policy::CostBenefit);
+    v.gc_background_as(policy, slot).map(|s| s.is_some()).unwrap_or(false)
 }
 
 /// What one wake of the discard thread did.

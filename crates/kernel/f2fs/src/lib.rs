@@ -53,11 +53,19 @@
 //! - `quota`:      per-identity usage accounting.
 //! - `verity`:     the descriptor a verity-protected file carries.
 //! - `opts`:       what a mount was asked for, and what it reports back.
+//! - `extent`:     the read and block-age extent caches, and their LRU.
+//! - `freenid`:    node ids nothing is using, and how one is handed out.
+//! - `atgc`:       age-threshold victim selection, and its candidate tree.
 //! - `fault`:      failures injected on purpose, at named sites and a rate.
 //! - `stats`:      what a mount has done, and what it looks like right now.
 //! - `atomic`:     writes that become visible together or not at all.
 //! - `pin`:        files whose blocks are promised never to move.
 //! - `swap`:       a file the paging code addresses by block.
+//! - `defrag`:     rewriting a range so its blocks land next to each other.
+//! - `moverange`:  handing a range of blocks from one file to another.
+//! - `sectrim`:    destroying a file's block contents where they lie.
+//! - `devices`:    the member devices a volume spans, and their address map.
+//! - `zoned`:      what a drive's zones permit, where they dictate placement.
 //! - `volume`:     a mounted volume, read and written against a real medium.
 //! - `bg`:         the cleaner and discard threads, and the balance path.
 //! - `mount`:      the VFS-facing filesystem, its inodes and their operations.
@@ -71,6 +79,8 @@ pub mod limits;
 pub mod checksum;
 pub mod features;
 pub mod sb;
+pub mod devices;
+pub mod zoned;
 pub mod sbwrite;
 pub mod sbflags;
 pub mod checkpoint;
@@ -88,10 +98,19 @@ pub mod crypto;
 pub mod quota;
 pub mod verity;
 pub mod opts;
+pub mod consistency;
+pub mod fallocate;
+pub mod errrec;
+pub mod extent;
+pub mod freenid;
+pub mod atgc;
 pub mod fault;
 pub mod atomic;
 pub mod pin;
 pub mod swap;
+pub mod defrag;
+pub mod moverange;
+pub mod sectrim;
 pub mod volume;
 pub mod bg;
 pub mod mount;

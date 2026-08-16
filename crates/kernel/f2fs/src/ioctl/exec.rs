@@ -20,7 +20,7 @@ use crate::crypto::KeyId;
 use crate::volume::Volume;
 
 use super::arg::{self, KeySpec};
-use super::perm::Ctx;
+use super::perm::{Ctx, DstFd};
 use super::reply::Reply;
 use super::req::Req;
 use super::uapi::*;
@@ -30,22 +30,8 @@ use super::uapi::*;
 /// contract defines.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Unbuilt {
-    /// Staging writes in a shadow inode and swapping it in at commit.
-    AtomicWrite,
-    /// Rewriting a range's blocks so they land contiguously.
-    Defragment,
-    /// Exchanging block ranges between two files.
-    MoveRange,
     /// Emptying one device of a multi-device volume onto the others.
     FlushDevice,
-    /// Handing back, and later re-reserving, the blocks compression saved.
-    CompressBlockAccounting,
-    /// Discarding or zeroing one file's blocks in place.
-    SecTrimFile,
-    /// Rewriting every cluster of a file compressed or plain.
-    ClusterRewrite,
-    /// Growing the volume into space added behind it.
-    ResizeFs,
 }
 
 /// The outcome of carrying out a request.
@@ -56,21 +42,57 @@ pub enum Outcome {
 }
 
 /// Carry out `r` against `v`. # C: command-dependent
-pub fn exec<S: SectorSource>(v: &mut Volume<S>, ino: u32, _c: &Ctx, r: &Req)
+pub fn exec<S: SectorSource>(v: &mut Volume<S>, ino: u32, c: &Ctx, r: &Req)
     -> Result<Outcome, Errno> {
     Ok(match r {
         Req::VolatileWrite => return Err(Errno::Eopnotsupp),
 
-        Req::StartAtomicWrite { .. } | Req::CommitAtomicWrite | Req::AbortAtomicWrite =>
-            Outcome::NotBuilt(Unbuilt::AtomicWrite),
-        Req::Defragment { .. } => Outcome::NotBuilt(Unbuilt::Defragment),
-        Req::MoveRange { .. } => Outcome::NotBuilt(Unbuilt::MoveRange),
+        // The handle-level ladder ran in admission, over the facts only a file
+        // description carries; the ladder the volume applies here is over the
+        // facts only the inode carries. Repeating either would be a second
+        // answer to a question already answered.
+        Req::StartAtomicWrite { replace } => {
+            v.start_atomic_write(ino, *replace)?;
+            Outcome::Reply(Reply::done())
+        }
+        Req::CommitAtomicWrite => { v.commit_atomic_write(ino)?; Outcome::Reply(Reply::done()) }
+        Req::AbortAtomicWrite => { v.abort_atomic_write(ino)?; Outcome::Reply(Reply::done()) }
+        // The bytes actually moved are written back over the caller's own
+        // request, which is how a caller tells a range that was already one
+        // run from one this had to rewrite.
+        Req::Defragment { start, len } => {
+            let moved = v.defragment_range(ino, *start, *len)?;
+            let mut out = Vec::with_capacity(DEFRAGMENT_SIZE as usize);
+            out.extend_from_slice(&start.to_le_bytes());
+            out.extend_from_slice(&moved.to_le_bytes());
+            Outcome::Reply(Reply::payload(out))
+        }
+        // The descriptor the request named was resolved by the layer that
+        // owns descriptors, and admission has already refused every way it
+        // could have been the wrong one.
+        Req::MoveRange { pos_in, pos_out, len, .. } => {
+            let DstFd::Ours(dst) = c.dst else { return Err(Errno::Exdev) };
+            v.move_file_range(ino, *pos_in, dst, *pos_out, *len)?;
+            Outcome::Reply(Reply::done())
+        }
         Req::FlushDevice { .. } => Outcome::NotBuilt(Unbuilt::FlushDevice),
-        Req::ReleaseCompressBlocks | Req::ReserveCompressBlocks =>
-            Outcome::NotBuilt(Unbuilt::CompressBlockAccounting),
-        Req::SecTrimFile { .. } => Outcome::NotBuilt(Unbuilt::SecTrimFile),
-        Req::CompressFile | Req::DecompressFile => Outcome::NotBuilt(Unbuilt::ClusterRewrite),
-        Req::ResizeFs(_) => Outcome::NotBuilt(Unbuilt::ResizeFs),
+        // Both report the blocks they moved through the caller's own argument
+        // word, which is the count a caller distributing images checks against
+        // what it expected to get back.
+        Req::ReleaseCompressBlocks =>
+            Outcome::Reply(Reply::u64(v.release_compress_blocks(ino)?)),
+        Req::ReserveCompressBlocks =>
+            Outcome::Reply(Reply::u64(v.reserve_compress_blocks(ino)?)),
+        Req::SecTrimFile { start, len, flags } => {
+            v.sec_trim_file(ino, *start, *len, *flags)?;
+            Outcome::Reply(Reply::done())
+        }
+        // The count of clusters rewritten is this build's own; the command
+        // reports success and nothing else, as the caller's argument word is
+        // unused in both directions.
+        Req::CompressFile => { v.compress_file(ino)?; Outcome::Reply(Reply::done()) }
+        Req::DecompressFile => { v.decompress_file(ino)?; Outcome::Reply(Reply::done()) }
+        Req::ResizeFs(blocks) => { v.resize_fs(*blocks)?; Outcome::Reply(Reply::done()) }
 
         Req::Shutdown(mode) => {
             // Every mode but the last two takes the volume's state to the
@@ -307,3 +329,23 @@ fn fresh_salt<S: SectorSource>(v: &Volume<S>, ino: u32) -> [u8; 16] {
 #[cfg(test)]
 #[path = "../tests/ioctl/exec.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../tests/ioctl/atomic.rs"]
+mod atomic_tests;
+
+#[cfg(test)]
+#[path = "../tests/ioctl/compress_blocks.rs"]
+mod compress_blocks_tests;
+
+#[cfg(test)]
+#[path = "../tests/ioctl/rewrite.rs"]
+mod rewrite_tests;
+
+#[cfg(test)]
+#[path = "../tests/ioctl/resize.rs"]
+mod resize_tests;
+
+#[cfg(test)]
+#[path = "../tests/ioctl/rangeops.rs"]
+mod rangeops_tests;

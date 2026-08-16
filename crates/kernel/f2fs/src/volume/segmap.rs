@@ -66,10 +66,33 @@ pub struct SegState {
     /// Where the next victim search resumes, so successive searches sweep the
     /// volume instead of re-costing the same low-numbered segments.
     pub gc_cursor: u32,
+    /// Which policy the pass now running is attributed to, as the reclaimed
+    /// figures break their total down by.
+    ///
+    /// Per-PASS, not a copy of the cleaner thread's mode: the mode lives with
+    /// the thread that the user's knob turns, and a second stored copy of it
+    /// here would be a value that could disagree with the one being obeyed.
+    /// A caller that is not the cleaner thread cleans under the ordinary
+    /// policy and is counted as such.
+    pub gc_pass_mode: usize,
+    /// Whether the pass now running writes what it moves into the
+    /// age-threshold log. Set only by an ahead-of-demand pass on a mount that
+    /// has the policy on: a blocked caller's pass has no time to be placing
+    /// blocks by age, and would only spread its output over another log.
+    pub gc_atgc_log: bool,
     /// The wall clock as it read when the last checkpoint landed. The
     /// periodic checkpoint is measured from here, so a mount that has just
     /// written one is not asked for another a moment later.
     pub last_cp_clock: u64,
+    /// The first segment a resize is about to take away, while one is running.
+    ///
+    /// The allocator must not hand out a segment the volume is in the middle
+    /// of giving up — the blocks would be written and then cease to exist —
+    /// and the cleaner emptying that range must not choose a victim inside it.
+    /// Held here rather than by shrinking the segment count, because the
+    /// blocks being moved OUT of the range still have to be readable while the
+    /// move is happening.
+    pub resize_barrier: Option<u32>,
 }
 
 impl SegState {
@@ -269,6 +292,9 @@ impl<S: SectorSource> Volume<S> {
     /// rather than fighting over the lowest free segment.
     /// # C: O(main segments)
     pub(crate) fn find_free_seg(&self, hint: u32) -> Option<u32> {
+        if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::NoSegment) {
+            return None;
+        }
         let n = self.sb.segment_count_main;
         (0..n).map(|i| (hint + 1 + i) % n).find(|&s| self.seg_is_free(s))
     }
@@ -281,6 +307,13 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(logs + log prefree)
     pub(crate) fn seg_is_free(&self, segno: u32) -> bool {
         self.seg_valid(segno) == 0 && !self.is_current(segno) && !self.is_prefree(segno)
+            && !self.beyond_resize(segno)
+    }
+
+    /// Whether `segno` is inside the range a running resize is giving up.
+    /// # C: O(1)
+    pub(crate) fn beyond_resize(&self, segno: u32) -> bool {
+        self.segstate.resize_barrier.is_some_and(|first| segno >= first)
     }
 
     /// A partly-used segment to recycle, and the first free block in it.
@@ -293,7 +326,7 @@ impl<S: SectorSource> Volume<S> {
         let per = self.sb.blks_per_seg() as u16;
         for i in 0..n {
             let s = (hint + 1 + i) % n;
-            if self.is_current(s) || self.is_prefree(s) { continue; }
+            if self.is_current(s) || self.is_prefree(s) || self.beyond_resize(s) { continue; }
             let live = self.seg_valid(s);
             if live == 0 || live >= per { continue; }
             if let Some(off) = self.first_free_block(s) { return Some((s, off)); }

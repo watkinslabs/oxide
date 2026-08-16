@@ -41,7 +41,7 @@ pub mod vfs;
 
 pub use entry::{handle, Answer};
 pub use exec::{Outcome, Unbuilt};
-pub use perm::{Ctx, FileFacts, VolFacts};
+pub use perm::{Ctx, DstFd, FileFacts, VolFacts};
 pub use reply::Reply;
 pub use req::{Extra, Req};
 pub use spec::{owns, spec, Indirect, Payload, Spec, Stage};

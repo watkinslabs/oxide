@@ -43,25 +43,77 @@ pub const F_DIGEST: usize = F_SIZE + U16_LEN;
 
 /// What this mount will accept.
 ///
-/// The store is the set of certificates a signature's chain must reach — the
-/// reference keeps exactly one such keyring for the whole system, and an
-/// empty one means built-in signatures are compiled in but unused.
+/// The certificates a signature's chain must reach are the SYSTEM's, not this
+/// mount's: the reference keeps exactly one such keyring for the whole
+/// machine, and which keys are trusted is a property of the machine rather
+/// than of a filesystem. So the ordinary policy holds no store at all and the
+/// system keyring is read at verify time — never copied at mount, because a
+/// copy is a second piece of trust state and a certificate added afterwards
+/// would reach some mounts and not others.
+///
+/// The override exists for a caller that must be unaffected by what the
+/// machine happens to trust, which in practice is a test: the store and the
+/// knob are process-wide, and a test that set them could not run beside
+/// another that did.
 #[derive(Default)]
 pub struct Policy {
-    pub store: TrustStore,
-    /// Whether an unsigned verity file may be read at all.
-    pub require: bool,
+    over_store: Option<TrustStore>,
+    over_require: Option<bool>,
 }
 
 impl Policy {
-    /// A policy that trusts nothing and demands nothing: an unsigned file
-    /// reads, and a signed one is refused because there is no key to check
-    /// it against. # C: O(1)
-    pub fn new() -> Self { Self { store: TrustStore::new(), require: false } }
+    /// A policy that defers to the system keyring for both answers. # C: O(1)
+    pub fn new() -> Self { Self { over_store: None, over_require: None } }
 
-    /// Trust a DER certificate. # C: O(len)
+    /// A policy that trusts NOTHING, whatever the machine's keyring holds.
+    ///
+    /// Distinct from [`Self::new`], which defers to that keyring: this one is
+    /// pinned, so a caller that must be unaffected by what the machine trusts
+    /// — a test asserting what an empty keyring does — gets the same answer
+    /// however the machine is configured.
+    /// # C: O(1)
+    pub fn trusting_nothing() -> Self {
+        Self { over_store: Some(TrustStore::new()), over_require: None }
+    }
+
+    /// Trust a DER certificate FOR THIS POLICY ONLY, taking it off the system
+    /// keyring for good.
+    ///
+    /// Nothing in the running system calls this — a certificate reaches the
+    /// machine through its keyring. It is how a test pins the trust its own
+    /// case needs without touching what every other test sees.
+    /// # C: O(len)
     pub fn trust(&mut self, der: &[u8]) -> Result<(), VerityError> {
-        self.store.add(der).map_err(|_| VerityError::MalformedSignature)
+        self.over_store
+            .get_or_insert_with(TrustStore::new)
+            .add(der)
+            .map_err(|_| VerityError::MalformedSignature)
+    }
+
+    /// Whether an unsigned verity file is refused. # C: O(1)
+    pub fn require(&self) -> bool {
+        self.over_require.unwrap_or_else(vfs::verity_keys::require_signatures)
+    }
+
+    /// Refuse (or stop refusing) unsigned verity files, for this policy only.
+    /// # C: O(1)
+    pub fn set_require(&mut self, v: bool) { self.over_require = Some(v); }
+
+    /// Whether the certificates this policy checks against hold nothing.
+    /// # C: O(1)
+    pub fn store_is_empty(&self) -> bool {
+        match &self.over_store {
+            Some(s) => s.is_empty(),
+            None => vfs::verity_keys::is_empty(),
+        }
+    }
+
+    /// Run `f` against the certificates this policy checks against. # C: O(f)
+    pub fn with_store<R>(&self, f: impl FnOnce(&TrustStore) -> R) -> R {
+        match &self.over_store {
+            Some(s) => f(s),
+            None => vfs::verity_keys::with_store(f),
+        }
     }
 }
 
@@ -90,12 +142,12 @@ pub fn verify(policy: &Policy, alg: u8, file_digest: &[u8], sig: &[u8])
     -> Result<(), VerityError> {
     if sig.is_empty() {
         // Only the absence is a policy question.
-        if policy.require { return Err(VerityError::SignatureRequired); }
+        if policy.require() { return Err(VerityError::SignatureRequired); }
         return Ok(());
     }
-    if policy.store.is_empty() { return Err(VerityError::NoKey); }
+    if policy.store_is_empty() { return Err(VerityError::NoKey); }
     let signed = formatted(alg, file_digest);
-    pkcs7::detached(&signed, sig, &policy.store).map_err(errno_of)
+    policy.with_store(|store| pkcs7::detached(&signed, sig, store).map_err(errno_of))
 }
 
 /// Why a signature was not accepted, kept apart because a caller acts

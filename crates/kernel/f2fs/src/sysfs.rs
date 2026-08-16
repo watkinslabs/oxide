@@ -28,6 +28,9 @@
 //!                   a number.
 //! - `knobs`:        the per-mount controls, which turn the background
 //!                   threads.
+//! - `tunables`:     the per-mount controls the volume itself owns: both
+//!                   extent caches, the free-id cache, and age-threshold
+//!                   victim selection.
 //! - `stat`:         `<dev>/stat/`, and the in-memory status word.
 //! - `feature_list`: `<dev>/feature_list/`, one entry per on-disk bit.
 
@@ -35,6 +38,7 @@ mod build;
 mod feature_list;
 mod knobs;
 mod stat;
+mod tunables;
 pub(crate) mod volume;
 
 #[cfg(test)]
@@ -74,6 +78,7 @@ pub fn mount_attrs(fs: &Arc<F2fs>) -> Vec<Attr> {
     let dev = mount_dir(fs.source());
     let mut out = volume::attrs(fs, &dev);
     out.extend(knobs::attrs(fs, &dev));
+    out.extend(tunables::attrs(fs, &dev));
     out.extend(stat::attrs(fs, &dev));
     out.extend(feature_list::attrs(fs, &dev));
     out

@@ -17,7 +17,9 @@ pub fn render(o: &mut String, g: &General) {
     o.push_str(&format!("  - Hit Ratio: {}% ({} / {})\n",
                         g.hit_ratio(extent_of::READ), g.hit_total[extent_of::READ],
                         g.total_ext[extent_of::READ]));
-    o.push_str(&format!("  - Inner Struct Count: tree: {}({}), node: {}\n", 0, 0, 0));
+    o.push_str(&format!("  - Inner Struct Count: tree: {}({}), node: {}\n",
+                        g.ext_tree[extent_of::READ], g.ext_zombie[extent_of::READ],
+                        g.ext_node[extent_of::READ]));
 
     o.push_str("\nExtent Cache (Block Age):\n");
     o.push_str(&format!("  - Allocated Data Blocks: {}\n", g.allocated_data_blocks));
@@ -26,7 +28,9 @@ pub fn render(o: &mut String, g: &General) {
     o.push_str(&format!("  - Hit Ratio: {}% ({} / {})\n",
                         g.hit_ratio(extent_of::BLOCK_AGE), g.hit_total[extent_of::BLOCK_AGE],
                         g.total_ext[extent_of::BLOCK_AGE]));
-    o.push_str(&format!("  - Inner Struct Count: tree: {}({}), node: {}\n", 0, 0, 0));
+    o.push_str(&format!("  - Inner Struct Count: tree: {}({}), node: {}\n",
+                        g.ext_tree[extent_of::BLOCK_AGE], g.ext_zombie[extent_of::BLOCK_AGE],
+                        g.ext_node[extent_of::BLOCK_AGE]));
 
     // Work in flight. Every one of these counts requests the volume has
     // handed to a lower layer and is still waiting on. This build's reads and

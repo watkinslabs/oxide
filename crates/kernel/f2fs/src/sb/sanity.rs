@@ -97,8 +97,8 @@ fn counts(sb: &SuperBlock) -> Result<(), SbError> {
     if sb.secs_per_zone > sb.section_count || sb.secs_per_zone == 0 {
         return Err(SbError::Counts);
     }
-    if !sb.device_segments.is_empty() {
-        let total: u64 = sb.device_segments.iter().map(|&s| u64::from(s)).sum();
+    if !sb.devices.is_empty() {
+        let total: u64 = sb.devices.iter().map(|d| u64::from(d.total_segments)).sum();
         if total != u64::from(sb.segment_count) { return Err(SbError::Counts); }
     }
     Ok(())
@@ -142,7 +142,7 @@ pub fn access(sb: &SuperBlock) -> Result<features::Access, features::Refusal> {
     {
         return Err(features::Refusal::Casefold);
     }
-    features::access(sb.feature, sb.multi_device())
+    features::access(sb.feature)
 }
 
 #[cfg(test)]

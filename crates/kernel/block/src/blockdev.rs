@@ -166,6 +166,20 @@ pub trait BlockDevice: Send + Sync {
     /// zram overrides it to free its compressed object immediately.
     /// # C: O(1) default
     fn swap_slot_free_notify(&self, _start_block: u64, _len_blocks: u32) -> KResult<()> { Ok(()) }
+
+    /// The drive's zone map, or `None` when it is not a zoned drive.
+    ///
+    /// The default is `None`, and that answer means exactly one thing: this
+    /// device has no zones, so every block on it may be written in any order.
+    /// It must never be read as "unknown, assume the usual layout" — a
+    /// filesystem that placed blocks on a guessed zone map would write behind
+    /// the drive's write pointer, which a host-managed drive refuses and a
+    /// host-aware drive silently relocates.
+    ///
+    /// No driver in this tree answers yet, so every real device reports not
+    /// zoned; the callers above are live against that answer.
+    /// # C: O(zones)
+    fn zone_report(&self) -> Option<crate::zoned::ZoneReport> { None }
 }
 
 /// In-memory block device for tests + future tmpfs backing. Exposes

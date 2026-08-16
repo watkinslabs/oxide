@@ -11,6 +11,7 @@
 //! - `curseg`: the six open logs, and which one a write appends to.
 //! - `segmap`: which blocks are live and which segments are free.
 //! - `write`:  allocating a block and putting a node or a page in it.
+//! - `nids`:   taking a node id, giving one back, and the cache that holds them.
 //! - `dnode`:  reaching — and creating — the node holding a block's address.
 //! - `trim`:   freeing the nodes a shortened file no longer needs.
 //! - `commit`: writing a checkpoint to the other pack.
@@ -60,6 +61,7 @@ pub mod dir;
 pub mod xattrs;
 pub mod space;
 pub mod write;
+pub mod nids;
 pub mod dnode;
 pub mod trim;
 pub mod commit;
@@ -93,6 +95,11 @@ pub struct Volume<S: SectorSource> {
     pub(crate) sb_raw: crate::sbwrite::RawSuper,
     /// Every volume-wide condition this mount is in.
     pub(crate) sbi: crate::sbflags::SbFlags,
+    /// The inconsistency kinds this volume has ever shown and the times it
+    /// stopped checkpointing, seeded from the superblock and written back
+    /// there. Cumulative across mounts, which is what makes it worth having:
+    /// a fault that a repair cleared is invisible from the volume's contents.
+    pub(crate) errrec: crate::errrec::ErrorRecord,
     pub(crate) cp: Checkpoint,
     /// The checkpoint's head block and its payload blocks, joined, because
     /// the version bitmaps run from one into the next.
@@ -169,6 +176,25 @@ pub struct Volume<S: SectorSource> {
     /// The certificates a built-in signature's chain must reach, and whether
     /// an unsigned verity file may be read at all.
     pub(crate) verity_policy: crate::verity::Policy,
+    /// What this mount remembers about where each file's blocks are, and how
+    /// long ago they were written.
+    ///
+    /// Interior mutability for the same reason `verity_cache` has it: a READ
+    /// is what fills this and a read takes `&self`. Without the cache every
+    /// lookup walks the node tree, which is a block read per level for a
+    /// question the previous lookup already answered.
+    pub(crate) extents: core::cell::RefCell<crate::extent::Caches>,
+    /// Node ids nothing is using. Without it, taking an id means walking the
+    /// node table from a cursor and reading a table block per id considered.
+    pub(crate) free_nids: crate::freenid::FreeNids,
+    /// Whether this mount chooses victims by age, and what it is tuned by.
+    pub(crate) atgc: crate::atgc::Atgc,
+    /// Running totals nothing can recompute: how many lookups each cache
+    /// answered, how many segments each cleaning policy emptied, how many data
+    /// blocks have been handed out. Interior mutability because a READ is one
+    /// of the things being counted and a read takes `&self` — the same reason
+    /// `verity_cache` above needs it.
+    pub(crate) counters: core::cell::RefCell<crate::stats::Counters>,
     /// Files between START and COMMIT of an atomic write, by inode number.
     ///
     /// Never on the medium, and that is the promise: an atomic span that a
@@ -176,6 +202,19 @@ pub struct Volume<S: SectorSource> {
     /// what was written is reachable from it — the blocks belong to a COW
     /// inode the checkpoint parks as an orphan.
     pub(crate) atomic: BTreeMap<u32, crate::atomic::AtomicFile>,
+    /// The member devices, and which span of block addresses each holds. One
+    /// entry for a volume that names none, so nothing below has to ask
+    /// whether the volume is spread before it can address a block.
+    pub(crate) devs: crate::devices::DevTable,
+    /// What the members said about their zones, on a volume laid out for
+    /// them. `None` everywhere else, and that `None` is what makes every
+    /// usable-space answer collapse to the plain one.
+    pub(crate) zoned: Option<crate::zoned::Geometry>,
+    /// Failures this mount was asked to inject, and how many each site has
+    /// been given. Live state rather than a copy of the option set: a knob
+    /// rearms a site without remounting, and the counters are what the report
+    /// reads.
+    pub(crate) fault: crate::fault::Info,
 }
 
 impl<S: SectorSource> Volume<S> {
@@ -223,6 +262,59 @@ impl<S: SectorSource> Volume<S> {
     /// The inode number of the root directory. # C: O(1)
     pub fn root_ino(&self) -> u32 { self.sb.root_ino }
 
+    /// The member devices and their spans. # C: O(1)
+    pub fn devices(&self) -> &crate::devices::DevTable { &self.devs }
+
+    /// What the members said about their zones. # C: O(1)
+    pub fn zones(&self) -> Option<&crate::zoned::Geometry> { self.zoned.as_ref() }
+
+    /// Blocks segment `segno` may hold. Every segment on a volume that is not
+    /// zoned, and every segment inside its section's zone capacity, holds a
+    /// whole segment's worth; the rest hold less or nothing.
+    /// # C: O(1)
+    pub fn usable_blks_in_seg(&self, segno: u32) -> u32 {
+        crate::zoned::usable::usable_blks_in_seg(&self.sb, self.zoned.as_ref(), segno)
+    }
+
+    /// Segments of a section that may hold blocks. # C: O(1)
+    pub fn usable_segs_in_sec(&self) -> u32 {
+        crate::zoned::usable::usable_segs_in_sec(&self.sb, self.zoned.as_ref())
+    }
+
+    /// Whether log `log` may hand out another block without opening a new
+    /// segment. # C: O(1)
+    pub(crate) fn curseg_has_room(&self, log: usize) -> bool {
+        let c = &self.curseg[log];
+        if c.segno == crate::uapi::NULL_SEGNO { return false; }
+        c.has_room_within(self.usable_blks_in_seg(c.segno))
+    }
+
+    /// Blocks a section may hold. # C: O(1)
+    pub fn cap_blks_per_sec(&self) -> u32 {
+        crate::zoned::usable::cap_blks_per_sec(&self.sb, self.zoned.as_ref())
+    }
+
+    /// The segment window one `flush device` request should clean.
+    /// # C: O(devices)
+    pub fn flush_device_window(&self, dev_num: usize, segments: u32, cursor: u32)
+        -> Option<(u32, u32)> {
+        crate::devices::flush::window(&self.sb, &self.devs, dev_num, segments, cursor)
+    }
+
+    /// Which member a file that aliases a device stands for, or why it does
+    /// not stand for one. # C: O(devices)
+    pub fn alias_device(&self, i: &crate::node::Inode)
+        -> Result<usize, crate::devices::alias::AliasError> {
+        let zoned = self.zoned.as_ref();
+        crate::devices::alias::resolve(
+            i,
+            self.sb.feature,
+            crate::pin::state::is_pinned(i),
+            &self.devs,
+            |d| zoned.is_some_and(|g| g.dev_is_zoned(d)),
+        )
+    }
+
     /// Read one block by its address.
     ///
     /// Addresses are in blocks and the source is addressed in blocks, so the
@@ -230,6 +322,9 @@ impl<S: SectorSource> Volume<S> {
     /// is created at the volume's block size rather than at a sector size.
     /// # C: O(BLKSIZE)
     pub fn read_block(&self, addr: u32) -> Result<Vec<u8>, Errno> {
+        if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::ReadIo) {
+            return Err(Errno::Eio);
+        }
         if u64::from(addr) >= self.sb.max_blkaddr() { return Err(Errno::Eio); }
         let mut buf = vec![0u8; BLKSIZE];
         self.source.read_sectors(u64::from(addr), &mut buf)?;
@@ -243,7 +338,7 @@ impl<S: SectorSource> Volume<S> {
     /// block as if it were data.
     /// # C: O(BLKSIZE)
     pub fn read_main_block(&self, addr: u32) -> Result<Vec<u8>, Errno> {
-        if !self.sb.valid_main_blkaddr(addr) { return Err(Errno::Eio); }
+        if !self.sb_main_contains(addr) { return Err(Errno::Eio); }
         self.read_block(addr)
     }
 
@@ -277,8 +372,72 @@ impl<S: SectorSource> Volume<S> {
     /// The open logs, for a caller checking where a write landed. # C: O(1)
     pub fn logs(&self) -> &[Curseg] { &self.curseg }
 
-    /// Whether `addr` is a main-area block of this volume. # C: O(1)
-    pub fn sb_main_contains(&self, addr: u32) -> bool { self.sb.valid_main_blkaddr(addr) }
+    /// Whether `addr` is a main-area block of this volume.
+    ///
+    /// Every reader of a stored address goes through here rather than through
+    /// the superblock's own bounds test, because this is the one place a mount
+    /// asked to fail address checks can make one fail.
+    /// # C: O(1)
+    pub fn sb_main_contains(&self, addr: u32) -> bool {
+        if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::BlkaddrValidity) {
+            return false;
+        }
+        self.sb.valid_main_blkaddr(addr)
+    }
+
+    /// What this mount has accumulated, as one snapshot.
+    ///
+    /// Copied out rather than borrowed: the report needs the volume MUTABLY to
+    /// load the segment table, and a live borrow of the counters would still be
+    /// held while it did. A copy cannot go stale the way a stored second count
+    /// can, because nothing ever writes back through it.
+    /// # C: O(1)
+    pub fn counters(&self) -> crate::stats::Counters { *self.counters.borrow() }
+
+    /// What each extent cache is holding: trees, of which zombies, and runs.
+    /// # C: O(1)
+    #[allow(clippy::type_complexity)]
+    pub fn extent_cache_counts(&self) -> ([u64; 2], [u64; 2], [u64; 2]) {
+        use crate::extent::Kind;
+        let c = self.extents.borrow();
+        ([c.tree_count(Kind::Read), c.tree_count(Kind::BlockAge)],
+         [c.zombie_count(Kind::Read), c.zombie_count(Kind::BlockAge)],
+         [c.node_count(Kind::Read), c.node_count(Kind::BlockAge)])
+    }
+
+    /// Bytes each extent cache is holding. # C: O(1)
+    pub fn extent_cache_bytes(&self) -> [u64; 2] {
+        use crate::extent::Kind;
+        let c = self.extents.borrow();
+        [c.mem_bytes(Kind::Read), c.mem_bytes(Kind::BlockAge)]
+    }
+
+    /// Whether this mount is choosing victims by age. # C: O(1)
+    pub fn atgc_enabled(&self) -> bool { self.atgc.enabled }
+
+    /// What age-threshold cleaning is tuned by. # C: O(1)
+    pub fn atgc(&self) -> &crate::atgc::Atgc { &self.atgc }
+
+    /// The same, to turn one of its controls. # C: O(1)
+    pub fn atgc_mut(&mut self) -> &mut crate::atgc::Atgc { &mut self.atgc }
+
+    /// The extent caches, to turn one of their controls. # C: O(1)
+    pub fn extents_mut(&mut self) -> core::cell::RefMut<'_, crate::extent::Caches> {
+        self.extents.borrow_mut()
+    }
+
+    /// The extent caches, to read one of their controls. # C: O(1)
+    pub fn extents(&self) -> core::cell::Ref<'_, crate::extent::Caches> { self.extents.borrow() }
+
+    /// Failures this mount injects, and the counts each site has taken.
+    /// # C: O(1)
+    pub fn fault_info(&self) -> &crate::fault::Info { &self.fault }
+
+    /// Change what this mount injects, one field at a time. # C: O(1)
+    pub fn set_fault(&self, rate: u32, ty: u32, which: crate::fault::Which)
+        -> Result<(), Errno> {
+        crate::fault::build(&self.fault, rate, ty, which)
+    }
 }
 
 #[cfg(test)]

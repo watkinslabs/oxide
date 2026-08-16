@@ -73,7 +73,13 @@ impl Footprint {
         let prefree = u64::from(v.prefree_count()) * size_of::<u32>() as u64;
         let cache = nat + nat_j + sit_j + sit_d + dq + dq_d + orph + opens + disc + prefree;
 
-        Footprint { base_mem: base, cache_mem: cache, page_mem: 0,
-                    ext_mem: [0; extent_of::MAX] }
+        // The two extent caches are reported on their own line as well as
+        // inside the cached total, which is why they are added rather than
+        // counted above: a reader comparing the two would otherwise find the
+        // parts summing to less than the whole.
+        let ext_mem = v.extent_cache_bytes();
+        let cache = cache + ext_mem[extent_of::READ] + ext_mem[extent_of::BLOCK_AGE]
+            + v.free_nid_bytes();
+        Footprint { base_mem: base, cache_mem: cache, page_mem: 0, ext_mem }
     }
 }

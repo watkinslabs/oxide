@@ -80,6 +80,12 @@ impl<S: SectorSource> Volume<S> {
         // references they were being held against, and it must record the
         // free count that includes them.
         self.clear_prefree();
+        // Everything this checkpoint will refer to is now on the media. On a
+        // volume spread over several devices the ones that do NOT carry the
+        // pack must be durable before it lands, or the pack names blocks a
+        // power loss never finished writing. A mount that asked for no
+        // barriers has said it accepts that risk.
+        if self.opts.barrier { self.source.flush_devices()?; }
         let version = self.cp.version.wrapping_add(1);
         let pack = match self.cp.pack { Pack::First => Pack::Second, Pack::Second => Pack::First };
         let start = match pack {
@@ -124,6 +130,13 @@ impl<S: SectorSource> Volume<S> {
         self.sit_dirty.clear();
         self.dirty = false;
         self.sbi.checkpointed();
+        // A volume mounted younger than the age threshold has no section that
+        // could clear it, so the age policy started off. The checkpoint is
+        // what advances the volume's recorded age, so it is also the only
+        // point at which a volume can have grown into the policy — and
+        // without this the mount would carry the option and never obey it.
+        let (atgc, elapsed) = (self.opts.atgc, self.cp.elapsed_time);
+        if self.atgc.may_reinit(atgc, elapsed) { self.atgc.enabled = true; }
         Ok(())
     }
 

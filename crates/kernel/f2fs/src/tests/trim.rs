@@ -170,10 +170,18 @@ fn freeing_an_inode_gives_its_node_id_back() {
     let (mut v, ino) = with_file();
     v.free_inode(ino).unwrap();
     assert_eq!(v.node_addr(ino).unwrap(), NULL_ADDR);
-    // The id is offered again rather than lost for the life of the volume.
+    // The id comes back to the cache rather than being lost for the life of
+    // the volume — but it is NOT the next one handed out. A released id joins
+    // the TAIL of the free order, behind everything the cache already holds,
+    // because something may still be naming an id that has just been released
+    // and it is the last one that should be reused. So the claim to check is
+    // that it is recorded free again and that the volume's remaining count
+    // came back with it, not that the next file gets it.
+    assert!(v.nid_is_cached_free(ino), "the freed id {ino} was not recorded free again");
+    assert!(v.free_nid_counts().2 > 0);
     let spec = NewInode { mode: S_IFREG | 0o644, uid: 0, gid: 0, rdev: 0, now: NOW };
     let next = v.create(ROOT_INO, b"g", &spec, None).unwrap();
-    assert_eq!(next, ino);
+    assert_ne!(next, ino, "an id released a moment ago was handed straight back out");
 }
 
 #[test]

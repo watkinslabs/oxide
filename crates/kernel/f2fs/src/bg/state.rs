@@ -63,6 +63,25 @@ impl Bg {
     /// Whether the threads have been told to wind up. # C: O(1)
     pub fn stopping(&self) -> bool { self.stopping.load(Ordering::Acquire) }
 
+    /// Let the threads run again after a stop.
+    ///
+    /// The stop flag is how an unmount winds the threads up, and a remount to
+    /// read-only uses the same flag for the same reason. Coming back
+    /// read-write therefore has to lower it BEFORE starting: a thread spawned
+    /// with the flag still up reads it on its first round and exits, leaving a
+    /// writable mount with no cleaner and nothing saying so.
+    /// # C: O(1)
+    pub fn resume(&self) { self.stopping.store(false, Ordering::Release); }
+
+    /// Tell the threads to wind up, whether or not any are running.
+    ///
+    /// The flag is the MOUNT's statement that no pass may run, which is a
+    /// different thing from a thread having noticed it. Raising it here rather
+    /// than inside the spawn machinery is what makes a read-only remount's
+    /// decision observable on a build that spawns nothing.
+    /// # C: O(1)
+    pub fn halt(&self) { self.stopping.store(true, Ordering::Release); }
+
     /// The cleaning mode in force. # C: O(1)
     pub fn gc_mode(&self) -> GcMode { self.gc.lock().mode }
 

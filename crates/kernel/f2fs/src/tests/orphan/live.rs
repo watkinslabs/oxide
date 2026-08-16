@@ -264,3 +264,18 @@ fn scratch_pack_start(v: &Volume<MemImage>) -> u32 {
         crate::checkpoint::Pack::Second => sb.cp_blkaddr,
     }
 }
+
+#[test]
+fn a_name_coming_back_takes_the_inode_off_the_orphan_list() {
+    // The shape `linkat` of an unnamed file produces: an inode something holds
+    // open, its last name gone, then a new name for it. Left parked, the next
+    // checkpoint records it as an orphan and the mount after that frees a file
+    // that has a name.
+    let mut v = vol();
+    let ino = v.create(ROOT_INO, b"tmp", &spec(), None).unwrap();
+    v.open_inode(ino);
+    v.remove(ROOT_INO, b"tmp", false, NOW).unwrap();
+    assert!(v.is_orphan(ino), "the fixture never parked it");
+    v.link(ROOT_INO, b"named", ino, NOW).unwrap();
+    assert!(!v.is_orphan(ino), "the inode is still parked after its name came back");
+}

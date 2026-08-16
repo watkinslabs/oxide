@@ -13,6 +13,7 @@ fn ok() -> SyncState {
         pino_ok: true,
         space_for_roll_forward: true,
         parent_checkpointed: true,
+        fastboot: false,
         active_logs: 6,
         strict: false,
         need_dentry_mark: false,
@@ -63,6 +64,28 @@ fn a_full_volume_takes_the_checkpoint() {
 #[test]
 fn a_parent_that_is_not_yet_durable_takes_the_checkpoint() {
     let s = SyncState { parent_checkpointed: false, ..ok() };
+    assert_eq!(need_checkpoint(&s), CpReason::ParentNotCheckpointed);
+}
+
+#[test]
+fn fastboot_takes_the_checkpoint() {
+    let s = SyncState { fastboot: true, ..ok() };
+    assert_eq!(need_checkpoint(&s), CpReason::Fastboot);
+    assert!(need_checkpoint(&s).needed());
+}
+
+#[test]
+fn fastboot_is_read_before_the_log_count() {
+    // The rung sits between the parent's durability and the log count, so a
+    // state that trips both reports the earlier one.
+    let s = SyncState { fastboot: true, active_logs: 2, ..ok() };
+    assert_eq!(need_checkpoint(&s), CpReason::Fastboot);
+    assert_eq!(need_checkpoint(&SyncState { fastboot: false, ..s }), CpReason::SpecLogNum);
+}
+
+#[test]
+fn a_parent_not_yet_durable_is_read_before_fastboot() {
+    let s = SyncState { fastboot: true, parent_checkpointed: false, ..ok() };
     assert_eq!(need_checkpoint(&s), CpReason::ParentNotCheckpointed);
 }
 
@@ -126,6 +149,10 @@ fn dropping_the_first_reason_uncovers_the_second() {
     assert_eq!(need_checkpoint(&s), CpReason::ParentNotCheckpointed);
     let s = SyncState { parent_checkpointed: true, ..s };
     assert_eq!(need_checkpoint(&s), CpReason::SpecLogNum);
+    let s = SyncState { fastboot: true, ..s };
+    assert_eq!(need_checkpoint(&s), CpReason::Fastboot);
+    let s = SyncState { fastboot: false, ..s };
+    assert_eq!(need_checkpoint(&s), CpReason::SpecLogNum);
     let s = SyncState { active_logs: 6, ..s };
     assert_eq!(need_checkpoint(&s), CpReason::None);
 }
@@ -135,7 +162,7 @@ fn only_the_no_reason_case_reports_no_need() {
     let all = [
         CpReason::NonRegular, CpReason::Compressed, CpReason::Hardlink,
         CpReason::WrongPino, CpReason::NoSpaceRollForward,
-        CpReason::ParentNotCheckpointed, CpReason::SpecLogNum,
+        CpReason::ParentNotCheckpointed, CpReason::Fastboot, CpReason::SpecLogNum,
         CpReason::RecoverDir, CpReason::XattrDir,
     ];
     for r in all { assert!(r.needed(), "{r:?} must force a checkpoint"); }

@@ -116,9 +116,21 @@ impl<S: SectorSource> Volume<S> {
         let nid = self.alloc_nid()?;
         let mut fresh = vec![0u8; BLKSIZE];
         set_node_ofs(&mut fresh, slot_ofs(slot));
-        self.write_node(nid, ino, fresh, kind)?;
+        // An id claimed and never written is gone for the life of the volume:
+        // nothing names it, so nothing frees it, and the next mount reads it
+        // as in use. It goes back the moment the write it was claimed for
+        // fails.
+        if let Err(e) = self.write_node(nid, ino, fresh, kind) {
+            self.release_node(nid)?;
+            return Err(e);
+        }
         block[at..at + 4].copy_from_slice(&nid.to_le_bytes());
-        self.put_inode(ino, block)?;
+        // The link is what makes the node part of the file. Without it the
+        // node is allocated, charged and unreachable.
+        if let Err(e) = self.put_inode(ino, block) {
+            self.undo_new_node(ino, nid)?;
+            return Err(e);
+        }
         Ok(nid)
     }
 
@@ -146,9 +158,15 @@ impl<S: SectorSource> Volume<S> {
         let nid = self.alloc_nid()?;
         let mut fresh = vec![0u8; BLKSIZE];
         set_node_ofs(&mut fresh, parent_ofs + 1 + slot as u32 * stride);
-        self.write_node(nid, ino, fresh, kind)?;
+        if let Err(e) = self.write_node(nid, ino, fresh, kind) {
+            self.release_node(nid)?;
+            return Err(e);
+        }
         block[at..at + 4].copy_from_slice(&nid.to_le_bytes());
-        self.write_node(parent, ino, block, Kind::IndirectNode)?;
+        if let Err(e) = self.write_node(parent, ino, block, Kind::IndirectNode) {
+            self.undo_new_node(ino, nid)?;
+            return Err(e);
+        }
         Ok(nid)
     }
 
@@ -171,6 +189,7 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(1 block)
     pub(crate) fn set_holder_addr(&mut self, ino: u32, holder: Holder, ofs: usize, addr: u32)
         -> Result<(), Errno> {
+        self.note_mapping_change(ino, holder, ofs, addr)?;
         match holder {
             Holder::Inode => {
                 let inode = self.read_inode(ino)?;
@@ -199,6 +218,82 @@ impl<S: SectorSource> Volume<S> {
                 Ok(())
             }
         }
+    }
+
+    /// Which file offset `(holder, ofs)` names.
+    ///
+    /// The inode's own array starts at offset zero; a direct node's slot zero
+    /// is at whatever offset the node sits at in the file, which the node's
+    /// own footer states. Deriving it here rather than taking it from the
+    /// caller is what makes the cache update unmissable: every write funnels
+    /// through this one function, and a caller that forgot to pass an offset
+    /// would leave a stale run answering with the block's OLD address.
+    /// # C: O(1 block)
+    pub(crate) fn file_offset_of(&self, ino: u32, holder: Holder, ofs: usize)
+        -> Result<u64, Errno> {
+        match holder {
+            Holder::Inode => Ok(ofs as u64),
+            Holder::Direct(nid) => {
+                let n = self.read_node(nid, Some(ino))?;
+                let apb = self.read_inode(ino)?.addrs_per_inode();
+                let base = crate::volume::recover::marks::start_bidx_of_node(
+                    n.footer.ofs_of_node(), apb);
+                Ok(base + ofs as u64)
+            }
+        }
+    }
+
+    /// Take a changed block address into both caches.
+    ///
+    /// A cache that is not told is a cache that answers with the address the
+    /// block used to have, and every read of it returns the PREVIOUS contents
+    /// — stale data, with nothing reporting an error. That is the whole risk
+    /// the caches carry, so the notification sits in front of the write rather
+    /// than after it: the run is invalidated even if the write then fails.
+    /// # C: O(runs overlapping the block)
+    pub(crate) fn note_mapping_change(&mut self, ino: u32, holder: Holder, ofs: usize, addr: u32)
+        -> Result<(), Errno> {
+        let Ok(index) = self.file_offset_of(ino, holder, ofs) else { return Ok(()) };
+        let Ok(fofs) = u32::try_from(index) else { return Ok(()) };
+        let inode = self.read_inode(ino)?;
+        let g = self.extent_gate(&inode);
+        let seed = self.stored_extent(&inode);
+        // A reservation names no block yet, and a hole names none any more.
+        // Both invalidate rather than record: a run whose address is not a
+        // block would hand one out.
+        let real = !crate::node::is_hole(addr) && self.sb.valid_main_blkaddr(addr);
+        let cur_blocks = self.counters.borrow().allocated_data_blocks;
+        let i_size = inode.size;
+        let mut caches = self.extents.borrow_mut();
+        caches.init_trees(ino, g, seed);
+        let ei = if real { crate::extent::Info::read(fofs, 1, addr) }
+                 else { crate::extent::Info::invalidate(fofs, 1) };
+        caches.update_range(crate::extent::Kind::Read, ino, ei);
+        // The age half asks the age cache what it already knows about this
+        // block, which is itself a lookup and is counted as one.
+        let (aged, found) = caches.new_block_age(ino, fofs, addr == crate::uapi::NEW_ADDR,
+                                                 cur_blocks, i_size,
+                                                 crate::uapi::BLKSIZE_BITS);
+        drop(caches);
+        if found.consulted() {
+            self.counters.borrow_mut()
+                .inc_total_hit(crate::stats::counters::extent_of::BLOCK_AGE);
+        }
+        if let Some((_, hit)) = found.found() {
+            use crate::extent::Hit;
+            use crate::stats::counters::extent_of::BLOCK_AGE;
+            let mut c = self.counters.borrow_mut();
+            match hit {
+                Hit::Cached => c.inc_cached_hit(BLOCK_AGE),
+                Hit::Tree | Hit::Largest => c.inc_rbtree_hit(BLOCK_AGE),
+            }
+        }
+        if let Some((age, last)) = aged {
+            self.extents.borrow_mut().update_range(
+                crate::extent::Kind::BlockAge, ino, crate::extent::Info::aged(fofs, 1, age, last));
+        }
+        if real { self.counters.borrow_mut().add_allocated_data_blocks(1); }
+        Ok(())
     }
 
     /// Read one of the inode's five node slots. # C: O(1 block)
@@ -234,6 +329,10 @@ impl<S: SectorSource> Volume<S> {
         block[I_BLOCKS..I_BLOCKS + 8].copy_from_slice(&blocks.max(1).to_le_bytes());
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/nodeleak.rs"]
+mod tests;
 
 /// Write a little-endian value into an inode or node block. # C: O(1)
 pub fn put16(b: &mut [u8], at: usize, v: u16) { b[at..at + 2].copy_from_slice(&v.to_le_bytes()); }

@@ -130,17 +130,28 @@ impl<S: SectorSource> Volume<S> {
             if let Some(slot) = room_for(&block[at..at + len], &l, slots) {
                 place_entry_hashed(&mut block[at..at + len], &l, slot, name, want, ino, ft);
                 self.put_inode(dir, block)?;
+                self.unpark_orphan(ino);
                 return Ok(());
             }
             self.convert_inline_dir(dir)?;
         }
-        self.add_regular_dentry(dir, name, ino, ft, slots, want)
+        self.add_regular_dentry(dir, name, ino, ft, slots, want)?;
+        // A name has landed. An inode parked for want of one — a file made
+        // without a name and then linked to it, or one whose last name went
+        // while something held it open and whose name a replay has just put
+        // back — is reachable again, and a mount that still found it on the
+        // orphan list would free a file that has a name.
+        self.unpark_orphan(ino);
+        Ok(())
     }
 
     /// Add to a directory whose entries live in blocks. # C: O(depth) blocks
     #[allow(clippy::too_many_arguments)]
     fn add_regular_dentry(&mut self, dir: u32, name: &[u8], ino: u32, ft: u8, slots: usize,
                           want: u32) -> Result<(), Errno> {
+        if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::DirDepth) {
+            return Err(Errno::Enospc);
+        }
         let l = Layout::block();
         let inode = self.read_inode(dir)?;
         let dir_level = inode.dir_level;

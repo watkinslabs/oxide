@@ -239,6 +239,13 @@ pub fn sanity(i: &Inode, ino: u32, feature: u32) -> Result<(), NodeError> {
     if i.inline_xattr_addrs > DEF_ADDRS_PER_INODE - i.extra_isize / 4 {
         return Err(NodeError::Checksum);
     }
+    // A file that stands for a whole member device only means that on a
+    // volume that carries the feature, and only while it is pinned: the
+    // cleaner would otherwise move it, and the member's blocks would then be
+    // somewhere else while the file still claims their span.
+    if !crate::devices::alias::flag_ok(i.flags, feature, i.has(PIN_FILE)) {
+        return Err(NodeError::Checksum);
+    }
     compression(i, feature)?;
     Ok(())
 }

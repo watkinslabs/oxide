@@ -128,6 +128,12 @@ impl<S: SectorSource> Volume<S> {
     /// would make the first allocation by every new user fail.
     /// # C: O(file bytes) on the first touch, O(log ids) after
     pub(crate) fn dq_get(&mut self, kind: usize, id: u32) -> Result<Dqblk, Errno> {
+        // Bringing an identity's record in is what "initialise the quotas of
+        // this inode" means here, so it is where a mount asking for that step
+        // to fail gets its failure.
+        if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::DquotInit) {
+            return Err(Errno::Esrch);
+        }
         if let Some(d) = self.dquots.get(&(kind, id)) { return Ok(d.clone()); }
         let info = self.dq_info(kind)?;
         let file = self.read_quota_file(self.quota_setup[kind].ino)?;
@@ -293,6 +299,24 @@ impl<S: SectorSource> Volume<S> {
     /// A record as this mount currently has it. # C: O(file bytes) once
     pub fn quota_record(&mut self, kind: usize, id: u32) -> Result<Dqblk, Errno> {
         self.dq_get(kind, id)
+    }
+
+    /// Replace one identity's record, for a caller setting limits rather than
+    /// allocating.
+    ///
+    /// The cache is the truth this mount charges against, so a record changed
+    /// here takes effect on the very next allocation; the medium catches up at
+    /// the next checkpoint with everything else the counts describe. Writing
+    /// the file directly instead would leave the cache still enforcing the old
+    /// limits until something evicted it.
+    /// # C: O(1)
+    pub fn set_quota_record(&mut self, kind: usize, id: u32, d: Dqblk) -> Result<(), Errno> {
+        if kind >= MAX_QUOTAS { return Err(Errno::Einval); }
+        if !quota::types::accounted(&self.quota_setup[kind]) { return Err(Errno::Esrch); }
+        self.dquots.insert((kind, id), d);
+        self.dq_dirty.insert((kind, id));
+        self.dirty = true;
+        Ok(())
     }
 
     /// The next identity at or after `id` this kind holds a record for, and

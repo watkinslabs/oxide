@@ -244,6 +244,9 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(blocks released)
     pub fn truncate_file(&mut self, ino: u32, len: u64) -> Result<(), Errno> {
         self.writable_or_err()?;
+        if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::Truncate) {
+            return Err(Errno::Eio);
+        }
         let inode = self.read_inode(ino)?;
         crate::verity::access::truncate(inode.flags).map_err(crate::verity::access::errno)?;
         crate::pin::policy::truncate(crate::pin::state::is_pinned(&inode), inode.size, len,

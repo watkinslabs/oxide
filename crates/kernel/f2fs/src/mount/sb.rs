@@ -92,6 +92,18 @@ impl SuperOps for F2fsSuperOps {
         Ok(st)
     }
 
+    /// This filesystem keeps its quota records on the medium, so the whole
+    /// `quotactl` surface applies to it — the hooks that answer are installed
+    /// on the superblock at mount.
+    fn quota_supported(&self) -> bool { true }
+
+    /// A kind the volume has no file for is not supported, which is what
+    /// tells a caller "this filesystem does not account that" apart from
+    /// "that identity has no record".
+    fn quota_type_supported(&self, kind: vfs::QuotaType) -> bool {
+        super::quota::accounts(&self.fs, kind)
+    }
+
     fn show_options(&self) -> String { crate::opts::show(self.fs.volume.lock().options()) }
 
     /// Write a checkpoint.
@@ -122,11 +134,14 @@ impl SuperOps for F2fsSuperOps {
     /// whose snapshot is missing the work it was told to flush.
     fn freeze_fs(&self) -> KResult<()> { self.fs.checkpoint() }
 
-    /// Going read-only is a state change a reader must see, so it is written
-    /// out; coming back read-write needs nothing, because the mount already
-    /// holds the state.
-    fn remount_fs(&self, sb_flags: u64, _data: &str) -> KResult<()> {
-        if sb_flags & vfs::superblock::SB_RDONLY != 0 { return self.fs.checkpoint(); }
-        Ok(())
+    /// Reconfigure from the new option line.
+    ///
+    /// The line is not decoration. `-o remount,background_gc=off` has to reach
+    /// the cleaner, and a mount that parsed nothing would report the option
+    /// back through `show_options` while the thread carried on cleaning — an
+    /// option honoured in the mount table and nowhere else.
+    fn remount_fs(&self, sb_flags: u64, data: &str) -> KResult<()> {
+        let ro = sb_flags & vfs::superblock::SB_RDONLY != 0;
+        self.fs.remount(data, ro)
     }
 }

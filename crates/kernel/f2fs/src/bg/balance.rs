@@ -218,6 +218,15 @@ impl<S: SectorSource> Volume<S> {
     /// caches and does not need them looked at.
     /// # C: O(main segments), plus a clean or a checkpoint when one is due
     pub fn balance_fs(&mut self, need: bool) -> Result<(), Errno> {
+        // A checkpoint failure is not an error the caller can act on: the
+        // volume stops instead, which is what keeps a filesystem that can no
+        // longer describe itself from writing any more of itself down.
+        // Injection is turned off with it, or a stopped volume would keep
+        // counting failures for work it is no longer doing.
+        if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::Checkpoint) {
+            let _ = crate::fault::build(&self.fault, 0, 0, crate::fault::Which::ALL);
+            self.stop_checkpoint(crate::errrec::StopReason::FaultInject, false);
+        }
         if !self.writable || self.recovering { return Ok(()); }
         // A clean re-entering itself would find its own half-emptied victim.
         if self.segstate.gc_running { return Ok(()); }

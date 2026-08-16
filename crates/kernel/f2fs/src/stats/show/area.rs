@@ -4,8 +4,9 @@ use alloc::format;
 use alloc::string::String;
 
 use crate::stats::sample::General;
-use crate::uapi::{CURSEG_COLD_DATA, CURSEG_COLD_DATA_PINNED, CURSEG_COLD_NODE, CURSEG_HOT_DATA,
-                  CURSEG_HOT_NODE, CURSEG_WARM_DATA, CURSEG_WARM_NODE};
+use crate::uapi::{CURSEG_ALL_DATA_ATGC, CURSEG_COLD_DATA, CURSEG_COLD_DATA_PINNED,
+                  CURSEG_COLD_NODE, CURSEG_HOT_DATA, CURSEG_HOT_NODE, CURSEG_WARM_DATA,
+                  CURSEG_WARM_NODE};
 
 /// The rows, in the order the report lists them — coldest data first, then
 /// the three node logs. The order is the report's, not the numbering's.
@@ -35,11 +36,12 @@ pub fn render(o: &mut String, g: &General) {
     let p = CURSEG_COLD_DATA_PINNED;
     o.push_str(&format!("  - Pinned file: {:>8} {:>8} {:>8} {:>8}\n",
                         g.blkoff[p], g.curseg[p], g.cursec[p], g.curzone[p]));
-    // The age-threshold cleaner writes through a log of its own upstream.
-    // There is none here, and a row of zeroes says the log holds nothing —
-    // which is true of a log that does not exist. The row stays because a
-    // reader indexes the table by position.
-    o.push_str(&format!("  - ATGC   data: {:>8} {:>8} {:>8} {:>8}\n", 0, 0, 0, 0));
+    // The age-threshold cleaner's own log, which exists only while mounted and
+    // only on a volume old enough for the policy to mean anything — so it too
+    // is reported by position alone.
+    let a = CURSEG_ALL_DATA_ATGC;
+    o.push_str(&format!("  - ATGC   data: {:>8} {:>8} {:>8} {:>8}\n",
+                        g.blkoff[a], g.curseg[a], g.cursec[a], g.curzone[a]));
 
     o.push_str(&format!("\n  - Valid: {}\n  - Dirty: {}\n", g.valid_segs(), g.dirty_count));
     o.push_str(&format!("  - Prefree: {}\n  - Free: {} ({})\n\n",

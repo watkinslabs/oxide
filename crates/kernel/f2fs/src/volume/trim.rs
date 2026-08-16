@@ -38,6 +38,12 @@ impl<S: SectorSource> Volume<S> {
     /// Drop every block and node of `ino` from file index `first_gone` on.
     /// # C: O(blocks and nodes the file has)
     pub(crate) fn truncate_tail(&mut self, ino: u32, first_gone: u64) -> Result<(), Errno> {
+        // Whole node subtrees go here, not one address at a time, so the
+        // per-address notification the write path relies on never fires for
+        // them. Everything from the cut is invalidated in one range instead:
+        // a remembered run over blocks this file no longer owns would answer a
+        // read past the end of the file with someone else's data.
+        self.forget_extents_from(ino, first_gone);
         let inode = self.read_inode(ino)?;
         let apb = inode.addrs_per_inode() as u64;
         let d = DEF_ADDRS_PER_BLOCK as u64;
@@ -167,6 +173,13 @@ impl<S: SectorSource> Volume<S> {
     /// Free everything an inode owns: its data, its nodes, its attribute
     /// block and finally itself. # C: O(blocks the file has)
     pub(crate) fn free_inode(&mut self, ino: u32) -> Result<(), Errno> {
+        // The number is about to be handed to something else, so nothing
+        // remembered under it may survive: a run left behind would answer for
+        // whatever file next takes the id.
+        self.extents.borrow_mut().destroy(ino, 0);
+        if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::EvictInode) {
+            return Err(Errno::Eio);
+        }
         let inode = self.read_inode(ino)?;
         if !inode.inline_data() && !inode.inline_dentry() {
             let block = self.inode_bytes(ino)?;
@@ -203,6 +216,12 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(blocks the file has)
     pub(crate) fn count_blocks(&self, ino: u32) -> Result<u64, Errno> {
         let inode = self.read_inode(ino)?;
+        // A file whose saved blocks were handed back is no longer charged for
+        // the sentinel of each compressed cluster: the slot stays, because it
+        // is what says the cluster is an image, and the release gave its
+        // charge back with the reservations beside it.
+        let released = inode.has(crate::flags::COMPRESS_RELEASED);
+        let counts = |addr: u32| addr != NULL_ADDR && !(released && addr == COMPRESS_ADDR);
         let mut n = 1u64;
         // The attribute block is the inode's whether or not its data is
         // inline; counting it only on the non-inline path under-reports every
@@ -215,28 +234,28 @@ impl<S: SectorSource> Volume<S> {
             // A reservation is space the file HOLDS: it names no block on the
             // medium, and the write it is holding room for has one waiting.
             let addr = le32(&block, base + i * 4).unwrap_or(NULL_ADDR);
-            if addr != NULL_ADDR { n += 1; }
+            if counts(addr) { n += 1; }
         }
         for (slot, depth) in [(0usize, 0u8), (1, 0), (2, 1), (3, 1), (4, 2)] {
             let nid = self.inode_slot(ino, slot)?;
-            if nid != 0 { n += self.count_subtree(ino, nid, depth)?; }
+            if nid != 0 { n += self.count_subtree(ino, nid, released, depth)?; }
         }
         Ok(n)
     }
 
     /// The blocks one node and everything under it occupy. # C: O(subtree)
-    fn count_subtree(&self, ino: u32, nid: u32, depth: u8) -> Result<u64, Errno> {
+    fn count_subtree(&self, ino: u32, nid: u32, released: bool, depth: u8) -> Result<u64, Errno> {
         let Ok(node) = self.read_node(nid, Some(ino)) else { return Ok(0) };
         let mut n = 1u64;
         if depth == 0 {
             for i in 0..DEF_ADDRS_PER_BLOCK {
                 let addr = crate::node::direct_addr(&node.block, i).unwrap_or(NULL_ADDR);
-                if addr != NULL_ADDR { n += 1; }
+                if addr != NULL_ADDR && !(released && addr == COMPRESS_ADDR) { n += 1; }
             }
         } else {
             for i in 0..NIDS_PER_BLOCK {
                 let child = crate::node::indirect_nid(&node.block, i).unwrap_or(0);
-                if child != 0 { n += self.count_subtree(ino, child, depth - 1)?; }
+                if child != 0 { n += self.count_subtree(ino, child, released, depth - 1)?; }
             }
         }
         Ok(n)

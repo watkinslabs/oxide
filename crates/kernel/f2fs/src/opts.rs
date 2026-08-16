@@ -6,14 +6,20 @@
 //! - `bounds`: the range each valued option's argument must fall in.
 //! - `crypt`:  the dummy policy, and where encryption happens.
 //! - `jquota`: quota files named on the mount line, and their format.
+//! - `spec`:   which keys the line actually named, as against their values.
+//! - `facts`:  the defaults the volume's own shape dictates.
 
 pub mod parse;
 pub mod show;
 pub mod bounds;
 pub mod crypt;
 pub mod jquota;
+pub mod spec;
+pub mod facts;
 
-pub use parse::parse;
+pub use parse::{parse, parse_spec};
+pub use spec::Spec;
+pub use facts::Facts;
 pub use show::show;
 pub use crypt::DummyPolicy;
 pub use jquota::{JqFmt, Jquota, QKind, QfName};
@@ -100,6 +106,15 @@ pub struct Options {
     pub background_gc: BackgroundGc,
     /// Whether a crash's tail is replayed at mount.
     pub recovery: bool,
+    /// Whether the line said `norecovery` specifically, as against
+    /// `disable_roll_forward`.
+    ///
+    /// Both stop the replay, and only one of them demands a read-only mount:
+    /// skipping the replay on a mount that then WRITES leaves the chain the
+    /// crash left behind unreachable and its blocks allocatable, so the next
+    /// mount replays a chain that has been overwritten. The two spellings must
+    /// therefore stay distinguishable after parsing.
+    pub norecovery: bool,
     /// Whether freed blocks are announced to the device as no longer needed.
     pub discard: bool,
     /// The smallest span worth announcing.
@@ -182,6 +197,24 @@ pub struct Options {
     /// Whether encryption is asked to happen on the way to the device rather
     /// than in the filesystem. Same ciphertext either way; different place.
     pub inlinecrypt: bool,
+    /// Which side decides when a compressed file's clusters are compressed.
+    pub compress_mode: CompressMode,
+}
+
+/// Who compresses a compressible file's clusters.
+///
+/// Not a preference: it decides whether the two rewrite commands mean anything
+/// at all. Where the mount compresses, a file is written in its final shape and
+/// a caller asking for it to be compressed is asking for what already happened;
+/// where the caller does, a file is written plain and stays plain until one of
+/// those commands is issued, so refusing them would leave the mount unable to
+/// compress anything.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum CompressMode {
+    /// The mount compresses as it writes; the default.
+    Fs,
+    /// The caller compresses, through the rewrite commands.
+    User,
 }
 
 /// How eagerly the cleaner runs.
@@ -198,6 +231,7 @@ impl Options {
         Self {
             background_gc: BackgroundGc::On,
             recovery: true,
+            norecovery: false,
             discard: true,
             discard_unit: DiscardUnit::Block,
             memory: MemoryMode::Normal,
@@ -226,9 +260,9 @@ impl Options {
             checkpoint_disabled: false,
             unusable_cap: 0,
             unusable_cap_perc: 0,
-            checkpoint_merge: false,
-            lazytime: false,
-            nat_bits: true,
+            checkpoint_merge: true,
+            lazytime: true,
+            nat_bits: false,
             gc_merge: false,
             atgc: false,
             lookup_mode: crate::casefold::DEFAULT_LOOKUP_MODE,
@@ -239,6 +273,7 @@ impl Options {
             fault: crate::fault::Cfg { rate: None, types: None },
             dummy_policy: None,
             inlinecrypt: false,
+            compress_mode: CompressMode::Fs,
         }
     }
 }

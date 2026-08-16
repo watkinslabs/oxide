@@ -61,6 +61,9 @@ impl<S: SectorSource> Volume<S> {
         if node::is_hole(addr) { return Err(Errno::Enoent); }
         let block = self.read_main_block(addr)?;
         let f = footer::expect(&block, nid, ino).map_err(|_| Errno::Eio)?;
+        if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::InconsistentFooter) {
+            return Err(Errno::Eio);
+        }
         Ok(NodeRef { block, footer: f })
     }
 

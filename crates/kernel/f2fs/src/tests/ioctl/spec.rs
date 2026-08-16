@@ -114,3 +114,46 @@ fn the_extended_policy_query_moves_more_than_its_number_encodes() {
     assert_eq!(ioc_size(GET_ENCRYPTION_POLICY_EX), POLICY_EX_STUB_SIZE);
     assert_eq!(payload_len(GET_ENCRYPTION_POLICY_EX), POLICY_EX_ARG_SIZE);
 }
+
+/// The move's argument travels IN only.
+///
+/// Its number encodes both directions — `_IOWR` — and the handler writes
+/// nothing back. A layer that copied by the encoded direction would hand the
+/// caller bytes the interface does not define, over the request it had just
+/// sent.
+#[test]
+fn the_move_commands_argument_travels_in_only() {
+    assert_eq!(ioc_dir(MOVE_RANGE), IOC_READ | IOC_WRITE);
+    assert!(reads_payload(MOVE_RANGE));
+    assert!(!writes_payload(MOVE_RANGE));
+    assert_eq!(payload_len(MOVE_RANGE), MOVE_RANGE_SIZE);
+}
+
+/// The defragment argument DOES travel both ways: the bytes actually moved are
+/// reported over the caller's own request, which is the pair this build must
+/// keep distinct from the move above.
+#[test]
+fn the_defragment_argument_travels_both_ways() {
+    assert!(reads_payload(DEFRAGMENT));
+    assert!(writes_payload(DEFRAGMENT));
+}
+
+/// Where an indirect reply goes is stated by the surface, so the layer that
+/// copies it never has to guess an address in the caller's memory.
+#[test]
+fn the_indirect_replies_name_their_own_destination() {
+    // The digest follows the head inside the caller's own argument.
+    assert_eq!(indirect_out(Indirect::VerityMeasure, 0x4000, &[]), Some(0x4000 + VD_DIGEST as u64));
+    // The metadata goes wherever the argument's own pointer field says.
+    let mut p = alloc::vec![0u8; VERITY_READ_METADATA_SIZE as usize];
+    p[VRM_BUF_PTR..VRM_BUF_PTR + 8].copy_from_slice(&0xdead_0000u64.to_le_bytes());
+    assert_eq!(indirect_out(Indirect::VerityReadMetadata, 0x4000, &p), Some(0xdead_0000));
+    // A payload too short to hold that pointer names nowhere at all, rather
+    // than an address made of whatever follows it.
+    assert_eq!(indirect_out(Indirect::VerityReadMetadata, 0x4000, &[0u8; 8]), None);
+    // Every other command has no indirect reply, and must not be handed one.
+    for i in [Indirect::None, Indirect::VerityEnable, Indirect::AddKeyRaw,
+              Indirect::LabelString, Indirect::PolicyIn] {
+        assert_eq!(indirect_out(i, 0x4000, &[0u8; 64]), None, "{i:?}");
+    }
+}

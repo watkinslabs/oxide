@@ -141,6 +141,18 @@ impl<S: SectorSource> Volume<S> {
             // what keep the count from drifting either way.
             if dest == NEW_ADDR { self.charge_reservation(); }
             if src == NEW_ADDR { self.release_reservation(); }
+            // A block the crashed generation left behind becomes this file's
+            // from here on, so its owner is charged for it — nothing else on
+            // the replay path does. The charge can be REFUSED, and that
+            // refusal fails the replay and with it the mount: adopting blocks
+            // an identity may not have would put the volume back with an
+            // overdraft nobody ever agreed to.
+            if !crate::node::is_hole(dest) && crate::node::is_hole(src) {
+                self.charge_space(ino, BLKSIZE as u64)?;
+            }
+            if crate::node::is_hole(dest) && !crate::node::is_hole(src) {
+                self.uncharge_space(ino, BLKSIZE as u64)?;
+            }
             hblock[at..at + 4].copy_from_slice(&dest.to_le_bytes());
             if !crate::node::is_hole(src) { freed.push(src); }
         }
@@ -156,6 +168,12 @@ impl<S: SectorSource> Volume<S> {
             }
         }
         self.refresh_extent(ino)?;
+        // The count the file reports has to move with the blocks it just
+        // gained or lost. A checker compares it against what the tree holds,
+        // and a replay that changed the tree without it leaves every recovered
+        // file reporting the shape it had before the crash.
+        let blocks = self.count_blocks(ino)?;
+        self.stamp_inode(ino, |b| Self::set_iblocks(b, blocks))?;
         for addr in freed { self.release_block(addr)?; }
         Ok(recovered)
     }
