@@ -1,19 +1,27 @@
 use super::*;
-use crate::oss::oss_params::{AFMT_S16_LE, AFMT_U8, V_S16};
+use crate::oss::oss_params::{AFMT_S16_LE, AFMT_U8};
+use crate::uapi::FMT_S16_LE;
 use crate::oss::oss_state::OSS;
 use core::sync::atomic::{AtomicU32, Ordering};
 use syscall::errno::Errno;
 
 fn cfg(_owner: crate::SoundOwnerKey) -> Option<(u32, u32, u32, u32)> { Some((0, 0, 0, 0)) }
-fn caps(_owner: crate::SoundOwnerKey) -> crate::ops::Caps { Some((1 << V_S16, 1 << 6, 1, 2)) }
+fn caps(_owner: crate::SoundOwnerKey) -> crate::ops::Caps { Some((1 << FMT_S16_LE, 1 << 6, 1, 2)) }
 fn period(_owner: crate::SoundOwnerKey) -> usize { 2048 }
-fn hw_params(_owner: crate::SoundOwnerKey, _rate: u8, _format: u8, _channels: u8, _period_bytes: u32, _buffer_bytes: u32) -> bool { true }
-fn hw_params_record(_owner: crate::SoundOwnerKey, _rate: u8, _format: u8, _channels: u8, period_bytes: u32, buffer_bytes: u32) -> bool {
+fn hw_params(_owner: crate::SoundOwnerKey, _format: u32, _rate_hz: u32, _channels: u8, _period_bytes: u32, _buffer_bytes: u32) -> bool { true }
+fn hw_params_record(_owner: crate::SoundOwnerKey, _format: u32, _rate_hz: u32, _channels: u8, period_bytes: u32, buffer_bytes: u32) -> bool {
     LAST_PERIOD.store(period_bytes, Ordering::SeqCst);
     LAST_BUFFER.store(buffer_bytes, Ordering::SeqCst);
     true
 }
 fn yes(_owner: crate::SoundOwnerKey) -> bool { true }
+fn ident(_owner: crate::SoundOwnerKey) -> crate::CardIdentity {
+    crate::CardIdentity::new(b"oss", b"oss-drv", b"OSS Card", b"OSS Card", b"OSS Mixer", b"", b"OSS PCM")
+}
+fn limits(_owner: crate::SoundOwnerKey) -> crate::ops::HwLimits { (4096, 16384) }
+fn info_flags(_owner: crate::SoundOwnerKey) -> u32 { crate::uapi::PCM_INFO_PAUSE }
+fn pause(_owner: crate::SoundOwnerKey, _pause: bool) -> bool { true }
+fn no_pointer(_owner: crate::SoundOwnerKey) -> Option<u64> { None }
 fn start_only(_owner: crate::SoundOwnerKey, start: bool) -> bool { start }
 fn submit(_owner: crate::SoundOwnerKey, b: &[u8]) -> usize { b.len() }
 fn recv(_owner: crate::SoundOwnerKey, b: &mut [u8]) -> usize { b.len() }
@@ -22,12 +30,14 @@ static LAST_PERIOD: AtomicU32 = AtomicU32::new(0);
 static LAST_BUFFER: AtomicU32 = AtomicU32::new(0);
 
 static STOP_FAIL_OPS: crate::ops::SoundOps = crate::ops::SoundOps {
+    identity: ident, hw_limits: limits, info_flags: info_flags, pcm_pause: pause, pcm_drain: yes, pcm_pointer: no_pointer, cap_pointer: no_pointer,
     config: cfg, pcm_caps: caps, cap_caps: caps, period_bytes: period,
     pcm_hw_params: hw_params, pcm_prepare: yes, pcm_trigger: start_only, pcm_hw_free: yes, pcm_submit: submit,
     cap_hw_params: hw_params, cap_prepare: yes, cap_trigger: start_only, cap_hw_free: yes, pcm_recv: recv,
 };
 
 static GEOM_OPS: crate::ops::SoundOps = crate::ops::SoundOps {
+    identity: ident, hw_limits: limits, info_flags: info_flags, pcm_pause: pause, pcm_drain: yes, pcm_pointer: no_pointer, cap_pointer: no_pointer,
     config: cfg, pcm_caps: caps, cap_caps: caps, period_bytes: period,
     pcm_hw_params: hw_params_record, pcm_prepare: yes, pcm_trigger: start_only, pcm_hw_free: yes, pcm_submit: submit,
     cap_hw_params: hw_params_record, cap_prepare: yes, cap_trigger: start_only, cap_hw_free: yes, pcm_recv: recv,
@@ -69,7 +79,7 @@ fn parameter_change_does_not_clear_running_state_when_reset_fails() {
         let guard = OSS.lock();
         let o = guard.iter().find(|o| o.owner == owner).expect("registered OSS state");
         assert!(o.running);
-        assert_eq!(o.format, V_S16);
+        assert_eq!(o.format, FMT_S16_LE);
     }
 
     let speed_req = (1u64 << 30) | (4u64 << 16) | ((b'P' as u64) << 8) | 2;

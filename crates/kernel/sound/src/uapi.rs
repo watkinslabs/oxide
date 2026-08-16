@@ -42,16 +42,47 @@ pub const CTL_ELEM_INFO:      u64 = 0x11;
 pub const CTL_ELEM_READ:      u64 = 0x12;
 pub const CTL_ELEM_WRITE:     u64 = 0x13;
 pub const CTL_SUBSCRIBE:      u64 = 0x16;
+pub const CTL_TLV_READ:       u64 = 0x1a;
+pub const CTL_TLV_WRITE:      u64 = 0x1b;
+pub const CTL_TLV_COMMAND:    u64 = 0x1c;
 pub const CTL_PCM_NEXT_DEVICE: u64 = 0x30;
 pub const CTL_PCM_INFO:       u64 = 0x31;
 
 // snd_ctl_elem_* constants and LP64 offsets.
+pub const CTL_ELEM_IFACE_CARD: u32 = 0;
 pub const CTL_ELEM_IFACE_MIXER: u32 = 2;
+pub const CTL_ELEM_IFACE_PCM: u32 = 3;
 pub const CTL_ELEM_TYPE_BOOLEAN: u32 = 1;
 pub const CTL_ELEM_TYPE_INTEGER: u32 = 2;
+pub const CTL_ELEM_TYPE_ENUMERATED: u32 = 3;
 pub const CTL_ELEM_ACCESS_READ: u32 = 1 << 0;
 pub const CTL_ELEM_ACCESS_WRITE: u32 = 1 << 1;
+pub const CTL_ELEM_ACCESS_VOLATILE: u32 = 1 << 2;
+pub const CTL_ELEM_ACCESS_TLV_READ: u32 = 1 << 4;
 pub const CTL_ELEM_ACCESS_READWRITE: u32 = CTL_ELEM_ACCESS_READ | CTL_ELEM_ACCESS_WRITE;
+
+// snd_ctl_elem_info enumerated arm (offsets inside the value union at 80).
+pub const CEINFO_ENUM_ITEMS: usize = 80;
+pub const CEINFO_ENUM_ITEM: usize = 84;
+pub const CEINFO_ENUM_NAME: usize = 88;
+pub const CEINFO_ENUM_NAME_LEN: usize = 64;
+
+// snd_ctl_tlv: numid@0, length@4, tlv[]@8.
+pub const CTL_TLV_NUMID: usize = 0;
+pub const CTL_TLV_LENGTH: usize = 4;
+pub const CTL_TLV_DATA: usize = 8;
+pub const CTL_TLV_HEADER_SIZE: usize = 8;
+/// SNDRV_CTL_TLVT_DB_SCALE — `[type, len, min_centibel, step|mute]`.
+pub const CTL_TLVT_DB_SCALE: u32 = 1;
+/// Mute flag ORed into the DB_SCALE step word.
+pub const CTL_TLV_DB_SCALE_MUTE: u32 = 0x0001_0000;
+
+// snd_ctl_event: type@0 then the elem id at 8.
+pub const CTL_EVENT_ELEM: u32 = 0;
+pub const CTL_EVENT_MASK: usize = 4;
+pub const CTL_EVENT_ID: usize = 8;
+pub const CTL_EVENT_MASK_VALUE: u32 = 1 << 0;
+pub const CTL_EVENT_MASK_INFO: u32 = 1 << 1;
 
 pub const CTL_ELEM_ID_SIZE: usize = 64;
 pub const CEI_NUMID: usize = 0;
@@ -96,10 +127,20 @@ pub const STATE_PREPARED: u32 = 2;
 pub const STATE_RUNNING: u32 = 3;
 pub const STATE_XRUN: u32 = 4;
 pub const STATE_DRAINING: u32 = 5;
+pub const STATE_PAUSED: u32 = 6;
+pub const STATE_SUSPENDED: u32 = 7;
 
 // SNDRV_PCM_STREAM_*.
 pub const STREAM_PLAYBACK: i32 = 0;
 pub const STREAM_CAPTURE: i32 = 1;
+
+// SNDRV_PCM_INFO_* capability bits reported in snd_pcm_hw_params.info.
+pub const PCM_INFO_MMAP: u32 = 0x0000_0001;
+pub const PCM_INFO_MMAP_VALID: u32 = 0x0000_0002;
+pub const PCM_INFO_PAUSE: u32 = 0x0000_0008;
+pub const PCM_INFO_INTERLEAVED: u32 = 0x0000_0100;
+pub const PCM_INFO_BLOCK_TRANSFER: u32 = 0x0001_0000;
+pub const PCM_INFO_RESUME: u32 = 0x0004_0000;
 
 // SNDRV_PCM_ACCESS_*.
 pub const ACCESS_RW_INTERLEAVED: u32 = 3;
@@ -109,6 +150,8 @@ pub const FMT_S8: u32 = 0;
 pub const FMT_U8: u32 = 1;
 pub const FMT_S16_LE: u32 = 2;
 pub const FMT_U16_LE: u32 = 4;
+pub const FMT_S24_LE: u32 = 6;
+pub const FMT_S32_LE: u32 = 10;
 pub const FMT_MU_LAW: u32 = 20;
 pub const FMT_A_LAW: u32 = 21;
 

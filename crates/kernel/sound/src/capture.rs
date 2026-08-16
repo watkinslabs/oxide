@@ -13,7 +13,7 @@ use sync::{Spinlock, TaskList as L};
 use syscall::errno::Errno;
 
 use crate::uapi::*;
-use crate::pcm::{refine_params, fmt_alsa_to_virtio, rate_hz_to_enum};
+use crate::pcm::{limits_for, refine_params};
 
 const BOUNDARY: u64 = 0x4000_0000_0000;
 
@@ -31,6 +31,7 @@ fn initial(owner: crate::SoundOwnerKey) -> Cap {
     Cap { owner, state: STATE_OPEN, frame_bytes: 4, buffer_frames: 1024, appl_ptr: 0, hw_ptr: 0 }
 }
 
+/// # C: O(cards)
 pub(crate) fn register_card(owner: crate::SoundOwnerKey) {
     let mut guard = CAP.lock();
     if !guard.iter().any(|c| c.owner == owner) {
@@ -38,12 +39,14 @@ pub(crate) fn register_card(owner: crate::SoundOwnerKey) {
     }
 }
 
+/// # C: O(cards)
 pub(crate) fn unregister_card(owner: crate::SoundOwnerKey) {
     let mut guard = CAP.lock();
     guard.retain(|c| c.owner != owner);
 }
 
 #[cfg(test)]
+/// # C: O(cards)
 pub(crate) fn registered_count() -> usize {
     CAP.lock().len()
 }
@@ -53,6 +56,7 @@ fn is_registered(owner: crate::SoundOwnerKey) -> bool {
 }
 
 #[cfg(test)]
+/// # C: O(cards)
 pub(crate) fn has_card(owner: crate::SoundOwnerKey) -> bool { is_registered(owner) }
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
@@ -66,12 +70,9 @@ fn refine(owner: crate::SoundOwnerKey, b: &UserBuf, commit: bool) -> i64 {
     let Some((vf, vr, ch_min, ch_max)) = caps(owner) else {
         return err(Errno::Enodev);
     };
-    let r = match refine_params(b, vf, vr, ch_min, ch_max) { Ok(r) => r, Err(e) => return e };
+    let r = match refine_params(b, vf, vr, ch_min, ch_max, &limits_for(owner), crate::ops::info_flags(owner)) { Ok(r) => r, Err(e) => return e };
     if commit {
-        let Some(format) = fmt_alsa_to_virtio(r.format) else {
-            return err(Errno::Einval);
-        };
-        if !crate::ops::cap_hw_params(owner, rate_hz_to_enum(r.rate), format,
+        if !crate::ops::cap_hw_params(owner, r.format, r.rate,
                                       r.channels as u8, r.period_bytes, r.buffer_bytes) {
             return err(Errno::Eio);
         }
@@ -132,7 +133,7 @@ pub fn handle(owner: crate::SoundOwnerKey, card: u32, nr: u64, arg: u64) -> i64 
             };
             c.state = STATE_SETUP; c.appl_ptr = 0; c.hw_ptr = 0; 0
         }
-        PCM_HWSYNC => 0,
+        PCM_HWSYNC => { sync_hw_ptr(owner); 0 }
         PCM_DELAY => match UserBuf::new(arg, 8) { Some(b) => { b.w64(0, 0); 0 } None => err(Errno::Efault) },
         PCM_STATUS => status(owner, arg),
         PCM_SYNC_PTR => sync_ptr(owner, arg),
@@ -147,21 +148,25 @@ fn pcm_info(owner: crate::SoundOwnerKey, card: u32, arg: u64) -> i64 {
         return err(Errno::Enodev);
     }
     let b = match UserBuf::new(arg, PCM_INFO_SIZE) { Some(b) => b, None => return err(Errno::Efault) };
-    b.zero(0, PCM_INFO_SIZE);
-    b.w32(PI_DEVICE, 0);
-    b.w32(PI_SUBDEVICE, 0);
-    b.w32(PI_STREAM, STREAM_CAPTURE as u32);
-    b.w32(PI_CARD, card);
-    b.wstr(PI_ID, b"virtio-snd", 64);
-    b.wstr(PI_NAME, b"virtio-snd PCM", 80);
-    b.wstr(PI_SUBNAME, b"subdevice #0", 32);
-    b.w32(PI_SUBDEVICES_COUNT, 1);
-    b.w32(PI_SUBDEVICES_AVAIL, 1);
+    let Some(ident) = crate::ops::identity(owner) else { return err(Errno::Enodev); };
+    crate::pcm_info::write(&b, card, STREAM_CAPTURE, &ident.id,
+                           &crate::identity::pcm_stream_name(&ident, true));
     0
+}
+
+/// Refresh `hw_ptr` from the card's real capture position when it reports
+/// one; otherwise the core's own accounting is the truthful answer.
+/// # C: O(1)
+fn sync_hw_ptr(owner: crate::SoundOwnerKey) {
+    let Some(frames) = crate::ops::cap_pointer(owner) else { return; };
+    let mut guard = CAP.lock();
+    let Some(c) = guard.iter_mut().find(|c| c.owner == owner) else { return; };
+    c.hw_ptr = frames % BOUNDARY;
 }
 
 fn status(owner: crate::SoundOwnerKey, arg: u64) -> i64 {
     let b = match UserBuf::new(arg, STATUS_SIZE) { Some(b) => b, None => return err(Errno::Efault) };
+    sync_hw_ptr(owner);
     let guard = CAP.lock();
     let Some(c) = guard.iter().find(|c| c.owner == owner) else {
         return err(Errno::Enodev);
@@ -178,6 +183,7 @@ fn status(owner: crate::SoundOwnerKey, arg: u64) -> i64 {
 fn sync_ptr(owner: crate::SoundOwnerKey, arg: u64) -> i64 {
     let b = match UserBuf::new(arg, SYNC_PTR_SIZE) { Some(b) => b, None => return err(Errno::Efault) };
     let flags = b.r32(SP_FLAGS);
+    if flags & SYNC_PTR_HWSYNC != 0 { sync_hw_ptr(owner); }
     let mut guard = CAP.lock();
     let Some(c) = guard.iter_mut().find(|c| c.owner == owner) else {
         return err(Errno::Enodev);

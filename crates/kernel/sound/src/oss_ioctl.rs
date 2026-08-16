@@ -1,11 +1,12 @@
 use syscall::errno::Errno;
 
-use crate::oss::oss_params::{afmt_to_virtio, caps, formats_to_afmt, fragment_geometry, nearest_supported_rate_enum, oss_period_buffer, rate_enum_to_hz, virtio_to_afmt};
+use crate::oss::oss_params::{afmt_to_alsa, alsa_to_afmt, caps, formats_to_afmt, fragment_geometry, nearest_supported_rate_enum, oss_period_buffer, rate_enum_to_hz};
 use crate::oss::oss_state::OSS;
 use crate::uapi::UserBuf;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
+/// # C: O(1)
 pub(crate) fn set_subdivision(owner: crate::SoundOwnerKey, subdivision: u32) -> i64 {
     if subdivision == 0 {
         let guard = OSS.lock();
@@ -25,6 +26,7 @@ pub(crate) fn set_subdivision(owner: crate::SoundOwnerKey, subdivision: u32) -> 
     i64::from(subdivision)
 }
 
+/// # C: O(1)
 pub(crate) fn set_fragment(owner: crate::SoundOwnerKey, val: u32) -> i64 {
     let mut fragshift = (val & 0xffff) as u8;
     if fragshift >= 25 { return err(Errno::Einval); }
@@ -46,6 +48,7 @@ pub(crate) fn set_fragment(owner: crate::SoundOwnerKey, val: u32) -> i64 {
 
 /// Stop + release both directions and disarm, so the next I/O re-applies
 /// params (SNDCTL_DSP_RESET / a param change).
+/// # C: O(1)
 pub(crate) fn reset(owner: crate::SoundOwnerKey) -> bool {
     let (running, cap_running) = {
         let mut guard = OSS.lock();
@@ -78,7 +81,7 @@ pub fn read(owner: crate::SoundOwnerKey, buf: &mut [u8]) -> usize {
     };
     if !cap_running {
         let Some((period, buffer)) = oss_period_buffer(owner) else { return 0; };
-        if !crate::ops::cap_hw_params(owner, rate, fmt, ch, period, buffer) { return 0; }
+        if !crate::ops::cap_hw_params(owner, fmt, rate_enum_to_hz(rate), ch, period, buffer) { return 0; }
         if !crate::ops::cap_prepare(owner) { return 0; }
         if !crate::ops::cap_trigger(owner, true) { return 0; }
         let mut guard = OSS.lock();
@@ -99,7 +102,7 @@ pub fn write(owner: crate::SoundOwnerKey, buf: &[u8]) -> usize {
     };
     if !running {
         let Some((period, buffer)) = oss_period_buffer(owner) else { return 0; };
-        if !crate::ops::pcm_hw_params(owner, rate, fmt, ch, period, buffer) { return 0; }
+        if !crate::ops::pcm_hw_params(owner, fmt, rate_enum_to_hz(rate), ch, period, buffer) { return 0; }
         if !crate::ops::pcm_prepare(owner) { return 0; }
         if !crate::ops::pcm_trigger(owner, true) { return 0; }
         let mut guard = OSS.lock();
@@ -168,17 +171,17 @@ pub fn handle(owner: crate::SoundOwnerKey, is_mixer: bool, req: u64, arg: u64) -
             if a == 0 {
                 let guard = OSS.lock();
                 let Some(o) = guard.iter().find(|o| o.owner == owner) else { return err(Errno::Enodev); };
-                wi(arg, virtio_to_afmt(o.format));
+                wi(arg, alsa_to_afmt(o.format));
                 return 0;
             }
             let Some((formats, _, _, _)) = caps(owner) else { return err(Errno::Enodev); };
-            let Some(format) = afmt_to_virtio(a) else { return err(Errno::Einval); };
-            if (formats & (1u64 << format)) == 0 { return err(Errno::Einval); }
+            let Some(format) = afmt_to_alsa(a) else { return err(Errno::Einval); };
+            if !crate::format::mask_has(formats, format) { return err(Errno::Einval); }
             if !reset(owner) { return err(Errno::Eio); }
             let mut guard = OSS.lock();
             let Some(o) = guard.iter_mut().find(|o| o.owner == owner) else { return err(Errno::Enodev); };
             o.format = format;
-            wi(arg, virtio_to_afmt(format));
+            wi(arg, alsa_to_afmt(format));
             0
         }
         6 => {

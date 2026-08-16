@@ -106,6 +106,20 @@ must use grouped paths from day one.
     handoff, WC mapping, format conversion, and fbdev/fbcon lifetime. Boot
     parsers only populate `BootInfo.framebuffer`; `kmain` only sequences the
     post-PCI fallback platform-device registration.
+11. `crates/kernel/sound` owns the user-visible ALSA and OSS surface for every
+    sound card: card numbering and node publication, the PCM substream state
+    machine and its ioctl ABI, the control-element registry and its event
+    queue, and the sample-format and rate arithmetic every card shares. It
+    owns no transport. A card driver supplies its identity, its capability
+    masks in ALSA terms, its transfer limits and its control elements through
+    `sound::ops` and `sound::elem`; a transport-private encoding (virtio's
+    format enum, HD-Audio's stream format word) stays in the driver crate that
+    owns that transport and is translated at the boundary.
+12. `crates/drivers/drv-hda` owns HD-Audio: the controller register file,
+    CORB/RIRB transport, codec enumeration, the generic parser that turns a
+    widget graph into a routing plan, stream DMA, and the mixer and jack
+    controls built from that plan (`61`). It is the only routing policy for an
+    HD-Audio codec; there is no second table deciding what a jack is for.
 
 11. Device-class ownership: `crates/kernel/power-supply` owns the power-supply
     class (registered supplies, the property/unit contract, per-supply

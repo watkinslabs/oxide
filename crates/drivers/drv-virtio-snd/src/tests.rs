@@ -223,7 +223,7 @@ mod prepost;
         CTX.lock().push(c);
         assert_eq!(
             pcm_caps(owner),
-            Some((1 << VIRTIO_SND_PCM_FMT_S16, 1 << VIRTIO_SND_PCM_RATE_44100, 1, 2))
+            Some((1 << sound::uapi::FMT_S16_LE, 1 << VIRTIO_SND_PCM_RATE_44100, 1, 2))
         );
         assert!(cap_caps(owner).is_none());
 
@@ -234,7 +234,7 @@ mod prepost;
         CTX.lock().push(c);
         assert_eq!(
             cap_caps(owner),
-            Some((1 << VIRTIO_SND_PCM_FMT_S16, 1 << VIRTIO_SND_PCM_RATE_44100, 1, 2))
+            Some((1 << sound::uapi::FMT_S16_LE, 1 << VIRTIO_SND_PCM_RATE_44100, 1, 2))
         );
         reset_test_state();
     }

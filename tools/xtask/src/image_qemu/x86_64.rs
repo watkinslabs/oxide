@@ -338,6 +338,10 @@ pub(super) fn qemu_run_grub_x86_64(
             "-device", vsock_dev.as_str(),
             "-audiodev", "none,id=snd0",
             "-device", "virtio-sound-pci,audiodev=snd0,disable-legacy=on,bus=pcie.0",
+            // F1173: an Intel HD-Audio controller with a duplex codec, the
+            // second sound card. Class 0x040300 is what drv-hda matches.
+            "-device", "intel-hda,id=hda,bus=pcie.0",
+            "-device", "hda-duplex,bus=hda.0,audiodev=snd0",
         ]),
         HardwareProfile::NativePci if native_root_ahci => c.args([
             "-device", "ich9-ahci,id=boot-ahci,bus=pcie.0",

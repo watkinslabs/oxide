@@ -1,29 +1,89 @@
-// ALSA control nodes (/dev/snd/controlC<N>) — SNDRV_CTL_IOCTL_*. Report the
-// card identity and enumerate PCM devices. Mixer/control elements must be
-// backed by driver-visible controls; this core must not invent card controls.
+// ALSA control nodes (/dev/snd/controlC<N>) — SNDRV_CTL_IOCTL_*. Card
+// identity, PCM device enumeration, and the driver-registered mixer/jack
+// elements. Every element and every string comes from the card driver; this
+// core invents neither.
+//
+// Module manifest:
+// - `control_elem`: ELEM_LIST/INFO/READ/WRITE and TLV_READ marshalling.
+// - `control_event`: the per-card event queue behind SUBSCRIBE_EVENTS.
 
 use syscall::errno::Errno;
 
+use crate::elem::{ElemId, MAX_ELEM_CHANNELS};
+use crate::identity::{pcm_stream_name, write_card_info};
 use crate::uapi::*;
+
+#[path = "control_elem.rs"] mod control_elem;
+#[path = "control_event.rs"] pub mod events;
+
+/// Element name the OSS `/dev/mixer` bridge maps its master channel onto.
+const OSS_MASTER_NAME: &[u8] = b"Master Playback Volume";
+/// OSS mixer levels are percentages.
+const OSS_LEVEL_MAX: i64 = 100;
+/// Bit position of the right channel in an OSS packed stereo level.
+const OSS_RIGHT_SHIFT: u32 = 8;
+const OSS_CHANNEL_MASK: u32 = 0xFF;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
-/// Owner-keyed OSS mixer bridge. No mixer exists until a driver registers
-/// real controls; report absence instead of fabricating a Master control.
-pub fn mixer_level(owner: crate::SoundOwnerKey) -> Option<u32> {
-    let _ = owner;
-    None
+/// Queue an element-value notification for every control-fd subscriber.
+/// # C: O(cards)
+pub(crate) fn notify_elem(owner: crate::SoundOwnerKey, numid: u32, id: &ElemId) {
+    events::push(owner, CTL_EVENT_MASK_VALUE, numid, id);
+    crate::device::wake_control(owner);
 }
 
+/// Publish a jack/element change from a card driver (unsolicited codec event
+/// or a driver-side state change userspace must observe). # C: O(cards)
+pub fn notify(owner: crate::SoundOwnerKey, numid: u32, id: &ElemId) {
+    notify_elem(owner, numid, id);
+}
+
+/// Scale a driver element value onto the OSS 0..100 percentage. # C: O(1)
+fn to_percent(value: i64, min: i64, max: i64) -> u32 {
+    if max <= min { return 0; }
+    (((value - min) * OSS_LEVEL_MAX) / (max - min)).clamp(0, OSS_LEVEL_MAX) as u32
+}
+
+/// Inverse of [`to_percent`]. # C: O(1)
+fn from_percent(percent: u32, min: i64, max: i64) -> i64 {
+    if max <= min { return min; }
+    min + ((percent.min(OSS_LEVEL_MAX as u32) as i64) * (max - min) + OSS_LEVEL_MAX / 2) / OSS_LEVEL_MAX
+}
+
+/// Owner-keyed OSS mixer bridge over the card's master element. No mixer
+/// exists until a driver registers real controls.
+/// # C: O(elements)
+pub fn mixer_level(owner: crate::SoundOwnerKey) -> Option<u32> {
+    crate::elem::with_id(owner, 0, &ElemId::mixer(OSS_MASTER_NAME, 0), |_, desc| {
+        let mut values = [0i64; MAX_ELEM_CHANNELS];
+        if !(desc.ops.get)(owner, desc.private, &mut values) { return None; }
+        let left = to_percent(values[0], desc.min, desc.max);
+        let right = if desc.count > 1 { to_percent(values[1], desc.min, desc.max) } else { left };
+        Some(left | (right << OSS_RIGHT_SHIFT))
+    })?
+}
+
+/// # C: O(elements)
 pub fn set_mixer_level(owner: crate::SoundOwnerKey, packed: u32) -> bool {
-    let _ = (owner, packed);
-    false
+    crate::elem::with_id(owner, 0, &ElemId::mixer(OSS_MASTER_NAME, 0), |numid, desc| {
+        let mut values = [0i64; MAX_ELEM_CHANNELS];
+        values[0] = from_percent(packed & OSS_CHANNEL_MASK, desc.min, desc.max);
+        values[1] = from_percent((packed >> OSS_RIGHT_SHIFT) & OSS_CHANNEL_MASK, desc.min, desc.max);
+        let left = values[0];
+        for value in values.iter_mut().skip(2) { *value = left; }
+        if !(desc.ops.put)(owner, desc.private, &values) { return false; }
+        notify_elem(owner, numid, &desc.id);
+        true
+    }).unwrap_or(false)
 }
 
 /// Drop card-local ALSA/OSS control state when the owning sound card is
 /// removed or probe publication rolls back.
+/// # C: O(elements)
 pub(crate) fn unregister_card(owner: crate::SoundOwnerKey) {
-    let _ = owner;
+    crate::elem::unregister_card(owner);
+    events::unregister_card(owner);
 }
 
 /// Handle one `SNDRV_CTL_IOCTL_*` (magic 'U' stripped → `nr`). # C: O(1)
@@ -50,31 +110,26 @@ pub(crate) fn handle_open(
         CTL_PVERSION => match UserBuf::new(arg, 4) {
             Some(b) => { b.w32(0, SNDRV_CTL_VERSION); 0 } None => err(Errno::Efault),
         },
-        CTL_CARD_INFO => card_info(card, arg),
+        CTL_CARD_INFO => card_info(owner, card, arg),
         CTL_PCM_NEXT_DEVICE => pcm_next_device(owner, arg),
         CTL_PCM_INFO => pcm_info(owner, card, arg),
-        CTL_ELEM_LIST => elem_list(arg),
+        CTL_ELEM_LIST => control_elem::list(owner, arg),
         CTL_SUBSCRIBE => match file {
-            Some(file) => subscribe(file, arg),
+            Some(file) => subscribe(owner, file, arg),
             None => err(Errno::Ebadfd),
         },
-        CTL_ELEM_INFO => elem_info(arg),
-        CTL_ELEM_READ => elem_read(owner, arg),
-        CTL_ELEM_WRITE => elem_write(owner, arg),
+        CTL_ELEM_INFO => control_elem::info(owner, arg),
+        CTL_ELEM_READ => control_elem::read(owner, arg),
+        CTL_ELEM_WRITE => control_elem::write(owner, arg),
+        CTL_TLV_READ => control_elem::tlv_read(owner, arg),
         _ => err(Errno::Enotty),
     }
 }
 
-fn card_info(card: u32, arg: u64) -> i64 {
+fn card_info(owner: crate::SoundOwnerKey, card: u32, arg: u64) -> i64 {
     let b = match UserBuf::new(arg, CARD_INFO_SIZE) { Some(b) => b, None => return err(Errno::Efault) };
-    b.zero(0, CARD_INFO_SIZE);
-    b.w32(CI_CARD, card);
-    b.wstr(CI_ID, b"virtio-snd", 16);
-    b.wstr(CI_DRIVER, b"virtio_snd", 16);
-    b.wstr(CI_NAME, b"virtio-snd", 32);
-    b.wstr(CI_LONGNAME, b"virtio sound card at virtio bus", 80);
-    b.wstr(CI_MIXERNAME, b"virtio-snd", 80);
-    b.wstr(CI_COMPONENTS, b"", 128);
+    let Some(ident) = crate::ops::identity(owner) else { return err(Errno::Enodev); };
+    write_card_info(&b, card, &ident);
     0
 }
 
@@ -103,207 +158,51 @@ fn pcm_info(owner: crate::SoundOwnerKey, card: u32, arg: u64) -> i64 {
         _ => false,
     };
     if device != 0 || !available { return err(Errno::Enoent); }
-    b.zero(0, PCM_INFO_SIZE);
-    b.w32(PI_DEVICE, 0);
-    b.w32(PI_SUBDEVICE, 0);
-    b.w32(PI_STREAM, stream as u32);
-    b.w32(PI_CARD, card);
-    b.wstr(PI_ID, b"virtio-snd", 64);
-    let name = if stream == STREAM_CAPTURE { b"virtio-snd PCM Capture".as_slice() } else { b"virtio-snd PCM Playback".as_slice() };
-    b.wstr(PI_NAME, name, 80);
-    b.wstr(PI_SUBNAME, b"subdevice #0", 32);
-    b.w32(PI_SUBDEVICES_COUNT, 1);
-    b.w32(PI_SUBDEVICES_AVAIL, 1);
+    let Some(ident) = crate::ops::identity(owner) else { return err(Errno::Enodev); };
+    crate::pcm_info::write(&b, card, stream, &ident.id, &pcm_stream_name(&ident, stream == STREAM_CAPTURE));
     0
 }
 
-/// SNDRV_CTL_IOCTL_ELEM_LIST: expose no elements until the card driver
-/// registers real mixer/control elements.
-/// snd_ctl_elem_list: offset@0, space@4, used@8, count@12.
-fn elem_list(arg: u64) -> i64 {
-    let b = match UserBuf::new(arg, CTL_ELEM_LIST_SIZE) { Some(b) => b, None => return err(Errno::Efault) };
-    b.w32(CEL_USED, 0);
-    b.w32(CEL_COUNT, 0);
-    0
-}
-
-fn elem_info(arg: u64) -> i64 {
-    let _ = match UserBuf::new(arg, CTL_ELEM_INFO_SIZE) { Some(b) => b, None => return err(Errno::Efault) };
-    err(Errno::Enoent)
-}
-
-fn elem_read(owner: crate::SoundOwnerKey, arg: u64) -> i64 {
-    let _ = owner;
-    let _ = match UserBuf::new(arg, CTL_ELEM_VALUE_SIZE) { Some(b) => b, None => return err(Errno::Efault) };
-    err(Errno::Enoent)
-}
-
-fn elem_write(owner: crate::SoundOwnerKey, arg: u64) -> i64 {
-    let _ = owner;
-    let _ = match UserBuf::new(arg, CTL_ELEM_VALUE_SIZE) { Some(b) => b, None => return err(Errno::Efault) };
-    err(Errno::Enoent)
-}
-
-fn subscribe(file: &vfs::File, arg: u64) -> i64 {
+/// SNDRV_CTL_IOCTL_SUBSCRIBE_EVENTS. Reading back with a negative argument
+/// reports the current subscription without changing it.
+fn subscribe(owner: crate::SoundOwnerKey, file: &vfs::File, arg: u64) -> i64 {
     let b = match UserBuf::new(arg, 4) { Some(b) => b, None => return err(Errno::Efault) };
     let requested = b.r32(0) as i32;
+    let (subscribed, cursor) = events::unpack(file.private_data());
     if requested < 0 {
-        b.w32(0, u32::from(file.private_data() != 0));
+        b.w32(0, u32::from(subscribed));
         return 0;
     }
-    file.set_private_data(u64::from(requested != 0));
+    if requested != 0 {
+        // Subscribing starts the reader at the current tail, so a late
+        // subscriber never replays history it did not ask for.
+        let start = if subscribed { cursor } else { events::latest_seq(owner) };
+        file.set_private_data(events::pack(true, start));
+    } else {
+        file.set_private_data(events::pack(false, cursor));
+    }
     0
+}
+
+/// Encode one queued event into a `snd_ctl_event` for `snd_ctl_read`, and
+/// return the sequence the reader's cursor should advance to.
+/// # C: O(CTL_EVENT_SIZE)
+pub(crate) fn read_event(owner: crate::SoundOwnerKey, cursor: u64, out: &mut [u8]) -> Option<u64> {
+    let event = events::next_after(owner, cursor)?;
+    if out.len() < CTL_EVENT_SIZE { return None; }
+    out[..CTL_EVENT_SIZE].fill(0);
+    out[..4].copy_from_slice(&CTL_EVENT_ELEM.to_le_bytes());
+    out[CTL_EVENT_MASK..CTL_EVENT_MASK + 4].copy_from_slice(&event.mask.to_le_bytes());
+    let id = CTL_EVENT_ID;
+    out[id + CEI_NUMID..id + CEI_NUMID + 4].copy_from_slice(&event.numid.to_le_bytes());
+    out[id + CEI_IFACE..id + CEI_IFACE + 4].copy_from_slice(&event.id.iface.to_le_bytes());
+    out[id + CEI_DEVICE..id + CEI_DEVICE + 4].copy_from_slice(&event.id.device.to_le_bytes());
+    out[id + CEI_SUBDEVICE..id + CEI_SUBDEVICE + 4].copy_from_slice(&event.id.subdevice.to_le_bytes());
+    out[id + CEI_NAME..id + CEI_NAME + CEI_NAME_LEN].copy_from_slice(&event.id.name);
+    out[id + CEI_INDEX..id + CEI_INDEX + 4].copy_from_slice(&event.id.index.to_le_bytes());
+    Some(event.seq)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn cfg(_owner: crate::SoundOwnerKey) -> Option<(u32, u32, u32, u32)> { Some((0, 0, 0, 0)) }
-    fn caps(_owner: crate::SoundOwnerKey) -> crate::ops::Caps { Some((0, 0, 1, 2)) }
-    fn period(_owner: crate::SoundOwnerKey) -> usize { 2048 }
-    fn hw_params(_owner: crate::SoundOwnerKey, _rate: u8, _format: u8, _channels: u8, _period_bytes: u32, _buffer_bytes: u32) -> bool { true }
-    fn yes(_owner: crate::SoundOwnerKey) -> bool { true }
-    fn trigger(_owner: crate::SoundOwnerKey, _start: bool) -> bool { true }
-    fn submit(_owner: crate::SoundOwnerKey, b: &[u8]) -> usize { b.len() }
-    fn recv(_owner: crate::SoundOwnerKey, b: &mut [u8]) -> usize { b.len() }
-
-    static TEST_OPS: crate::ops::SoundOps = crate::ops::SoundOps {
-        config: cfg,
-        pcm_caps: caps,
-        cap_caps: caps,
-        period_bytes: period,
-        pcm_hw_params: hw_params,
-        pcm_prepare: yes,
-        pcm_trigger: trigger,
-        pcm_hw_free: yes,
-        pcm_submit: submit,
-        cap_hw_params: hw_params,
-        cap_prepare: yes,
-        cap_trigger: trigger,
-        cap_hw_free: yes,
-        pcm_recv: recv,
-    };
-
-    fn u32_at(buf: &[u8], off: usize) -> u32 {
-        u32::from_le_bytes(buf[off..off + 4].try_into().unwrap())
-    }
-
-    fn put_u32(buf: &mut [u8], off: usize, value: u32) {
-        buf[off..off + 4].copy_from_slice(&value.to_le_bytes());
-    }
-
-    fn put_u64(buf: &mut [u8], off: usize, value: u64) {
-        buf[off..off + 8].copy_from_slice(&value.to_le_bytes());
-    }
-
-    fn put_id(buf: &mut [u8], numid: u32) {
-        put_u32(buf, CEI_NUMID, numid);
-        put_u32(buf, CEI_IFACE, CTL_ELEM_IFACE_MIXER);
-    }
-    fn key(raw: u32) -> crate::SoundOwnerKey { crate::SoundOwnerKey::from_raw(raw).unwrap() }
-
-    #[test]
-    fn control_pcm_info_reports_playback_and_capture_streams() {
-        let owner = key(0x5102);
-        let _ = crate::ops::clear(owner);
-        let _ = crate::cancel_card_reservation(owner);
-        assert!(crate::reserve_card(owner));
-        assert!(crate::ops::register(owner, &TEST_OPS));
-
-        let mut info = [0u8; PCM_INFO_SIZE];
-        put_u32(&mut info, PI_DEVICE, 0);
-        put_u32(&mut info, PI_STREAM, STREAM_PLAYBACK as u32);
-        assert_eq!(handle(owner, 3, CTL_PCM_INFO, info.as_mut_ptr() as u64), 0);
-        assert_eq!(u32_at(&info, PI_DEVICE), 0);
-        assert_eq!(u32_at(&info, PI_STREAM), STREAM_PLAYBACK as u32);
-        assert_eq!(u32_at(&info, PI_CARD), 3);
-
-        info.fill(0);
-        put_u32(&mut info, PI_DEVICE, 0);
-        put_u32(&mut info, PI_STREAM, STREAM_CAPTURE as u32);
-        assert_eq!(handle(owner, 3, CTL_PCM_INFO, info.as_mut_ptr() as u64), 0);
-        assert_eq!(u32_at(&info, PI_DEVICE), 0);
-        assert_eq!(u32_at(&info, PI_STREAM), STREAM_CAPTURE as u32);
-        assert_eq!(u32_at(&info, PI_CARD), 3);
-
-        info.fill(0);
-        put_u32(&mut info, PI_DEVICE, 0);
-        put_u32(&mut info, PI_STREAM, 99);
-        assert_eq!(
-            handle(owner, 3, CTL_PCM_INFO, info.as_mut_ptr() as u64),
-            -(Errno::Enoent.as_i32() as i64)
-        );
-
-        let _ = crate::ops::clear(owner);
-        let _ = crate::cancel_card_reservation(owner);
-    }
-
-    #[test]
-    fn missing_mixer_controls_are_not_fabricated() {
-        let owner = key(0x5100);
-        let _ = crate::ops::clear(owner);
-        let _ = crate::cancel_card_reservation(owner);
-        assert!(crate::reserve_card(owner));
-        assert!(crate::ops::register(owner, &TEST_OPS));
-
-        let mut ids = [0u8; CTL_ELEM_ID_SIZE * 2];
-        let mut list = [0u8; CTL_ELEM_LIST_SIZE];
-        put_u32(&mut list, CEL_SPACE, 2);
-        put_u64(&mut list, CEL_PIDS, ids.as_mut_ptr() as u64);
-
-        assert_eq!(handle(owner, 0, CTL_ELEM_LIST, list.as_mut_ptr() as u64), 0);
-        assert_eq!(u32_at(&list, CEL_USED), 0);
-        assert_eq!(u32_at(&list, CEL_COUNT), 0);
-        assert_eq!(ids, [0u8; CTL_ELEM_ID_SIZE * 2]);
-
-        let mut info = [0u8; CTL_ELEM_INFO_SIZE];
-        put_id(&mut info, 1);
-        assert_eq!(
-            handle(owner, 0, CTL_ELEM_INFO, info.as_mut_ptr() as u64),
-            -(Errno::Enoent.as_i32() as i64)
-        );
-
-        let _ = crate::ops::clear(owner);
-        let _ = crate::cancel_card_reservation(owner);
-    }
-
-    #[test]
-    fn missing_mixer_controls_reject_reads_writes_and_oss_mixer() {
-        let owner = key(0x5101);
-        let _ = crate::ops::clear(owner);
-        let _ = crate::cancel_card_reservation(owner);
-        assert!(crate::reserve_card(owner));
-        assert!(crate::ops::register(owner, &TEST_OPS));
-
-        let mut value = [0u8; CTL_ELEM_VALUE_SIZE];
-        put_id(&mut value, 1);
-        assert_eq!(
-            handle(owner, 0, CTL_ELEM_READ, value.as_mut_ptr() as u64),
-            -(Errno::Enoent.as_i32() as i64)
-        );
-        assert_eq!(
-            handle(owner, 0, CTL_ELEM_WRITE, value.as_mut_ptr() as u64),
-            -(Errno::Enoent.as_i32() as i64)
-        );
-
-        assert_eq!(mixer_level(owner), None);
-        assert!(!set_mixer_level(owner, 80 | (90 << 8)));
-
-        let read_req = (2u64 << 30) | (4u64 << 16) | ((b'M' as u64) << 8);
-        let write_req = (1u64 << 30) | (4u64 << 16) | ((b'M' as u64) << 8);
-        let mut packed = 10u32 | (20u32 << 8);
-        assert_eq!(
-            crate::oss::handle(owner, true, read_req, (&mut packed as *mut u32) as u64),
-            -(Errno::Enodev.as_i32() as i64)
-        );
-        packed = 10 | (20 << 8);
-        assert_eq!(
-            crate::oss::handle(owner, true, write_req, (&mut packed as *mut u32) as u64),
-            -(Errno::Enodev.as_i32() as i64)
-        );
-
-        let _ = crate::ops::clear(owner);
-        let _ = crate::cancel_card_reservation(owner);
-    }
-}
+#[path = "tests/control.rs"]
+mod tests;

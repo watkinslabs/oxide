@@ -13,7 +13,7 @@ pub fn output_stream() -> Option<u32> { active_ctx(&CTX.lock_bh::<crate::state::
 pub fn pcm_caps(owner: sound::SoundOwnerKey) -> Option<(u64, u64, u8, u8)> {
     active_ctx_for(&CTX.lock_bh::<crate::state::SndBh>(), owner).and_then(|c| {
         c.out_stream?;
-        Some((c.out_formats, c.out_rates, c.out_ch_min, c.out_ch_max))
+        Some((crate::fmt::caps_mask_to_alsa(c.out_formats), c.out_rates, c.out_ch_min, c.out_ch_max))
     })
 }
 
@@ -42,7 +42,7 @@ pub fn frame_size() -> usize {
 pub fn cap_caps(owner: sound::SoundOwnerKey) -> Option<(u64, u64, u8, u8)> {
     active_ctx_for(&CTX.lock_bh::<crate::state::SndBh>(), owner).and_then(|c| {
         c.in_stream?;
-        Some((c.in_formats, c.in_rates, c.in_ch_min, c.in_ch_max))
+        Some((crate::fmt::caps_mask_to_alsa(c.in_formats), c.in_rates, c.in_ch_min, c.in_ch_max))
     })
 }
 
