@@ -42,6 +42,56 @@ impl SuperOps for F2fsSuperOps {
         })
     }
 
+    /// The same counts, narrowed to what the named object is actually allowed.
+    ///
+    /// A file under a project-inheriting tree is confined to that project's
+    /// limits, not the volume's. Reporting the volume's counts inside such a
+    /// tree says there is room where there is none, and the write that follows
+    /// fails with the space apparently still free — which is the one thing a
+    /// caller cannot recover from, because it contradicts what it was just
+    /// told. An unlimited project, an inode outside any project, or a volume
+    /// not enforcing project quota all fall back to the volume's own answer.
+    /// # C: O(1 block + quota file lookup)
+    fn statfs_at(&self, inode: &vfs::InodeRef) -> KResult<SbStatFs> {
+        let mut st = self.statfs()?;
+        let mut v = self.fs.volume.lock();
+        if !crate::quota::types::enforced(&v.quota_setup()[crate::quota::uapi::PRJQUOTA]) {
+            return Ok(st);
+        }
+        let Ok(ino) = v.read_inode(inode.ino() as u32) else { return Ok(st) };
+        if ino.flags & crate::flags::F2FS_PROJINHERIT_FL == 0 { return Ok(st); }
+        let Ok(d) = v.quota_record(crate::quota::uapi::PRJQUOTA, ino.projid) else { return Ok(st) };
+        // The record counts bytes; this interface counts blocks. The limit and
+        // the usage are each rounded to whole blocks BEFORE they are
+        // subtracted: rounding the difference instead loses a block whenever
+        // either is not a whole number of them, and a limit is stored in units
+        // a block is not a multiple of.
+        //
+        // A limit smaller than one block narrows nothing at all. Reporting
+        // zero blocks and zero free would tell the caller the filesystem is
+        // full, when the volume's own answer is both truthful and useful; the
+        // write is refused by the quota itself, which is where that belongs.
+        let bsize = u64::from(st.f_bsize.max(1));
+        let limit = crate::quota::limit::effective_limit(d.bhardlimit, d.bsoftlimit)
+            .map_or(0, |l| l / bsize);
+        if limit > 0 {
+            let used = crate::quota::limit::total_space(&d) / bsize;
+            let left = limit.saturating_sub(used);
+            st.f_blocks = st.f_blocks.min(limit);
+            // Free and available narrow together: the reserve an ordinary
+            // caller may not touch is the VOLUME's, and it does not buy room
+            // inside a project that is already at its limit.
+            st.f_bfree = st.f_bfree.min(left);
+            st.f_bavail = st.f_bavail.min(left);
+        }
+        if let Some(limit) = crate::quota::limit::effective_limit(d.ihardlimit, d.isoftlimit) {
+            let left = crate::quota::limit::inodes_remaining(&d).unwrap_or(0);
+            st.f_files = st.f_files.min(limit);
+            st.f_ffree = st.f_ffree.min(left);
+        }
+        Ok(st)
+    }
+
     fn show_options(&self) -> String { crate::opts::show(self.fs.volume.lock().options()) }
 
     /// Write a checkpoint.

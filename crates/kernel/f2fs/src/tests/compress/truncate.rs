@@ -201,3 +201,35 @@ fn a_read_only_mount_refuses_to_shorten_a_compressed_file() {
     .unwrap();
     assert_eq!(ro.truncate_compressed(ino, 0), Err(syscall::errno::Errno::Erofs));
 }
+
+#[test]
+fn shortening_through_the_general_entry_point_reaches_the_cluster_truncater() {
+    // `truncate_file` is what a caller actually reaches, and a compressed
+    // file cannot go down its block-at-a-time path: blocks come off a whole
+    // cluster at a time, and the cluster the end falls inside is rewritten.
+    let (mut v, ino, data) = written(2, 8);
+    let len = 5 * BLKSIZE as u64 + 100;
+    v.truncate_file(ino, len).unwrap();
+    let v = remount(v);
+    assert_eq!(v.read_inode(ino).unwrap().size, len);
+    assert_eq!(whole(&v, ino), data[..len as usize].to_vec());
+    // The cluster the end falls inside came back plain, and only the blocks
+    // the file still reaches were kept.
+    let a = addrs(&v, ino, 4);
+    assert_eq!(plan::compressed_extent(&a), None, "{a:?}");
+    assert_eq!(a[2], NULL_ADDR, "{a:?}");
+    assert_eq!(a[3], NULL_ADDR, "{a:?}");
+    // The cluster before it is untouched and still compressed.
+    assert!(plan::compressed_extent(&addrs(&v, ino, 0)).is_some());
+}
+
+#[test]
+fn growing_through_the_general_entry_point_allocates_nothing() {
+    let (mut v, ino, data) = written(2, 4);
+    v.truncate_file(ino, 12 * BLKSIZE as u64).unwrap();
+    let v = remount(v);
+    assert!(addrs(&v, ino, 4).iter().all(|&a| a == NULL_ADDR));
+    let mut want = data.clone();
+    want.resize(12 * BLKSIZE, 0);
+    assert_eq!(whole(&v, ino), want);
+}

@@ -204,6 +204,7 @@ impl<S: SectorSource> Volume<S> {
         // cluster the new end falls inside holds one image rather than one
         // block per block, so it is rewritten rather than shortened.
         if inode.compressed() {
+            if inode.encrypted() { return Err(Errno::Eopnotsupp); }
             return self.truncate_compressed(ino, len);
         }
         if inode.inline_data() {
