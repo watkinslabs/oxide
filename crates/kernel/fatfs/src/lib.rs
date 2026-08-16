@@ -11,6 +11,8 @@
 //! - `bpb`:      the boot sector's fields, and which of them are valid.
 //! - `geometry`: where everything lives, and which FAT width this volume is.
 //! - `dirent`:   the 32-byte records, and the long name spread across several.
+//! - `name`:     code pages, 8.3 generation, long-name slots, name matching.
+//! - `time`:     the three timestamps a record carries, and their granularities.
 //! - `chain`:    the allocation table, and walking a file's clusters through it.
 //! - `cluster_alloc`: changing that table: claiming, linking, releasing.
 //! - `fsinfo`:   the FAT32 information sector, and the free-cluster count.
@@ -29,6 +31,8 @@ extern crate alloc;
 pub mod bpb;
 pub mod geometry;
 pub mod dirent;
+pub mod name;
+pub mod time;
 pub mod chain;
 pub mod cluster_alloc;
 pub mod fsinfo;
@@ -48,5 +52,8 @@ pub use fsinfo::{FreeState, FsInfo};
 pub use fatcache::{get_cluster, ChainCache, Seek};
 pub use volstate::{fat_copy_starts, is_dirty, set_dirty, FAT_STATE_DIRTY};
 pub use volume::{DirEntry, SectorSource, Volume};
-pub use dirent::{checksum, short_name, Entry, LongName, ShortEntry};
+pub use dirent::{checksum, short_name, short_name_with, Entry, LongName, Record, RecordTimes,
+                 ShortEntry};
+pub use name::{CodePage, ShortName, CP437, SFN_DEFAULT, SFN_MSDOS};
+pub use time::{from_unix, to_unix, truncate_atime, truncate_mtime, FatTime, TimeConfig};
 pub use geometry::{Geometry, GeometryError, FatWidth};

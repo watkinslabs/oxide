@@ -1,0 +1,73 @@
+//! The code page: what a byte means, and the byte a character needs.
+
+use crate::name::codepage::{by_number, CP437, DEFAULT_CODEPAGE};
+
+/// Below 0x80 a byte is the character of the same value, which is why reading
+/// an ASCII name without a code page at all looks correct and is not.
+#[test]
+fn ascii_maps_to_itself_both_ways() {
+    for b in 0u8..0x80 {
+        assert_eq!(CP437.to_char(b), u16::from(b), "byte {b:#04x}");
+        assert_eq!(CP437.from_char(u16::from(b)), Some(b));
+    }
+}
+
+/// Above it the byte means something else entirely. These are the mappings a
+/// byte-for-character reader gets wrong, and the reason a name written on
+/// another machine came back as the wrong word.
+#[test]
+fn the_high_range_is_not_latin_1() {
+    // (byte, character it means on this page)
+    const CASES: &[(u8, u16)] = &[
+        (0x80, 0x00c7), // capital C with cedilla
+        (0x81, 0x00fc), // small u with diaeresis
+        (0x9b, 0x00a2), // cent sign
+        (0xb0, 0x2591), // light shade
+        (0xe1, 0x00df), // small sharp s
+        (0xe5, 0x03c3), // small sigma
+        (0xff, 0x00a0), // no-break space
+    ];
+    for (byte, ch) in CASES.iter().copied() {
+        assert_eq!(CP437.to_char(byte), ch, "byte {byte:#04x}");
+        assert_ne!(ch, u16::from(byte), "and it is NOT the character of the same value");
+        assert_eq!(CP437.from_char(ch), Some(byte), "and it comes back");
+    }
+}
+
+/// The table is injective, so inverting it is exact — a second table for the
+/// reverse direction would be a second place for the same fact to be wrong.
+#[test]
+fn the_table_is_injective() {
+    for b in 0u8..=0xff {
+        assert_eq!(CP437.from_char(CP437.to_char(b)), Some(b), "byte {b:#04x}");
+    }
+}
+
+/// A character the page cannot store has no byte. That is not an error: it is
+/// what forces a created name to keep its long form.
+#[test]
+fn a_character_outside_the_page_has_no_byte() {
+    assert_eq!(CP437.from_char(0x4e2d), None, "a CJK ideograph");
+    assert_eq!(CP437.from_char(0x0100), None, "capital A with macron");
+}
+
+/// Case folding is a property of the PAGE, over bytes — a byte whose
+/// uppercase the page cannot store stays as it is.
+#[test]
+fn case_folds_through_the_page_and_stops_where_the_page_does() {
+    assert_eq!(CP437.to_upper(b'a'), b'A');
+    assert_eq!(CP437.to_lower(b'Z'), b'z');
+    assert_eq!(CP437.to_upper(0x81), 0x9a, "u with diaeresis has an uppercase here");
+    assert_eq!(CP437.to_lower(0x9a), 0x81);
+    assert_eq!(CP437.to_upper(0xe1), 0xe1, "sharp s has no uppercase on this page");
+    assert_eq!(CP437.to_upper(0xb0), 0xb0, "and a box-drawing byte has no case at all");
+}
+
+/// The mount option names the page by number, and a number this build has no
+/// table for is refused rather than silently defaulted.
+#[test]
+fn a_page_is_found_by_its_number() {
+    assert!(by_number(DEFAULT_CODEPAGE).is_some());
+    assert_eq!(by_number(DEFAULT_CODEPAGE).map(|p| p.number), Some(437));
+    assert!(by_number(850).is_none(), "no table for this page in this build");
+}
