@@ -223,7 +223,19 @@ pub fn dqbuf(handle: &Arc<FileHandle>, arg: &mut [u8], ctx: &dyn Ctx) -> Result<
             let state = device.state.lock();
             match vb2::qbuf::dqbuf_ready(&state.queue, ctx.nonblocking())? {
                 Some(_) => {}
-                None => { drop(state); ctx.wait_for_buffer(&device)?; continue; }
+                None => {
+                    drop(state);
+                    // Publish the wait before sleeping. The reference keys two
+                    // rules on it — a second `DQBUF` is `EBUSY`, and a
+                    // `REQBUFS` that would free the buffers out from under
+                    // this reader is refused — and neither can fire unless the
+                    // waiter marks itself.
+                    device.state.lock().queue.waiting_in_dqbuf = true;
+                    let waited = ctx.wait_for_buffer(&device);
+                    device.state.lock().queue.waiting_in_dqbuf = false;
+                    waited?;
+                    continue;
+                }
             }
         }
         let mut state = device.state.lock();
@@ -240,7 +252,14 @@ pub fn dqbuf(handle: &Arc<FileHandle>, arg: &mut [u8], ctx: &dyn Ctx) -> Result<
         // than reporting an error the caller did not earn.
         let index = match vb2::qbuf::dqbuf(&mut state.queue, handle.id, buf_type) {
             Ok(index) => index,
-            Err(Errno::Eagain) if !ctx.nonblocking() => { drop(state); ctx.wait_for_buffer(&device)?; continue; }
+            Err(Errno::Eagain) if !ctx.nonblocking() => {
+                drop(state);
+                device.state.lock().queue.waiting_in_dqbuf = true;
+                let waited = ctx.wait_for_buffer(&device);
+                device.state.lock().queue.waiting_in_dqbuf = false;
+                waited?;
+                continue;
+            }
             Err(e) => return Err(e),
         };
         let buf = snapshot.filter(|b| b.index == index).ok_or(Errno::Einval)?;

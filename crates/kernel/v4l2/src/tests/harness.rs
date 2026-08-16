@@ -198,20 +198,27 @@ pub struct FakeCtx {
     pub user: FakeUser,
     pub waits: AtomicU32,
     pub wakes: AtomicU32,
+    /// Was the queue marked as having a parked reader at the moment the wait
+    /// ran? Observed here because that is the only point the flag is true.
+    pub saw_waiting: AtomicBool,
 }
 
 impl FakeCtx {
     pub fn new(nonblocking: bool) -> FakeCtx {
         FakeCtx { nonblocking, user: FakeUser::new(),
-                  waits: AtomicU32::new(0), wakes: AtomicU32::new(0) }
+                  waits: AtomicU32::new(0), wakes: AtomicU32::new(0),
+                  saw_waiting: AtomicBool::new(false) }
     }
 }
 
 impl Ctx for FakeCtx {
     fn now(&self) -> (u64, u64) { (1234, 567_000_000) }
     fn nonblocking(&self) -> bool { self.nonblocking }
-    fn wait_for_buffer(&self, _device: &Arc<VideoDevice>) -> Result<(), Errno> {
+    fn wait_for_buffer(&self, device: &Arc<VideoDevice>) -> Result<(), Errno> {
         self.waits.fetch_add(1, Ordering::AcqRel);
+        if device.state.lock().queue.waiting_in_dqbuf {
+            self.saw_waiting.store(true, Ordering::Release);
+        }
         Err(Errno::Eintr)
     }
     fn user(&self) -> &dyn UserMem { &self.user }

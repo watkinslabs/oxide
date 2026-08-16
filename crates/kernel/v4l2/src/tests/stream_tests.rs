@@ -284,3 +284,39 @@ fn a_second_handle_cannot_take_a_claimed_queue() {
     assert_eq!(crate::ioctl::dispatch(&other, VIDIOC_REQBUFS, &mut arg, &ctx), Err(Errno::Ebusy));
     crate::device::close(&other);
 }
+
+#[test]
+fn a_blocking_dequeue_publishes_its_wait() {
+    let rig = Rig::new();
+    let ctx = FakeCtx::new(true);
+    rig.reqbufs(2, &ctx).expect("buffers allocate");
+    rig.qbuf(0, &ctx).expect("buffer queues");
+    rig.streamon(&ctx).expect("stream starts");
+    // The wait must be visible WHILE it lasts, or the two rules keyed on it —
+    // a second dequeue, and a reallocation under a parked reader — can never
+    // fire. The context observes the flag from inside the wait, which is the
+    // only moment it is true; asserting after the call returns would pass
+    // whether the flag was ever set or not.
+    let blocking = FakeCtx::new(false);
+    let mut arg = alloc::vec![0u8; l::BUFFER_SIZE];
+    w32(&mut arg, l::BUF_TYPE, flags::BUF_TYPE_VIDEO_CAPTURE);
+    assert_eq!(rig.call(VIDIOC_DQBUF, &mut arg, &blocking), Err(Errno::Eintr));
+    assert!(blocking.saw_waiting.load(Ordering::Acquire),
+            "the parked reader must be visible to everyone else while it sleeps");
+    assert!(!rig.device.state.lock().queue.waiting_in_dqbuf,
+            "and must not survive the wait it describes");
+
+    // With a reader parked, a second dequeue is EBUSY and a reallocating
+    // REQBUFS is refused; freeing everything is still allowed.
+    rig.device.state.lock().queue.waiting_in_dqbuf = true;
+    assert_eq!(rig.call(VIDIOC_DQBUF, &mut arg, &ctx), Err(Errno::Ebusy));
+    let mut req = alloc::vec![0u8; l::REQUESTBUFFERS_SIZE];
+    w32(&mut req, l::REQBUFS_COUNT, 4);
+    w32(&mut req, l::REQBUFS_TYPE, flags::BUF_TYPE_VIDEO_CAPTURE);
+    w32(&mut req, l::REQBUFS_MEMORY, flags::MEMORY_MMAP);
+    rig.streamoff(&ctx).expect("stop so the streaming check does not mask this");
+    assert_eq!(rig.call(VIDIOC_REQBUFS, &mut req, &ctx), Err(Errno::Ebusy));
+    w32(&mut req, l::REQBUFS_COUNT, 0);
+    rig.call(VIDIOC_REQBUFS, &mut req, &ctx).expect("freeing is not refused");
+    rig.device.state.lock().queue.waiting_in_dqbuf = false;
+}

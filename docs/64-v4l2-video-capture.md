@@ -1,12 +1,12 @@
 # 62 V4L2 video capture
 
-DRAFT. Dep:`01`,`02`,`06`,`07`,`08`,`09`,`13`,`15`,`16`,`19`,`22`,`23`,`34`,`35`,`52`,`53`,`60`. Provides:`v4l2`, `/dev/videoN`, the `video4linux` class, `drv-vivid`.
+DRAFT 2026-08-16. Dep:`01`,`02`,`06`,`07`,`08`,`09`,`13`,`15`,`16`,`19`,`22`,`23`,`34`,`35`,`52`,`53`,`60`. Provides:`v4l2`, `/dev/videoN`, the `video4linux` class, `drv-vivid`.
 
 Full Linux compat surface: the video device core, the `VIDIOC_*` command set, the buffer queue with its three memory models, the control framework, and the event queue. No deferrals.
 
 ## 1 Purpose
 
-A camera is the last device class a desktop needs and the only one this repository had no owner for at all. Nothing on any bus published a video node, so a video call, a camera panel and a barcode scanner each found no device rather than a device that failed. `crates/kernel/v4l2` is the owner: it publishes `/dev/videoN`, answers the command surface an application actually speaks, and runs the buffer queue every capture driver streams through. `crates/drivers/drv-vivid` is its first driver — a virtual camera, so the path has a caller on a machine with no camera hardware.
+A camera is the last device class a desktop needs and the only one this repository had no owner for at all. Nothing on any bus published a video node, so a video call, a camera panel and a barcode scanner each found no device at all, not a device that failed. `crates/kernel/v4l2` is the owner: it publishes `/dev/videoN`, answers the command surface an application speaks, and runs the buffer queue every capture driver streams through. `crates/drivers/drv-vivid` is its first driver — a virtual camera, so the path has a caller on a machine with no camera hardware.
 
 ## 2 Invariants (frozen)
 
@@ -52,7 +52,7 @@ Any other V4L2-typed command is `ENOTTY`, the same answer a foreign command gets
 1. A pixel format the device does not produce is replaced by the driver's preferred one — negotiation, not refusal.
 2. The requested size is clamped to the nearest declared frame size by total pixel-count difference, ties to the earlier entry.
 3. A progressive device reports `V4L2_FIELD_NONE` whatever was asked for. An interlaced one keeps a valid request and resolves the any-field selector to interlaced.
-4. Colorimetry words outside their enumerations reset to their defaults rather than refusing. An unspecified colorspace resolves to sRGB.
+4. Colorimetry words outside their enumerations reset to their defaults; the call is not refused. An unspecified colorspace resolves to sRGB.
 5. `bytesperline` and `sizeimage` are derived from the settled format: a product for a packed format, luma plus chroma for a planar one, and the driver's declared maximum for a compressed bytestream, whose stride is zero.
 6. `TRY_FMT` predicts `S_FMT` exactly. The two differ only in whether the result is kept.
 
@@ -62,7 +62,7 @@ States are `Dequeued`, `InRequest`, `Preparing`, `Queued`, `Active`, `Done`, `Er
 
 1. Only a buffer userspace owns may be queued. Everything else is `EINVAL` — that refusal is what stops a frame being delivered twice.
 2. `PREPARE_BUF` admits only a dequeued, unprepared buffer.
-3. A completion is believed only from `Active`. Any other origin is forced to `Error` rather than trusted, because acting on it would corrupt the done list.
+3. A completion is believed only from `Active`. Any other origin is forced to `Error`, never trusted: acting on it would corrupt the done list.
 4. `STREAMON` on a running queue succeeds and does nothing. With no buffers, or fewer queued than the driver's minimum, it is `EINVAL`. A refused `start_streaming` returns every handed buffer to `Queued` in its original order, so the pool is reusable unchanged.
 5. `STREAMOFF` is unconditional and returns every buffer to `Dequeued` whatever it was doing. It succeeds on a queue that was never streaming.
 6. `DQBUF` admission order: a second waiter is `EBUSY`, then not-streaming is `EINVAL`, then a failed queue is `EIO`, then the consumed end-of-stream marker is `EPIPE`, then an empty done list is `EAGAIN` for a non-blocking caller and a sleep otherwise.
@@ -81,7 +81,7 @@ States are `Dequeued`, `InRequest`, `Preparing`, `Queued`, `Active`, `Done`, `Er
 3. A driver range that cannot be satisfied is refused at registration, per type: a numeric control needs a non-zero step and an in-range default, a boolean has no step to choose, a bitmask has no minimum and a non-zero legal set, and a menu's skip mask reaches only the first 64 entries.
 4. `QUERYCTRL` and `QUERY_EXT_CTRL` describe a disabled control and report `V4L2_CTRL_FLAG_DISABLED`; it is value access that refuses it with `EINVAL`. A control the device lacks is `EINVAL`, never `ENOENT`.
 5. The walk flags select the next control above the given id — any kind, compound only, or simple only. Failure ends the enumeration with `EINVAL`.
-6. The legacy 32-bit query refuses a compound control or a range that does not fit, rather than truncating one an application would then negotiate against.
+6. The legacy 32-bit query refuses a compound control or a range that does not fit; truncating one leaves an application negotiating against a range the device does not have.
 7. A cluster's dependants go inactive while the automatic control that governs them is engaged, and each change is announced, so a settings panel greys out the exposure time the moment automatic exposure is switched on.
 8. An extended batch is validated in full before the first store; the failing entry's index is reported and nothing is applied. A successful batch leaves the index at the count.
 9. The `which` selector chooses the live value, the default, or an end of the range. The request selector is `EINVAL` until request descriptors exist (`known_issues`).
@@ -106,7 +106,7 @@ The state-changing commands are arbitrated. A handle at a strictly lower priorit
 
 ## 10 `drv-vivid`
 
-A virtual capture device, published unconditionally at boot. Eight vertical colour bars scrolling one bar per frame, in `YUYV`, `UYVY`, `RGB24`, `BGR24`, `RGB565` and `GREY`, at four sizes and four frame intervals, with the standard camera control set. Frames are produced by a periodic timer that advances by whole periods so the nominal rate does not drift, and resynchronises rather than bursting after a stall longer than a second.
+A virtual capture device, published unconditionally at boot. Eight vertical colour bars scrolling one bar per frame, in `YUYV`, `UYVY`, `RGB24`, `BGR24`, `RGB565` and `GREY`, at four sizes and four frame intervals, with the standard camera control set. Frames are produced by a periodic timer that advances by whole periods so the nominal rate does not drift, and resynchronises after a stall longer than a second instead of bursting.
 
 ## 11 Test contract
 

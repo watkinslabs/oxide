@@ -47,11 +47,16 @@ pub fn register(index_hint: u32) -> bool {
     };
     match v4l2::node::register_and_publish(registration) {
         Ok(device) => {
-            klog::kinfo!("[vivid] virtual capture device published");
+            #[cfg(feature="debug-boot")]
+            { klog::kinfo!("[vivid] virtual capture device published"); }
             CAMERAS.lock().push(Registered { vivid, device });
             true
         }
-        Err(_) => { klog::kwarn!("[vivid] could not publish a capture device"); false }
+        Err(_) => {
+            #[cfg(feature="debug-boot")]
+            { klog::kwarn!("[vivid] could not publish a capture device"); }
+            false
+        }
     }
 }
 
