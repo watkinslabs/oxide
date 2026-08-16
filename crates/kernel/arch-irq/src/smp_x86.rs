@@ -353,6 +353,13 @@ pub fn reserve_trampoline_page() {
         // pfn = TRAMP_PA >> 12 = 8. One 4 KiB page covers the blob + its
         // GDT/data block (all within [TRAMP_PA, TRAMP_PA+0x1000)).
         let _ = p.reserve_early(hal::Pfn(TRAMP_PA >> 12), 1);
+        // The S3 resume stub needs the same treatment and the same timing
+        // (`32a§9`): firmware re-enters in real mode at a physical address, so
+        // its page must never have been handed to the allocator. Without the
+        // reservation the deep state is refused outright rather than entered
+        // with nowhere to come back to.
+        let _ = p.reserve_early(hal::Pfn(hal_x86_64::suspend::WAKEUP_TRAMP_PA >> 12), 1);
+        hal_x86_64::suspend::set_wakeup_page_reserved();
     }
 }
 
