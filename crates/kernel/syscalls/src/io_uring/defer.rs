@@ -34,10 +34,23 @@ pub enum Armed {
     Failed(Errno),
 }
 
-/// Whether this opcode can only ever be deferred. # C: O(1)
+/// Whether this opcode can only ever be deferred.
+///
+/// Three reasons appear here. A timeout and a poll have nothing to do but
+/// wait. A driver command is completed by the driver, not by the submission.
+/// And an operation that PARKS — on a futex word, on a child, on an epoll set —
+/// must never park the submitting task: a submission holding a wait and the
+/// wake that satisfies it would deadlock, because the wake would never be
+/// submitted. A splice is deferred for the reference's own reason: it moves an
+/// unbounded number of bytes between two descriptions, either of which may
+/// block, so it belongs on a worker whatever the submitter asked for.
+/// # C: O(1)
 pub fn always_async(op: u8) -> bool {
     matches!(op, IORING_OP_TIMEOUT | IORING_OP_LINK_TIMEOUT | IORING_OP_POLL_ADD
-        | IORING_OP_URING_CMD | IORING_OP_URING_CMD128)
+        | IORING_OP_URING_CMD | IORING_OP_URING_CMD128
+        | IORING_OP_SPLICE | IORING_OP_TEE
+        | IORING_OP_WAITID | IORING_OP_FUTEX_WAIT | IORING_OP_FUTEX_WAITV
+        | IORING_OP_EPOLL_WAIT)
 }
 
 /// Whether the submitter asked for this entry to be handed to a worker
