@@ -128,6 +128,24 @@ pub(super) const USERSPACE_CONSOLE_PARAMS: &str =
 /// channel open.
 pub(super) const SYSRQ_PARAMS: &str = "sysctl.kernel.sysrq=1 sysrq_always_enabled";
 
+/// How this image runs the mandatory-access-control module.
+///
+/// **This is not `selinux=0`.** The module is enabled, the distribution's own
+/// policy is loaded, contexts are resolved and every decision is computed and
+/// reported — `enforcing=0` changes only what happens to a denial, which is
+/// the same parameter a real system uses to bring a new policy up before
+/// trusting it.
+///
+/// It is here because the check points are not yet complete: the file and
+/// directory paths ask the policy, most other object classes do not, and an
+/// object whose label has not been resolved is unlabeled. Enforcing against a
+/// partial set of checks would refuse operations the policy permits, which
+/// tells us nothing about the policy and everything about the missing wiring.
+/// The parameter comes off when the remaining classes are wired, and until
+/// then a boot that reaches userspace with a real policy loaded is the thing
+/// being measured.
+pub(super) const SELINUX_PARAMS: &str = "enforcing=0";
+
 /// Kernel parameters that make a boot narrate itself, for the case the set
 /// exists to serve: a boot that never completes and produces nothing to
 /// diagnose with.
@@ -182,7 +200,7 @@ pub(super) fn kernel_cmdline_for_root(arch: &str, image_path: &str, root: &str) 
     // lies. A boot that wants it can pass it through OXIDE_CMDLINE_EXTRA.
     format!(
         "{boot_image}root={root} rw {KERNEL_CONSOLE_PARAMS} {USERSPACE_CONSOLE_PARAMS} \
-         {SYSRQ_PARAMS} {extra}\
+         {SYSRQ_PARAMS} {SELINUX_PARAMS} {extra}\
          console={ser},115200 console=tty0 \
          systemd.mask=firewalld.service systemd.mask=chronyd.service \
          systemd.mask=ModemManager.service systemd.mask=plymouth-start.service \
@@ -474,5 +492,36 @@ mod tests {
                 assert!(!line.split(' ').any(|t| t == "quiet"), "{arch}: {line}");
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod selinux_params_tests {
+    use super::{kernel_cmdline, SELINUX_PARAMS};
+
+    #[test]
+    fn both_arches_carry_the_permissive_parameter() {
+        for arch in ["x86_64", "aarch64"] {
+            let line = kernel_cmdline(arch, "/boot/oxide.elf");
+            assert!(line.split(' ').any(|t| t == SELINUX_PARAMS),
+                    "{arch} line lost the parameter: {line}");
+        }
+    }
+
+    #[test]
+    fn the_module_is_never_disabled_by_the_boot_line() {
+        // Disabling the module would mean the boot no longer matches the
+        // distribution it is built from, which is the whole point of loading
+        // its policy at all. Permissive is a mode; disabled is an absence.
+        for arch in ["x86_64", "aarch64"] {
+            let line = kernel_cmdline(arch, "/boot/oxide.elf");
+            assert!(!line.contains("selinux=0"), "{arch}: {line}");
+            assert!(!line.split(' ').any(|t| t == "selinux=off"), "{arch}: {line}");
+        }
+    }
+
+    #[test]
+    fn the_parameter_asks_for_permissive_and_not_for_a_disable() {
+        assert_eq!(SELINUX_PARAMS, "enforcing=0");
     }
 }
