@@ -83,7 +83,11 @@ mod tests {
     #[test]
     fn atomic_flush_detaches_and_immediately_delivers_when_vblank_is_unavailable() {
         let _modules = crate::test_serial::claim(); let mut crtc = [0u8; 1228]; let mut dev = [0u8; 512]; let mut state = [0u8; 128]; let mut entries = [0u8; DRM_ATOMIC_CRTC_ENTRY_SIZE]; let mut crtc_state = [0u8; 336]; let mut event = [0u8; 120]; let mut file = [0u8; 416];
+        // SAFETY: test storage supplies the exact CRTC, atomic-state, crtc-state, and
+        // pending-event fields the immediate-delivery path (no live vblank) reads.
         unsafe { write(crtc.as_mut_ptr().cast::<*mut c_void>(), dev.as_mut_ptr().cast()); write(state.as_mut_ptr().add(DRM_ATOMIC_CRTCS_OFF).cast::<*mut u8>(), entries.as_mut_ptr()); write(entries.as_mut_ptr().add(DRM_ATOMIC_CRTC_NEW_STATE_OFF).cast::<*mut u8>(), crtc_state.as_mut_ptr()); write(crtc_state.as_mut_ptr().add(DRM_CRTC_STATE_EVENT_OFF).cast::<*mut u8>(), event.as_mut_ptr()); write(event.as_mut_ptr().add(DRM_PENDING_EVENT_FILE_OFF).cast::<*mut u8>(), file.as_mut_ptr()); let head = file.as_mut_ptr().add(DRM_FILE_EVENT_LIST_OFF); write(head.cast::<*mut u8>(), head); write(head.add(8).cast::<*mut u8>(), head); }
+        // SAFETY: crtc_state and file are the same local arrays wired above, read
+        // after the flush call is expected to have consumed and delivered the event.
         drm_crtc_vblank_atomic_flush(crtc.as_mut_ptr().cast(), state.as_mut_ptr().cast()); assert!(unsafe { read(crtc_state.as_ptr().add(DRM_CRTC_STATE_EVENT_OFF).cast::<*mut u8>()) }.is_null()); assert_eq!(unsafe { read(file.as_ptr().add(DRM_FILE_EVENT_LIST_OFF).cast::<*mut u8>()) }, unsafe { event.as_mut_ptr().add(DRM_PENDING_EVENT_PENDING_LINK_OFF) });
     }
 
@@ -93,6 +97,8 @@ mod tests {
         // SAFETY: test storage supplies the exact CRTC, device, vblank, state, and list fields used by the handoff.
         unsafe { write(crtc.as_mut_ptr().cast::<*mut c_void>(), dev.as_mut_ptr().cast()); write(dev.as_mut_ptr().add(vblank::DRM_DEVICE_NUM_CRTCS_OFF).cast::<u32>(), 1); write(dev.as_mut_ptr().add(vblank::DRM_DEVICE_VBLANK_OFF).cast::<*mut u8>(), records.as_mut_ptr()); write(records.as_mut_ptr().add(vblank::DRM_VBLANK_ENABLED_OFF).cast::<bool>(), true); let events = dev.as_mut_ptr().add(DRM_DEVICE_VBLANK_EVENT_LIST_OFF); write(events.cast::<*mut u8>(), events); write(events.add(8).cast::<*mut u8>(), events); write(state.as_mut_ptr().add(DRM_ATOMIC_CRTCS_OFF).cast::<*mut u8>(), entries.as_mut_ptr()); write(entries.as_mut_ptr().add(DRM_ATOMIC_CRTC_NEW_STATE_OFF).cast::<*mut u8>(), crtc_state.as_mut_ptr()); write(crtc_state.as_mut_ptr().add(DRM_CRTC_STATE_EVENT_OFF).cast::<*mut u8>(), event.as_mut_ptr()); write(event.as_mut_ptr().add(DRM_PENDING_EVENT_FILE_OFF).cast::<*mut u8>(), file.as_mut_ptr()); let file_events = file.as_mut_ptr().add(DRM_FILE_EVENT_LIST_OFF); write(file_events.cast::<*mut u8>(), file_events); write(file_events.add(8).cast::<*mut u8>(), file_events); }
         DEVICES.lock().push(DeviceAllocation { dev: dev.as_mut_ptr() as usize, base: 0, layout: Layout::new::<u8>(), refs: 1, mode_config: false, objects: Vec::new(), planes: Vec::new(), crtcs: Vec::new(), encoders: Vec::new(), connectors: Vec::new(), clients: Vec::new(), vblank: Some((records.as_mut_ptr() as usize, Layout::new::<u8>())), primary_master: None, put_pending: false, unplugged: false });
+        // SAFETY: dev, event, and records are the same local arrays wired above, read
+        // after the flush call is expected to have queued the event on the live vblank.
         drm_crtc_vblank_atomic_flush(crtc.as_mut_ptr().cast(), state.as_mut_ptr().cast()); assert_eq!(unsafe { read(dev.as_ptr().add(DRM_DEVICE_VBLANK_EVENT_LIST_OFF).cast::<*mut u8>()) }, unsafe { event.as_mut_ptr().add(DRM_PENDING_EVENT_LINK_OFF) }); assert_eq!(unsafe { read(records.as_ptr().add(vblank::DRM_VBLANK_REFCOUNT_OFF).cast::<i32>()) }, 1); DEVICES.lock().clear();
     }
 
@@ -101,13 +107,19 @@ mod tests {
         let _modules = crate::test_serial::claim(); let mut file = [0u8; 416]; let mut filp = [0u8; 192]; let mut out = [0u8; 32]; let event = crate::linux_alloc::kzalloc(120, 0); assert!(!event.is_null());
         // SAFETY: this fabricates the exact queued event and file list relation consumed by drm_read.
         unsafe { let head = file.as_mut_ptr().add(DRM_FILE_EVENT_LIST_OFF); write(head.cast::<*mut u8>(), event.add(DRM_PENDING_EVENT_LINK_OFF)); write(head.add(8).cast::<*mut u8>(), event.add(DRM_PENDING_EVENT_LINK_OFF)); write(event.add(DRM_PENDING_EVENT_LINK_OFF).cast::<*mut u8>(), head); write(event.add(DRM_PENDING_EVENT_LINK_OFF + 8).cast::<*mut u8>(), head); write(event.add(DRM_PENDING_EVENT_EVENT_OFF).cast::<*mut u8>(), event.add(DRM_PENDING_VBLANK_EVENT_OFF)); write(event.add(DRM_PENDING_VBLANK_EVENT_OFF).cast::<u32>(), 1); write(event.add(DRM_PENDING_VBLANK_EVENT_OFF + DRM_EVENT_LENGTH_OFF).cast::<u32>(), 32); write(event.add(DRM_PENDING_VBLANK_EVENT_OFF + DRM_EVENT_SEQUENCE_OFF).cast::<u32>(), 7); write(filp.as_mut_ptr().add(24).cast::<*mut u8>(), file.as_mut_ptr()); }
+        // SAFETY: out and file are local arrays from above; drm_read is expected to
+        // have copied the queued event into out and unlinked it from file's list.
         assert_eq!(file::drm_read(filp.as_mut_ptr().cast(), out.as_mut_ptr(), out.len(), core::ptr::null_mut()), 32); assert_eq!(unsafe { read(out.as_ptr().add(DRM_EVENT_SEQUENCE_OFF).cast::<u32>()) }, 7); assert_eq!(unsafe { read(file.as_ptr().add(DRM_FILE_EVENT_LIST_OFF).cast::<*mut u8>()) }, unsafe { file.as_mut_ptr().add(DRM_FILE_EVENT_LIST_OFF) });
     }
 
     #[test]
     fn drm_poll_reports_only_a_completed_event() {
         let _modules = crate::test_serial::claim(); let mut file = [0u8; 416]; let mut filp = [0u8; 192]; let mut event = [0u8; 120];
+        // SAFETY: file and filp are local stack arrays sized past every offset used;
+        // this first links filp to file with an empty (self-linked) event list.
         unsafe { let head = file.as_mut_ptr().add(DRM_FILE_EVENT_LIST_OFF); write(head.cast::<*mut u8>(), head); write(head.add(8).cast::<*mut u8>(), head); write(filp.as_mut_ptr().add(24).cast::<*mut u8>(), file.as_mut_ptr()); } assert_eq!(file::drm_poll(filp.as_mut_ptr().cast(), core::ptr::null_mut()), 0);
+        // SAFETY: same local file/event arrays; this links one pending event onto
+        // file's list to exercise the completed-event poll path.
         unsafe { let head = file.as_mut_ptr().add(DRM_FILE_EVENT_LIST_OFF); write(head.cast::<*mut u8>(), event.as_mut_ptr().add(DRM_PENDING_EVENT_LINK_OFF)); write(event.as_mut_ptr().add(DRM_PENDING_EVENT_LINK_OFF).cast::<*mut u8>(), head); write(event.as_mut_ptr().add(DRM_PENDING_EVENT_LINK_OFF + 8).cast::<*mut u8>(), head); } assert_eq!(file::drm_poll(filp.as_mut_ptr().cast(), core::ptr::null_mut()), 0x041);
     }
 }

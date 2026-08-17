@@ -52,6 +52,9 @@ impl AddressSpace {
         // A sibling can win the same first-touch while this task allocates and
         // zeroes its frame.  Preserve that page; a zero-fill must never replace
         // a live anonymous write.
+        // SAFETY: `va_page` is page-aligned by the mask above and `pa` is the fresh
+        // 4 KiB frame this task still holds the only reference to, so it owns `pa`
+        // until the install wins; on a false return it drops that reference below.
         let installed = unsafe {
             self.map_if_absent::<M>(Va(va_page), Pa(pa), pte_flags, PageSize::P4K)
         };

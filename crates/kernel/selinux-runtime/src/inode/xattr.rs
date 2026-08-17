@@ -6,10 +6,17 @@
 // `security.*` operation was permitted outright — leaves the label writable by
 // anyone the discretionary rules let near the file.
 
+extern crate alloc;
+use alloc::vec::Vec;
+
 use crate::label::XATTR_NAME_SELINUX;
 
 /// Permission a read of an object's metadata asks for.
 pub const PERM_GETATTR: &str = "getattr";
+
+/// `XATTR_SELINUX_SUFFIX` — what `XATTR_NAME_SELINUX` is left as once the
+/// `security.` prefix the VFS strips is gone.
+pub const SELINUX_SUFFIX: &str = "selinux";
 
 /// Which kind of attribute operation is being attempted.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -48,4 +55,24 @@ pub fn selinux_xattr_gate(name: &str, op: XattrOp) -> XattrGate {
         XattrOp::Set => XattrGate::Relabel,
         XattrOp::Remove => XattrGate::Refuse,
     }
+}
+
+/// `selinux_inode_getsecurity`'s name test. This module answers for exactly one
+/// suffix; every other `security.*` name is `EOPNOTSUPP`, which is the signal
+/// that sends the read on to the filesystem's own attribute store.
+/// # C: O(1)
+pub fn answers_getsecurity(suffix: &str) -> bool { suffix == SELINUX_SUFFIX }
+
+/// The attribute VALUE a label read reports.
+///
+/// The length is `strlen + 1`: the terminating NUL is part of the attribute, so
+/// a reader that treats the result as a C string — which every consumer of this
+/// attribute does — finds its terminator inside the bytes it was given. Handing
+/// back one byte fewer leaves that reader running off the end of its buffer.
+/// # C: O(len)
+pub fn getsecurity_value(context: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(context.len() + 1);
+    out.extend_from_slice(context.as_bytes());
+    out.push(0);
+    out
 }

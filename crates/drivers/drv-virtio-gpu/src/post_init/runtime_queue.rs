@@ -356,12 +356,20 @@ fn run_queue(raw_key: usize, kind: QueueKind) {
             return;
         };
         let ok = match kind {
+            // SAFETY: `take_queue` above handed this worker exclusive ownership of
+            // `owner`, so `buf_va`/`buf_dma` name the one 4 KiB command frame paired
+            // with `owner.queue` and nothing else can submit on it concurrently; the
+            // worker runs in process context holding no driver lock, which is what
+            // lets `submit_one_wait` sleep on the completion.
             QueueKind::Ctrl => unsafe {
                 super::probe::submit_one_wait(owner.buf_va, owner.buf_dma,
                     |buf| cmd.encode_ctrl(buf), &mut owner.queue, &super::probe::CompletionWaits {
                         wake: &queue.wait, cancelled: &events.cancelled,
                     })
             },
+            // SAFETY: same exclusive `owner` ownership as the Ctrl arm; the cursor
+            // path writes a disjoint offset in that frame and has no response
+            // descriptor, so the frame is device-readable only.
             QueueKind::Cursor => unsafe {
                 super::probe::submit_cursor_one_wait(owner.buf_va, owner.buf_dma,
                     |buf| cmd.encode_cursor(buf), &mut owner.queue, &queue.wait, &events.cancelled)

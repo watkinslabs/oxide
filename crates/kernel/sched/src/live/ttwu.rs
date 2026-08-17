@@ -118,6 +118,9 @@ pub fn sched_ttwu_pending(cpu: u32, current: *mut Task, rq: &Runqueue) -> bool {
                 // SAFETY: `current` is this CPU's running task, kept alive by
                 // the runqueue's strong reference for this locked decision.
                 let raw = rq.current.load(Ordering::Acquire);
+                // SAFETY: `raw` is the runqueue's current-task pointer read under the held rq
+                // lock, and the runqueue holds a strong reference to whatever it names, so the
+                // borrow cannot outlive the task or race a swap of `rq.current`.
                 let curr = if raw.is_null() { None } else { Some(cand_of(unsafe { &*raw })) };
                 #[cfg(feature = "debug-watchdog")]
                 task.wake_diag_mark(WakeDiagPhase::Activating, wake_diag_now_ns());

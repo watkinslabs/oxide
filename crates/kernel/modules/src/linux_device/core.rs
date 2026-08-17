@@ -76,6 +76,7 @@ extern "C" fn device_initialize(dev: *mut LinuxDevice) {
         (*dev).kobj.state = 1;
         (*dev).driver = null_mut();
     }
+    // SAFETY: dev was null-checked above and its kobj field was just initialized by this same function; taking its address only produces an integer key, no live reference escapes.
     registry::initialize_kobject(unsafe { &mut (*dev).kobj as *mut _ as usize });
     registry::initialize_device(dev as usize);
 }

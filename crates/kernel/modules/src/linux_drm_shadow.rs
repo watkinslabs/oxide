@@ -36,6 +36,8 @@ pub(super) extern "C" fn drm_gem_begin_shadow_fb_access(_plane: *mut c_void, sta
         if object.is_null() { drm_gem_end_shadow_fb_access(core::ptr::null_mut(), state); return -LINUX_EINVAL; }
         // SAFETY: shmem dumb GEM creation publishes the backing vaddr at this verified shmem-object offset.
         let vaddr = unsafe { read(object.add(DRM_GEM_SHMEM_VADDR_OFF).cast::<*mut u8>()) };
+        // SAFETY: offset is the framebuffer's per-plane byte offset into this shmem
+        // object, set at framebuffer creation to stay within the object's own allocation.
         let Some(data) = (!vaddr.is_null()).then(|| unsafe { vaddr.add(offset as usize) }) else { drm_gem_end_shadow_fb_access(core::ptr::null_mut(), state); return -LINUX_EINVAL; };
         // SAFETY: map/data slots are exact iosys_map records; a shmem mapping is normal memory, so is_iomem remains false.
         unsafe { write(state.cast::<u8>().add(DRM_SHADOW_MAPS_OFF + plane * DRM_IOSYS_MAP_SIZE).cast::<*mut u8>(), vaddr); write(state.cast::<u8>().add(DRM_SHADOW_DATA_OFF + plane * DRM_IOSYS_MAP_SIZE).cast::<*mut u8>(), data); }

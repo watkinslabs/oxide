@@ -26,6 +26,8 @@ pub(super) extern "C" fn drm_edid_connector_update(connector: *mut c_void, edid:
     if !edid.is_null() && replacement.is_null() { return -LINUX_EINVAL; }
     // SAFETY: the connector is a complete external ABI object; its EDID property slot is BTF-verified.
     let slot = unsafe { connector.cast::<u8>().add(DRM_CONNECTOR_EDID_BLOB_OFF).cast::<*mut u8>() };
+    // SAFETY: slot was just computed from the same connector object above and
+    // points at its BTF-verified EDID blob pointer field.
     let old = unsafe { read(slot) };
     if !old.is_null() && !replacement.is_null() && !blob_equal(old, replacement) {
         // SAFETY: epoch_counter is a BTF-verified u64 field, changed only with this property replacement.
@@ -43,10 +45,14 @@ pub(super) extern "C" fn drm_edid_connector_add_modes(connector: *mut c_void) ->
     // SAFETY: connector EDID slot is the BTF-verified property-blob pointer initialized by update above.
     let blob = unsafe { read(connector.cast::<u8>().add(DRM_CONNECTOR_EDID_BLOB_OFF).cast::<*mut u8>()) };
     if blob.is_null() { return 0; }
+    // SAFETY: blob is the connector's own property blob, allocated by blob_from_edid
+    // with a DRM_PROPERTY_BLOB_HEADER-sized layout, so its length/data fields are populated.
     let (length, raw) = unsafe { (read(blob.add(DRM_PROPERTY_BLOB_LENGTH_OFF).cast::<usize>()), blob.add(DRM_PROPERTY_BLOB_DATA_OFF)) };
     if length < EDID_BLOCK { return 0; }
     let mut count = 0;
     for index in 0..DETAILED_COUNT {
+        // SAFETY: length was just checked >= EDID_BLOCK (128); the highest detailed
+        // descriptor read (index 3) ends at DETAILED_START + 4*DETAILED_SIZE = 126, in bounds.
         let timing = unsafe { core::slice::from_raw_parts(raw.add(DETAILED_START + index * DETAILED_SIZE), DETAILED_SIZE) };
         if add_detailed_mode(connector, timing, index == 0) { count += 1; }
     }
@@ -58,7 +64,10 @@ pub(super) fn release_connector(connector: *mut c_void) {
     if connector.is_null() { return; }
     // SAFETY: connector cleanup owns this final property slot and clears it before the object is reused.
     let slot = unsafe { connector.cast::<u8>().add(DRM_CONNECTOR_EDID_BLOB_OFF).cast::<*mut u8>() };
+    // SAFETY: slot is this connector's own EDID blob field, computed just above.
     let blob = unsafe { read(slot) };
+    // SAFETY: same slot; clearing it before freeing blob prevents a second
+    // release from observing the about-to-be-freed pointer.
     unsafe { write(slot, core::ptr::null_mut()); }
     blob_free(blob);
 }
@@ -66,10 +75,13 @@ pub(super) fn release_connector(connector: *mut c_void) {
 fn blob_from_edid(edid: *const c_void) -> *mut u8 {
     let raw = edid_owner::drm_edid_raw(edid);
     if raw.is_null() { return core::ptr::null_mut(); }
+    // SAFETY: drm_edid_raw returns non-null only when the owner holds at least
+    // a full EDID_LENGTH=128-byte base block, so byte 126 (extension count) is in bounds.
     let blocks = unsafe { *raw.add(126) as usize + 1 };
     let Some(length) = blocks.checked_mul(EDID_BLOCK) else { return core::ptr::null_mut(); };
     let Some(total) = DRM_PROPERTY_BLOB_HEADER.checked_add(length) else { return core::ptr::null_mut(); };
     let Some(layout) = Layout::from_size_align(total, core::mem::align_of::<u64>()).ok() else { return core::ptr::null_mut(); };
+    // SAFETY: layout was just computed above with a non-zero total size and valid alignment.
     let blob = unsafe { alloc_zeroed(layout) };
     if blob.is_null() { return core::ptr::null_mut(); }
     // SAFETY: raw is validated by drm_edid_raw for all extension blocks, and blob reserves its exact payload extent.
@@ -80,6 +92,8 @@ fn blob_from_edid(edid: *const c_void) -> *mut u8 {
 fn blob_equal(left: *const u8, right: *const u8) -> bool {
     // SAFETY: both pointers are property blobs created by blob_from_edid and retain their immutable extents.
     let (left_len, right_len) = unsafe { (read(left.add(DRM_PROPERTY_BLOB_LENGTH_OFF).cast::<usize>()), read(right.add(DRM_PROPERTY_BLOB_LENGTH_OFF).cast::<usize>())) };
+    // SAFETY: left_len/right_len are each blob's own stored length, matching the
+    // payload extent blob_from_edid allocated for that blob at DRM_PROPERTY_BLOB_DATA_OFF.
     left_len == right_len && unsafe { core::slice::from_raw_parts(left.add(DRM_PROPERTY_BLOB_DATA_OFF), left_len) == core::slice::from_raw_parts(right.add(DRM_PROPERTY_BLOB_DATA_OFF), right_len) }
 }
 
@@ -87,6 +101,8 @@ fn blob_free(blob: *mut u8) {
     if blob.is_null() { return; }
     // SAFETY: blob was allocated by blob_from_edid with the stored payload length and no other owner remains.
     let length = unsafe { read(blob.add(DRM_PROPERTY_BLOB_LENGTH_OFF).cast::<usize>()) };
+    // SAFETY: total/layout are recomputed here from blob's own stored length,
+    // reproducing the exact layout blob_from_edid allocated it with.
     if let Some(total) = DRM_PROPERTY_BLOB_HEADER.checked_add(length) { if let Ok(layout) = Layout::from_size_align(total, core::mem::align_of::<u64>()) { unsafe { dealloc(blob, layout); } } }
 }
 
@@ -125,8 +141,13 @@ mod tests {
         let mut connector = [0u64; 300]; let mut first = [0u8; EDID_BLOCK]; let mut second = [0u8; EDID_BLOCK];
         first[..8].copy_from_slice(&[0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0]); second[..8].copy_from_slice(&[0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0]); first[18] = 1; second[18] = 1; second[20] = 1;
         let one = edid_owner::drm_edid_alloc(first.as_ptr().cast(), first.len()); let two = edid_owner::drm_edid_alloc(second.as_ptr().cast(), second.len()); assert!(!one.is_null() && !two.is_null());
+        // SAFETY: connector is a local stack array sized past both fixed offsets read
+        // below; blob is the property allocation drm_edid_connector_update just published.
         assert_eq!(drm_edid_connector_update(connector.as_mut_ptr().cast(), one), 0); let blob = unsafe { read(connector.as_ptr().cast::<u8>().add(DRM_CONNECTOR_EDID_BLOB_OFF).cast::<*mut u8>()) }; assert!(!blob.is_null()); assert_eq!(unsafe { read(blob.add(DRM_PROPERTY_BLOB_LENGTH_OFF).cast::<usize>()) }, EDID_BLOCK);
+        // SAFETY: same local connector array; epoch_counter was just bumped by the
+        // second update call since the two blobs' contents differ.
         assert_eq!(drm_edid_connector_update(connector.as_mut_ptr().cast(), two), 0); assert_eq!(unsafe { read(connector.as_ptr().cast::<u8>().add(DRM_CONNECTOR_EPOCH_OFF).cast::<u64>()) }, 1);
+        // SAFETY: same local connector array; the null-edid update clears the blob slot.
         assert_eq!(drm_edid_connector_update(connector.as_mut_ptr().cast(), core::ptr::null()), 0); assert!(unsafe { read(connector.as_ptr().cast::<u8>().add(DRM_CONNECTOR_EDID_BLOB_OFF).cast::<*mut u8>()) }.is_null()); edid_owner::drm_edid_free(one); edid_owner::drm_edid_free(two);
     }
 

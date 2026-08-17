@@ -140,6 +140,10 @@ pub struct Inode {
     pub(super) owner_persist:  Option<Arc<dyn OwnerPersist>>,
     pub(super) i_link:         Option<Box<[u8]>>,
     pub(super) i_xattrs:       Option<crate::xattr::SimpleXattrs>,
+    /// `inode->i_acl` / `inode->i_default_acl`: the POSIX ACLs that DECIDE
+    /// access to this object, cached here because the store they come from is
+    /// the medium and a permission check runs per path component.
+    pub(super) i_acl:          super::acl::AclCache,
     pub(crate) i_dquot:        InodeDquots,
     pub(super) i_rwsem:        super::rwsem::InodeRwsem,
     /// `inode->i_flctx`: single owner for BSD flock and POSIX/OFD records.
@@ -202,6 +206,7 @@ impl Inode {
             owner_persist: self.owner_persist.clone(),
             i_link: self.i_link.clone(),
             i_xattrs: xattrs,
+            i_acl: super::acl::AclCache::new(),
             i_dquot: InodeDquots::new(),
             i_rwsem: super::rwsem::InodeRwsem::new(),
             i_flctx: FileLockContext::new(),

@@ -28,6 +28,7 @@ pub(super) extern "C" fn drm_atomic_helper_check(dev: *mut c_void, state: *mut c
     let ret = atomic_check::drm_atomic_helper_check_planes(dev, state); if ret != 0 { return ret; }
     // SAFETY: these bitfields are transaction-private hints owned by atomic check.
     let flags = unsafe { state_bytes.add(DRM_ATOMIC_FLAGS_OFF) };
+    // SAFETY: flags points inside the same non-null atomic-state allocation validated at entry; the byte is a single-writer transaction field.
     if unsafe { *flags & DRM_ATOMIC_LEGACY_CURSOR_UPDATE_BIT } != 0 {
         let accepted = atomic_async::drm_atomic_helper_async_check(dev, state) == 0;
         // SAFETY: the hint is set only after every synchronous validation stage passed.

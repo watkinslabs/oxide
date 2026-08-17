@@ -60,6 +60,7 @@ fn validate(lim: &mut LinuxQueueLimits) -> bool {
 
 unsafe extern "C" fn blk_set_stacking_limits(lim: *mut LinuxQueueLimits) {
     if lim.is_null() { return; }
+    // SAFETY: LinuxQueueLimits is a C-layout struct of scalar/raw-pointer fields, all safely zero-representable; every field this function relies on is set explicitly below before out is used.
     let mut out = unsafe { core::mem::zeroed::<LinuxQueueLimits>() };
     out.logical_block_size = LINUX_SECTOR_SIZE;
     out.physical_block_size = LINUX_SECTOR_SIZE;

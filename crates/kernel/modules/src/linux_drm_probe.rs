@@ -13,6 +13,8 @@ pub(super) extern "C" fn drm_helper_probe_single_connector_modes(connector: *mut
     // SAFETY: connector status is a verified enum field in a live connector object.
     unsafe { write(connector.cast::<u8>().add(connector::DRM_CONNECTOR_STATUS_OFF).cast::<i32>(), status); }
     if status == connector::DRM_CONNECTOR_STATUS_DISCONNECTED { mode::prune_invalid_live_modes(connector, max_width, max_height); return 0; }
+    // SAFETY: connector was null-checked on entry and is the same live pointer
+    // just written to by the status field above, unchanged since.
     let mut count = unsafe { mode::connector_get_modes(connector) };
     if count == 0 && [connector::DRM_CONNECTOR_STATUS_CONNECTED, connector::DRM_CONNECTOR_STATUS_UNKNOWN].contains(&status) { count = mode::drm_add_modes_noedid(connector, NO_EDID_MAX_WIDTH, NO_EDID_MAX_HEIGHT); }
     if count != 0 { mode::drm_connector_list_update(connector); }

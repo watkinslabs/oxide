@@ -454,7 +454,9 @@ fn ra_withdrawal_and_teardown_emit_ipv6_addr_route_events_in_order() {
     assert_eq!(addr[Nlmsghdr::SIZE + 2] & net::iface_addr::IFA_F_PERMANENT as u8, 0,
         "SLAAC must not be permanent");
     let addr_attrs = &addr[Nlmsghdr::SIZE + Ifaddrmsg::SIZE..];
-    assert_eq!(find_attr(addr_attrs, ifa::IFA_LABEL).unwrap(), b"eth-stable\0");
+    // IFA_LABEL names an IPv4 alias; the IPv6 fill emits IFA_ADDRESS instead.
+    assert!(find_attr(addr_attrs, ifa::IFA_LABEL).is_none());
+    assert!(find_attr(addr_attrs, ifa::IFA_ADDRESS).is_some());
     let (prefix_route, _) = listener.dequeue().expect("RA prefix route event");
     let (default_route, _) = listener.dequeue().expect("RA default route event");
     for route in [&prefix_route, &default_route] {
