@@ -43,6 +43,8 @@
 //!              mount's metadata mapping.
 //! - `writeback`: choosing where a file's dirty data pages go, and putting
 //!                them there.
+//! - `placement`: what the in-place-update and segment-recycling decisions ask
+//!                the volume, and the one write that keeps a block's address.
 
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
@@ -70,6 +72,7 @@ pub mod dir;
 pub mod xattrs;
 pub mod space;
 pub mod write;
+pub mod logopen;
 pub mod nids;
 pub mod dnode;
 pub mod trim;
@@ -93,6 +96,7 @@ pub mod iostat;
 pub mod blockio;
 pub mod writeback;
 pub mod nodeback;
+pub mod placement;
 
 pub use curseg::{Curseg, Kind, Summary};
 pub use dir::DirEntry;
@@ -269,6 +273,35 @@ pub struct Volume<S: SectorSource> {
     /// rearms a site without remounting, and the counters are what the report
     /// reads.
     pub(crate) fault: crate::fault::Info,
+    /// The thresholds this mount's write-placement decisions compare against:
+    /// which in-place-update policies are armed, and how much pressure the
+    /// allocator takes before it recycles a segment (`placement`).
+    pub(crate) place: crate::place::Tunables,
+    /// The background state this mount's threads share, once there is one.
+    ///
+    /// Held so the allocator can read the cleaner's MODE: a cleaner told to run
+    /// urgently needs every section it can be handed, which is one of the
+    /// states that makes the allocator recycle instead of opening a fresh
+    /// segment. Read rather than mirrored — a copy here could disagree with the
+    /// knob that sets it. `None` on a volume driven without those threads,
+    /// where nothing is urgent because nothing is cleaning.
+    pub(crate) bg: Option<alloc::sync::Arc<crate::bg::Bg>>,
+    /// The file whose `fsync` is running, when that `fsync` asked for its
+    /// pages to be rewritten where they lie.
+    ///
+    /// Live for the length of one flush and never on the medium: it is a
+    /// statement about the call in progress, not about the file. One inode
+    /// rather than a set, because the flush it spans is one file's.
+    pub(crate) need_ipu: Option<u32>,
+    /// Whether the writeback running right now is one a caller is WAITING on.
+    ///
+    /// The filesystem's own flush points — an `fsync`, a checkpoint, a truncate
+    /// — are waited on; the machine's flusher and page reclaim arrive on their
+    /// own account and nothing is waiting. One of the in-place policies asks
+    /// exactly that question, and the answer is which entry point the batch
+    /// came through, so it is recorded where the batch enters rather than
+    /// guessed where the decision is made.
+    pub(crate) sync_writeback: bool,
 }
 
 impl<S: SectorSource> Volume<S> {

@@ -106,7 +106,7 @@ impl F2fs {
         let table = crate::devices::DevTable::scan(&sb);
         let reports = devs::zone_reports(&members);
         let src = devs::medium(&members, table, write)?;
-        let volume =
+        let mut volume =
             Volume::mount_devices(src, opts, write, &reports).map_err(errno_to_vfs)?;
         if volume.access() == Access::ReadOnly {
             klog::warn::warn_on(true, "f2fs: volume is marked read-only; mounting read-only");
@@ -115,6 +115,11 @@ impl F2fs {
         let bg = Arc::new(crate::bg::Bg::new(volume.options().background_gc,
                                              volume.options().discard_unit,
                                              volume.super_block().segs_per_sec));
+        // Before the volume is handed to anything that can allocate: the
+        // allocator reads the cleaner's mode to decide whether to recycle a
+        // segment, and a volume that could not see it would answer "nothing is
+        // urgent" for the life of the mount.
+        volume.attach_bg(Arc::clone(&bg));
         let fs = Arc::new_cyclic(|me| Self {
             devs: members,
             volume: sync::Spinlock::new(volume),
