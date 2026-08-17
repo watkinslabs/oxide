@@ -25,8 +25,12 @@
     mod notification_races;
     #[path = "rtnetlink_tests/address_semantics.rs"]
     mod address_semantics;
+    #[path = "rtnetlink_tests/address6_common.rs"]
+    mod address6_common;
     #[path = "rtnetlink_tests/address6_semantics.rs"]
     mod address6_semantics;
+    #[path = "rtnetlink_tests/address6_ordering.rs"]
+    mod address6_ordering;
     #[path = "rtnetlink_tests/strict_dumps.rs"]
     mod strict_dumps;
     #[path = "rtnetlink_tests/addr_fields.rs"]
