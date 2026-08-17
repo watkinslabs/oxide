@@ -1,5 +1,4 @@
 use super::*;
-use crate::io_uring_abi::ops::IOSQE_BUFFER_SELECT;
 
 fn rv() -> Sqe {
     Sqe { opcode: IORING_OP_READV_FIXED, addr: 0x5000, len: 3, buf_index: 2,
@@ -24,25 +23,38 @@ fn the_write_form_is_told_apart_by_its_opcode_alone() {
 }
 
 #[test]
-fn an_empty_or_oversized_vector_is_refused() {
+fn an_oversized_vector_is_refused() {
     let mut s = rv();
-    s.len = 0;
-    assert_eq!(prep_vec_fixed(&s), Err(Errno::Einval));
     s.len = UIO_MAXIOV + 1;
     assert_eq!(prep_vec_fixed(&s), Err(Errno::Einval));
     s.len = UIO_MAXIOV;
     assert!(prep_vec_fixed(&s).is_ok());
 }
 
-/// `buf_index` and `buf_group` are the SAME field. An entry that also asks for
-/// a provided buffer would have it read as a group by the selection path and
-/// as a registration by this one — two different buffers for one transfer,
-/// with whichever ran second winning silently.
+/// A zero-segment vectored transfer is LEGAL and moves no bytes — the
+/// long-standing answer for every vectored read and write, not an error.
+/// Refusing it would report `EINVAL` for a request that must succeed with `0`.
 #[test]
-fn a_provided_buffer_group_and_a_registration_cannot_both_be_named() {
+fn an_empty_vector_is_accepted_and_moves_nothing() {
     let mut s = rv();
-    s.flags = IOSQE_BUFFER_SELECT;
-    assert_eq!(prep_vec_fixed(&s), Err(Errno::Einval));
+    s.len = 0;
+    assert_eq!(prep_vec_fixed(&s).expect("an empty vector is legal").nr, 0);
+}
+
+/// `buf_index` and `buf_group` are the SAME field, so an entry naming both a
+/// group and a registration is a contradiction — but it is refused for EVERY
+/// opcode whose table entry does not offer selection, by the submission
+/// admission that reads `op_buffer_select`, and it is `EOPNOTSUPP` there. This
+/// decoder must NOT answer the same question a second time with a different
+/// errno; the table entry is what carries the contract.
+#[test]
+fn the_provided_buffer_question_is_left_to_the_table_that_owns_it() {
+    assert!(!crate::io_uring_abi::ops::op_buffer_select(IORING_OP_READV_FIXED));
+    assert!(!crate::io_uring_abi::ops::op_buffer_select(IORING_OP_WRITEV_FIXED));
+    // The decoder itself is silent on the flag rather than duplicating the rung.
+    let mut s = rv();
+    s.flags = crate::io_uring_abi::ops::IOSQE_BUFFER_SELECT;
+    assert!(prep_vec_fixed(&s).is_ok());
 }
 
 #[test]

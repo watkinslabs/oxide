@@ -15,7 +15,7 @@ use syscall::errno::Errno;
 
 use crate::io_uring_sqe::Sqe;
 
-use super::ops::{IORING_OP_READV_FIXED, IORING_OP_WRITEV_FIXED, IOSQE_BUFFER_SELECT};
+use super::ops::{IORING_OP_READV_FIXED, IORING_OP_WRITEV_FIXED};
 
 /// `UIO_MAXIOV` — most segments one vector may hold.
 pub const UIO_MAXIOV: u32 = 1024;
@@ -48,17 +48,22 @@ pub const CUR_POS: u64 = u64::MAX;
 ///
 /// | rung | errno |
 /// |---|---|
-/// | an empty vector, or one longer than `UIO_MAXIOV` | `EINVAL` |
-/// | the entry also draws from a provided-buffer group | `EINVAL` |
+/// | a vector longer than `UIO_MAXIOV` | `EINVAL` |
 ///
-/// The group rung is the one that would otherwise go unnoticed: `buf_index`
-/// and `buf_group` are the same field, so an entry carrying
-/// `IOSQE_BUFFER_SELECT` would have that field read as a group by the
-/// selection path and as a registration by this one — two different buffers
-/// for one transfer, and whichever ran second would win silently. # C: O(1)
+/// An EMPTY vector is NOT refused: a zero-segment vectored transfer is legal
+/// and moves no bytes, which is the long-standing answer for every vectored
+/// read and write. Refusing it here would report `EINVAL` for a request the
+/// contract says succeeds with `0`.
+///
+/// The provided-buffer question is not asked here either. `buf_index` and
+/// `buf_group` are the same field, so an entry carrying `IOSQE_BUFFER_SELECT`
+/// would name a group and a registration at once — but that is refused for
+/// EVERY opcode whose table entry does not offer selection, by the submission
+/// admission that reads `op_buffer_select`, and it is `EOPNOTSUPP` there. A
+/// second copy of the rung here would be a split source of truth answering the
+/// same question with a different errno. # C: O(1)
 pub fn prep_vec_fixed(sqe: &Sqe) -> Result<VecFixedOp, Errno> {
-    if sqe.len == 0 || sqe.len > UIO_MAXIOV { return Err(Errno::Einval); }
-    if sqe.flags & IOSQE_BUFFER_SELECT != 0 { return Err(Errno::Einval); }
+    if sqe.len > UIO_MAXIOV { return Err(Errno::Einval); }
     Ok(VecFixedOp {
         uvec: sqe.addr,
         nr: sqe.len,
