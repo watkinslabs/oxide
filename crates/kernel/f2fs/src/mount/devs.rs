@@ -19,7 +19,7 @@ use vfs::{KResult, VfsError};
 use crate::devices::{DeviceSet, DevTable};
 use crate::sb::SuperBlock;
 use crate::uapi::BLKSIZE;
-use crate::zoned::{DevZones, Zone, ZoneType};
+use crate::zoned::{DevZones, Zone, ZoneCond, ZoneType};
 
 /// The medium a mounted volume reads through: its members, behind the map
 /// that says which of them holds a given block.
@@ -66,7 +66,7 @@ pub fn zone_reports(members: &[Arc<dyn block::BlockDevice>]) -> Vec<Option<DevZo
 /// of volume blocks is refused rather than rounded: a rounded boundary is a
 /// zone map that disagrees with the drive.
 /// # C: O(zones)
-fn convert(r: block::ZoneReport, dev_block: u32) -> Option<DevZones> {
+pub(crate) fn convert(r: block::ZoneReport, dev_block: u32) -> Option<DevZones> {
     let bs = u64::from(dev_block.max(1));
     let per = BLKSIZE as u64;
     let to_blks = |n: u64| -> Option<u32> {
@@ -78,6 +78,19 @@ fn convert(r: block::ZoneReport, dev_block: u32) -> Option<DevZones> {
     for z in &r.zones {
         let start_bytes = z.start_block.checked_mul(bs)?;
         if start_bytes % per != 0 { return None; }
+        // The write pointer is the one figure that need NOT land on a volume
+        // block: the drive moves it by its own block, so a drive with the
+        // smaller block can park it inside one of ours. Rounding it down and
+        // saying so is the only honest answer — rounding up would place it
+        // past bytes the drive has already taken, and rounding silently would
+        // make a log that is half a block behind the drive look aligned.
+        let (wp_blk, wp_partial) = match z.wp_block {
+            Some(wp) => {
+                let bytes = wp.checked_mul(bs)?;
+                (Some(bytes / per), bytes % per != 0)
+            }
+            None => (None, false),
+        };
         zones.push(Zone {
             start_blk: start_bytes / per,
             len_blks: to_blks(z.len_blocks)?,
@@ -86,6 +99,18 @@ fn convert(r: block::ZoneReport, dev_block: u32) -> Option<DevZones> {
                 block::ZoneType::Conventional => ZoneType::Conventional,
                 block::ZoneType::SeqWriteRequired => ZoneType::SeqWriteRequired,
                 block::ZoneType::SeqWritePreferred => ZoneType::SeqWritePreferred,
+            },
+            wp_blk,
+            wp_partial,
+            cond: match z.cond {
+                block::ZoneCond::NotWp => ZoneCond::NotWp,
+                block::ZoneCond::Empty => ZoneCond::Empty,
+                block::ZoneCond::ImplicitOpen => ZoneCond::ImplicitOpen,
+                block::ZoneCond::ExplicitOpen => ZoneCond::ExplicitOpen,
+                block::ZoneCond::Closed => ZoneCond::Closed,
+                block::ZoneCond::Full => ZoneCond::Full,
+                block::ZoneCond::ReadOnly => ZoneCond::ReadOnly,
+                block::ZoneCond::Offline => ZoneCond::Offline,
             },
         });
     }

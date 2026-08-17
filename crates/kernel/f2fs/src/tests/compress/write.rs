@@ -11,7 +11,7 @@ use alloc::vec::Vec;
 
 use sectors::MemImage;
 
-use crate::compress::algo::{COMPRESS_LZ4, COMPRESS_LZO, COMPRESS_LZORLE};
+use crate::compress::algo::{COMPRESS_LZ4, COMPRESS_LZO, COMPRESS_LZORLE, COMPRESS_ZSTD};
 use crate::compress::plan;
 use crate::mode::S_IFREG;
 use crate::opts::Options;
@@ -24,7 +24,7 @@ use crate::volume::{NewInode, Volume};
 const NOW: (u64, u32) = (1_800_000_000, 7);
 const CHKSUM_FLAG: u16 = 1;
 /// Every codec this build writes.
-const CODECS: [u8; 3] = [COMPRESS_LZO, COMPRESS_LZ4, COMPRESS_LZORLE];
+const CODECS: [u8; 4] = [COMPRESS_LZO, COMPRESS_LZ4, COMPRESS_LZORLE, COMPRESS_ZSTD];
 
 /// # C: O(1)
 fn spec() -> NewInode {

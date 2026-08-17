@@ -25,58 +25,76 @@ fn with_file() -> (Volume<MemImage>, u32) {
     (v, ino)
 }
 
-/// Mark `ino` as attested by a hash tree.
-fn make_verity(v: &mut Volume<MemImage>, ino: u32) {
+/// Every tree-block size the format admits, narrowest first.
+///
+/// The boundary behaviour below is stated in terms of the FILE's size, and at
+/// every size but the widest one file block carries several attested blocks —
+/// so the tree has a different shape, the descriptor a different position,
+/// and the clamp a different amount of material behind it to hide.
+const LOG_BS: core::ops::RangeInclusive<u8> = 10..=12;
+
+/// Mark `ino` as attested by a hash tree over `log_bs`-sized blocks.
+fn make_verity(v: &mut Volume<MemImage>, ino: u32, log_bs: u8) {
     // The real sealing path, not just the flag: a file carrying the flag with
     // no descriptor behind it is a corrupt inode, and a fixture that produced
     // one would be testing a state the filesystem never writes.
-    v.enable_verity(ino, crate::verity::uapi::HASH_ALG_SHA256, 12, b"").unwrap();
+    v.enable_verity(ino, crate::verity::uapi::HASH_ALG_SHA256, log_bs, b"").unwrap();
 }
 
 #[test]
 fn a_verity_file_refuses_a_write() {
     // Its contents are what its hash tree attests to; changing them would
     // leave the attestation describing bytes that are no longer there.
-    let (mut v, ino) = with_file();
-    v.write_file(ino, 0, b"sealed").unwrap();
-    make_verity(&mut v, ino);
-    assert!(v.read_inode(ino).unwrap().verity());
-    assert_eq!(v.write_file(ino, 0, b"x").err(), Some(Errno::Eperm));
+    for log_bs in LOG_BS {
+        let (mut v, ino) = with_file();
+        v.write_file(ino, 0, b"sealed").unwrap();
+        make_verity(&mut v, ino, log_bs);
+        assert!(v.read_inode(ino).unwrap().verity(), "log_bs {log_bs}");
+        assert_eq!(v.write_file(ino, 0, b"x").err(), Some(Errno::Eperm), "log_bs {log_bs}");
+    }
 }
 
 #[test]
 fn a_verity_file_refuses_a_truncation() {
-    let (mut v, ino) = with_file();
-    v.write_file(ino, 0, b"sealed").unwrap();
-    make_verity(&mut v, ino);
-    assert_eq!(v.truncate_file(ino, 0).err(), Some(Errno::Eperm));
+    for log_bs in LOG_BS {
+        let (mut v, ino) = with_file();
+        v.write_file(ino, 0, b"sealed").unwrap();
+        make_verity(&mut v, ino, log_bs);
+        assert_eq!(v.truncate_file(ino, 0).err(), Some(Errno::Eperm), "log_bs {log_bs}");
+    }
 }
 
 #[test]
 fn a_verity_files_data_still_reads() {
-    let (mut v, ino) = with_file();
-    v.write_file(ino, 0, b"attested").unwrap();
-    make_verity(&mut v, ino);
-    let inode = v.read_inode(ino).unwrap();
-    let mut buf = [0u8; 8];
-    assert_eq!(v.read_file(&inode, ino, 0, &mut buf).unwrap(), 8);
-    assert_eq!(&buf, b"attested");
+    for log_bs in LOG_BS {
+        let (mut v, ino) = with_file();
+        v.write_file(ino, 0, b"attested").unwrap();
+        make_verity(&mut v, ino, log_bs);
+        let inode = v.read_inode(ino).unwrap();
+        let mut buf = [0u8; 8];
+        assert_eq!(v.read_file(&inode, ino, 0, &mut buf).unwrap(), 8, "log_bs {log_bs}");
+        assert_eq!(&buf, b"attested", "log_bs {log_bs}");
+    }
 }
 
 #[test]
 fn a_read_reaching_past_a_verity_files_data_is_refused() {
     // Past the stored size is where the hash tree and the descriptor live.
-    // Serving them as file content is the concrete bug the clamp prevents.
-    let (mut v, ino) = with_file();
-    v.write_file(ino, 0, &vec![7u8; 2 * BLKSIZE]).unwrap();
-    make_verity(&mut v, ino);
-    let inode = v.read_inode(ino).unwrap();
-    let mut buf = vec![0u8; 64];
-    let past = inode.size - 8;
-    assert_eq!(v.read_file(&inode, ino, past, &mut buf).err(), Some(Errno::Eio));
-    // A read that stays inside the data is unaffected.
-    let mut small = [0u8; 8];
-    assert_eq!(v.read_file(&inode, ino, past, &mut small).unwrap(), 8);
+    // Serving them as file content is the concrete bug the clamp prevents,
+    // and the material behind the clamp differs at every tree-block size.
+    for log_bs in LOG_BS {
+        let (mut v, ino) = with_file();
+        v.write_file(ino, 0, &vec![7u8; 2 * BLKSIZE]).unwrap();
+        make_verity(&mut v, ino, log_bs);
+        let inode = v.read_inode(ino).unwrap();
+        let mut buf = vec![0u8; 64];
+        let past = inode.size - 8;
+        assert_eq!(v.read_file(&inode, ino, past, &mut buf).err(), Some(Errno::Eio),
+                   "log_bs {log_bs}");
+        // A read that stays inside the data is unaffected.
+        let mut small = [0u8; 8];
+        assert_eq!(v.read_file(&inode, ino, past, &mut small).unwrap(), 8, "log_bs {log_bs}");
+    }
 }
 
 #[test]

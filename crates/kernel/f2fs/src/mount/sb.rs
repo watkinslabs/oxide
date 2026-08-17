@@ -130,9 +130,20 @@ impl SuperOps for F2fsSuperOps {
     }
 
     /// Freezing must leave the medium consistent, which for this filesystem
-    /// means a checkpoint: a frozen volume that still needs one is a volume
-    /// whose snapshot is missing the work it was told to flush.
-    fn freeze_fs(&self) -> KResult<()> { self.fs.checkpoint() }
+    /// means a checkpoint — one the freeze has ALREADY taken through
+    /// `sync_fs`. So this does not write a second: it satisfies itself the
+    /// first one landed and raises the mark that says a freeze is part way
+    /// through. A checkpoint written here would be a write taken after the
+    /// volume was declared quiescent.
+    fn freeze_fs(&self) -> KResult<()> { self.fs.freeze() }
+
+    /// Thawing hands back whatever the freeze parked, then lowers the mark.
+    ///
+    /// The discards are the part with a reason beyond symmetry: a snapshot
+    /// over this volume can leave the device advertising no discard capacity
+    /// for as long as it exists, so runs this filesystem is holding on the
+    /// device's behalf have to be issued rather than waited on.
+    fn thaw_fs(&self) -> KResult<()> { self.fs.thaw(); Ok(()) }
 
     /// Reconfigure from the new option line.
     ///

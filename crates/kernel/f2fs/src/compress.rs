@@ -25,6 +25,7 @@
 //! - `cluster`:    the geometry, the header, and which addresses are data.
 //! - `lz4`:        LZ4 block decoding.
 //! - `lzo`:        LZO1X block decoding, with the zero-run extension.
+//! - `zstd`:       Zstandard clusters, through the shared codec.
 //! - `decompress`: a cluster's stored blocks into its plain bytes.
 //! - `lz4_enc`:    LZ4 block encoding.
 //! - `lzo_enc`:    LZO1X block encoding, both variants.
@@ -39,6 +40,7 @@ pub mod algo;
 pub mod cluster;
 pub mod lz4;
 pub mod lzo;
+pub mod zstd;
 pub mod decompress;
 pub mod lz4_enc;
 pub mod lzo_enc;

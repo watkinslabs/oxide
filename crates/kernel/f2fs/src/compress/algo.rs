@@ -65,14 +65,19 @@ impl Algorithm {
 
     /// Whether this build can turn this codec's bytes back into file bytes.
     ///
-    /// A `false` here is the whole reason `UnsupportedAlgorithm` exists: the
-    /// caller reports that the operation is not supported, which is true,
-    /// instead of a corruption error, which would be a lie about the volume.
+    /// Every codec the format names, which is what a filesystem has to be:
+    /// the stored number carries no self-description, so a volume written
+    /// with a codec the build lacks is indistinguishable from one written
+    /// with a codec it has until the bytes come out wrong. The predicate
+    /// stays because it is what `UnsupportedAlgorithm` is decided by, and
+    /// because the answer is a property of the build rather than of the
+    /// format — a build that dropped a codec would report the operation
+    /// unsupported, which is true, instead of a corruption error, which
+    /// would be a lie about the volume.
     /// # C: O(1)
     pub fn unpacks(self) -> bool {
         match self {
-            Algorithm::Lzo | Algorithm::Lz4 | Algorithm::LzoRle => true,
-            Algorithm::Zstd => false,
+            Algorithm::Lzo | Algorithm::Lz4 | Algorithm::LzoRle | Algorithm::Zstd => true,
         }
     }
 }

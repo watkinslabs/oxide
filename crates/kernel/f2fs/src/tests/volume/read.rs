@@ -274,17 +274,24 @@ fn a_cluster_sentinel_on_a_file_with_no_valid_cluster_width_is_an_error() {
 }
 
 #[test]
-fn a_cluster_naming_a_codec_this_build_cannot_unpack_says_so() {
-    // The data is intact and another reader could have it, so this is
-    // "not supported here", not "your filesystem is broken".
+fn a_zstd_cluster_whose_bytes_are_not_a_frame_reports_a_read_error() {
+    // The codec exists, so a cluster it refuses says the stored bytes are
+    // wrong — not that the operation is unsupported, which would be a claim
+    // about this build rather than about the volume.
     let mut b = test_image::with_root();
     let mut s = nodes::Spec::file(4);
     s.flags = crate::flags::F2FS_COMPR_FL;
     // One cluster's worth, so the read reaches the sentinel at all.
     s.size = 4 * BLKSIZE as u64;
-    let s = nodes::add_sparse_with(&mut b, s, &[]);
+    // The cluster's one image block: a well-formed header naming 64 bytes of
+    // codec output, and 64 bytes that are not a frame. An EMPTY cluster would
+    // read as zeroes and prove nothing.
+    let mut img = filled(0xFF, BLKSIZE);
+    img[..4].copy_from_slice(&64u32.to_le_bytes());
+    img[4..8].copy_from_slice(&0u32.to_le_bytes());
+    let s = nodes::add_sparse_with(&mut b, s, &[(1, img)]);
     let at = s.addr_base();
-    let algo = crate::compress::Algorithm::Zstd as u8;
+    let algo = crate::compress::Algorithm::Zstd.stored();
     nodes::patch_inode(&mut b, 4, |blk| {
         blk[at..at + 4].copy_from_slice(&COMPRESS_ADDR.to_le_bytes());
         blk[I_COMPRESS_ALGORITHM] = algo;
@@ -293,7 +300,7 @@ fn a_cluster_naming_a_codec_this_build_cannot_unpack_says_so() {
     let v = b.mount().unwrap();
     let i = v.read_inode(4).unwrap();
     assert_eq!(i.compress_algorithm, algo);
-    assert_eq!(v.read_whole(&i, 4).err(), Some(Errno::Eopnotsupp));
+    assert_eq!(v.read_whole(&i, 4).err(), Some(Errno::Eio));
 }
 
 #[test]

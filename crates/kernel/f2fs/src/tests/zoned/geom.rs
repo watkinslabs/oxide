@@ -11,7 +11,7 @@ const ZONED: u32 = FEATURE_BLKZONED;
 const PLAIN: u32 = 0;
 
 fn zone(start: u64, len: u32, cap: u32, kind: ZoneType) -> Zone {
-    Zone { start_blk: start, len_blks: len, cap_blks: cap, kind }
+    Zone::fresh(start, len, cap, kind)
 }
 
 /// `n` sequential zones of `len` blocks with `cap` usable.

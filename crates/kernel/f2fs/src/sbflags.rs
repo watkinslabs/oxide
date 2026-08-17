@@ -13,8 +13,10 @@
 //! Module manifest:
 //! - `bits`:  the bit positions, which are the ABI, and which of them derive.
 //! - `state`: the stored bits, what seeds them at mount, and the composed word.
+//! - `freeze`: what a freeze and a thaw of one volume decide.
 
 pub mod bits;
+pub mod freeze;
 pub mod state;
 
 pub use state::{Derived, SbFlags};

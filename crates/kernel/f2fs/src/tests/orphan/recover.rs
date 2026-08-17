@@ -164,6 +164,19 @@ fn open(bytes: Vec<u8>, write: bool) -> Result<Volume<MemImage>, Errno> {
 
 fn mount(bytes: Vec<u8>, write: bool) -> Volume<MemImage> { open(bytes, write).unwrap() }
 
+/// The bytes on a medium that REFUSES writes, which is the only thing that
+/// leaves a parked list parked.
+///
+/// A read-only MOUNT does not: the mount lifts its own read-only for the
+/// length of a repair, so the list is reclaimed and then the mount goes back
+/// to read-only. A test that wants to look at the parked state has to make
+/// the repair impossible, not merely unasked-for.
+/// # C: O(image bytes)
+fn mount_ro_medium(bytes: Vec<u8>) -> Volume<MemImage> {
+    let img = MemImage::from_bytes(BLKSIZE as u32, bytes).read_only();
+    Volume::mount_with(img, Options::defaults(), false).unwrap()
+}
+
 /// Mount and recover, whichever of the two does the reading.
 ///
 /// A mount that recovers on the way in reports a refused pack as a failed
@@ -186,7 +199,7 @@ fn a_pack_that_parked_an_inode_still_holds_it_before_anything_reclaims() {
     // reclaim on a medium that cannot record it cannot be.
     let park = parked(&[b"held"], &Patch::sane());
     let (ino, addr) = (park.inos[0], park.addrs[0]);
-    let v = mount(park.bytes, false);
+    let v = mount_ro_medium(park.bytes);
     assert!(v.checkpoint().has(CP_ORPHAN_PRESENT_FLAG));
     assert_eq!(
         block::blocks_in_pack(v.checkpoint().pack_start_sum, park.payload),
@@ -282,15 +295,36 @@ fn recovery_is_skipped_when_the_flag_is_clear() {
 }
 
 #[test]
-fn a_read_only_mount_reclaims_nothing() {
+fn a_read_only_medium_reclaims_nothing() {
     let park = parked(&[b"held"], &Patch::sane());
     let (ino, addr) = (park.inos[0], park.addrs[0]);
-    let mut v = mount(park.bytes, false);
+    let mut v = mount_ro_medium(park.bytes);
     assert!(!v.writable());
     v.recover_orphans().unwrap();
     assert!(v.read_inode(ino).is_ok(), "a mount that cannot record a reclaim must not do one");
     assert!(v.block_is_live(addr).unwrap());
     assert!(v.checkpoint().has(CP_ORPHAN_PRESENT_FLAG), "the list is still owed");
+}
+
+#[test]
+fn a_read_only_mount_over_a_writable_medium_reclaims_and_stays_read_only() {
+    // An orphan list is work a crash left unfinished, not work the caller
+    // asked for, and the inodes it names are already unlinked. A mount that
+    // walked past it because the caller said read-only would hand back a
+    // filesystem whose node ids are still owned by files nothing can reach —
+    // and the next writable mount could hand one of those ids to a new file.
+    let park = parked(&[b"held"], &Patch::sane());
+    let (ino, addr) = (park.inos[0], park.addrs[0]);
+    let v = mount(park.bytes, false);
+    assert!(v.read_inode(ino).is_err(), "the parked inode must be gone");
+    assert!(!v.block_is_live(addr).unwrap(), "and its block released");
+    assert!(!v.checkpoint().has(CP_ORPHAN_PRESENT_FLAG), "the list is no longer owed");
+    // The window is closed: the mount is read-only again, and says so.
+    assert!(!v.writable(), "the lifted read-only must be put back");
+    assert_eq!(v.sb_status() & (1 << crate::sbflags::bits::IS_WRITABLE), 0,
+               "and the mark that recorded the lift comes down with it");
+    // What it DID is still recorded, which is the difference a reader needs.
+    assert_ne!(v.sb_status() & (1 << crate::sbflags::bits::IS_RECOVERED), 0);
 }
 
 #[test]
@@ -322,7 +356,7 @@ fn recovery_refuses_an_entry_count_the_block_cannot_hold() {
         "a block claiming more entries than it holds must be refused whole"
     );
     assert_eq!(mount_and_recover(park.bytes.clone()).err(), Some(Errno::Einval));
-    let v = mount(park.bytes, false);
+    let v = mount_ro_medium(park.bytes);
     for (i, ino) in park.inos.iter().enumerate() {
         assert!(v.read_inode(*ino).is_ok(), "nothing may be freed off a refused block");
         assert!(v.block_is_live(park.addrs[i]).unwrap());

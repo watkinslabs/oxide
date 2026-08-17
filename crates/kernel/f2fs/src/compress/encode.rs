@@ -20,7 +20,7 @@ use crate::uapi::BLKSIZE;
 
 use super::algo::{Algorithm, CompressError};
 use super::cluster::{Geometry, CHKSUM_OFF, CLEN_OFF, COMPRESS_HEADER_SIZE};
-use super::{lz4_enc, lzo_enc};
+use super::{lz4_enc, lzo_enc, zstd};
 
 /// One cluster's stored image, whole blocks of it.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -66,7 +66,11 @@ pub fn compress_cluster(g: &Geometry, plain: &[u8]) -> Result<Stored, CompressEr
         Algorithm::Lz4 => lz4_enc::compress(plain, &mut cdata),
         Algorithm::Lzo => lzo_enc::compress(plain, &mut cdata, false),
         Algorithm::LzoRle => lzo_enc::compress(plain, &mut cdata, true),
-        other => return Err(CompressError::UnsupportedAlgorithm(other)),
+        // The level is the FILE's, taken from the stored flag word rather
+        // than from a mount-wide setting: a file written at one level and
+        // rewritten at another would be a file whose recorded settings no
+        // longer describe its own clusters.
+        Algorithm::Zstd => zstd::compress(plain, &mut cdata, g.level()),
     };
     // A codec that ran out of budget has said the data does not compress; the
     // cluster is stored plain rather than as an image that will not fit.

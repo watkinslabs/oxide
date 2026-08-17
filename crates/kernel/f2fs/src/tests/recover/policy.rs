@@ -115,11 +115,47 @@ fn a_clean_volume_needs_no_recovery_at_mount() {
 }
 
 #[test]
-fn a_read_only_mount_does_not_replay() {
+fn a_mount_that_declined_the_chain_does_not_replay() {
     let (mut v, ino, body) = checkpointed(b"f");
     append_block(&mut v, ino, 0xEE, true);
     let mut v = crash_ro(v);
     assert_eq!(v.recover_at_mount().expect("mount hook"), Recovery::Skipped);
+    assert_eq!(whole(&v, ino), body);
+}
+
+/// A mount asked for read-only still finishes what a crash left, over a
+/// medium that will take the writes — and then goes back to read-only.
+///
+/// Walking past the chain instead would hand back a filesystem missing
+/// writes an `fsync` promised, with nothing saying so; the next clean unmount
+/// retires the chain's blocks and the loss becomes permanent. Being asked for
+/// a read-only VIEW is not the same as being told the medium is read-only,
+/// and only the second can refuse a repair.
+#[test]
+fn a_read_only_mount_over_a_writable_medium_replays_and_stays_read_only() {
+    use crate::sbflags::bits::{IS_RECOVERED, IS_WRITABLE};
+    let (mut v, ino, body) = checkpointed(b"f");
+    append_block(&mut v, ino, 0xEE, true);
+    let v = remount(v.into_source().snapshot(), false);
+    let all = whole(&v, ino);
+    assert_eq!(all.len(), body.len() + BLKSIZE, "the chain's block is in the file");
+    assert!(all[body.len()..].iter().all(|&x| x == 0xEE));
+    // The window is closed behind it.
+    assert!(!v.writable(), "the lifted read-only must be put back");
+    assert_eq!(v.sb_status() & (1 << IS_WRITABLE), 0, "and its mark with it");
+    assert_ne!(v.sb_status() & (1 << IS_RECOVERED), 0, "what it did is still recorded");
+}
+
+/// The same volume mounted read-only under `disable_roll_forward` lifts
+/// nothing, because nothing is owed: the request is what decides it, not the
+/// medium.
+#[test]
+fn declining_the_chain_leaves_a_read_only_mount_read_only_throughout() {
+    let (mut v, ino, body) = checkpointed(b"f");
+    append_block(&mut v, ino, 0xEE, true);
+    let v = crash_ro(v);
+    assert!(!v.writable());
+    assert_eq!(v.sb_status() & (1 << crate::sbflags::bits::IS_WRITABLE), 0);
     assert_eq!(whole(&v, ino), body);
 }
 

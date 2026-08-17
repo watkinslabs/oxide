@@ -375,3 +375,45 @@ fn errno_translation_keeps_each_meaning() {
     assert_eq!(errno_to_vfs(Errno::Eio), VfsError::Eio);
     assert_eq!(errno_to_vfs(Errno::Eagain), VfsError::Eio);
 }
+
+// --------------------------------------------------------- freeze and thaw
+
+/// The condition word's freezing bit, read through the volume the way every
+/// reporting surface reads it. # C: O(1)
+fn freezing(fs: &Arc<F2fs>) -> bool {
+    fs.volume.lock().sb_status() & (1 << crate::sbflags::bits::IS_FREEZING) != 0
+}
+
+#[test]
+fn freezing_a_clean_writable_mount_raises_the_mark_and_thawing_lowers_it() {
+    let (fs, _dev) = mounted();
+    assert!(!freezing(&fs), "a mount that was never frozen must not claim to be");
+    vfs::superblock::SuperOps::freeze_fs(&crate::mount::sb::F2fsSuperOps { fs: fs.clone() }).expect("freeze");
+    assert!(freezing(&fs), "a frozen volume has to say so, or nothing can tell");
+    vfs::superblock::SuperOps::thaw_fs(&crate::mount::sb::F2fsSuperOps { fs: fs.clone() }).expect("thaw");
+    assert!(!freezing(&fs));
+}
+
+#[test]
+fn freezing_a_volume_still_dirty_is_refused_and_raises_nothing() {
+    // The freeze syncs before it asks, so work left over means the sync did
+    // not do what it promised — and sealing over it would name a state the
+    // medium never held.
+    let (fs, _dev) = mounted();
+    let root = fs.root_inode().expect("root");
+    root.create_child("pending", 0o644, &CreateCtx::root()).expect("create");
+    assert!(fs.volume.lock().is_dirty(), "the fixture must leave work pending");
+    assert_eq!(vfs::superblock::SuperOps::freeze_fs(&crate::mount::sb::F2fsSuperOps { fs: fs.clone() }).err(),
+               Some(VfsError::Einval));
+    assert!(!freezing(&fs), "a refused freeze leaves no mark behind");
+}
+
+#[test]
+fn freezing_a_read_only_mount_does_nothing_and_says_so() {
+    // It has no writes to stop and no mark to raise; refusing would make a
+    // snapshot of a read-only mount impossible.
+    let dev = disk(&test_image::with_root().finish());
+    let fs = F2fs::open_with(dev, "/dev/fake", false, Options::defaults()).expect("mount");
+    vfs::superblock::SuperOps::freeze_fs(&crate::mount::sb::F2fsSuperOps { fs: fs.clone() }).expect("freeze");
+    assert!(!freezing(&fs));
+}

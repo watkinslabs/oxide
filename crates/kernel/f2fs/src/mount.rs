@@ -14,6 +14,8 @@
 //! - `write`: the mutating operations, and the clock they share.
 //! - `remount`: reconfiguring a live mount from a new option line.
 //! - `devs`:  finding the member devices, and asking each about its zones.
+//! - `freeze`: sealing the volume for a snapshot, and resuming after one.
+//! - `wp`:     settling the drives' write pointers against the volume.
 
 use alloc::string::{String, ToString};
 use alloc::sync::{Arc, Weak};
@@ -36,6 +38,8 @@ pub mod quota;
 pub mod sb;
 pub mod write;
 pub mod remount;
+pub mod freeze;
+pub mod wp;
 
 /// The one name this filesystem is registered under.
 pub const F2FS_NAME: &str = "f2fs";
@@ -115,6 +119,12 @@ impl F2fs {
             me: me.clone(),
             bg,
         });
+        // After the replay the volume ran on its way up, and before anything
+        // can allocate: a log left standing where the drive will not take its
+        // next write fails the FIRST write to it, with nothing to say why.
+        // The mount is failed rather than handed out — a volume whose logs
+        // cannot be written to is not a mounted filesystem.
+        fs.check_and_fix_write_pointers()?;
         // After the mount is reachable, never during it: a thread that woke
         // first would find a filesystem nothing could hand it work through.
         fs.start_background();

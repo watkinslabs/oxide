@@ -48,9 +48,11 @@ fn settings_this_build_cannot_write_produce_no_context_at_all() {
     assert_eq!(context(COMPRESS_LZ4, 4, true, 0), Some((COMPRESS_LZ4, 4, 1)));
     assert_eq!(context(COMPRESS_LZO, 2, false, 0), Some((COMPRESS_LZO, 2, 0)));
     assert_eq!(context(COMPRESS_LZORLE, 8, true, 0), Some((COMPRESS_LZORLE, 8, 1)));
-    // A codec this build cannot unpack, a level a codec has no meaning for,
-    // and a width outside the format: each one is refused rather than stored.
-    assert_eq!(context(COMPRESS_ZSTD, 4, false, 3), None, "no zstd encoder in this build");
+    // The one codec that keeps a level records it in the top byte.
+    assert_eq!(context(COMPRESS_ZSTD, 4, false, 3), Some((COMPRESS_ZSTD, 4, 3 << 8)));
+    // A level a codec has no meaning for, a width outside the format, and a
+    // number the format does not name: each one is refused rather than stored.
+    assert_eq!(context(COMPRESS_ZSTD, 4, false, 23), None);
     assert_eq!(context(COMPRESS_LZ4, 4, false, 3), None);
     assert_eq!(context(COMPRESS_LZ4, 1, false, 0), None);
     assert_eq!(context(9, 4, false, 0), None);

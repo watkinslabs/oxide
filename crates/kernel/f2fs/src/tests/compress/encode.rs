@@ -3,17 +3,18 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::compress::algo::{COMPRESS_LZ4, COMPRESS_LZO, COMPRESS_LZORLE, COMPRESS_ZSTD};
+use crate::compress::algo::{COMPRESS_LZ4, COMPRESS_LZO, COMPRESS_LZORLE, COMPRESS_MAX,
+                            COMPRESS_ZSTD};
 use crate::compress::cluster::COMPRESS_HEADER_SIZE;
 use crate::compress::{
-    decompress_cluster, encode, max_clen, Algorithm, Chksum, CompressError, Geometry, Stored,
+    decompress_cluster, encode, max_clen, Chksum, CompressError, Geometry, Stored,
 };
 use crate::uapi::{le32, BLKSIZE};
 
 const CHKSUM_FLAG: u16 = 1;
 
 /// Every codec this build writes. # C: O(1)
-const CODECS: [u8; 3] = [COMPRESS_LZO, COMPRESS_LZ4, COMPRESS_LZORLE];
+const CODECS: [u8; 4] = [COMPRESS_LZO, COMPRESS_LZ4, COMPRESS_LZORLE, COMPRESS_ZSTD];
 
 /// # C: O(n)
 fn noise(n: usize, seed: u32) -> Vec<u8> {
@@ -154,11 +155,9 @@ fn bytes_that_are_not_a_whole_cluster_are_refused() {
 }
 
 #[test]
-fn a_codec_this_build_cannot_write_is_refused_before_a_geometry_exists() {
-    assert_eq!(
-        Geometry::new(COMPRESS_ZSTD, 2, 0),
-        Err(CompressError::UnsupportedAlgorithm(Algorithm::Zstd))
-    );
+fn a_codec_number_the_format_does_not_name_is_refused_before_a_geometry_exists() {
+    assert_eq!(Geometry::new(COMPRESS_MAX, 2, 0),
+               Err(CompressError::UnknownAlgorithm(COMPRESS_MAX)));
 }
 
 #[test]

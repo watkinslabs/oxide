@@ -24,7 +24,6 @@ use crate::{Error, Result};
 /// Everything large lives behind `Vec`, so the struct itself is a handful of
 /// pointers and never sizes a caller's stack frame -- the failure mode that
 /// made the vendored decoder unusable in the kernel.
-#[derive(Default)]
 pub struct Decoder {
     huffman: Option<huff::Table>,
     fse: sequences::Tables,
@@ -32,6 +31,30 @@ pub struct Decoder {
     /// Output scratch, kept across calls so a per-CPU decoder stops
     /// reallocating a page-sized buffer for every page.
     scratch: Vec<u8>,
+    /// Ceiling on one frame's OWN output, in bytes.
+    ///
+    /// A frame carries no honest statement of how much it decodes to: the
+    /// declared content size is optional, and an RLE block spends three
+    /// header bytes to produce 128 KiB. So an input of a few hundred bytes
+    /// can name terabytes of output, and a decoder that grows a buffer until
+    /// the blocks run out will try to allocate them. Every caller that owns
+    /// its destination knows the only size worth producing, and says so here;
+    /// `usize::MAX` is the free-buffer path, which is bounded by the input's
+    /// own block count instead.
+    limit: usize,
+}
+
+impl Default for Decoder {
+    /// # C: O(1)
+    fn default() -> Self {
+        Self {
+            huffman: None,
+            fse: sequences::Tables::default(),
+            literals: Vec::new(),
+            scratch: Vec::new(),
+            limit: usize::MAX,
+        }
+    }
 }
 
 impl Decoder {
@@ -69,7 +92,13 @@ impl Decoder {
             out.clear();
             if let Some(d) = dict { out.extend_from_slice(&d.content); }
             let prefix = out.len();
-            at += self.decompress_frame_with(&src[at..], out, dict)?;
+            // What is left of the caller's buffer is the most this frame can
+            // usefully produce; a frame that wants more is refused while it
+            // is still cheap, rather than after it has been decoded.
+            self.limit = dst.len() - written;
+            let r = self.decompress_frame_with(&src[at..], out, dict);
+            self.limit = usize::MAX;
+            at += r?;
             let n = out.len() - prefix;
             let end = written.checked_add(n).ok_or(Error::OutputFull)?;
             if end > dst.len() { return Err(Error::OutputFull); }
@@ -169,6 +198,10 @@ impl Decoder {
                     at = end;
                 }
             }
+            // Checked per block rather than per byte: a block produces at
+            // most `BLOCK_SIZE_MAX`, so the overshoot is bounded by one
+            // block, and the loop cannot run away.
+            if out.len() - frame_start > self.limit { return Err(Error::OutputFull); }
             if bh.last { break; }
         }
 
@@ -230,10 +263,11 @@ fn decompress_with(src: &[u8], dict: Option<&Dictionary>) -> Result<Vec<u8>> {
 ///
 /// This is the shape zram wants: the destination is a page it already owns, and
 /// a frame that decodes to more than a page is an error rather than a
-/// reallocation.
+/// reallocation. The ceiling is enforced DURING the decode, not after it, so a
+/// short input naming an enormous output is refused instead of allocated.
 /// # C: O(decompressed size)
 pub fn decompress_into(src: &[u8], dst: &mut [u8]) -> Result<usize> {
-    copy_out(decompress(src)?, dst)
+    Decoder::new().decompress_page(src, dst, None)
 }
 
 /// `decompress_into` against a dictionary.
@@ -270,6 +304,42 @@ mod tests {
         frame::write_block_header(true, BlockKind::Rle, 1000, &mut buf);
         buf.push(b'z');
         assert_eq!(decompress(&buf).unwrap(), vec![b'z'; 1000]);
+    }
+
+    #[test]
+    fn a_bounded_decode_stops_at_the_ceiling_rather_than_reading_on() {
+        // Eight RLE blocks, four bytes of input each, naming 1 MiB of output,
+        // and no last block: the frame RUNS OFF the end of the input. Which
+        // error comes back says where the decoder stopped. Bounded, it stops
+        // at the ceiling on the first block, 128 KiB in, and says the buffer
+        // is full; unbounded it keeps expanding until the block headers run
+        // out and says the input was truncated. Asserting the error alone
+        // would not distinguish them — the unbounded path also reports a full
+        // buffer, but only AFTER decoding every block.
+        const BLOCKS: usize = 8;
+        const PER: usize = 128 * 1024;
+        let mut buf = Vec::new();
+        frame::write_header((BLOCKS * PER) as u64, false, 0, &mut buf);
+        for _ in 0..BLOCKS {
+            frame::write_block_header(false, BlockKind::Rle, PER, &mut buf);
+            buf.push(b'q');
+        }
+        let mut dst = vec![0u8; 4096];
+        assert_eq!(decompress_into(&buf, &mut dst).unwrap_err(), Error::OutputFull);
+        // Same bytes with no ceiling: the decode walks the whole input and
+        // fails on its end instead, which is what the ceiling prevented.
+        assert_eq!(decompress(&buf).unwrap_err(), Error::Truncated);
+    }
+
+    #[test]
+    fn a_bounded_decode_still_takes_what_fits_exactly() {
+        let mut buf = Vec::new();
+        frame::write_header(4096, false, 0, &mut buf);
+        frame::write_block_header(true, BlockKind::Rle, 4096, &mut buf);
+        buf.push(b'z');
+        let mut dst = vec![0u8; 4096];
+        assert_eq!(decompress_into(&buf, &mut dst).unwrap(), 4096);
+        assert_eq!(dst, vec![b'z'; 4096]);
     }
 
     #[test]
