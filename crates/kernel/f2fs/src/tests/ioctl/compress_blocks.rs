@@ -73,6 +73,9 @@ fn with_compressed(clusters: usize) -> (Volume<MemImage>, u32) {
     })
     .unwrap();
     v.write_compressed(ino, 0, &patterned(clusters * CS * BLKSIZE)).unwrap();
+    // Placed: the saving a release hands back is recorded when the cluster's
+    // shape is chosen, which is at writeback.
+    v.sync_data().unwrap();
     (v, ino)
 }
 

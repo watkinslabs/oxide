@@ -54,6 +54,8 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(file blocks)
     pub fn release_compress_blocks(&mut self, ino: u32) -> Result<u64, Errno> {
         self.writable_or_err()?;
+        // The walk reads addresses, so every pending write has to have one.
+        self.flush_data_pages(ino)?;
         let g = self.geometry(&self.read_inode(ino)?)?;
         let mut released = 0u64;
         let mut saved = self.compr_blocks(ino)?;
@@ -63,16 +65,25 @@ impl<S: SectorSource> Volume<S> {
         // unreleased would let the next writer spend them twice.
         self.stamp_inode(ino, |b| b[I_INLINE] |= COMPRESS_RELEASED)?;
         let outcome = self.walk_clusters(ino, &g, |v, first, addrs, c| {
+            let mut back = 0u64;
             for (i, &a) in addrs.iter().enumerate().skip(1) {
                 if a != NEW_ADDR { continue; }
                 let (h, ofs) = v.dnode_for_write(ino, first + i as u64)?;
                 v.set_holder_addr(ino, h, ofs, NULL_ADDR)?;
                 v.release_reservation();
+                back += 1;
             }
             // The sentinel's own charge, given back while the sentinel stays:
             // the slot is what says this cluster is an image, and clearing it
             // would leave the blocks after it unreadable.
             v.release_reservation();
+            back += 1;
+            // A mark holds the OWNER'S quota as well as the volume's count —
+            // the two move together everywhere a mark is made or unmade — so
+            // both come back here. Giving back only the volume's half would
+            // leave the file charged forever for room it no longer holds, and
+            // the charge would survive every remount.
+            v.uncharge_space(ino, back * BLKSIZE as u64)?;
             let n = (g.blocks() - c.data) as u64;
             released += n;
             saved = saved.saturating_sub(n);
@@ -95,6 +106,7 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(file blocks)
     pub fn reserve_compress_blocks(&mut self, ino: u32) -> Result<u64, Errno> {
         self.writable_or_err()?;
+        self.flush_data_pages(ino)?;
         let g = self.geometry(&self.read_inode(ino)?)?;
         // A file that still records a saving was never released, so there is
         // nothing to take back and the slots are already the file's.
@@ -106,6 +118,10 @@ impl<S: SectorSource> Volume<S> {
             // Every slot but one already stands reserved, so the one left is
             // the sentinel's own charge, which the cluster still holds.
             if c.reserved > 0 && want == 1 { return Ok(()); }
+            // The owner's quota is taken BEFORE any slot changes: a refusal
+            // afterwards would leave the file holding marks nobody is charged
+            // for, which is the same hole as an uncharged block.
+            v.charge_space(ino, want as u64 * BLKSIZE as u64)?;
             for (i, &a) in addrs.iter().enumerate().skip(1) {
                 if a != NULL_ADDR { continue; }
                 let (h, ofs) = v.dnode_for_write(ino, first + i as u64)?;
