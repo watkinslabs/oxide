@@ -149,6 +149,12 @@ impl Ipv6Addr {
     /// ff00::/8 multicast.
     /// # C: O(1)
     pub const fn is_multicast(self) -> bool { self.0[0] == 0xff }
+    /// fec0::/10 site-local. Deprecated as an addressing plan (RFC 3879) and
+    /// still its own reported scope.
+    /// # C: O(1)
+    pub const fn is_site_local(self) -> bool {
+        (self.0[0] == 0xfe) && ((self.0[1] & 0xc0) == 0xc0)
+    }
 }
 
 /// Tagged union of v4/v6 addresses for routing & socket APIs.
