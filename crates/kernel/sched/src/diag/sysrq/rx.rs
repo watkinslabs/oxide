@@ -100,6 +100,11 @@ static ARMED_UNTIL_NS: AtomicU64 = AtomicU64::new(DISARMED);
 /// would stop advancing during exactly the I/O storms that freeze this
 /// kernel's tick for seconds, leaving a window that outlives its own deadline.
 /// The counter keeps running regardless.
+///
+/// The state is taken before the decision and republished after, so the window
+/// between them reads as DISARMED — a concurrent byte can only fail to
+/// dispatch, never dispatch on a stale deadline. `known_issues.md` carries the
+/// per-port state this word should be, which is a `drv-serial` change.
 /// # C: see `perform`
 pub fn rx(b: u8) -> bool {
     let now = timekeeper::monotonic_ns();
