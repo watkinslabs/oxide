@@ -109,6 +109,7 @@ pub mod blockio;
 pub mod writeback;
 pub mod nodeback;
 pub mod placement;
+pub mod extlist;
 pub mod mapped;
 pub mod readahead;
 
