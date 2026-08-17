@@ -129,10 +129,10 @@ impl<S: SectorSource> Volume<S> {
         let own_entry = name == b"." || name == b"..";
         let inode = self.read_inode(dir)?;
         // Creating an entry needs the plaintext to encrypt, so it is the one
-        // directory operation that cannot proceed without the key.
-        let crypt = self.crypt_info(&inode, dir)?;
-        if inode.encrypted() && crypt.is_none() { return Err(Errno::Enokey); }
-        let want = self.entry_hash_crypt(&inode, crypt.as_ref(), name)?;
+        // directory operation that cannot proceed without the key. Resolved
+        // here, at the operation, and read as memory by everything below.
+        let crypt = self.crypt_require_key(&inode, dir)?;
+        let want = self.entry_hash_crypt(&inode, crypt.as_deref(), name)?;
         // What lands in the entry is the ciphertext, and every length decision
         // below is about THAT — a plaintext name and its stored form differ in
         // length, so sizing the record from the plaintext overflows the slot.
@@ -140,20 +140,7 @@ impl<S: SectorSource> Volume<S> {
             Some(c) => c.encrypt_name(name).map_err(|e| e.errno())?,
             None => Vec::from(name),
         };
-        let name: &[u8] = &stored;
-        let slots = dentry_slots(name.len());
-        if inode.inline_dentry() {
-            let (at, len) = inode.inline_data_span();
-            let l = Layout::inline(len);
-            let mut block = self.inode_bytes(dir)?;
-            if let Some(slot) = room_for(&block[at..at + len], &l, slots) {
-                place_entry_hashed(&mut block[at..at + len], &l, slot, name, want, ino, ft);
-                self.put_inode(dir, block)?;
-                return self.name_landed(dir, ino, own_entry);
-            }
-            self.convert_inline_dir(dir)?;
-        }
-        self.add_regular_dentry(dir, name, ino, ft, slots, want)?;
+        self.add_stored_dentry(dir, &inode, &stored, want, ino, ft)?;
         self.name_landed(dir, ino, own_entry)
     }
 
@@ -180,7 +167,8 @@ impl<S: SectorSource> Volume<S> {
 
     /// Add to a directory whose entries live in blocks. # C: O(depth) blocks
     #[allow(clippy::too_many_arguments)]
-    fn add_regular_dentry(&mut self, dir: u32, name: &[u8], ino: u32, ft: u8, slots: usize,
+    pub(crate) fn add_regular_dentry(&mut self, dir: u32, name: &[u8], ino: u32, ft: u8,
+                          slots: usize,
                           want: u32) -> Result<(), Errno> {
         if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::DirDepth) {
             return Err(Errno::Enospc);
@@ -327,14 +315,14 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(name len)
     pub(crate) fn entry_key(&self, inode: &crate::node::Inode, dir: u32, name: &[u8])
         -> Result<(u32, Vec<u8>), Errno> {
-        let crypt = self.crypt_info(inode, dir)?;
+        let crypt = self.crypt_setup_info(inode, dir)?;
         let search = if inode.encrypted() {
-            Some(crate::crypto::setup(crypt.as_ref(), name, true).map_err(|e| e.errno())?)
+            Some(crate::crypto::setup(crypt.as_deref(), name, true).map_err(|e| e.errno())?)
         } else { None };
         let want = match &search {
             Some(s) => match s.hash() {
                 Some(h) => h,
-                None => self.entry_hash_crypt(inode, crypt.as_ref(), name)?,
+                None => self.entry_hash_crypt(inode, crypt.as_deref(), name)?,
             },
             None => self.entry_hash(inode, name)?,
         };

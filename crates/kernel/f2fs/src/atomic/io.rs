@@ -70,8 +70,9 @@ impl<S: SectorSource> Volume<S> {
         let old = self.holder_addr(cow, holder, ofs)?;
         if crate::node::is_hole(old) { self.charge_space(cow, BLKSIZE as u64)?; }
         let inode = self.read_inode(ino)?;
-        let crypt = self.crypt_info(&inode, ino)?;
-        if inode.encrypted() && crypt.is_none() { return Err(Errno::Enokey); }
+        // Held, not resolved: the write that opened this span required the key at
+        // its entry, the same as any other write of the file.
+        let crypt = self.crypt_info_held(&inode, ino)?;
         // A replacing span shows an empty file, so a base taken from the file
         // would resurrect bytes the span has already made invisible.
         let replace = self.atomic_is_replace(ino);
@@ -83,7 +84,7 @@ impl<S: SectorSource> Volume<S> {
             match self.map_block(&inode, ino, index)? { Mapped::At(a) => Some(a), _ => None }
         };
         let mut page = match base {
-            Some(a) => self.read_main_plain(a, crypt.as_ref(), index)?,
+            Some(a) => self.read_main_plain(a, crypt.as_deref(), index)?,
             None => vec![0u8; BLKSIZE],
         };
         page[skew..skew + data.len()].copy_from_slice(data);
@@ -95,7 +96,7 @@ impl<S: SectorSource> Volume<S> {
                     .map_err(|e| e.errno())?;
             }
         }
-        let ctx = self.write_ctx(crypt.as_ref(), index);
+        let ctx = self.write_ctx(crypt.as_deref(), index);
         let owner = match holder { Holder::Inode => cow, Holder::Direct(nid) => nid };
         let addr = self.write_data_crypt(cow, crate::volume::curseg::Kind::FileData, owner,
             ofs as u16, old, &page, block::RequestFlags::NONE, ctx.as_ref())?;
@@ -116,8 +117,7 @@ impl<S: SectorSource> Volume<S> {
         let want = buf.len().min((inode.size - off) as usize).min(crate::limits::MAX_IO_BYTES);
         if want == 0 { return Ok(0); }
         let cow_inode = self.read_inode(cow)?;
-        let crypt = self.crypt_info(inode, ino)?;
-        if inode.encrypted() && crypt.is_none() { return Err(Errno::Enokey); }
+        let crypt = self.crypt_require_key(inode, ino)?;
         let replace = self.atomic_is_replace(ino);
         let mut done = 0usize;
         while done < want {
@@ -127,7 +127,7 @@ impl<S: SectorSource> Volume<S> {
             let take = (BLKSIZE - skew).min(want - done);
             match self.map_block(&cow_inode, cow, index)? {
                 Mapped::At(addr) => {
-                    let page = self.read_main_plain(addr, crypt.as_ref(), index)?;
+                    let page = self.read_main_plain(addr, crypt.as_deref(), index)?;
                     buf[done..done + take].copy_from_slice(&page[skew..skew + take]);
                 }
                 _ if replace => buf[done..done + take].fill(0),
@@ -136,7 +136,7 @@ impl<S: SectorSource> Volume<S> {
                 // a span open back into this one.
                 _ => match self.map_block(inode, ino, index)? {
                     Mapped::At(addr) => {
-                        let page = self.read_main_plain(addr, crypt.as_ref(), index)?;
+                        let page = self.read_main_plain(addr, crypt.as_deref(), index)?;
                         if inode.verity() && !self.verity_check(inode, ino, index, &page)? {
                             return Err(Errno::Eio);
                         }

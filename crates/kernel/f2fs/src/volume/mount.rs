@@ -168,6 +168,7 @@ impl<S: SectorSource> Volume<S> {
             inode_seed,
             casefold,
             fscrypt_keys: alloc::collections::BTreeMap::new(),
+            crypt_cache: core::cell::RefCell::new(alloc::collections::BTreeMap::new()),
             opts,
             access,
             writable,

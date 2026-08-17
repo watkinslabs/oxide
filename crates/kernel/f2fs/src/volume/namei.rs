@@ -131,6 +131,14 @@ impl<S: SectorSource> Volume<S> {
         // underneath the node write it is part of.
         self.dquot_initialize(dir)?;
         self.dquot_initialize_new(spec.uid, spec.gid)?;
+        // The parent's key, once, before an id is taken or a block is built.
+        // The name this inode RECORDS has to be the form the medium holds —
+        // ciphertext when the parent encrypts — so the key is needed here and
+        // not only where the entry is placed. Refusing before `alloc_nid` also
+        // means a locked directory leaves no id handed out; the reference
+        // prepares the new inode's encryption at the same point, before its
+        // inode exists.
+        let dir_crypt = self.crypt_require_key(&parent, dir)?;
         let ft = mode::file_type(spec.mode);
         let is_dir = ft == vfs::FileType::Directory;
         // The inode record itself, from the cache the reference keeps them in,
@@ -146,9 +154,37 @@ impl<S: SectorSource> Volume<S> {
             spec.uid, spec.gid, crate::volume::quotas::DEFAULT_PROJID));
         let mut block = self.blank_inode(ino, spec, if is_dir { 2 } else { 1 });
         put32(&mut block, I_PINO, dir);
-        let namelen = name.len().min(NAME_LEN);
+        // THE STORED FORM, not the plaintext. This field is what a replay reads
+        // to put a lost directory entry back, and a replay runs at mount with no
+        // key — so a plaintext name here is a name recovery cannot turn into an
+        // entry, and it also writes an encrypted file's name onto the medium in
+        // the clear.
+        let stored: Vec<u8> = match &dir_crypt {
+            Some(c) => c.encrypt_name(name).map_err(|e| e.errno())?,
+            None => Vec::from(name),
+        };
+        let namelen = stored.len().min(NAME_LEN);
         put32(&mut block, I_NAMELEN, namelen as u32);
-        block[I_NAME..I_NAME + namelen].copy_from_slice(&name[..namelen]);
+        block[I_NAME..I_NAME + namelen].copy_from_slice(&stored[..namelen]);
+        if let Some(c) = &dir_crypt {
+            // Recorded so another reader knows the field is not a name it can
+            // print. Its only use in the reference is exactly that.
+            block[I_ADVISE] |= FADVISE_ENC_NAME_BIT;
+            // A directory that also folds files its entries under a KEYED hash
+            // of the folded plaintext, which no keyless replay can compute. The
+            // value is written after the name, where recovery reads it back; if
+            // it does not fit, the inode is marked as having lost its parent
+            // instead, which sends a later `fsync` down the checkpoint path so
+            // no replay ever needs the hash.
+            if parent.casefolded() {
+                let want = self.entry_hash_crypt(&parent, Some(c), name)?;
+                if namelen + core::mem::size_of::<u32>() <= NAME_LEN {
+                    put32(&mut block, I_NAME + namelen, want);
+                } else {
+                    block[I_ADVISE] |= FADVISE_LOST_PINO_BIT;
+                }
+            }
+        }
         // Before the inline offer below, never after. A compressed file's
         // blocks are clusters and its inline region would be read as plain
         // bytes, so the two are mutually exclusive — and only the compression
