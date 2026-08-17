@@ -128,7 +128,7 @@ fn an_attribute_is_writable_exactly_when_something_reads_it() {
     controls.extend(crate::atgc::knobs::ALL.iter().map(|&k| crate::atgc::knobs::name(k)));
     controls.extend(["ram_thresh", "max_read_extent_count", "last_age_weight",
                      "hot_data_age_threshold", "warm_data_age_threshold", "iostat_enable",
-                     "readdir_ra"]);
+                     "readdir_ra", "dirty_nats_ratio"]);
     // The fourth owner is the placement pair: the armed in-place-update set and
     // the three thresholds its arms compare against.
     controls.extend(["ipu_policy", "min_ipu_util", "min_fsync_blocks", "min_ssr_sections"]);

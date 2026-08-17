@@ -110,6 +110,18 @@ impl<S: SectorSource> Volume<S> {
         Ok(())
     }
 
+    /// Sections an ahead-of-demand cleaning pass costs before it settles.
+    ///
+    /// From the background state the mount shares with its threads, which is
+    /// where the knob that sets it writes. A volume driven without those threads
+    /// — every hosted test — has none and uses the value the mount would have
+    /// started them with.
+    /// # C: O(1)
+    pub(crate) fn max_victim_search(&self) -> u32 {
+        self.bg.as_ref().map_or(crate::volume::gc::victim::DEF_MAX_VICTIM_SEARCH,
+                                |b| b.gc.lock().max_victim_search)
+    }
+
     /// Give the volume the background state its mount's threads share.
     ///
     /// Late rather than at construction: the state is built from what the

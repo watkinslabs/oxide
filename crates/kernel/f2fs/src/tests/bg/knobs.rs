@@ -180,3 +180,19 @@ fn a_turned_control_reaches_the_policy_that_reads_it() {
     let round = b.dcc.lock().issue_round(&loose, true);
     assert_eq!(round.runs, alloc::vec![(100, 4)], "now the run is worth announcing");
 }
+
+/// The ahead-of-demand search bound written through the knob is the one the
+/// search itself is given.
+#[test]
+fn the_victim_search_bound_reaches_the_search() {
+    let b = bg();
+    assert_eq!(knobs::show(&b, Knob::MaxVictimSearch),
+               u64::from(crate::volume::gc::victim::DEF_MAX_VICTIM_SEARCH));
+    knobs::store(&b, Knob::MaxVictimSearch, 7, true).expect("accepted");
+    assert_eq!(b.gc.lock().max_victim_search, 7);
+    assert_eq!(knobs::show(&b, Knob::MaxVictimSearch), 7);
+    // Zero would cost nothing and settle for nothing, so a pass with it set
+    // would never find a victim at all.
+    assert_eq!(knobs::store(&b, Knob::MaxVictimSearch, 0, true), Err(Errno::Einval));
+    assert_eq!(b.gc.lock().max_victim_search, 7, "a refusal changed it");
+}
