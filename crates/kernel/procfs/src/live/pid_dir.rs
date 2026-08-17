@@ -43,7 +43,7 @@ fn pc_smaps(t: u32, _s: bool) -> InodeRef { crate::smaps::make_proc_pid_smaps(t)
 fn pc_comm(t: u32, _s: bool) -> InodeRef { make_pid_comm(t) }
 fn pc_environ(t: u32, _s: bool) -> InodeRef { make_pid_environ(t) }
 fn pc_statm(t: u32, _s: bool) -> InodeRef { make_pid_statm(t) }
-fn pc_wchan(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"0") }
+fn pc_wchan(t: u32, _s: bool) -> InodeRef { super::pid_files::make_pid_wchan(t) }
 fn pc_oom_score(t: u32, _s: bool) -> InodeRef { make_pid_oom_score(t) }
 fn pc_oom_score_adj(t: u32, _s: bool) -> InodeRef { make_pid_oom_score_adj(t) }
 fn pc_loginuid(_t: u32, _s: bool) -> InodeRef { crate::sysctl::SysctlInode::new(b"4294967295\n") }
