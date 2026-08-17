@@ -62,8 +62,9 @@ impl<S: SectorSource> Volume<S> {
         // to the table would answer with the node's previous contents — or,
         // for a node created since, with nothing at all.
         if let Some(block) = self.peek_node(nid) {
-            let f = footer::expect(&block, nid, ino).map_err(|_| Errno::Eio)?;
+            let f = self.footer_or_note(&block, nid, ino)?;
             if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::InconsistentFooter) {
+                self.note_error(crate::errrec::Error::InconsistentFooter);
                 return Err(Errno::Eio);
             }
             return Ok(NodeRef { block, footer: f });
@@ -73,8 +74,9 @@ impl<S: SectorSource> Volume<S> {
         if node::is_hole(addr) { return Err(Errno::Enoent); }
         let block = self.read_main_block(addr)?;
         self.io_account(crate::stats::iostat::Io::FsNodeRead, crate::uapi::BLKSIZE as u64, false);
-        let f = footer::expect(&block, nid, ino).map_err(|_| Errno::Eio)?;
+        let f = self.footer_or_note(&block, nid, ino)?;
         if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::InconsistentFooter) {
+            self.note_error(crate::errrec::Error::InconsistentFooter);
             return Err(Errno::Eio);
         }
         // Kept CLEAN, so the next read of the same node costs nothing. Nothing
@@ -92,11 +94,16 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(1 block)
     pub fn read_inode_ref(&self, ino: u32) -> Result<(Inode, NodeRef), Errno> {
         let n = self.read_node(ino, Some(ino))?;
-        if !n.footer.is_inode() { return Err(Errno::Eio); }
-        let inode = node::inode::parse(&n.block, self.sb.feature).ok_or(Errno::Eio)?;
-        node::inode::sanity(&inode, ino, self.sb.feature).map_err(|_| Errno::Eio)?;
+        // Every arm below is one kind: bytes that claim to be this inode and
+        // are not usable as one. Recorded so the volume reaches the next mount
+        // and fsck saying an inode is damaged, rather than only answering EIO
+        // to whoever happened to open it.
+        let corrupt = || { self.note_error(crate::errrec::Error::CorruptedInode); Errno::Eio };
+        if !n.footer.is_inode() { return Err(corrupt()); }
+        let inode = node::inode::parse(&n.block, self.sb.feature).ok_or_else(corrupt)?;
+        node::inode::sanity(&inode, ino, self.sb.feature).map_err(|_| corrupt())?;
         if !node::inode::checksum_ok(&inode, &n.block, self.inode_seed, self.sb.feature) {
-            return Err(Errno::Eio);
+            return Err(corrupt());
         }
         // A file that stands for a member device must stand for a REAL one.
         // The flag's agreement with the volume's features and the file's
@@ -107,9 +114,23 @@ impl<S: SectorSource> Volume<S> {
         // not a device to hand out — and handing them out would give one span
         // two owners.
         if crate::devices::alias::is_alias(inode.flags) && self.alias_device(&inode).is_err() {
-            return Err(Errno::Eio);
+            return Err(corrupt());
         }
         Ok((inode, n))
+    }
+
+    /// The footer of a node block, recording a mismatch before reporting it.
+    ///
+    /// A footer that names a different node or a different owner means the
+    /// table pointed here wrongly or the block was overwritten; either way the
+    /// disagreement is between two structures and belongs on the medium.
+    /// # C: O(1)
+    fn footer_or_note(&self, block: &[u8], nid: u32, ino: Option<u32>)
+        -> Result<footer::Footer, Errno> {
+        footer::expect(block, nid, ino).map_err(|_| {
+            self.note_error(crate::errrec::Error::InconsistentFooter);
+            Errno::Eio
+        })
     }
 
     /// The inode numbered `ino`, without its block. # C: O(1 block)

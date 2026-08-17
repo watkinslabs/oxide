@@ -97,7 +97,7 @@ impl<S: SectorSource> Volume<S> {
         }
         let ctx = self.write_ctx(crypt.as_ref(), index);
         let owner = match holder { Holder::Inode => cow, Holder::Direct(nid) => nid };
-        let addr = self.write_data_crypt(crate::volume::curseg::Kind::FileData, owner,
+        let addr = self.write_data_crypt(cow, crate::volume::curseg::Kind::FileData, owner,
             ofs as u16, old, &page, block::RequestFlags::NONE, ctx.as_ref())?;
         self.set_holder_addr(cow, holder, ofs, addr)
     }

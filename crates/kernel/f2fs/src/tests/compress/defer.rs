@@ -75,16 +75,16 @@ fn as_after_a_crash(v: &Volume<MemImage>) -> Volume<MemImage> {
         .unwrap()
 }
 
-/// Leave `keep` blocks of the volume available to an ordinary allocation and
-/// nothing more.
+/// Leave `keep` blocks of the volume available and nothing more.
 ///
-/// Through the root reserve, which is space an ordinary allocation may not
-/// have, so the volume's own counts stay untouched and only what a write is
-/// allowed to take changes.
+/// By shrinking the volume's own block count, NOT through the root reserve:
+/// the reserve is space a PRIVILEGED caller may still have, and a hosted test
+/// has no credential probe installed, so it counts as kernel context and
+/// reaches the reserve. What these cases are about is a genuinely full volume.
 /// # C: O(1)
 fn leave_room_for(v: &mut Volume<MemImage>, keep: u64) {
     let left = v.checkpoint().user_block_count - v.valid_block_count;
-    v.opts.reserve_root = (left - keep) as u32;
+    v.cp.user_block_count -= left - keep;
 }
 
 /// Reserve MORE than the volume has left, so any request for room is refused.
@@ -96,7 +96,7 @@ fn leave_room_for(v: &mut Volume<MemImage>, keep: u64) {
 /// # C: O(1)
 fn leave_no_room(v: &mut Volume<MemImage>) {
     let left = v.checkpoint().user_block_count - v.valid_block_count;
-    v.opts.reserve_root = (left + 1) as u32;
+    v.cp.user_block_count -= left;
 }
 
 // ------------------------------------------------------- the deferred window

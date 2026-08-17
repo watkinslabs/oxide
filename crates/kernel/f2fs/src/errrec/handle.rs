@@ -69,13 +69,29 @@ pub fn decide(s: &Situation) -> Outcome {
 }
 
 impl<S: SectorSource> Volume<S> {
-    /// Note an inconsistency, and carry on.
+    /// Note an inconsistency from a path that cannot write, reporting whether
+    /// it was news.
     ///
-    /// Returns whether it was news — a caller reporting upwards wants to say
-    /// something once, not once per block of a damaged file.
+    /// The entry point every detection site uses, because nearly all of them
+    /// are reads: an inode whose checksum fails, a footer naming the wrong
+    /// node, an address outside the main area. Recording is separated from
+    /// pushing for that reason — a `&self` path can add to the record, and the
+    /// next path that can write puts it on the medium.
+    ///
+    /// News, rather than every occurrence, is what a caller reports upwards: a
+    /// damaged file yields one fault, not one per block.
+    /// # C: O(1)
+    pub fn note_error(&self, e: Error) -> bool {
+        let mut r = self.errrec.get();
+        let news = r.save_error(e);
+        if news { self.errrec.set(r); }
+        news
+    }
+
+    /// Note an inconsistency, and put it on the medium now.
     /// # C: O(1), plus a superblock commit when the kind is new
     pub fn handle_error(&mut self, e: Error) -> bool {
-        if !self.errrec.save_error(e) { return false; }
+        if !self.note_error(e) { return false; }
         // Best effort: an error found while the medium refuses writes is still
         // worth holding in memory, because a later remount that can write
         // pushes it through.
@@ -84,7 +100,7 @@ impl<S: SectorSource> Volume<S> {
     }
 
     /// Note an inconsistency without attempting to write it. # C: O(1)
-    pub fn save_error(&mut self, e: Error) -> bool { self.errrec.save_error(e) }
+    pub fn save_error(&mut self, e: Error) -> bool { self.note_error(e) }
 
     /// Stop checkpointing, for the stated reason, and act on `errors=`.
     ///
@@ -105,7 +121,9 @@ impl<S: SectorSource> Volume<S> {
         // volume that stopped for a reason it could not record must still stop.
         self.cp.flags |= crate::flags::CP_ERROR_FLAG;
         if out.record {
-            self.errrec.save_stop_reason(reason);
+            let mut r = self.errrec.get();
+            r.save_stop_reason(reason);
+            self.errrec.set(r);
             let _ = self.record_errors();
         }
         if out.shutdown { self.sbi.set(crate::sbflags::bits::IS_SHUTDOWN); }
@@ -120,17 +138,25 @@ impl<S: SectorSource> Volume<S> {
     /// mount does not believe goes down first.
     /// # C: O(2 blocks)
     pub fn record_errors(&mut self) -> Result<(), Errno> {
-        if !self.errrec.dirty() { return Ok(()); }
-        self.errrec.into_super(self.sb_raw.bytes_mut());
+        let mut r = self.errrec.get();
+        if !r.dirty() { return Ok(()); }
+        r.into_super(self.sb_raw.bytes_mut());
+        self.errrec.set(r);
         let mount_ro = !self.writable;
         crate::sbwrite::commit_super(&self.source, &mut self.sb_raw, false, mount_ro,
                                      &mut self.sbi)
     }
 
     /// The record as it stands. # C: O(1)
-    pub fn error_record(&self) -> &super::ErrorRecord { &self.errrec }
+    pub fn error_record(&self) -> super::ErrorRecord { self.errrec.get() }
 }
 
 #[cfg(test)]
 #[path = "../tests/errrec/handle.rs"]
 mod tests;
+
+/// Proof that the two entry points above are REACHED by ordinary operations,
+/// which is the half that was missing rather than the machinery.
+#[cfg(test)]
+#[path = "../tests/errrec/sites.rs"]
+mod sites;
