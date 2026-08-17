@@ -110,7 +110,13 @@ ALIVE_READY_MARKER="${SMOKE_ALIVE_READY_MARKER:-sh-5.2#}"
 #              handler PARKS that CPU, so without this the run burns the whole
 #              timeout with a wedged guest instead of failing in seconds
 #   [BUG]      scheduling while atomic (sched refused to switch)
-FAIL_MARKER="${SMOKE_FAIL_MARKER-\[FAULT\]|\[BADSTACK\]|\[BUG\]|systemd\[1\]: segfault|Attempted to kill init}"
+#   INFO: task ... blocked for more than
+#              the hung-task detector found a task in an uninterruptible sleep
+#              across its whole window with no context switch. During a boot
+#              that is never acceptable, and the report names the sleep site
+#              (`wchan=<file>:<line>`), so failing here hands over the
+#              diagnosis rather than a timeout. Nothing else emits this line.
+FAIL_MARKER="${SMOKE_FAIL_MARKER-\[FAULT\]|\[BADSTACK\]|\[BUG\]|systemd\[1\]: segfault|Attempted to kill init|INFO: task .* blocked for more than}"
 
 # Bounded retry. SMP=2 boot has a known intermittent late-boot timing
 # race (~25%: reaches deep into rcS but the getty/login prompt doesn't
