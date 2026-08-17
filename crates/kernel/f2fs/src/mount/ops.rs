@@ -481,5 +481,6 @@ mod tests;
 #[path = "../tests/acl_ops.rs"]
 mod acl_tests;
 /// The namespace operations, driven through the interface's own vtable.
+#[cfg(test)]
 #[path = "../tests/opsnamei.rs"]
 mod namei_tests;
