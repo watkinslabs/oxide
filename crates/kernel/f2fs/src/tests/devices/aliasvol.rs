@@ -63,7 +63,7 @@ fn volume(blk: u32, len: u32, pinned: bool) -> Result<Volume<spread::Spread>, Er
     let b = b.devices(&SPLIT);
     let (media, t) = spread::members(b);
     let set = DeviceSet::new(media, t)?;
-    Volume::mount_devices(set, Options::defaults(), true, &[])
+    Volume::mount_devices(set, Options::defaults(), true, &[]).map(|v| *v)
 }
 
 /// The span of member `i`, as an extent.

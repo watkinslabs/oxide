@@ -15,6 +15,7 @@ use super::{check_opt_consistency, Sbi};
 
 /// The options a fresh mount of a volume with these facts runs with.
 /// # C: O(len(data))
+#[inline(never)]
 pub fn resolve(facts: &Facts, data: &str) -> Result<(Options, Spec), Errno> {
     let base = Options::defaults_for(facts);
     let (mut o, mut spec) = parse_spec(base, data)?;

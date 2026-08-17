@@ -56,6 +56,7 @@ pub enum Cipher {
 impl Cipher {
     /// Prepare the cipher `mode` names from `key`, which must be exactly the
     /// mode's key size. # C: O(1)
+    #[inline(never)]
     pub fn prepare(mode: Mode, key: &[u8]) -> Result<Self, FscryptError> {
         let bad = || FscryptError::BadKeySize(key.len());
         if key.len() != mode.key_size { return Err(bad()); }

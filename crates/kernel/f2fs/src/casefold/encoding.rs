@@ -93,6 +93,7 @@ pub struct Casefold {
 impl Casefold {
     /// Load what `s_encoding` and `s_encoding_flags` ask for.
     /// # C: O(1)
+    #[inline(never)]
     pub fn load(magic: u16, flags: u16) -> Result<Casefold, EncodingRefusal> {
         let info = encoding_for(magic).ok_or(EncodingRefusal::UnknownEncoding(magic))?;
         let unknown = flags & !KNOWN_ENC_FLAGS;

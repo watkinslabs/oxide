@@ -63,6 +63,7 @@ impl F2fs {
     /// and exists before there is a filesystem to point at, and the reference
     /// back has to be the one an `Arc` hands out rather than a second object.
     /// # C: O(1)
+    #[inline(never)]
     pub(crate) fn adopt_data_pages(self: &Arc<Self>) {
         let cache = self.volume.lock().data_cache();
         cache.set_host(Arc::downgrade(self) as alloc::sync::Weak<dyn DataHost>);

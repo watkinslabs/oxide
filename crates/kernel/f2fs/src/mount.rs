@@ -56,7 +56,7 @@ pub struct F2fs {
     devs: Vec<Arc<dyn block::BlockDevice>>,
     /// One lock: the volume caches the checkpoint and both journals, which
     /// every read consults.
-    pub(crate) volume: sync::Spinlock<Volume<devs::Medium>, sync::TaskList>,
+    pub(crate) volume: sync::Spinlock<alloc::boxed::Box<Volume<devs::Medium>>, sync::TaskList>,
     source: String,
     /// Held so the superblock operations can reach the filesystem they belong
     /// to, which the `&self` those operations are asked for cannot.
@@ -89,6 +89,7 @@ impl F2fs {
     /// Reporting writable when the volume is not fails every write at the
     /// first one instead of at the mount.
     /// # C: O(checkpoint bytes)
+    #[inline(never)]
     pub fn open_with(dev: Arc<dyn block::BlockDevice>, source: &str, write: bool, opts: Options)
         -> KResult<Arc<Self>> {
         // The volume's own unit is the block, and the source is aimed at it
@@ -144,6 +145,7 @@ impl F2fs {
     /// is read, so a mount that named nothing gets what THIS volume needs
     /// rather than what the build guessed.
     /// # C: O(checkpoint bytes)
+    #[inline(never)]
     pub fn open_line(dev: Arc<dyn block::BlockDevice>, source: &str, write: bool, data: &str)
         -> KResult<Arc<Self>> {
         let discard = dev.supports_discard();
@@ -188,7 +190,7 @@ impl F2fs {
     /// cost-benefit selection degenerates to lowest-numbered.
     /// # C: O(1)
     pub(crate) fn volume_now(&self)
-        -> sync::Guard<'_, Volume<devs::Medium>, sync::TaskList>
+        -> sync::Guard<'_, alloc::boxed::Box<Volume<devs::Medium>>, sync::TaskList>
     {
         let mut v = self.volume.lock();
         v.set_clock(crate::mount::write::now().0);

@@ -46,6 +46,7 @@ impl DevTable {
     /// segment counts describe segments, and the blocks before segment zero
     /// belong to that member as well.
     /// # C: O(devices)
+    #[inline(never)]
     pub fn scan(sb: &SuperBlock) -> Self {
         let per_seg = u64::from(sb.blks_per_seg());
         if sb.devices.is_empty() {

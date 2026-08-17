@@ -35,6 +35,7 @@ const DEV_PREFIX: &str = "/dev/";
 /// since been renamed must not stop a volume mounting from the device in
 /// hand.
 /// # C: O(devices)
+#[inline(never)]
 pub fn open_members(dev: Arc<dyn block::BlockDevice>, sb: &SuperBlock)
     -> KResult<Vec<Arc<dyn block::BlockDevice>>> {
     let mut out = Vec::with_capacity(sb.devices.len().max(1));
@@ -54,6 +55,7 @@ fn by_path(path: &str) -> Option<Arc<dyn block::BlockDevice>> {
 
 /// What each member says about its zones, in the volume's block unit.
 /// # C: O(zones)
+#[inline(never)]
 pub fn zone_reports(members: &[Arc<dyn block::BlockDevice>]) -> Vec<Option<DevZones>> {
     members.iter().map(|d| convert(d.zone_report()?, d.block_size())).collect()
 }
@@ -123,6 +125,7 @@ pub(crate) fn convert(r: block::ZoneReport, dev_block: u32) -> Option<DevZones> 
 
 /// The medium a volume reads through, built from members already open.
 /// # C: O(devices)
+#[inline(never)]
 pub fn medium(members: &[Arc<dyn block::BlockDevice>], table: DevTable, write: bool)
     -> KResult<Medium> {
     let sources: Vec<BlockSource> = members

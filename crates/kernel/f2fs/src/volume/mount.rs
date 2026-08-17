@@ -33,7 +33,7 @@ impl<S: SectorSource> Volume<S> {
     /// is perfectly readable, and the mount reports what it settled on.
     /// # C: O(checkpoint + journal bytes)
     pub fn mount_with(source: S, opts: Options, want_write: bool) -> Result<Self, Errno> {
-        Self::mount_devices(source, opts, want_write, &[])
+        Self::mount_devices(source, opts, want_write, &[]).map(|v| *v)
     }
 
     /// Mount, with what each member device said about its zones.
@@ -48,12 +48,13 @@ impl<S: SectorSource> Volume<S> {
     /// not mount at all — reading it as though the zones were not there
     /// places blocks the drive will refuse.
     /// # C: O(checkpoint + journal bytes)
+    #[inline(never)]
     pub fn mount_devices(
         source: S,
         opts: Options,
         want_write: bool,
         reports: &[Option<crate::zoned::DevZones>],
-    ) -> Result<Self, Errno> {
+    ) -> Result<alloc::boxed::Box<Self>, Errno> {
         let (sb_raw, sb) = crate::sbwrite::read_raw(&source)?;
         let access = sb::sanity::access(&sb).map_err(|_| Errno::Einval)?;
         let devs = crate::devices::DevTable::scan(&sb);
@@ -139,7 +140,12 @@ impl<S: SectorSource> Volume<S> {
         let meta_cache = crate::checkpoint::cache::Cache::new(
             sb.meta_ino, sb.cp_blkaddr, sb.main_blkaddr);
         let node_ino = sb.node_ino;
-        let mut vol = Self {
+        // On the heap from the moment it exists, and it never has a by-value
+        // life: the reference allocates its per-mount info and fills it
+        // through the pointer, and a mount that built one by value instead
+        // carries a copy of the whole thing in every frame between here and
+        // the superblock it ends up in — more than a kernel stack holds.
+        let mut vol = alloc::boxed::Box::new(Self {
             source,
             sb,
             sb_raw,
@@ -206,7 +212,7 @@ impl<S: SectorSource> Volume<S> {
             fault: crate::fault::Info::new(),
             devs,
             zoned,
-        };
+        });
         // What the mount asked to have failed, armed before anything reads or
         // writes: a mount that named sites and then replayed a log without
         // them would exercise the healthy path and report the error path
@@ -299,6 +305,7 @@ impl<S: SectorSource> Volume<S> {
 /// that clause is gated on the line having NAMED discard — which nothing has
 /// here — so the value below cannot change an answer.
 /// # C: O(1)
+#[inline(never)]
 fn check_mount_options(sb: &SuperBlock, opts: &Options, writable: bool)
     -> Result<Options, Errno> {
     let facts = crate::opts::Facts {
@@ -316,6 +323,7 @@ fn check_mount_options(sb: &SuperBlock, opts: &Options, writable: bool)
 
 /// What a volume's shape says about the defaults a mount of it should take.
 /// # C: O(2 blocks)
+#[inline(never)]
 pub fn mount_facts<S: SectorSource>(source: &S, want_write: bool, hw_support_discard: bool)
     -> Result<crate::opts::Facts, Errno> {
     let sb = read_super(source)?;
@@ -333,6 +341,7 @@ pub fn mount_facts<S: SectorSource>(source: &S, want_write: bool, hw_support_dis
 /// are two. Only a volume where NEITHER validates is refused, and the error
 /// reported is the first copy's, because it is the one a checker will look at.
 /// # C: O(2 blocks)
+#[inline(never)]
 pub fn read_super<S: SectorSource>(source: &S) -> Result<SuperBlock, Errno> {
     let mut first_err = None;
     for block in 0..SUPER_COPIES {
@@ -353,6 +362,7 @@ pub fn read_super<S: SectorSource>(source: &S) -> Result<SuperBlock, Errno> {
 
 /// Read both checkpoint packs and keep the newer valid one, with its payload.
 /// # C: O(payload blocks)
+#[inline(never)]
 pub fn read_checkpoint<S: SectorSource>(source: &S, sb: &SuperBlock)
     -> Result<(Checkpoint, Vec<u8>), Errno> {
     let blks = sb.blks_per_seg();
@@ -370,6 +380,7 @@ pub fn read_checkpoint<S: SectorSource>(source: &S, sb: &SuperBlock)
 }
 
 /// One pack, or `None` when it does not validate. # C: O(2 blocks)
+#[inline(never)]
 fn try_pack<S: SectorSource>(source: &S, start: u32, blks_per_seg: u32, pack: Pack)
     -> Option<Checkpoint> {
     let head = read_one(source, start).ok()?;
@@ -395,6 +406,7 @@ fn read_one<S: SectorSource>(source: &S, addr: u32) -> Result<Vec<u8>, Errno> {
 /// written at all. Reading the wrong block yields a journal of plausible
 /// nonsense whose entries then override correct table entries.
 /// # C: O(2 blocks)
+#[inline(never)]
 pub fn read_journals<S: SectorSource>(source: &S, sb: &SuperBlock, cp: &Checkpoint)
     -> Result<(NatJournal, SitJournal), Errno> {
     let start = cp.start(sb.cp_blkaddr, sb.blks_per_seg());
@@ -424,6 +436,7 @@ pub fn read_journals<S: SectorSource>(source: &S, sb: &SuperBlock, cp: &Checkpoi
 /// fits. The segment numbers and offsets come from the checkpoint either way —
 /// losing those would make the next write land in a segment already in use.
 /// # C: O(6 blocks)
+#[inline(never)]
 pub fn read_cursegs<S: SectorSource>(source: &S, sb: &SuperBlock, cp: &Checkpoint)
     -> Result<[Curseg; crate::uapi::NR_CURSEG_TYPE], Errno> {
     let start = cp.start(sb.cp_blkaddr, sb.blks_per_seg());
@@ -469,6 +482,7 @@ pub fn probe_access(sb: &SuperBlock) -> Result<Access, features::Refusal> {
 /// zoned layout nothing can locate, a zoned drive under a conventional
 /// layout, and reports that do not agree with one another.
 /// # C: O(zones)
+#[inline(never)]
 fn zone_geometry(
     sb: &SuperBlock,
     opts: &Options,

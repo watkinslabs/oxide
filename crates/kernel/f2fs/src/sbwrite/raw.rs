@@ -66,6 +66,7 @@ impl RawSuper {
 /// stopped at the first good copy would leave a broken one broken forever.
 /// Only a volume where NEITHER validates is refused.
 /// # C: O(2 blocks)
+#[inline(never)]
 pub fn read_raw<S: SectorSource>(source: &S) -> Result<(RawSuper, SuperBlock), Errno> {
     let mut first_err = None;
     let mut found: Option<(Vec<u8>, u64)> = None;

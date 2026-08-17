@@ -40,6 +40,7 @@ impl ErrorRecord {
     }
 
     /// Read both arrays out of a superblock copy's bytes. # C: O(1)
+    #[inline(never)]
     pub fn from_super(b: &[u8]) -> Self {
         let mut errors = [0u8; MAX_F2FS_ERRORS];
         let mut stop_reason = [0u8; MAX_STOP_REASON];
