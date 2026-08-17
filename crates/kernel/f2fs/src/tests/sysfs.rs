@@ -65,10 +65,24 @@ fn the_build_feature_directory_lists_only_implemented_features() {
     assert!(listed.contains(&"compression"));
     assert!(listed.contains(&"verity"));
     assert!(listed.contains(&"quota_ino"));
-    // Refused at mount, so claiming it would send a formatter into a failure.
-    assert!(!listed.contains(&"block_zoned"));
-    // Nothing reads the encryption bit.
-    assert!(!listed.contains(&"encryption"));
+    // A zoned volume MOUNTS: its geometry is read and its write pointers are
+    // reconciled against the logs. Claiming otherwise sent a formatter away
+    // from a feature that works.
+    assert!(listed.contains(&"block_zoned"));
+    // Data and names are both enciphered and deciphered, including under a
+    // case-folding directory, where the bucket is the keyed hash of the folded
+    // plaintext.
+    assert!(listed.contains(&"encryption"));
+    assert!(listed.contains(&"encrypted_casefold"));
+    // The ioctls exist and reach the volume.
+    assert!(listed.contains(&"atomic_write"));
+    assert!(listed.contains(&"pin_file"));
+    // A no-op at the only block size a volume may state, so the ordinary
+    // summary reader reads a packed volume correctly.
+    assert!(listed.contains(&"packed_ssa"));
+    // The one absence: nothing calls the record that carries an error into the
+    // superblock, so a damaged volume looks clean to the next mount.
+    assert!(!listed.contains(&"fserror"));
     for a in attrs.iter() {
         assert_eq!(a.mode, crate::fsattr::RO);
         assert_eq!((a.show)().expect("show"), b"supported\n");
@@ -90,7 +104,9 @@ fn a_mount_publishes_its_own_stat_and_feature_list_directories() {
     let fs = mounted("/dev/vda");
     let attrs = mount_attrs(&fs);
     assert!(!names(&attrs, "vda").is_empty());
-    assert_eq!(names(&attrs, "vda/stat"), ["cp_status", "sb_status", "undiscard_blks"]);
+    assert_eq!(names(&attrs, "vda/stat"),
+               ["cp_status", "issued_discard", "queued_discard", "sb_status",
+                "undiscard_blks"]);
     let fl = names(&attrs, "vda/feature_list");
     assert_eq!(fl.len(), 16, "one entry per on-disk feature bit");
     assert!(fl.contains(&"casefold"));
@@ -113,6 +129,9 @@ fn an_attribute_is_writable_exactly_when_something_reads_it() {
     controls.extend(["ram_thresh", "max_read_extent_count", "last_age_weight",
                      "hot_data_age_threshold", "warm_data_age_threshold", "iostat_enable",
                      "readdir_ra"]);
+    // The injection record is the third owner: its fields are written one at a
+    // time, and every injection site consults them.
+    controls.extend(["inject_rate", "inject_type", "inject_lock_timeout"]);
     for a in mount_attrs(&fs).iter().chain(global_attrs().iter()) {
         let control = controls.contains(&a.name);
         assert_eq!(a.store.is_some(), control, "{}/{}", a.dir, a.name);
