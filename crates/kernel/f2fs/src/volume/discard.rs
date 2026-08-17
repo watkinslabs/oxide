@@ -108,6 +108,27 @@ impl<S: SectorSource> Volume<S> {
 
     /// Whether this mount announces freed space at all. # C: O(1)
     pub fn discards(&self) -> bool { self.opts.discard }
+
+    /// Runs the discard machinery is holding and has not announced.
+    ///
+    /// Read from the DISCARD CONTROL, which is the one owner of what is
+    /// outstanding: `pending_discard` above is a different stage of the same
+    /// pipeline — addresses released since the last checkpoint, which may not be
+    /// announced at all until that checkpoint lands — and reporting it as
+    /// outstanding would count blocks the device may not be told about.
+    ///
+    /// A mount with no discard thread announces every run as its checkpoint
+    /// lands, so nothing is ever outstanding and zero is the true answer rather
+    /// than a missing one.
+    /// # C: O(MAX_PLIST_NUM)
+    pub fn discard_runs_waiting(&self) -> u64 {
+        self.bg.as_ref().map_or(0, |b| b.dcc.lock().cmd_count() as u64)
+    }
+
+    /// The same, in blocks. # C: O(runs waiting)
+    pub fn discard_blocks_waiting(&self) -> u64 {
+        self.bg.as_ref().map_or(0, |b| b.dcc.lock().undiscard_blks())
+    }
 }
 
 #[cfg(test)]

@@ -177,3 +177,36 @@ fn errors_remount_ro_stops_the_writes_when_a_real_checkpoint_fails() {
     assert!(v.commit().is_err());
     assert!(!v.writable(), "errors=remount-ro did not stop the writes");
 }
+
+/// `errors=panic` reaches the layer that owns the machine.
+///
+/// The demand is what is observable here: a hosted build has no machine to
+/// stop, so the test installs the halt path itself and asserts the filesystem
+/// asked it — with the reason it found, which is the whole content of the
+/// diagnosis. The four other arms of `errors=` are pinned in `handle.rs`; what
+/// this pins is that the halt arm is not decided and then dropped.
+#[test]
+fn errors_panic_demands_a_halt_naming_the_reason() {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    static SEEN: AtomicUsize = AtomicUsize::new(0);
+    fn record(fs: &'static str, reason: &'static str) {
+        assert_eq!(fs, "f2fs");
+        assert_eq!(reason, "write failure");
+        SEEN.fetch_add(1, Ordering::SeqCst);
+    }
+    let panic_opts = Options { errors: crate::opts::Errors::Panic, ..Options::defaults() };
+    let (bytes, _ino, _at) = image_with_file();
+
+    // The control: the same stop under `errors=continue` demands nothing.
+    vfs::set_fs_halt_hook(record);
+    let mut v = Volume::mount_with(MemImage::from_bytes(BLKSIZE as u32, bytes.clone()),
+                                  Options::defaults(), true).expect("mount");
+    v.stop_checkpoint(StopReason::WriteFail, false);
+    assert_eq!(SEEN.load(Ordering::SeqCst), 0, "errors=continue asked for a halt");
+
+    let mut v = Volume::mount_with(MemImage::from_bytes(BLKSIZE as u32, bytes),
+                                  panic_opts, true).expect("mount");
+    v.stop_checkpoint(StopReason::WriteFail, false);
+    vfs::clear_fs_halt_hook();
+    assert_eq!(SEEN.load(Ordering::SeqCst), 1, "errors=panic was decided and never acted on");
+}

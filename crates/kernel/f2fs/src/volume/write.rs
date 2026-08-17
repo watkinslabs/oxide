@@ -314,6 +314,10 @@ impl<S: SectorSource> Volume<S> {
         let take = data.len().min(BLKSIZE);
         block[..take].copy_from_slice(&data[..take]);
         self.write_block_crypt(addr, &block, flags, ctx)?;
+        // Whose block it was is known HERE and nowhere below: the block writer
+        // sees an address, and an address cannot say which file's `fsync` will
+        // have to fence the member it landed on.
+        self.note_file_write(ino, addr);
         {
             use crate::stats::iostat::Io;
             self.io_account(self.io_gc_kind(Io::FsData, Io::FsGcData), BLKSIZE as u64, false);

@@ -103,12 +103,14 @@ fn each_inode_shape_has_its_own_line() {
 fn the_three_pending_inode_figures_share_one_line_in_order() {
     let mut v = vol();
     v.orphans.insert(4);
-    let mut c = Counters::new();
-    c.append_ino = 5;
-    c.update_ino = 6;
-    let g = General::sample(&mut v, &c).unwrap();
+    // Each figure comes off the record that owns it, so each is arranged the
+    // way the running filesystem arranges it: a file with data placed out of
+    // line, and a file with a rewrite in place that no barrier has reached.
+    for ino in [5u32, 6, 7] { v.ino_lists.add(crate::checkpoint::InoKind::Append, ino); }
+    for ino in [8u32, 9] { v.note_inplace_write(ino); }
+    let g = General::sample(&mut v, &Counters::new()).unwrap();
     let b = partition(&g, "vda", 0, 0);
-    assert!(b.contains("  - Orphan/Append/Update Inode: 1, 5, 6\n"), "{b}");
+    assert!(b.contains("  - Orphan/Append/Update Inode: 1, 3, 2\n"), "{b}");
 }
 
 /// The occupancy table has one row per log, in the report's own order, and

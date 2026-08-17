@@ -355,7 +355,8 @@ impl<S: SectorSource> Volume<S> {
         self.writable_or_err()?;
         if self.segstate.gc_running { return Ok(None); }
         self.load_segments()?;
-        let search = Search::background(policy, self.segstate.gc_cursor);
+        let search = Search::background(policy, self.segstate.gc_cursor,
+                                       self.max_victim_search());
         // What an earlier ahead-of-demand pass already chose is passed over.
         // This search is BOUNDED, so without the exclusion it would settle on
         // the same cheapest section every round and the rest of the volume

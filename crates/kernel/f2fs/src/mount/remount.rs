@@ -92,7 +92,7 @@ impl F2fs {
                 // leaves is what says the volume was put down cleanly.
                 v.mark_dirty();
             }
-            let out = self.checkpoint();
+            let out = self.checkpoint_now();
             self.volume.lock().set_closing(false);
             out?;
         }

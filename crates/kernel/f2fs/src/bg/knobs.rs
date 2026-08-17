@@ -29,6 +29,10 @@ pub enum Knob {
     GcIdle,
     /// Passes an urgent mode lasts before it lapses.
     GcRemainingTrials,
+    /// Sections an ahead-of-demand pass costs before it settles for the best it
+    /// has seen. A caller that needs space NOW is deliberately not bounded by
+    /// it, so this only ever widens or narrows the BACKGROUND pass.
+    MaxVictimSearch,
     DiscardGranularity,
     MaxOrderedDiscard,
     DiscardIoAwareGran,
@@ -50,6 +54,7 @@ pub fn name(k: Knob) -> &'static str {
         Knob::GcUrgent => "gc_urgent",
         Knob::GcIdle => "gc_idle",
         Knob::GcRemainingTrials => "gc_remaining_trials",
+        Knob::MaxVictimSearch => "max_victim_search",
         Knob::DiscardGranularity => "discard_granularity",
         Knob::MaxOrderedDiscard => "max_ordered_discard",
         Knob::DiscardIoAwareGran => "discard_io_aware_gran",
@@ -66,6 +71,7 @@ pub fn name(k: Knob) -> &'static str {
 pub const ALL: &[Knob] = &[
     Knob::GcUrgentSleepTime, Knob::GcMinSleepTime, Knob::GcMaxSleepTime,
     Knob::GcNoGcSleepTime, Knob::GcUrgent, Knob::GcIdle, Knob::GcRemainingTrials,
+    Knob::MaxVictimSearch,
     Knob::DiscardGranularity, Knob::MaxOrderedDiscard, Knob::DiscardIoAwareGran,
     Knob::DiscardIoAware, Knob::DiscardUrgentUtil, Knob::MaxDiscardRequest,
     Knob::MinDiscardIssueTime, Knob::MidDiscardIssueTime, Knob::MaxDiscardIssueTime,
@@ -81,6 +87,7 @@ pub fn show(bg: &Bg, k: Knob) -> u64 {
         Knob::GcUrgent => u64::from(urgent_of(bg.gc.lock().mode)),
         Knob::GcIdle => u64::from(bg.gc.lock().mode.as_u32()),
         Knob::GcRemainingTrials => u64::from(bg.gc.lock().remaining_trials),
+        Knob::MaxVictimSearch => u64::from(bg.gc.lock().max_victim_search),
         Knob::DiscardGranularity => u64::from(bg.dcc.lock().granularity),
         Knob::MaxOrderedDiscard => u64::from(bg.dcc.lock().max_ordered_discard),
         Knob::DiscardIoAwareGran => u64::from(bg.dcc.lock().io_aware_gran),
@@ -126,6 +133,9 @@ pub fn accepts(k: Knob, v: u64, atgc: bool) -> Result<(), Errno> {
         | Knob::MaxDiscardIssueTime | Knob::MaxDiscardRequest =>
             v != 0 && v <= u64::from(u32::MAX),
         Knob::GcRemainingTrials => v <= u64::from(u32::MAX),
+        // Zero would cost nothing and settle for nothing, so an ahead-of-demand
+        // pass with it set would never find a victim at all.
+        Knob::MaxVictimSearch => v != 0 && v <= u64::from(u32::MAX),
     };
     if ok { Ok(()) } else { Err(Errno::Einval) }
 }
@@ -146,6 +156,7 @@ pub fn store(bg: &Bg, k: Knob, v: u64, atgc: bool) -> Result<(), Errno> {
         Knob::GcUrgent => bg.set_gc_mode(urgent_mode(n)),
         Knob::GcIdle => bg.set_gc_mode(GcMode::from_u32(n).unwrap_or(GcMode::Normal)),
         Knob::GcRemainingTrials => bg.gc.lock().remaining_trials = n,
+        Knob::MaxVictimSearch => bg.gc.lock().max_victim_search = n,
         Knob::DiscardGranularity => bg.dcc.lock().granularity = n,
         Knob::MaxOrderedDiscard => bg.dcc.lock().max_ordered_discard = n,
         Knob::DiscardIoAwareGran => bg.dcc.lock().io_aware_gran = n,

@@ -128,10 +128,16 @@ fn an_attribute_is_writable_exactly_when_something_reads_it() {
     controls.extend(crate::atgc::knobs::ALL.iter().map(|&k| crate::atgc::knobs::name(k)));
     controls.extend(["ram_thresh", "max_read_extent_count", "last_age_weight",
                      "hot_data_age_threshold", "warm_data_age_threshold", "iostat_enable",
-                     "readdir_ra"]);
+                     "readdir_ra", "dirty_nats_ratio"]);
+    // The fourth owner is the placement pair: the armed in-place-update set and
+    // the three thresholds its arms compare against.
+    controls.extend(["ipu_policy", "min_ipu_util", "min_fsync_blocks", "min_ssr_sections"]);
     // The injection record is the third owner: its fields are written one at a
     // time, and every injection site consults them.
     controls.extend(["inject_rate", "inject_type", "inject_lock_timeout"]);
+    // The extension lists are the fifth: the write reaches the SUPERBLOCK, so
+    // a name added here is seen by every later mount.
+    controls.push("extension_list");
     for a in mount_attrs(&fs).iter().chain(global_attrs().iter()) {
         let control = controls.contains(&a.name);
         assert_eq!(a.store.is_some(), control, "{}/{}", a.dir, a.name);
@@ -326,10 +332,20 @@ fn discard_counts_start_empty_and_count_runs_and_blocks_separately() {
     assert_eq!(show(&attrs, "vda", "pending_discard"), "0\n");
     assert_eq!(show(&attrs, "vda/stat", "undiscard_blks"), "0\n");
 
+    // Both come off the DISCARD CONTROL, which is the one owner of what is
+    // outstanding. A block released since the last checkpoint is not outstanding
+    // — that checkpoint may make it live again — so parking one on the volume's
+    // own list must move neither figure.
     fs.volume.lock().pending_discard.extend_from_slice(&[100, 101, 102, 200]);
+    assert_eq!(show(&attrs, "vda", "pending_discard"), "0\n");
+    assert_eq!(show(&attrs, "vda/stat", "undiscard_blks"), "0\n");
+
+    fs.bg().dcc.lock().extend([(100u32, 3u32), (200, 1)]);
 
     assert_eq!(show(&attrs, "vda", "pending_discard"), "2\n", "two runs");
     assert_eq!(show(&attrs, "vda/stat", "undiscard_blks"), "4\n", "four blocks");
+    // In flight is a third state, and nothing has been handed over yet.
+    assert_eq!(show(&attrs, "vda/stat", "queued_discard"), "0\n");
 }
 
 /// Every attribute must render off the LIVE volume: a value captured when the
@@ -344,4 +360,41 @@ fn an_attribute_reflects_a_change_made_after_it_was_published() {
     assert_ne!(before, after, "sb_status did not follow the volume");
     let word = u64::from_str_radix(after.trim(), 16).expect("hex");
     assert!(word & 1 != 0, "the dirty bit did not rise");
+}
+
+/// The extension list takes a write, and the write reaches the MEDIUM.
+///
+/// The read-back is through a fresh mount of the bytes the volume left behind,
+/// because an attribute that changed only memory would satisfy any assertion
+/// made through the mount that took the write.
+#[test]
+fn an_extension_written_through_sysfs_is_on_the_medium() {
+    let fs = mounted("/dev/vda");
+    let attrs = mount_attrs(&fs);
+    let a = attrs.iter().find(|a| a.dir == "vda" && a.name == "extension_list").expect("published");
+    let store = a.store.as_ref().expect("writable");
+    assert_eq!(store(b"[h]qcow2\n").expect("accepted"), 9, "the whole write was consumed");
+    let shown = String::from_utf8((a.show)().unwrap()).unwrap();
+    let (cold, hot) = shown.split_once("hot file extension:\n").expect("both lists");
+    assert!(hot.contains("qcow2\n"), "{shown}");
+    assert!(!cold.contains("qcow2\n"), "the name landed in the wrong list: {shown}");
+
+    // Refusals, and that a refusal changes nothing.
+    assert!(store(b"[h]qcow2\n").is_err(), "a name already listed was taken twice");
+    assert!(store(b"qcow2\n").is_err(), "a line naming no list was accepted");
+    assert!(store(b"[c]!nosuchext\n").is_err(), "a name in no list was removed");
+    assert_eq!(String::from_utf8((a.show)().unwrap()).unwrap(), shown);
+
+    // That the change reaches the MEDIUM is pinned by
+    // `volume::extlist::tests`, which remounts the bytes; what is pinned here is
+    // that the file's write reaches the volume that writes them. The mount's own
+    // parsed superblock is re-read from the committed copy by `adopt_super`.
+    let sb = fs.volume.lock().super_block().clone();
+    let hot_names: alloc::vec::Vec<&str> = sb.extensions.iter()
+        .skip(sb.extension_count as usize).take(sb.hot_ext_count as usize)
+        .map(|s| s.as_str()).collect();
+    assert!(hot_names.contains(&"qcow2"), "the write did not reach the volume: {hot_names:?}");
+
+    assert_eq!(store(b"[h]!qcow2\n").expect("accepted"), 10);
+    assert_eq!(fs.volume.lock().super_block().hot_ext_count, 0, "the removal did not reach it");
 }

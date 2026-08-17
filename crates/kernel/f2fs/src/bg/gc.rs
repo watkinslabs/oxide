@@ -136,6 +136,10 @@ pub struct GcKthread {
     pub remaining_trials: u32,
     /// Where the walk has got to: the interval the next sleep will use.
     pub wait_ms: u32,
+    /// Sections an ahead-of-demand pass costs before it settles for the best it
+    /// has seen. A caller that needs space NOW is not bounded by it — a bound
+    /// there would fail an allocation while a good victim sat past the cut-off.
+    pub max_victim_search: u32,
 }
 
 impl Default for GcKthread {
@@ -154,6 +158,7 @@ impl GcKthread {
             mode: GcMode::Normal,
             remaining_trials: 0,
             wait_ms: DEF_GC_THREAD_MIN_SLEEP_TIME,
+            max_victim_search: crate::volume::gc::victim::DEF_MAX_VICTIM_SEARCH,
         }
     }
 

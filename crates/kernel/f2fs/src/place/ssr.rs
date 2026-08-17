@@ -97,6 +97,53 @@ pub fn need_new_seg(c: &Choice, need_ssr: impl FnOnce() -> bool) -> bool {
     !need_ssr()
 }
 
+/// The order the types are searched in for a segment to recycle.
+///
+/// The log's OWN type first, because a segment already holding blocks of this
+/// temperature is the one where a recycled write costs the cleaner nothing
+/// extra: mixing a hot block into a cold segment is what makes a section
+/// expensive to reclaim later, since the cleaner has to move the whole of it for
+/// the sake of the one block that keeps changing.
+///
+/// Then the rest of the log's own CLASS — never across it, so a file's data is
+/// never written into a segment holding node blocks — walked from the far end
+/// towards this type: a warm or cold log looks at the coldest first and a hot log
+/// at the hottest, so the search moves AWAY from the temperature that would
+/// contaminate the segment it lands in.
+/// # C: O(1)
+/// The two logs beyond the persisted six — the pinned log and the
+/// age-threshold one — are cold DATA by temperature, which is the type the
+/// reference gives the age-threshold log when it asks for a victim.
+pub fn victim_type_order(seg_type: usize) -> [usize; TYPES_PER_CLASS] {
+    let ty = if seg_type >= NR_CURSEG_PERSIST_TYPE { COLD_DATA } else { seg_type };
+    let node = ty >= NR_CURSEG_DATA_TYPE;
+    let base = if node { NR_CURSEG_DATA_TYPE } else { 0 };
+    // WARM and COLD walk down from the coldest; HOT walks up from itself.
+    let reversed = ty >= base + 1;
+    let mut out = [ty; TYPES_PER_CLASS];
+    let mut at = 1;
+    for i in 0..TYPES_PER_CLASS {
+        let cand = if reversed { base + TYPES_PER_CLASS - 1 - i } else { base + i };
+        if cand == ty { continue; }
+        out[at] = cand;
+        at += 1;
+    }
+    out
+}
+
+/// Logs one class holds: hot, warm and cold.
+pub const TYPES_PER_CLASS: usize = 3;
+
+/// Where the node logs begin, which is where the data class ends.
+const NR_CURSEG_DATA_TYPE: usize = 3;
+
+/// Logs that name a type the medium's segment table records.
+const NR_CURSEG_PERSIST_TYPE: usize = NR_CURSEG_DATA_TYPE + TYPES_PER_CLASS;
+
+/// The coldest data log, which is what a log outside the persisted six counts
+/// as.
+const COLD_DATA: usize = 2;
+
 /// Where the search for a free segment starts.
 ///
 /// From the beginning of the main area for the logs whose blocks are expected

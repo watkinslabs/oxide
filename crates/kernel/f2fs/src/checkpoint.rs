@@ -25,6 +25,7 @@ pub mod bitmap;
 pub mod sanity;
 pub mod inolist;
 pub mod cache;
+pub mod merge;
 
 pub use bitmap::{nat_bitmap, sit_bitmap, test_bit};
 pub use inolist::{InoKind, InoLists};

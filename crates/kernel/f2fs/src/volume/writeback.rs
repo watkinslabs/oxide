@@ -100,6 +100,9 @@ impl<S: SectorSource> Volume<S> {
         // an allocation is the thing being avoided.
         if self.writes_in_place(ino, &inode, old, self.sync_writeback)? {
             self.write_data_in_place(old, &page, flags, ctx.as_ref())?;
+            // The rewrite landed on the member `old` lies on, and it is this
+            // file's `fsync` that will have to fence it.
+            self.note_file_write(ino, old);
             // The file now has bytes on a block nothing about its recorded
             // shape distinguishes from the one the checkpoint already holds, so
             // no later comparison can tell that anything happened. Recorded
@@ -113,6 +116,19 @@ impl<S: SectorSource> Volume<S> {
         let kind = if is_dir { Kind::DirData } else { Kind::FileData };
         let addr = self.write_data_crypt(ino, kind, owner, ofs as u16, old, &page, flags, ctx.as_ref())?;
         self.set_holder_addr_keeping_page(ino, holder, ofs, addr)?;
+        // The file now has data written OUT of line since the last checkpoint,
+        // which is exactly what a recovery chain can put back — so an `fsync`
+        // arriving later has recovery info worth writing. Recorded per volume so
+        // the fact outlives whatever this mount stops holding about the file.
+        self.ino_lists.add(crate::checkpoint::InoKind::Append, ino);
+        // The file now has data written OUT of line since the last checkpoint,
+        // which is exactly what a recovery chain can put back — so an `fsync`
+        // arriving later has recovery info worth writing. Recorded per volume so
+        // the fact outlives whatever this mount stops holding about the file.
+        // The file now has data written OUT of line since the last checkpoint,
+        // which is exactly what a recovery chain can put back — so an `fsync`
+        // arriving later has recovery info worth writing. Recorded per volume so
+        // the fact outlives whatever this mount stops holding about the file.
         // The room the reservation was holding is the room this block just
         // took. Released after the slot names a real block, so a failure above
         // leaves the reservation intact and the page still dirty.

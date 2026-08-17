@@ -38,19 +38,25 @@ impl<S: SectorSource> Volume<S> {
         Ok(())
     }
 
-    /// Make everything this mount has written to the medium durable ON it.
+    /// Make ONE FILE's writes durable on the members they actually landed on.
     ///
     /// What `fsync` reaches when it took the chain path. The chain is a run of
     /// node blocks a later mount goes looking for; a device is free to hold them
     /// in its cache and to reorder them, so without this the call returns having
     /// promised durability for bytes a power cut still loses.
     ///
-    /// Every member is asked, not only the dirty ones: this is not the
-    /// checkpoint's pass, and the file whose blocks are being fenced may sit on
-    /// any of them.
-    /// # C: one barrier per member
-    pub(crate) fn issue_flush(&self) -> Result<(), Errno> {
-        for i in 0..self.source.members() { self.barrier_member(i)?; }
+    /// A file whose blocks all sit on one member of a six-member volume owes one
+    /// barrier, not six, and a barrier is a whole-cache operation rather than a
+    /// rounding error. Which members those are is the decision's
+    /// (`devices::barrier::fsync_flush_targets`), and it answers "every member"
+    /// for a volume of one and for a file nothing is recorded against — a caller
+    /// that cannot tell "nothing written" from "not recorded" must not skip a
+    /// barrier it may owe.
+    /// # C: one barrier per member the file's blocks landed on
+    pub(crate) fn issue_flush_for(&self, ino: u32) -> Result<(), Errno> {
+        let targets = barrier::fsync_flush_targets(
+            self.source.members(), self.dirty_ino_devs.mask(ino));
+        for i in targets.iter() { self.barrier_member(i)?; }
         Ok(())
     }
 
@@ -64,12 +70,17 @@ impl<S: SectorSource> Volume<S> {
     /// forgetting the debt would mean the next `fsync` — which may be the one
     /// that could have paid it — no longer knows it is owed.
     /// # C: one barrier per member, or none
-    pub(crate) fn fsync_barrier(&self, ino: u32, atomic: bool) -> Result<(), Errno> {
+    pub(crate) fn fsync_barrier(&mut self, ino: u32, atomic: bool) -> Result<(), Errno> {
         if !barrier::fsync_needs_flush(self.opts.barrier, self.opts.fsync_mode, atomic) {
             return Ok(());
         }
-        self.issue_flush()?;
+        self.issue_flush_for(ino)?;
         self.update_writes.borrow_mut().fenced(ino);
+        // The members this file's blocks were on have emptied their caches, so
+        // it owes nothing until it is written to again. Dropped only after the
+        // barriers succeeded: an entry cleared on a failed barrier would let the
+        // next `fsync` of the same file skip a member still holding its bytes.
+        self.dirty_ino_devs.forget(ino);
         Ok(())
     }
 
@@ -82,6 +93,14 @@ impl<S: SectorSource> Volume<S> {
     pub(crate) fn note_inplace_write(&self, ino: u32) {
         self.update_writes.borrow_mut().record(ino);
     }
+
+    /// How many files have a rewrite in place that no barrier has reached.
+    ///
+    /// The reference keeps this as a list of inode numbers on the mount, for
+    /// the same reason and with the same lifetime: raised where a page is
+    /// rewritten where it lay, dropped by the barrier that makes it durable.
+    /// # C: O(1)
+    pub(crate) fn unfenced_inplace_files(&self) -> usize { self.update_writes.borrow().len() }
 
     /// Whether `ino` has a rewrite in place that no barrier has reached.
     /// # C: O(log files)
@@ -98,7 +117,10 @@ impl<S: SectorSource> Volume<S> {
     /// promise was actually made; a mount that asked for no barriers wrote the
     /// commit block plain and fenced nothing, so it has retired no debt.
     /// # C: O(files owed)
-    pub(crate) fn note_all_fenced(&self) { self.update_writes.borrow_mut().fenced_all(); }
+    pub(crate) fn note_all_fenced(&mut self) {
+        self.update_writes.borrow_mut().fenced_all();
+        self.dirty_ino_devs.clear();
+    }
 
     /// Empty the caches of every member this checkpoint's pack will REFER TO,
     /// leaving the member that carries the pack to the commit block.
@@ -135,6 +157,24 @@ impl<S: SectorSource> Volume<S> {
             }
         }
         Ok(())
+    }
+
+    /// Note that a write of `ino` landed on the member holding `addr`.
+    ///
+    /// Beside the volume-wide mark, not instead of it: the two answer different
+    /// questions — which members a CHECKPOINT depends on, and which members one
+    /// FILE's `fsync` must fence — and a checkpoint's answer cannot be derived
+    /// from one file's.
+    ///
+    /// Called from the writers that know whose block it is, which is every
+    /// writer into a log. Metadata writes have no owning file and are covered by
+    /// the volume-wide mark alone, exactly as the reference covers them.
+    /// # C: O(log files), plus O(devices)
+    pub(crate) fn note_file_write(&mut self, ino: u32, addr: u32) {
+        self.note_device_write(addr);
+        if !self.devs.is_multi() { return; }
+        let (member, _) = self.devs.target(addr);
+        self.dirty_ino_devs.mark(ino, member);
     }
 
     /// Note that a write landed on the member holding `addr`.

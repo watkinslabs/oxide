@@ -21,6 +21,20 @@ pub struct Tunables {
     pub min_ssr_sections: u32,
 }
 
+/// A threshold a control may be RETUNED to, checked before it takes effect.
+///
+/// The three thresholds below carry no bound of their own: each is compared
+/// against a count, and a value no count can reach turns the arm that reads it
+/// off, which is a legitimate thing to ask for and is what the reference's own
+/// controls accept. The one refusal is the WIDTH — the value is stored in a
+/// word, and truncating a wider one would leave the mount running a threshold
+/// nobody asked for while the attribute reported the value that was written.
+/// # C: O(1)
+pub fn store_threshold(value: u64) -> Result<u32, syscall::errno::Errno> {
+    if value > u64::from(u32::MAX) { return Err(syscall::errno::Errno::Einval); }
+    Ok(value as u32)
+}
+
 impl Tunables {
     /// What a mount of this volume starts with.
     ///

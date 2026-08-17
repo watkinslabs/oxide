@@ -156,6 +156,11 @@ fn a_discard_pass_hands_over_what_is_parked_and_shortens_its_interval() {
     assert_eq!(pass.round.issued(), 2);
     assert_eq!(pass.wait_ms, 60_000, "the list is empty again, so there is no hurry");
     assert_eq!(fs.bg().dcc.lock().cmd_count(), 0);
+    // The device has answered by the time the pass returns, so nothing is left
+    // in flight. A pass that raised the count and never lowered it would report
+    // a device permanently busy with requests it finished long ago.
+    assert_eq!(fs.bg().dcc.lock().queued_count(), 0, "the in-flight count was never lowered");
+    assert_eq!(fs.bg().dcc.lock().issued, 2, "the work done is still reported");
 }
 
 #[test]
@@ -273,4 +278,79 @@ fn every_mutating_operation_reaches_the_balance_path() {
         op(&fs);
         assert!(fs.bg().balance_count() > before, "{name} never reached the balance path");
     }
+}
+
+/// One write serves every caller enrolled for it, against a real mount.
+///
+/// This is the pass the merge thread runs, and the saving is what it is for:
+/// three enrolled callers cost ONE checkpoint, and all three are released with
+/// that one write's result.
+#[test]
+fn one_merged_pass_writes_one_checkpoint_for_every_enrolled_caller() {
+    let fs = with_a_file("f", 2);
+    let before = fs.bg().cprc.lock().generation();
+    let seen: Vec<u64> = (0..3).map(|_| fs.bg().enrol_checkpoint()).collect();
+    assert_eq!(fs.bg().cprc.lock().queued(), 3);
+    assert_eq!(crate::bg::round::ckpt_pass(&fs), 3, "the pass did not serve the whole queue");
+    let c = fs.bg().cprc.lock().clone();
+    assert_eq!((c.issued(), c.total()), (1, 3), "three callers cost more than one write");
+    assert_eq!(c.last(), Ok(()), "the write that served them failed");
+    for &g in &seen { assert!(fs.bg().checkpoint_served(g), "a caller was left waiting"); }
+    assert!(c.generation() != before);
+    // A pass with nothing enrolled writes nothing: a checkpoint is never owed
+    // because time has passed.
+    assert_eq!(crate::bg::round::ckpt_pass(&fs), 0);
+    assert_eq!(fs.bg().cprc.lock().issued(), 1, "an empty pass wrote a checkpoint");
+}
+
+/// With no thread to hand it to, the caller keeps the write — and the mount's
+/// state really does reach the medium, which is the thing a fall-through must
+/// not quietly skip.
+#[test]
+fn a_mount_with_no_merge_thread_writes_its_own_checkpoint() {
+    let mut o = Options::defaults();
+    o.checkpoint_merge = true;
+    let fs = mounted_with(o);
+    assert!(fs.merges_checkpoints(), "the option did not reach the mount");
+    fs.make(ROOT_INO, "g", crate::mode::S_IFREG | 0o644, 0, 0, 0, None, true).unwrap();
+    fs.checkpoint_merged(true).expect("the caller must write its own");
+    assert_eq!(fs.bg().cprc.lock().issued(), 0, "nothing was handed to a thread");
+    let root = fs.volume.lock().read_inode(ROOT_INO).unwrap();
+    assert!(fs.volume.lock().lookup(&root, ROOT_INO, b"g").is_ok(),
+            "the fall-through wrote nothing");
+}
+
+/// The dispatch asks the thread exactly when the decision says to, and takes
+/// the thread's answer as its own when it gets one.
+///
+/// Driven with the handing-over lifted out, because a hosted build has no thread
+/// to hand anything to: without this, a mount that decided perfectly and then
+/// never asked would pass every test here.
+#[test]
+fn the_dispatch_asks_the_thread_exactly_when_the_decision_says_to() {
+    use crate::checkpoint::merge::Request;
+    use core::cell::Cell;
+    let fs = mounted();
+    let handed = Request { merge: true, thread_running: true, umounting: false, waiting: true };
+    let asked = Cell::new(0u32);
+    // Handed over and served: the thread's answer is the caller's, and no
+    // checkpoint of the caller's own is written.
+    let before = fs.bg().cprc.lock().issued();
+    let out = fs.checkpoint_via(&handed, || { asked.set(asked.get() + 1); Some(Ok(())) });
+    assert_eq!(out, Ok(()));
+    assert_eq!(asked.get(), 1, "the thread was not asked");
+    assert_eq!(fs.bg().cprc.lock().issued(), before, "it wrote one of its own as well");
+    // Handed over and REFUSED — the thread was stopping — so the caller writes
+    // its own rather than reporting a promise nobody kept.
+    let out = fs.checkpoint_via(&handed, || { asked.set(asked.get() + 1); None });
+    assert_eq!(out, Ok(()));
+    assert_eq!(asked.get(), 2);
+    // A failure the thread reports is the caller's failure too.
+    let out = fs.checkpoint_via(&handed, || Some(Err(vfs::VfsError::Eio)));
+    assert_eq!(out, Err(vfs::VfsError::Eio));
+    // Not handed over: the thread is never asked.
+    let own = Request { merge: false, ..handed };
+    let out = fs.checkpoint_via(&own, || { asked.set(asked.get() + 1); Some(Ok(())) });
+    assert_eq!(out, Ok(()));
+    assert_eq!(asked.get(), 2, "a caller that must not merge asked the thread anyway");
 }

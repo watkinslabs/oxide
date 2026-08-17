@@ -112,7 +112,10 @@ impl SuperOps for F2fsSuperOps {
     /// started from: every out-of-place write is invisible, because nothing
     /// points at the new blocks. A read-only mount has nothing to push and
     /// reports success rather than failing every `sync(2)` on the machine.
-    fn sync_fs(&self, _wait: bool) -> KResult<()> { self.fs.checkpoint() }
+    /// A synchronous `sync` is the one checkpoint several callers can share, so
+    /// it is the one that goes through the merge thread; an asynchronous one is
+    /// nobody's wait to save. # C: O(a checkpoint), or O(1) plus the wait
+    fn sync_fs(&self, wait: bool) -> KResult<()> { self.fs.checkpoint_merged(wait) }
 
     /// Unmount. This is the last chance to write a checkpoint, and skipping it
     /// throws away everything the mount did since the previous one — the
@@ -122,7 +125,7 @@ impl SuperOps for F2fsSuperOps {
     /// A failure is logged rather than swallowed silently, because the volume
     /// is then genuinely behind and a check is due.
     fn put_super(&self) {
-        if self.fs.checkpoint().is_err() {
+        if self.fs.checkpoint_now().is_err() {
             klog::warn::warn_on(true, "f2fs: could not write a checkpoint at unmount; run fsck");
         }
         // The reporting directories describe a volume that no longer exists.

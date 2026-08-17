@@ -16,6 +16,7 @@ use sync::{Spinlock, TaskList};
 
 use crate::opts::{BackgroundGc, DiscardUnit};
 
+use super::ckpt::CkptControl;
 use super::discard::DiscardControl;
 use super::gc::{GcKthread, GcMode};
 use super::waits::Waits;
@@ -24,6 +25,8 @@ use super::waits::Waits;
 pub struct Bg {
     pub gc: Spinlock<GcKthread, TaskList>,
     pub dcc: Spinlock<DiscardControl, TaskList>,
+    /// The checkpoint requests waiting to be merged into one write.
+    pub cprc: Spinlock<CkptControl, TaskList>,
     /// What the mount was asked for. The threads honour it every round, so a
     /// remount that turns cleaning off stops it without stopping the thread.
     pub bggc: Spinlock<BackgroundGc, TaskList>,
@@ -33,6 +36,7 @@ pub struct Bg {
     /// run will ever be looked at.
     pub gc_running: AtomicBool,
     pub discard_running: AtomicBool,
+    pub ckpt_running: AtomicBool,
     /// When the mount last did work for somebody, in the clock's seconds.
     /// Both threads yield to a volume that is being used.
     pub last_op: AtomicU64,
@@ -49,10 +53,12 @@ impl Bg {
         Self {
             gc: Spinlock::new(GcKthread::new()),
             dcc: Spinlock::new(DiscardControl::new(unit, segs_per_sec)),
+            cprc: Spinlock::new(CkptControl::new()),
             bggc: Spinlock::new(bggc),
             stopping: AtomicBool::new(false),
             gc_running: AtomicBool::new(false),
             discard_running: AtomicBool::new(false),
+            ckpt_running: AtomicBool::new(false),
             last_op: AtomicU64::new(0),
             fggc_gen: AtomicU64::new(0),
             balances: AtomicU64::new(0),
@@ -99,6 +105,28 @@ impl Bg {
     pub fn wake_discard(&self) {
         self.dcc.lock().wake = true;
         self.waits.wake_discard();
+    }
+
+    /// Enrol this caller for the next merged checkpoint, answering the batch
+    /// counter it must wait to pass.
+    ///
+    /// The enrolment and the wake are one step so a thread between its
+    /// condition test and its park still sees the request.
+    /// # C: O(1)
+    pub fn enrol_checkpoint(&self) -> u64 {
+        let seen = self.cprc.lock().enrol();
+        self.waits.wake_ckpt();
+        seen
+    }
+
+    /// Whether the merge thread has moved past `seen`. # C: O(1)
+    pub fn checkpoint_served(&self, seen: u64) -> bool {
+        self.cprc.lock().generation() != seen
+    }
+
+    /// The result of the batch that has just been served. # C: O(1)
+    pub fn checkpoint_result(&self) -> Result<(), vfs::VfsError> {
+        self.cprc.lock().last()
     }
 
     /// Put the cleaner into an urgent mode and start it immediately.

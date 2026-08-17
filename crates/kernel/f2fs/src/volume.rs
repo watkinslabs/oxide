@@ -115,6 +115,7 @@ pub mod blockio;
 pub mod writeback;
 pub mod nodeback;
 pub mod placement;
+pub mod extlist;
 pub mod mapped;
 pub mod mkwrite;
 pub mod readahead;
@@ -332,6 +333,8 @@ pub struct Volume<S: SectorSource> {
     /// and the write path takes `&self`, for the same reason the caches above
     /// need it.
     pub(crate) dirty_devs: core::cell::Cell<crate::devices::barrier::DirtyDevices>,
+    /// The same, per FILE, which is what an `fsync` asks about.
+    pub(crate) dirty_ino_devs: crate::devices::barrier::DirtyInoDevices,
     /// Files whose bytes were rewritten IN PLACE since the last barrier.
     ///
     /// A rewrite in place changes nothing about the file's recorded shape, so

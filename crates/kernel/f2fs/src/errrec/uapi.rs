@@ -95,4 +95,27 @@ pub const STOP_REASON_MAX: usize = 13;
 impl StopReason {
     /// Which slot of the array counts this reason. # C: O(1)
     pub fn slot(self) -> usize { self as usize }
+
+    /// The reason as a name a diagnostic can carry.
+    ///
+    /// Static, because the one caller is the halt path: the machine is about to
+    /// stop, and a message built there could not allocate.
+    /// # C: O(1)
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StopReason::Shutdown => "shutdown",
+            StopReason::FaultInject => "fault injection",
+            StopReason::MetaPage => "metadata page",
+            StopReason::WriteFail => "write failure",
+            StopReason::CorruptedSummary => "corrupted summary",
+            StopReason::UpdateInode => "inode update",
+            StopReason::FlushFail => "cache flush failure",
+            StopReason::NoSegment => "no segment",
+            StopReason::CorruptedFreeBitmap => "corrupted free bitmap",
+            StopReason::CorruptedNid => "corrupted node id",
+            StopReason::ReadMeta => "metadata read",
+            StopReason::ReadNode => "node read",
+            StopReason::ReadData => "data read",
+        }
+    }
 }

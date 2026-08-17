@@ -218,6 +218,67 @@ impl DirtyDevices {
     pub const fn is_dirty(self, i: usize) -> bool { i < 64 && self.mask & (1 << i) != 0 }
 }
 
+/// Which members hold writes of ONE FILE that no barrier has reached.
+///
+/// The volume-wide set next door answers a checkpoint's question — which members
+/// does the pack about to be written depend on — and cannot answer an `fsync`'s,
+/// which is about one file: on a volume of six members, a file whose blocks all
+/// landed on one of them owes one barrier, and the volume-wide set would charge
+/// it six. A barrier is a whole-cache operation, so those five are not a rounding
+/// error.
+///
+/// An entry is dropped by the barrier that emptied the caches it named, and every
+/// entry by a checkpoint, which fences everything at once. A file with NO entry is
+/// owed nothing — nothing of it has been written since it was last made durable —
+/// but a caller that cannot tell "nothing written" from "not recorded" must flush
+/// every member rather than none: a barrier too many costs time, and one too few
+/// loses data the caller was promised.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DirtyInoDevices {
+    inos: alloc::collections::BTreeMap<u32, u64>,
+}
+
+impl DirtyInoDevices {
+    /// # C: O(1)
+    pub fn new() -> Self { Self::default() }
+
+    /// Note that a block of `ino` landed on member `i`. # C: O(log files)
+    pub fn mark(&mut self, ino: u32, i: usize) {
+        let bit = if i < 64 { 1u64 << i } else { u64::MAX };
+        *self.inos.entry(ino).or_insert(0) |= bit;
+    }
+
+    /// The members `ino` has unfenced writes on. # C: O(log files)
+    pub fn mask(&self, ino: u32) -> u64 { self.inos.get(&ino).copied().unwrap_or(0) }
+
+    /// Forget one file's, after a barrier that reached those members.
+    /// # C: O(log files)
+    pub fn forget(&mut self, ino: u32) { self.inos.remove(&ino); }
+
+    /// Forget every file's, after something that fenced them all. # C: O(files)
+    pub fn clear(&mut self) { self.inos.clear(); }
+
+    /// How many files have unfenced writes recorded. # C: O(1)
+    pub fn len(&self) -> usize { self.inos.len() }
+
+    /// # C: O(1)
+    pub fn is_empty(&self) -> bool { self.inos.is_empty() }
+}
+
+/// Which members one file's `fsync` must fence.
+///
+/// A single-member volume fences its one member whatever is recorded: it carries
+/// everything, so there is nothing to narrow. A multi-member volume fences the
+/// members the file's own blocks landed on — and every member when nothing is
+/// recorded for it, because a caller that cannot tell "nothing written" from "not
+/// recorded" must not skip a barrier it may owe.
+/// # C: O(1)
+pub fn fsync_flush_targets(members: usize, ino_mask: u64) -> Members {
+    let all = if members >= 64 { u64::MAX } else { (1u64 << members) - 1 };
+    if members < 2 || ino_mask == 0 { return Members { mask: all }; }
+    Members { mask: ino_mask & all }
+}
+
 #[cfg(test)]
 #[path = "../tests/barrier.rs"]
 mod tests;

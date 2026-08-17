@@ -375,10 +375,27 @@ impl<S: SectorSource> Volume<S> {
 
     /// A partly-used segment to recycle, and the first free block in it.
     ///
+    /// `log` is the log doing the recycling, and its TYPE decides the order the
+    /// candidates are considered in (`place::ssr::victim_type_order`): a segment
+    /// already holding blocks of this temperature first, then the rest of this
+    /// log's own class, and never the other class — a file's data written into a
+    /// segment the table calls a node segment is a volume whose file and tables
+    /// disagree about what an address is, which the in-place writer's own guard
+    /// refuses.
+    ///
     /// A segment that is empty is not a recycling candidate — that is what
     /// opening a fresh one is for — and one that is full has nothing to give.
-    /// # C: O(main segments)
-    pub(crate) fn find_victim_seg(&self, hint: u32) -> Option<(u32, u16)> {
+    /// # C: O(main segments) per type
+    pub(crate) fn find_victim_seg(&self, hint: u32, log: usize) -> Option<(u32, u16)> {
+        for ty in crate::place::ssr::victim_type_order(log) {
+            if let Some(hit) = self.find_victim_seg_typed(hint, ty as u8) { return Some(hit); }
+        }
+        None
+    }
+
+    /// One pass of the search, over the segments the table gives `want` as their
+    /// type. # C: O(main segments)
+    fn find_victim_seg_typed(&self, hint: u32, want: u8) -> Option<(u32, u16)> {
         let n = self.sb.segment_count_main;
         let per = self.sb.blks_per_seg() as u16;
         for i in 0..n {
@@ -386,6 +403,7 @@ impl<S: SectorSource> Volume<S> {
             if self.is_current(s) || self.is_prefree(s) || self.beyond_resize(s) { continue; }
             let live = self.seg_valid(s);
             if live == 0 || live >= per { continue; }
+            if self.segments().get(s as usize).map(|e| e.seg_type()) != Some(want) { continue; }
             if let Some(off) = self.first_free_block(s) { return Some((s, off)); }
         }
         None
