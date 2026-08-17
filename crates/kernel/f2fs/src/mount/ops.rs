@@ -67,11 +67,29 @@ impl F2fsOps {
             FileType::Symlink   => vfs::posix_acl::NewKind::Symlink,
             _                   => vfs::posix_acl::NewKind::Other,
         };
+        let got = Self::inherited(node, &dir, perm as u16, ctx.umask, kind)?;
+        let child = node.fs.make(node.ino, name, mk_mode(ftype, u32::from(got.mode)),
+                                 ctx.fsuid(), ctx.fsgid(), rdev, body, named)?;
+        if got.access.is_some() || got.default.is_some() {
+            Self::store_inherited(node, Self::node(&child)?.ino, &got)?;
+        }
+        Ok(child)
+    }
+
+    /// The parent's default ACL, folded with the requested mode and the umask
+    /// into what the new object gets.
+    ///
+    /// Kept out of line: the attribute region it reads is assembled in a buffer
+    /// the size of a block, and a create already spends most of the kernel stack
+    /// on the write path below it. # C: O(region bytes)
+    #[inline(never)]
+    fn inherited(node: &F2fsNode, dir: &crate::Inode, perm: u16, umask: u16,
+                 kind: vfs::posix_acl::NewKind) -> KResult<crate::acl::Inherited> {
         let (enabled, parent) = {
             let v = node.fs.volume.lock();
             let enabled = v.options().acl;
             let parent = if enabled && kind != vfs::posix_acl::NewKind::Symlink {
-                match v.get_xattr(&dir, node.ino, crate::acl::name_default()) {
+                match v.get_xattr(dir, node.ino, crate::acl::name_default()) {
                     Ok(bytes) => Some(bytes),
                     Err(Errno::Enodata) | Err(Errno::Eopnotsupp) => None,
                     Err(e) => return Err(errno_to_vfs(e)),
@@ -81,21 +99,20 @@ impl F2fsOps {
             };
             (enabled, parent)
         };
-        let got = crate::acl::inherit(parent.as_deref(), perm as u16, ctx.umask, kind, enabled)
-            .map_err(errno_to_vfs)?;
-        let child = node.fs.make(node.ino, name, mk_mode(ftype, u32::from(got.mode)),
-                                 ctx.fsuid(), ctx.fsgid(), rdev, body, named)?;
-        // The ACLs go on AFTER the object exists, the default one first, exactly
-        // as the mode above was decided before it: a create that fails here has
-        // an object whose mode already reflects the ACL it did not get.
+        crate::acl::inherit(parent.as_deref(), perm, umask, kind, enabled).map_err(errno_to_vfs)
+    }
+
+    /// Put the inherited ACLs on the object once it exists, the default one
+    /// first. Out of line for the same reason as `inherited`. # C: O(region bytes)
+    #[inline(never)]
+    fn store_inherited(node: &F2fsNode, ino: u32, got: &crate::acl::Inherited) -> KResult<()> {
         for (name, value) in [(crate::acl::name_default(), &got.default),
                               (crate::acl::name_access(),  &got.access)] {
             let Some(bytes) = value else { continue };
-            let child_ino = Self::node(&child)?.ino;
-            node.fs.volume_now().set_xattr(child_ino, name, Some(bytes), false, false)
+            node.fs.volume_now().set_xattr(ino, name, Some(bytes), false, false)
                 .map_err(errno_to_vfs)?;
         }
-        Ok(child)
+        Ok(())
     }
 }
 
