@@ -235,6 +235,13 @@ impl InodeOps for F2fsOps {
         Ok(child)
     }
 
+    /// `f2fs_fallocate`. The mode word arrives raw: the generic layer vets the
+    /// COMBINATION, and every refusal that depends on this volume's or this
+    /// file's state is `super::falloc`'s. # C: O(blocks the range covers)
+    fn fallocate(&self, inode: &Inode, mode: u32, off: u64, len: u64) -> KResult<()> {
+        super::falloc::fallocate(inode, mode, off, len)
+    }
+
     fn truncate(&self, inode: &Inode, len: u64) -> KResult<()> {
         let node = Self::node(inode)?;
         if !node.fs.is_writable() { return Err(VfsError::Erofs); }
@@ -500,3 +507,7 @@ mod create_owner_tests;
 #[cfg(test)]
 #[path = "../tests/opsnamei.rs"]
 mod namei_tests;
+/// What an OPEN owes, driven through a real handle.
+#[cfg(test)]
+#[path = "../tests/openhook.rs"]
+mod open_tests;

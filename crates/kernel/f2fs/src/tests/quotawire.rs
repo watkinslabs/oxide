@@ -11,6 +11,7 @@
 //! - `release`: space returned when an attribute or a directory block goes.
 //! - `project`: what a project's own tree reports as free.
 //! - `compress`: what a compressed cluster costs its owner.
+//! - `flushblocks`: which blocks of a quota file a checkpoint re-places.
 //! - `acquire`:  that every entry point acquires before it allocates, driven
 //!               on a FRESH MOUNT — the only state in which a missing
 //!               acquisition is visible.
@@ -41,3 +42,4 @@ use sectors::MemImage;
 #[path = "quotawire/project.rs"] mod project;
 #[path = "quotawire/compress.rs"] mod compress;
 #[path = "quotawire/acquire.rs"] mod acquire;
+#[path = "quotawire/flushblocks.rs"] mod flushblocks;

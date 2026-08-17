@@ -9,6 +9,7 @@
 //! Module manifest:
 //! - `node`: what an inode of this filesystem is, built from a stored one.
 //! - `ops`:  the inode and file operations.
+//! - `falloc`: the `fallocate(2)` slot, and the swap-area hooks.
 //! - `quota`: the hooks `quotactl(2)` reaches this filesystem through.
 //! - `sb`:   `statfs` and the option tail.
 //! - `write`: the mutating operations, and the clock they share.
@@ -39,6 +40,7 @@ use crate::volume::Volume;
 
 pub mod node;
 pub mod devs;
+pub mod falloc;
 pub mod ops;
 pub mod prepare;
 pub mod quota;
@@ -350,6 +352,30 @@ pub fn errno_to_vfs(err: Errno) -> VfsError {
         Errno::Enomem => VfsError::Enomem,
         Errno::Eopnotsupp => VfsError::Eopnotsupp,
         Errno::Enodata => VfsError::Enodata,
+        // Everything below was reaching userspace as EIO, which says the medium
+        // failed. Each of these is a refusal the caller can act on, and a
+        // program told EIO instead retries or reports a broken disk: a write
+        // over a quota limit is EDQUOT, a writable open of a sealed file is
+        // EPERM, a link past the count limit is EMLINK.
+        Errno::Eperm => VfsError::Eperm,
+        Errno::Eacces => VfsError::Eacces,
+        Errno::Edquot => VfsError::Edquot,
+        Errno::Emlink => VfsError::Emlink,
+        Errno::Exdev => VfsError::Exdev,
+        Errno::Ebusy => VfsError::Ebusy,
+        Errno::Etxtbsy => VfsError::Etxtbsy,
+        Errno::Eagain => VfsError::Eagain,
+        Errno::Erange => VfsError::Erange,
+        Errno::Eoverflow => VfsError::Eoverflow,
+        Errno::Euclean => VfsError::Euclean,
+        Errno::Enotty => VfsError::Enotty,
+        Errno::Emsgsize => VfsError::Emsgsize,
+        Errno::Ebadf => VfsError::Ebadf,
+        Errno::Efault => VfsError::Efault,
+        Errno::Esrch => VfsError::Esrch,
+        // EIO is the answer for a medium failure and for the errnos this
+        // interface's error type cannot spell (the three signature refusals and
+        // ENOPKG), which is recorded as an open issue rather than hidden here.
         _ => VfsError::Eio,
     }
 }
