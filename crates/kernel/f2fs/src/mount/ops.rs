@@ -12,6 +12,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
+use syscall::errno::Errno;
 use vfs::xattr::XattrError;
 use vfs::idmap::Idmap;
 use vfs::namei::RENAME_NOREPLACE;
@@ -56,11 +57,45 @@ impl F2fsOps {
     /// names. # C: O(depth) blocks
     fn make(inode: &Inode, name: &str, ftype: FileType, perm: u32, rdev: u32,
             body: Option<&[u8]>, ctx: &CreateCtx, named: bool) -> KResult<InodeRef> {
-        let node = Self::writable_dir(inode)?;
+        let (node, dir) = Self::dir_of(inode)?;
+        if !node.fs.is_writable() { return Err(VfsError::Erofs); }
         // The umask is applied here and not in the volume: it is a property of
-        // the caller, not of the medium.
-        let perm = perm & !u32::from(ctx.umask);
-        node.fs.make(node.ino, name, mk_mode(ftype, perm), ctx.fsuid(), ctx.fsgid(), rdev, body, named)
+        // the caller, not of the medium — and it is only ever consulted when the
+        // parent has no default ACL to inherit, which is what `inherit` decides.
+        let kind = match ftype {
+            FileType::Directory => vfs::posix_acl::NewKind::Dir,
+            FileType::Symlink   => vfs::posix_acl::NewKind::Symlink,
+            _                   => vfs::posix_acl::NewKind::Other,
+        };
+        let (enabled, parent) = {
+            let v = node.fs.volume.lock();
+            let enabled = v.options().acl;
+            let parent = if enabled && kind != vfs::posix_acl::NewKind::Symlink {
+                match v.get_xattr(&dir, node.ino, crate::acl::name_default()) {
+                    Ok(bytes) => Some(bytes),
+                    Err(Errno::Enodata) | Err(Errno::Eopnotsupp) => None,
+                    Err(e) => return Err(errno_to_vfs(e)),
+                }
+            } else {
+                None
+            };
+            (enabled, parent)
+        };
+        let got = crate::acl::inherit(parent.as_deref(), perm as u16, ctx.umask, kind, enabled)
+            .map_err(errno_to_vfs)?;
+        let child = node.fs.make(node.ino, name, mk_mode(ftype, u32::from(got.mode)),
+                                 ctx.fsuid(), ctx.fsgid(), rdev, body, named)?;
+        // The ACLs go on AFTER the object exists, the default one first, exactly
+        // as the mode above was decided before it: a create that fails here has
+        // an object whose mode already reflects the ACL it did not get.
+        for (name, value) in [(crate::acl::name_default(), &got.default),
+                              (crate::acl::name_access(),  &got.access)] {
+            let Some(bytes) = value else { continue };
+            let child_ino = Self::node(&child)?.ino;
+            node.fs.volume_now().set_xattr(child_ino, name, Some(bytes), false, false)
+                .map_err(errno_to_vfs)?;
+        }
+        Ok(child)
     }
 }
 
@@ -191,6 +226,13 @@ impl InodeOps for F2fsOps {
         -> Result<(), XattrError> {
         let node = Self::node(inode).map_err(XattrError::Fs)?;
         if !node.fs.is_writable() { return Err(XattrError::Fs(VfsError::Erofs)); }
+        // The two ACL names are stored as this filesystem's own record, so the
+        // interchange blob the caller handed over is converted before it lands.
+        let value = if crate::acl::is_acl_name(name) {
+            crate::acl::disk_from_xattr(&value).map_err(xattr_errno)?
+        } else {
+            value
+        };
         node.fs
             .volume
             .lock()
@@ -215,8 +257,14 @@ impl InodeOps for F2fsOps {
     fn getxattr(&self, inode: &Inode, name: &str) -> Result<Vec<u8>, XattrError> {
         let node = Self::node(inode).map_err(XattrError::Fs)?;
         let live = node.live().map_err(XattrError::Fs)?;
-        let v = node.fs.volume.lock();
-        v.get_xattr(&live, node.ino, name).map_err(xattr_errno)
+        let stored = {
+            let v = node.fs.volume.lock();
+            v.get_xattr(&live, node.ino, name).map_err(xattr_errno)?
+        };
+        if crate::acl::is_acl_name(name) {
+            return crate::acl::xattr_from_disk(&stored).map_err(xattr_errno);
+        }
+        Ok(stored)
     }
 
     fn listxattr(&self, inode: &Inode) -> Result<Vec<String>, XattrError> {
@@ -348,3 +396,7 @@ pub fn split_names(bytes: &[u8]) -> Vec<String> {
 #[cfg(test)]
 #[path = "../tests/ops.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../tests/acl_ops.rs"]
+mod acl_tests;

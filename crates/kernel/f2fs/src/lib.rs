@@ -46,6 +46,7 @@
 //! - `hash`:       the name hash that picks a directory bucket.
 //! - `dirent`:     entries, their four parallel arrays, and bucket addressing.
 //! - `xattr`:      the attribute region, assembled from its two halves.
+//! - `acl`:        the stored ACL record, and what a new object inherits.
 //! - `mode`:       the stored mode word, and the device number beside it.
 //! - `compress`:   compressed clusters, and the codecs that unpack them.
 //! - `casefold`:   case-insensitive name resolution.
@@ -92,6 +93,7 @@ pub mod node;
 pub mod hash;
 pub mod dirent;
 pub mod xattr;
+pub mod acl;
 pub mod mode;
 pub mod compress;
 pub mod casefold;
