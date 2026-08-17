@@ -82,30 +82,36 @@ pub fn context(algorithm: u8, log: u8, chksum: bool, level: u8) -> Option<(u8, u
 /// only where the real extension would be: at the end, or immediately before
 /// another dot.
 /// # C: O(name length)
-pub fn matches_extension(name: &[u8], ext: &[u8]) -> bool {
+pub fn matches_extension(name: &[u8], ext: &[u8]) -> bool { scan(name, ext, true) }
+
+/// Whether `name` carries `ext` as an extension for the volume's HOT list.
+///
+/// The same walk with the last rule dropped: a dotted component that merely
+/// BEGINS with the entry counts. The two lists are read by different
+/// decisions and are matched differently, so `clip.mp4x` is a hot name and is
+/// not a compressible one. Folding the two into one predicate would move
+/// whichever list did not own that rule.
+/// # C: O(name length)
+pub fn matches_temperature_extension(name: &[u8], ext: &[u8]) -> bool { scan(name, ext, false) }
+
+/// The shared walk. `at_boundary` demands the match sit where the REAL
+/// extension would: at the end, or immediately before another dot.
+/// # C: O(name length)
+fn scan(name: &[u8], ext: &[u8], at_boundary: bool) -> bool {
     if ext == EXTENSION_ANY { return true; }
     if ext.is_empty() || name.len() < ext.len() + 2 { return false; }
     let (n, e) = (name.len(), ext.len());
     for i in 1..n - e {
         if name[i] != b'.' { continue; }
         if !eq_fold(&name[i + 1..i + 1 + e], ext) { continue; }
+        if !at_boundary { return true; }
         if i == n - e - 1 || name[i + 1 + e] == b'.' { return true; }
     }
     false
 }
 
-/// Whether a name should be created compressed under one mount's lists.
-///
-/// The refusal list wins: a name on both lists is not compressed, because the
-/// list that says no is the one that was written to make an exception.
-/// # C: O(names * lengths)
-pub fn wants_compression(name: &[u8], allow: &[&[u8]], refuse: &[&[u8]]) -> bool {
-    if refuse.iter().any(|e| matches_extension(name, e)) { return false; }
-    allow.iter().any(|e| matches_extension(name, e))
-}
-
 /// Case-insensitive comparison over the ASCII the lists are written in.
 /// # C: O(len)
-fn eq_fold(a: &[u8], b: &[u8]) -> bool {
+pub(crate) fn eq_fold(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.eq_ignore_ascii_case(y))
 }

@@ -34,7 +34,7 @@ pub fn vol_facts<S: SectorSource>(v: &Volume<S>) -> VolFacts {
         // so this is never zero.
         device_count: u32::try_from(v.devices().len()).unwrap_or(u32::MAX),
         large_section: sb.segs_per_sec > 1,
-        compress_mode_user: v.options().compress_mode == crate::opts::CompressMode::User,
+        compress_mode_user: v.options().compress.mode == crate::opts::CompressMode::User,
         compress_backend_ready: true,
         main_blkaddr: main,
         max_blkaddr: main

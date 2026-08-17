@@ -81,14 +81,53 @@ fn a_checkpoint_owes_the_mark_again() {
 
 #[test]
 fn a_strict_mount_stops_forcing_a_checkpoint_once_the_name_is_stated() {
-    // `CpReason::RecoverDir` is the state this feeds: a strict mount owes a
-    // checkpoint while the entry is still only in the chain. Once an fsync has
-    // stated it, the file's next sync is an ordinary chain write.
+    // `CpReason::RecoverDir` needs BOTH halves: the parent must have lost an
+    // entry under a strict mount, and this file's own name must still be owed
+    // to the chain. Once an fsync has stated the name, the file's next sync is
+    // an ordinary chain write even though the parent is still on the list.
     let opts = Options { fsync_mode: FsyncMode::Strict, ..Options::defaults() };
     let (mut v, ino) = fresh_file(opts);
+    let gone = v.create(ROOT_INO, b"g", &spec(), None).expect("create");
+    v.remove(ROOT_INO, b"g", false, NOW).expect("remove");
+    let _ = gone;
     assert_eq!(v.fsync(ino).expect("first"), CpReason::RecoverDir);
     v.write_file(ino, 0, b"more").expect("write");
     assert_eq!(v.fsync(ino).expect("second"), CpReason::None);
+}
+
+#[test]
+fn a_strict_mount_that_removed_nothing_takes_the_chain() {
+    // The state the old approximation got wrong. Creating a file WRITES the
+    // parent's node, so a rule reading "was the parent written since the
+    // checkpoint" answered yes here and made every strict fsync of a new file
+    // pay for a whole checkpoint. Nothing was removed, so nothing is owed.
+    let opts = Options { fsync_mode: FsyncMode::Strict, ..Options::defaults() };
+    let (mut v, ino) = fresh_file(opts);
+    assert!(v.need_dentry_mark(ino).expect("mark"), "the name is still owed");
+    assert_eq!(v.fsync(ino).expect("fsync"), CpReason::None);
+}
+
+#[test]
+fn a_checkpoint_retires_the_parents_place_on_the_list() {
+    let opts = Options { fsync_mode: FsyncMode::Strict, ..Options::defaults() };
+    let (mut v, _) = fresh_file(opts);
+    v.create(ROOT_INO, b"g", &spec(), None).expect("create");
+    v.remove(ROOT_INO, b"g", false, NOW).expect("remove");
+    v.commit().expect("commit");
+    let after = v.create(ROOT_INO, b"a", &spec(), None).expect("create");
+    v.write_file(after, 0, b"x").expect("write");
+    assert_eq!(v.fsync(after).expect("fsync"), CpReason::None,
+               "the checkpoint made the parent durable, so the removal is paid for");
+}
+
+#[test]
+fn a_removal_under_a_lax_mount_is_not_recorded_at_all() {
+    // The list is a strict-mount promise. A posix mount owes only the file it
+    // is syncing, so a sibling's removal is none of its business.
+    let (mut v, ino) = fresh_file(Options::defaults());
+    v.create(ROOT_INO, b"g", &spec(), None).expect("create");
+    v.remove(ROOT_INO, b"g", false, NOW).expect("remove");
+    assert_eq!(v.fsync(ino).expect("fsync"), CpReason::None);
 }
 
 #[test]

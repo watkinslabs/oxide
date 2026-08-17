@@ -23,6 +23,7 @@
 //! - `fileops`: writing a file's bytes, and shortening one.
 //! - `dirwrite`: adding and removing directory entries.
 //! - `namei`:  creating, removing and renaming names.
+//! - `newcompr`: stamping a new inode's compression settings.
 //! - `xattr_write`: setting and removing attributes.
 //! - `quotas`:  charging allocations to the identities that own them.
 //! - `verify`:  attesting a verity file's data against its hash tree.
@@ -73,6 +74,7 @@ pub mod commit;
 pub mod fileops;
 pub mod dirwrite;
 pub mod namei;
+pub mod newcompr;
 pub mod xattr_write;
 pub mod discard;
 pub mod quotas;
@@ -149,6 +151,11 @@ pub struct Volume<S: SectorSource> {
     pub(crate) next_free_nid: u32,
     /// Whether anything is waiting for a checkpoint.
     pub(crate) dirty: bool,
+    /// The inode numbers this checkpoint epoch has accumulated, by why. Two of
+    /// the reasons an `fsync` must write a whole checkpoint are events that
+    /// happened to a directory rather than states its blocks show, so they are
+    /// recorded here as they happen and retired when a checkpoint lands.
+    pub(crate) ino_lists: crate::checkpoint::InoLists,
     /// What each quota kind resolved to on this mount.
     pub(crate) quota_setup: [crate::quota::Setup; crate::uapi::MAX_QUOTAS],
     /// Each kind's file header, parsed once.

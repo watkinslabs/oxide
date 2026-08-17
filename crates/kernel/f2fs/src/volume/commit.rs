@@ -157,6 +157,11 @@ impl<S: SectorSource> Volume<S> {
         self.nat_dirty.clear();
         self.sit_dirty.clear();
         self.dirty = false;
+        // Every entry names a directory whose blocks this checkpoint has just
+        // made durable, so no file below one of them needs a checkpoint on its
+        // account any more. Leaving them would make one strict removal cost a
+        // checkpoint per `fsync` for the rest of the mount.
+        self.ino_lists.release();
         self.sbi.checkpointed();
         // A volume mounted younger than the age threshold has no section that
         // could clear it, so the age policy started off. The checkpoint is

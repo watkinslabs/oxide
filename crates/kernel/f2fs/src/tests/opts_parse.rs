@@ -177,16 +177,15 @@ fn the_quota_options_set_their_own_kind() {
 
 #[test]
 fn a_name_this_build_cannot_deliver_is_refused_rather_than_dropped() {
-    // Accepting one silently would be a promise nothing keeps.
-    for name in [
-        "compress_algorithm=lz4",
-        "compress_log_size=14",
-        "compress_extension=so",
-        "nocompress_extension=txt",
-        "compress_chksum",
-        "compress_cache",
-    ] {
-        assert_eq!(p(name), Err(Errno::Eopnotsupp), "{name} should be refused");
+    // Accepting one silently would be a promise nothing keeps. The six names
+    // that decide what a new file is compressed with are no longer here: they
+    // are honoured, and their grammar is in `tests/opts/compress.rs`. What is
+    // left asks for a second cache in front of the decompressed pages, which
+    // has an observable memory cost this build does not pay.
+    assert_eq!(p("compress_cache"), Err(Errno::Eopnotsupp));
+    for name in ["compress_algorithm=lz4", "compress_log_size=4", "compress_extension=so",
+                 "nocompress_extension=txt", "compress_chksum"] {
+        assert!(p(name).is_ok(), "{name} should be honoured");
     }
 }
 
@@ -197,15 +196,16 @@ fn which_side_compresses_is_honoured_and_survives_being_shown() {
     // it. A remount reads the shown string back, so both spellings have to
     // come out of `show` in a form `parse` accepts.
     use crate::opts::CompressMode;
-    assert_eq!(Options::defaults().compress_mode, CompressMode::Fs);
-    assert_eq!(p("compress_mode=fs").unwrap().compress_mode, CompressMode::Fs);
+    let feature = crate::flags::FEATURE_COMPRESSION;
+    assert_eq!(Options::defaults().compress.mode, CompressMode::Fs);
+    assert_eq!(p("compress_mode=fs").unwrap().compress.mode, CompressMode::Fs);
     let user = p("compress_mode=user").unwrap();
-    assert_eq!(user.compress_mode, CompressMode::User);
+    assert_eq!(user.compress.mode, CompressMode::User);
     assert_eq!(p("compress_mode=maybe").map(|_| ()), Err(Errno::Einval));
     assert_eq!(p("compress_mode").map(|_| ()), Err(Errno::Einval));
-    let shown = crate::opts::show(&user);
+    let shown = crate::opts::show(&user, feature);
     assert!(shown.contains(",compress_mode=user"), "{shown}");
-    assert_eq!(crate::opts::parse(Options::defaults(), &shown).unwrap().compress_mode,
+    assert_eq!(crate::opts::parse(Options::defaults(), &shown).unwrap().compress.mode,
                CompressMode::User);
 }
 
@@ -279,5 +279,5 @@ fn the_two_names_the_format_no_longer_acts_on_are_still_accepted() {
 #[test]
 fn the_new_options_round_trip_through_their_own_rendering() {
     let o = p("fastboot,reserve_root=8,reserve_node=4,checkpoint=disable:12%").unwrap();
-    assert_eq!(parse(Options::defaults(), &crate::opts::show(&o)).unwrap(), o);
+    assert_eq!(parse(Options::defaults(), &crate::opts::show(&o, 0)).unwrap(), o);
 }

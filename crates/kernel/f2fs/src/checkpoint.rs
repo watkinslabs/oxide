@@ -13,6 +13,7 @@
 //!
 //! Module manifest:
 //! - `bitmap`: where the two version bitmaps live, and reading a bit.
+//! - `inolist`: the inode numbers one checkpoint epoch accumulated, and why.
 
 use alloc::vec::Vec;
 
@@ -21,8 +22,10 @@ use crate::uapi::*;
 
 pub mod bitmap;
 pub mod sanity;
+pub mod inolist;
 
 pub use bitmap::{nat_bitmap, sit_bitmap, test_bit};
+pub use inolist::{InoKind, InoLists};
 
 /// One checkpoint pack's header, resolved.
 #[derive(Clone, Debug, PartialEq, Eq)]

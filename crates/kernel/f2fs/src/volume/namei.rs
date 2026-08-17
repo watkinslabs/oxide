@@ -82,9 +82,29 @@ impl<S: SectorSource> Volume<S> {
     /// The one entry point for create, mkdir, symlink and mknod: they differ
     /// only in the mode, the initial contents and the link counts, and having
     /// four copies of the ordering above is how one of them ends up wrong.
+    ///
+    /// The compression policy is NOT offered the name here. That is the split
+    /// the reference draws and it is not arbitrary: a name only says something
+    /// about the bytes a file will hold when the caller creating it meant the
+    /// name to describe them. A device node, a symbolic link and an unnamed
+    /// temporary file carry names that describe nothing of the sort, so they
+    /// take compression from neither their name nor their directory.
     /// # C: O(depth) blocks
     pub fn create(&mut self, dir: u32, name: &[u8], spec: &NewInode, body: Option<&[u8]>)
         -> Result<u32, Errno> {
+        self.create_inner(dir, name, spec, body, false)
+    }
+
+    /// The ordinary file-creation form, which DOES offer the name.
+    /// # C: O(depth) blocks
+    pub fn create_named(&mut self, dir: u32, name: &[u8], spec: &NewInode, body: Option<&[u8]>)
+        -> Result<u32, Errno> {
+        self.create_inner(dir, name, spec, body, true)
+    }
+
+    /// # C: O(depth) blocks
+    fn create_inner(&mut self, dir: u32, name: &[u8], spec: &NewInode, body: Option<&[u8]>,
+                    named: bool) -> Result<u32, Errno> {
         self.writable_or_err()?;
         let parent = self.read_inode(dir)?;
         if mode::file_type(parent.mode) != vfs::FileType::Directory { return Err(Errno::Enotdir); }
@@ -97,10 +117,18 @@ impl<S: SectorSource> Volume<S> {
         let namelen = name.len().min(NAME_LEN);
         put32(&mut block, I_NAMELEN, namelen as u32);
         block[I_NAME..I_NAME + namelen].copy_from_slice(&name[..namelen]);
+        // Before the inline offer below, never after. A compressed file's
+        // blocks are clusters and its inline region would be read as plain
+        // bytes, so the two are mutually exclusive — and only the compression
+        // decision can say which of them the file gets.
+        let compressed =
+            self.stamp_new_compress(&mut block, parent.flags, is_dir,
+                                    if named { Some(name) } else { None });
         if is_dir {
             block[I_INLINE] |= INLINE_DENTRY | INLINE_DATA | DATA_EXIST;
             put32(&mut block, I_CURRENT_DEPTH, 1);
-        } else if self.opts.inline_data
+        } else if !compressed
+            && self.opts.inline_data
             && matches!(ft, vfs::FileType::Regular | vfs::FileType::Symlink)
         {
             // A small file starts INSIDE its inode, which is where most files
@@ -238,6 +266,14 @@ impl<S: SectorSource> Volume<S> {
             put64(b, I_CTIME, now.0);
             put32(b, I_CTIME_NSEC, now.1);
         })?;
+        // The name's DESTINATION is the half a removal does not cover. The
+        // source directory was recorded when its entry was cleared; the
+        // destination gained an entry that a chain replay would have to add
+        // back, and a moved directory carries its own second entry with it.
+        if self.opts.fsync_mode == crate::opts::FsyncMode::Strict {
+            self.ino_lists.add(crate::checkpoint::InoKind::TransDir, to);
+            if moving_is_dir { self.ino_lists.add(crate::checkpoint::InoKind::TransDir, hit.ino); }
+        }
         self.touch(from, now)?;
         if from != to { self.touch(to, now)?; }
         Ok(())

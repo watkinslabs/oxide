@@ -10,11 +10,19 @@
 use alloc::format;
 use alloc::string::String;
 
+use super::compress::{algorithm_name, Compress};
 use super::{AllocMode, BackgroundGc, CompressMode, DiscardUnit, Errors, Fragment, FsyncMode,
             MemoryMode, Mode, Options};
 
-/// Render `o`. # C: O(number of options)
-pub fn show(o: &Options) -> String {
+/// Render `o`, for a volume whose features are `feature`.
+///
+/// The feature set is a parameter because the compression group is shown only
+/// where the volume can record it. Rendering it everywhere would put a codec
+/// and a cluster width in the mount table of every volume that has no way to
+/// store either, and a remount reading the string back would then be told to
+/// configure compression on a volume that cannot have it.
+/// # C: O(number of options)
+pub fn show(o: &Options, feature: u32) -> String {
     let d = Options::defaults();
     let mut s = String::new();
     if o.background_gc != d.background_gc {
@@ -97,9 +105,7 @@ pub fn show(o: &Options) -> String {
     jquota(&mut s, o);
     if let Some(p) = &o.dummy_policy { s.push_str(crate::opts::crypt::show_dummy(p)); }
     if o.inlinecrypt { s.push_str(",inlinecrypt"); }
-    // Shown only when the caller was handed the decision: the mount doing it
-    // is the default, and a remount reads this string back.
-    if o.compress_mode == CompressMode::User { s.push_str(",compress_mode=user"); }
+    if crate::features::has_compression(feature) { compress(&mut s, &o.compress); }
     // Shown only when the mount asked, so an ordinary line stays short — and
     // shown in FULL when it did, because a volume running with injected
     // failures must never look like one that is not.
@@ -116,6 +122,37 @@ pub fn show(o: &Options) -> String {
         });
     }
     s
+}
+
+/// The compression group, in full.
+///
+/// Rendered in full rather than only where it differs from a default, because
+/// what a file is created with is not recoverable from the file afterwards: a
+/// caller reading the mount table has to be able to say what the next file it
+/// creates will be compressed with, and "whatever the build's default is" is
+/// not an answer a remount can restate.
+///
+/// The level rides on the codec's own name, in the one spelling the parser
+/// takes it in — a level rendered as a name of its own would be read back as
+/// an unknown option and silently dropped.
+/// # C: O(entries)
+fn compress(s: &mut String, c: &Compress) {
+    s.push_str(&format!(",compress_algorithm={}", algorithm_name(c.algorithm)));
+    if c.level != 0 { s.push_str(&format!(":{}", c.level)); }
+    s.push_str(&format!(",compress_log_size={}", c.log_size));
+    for e in c.extensions.iter() {
+        s.push_str(",compress_extension=");
+        s.push_str(&String::from_utf8_lossy(e));
+    }
+    for e in c.noextensions.iter() {
+        s.push_str(",nocompress_extension=");
+        s.push_str(&String::from_utf8_lossy(e));
+    }
+    if c.chksum { s.push_str(",compress_chksum"); }
+    s.push_str(match c.mode {
+        CompressMode::Fs => ",compress_mode=fs",
+        CompressMode::User => ",compress_mode=user",
+    });
 }
 
 /// The legacy arrangement: the format first, then one name per kind.

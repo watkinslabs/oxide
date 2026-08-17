@@ -31,7 +31,9 @@
 //! - `lzo_enc`:    LZO1X block encoding, both variants.
 //! - `encode`:     a cluster's plain bytes into the image the medium stores.
 //! - `plan`:       what a rewritten cluster's slots become, and the two counts.
-//! - `policy`:     which codec, which level, and which files get compressed.
+//! - `policy`:     which codec, which level, and which names match a list.
+//! - `newfile`:    whether a file being created is created compressed.
+//! - `chattr`:     turning the mark on and off after the file exists.
 //! - `writeback`:  writing and shortening a compressed file, cluster at a time.
 //! - `release`:    handing the saving back to the volume, and taking it again.
 //! - `rewrite`:    rewriting every cluster of one file compressed or plain.
@@ -47,6 +49,8 @@ pub mod lzo_enc;
 pub mod encode;
 pub mod plan;
 pub mod policy;
+pub mod newfile;
+pub mod chattr;
 pub mod writeback;
 pub mod release;
 pub mod rewrite;
@@ -55,6 +59,7 @@ pub use algo::{Algorithm, CompressError};
 pub use cluster::{data_blocks, Geometry, Header, COMPRESS_HEADER_SIZE};
 pub use decompress::{decompress_cluster, Chksum, Cluster};
 pub use encode::{compress_cluster, max_clen, Image, Stored};
+pub use newfile::{decide, NewFile};
 pub use plan::Slot;
 
 #[cfg(test)]

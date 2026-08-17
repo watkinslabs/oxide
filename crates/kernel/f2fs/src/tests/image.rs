@@ -113,6 +113,11 @@ pub struct Builder {
     pub root_ino: u32,
     pub node_ino: u32,
     pub meta_ino: u32,
+    /// The volume's own extension list, cold entries and hot ones. One array
+    /// on the medium; two here, because only the counts separate them and a
+    /// fixture that could not set them apart could not test the split.
+    pub cold_ext: alloc::vec::Vec<alloc::string::String>,
+    pub hot_ext: alloc::vec::Vec<alloc::string::String>,
     /// Whether the superblock's first copy is deliberately left broken.
     pub break_super0: bool,
     /// The member devices the superblock names: a path and a segment count
@@ -137,6 +142,8 @@ impl Builder {
             next_nid: FIRST_NID,
             nat: Vec::new(),
             nat_journal: Vec::new(),
+            cold_ext: alloc::vec!["jpg".into(), "mp4".into()],
+            hot_ext: alloc::vec::Vec::new(),
             nat_bitmap: vec![0u8; BITMAP_BYTES as usize],
             sit_bitmap: vec![0u8; BITMAP_BYTES as usize],
             sit_valid: vec![0u16; SEG_MAIN as usize],

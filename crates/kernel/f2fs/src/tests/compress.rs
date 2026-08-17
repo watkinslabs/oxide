@@ -11,6 +11,7 @@
 //! - `encode`:   whole clusters into the image the medium stores.
 //! - `plan`:     what a rewritten cluster's slots become, and the two counts.
 //! - `policy`:   which files get compressed, with which codec and level.
+//! - `newinode`: what a newly created file is compressed with, by remounting.
 //! - `write`:    writing a compressed file, proved by remounting.
 //! - `truncate`: shortening one, proved by remounting.
 
@@ -34,6 +35,8 @@ mod encode;
 mod plan;
 #[path = "compress/policy.rs"]
 mod policy;
+#[path = "compress/newinode.rs"]
+mod newinode;
 #[path = "compress/write.rs"]
 mod write;
 #[path = "compress/truncate.rs"]
