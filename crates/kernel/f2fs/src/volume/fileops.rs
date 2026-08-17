@@ -242,6 +242,28 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(1 block)
     pub(crate) fn reserve_data_slot(&mut self, ino: u32, holder: Holder, ofs: usize)
         -> Result<(), Errno> {
+        self.reserve_data_slot_inner(ino, holder, ofs, false)
+    }
+
+    /// The same, LEAVING the mapping's page for that offset where it is.
+    ///
+    /// One caller: the shared-mapping write fault, and for the same reason
+    /// writeback keeps its page. The page it is reserving for is the page a
+    /// user page table is about to point AT, so dropping it would hand the
+    /// mapper a frame the mapping no longer knows about and fill a second,
+    /// different frame for the next reader of the same offset — two live copies
+    /// of one page, disagreeing about the file for as long as both existed.
+    /// Nothing is lost by keeping it: a slot that held nothing read as zeroes,
+    /// which is what the page holds.
+    /// # C: O(1 block)
+    pub(crate) fn reserve_data_slot_keeping_page(&mut self, ino: u32, holder: Holder, ofs: usize)
+        -> Result<(), Errno> {
+        self.reserve_data_slot_inner(ino, holder, ofs, true)
+    }
+
+    /// # C: O(1 block)
+    fn reserve_data_slot_inner(&mut self, ino: u32, holder: Holder, ofs: usize, keep_page: bool)
+        -> Result<(), Errno> {
         self.volume_has_room(Some(ino), false)?;
         // Promised and taken up in the same breath, which is what the reference
         // does and what makes the limit refuse before the reservation exists
@@ -254,7 +276,9 @@ impl<S: SectorSource> Volume<S> {
             self.release_reserved_space(ino, BLKSIZE as u64)?;
             return Err(e);
         }
-        if let Err(e) = self.set_holder_addr_reserved(ino, holder, ofs) {
+        let set = if keep_page { self.set_holder_addr_reserved_keeping_page(ino, holder, ofs) }
+                  else { self.set_holder_addr_reserved(ino, holder, ofs) };
+        if let Err(e) = set {
             self.release_reservation();
             self.uncharge_space(ino, BLKSIZE as u64)?;
             return Err(e);

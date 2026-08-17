@@ -209,6 +209,23 @@ impl<S: SectorSource> Volume<S> {
         self.set_holder_addr_inner(ino, holder, ofs, crate::uapi::NEW_ADDR, true, false)
     }
 
+    /// A RESERVATION, leaving the mapping's page where it is.
+    ///
+    /// The two halves come from the two variants around it and neither may be
+    /// dropped: the stored run is left alone because a reservation names no
+    /// address and recomputing the run over it shortens it to nothing, and the
+    /// page is left alone because the shared-mapping write fault that reserves
+    /// here is reserving FOR that page — a user page table is about to point at
+    /// it, so dropping it would leave the mapper writing a frame the mapping no
+    /// longer knows about while the next reader of the offset filled a second
+    /// one. A slot that held nothing read as zeroes, which is what the page
+    /// holds, so keeping it shows nothing stale.
+    /// # C: O(1 block)
+    pub(crate) fn set_holder_addr_reserved_keeping_page(&mut self, ino: u32, holder: Holder,
+                                                        ofs: usize) -> Result<(), Errno> {
+        self.set_holder_addr_inner(ino, holder, ofs, crate::uapi::NEW_ADDR, false, false)
+    }
+
     /// The same, LEAVING the mapping's page where it is.
     ///
     /// One caller: writeback, which is putting the page it holds at `addr`. It

@@ -345,6 +345,12 @@ pub unsafe fn init_from_boot_info(
     }
     PMM_READY.store(true, Ordering::Release);
     crate::watermark::install(pmm_ref.snapshot());
+    // A cached page can become a machine frame from the moment there is an
+    // allocator to take one from, which is HERE — not at the kernel-only wiring
+    // below. A hosted test that brings this PMM up gets the same page cache the
+    // machine gets, which is what makes a shared writable mapping of a file
+    // checkable without a boot.
+    super::install_page_cache_frames();
     #[cfg(target_os = "oxide-kernel")]
     install_oom_accounting(pmm_ref);
     Ok(pmm_ref)

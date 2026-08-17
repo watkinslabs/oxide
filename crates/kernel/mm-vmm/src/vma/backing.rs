@@ -93,6 +93,23 @@ pub trait FileBacking: Send + Sync {
     /// # C: O(log N_pages)
     fn shared_frame(&self, _off: u64) -> Result<Option<SharedFrame>, FileBackingError> { Ok(None) }
 
+    /// A shared mapping is about to WRITE the page at page-aligned `off`
+    /// (Linux `vm_operations_struct.page_mkwrite`).
+    ///
+    /// Called by the write-fault path BEFORE it asks for the frame, because for
+    /// a file on a medium this call is what makes a frame answerable at all: a
+    /// shared-writable fault over a hole is where the block gets reserved, so
+    /// `ENOSPC`, quota and the immutability refusals are decided here and can
+    /// still be reported as the fault's error. It is also the only event the
+    /// filesystem sees for a mapped write — the store itself is a CPU write
+    /// with no syscall behind it — so it is where the page is marked dirty and
+    /// where mapped-write accounting is charged.
+    ///
+    /// The default no-op is correct for a backing whose frames ARE the object's
+    /// storage (tmpfs/memfd): nothing to reserve, nothing to write back to.
+    /// # Ctx: process # Sleeps: y # C: O(indirection depth) blocks
+    fn page_mkwrite(&self, _off: u64) -> Result<(), FileBackingError> { Ok(()) }
+
     /// Byte size of the huge page this backing is built on, or 0 when it maps
     /// ordinary base pages.
     ///

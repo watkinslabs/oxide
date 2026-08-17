@@ -326,6 +326,21 @@ impl PageCache {
         out
     }
 
+    /// The same, restricted to the INCLUSIVE page-index range `[lo, hi]`.
+    ///
+    /// What a range `fsync` and `sync_file_range(2)` ask for. The unbounded form
+    /// is a correct superset of this and loses no data, but it makes a one-page
+    /// flush of a large file cost every unplaced page of it, which is the
+    /// opposite of what the caller asked for by naming a range.
+    /// # Ctx: process # Sleeps: y # C: O(dirty pages in range)
+    pub fn writeback_range_with(&self, inode: InodeId, lo: u64, hi: u64, max: usize, sink: Sink<'_>)
+        -> (usize, KResult<()>) {
+        let Some(map) = self.mapping(inode) else { return (0, Ok(())); };
+        let out = super::writeback::writeback_range_with(&map, lo, hi, max, sink);
+        if map.nr_dirty() == 0 { map.dirtied_when.store(0, Ordering::Release); }
+        out
+    }
+
     /// Write back ONE named page through a sink the caller supplies, leaving
     /// it resident and CLEAN.
     ///

@@ -172,6 +172,20 @@ impl AddressSpace {
                 let direct = if let Some(pa) = backing.direct_frame(file_off) {
                     Some((pa, false))
                 } else if vma.flags.contains(VmaFlags::SHARED) && !cfg!(feature = "debug-no-shmem") {
+                    // A WRITE fault on a shared mapping tells the object so
+                    // before the frame is asked for, because for a file on a
+                    // medium that call is what reserves the block the frame will
+                    // hold — so a hole becomes storage, ENOSPC and quota are
+                    // decided while the fault can still report them, and the
+                    // page is dirtied by the one event the filesystem sees for a
+                    // mapped write. A read fault reserves nothing.
+                    if matches!(access, FaultAccess::Write) {
+                        match backing.page_mkwrite(file_off) {
+                            Ok(()) => {}
+                            Err(FileBackingError::NoMem) => return Err(Error::NoMem),
+                            Err(_) => return Err(Error::Io),
+                        }
+                    }
                     match backing.shared_frame(file_off) {
                         Ok(frame) => frame.map(|frame| (frame.pa, frame.map_ref_held)),
                         Err(FileBackingError::NoMem) => return Err(Error::NoMem),
