@@ -8,7 +8,10 @@
 //! `fstarget.rs`  — the write side as a filesystem uses it: a whole-mapping
 //!                  target, a dirty mark that does not write back, and the
 //!                  writer's own balance.
+//! `frames.rs`    — a cached page as a machine frame, and the two eviction
+//!                  paths that must leave a mapped one alone.
 
+mod frames;
 mod fstarget;
 mod locking;
 mod query;
@@ -92,3 +95,68 @@ impl BlockDevice for CountingDisk {
     }
     fn flush(&self) -> KResult<()> { self.flushes.fetch_add(1, Ordering::AcqRel); self.inner.flush() }
 }
+
+// ------------------------------------------------------- the frame provider
+//
+// A cached page becomes a machine frame only through the provider the machine
+// installs, so every test about a mapped page needs one. This is that provider,
+// backed by a leaked host pool: `pa` is an index into it, offset by one page so
+// no valid frame has address zero — which the storage type reads as "on the
+// heap".
+
+/// Frames the test pool holds.
+pub(super) const POOL_PAGES: usize = 64;
+const FRAME_BASE: u64 = PAGE_BYTES as u64;
+
+static NEXT_FRAME: AtomicUsize = AtomicUsize::new(0);
+static RELEASED: AtomicUsize = AtomicUsize::new(0);
+static POOL: AtomicUsize = AtomicUsize::new(0);
+/// What the provider answers for "does a user page table map this frame".
+/// Global rather than per frame: a test says which answer it is testing, and the
+/// machine-wide test lock makes that unambiguous.
+static ALL_MAPPED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+fn pool() -> *mut u8 {
+    let held = POOL.load(Ordering::Acquire);
+    if held != 0 { return held as *mut u8; }
+    let fresh = alloc::boxed::Box::leak(alloc::vec![0u8; POOL_PAGES * PAGE_BYTES].into_boxed_slice())
+        .as_mut_ptr();
+    match POOL.compare_exchange(0, fresh as usize, Ordering::AcqRel, Ordering::Acquire) {
+        Ok(_) => fresh,
+        Err(won) => won as *mut u8,
+    }
+}
+
+fn test_alloc() -> Option<u64> {
+    let n = NEXT_FRAME.fetch_add(1, Ordering::AcqRel);
+    if n >= POOL_PAGES { return None; }
+    Some(FRAME_BASE + (n * PAGE_BYTES) as u64)
+}
+
+pub(super) fn test_frame_ptr(pa: u64) -> Option<*mut u8> {
+    let idx = pa.checked_sub(FRAME_BASE)? as usize;
+    if idx >= POOL_PAGES * PAGE_BYTES { return None; }
+    // SAFETY: `idx` is a page-aligned offset inside the leaked pool.
+    Some(unsafe { pool().add(idx) })
+}
+
+unsafe fn test_release(_pa: u64) { RELEASED.fetch_add(1, Ordering::AcqRel); }
+
+fn test_mapped(_pa: u64) -> bool { ALL_MAPPED.load(Ordering::Acquire) }
+
+static TEST_PROVIDER: super::store::FrameProvider = super::store::FrameProvider {
+    alloc: test_alloc, ptr: test_frame_ptr, release: test_release, mapped: test_mapped,
+};
+
+/// Install the test frame allocator. Process-global, exactly as the machine's
+/// is, so it is installed rather than handed to a caller.
+pub(super) fn with_frames() {
+    let _ = pool();
+    super::store::install_frame_provider(&TEST_PROVIDER);
+}
+
+/// Say whether the provider reports every frame as user-mapped.
+pub(super) fn set_all_mapped(on: bool) { ALL_MAPPED.store(on, Ordering::Release); }
+
+/// References the provider has been asked to return.
+pub(super) fn released() -> usize { RELEASED.load(Ordering::Acquire) }

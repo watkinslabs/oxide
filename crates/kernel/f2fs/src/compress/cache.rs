@@ -94,7 +94,7 @@ impl Cache {
     pub fn load(&self, addr: u32) -> Option<Vec<u8>> {
         let pages = self.pages.as_ref()?;
         let page = pages.lookup(self.ino, Self::off(addr))?;
-        let bytes = page.data.lock().clone();
+        let bytes = page.data.lock().to_vec();
         self.hits.set(self.hits.get() + 1);
         Some(bytes)
     }

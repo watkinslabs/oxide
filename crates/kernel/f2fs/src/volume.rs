@@ -52,6 +52,9 @@
 //! - `mapped`: what a MAPPING of a file asks for — the fault's fill, charged
 //!             to the mapped layer, and the residency questions that must not
 //!             fetch.
+//! - `mkwrite`: what a SHARED MAPPING's write fault asks for before the store
+//!              lands — the refusals, the block reservation, the post-EOF zero,
+//!              the dirty mark, and the frame a page table points at.
 //! - `readahead`: blocks — data, node and metadata — fetched before a reader
 //!                asks for them, one transfer per contiguous run.
 
@@ -110,6 +113,7 @@ pub mod writeback;
 pub mod nodeback;
 pub mod placement;
 pub mod mapped;
+pub mod mkwrite;
 pub mod readahead;
 
 pub use curseg::{Curseg, Kind, Summary};

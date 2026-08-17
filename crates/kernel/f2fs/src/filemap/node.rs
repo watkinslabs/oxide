@@ -148,7 +148,7 @@ impl NodeCache {
     pub fn peek(&self, nid: u32) -> Option<Vec<u8>> {
         let page = self.pages.lookup(self.ino, Self::off(nid))?;
         self.hits.fetch_add(1, Ordering::Relaxed);
-        let bytes = page.data.lock().clone();
+        let bytes = page.data.lock().to_vec();
         Some(bytes)
     }
 
