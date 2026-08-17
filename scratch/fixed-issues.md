@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2257-fault-report-vma-file
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2257 | DEFECT | med | **The unhandled-fault report named the process's EXECUTABLE where the reference names the faulting MAPPING's file, which sent a reader to the wrong binary.** The line now carries the reference's `print_vma_addr` tail verbatim in form: ` in <vma-file basename>[<file offset>,<vm_start>+<length>]`, and no exe path at all. A mapping with no file prints no tail, matching the reference's `vma && vma->vm_file` test; the name is the basename because `%pD` with no depth suffix resolves to dentry depth 1. Measured cost of the old form: a live-gnome boot logged `gdm-session-wor[246]: segfault ... in /usr/libexec/gdm-session-worker vma 00007f2ac9974000+16e000` when the mapping was in fact the guest's `libc.so.6`, and the mis-named line cost a whole investigation step. | B2257. Reference read at Linux 7.2.0-rc4: `mm/memory.c` `print_vma_addr` prints `"%s%pD[%lx,%lx+%lx]"` of `vma->vm_file` after `ip -= vm_start; ip += vm_pgoff << PAGE_SHIFT`, called as `print_vma_addr(KERN_CONT " in ", regs->ip)` from the x86 `show_signal_msg` and the arm64 `__do_kernel_fault` reporter; `%pD` -> `file_dentry_name` -> `dentry_name` with `depth = 1` (`lib/vsprintf.c`). Code: `sched::signal_report::{vma_addr_from, write_vma_tail, VmaName}` (ungated, unit-tested) with `mm-pmm/src/user_as/signal.rs::vma_at` reduced to a shim that hands over `FileBacking::map_path()`. 12 new tests in `sched::signal_report::tests`, incl. the exact gdm line reproduced from the boot's own numbers. Positive controls: swapping the offset and start fields turns 2 tests RED with the two forms printed side by side; sourcing the name from the process executable instead of the mapping turns `a_fault_in_a_mapped_library_names_the_library_not_the_program` RED. Both restored to GREEN (21 signal_report tests, 1472 in `sched`). | B2257 |
+
 ### B2253-gdm-session-worker-segv
 
 | Status | Class | Sev | Issue | Evidence | Owner |
