@@ -86,7 +86,7 @@ impl<S: SectorSource> Volume<S> {
             let (area, layout) = self.inline_dir(inode, ino)?;
             // One area: there is no bucket to pick, so the hash never gates.
             let hit = deblock::find_with(&area, &layout, |h, de| matches(h, de, false))
-                .map_err(|_| Errno::Eio)?;
+                .map_err(|_| self.corrupt_dirent())?;
             return hit.map(|e| self.present_entry(&crypt, inode, e))
                 .transpose()?
                 .ok_or(Errno::Enoent);
@@ -113,12 +113,24 @@ impl<S: SectorSource> Volume<S> {
                     let Some(block) = self.dir_block(inode, ino, index)? else { continue };
                     let hit = deblock::find_with(&block, &Layout::block(),
                                                  |h, de| matches(h, de, use_hash))
-                        .map_err(|_| Errno::Eio)?;
+                        .map_err(|_| self.corrupt_dirent())?;
                     if let Some(e) = hit { return self.present_entry(&crypt, inode, e); }
                 }
             }
         }
         Err(Errno::Enoent)
+    }
+
+    /// Turn a directory-block parse failure into the recorded kind.
+    ///
+    /// Records that a DIRENT is corrupt — a bitmap disagreeing with the record
+    /// slots, a name length running past the block — so the volume tells the
+    /// next mount and fsck, instead of one lookup answering EIO and the damage
+    /// going unremembered.
+    /// # C: O(1)
+    fn corrupt_dirent(&self) -> Errno {
+        self.note_error(crate::errrec::Error::CorruptedDirent);
+        Errno::Eio
     }
 
     /// Every entry of a directory, in the order the medium holds them.
@@ -131,14 +143,15 @@ impl<S: SectorSource> Volume<S> {
         let crypt = self.crypt_info(inode, ino)?;
         if inode.inline_dentry() {
             let (area, layout) = self.inline_dir(inode, ino)?;
-            let list = deblock::entries(&area, &layout).map_err(|_| Errno::Eio)?;
+            let list = deblock::entries(&area, &layout).map_err(|_| self.corrupt_dirent())?;
             return list.into_iter().map(|e| self.present_entry(&crypt, inode, e)).collect();
         }
         let blocks = inode.size.div_ceil(BLKSIZE as u64);
         let mut out = Vec::new();
         for index in 0..blocks {
             let Some(block) = self.dir_block(inode, ino, index)? else { continue };
-            let list = deblock::entries(&block, &Layout::block()).map_err(|_| Errno::Eio)?;
+            let list = deblock::entries(&block, &Layout::block())
+                .map_err(|_| self.corrupt_dirent())?;
             // The inodes this block names, fetched before any of them is
             // asked for: a listing is almost always followed by a stat of
             // everything in it, and the ones written together are adjacent.
@@ -205,9 +218,9 @@ impl<S: SectorSource> Volume<S> {
     fn inline_dir(&self, inode: &Inode, ino: u32) -> Result<(Vec<u8>, Layout), Errno> {
         let n = self.read_inode_ref(ino)?.1;
         let (at, len) = inode.inline_data_span();
-        let area = n.block.get(at..at + len).ok_or(Errno::Eio)?.to_vec();
+        let area = n.block.get(at..at + len).ok_or_else(|| self.corrupt_dirent())?.to_vec();
         let layout = Layout::inline(len);
-        if !layout.fits() { return Err(Errno::Eio); }
+        if !layout.fits() { return Err(self.corrupt_dirent()); }
         Ok((area, layout))
     }
 }

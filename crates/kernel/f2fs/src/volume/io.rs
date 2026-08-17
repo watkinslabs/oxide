@@ -328,11 +328,16 @@ impl<S: SectorSource> Volume<S> {
             self.io_account(crate::stats::iostat::Io::FsDataRead, BLKSIZE as u64, true);
             self.io_read_folio(0);
         }
-        let cluster = crate::compress::decompress_cluster(&g, &image).map_err(compress_errno)?;
+        // A cluster that will not decompress, or whose checksum disagrees with
+        // its bytes, is recorded: it is one file's problem rather than a
+        // structural one, but it is still damage the next mount must know about.
+        let cluster = crate::compress::decompress_cluster(&g, &image)
+            .map_err(|e| { self.note_error(crate::errrec::Error::FailDecompression); compress_errno(e) })?;
         // A checksum the file asked for and that does not match means the
         // bytes are not the bytes that were written; handing them back would
         // be worse than refusing.
         if let crate::compress::Chksum::Mismatch { .. } = cluster.chksum {
+            self.note_error(crate::errrec::Error::FailDecompression);
             return Err(Errno::Eio);
         }
         Ok(Plain { first, data: cluster.data })

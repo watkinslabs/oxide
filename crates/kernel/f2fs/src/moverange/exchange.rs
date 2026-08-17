@@ -92,7 +92,7 @@ impl<S: SectorSource> Volume<S> {
         let dir = crate::mode::file_type(inode.mode) == vfs::FileType::Directory;
         let (holder, ofs) = self.dnode_for_write(dst, to)?;
         self.reserve_space(dst, BLKSIZE as u64)?;
-        let new = match self.write_data(match holder { Holder::Inode => dst,
+        let new = match self.write_data(dst, match holder { Holder::Inode => dst,
                                                        Holder::Direct(nid) => nid },
                                         ofs as u16, dir, NULL_ADDR, &data) {
             Ok(new) => new,

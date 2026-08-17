@@ -77,8 +77,10 @@ fn a_volume_with_no_room_left_refuses_a_node_as_well_as_a_block() {
     // Every remaining block spoken for. The logs still have room inside their
     // open segments, which is exactly the state in which a node allocation
     // that consults only its own log keeps succeeding.
+    // The volume's own count, not the root reserve: with no credential probe
+    // installed a hosted caller is kernel context and reaches the reserve.
     let left = v.cp.user_block_count - v.valid_block_count;
-    v.opts.reserve_root = left as u32;
+    v.cp.user_block_count -= left;
     // Past the inode's own address array, so it needs a direct node first.
     let apb = v.read_inode(ino).unwrap().addrs_per_inode() as u64;
     let r = v.write_file(ino, apb * BLKSIZE as u64, b"x");

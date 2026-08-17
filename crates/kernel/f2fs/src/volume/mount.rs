@@ -158,7 +158,7 @@ impl<S: SectorSource> Volume<S> {
             sb,
             sb_raw,
             sbi,
-            errrec,
+            errrec: core::cell::Cell::new(errrec),
             cp,
             cp_raw,
             nat_bitmap,

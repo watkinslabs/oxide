@@ -76,6 +76,37 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(dirty table blocks + pack blocks)
     pub fn commit_with(&mut self, reason: CpReason) -> Result<(), Errno> {
         if !self.writable { return Ok(()); }
+        let outcome = self.commit_attempt(reason);
+        // A sync that could not be completed leaves the medium describing the
+        // PREVIOUS state while this mount carries on believing its own, so
+        // checkpointing stops and the reason is recorded. Reporting the errno
+        // upwards and nothing else left the mount live and writing on top of a
+        // checkpoint it had failed to place, and told the next mount nothing.
+        // This is also the one path that makes `errors=` reachable from a real
+        // failure rather than only from a shutdown, which forces its own
+        // behaviour whatever the option says.
+        //
+        // Wrapping the WHOLE attempt, not only the pack write: a placement that
+        // fails is just as unrecorded as a pack that fails, and the early `?`
+        // returns below are exactly where the first attempt at this missed it.
+        if outcome.is_err() {
+            self.stop_checkpoint(crate::errrec::StopReason::MetaPage, false);
+        }
+        outcome
+    }
+
+    /// One attempt at the sync, reporting the first thing that would not land.
+    /// # C: O(dirty table blocks + pack blocks)
+    fn commit_attempt(&mut self, reason: CpReason) -> Result<(), Errno> {
+        // The error record goes down FIRST, and ahead of the dirty test below.
+        // A read path that found a corruption can only add to the record in
+        // memory — it has no write — so this is where it reaches the medium,
+        // and it must not be conditional on the checkpoint having anything of
+        // its own to write: a mount whose ONLY change is a fault it found is
+        // exactly the mount whose record the next mount and fsck need. Best
+        // effort, because a failure to record a fault must not turn into a
+        // failure of the sync that noticed it.
+        let _ = self.record_errors();
         // Before the dirty test, not after: a mount whose only change is a
         // buffered write has pages to place, and placing them is what makes
         // it dirty in the sense the test means.

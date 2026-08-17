@@ -108,7 +108,7 @@ impl<S: SectorSource> Volume<S> {
             return Ok(());
         }
         let kind = if is_dir { Kind::DirData } else { Kind::FileData };
-        let addr = self.write_data_crypt(kind, owner, ofs as u16, old, &page, flags, ctx.as_ref())?;
+        let addr = self.write_data_crypt(ino, kind, owner, ofs as u16, old, &page, flags, ctx.as_ref())?;
         self.set_holder_addr_keeping_page(ino, holder, ofs, addr)?;
         // The room the reservation was holding is the room this block just
         // took. Released after the slot names a real block, so a failure above
