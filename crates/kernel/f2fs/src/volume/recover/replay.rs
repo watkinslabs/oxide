@@ -78,6 +78,13 @@ impl<S: SectorSource> Volume<S> {
         self.writable_or_err()?;
         let found = self.scan_fsync_chain()?;
         if found.is_empty() { return Ok(Recovery::Clean); }
+        // Raised the moment a chain is FOUND, not when the replay finishes. It
+        // records that this mount has taken a roll-forward on itself, and a pass
+        // that failed part way through has taken one just as much as one that
+        // finished — the tail was read, the segments were opened, the mount is
+        // not the clean mount it would otherwise be. A tool told nothing
+        // happened cannot tell the two apart from one that came up clean.
+        self.sbi.recovered();
         self.load_segments()?;
         self.protect_chain(&found)?;
         let live = self.resolve_inodes(&found)?;
@@ -101,10 +108,6 @@ impl<S: SectorSource> Volume<S> {
             if f.ofs == marks::xattr_node_offset() { continue; }
             self.release_block(f.addr)?;
         }
-        // What this mount put back is a condition of the mount, not of the
-        // medium: a tool that came along afterwards would otherwise see a
-        // volume indistinguishable from one that came up clean.
-        self.sbi.recovered();
         self.dirty = true;
         self.commit()?;
         Ok(Recovery::Replayed(done))
@@ -239,6 +242,13 @@ impl<S: SectorSource> Volume<S> {
     }
 
     /// Re-add the directory entry a recovered inode names, when it is missing.
+    ///
+    /// The name in the record is ALREADY the form the medium holds — ciphertext
+    /// when the parent encrypts — so it is placed and found as stored bytes and
+    /// no key is needed. The reference builds its filename the same way and for
+    /// the same reason: a replay runs at mount, before any key can have been
+    /// added, and re-encrypting a name that is already encrypted would file an
+    /// entry nothing can ever find.
     /// # C: O(directory depth) blocks
     fn recover_dentry(&mut self, ino: u32, rec: &[u8]) -> Result<bool, Errno> {
         let pino = le32(rec, I_PINO).ok_or(Errno::Eio)?;
@@ -246,12 +256,31 @@ impl<S: SectorSource> Volume<S> {
         if len == 0 || len > NAME_LEN { return Err(Errno::Eio); }
         let name: Vec<u8> = rec[I_NAME..I_NAME + len].to_vec();
         let Ok(dir) = self.read_inode(pino) else { return Ok(false) };
-        if let Ok(e) = self.lookup(&dir, pino, &name) {
-            if e.ino == ino { return Ok(false); }
+        let want = self.recovered_entry_hash(&dir, rec, len, &name)?;
+        if let Some(held) = self.find_stored_entry(&dir, pino, want, &name)? {
+            if held == ino { return Ok(false); }
         }
         let mode_word = le16(rec, I_MODE).ok_or(Errno::Eio)?;
-        self.add_dentry(pino, &name, ino, ftype_byte(mode_word))?;
+        self.add_stored_dentry(pino, &dir, &name, want, ino, ftype_byte(mode_word))?;
         Ok(true)
+    }
+
+    /// The hash a recovered name is filed under.
+    ///
+    /// A directory that BOTH folds and encrypts cannot have its hash recomputed
+    /// without the key — it is a keyed hash of the folded plaintext — so the
+    /// value is stored on the medium, immediately after the name, and read back
+    /// from there. Every other shape is computable from the stored bytes: an
+    /// encrypting directory files ciphertext under the plain hash of that
+    /// ciphertext, and a folding one folds the name it holds.
+    /// # C: O(name len)
+    fn recovered_entry_hash(&self, dir: &crate::node::Inode, rec: &[u8], len: usize,
+                            name: &[u8]) -> Result<u32, Errno> {
+        if dir.encrypted() && dir.casefolded() {
+            if len + core::mem::size_of::<u32>() > NAME_LEN { return Err(Errno::Einval); }
+            return le32(rec, I_NAME + len).ok_or(Errno::Eio);
+        }
+        self.entry_hash(dir, name)
     }
 }
 
@@ -269,3 +298,8 @@ fn last_dentry_of(found: &[Found], live: &BTreeSet<u32>) -> BTreeMap<u32, u32> {
 #[cfg(test)]
 #[path = "../../tests/recover/protect.rs"]
 mod tests;
+
+/// The in-progress and recovered conditions, and which way round each goes.
+#[cfg(test)]
+#[path = "../../tests/recover/flags.rs"]
+mod flag_tests;

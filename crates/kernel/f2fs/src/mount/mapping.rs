@@ -53,14 +53,50 @@ impl F2fsMapping {
 }
 
 impl AddressSpaceOps for F2fsMapping {
-    /// No frame. A page of this filesystem is held as bytes in the mount's
-    /// mapping, not as a machine frame, so there is nothing here a user page
-    /// table could point at. Handing out anything else — a frame filled from
-    /// the page — would be the second copy this whole object exists to
-    /// prevent, and a shared writable mapping over it would diverge from the
-    /// file at the first store.
-    /// # C: O(1)
-    fn shared_frame(&self, _off: u64) -> KResult<Option<SharedFrame>> { Ok(None) }
+    /// THE page this file holds at that offset, as a machine frame a user page
+    /// table can point at.
+    ///
+    /// It is the same page a `read` and a `write` go through, converted in
+    /// place: the mapping's page is a heap buffer while nothing maps it and the
+    /// frame the bytes were MOVED into once something does, so there is never a
+    /// second copy and a store through the mapping is visible to every other
+    /// reader of the file. Handing out a frame FILLED from the page would be
+    /// that second copy, and a shared writable mapping over it would diverge
+    /// from the file at the first store.
+    ///
+    /// `map_ref_held` is false: the caller takes the mapping's reference when it
+    /// installs the page-table entry and returns it when the entry goes, which
+    /// is what keeps the frame alive for exactly as long as either this mapping
+    /// or a mapper still wants it.
+    ///
+    /// `None` where this file's pages cannot be mapped — a compressed file,
+    /// whose unpacked cluster is not held here at all. That is the honest
+    /// answer; the write fault refuses rather than accepting a store it cannot
+    /// keep.
+    /// # Ctx: process # Sleeps: y # C: O(1 block read) on a miss
+    fn shared_frame(&self, off: u64) -> KResult<Option<SharedFrame>> {
+        let pa = self.fs.volume.lock().mapped_frame(self.ino, Self::index(off));
+        Ok(pa.map(|pa| SharedFrame { pa, map_ref_held: false }))
+    }
+
+    /// A shared mapping is about to WRITE the page at `off`.
+    ///
+    /// The one event this filesystem sees for a mapped write, so everything a
+    /// buffered write decides on the way in is decided here — the refusals, the
+    /// block reservation that gives a hole somewhere to go, the zeroing of the
+    /// tail past the end of the file, the dirty mark without which nothing ever
+    /// writes the page, and the mapped-write charge. `mkwrite` carries the
+    /// order and the reason for each step.
+    ///
+    /// The balance is OUTSIDE the volume's lock, exactly as the buffered write's
+    /// is: over the machine's dirty limit it writes back, which re-enters this
+    /// mount, so a caller still holding the guard would wait on itself.
+    /// # Ctx: process # Sleeps: y # C: O(indirection depth) blocks
+    fn page_mkwrite(&self, off: u64) -> KResult<()> {
+        self.fs.volume_now().mkwrite_page(self.ino, Self::index(off)).map_err(errno_to_vfs)?;
+        self.fs.balance_data(self.ino);
+        Ok(())
+    }
 
     /// The fault's fill, through the mount's mapping and charged to the mapped
     /// layer. # C: O(bytes)
@@ -114,6 +150,26 @@ impl AddressSpaceOps for F2fsMapping {
     fn writeback(&self) -> Result<(), ()> {
         if !self.fs.is_writable() { return Ok(()); }
         self.fs.volume_now().flush_data_pages(self.ino).map_err(|_| ())
+    }
+
+    /// The pages of this file that lie in the byte range, and no others.
+    ///
+    /// Overridden rather than left at its default because the default flushes
+    /// the WHOLE file — a correct superset that loses nothing, and makes a
+    /// one-page `sync_file_range` over a large file rewrite every unplaced page
+    /// of it. The reference honours the range its writeback control carries.
+    /// A page outside the range keeps its dirty state and is the next unbounded
+    /// flush's work.
+    /// # Ctx: process # Sleeps: y # C: O(dirty pages in range)
+    fn writeback_range(&self, start: u64, end: u64) -> Result<(), ()> {
+        if !self.fs.is_writable() { return Ok(()); }
+        if end <= start { return Ok(()); }
+        let lo = Self::index(start);
+        // Inclusive, and the last byte's page rather than the end's: a range
+        // ending exactly on a page boundary does not reach into the page after
+        // it, and `u64::MAX` means "to the end of the file".
+        let hi = if end == u64::MAX { u64::MAX } else { Self::index(end - 1) };
+        self.fs.volume_now().flush_data_pages_range(self.ino, lo, hi).map_err(|_| ())
     }
 
     /// The backend half of an `fsync` reached without a descriptor.

@@ -161,14 +161,14 @@ impl SuperOps for F2fsSuperOps {
     /// which is the recoverable direction: the list is in the checkpoint, so
     /// the next mount frees what this one could not.
     fn evict_inode(&self, inode: &vfs::Inode) {
-        // The hold is dropped whether or not the inode is still parked: an
-        // unnamed file that was GIVEN a name in the meantime is no longer on
-        // the list, and a hold left behind for it would make a later unlink
-        // park a file nothing holds open.
+        // Asked for EVERY inode leaving the cache, not only one the volume
+        // believes is held: the volume keeps no second record of who has the
+        // file open, because this call arriving IS the record that nobody does.
+        // A gate here on such a record is a gate on state nothing on the open
+        // path ever sets, which frees a parked file only by accident.
         if self.fs.is_writable() {
             let mut v = self.fs.volume.lock();
-            let ino = inode.ino() as u32;
-            if v.inode_is_open(ino) && v.close_inode(ino).is_err() {
+            if v.evict_inode(inode.ino() as u32).is_err() {
                 klog::warn::warn_on(true, "f2fs: could not free an unnamed inode; run fsck");
             }
         }

@@ -250,28 +250,29 @@ impl<S: SectorSource> Volume<S> {
         self.dquot_initialize(ino)?;
         let inode = self.read_inode(ino)?;
         let want = super::policy::parse_wire(wire).map_err(|e| e.errno())?;
-        // The EXISTING policy is read before anything about the inode's shape is
-        // tested, which is the order the reference's own entry point takes: a
-        // file that already carries a policy is answered for THAT, whatever it
-        // is, because the answer to "set a policy" on an object that has one is
-        // about the policy and not about the object.
+        // THE EXISTING POLICY FIRST, before anything about what the inode is.
+        // The reference's order, and it is observable: an inode that already
+        // carries a context is answered about that context, so a non-directory
+        // that somehow has one reports `EEXIST` rather than `ENOTDIR`. Deciding
+        // `ENOTDIR` first would answer a question the caller did not ask.
         //
         // Re-applying the SAME policy is how a tool makes sure of one it may
         // already have set, and must not be an error; a DIFFERENT one is a
-        // second answer to how the directory's children are written. A stored
-        // context this build cannot read is also `EEXIST` — there IS a policy
-        // there and it is not the one being asked for.
+        // second answer to how the directory's children are written. A context
+        // that is THERE but unrecognised is also `EEXIST`: it is a policy this
+        // build cannot compare, which is not a policy it may overwrite.
         match self.crypt_context(&inode, ino) {
-            Ok(Some(held)) => {
-                return if crate::crypto::policy::equal(&held.policy, &want) {
-                    Ok(())
-                } else {
-                    Err(Errno::Eexist)
-                };
-            }
-            Err(Errno::Einval) => return Err(Errno::Eexist),
+            Ok(Some(held)) => return if crate::crypto::policy::equal(&held.policy, &want) {
+                Ok(())
+            } else {
+                Err(Errno::Eexist)
+            },
+            // Nothing stored yet. `EUCLEAN` is the same answer: it is an inode
+            // whose flag says encrypted and which carries no context at all,
+            // which the reference reads as "no policy" and gives one.
+            Ok(None) | Err(Errno::Euclean) => {}
+            Err(Errno::Einval) | Err(Errno::Enopkg) => return Err(Errno::Eexist),
             Err(e) => return Err(e),
-            Ok(None) => {}
         }
         let facts = self.crypt_inode_facts(&inode);
         if !facts.is_dir { return Err(Errno::Enotdir); }
@@ -301,7 +302,11 @@ impl<S: SectorSource> Volume<S> {
             let at = crate::uapi::I_FLAGS;
             let held = u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
             crate::volume::dnode::put32(b, at, held | crate::flags::F2FS_ENCRYPT_FL);
-        })
+        })?;
+        // The directory has a context now, so anything resolved for it before
+        // this — under no policy — no longer describes it.
+        self.crypt_forget(ino);
+        Ok(())
     }
 
     /// A nonce for a newly encrypted inode.

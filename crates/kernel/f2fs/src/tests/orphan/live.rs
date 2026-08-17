@@ -1,15 +1,19 @@
-//! Parking a real inode and reclaiming it at the last close.
+//! Parking a real inode at its last name and reclaiming it at its eviction.
 //!
-//! The distinction under test is the one that costs blocks: an inode nothing
-//! holds open is freed the moment its last name goes, and an inode something
-//! does hold open must survive with its blocks intact and its stored link
-//! count at zero. Getting either direction wrong is invisible in memory and
-//! only shows against a medium, so every assertion here is against one.
+//! The invariant under test is the one that costs data: losing a name NEVER
+//! frees an inode. It goes on the orphan list with its blocks intact and its
+//! stored link count at zero, and only the eviction — the last reference, the
+//! one point that knows nothing can read it any more — frees it. A volume
+//! cannot see who holds a descriptor, so an inode freed here on any reckoning
+//! of its own is an inode freed under a reader. Getting this wrong is invisible
+//! in memory and only shows against a medium, so every assertion here is
+//! against one.
 
 use alloc::vec;
 use alloc::vec::Vec;
 
 use sectors::MemImage;
+use syscall::errno::Errno;
 
 use crate::flags::CP_ORPHAN_PRESENT_FLAG;
 use crate::mode::S_IFREG;
@@ -47,55 +51,42 @@ pub fn data_addr(v: &Volume<MemImage>, ino: u32) -> u32 {
     }
 }
 
-/// Take a name away and drop the inode's last link, which is what `remove`
+/// Take a name away and drop the inode's link for it, which is what `remove`
 /// does once the name is gone. # C: O(depth)
 fn unlink(v: &mut Volume<MemImage>, name: &[u8]) -> u32 {
     let ino = v.remove_dentry(ROOT_INO, name).unwrap();
-    v.drop_last_link(ino, NOW).unwrap();
+    v.drop_nlink(ROOT_INO, ino, false, NOW).unwrap();
     ino
 }
 
 // -------------------------------------------------------------- parking
 
 #[test]
-fn an_open_inode_is_parked_instead_of_freed() {
-    let mut v = vol();
-    let ino = file_with_a_block(&mut v, b"held");
-    let addr = data_addr(&v, ino);
-    v.open_inode(ino);
-    assert_eq!(unlink(&mut v, b"held"), ino);
-    assert!(v.is_orphan(ino));
-    assert_eq!(v.orphan_list(), vec![ino]);
-    // Still readable through the handle, and its block still counted live.
-    let inode = v.read_inode(ino).unwrap();
-    assert_eq!(inode.links, 0, "the stored link count must reach zero");
-    assert!(v.block_is_live(addr).unwrap());
-}
-
-#[test]
-fn a_closed_inode_is_freed_at_once() {
+fn losing_the_last_name_parks_the_inode_and_frees_nothing() {
     let mut v = vol();
     let ino = file_with_a_block(&mut v, b"gone");
     let addr = data_addr(&v, ino);
     let before = v.valid_inode_count;
     assert_eq!(unlink(&mut v, b"gone"), ino);
-    assert!(!v.is_orphan(ino));
-    assert!(v.orphan_list().is_empty());
-    assert!(v.read_inode(ino).is_err());
-    assert!(!v.block_is_live(addr).unwrap());
-    assert_eq!(v.valid_inode_count, before - 1);
+    assert!(v.is_orphan(ino));
+    assert_eq!(v.orphan_list(), vec![ino]);
+    // Still readable, and its block still counted live: a descriptor may hold
+    // it, and the volume has no way to know that it does not.
+    let inode = v.read_inode(ino).unwrap();
+    assert_eq!(inode.links, 0, "the stored link count must reach zero");
+    assert!(v.block_is_live(addr).unwrap());
+    assert_eq!(v.valid_inode_count, before, "parking must not free the inode");
 }
 
 #[test]
-fn the_last_close_reclaims_the_parked_inode() {
+fn the_eviction_reclaims_the_parked_inode() {
     let mut v = vol();
     let ino = file_with_a_block(&mut v, b"held");
     let addr = data_addr(&v, ino);
     let before = v.valid_inode_count;
-    v.open_inode(ino);
     unlink(&mut v, b"held");
     assert_eq!(v.valid_inode_count, before, "parking must not free the inode");
-    v.close_inode(ino).unwrap();
+    v.evict_inode(ino).unwrap();
     assert!(!v.is_orphan(ino));
     assert!(v.read_inode(ino).is_err());
     assert!(!v.block_is_live(addr).unwrap());
@@ -103,42 +94,42 @@ fn the_last_close_reclaims_the_parked_inode() {
 }
 
 #[test]
-fn a_close_that_is_not_the_last_keeps_the_inode() {
-    let mut v = vol();
-    let ino = file_with_a_block(&mut v, b"held");
-    let addr = data_addr(&v, ino);
-    v.open_inode(ino);
-    v.open_inode(ino);
-    unlink(&mut v, b"held");
-    v.close_inode(ino).unwrap();
-    assert!(v.is_orphan(ino), "one holder is left");
-    assert!(v.read_inode(ino).is_ok());
-    assert!(v.block_is_live(addr).unwrap());
-    v.close_inode(ino).unwrap();
-    assert!(!v.is_orphan(ino));
-    assert!(v.read_inode(ino).is_err());
-    assert!(!v.block_is_live(addr).unwrap());
-}
-
-#[test]
-fn closing_something_that_was_never_opened_frees_nothing() {
+fn evicting_a_file_that_still_has_a_name_frees_nothing() {
     let mut v = vol();
     let ino = file_with_a_block(&mut v, b"live");
-    v.close_inode(ino).unwrap();
+    let addr = data_addr(&v, ino);
+    v.evict_inode(ino).unwrap();
     assert!(v.read_inode(ino).is_ok());
+    assert!(v.block_is_live(addr).unwrap());
     assert!(!v.is_orphan(ino));
 }
 
 #[test]
-fn an_unparked_inode_survives_its_last_close() {
+fn an_unparked_inode_survives_its_eviction() {
     let mut v = vol();
     let ino = file_with_a_block(&mut v, b"held");
-    v.open_inode(ino);
     unlink(&mut v, b"held");
     assert!(v.unpark_orphan(ino));
     assert!(!v.unpark_orphan(ino), "unparking twice reports the second as a no-op");
-    v.close_inode(ino).unwrap();
+    v.evict_inode(ino).unwrap();
     assert!(v.read_inode(ino).is_ok(), "a name came back, so nothing frees it");
+}
+
+#[test]
+fn a_removal_is_refused_while_the_list_is_full_and_leaves_the_name_alone() {
+    // The reservation is taken before the entry comes out. Taken after, a full
+    // list leaves an inode that can be neither parked nor reached, with its
+    // blocks still counted live and nothing recording the debt.
+    let mut v = vol();
+    let ino = file_with_a_block(&mut v, b"victim");
+    let full = v.max_orphans();
+    // The list itself is what has to be full; the numbers on it need not exist.
+    for i in 0..full as u32 { v.add_orphan(ROOT_INO + 1_000 + i).unwrap(); }
+    assert_eq!(v.remove(ROOT_INO, b"victim", false, NOW).err(), Some(Errno::Enospc));
+    let root = v.read_inode(ROOT_INO).unwrap();
+    assert_eq!(v.lookup(&root, ROOT_INO, b"victim").unwrap().ino, ino,
+               "a refused removal must leave the name where it was");
+    assert_eq!(v.read_inode(ino).unwrap().links, 1);
 }
 
 #[test]
@@ -268,13 +259,11 @@ fn scratch_pack_start(v: &Volume<MemImage>) -> u32 {
 
 #[test]
 fn a_name_coming_back_takes_the_inode_off_the_orphan_list() {
-    // The shape `linkat` of an unnamed file produces: an inode something holds
-    // open, its last name gone, then a new name for it. Left parked, the next
-    // checkpoint records it as an orphan and the mount after that frees a file
-    // that has a name.
+    // The shape `linkat` of an unnamed file produces: an inode whose last name
+    // is gone, then a new name for it. Left parked, the next checkpoint records
+    // it as an orphan and the mount after that frees a file that has a name.
     let mut v = vol();
     let ino = v.create(ROOT_INO, b"tmp", &spec(), None).unwrap();
-    v.open_inode(ino);
     v.remove(ROOT_INO, b"tmp", false, NOW).unwrap();
     assert!(v.is_orphan(ino), "the fixture never parked it");
     v.link(ROOT_INO, b"named", ino, NOW).unwrap();

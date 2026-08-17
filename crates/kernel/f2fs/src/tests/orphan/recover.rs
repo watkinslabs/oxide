@@ -384,14 +384,13 @@ fn recovery_refuses_summaries_that_start_before_the_payload_ends() {
 // --------------------------------------------------- the writer's own pack
 
 #[test]
-fn an_open_inode_survives_a_checkpoint_and_is_reclaimed_at_the_next_mount() {
+fn a_parked_inode_survives_a_checkpoint_and_is_reclaimed_at_the_next_mount() {
     let mut v = live::vol();
     let ino = live::file_with_a_block(&mut v, b"held");
     let addr = live::data_addr(&v, ino);
-    v.open_inode(ino);
     let gone = v.remove_dentry(ROOT_INO, b"held").unwrap();
     assert_eq!(gone, ino);
-    v.drop_last_link(ino, live::NOW).unwrap();
+    v.drop_nlink(ROOT_INO, ino, false, live::NOW).unwrap();
     v.commit().unwrap();
     let (start, payload) = {
         let sb = v.super_block();
@@ -431,13 +430,12 @@ fn a_checkpoint_with_nothing_parked_carries_no_orphan_blocks() {
 }
 
 #[test]
-fn an_unlink_of_an_open_file_parks_it_and_a_close_reclaims_it_across_a_mount() {
+fn an_unlink_parks_the_file_and_the_next_mount_reclaims_it_when_a_crash_intervened() {
     let mut v = live::vol();
     let ino = live::file_with_a_block(&mut v, b"held");
     let addr = live::data_addr(&v, ino);
-    v.open_inode(ino);
     v.remove(ROOT_INO, b"held", false, live::NOW).unwrap();
-    assert!(v.is_orphan(ino), "remove must park an inode something holds open");
+    assert!(v.is_orphan(ino), "remove must park the inode it unnamed");
     v.commit().unwrap();
     let mut v = mount(v.into_source().snapshot(), true);
     v.recover_orphans().unwrap();

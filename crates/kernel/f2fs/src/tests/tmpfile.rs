@@ -80,15 +80,16 @@ fn naming_a_temporary_file_takes_it_off_the_list() {
 }
 
 #[test]
-fn closing_the_last_handle_frees_a_temporary_file() {
+fn evicting_a_temporary_file_frees_it() {
     let mut v = vol();
     let inodes_before = v.valid_inode_count;
     let ino = v.tmpfile(ROOT_INO, &spec(S_IFREG | 0o600)).unwrap();
     v.write_file(ino, 0, b"gone soon").unwrap();
     assert_eq!(v.valid_inode_count, inodes_before + 1);
-    // The hold the creation took is the last one, so this is the close that
-    // frees it — the reclaim does NOT wait for the next mount.
-    v.close_inode(ino).unwrap();
+    // The reference the creation handed back is the only thing that could
+    // reach it, so its eviction is what frees it — the reclaim does NOT wait
+    // for the next mount.
+    v.evict_inode(ino).unwrap();
     assert!(!v.is_orphan(ino));
     assert_eq!(v.read_inode(ino).err(), Some(Errno::Enoent));
     assert_eq!(v.valid_inode_count, inodes_before);

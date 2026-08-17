@@ -54,10 +54,15 @@ impl F2fs {
 
     /// Remove a name. # C: O(depth) blocks
     pub fn remove(self: &Arc<Self>, dir: u32, name: &str, expect_dir: bool) -> KResult<()> {
-        self.volume
+        let out = self.volume
             .lock()
             .remove(dir, name.as_bytes(), expect_dir, now())
             .map_err(errno_to_vfs)?;
+        // The volume parked the inode and could go no further: what it cannot
+        // see is whether anything still holds the file. Settling that is the
+        // other half of the removal, and skipping it leaves an inode nothing can
+        // reach still holding its blocks for the life of the mount.
+        self.after_remove(out)?;
         self.balance(true)
     }
 
@@ -78,7 +83,12 @@ impl F2fs {
         let r = crate::volume::Rename {
             from, old: old.as_bytes(), to, new: new.as_bytes(), flags, owner, now: now(),
         };
-        self.volume.lock().rename(&r).map_err(errno_to_vfs)?;
+        let replaced = self.volume.lock().rename(&r).map_err(errno_to_vfs)?;
+        // A move onto an existing name is a removal of that name, and owes the
+        // inode behind it exactly what an unlink owes: its cached link count,
+        // and an eviction if nothing holds it. Left out, a `mv` over an open
+        // file leaks the file it replaced.
+        if let Some(out) = replaced { self.after_remove(out)?; }
         self.balance(true)
     }
 
@@ -88,12 +98,13 @@ impl F2fs {
         let spec = NewInode { mode: mode_word, uid, gid, rdev: 0, now: now() };
         let ino = self.volume_now().tmpfile(dir, &spec).map_err(errno_to_vfs)?;
         self.balance(true)?;
-        let inode = node_inode(Arc::clone(self), ino)?;
-        // An unnamed file's link count is ZERO and has to present as zero: that
-        // is how a caller tells a temporary file from an ordinary one, and how
-        // it knows the file disappears when the handle does.
-        inode.set_nlink(0);
-        Ok(inode)
+        // An unnamed file's link count is ZERO and presents as zero because
+        // that is what it STORES — no correction is applied here. One was, and
+        // it was a second answer to the same question sitting on top of a
+        // builder that floored the count at one; the floor is what made a
+        // link-less inode read as linked everywhere the correction did not
+        // reach, and the correction is what hid it.
+        node_inode(Arc::clone(self), ino)
     }
 
     /// Write into a file, reporting the bytes that landed. # C: O(bytes)

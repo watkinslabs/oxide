@@ -82,8 +82,7 @@ impl<S: SectorSource> Volume<S> {
         // An encrypted file's blocks hold ciphertext. Without the key there is
         // nothing to return but the ciphertext, which would be the wrong bytes
         // rather than no bytes.
-        let crypt = self.crypt_info(inode, ino)?;
-        if inode.encrypted() && crypt.is_none() { return Err(Errno::Enokey); }
+        let crypt = self.crypt_require_key(inode, ino)?;
         // The window the CALLER asked for, fetched before it is served block
         // by block below. The same blocks either way; the difference is that a
         // contiguous run of them goes to the medium once instead of once per
@@ -125,7 +124,7 @@ impl<S: SectorSource> Volume<S> {
                     done += take;
                 }
                 Mapped::At(addr) => {
-                    let block = self.read_data_page(inode, ino, index, addr, crypt.as_ref())?;
+                    let block = self.read_data_page(inode, ino, index, addr, crypt.as_deref())?;
                     buf[done..done + take].copy_from_slice(&block[skew..skew + take]);
                     done += take;
                 }
