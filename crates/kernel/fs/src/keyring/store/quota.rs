@@ -96,6 +96,12 @@ impl Store {
             for &v in self.user.values() { linked.push(v); }
             for &v in self.usersess.values() { linked.push(v); }
             for &r in self.persistent_register.values() { linked.push(r); }
+            // A keyring the kernel itself holds a reference to is a root, even
+            // though nothing links it and no task owns it. `.fs-verity` is the
+            // case that matters: it hangs off no keyring, so without this any
+            // `KEYCTL_CLEAR` anywhere in the system would collect the machine's
+            // entire verity trust store.
+            for k in self.keys.values() { if k.kernel_held { linked.push(k.serial); } }
             // A key still under construction is referenced by the requester
             // waiting on it and by the authorisation token naming it, neither
             // of which is a keyring link.

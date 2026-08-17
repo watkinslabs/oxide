@@ -1,0 +1,15 @@
+[package]
+name = "adiantum"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Adiantum length-preserving encryption over XChaCha12, NH-Poly1305 and AES-256, as required by the filesystem-encryption Adiantum mode."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+aes = { path = "../aes" }
+
+[lints]
+workspace = true

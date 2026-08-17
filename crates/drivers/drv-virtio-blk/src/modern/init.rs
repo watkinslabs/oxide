@@ -46,7 +46,47 @@ fn read_device_config(resources: virtio::VirtioResources, drv_features: u64) -> 
         num_queues = u16::from_le_bytes(nqb);
     }
 
-    Some(BlkDeviceConfig { capacity, blk_size, num_queues })
+    // The zoned characteristics are meaningful only under a negotiated
+    // `F_ZONED`. A device that did not offer the bit has no such block, and
+    // reading it would decode whatever follows the config as a zone size.
+    let mut zoned = virtio::blk::zoned::ZonedProbe::NotZoned;
+    if drv_features & virtio::VIRTIO_BLK_F_ZONED != 0 {
+        let mut zb = [0u8; virtio::blk::zoned::BLK_CFG_ZONED_BYTES];
+        for (i, b) in zb.iter_mut().enumerate() {
+            let off = virtio::blk::zoned::BLK_CFG_OFF_ZONE_SECTORS + i as u64;
+            // SAFETY: read_device_config uses a transport-mapped virtio device config byte address.
+            *b = unsafe { core::ptr::read_volatile((cfg + off) as *const u8) };
+        }
+        zoned = virtio::blk::zoned::probe_zoned(&zb);
+    }
+
+    Some(BlkDeviceConfig { capacity, blk_size, num_queues, zoned })
+}
+
+/// Settle the drive's zone geometry, or refuse the device.
+///
+/// A refusal here means the disk is never registered at all. That is the
+/// point: a host-managed drive whose characteristics this driver cannot
+/// honour must not appear as an ordinary disk, because a filesystem placed on
+/// it would write behind the drive's write pointer and be refused a block at
+/// a time with no way to tell why.
+/// # C: O(1)
+fn settle_zoned(
+    probe: virtio::blk::zoned::ZonedProbe, blk_size: u32,
+) -> Result<Option<virtio::blk::zoned::ZonedInfo>, virtio::blk::zoned::ZonedRefusal> {
+    use virtio::blk::zoned::{ZonedProbe, ZonedRefusal, zone_size_block_aligned};
+    match probe {
+        ZonedProbe::NotZoned => Ok(None),
+        ZonedProbe::Refuse(why) => Err(why),
+        ZonedProbe::HostManaged(info) => {
+            if !zone_size_block_aligned(info.zone_sectors, blk_size) {
+                return Err(ZonedRefusal::ZoneSizeNotBlockAligned {
+                    zone_sectors: info.zone_sectors, blk_size,
+                });
+            }
+            Ok(Some(info))
+        }
+    }
 }
 
 /// The used-ring index the device left after reset, so the driver's cursor
@@ -96,6 +136,35 @@ pub(crate) fn test_read_device_config(
     read_device_config(resources, drv_features).map(|cfg| (cfg.capacity, cfg.blk_size))
 }
 
+/// Name the characteristic that made a zoned device unusable. Without it the
+/// only symptom is a disk that never appears.
+#[cfg(feature = "debug-boot")]
+fn log_zoned_refusal(why: virtio::blk::zoned::ZonedRefusal) {
+    use virtio::blk::zoned::ZonedRefusal as R;
+    klog::write_raw(b"[WARN]  virtio-blk zoned device refused: ");
+    match why {
+        R::UnknownModel(m) => { klog::write_raw(b"model="); klog::write_dec_u64(m as u64); }
+        R::ZeroWriteGranularity => klog::write_raw(b"zero write granularity"),
+        R::ZoneSectorsNotPowerOfTwo(z) => {
+            klog::write_raw(b"zone sectors not a power of two="); klog::write_dec_u64(z as u64);
+        }
+        R::ZeroMaxAppendSectors => klog::write_raw(b"zero max append sectors"),
+        R::AppendBelowWriteGranularity { write_granularity, max_append_sectors } => {
+            klog::write_raw(b"append limit below write unit wg=");
+            klog::write_dec_u64(write_granularity as u64);
+            klog::write_raw(b" max_append=");
+            klog::write_dec_u64(max_append_sectors as u64);
+        }
+        R::ZoneSizeNotBlockAligned { zone_sectors, blk_size } => {
+            klog::write_raw(b"zone size not a whole number of blocks zs=");
+            klog::write_dec_u64(zone_sectors as u64);
+            klog::write_raw(b" blk_size=");
+            klog::write_dec_u64(blk_size as u64);
+        }
+    }
+    klog::write_raw(b"\n");
+}
+
 pub fn disk_name(index: u32) -> String {
     let mut buf = [0u8; DISK_NAME_BUF_BYTES];
     let n = blk::vd_name(index, &mut buf);
@@ -140,6 +209,17 @@ pub fn init_blk(init: BlkInit) -> u32 {
         }
     }
     let blk_size = blk::validate_blk_size(device_cfg.blk_size);
+    let zoned = match settle_zoned(device_cfg.zoned, blk_size) {
+        Ok(z) => z,
+        Err(_why) => {
+            #[cfg(feature = "debug-boot")]
+            log_zoned_refusal(_why);
+            // SAFETY: nothing was published for this device, so no descriptor
+            // and no registry entry can reference the bounce block being freed.
+            unsafe { pmm::setup::free_contig(bounce_pa, pmm::Order(BOUNCE_ORDER)); }
+            return 0;
+        }
+    };
     let seed = seed_used_index(h, &requestq);
 
     let mut state = BlkState {
@@ -155,6 +235,7 @@ pub fn init_blk(init: BlkInit) -> u32 {
         // The reference derives the queue's write-cache mode straight from
         // the negotiated `F_FLUSH` bit: that bit IS the cache mode.
         write_cache: virtio::cache_mode_writeback(init.drv_features),
+        zoned,
         poisoned: core::sync::atomic::AtomicBool::new(false),
     };
 

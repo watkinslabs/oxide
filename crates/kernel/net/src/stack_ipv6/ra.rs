@@ -7,8 +7,8 @@ use crate::stack::NetStack;
 
 const NS_PER_SEC: u64 = 1_000_000_000;
 const NS_PER_MILLISEC: u64 = 1_000_000;
-const INFINITE_DEADLINE: u64 = u64::MAX;
-const MAX_FINITE_DEADLINE: u64 = u64::MAX - 1;
+pub(crate) const INFINITE_DEADLINE: u64 = u64::MAX;
+pub(crate) const MAX_FINITE_DEADLINE: u64 = u64::MAX - 1;
 pub(super) const TWO_HOURS_SECS: u32 = 2 * 60 * 60;
 pub(crate) const DAD_DELAY_NS: u64 = NS_PER_SEC;
 
@@ -142,13 +142,17 @@ impl NetStack {
     }
 }
 
-pub(super) fn lifetime_deadline(now_ns: u64, lifetime: u32) -> u64 {
+/// Absolute deadline for a stated lifetime; the protocol's infinity maps to
+/// the sentinel deadline, and a finite one saturates below it. # C: O(1)
+pub(crate) fn lifetime_deadline(now_ns: u64, lifetime: u32) -> u64 {
     if lifetime == u32::MAX { INFINITE_DEADLINE }
     else { now_ns.saturating_add((lifetime as u64).saturating_mul(NS_PER_SEC))
         .min(MAX_FINITE_DEADLINE) }
 }
 
-pub(super) fn remaining_lifetime(now_ns: u64, deadline_ns: u64) -> u32 {
+/// Seconds left before a deadline; the sentinel reports the protocol's
+/// infinity rather than a countdown. # C: O(1)
+pub(crate) fn remaining_lifetime(now_ns: u64, deadline_ns: u64) -> u32 {
     if deadline_ns == INFINITE_DEADLINE { return u32::MAX; }
     ((deadline_ns.saturating_sub(now_ns) / NS_PER_SEC).min(u32::MAX as u64)) as u32
 }

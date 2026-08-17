@@ -4,8 +4,6 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use crate::PmmSnapshot;
-
 /// Linux `watermark_scale_factor` is expressed in ten-thousandths.
 pub const WATERMARK_SCALE_DENOMINATOR: u64 = 10_000;
 /// Linux default `vm.watermark_scale_factor`.
@@ -47,6 +45,12 @@ pub struct WatermarkSnapshot {
 /// allocation remains the sole owner of a page; policy only schedules reclaim.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum AllocationPolicy { Allow, WakeBackground, DirectReclaim }
+
+/// Serialises the hosted tests that write the published aggregate directly
+/// against those that drive `Pmm::refresh_watermarks`; both reach the same
+/// process-global statics, and neither may observe the other's window.
+#[cfg(test)]
+pub(crate) static PUBLISH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 static MANAGED_PAGES: AtomicU64 = AtomicU64::new(0);
 static MIN_PAGES: AtomicU64 = AtomicU64::new(0);
@@ -128,15 +132,19 @@ pub fn derive_zone_watermarks(
     ZoneWatermarks { min, low: min.saturating_add(gap), high: min.saturating_add(gap.saturating_mul(2)) }
 }
 
-/// Publish the boot allocator's one current normal zone.  The global records
-/// only derived thresholds; live free state always comes from `Pmm::snapshot`.
+/// Publish the aggregate of the buddy's per-zone thresholds. The per-zone
+/// array the allocation gate reads is the one derivation; this records its
+/// sum, which is what the whole-system reclaim policy and the background
+/// reclaimer compare a total free count against. Live free state always comes
+/// from `Pmm::snapshot`, never from here.
+///
+/// Called by `Pmm::refresh_watermarks`, which is the only producer.
 /// # C: O(1)
-pub fn install(snapshot: PmmSnapshot) {
-    let zone = derive_zone_watermarks(snapshot.managed_pages, snapshot.managed_pages, WatermarkTunables::default(), hal::PAGE_SIZE_BYTES);
-    MANAGED_PAGES.store(snapshot.managed_pages, Ordering::Release);
-    MIN_PAGES.store(zone.min, Ordering::Release);
-    LOW_PAGES.store(zone.low, Ordering::Release);
-    HIGH_PAGES.store(zone.high, Ordering::Release);
+pub(crate) fn publish(managed_pages: u64, agg: ZoneWatermarks) {
+    MANAGED_PAGES.store(managed_pages, Ordering::Release);
+    MIN_PAGES.store(agg.min, Ordering::Release);
+    LOW_PAGES.store(agg.low, Ordering::Release);
+    HIGH_PAGES.store(agg.high, Ordering::Release);
 }
 
 /// Return the currently published policy and live buddy free count. # C: O(1)

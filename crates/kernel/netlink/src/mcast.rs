@@ -112,12 +112,11 @@ fn emit_addr(event: &net::control_event::AddrEvent) {
 fn emit_addr6(event: &net::control_event::Addr6Event) {
     pause_notification(event.owner.iface.raw());
     let row = &event.row;
-    let scope = if row.addr.is_loopback() { rt::RT_SCOPE_HOST }
-        else if row.addr.is_link_local() { rt::RT_SCOPE_LINK } else { rt::RT_SCOPE_UNIVERSE };
-    let flags = row.flags();
     let mut msg = rt::build_newaddr6_reply(0, 0, notify_ifindex(&event.owner, event.namespace.id()),
-        &event.label, row.addr.0, row.prefixlen, scope, flags,
-        rt::IfaCacheInfo { preferred: row.preferred, valid: row.valid, cstamp: 0, tstamp: 0 },
+        row.addr.0, row.peer.map(|peer| peer.0), row.prefixlen, row.rt_scope(), row.flags(),
+        row.proto, row.rt_priority,
+        rt::IfaCacheInfo { preferred: row.preferred, valid: row.valid,
+            cstamp: row.cstamp, tstamp: row.tstamp },
         0, None);
     if event.kind == net::control_event::EventKind::Delete {
         patch_type(&mut msg, rt::RTM_DELADDR);

@@ -296,7 +296,8 @@ pub fn listen(sock: &alloc::sync::Arc<InetSocket>, backlog: i32) -> Result<(), N
         let current = sched::live::current();
         let cred = crate::PeerCred::of_current();
         let identity = current.as_ref().map(|c| c.thread_group.leader_pid());
-        listener.listen_with_cred(backlog, somaxconn, cred, identity);
+        listener.listen_with_cred(backlog, somaxconn, cred, identity,
+            Some(sock.security_label()));
         #[cfg(target_os = "oxide-kernel")]
         sock.connect_waiters.wake_all();
         return Ok(());

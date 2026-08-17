@@ -24,11 +24,12 @@ pub mod fixture;
 
 pub use crate::avc::{AvDecision, AVD_FLAGS_NEVERAUDIT, AVD_FLAGS_PERMISSIVE};
 
-pub use av::{compute_av, MAX_BOUNDS_DEPTH};
+pub use av::{compute_av, compute_av_user, MAX_BOUNDS_DEPTH};
 pub use constraint::constraint_eval;
-pub use transition::{change_sid, compute_sid, is_socket_class, member_sid, transition_sid,
+pub use transition::{change_sid, change_sid_user, compute_sid, is_socket_class, member_sid,
+                     member_sid_user, transition_sid, transition_sid_user, ClassValue,
                      TransitionKind, TransitionRequest};
 pub use render::{context_to_string, sid_to_context};
 pub use parse::{context_from_string, string_to_sid};
 pub use objects::{genfs_sid, initial_sid_context, load_initial_sids};
-pub use validtrans::validate_transition;
+pub use validtrans::{validate_transition, validate_transition_user};

@@ -156,6 +156,14 @@ const SYSCTL_TREE: &[Node] = &[
         File("protected_hardlinks",   Int(1, Some((0, 1)))),
         File("protected_symlinks",    Int(1, Some((0, 1)))),
         File("suid_dumpable",         IntHook(get_suid_dumpable, set_suid_dumpable, Some((0, 2)))),
+        // fs-verity's one system-wide knob. The trusted certificates are a
+        // keyring rather than a sysctl, but whether an UNSIGNED verity file
+        // may be read at all is a single machine-wide boolean, and the
+        // reference registers it right here.
+        Dir("verity", &[
+            File("require_signatures", IntHook(get_verity_require_sigs,
+                                               set_verity_require_sigs, Some((0, 1)))),
+        ]),
         Dir("mqueue", &[
             // `queues_max` is a plain `proc_dointvec`; the
             // four size knobs are `proc_dointvec_minmax` between the MIN_* an

@@ -429,7 +429,8 @@ impl File {
         let total = if capped_bufs.is_empty() { 0 } else {
             self.f_op.write_iter_file(self, base, &capped_bufs, nonblock)? as u64
         };
-        self.pos.store(base + total, Ordering::Release);
+        // Same cursor ownership as the scalar path (`FileOps::write_advances_pos`).
+        if self.f_op.write_advances_pos() { self.pos.store(base + total, Ordering::Release); }
         drop(append_guard); // release i_rwsem (rank 40) before f_pos_lock (rank 35)
         drop(pos_guard); // release before the (possibly lock-taking) inotify hook
         if total > 0 {

@@ -32,6 +32,7 @@ pub mod char_class;
 pub mod devicetree;
 pub mod dmi;
 pub mod drm;
+pub mod fs_subsys;
 pub mod input;
 pub mod kernel;
 pub mod mm;
@@ -171,6 +172,8 @@ pub fn init() {
     // pstore, securityfs). They must exist as walkable dentries in sysfs's
     // own tree BEFORE those mounts attach (moved here from devfs::boot —
     // devfs can't depend on sysfs without a cycle). # C: O(1)
+    // `/sys/fs` itself exists before any filesystem publishes into it.
+    fs_subsys::init();
     register_dir("/sys/fs/cgroup");
     register_dir("/sys/fs/bpf");
     register_dir("/sys/fs/pstore");

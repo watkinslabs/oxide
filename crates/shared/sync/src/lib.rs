@@ -97,6 +97,14 @@ decl_lock_class! {
     Timer        =  5,
     Slab         = 10,
     Reclaim      = 15,
+    // Page-cache LRU + dirty-inode lists (`block::pagecache`), the reference's
+    // per-node `lruvec->lru_lock` plus the flusher's dirty-inode list. Ranked
+    // strictly BELOW `Inode` (40) because both reclaim and the flusher walk a
+    // list entry and then take the owning mapping's lock to act on it —
+    // ascending, and never the other way: a mapping never touches these lists
+    // with its own lock held. Ranked above `Reclaim` (15) so PMM reclaim may
+    // call the page-cache shrinker while holding its own reclaim state.
+    PageCacheLru = 16,
     PageTable    = 20,
     AnonVma      = 25,
     // Per-page migration-token state.  Kept above i_mmap/rmap (25) and
@@ -277,6 +285,14 @@ decl_lock_class! {
     // under it takes no tracked lock of its own, so it is a leaf apart from
     // allocation.
     SecurityPolicy = 150,
+    // Security-module framework: the resolved module order, the per-object
+    // slot allocation and the hook lists (`lsm::registry`). Set once during
+    // early boot and read afterwards. Ranked just below the policy lock
+    // because a module is reached through the framework and only then takes
+    // its own policy lock inside — never the other way round. Nothing
+    // on a hot path takes it: a subsystem owning a hook list owns the lock
+    // over that list, and this one covers the framework itself.
+    LsmFramework = 149,
     // Kernel CSPRNG state (`crng::pool`). A strict LEAF: the ChaCha20 rekey and
     // output run entirely inside it and take no nested tracked lock, so any
     // consumer (getrandom, /dev/urandom, AT_RANDOM, uuid, socket cookies) may

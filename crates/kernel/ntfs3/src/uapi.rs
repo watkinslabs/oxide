@@ -178,6 +178,9 @@ pub const FILE_NAME_UNICODE_AND_DOS: u8 = FILE_NAME_DOS | FILE_NAME_UNICODE;
 
 /// Longest name the format admits, in UTF-16 units.
 pub const NTFS_NAME_LEN: usize = 255;
+
+/// Longest volume label, in UTF-16 units. A name past it is refused.
+pub const NTFS_LABEL_MAX: usize = 0x100 / 2;
 /// Hard links one record admits.
 pub const NTFS_LINK_MAX: u16 = 4000;
 

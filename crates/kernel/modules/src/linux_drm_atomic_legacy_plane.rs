@@ -85,6 +85,7 @@ fn mark_cursor_update(state: *mut u8, plane: *mut u8, crtc: *mut c_void) {
     if state.is_null() || plane.is_null() || crtc.is_null() { return; }
     // SAFETY: live CRTC and atomic state expose their fixed cursor pointer and transaction flag bit.
     if unsafe { read(crtc.cast::<u8>().add(DRM_CRTC_CURSOR_OFF).cast::<*mut u8>()) } == plane {
+        // SAFETY: state is the non-null atomic-state pointer checked by the caller; this bit is the transaction's own single-writer flag byte.
         unsafe { *state.add(DRM_ATOMIC_LEGACY_CURSOR_UPDATE_OFF) |= DRM_ATOMIC_LEGACY_CURSOR_UPDATE; }
     }
 }

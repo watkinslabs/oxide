@@ -34,6 +34,7 @@ pub(super) extern "C" fn drm_atomic_helper_connector_reset(connector: *mut c_voi
     if !old.is_null() { drm_atomic_helper_connector_destroy_state(connector, old); }
     // SAFETY: reset publishes a zeroed state only after the old state is withdrawn.
     unsafe { write(connector.cast::<u8>().add(DRM_CONNECTOR_STATE_OFF).cast::<*mut c_void>(), core::ptr::null_mut()); }
+    // SAFETY: allocates a fresh block of exactly state_layout()'s size/align; the following writes populate it before publication.
     let state = unsafe { alloc_zeroed_state() }; if state.is_null() { return; }
     // SAFETY: state is a fresh standard connector state and connector is its immutable backpointer.
     unsafe { write(state.add(DRM_CONNECTOR_STATE_CONNECTOR_OFF).cast::<*mut c_void>(), connector); write(connector.cast::<u8>().add(DRM_CONNECTOR_STATE_OFF).cast::<*mut u8>(), state); }
@@ -47,11 +48,13 @@ pub(super) extern "C" fn drm_atomic_helper_connector_duplicate_state(connector: 
     // SAFETY: connector is an ABI-complete external object whose state field is current under the caller's modeset lock.
     let old = unsafe { read(connector.cast::<u8>().add(DRM_CONNECTOR_STATE_OFF).cast::<*mut u8>()) };
     if old.is_null() || has_unowned_resources(old) { return core::ptr::null_mut(); }
+    // SAFETY: allocates a fresh block of exactly state_layout()'s size/align; the copy below populates it from old before publication.
     let state = unsafe { alloc_zeroed_state() }; if state.is_null() { return core::ptr::null_mut(); }
     // SAFETY: two distinct complete standard connector states are copied before transient resource fields are cleared.
     unsafe { core::ptr::copy_nonoverlapping(old, state, DRM_CONNECTOR_STATE_SIZE); write(state.add(DRM_CONNECTOR_STATE_COMMIT_OFF).cast::<*mut c_void>(), core::ptr::null_mut()); write(state.add(DRM_CONNECTOR_STATE_WRITEBACK_JOB_OFF).cast::<*mut c_void>(), core::ptr::null_mut()); }
     // SAFETY: Linux retains the connector only for a state that carries a CRTC relation.
     let crtc = unsafe { read(state.add(DRM_CONNECTOR_STATE_CRTC_OFF).cast::<*mut c_void>()) };
+    // SAFETY: connector was validated non-null above; its embedded mode-object base is the fixed offset every mode_object_refs call uses.
     if !crtc.is_null() { mode_object_refs::get(unsafe { connector.cast::<u8>().add(DRM_CONNECTOR_BASE_OFF).cast() }); }
     state.cast()
 }
@@ -68,6 +71,7 @@ pub(super) extern "C" fn drm_atomic_helper_connector_destroy_state(_connector: *
     if has_unowned_resources(state) { return; }
     // SAFETY: a duplicated state with a CRTC relation owns precisely one connector mode-object reference.
     let crtc = unsafe { read(state.add(DRM_CONNECTOR_STATE_CRTC_OFF).cast::<*mut c_void>()) };
+    // SAFETY: owner is the state's own CONNECTOR_OFF backpointer, set at reset/duplicate time; balances the get taken in duplicate_state for a CRTC-attached state.
     if !crtc.is_null() { let owner = unsafe { read(state.add(DRM_CONNECTOR_STATE_CONNECTOR_OFF).cast::<*mut c_void>()) }; if !owner.is_null() { mode_object_refs::put(unsafe { owner.cast::<u8>().add(DRM_CONNECTOR_BASE_OFF).cast() }); } }
     // SAFETY: state is a standard allocation made by reset or duplicate and is released exactly once.
     unsafe { dealloc(state, state_layout()); }
@@ -79,10 +83,15 @@ mod tests {
     #[test]
     fn standard_connector_states_reset_duplicate_and_release_the_crtc_reference() {
         let mut connector = [0u8; 2280]; drm_atomic_helper_connector_reset(connector.as_mut_ptr().cast());
+        // SAFETY: reset just published state through this same field; reads it back and its embedded backpointer, both within the fabricated 2280-byte connector.
         let state = unsafe { read(connector.as_ptr().add(DRM_CONNECTOR_STATE_OFF).cast::<*mut u8>()) }; assert!(!state.is_null()); assert_eq!(unsafe { read(state.cast::<*mut c_void>()) }, connector.as_mut_ptr().cast());
+        // SAFETY: fabricates a CRTC relation and a mode-object refcount/lock-owner pair at the offsets duplicate/destroy read through mode_object_refs.
         unsafe { write(state.add(DRM_CONNECTOR_STATE_CRTC_OFF).cast::<*mut c_void>(), 1usize as *mut c_void); write(connector.as_mut_ptr().add(DRM_CONNECTOR_BASE_OFF + 16).cast::<i32>(), 2); write(connector.as_mut_ptr().add(DRM_CONNECTOR_BASE_OFF + 24).cast::<usize>(), 1); }
+        // SAFETY: duplicating a state with a CRTC relation must take one mode-object ref; reads back the refcount field bumped by mode_object_refs::get.
         let duplicate = drm_atomic_helper_connector_duplicate_state(connector.as_mut_ptr().cast()); assert!(!duplicate.is_null()); assert_eq!(unsafe { read(connector.as_ptr().add(DRM_CONNECTOR_BASE_OFF + 16).cast::<i32>()) }, 3);
+        // SAFETY: destroying the duplicate drops exactly the one mode-object ref taken at line 55; reads back the same fabricated refcount field.
         drm_atomic_helper_connector_destroy_state(connector.as_mut_ptr().cast(), duplicate); assert_eq!(unsafe { read(connector.as_ptr().add(DRM_CONNECTOR_BASE_OFF + 16).cast::<i32>()) }, 2);
+        // SAFETY: clears the CRTC relation on the still-live state so the final destroy takes the no-crtc path, freeing without a second mode-object put.
         unsafe { write(state.add(DRM_CONNECTOR_STATE_CRTC_OFF).cast::<*mut c_void>(), core::ptr::null_mut()); } drm_atomic_helper_connector_destroy_state(connector.as_mut_ptr().cast(), state.cast());
     }
     #[test]

@@ -39,6 +39,7 @@ pub(super) fn export_symbols() {
 pub(super) fn mode_layout() -> Layout { Layout::from_size_align(DRM_DISPLAY_MODE_SIZE, core::mem::align_of::<u64>()).unwrap() }
 
 pub(super) fn edid_detailed_add(connector: *mut c_void, clock: i32, hdisplay: u16, hsync_start: u16, hsync_end: u16, htotal: u16, vdisplay: u16, vsync_start: u16, vsync_end: u16, vtotal: u16, flags: u32, preferred: bool) -> bool {
+    // SAFETY: the null check in this same expression guards the read; dev lives at ABI offset 0.
     let dev = if connector.is_null() { return false; } else { unsafe { read(connector.cast::<*mut c_void>()) } };
     let mode = drm_mode_create(dev); if mode.is_null() { return false; }
     // SAFETY: mode is a newly allocated complete drm_display_mode; all timing offsets are ABI verified.
@@ -73,6 +74,7 @@ pub(super) extern "C" fn drm_mode_destroy(_dev: *mut c_void, mode: *mut c_void) 
 /// Append a newly probed mode to one connector's pending mode list. # C: O(N_connectors)
 pub(super) extern "C" fn drm_mode_probed_add(connector: *mut c_void, mode: *mut c_void) {
     if connector.is_null() || mode.is_null() { return; }
+    // SAFETY: connector was null-checked immediately above; dev lives at ABI offset 0.
     let dev = unsafe { *(connector.cast::<*mut c_void>()) };
     let mut devices = DEVICES.lock();
     if devices.iter().any(|record| record.connectors.iter().any(|entry| entry.modes.iter().chain(entry.probed_modes.iter()).any(|ptr| *ptr == mode as usize))) { return; }
@@ -119,6 +121,7 @@ pub(super) extern "C" fn drm_mode_duplicate(dev: *mut c_void, src: *const c_void
 
 /// Add every standard fallback mode within the requested display bounds. # C: O(N_dmt)
 pub(super) extern "C" fn drm_add_modes_noedid(connector: *mut c_void, max_h: u32, max_v: u32) -> i32 {
+    // SAFETY: connector is null-checked in this same statement before the read; dev lives at ABI offset 0.
     if connector.is_null() { return 0; } let dev = unsafe { *(connector.cast::<*mut c_void>()) };
     if !DEVICES.lock().iter().any(|record| record.dev == dev as usize && record.connectors.iter().any(|entry| entry.ptr == connector as usize)) { return 0; }
     let mut count = 0;
@@ -130,28 +133,45 @@ pub(super) extern "C" fn drm_add_modes_noedid(connector: *mut c_void, max_h: u32
 
 /// Mark every pending mode matching the requested visible resolution preferred. # C: O(N_modes)
 pub(super) extern "C" fn drm_set_preferred_mode(connector: *mut c_void, hpref: i32, vpref: i32) {
+    // SAFETY: connector is null-checked in this same statement before the read; dev lives at ABI offset 0.
     if connector.is_null() { return; } let dev = unsafe { *(connector.cast::<*mut c_void>()) }; let devices = DEVICES.lock();
     let Some(record) = devices.iter().find(|record| record.dev == dev as usize) else { return; }; let Some(entry) = record.connectors.iter().find(|entry| entry.ptr == connector as usize) else { return; };
+    // SAFETY: each probed_modes entry is a DRM_DISPLAY_MODE_SIZE allocation created
+    // by drm_mode_create and pushed only by drm_mode_probed_add, so its timing fields are valid.
     for &mode in &entry.probed_modes { unsafe { let ptr = mode as *mut u8; if *(ptr.add(DRM_DISPLAY_MODE_HDISPLAY_OFF).cast::<u16>()) as i32 == hpref && *(ptr.add(DRM_DISPLAY_MODE_VDISPLAY_OFF).cast::<u16>()) as i32 == vpref { let ty = ptr.add(DRM_DISPLAY_MODE_TYPE_OFF); write(ty, *ty | DRM_MODE_TYPE_PREFERRED); } } }
 }
 
 /// Move new probed modes into the connector's live mode list. # C: O(N_probed * N_modes)
 pub(super) extern "C" fn drm_connector_list_update(connector: *mut c_void) {
+    // SAFETY: connector is null-checked in this same statement before the read; dev lives at ABI offset 0.
     if connector.is_null() { return; } let dev = unsafe { *(connector.cast::<*mut c_void>()) }; let mut devices = DEVICES.lock(); let Some(record) = devices.iter_mut().find(|record| record.dev == dev as usize) else { return; }; let Some(entry) = record.connectors.iter_mut().find(|entry| entry.ptr == connector as usize) else { return; };
+    // SAFETY: old is a live entry.modes allocation and new/mode a live probed_modes
+    // allocation, both DRM_DISPLAY_MODE_SIZE display-mode objects created by
+    // drm_mode_create; the merge case's dealloc(new, mode_layout()) frees the exact
+    // same-sized allocation only after unlink_mode removes its list linkage, and it
+    // has just been dropped from entry.probed_modes by the take() above (sole owner).
     let probed = core::mem::take(&mut entry.probed_modes); for mode in probed { let found = entry.modes.iter().copied().find(|old| unsafe { modes_equal(*old as *const u8, mode as *const u8) }); if let Some(old) = found { unsafe { let old = old as *mut u8; let new = mode as *mut u8; if read(old.add(DRM_DISPLAY_MODE_STATUS_OFF).cast::<i32>()) == MODE_STATUS_STALE { drm_mode_copy(old.cast(), new.cast()); } else if read(old.add(DRM_DISPLAY_MODE_TYPE_OFF) as *const u8) & DRM_MODE_TYPE_PREFERRED == 0 && read(new.add(DRM_DISPLAY_MODE_TYPE_OFF) as *const u8) & DRM_MODE_TYPE_PREFERRED != 0 { let ty = new.add(DRM_DISPLAY_MODE_TYPE_OFF); write(ty, read(ty as *const u8) | read(old.add(DRM_DISPLAY_MODE_TYPE_OFF) as *const u8)); drm_mode_copy(old.cast(), new.cast()); } else { let ty = old.add(DRM_DISPLAY_MODE_TYPE_OFF); write(ty, read(ty as *const u8) | read(new.add(DRM_DISPLAY_MODE_TYPE_OFF) as *const u8)); } unlink_mode(new.cast()); dealloc(new, mode_layout()); } } else { unsafe { unlink_mode(mode as *mut c_void); link_tail(connector.cast::<u8>().add(DRM_CONNECTOR_MODES_OFF), (mode as *mut u8).add(DRM_DISPLAY_MODE_HEAD_OFF)); } entry.modes.push(mode); } }
 }
 
 pub(super) fn mark_live_modes_stale(connector: *mut c_void) {
+    // SAFETY: connector is null-checked in this same statement before the read; dev lives at ABI offset 0.
     if connector.is_null() { return; } let dev = unsafe { *(connector.cast::<*mut c_void>()) }; let devices = DEVICES.lock(); let Some(record) = devices.iter().find(|record| record.dev == dev as usize) else { return; }; let Some(entry) = record.connectors.iter().find(|entry| entry.ptr == connector as usize) else { return; };
+    // SAFETY: each entry.modes value is a live DRM_DISPLAY_MODE_SIZE mode object
+    // created by drm_mode_create; status lives at this fixed offset in that layout.
     for &mode in &entry.modes { unsafe { write((mode as *mut u8).add(DRM_DISPLAY_MODE_STATUS_OFF).cast::<i32>(), MODE_STATUS_STALE); } }
 }
 
 pub(super) fn prune_invalid_live_modes(connector: *mut c_void, max_width: u32, max_height: u32) {
+    // SAFETY: connector is null-checked in this same statement before the read; dev lives at ABI offset 0.
     if connector.is_null() { return; } let dev = unsafe { *(connector.cast::<*mut c_void>()) }; let mut devices = DEVICES.lock(); let Some(record) = devices.iter_mut().find(|record| record.dev == dev as usize) else { return; }; let Some(entry) = record.connectors.iter_mut().find(|entry| entry.ptr == connector as usize) else { return; }; let modes = core::mem::take(&mut entry.modes);
+    // SAFETY: each mode is a live DRM_DISPLAY_MODE_SIZE object created by
+    // drm_mode_create, just removed from entry.modes by the take() above (sole
+    // owner), so the discard branch's dealloc(ptr, mode_layout()) is its one free.
     for mode in modes { unsafe { let ptr = mode as *mut u8; let within_bounds = (max_width == 0 || read(ptr.add(DRM_DISPLAY_MODE_HDISPLAY_OFF).cast::<u16>()) as u32 <= max_width) && (max_height == 0 || read(ptr.add(DRM_DISPLAY_MODE_VDISPLAY_OFF).cast::<u16>()) as u32 <= max_height); if read(ptr.add(DRM_DISPLAY_MODE_STATUS_OFF).cast::<i32>()) == 0 && within_bounds { entry.modes.push(mode); } else { unlink_mode(mode as *mut c_void); dealloc(ptr, mode_layout()); } } }
 }
 
 pub(super) fn live_mode_count(connector: *mut c_void) -> usize {
+    // SAFETY: connector is null-checked in this same statement before the read; dev lives at ABI offset 0.
     if connector.is_null() { return 0; } let dev = unsafe { *(connector.cast::<*mut c_void>()) }; let devices = DEVICES.lock(); devices.iter().find(|record| record.dev == dev as usize).and_then(|record| record.connectors.iter().find(|entry| entry.ptr == connector as usize)).map_or(0, |entry| entry.modes.len())
 }
 

@@ -207,19 +207,28 @@ fn netdev_alloc(sizeof_priv: usize, txq_count: u32) -> *mut LinuxNetDevice {
     let base = unsafe { alloc_zeroed(layout) };
     if base.is_null() { return null_mut(); }
     let tstats_layout = match Layout::from_size_align(cpu::MAX_CPUS * cpu::LINUX_MODULE_PERCPU_STRIDE,
-        align_of::<LinuxPcpuSwNetStats>()) { Ok(v) => v, Err(_) => { unsafe { dealloc(base, layout); } return null_mut(); } };
+        align_of::<LinuxPcpuSwNetStats>()) { Ok(v) => v, Err(_) => {
+            // SAFETY: the percpu stats layout computation failed before dev was published; base was allocated above with this exact layout and no other pointer to it exists yet.
+            unsafe { dealloc(base, layout); } return null_mut();
+        } };
+    // SAFETY: tstats_layout was just validated by Layout::from_size_align above and zero init matches C allocation expectations.
     let tstats = unsafe { alloc_zeroed(tstats_layout) as *mut LinuxPcpuSwNetStats };
     if tstats.is_null() {
+        // SAFETY: tstats allocation failed before dev was published; base was allocated above with this exact layout and no other pointer to it exists yet.
         unsafe { dealloc(base, layout); }
         return null_mut();
     }
     let txq_layout = match Layout::array::<LinuxNetdevQueue>(txq_count as usize) {
         Ok(v) => v,
-        Err(_) => { unsafe { dealloc(tstats.cast(), tstats_layout); dealloc(base, layout); } return null_mut(); }
+        Err(_) => {
+            // SAFETY: the txq array layout computation failed before dev was published; tstats/base were each allocated above with tstats_layout/layout, matching the layouts freed here, and no other pointer to either exists yet.
+            unsafe { dealloc(tstats.cast(), tstats_layout); dealloc(base, layout); } return null_mut();
+        }
     };
     // SAFETY: txq_layout describes the requested nonzero queue array.
     let txq = unsafe { alloc_zeroed(txq_layout) as *mut LinuxNetdevQueue };
     if txq.is_null() {
+        // SAFETY: txq allocation failed before dev was published; tstats/base were each allocated above with tstats_layout/layout, the exact layouts being freed here, and no other pointer to either exists yet.
         unsafe { dealloc(tstats.cast(), tstats_layout); dealloc(base, layout); }
         return null_mut();
     }

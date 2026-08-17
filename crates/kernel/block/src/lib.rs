@@ -3,18 +3,33 @@
 // `types.rs` — `BlockOp`, `BlockError`, `PageFlags`, `InodeId`, `PAGE_BYTES`.
 // `queue_limits.rs` — canonical block queue topology + sysfs leaf mapping.
 // `blockdev.rs` — `BlockDevice` trait + `BlockRequest` + `MemDisk` test backing.
+// `zoned.rs` — what a drive says about its zones, the answer that means
+// "not a zoned drive", and the sequential-write rule. virtio-blk answers for
+// a host-managed drive; every other driver takes the `None` default.
 // `completion.rs` — shared BlockIo softirq completion-handler registry.
 // `elevator.rs` — I/O-priority dispatch order for requests that had to wait.
-// `pagecache.rs` — `PageCache` (sync `read_page` / `write_page` /
-// `fsync` / `invalidate`); `CachedPage` with `PG_*` flags.
+// `crypto.rs` — inline encryption (Linux blk-crypto): the profile a device
+// advertises, the encryption context a request carries, the keyslots a key is
+// programmed into, and the software fallback that serves a context no device
+// can — so a mount that asked for inline crypto never silently gets plaintext.
+// `flags.rs` — the per-request op-flag word: what a submitter says about one
+// request beyond its operation, and the predicate a queue reads it through.
+// `durability.rs` — the pre-flush / forced-unit-access promise a submitter can
+// make about WHEN a write is on the medium, the decision that turns it into
+// device commands given what the device advertises, and the one place that
+// issues them in order.
+// `pagecache.rs` — the file page cache (`17§4`): per-inode radix trees of
+// `CachedPage`, the `PG_LOCKED` bit that collapses a racing miss to one fetch,
+// the per-inode dirty list and machine-wide dirty thresholds `kflushd` acts
+// on, and the two-list LRU reclaim frees clean pages from — never a page
+// carrying a write the medium has not got.
 // `bdev.rs` — the BLOCK-DEVICE page cache: the address space a raw
 // `/dev/<disk>` open reads and writes through, its two-pass writeback, and
 // `sync_bdevs` — the device half of `sync(2)`.
 //
 // The owned-request completion contract is present; individual driver queue
 // engines migrate from their synchronous compatibility path to it. Remaining:
-// writeback daemon (`17§4`), radix-tree, PG_LOCKED waiters, io_uring fixed
-// buffers, and multi-command driver queues.
+// io_uring fixed buffers, and multi-command driver queues.
 
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
@@ -27,9 +42,12 @@ pub mod bdev;
 mod bh_gate;
 pub mod blockdev;
 pub mod completion;
+pub mod crypto;
 pub mod devbridge;
 pub mod direct;
+pub mod durability;
 pub mod elevator;
+pub mod flags;
 pub mod pagecache;
 pub mod partitions;
 pub mod queue_limits;
@@ -38,12 +56,16 @@ pub mod stats;
 pub mod task_io;
 pub mod types;
 pub mod uapi;
+pub mod zoned;
 
 pub use bdev::{sync_bdevs, BdevMapping};
 pub use blockdev::{BlockCompletion, BlockDevice, BlockRequest, MemDisk};
+pub use durability::Durability;
+pub use flags::RequestFlags;
 pub use pagecache::{CachedPage, PageCache};
 pub use queue_limits::{QueueFeatures, QueueLimits, LINUX_SECTOR_BYTES, MAX_DISCARD_SECTORS};
 pub use registry::{Disk, Partition, ScsiDiskName, register, unregister, by_name, by_index, partition_by_dev, partition_by_label, partition_by_name, partition_by_uuid, partition_by_uuid_offset, rescan_partitions, reserve_scsi_disk_name, snapshot, start_deferred_partition_scans};
+pub use zoned::{Zone, ZoneCond, ZoneMgmtOp, ZoneReport, ZoneType};
 pub use types::{BlockError, BlockOp, InodeId, KResult, PageFlags, PAGE_BYTES};
 
 #[cfg(target_os = "oxide-kernel")]

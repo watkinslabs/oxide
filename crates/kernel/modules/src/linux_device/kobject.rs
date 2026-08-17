@@ -156,6 +156,7 @@ unsafe fn kobject_path(kobj: *const LinuxKobject) -> Result<String, ()> {
     while !cur.is_null() {
         // SAFETY: each link is from the caller-owned live kobject ancestry used during uevent construction.
         let name = unsafe { (*cur).name };
+        // SAFETY: name was just checked non-null; kobject names are Linux-convention NUL-terminated C strings owned by the kobject or registry::replace_kobject_name's allocation.
         if !name.is_null() { names.push(unsafe { cstr_string(name) }?); }
         // SAFETY: same live ancestry; the link is only read to continue toward the root.
         cur = unsafe { (*cur).parent };
@@ -168,6 +169,7 @@ unsafe fn kobject_path(kobj: *const LinuxKobject) -> Result<String, ()> {
 
 unsafe fn add_default_env(env: &mut LinuxKobjUeventEnv, action: &str, devpath: &str, subsystem: &str, envp_ext: *mut *mut c_char) -> Option<i32> {
     for entry in [alloc::format!("ACTION={action}"), alloc::format!("DEVPATH={devpath}"), alloc::format!("SUBSYSTEM={subsystem}")] {
+        // SAFETY: add_env_bytes only needs env/bytes valid for the call; env is the local LinuxKobjUeventEnv this uevent build owns and entry is an owned, just-formatted String's bytes.
         let rc = unsafe { add_env_bytes(env, entry.as_bytes()) };
         if rc != LINUX_OK { return Some(rc); }
     }
@@ -178,6 +180,7 @@ unsafe fn add_default_env(env: &mut LinuxKobjUeventEnv, action: &str, devpath: &
         if entry.is_null() { break; }
         // SAFETY: each vector element is a NUL-terminated environment string by the KPI contract.
         let bytes = unsafe { CStr::from_ptr(entry).to_bytes() };
+        // SAFETY: add_env_bytes only needs env/bytes valid for the call; env is the same live local passed through this function and bytes was just extracted from the NUL-terminated envp_ext entry.
         let rc = unsafe { add_env_bytes(env, bytes) };
         if rc != LINUX_OK { return Some(rc); }
         // SAFETY: the element above was valid, so increment remains within the caller's NULL-terminated vector.
@@ -215,6 +218,7 @@ fn env_entries(env: &LinuxKobjUeventEnv) -> Vec<Vec<u8>> {
 fn zap_modalias(env: &mut LinuxKobjUeventEnv) {
     let kept: Vec<Vec<u8>> = env_entries(env).into_iter().filter(|entry| !entry.starts_with(b"MODALIAS=")).collect();
     *env = LinuxKobjUeventEnv::new();
+    // SAFETY: add_env_bytes only needs env/bytes valid for the call; env was just reset to a fresh LinuxKobjUeventEnv and entry is an owned Vec from the filtered env_entries copy.
     for entry in kept { let _ = unsafe { add_env_bytes(env, &entry) }; }
 }
 

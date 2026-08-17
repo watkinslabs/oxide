@@ -11,7 +11,7 @@ use crate::io_uring_sqe::Sqe;
 
 use super::fdres::{effective_fd, select_buf};
 use super::outcome::OpOutcome;
-use super::{async_ops, fs_ops, net_ops, ring_ops, rw};
+use super::{async_ops, fs_ops, net_ops, proc_ops, ring_ops, rw, rw_vec, splice_ops};
 
 /// One operation's resolved operands.
 pub struct Op<'a> {
@@ -99,6 +99,8 @@ fn run(op: &Op) -> i64 {
         IORING_OP_WRITEV          => rw::writev(op),
         IORING_OP_READ_FIXED      => rw::read_fixed(op),
         IORING_OP_WRITE_FIXED     => rw::write_fixed(op),
+        IORING_OP_READV_FIXED     => rw_vec::vec_fixed(op),
+        IORING_OP_WRITEV_FIXED    => rw_vec::vec_fixed(op),
         IORING_OP_FSYNC           => rw::fsync(op),
         IORING_OP_SYNC_FILE_RANGE => rw::sync_file_range(op),
         IORING_OP_FALLOCATE       => rw::fallocate(op),
@@ -119,9 +121,11 @@ fn run(op: &Op) -> i64 {
         IORING_OP_FSETXATTR       => fs_ops::fsetxattr(op),
         IORING_OP_GETXATTR        => fs_ops::getxattr(op),
         IORING_OP_FGETXATTR       => fs_ops::fgetxattr(op),
-        IORING_OP_TEE             => fs_ops::tee(op),
+        IORING_OP_SPLICE          => splice_ops::splice(op),
+        IORING_OP_TEE             => splice_ops::tee(op),
         IORING_OP_PIPE            => fs_ops::pipe(op),
         IORING_OP_EPOLL_CTL       => fs_ops::epoll_ctl(op),
+        IORING_OP_EPOLL_WAIT      => fs_ops::epoll_wait(op),
 
         IORING_OP_SEND            => net_ops::send(op),
         IORING_OP_SEND_ZC         => net_ops::send_zc(op),
@@ -142,6 +146,11 @@ fn run(op: &Op) -> i64 {
         IORING_OP_PROVIDE_BUFFERS   => ring_ops::provide_buffers(op),
         IORING_OP_REMOVE_BUFFERS    => ring_ops::remove_buffers(op),
         IORING_OP_FIXED_FD_INSTALL  => ring_ops::fixed_fd_install(op),
+
+        IORING_OP_WAITID            => proc_ops::waitid(op),
+        IORING_OP_FUTEX_WAIT        => proc_ops::futex_wait(op),
+        IORING_OP_FUTEX_WAKE        => proc_ops::futex_wake(op),
+        IORING_OP_FUTEX_WAITV       => proc_ops::futex_waitv(op),
 
         IORING_OP_ASYNC_CANCEL      => async_ops::async_cancel(op),
         IORING_OP_TIMEOUT_REMOVE    => async_ops::timeout_remove(op),

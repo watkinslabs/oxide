@@ -118,11 +118,15 @@ pub fn install_eventq(
         return Err(());
     };
     let Some(buf_dma) = iommu::map_dma(bdf, buf_pa, hal::PAGE_SIZE_BYTES as usize) else {
+        // SAFETY: both frames were allocated above and this mapping attempt was the
+        // first; neither has an IOVA or a device-visible reference to invalidate.
         unsafe { pmm::setup::free_one_frame(status_buf_pa); pmm::setup::free_one_frame(buf_pa); }
         return Err(());
     };
     let Some(status_buf_dma) = iommu::map_dma(bdf, status_buf_pa, hal::PAGE_SIZE_BYTES as usize) else {
         let _ = iommu::unmap_dma(bdf, buf_dma, hal::PAGE_SIZE_BYTES as usize);
+        // SAFETY: `buf_pa`'s only IOVA was just torn down on the line above and
+        // `status_buf_pa` never acquired one, so neither frame is device-reachable.
         unsafe { pmm::setup::free_one_frame(status_buf_pa); pmm::setup::free_one_frame(buf_pa); }
         return Err(());
     };

@@ -19,7 +19,7 @@ fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 const CUR_POS: u64 = u64::MAX;
 
 /// Resolve the operation's descriptor to an open description. # C: O(1)
-fn file_of(fd: i32) -> Result<Arc<File>, i64> {
+pub(super) fn file_of(fd: i32) -> Result<Arc<File>, i64> {
     let Some(cur) = sched::live::current() else { return Err(err(Errno::Ebadf)) };
     // SAFETY: running task on this CPU; preempt-off; sole reader of the fd_table slot.
     let Some(fdt) = (unsafe { cur.fd_table_ref() }) else { return Err(err(Errno::Ebadf)) };
@@ -35,7 +35,7 @@ fn file_of(fd: i32) -> Result<Arc<File>, i64> {
 /// poll for completed I/O at all. Reported as `EOPNOTSUPP`, which is what
 /// separates "this file cannot serve a polled transfer" from the `EINVAL` a
 /// malformed entry gets. # C: O(1)
-fn polled_admission(op: &Op, hipri: bool) -> Result<(), i64> {
+pub(super) fn polled_admission(op: &Op, hipri: bool) -> Result<(), i64> {
     use crate::io_uring_abi::iopoll::{admit_rw, RwTarget};
     let ring_iopoll = crate::io_uring::iopoll::polled(&op.inode);
     if !ring_iopoll && !hipri { return Ok(()); }
@@ -63,7 +63,7 @@ fn has_metadata(_f: &Arc<File>) -> bool { false }
 /// Refused BEFORE the transfer, because an attribute the target cannot honour
 /// must not be answered by a transfer that silently dropped it — that is the
 /// difference the feature bit announces. # C: O(1)
-fn attr_admission(op: &Op) -> Result<(), i64> {
+pub(super) fn attr_admission(op: &Op) -> Result<(), i64> {
     use crate::io_uring_abi::rw_attr::{admit_target, op_takes_attr, parse_pi, wants_attr,
                                        ATTR_PI_BYTES};
     if !op_takes_attr(op.sqe.opcode) { return Ok(()); }

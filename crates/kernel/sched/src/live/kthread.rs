@@ -89,7 +89,8 @@ fn request_stop(task: &Arc<Task>) {
 /// # C: O(1) + completion wait
 /// # Sleeps: until the target exits
 pub unsafe fn stop(task: &Arc<Task>) -> i32 {
-    // SAFETY: forwarded public contract.
+    // SAFETY: forwards this function's own contract unchanged — the caller is
+    // not `task` and holds no lock the target needs to reach its stop point.
     unsafe { stop_and_join(task) }
 }
 
@@ -104,6 +105,9 @@ pub fn park(task: &Arc<Task>) {
     // A running target must be kicked so it can observe the request at its
     // next safe point; Linux's `kthread_park()` does the same `wake_up_process`
     // before waiting on the `parked` completion.
+    // SAFETY: `try_to_wake_up` requires a live wake site holding an Arc that keeps
+    // the target alive — `park` is called from process context and clones the
+    // caller's own reference, so `task` cannot be freed inside the wake.
     unsafe { let _ = super::try_to_wake_up(Arc::clone(task)); }
     // Hosted lifecycle tests have no installed runqueue and intentionally use
     // this API only to inspect the request state.  A live kernel caller gets

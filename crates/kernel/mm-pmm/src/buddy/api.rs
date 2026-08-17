@@ -19,132 +19,10 @@ pub struct Pmm<B: PageBacking, I: IrqGate = NoopIrq> {
     /// own spinlock without violating `06§3.6` partial order.
     pub(super) backing: B,
     pub(super) inner: Spinlock<PmmInner, Buddy>,
-    _i: PhantomData<fn() -> I>,
+    pub(super) _i: PhantomData<fn() -> I>,
 }
 
-impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
-    /// Build a PMM from one or more usable physical regions. Each
-    /// region is greedy-largest-aligned-block seeded; the union must
-    /// not overlap (caller invariant per `10§6.3`).
-    ///
-    /// # C: O(n + N) where n=regions, N=max_pfn / smallest order
-    /// # Ctx: pre-init, single-CPU
-    pub fn init(backing: B, regions: &[UsableRegion]) -> KResult<Self> {
-        if regions.is_empty() { return Err(Error::OutOfRange); }
-        let mut pfn_max: u64 = 0;
-        let mut total: u64 = 0;
-        for r in regions {
-            let end = r.start.0.checked_add(r.len_pfn).ok_or(Error::OutOfRange)?;
-            if end > pfn_max { pfn_max = end; }
-            total = total.checked_add(r.len_pfn).ok_or(Error::OutOfRange)?;
-        }
-        // Defensive overlap detection — caller invariant per `10§6.3`,
-        // but seeding the same page twice corrupts the free-list, so
-        // reject at boot rather than crash later.
-        for i in 0..regions.len() {
-            let a = &regions[i];
-            if a.len_pfn == 0 { continue; }
-            let a_end = a.start.0 + a.len_pfn;
-            for j in (i + 1)..regions.len() {
-                let b = &regions[j];
-                if b.len_pfn == 0 { continue; }
-                let b_end = b.start.0 + b.len_pfn;
-                if a.start.0 < b_end && b.start.0 < a_end {
-                    return Err(Error::Overlap);
-                }
-            }
-        }
-
-        let mut bitmaps = [&[][..]; ORDERS];
-        for o in 0..ORDERS {
-            let blocks = (pfn_max + (1u64 << o) - 1) >> o;
-            let words = ((blocks + 63) >> 6) as usize;
-            bitmaps[o] = backing.bitmap_storage(o as u8, words);
-        }
-
-        let mut inner = PmmInner {
-            pfn_max,
-            bitmaps,
-            free_heads: [PFN_NULL; ORDERS],
-            free_count: [0; ORDERS],
-            allocated: 0,
-            reserved: 0,
-            initial_free: total,
-            alloc_events: 0,
-            alloc_event_pages: 0,
-            free_events: 0,
-            free_event_pages: 0,
-        };
-
-        for r in regions {
-            // SAFETY: caller-asserted regions disjoint and in-range; the
-            // pages have not been touched by any other subsystem yet.
-            unsafe { inner.seed_range(&backing, r.start.0, r.start.0 + r.len_pfn) };
-        }
-
-        Ok(Self { backing, inner: Spinlock::new(inner), _i: PhantomData })
-    }
-
-    /// Reserve `[start, start+len_pfn)` from the boot path. Called
-    /// after [`Pmm::init`] for kernel-image / ACPI / framebuffer
-    /// ranges that were inside a usable region (`10§6.3`). Reserved
-    /// pages count as `allocated` permanently.
-    ///
-    /// # C: O(len_pfn × MAX_ORDER)
-    /// # Ctx: pre-init, single-CPU
-    pub fn reserve_early(&self, start: Pfn, len_pfn: u64) -> KResult<()> {
-        let mut g = self.inner.lock_irqsave::<I>();
-        let end = start.0.checked_add(len_pfn).ok_or(Error::OutOfRange)?;
-        if end > g.pfn_max { return Err(Error::OutOfRange); }
-        let mut p = start.0;
-        while p < end {
-            // Find smallest containing block currently on a free-list.
-            let mut k: Option<u8> = None;
-            for o in 0..=MAX_ORDER {
-                if g.bitmap_get(o, p >> o) { k = Some(o); break; }
-            }
-            let Some(mut o) = k else {
-                // Page already allocated/reserved by an earlier call,
-                // or outside seeded RAM. Skip.
-                p += 1;
-                continue;
-            };
-            let mut blk = (p >> o) << o;
-            // Remove from free-list at order o.
-            // SAFETY: bitmap-truth says blk is on free_list[o].
-            unsafe { g.unlink_free(&self.backing, blk, o) };
-            g.bitmap_clear(o, blk >> o);
-            g.free_count[o as usize] -= 1;
-            // Split down to order 0 along the half containing p.
-            while o > 0 {
-                o -= 1;
-                let half = 1u64 << o;
-                let buddy = blk + half;
-                if p >= buddy {
-                    // SAFETY: half is order-o aligned, in-range, not on
-                    // any list (just split out).
-                    unsafe { g.push_free(&self.backing, blk, o) };
-                    g.bitmap_set(o, blk >> o);
-                    g.free_count[o as usize] += 1;
-                    blk = buddy;
-                } else {
-                    // SAFETY: buddy is order-o aligned, in-range, not on
-                    // any list (just split out).
-                    unsafe { g.push_free(&self.backing, buddy, o) };
-                    g.bitmap_set(o, buddy >> o);
-                    g.free_count[o as usize] += 1;
-                }
-            }
-            // blk now == p; consume it as permanently reserved.
-            debug_assert_eq!(blk, p);
-            g.allocated += 1;
-            g.reserved += 1;
-            p += 1;
-        }
-        Ok(())
-    }
-
-    /// Allocate one buddy block of `order`. Returns the base PFN.
+impl<B: PageBacking, I: IrqGate> Pmm<B, I> {    /// Allocate one buddy block of `order`. Returns the base PFN.
     /// Always picks lower half on split (deterministic) per `10§6.1`.
     /// Verifies the head free-node inside lock; zeros pages outside lock.
     ///
@@ -152,16 +30,30 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
     /// # Ctx: any; brief IRQ-off
     /// # Lk: Buddy
     pub fn alloc(&self, order: Order) -> KResult<Pfn> {
+        self.alloc_gfp(order, 0)
+    }
+
+    /// Allocate one buddy block of `order` for an allocation whose zone bits
+    /// are `gfp`. The bits name the highest zone the block may come from; the
+    /// walk descends from there and can never rise above it, so a bounded
+    /// request that cannot be met fails instead of escaping its bound.
+    ///
+    /// # C: O(NR_ZONES × MAX_ORDER) bounded
+    /// # Ctx: any; brief IRQ-off
+    /// # Lk: Buddy
+    pub fn alloc_gfp(&self, order: Order, gfp: u32) -> KResult<Pfn> {
+        let Ok(zone) = crate::zone::gfp_zone(gfp) else { return Err(Error::InvalidOrder) };
+        let hi = zone.index();
         // Preserve the allocator ABI: invalid orders are rejected by
         // `alloc_inner` before any order-derived arithmetic is evaluated.
         if order.0 <= MAX_ORDER {
             crate::watermark::before_allocation(self.free_pages(), 1u64 << order.0);
         }
-        let mut r = self.alloc_inner(order);
+        let mut r = self.alloc_inner_zoned(order, hi, AllocWmark::Low);
         // Exhaustion is not the answer until reclaim and the out-of-memory
         // selector have both been given their turn: any allocation that
         // cannot be satisfied enters the slowpath, not only a user fault.
-        if matches!(r, Err(Error::NoMem)) { r = self.alloc_slowpath(order); }
+        if matches!(r, Err(Error::NoMem)) { r = self.alloc_slowpath(order, hi); }
         if r.is_ok() { crate::watermark::after_allocation(self.free_pages()); }
         if let Ok(pfn) = r { hal::zerotrap::trap_buddy(pfn.0 * hal::PAGE_SIZE_BYTES, b"ALLOC"); }
         r
@@ -184,34 +76,45 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
         let pfn = {
             let mut g = self.inner.lock_irqsave::<I>();
             let upper = core::cmp::min(limit, g.pfn_max);
+            // Zones above the aperture cannot contain a qualifying block, and
+            // the walk descends, so the search stays inside the bound by
+            // construction; the per-candidate span check enforces it again for
+            // the zone the aperture cuts through.
             let mut found = None;
-            for k in order.0..=MAX_ORDER {
-                let mut candidate = g.free_heads[k as usize];
-                while candidate != PFN_NULL {
-                    if candidate.checked_add(span).is_some_and(|end| end <= upper) {
-                        found = Some((candidate, k));
-                        break;
+            let mut pos = 0usize;
+            'zones: while let Some(zi) = g.zonelist.entry(pos) {
+                pos += 1;
+                if g.layout.span_at(zi).start_pfn >= upper { continue; }
+                for k in order.0..=MAX_ORDER {
+                    let mut candidate = g.free_heads[zi][k as usize];
+                    while candidate != PFN_NULL {
+                        if candidate.checked_add(span).is_some_and(|end| end <= upper) {
+                            found = Some((candidate, k, zi));
+                            break 'zones;
+                        }
+                        // SAFETY: candidate is on this live free list, so its intrusive next field is readable.
+                        let ptr = unsafe { self.backing.page_ptr(Pfn(candidate)) };
+                        // SAFETY: `ptr` is the struct-page just resolved for a PFN still linked on
+                        // this order's free list under the held inner lock, so OFF_NEXT holds a
+                        // live intrusive link rather than allocated page contents.
+                        let next = unsafe { read_u64(ptr, OFF_NEXT) };
+                        if next == PFN_NULL || next >= g.pfn_max { break; }
+                        candidate = next;
                     }
-                    // SAFETY: candidate is on this live free list, so its intrusive next field is readable.
-                    let ptr = unsafe { self.backing.page_ptr(Pfn(candidate)) };
-                    let next = unsafe { read_u64(ptr, OFF_NEXT) };
-                    if next == PFN_NULL || next >= g.pfn_max { break; }
-                    candidate = next;
                 }
-                if found.is_some() { break; }
             }
-            let Some((pfn, mut k)) = found else { return Err(Error::NoMem); };
+            let Some((pfn, mut k, zi)) = found else { return Err(Error::NoMem); };
             // SAFETY: `pfn` was found on free_list[k] while holding the buddy lock.
             unsafe { g.unlink_free(&self.backing, pfn, k) };
             g.bitmap_clear(k, pfn >> k);
-            g.free_count[k as usize] -= 1;
+            g.free_count[zi][k as usize] -= 1;
             while k > order.0 {
                 k -= 1;
                 let buddy = pfn + (1u64 << k);
                 // SAFETY: splitting the selected lower half creates one free, aligned upper buddy.
                 unsafe { g.push_free(&self.backing, buddy, k) };
                 g.bitmap_set(k, buddy >> k);
-                g.free_count[k as usize] += 1;
+                g.free_count[zi][k as usize] += 1;
             }
             // SAFETY: the selected block is no longer on a free list and is exclusively PMM-owned.
             unsafe { g.verify_poison(&self.backing, pfn) };
@@ -236,10 +139,17 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
     /// Policy lives in `crate::oom_entry`; this only supplies the three
     /// actions it drives.
     /// # C: bounded retries; # Ctx: blockable only; # Sleeps: yes
-    fn alloc_slowpath(&self, order: Order) -> KResult<Pfn> {
+    fn alloc_slowpath(&self, order: Order, hi: usize) -> KResult<Pfn> {
+        // The first thing the slowpath does, before deciding whether this
+        // context may reclaim at all, is re-walk the zonelist against the min
+        // watermark: a non-blocking caller is entitled to the part of the
+        // reserve that a blockable one is not, and that attempt must happen
+        // even when reclaim is closed to it.
+        let wmark = if crate::oom_entry::context_allows_slowpath() { AllocWmark::Min } else { AllocWmark::MinNonBlock };
+        if let Ok(pfn) = self.alloc_inner_zoned(order, hi, wmark) { return Ok(pfn); }
         let allowed = crate::oom_entry::context_allows_slowpath();
         match crate::oom_entry::run_slowpath(order.0, allowed,
-            || self.alloc_inner(order).ok(),
+            || self.alloc_inner_zoned(order, hi, wmark).ok(),
             crate::oom_entry::reclaim_once,
             crate::oom_entry::invoke_oom)
         {
@@ -248,30 +158,30 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
         }
     }
 
-    fn alloc_inner(&self, order: Order) -> KResult<Pfn> {
+    /// Walk the fallback order from the highest permitted zone downward and
+    /// take the first block a zone can give up without crossing its
+    /// watermark. Every zone reached is at or below `hi`, which is what makes
+    /// the address bound of a constrained request unconditional.
+    fn alloc_inner_zoned(&self, order: Order, hi: usize, wmark: AllocWmark) -> KResult<Pfn> {
         if order.0 > MAX_ORDER { return Err(Error::InvalidOrder); }
         let pfn;
         let o = order.0;
         {
             let mut g = self.inner.lock_irqsave::<I>();
-            let mut k = o;
-            while k <= MAX_ORDER && g.free_heads[k as usize] == PFN_NULL {
-                k += 1;
+            let mut taken: Option<u64> = None;
+            let mut pos = 0usize;
+            while let Some(zi) = g.zonelist.entry(pos) {
+                pos += 1;
+                if zi > hi { continue; }
+                let Some(zone) = ZoneType::from_index(zi) else { continue };
+                let mark = match wmark { AllocWmark::Low => g.wmark[zi].low, _ => g.wmark[zi].min };
+                let area = g.free_count[zi];
+                if !zone_watermark_ok(zone, o, mark, wmark, &g.reserve, hi, &area) { continue; }
+                // SAFETY: the buddy lock is held and `zi` came from the zonelist.
+                if let Some(p) = unsafe { g.take_block(&self.backing, zi, o) } { taken = Some(p); break; }
             }
-            if k > MAX_ORDER { return Err(Error::NoMem); }
-            // SAFETY: k's list is non-empty by the loop exit condition.
-            pfn = unsafe { g.pop_free(&self.backing, k) };
-            g.bitmap_clear(k, pfn >> k);
-            g.free_count[k as usize] -= 1;
-            while k > o {
-                k -= 1;
-                let buddy = pfn + (1u64 << k);
-                // SAFETY: buddy is order-k aligned (lower-half pfn at order
-                // k+1 ⇒ buddy = pfn + 1<<k); in-range; not on any list.
-                unsafe { g.push_free(&self.backing, buddy, k) };
-                g.bitmap_set(k, buddy >> k);
-                g.free_count[k as usize] += 1;
-            }
+            let Some(p) = taken else { return Err(Error::NoMem); };
+            pfn = p;
             // SAFETY: pfn is the popped (and possibly split-down) free block
             // head; verify its node before releasing the lock.
             unsafe { g.verify_poison(&self.backing, pfn) };
@@ -355,10 +265,15 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
         // Record this (good) free so a LATER double free of this pfn can
         // name us as the prior freer. Only order-0 (the teardown granularity).
         if order.0 == 0 { df_note(pfn.0, loc); }
+        let zone = g.zi(p);
         loop {
             if o == MAX_ORDER { break; }
             let buddy = p ^ (1u64 << o);
             if buddy + (1u64 << o) > g.pfn_max { break; }
+            // A merged block must stay inside one zone: its accounting belongs
+            // to one zone's lists, and a block straddling the boundary would
+            // let a bounded allocation take pages above its bound.
+            if g.zi(buddy) != zone { break; }
             if !g.bitmap_get(o, buddy >> o) { break; }
             // [debug-cow] FREE-WHILE-MAPPED trap: `buddy`'s bitmap says it is
             // free, so its FreeNode header MUST still carry POISON_MAGIC. If a
@@ -400,7 +315,7 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
             // SAFETY: bitmap I3 says buddy is on free_list[o].
             unsafe { g.unlink_free(&self.backing, buddy, o) };
             g.bitmap_clear(o, buddy >> o);
-            g.free_count[o as usize] -= 1;
+            g.free_count[zone][o as usize] -= 1;
             if buddy < p { p = buddy; }
             o += 1;
         }
@@ -408,7 +323,7 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
         // free-list (just merged out of it or it's the original).
         unsafe { g.push_free(&self.backing, p, o) };
         g.bitmap_set(o, p >> o);
-        g.free_count[o as usize] += 1;
+        g.free_count[zone][o as usize] += 1;
         let pages = 1u64 << order.0;
         g.allocated -= pages;
         g.free_events += 1;
@@ -420,7 +335,7 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
     pub fn free_pages(&self) -> u64 {
         let g = self.inner.lock_irqsave::<I>();
         let mut sum = 0u64;
-        for o in 0..ORDERS { sum += g.free_count[o] << o; }
+        for zi in 0..NR_ZONES { sum += g.zone_free_pages(zi); }
         sum
     }
 
@@ -431,7 +346,7 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
     pub fn free_orders(&self) -> [u64; ORDERS] {
         let g = self.inner.lock_irqsave::<I>();
         let mut out = [0u64; ORDERS];
-        for o in 0..ORDERS { out[o] = g.free_count[o]; }
+        for zi in 0..NR_ZONES { for o in 0..ORDERS { out[o] += g.free_count[zi][o]; } }
         out
     }
 
@@ -452,7 +367,7 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
     pub fn snapshot(&self) -> PmmSnapshot {
         let g = self.inner.lock_irqsave::<I>();
         let mut free_pages = 0u64;
-        for order in 0..ORDERS { free_pages += g.free_count[order] << order; }
+        for zi in 0..NR_ZONES { free_pages += g.zone_free_pages(zi); }
         PmmSnapshot {
             managed_pages: g.initial_free,
             free_pages,

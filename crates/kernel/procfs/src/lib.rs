@@ -76,6 +76,7 @@ pub mod hooks;
 #[cfg(any(test, feature = "hosted"))]
 extern crate std;
 
+pub mod fs_dir;
 pub mod paths;
 pub mod pseudo;
 pub mod reg;
@@ -128,4 +129,5 @@ pub mod net_icmp;
 pub mod maps_name;
 pub mod fs_info;
 pub mod pid_file_policy;
+pub mod wchan_render;
 #[cfg(target_os = "oxide-kernel")] pub mod smaps;

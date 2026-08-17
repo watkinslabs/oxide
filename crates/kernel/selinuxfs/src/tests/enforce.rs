@@ -39,3 +39,27 @@ fn a_write_asking_for_the_mode_already_in_force_is_not_a_change() {
     assert_eq!(write_enforce(&mut ops, b"0").unwrap(), 1);
     assert!(!ops.was_checked(PERM_SETENFORCE));
 }
+
+#[test]
+fn a_change_of_mode_is_announced_to_the_userspace_avc() {
+    // The userspace AVC answers permissive decisions from its own cache, so a
+    // mode change it is never told about leaves it on the old mode.
+    use crate::notify::tests::announced;
+    use crate::notify::Notice;
+    let mut ops = FakeOps::allow_all();
+    write_enforce(&mut ops, b"1").unwrap();
+    assert_eq!(announced(), alloc::vec![Notice::Setenforce(true)]);
+    write_enforce(&mut ops, b"0").unwrap();
+    assert_eq!(announced(), alloc::vec![Notice::Setenforce(false)]);
+}
+
+#[test]
+fn a_write_that_changes_nothing_and_a_denied_one_announce_nothing() {
+    use crate::notify::tests::announced;
+    let mut ops = FakeOps::allow_all();
+    write_enforce(&mut ops, b"0").unwrap();
+    assert!(announced().is_empty(), "the mode already in force is not an event");
+    let mut denied = FakeOps::denying(PERM_SETENFORCE);
+    assert_eq!(write_enforce(&mut denied, b"1").err(), Some(VfsError::Eacces));
+    assert!(announced().is_empty(), "a refused write changed no mode to announce");
+}

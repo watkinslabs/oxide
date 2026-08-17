@@ -64,6 +64,17 @@ pub struct SbStatFs {
 pub trait SuperOps: Send + Sync {
     /// `statfs`/`fstatfs` backend. # C: O(1)
     fn statfs(&self) -> KResult<SbStatFs>;
+    /// The same answer, in hand of the OBJECT the call named. Linux hands this
+    /// hook a dentry, and every backend that narrows reads the inode out of it.
+    ///
+    /// The default forwards to [`Self::statfs`], so a filesystem whose answer
+    /// is the same for every object needs nothing. A filesystem with
+    /// PER-OBJECT limits — a project quota, a subvolume, a tree quota —
+    /// overrides this one: the limit is a property of the inode, and reporting
+    /// the whole volume's counts to a caller confined to a fraction of it says
+    /// there is room where there is none, so the write that follows fails with
+    /// the space apparently still free. # C: FS-dependent
+    fn statfs_at(&self, _inode: &InodeRef) -> KResult<SbStatFs> { self.statfs() }
     /// `sync_fs` — flush dirty state. Default no-op (pseudo-fs). # C: FS-dependent
     fn sync_fs(&self, _wait: bool) -> KResult<()> { Ok(()) }
 

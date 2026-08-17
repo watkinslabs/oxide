@@ -52,7 +52,17 @@ impl Default for NetlinkFlags { fn default() -> Self { Self::new() } }
 pub fn nonroot_recv(protocol: u16) -> bool {
     matches!(protocol,
         proto::NETLINK_ROUTE | proto::NETLINK_GENERIC | proto::NETLINK_SOCK_DIAG
-        | proto::NETLINK_AUDIT | proto::NETLINK_KOBJECT_UEVENT)
+        | proto::NETLINK_AUDIT | proto::NETLINK_SELINUX | proto::NETLINK_KOBJECT_UEVENT)
+}
+
+/// `netlink_bind`: whether a bind may subscribe the `nl_groups` mask it
+/// carries. An empty mask subscribes nothing and asks for no privilege; a
+/// non-empty one is the same multicast subscription
+/// `NETLINK_ADD_MEMBERSHIP` performs and is gated identically — the
+/// capability, or a protocol that declares `NL_CFG_F_NONROOT_RECV`.
+/// # C: O(1)
+pub fn bind_groups_allowed(protocol: u16, nl_groups: u32, net_admin: bool) -> bool {
+    nl_groups == 0 || net_admin || nonroot_recv(protocol)
 }
 
 /// What `setsockopt(SOL_NETLINK, optname, …)` must do.
@@ -195,7 +205,24 @@ mod tests {
         assert!(nonroot_recv(proto::NETLINK_SOCK_DIAG));
         assert!(nonroot_recv(proto::NETLINK_AUDIT));
         assert!(nonroot_recv(proto::NETLINK_KOBJECT_UEVENT));
+        // The SELinux family declares `NL_CFG_F_NONROOT_RECV`, and every
+        // subscriber is an unprivileged process linked against libselinux.
+        assert!(nonroot_recv(proto::NETLINK_SELINUX));
         // netfilter declares no `NL_CFG_F_NONROOT_RECV`.
         assert!(!nonroot_recv(proto::NETLINK_NETFILTER));
+    }
+
+    #[test]
+    fn binding_a_group_mask_is_gated_exactly_as_a_membership_is() {
+        // An empty mask subscribes nothing, so it asks for no privilege.
+        assert!(bind_groups_allowed(proto::NETLINK_NETFILTER, 0, false));
+        // A non-empty mask on a protocol without NONROOT_RECV needs the cap.
+        assert!(!bind_groups_allowed(proto::NETLINK_NETFILTER, 1, false));
+        assert!(bind_groups_allowed(proto::NETLINK_NETFILTER, 1, true));
+        // The control protocols permit it unprivileged — the userspace AVC and
+        // every udev monitor bind their group as an ordinary process.
+        assert!(bind_groups_allowed(proto::NETLINK_SELINUX, 1, false));
+        assert!(bind_groups_allowed(proto::NETLINK_KOBJECT_UEVENT, 1, false));
+        assert!(bind_groups_allowed(proto::NETLINK_ROUTE, u32::MAX, false));
     }
 }

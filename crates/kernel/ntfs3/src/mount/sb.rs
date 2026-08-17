@@ -47,7 +47,11 @@ impl SuperOps for NtfsSuperOps {
         Ok(())
     }
 
+    /// The reports this mount published describe a volume that is about to be
+    /// unreachable, so they go with it. The trees hosting them cannot be named
+    /// from here, which is why the withdrawal was left behind at mount.
     fn put_super(&self) {
         let _ = self.fs.mark_clean();
+        crate::fsattr::run_teardown(&crate::procfs::mount_dir(self.fs.source()));
     }
 }

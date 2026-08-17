@@ -1,0 +1,20 @@
+[package]
+name = "sunrpc"
+version = "0.1.0"
+edition = "2021"
+publish = false
+[lib]
+path = "src/lib.rs"
+[dependencies]
+sync    = { path = "../../shared/sync" }
+syscall = { path = "../syscall" }
+
+[target.'cfg(target_os = "oxide-kernel")'.dependencies]
+sched   = { path = "../sched" }
+
+[features]
+default = []
+hosted = []
+
+[lints]
+workspace = true

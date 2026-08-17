@@ -14,8 +14,22 @@ use super::free_node::*;
 pub(super) struct PmmInner {
     pub(super) pfn_max: u64,                                    // exclusive upper bound
     pub(super) bitmaps: [&'static [AtomicU64]; ORDERS],
-    pub(super) free_heads: [u64; ORDERS],
-    pub(super) free_count: [u64; ORDERS],
+    /// Zone partition of `[0, pfn_max)`. Free state is kept per zone so a
+    /// bounded allocation reaches only the lists it is allowed to reach.
+    pub(super) layout: ZoneLayout,
+    pub(super) zonelist: Zonelist,
+    pub(super) free_heads: [[u64; ORDERS]; NR_ZONES],
+    pub(super) free_count: [[u64; ORDERS]; NR_ZONES],
+    /// Pages seeded into each zone's lists at boot.
+    pub(super) managed: [u64; NR_ZONES],
+    /// Pages each zone spans, holes included.
+    pub(super) spanned: [u64; NR_ZONES],
+    pub(super) reserve: LowmemReserve,
+    pub(super) wmark: [ZoneWatermarks; NR_ZONES],
+    /// Watermark tuning the boot path published, or `None` before it has run.
+    /// The marks stay zero until then, which leaves the gate open — a zone
+    /// cannot be held to a threshold nobody has computed yet.
+    pub(super) tunables: Option<crate::watermark::WatermarkTunables>,
     pub(super) allocated: u64,
     /// Permanently consumed boot pages.  These stay part of the allocator's
     /// `allocated` invariant but are reported separately from runtime users.
@@ -30,6 +44,36 @@ pub(super) struct PmmInner {
 }
 
 impl PmmInner {
+    /// Re-derive everything that is a function of the per-zone managed page
+    /// counts: the lowmem reserve matrix always, and the watermarks once the
+    /// boot path has published its tuning. Every mutation of `managed` must
+    /// end here, or the allocation gate keeps enforcing a threshold derived
+    /// from memory the allocator no longer owns.
+    ///
+    /// Returns the managed total and the watermark aggregate to publish once
+    /// the caller has dropped the lock, or `None` while no tuning exists.
+    /// # C: O(NR_ZONES^2)
+    pub(super) fn recompute_derived(&mut self) -> Option<(u64, ZoneWatermarks)> {
+        self.reserve = lowmem_reserve(self.managed, DEFAULT_LOWMEM_RESERVE_RATIO);
+        let total: u64 = self.managed.iter().sum();
+        let t = self.tunables?;
+        let mut agg = ZoneWatermarks::default();
+        for zi in 0..NR_ZONES {
+            let w = crate::watermark::derive_zone_watermarks(self.managed[zi], total, t, PAGE_SIZE_BYTES);
+            self.wmark[zi] = w;
+            agg.min += w.min; agg.low += w.low; agg.high += w.high;
+        }
+        Some((total, agg))
+    }
+
+    /// Zone-list slot owning `pfn`. A PFN outside every span has no slot; the
+    /// allocator never reaches one, so the last slot is used as a terminal
+    /// rather than panicking inside a lock. # C: O(NR_ZONES)
+    pub(super) fn zi(&self, pfn: u64) -> usize {
+        let i = self.layout.index_of(pfn);
+        if i < NR_ZONES { i } else { NR_ZONES - 1 }
+    }
+
     pub(super) fn bitmap_get(&self, order: u8, idx: u64) -> bool {
         let word = (idx >> 6) as usize;
         let bit = (idx & 63) as u32;
@@ -84,7 +128,8 @@ impl PmmInner {
     /// # SAFETY: `pfn` is order-aligned, in-range, currently NOT on any
     /// free-list; pages are PMM-owned at call site.
     pub(super) unsafe fn push_free<B: PageBacking>(&mut self, backing: &B, pfn: u64, order: u8) {
-        let head = self.free_heads[order as usize];
+        let z = self.zi(pfn);
+        let head = self.free_heads[z][order as usize];
         // SAFETY: pfn block PMM-owned per fn contract.
         unsafe { self.stamp_block(backing, pfn, order, head, PFN_NULL) };
         if head != PFN_NULL {
@@ -93,14 +138,14 @@ impl PmmInner {
             // SAFETY: write old head's prev field inside its header.
             unsafe { write_u64(hp, OFF_PREV, pfn) };
         }
-        self.free_heads[order as usize] = pfn;
+        self.free_heads[z][order as usize] = pfn;
     }
 
     /// Pop head of free_list[order]. Caller updates bitmap + count.
     ///
     /// # SAFETY: free_list[order] is non-empty.
-    pub(super) unsafe fn pop_free<B: PageBacking>(&mut self, backing: &B, order: u8) -> u64 {
-        let head = self.free_heads[order as usize];
+    pub(super) unsafe fn pop_free<B: PageBacking>(&mut self, backing: &B, zone: usize, order: u8) -> u64 {
+        let head = self.free_heads[zone][order as usize];
         debug_assert!(head != PFN_NULL);
         // SAFETY: head on free-list ⇒ PMM-owned page.
         let hp = unsafe { backing.page_ptr(Pfn(head)) };
@@ -135,7 +180,7 @@ impl PmmInner {
             // SAFETY: write into next-node's prev field; PMM-owned page.
             unsafe { write_u64(np, OFF_PREV, PFN_NULL) };
         }
-        self.free_heads[order as usize] = next;
+        self.free_heads[zone][order as usize] = next;
         head
     }
 
@@ -143,6 +188,7 @@ impl PmmInner {
     ///
     /// # SAFETY: `pfn` is currently on free_list[order]; page PMM-owned.
     pub(super) unsafe fn unlink_free<B: PageBacking>(&mut self, backing: &B, pfn: u64, order: u8) {
+        let z = self.zi(pfn);
         // SAFETY: pfn on free-list ⇒ PMM-owned page.
         let p = unsafe { backing.page_ptr(Pfn(pfn)) };
         // SAFETY: header read inside owned page.
@@ -166,7 +212,7 @@ impl PmmInner {
             prev = PFN_NULL;
         }
         if prev == PFN_NULL {
-            self.free_heads[order as usize] = next;
+            self.free_heads[z][order as usize] = next;
         } else {
             // SAFETY: prev on free-list ⇒ PMM-owned page.
             let pp = unsafe { backing.page_ptr(Pfn(prev)) };
@@ -196,7 +242,23 @@ impl PmmInner {
     /// free-lists with bitmap bits set. Used by init + region-replay.
     ///
     /// # SAFETY: `cur..end` is in-range, never previously seeded.
-    pub(super) unsafe fn seed_range<B: PageBacking>(&mut self, backing: &B, mut cur: u64, end: u64) {
+    pub(super) unsafe fn seed_range<B: PageBacking>(&mut self, backing: &B, start: u64, end: u64) {
+        // A block never straddles a zone boundary: it would belong to two
+        // zones' accounting at once and a merge across the boundary would
+        // hand a bounded allocation a block whose tail is out of bounds.
+        // Clip the region to each zone and seed the pieces independently.
+        for zi in 0..NR_ZONES {
+            let span = self.layout.span_at(zi);
+            let lo = core::cmp::max(start, span.start_pfn);
+            let hi = core::cmp::min(end, span.end_pfn);
+            if hi <= lo { continue; }
+            // SAFETY: `lo..hi` is a sub-range of the caller's never-seeded region.
+            unsafe { self.seed_within_zone(backing, zi, lo, hi) };
+        }
+    }
+
+    /// # SAFETY: as `seed_range`, and `cur..end` lies inside zone `zi`.
+    unsafe fn seed_within_zone<B: PageBacking>(&mut self, backing: &B, zi: usize, mut cur: u64, end: u64) {
         while cur < end {
             let remaining = end - cur;
             let mut o: u8 = MAX_ORDER;
@@ -210,8 +272,41 @@ impl PmmInner {
             // SAFETY: cur..cur+span is order-o aligned, in-range, never seeded.
             unsafe { self.push_free(backing, cur, o) };
             self.bitmap_set(o, cur >> o);
-            self.free_count[o as usize] += 1;
+            self.free_count[zi][o as usize] += 1;
+            self.managed[zi] += span;
             cur += span;
         }
+    }
+
+    /// Take a block of at least `order` from zone `zi`, splitting the surplus
+    /// back onto that zone's lists. `None` when the zone holds nothing large
+    /// enough. # C: O(MAX_ORDER)
+    ///
+    /// # SAFETY: caller holds the buddy lock; `zi` is a valid zone slot.
+    pub(super) unsafe fn take_block<B: PageBacking>(&mut self, backing: &B, zi: usize, order: u8) -> Option<u64> {
+        let mut k = order;
+        while k <= MAX_ORDER && self.free_heads[zi][k as usize] == PFN_NULL { k += 1; }
+        if k > MAX_ORDER { return None; }
+        // SAFETY: the loop exit condition proves this list is non-empty.
+        let pfn = unsafe { self.pop_free(backing, zi, k) };
+        self.bitmap_clear(k, pfn >> k);
+        self.free_count[zi][k as usize] -= 1;
+        while k > order {
+            k -= 1;
+            let buddy = pfn + (1u64 << k);
+            // SAFETY: the upper half of a block inside zone `zi` is itself
+            // inside zone `zi`, order-k aligned, and on no list.
+            unsafe { self.push_free(backing, buddy, k) };
+            self.bitmap_set(k, buddy >> k);
+            self.free_count[zi][k as usize] += 1;
+        }
+        Some(pfn)
+    }
+
+    /// Free base pages currently on zone `zi`'s lists. # C: O(ORDERS)
+    pub(super) fn zone_free_pages(&self, zi: usize) -> u64 {
+        let mut sum = 0u64;
+        for o in 0..ORDERS { sum += self.free_count[zi][o] << o; }
+        sum
     }
 }

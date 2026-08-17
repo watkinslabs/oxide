@@ -16,6 +16,11 @@ static IOAPIC_GSI_BASES: [AtomicU64; MAX_IOAPICS] = [const { AtomicU64::new(0) }
 static IOAPIC_IDS: [AtomicU64; MAX_IOAPICS] = [const { AtomicU64::new(u64::MAX) }; MAX_IOAPICS];
 static VECTOR_PINS: [AtomicU64; 256] =
     [const { AtomicU64::new(0) }; 256];
+/// Widest pin index a redirection table can hold. The version register's
+/// `entries` field (bits 23:16, read at [`IOAPIC_VER`]) is 8 bits wide and
+/// reports one less than the entry count, so a controller can implement at
+/// most 256 entries and the highest valid pin is 255.
+const MAX_REDIR_PIN: u32 = 256;
 
 const IOREGSEL: u64 = 0x00;
 const IOWIN: u64 = 0x10;
@@ -80,6 +85,11 @@ pub fn set_gsi_base_va(id: u8, gsi_base: u32, va: u64) -> bool {
 pub fn unroute_vector(vector: u8) { VECTOR_PINS[vector as usize].store(0, Ordering::Release); }
 
 fn route_vector(vector: u8, va: u64, pin: u32) {
+    // A pin at or beyond MAX_REDIR_PIN cannot be biased by 1 and packed into
+    // the low 32 bits without carrying into the index field above it; reject
+    // rather than silently mis-encode (no live route ever reaches here, since
+    // hardware caps `pin` at 255 — see MAX_REDIR_PIN).
+    if pin >= MAX_REDIR_PIN { return; }
     let Some(index) = (0..MAX_IOAPICS).find(|index| IOAPIC_VAS[*index].load(Ordering::Acquire) == va) else { return; };
     VECTOR_PINS[vector as usize].store(((index as u64 + 1) << 32) | (u64::from(pin) + 1), Ordering::Release);
 }
@@ -325,6 +335,8 @@ pub unsafe fn clear_all() {
 
 /// # SAFETY: `va` names a live I/O APIC mapping under caller serialization.
 unsafe fn clear_at(va: u64) {
+    // SAFETY: `clear_at`'s precondition is a live mapped controller window under
+    // caller serialization; IOAPIC_VER is an architected always-present register.
     let maxred = unsafe { (read_reg_at(va, IOAPIC_VER) >> 16) & 0xff };
     for pin in 0..=maxred {
         let lo_idx = 0x10 + 2 * pin;
@@ -362,9 +374,20 @@ mod tests {
         let vector = 0x71;
         let va = 0xfee0_0000;
         IOAPIC_VAS[0].store(va, Ordering::Release);
-        route_vector(vector, va, u32::MAX);
-        assert_eq!(pin_for_vector(vector), Some((va, u32::MAX)));
+        route_vector(vector, va, MAX_REDIR_PIN - 1);
+        assert_eq!(pin_for_vector(vector), Some((va, MAX_REDIR_PIN - 1)));
         unroute_vector(vector);
+        assert_eq!(pin_for_vector(vector), None);
+    }
+
+    #[test]
+    fn route_vector_rejects_a_pin_beyond_the_redir_table_width() {
+        let vector = 0x72;
+        let va = 0xfee0_0000;
+        IOAPIC_VAS[0].store(va, Ordering::Release);
+        route_vector(vector, va, MAX_REDIR_PIN);
+        assert_eq!(pin_for_vector(vector), None);
+        route_vector(vector, va, u32::MAX);
         assert_eq!(pin_for_vector(vector), None);
     }
 

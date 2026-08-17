@@ -59,3 +59,53 @@ fn the_policy_states_each_initial_context() {
     assert_eq!(initial_sid_context(&db, InitSid::Kernel.sid()).map(|c| c.ty), Some(T_INIT));
     assert_eq!(initial_sid_context(&db, InitSid::Netif.sid()).map(|c| c.ty), None);
 }
+
+/// An initial SID this kernel has no slot for is SKIPPED, not refused.
+///
+/// Policies are written against newer kernels than the one loading them, so a
+/// policy naming a SID this kernel never asks about must still load. Refusing
+/// the image would leave the system with no policy at all — strictly worse than
+/// ignoring a slot nothing here reads.
+#[test]
+fn an_initial_sid_beyond_this_kernels_range_is_skipped_not_refused() {
+    use crate::uapi::initsid::SECINITSID_NUM;
+    let mut db = policy();
+    // A slot past the end of this kernel's table, as a newer policy would carry.
+    db.ocontexts.isids.push(crate::policydb::sections::IsidCon {
+        sid: SECINITSID_NUM + 5, context: ctx(U_SYSTEM, R_OBJECT, T_FILE, S0, &[]),
+    });
+    let mut sidtab = Sidtab::new();
+    load_initial_sids(&db, &mut sidtab)
+        .expect("a SID this kernel does not use must not refuse the whole policy");
+    // The slots this kernel DOES name still loaded.
+    assert!(sidtab.lookup(InitSid::Kernel.sid()).is_some());
+    assert!(sidtab.lookup(InitSid::Unlabeled.sid()).is_some());
+}
+
+/// SID 0 is the "no SID" value. A context assigned to it means the image is
+/// malformed, and that IS refused — the skip above must not swallow it.
+#[test]
+fn a_context_assigned_to_the_no_sid_value_refuses_the_policy() {
+    let mut db = policy();
+    db.ocontexts.isids.push(crate::policydb::sections::IsidCon {
+        sid: 0, context: ctx(U_SYSTEM, R_OBJECT, T_FILE, S0, &[]),
+    });
+    let mut sidtab = Sidtab::new();
+    assert!(load_initial_sids(&db, &mut sidtab).is_err());
+}
+
+/// Without the `userspace_initial_context` capability the first user process's
+/// label takes the KERNEL's context, not the placeholder the policy declares.
+#[test]
+fn the_first_process_label_follows_the_kernels_without_the_capability() {
+    let db = policy();
+    assert!(!db.policycap(crate::uapi::policycap::POLICYDB_CAP_USERSPACE_INITIAL_CONTEXT),
+        "the fixture policy does not advertise it; this test is about that case");
+    let mut sidtab = Sidtab::new();
+    load_initial_sids(&db, &mut sidtab).expect("load");
+    let kernel = sidtab.lookup(InitSid::Kernel.sid()).and_then(Context::valid).expect("kernel");
+    let init = sidtab.lookup(InitSid::Init.sid()).and_then(Context::valid)
+        .expect("the first process's label must be set even though policy skips it");
+    assert_eq!(init.ty, kernel.ty);
+    assert_eq!(init.ty, T_INIT);
+}
