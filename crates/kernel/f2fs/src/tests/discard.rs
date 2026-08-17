@@ -193,11 +193,11 @@ fn the_option_round_trips_through_its_own_rendering() {
         let mut o = Options::defaults();
         o.discard_unit = unit;
         let shown = crate::opts::show(&o, 0);
-        assert_eq!(crate::opts::parse(Options::defaults(), &shown).unwrap().discard_unit, unit);
+        assert_eq!(crate::opts::parse(&Options::defaults(), &shown).unwrap().discard_unit, unit);
     }
 }
 
 #[test]
 fn an_unknown_granularity_is_refused() {
-    assert!(crate::opts::parse(Options::defaults(), "discard_unit=page").is_err());
+    assert!(crate::opts::parse(&Options::defaults(), "discard_unit=page").is_err());
 }

@@ -114,7 +114,7 @@ fn a_second_fsync_of_the_same_file_replaces_the_first() {
 #[test]
 fn four_logs_put_the_chain_where_the_walk_looks_for_it() {
     let opts = Options { active_logs: 4, ..Options::defaults() };
-    let (mut v, ino) = checkpointed_opts(b"f", opts);
+    let (mut v, ino) = checkpointed_opts(b"f", opts.clone());
     let want = grow_and_fsync(&mut v, ino, 0xD4);
     let v = remount_opts(v.into_source().snapshot(), true, opts);
     assert_eq!(whole(&v, ino), want);

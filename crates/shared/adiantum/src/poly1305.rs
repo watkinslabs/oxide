@@ -45,6 +45,10 @@ fn le64(b: &[u8], off: usize) -> u64 {
 pub struct CoreKey { r: [u64; 3], s: [u64; 2] }
 
 impl CoreKey {
+    /// A zeroed multiplier, for building an owner in place before its key is
+    /// known. Not a usable key.
+    pub const ZERO: Self = Self { r: [0; 3], s: [0; 2] };
+
     /// Clamp a 16-byte raw key into the three-limb multiplier.
     ///
     /// # C: r &= 0x0ffffffc0ffffffc0ffffffc0fffffff

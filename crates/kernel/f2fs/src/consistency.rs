@@ -37,10 +37,13 @@ pub use apply::{resolve, resolve_remount};
 /// feature-derived default and every "already set" clause is vacuous; at a
 /// remount it is what the mount is running with, and those clauses are the
 /// whole point.
-#[derive(Copy, Clone, Debug)]
-pub struct Sbi {
+#[derive(Clone, Debug)]
+pub struct Sbi<'a> {
     pub facts: Facts,
-    pub cur: Options,
+    /// Borrowed, never copied: the running option set is the mount's, and the
+    /// reference reaches it through the superblock-info pointer for the same
+    /// reason — a by-value field put it in every frame of the check.
+    pub cur: &'a Options,
     /// Whether the mount is being reconfigured rather than opened.
     pub remount: bool,
     /// Whether accounting is switched on for any kind right now. Naming a
@@ -51,9 +54,9 @@ pub struct Sbi {
     pub casefold_loadable: bool,
 }
 
-impl Sbi {
+impl<'a> Sbi<'a> {
     /// The state a fresh mount checks against. # C: O(1)
-    pub fn at_mount(facts: Facts, cur: Options) -> Self {
+    pub fn at_mount(facts: Facts, cur: &'a Options) -> Self {
         Self { facts, cur, remount: false, quota_on: false, casefold_loadable: true }
     }
 }

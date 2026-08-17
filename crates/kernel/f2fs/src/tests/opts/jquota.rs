@@ -6,7 +6,7 @@ use syscall::errno::Errno;
 use crate::opts::jquota::{JqFmt, QKind};
 use crate::opts::{parse, show, Options};
 
-fn p(s: &str) -> Result<Options, Errno> { parse(Options::defaults(), s) }
+fn p(s: &str) -> Result<Options, Errno> { parse(&Options::defaults(), s) }
 
 fn named(o: &Options, k: QKind) -> Option<&str> {
     o.jquota.names[k as usize].as_ref().map(|n| n.as_str())
@@ -112,5 +112,5 @@ fn the_legacy_arrangement_round_trips_through_its_own_rendering() {
     assert!(line.contains(",jqfmt=vfsv1"), "{line}");
     assert!(line.contains(",usrjquota=aquota.user"), "{line}");
     assert!(line.contains(",grpjquota=aquota.group"), "{line}");
-    assert_eq!(parse(Options::defaults(), &line).unwrap(), o);
+    assert_eq!(parse(&Options::defaults(), &line).unwrap(), o);
 }

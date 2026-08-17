@@ -6,7 +6,7 @@ use syscall::errno::Errno;
 use crate::opts::bounds::{MAX_INLINE_XATTR, MIN_INLINE_XATTR};
 use crate::opts::{parse, Options};
 
-fn p(s: &str) -> Result<Options, Errno> { parse(Options::defaults(), s) }
+fn p(s: &str) -> Result<Options, Errno> { parse(&Options::defaults(), s) }
 
 #[test]
 fn a_log_count_is_checked_before_it_is_narrowed() {

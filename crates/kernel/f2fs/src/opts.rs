@@ -103,7 +103,7 @@ pub enum Fragment {
 }
 
 /// Everything one mount was asked for.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Options {
     /// Whether the cleaner runs, and how eagerly.
     pub background_gc: BackgroundGc,
@@ -284,7 +284,7 @@ impl Options {
             usrquota: false,
             grpquota: false,
             prjquota: false,
-            jquota: Jquota { names: [None; jquota::QKINDS], fmt: None },
+            jquota: Jquota::default(),
             fault: crate::fault::Cfg { rate: None, types: None },
             dummy_policy: None,
             inlinecrypt: false,

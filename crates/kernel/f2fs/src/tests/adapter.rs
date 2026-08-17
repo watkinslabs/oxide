@@ -328,13 +328,13 @@ fn statfs_free_space_falls_as_the_volume_fills() {
 #[test]
 fn the_option_tail_round_trips_and_names_this_filesystem() {
     let dev = disk(&test_image::with_root().finish());
-    let opts = crate::opts::parse(Options::defaults(), "noacl,mode=lfs").unwrap();
+    let opts = crate::opts::parse(&Options::defaults(), "noacl,mode=lfs").unwrap();
     let fs = F2fs::open_with(dev, "/dev/fake", true, opts).unwrap();
     let shown = vfs::fs::FileSystem::show_options(&*fs);
     assert!(shown.contains(",noacl"));
     assert!(shown.contains(",mode=lfs"));
     assert_eq!(fs.super_ops().unwrap().show_options(), shown);
-    assert!(crate::opts::parse(Options::defaults(), &shown).is_ok());
+    assert!(crate::opts::parse(&Options::defaults(), &shown).is_ok());
 }
 
 #[test]

@@ -3,7 +3,7 @@
 use super::*;
 use crate::opts::{BackgroundGc, Options};
 
-fn p(s: &str) -> Result<Options, Errno> { parse(Options::defaults(), s) }
+fn p(s: &str) -> Result<Options, Errno> { parse(&Options::defaults(), s) }
 
 #[test]
 fn an_empty_string_leaves_the_defaults() {
@@ -207,7 +207,7 @@ fn which_side_compresses_is_honoured_and_survives_being_shown() {
     assert_eq!(p("compress_mode").map(|_| ()), Err(Errno::Einval));
     let shown = crate::opts::show(&user, feature);
     assert!(shown.contains(",compress_mode=user"), "{shown}");
-    assert_eq!(crate::opts::parse(Options::defaults(), &shown).unwrap().compress.mode,
+    assert_eq!(crate::opts::parse(&Options::defaults(), &shown).unwrap().compress.mode,
                CompressMode::User);
 }
 
@@ -283,5 +283,5 @@ fn the_two_names_the_format_no_longer_acts_on_are_still_accepted() {
 #[test]
 fn the_new_options_round_trip_through_their_own_rendering() {
     let o = p("fastboot,reserve_root=8,reserve_node=4,checkpoint=disable:12%").unwrap();
-    assert_eq!(parse(Options::defaults(), &crate::opts::show(&o, 0)).unwrap(), o);
+    assert_eq!(parse(&Options::defaults(), &crate::opts::show(&o, 0)).unwrap(), o);
 }

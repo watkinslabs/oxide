@@ -34,8 +34,8 @@ pub fn check_quota_consistency(sbi: &Sbi, o: &mut Options, spec: &mut Spec)
     let quota_feature = crate::features::has_quota_ino(sbi.facts.feature);
     for i in 0..QKINDS {
         if !spec.qname[i] { continue; }
-        let old = sbi.cur.jquota.names[i];
-        let new = o.jquota.names[i];
+        let old = &sbi.cur.jquota.names[i];
+        let new = &o.jquota.names[i];
         if sbi.quota_on && old.is_some() != new.is_some() { return Err(Errno::Einval); }
         if let Some(had) = old {
             match new {

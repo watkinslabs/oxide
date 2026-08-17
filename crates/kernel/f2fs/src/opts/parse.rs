@@ -29,7 +29,7 @@ const ASSIGN: char = '=';
 /// either order in one string, and whether they conflict is a property of the
 /// whole string.
 /// # C: O(len(data))
-pub fn parse(base: Options, data: &str) -> Result<Options, Errno> {
+pub fn parse(base: &Options, data: &str) -> Result<Options, Errno> {
     let (mut o, _) = parse_spec(base, data)?;
     settle_quotas(&mut o)?;
     Ok(o)
@@ -56,8 +56,8 @@ pub fn settle_quotas(o: &mut Options) -> Result<(), Errno> {
 /// default and an option explicitly set to that default are the same value and
 /// different requests, and the consistency pass answers them differently.
 /// # C: O(len(data))
-pub fn parse_spec(base: Options, data: &str) -> Result<(Options, Spec), Errno> {
-    let mut o = base;
+pub fn parse_spec(base: &Options, data: &str) -> Result<(Options, Spec), Errno> {
+    let mut o = base.clone();
     let mut spec = Spec::none();
     for token in data.split(SEP).map(str::trim).filter(|t| !t.is_empty()) {
         let (key, val) = match token.split_once(ASSIGN) {

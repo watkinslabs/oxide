@@ -300,7 +300,7 @@ impl F2fs {
     }
 
     /// This mount's option set. # C: O(1)
-    pub fn options(&self) -> Options { *self.volume.lock().options() }
+    pub fn options(&self) -> Options { self.volume.lock().options().clone() }
 
     /// The device this filesystem was mounted from. # C: O(1)
     pub fn source(&self) -> &str { &self.source }

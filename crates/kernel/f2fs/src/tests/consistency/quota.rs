@@ -6,9 +6,12 @@ use crate::flags::{FEATURE_PRJQUOTA, FEATURE_QUOTA_INO};
 use crate::opts::{QKind, QfName};
 
 /// A mount running with `line` already applied, ready to be reconfigured.
-fn running(facts: &Facts, line: &str) -> Sbi {
+fn running(facts: &Facts, line: &str) -> Sbi<'static> {
     let cur = at_mount(facts, line).expect("the mount itself must be legal");
-    Sbi { facts: *facts, cur, remount: true, quota_on: false, casefold_loadable: true }
+    // Leaked so the borrowed running set outlives this helper. A test process
+    // exits; the alternative is threading the owner through every case.
+    Sbi { facts: *facts, cur: alloc::boxed::Box::leak(alloc::boxed::Box::new(cur)),
+          remount: true, quota_on: false, casefold_loadable: true }
 }
 
 fn name(s: &str) -> Option<QfName> { Some(QfName::new(s).expect("name")) }

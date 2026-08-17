@@ -6,7 +6,7 @@ use syscall::errno::Errno;
 use crate::fault::{apply, Fault, Info, ALL_TYPES};
 use crate::opts::{parse, show, Options};
 
-fn p(s: &str) -> Result<Options, Errno> { parse(Options::defaults(), s) }
+fn p(s: &str) -> Result<Options, Errno> { parse(&Options::defaults(), s) }
 
 #[test]
 fn a_line_that_asks_for_neither_leaves_the_mount_uninjected() {
@@ -83,6 +83,6 @@ fn an_injected_mount_never_looks_like_an_uninjected_one() {
 fn the_two_options_round_trip_through_their_own_rendering() {
     for line in ["fault_injection=9", "fault_type=64", "fault_injection=2,fault_type=1"] {
         let o = p(line).unwrap();
-        assert_eq!(parse(Options::defaults(), &show(&o, 0)).unwrap(), o, "{line}");
+        assert_eq!(parse(&Options::defaults(), &show(&o, 0)).unwrap(), o, "{line}");
     }
 }

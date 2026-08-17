@@ -73,14 +73,15 @@ pub const QKINDS: usize = 3;
 
 /// A quota file's name.
 ///
-/// Stored inline rather than on the heap so the option set stays a plain value
-/// that can be copied into a mount without an allocation on a path that must
-/// not fail. The bound is the longest name this filesystem's directories can
+/// On the heap, one allocation per name, the way the reference holds these:
+/// three inline buffers of the longest name a directory can hold is 768 bytes,
+/// and the option set they sit in is passed and returned along the whole mount
+/// path — so held inline they landed in every frame on it, three times over in
+/// some. The bound is still the longest name this filesystem's directories can
 /// hold, so nothing a volume could actually contain is refused for length.
-#[derive(Copy, Clone)]
+#[derive(Clone)]
 pub struct QfName {
-    bytes: [u8; NAME_LEN],
-    len: u8,
+    name: alloc::boxed::Box<str>,
 }
 
 impl QfName {
@@ -93,19 +94,14 @@ impl QfName {
         // A quota file is an entry in the volume's own root. A name carrying a
         // separator is asking for a path, and a path could leave the volume.
         if b.contains(&b'/') { return Err(Errno::Einval); }
-        let mut bytes = [0u8; NAME_LEN];
-        bytes[..b.len()].copy_from_slice(b);
-        Ok(QfName { bytes, len: b.len() as u8 })
+        Ok(QfName { name: s.into() })
     }
 
     /// # C: O(1)
-    pub fn as_bytes(&self) -> &[u8] { &self.bytes[..self.len as usize] }
+    pub fn as_bytes(&self) -> &[u8] { self.name.as_bytes() }
 
-    /// # C: O(len)
-    pub fn as_str(&self) -> &str {
-        // A name only ever enters through `new`, which took a `&str`.
-        core::str::from_utf8(self.as_bytes()).unwrap_or("")
-    }
+    /// # C: O(1)
+    pub fn as_str(&self) -> &str { &self.name }
 }
 
 impl PartialEq for QfName {
@@ -120,7 +116,7 @@ impl core::fmt::Debug for QfName {
 }
 
 /// What the mount line said about legacy quota files.
-#[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Jquota {
     /// One name per kind, in `QKind` order.
     pub names: [Option<QfName>; QKINDS],
@@ -141,8 +137,8 @@ impl Jquota {
             return Ok(());
         };
         let name = QfName::new(v)?;
-        match self.names[slot] {
-            Some(had) if had != name => Err(Errno::Einval),
+        match &self.names[slot] {
+            Some(had) if *had != name => Err(Errno::Einval),
             _ => { self.names[slot] = Some(name); Ok(()) }
         }
     }

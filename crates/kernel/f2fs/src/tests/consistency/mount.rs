@@ -65,9 +65,10 @@ fn an_aliased_device_refuses_noextent_cache() {
 #[test]
 fn a_folding_volume_whose_table_will_not_load_is_refused() {
     let c = Facts { feature: FEATURE_CASEFOLD, ..plain() };
-    let mut sbi = crate::consistency::Sbi::at_mount(c, Options::defaults_for(&c));
+    let base = Options::defaults_for(&c);
+    let mut sbi = crate::consistency::Sbi::at_mount(c, &base);
     sbi.casefold_loadable = false;
-    let (mut o, mut spec) = (sbi.cur, Spec::none());
+    let (mut o, mut spec) = (sbi.cur.clone(), Spec::none());
     assert_eq!(crate::consistency::check_opt_consistency(&sbi, &mut o, &mut spec),
                Err(Errno::Einval));
     sbi.casefold_loadable = true;
@@ -129,7 +130,7 @@ fn sizing_the_inline_region_needs_the_region() {
     // The clause bites where the region is genuinely absent: a mount already
     // running without it, reconfigured to size it.
     let cur = at_mount(&both, "noinline_xattr").expect("legal");
-    let sbi = crate::consistency::Sbi { facts: both, cur, remount: true, quota_on: false,
+    let sbi = crate::consistency::Sbi { facts: both, cur: &cur, remount: true, quota_on: false,
                                         casefold_loadable: true };
     assert_eq!(crate::consistency::resolve_remount(&sbi, "noinline_xattr,inline_xattr_size=40")
                    .map(|(o, _)| o.inline_xattr_size),
@@ -183,11 +184,13 @@ fn wants_dummy() -> Options {
 fn the_test_key_needs_the_encrypt_feature() {
     let mut o = wants_dummy();
     let mut spec = Spec::none();
-    let sbi = crate::consistency::Sbi::at_mount(plain(), Options::defaults_for(&plain()));
+    let plain_base = Options::defaults_for(&plain());
+    let sbi = crate::consistency::Sbi::at_mount(plain(), &plain_base);
     assert_eq!(crate::consistency::check_opt_consistency(&sbi, &mut o, &mut spec),
                Err(Errno::Einval));
     let e = Facts { feature: FEATURE_ENCRYPT, ..plain() };
-    let sbi = crate::consistency::Sbi::at_mount(e, Options::defaults_for(&e));
+    let e_base = Options::defaults_for(&e);
+    let sbi = crate::consistency::Sbi::at_mount(e, &e_base);
     let mut o = wants_dummy();
     assert!(crate::consistency::check_opt_consistency(&sbi, &mut o, &mut spec).is_ok());
 }
@@ -198,13 +201,14 @@ fn the_test_key_may_be_restated_on_a_remount_and_not_introduced() {
     let running = Options::defaults_for(&e);
     let mut spec = Spec::none();
     // Introducing it under a mount that does not have it: refused.
-    let sbi = crate::consistency::Sbi { facts: e, cur: running, remount: true,
+    let sbi = crate::consistency::Sbi { facts: e, cur: &running, remount: true,
                                         quota_on: false, casefold_loadable: true };
     let mut o = wants_dummy();
     assert_eq!(crate::consistency::check_opt_consistency(&sbi, &mut o, &mut spec),
                Err(Errno::Einval));
     // Restating what is already in force: accepted.
-    let sbi = crate::consistency::Sbi { cur: wants_dummy(), ..sbi };
+    let dummy = wants_dummy();
+    let sbi = crate::consistency::Sbi { cur: &dummy, ..sbi };
     let mut o = wants_dummy();
     assert!(crate::consistency::check_opt_consistency(&sbi, &mut o, &mut spec).is_ok());
 }

@@ -18,8 +18,8 @@ use super::{check_opt_consistency, Sbi};
 #[inline(never)]
 pub fn resolve(facts: &Facts, data: &str) -> Result<(Options, Spec), Errno> {
     let base = Options::defaults_for(facts);
-    let (mut o, mut spec) = parse_spec(base, data)?;
-    let sbi = Sbi::at_mount(*facts, base);
+    let (mut o, mut spec) = parse_spec(&base, data)?;
+    let sbi = Sbi::at_mount(*facts, &base);
     check_opt_consistency(&sbi, &mut o, &mut spec)?;
     Ok((o, spec))
 }
@@ -32,7 +32,7 @@ pub fn resolve(facts: &Facts, data: &str) -> Result<(Options, Spec), Errno> {
 /// # C: O(len(data))
 pub fn resolve_remount(sbi: &Sbi, data: &str) -> Result<(Options, Spec), Errno> {
     let base = Options::redefault(sbi.cur, &sbi.facts, true);
-    let (mut o, mut spec) = parse_spec(base, data)?;
+    let (mut o, mut spec) = parse_spec(&base, data)?;
     check_opt_consistency(sbi, &mut o, &mut spec)?;
     check_remount_switches(sbi, &o)?;
     Ok((o, spec))

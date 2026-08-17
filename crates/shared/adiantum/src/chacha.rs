@@ -129,6 +129,28 @@ pub fn xor_stream(state: &mut State, buf: &mut [u8], rounds: u32) {
     }
 }
 
+/// The base-construction state the extended-nonce construction runs on.
+///
+/// Handed out so a caller needing a long keystream can consume it in pieces
+/// small enough to keep off the stack: the counter lives in the state, so
+/// successive `xor_stream` calls over the same state produce exactly the
+/// keystream one call over the concatenation would have.
+///
+/// # C: chacha_state(hchacha(key, iv[0..16]), iv[24..32] || iv[16..24])
+pub fn xchacha_state(key: &[u8; CHACHA_KEY_LEN], iv: &[u8; XCHACHA_IV_LEN], rounds: u32)
+    -> State
+{
+    let mut n16 = [0u8; CHACHA_IV_LEN];
+    n16.copy_from_slice(&iv[0..16]);
+    let subkey = hchacha(key, &n16, rounds);
+
+    let mut real_iv = [0u8; CHACHA_IV_LEN];
+    real_iv[0..8].copy_from_slice(&iv[24..32]);
+    real_iv[8..16].copy_from_slice(&iv[16..24]);
+
+    State::from_key_words(&subkey, &real_iv)
+}
+
 /// Exclusive-or the extended-nonce keystream over `buf` in place.
 ///
 /// The 32-byte input splits as a 24-byte nonce followed by an 8-byte stream
@@ -140,14 +162,6 @@ pub fn xor_stream(state: &mut State, buf: &mut [u8], rounds: u32) {
 pub fn xchacha_xor(key: &[u8; CHACHA_KEY_LEN], iv: &[u8; XCHACHA_IV_LEN],
                    buf: &mut [u8], rounds: u32)
 {
-    let mut n16 = [0u8; CHACHA_IV_LEN];
-    n16.copy_from_slice(&iv[0..16]);
-    let subkey = hchacha(key, &n16, rounds);
-
-    let mut real_iv = [0u8; CHACHA_IV_LEN];
-    real_iv[0..8].copy_from_slice(&iv[24..32]);
-    real_iv[8..16].copy_from_slice(&iv[16..24]);
-
-    let mut st = State::from_key_words(&subkey, &real_iv);
+    let mut st = xchacha_state(key, iv, rounds);
     xor_stream(&mut st, buf, rounds);
 }

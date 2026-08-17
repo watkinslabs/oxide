@@ -11,7 +11,7 @@ use crate::opts::compress::{algorithm, check_lists, log_size, Compress, ExtList,
 use crate::opts::{parse, CompressMode, Options};
 
 /// Parse a line over the build-wide defaults. # C: O(len)
-fn p(line: &str) -> Result<Options, Errno> { parse(Options::defaults(), line) }
+fn p(line: &str) -> Result<Options, Errno> { parse(&Options::defaults(), line) }
 
 // ---- the codec, and the level it may carry ------------------------------
 
@@ -199,7 +199,7 @@ fn the_read_cache_is_shown_only_where_it_is_on_and_reads_back() {
     let on = p("compress_cache").unwrap();
     let shown = crate::opts::show(&on, feature);
     assert!(shown.contains(",compress_cache"), "{shown}");
-    assert!(crate::opts::parse(Options::defaults(), &shown).unwrap().compress_cache);
+    assert!(crate::opts::parse(&Options::defaults(), &shown).unwrap().compress_cache);
     assert!(!crate::opts::show(&Options::defaults(), feature).contains("compress_cache"));
     // A volume that cannot record compression shows none of the group, so the
     // string a remount reads back never asks for a cache it would then refuse.
@@ -236,7 +236,7 @@ fn what_is_shown_parses_back_to_what_was_shown() {
                  "compress_log_size=8,compress_chksum,compress_mode=user",
                  "compress_extension=txt,compress_extension=log,nocompress_extension=bin"] {
         let s = shown(line);
-        let back = parse(Options::defaults(), &s).expect(&s);
+        let back = parse(&Options::defaults(), &s).expect(&s);
         assert_eq!(back.compress, p(line).unwrap().compress, "{s}");
     }
 }

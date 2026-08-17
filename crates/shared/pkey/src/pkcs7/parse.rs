@@ -31,7 +31,7 @@ pub const VERSION_V3: u8 = 3;
 /// key is parsed from the whole certificate rather than from its fields.
 pub struct MsgCert {
     pub der: Vec<u8>,
-    pub cert: x509::Certificate,
+    pub cert: alloc::boxed::Box<x509::Certificate>,
 }
 
 /// One SignerInfo.

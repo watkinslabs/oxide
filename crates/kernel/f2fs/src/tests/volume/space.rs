@@ -251,8 +251,8 @@ fn a_long_value_reads_back_whole() {
 #[test]
 fn the_option_set_a_mount_was_given_is_what_it_reports() {
     let b = test_image::with_root();
-    let opts = crate::opts::parse(crate::opts::Options::defaults(), "noacl,mode=lfs").unwrap();
-    let v = Volume::mount_with(b.image(), opts, false).unwrap();
+    let opts = crate::opts::parse(&crate::opts::Options::defaults(), "noacl,mode=lfs").unwrap();
+    let v = Volume::mount_with(b.image(), opts.clone(), false).unwrap();
     assert_eq!(*v.options(), opts);
     let shown = crate::opts::show(v.options(), v.super_block().feature);
     assert!(shown.contains(",noacl"));
