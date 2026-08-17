@@ -5,12 +5,31 @@ use crate::preempt::{self, PREEMPT_DISABLED};
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum Recovery {
     Clean,
+    /// The count is BELOW the level `schedule()` just established, so the
+    /// entry `preempt_disable` was paid into a count that had already gone
+    /// negative. Nothing is held and nothing is atomic: the context is
+    /// switchable and the count is simply wrong. Restore the level and
+    /// schedule, which is what the reference does for every count mismatch.
+    Repair,
     DeferAtomic,
 }
 
+/// A count below the scheduler's own entry level cannot be deferred.
+///
+/// `DeferAtomic` preserves the count and hands the request to whoever will
+/// drop it — an IRQ tail, a bottom half, a lock release. An UNDER-count has no
+/// such owner: the missing decrement already happened, so every later attempt
+/// re-reads the same wrong value, refuses again, and the caller's wait loop
+/// re-drives it. That is a livelock with no exit, and it is what a run of
+/// identical `preempt_count=0` reports from one task at one stack pointer is.
+/// The reference has no deferral at all here: it reports and stamps the count
+/// back to the schedule-entry level, so the accounting is self-healing.
+/// # C: O(1)
 fn classify(count: u32, shared_stack: bool, in_interrupt: bool) -> Recovery {
-    if count == PREEMPT_DISABLED && !shared_stack && !in_interrupt { Recovery::Clean }
-    else { Recovery::DeferAtomic }
+    if shared_stack || in_interrupt { return Recovery::DeferAtomic; }
+    if count == PREEMPT_DISABLED { return Recovery::Clean; }
+    if count < PREEMPT_DISABLED { return Recovery::Repair; }
+    Recovery::DeferAtomic
 }
 
 fn defer_schedule(task: Option<&crate::Task>) {
@@ -40,10 +59,23 @@ fn current_sp() -> u64 {
     { 0 }
 }
 
+/// The two shapes a count mismatch takes, so the line names which one it is.
+/// A report whose every atomicity field reads zero is an UNDER-count, and
+/// reading it as an atomic-context violation sends the diagnosis the wrong way.
+fn reason(verdict: Recovery) -> &'static [u8] {
+    match verdict {
+        Recovery::Repair => b" reason=count-under-entry-level",
+        _ => b" reason=atomic-context",
+    }
+}
+
 #[track_caller]
-fn report(count: u32, shared_stack: bool) {
+fn report(count: u32, shared_stack: bool, verdict: Recovery) {
     klog::write_raw(b"[BUG] scheduling while atomic: preempt_count=");
     klog::write_hex_u64(count as u64);
+    klog::write_raw(b" expected=");
+    klog::write_hex_u64(PREEMPT_DISABLED as u64);
+    klog::write_raw(reason(verdict));
     klog::write_raw(if preempt::in_interrupt() { b" in_interrupt=1" } else { b" in_interrupt=0" });
     #[cfg(feature = "debug-preempt")]
     {
@@ -76,16 +108,24 @@ fn report(count: u32, shared_stack: bool) {
 /// Validate the scheduler-owned preempt-disable level.  An interrupt, bottom
 /// half, lock, or shared-IRQ-stack count is not switchable state.  Preserve it
 /// and defer the request to the owner that will drop that count, rather than
-/// rewriting CPU-local accounting under the interrupted caller.
+/// rewriting CPU-local accounting under the interrupted caller.  A count BELOW
+/// the entry level has no such owner and is repaired here instead — see
+/// [`classify`].
 /// # C: O(1)
 #[track_caller]
 pub(super) fn recover() -> bool {
     let count = preempt::preempt_count();
     let shared_stack = preempt::on_irq_stack();
-    match classify(count, shared_stack, preempt::in_interrupt()) {
+    let verdict = classify(count, shared_stack, preempt::in_interrupt());
+    match verdict {
         Recovery::Clean => true,
+        Recovery::Repair => {
+            report(count, shared_stack, verdict);
+            preempt::preempt_count_set(PREEMPT_DISABLED);
+            true
+        }
         Recovery::DeferAtomic => {
-            report(count, shared_stack);
+            report(count, shared_stack, verdict);
             defer_schedule(crate::live::current());
             false
         }
@@ -119,6 +159,52 @@ mod tests {
             "defer must preserve the caller's intended sleep state");
         assert!(preempt::resched::test_tsk_need_resched(&task));
         assert!(preempt::resched::clear_tsk_need_resched(&task));
+    }
+
+    #[test]
+    fn count_below_entry_level_is_repaired_not_deferred() {
+        // The observed shape: the entry `preempt_disable` landed on a count
+        // that had already gone one below zero, so `schedule()` reads zero
+        // with nothing held, nothing on the IRQ stack and no interrupt.
+        assert_eq!(classify(0, false, false), Recovery::Repair);
+    }
+
+    #[test]
+    fn repair_restores_the_entry_level_and_lets_the_switch_run() {
+        preempt::_test_reset();
+        // No `preempt_disable` credit at all: the schedule-entry increment was
+        // consumed by a prior missing decrement.
+        assert!(recover(), "an under-count is switchable and must schedule");
+        assert_eq!(preempt::preempt_count(), PREEMPT_DISABLED,
+            "repair must leave exactly the level schedule() runs its body at");
+        preempt::_test_reset();
+    }
+
+    // The property the 624-report boot violated: driving the real entry
+    // sequence from an under-counted CPU must reach a schedule, not repeat one
+    // refusal forever. Each round is what `schedule_once` does — the entry
+    // increment, the check, and the give-back on refusal — so a verdict that
+    // cannot heal the count shows up here as a loop that never returns true.
+    #[test]
+    fn undercounted_cpu_reaches_a_schedule_instead_of_looping_forever() {
+        preempt::_test_reset();
+        // One decrement more than was ever taken: the live wedge's state.
+        preempt::preempt_count_set(0u32.wrapping_sub(1));
+        let mut rounds = 0;
+        let scheduled = loop {
+            rounds += 1;
+            preempt::preempt_disable();
+            if recover() { break true; }
+            // `schedule_once`'s give-back on refusal. Spelled as a set because
+            // the paired helper's debug-only underflow assertion is compiled
+            // out of the kernel build this state was observed in, and the
+            // question here is the verdict, not the assertion.
+            preempt::preempt_count_set(preempt::preempt_count().wrapping_sub(1));
+            if rounds == 32 { break false; }
+        };
+        assert!(scheduled, "refusal never healed the count: {rounds} rounds, still refusing");
+        assert_eq!(preempt::preempt_count(), PREEMPT_DISABLED);
+        preempt::_test_reset();
     }
 
     #[test]

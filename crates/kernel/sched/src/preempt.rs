@@ -8,13 +8,12 @@
 //
 // Discipline (`13§9`):
 //   - `preempt_count > 0` ⇒ no schedule() may run on this CPU.
-//   - Hits zero only at well-defined release sites: kernel-return-
-//     to-user, idle, end-of-softirq, voluntary yield.
+//   - Hits zero only at well-defined release sites: kernel-return-to-user,
+//     idle, end-of-softirq, voluntary yield.
 //   - `need_resched=true` is set by wakeup / tick; checked at every
 //     `preempt_enable` decrement-to-zero and at IRQ-exit.
-//
-// `PreemptGuard` is the RAII pair: drop runs `preempt_enable()`,
-// which schedules iff count returned to zero and need_resched is set.
+//   - `PreemptGuard` is the RAII pair: drop runs `preempt_enable()`, which
+//     schedules iff count returned to zero and need_resched is set.
 
 use core::sync::atomic::{AtomicPtr, Ordering};
 #[cfg(target_os = "oxide-kernel")]
@@ -82,7 +81,7 @@ fn hosted_preempt<R>(f: impl FnOnce(&core::cell::Cell<u32>) -> R) -> R {
 /// `PREEMPT_DISABLED`.
 pub const PREEMPT_DISABLED: u32 = 1;
 
-/// `CONFIG_DEBUG_PREEMPT` subset — the two count-leak detectors.
+/// `CONFIG_DEBUG_PREEMPT` subset — the count-leak detectors.
 #[cfg(feature = "debug-preempt")]
 pub mod debug;
 /// Module manifest: spinlock-gate installation owns the scheduler→sync bridge.
@@ -114,7 +113,9 @@ fn preempt_count_add_local(n: u32) {
     { preempt_count_slot().fetch_add(n, Ordering::AcqRel); }
 }
 
-fn preempt_count_sub_local(n: u32) -> u32 {
+// Checked BEFORE the sub: afterwards the wrapped count is indistinguishable from deep nesting.
+#[track_caller] fn preempt_count_sub_local(n: u32) -> u32 {
+    #[cfg(feature = "debug-preempt")] debug::check_preempt_sub(preempt_count_load(), n);
     #[cfg(not(target_os = "oxide-kernel"))]
     { return hosted_preempt(|count| {
         let prev = count.get();
@@ -177,6 +178,8 @@ pub(crate) fn preempt_count_set(value: u32) {
 // no other change needed. HARDIRQ/NMI fields are reserved for when the IRQ
 // path starts accounting (`irq_enter`); today only PREEMPT + SOFTIRQ are used.
 
+/// Preempt-disable nesting field mask, the low byte (Linux `PREEMPT_MASK`).
+pub const PREEMPT_MASK: u32 = 0xff;
 /// Softirq field shift (Linux `SOFTIRQ_SHIFT` = `PREEMPT_BITS`).
 pub const SOFTIRQ_SHIFT: u32 = 8;
 /// One softirq unit. Added once = "serving a softirq" (`in_serving_softirq`).
@@ -325,7 +328,7 @@ pub fn preempt_count_add(n: u32) { preempt_count_add_local(n); }
 
 /// Raw subtract from this CPU's count (Linux `preempt_count_sub`). No
 /// reschedule check — the bh layer decides when to resched. # C: O(1)
-pub fn preempt_count_sub(n: u32) {
+#[track_caller] pub fn preempt_count_sub(n: u32) {
     let prev = preempt_count_sub_local(n);
     debug_assert!(prev >= n, "preempt_count_sub underflow");
 }
@@ -380,7 +383,7 @@ pub fn preempt_disable() {
 /// not call schedule() (e.g. inside the schedule path itself when
 /// switching back into a preempt-off region).
 /// # C: O(1)
-pub fn preempt_enable_no_check() {
+#[track_caller] pub fn preempt_enable_no_check() {
     let prev = preempt_count_sub_local(1);
     // Underflow check in debug; in release the saturating_sub
     // semantics on AtomicU32::fetch_sub wrap, which would surface
@@ -396,7 +399,7 @@ pub fn preempt_enable_no_check() {
 /// not holding spinlocks that schedule() acquires, and the current
 /// task's stack is suitable for a context switch.
 /// # C: O(1) + O(log N) iff schedule fires
-pub unsafe fn preempt_enable() {
+#[track_caller] pub unsafe fn preempt_enable() {
     let prev = preempt_count_sub_local(1);
     debug_assert!(prev != 0, "preempt_enable underflow");
     if preemptible(prev - 1, irqs_disabled()) && take_need_resched() {
