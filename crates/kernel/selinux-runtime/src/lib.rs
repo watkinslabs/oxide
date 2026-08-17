@@ -15,6 +15,7 @@
 //   label — SID storage helpers shared by the object owners
 //   inode — how a mount and its inodes acquire labels
 //   task  — the subject side of a check, read from the task owner
+//   network — how sockets acquire labels and how a peer label renders
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -26,6 +27,7 @@ pub mod boot;
 pub mod check;
 pub mod inode;
 pub mod label;
+pub mod network;
 pub mod task;
 
 use sync::{Spinlock, SecurityPolicy};

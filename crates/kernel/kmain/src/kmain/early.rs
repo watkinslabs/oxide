@@ -136,6 +136,13 @@ pub unsafe fn init(info: &BootInfo) {
     // carries.
     selinux_runtime::task::set_current_sid_source(sched::selinux_label::current_sid);
     selinux_runtime::task::set_fscreate_sid_source(sched::selinux_label::current_fscreate_sid);
+    selinux_runtime::network::set_sockcreate_sid_source(
+        sched::selinux_label::current_sockcreate_sid);
+    // Sockets take their labels from here on. Installed BEFORE any socket is
+    // created: a socket created earlier would carry no label and report none for
+    // its peers, and a session bus refuses every connection whose label it
+    // cannot read.
+    pmm::kassert!(net::selinux_glue::init(), "socket labelling installed exactly once");
     console::register_devnodes(); ::devfs::boot::populate_defaults(); procfs::init();
     syscalls::init_wall_clock_from_rtc();
     fs::tmpfs::init(); fs::fuse::register(); tracefs::init(); drv_virtio_input::devfs::init();

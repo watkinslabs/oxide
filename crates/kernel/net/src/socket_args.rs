@@ -41,6 +41,8 @@ pub const IPPROTO_UDP:    u32 = 17;
 /// raw-network capability.
 pub const IPPROTO_ICMP:   u32 = 1;
 pub const IPPROTO_ICMPV6: u32 = 58;
+pub const IPPROTO_SCTP:   u32 = 132;
+pub const IPPROTO_MPTCP:  u32 = 262;
 pub const IPPROTO_RAW:    u32 = 255;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

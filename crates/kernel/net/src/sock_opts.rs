@@ -14,6 +14,7 @@ pub mod identity;
 pub mod inq;
 pub mod msfilter;
 pub mod peercred;
+pub mod peersec;
 pub mod sol_ip;
 pub mod sol_ipv6;
 pub mod sol_socket;

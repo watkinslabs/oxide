@@ -31,4 +31,4 @@ pub use exec::{exec_commit, exec_plan};
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub use attr::{read_attr, write_attr};
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
-pub use label::{current_fscreate_sid, current_sid};
+pub use label::{current_fscreate_sid, current_sid, current_sockcreate_sid};

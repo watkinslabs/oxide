@@ -33,6 +33,11 @@ struct UnixListenerState {
     /// accepted connection's server end so the client's `SO_PEERPIDFD` names
     /// the listening process itself, not whatever holds its pid number later.
     owner_identity: Option<Arc<sched::pid::PidIdentity>>,
+    /// Security label of the listening socket, copied onto every accepted
+    /// connection's server end. That is the label the CLIENT reads back as its
+    /// peer's, so a connecting process learns the label of the service it
+    /// reached rather than of whichever task happened to run the accept.
+    owner_sid: u32,
     connect_sockets: Vec<alloc::sync::Weak<crate::sock::InetSocket>>,
 }
 
@@ -102,6 +107,7 @@ impl UnixListener {
                 accept_q: alloc::collections::VecDeque::new(),
                 owner_cred: crate::PeerCred::default(),
                 owner_identity: None,
+                owner_sid: security::network::NO_LABEL,
                 connect_sockets: Vec::new(),
             }),
             accept_waiters: crate::sock_wait::SockWaitQueue::new(),
@@ -118,16 +124,17 @@ impl UnixListener {
     /// Queue capacity is `backlog + 1`, matching AF_UNIX connect accounting.
     /// # C: O(1)
     pub fn listen(&self, backlog: i32, somaxconn: usize) {
-        self.listen_with_cred(backlog, somaxconn, None, None);
+        self.listen_with_cred(backlog, somaxconn, None, None, None);
     }
 
     /// Publish a listener and atomically replace its peer credential snapshot.
     /// # C: O(1)
     pub(crate) fn listen_with_cred(&self, backlog: i32, somaxconn: usize, cred: Option<crate::PeerCred>,
-        identity: Option<Arc<sched::pid::PidIdentity>>) {
+        identity: Option<Arc<sched::pid::PidIdentity>>, sid: Option<u32>) {
         let mut st = self.state.lock();
         if let Some(cred) = cred { st.owner_cred = cred; }
         if identity.is_some() { st.owner_identity = identity; }
+        if let Some(sid) = sid { st.owner_sid = sid; }
         st.backlog = crate::sysctl::normalize_listen_backlog(backlog, somaxconn);
         st.listening = !st.closed;
         let waiters = core::mem::take(&mut st.connect_sockets);
@@ -194,6 +201,8 @@ impl UnixListener {
         if st.accept_q.len() > st.backlog { return Err(UnixConnectError::Full); }
         pair.set_end_cred(UnixEnd::A, st.owner_cred.clone());
         pair.set_end_identity(UnixEnd::A, st.owner_identity.clone());
+        pair.set_end_sid(UnixEnd::A,
+            security::network::server_end_label(st.owner_sid, pair.peer_sid(UnixEnd::A)));
         st.accept_q.push_back((pair.clone(), link));
         drop(st);
         self.accept_waiters.wake_all();
@@ -218,6 +227,12 @@ impl UnixListener {
         if st.accept_q.len() > st.backlog { return Err(crate::NetError::Eagain); }
         pair.set_end_cred(UnixEnd::A, st.owner_cred.clone());
         pair.set_end_identity(UnixEnd::A, st.owner_identity.clone());
+        // The server end's label, recorded at the same instant the connection
+        // is committed. The client reads it back as its peer's, and it is
+        // derived from both ends — the client's end was recorded before this
+        // call, so `peer_sid(A)` is the connecting socket's label.
+        pair.set_end_sid(UnixEnd::A,
+            security::network::server_end_label(st.owner_sid, pair.peer_sid(UnixEnd::A)));
         use core::sync::atomic::Ordering::Acquire;
         if sock.read_shut.load(Acquire) { pair.shutdown_reader(UnixEnd::B); }
         if sock.write_shut.load(Acquire) { pair.close_writer(UnixEnd::B); }

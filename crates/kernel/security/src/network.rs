@@ -115,47 +115,24 @@ pub fn remove(namespace: u64, operation: Operation) -> Option<Hook> {
 }
 
 /// Remove every network hook and its counters for a destroyed namespace. # C: O(operations)
+///
+/// Socket labelling is not namespace-scoped and is untouched here: one module
+/// labels every socket in the kernel, so a namespace going away must not take
+/// the labelling of the sockets in every other namespace with it.
 pub fn remove_namespace(namespace: u64) -> usize {
-    let removed = {
-        let mut all = HOOKS.lock();
-        let removed = all.remove(&namespace).map_or(0, |ops| ops.len());
-        publish_active_operations(&all);
-        removed
-    };
-    PEER_SECURITY.lock().remove(&namespace);
+    let mut all = HOOKS.lock();
+    let removed = all.remove(&namespace).map_or(0, |ops| ops.len());
+    publish_active_operations(&all);
     removed
 }
 
-/// The connected peer whose label `SO_PEERSEC` asks for. # C: O(1)
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct PeerContext { pub namespace: u64, pub family: u16, pub connected: bool }
-
-/// A module that labels sockets answers with the peer's security context.
-/// `None` means this socket carries no peer label.
-pub type PeerSecurityHook = fn(PeerContext) -> Option<alloc::vec::Vec<u8>>;
-
-static PEER_SECURITY: Spinlock<BTreeMap<u64, PeerSecurityHook>, Namespace> =
-    Spinlock::new(BTreeMap::new());
-
-/// # C: O(log N)
-pub fn install_peer_security(namespace: u64, hook: PeerSecurityHook)
-    -> Option<PeerSecurityHook>
-{
-    PEER_SECURITY.lock().insert(namespace, hook)
-}
-
-/// # C: O(log N)
-pub fn remove_peer_security(namespace: u64) -> Option<PeerSecurityHook> {
-    PEER_SECURITY.lock().remove(&namespace)
-}
-
-/// Peer security context for a connected socket. With no labelling module
-/// installed there is no context to report, and `SO_PEERSEC` has no value.
-/// # C: O(log N)
-pub fn peer_security(context: PeerContext) -> Option<alloc::vec::Vec<u8>> {
-    let hook = *PEER_SECURITY.lock().get(&context.namespace)?;
-    hook(context)
-}
+/// How sockets acquire labels and how a recorded label renders. The label ids
+/// themselves live on the connections that recorded them, never in a table
+/// here.
+#[path = "network/peer.rs"]
+mod peer;
+pub use peer::{install_socket_label, new_socket_label, remove_socket_label, server_end_label,
+               socket_label_context, unlabeled_socket_label, SocketLabelOps, NO_LABEL};
 
 /// The sender label carried by one received message.  This is deliberately a
 /// message-time hook: querying a peer again at receive time would let a later
@@ -212,10 +189,6 @@ mod tests {
     fn deny(ctx: Context) -> Verdict { assert_eq!(ctx.namespace, 7); Verdict::Deny }
     fn deny_any(_ctx: Context) -> Verdict { Verdict::Deny }
     fn allow(_ctx: Context) -> Verdict { Verdict::Allow }
-    fn label(ctx: PeerContext) -> Option<alloc::vec::Vec<u8>> {
-        if ctx.connected { Some(alloc::vec::Vec::from(&b"peer_u:peer_r:peer_t"[..])) } else { None }
-    }
-
     fn message_label(ctx: MessageContext<'_>) -> Option<alloc::vec::Vec<u8>> {
         assert!(ctx.sender.is_none());
         Some(alloc::vec::Vec::from(&b"system_u:system_r:sender_t"[..]))
@@ -229,22 +202,6 @@ mod tests {
         assert_eq!(message_security(None).as_deref(), Some(&b"system_u:system_r:sender_t"[..]));
         assert_eq!(remove_message_security(), Some(message_label as MessageSecurityHook));
         assert_eq!(message_security(None), None);
-    }
-
-    #[test]
-    fn peer_security_has_no_value_until_a_labelling_module_is_installed() {
-        let namespace = 31;
-        let connected = PeerContext { namespace, family: 1, connected: true };
-        let _ = remove_peer_security(namespace);
-        assert_eq!(peer_security(connected), None);
-        assert!(install_peer_security(namespace, label).is_none());
-        assert_eq!(peer_security(connected).as_deref(), Some(&b"peer_u:peer_r:peer_t"[..]));
-        // An unconnected socket has no peer to label even with a module loaded.
-        assert_eq!(peer_security(PeerContext { connected: false, ..connected }), None);
-        // The label is namespace-scoped like every other network hook.
-        assert_eq!(peer_security(PeerContext { namespace: namespace + 1, ..connected }), None);
-        assert_eq!(remove_namespace(namespace), 0);
-        assert_eq!(peer_security(connected), None);
     }
 
     #[test]

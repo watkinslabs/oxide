@@ -1707,6 +1707,7 @@ dependencies = [
  "pmm",
  "sched",
  "security",
+ "selinux-runtime",
  "siphash",
  "softirq",
  "sync",

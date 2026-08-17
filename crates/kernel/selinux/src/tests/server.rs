@@ -191,8 +191,42 @@ fn transition_and_render_are_refused_before_a_policy_is_loaded() {
     assert!(s.transition_sid(1, 2, 7, None).is_err());
     assert!(s.change_sid(1, 2, 7).is_err());
     assert!(s.member_sid(1, 2, 7).is_err());
-    assert!(s.sid_to_context(1).is_err());
     assert!(s.context_to_sid("system_u:object_r:etc_t:s0").is_err());
+}
+
+/// A label read this early must ANSWER, not fail: userspace reads its own and
+/// its peers' labels before it loads a policy, and a refusal there reads as a
+/// kernel without the module. The pre-policy answer is the initial SID's own
+/// name.
+#[test]
+fn an_initial_sid_renders_to_its_own_name_before_a_policy_is_loaded() {
+    use crate::uapi::initsid::InitSid;
+    let s = server();
+    assert_eq!(s.sid_to_context(InitSid::Kernel.sid()).unwrap(), "kernel");
+    assert_eq!(s.sid_to_context(InitSid::Unlabeled.sid()).unwrap(), "unlabeled");
+    assert_eq!(s.sid_to_context(InitSid::Security.sid()).unwrap(), "security");
+    assert_eq!(s.sid_to_context(InitSid::Devnull.sid()).unwrap(), "devnull");
+    // The first user process's label renders as the kernel's name. Any other
+    // answer tells a reader a policy is already loaded, and it then never
+    // loads one.
+    assert_eq!(s.sid_to_context(InitSid::Init.sid()).unwrap(), "kernel");
+    // A placeholder slot policy never names, and anything above the initial
+    // range, has no pre-policy rendering.
+    assert!(s.sid_to_context(4).is_err());
+    assert!(s.sid_to_context(crate::uapi::initsid::SECINITSID_NUM + 1).is_err());
+}
+
+/// With no policy there is no range to move, so the identity SID stands. This
+/// is the answer the AF_UNIX connect path relies on for a server child's label
+/// for the whole of early boot.
+#[test]
+fn an_mls_range_copy_is_the_identity_before_a_policy_is_loaded() {
+    use crate::uapi::initsid::InitSid;
+    let mut s = server();
+    assert_eq!(s.sid_mls_copy(InitSid::Kernel.sid(), InitSid::Init.sid()),
+        Ok(InitSid::Kernel.sid()));
+    assert_eq!(s.sid_mls_copy(InitSid::Unlabeled.sid(), InitSid::Kernel.sid()),
+        Ok(InitSid::Unlabeled.sid()));
 }
 
 #[test]
