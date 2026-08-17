@@ -152,6 +152,14 @@ impl NodeCache {
         Some(bytes)
     }
 
+    /// Whether the mapping holds the block for `nid`, WITHOUT counting the
+    /// question as a read — what readahead asks before it fetches. Counting
+    /// these would report hits for reads nobody made.
+    /// # C: O(height)
+    pub fn holds(&self, nid: u32) -> bool {
+        self.pages.lookup(self.ino, Self::off(nid)).is_some()
+    }
+
     /// Count a read this mapping could not answer. # C: O(1)
     pub fn miss(&self) { self.misses.fetch_add(1, Ordering::Relaxed); }
 

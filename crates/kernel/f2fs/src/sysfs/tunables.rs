@@ -36,6 +36,8 @@ pub(crate) fn attrs(fs: &Arc<F2fs>, dev: &str) -> Vec<Attr> {
                |v| u64::from(v.extents().warm_data_age_threshold()), set_warm_age),
         num_rw(fs, dev, "iostat_enable",
                |v| u64::from(v.iostat_enabled()), set_iostat_enable),
+        num_rw(fs, dev, "readdir_ra",
+               |v| u64::from(v.readdir_ra()), set_readdir_ra),
     ];
     out.extend(atgc::knobs::ALL.iter().map(|&k| atgc_knob(fs, dev, k)));
     out
@@ -125,6 +127,15 @@ fn set_warm_age(v: &mut Vol, n: u64) -> Result<(), Errno> {
 /// # C: O(N kinds)
 fn set_iostat_enable(v: &mut Vol, n: u64) -> Result<(), Errno> {
     v.set_iostat_enabled(n != 0);
+    Ok(())
+}
+
+/// Whether a directory listing prefetches the node block of every inode it
+/// names. Any non-zero value turns it on, as the reference's own boolean
+/// control does.
+/// # C: O(1)
+fn set_readdir_ra(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    v.set_readdir_ra(n != 0);
     Ok(())
 }
 

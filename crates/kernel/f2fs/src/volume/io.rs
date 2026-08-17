@@ -84,6 +84,13 @@ impl<S: SectorSource> Volume<S> {
         // rather than no bytes.
         let crypt = self.crypt_info(inode, ino)?;
         if inode.encrypted() && crypt.is_none() { return Err(Errno::Enokey); }
+        // The window the CALLER asked for, fetched before it is served block
+        // by block below. The same blocks either way; the difference is that a
+        // contiguous run of them goes to the medium once instead of once per
+        // block, and the loop below then finds them in the mapping.
+        let first = off / BLKSIZE as u64;
+        let last = (off + want as u64 - 1) / BLKSIZE as u64;
+        self.readahead_data(inode, ino, first, (last - first + 1) as usize);
         let mut done = 0usize;
         while done < want {
             let pos = off + done as u64;
