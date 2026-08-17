@@ -81,6 +81,23 @@ impl<S: SectorSource> Volume<S> {
             let kind = if self.segstate.cp_writing { Io::FsCpMeta } else { Io::FsMeta };
             self.io_account(kind, BLKSIZE as u64, false);
         }
+        // The mapping of metadata blocks is kept in step HERE, after the write
+        // landed and nowhere else, because this is the single point every
+        // metadata write in this filesystem goes through. A block rewritten
+        // without this would still be answered from the mapping with the bytes
+        // it held before — a stale read with no error anywhere, which is the
+        // one failure a read cache can produce.
+        if self.meta_cache.covers(addr) {
+            // A context means the LAYER BELOW transforms these bytes before
+            // they land, so what is now at the address is not what was passed
+            // down and cannot be filed as if it were. No metadata write
+            // carries one today; the mapping drops the block rather than
+            // depend on that staying true.
+            match ctx {
+                None => self.meta_cache.overwrite(addr, data),
+                Some(_) => self.meta_cache.invalidate_range(addr, 1),
+            }
+        }
         Ok(())
     }
 

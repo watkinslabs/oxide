@@ -51,7 +51,11 @@ pub fn render(o: &mut String, g: &General) {
                         0, g.ndirty_dirs, g.ndirty_all));
     o.push_str(&format!("  - data: {:>4} in files:{:>4}\n", 0, g.ndirty_files));
     o.push_str(&format!("  - quota data: {:>4} in quota files:{:>4}\n", 0, g.nquota_files));
-    o.push_str(&format!("  - meta: {:>4} in {:>4}\n", 0, 0));
+    // The second figure is the metadata mapping's size, which the reference
+    // reads off the mapping itself. The first is the dirty count, and this
+    // build has none to report: a metadata write reaches the medium inside the
+    // call that makes it, so no metadata block is ever dirty in memory.
+    o.push_str(&format!("  - meta: {:>4} in {:>4}\n", 0, g.meta_cached));
     o.push_str(&format!("  - imeta: {:>4}\n", 0));
     o.push_str(&format!("  - fsync mark: {:>4}\n", 0));
     o.push_str(&format!("  - NATs: {:>9}/{:>9}\n  - SITs: {:>9}/{:>9}\n",

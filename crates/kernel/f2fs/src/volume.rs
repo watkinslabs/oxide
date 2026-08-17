@@ -39,9 +39,10 @@
 //! - `ioprio`: the per-file write-priority hint, and the request flags a
 //!             write carries because of it.
 //! - `iostat`: charging one request to the layer that asked for it.
+//! - `blockio`: one block by its address, off the medium or out of the
+//!              mount's metadata mapping.
 
 use alloc::collections::{BTreeMap, BTreeSet};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use syscall::errno::Errno;
@@ -54,7 +55,7 @@ use crate::node::Inode;
 use crate::opts::Options;
 use crate::sb::SuperBlock;
 use crate::summary::{NatEntry, NatJournal, SitEntry, SitJournal};
-use crate::uapi::{BLKSIZE, NR_CURSEG_TYPE};
+use crate::uapi::NR_CURSEG_TYPE;
 
 pub mod mount;
 pub mod zonewp;
@@ -87,6 +88,7 @@ pub mod fsync;
 pub mod crypto;
 pub mod ioprio;
 pub mod iostat;
+pub mod blockio;
 
 pub use curseg::{Curseg, Kind, Summary};
 pub use dir::DirEntry;
@@ -242,6 +244,12 @@ pub struct Volume<S: SectorSource> {
     /// to keep them; inert on every other mount. Interior-mutable already, for
     /// the reason the caches above are: a READ is what fills it.
     pub(crate) compress_cache: crate::compress::cache::Cache,
+    /// The metadata blocks this mount has read and kept — the checkpoint
+    /// packs, both tables and the summary area. Unconditional, unlike the
+    /// compressed-block cache above: no mount option turns it off, because
+    /// the reference has no option for it either and every mount re-reads the
+    /// same handful of table blocks without one.
+    pub(crate) meta_cache: crate::checkpoint::cache::Cache,
     /// Failures this mount was asked to inject, and how many each site has
     /// been given. Live state rather than a copy of the option set: a knob
     /// rearms a site without remounting, and the counters are what the report
@@ -361,41 +369,6 @@ impl<S: SectorSource> Volume<S> {
             &self.devs,
             |d| zoned.is_some_and(|g| g.dev_is_zoned(d)),
         )
-    }
-
-    /// Read one block by its address.
-    ///
-    /// Addresses are in blocks and the source is addressed in blocks, so the
-    /// two units are the same here by construction — which is why the source
-    /// is created at the volume's block size rather than at a sector size.
-    /// # C: O(BLKSIZE)
-    pub fn read_block(&self, addr: u32) -> Result<Vec<u8>, Errno> {
-        if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::ReadIo) {
-            return Err(Errno::Eio);
-        }
-        if u64::from(addr) >= self.sb.max_blkaddr() { return Err(Errno::Eio); }
-        let mut buf = vec![0u8; BLKSIZE];
-        self.source.read_sectors(u64::from(addr), &mut buf)?;
-        // Everything OUTSIDE the main area is metadata by the layout's own
-        // definition, which is the same derivation the write path uses to
-        // decide a block is metadata. The main-area reads — nodes, file data,
-        // the cleaner's copies — are charged by the typed readers above this
-        // one, because the address cannot tell those three apart.
-        if !self.sb.valid_main_blkaddr(addr) {
-            self.io_account(crate::stats::iostat::Io::FsMetaRead, BLKSIZE as u64, false);
-        }
-        Ok(buf)
-    }
-
-    /// Read one block that must lie in the MAIN area.
-    ///
-    /// Everything a file or a node points at lives there. An address outside
-    /// it names metadata, and following one would read a checkpoint or a table
-    /// block as if it were data.
-    /// # C: O(BLKSIZE)
-    pub fn read_main_block(&self, addr: u32) -> Result<Vec<u8>, Errno> {
-        if !self.sb_main_contains(addr) { return Err(Errno::Eio); }
-        self.read_block(addr)
     }
 
     /// The root directory's inode. # C: O(1 block)

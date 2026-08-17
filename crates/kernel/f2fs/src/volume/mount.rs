@@ -133,6 +133,11 @@ impl<S: SectorSource> Volume<S> {
         // comparing, so the option alone does not turn it on.
         let mut atgc = crate::atgc::Atgc::new();
         atgc.enable_at_mount(opts.atgc, cp.elapsed_time);
+        // Built before the superblock is moved into the volume: the mapping's
+        // inode number and its area bounds are the format's, so nothing here
+        // picks either.
+        let meta_cache = crate::checkpoint::cache::Cache::new(
+            sb.meta_ino, sb.cp_blkaddr, sb.main_blkaddr);
         let mut vol = Self {
             source,
             sb,
@@ -184,6 +189,10 @@ impl<S: SectorSource> Volume<S> {
             // take, which is where the reference puts the same mapping: no
             // file can collide with it, on any volume.
             compress_cache: crate::compress::cache::Cache::new(compress_cache, max_nid),
+            // The volume's own metadata inode and its own area bounds: the
+            // format says which inode number that is and where the metadata
+            // ends, so nothing here picks either.
+            meta_cache,
             fault: crate::fault::Info::new(),
             devs,
             zoned,

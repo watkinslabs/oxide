@@ -86,6 +86,9 @@ pub struct General {
     /// Both zero on a mount that was not asked to hold any.
     pub compress_cached: usize,
     pub compress_hits: u64,
+    /// Metadata blocks this mount is holding in its metadata mapping. Every
+    /// mount holds some: the mapping is not optional.
+    pub meta_cached: usize,
     pub swapfile_inode: i64,
     pub ndonate_files: u32,
     pub nquota_files: u32,
@@ -271,6 +274,7 @@ impl General {
             compr_blocks: c.compr_blocks, swapfile_inode: c.swapfile_inode,
             compress_cached: v.compress_cache.blocks(),
             compress_hits: v.compress_cache.hits(),
+            meta_cached: v.meta_cached_blocks(),
             ndonate_files: c.donate_files,
             nquota_files: c.nquota_files,
             orphans: v.orphans.len() as u32,
