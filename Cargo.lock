@@ -2512,6 +2512,15 @@ name = "structured-zstd"
 version = "0.0.49"
 
 [[package]]
+name = "sunrpc"
+version = "0.1.0"
+dependencies = [
+ "sched",
+ "sync",
+ "syscall",
+]
+
+[[package]]
 name = "syn"
 version = "2.0.117"
 source = "registry+https://github.com/rust-lang/crates.io-index"
