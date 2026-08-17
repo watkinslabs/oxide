@@ -23,6 +23,7 @@
 //! - `fileops`: writing a file's bytes, and shortening one.
 //! - `dirwrite`: adding and removing directory entries.
 //! - `namei`:  creating, removing and renaming names.
+//! - `newcompr`: stamping a new inode's compression settings.
 //! - `xattr_write`: setting and removing attributes.
 //! - `quotas`:  charging allocations to the identities that own them.
 //! - `verify`:  attesting a verity file's data against its hash tree.
@@ -72,6 +73,7 @@ pub mod commit;
 pub mod fileops;
 pub mod dirwrite;
 pub mod namei;
+pub mod newcompr;
 pub mod xattr_write;
 pub mod discard;
 pub mod quotas;

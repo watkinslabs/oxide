@@ -166,11 +166,59 @@ impl<S: SectorSource> Volume<S> {
     ///
     /// The whole word, not a merge: the caller already decided which bits it
     /// may move, and a second merge here would be a second answer to that.
-    /// # C: O(1 block)
+    ///
+    /// The compression mark is NOT just a bit in that word. Adding it commits
+    /// the file to a codec and a cluster width that have to be recorded with
+    /// it — an inode marked compressed and carrying no width claims a width of
+    /// zero, which the format does not admit and this crate's own inode check
+    /// rejects, so the file stops being readable. Taking it away, or adding it
+    /// to a file that already holds blocks, is refused for the mirror reason:
+    /// the addresses already written mean one thing under the mark and another
+    /// without it.
+    /// # C: O(1 block), or a block move where inline data has to be converted
     pub fn set_inode_flags(&mut self, ino: u32, flags: u32) -> Result<(), Errno> {
         self.writable_or_err()?;
+        let inode = self.read_inode(ino)?;
+        let st = crate::compress::chattr::FileState {
+            is_reg: crate::mode::file_type(inode.mode) == vfs::FileType::Regular,
+            is_dir: crate::mode::file_type(inode.mode) == vfs::FileType::Directory,
+            // The inode block itself is counted, so a file holding data holds
+            // more than one.
+            has_blocks: inode.blocks > 1,
+            pinned: inode.has(crate::flags::PIN_FILE),
+            atomic: self.is_atomic_file(ino),
+        };
+        let change =
+            crate::compress::chattr::check(self.sb.feature, inode.flags, flags, &st)?;
+        let setting = change == crate::compress::chattr::FlagChange::Set;
+        let mut stamp = None;
+        if setting {
+            // The settings have nowhere to go on an inode too narrow to hold
+            // them, and the mount may be running with a combination this build
+            // cannot write. Both are refusals rather than a mark stamped with
+            // nothing behind it.
+            if crate::uapi::I_COMPRESS_FLAG + 2
+                > crate::uapi::OFFSET_OF_END_OF_I_EXT + inode.extra_isize
+            {
+                return Err(Errno::Eopnotsupp);
+            }
+            let c = self.opts.compress;
+            stamp = Some(
+                crate::compress::policy::context(c.algorithm, c.log_size, c.chksum, c.level)
+                    .ok_or(Errno::Einval)?,
+            );
+            // Before the mark goes down, not after: a file whose bytes live
+            // inside its inode has no clusters to put them in, and the
+            // conversion is what gives it the addresses the mark describes.
+            if inode.inline_data() { self.convert_inline(ino)?; }
+        }
         self.stamp_inode(ino, |b| {
             crate::volume::dnode::put32(b, crate::uapi::I_FLAGS, flags);
+            if let Some((algo, log, flag)) = stamp {
+                b[crate::uapi::I_COMPRESS_ALGORITHM] = algo;
+                b[crate::uapi::I_LOG_CLUSTER_SIZE] = log;
+                crate::volume::dnode::put16(b, crate::uapi::I_COMPRESS_FLAG, flag);
+            }
         })
     }
 

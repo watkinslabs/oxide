@@ -79,7 +79,7 @@ fn a_policy_round_trips_through_the_line_it_is_rendered_as() {
             contents_mode: MODE_AES_256_XTS,
             filenames_mode: MODE_AES_256_CTS,
         });
-        let line = show(&o);
+        let line = show(&o, 0);
         assert!(line.contains("test_dummy_encryption="), "{line}");
         // The rendering names the generation explicitly, so a remount cannot
         // land on a different one because the default moved.

@@ -67,10 +67,12 @@ pub fn super_bytes(b: &Builder) -> Vec<u8> {
     for (i, u) in "oxide".encode_utf16().enumerate() {
         put16(&mut s, SB_VOLUME_NAME + i * 2, u);
     }
-    put32(&mut s, SB_EXTENSION_COUNT, 2);
-    s[SB_EXTENSION_LIST..SB_EXTENSION_LIST + 3].copy_from_slice(b"jpg");
-    s[SB_EXTENSION_LIST + EXTENSION_LEN..SB_EXTENSION_LIST + EXTENSION_LEN + 3]
-        .copy_from_slice(b"mp4");
+    put32(&mut s, SB_EXTENSION_COUNT, b.cold_ext.len() as u32);
+    s[SB_HOT_EXT_COUNT] = b.hot_ext.len() as u8;
+    for (i, e) in b.cold_ext.iter().chain(b.hot_ext.iter()).enumerate() {
+        let at = SB_EXTENSION_LIST + i * EXTENSION_LEN;
+        s[at..at + e.len()].copy_from_slice(e.as_bytes());
+    }
     put32(&mut s, SB_CP_PAYLOAD, b.cp_payload);
     put32(&mut s, SB_FEATURE, b.feature);
     for (i, (path, segs)) in b.devices.iter().enumerate() {

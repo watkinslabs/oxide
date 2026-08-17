@@ -8,6 +8,7 @@
 //! - `jquota`: quota files named on the mount line, and their format.
 //! - `spec`:   which keys the line actually named, as against their values.
 //! - `facts`:  the defaults the volume's own shape dictates.
+//! - `compress`: the six names that decide what a new file is compressed with.
 
 pub mod parse;
 pub mod show;
@@ -16,10 +17,12 @@ pub mod crypt;
 pub mod jquota;
 pub mod spec;
 pub mod facts;
+pub mod compress;
 
 pub use parse::{parse, parse_spec};
 pub use spec::Spec;
 pub use facts::Facts;
+pub use compress::{Compress, ExtList};
 pub use show::show;
 pub use crypt::DummyPolicy;
 pub use jquota::{JqFmt, Jquota, QKind, QfName};
@@ -197,8 +200,13 @@ pub struct Options {
     /// Whether encryption is asked to happen on the way to the device rather
     /// than in the filesystem. Same ciphertext either way; different place.
     pub inlinecrypt: bool,
-    /// Which side decides when a compressed file's clusters are compressed.
-    pub compress_mode: CompressMode,
+    /// What a new file is created compressed with, and which files are.
+    ///
+    /// One group rather than seven fields beside each other, because a volume
+    /// whose feature set cannot record compression drops the whole group at
+    /// once: leaving one of them behind would mean a mount reporting a codec
+    /// for files that can never carry one.
+    pub compress: Compress,
 }
 
 /// Who compresses a compressible file's clusters.
@@ -273,7 +281,7 @@ impl Options {
             fault: crate::fault::Cfg { rate: None, types: None },
             dummy_policy: None,
             inlinecrypt: false,
-            compress_mode: CompressMode::Fs,
+            compress: Compress::defaults(),
         }
     }
 }

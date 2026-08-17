@@ -138,7 +138,7 @@ impl<S: SectorSource> Volume<S> {
         // volume mounted for caller-driven compression writes plain and stays
         // plain until the rewrite command asks otherwise, which is the whole
         // arrangement.
-        let compress = self.opts.compress_mode == crate::opts::CompressMode::Fs;
+        let compress = self.opts.compress.mode == crate::opts::CompressMode::Fs;
         self.store_cluster_shaped(ino, g, first, &planebytes, size, &touched, compress)
     }
 
