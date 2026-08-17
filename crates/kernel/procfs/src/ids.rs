@@ -48,6 +48,8 @@ pub(crate) const SOFTIRQS: u64 = 0x3000_102D;
 pub(crate) const DEVICES: u64 = 0x3000_1026;
 pub(crate) const FILESYSTEMS: u64 = 0x3000_1028;
 pub(crate) const BUDDYINFO: u64 = 0x3000_1027;
+/// `/proc/zoneinfo` — the buddy allocator's per-zone rows.
+pub(crate) const ZONEINFO: u64 = 0x3000_102E;
 pub(crate) const IOMEM: u64 = 0x3000_1029;
 /// `/proc/kcore` — the synthetic core file of the running kernel.
 pub(crate) const KCORE: u64 = 0x3000_102A;
