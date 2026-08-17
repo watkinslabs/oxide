@@ -6,7 +6,12 @@
 use super::*;
 use crate::opts::{parse, AllocMode, BackgroundGc, Errors, Fragment, FsyncMode, Mode, Options};
 
-fn shown(o: &Options) -> alloc::string::String { show(o) }
+/// Rendered for a volume with no compression feature, which is what every
+/// case here is about: the compression group has its own round trip in
+/// `tests/opts/compress.rs`, and rendering it in all of these would only
+/// restate that.
+/// # C: O(options)
+fn shown(o: &Options) -> alloc::string::String { show(o, 0) }
 
 #[test]
 fn every_rendered_option_carries_its_own_leading_comma() {

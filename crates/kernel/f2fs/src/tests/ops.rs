@@ -73,7 +73,7 @@ fn the_registry_facing_surface_has_the_shape_the_registry_expects() {
     let _: Ctor = crate::F2fs::open_with;
     let _: fn(crate::Options, &str) -> Result<crate::Options, syscall::errno::Errno> =
         crate::opts::parse;
-    let _: fn(&crate::Options) -> String = crate::opts::show;
+    let _: fn(&crate::Options, u32) -> String = crate::opts::show;
     let _: fn(syscall::errno::Errno) -> vfs::VfsError = crate::errno_to_vfs;
     let _: fn(&crate::F2fs) -> bool = crate::F2fs::is_writable;
     // The registry takes the root through the Arc it just built and commits at

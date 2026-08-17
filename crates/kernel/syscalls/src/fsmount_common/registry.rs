@@ -331,9 +331,14 @@ fn register_filesystems() {
         let write = sb_flags & vfs::superblock::SB_RDONLY == 0;
         let access = vfs::MAY_READ | if write { vfs::MAY_WRITE } else { 0 };
         let (dev, _dev_t) = resolve_block_source(source, access)?;
-        let opts = f2fs::opts::parse(f2fs::Options::defaults(), d)
-            .map_err(f2fs::errno_to_vfs)?;
-        let fs = f2fs::F2fs::open_with(dev, source, write, opts)?;
+        // The option line is parsed against defaults the VOLUME derives, not
+        // against a build-wide set: how many logs a read-only-feature volume
+        // takes, whether the device wants discard, section-granular discard
+        // and LFS mode on a zoned volume are all properties of the medium.
+        // Going through `open_with` with `Options::defaults()` skipped that
+        // AND skipped the consistency pass, so a line the reference refuses
+        // was accepted.
+        let fs = f2fs::F2fs::open_line(dev, source, write, d)?;
         super::fs_surfaces::f2fs_publish_surfaces(&fs);
         let sb_flags = if fs.is_writable() { sb_flags } else { sb_flags | vfs::superblock::SB_RDONLY };
         let root = fs.root_inode()?;

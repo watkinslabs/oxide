@@ -136,7 +136,10 @@ fn an_extension_written_is_in_the_list_the_next_mount_reads() {
     let sb = v.super_block();
     assert_eq!(sb.extension_count, 3);
     assert_eq!(sb.hot_ext_count, 1);
-    assert_eq!(sb.extensions, vec!["jpg", "mp4", "iso"]);
+    // Both halves, in one array: the cold ones the count names, then the hot
+    // one after them. A list that stopped at the cold count would report the
+    // hot entry as absent on every later mount.
+    assert_eq!(sb.extensions, vec!["jpg", "mp4", "iso", "log"]);
 }
 
 #[test]

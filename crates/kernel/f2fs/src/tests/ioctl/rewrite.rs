@@ -49,7 +49,7 @@ fn mounted(mode: CompressMode) -> (Volume<MemImage>, u32) {
     let mut b = test_image::with_root();
     b.feature |= crate::flags::FEATURE_COMPRESSION;
     let mut o = Options::defaults();
-    o.compress_mode = mode;
+    o.compress.mode = mode;
     let mut v = b.mount_opts(o).unwrap();
     let ino = v.create(ROOT_INO, b"c",
                        &NewInode { mode: S_IFREG | 0o644, uid: 0, gid: 0, rdev: 0, now: NOW },
@@ -69,7 +69,7 @@ fn remount(mut v: Volume<MemImage>, mode: CompressMode) -> Volume<MemImage> {
     v.commit().unwrap();
     let bytes = v.into_source().snapshot();
     let mut o = Options::defaults();
-    o.compress_mode = mode;
+    o.compress.mode = mode;
     Volume::mount_with(MemImage::from_bytes(BLKSIZE as u32, bytes), o, true).unwrap()
 }
 

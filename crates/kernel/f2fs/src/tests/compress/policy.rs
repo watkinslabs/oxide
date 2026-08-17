@@ -2,7 +2,7 @@
 
 use crate::compress::algo::{COMPRESS_LZ4, COMPRESS_LZO, COMPRESS_LZORLE, COMPRESS_ZSTD};
 use crate::compress::policy::{
-    context, flag_word, log_size_valid, matches_extension, wants_compression,
+    context, flag_word, log_size_valid, matches_extension, matches_temperature_extension,
 };
 use crate::compress::Algorithm;
 
@@ -91,16 +91,19 @@ fn the_wildcard_matches_every_name() {
 }
 
 #[test]
-fn the_refusing_list_wins_over_the_allowing_one() {
-    let allow: [&[u8]; 2] = [b"txt", b"log"];
-    let refuse: [&[u8]; 1] = [b"log"];
-    assert!(wants_compression(b"a.txt", &allow, &refuse));
-    assert!(!wants_compression(b"a.log", &allow, &refuse));
-    assert!(!wants_compression(b"a.bin", &allow, &refuse));
-    // The wildcard on the allowing side still loses to a named refusal.
-    let any: [&[u8]; 1] = [b"*"];
-    assert!(!wants_compression(b"a.log", &any, &refuse));
-    assert!(wants_compression(b"a.bin", &any, &refuse));
+fn the_hot_list_takes_a_component_that_merely_begins_with_the_entry() {
+    // The one rule the two matches differ by, and it is load-bearing: the
+    // volume's hot list is written to keep often-rewritten data out of
+    // clusters, and a name it half-matches is still that data.
+    assert!(matches_temperature_extension(b"clip.mp4x", b"mp4"));
+    assert!(!matches_extension(b"clip.mp4x", b"mp4"));
+    // Everything else is the same walk.
+    for name in [&b"clip.mp4"[..], b"clip.mp4.part", b"CLIP.MP4"] {
+        assert!(matches_temperature_extension(name, b"mp4"), "{name:?}");
+        assert!(matches_extension(name, b"mp4"), "{name:?}");
+    }
+    assert!(!matches_temperature_extension(b"mp4", b"mp4"));
+    assert!(matches_temperature_extension(b"anything", b"*"));
 }
 
 // ---- what an inode's stored compression settings must satisfy -------------
