@@ -225,8 +225,12 @@ pub unsafe extern "C" fn efi_stub_setup(handle: u64, systab: *const u8) -> u64 {
         let exit_boot_services: ExitBootServicesFn =
             core::mem::transmute(*(boot_services.add(0xE8) as *const u64));
 
-        // QEMU virt's map is a few KiB; 16 KiB of stack covers it.
-        let mut buf = [0u8; 16384];
+        // QEMU virt's map is a few KiB. The 16 KiB that covers it does not go on
+        // the stack: the kernel stack is 16 KiB total, and the firmware calls
+        // below run while the buffer is live.
+        // SAFETY: boot CPU inside the EFI stub, taken once per boot — this is
+        // the only `scratch` call in the kernel.
+        let buf = super::efi_memmap::scratch();
         let mut map_key: u64 = 0;
         let mut desc_size: u64 = 0;
         let mut desc_ver: u32 = 0;
