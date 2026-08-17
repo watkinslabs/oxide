@@ -48,6 +48,8 @@ unsafe fn program_x86_ioapic_at(ioapic_id: u8, va: u64, pin: u32, vector: u8, de
 /// # SAFETY: as [`program_x86_ioapic`]. # C: O(IRTE scan + poll limit)
 pub unsafe fn program_x86_intx_gsi(gsi: u32, vector: u8, destination_apic_id: u32,
     level: bool, active_low: bool) -> bool {
+    // SAFETY: `gsi_pin` only reads the published controller table, whose entries
+    // this function's own `unsafe fn` contract says the caller has serialized.
     let Some((ioapic_id, va, pin)) = (unsafe { hal_x86_64::ioapic::gsi_pin(gsi) }) else { return false; };
     // SAFETY: `gsi_pin` selected a live mapped controller and the caller owns its serialization.
     unsafe { program_x86_ioapic_at(ioapic_id, va, pin, vector, destination_apic_id, level, active_low) }

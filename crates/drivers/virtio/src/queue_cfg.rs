@@ -394,9 +394,10 @@ mod tests {
         let mut allocator = TestAllocator::with_dma_offset(3, TEST_DMA_OFFSET);
 
         let ring = program_queue(base, 0, 0, &mut allocator).expect("queue programmed");
+        // SAFETY: `program_queue` wrote the aligned le64 register as two u32 words
+        // in this test-owned fake common-cfg block; `cfg` is a live 64-byte local
+        // still in scope, so CFG_QUEUE_DESC+8 is within it and correctly aligned.
         let desc_dma = unsafe {
-            // SAFETY: `program_queue` wrote the aligned le64 register as two
-            // u32 words in this test-owned fake common-cfg block.
             core::ptr::read_volatile((base + CFG_QUEUE_DESC) as *const u64)
         };
 

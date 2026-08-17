@@ -79,6 +79,7 @@ pub(super) extern "C" fn drm_atomic_helper_prepare_planes(dev: *mut c_void, stat
         // SAFETY: prepare_fb has the ABI-pinned plane/new-state signature.
         let ret = unsafe { core::mem::transmute::<usize, unsafe extern "C" fn(*mut c_void, *mut c_void) -> i32>(prepare)(plane, new) };
         if ret != 0 {
+            // SAFETY: cleanup_fb has the ABI-pinned plane/new-state signature; each_plane bounds prior/prior_new to the `prepared` prefix that actually ran prepare_fb.
             let _ = each_plane(state, prepared, &mut |prior, prior_new, prior_helpers| { let cleanup = callback(prior_helpers, DRM_PLANE_HELPER_CLEANUP_FB_OFF); if cleanup != 0 { unsafe { core::mem::transmute::<usize, unsafe extern "C" fn(*mut c_void, *mut c_void)>(cleanup)(prior, prior_new); } } 0 });
             return ret;
         }
@@ -99,7 +100,9 @@ pub(super) extern "C" fn drm_atomic_helper_prepare_planes(dev: *mut c_void, stat
         // SAFETY: begin_fb_access has the ABI-pinned plane/new-state signature.
         let ret = unsafe { core::mem::transmute::<usize, unsafe extern "C" fn(*mut c_void, *mut c_void) -> i32>(begin)(plane, new) };
         if ret != 0 {
+            // SAFETY: end_fb_access has the ABI-pinned plane/new-state signature; each_plane bounds prior/prior_new to the `begun` prefix that actually ran begin_fb_access.
             let _ = each_plane(state, begun, &mut |prior, prior_new, prior_helpers| { let end = callback(prior_helpers, DRM_PLANE_HELPER_END_FB_ACCESS_OFF); if end != 0 { unsafe { core::mem::transmute::<usize, unsafe extern "C" fn(*mut c_void, *mut c_void)>(end)(prior, prior_new); } } 0 });
+            // SAFETY: cleanup_fb has the ABI-pinned plane/new-state signature; every plane in this transaction ran prepare_fb by this point, so cleanup covers the full `count`.
             let _ = each_plane(state, count, &mut |prior, prior_new, prior_helpers| { let cleanup = callback(prior_helpers, DRM_PLANE_HELPER_CLEANUP_FB_OFF); if cleanup != 0 { unsafe { core::mem::transmute::<usize, unsafe extern "C" fn(*mut c_void, *mut c_void)>(cleanup)(prior, prior_new); } } 0 });
             return ret;
         }
@@ -113,7 +116,9 @@ pub(super) extern "C" fn drm_atomic_helper_unprepare_planes(dev: *mut c_void, st
     let Some((state, count)) = transaction(state) else { return; };
     // SAFETY: this transaction's retained device must match the caller's device.
     if unsafe { read(state.add(DRM_ATOMIC_DEV_OFF).cast::<*mut c_void>()) } != dev { return; }
+    // SAFETY: end_fb_access has the ABI-pinned plane/new-state signature; a caller-successful prepare means every plane in the transaction ran begin_fb_access.
     let _ = each_plane(state, count, &mut |plane, new, helpers| { let end = callback(helpers, DRM_PLANE_HELPER_END_FB_ACCESS_OFF); if end != 0 { unsafe { core::mem::transmute::<usize, unsafe extern "C" fn(*mut c_void, *mut c_void)>(end)(plane, new); } } 0 });
+    // SAFETY: cleanup_fb has the ABI-pinned plane/new-state signature; same fully-prepared transaction as the end_fb_access pass above.
     let _ = each_plane(state, count, &mut |plane, new, helpers| { let cleanup = callback(helpers, DRM_PLANE_HELPER_CLEANUP_FB_OFF); if cleanup != 0 { unsafe { core::mem::transmute::<usize, unsafe extern "C" fn(*mut c_void, *mut c_void)>(cleanup)(plane, new); } } 0 });
 }
 

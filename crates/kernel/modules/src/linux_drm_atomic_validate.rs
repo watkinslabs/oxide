@@ -55,6 +55,7 @@ fn format_supported(plane: *mut u8, fb: *mut u8) -> bool {
     if formats.is_null() || info.is_null() { return false; }
     // SAFETY: format list has exactly count 32-bit entries published at plane initialization.
     let selected = unsafe { read(info.cast::<u32>()) };
+    // SAFETY: formats is checked non-null with count entries published at plane init; index stays inside that same 0..count range.
     (0..count).any(|index| unsafe { read(formats.add(index)) == selected })
 }
 fn plane_check(plane: *mut u8, old: *mut u8, new: *mut u8) -> i32 {
@@ -83,6 +84,7 @@ fn crtc_check(old: *mut u8, new: *mut u8) -> i32 {
 unsafe fn mode_callback(dev: *mut u8, offset: usize) -> usize {
     // SAFETY: device mode-config owns the ABI-pinned mode config function table.
     let funcs = unsafe { read(dev.add(DRM_DEVICE_MODE_CONFIG_OFF + DRM_MODE_CONFIG_FUNCS_OFF).cast::<*const u8>()) };
+    // SAFETY: funcs is checked non-null above; offset names one callback slot inside the same fixed mode-config function table.
     if funcs.is_null() { 0 } else { unsafe { read(funcs.add(offset).cast::<usize>()) } }
 }
 
@@ -117,6 +119,7 @@ pub(super) extern "C" fn drm_atomic_check_only(state: *mut c_void) -> i32 {
     }
     // SAFETY: a nonzero driver validation slot has the registered atomic-check ABI signature.
     let callback = unsafe { mode_callback(dev, DRM_MODE_CONFIG_ATOMIC_CHECK_OFF) };
+    // SAFETY: atomic_check's ABI signature is (dev, state) -> i32; both are the caller's own validated non-null pointers.
     if callback != 0 { let ret = unsafe { core::mem::transmute::<usize, unsafe extern "C" fn(*mut c_void, *mut c_void) -> i32>(callback)(dev.cast(), state.cast()) }; if ret != 0 { return ret; } }
     // SAFETY: the checked bit is transaction-private and can be published only after every callback succeeds.
     unsafe { *state.add(DRM_ATOMIC_FLAGS_OFF) |= DRM_ATOMIC_CHECKED_BIT; }
@@ -131,6 +134,7 @@ fn atomic_commit(state: *mut c_void, nonblock: bool) -> i32 {
     // SAFETY: a nonzero driver commit slot has the registered atomic-commit ABI signature.
     let callback = unsafe { mode_callback(dev, DRM_MODE_CONFIG_ATOMIC_COMMIT_OFF) };
     if callback == 0 { return -LINUX_EINVAL; }
+    // SAFETY: atomic_commit's ABI signature is (dev, state, nonblock) -> i32; dev/state are the same validated non-null pointers passed to check_only.
     unsafe { core::mem::transmute::<usize, unsafe extern "C" fn(*mut c_void, *mut c_void, bool) -> i32>(callback)(dev.cast(), state, nonblock) }
 }
 
@@ -157,6 +161,7 @@ mod tests {
         unsafe { write(dev.as_mut_ptr().add(DRM_DEVICE_MODE_CONFIG_OFF + DRM_MODE_CONFIG_FUNCS_OFF).cast::<*mut u8>(), funcs.as_mut_ptr()); write(funcs.as_mut_ptr().add(DRM_MODE_CONFIG_ATOMIC_CHECK_OFF).cast::<usize>(), check_callback as *const () as usize); write(state.as_mut_ptr().add(DRM_ATOMIC_DEV_OFF).cast::<*mut u8>(), dev.as_mut_ptr()); write(state.as_mut_ptr().add(DRM_ATOMIC_PLANES_OFF).cast::<*mut u8>(), plane_entries.as_mut_ptr()); write(plane_entries.as_mut_ptr().add(DRM_ENTRY_OBJECT_OFF).cast::<*mut u8>(), plane.as_mut_ptr()); write(plane_entries.as_mut_ptr().add(DRM_ENTRY_OLD_OFF).cast::<*mut u8>(), old.as_mut_ptr()); write(plane_entries.as_mut_ptr().add(DRM_ENTRY_NEW_OFF).cast::<*mut u8>(), new.as_mut_ptr()); }
         DEVICES.lock().push(DeviceAllocation { dev: dev.as_mut_ptr() as usize, base: 0, layout: Layout::new::<u8>(), refs: 1, mode_config: true, objects: Vec::new(), planes: vec![PlaneRecord { ptr: plane.as_mut_ptr() as usize, formats: 0, layout: Layout::new::<u8>() }], crtcs: Vec::new(), encoders: Vec::new(), connectors: Vec::new(), clients: Vec::new(), vblank: None, primary_master: None, put_pending: false, unplugged: false });
         CALLS.store(0, Ordering::SeqCst); assert_eq!(drm_atomic_check_only(state.as_mut_ptr().cast()), 0); assert_eq!(CALLS.load(Ordering::SeqCst), 1);
+        // SAFETY: sets a non-null bogus CRTC with a still-null fb on the fabricated new state, to force plane_check's crtc.is_null() != fb.is_null() rejection before the driver callback runs.
         unsafe { write(new.as_mut_ptr().add(DRM_PLANE_STATE_CRTC_OFF).cast::<*mut u8>(), 1usize as *mut u8); } CALLS.store(0, Ordering::SeqCst); assert_eq!(drm_atomic_check_only(state.as_mut_ptr().cast()), -LINUX_EINVAL); assert_eq!(CALLS.load(Ordering::SeqCst), 0); DEVICES.lock().clear();
     }
 }

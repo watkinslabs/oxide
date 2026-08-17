@@ -35,6 +35,7 @@ pub(super) extern "C" fn drm_atomic_helper_crtc_reset(crtc: *mut c_void) {
     if !old.is_null() { drm_atomic_helper_crtc_destroy_state(crtc, old); }
     // SAFETY: a stale pointer must be withdrawn before allocation can fail.
     unsafe { write(crtc.cast::<u8>().add(DRM_CRTC_STATE_OFF).cast::<*mut c_void>(), core::ptr::null_mut()); }
+    // SAFETY: allocates a fresh block of exactly layout()'s size/align; the following writes populate it before publication.
     let state = unsafe { alloc_zeroed(layout()) }; if state.is_null() { return; }
     // SAFETY: fresh state backpointer and CRTC state publication are paired.
     unsafe { write(state.cast::<*mut c_void>(), crtc); write(crtc.cast::<u8>().add(DRM_CRTC_STATE_OFF).cast::<*mut u8>(), state); }
@@ -46,6 +47,7 @@ pub(super) extern "C" fn drm_atomic_helper_crtc_duplicate_state(crtc: *mut c_voi
     // SAFETY: caller holds the modeset serialization required by Linux for the current state pointer.
     let old = unsafe { read(crtc.cast::<u8>().add(DRM_CRTC_STATE_OFF).cast::<*mut u8>()) };
     if old.is_null() || resources(old) { return core::ptr::null_mut(); }
+    // SAFETY: allocates a fresh block of exactly layout()'s size/align; the copy below populates it from old before publication.
     let state = unsafe { alloc_zeroed(layout()) }; if state.is_null() { return core::ptr::null_mut(); }
     // SAFETY: both buffers are complete standard CRTC-state records.
     unsafe { core::ptr::copy_nonoverlapping(old, state, DRM_CRTC_STATE_SIZE); *state.add(DRM_CRTC_STATE_CHANGE_FLAGS_OFF) &= !0x3f; *state.add(DRM_CRTC_STATE_ASYNC_FLIP_OFF) = 0; *state.add(DRM_CRTC_STATE_SELF_REFRESH_OFF) = 0; write(state.add(DRM_CRTC_STATE_EVENT_OFF).cast::<*mut c_void>(), core::ptr::null_mut()); write(state.add(DRM_CRTC_STATE_COMMIT_OFF).cast::<*mut c_void>(), core::ptr::null_mut()); }
@@ -71,9 +73,14 @@ mod tests {
     use super::*;
     #[test]
     fn standard_crtc_states_reset_duplicate_and_clear_transient_fields() {
-        let mut crtc = [0u8; 1656]; drm_atomic_helper_crtc_reset(crtc.as_mut_ptr().cast()); let state = unsafe { read(crtc.as_ptr().add(DRM_CRTC_STATE_OFF).cast::<*mut u8>()) }; assert_eq!(unsafe { read(state.cast::<*mut c_void>()) }, crtc.as_mut_ptr().cast());
+        let mut crtc = [0u8; 1656]; drm_atomic_helper_crtc_reset(crtc.as_mut_ptr().cast());
+        // SAFETY: reset just published state through this same field; reads it back and its embedded backpointer within the fabricated 1656-byte crtc.
+        let state = unsafe { read(crtc.as_ptr().add(DRM_CRTC_STATE_OFF).cast::<*mut u8>()) }; assert_eq!(unsafe { read(state.cast::<*mut c_void>()) }, crtc.as_mut_ptr().cast());
+        // SAFETY: sets the change/async-flip/self-refresh transient fields and an event pointer to prove duplicate clears them.
         unsafe { *state.add(DRM_CRTC_STATE_CHANGE_FLAGS_OFF) = 0x3f; *state.add(DRM_CRTC_STATE_ASYNC_FLIP_OFF) = 1; *state.add(DRM_CRTC_STATE_SELF_REFRESH_OFF) = 1; write(state.add(DRM_CRTC_STATE_EVENT_OFF).cast::<*mut c_void>(), 1usize as *mut c_void); }
+        // SAFETY: duplicate() zeroed these transient fields per the copy-then-clear contract; reads them back on the returned allocation.
         let duplicate = drm_atomic_helper_crtc_duplicate_state(crtc.as_mut_ptr().cast()).cast::<u8>(); assert!(!duplicate.is_null()); assert_eq!(unsafe { *duplicate.add(DRM_CRTC_STATE_CHANGE_FLAGS_OFF) & 0x3f }, 0); assert_eq!(unsafe { *duplicate.add(DRM_CRTC_STATE_ASYNC_FLIP_OFF) }, 0); assert!(unsafe { read(duplicate.add(DRM_CRTC_STATE_EVENT_OFF).cast::<*mut c_void>()) }.is_null());
+        // SAFETY: attaches a real commit to the duplicate then clears the original's stale event pointer, so both destroy calls release exactly what each state owns.
         let commit = crtc_commit::alloc(crtc.as_mut_ptr().cast()); unsafe { write(duplicate.add(DRM_CRTC_STATE_COMMIT_OFF).cast::<*mut u8>(), commit); } drm_atomic_helper_crtc_destroy_state(crtc.as_mut_ptr().cast(), duplicate.cast()); unsafe { write(state.add(DRM_CRTC_STATE_EVENT_OFF).cast::<*mut c_void>(), core::ptr::null_mut()); } drm_atomic_helper_crtc_destroy_state(crtc.as_mut_ptr().cast(), state.cast());
     }
     #[test]

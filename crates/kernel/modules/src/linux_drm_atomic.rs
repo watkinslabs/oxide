@@ -124,7 +124,9 @@ pub(super) extern "C" fn drm_atomic_helper_check_plane_state(state: *mut c_void,
     let state = state.cast::<u8>(); let crtc_state = crtc_state.cast::<u8>();
     // SAFETY: the caller supplies complete, live DRM plane/CRTC state objects using their verified ABI fields.
     let (fb, crtc, enabled, rotation) = unsafe { (read(state.add(DRM_PLANE_STATE_FB_OFF).cast::<*mut c_void>()), read(state.add(DRM_PLANE_STATE_CRTC_OFF).cast::<*mut c_void>()), read(crtc_state.add(DRM_CRTC_STATE_ENABLE_OFF).cast::<bool>()), read(state.add(DRM_PLANE_STATE_ROTATION_OFF).cast::<u32>())) };
+    // SAFETY: state is the same validated plane-state pointer read above; the visible flag lives at the same fixed offset.
     if fb.is_null() { unsafe { write(state.add(DRM_PLANE_STATE_VISIBLE_OFF).cast::<bool>(), false); } return 0; }
+    // SAFETY: the null-crtc arm writes the same VISIBLE_OFF field on the still-validated state as the fb.is_null() arm above.
     if crtc.is_null() { unsafe { write(state.add(DRM_PLANE_STATE_VISIBLE_OFF).cast::<bool>(), false); } return 0; }
     if !enabled && !can_update_disabled { return -LINUX_EINVAL; }
     // SAFETY: coordinate fields and derived source/destination rectangles lie inside the complete plane-state ABI record.
@@ -191,6 +193,7 @@ pub(super) extern "C" fn drm_gem_duplicate_shadow_plane_state(plane: *mut c_void
     let new = unsafe { alloc_zeroed(layout) }; if new.is_null() { return core::ptr::null_mut(); }
     // SAFETY: both states own complete base records; framebuffer ownership is retained for the duplicate.
     unsafe { core::ptr::copy_nonoverlapping(old, new, DRM_PLANE_STATE_SIZE); write(new.add(DRM_PLANE_STATE_FENCE_OFF).cast::<*mut c_void>(), core::ptr::null_mut()); write(new.add(DRM_PLANE_STATE_COMMIT_OFF).cast::<*mut c_void>(), core::ptr::null_mut()); write(new.add(DRM_PLANE_STATE_DAMAGE_OFF).cast::<*mut c_void>(), core::ptr::null_mut()); *new.add(DRM_PLANE_STATE_COLOR_CHANGED_OFF) = 0; }
+    // SAFETY: the copy above just populated new's FB_OFF field from old's, so new is initialized at this offset.
     let fb = unsafe { read(new.add(DRM_PLANE_STATE_FB_OFF).cast::<*mut c_void>()) }; gem::framebuffer_get(fb); new.cast()
 }
 
@@ -220,10 +223,13 @@ mod tests {
         // SAFETY: fabricated framebuffer uses the same embedded reference field as the ABI object.
         unsafe { write(fb.as_mut_ptr().add(40).cast::<i32>(), 3); write(state.add(DRM_PLANE_STATE_FB_OFF).cast::<*mut u8>(), fb.as_mut_ptr()); }
         let duplicate = drm_gem_duplicate_shadow_plane_state(plane.as_mut_ptr().cast()); assert!(!duplicate.is_null());
+        // SAFETY: reads the refcount word this test wrote into the fabricated 192-byte fb array at offset 40.
         assert_eq!(unsafe { read(fb.as_ptr().add(40).cast::<i32>()) }, 4);
         drm_gem_destroy_shadow_plane_state(plane.as_mut_ptr().cast(), duplicate);
+        // SAFETY: destroying the duplicate must drop exactly the one framebuffer_get taken at line 194.
         assert_eq!(unsafe { read(fb.as_ptr().add(40).cast::<i32>()) }, 3);
         drm_gem_destroy_shadow_plane_state(plane.as_mut_ptr().cast(), state.cast());
+        // SAFETY: destroying the original state drops the plane's own framebuffer reference, not the duplicate's.
         assert_eq!(unsafe { read(fb.as_ptr().add(40).cast::<i32>()) }, 2);
     }
 
@@ -241,6 +247,7 @@ mod tests {
             write(plane.as_mut_ptr().add(DRM_PLANE_STATE_FB_OFF).cast::<*mut u8>(), fb.as_mut_ptr()); write(plane.as_mut_ptr().add(DRM_PLANE_STATE_CRTC_OFF).cast::<*mut u8>(), 1usize as *mut u8); write(plane.as_mut_ptr().add(DRM_PLANE_STATE_ROTATION_OFF).cast::<u32>(), DRM_ROTATE_0); write(plane.as_mut_ptr().add(DRM_PLANE_STATE_CRTC_W_OFF).cast::<u32>(), 64); write(plane.as_mut_ptr().add(DRM_PLANE_STATE_CRTC_H_OFF).cast::<u32>(), 48); write(plane.as_mut_ptr().add(DRM_PLANE_STATE_SRC_W_OFF).cast::<u32>(), 64 << 16); write(plane.as_mut_ptr().add(DRM_PLANE_STATE_SRC_H_OFF).cast::<u32>(), 48 << 16); write(crtc.as_mut_ptr().add(DRM_CRTC_STATE_ENABLE_OFF).cast::<bool>(), true); write(crtc.as_mut_ptr().add(DRM_CRTC_STATE_MODE_HDISPLAY_OFF).cast::<u16>(), 64); write(crtc.as_mut_ptr().add(DRM_CRTC_STATE_MODE_VDISPLAY_OFF).cast::<u16>(), 48);
         }
         assert_eq!(drm_atomic_helper_check_plane_state(plane.as_mut_ptr().cast(), crtc.as_ptr().cast(), 1 << 16, 1 << 16, false, false), 0);
+        // SAFETY: reads back the visible flag the call above just wrote inside the fixed-size fabricated plane array.
         assert!(unsafe { read(plane.as_ptr().add(DRM_PLANE_STATE_VISIBLE_OFF).cast::<bool>()) });
         // SAFETY: move the requested plane right so the clipped destination no longer covers the CRTC.
         unsafe { write(plane.as_mut_ptr().add(DRM_PLANE_STATE_CRTC_X_OFF).cast::<i32>(), 1); }

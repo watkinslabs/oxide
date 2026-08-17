@@ -115,8 +115,14 @@ mod tests {
         assert!(gem::file_init(file.as_mut_ptr().cast()));
         // SAFETY: arrays reserve one shmem GEM, external file context, and complete VMA layout fields.
         unsafe { write(args.as_mut_ptr().add(0).cast::<u32>(), 4); write(args.as_mut_ptr().add(4).cast::<u32>(), 8); write(args.as_mut_ptr().add(8).cast::<u32>(), 32); write(filp.as_mut_ptr().add(LINUX_FILE_PRIVATE_OFF).cast::<*mut c_void>(), file.as_mut_ptr().cast()); write(vma.as_mut_ptr().add(VMA_START_OFF).cast::<u64>(), 0x4000_0000); write(vma.as_mut_ptr().add(VMA_END_OFF).cast::<u64>(), 0x4000_1000); }
+        // SAFETY: args is the local stack array written above; the dumb-create call
+        // just filled its handle field at this fixed offset before it is read back.
         assert_eq!(gem::drm_gem_shmem_dumb_create(file.as_mut_ptr().cast(), dev.as_mut_ptr().cast(), args.as_mut_ptr().cast()), 0); let handle = unsafe { read(args.as_ptr().add(16).cast::<u32>()) };
+        // SAFETY: vma is the same local stack array initialized above; only its
+        // page-offset field is written here, ahead of the mmap call that reads it.
         assert_eq!(gem::drm_gem_dumb_map_offset(file.as_mut_ptr().cast(), dev.as_mut_ptr().cast(), handle, &mut offset), 0); unsafe { write(vma.as_mut_ptr().add(VMA_PGOFF_OFF).cast::<u64>(), offset / PAGE_SIZE); }
+        // SAFETY: vma is the local stack array from above, sized past every fixed
+        // offset read here, and remains exclusively owned by this test throughout.
         assert_eq!(drm_gem_mmap(filp.as_mut_ptr().cast(), vma.as_mut_ptr().cast()), 0); assert!(!unsafe { read(vma.as_ptr().add(VMA_PRIVATE_OFF).cast::<*mut c_void>()) }.is_null()); assert_eq!(unsafe { read(vma.as_ptr().add(VMA_FLAGS_OFF).cast::<u64>()) } & (VM_IO | VM_PFNMAP | VM_DONTEXPAND | VM_DONTDUMP), VM_IO | VM_PFNMAP | VM_DONTEXPAND | VM_DONTDUMP); drm_gem_vm_close(vma.as_mut_ptr().cast()); assert!(unsafe { read(vma.as_ptr().add(VMA_PRIVATE_OFF).cast::<*mut c_void>()) }.is_null()); gem::file_release(dev.as_mut_ptr().cast(), file.as_mut_ptr().cast());
     }
 }

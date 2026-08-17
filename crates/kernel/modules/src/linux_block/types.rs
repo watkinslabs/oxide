@@ -217,6 +217,7 @@ pub(super) unsafe fn queue_private(q: *mut LinuxRequestQueue) -> Option<&'static
     if q.is_null() { return None; }
     // SAFETY: td is installed before the queue escapes and reclaimed only after its users are drained.
     let p = unsafe { (*q).td };
+    // SAFETY: p was just read from q->td above and checked non-null on this line; td is installed once before q escapes, so this reborrow names a live LinuxQueuePrivate.
     if p.is_null() { None } else { Some(unsafe { &mut *p }) }
 }
 

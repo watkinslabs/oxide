@@ -154,7 +154,10 @@ mod tests {
         unsafe { write(crtc.as_mut_ptr().cast::<*mut c_void>(), dev.as_mut_ptr().cast()); write(crtc.as_mut_ptr().add(DRM_CRTC_INDEX_OFF).cast::<u32>(), 0); write(dev.as_mut_ptr().add(DRM_DEVICE_NUM_CRTCS_OFF).cast::<u32>(), 1); write(dev.as_mut_ptr().add(DRM_DEVICE_VBLANK_OFF).cast::<*mut u8>(), records.as_mut_ptr()); }
         DEVICES.lock().push(DeviceAllocation { dev: dev.as_mut_ptr() as usize, base: 0, layout: Layout::new::<u8>(), refs: 1, mode_config: false, objects: Vec::new(), planes: Vec::new(), crtcs: Vec::new(), encoders: Vec::new(), connectors: Vec::new(), clients: Vec::new(), vblank: None, primary_master: None, put_pending: false, unplugged: false });
         drm_crtc_vblank_off(crtc.as_mut_ptr().cast()); drm_crtc_vblank_off(crtc.as_mut_ptr().cast());
+        // SAFETY: records is the local stack array wired in as this device's vblank
+        // record above, still exclusively owned by this test.
         assert_eq!(unsafe { read(records.as_ptr().add(DRM_VBLANK_REFCOUNT_OFF).cast::<i32>()) }, 1);
+        // SAFETY: same local records array, read after the balancing vblank_on call below it triggers.
         drm_crtc_vblank_on(crtc.as_mut_ptr().cast()); assert_eq!(unsafe { read(records.as_ptr().add(DRM_VBLANK_REFCOUNT_OFF).cast::<i32>()) }, 0); assert!(unsafe { read(records.as_ptr().add(DRM_VBLANK_ENABLED_OFF).cast::<bool>()) });
         DEVICES.lock().clear();
     }
@@ -174,10 +177,15 @@ mod tests {
     #[test]
     fn vblank_timer_uses_the_embedded_interval_and_returns_its_boundary() {
         let _modules = crate::test_serial::claim(); let mut crtc = [0u8; 1228]; let mut dev = [0u8; 512]; let mut records = [0u8; DRM_VBLANK_CRTC_SIZE]; let mut stamp = 0i64;
+        // SAFETY: crtc, dev, and records are local stack arrays sized past every
+        // fixed offset written here, exclusively owned by this test.
         unsafe { write(crtc.as_mut_ptr().cast::<*mut c_void>(), dev.as_mut_ptr().cast()); write(crtc.as_mut_ptr().add(DRM_CRTC_INDEX_OFF).cast::<u32>(), 0); write(dev.as_mut_ptr().add(DRM_DEVICE_NUM_CRTCS_OFF).cast::<u32>(), 1); write(dev.as_mut_ptr().add(DRM_DEVICE_VBLANK_OFF).cast::<*mut u8>(), records.as_mut_ptr()); write(records.as_mut_ptr().add(DRM_VBLANK_FRAMEDUR_OFF).cast::<i32>(), 16_666_667); }
         DEVICES.lock().push(DeviceAllocation { dev: dev.as_mut_ptr() as usize, base: 0, layout: Layout::new::<u8>(), refs: 1, mode_config: false, objects: Vec::new(), planes: Vec::new(), crtcs: Vec::new(), encoders: Vec::new(), connectors: Vec::new(), clients: Vec::new(), vblank: Some((records.as_mut_ptr() as usize, Layout::new::<u8>())), primary_master: None, put_pending: false, unplugged: false });
+        // SAFETY: same local records array, read after the timer-enable call above populates these fields.
         assert_eq!(drm_crtc_vblank_helper_enable_vblank_timer(crtc.as_mut_ptr().cast()), 0); assert_eq!(unsafe { read(records.as_ptr().add(DRM_VBLANK_TIMER_CRTC_OFF).cast::<*mut c_void>()) }, crtc.as_mut_ptr().cast()); let expiry = unsafe { read(records.as_ptr().add(DRM_VBLANK_TIMER_EXPIRES_OFF).cast::<i64>()) }; assert!(drm_crtc_vblank_helper_get_vblank_timestamp_from_timer(crtc.as_mut_ptr().cast(), core::ptr::null_mut(), &mut stamp, false)); assert_eq!(stamp, expiry - 16_666_667);
+        // SAFETY: same local records array, read after run_due fires the timer callback that updates them.
         timer::run_due(expiry as u64); assert_eq!(unsafe { read(records.as_ptr().add(DRM_VBLANK_COUNT_OFF).cast::<i64>()) }, 1); assert_eq!(unsafe { read(records.as_ptr().add(DRM_VBLANK_TIMER_INTERVAL_OFF).cast::<i64>()) }, 16_666_667);
+        // SAFETY: same local records array, read after disable_vblank_timer clears its timer-state field.
         drm_crtc_vblank_helper_disable_vblank_timer(crtc.as_mut_ptr().cast()); assert_eq!(unsafe { read(records.as_ptr().add(DRM_VBLANK_TIMER_STATE_OFF).cast::<u8>()) }, 0); DEVICES.lock().clear();
     }
 }
