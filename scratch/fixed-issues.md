@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2253-gdm-session-worker-segv
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2253 | DEFECT | high | **A `security.selinux` read went to the filesystem's attribute store and never asked the label module, so the label of any object whose filesystem cannot store attributes was unreadable.** The reference answers a `security.*` read from the LSM FIRST (`fs/xattr.c: vfs_getxattr` -> `xattr_getsecurity` -> `security_inode_getsecurity` -> `selinux_inode_getsecurity`), which reads the object's IN-CORE sid and renders it; the store is reached only on the `nolsm:` fallback, i.e. only when the answer was `EOPNOTSUPP` (no module owns the name). `selinux_inode_getsecurity` never touches the filesystem, so upstream the label is readable on devtmpfs, procfs, sockfs and pipefs alike. Here `vfs_getxattr` went straight to `inode.getxattr()`, so a device node answered `EOPNOTSUPP` and an unlabelled disk file answered `ENODATA` — both of which callers read as "no label". `xattr_permission` was also wrong to be able to fail here: the reference returns 0 for the whole `security.` namespace with no DAC check (`fs/xattr.c:137-143`), and a label-module denial is `-EACCES` (`security/selinux/avc.c`), never `EPERM`. | B2253. Observed on a live-gnome boot: `pam_selinux(gdm-autologin:session): Failed to get current context for /dev/tty2: Operation not supported` (EOPNOTSUPP = -95) and `polkit.service: Failed to read SELinux context of '/usr/lib/systemd/system/polkit.service'`. Fix: `selinux_runtime::inode::xattr::{answers_getsecurity,getsecurity_value}` (pure), `fs::selinux::xattr::inode_getsecurity` (glue), called from `fs::xattr::ops::vfs_getxattr` with the `lsm_declined` (`EOPNOTSUPP`-only) fallthrough. Tests: `fs/tests/selinux_label_attribute.rs` (3, driven against the real Fedora `policy.34`) + 3 in `selinux-runtime/src/tests/inode.rs`. Positive control: disabling the hook turns 2 of the 3 RED, the storeless one with exactly `-95`. The value length is `strlen + 1` per `security/selinux/ss/services.c:1389`, so the terminator is inside the attribute. | B2253 |
+
 ### F1187-f2fs
 
 | Status | Class | Sev | Issue | Evidence | Owner |
