@@ -64,9 +64,13 @@ impl<S: SectorSource> Volume<S> {
         let hint = if old == NULL_SEGNO {
             0
         } else {
+            // The hot data log and the three node logs; the two in-memory logs
+            // are cold data by temperature and search from where they are, as
+            // the cold data log does.
+            let soon = log == CURSEG_HOT_DATA
+                || (log >= NR_CURSEG_DATA_TYPE && log < NR_CURSEG_PERSIST_TYPE);
             crate::place::ssr::next_segno_hint(
-                log == CURSEG_HOT_DATA || log >= NR_CURSEG_DATA_TYPE,
-                curseg::wants_recycle(self.opts.alloc_mode), old)
+                soon, curseg::wants_recycle(self.opts.alloc_mode), old)
         };
         if recycle || log == CURSEG_ALL_DATA_ATGC {
             if let Some((segno, off)) = self.find_victim_seg(hint) {

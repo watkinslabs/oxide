@@ -197,12 +197,17 @@ impl<S: SectorSource> Volume<S> {
         if self.cp.flags & CP_ERROR_FLAG != 0 { return Err(Errno::Eio); }
         self.write_block_crypt(addr, page, flags, ctx)?;
         self.counters.borrow_mut().inc_inplace_blocks();
+        // No checkpoint is owed by this write and the mark is not raised. The
+        // segment table already counted this block, the summary already names
+        // its owner and the file's slot already holds the address, so there is
+        // nothing in memory a checkpoint would have to persist — which is the
+        // whole saving, and claiming otherwise would make every rewritten byte
+        // buy a checkpoint.
         {
             use crate::stats::iostat::Io;
             self.io_account(self.io_gc_kind(Io::FsData, Io::FsGcData),
                             crate::uapi::BLKSIZE as u64, false);
         }
-        self.dirty = true;
         Ok(())
     }
 
