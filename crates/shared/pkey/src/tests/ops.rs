@@ -5,8 +5,8 @@ use super::fixtures::*;
 use crate::key::{AsymmetricKey, Operation};
 use crate::PkeyError;
 
-fn public() -> AsymmetricKey { AsymmetricKey::parse(&unhex(CERT_DER)).expect("parses") }
-fn private() -> AsymmetricKey { AsymmetricKey::parse(&unhex(KEY_PKCS8)).expect("parses") }
+fn public() -> alloc::boxed::Box<AsymmetricKey> { AsymmetricKey::parse(&unhex(CERT_DER)).expect("parses") }
+fn private() -> alloc::boxed::Box<AsymmetricKey> { AsymmetricKey::parse(&unhex(KEY_PKCS8)).expect("parses") }
 
 /// Deterministic non-zero padding, so an encryption test has a fixed answer.
 fn fixed_rand(buf: &mut [u8]) { for (i, b) in buf.iter_mut().enumerate() { *b = (i as u8) | 0x41; } }
