@@ -23,7 +23,7 @@ fn drain(p: &Pmm<HostedBacking>) -> u64 {
 
 #[test]
 fn the_marks_are_zero_until_the_refresh_produces_them() {
-    let _g = crate::watermark::PUBLISH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _right = crate::watermark::PublishGuard::acquire();
     let p = build(POOL_PAGES);
     for z in p.zone_snapshot() {
         assert_eq!(z.wmark, ZoneWatermarks::default(), "a freshly built zone carries no marks: {z:?}");
@@ -44,7 +44,7 @@ fn the_marks_are_zero_until_the_refresh_produces_them() {
 
 #[test]
 fn a_zones_share_of_the_minimum_follows_the_pages_it_manages() {
-    let _g = crate::watermark::PUBLISH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _right = crate::watermark::PublishGuard::acquire();
     let p = build(POOL_PAGES);
     p.refresh_watermarks(WatermarkTunables::default());
     let z = p.zone_snapshot();
@@ -57,7 +57,7 @@ fn a_zones_share_of_the_minimum_follows_the_pages_it_manages() {
 
 #[test]
 fn the_gate_holds_pages_back_only_once_the_marks_exist() {
-    let _g = crate::watermark::PUBLISH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _right = crate::watermark::PublishGuard::acquire();
     let bare = build(POOL_PAGES);
     let left_bare = drain(&bare);
 
@@ -73,7 +73,7 @@ fn the_gate_holds_pages_back_only_once_the_marks_exist() {
 
 #[test]
 fn a_post_boot_reservation_re_derives_what_it_shrank() {
-    let _g = crate::watermark::PUBLISH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _right = crate::watermark::PublishGuard::acquire();
     let p = build(POOL_PAGES);
     p.refresh_watermarks(WatermarkTunables::default());
     let before = p.zone_snapshot();

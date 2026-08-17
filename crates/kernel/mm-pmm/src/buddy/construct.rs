@@ -65,6 +65,7 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
             free_heads: [[PFN_NULL; ORDERS]; NR_ZONES],
             free_count: [[0; ORDERS]; NR_ZONES],
             managed: [0; NR_ZONES],
+            present: [0; NR_ZONES],
             spanned,
             reserve: [[0; NR_ZONES]; NR_ZONES],
             wmark: [ZoneWatermarks::default(); NR_ZONES],

@@ -67,7 +67,10 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
         // releasing the lock; publish the aggregate after.
         let derived = g.recompute_derived();
         drop(g);
-        if let Some((total, agg)) = derived { crate::watermark::publish(total, agg); }
+        if let Some((total, agg)) = derived {
+            let right = crate::watermark::PublishGuard::acquire();
+            crate::watermark::publish(&right, total, agg);
+        }
         Ok(())
     }
 }

@@ -187,3 +187,28 @@ fn boot_two_gigabytes() {
 }
 
 // ---------------------------------------------------------------------------
+
+// A permanent boot reservation is exactly the difference between what the
+// firmware map made usable in a zone and what the allocator ended up owning.
+// Reporting one figure for both hides every hole a reservation punches.
+#[test]
+fn a_boot_reservation_separates_present_from_managed() {
+    let n = 4096u64;
+    let pmm = build(n);
+    let before = pmm.zone_snapshot();
+    for z in before.iter() { assert_eq!(z.present_pages, z.managed_pages, "nothing is reserved yet: {z:?}"); }
+
+    const RESERVED: u64 = 64;
+    pmm.reserve_early(Pfn(0), RESERVED).unwrap();
+    let after = pmm.zone_snapshot();
+    let reserved_zone = after.iter().position(|z| z.managed_pages != before[z.zone.index()].managed_pages)
+        .expect("the reservation left some zone's managed count");
+    let z = &after[reserved_zone];
+    assert_eq!(z.present_pages, before[reserved_zone].present_pages, "a reservation does not unmake a present page");
+    assert_eq!(z.managed_pages, z.present_pages - RESERVED, "the reserved pages left the managed count");
+    // Every other zone is untouched by a reservation that did not reach it.
+    for (i, z) in after.iter().enumerate() {
+        if i == reserved_zone { continue; }
+        assert_eq!(z.present_pages, z.managed_pages, "zone {i} was not reserved from: {z:?}");
+    }
+}
