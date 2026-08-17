@@ -45,6 +45,7 @@ use syscall::errno::Errno;
 
 use sectors::SectorSource;
 
+use crate::volume::dnode::{put32, put64};
 use crate::volume::Volume;
 
 impl<S: SectorSource> Volume<S> {
@@ -82,6 +83,25 @@ impl<S: SectorSource> Volume<S> {
             self.expand_inode_data(ino, offset, len, mode)?;
         }
         self.refresh_extent(ino)
+    }
+
+    /// Record that `ino`'s contents changed at `now`.
+    ///
+    /// Both stamps move together, and both are STORED rather than only cached:
+    /// the reference sets the modification time to the change time it has just
+    /// taken and then marks the inode dirty, so a mount after a crash reports
+    /// the allocation as a modification. Giving a file blocks is a
+    /// modification even under `KEEP_SIZE`, where the length does not move —
+    /// which is why this is not folded into the size write.
+    /// # C: O(1 block)
+    pub(crate) fn stamp_modified(&mut self, ino: u32, now: (u64, u32))
+        -> Result<(), Errno> {
+        self.stamp_inode(ino, |b| {
+            put64(b, crate::uapi::I_MTIME, now.0);
+            put32(b, crate::uapi::I_MTIME_NSEC, now.1);
+            put64(b, crate::uapi::I_CTIME, now.0);
+            put32(b, crate::uapi::I_CTIME_NSEC, now.1);
+        })
     }
 
     /// Gather what the ladder reads, for one file. # C: O(1)

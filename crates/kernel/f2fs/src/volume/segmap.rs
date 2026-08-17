@@ -32,7 +32,7 @@ use crate::uapi::*;
 
 use super::Volume;
 
-/// A blank entry, for a segment nothing has been written to.
+/// A blank entry, for a segment nothing has been written to. # C: O(1)
 pub fn empty_entry() -> SitEntry {
     SitEntry { vblocks: 0, valid_map: [0u8; SIT_VBLOCK_MAP_SIZE], mtime: 0 }
 }

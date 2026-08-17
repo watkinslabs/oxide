@@ -55,6 +55,9 @@ impl<S: SectorSource> Volume<S> {
             // it has nothing dirty to write.
             let Some(mut info) = self.dq_info_held(kind) else { continue };
             let mut file = self.read_quota_file(ino)?;
+            // The image as the medium already holds it, so the write below can
+            // place the blocks the tree CHANGED and leave the rest alone.
+            let before = file.clone();
             let mut touched = false;
             for id in ids {
                 let Some(d) = self.dquots.get(&(kind, id)).cloned() else { continue };
@@ -72,21 +75,36 @@ impl<S: SectorSource> Volume<S> {
                 // whose new blocks nothing can find again.
                 quota::info::store(&mut file, &info).map_err(|e| e.errno())?;
                 self.quota_info[kind] = Some(info);
-                self.write_quota_file(ino, &file)?;
+                self.write_quota_file(ino, &file, &before)?;
             }
         }
         self.dq_dirty.clear();
         Ok(())
     }
 
-    /// Put a quota file's bytes back.
+    /// Put a quota file's changed blocks back.
+    ///
+    /// `before` is the image the medium already holds. Only the blocks that
+    /// differ from it are written, which is what the reference does: it reaches
+    /// a quota-file block through the quota inode's mapping and writes the ONE
+    /// block an inserted or rewritten record sits in. Writing every block would
+    /// cost far more here than there, because a write is placed out of place: a
+    /// checkpoint that changed one identity's usage would re-place the whole
+    /// quota file, taking a fresh block and a node update for every block of it
+    /// and leaving the old copies for the cleaner.
     ///
     /// Written through the ordinary file path, so the blocks it occupies are
     /// allocated and accounted like any other — except for the charge, which
     /// `is_quota_file` suppresses.
-    /// # C: O(file bytes)
-    fn write_quota_file(&mut self, ino: u32, bytes: &[u8]) -> Result<(), Errno> {
+    /// # C: O(changed blocks)
+    fn write_quota_file(&mut self, ino: u32, bytes: &[u8], before: &[u8]) -> Result<(), Errno> {
         for (i, chunk) in bytes.chunks(BLKSIZE).enumerate() {
+            let at = i * BLKSIZE;
+            // A block past what the file held is new and has never been
+            // written; one that matches what the medium holds has nothing to
+            // say. `get` rather than a length test because the last block of
+            // either image can be short.
+            if before.get(at..at + chunk.len()) == Some(chunk) { continue; }
             self.write_one_block(ino, i as u64, 0, chunk)?;
         }
         // A tree that grew put blocks PAST the inode's recorded length, and a
