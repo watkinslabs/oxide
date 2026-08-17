@@ -344,7 +344,10 @@ pub unsafe fn init_from_boot_info(
         }
     }
     PMM_READY.store(true, Ordering::Release);
-    crate::watermark::install(pmm_ref.snapshot());
+    // Every zone is seeded by this point, so the managed totals the watermarks
+    // are proportional to are final. This is the one producer of both the
+    // per-zone allocation gate and the aggregate the reclaim policy reads.
+    pmm_ref.refresh_watermarks(crate::watermark::WatermarkTunables::default());
     // A cached page can become a machine frame from the moment there is an
     // allocator to take one from, which is HERE — not at the kernel-only wiring
     // below. A hosted test that brings this PMM up gets the same page cache the

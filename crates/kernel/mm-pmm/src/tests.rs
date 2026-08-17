@@ -7,6 +7,7 @@ mod accounting;
 mod concurrent;
 mod init;
 mod reserve;
+mod watermark_gate;
 
 use super::*;
 use core::sync::atomic::AtomicU64;
