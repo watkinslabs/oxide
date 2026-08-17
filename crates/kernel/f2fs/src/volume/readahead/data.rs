@@ -43,8 +43,10 @@ impl<S: SectorSource> Volume<S> {
         // nothing rather than reading padding into the mapping.
         let blocks = inode.size.div_ceil(BLKSIZE as u64);
         if start >= blocks { return; }
-        let crypt = match self.crypt_info(inode, ino) { Ok(c) => c, Err(_) => return };
-        if inode.encrypted() && crypt.is_none() { return; }
+        // The read that asked for this window resolved the key at its entry;
+        // a window whose record is absent is fetched as nothing rather than
+        // resolved from underneath the fetch.
+        let crypt = match self.crypt_info_held(inode, ino) { Ok(c) => c, Err(_) => return };
         // A compressed file's blocks are not its bytes: a cluster is the unit
         // that unpacks, and the blocks it stores are read by the cluster
         // reader. Fetching them here would fill the image cache from outside
@@ -54,7 +56,7 @@ impl<S: SectorSource> Volume<S> {
         let addrs = self.ra_window(inode, ino, start, want);
         for run in runs(&addrs) {
             let first = start + run.at as u64;
-            let Ok(bytes) = self.read_run_plain(run.addr, run.len, crypt.as_ref(), first)
+            let Ok(bytes) = self.read_run_plain(run.addr, run.len, crypt.as_deref(), first)
                 else { return };
             if !self.file_run(inode, ino, first, run.len, &bytes) { return }
         }

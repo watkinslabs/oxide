@@ -249,19 +249,33 @@ impl<S: SectorSource> Volume<S> {
         // The policy is stored as an attribute, which may take a block.
         self.dquot_initialize(ino)?;
         let inode = self.read_inode(ino)?;
-        let facts = self.crypt_inode_facts(&inode);
-        if !facts.is_dir { return Err(Errno::Enotdir); }
         let want = super::policy::parse_wire(wire).map_err(|e| e.errno())?;
+        // THE EXISTING POLICY FIRST, before anything about what the inode is.
+        // The reference's order, and it is observable: an inode that already
+        // carries a context is answered about that context, so a non-directory
+        // that somehow has one reports `EEXIST` rather than `ENOTDIR`. Deciding
+        // `ENOTDIR` first would answer a question the caller did not ask.
+        //
         // Re-applying the SAME policy is how a tool makes sure of one it may
         // already have set, and must not be an error; a DIFFERENT one is a
-        // second answer to how the directory's children are written.
-        if let Some(held) = self.crypt_context(&inode, ino)? {
-            return if crate::crypto::policy::equal(&held.policy, &want) {
+        // second answer to how the directory's children are written. A context
+        // that is THERE but unrecognised is also `EEXIST`: it is a policy this
+        // build cannot compare, which is not a policy it may overwrite.
+        match self.crypt_context(&inode, ino) {
+            Ok(Some(held)) => return if crate::crypto::policy::equal(&held.policy, &want) {
                 Ok(())
             } else {
                 Err(Errno::Eexist)
-            };
+            },
+            // Nothing stored yet. `EUCLEAN` is the same answer: it is an inode
+            // whose flag says encrypted and which carries no context at all,
+            // which the reference reads as "no policy" and gives one.
+            Ok(None) | Err(Errno::Euclean) => {}
+            Err(Errno::Einval) | Err(Errno::Enopkg) => return Err(Errno::Eexist),
+            Err(e) => return Err(e),
         }
+        let facts = self.crypt_inode_facts(&inode);
+        if !facts.is_dir { return Err(Errno::Enotdir); }
         if !self.dir_is_empty(&inode, ino)? { return Err(Errno::Enotempty); }
         // Last, where the reference puts it: a caller that named a bad policy,
         // a file, a directory with a different policy or a non-empty one hears
@@ -288,7 +302,11 @@ impl<S: SectorSource> Volume<S> {
             let at = crate::uapi::I_FLAGS;
             let held = u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
             crate::volume::dnode::put32(b, at, held | crate::flags::F2FS_ENCRYPT_FL);
-        })
+        })?;
+        // The directory has a context now, so anything resolved for it before
+        // this — under no policy — no longer describes it.
+        self.crypt_forget(ino);
+        Ok(())
     }
 
     /// A nonce for a newly encrypted inode.

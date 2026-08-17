@@ -63,9 +63,9 @@ impl<S: SectorSource> Volume<S> {
         let inode = self.read_inode(ino)?;
         // Writing an encrypted file needs its key: the bytes that reach the
         // medium are ciphertext, and there is no plaintext form of a block on
-        // an encrypted volume.
-        let crypt = self.crypt_info(&inode, ino)?;
-        if inode.encrypted() && crypt.is_none() { return Err(Errno::Enokey); }
+        // an encrypted volume. Resolved HERE, once, before the block loop —
+        // every block below then reads the record rather than the medium.
+        self.crypt_require_key(&inode, ino)?;
         // A verity file is sealed: its contents are what its hash tree attests
         // to, so changing them would leave the attestation describing bytes
         // that are no longer there.
@@ -280,8 +280,11 @@ impl<S: SectorSource> Volume<S> {
             return Err(Errno::Enomem);
         }
         let inode = self.read_inode(ino)?;
-        let crypt = self.crypt_info(&inode, ino)?;
-        if inode.encrypted() && crypt.is_none() { return Err(Errno::Enokey); }
+        // The record the operation that started this write resolved. NOT a
+        // resolution: reading a key means reading an attribute, which means a
+        // node read and a page lock that can block, and charging that to every
+        // partial block write is what put this path over the stack ceiling.
+        let crypt = self.crypt_info_held(&inode, ino)?;
         let mut page = match self.data_cache.peek(ino, index) {
             // The mapping's page IS the file's contents at this offset, and it
             // may be the only copy of them — a write not yet placed has no
@@ -289,7 +292,7 @@ impl<S: SectorSource> Volume<S> {
             // the earlier write.
             Some(held) => held,
             None if crate::node::is_hole(old) => vec![0u8; BLKSIZE],
-            None => self.read_data_page_unattested(ino, index, old, crypt.as_ref())?,
+            None => self.read_data_page_unattested(ino, index, old, crypt.as_deref())?,
         };
         if page.len() != BLKSIZE { return Err(Errno::Eio); }
         page[skew..skew + data.len()].copy_from_slice(data);
@@ -312,6 +315,11 @@ impl<S: SectorSource> Volume<S> {
             return Err(Errno::Eio);
         }
         let inode = self.read_inode(ino)?;
+        // A size change of an encrypted file needs its key: the tail of the
+        // last kept block is zeroed over PLAINTEXT and written back, which the
+        // cipher has to go on again. Resolved at the entry, which is where the
+        // reference's setattr hook requires it, and never from the block loop.
+        self.crypt_require_key(&inode, ino)?;
         crate::verity::access::truncate(inode.flags).map_err(crate::verity::access::errno)?;
         crate::pin::policy::truncate(crate::pin::state::is_pinned(&inode), inode.size, len,
                                      u64::from(self.blks_per_sec()) * BLKSIZE as u64)?;
@@ -348,9 +356,8 @@ impl<S: SectorSource> Volume<S> {
                 // encrypted: the block reads as noise afterwards, the tail is
                 // not zeroes, and nothing reports it. The writer below takes
                 // plaintext and puts the encryption back on.
-                let crypt = self.crypt_info(&inode, ino)?;
-                if inode.encrypted() && crypt.is_none() { return Err(Errno::Enokey); }
-                let mut page = self.read_data_page_unattested(ino, index, old, crypt.as_ref())?;
+                let crypt = self.crypt_info_held(&inode, ino)?;
+                let mut page = self.read_data_page_unattested(ino, index, old, crypt.as_deref())?;
                 page[skew..].fill(0);
                 self.write_one_block(ino, index, 0, &page)?;
             }

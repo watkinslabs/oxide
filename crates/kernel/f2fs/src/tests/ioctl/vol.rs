@@ -242,6 +242,46 @@ fn a_policy_on_something_that_is_not_a_directory_is_refused() {
     assert_eq!(v.set_encryption_policy(ino, &wire_v2()), Err(Errno::Enotdir));
 }
 
+/// THE EXISTING POLICY IS READ FIRST, before anything about what the inode is.
+///
+/// An inode that already carries a context is answered about that context —
+/// `EEXIST` for a different one — even when it is not a directory, because
+/// "what policy is already here" is the question the caller asked. Deciding
+/// `ENOTDIR` first answers a different one, and the ordering is the contract.
+#[test]
+fn an_existing_policy_is_reported_before_the_inode_is_asked_what_it_is() {
+    let (mut v, ino) = one_file();
+    let inode = v.read_inode(ino).unwrap();
+    // A context on a plain FILE, which the ordinary interface never produces
+    // and which is exactly the case the ordering distinguishes.
+    let area = v.xattr_area(&inode, ino).unwrap();
+    let mut attrs = crate::xattr::list(&area).unwrap();
+    let (bytes, used) = crate::crypto::policy::serialize(&crate::crypto::policy::Context {
+        policy: crate::ioctl::policy::parse_wire(&wire_v2()).unwrap(),
+        nonce: [0x11; crate::crypto::uapi::FILE_NONCE_SIZE],
+    });
+    attrs.push(crate::xattr::Attr {
+        index: crate::uapi::XATTR_INDEX_ENCRYPTION,
+        name: crate::crypto::uapi::XATTR_NAME.to_vec(),
+        value: bytes[..used].to_vec(),
+    });
+    v.store_xattrs(ino, &attrs).unwrap();
+    v.stamp_inode(ino, |b| {
+        let at = crate::uapi::I_FLAGS;
+        let held = u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
+        crate::volume::dnode::put32(b, at, held | crate::flags::F2FS_ENCRYPT_FL);
+    })
+    .unwrap();
+    // The SAME policy is not an error, even on a file: the answer is about the
+    // policy, not about the inode's type.
+    assert_eq!(v.set_encryption_policy(ino, &wire_v2()), Ok(()));
+    // A DIFFERENT one is `EEXIST` — not `ENOTDIR`, which is what a
+    // directory-first order would report.
+    let mut other = wire_v2();
+    other[8] = 0x44;
+    assert_eq!(v.set_encryption_policy(ino, &other), Err(Errno::Eexist));
+}
+
 /// Re-applying the SAME policy is how a tool makes sure of one it may already
 /// have set, and must not be an error.
 #[test]
