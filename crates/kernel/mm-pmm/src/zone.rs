@@ -18,11 +18,11 @@ mod reserve;
 mod wmark;
 
 pub use types::{ZoneType, NR_ZONES};
-pub use gfp::{gfp_zone, GfpError, GFP_DMA, GFP_DMA32, GFP_HIGHMEM, GFP_MOVABLE, GFP_ZONEMASK};
+pub use gfp::{gfp_zone, grants_min_reserve, GfpError, GFP_ATOMIC, GFP_DMA, GFP_DMA32, GFP_HIGH, GFP_HIGHMEM, GFP_KSWAPD_RECLAIM, GFP_MOVABLE, GFP_ZONEMASK};
 pub use limits::{ZoneLayout, ZoneLimits, ZoneSpan};
 pub use zonelist::Zonelist;
 pub use reserve::{lowmem_reserve, LowmemReserve, DEFAULT_LOWMEM_RESERVE_RATIO};
-pub use wmark::{zone_watermark_ok, AllocWmark, ZoneFreeArea};
+pub use wmark::{slowpath_wmark, zone_watermark_ok, AllocWmark, ZoneFreeArea};
 
 #[cfg(test)]
 #[path = "zone/tests.rs"]

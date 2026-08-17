@@ -53,7 +53,7 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {    /// Allocate one buddy block of 
         // Exhaustion is not the answer until reclaim and the out-of-memory
         // selector have both been given their turn: any allocation that
         // cannot be satisfied enters the slowpath, not only a user fault.
-        if matches!(r, Err(Error::NoMem)) { r = self.alloc_slowpath(order, hi); }
+        if matches!(r, Err(Error::NoMem)) { r = self.alloc_slowpath(order, hi, gfp); }
         if r.is_ok() { crate::watermark::after_allocation(self.free_pages()); }
         if let Ok(pfn) = r { hal::zerotrap::trap_buddy(pfn.0 * hal::PAGE_SIZE_BYTES, b"ALLOC"); }
         r
@@ -139,15 +139,16 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {    /// Allocate one buddy block of 
     /// Policy lives in `crate::oom_entry`; this only supplies the three
     /// actions it drives.
     /// # C: bounded retries; # Ctx: blockable only; # Sleeps: yes
-    fn alloc_slowpath(&self, order: Order, hi: usize) -> KResult<Pfn> {
+    fn alloc_slowpath(&self, order: Order, hi: usize, gfp: u32) -> KResult<Pfn> {
         // The first thing the slowpath does, before deciding whether this
         // context may reclaim at all, is re-walk the zonelist against the min
-        // watermark: a non-blocking caller is entitled to the part of the
-        // reserve that a blockable one is not, and that attempt must happen
-        // even when reclaim is closed to it.
-        let wmark = if crate::oom_entry::context_allows_slowpath() { AllocWmark::Min } else { AllocWmark::MinNonBlock };
-        if let Ok(pfn) = self.alloc_inner_zoned(order, hi, wmark) { return Ok(pfn); }
+        // watermark. How far into the reserve that attempt may reach is the
+        // caller's to ask for: the discount comes from the high-priority flag,
+        // and being unable to block deepens it only for a caller that already
+        // holds one.
         let allowed = crate::oom_entry::context_allows_slowpath();
+        let wmark = crate::zone::slowpath_wmark(crate::zone::grants_min_reserve(gfp), allowed);
+        if let Ok(pfn) = self.alloc_inner_zoned(order, hi, wmark) { return Ok(pfn); }
         match crate::oom_entry::run_slowpath(order.0, allowed,
             || self.alloc_inner_zoned(order, hi, wmark).ok(),
             crate::oom_entry::reclaim_once,

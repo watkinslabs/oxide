@@ -16,10 +16,23 @@ pub enum AllocWmark {
     /// Retry after the first attempt found nothing: the min watermark is the
     /// floor below which reclaim, not allocation, is the answer.
     Min,
-    /// A context permitted to dip into half the min reserve.
+    /// A caller that asked for the reserve and gets half of it.
     MinReserve,
-    /// A context permitted to dip further still because it cannot block.
+    /// A caller that asked for the reserve AND cannot block, and so gets
+    /// further into it than the reserve alone would allow.
     MinNonBlock,
+}
+
+/// Which rung of the min watermark a slowpath attempt is measured against.
+///
+/// The reserve discount is earned by asking for it, not by being unable to
+/// block: a caller that cannot block but never asked is held to the whole
+/// minimum, and only a caller holding both gets the deeper cut. Getting this
+/// backwards is permissive — it lets an allocation that has not earned the
+/// reserve drain what a blockable context is relying on. # C: O(1)
+pub const fn slowpath_wmark(grants_min_reserve: bool, can_block: bool) -> AllocWmark {
+    if !grants_min_reserve { return AllocWmark::Min; }
+    if can_block { AllocWmark::MinReserve } else { AllocWmark::MinNonBlock }
 }
 
 /// Per-order free-block counts for one zone.
@@ -35,9 +48,10 @@ pub fn free_pages(area: &ZoneFreeArea) -> u64 {
 fn effective_min(mark: u64, wmark: AllocWmark) -> u64 {
     match wmark {
         AllocWmark::Low | AllocWmark::Min => mark,
-        // A context holding the reserve right gets half of it.
+        // Asking for the reserve buys half of it.
         AllocWmark::MinReserve => mark - mark / 2,
-        // A non-blocking context cannot reclaim, so it gets more still.
+        // A non-blocking caller that also asked for the reserve gets a
+        // further quarter of what the reserve discount left.
         AllocWmark::MinNonBlock => { let m = mark - mark / 2; m - m / 4 }
     }
 }
