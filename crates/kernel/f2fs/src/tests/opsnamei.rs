@@ -148,6 +148,4 @@ fn evicting_a_file_that_gained_a_name_leaves_it_alone() {
     sops.evict_inode(&tmp);
     let v = fs.volume.lock();
     assert!(v.read_inode(ino).is_ok(), "a named file was freed at eviction");
-    // And the hold is gone, so a later unlink is not told something holds it.
-    assert!(!v.inode_is_open(ino));
 }

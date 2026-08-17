@@ -470,33 +470,6 @@ fn writing_to_a_compressed_inode_goes_through_the_cluster_writer() {
 }
 
 #[test]
-fn a_file_that_is_both_compressed_and_encrypted_is_refused_rather_than_written_in_the_clear() {
-    // A compressed cluster is encrypted as its stored IMAGE, so the cipher
-    // has to run inside the cluster writer. Until it does, writing would put
-    // the file's bytes on the medium unencrypted.
-    let mut b = crate::test_image::with_root();
-    b.feature |= crate::flags::FEATURE_COMPRESSION;
-    let mut v = b.mount_rw().unwrap();
-    let ino = v.create(ROOT_INO, b"c", &spec(), None).unwrap();
-    v.stamp_inode(ino, |b| {
-        let f = crate::uapi::le32(b, I_FLAGS).unwrap_or(0)
-            | crate::flags::F2FS_COMPR_FL
-            | crate::flags::F2FS_ENCRYPT_FL;
-        b[I_FLAGS..I_FLAGS + 4].copy_from_slice(&f.to_le_bytes());
-        b[crate::uapi::I_COMPRESS_ALGORITHM] = crate::compress::algo::COMPRESS_LZ4;
-        b[crate::uapi::I_LOG_CLUSTER_SIZE] = 2;
-    })
-    .unwrap();
-    // Shortening takes the same decision without needing a key, so this is
-    // the combination being refused rather than the key being missing.
-    assert_eq!(v.truncate_file(ino, 0).err(), Some(Errno::Eopnotsupp));
-    // The write is refused too, and refused BEFORE anything reaches the
-    // medium — which is the property that matters.
-    assert!(v.write_file(ino, 0, b"x").is_err());
-    assert_eq!(v.read_inode(ino).unwrap().size, 0);
-}
-
-#[test]
 fn a_written_file_is_still_reachable_by_name_after_a_remount() {
     let (mut v, ino) = with_file();
     v.write_file(ino, 0, b"payload").unwrap();

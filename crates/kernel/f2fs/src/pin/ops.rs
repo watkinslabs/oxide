@@ -220,9 +220,9 @@ impl<S: SectorSource> Volume<S> {
             // gate and the map disagree, which is not a write to guess at.
             return Err(Errno::Eio);
         };
-        let crypt = self.crypt_info(&inode, ino)?;
-        if inode.encrypted() && crypt.is_none() { return Err(Errno::Enokey); }
-        let mut page = self.read_data_page_unattested(ino, index, addr, crypt.as_ref())?;
+        // Held: the write this block belongs to required the key at its entry.
+        let crypt = self.crypt_info_held(&inode, ino)?;
+        let mut page = self.read_data_page_unattested(ino, index, addr, crypt.as_deref())?;
         page[skew..skew + data.len()].copy_from_slice(data);
         // A pinned block is rewritten WHERE IT LIES, so its address does not
         // change and the mapping-change notification every other writer
@@ -238,7 +238,7 @@ impl<S: SectorSource> Volume<S> {
                     .map_err(|e| e.errno())?;
             }
         }
-        let ctx = self.write_ctx(crypt.as_ref(), index);
+        let ctx = self.write_ctx(crypt.as_deref(), index);
         self.write_block_crypt(addr, &page, block::RequestFlags::NONE, ctx.as_ref())?;
         self.dirty = true;
         Ok(())

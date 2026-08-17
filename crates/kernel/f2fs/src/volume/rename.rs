@@ -22,7 +22,7 @@ use crate::mode;
 use crate::uapi::*;
 
 use super::dnode::{put32, put64};
-use super::namei::NewInode;
+use super::namei::{NewInode, Removed};
 use super::Volume;
 
 /// Every flag this filesystem answers for. One that is not here is refused.
@@ -68,7 +68,11 @@ impl<S: SectorSource> Volume<S> {
     /// filesystem disagree about what was even asked for, and answering the
     /// rest of the request would be answering a different question.
     /// # C: O(depth) blocks
-    pub fn rename(&mut self, r: &Rename<'_>) -> Result<(), Errno> {
+    /// Reports the inode a REPLACED name left behind, when the move replaced
+    /// one. At zero links that inode is PARKED, and only the layer above can
+    /// settle whether anything still holds it, so the answer travels up rather
+    /// than being decided here. `None` when nothing was replaced.
+    pub fn rename(&mut self, r: &Rename<'_>) -> Result<Option<Removed>, Errno> {
         if r.flags & !SUPPORTED_FLAGS != 0 { return Err(Errno::Einval); }
         // An exchange replaces both names, so neither "refuse to replace" nor
         // "leave a marker behind" has a meaning alongside it.
@@ -82,7 +86,7 @@ impl<S: SectorSource> Volume<S> {
 
     /// Move one name onto another, replacing whatever was there.
     /// # C: O(depth) blocks
-    fn plain_rename(&mut self, r: &Rename<'_>) -> Result<(), Errno> {
+    fn plain_rename(&mut self, r: &Rename<'_>) -> Result<Option<Removed>, Errno> {
         let (from, to, now) = (r.from, r.to, r.now);
         let from_inode = self.read_inode(from)?;
         let hit = self.lookup(&from_inode, from, r.old)?;
@@ -92,7 +96,7 @@ impl<S: SectorSource> Volume<S> {
         let victim = match self.lookup(&to_inode, to, r.new) {
             Ok(existing) => {
                 if r.flags & RENAME_NOREPLACE != 0 { return Err(Errno::Eexist); }
-                if existing.ino == hit.ino { return Ok(()); }
+                if existing.ino == hit.ino { return Ok(None); }
                 let v = self.read_inode(existing.ino)?;
                 let victim_is_dir = mode::file_type(v.mode) == vfs::FileType::Directory;
                 if victim_is_dir && !self.dir_is_empty(&v, existing.ino)? {
@@ -117,13 +121,18 @@ impl<S: SectorSource> Volume<S> {
         // so a refused rename leaves both directories exactly as they were —
         // and the whiteout's inode is not taken until the request is certain.
         let whiteout = self.new_whiteout(r)?;
-        if let Some((_, victim_is_dir)) = victim {
-            if let Err(e) = self.remove(to, r.new, victim_is_dir, now) {
-                if let Some(w) = whiteout { let _ = self.release_orphan(w); }
-                return Err(e);
-            }
-        }
-        self.move_entry(r, &hit, moving_is_dir, whiteout)
+        let replaced = match victim {
+            Some((_, victim_is_dir)) => match self.remove(to, r.new, victim_is_dir, now) {
+                Ok(out) => Some(out),
+                Err(e) => {
+                    if let Some(w) = whiteout { let _ = self.release_orphan(w); }
+                    return Err(e);
+                }
+            },
+            None => None,
+        };
+        self.move_entry(r, &hit, moving_is_dir, whiteout)?;
+        Ok(replaced)
     }
 
     /// Take the name off the source, put it on the destination, and repair
@@ -217,9 +226,11 @@ impl<S: SectorSource> Volume<S> {
     /// and only when the pair is mixed — a directory arriving in a parent
     /// brings a second link with it and a file arriving does not.
     /// # C: O(depth) blocks
-    fn cross_rename(&mut self, r: &Rename<'_>) -> Result<(), Errno> {
+    fn cross_rename(&mut self, r: &Rename<'_>) -> Result<Option<Removed>, Errno> {
         let (from, to, now) = (r.from, r.to, r.now);
-        if from == to && r.old == r.new { return Ok(()); }
+        // An exchange replaces no name — both survive under the other's — so it
+        // never leaves an inode behind and always reports nothing.
+        if from == to && r.old == r.new { return Ok(None); }
         let from_inode = self.read_inode(from)?;
         let a = self.lookup(&from_inode, from, r.old)?;
         let to_inode = self.read_inode(to)?;
@@ -227,7 +238,7 @@ impl<S: SectorSource> Volume<S> {
         // not a rename with nothing to replace — there is nothing to swap
         // with, which is a different answer from the one a plain move gives.
         let b = self.lookup(&to_inode, to, r.new)?;
-        if a.ino == b.ino { return Ok(()); }
+        if a.ino == b.ino { return Ok(None); }
         let a_is_dir = mode::file_type(self.read_inode(a.ino)?.mode) == vfs::FileType::Directory;
         let b_is_dir = mode::file_type(self.read_inode(b.ino)?.mode) == vfs::FileType::Directory;
         let mixed = from != to && a_is_dir != b_is_dir;
@@ -263,7 +274,7 @@ impl<S: SectorSource> Volume<S> {
             self.ino_lists.add(crate::checkpoint::InoKind::TransDir, from);
             self.ino_lists.add(crate::checkpoint::InoKind::TransDir, to);
         }
-        Ok(())
+        Ok(None)
     }
 
     /// Record where an exchanged inode now lives: the field for a directory,

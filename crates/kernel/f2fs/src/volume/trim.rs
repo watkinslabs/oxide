@@ -179,6 +179,10 @@ impl<S: SectorSource> Volume<S> {
         self.extents.borrow_mut().destroy(ino, 0);
         self.data_cache.forget_inode(ino);
         self.forget_io_prio(ino);
+        // Including the key: the next file to take this number has a policy and
+        // a nonce of its own, and a record left here would encrypt its bytes
+        // under the one that belonged to a file that no longer exists.
+        self.crypt_forget(ino);
         if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::EvictInode) {
             return Err(Errno::Eio);
         }

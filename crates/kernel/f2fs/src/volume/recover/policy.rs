@@ -77,6 +77,27 @@ impl<S: SectorSource> Volume<S> {
         self.sbi.set_transiently_writable(true);
     }
 
+    /// Raise the in-progress condition for the length of a replay.
+    ///
+    /// Everything that reads it is asking "is this volume's tail still
+    /// unresolved": the cleaner, which must not move blocks a chain still names,
+    /// the allocators that keep a reserve back, and the status word a tool
+    /// reads. # C: O(1)
+    pub(crate) fn begin_recovery(&mut self) { self.recovering = true; }
+
+    /// Lower it — which ONLY a pass that succeeded may do.
+    ///
+    /// A failed replay leaves the tail unresolved, so the condition stays
+    /// raised. Lowered anyway, the cleaner is told it may start moving live
+    /// blocks the chain still names, and the status word reports a volume that
+    /// came up clean. Raised is the recoverable direction: it costs a reserve
+    /// and a stalled cleaner, where lowering it costs the data.
+    /// # C: O(1)
+    pub(crate) fn finish_recovery(&mut self, ok: bool) { if ok { self.recovering = false; } }
+
+    /// Whether this mount is still part way through a replay. # C: O(1)
+    pub fn is_recovering(&self) -> bool { self.recovering }
+
     /// Put the read-only back, if this mount lifted it. # C: O(1)
     pub(crate) fn end_repair_write(&mut self) {
         if !self.sbi.transiently_writable() { return; }

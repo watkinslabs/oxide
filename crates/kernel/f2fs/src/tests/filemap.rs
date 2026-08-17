@@ -146,15 +146,20 @@ fn a_pinned_file_rewritten_where_it_lies_serves_the_new_bytes() {
 #[test]
 fn a_deleted_file_leaves_nothing_under_its_inode_number() {
     // The whole-inode invalidation: `free_inode`. An inode number goes back
-    // to the pool the moment its last name and its last open are gone, so a
-    // page left filed under it would answer for whatever file takes the id
-    // next — and until then it would hold a deleted file's bytes resident.
-    // Remove the `data_cache.forget_inode` there and the count stays at one.
+    // to the pool once its last name is gone AND the last reference to it has
+    // been evicted, so a page left filed under it would answer for whatever
+    // file takes the id next — and until then it would hold a deleted file's
+    // bytes resident. Remove the `data_cache.forget_inode` there and the count
+    // stays at one.
     let (mut v, ino) = volume();
     v.write_file(ino, 0, &filled(0xA1)).unwrap();
     assert_eq!(read_all(&v, ino), filled(0xA1));
     assert_eq!(v.data_cached_pages(), 1);
     v.remove(ROOT_INO, b"f", false, NOW).unwrap();
+    // The name going parks the inode; the EVICTION is what frees it and
+    // gives back what it held. The two are separate events, and a descriptor
+    // may sit between them.
+    v.evict_inode(ino).unwrap();
     assert_eq!(v.data_cached_pages(), 0);
 }
 

@@ -69,8 +69,9 @@ impl<S: SectorSource> Volume<S> {
 
     /// Close a span: restore the size when asked, and reclaim the COW inode.
     ///
-    /// The COW inode is released by dropping the hold the span had on it. It
-    /// is an orphan, so the drop is what frees it and everything it still
+    /// The COW inode is released by evicting it: the span's record was the only
+    /// thing that could reach it, and this is the moment that record goes. It
+    /// is an orphan, so the eviction is what frees it and everything it still
     /// owns — after a commit that is nothing, and after an abort it is every
     /// block the span wrote.
     /// # C: O(blocks the COW inode still owns)
@@ -79,7 +80,7 @@ impl<S: SectorSource> Volume<S> {
         if clean && self.writable {
             self.stamp_inode(ino, |b| put64(b, I_SIZE, a.original_size))?;
         }
-        self.close_inode(a.cow_ino)
+        self.evict_inode(a.cow_ino)
     }
 
     /// Point the file's index at every block the span wrote.
