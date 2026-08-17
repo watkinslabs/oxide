@@ -122,6 +122,16 @@ struct Transaction { kind: TxKind }
 struct TransactionOps;
 
 impl FileOps for TransactionOps {
+    /// # C: O(1)
+    ///
+    /// The request and the answer share one description and one cursor:
+    /// userspace writes the request and reads the answer back with no seek in
+    /// between. A write that moved the cursor would leave the read starting
+    /// past the answer, so it would copy out nothing — and a zero-length read
+    /// is not an error to the caller, it is an EMPTY CONTEXT, which is then
+    /// handed to a `setcon`/`setfilecon` that rightly refuses it.
+    fn write_advances_pos(&self) -> bool { false }
+
     /// # C: O(answer)
     /// The answer is taken under the lock and written out after it is
     /// dropped: `buf` is caller memory and touching it can take a demand fault
@@ -184,3 +194,7 @@ pub fn held_answers() -> usize { ANSWERS.lock().len() }
 #[cfg(test)]
 #[path = "../tests/transaction.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../tests/transaction_file.rs"]
+mod file_tests;

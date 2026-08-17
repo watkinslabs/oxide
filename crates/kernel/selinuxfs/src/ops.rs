@@ -94,7 +94,12 @@ pub trait PolicyOps {
     /// Boolean names in policy order. # C: O(booleans)
     fn bool_names(&self) -> Vec<String>;
 
-    /// Full decision for a written subject, object and class. # C: O(1) cached
+    /// Full decision for a written subject, object and class.
+    ///
+    /// `class` is the value userspace read out of `class/<name>/index`, which
+    /// is the LOADED POLICY's class value — not the kernel's own. So is every
+    /// other `class` on this trait, and so are the permission bits in the
+    /// answer. # C: O(attrs^2 * bucket)
     fn compute_av(&mut self, scon: &str, tcon: &str, class: u16) -> KResult<AvDecision>;
 
     /// Canonical rendering of a written context. # C: O(categories)

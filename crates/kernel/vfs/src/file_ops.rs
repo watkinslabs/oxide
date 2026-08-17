@@ -80,6 +80,19 @@ pub trait FileOps: Send + Sync {
         self.write(file.inode(), off, buf)
     }
 
+    /// Whether a cursor write through this backend moves the description's
+    /// cursor by the byte count it consumed.
+    ///
+    /// In Linux the `->write` handler owns `*pos`, so a backend that never
+    /// touches it leaves the cursor where it was. A transaction file — write a
+    /// request, read the answer back from the SAME description without an
+    /// intervening seek — depends on exactly that: userspace issues
+    /// `write(fd, req, n)` then `read(fd, buf, size)`, and if the write had
+    /// advanced the cursor the read would start past the answer and return
+    /// zero bytes, which a caller reads as an empty answer rather than an
+    /// error. # C: O(1)
+    fn write_advances_pos(&self) -> bool { true }
+
     /// Non-blocking write with access to the open file description. Default
     /// forwards to [`Self::write_nonblock`]. # C: backend-dependent
     fn write_nonblock_file(&self, file: &File, off: u64, buf: &[u8]) -> KResult<usize> {
