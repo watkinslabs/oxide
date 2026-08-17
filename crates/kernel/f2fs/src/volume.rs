@@ -14,6 +14,8 @@
 //! - `nids`:   taking a node id, giving one back, and the cache that holds them.
 //! - `dnode`:  reaching — and creating — the node holding a block's address.
 //! - `trim`:   freeing the nodes a shortened file no longer needs.
+//! - `barrier`: asking the members to empty their write caches, and what a
+//!              refusal costs.
 //! - `commit`: writing a checkpoint to the other pack.
 //! - `nodes`:  a node id into a node block, and an inode out of one.
 //! - `map`:    a file's block index into a block address.
@@ -83,6 +85,7 @@ pub mod logopen;
 pub mod nids;
 pub mod dnode;
 pub mod trim;
+pub mod barrier;
 pub mod commit;
 pub mod fileops;
 pub mod dirwrite;
@@ -290,6 +293,24 @@ pub struct Volume<S: SectorSource> {
     /// rearms a site without remounting, and the counters are what the report
     /// reads.
     pub(crate) fault: crate::fault::Info,
+    /// Which members hold writes no barrier has fenced yet.
+    ///
+    /// Live state, never on the medium: a mount that ends cleanly has fenced
+    /// everything by its last checkpoint, and a mount that does not has nothing
+    /// to hand on — the next mount replays from the pack, which was fenced when
+    /// it was written. Interior mutability because a WRITE is what raises a bit
+    /// and the write path takes `&self`, for the same reason the caches above
+    /// need it.
+    pub(crate) dirty_devs: core::cell::Cell<crate::devices::barrier::DirtyDevices>,
+    /// Files whose bytes were rewritten IN PLACE since the last barrier.
+    ///
+    /// A rewrite in place changes nothing about the file's recorded shape, so
+    /// it is invisible to the comparison `fsync` decides by — and the bytes are
+    /// nonetheless sitting in the device's cache. Without this record an
+    /// `fsync` on such a file writes nothing, fences nothing and reports
+    /// success over data a power cut still loses. Interior mutability because
+    /// the writeback path takes `&self`, as the caches above do.
+    pub(crate) update_writes: core::cell::RefCell<crate::devices::barrier::UpdateWrites>,
     /// The thresholds this mount's write-placement decisions compare against:
     /// which in-place-update policies are armed, and how much pressure the
     /// allocator takes before it recycles a segment (`placement`).

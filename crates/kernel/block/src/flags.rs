@@ -9,9 +9,11 @@
 // Every flag here is a HINT. Nothing in this word may change what lands on the
 // medium, only the order it lands in: a device that ignores the whole word
 // still stores exactly the same bytes. A modifier that carries a DURABILITY
-// promise (forced unit access, pre-flush) is not in this word, because
-// honouring one needs a flush sequencer this layer does not have, and a
-// promise nothing keeps is worse than one nobody made.
+// promise (forced unit access, pre-flush) is not in this word and never will
+// be: it lives in `durability::Durability`, which is sequenced into device
+// commands rather than offered as a hint. Two words, because a submitter
+// asking for speed and a submitter asking for an ordering guarantee must not
+// be able to be confused — a queue is free to drop every bit of THIS word.
 //
 // Ungated on purpose: the flags and the predicate over them are the contract,
 // and they are hosted-tested here rather than in a driver.

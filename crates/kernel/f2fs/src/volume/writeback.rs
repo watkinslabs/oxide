@@ -97,6 +97,14 @@ impl<S: SectorSource> Volume<S> {
         // an allocation is the thing being avoided.
         if self.writes_in_place(ino, &inode, old, self.sync_writeback)? {
             self.write_data_in_place(old, &page, flags, ctx.as_ref())?;
+            // The file now has bytes on a block nothing about its recorded
+            // shape distinguishes from the one the checkpoint already holds, so
+            // no later comparison can tell that anything happened. Recorded
+            // HERE, at the one site that both performed the rewrite and knows
+            // whose file it was, because the only thing that can still make
+            // those bytes durable is a barrier, and `fsync` has no other way to
+            // learn that one is owed.
+            self.note_inplace_write(ino);
             return Ok(());
         }
         let kind = if is_dir { Kind::DirData } else { Kind::FileData };

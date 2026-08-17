@@ -35,6 +35,17 @@ pub struct BlockRequest {
     /// this one request. A submitter that folded a per-request hint into the
     /// class would move every other request the task issues along with it.
     pub flags:        crate::flags::RequestFlags,
+    /// What the submitter promised about WHEN this request is on the medium.
+    ///
+    /// A SEPARATE axis from `flags`, and not for the same reason: every bit of
+    /// that word may be dropped without changing which bytes land, while
+    /// dropping a bit of this one leaves a write the caller was told was
+    /// durable in the device's volatile cache. A request carrying one of these
+    /// must be submitted through [`crate::durability::submit::submit_durable`],
+    /// which issues the flushes the promise needs and strips what the device
+    /// cannot honour — a driver handed the word raw would report completion for
+    /// data still in its cache.
+    pub durability:   crate::durability::Durability,
     /// This request's completion will be REAPED BY A POLLER, so a driver with
     /// a separate interrupt-free queue must issue it there. Set by the direct
     /// submission path a polled ring drives, and by nothing else: a request
@@ -59,7 +70,8 @@ impl Default for BlockRequest {
     /// # C: O(1)
     fn default() -> Self {
         Self { op: BlockOp::Read, start_block: 0, len_blocks: 0, buffer: Vec::new(), ioprio: sched::ioprio::DEFAULT,
-               flags: crate::flags::RequestFlags::NONE, polled: false, crypt: None }
+               flags: crate::flags::RequestFlags::NONE, polled: false, crypt: None,
+               durability: crate::durability::Durability::NONE }
     }
 }
 
@@ -87,6 +99,16 @@ impl BlockRequest {
     /// # C: O(1)
     pub fn new_write(start_block: u64, len_blocks: u32, buffer: Vec<u8>) -> Self {
         Self { op: BlockOp::Write, start_block, len_blocks, buffer, ..Default::default() }
+    }
+
+    /// The same request with a durability promise on it.
+    ///
+    /// Additive, and it commits the request to
+    /// [`crate::durability::submit::submit_durable`]; see the field.
+    /// # C: O(1)
+    pub fn with_durability(mut self, d: crate::durability::Durability) -> Self {
+        self.durability |= d;
+        self
     }
 
     /// The same request with an encryption context on it.

@@ -17,11 +17,14 @@
 //! Module manifest:
 //! - `table`: the member spans, and the address-to-member lookup.
 //! - `route`: one medium over the members, split at their boundaries.
+//! - `barrier`: when a device is asked to empty its write cache, which member
+//!              owes one, and what a failed one costs.
 //! - `flush`: the segment range one member's blocks occupy.
 //! - `alias`: a file that stands for a whole member device.
 
 pub mod table;
 pub mod route;
+pub mod barrier;
 pub mod flush;
 pub mod alias;
 
