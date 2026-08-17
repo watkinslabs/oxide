@@ -104,7 +104,9 @@ fn a_mount_publishes_its_own_stat_and_feature_list_directories() {
     let fs = mounted("/dev/vda");
     let attrs = mount_attrs(&fs);
     assert!(!names(&attrs, "vda").is_empty());
-    assert_eq!(names(&attrs, "vda/stat"), ["cp_status", "sb_status", "undiscard_blks"]);
+    assert_eq!(names(&attrs, "vda/stat"),
+               ["cp_status", "issued_discard", "queued_discard", "sb_status",
+                "undiscard_blks"]);
     let fl = names(&attrs, "vda/feature_list");
     assert_eq!(fl.len(), 16, "one entry per on-disk feature bit");
     assert!(fl.contains(&"casefold"));
@@ -126,6 +128,9 @@ fn an_attribute_is_writable_exactly_when_something_reads_it() {
     controls.extend(crate::atgc::knobs::ALL.iter().map(|&k| crate::atgc::knobs::name(k)));
     controls.extend(["ram_thresh", "max_read_extent_count", "last_age_weight",
                      "hot_data_age_threshold", "warm_data_age_threshold", "iostat_enable"]);
+    // The injection record is the third owner: its fields are written one at a
+    // time, and every injection site consults them.
+    controls.extend(["inject_rate", "inject_type", "inject_lock_timeout"]);
     for a in mount_attrs(&fs).iter().chain(global_attrs().iter()) {
         let control = controls.contains(&a.name);
         assert_eq!(a.store.is_some(), control, "{}/{}", a.dir, a.name);

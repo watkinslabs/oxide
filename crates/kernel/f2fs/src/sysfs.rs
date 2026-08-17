@@ -37,8 +37,11 @@
 //! - `feature_list`: `<dev>/feature_list/`, one entry per on-disk bit.
 
 mod build;
+mod discard;
 mod feature_list;
+mod inject;
 mod knobs;
+mod reports;
 mod stat;
 mod tunables;
 pub(crate) mod volume;
@@ -80,7 +83,10 @@ pub fn mount_attrs(fs: &Arc<F2fs>) -> Vec<Attr> {
     let mut out = volume::attrs(fs, &dev);
     out.extend(knobs::attrs(fs, &dev));
     out.extend(tunables::attrs(fs, &dev));
+    out.extend(reports::attrs(fs, &dev));
+    out.extend(inject::attrs(fs, &dev));
     out.extend(stat::attrs(fs, &dev));
+    out.extend(discard::attrs(fs, &dev));
     out.extend(feature_list::attrs(fs, &dev));
     out
 }

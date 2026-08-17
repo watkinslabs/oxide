@@ -135,10 +135,34 @@ pub fn scan(nr: usize) -> usize {
     freed
 }
 
-/// Mounts currently published, for a test that needs to know the list is
-/// maintained rather than only that its callbacks return numbers. # C: O(1)
+/// Whether ONE mount is published, by identity.
+///
+/// Identity rather than a list length, because the list is one static shared by
+/// every test in the binary and tests run concurrently: a length that moved by
+/// one is a claim about every other test's mounts as well as this one's, and it
+/// fails whenever a sibling test happens to mount at the same moment.
+/// # C: O(N mounts)
 #[cfg(test)]
-pub(crate) fn joined() -> usize { MOUNTS.lock().iter().filter(|w| w.strong_count() > 0).count() }
+pub(crate) fn listed(fs: &Arc<F2fs>) -> bool {
+    MOUNTS.lock().iter().any(|w| core::ptr::eq(w.as_ptr(), Arc::as_ptr(fs)))
+}
+
+/// How many times a mount appears, so a double join is visible as a duplicate
+/// rather than only as a changed total. # C: O(N mounts)
+#[cfg(test)]
+pub(crate) fn listings(fs: &Arc<F2fs>) -> usize {
+    MOUNTS.lock().iter().filter(|w| core::ptr::eq(w.as_ptr(), Arc::as_ptr(fs))).count()
+}
+
+/// Whether an entry for a mount that has ALREADY been dropped is still held.
+///
+/// Takes a raw pointer because the point of the question is that the `Arc` is
+/// gone: a test asking it cannot hold one.
+/// # C: O(N mounts)
+#[cfg(test)]
+pub(crate) fn holds_ptr(me: *const F2fs) -> bool {
+    MOUNTS.lock().iter().any(|w| core::ptr::eq(w.as_ptr(), me))
+}
 
 #[cfg(test)]
 #[path = "../tests/shrink/registry.rs"]

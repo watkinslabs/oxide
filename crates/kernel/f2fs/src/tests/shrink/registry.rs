@@ -8,6 +8,7 @@
 //! would pass or fail on test ordering rather than on the code.
 
 use super::*;
+use super::super::registry::{holds_ptr, listed, listings};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
@@ -64,19 +65,19 @@ fn plant(fs: &Arc<F2fs>) {
 /// nothing outside the caches' own tests ever called a shrink pass.
 #[test]
 fn mounting_joins_the_reclaim_list_and_dropping_leaves_it() {
-    let before = joined();
     let fs = mounted();
-    assert_eq!(joined(), before + 1, "a mount did not join the reclaim list");
+    assert!(listed(&fs), "a mount did not join the reclaim list");
+    let ptr = Arc::as_ptr(&fs);
     drop(fs);
-    assert_eq!(joined(), before, "a dropped mount stayed in the reclaim list");
+    assert!(!holds_ptr(ptr), "a dropped mount stayed in the reclaim list");
 }
 
 #[test]
 fn a_mount_joining_twice_is_listed_once() {
     let fs = mounted();
-    let after_mount = joined();
+    assert_eq!(listings(&fs), 1);
     crate::shrink::join(&fs);
-    assert_eq!(joined(), after_mount, "a second join listed the same mount twice");
+    assert_eq!(listings(&fs), 1, "a second join listed the same mount twice");
 }
 
 /// The count callback reports the entries a mount could give back, so it must
@@ -153,9 +154,9 @@ fn leaving_empties_both_extent_caches() {
 fn a_dropped_mount_is_not_visited_by_a_later_pass() {
     let fs = mounted();
     plant(&fs);
-    let before = joined();
+    let ptr = Arc::as_ptr(&fs);
     drop(fs);
-    assert_eq!(joined(), before - 1);
+    assert!(!holds_ptr(ptr));
     // Both callbacks must survive walking a list that just lost an entry.
     let _ = count();
     let _ = scan(64);
