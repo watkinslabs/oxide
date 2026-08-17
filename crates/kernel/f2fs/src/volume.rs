@@ -147,6 +147,11 @@ pub struct Volume<S: SectorSource> {
     pub(crate) next_free_nid: u32,
     /// Whether anything is waiting for a checkpoint.
     pub(crate) dirty: bool,
+    /// The inode numbers this checkpoint epoch has accumulated, by why. Two of
+    /// the reasons an `fsync` must write a whole checkpoint are events that
+    /// happened to a directory rather than states its blocks show, so they are
+    /// recorded here as they happen and retired when a checkpoint lands.
+    pub(crate) ino_lists: crate::checkpoint::InoLists,
     /// What each quota kind resolved to on this mount.
     pub(crate) quota_setup: [crate::quota::Setup; crate::uapi::MAX_QUOTAS],
     /// Each kind's file header, parsed once.

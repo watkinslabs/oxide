@@ -22,6 +22,19 @@ fn project_enforcement_needs_the_field_to_enforce_against() {
     assert!(at_mount(&p, "prjquota").expect("accepted").prjquota);
 }
 
+#[test]
+fn the_project_feature_is_checked_before_the_named_file_clears_the_flag() {
+    // Order, not just outcome. A named project file CLEARS `prjquota`, so a
+    // pass that settled the two arrangements first would find the flag gone
+    // and accept a line asking for enforcement the volume cannot store.
+    assert_eq!(at_mount(&plain(), "prjquota,prjjquota=aq,jqfmt=vfsv1"), Err(Errno::Einval));
+    // With the field present the same line is legal, and the file wins.
+    let p = Facts { feature: FEATURE_PRJQUOTA, ..plain() };
+    let o = at_mount(&p, "prjquota,prjjquota=aq,jqfmt=vfsv1").expect("accepted");
+    assert!(!o.prjquota, "the file wins");
+    assert_eq!(o.jquota.names[QKind::Project as usize], name("aq"));
+}
+
 // ---------------------------------------------------------------- mixing
 
 #[test]
@@ -29,6 +42,22 @@ fn a_named_file_and_the_modern_flag_for_the_same_kind_settle_to_the_file() {
     let o = at_mount(&plain(), "usrquota,usrjquota=aq,jqfmt=vfsv1").expect("accepted");
     assert!(!o.usrquota, "the file wins");
     assert_eq!(o.jquota.names[QKind::User as usize], name("aq"));
+}
+
+#[test]
+fn a_volume_with_its_own_quota_inodes_drops_the_name_rather_than_calling_it_a_mixture() {
+    // The name is dropped BEFORE the mixture is judged, so a line carrying
+    // both the legacy name and the modern flag is legal here — refusing it
+    // would break a line that has carried the pair for years.
+    let q = Facts { feature: FEATURE_QUOTA_INO, ..plain() };
+    let (o, spec) = at_mount_spec(&q, "usrjquota=aq,jqfmt=vfsv1,usrquota").expect("accepted");
+    assert_eq!(o.jquota.names[QKind::User as usize], None, "the name is dropped");
+    assert!(!spec.qname[QKind::User as usize]);
+    assert!(o.usrquota, "the flag the volume CAN honour is kept");
+    // Without the feature the same line is the mixture it looks like.
+    assert_eq!(at_mount(&plain(), "usrjquota=aq,jqfmt=vfsv1,usrquota").map(|o| o.usrquota),
+               Ok(false), "the file wins for its own kind");
+    assert_eq!(at_mount(&plain(), "usrjquota=aq,jqfmt=vfsv1,grpquota"), Err(Errno::Einval));
 }
 
 #[test]

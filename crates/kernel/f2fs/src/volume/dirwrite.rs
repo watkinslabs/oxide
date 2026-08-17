@@ -222,6 +222,14 @@ impl<S: SectorSource> Volume<S> {
     /// Remove `name` from `dir`. Reports the inode it named. # C: O(depth)
     pub(crate) fn remove_dentry(&mut self, dir: u32, name: &[u8]) -> Result<u32, Errno> {
         self.writable_or_err()?;
+        // A strict mount promises that an `fsync` of any file leaves the whole
+        // directory tree consistent, and a removed entry is exactly what a
+        // chain replay cannot put back — the chain restores files, not
+        // absences. Recording the directory here is what later makes an
+        // `fsync` of a file below it take the checkpoint path.
+        if self.opts.fsync_mode == crate::opts::FsyncMode::Strict {
+            self.ino_lists.add(crate::checkpoint::InoKind::TransDir, dir);
+        }
         let inode = self.read_inode(dir)?;
         // Removing an entry does NOT need the key: without it the caller
         // passes back the encoded name a listing produced, which carries the
