@@ -104,14 +104,16 @@ fn meta(sock: &InetSocket, rcv: &Received) -> net::cmsg::RxMeta {
     rcv.rx_meta(peer_label(sock))
 }
 
-/// The peer's security label, published only by a module that labels sockets.
-/// # C: O(label)
+/// The received datagram's sender label, for `SCM_SECURITY`. # C: O(label)
+///
+/// A datagram's label comes from the PACKET, not from any peer this socket
+/// recorded: an unconnected receiver has no peer, and a connected one may still
+/// receive from elsewhere. This stack carries no per-packet label, so an INET
+/// datagram has none to report and no `SCM_SECURITY` is attached — which is the
+/// same answer a kernel without packet labelling gives.
 fn peer_label(sock: &InetSocket) -> Option<Vec<u8>> {
-    security::network::peer_security(security::network::PeerContext {
-        namespace: sock.net_ns(),
-        family: sock.family.load(Ordering::Acquire),
-        connected: sock.peer.lock().is_some() || sock.peer6.lock().is_some(),
-    })
+    let _ = sock;
+    None
 }
 
 fn packet_name(meta: net::sock::PacketAddr) -> [u8; 20] {

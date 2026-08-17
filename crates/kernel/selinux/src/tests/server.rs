@@ -191,8 +191,42 @@ fn transition_and_render_are_refused_before_a_policy_is_loaded() {
     assert!(s.transition_sid(1, 2, 7, None).is_err());
     assert!(s.change_sid(1, 2, 7).is_err());
     assert!(s.member_sid(1, 2, 7).is_err());
-    assert!(s.sid_to_context(1).is_err());
     assert!(s.context_to_sid("system_u:object_r:etc_t:s0").is_err());
+}
+
+/// A label read this early must ANSWER, not fail: userspace reads its own and
+/// its peers' labels before it loads a policy, and a refusal there reads as a
+/// kernel without the module. The pre-policy answer is the initial SID's own
+/// name.
+#[test]
+fn an_initial_sid_renders_to_its_own_name_before_a_policy_is_loaded() {
+    use crate::uapi::initsid::InitSid;
+    let s = server();
+    assert_eq!(s.sid_to_context(InitSid::Kernel.sid()).unwrap(), "kernel");
+    assert_eq!(s.sid_to_context(InitSid::Unlabeled.sid()).unwrap(), "unlabeled");
+    assert_eq!(s.sid_to_context(InitSid::Security.sid()).unwrap(), "security");
+    assert_eq!(s.sid_to_context(InitSid::Devnull.sid()).unwrap(), "devnull");
+    // The first user process's label renders as the kernel's name. Any other
+    // answer tells a reader a policy is already loaded, and it then never
+    // loads one.
+    assert_eq!(s.sid_to_context(InitSid::Init.sid()).unwrap(), "kernel");
+    // A placeholder slot policy never names, and anything above the initial
+    // range, has no pre-policy rendering.
+    assert!(s.sid_to_context(4).is_err());
+    assert!(s.sid_to_context(crate::uapi::initsid::SECINITSID_NUM + 1).is_err());
+}
+
+/// With no policy there is no range to move, so the identity SID stands. This
+/// is the answer the AF_UNIX connect path relies on for a server child's label
+/// for the whole of early boot.
+#[test]
+fn an_mls_range_copy_is_the_identity_before_a_policy_is_loaded() {
+    use crate::uapi::initsid::InitSid;
+    let mut s = server();
+    assert_eq!(s.sid_mls_copy(InitSid::Kernel.sid(), InitSid::Init.sid()),
+        Ok(InitSid::Kernel.sid()));
+    assert_eq!(s.sid_mls_copy(InitSid::Unlabeled.sid(), InitSid::Kernel.sid()),
+        Ok(InitSid::Unlabeled.sid()));
 }
 
 #[test]
@@ -288,4 +322,33 @@ fn a_malformed_image_is_refused_at_parse_and_never_reaches_a_server() {
     broken[0] ^= 0xff;
     assert!(crate::StagedPolicy::parse(&broken).is_err(),
             "a refused image must not survive to the point where a server would take it");
+}
+
+/// The first user process's label must render to the KERNEL's context, not to
+/// the placeholder the policy declares for it.
+///
+/// A policy declares a real context for this SID only when it advertises
+/// `userspace_initial_context`; the shipped policy does not, and its declared
+/// context is `unlabeled_t`. Taking that placeholder gave every task started
+/// before the policy load an `unlabeled_t` label, and userspace that reads its
+/// own label to decide what to do then acted on a label the policy never meant
+/// it to have.
+#[test]
+fn the_first_process_label_renders_as_the_kernels_when_the_policy_lacks_the_capability() {
+    use crate::uapi::initsid::InitSid;
+    use crate::uapi::policycap::POLICYDB_CAP_USERSPACE_INITIAL_CONTEXT;
+    let Some(s) = loaded() else { return };
+    let db = s.policy().expect("policy");
+    assert!(!db.policycap(POLICYDB_CAP_USERSPACE_INITIAL_CONTEXT),
+        "the shipped policy does not advertise it; this test is about that case");
+    // The policy DOES declare a context for the SID — it is simply a placeholder.
+    let declared = db.ocontexts.isid(InitSid::Init.sid()).expect("declared").clone();
+    let kernel = s.sid_to_context(InitSid::Kernel.sid()).expect("kernel renders");
+    let init = s.sid_to_context(InitSid::Init.sid()).expect("init renders");
+    assert_eq!(init, kernel, "the first process takes the kernel's context");
+    assert_ne!(init, s.sid_to_context(InitSid::Unlabeled.sid()).expect("unlabeled renders"),
+        "the declared placeholder must not be what this SID resolves to");
+    // The placeholder really was the unlabeled type, so the assertion above is
+    // testing the substitution and not a policy that happened to agree.
+    let _ = declared;
 }

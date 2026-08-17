@@ -91,6 +91,23 @@ impl UnixPair {
         }
     }
 
+    /// Record the security label of the socket owning `end` (`SO_PEERSEC`
+    /// source). # C: O(1)
+    pub fn set_end_sid(&self, end: crate::UnixEnd, sid: u32) {
+        match end {
+            crate::UnixEnd::A => self.cred_a.set_sid(sid),
+            crate::UnixEnd::B => self.cred_b.set_sid(sid),
+        }
+    }
+
+    /// The PEER's security label as seen from `end` (peer of A is B). # C: O(1)
+    pub fn peer_sid(&self, end: crate::UnixEnd) -> u32 {
+        match end {
+            crate::UnixEnd::A => self.cred_b.sid(),
+            crate::UnixEnd::B => self.cred_a.sid(),
+        }
+    }
+
     /// Pin the identity of the process owning `end` (`SO_PEERPIDFD` source).
     /// # C: O(1)
     pub fn set_end_identity(&self, end: crate::UnixEnd, identity: Option<alloc::sync::Arc<sched::pid::PidIdentity>>) {

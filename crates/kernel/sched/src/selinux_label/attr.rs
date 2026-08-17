@@ -136,15 +136,37 @@ pub fn parse_attr_write(slot: AttrSlot, src: &[u8]) -> Result<AttrRequest<'_>, E
 
 /// Render one slot's value for a read. # C: O(categories)
 ///
-/// An unset slot, and any slot at all before a policy is loaded, reads as zero
-/// bytes rather than an error: userspace tests these files for emptiness to
-/// decide whether the module is doing anything, and an error there is read as
-/// a broken kernel rather than as an unset label.
-pub fn render_slot(value: Option<Sid>) -> Vec<u8> {
-    let Some(sid) = value else { return Vec::new() };
-    match selinux_runtime::with(|s| s.sid_to_context(sid)) {
-        Some(Ok(text)) => text.into_bytes(),
-        _ => Vec::new(),
+/// An unset slot, and every slot on a kernel with no module installed, read as
+/// zero bytes rather than an error: userspace tests these files for emptiness to
+/// decide whether the module is doing anything, and an error there reads as a
+/// broken kernel rather than as an unset label.
+///
+/// A slot that IS set and whose label cannot be rendered is an ERROR, not zero
+/// bytes. Those two are not the same answer and must not collapse onto one:
+/// userspace that reads an empty buffer carries the empty string onward as a
+/// label and only fails much later, somewhere that names neither the SID nor the
+/// read. An empty context is not a context, so the read that could not produce
+/// one has to say so.
+pub fn render_slot(value: Option<Sid>) -> Result<Vec<u8>, Errno> {
+    let Some(sid) = value else { return Ok(Vec::new()) };
+    slot_answer(selinux_runtime::with(|s|
+        s.sid_to_context(sid).ok().map(alloc::string::String::into_bytes)))
+}
+
+/// The read's answer, given what the module could render. # C: O(1)
+///
+/// `None` is no module installed; `Some(None)` is a module that could not render
+/// the label; `Some(Some(text))` is the rendered context. The middle case is the
+/// one that must not become zero bytes, and it is separated from the outer one
+/// here so a test can reach it without a loaded policy.
+pub fn slot_answer(rendered: Option<Option<Vec<u8>>>) -> Result<Vec<u8>, Errno> {
+    match rendered {
+        Some(Some(text)) => Ok(text),
+        // The label is set and no table can render it.
+        Some(None) => Err(Errno::Einval),
+        // No module at all: nothing labels anything, so there is no label to
+        // report and no failure to report either.
+        None => Ok(Vec::new()),
     }
 }
 
@@ -165,7 +187,7 @@ pub fn read_attr(target: &crate::Task, slot: AttrSlot) -> Result<Vec<u8>, Errno>
             policy::check(ssid, tsid, CLASS_PROCESS, PERM_GETATTR)?;
         }
     }
-    Ok(render_slot(value))
+    render_slot(value)
 }
 
 /// Write one attribute of the calling thread. # C: O(categories)
