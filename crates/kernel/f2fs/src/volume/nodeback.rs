@@ -77,6 +77,10 @@ impl<S: SectorSource> Volume<S> {
         // does not say what it is. It is metadata all the same: every data
         // block under it is unreachable until the node naming it lands.
         self.write_block_flags(addr, &out, block::flags::META)?;
+        // A node block belongs to a file, and it is that file's `fsync` that
+        // fences the member it landed on. The owner is in the block's own footer
+        // — an inode block names itself — so no caller has to carry it here.
+        self.note_file_write(f.ino, addr);
         {
             use crate::stats::iostat::Io;
             self.io_account(self.io_gc_kind(Io::FsNode, Io::FsGcNode), BLKSIZE as u64, false);

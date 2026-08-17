@@ -97,6 +97,9 @@ impl<S: SectorSource> Volume<S> {
         // an allocation is the thing being avoided.
         if self.writes_in_place(ino, &inode, old, self.sync_writeback)? {
             self.write_data_in_place(old, &page, flags, ctx.as_ref())?;
+            // The rewrite landed on the member `old` lies on, and it is this
+            // file's `fsync` that will have to fence it.
+            self.note_file_write(ino, old);
             // The file now has bytes on a block nothing about its recorded
             // shape distinguishes from the one the checkpoint already holds, so
             // no later comparison can tell that anything happened. Recorded

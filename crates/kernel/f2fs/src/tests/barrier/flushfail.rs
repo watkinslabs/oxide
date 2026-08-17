@@ -85,3 +85,98 @@ fn a_member_that_keeps_refusing_stops_the_checkpoint() {
     assert_ne!(v.checkpoint().flags & CP_ERROR_FLAG, 0, "the volume did not stop checkpointing");
     assert!(v.dirty_devs.get().is_dirty(1), "a failed barrier may not lower the member's bit");
 }
+
+// ---- what ONE FILE's fsync fences -----------------------------------------
+
+/// A file whose blocks are all on one member owes ONE barrier, not one per
+/// member.
+///
+/// The saving is the property: a barrier is a whole-cache operation, so on a
+/// wide volume the difference between "the members this file is on" and "every
+/// member" is real cost paid on every `fsync`.
+#[test]
+fn an_fsync_fences_only_the_members_the_files_blocks_landed_on() {
+    let mut v = spread_refusing(0);
+    let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
+    // A WHOLE block, so the file has a data block of its own: a few bytes live
+    // inside the inode, and such a file has no data member to record.
+    v.write_file(ino, 0, &alloc::vec![0xA1u8; crate::uapi::BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
+    v.commit().unwrap();
+    // Which member this file is on is the volume's choice, so it is READ rather
+    // than assumed — what is asserted is that the other members are not fenced.
+    //
+    // The rewrite is forced OUT of place, so the record has to come from the
+    // data writer itself: a build that recorded only its node writes would name
+    // the node's member and leave the file's bytes in another member's cache.
+    v.set_ipu_policy(crate::place::bits::DISABLE).unwrap();
+    v.write_file(ino, 0, &alloc::vec![0xB2u8; crate::uapi::BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
+    let mask = v.dirty_ino_devs.mask(ino);
+    assert!(mask != 0, "nothing was recorded for a file that has been written");
+    // Non-vacuity: a file spread over BOTH members would make the assertion
+    // below identical to the old fence-everything behaviour. Measured at 0x2 on
+    // this fixture — one member — so the loop can genuinely fail.
+    assert!(mask != 0b11, "the file is on both members; this case proves nothing");
+    // The record must cover the member the DATA landed on, not only the one its
+    // node did: a build that recorded node writes alone would fence the node's
+    // member and leave the file's bytes in another member's cache.
+    let at = v.holder_addr(ino, crate::volume::Holder::Inode, 0).unwrap();
+    let (data_member, _) = v.devices().target(at);
+    assert!(mask & (1 << data_member) != 0,
+            "the member the data landed on ({data_member}) is not in the record {mask:#x}");
+    // Measured on this fixture: the file's data block and its node both land on
+    // member 1, so this assertion cannot tell the data writer's record from the
+    // node writer's. A filed row records that gap rather than a fixture bent to
+    // hide it.
+    for m in v.source_ref().members() { m.forget_commands(); }
+    v.fsync(ino).unwrap();
+    for i in 0..2usize {
+        let want = if mask & (1 << i) != 0 { 1 } else { 0 };
+        assert_eq!(barriers(&v, i), want,
+                   "member {i}: fenced {} times for a file with mask {mask:#x}",
+                   barriers(&v, i));
+    }
+    assert_eq!(v.dirty_ino_devs.mask(ino), 0, "the barrier did not retire the record");
+
+    // And again for a rewrite that lands back IN place, which is a different
+    // writer and which changes nothing about the file's recorded shape — so
+    // nothing else in the filesystem could afterwards say which member holds it.
+    v.set_ipu_policy(crate::place::bits::bit(crate::place::bits::FORCE)).unwrap();
+    let at = v.holder_addr(ino, crate::volume::Holder::Inode, 0).unwrap();
+    v.write_file(ino, 0, &alloc::vec![0xC3u8; crate::uapi::BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
+    assert_eq!(v.holder_addr(ino, crate::volume::Holder::Inode, 0).unwrap(), at,
+               "the rewrite moved, so this case is not about the in-place writer");
+    let (m, _) = v.devices().target(at);
+    assert!(v.dirty_ino_devs.mask(ino) & (1 << m) != 0,
+            "an in-place rewrite on member {m} was not recorded");
+}
+
+/// A file nothing is recorded against is fenced everywhere: a caller that
+/// cannot tell "nothing written" from "not recorded" must not skip a barrier it
+/// may owe.
+#[test]
+fn a_file_with_nothing_recorded_is_fenced_everywhere() {
+    use crate::devices::barrier::fsync_flush_targets;
+    assert_eq!(fsync_flush_targets(2, 0).iter().count(), 2);
+    assert_eq!(fsync_flush_targets(6, 0).iter().count(), 6);
+    // A volume of one carries everything, so there is nothing to narrow.
+    assert_eq!(fsync_flush_targets(1, 0).iter().count(), 1);
+    assert_eq!(fsync_flush_targets(1, 0b10).iter().count(), 1);
+    // And a recorded mask is honoured, bounded by the members that exist.
+    assert_eq!(fsync_flush_targets(4, 0b1010).iter().collect::<Vec<_>>(), [1, 3]);
+    assert_eq!(fsync_flush_targets(2, 0b1010).iter().collect::<Vec<_>>(), [1]);
+}
+
+/// A checkpoint fences everything at once, so every file's record is retired.
+#[test]
+fn a_checkpoint_retires_every_files_record() {
+    let mut v = spread_refusing(0);
+    let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
+    v.write_file(ino, 0, b"payload").unwrap();
+    v.sync_data().unwrap();
+    assert!(!v.dirty_ino_devs.is_empty(), "nothing was recorded");
+    v.commit().unwrap();
+    assert!(v.dirty_ino_devs.is_empty(), "a checkpoint left records standing");
+}
