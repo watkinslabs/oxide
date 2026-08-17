@@ -97,6 +97,12 @@ pub(crate) fn build(fs: Arc<F2fs>, ino: u32, inode: Inode, rdev: u32) -> InodeRe
     let size = inode.size;
     let links = inode.links;
     let (uid, gid) = (inode.uid, inode.gid);
+    // The file's own address space. A mapping of a regular file resolves its
+    // faults through THIS filesystem's pages; without it the memory manager
+    // fills a byte cache of its own from `read` and holds a second copy of
+    // every page it touches, which stops agreeing with the file the moment
+    // either side is written.
+    let space = super::mapping::address_space(&fs, ino, ftype);
     let node = F2fsNode { fs, ino };
     let mut b = InodeBuilder::new(u64::from(ino), mode_word, inode_ops, file_ops)
         .size(size)
@@ -105,6 +111,7 @@ pub(crate) fn build(fs: Arc<F2fs>, ino: u32, inode: Inode, rdev: u32) -> InodeRe
         .nlink(links.max(1))
         .times(atime, mtime, ctime)
         .private(Arc::new(node));
+    if let Some(space) = space { b = b.mapping(space); }
     if matches!(ftype, FileType::CharDev | FileType::BlockDev) { b = b.rdev(rdev); }
     if let Some(t) = crtime { b = b.btime(t); }
     b.build()

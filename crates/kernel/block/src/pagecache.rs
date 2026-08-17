@@ -10,6 +10,8 @@
 //                    dirty-inode list, the dirty count and its thresholds.
 //   `writeback.rs` — the passes: `fsync`/flusher writeback, and reclaim.
 //   `cache.rs`     — `PageCache`, the public surface.
+//   `query.rs`     — asking a mapping what it holds without changing it, and
+//                    the best-effort eviction that is a hint, not a truncate.
 //   `daemon.rs`    — `kflushd`, per target.
 //
 // Backing-store dispatch: a `PageCache` used over a raw device installs a
@@ -32,6 +34,7 @@ mod daemon;
 mod global;
 mod mapping;
 mod page;
+mod query;
 mod radix;
 mod writeback;
 #[cfg(test)]
@@ -46,5 +49,6 @@ pub use global::{
 };
 pub use mapping::{Mapping, PageOut, Writeback};
 pub use page::CachedPage;
+pub use query::PageState;
 pub use radix::RadixTree;
 pub use writeback::{flush_pass, reclaimable_pages, shrink, DevWriteback, Sink};

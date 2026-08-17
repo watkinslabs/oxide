@@ -43,6 +43,9 @@
 //!              mount's metadata mapping.
 //! - `writeback`: choosing where a file's dirty data pages go, and putting
 //!                them there.
+//! - `mapped`: what a MAPPING of a file asks for — the fault's fill, charged
+//!             to the mapped layer, and the residency questions that must not
+//!             fetch.
 
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
@@ -93,6 +96,7 @@ pub mod iostat;
 pub mod blockio;
 pub mod writeback;
 pub mod nodeback;
+pub mod mapped;
 
 pub use curseg::{Curseg, Kind, Summary};
 pub use dir::DirEntry;
