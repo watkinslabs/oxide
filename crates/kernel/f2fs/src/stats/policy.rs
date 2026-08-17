@@ -1,46 +1,26 @@
 //! When a write may land back on the block it came from.
 //!
-//! Overwriting in place breaks the one rule the format is built on — that
-//! the previous checkpoint's blocks all survive until the next one retires
-//! them — so it is only ever done where the block being overwritten is
-//! already unreachable from any checkpoint. Which of those cases a mount
-//! takes is a policy, reported as a set rather than a single choice because
-//! several can be armed at once.
+//! Overwriting in place bends the one rule the format is built on — that the
+//! previous checkpoint's blocks all survive until the next one retires them —
+//! and is worth it only for a file's own DATA, where a roll-forward replay can
+//! reconstruct the tail. Which states a mount does it in is a policy, decided
+//! in `crate::place::ipu` and reported here as a set rather than a single
+//! choice, because several can be armed at once.
 
 use alloc::string::String;
 
-use crate::opts::Options;
-
-/// The policies, by bit position. The positions are the report's ABI: a
-/// reader decodes the set by name, and the names are listed in this order.
-pub mod ipu {
-    pub const FORCE: u32 = 0;
-    pub const SSR: u32 = 1;
-    pub const UTIL: u32 = 2;
-    pub const SSR_UTIL: u32 = 3;
-    pub const FSYNC: u32 = 4;
-    pub const ASYNC: u32 = 5;
-    pub const NOCACHE: u32 = 6;
-    pub const HONOR_OPU_WRITE: u32 = 7;
-    pub const MAX: u32 = 8;
-}
+/// The policies, by bit position, and the names they are reported under.
+///
+/// Re-exported rather than restated: the set the writer CONSULTS is the set the
+/// report names, and two lists would be two places for a policy to be armed in
+/// one and missing from the other.
+pub use crate::place::bits as ipu;
 
 /// The names, indexed by bit position.
-pub const IPU_NAMES: [&str; ipu::MAX as usize] =
-    ["FORCE", "SSR", "UTIL", "SSR_UTIL", "FSYNC", "ASYNC", "NOCACHE", "HONOR_OPU_WRITE"];
-
-/// Which policies this mount will use.
-///
-/// None. Every write this build makes takes a fresh block and releases the
-/// old one, with no path that rewrites a block where it sits — so the honest
-/// report is the empty set, which the reader renders as disabled. Reporting
-/// a policy the writer does not consult would say in-place update is armed
-/// on a mount where it can never happen.
-/// # C: O(1)
-pub fn ipu_policy(_o: &Options) -> u32 { 0 }
+pub const IPU_NAMES: [&str; ipu::MAX as usize] = ipu::NAMES;
 
 /// Whether in-place update is off entirely. # C: O(1)
-pub fn ipu_disabled(policy: u32) -> bool { policy == 0 }
+pub fn ipu_disabled(policy: u32) -> bool { policy == ipu::DISABLE }
 
 /// The set as the report writes it: the armed names, or the word that says
 /// there are none. # C: O(N policies)

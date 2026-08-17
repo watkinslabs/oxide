@@ -112,6 +112,16 @@ pub fn has_compression(feature: u32) -> bool { feature & FEATURE_COMPRESSION != 
 /// Whether any file on the volume may be stored encrypted. # C: O(1)
 pub fn has_encrypt(feature: u32) -> bool { feature & FEATURE_ENCRYPT != 0 }
 
+/// Whether the volume promises a repair tool a directory to reparent recovered
+/// orphans into.
+///
+/// The reparenting itself belongs to the tool that walks a broken volume, not
+/// to a mount: a mount has a live checkpoint and an orphan list and needs
+/// neither. What the bit costs a MOUNT is one refusal, `crypto::support`, and
+/// it is the whole of the bit's meaning here.
+/// # C: O(1)
+pub fn has_lost_found(feature: u32) -> bool { feature & FEATURE_LOST_FOUND != 0 }
+
 #[cfg(test)]
 #[path = "tests/features.rs"]
 mod tests;

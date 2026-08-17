@@ -64,7 +64,7 @@ impl<S: SectorSource> Volume<S> {
     }
 
     /// # C: O(bytes read)
-    fn read_file_inner(&self, inode: &Inode, ino: u32, off: u64, buf: &mut [u8])
+    pub(super) fn read_file_inner(&self, inode: &Inode, ino: u32, off: u64, buf: &mut [u8])
         -> Result<usize, Errno> {
         // The writer of an open span must see its own writes, which live in
         // the shadow inode rather than in this one.
@@ -84,6 +84,13 @@ impl<S: SectorSource> Volume<S> {
         // rather than no bytes.
         let crypt = self.crypt_info(inode, ino)?;
         if inode.encrypted() && crypt.is_none() { return Err(Errno::Enokey); }
+        // The window the CALLER asked for, fetched before it is served block
+        // by block below. The same blocks either way; the difference is that a
+        // contiguous run of them goes to the medium once instead of once per
+        // block, and the loop below then finds them in the mapping.
+        let first = off / BLKSIZE as u64;
+        let last = (off + want as u64 - 1) / BLKSIZE as u64;
+        self.readahead_data(inode, ino, first, (last - first + 1) as usize);
         let mut done = 0usize;
         while done < want {
             let pos = off + done as u64;
@@ -126,6 +133,14 @@ impl<S: SectorSource> Volume<S> {
                 // request as falls inside it is served from one decompression
                 // rather than one per block.
                 Mapped::Compressed => {
+                    // A cluster unpacks into a buffer the size of the whole
+                    // cluster plus whatever the algorithm needs to work in —
+                    // the largest single allocation any read makes, and the one
+                    // the reference takes from the virtual allocator and
+                    // injects at.
+                    if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::Vmalloc) {
+                        return Err(Errno::Enomem);
+                    }
                     let plain = self.read_cluster(inode, ino, index)?;
                     let at = (index - plain.first) as usize * BLKSIZE + skew;
                     let n = (plain.data.len() - at).min(want - done);
@@ -177,6 +192,12 @@ impl<S: SectorSource> Volume<S> {
     fn fill_data_page(&self, inode: &Inode, ino: u32, index: u64, addr: u32,
                       crypt: Option<&crate::crypto::Info>, attest: bool)
         -> Result<Vec<u8>, Errno> {
+        // The mapping is asked for a page BEFORE the medium is: the lookup can
+        // fail for want of a page as easily as the read can fail for want of a
+        // block, and the reference injects at the lookup for that reason.
+        if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::PageGet) {
+            return Err(Errno::Enomem);
+        }
         self.data_cache.read(ino, index, || {
             self.io_account(crate::stats::iostat::Io::FsDataRead, BLKSIZE as u64, false);
             self.io_read_folio(0);
@@ -209,7 +230,7 @@ impl<S: SectorSource> Volume<S> {
     /// size stops part way through is stored plain — so the question is put to
     /// the cluster's head rather than assumed from the inode's flag.
     /// # C: O(indirection depth) blocks
-    fn map_cluster_block(&self, inode: &Inode, ino: u32, index: u64) -> Result<Mapped, Errno> {
+    pub(super) fn map_cluster_block(&self, inode: &Inode, ino: u32, index: u64) -> Result<Mapped, Errno> {
         if !inode.compressed() { return self.map_block(inode, ino, index); }
         let g = crate::compress::Geometry::new(
             inode.compress_algorithm,

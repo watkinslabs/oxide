@@ -267,6 +267,8 @@ fn compressed_traffic_appears_under_its_plain_kind_and_its_own() {
     v.set_iostat_enabled(true);
     let data = vec![9u8; 8 * BLKSIZE];
     v.write_file(ino, 0, &data).unwrap();
+    // The stored blocks are charged where they are chosen, which is writeback.
+    v.sync_data().unwrap();
     let b = body(&v);
     assert_eq!(row(&b, "[WRITE]", "app buffered data").0, data.len() as u64);
     assert_eq!(row(&b, "[WRITE]", "app buffered cdata").0, data.len() as u64,

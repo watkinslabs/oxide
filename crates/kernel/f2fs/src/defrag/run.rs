@@ -38,11 +38,16 @@ impl<S: SectorSource> Volume<S> {
             compress_released: inode.has(crate::flags::COMPRESS_RELEASED),
             atomic: self.is_atomic_file(ino),
             pinned: crate::pin::state::is_pinned(&inode),
-            // What the mount has ARMED, read from the one place that answers
-            // it. No policy is armed in this build, so the refusal a policy
-            // would cause appears the moment one is.
-            inplace_update: !crate::stats::policy::ipu_disabled(
-                crate::stats::policy::ipu_policy(self.options())),
+            // Whether this file's writes would land back where they already
+            // are, which is the question a rewrite has to ask first: a mount
+            // that overwrites in place cannot move a block anywhere, so the
+            // whole walk would read the range and change nothing.
+            //
+            // Asked as if the file had ALREADY asked for out-of-place writes,
+            // which is what a rewrite is: the arm that honours that request is
+            // therefore the one arm this question does not trip over, and a
+            // mount whose only armed policy is that one may still defragment.
+            inplace_update: self.writes_in_place_opu(ino, &inode)?,
         };
         plan::admit(&facts)?;
         // The state refusals come first, whatever the range: a caller told

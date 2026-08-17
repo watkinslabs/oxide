@@ -12,9 +12,9 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
+use syscall::errno::Errno;
 use vfs::xattr::XattrError;
 use vfs::idmap::Idmap;
-use vfs::namei::RENAME_NOREPLACE;
 use vfs::setattr::{Iattr, ATTR_ATIME, ATTR_GID, ATTR_MODE, ATTR_MTIME, ATTR_SIZE, ATTR_UID};
 use vfs::{CreateCtx, DirContext, FileType, FileOps, Inode, InodeOps, InodeRef, KResult,
           VfsError};
@@ -52,15 +52,87 @@ impl F2fsOps {
         Ok(node)
     }
 
+    /// Whether the name being moved names a directory, and what — if anything
+    /// — sits at the destination. Read BEFORE the rename, because afterwards
+    /// neither name resolves to what it did.
+    /// # C: O(depth) blocks
+    fn shapes(node: &F2fsNode, old_name: &str, target: &F2fsNode, new_name: &str)
+        -> (bool, Option<bool>) {
+        let v = node.fs.volume.lock();
+        let is_dir = |ino: u32| {
+            v.read_inode(ino).map(|i| mode::file_type(i.mode) == FileType::Directory)
+                .unwrap_or(false)
+        };
+        let moved = v.read_inode(node.ino).ok()
+            .and_then(|d| v.lookup(&d, node.ino, old_name.as_bytes()).ok())
+            .map(|h| is_dir(h.ino))
+            .unwrap_or(false);
+        let victim = v.read_inode(target.ino).ok()
+            .and_then(|d| v.lookup(&d, target.ino, new_name.as_bytes()).ok())
+            .map(|h| is_dir(h.ino));
+        (moved, victim)
+    }
+
     /// Make something under `inode`, with the owner the caller's context
     /// names. # C: O(depth) blocks
     fn make(inode: &Inode, name: &str, ftype: FileType, perm: u32, rdev: u32,
             body: Option<&[u8]>, ctx: &CreateCtx, named: bool) -> KResult<InodeRef> {
-        let node = Self::writable_dir(inode)?;
+        let (node, dir) = Self::dir_of(inode)?;
+        if !node.fs.is_writable() { return Err(VfsError::Erofs); }
         // The umask is applied here and not in the volume: it is a property of
-        // the caller, not of the medium.
-        let perm = perm & !u32::from(ctx.umask);
-        node.fs.make(node.ino, name, mk_mode(ftype, perm), ctx.fsuid(), ctx.fsgid(), rdev, body, named)
+        // the caller, not of the medium — and it is only ever consulted when the
+        // parent has no default ACL to inherit, which is what `inherit` decides.
+        let kind = match ftype {
+            FileType::Directory => vfs::posix_acl::NewKind::Dir,
+            FileType::Symlink   => vfs::posix_acl::NewKind::Symlink,
+            _                   => vfs::posix_acl::NewKind::Other,
+        };
+        let got = Self::inherited(node, &dir, perm as u16, ctx.umask, kind)?;
+        let child = node.fs.make(node.ino, name, mk_mode(ftype, u32::from(got.mode)),
+                                 ctx.fsuid(), ctx.fsgid(), rdev, body, named)?;
+        if got.access.is_some() || got.default.is_some() {
+            Self::store_inherited(node, Self::node(&child)?.ino, &got)?;
+        }
+        Ok(child)
+    }
+
+    /// The parent's default ACL, folded with the requested mode and the umask
+    /// into what the new object gets.
+    ///
+    /// Kept out of line: the attribute region it reads is assembled in a buffer
+    /// the size of a block, and a create already spends most of the kernel stack
+    /// on the write path below it. # C: O(region bytes)
+    #[inline(never)]
+    fn inherited(node: &F2fsNode, dir: &crate::Inode, perm: u16, umask: u16,
+                 kind: vfs::posix_acl::NewKind) -> KResult<crate::acl::Inherited> {
+        let (enabled, parent) = {
+            let v = node.fs.volume.lock();
+            let enabled = v.options().acl;
+            let parent = if enabled && kind != vfs::posix_acl::NewKind::Symlink {
+                match v.get_xattr(dir, node.ino, crate::acl::name_default()) {
+                    Ok(bytes) => Some(bytes),
+                    Err(Errno::Enodata) | Err(Errno::Eopnotsupp) => None,
+                    Err(e) => return Err(errno_to_vfs(e)),
+                }
+            } else {
+                None
+            };
+            (enabled, parent)
+        };
+        crate::acl::inherit(parent.as_deref(), perm, umask, kind, enabled).map_err(errno_to_vfs)
+    }
+
+    /// Put the inherited ACLs on the object once it exists, the default one
+    /// first. Out of line for the same reason as `inherited`. # C: O(region bytes)
+    #[inline(never)]
+    fn store_inherited(node: &F2fsNode, ino: u32, got: &crate::acl::Inherited) -> KResult<()> {
+        for (name, value) in [(crate::acl::name_default(), &got.default),
+                              (crate::acl::name_access(),  &got.access)] {
+            let Some(bytes) = value else { continue };
+            node.fs.volume_now().set_xattr(ino, name, Some(bytes), false, false)
+                .map_err(errno_to_vfs)?;
+        }
+        Ok(())
     }
 }
 
@@ -123,7 +195,13 @@ impl InodeOps for F2fsOps {
         let node = Self::writable_dir(inode)?;
         let other = Self::node(target)?;
         if !Arc::ptr_eq(&node.fs, &other.fs) { return Err(VfsError::Exdev); }
-        node.fs.link(node.ino, name, other.ino)
+        node.fs.link(node.ino, name, other.ino)?;
+        // The count on the medium moved, and the cached one has to move with
+        // it: a temporary file that has just been given its first name would
+        // otherwise keep reporting no links, which is what tells a caller the
+        // file disappears when the handle does.
+        target.inc_nlink();
+        Ok(())
     }
 
     fn unlink(&self, inode: &Inode, name: &str) -> KResult<()> {
@@ -136,14 +214,51 @@ impl InodeOps for F2fsOps {
         node.fs.remove(node.ino, name, true)
     }
 
+    /// The flags reach the volume UNREDUCED. An exchange or a whiteout narrowed
+    /// to "replace or not" on the way down reports success for an operation
+    /// that did not happen, and the caller's next step assumes it did.
     fn rename(&self, inode: &Inode, old_name: &str, new_dir: &Inode, new_name: &str, flags: u32,
-              _ctx: &CreateCtx) -> KResult<()> {
+              ctx: &CreateCtx) -> KResult<()> {
         let node = Self::writable_dir(inode)?;
         let (target, _) = Self::dir_of(new_dir)?;
         // Both directories are on one volume by construction: a rename across
         // filesystems never reaches a backend.
         if !Arc::ptr_eq(&node.fs, &target.fs) { return Err(VfsError::Exdev); }
-        node.fs.rename(node.ino, old_name, target.ino, new_name, flags & RENAME_NOREPLACE != 0)
+        // What the two directories will be worth AFTERWARDS is decided from
+        // what they hold NOW: a directory arriving in a parent brings its own
+        // second entry with it, and a directory leaving takes one away.
+        let (moved_is_dir, victim_is_dir) = Self::shapes(node, old_name, target, new_name);
+        let same_parent = node.ino == target.ino;
+        // The identity is the CALLER's, and only a whiteout reads it: the
+        // marker a whiteout rename leaves behind is a new inode and belongs to
+        // whoever asked for the rename.
+        node.fs.rename(node.ino, old_name, target.ino, new_name, flags,
+                       (ctx.fsuid(), ctx.fsgid()))?;
+        // The counts on the medium moved above; these are the CACHED ones the
+        // same `stat` reads without going back to the medium.
+        if flags & vfs::namei::RENAME_EXCHANGE != 0 {
+            if !same_parent && moved_is_dir != victim_is_dir.unwrap_or(false) {
+                if moved_is_dir { inode.drop_nlink(); new_dir.inc_nlink(); }
+                else { new_dir.drop_nlink(); inode.inc_nlink(); }
+            }
+        } else if moved_is_dir {
+            // A replaced directory surrendered the destination's incoming link
+            // as it was removed, so the destination already balances the
+            // arriving one and only the source parent drops.
+            if victim_is_dir.is_some() { inode.drop_nlink(); }
+            else if !same_parent { inode.drop_nlink(); new_dir.inc_nlink(); }
+        }
+        Ok(())
+    }
+
+    /// A file with no name, which the volume keeps on the same orphan list an
+    /// unlink of an open file uses.
+    fn tmpfile(&self, inode: &Inode, mode_bits: u32, ctx: &CreateCtx) -> KResult<InodeRef> {
+        let node = Self::writable_dir(inode)?;
+        // The umask belongs to the caller, not to the medium — the same split
+        // every other creation here makes.
+        let perm = mode_bits & !u32::from(ctx.umask);
+        node.fs.tmpfile(node.ino, mk_mode(FileType::Regular, perm), ctx.fsuid(), ctx.fsgid())
     }
 
     fn truncate(&self, inode: &Inode, len: u64) -> KResult<()> {
@@ -191,6 +306,13 @@ impl InodeOps for F2fsOps {
         -> Result<(), XattrError> {
         let node = Self::node(inode).map_err(XattrError::Fs)?;
         if !node.fs.is_writable() { return Err(XattrError::Fs(VfsError::Erofs)); }
+        // The two ACL names are stored as this filesystem's own record, so the
+        // interchange blob the caller handed over is converted before it lands.
+        let value = if crate::acl::is_acl_name(name) {
+            crate::acl::disk_from_xattr(&value).map_err(xattr_errno)?
+        } else {
+            value
+        };
         node.fs
             .volume
             .lock()
@@ -215,8 +337,14 @@ impl InodeOps for F2fsOps {
     fn getxattr(&self, inode: &Inode, name: &str) -> Result<Vec<u8>, XattrError> {
         let node = Self::node(inode).map_err(XattrError::Fs)?;
         let live = node.live().map_err(XattrError::Fs)?;
-        let v = node.fs.volume.lock();
-        v.get_xattr(&live, node.ino, name).map_err(xattr_errno)
+        let stored = {
+            let v = node.fs.volume.lock();
+            v.get_xattr(&live, node.ino, name).map_err(xattr_errno)?
+        };
+        if crate::acl::is_acl_name(name) {
+            return crate::acl::xattr_from_disk(&stored).map_err(xattr_errno);
+        }
+        Ok(stored)
     }
 
     fn listxattr(&self, inode: &Inode) -> Result<Vec<String>, XattrError> {
@@ -348,3 +476,11 @@ pub fn split_names(bytes: &[u8]) -> Vec<String> {
 #[cfg(test)]
 #[path = "../tests/ops.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../tests/acl_ops.rs"]
+mod acl_tests;
+/// The namespace operations, driven through the interface's own vtable.
+#[cfg(test)]
+#[path = "../tests/opsnamei.rs"]
+mod namei_tests;

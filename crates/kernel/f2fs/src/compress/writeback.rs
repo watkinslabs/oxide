@@ -1,9 +1,11 @@
-//! Writing a compressed file: one whole cluster at a time.
+//! Storing a compressed file's clusters, and shortening one.
 //!
 //! A block of a compressed file cannot be written by itself. The cluster it
 //! belongs to is one image, so changing a byte means reading the cluster back,
 //! putting the byte in, and writing the whole cluster again — the read is not
 //! an optimisation, it is the only way to know what the other blocks held.
+//! Where that read happens is `begin`; where the codec runs is `place`; this
+//! file is what both of them, and the two rewrite commands, share.
 //!
 //! Two rules decide whether the cluster comes out compressed at all, and
 //! getting either wrong is silent:
@@ -88,64 +90,6 @@ impl<S: SectorSource> Volume<S> {
         Ok(self.read_inode(ino)?.compr_blocks)
     }
 
-    /// Write `data` into a compressed file at byte offset `off`.
-    ///
-    /// Cluster by cluster, each one read back before it is rewritten. What
-    /// landed stays landed when a later cluster fails: reporting the whole
-    /// call as failed would tell the caller its file is unchanged when it is
-    /// not.
-    /// # C: O(bytes written + clusters touched * cluster bytes)
-    pub fn write_compressed(&mut self, ino: u32, off: u64, data: &[u8]) -> Result<usize, Errno> {
-        self.writable_or_err()?;
-        if data.is_empty() { return Ok(0); }
-        let inode = self.read_inode(ino)?;
-        let g = self.geometry(&inode)?;
-        if inode.inline_data() { self.convert_inline(ino)?; }
-        let span = g.bytes() as u64;
-        let end = off.checked_add(data.len() as u64).ok_or(Errno::Efbig)?;
-        let size = end.max(self.read_inode(ino)?.size);
-        let (mut done, mut stopped) = (0usize, None);
-        let mut at = off;
-        while at < end {
-            let first = (at / span) * g.blocks() as u64;
-            let base = (at / span) * span;
-            let take = (base + span).min(end) - at;
-            let put = (at - base) as usize;
-            match self.splice_cluster(ino, &g, first, put, &data[done..done + take as usize], size)
-            {
-                Ok(()) => { done += take as usize; at += take; }
-                Err(e) => { stopped = Some(e); break; }
-            }
-        }
-        if done > 0 { self.stamp_size(ino, (off + done as u64).max(inode.size))?; }
-        match stopped {
-            Some(e) if done == 0 => Err(e),
-            _ => Ok(done),
-        }
-    }
-
-    /// Put `data` at `put` bytes into one cluster and store the cluster again.
-    /// # C: O(cluster bytes)
-    fn splice_cluster(&mut self, ino: u32, g: &Geometry, first: u64, put: usize, data: &[u8],
-                      size: u64) -> Result<(), Errno> {
-        let inode = self.read_inode(ino)?;
-        let mut planebytes = self.cluster_bytes(&inode, ino, g, first)?;
-        planebytes[put..put + data.len()].copy_from_slice(data);
-        let touched: Vec<bool> = (0..g.blocks())
-            .map(|i| {
-                let (s, e) = (i * BLKSIZE, (i + 1) * BLKSIZE);
-                put < e && put + data.len() > s
-            })
-            .collect();
-        // Whether a write comes out compressed at all is the MOUNT's decision
-        // where the mount was given it, and the caller's where it was not: a
-        // volume mounted for caller-driven compression writes plain and stays
-        // plain until the rewrite command asks otherwise, which is the whole
-        // arrangement.
-        let compress = self.opts.compress.mode == crate::opts::CompressMode::Fs;
-        self.store_cluster_shaped(ino, g, first, &planebytes, size, &touched, compress)
-    }
-
     /// Store one cluster's plain bytes, compressed if both rules allow it.
     ///
     /// `touched` says which blocks this write itself covered; a block that was
@@ -156,6 +100,22 @@ impl<S: SectorSource> Volume<S> {
     pub(crate) fn store_cluster(&mut self, ino: u32, g: &Geometry, first: u64, plainbytes: &[u8],
                                 size: u64, touched: &[bool]) -> Result<(), Errno> {
         self.store_cluster_shaped(ino, g, first, plainbytes, size, touched, true)
+    }
+
+    /// The same, PLACING pages the mapping already holds rather than dropping
+    /// them.
+    ///
+    /// Writeback's form. Every other caller changed the cluster's contents
+    /// under a mapping still holding the old ones, so for those the drop is the
+    /// point; this one is putting the pages it holds at the addresses it is
+    /// choosing, and dropping them would throw away the only copy of a write
+    /// and send the next read to the medium for bytes it already had.
+    /// # C: O(cluster bytes)
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn store_cluster_placed(&mut self, ino: u32, g: &Geometry, first: u64,
+                                       plainbytes: &[u8], size: u64, touched: &[bool],
+                                       compress: bool) -> Result<(), Errno> {
+        self.store_cluster_inner(ino, g, first, plainbytes, size, touched, compress, true)
     }
 
     /// The same, with the choice of shape taken away.
@@ -170,6 +130,14 @@ impl<S: SectorSource> Volume<S> {
     pub(crate) fn store_cluster_shaped(&mut self, ino: u32, g: &Geometry, first: u64,
                                        plainbytes: &[u8], size: u64, touched: &[bool],
                                        compress: bool) -> Result<(), Errno> {
+        self.store_cluster_inner(ino, g, first, plainbytes, size, touched, compress, false)
+    }
+
+    /// # C: O(cluster bytes)
+    #[allow(clippy::too_many_arguments)]
+    fn store_cluster_inner(&mut self, ino: u32, g: &Geometry, first: u64, plainbytes: &[u8],
+                           size: u64, touched: &[bool], compress: bool, keep: bool)
+        -> Result<(), Errno> {
         let inode = self.read_inode(ino)?;
         let old = self.cluster_addrs(&inode, ino, g, first)?;
         let was = plan::compressed_extent(&old);
@@ -209,7 +177,7 @@ impl<S: SectorSource> Volume<S> {
         // its sentinels, so the slot that holds one must not be given back a
         // second time. `cur` is the same test the reference makes: only a
         // released file has a sentinel and no saving recorded.
-        self.lay_out(ino, first, &old, &slots, &payload, cur == 0)?;
+        self.lay_out(ino, first, &old, &slots, &payload, cur == 0, keep)?;
         let after = plan::compr_blocks_after(cur, g.blocks(), was, now);
         self.stamp_counts(ino, Some(after))
     }
@@ -236,49 +204,59 @@ impl<S: SectorSource> Volume<S> {
     /// Three kinds of thing can sit in a slot and each is accounted its own
     /// way. A real block holds a bit in the segment table, a block of the
     /// volume's count and a block of the owner's quota. A MARK — the sentinel
-    /// or a reservation — holds none of the first and none of the last: it
-    /// names no block on the medium, so it sets no bit and costs no quota, but
-    /// it does hold the volume's count, because the write it is holding room
-    /// for has to find a block somewhere. An empty slot holds nothing.
+    /// or a reservation — holds no bit in the table, because it names no block
+    /// on the medium, and BOTH of the counts: the write it is holding room for
+    /// has to find a block somewhere, and the file goes on being charged for
+    /// the room until the mark stops existing. An empty slot holds nothing.
+    ///
+    /// A mark and a block therefore cost the same, which is what lets one turn
+    /// into the other with no count moving. That is not a convenience: it is
+    /// the whole reason a cluster whose slots are already held can be turned
+    /// into an image at writeback without asking the volume for room, and so
+    /// without refusing a write the caller was already told had landed.
     ///
     /// Getting the mark wrong in either direction is silent: released as if it
-    /// were a block, it lowers a count nothing raised and looks up a segment
-    /// that does not exist; not released at all, it leaks the count for the
-    /// life of the volume.
+    /// were a block, it looks up a segment that does not exist; not released at
+    /// all, it leaks the counts for the life of the volume.
     /// # C: O(cluster bytes)
     #[allow(clippy::too_many_arguments)]
     fn lay_out(&mut self, ino: u32, first: u64, old: &[u32], slots: &[Slot], payload: &[u8],
-               released: bool) -> Result<(), Errno> {
-        // Quota is charged for the blocks the cluster is about to GAIN before
-        // any of them is allocated: a refusal afterwards would leave them
-        // charged to nobody and the file pointing at them.
+               released: bool, keep: bool) -> Result<(), Errno> {
+        // Quota is charged for the slots the cluster is about to GAIN before
+        // any of them is filled: a refusal afterwards would leave them charged
+        // to nobody and the file pointing at them. A slot that already holds a
+        // block or a mark is not a gain — it is already paid for, and charging
+        // it again would take the owner's quota twice for one block.
         let gained = slots
             .iter()
             .enumerate()
-            .filter(|(i, s)| matches!(s, Slot::Data(_)) && !holds_block(old[*i]))
+            .filter(|(i, s)| s.owned() && !unchanged(s, old[*i]) && !owned_slot(old[*i], released))
             .count() as u64;
         if gained > 0 { self.charge_space(ino, gained * BLKSIZE as u64)?; }
         for (i, slot) in slots.iter().enumerate() {
             let was = old[i];
-            let target = match slot {
-                Slot::Sentinel => COMPRESS_ADDR,
-                Slot::Reserved => NEW_ADDR,
-                Slot::Hole => NULL_ADDR,
-                Slot::Data(_) => NULL_ADDR,
-            };
+            let paid = owned_slot(was, released);
+            let target = mark_of(slot);
             // A slot that is not changing is left alone entirely: reaching for
             // its node would CREATE the node a sparse file does not have.
-            if !matches!(slot, Slot::Data(_)) && target == was { continue; }
+            if unchanged(slot, was) { continue; }
             let (holder, ofs) = self.dnode_for_write(ino, first + i as u64)?;
             let addr = match slot {
                 Slot::Data(n) => {
-                    if is_mark(was) && !uncharged(was, released) { self.release_reservation(); }
                     let at = n * BLKSIZE;
                     let owner = match holder { Holder::Inode => ino, Holder::Direct(nid) => nid };
                     let page = payload.get(at..at + BLKSIZE).ok_or(Errno::Eio)?;
-                    // Only a real block is handed to the allocator as the one
-                    // being replaced; a mark names no segment to clear.
-                    let carry = if holds_block(was) { was } else { NULL_ADDR };
+                    // What the allocator is told the slot held decides whether
+                    // it asks the volume for room. A real block names a segment
+                    // to clear and costs nothing. A mark that was paid for is
+                    // handed down as a RESERVATION — the one value that says
+                    // "the room is already mine, take it up" — and its own
+                    // charge comes back as the block takes it.
+                    let carry = match was {
+                        a if holds_block(a) => a,
+                        _ if paid => { self.release_reservation(); NEW_ADDR }
+                        _ => NULL_ADDR,
+                    };
                     let at_addr = self.write_data(owner, ofs as u16, false, carry, page)?;
                     // The generic writer has already charged this as file
                     // data; it is compressed data as well, and the compressed
@@ -287,17 +265,29 @@ impl<S: SectorSource> Volume<S> {
                     at_addr
                 }
                 Slot::Sentinel | Slot::Reserved => {
-                    if holds_block(was) { self.release_slot(ino, was)?; }
+                    // The BLOCK goes back and its counts do not: the mark
+                    // takes them over in the same breath. Routing this through
+                    // the slot release instead would give the owner's quota
+                    // back and never take it again, and the file would hold a
+                    // cluster's worth of room it was no longer charged for.
+                    if holds_block(was) { self.release_block(was)?; }
                     if !is_mark(was) { self.charge_reservation(); }
                     target
                 }
                 Slot::Hole => {
                     if holds_block(was) { self.release_slot(ino, was)?; }
-                    if is_mark(was) && !uncharged(was, released) { self.release_reservation(); }
+                    if is_mark(was) && paid {
+                        self.release_reservation();
+                        self.uncharge_space(ino, BLKSIZE as u64)?;
+                    }
                     target
                 }
             };
-            self.set_holder_addr(ino, holder, ofs, addr)?;
+            if keep {
+                self.set_holder_addr_keeping_page(ino, holder, ofs, addr)?;
+            } else {
+                self.set_holder_addr(ino, holder, ofs, addr)?;
+            }
         }
         Ok(())
     }
@@ -311,6 +301,12 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(clusters released)
     pub fn truncate_compressed(&mut self, ino: u32, len: u64) -> Result<(), Errno> {
         self.writable_or_err()?;
+        // Every pending write has to be placed first. A cluster whose blocks
+        // are still reservations has no addresses to rearrange, and the bytes
+        // that would decide what the surviving cluster holds are in the
+        // mapping rather than on the medium — so a truncate that skipped this
+        // would zero a tail it had never read.
+        self.flush_data_pages(ino)?;
         let inode = self.read_inode(ino)?;
         // A file truncated away entirely stops being a released file: there is
         // no saving left that could have been handed back, and one that went
@@ -353,7 +349,7 @@ impl<S: SectorSource> Volume<S> {
                 let was = plan::compressed_extent(&old);
                 let cur = self.compr_blocks(ino)?;
                 let slots = vec![Slot::Hole; g.blocks()];
-                self.lay_out(ino, first, &old, &slots, &[], cur == 0)?;
+                self.lay_out(ino, first, &old, &slots, &[], cur == 0, false)?;
                 let after = plan::compr_blocks_after(cur, g.blocks(), was, None);
                 self.stamp_counts(ino, Some(after))?;
             }
@@ -382,15 +378,32 @@ fn is_mark(addr: u32) -> bool { addr == NEW_ADDR || addr == COMPRESS_ADDR }
 /// # C: O(1)
 fn holds_block(addr: u32) -> bool { addr != NULL_ADDR && !is_mark(addr) }
 
-/// Whether this slot's mark is one the volume has ALREADY stopped counting.
+/// The address a slot that stores no payload is written as. # C: O(1)
+fn mark_of(slot: &Slot) -> u32 {
+    match slot {
+        Slot::Sentinel => COMPRESS_ADDR,
+        Slot::Reserved => NEW_ADDR,
+        Slot::Hole | Slot::Data(_) => NULL_ADDR,
+    }
+}
+
+/// Whether this slot already holds what it is about to be given. # C: O(1)
+fn unchanged(slot: &Slot, was: u32) -> bool {
+    !matches!(slot, Slot::Data(_)) && mark_of(slot) == was
+}
+
+/// Whether the file is charged for what this slot holds now.
 ///
-/// The sentinel of a file whose saving was handed back is exactly that: the
-/// release gave its charge back and left the slot in place. Releasing it again
-/// when the cluster is rewritten lowers a count nothing raised, and the volume
-/// then believes it has more space than it does — free space that only ever
-/// grows, and a checker that reports the wrong number.
+/// Every block and every mark is, with one exception: the sentinel of a file
+/// whose saving was handed back. The release gave its charge back and left the
+/// slot in place, so charging it again on the next rewrite would take room the
+/// file already holds, and releasing it again would lower a count nothing
+/// raised — free space that only ever grows, and a checker that reports the
+/// wrong number.
 /// # C: O(1)
-fn uncharged(addr: u32, released: bool) -> bool { released && addr == COMPRESS_ADDR }
+fn owned_slot(addr: u32, released: bool) -> bool {
+    addr != NULL_ADDR && !(released && addr == COMPRESS_ADDR)
+}
 
 /// Whether the inode's extra attributes reach the saved-block count.
 ///
