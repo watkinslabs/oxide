@@ -1011,6 +1011,7 @@ dependencies = [
  "blockcipher",
  "crc",
  "crypt",
+ "fs",
  "klog",
  "pkey",
  "sched",
