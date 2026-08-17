@@ -103,7 +103,7 @@ fn a_reservation_a_later_chain_block_replaces_gives_its_charge_back() {
     let (mut v, ino, _) = checkpointed(b"f");
     let old = second_block(&v, ino);
     let before = v.checkpoint().valid_block_count;
-    let fresh = v.write_data(ino, 1, false, NULL_ADDR, &alloc::vec![0xC7u8; BLKSIZE])
+    let fresh = v.write_data(ino, ino, 1, false, NULL_ADDR, &alloc::vec![0xC7u8; BLKSIZE])
         .expect("data");
     chain_slot(&mut v, ino, NEW_ADDR);
     chain_slot(&mut v, ino, fresh);

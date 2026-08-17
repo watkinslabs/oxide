@@ -187,7 +187,7 @@ impl<S: SectorSource> Volume<S> {
             // occupies its inode and nothing else — so it is charged like any
             // other block a file gains, and given back if it cannot be had.
             self.reserve_space(ino, BLKSIZE as u64)?;
-            let addr = match self.write_data(ino, 0, is_dir, NULL_ADDR, &payload) {
+            let addr = match self.write_data(ino, ino, 0, is_dir, NULL_ADDR, &payload) {
                 Ok(addr) => addr,
                 Err(e) => {
                     self.release_reserved_space(ino, BLKSIZE as u64)?;
@@ -242,7 +242,7 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(1 block)
     pub(crate) fn reserve_data_slot(&mut self, ino: u32, holder: Holder, ofs: usize)
         -> Result<(), Errno> {
-        self.volume_has_room(false)?;
+        self.volume_has_room(Some(ino), false)?;
         // Promised and taken up in the same breath, which is what the reference
         // does and what makes the limit refuse before the reservation exists
         // rather than after it. Nothing between the two can fail, so no window

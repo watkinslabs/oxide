@@ -84,7 +84,7 @@ impl<S: SectorSource> Volume<S> {
         // describes it and the next pass costs it wrongly.
         let kind = if self.segstate.gc_atgc_log { Kind::AtgcData }
                    else if dir { Kind::DirData } else { Kind::FileData };
-        let new = self.write_data_kind(kind, s.nid, s.ofs_in_node, NULL_ADDR, &data)?;
+        let new = self.write_data_kind(o.ino, kind, s.nid, s.ofs_in_node, NULL_ADDR, &data)?;
         self.set_holder_addr(o.ino, o.holder, ofs, new)
     }
 

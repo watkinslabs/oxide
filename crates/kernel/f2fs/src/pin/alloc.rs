@@ -200,7 +200,7 @@ impl<S: SectorSource> Volume<S> {
             let owner = match holder { Holder::Inode => ino, Holder::Direct(nid) => nid };
             let released = if keep { old } else { NULL_ADDR };
             let addr =
-                self.write_data_kind(Kind::PinnedData, owner, ofs as u16, released, &page)?;
+                self.write_data_kind(ino, Kind::PinnedData, owner, ofs as u16, released, &page)?;
             batch.push((ofs, addr));
             made += 1;
         }

@@ -21,6 +21,8 @@ mod read;
 mod dirs;
 #[path = "volume/space.rs"]
 mod space;
+#[path = "volume/reserve_gate.rs"]
+mod reserve_gate;
 #[path = "volume/encrypted.rs"]
 mod encrypted;
 #[path = "volume/inlinecrypt.rs"]

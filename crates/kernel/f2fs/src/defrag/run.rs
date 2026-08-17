@@ -122,7 +122,7 @@ impl<S: SectorSource> Volume<S> {
         let data = self.read_main_block(old)?;
         let dir = crate::mode::file_type(inode.mode) == vfs::FileType::Directory;
         let owner = match holder { Holder::Inode => ino, Holder::Direct(nid) => nid };
-        let new = self.write_data(owner, ofs as u16, dir, old, &data)?;
+        let new = self.write_data(ino, owner, ofs as u16, dir, old, &data)?;
         if new == NULL_ADDR { return Err(Errno::Eio); }
         self.set_holder_addr(ino, holder, ofs, new)?;
         Ok(true)

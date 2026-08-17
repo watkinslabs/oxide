@@ -133,7 +133,12 @@ pub struct Volume<S: SectorSource> {
     /// stopped checkpointing, seeded from the superblock and written back
     /// there. Cumulative across mounts, which is what makes it worth having:
     /// a fault that a repair cleared is invisible from the volume's contents.
-    pub(crate) errrec: crate::errrec::ErrorRecord,
+    /// Mutated from READ paths, which is why it is a cell: a corruption is
+    /// found while walking a node or parsing an inode, and every one of those
+    /// is a `&self` method. The reference takes a spinlock over the same two
+    /// arrays for exactly this reason. Pushing the record to the medium still
+    /// needs `&mut self` and happens where a write is possible.
+    pub(crate) errrec: core::cell::Cell<crate::errrec::ErrorRecord>,
     pub(crate) cp: Checkpoint,
     /// The checkpoint's head block and its payload blocks, joined, because
     /// the version bitmaps run from one into the next.

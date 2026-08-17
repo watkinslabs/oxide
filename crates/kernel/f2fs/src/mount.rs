@@ -19,6 +19,9 @@
 //! - `data`:   the way back from a dirty data page to this mount.
 //! - `mapping`: a regular file's address space, as the memory manager reaches
 //!              it — the fault's fill, residency, flush and eviction.
+//! - `prepare`: what a create decides before the volume writes it — owner ids,
+//!              the mode clamp, default-ACL inheritance, and the ACL rewrite a
+//!              `chmod` owes.
 
 use alloc::string::{String, ToString};
 use alloc::sync::{Arc, Weak};
@@ -37,6 +40,7 @@ use crate::volume::Volume;
 pub mod node;
 pub mod devs;
 pub mod ops;
+pub mod prepare;
 pub mod quota;
 pub mod sb;
 pub mod write;

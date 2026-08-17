@@ -203,7 +203,7 @@ fn a_full_volume_refuses_the_write_and_not_the_flush() {
     v.write_file(ino, 0, &filled(1)).unwrap();
     v.sync_data().unwrap();
     let left = v.checkpoint().user_block_count - v.valid_block_count;
-    v.opts.reserve_root = left as u32;
+    v.cp.user_block_count -= left;
     assert_eq!(v.write_file(ino, BLKSIZE as u64, &filled(2)), Err(Errno::Enospc));
     assert_eq!(v.dirty_data_pages(ino), 0, "a refused write still filed its page");
     assert_eq!(slot(&v, ino, 1), NULL_ADDR, "a refused write still took the slot");
@@ -219,8 +219,10 @@ fn a_flush_of_a_reserved_slot_needs_no_further_room() {
     v.write_file(ino, 0, &filled(1)).unwrap();
     v.sync_data().unwrap();
     // One block left for the next write and nothing beyond it.
+    // The volume's own count, not the root reserve: the reserve is now
+    // conditional on who is asking, and a hosted caller reaches it.
     let left = v.checkpoint().user_block_count - v.valid_block_count;
-    v.opts.reserve_root = (left - 1) as u32;
+    v.cp.user_block_count -= left - 1;
     v.write_file(ino, BLKSIZE as u64, &filled(2)).unwrap();
     assert_eq!(v.sync_data(), Ok(()), "the placement asked for room it already held");
     assert_ne!(slot(&v, ino, 1), NEW_ADDR);
