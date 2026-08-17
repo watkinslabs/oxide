@@ -25,6 +25,7 @@ use syscall::errno::Errno;
 
 use sectors::SectorSource;
 
+use crate::devices::barrier;
 use crate::mode;
 use crate::opts::FsyncMode;
 
@@ -114,7 +115,22 @@ impl<S: SectorSource> Volume<S> {
         // Nothing to make durable is answered before the ladder, not inside
         // it: a checkpoint written for a file that has not changed makes the
         // whole volume pay for a call that had nothing to do.
-        if !self.inode_dirty(ino)?.needs_sync(datasync) { return Ok(CpReason::None); }
+        //
+        // "Changed" is read off the file's recorded shape, and a page rewritten
+        // IN PLACE changes none of it — same block, same slot, same count — so
+        // such a file compares identical to its checkpointed generation while
+        // its new bytes sit in the device's cache. That is the one state in
+        // which there is nothing to WRITE and a barrier is nonetheless owed,
+        // and it is the reference's own third answer here.
+        let dirty = self.inode_dirty(ino)?.needs_sync(datasync);
+        match barrier::sync_work(dirty, self.owes_inplace_barrier(ino)) {
+            barrier::SyncWork::Nothing => return Ok(CpReason::None),
+            barrier::SyncWork::BarrierOnly => {
+                self.fsync_barrier(ino, self.is_atomic_file(ino))?;
+                return Ok(CpReason::None);
+            }
+            barrier::SyncWork::Full => {}
+        }
         let state = self.sync_state(ino)?;
         let reason = need_checkpoint(&state);
         if reason.needed() {
@@ -134,7 +150,7 @@ impl<S: SectorSource> Volume<S> {
         // fencing would report durability for bytes a power cut still loses.
         // Whether one is owed at all is the mount's decision — see
         // `devices::barrier`.
-        self.fsync_barrier(self.is_atomic_file(ino))?;
+        self.fsync_barrier(ino, self.is_atomic_file(ino))?;
         Ok(CpReason::None)
     }
 }

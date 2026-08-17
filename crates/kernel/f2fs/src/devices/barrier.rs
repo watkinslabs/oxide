@@ -60,6 +60,76 @@ pub fn fsync_needs_flush(barrier: bool, mode: FsyncMode, atomic: bool) -> bool {
     barrier && mode != FsyncMode::Nobarrier && !atomic
 }
 
+/// What one `fsync` owes, once what changed about the file is known.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum SyncWork {
+    /// Nothing: the file is exactly as the last checkpoint left it, and no
+    /// write of this mount is waiting in a device cache on its account.
+    Nothing,
+    /// A barrier, and NO recovery chain.
+    BarrierOnly,
+    /// The whole ladder — a chain or a checkpoint, and then a barrier.
+    Full,
+}
+
+/// Which of the three an `fsync` has in front of it.
+///
+/// `BarrierOnly` is the case a build without it silently gets wrong. A page
+/// rewritten IN PLACE lands on the block the file's slot ALREADY names and the
+/// block the last checkpoint ALREADY counted, so nothing about the file's
+/// recorded shape changes and it compares identical to its checkpointed
+/// generation — there is nothing for a recovery chain to say, and a build that
+/// keys the whole call on "did anything change" therefore writes nothing and
+/// returns. But the bytes DID change, and on a device with a volatile cache
+/// they are sitting in it: the caller was told they were durable and a power
+/// cut loses them. What the file needs is precisely the half a chain cannot
+/// give it — the barrier — which is why this is a case of its own rather than
+/// a branch of the other two.
+/// # C: O(1)
+pub fn sync_work(dirty_needs_sync: bool, unfenced_inplace: bool) -> SyncWork {
+    if dirty_needs_sync { return SyncWork::Full; }
+    if unfenced_inplace { return SyncWork::BarrierOnly; }
+    SyncWork::Nothing
+}
+
+/// The files whose bytes were rewritten IN PLACE and not yet fenced.
+///
+/// Held per volume and keyed by inode number because that is what the caller
+/// asks about: `fsync` names one file and must know whether THAT file has a
+/// rewrite waiting in a cache. A single flag for the whole mount would make
+/// every file's `fsync` pay for every other file's rewrite.
+///
+/// An entry is removed only by a barrier that was actually issued. Clearing it
+/// on the write itself, or on a barrier that was skipped, would drop the record
+/// of the one thing it exists to remember.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UpdateWrites {
+    inos: alloc::collections::BTreeSet<u32>,
+}
+
+impl UpdateWrites {
+    /// Nothing rewritten yet. # C: O(1)
+    pub fn new() -> Self { Self::default() }
+
+    /// Note that a page of `ino` was rewritten where it lay. # C: O(log n)
+    pub fn record(&mut self, ino: u32) { self.inos.insert(ino); }
+
+    /// Whether `ino` has a rewrite no barrier has reached. # C: O(log n)
+    pub fn owed(&self, ino: u32) -> bool { self.inos.contains(&ino) }
+
+    /// Forget one file's, after a barrier that was issued. # C: O(log n)
+    pub fn fenced(&mut self, ino: u32) { self.inos.remove(&ino); }
+
+    /// Forget every file's, after something that fenced them all. # C: O(n)
+    pub fn fenced_all(&mut self) { self.inos.clear(); }
+
+    /// How many files are owed one. # C: O(1)
+    pub fn len(&self) -> usize { self.inos.len() }
+
+    /// # C: O(1)
+    pub fn is_empty(&self) -> bool { self.inos.is_empty() }
+}
+
 /// The promise the checkpoint's COMMIT BLOCK is written under.
 ///
 /// The pack's last block is the one that makes the whole pack current: until it

@@ -302,6 +302,15 @@ pub struct Volume<S: SectorSource> {
     /// and the write path takes `&self`, for the same reason the caches above
     /// need it.
     pub(crate) dirty_devs: core::cell::Cell<crate::devices::barrier::DirtyDevices>,
+    /// Files whose bytes were rewritten IN PLACE since the last barrier.
+    ///
+    /// A rewrite in place changes nothing about the file's recorded shape, so
+    /// it is invisible to the comparison `fsync` decides by — and the bytes are
+    /// nonetheless sitting in the device's cache. Without this record an
+    /// `fsync` on such a file writes nothing, fences nothing and reports
+    /// success over data a power cut still loses. Interior mutability because
+    /// the writeback path takes `&self`, as the caches above do.
+    pub(crate) update_writes: core::cell::RefCell<crate::devices::barrier::UpdateWrites>,
     /// The thresholds this mount's write-placement decisions compare against:
     /// which in-place-update policies are armed, and how much pressure the
     /// allocator takes before it recycles a segment (`placement`).

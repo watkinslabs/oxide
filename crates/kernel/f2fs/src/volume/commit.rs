@@ -158,8 +158,15 @@ impl<S: SectorSource> Volume<S> {
         // is what forbids that, and its forced-unit-access is what makes the
         // checkpoint durable by the time this call returns rather than whenever
         // the device gets round to it.
-        self.write_block_durable(start + total - 1, &head,
-            crate::devices::barrier::commit_block_durability(self.opts.barrier))?;
+        let promise = crate::devices::barrier::commit_block_durability(self.opts.barrier);
+        self.write_block_durable(start + total - 1, &head, promise)?;
+        // Its pre-flush put everything written before it on the medium, and
+        // that includes every page this mount rewrote IN PLACE — so no file is
+        // still owed a barrier on their account. Retired only when the promise
+        // was actually made: a mount that asked for no barriers wrote this
+        // block plain and fenced nothing, and forgetting the debt there would
+        // leave those bytes volatile with nothing left to say so.
+        if !promise.is_empty() { self.note_all_fenced(); }
         self.adopt(head, pack, payload, nat_bitmap, sit_bitmap, nat_journal, sit_journal)
     }
 

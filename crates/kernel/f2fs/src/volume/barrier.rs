@@ -58,13 +58,47 @@ impl<S: SectorSource> Volume<S> {
     ///
     /// `atomic` says the caller is committing an atomic write, whose node chain
     /// is ordered by its own construction; see `devices::barrier`.
+    ///
+    /// The file's in-place record is retired only when a barrier was actually
+    /// issued. A mount that skipped one has not made those bytes durable, and
+    /// forgetting the debt would mean the next `fsync` — which may be the one
+    /// that could have paid it — no longer knows it is owed.
     /// # C: one barrier per member, or none
-    pub(crate) fn fsync_barrier(&self, atomic: bool) -> Result<(), Errno> {
+    pub(crate) fn fsync_barrier(&self, ino: u32, atomic: bool) -> Result<(), Errno> {
         if !barrier::fsync_needs_flush(self.opts.barrier, self.opts.fsync_mode, atomic) {
             return Ok(());
         }
-        self.issue_flush()
+        self.issue_flush()?;
+        self.update_writes.borrow_mut().fenced(ino);
+        Ok(())
     }
+
+    /// Note that a page of `ino` was rewritten where it lay.
+    ///
+    /// See the field: such a write leaves the file's recorded shape untouched,
+    /// so nothing else in this filesystem can afterwards tell that the device
+    /// is holding bytes somebody was promised were durable.
+    /// # C: O(log files)
+    pub(crate) fn note_inplace_write(&self, ino: u32) {
+        self.update_writes.borrow_mut().record(ino);
+    }
+
+    /// Whether `ino` has a rewrite in place that no barrier has reached.
+    /// # C: O(log files)
+    pub(crate) fn owes_inplace_barrier(&self, ino: u32) -> bool {
+        self.update_writes.borrow().owed(ino)
+    }
+
+    /// Every file's rewrite is on the medium, because something fenced them
+    /// all at once.
+    ///
+    /// A checkpoint does exactly that: its commit block is written under a
+    /// pre-flush, so every write this mount made — the rewrites in place among
+    /// them — is on the medium before the block lands. Called only when that
+    /// promise was actually made; a mount that asked for no barriers wrote the
+    /// commit block plain and fenced nothing, so it has retired no debt.
+    /// # C: O(files owed)
+    pub(crate) fn note_all_fenced(&self) { self.update_writes.borrow_mut().fenced_all(); }
 
     /// Empty the caches of every member this checkpoint's pack will REFER TO,
     /// leaving the member that carries the pack to the commit block.

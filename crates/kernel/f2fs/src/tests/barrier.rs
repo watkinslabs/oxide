@@ -291,3 +291,105 @@ fn an_uncached_medium_is_asked_for_no_barrier_by_either_path() {
     v.commit().unwrap();
     assert!(!cmds(&v).iter().any(|c| *c == Cmd::Flush));
 }
+
+// ---- a page rewritten IN PLACE ----
+//
+// The state a build without a record of it gets silently wrong: the rewrite
+// leaves the file's recorded shape untouched, so every comparison says nothing
+// changed, and an `fsync` that keys on that writes nothing and fences nothing
+// while the new bytes sit in the device's cache.
+
+#[test]
+fn a_clean_file_with_no_rewrite_in_place_owes_nothing() {
+    assert_eq!(sync_work(false, false), SyncWork::Nothing);
+}
+
+#[test]
+fn a_clean_file_with_a_rewrite_in_place_owes_a_barrier_and_no_chain() {
+    assert_eq!(sync_work(false, true), SyncWork::BarrierOnly);
+}
+
+#[test]
+fn a_file_that_changed_takes_the_whole_ladder_however_it_was_written() {
+    assert_eq!(sync_work(true, false), SyncWork::Full);
+    assert_eq!(sync_work(true, true), SyncWork::Full);
+}
+
+#[test]
+fn the_record_is_per_file_and_survives_until_a_barrier_retires_it() {
+    let mut u = UpdateWrites::new();
+    u.record(7);
+    assert!(u.owed(7) && !u.owed(8), "one file's rewrite is not another's debt");
+    u.record(8);
+    u.fenced(7);
+    assert!(!u.owed(7) && u.owed(8));
+    u.fenced_all();
+    assert!(u.is_empty());
+}
+
+/// A mount whose one file has been checkpointed and then REWRITTEN IN PLACE:
+/// the bytes changed, nothing about the file's shape did.
+fn rewritten_in_place(opts: Options) -> (Volume<MemImage>, u32) {
+    let mut v = cached(opts);
+    let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
+    v.write_file(ino, 0, &alloc::vec![7u8; crate::uapi::BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
+    v.commit().unwrap();
+    v.write_file(ino, 0, b"x").unwrap();
+    v.sync_data().unwrap();
+    assert!(v.inode_dirty(ino).unwrap().clean(),
+            "fixture must produce the invisible case: the file compares unchanged");
+    assert!(v.owes_inplace_barrier(ino), "the rewrite in place must have been recorded");
+    v.source_ref().forget_commands();
+    (v, ino)
+}
+
+#[test]
+fn an_fsync_after_a_rewrite_in_place_fences_the_medium_and_writes_nothing() {
+    let (mut v, ino) = rewritten_in_place(Options::defaults());
+    assert!(!v.fsync(ino).unwrap().needed());
+    // Exactly a barrier: there is nothing for a recovery chain to say about a
+    // block the checkpoint already names, and the bytes are durable only once
+    // the cache is empty.
+    assert_eq!(cmds(&v), alloc::vec![Cmd::Flush],
+               "an fsync over a rewrite in place must fence, and must not write a chain");
+    assert!(!v.owes_inplace_barrier(ino), "a barrier that was issued retires the debt");
+}
+
+#[test]
+fn a_skipped_barrier_leaves_the_debt_standing_for_the_next_fsync() {
+    // `fsync_mode=nobarrier` asks for the barrier to be skipped, not for the
+    // bytes to be forgotten: a later call that CAN pay must still know it is
+    // owed, or the debt disappears with nothing having made the bytes durable.
+    let mut o = Options::defaults();
+    o.fsync_mode = FsyncMode::Nobarrier;
+    let (mut v, ino) = rewritten_in_place(o);
+    v.fsync(ino).unwrap();
+    assert!(cmds(&v).is_empty());
+    assert!(v.owes_inplace_barrier(ino), "a barrier nobody issued retires nothing");
+}
+
+#[test]
+fn a_checkpoints_commit_block_retires_every_rewrite_in_place() {
+    // The commit block's pre-flush put everything written before it on the
+    // medium, so no file is still owed one on its account — and the next
+    // `fsync` over an unchanged file must therefore cost nothing at all.
+    let (mut v, ino) = rewritten_in_place(Options::defaults());
+    v.create(ROOT_INO, b"g", &spec(), None).unwrap();
+    v.commit().unwrap();
+    assert!(!v.owes_inplace_barrier(ino));
+    v.source_ref().forget_commands();
+    v.fsync(ino).unwrap();
+    assert!(cmds(&v).is_empty(), "a file the checkpoint already fenced owes nothing");
+}
+
+#[test]
+fn a_nobarrier_mounts_checkpoint_retires_nothing_because_it_fenced_nothing() {
+    let mut o = Options::defaults();
+    o.barrier = false;
+    let (mut v, ino) = rewritten_in_place(o);
+    v.create(ROOT_INO, b"g", &spec(), None).unwrap();
+    v.commit().unwrap();
+    assert!(v.owes_inplace_barrier(ino),
+            "the commit block was written plain; it made no bytes durable");
+}
