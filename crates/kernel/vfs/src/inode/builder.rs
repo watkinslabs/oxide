@@ -139,6 +139,7 @@ impl InodeBuilder {
             owner_persist: self.owner_persist,
             i_link: self.link,
             i_xattrs: self.xattrs,
+            i_acl: super::acl::AclCache::new(),
             i_dquot: InodeDquots::new(),
             i_rwsem: super::rwsem::InodeRwsem::new(),
             i_flctx: super::file_lock::FileLockContext::new(),
