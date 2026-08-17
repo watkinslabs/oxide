@@ -54,6 +54,11 @@ bitflags::bitflags! {
         const WRITEBACK  = 1 << 2;
         const REFERENCED = 1 << 3;
         const UPTODATE   = 1 << 4;
+        /// On the ACTIVE half of the two-list LRU (`17§4.4`). A page reaches
+        /// it by being found again while already referenced on the inactive
+        /// half, which is what makes the second reference — not the first —
+        /// the thing that protects a page from reclaim.
+        const ACTIVE     = 1 << 5;
     }
 }
 

@@ -140,6 +140,7 @@ fn memdisk_write_zeroes_has_no_payload_and_preserves_neighboring_blocks() {
 
 #[test]
 fn pagecache_empty_lookup_miss() {
+    let _m = crate::pagecache::tests::fresh_machine();
     let pc = PageCache::new();
     assert!(pc.lookup(InodeId(1), 0).is_none());
     assert_eq!(pc.cached_count(), 0);
@@ -147,15 +148,16 @@ fn pagecache_empty_lookup_miss() {
 
 #[test]
 fn pagecache_read_page_hits_cache_after_first_load() {
-    let d = Disk::new(512, 8 * (PAGE_BYTES as u64 / 512) as u64);
+    let _m = crate::pagecache::tests::fresh_machine();
+    let d: Arc<dyn BlockDevice> = Disk::new(512, 8 * (PAGE_BYTES as u64 / 512) as u64);
     // Pre-populate disk with a known pattern.
     let payload: Vec<u8> = (0..PAGE_BYTES as u32).map(|i| (i & 0xFF) as u8).collect();
     let mut w = BlockRequest::new_write(0, (PAGE_BYTES / 512) as u32, payload.clone());
     d.submit_sync(&mut w).unwrap();
 
     let pc = PageCache::new();
-    let p1 = pc.read_page(InodeId(1), 0, &*d).unwrap();
-    let p2 = pc.read_page(InodeId(1), 0, &*d).unwrap();
+    let p1 = pc.read_page(InodeId(1), 0, &d).unwrap();
+    let p2 = pc.read_page(InodeId(1), 0, &d).unwrap();
     assert!(Arc::ptr_eq(&p1, &p2), "second read must be a cache hit");
     assert_eq!(*p1.data.lock(), payload);
     assert_eq!(pc.cached_count(), 1);
@@ -164,20 +166,22 @@ fn pagecache_read_page_hits_cache_after_first_load() {
 
 #[test]
 fn pagecache_unaligned_offset_is_einval() {
-    let d = Disk::new(512, 8);
+    let _m = crate::pagecache::tests::fresh_machine();
+    let d: Arc<dyn BlockDevice> = Disk::new(512, 8);
     let pc = PageCache::new();
     assert_eq!(
-        pc.read_page(InodeId(1), 1, &*d).err(),
+        pc.read_page(InodeId(1), 1, &d).err(),
         Some(BlockError::Einval),
     );
 }
 
 #[test]
 fn pagecache_write_marks_dirty() {
-    let d = Disk::new(512, (PAGE_BYTES / 512) as u64 * 2);
+    let _m = crate::pagecache::tests::fresh_machine();
+    let d: Arc<dyn BlockDevice> = Disk::new(512, (PAGE_BYTES / 512) as u64 * 2);
     let pc = PageCache::new();
     let payload = vec![0x5A; PAGE_BYTES];
-    let p = pc.write_page(InodeId(1), 0, &payload, &*d).unwrap();
+    let p = pc.write_page(InodeId(1), 0, &payload, &d).unwrap();
     assert!(p.is_dirty(), "write_page must mark PG_DIRTY");
     assert_eq!(*p.data.lock(), payload);
     // Disk untouched until fsync.
@@ -188,12 +192,13 @@ fn pagecache_write_marks_dirty() {
 
 #[test]
 fn pagecache_fsync_writes_dirty_pages_then_clears_flag() {
-    let d = Disk::new(512, (PAGE_BYTES / 512) as u64 * 4);
+    let _m = crate::pagecache::tests::fresh_machine();
+    let d: Arc<dyn BlockDevice> = Disk::new(512, (PAGE_BYTES / 512) as u64 * 4);
     let pc = PageCache::new();
     let payload = vec![0xC3; PAGE_BYTES];
-    let p = pc.write_page(InodeId(1), 0, &payload, &*d).unwrap();
+    let p = pc.write_page(InodeId(1), 0, &payload, &d).unwrap();
     assert!(p.is_dirty());
-    pc.fsync(InodeId(1), &*d).unwrap();
+    pc.fsync(InodeId(1), &d).unwrap();
     assert!(!p.is_dirty(), "fsync must clear PG_DIRTY");
     // Disk now reflects the write.
     let mut r = BlockRequest::new_read(0, (PAGE_BYTES / 512) as u32, 512);
@@ -203,28 +208,30 @@ fn pagecache_fsync_writes_dirty_pages_then_clears_flag() {
 
 #[test]
 fn pagecache_fsync_only_flushes_target_inode() {
-    let d = Disk::new(512, (PAGE_BYTES / 512) as u64 * 4);
+    let _m = crate::pagecache::tests::fresh_machine();
+    let d: Arc<dyn BlockDevice> = Disk::new(512, (PAGE_BYTES / 512) as u64 * 4);
     let pc = PageCache::new();
-    let p1 = pc.write_page(InodeId(1), 0, &vec![1; PAGE_BYTES], &*d).unwrap();
+    let p1 = pc.write_page(InodeId(1), 0, &vec![1; PAGE_BYTES], &d).unwrap();
     // Inode 2 lives on different disk pages (1 page in).
     let p2 = pc.write_page(
         InodeId(2),
         PAGE_BYTES as u64,
         &vec![2; PAGE_BYTES],
-        &*d,
+        &d,
     ).unwrap();
     assert!(p1.is_dirty() && p2.is_dirty());
-    pc.fsync(InodeId(1), &*d).unwrap();
+    pc.fsync(InodeId(1), &d).unwrap();
     assert!(!p1.is_dirty(), "inode 1 fsynced");
     assert!(p2.is_dirty(),  "inode 2 untouched");
 }
 
 #[test]
 fn pagecache_invalidate_drops_pages_for_inode() {
-    let d = Disk::new(512, (PAGE_BYTES / 512) as u64 * 4);
+    let _m = crate::pagecache::tests::fresh_machine();
+    let d: Arc<dyn BlockDevice> = Disk::new(512, (PAGE_BYTES / 512) as u64 * 4);
     let pc = PageCache::new();
-    let _ = pc.read_page(InodeId(1), 0, &*d).unwrap();
-    let _ = pc.read_page(InodeId(2), 0, &*d).unwrap();
+    let _ = pc.read_page(InodeId(1), 0, &d).unwrap();
+    let _ = pc.read_page(InodeId(2), 0, &d).unwrap();
     assert_eq!(pc.cached_count(), 2);
     pc.invalidate(InodeId(1));
     assert_eq!(pc.cached_count(), 1);
@@ -234,6 +241,7 @@ fn pagecache_invalidate_drops_pages_for_inode() {
 
 #[test]
 fn pagecache_insert_new_takes_absent_pages_and_declines_present_ones() {
+    let _m = crate::pagecache::tests::fresh_machine();
     let pc = PageCache::new();
     assert!(pc.insert_new(InodeId(1), 0, vec![7; PAGE_BYTES], 0, usize::MAX));
     assert_eq!(*pc.lookup(InodeId(1), 0).unwrap().data.lock(), vec![7; PAGE_BYTES]);
@@ -245,6 +253,7 @@ fn pagecache_insert_new_takes_absent_pages_and_declines_present_ones() {
 
 #[test]
 fn pagecache_insert_new_declines_at_the_cap_and_keeps_what_it_has() {
+    let _m = crate::pagecache::tests::fresh_machine();
     let pc = PageCache::new();
     assert!(pc.insert_new(InodeId(1), 0, vec![1; PAGE_BYTES], 0, 2));
     assert!(pc.insert_new(InodeId(1), PAGE_BYTES as u64, vec![2; PAGE_BYTES], 0, 2));
@@ -255,6 +264,7 @@ fn pagecache_insert_new_declines_at_the_cap_and_keeps_what_it_has() {
 
 #[test]
 fn pagecache_insert_new_refuses_a_short_page_or_an_unaligned_index() {
+    let _m = crate::pagecache::tests::fresh_machine();
     let pc = PageCache::new();
     assert!(!pc.insert_new(InodeId(1), 0, vec![1; PAGE_BYTES - 1], 0, usize::MAX));
     assert!(!pc.insert_new(InodeId(1), 1, vec![1; PAGE_BYTES], 0, usize::MAX));
@@ -263,6 +273,7 @@ fn pagecache_insert_new_refuses_a_short_page_or_an_unaligned_index() {
 
 #[test]
 fn pagecache_invalidate_range_drops_only_the_named_span() {
+    let _m = crate::pagecache::tests::fresh_machine();
     let pc = PageCache::new();
     for i in 0..4u64 {
         assert!(pc.insert_new(InodeId(1), i * PAGE_BYTES as u64, vec![0; PAGE_BYTES], 0,
@@ -279,6 +290,7 @@ fn pagecache_invalidate_range_drops_only_the_named_span() {
 
 #[test]
 fn pagecache_invalidate_tagged_drops_only_pages_of_that_owner() {
+    let _m = crate::pagecache::tests::fresh_machine();
     let pc = PageCache::new();
     for i in 0..4u64 {
         let tag = if i % 2 == 0 { 11 } else { 22 };
@@ -294,10 +306,11 @@ fn pagecache_invalidate_tagged_drops_only_pages_of_that_owner() {
 
 #[test]
 fn pagecache_multi_inode_isolation() {
-    let d = Disk::new(512, (PAGE_BYTES / 512) as u64 * 4);
+    let _m = crate::pagecache::tests::fresh_machine();
+    let d: Arc<dyn BlockDevice> = Disk::new(512, (PAGE_BYTES / 512) as u64 * 4);
     let pc = PageCache::new();
-    let p1 = pc.write_page(InodeId(1), 0, &vec![1; PAGE_BYTES], &*d).unwrap();
-    let p2 = pc.write_page(InodeId(2), 0, &vec![2; PAGE_BYTES], &*d).unwrap();
+    let p1 = pc.write_page(InodeId(1), 0, &vec![1; PAGE_BYTES], &d).unwrap();
+    let p2 = pc.write_page(InodeId(2), 0, &vec![2; PAGE_BYTES], &d).unwrap();
     assert_ne!(*p1.data.lock(), *p2.data.lock());
     let look_1 = pc.lookup(InodeId(1), 0).unwrap();
     let look_2 = pc.lookup(InodeId(2), 0).unwrap();
@@ -307,6 +320,7 @@ fn pagecache_multi_inode_isolation() {
 
 #[test]
 fn cached_page_flag_set_clear_round_trip() {
+    let _m = crate::pagecache::tests::fresh_machine();
     let p = CachedPage::new(InodeId(0), 0, vec![0; PAGE_BYTES]);
     assert!(p.flags().contains(PageFlags::UPTODATE));
     let prev = p.set_flags(PageFlags::DIRTY);
@@ -318,16 +332,17 @@ fn cached_page_flag_set_clear_round_trip() {
 
 #[test]
 fn pagecache_concurrent_readers_share_one_page() {
+    let _m = crate::pagecache::tests::fresh_machine();
     use std::sync::Arc as StdArc;
     use std::thread;
-    let d = StdArc::new(Disk::new(512, (PAGE_BYTES / 512) as u64 * 4));
+    let d: Arc<dyn BlockDevice> = Disk::new(512, (PAGE_BYTES / 512) as u64 * 4);
     let pc: StdArc<PageCache> = StdArc::new(PageCache::new());
     let mut handles = Vec::new();
     for _ in 0..8 {
         let pc = StdArc::clone(&pc);
-        let d = StdArc::clone(&d);
+        let d = Arc::clone(&d);
         handles.push(thread::spawn(move || {
-            let p = pc.read_page(InodeId(7), 0, &**d).unwrap();
+            let p = pc.read_page(InodeId(7), 0, &d).unwrap();
             Arc::as_ptr(&p) as usize
         }));
     }
