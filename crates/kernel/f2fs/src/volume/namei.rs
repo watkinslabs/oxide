@@ -22,6 +22,21 @@ use crate::uapi::*;
 use super::dnode::{put32, put64};
 use super::Volume;
 
+/// What a removal did, for the layer that owns the rest of the lifecycle.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Removed {
+    /// The inode that lost the name.
+    pub ino: u32,
+    /// Its stored link count now. Zero means it is PARKED, not freed.
+    pub links: u32,
+}
+
+impl Removed {
+    /// Whether the removal took the last name and the inode is on the list.
+    /// # C: O(1)
+    pub fn parked(&self) -> bool { self.links == 0 }
+}
+
 /// What a new inode is being made as.
 #[derive(Clone, Debug)]
 pub struct NewInode {
@@ -221,9 +236,15 @@ impl<S: SectorSource> Volume<S> {
 
     /// Remove a name. `expect_dir` says which of unlink and rmdir was asked
     /// for, and a mismatch is refused rather than silently done.
+    ///
+    /// Reports which inode lost the name and what its stored link count is now,
+    /// because the layer above owns the rest of the lifecycle: at zero the
+    /// inode is PARKED here and only that layer knows whether anything still
+    /// holds it, so only it can decide whether the eviction happens now or when
+    /// the last handle goes.
     /// # C: O(depth) blocks
     pub fn remove(&mut self, dir: u32, name: &[u8], expect_dir: bool, now: (u64, u32))
-        -> Result<(), Errno> {
+        -> Result<Removed, Errno> {
         self.writable_or_err()?;
         if name == b"." || name == b".." { return Err(Errno::Einval); }
         let parent = self.read_inode(dir)?;
@@ -238,29 +259,20 @@ impl<S: SectorSource> Volume<S> {
         // before either is touched.
         self.dquot_initialize(dir)?;
         self.dquot_initialize(hit.ino)?;
+        // Room for the parking is claimed while the directory is still intact.
+        // Every removal asks, not only the one taking the last name: a list
+        // with no room left cannot record a debt, and a removal that discovers
+        // that after taking the entry out has an inode it can neither park nor
+        // reach. Refused here, the caller's directory is untouched and the
+        // refusal is one it can act on.
+        self.reserve_orphan()?;
         self.remove_dentry(dir, name)?;
-        if victim_is_dir {
-            // A directory's own two entries are its remaining links; both go
-            // with it, and the parent loses the one its child held.
-            self.free_inode(hit.ino)?;
-            let links = self.read_inode(dir)?.links.saturating_sub(1).max(1);
-            self.stamp_inode(dir, |b| put32(b, I_LINKS, links))?;
-        } else {
-            let links = victim.links.saturating_sub(1);
-            if links == 0 {
-                // The last name is gone, but a descriptor may still hold it.
-                // Freeing it now would pull the blocks from under a reader;
-                // parking it records the debt so a crash cannot lose it.
-                self.drop_last_link(hit.ino, now)?;
-            } else {
-                self.stamp_inode(hit.ino, |b| {
-                    put32(b, I_LINKS, links);
-                    put64(b, I_CTIME, now.0);
-                    put32(b, I_CTIME_NSEC, now.1);
-                })?;
-            }
-        }
-        self.touch(dir, now)
+        // The link count goes down and the inode is PARKED when it reaches
+        // zero — never freed here. A descriptor may still be reading it, and
+        // eviction is the point that knows one is not.
+        self.drop_nlink(dir, hit.ino, victim_is_dir, now)?;
+        self.touch(dir, now)?;
+        Ok(Removed { ino: hit.ino, links: self.read_inode(hit.ino)?.links })
     }
 
     /// Give an existing file a second name — or a FIRST one, for an inode that

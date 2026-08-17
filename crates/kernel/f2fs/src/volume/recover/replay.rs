@@ -78,6 +78,13 @@ impl<S: SectorSource> Volume<S> {
         self.writable_or_err()?;
         let found = self.scan_fsync_chain()?;
         if found.is_empty() { return Ok(Recovery::Clean); }
+        // Raised the moment a chain is FOUND, not when the replay finishes. It
+        // records that this mount has taken a roll-forward on itself, and a pass
+        // that failed part way through has taken one just as much as one that
+        // finished — the tail was read, the segments were opened, the mount is
+        // not the clean mount it would otherwise be. A tool told nothing
+        // happened cannot tell the two apart from one that came up clean.
+        self.sbi.recovered();
         self.load_segments()?;
         self.protect_chain(&found)?;
         let live = self.resolve_inodes(&found)?;
@@ -101,10 +108,6 @@ impl<S: SectorSource> Volume<S> {
             if f.ofs == marks::xattr_node_offset() { continue; }
             self.release_block(f.addr)?;
         }
-        // What this mount put back is a condition of the mount, not of the
-        // medium: a tool that came along afterwards would otherwise see a
-        // volume indistinguishable from one that came up clean.
-        self.sbi.recovered();
         self.dirty = true;
         self.commit()?;
         Ok(Recovery::Replayed(done))
@@ -295,3 +298,8 @@ fn last_dentry_of(found: &[Found], live: &BTreeSet<u32>) -> BTreeMap<u32, u32> {
 #[cfg(test)]
 #[path = "../../tests/recover/protect.rs"]
 mod tests;
+
+/// The in-progress and recovered conditions, and which way round each goes.
+#[cfg(test)]
+#[path = "../../tests/recover/flags.rs"]
+mod flag_tests;
