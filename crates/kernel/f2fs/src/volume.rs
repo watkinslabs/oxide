@@ -38,6 +38,7 @@
 //! - `zonewp`: what the segment tables say about a drive's zones.
 //! - `ioprio`: the per-file write-priority hint, and the request flags a
 //!             write carries because of it.
+//! - `iostat`: charging one request to the layer that asked for it.
 
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec;
@@ -85,6 +86,7 @@ pub mod recover;
 pub mod fsync;
 pub mod crypto;
 pub mod ioprio;
+pub mod iostat;
 
 pub use curseg::{Curseg, Kind, Summary};
 pub use dir::DirEntry;
@@ -370,6 +372,14 @@ impl<S: SectorSource> Volume<S> {
         if u64::from(addr) >= self.sb.max_blkaddr() { return Err(Errno::Eio); }
         let mut buf = vec![0u8; BLKSIZE];
         self.source.read_sectors(u64::from(addr), &mut buf)?;
+        // Everything OUTSIDE the main area is metadata by the layout's own
+        // definition, which is the same derivation the write path uses to
+        // decide a block is metadata. The main-area reads — nodes, file data,
+        // the cleaner's copies — are charged by the typed readers above this
+        // one, because the address cannot tell those three apart.
+        if !self.sb.valid_main_blkaddr(addr) {
+            self.io_account(crate::stats::iostat::Io::FsMetaRead, BLKSIZE as u64, false);
+        }
         Ok(buf)
     }
 

@@ -34,6 +34,8 @@ pub(crate) fn attrs(fs: &Arc<F2fs>, dev: &str) -> Vec<Attr> {
                |v| u64::from(v.extents().hot_data_age_threshold()), set_hot_age),
         num_rw(fs, dev, "warm_data_age_threshold",
                |v| u64::from(v.extents().warm_data_age_threshold()), set_warm_age),
+        num_rw(fs, dev, "iostat_enable",
+               |v| u64::from(v.iostat_enabled()), set_iostat_enable),
     ];
     out.extend(atgc::knobs::ALL.iter().map(|&k| atgc_knob(fs, dev, k)));
     out
@@ -111,6 +113,18 @@ fn set_warm_age(v: &mut Vol, n: u64) -> Result<(), Errno> {
     let hot = u64::from(v.extents().hot_data_age_threshold());
     if n <= hot || n > u64::from(u32::MAX) { return Err(Errno::Einval); }
     v.extents_mut().set_warm_data_age_threshold(n as u32);
+    Ok(())
+}
+
+/// Whether the mount charges every request to the layer that asked for it.
+///
+/// Any non-zero value turns it on, which is what a tool writing `1` expects
+/// and what a tool writing `2` gets rather than a refusal. Turning it OFF
+/// forgets the totals: a window is measured by switching off and on again, and
+/// totals carried across the switch would make a fresh count impossible.
+/// # C: O(N kinds)
+fn set_iostat_enable(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    v.set_iostat_enabled(n != 0);
     Ok(())
 }
 

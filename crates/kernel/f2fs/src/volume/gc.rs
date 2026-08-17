@@ -3,6 +3,8 @@
 //! Module manifest:
 //! - `victim`:  which SECTION is worth cleaning, over the table alone, under
 //!              a bounded search that resumes where the last one stopped.
+//! - `secmap`:  the sections an ahead-of-demand search has already chosen,
+//!              kept between searches.
 //! - `live`:    whether a block of the victim is still in use, by all three
 //!              records that describe it.
 //! - `migrate`: moving one live block and repointing its owner.
@@ -13,6 +15,7 @@
 //! - `flushdev`: emptying one member device of a spread volume onto the rest.
 
 pub mod victim;
+pub mod secmap;
 pub mod live;
 pub mod migrate;
 pub mod collect;
