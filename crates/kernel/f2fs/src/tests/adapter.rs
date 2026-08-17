@@ -371,9 +371,32 @@ fn errno_translation_keeps_each_meaning() {
     assert_eq!(errno_to_vfs(Errno::Eopnotsupp), VfsError::Eopnotsupp);
     assert_eq!(errno_to_vfs(Errno::Enodata), VfsError::Enodata);
     assert_eq!(errno_to_vfs(Errno::Enospc), VfsError::Enospc);
+    // Refusals a caller acts on. Each of these used to arrive as EIO, which
+    // tells a program the disk failed: it retries, or reports a broken volume,
+    // when what happened was a quota limit or a permission.
+    assert_eq!(errno_to_vfs(Errno::Eperm), VfsError::Eperm);
+    assert_eq!(errno_to_vfs(Errno::Eacces), VfsError::Eacces);
+    assert_eq!(errno_to_vfs(Errno::Edquot), VfsError::Edquot);
+    assert_eq!(errno_to_vfs(Errno::Emlink), VfsError::Emlink);
+    assert_eq!(errno_to_vfs(Errno::Exdev), VfsError::Exdev);
+    assert_eq!(errno_to_vfs(Errno::Ebusy), VfsError::Ebusy);
+    assert_eq!(errno_to_vfs(Errno::Etxtbsy), VfsError::Etxtbsy);
+    assert_eq!(errno_to_vfs(Errno::Eagain), VfsError::Eagain);
+    assert_eq!(errno_to_vfs(Errno::Erange), VfsError::Erange);
+    assert_eq!(errno_to_vfs(Errno::Eoverflow), VfsError::Eoverflow);
+    assert_eq!(errno_to_vfs(Errno::Euclean), VfsError::Euclean);
+    assert_eq!(errno_to_vfs(Errno::Enotty), VfsError::Enotty);
+    assert_eq!(errno_to_vfs(Errno::Emsgsize), VfsError::Emsgsize);
+    assert_eq!(errno_to_vfs(Errno::Eloop), VfsError::Eloop);
     // Anything without a closer meaning is an I/O error, not a silent success.
     assert_eq!(errno_to_vfs(Errno::Eio), VfsError::Eio);
-    assert_eq!(errno_to_vfs(Errno::Eagain), VfsError::Eio);
+    // The three signature refusals and ENOPKG have no spelling in this error
+    // type, so they still arrive as EIO. Pinned so the day the type grows them
+    // this test is what says where to change it.
+    assert_eq!(errno_to_vfs(Errno::Enokey), VfsError::Eio);
+    assert_eq!(errno_to_vfs(Errno::Ekeyrejected), VfsError::Eio);
+    assert_eq!(errno_to_vfs(Errno::Ebadmsg), VfsError::Eio);
+    assert_eq!(errno_to_vfs(Errno::Enopkg), VfsError::Eio);
 }
 
 // --------------------------------------------------------- freeze and thaw
@@ -471,4 +494,24 @@ fn the_machines_flusher_places_this_mounts_pages() {
     block::pagecache::flush_pass(u64::MAX);
     assert_eq!(fs.volume.lock().dirty_data_pages(ino), 0,
                "the flusher could not reach this mount");
+}
+
+/// REPRODUCTION probe for the unexplained one-off failure of
+/// `syncing_the_file_places_it_and_a_remount_finds_it`: the machine's flusher
+/// is PROCESS-WIDE, so a sibling test calling `flush_pass` places the pages of
+/// every mount alive at that moment, including this one's, at a point this test
+/// did not choose.
+#[test]
+fn a_page_placed_by_the_machines_flusher_still_survives_this_mounts_checkpoint() {
+    let (fs, dev, ino) = with_file();
+    let page = vec![0xA5u8; BLKSIZE];
+    fs.write(ino, 0, &page).unwrap();
+    // What a sibling test does to its own mount, which reaches this one too.
+    block::pagecache::flush_pass(u64::MAX);
+    assert_eq!(fs.volume.lock().dirty_data_pages(ino), 0, "the flusher did not reach this mount");
+    fs.sync_file(ino, false).unwrap();
+    fs.checkpoint().unwrap();
+    let again = remount(&dev);
+    assert_eq!(again.read_all(ino).unwrap(), page,
+               "a page the machine's flusher placed did not survive the checkpoint");
 }

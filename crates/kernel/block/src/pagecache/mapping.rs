@@ -201,6 +201,31 @@ impl Mapping {
         out
     }
 
+    /// [`Self::take_for_writeback`] restricted to the INCLUSIVE index range
+    /// `[lo, hi]` — what a range `fsync` or a `sync_file_range` asks for.
+    ///
+    /// Restricted at the CLAIM rather than filtered afterwards, because the
+    /// claim is what takes a page off the dirty list: a batch claimed whole and
+    /// then filtered would have marked pages under writeback that nobody is
+    /// going to write. Pages outside the range keep their dirty state untouched
+    /// and are the next unbounded flush's work.
+    /// # C: O(dirty pages of this inode)
+    pub(super) fn take_range_for_writeback(&self, lo: u64, hi: u64, max: usize)
+        -> Vec<(u64, Arc<CachedPage>)>
+    {
+        let mut g = self.st.lock();
+        let idxs: Vec<u64> = g.dirty.range(lo..=hi).take(max).copied().collect();
+        let mut out = Vec::with_capacity(idxs.len());
+        for idx in idxs {
+            let Some(page) = g.tree.get(idx).cloned() else { continue; };
+            g.dirty.remove(&idx);
+            page.clear_flags(PageFlags::DIRTY);
+            page.set_flags(PageFlags::WRITEBACK);
+            out.push((idx, page));
+        }
+        out
+    }
+
     /// Take ONE named dirty index for writeback — what reclaim needs, which
     /// has chosen a specific cold page rather than "some dirty page".
     /// # C: O(log dirty)

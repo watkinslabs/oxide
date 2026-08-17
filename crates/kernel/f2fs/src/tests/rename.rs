@@ -36,9 +36,11 @@ fn req<'a>(from: u32, old: &'a [u8], to: u32, new: &'a [u8], flags: u32) -> Rena
     Rename { from, old, to, new, flags, owner: OWNER, now: NOW }
 }
 
+/// A move, with what it replaced discarded — these tests read the medium for
+/// that, not the report. # C: O(depth)
 fn mv(v: &mut Volume<MemImage>, from: u32, old: &[u8], to: u32, new: &[u8], flags: u32)
     -> Result<(), Errno> {
-    v.rename(&req(from, old, to, new, flags))
+    v.rename(&req(from, old, to, new, flags)).map(|_| ())
 }
 
 /// Look a name up in `dir`. # C: O(depth)

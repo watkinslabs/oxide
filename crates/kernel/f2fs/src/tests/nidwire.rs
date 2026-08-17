@@ -114,6 +114,10 @@ fn the_remaining_count_moves_by_one_per_id() {
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     assert_eq!(v.free_nid_counts().2, before - 1, "creating a file cost more than one id");
     v.remove(ROOT_INO, b"f", false, NOW).unwrap();
-    assert_eq!(v.free_nid_counts().2, before, "removing it did not give the id back");
+    // The name going parks the inode; the EVICTION is what frees it and
+    // gives back what it held. The two are separate events, and a descriptor
+    // may sit between them.
+    v.evict_inode(ino).unwrap();
+    assert_eq!(v.free_nid_counts().2, before, "evicting it did not give the id back");
     assert!(v.nid_is_cached_free(ino));
 }

@@ -125,6 +125,10 @@ fn a_hint_does_not_outlive_the_inode_it_was_set_on() {
     let (mut v, ino) = recorded();
     v.set_io_prio(ino, IOPRIO_WRITE).unwrap();
     v.remove(ROOT_INO, b"f", false, NOW).unwrap();
+    // The name going parks the inode; the EVICTION is what frees it and
+    // gives back what it held. The two are separate events, and a descriptor
+    // may sit between them.
+    v.evict_inode(ino).unwrap();
     assert_eq!(v.io_prio(ino), IOPRIO_NONE);
 }
 

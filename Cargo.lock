@@ -1009,6 +1009,7 @@ dependencies = [
  "aes",
  "block",
  "blockcipher",
+ "boot-info",
  "crc",
  "crypt",
  "fs",

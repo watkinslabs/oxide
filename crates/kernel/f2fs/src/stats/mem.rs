@@ -68,10 +68,9 @@ impl Footprint {
         let dq = v.dquots.len() as u64 * size_of::<crate::quota::Dqblk>() as u64;
         let dq_d = v.dq_dirty.len() as u64 * (2 * size_of::<u32>()) as u64;
         let orph = v.orphans.len() as u64 * size_of::<u32>() as u64;
-        let opens = v.opens.len() as u64 * (2 * size_of::<u32>()) as u64;
         let disc = v.pending_discard.len() as u64 * size_of::<u32>() as u64;
         let prefree = u64::from(v.prefree_count()) * size_of::<u32>() as u64;
-        let cache = nat + nat_j + sit_j + sit_d + dq + dq_d + orph + opens + disc + prefree;
+        let cache = nat + nat_j + sit_j + sit_d + dq + dq_d + orph + disc + prefree;
 
         // The two extent caches are reported on their own line as well as
         // inside the cached total, which is why they are added rather than

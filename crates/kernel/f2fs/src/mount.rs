@@ -9,9 +9,13 @@
 //! Module manifest:
 //! - `node`: what an inode of this filesystem is, built from a stored one.
 //! - `ops`:  the inode and file operations.
+//! - `falloc`: the `fallocate(2)` slot, and the swap-area hooks.
 //! - `quota`: the hooks `quotactl(2)` reaches this filesystem through.
 //! - `sb`:   `statfs` and the option tail.
 //! - `write`: the mutating operations, and the clock they share.
+//! - `evict`: the half of an inode's death above the volume — making the cached
+//!            inode agree with the stored link count, and evicting a parked
+//!            inode nothing holds.
 //! - `remount`: reconfiguring a live mount from a new option line.
 //! - `devs`:  finding the member devices, and asking each about its zones.
 //! - `freeze`: sealing the volume for a snapshot, and resuming after one.
@@ -39,11 +43,13 @@ use crate::volume::Volume;
 
 pub mod node;
 pub mod devs;
+pub mod falloc;
 pub mod ops;
 pub mod prepare;
 pub mod quota;
 pub mod sb;
 pub mod write;
+pub mod evict;
 pub mod remount;
 pub mod freeze;
 pub mod wp;
@@ -69,6 +75,16 @@ pub struct F2fs {
     /// Held so the superblock operations can reach the filesystem they belong
     /// to, which the `&self` those operations are asked for cannot.
     me: Weak<F2fs>,
+    /// The superblock this filesystem was realized into, weakly — it owns the
+    /// operations table that points back here.
+    ///
+    /// Needed because a removal is only HALF of an inode's death. The other
+    /// half is the cached inode the layer above holds: its link count has to
+    /// follow the stored one down to zero, or the keep-versus-evict decision
+    /// reads a file that still looks linked and the eviction that frees the
+    /// parked inode never happens for the life of the mount. Reaching that
+    /// cached inode means reaching the cache, which lives here.
+    sb: sync::Spinlock<Weak<vfs::superblock::SuperBlock>, sync::TaskList>,
     /// The cleaner and the discard thread, their knobs and their wake points.
     /// Outside the volume lock deliberately: turning a knob must not have to
     /// wait behind a read that is fetching a block.
@@ -133,6 +149,7 @@ impl F2fs {
             volume: sync::Spinlock::new(volume),
             source,
             me: me.clone(),
+            sb: sync::Spinlock::new(Weak::new()),
             bg,
         });
         // Before anything can dirty a page: the mapping refuses to hold a
@@ -176,6 +193,12 @@ impl F2fs {
     }
 
     /// The background state this mount's threads share. # C: O(1)
+    /// The superblock this filesystem was realized into, if it has been.
+    /// # C: O(1)
+    pub(crate) fn superblock(&self) -> Option<Arc<vfs::superblock::SuperBlock>> {
+        self.sb.lock().upgrade()
+    }
+
     pub fn bg(&self) -> &Arc<crate::bg::Bg> { &self.bg }
 
     /// Whether the DEVICE can be told that blocks are no longer needed.
@@ -350,6 +373,31 @@ pub fn errno_to_vfs(err: Errno) -> VfsError {
         Errno::Enomem => VfsError::Enomem,
         Errno::Eopnotsupp => VfsError::Eopnotsupp,
         Errno::Enodata => VfsError::Enodata,
+        // Everything below was reaching userspace as EIO, which says the medium
+        // failed. Each of these is a refusal the caller can act on, and a
+        // program told EIO instead retries or reports a broken disk: a write
+        // over a quota limit is EDQUOT, a writable open of a sealed file is
+        // EPERM, a link past the count limit is EMLINK.
+        Errno::Eperm => VfsError::Eperm,
+        Errno::Eacces => VfsError::Eacces,
+        Errno::Edquot => VfsError::Edquot,
+        Errno::Emlink => VfsError::Emlink,
+        Errno::Exdev => VfsError::Exdev,
+        Errno::Ebusy => VfsError::Ebusy,
+        Errno::Etxtbsy => VfsError::Etxtbsy,
+        Errno::Eagain => VfsError::Eagain,
+        Errno::Erange => VfsError::Erange,
+        Errno::Eoverflow => VfsError::Eoverflow,
+        Errno::Euclean => VfsError::Euclean,
+        Errno::Enotty => VfsError::Enotty,
+        Errno::Emsgsize => VfsError::Emsgsize,
+        Errno::Ebadf => VfsError::Ebadf,
+        Errno::Efault => VfsError::Efault,
+        Errno::Esrch => VfsError::Esrch,
+        Errno::Eloop => VfsError::Eloop,
+        // EIO is the answer for a medium failure and for the errnos this
+        // interface's error type cannot spell (the three signature refusals and
+        // ENOPKG), which is recorded as an open issue rather than hidden here.
         _ => VfsError::Eio,
     }
 }
@@ -364,6 +412,15 @@ impl vfs::fs::FileSystem for F2fs {
         self.me
             .upgrade()
             .map(|fs| Arc::new(sb::F2fsSuperOps { fs }) as Arc<dyn vfs::superblock::SuperOps>)
+    }
+
+    /// Take the superblock this filesystem was realized into.
+    ///
+    /// Not decoration: without it a removal cannot reach the cached inode whose
+    /// link count has to reach zero for the eviction to ever run. See the field.
+    fn set_sb(&self, sb: Weak<vfs::superblock::SuperBlock>) -> vfs::KResult<()> {
+        *self.sb.lock() = sb;
+        Ok(())
     }
 }
 

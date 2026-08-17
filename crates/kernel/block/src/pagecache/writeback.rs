@@ -88,6 +88,22 @@ pub fn writeback_mapping_with(map: &Arc<Mapping>, max: usize, sink: Sink<'_>)
     submit_batch(map, sink, batch)
 }
 
+/// [`writeback_mapping_with`] restricted to the INCLUSIVE index range
+/// `[lo, hi]`.
+///
+/// What a range `fsync` and `sync_file_range(2)` ask for, and the difference
+/// from the unbounded form is the whole cost of the call: a one-page range
+/// `fsync` of a large file has no business writing every unplaced page of it.
+/// A page outside the range keeps its dirty state and is the next unbounded
+/// flush's work, so this loses nothing — it is narrower, not weaker.
+/// # Ctx: process # Sleeps: y # C: O(dirty pages in range)
+pub fn writeback_range_with(map: &Arc<Mapping>, lo: u64, hi: u64, max: usize, sink: Sink<'_>)
+    -> (usize, KResult<()>) {
+    if hi < lo { return (0, Ok(())); }
+    let batch = map.take_range_for_writeback(lo, hi, max);
+    submit_batch(map, sink, batch)
+}
+
 /// Write back exactly the named page if it is dirty. Reclaim's cleaning step:
 /// `17§4.4` makes writeback the precondition of evicting a dirty page, and the
 /// page reclaim chose is the one that has to be cleaned. # C: O(1 page)
@@ -137,7 +153,7 @@ fn submit_batch(map: &Arc<Mapping>, sink: Sink<'_>, batch: Vec<(u64, Arc<super::
     // is entered: the target is a filesystem or a driver call and may sleep,
     // which nothing may do holding a spinlock, and it is handed the whole
     // batch at once so it can decide the batch's placement as a batch.
-    let payloads: Vec<Vec<u8>> = batch.iter().map(|(_, p)| p.data.lock().clone()).collect();
+    let payloads: Vec<Vec<u8>> = batch.iter().map(|(_, p)| p.data.lock().to_vec()).collect();
     let pages: Vec<PageOut<'_>> = batch.iter().zip(payloads.iter())
         .map(|((_, p), buf)| PageOut { offset: p.offset, data: buf }).collect();
     // Prefilled with a failure, so a target that returns without reporting a
@@ -200,6 +216,13 @@ pub fn shrink(target: usize) -> usize {
         if freed >= target { break; }
         let Some(page) = map.get(index) else { continue; };
         if page.is_locked() || page.is_writeback() { continue; }
+        // A page a user page table maps is not reclaim's to take, and for a
+        // different reason from the dirty rule below: dropping it leaves the
+        // mapper writing a frame this cache has stopped tracking, and the next
+        // fill of the same offset takes a different frame — two live copies of
+        // one page. The reference unmaps a folio before it may evict it; nothing
+        // here can, so the page stays.
+        if page.user_mapped() { continue; }
         if page.flags().contains(PageFlags::REFERENCED) { page.clear_flags(PageFlags::REFERENCED); continue; }
         if page.is_dirty() { writeback_page(&map, index); continue; }
         if map.evict(index).is_some() { global::account_cached(-1); freed += 1; }
