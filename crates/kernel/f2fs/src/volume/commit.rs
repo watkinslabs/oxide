@@ -80,6 +80,13 @@ impl<S: SectorSource> Volume<S> {
         // buffered write has pages to place, and placing them is what makes
         // it dirty in the sense the test means.
         self.flush_all_data_pages()?;
+        // Then the nodes, and in that order: placing a data page writes an
+        // address into the node that holds it, so nodes flushed first would be
+        // dirty again by the time the table was written. Before the dirty test
+        // for the same reason the data flush is — a mount whose only change is
+        // a node has one to place, and placing it is what makes it dirty in
+        // the sense the test means.
+        self.flush_all_nodes()?;
         if !self.dirty { return Ok(()); }
         // Every metadata block written from here to the end of this call is
         // the checkpoint's, which is the only thing that tells it apart from
@@ -97,6 +104,14 @@ impl<S: SectorSource> Volume<S> {
         self.load_segments()?;
         // Accounting becomes durable with everything else it describes.
         self.flush_quotas()?;
+        // AGAIN, and after the quota files: writing them is an ordinary file
+        // write, so it leaves data pages and node pages behind exactly as any
+        // other write does. A node still in the mapping when the table below
+        // is written would have its NO-ADDRESS-YET marker recorded as the
+        // node's address, which the next mount reads as a node that is not
+        // there. This is the reference's own drain-before-the-table step.
+        self.flush_all_data_pages()?;
+        self.flush_all_nodes()?;
         let mut nat_bitmap = self.nat_bitmap.clone();
         let mut sit_bitmap = self.sit_bitmap.clone();
         let nat_journal = self.flush_nat(&mut nat_bitmap)?;

@@ -81,12 +81,19 @@ impl<S: SectorSource> Volume<S> {
     /// Only the marks are stamped here. The forward pointer belongs to the
     /// node writer, which fills it in from the log's position after the block
     /// has been allocated — the one place that knows where the log goes next.
+    ///
+    /// PLACED at once, rather than left dirty for the next flush. A chain is
+    /// read forward from where the log stood at the last checkpoint, so the
+    /// order the blocks reach the medium in IS the chain; leaving them to a
+    /// later flush would let the mapping choose that order, and an inode
+    /// arriving after the nodes under it is a chain replay cannot size.
     /// # C: O(1 block)
     pub(crate) fn write_chained_node(&mut self, nid: u32, ino: u32, block: Vec<u8>, flag: u32)
         -> Result<u32, Errno> {
         let mut block = block;
         marks::set_flag(&mut block, flag);
-        self.write_node(nid, ino, block, Kind::FileNode)
+        self.write_node(nid, ino, block, Kind::FileNode)?;
+        self.writeback_node(nid)
     }
 
     /// Put the whole file into the log, inode first.

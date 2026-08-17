@@ -77,7 +77,13 @@ pub fn inode_chksum(seed: u32, block: &[u8]) -> Option<u32> {
     c = chksum(c, gen);
     c = chksum(c, block.get(..cs)?);
     c = chksum(c, &[0u8; 4]);
-    Some(chksum(c, block.get(cs + 4..uapi::BLKSIZE)?))
+    // The node FOOTER is outside what an inode's checksum covers, which is
+    // what lets the footer be finished after the inode is sealed: the
+    // checkpoint version and the forward pointer are stamped when the block is
+    // placed, long after its contents were settled. Covering them would make
+    // every deferred inode fail its own checksum, and would disagree with the
+    // on-disk value any other implementation computes.
+    Some(chksum(c, block.get(cs + 4..uapi::NODE_FOOTER_OFF)?))
 }
 
 #[cfg(test)]

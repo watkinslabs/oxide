@@ -12,7 +12,7 @@ use alloc::sync::Arc;
 use block::pagecache::PageOut;
 use block::types::KResult;
 
-use crate::filemap::DataHost;
+use crate::filemap::{DataHost, NodeHost};
 
 use super::F2fs;
 
@@ -37,6 +37,25 @@ impl DataHost for F2fs {
     }
 }
 
+impl NodeHost for F2fs {
+    /// The same for NODE pages, which reclaim and the flusher reach by the
+    /// same route and for the same reason: a dirty node page they cannot place
+    /// is one the flusher walks forever and reclaim can never evict.
+    /// # Ctx: process # Sleeps: y # C: O(pages) blocks
+    fn writeback_nodes(&self, pages: &[PageOut<'_>], results: &mut [KResult<()>]) {
+        let mut first = None;
+        let mut v = self.volume.lock();
+        v.set_clock(super::write::now().0);
+        v.writeback_node_pages(pages, results, &mut first);
+    }
+
+    /// # C: O(devices)
+    fn sync_node_medium(&self) -> KResult<()> {
+        for dev in &self.devs { dev.flush()?; }
+        Ok(())
+    }
+}
+
 impl F2fs {
     /// Give the mapping the way back to this mount.
     ///
@@ -47,6 +66,8 @@ impl F2fs {
     pub(crate) fn adopt_data_pages(self: &Arc<Self>) {
         let cache = self.volume.lock().data_cache();
         cache.set_host(Arc::downgrade(self) as alloc::sync::Weak<dyn DataHost>);
+        let nodes = self.volume.lock().node_cache();
+        nodes.set_host(Arc::downgrade(self) as alloc::sync::Weak<dyn NodeHost>);
     }
 
     /// Act on the machine's dirty state after a write.

@@ -57,6 +57,18 @@ impl<S: SectorSource> Volume<S> {
     /// the inode number in the first place.
     /// # C: O(1 block)
     pub fn read_node(&self, nid: u32, ino: Option<u32>) -> Result<NodeRef, Errno> {
+        // The node mapping FIRST. A node changed since the last flush has not
+        // been placed and the table gives it no address, so a read that went
+        // to the table would answer with the node's previous contents — or,
+        // for a node created since, with nothing at all.
+        if let Some(block) = self.peek_node(nid) {
+            let f = footer::expect(&block, nid, ino).map_err(|_| Errno::Eio)?;
+            if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::InconsistentFooter) {
+                return Err(Errno::Eio);
+            }
+            return Ok(NodeRef { block, footer: f });
+        }
+        self.node_cache.miss();
         let addr = self.node_addr(nid)?;
         if node::is_hole(addr) { return Err(Errno::Enoent); }
         let block = self.read_main_block(addr)?;
@@ -65,6 +77,10 @@ impl<S: SectorSource> Volume<S> {
         if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::InconsistentFooter) {
             return Err(Errno::Eio);
         }
+        // Kept CLEAN, so the next read of the same node costs nothing. Nothing
+        // changes a node behind this mapping: every writer of a node block in
+        // this filesystem files its result here on the way past.
+        self.node_cache.fill(nid, block.clone());
         Ok(NodeRef { block, footer: f })
     }
 

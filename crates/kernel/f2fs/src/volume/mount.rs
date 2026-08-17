@@ -138,6 +138,7 @@ impl<S: SectorSource> Volume<S> {
         // picks either.
         let meta_cache = crate::checkpoint::cache::Cache::new(
             sb.meta_ino, sb.cp_blkaddr, sb.main_blkaddr);
+        let node_ino = sb.node_ino;
         let mut vol = Self {
             source,
             sb,
@@ -198,6 +199,10 @@ impl<S: SectorSource> Volume<S> {
             // move a file's bytes to a different address without changing
             // them — leaves the mapping alone.
             data_cache: crate::filemap::Cache::new(),
+            // Filed under the volume's own NODE inode number, which the
+            // format reserves and no file can take — where the reference
+            // puts the same mapping.
+            node_cache: crate::filemap::NodeCache::new(node_ino),
             fault: crate::fault::Info::new(),
             devs,
             zoned,
