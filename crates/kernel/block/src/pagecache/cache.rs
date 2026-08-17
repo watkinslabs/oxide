@@ -22,7 +22,7 @@ use crate::types::{BlockError, InodeId, KResult, PageFlags, PAGE_BYTES};
 use super::global;
 use super::mapping::{Mapping, Writeback};
 use super::page::CachedPage;
-use super::writeback::{writeback_mapping, DevWriteback};
+use super::writeback::{writeback_mapping, writeback_mapping_with, DevWriteback, Sink};
 
 /// Page cache.
 pub struct PageCache {
@@ -312,6 +312,27 @@ impl PageCache {
         let out = writeback_mapping(&map, max);
         if map.nr_dirty() == 0 { map.dirtied_when.store(0, Ordering::Release); }
         out
+    }
+
+    /// The same, into a sink the caller supplies rather than the installed
+    /// target — what a filesystem's own flush point uses, per
+    /// [`writeback_mapping_with`].
+    /// # Ctx: process # Sleeps: y # C: O(pages written)
+    pub fn writeback_with(&self, inode: InodeId, max: usize, sink: Sink<'_>)
+        -> (usize, KResult<()>) {
+        let Some(map) = self.mapping(inode) else { return (0, Ok(())); };
+        let out = writeback_mapping_with(&map, max, sink);
+        if map.nr_dirty() == 0 { map.dirtied_when.store(0, Ordering::Release); }
+        out
+    }
+
+    /// Every inode this cache holds a dirty page of — what a whole-filesystem
+    /// flush has to visit. Sampled under the inode map's lock and returned by
+    /// value, because the flush enters the filesystem and may dirty more.
+    /// # C: O(inodes)
+    pub fn dirty_inodes(&self) -> Vec<InodeId> {
+        let maps: Vec<Arc<Mapping>> = self.maps.lock().values().cloned().collect();
+        maps.iter().filter(|m| m.nr_dirty() > 0).map(|m| m.ino()).collect()
     }
 
     /// Act on the machine's dirty state after dirtying a page.

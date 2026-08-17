@@ -216,7 +216,7 @@ impl<S: SectorSource> Volume<S> {
         // caches. Telling them here is not optional: every pair below moves a
         // block, and a run left describing where the block used to be answers
         // a later read with data that has been overwritten by something else.
-        for &(ofs, addr) in pairs { self.note_mapping_change(ino, holder, ofs, addr)?; }
+        for &(ofs, addr) in pairs { self.note_mapping_change(ino, holder, ofs, addr, true)?; }
         match holder {
             Holder::Inode => {
                 let inode = self.read_inode(ino)?;

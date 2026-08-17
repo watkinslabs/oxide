@@ -16,6 +16,7 @@
 //! - `devs`:  finding the member devices, and asking each about its zones.
 //! - `freeze`: sealing the volume for a snapshot, and resuming after one.
 //! - `wp`:     settling the drives' write pointers against the volume.
+//! - `data`:   the way back from a dirty data page to this mount.
 
 use alloc::string::{String, ToString};
 use alloc::sync::{Arc, Weak};
@@ -40,6 +41,7 @@ pub mod write;
 pub mod remount;
 pub mod freeze;
 pub mod wp;
+pub mod data;
 
 /// The one name this filesystem is registered under.
 pub const F2FS_NAME: &str = "f2fs";
@@ -119,6 +121,10 @@ impl F2fs {
             me: me.clone(),
             bg,
         });
+        // Before anything can dirty a page: the mapping refuses to hold a
+        // dirty page it has nowhere to send, and everything below writes
+        // through it.
+        fs.adopt_data_pages();
         // After the replay the volume ran on its way up, and before anything
         // can allocate: a log left standing where the drive will not take its
         // next write fails the FIRST write to it, with nothing to say why.

@@ -25,6 +25,7 @@ fn with_file(tags: &[u8]) -> (Volume<MemImage>, u32) {
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     for (i, t) in tags.iter().enumerate() {
         v.write_file(ino, i as u64 * BLK, &page(*t)).unwrap();
+        v.sync_data().unwrap();
     }
     (v, ino)
 }
@@ -84,7 +85,12 @@ fn blocks_that_are_not_adjacent_on_the_medium_are_separate_requests() {
     // would name blocks belonging to something else.
     let mut v = test_image::with_root().mount_rw().unwrap();
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
-    for index in [1u64, 0] { v.write_file(ino, index * BLK, &page(index as u8 + 1)).unwrap(); }
+    // Placed as each is written: allocation is what scatters them, and a
+    // pair left pending would be placed together, in order, as one run.
+    for index in [1u64, 0] {
+        v.write_file(ino, index * BLK, &page(index as u8 + 1)).unwrap();
+        v.sync_data().unwrap();
+    }
     v.sec_trim_file(ino, 0, 2 * BLK, TRIM_FILE_DISCARD).unwrap();
     let erased = v.source.erased();
     assert_eq!(erased.len(), 2, "expected two runs, got {erased:?}");
@@ -96,7 +102,9 @@ fn a_hole_does_not_reach_the_medium() {
     let mut v = test_image::with_root().mount_rw().unwrap();
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     v.write_file(ino, 0, &page(1)).unwrap();
+    v.sync_data().unwrap();
     v.write_file(ino, 2 * BLK, &page(3)).unwrap();
+    v.sync_data().unwrap();
     v.sec_trim_file(ino, 0, 3 * BLK, TRIM_FILE_DISCARD).unwrap();
     let erased = v.source.erased();
     assert_eq!(erased.iter().map(|&(_, n)| n).sum::<u64>(), 2);
@@ -116,7 +124,9 @@ fn a_range_reaching_the_end_takes_the_last_partial_block_whole() {
     let mut v = test_image::with_root().mount_rw().unwrap();
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     v.write_file(ino, 0, &page(1)).unwrap();
+    v.sync_data().unwrap();
     v.write_file(ino, BLK, &[7u8; 8]).unwrap();
+    v.sync_data().unwrap();
     assert_eq!(v.read_inode(ino).unwrap().size, BLK + 8);
     v.sec_trim_file(ino, BLK, u64::MAX, TRIM_FILE_ZEROOUT).unwrap();
     let v = remount(v);
@@ -181,6 +191,7 @@ fn a_medium_that_cannot_erase_says_so_rather_than_reporting_success() {
     let mut v = test_image::with_root().mount_rw().unwrap();
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     v.write_file(ino, 0, &page(1)).unwrap();
+    v.sync_data().unwrap();
     v.commit().unwrap();
     let bytes = v.into_source().snapshot();
     let src = NoErase(MemImage::from_bytes(BLKSIZE as u32, bytes));

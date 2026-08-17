@@ -58,6 +58,10 @@ impl<S: SectorSource> Volume<S> {
     pub fn fallocate(&mut self, ino: u32, mode: u32, offset: u64, len: u64)
         -> Result<(), Errno> {
         self.writable_or_err()?;
+        // Every buffered write of this file has to be on the medium before
+        // its addresses are read: a page not yet placed has no address, and
+        // this operation is about to rearrange the ones that exist.
+        self.flush_data_pages(ino)?;
         let inode = self.read_inode(ino)?;
         check(&self.gate_for(ino, &inode)?, mode)?;
         if len == 0 { return Ok(()); }

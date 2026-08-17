@@ -47,6 +47,7 @@ fn fixture() -> (Volume<spread::Spread>, u32) {
     let ino = v.create(ROOT_INO, b"onmember0", &spec(), None).unwrap();
     let data = payload();
     v.write_file(ino, 0, &data).unwrap();
+    v.sync_data().unwrap();
     // Sealing the log writes the segment's summary block, which the cleaner
     // cannot work without, and moves the log off the segment.
     v.open_segment(CURSEG_WARM_DATA).unwrap();

@@ -100,6 +100,7 @@ fn a_file_written_before_the_resize_still_reads_afterwards() {
                        None).unwrap();
     let data: Vec<u8> = (0..3 * BLKSIZE).map(|i| (i % 251) as u8).collect();
     v.write_file(ino, 0, &data).unwrap();
+    v.sync_data().unwrap();
     let was = v.super_block().block_count;
     let step = per_sec(&v);
     resize(&mut v, was - step).unwrap();
@@ -117,6 +118,7 @@ fn nothing_live_is_left_in_the_sections_that_went() {
                        &NewInode { mode: S_IFREG | 0o644, uid: 0, gid: 0, rdev: 0, now: NOW },
                        None).unwrap();
     v.write_file(ino, 0, &vec![7u8; 2 * BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     let was = v.super_block().block_count;
     let step = per_sec(&v);
     resize(&mut v, was - step).unwrap();
@@ -224,6 +226,7 @@ fn write_into_the_top_section(v: &mut Volume<MemImage>, ino: u32, bytes: &[u8]) 
     v.curseg[log].next_blkoff = 0;
     v.curseg[log].alloc_type = crate::uapi::ALLOC_LFS;
     v.write_file(ino, 0, bytes).unwrap();
+    v.sync_data().unwrap();
     let inode = v.read_inode(ino).unwrap();
     let a = v.stored_addr(&inode, ino, 0).unwrap();
     assert_eq!(v.super_block().segno_of(a), Some(top), "the write did not land in the top section");

@@ -27,6 +27,7 @@ fn with_file() -> (Volume<MemImage>, u32) {
     let spec = NewInode { mode: S_IFREG | 0o644, uid: 0, gid: 0, rdev: 0, now: NOW };
     let ino = v.create(ROOT_INO, b"f", &spec, None).unwrap();
     v.write_file(ino, 0, &contents()).unwrap();
+    v.sync_data().unwrap();
     (v, ino)
 }
 

@@ -52,7 +52,10 @@ fn a_write_that_runs_out_of_room_leaves_no_node_the_tree_cannot_reach() {
     // Far apart, so each write builds its own branch of the node tree, until
     // the volume has nothing left to build one out of.
     for i in 0..1024u64 {
-        let r = v.write_file(ino, (i + 1) * 4096 * BLKSIZE as u64, b"x");
+        // The room is taken at the write and the block is chosen at the
+        // flush, so either can be the one that runs out.
+        let r = v.write_file(ino, (i + 1) * 4096 * BLKSIZE as u64, b"x")
+            .and_then(|n| v.sync_data().map(|()| n));
         let charged = v.quota_record(USRQUOTA, UID).unwrap().curspace / BLKSIZE as u64;
         let held = v.count_blocks(ino).unwrap();
         // The inode's own block is counted by the tree walk and never charged
@@ -69,6 +72,7 @@ fn a_volume_with_no_room_left_refuses_a_node_as_well_as_a_block() {
     let mut v = vol();
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     v.write_file(ino, 0, &vec![1u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     let nodes_before = v.valid_node_count;
     // Every remaining block spoken for. The logs still have room inside their
     // open segments, which is exactly the state in which a node allocation
@@ -78,6 +82,8 @@ fn a_volume_with_no_room_left_refuses_a_node_as_well_as_a_block() {
     // Past the inode's own address array, so it needs a direct node first.
     let apb = v.read_inode(ino).unwrap().addrs_per_inode() as u64;
     let r = v.write_file(ino, apb * BLKSIZE as u64, b"x");
+    v.sync_data().unwrap();
     assert_eq!(r, Err(Errno::Enospc), "a full volume let a write through");
     assert_eq!(v.valid_node_count, nodes_before, "a full volume handed out a node block");
 }
+

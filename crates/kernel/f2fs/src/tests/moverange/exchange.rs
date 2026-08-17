@@ -23,6 +23,7 @@ fn file(v: &mut Volume<MemImage>, name: &[u8], tags: &[u8]) -> u32 {
     let ino = v.create(ROOT_INO, name, &spec(), None).unwrap();
     for (i, t) in tags.iter().enumerate() {
         v.write_file(ino, i as u64 * BLK, &page(*t)).unwrap();
+        v.sync_data().unwrap();
     }
     ino
 }
@@ -82,7 +83,9 @@ fn a_hole_in_the_source_leaves_the_destination_untouched() {
     let mut v = test_image::with_root().mount_rw().unwrap();
     let src = v.create(ROOT_INO, b"a", &spec(), None).unwrap();
     v.write_file(src, 0, &page(1)).unwrap();
+    v.sync_data().unwrap();
     v.write_file(src, 2 * BLK, &page(3)).unwrap();
+    v.sync_data().unwrap();
     let dst = file(&mut v, b"b", &[9, 9, 9]);
     v.exchange_blocks(src, dst, 0, 0, 3).unwrap();
     let v = remount(v);

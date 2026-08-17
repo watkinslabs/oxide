@@ -34,6 +34,7 @@ pub fn vol() -> Volume<MemImage> { test_image::with_root().mount_rw().unwrap() }
 pub fn file_with_a_block(v: &mut Volume<MemImage>, name: &[u8]) -> u32 {
     let ino = v.create(ROOT_INO, name, &spec(), None).unwrap();
     v.write_file(ino, 0, &vec![0xAB; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     ino
 }
 

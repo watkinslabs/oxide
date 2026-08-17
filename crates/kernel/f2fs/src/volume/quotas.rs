@@ -405,7 +405,11 @@ impl<S: SectorSource> Volume<S> {
                 Self::set_iblocks(b, blocks);
             })?;
         }
-        Ok(())
+        // Placed here rather than left to the next flush point: this is called
+        // from inside the checkpoint, PAST the point that would have placed
+        // it, and the checkpoint that records these counts is the same one
+        // that has to be able to find the blocks holding them.
+        self.flush_data_pages(ino)
     }
 }
 

@@ -41,6 +41,8 @@
 //! - `iostat`: charging one request to the layer that asked for it.
 //! - `blockio`: one block by its address, off the medium or out of the
 //!              mount's metadata mapping.
+//! - `writeback`: choosing where a file's dirty data pages go, and putting
+//!                them there.
 
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
@@ -89,6 +91,7 @@ pub mod crypto;
 pub mod ioprio;
 pub mod iostat;
 pub mod blockio;
+pub mod writeback;
 
 pub use curseg::{Curseg, Kind, Summary};
 pub use dir::DirEntry;
@@ -248,7 +251,7 @@ pub struct Volume<S: SectorSource> {
     /// number and file offset rather than by block address (`filemap`).
     /// Interior-mutable for the reason the caches above are: a READ is what
     /// fills it, and a read takes `&self`.
-    pub(crate) data_cache: crate::filemap::Cache,
+    pub(crate) data_cache: alloc::sync::Arc<crate::filemap::Cache>,
     /// The metadata blocks this mount has read and kept — the checkpoint
     /// packs, both tables and the summary area. Unconditional, unlike the
     /// compressed-block cache above: no mount option turns it off, because

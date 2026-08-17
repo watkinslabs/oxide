@@ -218,6 +218,7 @@ fn a_file_that_begins_with_a_hole_is_refused() {
     let ino = v.create(ROOT_INO, b"sparse", &spec(), None).unwrap();
     // Written past the front, so the file's first block has no address at all.
     v.write_file(ino, BLKSIZE as u64 * 4, b"far out").unwrap();
+    v.sync_data().unwrap();
     assert_eq!(v.swap_activate(ino, NO_CEILING), Err(Errno::Einval));
 }
 
@@ -256,6 +257,7 @@ fn a_file_whose_length_is_not_whole_sections_is_refused_rather_than_retried_fore
     let mut v = test_image::with_root().mount_rw().unwrap();
     let ino = v.create(ROOT_INO, b"odd", &spec(), None).unwrap();
     v.write_file(ino, 0, &vec![4u8; BLKSIZE * 2]).unwrap();
+    v.sync_data().unwrap();
     assert_eq!(v.swap_activate(ino, NO_CEILING), Err(Errno::Einval));
 }
 
@@ -274,6 +276,7 @@ fn moving_a_run_puts_it_on_a_section_boundary() {
     let ino = v.create(ROOT_INO, b"m", &spec(), None).unwrap();
     let region = v.read_inode(ino).unwrap().inline_data_span().1;
     v.write_file(ino, 0, &vec![6u8; region + 1]).unwrap();
+    v.sync_data().unwrap();
     let sb_main = v.super_block().main_blkaddr;
     let sec = u64::from(v.blks_per_sec());
     let before = match v.map_block(&v.read_inode(ino).unwrap(), ino, 0).unwrap() {

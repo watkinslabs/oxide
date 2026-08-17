@@ -60,6 +60,8 @@ fn poke_page(v: &Volume<MemImage>, ino: u32, index: u64, byte: u8) -> u32 {
 fn a_second_read_of_a_page_is_served_without_the_medium() {
     let (mut v, ino) = volume();
     v.write_file(ino, 0, &filled(0xA1)).unwrap();
+    // Placed, so the page has an address for the edit below to aim at.
+    v.sync_data().unwrap();
     assert_eq!(read_all(&v, ino), filled(0xA1));
     let before = v.data_cache_hits();
     poke_page(&v, ino, 0, 0xB2);
@@ -182,9 +184,11 @@ fn a_relocated_block_is_still_the_same_page() {
     // address changes and the contents do not, and a reader sees neither.
     let (mut v, ino) = volume();
     v.write_file(ino, 0, &filled(0xA1)).unwrap();
+    v.sync_data().unwrap();
     let i = v.read_inode(ino).unwrap();
     let Mapped::At(first) = v.map_block(&i, ino, 0).unwrap() else { panic!("no block") };
     v.write_file(ino, 0, &filled(0xA1)).unwrap();
+    v.sync_data().unwrap();
     let i = v.read_inode(ino).unwrap();
     let Mapped::At(second) = v.map_block(&i, ino, 0).unwrap() else { panic!("no block") };
     assert_ne!(first, second, "the fixture depends on the write being out of place");

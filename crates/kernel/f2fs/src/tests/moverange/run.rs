@@ -23,6 +23,7 @@ fn file(v: &mut Volume<MemImage>, name: &[u8], tags: &[u8]) -> u32 {
     let ino = v.create(ROOT_INO, name, &spec(), None).unwrap();
     for (i, t) in tags.iter().enumerate() {
         v.write_file(ino, i as u64 * BLK, &page(*t)).unwrap();
+        v.sync_data().unwrap();
     }
     ino
 }
@@ -139,6 +140,7 @@ fn an_inline_source_is_moved_out_into_blocks_first() {
     let mut v = test_image::with_root().mount_rw().unwrap();
     let src = v.create(ROOT_INO, b"a", &spec(), None).unwrap();
     v.write_file(src, 0, b"inline bytes").unwrap();
+    v.sync_data().unwrap();
     assert!(v.read_inode(src).unwrap().inline_data());
     let dst = v.create(ROOT_INO, b"b", &spec(), None).unwrap();
     v.move_file_range(src, 0, dst, 0, 0).unwrap();

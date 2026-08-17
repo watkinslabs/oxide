@@ -158,11 +158,13 @@ impl<S: SectorSource> Volume<S> {
         let mut depth = inode.current_depth.max(1);
         for level in 0..MAX_LOOKUP_DEPTH {
             for index in bucket::search_range(want, level, dir_level) {
-                let mut area = match self.map_block(&inode, dir, index)? {
-                    Mapped::At(addr) => self.read_main_block(addr)?,
-                    Mapped::Compressed => return Err(Errno::Eio),
-                    Mapped::Hole => vec![0u8; BLKSIZE],
-                };
+                // Through the mapping, like every other reader of a
+                // directory's blocks: a block this directory has already
+                // grown but whose page is not placed yet holds entries that
+                // exist, and reading the medium instead would rewrite the
+                // block from what it held BEFORE them — every name added
+                // since, silently gone.
+                let mut area = self.dir_block(&inode, dir, index)?.unwrap_or_else(|| vec![0u8; BLKSIZE]);
                 let Some(slot) = room_for(&area, &l, slots) else { continue };
                 place_entry_hashed(&mut area, &l, slot, name, want, ino, ft);
                 self.write_one_block(dir, index, 0, &area)?;
@@ -222,6 +224,10 @@ impl<S: SectorSource> Volume<S> {
     /// Remove `name` from `dir`. Reports the inode it named. # C: O(depth)
     pub(crate) fn remove_dentry(&mut self, dir: u32, name: &[u8]) -> Result<u32, Errno> {
         self.writable_or_err()?;
+        // A block emptied of its last entry is RELEASED, which needs the
+        // address it occupies — so every page of this directory has to have
+        // one before the walk starts.
+        self.flush_data_pages(dir)?;
         // A strict mount promises that an `fsync` of any file leaves the whole
         // directory tree consistent, and a removed entry is exactly what a
         // chain replay cannot put back — the chain restores files, not

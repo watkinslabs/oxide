@@ -146,7 +146,17 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(main segments) worst case
     pub(crate) fn allocate_new_block(&mut self, kind: Kind, sum: Summary, old: u32, node: bool)
         -> Result<u32, Errno> {
-        if crate::node::is_hole(old) { self.volume_has_room(node)?; }
+        // A DATA slot holding a reservation already holds the room: it was
+        // counted against the volume when the slot was set, and this
+        // allocation is what takes it up. Demanding room for it again refuses,
+        // at writeback, a write the caller was already told had landed — and
+        // only on the full volume, where it matters most.
+        //
+        // A NODE reads the same value for a different reason: an id claimed
+        // and not yet written reads as `NEW_ADDR` and has been charged
+        // NOTHING, so it is the one case where the same value must still ask.
+        let reserved = old == NEW_ADDR && !node;
+        if crate::node::is_hole(old) && !reserved { self.volume_has_room(node)?; }
         self.allocate_block(kind, sum, old)
     }
 
@@ -425,10 +435,11 @@ impl<S: SectorSource> Volume<S> {
     /// Release whatever a file's slot held, block or reservation.
     ///
     /// A reservation occupies no block of the medium, so there is no bit for
-    /// the segment update to clear and no space charged to the owner — but it
-    /// was counted against the VOLUME when it was made, and that is what comes
-    /// back here. Releasing it as if it were a block would lower a count
-    /// nothing raised and hand the owner space it never spent.
+    /// the segment update to clear — but it was counted against the VOLUME and
+    /// charged to the OWNER when it was made, and both come back here.
+    /// Releasing it as if it were a block would lower a count nothing raised;
+    /// releasing only the volume's half would leave the owner charged forever
+    /// for a block that was never written.
     /// # C: O(1)
     pub(crate) fn release_slot(&mut self, ino: u32, addr: u32) -> Result<(), Errno> {
         // The slot has already been cleared by the caller. Leaving the block
@@ -437,7 +448,10 @@ impl<S: SectorSource> Volume<S> {
         if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::BlkaddrConsistence) {
             return Ok(());
         }
-        if addr == NEW_ADDR { self.release_reservation(); return Ok(()); }
+        if addr == NEW_ADDR {
+            self.release_reservation();
+            return self.uncharge_space(ino, BLKSIZE as u64);
+        }
         if crate::node::is_hole(addr) { return Ok(()); }
         self.release_block(addr)?;
         self.uncharge_space(ino, BLKSIZE as u64)

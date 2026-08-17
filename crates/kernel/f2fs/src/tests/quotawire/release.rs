@@ -132,6 +132,7 @@ fn moving_an_inline_file_out_into_a_block_charges_that_block() {
     let mut v = with_quota(0, 0, true);
     let ino = v.create(ROOT_INO, b"f", &spec_of(UID), None).unwrap();
     v.write_file(ino, 0, b"small").unwrap();
+    v.sync_data().unwrap();
     assert_eq!(space(&mut v), 0, "an inline file occupies its inode and nothing else");
     v.convert_inline(ino).unwrap();
     assert_eq!(space(&mut v), BLKSIZE as u64, "the block the bytes moved into is the owner's");
@@ -155,6 +156,7 @@ fn a_node_block_the_log_has_no_room_for_gives_the_promise_back() {
     // Out of its inode before the volume fills, so nothing below is the
     // inode's own write.
     v.write_file(deep, 0, &[1u8; 16]).unwrap();
+    v.sync_data().unwrap();
     v.convert_inline(deep).unwrap();
     let mut index = 0u64;
     loop {

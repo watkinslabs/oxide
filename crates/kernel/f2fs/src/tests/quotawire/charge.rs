@@ -37,9 +37,11 @@ fn a_node_block_other_than_the_inode_is_charged_as_space() {
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     let apb = v.read_inode(ino).unwrap().addrs_per_inode() as u64;
     v.write_file(ino, 0, &vec![1u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     let before = space(&mut v);
     // Past the inode's own array, so this needs a direct node as well.
     v.write_file(ino, apb * BLKSIZE as u64, b"x").unwrap();
+    v.sync_data().unwrap();
     assert_eq!(space(&mut v), before + 2 * BLKSIZE as u64,
                "the direct node and the data block should each cost one block");
 }
@@ -50,6 +52,7 @@ fn writing_blocks_charges_their_space() {
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     let before = space(&mut v);
     v.write_file(ino, 0, &vec![1u8; 3 * BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     assert!(space(&mut v) >= before + 3 * BLKSIZE as u64, "blocks were not charged");
 }
 
@@ -61,6 +64,7 @@ fn rewriting_a_block_charges_nothing_further() {
     let mut v = with_quota(0, 0, true);
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     v.write_file(ino, 0, &vec![1u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     let after_first = space(&mut v);
     for i in 0..8u8 { v.write_file(ino, 0, &vec![i; BLKSIZE]).unwrap(); }
     assert_eq!(space(&mut v), after_first, "a rewrite was charged as new space");
@@ -75,6 +79,7 @@ fn a_hard_space_limit_shortens_the_write_then_refuses_it() {
     let mut v = with_quota(8, 0, true);
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     let n = v.write_file(ino, 0, &vec![1u8; 8 * BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     assert!(n > 0 && n < 8 * BLKSIZE, "expected a short write, got {}", n);
     assert!(space(&mut v) <= qi::units(8), "it charged past the hard limit");
     // The file describes what landed, not what was asked for.
@@ -87,6 +92,7 @@ fn a_mount_that_only_tracks_usage_refuses_nothing() {
     let mut v = with_quota(8, 0, false);
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     v.write_file(ino, 0, &vec![1u8; 8 * BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     // Counted past the limit, which is what "usage only" means.
     assert!(space(&mut v) > qi::units(8));
 }
@@ -107,7 +113,9 @@ fn a_write_that_runs_out_of_room_keeps_what_it_wrote() {
     let mut v = with_quota(8, 0, true);
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     v.write_file(ino, 0, &vec![7u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     let n = v.write_file(ino, 0, &vec![9u8; 8 * BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     assert!(n > 0 && n < 8 * BLKSIZE, "expected a short write, got {}", n);
     let inode = v.read_inode(ino).unwrap();
     let got = v.read_whole(&inode, ino).unwrap();
@@ -120,6 +128,7 @@ fn truncating_gives_the_space_back() {
     let mut v = with_quota(0, 0, true);
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     v.write_file(ino, 0, &vec![1u8; 4 * BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     let full = space(&mut v);
     v.truncate_file(ino, 0).unwrap();
     assert!(space(&mut v) < full, "truncation returned nothing");
@@ -131,6 +140,7 @@ fn unlinking_returns_everything_the_file_held() {
     let before = (space(&mut v), inodes(&mut v));
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     v.write_file(ino, 0, &vec![1u8; 3 * BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     v.remove(ROOT_INO, b"f", false, NOW).unwrap();
     assert_eq!(inodes(&mut v), before.1, "the inode was not returned");
     assert_eq!(space(&mut v), before.0, "space was not returned");
@@ -142,11 +152,14 @@ fn space_freed_makes_room_for_the_write_that_was_refused() {
     let mut v = with_quota(16, 0, true);
     let a = v.create(ROOT_INO, b"a", &spec(), None).unwrap();
     v.write_file(a, 0, &vec![1u8; 3 * BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     let b = v.create(ROOT_INO, b"b", &spec(), None).unwrap();
     let n = v.write_file(b, 0, &vec![2u8; 3 * BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     assert!(n < 3 * BLKSIZE, "the room was already gone, yet the write completed");
     v.remove(ROOT_INO, b"a", false, NOW).unwrap();
     v.write_file(b, 0, &vec![2u8; 3 * BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     assert_eq!(space(&mut v), 3 * BLKSIZE as u64);
 }
 
@@ -165,6 +178,7 @@ fn what_was_charged_survives_a_remount() {
     let mut v = with_quota(0, 0, true);
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     v.write_file(ino, 0, &vec![1u8; 3 * BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     let want = space(&mut v);
     assert!(want > 0);
     v.commit().unwrap();
@@ -183,6 +197,7 @@ fn a_volume_with_no_quota_file_accounts_nothing_and_refuses_nothing() {
     assert!(!v.quota_active());
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     v.write_file(ino, 0, &vec![1u8; 4 * BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
 }
 
 #[test]
@@ -211,6 +226,7 @@ fn the_grace_clock_reaches_the_decision() {
     v.set_clock(NOW.0);
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     v.write_file(ino, 0, &vec![1u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     assert!(space(&mut v) > 0);
     let _ = ino;
     let _: u64 = QT_BLOCK_SIZE as u64;
@@ -225,6 +241,7 @@ fn space_is_charged_in_whole_blocks_and_nothing_else() {
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     let before = space(&mut v);
     v.write_file(ino, 0, &vec![1u8; 4 * BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     assert_eq!(space(&mut v) - before, 4 * BLKSIZE as u64);
 }
 

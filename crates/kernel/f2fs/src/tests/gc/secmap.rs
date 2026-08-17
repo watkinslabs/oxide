@@ -47,6 +47,7 @@ fn stuck_victim() -> (Volume<MemImage>, u32) {
     let mut v = test_image::with_root().mount_rw().unwrap();
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     v.write_file(ino, 0, &vec![5u8; FILE_BLOCKS * BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     let victim = seg_of(addr_of(&v, ino, 0));
     // Sealing the log writes the summary block out and moves the log off the
     // segment, which is what makes it a candidate at all.

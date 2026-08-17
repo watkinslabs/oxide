@@ -22,6 +22,7 @@ fn with_two_blocks() -> (Volume<MemImage>, u32, Vec<u8>) {
     let mut body = vec![0xAAu8; BLKSIZE];
     body.extend_from_slice(&[0xBBu8; BLKSIZE]);
     v.write_file(ino, 0, &body).unwrap();
+    v.sync_data().unwrap();
     (v, ino, body)
 }
 
@@ -382,6 +383,7 @@ fn a_span_takes_the_file_out_of_its_own_inode_first() {
     let mut v = test_image::with_root().mount_rw().unwrap();
     let ino = v.create(ROOT_INO, b"small", &spec(), None).unwrap();
     v.write_file(ino, 0, b"tiny").unwrap();
+    v.sync_data().unwrap();
     assert!(v.read_inode(ino).unwrap().inline_data());
     v.start_atomic_write(ino, false).unwrap();
     assert!(!v.read_inode(ino).unwrap().inline_data());

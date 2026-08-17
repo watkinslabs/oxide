@@ -26,7 +26,9 @@ fn part_used() -> (Volume<MemImage>, u32) {
     let dead = v.create(ROOT_INO, b"dead", &spec(), None).unwrap();
     let live = v.create(ROOT_INO, b"live", &spec(), None).unwrap();
     v.write_file(dead, 0, &vec![1u8; 40 * BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     v.write_file(live, 0, &vec![2u8; 40 * BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     v.remove(ROOT_INO, b"dead", false, NOW).unwrap();
     // Move the data log off that segment: a log still appending to a segment
     // holds it, and the cleaner must never take one out from under a writer.
@@ -80,6 +82,7 @@ fn a_write_that_needs_a_new_segment_still_succeeds() {
     let ino = v.create(ROOT_INO, b"more", &spec(), None).unwrap();
     let data = vec![0xA5u8; 4 * BLKSIZE];
     v.write_file(ino, 0, &data).unwrap();
+    v.sync_data().unwrap();
     let inode = v.read_inode(ino).unwrap();
     assert_eq!(v.read_whole(&inode, ino).unwrap(), data);
     // And the file whose blocks the cleaner moved still reads.

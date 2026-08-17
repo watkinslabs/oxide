@@ -14,6 +14,7 @@ fn a_first_allocation_by_an_identity_the_file_has_never_held_is_recorded() {
     let mut v = with_quota(0, 0, true);
     let ino = v.create(ROOT_INO, b"f", &spec_of(OTHER), None).unwrap();
     v.write_file(ino, 0, &vec![1u8; 2 * BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     let want = v.quota_record(USRQUOTA, OTHER).unwrap();
     assert!(want.curspace > 0 && want.curinodes == 1);
     v.commit().unwrap();
@@ -38,6 +39,7 @@ fn a_record_with_nothing_left_in_it_is_removed_rather_than_kept() {
     let mut v = with_quota(0, 0, true);
     let ino = v.create(ROOT_INO, b"f", &spec_of(OTHER), None).unwrap();
     v.write_file(ino, 0, &vec![1u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     v.commit().unwrap();
     assert_eq!(
         v.quota_next_record(USRQUOTA, OTHER).unwrap().map(|(id, _)| id),
@@ -56,6 +58,7 @@ fn the_next_identity_scan_answers_off_the_file_and_stops_at_the_end() {
     let mut v = with_quota(0, 0, true);
     let ino = v.create(ROOT_INO, b"f", &spec_of(OTHER), None).unwrap();
     v.write_file(ino, 0, &vec![1u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     v.commit().unwrap();
     let first = v.quota_next_record(USRQUOTA, 0).unwrap().expect("an identity");
     assert_eq!(first.0, UID.min(OTHER));
@@ -79,6 +82,7 @@ fn a_quota_file_the_mount_named_is_looked_up_and_accounted_against() {
     v.set_clock(NOW.0);
     let qino = v.create(ROOT_INO, b"aquota.user", &spec_of(UID), None).unwrap();
     v.write_file(qino, 0, &qi::user_file(UID, 0, 0)).unwrap();
+    v.sync_data().unwrap();
     v.commit().unwrap();
     let bytes = v.into_source().snapshot();
 
@@ -93,6 +97,7 @@ fn a_quota_file_the_mount_named_is_looked_up_and_accounted_against() {
 
     let ino = v.create(ROOT_INO, b"f", &spec_of(UID), None).unwrap();
     v.write_file(ino, 0, &vec![1u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     assert!(space(&mut v) > 0, "nothing was charged against the named file");
 
     // The named file is owned by the very identity it accounts. Charging its

@@ -210,6 +210,7 @@ fn the_segment_table_survives_a_remount() {
     let mut v = vol();
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     v.write_file(ino, 0, &vec![3u8; 2 * BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     v.commit().unwrap();
     let want: alloc::vec::Vec<u16> =
         (0..test_image::SEG_MAIN).map(|s| v.seg_entry(s).unwrap().valid_blocks()).collect();
@@ -239,6 +240,7 @@ fn a_write_after_a_remount_does_not_reuse_a_live_block() {
     let mut v = vol();
     let a = v.create(ROOT_INO, b"a", &spec(), None).unwrap();
     v.write_file(a, 0, &vec![1u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     v.commit().unwrap();
     let inode = v.read_inode(a).unwrap();
     let crate::volume::map::Mapped::At(live) = v.map_block(&inode, a, 0).unwrap()
@@ -246,6 +248,7 @@ fn a_write_after_a_remount_does_not_reuse_a_live_block() {
     let mut v = reopen(v);
     let b = v.create(ROOT_INO, b"b", &spec(), None).unwrap();
     v.write_file(b, 0, &vec![2u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     let inode = v.read_inode(b).unwrap();
     let crate::volume::map::Mapped::At(fresh) = v.map_block(&inode, b, 0).unwrap()
         else { panic!("no block") };

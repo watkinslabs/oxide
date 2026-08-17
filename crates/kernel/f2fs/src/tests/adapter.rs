@@ -417,3 +417,58 @@ fn freezing_a_read_only_mount_does_nothing_and_says_so() {
     vfs::superblock::SuperOps::freeze_fs(&crate::mount::sb::F2fsSuperOps { fs: fs.clone() }).expect("freeze");
     assert!(!freezing(&fs));
 }
+
+// ---------------------------------------------- buffered writes, as the VFS
+// sees them. The mount is what gives the mapping a way back to itself, and
+// nothing below this file can prove that was done: a `Volume` on its own has
+// no host, so its pages are placed only by its own flush points. These drive
+// the real filesystem.
+
+/// A mounted filesystem with one empty file, and that file's number.
+fn with_file() -> (Arc<F2fs>, Arc<MemDisk<TaskList>>, u32) {
+    let (fs, dev) = mounted();
+    let root = fs.root_inode().unwrap();
+    let file = root.create_child("f", 0o644, &CreateCtx::root()).unwrap();
+    let ino = file.ino() as u32;
+    (fs, dev, ino)
+}
+
+#[test]
+fn a_write_through_the_filesystem_is_deferred_and_still_reads_back() {
+    // The mount installs the way back at `adopt_data_pages`. Remove that call
+    // and the layer below refuses to dirty a page it cannot place, so the
+    // write below fails outright.
+    let (fs, _dev, ino) = with_file();
+    let page = vec![0xA5u8; BLKSIZE];
+    assert_eq!(fs.write(ino, 0, &page).unwrap(), BLKSIZE);
+    assert_eq!(fs.volume.lock().dirty_data_pages(ino), 1, "the write was not deferred");
+    assert_eq!(fs.read_all(ino).unwrap(), page);
+}
+
+#[test]
+fn syncing_the_file_places_it_and_a_remount_finds_it() {
+    let (fs, dev, ino) = with_file();
+    let page = vec![0xA5u8; BLKSIZE];
+    fs.write(ino, 0, &page).unwrap();
+    fs.sync_file(ino, false).unwrap();
+    assert_eq!(fs.volume.lock().dirty_data_pages(ino), 0, "the sync left the page pending");
+    fs.checkpoint().unwrap();
+    let again = remount(&dev);
+    assert_eq!(again.read_all(ino).unwrap(), page);
+}
+
+#[test]
+fn the_machines_flusher_places_this_mounts_pages() {
+    // The proof that the mapping's own writeback target reaches this mount.
+    // It is what the flusher and page reclaim use, and it is the only path
+    // that does not start inside this filesystem — an unplaced page with no
+    // way back is one the machine can neither write nor evict.
+    let (fs, _dev, ino) = with_file();
+    fs.write(ino, 0, &vec![0xA5u8; BLKSIZE]).unwrap();
+    assert_eq!(fs.volume.lock().dirty_data_pages(ino), 1);
+    // Far enough ahead that every dirty mapping on the machine has expired,
+    // which is the condition the flusher writes back under.
+    block::pagecache::flush_pass(u64::MAX);
+    assert_eq!(fs.volume.lock().dirty_data_pages(ino), 0,
+               "the flusher could not reach this mount");
+}

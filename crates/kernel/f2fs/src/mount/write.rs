@@ -80,6 +80,13 @@ impl F2fs {
     /// Write into a file, reporting the bytes that landed. # C: O(bytes)
     pub fn write(self: &Arc<Self>, ino: u32, off: u64, data: &[u8]) -> KResult<usize> {
         let n = self.volume_now().write_file(ino, off, data).map_err(errno_to_vfs)?;
+        // Both of these act on state the write just changed, and both are here
+        // rather than inside the writer because the guard above is dropped by
+        // the end of the statement that took it. Balancing writes back when the
+        // machine is over its dirty limit, which re-enters this mount; a
+        // process that could dirty without bound would otherwise outrun every
+        // flusher on the box.
+        self.balance_data(ino);
         self.balance(true)?;
         Ok(n)
     }

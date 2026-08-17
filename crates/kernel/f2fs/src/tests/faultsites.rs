@@ -117,7 +117,10 @@ fn a_page_of_data_can_be_dropped_on_its_way_to_the_medium() {
     // The reference arms this only while checkpoints are being re-enabled.
     v.sbi.begin_enable_checkpoint();
     arm(&v, Fault::SkipWrite);
-    assert_eq!(v.write_file(ino, 0, &vec![1u8; BLKSIZE]), Err(Errno::Einval));
+    // The site is on the way to the MEDIUM, which a buffered write reaches at
+    // writeback: the write itself only takes the room and files the page.
+    v.write_file(ino, 0, &vec![1u8; BLKSIZE]).unwrap();
+    assert_eq!(v.sync_data(), Err(Errno::Einval));
 }
 
 #[test]
@@ -159,6 +162,7 @@ fn a_released_block_can_be_made_to_stay_live() {
     let mut v = vol();
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     v.write_file(ino, 0, &vec![1u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     let addr = v.holder_addr(ino, crate::volume::Holder::Inode, 0).unwrap();
     assert!(v.block_is_live(addr).unwrap(), "the block was never live");
     arm(&v, Fault::BlkaddrConsistence);

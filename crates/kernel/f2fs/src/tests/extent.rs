@@ -86,6 +86,7 @@ fn an_extent_that_would_overflow_its_own_arithmetic_is_refused() {
 fn a_contiguous_write_records_an_extent() {
     let (mut v, ino) = with_file();
     v.write_file(ino, 0, &vec![7u8; 4 * BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     let (fofs, blk, len) = v.read_inode(ino).unwrap().cached_extent().unwrap();
     assert_eq!(fofs, 0);
     assert_eq!(len, 4);
@@ -97,6 +98,7 @@ fn a_contiguous_write_records_an_extent() {
 fn the_recorded_extent_survives_a_remount_and_still_agrees() {
     let (mut v, ino) = with_file();
     v.write_file(ino, 0, &vec![7u8; 4 * BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     let v = remount(v);
     assert!(v.read_inode(ino).unwrap().cached_extent().is_some());
     agree(&v, ino);
@@ -108,6 +110,7 @@ fn the_recorded_extent_survives_a_remount_and_still_agrees() {
 fn an_inline_file_records_no_extent() {
     let (mut v, ino) = with_file();
     v.write_file(ino, 0, b"tiny").unwrap();
+    v.sync_data().unwrap();
     assert!(v.read_inode(ino).unwrap().inline_data());
     assert_eq!(v.read_inode(ino).unwrap().cached_extent(), None);
 }
@@ -118,9 +121,12 @@ fn a_hole_at_the_start_records_no_extent() {
     // has none to record, and inventing one would name a block it does not own.
     let (mut v, ino) = with_file();
     v.write_file(ino, 0, &vec![1u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     v.write_file(ino, 3 * BLKSIZE as u64, b"far").unwrap();
+    v.sync_data().unwrap();
     v.truncate_file(ino, 0).unwrap();
     v.write_file(ino, 2 * BLKSIZE as u64, b"only far").unwrap();
+    v.sync_data().unwrap();
     assert_eq!(v.read_inode(ino).unwrap().cached_extent(), None);
 }
 
@@ -128,7 +134,9 @@ fn a_hole_at_the_start_records_no_extent() {
 fn a_run_broken_by_a_hole_stops_at_the_hole() {
     let (mut v, ino) = with_file();
     v.write_file(ino, 0, &vec![1u8; 2 * BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     v.write_file(ino, 5 * BLKSIZE as u64, b"beyond").unwrap();
+    v.sync_data().unwrap();
     let (_, _, len) = v.read_inode(ino).unwrap().cached_extent().unwrap();
     assert_eq!(len, 2, "the run ran through a hole");
     agree(&v, ino);
@@ -140,8 +148,10 @@ fn rewriting_a_block_keeps_the_extent_true() {
     // block this file no longer owns.
     let (mut v, ino) = with_file();
     v.write_file(ino, 0, &vec![1u8; 4 * BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     let before = v.read_inode(ino).unwrap().cached_extent().unwrap();
     v.write_file(ino, BLKSIZE as u64, &vec![2u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     let after = v.read_inode(ino).unwrap().cached_extent();
     assert_ne!(Some(before), after, "the extent still describes the old layout");
     agree(&v, ino);
@@ -155,6 +165,7 @@ fn rewriting_a_block_keeps_the_extent_true() {
 fn truncating_keeps_the_extent_true() {
     let (mut v, ino) = with_file();
     v.write_file(ino, 0, &vec![1u8; 6 * BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     v.truncate_file(ino, 2 * BLKSIZE as u64).unwrap();
     agree(&v, ino);
     let inode = v.read_inode(ino).unwrap();
@@ -165,6 +176,7 @@ fn truncating_keeps_the_extent_true() {
 fn truncating_to_nothing_forgets_the_extent() {
     let (mut v, ino) = with_file();
     v.write_file(ino, 0, &vec![1u8; 4 * BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     v.truncate_file(ino, 0).unwrap();
     assert_eq!(v.read_inode(ino).unwrap().cached_extent(), None);
 }
@@ -175,6 +187,7 @@ fn an_extent_outside_the_main_area_is_not_trusted() {
     // hand back a metadata block as file data.
     let (mut v, ino) = with_file();
     v.write_file(ino, 0, &vec![1u8; 2 * BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     let mut inode = v.read_inode(ino).unwrap();
     inode.ext = (0, 1, 2);
     assert!(!v.extent_is_sane(&inode));
@@ -188,6 +201,7 @@ fn an_extent_whose_tail_leaves_the_main_area_is_not_trusted() {
     // Checking only the first block would accept a run that walks off the end.
     let (mut v, ino) = with_file();
     v.write_file(ino, 0, &vec![1u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     let mut inode = v.read_inode(ino).unwrap();
     let end = test_image::MAIN_BLKADDR + test_image::SEG_MAIN * BLKS_PER_SEG;
     inode.ext = (0, end - 2, 8);
@@ -200,6 +214,7 @@ fn a_bad_extent_never_changes_what_a_read_returns() {
     let (mut v, ino) = with_file();
     let data: Vec<u8> = (0..3 * BLKSIZE).map(|i| (i % 251) as u8).collect();
     v.write_file(ino, 0, &data).unwrap();
+    v.sync_data().unwrap();
     let mut inode = v.read_inode(ino).unwrap();
     inode.ext = (0, 1, 3);
     assert_eq!(v.read_whole(&inode, ino).unwrap(), data);
@@ -210,6 +225,7 @@ fn the_cache_and_the_walk_agree_over_many_shapes() {
     for blocks in [1usize, 2, 3, 5, 8] {
         let (mut v, ino) = with_file();
         v.write_file(ino, 0, &vec![9u8; blocks * BLKSIZE]).unwrap();
+        v.sync_data().unwrap();
         agree(&v, ino);
         let v = remount(v);
         agree(&v, ino);
@@ -224,6 +240,7 @@ fn a_block_written_under_the_cache_is_the_block_that_reads_back() {
     // contents — stale data, with no error anywhere to say so.
     let (mut v, ino) = with_file();
     v.write_file(ino, 0, &vec![7u8; 3 * BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     let inode = v.read_inode(ino).unwrap();
     assert!(v.extent_is_sane(&inode), "no cache to invalidate; the test proves nothing");
     v.write_one_block(ino, 1, 0, &vec![8u8; BLKSIZE]).unwrap();
@@ -243,6 +260,7 @@ fn converting_an_inline_file_leaves_no_content_in_the_address_array() {
     // land inside the main area, hands back a block belonging to another file.
     let (mut v, ino) = with_file();
     v.write_file(ino, 0, &vec![1u8; 100]).unwrap();
+    v.sync_data().unwrap();
     assert!(v.read_inode(ino).unwrap().inline_data(), "the fixture was never inline");
     v.convert_inline(ino).unwrap();
     let inode = v.read_inode(ino).unwrap();
@@ -256,6 +274,7 @@ fn converting_an_inline_file_leaves_no_content_in_the_address_array() {
     // The proof it matters: a write far into the file now lands instead of
     // tripping over a leftover byte pattern read as an address.
     v.write_one_block(ino, 16, 0, &vec![5u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     let inode = v.read_inode(ino).unwrap();
     assert!(matches!(v.map_block(&inode, ino, 16).unwrap(), Mapped::At(_)));
 }

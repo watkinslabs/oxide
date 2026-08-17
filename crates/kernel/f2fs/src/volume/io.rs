@@ -90,6 +90,17 @@ impl<S: SectorSource> Volume<S> {
             let index = pos / BLKSIZE as u64;
             let skew = (pos % BLKSIZE as u64) as usize;
             let take = (BLKSIZE - skew).min(want - done);
+            // THE MAPPING FIRST, the node tree second. A buffered write that
+            // has not been placed yet has no address at all — its slot holds a
+            // reservation, which the tree reports as a hole — so asking the
+            // tree first would answer a write this filesystem had already
+            // accepted with zeroes. The mapping holds plaintext, already
+            // attested where the file is sealed, so nothing below is owed.
+            if let Some(page) = self.data_cache.peek(ino, index) {
+                buf[done..done + take].copy_from_slice(&page[skew..skew + take]);
+                done += take;
+                continue;
+            }
             match self.map_cluster_block(inode, ino, index)? {
                 // A hole in a verity file's DATA is not padding: the tree
                 // holds a hash for that block, and the zeroes a hole returns

@@ -105,10 +105,17 @@ impl<S: SectorSource> Volume<S> {
             }
             done += take;
         }
-        // What landed is recorded even when the rest did not: the size, the
-        // block count and the cached extent all describe blocks that now
-        // exist, and leaving them behind would make the file disagree with
-        // its own contents.
+        // What landed is recorded even when the rest did not: the size and the
+        // block count both describe room that now belongs to this file, and
+        // leaving them behind would make the file disagree with its own
+        // contents. A reservation counts as a block the file holds, which is
+        // what makes the count right before the address is chosen.
+        //
+        // The stored RUN is not recomputed here, and must not be: it names
+        // where the blocks are, the reservations name nowhere, and recomputing
+        // it over them shortens it to nothing — which this filesystem reads as
+        // "this inode is not worth remembering" and never revisits. It is
+        // recomputed as each page is placed.
         if done > 0 {
             let size = (off + done as u64).max(self.read_inode(ino)?.size);
             let blocks = self.count_blocks(ino)?;
@@ -116,7 +123,6 @@ impl<S: SectorSource> Volume<S> {
                 put64(b, I_SIZE, size);
                 Self::set_iblocks(b, blocks);
             })?;
-            self.refresh_extent(ino)?;
         }
         match stopped {
             Some(e) if done == 0 => Err(e),
@@ -186,85 +192,79 @@ impl<S: SectorSource> Volume<S> {
         Ok(())
     }
 
-    /// Read-modify-write one block of a file.
+    /// Take everything one block of a buffered write needs, and leave the
+    /// bytes in the file mapping.
     ///
-    /// The owner's quota is PROMISED before the block exists and taken up once
-    /// it does. The promise is what the limit refuses, so a write that is
-    /// going to be refused is refused before anything is allocated; and an
-    /// allocation that fails after the promise gives it straight back, which
-    /// is why a write that ends in `ENOSPC` leaves nothing charged to anybody.
+    /// NO BLOCK IS ALLOCATED HERE. What this takes is the room and the owner's
+    /// quota, and what it writes into the file's node is a RESERVATION — a
+    /// slot that says "a block is owed here" and names none. The address is
+    /// chosen when the page is written back, which is what lets a run of
+    /// scattered small writes land as one sequential run through one log.
+    ///
+    /// Both refusals a write can suffer happen HERE, before anything is
+    /// changed: a volume with no room and an owner over quota are both refused
+    /// by the reservation, so a write that returns success is a write that has
+    /// somewhere to go. Deciding either at writeback would refuse a write the
+    /// caller was already told had landed.
     /// # C: O(BLKSIZE)
     pub(crate) fn write_one_block(&mut self, ino: u32, index: u64, skew: usize, data: &[u8])
         -> Result<(), Errno> {
         let (holder, ofs) = self.dnode_for_write(ino, index)?;
         let old = self.holder_addr(ino, holder, ofs)?;
-        // A reservation is a hole too: it holds room against the VOLUME's
-        // count and was never charged to the owner, so the block that lands
-        // on it is this owner's first charge for it.
-        let fresh = crate::node::is_hole(old);
-        if fresh { self.reserve_space(ino, BLKSIZE as u64)?; }
-        let addr = match self.write_page(ino, index, skew, data, (holder, ofs, old)) {
-            Ok(addr) => addr,
-            Err(e) => {
-                if fresh { self.release_reserved_space(ino, BLKSIZE as u64)?; }
+        // A slot that already holds a reservation is already paid for. Only a
+        // slot holding NOTHING is a claim on the volume's remaining space.
+        let fresh = old == NULL_ADDR;
+        let page = self.write_begin_page(ino, index, skew, data, old)?;
+        if fresh {
+            self.volume_has_room(false)?;
+            // Promised and taken up in the same breath, which is what the
+            // reference does and what makes the limit refuse before the
+            // reservation exists rather than after it. Nothing between the two
+            // can fail, so no window exists in which a promise is outstanding.
+            self.reserve_space(ino, BLKSIZE as u64)?;
+            self.charge_reservation();
+            if let Err(e) = self.claim_space(ino, BLKSIZE as u64) {
+                self.release_reservation();
+                self.release_reserved_space(ino, BLKSIZE as u64)?;
                 return Err(e);
             }
-        };
-        // The block exists now, so the promise becomes occupancy.
-        if fresh { self.claim_space(ino, BLKSIZE as u64)?; }
-        // The room a reservation was holding is the room this block just took.
-        if old == NEW_ADDR { self.release_reservation(); }
-        self.set_holder_addr(ino, holder, ofs, addr)
-    }
-
-    /// Build the page this write leaves behind and put it somewhere.
-    ///
-    /// Everything between the promise and the block existing lives here, so
-    /// the caller has one place to give the promise back from.
-    /// # C: O(BLKSIZE)
-    fn write_page(&mut self, ino: u32, index: u64, skew: usize, data: &[u8],
-                  slot: (Holder, usize, u32)) -> Result<u32, Errno> {
-        let (holder, ofs, old) = slot;
-        // Which block the patch is applied ON TOP of, if any. Resolved before
-        // the key is looked up because reading it needs the key.
-        let base = if crate::node::is_hole(old) { None } else { Some(old) };
-        let inode = self.read_inode(ino)?;
-        // A read-modify-write of an encrypted block happens over PLAINTEXT:
-        // the block on the medium is ciphertext, so it is decrypted, patched
-        // and encrypted again. Patching the ciphertext in place would corrupt
-        // every byte of the unit the write lands in, not just the bytes it
-        // meant to change.
-        let crypt = self.crypt_info(&inode, ino)?;
-        if inode.encrypted() && crypt.is_none() { return Err(Errno::Enokey); }
-        let mut page = match base {
-            // Through the file mapping, not around it: the block this patch
-            // lands on is the same page a reader would be served, so a write
-            // that read it from the medium while the mapping held it would be
-            // patching a second copy of the same offset.
-            Some(addr) => self.read_data_page_unattested(ino, index, addr, crypt.as_ref())?,
-            None => vec![0u8; BLKSIZE],
-        };
-        page[skew..skew + data.len()].copy_from_slice(data);
-        // An inline inode hands the plaintext down with a context and the
-        // block layer enciphers it; a software one enciphers it here. Exactly
-        // one of the two runs — doing both would encipher it twice, and doing
-        // neither would put the file's bytes on the medium.
-        if let Some(c) = &crypt {
-            if !c.uses_inline_crypto() {
-                c.crypt_contents(self.first_unit(c, index), &mut page, true)
-                    .map_err(|e| e.errno())?;
+            if let Err(e) = self.set_holder_addr_reserved(ino, holder, ofs) {
+                self.release_reservation();
+                self.uncharge_space(ino, BLKSIZE as u64)?;
+                return Err(e);
             }
         }
-        let ctx = self.write_ctx(crypt.as_ref(), index);
-        let is_dir = inode.mode & mode_ifmt() == mode_ifdir();
-        let owner = match holder { Holder::Inode => ino, Holder::Direct(nid) => nid };
-        // The hint belongs to the FILE, so it is read here — the one place a
-        // page is written on behalf of a named inode — and not further down,
-        // where `owner` may be a direct node and the file is no longer known.
-        let flags = self.data_write_flags(ino);
-        let kind = if is_dir { crate::volume::curseg::Kind::DirData }
-                   else { crate::volume::curseg::Kind::FileData };
-        self.write_data_crypt(kind, owner, ofs as u16, old, &page, flags, ctx.as_ref())
+        // AFTER the slot is set, never before: setting it drops the mapping's
+        // page for this offset, so filing the bytes first would file them and
+        // then throw them away.
+        self.data_cache.write(ino, index, page)
+    }
+
+    /// The whole block this write leaves behind, patched over whatever the
+    /// file has at that offset now.
+    ///
+    /// PLAINTEXT: the mapping holds a file's bytes as a reader gets them, and
+    /// the cipher goes back on at writeback. Patching ciphertext would corrupt
+    /// every byte of the unit the write lands in, not just the bytes it meant
+    /// to change.
+    /// # C: O(BLKSIZE)
+    fn write_begin_page(&mut self, ino: u32, index: u64, skew: usize, data: &[u8], old: u32)
+        -> Result<Vec<u8>, Errno> {
+        let inode = self.read_inode(ino)?;
+        let crypt = self.crypt_info(&inode, ino)?;
+        if inode.encrypted() && crypt.is_none() { return Err(Errno::Enokey); }
+        let mut page = match self.data_cache.peek(ino, index) {
+            // The mapping's page IS the file's contents at this offset, and it
+            // may be the only copy of them — a write not yet placed has no
+            // address to be read back from. Patching anything else would lose
+            // the earlier write.
+            Some(held) => held,
+            None if crate::node::is_hole(old) => vec![0u8; BLKSIZE],
+            None => self.read_data_page_unattested(ino, index, old, crypt.as_ref())?,
+        };
+        if page.len() != BLKSIZE { return Err(Errno::Eio); }
+        page[skew..skew + data.len()].copy_from_slice(data);
+        Ok(page)
     }
 
     /// Shorten (or extend) a file to `len`.
@@ -274,6 +274,10 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(blocks released)
     pub fn truncate_file(&mut self, ino: u32, len: u64) -> Result<(), Errno> {
         self.writable_or_err()?;
+        // Every buffered write of this file has to be on the medium before
+        // its addresses are read: a page not yet placed has no address, and
+        // this operation is about to rearrange the ones that exist.
+        self.flush_data_pages(ino)?;
         if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::Truncate) {
             return Err(Errno::Eio);
         }

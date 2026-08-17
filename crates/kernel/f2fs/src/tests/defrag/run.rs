@@ -36,6 +36,7 @@ fn scattered() -> (Volume<MemImage>, u32) {
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     for index in [2u64, 0, 1] {
         v.write_file(ino, index * BLK, &page(index as u8 + 1)).unwrap();
+        v.sync_data().unwrap();
     }
     // A checkpoint, so the sections the next one will need are not counted
     // against the rewrite: the gate asks whether there is room for BOTH.
@@ -116,7 +117,9 @@ fn holes_between_adjacent_blocks_are_not_fragmentation() {
     let mut v = test_image::with_root().mount_rw().unwrap();
     let ino = v.create(ROOT_INO, b"h", &spec(), None).unwrap();
     v.write_file(ino, 0, &page(1)).unwrap();
+    v.sync_data().unwrap();
     v.write_file(ino, 2 * BLK, &page(3)).unwrap();
+    v.sync_data().unwrap();
     assert_eq!(v.mapped_addr(ino, 1).unwrap(), None);
     let before = (v.mapped_addr(ino, 0).unwrap(), v.mapped_addr(ino, 2).unwrap());
     assert_eq!(v.defragment_range(ino, 0, 3 * BLK).unwrap(), 0);
@@ -127,7 +130,12 @@ fn holes_between_adjacent_blocks_are_not_fragmentation() {
 fn a_hole_inside_a_scattered_range_is_left_a_hole() {
     let mut v = test_image::with_root().mount_rw().unwrap();
     let ino = v.create(ROOT_INO, b"i", &spec(), None).unwrap();
-    for index in [3u64, 0] { v.write_file(ino, index * BLK, &page(index as u8 + 1)).unwrap(); }
+    // Placed as each is written, which is what scatters them: a pair left
+    // pending is placed together, in file order, and is not fragmented at all.
+    for index in [3u64, 0] {
+        v.write_file(ino, index * BLK, &page(index as u8 + 1)).unwrap();
+        v.sync_data().unwrap();
+    }
     v.commit().unwrap();
     assert_eq!(v.defragment_range(ino, 0, 4 * BLK).unwrap(), 2 * BLK);
     assert_eq!(v.mapped_addr(ino, 1).unwrap(), None);
@@ -177,6 +185,7 @@ fn a_pinned_file_is_refused_because_its_blocks_may_not_move() {
     let mut v = test_image::with_root().mount_rw().unwrap();
     let ino = v.create(ROOT_INO, b"p", &spec(), None).unwrap();
     v.write_file(ino, 0, &page(1)).unwrap();
+    v.sync_data().unwrap();
     v.commit().unwrap();
     // Pinned after the fact: what matters here is the refusal, not the path
     // that set the promise.

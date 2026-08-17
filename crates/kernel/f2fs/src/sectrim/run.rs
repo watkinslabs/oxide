@@ -19,6 +19,10 @@ impl<S: SectorSource> Volume<S> {
     pub fn sec_trim_file(&mut self, ino: u32, start: u64, len: u64, flags: u64)
         -> Result<(), Errno> {
         self.writable_or_err()?;
+        // Every buffered write of this file has to be on the medium before
+        // its addresses are read: a page not yet placed has no address, and
+        // this operation is about to rearrange the ones that exist.
+        self.flush_data_pages(ino)?;
         if flags == 0 || flags & !TRIM_FILE_MASK != 0 { return Err(Errno::Einval); }
         let inode = self.read_inode(ino)?;
         let max = self.sb_max_bytes();

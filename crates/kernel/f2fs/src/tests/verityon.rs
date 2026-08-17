@@ -57,6 +57,15 @@ fn remount(mut v: Volume<MemImage>) -> Volume<MemImage> {
         .unwrap()
 }
 
+/// Change a block of a SEALED file the way a failing medium would: the bytes
+/// reach the disk and nothing is left in the mapping still holding the old
+/// ones — which is what makes the read that follows a read of the medium.
+fn plant(v: &mut Volume<MemImage>, ino: u32, index: u64, skew: usize, bytes: &[u8]) {
+    v.write_one_block(ino, index, skew, bytes).unwrap();
+    v.sync_data().unwrap();
+    v.data_cache.forget_inode(ino);
+}
+
 #[test]
 fn a_sealed_file_reads_back_its_own_bytes() {
     let data: Vec<u8> = (0..3 * BLKSIZE).map(|i| (i % 251) as u8).collect();
@@ -115,6 +124,7 @@ fn a_salt_changes_the_root() {
     let ra = v.enable_verity(a, HASH_ALG_SHA256, LOG_BS, b"").unwrap();
     let b = v.create(ROOT_INO, b"g", &spec(), None).unwrap();
     v.write_file(b, 0, &vec![3u8; 2 * BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     let rb = v.enable_verity(b, HASH_ALG_SHA256, LOG_BS, b"pepper").unwrap();
     assert_ne!(ra, rb);
     assert_eq!(read_all(&v, b).unwrap(), vec![3u8; 2 * BLKSIZE]);
@@ -211,7 +221,7 @@ fn a_change_inside_one_sub_block_is_caught_at_every_tree_block_size() {
             let mut block = vec![0u8; BLKSIZE];
             v.read_file(&inode, ino, 7 * BLKSIZE as u64, &mut block).unwrap();
             block[sub * bs + 5] ^= 0x20;
-            v.write_one_block(ino, 7, 0, &block).unwrap();
+            plant(&mut v, ino, 7, 0, &block);
             assert_eq!(read_all(&v, ino).err(), Some(Errno::Eio),
                        "log_bs {log_bs} sub-block {sub} went unchecked");
         }
@@ -243,7 +253,7 @@ fn a_flipped_data_byte_is_caught() {
     let mut block = vec![0u8; BLKSIZE];
     v.read_file(&inode, ino, BLKSIZE as u64, &mut block).unwrap();
     block[10] ^= 0xff;
-    v.write_one_block(ino, 1, 0, &block).unwrap();
+    plant(&mut v, ino, 1, 0, &block);
     assert_eq!(read_all(&v, ino).err(), Some(Errno::Eio));
     // Unaltered blocks still read: the refusal is per block, not per file.
     let inode = v.read_inode(ino).unwrap();
@@ -262,7 +272,7 @@ fn a_flipped_tree_byte_is_caught() {
     let tree_at = crate::verity::metadata_pos(inode.size);
     let mut block = v.read_past_end(&inode, ino, tree_at, BLKSIZE).unwrap();
     block[0] ^= 0x01;
-    v.write_one_block(ino, tree_at / BLKSIZE as u64, 0, &block).unwrap();
+    plant(&mut v, ino, tree_at / BLKSIZE as u64, 0, &block);
     assert_eq!(read_all(&v, ino).err(), Some(Errno::Eio));
 }
 
@@ -280,7 +290,7 @@ fn a_root_from_another_file_is_caught() {
     desc[crate::verity::uapi::D_ROOT_HASH] ^= 0xff;
     let index = loc.pos / BLKSIZE as u64;
     let skew = (loc.pos % BLKSIZE as u64) as usize;
-    v.write_one_block(ino, index, skew, &desc).unwrap();
+    plant(&mut v, ino, index, skew, &desc);
     // The mount that sealed the file still holds its metadata, and a verity
     // file's metadata is read once — so this mount answers from what it
     // already has, which is what the reference does too.
@@ -344,7 +354,7 @@ fn a_flipped_data_byte_is_caught_even_with_the_metadata_already_held() {
     let mut block = vec![0u8; BLKSIZE];
     v.read_file(&inode, ino, 5 * BLKSIZE as u64, &mut block).unwrap();
     block[3] ^= 0x40;
-    v.write_one_block(ino, 5, 0, &block).unwrap();
+    plant(&mut v, ino, 5, 0, &block);
     assert_eq!(read_all(&v, ino).err(), Some(Errno::Eio));
 }
 

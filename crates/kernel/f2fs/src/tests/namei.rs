@@ -285,6 +285,7 @@ fn unlinking_frees_the_inodes_blocks() {
     let mut v = vol();
     let ino = v.create(ROOT_INO, b"big", &spec(S_IFREG | 0o644), None).unwrap();
     v.write_file(ino, 0, &vec![7u8; 3 * BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     v.commit().unwrap();
     let used = v.space().free;
     v.remove(ROOT_INO, b"big", false, NOW).unwrap();
@@ -337,6 +338,7 @@ fn a_second_name_shares_one_inode_and_raises_the_link_count() {
     let mut v = vol();
     let ino = v.create(ROOT_INO, b"one", &spec(S_IFREG | 0o644), None).unwrap();
     v.write_file(ino, 0, b"shared").unwrap();
+    v.sync_data().unwrap();
     v.link(ROOT_INO, b"two", ino, NOW).unwrap();
     let v = remount(v);
     assert_eq!(find(&v, b"two").unwrap().ino, ino);
@@ -350,6 +352,7 @@ fn removing_one_of_two_names_keeps_the_file() {
     let mut v = vol();
     let ino = v.create(ROOT_INO, b"one", &spec(S_IFREG | 0o644), None).unwrap();
     v.write_file(ino, 0, b"kept").unwrap();
+    v.sync_data().unwrap();
     v.link(ROOT_INO, b"two", ino, NOW).unwrap();
     v.remove(ROOT_INO, b"one", false, NOW).unwrap();
     let v = remount(v);
@@ -475,3 +478,4 @@ fn stored_times_survive_a_remount() {
     assert_eq!(inode.atime, (111, 1));
     assert_eq!(inode.mtime, (222, 2));
 }
+

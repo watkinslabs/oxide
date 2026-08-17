@@ -100,6 +100,11 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(blocks per segment) blocks read and rewritten
     pub fn gc_segment(&mut self, segno: u32) -> Result<u32, Errno> {
         self.writable_or_err()?;
+        // The cleaner moves blocks by ADDRESS. A page written but not yet
+        // placed has none, and the move would drop it from the mapping while
+        // relocating the block it no longer describes — so every pending
+        // write goes down first, whatever file it belongs to.
+        self.flush_all_data_pages()?;
         self.load_segments()?;
         if segno >= self.sb.segment_count_main { return Err(Errno::Einval); }
         // A log is still appending here; its own summary entries are in memory
