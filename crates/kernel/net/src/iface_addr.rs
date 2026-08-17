@@ -12,10 +12,21 @@ use crate::{Ipv4Addr, NetIfaceId};
 pub const IFA_F_PERMANENT: u32 = 0x80;
 /// IPv6 privacy-address flag (`IFA_F_SECONDARY` for IPv4).
 pub const IFA_F_TEMPORARY: u32 = 0x01;
+pub const IFA_F_SECONDARY: u32 = 0x01;
+pub const IFA_F_NODAD: u32 = 0x02;
+pub const IFA_F_OPTIMISTIC: u32 = 0x04;
 pub const IFA_F_DADFAILED: u32 = 0x08;
+pub const IFA_F_HOMEADDRESS: u32 = 0x10;
 pub const IFA_F_DEPRECATED: u32 = 0x20;
 pub const IFA_F_TENTATIVE: u32 = 0x40;
+pub const IFA_F_MANAGETEMPADDR: u32 = 0x100;
+pub const IFA_F_NOPREFIXROUTE: u32 = 0x200;
+pub const IFA_F_MCAUTOJOIN: u32 = 0x400;
+pub const IFA_F_STABLE_PRIVACY: u32 = 0x800;
 pub const INFINITY_LIFE_TIME: u32 = u32::MAX;
+pub const RT_SCOPE_UNIVERSE: u8 = 0;
+pub const RT_SCOPE_SITE: u8 = 200;
+pub const RT_SCOPE_LINK: u8 = 253;
 pub const RT_SCOPE_HOST: u8 = 254;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

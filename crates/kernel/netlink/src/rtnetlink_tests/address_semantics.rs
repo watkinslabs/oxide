@@ -91,14 +91,18 @@ fn address_only_is_local_and_distinct_peer_has_linux_semantics() {
     let _ = stack.ifaces.unregister(iface);
 }
 
+// AF_INET and AF_INET6 both have an address-write handler; every other family
+// has none, and neither does the family-agnostic table rtnetlink falls back to,
+// so the request reports the missing operation rather than a rejected family.
 #[test]
 fn ipv4_address_family_and_prefix_are_validated_before_lookup() {
+    const AF_PACKET: u8 = 17;
     for ty in [RTM_NEWADDR, RTM_DELADDR] {
         let (req, mut wrong_family) = addr_req(ty, u32::MAX, 24, [192, 0, 2, 1]);
-        wrong_family[Nlmsghdr::SIZE] = AF_INET6;
+        wrong_family[Nlmsghdr::SIZE] = AF_PACKET;
         let reply = if ty == RTM_NEWADDR { handle_newaddr(&req, &wrong_family) }
             else { handle_deladdr(&req, &wrong_family) };
-        assert_eq!(ack_errno(&reply), -97);
+        assert_eq!(ack_errno(&reply), -95);
 
         let (req, invalid_prefix) = addr_req(ty, u32::MAX, 33, [192, 0, 2, 1]);
         let reply = if ty == RTM_NEWADDR { handle_newaddr(&req, &invalid_prefix) }

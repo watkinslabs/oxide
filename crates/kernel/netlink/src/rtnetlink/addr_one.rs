@@ -11,7 +11,7 @@ use crate::Nlmsghdr;
 use super::dumps::build_newaddr6_reply;
 use super::iface::ifaces_snapshot_in;
 use super::rtnetlink_addr::IfaCacheInfo;
-use super::uapi::{ifa, AF_INET6, Ifaddrmsg, RT_SCOPE_HOST, RT_SCOPE_LINK, RT_SCOPE_UNIVERSE};
+use super::uapi::{ifa, AF_INET6, Ifaddrmsg};
 
 /// Handle a one-shot IPv6 `RTM_GETADDR` in the socket's network namespace.
 /// # C: O(N addresses)
@@ -69,12 +69,14 @@ where
     let found = net::sock::stack().v6_addr_snapshot_in(target_ns).into_iter().find(|(iface, row)|
         net::global_stack().ifaces.ifindex_in_ns(*iface, target_ns) == Some(ifindex) && row.addr.0 == wanted);
     let Some((_, row)) = found else { return super::ack::build_ack(req, -(Errno::Enoent.as_i32())); };
-    let Some((_, name, _, _, _, _, _, _)) = ifaces.iter().find(|(id, ..)| *id == ifindex) else {
+    if !ifaces.iter().any(|(id, ..)| *id == ifindex) {
         return super::ack::build_ack(req, -(Errno::Enodev.as_i32()));
-    };
-    let scope = if row.addr.is_loopback() { RT_SCOPE_HOST } else if row.addr.is_link_local() { RT_SCOPE_LINK } else { RT_SCOPE_UNIVERSE };
-    build_newaddr6_reply(req.nlmsg_seq, req.nlmsg_pid, ifindex as i32, name, row.addr.0, row.prefixlen,
-        scope, row.flags(), IfaCacheInfo { preferred: row.preferred, valid: row.valid, cstamp: 0, tstamp: 0 }, 0, target_nsid)
+    }
+    build_newaddr6_reply(req.nlmsg_seq, req.nlmsg_pid, ifindex as i32, row.addr.0,
+        row.peer.map(|peer| peer.0), row.prefixlen, row.rt_scope(), row.flags(), row.proto,
+        row.rt_priority,
+        IfaCacheInfo { preferred: row.preferred, valid: row.valid,
+            cstamp: row.cstamp, tstamp: row.tstamp }, 0, target_nsid)
 }
 
 fn einval(req: &Nlmsghdr) -> Vec<u8> {

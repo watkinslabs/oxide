@@ -19,7 +19,7 @@ use vfs::InodeRef;
 
 use super::acl;
 use super::policy::{cap_remove_gate, cap_set_gate, err, list_payload, resolve_name,
-                    xattr_permission, XattrCred, XATTR_CREATE, XATTR_REPLACE};
+                    xattr_permission, XattrCred, SECURITY_PREFIX, XATTR_CREATE, XATTR_REPLACE};
 
 /// Storage-backend outcome → negative errno. `ENODATA` (61) has no `VfsError`
 /// variant, hence the dedicated mapping. # C: O(1)
@@ -56,15 +56,35 @@ pub fn vfs_setxattr(inode: &InodeRef, name: &str, value: Vec<u8>, flags: u32, c:
 pub(super) fn notify_xattr(inode: &InodeRef) { crate::inotify::fire_attrib(inode); }
 
 /// `vfs_getxattr`. An absent attribute is `ENODATA`, never `ENOENT`; an empty
-/// value is a legal, DISTINCT result from absent. # C: O(N_xattr)
+/// value is a legal, DISTINCT result from absent.
+///
+/// A `security.*` name is answered by the label module FIRST and only reaches
+/// the filesystem's store if no module claims it (`lsm_declined`). That order is
+/// the contract: the live label is kernel state, the stored attribute is where
+/// it was last persisted, and the two differ on every object whose label was
+/// computed rather than written — every device node, pipe and socket, and every
+/// file on a mount that cannot store attributes at all.
+/// # C: O(N_xattr)
 pub fn vfs_getxattr(inode: &InodeRef, name: &str, c: &XattrCred) -> Result<Vec<u8>, i64> {
     // POSIX ACLs bypass `xattr_permission` entirely (`do_get_acl`).
-    if !acl::is_acl_name(name) {
-        xattr_permission(inode, name, vfs::MAY_READ, c)?;
-        resolve_name(name)?;
+    if acl::is_acl_name(name) { return inode.getxattr(name).map_err(xattr_errno); }
+    xattr_permission(inode, name, vfs::MAY_READ, c)?;
+    if let Some(suffix) = name.strip_prefix(SECURITY_PREFIX) {
+        match crate::selinux::inode_getsecurity(inode, suffix) {
+            Err(rv) if lsm_declined(rv) => {}
+            answer => return answer,
+        }
     }
+    resolve_name(name)?;
     inode.getxattr(name).map_err(xattr_errno)
 }
+
+/// Whether a `security.*` read falls through to the filesystem's own store.
+///
+/// `EOPNOTSUPP` is the ONE answer that means "no module owns this attribute";
+/// every other error is a real answer about a claimed attribute and must not be
+/// papered over with whatever the disk holds. # C: O(1)
+pub fn lsm_declined(rv: i64) -> bool { rv == err(Errno::Eopnotsupp) }
 
 /// `vfs_listxattr` — no permission check (Linux consults only the LSM), and no
 /// `i_op->listxattr` means an EMPTY list rather than an error. `trusted.*`

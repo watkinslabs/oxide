@@ -8,111 +8,9 @@ use crate::pkt::Pkt;
 use crate::netfilter_hook::{nf_output, NFPROTO_IPV6};
 use crate::stack::NetStack;
 
-use super::{Ipv6AddrOrigin, Ipv6AddrState, Ipv6IfaceAddr, Udp6RxQueue};
+use super::Udp6RxQueue;
 
 impl NetStack {
-    pub fn add_v6_addr(&self, iface: NetIfaceId, ip: Ipv6Addr) {
-        self.add_v6_addr_meta(iface, ip, 128, u32::MAX, u32::MAX);
-    }
-
-    pub fn add_v6_addr_meta(
-        &self,
-        iface: NetIfaceId,
-        ip: Ipv6Addr,
-        prefixlen: u8,
-        valid: u32,
-        preferred: u32,
-    ) {
-        self.add_v6_addr_meta_with_temporary(iface, ip, prefixlen, valid, preferred, false);
-    }
-
-    /// Insert a static IPv6 address with its privacy-address classification.
-    /// # C: O(N)
-    pub fn add_v6_addr_meta_with_temporary(
-        &self,
-        iface: NetIfaceId,
-        ip: Ipv6Addr,
-        prefixlen: u8,
-        valid: u32,
-        preferred: u32,
-        temporary: bool,
-    ) {
-        let mut all = self.v6_addrs.lock();
-        let addrs = all.entry(iface).or_default();
-        let row = Ipv6IfaceAddr {
-            addr: ip, prefixlen, preferred, valid, origin: Ipv6AddrOrigin::Static,
-            state: Ipv6AddrState::Assigned, deprecated: preferred == 0, temporary,
-            notify_pending: false,
-        };
-        match addrs.iter().position(|addr| addr.addr == ip) {
-            Some(i) => addrs[i] = row,
-            None => addrs.push(row),
-        }
-    }
-
-    pub(crate) fn upsert_slaac_addr(
-        &self,
-        iface: NetIfaceId,
-        ip: Ipv6Addr,
-        prefixlen: u8,
-        valid: u32,
-        preferred: u32,
-        prefix: Ipv6Addr,
-        now_ns: u64,
-        retrans_timer_ns: Option<u64>,
-    ) -> Option<bool> {
-        let mut all = self.v6_addrs.lock();
-        let addrs = all.entry(iface).or_default();
-        match addrs.iter_mut().find(|addr| addr.addr == ip) {
-            Some(row) => match &mut row.origin {
-                Ipv6AddrOrigin::Static => return Some(false),
-                Ipv6AddrOrigin::Slaac { preferred_until_ns, valid_until_ns, .. } => {
-                    *valid_until_ns = slaac_valid_deadline(*valid_until_ns, valid, now_ns);
-                    *preferred_until_ns = super::ra::lifetime_deadline(now_ns, preferred);
-                    refresh_slaac_lifetimes(row, now_ns);
-                    row.deprecated = !row.preferred_at(now_ns);
-                    if let (Some(retrans_timer_ns), Ipv6AddrState::Tentative {
-                        retrans_timer_ns: current, ..
-                    }) = (retrans_timer_ns, &mut row.state) { *current = retrans_timer_ns; }
-                    return row.valid_at(now_ns).then_some(false);
-                }
-            },
-            None => {
-                if valid == 0 { return None; }
-                addrs.push(Ipv6IfaceAddr {
-                    addr: ip, prefixlen, preferred, valid,
-                    origin: Ipv6AddrOrigin::Slaac { prefix,
-                        preferred_until_ns: super::ra::lifetime_deadline(now_ns, preferred),
-                        valid_until_ns: super::ra::lifetime_deadline(now_ns, valid) },
-                    state: Ipv6AddrState::Tentative {
-                        dad_until_ns: None, retry_at_ns: now_ns,
-                        retrans_timer_ns: retrans_timer_ns.unwrap_or(super::ra::DAD_DELAY_NS) },
-                    deprecated: preferred == 0, temporary: false, notify_pending: false,
-                });
-                return Some(true);
-            }
-        }
-    }
-
-    pub fn v6_addr_snapshot(&self) -> Vec<(NetIfaceId, Ipv6IfaceAddr)> {
-        self.v6_addr_snapshot_in(0)
-    }
-
-    /// Snapshot IPv6 interface addresses owned by one network namespace. # C: O(N)
-    pub fn v6_addr_snapshot_in(&self, net_ns: u64) -> Vec<(NetIfaceId, Ipv6IfaceAddr)> {
-        let now_ns = self.ra_now_ns();
-        let mut out = Vec::new();
-        for (iface, addrs) in self.v6_addrs.lock().iter() {
-            if self.ifaces.namespace(*iface) != Some(net_ns) { continue; }
-            for addr in addrs {
-                let mut row = addr.clone();
-                refresh_slaac_lifetimes(&mut row, now_ns);
-                out.push((*iface, row));
-            }
-        }
-        out
-    }
-
     pub fn bind_udp6(&self, bind_ip: Ipv6Addr, port: u16) -> NetResult<Arc<Udp6RxQueue>> {
         self.bind_udp6_with_iface(bind_ip, port, None)
     }
@@ -473,23 +371,5 @@ impl NetStack {
             return Ok(());
         }
         iface.xmit(p)
-    }
-}
-
-pub(super) fn refresh_slaac_lifetimes(row: &mut Ipv6IfaceAddr, now_ns: u64) {
-    let Ipv6AddrOrigin::Slaac { preferred_until_ns, valid_until_ns, .. } = &row.origin else { return; };
-    row.valid = super::ra::remaining_lifetime(now_ns, *valid_until_ns);
-    row.preferred = super::ra::remaining_lifetime(now_ns, *preferred_until_ns);
-}
-
-fn slaac_valid_deadline(old_deadline_ns: u64, advertised: u32, now_ns: u64) -> u64 {
-    let advertised_deadline = super::ra::lifetime_deadline(now_ns, advertised);
-    let two_hours_deadline = super::ra::lifetime_deadline(now_ns, super::ra::TWO_HOURS_SECS);
-    if advertised > super::ra::TWO_HOURS_SECS || advertised_deadline > old_deadline_ns {
-        advertised_deadline
-    } else if old_deadline_ns <= two_hours_deadline {
-        old_deadline_ns
-    } else {
-        two_hours_deadline
     }
 }
