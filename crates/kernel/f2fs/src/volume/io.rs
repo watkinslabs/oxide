@@ -200,7 +200,20 @@ impl<S: SectorSource> Volume<S> {
         let mut image = alloc::vec::Vec::with_capacity(live.len() * BLKSIZE);
         for &a in live {
             if !self.sb.valid_main_blkaddr(a) { return Err(Errno::Eio); }
-            image.extend_from_slice(&self.read_main_block(a)?);
+            // A block this mount already holds is not read again, and — the
+            // point of holding it — is not charged as traffic either: nothing
+            // went to the device, so a figure that counted it would report I/O
+            // the cache exists to avoid.
+            if let Some(cached) = self.compress_cache.load(a) {
+                image.extend_from_slice(&cached);
+                continue;
+            }
+            let block = self.read_main_block(a)?;
+            // Offered AFTER the read rather than instead of it: the cache is
+            // filled by what the medium actually returned, so a block that
+            // could not be read leaves nothing behind to be served later.
+            self.compress_cache.store(a, ino, &block);
+            image.extend_from_slice(&block);
             // A compressed cluster's stored blocks are file data and are also
             // compressed data, so they are charged to both — the compressed
             // figure answers what share of the traffic was compressed, which a

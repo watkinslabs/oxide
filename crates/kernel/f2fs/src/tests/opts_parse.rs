@@ -176,17 +176,19 @@ fn the_quota_options_set_their_own_kind() {
 }
 
 #[test]
-fn a_name_this_build_cannot_deliver_is_refused_rather_than_dropped() {
-    // Accepting one silently would be a promise nothing keeps. The six names
-    // that decide what a new file is compressed with are no longer here: they
-    // are honoured, and their grammar is in `tests/opts/compress.rs`. What is
-    // left asks for a second cache in front of the decompressed pages, which
-    // has an observable memory cost this build does not pay.
-    assert_eq!(p("compress_cache"), Err(Errno::Eopnotsupp));
+fn every_compression_name_the_format_defines_is_honoured() {
+    // No name in this group is refused any more. Six of them decide what a new
+    // file is compressed with and their grammar is in `tests/opts/compress.rs`;
+    // the seventh decides what this mount does with the clusters it reads.
     for name in ["compress_algorithm=lz4", "compress_log_size=4", "compress_extension=so",
-                 "nocompress_extension=txt", "compress_chksum"] {
+                 "nocompress_extension=txt", "compress_chksum", "compress_mode=user",
+                 "compress_cache"] {
         assert!(p(name).is_ok(), "{name} should be honoured");
     }
+    assert!(p("compress_cache").unwrap().compress_cache);
+    assert!(!Options::defaults().compress_cache, "off unless the line asks");
+    // A flag, so a value is a mistake in the line rather than a setting.
+    assert_eq!(p("compress_cache=on").map(|_| ()), Err(Errno::Einval));
 }
 
 #[test]
@@ -234,7 +236,9 @@ fn a_name_this_filesystem_does_not_own_is_skipped() {
 
 #[test]
 fn a_refusal_stops_the_whole_string() {
-    assert_eq!(p("discard,compress_cache,noacl"), Err(Errno::Eopnotsupp));
+    // The names on either side are perfectly good ones; a line is taken whole
+    // or not at all, so neither is applied.
+    assert_eq!(p("discard,memory=huge,noacl"), Err(Errno::Einval));
 }
 
 #[test]

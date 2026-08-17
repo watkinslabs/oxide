@@ -207,6 +207,13 @@ pub struct Options {
     /// once: leaving one of them behind would mean a mount reporting a codec
     /// for files that can never carry one.
     pub compress: Compress,
+    /// Whether the mount keeps the compressed blocks it reads, so a second
+    /// read of the same cluster does not go back to the medium.
+    ///
+    /// Beside the group rather than inside it because it is not a property of
+    /// files being created: it changes what THIS mount does with what it
+    /// reads, and it is the one compression name a remount may not change.
+    pub compress_cache: bool,
 }
 
 /// Who compresses a compressible file's clusters.
@@ -282,6 +289,7 @@ impl Options {
             dummy_policy: None,
             inlinecrypt: false,
             compress: Compress::defaults(),
+            compress_cache: false,
         }
     }
 }

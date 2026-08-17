@@ -37,6 +37,7 @@
 //! - `writeback`:  writing and shortening a compressed file, cluster at a time.
 //! - `release`:    handing the saving back to the volume, and taking it again.
 //! - `rewrite`:    rewriting every cluster of one file compressed or plain.
+//! - `cache`:      the mount's cache of compressed blocks as the medium holds them.
 
 pub mod algo;
 pub mod cluster;
@@ -54,6 +55,7 @@ pub mod chattr;
 pub mod writeback;
 pub mod release;
 pub mod rewrite;
+pub mod cache;
 
 pub use algo::{Algorithm, CompressError};
 pub use cluster::{data_blocks, Geometry, Header, COMPRESS_HEADER_SIZE};

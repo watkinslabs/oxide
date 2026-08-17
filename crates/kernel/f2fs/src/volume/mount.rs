@@ -121,6 +121,7 @@ impl<S: SectorSource> Volume<S> {
         // every segment timestamp this mount writes counts from.
         let segstate = super::segmap::SegState::at_mount(cp.elapsed_time);
         let (extent_read, extent_age) = (opts.extent_cache, opts.age_extent_cache);
+        let compress_cache = opts.compress_cache;
         // Ids the table can name, less the ones the format reserves and the
         // ones already in use. Computed here rather than counted later: it is
         // what an allocation is refused against, and a count that started at
@@ -179,6 +180,10 @@ impl<S: SectorSource> Volume<S> {
             counters: core::cell::RefCell::new(crate::stats::Counters::new()),
             atomic: alloc::collections::BTreeMap::new(),
             ioprio_hint: alloc::collections::BTreeMap::new(),
+            // Filed under an inode number one past the last a node id can
+            // take, which is where the reference puts the same mapping: no
+            // file can collide with it, on any volume.
+            compress_cache: crate::compress::cache::Cache::new(compress_cache, max_nid),
             fault: crate::fault::Info::new(),
             devs,
             zoned,

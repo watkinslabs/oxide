@@ -82,6 +82,10 @@ pub struct General {
     pub inline_dir: i64,
     pub compr_inode: i64,
     pub compr_blocks: i64,
+    /// Compressed blocks this mount is holding, and reads it served from them.
+    /// Both zero on a mount that was not asked to hold any.
+    pub compress_cached: usize,
+    pub compress_hits: u64,
     pub swapfile_inode: i64,
     pub ndonate_files: u32,
     pub nquota_files: u32,
@@ -265,6 +269,8 @@ impl General {
             inline_xattr: c.inline_xattr, inline_inode: c.inline_inode,
             inline_dir: c.inline_dir, compr_inode: c.compr_inode,
             compr_blocks: c.compr_blocks, swapfile_inode: c.swapfile_inode,
+            compress_cached: v.compress_cache.blocks(),
+            compress_hits: v.compress_cache.hits(),
             ndonate_files: c.donate_files,
             nquota_files: c.nquota_files,
             orphans: v.orphans.len() as u32,

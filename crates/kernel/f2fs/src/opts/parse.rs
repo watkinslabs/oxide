@@ -206,11 +206,9 @@ fn one(o: &mut Options, key: &str, val: Option<&str>) -> Result<(), Errno> {
         "nocompress_extension" => o.compress.noextensions.push(need(val)?.as_bytes())?,
         "compress_chksum" => { flag(val)?; o.compress.chksum = true; }
         "compress_mode" => o.compress.mode = compress_mode(need(val)?)?,
-        // A name the format defines that this build cannot deliver. It asks
-        // for a second cache in front of the decompressed pages, which is a
-        // performance structure with observable memory cost; accepting it
-        // silently would report a cache the mount does not have.
-        "compress_cache" => return Err(Errno::Eopnotsupp),
+        // Not part of the group above: it says what this mount does with the
+        // clusters it READS, rather than what it writes into a new file.
+        "compress_cache" => { flag(val)?; o.compress_cache = true; }
         _ => {}
     }
     Ok(())

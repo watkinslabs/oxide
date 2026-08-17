@@ -17,7 +17,7 @@ use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use sync::{Inode as InodeClass, Spinlock};
 
@@ -34,6 +34,13 @@ pub struct CachedPage {
     pub offset: u64,
     pub flags:  AtomicU32,
     pub data:   Spinlock<Vec<u8>, InodeClass>,
+    /// Owner note the filesystem hangs on the page, opaque here.
+    ///
+    /// A mapping whose index is a DEVICE address rather than a file offset
+    /// cannot say which file a page belongs to from its key, so the filesystem
+    /// records it on the page and drops pages by it later. Zero is "nothing
+    /// recorded", which is what an ordinary file-offset mapping leaves it as.
+    pub tag: AtomicU64,
 }
 
 impl CachedPage {
@@ -47,8 +54,15 @@ impl CachedPage {
             inode, offset,
             flags: AtomicU32::new(PageFlags::UPTODATE.bits()),
             data:  Spinlock::new(data),
+            tag:   AtomicU64::new(0),
         })
     }
+
+    /// The owner note this page carries. # C: O(1)
+    pub fn tag(&self) -> u64 { self.tag.load(Ordering::Acquire) }
+
+    /// Record the owner note. # C: O(1)
+    pub fn set_tag(&self, tag: u64) { self.tag.store(tag, Ordering::Release); }
 
     /// # C: O(1)
     pub fn flags(&self) -> PageFlags {
@@ -125,6 +139,69 @@ impl PageCache {
         }
         g.insert((inode, page_offset), Arc::clone(&p));
         Ok(p)
+    }
+
+    /// Add a page the caller already holds the bytes of, if the mapping does
+    /// not have that index yet and holds fewer than `max_pages`.
+    ///
+    /// Distinct from `read_page_with`, whose miss path FETCHES: a caller that
+    /// read the bytes for its own reasons and is offering them to the cache
+    /// must be able to have the offer declined without that turning into a
+    /// second read. `false` is "not taken" — already present, or the mapping
+    /// is full — and is never an error: the bytes the caller holds are the
+    /// same bytes either way.
+    ///
+    /// The count is checked under the same lock as the insert, so a cap is a
+    /// cap rather than a race. `usize::MAX` asks for no cap.
+    /// # C: O(log N)
+    pub fn insert_new(
+        &self,
+        inode:       InodeId,
+        page_offset: u64,
+        data:        Vec<u8>,
+        tag:         u64,
+        max_pages:   usize,
+    ) -> bool {
+        if page_offset % PAGE_BYTES as u64 != 0 { return false; }
+        if data.len() != PAGE_BYTES { return false; }
+        let p = CachedPage::new(inode, page_offset, data);
+        p.set_tag(tag);
+        let mut g = self.entries.lock();
+        if g.len() >= max_pages { return false; }
+        if g.contains_key(&(inode, page_offset)) { return false; }
+        g.insert((inode, page_offset), p);
+        true
+    }
+
+    /// Drop `inode`'s cached pages whose offsets fall in `[start_off, end_off)`.
+    ///
+    /// Whole-inode invalidation is the wrong tool where the index is a device
+    /// address: one address going out of use says nothing about the rest of
+    /// the mapping, and dropping all of it would throw away every other file's
+    /// pages as well.
+    /// # C: O(log N + dropped)
+    pub fn invalidate_range(&self, inode: InodeId, start_off: u64, end_off: u64) {
+        if end_off <= start_off { return; }
+        let mut g = self.entries.lock();
+        let keys: Vec<_> =
+            g.range((inode, start_off)..(inode, end_off)).map(|(k, _)| *k).collect();
+        for k in keys { g.remove(&k); }
+    }
+
+    /// Drop `inode`'s cached pages carrying owner note `tag`.
+    ///
+    /// The walk is the whole mapping's, because a tag is not part of the key —
+    /// which is the same cost the tag exists to pay for: an owner that cannot
+    /// be derived from the index has to be looked for.
+    /// # C: O(pages of this inode)
+    pub fn invalidate_tagged(&self, inode: InodeId, tag: u64) {
+        let mut g = self.entries.lock();
+        let keys: Vec<_> = g
+            .range((inode, 0)..=(inode, u64::MAX))
+            .filter(|(_, p)| p.tag() == tag)
+            .map(|(k, _)| *k)
+            .collect();
+        for k in keys { g.remove(&k); }
     }
 
     /// `read_page` per `17§4.2`. Returns the cached page; on miss,

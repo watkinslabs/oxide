@@ -167,6 +167,15 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(1)
     pub(crate) fn update_seg(&mut self, addr: u32, live: bool) -> Result<(), Errno> {
         if crate::node::is_hole(addr) { return Ok(()); }
+        // A block leaving the live set is a block whose contents no longer
+        // belong to the file that cached them, and the address WILL be handed
+        // out again. Dropping the cached copy here rather than at each caller
+        // is what makes it unconditional: this is the one point both the
+        // release path and the rewrite path pass through, and a rewrite that
+        // forgot would serve the previous contents of the file it just wrote.
+        // Ahead of the already-in-that-state exit below, because a cache entry
+        // is not part of the state that check is reading.
+        if !live { self.compress_cache.invalidate_range(addr, 1); }
         let Some(segno) = self.sb.segno_of(addr) else { return Err(Errno::Eio) };
         let off = ((addr - self.sb.main_blkaddr) % self.sb.blks_per_seg()) as usize;
         {

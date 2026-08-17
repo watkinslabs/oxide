@@ -52,6 +52,12 @@ fn check_remount_switches(sbi: &Sbi, o: &Options) -> Result<(), Errno> {
     if o.age_extent_cache != sbi.cur.age_extent_cache { return Err(Errno::Einval); }
     if o.discard_unit != sbi.cur.discard_unit { return Err(Errno::Einval); }
     if o.nat_bits != sbi.cur.nat_bits { return Err(Errno::Einval); }
+    // The compressed-block cache is built once, when the mount is made, and
+    // the read path either consults it or does not. Turning it on afterwards
+    // would leave a cache nothing had populated for the clusters already read;
+    // turning it off would leave the entries it holds unreachable and never
+    // invalidated, which is the same as keeping them and lying about it.
+    if o.compress_cache != sbi.cur.compress_cache { return Err(Errno::Einval); }
     // A checkpoint is what makes the volume's state durable. A read-only mount
     // that also refuses to write one has no way to record the space it must
     // hold back, and no way to give it up again.

@@ -233,6 +233,66 @@ fn pagecache_invalidate_drops_pages_for_inode() {
 }
 
 #[test]
+fn pagecache_insert_new_takes_absent_pages_and_declines_present_ones() {
+    let pc = PageCache::new();
+    assert!(pc.insert_new(InodeId(1), 0, vec![7; PAGE_BYTES], 0, usize::MAX));
+    assert_eq!(*pc.lookup(InodeId(1), 0).unwrap().data.lock(), vec![7; PAGE_BYTES]);
+    // A second offer of the same index is declined and does NOT overwrite:
+    // the page already there may be dirty or may be the one a reader holds.
+    assert!(!pc.insert_new(InodeId(1), 0, vec![9; PAGE_BYTES], 0, usize::MAX));
+    assert_eq!(*pc.lookup(InodeId(1), 0).unwrap().data.lock(), vec![7; PAGE_BYTES]);
+}
+
+#[test]
+fn pagecache_insert_new_declines_at_the_cap_and_keeps_what_it_has() {
+    let pc = PageCache::new();
+    assert!(pc.insert_new(InodeId(1), 0, vec![1; PAGE_BYTES], 0, 2));
+    assert!(pc.insert_new(InodeId(1), PAGE_BYTES as u64, vec![2; PAGE_BYTES], 0, 2));
+    assert!(!pc.insert_new(InodeId(1), 2 * PAGE_BYTES as u64, vec![3; PAGE_BYTES], 0, 2));
+    assert_eq!(pc.cached_count(), 2);
+    assert!(pc.lookup(InodeId(1), 0).is_some(), "declining does not evict");
+}
+
+#[test]
+fn pagecache_insert_new_refuses_a_short_page_or_an_unaligned_index() {
+    let pc = PageCache::new();
+    assert!(!pc.insert_new(InodeId(1), 0, vec![1; PAGE_BYTES - 1], 0, usize::MAX));
+    assert!(!pc.insert_new(InodeId(1), 1, vec![1; PAGE_BYTES], 0, usize::MAX));
+    assert_eq!(pc.cached_count(), 0);
+}
+
+#[test]
+fn pagecache_invalidate_range_drops_only_the_named_span() {
+    let pc = PageCache::new();
+    for i in 0..4u64 {
+        assert!(pc.insert_new(InodeId(1), i * PAGE_BYTES as u64, vec![0; PAGE_BYTES], 0,
+                              usize::MAX));
+    }
+    assert!(pc.insert_new(InodeId(2), PAGE_BYTES as u64, vec![0; PAGE_BYTES], 0, usize::MAX));
+    pc.invalidate_range(InodeId(1), PAGE_BYTES as u64, 3 * PAGE_BYTES as u64);
+    assert!(pc.lookup(InodeId(1), 0).is_some());
+    assert!(pc.lookup(InodeId(1), PAGE_BYTES as u64).is_none());
+    assert!(pc.lookup(InodeId(1), 2 * PAGE_BYTES as u64).is_none());
+    assert!(pc.lookup(InodeId(1), 3 * PAGE_BYTES as u64).is_some());
+    assert!(pc.lookup(InodeId(2), PAGE_BYTES as u64).is_some(), "another inode is untouched");
+}
+
+#[test]
+fn pagecache_invalidate_tagged_drops_only_pages_of_that_owner() {
+    let pc = PageCache::new();
+    for i in 0..4u64 {
+        let tag = if i % 2 == 0 { 11 } else { 22 };
+        assert!(pc.insert_new(InodeId(1), i * PAGE_BYTES as u64, vec![0; PAGE_BYTES], tag,
+                              usize::MAX));
+    }
+    pc.invalidate_tagged(InodeId(1), 11);
+    assert_eq!(pc.cached_count(), 2);
+    assert!(pc.lookup(InodeId(1), 0).is_none());
+    assert!(pc.lookup(InodeId(1), PAGE_BYTES as u64).is_some());
+    assert_eq!(pc.lookup(InodeId(1), PAGE_BYTES as u64).unwrap().tag(), 22);
+}
+
+#[test]
 fn pagecache_multi_inode_isolation() {
     let d = Disk::new(512, (PAGE_BYTES / 512) as u64 * 4);
     let pc = PageCache::new();
