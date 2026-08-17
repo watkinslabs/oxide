@@ -193,6 +193,11 @@ impl<S: SectorSource> Volume<S> {
             // format says which inode number that is and where the metadata
             // ends, so nothing here picks either.
             meta_cache,
+            // Keyed by the file's own inode number and its own page index, so
+            // an out-of-place rewrite or a cleaner relocation — both of which
+            // move a file's bytes to a different address without changing
+            // them — leaves the mapping alone.
+            data_cache: crate::filemap::Cache::new(),
             fault: crate::fault::Info::new(),
             devs,
             zoned,

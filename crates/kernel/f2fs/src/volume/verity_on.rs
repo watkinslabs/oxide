@@ -115,6 +115,12 @@ impl<S: SectorSource> Volume<S> {
         // fresh info replaces it rather than being left to be re-derived,
         // because it was just built and is known to be the one a read wants.
         self.verity_cache.borrow_mut().insert(ino, info);
+        // Every page of this file in the mapping was filed BEFORE the file was
+        // sealed and therefore without an attestation. Serving one afterwards
+        // would hand back bytes no tree ever attested to, under a flag that
+        // says they were — the file is dropped from the mapping so the next
+        // read of each page is checked as a read of a sealed file.
+        self.data_cache.forget_inode(ino);
         Ok(root)
     }
 

@@ -244,6 +244,11 @@ pub struct Volume<S: SectorSource> {
     /// to keep them; inert on every other mount. Interior-mutable already, for
     /// the reason the caches above are: a READ is what fills it.
     pub(crate) compress_cache: crate::compress::cache::Cache,
+    /// The file DATA pages this mount has read and kept, keyed by inode
+    /// number and file offset rather than by block address (`filemap`).
+    /// Interior-mutable for the reason the caches above are: a READ is what
+    /// fills it, and a read takes `&self`.
+    pub(crate) data_cache: crate::filemap::Cache,
     /// The metadata blocks this mount has read and kept — the checkpoint
     /// packs, both tables and the summary area. Unconditional, unlike the
     /// compressed-block cache above: no mount option turns it off, because

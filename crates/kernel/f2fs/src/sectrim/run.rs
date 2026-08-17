@@ -41,6 +41,13 @@ impl<S: SectorSource> Volume<S> {
         let mut run: Option<(u32, u64)> = None;
         for index in s.first..end {
             let addr = match self.mapped_addr(ino, index)? { Some(a) => a, None => continue };
+            // The block keeps its address and loses its contents, so the
+            // per-address notification every out-of-place writer funnels
+            // through never fires. A page left in the file mapping would go on
+            // serving exactly the bytes this call exists to destroy — the one
+            // operation where answering from a cache is worse than answering
+            // slowly.
+            self.data_cache.forget(ino, index);
             match run {
                 Some((first, n)) if u64::from(first) + n == u64::from(addr) => {
                     run = Some((first, n + 1));

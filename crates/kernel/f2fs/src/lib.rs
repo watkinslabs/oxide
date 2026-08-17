@@ -54,6 +54,7 @@
 //! - `verity`:     the descriptor a verity-protected file carries.
 //! - `opts`:       what a mount was asked for, and what it reports back.
 //! - `extent`:     the read and block-age extent caches, and their LRU.
+//! - `filemap`:    a file's data pages, keyed by inode and file offset.
 //! - `freenid`:    node ids nothing is using, and how one is handed out.
 //! - `atgc`:       age-threshold victim selection, and its candidate tree.
 //! - `fault`:      failures injected on purpose, at named sites and a rate.
@@ -102,6 +103,7 @@ pub mod consistency;
 pub mod fallocate;
 pub mod errrec;
 pub mod extent;
+pub mod filemap;
 pub mod freenid;
 pub mod atgc;
 pub mod fault;
