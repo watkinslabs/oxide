@@ -237,7 +237,11 @@ impl<S: SectorSource> Volume<S> {
         let crypt = self.crypt_info(&inode, ino)?;
         if inode.encrypted() && crypt.is_none() { return Err(Errno::Enokey); }
         let mut page = match base {
-            Some(addr) => self.read_main_plain(addr, crypt.as_ref(), index)?,
+            // Through the file mapping, not around it: the block this patch
+            // lands on is the same page a reader would be served, so a write
+            // that read it from the medium while the mapping held it would be
+            // patching a second copy of the same offset.
+            Some(addr) => self.read_data_page_unattested(ino, index, addr, crypt.as_ref())?,
             None => vec![0u8; BLKSIZE],
         };
         page[skew..skew + data.len()].copy_from_slice(data);
@@ -312,7 +316,7 @@ impl<S: SectorSource> Volume<S> {
                 // plaintext and puts the encryption back on.
                 let crypt = self.crypt_info(&inode, ino)?;
                 if inode.encrypted() && crypt.is_none() { return Err(Errno::Enokey); }
-                let mut page = self.read_main_plain(old, crypt.as_ref(), index)?;
+                let mut page = self.read_data_page_unattested(ino, index, old, crypt.as_ref())?;
                 page[skew..].fill(0);
                 self.write_one_block(ino, index, 0, &page)?;
             }

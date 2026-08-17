@@ -254,6 +254,12 @@ impl<S: SectorSource> Volume<S> {
     pub(crate) fn note_mapping_change(&mut self, ino: u32, holder: Holder, ofs: usize, addr: u32)
         -> Result<(), Errno> {
         let Ok(index) = self.file_offset_of(ino, holder, ofs) else { return Ok(()) };
+        // The page mapping goes with the extent cache, at the same point and
+        // for the same reason: the bytes at this file offset are about to stop
+        // being the bytes the mapping holds. Dropped ahead of the write rather
+        // than after it, so a write that then fails cannot leave a page
+        // answering for an address the file no longer has.
+        self.data_cache.forget(ino, index);
         let Ok(fofs) = u32::try_from(index) else { return Ok(()) };
         let inode = self.read_inode(ino)?;
         let g = self.extent_gate(&inode);

@@ -77,4 +77,10 @@ impl<S: SectorSource> Volume<S> {
 
     /// Metadata blocks this mount is holding. # C: O(1)
     pub fn meta_cached_blocks(&self) -> usize { self.meta_cache.blocks() }
+
+    /// File data pages this mount is holding. # C: O(inodes held)
+    pub fn data_cached_pages(&self) -> usize { self.data_cache.pages() }
+
+    /// Reads the file mapping answered without the medium. # C: O(1)
+    pub fn data_cache_hits(&self) -> u64 { self.data_cache.hits() }
 }

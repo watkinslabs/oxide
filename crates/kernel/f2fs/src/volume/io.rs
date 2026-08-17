@@ -107,24 +107,7 @@ impl<S: SectorSource> Volume<S> {
                     done += take;
                 }
                 Mapped::At(addr) => {
-                    // Both halves matter: the read must be accounted, and it
-                    // must come back as plaintext.
-                    self.io_account(crate::stats::iostat::Io::FsDataRead, BLKSIZE as u64, false);
-                    self.io_read_folio(0);
-                    // Contents are encrypted in UNITS, which may be smaller
-                    // than a block, and the index counts units from the start
-                    // of the file — not blocks. Decryption comes before the
-                    // verity check because the tree attests to the plaintext,
-                    // and it happens inside this call whichever layer performs
-                    // it — the block layer for an inline inode, this one
-                    // otherwise.
-                    let block = self.read_main_plain(addr, crypt.as_ref(), index)?;
-                    // A verity file's bytes are attested, not merely located:
-                    // the block is checked against the tree before any of it
-                    // reaches the caller.
-                    if inode.verity() && !self.verity_check(inode, ino, index, &block)? {
-                        return Err(Errno::Eio);
-                    }
+                    let block = self.read_data_page(inode, ino, index, addr, crypt.as_ref())?;
                     buf[done..done + take].copy_from_slice(&block[skew..skew + take]);
                     done += take;
                 }
@@ -142,6 +125,62 @@ impl<S: SectorSource> Volume<S> {
             }
         }
         Ok(want)
+    }
+
+    /// One page of a file's data, as the reader gets it: PLAINTEXT, attested.
+    ///
+    /// The one place a file's data block becomes a page, and therefore the one
+    /// place the file mapping is consulted and filled. Everything a reader is
+    /// owed happens on the way in and is what the mapping keeps: decryption
+    /// comes first because contents are enciphered in UNITS that may be
+    /// smaller than a block and the tree attests to the plaintext, and the
+    /// verity check comes after it for the same reason.
+    ///
+    /// Accounting is inside the fetch rather than around it. A page the
+    /// mapping answered moved no bytes at the device, and a figure that
+    /// counted it would report traffic the mapping exists to avoid.
+    /// # C: O(1) held, O(BLKSIZE) otherwise
+    pub(crate) fn read_data_page(&self, inode: &Inode, ino: u32, index: u64, addr: u32,
+                                 crypt: Option<&crate::crypto::Info>) -> Result<Vec<u8>, Errno> {
+        self.fill_data_page(inode, ino, index, addr, crypt, inode.verity())
+    }
+
+    /// The same page WITHOUT the attestation — the read half of a
+    /// read-modify-write.
+    ///
+    /// A sealed file is never written: the write is refused above this layer,
+    /// so the two readers can never disagree about a page of file DATA. What
+    /// this exists for is the hash tree a file is being sealed with, whose
+    /// blocks are written through the ordinary block writer and which the
+    /// tree does not attest to — checking one against the tree refuses the
+    /// sealing itself.
+    /// # C: O(1) held, O(BLKSIZE) otherwise
+    pub(crate) fn read_data_page_unattested(&self, ino: u32, index: u64, addr: u32,
+                                            crypt: Option<&crate::crypto::Info>)
+        -> Result<Vec<u8>, Errno> {
+        let inode = self.read_inode(ino)?;
+        self.fill_data_page(&inode, ino, index, addr, crypt, false)
+    }
+
+    /// # C: O(1) held, O(BLKSIZE) otherwise
+    fn fill_data_page(&self, inode: &Inode, ino: u32, index: u64, addr: u32,
+                      crypt: Option<&crate::crypto::Info>, attest: bool)
+        -> Result<Vec<u8>, Errno> {
+        self.data_cache.read(ino, index, || {
+            self.io_account(crate::stats::iostat::Io::FsDataRead, BLKSIZE as u64, false);
+            self.io_read_folio(0);
+            let block = self.read_main_plain(addr, crypt, index)?;
+            // A verity file's bytes are attested, not merely located: the
+            // block is checked against the tree before any of it reaches the
+            // caller — and before it is filed, so a page served later carries
+            // the same attestation as one served now. That is why sealing a
+            // file drops its pages: everything filed before the seal was filed
+            // without one.
+            if attest && !self.verity_check(inode, ino, index, &block)? {
+                return Err(Errno::Eio);
+            }
+            Ok(block)
+        })
     }
 
     /// Where a block lives, asked of its CLUSTER rather than of the block.

@@ -177,6 +177,7 @@ impl<S: SectorSource> Volume<S> {
         // remembered under it may survive: a run left behind would answer for
         // whatever file next takes the id.
         self.extents.borrow_mut().destroy(ino, 0);
+        self.data_cache.forget_inode(ino);
         self.forget_io_prio(ino);
         if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::EvictInode) {
             return Err(Errno::Eio);

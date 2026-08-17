@@ -247,6 +247,11 @@ impl<S: SectorSource> Volume<S> {
     /// make every later read of it walk the tree again.
     /// # C: O(runs past the cut)
     pub(crate) fn forget_extents_from(&self, ino: u32, first: u64) {
+        // Whole node subtrees go at once here, so the per-address notification
+        // never fires for them and the page mapping has to be told by range
+        // too. A page past the new end that survived would answer a read after
+        // the file grew again with the bytes it used to have.
+        self.data_cache.forget_from(ino, first);
         let Ok(fofs) = u32::try_from(first) else { return };
         let len = u32::MAX - fofs;
         if len == 0 { return; }

@@ -218,8 +218,15 @@ impl<S: SectorSource> Volume<S> {
         };
         let crypt = self.crypt_info(&inode, ino)?;
         if inode.encrypted() && crypt.is_none() { return Err(Errno::Enokey); }
-        let mut page = self.read_main_plain(addr, crypt.as_ref(), index)?;
+        let mut page = self.read_data_page_unattested(ino, index, addr, crypt.as_ref())?;
         page[skew..skew + data.len()].copy_from_slice(data);
+        // A pinned block is rewritten WHERE IT LIES, so its address does not
+        // change and the mapping-change notification every other writer
+        // funnels through never fires. Without this the mapping would keep
+        // answering with the bytes the block held before the write — the one
+        // failure a read cache can produce, and the only path in this
+        // filesystem that can reach it.
+        self.data_cache.forget(ino, index);
         // Exactly one layer enciphers; see the out-of-place writer.
         if let Some(c) = &crypt {
             if !c.uses_inline_crypto() {
