@@ -17,6 +17,8 @@
 //! - `freeze`: sealing the volume for a snapshot, and resuming after one.
 //! - `wp`:     settling the drives' write pointers against the volume.
 //! - `data`:   the way back from a dirty data page to this mount.
+//! - `mapping`: a regular file's address space, as the memory manager reaches
+//!              it — the fault's fill, residency, flush and eviction.
 
 use alloc::string::{String, ToString};
 use alloc::sync::{Arc, Weak};
@@ -42,6 +44,7 @@ pub mod remount;
 pub mod freeze;
 pub mod wp;
 pub mod data;
+pub mod mapping;
 
 /// The one name this filesystem is registered under.
 pub const F2FS_NAME: &str = "f2fs";

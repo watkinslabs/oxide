@@ -96,7 +96,8 @@ fn a_rename_records_the_destination_under_a_strict_mount() {
     let spare = v.create(ROOT_INO, b"s", &spec(S_IFREG | 0o644), None).expect("create");
     v.commit().expect("commit");
     let _ = spare;
-    v.rename(ROOT_INO, b"s", dir, b"s", false, NOW).expect("rename");
+    v.rename(&crate::volume::Rename { from: ROOT_INO, old: b"s", to: dir, new: b"s",
+                                     flags: 0, owner: (0, 0), now: NOW }).expect("rename");
     dirty_file(&mut v, ino);
     // The file's own name is already checkpointed, so the dentry mark is not
     // owed and the destination's place on the list is what remains.
@@ -112,7 +113,8 @@ fn a_rename_records_the_destination_under_a_strict_mount() {
 fn a_rename_under_a_lax_mount_records_nothing() {
     let (mut v, dir, _) = dir_with_file(Options::defaults());
     v.create(ROOT_INO, b"s", &spec(S_IFREG | 0o644), None).expect("create");
-    v.rename(ROOT_INO, b"s", dir, b"s", false, NOW).expect("rename");
+    v.rename(&crate::volume::Rename { from: ROOT_INO, old: b"s", to: dir, new: b"s",
+                                     flags: 0, owner: (0, 0), now: NOW }).expect("rename");
     let fresh = v.create(dir, b"n", &spec(S_IFREG | 0o644), None).expect("create");
     v.write_file(fresh, 0, b"y").expect("write");
     assert_eq!(v.fsync(fresh).expect("fresh"), CpReason::None);

@@ -22,7 +22,9 @@
 //! - `xattrs`: the attribute region, assembled from its two halves.
 //! - `fileops`: writing a file's bytes, and shortening one.
 //! - `dirwrite`: adding and removing directory entries.
-//! - `namei`:  creating, removing and renaming names.
+//! - `namei`:  creating, removing and linking names.
+//! - `rename`: moving a name, exchanging two, and the whiteout form.
+//! - `tmpfile`: an inode no name reaches.
 //! - `newcompr`: stamping a new inode's compression settings.
 //! - `xattr_write`: setting and removing attributes.
 //! - `quotas`:  charging allocations to the identities that own them.
@@ -45,6 +47,11 @@
 //!                them there.
 //! - `placement`: what the in-place-update and segment-recycling decisions ask
 //!                the volume, and the one write that keeps a block's address.
+//! - `mapped`: what a MAPPING of a file asks for — the fault's fill, charged
+//!             to the mapped layer, and the residency questions that must not
+//!             fetch.
+//! - `readahead`: blocks — data, node and metadata — fetched before a reader
+//!                asks for them, one transfer per contiguous run.
 
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
@@ -80,6 +87,8 @@ pub mod commit;
 pub mod fileops;
 pub mod dirwrite;
 pub mod namei;
+pub mod rename;
+pub mod tmpfile;
 pub mod newcompr;
 pub mod xattr_write;
 pub mod discard;
@@ -97,11 +106,14 @@ pub mod blockio;
 pub mod writeback;
 pub mod nodeback;
 pub mod placement;
+pub mod mapped;
+pub mod readahead;
 
 pub use curseg::{Curseg, Kind, Summary};
 pub use dir::DirEntry;
 pub use dnode::Holder;
 pub use namei::NewInode;
+pub use rename::Rename;
 pub use nodes::NodeRef;
 
 /// A mounted volume.
@@ -267,6 +279,11 @@ pub struct Volume<S: SectorSource> {
     /// compressed-block cache above: no mount option turns it off, because
     /// the reference has no option for it either and every mount re-reads the
     /// same handful of table blocks without one.
+    /// Whether listing a directory prefetches the node block of every inode
+    /// it names. On by default, as the reference has it, and published as a
+    /// control because a listing that will not stat what it lists pays for
+    /// blocks it never reads.
+    pub(crate) readdir_ra: bool,
     pub(crate) meta_cache: crate::checkpoint::cache::Cache,
     /// Failures this mount was asked to inject, and how many each site has
     /// been given. Live state rather than a copy of the option set: a knob

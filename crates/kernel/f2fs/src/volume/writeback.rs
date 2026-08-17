@@ -46,6 +46,12 @@ impl<S: SectorSource> Volume<S> {
     /// # Ctx: process # Sleeps: y # C: O(pages) blocks
     pub(crate) fn writeback_data_pages(&mut self, ino: u32, pages: &[PageOut<'_>],
                                        results: &mut [KResult<()>], first: &mut Option<Errno>) {
+        // A compressed file's pages are not placed one at a time and cannot be:
+        // the cluster they belong to is one image, so its bytes, its shape and
+        // its addresses are all decided together, once, for the whole cluster.
+        if self.read_inode(ino).map(|i| i.compressed()).unwrap_or(false) {
+            return self.writeback_compressed_pages(ino, pages, results, first);
+        }
         for (i, p) in pages.iter().enumerate() {
             let index = Cache::index_of(p);
             results[i] = match self.writeback_one(ino, index, p.data) {

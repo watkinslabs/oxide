@@ -59,6 +59,26 @@ fn volume(cache: bool) -> (Volume<MemImage>, u32) {
 /// address and a test can name it. # C: O(n)
 fn patterned(n: usize, seed: u8) -> Vec<u8> { (0..n).map(|_| seed).collect() }
 
+/// Write, PLACE, and let the plain pages go.
+///
+/// Two steps, each answering a different thing this cache needs.
+///
+/// The write is deferred: a compressed cluster's addresses are chosen at
+/// writeback, so a case that reads them — or the blocks they name — has to ask
+/// for the placement, exactly as an fsync or a checkpoint does.
+///
+/// The plain pages are then dropped, because a writer keeps them: they are the
+/// file's own bytes and the mapping answers every read of them without going
+/// near the medium. This cache exists for the reads that DO go to the medium —
+/// after reclaim, after a fresh mount — so a case that left the plain pages in
+/// place would never reach it and would prove nothing about it.
+/// # C: O(bytes)
+fn wrote(v: &mut Volume<MemImage>, ino: u32, off: u64, data: &[u8]) {
+    v.write_compressed(ino, off, data).unwrap();
+    v.sync_data().unwrap();
+    v.data_cache().forget_inode(ino);
+}
+
 /// # C: O(cluster blocks)
 fn addrs(v: &Volume<MemImage>, ino: u32) -> Vec<u32> {
     let inode = v.read_inode(ino).unwrap();
@@ -95,7 +115,7 @@ fn a_mount_that_asked_keeps_the_blocks_it_read_and_one_that_did_not_keeps_none()
     let data = patterned(4 * BLKSIZE, 0x31);
     for cache in [false, true] {
         let (mut v, ino) = volume(cache);
-        v.write_compressed(ino, 0, &data).unwrap();
+        wrote(&mut v, ino, 0, &data);
         assert_eq!(v.compress_cache.blocks(), 0, "nothing is cached by writing");
         assert_eq!(whole(&v, ino).unwrap(), data);
         assert_eq!(v.compress_cache.enabled(), cache);
@@ -107,7 +127,7 @@ fn a_mount_that_asked_keeps_the_blocks_it_read_and_one_that_did_not_keeps_none()
 fn a_second_read_of_a_cluster_never_reaches_the_medium() {
     let (mut v, ino) = volume(true);
     let data = patterned(4 * BLKSIZE, 0x42);
-    v.write_compressed(ino, 0, &data).unwrap();
+    wrote(&mut v, ino, 0, &data);
     let a = image_addr(&v, ino);
     assert_eq!(whole(&v, ino).unwrap(), data);
     assert_eq!(v.compress_cache.hits(), 0, "the first read had nothing to hit");
@@ -125,7 +145,7 @@ fn a_mount_that_did_not_ask_reads_the_medium_every_time() {
     // the option, must be visible.
     let (mut v, ino) = volume(false);
     let data = patterned(4 * BLKSIZE, 0x42);
-    v.write_compressed(ino, 0, &data).unwrap();
+    wrote(&mut v, ino, 0, &data);
     let a = image_addr(&v, ino);
     assert_eq!(whole(&v, ino).unwrap(), data);
     poison(&v, a);
@@ -140,14 +160,14 @@ fn a_block_that_has_left_the_file_does_not_answer_for_it_afterwards() {
     // anywhere, and the wrong bytes.
     let (mut v, ino) = volume(true);
     let old = patterned(4 * BLKSIZE, 0x11);
-    v.write_compressed(ino, 0, &old).unwrap();
+    wrote(&mut v, ino, 0, &old);
     let first = image_addr(&v, ino);
     assert_eq!(whole(&v, ino).unwrap(), old);
     assert_eq!(v.compress_cache.blocks(), 1);
 
     // Rewriting the cluster releases the block it was stored in.
     let new = patterned(4 * BLKSIZE, 0x22);
-    v.write_compressed(ino, 0, &new).unwrap();
+    wrote(&mut v, ino, 0, &new);
     let second = image_addr(&v, ino);
     assert_ne!(first, second, "the rewrite must land elsewhere or there is nothing to free");
     assert_eq!(v.compress_cache.load(first), None, "the freed block is still cached");
@@ -163,7 +183,7 @@ fn a_block_that_has_left_the_file_does_not_answer_for_it_afterwards() {
 #[test]
 fn closing_the_last_holder_drops_what_that_file_cached() {
     let (mut v, ino) = volume(true);
-    v.write_compressed(ino, 0, &patterned(4 * BLKSIZE, 0x53)).unwrap();
+    wrote(&mut v, ino, 0, &patterned(4 * BLKSIZE, 0x53));
     v.open_inode(ino);
     assert_eq!(whole(&v, ino).unwrap().len(), 4 * BLKSIZE);
     assert_eq!(v.compress_cache.blocks(), 1);
@@ -174,7 +194,7 @@ fn closing_the_last_holder_drops_what_that_file_cached() {
 #[test]
 fn one_files_blocks_survive_another_files_last_close() {
     let (mut v, ino) = volume(true);
-    v.write_compressed(ino, 0, &patterned(4 * BLKSIZE, 0x64)).unwrap();
+    wrote(&mut v, ino, 0, &patterned(4 * BLKSIZE, 0x64));
     assert_eq!(whole(&v, ino).unwrap().len(), 4 * BLKSIZE);
     assert_eq!(v.compress_cache.blocks(), 1);
     // A close of an inode that cached nothing must not take this one's block
@@ -190,7 +210,7 @@ fn the_status_report_carries_what_is_held_and_what_it_answered() {
     // matching on it cannot tell "this mount holds none" from "this build does
     // not count", so the figures have to be the cache's own.
     let (mut v, ino) = volume(true);
-    v.write_compressed(ino, 0, &patterned(4 * BLKSIZE, 0x85)).unwrap();
+    wrote(&mut v, ino, 0, &patterned(4 * BLKSIZE, 0x85));
     assert_eq!(whole(&v, ino).unwrap().len(), 4 * BLKSIZE);
     assert_eq!(whole(&v, ino).unwrap().len(), 4 * BLKSIZE);
     let c = crate::stats::counters::Counters::new();
