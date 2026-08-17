@@ -220,6 +220,19 @@ must use grouped paths from day one.
     superblock; `crates/drivers/drv-virtio-fs` owns the virtio-fs device. A
     virtiofs mount reuses the FUSE connection — a second FUSE implementation is
     forbidden.
+22. Image and native filesystem ownership (`69§2`): one crate per FORMAT —
+    `crates/kernel/squashfs`, `crates/kernel/erofs`, `crates/kernel/f2fs`,
+    `crates/kernel/xfs`, `crates/kernel/btrfs`. Each is layered as `62§3`
+    (decision modules, `Volume<S>`, `mount`) and reads its sectors through
+    `crates/kernel/sectors`, which stays the only owner of the volume-sector
+    adapter. Each registers through `syscalls::fsmount_common::registry` and
+    nowhere else.
+23. A COMPRESSION codec has one owner, never a copy per filesystem:
+    `crates/shared/zstd` owns Zstandard, `miniz_oxide` DEFLATE, `lzokay` LZO.
+    The LZ4 BLOCK decoder that the read-only image formats need is
+    output-bounded and partial, which the whole-buffer form cannot express; it
+    lives in the crate that needs it until a second consumer appears, at which
+    point it moves to `crates/shared` (`69§9` OQ 2) and is never copied.
 
 ## 6 Naming rules (frozen)
 
@@ -309,6 +322,11 @@ Constraints:
     is dependency-free so both shores can name it; `crates/kernel/ninep` is a
     leaf over `vfs`+`sync`. `crates/drivers/drv-virtio-9p` depends on `ninep`,
     `crates/drivers/drv-virtio-fs` on `fuse-transport`, and neither on `fs`.
+21. An on-disk filesystem crate is a LEAF over `vfs`, `block`, `sectors`,
+    `syscall`, `sync`, `klog` and its codecs. No filesystem crate depends on
+    another filesystem crate, and none depends on `syscalls` — the registry
+    depends on them. A mechanism two of them share moves to its own owner
+    (`§5` rules 22–23); a sideways dependency is forbidden.
 
 ## 8 Change policy
 

@@ -34,21 +34,11 @@ pub enum Armed {
     Failed(Errno),
 }
 
-/// Whether this opcode can only ever be deferred. # C: O(1)
-pub fn always_async(op: u8) -> bool {
-    matches!(op, IORING_OP_TIMEOUT | IORING_OP_LINK_TIMEOUT | IORING_OP_POLL_ADD
-        | IORING_OP_URING_CMD | IORING_OP_URING_CMD128)
-}
-
-/// Whether the submitter asked for this entry to be handed to a worker
-/// regardless of whether it would have run inline. # C: O(1)
-pub fn forced_async(flags: u8) -> bool { flags & IOSQE_ASYNC != 0 }
-
-/// Whether this entry is deferred before it is ever attempted. # C: O(1)
-pub fn defers(sqe: &Sqe) -> bool {
-    always_async(sqe.opcode) || forced_async(sqe.flags)
-        || crate::io_uring_abi::recvsend::defers_before_issue(sqe.opcode, sqe.flags, sqe.ioprio)
-}
+// The opcode policy itself lives in `io_uring_abi::async_policy`, which is
+// ungated and therefore testable: this file is reached only through
+// `kernel_body.rs`, so a test written beside the decision here would compile
+// out silently (CLAUDE.md phantom-test rule).
+pub use crate::io_uring_abi::async_policy::{always_async, defers, forced_async};
 
 /// The same question for one ring: a transfer on a POLLED ring is deferred
 /// too, because that is what makes it pollable. It is issued to the backend

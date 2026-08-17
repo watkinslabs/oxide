@@ -8,8 +8,10 @@ use crate::mapping::Mapping;
 use crate::mls::Range;
 use crate::policydb::symbols::{Default1, DefaultRange, OBJECT_R_VAL};
 use crate::policydb::Policydb;
-use crate::services::transition::{change_sid, compute_sid, is_socket_class, member_sid,
-                                  transition_sid, TransitionKind, TransitionRequest};
+use crate::services::transition::{change_sid, change_sid_user, compute_sid, is_socket_class,
+                                  member_sid, member_sid_user, transition_sid,
+                                  transition_sid_user, ClassValue, TransitionKind,
+                                  TransitionRequest};
 use crate::sidtab::{Sid, Sidtab};
 use crate::uapi::classmap::class_by_name;
 
@@ -308,7 +310,7 @@ fn an_invalid_result_is_refused_rather_than_labelled() {
         datum: crate::avtab::Datum::Word(T_ATTR_DOMAIN),
     });
     let out = compute_sid(&e.db, &e.map, &mut e.sidtab, &TransitionRequest {
-        ssid, tsid, kernel_class: kcls("process"), objname: None,
+        ssid, tsid, class: ClassValue::Kernel(kcls("process")), objname: None,
         kind: TransitionKind::Transition,
     });
     assert_eq!(out, Err(Error::InvalidContext));
@@ -339,4 +341,48 @@ fn a_socket_class_inherits_the_source_role_type_and_range() {
 
 impl Env {
     fn rebuild(&mut self) { self.map = Mapping::build(&self.db).expect("mapping"); }
+}
+
+#[test]
+fn a_class_written_by_userspace_is_read_in_the_policys_own_numbering() {
+    // The `class/<name>/index` node publishes the POLICY's class value, and
+    // userspace writes that same number back to `create`. Reading it as the
+    // KERNEL's class value answers about whichever class happens to sit at
+    // that kernel index — here, the file value 2 is the kernel's `process`.
+    let mut e = env();
+    let (s, t) = exec_pair();
+    let (ssid, tsid) = (e.sid(s), e.sid(t));
+    assert_ne!(CLS_FILE, kcls("file") as u32, "the fixture numbers the two differently");
+    assert_eq!(CLS_FILE, kcls("process") as u32, "and the file value is the kernel's process");
+
+    let published = transition_sid_user(&e.db, &e.map, &mut e.sidtab, ssid, tsid, CLS_FILE, None)
+        .expect("the published value names the file class");
+    let misread = transition_sid(&e.db, &e.map, &mut e.sidtab, ssid, tsid, CLS_FILE as u16, None)
+        .expect("the same number read as a kernel class names the process class");
+    assert_eq!(e.context(published).role, OBJECT_R_VAL, "a file takes the object role");
+    assert_eq!(e.context(misread).role, R_USER, "the process class takes a role transition");
+    assert_ne!(published, misread);
+}
+
+#[test]
+fn a_relabel_and_a_member_read_a_written_class_the_same_way() {
+    let mut e = env();
+    let (s, t) = exec_pair();
+    let (ssid, tsid) = (e.sid(s), e.sid(t));
+    let relabel = change_sid_user(&e.db, &e.map, &mut e.sidtab, ssid, tsid, CLS_FILE)
+        .expect("relabel");
+    let member = member_sid_user(&e.db, &e.map, &mut e.sidtab, ssid, tsid, CLS_FILE)
+        .expect("member");
+    assert_eq!(e.context(relabel).role, OBJECT_R_VAL);
+    assert_eq!(e.context(member).role, OBJECT_R_VAL);
+}
+
+#[test]
+fn a_class_the_policy_does_not_declare_is_refused_rather_than_defaulted() {
+    let mut e = env();
+    let (s, t) = exec_pair();
+    let (ssid, tsid) = (e.sid(s), e.sid(t));
+    let absent = e.db.symbols.classes.len() as u32 + 1;
+    assert_eq!(transition_sid_user(&e.db, &e.map, &mut e.sidtab, ssid, tsid, absent, None),
+               Err(Error::UnknownSymbol));
 }

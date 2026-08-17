@@ -149,3 +149,39 @@ fn syscall_layer_policy_writes_reach_disk_on_ext4() {
     assert_eq!(fs::xattr::vfs_listxattr(&inode, &root), Ok(b"trusted.t\0user.c\0".to_vec()));
     assert_eq!(fs::xattr::vfs_getxattr(&inode, "btrfs.x", &root), Err(-95));
 }
+
+// A POSIX ACL is stored as this filesystem's own record — version 1 with
+// variable-length entries — not as the interchange blob a caller sets and gets.
+// Storing the blob verbatim would write a version this format's reader rejects,
+// so a Linux `getfacl` would refuse it and the permission check could not decode
+// the ACL that is meant to decide it.
+#[test]
+fn a_posix_acl_is_stored_as_the_on_disk_record_and_not_the_interchange_blob() {
+    use vfs::posix_acl::{disk, from_xattr, to_xattr, AclEntry, ACL_GROUP_OBJ, ACL_MASK,
+                         ACL_OTHER, ACL_UNDEFINED_ID, ACL_USER, ACL_USER_OBJ};
+    let disk_dev = build_disk();
+    let path = b"/acl.bin";
+    let blob = to_xattr(&[
+        AclEntry { tag: ACL_USER_OBJ, perm: 0o6, id: ACL_UNDEFINED_ID },
+        AclEntry { tag: ACL_USER, perm: 0o6, id: 1000 },
+        AclEntry { tag: ACL_GROUP_OBJ, perm: 0o4, id: ACL_UNDEFINED_ID },
+        AclEntry { tag: ACL_MASK, perm: 0o6, id: ACL_UNDEFINED_ID },
+        AclEntry { tag: ACL_OTHER, perm: 0o4, id: ACL_UNDEFINED_ID },
+    ]);
+    let record = disk::to_disk(&from_xattr(&blob).unwrap()).unwrap();
+    assert_ne!(record, blob, "the two forms are different bytes, so this can fail");
+
+    let m = ext4::rootfs::Ext4Mount::open(disk_dev.clone()).unwrap();
+    let st = m.state();
+    let inode = st.create_at(path, 0o640).expect("create");
+    inode.setxattr("system.posix_acl_access", blob.clone(), false, false).expect("set acl");
+    // The value the medium holds, read past the converting boundary.
+    assert_eq!(inode.simple_xattrs().unwrap().get("system.posix_acl_access").unwrap(), record,
+               "the interchange blob must not be stored verbatim");
+    // And what a caller gets back is the blob again.
+    assert_eq!(inode.getxattr("system.posix_acl_access").unwrap(), blob);
+    // Which is also what the permission check decodes.
+    let got = inode.get_inode_acl(vfs::posix_acl::AclType::Access).expect("decode").expect("some");
+    assert_eq!(got.len(), 5);
+    assert_eq!(got[1], AclEntry { tag: ACL_USER, perm: 0o6, id: 1000 });
+}

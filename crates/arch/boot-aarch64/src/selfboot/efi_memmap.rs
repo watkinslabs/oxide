@@ -27,6 +27,35 @@ struct MemMap(UnsafeCell<[u8; EFI_MMAP_MAX]>);
 unsafe impl Sync for MemMap {}
 static MMAP: MemMap = MemMap(UnsafeCell::new([0; EFI_MMAP_MAX]));
 
+/// Scratch the firmware writes its map INTO, distinct from the retained copy
+/// above so a `GetMemoryMap` retry that overruns cannot clobber the last map
+/// that was retained whole.
+///
+/// Off-stack because the map is a few KiB and the kernel stack is 16 KiB: a
+/// map-sized array in the EFI stub's frame is the whole stack, leaving nothing
+/// for the firmware calls made while it is live. The reference stub keeps this
+/// buffer off-stack too, in a firmware pool allocation; nothing allocates here —
+/// the stub runs before the PMM exists — so the block lives in the kernel image,
+/// whose extent the boot memmap already carves out of usable RAM.
+#[repr(C, align(4096))]
+struct Scratch(UnsafeCell<[u8; EFI_MMAP_MAX]>);
+// SAFETY: written once by the boot CPU inside `efi_stub_setup`, before any
+// other context exists; nothing else ever names it.
+unsafe impl Sync for Scratch {}
+static SCRATCH: Scratch = Scratch(UnsafeCell::new([0; EFI_MMAP_MAX]));
+
+/// The firmware-map scratch block, zero on entry as a fresh stack array was.
+///
+/// # SAFETY: caller must be the boot CPU inside the EFI stub and must take this
+/// reference at most once per boot — it is the sole handle to the block, and a
+/// second live one would alias it.
+/// # C: O(1)
+pub unsafe fn scratch() -> &'static mut [u8] {
+    // SAFETY: boot-path single caller per the contract above; no other context
+    // exists yet that could hold a reference to the block.
+    unsafe { &mut *SCRATCH.0.get() }
+}
+
 /// Physical address of the retained copy; 0 = nothing retained.
 static MMAP_PA: AtomicU64 = AtomicU64::new(0);
 /// Bytes of map at `MMAP_PA`.

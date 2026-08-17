@@ -160,9 +160,11 @@ mod tests {
     fn compat_ioctl_zero_extends_the_32_bit_argument_and_forwards_mode() {
         let _modules = crate::test_serial::claim();
         let ops = LinuxBlockDeviceOperations { owner: core::ptr::null_mut(), open: None, release: None, ioctl: Some(compat_ioctl) };
+        // SAFETY: LinuxGendisk is a C-layout struct whose fields are all safely zero-representable (raw pointers/integers); fops is set immediately below before any other field is read.
         let mut disk = unsafe { core::mem::zeroed::<LinuxGendisk>() }; disk.fops = &ops;
         let mut bdev = LinuxBlockDevice::new();
         bdev.bd_disk = &mut disk;
+        // SAFETY: bdev/disk/ops are the live local test values wired together above, satisfying blkdev_compat_ptr_ioctl's non-null bdev/disk/fops/ioctl chain.
         assert_eq!(unsafe { blkdev_compat_ptr_ioctl(&mut bdev, 0x12, 0x34, usize::MAX) }, 37);
         assert_eq!(COMPAT_MODE.load(Ordering::SeqCst), 0x12); assert_eq!(COMPAT_CMD.load(Ordering::SeqCst), 0x34); assert_eq!(COMPAT_ARG.load(Ordering::SeqCst), u32::MAX as usize);
     }
@@ -171,6 +173,7 @@ mod tests {
     fn compat_ioctl_without_driver_callback_reports_linux_no_ioctl() {
         let _modules = crate::test_serial::claim();
         let mut bdev = LinuxBlockDevice::new();
+        // SAFETY: bdev is a live LinuxBlockDevice::new() default with a null bd_disk, which blkdev_compat_ptr_ioctl checks and rejects before any further deref.
         assert_eq!(unsafe { blkdev_compat_ptr_ioctl(&mut bdev, 0, 0, 0) }, -LINUX_ENOIOCTLCMD);
     }
 
@@ -214,6 +217,7 @@ mod tests {
 
     #[test]
     fn disk_report_zone_synchronizes_a_pending_write_plug_without_a_callback() {
+        // SAFETY: LinuxGendisk is a C-layout struct whose fields are safely zero-representable; the zoned fields this test needs are set immediately below.
         let mut disk: LinuxGendisk = unsafe { core::mem::zeroed() };
         disk.zoned.nr_zones = 1; disk.zoned.zone_capacity = 100; disk.zoned.last_zone_capacity = 100;
         // SAFETY: this test owns the gendisk and installs its only canonical plug before reporting.

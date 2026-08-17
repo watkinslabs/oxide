@@ -7,7 +7,7 @@ use vfs::inode::InodeBuilder;
 use vfs::inode_ops::{InodeOps, mk_mode};
 use vfs::{DirContext, FileType, Inode, InodeRef, KResult, VfsError};
 
-use super::data::{Ext4StatData, ext4_file_ino, remove_inode_xattr, set_inode_xattr};
+use super::data::{Ext4StatData, ext4_file_ino, get_inode_xattr, remove_inode_xattr, set_inode_xattr};
 use super::ids::ext4_wrap_ino;
 use super::super::state::RootfsState;
 
@@ -61,6 +61,10 @@ impl InodeOps for Ext4StatInodeOps {
     }
     fn fileattr_set(&self, inode: &Inode, fa: &vfs::FileAttr) -> KResult<()> {
         super::meta::ext4_fileattr_set(inode, fa)
+    }
+
+    fn getxattr(&self, inode: &Inode, name: &str) -> Result<Vec<u8>, vfs::XattrError> {
+        get_inode_xattr(inode, name)
     }
 
     fn setxattr(&self, inode: &Inode, name: &str, value: Vec<u8>, create: bool, replace: bool)

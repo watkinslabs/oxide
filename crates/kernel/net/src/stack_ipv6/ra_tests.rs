@@ -334,9 +334,10 @@ fn two_hour_comparison_uses_exact_deadlines() {
     stack.apply_router_advertisement(net_ns, iface, router, &ra(prefix, 7_200, 0, 0));
     let row = stack.v6_addr_snapshot_in(net_ns).into_iter()
         .find(|(_, row)| row.addr == addr).unwrap().1;
-    let super::Ipv6AddrOrigin::Slaac { valid_until_ns, .. } = row.origin else {
+    let super::Ipv6AddrOrigin::Slaac { .. } = row.origin else {
         panic!("expected SLAAC address");
     };
+    let valid_until_ns = row.valid_until_ns;
     assert_eq!(valid_until_ns, SEC / 2 + super::ra::TWO_HOURS_SECS as u64 * SEC);
     stack.set_ra_now_ns(valid_until_ns);
     assert!(!stack.v6_addr_owned_by(iface, addr));
@@ -355,9 +356,10 @@ fn finite_deadline_overflow_never_becomes_protocol_infinity() {
     stack.apply_router_advertisement(net_ns, iface, router, &ra(prefix, 1, 1, 1));
     let row = stack.v6_addr_snapshot_in(net_ns).into_iter()
         .find(|(_, row)| row.addr == addr).unwrap().1;
-    let super::Ipv6AddrOrigin::Slaac { valid_until_ns, .. } = row.origin else {
+    let super::Ipv6AddrOrigin::Slaac { .. } = row.origin else {
         panic!("expected SLAAC address");
     };
+    let valid_until_ns = row.valid_until_ns;
     assert_eq!(valid_until_ns, u64::MAX - 1);
     assert_ne!(valid_until_ns, u64::MAX);
     assert!(!stack.v6_addr_owned_by(iface, addr));

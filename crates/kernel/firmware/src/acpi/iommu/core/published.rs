@@ -1,5 +1,7 @@
 // Published immutable IOMMU inventory accessors and ACPI decode entrypoints.
 
+use alloc::boxed::Box;
+
 use super::*;
 
 fn scope_meta(scope: DmarScope) -> u64 {
@@ -25,7 +27,7 @@ fn load_scope(meta: u64, lo: u64, hi: u64) -> DmarScope {
         start_bus: (meta >> 24) as u8, path_len: (meta >> 32) as u8, path }
 }
 
-fn publish(inv: IommuInventory) {
+fn publish(inv: &IommuInventory) {
     if inv.unit_count == 0 || IOMMU_KIND.load(Ordering::Acquire) != IOMMU_KIND_NONE { return; }
     for i in 0..inv.unit_count {
         let u = inv.units[i];
@@ -245,7 +247,7 @@ pub fn dmar_rmrr(index: usize) -> Option<DmarRmrr> {
         base: DMAR_RMRR_BASE[index].load(Ordering::Relaxed), end: DMAR_RMRR_END[index].load(Ordering::Relaxed), scopes, scope_count })
 }
 
-unsafe fn decode(pa: u64, hhdm_offset: u64, parse: fn(&[u8]) -> Result<IommuInventory, IommuError>, tag: &'static [u8]) {
+unsafe fn decode(pa: u64, hhdm_offset: u64, parse: fn(&[u8]) -> Result<Box<IommuInventory>, IommuError>, tag: &'static [u8]) {
     let p = (hhdm_offset.wrapping_add(pa)) as *const u8;
     // SAFETY: caller provides an HHDM-mapped standard ACPI header; offset 4 is within it.
     let len = unsafe { read_u32_le(p.add(4)) } as usize;
@@ -256,7 +258,7 @@ unsafe fn decode(pa: u64, hhdm_offset: u64, parse: fn(&[u8]) -> Result<IommuInve
         Ok(inv) => {
             alog_raw(b"[INFO]    "); alog_raw(tag); alog_raw(b" iommu_units="); alog_dec(inv.unit_count as u64); alog_raw(b"\n");
             for i in 0..inv.unit_count { alog_raw(b"[INFO]      iommu pa="); alog_hex(inv.units[i].register_base); alog_raw(b" seg="); alog_dec(inv.units[i].segment as u64); alog_raw(b"\n"); }
-            publish(inv);
+            publish(&inv);
         }
         Err(_) => alog_raw(b"[ERROR]    iommu: rejected firmware table\n"),
     }

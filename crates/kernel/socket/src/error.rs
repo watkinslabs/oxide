@@ -71,6 +71,9 @@ impl From<vfs::VfsError> for Error {
             // No socket path produces an owner-mapping overflow; report the
             // generic invalid-argument rather than inventing a socket errno.
             vfs::VfsError::Eoverflow => Self::Einval,
+            // A zoned block drive's open-zone limit; no socket path reaches
+            // one, so it takes the same generic answer as the line above.
+            vfs::VfsError::Etoomanyrefs => Self::Einval,
         }
     }
 }

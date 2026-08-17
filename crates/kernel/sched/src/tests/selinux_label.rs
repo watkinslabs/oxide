@@ -11,7 +11,8 @@ use syscall::errno::Errno;
 
 use crate::selinux_label::{
     AttrRequest, AttrSlot, AttrWritePerm, ExecDomain, ExecInputs, TaskLabel, attr_mode,
-    attr_write_target, decide_exec_domain, parse_attr_write, render_slot, write_permission,
+    attr_write_target, decide_exec_domain, parse_attr_write, render_slot, slot_answer,
+    write_permission,
 };
 use crate::task::{SchedClass, Task};
 
@@ -301,11 +302,28 @@ fn a_write_may_only_target_the_calling_thread() {
 }
 
 #[test]
-fn an_unset_slot_reads_as_zero_bytes() {
-    assert!(render_slot(None).is_empty());
-    // With no policy loaded there is no table to render against, and userspace
-    // reads emptiness rather than an error.
-    assert!(render_slot(Some(SID_OLD)).is_empty());
+fn an_unset_slot_reads_as_zero_bytes_and_an_unrenderable_one_is_an_error() {
+    assert_eq!(render_slot(None), Ok(alloc::vec::Vec::new()));
+    // No module installed: nothing labels anything, so there is no label to
+    // report and userspace reads emptiness rather than an error.
+    assert_eq!(render_slot(Some(SID_OLD)), Ok(alloc::vec::Vec::new()));
+}
+
+/// An empty read and a failed render are DIFFERENT answers. Collapsing them is
+/// why an empty context travelled all the way out to userspace and failed there
+/// instead of here: a caller that reads zero bytes carries the empty string on
+/// as a label, and the failure then names neither the label nor this read.
+#[test]
+fn a_label_that_cannot_be_rendered_is_an_error_and_not_an_empty_context() {
+    // A module that rendered the label: its bytes, unchanged.
+    assert_eq!(slot_answer(Some(Some(alloc::vec::Vec::from(&b"system_u:system_r:kernel_t:s0"[..])))),
+        Ok(alloc::vec::Vec::from(&b"system_u:system_r:kernel_t:s0"[..])));
+    // A module that could NOT render it: an error, never zero bytes.
+    assert_eq!(slot_answer(Some(None)), Err(Errno::Einval));
+    assert_ne!(slot_answer(Some(None)), Ok(alloc::vec::Vec::new()));
+    // No module at all: zero bytes, which is how userspace learns the module is
+    // not doing anything.
+    assert_eq!(slot_answer(None), Ok(alloc::vec::Vec::new()));
 }
 
 #[test]

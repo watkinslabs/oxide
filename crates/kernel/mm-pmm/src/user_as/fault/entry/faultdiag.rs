@@ -23,6 +23,9 @@ fn plt_got_slot(rip: u64, insn: [u8; 6]) -> Option<u64> {
 pub(super) fn trace_plt_got(root: u64, rip: u64, hhdm: u64) {
     use hal::pt_walker::translate_4k_at_root;
 
+    // SAFETY: `root` is the faulting address space's page-table root supplied by
+    // the fault entry and still installed, and `hhdm` maps all managed RAM, so
+    // the walker only dereferences HHDM views of live table frames.
     let code = unsafe {
         translate_4k_at_root::<hal_x86_64::vmm::PtWalkerX86>(root, rip, hhdm)
     };
@@ -50,6 +53,9 @@ pub(super) fn trace_plt_got(root: u64, rip: u64, hhdm: u64) {
         klog::write_raw(b" leaf="); klog::write_hex_u64(code.1);
         return;
     };
+    // SAFETY: same still-installed `root` and HHDM as the code-page walk above;
+    // `slot` is a GOT address decoded from the instruction, and an unmapped or
+    // bogus value simply makes the walk return None.
     let got = unsafe {
         translate_4k_at_root::<hal_x86_64::vmm::PtWalkerX86>(root, slot, hhdm)
     };

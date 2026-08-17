@@ -65,7 +65,7 @@ impl AsymmetricKey {
     /// order. A blob that is neither is not a key — the LAST parser's
     /// complaint is not reported, because "this is not a PKCS#8 key" says
     /// nothing useful about a corrupt certificate. # C: O(len)
-    pub fn parse(blob: &[u8]) -> Result<Self, PkeyError> {
+    pub fn parse(blob: &[u8]) -> Result<alloc::boxed::Box<Self>, PkeyError> {
         if let Ok(cert) = x509::parse(blob) {
             if cert.algo != "rsa" { return Err(PkeyError::NoPackage); }
             let key = rsa::parse_public(&cert.key)?;
@@ -79,15 +79,16 @@ impl AsymmetricKey {
             desc.push_str(": ");
             let id = cert.skid.unwrap_or(cert.serial);
             for b in &id { push_hex(&mut desc, *b); }
-            return Ok(Self {
+            return Ok(alloc::boxed::Box::new(Self {
                 algo: cert.algo, id_type: ID_TYPE_X509, description: Some(desc), ids,
                 name_id: Some(cert.subject_id), key,
-            });
+            }));
         }
         let (algo, private) = pkcs8::parse(blob)?;
         if algo != "rsa" { return Err(PkeyError::NoPackage); }
         let key = rsa::parse_private(&private)?;
-        Ok(Self { algo, id_type: ID_TYPE_PKCS8, description: None, ids: Vec::new(), name_id: None, key })
+        Ok(alloc::boxed::Box::new(
+            Self { algo, id_type: ID_TYPE_PKCS8, description: None, ids: Vec::new(), name_id: None, key }))
     }
 
     /// Whether this key can perform private operations. # C: O(1)

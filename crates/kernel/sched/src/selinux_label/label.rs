@@ -119,3 +119,13 @@ pub fn current_sid() -> Sid {
 pub fn current_fscreate_sid() -> Option<Sid> {
     crate::live::current().and_then(|t| t.selinux_label.lock().fscreate)
 }
+
+/// Label the running thread staged for the next SOCKET it creates. # C: O(1)
+///
+/// Separate from the file-creation staging: a thread may stage a label for the
+/// sockets it opens without staging one for the files it writes, and the two
+/// slots are written through different attributes.
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+pub fn current_sockcreate_sid() -> Option<Sid> {
+    crate::live::current().and_then(|t| t.selinux_label.lock().sockcreate)
+}

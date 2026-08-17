@@ -174,9 +174,7 @@ pub(super) fn handle_nft(
             });
             match result {
                 Ok(_) => nlmsg_ack(req, 0),
-                Err(nft_expr::ParseError::Unsupported) => nlmsg_ack(req, -95 /* EOPNOTSUPP */),
-                Err(nft_expr::ParseError::Malformed) => nlmsg_ack(req, -22 /* EINVAL */),
-                Err(nft_expr::ParseError::MissingSet) => nlmsg_ack(req, -2 /* ENOENT */),
+                Err(err) => nlmsg_ack(req, parse_errno(err)),
             }
         }
         nft_msg::NFT_MSG_DELRULE => {
@@ -363,3 +361,21 @@ pub(super) fn handle_nft(
         _ => nlmsg_ack(req, 0), // batches: future PR
     }
 }
+
+/// Errno the reference reports for one refused rule. # C: O(1)
+pub(crate) fn parse_errno(err: nft_expr::ParseError) -> i32 {
+    use nft_expr::ParseError::*;
+    match err {
+        Unsupported | WrongHook => -EOPNOTSUPP,
+        Malformed => -EINVAL,
+        MissingSet => -ENOENT,
+        Overflow => -EOVERFLOW,
+        OutOfRange => -ERANGE,
+    }
+}
+
+const EINVAL: i32 = 22;
+const ENOENT: i32 = 2;
+const ERANGE: i32 = 34;
+const EOVERFLOW: i32 = 75;
+const EOPNOTSUPP: i32 = 95;

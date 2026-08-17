@@ -28,8 +28,12 @@ impl BlkState {
 
     #[allow(clippy::too_many_arguments)]
     pub(super) fn do_request(&self, h: u64, type_: u32, sector: u64, data: &mut [u8],
-                  is_in: bool, is_flush: bool, data_len: u32) -> KResult<()> {
+                  is_in: bool, is_flush: bool, data_len: u32) -> KResult<InHeader> {
         let bounce = h.wrapping_add(self.bounce_pa) as *mut u8;
+        // Zone append answers with the sector its data landed at ahead of the
+        // status byte, so its device-writable tail is wider. Declaring one
+        // byte would have the device write eight past the descriptor.
+        let in_len = virtio::blk::zoned::in_header_bytes(type_);
         let mut hdr = [0u8; 16];
         blk::encode_header(&mut hdr, type_, sector);
         // No descriptor referencing this block has been published yet, so the
@@ -47,13 +51,14 @@ impl BlkState {
                     core::ptr::write_volatile(bounce.add(DATA_OFF + i), *b);
                 }
             }
-            core::ptr::write_volatile(bounce.add(STATUS_OFF), 0xFFu8);
+            for i in 0..in_len { core::ptr::write_volatile(bounce.add(STATUS_OFF + i), 0xFFu8); }
         }
 
         let hdr_dma = self.bounce_dma + HDR_OFF as u64;
         let data_dma = self.bounce_dma + DATA_OFF as u64;
         let status_dma = self.bounce_dma + STATUS_OFF as u64;
-        let (descs, n) = blk::build_chain(is_in, hdr_dma, data_dma, data_len, status_dma);
+        let (descs, n) = blk::build_chain_with_in_header(
+            is_in, hdr_dma, data_dma, data_len, status_dma, in_len as u32);
 
         let desc_tbl = h.wrapping_add(self.requestq.res.desc_pa) as *mut u64;
         // `acquire_turn` gives this task sole ownership of heads 0..n, and the
@@ -108,11 +113,20 @@ impl BlkState {
         self.wait_for_completion(h, target)?;
         core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
 
-        // SAFETY: same owned bounce block; STATUS_OFF is its in-bounds status
-        // byte. `wait_for_completion` observed this request's used-ring entry,
-        // so the device has finished writing the byte, and the Acquire fence
-        // above orders that device write before this load.
-        let status = unsafe { core::ptr::read_volatile(bounce.add(STATUS_OFF)) };
+        let mut in_header: InHeader = [0u8; VIRTIO_BLK_MAX_IN_HEADER_BYTES];
+        // SAFETY: same owned bounce block; the in-header occupies
+        // STATUS_OFF..STATUS_OFF+in_len, which `in_header_bytes` caps at
+        // VIRTIO_BLK_MAX_IN_HEADER_BYTES and DATA_OFF places a whole page
+        // past. The used-ring entry retired the chain, so the device has
+        // finished writing every one of those bytes.
+        unsafe {
+            for i in 0..in_len {
+                in_header[i] = core::ptr::read_volatile(bounce.add(STATUS_OFF + i));
+            }
+        }
+        // The status is the LAST byte of the in-header at every width, which
+        // is what lets one decode path serve the plain and the wide form.
+        let status = in_header[in_len - 1];
         if let Err(st) = blk::decode_status(status) {
             #[cfg(feature = "debug-boot")]
             log_status_error(type_, sector, data_len, status);
@@ -129,7 +143,7 @@ impl BlkState {
                 }
             }
         }
-        Ok(())
+        Ok(in_header)
     }
 
     /// Issue the device barrier, or skip it when the negotiated cache mode is
@@ -154,6 +168,20 @@ impl BlkState {
 
 impl BlockDevice for BlkState {
     fn block_size(&self) -> u32 { self.blk_size }
+
+    /// The topology, carrying the negotiated cache mode as a queue FACT.
+    ///
+    /// Publishing it is what lets a filesystem above decide whether its commit
+    /// record needs a barrier. Without it the layer that sequences durability
+    /// reads "no volatile cache" for a write-back device and issues nothing, so
+    /// an `fsync` returns while the data is still in the device's cache — the
+    /// driver knowing the mode privately is not enough. Forced-unit-access is
+    /// deliberately absent: virtio has no per-request equivalent, so the
+    /// promise is kept by a flush after the write instead.
+    /// # C: O(1)
+    fn queue_limits(&self) -> KResult<block::QueueLimits> {
+        topology(self.blk_size, self.write_cache)
+    }
 
     fn capacity_blocks(&self) -> u64 {
         blk::capacity_blocks(self.capacity, self.blk_size)
@@ -195,21 +223,33 @@ impl BlockDevice for BlkState {
                 } else {
                     blk::VIRTIO_BLK_T_OUT
                 };
+                // A run that crosses a zone boundary is CUT here, never sent
+                // whole: its tail would land at the head of a zone whose
+                // write pointer is somewhere else, which a host-managed drive
+                // refuses. The reference expresses the same rule as a queue
+                // limit the block layer splits on; with no splitter above,
+                // the cut belongs here. `zone_sectors` is 0 on a drive with
+                // no zones, which imposes no boundary at all.
+                let zone_sectors = self.zone_sectors();
                 let mut tmp: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
-                let mut chunk_idx = 0u64;
-                while let Some((chunk_base, chunk_sectors, off)) = blk::chunk_plan(
-                    base_sector, total_sectors, chunk_idx, blk::BOUNCE_DATA_SECTORS,
+                let mut at = base_sector;
+                let mut left = total_sectors;
+                let mut off = 0usize;
+                while let Some(chunk_sectors) = virtio::blk::zoned::zone_bounded_chunk(
+                    at, left, blk::BOUNCE_DATA_SECTORS, zone_sectors,
                 ) {
                     let clen = chunk_sectors as usize * sec;
                     tmp.resize(clen, 0);
                     if req.op == BlockOp::Write {
                         tmp.copy_from_slice(&req.buffer[off..off + clen]);
                     }
-                    self.submit(type_, chunk_base, &mut tmp[..clen])?;
+                    self.submit(type_, at, &mut tmp[..clen])?;
                     if req.op == BlockOp::Read {
                         req.buffer[off..off + clen].copy_from_slice(&tmp[..clen]);
                     }
-                    chunk_idx += 1;
+                    at += chunk_sectors;
+                    left -= chunk_sectors;
+                    off += clen;
                 }
                 Ok(())
             }
@@ -236,14 +276,69 @@ impl BlockDevice for BlkState {
     fn poll_completions(&self) -> usize {
         self.queues().filter(|q| poll_drains(q)).map(|q| self.drain_owned_completions(q)).sum()
     }
+
+    /// # C: O(zones)
+    fn zone_report(&self) -> Option<block::zoned::ZoneReport> { self.read_zone_report() }
+
+    /// # C: one request
+    fn zone_mgmt(&self, op: block::zoned::ZoneMgmtOp, start_block: u64) -> KResult<()> {
+        self.issue_zone_mgmt(op, start_block)
+    }
+
+    /// # C: one request
+    fn zone_append(&self, start_block: u64, buffer: &[u8]) -> KResult<u64> {
+        self.issue_zone_append(start_block, buffer)
+    }
 }
 
 /// `S_UNSUPP` is an unsupported-operation answer, not an I/O error. Collapsing
 /// both into `Eio` is what made a flush issued against an un-negotiated
 /// `F_FLUSH` indistinguishable from a real media failure. # C: O(1)
 pub(super) fn block_error_for_status(status: u8) -> BlockError {
-    match status {
-        blk::VIRTIO_BLK_S_UNSUPP => BlockError::Eopnotsupp,
-        _ => BlockError::Eio,
+    zoned::zone_block_error(status)
+}
+
+/// The queue topology this device publishes, as a function of the two facts it
+/// has: its logical block size and its post-negotiation cache mode.
+///
+/// Ungated and separate from the trait method so the mapping can be checked
+/// without a live device. What it decides is not cosmetic: the layer that
+/// sequences a filesystem's durability promises reads `WRITE_CACHE` from here,
+/// and a device that failed to publish it would have every barrier above it
+/// optimised away — an `fsync` would return with the data still in the device's
+/// cache. `FUA` is deliberately never set: virtio has no per-request
+/// forced-unit-access, so that promise is kept by a flush after the write.
+/// # C: O(1)
+pub(super) fn topology(blk_size: u32, write_cache: bool) -> KResult<block::QueueLimits> {
+    let mut f = block::QueueFeatures::empty();
+    if write_cache { f |= block::QueueFeatures::WRITE_CACHE; }
+    Ok(block::QueueLimits::for_logical_block_size(blk_size)?.with_features(f))
+}
+
+#[cfg(test)]
+mod topology_tests {
+    use super::topology;
+
+    /// A write-back device must SAY it holds acknowledged writes in a cache.
+    /// The cache mode is already known privately; publishing it is what lets a
+    /// filesystem's commit record be fenced.
+    #[test]
+    fn a_writeback_device_publishes_its_volatile_cache() {
+        let l = topology(512, true).unwrap();
+        assert!(l.write_cache());
+        assert!(!l.fua(), "virtio has no per-request forced unit access to claim");
+    }
+
+    /// A write-through device has no cache to empty, and saying it had one would
+    /// cost a barrier per commit for nothing.
+    #[test]
+    fn a_writethrough_device_publishes_no_cache() {
+        assert!(!topology(4096, false).unwrap().write_cache());
+    }
+
+    #[test]
+    fn the_logical_block_size_is_carried_through_either_way() {
+        assert_eq!(topology(4096, true).unwrap().logical_block_size(), 4096);
+        assert_eq!(topology(512, false).unwrap().logical_block_size(), 512);
     }
 }

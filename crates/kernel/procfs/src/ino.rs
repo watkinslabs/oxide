@@ -20,6 +20,7 @@ static NEXT_DYNAMIC_INO: RegionAllocator = RegionAllocator::new(&PROCFS_DYNAMIC)
 /// Per-pid inode tags for entries whose identity is shared across modules.
 pub(crate) const PID_INO_TAG_PERSONALITY: u64 = 0x2e;
 pub(crate) const PID_INO_TAG_PROJID_MAP: u64 = 0x30;
+pub(crate) const PID_INO_TAG_WCHAN: u64 = 0x31;
 
 /// Next inode number for a procfs entry built at runtime — sysctl files and
 /// directories, per-task attr files. # C: O(1)

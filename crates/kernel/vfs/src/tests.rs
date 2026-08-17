@@ -20,6 +20,7 @@ mod dentry_paths;
 mod file_fd;
 mod write_hint;
 mod superblock_ownership;
+mod statfs_at;
 
 // ---------------------------------------------------------------------------
 // In-memory test inode — minimal Regular + Directory inodes for the FS surface

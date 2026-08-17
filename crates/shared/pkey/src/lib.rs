@@ -9,6 +9,8 @@
 //           they map to.
 // - rsa:    the RSA key and the raw primitive.
 // - pkcs1:  EME/EMSA v1.5 encodings and the DigestInfo prefix table.
+// - pkcs7:  detached SignedData signatures, and the trust store a chain must
+//           reach.
 // - x509:   certificate parsing, including the name rendering the key
 //           subsystem describes a certificate by.
 // - pkcs8:  private-key blob parsing.
@@ -30,6 +32,7 @@ pub mod der;
 pub mod key;
 pub mod oid;
 pub mod pkcs1;
+pub mod pkcs7;
 pub mod pkcs8;
 pub mod rsa;
 pub mod x509;

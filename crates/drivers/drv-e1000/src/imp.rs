@@ -439,10 +439,11 @@ pub(crate) fn probe_common(parent: &Arc<drv::Device>, dma_mask: u64, profile: cr
         let bar = resource.start;
         let io_base = if profile.legacy_io_reset { match bars[1] { pci::Bar::Io { port } => u16::try_from(port).ok(), _ => None } } else { None };
         if bar == 0 { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); }
-        // SAFETY: BAR0 is owned by this successfully matched PCI function and maps its register file.
-        // SAFETY: BAR0 comes from the matched PCI function and the driver takes exclusive ownership.
         let bytes = resource.end.checked_sub(resource.start).and_then(|bytes| bytes.checked_add(1)).ok_or(drv::Error::ProbeFailed)?;
         let pages = (bar & (PAGE - 1)).checked_add(bytes).and_then(|bytes| bytes.checked_add(PAGE - 1)).and_then(|bytes| bytes.checked_div(PAGE)).ok_or(drv::Error::ProbeFailed)?;
+        // SAFETY: BAR0 belongs to the PCI function this probe matched, so no other
+        // driver owns the window; `pages` covers exactly the resource range the PCI
+        // core reported, rounded out to the page the unaligned base sits in.
         let mmio = unsafe { mmio_map::map_owned(bar & !(PAGE - 1), pages) };
         let flash = if profile.pch && !profile.lpt { match crate::pch::FlashBar::map(parent) { Some(flash) => Some(flash), None => { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); } } } else { None };
         let (controller, mac) = match configure_rings(mmio, io_base, bdf, dma_mask, profile, flash) { Some(value) => value, None => { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); } };

@@ -144,6 +144,16 @@ pub struct InetSocket {
     /// The socket's canonical open-file description.  AF_UNIX policy checks
     /// read its immutable `f_cred`, just as the kernel socket path does.
     pub(crate) file: Spinlock<alloc::sync::Weak<vfs::File>, SockLockClass>,
+    /// The socket's own security label, taken from the creating task when the
+    /// socket is created and never changed afterwards.
+    ///
+    /// Fixed at creation, not read at use: a socket passed to another process
+    /// over `SCM_RIGHTS`, or one whose creator later relabelled itself, still
+    /// carries the label it was created with — which is the label a peer
+    /// recorded when it connected.
+    ///
+    /// `security::network::NO_LABEL` when nothing labels sockets.
+    pub(crate) security_sid: core::sync::atomic::AtomicU32,
 }
 
 impl core::ops::Deref for InetSocket {
@@ -162,6 +172,11 @@ impl InetSocket {
         // Published here, by the one bind that owns the association, so the
         // socket and its transport cannot name different descriptions.
         if let SockKind::TcpConn(entry) = &*self.kind.lock() { entry.register_file(file); }
+    }
+
+    /// This socket's own security label. # C: O(1)
+    pub fn security_label(&self) -> u32 {
+        self.security_sid.load(core::sync::atomic::Ordering::Acquire)
     }
 
     /// Landlock domain in this socket's retained file credentials. # C: O(1)

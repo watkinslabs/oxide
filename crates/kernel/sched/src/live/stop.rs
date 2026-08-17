@@ -16,7 +16,24 @@ use core::sync::atomic::Ordering;
 
 use crate::exit::notify::{cldstop_notify, Cldstop, ParentSigchld};
 use crate::jobctl::{self, NotifyTarget, StopKind};
+use crate::task::Task;
 use crate::TaskState;
+
+/// Publish the stop: the state the picker refuses to re-enqueue, plus the
+/// source position `/proc/<pid>/wchan` reports while the task sits here.
+///
+/// A stop does NOT go through any wait site — it flips state and schedules
+/// directly — so without this the last predicate wait the task blocked in
+/// would still be recorded, and `wchan` would name a sleep the task left long
+/// ago. The reference has no such hazard: it unwinds the stopped task's stack
+/// on demand and names its stop function. Recording the stop's own position is
+/// that same answer.
+/// # C: O(1)
+#[track_caller]
+fn enter_stopped(cur: &Task) {
+    cur.park_site.set(core::panic::Location::caller());
+    cur.set_state(TaskState::Stopped);
+}
 
 /// Flip current to Stopped + schedule away. Loops until SIGCONT
 /// (or any signal flipping state back to Runnable) wakes us.
@@ -67,7 +84,7 @@ pub fn stop_until_cont_code(code: u32, kind: StopKind) {
         StopKind::Ptrace     => jobctl::TRACED,
         StopKind::JobControl => jobctl::STOPPED,
     }, Ordering::Release);
-    cur.set_state(TaskState::Stopped);
+    enter_stopped(cur);
     notify_stop(cur, kind, sig as u32);
     loop {
         // SAFETY: process context, preempt-off, single-CPU; same as voluntary `schedule()` per `13§8`.
@@ -84,7 +101,7 @@ pub fn stop_until_cont_code(code: u32, kind: StopKind) {
                                  Ordering::Release);
                 cur.stop_code.store(code, Ordering::Release);
                 cur.stop_pending.store(true, Ordering::Release);
-                cur.set_state(TaskState::Stopped);
+                enter_stopped(cur);
                 notify_stop(cur, kind, sig as u32);
                 continue;
             }
@@ -239,4 +256,33 @@ fn notify_parent_cldstop(cur: &crate::Task, why: Cldstop, status_sig: u32, to: N
             crate::sigsend::SigSource::Info(info), crate::sigsend::SigTarget::Process);
     }
     if n.wake_parent { crate::live::zombies::wake_wait4_parent(parent.tid); }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::SchedClass;
+
+    /// A stop is not a wait: it flips state and schedules directly, so unless
+    /// the stop path names itself, `/proc/<pid>/wchan` keeps reporting the last
+    /// predicate wait the task blocked in — a sleep it has long since left.
+    #[test]
+    fn a_stop_names_itself_rather_than_the_last_wait_the_task_left() {
+        let t = Task::new(9931, "stopper", SchedClass::Normal { weight: 1024 });
+        // Stand in for the stale site every task carries after any earlier wait.
+        t.park_site.set(core::panic::Location::caller());
+        let stale = t.park_site.get().expect("precondition: a site is recorded");
+        assert!(stale.file().ends_with("stop.rs"));
+
+        enter_stopped(&t);
+
+        assert_eq!(t.state(), TaskState::Stopped);
+        let site = t.park_site.get().expect("a stop must record where it parked");
+        assert_ne!(site.line(), stale.line(), "the stale wait site must be replaced");
+        assert!(site.file().ends_with("stop.rs"),
+                "a stopped task's wchan names the stop path, not an old wait");
+        // And the value is publishable: `reportable` admits a stopped task, so
+        // this site is what a reader actually sees.
+        assert!(crate::park_site::reportable(t.state(), false, false));
+    }
 }

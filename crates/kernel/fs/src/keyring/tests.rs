@@ -16,6 +16,9 @@
 // - watch: WATCH_KEY and the records a watcher receives from the real ops.
 // - dh:    DH_COMPUTE — input-key admission, parameter vetting, and the
 //          known-answer exponentiation and key derivation.
+// - verity: the `.fs-verity` keyring — its permissions, the only writer into
+//          it, its link restriction, and that what it holds is what the verity
+//          verifier checks against.
 
 use super::*;
 use super::ops::Ctx;
@@ -30,6 +33,7 @@ mod perm;
 mod pkey;
 mod quota;
 mod rings;
+mod verity;
 mod watch;
 
 /// A caller with fsuid == fsgid == `uid` and no supplementary groups.

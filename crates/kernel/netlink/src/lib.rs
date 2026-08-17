@@ -4,6 +4,8 @@
 // - `groups`: the per-socket multicast-group subscription bitmap.
 // - `membership`: socket-side group subscription + genetlink credentials.
 // - `listeners`: uevent + rtnetlink multicast/unicast listener registries.
+// - `protocols`: which `NETLINK_*` families have a kernel end at all.
+// - `selinux_nl`: `NETLINK_SELINUX` setenforce/policyload notifications.
 // - `netlink_socket`: socket state, dispatch, RX queue, and poll behavior.
 // - `destination`: socket-owned connect destination and default-send state.
 // - `ports`: live namespace/protocol/port-ID ownership and bind collision checks.
@@ -46,6 +48,7 @@ mod destination;
 pub mod admission;
 mod ports;
 mod proc_seq;
+mod protocols;
 mod rcv_skb;
 mod receive;
 mod sockaddr;
@@ -55,6 +58,8 @@ pub mod sol_socket;
 #[cfg(test)]
 mod netlink_tests;
 mod wire;
+
+pub mod selinux_nl;
 
 pub mod genetlink;
 pub mod mcast;
@@ -77,12 +82,14 @@ pub use listeners::{
 };
 pub(crate) use handler::invoke_netfilter;
 pub use ports::{bind_port_id, proc_rows};
+pub use protocols::protocol_registered;
+pub use selinux_nl::{notify_policyload, notify_setenforce, register_selinux_listener};
 pub use proc_seq::{render as render_proc_netlink, ProcRow};
 pub(crate) use ports::{register_port_id, unicast_port};
 pub use netlink_socket::{NETLINK_RCVBUF_DEFAULT, NETLINK_SNDBUF_DEFAULT, NETLINK_SEND_OVERHEAD,
     NetlinkSocket, SendError};
 pub use receive::{ReceiveState, ReceivedDatagram};
-pub use sockflags::{get_answer, nonroot_recv, set_action, GetAnswer, NetlinkFlags, SetAction,
+pub use sockflags::{bind_groups_allowed, get_answer, nonroot_recv, set_action, GetAnswer, NetlinkFlags, SetAction,
     F_BROADCAST_SEND_ERROR, F_CAP_ACK, F_EXT_ACK, F_LISTEN_ALL_NSID, F_RECV_NO_ENOBUFS,
     F_RECV_PKTINFO, F_STRICT_CHK};
 pub use sockaddr::{admit_dest, encode_dest, first_group, nonroot_send, parse_dest,

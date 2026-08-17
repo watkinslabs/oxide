@@ -1,0 +1,12 @@
+[package]
+name = "blockcipher"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Chaining and tweakable modes over any 128-bit block cipher: CBC, CBC with ciphertext stealing (CS3), and XTS."
+
+[lib]
+path = "src/lib.rs"
+
+[lints]
+workspace = true

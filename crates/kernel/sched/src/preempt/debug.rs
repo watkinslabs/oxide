@@ -2,7 +2,7 @@
 // instruction that causes it, instead of minutes later as an unexplained
 // "both CPUs idle, nothing runnable" wedge.
 //
-// Two detectors, covering the two ways the count goes wrong here:
+// Three detectors, covering the ways the count goes wrong here:
 //
 //   * **irq_exit underflow** — `irq_exit()` reached with the HARDIRQ field
 //     already clear. Either an entry path skipped `irq_enter()`, or something
@@ -13,6 +13,13 @@
 //     again. Linux catches the same case in `irq_exit_rcu`'s
 //     `WARN_ONCE(!in_interrupt())`.
 //
+//   * **unpaired decrement** — a subtract deeper than the field it targets,
+//     i.e. one more `preempt_enable` than there were `preempt_disable`s. The
+//     count wraps one below zero, so `schedule()`'s entry increment lands back
+//     at zero and its entry-level check fails on every later attempt while
+//     reporting no interrupt, no IRQ stack and no held lock. The scheduler
+//     repairs that state; only this detector names the site that caused it.
+//
 //   * **idle-with-count** — a CPU about to park in `halt_forever` while
 //     `in_interrupt()` is true. An idle CPU is by construction not inside a
 //     hard IRQ and not serving a bottom half, so a non-zero field there is a
@@ -20,7 +27,7 @@
 //     observed wedge signature into a named failure: the count is readable at
 //     exactly the moment the CPU gives up looking for work.
 //
-// Both latch one-shot per CPU. Each condition, once true, is true on every
+// Each latches one-shot per CPU. Each condition, once true, is true on every
 // subsequent tick — an unlatched detector floods the serial log it exists to
 // produce, and the flood is what would push the boot past its timeout.
 
@@ -38,6 +45,8 @@ static IRQ_EXIT_REPORTED: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(fals
 static IRQ_ENTRY_DEPTH: [AtomicU8; MAX_CPUS] = [const { AtomicU8::new(0) }; MAX_CPUS];
 /// One-shot latch per CPU for the idle-with-count report.
 static IDLE_LEAK_REPORTED: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
+/// One-shot latch per CPU for the preempt-field underflow report.
+static PREEMPT_SUB_REPORTED: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
 
 /// Take a CPU's one-shot latch. True exactly once per CPU per latch.
 /// # C: O(1)
@@ -93,6 +102,42 @@ pub fn check_irq_exit(pc: u32) {
     klog::write_raw(b" (HARDIRQ field already clear: the sub borrows into SOFTIRQ and pins in_interrupt() true)\n");
 }
 
+/// Pure decision: subtracting `n` borrows out of the PREEMPT field (or out of
+/// the word entirely), i.e. one more decrement is being paid than was ever
+/// taken. # C: O(1)
+pub fn is_preempt_sub_underflow(pc: u32, n: u32) -> bool {
+    pc < n || (pc & super::PREEMPT_MASK) < (n & super::PREEMPT_MASK)
+}
+
+/// Called from the count-subtract funnel BEFORE the sub, with the live count.
+///
+/// An unpaired decrement wraps the count one below zero. From then on every
+/// `schedule()` entry increment lands back at zero, so the scheduler's own
+/// entry-level check fails on every attempt while reporting a count with no
+/// atomicity bits set — the "atomic context with nothing held" shape. The
+/// scheduler repairs that state, but nothing else names the site that caused
+/// it, and the caller location is the whole answer.
+#[inline(never)]
+/// # C: O(1)
+#[track_caller]
+pub fn check_preempt_sub(pc: u32, n: u32) {
+    if !is_preempt_sub_underflow(pc, n) { return; }
+    let cpu = this_cpu();
+    if !take(&PREEMPT_SUB_REPORTED, cpu) { return; }
+    let caller = core::panic::Location::caller();
+    klog::write_raw(b"\n[PREEMPT-LEAK] unpaired decrement cpu=");
+    klog::write_dec_u64(cpu as u64);
+    klog::write_raw(b" preempt_count=0x");
+    klog::write_hex_u64(pc as u64);
+    klog::write_raw(b" sub=0x");
+    klog::write_hex_u64(n as u64);
+    klog::write_raw(b" caller=");
+    klog::write_raw(caller.file().as_bytes());
+    klog::write_raw(b":");
+    klog::write_dec_u64(caller.line() as u64);
+    klog::write_raw(b" (count wraps below zero: every later schedule() reads a false zero)\n");
+}
+
 /// Called from the idle loop just before parking, with the live count.
 /// # C: O(1)
 pub fn check_idle(pc: u32) {
@@ -115,6 +160,7 @@ pub fn _test_reset() {
     for l in IRQ_EXIT_REPORTED.iter()  { l.store(false, Ordering::Release); }
     for d in IRQ_ENTRY_DEPTH.iter() { d.store(0, Ordering::Release); }
     for l in IDLE_LEAK_REPORTED.iter() { l.store(false, Ordering::Release); }
+    for l in PREEMPT_SUB_REPORTED.iter() { l.store(false, Ordering::Release); }
 }
 
 #[cfg(test)]
@@ -159,6 +205,22 @@ mod tests {
         assert!(take(&IDLE_LEAK_REPORTED, 0));
         _test_reset();
         assert!(take(&IRQ_EXIT_REPORTED, 0));
+    }
+
+    #[test]
+    fn a_decrement_deeper_than_the_field_is_an_underflow() {
+        // The live wedge's seed: one enable with no matching disable.
+        assert!(is_preempt_sub_underflow(0, 1));
+        // Ordinary nesting is not.
+        assert!(!is_preempt_sub_underflow(1, 1));
+        assert!(!is_preempt_sub_underflow(2, 1));
+        // A preempt-field decrement under a held softirq field still borrows
+        // out of the field it targets, even though the word stays positive.
+        assert!(is_preempt_sub_underflow(SOFTIRQ_OFFSET, 1));
+        // The hardirq-field subtract is the other detector's business, and
+        // does not read as a preempt-field underflow while a level is held.
+        assert!(!is_preempt_sub_underflow(HARDIRQ_OFFSET, HARDIRQ_OFFSET));
+        assert!(is_preempt_sub_underflow(0, HARDIRQ_OFFSET));
     }
 
     #[test]

@@ -20,6 +20,7 @@ fatfs   = { path = "../fatfs" }
 overlayfs = { path = "../overlayfs" }
 exfatfs = { path = "../exfatfs" }
 ntfs3   = { path = "../ntfs3" }
+f2fs    = { path = "../f2fs" }
 drv-loop = { path = "../../drivers/drv-loop" }
 boot-info = { path = "../../shared/boot-info" }
 cpu       = { path = "../cpu" }

@@ -136,7 +136,8 @@ impl Mount {
             batch: false,
             undo: Vec::new(),
         };
-        let m = Self { dev, sb, state: sync::Spinlock::new(state), quota_sb: sync::Spinlock::new(alloc::sync::Weak::new()),
+        let err = sync::Spinlock::new(crate::errstat::ErrRecord::parse(&sb_bytes));
+        let m = Self { dev, sb, state: sync::Spinlock::new(state), quota_sb: sync::Spinlock::new(alloc::sync::Weak::new()), err,
                        #[cfg(not(target_os = "oxide-kernel"))]
                        faults: super::faults::HostedFaults::new(),
                        txn_owner: ::core::sync::atomic::AtomicU64::new(0),

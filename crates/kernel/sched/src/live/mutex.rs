@@ -88,6 +88,7 @@ impl<T> Mutex<T> {
     /// sleep — see the module note.
     /// # C: O(1) uncontended; one context switch per contended round
     /// # Sleeps: yes, while another task owns it
+    #[track_caller]
     pub unsafe fn lock(&self) -> MutexGuard<'_, T> {
         loop {
             let mut g = self.gate.lock();
@@ -101,6 +102,7 @@ impl<T> Mutex<T> {
             // across the sleep. `mutex_lock` does not have an interrupted
             // return path, so its wait class is uninterruptible.
             unsafe { self.wait.prepare_to_wait(); }
+            crate::park_site::note(core::panic::Location::caller());
             drop(g);
             // SAFETY: parked on this mutex's wait list holding no lock.
             unsafe { super::schedule(); }

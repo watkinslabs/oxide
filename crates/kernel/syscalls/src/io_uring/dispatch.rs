@@ -9,7 +9,10 @@
 //   fdres    — fixed files, direct descriptors and provided-buffer selection
 //   router   — opcode → handler
 //   rw       — read/write family, fixed buffers, sync and size ops
+//   rw_vec   — a vectored transfer whose segments address a registered buffer
 //   fs_ops   — path, descriptor and extended-attribute operations
+//   splice_ops — moving bytes between two descriptions
+//   proc_ops — waiting on a futex word or on a child
 //   net_ops  — socket operations
 //   net_send — one message gathered from several pieces (bundle, vector,
 //              registered buffer)
@@ -23,7 +26,10 @@
 #[path = "dispatch/fdres.rs"]    pub mod fdres;
 #[path = "dispatch/router.rs"]   pub mod router;
 #[path = "dispatch/rw.rs"]       pub mod rw;
+#[path = "dispatch/rw_vec.rs"]   pub mod rw_vec;
 #[path = "dispatch/fs_ops.rs"]   pub mod fs_ops;
+#[path = "dispatch/splice_ops.rs"] pub mod splice_ops;
+#[path = "dispatch/proc_ops.rs"] pub mod proc_ops;
 #[path = "dispatch/net_ops.rs"]  pub mod net_ops;
 #[path = "dispatch/net_send.rs"] pub mod net_send;
 #[path = "dispatch/net_recv.rs"] pub mod net_recv;

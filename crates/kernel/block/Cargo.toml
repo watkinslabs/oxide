@@ -24,6 +24,13 @@ drv      = { path = "../../drivers/drv" }
 vfs      = { path = "../../kernel/vfs" }
 bitflags = { version = "2", default-features = false }
 crc      = { path = "../../shared/crc" }
+# Inline encryption (blk-crypto): the software fallback performs the same
+# constructions a controller would, so the block layer needs the ciphers
+# directly rather than through any filesystem.
+crypt    = { path = "../../shared/crypt" }
+aes      = { path = "../../shared/aes" }
+sm4      = { path = "../../shared/sm4" }
+adiantum = { path = "../../shared/adiantum" }
 
 [features]
 default = []
@@ -34,6 +41,12 @@ hosted  = ["sched/hosted"]
 # a spinlock model would hide scheduling-while-atomic regressions.
 [target.'cfg(not(target_os = "oxide-kernel"))'.dependencies]
 sched = { path = "../sched", features = ["hosted"] }
+
+# kflushd's park deadline and the age a dirty mapping is measured by. Only the
+# kernel build has a thread to park; a hosted test drives the writeback pass
+# directly and supplies its own clock through `pagecache::install_clock`.
+[target.'cfg(target_os = "oxide-kernel")'.dependencies]
+timekeeper = { path = "../timekeeper" }
 
 [lints]
 workspace = true

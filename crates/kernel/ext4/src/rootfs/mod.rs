@@ -12,7 +12,7 @@
 
 mod state;
 mod evict;
-mod fserror;
+pub(crate) mod fserror;
 mod inode;
 mod ops;
 mod quota;

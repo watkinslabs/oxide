@@ -16,6 +16,7 @@
 //   subject     — the SID a write to this filesystem is checked against
 //   format      — every read/write byte format, as pure functions
 //   nodes       — one module per node group: handlers plus their inodes
+//   notify      — what a write announces to the userspace AVC, and when
 //   root        — the node tree, its population and its per-load rebuild
 //   fs_impl     — the mountable filesystem
 
@@ -23,12 +24,15 @@
 #![forbid(unsafe_code)]
 
 extern crate alloc;
+#[cfg(test)]
+extern crate std;
 
 pub mod ops;
 pub mod server;
 pub mod subject;
 pub mod format;
 pub mod nodes;
+pub mod notify;
 pub mod root;
 pub mod fs_impl;
 

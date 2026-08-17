@@ -120,55 +120,92 @@ impl Encoder {
     }
 
     /// Compress `src` into a complete frame appended to `out`.
+    ///
+    /// Input past one block's ceiling becomes SEVERAL blocks in ONE frame. A
+    /// compressing filesystem hands over a whole cluster, which reaches a
+    /// megabyte -- eight times what a block may carry -- so a one-block-only
+    /// encoder is usable for the page-sized caller and nothing else.
     /// # C: O(len * level depth)
     pub fn compress_frame(&mut self, src: &[u8], out: &mut Vec<u8>) -> Result<()> {
-        if src.len() > BLOCK_SIZE_MAX { return Err(Error::BlockTooLarge); }
         frame::write_header(src.len() as u64, false, self.dict_id, out);
         if src.is_empty() {
             frame::write_block_header(true, BlockKind::Raw, 0, out);
             return Ok(());
         }
-        // A page of one repeated byte is the single most common compressible
-        // case on the swap path, and RLE encodes it in one byte.
-        if src.iter().all(|&b| b == src[0]) {
-            frame::write_block_header(true, BlockKind::Rle, src.len(), out);
-            out.push(src[0]);
-            return Ok(());
-        }
-        self.parse(src);
-        self.emit_body()?;
-        // Only worth a compressed block if it actually beat the bytes.
-        if self.body.len() < src.len() {
-            frame::write_block_header(true, BlockKind::Compressed, self.body.len(), out);
-            out.extend_from_slice(&self.body);
-        } else {
-            frame::write_block_header(true, BlockKind::Raw, src.len(), out);
-            out.extend_from_slice(src);
-        }
-        Ok(())
-    }
-
-    /// Greedy LZ77 parse into `self.literals` and `self.seqs`.
-    ///
-    /// The search runs over `dictionary ++ input` so a match may reach into the
-    /// dictionary, but only positions inside the input produce sequences. With
-    /// no dictionary the prefix is empty and this is a plain parse.
-    fn parse(&mut self, src: &[u8]) {
-        self.literals.clear();
-        self.seqs.clear();
+        // The whole input is hashed ONCE and the parse then walks it block by
+        // block, so a match may reach back across a block boundary. That is
+        // legal precisely because the frame is single-segment: its window is
+        // its whole content, so no offset this produces can outrun it.
         self.window.clear();
         self.window.extend_from_slice(&self.dict);
         self.window.extend_from_slice(src);
         let base = self.dict.len();
-        let window = &self.window[..];
-        let mut finder = Finder::new(window.len(), self.level.depth());
+        let mut finder = Finder::new(self.window.len(), self.level.depth());
         // Prime with the dictionary: every position in it becomes a candidate,
         // and none of them can emit a sequence because the parse starts after.
-        for i in 0..base { finder.insert(window, i); }
-        let mut at = base;
-        let mut lit_start = base;
-        while at + MIN_MATCH <= window.len() {
-            match finder.find(window, at) {
+        for i in 0..base { finder.insert(&self.window, i); }
+
+        let mut at = 0usize;
+        while at < src.len() {
+            let n = (src.len() - at).min(BLOCK_SIZE_MAX);
+            let last = at + n == src.len();
+            self.emit_block(base + at, base + at + n, last, &mut finder, out)?;
+            at += n;
+        }
+        Ok(())
+    }
+
+    /// Emit one block covering `window[from..to]`, choosing among the three
+    /// block types by which is smallest.
+    fn emit_block(&mut self, from: usize, to: usize, last: bool, finder: &mut Finder,
+        out: &mut Vec<u8>) -> Result<()>
+    {
+        let n = to - from;
+        // A block of one repeated byte is the most common compressible case,
+        // and RLE spends a single byte on it.
+        let first = self.window[from];
+        if self.window[from..to].iter().all(|&b| b == first) {
+            frame::write_block_header(last, BlockKind::Rle, n, out);
+            out.push(first);
+            // The run's positions still enter the chain: a LATER block may
+            // match back into this one, and the decoder will honour that
+            // offset because the window covers the whole frame.
+            for i in from..to { finder.insert(&self.window, i); }
+            return Ok(());
+        }
+        self.parse(from, to, finder);
+        self.emit_body()?;
+        // Only worth a compressed block if it actually beat the bytes.
+        if self.body.len() < n {
+            frame::write_block_header(last, BlockKind::Compressed, self.body.len(), out);
+            out.extend_from_slice(&self.body);
+        } else {
+            frame::write_block_header(last, BlockKind::Raw, n, out);
+            out.extend_from_slice(&self.window[from..to]);
+        }
+        Ok(())
+    }
+
+    /// Greedy LZ77 parse of `window[from..to]` into `self.literals`/`self.seqs`.
+    ///
+    /// The finder spans the WHOLE window, so a match may reach into the
+    /// dictionary or into an earlier block. A match may not reach FORWARD past
+    /// `to`: a block's sequences must reproduce exactly that block, and a match
+    /// running into the next block would make the decoder's literal count and
+    /// the block's declared size disagree. The search naturally extends a run
+    /// to the end of the window, so the length is clamped here rather than
+    /// discovered later.
+    fn parse(&mut self, from: usize, to: usize, finder: &mut Finder) {
+        self.literals.clear();
+        self.seqs.clear();
+        let window = &self.window[..];
+        let mut at = from;
+        let mut lit_start = from;
+        while at + MIN_MATCH <= to {
+            let found = finder.find(window, at)
+                .map(|m| Match { distance: m.distance, length: m.length.min(to - at) })
+                .filter(|m| m.length >= MIN_MATCH);
+            match found {
                 Some(Match { distance, length }) => {
                     self.literals.extend_from_slice(&window[lit_start..at]);
                     self.seqs.push(Seq {
@@ -188,7 +225,11 @@ impl Encoder {
                 }
             }
         }
-        self.literals.extend_from_slice(&window[lit_start..]);
+        // The tail is too short to start a match but is still a candidate for
+        // the blocks that follow, so it enters the chain even though it emits
+        // no sequence.
+        for i in at..to { finder.insert(window, i); }
+        self.literals.extend_from_slice(&window[lit_start..to]);
     }
 
     /// Serialise literals + sequences into `self.body`.
@@ -295,11 +336,12 @@ pub fn compress_into(src: &[u8], dst: &mut [u8], level: Level) -> Result<usize> 
 }
 
 /// Largest frame `compress` can produce for `len` input bytes: the raw-block
-/// fallback plus its headers.
+/// fallback plus its headers, one header per block the input needs.
 /// # C: O(1)
 pub fn max_compressed_len(len: usize) -> usize {
     const MAX_FRAME_HEADER: usize = 4 + 1 + 4 + 8;
-    MAX_FRAME_HEADER + BLOCK_HEADER_LEN + len
+    let blocks = len.div_ceil(BLOCK_SIZE_MAX).max(1);
+    MAX_FRAME_HEADER + blocks * BLOCK_HEADER_LEN + len
 }
 
 #[cfg(test)]

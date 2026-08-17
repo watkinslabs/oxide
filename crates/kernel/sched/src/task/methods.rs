@@ -418,6 +418,7 @@ impl Task {
             set_child_tid: AtomicU64::new(0),
             restart_block: super::restart::RestartBlock::new(),
             vfork_pending: AtomicBool::new(false),
+            park_site: crate::park_site::ParkSite::new(),
             namespaces:      Spinlock::new(Some(TaskNamespaces::initial())),
             traced_by:       AtomicU32::new(0),
             ptrace_options:  AtomicU32::new(0),

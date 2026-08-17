@@ -67,6 +67,12 @@ pub struct Volume<S: SectorSource> {
     pub(crate) opts: Options,
     pub(crate) label: Vec<u16>,
     pub(crate) volume_flags: u16,
+    /// Whether this volume needs a check — it was found dirty when it was
+    /// loaded. Kept apart from [`Self::volume_flags`] because a writable mount
+    /// sets the dirty flag itself and a clean unmount clears it again: the
+    /// flag says what the volume looks like right now, and this says what it
+    /// looked like before anybody here touched it.
+    pub(crate) real_dirty: bool,
     pub(crate) version: (u8, u8),
     pub(crate) writable: bool,
     /// Where the next cluster allocation starts looking.
@@ -98,6 +104,7 @@ impl<S: SectorSource> Volume<S> {
             opts,
             label: Vec::new(),
             volume_flags: 0,
+            real_dirty: false,
             version: (0, 0),
             writable: false,
             cluster_hint: 0,
@@ -186,6 +193,8 @@ impl<S: SectorSource> Volume<S> {
                         self.volume_flags =
                             u16::from_le_bytes([raw[VOLINFO_OFF_FLAGS],
                                                 raw[VOLINFO_OFF_FLAGS + 1]]);
+                        // Recorded before this mount can set the flag itself.
+                        if self.volume_flags & VOLUME_FLAG_DIRTY != 0 { self.real_dirty = true; }
                     }
                 }
             }
@@ -210,6 +219,9 @@ impl<S: SectorSource> Volume<S> {
 
     /// Whether the volume's last owner left it dirty. # C: O(1)
     pub fn was_dirty(&self) -> bool { self.volume_flags & VOLUME_FLAG_DIRTY != 0 }
+
+    /// Whether the volume needs a check, whatever its flag says now. # C: O(1)
+    pub fn real_dirty(&self) -> bool { self.real_dirty }
 
     /// Records the MFT holds. # C: O(1)
     pub fn mft_records(&self) -> u64 { self.mft_records }
@@ -267,3 +279,7 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/write.rs"]
 mod write_tests;
+
+#[cfg(test)]
+#[path = "tests/volume_meta.rs"]
+mod meta_tests;
