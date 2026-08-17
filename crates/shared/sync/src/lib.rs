@@ -97,6 +97,14 @@ decl_lock_class! {
     Timer        =  5,
     Slab         = 10,
     Reclaim      = 15,
+    // Page-cache LRU + dirty-inode lists (`block::pagecache`), the reference's
+    // per-node `lruvec->lru_lock` plus the flusher's dirty-inode list. Ranked
+    // strictly BELOW `Inode` (40) because both reclaim and the flusher walk a
+    // list entry and then take the owning mapping's lock to act on it —
+    // ascending, and never the other way: a mapping never touches these lists
+    // with its own lock held. Ranked above `Reclaim` (15) so PMM reclaim may
+    // call the page-cache shrinker while holding its own reclaim state.
+    PageCacheLru = 16,
     PageTable    = 20,
     AnonVma      = 25,
     // Per-page migration-token state.  Kept above i_mmap/rmap (25) and

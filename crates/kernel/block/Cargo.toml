@@ -42,5 +42,11 @@ hosted  = ["sched/hosted"]
 [target.'cfg(not(target_os = "oxide-kernel"))'.dependencies]
 sched = { path = "../sched", features = ["hosted"] }
 
+# kflushd's park deadline and the age a dirty mapping is measured by. Only the
+# kernel build has a thread to park; a hosted test drives the writeback pass
+# directly and supplies its own clock through `pagecache::install_clock`.
+[target.'cfg(target_os = "oxide-kernel")'.dependencies]
+timekeeper = { path = "../timekeeper" }
+
 [lints]
 workspace = true

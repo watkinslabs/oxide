@@ -357,6 +357,11 @@ pub unsafe fn init_from_boot_info(
 fn install_oom_accounting(pmm: &Pmm<HhdmBacking, KernelIrqGate>) {
     sched::oom::install_managed_pages(pmm.snapshot().managed_pages);
     sched::oom::install_memory_observer(crate::user_as::oom_memory);
+    // Same truth, second consumer: the page cache's dirty thresholds are a
+    // percentage of the machine's managed pages (`17§4.3`), and PMM is the
+    // only thing that knows that number. Installed here rather than counted
+    // again elsewhere.
+    block::pagecache::install_totalram_pages(pmm.snapshot().managed_pages);
 }
 
 /// Get a `&'static` reference to the PMM after `init_from_boot_info`

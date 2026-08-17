@@ -121,7 +121,13 @@ fn spawn_kthreads() {
     // step failed, and `04§4.0` is frozen on a default build emitting no log
     // bytes, so a second unconditional message buys nothing.
     sched::oom::install_oom_zapper(pmm::user_as::evict_foreign_pages_in_range);
+    // kflushd, the third of the periodic reclaim threads: it puts dirty page
+    // cache on the medium once the machine passes its background dirty
+    // threshold, and ages out anything dirty long enough (`17§4.3`). Without
+    // it a dirty page waits for an `fsync` that a writer may never issue, and
+    // reclaim meets pages it is not allowed to drop.
     let reclaim_failed = step("spawn_kswapd", || pmm::spawn_kswapd()).is_err()
+        || step("block::pagecache::spawn_daemons", block::pagecache::spawn_daemons).is_err()
         || step("sched::oom::spawn_oom_reaper", || sched::oom::spawn_oom_reaper()).is_err();
     if reclaim_failed {
         klog::kerror!("fatal: reclaim kthread spawn failed");

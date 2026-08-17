@@ -368,6 +368,13 @@ fn init_pmm_and_arch(info: &BootInfo) {
             count_objects: drv_zram::reclaimable_pages,
             scan_objects: drv_zram::reclaim_pages,
         }).is_ok(), "zram shrinker registration");
+        // The file page cache under memory pressure (`17§4.4`). Reclaim walks
+        // the inactive half of its LRU, writes back a dirty page rather than
+        // dropping it, and frees only clean idle ones.
+        pmm::kassert!(pmm::shrinker::register_shrinker(pmm::shrinker::Shrinker {
+            count_objects: block::pagecache::reclaimable_pages,
+            scan_objects: block::pagecache::shrink,
+        }).is_ok(), "page cache shrinker registration");
     }
     debug_boot! {
         match &pmm {

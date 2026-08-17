@@ -14,16 +14,18 @@
 // can — so a mount that asked for inline crypto never silently gets plaintext.
 // `flags.rs` — the per-request op-flag word: what a submitter says about one
 // request beyond its operation, and the predicate a queue reads it through.
-// `pagecache.rs` — `PageCache` (sync `read_page` / `write_page` /
-// `fsync` / `invalidate`); `CachedPage` with `PG_*` flags.
+// `pagecache.rs` — the file page cache (`17§4`): per-inode radix trees of
+// `CachedPage`, the `PG_LOCKED` bit that collapses a racing miss to one fetch,
+// the per-inode dirty list and machine-wide dirty thresholds `kflushd` acts
+// on, and the two-list LRU reclaim frees clean pages from — never a page
+// carrying a write the medium has not got.
 // `bdev.rs` — the BLOCK-DEVICE page cache: the address space a raw
 // `/dev/<disk>` open reads and writes through, its two-pass writeback, and
 // `sync_bdevs` — the device half of `sync(2)`.
 //
 // The owned-request completion contract is present; individual driver queue
 // engines migrate from their synchronous compatibility path to it. Remaining:
-// writeback daemon (`17§4`), radix-tree, PG_LOCKED waiters, io_uring fixed
-// buffers, and multi-command driver queues.
+// io_uring fixed buffers, and multi-command driver queues.
 
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
