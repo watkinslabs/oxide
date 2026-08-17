@@ -1,5 +1,6 @@
 //! Page-cache tests (`17§7`).
 //!
+//! `query.rs`     — what a mapping holds, and the eviction that is a hint.
 //! `radix.rs`     — the index tree on its own.
 //! `locking.rs`   — `PG_LOCKED`: one fetch per miss however many race it.
 //! `writeback.rs` — the dirty list, the thresholds, `fsync`, the flusher.
@@ -10,6 +11,7 @@
 
 mod fstarget;
 mod locking;
+mod query;
 mod radix;
 mod reclaim;
 mod writeback;

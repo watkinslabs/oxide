@@ -139,6 +139,19 @@ impl<S: SectorSource> Volume<S> {
         for index in 0..blocks {
             let Some(block) = self.dir_block(inode, ino, index)? else { continue };
             let list = deblock::entries(&block, &Layout::block()).map_err(|_| Errno::Eio)?;
+            // The inodes this block names, fetched before any of them is
+            // asked for: a listing is almost always followed by a stat of
+            // everything in it, and the ones written together are adjacent.
+            // The two self-referential names are skipped — the directory's own
+            // inode is in hand and its parent's is one a walk here already
+            // passed through.
+            if self.readdir_ra {
+                let nids: Vec<u32> = list.iter()
+                    .filter(|e| !hash::is_dot_or_dotdot(&e.name))
+                    .map(|e| e.ino)
+                    .collect();
+                self.ra_node_ids(&nids);
+            }
             for e in list { out.push(self.present_entry(&crypt, inode, e)?); }
         }
         Ok(out)

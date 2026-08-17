@@ -236,14 +236,29 @@ impl Builder {
         Volume::mount_with(self.image(), Options::defaults(), false)
     }
 
-    /// The finished image, mounted read-WRITE. # C: O(image bytes)
+    /// The finished image, mounted read-WRITE, with write placement left OUT of
+    /// the picture.
+    ///
+    /// The fixture's main area is eight segments — sixteen megabytes — and a
+    /// real mount of a volume that small arms the whole in-place-update set,
+    /// because a volume with that little room cannot keep an out-of-place writer
+    /// ahead of the cleaner (`crate::place::ipu::mount_policy`). Every test that
+    /// reads an address after a rewrite would then be measuring that tuning
+    /// rather than the thing it was written for, so the fixture arms nothing and
+    /// `tests/placement.rs` mounts the same image WITHOUT this override to prove
+    /// the tuning is live.
+    /// # C: O(image bytes)
     pub fn mount_rw(self) -> Result<Volume<MemImage>, syscall::errno::Errno> {
-        Volume::mount_with(self.image(), Options::defaults(), true)
+        let mut v = Volume::mount_with(self.image(), Options::defaults(), true)?;
+        v.set_ipu_policy(crate::place::bits::DISABLE)?;
+        Ok(v)
     }
 
-    /// The finished image, mounted read-write under `opts`. # C: O(image bytes)
+    /// The same under `opts`, and for the same reason. # C: O(image bytes)
     pub fn mount_opts(self, opts: Options) -> Result<Volume<MemImage>, syscall::errno::Errno> {
-        Volume::mount_with(self.image(), opts, true)
+        let mut v = Volume::mount_with(self.image(), opts, true)?;
+        v.set_ipu_policy(crate::place::bits::DISABLE)?;
+        Ok(v)
     }
 }
 

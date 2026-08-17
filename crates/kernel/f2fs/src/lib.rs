@@ -68,6 +68,7 @@
 //! - `sectrim`:    destroying a file's block contents where they lie.
 //! - `devices`:    the member devices a volume spans, and their address map.
 //! - `zoned`:      what a drive's zones permit, where they dictate placement.
+//! - `place`:      where a write lands: back on its own block, or a fresh one.
 //! - `volume`:     a mounted volume, read and written against a real medium.
 //! - `bg`:         the cleaner and discard threads, and the balance path.
 //! - `mount`:      the VFS-facing filesystem, its inodes and their operations.
@@ -115,6 +116,7 @@ pub mod swap;
 pub mod defrag;
 pub mod moverange;
 pub mod sectrim;
+pub mod place;
 pub mod volume;
 pub mod bg;
 pub mod mount;

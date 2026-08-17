@@ -326,6 +326,29 @@ impl PageCache {
         out
     }
 
+    /// Write back ONE named page through a sink the caller supplies, leaving
+    /// it resident and CLEAN.
+    ///
+    /// [`Self::writeback_with`] for a caller that chooses its pages one at a
+    /// time rather than handing the mapping a count — a filesystem whose flush
+    /// point cares about the ORDER its pages reach the medium in, which no
+    /// batch entry point can express because the mapping picks the batch.
+    ///
+    /// Without this such a caller has to place the bytes itself and then
+    /// invalidate the index to stop the page being written a second time, so
+    /// a page that is now clean and correct is dropped and the next read of it
+    /// goes back to the medium. The page's dirty state is ended HERE, by the
+    /// same claim-and-complete step every other writeback uses.
+    /// # Ctx: process # Sleeps: y # C: O(1 page)
+    pub fn writeback_page_with(&self, inode: InodeId, page_offset: u64, sink: Sink<'_>)
+        -> (usize, KResult<()>) {
+        if !aligned(page_offset) { return (0, Err(BlockError::Einval)); }
+        let Some(map) = self.mapping(inode) else { return (0, Ok(())); };
+        let out = super::writeback::writeback_page_with(&map, index_of(page_offset), sink);
+        if map.nr_dirty() == 0 { map.dirtied_when.store(0, Ordering::Release); }
+        out
+    }
+
     /// Every inode this cache holds a dirty page of — what a whole-filesystem
     /// flush has to visit. Sampled under the inode map's lock and returned by
     /// value, because the flush enters the filesystem and may dirty more.
