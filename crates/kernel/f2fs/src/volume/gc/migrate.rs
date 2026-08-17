@@ -94,11 +94,18 @@ impl<S: SectorSource> Volume<S> {
     /// records the new address there, so there is no second owner to repoint.
     /// That same write releases the old block, which is why a node victim
     /// needs no deferred release.
+    ///
+    /// PLACED at once rather than left dirty, which is what a foreground clean
+    /// does in the reference: the whole point of the move is to empty the
+    /// victim, and a node still in the mapping has not left it. A background
+    /// clean may leave it dirty; this cleaner is only ever the foreground one,
+    /// because it is what a caller with no room left is waiting on.
     /// # C: O(BLKSIZE)
     pub(crate) fn migrate_node(&mut self, nid: u32) -> Result<(), Errno> {
         let n = self.read_node(nid, None)?;
         let kind = self.migrated_node_kind(&n.footer)?;
         self.write_node(nid, n.footer.ino, n.block, kind)?;
+        self.writeback_node(nid)?;
         Ok(())
     }
 

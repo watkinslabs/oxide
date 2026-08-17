@@ -103,8 +103,10 @@ impl<S: SectorSource> Volume<S> {
         // The cleaner moves blocks by ADDRESS. A page written but not yet
         // placed has none, and the move would drop it from the mapping while
         // relocating the block it no longer describes — so every pending
-        // write goes down first, whatever file it belongs to.
-        self.flush_all_data_pages()?;
+        // write goes down first, whatever file it belongs to — nodes as well
+        // as data, because a node the cleaner is about to relocate that is
+        // still only in the node mapping has no address to move.
+        self.sync_data()?;
         self.load_segments()?;
         if segno >= self.sb.segment_count_main { return Err(Errno::Einval); }
         // A log is still appending here; its own summary entries are in memory

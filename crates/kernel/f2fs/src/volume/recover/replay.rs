@@ -79,6 +79,7 @@ impl<S: SectorSource> Volume<S> {
             done.blocks += self.recover_node_data(f.ino, f)?;
             done.nodes += 1;
         }
+        self.open_logs_off_chain(&found)?;
         for f in &found {
             if f.ofs == marks::xattr_node_offset() { continue; }
             self.release_block(f.addr)?;
@@ -123,11 +124,26 @@ impl<S: SectorSource> Volume<S> {
             }
         }
         for &a in &protected { self.update_seg(a, true)?; }
+        Ok(())
+    }
+
+    /// Move every log off the chain, once the chain has been read.
+    ///
+    /// AFTER the replay, where the reference puts it, and for the reference's
+    /// reason: nothing the replay does takes a block. Every node it changes
+    /// goes into the node mapping and every page it writes into the file
+    /// mapping, and both are placed by the checkpoint that closes recovery —
+    /// by which time this has already moved the logs off the chain's blocks.
+    ///
+    /// A log left standing here would append over the chain the NEXT mount
+    /// might still want, and the marking above cannot stop it: a log hands out
+    /// the next block of its own segment by position, not by consulting the
+    /// live map.
+    /// # C: O(chain length)
+    fn open_logs_off_chain(&mut self, found: &[Found]) -> Result<(), Errno> {
         for log in 0..NR_CURSEG_PERSIST_TYPE {
             let segno = self.curseg[log].segno;
-            let stands_on = protected
-                .iter()
-                .any(|&a| self.sb.segno_of(a) == Some(segno));
+            let stands_on = found.iter().any(|f| self.sb.segno_of(f.addr) == Some(segno));
             if stands_on { self.open_segment(log)?; }
         }
         Ok(())

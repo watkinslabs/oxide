@@ -92,6 +92,7 @@ pub mod ioprio;
 pub mod iostat;
 pub mod blockio;
 pub mod writeback;
+pub mod nodeback;
 
 pub use curseg::{Curseg, Kind, Summary};
 pub use dir::DirEntry;
@@ -252,6 +253,11 @@ pub struct Volume<S: SectorSource> {
     /// Interior-mutable for the reason the caches above are: a READ is what
     /// fills it, and a read takes `&self`.
     pub(crate) data_cache: alloc::sync::Arc<crate::filemap::Cache>,
+    /// The NODE blocks this mount has read or changed, keyed by node id
+    /// (`filemap::node`). A node changed here is not on the medium: the
+    /// address is chosen when the page is written back, which is what makes a
+    /// transaction's nodes one run of the log instead of one block per change.
+    pub(crate) node_cache: alloc::sync::Arc<crate::filemap::NodeCache>,
     /// The metadata blocks this mount has read and kept — the checkpoint
     /// packs, both tables and the summary area. Unconditional, unlike the
     /// compressed-block cache above: no mount option turns it off, because

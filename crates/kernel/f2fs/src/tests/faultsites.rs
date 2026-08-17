@@ -63,7 +63,11 @@ fn a_write_to_the_medium_can_be_made_to_fail() {
     let mut v = vol();
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     arm(&v, Fault::WriteIo);
-    assert!(v.write_file(ino, 0, &vec![1u8; BLKSIZE]).is_err(), "the write went through");
+    // Through the flush, because a buffered write reaches no medium: the page
+    // and the node it changes are both placed later, which is the one point
+    // the site can fail at.
+    let out = v.write_file(ino, 0, &vec![1u8; BLKSIZE]).and_then(|_| v.sync_data());
+    assert!(out.is_err(), "the write went through");
 }
 
 #[test]

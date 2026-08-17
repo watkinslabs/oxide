@@ -185,6 +185,12 @@ fn resolving_the_same_inode_twice_reads_the_node_table_once() {
     v.root().unwrap();
     let once = v.counters().iostat.bytes[read];
     assert!(once > 0, "resolving an inode read no metadata at all");
+    // The NODE mapping would answer the second resolution out of its own copy
+    // of the inode block and never reach the table at all, which is a
+    // different mapping's coverage. Dropped, so the question this test asks is
+    // the one it says it asks: does the METADATA mapping hold the table block.
+    let root = v.super_block().root_ino;
+    v.node_cache().forget(root);
     v.root().unwrap();
     assert_eq!(v.counters().iostat.bytes[read], once,
                "the node table was read from the medium twice");

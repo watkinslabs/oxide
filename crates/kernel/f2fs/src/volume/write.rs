@@ -162,12 +162,11 @@ impl<S: SectorSource> Volume<S> {
 
     /// Give back a node the tree could not be made to reach.
     ///
-    /// A node whose parent could not be rewritten is allocated, charged,
-    /// counted and unreachable — nothing can ever find it to free it, and the
-    /// space it holds never comes back. The reference cannot reach that state
-    /// because its parent link is a memory update that does not fail; here the
-    /// link is another out-of-place write, so the node is undone the moment
-    /// the link does not land.
+    /// A node whose parent could not be changed is charged, counted and
+    /// unreachable — nothing can ever find it to free it, and the space it
+    /// holds never comes back. No BLOCK is stranded any more: the node was
+    /// never placed, so what is undone is the id, the counts and the dirty
+    /// page. The reference unwinds the same three things and no fourth.
     /// # C: O(1)
     pub(crate) fn undo_new_node(&mut self, ino: u32, nid: u32) -> Result<(), Errno> {
         self.release_node(nid)?;
@@ -275,75 +274,78 @@ impl<S: SectorSource> Volume<S> {
         Ok(())
     }
 
-    /// Write a node block out of place and record its new address.
+    /// Change a node block: file it in the node mapping, DIRTY.
     ///
-    /// The footer's own forward pointer is stamped with the address the block
-    /// is going to, and an inode's checksum is recomputed last, over the
-    /// finished block — both are inside what the checksum covers.
+    /// Nothing reaches the medium here and no address is chosen. The node's
+    /// identity goes into the footer, an inode's checksum is recomputed over
+    /// the finished block, the id is made live in the node table with no
+    /// address yet, and the bytes are left in the mapping. The segment, the
+    /// log and the address are decided once, later, by `writeback_node` — the
+    /// point of the whole arrangement, because a node changed four times
+    /// between two checkpoints then costs ONE block instead of four, and every
+    /// node a transaction touched lands in one run of the log.
+    ///
+    /// Two stamps deliberately do NOT happen here. The forward pointer names
+    /// where the log goes next, which is not known until a block is taken; and
+    /// the cold mark is stamped from `kind`, so the block's own footer is
+    /// afterwards the only thing that says which log it belongs in.
     /// # C: O(BLKSIZE)
     pub(crate) fn write_node(&mut self, nid: u32, ino: u32, mut block: Vec<u8>, kind: Kind)
-        -> Result<u32, Errno> {
+        -> Result<(), Errno> {
         self.writable_or_err()?;
         if block.len() != BLKSIZE { return Err(Errno::Einval); }
         let old = self.node_addr(nid).unwrap_or(NULL_ADDR);
-        // A node id claimed but not yet written reads as `NEW_ADDR`; counting
-        // only the null case would leave every freshly created node
-        // uncounted, and the checkpoint would under-report the volume.
-        let was_new = crate::node::is_hole(old);
+        // `NEW_ADDR` no longer says on its own that the node is new: it is
+        // also what a node changed and not yet placed reads as. The two are
+        // told apart by the id's own state — an id handed out and not yet made
+        // into a node is PREALLOCATED, and the very next line of this function
+        // is what ends that. Treating a not-yet-placed node as new would
+        // charge, count and re-announce the same node on its second change;
+        // treating a preallocated id as old would leave every node created
+        // since the last checkpoint uncharged and uncounted.
+        let was_new = old == NULL_ADDR || self.nid_unwritten(nid);
         // A rewrite MOVES a block and costs nothing. A new INODE is charged as
         // an inode and not as space — the reference counts the inode itself,
         // never the block it occupies — while every other node costs its owner
-        // one block. That block is PROMISED here and taken up once the log has
-        // handed one out: a log with no room gives the promise back rather
-        // than leaving the owner charged for a node that does not exist.
+        // one block. Charged HERE rather than at writeback, because this is
+        // where the caller can still be told no: a node the caller was told it
+        // had, refused later for space, has nowhere to go back to.
         let owed = was_new && nid != ino;
         if owed { self.reserve_space(ino, BLKSIZE as u64)?; }
-        let sum = Summary { nid, version: 0, ofs_in_node: 0 };
-        let addr = match self.allocate_new_block(kind, sum, old, true) {
-            Ok(addr) => addr,
-            Err(e) => {
+        if was_new {
+            if let Err(e) = self.volume_has_room(true) {
                 if owed { self.release_reserved_space(ino, BLKSIZE as u64)?; }
                 return Err(e);
             }
-        };
+        }
         let f = NODE_FOOTER_OFF;
         block[f + FOOTER_NID..f + FOOTER_NID + 4].copy_from_slice(&nid.to_le_bytes());
         block[f + FOOTER_INO..f + FOOTER_INO + 4].copy_from_slice(&ino.to_le_bytes());
-        block[f + FOOTER_CP_VER..f + FOOTER_CP_VER + 8]
-            .copy_from_slice(&self.cp.version.to_le_bytes());
-        // The chain a crash is recovered from is built here: each node names
-        // the block the log will hand out NEXT, so a walk forward from the
-        // checkpoint's position reaches everything written after it. Stamping
-        // the block's own address instead makes every chain one link long and
-        // no crash tail recoverable. Read after `allocate_block`, which has
-        // already advanced the log and opened a fresh segment if this write
-        // filled one.
-        let next = self.curseg[curseg::log_for(kind, self.opts.active_logs)]
-            .next_addr(self.sb.main_blkaddr);
-        block[f + FOOTER_NEXT_BLKADDR..f + FOOTER_NEXT_BLKADDR + 4]
-            .copy_from_slice(&next.to_le_bytes());
+        // The cold mark is what tells a dnode of a file from a dnode of a
+        // directory once the caller is gone, and the offset already in the
+        // footer tells either from an indirection node. Together they are what
+        // the log is read off at writeback, which is where the reference reads
+        // it from too — so the mark is stamped from `kind` and the other three
+        // bits of the flag word, which carry the recovery marks, are left be.
+        curseg::stamp_node_temp(&mut block, kind);
         if nid == ino { self.seal_inode(&mut block); }
-        // A node block sits in the main area beside file data, so its address
-        // does not say what it is. It is metadata all the same: every data
-        // block under it is unreachable until the node naming it lands.
-        if let Err(e) = self.write_block_flags(addr, &block, block::flags::META) {
-            if owed { self.release_reserved_space(ino, BLKSIZE as u64)?; }
-            return Err(e);
-        }
-        {
-            use crate::stats::iostat::Io;
-            self.io_account(self.io_gc_kind(Io::FsNode, Io::FsGcNode), BLKSIZE as u64, false);
-        }
-        self.nat_dirty.insert(nid, NatEntry { version: 0, ino, block_addr: addr });
         if was_new {
+            self.nat_dirty.insert(nid, NatEntry { version: 0, ino, block_addr: NEW_ADDR });
             // The id is a live node now, so the cache stops holding it: an id
             // left recorded as handed out is one the failure path could give
             // back while a node is using it.
             self.free_nids.alloc_done(nid);
             self.valid_node_count += 1;
+            // The block this node will occupy is counted against the volume
+            // from now, not from writeback. A window in which a promised node
+            // is uncounted is a window in which the volume says it has room it
+            // has already given away.
+            self.charge_reservation();
             if owed { self.claim_space(ino, BLKSIZE as u64)?; }
         }
-        Ok(addr)
+        self.node_cache.store(nid, block)?;
+        self.dirty = true;
+        Ok(())
     }
 
     /// Recompute an inode block's checksum, if the volume keeps them.
@@ -460,8 +462,23 @@ impl<S: SectorSource> Volume<S> {
     /// Release a whole node: its block, and its table entry. # C: O(1)
     pub(crate) fn release_node(&mut self, nid: u32) -> Result<(), Errno> {
         if nid == 0 { return Ok(()); }
+        // The id can be handed out again, so a page left behind would answer
+        // for whatever node next takes it. Dropped before the table entry, so
+        // no window exists in which the id is free and the mapping still
+        // speaks for it.
+        self.forget_node_page(nid);
+        // An id handed out and never made into a node was charged nothing and
+        // counted nowhere, so nothing comes back for it.
+        let claimed = self.nid_unwritten(nid);
         let live = match self.node_addr(nid) {
-            Ok(addr) => { self.release_block(addr)?; !crate::node::is_hole(addr) }
+            Ok(addr) => {
+                self.release_block(addr)?;
+                // A node changed but not yet placed occupies no block, so
+                // there is no bit to clear — but it was counted against the
+                // volume when it was changed, and that count comes back here.
+                if addr == NEW_ADDR && !claimed { self.release_reservation(); }
+                addr != NULL_ADDR && !claimed
+            }
             Err(_) => false,
         };
         self.nat_dirty.insert(nid, NatEntry { version: 0, ino: 0, block_addr: NULL_ADDR });

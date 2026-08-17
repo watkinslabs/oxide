@@ -47,6 +47,16 @@ impl<S: SectorSource> Volume<S> {
         }
     }
 
+    /// Whether `nid` has been handed out but never made into a node.
+    ///
+    /// The one thing that tells a claimed id from a node changed and not yet
+    /// placed: both read as the no-address-yet marker in the node table, and
+    /// they are opposites for charging, counting and release.
+    /// # C: O(log ids)
+    pub(crate) fn nid_unwritten(&self, nid: u32) -> bool {
+        matches!(self.free_nids.state_of(nid), Some(crate::freenid::NidState::Prealloc))
+    }
+
     /// A node id nothing is using.
     ///
     /// Taken from the cache of known-free ids rather than by walking the table

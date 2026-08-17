@@ -133,6 +133,38 @@ impl Kind {
     }
 }
 
+/// Stamp a node block's temperature mark from the kind of node it is.
+///
+/// Only the cold bit is touched. The other three fields of the flag word — the
+/// node's offset in its file's tree, and the two recovery marks — are set by
+/// whoever knows them and must survive a rewrite that only changes contents.
+/// # C: O(1)
+pub fn stamp_node_temp(block: &mut [u8], kind: Kind) {
+    if !kind.is_node() { return; }
+    let at = NODE_FOOTER_OFF + FOOTER_FLAG;
+    let Some(old) = le32(block, at) else { return; };
+    let bit = 1u32 << crate::flags::COLD_BIT_SHIFT;
+    // A file's node carries the mark and a directory's does not, which is the
+    // sense the reference stamps it in: the two dnode logs are told apart by
+    // it, and reading it backwards puts every file's nodes in the log the
+    // directories should have.
+    let w = if kind == Kind::FileNode { old | bit } else { old & !bit };
+    block[at..at + 4].copy_from_slice(&w.to_le_bytes());
+}
+
+/// Which kind of node a block is, read off the block's own footer.
+///
+/// The one thing that says which log a node belongs in once the caller that
+/// changed it is gone — which is the whole reason a node's temperature is
+/// recorded in the block rather than carried beside it. A node whose offset
+/// says it holds node ids rather than addresses is an indirection node
+/// whatever its mark says; below that, the mark decides.
+/// # C: O(1)
+pub fn node_kind_of(f: &crate::node::footer::Footer) -> Kind {
+    if !crate::volume::recover::marks::is_dnode(f.ofs_of_node()) { return Kind::IndirectNode; }
+    if f.is_cold() { Kind::FileNode } else { Kind::DirNode }
+}
+
 /// Which log `kind` is written to, given how many logs the volume keeps.
 ///
 /// Two logs separate nodes from data and nothing else; four add a hot/cold

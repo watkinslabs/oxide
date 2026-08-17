@@ -61,15 +61,24 @@
 //! consults this mapping before it consults the node tree, and why eviction of
 //! a dirty page is refused by the layer below.
 //!
+//! NODE blocks are held the same way and for the same reason, in their own
+//! mapping keyed by node id (`node`). A node is changed where it is changed
+//! and placed later, which is what lets a checkpoint choose one run of
+//! addresses for every node a transaction touched instead of one address per
+//! change.
+//!
 //! Module manifest:
 //! - `cache`:  the mapping itself — read, write, flush, invalidate, count.
 //! - `target`: where a dirty page goes when the MACHINE's flusher or reclaim
 //!             reaches it, as opposed to this filesystem's own flush points.
+//! - `node`:   the same pair for NODE blocks, keyed by node id.
 
 mod cache;
+mod node;
 mod target;
 
 pub use cache::Cache;
+pub use node::{NodeCache, NodeHost, NodeTarget};
 pub use target::{DataHost, Target};
 
 #[cfg(test)]

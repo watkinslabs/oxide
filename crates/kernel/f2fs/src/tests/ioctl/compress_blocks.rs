@@ -85,6 +85,10 @@ fn remount(mut v: Volume<MemImage>) -> Volume<MemImage> {
 /// block, so it is counted by the volume and not by the table.
 /// # C: O(main segments)
 fn drift(v: &mut Volume<MemImage>) -> i64 {
+    // Quiesced first: a node changed and not yet placed is counted against the
+    // volume and holds no bit in the segment table, so an unflushed
+    // measurement compared against a flushed one reads as a leak.
+    v.sync_data().unwrap();
     v.load_segments().unwrap();
     let live: i64 = (0..v.sb.segment_count_main).map(|s| i64::from(v.seg_valid(s))).sum();
     v.valid_block_count as i64 - live

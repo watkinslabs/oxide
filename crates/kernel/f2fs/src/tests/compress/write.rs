@@ -385,6 +385,11 @@ fn sit_live(v: &mut Volume<MemImage>) -> u64 {
 /// one visible here rather than as free space that never comes back.
 /// # C: O(main segments)
 fn drift(v: &mut Volume<MemImage>) -> i64 {
+    // Quiesced first. A node changed and not yet placed is counted against the
+    // volume and holds no bit in the segment table, so it is a reservation
+    // like any other — and one measured on one side of a flush and compared
+    // against the other side would read as a leak.
+    v.sync_data().unwrap();
     let live = sit_live(v) as i64;
     v.valid_block_count as i64 - live
 }

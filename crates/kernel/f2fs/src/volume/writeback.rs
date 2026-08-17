@@ -134,8 +134,17 @@ impl<S: SectorSource> Volume<S> {
     /// a page not yet placed has none, so a question about where a file's
     /// blocks are has no answer until they exist. The flush points inside this
     /// filesystem call it for their own inode; this is the whole-mount form.
+    ///
+    /// NODES as well as data, and in that order: a node holds the addresses of
+    /// the blocks under it and is itself placed late, so a caller that wanted
+    /// addresses and got only the data flush would read a node table naming
+    /// nodes that are not on the medium. Placing a data page changes the node
+    /// above it, which is why the data half goes first.
     /// # Ctx: process # Sleeps: y # C: O(dirty pages)
-    pub fn sync_data(&mut self) -> Result<(), Errno> { self.flush_all_data_pages() }
+    pub fn sync_data(&mut self) -> Result<(), Errno> {
+        self.flush_all_data_pages()?;
+        self.flush_all_nodes()
+    }
 
     /// The mapping this mount reads and writes its files' data through.
     ///

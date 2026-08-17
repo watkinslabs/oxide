@@ -112,7 +112,14 @@ impl<S: SectorSource> Volume<S> {
             let tail = &encoded[inline_len..];
             let take = tail.len().min(VALID_XATTR_BLOCK_SIZE);
             xb[..take].copy_from_slice(&tail[..take]);
-            self.write_node(nid, ino, xb, super::curseg::Kind::IndirectNode)?;
+            // An attribute node has its OWN reserved tree offset, outside the
+            // range an ordinary node offset can take. Left at zero it claims
+            // to be the inode, which is what a replay reads it as — and it is
+            // the offset that names the log the block belongs in, now that the
+            // block rather than the caller says so.
+            super::dnode::set_node_ofs(&mut xb, super::recover::marks::xattr_node_offset());
+            let kind = self.node_kind(inode.mode);
+            self.write_node(nid, ino, xb, kind)?;
         } else if inode.xattr_nid != 0 {
             self.release_node(inode.xattr_nid)?;
             // The attribute block was charged as space when it was written,
