@@ -2,7 +2,6 @@
 //! that get there before any of them.
 
 use super::*;
-use crate::fallocate::uapi::*;
 use crate::mode::S_IFDIR;
 
 const B: u64 = BLKSIZE as u64;

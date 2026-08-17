@@ -21,7 +21,6 @@ use crate::crypto::policy::{Context, KeyId, Policy};
 use crate::crypto::uapi::*;
 use crate::crypto::MasterKey;
 use crate::opts::Options;
-use crate::test_image::with_root;
 
 fn master_bytes() -> [u8; 64] { core::array::from_fn(|i| (0x40 + i) as u8) }
 fn nonce() -> [u8; FILE_NONCE_SIZE] { core::array::from_fn(|i| (0x10 + i) as u8) }

@@ -6,7 +6,6 @@
 use crate::test_image;
 use crate::uapi::*;
 use crate::volume::Volume;
-use sectors::MemImage;
 use syscall::errno::Errno;
 
 /// Renaming a volume replaces one attribute of one record, so the proof is a

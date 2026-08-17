@@ -12,7 +12,7 @@ use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use block::crypto::{self as blk, Ctx, Dun, KeyType, Profile};
+use block::crypto::{self as blk, KeyType, Profile};
 
 use crate::crypto::inline::{self, Inline};
 use crate::crypto::uapi::*;

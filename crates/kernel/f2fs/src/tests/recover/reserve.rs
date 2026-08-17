@@ -153,7 +153,7 @@ fn a_block_the_replay_adopts_is_counted_in_the_inode_it_joins() {
     let (mut v, ino, _) = checkpointed(b"f");
     let before = v.count_blocks(ino).expect("count");
     append_block(&mut v, ino, 0xC3, true);
-    let mut v = crash(v);
+    let v = crash(v);
     let held = v.count_blocks(ino).expect("count");
     assert_eq!(held, before + 1, "the adopted block is not in the tree");
     assert_eq!(v.read_inode(ino).expect("inode").blocks, held,

@@ -14,7 +14,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use sectors::{MemImage, SectorSource};
+use sectors::MemImage;
 use syscall::errno::Errno;
 
 use crate::filemap::Cache;

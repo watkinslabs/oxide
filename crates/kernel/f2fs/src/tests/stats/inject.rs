@@ -1,7 +1,6 @@
 //! One row per site, armed or not.
 
 use alloc::string::String;
-use alloc::vec::Vec;
 
 
 use crate::fault::{Fault, Info, FAULT_MAX};
