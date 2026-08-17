@@ -82,6 +82,8 @@ pub mod timer_driver;
 pub use timer_driver::spawn_timer_driver;
 pub mod ksoftirqd;
 pub use ksoftirqd::spawn_ksoftirqd;
+#[cfg(target_os = "oxide-kernel")] pub mod khungtaskd;
+#[cfg(target_os = "oxide-kernel")] pub use khungtaskd::spawn_khungtaskd;
 pub use wait_list::WaitList;
 pub use wait_event::{wait_event, wait_event_interruptible, wait_event_interruptible_until,
                      wait_event_killable, wait_event_uninterruptible,

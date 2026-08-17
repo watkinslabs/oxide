@@ -419,6 +419,8 @@ impl Task {
             restart_block: super::restart::RestartBlock::new(),
             vfork_pending: AtomicBool::new(false),
             park_site: crate::park_site::ParkSite::new(),
+            hung_last_switch_count: AtomicU64::new(0),
+            hung_last_switch_ns: AtomicU64::new(0),
             namespaces:      Spinlock::new(Some(TaskNamespaces::initial())),
             traced_by:       AtomicU32::new(0),
             ptrace_options:  AtomicU32::new(0),

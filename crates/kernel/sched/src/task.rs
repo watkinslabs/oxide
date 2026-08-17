@@ -658,6 +658,13 @@ pub struct Task {
     /// `/proc/<pid>/wchan` reports. See [`crate::park_site`].
     pub park_site: crate::park_site::ParkSite,
 
+    /// Linux `task_struct::last_switch_count` / `last_switch_time`: what the
+    /// hung-task scan last observed of `nvcsw + nivcsw`, and when. Written
+    /// only by that single scanning kthread, so no ordering beyond Relaxed is
+    /// owed. See [`crate::hung_task`].
+    pub hung_last_switch_count: AtomicU64,
+    pub hung_last_switch_ns: AtomicU64,
+
     /// Concrete non-network namespace owners. `None` after task exit, even
     /// while process identity or a pidfd retains this Task allocation.
     namespaces: Spinlock<Option<namespaces::TaskNamespaces>, Namespace>,

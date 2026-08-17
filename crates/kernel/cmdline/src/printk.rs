@@ -92,8 +92,6 @@ pub fn unsupported_parameter(name: &[u8]) -> Option<&'static str> {
     match name {
         b"softlockup_panic" => Some("softlockup_panic: lockup detector is report-only"),
         b"nmi_watchdog" => Some("nmi_watchdog: no periodic NMI lockup detector"),
-        b"hung_task_panic" => Some("hung_task_panic: no hung-task detector"),
-        b"hung_task_timeout_secs" => Some("hung_task_timeout_secs: no hung-task detector"),
         b"log_buf_len" => Some("log_buf_len: record ring is a fixed-size static"),
         b"no_console_suspend" => Some("no_console_suspend: no system-suspend path"),
         b"slub_debug" => Some("slub_debug: allocator debug is build-time only"),
