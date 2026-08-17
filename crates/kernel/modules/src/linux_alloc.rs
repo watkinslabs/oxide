@@ -289,6 +289,7 @@ pub(crate) extern "C" fn __free_pages(page: *mut LinuxPage, order: u32) {
     if page.is_null() { return; }
     #[cfg(target_os = "oxide-kernel")]
     {
+        // SAFETY: page is non-null (checked above); linux_page_phys's native_page_run casts it only as a pmm registry lookup key (see native_page_run below) and never dereferences it directly.
         let Some(pa) = (unsafe { linux_page_phys(page) }) else { return; };
         if !native_page_run_take(pa, order) { return; }
         // SAFETY: this allocation's caller supplied the matching order and transfers its final ownership.
@@ -324,6 +325,7 @@ extern "C" fn free_pages(addr: usize, order: u32) {
 
 pub(crate) extern "C" fn page_address(page: *mut LinuxPage) -> *mut u8 {
     #[cfg(target_os = "oxide-kernel")]
+    // SAFETY: page_address forwards page unchecked into linux_page_phys, but its native_page_run casts the pointer only as a pmm registry lookup key (see native_page_run below) and never dereferences it directly, so a null/foreign page cannot fault here.
     { return unsafe { linux_page_phys(page) }.and_then(pmm::setup::frame_ptr).unwrap_or(null_mut()); }
     #[cfg(not(target_os = "oxide-kernel"))]
     {
@@ -359,6 +361,7 @@ pub(crate) fn page_run_len(page: *mut LinuxPage) -> Option<usize> {
 pub(crate) fn page_ref_count(page: *mut LinuxPage) -> Option<u32> {
     #[cfg(target_os = "oxide-kernel")]
     {
+        // SAFETY: page_ref_count forwards page unchecked into valid_page, whose oxide-kernel arm resolves it via native_page_run's pmm registry lookup (below) rather than a direct dereference, so an invalid page returns None instead of faulting.
         if !unsafe { valid_page(page) } { return None; }
         // SAFETY: valid_page proved this is a PMM native descriptor with an initialized refcount.
         return Some(unsafe { (*page.cast::<pmm::NativePage>()).refcount.load(Ordering::Acquire).max(0) as u32 });

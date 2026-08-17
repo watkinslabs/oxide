@@ -19,4 +19,8 @@ pub(super) fn export_symbols() { crate::symtab::export("drm_format_info", drm_fo
 pub(super) extern "C" fn drm_format_info(format: u32) -> *const c_void { match format { XRGB8888 => XRGB.as_ptr().cast(), ARGB8888 => ARGB.as_ptr().cast(), RGB565 => RGB.as_ptr().cast(), _ => core::ptr::null() } }
 
 /// Compute block-rounded minimum pitch for one format plane. # C: O(1)
+// SAFETY: info is one of the three FORMAT_SIZE=24 static arrays returned by
+// drm_format_info for a fixed format constant; plane is bounds-checked against
+// the byte at FORMAT_PLANES_OFF before any per-plane field is read, and every
+// per-plane offset used below stays inside the 24-byte layout for plane<4.
 pub(super) extern "C" fn drm_format_info_min_pitch(info: *const u8, plane: i32, width: u32) -> u64 { if info.is_null() || plane < 0 || plane >= unsafe { *info.add(FORMAT_PLANES_OFF) as i32 } { return 0; } let plane = plane as usize; unsafe { let bytes = *info.add(FORMAT_BYTES_PER_BLOCK_OFF + plane) as u64; let blocks = (*info.add(FORMAT_BLOCK_WIDTH_OFF + plane) as u64).max(1) * (*info.add(FORMAT_BLOCK_HEIGHT_OFF + plane) as u64).max(1); (width as u64).saturating_mul(bytes).saturating_add(blocks - 1) / blocks } }

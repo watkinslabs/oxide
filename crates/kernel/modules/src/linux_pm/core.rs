@@ -61,11 +61,13 @@ unsafe fn latency_qos(dev: *mut LinuxDevice) -> Option<&'static mut LinuxLatency
     if dev.is_null() { return None; }
     // SAFETY: power.qos is assigned only by the functions below and reclaimed only on a negative request.
     let qos = unsafe { (*dev).power.qos as *mut LinuxLatencyTolerance };
+    // SAFETY: qos was just checked non-null and points at the Box that update_user_latency_tolerance's allocation arm leaked into power.qos.
     if qos.is_null() { None } else { Some(unsafe { &mut *qos }) }
 }
 
 unsafe extern "C" fn dev_pm_qos_update_user_latency_tolerance(dev: *mut LinuxDevice, value: i32) -> i32 {
     if dev.is_null() { return -LINUX_EINVAL; }
+    // SAFETY: dev was null-checked above; latency_qos only dereferences dev.power, which is embedded by value in the caller's struct device.
     let qos = unsafe { latency_qos(dev) };
     if value < 0 {
         if value != -1 { return -LINUX_EINVAL; }
@@ -86,21 +88,27 @@ unsafe extern "C" fn dev_pm_qos_update_user_latency_tolerance(dev: *mut LinuxDev
     qos.value = value;
     // SAFETY: the callback pointer uses the Linux device/s32 ABI and is read only after the request is live.
     if !unsafe { (*dev).power.set_latency_tolerance }.is_null() {
+        // SAFETY: the guard above confirmed set_latency_tolerance is non-null; transmuting the stored fn pointer to this signature matches the dev_pm_ops.set_latency_tolerance prototype the driver installed it under.
         let callback: unsafe extern "C" fn(*mut LinuxDevice, i32) = unsafe { core::mem::transmute((*dev).power.set_latency_tolerance) };
+        // SAFETY: callback was just transmuted from the driver's own set_latency_tolerance pointer; dev is the same non-null pointer validated above and stays live for the call.
         unsafe { callback(dev, value); }
     }
     LINUX_OK
 }
 
 unsafe extern "C" fn dev_pm_qos_expose_latency_tolerance(dev: *mut LinuxDevice) -> i32 {
+    // SAFETY: `||` short-circuits so the deref runs only once dev.is_null() is false; set_latency_tolerance is a raw fn-pointer field inside the by-value LinuxDevPmInfo.
     if dev.is_null() || unsafe { (*dev).power.set_latency_tolerance }.is_null() { return -LINUX_EINVAL; }
+    // SAFETY: dev was null-checked by the `||` above; latency_qos re-derives power.qos, which only functions in this file ever write.
     if let Some(qos) = unsafe { latency_qos(dev) } { qos.exposed = true; }
     LINUX_OK
 }
 
 unsafe extern "C" fn dev_pm_qos_hide_latency_tolerance(dev: *mut LinuxDevice) {
     if dev.is_null() { return; }
+    // SAFETY: dev was null-checked above; latency_qos only re-derives power.qos, which is either null or the live Box this file's allocation arm leaked into it.
     if let Some(qos) = unsafe { latency_qos(dev) } { qos.exposed = false; }
+    // SAFETY: dev was null-checked above and stays the same live pointer passed through to the removal arm, which repeats its own null guard.
     let _ = unsafe { dev_pm_qos_update_user_latency_tolerance(dev, -1) };
 }
 
