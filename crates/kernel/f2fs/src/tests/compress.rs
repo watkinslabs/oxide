@@ -13,6 +13,7 @@
 //! - `policy`:   which files get compressed, with which codec and level.
 //! - `newinode`: what a newly created file is compressed with, by remounting.
 //! - `write`:    writing a compressed file, proved by remounting.
+//! - `defer`:    the deferred window: what a write reserves, what a placement decides.
 //! - `truncate`: shortening one, proved by remounting.
 
 #[path = "compress/build.rs"]
@@ -39,5 +40,7 @@ mod policy;
 mod newinode;
 #[path = "compress/write.rs"]
 mod write;
+#[path = "compress/defer.rs"]
+mod defer;
 #[path = "compress/truncate.rs"]
 mod truncate;
