@@ -3,6 +3,7 @@
 //! decides when allocation must wake background or direct reclaim.
 
 mod cell;
+pub mod tunables;
 pub use cell::PublishGuard;
 
 
