@@ -99,7 +99,18 @@ impl<S: SectorSource> Volume<S> {
         // addresses of its file's data; writing the chain over pages that have
         // not been placed would leave it naming reservations, and a replay
         // would recover a file of holes where the caller was promised bytes.
-        self.flush_data_pages(ino)?;
+        //
+        // A sync of the DATA alone, or of a short tail, asks for those pages to
+        // be rewritten where they lie: the caller wants the bytes durable and
+        // is paying for every node block an out-of-place write would move
+        // (`crate::place::ipu`). Armed for the length of this flush only — it
+        // is a statement about the call, not about the file.
+        let wants_ipu = crate::place::ipu::fsync_wants_ipu(
+            datasync, self.dirty_data_pages(ino), self.place.min_fsync_blocks);
+        self.need_ipu = if wants_ipu { Some(ino) } else { None };
+        let flushed = self.flush_data_pages(ino);
+        self.need_ipu = None;
+        flushed?;
         // Nothing to make durable is answered before the ladder, not inside
         // it: a checkpoint written for a file that has not changed makes the
         // whole volume pay for a call that had nothing to do.

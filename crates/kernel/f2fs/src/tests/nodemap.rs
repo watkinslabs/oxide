@@ -13,6 +13,8 @@ use sectors::MemImage;
 use crate::mode::S_IFREG;
 use crate::test_image::{self, ROOT_INO};
 use crate::uapi::{BLKSIZE, NEW_ADDR, NULL_ADDR};
+use syscall::errno::Errno;
+
 use crate::volume::{NewInode, Volume};
 
 const NOW: (u64, u32) = (1_800_000_000, 3);
@@ -230,6 +232,84 @@ fn a_node_the_tree_could_not_reach_strands_no_block() {
     assert!(v.peek_node(nid).is_none(), "the undone node kept its page");
     v.sync_data().unwrap();
     assert_eq!(live(&mut v), before, "the undone node was placed anyway");
+}
+
+// ------------------------------------------------------- the placed-one page
+
+#[test]
+fn a_node_placed_one_at_a_time_stays_cached_and_is_not_read_back_off_the_medium() {
+    // `writeback_node` used to INVALIDATE the page it had just placed, because
+    // there was no way to tell the layer below that a page it still called
+    // dirty had already been written. The bytes it dropped are the node's
+    // current bytes, so the next read of an fsync'd node went to the device
+    // for what the mount was already holding.
+    //
+    // The device read is what is asserted, and it is asserted so that it can
+    // fail: the medium's copy of the block is OVERWRITTEN with a byte pattern
+    // no valid node can carry, so a read that reaches the device cannot come
+    // back with the right contents — it comes back with a footer that does not
+    // name this node, which is an `EIO`. Restoring the `forget` call turns the
+    // `unwrap` below into a panic.
+    let (mut v, ino) = with_file();
+    v.stamp_inode(ino, |b| b[crate::uapi::I_ADVISE] = 0x77).unwrap();
+    assert_eq!(v.dirty_node_pages(), 1, "the change was not left in the mapping");
+    let misses = v.node_cache_misses();
+
+    v.write_fsync_chain(ino, false).unwrap();
+    assert_eq!(v.dirty_node_pages(), 0, "the placed node is still dirty");
+    let addr = v.node_addr(ino).unwrap();
+    assert_ne!(addr, NEW_ADDR, "the node was not placed at all");
+    v.source.poke(addr as usize * BLKSIZE, &vec![0xff; BLKSIZE]);
+
+    let back = v.read_node(ino, Some(ino)).unwrap();
+    assert_eq!(back.block[crate::uapi::I_ADVISE], 0x77,
+               "the placed node came back from the poisoned medium");
+    assert_eq!(v.node_cache_misses(), misses,
+               "the placed node was read off the medium instead of the mapping");
+}
+
+#[test]
+fn placing_one_node_leaves_the_rest_of_the_mapping_dirty() {
+    // The one-page entry point claims exactly the index it was given. A claim
+    // that took the whole mapping would place nodes in an order this caller
+    // did not choose, which is the entire reason it does not use the batch.
+    let (mut v, ino) = with_file();
+    let other = v.alloc_nid().unwrap();
+    let mut block = vec![0u8; BLKSIZE];
+    crate::volume::dnode::set_node_ofs(&mut block, 1);
+    v.write_node(other, ino, block, crate::volume::curseg::Kind::FileNode).unwrap();
+    v.stamp_inode(ino, |b| b[crate::uapi::I_ADVISE] = 0x11).unwrap();
+    assert_eq!(v.dirty_node_pages(), 2, "the fixture is not two dirty nodes");
+    v.writeback_node(ino).unwrap();
+    assert_eq!(v.dirty_node_pages(), 1, "the named node was not the only one placed");
+    assert_eq!(v.node_addr(other).unwrap(), NEW_ADDR, "the other node was placed too");
+}
+
+// ----------------------------------------------------------------- the drain
+
+#[test]
+fn the_node_drain_runs_until_the_mapping_is_clean_however_many_passes_it_takes() {
+    // A fixed pass count and a run-to-clean loop are indistinguishable on
+    // every workload that converges in one pass, which is every workload this
+    // filesystem has — so the bound is asserted on the decision itself.
+    // Reinstating `for _ in 0..8` turns this red.
+    let left = core::cell::Cell::new(20usize);
+    let mut passes = 0usize;
+    crate::volume::nodeback::drain_nodes(
+        || left.get(),
+        || { left.set(left.get() - 1); passes += 1; None }).unwrap();
+    assert_eq!(passes, 20, "the drain gave up before the mapping was clean");
+}
+
+#[test]
+fn the_node_drain_stops_at_the_first_pass_that_reports() {
+    // Never a spin on a mapping that cannot be written: an erroring pass ends
+    // the loop with its own errno, not with a count exhausted.
+    let mut passes = 0usize;
+    let err = crate::volume::nodeback::drain_nodes(|| 1, || { passes += 1; Some(Errno::Eio) })
+        .unwrap_err();
+    assert_eq!(err, Errno::Eio);
+    assert_eq!(passes, 1, "the drain kept going after a failure");
 }
 
 // ---------------------------------------------------------------- the counts

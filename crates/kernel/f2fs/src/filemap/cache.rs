@@ -78,6 +78,18 @@ impl Cache {
         Some(bytes)
     }
 
+    /// Whether the mapping holds page `index` of file `ino`, WITHOUT counting
+    /// the question as a read.
+    ///
+    /// Separate from `peek` because readahead asks it about every block of a
+    /// window and never takes the bytes: counting those as hits would report a
+    /// hit rate for reads nobody made, and the figure exists to say how much
+    /// of the reading this mapping answered.
+    /// # C: O(height)
+    pub fn holds(&self, ino: u32, index: u64) -> bool {
+        self.pages.lookup(Self::key(ino), Self::off(index)).is_some()
+    }
+
     /// Page `index` of file `ino`, fetching it with `fetch` on a miss.
     ///
     /// `fetch` runs at most once per miss and its bytes are what the mapping
@@ -185,6 +197,40 @@ impl Cache {
     /// behind would answer for whatever file next takes the id.
     /// # C: O(pages of this inode)
     pub fn forget_inode(&self, ino: u32) { self.pages.invalidate(Self::key(ino)); }
+
+    /// Whether page `index` of `ino` is held, WITHOUT copying it out.
+    ///
+    /// Separate from [`Self::peek`] because the two answer different
+    /// questions and cost different amounts: `peek` hands back the bytes and
+    /// counts a hit, which is what a read wants; this answers one bit and
+    /// counts nothing, which is what a residency query wants. Asking `peek`
+    /// would charge a page copy and a hit per byte of an `mincore` walk and
+    /// would report reads that never happened.
+    /// # C: O(height)
+    pub fn held(&self, ino: u32, index: u64) -> bool { self.pages.holds(Self::key(ino), index) }
+
+    /// What `ino` holds in the INCLUSIVE index range, and in what state.
+    ///
+    /// Only pages that EXIST are visited, so an unbounded range over a sparse
+    /// file costs what the file holds rather than what its index space could
+    /// address.
+    /// # C: O(pages in range)
+    pub fn states(&self, ino: u32, lo: u64, hi: u64) -> Vec<block::pagecache::PageState> {
+        self.pages.page_states(Self::key(ino), lo, hi)
+    }
+
+    /// Drop what can be spared of `ino`'s pages in the INCLUSIVE index range,
+    /// reporting how many went.
+    ///
+    /// A HINT, and the difference from [`Self::forget`] is the whole point: a
+    /// page not yet placed is the only copy of a write, so this leaves a dirty
+    /// or in-flight page exactly where it is. `forget` is for an offset whose
+    /// contents STOPPED being what the mapping holds, where keeping the page
+    /// would serve stale bytes; there the drop is not optional.
+    /// # C: O(pages in range)
+    pub fn try_forget(&self, ino: u32, lo: u64, hi: u64) -> usize {
+        self.pages.try_invalidate_range(Self::key(ino), lo, hi)
+    }
 
     /// Pages held right now. # C: O(inodes)
     pub fn pages(&self) -> usize { self.pages.cached_count() }

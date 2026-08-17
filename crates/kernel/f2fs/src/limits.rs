@@ -29,3 +29,8 @@ pub const MAX_IO_BYTES: usize = 8 * 1024 * 1024;
 
 /// Links a lookup may follow before it declares a loop.
 pub const MAX_SYMLINK_BYTES: usize = 4096;
+
+/// The most names one inode may carry. A count at the ceiling refuses another
+/// link rather than wrapping — past the maximum a directory reads as one with
+/// no parents at all.
+pub const F2FS_LINK_MAX: u32 = 0xffff_ffff;

@@ -262,7 +262,7 @@ fn every_mutating_operation_reaches_the_balance_path() {
                         fs.link(ROOT_INO, "d2", ino).unwrap(); }),
         ("rename", |fs| { fs.make(ROOT_INO, "e", crate::mode::S_IFREG | 0o644, 0, 0, 0, None, true)
                             .unwrap();
-                          fs.rename(ROOT_INO, "e", ROOT_INO, "e2", false).unwrap(); }),
+                          fs.rename(ROOT_INO, "e", ROOT_INO, "e2", 0, (0, 0)).unwrap(); }),
         ("remove", |fs| { fs.make(ROOT_INO, "h", crate::mode::S_IFREG | 0o644, 0, 0, 0, None, true)
                             .unwrap();
                           fs.remove(ROOT_INO, "h", false).unwrap(); }),

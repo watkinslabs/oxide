@@ -85,6 +85,9 @@ pub const OFFSET_BIT_MASK: u32 = (1 << OFFSET_BIT_SHIFT) - 1;
 
 // ------------------------------------------------------------- inode i_advise
 
+/// The file's blocks are not expected to be rewritten, so moving them costs
+/// fragmentation and buys nothing: a write to one lands where it already lies.
+pub const FADVISE_COLD_BIT: u8 = 0x01;
 /// The inode has lost track of its parent, so a recovery cannot trust `i_pino`.
 pub const FADVISE_LOST_PINO_BIT: u8 = 0x02;
 /// The inode's size must not be changed by a write past its end.

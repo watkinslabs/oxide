@@ -308,7 +308,7 @@ impl General {
             cp_flags,
             sbi_flags: 0,
             mounted_time,
-            ipu_policy: super::policy::ipu_policy(v.options()),
+            ipu_policy: v.ipu_policy(),
             discard: v.options().discard,
             large_section: segs_per_sec > 1,
         };

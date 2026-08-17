@@ -1,10 +1,21 @@
 //! What a compressed cluster costs its owner.
 //!
-//! The charge is the blocks the cluster ACTUALLY occupies, never the blocks it
-//! would have occupied plain. Getting that wrong is silent on every volume
-//! without quota — the segment tables and the volume's own counts are already
-//! computed from the real blocks — and on a volume with one it charges a user
-//! for space nobody is using, up to the whole saving.
+//! The WHOLE cluster, and that is not an oversight. A compressed cluster's
+//! unused slots stay RESERVED — the file goes on holding them so that a
+//! rewrite which compresses worse always has somewhere to land — and a slot the
+//! file holds is a slot its owner is charged for, mark or block. So compressing
+//! a file changes what it occupies on the medium and not what it is charged,
+//! and the two figures are meant to disagree.
+//!
+//! The saving is handed back deliberately, once, by the release command, which
+//! gives the owner's quota back with the volume's own count. Making writeback
+//! hand it back instead would give the space away silently and leave a file
+//! that cannot be written, which is the state a release exists to ask for.
+//!
+//! Charging LESS than the whole cluster is the silent failure here, not more:
+//! the block count read off the address tree already counts every mark, so a
+//! quota that counted only the real blocks disagrees with the inode beside it,
+//! and the release then hands back room the owner was never charged for.
 
 use super::*;
 use super::fixture::*;
@@ -22,10 +33,12 @@ const CLUSTER: usize = 1 << LOG;
 fn compressible() -> Vec<u8> { vec![0u8; CLUSTER * BLKSIZE] }
 
 #[test]
-fn a_compressed_cluster_charges_its_owner_less_than_a_plain_one() {
+fn a_compressed_cluster_charges_its_owner_exactly_what_a_plain_one_does() {
     // The differential is the whole assertion: the same bytes, the same
-    // identity, one file compressed and one not. A charge computed from the
-    // cluster's width would make the two equal.
+    // identity, one file compressed and one not, and the SAME charge. A quota
+    // that counted only the image's blocks would make the compressed one
+    // cheaper — and cheaper than the block count the inode beside it records,
+    // which is the disagreement this case exists to catch.
     for algo in CODECS {
         let (mut v, ino) = with_compressed_quota(algo, LOG, 0);
         let data = compressible();
@@ -33,31 +46,50 @@ fn a_compressed_cluster_charges_its_owner_less_than_a_plain_one() {
         let plain = plain_file(&mut v);
         let before = space(&mut v);
         v.write_file(plain, 0, &data).unwrap();
+        v.sync_data().unwrap();
         let plain_cost = space(&mut v) - before;
 
         let before = space(&mut v);
         v.write_compressed(ino, 0, &data).unwrap();
+        v.sync_data().unwrap();
         let cost = space(&mut v) - before;
 
-        assert!(cost > 0, "codec {algo}: a compressed cluster must still be charged");
-        assert!(cost < plain_cost,
-                "codec {algo}: compressed cost {cost}, plain cost {plain_cost}");
-        assert!(cost < CLUSTER as u64 * BLKSIZE as u64,
-                "codec {algo}: charged {cost} for a cluster that does not occupy that much");
+        assert_eq!(plain_cost, CLUSTER as u64 * BLKSIZE as u64, "codec {algo}: fixture");
+        assert_eq!(cost, plain_cost,
+                   "codec {algo}: compressed cost {cost}, plain cost {plain_cost}");
+        // And the image really is smaller, or the equality above would be
+        // equality for the wrong reason.
+        assert!(v.compr_blocks(ino).unwrap() > 0, "codec {algo}: nothing was saved");
     }
 }
 
 #[test]
-fn a_limit_the_plain_cluster_would_exceed_still_admits_the_compressed_one() {
-    // The sharp form of the same fact, and the one a user would notice: a
-    // charge taken on the cluster's width refuses this write, and the file it
-    // refuses fits with room to spare.
+fn releasing_the_saving_is_what_gives_the_owners_quota_back() {
+    // The one place the saving reaches the owner. Give it back at writeback
+    // instead and this comes back as no change at all, because there would be
+    // nothing left to release.
     for algo in CODECS {
-        // Two blocks' worth of allowance, in the quota file's own units.
+        let (mut v, ino) = with_compressed_quota(algo, LOG, 0);
+        v.write_compressed(ino, 0, &compressible()).unwrap();
+        v.sync_data().unwrap();
+        let before = space(&mut v);
+        let handed = v.release_compress_blocks(ino).unwrap();
+        assert!(handed > 0, "codec {algo}: nothing was handed back");
+        assert_eq!(before - space(&mut v), handed * BLKSIZE as u64, "codec {algo}");
+    }
+}
+
+#[test]
+fn a_limit_a_whole_cluster_exceeds_refuses_the_compressed_write_too() {
+    // Two blocks' allowance and a four-block cluster. Compression does not buy
+    // the owner room: every slot of the cluster is held and charged, so the
+    // write is refused exactly as a plain one is — and the charge left behind
+    // is only for the blocks that landed.
+    for algo in CODECS {
         let units = (2 * BLKSIZE / QT_BLOCK_SIZE) as u64;
         let (mut v, ino) = with_compressed_quota(algo, LOG, units);
-        assert_eq!(v.write_compressed(ino, 0, &compressible()).unwrap(),
-                   CLUSTER * BLKSIZE, "codec {algo}");
+        assert!(v.write_compressed(ino, 0, &compressible()).unwrap() < CLUSTER * BLKSIZE,
+                "codec {algo}: a cluster larger than the allowance was accepted whole");
         assert!(space(&mut v) <= 2 * BLKSIZE as u64, "codec {algo}");
     }
 }

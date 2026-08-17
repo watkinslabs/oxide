@@ -13,34 +13,10 @@ use syscall::errno::Errno;
 use vfs::{FileType, InodeRef};
 
 use super::policy::{err, may_write_xattr, XattrCred, NAME_ACL_ACCESS, NAME_ACL_DEFAULT};
+use vfs::posix_acl::{self, AclEntry};
 
-/// POSIX ACL entry tags.
-const ACL_USER_OBJ:  u16 = 0x01;
-const ACL_USER:      u16 = 0x02;
-const ACL_GROUP_OBJ: u16 = 0x04;
-const ACL_GROUP:     u16 = 0x08;
-const ACL_MASK:      u16 = 0x10;
-const ACL_OTHER:     u16 = 0x20;
-/// `POSIX_ACL_XATTR_VERSION`.
-const ACL_XATTR_VERSION: u32 = 2;
-/// `sizeof(struct posix_acl_xattr_header)` / `..._entry`.
-const ACL_HDR_LEN:   usize = 4;
-const ACL_ENTRY_LEN: usize = 8;
-/// `ACL_READ|ACL_WRITE|ACL_EXECUTE` — every legal `e_perm` bit.
-const ACL_PERM_MASK: u16 = 0o7;
-/// `S_IRWXU|S_IRWXG|S_IRWXO` and `S_ISGID` in `Umode` terms.
-const S_IRWXUGO: u16 = 0o777;
-const S_IRWXO:   u16 = 0o7;
-const S_IRWXG:   u16 = 0o70;
-const S_ISGID:   u16 = 0o2000;
-
-/// One decoded `struct posix_acl_xattr_entry`. `id` mirrors `e_id` and is
-/// decoded for layout fidelity only: the mode fold (`equiv_mode`) needs just
-/// tag+perm, and enforcement re-parses ids straight out of the stored blob in
-/// `vfs::namei::permission::posix_acl_permission`.
-#[allow(dead_code, reason = "mirrors struct posix_acl_xattr_entry; e_id is part of the ABI record even though only tag+perm are folded here")]
-#[derive(Clone, Copy)]
-struct AclEntry { tag: u16, perm: u16, id: u32 }
+/// `S_ISGID` in `Umode` terms.
+const S_ISGID: u16 = 0o2000;
 
 /// Is `name` one of the two whole-name POSIX-ACL handlers? # C: O(1)
 pub fn is_acl_name(name: &str) -> bool { name == NAME_ACL_ACCESS || name == NAME_ACL_DEFAULT }
@@ -49,65 +25,12 @@ pub fn is_acl_name(name: &str) -> bool { name == NAME_ACL_ACCESS || name == NAME
 /// entry list decodes to "no ACL" (Linux `NULL`), which REMOVES the attribute.
 /// # C: O(N_entries)
 fn decode(value: &[u8]) -> Result<Vec<AclEntry>, i64> {
-    if value.len() < ACL_HDR_LEN { return Err(err(Errno::Einval)); }
-    let ver = u32::from_le_bytes([value[0], value[1], value[2], value[3]]);
-    if ver != ACL_XATTR_VERSION { return Err(err(Errno::Eopnotsupp)); }
-    let body = &value[ACL_HDR_LEN..];
-    if body.len() % ACL_ENTRY_LEN != 0 { return Err(err(Errno::Einval)); }
-    let mut out = Vec::new();
-    for e in body.chunks_exact(ACL_ENTRY_LEN) {
-        out.push(AclEntry {
-            tag:  u16::from_le_bytes([e[0], e[1]]),
-            perm: u16::from_le_bytes([e[2], e[3]]),
-            id:   u32::from_le_bytes([e[4], e[5], e[6], e[7]]),
-        });
-    }
-    Ok(out)
+    posix_acl::from_xattr(value).map_err(err)
 }
 
-/// `posix_acl_valid` — the entry sequence must be USER_OBJ, USER*, GROUP_OBJ,
-/// GROUP*, MASK?, OTHER, a MASK is mandatory once any USER/GROUP entry exists,
-/// and no `e_perm` bit outside rwx may be set. # C: O(N_entries)
+/// `posix_acl_valid`. # C: O(N_entries)
 fn validate(entries: &[AclEntry]) -> Result<(), i64> {
-    let einval = Err(err(Errno::Einval));
-    // `state` tracks which tag is legal next; 0 means "sequence complete".
-    let mut state = ACL_USER_OBJ;
-    let mut needs_mask = false;
-    for e in entries {
-        if e.perm & !ACL_PERM_MASK != 0 { return einval; }
-        match e.tag {
-            ACL_USER_OBJ  => { if state != ACL_USER_OBJ { return einval; } state = ACL_USER; }
-            ACL_USER      => { if state != ACL_USER { return einval; } needs_mask = true; }
-            ACL_GROUP_OBJ => { if state != ACL_USER { return einval; } state = ACL_GROUP; }
-            ACL_GROUP     => { if state != ACL_GROUP { return einval; } needs_mask = true; }
-            ACL_MASK      => { if state != ACL_GROUP { return einval; } state = ACL_OTHER; }
-            ACL_OTHER     => {
-                if state == ACL_OTHER || (state == ACL_GROUP && !needs_mask) { state = 0; }
-                else { return einval; }
-            }
-            _ => return einval,
-        }
-    }
-    if state == 0 { Ok(()) } else { einval }
-}
-
-/// `posix_acl_equiv_mode` — fold the three base entries into permission bits.
-/// Returns `true` when the ACL carries information the mode bits CANNOT express
-/// (a named user/group or a mask), i.e. Linux's `not_equiv`. # C: O(N_entries)
-fn equiv_mode(entries: &[AclEntry], mode: &mut u16) -> bool {
-    let mut perm: u16 = 0;
-    let mut not_equiv = false;
-    for e in entries {
-        match e.tag {
-            ACL_USER_OBJ  => perm |= (e.perm & S_IRWXO) << 6,
-            ACL_GROUP_OBJ => perm |= (e.perm & S_IRWXO) << 3,
-            ACL_OTHER     => perm |= e.perm & S_IRWXO,
-            ACL_MASK      => { perm = (perm & !S_IRWXG) | ((e.perm & S_IRWXO) << 3); not_equiv = true; }
-            _             => not_equiv = true,
-        }
-    }
-    *mode = (*mode & !S_IRWXUGO) | perm;
-    not_equiv
+    posix_acl::validate(entries).map_err(err)
 }
 
 /// `posix_acl_update_mode` — rewrite `i_mode` from the ACL and drop the S_ISGID
@@ -115,7 +38,7 @@ fn equiv_mode(entries: &[AclEntry], mode: &mut u16) -> bool {
 /// # C: O(N_entries) + backend setattr
 fn update_mode(inode: &InodeRef, entries: &[AclEntry], c: &XattrCred) -> Result<bool, i64> {
     let mut mode = inode.i_mode() as u16;
-    let keep = equiv_mode(entries, &mut mode);
+    let keep = posix_acl::equiv_mode(entries, &mut mode).map_err(err)?;
     if !c.cred.in_group(inode.gid().unwrap_or(0)) && !c.cred.cap_fsetid { mode &= !S_ISGID; }
     let ia = vfs::Iattr { valid: vfs::ATTR_MODE, mode: mode & 0o7777, ..Default::default() };
     inode.setattr(&vfs::IDENTITY, &ia).map_err(|e| -(e as i64))?;
