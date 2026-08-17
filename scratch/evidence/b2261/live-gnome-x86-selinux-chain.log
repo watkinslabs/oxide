@@ -1,0 +1,141 @@
+8:[1.578] [INFO]  selinux: enabled, awaiting policy
+28:[43.151] systemd[1]: Reached target cryptsetup.target - Local Encrypted Volumes.
+29:[43.152] systemd[1]: Reached target getty.target - Login Prompts.
+30:[43.153] systemd[1]: Reached target integritysetup.target - Local Integrity Protected Volumes.
+31:[43.154] systemd[1]: Reached target paths.target - Path Units.
+32:[43.155] systemd[1]: Reached target remote-fs.target - Remote File Systems.
+33:[43.156] systemd[1]: Reached target slices.target - Slice Units.
+34:[43.157] systemd[1]: Reached target veritysetup.target - Local Verity Protected Volumes.
+113:[43.651] systemd[1]: Reached target local-fs-pre.target - Preparation for Local File Systems.
+114:[43.653] systemd[1]: Reached target local-fs.target - Local File Systems.
+118:[43.667] systemd[1]: selinux-autorelabel-mark.service - Mark the need to relabel after reboot skipped, unmet condition check ConditionSecurity=!selinux
+138:[64.194] systemd[1]: Reached target swap.target - Swaps.
+144:[64.217] systemd[1]: selinux-autorelabel-mark.service - Mark the need to relabel after reboot skipped, unmet condition check ConditionSecurity=!selinux
+181:[64.395] systemd[1]: Reached target nss-lookup.target - Host and Network Name Lookups.
+182:[64.398] systemd[1]: Reached target sysinit.target - System Initialization.
+190:[64.420] systemd[1]: Reached target timers.target - Timer Units.
+191:[64.424] systemd[1]: Listening on dbus.socket - D-Bus System Message Bus Socket.
+195:[64.438] systemd[1]: Reached target sockets.target - Socket Units.
+196:[64.443] systemd[1]: Starting dbus-broker.service - D-Bus System Message Bus...
+199:[64.473] systemd[1]: Started dbus-broker.service - D-Bus System Message Bus.
+200:[64.479] systemd[1]: Reached target basic.target - Basic System.
+211:[64.566] systemd[1]: Reached target nss-user-lookup.target - User and Group Name Lookups.
+232:[64.921] systemd[1]: Reached target sound.target - Sound Card.
+257:[85.007] systemd[1]: Reached target network.target - Network.
+258:[85.010] systemd[1]: Reached target network-online.target - Network is Online.
+259:[85.012] systemd[1]: Reached target sshd-keygen.target.
+264:[85.046] systemd[1]: Starting gdm.service - GNOME Display Manager...
+267:[85.063] systemd[1]: Reached target multi-user.target - Multi-User System.
+269:[85.084] systemd[1]: Started gdm.service - GNOME Display Manager.
+271:[85.136] systemd[1]: Reached target graphical.target - Graphical Interface.
+278:[85.170] gdm-autologin][241]: gkr-pam: unable to locate daemon control file
+279:[85.186] gdm-autologin][241]: pam_selinux(gdm-autologin:session): Setting file context "" failed for /dev/tty2: Invalid argument
+280:[85.222] gdm-autologin][241]: pam_systemd(gdm-autologin:session): Failed to create session: Access denied
+281:[85.223] gdm-autologin][241]: gkr-pam: unable to locate daemon control file
+282:[85.286] /usr/libexec/gdm-wayland-session[265]: dbus-daemon[265]: [session uid=1000 pid=265 pidfd=5] Unable to set up new connection: Failed to read an SELinux context from connection
+283:[85.422] /usr/libexec/gdm-wayland-session[262]: Unable to run session message bus
+284:[85.424] gdm[231]: Gdm: GdmDisplay: Session never registered, failing
+285:[85.449] gdm-autologin][269]: gkr-pam: unable to locate daemon control file
+286:[85.456] gdm-autologin][269]: pam_selinux(gdm-autologin:session): Setting file context "" failed for /dev/tty3: Invalid argument
+287:[85.481] gdm-autologin][269]: pam_systemd(gdm-autologin:session): Failed to create session: Access denied
+288:[85.530] gdm-autologin][269]: gkr-pam: unable to locate daemon control file
+289:[85.553] gdm[231]: trap at 00007f9e67f8f548 ip 00007f9e67f8f548 sp 00007fffb324b480 error 0000000000000000 tid 4339 in libglib-2.0.so.0.8400.4[0000000000046548,00007f9e67f49000+00000000000a5000]
+290:[85.554] gdm[231]: Gdm: GdmSession: no session desktop files installed, aborting...
+291:[85.802] systemd[1]: gdm.service: Main process exited, code=dumped, status=5/TRAP
+292:[85.805] systemd[1]: gdm.service: Killing process 257 (gnome-keyring-d) with signal SIGKILL.
+293:[85.809] systemd[1]: gdm.service: Killing process 269 (gdm-session-wor) with signal SIGKILL.
+294:[85.812] systemd[1]: gdm.service: Killing process 279 (gnome-keyring-d) with signal SIGKILL.
+295:[85.815] systemd[1]: gdm.service: Failed with result 'core-dump'.
+296:[85.816] systemd[1]: gdm.service: Triggering OnFailure= dependencies.
+299:[85.927] systemd[1]: gdm.service: Scheduled restart job, restart counter is at 1.
+302:[85.934] systemd[1]: Starting gdm.service - GNOME Display Manager...
+303:[85.948] systemd[1]: Started gdm.service - GNOME Display Manager.
+304:[85.975] gdm-autologin][294]: gkr-pam: unable to locate daemon control file
+305:[85.985] gdm-autologin][294]: pam_selinux(gdm-autologin:session): Setting file context "" failed for /dev/tty3: Invalid argument
+306:[86.020] gdm-autologin][294]: pam_systemd(gdm-autologin:session): Failed to create session: Access denied
+307:[86.023] gdm-autologin][294]: gkr-pam: unable to locate daemon control file
+308:[86.057] /usr/libexec/gdm-wayland-session[311]: dbus-daemon[311]: [session uid=1000 pid=311 pidfd=5] Unable to set up new connection: Failed to read an SELinux context from connection
+309:[86.058] /usr/libexec/gdm-wayland-session[308]: Unable to run session message bus
+310:[86.069] gdm[289]: Gdm: GdmDisplay: Session never registered, failing
+311:[86.089] gdm-autologin][316]: gkr-pam: unable to locate daemon control file
+312:[86.098] gdm-autologin][316]: pam_selinux(gdm-autologin:session): Setting file context "" failed for /dev/tty4: Invalid argument
+313:[86.123] gdm-autologin][316]: pam_systemd(gdm-autologin:session): Failed to create session: Access denied
+314:[86.125] gdm-autologin][316]: gkr-pam: unable to locate daemon control file
+315:[86.140] gdm[289]: trap at 00007fcff40cd548 ip 00007fcff40cd548 sp 00007ffe0762b860 error 0000000000000000 tid 4398 in libglib-2.0.so.0.8400.4[0000000000046548,00007fcff4087000+00000000000a5000]
+316:[86.141] gdm[289]: Gdm: GdmSession: no session desktop files installed, aborting...
+317:[86.149] systemd[1]: gdm.service: Main process exited, code=dumped, status=5/TRAP
+318:[86.152] systemd[1]: gdm.service: Killing process 303 (gnome-keyring-d) with signal SIGKILL.
+319:[86.155] systemd[1]: gdm.service: Killing process 316 (gdm-session-wor) with signal SIGKILL.
+320:[86.158] systemd[1]: gdm.service: Killing process 326 (gnome-keyring-d) with signal SIGKILL.
+321:[86.161] systemd[1]: gdm.service: Failed with result 'core-dump'.
+322:[86.163] systemd[1]: gdm.service: Triggering OnFailure= dependencies.
+325:[86.427] systemd[1]: gdm.service: Scheduled restart job, restart counter is at 2.
+328:[86.436] systemd[1]: Starting gdm.service - GNOME Display Manager...
+329:[86.450] systemd[1]: Started gdm.service - GNOME Display Manager.
+330:[86.483] gdm-autologin][341]: gkr-pam: unable to locate daemon control file
+331:[86.491] gdm-autologin][341]: pam_selinux(gdm-autologin:session): Setting file context "" failed for /dev/tty4: Invalid argument
+332:[86.520] gdm-autologin][341]: pam_systemd(gdm-autologin:session): Failed to create session: Access denied
+333:[86.522] gdm-autologin][341]: gkr-pam: unable to locate daemon control file
+334:[86.557] /usr/libexec/gdm-wayland-session[358]: dbus-daemon[358]: [session uid=1000 pid=358 pidfd=5] Unable to set up new connection: Failed to read an SELinux context from connection
+335:[86.560] /usr/libexec/gdm-wayland-session[355]: Unable to run session message bus
+336:[86.568] gdm[336]: Gdm: GdmDisplay: Session never registered, failing
+337:[86.689] gdm-autologin][362]: gkr-pam: unable to locate daemon control file
+338:[86.697] gdm-autologin][362]: pam_selinux(gdm-autologin:session): Setting file context "" failed for /dev/tty5: Invalid argument
+339:[86.723] gdm-autologin][362]: pam_systemd(gdm-autologin:session): Failed to create session: Access denied
+340:[86.725] gdm-autologin][362]: gkr-pam: unable to locate daemon control file
+341:[86.738] gdm[336]: trap at 00007ff38f613548 ip 00007ff38f613548 sp 00007ffe63b89090 error 0000000000000000 tid 4445 in libglib-2.0.so.0.8400.4[0000000000046548,00007ff38f5cd000+00000000000a5000]
+342:[86.738] gdm[336]: Gdm: GdmSession: no session desktop files installed, aborting...
+343:[86.748] systemd[1]: gdm.service: Main process exited, code=dumped, status=5/TRAP
+344:[86.749] systemd[1]: gdm.service: Killing process 350 (gnome-keyring-d) with signal SIGKILL.
+345:[86.749] systemd[1]: gdm.service: Killing process 362 (gdm-session-wor) with signal SIGKILL.
+346:[86.749] systemd[1]: gdm.service: Killing process 373 (gnome-keyring-d) with signal SIGKILL.
+347:[86.750] systemd[1]: gdm.service: Killing process 351 (n/a) with signal SIGKILL.
+348:[86.750] systemd[1]: gdm.service: Killing process 352 (n/a) with signal SIGKILL.
+349:[86.750] systemd[1]: gdm.service: Killing process 353 (n/a) with signal SIGKILL.
+350:[86.751] systemd[1]: gdm.service: Killing process 363 (n/a) with signal SIGKILL.
+351:[86.751] systemd[1]: gdm.service: Killing process 364 (n/a) with signal SIGKILL.
+352:[86.751] systemd[1]: gdm.service: Killing process 368 (n/a) with signal SIGKILL.
+353:[86.752] systemd[1]: gdm.service: Killing process 374 (n/a) with signal SIGKILL.
+354:[86.752] systemd[1]: gdm.service: Killing process 375 (n/a) with signal SIGKILL.
+355:[86.753] systemd[1]: gdm.service: Killing process 376 (n/a) with signal SIGKILL.
+356:[86.763] systemd[1]: gdm.service: Failed with result 'core-dump'.
+357:[86.763] systemd[1]: gdm.service: Triggering OnFailure= dependencies.
+360:[86.927] systemd[1]: gdm.service: Scheduled restart job, restart counter is at 3.
+363:[86.930] systemd[1]: Starting gdm.service - GNOME Display Manager...
+364:[86.944] systemd[1]: Started gdm.service - GNOME Display Manager.
+365:[86.975] gdm-autologin][388]: gkr-pam: unable to locate daemon control file
+366:[86.984] gdm-autologin][388]: pam_selinux(gdm-autologin:session): Setting file context "" failed for /dev/tty5: Invalid argument
+367:[87.027] gdm-autologin][388]: pam_systemd(gdm-autologin:session): Failed to create session: Access denied
+368:[87.029] gdm-autologin][388]: gkr-pam: unable to locate daemon control file
+396:[241.651]   153   4261 dbus-broker-lau  S  n  n    n     1  epoll_wait       2393         32 tgid=  4261 vtid=   153 ptid=3235774466 exe=/usr/bin/dbus-broker-launch
+397:[241.653]   154   4262 dbus-broker      S  n  n    n     1  epoll_wait      11278         68 tgid=  4262 vtid=   154 ptid=  4261 exe=/usr/bin/dbus-broker
+408:[241.665]   155   4298 gdbus            S  n  n    n     0  ppoll            5462          7 tgid=  4263 vtid=   190 ptid=  4263 exe=/usr/bin/NetworkManager
+412:[241.670]   173   4306 gdbus            S  n  n    n     1  ppoll             234          1 tgid=  4281 vtid=   198 ptid=  4281 exe=/usr/libexec/switcheroo-control
+416:[241.675]   169   4313 gdbus            S  n  n    n     0  ppoll            4049         11 tgid=  4277 vtid=   205 ptid=  4277 exe=/usr/libexec/accounts-daemon
+418:[241.677]   186   4317 gdbus            S  n  n    n     1  ppoll             738          1 tgid=  4294 vtid=   209 ptid=  4294 exe=/usr/libexec/udisks2/udisksd
+421:[241.681]   191   4326 gdbus            S  n  n    n     1  ppoll            1249          3 tgid=  4299 vtid=   218 ptid=  4299 exe=/usr/libexec/upowerd
+430:[241.691]   234   4352 gdbus            S  n  n    n     1  ppoll            1097          5 tgid=  4342 vtid=   244 ptid=  4342 exe=/usr/libexec/power-profiles-daemon
+434:[241.696]   383   4492 gdm              S  n  n    n     0  ppoll            2924         18 tgid=  4492 vtid=   383 ptid=3235774466 exe=/usr/bin/gdm
+435:[241.697]   383   4493 pool-spawner     S  n  n    n     0  futex              20          1 tgid=  4492 vtid=   384 ptid=  4492 fux=000055db111dc4f0 exe=/usr/bin/gdm
+436:[241.698]   383   4494 gmain            S  n  n    n     0  ppoll              10          1 tgid=  4492 vtid=   385 ptid=  4492 exe=/usr/bin/gdm
+437:[241.699]   383   4495 gdbus            S  n  n    n     1  ppoll            2582          4 tgid=  4492 vtid=   386 ptid=  4492 exe=/usr/bin/gdm
+438:[241.700]   388   4497 gdm-session-wor  S  n  n    n     1  ioctl            3133        133 tgid=  4497 vtid=   388 ptid=  4492 wake_dl_ns=241719811940 exe=/usr/libexec/gdm-session-worker
+439:[241.702]   388   4498 pool-spawner     S  n  n    n     1  futex              16          0 tgid=  4497 vtid=   389 ptid=  4497 fux=0000555fd3dce6f0 exe=/usr/libexec/gdm-session-worker
+440:[241.703]   388   4499 gmain            S  n  n    n     0  ppoll              27          1 tgid=  4497 vtid=   390 ptid=  4497 exe=/usr/libexec/gdm-session-worker
+441:[241.704]   388   4501 gdbus            S  n  n    n     1  ppoll            2101          3 tgid=  4497 vtid=   392 ptid=  4497 exe=/usr/libexec/gdm-session-worker
+467:[244.652]   153   4261 dbus-broker-lau  S  n  n    n     1  epoll_wait       2393         32 tgid=  4261 vtid=   153 ptid=3235774466 exe=/usr/bin/dbus-broker-launch
+468:[244.654]   154   4262 dbus-broker      S  n  n    n     1  epoll_wait      11278         68 tgid=  4262 vtid=   154 ptid=  4261 exe=/usr/bin/dbus-broker
+479:[244.666]   155   4298 gdbus            S  n  n    n     0  ppoll            5462          7 tgid=  4263 vtid=   190 ptid=  4263 exe=/usr/bin/NetworkManager
+483:[244.671]   173   4306 gdbus            S  n  n    n     1  ppoll             234          1 tgid=  4281 vtid=   198 ptid=  4281 exe=/usr/libexec/switcheroo-control
+487:[244.676]   169   4313 gdbus            S  n  n    n     0  ppoll            4049         11 tgid=  4277 vtid=   205 ptid=  4277 exe=/usr/libexec/accounts-daemon
+489:[244.678]   186   4317 gdbus            S  n  n    n     1  ppoll             738          1 tgid=  4294 vtid=   209 ptid=  4294 exe=/usr/libexec/udisks2/udisksd
+492:[244.682]   191   4326 gdbus            S  n  n    n     1  ppoll            1249          3 tgid=  4299 vtid=   218 ptid=  4299 exe=/usr/libexec/upowerd
+501:[244.692]   234   4352 gdbus            S  n  n    n     1  ppoll            1097          5 tgid=  4342 vtid=   244 ptid=  4342 exe=/usr/libexec/power-profiles-daemon
+505:[244.697]   383   4492 gdm              S  n  n    n     0  ppoll            2924         18 tgid=  4492 vtid=   383 ptid=3235774466 exe=/usr/bin/gdm
+506:[244.698]   383   4493 pool-spawner     S  n  n    n     0  futex              20          1 tgid=  4492 vtid=   384 ptid=  4492 fux=000055db111dc4f0 exe=/usr/bin/gdm
+507:[244.699]   383   4494 gmain            S  n  n    n     0  ppoll              10          1 tgid=  4492 vtid=   385 ptid=  4492 exe=/usr/bin/gdm
+508:[244.700]   383   4495 gdbus            S  n  n    n     1  ppoll            2582          4 tgid=  4492 vtid=   386 ptid=  4492 exe=/usr/bin/gdm
+509:[244.702]   388   4497 gdm-session-wor  S  n  n    n     1  ioctl            3133        135 tgid=  4497 vtid=   388 ptid=  4492 wake_dl_ns=244719531042 exe=/usr/libexec/gdm-session-worker
+510:[244.703]   388   4498 pool-spawner     S  n  n    n     1  futex              16          0 tgid=  4497 vtid=   389 ptid=  4497 fux=0000555fd3dce6f0 exe=/usr/libexec/gdm-session-worker
+511:[244.704]   388   4499 gmain            S  n  n    n     0  ppoll              27          1 tgid=  4497 vtid=   390 ptid=  4497 exe=/usr/libexec/gdm-session-worker
+512:[244.705]   388   4501 gdbus            S  n  n    n     1  ppoll            2101          3 tgid=  4497 vtid=   392 ptid=  4497 exe=/usr/libexec/gdm-session-worker
