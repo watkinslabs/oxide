@@ -142,12 +142,16 @@ impl NetStack {
     }
 }
 
+/// Absolute deadline for a stated lifetime; the protocol's infinity maps to
+/// the sentinel deadline, and a finite one saturates below it. # C: O(1)
 pub(crate) fn lifetime_deadline(now_ns: u64, lifetime: u32) -> u64 {
     if lifetime == u32::MAX { INFINITE_DEADLINE }
     else { now_ns.saturating_add((lifetime as u64).saturating_mul(NS_PER_SEC))
         .min(MAX_FINITE_DEADLINE) }
 }
 
+/// Seconds left before a deadline; the sentinel reports the protocol's
+/// infinity rather than a countdown. # C: O(1)
 pub(crate) fn remaining_lifetime(now_ns: u64, deadline_ns: u64) -> u32 {
     if deadline_ns == INFINITE_DEADLINE { return u32::MAX; }
     ((deadline_ns.saturating_sub(now_ns) / NS_PER_SEC).min(u32::MAX as u64)) as u32

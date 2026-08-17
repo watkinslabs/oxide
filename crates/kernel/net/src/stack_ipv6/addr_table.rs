@@ -12,10 +12,12 @@ use crate::stack::NetStack;
 use super::{Ipv6AddrOrigin, Ipv6AddrState, Ipv6IfaceAddr};
 
 impl NetStack {
+    /// Insert a permanent host address, already verified. # C: O(N)
     pub fn add_v6_addr(&self, iface: NetIfaceId, ip: Ipv6Addr) {
         self.add_v6_addr_meta(iface, ip, 128, u32::MAX, u32::MAX);
     }
 
+    /// Insert a static address with its prefix and lifetimes. # C: O(N)
     pub fn add_v6_addr_meta(
         &self,
         iface: NetIfaceId,
@@ -57,6 +59,9 @@ impl NetStack {
         }
     }
 
+    /// Insert or refresh one autoconfigured address from an advertised prefix.
+    /// `None` when a zero valid lifetime withdraws an address we do not hold;
+    /// `Some(true)` when the row is new. # C: O(N)
     pub(crate) fn upsert_slaac_addr(
         &self,
         iface: NetIfaceId,
@@ -103,6 +108,7 @@ impl NetStack {
         }
     }
 
+    /// Snapshot the initial namespace's IPv6 addresses. # C: O(N)
     pub fn v6_addr_snapshot(&self) -> Vec<(NetIfaceId, Ipv6IfaceAddr)> {
         self.v6_addr_snapshot_in(0)
     }
