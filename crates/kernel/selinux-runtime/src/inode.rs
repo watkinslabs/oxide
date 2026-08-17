@@ -11,7 +11,8 @@
 //   sb      — the per-mount decision: which behaviour, which default label
 //   resolve — the per-inode decision: existing label, and a new object's
 //   relabel — the three-permission ladder a `security.selinux` write costs
-//   xattr   — what a `security.*` attribute operation is allowed to demand
+//   xattr   — what a `security.*` attribute operation is allowed to demand, and
+//             the value a read of the label attribute reports
 //   perm    — the access-vector one ordinary permission check asks for
 
 pub mod sb;
@@ -25,7 +26,8 @@ pub use resolve::{LabelPlan, NewInodePlan, existing_inode_plan, existing_inode_s
                   genfs_context, new_inode_plan, new_inode_sid};
 pub use relabel::{Check, RelabelRequest, relabel_checks, relabel_decision,
                   PERM_ASSOCIATE, PERM_RELABELFROM, PERM_RELABELTO};
-pub use xattr::{XattrGate, XattrOp, selinux_xattr_gate};
+pub use xattr::{XattrGate, XattrOp, answers_getsecurity, getsecurity_value, selinux_xattr_gate,
+                SELINUX_SUFFIX};
 pub use perm::inode_permission_av;
 
 #[cfg(test)]

@@ -118,7 +118,9 @@ fn alloc_msix_vectors(dev: *mut LinuxPciDev, min_vecs: i32, max_vecs: i32) -> Op
     if table_end > super::core::resource_len(resource) { return None; }
     let mapping = super::maps::iomap_resource(resource, table_end)? as usize;
 
+    // SAFETY: dev is the same non-NULL, caller-owned pointer validated at function entry; msi_cap is a plain offset field, not re-dereferenced.
     if unsafe { (*dev).msi_cap } != 0 {
+        // SAFETY: dev is the same non-NULL, caller-owned pointer validated at function entry; msi_cap is a plain offset field, not re-dereferenced.
         let _ = pci::disable_msi(&config, bdf, unsafe { (*dev).msi_cap });
     }
     let cfg = cap_off & 0xfc;

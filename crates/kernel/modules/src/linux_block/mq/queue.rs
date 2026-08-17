@@ -166,6 +166,7 @@ unsafe extern "C" fn blk_mq_unquiesce_tagset(set: *mut LinuxBlkMqTagSet) {
     // SAFETY: set owns its attached queue list and this reverses one quiesce nesting level per queue.
     unsafe { change_tagset_quiesce(set, false); }
 }
+// SAFETY: set is the module's tag set per the KPI; wait_tagset_dispatches only touches its own lifecycle counters, mirroring blk_mq_quiesce_tagset's second call above.
 unsafe extern "C" fn blk_mq_wait_quiesce_done(set: *mut LinuxBlkMqTagSet) { unsafe { wait_tagset_dispatches(set); } }
 unsafe extern "C" fn blk_mq_tagset_wait_completed_request(set: *mut LinuxBlkMqTagSet) {
     // SAFETY: set owns the completion predicate for every request allocated through its attached queues.
@@ -245,6 +246,7 @@ unsafe fn mq_ops_from_set(set: *mut LinuxBlkMqTagSet) -> Option<*const LinuxBlkM
 /// The lifecycle gate serializes this test/increment with the first freeze, mirroring the queue usage
 /// reference transition: once freeze_depth becomes non-zero no later caller can obtain a new reference.
 pub(in crate::linux_block) unsafe fn queue_begin_use(q: *mut LinuxRequestQueue) -> bool {
+    // SAFETY: q is the caller-supplied queue whose lifecycle() null-checks it before returning; queue_begin_use establishes no additional precondition here.
     let Some(lifecycle) = (unsafe { lifecycle(q) }) else { return false; };
     let _gate = lifecycle.gate.lock();
     // SAFETY: lifecycle belongs to q and its gate serializes freeze_depth with this admission decision.
@@ -255,6 +257,7 @@ pub(in crate::linux_block) unsafe fn queue_begin_use(q: *mut LinuxRequestQueue) 
 
 /// Release the queue-use reference acquired by queue_begin_use.
 pub(in crate::linux_block) unsafe fn queue_end_use(q: *mut LinuxRequestQueue) {
+    // SAFETY: q is the same queue whose reference queue_begin_use previously admitted; its lifecycle record cannot have been freed while a user reference is outstanding.
     let Some(lifecycle) = (unsafe { lifecycle(q) }) else { return; };
     let was_one = lifecycle.users.fetch_update(
         ::core::sync::atomic::Ordering::AcqRel,
@@ -281,17 +284,20 @@ pub(in crate::linux_block) unsafe fn detach_queue(q: *mut LinuxRequestQueue) {
     if q.is_null() { return; }
     // SAFETY: q is frozen and drained by caller; its tag_set field is stable until this final detach.
     let set = unsafe { (*q).tag_set };
+    // SAFETY: set was just read from q's tag_set field above, itself read only after the caller-guaranteed drained/frozen state; tagset_lifecycle null-checks set before dereferencing.
     let Some(lifecycle) = (unsafe { tagset_lifecycle(set) }) else { return; };
     lifecycle.queues.lock().retain(|entry| *entry != q as usize);
 }
 
 pub(in crate::linux_block) unsafe fn attach_queue(set: *mut LinuxBlkMqTagSet, q: *mut LinuxRequestQueue) {
+    // SAFETY: set is the tag set attach_queue's caller is currently registering q into; tagset_lifecycle null-checks it before use.
     let Some(lifecycle) = (unsafe { tagset_lifecycle(set) }) else { return; };
     let mut queues = lifecycle.queues.lock();
     if !queues.contains(&(q as usize)) { queues.push(q as usize); }
 }
 
 unsafe fn change_tagset_quiesce(set: *mut LinuxBlkMqTagSet, begin: bool) {
+    // SAFETY: set is the caller-supplied tag set for this quiesce toggle; tagset_lifecycle null-checks it before returning the lifecycle reference iterated below.
     let Some(lifecycle) = (unsafe { tagset_lifecycle(set) }) else { return; };
     let queues = lifecycle.queues.lock();
     for entry in queues.iter().copied() {
@@ -304,6 +310,7 @@ unsafe fn change_tagset_quiesce(set: *mut LinuxBlkMqTagSet, begin: bool) {
 
 /// Admit one hardware dispatch only while neither freezing nor quiescing is active.
 pub(super) unsafe fn queue_begin_dispatch(q: *mut LinuxRequestQueue) -> bool {
+    // SAFETY: q is the caller-supplied queue being admitted for dispatch; lifecycle() null-checks it before returning.
     let Some(lifecycle) = (unsafe { lifecycle(q) }) else { return false; };
     let _gate = lifecycle.gate.lock();
     // SAFETY: queue lifecycle gate serializes both depth counters with dispatch admission.
@@ -311,6 +318,7 @@ pub(super) unsafe fn queue_begin_dispatch(q: *mut LinuxRequestQueue) -> bool {
     lifecycle.users.fetch_add(1, ::core::sync::atomic::Ordering::AcqRel);
     // SAFETY: q remains retained by the added user reference while the dispatch counter is published.
     let set = unsafe { (*q).tag_set };
+    // SAFETY: set was just read from the retained q's tag_set field on the line above; tagset_lifecycle null-checks it before use.
     if let Some(tagset) = unsafe { tagset_lifecycle(set) } {
         tagset.dispatches.fetch_add(1, ::core::sync::atomic::Ordering::AcqRel);
     }
@@ -322,6 +330,7 @@ pub(super) unsafe fn queue_end_dispatch(q: *mut LinuxRequestQueue) {
     if q.is_null() { return; }
     // SAFETY: queue_begin_dispatch retained q through this callback interval, so tag_set remains readable.
     let set = unsafe { (*q).tag_set };
+    // SAFETY: set was just read from q's tag_set field above, q still retained by the dispatch reference this call is releasing.
     if let Some(tagset) = unsafe { tagset_lifecycle(set) } {
         let was_one = tagset.dispatches.fetch_update(
             ::core::sync::atomic::Ordering::AcqRel,
@@ -342,6 +351,7 @@ pub(super) unsafe fn request_mark_complete(q: *mut LinuxRequestQueue) {
     if q.is_null() { return; }
     // SAFETY: q is retained by the live request that is making this transition, so tag_set remains readable.
     let set = unsafe { (*q).tag_set };
+    // SAFETY: set was just read from q's tag_set field above, q retained by the live request whose completion is being recorded.
     if let Some(tagset) = unsafe { tagset_lifecycle(set) } {
         tagset.completions.fetch_add(1, ::core::sync::atomic::Ordering::AcqRel);
     }
@@ -352,6 +362,7 @@ pub(super) unsafe fn request_unmark_complete(q: *mut LinuxRequestQueue) {
     if q.is_null() { return; }
     // SAFETY: q remains retained by the request until after this accounting transition has completed.
     let set = unsafe { (*q).tag_set };
+    // SAFETY: set was just read from q's tag_set field above, q retained by the request until this withdrawal completes.
     if let Some(tagset) = unsafe { tagset_lifecycle(set) } {
         let was_one = tagset.completions.fetch_update(
             ::core::sync::atomic::Ordering::AcqRel,
@@ -366,6 +377,7 @@ pub(super) unsafe fn request_unmark_complete(q: *mut LinuxRequestQueue) {
 }
 
 unsafe fn wait_tagset_dispatches(set: *mut LinuxBlkMqTagSet) {
+    // SAFETY: set is the caller-supplied tag set to wait on; tagset_lifecycle null-checks it before returning its lifecycle reference.
     let Some(lifecycle) = (unsafe { tagset_lifecycle(set) }) else { return; };
     #[cfg(target_os = "oxide-kernel")]
     // SAFETY: this waits only on tag-set-owned dispatch state and callers hold no queue/tag-list lock.
@@ -378,6 +390,7 @@ unsafe fn wait_tagset_dispatches(set: *mut LinuxBlkMqTagSet) {
 }
 
 unsafe fn wait_tagset_completions(set: *mut LinuxBlkMqTagSet) {
+    // SAFETY: set is the caller-supplied tag set whose completion predicate is awaited; tagset_lifecycle null-checks it first.
     let Some(lifecycle) = (unsafe { tagset_lifecycle(set) }) else { return; };
     #[cfg(target_os = "oxide-kernel")]
     // SAFETY: the tag set owns completion_wait for its requests, and callers hold no driver completion lock.
@@ -390,6 +403,7 @@ unsafe fn wait_tagset_completions(set: *mut LinuxBlkMqTagSet) {
 }
 
 unsafe fn bump_depth(q: *mut LinuxRequestQueue, freeze: bool) {
+    // SAFETY: q is the caller-supplied queue whose freeze/quiesce depth is being incremented; lifecycle() null-checks it before returning.
     let Some(lifecycle) = (unsafe { lifecycle(q) }) else { return; };
     let _gate = lifecycle.gate.lock();
     // SAFETY: q/lifecycle are live and this gate is the sole synchronization for the externally visible
@@ -401,6 +415,7 @@ unsafe fn bump_depth(q: *mut LinuxRequestQueue, freeze: bool) {
 }
 
 unsafe fn drop_depth(q: *mut LinuxRequestQueue, freeze: bool) {
+    // SAFETY: q is the caller-supplied queue whose freeze/quiesce depth is being decremented; lifecycle() null-checks it before returning.
     let Some(lifecycle) = (unsafe { lifecycle(q) }) else { return; };
     let _gate = lifecycle.gate.lock();
     // SAFETY: q/lifecycle are live and this gate serializes the depth decrement with admission. Releasing
@@ -416,6 +431,7 @@ unsafe fn drop_depth(q: *mut LinuxRequestQueue, freeze: bool) {
 }
 
 unsafe fn freeze_wait(q: *mut LinuxRequestQueue) {
+    // SAFETY: q is the caller-supplied queue being waited on; lifecycle() null-checks it before returning the predicate this function sleeps on.
     let Some(lifecycle) = (unsafe { lifecycle(q) }) else { return; };
     #[cfg(target_os = "oxide-kernel")]
     // SAFETY: callers are in the sleepable block-management path; lifecycle is owned by q and q stays live
@@ -429,6 +445,7 @@ unsafe fn freeze_wait(q: *mut LinuxRequestQueue) {
 }
 
 unsafe fn freeze_wait_timeout(q: *mut LinuxRequestQueue, timeout: u64) -> i32 {
+    // SAFETY: q is the caller-supplied queue being waited on with a deadline; lifecycle() null-checks it before returning the predicate.
     let Some(lifecycle) = (unsafe { lifecycle(q) }) else { return 0; };
     if lifecycle.users.load(::core::sync::atomic::Ordering::Acquire) == 0 { return timeout.min(i32::MAX as u64) as i32; }
     if timeout == 0 { return 0; }
@@ -466,6 +483,7 @@ unsafe fn tagset_lifecycle(set: *mut LinuxBlkMqTagSet) -> Option<&'static LinuxT
     if set.is_null() { return None; }
     // SAFETY: tag-set lifecycle is initialized before queues attach and freed only after every queue detaches.
     let lifecycle = unsafe { (*set).srcu };
+    // SAFETY: lifecycle was just read from set->srcu above and checked non-null on this line before this reborrow, so it names a live LinuxTagSetLifecycle installed by the module.
     if lifecycle.is_null() { None } else { Some(unsafe { &*lifecycle }) }
 }
 

@@ -49,6 +49,7 @@ mod tests {
         let chip = HwmonChipInfo { ops: &ops, info: info.as_ptr() };
         let dev = hwmon_device_register_with_info(&mut parent, c"n".as_ptr(), data, &chip, ::core::ptr::null());
         assert!(!dev.is_null());
+        // SAFETY: dev was just checked non-null and is the LinuxDevice this test's own register call allocated and still owns.
         unsafe { assert!((*dev).parent == &mut parent); assert_eq!((*dev).driver_data, data); }
         hwmon_device_unregister(dev);
     }
