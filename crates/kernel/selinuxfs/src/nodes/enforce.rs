@@ -29,9 +29,16 @@ pub fn read_enforce(ops: &mut dyn PolicyOps) -> String { render_flag(ops.enforci
 /// nothing is applied and nothing partially applied.
 pub fn write_enforce(ops: &mut dyn PolicyOps, body: &[u8]) -> KResult<usize> {
     let want = parse_flag(request_text(body)?)?;
-    if want == ops.enforcing() { return Ok(body.len()); }
+    let before = ops.enforcing();
+    if want == before { return Ok(body.len()); }
     ops.check(PERM_SETENFORCE)?;
     ops.set_enforcing(want)?;
+    // The userspace AVC caches its own decisions and answers permissive ones
+    // from that cache, so a mode change it is not told about leaves it
+    // enforcing — or not — on last session's answer.
+    if let Some(notice) = crate::notify::enforce_notice(before, ops.enforcing()) {
+        crate::notify::emit(notice);
+    }
     Ok(body.len())
 }
 

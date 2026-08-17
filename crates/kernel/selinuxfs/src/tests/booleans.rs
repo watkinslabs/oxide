@@ -60,3 +60,20 @@ fn a_word_and_an_unknown_boolean_are_both_refused() {
     assert_eq!(write_bool(&mut ops, "absent", b"1").err(), Some(VfsError::Einval));
     assert_eq!(read_bool(&mut ops, "absent").err(), Some(VfsError::Einval));
 }
+
+#[test]
+fn a_commit_announces_the_policy_change_and_a_zero_commit_announces_nothing() {
+    // A commit re-evaluates every conditional rule, so answers the userspace
+    // AVC cached under the old boolean values are stale.
+    use crate::notify::tests::announced;
+    use crate::notify::Notice;
+    let mut ops = FakeOps::allow_all().with_bool("one", false);
+    ops.facts.seqno = 6;
+    write_commit(&mut ops, b"1").unwrap();
+    assert_eq!(announced(), alloc::vec![Notice::Policyload(6)]);
+    write_commit(&mut ops, b"0").unwrap();
+    assert!(announced().is_empty(), "nothing was applied, so nothing changed");
+    let mut denied = FakeOps::denying(PERM_SETBOOL).with_bool("one", false);
+    assert_eq!(write_commit(&mut denied, b"1").err(), Some(VfsError::Eacces));
+    assert!(announced().is_empty());
+}
