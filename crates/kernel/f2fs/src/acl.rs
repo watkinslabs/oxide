@@ -39,6 +39,8 @@ fn is_named(tag: u16) -> bool { tag == ACL_USER || tag == ACL_GROUP }
 /// bytes the caller handed over. Taken from the index table so the name and the
 /// index it is stored under cannot drift apart. # C: O(1)
 pub fn name_access()  -> &'static str { name_of(XATTR_INDEX_POSIX_ACL_ACCESS) }
+/// The name of the template a directory hands to what is created inside it.
+/// # C: O(1)
 pub fn name_default() -> &'static str { name_of(XATTR_INDEX_POSIX_ACL_DEFAULT) }
 
 fn name_of(index: u8) -> &'static str {
