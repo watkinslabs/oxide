@@ -7,6 +7,8 @@
 //! - `encrypted`: an encrypted directory, locked and unlocked.
 //! - `inlinecrypt`: the mount option that moves contents encryption down a
 //!                  layer, and the proof the medium is unchanged by it.
+//! - `keyatopen`: WHERE an encrypted inode's key is resolved — at the
+//!                operation that enters the file, never from under a write.
 
 use super::*;
 use crate::features::Access;
@@ -27,6 +29,8 @@ mod reserve_gate;
 mod encrypted;
 #[path = "volume/inlinecrypt.rs"]
 mod inlinecrypt;
+#[path = "volume/keyatopen.rs"]
+mod keyatopen;
 
 #[test]
 fn a_fixture_volume_mounts() {

@@ -24,6 +24,8 @@
 //! - `xattrs`: the attribute region, assembled from its two halves.
 //! - `fileops`: writing a file's bytes, and shortening one.
 //! - `dirwrite`: adding and removing directory entries.
+//! - `dirstored`: placing and finding an entry by its STORED name, which a
+//!                replay does and which needs no key.
 //! - `namei`:  creating, removing and linking names.
 //! - `rename`: moving a name, exchanging two, and the whiteout form.
 //! - `tmpfile`: an inode no name reaches.
@@ -89,6 +91,7 @@ pub mod barrier;
 pub mod commit;
 pub mod fileops;
 pub mod dirwrite;
+pub mod dirstored;
 pub mod namei;
 pub mod rename;
 pub mod tmpfile;
@@ -159,6 +162,15 @@ pub struct Volume<S: SectorSource> {
     /// one by. Never on the medium: an inode whose key is absent stays
     /// listable and removable, and only its contents and names are withheld.
     pub(crate) fscrypt_keys: BTreeMap<crate::crypto::KeyId, crate::crypto::MasterKey>,
+    /// The key each encrypted inode's contents and names are worked under, as
+    /// the operation that entered the file resolved it. The reference keeps
+    /// exactly this beside the inode and its en/decryption reads it with a raw
+    /// dereference; resolving it at the point of use instead put an attribute
+    /// read, a node read and a page lock that can block underneath every
+    /// partial block write. Interior mutability because a READ is one of the
+    /// entry points that fills it and a read takes `&self` — the same reason
+    /// `verity_cache` below has it.
+    pub(crate) crypt_cache: core::cell::RefCell<BTreeMap<u32, alloc::sync::Arc<crate::crypto::Info>>>,
     pub(crate) opts: Options,
     pub(crate) access: Access,
     pub(crate) writable: bool,
