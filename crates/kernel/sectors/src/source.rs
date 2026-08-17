@@ -221,6 +221,14 @@ pub struct MemImage {
     /// leave, so the two are indistinguishable by content — recording the
     /// request is the only way a test can tell which one it asked for.
     erased: sync::Spinlock<Vec<(u64, u64)>, sync::TaskList>,
+    /// How many of the next cache flushes this image REFUSES.
+    ///
+    /// A real device can fail a barrier, and a filesystem's answer to one —
+    /// retry, then stop writing rather than record a state the medium does not
+    /// hold — is unreachable from a fixture that always succeeds. Counted down
+    /// rather than latched, so a test can arrange a transient refusal that the
+    /// retry recovers from as well as a member that never comes back.
+    refuse_flushes: sync::Spinlock<u32, sync::TaskList>,
     sector_size: u32,
     writable: bool,
 }
@@ -236,13 +244,21 @@ impl MemImage {
     pub fn from_bytes(sector_size: u32, bytes: Vec<u8>) -> Self {
         Self { bytes: sync::Spinlock::new(bytes), log: sync::Spinlock::new(Vec::new()),
                write_cache: false, erased: sync::Spinlock::new(Vec::new()),
-               sector_size, writable: true }
+               refuse_flushes: sync::Spinlock::new(0), sector_size, writable: true }
     }
 
     /// Have this image behave as a device that holds acknowledged writes in a
     /// volatile cache, so the barriers a durability promise needs are actually
     /// issued at it. # C: O(1)
     pub fn with_write_cache(mut self) -> Self { self.write_cache = true; self }
+
+    /// Have the next `n` cache flushes fail, as a device with a failing cache
+    /// does. The command is still RECORDED: it was issued, and a test asserting
+    /// how many times a caller retried counts exactly those. # C: O(1)
+    pub fn refusing_flushes(self, n: u32) -> Self { *self.refuse_flushes.lock() = n; self }
+
+    /// How many refusals this image still owes. # C: O(1)
+    pub fn flush_refusals_left(&self) -> u32 { *self.refuse_flushes.lock() }
 
     /// The commands this image has been asked for, in order. # C: O(commands)
     pub fn commands(&self) -> Vec<Cmd> { self.log.lock().clone() }
@@ -314,6 +330,8 @@ impl SectorSource for MemImage {
     /// barrier arrived before the block it was meant to fence.
     fn flush(&self) -> Result<(), Errno> {
         self.log.lock().push(Cmd::Flush);
+        let mut left = self.refuse_flushes.lock();
+        if *left > 0 { *left -= 1; return Err(Errno::Eio); }
         Ok(())
     }
 

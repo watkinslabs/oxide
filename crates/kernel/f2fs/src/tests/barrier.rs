@@ -9,6 +9,9 @@
 
 use super::*;
 
+#[path = "barrier/flushfail.rs"]
+mod flushfail;
+
 use block::durability::{FUA, PREFLUSH};
 use sectors::source::Cmd;
 use sectors::MemImage;
