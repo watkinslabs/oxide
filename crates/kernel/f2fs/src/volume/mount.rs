@@ -200,6 +200,7 @@ impl<S: SectorSource> Volume<S> {
             // The volume's own metadata inode and its own area bounds: the
             // format says which inode number that is and where the metadata
             // ends, so nothing here picks either.
+            readdir_ra: true,
             meta_cache,
             // Keyed by the file's own inode number and its own page index, so
             // an out-of-place rewrite or a cleaner relocation — both of which

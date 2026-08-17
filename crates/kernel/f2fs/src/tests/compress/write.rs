@@ -231,15 +231,43 @@ fn a_hole_inside_a_plain_cluster_stays_a_hole() {
 }
 
 #[test]
-fn a_hole_inside_a_cluster_that_gets_compressed_reads_back_as_zeroes() {
+fn a_cluster_with_a_slot_nobody_reserved_is_stored_plain() {
+    // The blocks the write covered are held; the two before them are empty,
+    // and an IMAGE occupies the whole cluster's worth of slots. Making one out
+    // of this cluster would have to take room for those two slots HERE, at
+    // writeback, for a write the caller was already told had landed — so the
+    // cluster is stored plain instead, which needs no slot it does not have.
+    //
+    // Filling the holes is what makes it an image, and the case below that
+    // does exactly that is the positive control for this one.
     let (mut v, ino) = with_compressed(COMPRESS_LZ4, 2, 0);
     let data = patterned(BLKSIZE);
     v.write_compressed(ino, 2 * BLKSIZE as u64, &data).unwrap();
-    // Now the cluster is whole, so it is compressed — hole included.
     v.write_compressed(ino, 3 * BLKSIZE as u64, &data).unwrap();
     let v = remount(v);
-    assert!(plan::compressed_extent(&addrs(&v, ino, 0)).is_some());
+    let a = addrs(&v, ino, 0);
+    assert_eq!(plan::compressed_extent(&a), None, "{a:?}");
     let mut want = vec![0u8; 2 * BLKSIZE];
+    want.extend_from_slice(&data);
+    want.extend_from_slice(&data);
+    assert_eq!(whole(&v, ino), want);
+}
+
+#[test]
+fn filling_a_clusters_holes_makes_it_an_image() {
+    // The positive control for the case above: the same two blocks written,
+    // then the two holes filled, and now every slot of the cluster is held —
+    // which is the one condition an image needs that the sparse cluster
+    // lacked.
+    let (mut v, ino) = with_compressed(COMPRESS_LZ4, 2, 0);
+    let data = patterned(BLKSIZE);
+    v.write_compressed(ino, 2 * BLKSIZE as u64, &data).unwrap();
+    v.write_compressed(ino, 3 * BLKSIZE as u64, &data).unwrap();
+    v.write_compressed(ino, 0, &patterned(2 * BLKSIZE)).unwrap();
+    let v = remount(v);
+    let a = addrs(&v, ino, 0);
+    assert!(plan::compressed_extent(&a).is_some(), "{a:?}");
+    let mut want = patterned(2 * BLKSIZE);
     want.extend_from_slice(&data);
     want.extend_from_slice(&data);
     assert_eq!(whole(&v, ino), want);
@@ -404,6 +432,8 @@ fn every_mark_a_compressed_file_carries_is_counted_once_and_given_back_once() {
     let (mut v, ino) = with_compressed(COMPRESS_LZ4, 2, 0);
     let base = drift(&mut v);
     v.write_compressed(ino, 0, &patterned(8 * BLKSIZE)).unwrap();
+    // The marks a cluster carries are chosen with its shape, at writeback.
+    v.sync_data().unwrap();
     let held = marks(&v, ino, 0) + marks(&v, ino, 4);
     assert!(held > 0, "no marks, so the case proves nothing");
     assert_eq!(drift(&mut v), base + held, "a mark was counted twice or not at all");
@@ -424,6 +454,7 @@ fn overwriting_a_compressed_cluster_leaks_no_mark() {
     v.write_compressed(ino, 0, &noise(4 * BLKSIZE, 21)).unwrap();
     assert_eq!(drift(&mut v), base, "a plain cluster still carries marks");
     v.write_compressed(ino, 0, &patterned(4 * BLKSIZE)).unwrap();
+    v.sync_data().unwrap();
     let held = marks(&v, ino, 0);
     assert!(held > 0);
     assert_eq!(drift(&mut v), base + held);

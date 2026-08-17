@@ -45,6 +45,11 @@
 //!              mount's metadata mapping.
 //! - `writeback`: choosing where a file's dirty data pages go, and putting
 //!                them there.
+//! - `mapped`: what a MAPPING of a file asks for — the fault's fill, charged
+//!             to the mapped layer, and the residency questions that must not
+//!             fetch.
+//! - `readahead`: blocks — data, node and metadata — fetched before a reader
+//!                asks for them, one transfer per contiguous run.
 
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
@@ -97,6 +102,8 @@ pub mod iostat;
 pub mod blockio;
 pub mod writeback;
 pub mod nodeback;
+pub mod mapped;
+pub mod readahead;
 
 pub use curseg::{Curseg, Kind, Summary};
 pub use dir::DirEntry;
@@ -268,6 +275,11 @@ pub struct Volume<S: SectorSource> {
     /// compressed-block cache above: no mount option turns it off, because
     /// the reference has no option for it either and every mount re-reads the
     /// same handful of table blocks without one.
+    /// Whether listing a directory prefetches the node block of every inode
+    /// it names. On by default, as the reference has it, and published as a
+    /// control because a listing that will not stat what it lists pays for
+    /// blocks it never reads.
+    pub(crate) readdir_ra: bool,
     pub(crate) meta_cache: crate::checkpoint::cache::Cache,
     /// Failures this mount was asked to inject, and how many each site has
     /// been given. Live state rather than a copy of the option set: a knob

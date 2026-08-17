@@ -90,19 +90,39 @@ impl<S: SectorSource> Volume<S> {
         Ok(addr)
     }
 
-    /// Place ONE node now, by id, and stop holding its page.
+    /// Place ONE node now, by id, and keep its page — clean.
     ///
     /// What a flush point that cares about the ORDER of its nodes needs — the
     /// chain an `fsync` leaves is read forward from where the log stood, so
-    /// the inode has to reach the medium before the nodes under it. The page
-    /// is dropped rather than kept clean because the layer below has no way to
-    /// be told that a page it still calls dirty has already been placed.
+    /// the inode has to reach the medium before the nodes under it, and no
+    /// batch entry point can express that because the mapping picks the batch.
+    ///
+    /// The page ENDS WRITEBACK rather than being invalidated, which is the
+    /// whole difference: the bytes just placed are the node's current bytes,
+    /// so dropping them sends the next read of an `fsync`'d or relocated node
+    /// back to the medium for what the mount is already holding. Ending the
+    /// dirty state instead is what the reference does to a node folio it
+    /// writes one at a time, and it needs the layer below to have a way of
+    /// being told — which is why this goes through the one-page writeback
+    /// entry point rather than placing the block and invalidating behind it.
     /// # C: O(main segments) worst case
     pub(crate) fn writeback_node(&mut self, nid: u32) -> Result<u32, Errno> {
-        let Some(block) = self.node_cache.peek(nid) else { return Err(Errno::Enoent) };
-        let addr = self.writeback_node_block(nid, &block)?;
-        self.node_cache.forget(nid);
-        Ok(addr)
+        let cache = Arc::clone(&self.node_cache);
+        let mut placed: Result<u32, Errno> = Err(Errno::Enoent);
+        let (_, _out) = cache.writeback_nid(nid, &mut |_ino, pages, results| {
+            for (i, p) in pages.iter().enumerate() {
+                placed = self.writeback_node_block(NodeCache::nid_of(p), p.data);
+                // A node released while dirty is reported CLEAN to the page,
+                // for the reason the batch path reports it clean: there is
+                // nothing to write and nothing a later flush could do with it.
+                // The caller still hears the `ENOENT`.
+                results[i] = match placed {
+                    Ok(_) | Err(Errno::Enoent) => Ok(()),
+                    Err(_) => Err(BlockError::Eio),
+                };
+            }
+        });
+        placed
     }
 
     /// Place a batch the mapping handed over, one address per page.
@@ -128,24 +148,32 @@ impl<S: SectorSource> Volume<S> {
 
     /// Place every node this mount has changed, reporting the first failure.
     ///
-    /// Repeated until the mapping is clean, because placing a node can dirty
+    /// Repeated UNTIL THE MAPPING IS CLEAN, because placing a node can dirty
     /// another one: the node table's own accounting is not node state, but the
     /// cleaner and the space accounting reachable from an allocation are.
-    /// Bounded by the number of passes rather than run to a fixed point
-    /// forever, so a mount that cannot make progress reports rather than hangs.
+    ///
+    /// It terminates, and the argument is the same one the reference's own
+    /// unbounded retry rests on. The reference shuts every writer out before
+    /// it starts — the checkpoint holds the whole-filesystem lock and the node
+    /// change lock across its retry — so the dirty set can only grow by what
+    /// the flush ITSELF dirties. Here that exclusion is the `&mut` on the
+    /// mount: nothing else can reach a node while this runs. Each pass claims
+    /// every page dirty when it started and either places it or ends the loop
+    /// with the error, so the set strictly drains unless placing a node dirties
+    /// one that was not dirty — and a placement that did that forever would be
+    /// a filesystem that cannot be checkpointed at all, which is a defect to
+    /// find rather than a count to survive.
     /// # Ctx: process # Sleeps: y # C: O(dirty nodes)
     pub(crate) fn flush_all_nodes(&mut self) -> Result<(), Errno> {
         let cache = Arc::clone(&self.node_cache);
-        let mut first: Option<Errno> = None;
-        for _ in 0..NODE_FLUSH_PASSES {
-            if cache.dirty() == 0 { break; }
+        drain_nodes(|| cache.dirty(), || {
+            let mut first: Option<Errno> = None;
             let (_, out) = cache.flush(usize::MAX, &mut |_ino, pages, results| {
                 self.writeback_node_pages(pages, results, &mut first);
             });
             if let (None, Err(_)) = (first, out) { first = Some(Errno::Eio); }
-            if first.is_some() { break; }
-        }
-        match first { Some(e) => Err(e), None => Ok(()) }
+            first
+        })
     }
 
     /// The mapping this mount reads and changes its nodes through. # C: O(1)
@@ -171,11 +199,23 @@ impl<S: SectorSource> Volume<S> {
     pub(crate) fn peek_node(&self, nid: u32) -> Option<Vec<u8>> { self.node_cache.peek(nid) }
 }
 
+/// Run `pass` until `dirty` reports nothing left, or until a pass reports.
+///
+/// The drain's own decision, with the mapping and the placement lifted out, so
+/// what it does about a pass that leaves work behind is answerable without a
+/// volume: a fixed bound and an unbounded loop are indistinguishable on any
+/// workload that converges in one pass, which is every workload this
+/// filesystem has.
+/// # C: O(passes)
+pub(crate) fn drain_nodes<D, P>(mut dirty: D, mut pass: P) -> Result<(), Errno>
+where D: FnMut() -> usize, P: FnMut() -> Option<Errno>
+{
+    while dirty() != 0 {
+        if let Some(e) = pass() { return Err(e); }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 #[path = "../tests/nodemap.rs"]
 mod tests;
-
-/// How many times a whole-mount node flush will go round before it calls the
-/// mapping unable to drain. One pass places every node dirty when it started;
-/// a second covers nodes the first dirtied; past that nothing is converging.
-const NODE_FLUSH_PASSES: usize = 8;

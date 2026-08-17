@@ -234,3 +234,68 @@ fn a_failed_page_is_re_dirtied_and_reported() {
     pc.sync(INO).unwrap();
     assert_eq!(fs.medium_page(0).unwrap(), page(0x77));
 }
+
+// ---------------------------------------------- one named page, chosen by the FS
+
+/// A sink that records what it was handed and lands it in `fs`'s medium — what
+/// a filesystem already inside its own flush point passes, rather than letting
+/// the cache enter the installed target and take a lock it is holding.
+fn into_medium<'a>(fs: &'a Arc<FsTarget>, fail: bool)
+    -> impl FnMut(InodeId, &[PageOut<'_>], &mut [KResult<()>]) + 'a {
+    move |ino, pages, results| {
+        if fail { return; } // slots arrive prefilled with a failure
+        fs.writepages(ino, pages, results);
+    }
+}
+
+#[test]
+fn a_single_named_page_written_back_stays_resident_and_clean() {
+    // The property a log-structured filesystem's ordered flush needs: it names
+    // ONE page, that page's dirty state ends, and the page itself is still
+    // here — so the next read of it costs nothing. Invalidating instead is
+    // correct and colder, and is what this asserts against.
+    let _m = fresh_machine();
+    let fs = FsTarget::new();
+    let pc = cache_with(&fs, 2);
+    dirty(&pc, 0, &page(0x91)).unwrap();
+    dirty(&pc, PAGE_BYTES as u64, &page(0x92)).unwrap();
+
+    let (n, out) = pc.writeback_page_with(INO, 0, &mut into_medium(&fs, false));
+    assert_eq!((n, out), (1, Ok(())));
+    assert_eq!(fs.visits(), vec![1], "the batch was not the one page named");
+    assert_eq!(fs.medium_page(0).unwrap(), page(0x91));
+    assert_eq!(fs.medium_page(PAGE_BYTES as u64), None, "the unnamed page was written too");
+
+    let held = pc.lookup(INO, 0).expect("the placed page was dropped, not cleaned");
+    assert!(!held.is_dirty(), "the placed page is still dirty");
+    assert_eq!(*held.data.lock(), page(0x91), "the placed page lost its bytes");
+    assert_eq!(pc.dirty_count(INO), 1, "the unnamed page did not stay dirty");
+    assert_eq!(nr_dirty(), 1);
+}
+
+#[test]
+fn a_single_named_page_the_sink_did_not_report_is_re_dirtied() {
+    // The same rule the batch path follows: an unreported page keeps the only
+    // copy of the bytes and stays on the dirty list for the next flush.
+    let _m = fresh_machine();
+    let fs = FsTarget::new();
+    let pc = cache_with(&fs, 1);
+    dirty(&pc, 0, &page(0x93)).unwrap();
+    let (n, out) = pc.writeback_page_with(INO, 0, &mut into_medium(&fs, true));
+    assert_eq!(n, 0);
+    assert_eq!(out, Err(BlockError::Eio));
+    assert_eq!(pc.dirty_count(INO), 1, "the unwritten page went clean");
+    assert_eq!(*pc.lookup(INO, 0).unwrap().data.lock(), page(0x93));
+}
+
+#[test]
+fn a_single_named_page_that_is_already_clean_is_written_nowhere() {
+    // Someone else wrote it. Not this caller's error, and not a second write
+    // of a block the log has already handed out.
+    let _m = fresh_machine();
+    let fs = FsTarget::new();
+    let pc = cache_with(&fs, 1);
+    let (n, out) = pc.writeback_page_with(INO, 0, &mut into_medium(&fs, false));
+    assert_eq!((n, out), (0, Ok(())));
+    assert_eq!(fs.visits(), Vec::<usize>::new(), "a clean page reached the sink");
+}
