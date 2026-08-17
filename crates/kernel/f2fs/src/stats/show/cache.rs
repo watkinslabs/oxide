@@ -45,7 +45,7 @@ pub fn render(o: &mut String, g: &General) {
     o.push_str(&format!("Discard: ({:>4} {:>4})) cmd: {:>4} undiscard:{:>4}\n",
                         0, 0, 0, g.undiscard_blks));
     o.push_str(&format!("  - atomic IO: {:>4} (Max. {:>4})\n", g.aw_cnt, g.max_aw_cnt));
-    o.push_str(&format!("  - compress: {:>4}, hit:{:>8}\n", 0, 0));
+    o.push_str(&format!("  - compress: {:>4}, hit:{:>8}\n", g.compress_cached, g.compress_hits));
     o.push_str(&format!("  - nodes: {:>4} in {:>4}\n", 0, 0));
     o.push_str(&format!("  - dents: {:>4} in dirs:{:>4} ({:>4})\n",
                         0, g.ndirty_dirs, g.ndirty_all));

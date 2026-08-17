@@ -23,6 +23,20 @@ fn mounted() -> Arc<F2fs> {
     F2fs::open_line(dev, "/dev/fake", true, "").expect("mount")
 }
 
+/// The same, over a volume whose features can record compression, mounted
+/// under `line`. Without the feature the compression group — the read cache
+/// with it — is dropped before any remount can be refused for changing it.
+fn mounted_compressed(line: &str) -> Arc<F2fs> {
+    let mut b = test_image::with_root();
+    b.feature |= crate::flags::FEATURE_COMPRESSION;
+    let bytes = b.finish();
+    let blocks = bytes.len() as u64 / u64::from(BS);
+    let dev: Arc<MemDisk<TaskList>> = MemDisk::new(BS, blocks);
+    let mut req = BlockRequest::new_write(0, blocks as u32, bytes);
+    dev.submit_sync(&mut req).expect("device write");
+    F2fs::open_line(dev, "/dev/fake", true, line).expect("mount")
+}
+
 /// The flush a mount going read-only takes is taken as if the volume were
 /// going away — and the checkpoint it leaves SAYS so, because the reason a
 /// checkpoint is written is read off the closing mark rather than from the
@@ -155,6 +169,25 @@ fn the_discard_unit_may_not_be_switched_under_a_running_mount() {
     assert_eq!(fs.options().discard_unit, DiscardUnit::Block);
     assert!(fs.remount("discard_unit=section", false).is_err());
     assert_eq!(fs.options().discard_unit, DiscardUnit::Block);
+}
+
+#[test]
+fn the_compressed_block_cache_may_not_be_switched_under_a_running_mount() {
+    // The cache is built when the mount is made and the read path either
+    // consults it or does not. Turning it on later would leave it empty for
+    // every cluster already read; turning it off would leave its entries
+    // unreachable and never invalidated, which is worse than keeping them.
+    let off = mounted_compressed("");
+    assert!(!off.options().compress_cache);
+    assert!(off.remount("compress_cache", false).is_err());
+    assert!(!off.options().compress_cache, "nothing was applied");
+
+    let on = mounted_compressed("compress_cache");
+    assert!(on.options().compress_cache);
+    // A line that says nothing about it keeps it, so an ordinary remount of a
+    // caching mount is not refused.
+    on.remount("background_gc=off", false).expect("remount");
+    assert!(on.options().compress_cache);
 }
 
 // ------------------------------------------------------ defaults at mount

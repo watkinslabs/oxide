@@ -238,6 +238,10 @@ pub struct Volume<S: SectorSource> {
     /// that accumulated an entry per file ever touched would grow with the
     /// number of files rather than with the number of hints.
     pub(crate) ioprio_hint: BTreeMap<u32, u32>,
+    /// The compressed blocks this mount has read and kept, when it was asked
+    /// to keep them; inert on every other mount. Interior-mutable already, for
+    /// the reason the caches above are: a READ is what fills it.
+    pub(crate) compress_cache: crate::compress::cache::Cache,
     /// Failures this mount was asked to inject, and how many each site has
     /// been given. Live state rather than a copy of the option set: a knob
     /// rearms a site without remounting, and the counters are what the report

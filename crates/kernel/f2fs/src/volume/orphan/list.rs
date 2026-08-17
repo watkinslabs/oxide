@@ -89,6 +89,11 @@ impl<S: SectorSource> Volume<S> {
         if left > 0 { return Ok(()); }
         self.opens.remove(&ino);
         if self.orphans.contains(&ino) { return self.release_orphan(ino); }
+        // Nothing holds the file any more, so nothing is going to read its
+        // clusters again soon; the blocks it cached are held for no one. A
+        // file being FREED needs no such call — releasing its blocks drops
+        // their cached copies by address.
+        self.compress_cache.invalidate_ino(ino);
         Ok(())
     }
 

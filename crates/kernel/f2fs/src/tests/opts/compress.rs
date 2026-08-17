@@ -179,6 +179,34 @@ fn a_volume_that_can_record_it_keeps_the_group_and_checks_the_pair() {
 }
 
 #[test]
+fn a_volume_that_cannot_record_compression_drops_the_read_cache_with_the_group() {
+    // The cache is not part of the group and is not a setting a file carries,
+    // but a volume with no compressed cluster on it has nothing for the cache
+    // to hold — and leaving it on would report a cache that can never fill.
+    let mut o = p("compress_cache").unwrap();
+    assert!(o.compress_cache);
+    assert_eq!(check_compression(FEATURE_EXTRA_ATTR, &mut o), Ok(()));
+    assert!(!o.compress_cache);
+
+    let mut kept = p("compress_cache").unwrap();
+    assert_eq!(check_compression(FEATURE_COMPRESSION, &mut kept), Ok(()));
+    assert!(kept.compress_cache, "a volume that can record it keeps it");
+}
+
+#[test]
+fn the_read_cache_is_shown_only_where_it_is_on_and_reads_back() {
+    let feature = FEATURE_COMPRESSION;
+    let on = p("compress_cache").unwrap();
+    let shown = crate::opts::show(&on, feature);
+    assert!(shown.contains(",compress_cache"), "{shown}");
+    assert!(crate::opts::parse(Options::defaults(), &shown).unwrap().compress_cache);
+    assert!(!crate::opts::show(&Options::defaults(), feature).contains("compress_cache"));
+    // A volume that cannot record compression shows none of the group, so the
+    // string a remount reads back never asks for a cache it would then refuse.
+    assert!(!crate::opts::show(&on, FEATURE_EXTRA_ATTR).contains("compress_cache"));
+}
+
+#[test]
 fn a_value_out_of_range_is_refused_even_where_it_could_not_be_recorded() {
     // The mistake is in the LINE, and the line is the same on every volume.
     assert_eq!(p("compress_log_size=9").map(|_| ()), Err(Errno::Einval));

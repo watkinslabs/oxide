@@ -105,7 +105,7 @@ pub fn show(o: &Options, feature: u32) -> String {
     jquota(&mut s, o);
     if let Some(p) = &o.dummy_policy { s.push_str(crate::opts::crypt::show_dummy(p)); }
     if o.inlinecrypt { s.push_str(",inlinecrypt"); }
-    if crate::features::has_compression(feature) { compress(&mut s, &o.compress); }
+    if crate::features::has_compression(feature) { compress(&mut s, &o.compress, o.compress_cache); }
     // Shown only when the mount asked, so an ordinary line stays short — and
     // shown in FULL when it did, because a volume running with injected
     // failures must never look like one that is not.
@@ -136,7 +136,7 @@ pub fn show(o: &Options, feature: u32) -> String {
 /// takes it in — a level rendered as a name of its own would be read back as
 /// an unknown option and silently dropped.
 /// # C: O(entries)
-fn compress(s: &mut String, c: &Compress) {
+fn compress(s: &mut String, c: &Compress, cache: bool) {
     s.push_str(&format!(",compress_algorithm={}", algorithm_name(c.algorithm)));
     if c.level != 0 { s.push_str(&format!(":{}", c.level)); }
     s.push_str(&format!(",compress_log_size={}", c.log_size));
@@ -153,6 +153,9 @@ fn compress(s: &mut String, c: &Compress) {
         CompressMode::Fs => ",compress_mode=fs",
         CompressMode::User => ",compress_mode=user",
     });
+    // Last, and only when it is on: the parser has no spelling that turns it
+    // off, so a rendered "off" would be a line no remount could give back.
+    if cache { s.push_str(",compress_cache"); }
 }
 
 /// The legacy arrangement: the format first, then one name per kind.
