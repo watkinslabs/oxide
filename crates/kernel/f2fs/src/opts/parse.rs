@@ -12,6 +12,7 @@ use syscall::errno::Errno;
 use crate::fault::{ALL_TYPES};
 
 use super::bounds::{active_logs_ok, inline_xattr_ok, MAX_UNUSABLE_PERC};
+use super::compress;
 use super::crypt;
 use super::jquota::{self, JqFmt, QKind};
 use super::spec::Spec;
@@ -191,19 +192,25 @@ fn one(o: &mut Options, key: &str, val: Option<&str>) -> Result<(), Errno> {
         // WHERE the same encryption happens, so a build without it encrypts in
         // the filesystem instead and the caller gets what it asked for.
         "inlinecrypt" => { flag(val)?; o.inlinecrypt = crypt::INLINE_CRYPT; }
-        // Names the format defines that this build cannot deliver. Each one
-        // changes what the caller gets, so accepting it silently would be a
-        // promise nothing keeps.
-        // Which side compresses is honoured rather than refused: this build
-        // writes compressed clusters and answers the two rewrite commands, and
-        // those commands mean nothing on a mount that never said `user`.
-        "compress_mode" => o.compress_mode = compress_mode(need(val)?)?,
-        "compress_algorithm"
-        | "compress_log_size"
-        | "compress_extension"
-        | "nocompress_extension"
-        | "compress_chksum"
-        | "compress_cache" => return Err(Errno::Eopnotsupp),
+        // The compression group. Every one of these is checked for shape here
+        // and honoured or dropped later, against the volume: a value out of
+        // range is refused even on a volume that could not record it, because
+        // it is a mistake in the line rather than a mismatch with the medium.
+        "compress_algorithm" => {
+            let (a, level) = compress::algorithm(need(val)?)?;
+            o.compress.algorithm = a;
+            o.compress.level = level;
+        }
+        "compress_log_size" => o.compress.log_size = compress::log_size(need(val)?)?,
+        "compress_extension" => o.compress.extensions.push(need(val)?.as_bytes())?,
+        "nocompress_extension" => o.compress.noextensions.push(need(val)?.as_bytes())?,
+        "compress_chksum" => { flag(val)?; o.compress.chksum = true; }
+        "compress_mode" => o.compress.mode = compress_mode(need(val)?)?,
+        // A name the format defines that this build cannot deliver. It asks
+        // for a second cache in front of the decompressed pages, which is a
+        // performance structure with observable memory cost; accepting it
+        // silently would report a cache the mount does not have.
+        "compress_cache" => return Err(Errno::Eopnotsupp),
         _ => {}
     }
     Ok(())

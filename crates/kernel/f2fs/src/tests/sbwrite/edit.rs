@@ -23,16 +23,13 @@ fn parsed(raw: &RawSuper) -> SuperBlock { raw.parse().expect("parses") }
 /// The two sections of the extension list, as a reader sees them.
 fn lists(raw: &RawSuper) -> (Vec<String>, Vec<String>) {
     let sb = parsed(raw);
-    let cold = sb.extensions.clone();
-    // The hot entries sit after the cold ones; the parsed view stops at the
-    // cold count, so they are read out of the bytes directly.
-    let mut hot = Vec::new();
-    for i in 0..usize::from(sb.hot_ext_count) {
-        let at = SB_EXTENSION_LIST + (sb.extension_count as usize + i) * EXTENSION_LEN;
-        let e = &raw.bytes()[at..at + EXTENSION_LEN];
-        let end = e.iter().position(|&c| c == 0).unwrap_or(EXTENSION_LEN);
-        hot.push(String::from_utf8_lossy(&e[..end]).into_owned());
-    }
+    // ONE array holds both, cold entries first; only the cold count says
+    // where the boundary is. Splitting the parsed list at that count is what
+    // every reader of the hot half has to do.
+    let cold: Vec<String> = sb.extensions.iter().take(sb.extension_count as usize).cloned()
+        .collect();
+    let hot: Vec<String> = sb.extensions.iter().skip(sb.extension_count as usize)
+        .take(usize::from(sb.hot_ext_count)).cloned().collect();
     (cold, hot)
 }
 

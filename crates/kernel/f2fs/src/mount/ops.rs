@@ -55,12 +55,12 @@ impl F2fsOps {
     /// Make something under `inode`, with the owner the caller's context
     /// names. # C: O(depth) blocks
     fn make(inode: &Inode, name: &str, ftype: FileType, perm: u32, rdev: u32,
-            body: Option<&[u8]>, ctx: &CreateCtx) -> KResult<InodeRef> {
+            body: Option<&[u8]>, ctx: &CreateCtx, named: bool) -> KResult<InodeRef> {
         let node = Self::writable_dir(inode)?;
         // The umask is applied here and not in the volume: it is a property of
         // the caller, not of the medium.
         let perm = perm & !u32::from(ctx.umask);
-        node.fs.make(node.ino, name, mk_mode(ftype, perm), ctx.fsuid(), ctx.fsgid(), rdev, body)
+        node.fs.make(node.ino, name, mk_mode(ftype, perm), ctx.fsuid(), ctx.fsgid(), rdev, body, named)
     }
 }
 
@@ -92,19 +92,19 @@ impl InodeOps for F2fsOps {
 
     fn create(&self, inode: &Inode, name: &str, mode_bits: u32, ctx: &CreateCtx)
         -> KResult<InodeRef> {
-        Self::make(inode, name, FileType::Regular, mode_bits, 0, None, ctx)
+        Self::make(inode, name, FileType::Regular, mode_bits, 0, None, ctx, true)
     }
 
     fn mkdir(&self, inode: &Inode, name: &str, mode_bits: u32, ctx: &CreateCtx)
         -> KResult<InodeRef> {
-        Self::make(inode, name, FileType::Directory, mode_bits, 0, None, ctx)
+        Self::make(inode, name, FileType::Directory, mode_bits, 0, None, ctx, false)
     }
 
     fn mknod(&self, inode: &Inode, name: &str, mode_bits: u16, rdev: u32, ctx: &CreateCtx)
         -> KResult<()> {
         let ftype = mknod_type(u32::from(mode_bits))?;
         let rdev = if matches!(ftype, FileType::CharDev | FileType::BlockDev) { rdev } else { 0 };
-        Self::make(inode, name, ftype, u32::from(mode_bits), rdev, None, ctx)?;
+        Self::make(inode, name, ftype, u32::from(mode_bits), rdev, None, ctx, false)?;
         Ok(())
     }
 
@@ -114,7 +114,7 @@ impl InodeOps for F2fsOps {
         if target.is_empty() || target.len() > crate::limits::MAX_SYMLINK_BYTES {
             return Err(VfsError::Enametoolong);
         }
-        Self::make(inode, name, FileType::Symlink, 0o777, 0, Some(target), ctx)?;
+        Self::make(inode, name, FileType::Symlink, 0o777, 0, Some(target), ctx, false)?;
         Ok(())
     }
 

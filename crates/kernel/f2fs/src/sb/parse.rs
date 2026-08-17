@@ -81,12 +81,22 @@ fn volume_name(sb: &[u8]) -> Option<String> {
 
 /// The extension list, trimmed at each entry's first zero byte.
 ///
-/// The stored count is not trusted to bound the read: it is checked in
+/// ONE array holds both temperatures: the cold entries first, then the hot
+/// ones, with only the two counts saying where the boundary is. Reading the
+/// cold count alone leaves the hot half unparsed, and every reader that then
+/// skips past the cold entries to find them finds an empty tail — so a name
+/// the volume marked as often-rewritten reads as a name it never named, and
+/// both the reported list and the decision not to compress such a file go
+/// silently wrong.
+///
+/// The stored counts are not trusted to bound the read: they are checked in
 /// `sanity`, and a copy that fails that check must still have parsed without
 /// running off the array.
 /// # C: O(MAX_EXTENSION * EXTENSION_LEN)
 fn extensions(sb: &[u8]) -> Option<Vec<String>> {
-    let count = (le32(sb, SB_EXTENSION_COUNT)? as usize).min(MAX_EXTENSION as usize);
+    let cold = le32(sb, SB_EXTENSION_COUNT)? as usize;
+    let hot = *sb.get(SB_HOT_EXT_COUNT)? as usize;
+    let count = cold.saturating_add(hot).min(MAX_EXTENSION as usize);
     let mut out = Vec::with_capacity(count);
     for i in 0..count {
         let at = SB_EXTENSION_LIST + i * EXTENSION_LEN;

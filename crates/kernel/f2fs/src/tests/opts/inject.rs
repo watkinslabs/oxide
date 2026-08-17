@@ -12,7 +12,7 @@ fn p(s: &str) -> Result<Options, Errno> { parse(Options::defaults(), s) }
 fn a_line_that_asks_for_neither_leaves_the_mount_uninjected() {
     let o = Options::defaults();
     assert!(!o.fault.asked());
-    assert!(!show(&o).contains("fault"));
+    assert!(!show(&o, 0).contains("fault"));
 }
 
 #[test]
@@ -74,7 +74,7 @@ fn an_injected_mount_never_looks_like_an_uninjected_one() {
     // such in the mount table; a short line would make a test rig
     // indistinguishable from a real one.
     let o = p("fault_injection=7,fault_type=5").unwrap();
-    let line = show(&o);
+    let line = show(&o, 0);
     assert!(line.contains(",fault_injection=7"), "{line}");
     assert!(line.contains(",fault_type=5"), "{line}");
 }
@@ -83,6 +83,6 @@ fn an_injected_mount_never_looks_like_an_uninjected_one() {
 fn the_two_options_round_trip_through_their_own_rendering() {
     for line in ["fault_injection=9", "fault_type=64", "fault_injection=2,fault_type=1"] {
         let o = p(line).unwrap();
-        assert_eq!(parse(Options::defaults(), &show(&o)).unwrap(), o, "{line}");
+        assert_eq!(parse(Options::defaults(), &show(&o, 0)).unwrap(), o, "{line}");
     }
 }

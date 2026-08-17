@@ -28,13 +28,21 @@ impl F2fs {
     ///
     /// The mode carries the type; `body` is the initial contents, which a
     /// symbolic link uses for its target and nothing else does.
+    ///
+    /// `named` says whether the operation doing the creating means the name to
+    /// describe the file's future contents, which is what the compression
+    /// policy reads it as. Ordinary file creation does; making a device node,
+    /// a directory or a symbolic link does not.
     /// # C: O(depth) blocks
     pub fn make(self: &Arc<Self>, dir: u32, name: &str, mode_word: u16, uid: u32, gid: u32,
-                rdev: u32, body: Option<&[u8]>) -> KResult<InodeRef> {
+                rdev: u32, body: Option<&[u8]>, named: bool) -> KResult<InodeRef> {
         let spec = NewInode { mode: mode_word, uid, gid, rdev, now: now() };
         let ino = {
             let mut v = self.volume_now();
-            v.create(dir, name.as_bytes(), &spec, body).map_err(errno_to_vfs)?
+            let n = name.as_bytes();
+            let r = if named { v.create_named(dir, n, &spec, body) }
+                    else { v.create(dir, n, &spec, body) };
+            r.map_err(errno_to_vfs)?
         };
         // Every operation that used space asks, before it returns, whether the
         // volume can still serve the next one. Asking afterwards is the point:

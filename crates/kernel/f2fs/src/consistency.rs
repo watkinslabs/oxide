@@ -17,6 +17,7 @@
 //!
 //! Module manifest:
 //! - `quota`: the two accounting arrangements, across a mount and a remount.
+//! - `compress`: the compression group, against the volume that must record it.
 //! - `apply`: parse, default and check in one call, at mount and at remount.
 
 use syscall::errno::Errno;
@@ -25,6 +26,7 @@ use crate::opts::facts::Facts;
 use crate::opts::{BackgroundGc, DiscardUnit, Mode, Options, Spec};
 
 pub mod quota;
+pub mod compress;
 pub mod apply;
 
 pub use apply::{resolve, resolve_remount};
@@ -98,6 +100,7 @@ pub fn check_opt_consistency(sbi: &Sbi, o: &mut Options, spec: &mut Spec)
         spec.reserve_node = false;
     }
     check_test_dummy_encryption(sbi, o)?;
+    compress::check_compression(f.feature, o)?;
     quota::check_quota_consistency(sbi, o, spec)?;
     // Names on this volume resolve through a table; without it a lookup misses
     // names that exist, which reads as an empty directory rather than an error.
