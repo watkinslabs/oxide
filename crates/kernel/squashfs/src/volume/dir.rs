@@ -70,9 +70,20 @@ impl<S: SectorSource> Volume<S> {
     /// Every name in a directory, in stored order.
     /// # C: O(listing bytes)
     pub fn read_dir(&self, node: &Inode) -> Result<Vec<DirEntry>, Errno> {
-        let (mut cur, size_bytes) = self.listing(node)?;
+        self.read_dir_from(node, 0)
+    }
+
+    /// The names at or after caller position `pos`, in stored order.
+    ///
+    /// The index seeds the walk at the metadata block holding `pos`, so
+    /// resuming a listing costs the index plus the blocks actually emitted
+    /// rather than the whole directory — without it a full walk of a large
+    /// directory is quadratic in its entry count.
+    /// # C: O(index entries + listing bytes at or after `pos`)
+    pub fn read_dir_from(&self, node: &Inode, pos: u64) -> Result<Vec<DirEntry>, Errno> {
+        let (_, size_bytes) = self.listing(node)?;
+        let (mut cur, mut length) = self.index_by_pos(node, pos)?;
         let mut out = Vec::new();
-        let mut length: u64 = 0;
         while length < size_bytes {
             let (base_ino, block, count) = self.read_dir_header(&mut cur, &mut length)?;
             for _ in 0..count {
@@ -157,7 +168,11 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(index entries)
     pub(super) fn index_by_pos(&self, node: &Inode, pos: u64) -> Result<(Cursor, u64), Errno> {
         let (start, _) = self.listing(node)?;
-        if pos <= SYNTHETIC_ENTRIES { return Ok((start, pos)); }
+        // The returned length is the ON-DISK byte count the walk resumes at;
+        // the synthetic entries occupy no listing bytes, so any position at or
+        // below them resumes at zero. Returning `pos` here would push every
+        // entry's reported position three too high on an ordinary full walk.
+        if pos <= SYNTHETIC_ENTRIES { return Ok((start, 0)); }
         let want = pos - SYNTHETIC_ENTRIES;
         let Kind::Dir { index: Some(loc), .. } = &node.kind else { return Ok((start, 0)) };
         let mut cur = loc.cursor;

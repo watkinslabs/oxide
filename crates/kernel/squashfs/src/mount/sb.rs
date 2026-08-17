@@ -34,7 +34,7 @@ impl SuperOps for SquashSuperOps {
             // none to report; inventing one would collide with a real fsid.
             f_fsid: 0,
             f_flags: 0,
-            f_namelen: NAME_LEN as u32,
+            f_namelen: NAME_LEN as u64,
             f_frsize: 0,
         })
     }

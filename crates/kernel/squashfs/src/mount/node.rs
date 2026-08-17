@@ -69,7 +69,7 @@ pub(crate) fn build(fs: &Arc<SquashFs>, node: Inode) -> KResult<InodeRef> {
     // Every stored time is one second-resolution modification time. Reporting
     // it for all three is the closest true statement the image supports; there
     // is no access time to update on a medium nothing writes to.
-    let t = vfs::timespec::Timespec64 { tv_sec: i64::from(node.mtime), tv_nsec: 0 };
+    let t = vfs::timespec::Timespec64 { sec: i64::from(node.mtime), nsec: 0 };
     let mut builder = InodeBuilder::new(u64::from(node.ino),
                                         mk_mode(ftype, node.perm), ops, fops)
         .size(node.size)
