@@ -67,6 +67,10 @@ impl<S: SectorSource> Volume<S> {
                 let ind = self.read_node(nid, Some(ino))?;
                 let Some(dnid) = live_nid(node::indirect_nid(&ind.block, dnode))
                     else { return Ok(None) };
+                // The siblings after this one, while their parent is in hand:
+                // a read that walks on into them finds them already there, and
+                // the ones that were written together arrive in one transfer.
+                self.ra_next_siblings(&ind.block, dnode);
                 let d = self.read_node(dnid, Some(ino))?;
                 node::direct_addr(&d.block, index)
             }
@@ -78,6 +82,7 @@ impl<S: SectorSource> Volume<S> {
                 let mid = self.read_node(mid_nid, Some(ino))?;
                 let Some(dnid) = live_nid(node::indirect_nid(&mid.block, dnode))
                     else { return Ok(None) };
+                self.ra_next_siblings(&mid.block, dnode);
                 let d = self.read_node(dnid, Some(ino))?;
                 node::direct_addr(&d.block, index)
             }

@@ -58,6 +58,11 @@ impl<S: SectorSource> Volume<S> {
     fn rewrite_clusters(&mut self, ino: u32, want: Shape) -> Result<u64, Errno> {
         self.writable_or_err()?;
         self.dquot_initialize(ino)?;
+        // Every pending write of this file has to be placed before its
+        // addresses are read: a page not yet placed has none, and both walks
+        // decide what to do from exactly those addresses. A cluster whose
+        // blocks are still reservations reads as one nothing can be made of.
+        self.flush_data_pages(ino)?;
         let inode = self.read_inode(ino)?;
         let g = self.geometry(&inode)?;
         if inode.inline_data() { self.convert_inline(ino)?; }

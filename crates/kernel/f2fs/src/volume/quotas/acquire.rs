@@ -193,6 +193,13 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(1)
     pub(super) fn dq_info_held(&self, kind: usize) -> Option<Info> { self.quota_info[kind].clone() }
 
+    /// Whether an identity's record is in hand, for a test asking whether an
+    /// operation's entry point acquired one. # C: O(log ids)
+    #[cfg(test)]
+    pub(crate) fn dquot_is_held(&self, kind: usize, id: u32) -> bool {
+        self.dquots.contains_key(&(kind, id))
+    }
+
     /// The record this mount HOLDS for one identity, without going to the
     /// medium. # C: O(log ids)
     pub(super) fn dq_held(&self, kind: usize, id: u32) -> Option<Dqblk> {

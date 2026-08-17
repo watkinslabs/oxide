@@ -34,7 +34,9 @@
 //! - `policy`:     which codec, which level, and which names match a list.
 //! - `newfile`:    whether a file being created is created compressed.
 //! - `chattr`:     turning the mark on and off after the file exists.
-//! - `writeback`:  writing and shortening a compressed file, cluster at a time.
+//! - `begin`:      what a write takes and reserves, before anything is placed.
+//! - `place`:      the codec, the shape and the addresses, one cluster at a time.
+//! - `writeback`:  storing and shortening a compressed file, cluster at a time.
 //! - `release`:    handing the saving back to the volume, and taking it again.
 //! - `rewrite`:    rewriting every cluster of one file compressed or plain.
 //! - `cache`:      the mount's cache of compressed blocks as the medium holds them.
@@ -52,6 +54,8 @@ pub mod plan;
 pub mod policy;
 pub mod newfile;
 pub mod chattr;
+pub mod begin;
+pub mod place;
 pub mod writeback;
 pub mod release;
 pub mod rewrite;

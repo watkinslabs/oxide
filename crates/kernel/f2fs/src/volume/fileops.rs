@@ -223,29 +223,43 @@ impl<S: SectorSource> Volume<S> {
         // slot holding NOTHING is a claim on the volume's remaining space.
         let fresh = old == NULL_ADDR;
         let page = self.write_begin_page(ino, index, skew, data, old)?;
-        if fresh {
-            self.volume_has_room(false)?;
-            // Promised and taken up in the same breath, which is what the
-            // reference does and what makes the limit refuse before the
-            // reservation exists rather than after it. Nothing between the two
-            // can fail, so no window exists in which a promise is outstanding.
-            self.reserve_space(ino, BLKSIZE as u64)?;
-            self.charge_reservation();
-            if let Err(e) = self.claim_space(ino, BLKSIZE as u64) {
-                self.release_reservation();
-                self.release_reserved_space(ino, BLKSIZE as u64)?;
-                return Err(e);
-            }
-            if let Err(e) = self.set_holder_addr_reserved(ino, holder, ofs) {
-                self.release_reservation();
-                self.uncharge_space(ino, BLKSIZE as u64)?;
-                return Err(e);
-            }
-        }
+        if fresh { self.reserve_data_slot(ino, holder, ofs)?; }
         // AFTER the slot is set, never before: setting it drops the mapping's
         // page for this offset, so filing the bytes first would file them and
         // then throw them away.
         self.data_cache.write(ino, index, page)
+    }
+
+    /// Take the room and the owner's quota for one slot that holds nothing,
+    /// and write a RESERVATION into it.
+    ///
+    /// The one place a data slot is reserved. Both the block-at-a-time path and
+    /// the compressed-cluster path arrive here, because both refusals a write
+    /// can suffer have to be decided identically and in one place: a second
+    /// copy of this ladder is a second place for the unwinding to be got wrong,
+    /// and the failure it produces — a charge for a block that does not exist —
+    /// is invisible until the volume fills.
+    /// # C: O(1 block)
+    pub(crate) fn reserve_data_slot(&mut self, ino: u32, holder: Holder, ofs: usize)
+        -> Result<(), Errno> {
+        self.volume_has_room(false)?;
+        // Promised and taken up in the same breath, which is what the reference
+        // does and what makes the limit refuse before the reservation exists
+        // rather than after it. Nothing between the two can fail, so no window
+        // exists in which a promise is outstanding.
+        self.reserve_space(ino, BLKSIZE as u64)?;
+        self.charge_reservation();
+        if let Err(e) = self.claim_space(ino, BLKSIZE as u64) {
+            self.release_reservation();
+            self.release_reserved_space(ino, BLKSIZE as u64)?;
+            return Err(e);
+        }
+        if let Err(e) = self.set_holder_addr_reserved(ino, holder, ofs) {
+            self.release_reservation();
+            self.uncharge_space(ino, BLKSIZE as u64)?;
+            return Err(e);
+        }
+        Ok(())
     }
 
     /// The whole block this write leaves behind, patched over whatever the

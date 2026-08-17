@@ -14,7 +14,6 @@ use alloc::vec::Vec;
 
 use vfs::xattr::XattrError;
 use vfs::idmap::Idmap;
-use vfs::namei::RENAME_NOREPLACE;
 use vfs::setattr::{Iattr, ATTR_ATIME, ATTR_GID, ATTR_MODE, ATTR_MTIME, ATTR_SIZE, ATTR_UID};
 use vfs::{CreateCtx, DirContext, FileType, FileOps, Inode, InodeOps, InodeRef, KResult,
           VfsError};
@@ -50,6 +49,27 @@ impl F2fsOps {
         let (node, _) = Self::dir_of(inode)?;
         if !node.fs.is_writable() { return Err(VfsError::Erofs); }
         Ok(node)
+    }
+
+    /// Whether the name being moved names a directory, and what — if anything
+    /// — sits at the destination. Read BEFORE the rename, because afterwards
+    /// neither name resolves to what it did.
+    /// # C: O(depth) blocks
+    fn shapes(node: &F2fsNode, old_name: &str, target: &F2fsNode, new_name: &str)
+        -> (bool, Option<bool>) {
+        let v = node.fs.volume.lock();
+        let is_dir = |ino: u32| {
+            v.read_inode(ino).map(|i| mode::file_type(i.mode) == FileType::Directory)
+                .unwrap_or(false)
+        };
+        let moved = v.read_inode(node.ino).ok()
+            .and_then(|d| v.lookup(&d, node.ino, old_name.as_bytes()).ok())
+            .map(|h| is_dir(h.ino))
+            .unwrap_or(false);
+        let victim = v.read_inode(target.ino).ok()
+            .and_then(|d| v.lookup(&d, target.ino, new_name.as_bytes()).ok())
+            .map(|h| is_dir(h.ino));
+        (moved, victim)
     }
 
     /// Make something under `inode`, with the owner the caller's context
@@ -123,7 +143,13 @@ impl InodeOps for F2fsOps {
         let node = Self::writable_dir(inode)?;
         let other = Self::node(target)?;
         if !Arc::ptr_eq(&node.fs, &other.fs) { return Err(VfsError::Exdev); }
-        node.fs.link(node.ino, name, other.ino)
+        node.fs.link(node.ino, name, other.ino)?;
+        // The count on the medium moved, and the cached one has to move with
+        // it: a temporary file that has just been given its first name would
+        // otherwise keep reporting no links, which is what tells a caller the
+        // file disappears when the handle does.
+        target.inc_nlink();
+        Ok(())
     }
 
     fn unlink(&self, inode: &Inode, name: &str) -> KResult<()> {
@@ -136,14 +162,51 @@ impl InodeOps for F2fsOps {
         node.fs.remove(node.ino, name, true)
     }
 
+    /// The flags reach the volume UNREDUCED. An exchange or a whiteout narrowed
+    /// to "replace or not" on the way down reports success for an operation
+    /// that did not happen, and the caller's next step assumes it did.
     fn rename(&self, inode: &Inode, old_name: &str, new_dir: &Inode, new_name: &str, flags: u32,
-              _ctx: &CreateCtx) -> KResult<()> {
+              ctx: &CreateCtx) -> KResult<()> {
         let node = Self::writable_dir(inode)?;
         let (target, _) = Self::dir_of(new_dir)?;
         // Both directories are on one volume by construction: a rename across
         // filesystems never reaches a backend.
         if !Arc::ptr_eq(&node.fs, &target.fs) { return Err(VfsError::Exdev); }
-        node.fs.rename(node.ino, old_name, target.ino, new_name, flags & RENAME_NOREPLACE != 0)
+        // What the two directories will be worth AFTERWARDS is decided from
+        // what they hold NOW: a directory arriving in a parent brings its own
+        // second entry with it, and a directory leaving takes one away.
+        let (moved_is_dir, victim_is_dir) = Self::shapes(node, old_name, target, new_name);
+        let same_parent = node.ino == target.ino;
+        // The identity is the CALLER's, and only a whiteout reads it: the
+        // marker a whiteout rename leaves behind is a new inode and belongs to
+        // whoever asked for the rename.
+        node.fs.rename(node.ino, old_name, target.ino, new_name, flags,
+                       (ctx.fsuid(), ctx.fsgid()))?;
+        // The counts on the medium moved above; these are the CACHED ones the
+        // same `stat` reads without going back to the medium.
+        if flags & vfs::namei::RENAME_EXCHANGE != 0 {
+            if !same_parent && moved_is_dir != victim_is_dir.unwrap_or(false) {
+                if moved_is_dir { inode.drop_nlink(); new_dir.inc_nlink(); }
+                else { new_dir.drop_nlink(); inode.inc_nlink(); }
+            }
+        } else if moved_is_dir {
+            // A replaced directory surrendered the destination's incoming link
+            // as it was removed, so the destination already balances the
+            // arriving one and only the source parent drops.
+            if victim_is_dir.is_some() { inode.drop_nlink(); }
+            else if !same_parent { inode.drop_nlink(); new_dir.inc_nlink(); }
+        }
+        Ok(())
+    }
+
+    /// A file with no name, which the volume keeps on the same orphan list an
+    /// unlink of an open file uses.
+    fn tmpfile(&self, inode: &Inode, mode_bits: u32, ctx: &CreateCtx) -> KResult<InodeRef> {
+        let node = Self::writable_dir(inode)?;
+        // The umask belongs to the caller, not to the medium — the same split
+        // every other creation here makes.
+        let perm = mode_bits & !u32::from(ctx.umask);
+        node.fs.tmpfile(node.ino, mk_mode(FileType::Regular, perm), ctx.fsuid(), ctx.fsgid())
     }
 
     fn truncate(&self, inode: &Inode, len: u64) -> KResult<()> {
@@ -249,17 +312,27 @@ impl FileOps for F2fsOps {
     /// signature is therefore a refused open — which is where a caller can act
     /// on it — rather than a read error at whichever offset first needed a
     /// hash. Nothing else in this filesystem builds that record.
-    /// # C: O(1) for an ordinary file; O(descriptor bytes) on a sealed one's
-    /// first open
+    /// A writable handle also brings this file's quota records in, once, here.
+    /// The reference does the same and for the same reason: everything the
+    /// handle goes on to do allocates, and an allocation may not go to a quota
+    /// file for a record while it is holding the state it is writing. The
+    /// per-operation acquisitions stay — the reference keeps both — because an
+    /// operation can reach this filesystem without a handle.
+    /// # C: O(1) for an ordinary read handle; O(descriptor bytes) on a sealed
+    /// file's first open, O(quota file) on an identity's first writable one
     fn on_open_file(&self, file: &vfs::File) -> KResult<()> {
         let inode = file.inode();
         let node = F2fsOps::node(inode)?;
         let live = node.live()?;
-        if !crate::verity::access::is_verity(live.flags) { return Ok(()); }
         let fl = file.flags();
         let write = fl.contains(vfs::OpenFlags::O_WRONLY) || fl.contains(vfs::OpenFlags::O_RDWR);
-        let v = node.fs.volume.lock();
-        v.verity_file_open(&live, node.ino, write).map_err(errno_to_vfs)
+        if !write && !crate::verity::access::is_verity(live.flags) { return Ok(()); }
+        let mut v = node.fs.volume.lock();
+        // Verity first: a sealed file refuses a writable handle outright, and
+        // there is nothing to acquire for a handle that is not going to exist.
+        v.verity_file_open(&live, node.ino, write).map_err(errno_to_vfs)?;
+        if write { v.dquot_initialize(node.ino).map_err(errno_to_vfs)?; }
+        Ok(())
     }
 
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
@@ -369,3 +442,8 @@ pub fn split_names(bytes: &[u8]) -> Vec<String> {
 #[cfg(test)]
 #[path = "../tests/ops.rs"]
 mod tests;
+
+/// The namespace operations, driven through the interface's own vtable.
+#[cfg(test)]
+#[path = "../tests/opsnamei.rs"]
+mod namei_tests;

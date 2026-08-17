@@ -148,6 +148,9 @@ impl<S: SectorSource> Volume<S> {
         let base = self.cp.start(self.sb.cp_blkaddr, self.sb.blks_per_seg()) + 1 + payload;
         let n = block::blocks_in_pack(self.cp.pack_start_sum, payload).ok_or(Errno::Einval)?;
         let mut inos: Vec<u32> = Vec::new();
+        // The pack's orphan blocks are consecutive, so the whole list is
+        // fetched as runs before it is decoded block by block.
+        self.ra_meta_pages(base, n, crate::volume::readahead::RaMeta::Cp);
         for i in 0..n {
             let raw = self.read_block(base + i)?;
             let decoded = block::decode(&raw).ok_or(Errno::Einval)?;

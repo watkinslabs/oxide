@@ -64,7 +64,7 @@ impl<S: SectorSource> Volume<S> {
     }
 
     /// # C: O(bytes read)
-    fn read_file_inner(&self, inode: &Inode, ino: u32, off: u64, buf: &mut [u8])
+    pub(super) fn read_file_inner(&self, inode: &Inode, ino: u32, off: u64, buf: &mut [u8])
         -> Result<usize, Errno> {
         // The writer of an open span must see its own writes, which live in
         // the shadow inode rather than in this one.
@@ -84,6 +84,13 @@ impl<S: SectorSource> Volume<S> {
         // rather than no bytes.
         let crypt = self.crypt_info(inode, ino)?;
         if inode.encrypted() && crypt.is_none() { return Err(Errno::Enokey); }
+        // The window the CALLER asked for, fetched before it is served block
+        // by block below. The same blocks either way; the difference is that a
+        // contiguous run of them goes to the medium once instead of once per
+        // block, and the loop below then finds them in the mapping.
+        let first = off / BLKSIZE as u64;
+        let last = (off + want as u64 - 1) / BLKSIZE as u64;
+        self.readahead_data(inode, ino, first, (last - first + 1) as usize);
         let mut done = 0usize;
         while done < want {
             let pos = off + done as u64;
@@ -232,7 +239,7 @@ impl<S: SectorSource> Volume<S> {
     /// size stops part way through is stored plain — so the question is put to
     /// the cluster's head rather than assumed from the inode's flag.
     /// # C: O(indirection depth) blocks
-    fn map_cluster_block(&self, inode: &Inode, ino: u32, index: u64) -> Result<Mapped, Errno> {
+    pub(super) fn map_cluster_block(&self, inode: &Inode, ino: u32, index: u64) -> Result<Mapped, Errno> {
         if !inode.compressed() { return self.map_block(inode, ino, index); }
         let g = crate::compress::Geometry::new(
             inode.compress_algorithm,
