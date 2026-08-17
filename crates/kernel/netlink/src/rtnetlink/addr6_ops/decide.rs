@@ -46,9 +46,6 @@ impl Lifetimes {
         if valid == 0 || preferred > valid { return None; }
         Some(Self { preferred, valid })
     }
-
-    /// The address is permanent while nothing expires it. # C: O(1)
-    pub(crate) fn permanent(&self) -> bool { self.valid == INFINITY_LIFE_TIME }
 }
 
 /// The classification the reference screens a new address by.
@@ -128,11 +125,9 @@ mod tests {
     }
 
     #[test]
-    fn absent_cacheinfo_is_an_infinite_permanent_lifetime() {
-        let lifetimes = Lifetimes::from_cacheinfo(None).unwrap();
-        assert_eq!(lifetimes, Lifetimes { preferred: INFINITY_LIFE_TIME,
-            valid: INFINITY_LIFE_TIME });
-        assert!(lifetimes.permanent());
+    fn absent_cacheinfo_is_an_infinite_lifetime() {
+        assert_eq!(Lifetimes::from_cacheinfo(None),
+            Some(Lifetimes { preferred: INFINITY_LIFE_TIME, valid: INFINITY_LIFE_TIME }));
     }
 
     #[test]
@@ -146,13 +141,17 @@ mod tests {
             Some(Lifetimes { preferred: 0, valid: 600 }));
     }
 
-    // A finite valid lifetime is what strips IFA_F_PERMANENT; an infinite
-    // valid lifetime keeps it even when the preferred lifetime is finite.
+    // The valid lifetime passes through unchanged, because permanence is
+    // derived from it downstream (`Ipv6IfaceAddr::flags`) rather than decided
+    // twice. A preferred lifetime of zero with an infinite valid lifetime is
+    // legal: the address is permanent AND deprecated.
     #[test]
-    fn permanence_follows_the_valid_lifetime_alone() {
-        assert!(Lifetimes::from_cacheinfo(Some((0, INFINITY_LIFE_TIME))).unwrap().permanent());
-        assert!(!Lifetimes::from_cacheinfo(Some((600, 600))).unwrap().permanent());
-        assert!(!Lifetimes::from_cacheinfo(Some((1, u32::MAX - 1))).unwrap().permanent());
+    fn the_stated_lifetimes_pass_through_unchanged() {
+        assert_eq!(Lifetimes::from_cacheinfo(Some((0, INFINITY_LIFE_TIME))),
+            Some(Lifetimes { preferred: 0, valid: INFINITY_LIFE_TIME }));
+        assert_eq!(Lifetimes::from_cacheinfo(Some((1, u32::MAX - 1))),
+            Some(Lifetimes { preferred: 1, valid: u32::MAX - 1 }),
+            "a lifetime one short of infinity stays finite");
     }
 
     #[test]
