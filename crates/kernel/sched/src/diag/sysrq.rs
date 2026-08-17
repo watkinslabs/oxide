@@ -373,19 +373,28 @@ mod tests {
         }
     }
 
-    /// A second NUL arrives while armed, so it is a command byte and not a
-    /// re-arm: it asks for the key list and leaves the line disarmed. Treating
-    /// it as a re-arm would leave the line armed forever after a stray NUL,
-    /// and the next character typed would run whatever it decodes to.
+    /// A second NUL arriving while armed is currently taken as a command byte,
+    /// so it prints the key list and the byte is consumed.
+    ///
+    /// **This is a recorded divergence, not the contract.** The reference
+    /// refuses a zero byte as a command outright — the dispatch is guarded on
+    /// the byte being non-zero — and an armed line that receives one simply
+    /// disarms and forwards the byte to the tty. Two NULs on the wire should
+    /// therefore leave no trace; here the second one answers with the help
+    /// line and is swallowed. Pinned as-is so the behaviour cannot drift
+    /// unnoticed while the divergence is open (`scratch/known_issues.md`); the
+    /// assertion flips when it is closed.
     #[test]
-    fn a_second_break_is_a_command_byte_not_a_re_arm() {
+    fn a_second_break_is_taken_as_a_command_byte_diverging_from_the_reference() {
         assert_eq!(decide(true, SYSRQ_ARM), RxStep::Run(Cmd::Unbound(SYSRQ_ARM)));
     }
 
-    /// Every step either consumes the byte or passes it on, never both, and
-    /// only `Armed` leaves the line armed.
+    /// Exactly one byte value arms the line, and an armed line takes every
+    /// byte as a command. The second half is the divergence above stated over
+    /// the whole byte range: the reference exempts zero, so when that is fixed
+    /// this loop gains the same exemption.
     #[test]
-    fn exactly_one_step_leaves_the_line_armed() {
+    fn exactly_one_byte_arms_the_line() {
         for b in 0u8..=0xff {
             assert_eq!(decide(false, b) == RxStep::Armed, b == SYSRQ_ARM,
                        "byte {b:#x} armed the line, or the break failed to");
