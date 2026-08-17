@@ -86,9 +86,10 @@ impl<S: SectorSource> Volume<S> {
         // mount reclaims from, and a number on it that was never written is a
         // free of an inode belonging to whoever holds that number next.
         if let Err(e) = self.add_orphan(ino) { let _ = self.free_inode(ino); return Err(e); }
-        // Held open, so the close that follows the last handle frees it here
-        // rather than leaving the reclaim to the next mount.
-        self.open_inode(ino);
+        // Nothing records a hold: the reference to the inode the caller is
+        // handed IS the hold, and `evict_inode` at its last drop is what frees
+        // the file. A count kept here beside that reference would be a second
+        // answer to "is anything still using this", free to disagree with it.
         // The parent's times move: the reference stamps the directory a
         // temporary file was created under, and a backup reading only the
         // directory otherwise sees no change from a volume that gained a file.

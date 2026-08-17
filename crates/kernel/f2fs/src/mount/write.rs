@@ -54,10 +54,15 @@ impl F2fs {
 
     /// Remove a name. # C: O(depth) blocks
     pub fn remove(self: &Arc<Self>, dir: u32, name: &str, expect_dir: bool) -> KResult<()> {
-        self.volume
+        let out = self.volume
             .lock()
             .remove(dir, name.as_bytes(), expect_dir, now())
             .map_err(errno_to_vfs)?;
+        // The volume parked the inode and could go no further: what it cannot
+        // see is whether anything still holds the file. Settling that is the
+        // other half of the removal, and skipping it leaves an inode nothing can
+        // reach still holding its blocks for the life of the mount.
+        self.after_remove(out)?;
         self.balance(true)
     }
 
@@ -78,7 +83,12 @@ impl F2fs {
         let r = crate::volume::Rename {
             from, old: old.as_bytes(), to, new: new.as_bytes(), flags, owner, now: now(),
         };
-        self.volume.lock().rename(&r).map_err(errno_to_vfs)?;
+        let replaced = self.volume.lock().rename(&r).map_err(errno_to_vfs)?;
+        // A move onto an existing name is a removal of that name, and owes the
+        // inode behind it exactly what an unlink owes: its cached link count,
+        // and an eviction if nothing holds it. Left out, a `mv` over an open
+        // file leaks the file it replaced.
+        if let Some(out) = replaced { self.after_remove(out)?; }
         self.balance(true)
     }
 

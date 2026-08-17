@@ -121,6 +121,12 @@ impl<S: SectorSource> Volume<S> {
         -> Result<(), Errno> {
         self.writable_or_err()?;
         if name.is_empty() || name.len() > NAME_LEN { return Err(Errno::Enametoolong); }
+        // A directory's own two entries are not a NAME for what they point at:
+        // `.` points at the directory itself and `..` at its parent, and
+        // treating either as a name would record the new directory as its own
+        // parent, and as its parent's parent. Decided from the plaintext, before
+        // the ciphertext shadows it below.
+        let own_entry = name == b"." || name == b"..";
         let inode = self.read_inode(dir)?;
         // Creating an entry needs the plaintext to encrypt, so it is the one
         // directory operation that cannot proceed without the key.
@@ -143,17 +149,31 @@ impl<S: SectorSource> Volume<S> {
             if let Some(slot) = room_for(&block[at..at + len], &l, slots) {
                 place_entry_hashed(&mut block[at..at + len], &l, slot, name, want, ino, ft);
                 self.put_inode(dir, block)?;
-                self.unpark_orphan(ino);
-                return Ok(());
+                return self.name_landed(dir, ino, own_entry);
             }
             self.convert_inline_dir(dir)?;
         }
         self.add_regular_dentry(dir, name, ino, ft, slots, want)?;
-        // A name has landed. An inode parked for want of one — a file made
-        // without a name and then linked to it, or one whose last name went
-        // while something held it open and whose name a replay has just put
-        // back — is reachable again, and a mount that still found it on the
-        // orphan list would free a file that has a name.
+        self.name_landed(dir, ino, own_entry)
+    }
+
+    /// What every dentry add owes the inode it just named, whichever of the two
+    /// layouts held the entry.
+    ///
+    /// The recorded parent is the newest name's directory, so a file linked into
+    /// a second directory names THAT one from then on; a checker reads the field
+    /// and a chain replay restores an entry from it, so a stale one describes a
+    /// name that is not where it says. Written on every add for that reason,
+    /// rather than at creation only.
+    /// # C: O(1 block)
+    fn name_landed(&mut self, dir: u32, ino: u32, own_entry: bool) -> Result<(), Errno> {
+        if own_entry { return Ok(()); }
+        self.stamp_inode(ino, |b| put32(b, I_PINO, dir))?;
+        // An inode parked for want of a name — a file made without one and then
+        // linked to it, or one whose last name went while something held it open
+        // and whose name a replay has just put back — is reachable again, and a
+        // mount that still found it on the orphan list would free a file that
+        // has a name.
         self.unpark_orphan(ino);
         Ok(())
     }
@@ -423,3 +443,8 @@ pub fn inline_entries(block: &[u8], at: usize, len: usize) -> Result<Vec<deblock
 #[cfg(test)]
 #[path = "../tests/dirwrite.rs"]
 mod tests;
+
+/// The recorded parent every dentry add owes the inode it names.
+#[cfg(test)]
+#[path = "../tests/pino.rs"]
+mod pino_tests;

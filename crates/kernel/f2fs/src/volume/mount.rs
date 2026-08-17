@@ -189,7 +189,6 @@ impl<S: SectorSource> Volume<S> {
             dq_dirty: alloc::collections::BTreeSet::new(),
             clock: 0,
             recovering: false,
-            opens: alloc::collections::BTreeMap::new(),
             orphans: alloc::collections::BTreeSet::new(),
             pending_discard: alloc::vec::Vec::new(),
             verity_cache: core::cell::RefCell::new(crate::verity::info::Cache::new()),
@@ -257,7 +256,7 @@ impl<S: SectorSource> Volume<S> {
         // number.
         let mut outcome = vol.recover_orphans();
         if outcome.is_ok() {
-            vol.recovering = true;
+            vol.begin_recovery();
             // A replay is the one change a mount makes that nobody asked for,
             // so what it did is said out loud rather than dropped. The two
             // cases that matter are a chain put back and a chain FOUND AND
@@ -266,7 +265,7 @@ impl<S: SectorSource> Volume<S> {
                 crate::volume::recover::report::emit(
                     crate::volume::recover::report::announce_for(r));
             });
-            vol.recovering = false;
+            vol.finish_recovery(outcome.is_ok());
         }
         vol.end_repair_write();
         outcome?;

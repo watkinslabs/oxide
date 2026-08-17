@@ -331,6 +331,10 @@ fn an_inode_the_checkpoint_never_saw_is_created_from_its_marked_block() {
     let ino = v.create(ROOT_INO, b"n", &spec(), None).expect("create");
     let saved = v.inode_bytes(ino).expect("bytes");
     v.remove(ROOT_INO, b"n", false, NOW).expect("remove");
+    // The name going parks the inode; the EVICTION is what frees it and
+    // gives back what it held. The two are separate events, and a descriptor
+    // may sit between them.
+    v.evict_inode(ino).expect("evict");
     v.commit().expect("commit");
     assert!(v.read_inode(ino).is_err(), "the checkpoint must not know it");
     let flag = marks::flag_word(0, true, true, true);
