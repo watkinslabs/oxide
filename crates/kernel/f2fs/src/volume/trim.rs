@@ -205,6 +205,10 @@ impl<S: SectorSource> Volume<S> {
         // readable while the rest of its charges are returned. The inode's
         // own block was never charged as space, so only the inode comes back.
         self.uncharge_inode(ino)?;
+        // After the last charge is returned and before the number can be handed
+        // out again: an attachment left behind would charge this file's former
+        // owners for whatever takes the id next.
+        self.dquot_drop(ino);
         self.release_node(ino)?;
         self.valid_inode_count = self.valid_inode_count.saturating_sub(1);
         Ok(())

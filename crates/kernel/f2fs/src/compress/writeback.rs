@@ -300,6 +300,7 @@ impl<S: SectorSource> Volume<S> {
     /// the file's size now stops part way through it.
     /// # C: O(clusters released)
     pub fn truncate_compressed(&mut self, ino: u32, len: u64) -> Result<(), Errno> {
+        self.dquot_initialize(ino)?;
         self.writable_or_err()?;
         // Every pending write has to be placed first. A cluster whose blocks
         // are still reservations has no addresses to rearrange, and the bytes

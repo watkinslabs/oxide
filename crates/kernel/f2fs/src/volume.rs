@@ -189,6 +189,15 @@ pub struct Volume<S: SectorSource> {
     /// write cost a whole quota file.
     pub(crate) dquots: BTreeMap<(usize, u32), crate::quota::Dqblk>,
     pub(crate) dq_dirty: BTreeSet<(usize, u32)>,
+    /// Which identities each live inode's allocations are charged against.
+    ///
+    /// Hung off the inode by the operation that is about to allocate, and
+    /// consulted by every charge — the reference keeps exactly this beside the
+    /// inode. Reading the owners off the medium at the charge instead put a
+    /// node read, and with it a page lock that can block, underneath every node
+    /// write in the filesystem. An inode with no entry is charged nothing: the
+    /// operation that would charge it is the one that puts the entry there.
+    pub(crate) dquot_owners: BTreeMap<u32, crate::volume::quotas::Owners>,
     /// The wall clock, in seconds, as the layer above last read it. Grace
     /// periods are absolute expiries, so a decision needs a now.
     pub(crate) clock: u64,

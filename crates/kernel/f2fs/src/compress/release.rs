@@ -53,6 +53,7 @@ impl<S: SectorSource> Volume<S> {
     /// Reports the blocks handed back, which is what the caller is told.
     /// # C: O(file blocks)
     pub fn release_compress_blocks(&mut self, ino: u32) -> Result<u64, Errno> {
+        self.dquot_initialize(ino)?;
         self.writable_or_err()?;
         // The walk reads addresses, so every pending write has to have one.
         self.flush_data_pages(ino)?;
@@ -105,6 +106,7 @@ impl<S: SectorSource> Volume<S> {
     /// Reports the blocks re-reserved.
     /// # C: O(file blocks)
     pub fn reserve_compress_blocks(&mut self, ino: u32) -> Result<u64, Errno> {
+        self.dquot_initialize(ino)?;
         self.writable_or_err()?;
         self.flush_data_pages(ino)?;
         let g = self.geometry(&self.read_inode(ino)?)?;

@@ -196,8 +196,12 @@ fn bringing_an_identitys_quota_record_in_can_be_made_to_fail() {
     o.usrquota = true;
     let mut v = b.mount_opts(o).unwrap();
     assert!(v.quota_record(USRQUOTA, UID).is_ok(), "the fixture holds no record to withhold");
+    // The site is the ACQUISITION an operation does before it allocates, which
+    // is the one place records are brought in. Reporting a record a caller
+    // asked for by name is not that site and is left alone.
     arm(&v, Fault::DquotInit);
-    assert_eq!(v.quota_record(USRQUOTA, UID), Err(Errno::Esrch));
+    assert_eq!(v.dquot_initialize(ROOT_INO), Err(Errno::Esrch));
+    assert!(v.quota_record(USRQUOTA, UID).is_ok());
 }
 
 #[test]
@@ -249,6 +253,31 @@ fn looking_a_page_up_in_the_file_mapping_can_be_made_to_fail() {
     let addr = v.holder_addr(ino, crate::volume::Holder::Inode, 0).unwrap();
     let inode = v.read_inode(ino).unwrap();
     assert!(v.read_data_page(&inode, ino, 0, addr, None).is_ok(), "the fixture's page does not read");
+    arm(&v, Fault::PageGet);
+    assert_eq!(v.read_data_page(&inode, ino, 0, addr, None), Err(Errno::Enomem));
+}
+
+#[test]
+fn looking_a_sealed_files_page_up_can_be_made_to_fail_too() {
+    // The sibling of the test above, and not redundant with it. A sealed file
+    // is read by a DIFFERENT function — the attestation is a separate reader
+    // so that the tree climb stays out of the read half of a read-modify-write
+    // — and a site wired into only the ordinary one fires for an ordinary file
+    // and not for a sealed one, which is worse than not having it. Deleting
+    // either injection leaves one of these two red.
+    let mut v = vol();
+    let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
+    v.write_file(ino, 0, &vec![3u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
+    v.enable_verity(ino, crate::verity::uapi::HASH_ALG_SHA256, 12, b"").unwrap();
+    let inode = v.read_inode(ino).unwrap();
+    assert!(inode.verity(), "the fixture is not sealed, so it reads by the other path");
+    v.verity_file_open(&inode, ino, false).unwrap();
+    let addr = v.holder_addr(ino, crate::volume::Holder::Inode, 0).unwrap();
+    v.data_cache.forget_inode(ino);
+    assert!(v.read_data_page(&inode, ino, 0, addr, None).is_ok(),
+            "the fixture's page does not read");
+    v.data_cache.forget_inode(ino);
     arm(&v, Fault::PageGet);
     assert_eq!(v.read_data_page(&inode, ino, 0, addr, None), Err(Errno::Enomem));
 }

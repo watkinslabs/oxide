@@ -38,6 +38,10 @@ impl<S: SectorSource> Volume<S> {
     /// written out.
     /// # C: O(bytes written)
     pub fn write_file(&mut self, ino: u32, off: u64, data: &[u8]) -> Result<usize, Errno> {
+        // The records the blocks this write allocates will be charged against
+        // are brought in HERE, once, before the write starts. Every promise,
+        // claim and charge below then operates on memory.
+        self.dquot_initialize(ino)?;
         let put = self.write_file_inner(ino, off, data)?;
         // The inode is read again rather than carried out of the writer: the
         // three paths below return from different depths, and a file's
@@ -154,6 +158,10 @@ impl<S: SectorSource> Volume<S> {
     pub(crate) fn convert_inline(&mut self, ino: u32) -> Result<(), Errno> {
         let inode = self.read_inode(ino)?;
         if !inode.inline_data() { return Ok(()); }
+        // Moving the bytes out costs a block, charged to the file's owners.
+        // Every operation that converts reaches this one function, so this is
+        // where the acquisition belongs — the same place the reference puts it.
+        self.dquot_initialize(ino)?;
         let (at, len) = inode.inline_data_span();
         let block = self.inode_bytes(ino)?;
         let payload: Vec<u8> =
@@ -295,6 +303,7 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(blocks released)
     pub fn truncate_file(&mut self, ino: u32, len: u64) -> Result<(), Errno> {
         self.writable_or_err()?;
+        self.dquot_initialize(ino)?;
         // Every buffered write of this file has to be on the medium before
         // its addresses are read: a page not yet placed has no address, and
         // this operation is about to rearrange the ones that exist.

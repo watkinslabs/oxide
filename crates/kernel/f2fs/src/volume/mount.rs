@@ -184,6 +184,7 @@ impl<S: SectorSource> Volume<S> {
             ino_lists: crate::checkpoint::InoLists::new(),
             quota_setup,
             quota_info: [const { None }; MAX_QUOTAS],
+            dquot_owners: alloc::collections::BTreeMap::new(),
             dquots: alloc::collections::BTreeMap::new(),
             dq_dirty: alloc::collections::BTreeSet::new(),
             clock: 0,

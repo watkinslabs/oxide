@@ -57,6 +57,7 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(file bytes)
     fn rewrite_clusters(&mut self, ino: u32, want: Shape) -> Result<u64, Errno> {
         self.writable_or_err()?;
+        self.dquot_initialize(ino)?;
         // Every pending write of this file has to be placed before its
         // addresses are read: a page not yet placed has none, and both walks
         // decide what to do from exactly those addresses. A cluster whose

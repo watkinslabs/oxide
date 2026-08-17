@@ -168,7 +168,8 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(1) held, O(BLKSIZE) otherwise
     pub(crate) fn read_data_page(&self, inode: &Inode, ino: u32, index: u64, addr: u32,
                                  crypt: Option<&crate::crypto::Info>) -> Result<Vec<u8>, Errno> {
-        self.fill_data_page(inode, ino, index, addr, crypt, inode.verity())
+        if inode.verity() { return self.fill_data_page_attested(inode, ino, index, addr, crypt); }
+        self.fill_data_page(ino, index, addr, crypt)
     }
 
     /// The same page WITHOUT the attestation — the read half of a
@@ -184,35 +185,70 @@ impl<S: SectorSource> Volume<S> {
     pub(crate) fn read_data_page_unattested(&self, ino: u32, index: u64, addr: u32,
                                             crypt: Option<&crate::crypto::Info>)
         -> Result<Vec<u8>, Errno> {
-        let inode = self.read_inode(ino)?;
-        self.fill_data_page(&inode, ino, index, addr, crypt, false)
+        self.fill_data_page(ino, index, addr, crypt)
     }
 
+    /// The page, decrypted and filed, with no attestation anywhere in it.
+    ///
+    /// Two callers and one reason for the split: this is the reader a
+    /// read-modify-write uses, and a read-modify-write happens underneath a node
+    /// write. A single reader taking an `attest` flag would put the whole
+    /// attestation — the tree climb, the descriptor's own index walk, the page
+    /// lock each of them can block on — statically underneath every partial
+    /// block write in the filesystem, for a flag that is always false there.
     /// # C: O(1) held, O(BLKSIZE) otherwise
-    fn fill_data_page(&self, inode: &Inode, ino: u32, index: u64, addr: u32,
-                      crypt: Option<&crate::crypto::Info>, attest: bool)
-        -> Result<Vec<u8>, Errno> {
-        // The mapping is asked for a page BEFORE the medium is: the lookup can
-        // fail for want of a page as easily as the read can fail for want of a
-        // block, and the reference injects at the lookup for that reason.
+    pub(crate) fn fill_data_page(&self, ino: u32, index: u64, addr: u32,
+                                 crypt: Option<&crate::crypto::Info>) -> Result<Vec<u8>, Errno> {
+        self.page_get_fault()?;
+        self.data_cache.read(ino, index, || {
+            self.account_page_fetch();
+            self.read_main_plain(addr, crypt, index)
+        })
+    }
+
+    /// The page a reader of a SEALED file gets: checked against the tree before
+    /// any of it reaches the caller — and before it is filed, so a page served
+    /// later carries the same attestation as one served now. That is why sealing
+    /// a file drops its pages: everything filed before the seal was filed
+    /// without one.
+    /// # C: O(1) held, O(BLKSIZE + levels) otherwise
+    fn fill_data_page_attested(&self, inode: &Inode, ino: u32, index: u64, addr: u32,
+                               crypt: Option<&crate::crypto::Info>) -> Result<Vec<u8>, Errno> {
+        self.page_get_fault()?;
+        self.data_cache.read(ino, index, || {
+            self.account_page_fetch();
+            let block = self.read_main_plain(addr, crypt, index)?;
+            if !self.verity_check(inode, ino, index, &block)? { return Err(Errno::Eio); }
+            Ok(block)
+        })
+    }
+
+    /// Whether a caller asking the mapping for a page is to be told there is no
+    /// memory for one.
+    ///
+    /// The mapping is asked for a page BEFORE the medium is: the lookup can
+    /// fail for want of a page as easily as the read can fail for want of a
+    /// block, and the reference injects at the lookup for that reason. Both
+    /// readers below consult it, and neither may skip it — a site wired into
+    /// only one of them is a site that fires for an ordinary file and not for
+    /// a sealed one, which is worse than not having it.
+    /// # C: O(1)
+    fn page_get_fault(&self) -> Result<(), Errno> {
         if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::PageGet) {
             return Err(Errno::Enomem);
         }
-        self.data_cache.read(ino, index, || {
-            self.io_account(crate::stats::iostat::Io::FsDataRead, BLKSIZE as u64, false);
-            self.io_read_folio(0);
-            let block = self.read_main_plain(addr, crypt, index)?;
-            // A verity file's bytes are attested, not merely located: the
-            // block is checked against the tree before any of it reaches the
-            // caller — and before it is filed, so a page served later carries
-            // the same attestation as one served now. That is why sealing a
-            // file drops its pages: everything filed before the seal was filed
-            // without one.
-            if attest && !self.verity_check(inode, ino, index, &block)? {
-                return Err(Errno::Eio);
-            }
-            Ok(block)
-        })
+        Ok(())
+    }
+
+    /// What a page that had to be FETCHED costs the report.
+    ///
+    /// Inside the fetch rather than around it: a page the mapping answered moved
+    /// no bytes at the device, and a figure that counted it would report traffic
+    /// the mapping exists to avoid.
+    /// # C: O(1)
+    fn account_page_fetch(&self) {
+        self.io_account(crate::stats::iostat::Io::FsDataRead, BLKSIZE as u64, false);
+        self.io_read_folio(0);
     }
 
     /// Where a block lives, asked of its CLUSTER rather than of the block.

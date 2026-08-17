@@ -95,6 +95,11 @@ impl<S: SectorSource> Volume<S> {
     /// Replay one recovered node's worth of block addresses.
     /// # C: O(addresses in a node) blocks
     pub(crate) fn recover_node_data(&mut self, ino: u32, f: &Found) -> Result<u32, Errno> {
+        // A replay adopts blocks the crashed generation left behind and charges
+        // them to the file's owners, so the records are brought in before the
+        // replay starts — the same reason every other operation does it here
+        // and not at the charge.
+        self.dquot_initialize(ino)?;
         let rec = self.read_main_block(f.addr)?;
         if f.ofs == marks::xattr_node_offset() {
             return self.recover_xattr_node(ino, f.nid, f.addr);

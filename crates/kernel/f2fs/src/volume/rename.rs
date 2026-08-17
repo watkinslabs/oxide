@@ -101,15 +101,23 @@ impl<S: SectorSource> Volume<S> {
                 if victim_is_dir != moving_is_dir {
                     return Err(if victim_is_dir { Errno::Eisdir } else { Errno::Enotdir });
                 }
-                Some(victim_is_dir)
+                Some((existing.ino, victim_is_dir))
             }
             Err(_) => None,
         };
+        // Both directories, and the name being replaced if there is one. Those
+        // are the three identities a move charges — the reference names exactly
+        // these and not the moved inode, whose own blocks do not change hands.
+        // Acquired here, after every refusal and before the first allocation,
+        // so a refused rename has read nothing and a proceeding one charges
+        // records it already holds.
+        self.dquot_initialize_pair(from, to)?;
+        if let Some((victim_ino, _)) = victim { self.dquot_initialize(victim_ino)?; }
         // Every refusal above happens before anything is allocated or removed,
         // so a refused rename leaves both directories exactly as they were —
         // and the whiteout's inode is not taken until the request is certain.
         let whiteout = self.new_whiteout(r)?;
-        if let Some(victim_is_dir) = victim {
+        if let Some((_, victim_is_dir)) = victim {
             if let Err(e) = self.remove(to, r.new, victim_is_dir, now) {
                 if let Some(w) = whiteout { let _ = self.release_orphan(w); }
                 return Err(e);
@@ -230,6 +238,10 @@ impl<S: SectorSource> Volume<S> {
             let gaining = if a_is_dir { to } else { from };
             if self.read_inode(gaining)?.links >= F2FS_LINK_MAX { return Err(Errno::Emlink); }
         }
+        // The two parents, and only they: an exchange moves no blocks between
+        // inodes and changes no link count on either swapped file, so the
+        // reference acquires for the directories alone.
+        self.dquot_initialize_pair(from, to)?;
         // Both entries are rewritten IN PLACE, so neither name has to find room
         // and neither side can be lost to a full volume half way through.
         self.set_dentry(from, r.old, b.ino, b.file_type, now)?;

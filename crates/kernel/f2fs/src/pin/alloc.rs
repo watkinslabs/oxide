@@ -125,6 +125,7 @@ impl<S: SectorSource> Volume<S> {
     /// unless it overwrites a block that already exists.
     /// # C: O(blocks allocated)
     pub fn expand_pinned(&mut self, ino: u32, off: u64, len: u64) -> Result<u64, Errno> {
+        self.dquot_initialize(ino)?;
         self.writable_or_err()?;
         if len == 0 { return Ok(0); }
         let inode = self.read_inode(ino)?;

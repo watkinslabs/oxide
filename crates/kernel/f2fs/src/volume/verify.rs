@@ -47,6 +47,47 @@ impl<S: SectorSource> Volume<S> {
     /// What this mount will accept from a built-in signature. # C: O(1)
     pub fn verity_policy(&self) -> &verity::Policy { &self.verity_policy }
 
+    /// Establish this inode's verity info, which is what OPENING a verity file
+    /// does.
+    ///
+    /// The reference builds it here and nowhere else on a reader's path: the
+    /// descriptor is located, parsed and — if it carries one — its signature
+    /// checked against the mount's policy, all at open, and every later read
+    /// consumes the result. That ordering is the whole point. Building it from
+    /// inside a page read would put an index walk, a read past the file's own
+    /// length and a signature verification underneath every block fetch,
+    /// including block fetches this filesystem performs while holding its own
+    /// write state — and it would report a rejected signature as a read
+    /// failure at an arbitrary offset instead of as a refused open.
+    ///
+    /// Idempotent: an inode whose info is already held is left alone, so a
+    /// second open costs nothing.
+    /// # C: O(descriptor bytes + chain) once per inode
+    #[inline(never)]
+    pub(crate) fn verity_ensure_info(&self, inode: &Inode, ino: u32) -> Result<(), Errno> {
+        if self.verity_cache.borrow_mut().get(ino, inode.size).is_some() { return Ok(()); }
+        let info = self.verity_info(inode, ino)?;
+        self.verity_cache.borrow_mut().insert(ino, info);
+        Ok(())
+    }
+
+    /// What opening a file of this filesystem owes a verity inode.
+    ///
+    /// A sealed file may not be opened for writing: its hashes describe exactly
+    /// the bytes it holds, so a writable handle is a handle that can only
+    /// invalidate them. Refusing at the open rather than at the write is what
+    /// stops a caller being told the file is writable and then finding it is
+    /// not.
+    /// # C: O(descriptor bytes + chain) once per inode
+    pub(crate) fn verity_file_open(&self, inode: &Inode, ino: u32, write: bool)
+        -> Result<(), Errno> {
+        if !inode.verity() { return Ok(()); }
+        if write {
+            return Err(verity::access::errno(verity::VerityError::ReadOnlyFile));
+        }
+        self.verity_ensure_info(inode, ino)
+    }
+
     /// Read this inode's verity metadata from the medium and make an `Info`
     /// of it.
     ///
@@ -111,20 +152,13 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(blocks per file block * levels)
     pub(crate) fn verity_check(&self, inode: &Inode, ino: u32, index: u64, data: &[u8])
         -> Result<bool, Errno> {
-        // The descriptor is read and parsed at most once per inode. Building
-        // it needs the medium, so it happens BEFORE the cache is borrowed:
-        // nothing below reaches back into the cache, and keeping the two
-        // apart is what makes that true by construction rather than by
-        // inspection.
-        let fresh = match self.verity_cache.borrow_mut().get(ino, inode.size) {
-            Some(_) => None,
-            None => Some(self.verity_info(inode, ino)?),
-        };
+        // A read CONSUMES the info; it never builds it. Opening the file is
+        // what builds it, so a reader that has none is reading a sealed file
+        // nobody opened, and the honest answer is that these bytes cannot be
+        // attested — not to attest them from metadata fetched underneath the
+        // read.
         let mut cache = self.verity_cache.borrow_mut();
-        let info = match fresh {
-            Some(i) => cache.insert(ino, i),
-            None => cache.get(ino, inode.size).expect("present, and for this file"),
-        };
+        let Some(info) = cache.get(ino, inode.size) else { return Err(Errno::Eio) };
         let per = BLKSIZE / info.params.block_size;
         for sub in 0..per {
             let bidx = index * per as u64 + sub as u64;
