@@ -148,11 +148,11 @@ fn free_segments(v: &mut Vol) -> Result<u64, Errno> {
 }
 
 /// Discard requests waiting to be announced — RUNS, not blocks, because a
-/// request covers a run. The block count is `stat/undiscard_blks`.
-/// # C: O(N pending log N)
-fn pending_discard(v: &mut Vol) -> Result<u64, Errno> {
-    Ok(crate::volume::discard::coalesce(v.pending_discard.clone()).len() as u64)
-}
+/// request covers a run. The block count is `stat/undiscard_blks`, and both come
+/// off the discard control, which is the one thing that knows what is still
+/// outstanding.
+/// # C: O(MAX_PLIST_NUM)
+fn pending_discard(v: &mut Vol) -> Result<u64, Errno> { Ok(v.discard_runs_waiting()) }
 
 /// The Unicode version names resolve through, or that none does. # C: O(1)
 fn encoding(v: &mut Vol) -> Result<String, Errno> {

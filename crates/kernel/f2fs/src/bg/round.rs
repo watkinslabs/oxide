@@ -159,6 +159,11 @@ pub fn discard_pass(fs: &Arc<F2fs>) -> DiscardPass {
         }
     };
     fs.announce_free(&round.runs);
+    // The device has answered, so the runs are no longer in flight. Lowered
+    // here rather than inside the round, because the round is what SUBMITS
+    // them: a count lowered at submission would never be non-zero and the
+    // report would say nothing was ever outstanding.
+    bg.dcc.lock().completed(round.runs.len());
     DiscardPass { round, wait_ms }
 }
 
@@ -179,6 +184,7 @@ pub fn drain_discards(fs: &F2fs) {
         };
         if runs.is_empty() { return; }
         fs.announce_free(&runs);
+        bg.dcc.lock().completed(runs.len());
     }
 }
 

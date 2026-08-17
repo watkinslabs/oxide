@@ -249,19 +249,32 @@ impl<S: SectorSource> Volume<S> {
         // The policy is stored as an attribute, which may take a block.
         self.dquot_initialize(ino)?;
         let inode = self.read_inode(ino)?;
-        let facts = self.crypt_inode_facts(&inode);
-        if !facts.is_dir { return Err(Errno::Enotdir); }
         let want = super::policy::parse_wire(wire).map_err(|e| e.errno())?;
+        // The EXISTING policy is read before anything about the inode's shape is
+        // tested, which is the order the reference's own entry point takes: a
+        // file that already carries a policy is answered for THAT, whatever it
+        // is, because the answer to "set a policy" on an object that has one is
+        // about the policy and not about the object.
+        //
         // Re-applying the SAME policy is how a tool makes sure of one it may
         // already have set, and must not be an error; a DIFFERENT one is a
-        // second answer to how the directory's children are written.
-        if let Some(held) = self.crypt_context(&inode, ino)? {
-            return if crate::crypto::policy::equal(&held.policy, &want) {
-                Ok(())
-            } else {
-                Err(Errno::Eexist)
-            };
+        // second answer to how the directory's children are written. A stored
+        // context this build cannot read is also `EEXIST` — there IS a policy
+        // there and it is not the one being asked for.
+        match self.crypt_context(&inode, ino) {
+            Ok(Some(held)) => {
+                return if crate::crypto::policy::equal(&held.policy, &want) {
+                    Ok(())
+                } else {
+                    Err(Errno::Eexist)
+                };
+            }
+            Err(Errno::Einval) => return Err(Errno::Eexist),
+            Err(e) => return Err(e),
+            Ok(None) => {}
         }
+        let facts = self.crypt_inode_facts(&inode);
+        if !facts.is_dir { return Err(Errno::Enotdir); }
         if !self.dir_is_empty(&inode, ino)? { return Err(Errno::Enotempty); }
         // Last, where the reference puts it: a caller that named a bad policy,
         // a file, a directory with a different policy or a non-empty one hears

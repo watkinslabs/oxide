@@ -39,8 +39,10 @@ pub(crate) fn attrs(fs: &Arc<F2fs>, dev: &str) -> Vec<Attr> {
         // Runs handed to a device since the mount. Monotonic: a report of work
         // done, which a count that could fall would not be.
         counter(fs, &dir, "issued_discard", |d| d.issued),
-        // Runs parked and not yet handed over — the same quantity the mount's
-        // `pending_discard` reports, counted where the thread will act on it.
-        counter(fs, &dir, "queued_discard", |d| d.cmd_count() as u64),
+        // Runs handed to a device whose erase has not come back. Distinct from
+        // the parked count `pending_discard` reports: a run is parked, or it is
+        // in flight, and reporting the parked ones here would tell a tool the
+        // device was working on requests it has already answered for.
+        counter(fs, &dir, "queued_discard", |d| d.queued_count()),
     ]
 }

@@ -20,11 +20,14 @@ use super::volume::{hex, num, Vol};
 /// # C: O(1)
 fn sb_status(v: &mut Vol) -> Result<u64, Errno> { Ok(v.sb_status()) }
 
-/// Blocks released since the last checkpoint that the device has not been
-/// told about yet. # C: O(1)
-fn undiscard_blks(v: &mut Vol) -> Result<u64, Errno> {
-    Ok(v.pending_discard.len() as u64)
-}
+/// Blocks the discard machinery is holding and has not announced.
+///
+/// The discard control's own count, not the volume's list of addresses released
+/// since the last checkpoint: those are not announceable until the checkpoint
+/// lands, so counting them here would report as outstanding blocks the device
+/// may never be told about.
+/// # C: O(runs waiting)
+fn undiscard_blks(v: &mut Vol) -> Result<u64, Errno> { Ok(v.discard_blocks_waiting()) }
 
 /// The `stat/` attributes.
 ///

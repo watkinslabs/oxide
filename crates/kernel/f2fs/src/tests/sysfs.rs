@@ -332,10 +332,20 @@ fn discard_counts_start_empty_and_count_runs_and_blocks_separately() {
     assert_eq!(show(&attrs, "vda", "pending_discard"), "0\n");
     assert_eq!(show(&attrs, "vda/stat", "undiscard_blks"), "0\n");
 
+    // Both come off the DISCARD CONTROL, which is the one owner of what is
+    // outstanding. A block released since the last checkpoint is not outstanding
+    // — that checkpoint may make it live again — so parking one on the volume's
+    // own list must move neither figure.
     fs.volume.lock().pending_discard.extend_from_slice(&[100, 101, 102, 200]);
+    assert_eq!(show(&attrs, "vda", "pending_discard"), "0\n");
+    assert_eq!(show(&attrs, "vda/stat", "undiscard_blks"), "0\n");
+
+    fs.bg().dcc.lock().extend([(100u32, 3u32), (200, 1)]);
 
     assert_eq!(show(&attrs, "vda", "pending_discard"), "2\n", "two runs");
     assert_eq!(show(&attrs, "vda/stat", "undiscard_blks"), "4\n", "four blocks");
+    // In flight is a third state, and nothing has been handed over yet.
+    assert_eq!(show(&attrs, "vda/stat", "queued_discard"), "0\n");
 }
 
 /// Every attribute must render off the LIVE volume: a value captured when the

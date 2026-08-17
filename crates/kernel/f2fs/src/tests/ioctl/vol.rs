@@ -242,6 +242,36 @@ fn a_policy_on_something_that_is_not_a_directory_is_refused() {
     assert_eq!(v.set_encryption_policy(ino, &wire_v2()), Err(Errno::Enotdir));
 }
 
+/// An object that ALREADY carries a policy is answered for the policy, before
+/// anything about its shape is tested.
+///
+/// The ordering is the contract a caller reads: a request to set a policy on an
+/// object that has one is about the policy, so a non-directory carrying a
+/// context hears `EEXIST` and not `ENOTDIR`. Arranged by turning a directory
+/// that holds a policy into a file, which the ordinary interface cannot do —
+/// the ordering is nonetheless what the answer is defined by.
+#[test]
+fn an_object_that_already_holds_a_policy_answers_for_the_policy_first() {
+    let mut v = test_image::with_root().mount_rw().unwrap();
+    let dir = v.create(ROOT_INO, b"d", &spec(S_IFDIR | 0o755), None).unwrap();
+    v.set_encryption_policy(dir, &wire_v2()).unwrap();
+    let mode = crate::mode::S_IFREG | 0o644;
+    v.stamp_inode(dir, |b| crate::volume::dnode::put16(b, crate::uapi::I_MODE, mode)).unwrap();
+    assert!(!v.crypt_inode_facts(&v.read_inode(dir).unwrap()).is_dir, "still a directory");
+    let other = crate::ioctl::policy::encode_wire(&crate::crypto::policy::Policy {
+        version: crate::crypto::uapi::POLICY_V2,
+        contents_mode: crate::crypto::uapi::MODE_AES_256_XTS,
+        filenames_mode: crate::crypto::uapi::MODE_AES_256_CTS,
+        flags: 0,
+        log2_data_unit_size: 0,
+        key: crate::crypto::policy::KeyId::Identifier([0x44; 16]),
+    });
+    assert_eq!(v.set_encryption_policy(dir, &other), Err(Errno::Eexist),
+               "the shape was tested before the policy that is already there");
+    // And the same policy is still not an error, whatever the object's shape.
+    assert_eq!(v.set_encryption_policy(dir, &wire_v2()), Ok(()));
+}
+
 /// Re-applying the SAME policy is how a tool makes sure of one it may already
 /// have set, and must not be an error.
 #[test]

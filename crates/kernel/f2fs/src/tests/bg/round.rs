@@ -156,6 +156,11 @@ fn a_discard_pass_hands_over_what_is_parked_and_shortens_its_interval() {
     assert_eq!(pass.round.issued(), 2);
     assert_eq!(pass.wait_ms, 60_000, "the list is empty again, so there is no hurry");
     assert_eq!(fs.bg().dcc.lock().cmd_count(), 0);
+    // The device has answered by the time the pass returns, so nothing is left
+    // in flight. A pass that raised the count and never lowered it would report
+    // a device permanently busy with requests it finished long ago.
+    assert_eq!(fs.bg().dcc.lock().queued_count(), 0, "the in-flight count was never lowered");
+    assert_eq!(fs.bg().dcc.lock().issued, 2, "the work done is still reported");
 }
 
 #[test]

@@ -127,6 +127,13 @@ pub struct DiscardControl {
     pub pend: Vec<Vec<Range>>,
     /// Runs handed to the device since the mount, for the report.
     pub issued: u64,
+    /// Runs a round has handed to the device and whose erase has not come back.
+    ///
+    /// Raised where a run leaves the parked lists and lowered when the device
+    /// has answered for it, so the two counts are disjoint: a run is parked, or
+    /// it is in flight, never both. Separate from `issued`, which only ever
+    /// rises and is a report of work done.
+    pub queued: usize,
     /// Set by a caller that wants the current sleep cut short.
     pub wake: bool,
 }
@@ -158,6 +165,7 @@ impl DiscardControl {
             next_pos: 0,
             pend: vec![Vec::new(); MAX_PLIST_NUM],
             issued: 0,
+            queued: 0,
             wake: false,
         }
     }
@@ -176,6 +184,13 @@ impl DiscardControl {
 
     /// Runs waiting. # C: O(MAX_PLIST_NUM)
     pub fn cmd_count(&self) -> usize { self.pend.iter().map(|l| l.len()).sum() }
+
+    /// Runs handed to a device and not yet answered for. # C: O(1)
+    pub fn queued_count(&self) -> u64 { self.queued as u64 }
+
+    /// Note that the device has answered for `n` runs a round handed it.
+    /// # C: O(1)
+    pub fn completed(&mut self, n: usize) { self.queued = self.queued.saturating_sub(n); }
 
     /// Blocks waiting, which is what the report calls undiscarded.
     /// # C: O(runs)
@@ -273,6 +288,7 @@ impl DiscardControl {
             if out.len() as u32 >= p.max_requests || io_interrupted { break; }
         }
         let empty = out.is_empty();
+        self.queued += out.len();
         Round { runs: out, io_interrupted: io_interrupted && empty }
     }
 
@@ -302,6 +318,7 @@ impl DiscardControl {
         // stopped would never be reached again.
         if ran_off_the_end { self.next_pos = 0; }
         let empty = out.is_empty();
+        self.queued += out.len();
         Round { runs: out, io_interrupted: io_interrupted && empty }
     }
 

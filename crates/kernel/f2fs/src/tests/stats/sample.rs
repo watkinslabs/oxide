@@ -153,14 +153,22 @@ fn the_orphan_figure_is_the_volumes_own_set() {
 
 /// Blocks the mount has released but not yet announced are reported, because
 /// they are neither in use nor available to the device.
+///
+/// The two figures are different STAGES of the same pipeline and must not be the
+/// same number: `discard_blks` counts blocks invalidated since the last
+/// checkpoint — candidates, which that checkpoint may yet make live again — and
+/// `undiscard_blks` counts what the discard machinery is actually holding. This
+/// volume has no discard thread, so it announces every run as its checkpoint
+/// lands and nothing is ever outstanding.
 #[test]
 fn blocks_awaiting_announcement_are_reported() {
     let mut v = vol();
     v.pending_discard.push(100);
     v.pending_discard.push(101);
     let g = pic(&mut v, &Counters::new());
-    assert_eq!(g.discard_blks, 2);
-    assert_eq!(g.undiscard_blks, 2);
+    assert_eq!(g.discard_blks, 2, "the candidates are not counted");
+    assert_eq!(g.undiscard_blks, 0,
+               "a candidate was reported as held by the discard machinery");
 }
 
 /// A read-only mount says so, and the condition word agrees with the mount's

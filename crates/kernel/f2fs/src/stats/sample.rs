@@ -299,7 +299,7 @@ impl General {
             total_ext: c.total_hit_ext,
             allocated_data_blocks: c.allocated_data_blocks,
             ext_tree, ext_zombie, ext_node,
-            undiscard_blks: v.pending_discard.len() as u32,
+            undiscard_blks: v.discard_blocks_waiting().min(u64::from(u32::MAX)) as u32,
             iostat: c.iostat,
             mem: super::mem::Footprint::of(v, c),
             writable: v.writable(),

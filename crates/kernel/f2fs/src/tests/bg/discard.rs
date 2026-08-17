@@ -242,3 +242,22 @@ fn issued_runs_are_counted_for_the_report() {
     d.issue_round(&p, true);
     assert_eq!(d.issued, 2);
 }
+
+/// A run leaves the parked lists and becomes IN FLIGHT, and the two counts are
+/// disjoint: a build that reported the parked ones as queued would tell a tool
+/// the device was working on requests it has already answered for.
+#[test]
+fn a_run_a_round_takes_is_in_flight_until_the_device_answers() {
+    let mut d = dcc();
+    d.extend([(100u32, 32u32), (200, 32)]);
+    assert_eq!(d.cmd_count(), 2);
+    assert_eq!(d.queued_count(), 0, "nothing has been handed over yet");
+    let p = bg_policy(&d);
+    let round = d.issue_round(&p, true);
+    assert_eq!(round.runs.len(), 2);
+    assert_eq!(d.cmd_count(), 0, "an issued run is no longer parked");
+    assert_eq!(d.queued_count(), 2, "an issued run is in flight");
+    d.completed(round.runs.len());
+    assert_eq!(d.queued_count(), 0, "the device answered and nothing is outstanding");
+    assert_eq!(d.issued, 2, "the report of work done only ever rises");
+}
