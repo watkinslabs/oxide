@@ -40,6 +40,7 @@ pub(crate) const BITS: &[(u32, &str)] = &[
 ///
 /// `atomic_write` is the one bit with no entry upstream — it is not an on-disk
 /// property a volume is formatted with — so the two lists differ by it alone.
+/// # C: O(N bits)
 pub(crate) fn listed() -> impl Iterator<Item = &'static (u32, &'static str)> {
     BITS.iter().filter(|(bit, _)| *bit != FEATURE_ATOMIC_WRITE)
 }

@@ -4,9 +4,11 @@
 //! question each answers:
 //!
 //! - `features/` — what THIS BUILD can do, whatever is mounted. A name is
-//!   present when the code behind it is; a name whose feature this build
-//!   refuses at mount is absent, because a tool that reads it is deciding
-//!   whether to use the feature.
+//!   present when the code behind it is, and absent when the feature would not
+//!   be honoured, because a tool that reads it is deciding whether to use the
+//!   feature. Being unable to honour a feature does not mean refusing the
+//!   volume: most features this build lacks are read-through-able, and the
+//!   entry is withheld while the mount still succeeds.
 //! - `<dev>/feature_list/` — what THIS VOLUME was formatted with. Every
 //!   on-disk feature bit appears, and says `supported` or `unsupported`
 //!   according to the volume's own feature word.
@@ -35,8 +37,11 @@
 //! - `feature_list`: `<dev>/feature_list/`, one entry per on-disk bit.
 
 mod build;
+mod discard;
 mod feature_list;
+mod inject;
 mod knobs;
+mod reports;
 mod stat;
 mod tunables;
 pub(crate) mod volume;
@@ -78,7 +83,10 @@ pub fn mount_attrs(fs: &Arc<F2fs>) -> Vec<Attr> {
     let mut out = volume::attrs(fs, &dev);
     out.extend(knobs::attrs(fs, &dev));
     out.extend(tunables::attrs(fs, &dev));
+    out.extend(reports::attrs(fs, &dev));
+    out.extend(inject::attrs(fs, &dev));
     out.extend(stat::attrs(fs, &dev));
+    out.extend(discard::attrs(fs, &dev));
     out.extend(feature_list::attrs(fs, &dev));
     out
 }
