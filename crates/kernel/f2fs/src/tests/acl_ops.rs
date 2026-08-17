@@ -44,6 +44,16 @@ fn named_default_blob() -> Vec<u8> {
                e(ACL_GROUP_OBJ, R | X), e(ACL_MASK, R | W | X), e(ACL_OTHER, R | X)])
 }
 
+/// The bytes actually on the medium for `name`, ahead of the conversion the
+/// attribute boundary does — the only way to tell a stored record from a stored
+/// interchange blob.
+fn stored_raw(fs: &Arc<F2fs>, inode: &InodeRef, name: &str) -> Vec<u8> {
+    let node = super::F2fsOps::node(inode).expect("node");
+    let live = node.live().expect("live inode");
+    let v = fs.volume.lock();
+    v.get_xattr(&live, node.ino, name).expect("stored value")
+}
+
 /// A directory carrying `blob` as its default ACL.
 fn dir_with_default(fs: &Arc<F2fs>, blob: &[u8]) -> InodeRef {
     let root = fs.root_inode().expect("root");
@@ -59,10 +69,13 @@ fn an_acl_written_through_the_interface_reads_back_in_the_interchange_form() {
     let file = root.create_child("f", 0o644, &CreateCtx::root()).unwrap();
     let blob = named_default_blob();
     file.setxattr("system.posix_acl_access", blob.clone(), false, false).unwrap();
-    // What comes back is the interchange blob, not the stored record: the
-    // boundary converts both ways, and the two forms are different bytes.
+    // What went onto the MEDIUM is the record, not the blob the caller passed.
+    let record = crate::acl::to_disk(&vfs::posix_acl::from_xattr(&blob).unwrap()).unwrap();
+    assert_ne!(record, blob, "the two forms are different bytes, so this can fail");
+    assert_eq!(stored_raw(&fs, &file, "system.posix_acl_access"), record,
+               "the interchange blob must not be stored verbatim");
+    // And what comes back out is the blob again: the boundary converts both ways.
     assert_eq!(file.getxattr("system.posix_acl_access").unwrap(), blob);
-    assert_ne!(crate::acl::to_disk(&vfs::posix_acl::from_xattr(&blob).unwrap()).unwrap(), blob);
 }
 
 #[test]
