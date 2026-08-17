@@ -12,8 +12,10 @@ use block::{BlockDevice, BlockRequest, MemDisk};
 use sync::TaskList;
 
 use vfs::namei::{RENAME_EXCHANGE, RENAME_NOREPLACE, RENAME_WHITEOUT};
+use vfs::superblock::SuperOps;
 use vfs::{CreateCtx, FileType, InodeRef, VfsError};
 
+use crate::mount::sb::F2fsSuperOps;
 use crate::mount::F2fs;
 use crate::opts::Options;
 use crate::test_image;
@@ -117,4 +119,35 @@ fn a_moved_directory_moves_its_cached_parent_counts_too() {
     x.rename_child("m", &y, "m", 0, &CreateCtx::root()).expect("rename");
     assert_eq!(x.nlink(), lx - 1);
     assert_eq!(y.nlink(), ly + 1);
+}
+
+#[test]
+fn evicting_an_unnamed_file_frees_it_rather_than_leaving_it_for_the_next_mount() {
+    let fs = mounted();
+    let dir = root(&fs);
+    let tmp = dir.tmpfile(0o600, &CreateCtx::root()).expect("tmpfile");
+    let ino = tmp.ino() as u32;
+    assert!(fs.volume.lock().is_orphan(ino));
+    // The terminal reference drop, which is what the interface calls when the
+    // last handle on a link-less inode goes.
+    let sops = F2fsSuperOps { fs: Arc::clone(&fs) };
+    sops.evict_inode(&tmp);
+    let v = fs.volume.lock();
+    assert!(!v.is_orphan(ino), "the inode is still parked after eviction");
+    assert!(v.read_inode(ino).is_err(), "the inode was not freed");
+}
+
+#[test]
+fn evicting_a_file_that_gained_a_name_leaves_it_alone() {
+    let fs = mounted();
+    let dir = root(&fs);
+    let tmp = dir.tmpfile(0o600, &CreateCtx::root()).expect("tmpfile");
+    let ino = tmp.ino() as u32;
+    dir.link_child(&tmp, "kept", &CreateCtx::root()).expect("link");
+    let sops = F2fsSuperOps { fs: Arc::clone(&fs) };
+    sops.evict_inode(&tmp);
+    let v = fs.volume.lock();
+    assert!(v.read_inode(ino).is_ok(), "a named file was freed at eviction");
+    // And the hold is gone, so a later unlink is not told something holds it.
+    assert!(!v.inode_is_open(ino));
 }

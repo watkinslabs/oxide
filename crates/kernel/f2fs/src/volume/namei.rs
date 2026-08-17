@@ -237,10 +237,10 @@ impl<S: SectorSource> Volume<S> {
             put64(b, I_CTIME, now.0);
             put32(b, I_CTIME_NSEC, now.1);
         })?;
-        // The name it just gained is what takes it off the list, in the one
-        // place a link is added — so a temporary file given a name and a
-        // whiteout taking a vacated one both stop being reclaimable here.
-        if target.links == 0 { self.unpark_orphan(ino); }
+        // Coming off the orphan list is NOT done here. `add_dentry` above owns
+        // it, for every caller that lands a name — a linked temporary file, a
+        // whiteout taking a vacated name, a replay putting an entry back — and
+        // a second unpark beside it would be a second answer to one question.
         self.touch(dir, now)
     }
 
