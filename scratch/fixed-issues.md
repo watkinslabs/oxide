@@ -1,5 +1,11 @@
 # Fixed issues
 
+### R95-pmm-zoned-allocator-contract
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED R95 | INFRA | med | **`10§1` and `10§7` specified one PMM zone and deferred the per-CPU fast path, while the implementation had DMA/DMA32/Normal/Movable zones, zonelists, reserves, and watermarks.** The frozen contract now states the zone partition, bounded allocation ladder, zone-local free lists, watermarks, and the still-absent pageset. | R95. `docs/10-pmm.md`; the zone test contract names the boundary, fallback, and DMA-bound checks that make the revised contract fail if it drifts. | R95 |
+
 ### F1228-pmm-alloc-below-pagesets
 
 | Status | Class | Sev | Issue | Evidence | Owner |
