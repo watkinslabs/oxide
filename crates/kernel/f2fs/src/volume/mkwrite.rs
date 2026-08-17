@@ -60,7 +60,7 @@ impl<S: SectorSource> Volume<S> {
         // The bytes that reach the medium are ciphertext and there is no
         // plaintext form of a block on an encrypted volume, so a mapping of one
         // needs the key exactly as a write does.
-        let crypt = self.crypt_info(&inode, ino)?;
+        let crypt = self.crypt_require_key(&inode, ino)?;
         if inode.encrypted() && crypt.is_none() { return Err(Errno::Enokey); }
         // A compressed file's unpacked cluster is not held in this mapping at
         // all — the cluster reader unpacks per access — so there is no page here
@@ -118,11 +118,11 @@ impl<S: SectorSource> Volume<S> {
     fn mkwrite_page_bytes(&mut self, ino: u32, index: u64, old: u32)
         -> Result<alloc::vec::Vec<u8>, Errno> {
         let inode = self.read_inode(ino)?;
-        let crypt = self.crypt_info(&inode, ino)?;
+        let crypt = self.crypt_require_key(&inode, ino)?;
         let mut page = match self.data_cache.peek(ino, index) {
             Some(held) => held,
             None if crate::node::is_hole(old) => alloc::vec![0u8; BLKSIZE],
-            None => self.read_data_page_unattested(ino, index, old, crypt.as_ref())?,
+            None => self.read_data_page_unattested(ino, index, old, crypt.as_deref())?,
         };
         if page.len() != BLKSIZE { return Err(Errno::Eio); }
         let first_byte = index.wrapping_mul(BLKSIZE as u64);
