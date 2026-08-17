@@ -4,8 +4,15 @@
 //! The list is one static shared by every test in this binary, so nothing here
 //! asserts an absolute list length or an absolute reclaim total. Each test
 //! measures its OWN mount: how the list length moved across a mount and a drop,
-//! and what that mount's caches held before and after. An absolute assertion
-//! would pass or fail on test ordering rather than on the code.
+//! and what that mount's caches held before and after.
+//!
+//! Measuring its own mount is NOT enough on its own, because a shrink pass is
+//! process-wide: it walks every mount registered at that moment, so one test's
+//! `scan` frees entries out of another test's mounts, in the middle of that
+//! test's before/after pair. That made `one_budget_is_shared_across_mounts`
+//! fail intermittently — a budget of 8 with more than 8 entries gone, all of
+//! them taken by a sibling's pass. So every test that calls a pass, or reads a
+//! global total, takes [`shrink_lock`] first, and they run one at a time.
 
 use super::*;
 use super::super::registry::{holds_ptr, listed, listings};
@@ -22,6 +29,19 @@ use crate::test_image;
 use crate::uapi::BLKSIZE;
 
 const BS: u32 = BLKSIZE as u32;
+
+/// Serialise the tests that drive the process-wide reclaim list.
+///
+/// The list and both callbacks are one per machine by design. Two tests
+/// measuring their own mounts across their own pass would still see each
+/// other's, because neither pass is scoped to a mount.
+struct ShrinkTestLockClass;
+impl sync::LockClass for ShrinkTestLockClass {
+    fn rank() -> u16 { 35 }
+    fn name() -> &'static str { "ShrinkTestLockClass" }
+}
+static SHRINK_TEST_LOCK: sync::Spinlock<(), ShrinkTestLockClass> = sync::Spinlock::new(());
+fn shrink_lock() -> sync::Guard<'static, (), ShrinkTestLockClass> { SHRINK_TEST_LOCK.lock() }
 /// Runs to plant, comfortably more than a quarter-budget takes in one pass.
 const PLANTED: u32 = 40;
 
@@ -65,6 +85,7 @@ fn plant(fs: &Arc<F2fs>) {
 /// nothing outside the caches' own tests ever called a shrink pass.
 #[test]
 fn mounting_joins_the_reclaim_list_and_dropping_leaves_it() {
+    let _g = shrink_lock();
     let fs = mounted();
     assert!(listed(&fs), "a mount did not join the reclaim list");
     let ptr = Arc::as_ptr(&fs);
@@ -74,6 +95,7 @@ fn mounting_joins_the_reclaim_list_and_dropping_leaves_it() {
 
 #[test]
 fn a_mount_joining_twice_is_listed_once() {
+    let _g = shrink_lock();
     let fs = mounted();
     assert_eq!(listings(&fs), 1);
     crate::shrink::join(&fs);
@@ -84,6 +106,7 @@ fn a_mount_joining_twice_is_listed_once() {
 /// move when the mount's caches do.
 #[test]
 fn the_count_callback_rises_with_what_a_mount_has_cached() {
+    let _g = shrink_lock();
     let fs = mounted();
     let before = count();
     plant(&fs);
@@ -98,6 +121,7 @@ fn the_count_callback_rises_with_what_a_mount_has_cached() {
 /// point of the lane: this is the caller the shrink passes did not have.
 #[test]
 fn the_scan_callback_frees_a_mounts_cached_runs() {
+    let _g = shrink_lock();
     let fs = mounted();
     plant(&fs);
     let (read_before, age_before) = held(&fs);
@@ -112,6 +136,7 @@ fn the_scan_callback_frees_a_mounts_cached_runs() {
 /// can find would empty a cache the machine asked for four entries from.
 #[test]
 fn a_scan_frees_no_more_than_its_budget() {
+    let _g = shrink_lock();
     let fs = mounted();
     plant(&fs);
     let (read_before, age_before) = held(&fs);
@@ -125,6 +150,7 @@ fn a_scan_frees_no_more_than_its_budget() {
 
 #[test]
 fn a_scan_asked_for_nothing_frees_nothing() {
+    let _g = shrink_lock();
     let fs = mounted();
     plant(&fs);
     let (read_before, age_before) = held(&fs);
@@ -136,6 +162,7 @@ fn a_scan_asked_for_nothing_frees_nothing() {
 /// filesystem disappearing, so the entries are accounted for as reclaimed.
 #[test]
 fn leaving_empties_both_extent_caches() {
+    let _g = shrink_lock();
     let fs = mounted();
     plant(&fs);
     assert_ne!(held(&fs), (0, 0));
@@ -152,6 +179,7 @@ fn leaving_empties_both_extent_caches() {
 /// references precisely so it is not what keeps a filesystem alive.
 #[test]
 fn a_dropped_mount_is_not_visited_by_a_later_pass() {
+    let _g = shrink_lock();
     let fs = mounted();
     plant(&fs);
     let ptr = Arc::as_ptr(&fs);
@@ -166,6 +194,7 @@ fn a_dropped_mount_is_not_visited_by_a_later_pass() {
 /// for that number from every mount it can find.
 #[test]
 fn one_budget_is_shared_across_mounts() {
+    let _g = shrink_lock();
     let all: Vec<Arc<F2fs>> = (0..3).map(|_| mounted()).collect();
     for fs in &all { plant(fs); }
     let before: Vec<(u64, u64)> = all.iter().map(held).collect();

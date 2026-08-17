@@ -308,7 +308,7 @@ pub const NULL_SEGNO: u32 = u32::MAX;
 pub const ALLOC_LFS: u8 = 0;
 pub const ALLOC_SSR: u8 = 1;
 
-/// Byte offset of summary entry `n` inside a summary block.
+/// Byte offset of summary entry `n` inside a summary block. # C: O(1)
 pub const fn summary_off(n: usize) -> usize { n * SUMMARY_SIZE }
 
 /// Where a segment's summary block lives in the summary area. # C: O(1)
