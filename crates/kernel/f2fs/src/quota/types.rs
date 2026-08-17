@@ -88,6 +88,7 @@ pub fn is_quota_inode(qf_ino: &[u32; MAX_QUOTAS], feature: u32, ino: u32) -> boo
 /// writes the inconsistency deeper, and the reference stops rather than
 /// compounding it.
 /// # C: O(1)
+#[inline(never)]
 pub fn resolve(
     qf_ino: &[u32; MAX_QUOTAS],
     feature: u32,

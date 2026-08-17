@@ -29,6 +29,7 @@ impl<S: SectorSource> Volume<S> {
     /// the walk itself, and after a genuine clean unmount it costs one block —
     /// the log's next block belongs to an older generation and stops it.
     /// # C: O(chain length) blocks, one after a clean unmount
+    #[inline(never)]
     pub fn recover_at_mount(&mut self) -> Result<Recovery, Errno> {
         if !self.opts.recovery {
             // Asked not to replay, by either of the two options that say so.
@@ -64,6 +65,7 @@ impl<S: SectorSource> Volume<S> {
     /// answer held by the caller could disagree with the word every reporting
     /// surface publishes.
     /// # C: O(1)
+    #[inline(never)]
     pub(crate) fn begin_repair_write(&mut self) {
         let need = super::rw::need_recovery(super::rw::Facts {
             orphans_present: self.cp.has(crate::flags::CP_ORPHAN_PRESENT_FLAG),

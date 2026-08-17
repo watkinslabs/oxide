@@ -86,6 +86,7 @@ impl<S: SectorSource> Volume<S> {
     /// the reference logs and carries on, and a volume that refuses to mount
     /// over a missing quota file leaves nobody able to put one there.
     /// # C: O(kinds * depth)
+    #[inline(never)]
     pub(crate) fn open_named_quota_files(&mut self) {
         for kind in 0..MAX_QUOTAS {
             if !self.quota_setup[kind].named { continue; }

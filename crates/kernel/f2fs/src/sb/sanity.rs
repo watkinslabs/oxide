@@ -132,6 +132,7 @@ fn areas(sb: &SuperBlock) -> Result<(), SbError> {
 
 /// What this mount may do with the volume, or why it may not.
 /// # C: O(1)
+#[inline(never)]
 pub fn access(sb: &SuperBlock) -> Result<features::Access, features::Refusal> {
     // A folding volume is mountable exactly when its encoding is one this
     // build can load: the table is what every lookup resolves through, and

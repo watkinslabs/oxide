@@ -43,6 +43,7 @@ impl F2fs {
     /// be reset is one the next allocation will be refused from, and a mount
     /// that hid that would fail later, somewhere with no explanation.
     /// # C: O(zones), plus one report per member
+    #[inline(never)]
     pub fn check_and_fix_write_pointers(&self) -> KResult<()> {
         {
             let v = self.volume.lock();

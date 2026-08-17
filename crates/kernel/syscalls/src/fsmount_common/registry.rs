@@ -324,9 +324,16 @@ fn register_filesystems() {
     // does not name. Recovery replays those at mount from the node chain, which
     // is why this mounts read-write on an unclean volume where NTFS above will
     // not — replay is the designed path here, not a repair.
-    let _ = register_fs(FsType::new("f2fs", f2fs::F2FS_SUPER_MAGIC, FsFlags::FS_REQUIRES_DEV,
-        Box::new(|ty, source: Option<&str>, _t: &str, d: &str, sb_flags: u64,
-                  _p: &[vfs::fs::FsParameter]| -> R {
+    //
+    // The whole mount sequence lives in a fill function of its own rather than
+    // in the constructor's body. Every filesystem's constructor is registered
+    // from this one function, so a body written here is inlined into a frame
+    // shared with every other type's — the f2fs sequence alone reserved more
+    // than a whole kernel stack that way. Reaching it through one call keeps
+    // its locals in a frame that exists only while a f2fs volume is mounting.
+    #[inline(never)]
+    fn f2fs_fill(ty: Arc<dyn vfs::FileSystemType>, source: Option<&str>, d: &str,
+                 sb_flags: u64) -> R {
         let source = source.ok_or(vfs::VfsError::Enoent)?;
         let write = sb_flags & vfs::superblock::SB_RDONLY == 0;
         let access = vfs::MAY_READ | if write { vfs::MAY_WRITE } else { 0 };
@@ -351,6 +358,11 @@ fn register_filesystems() {
         // what makes the volume's own quota machinery reachable at all.
         f2fs::mount::quota::install(&sb, &quota_fs);
         Ok(sb)
+    }
+    let _ = register_fs(FsType::new("f2fs", f2fs::F2FS_SUPER_MAGIC, FsFlags::FS_REQUIRES_DEV,
+        Box::new(|ty, source: Option<&str>, _t: &str, d: &str, sb_flags: u64,
+                  _p: &[vfs::fs::FsParameter]| -> R {
+        f2fs_fill(ty, source, d, sb_flags)
     })));
     // procfs declares the three options it ENFORCES (`gid=`, `hidepid=`,
     // `subset=`) and builds a per-mount root that carries them. The table was an

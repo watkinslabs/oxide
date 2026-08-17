@@ -140,6 +140,7 @@ impl<S: SectorSource> Volume<S> {
     /// blocks stay counted, which is recoverable, where a half-done reclaim on
     /// a medium that cannot record it is not.
     /// # C: O(orphan blocks + blocks they own)
+    #[inline(never)]
     pub fn recover_orphans(&mut self) -> Result<(), Errno> {
         if !self.cp.has(CP_ORPHAN_PRESENT_FLAG) { return Ok(()); }
         if !self.writable { return Ok(()); }

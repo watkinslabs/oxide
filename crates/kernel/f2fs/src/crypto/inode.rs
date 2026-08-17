@@ -37,7 +37,12 @@ use super::{fname, iv, support, FscryptError};
 enum Impl {
     /// This filesystem, over the buffer, before it is handed to the block
     /// layer. Always the answer for filenames, which no controller encrypts.
-    Software(Cipher),
+    ///
+    /// Behind a pointer because the prepared cipher is over a kilobyte of
+    /// expanded key schedule, and the reference reaches its transform through
+    /// a pointer for the same reason: held by value it would ride in every
+    /// frame that sets an inode's key up, and it is the largest thing there.
+    Software(alloc::boxed::Box<Cipher>),
     /// The block layer, from a context attached to each request. The key may
     /// be one software could use, or a hardware-wrapped blob it could not.
     Inline(Arc<block::crypto::Key>),
@@ -148,7 +153,7 @@ impl Info {
             }
             None => {
                 let raw = Self::derive(&p, &ctx.nonce, mode, mk, uuid, ino, &mut hashed_ino)?;
-                Impl::Software(Cipher::prepare(mode, &raw)?)
+                Impl::Software(alloc::boxed::Box::new(Cipher::prepare(mode, &raw)?))
             }
         };
         // Only a case-folding directory hashes plaintext, and only the newer

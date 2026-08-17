@@ -61,7 +61,7 @@ pub fn mount(b: Builder) -> Result<Volume<Spread>, Errno> {
 pub fn mount_zoned(b: Builder, reports: &[Option<DevZones>]) -> Result<Volume<Spread>, Errno> {
     let (media, table) = members(b);
     let set = DeviceSet::new(media, table)?;
-    Volume::mount_devices(set, Options::defaults(), true, reports)
+    Volume::mount_devices(set, Options::defaults(), true, reports).map(|v| *v)
 }
 
 /// A report of `count` zones of `len` blocks each, the first `conv` of them
