@@ -74,6 +74,7 @@ mod tests {
 
     #[test]
     fn reported_zone_updates_only_a_plug_marked_for_write_pointer_refresh() {
+        // SAFETY: LinuxGendisk is a C-layout struct whose fields are safely zero-representable; the zoned fields this test needs are set immediately below.
         let mut disk: LinuxGendisk = unsafe { core::mem::zeroed() };
         disk.zoned.nr_zones = 2; disk.zoned.zone_capacity = 100; disk.zoned.last_zone_capacity = 80;
         // SAFETY: this test owns the zeroed gendisk and its canonical test plug for the complete call.

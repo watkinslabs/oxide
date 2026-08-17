@@ -59,6 +59,8 @@ fn register_primary(dev: *mut c_void) -> Result<(), i32> {
     if object.is_null() { return Err(-LINUX_ENOMEM); }
     // SAFETY: object is a zeroed drm_minor allocation; these fields use verified ABI offsets.
     unsafe { write(object.cast::<u32>(), minor); write(object.add(4).cast::<u32>(), 0); write(object.add(DRM_MINOR_DEV_OFF).cast::<*mut c_void>(), dev); }
+    // SAFETY: on this failure path object is still the sole, unpublished allocation
+    // from alloc_zeroed above with the identical layout; nothing else can hold it yet.
     let cdev = match crate::linux_chrdev::register_internal_cdev((DRM_MAJOR << 20) | minor, 1, ops) { Ok(v) => v, Err(rc) => { unsafe { dealloc(object, layout); } return Err(rc); } };
     // SAFETY: dev remains a live managed drm_device while its published minor is registered.
     unsafe { write(dev.cast::<u8>().add(DRM_DEVICE_PRIMARY_OFF).cast::<*mut c_void>(), object.cast()); }
@@ -71,6 +73,9 @@ pub(super) fn unregister_primary(dev: *mut c_void) {
         let mut g = PRIMARY_MINORS.lock();
         g.iter().position(|m| m.dev == dev as usize).map(|p| g.remove(p))
     };
+    // SAFETY: minor.object was allocated in register_primary with this identical
+    // layout and just removed as the sole PRIMARY_MINORS entry referencing it, so
+    // no other holder remains; dev stays the same live device whose primary field it clears.
     if let Some(minor) = minor { crate::linux_chrdev::unregister_internal_cdev(minor.cdev); let layout = Layout::from_size_align(DRM_MINOR_SIZE, core::mem::align_of::<u64>()).unwrap(); unsafe { dealloc(minor.object as *mut u8, layout); write(dev.cast::<u8>().add(DRM_DEVICE_PRIMARY_OFF).cast::<*mut c_void>(), core::ptr::null_mut()); } }
 }
 

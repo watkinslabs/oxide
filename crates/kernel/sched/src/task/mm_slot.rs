@@ -171,7 +171,8 @@ mod tests {
         unsafe { t.replace_mm(Some(old)); }
 
         let new = vmm::AddressSpace::new(0).expect("hosted address space");
-        // SAFETY: same contract as above.
+        // SAFETY: hosted single-threaded test; `t` is not on any runqueue, so the
+        // swap has no concurrent mm reader to race.
         let returned = unsafe { t.swap_mm_slot(Some(new)) };
         let returned = returned.expect("the swap must hand the old mm back, not drop it");
         assert!(Arc::ptr_eq(&returned, &keep), "a different address space came back");
@@ -189,7 +190,8 @@ mod tests {
         unsafe { t.replace_mm(Some(old)); }
 
         let new = vmm::AddressSpace::new(0).expect("hosted address space");
-        // SAFETY: same contract as above.
+        // SAFETY: hosted single-threaded test; the only reference to `t`'s mm slot
+        // is this thread, so nothing observes the departing mm mid-swap.
         let returned = unsafe { t.swap_mm_slot(Some(new)) };
         assert!(t.mm_pin_lock.try_lock().is_some(),
             "mm_pin_lock still held while the caller owns the departing mm");
@@ -205,7 +207,8 @@ mod tests {
         let mm = vmm::AddressSpace::new(0).expect("hosted address space");
         // SAFETY: hosted single-threaded test; this task is not scheduled.
         unsafe { t.replace_mm(Some(Arc::clone(&mm))); }
-        // SAFETY: same contract as above.
+        // SAFETY: hosted single-threaded test replacing the slot with the same mm;
+        // `t` is unscheduled, so no concurrent reader can see the identity swap.
         let returned = unsafe { t.swap_mm_slot(Some(Arc::clone(&mm))) };
         assert!(Arc::ptr_eq(&returned.expect("same mm handed back"), &mm));
         assert!(t.mm_pin_lock.try_lock().is_some());

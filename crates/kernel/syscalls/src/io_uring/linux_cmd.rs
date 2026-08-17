@@ -131,6 +131,9 @@ fn import_range(s: &ExternalCmd, addr: u64, len: usize, rw: i32, iter: *mut Nati
 /// Import a byte range from the SQE-selected registered buffer.
 /// # C: O(len / PAGE)
 pub unsafe extern "C" fn import_fixed(addr: u64, len: usize, rw: i32, iter: *mut NativeIovIter, cmd: *mut LinuxIoUringCmd, _flags: u32) -> i32 {
+    // SAFETY: `state` requires a pointer whose allocation begins with ExternalCmd;
+    // the import hook receives the exact `cmd` this dispatch handed the driver,
+    // and the command is still live because its completion has not been posted.
     let Some(s) = (unsafe { state(cmd) }) else { return -Errno::Einval.as_i32(); };
     import_range(s, addr, len, rw, iter).map_or_else(|e| -e.as_i32(), |_| 0)
 }
@@ -138,6 +141,9 @@ pub unsafe extern "C" fn import_fixed(addr: u64, len: usize, rw: i32, iter: *mut
 /// Import each user vector through the SQE-selected registered buffer.
 /// # C: O(N_vec + bytes / PAGE)
 pub unsafe extern "C" fn import_fixed_vec(cmd: *mut LinuxIoUringCmd, vec: *const LinuxUserIovec, nr: usize, rw: i32, iter: *mut NativeIovIter, _flags: u32) -> i32 {
+    // SAFETY: as `import_fixed` — the module passes back the `cmd` pointer this
+    // dispatch gave it, whose allocation starts with the ExternalCmd header and
+    // lives until the terminal completion that has not yet run.
     let Some(s) = (unsafe { state(cmd) }) else { return -Errno::Einval.as_i32(); };
     if iter.is_null() || (nr != 0 && vec.is_null()) { return -Errno::Efault.as_i32(); }
     if s.cmd.flags & IORING_URING_CMD_FIXED == 0 { return -Errno::Einval.as_i32(); }
@@ -170,6 +176,9 @@ pub unsafe extern "C" fn import_fixed_vec(cmd: *mut LinuxIoUringCmd, vec: *const
 /// Queue a driver task-work callback against the retained command.
 /// # C: O(1)
 pub unsafe extern "C" fn do_in_task(cmd: *mut LinuxIoUringCmd, callback: usize, _flags: u32) {
+    // SAFETY: `state` requires a pointer the driver was handed for a still-live
+    // command; `do_in_task` is only reachable from a module callback running
+    // against the command it was given, before that command completes.
     let Some(s) = (unsafe { state(cmd) }) else { return; };
     if callback == 0 { return; }
     if s.task.compare_exchange(0, callback, Ordering::AcqRel, Ordering::Acquire).is_err() { return; }
