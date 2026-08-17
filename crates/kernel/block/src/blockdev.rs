@@ -27,12 +27,40 @@ pub struct BlockRequest {
     /// effective priority when it is still unset, and read by the queue when
     /// it has to choose which of several waiting requests to start next.
     pub ioprio:       i32,
+    /// What the submitter said about this request beyond the operation: that
+    /// it carries metadata, that it should be boosted ahead of its stream.
+    ///
+    /// A SEPARATE axis from `ioprio`. That field is the submitting task's
+    /// priority class, which the whole task's I/O shares; this word is about
+    /// this one request. A submitter that folded a per-request hint into the
+    /// class would move every other request the task issues along with it.
+    pub flags:        crate::flags::RequestFlags,
+    /// What the submitter promised about WHEN this request is on the medium.
+    ///
+    /// A SEPARATE axis from `flags`, and not for the same reason: every bit of
+    /// that word may be dropped without changing which bytes land, while
+    /// dropping a bit of this one leaves a write the caller was told was
+    /// durable in the device's volatile cache. A request carrying one of these
+    /// must be submitted through [`crate::durability::submit::submit_durable`],
+    /// which issues the flushes the promise needs and strips what the device
+    /// cannot honour — a driver handed the word raw would report completion for
+    /// data still in its cache.
+    pub durability:   crate::durability::Durability,
     /// This request's completion will be REAPED BY A POLLER, so a driver with
     /// a separate interrupt-free queue must issue it there. Set by the direct
     /// submission path a polled ring drives, and by nothing else: a request
     /// nobody will poll for must stay on a queue whose completions are
     /// signalled, or it never completes at all.
     pub polled:       bool,
+    /// The key and starting data unit number this request's payload is
+    /// encrypted under, when it is encrypted at all.
+    ///
+    /// A request carrying one MUST be submitted through
+    /// [`crate::crypto::submit_sync`], never handed to a driver directly: a
+    /// driver that does not do inline encryption would write the plaintext it
+    /// was given and report success, which is indistinguishable downstream
+    /// from a device that encrypted.
+    pub crypt:        Option<crate::crypto::Ctx>,
 }
 
 impl Default for BlockRequest {
@@ -41,7 +69,9 @@ impl Default for BlockRequest {
     /// the request grows.
     /// # C: O(1)
     fn default() -> Self {
-        Self { op: BlockOp::Read, start_block: 0, len_blocks: 0, buffer: Vec::new(), ioprio: sched::ioprio::DEFAULT, polled: false }
+        Self { op: BlockOp::Read, start_block: 0, len_blocks: 0, buffer: Vec::new(), ioprio: sched::ioprio::DEFAULT,
+               flags: crate::flags::RequestFlags::NONE, polled: false, crypt: None,
+               durability: crate::durability::Durability::NONE }
     }
 }
 
@@ -69,6 +99,36 @@ impl BlockRequest {
     /// # C: O(1)
     pub fn new_write(start_block: u64, len_blocks: u32, buffer: Vec<u8>) -> Self {
         Self { op: BlockOp::Write, start_block, len_blocks, buffer, ..Default::default() }
+    }
+
+    /// The same request with a durability promise on it.
+    ///
+    /// Additive, and it commits the request to
+    /// [`crate::durability::submit::submit_durable`]; see the field.
+    /// # C: O(1)
+    pub fn with_durability(mut self, d: crate::durability::Durability) -> Self {
+        self.durability |= d;
+        self
+    }
+
+    /// The same request with an encryption context on it.
+    ///
+    /// Attaching one commits the request to [`crate::crypto::submit_sync`];
+    /// see the field.
+    /// # C: O(1)
+    pub fn with_crypt(mut self, ctx: crate::crypto::Ctx) -> Self {
+        self.crypt = Some(ctx);
+        self
+    }
+
+    /// The same request with `flags` also set on it.
+    ///
+    /// Additive rather than assigning, so a submitter that adds one hint does
+    /// not silently drop one a layer below it already asked for.
+    /// # C: O(1)
+    pub fn with_flags(mut self, flags: crate::flags::RequestFlags) -> Self {
+        self.flags |= flags;
+        self
     }
 
     /// Construct a Linux `WRITE_ZEROES` request. The operation has no data
@@ -107,6 +167,16 @@ pub trait BlockDevice: Send + Sync {
     fn queue_limits(&self) -> KResult<QueueLimits> {
         QueueLimits::for_logical_block_size(self.block_size())
     }
+
+    /// What this device can encrypt in line with a transfer, or `None` when it
+    /// does no inline encryption.
+    ///
+    /// `None` is the honest answer for every driver that has not been taught
+    /// to program keys, and it is not a dead end: a request whose context the
+    /// device cannot serve is served in software instead. What `None` must
+    /// never be read as is permission to submit an encrypted request anyway.
+    /// # C: O(1)
+    fn crypto_profile(&self) -> Option<&crate::crypto::Profile> { None }
 
     /// Whether this device advertises a nonzero Linux discard limit.  Callers
     /// may issue `BlockOp::Discard` only when this is true; an unsupported
@@ -166,6 +236,51 @@ pub trait BlockDevice: Send + Sync {
     /// zram overrides it to free its compressed object immediately.
     /// # C: O(1) default
     fn swap_slot_free_notify(&self, _start_block: u64, _len_blocks: u32) -> KResult<()> { Ok(()) }
+
+    /// The drive's zone map, or `None` when it is not a zoned drive.
+    ///
+    /// The default is `None`, and that answer means exactly one thing: this
+    /// device has no zones, so every block on it may be written in any order.
+    /// It must never be read as "unknown, assume the usual layout" — a
+    /// filesystem that placed blocks on a guessed zone map would write behind
+    /// the drive's write pointer, which a host-managed drive refuses and a
+    /// host-aware drive silently relocates.
+    ///
+    /// # C: O(zones)
+    fn zone_report(&self) -> Option<crate::zoned::ZoneReport> { None }
+
+    /// Ask the drive to move one zone between states.
+    ///
+    /// `start_block` names the zone by its FIRST block, which is how the
+    /// drive addresses it; a block inside the zone is refused rather than
+    /// rounded, because rounding would silently reset a neighbour.
+    /// [`crate::zoned::ZoneMgmtOp::ResetAll`] addresses the whole drive and
+    /// ignores `start_block`.
+    ///
+    /// The default refuses: a device with no zones has no zone to manage, and
+    /// answering `Ok(())` would tell a caller a transition happened that did
+    /// not. # C: one request
+    fn zone_mgmt(&self, _op: crate::zoned::ZoneMgmtOp, _start_block: u64) -> KResult<()> {
+        Err(BlockError::Eopnotsupp)
+    }
+
+    /// Write to a sequential zone WITHOUT naming the block, and learn where
+    /// the drive put it.
+    ///
+    /// This is the operation that makes a sequential zone usable by more than
+    /// one writer: an ordinary write has to name the write pointer, which two
+    /// writers cannot both do correctly, whereas an append lets the drive
+    /// choose and report back. The returned block is where the data landed —
+    /// the caller must record THAT, never the pointer it read beforehand.
+    ///
+    /// `start_block` names the target zone by its first block. The buffer's
+    /// length must be a whole number of blocks and within the drive's stated
+    /// append limit; a driver splits nothing here, because two appends are
+    /// two placements and the caller would only learn one of them.
+    /// # C: one request
+    fn zone_append(&self, _start_block: u64, _buffer: &[u8]) -> KResult<u64> {
+        Err(BlockError::Eopnotsupp)
+    }
 }
 
 /// In-memory block device for tests + future tmpfs backing. Exposes

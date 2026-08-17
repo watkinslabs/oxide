@@ -31,18 +31,22 @@ impl<K: Ord + Copy> KeyedWaitQueues<K> {
     /// Publish the running task on `key`'s uninterruptible queue.  The caller
     /// immediately drops its condition gate and schedules.
     /// # C: O(log N)
+    #[track_caller]
     pub fn prepare(&self, key: K) {
         let queue = self.queue(key);
         // SAFETY: callers provide the same condition-gate contract as Linux
         // `prepare_to_wait`; this owner only centralizes queue lifetime.
         unsafe { queue.prepare_to_wait(); }
+        crate::park_site::note(core::panic::Location::caller());
     }
 
     /// Interruptible form of [`Self::prepare`]. # C: O(log N)
+    #[track_caller]
     pub fn prepare_interruptible(&self, key: K) {
         let queue = self.queue(key);
         // SAFETY: same condition-gate contract as `prepare`.
         unsafe { queue.prepare_to_wait_interruptible(); }
+        crate::park_site::note(core::panic::Location::caller());
     }
 
     /// Wake every waiter registered for `key`. # C: O(N_waiters + log N)

@@ -55,6 +55,11 @@ fn create_files(domain: u32, raw_type: u32, protocol: u32, has_net_raw: bool, cu
         SOCK_SEQPACKET => Some(net::UnixMsgPair::new()),
         _ => None,
     };
+    // Both ends of a pair are created by one task at one instant, so both carry
+    // the same label and each reads the other's back as its peer's. Read once
+    // here rather than per end: two reads could not disagree, and one value
+    // makes it evident that they cannot.
+    let pair_sid = security::network::new_socket_label();
     if let Some(p) = &stream {
         let cred = net::PeerCred::of_current().unwrap_or_default();
         p.set_end_cred(net::UnixEnd::A, cred.clone());
@@ -62,6 +67,8 @@ fn create_files(domain: u32, raw_type: u32, protocol: u32, has_net_raw: bool, cu
         let identity = cur.thread_group.leader_pid();
         p.set_end_identity(net::UnixEnd::A, Some(identity.clone()));
         p.set_end_identity(net::UnixEnd::B, Some(identity));
+        p.set_end_sid(net::UnixEnd::A, pair_sid);
+        p.set_end_sid(net::UnixEnd::B, pair_sid);
     }
     if let Some(p) = &msg {
         let cred = net::PeerCred::of_current().unwrap_or_default();
@@ -70,6 +77,11 @@ fn create_files(domain: u32, raw_type: u32, protocol: u32, has_net_raw: bool, cu
         let identity = cur.thread_group.leader_pid();
         p.set_end_identity(net::UnixEnd::A, Some(identity.clone()));
         p.set_end_identity(net::UnixEnd::B, Some(identity));
+        // Recorded on a datagram pair too. `SO_PEERSEC` still reports nothing
+        // for it — the socket's class decides that, not the recording — but a
+        // SEQPACKET pair IS a reporting class and reaches this same arm.
+        p.set_end_sid(net::UnixEnd::A, pair_sid);
+        p.set_end_sid(net::UnixEnd::B, pair_sid);
     }
     let make_file = |end: net::UnixEnd| -> Result<Arc<vfs::File>, i64> {
         let error = if let Some(p) = &stream { p.end_error(end) }

@@ -71,27 +71,27 @@ pub(super) fn peername(sock: &Arc<InetSocket>, optval: u64, optlen_p: u64) -> i6
     publish(optval, optlen_p, &address.bytes[..len])
 }
 
-/// `SO_PEERSEC`: the peer's security label, published by whichever module
-/// labels sockets. With none installed the option carries no value. # C: O(label)
+/// `SO_PEERSEC`: the context of the peer whose label this socket recorded when
+/// its connection formed. # C: O(label)
+///
+/// Three distinct states collapse onto one refusal, all of them `ENOPROTOOPT`
+/// with nothing written: a socket whose class never carries a peer label, a
+/// socket that recorded none, and a kernel where nothing labels sockets. A
+/// caller cannot tell them apart, and does not need to — in each case there is
+/// no context to hand it.
 pub(super) fn peersec(sock: &Arc<InetSocket>, optval: u64, optlen_p: u64) -> i64 {
-    use core::sync::atomic::Ordering;
     let requested = match requested(optlen_p) { Ok(v) => v, Err(e) => return errno(e) };
-    let connected = crate::sock_name::peer_sockaddr(sock).is_ok();
-    let context = security::network::PeerContext {
-        namespace: sock.net_ns(),
-        family: sock.family.load(Ordering::Acquire),
-        connected,
-    };
-    let Some(label) = security::network::peer_security(context) else {
-        return errno(Errno::Enoprotoopt);
-    };
-    // A buffer too small still learns the label's length.
-    if (requested as usize) < label.len() {
-        return match publish_len(optlen_p, label.len()) {
-            Ok(()) => errno(Errno::Erange), Err(e) => errno(e),
-        };
+    let label = net::sock_opts::peersec::recorded_peer_label(sock)
+        .and_then(security::network::socket_label_context);
+    match varlen::peersec_len(label.as_ref().map(Vec::len), requested) {
+        Err((0, error)) => errno(error),
+        // The needed length is published BEFORE the refusal, because the caller
+        // sizes with this call and reads with the next.
+        Err((needed, error)) => match publish_len(optlen_p, needed) {
+            Ok(()) => errno(error), Err(e) => errno(e),
+        },
+        Ok(_) => publish(optval, optlen_p, &label.expect("a length implies a context")),
     }
-    publish(optval, optlen_p, &label)
 }
 
 /// `SO_GET_FILTER`: dump the retained classic blocks of the attached program.

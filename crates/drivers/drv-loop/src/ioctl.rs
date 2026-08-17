@@ -26,6 +26,8 @@ fn errno_of(err: block::BlockError) -> Errno {
         block::BlockError::Enomem => Errno::Enomem,
         block::BlockError::Eagain => Errno::Eagain,
         block::BlockError::Eopnotsupp => Errno::Eopnotsupp,
+        block::BlockError::Eoverflow => Errno::Eoverflow,
+        block::BlockError::Etoomanyrefs => Errno::Etoomanyrefs,
         block::BlockError::Eio => Errno::Eio,
     }
 }

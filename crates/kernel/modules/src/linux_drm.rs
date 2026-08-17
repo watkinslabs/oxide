@@ -305,12 +305,18 @@ fn release_planes(rec: &mut DeviceAllocation) {
         // SAFETY: formats was allocated by drm_universal_plane_init with this exact layout.
         unsafe { dealloc(plane.formats as *mut u8, plane.layout); }
     }
+    // SAFETY: storage/layout is the exact vblank allocation drm_vblank_init made for this
+    // device, and cancel_storage above retired any references before this free.
     if let Some((storage, layout)) = rec.vblank.take() { if storage != 0 { vblank::cancel_storage(storage, layout.size()); unsafe { dealloc(storage as *mut u8, layout); } } }
 }
 
 /// Allocate per-CRTC vblank storage and publish it in the DRM device. # C: O(N_crtcs)
 extern "C" fn drm_vblank_init(dev: *mut c_void, num_crtcs: u32) -> i32 {
+    // SAFETY: layout was computed from a checked size (DRM_VBLANK_CRTC_SIZE * num_crtcs)
+    // and validated by layout_for above.
     let Some(size) = DRM_VBLANK_CRTC_SIZE.checked_mul(num_crtcs as usize) else { return -LINUX_EINVAL; }; let Some(layout) = layout_for(size) else { return -LINUX_EBUSY; }; let storage = if size == 0 { core::ptr::null_mut() } else { unsafe { alloc_zeroed(layout) } }; if size != 0 && storage.is_null() { return -LINUX_EBUSY; }
+    // SAFETY: storage/layout is this call's own alloc_zeroed allocation from above, not yet
+    // published to any device record, freed here on either error path.
     let mut devices = DEVICES.lock(); let Some(rec) = devices.iter_mut().find(|rec| rec.dev == dev as usize && !rec.put_pending && !rec.unplugged) else { unsafe { if !storage.is_null() { dealloc(storage, layout); } } return -LINUX_ENODEV; }; if rec.vblank.is_some() { unsafe { if !storage.is_null() { dealloc(storage, layout); } } return -LINUX_EBUSY; }
     // SAFETY: storage covers exactly num_crtcs ABI vblank records; device fields are verified offsets.
     unsafe { for pipe in 0..num_crtcs as usize { let entry = storage.add(pipe * DRM_VBLANK_CRTC_SIZE); write(entry.add(DRM_VBLANK_CRTC_DEV_OFF).cast::<*mut c_void>(), dev); write(entry.add(DRM_VBLANK_CRTC_PIPE_OFF).cast::<u32>(), pipe as u32); } write(dev.cast::<u8>().add(DRM_DEVICE_VBLANK_OFF).cast::<*mut u8>(), storage); write(dev.cast::<u8>().add(DRM_DEVICE_NUM_CRTCS_OFF).cast::<u32>(), num_crtcs); }
@@ -423,6 +429,8 @@ unsafe extern "C" fn drm_universal_plane_init(
     if copied.is_null() { return -LINUX_EBUSY; }
     // SAFETY: copied covers format_count u32 values and formats identifies the input array required by the ABI.
     unsafe { core::ptr::copy_nonoverlapping(formats, copied.cast::<u32>(), format_count as usize); }
+    // SAFETY: plane was null-checked above and DRM_PLANE_BASE_OFF is the verified offset
+    // of its embedded drm_mode_object.
     let base = unsafe { plane.cast::<u8>().add(DRM_PLANE_BASE_OFF).cast() };
     let object_result = drm_mode_object_add(dev, base, DRM_MODE_OBJECT_PLANE);
     if object_result != 0 {
@@ -431,11 +439,17 @@ unsafe extern "C" fn drm_universal_plane_init(
         return object_result;
     }
     let mut devices = DEVICES.lock();
+    // SAFETY: copied/layout is this call's own format-table allocation, not yet stored in
+    // any PlaneRecord, freed here because no live device record matched.
     let Some(rec) = devices.iter_mut().find(|rec| rec.dev == dev as usize && rec.mode_config && !rec.put_pending && !rec.unplugged) else { unsafe { dealloc(copied, layout); } drop(devices); drm_mode_object_unregister(dev, base); return -LINUX_ENODEV; };
     let config = dev.cast::<u8>().wrapping_add(DRM_MODE_CONFIG_OFF);
     // SAFETY: the object was accepted by drm_mode_object_add and every plane/config offset is verified ABI layout.
     let index = unsafe { *(config.add(MODE_CONFIG_NUM_TOTAL_PLANE_OFF).cast::<i32>()) };
+    // SAFETY: as above, copied/layout is the unpublished format-table allocation freed here
+    // because the total-plane count exceeded the object limit.
     if index >= MAX_KMS_OBJECTS { unsafe { dealloc(copied, layout); } drop(devices); drm_mode_object_unregister(dev, base); return -LINUX_EBUSY; }
+    // SAFETY: rec confirms a live, mode_config-initialized device under the DEVICES lock;
+    // every plane/config field written below is a verified ABI offset.
     unsafe {
         let head = plane.cast::<u8>().add(DRM_PLANE_HEAD_OFF).cast::<*mut c_void>(); let list = config.add(MODE_CONFIG_PLANE_LIST_OFF).cast::<*mut c_void>(); let tail = *list.add(1);
         write(head, list.cast()); write(head.add(1), tail); write(tail as *mut *mut c_void, head.cast()); write(list.add(1), head.cast()); write(plane.cast::<u8>().cast::<*mut c_void>(), dev);
@@ -450,6 +464,8 @@ unsafe extern "C" fn drm_universal_plane_init(
 /// Detach a universal plane and release its copied format table. # C: O(N_planes + N_objects)
 extern "C" fn drm_plane_cleanup(plane: *mut c_void) {
     if plane.is_null() { return; }
+    // SAFETY: plane is caller-checked non-null; offset 0 holds the device back-pointer
+    // drm_universal_plane_init wrote at init time.
     let dev = unsafe { *(plane.cast::<*mut c_void>()) };
     let mut devices = DEVICES.lock();
     let Some(rec) = devices.iter_mut().find(|rec| rec.dev == dev as usize) else { return; };
@@ -468,6 +484,8 @@ extern "C" fn drm_plane_cleanup(plane: *mut c_void) {
         dealloc(entry.formats as *mut u8, entry.layout);
     }
     drop(devices);
+    // SAFETY: plane remains a valid caller-owned allocation after cleanup; DRM_PLANE_BASE_OFF
+    // is the verified embedded mode-object offset unregistered next.
     drm_mode_object_unregister(dev, unsafe { plane.cast::<u8>().add(DRM_PLANE_BASE_OFF).cast() });
 }
 
@@ -488,15 +506,27 @@ unsafe extern "C" fn drm_crtc_init_with_planes(
 ) -> i32 {
     if crtc.is_null() || funcs.is_null() { return -LINUX_EINVAL; }
     let config = dev.cast::<u8>().wrapping_add(DRM_MODE_CONFIG_OFF);
+    // SAFETY: the live-device check above confirms mode_config is initialized before this
+    // read of config's verified crtc-count field.
     let index = { let devices = DEVICES.lock(); if !devices.iter().any(|rec| rec.dev == dev as usize && rec.mode_config && !rec.put_pending && !rec.unplugged) { return -LINUX_ENODEV; } unsafe { *(config.add(MODE_CONFIG_NUM_CRTC_OFF).cast::<i32>()) } };
     if index >= MAX_KMS_OBJECTS { return -LINUX_EINVAL; }
     let Some((name, layout)) = kms_name(b"crtc-", index) else { return -LINUX_EBUSY; };
+    // SAFETY: crtc was null-checked above and DRM_CRTC_BASE_OFF is the verified offset
+    // of its embedded drm_mode_object.
     let base = unsafe { crtc.cast::<u8>().add(DRM_CRTC_BASE_OFF).cast() };
     let object_result = drm_mode_object_add(dev, base, DRM_MODE_OBJECT_CRTC);
+    // SAFETY: object registration failed so name/layout was never linked into any record;
+    // this is the allocation's sole owner freeing it.
     if object_result != 0 { unsafe { dealloc(name as *mut u8, layout); } return object_result; }
     let mut devices = DEVICES.lock();
+    // SAFETY: name/layout is this call's own kms_name allocation, not yet stored in any
+    // CrtcRecord, freed here because no live device record matched.
     let Some(rec) = devices.iter_mut().find(|rec| rec.dev == dev as usize && rec.mode_config && !rec.put_pending && !rec.unplugged) else { unsafe { dealloc(name as *mut u8, layout); } drop(devices); drm_mode_object_unregister(dev, base); return -LINUX_ENODEV; };
+    // SAFETY: config is the live device's embedded mode_config subobject and
+    // MODE_CONFIG_NUM_CRTC_OFF is verified within DRM_DEVICE_SIZE, read while DEVICES is locked.
     let index = unsafe { *(config.add(MODE_CONFIG_NUM_CRTC_OFF).cast::<i32>()) };
+    // SAFETY: as above, name/layout is the unpublished kms_name allocation freed here because
+    // the total-crtc count exceeded the object limit.
     if index >= MAX_KMS_OBJECTS { unsafe { dealloc(name as *mut u8, layout); } drop(devices); drm_mode_object_unregister(dev, base); return -LINUX_EINVAL; }
     // SAFETY: crtc, its optional plane objects, and the mode-config graph use the verified ABI offsets; all mutations are serialized by DEVICES.
     unsafe {
@@ -513,11 +543,15 @@ unsafe extern "C" fn drm_crtc_init_with_planes(
 /// Detach a CRTC from its device mode graph and release its core-owned name. # C: O(N_crtcs + N_objects)
 extern "C" fn drm_crtc_cleanup(crtc: *mut c_void) {
     if crtc.is_null() { return; }
+    // SAFETY: crtc is caller-checked non-null; offset 0 holds the device back-pointer
+    // drm_crtc_init_with_planes wrote at init time.
     let dev = unsafe { *(crtc.cast::<*mut c_void>()) }; let mut devices = DEVICES.lock();
     let Some(rec) = devices.iter_mut().find(|rec| rec.dev == dev as usize) else { return; };
     let Some(pos) = rec.crtcs.iter().position(|entry| entry.ptr == crtc as usize) else { return; }; let entry = rec.crtcs.remove(pos); let config = dev.cast::<u8>().wrapping_add(DRM_MODE_CONFIG_OFF);
     // SAFETY: entry is the exact CRTC owned by this device, including its linked list node and allocated name.
     unsafe { let head = crtc.cast::<u8>().add(DRM_CRTC_HEAD_OFF).cast::<*mut c_void>(); let next = *head; let prev = *head.add(1); write(prev.cast::<*mut c_void>(), next); write(next.cast::<*mut c_void>().add(1), prev); let count = config.add(MODE_CONFIG_NUM_CRTC_OFF).cast::<i32>(); if *count > 0 { write(count, *count - 1); } core::ptr::write_bytes(crtc.cast::<u8>(), 0, DRM_CRTC_FUNCS_OFF + core::mem::size_of::<*const c_void>()); dealloc(entry.name as *mut u8, entry.layout); }
+    // SAFETY: crtc remains a valid caller-owned allocation after cleanup; DRM_CRTC_BASE_OFF
+    // is the verified embedded mode-object offset unregistered next.
     drop(devices); drm_mode_object_unregister(dev, unsafe { crtc.cast::<u8>().add(DRM_CRTC_BASE_OFF).cast() });
 }
 
@@ -525,13 +559,25 @@ extern "C" fn drm_crtc_cleanup(crtc: *mut c_void) {
 unsafe extern "C" fn drm_encoder_init(dev: *mut c_void, encoder: *mut c_void, funcs: *const c_void, encoder_type: i32, _name: *const core::ffi::c_char, mut _args: ...) -> i32 {
     if encoder.is_null() || funcs.is_null() { return -LINUX_EINVAL; }
     let config = dev.cast::<u8>().wrapping_add(DRM_MODE_CONFIG_OFF);
+    // SAFETY: the live-device check above confirms mode_config is initialized before this
+    // read of config's verified encoder-count field.
     let index = { let devices = DEVICES.lock(); if !devices.iter().any(|rec| rec.dev == dev as usize && rec.mode_config && !rec.put_pending && !rec.unplugged) { return -LINUX_ENODEV; } unsafe { *(config.add(MODE_CONFIG_NUM_ENCODER_OFF).cast::<i32>()) } };
     if index >= MAX_KMS_OBJECTS { return -LINUX_EINVAL; }
+    // SAFETY: encoder was null-checked above and DRM_ENCODER_BASE_OFF is the verified offset
+    // of its embedded drm_mode_object.
     let Some((name, layout)) = kms_name(b"encoder-", index) else { return -LINUX_EBUSY; }; let base = unsafe { encoder.cast::<u8>().add(DRM_ENCODER_BASE_OFF).cast() }; let object_result = drm_mode_object_add(dev, base, DRM_MODE_OBJECT_ENCODER);
+    // SAFETY: object registration failed so name/layout was never linked into any record;
+    // this is the allocation's sole owner freeing it.
     if object_result != 0 { unsafe { dealloc(name as *mut u8, layout); } return object_result; }
     let mut devices = DEVICES.lock();
+    // SAFETY: as above, name/layout is the unpublished kms_name allocation freed here because
+    // no live device record matched after re-acquiring DEVICES.
     let Some(rec) = devices.iter_mut().find(|rec| rec.dev == dev as usize && rec.mode_config && !rec.put_pending && !rec.unplugged) else { unsafe { dealloc(name as *mut u8, layout); } drop(devices); drm_mode_object_unregister(dev, base); return -LINUX_ENODEV; };
+    // SAFETY: config is the live device's embedded mode_config subobject and
+    // MODE_CONFIG_NUM_ENCODER_OFF is verified within DRM_DEVICE_SIZE, read while DEVICES is locked.
     let index = unsafe { *(config.add(MODE_CONFIG_NUM_ENCODER_OFF).cast::<i32>()) };
+    // SAFETY: as above, name/layout is the unpublished kms_name allocation freed here because
+    // the total-encoder count exceeded the object limit.
     if index >= MAX_KMS_OBJECTS { unsafe { dealloc(name as *mut u8, layout); } drop(devices); drm_mode_object_unregister(dev, base); return -LINUX_EINVAL; }
     // SAFETY: encoder and config offsets are verified ABI fields; list and count mutation is serialized by DEVICES.
     unsafe { let head = encoder.cast::<u8>().add(DRM_ENCODER_HEAD_OFF).cast::<*mut c_void>(); let list = config.add(MODE_CONFIG_ENCODER_LIST_OFF).cast::<*mut c_void>(); let tail = *list.add(1); write(head, list.cast()); write(head.add(1), tail); write(tail as *mut *mut c_void, head.cast()); write(list.add(1), head.cast()); write(encoder.cast::<*mut c_void>(), dev); write(encoder.cast::<u8>().add(DRM_ENCODER_NAME_OFF).cast::<*mut u8>(), name as *mut u8); write(encoder.cast::<u8>().add(DRM_ENCODER_TYPE_OFF).cast::<i32>(), encoder_type); write(encoder.cast::<u8>().add(DRM_ENCODER_INDEX_OFF).cast::<u32>(), index as u32); write(encoder.cast::<u8>().add(DRM_ENCODER_FUNCS_OFF).cast::<*const c_void>(), funcs); write(config.add(MODE_CONFIG_NUM_ENCODER_OFF).cast::<i32>(), index + 1); }
@@ -540,9 +586,14 @@ unsafe extern "C" fn drm_encoder_init(dev: *mut c_void, encoder: *mut c_void, fu
 
 /// Detach an encoder from its device mode graph and release its core-owned name. # C: O(N_encoders + N_objects)
 extern "C" fn drm_encoder_cleanup(encoder: *mut c_void) {
-    if encoder.is_null() { return; } let dev = unsafe { *(encoder.cast::<*mut c_void>()) }; let mut devices = DEVICES.lock(); let Some(rec) = devices.iter_mut().find(|rec| rec.dev == dev as usize) else { return; }; let Some(pos) = rec.encoders.iter().position(|entry| entry.ptr == encoder as usize) else { return; }; let entry = rec.encoders.remove(pos); let config = dev.cast::<u8>().wrapping_add(DRM_MODE_CONFIG_OFF);
+    if encoder.is_null() { return; }
+    // SAFETY: encoder is caller-checked non-null; offset 0 holds the device back-pointer
+    // drm_encoder_init wrote at init time.
+    let dev = unsafe { *(encoder.cast::<*mut c_void>()) }; let mut devices = DEVICES.lock(); let Some(rec) = devices.iter_mut().find(|rec| rec.dev == dev as usize) else { return; }; let Some(pos) = rec.encoders.iter().position(|entry| entry.ptr == encoder as usize) else { return; }; let entry = rec.encoders.remove(pos); let config = dev.cast::<u8>().wrapping_add(DRM_MODE_CONFIG_OFF);
     // SAFETY: entry is the exact encoder owned by this device, including its linked node and name allocation.
     unsafe { let head = encoder.cast::<u8>().add(DRM_ENCODER_HEAD_OFF).cast::<*mut c_void>(); let next = *head; let prev = *head.add(1); write(prev.cast::<*mut c_void>(), next); write(next.cast::<*mut c_void>().add(1), prev); let count = config.add(MODE_CONFIG_NUM_ENCODER_OFF).cast::<i32>(); if *count > 0 { write(count, *count - 1); } core::ptr::write_bytes(encoder.cast::<u8>(), 0, DRM_ENCODER_FUNCS_OFF + core::mem::size_of::<*const c_void>()); dealloc(entry.name as *mut u8, entry.layout); }
+    // SAFETY: encoder remains a valid caller-owned allocation after cleanup; DRM_ENCODER_BASE_OFF
+    // is the verified embedded mode-object offset unregistered next.
     drop(devices); drm_mode_object_unregister(dev, unsafe { encoder.cast::<u8>().add(DRM_ENCODER_BASE_OFF).cast() });
 }
 

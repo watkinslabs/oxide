@@ -137,7 +137,9 @@ mod tests {
         }
         DEVICES.lock().push(DeviceAllocation { dev: dev.as_mut_ptr() as usize, base: 0, layout: Layout::new::<u8>(), refs: 1, mode_config: true, objects: Vec::new(), planes: vec![PlaneRecord { ptr: first_plane.as_mut_ptr() as usize, formats: 0, layout: Layout::new::<u8>() }, PlaneRecord { ptr: second_plane.as_mut_ptr() as usize, formats: 0, layout: Layout::new::<u8>() }], crtcs: vec![CrtcRecord { ptr: crtc.as_mut_ptr() as usize, name: 0, layout: Layout::new::<u8>() }], encoders: Vec::new(), connectors: Vec::new(), clients: Vec::new(), vblank: None, primary_master: None, put_pending: false, unplugged: false });
         assert_eq!(drm_atomic_normalize_zpos(dev.as_mut_ptr().cast(), state.as_mut_ptr().cast()), 0);
+        // SAFETY: reads back normalize_crtc's written normalized-zpos field; equal zpos (3==3) must tie-break by plane object ID, so first (id 9) sorts after second (id 4).
         assert_eq!(unsafe { read(new_first.as_ptr().add(DRM_PLANE_STATE_NORMALIZED_ZPOS_OFF).cast::<u32>()) }, 1);
+        // SAFETY: same normalized-zpos field on the fabricated second-plane new state, within its reserved 184-byte record.
         assert_eq!(unsafe { read(new_second.as_ptr().add(DRM_PLANE_STATE_NORMALIZED_ZPOS_OFF).cast::<u32>()) }, 0);
         assert_ne!(new_crtc[DRM_CRTC_STATE_CHANGE_FLAGS_OFF] & DRM_CRTC_STATE_ZPOS_CHANGED_BIT, 0);
         DEVICES.lock().clear();

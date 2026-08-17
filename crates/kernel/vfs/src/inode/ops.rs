@@ -66,12 +66,29 @@ impl Inode {
     pub fn bmap(&self, block: u64) -> KResult<u64> { self.i_op.bmap(self, block) }
     /// `i_op->getxattr`. # C: O(log N)
     pub fn getxattr(&self, name: &str) -> Result<Vec<u8>, crate::xattr::XattrError> { self.i_op.getxattr(self, name) }
-    /// `i_op->setxattr`. # C: O(log N)
+    /// `i_op->setxattr`. Writing either ACL attribute drops what is cached for
+    /// it (`forget_cached_acl`), so the next permission check re-reads what was
+    /// just stored instead of deciding from the ACL this call replaced.
+    /// # C: O(log N)
     pub fn setxattr(&self, name: &str, value: Vec<u8>, create: bool, replace: bool) -> Result<(), crate::xattr::XattrError> {
-        self.i_op.setxattr(self, name, value, create, replace)
+        let r = self.i_op.setxattr(self, name, value, create, replace);
+        if r.is_ok() { self.forget_acl_named(name); }
+        r
     }
-    /// `i_op->removexattr`. # C: O(log N)
-    pub fn removexattr(&self, name: &str) -> Result<(), crate::xattr::XattrError> { self.i_op.removexattr(self, name) }
+    /// `i_op->removexattr`. Drops the cached ACL for the same reason as
+    /// [`Self::setxattr`]. # C: O(log N)
+    pub fn removexattr(&self, name: &str) -> Result<(), crate::xattr::XattrError> {
+        let r = self.i_op.removexattr(self, name);
+        if r.is_ok() { self.forget_acl_named(name); }
+        r
+    }
+    /// Invalidate the cached ACL an attribute name selects, if it selects one.
+    /// # C: O(1)
+    fn forget_acl_named(&self, name: &str) {
+        if let Some(ty) = crate::posix_acl::AclType::from_xattr_name(name) {
+            self.forget_cached_acl(ty);
+        }
+    }
     /// `i_op->listxattr`. # C: O(N)
     pub fn listxattr(&self) -> Result<Vec<String>, crate::xattr::XattrError> { self.i_op.listxattr(self) }
     /// `i_op->fileattr_get`. # C: O(1)
@@ -111,6 +128,9 @@ impl Inode {
     pub fn poll_file(&self, pos: u64) -> u32 { self.i_fop.poll_file(self, pos) }
     /// `MAP_SHARED` cache frame. # C: O(log N_pages)
     pub fn mmap_shared_frame(&self, off: u64) -> KResult<Option<crate::SharedFrame>> { self.i_fop.mmap_shared_frame(self, off) }
+    /// A shared mapping is about to write this page (`page_mkwrite`).
+    /// # Ctx: process # Sleeps: y # C: O(indirection depth) blocks
+    pub fn mmap_page_mkwrite(&self, off: u64) -> KResult<()> { self.i_fop.mmap_page_mkwrite(self, off) }
     /// Huge-page size this inode's pages ARE, or 0 for base pages
     /// (`hstate_inode`). # C: O(1)
     pub fn huge_page_size(&self) -> u64 { self.i_fop.huge_page_size(self) }

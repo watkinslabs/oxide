@@ -1,6 +1,7 @@
 //! The volume's own flags and label, and what `statfs` reports.
 
 use alloc::string::String;
+use alloc::vec::Vec;
 
 use syscall::errno::Errno;
 
@@ -46,6 +47,38 @@ impl<S: SectorSource> Volume<S> {
 
     /// The version the volume was formatted at. # C: O(1)
     pub fn version(&self) -> (u8, u8) { self.version }
+
+    /// Give the volume a new label.
+    ///
+    /// The label is one resident attribute of the volume's own record, so
+    /// setting it replaces that attribute rather than editing bytes in place:
+    /// a shorter or longer name is a different attribute size, and a volume
+    /// that never had a label has no attribute to edit at all.
+    ///
+    /// A name too long for the on-disk field is refused rather than truncated
+    /// — a volume answering to half the name it was given is worse than one
+    /// that kept the name it had.
+    /// # C: O(record bytes)
+    pub fn set_label(&mut self, label: &str) -> Result<(), Errno> {
+        if !self.writable { return Err(Errno::Erofs); }
+        let wide = crate::name::encode(label).ok_or(Errno::Einval)?;
+        if wide.len() > NTFS_LABEL_MAX { return Err(Errno::Efbig); }
+        let (mut bytes, header) = self.read_record_raw(MFT_REC_VOL)?;
+        let attrs = attrib::parse_all(&bytes, &header);
+        if let Some(old) = attrib::find(&attrs, ATTR_LABEL, &[]) {
+            crate::volume::edit::remove_at(&mut bytes, &header, old.offset)?;
+        }
+        let raw: Vec<u8> = wide.iter().flat_map(|u| u.to_le_bytes()).collect();
+        let id = crate::volume::edit::take_attr_id(&mut bytes);
+        // The record header the insert works against must describe the record
+        // as the removal left it, not as it was read.
+        let header = crate::record::parse(&bytes).map_err(|e| e.errno())?;
+        let attr = crate::volume::edit::resident(ATTR_LABEL, &[], id, false, &raw);
+        crate::volume::edit::insert(&mut bytes, &header, &attr)?;
+        self.write_record(MFT_REC_VOL, &mut bytes)?;
+        self.label = wide;
+        Ok(())
+    }
 
     /// Mark the volume dirty, or clean.
     ///

@@ -35,6 +35,11 @@ pub struct RootfsState {
     /// Page-cache hit / miss counters (boot trace proof of cache use).
     pub cache_hits:   core::sync::atomic::AtomicU64,
     pub cache_misses: core::sync::atomic::AtomicU64,
+    /// Sectors written to this mount's disk when the mount began, so the
+    /// session write report covers this mount and not the disk's whole life.
+    /// Zero for a mount whose device is not a registered disk: nothing is
+    /// accumulating its writes, so there is no baseline to take.
+    pub wr_start: u64,
     /// FIFREEZE state (Linux `sb->s_writers.frozen`). Set by
     /// `Ext4SuperOps::freeze_fs`, cleared by `thaw_fs`. PER MOUNT.
     pub frozen: core::sync::atomic::AtomicBool,
@@ -44,15 +49,21 @@ impl RootfsState {
     /// Build state around an opened `Mount`.
     /// # C: O(1)
     pub fn new(mount: Arc<Mount>) -> Arc<Self> {
-        Arc::new(Self {
+        let wr_start = crate::sysfs::disk::sectors_written(&mount);
+        let st = Arc::new(Self {
             mount,
+            wr_start,
             sb: sync::Spinlock::new(Weak::new()),
             page_cache: PageCache::new(),
             orphans: sync::Spinlock::new(Vec::new()),
             cache_hits:   core::sync::atomic::AtomicU64::new(0),
             cache_misses: core::sync::atomic::AtomicU64::new(0),
             frozen:       core::sync::atomic::AtomicBool::new(false),
-        })
+        });
+        // Every mount announces itself: the reports it publishes are per
+        // mount, and this is the one point every open path funnels through.
+        crate::surfaces::note_mounted(&st);
+        st
     }
 
     /// On-disk quota feature bits of this mount. # C: O(1)

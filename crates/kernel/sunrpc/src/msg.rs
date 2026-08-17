@@ -12,7 +12,7 @@ use alloc::vec::Vec;
 
 use crate::auth::{check_reply_verf, encode_call_verf, Cred};
 use crate::err::{RpcError, RpcResult};
-use crate::uapi::{accept_stat, msg_type, reject_stat, reply_stat, RPC_VERSION};
+use crate::uapi::{accept_stat, limits, msg_type, reject_stat, reply_stat, RPC_VERSION};
 use crate::xdr::{Dec, Enc};
 
 /// What an RPC call names.
@@ -66,7 +66,7 @@ pub fn decode_reply_header(d: &mut Dec<'_>, expect_xid: u32) -> RpcResult<()> {
     // RFC 4506 requires the whole message be a multiple of four bytes; a body
     // that is not cannot be a well-formed reply, and every offset computed from
     // it afterwards would be wrong.
-    if d.remaining() % 4 != 0 { return Err(RpcError::Unparsable); }
+    if !d.remaining().is_multiple_of(limits::XDR_UNIT) { return Err(RpcError::Unparsable); }
 
     let xid = d.u32().map_err(|_| RpcError::Unparsable)?;
     if xid != expect_xid { return Err(RpcError::XidMismatch); }

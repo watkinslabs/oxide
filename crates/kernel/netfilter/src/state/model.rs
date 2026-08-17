@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use crate::nft_expr::Expr;
+use crate::nft_expr::{Expr, ExprStates};
 
 #[derive(Clone, Debug)]
 pub struct NftTable {
@@ -85,6 +85,10 @@ pub(super) struct NamespaceState {
 pub(super) struct StoredRule {
     pub(super) wire: NftRule,
     pub(super) exprs: Vec<Expr>,
+    /// Counters the rule's stateful expressions carry between packets. The
+    /// state belongs to the rule, so it survives every republication of the
+    /// compiled generation and is shared by every packet the rule sees.
+    pub(super) states: Arc<ExprStates>,
 }
 
 impl ControlState {

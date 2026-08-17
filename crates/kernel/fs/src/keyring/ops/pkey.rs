@@ -73,7 +73,7 @@ pub fn parse_info(info: &str) -> Result<Info, Errno> {
 /// not hand the key material back, so a key that may be found may be used.
 /// A key of any other type is EOPNOTSUPP — it exists, it simply has no
 /// asymmetric operations. # C: O(log N + payload)
-pub fn load_key(c: &Ctx, serial: i32) -> Result<AsymmetricKey, i64> {
+pub fn load_key(c: &Ctx, serial: i32) -> Result<alloc::boxed::Box<AsymmetricKey>, i64> {
     let mut g = STORE.lock();
     let real = g.resolve(serial, &c.t).map_err(e)?;
     perm::check_perm(&g, real, &c.t, KEY_NEED_SEARCH, perm::Lookup::Full, c.now_ns)?;

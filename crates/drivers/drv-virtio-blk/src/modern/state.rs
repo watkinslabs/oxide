@@ -188,9 +188,15 @@ pub(super) fn log_submit_failure(
 /// and licenses use of any virtqueue past index 0 (Virtio 1.2 §5.2.3/§5.2.4).
 /// Without it the driver has exactly one request queue and no queue to poll
 /// without an interrupt.
+///
+/// `VIRTIO_BLK_F_ZONED` is what makes the zoned characteristics block in the
+/// device config meaningful and the zone commands legal at all. Asking for it
+/// is also how a host-managed drive becomes REFUSABLE: without the bit the
+/// device presents itself as flat, and a filesystem would place blocks the
+/// drive rejects. Negotiating it is what lets the probe see the model byte.
 const WANTED_FEATURES: u64 =
     virtio::VIRTIO_F_VERSION_1 | virtio::VIRTIO_BLK_F_BLK_SIZE | virtio::VIRTIO_BLK_F_FLUSH
-    | virtio::VIRTIO_BLK_F_MQ;
+    | virtio::VIRTIO_BLK_F_MQ | virtio::VIRTIO_BLK_F_ZONED;
 
 pub const fn wanted_features() -> u64 {
     WANTED_FEATURES
@@ -206,9 +212,11 @@ pub const fn transport_profile() -> virtio::VirtioTransportProfile {
 
 /// `virtio_blk_req` is a type/reserved/sector tuple (Virtio 1.2 §5.2.6).
 pub(super) const VIRTIO_BLK_REQUEST_HEADER_BYTES: usize = 16;
-/// One device-written status byte follows the request header.
-#[allow(dead_code, reason = "Virtio 1.2 §5.2.6 request-layout table kept complete alongside VIRTIO_BLK_REQUEST_HEADER_BYTES; the descriptor lengths in virtio::blk::build_chain still spell 16/1 inline")]
-pub(super) const VIRTIO_BLK_REQUEST_STATUS_BYTES: usize = 1;
+/// The device-written in-header that follows the request header. One status
+/// byte for every request type but zone append, which prefixes the sector its
+/// data landed at; the status is the last byte either way.
+pub(super) const VIRTIO_BLK_MAX_IN_HEADER_BYTES: usize =
+    virtio::blk::zoned::ZONE_APPEND_IN_HEADER_BYTES;
 pub(super) const HDR_OFF: usize = 0;
 pub(super) const STATUS_OFF: usize = HDR_OFF + VIRTIO_BLK_REQUEST_HEADER_BYTES;
 /// Start payload on its own PMM page so header/status metadata can never
@@ -284,6 +292,10 @@ pub struct BlkState {
     /// `blk_queue_write_cache`). `false` = write-through: no volatile cache to
     /// fence, and `VIRTIO_BLK_T_FLUSH` must NOT go on the wire.
     pub(super) write_cache: bool,
+    /// The drive's zone geometry when it is host-managed, `None` when it has
+    /// no zones. A drive that claims zones this driver cannot honour is never
+    /// attached at all, so this is never a downgraded `None`.
+    pub(super) zoned: Option<virtio::blk::zoned::ZonedInfo>,
     pub(super) poisoned: core::sync::atomic::AtomicBool,
 }
 
@@ -311,8 +323,18 @@ impl BlkState {
             bounce_pa: 0,
             bounce_dma: 0,
             write_cache: true,
+            zoned: None,
             poisoned: core::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// The same device, host-managed with the given geometry. # C: O(1)
+    pub(crate) fn for_test_zoned(zoned: virtio::blk::zoned::ZonedInfo, blk_size: u32) -> Self {
+        let mut s = Self::for_test_cfg(0);
+        s.zoned = Some(zoned);
+        s.blk_size = blk_size;
+        s.capacity = 1 << 20;
+        s
     }
 
     /// Take the synchronous engine turn on every queue this device has.
@@ -401,4 +423,7 @@ pub(super) struct BlkDeviceConfig {
     /// Request queues the device advertises. Meaningful only under a
     /// negotiated `VIRTIO_BLK_F_MQ`; one otherwise.
     pub(super) num_queues: u16,
+    /// What the zoned characteristics say, before the logical block size has
+    /// been validated against them.
+    pub(super) zoned: virtio::blk::zoned::ZonedProbe,
 }

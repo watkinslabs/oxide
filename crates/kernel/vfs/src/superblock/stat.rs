@@ -13,14 +13,23 @@ impl SuperBlock {
     /// defaulted: a backend that reports zero blocks has zero blocks, which is
     /// the reported result for a pseudo filesystem.
     /// # C: O(1)
-pub fn statfs(&self) -> KResult<SbStatFs> {
-        let mut st = self.s_op.statfs()?;
+pub fn statfs(&self) -> KResult<SbStatFs> { Ok(self.with_defaults(self.s_op.statfs()?)) }
+
+    /// The same, in hand of the object the call named: the backend may narrow
+    /// to that object's own limits, and the VFS-side defaults are applied
+    /// after it either way. # C: O(1)
+    pub fn statfs_at(&self, inode: &crate::inode::InodeRef) -> KResult<SbStatFs> {
+        Ok(self.with_defaults(self.s_op.statfs_at(inode)?))
+    }
+
+    /// The tail both entry points share, so the two cannot drift. # C: O(1)
+    fn with_defaults(&self, mut st: SbStatFs) -> SbStatFs {
         if st.f_type == 0 { st.f_type = self.s_magic; }
         if st.f_bsize == 0 { st.f_bsize = self.s_blocksize; }
         if st.f_fsid == 0 { st.f_fsid = self.s_dev; }
         if st.f_namelen == 0 { st.f_namelen = crate::path::NAME_MAX as u64; }
         if st.f_frsize == 0 { st.f_frsize = st.f_bsize; }
-        Ok(st)
+        st
     }
 
     /// `s_op->show_options` passthrough — the backend's fs-specific `/proc/mounts`

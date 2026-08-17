@@ -45,6 +45,14 @@ pub const S_IFIFO:  Umode = 0o010000;
 /// (sticky) is defined here. All three are `Umode`.
 pub const S_ISVTX: Umode = 0o1000;
 
+/// The three permission classes of a `umode_t` (`S_IRWXU`/`S_IRWXG`/`S_IRWXO`).
+pub const S_IRWXU: Umode = 0o700;
+pub const S_IRWXG: Umode = 0o070;
+pub const S_IRWXO: Umode = 0o007;
+/// `S_IRWXUGO` — the nine permission bits. `S_IALLUGO`, which adds
+/// set-uid/set-gid/sticky, is defined by its consumer in `namei`.
+pub const S_IRWXUGO: Umode = S_IRWXU | S_IRWXG | S_IRWXO;
+
 impl FileType {
     /// `S_IFMT` type bits for this file type — the high half of the Linux
     /// `umode_t`/`i_mode` word. Inverse of `i_mode & S_IFMT`. # C: O(1)
@@ -231,6 +239,9 @@ pub enum VfsError {
     /// the filesystem's namespace, or any change to an inode whose existing
     /// owner has no mapping in the caller's view (Linux `notify_change`).
     Eoverflow = 75,
+    /// ETOOMANYREFS — a zoned drive already holds its limit of OPEN zones.
+    /// Closing one makes the same write succeed, which is why it is not EIO.
+    Etoomanyrefs = 109,
     /// `ERESTARTSYS` — NOT an errno, and it
     /// never reaches userspace. The interruptible-sleep wait primitive returns
     /// it for every interrupted wait, so it is
@@ -292,7 +303,7 @@ impl VfsError {
             89 => Edestaddrreq, 90 => Emsgsize, 92 => Enoprotoopt, 95 => Eopnotsupp,
             99 => Eaddrnotavail, 101 => Enetunreach, 103 => Econnaborted,
             104 => Econnreset, 105 => Enobufs, 107 => Enotconn, 110 => Etimedout,
-            111 => Econnrefused, 112 => Ehostdown, 113 => Ehostunreach,
+            109 => Etoomanyrefs, 111 => Econnrefused, 112 => Ehostdown, 113 => Ehostunreach,
             116 => Estale, 117 => Euclean, 122 => Edquot, 125 => Ecanceled,
             _ => Eio,
         }

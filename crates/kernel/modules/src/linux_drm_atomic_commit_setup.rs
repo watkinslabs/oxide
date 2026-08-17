@@ -78,18 +78,27 @@ pub(super) extern "C" fn drm_atomic_helper_setup_commit(state: *mut c_void, nonb
         let slot = unsafe { entry(state, DRM_ATOMIC_CONNECTORS_OFF, DRM_CONNECTOR_ENTRY_SIZE, index) };
         // SAFETY: state pointers are stable transaction fields.
         let (old, new) = unsafe { (read(slot.add(DRM_ENTRY_OLD_OFF).cast::<*mut u8>()), read(slot.add(DRM_ENTRY_NEW_OFF).cast::<*mut u8>())) }; if old.is_null() || new.is_null() { continue; }
+        // SAFETY: old is the non-null connector state just read from this entry; commit is its ABI-pinned reference field.
         let old_commit = unsafe { read(old.add(DRM_CONNECTOR_STATE_COMMIT_OFF).cast::<*mut u8>()) }; if nonblock && !completed(old_commit) { return -LINUX_EBUSY; }
+        // SAFETY: falls back to old's CRTC pointer only when new's is null; both fields share the same fixed offset on their own non-null states.
         let crtc = unsafe { let n = read(new.add(DRM_CONNECTOR_STATE_CRTC_OFF).cast::<*mut u8>()); if n.is_null() { read(old.add(DRM_CONNECTOR_STATE_CRTC_OFF).cast::<*mut u8>()) } else { n } };
+        // SAFETY: entry() bounds i by the same fixed CRTC array as the outer loop; object/new-state fields are the entry's own ABI slots.
         let commit = if crtc.is_null() { fake_commit(state) } else { let found = (0..crtcs).find_map(|i| { let e = unsafe { entry(state, DRM_ATOMIC_CRTCS_OFF, DRM_CRTC_ENTRY_SIZE, i) }; let object = unsafe { read(e.add(DRM_ENTRY_OBJECT_OFF).cast::<*mut u8>()) }; (object == crtc).then(|| unsafe { read(e.add(DRM_ENTRY_NEW_OFF).cast::<*mut u8>()) }) }); found.and_then(|s| (!s.is_null()).then(|| unsafe { read(s.add(DRM_CRTC_STATE_COMMIT_OFF).cast::<*mut u8>()) })).unwrap_or_else(|| fake_commit(state)) };
+        // SAFETY: new is the non-null connector state validated above; this stores the commit ref this transaction now owns.
         if commit.is_null() { return -LINUX_ENOMEM; } unsafe { write(new.add(DRM_CONNECTOR_STATE_COMMIT_OFF).cast::<*mut u8>(), crtc_commit::get(commit)); }
     }
     for index in 0..planes {
         // SAFETY: index is bounded by the fixed plane transaction array.
         let slot = unsafe { entry(state, DRM_ATOMIC_PLANES_OFF, DRM_PLANE_ENTRY_SIZE, index) };
+        // SAFETY: old/new-state fields occupy the fixed offsets of this plane entry, same layout as the CRTC/connector entries above.
         let (old, new) = unsafe { (read(slot.add(DRM_ENTRY_OLD_OFF).cast::<*mut u8>()), read(slot.add(DRM_ENTRY_NEW_OFF).cast::<*mut u8>())) }; if old.is_null() || new.is_null() { continue; }
+        // SAFETY: old is the non-null plane state just read from this entry; commit is its ABI-pinned reference field.
         let old_commit = unsafe { read(old.add(DRM_PLANE_STATE_COMMIT_OFF).cast::<*mut u8>()) }; if nonblock && !completed(old_commit) { return -LINUX_EBUSY; }
+        // SAFETY: falls back to old's CRTC pointer only when new's is null; both fields share the same fixed offset on their own non-null states.
         let crtc = unsafe { let n = read(new.add(DRM_PLANE_STATE_CRTC_OFF).cast::<*mut u8>()); if n.is_null() { read(old.add(DRM_PLANE_STATE_CRTC_OFF).cast::<*mut u8>()) } else { n } };
+        // SAFETY: entry() bounds i by the same fixed CRTC array as the CRTC loop above; object/new-state fields are the entry's own ABI slots.
         let commit = if crtc.is_null() { fake_commit(state) } else { let found = (0..crtcs).find_map(|i| { let e = unsafe { entry(state, DRM_ATOMIC_CRTCS_OFF, DRM_CRTC_ENTRY_SIZE, i) }; let object = unsafe { read(e.add(DRM_ENTRY_OBJECT_OFF).cast::<*mut u8>()) }; (object == crtc).then(|| unsafe { read(e.add(DRM_ENTRY_NEW_OFF).cast::<*mut u8>()) }) }); found.and_then(|s| (!s.is_null()).then(|| unsafe { read(s.add(DRM_CRTC_STATE_COMMIT_OFF).cast::<*mut u8>()) })).unwrap_or_else(|| fake_commit(state)) };
+        // SAFETY: new is the non-null plane state validated above; this stores the commit ref this transaction now owns.
         if commit.is_null() { return -LINUX_ENOMEM; } unsafe { write(new.add(DRM_PLANE_STATE_COMMIT_OFF).cast::<*mut u8>(), crtc_commit::get(commit)); }
     }
     0

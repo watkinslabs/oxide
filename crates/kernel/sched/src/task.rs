@@ -654,6 +654,10 @@ pub struct Task {
     /// 1 = parent waiting on this child.
     pub vfork_pending: AtomicBool,
 
+    /// Source position of the wait this task is blocked in — the datum
+    /// `/proc/<pid>/wchan` reports. See [`crate::park_site`].
+    pub park_site: crate::park_site::ParkSite,
+
     /// Concrete non-network namespace owners. `None` after task exit, even
     /// while process identity or a pidfd retains this Task allocation.
     namespaces: Spinlock<Option<namespaces::TaskNamespaces>, Namespace>,

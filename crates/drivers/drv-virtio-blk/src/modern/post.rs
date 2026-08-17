@@ -26,6 +26,11 @@ impl BlkState {
                 }
                 let (sector, sectors) = blk::sector_plan(request.start_block, request.len_blocks, self.blk_size)?;
                 if sectors > blk::BOUNCE_DATA_SECTORS { return None; }
+                // One hardware chain is one sector run, and a run that leaves
+                // its zone would put its tail at the head of a zone whose
+                // write pointer is elsewhere. This path cannot cut, so it
+                // declines and the chunking path takes the request and cuts.
+                if !self.run_within_one_zone(sector, sectors) { return None; }
                 let type_ = if request.op == BlockOp::Read { blk::VIRTIO_BLK_T_IN } else { blk::VIRTIO_BLK_T_OUT };
                 Some((type_, sector, request.op == BlockOp::Read, false, bytes as u32))
             }
@@ -196,7 +201,8 @@ impl BlkState {
                 }
                 let now = timekeeper::monotonic_ns();
                 let waiting: alloc::vec::Vec<block::elevator::Waiting> = ring.deferred.iter()
-                    .map(|d| block::elevator::Waiting { ioprio: d.request.ioprio, queued_ns: d.queued_ns })
+                    .map(|d| block::elevator::Waiting { ioprio: d.request.ioprio, queued_ns: d.queued_ns,
+                                        hiprio: d.request.flags.is_hiprio() })
                     .collect();
                 let Some(idx) = block::elevator::select(&waiting, now,
                     block::elevator::PRIO_AGING_EXPIRE_NS) else { return; };

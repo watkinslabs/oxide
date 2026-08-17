@@ -3,6 +3,13 @@
 version = 4
 
 [[package]]
+name = "adiantum"
+version = "0.1.0"
+dependencies = [
+ "aes",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11,6 +18,9 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 [[package]]
 name = "aes"
 version = "0.1.0"
+dependencies = [
+ "blockcipher",
+]
 
 [[package]]
 name = "aho-corasick"
@@ -135,17 +145,26 @@ dependencies = [
 name = "block"
 version = "0.1.0"
 dependencies = [
+ "adiantum",
+ "aes",
  "bitflags",
  "cgroup",
  "crc",
+ "crypt",
  "drv",
  "hal",
  "klog",
  "sched",
+ "sm4",
  "softirq",
  "sync",
+ "timekeeper",
  "vfs",
 ]
+
+[[package]]
+name = "blockcipher"
+version = "0.1.0"
 
 [[package]]
 name = "bluetooth"
@@ -210,6 +229,19 @@ version = "0.1.0"
 dependencies = [
  "cmdline",
  "klog",
+]
+
+[[package]]
+name = "btrfs"
+version = "0.1.0"
+dependencies = [
+ "block",
+ "crc",
+ "klog",
+ "sectors",
+ "sync",
+ "syscall",
+ "vfs",
 ]
 
 [[package]]
@@ -904,6 +936,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
+name = "erofs"
+version = "0.1.0"
+dependencies = [
+ "block",
+ "crc",
+ "klog",
+ "miniz_oxide",
+ "sectors",
+ "sync",
+ "syscall",
+ "vfs",
+ "zstd",
+]
+
+[[package]]
 name = "err"
 version = "0.1.0"
 dependencies = [
@@ -952,6 +999,33 @@ dependencies = [
  "sync",
  "timer",
  "vfs",
+]
+
+[[package]]
+name = "f2fs"
+version = "0.1.0"
+dependencies = [
+ "adiantum",
+ "aes",
+ "block",
+ "blockcipher",
+ "boot-info",
+ "crc",
+ "crypt",
+ "fs",
+ "klog",
+ "pkey",
+ "pmm",
+ "sched",
+ "sectors",
+ "siphash",
+ "sm4",
+ "sync",
+ "syscall",
+ "timekeeper",
+ "utf8",
+ "vfs",
+ "zstd",
 ]
 
 [[package]]
@@ -1195,6 +1269,14 @@ name = "id-arena"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
+
+[[package]]
+name = "ima"
+version = "0.1.0"
+dependencies = [
+ "crypt",
+ "tpm",
+]
 
 [[package]]
 name = "indexmap"
@@ -1472,6 +1554,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "lsm"
+version = "0.1.0"
+dependencies = [
+ "sync",
+]
+
+[[package]]
 name = "lz4_flex"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1618,6 +1707,7 @@ dependencies = [
  "pmm",
  "sched",
  "security",
+ "selinux-runtime",
  "siphash",
  "softirq",
  "sync",
@@ -1630,6 +1720,8 @@ dependencies = [
 name = "netfilter"
 version = "0.1.0"
 dependencies = [
+ "conntrack",
+ "nat",
  "net",
  "netlink",
  "sched",
@@ -1660,15 +1752,6 @@ dependencies = [
  "loom",
  "namespace-identity",
  "sync",
-]
-
-[[package]]
-name = "nfs"
-version = "0.1.0"
-dependencies = [
- "sunrpc",
- "sync",
- "syscall",
 ]
 
 [[package]]
@@ -2218,6 +2301,7 @@ version = "0.1.0"
 dependencies = [
  "audit",
  "kernfs",
+ "netlink",
  "selinux",
  "selinux-runtime",
  "sync",
@@ -2314,6 +2398,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sm4"
+version = "0.1.0"
+dependencies = [
+ "blockcipher",
+]
+
+[[package]]
 name = "smallvec"
 version = "1.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2400,6 +2491,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "squashfs"
+version = "0.1.0"
+dependencies = [
+ "block",
+ "crc",
+ "klog",
+ "lz4_flex",
+ "lzokay",
+ "miniz_oxide",
+ "sectors",
+ "sync",
+ "syscall",
+ "vfs",
+ "zstd",
+]
+
+[[package]]
 name = "structured-zstd"
 version = "0.0.49"
 
@@ -2467,6 +2575,7 @@ dependencies = [
  "elf-load",
  "exfatfs",
  "ext4",
+ "f2fs",
  "fatfs",
  "fbcon",
  "fbdev",
@@ -2623,6 +2732,13 @@ name = "timer"
 version = "0.1.0"
 dependencies = [
  "sync",
+]
+
+[[package]]
+name = "tpm"
+version = "0.1.0"
+dependencies = [
+ "crypt",
 ]
 
 [[package]]
@@ -2820,6 +2936,7 @@ dependencies = [
  "libc",
  "namespace-identity",
  "nscg",
+ "pkey",
  "sched",
  "sync",
  "syscall",
@@ -3092,6 +3209,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "05f360fc0b24296329c78fda852a1e9ae82de9cf7b27dae4b7f62f118f77b9ed"
 dependencies = [
  "tap",
+]
+
+[[package]]
+name = "xfs"
+version = "0.1.0"
+dependencies = [
+ "block",
+ "crc",
+ "klog",
+ "sectors",
+ "sync",
+ "syscall",
+ "vfs",
 ]
 
 [[package]]

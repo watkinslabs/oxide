@@ -121,6 +121,8 @@ fn irq1_handler(_irq: u32) -> arch_irq::IrqReport {
 fn irq12_handler(_irq: u32) -> arch_irq::IrqReport {
     // Both legacy lines feed the same i8042 output buffer; AUX classification
     // remains the status-bit decision in `drain_irq`.
+    // SAFETY: as `irq1_handler` — this handler is installed only by `install_irq`,
+    // which runs after probe has taken the i8042 and routed both legacy pins.
     arch_irq::IrqReport::hard(if unsafe { drain_irq() } {
         arch_irq::IrqRet::Handled
     } else {

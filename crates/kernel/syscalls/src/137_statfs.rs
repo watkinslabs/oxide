@@ -5,7 +5,7 @@
 use syscall::SyscallArgs;
 
 use crate::userbuf::validate_user_buf_writable;
-use crate::statfs_common::{statfs_for_mount, write_statfs, STATFS_BYTES};
+use crate::statfs_common::{write_statfs, STATFS_BYTES};
 
 #[cfg(feature = "debug-mount")]
 fn log_runtime_statfs(path_ptr: u64, rv: i64) {
@@ -45,7 +45,9 @@ pub fn sys_statfs(args: &SyscallArgs) -> i64 {
         log_runtime_statfs(path_ptr, -(syscall::errno::Errno::Enoent.as_i32() as i64));
         return -(syscall::errno::Errno::Enoent.as_i32() as i64);
     };
-    let st = statfs_for_mount(&m);
+    // The resolved object, not just its mount: a filesystem with per-object
+    // limits reports what THIS path is confined to.
+    let st = crate::statfs_common::statfs_at_inode(&m.sb(), &vp.inode, m.flags());
     if let Err(rv) = write_statfs(buf, &st) {
         #[cfg(feature = "debug-mount")]
         log_runtime_statfs(path_ptr, rv);

@@ -267,17 +267,36 @@ inject_sysrq() {
 # userspace of any kind involved. The kernel answers with its sysrq key list.
 # Set SMOKE_RX_MARKER='' to skip (e.g. a profile built without the diag).
 RX_MARKER="${SMOKE_RX_MARKER-\[sysrq\] keys:}"
-RX_TIMEOUT="${SMOKE_RX_TIMEOUT:-30}"
+# The probe's budget is what remains of THIS ATTEMPT's runtime deadline, not a
+# second deadline of its own. It used to be a fixed 30s, and that was a
+# duplicated statement of how long a guest is allowed to be slow — a run given
+# 300s answered the probe at t=58s on an idle box and had 242s of its stated
+# allowance left, while the probe judged it against 30 of its own. On a box
+# with several build lanes live the same guest reaches its shell later and
+# answers slower, so the fixed window expired on a guest the run had already
+# decided to wait for, three attempts running. SMOKE_RX_TIMEOUT still pins an
+# explicit budget; the floor keeps a probe entered near the deadline from
+# getting no window at all.
+RX_TIMEOUT="${SMOKE_RX_TIMEOUT:-}"
+RX_TIMEOUT_FLOOR="${SMOKE_RX_TIMEOUT_FLOOR:-30}"
 
+# $1: the attempt's absolute runtime deadline (epoch seconds).
 check_serial_rx() {
     [ -n "$RX_MARKER" ] || return 0
     if [ -z "${SYSRQ_WFD:-}" ]; then
         echo "boot-smoke: no writable serial FIFO — cannot verify serial RX" >&2
         return 1
     fi
-    echo "boot-smoke: probing serial RX (<NUL>? -> '$RX_MARKER')"
+    local budget
+    if [ -n "$RX_TIMEOUT" ]; then
+        budget="$RX_TIMEOUT"
+    else
+        budget=$(( ${1:-0} - $(date +%s) ))
+        [ "$budget" -lt "$RX_TIMEOUT_FLOOR" ] && budget="$RX_TIMEOUT_FLOOR"
+    fi
+    echo "boot-smoke: probing serial RX (<NUL>? -> '$RX_MARKER') budget=${budget}s"
     local rx_deadline
-    rx_deadline=$(( $(date +%s) + RX_TIMEOUT ))
+    rx_deadline=$(( $(date +%s) + budget ))
     while [ "$(date +%s)" -lt "$rx_deadline" ]; do
         printf '\000?' >&"$SYSRQ_WFD" 2>/dev/null || true
         sleep 2
@@ -286,8 +305,14 @@ check_serial_rx() {
             return 0
         fi
     done
-    echo "boot-smoke: FAIL — $ARCH booted but typed serial input never reached the kernel" >&2
-    echo "boot-smoke: (nothing matched '$RX_MARKER' within ${RX_TIMEOUT}s of typing)" >&2
+    # What was measured is "no answer inside the window". Whether the bytes
+    # reached the kernel is NOT measured, and the old wording asserted it —
+    # which sent one investigation looking for a console regression that did
+    # not exist. State the observation; name the other explanation.
+    echo "boot-smoke: FAIL — $ARCH answered nothing to the typed sysrq probe in ${budget}s" >&2
+    echo "boot-smoke: (nothing matched '$RX_MARKER'; this is 'no answer in the window', NOT" >&2
+    echo "boot-smoke:  proof the bytes never reached the kernel — check host load and" >&2
+    echo "boot-smoke:  concurrent boots before reading it as a serial-RX regression)" >&2
     return 1
 }
 
@@ -407,7 +432,7 @@ attempt_boot() {
         if [ -n "$proof" ]; then
             local elapsed=$(( $(date +%s) - (deadline - TIMEOUT) ))
             echo "boot-smoke: $ARCH proved alive by $proof in ${elapsed}s (attempt $1)"
-            if ! check_serial_rx; then
+            if ! check_serial_rx "$deadline"; then
                 keep_log_copy "$1" "no-serial-rx"
                 close_sysrq
                 return 1

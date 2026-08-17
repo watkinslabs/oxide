@@ -67,7 +67,7 @@ impl Enc {
         let pad = pad_of(b.len());
         self.room(b.len() + pad)?;
         self.buf.extend_from_slice(b);
-        self.buf.extend(core::iter::repeat(0u8).take(pad));
+        self.buf.extend(core::iter::repeat_n(0u8, pad));
         Ok(())
     }
 

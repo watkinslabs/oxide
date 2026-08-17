@@ -47,13 +47,14 @@ pub mod reclaim;
 pub mod shrinker;
 pub mod movable;
 pub mod watermark;
+pub mod zone;
 pub mod oom_entry;
 #[cfg(target_os = "oxide-kernel")]
 mod kswapd;
 #[cfg(target_os = "oxide-kernel")]
 mod memcg;
 
-pub use buddy::{Pmm, PmmSnapshot};
+pub use buddy::{Pmm, PmmSnapshot, ZoneStat};
 pub use page_meta::{reclaim_state, NativePage, PageFlags, PageMeta, PageMetaArr, ReclaimPageState};
 #[cfg(target_os = "oxide-kernel")]
 pub use kswapd::spawn_kswapd;

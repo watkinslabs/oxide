@@ -5,7 +5,9 @@
 // - `dumps`: GETLINK/GETADDR builders and multi-part terminator.
 // - `mcast_dumps`: GETMULTICAST/GETANYCAST snapshots from stack-owned state.
 // - `neigh`: RTM_*NEIGH bridge to the canonical ARP (v4) + NDP (v6) caches.
-// - `addr_ops`: RTM_NEWADDR / RTM_DELADDR request parsing and updates.
+// - `addr_ops`: RTM_NEWADDR / RTM_DELADDR request parsing and updates, and
+//   the family fan-out to `addr6_ops`.
+// - `addr6_ops`: the AF_INET6 half of RTM_NEWADDR / RTM_DELADDR.
 // - `route_state`: persistent route table storage and boot seeding.
 // - `route_ops`: route dump/mutation path and stack synchronization.
 // - `iface`: live iface snapshot + RTM_SETLINK mutation path.
@@ -16,6 +18,7 @@
 
 mod ack;
 mod addr_ops;
+mod addr6_ops;
 mod attrs;
 mod dump_req;
 mod dumps;
@@ -39,6 +42,7 @@ pub(crate) mod rtnetlink_route;
 
 pub use ack::{nlmsg_ack_bad_attr, nlmsg_ack_pub};
 pub use addr_ops::{handle_deladdr, handle_deladdr_in, handle_newaddr, handle_newaddr_in};
+pub use addr6_ops::{handle_deladdr6_in, handle_newaddr6_in};
 pub use attrs::{put_nlattr, put_nlattr_i32, put_nlattr_str, put_nlattr_u32, put_nlattr_u8};
 pub(crate) use dumps::{build_newaddr6_reply, build_newaddr_reply, build_newlink_reply};
 pub use dump_req::{is_dump, validate_addr_dump, validate_link_dump, AddrDump, LinkDump, NLM_F_DUMP_FILTERED};

@@ -1,15 +1,21 @@
-// The `security.*` attribute gate.
+// The `security.*` attribute gate, and the label attribute's VALUE.
 
 extern crate alloc;
+
+use alloc::vec::Vec;
 
 use syscall::errno::Errno;
 
 use selinux_runtime::check::{has_perm, EACCES};
-use selinux_runtime::inode::{relabel_decision, selinux_xattr_gate, RelabelRequest, XattrGate,
-                             XattrOp};
+use selinux_runtime::inode::{answers_getsecurity, getsecurity_value, relabel_decision,
+                             selinux_xattr_gate, RelabelRequest, XattrGate, XattrOp};
 use selinux_runtime::label::inode_class;
 
 use vfs::InodeRef;
+
+/// `-EOPNOTSUPP`: this module does not answer for the attribute, so the
+/// filesystem's own store does.
+const EOPNOTSUPP: i64 = -(Errno::Eopnotsupp.as_i32() as i64);
 
 /// Access vector asking for nothing; a permission this kernel does not know
 /// is never granted rather than silently skipped.
@@ -37,6 +43,32 @@ pub fn xattr_gate(inode: &InodeRef, name: &str, op: XattrOp, value: Option<&[u8]
         }
         XattrGate::Relabel => relabel(inode, ssid, isid, class, value),
     }
+}
+
+/// `selinux_inode_getsecurity` — the label attribute's value, read from the
+/// object's IN-CORE label rather than from any attribute store. # C: O(1) cached
+///
+/// This is what makes the label readable on every filesystem, not only the ones
+/// that can store an attribute: the label of a device node, a pipe or a socket
+/// lives in the kernel's own inode state, and a mount with no attribute store
+/// still has one. Answering such a read from the store instead reports "this
+/// filesystem cannot do attributes" for an object that is labelled, and the
+/// callers that ask — the login stack among them — treat that as "no label" and
+/// carry a null onwards.
+///
+/// `EOPNOTSUPP` means "not this module's attribute", and is the one answer that
+/// sends the read on to the store. A label the loaded policy cannot render is
+/// `EINVAL` and stands: falling back there would answer a live label read with
+/// whatever stale text the disk happens to hold.
+pub fn inode_getsecurity(inode: &InodeRef, suffix: &str) -> Result<Vec<u8>, i64> {
+    if !answers_getsecurity(suffix) || !selinux_runtime::active() { return Err(EOPNOTSUPP); }
+    // No label to report while the object has no filesystem type or no class
+    // the policy names: nothing has been decided for it, so the store answers.
+    let Some(sid) = super::label::inode_sid(inode) else { return Err(EOPNOTSUPP) };
+    let text = selinux_runtime::with(|s| s.sid_to_context(sid))
+        .ok_or(EOPNOTSUPP)?
+        .map_err(|_| -(Errno::Einval.as_i32() as i64))?;
+    Ok(getsecurity_value(&text))
 }
 
 /// Price a label write against the label being written. # C: O(rules)

@@ -139,7 +139,7 @@ impl PolicyOps for KernelOps {
         selinux_runtime::with(|s| {
             let ssid = s.context_to_sid(scon).map_err(engine_error)?;
             let tsid = s.context_to_sid(tcon).map_err(engine_error)?;
-            Ok(s.compute(ssid, tsid, class))
+            Ok(s.compute_av_user(ssid, tsid, class as u32))
         }).unwrap_or(Err(VfsError::Einval))
     }
 
@@ -158,9 +158,9 @@ impl PolicyOps for KernelOps {
             let ssid = s.context_to_sid(scon).map_err(engine_error)?;
             let tsid = s.context_to_sid(tcon).map_err(engine_error)?;
             let new = match kind {
-                NewContext::Create => s.transition_sid(ssid, tsid, class, name),
-                NewContext::Relabel => s.change_sid(ssid, tsid, class),
-                NewContext::Member => s.member_sid(ssid, tsid, class),
+                NewContext::Create => s.transition_sid_user(ssid, tsid, class as u32, name),
+                NewContext::Relabel => s.change_sid_user(ssid, tsid, class as u32),
+                NewContext::Member => s.member_sid_user(ssid, tsid, class as u32),
             }.map_err(engine_error)?;
             s.sid_to_context(new).map_err(engine_error)
         }).unwrap_or(Err(VfsError::Einval))
@@ -172,9 +172,8 @@ impl PolicyOps for KernelOps {
     /// else does: resolving the three contexts and stopping would accept every
     /// relabel the policy forbids, silently.
     fn validate_trans(&mut self, old: &str, new: &str, class: u16, task: &str) -> KResult<()> {
-        if selinux::uapi::classmap::class_def(class).is_none() { return Err(VfsError::Einval); }
         selinux_runtime::with(|s| {
-            s.validate_transition(old, new, class, task).map_err(engine_error)
+            s.validate_transition_user(old, new, class as u32, task).map_err(engine_error)
         }).unwrap_or(Err(VfsError::Einval))
     }
 

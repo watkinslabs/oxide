@@ -1,0 +1,15 @@
+[package]
+name = "sm4"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "SM4 block cipher (GB/T 32907-2016, ISO/IEC 18033-3:2010/Amd 1): 128-bit block, 128-bit key, 32 rounds."
+
+[dependencies]
+blockcipher = { path = "../blockcipher" }
+
+[lib]
+path = "src/lib.rs"
+
+[lints]
+workspace = true

@@ -43,8 +43,13 @@ pub struct Certificate {
     pub signature: Vec<u8>,
 }
 
-/// Parse a DER certificate. # C: O(len)
-pub fn parse(blob: &[u8]) -> Result<Certificate, PkeyError> {
+/// Parse a DER certificate.
+///
+/// Handed back on the heap: the record is ten heap-backed fields and every
+/// caller binds it across a verification, so returned by value it sat in the
+/// frame of each. The reference keeps a parsed certificate in its own
+/// allocation and passes the pointer. # C: O(len)
+pub fn parse(blob: &[u8]) -> Result<alloc::boxed::Box<Certificate>, PkeyError> {
     let cert = der::parse_exact(blob, der::TAG_SEQUENCE)?;
     let mut top = Reader::new(cert);
     let (tbs_tlv, tbs_raw) = top.next_raw()?;
@@ -71,10 +76,10 @@ pub fn parse(blob: &[u8]) -> Result<Certificate, PkeyError> {
     let (algo, key) = parse_spki(spki)?;
     let subject = render_name(subject_raw)?;
     let skid = find_skid(&mut r)?;
-    Ok(Certificate {
+    Ok(alloc::boxed::Box::new(Certificate {
         subject, subject_id: subject_raw.to_vec(), serial, issuer, skid, algo, key,
         tbs: tbs_raw.to_vec(), signature_hash, signature,
-    })
+    }))
 }
 
 /// `SubjectPublicKeyInfo ::= SEQUENCE { algorithm AlgorithmIdentifier,

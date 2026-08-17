@@ -80,6 +80,19 @@ pub trait FileOps: Send + Sync {
         self.write(file.inode(), off, buf)
     }
 
+    /// Whether a cursor write through this backend moves the description's
+    /// cursor by the byte count it consumed.
+    ///
+    /// In Linux the `->write` handler owns `*pos`, so a backend that never
+    /// touches it leaves the cursor where it was. A transaction file — write a
+    /// request, read the answer back from the SAME description without an
+    /// intervening seek — depends on exactly that: userspace issues
+    /// `write(fd, req, n)` then `read(fd, buf, size)`, and if the write had
+    /// advanced the cursor the read would start past the answer and return
+    /// zero bytes, which a caller reads as an empty answer rather than an
+    /// error. # C: O(1)
+    fn write_advances_pos(&self) -> bool { true }
+
     /// Non-blocking write with access to the open file description. Default
     /// forwards to [`Self::write_nonblock`]. # C: backend-dependent
     fn write_nonblock_file(&self, file: &File, off: u64, buf: &[u8]) -> KResult<usize> {
@@ -278,6 +291,16 @@ pub trait FileOps: Send + Sync {
     /// # C: O(log N_pages)
     fn mmap_shared_frame(&self, inode: &Inode, off: u64) -> KResult<Option<crate::SharedFrame>> {
         inode.i_mapping().map_or(Ok(None), |m| m.shared_frame(off))
+    }
+
+    /// A shared mapping is about to write the page at page-aligned `off`
+    /// (`vm_operations_struct.page_mkwrite`). Default forwards through the
+    /// inode's `i_mapping`, whose own default is a no-op — see
+    /// [`crate::AddressSpaceOps::page_mkwrite`] for what a filesystem on a
+    /// medium has to do there and why nothing else can do it.
+    /// # Ctx: process # Sleeps: y # C: O(indirection depth) blocks
+    fn mmap_page_mkwrite(&self, inode: &Inode, off: u64) -> KResult<()> {
+        inode.i_mapping().map_or(Ok(()), |m| m.page_mkwrite(off))
     }
 
     /// Byte size of the huge page this file's pages ARE, or 0 for a file made

@@ -24,6 +24,15 @@ pub fn validate_transition(db: &Policydb, map: &Mapping, sidtab: &Sidtab,
     -> Result<()>
 {
     let policy_class = map.policy_class(kernel_class).ok_or(Error::Malformed)?;
+    validate_transition_user(db, sidtab, old_sid, new_sid, task_sid, policy_class)
+}
+
+/// Same question for a class named in the POLICY's numbering — what userspace
+/// writes to the `validatetrans` node. # C: O(constraints)
+pub fn validate_transition_user(db: &Policydb, sidtab: &Sidtab,
+                                old_sid: Sid, new_sid: Sid, task_sid: Sid, policy_class: u32)
+    -> Result<()>
+{
     let class = db.symbols.class(policy_class).ok_or(Error::UnknownSymbol)?;
     if class.validatetrans.is_empty() { return Ok(()); }
 

@@ -28,7 +28,15 @@ pub enum BlockError {
     Ebusy   = 16,
     Einval  = 22,
     Enospc  = 28,
+    /// A drive refused because it already holds its limit of ACTIVE zones.
+    /// Not a media failure and not a permanent refusal: finishing or
+    /// resetting a zone makes the same request succeed, which is why this
+    /// stays distinct from `Eio`.
+    Eoverflow = 75,
     Eopnotsupp = 95,
+    /// A drive refused because it already holds its limit of OPEN zones.
+    /// Closing a zone makes the same request succeed.
+    Etoomanyrefs = 109,
 }
 
 pub type KResult<T> = core::result::Result<T, BlockError>;
@@ -46,6 +54,11 @@ bitflags::bitflags! {
         const WRITEBACK  = 1 << 2;
         const REFERENCED = 1 << 3;
         const UPTODATE   = 1 << 4;
+        /// On the ACTIVE half of the two-list LRU (`17§4.4`). A page reaches
+        /// it by being found again while already referenced on the inactive
+        /// half, which is what makes the second reference — not the first —
+        /// the thing that protects a page from reclaim.
+        const ACTIVE     = 1 << 5;
     }
 }
 

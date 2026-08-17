@@ -220,7 +220,8 @@ impl NvmeBlk {
                 if requests.pending.len() >= ctrl.io_capacity() { return; }
                 let now = wait::now_ns();
                 let waiting: Vec<block::elevator::Waiting> = requests.deferred.iter()
-                    .map(|request| block::elevator::Waiting { ioprio: request.request.ioprio, queued_ns: request.queued_ns })
+                    .map(|request| block::elevator::Waiting { ioprio: request.request.ioprio, queued_ns: request.queued_ns,
+                                              hiprio: request.request.flags.is_hiprio() })
                     .collect();
                 let Some(index) = block::elevator::select(&waiting, now, block::elevator::PRIO_AGING_EXPIRE_NS) else { return; };
                 requests.dispatching = true;
@@ -353,6 +354,24 @@ impl NvmeBlk {
 
 impl BlockDevice for NvmeBlk {
     fn block_size(&self) -> u32 { self.blk_size }
+
+
+    /// The topology, carrying a VOLATILE WRITE CACHE as a queue fact.
+    ///
+    /// Publishing it is what lets a filesystem above fence its commit record:
+    /// the layer that sequences durability promises reads this, and a device
+    /// that stayed silent would have every barrier above it optimised away — an
+    /// `fsync` returning with the data still in the drive's cache. Said
+    /// unconditionally rather than read from the controller's identify data: this driver does not
+    /// parse that field yet, and the conservative direction costs a flush command a
+    /// write-through drive completes immediately and cannot lose one that
+    /// matters. Forced unit access is not claimed, because no request here
+    /// carries it — that promise is kept by a flush after the write.
+    /// # C: O(1)
+    fn queue_limits(&self) -> KResult<block::QueueLimits> {
+        Ok(block::QueueLimits::for_logical_block_size(self.blk_size)?
+            .with_features(block::QueueFeatures::WRITE_CACHE))
+    }
     fn capacity_blocks(&self) -> u64 { self.capacity }
 
     fn submit(&self, request: BlockRequest, completion: BlockCompletion) {

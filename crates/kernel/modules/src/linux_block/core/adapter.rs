@@ -41,6 +41,7 @@ impl BlockDevice for LinuxBlockAdapter {
         // and `capacity` is a u64 field alloc_disk_node zero-initialises.
         let part0 = unsafe { (*d).part0 };
         if part0.is_null() { return 0; }
+        // SAFETY: part0 is non-null (checked above) and, per the same publication contract as block_size, a live LinuxBlockDevice alloc_disk_node owns; bd_nr_sectors is a u64 field it initialises.
         let sectors = unsafe { (*part0).bd_nr_sectors };
         sectors_to_blocks(sectors, self.block_size())
     }

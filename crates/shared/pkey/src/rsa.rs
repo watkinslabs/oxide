@@ -20,7 +20,10 @@ pub const RSA_KEY_SIZES: [usize; 6] = [512, 1024, 1536, 2048, 3072, 4096];
 pub struct RsaKey {
     n: Mpi,
     e: Mpi,
-    private: Option<PrivateKey>,
+    /// Behind a pointer: the CRT form is five multi-precision handles, and a
+    /// key parsed from a certificate never has one — held inline it sized
+    /// every public key, and every frame that binds one, to the private case.
+    private: Option<alloc::boxed::Box<PrivateKey>>,
     /// Modulus size in bytes — every padded block is exactly this wide.
     k: usize,
 }
@@ -48,7 +51,7 @@ impl RsaKey {
             Some(b) => {
                 let d = Mpi::from_be_bytes(b);
                 if d.is_zero() { return Err(PkeyError::BadKey); }
-                Some(PrivateKey::Exponent(d))
+                Some(alloc::boxed::Box::new(PrivateKey::Exponent(d)))
             }
         };
         Ok(Self { n, e, private, k })
@@ -75,7 +78,7 @@ impl RsaKey {
     pub fn private_op(&self, input: &[u8]) -> Result<Vec<u8>, PkeyError> {
         let input = Mpi::from_be_bytes(input);
         if input >= self.n { return Err(PkeyError::Invalid); }
-        match self.private.as_ref().ok_or(PkeyError::NoPrivateKey)? {
+        match &**self.private.as_ref().ok_or(PkeyError::NoPrivateKey)? {
             PrivateKey::Exponent(d) => self.result(input.powm(d, &self.n).ok_or(PkeyError::Invalid)?),
             PrivateKey::Crt { p, q, dp, dq, qi } => {
                 let m1 = input.powm(dp, p).ok_or(PkeyError::Invalid)?;
@@ -133,13 +136,13 @@ pub fn parse_private(der_bytes: &[u8]) -> Result<RsaKey, PkeyError> {
     let qi = Mpi::from_be_bytes(der::positive_integer(r.expect(TAG_INTEGER)?)?);
     r.end()?;
     let mut key = RsaKey::new(n, e, Some(d))?;
-    let d = match key.private.take() { Some(PrivateKey::Exponent(d)) => d, _ => return Err(PkeyError::BadKey) };
+    let d = match key.private.take().map(|p| *p) { Some(PrivateKey::Exponent(d)) => d, _ => return Err(PkeyError::BadKey) };
     let one = Mpi::from_u64(1);
     let pm1 = p.checked_sub(&one).ok_or(PkeyError::BadKey)?;
     let qm1 = q.checked_sub(&one).ok_or(PkeyError::BadKey)?;
     if p.is_zero() || q.is_zero() || key.n != p.mul(&q)
         || d.rem(&pm1) != Some(dp.clone()) || d.rem(&qm1) != Some(dq.clone())
         || qi.mul(&q).rem(&p) != Some(one) { return Err(PkeyError::BadKey); }
-    key.private = Some(PrivateKey::Crt { p, q, dp, dq, qi });
+    key.private = Some(alloc::boxed::Box::new(PrivateKey::Crt { p, q, dp, dq, qi }));
     Ok(key)
 }

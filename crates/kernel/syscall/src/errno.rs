@@ -96,6 +96,9 @@ pub enum Errno {
     Eprotonosupport   = 93,
     Esocktnosupport   = 94,
     Enotconn          = 107,
+    /// A zoned block drive already holds its limit of OPEN zones; closing one
+    /// makes the same write succeed.
+    Etoomanyrefs      = 109,
     Etimedout         = 110,
     Econnrefused      = 111,
     Ehostunreach      = 113,
@@ -104,9 +107,6 @@ pub enum Errno {
     Econnreset        = 104,
     Estale            = 116,
     Euclean           = 117,
-    /// `EREMOTEIO` — an I/O failure that happened at the far end of a network
-    /// filesystem rather than locally. What a server-side fault maps to.
-    Eremoteio         = 121,
     Edquot            = 122,
     Ecanceled         = 125,
     /// Keyring errnos, returned by
@@ -130,26 +130,6 @@ pub enum Errno {
     /// from `Eopnotsupp` (95), which other `bpf(2)` commands return for
     /// the same shape of refusal.
     Enotsupp          = 524,
-    /// Kernel-internal errnos above the standard range that a network
-    /// filesystem's server status codes translate to. They never reach
-    /// userspace unchanged: the filesystem maps each to a POSIX errno at the
-    /// syscall boundary, and keeping them distinct here is what lets it tell,
-    /// for example, a stale readdir cookie from a malformed file handle.
-    /// The file handle the server was given is not one it issued.
-    Ebadhandle        = 521,
-    /// Cached state and server state disagree about an update.
-    Enotsync          = 522,
-    /// A readdir cookie the server no longer recognizes.
-    Ebadcookie        = 523,
-    /// The reply buffer offered was smaller than the reply.
-    Etoosmall         = 525,
-    /// The server reported a fault it could not describe.
-    Eserverfault      = 526,
-    /// The object type requested is not one the server supports.
-    Ebadtype          = 527,
-    /// The server accepted the request but will not finish it promptly; the
-    /// client is expected to retry rather than fail.
-    Ejukebox          = 528,
 }
 
 impl Errno {
