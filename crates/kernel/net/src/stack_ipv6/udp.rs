@@ -37,11 +37,17 @@ impl NetStack {
         preferred: u32,
         temporary: bool,
     ) {
+        let now_ns = self.ra_now_ns();
         let mut all = self.v6_addrs.lock();
         let addrs = all.entry(iface).or_default();
         let row = Ipv6IfaceAddr {
-            addr: ip, prefixlen, preferred, valid, origin: Ipv6AddrOrigin::Static,
+            addr: ip, peer: None, prefixlen, preferred, valid,
+            preferred_until_ns: super::ra::lifetime_deadline(now_ns, preferred),
+            valid_until_ns: super::ra::lifetime_deadline(now_ns, valid),
+            origin: Ipv6AddrOrigin::Static,
             state: Ipv6AddrState::Assigned, deprecated: preferred == 0, temporary,
+            user_flags: 0, proto: 0, rt_priority: 0,
+            cstamp: crate::iface_addr::now_centisecs(), tstamp: crate::iface_addr::now_centisecs(),
             notify_pending: false,
         };
         match addrs.iter().position(|addr| addr.addr == ip) {
@@ -64,32 +70,34 @@ impl NetStack {
         let mut all = self.v6_addrs.lock();
         let addrs = all.entry(iface).or_default();
         match addrs.iter_mut().find(|addr| addr.addr == ip) {
-            Some(row) => match &mut row.origin {
-                Ipv6AddrOrigin::Static => return Some(false),
-                Ipv6AddrOrigin::Slaac { preferred_until_ns, valid_until_ns, .. } => {
-                    *valid_until_ns = slaac_valid_deadline(*valid_until_ns, valid, now_ns);
-                    *preferred_until_ns = super::ra::lifetime_deadline(now_ns, preferred);
-                    refresh_slaac_lifetimes(row, now_ns);
-                    row.deprecated = !row.preferred_at(now_ns);
-                    if let (Some(retrans_timer_ns), Ipv6AddrState::Tentative {
-                        retrans_timer_ns: current, ..
-                    }) = (retrans_timer_ns, &mut row.state) { *current = retrans_timer_ns; }
-                    return row.valid_at(now_ns).then_some(false);
-                }
-            },
+            Some(row) => {
+                if matches!(row.origin, Ipv6AddrOrigin::Static) { return Some(false); }
+                row.valid_until_ns = slaac_valid_deadline(row.valid_until_ns, valid, now_ns);
+                row.preferred_until_ns = super::ra::lifetime_deadline(now_ns, preferred);
+                refresh_lifetimes(row, now_ns);
+                row.deprecated = !row.preferred_at(now_ns);
+                row.tstamp = crate::iface_addr::now_centisecs();
+                if let (Some(retrans_timer_ns), Ipv6AddrState::Tentative {
+                    retrans_timer_ns: current, ..
+                }) = (retrans_timer_ns, &mut row.state) { *current = retrans_timer_ns; }
+                row.valid_at(now_ns).then_some(false)
+            }
             None => {
                 if valid == 0 { return None; }
+                let stamp = crate::iface_addr::now_centisecs();
                 addrs.push(Ipv6IfaceAddr {
-                    addr: ip, prefixlen, preferred, valid,
-                    origin: Ipv6AddrOrigin::Slaac { prefix,
-                        preferred_until_ns: super::ra::lifetime_deadline(now_ns, preferred),
-                        valid_until_ns: super::ra::lifetime_deadline(now_ns, valid) },
+                    addr: ip, peer: None, prefixlen, preferred, valid,
+                    preferred_until_ns: super::ra::lifetime_deadline(now_ns, preferred),
+                    valid_until_ns: super::ra::lifetime_deadline(now_ns, valid),
+                    origin: Ipv6AddrOrigin::Slaac { prefix },
                     state: Ipv6AddrState::Tentative {
                         dad_until_ns: None, retry_at_ns: now_ns,
                         retrans_timer_ns: retrans_timer_ns.unwrap_or(super::ra::DAD_DELAY_NS) },
-                    deprecated: preferred == 0, temporary: false, notify_pending: false,
+                    deprecated: preferred == 0, temporary: false,
+                    user_flags: 0, proto: 0, rt_priority: 0, cstamp: stamp, tstamp: stamp,
+                    notify_pending: false,
                 });
-                return Some(true);
+                Some(true)
             }
         }
     }
@@ -106,7 +114,7 @@ impl NetStack {
             if self.ifaces.namespace(*iface) != Some(net_ns) { continue; }
             for addr in addrs {
                 let mut row = addr.clone();
-                refresh_slaac_lifetimes(&mut row, now_ns);
+                refresh_lifetimes(&mut row, now_ns);
                 out.push((*iface, row));
             }
         }
@@ -476,10 +484,12 @@ impl NetStack {
     }
 }
 
-pub(super) fn refresh_slaac_lifetimes(row: &mut Ipv6IfaceAddr, now_ns: u64) {
-    let Ipv6AddrOrigin::Slaac { preferred_until_ns, valid_until_ns, .. } = &row.origin else { return; };
-    row.valid = super::ra::remaining_lifetime(now_ns, *valid_until_ns);
-    row.preferred = super::ra::remaining_lifetime(now_ns, *preferred_until_ns);
+/// Recompute the reported remaining lifetimes from the row's deadlines. Every
+/// origin ages the same way: the reference reports `valid_lft`/`prefered_lft`
+/// minus the age of the row's update stamp regardless of how it was created.
+pub(super) fn refresh_lifetimes(row: &mut Ipv6IfaceAddr, now_ns: u64) {
+    row.valid = super::ra::remaining_lifetime(now_ns, row.valid_until_ns);
+    row.preferred = super::ra::remaining_lifetime(now_ns, row.preferred_until_ns);
 }
 
 fn slaac_valid_deadline(old_deadline_ns: u64, advertised: u32, now_ns: u64) -> u64 {

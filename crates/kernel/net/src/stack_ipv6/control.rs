@@ -96,7 +96,7 @@ impl NetStack {
                     let mut all = self.v6_addrs.lock();
                     if let Some(rows) = all.get_mut(&lease.iface()) {
                         rows.retain_mut(|row| {
-                            super::udp::refresh_slaac_lifetimes(row, now_ns);
+                            super::udp::refresh_lifetimes(row, now_ns);
                             if !row.valid_at(now_ns) {
                                 removed.push(row.clone());
                                 return false;
@@ -107,7 +107,7 @@ impl NetStack {
                             {
                                 row.state = Ipv6AddrState::Assigned;
                                 promoted.push(row.addr);
-                                if let super::Ipv6AddrOrigin::Slaac { prefix, .. } = row.origin {
+                                if let super::Ipv6AddrOrigin::Slaac { prefix } = row.origin {
                                     assigned.push((prefix, row.addr));
                                 }
                                 notify = true;
