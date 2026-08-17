@@ -173,7 +173,7 @@ fn a_read_outside_the_main_area_is_charged_as_metadata() {
 /// say what it is; the reader that knows says so.
 #[test]
 fn a_node_read_is_charged_as_a_node_and_not_as_data() {
-    let mut v = measured();
+    let v = measured();
     let before = row(&body(&v), "[READ]", "fs node").1;
     v.read_inode(ROOT_INO).unwrap();
     let b = body(&v);

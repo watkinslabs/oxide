@@ -35,14 +35,6 @@ pub fn tcp(sport: u16, dport: u16, control: u8, options: &[u8]) -> Vec<u8> {
     t
 }
 
-/// UDP header bytes. # C: O(1)
-pub fn udp(sport: u16, dport: u16) -> Vec<u8> {
-    let mut u = vec![0u8; 8];
-    u[0..2].copy_from_slice(&sport.to_be_bytes());
-    u[2..4].copy_from_slice(&dport.to_be_bytes());
-    u
-}
-
 /// Conntrack stand-in whose every answer the test names. Nothing is derived,
 /// so a wrong read shows up as the value the test did not set.
 pub struct Ct {

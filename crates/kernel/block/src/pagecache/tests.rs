@@ -24,11 +24,6 @@ use crate::types::{BlockOp, KResult, PAGE_BYTES};
 
 pub(super) type Disk = MemDisk<sync::Inode>;
 
-/// A device sized for `pages` cache pages.
-pub(super) fn disk(pages: u64) -> Arc<dyn BlockDevice> {
-    Disk::new(512, pages * (PAGE_BYTES as u64 / 512))
-}
-
 /// The LRU, the dirty count and the thresholds are machine-wide by design, so
 /// a test that asserts on them must be the only one running. Held for the
 /// whole body; a poisoned lock still hands the section over, since the state

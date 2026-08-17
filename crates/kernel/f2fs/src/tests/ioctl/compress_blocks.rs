@@ -43,7 +43,11 @@ fn send(v: &mut Volume<MemImage>, ino: u32, cmd: u32) -> Result<Answer, Errno> {
 
 /// The count a command reported through the caller's argument. # C: O(1)
 fn count(a: Answer) -> u64 {
-    let Answer::Done(r) = a else { panic!("not built") };
+    // `Answer::NotBuilt` carries `exec::Unbuilt`, an uninhabited type per
+    // `ioctl::exec` — every command this crate answers is built, so `Done` is
+    // the only reachable arm and the compiler treats the pattern as
+    // irrefutable.
+    let Answer::Done(r) = a;
     let p = r.payload.expect("a payload");
     u64::from_le_bytes(p[..8].try_into().unwrap())
 }

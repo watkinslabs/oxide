@@ -1,7 +1,6 @@
 //! Injected failures: the site list is an ABI, the rate is a period, and off
 //! costs nothing.
 
-use super::*;
 use crate::fault::attr::Which;
 use crate::fault::{apply, build, time_to_inject, Cfg, Fault, Info, ALL_TYPES, FAULT_MAX,
                    TIMEOUT_MAX};

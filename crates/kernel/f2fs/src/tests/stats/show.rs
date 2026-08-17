@@ -5,9 +5,6 @@
 //! numbers are checked where the line's meaning depends on which of two
 //! similar figures it carries.
 
-use alloc::string::String;
-use alloc::vec::Vec;
-
 use sectors::MemImage;
 
 use crate::stats::counters::{alloc_of, call, gc_mode, gc_of, gc_when, meta, Counters};

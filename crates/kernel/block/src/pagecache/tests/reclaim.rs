@@ -13,6 +13,21 @@ use crate::pagecache::tests::{fresh_machine, CountingDisk};
 use crate::pagecache::{nr_cached, nr_dirty, reclaimable_pages, shrink, PageCache};
 use crate::types::{InodeId, PageFlags, PAGE_BYTES};
 
+/// `read_page`'s hit path costs a lookup and nothing else (`17§4.2`): a second
+/// `read_page` of the same offset must not reach the medium again.
+#[test]
+fn a_second_read_of_the_same_page_does_not_reach_the_medium() {
+    let _m = fresh_machine();
+    let disk = CountingDisk::new(8);
+    let dev: Arc<dyn BlockDevice> = disk.clone();
+    let pc = PageCache::new();
+    let first = pc.read_page(INO, 0, &dev).unwrap();
+    assert_eq!(disk.reads(), 1, "the miss fetches once");
+    let second = pc.read_page(INO, 0, &dev).unwrap();
+    assert_eq!(disk.reads(), 1, "the hit does not fetch again");
+    assert!(Arc::ptr_eq(&first, &second), "both calls hand back the same cached page");
+}
+
 const INO: InodeId = InodeId(1);
 fn page(byte: u8) -> alloc::vec::Vec<u8> { vec![byte; PAGE_BYTES] }
 

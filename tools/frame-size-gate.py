@@ -46,7 +46,16 @@ import rust_symbol_identity as rsi        # noqa: E402
 # tool report zero large frames on a binary that has nine.
 X86_SUB = re.compile(r"\ssub[qlwb]?\s+\$0x([0-9a-f]+),\s*%rsp\b")
 # aarch64: `sub sp, sp, #0x1234` / `#1234`, either disassembler.
-ARM_SUB = re.compile(r"\ssub\s+sp,\s*sp,\s*#(?:0x([0-9a-f]+)|(\d+))")
+#
+# The `, lsl #12` tail is NOT optional to parse. aarch64's immediate field is
+# 12 bits, so every reservation over 4095 bytes is emitted as a SHIFTED
+# immediate — `sub sp, sp, #0x7, lsl #12` is 28672 bytes, not 7. Reading the
+# immediate alone does not merely miss those frames, it reports them as a
+# handful of bytes, so the gate passed a 30016-byte frame while claiming the
+# binary's largest was 4176. Large frames are the only thing this gate exists
+# to catch, and on aarch64 large is exactly the set that carries this tail.
+ARM_SUB = re.compile(
+    r"\ssub\s+sp,\s*sp,\s*#(?:0x([0-9a-f]+)|(\d+))(\s*,\s*lsl\s*#(\d+))?")
 # aarch64 pre-index push that also opens the frame: `stp x29, x30, [sp, #-0x20]!`
 ARM_STP = re.compile(r"\sstp\s+.*\[sp,\s*#-(?:0x([0-9a-f]+)|(\d+))\]!")
 FUNC = re.compile(r"^\s*[0-9a-f]+\s*<(.+)>:")
@@ -67,11 +76,11 @@ def parse(objdump_out):
         for rx in (X86_SUB, ARM_SUB, ARM_STP):
             m = rx.search(line)
             if m:
-                hexv = m.group(1)
-                if hexv is not None:
-                    cur += int(hexv, 16)
-                elif m.lastindex and m.group(m.lastindex):
-                    cur += int(m.group(m.lastindex))
+                if m.group(1) is not None: v = int(m.group(1), 16)
+                elif m.group(2) is not None: v = int(m.group(2))
+                else: continue
+                if rx is ARM_SUB and m.group(4) is not None: v <<= int(m.group(4))
+                cur += v
                 break
     if fn is not None:
         frames[fn] = cur
@@ -106,6 +115,12 @@ SELF_TEST_INPUT = """
   203004: sub     sp, sp, #0x400
   203008: ret
 
+0000000000206000 <arm_shifted_frame>:
+  206000: stp     x29, x30, [sp, #-0x60]!
+  206004: sub     sp, sp, #0x7, lsl #12
+  206008: sub     sp, sp, #0x4e0
+  20600c: ret
+
 0000000000204000 <leaf>:
   204000: ret
 
@@ -125,6 +140,10 @@ def self_test():
         "probed_x86": 0x1000 + 0x1000 + 0x28,
         # aarch64 opens the frame with a pre-index stp, then extends it
         "arm_frame": 0x20 + 0x400,
+        # The shifted immediate every aarch64 frame over 4095 bytes uses.
+        # Read as a bare immediate this is 0x60 + 7 + 0x4e0 = 1383, and a real
+        # 30016-byte frame passed an 8192-byte ceiling on exactly that.
+        "arm_shifted_frame": 0x60 + (0x7 << 12) + 0x4e0,
         # a leaf that touches no stack must not be reported at all
         "leaf": 0,
         # llvm-objdump spelling: size suffix and a space after the comma. A

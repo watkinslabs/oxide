@@ -256,12 +256,14 @@ fn a_read_that_policy_does_not_measure_raises_nothing() {
 
 // --- end to end: IMA -> chip -> wire -----------------------------------
 
-/// A chip that records the command bytes IMA's measurement produced.
-struct WireChip { sent: Vec<Vec<u8>> }
+/// A chip that records the command bytes IMA's measurement produced. Shared
+/// with the test through `log` so the sent bytes are still readable after
+/// `Chip::new` has taken ownership of the transport.
+struct WireChip { log: alloc::rc::Rc<core::cell::RefCell<Vec<Vec<u8>>>> }
 
 impl tpm::Transport for WireChip {
     fn send(&mut self, cmd: &[u8]) -> Result<(), tpm::TransportError> {
-        self.sent.push(cmd.to_vec());
+        self.log.borrow_mut().push(cmd.to_vec());
         Ok(())
     }
     fn recv(&mut self, out: &mut [u8]) -> Result<usize, tpm::TransportError> {
@@ -283,11 +285,17 @@ fn a_measurement_travels_from_the_list_to_the_wire() {
     let td = e.template_digest(HashAlgo::Sha256).unwrap();
 
     let banks = tpm::AllocatedBanks::new(&[tpm::Alg::Sha256]).unwrap();
-    let mut chip = tpm::Chip::new(banks, WireChip { sent: Vec::new() });
+    let log = alloc::rc::Rc::new(core::cell::RefCell::new(Vec::new()));
+    let mut chip = tpm::Chip::new(banks, WireChip { log: log.clone() });
 
     let mut list = MeasurementList::new(HashAlgo::Sha256);
     list.add(e, &mut chip).unwrap();
     assert_eq!(list.tpm_failures(), 0, "the extend was accepted");
+
+    let sent = log.borrow();
+    assert_eq!(sent.len(), 1, "one entry, one extend command");
+    assert!(sent[0].windows(td.len()).any(|w| w == td.as_slice()),
+            "the wire command did not carry the record's template digest");
 }
 
 #[test]
@@ -298,7 +306,8 @@ fn a_chip_whose_banks_do_not_match_refuses_rather_than_extending_partially() {
     let d: Vec<u8> = (0u8..32).collect();
     let e = entry("/bin/sh", &d, 10);
     let banks = tpm::AllocatedBanks::new(&[tpm::Alg::Sha1, tpm::Alg::Sha256]).unwrap();
-    let mut chip = tpm::Chip::new(banks, WireChip { sent: Vec::new() });
+    let log = alloc::rc::Rc::new(core::cell::RefCell::new(Vec::new()));
+    let mut chip = tpm::Chip::new(banks, WireChip { log });
 
     let mut list = MeasurementList::new(HashAlgo::Sha256);
     list.add(e, &mut chip).unwrap();

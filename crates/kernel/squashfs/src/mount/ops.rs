@@ -98,7 +98,7 @@ impl FileOps for SquashOps {
         }
         let entries = {
             let v = n.fs.volume.lock();
-            v.read_dir(&n.node).map_err(errno_to_vfs)?
+            v.read_dir_from(&n.node, ctx.pos).map_err(errno_to_vfs)?
         };
         for entry in entries {
             if ctx.pos >= entry.next_pos { continue; }

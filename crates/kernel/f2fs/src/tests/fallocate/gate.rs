@@ -1,7 +1,6 @@
 //! The refusal ladder, one rung at a time.
 
 use super::*;
-use crate::fallocate::uapi::*;
 
 /// Every mode that names an operation, plus the bare one.
 const MODES: [u32; 6] = [0, FALLOC_FL_KEEP_SIZE, FALLOC_FL_PUNCH_HOLE,
