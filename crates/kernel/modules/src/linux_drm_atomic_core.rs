@@ -68,6 +68,7 @@ unsafe fn call_destroy(object: *mut c_void, funcs_off: usize, destroy_off: usize
     if funcs.is_null() { return; }
     // SAFETY: a nonzero atomic destroy callback receives its object and state exactly once.
     let callback = unsafe { state_callback(funcs, destroy_off) };
+    // SAFETY: destroy_off's ABI signature is atomic_destroy_state(object, state); object/state are the caller's own non-null pointers.
     if callback != 0 { unsafe { core::mem::transmute::<usize, unsafe extern "C" fn(*mut c_void, *mut c_void)>(callback)(object, state); } }
 }
 
@@ -85,6 +86,7 @@ pub(super) extern "C" fn drm_atomic_commit_alloc(dev: *mut c_void) -> *mut c_voi
     if !funcs.is_null() {
         // SAFETY: a mode-config custom allocator owns the complete returned atomic-state layout.
         let callback = unsafe { state_callback(funcs, DRM_MODE_CONFIG_ATOMIC_STATE_ALLOC_OFF) };
+        // SAFETY: ALLOC_OFF's ABI signature is atomic_state_alloc(dev) -> *mut state; dev is the caller's own device pointer.
         if callback != 0 { return unsafe { core::mem::transmute::<usize, unsafe extern "C" fn(*mut c_void) -> *mut c_void>(callback)(dev) }; }
     }
     let Some((planes, crtcs, _)) = allocation_counts(dev) else { return core::ptr::null_mut(); };
@@ -92,7 +94,9 @@ pub(super) extern "C" fn drm_atomic_commit_alloc(dev: *mut c_void) -> *mut c_voi
     // SAFETY: state_layout is the complete, aligned atomic-state ABI allocation.
     let state = unsafe { alloc_zeroed(state_layout) };
     if state.is_null() { return core::ptr::null_mut(); }
+    // SAFETY: on plane-array allocation failure, state is the just-allocated block above and state_layout is its exact matching layout, freed exactly once.
     let Some(plane_states) = alloc_array(planes, DRM_ATOMIC_PLANE_ENTRY_SIZE) else { unsafe { dealloc(state, state_layout); } return core::ptr::null_mut(); };
+    // SAFETY: on crtc-array allocation failure, plane_states is released by release_array before state is freed by its own matching layout, both exactly once.
     let Some(crtc_states) = alloc_array(crtcs, DRM_ATOMIC_CRTC_ENTRY_SIZE) else { release_array(plane_states, planes, DRM_ATOMIC_PLANE_ENTRY_SIZE); unsafe { dealloc(state, state_layout); } return core::ptr::null_mut(); };
     // SAFETY: every write names a verified field inside the newly allocated atomic state.
     unsafe { write(state.add(DRM_ATOMIC_REF_OFF).cast::<i32>(), 1); write(state.add(DRM_ATOMIC_DEV_OFF).cast::<*mut c_void>(), dev); write(state.add(DRM_ATOMIC_ALLOW_MODESET_OFF).cast::<u8>(), 1); write(state.add(DRM_ATOMIC_PLANES_OFF).cast::<*mut u8>(), plane_states); write(state.add(DRM_ATOMIC_CRTCS_OFF).cast::<*mut u8>(), crtc_states); }
@@ -106,6 +110,7 @@ pub(super) extern "C" fn drm_atomic_commit_put(state: *mut c_void) {
     let state = state.cast::<u8>();
     // SAFETY: caller owns one atomic-state reference; the count is private to this state.
     let refs = unsafe { read(state.add(DRM_ATOMIC_REF_OFF).cast::<i32>()) };
+    // SAFETY: refs was just read from this same non-null state's own REF_OFF field, still exclusively owned by this call.
     if refs > 1 { unsafe { write(state.add(DRM_ATOMIC_REF_OFF).cast::<i32>(), refs - 1); } return; }
     // SAFETY: a live atomic state always retains its live DRM device until final release.
     let dev = unsafe { read(state.add(DRM_ATOMIC_DEV_OFF).cast::<*mut c_void>()) };
@@ -114,7 +119,9 @@ pub(super) extern "C" fn drm_atomic_commit_put(state: *mut c_void) {
     if !funcs.is_null() {
         // SAFETY: custom state lifecycle callback owns final-state storage for this device.
         let release = unsafe { state_callback(funcs, DRM_MODE_CONFIG_ATOMIC_STATE_FREE_OFF) };
+        // SAFETY: FREE_OFF's ABI signature is atomic_state_free(state), taking ownership of the caller's non-null state pointer.
         if release != 0 { unsafe { core::mem::transmute::<usize, unsafe extern "C" fn(*mut c_void)>(release)(state.cast()); } }
+        // SAFETY: no custom free callback, so this call frees the fixed-size state block itself, matching the layout alloc used in commit_alloc.
         else { drm_atomic_commit_default_release(state.cast()); unsafe { dealloc(state, layout(DRM_ATOMIC_STATE_SIZE).unwrap()); } }
     } else {
         drm_atomic_commit_default_release(state.cast());
@@ -133,6 +140,7 @@ pub(super) extern "C" fn drm_atomic_commit_clear(state: *mut c_void) {
     if !funcs.is_null() {
         // SAFETY: the optional driver callback clears its own extension before the transaction is reused.
         let clear = unsafe { state_callback(funcs, DRM_MODE_CONFIG_ATOMIC_STATE_CLEAR_OFF) };
+        // SAFETY: CLEAR_OFF's ABI signature is atomic_state_clear(state); state is the caller's own non-null pointer.
         if clear != 0 { unsafe { core::mem::transmute::<usize, unsafe extern "C" fn(*mut c_void)>(clear)(state.cast()); } return; }
     }
     drm_atomic_commit_default_clear(state.cast());

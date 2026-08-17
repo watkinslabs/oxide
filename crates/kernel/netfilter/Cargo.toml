@@ -12,6 +12,8 @@ sync    = { path = "../../shared/sync" }
 netlink = { path = "../netlink" }
 net     = { path = "../net" }
 sched   = { path = "../sched" }
+conntrack = { path = "../conntrack" }
+nat     = { path = "../nat" }
 
 [dev-dependencies]
 sched = { path = "../sched", features = ["hosted"] }

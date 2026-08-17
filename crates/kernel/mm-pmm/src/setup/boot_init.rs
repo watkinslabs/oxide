@@ -345,6 +345,12 @@ pub unsafe fn init_from_boot_info(
     }
     PMM_READY.store(true, Ordering::Release);
     crate::watermark::install(pmm_ref.snapshot());
+    // A cached page can become a machine frame from the moment there is an
+    // allocator to take one from, which is HERE — not at the kernel-only wiring
+    // below. A hosted test that brings this PMM up gets the same page cache the
+    // machine gets, which is what makes a shared writable mapping of a file
+    // checkable without a boot.
+    super::install_page_cache_frames();
     #[cfg(target_os = "oxide-kernel")]
     install_oom_accounting(pmm_ref);
     Ok(pmm_ref)
@@ -357,6 +363,11 @@ pub unsafe fn init_from_boot_info(
 fn install_oom_accounting(pmm: &Pmm<HhdmBacking, KernelIrqGate>) {
     sched::oom::install_managed_pages(pmm.snapshot().managed_pages);
     sched::oom::install_memory_observer(crate::user_as::oom_memory);
+    // Same truth, second consumer: the page cache's dirty thresholds are a
+    // percentage of the machine's managed pages (`17§4.3`), and PMM is the
+    // only thing that knows that number. Installed here rather than counted
+    // again elsewhere.
+    block::pagecache::install_totalram_pages(pmm.snapshot().managed_pages);
 }
 
 /// Get a `&'static` reference to the PMM after `init_from_boot_info`

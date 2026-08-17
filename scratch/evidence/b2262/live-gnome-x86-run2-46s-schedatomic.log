@@ -1,0 +1,842 @@
+[H[J[1;1H[H[J[1;1H  Booting `oxide (multiboot2)'
+
+MB2
+L64
+[XSTATE] xsave=on pre_osxsave=0 cpuid0d_eax=0000000000000007 xcr0=0000000000000007 area=832
+[2.346] Kernel command line: BOOT_IMAGE=/boot/oxide-x86_64 root=/dev/vda rw earlycon printk.time=1 systemd.log_target=kmsg systemd.journald.forward_to_kmsg=1 sysctl.kernel.sysrq=1 sysrq_always_enabled enforcing=0 console=ttyS0,115200 console=tty0 systemd.mask=firewalld.service systemd.mask=chronyd.service systemd.mask=ModemManager.service systemd.mask=plymouth-start.service systemd.mask=NetworkManager-wait-online.service systemd.mask=flatpak-add-fedora-repos.service systemd.debug_shell=ttyS0 systemd.mask=serial-get
+[2.353] ty@ttyS0.service oxide.bootargs=grub
+[2.354] [INFO]  selinux: enabled, awaiting policy
+[2.356] [sysrq] always enabled by the boot line
+[43.517] [BOOT-DEV-NULL] type=8192 fs=devtmpfs
+[43.593] systemd[1]: Failed to transition into init label '', ignoring.
+[43.593] systemd[1]: Successfully loaded SELinux policy in 38.599ms.
+[43.627] systemd[1]: Relabeled /dev/, /dev/shm/, /run/ in 5.092ms.
+[43.633] systemd[1]: systemd 257.13-1.fc42 running in system mode (+PAM +AUDIT +SELINUX -APPARMOR +IMA +IPE +SMACK +SECCOMP -GCRYPT +GNUTLS +OPENSSL +ACL +BLKID +CURL +ELFUTILS +FIDO2 +IDN2 -IDN -IPTC +KMOD +LIBCRYPTSETUP +LIBCRYPTSETUP_PLUGINS +LIBFDISK +PCRE2 +PWQUALITY +P11KIT +QRENCODE +TPM2 +BZIP2 +LZ4 +XZ +ZLIB +ZSTD +BPF_FRAMEWORK +BTF +XKBCOMMON +UTMP +SYSVINIT +LIBARCHIVE)
+[43.633] systemd[1]: Detected virtualization kvm.
+[43.633] systemd[1]: Detected architecture x86-64.
+[43.649] systemd[1]: bpf-restrict-fs: BPF LSM hook not enabled in the kernel, BPF LSM not supported.
+[43.865] systemd[1]: Queued start job for default target graphical.target.
+[43.868] systemd[1]: Created slice system-getty.slice - Slice /system/getty.
+[43.869] systemd[1]: Created slice system-modprobe.slice - Slice /system/modprobe.
+[43.871] systemd[1]: Created slice system-sshd\x2dkeygen.slice - Slice /system/sshd-keygen.
+[43.872] systemd[1]: Created slice system-systemd\x2dzram\x2dsetup.slice - Slice /system/systemd-zram-setup.
+[43.874] systemd[1]: Created slice user.slice - User and Session Slice.
+[43.875] systemd[1]: Started systemd-ask-password-console.path - Dispatch Password Requests to Console Directory Watch.
+[43.877] systemd[1]: Started systemd-ask-password-wall.path - Forward Password Requests to Wall Directory Watch.
+[43.879] systemd[1]: Set up automount proc-sys-fs-binfmt_misc.automount - Arbitrary Executable File Formats File System Automount Point.
+[43.881] systemd[1]: Expecting device dev-zram0.device - /dev/zram0...
+[43.882] systemd[1]: Reached target cryptsetup.target - Local Encrypted Volumes.
+[43.883] systemd[1]: Reached target getty.target - Login Prompts.
+[43.884] systemd[1]: Reached target integritysetup.target - Local Integrity Protected Volumes.
+[43.885] systemd[1]: Reached target paths.target - Path Units.
+[43.886] systemd[1]: Reached target remote-fs.target - Remote File Systems.
+[43.888] systemd[1]: Reached target slices.target - Slice Units.
+[43.889] systemd[1]: Reached target veritysetup.target - Local Verity Protected Volumes.
+[43.893] systemd[1]: Listening on systemd-coredump.socket - Process Core Dump Socket.
+[43.897] systemd[1]: Listening on systemd-creds.socket - Credential Encryption/Decryption.
+[43.901] systemd[1]: Listening on systemd-initctl.socket - initctl Compatibility Named Pipe.
+[43.905] systemd[1]: Listening on systemd-journald-audit.socket - Journal Audit Socket.
+[43.908] systemd[1]: Listening on systemd-journald-dev-log.socket - Journal Socket (/dev/log).
+[43.912] systemd[1]: Listening on systemd-journald.socket - Journal Sockets.
+[43.916] systemd[1]: systemd-pcrextend.socket - TPM PCR Measurements skipped, unmet condition check ConditionSecurity=measured-uki
+[43.918] systemd[1]: systemd-pcrlock.socket - Make TPM PCR Policy skipped, unmet condition check ConditionSecurity=measured-uki
+[43.923] systemd[1]: Listening on systemd-udevd-control.socket - udev Control Socket.
+[43.926] systemd[1]: Listening on systemd-udevd-kernel.socket - udev Kernel Socket.
+[43.930] systemd[1]: Listening on systemd-userdbd.socket - User Database Manager Socket.
+[43.938] systemd[1]: Mounting dev-hugepages.mount - Huge Pages File System...
+[43.943] systemd[1]: Mounting dev-mqueue.mount - POSIX Message Queue File System...
+[43.946] systemd[1]: sys-kernel-debug.mount: Directory /sys/kernel/debug to mount over is not empty, mounting anyway.
+[43.952] systemd[1]: Mounting sys-kernel-debug.mount - Kernel Debug File System...
+[43.954] systemd[1]: sys-kernel-tracing.mount: Directory /sys/kernel/tracing to mount over is not empty, mounting anyway.
+[43.956] systemd[1]: Mounting sys-kernel-tracing.mount - Kernel Trace File System...
+[!p]104[?7h[6n[32766;32766H[6n[43.962] systemd[1]: Started debug-shell.service - Early root shell on /dev/ttyS0 FOR DEBUGGING ONLY.
+[43.965] systemd[1]: fips-crypto-policy-overlay.service - Bind-mount FIPS crypto-policy in FIPS mode skipped, unmet condition check ConditionKernelCommandLine=fips=1
+[43.967] systemd[1]: kmod-static-nodes.service - Create List of Static Device Nodes skipped, unmet condition check ConditionFileNotEmpty=/lib/modules/6.19.0-oxide/modules.devname
+[43.969] systemd[1]: Starting modprobe@configfs.service - Load Kernel Module configfs...
+[43.973] systemd[1]: Starting modprobe@dm_mod.service - Load Kernel Module dm_mod...
+[43.981] systemd[1]: Starting modprobe@drm.service - Load Kernel Module drm...
+[43.984] systemd[1]: Starting modprobe@fuse.service - Load Kernel Module fuse...
+[43.991] systemd[1]: Starting modprobe@loop.service - Load Kernel Module loop...
+[43.994] systemd[1]: systemd-hibernate-clear.service - Clear Stale Hibernate Storage Info skipped, unmet condition check ConditionPathExists=/sys/firmware/efi/efivars/HibernateLocation-8cf2644b-4b0b-428f-9387-6d876050dc67
+[43.997] systemd[1]: Starting systemd-journald.service - Journal Service...
+[44.004] systemd[1]: Starting systemd-modules-load.service - Load Kernel Modules...
+[44.006] systemd[1]: systemd-pcrmachine.service - TPM PCR Machine ID Measurement skipped, unmet condition check ConditionSecurity=measured-uki
+[44.011] systemd[1]: Starting systemd-remount-fs.service - Remount Root and Kernel File Systems...
+[44.016] systemd-modules-load[37]: Failed to find module 'i2c_dev'
+[44.018] systemd-modules-load[37]: Failed to find module 'msr'
+[44.025] systemd[1]: Starting systemd-tmpfiles-setup-dev-early.service - Create Static Device Nodes in /dev gracefully...
+[44.028] systemd[1]: systemd-tpm2-setup-early.service - Early TPM SRK Setup skipped, unmet condition check ConditionSecurity=measured-uki
+[44.031] systemd[1]: Starting systemd-udev-load-credentials.service - Load udev Rules from Credentials...
+[44.038] systemd-journald[36]: Collecting audit messages is enabled.
+[44.044] systemd[1]: Starting systemd-udev-trigger.service - Coldplug All udev Devices...
+[44.064] systemd[1]: Started systemd-journald.service - Journal Service.
+[44.070] systemd[1]: Mounted dev-hugepages.mount - Huge Pages File System.
+[44.074] systemd[1]: Mounted dev-mqueue.mount - POSIX Message Queue File System.
+[44.078] systemd[1]: Mounted sys-kernel-debug.mount - Kernel Debug File System.
+[44.081] systemd[1]: Mounted sys-kernel-tracing.mount - Kernel Trace File System.
+[44.087] systemd[1]: modprobe@configfs.service: Deactivated successfully.
+[44.090] systemd[1]: Finished modprobe@configfs.service - Load Kernel Module configfs.
+[44.094] systemd[1]: modprobe@dm_mod.service: Deactivated successfully.
+[44.096] systemd[1]: Finished modprobe@dm_mod.service - Load Kernel Module dm_mod.
+[44.100] systemd[1]: modprobe@drm.service: Deactivated successfully.
+[44.103] systemd[1]: Finished modprobe@drm.service - Load Kernel Module drm.
+[44.107] systemd[1]: modprobe@fuse.service: Deactivated successfully.
+[44.109] systemd[1]: Finished modprobe@fuse.service - Load Kernel Module fuse.
+[44.113] systemd[1]: modprobe@loop.service: Deactivated successfully.
+[44.115] systemd[1]: Finished modprobe@loop.service - Load Kernel Module loop.
+[44.119] systemd[1]: Finished systemd-modules-load.service - Load Kernel Modules.
+[44.123] systemd[1]: Finished systemd-remount-fs.service - Remount Root and Kernel File Systems.
+[44.127] systemd[1]: Finished systemd-udev-load-credentials.service - Load udev Rules from Credentials.
+[44.131] systemd[1]: Finished systemd-udev-trigger.service - Coldplug All udev Devices.
+[44.146] systemd[1]: sys-fs-fuse-connections.mount - FUSE Control File System skipped, unmet condition check ConditionPathExists=/sys/fs/fuse/connections
+[44.151] systemd[1]: Mounting sys-kernel-config.mount - Kernel Configuration File System...
+[44.155] systemd[1]: systemd-hwdb-update.service - Rebuild Hardware Database skipped, unmet condition check ConditionNeedsUpdate=/etc
+[44.159] systemd[1]: Starting systemd-journal-flush.service - Flush Journal to Persistent Storage...
+[44.167] systemd-journald[36]: Received client request to flush runtime journal.
+[44.168] systemd[1]: Starting systemd-random-seed.service - Load/Save OS Random Seed...
+[44.170] systemd-journald[36]: File /var/log/journal/ef3d82d2841043c38b0f299ba687bc2b/system.journal corrupted or uncleanly shut down, renaming and replacing.
+[44.173] systemd[1]: systemd-repart.service - Repartition Root Disk skipped, no trigger condition checks were met.
+[44.182] systemd[1]: Starting systemd-sysctl.service - Apply Kernel Variables...
+[44.184] systemd[1]: systemd-tpm2-setup.service - TPM SRK Setup skipped, unmet condition check ConditionSecurity=measured-uki
+[44.187] systemd[1]: Starting systemd-userdbd.service - User Database Manager...
+[44.191] systemd[1]: Mounted sys-kernel-config.mount - Kernel Configuration File System.
+[44.223] systemd[1]: Started systemd-userdbd.service - User Database Manager.
+[44.227] systemd[1]: Finished systemd-sysctl.service - Apply Kernel Variables.
+[!p]104[?7h[6n[32766;32766H[6n[44.331] systemd[1]: Finished systemd-random-seed.service - Load/Save OS Random Seed.
+[44.338] systemd[1]: Finished systemd-tmpfiles-setup-dev-early.service - Create Static Device Nodes in /dev gracefully.
+[44.341] systemd[1]: systemd-sysusers.service - Create System Users skipped, no trigger condition checks were met.
+[44.344] systemd[1]: Starting systemd-tmpfiles-setup-dev.service - Create Static Device Nodes in /dev...
+[44.386] systemd[1]: Finished systemd-journal-flush.service - Flush Journal to Persistent Storage.
+[44.417] systemd[1]: Finished systemd-tmpfiles-setup-dev.service - Create Static Device Nodes in /dev.
+[44.420] systemd[1]: Reached target local-fs-pre.target - Preparation for Local File Systems.
+[44.423] systemd[1]: Reached target local-fs.target - Local File Systems.
+[44.427] systemd[1]: Listening on systemd-bootctl.socket - Boot Entries Service Socket.
+[44.430] systemd[1]: Listening on systemd-sysext.socket - System Extension Image Management.
+[44.434] systemd[1]: Starting plymouth-read-write.service - Tell Plymouth To Write Out Runtime Data...
+[44.437] systemd[1]: selinux-autorelabel-mark.service - Mark the need to relabel after reboot skipped, unmet condition check ConditionSecurity=!selinux
+[44.439] systemd[1]: systemd-binfmt.service - Set Up Additional Binary Formats skipped, no trigger condition checks were met.
+[44.440] systemd[1]: systemd-boot-random-seed.service - Update Boot Loader Random Seed skipped, no trigger condition checks were met.
+[44.442] systemd[1]: systemd-confext.service - Merge System Configuration Images into /etc/ skipped, no trigger condition checks were met.
+[44.443] systemd[1]: systemd-sysext.service - Merge System Extension Images into /usr/ and /opt/ skipped, no trigger condition checks were met.
+[44.451] systemd[1]: Starting systemd-tmpfiles-setup.service - Create System Files and Directories...
+[44.457] systemd[1]: Starting systemd-udevd.service - Rule-based Manager for Device Events and Files...
+[44.463] systemd[1]: Finished plymouth-read-write.service - Tell Plymouth To Write Out Runtime Data.
+[44.481] systemd-udevd[81]: Using default interface naming scheme 'v257'.
+[44.545] systemd[1]: Started systemd-udevd.service - Rule-based Manager for Device Events and Files.
+[44.552] (udev-worker)[92]: sda: /usr/lib/udev/rules.d/60-block-scheduler.rules:5 Failed to write ATTR{/sys/devices/virtual/block/sda/queue/scheduler}="bfq", ignoring: No such file or directory
+[44.559] systemd[1]: Found device dev-zram0.device - /dev/zram0.
+[44.636] systemd[1]: Starting systemd-zram-setup@zram0.service - Create swap on /dev/zram0...
+[?2004hsh-5.2# [44.660] (udev-worker)[86]: controlC0: /usr/lib/udev/rules.d/78-sound-card.rules:5 Failed to write ATTR{/sys/devices/virtual/sound/controlC0/../uevent}="change", ignoring: No such file or directory
+[44.746] (udev-worker)[84]: controlC1: /usr/lib/udev/rules.d/78-sound-card.rules:5 Failed to write ATTR{/sys/devices/virtual/sound/controlC1/../uevent}="change", ignoring: No such file or directory
+[44.834] systemd[1]: fips-crypto-policy-overlay.service - Bind-mount FIPS crypto-policy in FIPS mode skipped, unmet condition check ConditionKernelCommandLine=fips=1
+[44.837] systemd[1]: kmod-static-nodes.service - Create List of Static Device Nodes skipped, unmet condition check ConditionFileNotEmpty=/lib/modules/6.19.0-oxide/modules.devname
+[44.847] systemd[1]: Starting modprobe@dm_mod.service - Load Kernel Module dm_mod...
+[44.854] systemd[1]: Starting modprobe@fuse.service - Load Kernel Module fuse...
+[44.865] systemd[1]: Starting modprobe@loop.service - Load Kernel Module loop...
+[44.870] systemd[1]: selinux-autorelabel-mark.service - Mark the need to relabel after reboot skipped, unmet condition check ConditionSecurity=!selinux
+[44.873] systemd[1]: systemd-binfmt.service - Set Up Additional Binary Formats skipped, no trigger condition checks were met.
+[44.876] systemd[1]: systemd-boot-random-seed.service - Update Boot Loader Random Seed skipped, no trigger condition checks were met.
+[44.879] systemd[1]: systemd-confext.service - Merge System Configuration Images into /etc/ skipped, no trigger condition checks were met.
+[44.882] systemd[1]: systemd-hibernate-clear.service - Clear Stale Hibernate Storage Info skipped, unmet condition check ConditionPathExists=/sys/firmware/efi/efivars/HibernateLocation-8cf2644b-4b0b-428f-9387-6d876050dc67
+[44.886] systemd[1]: systemd-hwdb-update.service - Rebuild Hardware Database skipped, unmet condition check ConditionNeedsUpdate=/etc
+[44.889] systemd[1]: systemd-pcrmachine.service - TPM PCR Machine ID Measurement skipped, unmet condition check ConditionSecurity=measured-uki
+[44.892] systemd[1]: systemd-sysext.service - Merge System Extension Images into /usr/ and /opt/ skipped, no trigger condition checks were met.
+[44.895] systemd[1]: systemd-sysusers.service - Create System Users skipped, no trigger condition checks were met.
+[44.898] systemd[1]: systemd-tpm2-setup-early.service - Early TPM SRK Setup skipped, unmet condition check ConditionSecurity=measured-uki
+[44.900] systemd[1]: systemd-tpm2-setup.service - TPM SRK Setup skipped, unmet condition check ConditionSecurity=measured-uki
+[44.905] systemd[1]: modprobe@dm_mod.service: Deactivated successfully.
+[44.907] systemd[1]: Finished modprobe@dm_mod.service - Load Kernel Module dm_mod.
+[44.911] systemd[1]: modprobe@fuse.service: Deactivated successfully.
+[44.914] systemd[1]: Finished modprobe@fuse.service - Load Kernel Module fuse.
+[44.918] systemd[1]: modprobe@loop.service: Deactivated successfully.
+[44.920] systemd[1]: Finished modprobe@loop.service - Load Kernel Module loop.
+[44.924] systemd[1]: Finished systemd-zram-setup@zram0.service - Create swap on /dev/zram0.
+[44.947] systemd[1]: Activating swap dev-zram0.swap - Compressed Swap on /dev/zram0...
+[44.950] systemd[1]: systemd-repart.service - Repartition Root Disk skipped, no trigger condition checks were met.
+[44.987] systemd[1]: Activated swap dev-zram0.swap - Compressed Swap on /dev/zram0.
+[44.992] systemd[1]: Reached target swap.target - Swaps.
+[45.007] systemd[1]: Finished systemd-tmpfiles-setup.service - Create System Files and Directories.
+[45.012] systemd[1]: Starting auditd.service - Security Audit Logging Service...
+[45.014] systemd[1]: ldconfig.service - Rebuild Dynamic Linker Cache skipped, no trigger condition checks were met.
+[45.015] systemd[1]: systemd-firstboot.service - First Boot Wizard skipped, unmet condition check ConditionFirstBoot=yes
+[45.017] systemd[1]: first-boot-complete.target - First Boot Complete skipped, unmet condition check ConditionFirstBoot=yes
+[45.018] systemd[1]: systemd-journal-catalog-update.service - Rebuild Journal Catalog skipped, unmet condition check ConditionNeedsUpdate=/var
+[45.020] systemd[1]: systemd-machine-id-commit.service - Save Transient machine-id to Disk skipped, unmet condition check ConditionPathIsMountPoint=/etc/machine-id
+[45.024] systemd[1]: Starting systemd-resolved.service - Network Name Resolution...
+[45.030] systemd[1]: systemd-update-done.service - Update is Completed skipped, no trigger condition checks were met.
+[45.032] auditd[131]: No plugins found, not dispatching events
+[45.039] systemd[1]: Started auditd.service - Security Audit Logging Service.
+[45.051] systemd[1]: Starting audit-rules.service - Load Audit Rules...
+[45.061] systemd[1]: Starting systemd-update-utmp.service - Record System Boot/Shutdown in UTMP...
+[45.069] systemd[1]: sys-fs-fuse-connections.mount - FUSE Control File System skipped, unmet condition check ConditionPathExists=/sys/fs/fuse/connections
+[45.075] systemd[1]: Finished systemd-update-utmp.service - Record System Boot/Shutdown in UTMP.
+[45.101] systemd[1]: audit-rules.service: Deactivated successfully.
+[45.103] systemd[1]: Finished audit-rules.service - Load Audit Rules.
+[45.119] systemd[1]: Started systemd-resolved.service - Network Name Resolution.
+[45.122] systemd[1]: Reached target nss-lookup.target - Host and Network Name Lookups.
+[45.125] systemd[1]: Reached target sysinit.target - System Initialization.
+[45.128] systemd[1]: Started dnf-makecache.timer - dnf5 makecache.
+[45.131] systemd[1]: Started fstrim.timer - Discard unused filesystem blocks once a week.
+[45.133] systemd[1]: Started raid-check.timer - Weekly RAID setup health check.
+[45.136] systemd[1]: Started sysstat-collect.timer - Run system activity accounting tool every 10 minutes.
+[45.139] systemd[1]: Started sysstat-rotate.timer - Rotate daily system activity data file at midnight.
+[45.142] systemd[1]: Started sysstat-summary.timer - Generate summary of yesterday's process accounting.
+[45.144] systemd[1]: Started systemd-tmpfiles-clean.timer - Daily Cleanup of Temporary Directories.
+[45.147] systemd[1]: Reached target timers.target - Timer Units.
+[45.151] systemd[1]: Listening on dbus.socket - D-Bus System Message Bus Socket.
+[45.155] systemd[1]: Listening on sshd-unix-local.socket - OpenSSH Server Socket (systemd-ssh-generator, AF_UNIX Local).
+[45.158] systemd[1]: Listening on sssd-kcm.socket - SSSD Kerberos Cache Manager responder socket.
+[45.161] systemd[1]: Listening on systemd-hostnamed.socket - Hostname Service Socket.
+[45.163] systemd[1]: Reached target sockets.target - Socket Units.
+[45.168] systemd[1]: Starting dbus-broker.service - D-Bus System Message Bus...
+[45.171] systemd[1]: rpmdb-rebuild.service - RPM database rebuild skipped, unmet condition check ConditionPathExists=/usr/lib/sysimage/rpm/.rebuilddb
+[45.172] systemd[1]: systemd-pcrphase-sysinit.service - TPM PCR Barrier (Initialization) skipped, unmet condition check ConditionSecurity=measured-uki
+[45.197] systemd[1]: Started dbus-broker.service - D-Bus System Message Bus.
+[45.202] systemd[1]: Reached target basic.target - Basic System.
+[45.205] systemd[1]: System is tainted: support-ended
+[45.215] systemd[1]: Starting NetworkManager.service - Network Manager...
+[45.229] systemd[1]: Starting dracut-shutdown.service - Restore /run/initramfs on shutdown...
+[45.232] systemd[1]: mdmonitor.service - Software RAID monitoring and management skipped, unmet condition check ConditionPathExists=/etc/mdadm.conf
+[45.237] systemd[1]: Starting rtkit-daemon.service - RealtimeKit Scheduling Policy Service...
+[45.244] systemd[1]: ssh-host-keys-migration.service - Update OpenSSH host key permissions skipped, unmet condition check ConditionPathExists=!/var/lib/.ssh-host-keys-migration
+[45.246] systemd[1]: sshd-keygen@ecdsa.service - OpenSSH ecdsa Server Key Generation skipped, no trigger condition checks were met.
+[45.248] systemd[1]: sshd-keygen@ed25519.service - OpenSSH ed25519 Server Key Generation skipped, no trigger condition checks were met.
+[45.249] systemd[1]: sshd-keygen@rsa.service - OpenSSH rsa Server Key Generation skipped, no trigger condition checks were met.
+[45.250] systemd[1]: Reached target sshd-keygen.target.
+[45.254] systemd[1]: sssd.service - System Security Services Daemon skipped, no trigger condition checks were met.
+[45.257] systemd[1]: Reached target nss-user-lookup.target - User and Group Name Lookups.
+[45.277] systemd[1]: Starting accounts-daemon.service - Accounts Service...
+[45.324] systemd[1]: Starting switcheroo-control.service - Switcheroo Control Proxy service...
+[45.334] systemd[1]: Starting sysstat.service - Resets System Activity Logs...
+[45.352] systemd[1]: Starting systemd-logind.service - User Login Management...
+[45.357] systemd[1]: systemd-pcrphase.service - TPM PCR Barrier (User) skipped, unmet condition check ConditionSecurity=measured-uki
+[45.365] systemd[1]: Starting udisks2.service - Disk Manager...
+[45.384] systemd[1]: Starting upower.service - Daemon for power management...
+[45.396] systemd[1]: Finished dracut-shutdown.service - Restore /run/initramfs on shutdown.
+[45.407] systemd[1]: Finished sysstat.service - Resets System Activity Logs.
+[45.427] systemd[1]: Started rtkit-daemon.service - RealtimeKit Scheduling Policy Service.
+[45.474] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.476] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.477] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.478] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.480] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.481] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.482] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.484] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.485] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.486] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.487] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.489] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.490] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.491] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.493] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.494] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.495] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.496] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.498] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.499] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.500] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.502] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.503] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.504] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.506] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.507] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.508] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.509] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.511] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.512] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.513] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.515] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.516] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.517] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.519] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.520] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.521] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.523] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.524] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.525] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.527] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.528] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.529] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.530] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.532] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.533] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.534] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.536] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.537] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.538] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.540] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.541] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.542] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.544] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.545] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.546] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.547] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.549] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.550] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.551] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.553] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.554] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.555] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.556] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.558] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.559] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.560] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.562] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.563] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.564] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.565] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.567] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.568] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.569] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.571] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.572] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.573] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.575] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.576] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.577] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.578] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.580] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.581] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.582] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.584] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.585] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.586] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.587] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.589] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.590] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.591] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.593] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.594] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.595] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.597] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.598] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.599] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.600] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.602] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.603] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.604] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.606] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.607] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.608] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.610] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.611] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.612] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.614] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.615] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.616] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.617] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.619] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.620] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.622] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.623] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.625] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.626] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.628] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.629] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.630] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.632] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.633] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.634] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.636] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.637] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.638] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.640] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.641] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.642] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.643] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.645] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.646] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.647] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.649] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.650] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.651] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.652] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.654] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.655] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.657] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.658] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.659] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.660] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.662] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.663] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.664] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.666] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.667] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.668] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.669] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.671] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.672] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.673] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.675] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.676] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.677] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.678] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.680] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.681] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.682] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.684] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.685] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.687] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.688] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.689] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.690] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.692] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.693] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.694] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.696] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.697] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.698] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.700] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.701] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.702] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.703] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.705] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.706] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.707] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.709] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.710] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.711] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.712] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.714] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.715] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.717] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.718] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.719] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.720] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.722] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.723] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.724] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.726] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.727] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.728] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.730] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.731] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.732] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.733] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.735] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.736] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.737] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.739] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.740] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.741] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.742] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.744] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.745] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.747] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.748] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.749] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.750] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.752] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.753] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.755] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.756] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.757] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.758] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.760] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.761] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.762] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.764] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.765] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.767] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.768] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.769] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.770] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.772] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.773] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.774] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.776] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.777] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.778] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.779] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.781] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.782] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.783] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.785] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.786] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.787] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.788] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.790] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.791] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.792] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.794] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.795] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.796] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.798] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.799] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.800] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.802] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.803] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.804] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.806] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.807] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.808] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.809] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.811] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.812] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.813] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.815] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.816] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.817] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.819] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.820] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.821] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.823] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.824] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.825] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.826] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.828] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.829] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.830] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.832] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.833] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.834] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.836] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.837] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.838] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.840] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.841] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.842] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.843] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.845] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.846] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.847] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.849] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.850] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.851] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.853] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.854] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.855] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.857] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.858] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.859] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.860] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.862] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.863] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.864] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.866] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.867] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.868] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.870] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.871] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.872] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.873] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.875] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.876] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.877] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.879] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.880] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.881] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.883] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.884] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.885] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.887] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.888] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.889] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.891] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.892] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.893] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.894] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.896] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.897] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.898] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.900] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.901] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.902] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.903] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.905] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.906] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.907] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.909] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.910] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.911] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.913] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.914] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.915] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.917] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.918] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.919] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.920] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.922] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.923] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.924] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.926] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.927] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.928] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.930] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.931] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.932] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.933] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.935] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.936] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.937] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.939] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.940] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.941] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.943] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.944] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.945] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.947] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.948] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.949] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.951] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.952] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.953] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.954] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.956] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.957] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.958] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.960] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.961] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.962] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.964] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.965] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.966] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.967] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.969] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.970] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.971] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.973] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.974] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.975] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.976] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.978] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.979] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.980] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.982] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.983] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.984] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.986] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.987] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.988] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.990] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.991] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.992] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.994] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.995] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.996] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.997] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[45.999] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.000] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.001] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.003] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.004] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.005] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.006] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.008] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.009] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.010] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.012] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.013] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.014] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.016] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.017] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.018] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.019] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.021] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.022] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.023] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.025] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.026] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.027] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.029] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.030] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.031] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.032] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.034] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.035] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.037] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.038] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.039] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.040] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.042] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.043] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.044] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.046] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.047] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.048] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.049] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.051] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.052] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.053] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.055] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.056] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.057] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.059] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.060] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.061] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.062] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.064] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.065] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.067] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.068] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.069] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.071] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.072] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.073] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.074] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.076] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.077] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.078] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.080] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.081] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.082] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.084] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.085] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.086] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.087] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.089] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.090] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.091] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.093] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.094] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.095] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.096] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.098] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.099] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.100] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.102] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.103] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.104] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.106] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.107] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.108] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.109] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.111] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.112] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.113] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.115] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.116] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.117] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.119] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.120] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.121] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.122] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.124] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.125] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.127] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.128] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.129] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.130] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.132] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.133] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.135] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.136] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.137] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.139] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.140] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.142] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.143] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.144] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.146] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.147] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.148] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.150] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.151] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.152] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.153] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.155] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.156] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.157] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.159] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.160] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.161] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.162] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.164] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.165] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.167] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.168] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.169] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.170] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.172] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.173] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.174] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.176] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.177] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.178] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.180] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.181] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.182] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.183] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.185] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.186] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.187] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.189] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.190] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.191] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.193] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.194] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.195] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.196] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.198] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.199] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.201] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.202] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.203] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.204] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.206] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.207] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.208] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.210] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.211] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.212] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.214] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.215] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.216] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.218] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.219] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.220] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.221] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.223] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.224] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.225] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.227] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.228] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.229] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.231] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.232] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.233] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.234] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.236] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.237] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.238] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.240] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.241] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.242] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.244] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.245] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.246] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.247] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.249] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.250] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.251] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.253] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.254] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.255] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.257] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.258] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.259] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.260] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.262] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.263] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.265] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.266] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.267] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.268] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.270] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.271] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.272] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.274] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.275] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.276] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.278] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.279] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.280] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.282] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.283] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.284] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.286] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.287] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.288] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kernel/sched/src/live/wait_event.rs:168
+[46.289] [BUG] scheduling while atomic: preempt_count=0000000000000000 in_interrupt=0 irq_stack=0 sp=0xfffffb00001492f0 held_lock_rank=0 held=[] current_tid=4283 caller=crates/kemu-system-x86_64: terminating on signal 15 from pid 373371 (bash)
+kmake: *** [Makefile:263: qemu-x86-existing] Terminated

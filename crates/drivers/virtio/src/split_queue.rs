@@ -301,6 +301,8 @@ mod tests {
         let desc_words = desc.0.as_ptr() as *const u64;
         // SAFETY: test owns the aligned descriptor page and reads words written by submit.
         assert_eq!(unsafe { core::ptr::read_volatile(desc_words) }, 0x9000_1000);
+        // SAFETY: second descriptor's address word, two u64s into the same
+        // test-owned 4 KiB descriptor page; `submit` wrote both entries above.
         assert_eq!(unsafe { core::ptr::read_volatile(desc_words.add(2)) }, 0x9000_2000);
         assert_eq!(notify, 3);
         let used_words = used.0.as_ptr() as *mut u32;
@@ -349,6 +351,8 @@ mod tests {
         let avail = Page([0; 4096]);
         let used = Page([0; 4096]);
         let mut notify = 0;
+        // SAFETY: offset of avail_event past the flags/idx pair and eight 8-byte
+        // used elements — 84 bytes into `used`'s private 4 KiB page, so in bounds.
         let event = unsafe { (used.0.as_ptr() as *mut u16).add(2 + 8 * 4) };
         // SAFETY: test emulates the device-owned avail_event field after an
         // eight-entry used ring in its private device frame.
@@ -376,6 +380,8 @@ mod tests {
         assert_eq!(notify, 3);
         // The device consumed avail index 1 and asks to be kicked for the
         // next one. This is written to the used ring, not to used_event.
+        // SAFETY: same in-page avail_event offset as the preceding test; `used` is
+        // a live local page and only this test writes it.
         let event = unsafe { (used.0.as_ptr() as *mut u16).add(2 + 8 * 4) };
         // SAFETY: test owns the private device ring and emulates its event
         // index update after consuming the first submission.
@@ -404,6 +410,8 @@ mod tests {
             core::ptr::write_volatile((used.0.as_ptr() as *mut u16).add(1), 1);
         }
         assert_eq!(queue.pop_used(), Ok(Some(SplitUsed { head, len: 8 })));
+        // SAFETY: the driver-owned used_event u16 sits immediately after this
+        // queue's eight avail-ring heads, well inside `avail`'s live 4 KiB page.
         let used_event = unsafe { (avail.0.as_ptr() as *const u16).add(AVAIL_RING_OFF + 8) };
         // SAFETY: `used_event` is the driver-owned event-index u16 immediately
         // after this test queue's eight avail-ring heads.

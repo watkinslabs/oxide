@@ -404,11 +404,16 @@ impl AmdViUnit {
     pub unsafe fn install_interrupt_table(&self, regs: &AmdViRegisters, tables: &AmdViTables,
         hhdm_offset: u64, bdf: pci::Bdf, table_pa: u64) -> bool {
         if self.state != AmdViState::Enabled || bdf.segment != self.segment || table_pa & 127 != 0 { return false; }
+        // SAFETY: the state check above proved this unit is Enabled and owns `bdf`,
+        // so `tables` holds the live device table; reading DTE word 2 read-modify-
+        // writes only the interrupt-remap fields this requester owns.
         let Some(old) = (unsafe { tables.dte_word(hhdm_offset, bdf.raw(), 2) }) else { return false; };
         let value = (old & !(DTE_IRQ_PHYS_ADDR_MASK | DTE_IRQ_REMAP_INTCTL | DTE_INTTABLEN_MASK | DTE_IRQ_REMAP_ENABLE))
             | (table_pa & DTE_IRQ_PHYS_ADDR_MASK) | DTE_IRQ_REMAP_INTCTL | DTE_INTTABLEN_512 | DTE_IRQ_REMAP_ENABLE;
         // SAFETY: the enabled unit owns this requester's DTE and serializes its command ring.
         if !unsafe { tables.write_dte_word(hhdm_offset, bdf.raw(), 2, value) }
+            // SAFETY: the DTE write above must be followed by a DTE-cache invalidation
+            // on the same serialized command ring, which this Enabled unit owns.
             || !unsafe { tables.queue_command(regs, hhdm_offset, AmdViCommand::invalidate_dte(bdf.raw())) } { return false; }
         // SAFETY: the same tables own the completion record paired with the queued invalidation.
         unsafe { tables.wait_for_completion(regs, hhdm_offset) }

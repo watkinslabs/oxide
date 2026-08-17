@@ -22,6 +22,8 @@ pub(super) fn from_owned(raw: *mut u8, size: usize) -> *mut c_void {
     // SAFETY: the owner contains only the immutable allocation extent and its raw owner.
     let owner = unsafe { alloc(owner_layout) };
     if owner.is_null() {
+        // SAFETY: from_owned's contract requires raw to be an allocation of exactly
+        // this Layout::array::<u8>(size); the owner-alloc failure below is its sole free.
         if let Ok(layout) = Layout::array::<u8>(size) { unsafe { dealloc(raw, layout); } }
         return core::ptr::null_mut();
     }
@@ -70,6 +72,8 @@ pub(super) extern "C" fn drm_edid_free(owner: *mut c_void) {
     if owner.is_null() { return; }
     // SAFETY: owner is uniquely owned by the caller and was allocated as the exact opaque two-word record.
     let (size, raw) = unsafe { (read(owner.cast::<u8>().add(DRM_EDID_SIZE_OFF).cast::<usize>()), read(owner.cast::<u8>().add(DRM_EDID_RAW_OFF).cast::<*mut u8>())) };
+    // SAFETY: raw was allocated by drm_edid_alloc/from_owned with exactly this
+    // Layout::array::<u8>(size); owner is uniquely owned by this caller, so this is the one free.
     if !raw.is_null() { if let Ok(layout) = Layout::array::<u8>(size) { unsafe { dealloc(raw, layout); } } }
     // SAFETY: this is the matching allocation layout for the opaque owner record.
     unsafe { dealloc(owner.cast(), Layout::new::<[usize; 2]>()); }
@@ -82,6 +86,8 @@ mod tests {
     fn owner_duplicates_valid_data_and_rejects_truncated_extensions() {
         let mut raw = [0u8; EDID_LENGTH]; raw[126] = 0; raw[0] = 1;
         let owner = drm_edid_alloc(raw.as_ptr().cast(), raw.len()); assert!(!owner.is_null()); let copy = drm_edid_dup(owner); assert!(!copy.is_null()); raw[0] = 2;
+        // SAFETY: drm_edid_raw(copy) is non-null only when it points at a full,
+        // just-duplicated EDID_LENGTH-byte block, so its first byte is readable.
         assert_eq!(unsafe { *drm_edid_raw(copy) }, 1); drm_edid_free(owner); drm_edid_free(copy);
         raw[126] = 1; let bad = drm_edid_alloc(raw.as_ptr().cast(), raw.len()); assert!(drm_edid_raw(bad).is_null()); drm_edid_free(bad);
     }

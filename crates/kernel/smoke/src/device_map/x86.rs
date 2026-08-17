@@ -82,6 +82,9 @@ pub fn smoke_device_map_x86(_hhdm: u64) {
         // SAFETY: ACPI MCFG provided this exact ECAM aperture; the bounded VA
         // slot is disjoint from every other aperture and maps it before PCI enum.
         let map_pa = w.base_pa + (u64::from(w.bus_start) << 20);
+        // SAFETY: single-CPU pre-init with MmuOps initialised; `map_pa` is the ACPI
+        // MCFG aperture biased to the reported first bus, and `base_va` is this
+        // iteration's own ECAM_WINDOW_BYTES slot, disjoint from every other window.
         unsafe { map_ecam_window::<X86Mmu>(base_va, map_pa, bus_cap); }
         windows[i] = hal_x86_64::pci::EcamWindow {
             base_va, segment: w.segment, bus_start: w.bus_start, bus_end: w.bus_end,

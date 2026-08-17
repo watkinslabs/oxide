@@ -43,14 +43,40 @@ impl TransitionKind {
     }
 }
 
+/// Which numbering a request names its class in.
+///
+/// A kernel caller knows the class by the kernel's own value and needs the
+/// mapping to reach the loaded policy's. Userspace asking through the
+/// filesystem does not: it read the value out of `class/<name>/index`, which
+/// publishes the POLICY value, and writes that same number back. Treating the
+/// one as the other silently answers about a different class whenever the two
+/// numberings differ.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ClassValue {
+    /// Value in the kernel's class numbering; resolved through the mapping.
+    Kernel(u16),
+    /// Value in the loaded policy's numbering; used as it stands.
+    Policy(u32),
+}
+
+impl ClassValue {
+    /// Policy class value this names. # C: O(1)
+    pub fn resolve(self, map: &Mapping) -> Result<u32> {
+        match self {
+            Self::Kernel(k) => map.policy_class(k).ok_or(Error::UnknownSymbol),
+            Self::Policy(p) => Ok(p),
+        }
+    }
+}
+
 /// One label-computation request.
 pub struct TransitionRequest<'a> {
     /// Subject performing the operation.
     pub ssid: Sid,
     /// Object or parent directory the operation is against.
     pub tsid: Sid,
-    /// Kernel class of the object being labelled.
-    pub kernel_class: u16,
+    /// Class of the object being labelled, in its caller's numbering.
+    pub class: ClassValue,
     /// Name the object is created under, when the caller knows it.
     pub objname: Option<&'a str>,
     /// Which label is being asked for.
@@ -62,7 +88,19 @@ pub fn transition_sid(db: &Policydb, map: &Mapping, sidtab: &mut Sidtab,
                       ssid: Sid, tsid: Sid, kernel_class: u16,
                       objname: Option<&str>) -> Result<Sid> {
     compute_sid(db, map, sidtab, &TransitionRequest {
-        ssid, tsid, kernel_class, objname, kind: TransitionKind::Transition,
+        ssid, tsid, class: ClassValue::Kernel(kernel_class), objname,
+        kind: TransitionKind::Transition,
+    })
+}
+
+/// Same label, for a class named in the POLICY's numbering — what userspace
+/// writes to the `create` node. # C: O(rules + transitions)
+pub fn transition_sid_user(db: &Policydb, map: &Mapping, sidtab: &mut Sidtab,
+                           ssid: Sid, tsid: Sid, policy_class: u32,
+                           objname: Option<&str>) -> Result<Sid> {
+    compute_sid(db, map, sidtab, &TransitionRequest {
+        ssid, tsid, class: ClassValue::Policy(policy_class), objname,
+        kind: TransitionKind::Transition,
     })
 }
 
@@ -70,7 +108,17 @@ pub fn transition_sid(db: &Policydb, map: &Mapping, sidtab: &mut Sidtab,
 pub fn change_sid(db: &Policydb, map: &Mapping, sidtab: &mut Sidtab,
                   ssid: Sid, tsid: Sid, kernel_class: u16) -> Result<Sid> {
     compute_sid(db, map, sidtab, &TransitionRequest {
-        ssid, tsid, kernel_class, objname: None, kind: TransitionKind::Change,
+        ssid, tsid, class: ClassValue::Kernel(kernel_class), objname: None,
+        kind: TransitionKind::Change,
+    })
+}
+
+/// Same relabel, for a class named in the POLICY's numbering. # C: O(rules + transitions)
+pub fn change_sid_user(db: &Policydb, map: &Mapping, sidtab: &mut Sidtab,
+                       ssid: Sid, tsid: Sid, policy_class: u32) -> Result<Sid> {
+    compute_sid(db, map, sidtab, &TransitionRequest {
+        ssid, tsid, class: ClassValue::Policy(policy_class), objname: None,
+        kind: TransitionKind::Change,
     })
 }
 
@@ -78,7 +126,18 @@ pub fn change_sid(db: &Policydb, map: &Mapping, sidtab: &mut Sidtab,
 pub fn member_sid(db: &Policydb, map: &Mapping, sidtab: &mut Sidtab,
                   ssid: Sid, tsid: Sid, kernel_class: u16) -> Result<Sid> {
     compute_sid(db, map, sidtab, &TransitionRequest {
-        ssid, tsid, kernel_class, objname: None, kind: TransitionKind::Member,
+        ssid, tsid, class: ClassValue::Kernel(kernel_class), objname: None,
+        kind: TransitionKind::Member,
+    })
+}
+
+/// Same member label, for a class named in the POLICY's numbering.
+/// # C: O(rules + transitions)
+pub fn member_sid_user(db: &Policydb, map: &Mapping, sidtab: &mut Sidtab,
+                       ssid: Sid, tsid: Sid, policy_class: u32) -> Result<Sid> {
+    compute_sid(db, map, sidtab, &TransitionRequest {
+        ssid, tsid, class: ClassValue::Policy(policy_class), objname: None,
+        kind: TransitionKind::Member,
     })
 }
 
@@ -87,7 +146,7 @@ pub fn compute_sid(db: &Policydb, map: &Mapping, sidtab: &mut Sidtab,
                    req: &TransitionRequest<'_>) -> Result<Sid> {
     let scontext = resolve(sidtab, req.ssid)?;
     let tcontext = resolve(sidtab, req.tsid)?;
-    let policy_class = map.policy_class(req.kernel_class).ok_or(Error::UnknownSymbol)?;
+    let policy_class = req.class.resolve(map)?;
     let class = db.symbols.class(policy_class).ok_or(Error::UnknownSymbol)?;
     let source_like = policy_class == db.process_class || is_socket_class(db, policy_class);
 

@@ -5,6 +5,9 @@ edition = "2021"
 publish = false
 description = "AES-128 block cipher and the AES-CMAC message authentication code, as required by Bluetooth link-layer key derivation."
 
+[dependencies]
+blockcipher = { path = "../blockcipher" }
+
 [lib]
 path = "src/lib.rs"
 

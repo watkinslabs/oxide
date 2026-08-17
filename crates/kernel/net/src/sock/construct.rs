@@ -66,6 +66,11 @@ impl InetSocket {
             receive_timestamp_enabled: core::sync::atomic::AtomicBool::new(false),
             unix_bound: Spinlock::new(None),
             file: Spinlock::new(alloc::sync::Weak::new()),
+            // Every socket takes its label here, at the one point every
+            // constructor funnels through, so no family can be created
+            // unlabelled and then record a label its peer cannot read back.
+            security_sid: core::sync::atomic::AtomicU32::new(
+                security::network::new_socket_label()),
         };
         sock.opts.base.sndbuf.store(sndbuf, core::sync::atomic::Ordering::Release);
         sock.opts.base.rcvbuf.store(rcvbuf, core::sync::atomic::Ordering::Release);

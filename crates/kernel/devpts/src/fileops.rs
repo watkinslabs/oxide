@@ -66,6 +66,10 @@ impl FileOps for PtyMasterFileOps {
         {
         // The predicate is checked after wait-list publication. A slave write
         // or hangup cannot land in the former check-then-yield hole.
+        // SAFETY: `wait_event_interruptible` requires process context with no lock
+        // held across the sleep; this is the master read path and the predicate
+        // closure takes and drops `pair.inner` inside each evaluation, so nothing
+        // is held when the task blocks, and `pair` outlives the wait via the inode.
         let outcome = unsafe {
             sched::live::wait_event_interruptible(&pair.master_read_wait,
                 || pair.inner.lock().master_readable())
@@ -190,6 +194,9 @@ impl FileOps for PtySlaveFileOps {
         {
         // A master write, EOF, or hangup wakes this list only after updating
         // `inner`; the shared predicate loop closes the lost-wakeup window.
+        // SAFETY: as the master read path — process context, and `pair.inner` is
+        // locked only inside the predicate, never across the block; the wait list
+        // lives in the `pair` this open file keeps alive.
         let outcome = unsafe {
             sched::live::wait_event_interruptible(&pair.slave_read_wait,
                 || pair.inner.lock().slave_readable())

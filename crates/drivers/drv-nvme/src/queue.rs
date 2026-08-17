@@ -117,6 +117,9 @@ impl Nvme {
         let mut i = 0usize;
         while i < frames.len() {
             match Self::alloc_frame(dma_mask) {
+                // SAFETY: on the IOMMU-mapping failure below, `pa` is the frame this
+                // iteration just allocated and never stored into `frames`, so it has no
+                // IOVA and no other reference — this is its only owner returning it.
                 Some(pa) => match iommu::map_dma_below(bdf, pa, PAGE as usize, dma_mask) { Some(dma) => { frames[i] = pa; dmas[i] = dma; }, None => { unsafe { pmm::setup::free_one_frame(pa); } for (pa, dma) in frames.iter_mut().zip(dmas.iter_mut()) { Self::free_frame(bdf, pa, dma); } return None; } },
                 None => {
                     for (pa, dma) in frames.iter_mut().zip(dmas.iter_mut()) {

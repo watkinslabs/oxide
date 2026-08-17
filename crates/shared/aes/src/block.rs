@@ -52,6 +52,19 @@ impl Aes128 {
 pub struct Aes256 { rk: [u8; AES256_RK] }
 
 impl Aes256 {
+    /// A key schedule of all zeroes, for building an instance in place.
+    ///
+    /// Not a usable key: it exists so a caller may put the instance where it
+    /// will live — a heap allocation, or a field of one — and then run the
+    /// expansion into it, instead of expanding into a stack temporary and
+    /// copying 240 bytes out.
+    pub const ZERO: Self = Self { rk: [0u8; AES256_RK] };
+
+    /// Expand a 256-bit key over this instance in place. # C: O(1)
+    pub fn set_key(&mut self, key: &[u8; AES256_KEY_LEN]) {
+        cipher::expand(key, &mut self.rk, AES256_ROUNDS);
+    }
+
     /// Expand a 256-bit key.
     /// # C: O(1) — 60-word key schedule
     pub fn new(key: &[u8; AES256_KEY_LEN]) -> Self {

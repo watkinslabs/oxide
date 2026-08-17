@@ -100,6 +100,11 @@ pub fn bind(target: &NetlinkFileRef, storage: &net::SockaddrStorage,
     if ::netlink::validate_shape(address).is_err() { return -(Errno::Einval.as_i32() as i64); }
     let (port_id, nl_groups) = ::netlink::raw_fields(address);
     let s = target.socket();
+    // Subscribing a group is refused BEFORE the port is claimed, as the
+    // reference orders it: a refused bind must leave the socket unbound.
+    if !::netlink::bind_groups_allowed(s.protocol, nl_groups, s.net_admin()) {
+        return -(Errno::Eperm.as_i32() as i64);
+    }
     if let Err(error) = ::netlink::bind_port_id(s, port_id) {
         return crate::net_errno::errno_from_neterr(error);
     }

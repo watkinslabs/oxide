@@ -30,6 +30,9 @@ pub fn write_load(ops: &mut dyn PolicyOps, off: u64, body: &[u8]) -> KResult<usi
     if body.is_empty() { return Err(VfsError::Einval); }
     ops.check(PERM_LOAD_POLICY)?;
     ops.load_policy(body)?;
+    // Every cached decision in every userspace AVC was answered by the policy
+    // this load just replaced.
+    crate::notify::policy_changed(ops);
     Ok(body.len())
 }
 
@@ -60,3 +63,7 @@ pub fn make_policy() -> InodeRef {
     let read: ReadFn = Box::new(|off, buf| with_ops(|o| read_policy(o, off, buf)));
     ro_file(POLICY_MODE, read)
 }
+
+#[cfg(test)]
+#[path = "../tests/load.rs"]
+mod tests;

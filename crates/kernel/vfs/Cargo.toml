@@ -13,6 +13,9 @@ klog     = { path = "../../shared/klog" }
 sync     = { path = "../../shared/sync" }
 bitflags = { version = "2", default-features = false }
 namespace-identity = { path = "../namespace-identity" }
+# fs-verity built-in signatures: the certificate parsing and the chain check.
+# Acyclic — `pkey` depends only on `mpi` and `crypt`.
+pkey     = { path = "../../shared/pkey" }
 syscall     = { path = "../syscall" }
 user-namespace = { path = "../user-namespace" }
 utf8     = { path = "../../shared/utf8" }

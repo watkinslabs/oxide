@@ -150,6 +150,10 @@ fn register_filesystems() {
     // so `nsdelegate` can be enforced.
     cgroup::state::set_cgroup_ns_root_hook(cgroup_ns_root_of_caller);
 
+    // ext4's reports. The publisher goes in before the type is registered, and
+    // publishing whatever mounted earlier is part of installing it.
+    super::fs_surfaces::install_ext4_publisher();
+
     // Every registered constructor funnels its `sb_flags` word through here:
     // Linux stamps `s_flags` in `alloc_super()`, so the flags a `mount -o
     // ro,nosuid,noatime` requested land on the superblock the fill-super
@@ -309,10 +313,56 @@ fn register_filesystems() {
         let opts = ntfs3::opts::parse(ntfs3::Options::defaults(), d)
             .map_err(ntfs3::mount::errno_to_vfs)?;
         let fs = ntfs3::NtfsFs::open_with(dev, source, write, opts)?;
+        super::fs_surfaces::ntfs3_publish_surfaces(&fs);
         let sb_flags = if fs.is_writable() { sb_flags } else { sb_flags | vfs::superblock::SB_RDONLY };
         let root = fs.root_inode()?;
         let fs: Arc<dyn vfs::fs::FileSystem> = fs;
         mounted(ty, fs, Some(root), source, sb_flags)
+    })));
+    // F2FS is a log-structured filesystem: it never overwrites in place, so a
+    // volume whose last mount did not checkpoint carries writes the checkpoint
+    // does not name. Recovery replays those at mount from the node chain, which
+    // is why this mounts read-write on an unclean volume where NTFS above will
+    // not — replay is the designed path here, not a repair.
+    //
+    // The whole mount sequence lives in a fill function of its own rather than
+    // in the constructor's body. Every filesystem's constructor is registered
+    // from this one function, so a body written here is inlined into a frame
+    // shared with every other type's — the f2fs sequence alone reserved more
+    // than a whole kernel stack that way. Reaching it through one call keeps
+    // its locals in a frame that exists only while a f2fs volume is mounting.
+    #[inline(never)]
+    fn f2fs_fill(ty: Arc<dyn vfs::FileSystemType>, source: Option<&str>, d: &str,
+                 sb_flags: u64) -> R {
+        let source = source.ok_or(vfs::VfsError::Enoent)?;
+        let write = sb_flags & vfs::superblock::SB_RDONLY == 0;
+        let access = vfs::MAY_READ | if write { vfs::MAY_WRITE } else { 0 };
+        let (dev, _dev_t) = resolve_block_source(source, access)?;
+        // The option line is parsed against defaults the VOLUME derives, not
+        // against a build-wide set: how many logs a read-only-feature volume
+        // takes, whether the device wants discard, section-granular discard
+        // and LFS mode on a zoned volume are all properties of the medium.
+        // Going through `open_with` with `Options::defaults()` skipped that
+        // AND skipped the consistency pass, so a line the reference refuses
+        // was accepted.
+        let fs = f2fs::F2fs::open_line(dev, source, write, d)?;
+        super::fs_surfaces::f2fs_publish_surfaces(&fs);
+        let sb_flags = if fs.is_writable() { sb_flags } else { sb_flags | vfs::superblock::SB_RDONLY };
+        let root = fs.root_inode()?;
+        let quota_fs = Arc::clone(&fs);
+        let fs: Arc<dyn vfs::fs::FileSystem> = fs;
+        let sb = mounted(ty, fs, Some(root), source, sb_flags)?;
+        // `quotactl` resolves a record through the hooks a filesystem installs
+        // on its superblock. Without them every command answers ESRCH on a
+        // volume whose quota files are present and being accounted, so this is
+        // what makes the volume's own quota machinery reachable at all.
+        f2fs::mount::quota::install(&sb, &quota_fs);
+        Ok(sb)
+    }
+    let _ = register_fs(FsType::new("f2fs", f2fs::F2FS_SUPER_MAGIC, FsFlags::FS_REQUIRES_DEV,
+        Box::new(|ty, source: Option<&str>, _t: &str, d: &str, sb_flags: u64,
+                  _p: &[vfs::fs::FsParameter]| -> R {
+        f2fs_fill(ty, source, d, sb_flags)
     })));
     // procfs declares the three options it ENFORCES (`gid=`, `hidepid=`,
     // `subset=`) and builds a per-mount root that carries them. The table was an
@@ -451,6 +501,7 @@ fn register_filesystems() {
                   _p: &[vfs::fs::FsParameter]| -> R {
             let source = source.ok_or(vfs::VfsError::Enoent)?;
             let fs = ::fs::ninep_fs::mount_9p(source, d, caller_fsuid())?;
+            super::fs_surfaces::ninep_claim_subsys();
             let root = fs.root_inode();
             let fs: Arc<dyn vfs::fs::FileSystem> = fs;
             mounted(ty, fs, Some(root), source, sb_flags)

@@ -5,7 +5,12 @@ use super::*;
 use sched::ioprio::{prio_value, CLASS_BE, CLASS_IDLE, CLASS_NONE, CLASS_RT};
 
 fn w(class: u32, level: u32, queued_ns: u64) -> Waiting {
-    Waiting { ioprio: prio_value(class, level), queued_ns }
+    Waiting { ioprio: prio_value(class, level), queued_ns, hiprio: false }
+}
+
+/// The same, carrying the per-request urgency hint.
+fn h(class: u32, level: u32, queued_ns: u64) -> Waiting {
+    Waiting { hiprio: true, ..w(class, level, queued_ns) }
 }
 
 #[test]
@@ -88,6 +93,54 @@ fn real_time_requests_are_never_promoted_by_aging() {
     // preference to an older starved one.
     let q = [w(CLASS_RT, 0, 0), w(CLASS_BE, 0, 10)];
     assert_eq!(select(&q, 1_000_000, 1), Some(1));
+}
+
+#[test]
+fn a_hint_starts_a_request_ahead_of_an_older_one_in_its_class() {
+    // The whole point of the hint: two best-effort requests that would have
+    // gone in arrival order, and the hinted one goes first.
+    let q = [w(CLASS_BE, 0, 10), h(CLASS_BE, 0, 50)];
+    assert_eq!(select(&q, 100, PRIO_AGING_EXPIRE_NS), Some(1));
+    // Without the hint the same queue is arrival order, which is what makes
+    // the assertion above about the hint and not about the timestamps.
+    let plain = [w(CLASS_BE, 0, 10), w(CLASS_BE, 0, 50)];
+    assert_eq!(select(&plain, 100, PRIO_AGING_EXPIRE_NS), Some(0));
+}
+
+#[test]
+fn a_hint_does_not_move_a_request_out_of_its_class() {
+    // A hinted idle-class request stays behind every best-effort one: the
+    // hint is a preference inside a class, not a class change. A submitter
+    // that could promote itself this way would make ioprio_set advisory.
+    let q = [w(CLASS_BE, 0, 90), h(CLASS_IDLE, 0, 10)];
+    assert_eq!(select(&q, 100, PRIO_AGING_EXPIRE_NS), Some(0));
+    // And it cannot pull a best-effort request ahead of real time either.
+    let q = [w(CLASS_RT, 0, 90), h(CLASS_BE, 0, 10)];
+    assert_eq!(select(&q, 100, PRIO_AGING_EXPIRE_NS), Some(0));
+}
+
+#[test]
+fn hints_among_themselves_still_dispatch_in_arrival_order() {
+    let q = [h(CLASS_BE, 0, 50), h(CLASS_BE, 0, 10), h(CLASS_BE, 0, 30)];
+    assert_eq!(select(&q, 100, PRIO_AGING_EXPIRE_NS), Some(1));
+}
+
+#[test]
+fn a_hint_cannot_defer_a_request_that_has_waited_out_the_bound() {
+    // A saturating stream of hinted requests must not park an ordinary one
+    // forever. Past the aging bound the hint stops counting.
+    let q = [w(CLASS_BE, 0, 100), h(CLASS_BE, 0, 9_900)];
+    assert_eq!(select(&q, 10_000, 1_000), Some(0));
+    // Inside the bound the hint is still what decides.
+    assert_eq!(select(&q, 10_000, 100_000), Some(1));
+}
+
+#[test]
+fn a_hint_orders_the_starved_requests_the_aging_guard_promotes() {
+    // Two best-effort requests are both past the bound with a real-time
+    // request queued; the guard rescues them, and the hint says which first.
+    let q = [w(CLASS_RT, 0, 9_000), w(CLASS_BE, 0, 100), h(CLASS_BE, 0, 200)];
+    assert_eq!(select(&q, 10_000, 1_000), Some(2));
 }
 
 #[test]

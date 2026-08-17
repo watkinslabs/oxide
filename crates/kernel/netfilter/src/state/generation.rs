@@ -6,11 +6,12 @@ use alloc::vec::Vec;
 use core::ops::Deref;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering};
 
-use crate::nft_expr::Expr;
+use crate::nft_expr::{Expr, ExprStates};
 use super::model::{ControlState, NamespaceState, NftChain, RuleCounter, StoredRule};
 
 pub(crate) struct CompiledRule {
     pub(crate) exprs: Vec<Expr>,
+    pub(crate) states: Arc<ExprStates>,
     pub(crate) counter: Arc<RuleCounter>,
 }
 
@@ -135,6 +136,7 @@ fn compile_namespace(control: &mut NamespaceState) -> CompiledNamespace {
                     && rule.wire.chain_name == chain.name
             }).map(|rule| CompiledRule {
                 exprs: compile_exprs(rule, &sets),
+                states: Arc::clone(&rule.states),
                 counter: Arc::clone(control.counters.get(&rule.wire.handle)
                     .expect("counter inserted before ruleset compilation")),
             }).collect();
@@ -236,11 +238,13 @@ mod tests {
             hook: Some(1), priority: 0, policy: crate::NFT_CHAIN_POLICY_ACCEPT,
         });
         control.rules.push(StoredRule {
+            states: Arc::new(ExprStates::default()),
             wire: NftRule {
                 table_family: 2, table_name: "table".into(), chain_name: "input".into(),
                 handle: 1, raw_expr: Vec::new(),
             },
             exprs: alloc::vec![Expr::Lookup {
+                dreg: None,
                 sreg: 1, set: "bound".into(), set_id: None, invert: false,
             }],
         });

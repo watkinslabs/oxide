@@ -94,6 +94,7 @@ pub(crate) fn hmac_once(id: u8, key: Option<&[u8]>, data: Option<&[u8]>, out: *m
 pub(crate) fn hash_len(id: u8) -> usize { match id { NVME_AUTH_HASH_SHA256 => 32, NVME_AUTH_HASH_SHA384 => 48, NVME_AUTH_HASH_SHA512 => 64, _ => 0 } }
 pub(crate) fn cstr(p: *const c_char) -> Option<&'static [u8]> { if p.is_null() { return None; } let mut n = 0; while n < CSTR_MAX { // SAFETY: callers pass a NUL-terminated kernel string.
     if unsafe { *p.add(n) } == 0 { return Some(unsafe { core::slice::from_raw_parts(p.cast(), n) }); } n += 1; } None }
+// SAFETY: every call site supplies p as a KPI key/data/digest buffer whose length is n by the Linux DHCHAP/PSK contract (key_len, hash_len(id), or a caller-declared byte count); this crate has no way to verify that beyond the p.is_null() check just made.
 pub(crate) fn slice<'a>(p: *const u8, n: usize) -> Option<&'a [u8]> { if n == 0 { Some(&[]) } else if p.is_null() { None } else { Some(unsafe { core::slice::from_raw_parts(p, n) }) } }
 
 fn map_id(name: *const c_char, names: &[&[u8]]) -> Option<u8> { let got = cstr(name)?; names.iter().position(|v| v.len() > 1 && got.starts_with(&v[..v.len() - 1])).map(|i| i as u8) }
@@ -109,6 +110,7 @@ fn digest512(data: &[u8], short: bool) -> alloc::vec::Vec<u8> { let mut h = if s
 #[cfg(test)]
 mod tests {
     use super::*;
+    // SAFETY: AuthHmacCtx is a plain-old-data ABI struct (u8/pointer/padding fields); nvme_auth_hmac_init below overwrites hmac_id/state before any field is read.
     #[test] fn maps_and_hmac_context_work() { let _modules = crate::test_serial::claim(); assert_eq!(nvme_auth_dhgroup_id(c"ffdhe3072".as_ptr()), 2); assert_eq!(nvme_auth_hmac_hash_len(3), 64); let mut ctx: AuthHmacCtx = unsafe { core::mem::zeroed() }; let mut out = [0u8; 32]; assert_eq!(nvme_auth_hmac_init(&mut ctx, 1, b"key".as_ptr(), 3), 0); nvme_auth_hmac_update(&mut ctx, b"The quick brown fox jumps over the lazy dog".as_ptr(), 43); nvme_auth_hmac_final(&mut ctx, out.as_mut_ptr()); assert_eq!(&out[..4], &[0xf7, 0xbc, 0x83, 0xf4]); }
     #[test] fn invalid_inputs_are_rejected() { let _modules = crate::test_serial::claim(); assert_eq!(nvme_auth_hmac_id(ptr::null()), NVME_AUTH_HASH_INVALID); assert_eq!(nvme_auth_dhgroup_id(ptr::null()), NVME_AUTH_DHGROUP_INVALID); }
 }

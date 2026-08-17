@@ -9,7 +9,7 @@ use vfs::inode_ops::{InodeOps, mk_mode};
 use vfs::mapping::AddressSpaceOps;
 use vfs::{FileType, Inode, InodeRef, KResult, VfsError};
 
-use super::data::{Ext4FileData, remove_inode_xattr, set_inode_xattr};
+use super::data::{Ext4FileData, get_inode_xattr, remove_inode_xattr, set_inode_xattr};
 use super::ids::ext4_wrap_ino;
 use super::super::state::RootfsState;
 
@@ -208,6 +208,10 @@ impl InodeOps for Ext4RegInodeOps {
             }
         }
         Ok(())
+    }
+
+    fn getxattr(&self, inode: &Inode, name: &str) -> Result<Vec<u8>, vfs::XattrError> {
+        get_inode_xattr(inode, name)
     }
 
     fn setxattr(&self, inode: &Inode, name: &str, value: Vec<u8>, create: bool, replace: bool)

@@ -197,6 +197,14 @@ impl FileBacking for InodeFileBacking {
             .map_err(vfs_error)
     }
 
+    /// MAP_SHARED write fault: tell the inode's address space before the write
+    /// is allowed to land, so the filesystem can reserve the block, refuse an
+    /// unwritable object, zero a post-EOF tail and dirty the page. An inode with
+    /// no address space has nothing to tell. # C: O(indirection depth) blocks
+    fn page_mkwrite(&self, off: u64) -> Result<(), FileBackingError> {
+        self.inode.mmap_page_mkwrite(off).map_err(vfs_error)
+    }
+
     /// Memory-backed shared storage is a property of the inode's address
     /// space, not of this handle to it. # C: O(1)
     fn is_shmem(&self) -> bool {

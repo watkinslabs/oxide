@@ -10,6 +10,7 @@ const PLANE_CRTC: usize = 8; const CRTC_COMMIT: usize = 320; const COMMIT_HW: us
 fn counts(dev: *mut c_void) -> Option<(usize, usize)> { let d = DEVICES.lock(); let r = d.iter().find(|r| r.dev == dev as usize && r.mode_config && !r.put_pending && !r.unplugged)?; Some((r.planes.len(), r.crtcs.len())) }
 unsafe fn entry(s: *mut u8, off: usize, size: usize, i: usize) -> *mut u8 { unsafe { read(s.add(off).cast::<*mut u8>()).add(i * size) } }
 unsafe fn call2(ptr: usize, a: *mut c_void, b: *mut c_void) { if ptr != 0 { unsafe { core::mem::transmute::<usize, unsafe extern "C" fn(*mut c_void, *mut c_void)>(ptr)(a, b); } } }
+// SAFETY: obj is checked non-null; table/off select an ABI-pinned helper-table pointer, then a callback slot inside that table.
 fn callback(obj: *mut u8, table: usize, off: usize) -> usize { if obj.is_null() { 0 } else { unsafe { let t = read(obj.add(table).cast::<*const u8>()); if t.is_null() { 0 } else { read(t.add(off).cast::<usize>()) } } } }
 
 pub(super) fn export_symbols() { for (n, p) in [("drm_atomic_helper_commit_planes", drm_atomic_helper_commit_planes as *const () as usize), ("drm_atomic_helper_commit_tail", drm_atomic_helper_commit_tail as *const () as usize), ("drm_atomic_helper_commit_hw_done", drm_atomic_helper_commit_hw_done as *const () as usize), ("drm_atomic_helper_commit_cleanup_done", drm_atomic_helper_commit_cleanup_done as *const () as usize)] { crate::symtab::export(n, p, false); } }
@@ -17,9 +18,13 @@ pub(super) fn export_symbols() { for (n, p) in [("drm_atomic_helper_commit_plane
 /// Execute CRTC begin, plane update/disable, and CRTC flush callbacks. # C: O(N_objects)
 pub(super) extern "C" fn drm_atomic_helper_commit_planes(dev: *mut c_void, state: *mut c_void, _flags: u32) {
     if state.is_null() { return; } let s = state.cast::<u8>(); let Some((planes, crtcs)) = counts(dev) else { return; };
+    // SAFETY: i is bounded by crtcs from counts(); entry() indexes the same device-owned fixed CRTC array; CRTC_BEGIN is the helper table's begin callback.
     for i in 0..crtcs { let e = unsafe { entry(s, CRTCS_OFF, CRTC_ENTRY, i) }; let (o, n) = unsafe { (read(e.add(OBJ).cast::<*mut u8>()), read(e.add(NEW).cast::<*mut u8>())) }; if !o.is_null() && !n.is_null() { unsafe { call2(callback(o, CRTC_HELPERS, CRTC_BEGIN), o.cast(), state); } } }
+    // SAFETY: i is bounded by planes from counts(); entry() indexes the fixed plane array; old/new CRTC pointers select which of PLANE_DISABLE/UPDATE/ENABLE runs.
     for i in 0..planes { let e = unsafe { entry(s, PLANES_OFF, PLANE_ENTRY, i) }; let (o, old, new) = unsafe { (read(e.add(OBJ).cast::<*mut u8>()), read(e.add(OLD).cast::<*mut u8>()), read(e.add(NEW).cast::<*mut u8>())) }; if o.is_null() || old.is_null() || new.is_null() { continue; } let (old_crtc, new_crtc) = unsafe { (read(old.add(PLANE_CRTC).cast::<*mut u8>()), read(new.add(PLANE_CRTC).cast::<*mut u8>())) }; let disabling = !old_crtc.is_null() && new_crtc.is_null(); if disabling && callback(o, PLANE_HELPERS, PLANE_DISABLE) != 0 { unsafe { call2(callback(o, PLANE_HELPERS, PLANE_DISABLE), o.cast(), state); } } else if !new_crtc.is_null() || disabling { unsafe { call2(callback(o, PLANE_HELPERS, PLANE_UPDATE), o.cast(), state); if old_crtc.is_null() && !new_crtc.is_null() { call2(callback(o, PLANE_HELPERS, PLANE_ENABLE), o.cast(), state); } } } }
+    // SAFETY: second CRTC pass reuses the same bounded array walk as the begin pass above, now invoking the flush callback.
     for i in 0..crtcs { let e = unsafe { entry(s, CRTCS_OFF, CRTC_ENTRY, i) }; let (o, n) = unsafe { (read(e.add(OBJ).cast::<*mut u8>()), read(e.add(NEW).cast::<*mut u8>())) }; if !o.is_null() && !n.is_null() { unsafe { call2(callback(o, CRTC_HELPERS, CRTC_FLUSH), o.cast(), state); } } }
+    // SAFETY: second plane pass reuses the same bounded array walk as the update pass above, passing the retained old state to end fb access.
     for i in 0..planes { let e = unsafe { entry(s, PLANES_OFF, PLANE_ENTRY, i) }; let (o, old) = unsafe { (read(e.add(OBJ).cast::<*mut u8>()), read(e.add(OLD).cast::<*mut u8>())) }; if !o.is_null() && !old.is_null() { unsafe { call2(callback(o, PLANE_HELPERS, PLANE_END_FB_ACCESS), o.cast(), old.cast()); } } }
 }
 
@@ -35,15 +40,18 @@ pub(super) extern "C" fn drm_atomic_helper_commit_tail(state: *mut c_void) {
 }
 
 /// Signal completion of hardware programming and transfer CRTC commit ownership. # C: O(N_crtcs)
+// SAFETY: state is checked non-null; dev/entries/commit fields sit at their fixed transaction/CRTC-state offsets, and each commit is put/get-balanced across the ownership transfer from old to new.
 pub(super) extern "C" fn drm_atomic_helper_commit_hw_done(state: *mut c_void) { if state.is_null() { return; } let s = state.cast::<u8>(); let dev = unsafe { read(s.add(DEV_OFF).cast::<*mut c_void>()) }; let Some((_, crtcs)) = counts(dev) else { return; }; for i in 0..crtcs { let e = unsafe { entry(s, CRTCS_OFF, CRTC_ENTRY, i) }; let (old, new) = unsafe { (read(e.add(OLD).cast::<*mut u8>()), read(e.add(NEW).cast::<*mut u8>())) }; if old.is_null() || new.is_null() { continue; } let commit = unsafe { read(new.add(CRTC_COMMIT).cast::<*mut u8>()) }; if commit.is_null() { continue; } let prior = unsafe { read(old.add(CRTC_COMMIT).cast::<*mut u8>()) }; crtc_commit::put(prior); unsafe { write(old.add(CRTC_COMMIT).cast::<*mut u8>(), crtc_commit::get(commit)); crate::linux_sync::complete_all(commit.add(COMMIT_HW).cast()); } } let fake = unsafe { read(s.add(FAKE_OFF).cast::<*mut u8>()) }; if !fake.is_null() { unsafe { crate::linux_sync::complete_all(fake.add(COMMIT_HW).cast()); crate::linux_sync::complete_all(fake.add(16).cast()); } } }
 
 /// Signal terminal cleanup completion after an atomic tail releases old resources. # C: O(N_crtcs)
+// SAFETY: state is checked non-null; dev/entries/commit fields sit at their fixed transaction/CRTC-state offsets, mirroring commit_hw_done's read pattern with no ownership transfer.
 pub(super) extern "C" fn drm_atomic_helper_commit_cleanup_done(state: *mut c_void) { if state.is_null() { return; } let s = state.cast::<u8>(); let dev = unsafe { read(s.add(DEV_OFF).cast::<*mut c_void>()) }; let Some((_, crtcs)) = counts(dev) else { return; }; for i in 0..crtcs { let e = unsafe { entry(s, CRTCS_OFF, CRTC_ENTRY, i) }; let old = unsafe { read(e.add(OLD).cast::<*mut u8>()) }; if !old.is_null() { let c = unsafe { read(old.add(CRTC_COMMIT).cast::<*mut u8>()) }; if !c.is_null() { unsafe { crate::linux_sync::complete_all(c.add(COMMIT_CLEANUP).cast()); } } } } let fake = unsafe { read(s.add(FAKE_OFF).cast::<*mut u8>()) }; if !fake.is_null() { unsafe { crate::linux_sync::complete_all(fake.add(COMMIT_CLEANUP).cast()); } } }
 
 #[cfg(test)]
 mod tests {
     use super::*; use alloc::vec; use core::sync::atomic::{AtomicUsize, Ordering};
     static UPDATES: AtomicUsize = AtomicUsize::new(0); static EXPECTED: AtomicUsize = AtomicUsize::new(0);
+    // SAFETY: plane is the fabricated 1360-byte test record below; offset 1232 is its state field the test wrote before invoking commit_planes.
     unsafe extern "C" fn update(plane: *mut c_void, _state: *mut c_void) { let current = unsafe { read(plane.cast::<u8>().add(1232).cast::<*mut u8>()) }; assert_eq!(current as usize, EXPECTED.load(Ordering::SeqCst)); UPDATES.fetch_add(1, Ordering::SeqCst); }
     #[test]
     fn plane_update_callback_observes_the_published_atomic_state() {

@@ -76,3 +76,22 @@ const INITSID_NAMES: [Option<&str>; SECINITSID_NUM as usize + 1] = [
 pub fn initsid_name(sid: u32) -> Option<&'static str> {
     *INITSID_NAMES.get(sid as usize)?
 }
+
+/// Context a SID renders to while no policy is loaded. # C: O(1)
+///
+/// The answer is the initial SID's own name rather than a user:role:type
+/// triple: no policy has bound those components yet, and this is the string a
+/// pre-policy label read has always returned.
+///
+/// The first user process's SID renders as the kernel's name. A reader that
+/// gets any other non-empty answer for its own label concludes a policy is
+/// already loaded and skips loading one, so naming this SID honestly here
+/// would stop the policy ever being loaded.
+///
+/// A SID above the initial range, or one whose slot is a historical
+/// placeholder policy never names, has no pre-policy rendering at all.
+pub fn initial_sid_context(sid: u32) -> Option<&'static str> {
+    let sid = if sid == InitSid::Init.sid() { InitSid::Kernel.sid() } else { sid };
+    if sid > SECINITSID_NUM { return None; }
+    initsid_name(sid)
+}

@@ -6,6 +6,8 @@
 
 use syscall::errno::Errno;
 use super::{SK_MEMINFO_VARS, SO_ATTACH_FILTER, SO_GET_FILTER};
+use crate::socket_args::{AF_INET, AF_INET6, AF_UNIX, IPPROTO_IP, IPPROTO_MPTCP, IPPROTO_SCTP,
+                         IPPROTO_TCP, SOCK_SEQPACKET, SOCK_STREAM};
 
 /// `sk_get_meminfo` slots, in wire order. # C: O(1)
 #[derive(Copy, Clone, Default, Debug, Eq, PartialEq)]
@@ -62,6 +64,47 @@ pub fn peername_len(address_len: Option<usize>, requested: i32) -> Result<usize,
     let Some(address_len) = address_len else { return Err(Errno::Enotconn); };
     if address_len < requested as usize { return Err(Errno::Einval); }
     Ok(requested as usize)
+}
+
+/// Whether a socket of this shape reports a peer security label at all.
+/// # C: O(1)
+///
+/// Only the connection-oriented socket classes carry one: a peer label is a
+/// property of an established connection, so a class that has no peer has
+/// nowhere to have recorded it. Every other class leaves the peer label
+/// unspecified, and an unspecified peer label is `ENOPROTOOPT` — which is also
+/// the answer a caller gets when no module labels sockets at all.
+///
+/// `SOCK_SEQPACKET` counts as connection-oriented on both sides of the family
+/// split. On AF_UNIX it shares the stream class outright; on AF_INET it is
+/// classed with stream and then admitted or refused by its protocol, exactly
+/// as `SOCK_STREAM` is.
+pub fn reports_peer_label(family: u32, socket_type: u32, protocol: u32) -> bool {
+    match family {
+        AF_UNIX => matches!(socket_type, SOCK_STREAM | SOCK_SEQPACKET),
+        AF_INET | AF_INET6 => matches!(socket_type, SOCK_STREAM | SOCK_SEQPACKET)
+            && matches!(protocol, IPPROTO_IP | IPPROTO_TCP | IPPROTO_MPTCP | IPPROTO_SCTP),
+        _ => false,
+    }
+}
+
+/// `SO_PEERSEC`: an unspecified peer label is `ENOPROTOOPT` with nothing
+/// written at all, and a buffer too small for the context is `ERANGE` **after**
+/// the needed length is published — the caller sizes with one call and reads
+/// with the next. # C: O(1)
+///
+/// `label_len` counts the context's terminating NUL, because the value copied
+/// out is a C string and the length published alongside it is the allocation a
+/// caller needs to hold that string. Publishing `strlen` instead would have
+/// every caller allocate one byte short and read past the end of its own
+/// buffer on the retry.
+///
+/// A buffer of exactly the context's length is accepted: the refusal is for a
+/// buffer SMALLER than the context, never one that fits it exactly.
+pub fn peersec_len(label_len: Option<usize>, requested: i32) -> Result<usize, (usize, Errno)> {
+    let Some(needed) = label_len else { return Err((0, Errno::Enoprotoopt)); };
+    if needed > requested as usize { return Err((needed, Errno::Erange)); }
+    Ok(needed)
 }
 
 /// One accepted `SO_GET_FILTER` read: the byte count to copy out, and the
@@ -130,6 +173,67 @@ mod tests {
         assert_eq!(peername_len(Some(16), 17), Err(Errno::Einval));
         assert_eq!(peername_len(Some(16), 16), Ok(16));
         assert_eq!(peername_len(Some(16), 4), Ok(4));
+    }
+
+    /// The sizing call and the reading call a labelled peer's consumer makes:
+    /// it asks with a fixed buffer, and on `ERANGE` re-asks with exactly the
+    /// length it was handed. The second call must then succeed, so the length
+    /// published by the first has to be the length the second accepts.
+    #[test]
+    fn peersec_publishes_the_needed_length_before_erange_and_accepts_it_back() {
+        // "unlabeled" plus its terminating NUL.
+        let context = 10usize;
+        assert_eq!(peersec_len(Some(context), 4), Err((context, Errno::Erange)));
+        // The caller retries with precisely what it was told, and is accepted.
+        assert_eq!(peersec_len(Some(context), context as i32), Ok(context));
+        // A buffer wider than the context copies only the context.
+        assert_eq!(peersec_len(Some(context), 256), Ok(context));
+        // One byte short is still short.
+        assert_eq!(peersec_len(Some(context), context as i32 - 1),
+            Err((context, Errno::Erange)));
+    }
+
+    /// An unspecified peer label publishes NOTHING — not a zero length. A zero
+    /// published length would tell a caller the peer's context is the empty
+    /// string, and it would then hand that empty string on as a label.
+    #[test]
+    fn peersec_without_a_label_publishes_no_length_at_all() {
+        assert_eq!(peersec_len(None, 256), Err((0, Errno::Enoprotoopt)));
+        assert_eq!(peersec_len(None, 0), Err((0, Errno::Enoprotoopt)));
+    }
+
+    /// A zero-length request is the sizing enquiry, and it is still `ERANGE`:
+    /// `SO_PEERSEC` has no "tell me the length without failing" form, unlike
+    /// `SO_GET_FILTER`.
+    #[test]
+    fn peersec_answers_a_zero_length_enquiry_with_erange_and_the_length() {
+        assert_eq!(peersec_len(Some(10), 0), Err((10, Errno::Erange)));
+    }
+
+    #[test]
+    fn only_connection_oriented_socket_classes_report_a_peer_label() {
+        use crate::socket_args::{AF_NETLINK, AF_PACKET, IPPROTO_ICMP, IPPROTO_UDP, SOCK_DGRAM,
+                                 SOCK_RAW};
+        // The AF_UNIX stream class — the one a session bus reads.
+        assert!(reports_peer_label(AF_UNIX, SOCK_STREAM, 0));
+        assert!(reports_peer_label(AF_UNIX, SOCK_SEQPACKET, 0));
+        // An AF_UNIX datagram socket records a peer label at socketpair time
+        // and STILL reports none: the class, not the recording, decides.
+        assert!(!reports_peer_label(AF_UNIX, SOCK_DGRAM, 0));
+        assert!(!reports_peer_label(AF_UNIX, SOCK_RAW, 0));
+        // The connection-oriented INET classes.
+        for family in [AF_INET, AF_INET6] {
+            assert!(reports_peer_label(family, SOCK_STREAM, IPPROTO_IP));
+            assert!(reports_peer_label(family, SOCK_STREAM, IPPROTO_TCP));
+            assert!(reports_peer_label(family, SOCK_STREAM, IPPROTO_MPTCP));
+            assert!(reports_peer_label(family, SOCK_STREAM, IPPROTO_SCTP));
+            // A stream socket on any other protocol is a raw-IP socket.
+            assert!(!reports_peer_label(family, SOCK_STREAM, IPPROTO_ICMP));
+            assert!(!reports_peer_label(family, SOCK_DGRAM, IPPROTO_UDP));
+            assert!(!reports_peer_label(family, SOCK_RAW, IPPROTO_TCP));
+        }
+        assert!(!reports_peer_label(AF_PACKET, SOCK_RAW, 0));
+        assert!(!reports_peer_label(AF_NETLINK, SOCK_DGRAM, 0));
     }
 
     #[test]

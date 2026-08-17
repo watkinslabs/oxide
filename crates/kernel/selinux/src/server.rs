@@ -25,6 +25,13 @@ use crate::uapi::initsid::InitSid;
 /// Base-two logarithm of the decision cache's bucket count.
 pub const AVC_SLOTS_LOG2: u32 = 9;
 
+/// Pre-policy rendering of one SID. # C: O(1)
+fn initial_sid_context(sid: Sid) -> Result<String> {
+    crate::uapi::initsid::initial_sid_context(sid)
+        .map(alloc::string::ToString::to_string)
+        .ok_or(Error::InvalidContext)
+}
+
 /// Outcome of one access check.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Verdict {
@@ -218,6 +225,79 @@ impl SecurityServer {
         avd
     }
 
+    /// Full decision for a class named in the POLICY's numbering, uncached and
+    /// answered in policy bit numbering. # C: O(attrs^2 * bucket)
+    ///
+    /// The question userspace asks through `access`, which names its class and
+    /// reads its permission bits out of the `class/` tree — both in the
+    /// policy's own numbering.
+    pub fn compute_av_user(&self, ssid: Sid, tsid: Sid, policy_class: u32) -> AvDecision {
+        let seqno = self.state.seqno;
+        // Before the first policy load there are no rules to consult and
+        // everything is permitted; answering the zero vector instead would
+        // report every access as denied to a caller that has no way to tell
+        // "denied" from "nothing loaded yet".
+        let Some(l) = self.loaded.as_ref() else {
+            return AvDecision { allowed: u32::MAX, ..AvDecision::init(seqno) };
+        };
+        services::compute_av_user(&l.db, &l.sidtab, ssid, tsid, policy_class, seqno)
+    }
+
+    /// SID of a newly created object, for a class named in the POLICY's
+    /// numbering. # C: O(rules)
+    pub fn transition_sid_user(&mut self, ssid: Sid, tsid: Sid, policy_class: u32,
+                               objname: Option<&str>) -> Result<Sid> {
+        if let Some(sid) = self.bootstrap_sid(ssid, tsid, policy_class) { return Ok(sid) }
+        let l = self.loaded.as_mut().ok_or(Error::UnknownSid)?;
+        services::transition_sid_user(&l.db, &l.map, &mut l.sidtab, ssid, tsid, policy_class,
+                                      objname)
+    }
+
+    /// SID an object takes when relabelled, for a class named in the POLICY's
+    /// numbering. # C: O(rules)
+    pub fn change_sid_user(&mut self, ssid: Sid, tsid: Sid, policy_class: u32) -> Result<Sid> {
+        if let Some(sid) = self.bootstrap_sid(ssid, tsid, policy_class) { return Ok(sid) }
+        let l = self.loaded.as_mut().ok_or(Error::UnknownSid)?;
+        services::change_sid_user(&l.db, &l.map, &mut l.sidtab, ssid, tsid, policy_class)
+    }
+
+    /// SID of a polyinstantiated member, for a class named in the POLICY's
+    /// numbering. # C: O(rules)
+    pub fn member_sid_user(&mut self, ssid: Sid, tsid: Sid, policy_class: u32) -> Result<Sid> {
+        if let Some(sid) = self.bootstrap_sid(ssid, tsid, policy_class) { return Ok(sid) }
+        let l = self.loaded.as_mut().ok_or(Error::UnknownSid)?;
+        services::member_sid_user(&l.db, &l.map, &mut l.sidtab, ssid, tsid, policy_class)
+    }
+
+    /// Whether an object may move between two written labels, for a class
+    /// named in the POLICY's numbering. # C: O(constraints)
+    pub fn validate_transition_user(&mut self, old: &str, new: &str, policy_class: u32,
+                                    task: &str) -> Result<()>
+    {
+        // No policy, no constraint list, nothing to refuse.
+        if !self.initialized() { return Ok(()) }
+        let l = self.loaded.as_mut().ok_or(Error::InvalidContext)?;
+        let old_sid = services::string_to_sid(&l.db, &mut l.sidtab, old)?;
+        let new_sid = services::string_to_sid(&l.db, &mut l.sidtab, new)?;
+        let task_sid = services::string_to_sid(&l.db, &mut l.sidtab, task)?;
+        services::validate_transition_user(&l.db, &l.sidtab, old_sid, new_sid, task_sid,
+                                           policy_class)
+    }
+
+    /// Label a computation answers with before any policy is loaded. # C: O(1)
+    ///
+    /// `None` once a policy is loaded, so the caller computes. Before then a
+    /// new process keeps its creator's label and any other object keeps the
+    /// one it is created against — there is no policy to say otherwise, and
+    /// refusing would make the interface unusable for the whole bootstrap
+    /// window. The class is compared against the KERNEL's `process` value
+    /// because with no policy loaded there is no other numbering in existence.
+    fn bootstrap_sid(&self, ssid: Sid, tsid: Sid, class: u32) -> Option<Sid> {
+        if self.initialized() { return None }
+        let process = crate::uapi::classmap::class_by_name("process")? as u32;
+        Some(if class == process { ssid } else { tsid })
+    }
+
     /// SID of a newly created object. # C: O(rules)
     pub fn transition_sid(&mut self, ssid: Sid, tsid: Sid, kernel_class: u16,
                           objname: Option<&str>) -> Result<Sid> {
@@ -256,9 +336,34 @@ impl SecurityServer {
     }
 
     /// Rendered context of a SID. # C: O(categories)
+    ///
+    /// Before a policy is loaded there is no table to render from, and the
+    /// answer is the initial SID's own policy name — a reader asking for a
+    /// label this early gets the name the policy will bind, not a failure.
+    /// Refusing instead would make every label read fail for the whole of
+    /// early boot, which userspace reads as a kernel without the module.
     pub fn sid_to_context(&self, sid: Sid) -> Result<String> {
-        let l = self.loaded.as_ref().ok_or(Error::UnknownSid)?;
+        let Some(l) = self.loaded.as_ref() else { return initial_sid_context(sid) };
         services::sid_to_context(&l.db, &l.sidtab, sid)
+    }
+
+    /// One SID's user, role and type carrying another's MLS range.
+    /// # C: O(categories)
+    ///
+    /// The range travels from the second SID while the identity comes from the
+    /// first, which is how a connection's server end takes the server's type at
+    /// the client's sensitivity. With no policy, no MLS, or an opaque context on
+    /// either side there is no range to move and the first SID stands.
+    pub fn sid_mls_copy(&mut self, sid: Sid, mls_sid: Sid) -> Result<Sid> {
+        let Some(l) = self.loaded.as_mut() else { return Ok(sid) };
+        if !l.db.mls { return Ok(sid); }
+        let Some(base) = l.sidtab.search(sid).ok_or(Error::UnknownSid)?.valid().cloned()
+            else { return Ok(sid) };
+        let Some(range) = l.sidtab.search(mls_sid).ok_or(Error::UnknownSid)?
+            .valid().map(|c| c.range.clone()) else { return Ok(sid) };
+        let new = crate::context::ValidContext { range, ..base };
+        if !l.db.context_is_valid(&new) { return Err(Error::InvalidContext); }
+        l.sidtab.context_to_sid(Context::Valid(new))
     }
 
     /// SID for a written context, allocating one if it is new. # C: O(categories)

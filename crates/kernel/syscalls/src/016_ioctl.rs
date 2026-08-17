@@ -14,6 +14,7 @@ pub(crate) use crate::ioctl_owner::{fs_unlocked_ioctl_applies, ioctl_file, ioctl
 #[path = "016_ioctl/common.rs"] mod common;
 #[path = "016_ioctl/core.rs"] mod core;
 #[path = "016_ioctl/fileattr.rs"] mod fileattr;
+#[path = "016_ioctl/f2fs.rs"] mod f2fs;
 #[path = "016_ioctl/fiemap.rs"] mod fiemap;
 #[path = "016_ioctl/font.rs"] mod font;
 #[path = "016_ioctl/netns.rs"] mod netns;

@@ -97,6 +97,10 @@ fn hard_handler_for(index: usize) {
                 if kind == crate::ring::TRB_TYPE_COMMAND_COMPLETION {
                     // SAFETY: both dwords belong to the same controller-owned event TRB.
                     let parameter_hi = unsafe { read_volatile((event_va + (dequeue * TRB_BYTES + 4) as u64) as *const u32) };
+                    // SAFETY: the completion-status dword of the same TRB whose control
+                    // and parameter dwords were just read; `dequeue` is kept below
+                    // TRBS_PER_SEGMENT by the wrap at the bottom of this loop, so the
+                    // whole 16-byte TRB lies inside the retained event page.
                     let status = unsafe { read_volatile((event_va + (dequeue * TRB_BYTES + 8) as u64) as *const u32) };
                     let completion = status >> 24;
                     let slot = control >> 24;
@@ -105,7 +109,12 @@ fn hard_handler_for(index: usize) {
                     command_event = true;
                 }
                 if kind == crate::ring::TRB_TYPE_TRANSFER_EVENT {
+                    // SAFETY: high half of this TRB's buffer pointer; same in-page TRB
+                    // the cycle-bit check above accepted, invalidated from the device
+                    // before the loop, and `dequeue` never leaves the segment.
                     let parameter_hi = unsafe { read_volatile((event_va + (dequeue * TRB_BYTES + 4) as u64) as *const u32) };
+                    // SAFETY: transfer-length/completion-code dword of that same TRB,
+                    // read volatile because the controller owns the page's contents.
                     let status = unsafe { read_volatile((event_va + (dequeue * TRB_BYTES + 8) as u64) as *const u32) };
                     let meta = (status & 0x00ff_ffff) as u64 | (((status >> 24) as u64) << 24)
                         | ((((control >> 16) & 0x1f) as u64) << 32) | (((control >> 24) as u64) << 40);

@@ -46,6 +46,9 @@ pub use timestamp::{EXT4_EXTRA_TIMESTAMP_MAX, EXT4_NON_EXTRA_TIMESTAMP_MAX, EXT4
 pub mod htree;
 pub use htree::EXT4_INDEX_FL;
 
+pub mod errstat;
+/// `/sys/fs/ext4` entry descriptions, in terms `/sys` does not have to know.
+pub mod fsattr;
 pub mod mount;
 pub use mount::{Mount, MountError, MountState, MountStateGuard};
 
@@ -77,6 +80,8 @@ pub use mount_opts::{DataMode, ErrorsPolicy, Ext4Behaviour, Ext4MountOpts, FsQuo
 // (tests/walk_image.rs) can drive the real ext4 Inode impls via
 // `set_test_mount`. The boot path mounts a real virtio-blk disk via
 // `init_from_dev` (serial `oxide-root`); no embedded image.
+pub mod surfaces;
+pub mod sysfs;
 pub mod rootfs;
 /// D8: flush every dirty ext4 frame store (the `msync(2)` durability path).
 pub use rootfs::flush_all_dirty;
