@@ -223,16 +223,42 @@ pub fn trigger(key: u8) { perform(decode(key), ENABLE_ALL); }
 
 const SYSRQ_ARM: u8 = 0x00;
 
+/// What the console byte sink owes a received byte, and the arm state it
+/// leaves behind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RxStep {
+    /// Consumed as the arming break; the byte after this one is a command.
+    Armed,
+    /// Consumed as a command; the line is disarmed again.
+    Run(Cmd),
+    /// Not sysrq's — forward it to the tty.
+    Passthrough,
+}
+
+/// Decide what one received byte means, given whether the line is armed.
+///
+/// Split out from [`rx`] because it is the whole of the serial console's
+/// input contract and the only part of it that a machine is not needed to
+/// check. It went untested for as long as it lived inside `rx`: the arm/key
+/// pair is the sequence the boot gate types at every guest, so a break in it
+/// looks exactly like an unreachable UART, and nothing here could have
+/// distinguished the two.
+/// # C: O(1)
+pub fn decide(armed: bool, b: u8) -> RxStep {
+    if armed { return RxStep::Run(decode(b)); }
+    if b == SYSRQ_ARM { return RxStep::Armed; }
+    RxStep::Passthrough
+}
+
 /// The serial line's byte sink: a break arms, the next byte is the command.
 /// Returns true when the byte was consumed by sysrq rather than the tty.
 /// # C: see `perform`
 pub fn rx(b: u8) -> bool {
-    if super::emit::sysrq_disarm() {
-        perform(decode(b), effective_mask(mask_value(), always_enabled()));
-        return true;
+    match decide(super::emit::sysrq_disarm(), b) {
+        RxStep::Run(cmd) => { perform(cmd, effective_mask(mask_value(), always_enabled())); true }
+        RxStep::Armed => { super::emit::sysrq_arm(); true }
+        RxStep::Passthrough => false,
     }
-    if b == SYSRQ_ARM { super::emit::sysrq_arm(); return true; }
-    false
 }
 
 /// The live `kernel.sysrq` setting.
@@ -324,6 +350,47 @@ mod tests {
         for cmd in [Cmd::Crash, Cmd::Reboot, Cmd::PowerOff, Cmd::ShowTasks,
                     Cmd::ShowBlocked, Cmd::ShowBacktraceAllCpus, Cmd::ShowRegisters] {
             assert!(mask_allows(ENABLE_ALL, cmd), "{cmd:?} refused under the enable-all mask");
+        }
+    }
+
+    /// The sequence the boot gate types at every guest, byte for byte: a NUL
+    /// arms the line, and the byte after it is the command. `?` is bound to
+    /// nothing, which is deliberately how the gate asks for the key list —
+    /// it wants an answer that cannot take the machine down.
+    #[test]
+    fn a_break_then_a_key_is_the_typed_console_sequence() {
+        assert_eq!(decide(false, SYSRQ_ARM), RxStep::Armed);
+        assert_eq!(decide(true, b'?'), RxStep::Run(Cmd::Unbound(b'?')));
+        assert_eq!(decide(true, b't'), RxStep::Run(Cmd::ShowTasks));
+    }
+
+    /// An unarmed ordinary byte belongs to the tty. Consuming it here would
+    /// swallow every character typed at the console.
+    #[test]
+    fn an_unarmed_ordinary_byte_goes_to_the_tty() {
+        for b in [b'a', b'?', b't', b'\r', b'\n', 0xff] {
+            assert_eq!(decide(false, b), RxStep::Passthrough, "byte {b:#x} was eaten");
+        }
+    }
+
+    /// A second NUL arrives while armed, so it is a command byte and not a
+    /// re-arm: it asks for the key list and leaves the line disarmed. Treating
+    /// it as a re-arm would leave the line armed forever after a stray NUL,
+    /// and the next character typed would run whatever it decodes to.
+    #[test]
+    fn a_second_break_is_a_command_byte_not_a_re_arm() {
+        assert_eq!(decide(true, SYSRQ_ARM), RxStep::Run(Cmd::Unbound(SYSRQ_ARM)));
+    }
+
+    /// Every step either consumes the byte or passes it on, never both, and
+    /// only `Armed` leaves the line armed.
+    #[test]
+    fn exactly_one_step_leaves_the_line_armed() {
+        for b in 0u8..=0xff {
+            assert_eq!(decide(false, b) == RxStep::Armed, b == SYSRQ_ARM,
+                       "byte {b:#x} armed the line, or the break failed to");
+            assert!(matches!(decide(true, b), RxStep::Run(_)),
+                    "byte {b:#x} was not taken as a command on an armed line");
         }
     }
 
