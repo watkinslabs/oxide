@@ -145,6 +145,29 @@ impl<S: SectorSource> Volume<S> {
         }
     }
 
+    /// The same, restricted to the INCLUSIVE page-index range `[lo, hi]`.
+    ///
+    /// What a range `fsync` and `sync_file_range(2)` ask for. The unbounded form
+    /// is a correct superset and loses nothing, but a one-page flush of a large
+    /// file has no business rewriting every unplaced page of it — the reference
+    /// honours the range its writeback control carries.
+    /// # Ctx: process # Sleeps: y # C: O(dirty pages in range)
+    pub(crate) fn flush_data_pages_range(&mut self, ino: u32, lo: u64, hi: u64)
+        -> Result<(), Errno> {
+        let cache = Arc::clone(&self.data_cache);
+        let mut first: Option<Errno> = None;
+        let waited = core::mem::replace(&mut self.sync_writeback, true);
+        let (_, out) = cache.flush_range(ino, lo, hi, usize::MAX, &mut |_ino, pages, results| {
+            self.writeback_data_pages(ino, pages, results, &mut first);
+        });
+        self.sync_writeback = waited;
+        match (first, out) {
+            (Some(e), _) => Err(e),
+            (None, Err(_)) => Err(Errno::Eio),
+            (None, Ok(())) => Ok(()),
+        }
+    }
+
     /// The same for every file this mount holds a dirty page of — what a
     /// checkpoint and an unmount owe the volume.
     ///

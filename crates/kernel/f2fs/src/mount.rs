@@ -371,6 +371,20 @@ pub fn errno_to_vfs(err: Errno) -> VfsError {
         Errno::Enomem => VfsError::Enomem,
         Errno::Eopnotsupp => VfsError::Eopnotsupp,
         Errno::Enodata => VfsError::Enodata,
+        // A refusal is not a broken disk. Folding these into an I/O error tells
+        // the caller its medium failed when what happened is that the operation
+        // was not allowed — and a caller acting on `EIO` remounts read-only,
+        // reports corruption, or gives up on a file that is intact. `EPERM` in
+        // particular is what an immutable file answers, through a write, an
+        // attribute change, or a mapped store.
+        Errno::Eperm => VfsError::Eperm,
+        Errno::Eacces => VfsError::Eacces,
+        Errno::Etxtbsy => VfsError::Etxtbsy,
+        Errno::Ebusy => VfsError::Ebusy,
+        Errno::Exdev => VfsError::Exdev,
+        Errno::Eloop => VfsError::Eloop,
+        Errno::Erange => VfsError::Erange,
+        Errno::Eagain => VfsError::Eagain,
         _ => VfsError::Eio,
     }
 }

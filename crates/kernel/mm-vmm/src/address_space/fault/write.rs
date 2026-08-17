@@ -142,6 +142,19 @@ impl AddressSpace {
                 if let (VmaBacking::File { backing, off }, Some((src_pa, _))) = (&vma.backing, cur) {
                     let cur_pa = src_pa.0 & !(PAGE_SIZE_BYTES - 1);
                     let foff = off.wrapping_add(va_page - vma.start.as_u64());
+                    // Linux `wp_page_shared` calls `page_mkwrite` before it
+                    // makes the leaf writable, for the same reasons the
+                    // not-present arm does: the block behind a hole is reserved
+                    // here, the page is dirtied here, and a refusal is still
+                    // reportable here. `Io` becomes SIGBUS and `NoMem` re-takes
+                    // the fault after the out-of-memory selector runs, which is
+                    // what the reference's own fault-error fold does with a
+                    // filesystem error from this call.
+                    match backing.page_mkwrite(foff) {
+                        Ok(()) => {}
+                        Err(crate::vma::FileBackingError::NoMem) => return Err(Error::NoMem),
+                        Err(_) => return Err(Error::Io),
+                    }
                     let shared = match backing.shared_frame(foff) {
                         Ok(shared) => shared,
                         Err(crate::vma::FileBackingError::NoMem) => return Err(Error::NoMem),

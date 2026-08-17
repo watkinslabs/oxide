@@ -156,6 +156,31 @@ pub trait AddressSpaceOps: Send + Sync {
     /// frame. # C: O(log N_pages)
     fn shared_frame(&self, off: u64) -> KResult<Option<SharedFrame>>;
 
+    /// A shared mapping is about to WRITE the page at page-aligned `off`
+    /// (Linux `vm_operations_struct.page_mkwrite`).
+    ///
+    /// Called before the write is allowed to land, and the filesystem's only
+    /// chance to take the decisions a store through a PTE cannot ask for. What
+    /// it is for, in the reference and here:
+    ///
+    /// | step | why it is HERE and nowhere else |
+    /// |---|---|
+    /// | refuse an immutable / released / erroring object | a store must fail as a fault, not corrupt a file that cannot be written |
+    /// | reserve the block | a shared-writable fault is where a HOLE gets storage, so `ENOSPC` and quota are decided at this call and can still be reported |
+    /// | zero the post-EOF tail | the tail of the last page is not part of the file and must not reach the medium holding whatever the frame held |
+    /// | mark it dirty | nothing else will: the store is a CPU write with no syscall behind it, so a page not dirtied here is never written back |
+    /// | charge the mapped counters | the same reason — this call is the only event the filesystem sees for a mapped write |
+    ///
+    /// The default is a no-op, which is right for an object whose pages ARE its
+    /// storage (shmem): there is no block to reserve and no writeback to be
+    /// dirty for. It is NOT right for a file on a medium, and an address space
+    /// that leaves it defaulted while handing out shared frames silently
+    /// accepts writes it never persists.
+    ///
+    /// Errors are the fault's errors: `ENOSPC`, `EIO`, `EDQUOT`, `EPERM`.
+    /// # Ctx: process # Sleeps: y # C: O(indirection depth) blocks
+    fn page_mkwrite(&self, off: u64) -> KResult<()> { let _ = off; Ok(()) }
+
     /// Retained, already-resident cache frame for fault-around. This lookup
     /// MUST NOT allocate, swap in, or issue backing I/O: `None` is the normal
     /// cache-miss answer. A returned frame carries one prospective PTE

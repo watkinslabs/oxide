@@ -74,7 +74,7 @@ impl Cache {
     pub fn peek(&self, ino: u32, index: u64) -> Option<Vec<u8>> {
         let page = self.pages.lookup(Self::key(ino), Self::off(index))?;
         self.hits.fetch_add(1, Ordering::Relaxed);
-        let bytes = page.data.lock().clone();
+        let bytes = page.data.lock().to_vec();
         Some(bytes)
     }
 
@@ -104,7 +104,7 @@ impl Cache {
         let (key, off) = (Self::key(ino), Self::off(index));
         if let Some(page) = self.pages.lookup(key, off) {
             self.hits.fetch_add(1, Ordering::Relaxed);
-            return Ok(page.data.lock().clone());
+            return Ok(page.data.lock().to_vec());
         }
         self.misses.fetch_add(1, Ordering::Relaxed);
         // The fetch's OWN error has to survive the round trip: the cache
@@ -118,7 +118,7 @@ impl Cache {
             Err(e) => { held.set(Some(e)); Err(BlockError::Eio) }
         });
         match got {
-            Ok(page) => Ok(page.data.lock().clone()),
+            Ok(page) => Ok(page.data.lock().to_vec()),
             Err(_) => Err(held.get().unwrap_or(Errno::Eio)),
         }
     }
@@ -147,6 +147,23 @@ impl Cache {
         Ok(())
     }
 
+    /// File `page` as the contents of block `index` of `ino`, CLEAN, unless the
+    /// mapping already holds that index.
+    ///
+    /// What a fault over a HOLE needs: the file has no block there and reads as
+    /// zeroes, but a mapper still needs a page to point at, and the page it
+    /// points at must be THE page every reader of that offset gets. Clean
+    /// because nothing has been written yet — filing it dirty would have the
+    /// next flush place a block for a hole nobody wrote.
+    ///
+    /// `false` is "not taken", because the mapping already had that index, and
+    /// is never an error: the page that is there is the page the caller wanted.
+    /// # C: O(height)
+    pub fn insert_clean(&self, ino: u32, index: u64, page: Vec<u8>) -> bool {
+        if page.len() != BLKSIZE { return false; }
+        self.pages.insert_new(Self::key(ino), Self::off(index), page, 0, usize::MAX)
+    }
+
     /// Act on the machine's dirty state after a write dirtied pages.
     ///
     /// Called by the writer with the mount's own lock DROPPED: over the limit
@@ -162,6 +179,39 @@ impl Cache {
     /// # Ctx: process # Sleeps: y # C: O(pages written)
     pub fn flush(&self, ino: u32, max: usize, sink: Sink<'_>) -> (usize, KResult<()>) {
         self.pages.writeback_with(Self::key(ino), max, sink)
+    }
+
+    /// The same, restricted to the INCLUSIVE index range `[lo, hi]`.
+    ///
+    /// What a range `fsync` and `sync_file_range(2)` ask for. The unbounded
+    /// form is a correct superset and loses nothing, but it makes a one-page
+    /// flush of a large file rewrite every unplaced page of it — the opposite
+    /// of what the caller asked for by naming a range.
+    /// # Ctx: process # Sleeps: y # C: O(dirty pages in range)
+    pub fn flush_range(&self, ino: u32, lo: u64, hi: u64, max: usize, sink: Sink<'_>)
+        -> (usize, KResult<()>) {
+        self.pages.writeback_range_with(Self::key(ino), lo, hi, max, sink)
+    }
+
+    /// The machine frame page `index` of `ino` already lives in.
+    ///
+    /// Never fills and never converts: what a residency question may ask.
+    /// # C: O(height)
+    pub fn frame(&self, ino: u32, index: u64) -> Option<u64> {
+        self.pages.frame_of(Self::key(ino), Self::off(index))
+    }
+
+    /// Make page `index` of `ino` a machine frame a user page table can point
+    /// at, and report its address.
+    ///
+    /// The page must already be held — this does not fetch, because the caller
+    /// that needs a mappable page has just put the bytes here and a fetch would
+    /// be a second answer about what the file holds. `None` means the page is
+    /// absent, or no frame could be had; it is never a heap page handed out as
+    /// if it were mappable.
+    /// # C: O(page) once per page, O(1) after
+    pub fn map_frame(&self, ino: u32, index: u64) -> Option<u64> {
+        self.pages.ensure_frame(Self::key(ino), Self::off(index))
     }
 
     /// Inodes holding a dirty page right now. # C: O(inodes)

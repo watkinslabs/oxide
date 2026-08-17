@@ -371,9 +371,17 @@ fn errno_translation_keeps_each_meaning() {
     assert_eq!(errno_to_vfs(Errno::Eopnotsupp), VfsError::Eopnotsupp);
     assert_eq!(errno_to_vfs(Errno::Enodata), VfsError::Enodata);
     assert_eq!(errno_to_vfs(Errno::Enospc), VfsError::Enospc);
-    // Anything without a closer meaning is an I/O error, not a silent success.
+    // A REFUSAL is not a broken disk. A caller told `EIO` remounts read-only,
+    // reports corruption, or gives up on a file that is intact, so every errno
+    // the VFS can express keeps its own meaning across the boundary.
+    assert_eq!(errno_to_vfs(Errno::Eperm), VfsError::Eperm);
+    assert_eq!(errno_to_vfs(Errno::Eacces), VfsError::Eacces);
+    assert_eq!(errno_to_vfs(Errno::Etxtbsy), VfsError::Etxtbsy);
+    assert_eq!(errno_to_vfs(Errno::Ebusy), VfsError::Ebusy);
+    assert_eq!(errno_to_vfs(Errno::Eagain), VfsError::Eagain);
+    // Anything the VFS cannot express is an I/O error, not a silent success.
     assert_eq!(errno_to_vfs(Errno::Eio), VfsError::Eio);
-    assert_eq!(errno_to_vfs(Errno::Eagain), VfsError::Eio);
+    assert_eq!(errno_to_vfs(Errno::Enokey), VfsError::Eio);
 }
 
 // --------------------------------------------------------- freeze and thaw
