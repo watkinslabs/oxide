@@ -84,6 +84,19 @@ pub(crate) fn reject_address_type(kind: AddrType, user_flags: u32, loopback_dev:
     }
 }
 
+/// A replace asking for managed temporary addresses is refused against a row
+/// that cannot own them: the reference rejects it when the existing address is
+/// itself a temporary one, or when its prefix is not a /64. The prefix length
+/// checked is the ROW's, because a replace never changes it.
+/// # C: O(1)
+pub(crate) fn reject_modify_manage_tempaddr(user_flags: u32, temporary: bool, prefixlen: u8)
+    -> Option<i32>
+{
+    if user_flags & IFA_F_MANAGETEMPADDR == 0 { return None; }
+    if temporary || prefixlen != MANAGETEMPADDR_PREFIXLEN { return Some(errno::EINVAL); }
+    None
+}
+
 /// A managed-temporary-address prefix must be a /64. # C: O(1)
 pub(crate) fn reject_manage_tempaddr(user_flags: u32, prefixlen: u8) -> Option<i32> {
     if user_flags & IFA_F_MANAGETEMPADDR != 0 && prefixlen != MANAGETEMPADDR_PREFIXLEN {
@@ -188,6 +201,18 @@ mod tests {
         assert!(addr.is_link_local());
         assert_eq!(AddrType::of(addr), AddrType::Unicast);
         assert_eq!(reject_address_type(AddrType::Unicast, 0, false), None);
+    }
+
+    // A replace is screened against the row it would rewrite, not against the
+    // prefix length the request happens to carry.
+    #[test]
+    fn a_replace_cannot_ask_a_temporary_or_non_64_row_to_manage_temporaries() {
+        assert_eq!(reject_modify_manage_tempaddr(IFA_F_MANAGETEMPADDR, false, 64), None);
+        assert_eq!(reject_modify_manage_tempaddr(IFA_F_MANAGETEMPADDR, true, 64),
+            Some(errno::EINVAL), "a temporary address cannot manage temporaries");
+        assert_eq!(reject_modify_manage_tempaddr(IFA_F_MANAGETEMPADDR, false, 128),
+            Some(errno::EINVAL));
+        assert_eq!(reject_modify_manage_tempaddr(0, true, 128), None);
     }
 
     #[test]

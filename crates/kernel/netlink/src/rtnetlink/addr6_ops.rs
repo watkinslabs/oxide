@@ -166,9 +166,9 @@ pub fn handle_newaddr6_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
             return build_ack(req, errno::ENODEV);
         }
         let generation = lease.generation();
-        let Some(present) = stack.ipv6_addr_present_rtnl(&rtnl, ns, iface, generation, addr)
+        let Some(existing) = stack.ipv6_addr_row_rtnl(&rtnl, ns, iface, generation, addr)
             else { return build_ack(req, errno::ENODEV) };
-        let row = if present {
+        let row = if let Some(existing) = existing {
             // The reference screens by address alone, so a repeat add of one
             // address is EEXIST whatever prefix length it names, and a replace
             // keeps the row's identity and DAD state rather than recreating it.
@@ -176,6 +176,13 @@ pub fn handle_newaddr6_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
                 || req.nlmsg_flags & flags::NLM_F_REPLACE == 0
             {
                 return build_ack(req, errno::EEXIST);
+            }
+            // A replace is screened against the row it would rewrite: the
+            // prefix length never changes, so a row that cannot own managed
+            // temporary addresses cannot be asked to start.
+            if let Some(err) = decide::reject_modify_manage_tempaddr(user_flags,
+                existing.temporary, existing.prefixlen) {
+                return build_ack(req, err);
             }
             stack.modify_ipv6_prefix_generation_rtnl(&rtnl, ns, iface, generation, addr,
                 peer.map(net::Ipv6Addr), meta)
@@ -239,7 +246,7 @@ pub fn handle_deladdr6_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
         let generation = lease.generation();
         // Generation gate first, so an interface replaced under the request
         // reports ENODEV rather than borrowing the missing-address errno.
-        if stack.ipv6_addr_present_rtnl(&rtnl, ns, iface, generation, addr).is_none() {
+        if stack.ipv6_addr_row_rtnl(&rtnl, ns, iface, generation, addr).is_none() {
             return build_ack(req, errno::ENODEV);
         }
         let Some(row) = stack.remove_ipv6_prefix_generation_rtnl(&rtnl, ns, iface,

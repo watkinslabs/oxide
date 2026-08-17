@@ -57,20 +57,21 @@ pub fn ipv6_disabled_in(ns: u64) -> bool {
 }
 
 impl NetStack {
-    /// Whether `addr` is already assigned to `iface`, at any prefix length —
-    /// the reference screens `RTM_NEWADDR` by address alone, so a second add
-    /// of the same address with a different prefix length is a replace, not a
-    /// new row. `None` when the interface left the generation.
+    /// The row `iface` already holds for `addr`, at any prefix length — the
+    /// reference screens `RTM_NEWADDR` by address alone, so a second add of one
+    /// address naming a different prefix length is a replace, not a new row.
+    /// The outer `None` means the interface left the named generation; the
+    /// inner one means the address is not assigned.
     /// # Lk: matching stack RTNL held. # C: O(N)
-    pub fn ipv6_addr_present_rtnl(&self, rtnl: &crate::RtnlGuard<'_>, ns: u64,
-                                  iface: NetIfaceId, generation: u64, addr: Ipv6Addr)
-        -> Option<bool>
+    pub fn ipv6_addr_row_rtnl(&self, rtnl: &crate::RtnlGuard<'_>, ns: u64, iface: NetIfaceId,
+                              generation: u64, addr: Ipv6Addr)
+        -> Option<Option<Ipv6IfaceAddr>>
     {
         if self.ifaces.control_generation_in_ns(rtnl, iface, ns) != Some(generation) {
             return None;
         }
         Some(self.v6_addrs.lock().get(&iface)
-            .is_some_and(|rows| rows.iter().any(|row| row.addr == addr)))
+            .and_then(|rows| rows.iter().find(|row| row.addr == addr).cloned()))
     }
 
     /// Insert one manual IPv6 address, tentative when DAD applies to it. The

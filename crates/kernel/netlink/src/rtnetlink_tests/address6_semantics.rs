@@ -481,3 +481,36 @@ fn a_replace_rewrites_the_restated_fields_and_keeps_dad_state() {
     assert_eq!(after.flags() & IFA_F_PERMANENT, 0);
     assert_eq!(after.state, before.state, "a replace does not restart verification");
 }
+
+// A replace asking for managed temporary addresses is screened against the row
+// it would rewrite, not against the prefix length the request carries: a
+// replace never changes the prefix length, so a /128 row can never own them
+// however the second request is shaped.
+#[test]
+fn a_replace_cannot_ask_a_non_64_row_to_manage_temporaries() {
+    let fx = fixture();
+    let (req, msg) = addr6_req(RTM_NEWADDR, fx.ifindex, 128, GLOBAL, 0, 0);
+    assert_eq!(ack_errno(&handle_newaddr(&req, &msg)), 0);
+
+    let (mut req, mut msg) = addr6_req(RTM_NEWADDR, fx.ifindex, 64, GLOBAL, 0,
+        crate::flags::NLM_F_REPLACE);
+    put_nlattr(&mut msg, ifa::IFA_FLAGS, &IFA_F_MANAGETEMPADDR.to_ne_bytes());
+    seal(&mut req, &mut msg);
+    assert_eq!(ack_errno(&handle_newaddr(&req, &msg)), -22);
+    let row = row_for(fx.iface, GLOBAL).unwrap();
+    assert_eq!(row.prefixlen, 128, "the refused replace changed nothing");
+    assert_eq!(row.flags() & IFA_F_MANAGETEMPADDR, 0);
+
+    // The same replace against a /64 row is accepted.
+    let mut sixty_four = GLOBAL;
+    sixty_four[15] = 0x64;
+    let (req, msg) = addr6_req(RTM_NEWADDR, fx.ifindex, 64, sixty_four, 0, 0);
+    assert_eq!(ack_errno(&handle_newaddr(&req, &msg)), 0);
+    let (mut req, mut msg) = addr6_req(RTM_NEWADDR, fx.ifindex, 64, sixty_four, 0,
+        crate::flags::NLM_F_REPLACE);
+    put_nlattr(&mut msg, ifa::IFA_FLAGS, &IFA_F_MANAGETEMPADDR.to_ne_bytes());
+    seal(&mut req, &mut msg);
+    assert_eq!(ack_errno(&handle_newaddr(&req, &msg)), 0);
+    assert_eq!(row_for(fx.iface, sixty_four).unwrap().flags() & IFA_F_MANAGETEMPADDR,
+        IFA_F_MANAGETEMPADDR);
+}
