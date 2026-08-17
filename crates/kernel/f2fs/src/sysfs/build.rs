@@ -17,18 +17,29 @@ use crate::fsattr::Attr;
 
 /// Features this build implements, in the order upstream lists them.
 ///
-/// Absent, and why — each is a feature this build would not honour, so
-/// claiming it would be a lie a formatter acts on:
+/// `packed_ssa` belongs here even though no code branches on the bit, and that
+/// is conformance rather than an omission. The feature fixes the summary block
+/// at four kibibytes instead of taking the volume's block size; a superblock
+/// stating any other block size is refused before the feature word is read, so
+/// the two sizes are always equal, one summary block always covers one
+/// segment, and every derived offset — entry count, journal start, journal
+/// length, footer — is the same number either way. The ordinary summary reader
+/// IS the packed reader at this block size. Pinned by the two tests over the
+/// derived sizes, one asserting the equality and one asserting it is a property
+/// of this block size and not of the formulas.
 ///
-/// - `encryption`, `test_dummy_encryption_v2`, `encrypted_casefold`: nothing
-///   reads the encryption bit; a volume's encrypted files are not decrypted.
-/// - `block_zoned`: a zoned volume is refused at mount outright.
-/// - `atomic_write`: the atomic-write ioctls do not exist.
-/// - `pin_file`: the pin ioctl does not exist; the on-disk hint is only read
-///   back during recovery.
-/// - `packed_ssa`: the bit is recognised but nothing acts on it.
-/// - `fserror`: errors are not recorded into the superblock.
+/// Absent, and why — a feature this build would not honour, so claiming it
+/// would be a lie a formatter acts on:
+///
+/// - `fserror`: the record that carries errors and stop reasons into the
+///   superblock is complete, and no error path calls it, so a volume this
+///   mount damages is handed to the next mount looking clean.
 pub const SUPPORTED: &[&str] = &[
+    "encryption",
+    "test_dummy_encryption_v2",
+    "encrypted_casefold",
+    "block_zoned",
+    "atomic_write",
     "extra_attr",
     "project_quota",
     "inode_checksum",
@@ -41,7 +52,9 @@ pub const SUPPORTED: &[&str] = &[
     "casefold",
     "readonly",
     "compression",
+    "pin_file",
     "linear_lookup",
+    "packed_ssa",
 ];
 
 /// The word every entry in this directory reads.

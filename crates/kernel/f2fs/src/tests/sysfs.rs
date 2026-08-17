@@ -65,10 +65,24 @@ fn the_build_feature_directory_lists_only_implemented_features() {
     assert!(listed.contains(&"compression"));
     assert!(listed.contains(&"verity"));
     assert!(listed.contains(&"quota_ino"));
-    // Refused at mount, so claiming it would send a formatter into a failure.
-    assert!(!listed.contains(&"block_zoned"));
-    // Nothing reads the encryption bit.
-    assert!(!listed.contains(&"encryption"));
+    // A zoned volume MOUNTS: its geometry is read and its write pointers are
+    // reconciled against the logs. Claiming otherwise sent a formatter away
+    // from a feature that works.
+    assert!(listed.contains(&"block_zoned"));
+    // Data and names are both enciphered and deciphered, including under a
+    // case-folding directory, where the bucket is the keyed hash of the folded
+    // plaintext.
+    assert!(listed.contains(&"encryption"));
+    assert!(listed.contains(&"encrypted_casefold"));
+    // The ioctls exist and reach the volume.
+    assert!(listed.contains(&"atomic_write"));
+    assert!(listed.contains(&"pin_file"));
+    // A no-op at the only block size a volume may state, so the ordinary
+    // summary reader reads a packed volume correctly.
+    assert!(listed.contains(&"packed_ssa"));
+    // The one absence: nothing calls the record that carries an error into the
+    // superblock, so a damaged volume looks clean to the next mount.
+    assert!(!listed.contains(&"fserror"));
     for a in attrs.iter() {
         assert_eq!(a.mode, crate::fsattr::RO);
         assert_eq!((a.show)().expect("show"), b"supported\n");

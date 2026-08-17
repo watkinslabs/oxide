@@ -4,9 +4,11 @@
 //! question each answers:
 //!
 //! - `features/` — what THIS BUILD can do, whatever is mounted. A name is
-//!   present when the code behind it is; a name whose feature this build
-//!   refuses at mount is absent, because a tool that reads it is deciding
-//!   whether to use the feature.
+//!   present when the code behind it is, and absent when the feature would not
+//!   be honoured, because a tool that reads it is deciding whether to use the
+//!   feature. Being unable to honour a feature does not mean refusing the
+//!   volume: most features this build lacks are read-through-able, and the
+//!   entry is withheld while the mount still succeeds.
 //! - `<dev>/feature_list/` — what THIS VOLUME was formatted with. Every
 //!   on-disk feature bit appears, and says `supported` or `unsupported`
 //!   according to the volume's own feature word.
