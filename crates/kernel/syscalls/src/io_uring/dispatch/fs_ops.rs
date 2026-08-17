@@ -101,13 +101,6 @@ pub fn fgetxattr(op: &Op) -> i64 {
          [op.fd as u64, op.sqe.addr, op.sqe.off, op.sqe.len as u64, 0, 0])
 }
 
-/// `tee(fd_in, fd_out, len, flags)` — the input descriptor is `splice_fd_in`.
-/// # C: O(len)
-pub fn tee(op: &Op) -> i64 {
-    call(crate::s275_splice::sys_tee,
-         [op.sqe.splice_fd_in as u64, op.fd as u64, op.sqe.len as u64, op.sqe.op_flags as u64, 0, 0])
-}
-
 /// # C: O(1)
 pub fn pipe(op: &Op) -> i64 {
     call(crate::s293_pipe2::sys_pipe2, [op.sqe.addr, op.sqe.op_flags as u64, 0, 0, 0, 0])
@@ -116,6 +109,23 @@ pub fn pipe(op: &Op) -> i64 {
 /// `epoll_ctl(epfd, op, fd, event)`: the operation is in `len`, the watched
 /// descriptor in `off`, the event in `addr`. # C: O(log N_watches)
 pub fn epoll_ctl(op: &Op) -> i64 {
+    if let Err(e) = crate::io_uring_abi::epoll_op::prep_ctl(op.sqe) {
+        return -(e.as_i32() as i64);
+    }
     call(::fs::epoll::sys_epoll_ctl,
          [op.fd as u64, op.sqe.len as u64, op.sqe.off, op.sqe.addr, 0, 0])
+}
+
+/// One non-blocking harvest from an epoll set. The wait itself is the RING's,
+/// not the set's: a harvest that found nothing reports "not yet" and the
+/// engine arms the entry on the set's own readiness, so an idle submission
+/// costs no thread and posts no completion until events exist.
+/// # C: O(N_ready)
+pub fn epoll_wait(op: &Op) -> i64 {
+    use crate::io_uring_abi::epoll_op::{prep_wait, wait_result};
+    let w = match prep_wait(op.sqe) { Ok(w) => w, Err(e) => return -(e.as_i32() as i64) };
+    let rv = call(::fs::epoll::sys_epoll_wait,
+                  [op.fd as u64, w.events, w.maxevents as u64, 0, 0, 0]);
+    if rv < 0 { return rv; }
+    wait_result(rv)
 }

@@ -62,14 +62,15 @@ use super::ops::*;
 /// request whose completion nothing would ever look for. # C: O(1)
 pub fn opcode_pollable(opcode: u8) -> bool {
     matches!(opcode,
-        IORING_OP_NOP
+        IORING_OP_NOP | IORING_OP_NOP128
         | IORING_OP_READV | IORING_OP_WRITEV
         | IORING_OP_READ_FIXED | IORING_OP_WRITE_FIXED
+        | IORING_OP_READV_FIXED | IORING_OP_WRITEV_FIXED
         | IORING_OP_READ | IORING_OP_WRITE
         | IORING_OP_FILES_UPDATE
         | IORING_OP_PROVIDE_BUFFERS | IORING_OP_REMOVE_BUFFERS
         | IORING_OP_MSG_RING
-        | IORING_OP_URING_CMD)
+        | IORING_OP_URING_CMD | IORING_OP_URING_CMD128)
 }
 
 /// Submission admission for one entry against the ring's polled-ness.

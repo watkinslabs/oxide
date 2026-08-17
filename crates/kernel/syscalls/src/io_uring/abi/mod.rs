@@ -55,6 +55,20 @@
 //   rw_attr     — the attribute vector a read or write entry may point at:
 //                 the record's wire form, its mask ladder, and the targets
 //                 that can carry it.
+//   rw_vec      — the vectored-fixed transfers: the segment vector, the
+//                 registration its segments address, and the wire form of one
+//                 segment. NOT the multishot read, which has no handler.
+//   splice      — `IORING_OP_SPLICE`/`TEE`: the flag word, the registered-file
+//                 input descriptor, and the offsets a tee may not carry.
+//   epoll_op    — `IORING_OP_EPOLL_CTL`/`EPOLL_WAIT`: the field ladder, and
+//                 why an empty harvest is "not yet" rather than zero.
+//   waitid_op   — `IORING_OP_WAITID`: which field carries the id, the id type
+//                 and the options word.
+//   futex_op    — `IORING_OP_FUTEX_WAIT`/`WAKE`/`WAITV`: the futex2 flag word,
+//                 the operand widths, and the reserved fields.
+//   async_policy — which opcodes can never run inside the submission that
+//                 issued them, and why parking one inline would deadlock the
+//                 ring against itself.
 //
 // Deliberately NOT kernel-gated: the three slot files are
 // `#![cfg(target_os = "oxide-kernel")]`, so any decision left in them is
@@ -89,4 +103,10 @@ pub mod reqstate;
 pub mod recvsend;
 pub mod bundle;
 pub mod rw_attr;
+pub mod rw_vec;
+pub mod splice;
+pub mod epoll_op;
+pub mod waitid_op;
+pub mod futex_op;
+pub mod async_policy;
 pub mod zcrx;

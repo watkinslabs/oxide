@@ -142,31 +142,86 @@ pub const IORING_SEND_ZC_REPORT_USAGE: u32 = 1 << 3;
 /// entries rather than at the payload itself.
 pub const IORING_SEND_VECTORIZED: u32 = 1 << 5;
 
-/// Whether the submission engine executes this opcode. # C: O(1)
-pub fn op_supported(op: u8) -> bool {
-    matches!(op,
-        IORING_OP_NOP | IORING_OP_READV | IORING_OP_WRITEV | IORING_OP_FSYNC
-        | IORING_OP_READ_FIXED | IORING_OP_WRITE_FIXED | IORING_OP_ACCEPT
-        | IORING_OP_CONNECT | IORING_OP_OPENAT | IORING_OP_CLOSE
-        | IORING_OP_READ | IORING_OP_WRITE | IORING_OP_SEND | IORING_OP_RECV
-        | IORING_OP_RECV_ZC
-        | IORING_OP_SENDMSG | IORING_OP_RECVMSG | IORING_OP_SYNC_FILE_RANGE
-        | IORING_OP_FALLOCATE | IORING_OP_STATX | IORING_OP_FADVISE
-        | IORING_OP_MADVISE | IORING_OP_OPENAT2 | IORING_OP_EPOLL_CTL
-        | IORING_OP_TEE | IORING_OP_SHUTDOWN
-        | IORING_OP_RENAMEAT | IORING_OP_UNLINKAT | IORING_OP_MKDIRAT
-        | IORING_OP_SYMLINKAT | IORING_OP_LINKAT | IORING_OP_FSETXATTR
-        | IORING_OP_SETXATTR | IORING_OP_FGETXATTR | IORING_OP_GETXATTR
-        | IORING_OP_SOCKET | IORING_OP_FTRUNCATE | IORING_OP_BIND
-        | IORING_OP_LISTEN | IORING_OP_PIPE
-        | IORING_OP_FILES_UPDATE | IORING_OP_MSG_RING
-        | IORING_OP_PROVIDE_BUFFERS | IORING_OP_REMOVE_BUFFERS
-        | IORING_OP_FIXED_FD_INSTALL
-        | IORING_OP_TIMEOUT | IORING_OP_TIMEOUT_REMOVE | IORING_OP_LINK_TIMEOUT
-        | IORING_OP_ASYNC_CANCEL | IORING_OP_POLL_ADD | IORING_OP_POLL_REMOVE
-        | IORING_OP_NOP128 | IORING_OP_SEND_ZC | IORING_OP_SENDMSG_ZC
-        | IORING_OP_URING_CMD | IORING_OP_URING_CMD128)
+/// Which group of handlers runs an opcode.
+///
+/// The AUTHORITY for "does this ring run that operation": `op_supported` is
+/// this answer with the family thrown away, and the probe reports
+/// `op_supported`. Kept ungated so the advertised set can be checked against
+/// the dispatched set by a hosted test in both directions — an opcode
+/// advertised but not runnable turns a caller's one-time feature detection
+/// into a permanent hang (CLAUDE.md phantom-test rule keeps this out of the
+/// engine's gated files).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum OpFamily {
+    /// Reads, writes, their fixed-buffer and vectored forms, sync and size.
+    Rw,
+    /// Paths, descriptors, extended attributes, descriptor-plumbing.
+    Fs,
+    /// Sockets.
+    Net,
+    /// Operations on the ring's own registration state.
+    Ring,
+    /// Operations on the ring's own in-flight work.
+    Async,
+    /// Placed on a clock or on a description by the submission engine rather
+    /// than run by a handler.
+    Armed,
+    /// A command handed to the description's own driver.
+    Cmd,
+    /// Waiting on something that is neither a file nor a clock: a futex word,
+    /// a child process.
+    Proc,
 }
+
+/// The family that runs `op`, or `None` when nothing does. # C: O(1)
+pub fn op_family(op: u8) -> Option<OpFamily> {
+    use OpFamily::*;
+    Some(match op {
+        IORING_OP_NOP | IORING_OP_NOP128 => Ring,
+
+        IORING_OP_READ | IORING_OP_WRITE | IORING_OP_READV | IORING_OP_WRITEV
+        | IORING_OP_READ_FIXED | IORING_OP_WRITE_FIXED
+        | IORING_OP_READV_FIXED | IORING_OP_WRITEV_FIXED
+        | IORING_OP_FSYNC | IORING_OP_SYNC_FILE_RANGE | IORING_OP_FALLOCATE
+        | IORING_OP_FTRUNCATE | IORING_OP_FADVISE | IORING_OP_MADVISE => Rw,
+
+        IORING_OP_OPENAT | IORING_OP_OPENAT2 | IORING_OP_CLOSE | IORING_OP_STATX
+        | IORING_OP_RENAMEAT | IORING_OP_UNLINKAT | IORING_OP_MKDIRAT
+        | IORING_OP_SYMLINKAT | IORING_OP_LINKAT
+        | IORING_OP_SETXATTR | IORING_OP_FSETXATTR | IORING_OP_GETXATTR
+        | IORING_OP_FGETXATTR
+        | IORING_OP_SPLICE | IORING_OP_TEE | IORING_OP_PIPE
+        | IORING_OP_EPOLL_CTL | IORING_OP_EPOLL_WAIT => Fs,
+
+        IORING_OP_SEND | IORING_OP_RECV | IORING_OP_SENDMSG | IORING_OP_RECVMSG
+        | IORING_OP_SEND_ZC | IORING_OP_SENDMSG_ZC | IORING_OP_RECV_ZC
+        | IORING_OP_ACCEPT | IORING_OP_CONNECT | IORING_OP_BIND
+        | IORING_OP_LISTEN | IORING_OP_SHUTDOWN | IORING_OP_SOCKET => Net,
+
+        IORING_OP_FILES_UPDATE | IORING_OP_MSG_RING
+        | IORING_OP_PROVIDE_BUFFERS | IORING_OP_REMOVE_BUFFERS
+        | IORING_OP_FIXED_FD_INSTALL => Ring,
+
+        IORING_OP_ASYNC_CANCEL | IORING_OP_TIMEOUT_REMOVE
+        | IORING_OP_POLL_REMOVE => Async,
+
+        IORING_OP_TIMEOUT | IORING_OP_LINK_TIMEOUT | IORING_OP_POLL_ADD => Armed,
+
+        IORING_OP_URING_CMD | IORING_OP_URING_CMD128 => Cmd,
+
+        IORING_OP_WAITID | IORING_OP_FUTEX_WAIT | IORING_OP_FUTEX_WAKE
+        | IORING_OP_FUTEX_WAITV => Proc,
+
+        _ => return None,
+    })
+}
+
+/// Whether the submission engine executes this opcode.
+///
+/// Enumerated, never `op < OP_LAST`: a newly defined opcode number must be
+/// claimed by a handler before the probe may claim it, and a range check would
+/// advertise it the moment the constant landed. # C: O(1)
+pub fn op_supported(op: u8) -> bool { op_family(op).is_some() }
 
 /// Whether the opcode takes its buffer from a provided-buffer group when the
 /// SQE carries `IOSQE_BUFFER_SELECT`. A send draws from a group too — the
