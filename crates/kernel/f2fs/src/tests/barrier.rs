@@ -13,7 +13,6 @@ use block::durability::{FUA, PREFLUSH};
 use sectors::source::Cmd;
 use sectors::MemImage;
 
-use crate::devices::barrier::*;
 use crate::mode::S_IFREG;
 use crate::opts::{FsyncMode, Options};
 use crate::test_image::{self, ROOT_INO};
