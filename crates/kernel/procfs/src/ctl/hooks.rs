@@ -267,6 +267,29 @@ pub(super) fn set_nr_hugepages(value: i64) {
     pmm::hugetlb::set_nr_hugepages(size, value.max(0) as u64);
 }
 
+/// `vm.min_free_kbytes` — the reserve every zone's minimum is apportioned
+/// from. A read reports the value the watermarks were actually derived from,
+/// which is the kernel-derived default until an operator sets one; a write
+/// re-derives every zone's marks. # C: O(NR_ZONES)
+pub(super) fn get_min_free_kbytes() -> i64 {
+    pmm::watermark::tunables::live_min_free_kbytes() as i64
+}
+/// # C: O(NR_ZONES^2)
+pub(super) fn set_min_free_kbytes(value: i64) {
+    pmm::watermark::tunables::set_min_free_kbytes(value.max(0) as u64);
+}
+
+/// `vm.watermark_scale_factor` — the ten-thousandths of a zone's managed
+/// memory each watermark gap covers. A write re-derives every zone's marks.
+/// # C: O(1)
+pub(super) fn get_watermark_scale_factor() -> i64 {
+    pmm::watermark::tunables::live_watermark_scale_factor() as i64
+}
+/// # C: O(NR_ZONES^2)
+pub(super) fn set_watermark_scale_factor(value: i64) {
+    pmm::watermark::tunables::set_watermark_scale_factor(value.max(0) as u64);
+}
+
 /// `vm.nr_overcommit_hugepages` — how many huge pages the pool may take beyond
 /// its target to satisfy a reservation, and give back afterwards.
 /// # C: O(1)

@@ -49,6 +49,10 @@ use crate::proc_handler::{
 
 /// `proc_dointvec_minmax` window upper bound for a 32-bit-int knob.
 const INT_MAX: i64 = i32::MAX as i64;
+/// `vm.watermark_scale_factor` accepts the range the allocator's derivation
+/// accepts, and the allocator owns both ends.
+const WATERMARK_SCALE_FACTOR_MIN: i64 = pmm::watermark::tunables::SCALE_FACTOR_MIN as i64;
+const WATERMARK_SCALE_FACTOR_MAX: i64 = pmm::watermark::tunables::SCALE_FACTOR_MAX as i64;
 
 /// `fs.mqueue.{msg_max,msg_default}` window.
 const MQ_MSG_BOUNDS: (i64, i64) =
@@ -204,7 +208,13 @@ const SYSCTL_TREE: &[Node] = &[
         File("dirty_ratio",             Int(20, Some((0, 100)))),
         File("dirty_background_ratio",  Int(10, Some((0, 100)))),
         File("max_map_count",           Int(65530, Some((0, INT_MAX)))),
-        File("min_free_kbytes",         Int(4096, Some((0, INT_MAX)))),
+        // Both bind to the watermark producer: a write re-derives every
+        // zone's marks, and a read of min_free_kbytes reports the value the
+        // marks were derived from, not the last thing written.
+        File("min_free_kbytes",         IntHook(get_min_free_kbytes, set_min_free_kbytes,
+                                                Some((0, INT_MAX)))),
+        File("watermark_scale_factor",  IntHook(get_watermark_scale_factor, set_watermark_scale_factor,
+                                                Some((WATERMARK_SCALE_FACTOR_MIN, WATERMARK_SCALE_FACTOR_MAX)))),
         File("page-cluster",            Int(3, Some((0, INT_MAX)))),
         // The pool is real memory, so this leaf is bound to it: a write sizes
         // the pool and a read reports the size it reached, which need not be

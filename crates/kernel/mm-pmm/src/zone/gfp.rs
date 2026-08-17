@@ -23,6 +23,18 @@ pub const GFP_MOVABLE: u32 = 0x08;
 /// The flag bits that participate in zone selection.
 pub const GFP_ZONEMASK: u32 = GFP_DMA | GFP_HIGHMEM | GFP_DMA32 | GFP_MOVABLE;
 
+/// Caller is high-priority and may be served from half the min reserve. This
+/// is the ONLY flag that opens the reserve; a caller that merely cannot block
+/// is held to the full minimum.
+pub const GFP_HIGH: u32 = 0x20;
+/// Caller may wake background reclaim but never blocks on it.
+pub const GFP_KSWAPD_RECLAIM: u32 = 0x800;
+/// The interrupt-context allocation: reserve access without blocking.
+pub const GFP_ATOMIC: u32 = GFP_HIGH | GFP_KSWAPD_RECLAIM;
+
+/// Does `flags` earn the reserve discount? # C: O(1)
+pub const fn grants_min_reserve(flags: u32) -> bool { flags & GFP_HIGH != 0 }
+
 /// A flag combination that names no zone.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct GfpError;

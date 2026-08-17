@@ -47,7 +47,7 @@ impl ZoneStat {
         managed_pages: 0,
         free_pages: 0,
         free_orders: [0; crate::ORDERS],
-        wmark: crate::watermark::ZoneWatermarks { min: 0, low: 0, high: 0 },
+        wmark: crate::watermark::ZoneWatermarks { min: 0, low: 0, high: 0, promo: 0 },
         lowmem_reserve: [0; super::NR_ZONES],
     };
 }

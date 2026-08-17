@@ -22,6 +22,10 @@ pub(super) struct PmmInner {
     pub(super) free_count: [[u64; ORDERS]; NR_ZONES],
     /// Pages seeded into each zone's lists at boot.
     pub(super) managed: [u64; NR_ZONES],
+    /// Pages the firmware map made usable inside each zone's span. A
+    /// permanent boot reservation leaves `managed` and not this, so the
+    /// difference is exactly what never reached the allocator.
+    pub(super) present: [u64; NR_ZONES],
     /// Pages each zone spans, holes included.
     pub(super) spanned: [u64; NR_ZONES],
     pub(super) reserve: LowmemReserve,
@@ -59,9 +63,13 @@ impl PmmInner {
         let t = self.tunables?;
         let mut agg = ZoneWatermarks::default();
         for zi in 0..NR_ZONES {
-            let w = crate::watermark::derive_zone_watermarks(self.managed[zi], total, t, PAGE_SIZE_BYTES);
+            // Only the movable zone is capped here: a 64-bit direct map has no
+            // separate high-memory zone for the other half of the reference's
+            // condition to name.
+            let cap = zi == ZoneType::Movable.index();
+            let w = crate::watermark::derive_zone_watermarks(self.managed[zi], total, t, PAGE_SIZE_BYTES, cap);
             self.wmark[zi] = w;
-            agg.min += w.min; agg.low += w.low; agg.high += w.high;
+            agg.min += w.min; agg.low += w.low; agg.high += w.high; agg.promo += w.promo;
         }
         Some((total, agg))
     }
@@ -274,6 +282,7 @@ impl PmmInner {
             self.bitmap_set(o, cur >> o);
             self.free_count[zi][o as usize] += 1;
             self.managed[zi] += span;
+            self.present[zi] += span;
             cur += span;
         }
     }

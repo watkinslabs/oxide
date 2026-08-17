@@ -2,7 +2,10 @@
 //! allocator truth; this module derives Linux-style thresholds from it and
 //! decides when allocation must wake background or direct reclaim.
 
-use core::sync::atomic::{AtomicU64, Ordering};
+mod cell;
+pub mod tunables;
+pub use cell::PublishGuard;
+
 
 /// Linux `watermark_scale_factor` is expressed in ten-thousandths.
 pub const WATERMARK_SCALE_DENOMINATOR: u64 = 10_000;
@@ -14,6 +17,12 @@ pub const MIN_FREE_KBYTES_FLOOR: u64 = 128;
 pub const MIN_FREE_KBYTES_CEILING: u64 = 262_144;
 /// Kernel page accounting unit for `min_free_kbytes` conversion.
 pub const KIB_BYTES: u64 = 1024;
+/// Fraction of a capped zone's managed pages taken as its minimum.
+pub const CAPPED_MIN_SHARE: u64 = 1024;
+/// Lower clamp on a capped zone's minimum, Linux's `SWAP_CLUSTER_MAX`.
+pub const CAPPED_MIN_FLOOR: u64 = 32;
+/// Upper clamp on a capped zone's minimum.
+pub const CAPPED_MIN_CEILING: u64 = 128;
 
 /// User-visible tuning inputs corresponding to Linux VM watermark controls.
 /// `min_free_kbytes == None` selects the kernel-derived Linux default.
@@ -30,8 +39,10 @@ impl Default for WatermarkTunables {
 }
 
 /// One allocator zone's reclaim thresholds, all measured in base pages.
+/// `promo` sits one gap above `high` and is the mark a promotion candidate is
+/// held to, so a zone already under reclaim pressure takes none.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
-pub struct ZoneWatermarks { pub min: u64, pub low: u64, pub high: u64 }
+pub struct ZoneWatermarks { pub min: u64, pub low: u64, pub high: u64, pub promo: u64 }
 
 /// PMM-owned observation plus its derived zone watermarks.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
@@ -46,16 +57,6 @@ pub struct WatermarkSnapshot {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum AllocationPolicy { Allow, WakeBackground, DirectReclaim }
 
-/// Serialises the hosted tests that write the published aggregate directly
-/// against those that drive `Pmm::refresh_watermarks`; both reach the same
-/// process-global statics, and neither may observe the other's window.
-#[cfg(test)]
-pub(crate) static PUBLISH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-static MANAGED_PAGES: AtomicU64 = AtomicU64::new(0);
-static MIN_PAGES: AtomicU64 = AtomicU64::new(0);
-static LOW_PAGES: AtomicU64 = AtomicU64::new(0);
-static HIGH_PAGES: AtomicU64 = AtomicU64::new(0);
 
 /// Linux `current->flags & PF_MEMALLOC_NOIO` — the running task asked, via
 /// `prctl(PR_SET_IO_FLUSHER)`, that its allocations never issue IO.
@@ -114,22 +115,36 @@ pub fn default_min_free_kbytes(managed_pages: u64, page_bytes: u64) -> u64 {
     target.clamp(MIN_FREE_KBYTES_FLOOR, MIN_FREE_KBYTES_CEILING)
 }
 
-/// Derive min/low/high exactly as Linux's per-zone watermark update does for
-/// a normal managed zone: min is proportional to managed memory and the
-/// low/high distance is at least min/4 or scale-factor coverage. # C: O(1)
+/// Derive min/low/high/promo exactly as Linux's per-zone watermark update
+/// does: min is proportional to managed memory and each successive mark sits
+/// one gap higher, the gap being at least min/4 or scale-factor coverage.
+///
+/// A zone whose pages a reserve-holding allocation has no use for — movable,
+/// and high memory where it exists — takes a small fixed minimum instead of
+/// its proportional share, while keeping the uncapped gap so the distances
+/// that drive background reclaim are unaffected. # C: O(1)
 pub fn derive_zone_watermarks(
     managed_pages: u64,
     total_managed_pages: u64,
     tunables: WatermarkTunables,
     page_bytes: u64,
+    cap_min: bool,
 ) -> ZoneWatermarks {
     if managed_pages == 0 || total_managed_pages == 0 || page_bytes == 0 { return ZoneWatermarks::default(); }
     let min_kbytes = tunables.min_free_kbytes.unwrap_or_else(|| default_min_free_kbytes(total_managed_pages, page_bytes));
     let total_min_pages = min_kbytes.saturating_mul(KIB_BYTES) / page_bytes;
-    let min = total_min_pages.saturating_mul(managed_pages) / total_managed_pages;
+    let proportional = total_min_pages.saturating_mul(managed_pages) / total_managed_pages;
     let scale = managed_pages.saturating_mul(tunables.watermark_scale_factor) / WATERMARK_SCALE_DENOMINATOR;
-    let gap = core::cmp::max(min / 4, scale);
-    ZoneWatermarks { min, low: min.saturating_add(gap), high: min.saturating_add(gap.saturating_mul(2)) }
+    let gap = core::cmp::max(proportional / 4, scale);
+    let min = if cap_min {
+        (managed_pages / CAPPED_MIN_SHARE).clamp(CAPPED_MIN_FLOOR, CAPPED_MIN_CEILING)
+    } else { proportional };
+    ZoneWatermarks {
+        min,
+        low: min.saturating_add(gap),
+        high: min.saturating_add(gap.saturating_mul(2)),
+        promo: min.saturating_add(gap.saturating_mul(3)),
+    }
 }
 
 /// Publish the aggregate of the buddy's per-zone thresholds. The per-zone
@@ -138,25 +153,17 @@ pub fn derive_zone_watermarks(
 /// reclaimer compare a total free count against. Live free state always comes
 /// from `Pmm::snapshot`, never from here.
 ///
-/// Called by `Pmm::refresh_watermarks`, which is the only producer.
-/// # C: O(1)
-pub(crate) fn publish(managed_pages: u64, agg: ZoneWatermarks) {
-    MANAGED_PAGES.store(managed_pages, Ordering::Release);
-    MIN_PAGES.store(agg.min, Ordering::Release);
-    LOW_PAGES.store(agg.low, Ordering::Release);
-    HIGH_PAGES.store(agg.high, Ordering::Release);
+/// The `PublishGuard` is the write right, not a formality: no other path to
+/// the published words exists, so a publisher that has not taken it cannot be
+/// written. # C: O(1)
+pub(crate) fn publish(right: &PublishGuard, managed_pages: u64, agg: ZoneWatermarks) {
+    cell::publish(right, managed_pages, agg);
 }
 
 /// Return the currently published policy and live buddy free count. # C: O(1)
 pub fn watermark_snapshot(free_pages: u64) -> Option<WatermarkSnapshot> {
-    let managed_pages = MANAGED_PAGES.load(Ordering::Acquire);
-    if managed_pages == 0 { return None; }
-    Some(WatermarkSnapshot {
-        managed_pages, free_pages,
-        zone: ZoneWatermarks {
-            min: MIN_PAGES.load(Ordering::Acquire), low: LOW_PAGES.load(Ordering::Acquire), high: HIGH_PAGES.load(Ordering::Acquire),
-        },
-    })
+    let (managed_pages, zone) = cell::load()?;
+    Some(WatermarkSnapshot { managed_pages, free_pages, zone })
 }
 
 /// Decide allocation reclaim policy for `requested_pages`. Linux wakes
