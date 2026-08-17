@@ -264,12 +264,27 @@ impl<S: SectorSource> Volume<S> {
         -> Result<u32, Errno> {
         let mut freed = 0u32;
         while self.free_segment_count() < target {
-            let search = Search { offset: self.segstate.gc_cursor, ..Search::foreground(policy) };
-            let Some(found) = self.search_victim(search, skip) else { break };
-            self.segstate.gc_cursor = found.cursor;
-            self.gc_section(found.segno)?;
-            if self.section_valid(found.segno) == 0 { freed += 1; }
-            skip.push(found.segno);
+            // What an ahead-of-demand search already costed comes first. A
+            // section is in that set because a search found it the cheapest
+            // thing to empty, so a caller that needs space now takes it
+            // without costing the table again — and taking it is also what
+            // stops the next ahead-of-demand pass from skipping it forever.
+            let segno = match self.take_bg_victim() {
+                Some(s) if !skip.contains(&s) => s,
+                _ => {
+                    let search =
+                        Search { offset: self.segstate.gc_cursor, ..Search::foreground(policy) };
+                    let Some(found) = self.search_victim(search, skip) else { break };
+                    self.segstate.gc_cursor = found.cursor;
+                    // A section this caller is about to empty is no longer
+                    // worth remembering as a candidate.
+                    self.clear_victim_section(found.segno);
+                    found.segno
+                }
+            };
+            self.gc_section(segno)?;
+            if self.section_valid(segno) == 0 { freed += 1; }
+            skip.push(segno);
         }
         Ok(freed)
     }
@@ -305,10 +320,12 @@ impl<S: SectorSource> Volume<S> {
         self.writable_or_err()?;
         if self.segstate.gc_running { return Ok(None); }
         self.load_segments()?;
-        let Some(found) = self.search_victim_by_age(&[]) else {
+        let skip = self.retained_victim_segs();
+        let Some(found) = self.search_victim_by_age(&skip) else {
             return self.gc_background_as(Policy::CostBenefit, mode);
         };
         self.segstate.gc_cursor = found.cursor;
+        self.mark_victim_section(found.segno);
         self.segstate.gc_running = true;
         self.segstate.gc_pass_mode = mode;
         self.segstate.gc_atgc_log = self.atgc.enabled;
@@ -328,8 +345,14 @@ impl<S: SectorSource> Volume<S> {
         if self.segstate.gc_running { return Ok(None); }
         self.load_segments()?;
         let search = Search::background(policy, self.segstate.gc_cursor);
-        let Some(found) = self.search_victim(search, &[]) else { return Ok(None) };
+        // What an earlier ahead-of-demand pass already chose is passed over.
+        // This search is BOUNDED, so without the exclusion it would settle on
+        // the same cheapest section every round and the rest of the volume
+        // would never be costed at all.
+        let skip = self.retained_victim_segs();
+        let Some(found) = self.search_victim(search, &skip) else { return Ok(None) };
         self.segstate.gc_cursor = found.cursor;
+        self.mark_victim_section(found.segno);
         self.segstate.gc_running = true;
         self.segstate.gc_pass_mode = mode;
         self.segstate.gc_atgc_log = self.atgc.enabled;

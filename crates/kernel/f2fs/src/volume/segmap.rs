@@ -63,6 +63,26 @@ pub struct SegState {
     /// Whether the cleaner is already running, so that a checkpoint taken to
     /// reclaim prefree segments cannot re-enter it.
     pub gc_running: bool,
+    /// Whether a checkpoint is writing right now.
+    ///
+    /// A metadata block is the same block whoever writes it, so its address
+    /// cannot say which layer generated the traffic; a checkpoint's blocks and
+    /// an ordinary summary flush are told apart by this and by nothing else.
+    /// Per-PASS state for the same reason `gc_moving` is: the writer already
+    /// knows, and a second copy carried down through every write call would be
+    /// a parameter every future metadata writer had to remember to set.
+    pub cp_writing: bool,
+    /// Sections a bounded ahead-of-demand search has already chosen.
+    ///
+    /// Retained ACROSS searches on purpose. An ahead-of-demand pass must not
+    /// keep re-picking the section it picked last time — its bounded scan
+    /// would sit on the same candidate and the rest of the volume would never
+    /// be reached — while a caller that needs space NOW wants exactly those
+    /// sections first, because a section chosen ahead of demand was chosen for
+    /// having few live blocks and is therefore the cheapest thing to empty.
+    /// A section is struck off when it is taken, and when it empties on its
+    /// own, so the set only ever holds sections still worth the memory.
+    pub victim_secs: BTreeSet<u32>,
     /// Where the next victim search resumes, so successive searches sweep the
     /// volume instead of re-costing the same low-numbered segments.
     pub gc_cursor: u32,
@@ -173,6 +193,14 @@ impl<S: SectorSource> Volume<S> {
             // appending to it, and the blocks it hands out next would be
             // taken from a segment the allocator had been told not to touch.
             if emptied && !self.is_current(segno) { self.segstate.prefree.insert(segno); }
+            // A section with nothing live in it is not a cleaning candidate —
+            // there is nothing to move out — so remembering it as one would
+            // send the next caller that needs space to a section that yields
+            // no work and no space, and the ahead-of-demand search would keep
+            // excluding it forever.
+            if emptied && self.section_valid(self.first_seg_of_sec(self.secno_of_seg(segno))) == 0 {
+                self.clear_victim_section(segno);
+            }
         }
         self.sit_dirty.insert(segno);
         Ok(())

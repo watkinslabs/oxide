@@ -59,6 +59,8 @@ impl<S: SectorSource> Volume<S> {
             for &a in live {
                 if !self.sb.valid_main_blkaddr(a) { return Err(Errno::Eio); }
                 image.extend_from_slice(&self.read_main_block(a)?);
+                self.io_account(crate::stats::iostat::Io::FsDataRead, BLKSIZE as u64, true);
+                self.io_read_folio(0);
             }
             let c = decompress_cluster(g, &image).map_err(errno)?;
             if let Chksum::Mismatch { .. } = c.chksum { return Err(Errno::Eio); }
@@ -69,6 +71,8 @@ impl<S: SectorSource> Volume<S> {
             if crate::node::is_hole(a) { continue; }
             if !self.sb.valid_main_blkaddr(a) { return Err(Errno::Eio); }
             out[i * BLKSIZE..(i + 1) * BLKSIZE].copy_from_slice(&self.read_main_block(a)?);
+            self.io_account(crate::stats::iostat::Io::FsDataRead, BLKSIZE as u64, false);
+            self.io_read_folio(0);
         }
         Ok(out)
     }
@@ -275,7 +279,12 @@ impl<S: SectorSource> Volume<S> {
                     // Only a real block is handed to the allocator as the one
                     // being replaced; a mark names no segment to clear.
                     let carry = if holds_block(was) { was } else { NULL_ADDR };
-                    self.write_data(owner, ofs as u16, false, carry, page)?
+                    let at_addr = self.write_data(owner, ofs as u16, false, carry, page)?;
+                    // The generic writer has already charged this as file
+                    // data; it is compressed data as well, and the compressed
+                    // figure is what answers how much of the traffic was.
+                    self.io_account(crate::stats::iostat::Io::FsCdata, BLKSIZE as u64, false);
+                    at_addr
                 }
                 Slot::Sentinel | Slot::Reserved => {
                     if holds_block(was) { self.release_slot(ino, was)?; }

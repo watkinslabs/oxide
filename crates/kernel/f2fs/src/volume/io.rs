@@ -52,6 +52,20 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(bytes read)
     pub fn read_file(&self, inode: &Inode, ino: u32, off: u64, buf: &mut [u8])
         -> Result<usize, Errno> {
+        let got = self.read_file_inner(inode, ino, off, buf)?;
+        // What the APPLICATION asked for, which is not what the medium moved:
+        // a read served from inline data or from a hole touches no block at
+        // all, and one that spans a compressed cluster unpacks more blocks
+        // than it returns. Both figures are wanted, so the application's is
+        // taken here and the medium's at the blocks themselves.
+        self.io_account(crate::stats::iostat::Io::AppBufferedRead, got as u64,
+                        inode.compressed());
+        Ok(got)
+    }
+
+    /// # C: O(bytes read)
+    fn read_file_inner(&self, inode: &Inode, ino: u32, off: u64, buf: &mut [u8])
+        -> Result<usize, Errno> {
         // The writer of an open span must see its own writes, which live in
         // the shadow inode rather than in this one.
         if self.is_atomic_file(ino) { return self.atomic_read_file(inode, ino, off, buf); }
@@ -94,6 +108,8 @@ impl<S: SectorSource> Volume<S> {
                 }
                 Mapped::At(addr) => {
                     let mut block = self.read_main_block(addr)?;
+                    self.io_account(crate::stats::iostat::Io::FsDataRead, BLKSIZE as u64, false);
+                    self.io_read_folio(0);
                     // Contents are encrypted in UNITS, which may be smaller
                     // than a block, and the index counts units from the start
                     // of the file — not blocks. Decryption comes before the
@@ -185,6 +201,12 @@ impl<S: SectorSource> Volume<S> {
         for &a in live {
             if !self.sb.valid_main_blkaddr(a) { return Err(Errno::Eio); }
             image.extend_from_slice(&self.read_main_block(a)?);
+            // A compressed cluster's stored blocks are file data and are also
+            // compressed data, so they are charged to both — the compressed
+            // figure answers what share of the traffic was compressed, which a
+            // partition of the total could not.
+            self.io_account(crate::stats::iostat::Io::FsDataRead, BLKSIZE as u64, true);
+            self.io_read_folio(0);
         }
         let cluster = crate::compress::decompress_cluster(&g, &image).map_err(compress_errno)?;
         // A checksum the file asked for and that does not match means the

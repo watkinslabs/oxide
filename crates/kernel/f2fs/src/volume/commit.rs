@@ -77,6 +77,19 @@ impl<S: SectorSource> Volume<S> {
     pub fn commit_with(&mut self, reason: CpReason) -> Result<(), Errno> {
         if !self.writable { return Ok(()); }
         if !self.dirty { return Ok(()); }
+        // Every metadata block written from here to the end of this call is
+        // the checkpoint's, which is the only thing that tells it apart from
+        // an ordinary summary flush. Lowered on every exit, including the
+        // failing ones: a mark left standing would charge the next mount-wide
+        // metadata write to a checkpoint that is not running.
+        self.segstate.cp_writing = true;
+        let outcome = self.commit_body(reason);
+        self.segstate.cp_writing = false;
+        outcome
+    }
+
+    /// # C: O(dirty table blocks + pack blocks)
+    fn commit_body(&mut self, reason: CpReason) -> Result<(), Errno> {
         self.load_segments()?;
         // Accounting becomes durable with everything else it describes.
         self.flush_quotas()?;
@@ -94,7 +107,13 @@ impl<S: SectorSource> Volume<S> {
         // pack must be durable before it lands, or the pack names blocks a
         // power loss never finished writing. A mount that asked for no
         // barriers has said it accepts that risk.
-        if self.opts.barrier { self.source.flush_devices()?; }
+        if self.opts.barrier {
+            self.source.flush_devices()?;
+            // A cache flush carries no bytes, so the figure worth having is
+            // how MANY were asked for; the byte total stays zero by
+            // construction rather than by an omission.
+            self.io_account(crate::stats::iostat::Io::FsFlush, 0, false);
+        }
         let version = self.cp.version.wrapping_add(1);
         let pack = match self.cp.pack { Pack::First => Pack::Second, Pack::Second => Pack::First };
         let start = match pack {

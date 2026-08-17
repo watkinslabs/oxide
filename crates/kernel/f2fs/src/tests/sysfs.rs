@@ -111,7 +111,7 @@ fn an_attribute_is_writable_exactly_when_something_reads_it() {
         crate::bg::knobs::ALL.iter().map(|&k| crate::bg::knobs::name(k)).collect();
     controls.extend(crate::atgc::knobs::ALL.iter().map(|&k| crate::atgc::knobs::name(k)));
     controls.extend(["ram_thresh", "max_read_extent_count", "last_age_weight",
-                     "hot_data_age_threshold", "warm_data_age_threshold"]);
+                     "hot_data_age_threshold", "warm_data_age_threshold", "iostat_enable"]);
     for a in mount_attrs(&fs).iter().chain(global_attrs().iter()) {
         let control = controls.contains(&a.name);
         assert_eq!(a.store.is_some(), control, "{}/{}", a.dir, a.name);

@@ -2,6 +2,7 @@
 //!
 //! Module manifest:
 //! - `victim`:   costing and choosing a victim, over a table with no medium.
+//! - `secmap`:   the sections the cleaner remembers between searches.
 //! - `search`:   bounded, resuming selection, in sections.
 //! - `liveness`: the three records a block's liveness is read from.
 //! - `clean`:    cleaning a real volume, proved by remounting it.
@@ -11,6 +12,8 @@
 
 #[path = "gc/victim.rs"]
 mod victim;
+#[path = "gc/secmap.rs"]
+mod secmap;
 #[path = "gc/search.rs"]
 mod search;
 #[path = "gc/liveness.rs"]
