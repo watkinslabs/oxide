@@ -210,15 +210,40 @@ fn an_application_read_and_the_blocks_under_it_are_charged_apart() {
 
 /// A cache flush carries no bytes, so its byte total is zero by construction
 /// and its count is the figure worth having.
+///
+/// A checkpoint on a volume of ONE member charges none: that member carries the
+/// pack, so its ordering is the commit block's own pre-flush and there is no
+/// separate barrier to count. The figure this row exists for is the barrier an
+/// `fsync` chain owes, and it is charged where it is issued — which is only at a
+/// medium that has a cache to empty.
 #[test]
 fn a_barrier_flush_is_counted_and_carries_no_bytes() {
-    let mut v = test_image::with_root().mount_rw().unwrap();
+    let bytes = test_image::with_root().finish();
+    let img = sectors::MemImage::from_bytes(BLKSIZE as u32, bytes).with_write_cache();
+    let mut v = crate::volume::Volume::mount_with(img, crate::opts::Options::defaults(), true).unwrap();
     assert!(v.options().barrier, "the fixture must be taking barriers");
+    let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
+    v.write_file(ino, 0, &vec![7u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
+    v.commit().unwrap();
+    v.write_file(ino, 0, b"x").unwrap();
+    v.sync_data().unwrap();
+    v.set_iostat_enabled(true);
+    assert!(!v.fsync(ino).unwrap().needed(), "the fixture must take the chain path");
+    assert_eq!(row(&body(&v), "[OTHER]", "fs flush"), (0, 1));
+}
+
+/// The same checkpoint on a volume of one member, where the commit block's own
+/// pre-flush is the whole of the ordering: nothing separate is issued, so
+/// nothing is counted.
+#[test]
+fn a_single_member_checkpoint_charges_no_separate_barrier() {
+    let mut v = test_image::with_root().mount_rw().unwrap();
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     v.write_file(ino, 0, &vec![7u8; BLKSIZE]).unwrap();
     v.set_iostat_enabled(true);
     v.commit().unwrap();
-    assert_eq!(row(&body(&v), "[OTHER]", "fs flush"), (0, 1));
+    assert_eq!(row(&body(&v), "[OTHER]", "fs flush"), (0, 0));
 }
 
 /// A compressed file's traffic is counted under both its kinds, because the

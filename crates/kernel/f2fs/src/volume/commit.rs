@@ -121,18 +121,6 @@ impl<S: SectorSource> Volume<S> {
         // references they were being held against, and it must record the
         // free count that includes them.
         self.clear_prefree();
-        // Everything this checkpoint will refer to is now on the media. On a
-        // volume spread over several devices the ones that do NOT carry the
-        // pack must be durable before it lands, or the pack names blocks a
-        // power loss never finished writing. A mount that asked for no
-        // barriers has said it accepts that risk.
-        if self.opts.barrier {
-            self.source.flush_devices()?;
-            // A cache flush carries no bytes, so the figure worth having is
-            // how MANY were asked for; the byte total stays zero by
-            // construction rather than by an omission.
-            self.io_account(crate::stats::iostat::Io::FsFlush, 0, false);
-        }
         let version = self.cp.version.wrapping_add(1);
         let pack = match self.cp.pack { Pack::First => Pack::Second, Pack::Second => Pack::First };
         let start = match pack {
@@ -155,9 +143,23 @@ impl<S: SectorSource> Volume<S> {
         for i in 1..=payload { self.write_block(start + i, &vec![0u8; BLKSIZE])?; }
         self.write_orphans(start + 1 + payload)?;
         self.write_summaries(start, total, logs, &nat_journal, &sit_journal)?;
-        // The tail goes last. Until it lands the pack reads as torn and the
-        // other pack stays current, which is exactly the guarantee wanted.
-        self.write_block(start + total - 1, &head)?;
+        // Everything this checkpoint refers to has now been written. On a volume
+        // spread over several members, the ones that do NOT carry the pack are
+        // fenced HERE, after the last of it went down and before the block that
+        // makes it current: their caches must be empty, or the pack names blocks
+        // a power loss never finished writing. The member that carries the pack
+        // is left to the commit block below, whose own pre-flush fences it —
+        // asking here as well would cost a second barrier for one guarantee.
+        self.flush_device_cache()?;
+        // The tail goes last, and under a durability promise rather than as an
+        // ordinary write. Until it lands the pack reads as torn and the other
+        // pack stays current, which is the guarantee wanted — but only if the
+        // device cannot reorder it ahead of the pack it commits. Its pre-flush
+        // is what forbids that, and its forced-unit-access is what makes the
+        // checkpoint durable by the time this call returns rather than whenever
+        // the device gets round to it.
+        self.write_block_durable(start + total - 1, &head,
+            crate::devices::barrier::commit_block_durability(self.opts.barrier))?;
         self.adopt(head, pack, payload, nat_bitmap, sit_bitmap, nat_journal, sit_journal)
     }
 

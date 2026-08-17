@@ -211,6 +211,7 @@ impl<S: SectorSource> Volume<S> {
             // puts the same mapping.
             node_cache: crate::filemap::NodeCache::new(node_ino),
             fault: crate::fault::Info::new(),
+            dirty_devs: core::cell::Cell::new(crate::devices::barrier::DirtyDevices::new()),
             devs,
             zoned,
         });

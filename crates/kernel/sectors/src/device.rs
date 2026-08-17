@@ -55,6 +55,46 @@ impl BlockSource {
         let blocks = u32::try_from(span.div_ceil(dev_block as usize)).map_err(|_| Errno::Eio)?;
         Ok((first, skew, blocks))
     }
+
+    /// The one write path, carrying whatever of a durability promise the device
+    /// itself is to honour.
+    ///
+    /// One implementation rather than a plain write beside a durable one: a
+    /// second copy is a second place for the read-modify-write rule, the
+    /// refusal on a read-only source and the span arithmetic to be got wrong,
+    /// and a partial-block write that forgets the read destroys the bytes
+    /// either side of it.
+    /// # C: O(len) plus one read when the span is partial
+    fn write_inner(&self, sector: u64, buf: &[u8], flags: block::RequestFlags,
+        durability: block::Durability) -> Result<(), Errno> {
+        if !self.writable { return Err(Errno::Erofs); }
+        let (first, skew, blocks) = self.span(sector, buf.len())?;
+        let span = skew + buf.len();
+        let whole = blocks as usize * self.dev.block_size().max(1) as usize;
+        let mut payload = if skew == 0 && span == whole {
+            alloc::vec![0u8; whole]
+        } else {
+            // The read-modify-write read carries the write's own hints. It is
+            // not a read anybody asked for — it exists only because this write
+            // does not cover whole device blocks — so leaving it unhinted
+            // would let it queue behind ordinary traffic and delay the write
+            // it is part of by exactly the amount the hint was meant to save.
+            //
+            // It does NOT carry the durability promise: the promise is about
+            // when the WRITE is on the medium, and a read has nothing to make
+            // durable.
+            let mut req = block::BlockRequest::new_read(first, blocks, self.dev.block_size())
+                .with_flags(flags);
+            self.dev.submit_sync(&mut req).map_err(|_| Errno::Eio)?;
+            if req.buffer.len() < whole { return Err(Errno::Eio); }
+            req.buffer
+        };
+        payload[skew..span].copy_from_slice(buf);
+        let mut req = block::BlockRequest::new_write(first, blocks, payload)
+            .with_flags(flags).with_durability(durability);
+        self.dev.submit_sync(&mut req).map_err(|_| Errno::Eio)?;
+        Ok(())
+    }
 }
 
 impl SectorSource for BlockSource {
@@ -74,28 +114,29 @@ impl SectorSource for BlockSource {
 
     fn write_sectors_flags(&self, sector: u64, buf: &[u8], flags: block::RequestFlags)
         -> Result<(), Errno> {
-        if !self.writable { return Err(Errno::Erofs); }
-        let (first, skew, blocks) = self.span(sector, buf.len())?;
-        let span = skew + buf.len();
-        let whole = blocks as usize * self.dev.block_size().max(1) as usize;
-        let mut payload = if skew == 0 && span == whole {
-            alloc::vec![0u8; whole]
-        } else {
-            // The read-modify-write read carries the write's own hints. It is
-            // not a read anybody asked for — it exists only because this write
-            // does not cover whole device blocks — so leaving it unhinted
-            // would let it queue behind ordinary traffic and delay the write
-            // it is part of by exactly the amount the hint was meant to save.
-            let mut req = block::BlockRequest::new_read(first, blocks, self.dev.block_size())
-                .with_flags(flags);
-            self.dev.submit_sync(&mut req).map_err(|_| Errno::Eio)?;
-            if req.buffer.len() < whole { return Err(Errno::Eio); }
-            req.buffer
-        };
-        payload[skew..span].copy_from_slice(buf);
-        let mut req = block::BlockRequest::new_write(first, blocks, payload).with_flags(flags);
-        self.dev.submit_sync(&mut req).map_err(|_| Errno::Eio)?;
-        Ok(())
+        self.write_inner(sector, buf, flags, block::Durability::NONE)
+    }
+
+    /// What the DEVICE says about its own cache, forwarded rather than assumed.
+    ///
+    /// A driver that knows its cache mode privately is not enough: the layer
+    /// that decides whether a commit record needs a barrier reads it from here,
+    /// and a medium that answered `false` for a write-back device would have
+    /// every barrier above it optimised away.
+    fn write_cache(&self) -> bool {
+        self.dev.queue_limits().map(|l| l.write_cache()).unwrap_or(true)
+    }
+
+    /// The promise kept by the device where it can, and by barriers where it
+    /// cannot. The residue of the promise rides on the request itself, so a
+    /// device with forced-unit-access does one write instead of a write and a
+    /// flush.
+    fn write_sectors_durable(&self, sector: u64, buf: &[u8], flags: block::RequestFlags,
+        want: block::Durability) -> Result<(), Errno> {
+        let (cache, fua) = block::durability::submit::facts(&*self.dev);
+        let seq = block::durability::sequence(cache, fua, want, true);
+        block::durability::submit::run_with(seq, || self.flush(),
+            |d| self.write_inner(sector, buf, flags, d))
     }
 
     fn crypto_profile(&self) -> Option<&block::crypto::Profile> { self.dev.crypto_profile() }

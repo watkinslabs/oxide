@@ -122,11 +122,28 @@ impl<S: SectorSource> SectorSource for DeviceSet<S> {
         Ok(())
     }
 
-    /// Every member but the first. The commit record lands on the first, so
-    /// its ordering belongs to the commit; the others must be durable BEFORE
-    /// that record, or it names blocks a power loss never finished writing.
-    fn flush_devices(&self) -> Result<(), Errno> {
-        for m in self.members.iter().skip(1) { m.flush()?; }
+    fn flush_device(&self, member: usize) -> Result<(), Errno> {
+        self.members.get(member).ok_or(Errno::Einval)?.flush()
+    }
+
+    fn members(&self) -> usize { self.members.len() }
+
+    /// A member holds a cache of its own, so the answer for the set is whether
+    /// ANY of them does. Answering with the primary alone would leave a
+    /// write-back member behind a write-through one unfenced.
+    fn write_cache(&self) -> bool { self.members.iter().any(|m| m.write_cache()) }
+
+    /// Each member sequences its OWN barriers around its own piece of the
+    /// write. Sequencing the set as a whole would flush every member for a
+    /// write that landed on one, and — worse for a commit record — would put
+    /// the barrier of the member holding the record's tail after another
+    /// member's piece of it.
+    fn write_sectors_durable(&self, sector: u64, buf: &[u8], flags: block::RequestFlags,
+        want: block::Durability) -> Result<(), Errno> {
+        for r in self.split(sector, buf.len())? {
+            let m = self.members.get(r.member).ok_or(Errno::Eio)?;
+            m.write_sectors_durable(r.local, &buf[r.at..r.at + r.len], flags, want)?;
+        }
         Ok(())
     }
 }

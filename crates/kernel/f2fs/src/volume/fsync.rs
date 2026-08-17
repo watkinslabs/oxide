@@ -107,10 +107,23 @@ impl<S: SectorSource> Volume<S> {
         let state = self.sync_state(ino)?;
         let reason = need_checkpoint(&state);
         if reason.needed() {
+            // No barrier on this leg, and that is not an omission: a checkpoint
+            // ends in a commit block written under its own durability promise,
+            // so everything this call was to make durable has already been
+            // fenced. Asking again would cost a second barrier for one
+            // guarantee.
             self.commit()?;
             return Ok(reason);
         }
         self.write_fsync_chain(ino, state.need_dentry_mark)?;
+        // And THEN the barrier, which is what makes the call's promise true. The
+        // chain is a run of node blocks a later mount goes looking for; a device
+        // with a volatile cache has acknowledged them without putting them on
+        // the medium and is free to reorder them, so returning here without
+        // fencing would report durability for bytes a power cut still loses.
+        // Whether one is owed at all is the mount's decision — see
+        // `devices::barrier`.
+        self.fsync_barrier(self.is_atomic_file(ino))?;
         Ok(CpReason::None)
     }
 }
