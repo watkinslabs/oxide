@@ -44,7 +44,7 @@ pub use global::{
     install_totalram_pages, nr_cached, nr_dirty, nr_writeback, totalram_pages, DirtyAction,
     DIRTY_BACKGROUND_RATIO, DIRTY_EXPIRE_NS, DIRTY_RATIO, WRITEBACK_INTERVAL_NS,
 };
-pub use mapping::{Mapping, Writeback};
+pub use mapping::{Mapping, PageOut, Writeback};
 pub use page::CachedPage;
 pub use radix::RadixTree;
 pub use writeback::{flush_pass, reclaimable_pages, shrink, DevWriteback};

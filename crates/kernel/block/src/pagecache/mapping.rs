@@ -24,13 +24,36 @@ use crate::types::{InodeId, KResult, PageFlags};
 use super::page::CachedPage;
 use super::radix::RadixTree;
 
+/// One page offered to a writeback target: where in the file it belongs and
+/// the bytes to put there. The bytes are a snapshot taken out from under the
+/// page lock, so a target may hold them across an operation that sleeps.
+pub struct PageOut<'a> {
+    pub offset: u64,
+    pub data:   &'a [u8],
+}
+
 /// Where a mapping's dirty pages go when writeback runs — the reference's
 /// `a_ops->writepages`. A mapping that has never been written has none, and
 /// nothing can dirty a page without installing one, so the flusher never
 /// meets a dirty page it cannot place.
+///
+/// WHOLE-MAPPING, never per page. A filesystem whose page addresses are chosen
+/// at writeback — every out-of-place log-structured one — decides where a
+/// batch goes as a batch: one allocator visit, one lock acquisition, one
+/// ordering. A per-page entry point forces that filesystem to take its own
+/// lock once per page from inside a call the cache makes while it is itself
+/// dirtying a page, which is where the reference's own per-page writeback
+/// entry point ended up and why it no longer has one.
 pub trait Writeback: Send + Sync {
-    /// Put one page's bytes on the medium. # C: O(I/O)
-    fn write_page(&self, ino: InodeId, offset: u64, data: &[u8]) -> KResult<()>;
+    /// Put a batch of one mapping's pages on the medium.
+    ///
+    /// `results` has one slot per page and arrives prefilled with a failure;
+    /// the target overwrites the slot of each page whose bytes it landed. A
+    /// page the target never reports is treated as not written and is
+    /// re-dirtied, because the alternative — assuming success — drops the only
+    /// copy of a write the caller was told had succeeded.
+    /// # Ctx: process # Sleeps: y # C: O(I/O)
+    fn writepages(&self, ino: InodeId, pages: &[PageOut<'_>], results: &mut [KResult<()>]);
     /// Barrier the medium after a run of pages (`fsync`'s cache flush).
     /// # C: O(I/O)
     fn sync_medium(&self) -> KResult<()>;
@@ -93,6 +116,9 @@ impl Mapping {
     pub(super) fn writeback_target(&self) -> Option<Arc<dyn Writeback>> {
         self.st.lock().wb.clone()
     }
+
+    /// Whether this mapping has somewhere to put a dirty page. # C: O(1)
+    pub(super) fn has_writeback(&self) -> bool { self.st.lock().wb.is_some() }
 
     /// # C: O(height)
     pub(super) fn get(&self, index: u64) -> Option<Arc<CachedPage>> {

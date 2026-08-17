@@ -20,7 +20,7 @@ use crate::blockdev::{BlockDevice, BlockRequest};
 use crate::types::{BlockError, InodeId, KResult, PageFlags, PAGE_BYTES};
 
 use super::global;
-use super::mapping::{Mapping, Writeback};
+use super::mapping::{Mapping, PageOut, Writeback};
 
 /// Writeback straight to a block device, file offset taken as device offset.
 /// What a `PageCache` used over a raw device gets; a filesystem that
@@ -32,9 +32,9 @@ impl DevWriteback {
     pub fn new(dev: Arc<dyn BlockDevice>) -> Arc<dyn Writeback> { Arc::new(Self { dev }) }
 }
 
-impl Writeback for DevWriteback {
+impl DevWriteback {
     /// # C: O(PAGE_BYTES / block_size)
-    fn write_page(&self, _ino: InodeId, offset: u64, data: &[u8]) -> KResult<()> {
+    fn write_one(&self, offset: u64, data: &[u8]) -> KResult<()> {
         let bs = self.dev.block_size() as u64;
         if bs == 0 || PAGE_BYTES as u64 % bs != 0 { return Err(BlockError::Einval); }
         let blocks = (PAGE_BYTES as u64 / bs) as u32;
@@ -42,6 +42,15 @@ impl Writeback for DevWriteback {
         self.dev.submit_sync(&mut req)?;
         crate::charge_io(PAGE_BYTES as u64, true);
         Ok(())
+    }
+}
+
+impl Writeback for DevWriteback {
+    /// A device mapping's page address IS its file offset, so a batch has no
+    /// decision to take as a batch and is written page by page.
+    /// # C: O(pages * PAGE_BYTES / block_size)
+    fn writepages(&self, _ino: InodeId, pages: &[PageOut<'_>], results: &mut [KResult<()>]) {
+        for (i, p) in pages.iter().enumerate() { results[i] = self.write_one(p.offset, p.data); }
     }
 
     /// # C: O(device flush)
@@ -79,13 +88,22 @@ fn submit_batch(map: &Arc<Mapping>, wb: &Arc<dyn Writeback>, batch: Vec<(u64, Ar
     global::account_writeback(n as isize);
     map.inflight.fetch_add(n, Ordering::AcqRel);
 
+    // Every payload is copied out from under the page locks BEFORE the target
+    // is entered: the target is a filesystem or a driver call and may sleep,
+    // which nothing may do holding a spinlock, and it is handed the whole
+    // batch at once so it can decide the batch's placement as a batch.
+    let payloads: Vec<Vec<u8>> = batch.iter().map(|(_, p)| p.data.lock().clone()).collect();
+    let pages: Vec<PageOut<'_>> = batch.iter().zip(payloads.iter())
+        .map(|((_, p), buf)| PageOut { offset: p.offset, data: buf }).collect();
+    // Prefilled with a failure, so a target that returns without reporting a
+    // page leaves that page re-dirtied rather than silently dropped.
+    let mut results: Vec<KResult<()>> = (0..n).map(|_| Err(BlockError::Eio)).collect();
+    wb.writepages(map.ino(), &pages, &mut results);
+    drop(pages);
+
     let mut written = 0usize;
     let mut first_err: KResult<()> = Ok(());
-    for (index, page) in batch {
-        // The payload is copied out from under the page lock: the target is a
-        // driver call and may sleep, which nothing may do holding a spinlock.
-        let payload = page.data.lock().clone();
-        let result = wb.write_page(map.ino(), page.offset, &payload);
+    for ((index, _), result) in batch.into_iter().zip(results.into_iter()) {
         let requeued = map.end_writeback(index, result.is_ok());
         global::account_writeback(-1);
         map.inflight.fetch_sub(1, Ordering::AcqRel);
