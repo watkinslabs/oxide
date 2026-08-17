@@ -352,3 +352,28 @@ fn the_first_process_label_renders_as_the_kernels_when_the_policy_lacks_the_capa
     // testing the substitution and not a policy that happened to agree.
     let _ = declared;
 }
+
+#[test]
+fn before_a_policy_load_a_written_query_is_answered_rather_than_refused() {
+    // The bootstrap window: userspace can already open the interface and ask,
+    // and there is no policy to answer from. Refusing makes every query fail
+    // for the whole of early boot, which the caller reads as a broken kernel
+    // rather than as an unconfigured one.
+    let mut s = server();
+    assert!(!s.initialized());
+    let kernel = crate::uapi::initsid::InitSid::Kernel.sid();
+    let file = crate::uapi::initsid::InitSid::File.sid();
+    let process = crate::uapi::classmap::class_by_name("process").expect("process") as u32;
+    let file_class = crate::uapi::classmap::class_by_name("file").expect("file") as u32;
+
+    // A new process keeps its creator's label; any other object keeps the
+    // label of the thing it is created against.
+    assert_eq!(s.transition_sid_user(kernel, file, process, None), Ok(kernel));
+    assert_eq!(s.transition_sid_user(kernel, file, file_class, None), Ok(file));
+    assert_eq!(s.change_sid_user(kernel, file, file_class), Ok(file));
+    assert_eq!(s.member_sid_user(kernel, file, file_class), Ok(file));
+
+    // Nothing is denied, and no constraint list exists to refuse a relabel.
+    assert_eq!(s.compute_av_user(kernel, file, file_class).allowed, u32::MAX);
+    assert_eq!(s.validate_transition_user("a", "b", file_class, "c"), Ok(()));
+}

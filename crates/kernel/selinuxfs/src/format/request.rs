@@ -21,7 +21,8 @@ pub struct AvRequest {
     pub scontext: String,
     /// Written context of the object.
     pub tcontext: String,
-    /// Kernel class value.
+    /// Class value in the LOADED POLICY's numbering, as `class/<name>/index`
+    /// publishes it and userspace writes it back.
     pub class: u16,
 }
 
@@ -32,7 +33,8 @@ pub struct CreateRequest {
     pub scontext: String,
     /// Written context of the parent object.
     pub tcontext: String,
-    /// Kernel class value.
+    /// Class value in the LOADED POLICY's numbering, as `class/<name>/index`
+    /// publishes it and userspace writes it back.
     pub class: u16,
     /// Name of the object being created, when the caller supplies one.
     pub name: Option<String>,
@@ -45,7 +47,8 @@ pub struct TransRequest {
     pub old: String,
     /// Context the object would take.
     pub new: String,
-    /// Kernel class value.
+    /// Class value in the LOADED POLICY's numbering, as `class/<name>/index`
+    /// publishes it and userspace writes it back.
     pub class: u16,
     /// Context of the task asking.
     pub task: String,
