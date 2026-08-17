@@ -2,6 +2,7 @@
 // source of x86 IOMMU-unit ownership; PCI and DMA consumers must read it,
 // never rediscover tables or manufacture a second device-to-unit registry.
 
+use alloc::boxed::Box;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use crate::acpi::log::{alog_dec, alog_hex, alog_raw};
@@ -163,6 +164,45 @@ pub struct IommuInventory {
     pub dmar_rmrr_count: usize,
 }
 
+impl IommuInventory {
+    /// Empty inventory, `const` so a heap slot is filled by one copy from
+    /// read-only data rather than being built in the caller's frame.
+    const EMPTY: Self = Self {
+        kind: IommuKind::AmdVi,
+        dmar_x2apic_opt_out: false,
+        units: [IommuUnit { kind: IommuKind::AmdVi, segment: 0, source_id: 0, event_msi: 0,
+            register_base: 0, register_pages: 1, include_all: false }; MAX_IOMMU_UNITS],
+        unit_count: 0,
+        amd_scopes: [AmdIvhdScope { unit_index: 0, first_requester: 0, last_requester: 0 }; MAX_AMD_IVHD_SCOPES],
+        amd_scope_count: 0,
+        amd_aliases: [AmdIvhdAlias { unit_index: 0, first_requester: 0, last_requester: 0, canonical_requester: 0 }; MAX_AMD_IVHD_ALIASES],
+        amd_alias_count: 0,
+        amd_ivmds: [AmdIvmd { segment: 0, first_requester: 0, last_requester: 0, base: 0, len: 0, read: false, write: false }; MAX_AMD_IVMDS],
+        amd_ivmd_count: 0,
+        amd_specials: [AmdIvhdSpecial { unit_index: 0, kind: 0, id: 0, requester: 0 }; MAX_AMD_SPECIALS],
+        amd_special_count: 0,
+        dmar_scopes: [DmarScope { unit_index: 0, scope_type: 0, enumeration_id: 0, start_bus: 0,
+            path_len: 0, path: [0; MAX_DMAR_PATH_BYTES] }; MAX_DMAR_SCOPES],
+        dmar_scope_count: 0,
+        dmar_rmrrs: [DmarRmrr { segment: 0, base: 0, end: 0, scope_count: 0,
+            scopes: [DmarScope { unit_index: DMAR_RMRR_SCOPE_UNIT, scope_type: 0, enumeration_id: 0,
+                start_bus: 0, path_len: 0, path: [0; MAX_DMAR_PATH_BYTES] }; rmrr::MAX_RMRR_SCOPES] }; MAX_DMAR_RMRRS],
+        dmar_rmrr_count: 0,
+    };
+
+    /// Heap-resident empty inventory of `kind`.
+    ///
+    /// This aggregate is ~24 KiB — a stack copy of it does not fit the 16 KiB
+    /// kernel stack, and firmware tables are parsed into per-record heap
+    /// objects rather than one stack-resident table.
+    /// # C: O(size_of::<Self>())
+    fn boxed(kind: IommuKind) -> Box<Self> {
+        let mut inv = Box::new(Self::EMPTY);
+        inv.kind = kind;
+        inv
+    }
+}
+
 static IOMMU_KIND: AtomicU32 = AtomicU32::new(IOMMU_KIND_NONE);
 static IOMMU_COUNT: AtomicU32 = AtomicU32::new(0);
 static DMAR_FLAGS: AtomicU32 = AtomicU32::new(0);
@@ -321,20 +361,19 @@ fn parse_ivhd_entries(t: &[u8], start: usize, end: usize, unit_index: usize, inv
 
 /// Parse a complete AMD IVRS table without touching hardware.
 /// # C: O(table bytes)
-pub fn parse_ivrs(t: &[u8]) -> Result<IommuInventory, IommuError> {
+pub fn parse_ivrs(t: &[u8]) -> Result<Box<IommuInventory>, IommuError> {
+    let mut inv = IommuInventory::boxed(IommuKind::AmdVi);
+    fill_ivrs(t, &mut inv)?;
+    Ok(inv)
+}
+
+/// Fill a caller-owned inventory from an IVRS table.
+///
+/// Split from `parse_ivrs` so the table walk never has the aggregate itself in
+/// its frame, only a pointer to it.
+/// # C: O(table bytes)
+fn fill_ivrs(t: &[u8], inv: &mut IommuInventory) -> Result<(), IommuError> {
     let t = checked_table(t, b"IVRS")?;
-    let empty = IommuUnit { kind: IommuKind::AmdVi, segment: 0, source_id: 0, event_msi: 0, register_base: 0, register_pages: 1, include_all: false };
-    let empty_scope = AmdIvhdScope { unit_index: 0, first_requester: 0, last_requester: 0 };
-    let empty_alias = AmdIvhdAlias { unit_index: 0, first_requester: 0, last_requester: 0, canonical_requester: 0 };
-    let empty_ivmd = AmdIvmd { segment: 0, first_requester: 0, last_requester: 0, base: 0, len: 0, read: false, write: false };
-    let empty_special = AmdIvhdSpecial { unit_index: 0, kind: 0, id: 0, requester: 0 };
-    let empty_dmar_scope = DmarScope { unit_index: 0, scope_type: 0, enumeration_id: 0, start_bus: 0, path_len: 0, path: [0; MAX_DMAR_PATH_BYTES] };
-    let empty_rmrr = DmarRmrr { segment: 0, base: 0, end: 0, scopes: [empty_dmar_scope; rmrr::MAX_RMRR_SCOPES], scope_count: 0 };
-    let mut inv = IommuInventory { kind: IommuKind::AmdVi, dmar_x2apic_opt_out: false, units: [empty; MAX_IOMMU_UNITS], unit_count: 0,
-        amd_scopes: [empty_scope; MAX_AMD_IVHD_SCOPES], amd_scope_count: 0,
-        amd_aliases: [empty_alias; MAX_AMD_IVHD_ALIASES], amd_alias_count: 0,
-        amd_ivmds: [empty_ivmd; MAX_AMD_IVMDS], amd_ivmd_count: 0, amd_specials: [empty_special; MAX_AMD_SPECIALS], amd_special_count: 0,
-        dmar_scopes: [empty_dmar_scope; MAX_DMAR_SCOPES], dmar_scope_count: 0, dmar_rmrrs: [empty_rmrr; MAX_DMAR_RMRRS], dmar_rmrr_count: 0 };
     let mut off = IOMMU_TABLE_HEADER_LEN;
     while off < t.len() {
         if t.len() - off < IVHD_HEADER_LEN { return Err(IommuError::BadRecord); }
@@ -349,9 +388,9 @@ pub fn parse_ivrs(t: &[u8]) -> Result<IommuInventory, IommuError> {
         };
         if hlen != 0 {
             if len < hlen { return Err(IommuError::BadRecord); }
-            parse_ivhd_entries(t, off + hlen, end, inv.unit_count, &mut inv)?;
+            parse_ivhd_entries(t, off + hlen, end, inv.unit_count, inv)?;
             let info = le16(t, off + 18);
-            push(&mut inv, IommuUnit { kind: IommuKind::AmdVi, segment: le16(t, off + 16), source_id: le16(t, off + 4), event_msi: (info & 0x1f) as u8, register_base: le64(t, off + 8), register_pages: 1, include_all: false })?;
+            push(inv, IommuUnit { kind: IommuKind::AmdVi, segment: le16(t, off + 16), source_id: le16(t, off + 4), event_msi: (info & 0x1f) as u8, register_base: le64(t, off + 8), register_pages: 1, include_all: false })?;
         } else if matches!(ty, IVMD_TYPE_ALL | IVMD_TYPE_SELECT | IVMD_TYPE_RANGE) {
             if len != IVMD_HEADER_LEN { return Err(IommuError::BadRecord); }
             let flags = t[off + 1];
@@ -365,13 +404,13 @@ pub fn parse_ivrs(t: &[u8]) -> Result<IommuInventory, IommuError> {
                 if len == 0 || base.checked_add(len).is_none() { return Err(IommuError::BadRecord); }
                 let (read, write) = if flags & IVMD_EXCLUSION_RANGE != 0 { (true, true) }
                     else { (flags & IVMD_IR != 0, flags & IVMD_IW != 0) };
-                push_amd_ivmd(&mut inv, le16(t, off + 8), first, last, base, len, read, write)?;
+                push_amd_ivmd(inv, le16(t, off + 8), first, last, base, len, read, write)?;
             }
         }
         off = end;
     }
     if off != t.len() { return Err(IommuError::BadRecord); }
-    Ok(inv)
+    Ok(())
 }
 
 fn parse_drhd_scopes(t: &[u8], start: usize, end: usize, unit_index: usize, inv: &mut IommuInventory) -> Result<(), IommuError> {
@@ -388,23 +427,20 @@ fn parse_drhd_scopes(t: &[u8], start: usize, end: usize, unit_index: usize, inv:
 
 /// Parse a complete Intel DMAR table without touching hardware.
 /// # C: O(table bytes)
-pub fn parse_dmar(t: &[u8]) -> Result<IommuInventory, IommuError> {
+pub fn parse_dmar(t: &[u8]) -> Result<Box<IommuInventory>, IommuError> {
+    let mut inv = IommuInventory::boxed(IommuKind::IntelVtd);
+    fill_dmar(t, &mut inv)?;
+    Ok(inv)
+}
+
+/// Fill a caller-owned inventory from a DMAR table.
+///
+/// Split from `parse_dmar` for the reason given on `fill_ivrs`.
+/// # C: O(table bytes)
+fn fill_dmar(t: &[u8], inv: &mut IommuInventory) -> Result<(), IommuError> {
     let t = checked_table(t, b"DMAR")?;
     if t[ACPI_HEADER_LEN] < DMAR_MIN_HOST_ADDRESS_WIDTH { return Err(IommuError::BadRecord); }
-    let empty = IommuUnit { kind: IommuKind::IntelVtd, segment: 0, source_id: 0, event_msi: 0, register_base: 0, register_pages: 1, include_all: false };
-    let empty_scope = AmdIvhdScope { unit_index: 0, first_requester: 0, last_requester: 0 };
-    let empty_alias = AmdIvhdAlias { unit_index: 0, first_requester: 0, last_requester: 0, canonical_requester: 0 };
-    let empty_ivmd = AmdIvmd { segment: 0, first_requester: 0, last_requester: 0, base: 0, len: 0, read: false, write: false };
-    let empty_special = AmdIvhdSpecial { unit_index: 0, kind: 0, id: 0, requester: 0 };
-    let empty_dmar_scope = DmarScope { unit_index: 0, scope_type: 0, enumeration_id: 0, start_bus: 0, path_len: 0, path: [0; MAX_DMAR_PATH_BYTES] };
-    let empty_rmrr = DmarRmrr { segment: 0, base: 0, end: 0, scopes: [empty_dmar_scope; rmrr::MAX_RMRR_SCOPES], scope_count: 0 };
-    let mut inv = IommuInventory { kind: IommuKind::IntelVtd,
-        dmar_x2apic_opt_out: t[ACPI_HEADER_LEN + 1] & DMAR_X2APIC_OPT_OUT != 0,
-        units: [empty; MAX_IOMMU_UNITS], unit_count: 0,
-        amd_scopes: [empty_scope; MAX_AMD_IVHD_SCOPES], amd_scope_count: 0,
-        amd_aliases: [empty_alias; MAX_AMD_IVHD_ALIASES], amd_alias_count: 0,
-        amd_ivmds: [empty_ivmd; MAX_AMD_IVMDS], amd_ivmd_count: 0, amd_specials: [empty_special; MAX_AMD_SPECIALS], amd_special_count: 0,
-        dmar_scopes: [empty_dmar_scope; MAX_DMAR_SCOPES], dmar_scope_count: 0, dmar_rmrrs: [empty_rmrr; MAX_DMAR_RMRRS], dmar_rmrr_count: 0 };
+    inv.dmar_x2apic_opt_out = t[ACPI_HEADER_LEN + 1] & DMAR_X2APIC_OPT_OUT != 0;
     let mut off = IOMMU_TABLE_HEADER_LEN;
     while off < t.len() {
         if t.len() - off < DMAR_HEADER_LEN { return Err(IommuError::BadRecord); }
@@ -414,12 +450,12 @@ pub fn parse_dmar(t: &[u8]) -> Result<IommuInventory, IommuError> {
         let end = off + len;
         if ty == DMAR_TYPE_DRHD {
             if len < DRHD_LEN { return Err(IommuError::BadRecord); }
-            parse_drhd_scopes(t, off + DRHD_LEN, end, inv.unit_count, &mut inv)?;
+            parse_drhd_scopes(t, off + DRHD_LEN, end, inv.unit_count, inv)?;
             let Some(register_pages) = 1u64.checked_shl(u32::from(t[off + 5])) else { return Err(IommuError::BadRecord); };
-            push(&mut inv, IommuUnit { kind: IommuKind::IntelVtd, segment: le16(t, off + 6), source_id: 0, event_msi: 0, register_base: le64(t, off + 8), register_pages, include_all: t[off + 4] & DMAR_INCLUDE_ALL != 0 })?;
-        } else if ty == DMAR_TYPE_RMRR { rmrr::parse(t, off, end, &mut inv)?; }
+            push(inv, IommuUnit { kind: IommuKind::IntelVtd, segment: le16(t, off + 6), source_id: 0, event_msi: 0, register_base: le64(t, off + 8), register_pages, include_all: t[off + 4] & DMAR_INCLUDE_ALL != 0 })?;
+        } else if ty == DMAR_TYPE_RMRR { rmrr::parse(t, off, end, inv)?; }
         off = end;
     }
     if off != t.len() { return Err(IommuError::BadRecord); }
-    Ok(inv)
+    Ok(())
 }
