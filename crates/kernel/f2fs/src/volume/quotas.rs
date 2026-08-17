@@ -90,7 +90,7 @@ impl<S: SectorSource> Volume<S> {
     pub(crate) fn open_named_quota_files(&mut self) {
         for kind in 0..MAX_QUOTAS {
             if !self.quota_setup[kind].named { continue; }
-            let Some(name) = self.opts.jquota.names[kind] else {
+            let Some(name) = &self.opts.jquota.names[kind] else {
                 self.quota_setup[kind] = quota::Setup::OFF;
                 continue;
             };

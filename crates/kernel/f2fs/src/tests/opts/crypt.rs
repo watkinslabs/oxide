@@ -6,7 +6,7 @@ use syscall::errno::Errno;
 use crate::opts::crypt::{self, DummyPolicy, PolicyVersion, MODE_AES_256_CTS, MODE_AES_256_XTS};
 use crate::opts::{parse, show, Options};
 
-fn p(s: &str) -> Result<Options, Errno> { parse(Options::defaults(), s) }
+fn p(s: &str) -> Result<Options, Errno> { parse(&Options::defaults(), s) }
 
 #[test]
 fn a_bare_request_asks_for_the_current_generation() {

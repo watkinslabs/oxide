@@ -97,7 +97,7 @@ fn a_remount_keeps_the_four_settings_it_may_not_re_derive() {
     // caller's back.
     let mounted = Options { extent_cache: false, checkpoint_disabled: true, discard: true,
                             discard_unit: DiscardUnit::Section, ..Options::defaults_for(&plain()) };
-    let again = Options::redefault(mounted, &plain(), true);
+    let again = Options::redefault(&mounted, &plain(), true);
     assert!(!again.extent_cache);
     assert!(again.checkpoint_disabled);
     assert!(again.discard);
@@ -108,7 +108,7 @@ fn a_remount_keeps_the_four_settings_it_may_not_re_derive() {
 fn a_fresh_mount_re_derives_all_four() {
     let mounted = Options { extent_cache: false, checkpoint_disabled: true, discard: true,
                             discard_unit: DiscardUnit::Section, ..Options::defaults_for(&plain()) };
-    let fresh = Options::redefault(mounted, &plain(), false);
+    let fresh = Options::redefault(&mounted, &plain(), false);
     assert!(fresh.extent_cache);
     assert!(!fresh.checkpoint_disabled);
     assert!(!fresh.discard);
@@ -121,7 +121,7 @@ fn a_remount_resets_what_the_line_did_not_carry_over() {
     // option gets the default back rather than keeping the old value.
     let mounted = Options { background_gc: BackgroundGc::Off, lazytime: false,
                             active_logs: 2, ..Options::defaults_for(&plain()) };
-    let again = Options::redefault(mounted, &plain(), true);
+    let again = Options::redefault(&mounted, &plain(), true);
     assert_eq!(again.background_gc, BackgroundGc::On);
     assert!(again.lazytime);
     assert_eq!(again.active_logs, 6);
@@ -134,7 +134,7 @@ fn a_remount_keeps_what_no_default_names() {
     // the mount had.
     let mounted = Options { atgc: true, nat_bits: true, age_extent_cache: true,
                             ..Options::defaults_for(&plain()) };
-    let again = Options::redefault(mounted, &plain(), true);
+    let again = Options::redefault(&mounted, &plain(), true);
     assert!(again.atgc && again.nat_bits && again.age_extent_cache);
 }
 

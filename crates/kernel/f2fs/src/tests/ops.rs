@@ -71,7 +71,7 @@ fn the_registry_facing_surface_has_the_shape_the_registry_expects() {
     type Ctor = fn(alloc::sync::Arc<dyn block::BlockDevice>, &str, bool, crate::Options)
         -> vfs::KResult<alloc::sync::Arc<crate::F2fs>>;
     let _: Ctor = crate::F2fs::open_with;
-    let _: fn(crate::Options, &str) -> Result<crate::Options, syscall::errno::Errno> =
+    let _: fn(&crate::Options, &str) -> Result<crate::Options, syscall::errno::Errno> =
         crate::opts::parse;
     let _: fn(&crate::Options, u32) -> String = crate::opts::show;
     let _: fn(syscall::errno::Errno) -> vfs::VfsError = crate::errno_to_vfs;

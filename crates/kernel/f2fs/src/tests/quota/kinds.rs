@@ -116,7 +116,7 @@ use crate::opts::jquota::{JqFmt, Jquota, QKind, QfName};
 
 /// A mount naming one file per kind in `kinds`, in the format `fmt`.
 fn named(kinds: &[QKind], fmt: Option<JqFmt>) -> Options {
-    let mut j = Jquota { names: [None; MAX_QUOTAS], fmt };
+    let mut j = Jquota { names: core::array::from_fn(|_| None), fmt };
     for k in kinds { j.names[*k as usize] = Some(QfName::new("aquota.file").unwrap()); }
     Options { jquota: j, ..Options::defaults() }
 }

@@ -17,6 +17,8 @@
 //! output perfectly, so picking the wrong one is invisible without a second
 //! implementation to disagree with.
 
+use alloc::boxed::Box;
+
 use aes::block::AesKey;
 use aes::cbc;
 use aes::hctr2::Hctr2;
@@ -35,22 +37,28 @@ use super::FscryptError;
 pub const CONTENTS_ALIGNMENT: usize = 16;
 
 /// A prepared cipher.
+///
+/// Every expanded key schedule sits behind a pointer, because the reference
+/// reaches a transform through one for the same reason: the widest of them is
+/// over a kilobyte, and held by value it would ride in the return slot of
+/// every frame on the path that sets an inode's key up. This enum is two
+/// words.
 #[derive(Clone)]
 pub enum Cipher {
     /// Tweakable narrow-block over the 128-bit-block Western cipher.
-    Xts(Xts),
+    Xts(Box<Xts>),
     /// Chaining with an enciphered IV, for file contents.
-    CbcEssiv { data: AesKey, essiv: aes::Aes256 },
+    CbcEssiv { data: Box<AesKey>, essiv: Box<aes::Aes256> },
     /// Chaining with ciphertext stealing, for names.
-    Cts(AesKey),
+    Cts(Box<AesKey>),
     /// Tweakable narrow-block over the other block cipher.
-    Sm4Xts(Sm4Xts),
+    Sm4Xts(Box<Sm4Xts>),
     /// Chaining with ciphertext stealing over the other block cipher.
-    Sm4Cts(Sm4),
+    Sm4Cts(Box<Sm4>),
     /// Wide-block over a stream cipher and two hashing passes.
-    Adiantum(Adiantum),
+    Adiantum(Box<Adiantum>),
     /// Wide-block over counter mode and a polynomial hash.
-    Hctr2(Hctr2),
+    Hctr2(Box<Hctr2>),
 }
 
 impl Cipher {
@@ -61,20 +69,32 @@ impl Cipher {
         let bad = || FscryptError::BadKeySize(key.len());
         if key.len() != mode.key_size { return Err(bad()); }
         match mode.num {
-            MODE_AES_256_XTS => Xts::new(key).map(Cipher::Xts).map_err(|_| bad()),
+            MODE_AES_256_XTS => Xts::new(key).map(|x| Cipher::Xts(Box::new(x))).map_err(|_| bad()),
             MODE_AES_128_CBC => {
                 // The IV key is the digest of the file key, so a predictable
                 // block index becomes an unpredictable IV.
                 let salt = crypt::sha256::sha256(key);
                 let data = AesKey::new(key).ok_or_else(bad)?;
-                Ok(Cipher::CbcEssiv { data, essiv: aes::Aes256::new(&salt) })
+                let mut essiv = Box::new(aes::Aes256::ZERO);
+                essiv.set_key(&salt);
+                Ok(Cipher::CbcEssiv { data: Box::new(data), essiv })
             }
             MODE_AES_256_CTS | MODE_AES_128_CTS =>
-                AesKey::new(key).map(Cipher::Cts).ok_or_else(bad),
-            MODE_SM4_XTS => Sm4Xts::new(key).map(Cipher::Sm4Xts).map_err(|_| bad()),
-            MODE_SM4_CTS => Sm4::from_key(key).map(Cipher::Sm4Cts).ok_or_else(bad),
-            MODE_ADIANTUM => Adiantum::new(key).map(Cipher::Adiantum).map_err(|_| bad()),
-            MODE_AES_256_HCTR2 => Hctr2::new(key).map(Cipher::Hctr2).map_err(|_| bad()),
+                AesKey::new(key).map(|k| Cipher::Cts(Box::new(k))).ok_or_else(bad),
+            MODE_SM4_XTS =>
+                Sm4Xts::new(key).map(|x| Cipher::Sm4Xts(Box::new(x))).map_err(|_| bad()),
+            MODE_SM4_CTS =>
+                Sm4::from_key(key).map(|k| Cipher::Sm4Cts(Box::new(k))).ok_or_else(bad),
+            MODE_ADIANTUM => {
+                // Derived straight into the allocation it will live in: the
+                // schedule is 1424 bytes, and a by-value construction would
+                // spend all of it on this frame and again on the caller's.
+                let mut a = Box::new(Adiantum::ZERO);
+                a.set_key(key).map_err(|_| bad())?;
+                Ok(Cipher::Adiantum(a))
+            }
+            MODE_AES_256_HCTR2 =>
+                Hctr2::new(key).map(|h| Cipher::Hctr2(Box::new(h))).map_err(|_| bad()),
             other => Err(FscryptError::UnsupportedMode(other)),
         }
     }
@@ -92,11 +112,11 @@ impl Cipher {
             Cipher::CbcEssiv { data, essiv } => {
                 let mut v = b;
                 essiv.encrypt_block(&mut v);
-                cbc::encrypt(data, &mut v, buf).map_err(|_| len())
+                cbc::encrypt(&**data, &mut v, buf).map_err(|_| len())
             }
-            Cipher::Cts(k) => cbc::cts_encrypt(k, &b, buf).map_err(|_| len()),
+            Cipher::Cts(k) => cbc::cts_encrypt(&**k, &b, buf).map_err(|_| len()),
             Cipher::Sm4Xts(x) => x.encrypt(&b, buf).map_err(|_| len()),
-            Cipher::Sm4Cts(k) => cbc::cts_encrypt(k, &b, buf).map_err(|_| len()),
+            Cipher::Sm4Cts(k) => cbc::cts_encrypt(&**k, &b, buf).map_err(|_| len()),
             Cipher::Adiantum(a) => a.encrypt(iv, buf).map_err(|_| len()),
             Cipher::Hctr2(h) => h.encrypt(iv, buf).map_err(|_| len()),
         }
@@ -112,11 +132,11 @@ impl Cipher {
             Cipher::CbcEssiv { data, essiv } => {
                 let mut v = b;
                 essiv.encrypt_block(&mut v);
-                cbc::decrypt(data, &mut v, buf).map_err(|_| len())
+                cbc::decrypt(&**data, &mut v, buf).map_err(|_| len())
             }
-            Cipher::Cts(k) => cbc::cts_decrypt(k, &b, buf).map_err(|_| len()),
+            Cipher::Cts(k) => cbc::cts_decrypt(&**k, &b, buf).map_err(|_| len()),
             Cipher::Sm4Xts(x) => x.decrypt(&b, buf).map_err(|_| len()),
-            Cipher::Sm4Cts(k) => cbc::cts_decrypt(k, &b, buf).map_err(|_| len()),
+            Cipher::Sm4Cts(k) => cbc::cts_decrypt(&**k, &b, buf).map_err(|_| len()),
             Cipher::Adiantum(a) => a.decrypt(iv, buf).map_err(|_| len()),
             Cipher::Hctr2(h) => h.decrypt(iv, buf).map_err(|_| len()),
         }

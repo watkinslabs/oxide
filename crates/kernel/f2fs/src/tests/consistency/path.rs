@@ -34,7 +34,7 @@ fn an_option_pair_the_volume_cannot_honour_is_refused_at_the_mount() {
 #[test]
 fn a_write_side_option_is_refused_on_a_mount_that_cannot_write() {
     let opts = Options { flush_merge: true, ..Options::defaults() };
-    assert_eq!(Volume::mount_with(img(), opts, false).err(), Some(Errno::Einval));
+    assert_eq!(Volume::mount_with(img(), opts.clone(), false).err(), Some(Errno::Einval));
     assert!(Volume::mount_with(img(), opts, true).is_ok());
 }
 

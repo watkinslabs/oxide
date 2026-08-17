@@ -30,7 +30,7 @@ pub struct GcPass {
 pub fn gc_pass(fs: &Arc<F2fs>) -> GcPass {
     let bg = fs.bg();
     let bggc = *bg.bggc.lock();
-    let opts = *fs.volume.lock().options();
+    let opts = fs.volume.lock().options().clone();
     // Off means off. The thread stays alive so a remount can turn it back on
     // without a mount cycle, but it does no work while the answer is off —
     // except for a caller blocked in the balance path, which asked for this

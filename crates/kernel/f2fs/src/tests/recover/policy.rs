@@ -195,7 +195,7 @@ fn norecovery_refuses_a_writable_mount_whether_or_not_there_is_a_chain() {
     let opts = Options { recovery: false, norecovery: true, ..Options::defaults() };
     let (mut v, ino, _) = checkpointed(b"f");
     append_block(&mut v, ino, 0xEE, true);
-    assert_eq!(try_crash(v, true, opts).err(), Some(Errno::Einval));
+    assert_eq!(try_crash(v, true, opts.clone()).err(), Some(Errno::Einval));
     // Same answer on a volume with nothing to replay: it is the OPTION that
     // is refused, not the chain.
     let (v, _, _) = checkpointed(b"g");

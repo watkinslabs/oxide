@@ -23,7 +23,7 @@ fn every_rendered_option_carries_its_own_leading_comma() {
 #[test]
 fn the_default_tail_round_trips_to_the_defaults() {
     let d = Options::defaults();
-    assert_eq!(parse(Options::defaults(), &shown(&d)).unwrap(), d);
+    assert_eq!(parse(&Options::defaults(), &shown(&d)).unwrap(), d);
 }
 
 #[test]
@@ -59,7 +59,7 @@ fn an_option_set_round_trips_through_its_own_rendering() {
     o.usrquota = true;
     o.grpquota = true;
     o.prjquota = true;
-    assert_eq!(parse(Options::defaults(), &shown(&o)).unwrap(), o);
+    assert_eq!(parse(&Options::defaults(), &shown(&o)).unwrap(), o);
 }
 
 #[test]
@@ -68,7 +68,7 @@ fn every_placement_mode_round_trips() {
               Mode::Fragment(Fragment::Block)] {
         let mut o = Options::defaults();
         o.mode = m;
-        assert_eq!(parse(Options::defaults(), &shown(&o)).unwrap().mode, m);
+        assert_eq!(parse(&Options::defaults(), &shown(&o)).unwrap().mode, m);
     }
 }
 
@@ -77,7 +77,7 @@ fn every_error_policy_round_trips() {
     for e in [Errors::Continue, Errors::Panic, Errors::RemountRo] {
         let mut o = Options::defaults();
         o.errors = e;
-        assert_eq!(parse(Options::defaults(), &shown(&o)).unwrap().errors, e);
+        assert_eq!(parse(&Options::defaults(), &shown(&o)).unwrap().errors, e);
     }
 }
 
@@ -86,7 +86,7 @@ fn every_cleaner_setting_round_trips() {
     for g in [BackgroundGc::On, BackgroundGc::Off, BackgroundGc::Sync] {
         let mut o = Options::defaults();
         o.background_gc = g;
-        assert_eq!(parse(Options::defaults(), &shown(&o)).unwrap().background_gc, g);
+        assert_eq!(parse(&Options::defaults(), &shown(&o)).unwrap().background_gc, g);
     }
 }
 
@@ -151,5 +151,5 @@ fn no_rendered_name_is_one_the_parser_refuses() {
     o.checkpoint_disabled = true;
     o.usrquota = true;
     let s = shown(&o);
-    assert!(parse(Options::defaults(), &s).is_ok());
+    assert!(parse(&Options::defaults(), &s).is_ok());
 }

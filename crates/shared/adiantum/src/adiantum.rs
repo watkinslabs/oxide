@@ -30,6 +30,13 @@ const BLOCKCIPHER_KEY_LEN: usize = 32;
 const HASH_KEY_LEN: usize = 2 * POLY1305_BLOCK_LEN + NH_KEY_LEN;
 /// Total derived key material.
 const DERIVED_LEN: usize = BLOCKCIPHER_KEY_LEN + HASH_KEY_LEN;
+/// Derived material ahead of the hash key: the block-cipher key and the two
+/// polynomial keys. Exactly one keystream block, so the hash key that follows
+/// resumes on a block boundary and the two pieces concatenate to the one-shot
+/// keystream.
+const HEAD_LEN: usize = BLOCKCIPHER_KEY_LEN + 2 * POLY1305_BLOCK_LEN;
+const _: () = assert!(HEAD_LEN == CHACHA_BLOCK_LEN);
+const _: () = assert!(DERIVED_LEN == HEAD_LEN + NH_KEY_LEN);
 /// Nonce byte the key-derivation stream runs under.
 const DERIVE_NONCE_BYTE: u8 = 1;
 /// Offset of the stream nonce word the encryption pass sets.
@@ -61,39 +68,74 @@ impl Adiantum {
     ///
     /// # C: K_E || K_H = XChaCha12(K_S, nonce = 1 || 0^191)
     pub fn new(key: &[u8]) -> Result<Self, Error> {
+        let mut out = Self::ZERO;
+        out.set_key(key)?;
+        Ok(out)
+    }
+
+    /// An unkeyed instance, for building one in place.
+    ///
+    /// Not usable as a cipher. It exists so a caller may put the instance
+    /// where it will live — the reference reaches a transform through a
+    /// pointer to heap-allocated context, never by value — and derive into it
+    /// there. Held by value the derived material is over a kilobyte, which is
+    /// too much for any frame that sets a file's key up.
+    pub const ZERO: Self = Self {
+        stream_key: [0u8; ADIANTUM_KEY_LEN],
+        blockcipher: Aes256::ZERO,
+        header_key: CoreKey::ZERO,
+        msg_key: CoreKey::ZERO,
+        nh_key: [0u32; NH_KEY_WORDS],
+    };
+
+    /// Derive every subkey from `key` into this instance in place.
+    ///
+    /// The keystream is consumed in two pieces — the block-cipher and
+    /// polynomial keys, then the almost-universal hash key a word-block at a
+    /// time — because the counter lives in the stream state, so the pieces
+    /// concatenate to exactly the one-shot keystream. The whole derived buffer
+    /// materialised at once is `DERIVED_LEN` bytes, which is a kilobyte of
+    /// stack this must not spend.
+    ///
+    /// # C: K_E || K_H = XChaCha12(K_S, nonce = 1 || 0^191)
+    pub fn set_key(&mut self, key: &[u8]) -> Result<(), Error> {
         if key.len() != ADIANTUM_KEY_LEN { return Err(Error::KeyLen); }
-        let mut k = [0u8; ADIANTUM_KEY_LEN];
-        k.copy_from_slice(key);
+        self.stream_key.copy_from_slice(key);
 
         let mut iv = [0u8; XCHACHA_IV_LEN];
         iv[0] = DERIVE_NONCE_BYTE;
-        let mut derived = [0u8; DERIVED_LEN];
-        chacha::xchacha_xor(&k, &iv, &mut derived, ROUNDS_12);
+        let mut st = chacha::xchacha_state(&self.stream_key, &iv, ROUNDS_12);
 
+        // The head is exactly one keystream block, so the hash key below
+        // resumes on a block boundary.
+        let mut head = [0u8; HEAD_LEN];
+        chacha::xor_stream(&mut st, &mut head, ROUNDS_12);
         let mut ke = [0u8; BLOCKCIPHER_KEY_LEN];
-        ke.copy_from_slice(&derived[..BLOCKCIPHER_KEY_LEN]);
+        ke.copy_from_slice(&head[..BLOCKCIPHER_KEY_LEN]);
         let mut p = BLOCKCIPHER_KEY_LEN;
-
         let mut hk = [0u8; POLY1305_BLOCK_LEN];
-        hk.copy_from_slice(&derived[p..p + POLY1305_BLOCK_LEN]);
+        hk.copy_from_slice(&head[p..p + POLY1305_BLOCK_LEN]);
         p += POLY1305_BLOCK_LEN;
         let mut mk = [0u8; POLY1305_BLOCK_LEN];
-        mk.copy_from_slice(&derived[p..p + POLY1305_BLOCK_LEN]);
-        p += POLY1305_BLOCK_LEN;
+        mk.copy_from_slice(&head[p..p + POLY1305_BLOCK_LEN]);
 
-        let mut nh_key = [0u32; NH_KEY_WORDS];
-        for i in 0..NH_KEY_WORDS {
-            let o = p + 4 * i;
-            nh_key[i] = u32::from_le_bytes([derived[o], derived[o + 1], derived[o + 2], derived[o + 3]]);
+        self.blockcipher.set_key(&ke);
+        self.header_key = CoreKey::new(&hk);
+        self.msg_key = CoreKey::new(&mk);
+
+        let mut i = 0;
+        while i < NH_KEY_WORDS {
+            let mut blk = [0u8; CHACHA_BLOCK_LEN];
+            chacha::xor_stream(&mut st, &mut blk, ROUNDS_12);
+            let mut j = 0;
+            while j < CHACHA_BLOCK_LEN && i < NH_KEY_WORDS {
+                self.nh_key[i] =
+                    u32::from_le_bytes([blk[j], blk[j + 1], blk[j + 2], blk[j + 3]]);
+                i += 1;
+                j += 4;
+            }
         }
-
-        Ok(Adiantum {
-            stream_key: k,
-            blockcipher: Aes256::new(&ke),
-            header_key: CoreKey::new(&hk),
-            msg_key: CoreKey::new(&mk),
-            nh_key,
-        })
+        Ok(())
     }
 
     /// Encrypt in place under `tweak`. Length is preserved.

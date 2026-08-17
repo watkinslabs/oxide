@@ -74,7 +74,8 @@ impl<S: SectorSource> Volume<S> {
         // `mount_ro` is the SETTLED answer rather than the request: a volume
         // whose features permit only reads has already been downgraded above
         // rather than refused, so the read-only clauses read that downgrade.
-        let opts = check_mount_options(&sb, &opts, writable)?;
+        let mut opts = opts;
+        check_mount_options(&sb, &mut opts, writable)?;
         let (cp, cp_raw) = read_checkpoint(&source, &sb)?;
         // The figures a formatter wrote have to add up before anything acts on
         // them. A volume with no reserve is the one that matters: substituting
@@ -306,19 +307,22 @@ impl<S: SectorSource> Volume<S> {
 /// here — so the value below cannot change an answer.
 /// # C: O(1)
 #[inline(never)]
-fn check_mount_options(sb: &SuperBlock, opts: &Options, writable: bool)
-    -> Result<Options, Errno> {
+fn check_mount_options(sb: &SuperBlock, opts: &mut Options, writable: bool)
+    -> Result<(), Errno> {
     let facts = crate::opts::Facts {
         feature: sb.feature,
         segment_count_main: sb.segment_count_main,
         hw_support_discard: opts.discard,
         mount_ro: !writable,
     };
-    let mut o = *opts;
+    // Adjusted in place, over one copy of the set the caller arrived with:
+    // the clauses compare the request against what is running, so the two have
+    // to be separate values, and returning a third by value put a whole option
+    // set in this frame and again in the caller's.
+    let cur = opts.clone();
     let mut spec = crate::opts::Spec::default();
-    let sbi = crate::consistency::Sbi::at_mount(facts, *opts);
-    crate::consistency::check_opt_consistency(&sbi, &mut o, &mut spec)?;
-    Ok(o)
+    let sbi = crate::consistency::Sbi::at_mount(facts, &cur);
+    crate::consistency::check_opt_consistency(&sbi, opts, &mut spec)
 }
 
 /// What a volume's shape says about the defaults a mount of it should take.

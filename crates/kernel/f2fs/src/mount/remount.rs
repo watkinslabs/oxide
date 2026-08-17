@@ -32,8 +32,12 @@ use crate::opts::{BackgroundGc, Options};
 use super::{errno_to_vfs, F2fs};
 
 impl F2fs {
-    /// The state the consistency pass checks a new line against. # C: O(1)
-    pub fn remount_state(&self, want_ro: bool) -> Sbi {
+    /// The state the consistency pass checks a new line against.
+    ///
+    /// `cur` is the running set, taken by the caller: it is borrowed rather
+    /// than copied in, so the whole option set does not ride in this frame and
+    /// every frame the check runs under. # C: O(1)
+    pub fn remount_state<'a>(&self, want_ro: bool, cur: &'a Options) -> Sbi<'a> {
         let v = self.volume.lock();
         let sb = v.super_block();
         Sbi {
@@ -47,7 +51,7 @@ impl F2fs {
                 // the right answer.
                 mount_ro: want_ro || v.access() == Access::ReadOnly,
             },
-            cur: *v.options(),
+            cur,
             remount: true,
             quota_on: v.quota_active(),
             casefold_loadable: v.casefold().is_some() || !crate::features::has_casefold(sb.feature),
@@ -62,7 +66,8 @@ impl F2fs {
     /// serving.
     /// # C: O(len(data)), plus starting or stopping the threads
     pub fn remount(self: &Arc<Self>, data: &str, want_ro: bool) -> KResult<()> {
-        let sbi = self.remount_state(want_ro);
+        let cur = self.volume.lock().options().clone();
+        let sbi = self.remount_state(want_ro, &cur);
         let (opts, _) = resolve_remount(&sbi, data).map_err(errno_to_vfs)?;
         // Going read-only is a state change a reader must see, so what the
         // mount has done is pushed out BEFORE it stops being able to push.
@@ -94,7 +99,7 @@ impl F2fs {
         {
             let mut v = self.volume.lock();
             let permitted = v.access() == Access::ReadWrite;
-            v.adopt_options(opts);
+            v.adopt_options(opts.clone());
             v.set_writable(!want_ro && permitted);
         }
         self.retune_background(&opts);

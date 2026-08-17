@@ -74,7 +74,7 @@ impl Options {
     /// What a mount of a volume with these facts gets before its line is read.
     /// # C: O(1)
     pub fn defaults_for(facts: &Facts) -> Self {
-        Self::redefault(Self::defaults(), facts, false)
+        Self::redefault(&Self::defaults(), facts, false)
     }
 
     /// Reset `base` to the defaults these facts dictate.
@@ -90,8 +90,8 @@ impl Options {
     /// faults keeps them, and the ones it does say something about are then
     /// applied over this by the parser.
     /// # C: O(1)
-    pub fn redefault(base: Options, facts: &Facts, remount: bool) -> Self {
-        let mut o = base;
+    pub fn redefault(base: &Options, facts: &Facts, remount: bool) -> Self {
+        let mut o = base.clone();
         if !remount {
             o.extent_cache = true;
             o.checkpoint_disabled = false;

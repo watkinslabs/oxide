@@ -4,9 +4,12 @@ use super::*;
 use crate::consistency::{resolve_remount, Sbi};
 use crate::opts::BackgroundGc;
 
-fn running(facts: &Facts, line: &str) -> Sbi {
+fn running(facts: &Facts, line: &str) -> Sbi<'static> {
     let cur = at_mount(facts, line).expect("the mount itself must be legal");
-    Sbi { facts: *facts, cur, remount: true, quota_on: false, casefold_loadable: true }
+    // Leaked so the borrowed running set outlives this helper. A test process
+    // exits; the alternative is threading the owner through every case.
+    Sbi { facts: *facts, cur: alloc::boxed::Box::leak(alloc::boxed::Box::new(cur)),
+          remount: true, quota_on: false, casefold_loadable: true }
 }
 
 #[test]
@@ -14,7 +17,7 @@ fn the_cleaner_may_be_turned_off_and_on_again() {
     let sbi = running(&plain(), "");
     let o = resolve_remount(&sbi, "background_gc=off").expect("accepted").0;
     assert_eq!(o.background_gc, BackgroundGc::Off);
-    let sbi = Sbi { cur: o, ..sbi };
+    let sbi = Sbi { cur: &o, ..sbi };
     let o = resolve_remount(&sbi, "background_gc=on").expect("accepted").0;
     assert_eq!(o.background_gc, BackgroundGc::On);
 }
