@@ -135,6 +135,11 @@ impl F2fs {
         // After the mount is reachable, never during it: a thread that woke
         // first would find a filesystem nothing could hand it work through.
         fs.start_background();
+        // Same reason, for the same hazard from the other direction: reclaim
+        // must not be able to reach a mount that is still being built. From
+        // here the three unbounded caches are visible to memory pressure, which
+        // is the only thing that ever shrinks them while the mount lives.
+        crate::shrink::join(&fs);
         Ok(fs)
     }
 

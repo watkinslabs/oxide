@@ -56,6 +56,7 @@
 //! - `extent`:     the read and block-age extent caches, and their LRU.
 //! - `filemap`:    a file's data pages, keyed by inode and file offset.
 //! - `freenid`:    node ids nothing is using, and how one is handed out.
+//! - `shrink`:     giving the three unbounded caches back under memory pressure.
 //! - `atgc`:       age-threshold victim selection, and its candidate tree.
 //! - `fault`:      failures injected on purpose, at named sites and a rate.
 //! - `stats`:      what a mount has done, and what it looks like right now.
@@ -105,6 +106,7 @@ pub mod errrec;
 pub mod extent;
 pub mod filemap;
 pub mod freenid;
+pub mod shrink;
 pub mod atgc;
 pub mod fault;
 pub mod atomic;

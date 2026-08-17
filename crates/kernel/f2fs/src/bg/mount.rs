@@ -105,5 +105,11 @@ impl Drop for F2fs {
     fn drop(&mut self) {
         run::stop(self);
         round::drain_discards(self);
+        // After both threads have stopped, so nothing is adding entries to the
+        // caches this empties, and here rather than in `put_super` for the same
+        // reason the stop has a backstop: a failed mount and a dropped
+        // reference must also come out of the reclaim list, or a later pass
+        // walks a weak reference to a filesystem that no longer exists.
+        crate::shrink::leave(self);
     }
 }
