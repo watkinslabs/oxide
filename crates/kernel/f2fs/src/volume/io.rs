@@ -64,7 +64,7 @@ impl<S: SectorSource> Volume<S> {
     }
 
     /// # C: O(bytes read)
-    fn read_file_inner(&self, inode: &Inode, ino: u32, off: u64, buf: &mut [u8])
+    pub(super) fn read_file_inner(&self, inode: &Inode, ino: u32, off: u64, buf: &mut [u8])
         -> Result<usize, Errno> {
         // The writer of an open span must see its own writes, which live in
         // the shadow inode rather than in this one.
@@ -209,7 +209,7 @@ impl<S: SectorSource> Volume<S> {
     /// size stops part way through is stored plain — so the question is put to
     /// the cluster's head rather than assumed from the inode's flag.
     /// # C: O(indirection depth) blocks
-    fn map_cluster_block(&self, inode: &Inode, ino: u32, index: u64) -> Result<Mapped, Errno> {
+    pub(super) fn map_cluster_block(&self, inode: &Inode, ino: u32, index: u64) -> Result<Mapped, Errno> {
         if !inode.compressed() { return self.map_block(inode, ino, index); }
         let g = crate::compress::Geometry::new(
             inode.compress_algorithm,
