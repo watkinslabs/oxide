@@ -18,6 +18,12 @@ miniz_oxide = { version = "0.8.9", default-features = false, features = ["with-a
 lz4_flex = { version = "0.14.0", default-features = false, features = ["safe-decode"] }
 lzokay = { version = "2.0.1", default-features = false, features = ["decompress", "alloc"] }
 
+[dev-dependencies]
+# Test-only encoder: production code only ever decompresses (`compress.rs`);
+# fixtures need a real LZO stream to decode, and the shipped build has no LZO
+# encoder of its own.
+lzokay = { version = "2.0.1", default-features = false, features = ["decompress", "compress", "alloc"] }
+
 [features]
 default = []
 hosted = []
