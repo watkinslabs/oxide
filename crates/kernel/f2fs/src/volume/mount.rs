@@ -160,6 +160,7 @@ impl<S: SectorSource> Volume<S> {
             valid_inode_count,
             next_free_nid,
             dirty: false,
+            ino_lists: crate::checkpoint::InoLists::new(),
             quota_setup,
             quota_info: [const { None }; MAX_QUOTAS],
             dquots: alloc::collections::BTreeMap::new(),
@@ -211,7 +212,14 @@ impl<S: SectorSource> Volume<S> {
         let mut outcome = vol.recover_orphans();
         if outcome.is_ok() {
             vol.recovering = true;
-            outcome = vol.recover_at_mount().map(|_| ());
+            // A replay is the one change a mount makes that nobody asked for,
+            // so what it did is said out loud rather than dropped. The two
+            // cases that matter are a chain put back and a chain FOUND AND
+            // NOT put back; a mount that came up clean says nothing.
+            outcome = vol.recover_at_mount().map(|r| {
+                crate::volume::recover::report::emit(
+                    crate::volume::recover::report::announce_for(r));
+            });
             vol.recovering = false;
         }
         vol.end_repair_write();

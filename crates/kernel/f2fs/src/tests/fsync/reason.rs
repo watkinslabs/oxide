@@ -17,8 +17,9 @@ fn ok() -> SyncState {
         active_logs: 6,
         strict: false,
         need_dentry_mark: false,
-        parent_dir_written: false,
-        parent_xattr_written: false,
+        parent_in_trans_dir: false,
+        parent_in_xattr_dir: false,
+        sb_need_cp: false,
     }
 }
 
@@ -48,6 +49,19 @@ fn a_second_name_takes_the_checkpoint() {
 #[test]
 fn no_name_at_all_takes_the_checkpoint() {
     assert_eq!(need_checkpoint(&SyncState { links: 0, ..ok() }), CpReason::Hardlink);
+}
+
+#[test]
+fn a_volume_owed_a_checkpoint_takes_it_whatever_the_file_is() {
+    let s = SyncState { sb_need_cp: true, ..ok() };
+    assert_eq!(need_checkpoint(&s), CpReason::SbNeedCp);
+}
+
+#[test]
+fn the_volumes_own_debt_is_read_after_the_link_count_and_before_the_parent() {
+    let s = SyncState { sb_need_cp: true, links: 2, pino_ok: false, ..ok() };
+    assert_eq!(need_checkpoint(&s), CpReason::Hardlink);
+    assert_eq!(need_checkpoint(&SyncState { links: 1, ..s }), CpReason::SbNeedCp);
 }
 
 #[test]
@@ -106,19 +120,19 @@ fn strict_mode_alone_does_not_force_a_checkpoint() {
 
 #[test]
 fn strict_mode_with_an_entry_still_in_the_chain_does() {
-    let s = SyncState { strict: true, need_dentry_mark: true, parent_dir_written: true, ..ok() };
+    let s = SyncState { strict: true, need_dentry_mark: true, parent_in_trans_dir: true, ..ok() };
     assert_eq!(need_checkpoint(&s), CpReason::RecoverDir);
 }
 
 #[test]
 fn the_same_state_without_strict_mode_does_not() {
-    let s = SyncState { need_dentry_mark: true, parent_dir_written: true, ..ok() };
+    let s = SyncState { need_dentry_mark: true, parent_in_trans_dir: true, ..ok() };
     assert_eq!(need_checkpoint(&s), CpReason::None);
 }
 
 #[test]
 fn a_parents_attributes_still_in_the_chain_take_the_checkpoint() {
-    let s = SyncState { parent_xattr_written: true, ..ok() };
+    let s = SyncState { parent_in_xattr_dir: true, ..ok() };
     assert_eq!(need_checkpoint(&s), CpReason::XattrDir);
 }
 
@@ -161,7 +175,7 @@ fn dropping_the_first_reason_uncovers_the_second() {
 fn only_the_no_reason_case_reports_no_need() {
     let all = [
         CpReason::NonRegular, CpReason::Compressed, CpReason::Hardlink,
-        CpReason::WrongPino, CpReason::NoSpaceRollForward,
+        CpReason::SbNeedCp, CpReason::WrongPino, CpReason::NoSpaceRollForward,
         CpReason::ParentNotCheckpointed, CpReason::Fastboot, CpReason::SpecLogNum,
         CpReason::RecoverDir, CpReason::XattrDir,
     ];

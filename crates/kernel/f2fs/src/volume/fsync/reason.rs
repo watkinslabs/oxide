@@ -28,6 +28,11 @@ pub enum CpReason {
     /// More than one name reaches the inode, and replay restores one file, not
     /// a link count.
     Hardlink,
+    /// The volume as a whole is owed a checkpoint, whatever this file's state.
+    ///
+    /// One thing raises it: a strict mount rewriting a directory's attributes,
+    /// which such a mount answers volume-wide rather than per directory.
+    SbNeedCp,
     /// The recorded parent is known to be stale, so no entry can be restored.
     WrongPino,
     /// Replaying would need more blocks than the volume has left.
@@ -43,9 +48,9 @@ pub enum CpReason {
     Fastboot,
     /// Two logs put file nodes where the walk does not look.
     SpecLogNum,
-    /// Strict mode, and the entry this file needs is itself only in the chain.
+    /// Strict mode, and the parent lost or gained an entry this epoch.
     RecoverDir,
-    /// The parent's attribute blocks are only in the chain.
+    /// The parent's attributes were rewritten this epoch.
     XattrDir,
 }
 
@@ -61,6 +66,8 @@ pub struct SyncState {
     pub compressed: bool,
     /// Names reaching the inode. Anything but one takes the checkpoint.
     pub links: u32,
+    /// Whether the volume as a whole is owed a checkpoint.
+    pub sb_need_cp: bool,
     /// Whether the recorded parent number is still trustworthy.
     pub pino_ok: bool,
     pub space_for_roll_forward: bool,
@@ -72,10 +79,15 @@ pub struct SyncState {
     pub strict: bool,
     /// Whether this inode's own entry may still need restoring.
     pub need_dentry_mark: bool,
-    /// Whether the parent has directory blocks written but not checkpointed.
-    pub parent_dir_written: bool,
-    /// Whether the parent has attribute blocks written but not checkpointed.
-    pub parent_xattr_written: bool,
+    /// Whether the parent lost or gained an entry since the last checkpoint,
+    /// under a strict mount. This is an EVENT the mount recorded, not a state
+    /// the parent's blocks show: an ordinary write to a directory rewrites its
+    /// node too, and reading that as this reason makes almost every strict
+    /// `fsync` write a whole checkpoint.
+    pub parent_in_trans_dir: bool,
+    /// Whether the parent's attributes were rewritten since the last
+    /// checkpoint, recorded the same way and for the same reason.
+    pub parent_in_xattr_dir: bool,
 }
 
 /// The number of logs at which file nodes stop having a log of their own.
@@ -91,16 +103,23 @@ pub fn need_checkpoint(s: &SyncState) -> CpReason {
     if !s.regular { return CpReason::NonRegular; }
     if s.compressed { return CpReason::Compressed; }
     if s.links != 1 { return CpReason::Hardlink; }
+    if s.sb_need_cp { return CpReason::SbNeedCp; }
     if !s.pino_ok { return CpReason::WrongPino; }
     if !s.space_for_roll_forward { return CpReason::NoSpaceRollForward; }
     if !s.parent_checkpointed { return CpReason::ParentNotCheckpointed; }
     if s.fastboot { return CpReason::Fastboot; }
     if s.active_logs == SPEC_LOG_NUM { return CpReason::SpecLogNum; }
-    if s.strict && s.need_dentry_mark && s.parent_dir_written { return CpReason::RecoverDir; }
-    if s.parent_xattr_written { return CpReason::XattrDir; }
+    if s.strict && s.need_dentry_mark && s.parent_in_trans_dir { return CpReason::RecoverDir; }
+    if s.parent_in_xattr_dir { return CpReason::XattrDir; }
     CpReason::None
 }
 
 #[cfg(test)]
 #[path = "../../tests/fsync/reason.rs"]
 mod tests;
+
+/// The two parent-directory rungs, driven through the operations that record
+/// them rather than through the decision alone.
+#[cfg(test)]
+#[path = "../../tests/fsync/inolists.rs"]
+mod inolist_tests;

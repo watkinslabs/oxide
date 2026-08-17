@@ -266,6 +266,14 @@ impl<S: SectorSource> Volume<S> {
             put64(b, I_CTIME, now.0);
             put32(b, I_CTIME_NSEC, now.1);
         })?;
+        // The name's DESTINATION is the half a removal does not cover. The
+        // source directory was recorded when its entry was cleared; the
+        // destination gained an entry that a chain replay would have to add
+        // back, and a moved directory carries its own second entry with it.
+        if self.opts.fsync_mode == crate::opts::FsyncMode::Strict {
+            self.ino_lists.add(crate::checkpoint::InoKind::TransDir, to);
+            if moving_is_dir { self.ino_lists.add(crate::checkpoint::InoKind::TransDir, hit.ino); }
+        }
         self.touch(from, now)?;
         if from != to { self.touch(to, now)?; }
         Ok(())

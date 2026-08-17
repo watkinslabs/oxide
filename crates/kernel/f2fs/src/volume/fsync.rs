@@ -43,16 +43,14 @@ impl<S: SectorSource> Volume<S> {
     /// Everything the checkpoint decision reads, for one file.
     /// # C: O(chain length) blocks for a file the checkpoint never saw
     pub(crate) fn sync_state(&self, ino: u32) -> Result<SyncState, Errno> {
+        use crate::checkpoint::InoKind;
         let inode = self.read_inode(ino)?;
         let pino = inode.pino;
-        let parent_xattr_written = match self.read_inode(pino) {
-            Ok(p) => p.xattr_nid != 0 && self.node_written_since_checkpoint(p.xattr_nid),
-            Err(_) => false,
-        };
         Ok(SyncState {
             regular: mode::file_type(inode.mode) == vfs::FileType::Regular,
             compressed: inode.compressed(),
             links: inode.links,
+            sb_need_cp: self.sbi.need_cp(),
             pino_ok: !advise::wrong_pino(inode.advise),
             space_for_roll_forward: self.space_for_roll_forward(),
             parent_checkpointed: self.node_is_checkpointed(pino),
@@ -60,8 +58,8 @@ impl<S: SectorSource> Volume<S> {
             active_logs: self.opts.active_logs,
             strict: self.opts.fsync_mode == FsyncMode::Strict,
             need_dentry_mark: self.need_dentry_mark(ino)?,
-            parent_dir_written: self.node_written_since_checkpoint(pino),
-            parent_xattr_written,
+            parent_in_trans_dir: self.ino_lists.exists(InoKind::TransDir, pino),
+            parent_in_xattr_dir: self.ino_lists.exists(InoKind::XattrDir, pino),
         })
     }
 
