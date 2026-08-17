@@ -124,7 +124,7 @@ impl F2fs {
     }
 
     /// Push everything this mount has changed to the medium. # C: O(dirty)
-    pub fn sync(&self) -> KResult<()> { self.checkpoint() }
+    pub fn sync(self: &alloc::sync::Arc<Self>) -> KResult<()> { self.checkpoint_merged(true) }
 }
 
 /// The mode word a creation asks for, with the type the caller meant.

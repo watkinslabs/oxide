@@ -12,6 +12,11 @@ use sched::live::WaitList;
 pub struct Waits {
     pub gc: WaitList,
     pub discard: WaitList,
+    /// The merge thread, and the callers waiting on the checkpoint it is about
+    /// to write. Both directions on ONE list: the thread parks on it for work
+    /// and the callers park on it for the result, and a wake of either kind
+    /// wakes both — which costs a condition re-test and cannot lose a wake.
+    pub ckpt: WaitList,
     /// Callers blocked in the balance path, waiting for the cleaner's pass.
     pub foreground: WaitList,
 }
@@ -23,7 +28,8 @@ impl Default for Waits {
 impl Waits {
     /// # C: O(1)
     pub fn new() -> Self {
-        Self { gc: WaitList::new(), discard: WaitList::new(), foreground: WaitList::new() }
+        Self { gc: WaitList::new(), discard: WaitList::new(), ckpt: WaitList::new(),
+               foreground: WaitList::new() }
     }
 
     /// # C: O(1)
@@ -31,6 +37,9 @@ impl Waits {
 
     /// # C: O(1)
     pub fn wake_discard(&self) { self.discard.wake_all(); }
+
+    /// Wake the merge thread AND everybody waiting on its result. # C: O(waiters)
+    pub fn wake_ckpt(&self) { self.ckpt.wake_all(); }
 
     /// Release every caller blocked on the pass that just finished.
     ///

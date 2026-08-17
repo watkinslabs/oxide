@@ -221,7 +221,7 @@ impl F2fs {
     /// filesystem state; without one the medium still describes the state the
     /// mount started from.
     /// # C: O(dirty blocks)
-    pub fn mark_clean(&self) -> KResult<()> { self.checkpoint() }
+    pub fn mark_clean(&self) -> KResult<()> { self.checkpoint_now() }
 
     /// Write a checkpoint, then announce what it freed.
     ///
@@ -230,6 +230,16 @@ impl F2fs {
     /// one first destroys the state a crash would recover to.
     /// # C: O(dirty blocks + freed runs)
     pub fn checkpoint(&self) -> KResult<()> {
+        self.checkpoint_now()
+    }
+
+    /// Write one now, whatever the mount asked about merging.
+    ///
+    /// The path every caller that must NOT wait on another thread takes: the
+    /// unmount, a remount, and anything already holding what the thread would
+    /// need.
+    /// # C: O(a checkpoint)
+    pub fn checkpoint_now(&self) -> KResult<()> {
         let runs = {
             let mut v = self.volume.lock();
             v.commit().map_err(errno_to_vfs)?;

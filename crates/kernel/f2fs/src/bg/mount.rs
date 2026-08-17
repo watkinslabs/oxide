@@ -84,6 +84,44 @@ impl F2fs {
         self.volume_now().balance_fs(need).map_err(errno_to_vfs)
     }
 
+    /// Whether this mount asked for its checkpoints to be merged. # C: O(1)
+    pub fn merges_checkpoints(&self) -> bool { self.options().checkpoint_merge }
+
+    /// Make everything durable, through the merge thread where the mount asked
+    /// for one.
+    ///
+    /// N callers arriving at once do not need N checkpoints: a checkpoint is
+    /// WHOLE, so one write makes all of their promises true. The exemptions are
+    /// the decision's own (`checkpoint::merge`), and a caller the thread cannot
+    /// serve keeps the write rather than waiting for one that will not come.
+    /// # C: O(a checkpoint), or O(1) plus the wait
+    pub fn checkpoint_merged(self: &Arc<Self>, waiting: bool) -> KResult<()> {
+        let r = crate::checkpoint::merge::Request {
+            merge: self.merges_checkpoints(),
+            thread_running: self.bg()
+                .ckpt_running.load(core::sync::atomic::Ordering::Acquire),
+            umounting: self.bg().stopping(),
+            waiting,
+        };
+        self.checkpoint_via(&r, || run::delegate_checkpoint(self))
+    }
+
+    /// The dispatch itself, with the handing-over lifted out.
+    ///
+    /// Separate so it can be driven where there is no thread to hand anything
+    /// to: a build that decided perfectly and then never asked, or asked and
+    /// then wrote its own anyway, is exactly the shape of an unwired feature,
+    /// and neither is visible through the mount's own entry point on a hosted
+    /// build.
+    /// # C: O(a checkpoint), or O(1) plus the delegate
+    pub(crate) fn checkpoint_via(&self, r: &crate::checkpoint::merge::Request,
+                                 delegate: impl FnOnce() -> Option<KResult<()>>) -> KResult<()> {
+        if crate::checkpoint::merge::takes_the_thread(r) {
+            if let Some(out) = delegate() { return out; }
+        }
+        self.checkpoint_now()
+    }
+
     /// Ask the cleaner for a pass now, whatever its sleep had been.
     /// # C: O(1)
     pub fn wake_gc(&self) { self.bg().wake_gc(); }

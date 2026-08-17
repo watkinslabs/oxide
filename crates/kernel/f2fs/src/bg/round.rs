@@ -167,6 +167,23 @@ pub fn discard_pass(fs: &Arc<F2fs>) -> DiscardPass {
     DiscardPass { round, wait_ms }
 }
 
+/// Serve every caller enrolled for a checkpoint, with ONE write.
+///
+/// The whole queue is taken before the write and the callers are released after
+/// it, so a caller that arrives while the write is in progress is enrolled for
+/// the next one — its own changes may not have been in the state this write
+/// captured.
+/// # C: O(a checkpoint)
+pub fn ckpt_pass(fs: &Arc<F2fs>) -> u32 {
+    let bg = fs.bg();
+    let count = bg.cprc.lock().take();
+    if count == 0 { return 0; }
+    let outcome = fs.checkpoint_now();
+    bg.cprc.lock().served(count, outcome);
+    bg.waits.wake_ckpt();
+    count
+}
+
 /// Issue everything still parked, whatever its length.
 ///
 /// The unmount path, and the only one that ignores granularity: the checkpoint

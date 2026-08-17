@@ -13,6 +13,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 pub struct Waits {
     gc: AtomicU32,
     discard: AtomicU32,
+    ckpt: AtomicU32,
     foreground: AtomicU32,
 }
 
@@ -25,6 +26,12 @@ impl Waits {
 
     /// # C: O(1)
     pub fn wake_discard(&self) { self.discard.fetch_add(1, Ordering::Release); }
+
+    /// # C: O(1)
+    pub fn wake_ckpt(&self) { self.ckpt.fetch_add(1, Ordering::Release); }
+
+    /// Times the merge thread has been asked to write. # C: O(1)
+    pub fn ckpt_wakes(&self) -> u32 { self.ckpt.load(Ordering::Acquire) }
 
     /// # C: O(1)
     pub fn wake_foreground(&self) { self.foreground.fetch_add(1, Ordering::Release); }
