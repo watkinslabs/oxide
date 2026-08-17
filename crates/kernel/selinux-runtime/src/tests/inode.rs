@@ -390,3 +390,41 @@ fn each_file_type_asks_within_its_own_class() {
         | selinux::uapi::classmap::perm_bit(class("file"), "write").unwrap();
     assert_eq!(av, want);
 }
+
+// ---- the label attribute's VALUE ------------------------------------------
+
+#[test]
+fn only_the_label_suffix_is_this_modules_attribute() {
+    assert!(answers_getsecurity(SELINUX_SUFFIX));
+    assert!(answers_getsecurity("selinux"));
+    // Every other `security.*` suffix belongs to somebody else, and saying so
+    // is what sends the read to the filesystem's own store.
+    for other in ["capability", "ima", "evm", "smack", "SELinux", "selinux.", "", "selinu"] {
+        assert!(!answers_getsecurity(other), "{other}");
+    }
+}
+
+#[test]
+fn the_reported_value_carries_its_terminator() {
+    let v = getsecurity_value("system_u:object_r:etc_t:s0");
+    assert_eq!(v.len(), "system_u:object_r:etc_t:s0".len() + 1,
+               "the attribute's length is strlen + 1, as every reader of it assumes");
+    assert_eq!(v[v.len() - 1], 0, "the terminator is inside the value, not past it");
+    assert_eq!(&v[..v.len() - 1], b"system_u:object_r:etc_t:s0");
+    // A context is never empty in practice, but the framing must not depend on it.
+    assert_eq!(getsecurity_value(""), alloc::vec![0u8]);
+}
+
+#[test]
+fn a_device_node_on_a_storeless_filesystem_still_has_a_renderable_label() {
+    // The `/dev/tty2` case. devtmpfs holds no attributes, so a label read that
+    // consults the store can only fail; the label itself is computed from the
+    // mount's behaviour and renders to text like any other.
+    let Some(mut s) = loaded() else { return };
+    let sb = superblock_security(&mut s, "devtmpfs", &MountOptions::default());
+    let task = context_sid(&mut s, Some("system_u:system_r:init_t:s0"));
+    let sid = existing_inode_sid(&mut s, &sb, task, class("chr_file"), None, Some("/tty2"));
+    let text = s.sid_to_context(sid).expect("the label renders under the loaded policy");
+    assert!(text.contains(':'), "a context is colon-separated: {text}");
+    assert_eq!(*getsecurity_value(&text).last().unwrap(), 0);
+}

@@ -174,6 +174,8 @@ fn drain_incoming(incoming: &Incoming, waiting: &mut Vec<(u64, RcuCallback)>) {
         // SAFETY: this detached node is solely owned by the drain; rewriting
         // `next` reverses the private list before Box ownership is recovered.
         let next = unsafe { (*node).next };
+        // SAFETY: `node` came off the detached list swapped out above, so this
+        // drain is its sole owner and no pusher can observe the rewritten link.
         unsafe { (*node).next = reversed; }
         reversed = node;
         node = next;

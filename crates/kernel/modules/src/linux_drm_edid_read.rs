@@ -127,8 +127,12 @@ mod tests {
     use super::*;
     struct Source { blocks: Vec<[u8; EDID_LENGTH]>, calls: [u32; 8] }
     unsafe extern "C" fn read(context: *mut c_void, dst: *mut u8, block: u32, _len: usize) -> i32 {
+        // SAFETY: context is exactly `&mut source as *mut Source` cast by the test
+        // caller, passed straight through with no other live reference during the call.
         let source = unsafe { &mut *context.cast::<Source>() }; source.calls[block as usize] += 1;
         let Some(bytes) = source.blocks.get(block as usize) else { return -1; };
+        // SAFETY: read_one's callback ABI guarantees dst is a writable EDID_LENGTH-byte
+        // buffer for this call; bytes is a same-sized [u8; EDID_LENGTH] block, non-overlapping.
         unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, EDID_LENGTH); } 0
     }
     fn base(extensions: u8) -> [u8; EDID_LENGTH] { let mut bytes = [0u8; EDID_LENGTH]; bytes[..8].copy_from_slice(&EDID_HEADER); bytes[18] = 1; bytes[126] = extensions; bytes[127] = checksum(&bytes); bytes }
@@ -139,6 +143,8 @@ mod tests {
         let mut source = Source { blocks: alloc::vec![first, extension(CTA_EXTENSION, false), extension(0x70, false)], calls: [0; 8] };
         let owner = drm_edid_read_custom(core::ptr::null_mut(), Some(read), (&mut source as *mut Source).cast());
         assert!(!owner.is_null()); let raw = edid_owner::drm_edid_raw(owner); assert!(!raw.is_null());
+        // SAFETY: raw is non-null only when drm_edid_raw validated the owner holds
+        // a full base block, so byte offset 126 (extension count) is in bounds.
         assert_eq!(unsafe { *raw.add(126) }, 1); assert_eq!(source.calls[0], 1); assert_eq!(source.calls[1], 1); assert_eq!(source.calls[2], 4); edid_owner::drm_edid_free(owner);
     }
     #[test]
@@ -146,6 +152,8 @@ mod tests {
         let first = base(1); let mut cta = extension(CTA_EXTENSION, true); cta[1] = 3; cta[2] = 7; cta[4] = (CTA_EXTENDED_TAG << 5) | 2; cta[5] = CTA_HF_EEODB; cta[6] = 2; cta[127] = checksum(&cta);
         let mut source = Source { blocks: alloc::vec![first, cta, extension(0x70, true)], calls: [0; 8] };
         let owner = drm_edid_read_custom(core::ptr::null_mut(), Some(read), (&mut source as *mut Source).cast()); assert!(!owner.is_null());
+        // SAFETY: drm_edid_raw(owner) is non-null only when it points at a full
+        // validated base block, so byte offset 126 (extension count) is in bounds.
         assert_eq!(unsafe { *(edid_owner::drm_edid_raw(owner)).add(126) }, 1); assert_eq!(source.calls[2], 1); edid_owner::drm_edid_free(owner); export_symbols(); assert!(crate::symtab::is_exported("drm_edid_read_custom"));
     }
 }

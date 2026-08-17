@@ -9,7 +9,8 @@
 // Module manifest:
 //   label — resolve and cache an inode's label from the object's own state
 //   perm  — the inode permission check the VFS calls
-//   xattr — the `security.*` attribute gate the xattr rules call
+//   xattr — the `security.*` attribute gate the xattr rules call, and the value
+//           a read of the label attribute reports
 
 pub mod label;
 pub mod perm;
@@ -17,4 +18,4 @@ pub mod xattr;
 
 pub use label::{inode_sid, superblock_security};
 pub use perm::{inode_permission, install};
-pub use xattr::xattr_gate;
+pub use xattr::{inode_getsecurity, xattr_gate};

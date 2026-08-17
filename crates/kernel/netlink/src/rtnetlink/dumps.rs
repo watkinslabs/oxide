@@ -12,7 +12,7 @@ use super::rtnetlink_addr::IfaCacheInfo;
 use super::rtnetlink_link::{put_link_stats64, LinkStats64};
 use super::uapi::{
     ifa, if_oper, ifla, iff, AF_INET, AF_INET6, Ifaddrmsg, Ifinfomsg,
-    RTM_NEWADDR, RTM_NEWLINK, RT_SCOPE_HOST, RT_SCOPE_LINK, RT_SCOPE_UNIVERSE,
+    RTM_NEWADDR, RTM_NEWLINK,
 };
 
 /// Build a single RTM_NEWLINK reply for one iface.
@@ -149,10 +149,17 @@ pub(crate) fn build_newaddr_reply(
 }
 
 /// Build a single RTM_NEWADDR reply for one iface's IPv6 address.
+///
+/// Not a copy of the IPv4 shape: an IPv6 address reports no `IFA_LABEL` (the
+/// label attribute is the IPv4 alias name), and it reports `IFA_LOCAL` only
+/// when a point-to-point peer makes the local and the on-wire address differ.
+/// A reader that keys off the presence of `IFA_LOCAL` therefore sees the same
+/// thing here as it does upstream.
 /// # C: O(N attrs)
 pub(crate) fn build_newaddr6_reply(
-    seq: u32, pid: u32, ifindex: i32, label: &str, addr: [u8; 16], prefixlen: u8, scope: u8,
-    flags: u32, cacheinfo: IfaCacheInfo, msg_flags: u16, target_nsid: Option<i32>,
+    seq: u32, pid: u32, ifindex: i32, addr: [u8; 16], peer: Option<[u8; 16]>, prefixlen: u8,
+    scope: u8, flags: u32, proto: u8, rt_priority: u32, cacheinfo: IfaCacheInfo,
+    msg_flags: u16, target_nsid: Option<i32>,
 ) -> Vec<u8> {
     let mut body: Vec<u8> = Vec::with_capacity(96);
     let ifa = Ifaddrmsg {
@@ -166,13 +173,19 @@ pub(crate) fn build_newaddr6_reply(
     ifa.write_to(&mut ifa_buf);
     body.extend_from_slice(&ifa_buf);
     if let Some(nsid) = target_nsid { put_nlattr_i32(&mut body, ifa::IFA_TARGET_NETNSID, nsid); }
-    put_nlattr(&mut body, ifa::IFA_LOCAL, &addr);
-    put_nlattr(&mut body, ifa::IFA_ADDRESS, &addr);
-    put_nlattr_str(&mut body, ifa::IFA_LABEL, label);
-    put_nlattr_u32(&mut body, ifa::IFA_FLAGS, flags);
+    match peer {
+        Some(peer) => {
+            put_nlattr(&mut body, ifa::IFA_LOCAL, &addr);
+            put_nlattr(&mut body, ifa::IFA_ADDRESS, &peer);
+        }
+        None => put_nlattr(&mut body, ifa::IFA_ADDRESS, &addr),
+    }
+    if rt_priority != 0 { put_nlattr_u32(&mut body, ifa::IFA_RT_PRIORITY, rt_priority); }
     let mut ci = [0u8; IfaCacheInfo::SIZE];
     cacheinfo.write_to(&mut ci);
     put_nlattr(&mut body, ifa::IFA_CACHEINFO, &ci);
+    put_nlattr_u32(&mut body, ifa::IFA_FLAGS, flags);
+    if proto != 0 { put_nlattr_u8(&mut body, ifa::IFA_PROTO, proto); }
 
     let total = Nlmsghdr::SIZE + body.len();
     let hdr = Nlmsghdr {
@@ -262,18 +275,13 @@ where F: Fn(&network_namespace::NetworkNamespaceRef) -> bool
     for (iface, row) in net::sock::stack().v6_addr_snapshot_in(ns) {
         let Some(ifindex) = net::global_stack().ifaces.ifindex_in_ns(iface, ns) else { continue; };
         if want.is_some_and(|w| w != ifindex) { continue; }
-        let name = match ifaces.iter().find(|(id, _, _, _, _, _, _, _)| *id == ifindex) {
-            Some((_, n, _, _, _, _, _, _)) => n.as_str(),
-            None => continue,
-        };
-        let addr = row.addr;
-        let scope = if addr.is_loopback() { RT_SCOPE_HOST }
-        else if addr.is_link_local() { RT_SCOPE_LINK }
-        else { RT_SCOPE_UNIVERSE };
-        let cacheinfo = IfaCacheInfo { preferred: row.preferred, valid: row.valid, cstamp: 0, tstamp: 0 };
+        if !ifaces.iter().any(|(id, _, _, _, _, _, _, _)| *id == ifindex) { continue; }
+        let cacheinfo = IfaCacheInfo { preferred: row.preferred, valid: row.valid,
+            cstamp: row.cstamp, tstamp: row.tstamp };
         reply.extend_from_slice(&build_newaddr6_reply(
-            req.nlmsg_seq, req.nlmsg_pid, ifindex as i32, name, addr.0, row.prefixlen, scope,
-            row.flags(), cacheinfo, msg_flags, target_nsid,
+            req.nlmsg_seq, req.nlmsg_pid, ifindex as i32, row.addr.0,
+            row.peer.map(|peer| peer.0), row.prefixlen, row.rt_scope(), row.flags(), row.proto,
+            row.rt_priority, cacheinfo, msg_flags, target_nsid,
         ));
     }
     reply.extend_from_slice(&done_multi(req.nlmsg_seq, req.nlmsg_pid));

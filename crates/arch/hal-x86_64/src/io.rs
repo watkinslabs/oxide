@@ -5,12 +5,23 @@ pub fn operation_region_access(port: u64, width: u64, write: Option<u64>) -> Opt
     let port = u16::try_from(port).ok()?;
     let bytes = match width { 8 => 1, 16 => 2, 32 => 4, _ => return None };
     if u32::from(port).checked_add(bytes)? > u32::from(u16::MAX) + 1 { return None; }
+    // Every arm below shares one argument: port I/O touches no memory the
+    // compiler models, so the only hazard is a device side effect, and the
+    // descriptor selecting `port`/`width` is firmware-authored (the accessors'
+    // precondition). The arm's width literal is the same one `bytes` above
+    // range-checked, so no access straddles the top of the 64 KiB port space.
     Some(match (width, write) {
+        // SAFETY: 8-bit read of a firmware-named port whose byte was bounds-checked above.
         (8, None) => u64::from(unsafe { in8(port) }),
+        // SAFETY: 16-bit read; the checked `bytes` was 2, so port+1 is still in range.
         (16, None) => u64::from(unsafe { in16(port) }),
+        // SAFETY: 32-bit read; the checked `bytes` was 4, so port+3 is still in range.
         (32, None) => u64::from(unsafe { in32(port) }),
+        // SAFETY: 8-bit write of a firmware-supplied value to a firmware-named port.
         (8, Some(value)) => { unsafe { out8(port, value as u8) }; 0 }
+        // SAFETY: 16-bit write; the checked `bytes` was 2, so port+1 is still in range.
         (16, Some(value)) => { unsafe { out16(port, value as u16) }; 0 }
+        // SAFETY: 32-bit write; the checked `bytes` was 4, so port+3 is still in range.
         (32, Some(value)) => { unsafe { out32(port, value as u32) }; 0 }
         _ => return None,
     })

@@ -54,6 +54,7 @@ unsafe fn duplicate(object: *mut u8, funcs_off: usize, duplicate_off: usize) -> 
     // SAFETY: a nonzero callback has the documented single-object duplication signature.
     let callback = unsafe { read(funcs.add(duplicate_off).cast::<usize>()) };
     if callback == 0 { return core::ptr::null_mut(); }
+    // SAFETY: the funcs-table slot at duplicate_off is the ABI's atomic_duplicate_state entry, taking one object pointer and returning one owned state pointer.
     unsafe { core::mem::transmute::<usize, unsafe extern "C" fn(*mut c_void) -> *mut c_void>(callback)(object.cast()) }
 }
 fn acquire_ctx(state: *mut u8) -> *mut c_void {
@@ -73,6 +74,7 @@ fn registered_object(dev: *mut c_void, object: *mut u8, index: usize, kind: u8) 
     }
 }
 fn fixed_array_entry(state: *mut u8, array_off: usize, entry_size: usize, index: usize, kind: u8) -> bool {
+    // SAFETY: every caller passes the atomic-state pointer already validated non-null by the entry point.
     let dev = unsafe { read(state.add(DRM_ATOMIC_DEV_OFF).cast::<*mut c_void>()) };
     let devices = DEVICES.lock();
     let Some(record) = devices.iter().find(|record| record.dev == dev as usize && record.mode_config && !record.put_pending && !record.unplugged) else { return false; };
@@ -121,6 +123,7 @@ pub(super) extern "C" fn drm_atomic_get_plane_state(state: *mut c_void, plane: *
     let state = state.cast::<u8>(); let plane = plane.cast::<u8>();
     // SAFETY: plane index is initialized with the plane's device graph membership.
     let index = unsafe { read(plane.add(DRM_PLANE_INDEX_OFF).cast::<u32>()) as usize };
+    // SAFETY: state is the non-null atomic-state pointer checked above and dev is its ABI-pinned device field.
     let dev = unsafe { read(state.add(DRM_ATOMIC_DEV_OFF).cast::<*mut c_void>()) };
     if !registered_object(dev, plane, index, 0) || !fixed_array_entry(state, DRM_ATOMIC_PLANES_OFF, DRM_PLANE_ENTRY_SIZE, index, 0) { return err_ptr(LINUX_EINVAL); }
     let result = duplicate_state(state, plane, plane.wrapping_add(DRM_PLANE_LOCK_OFF), DRM_PLANE_FUNCS_OFF, DRM_PLANE_DUPLICATE_OFF, DRM_PLANE_STATE_OFF, DRM_ATOMIC_PLANES_OFF, DRM_PLANE_ENTRY_SIZE, index, DRM_PLANE_STATE_ATOMIC_OFF);
@@ -135,6 +138,7 @@ pub(super) extern "C" fn drm_atomic_get_crtc_state(state: *mut c_void, crtc: *mu
     let state = state.cast::<u8>(); let crtc = crtc.cast::<u8>();
     // SAFETY: CRTC index is initialized with the CRTC's device graph membership.
     let index = unsafe { read(crtc.add(DRM_CRTC_INDEX_OFF).cast::<u32>()) as usize };
+    // SAFETY: state is the non-null atomic-state pointer checked above and dev is its ABI-pinned device field.
     let dev = unsafe { read(state.add(DRM_ATOMIC_DEV_OFF).cast::<*mut c_void>()) };
     if !registered_object(dev, crtc, index, 1) || !fixed_array_entry(state, DRM_ATOMIC_CRTCS_OFF, DRM_CRTC_ENTRY_SIZE, index, 1) { return err_ptr(LINUX_EINVAL); }
     duplicate_state(state, crtc, crtc.wrapping_add(DRM_CRTC_LOCK_OFF), DRM_CRTC_FUNCS_OFF, DRM_CRTC_DUPLICATE_OFF, DRM_CRTC_STATE_OFF, DRM_ATOMIC_CRTCS_OFF, DRM_CRTC_ENTRY_SIZE, index, DRM_CRTC_STATE_ATOMIC_OFF)

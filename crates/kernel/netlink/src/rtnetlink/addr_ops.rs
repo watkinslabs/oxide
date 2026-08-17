@@ -7,7 +7,14 @@ use crate::flags;
 
 use super::ack::build_ack;
 use super::rtnetlink_addr::{cache_to_net, IfaCacheInfo};
-use super::uapi::{ifa, Ifaddrmsg, AF_INET};
+use super::uapi::{ifa, Ifaddrmsg, AF_INET, AF_INET6};
+use super::addr6_ops::{handle_deladdr6_in, handle_newaddr6_in};
+
+/// A family for which rtnetlink registers no `RTM_NEWADDR`/`RTM_DELADDR`
+/// handler, and none is registered for `PF_UNSPEC` either. Not
+/// `EAFNOSUPPORT`: the dispatch falls back to the family-agnostic table and
+/// reports the missing operation.
+const EOPNOTSUPP: i32 = -(vfs::VfsError::Eopnotsupp as i32);
 
 #[derive(Copy, Clone)]
 struct NewAddrAttrs {
@@ -85,7 +92,8 @@ pub fn handle_newaddr_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
     let ifindex = u32::from_ne_bytes([
         full_msg[ifa_off + 4], full_msg[ifa_off + 5], full_msg[ifa_off + 6], full_msg[ifa_off + 7],
     ]);
-    if family != AF_INET { return build_ack(req, -97); }
+    if family == AF_INET6 { return handle_newaddr6_in(ns, req, full_msg); }
+    if family != AF_INET { return build_ack(req, EOPNOTSUPP); }
     if prefixlen > 32 { return build_ack(req, -22); }
     let attrs = &full_msg[ifa_off + Ifaddrmsg::SIZE..];
     let parsed = match parse_newaddr_attrs(attrs) {
@@ -179,7 +187,8 @@ pub fn handle_deladdr_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
     let ifindex = u32::from_ne_bytes([
         full_msg[ifa_off + 4], full_msg[ifa_off + 5], full_msg[ifa_off + 6], full_msg[ifa_off + 7],
     ]);
-    if family != AF_INET { return build_ack(req, -97); }
+    if family == AF_INET6 { return handle_deladdr6_in(ns, req, full_msg); }
+    if family != AF_INET { return build_ack(req, EOPNOTSUPP); }
     if prefixlen > 32 { return build_ack(req, -22); }
     let attrs = &full_msg[ifa_off + Ifaddrmsg::SIZE..];
     let parsed = match parse_newaddr_attrs(attrs) {

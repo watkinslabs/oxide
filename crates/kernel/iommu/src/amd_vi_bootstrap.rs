@@ -34,6 +34,8 @@ impl AmdViBootstrap {
     /// `domain` must cover every DMA address `bdf` may issue before enable.
     /// # C: O(1)
     pub unsafe fn attach(&mut self, bdf: Bdf, domain: &AmdViDomain, domain_id: u16) -> bool {
+        // SAFETY: forwards this function's own `unsafe fn` contract unchanged —
+        // `domain` covers every DMA address `bdf` may issue before enable.
         if !unsafe { self.attach_exact(bdf, domain, domain_id) } { return false; }
         let Some(alias) = firmware::acpi::amd_vi_alias_for_requester(bdf.segment, bdf.raw()) else { return true; };
         let alias = Bdf { segment: bdf.segment, bus: (alias >> 8) as u8,
@@ -78,6 +80,8 @@ impl AmdViBootstrap {
         let Some(last) = map.iova.end().checked_sub(pci::IOVA_PAGE_SIZE) else { return false; };
         // SAFETY: this enabled unit owns the serialized command ring and the supplied mapping belongs to its domain.
         (unsafe { self.unit.invalidate_iova_pages(&self.regs, &self.tables, self.hhdm_offset, domain_id, map.iova.start, last, true) })
+            // SAFETY: the queued invalidation above must be drained before the caller
+            // reuses the interval; the same enabled unit owns that completion record.
             && unsafe { self.unit.wait_for_invalidations(&self.regs, &self.tables, self.hhdm_offset) }
     }
     /// Allocate and publish one requester-owned AMD-Vi MSI route. # C: O(tables + poll limit)

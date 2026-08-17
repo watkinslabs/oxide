@@ -96,6 +96,8 @@ pub(crate) fn framebuffer_put(fb: *mut c_void) {
     if refs <= 1 {
         // SAFETY: creation installs the complete mode-object free callback before publication.
         let free = unsafe { read(fb.cast::<u8>().add(DRM_FB_FREE_CB_OFF).cast::<Option<ModeObjectFree>>()) };
+        // SAFETY: refs just read <= 1, so this is the final reference; the callback
+        // receives the same kref field its registration contract expects.
         if let Some(free) = free { unsafe { free(fb.cast::<u8>().add(DRM_FB_REFCOUNT_OFF).cast()); } }
     } else {
         // SAFETY: this is the non-final decrement of the embedded mode-object reference count.
@@ -152,6 +154,8 @@ fn state(file: *mut c_void) -> Option<&'static mut GemFile> {
     if file.is_null() { return None; }
     // SAFETY: the object-IDR root is initialized at drm_open and survives until file_release.
     let raw = unsafe { read(file.cast::<u8>().add(DRM_FILE_OBJECT_IDR_HEAD_OFF).cast::<*mut GemFile>()) };
+    // SAFETY: raw is non-null only when it is the exact Box::into_raw pointer file_init
+    // installed, valid until file_release; no other code retains a live &mut to it.
     if raw.is_null() { None } else { Some(unsafe { &mut *raw }) }
 }
 
@@ -286,6 +290,8 @@ pub(super) extern "C" fn drm_gem_shmem_dumb_create(file: *mut c_void, dev: *mut 
         // SAFETY: hosted tests need an equivalent page-aligned zeroed area.
         Ok(layout) => unsafe { alloc_zeroed(layout) }, Err(_) => core::ptr::null_mut(),
     };
+    // SAFETY: object is the alloc_zeroed allocation above with this identical
+    // layout, not yet published (handle creation is still below); this is its one free.
     if backing.is_null() { unsafe { dealloc(object, object_layout); } return -LINUX_EBUSY; }
     drm_gem_private_object_init(dev, object.cast(), size);
     // SAFETY: object reserves the complete shmem-GEM ABI record; these fields install its backing and free contract.
@@ -297,6 +303,8 @@ pub(super) extern "C" fn drm_gem_shmem_dumb_create(file: *mut c_void, dev: *mut 
         #[cfg(target_os = "oxide-kernel")]
         { crate::linux_alloc::vmalloc_free(backing); }
         #[cfg(not(target_os = "oxide-kernel"))]
+        // SAFETY: backing was allocated above with this identical recomputed
+        // Layout::from_size_align(size, PAGE_SIZE) in the hosted (non-kernel) build.
         if let Ok(layout) = Layout::from_size_align(size, PAGE_SIZE as usize) { unsafe { dealloc(backing, layout); } }
         // SAFETY: object was allocated above and was not published after handle creation failed.
         unsafe { dealloc(object, object_layout); }
@@ -355,6 +363,9 @@ pub(super) extern "C" fn drm_gem_fb_create_with_dirty(dev: *mut c_void, file: *m
     for plane in 0..planes {
         // SAFETY: plane is bounded by DRM_FORMAT_MAX_PLANES and all indexed cmd/fb fields lie in their fixed arrays.
         let (handle, pitch, offset) = unsafe { (read(cmd.add(DRM_FB_CMD_HANDLES_OFF + plane * 4).cast::<u32>()), read(cmd.add(DRM_FB_CMD_PITCHES_OFF + plane * 4).cast::<u32>()), read(cmd.add(DRM_FB_CMD_OFFSETS_OFF + plane * 4).cast::<u32>())) };
+        // SAFETY: fb is the live allocation written above; earlier plane slots hold
+        // either a retained lookup reference or the zeroed null from alloc_zeroed, so
+        // gem_fb_destroy's per-plane object_put only touches references actually held.
         let object = drm_gem_object_lookup(file, handle); if object.is_null() { unsafe { gem_fb_destroy(fb.cast()); } return err_ptr(LINUX_EINVAL); }
         // SAFETY: format helper accepts the verified format object and plane index; command width/height are fixed scalar fields.
         let (width, height, min_pitch) = unsafe { (read(cmd.add(DRM_FB_CMD_WIDTH_OFF).cast::<u32>()), read(cmd.add(DRM_FB_CMD_HEIGHT_OFF).cast::<u32>()), format::drm_format_info_min_pitch(info, plane as i32, read(cmd.add(DRM_FB_CMD_WIDTH_OFF).cast::<u32>()))) };
@@ -379,6 +390,8 @@ fn release_handle(object: *mut c_void, file: *mut c_void) {
     if !funcs.is_null() {
         // SAFETY: a non-null close slot has the external DRM object-close signature.
         let close = unsafe { read(funcs.add(DRM_GEM_FUNCS_CLOSE_OFF).cast::<Option<GemClose>>()) };
+        // SAFETY: the close callback, when present, is called with the live object
+        // and the file that still owns this handle, per the external DRM ABI.
         if let Some(close) = close { unsafe { close(object, file); } }
     }
     // SAFETY: this handle's reference is removed exactly once from the file owner's vector.
@@ -389,6 +402,8 @@ fn release_handle(object: *mut c_void, file: *mut c_void) {
 pub(crate) fn object_put(object: *mut c_void) {
     // SAFETY: every caller holds exactly one previously acquired GEM object reference.
     let refs = unsafe { read(object.cast::<u8>().add(DRM_GEM_REFCOUNT_OFF).cast::<i32>()) };
+    // SAFETY: refs just read > 1, so this decrement is not the final reference and
+    // the object stays live; the field is the same one read above.
     if refs <= 1 { object_free(object); } else { unsafe { write(object.cast::<u8>().add(DRM_GEM_REFCOUNT_OFF).cast::<i32>(), refs - 1); } }
 }
 
@@ -406,6 +421,8 @@ fn object_free(object: *mut c_void) {
     if funcs.is_null() { return; }
     // SAFETY: a non-null free slot has the external DRM object-free signature.
     let free = unsafe { read(funcs.add(DRM_GEM_FUNCS_FREE_OFF).cast::<Option<GemFree>>()) };
+    // SAFETY: this runs only at the object's final reference (object_put's refs<=1
+    // arm); the free callback, when present, follows the external DRM ABI.
     if let Some(free) = free { unsafe { free(object); } }
 }
 
@@ -424,8 +441,12 @@ unsafe extern "C" fn shmem_object_free(object: *mut c_void) {
     #[cfg(target_os = "oxide-kernel")]
     { let _ = size; crate::linux_alloc::vmalloc_free(backing); }
     #[cfg(not(target_os = "oxide-kernel"))]
+    // SAFETY: backing was allocated in drm_gem_shmem_dumb_create's hosted branch
+    // with this identical recomputed Layout::from_size_align(size, PAGE_SIZE).
     if let Ok(layout) = Layout::from_size_align(size, PAGE_SIZE as usize) { unsafe { dealloc(backing, layout); } }
     let layout = Layout::from_size_align(DRM_GEM_SHMEM_OBJECT_SIZE, core::mem::align_of::<u64>()).unwrap();
+    // SAFETY: this is the object's final reference (no import attachment above);
+    // object was allocated with this identical DRM_GEM_SHMEM_OBJECT_SIZE layout.
     unsafe { dealloc(object.cast(), layout); }
 }
 
@@ -435,6 +456,8 @@ unsafe extern "C" fn gem_fb_destroy(fb: *mut c_void) {
     // plane entry owns one lookup reference and must be returned before the framebuffer storage is freed.
     unsafe { for plane in 0..4 { let object = read(fb.cast::<u8>().add(DRM_FB_OBJECTS_OFF + plane * core::mem::size_of::<*mut c_void>()).cast::<*mut c_void>()); if !object.is_null() { object_put(object); } } }
     let layout = Layout::from_size_align(DRM_FB_SIZE, core::mem::align_of::<u64>()).unwrap();
+    // SAFETY: fb was allocated by drm_gem_fb_create_with_dirty with this identical
+    // DRM_FB_SIZE layout; every plane reference was released just above.
     unsafe { dealloc(fb.cast(), layout); }
 }
 
@@ -442,6 +465,8 @@ unsafe extern "C" fn gem_fb_mode_object_free(kref: *mut c_void) {
     if kref.is_null() { return; }
     // SAFETY: kref is the drm_framebuffer embedded mode-object reference field at its verified offset.
     let fb = unsafe { kref.cast::<u8>().sub(DRM_FB_REFCOUNT_OFF).cast::<c_void>() };
+    // SAFETY: this callback is installed only as the free_cb for a framebuffer built
+    // by drm_gem_fb_create_with_dirty, so fb is that same live framebuffer at its final reference.
     unsafe { gem_fb_destroy(fb); }
 }
 
@@ -500,6 +525,7 @@ mod tests {
         // SAFETY: args reserves drm_mode_create_dumb and receives one shmem object handle.
         unsafe { write(args.as_mut_ptr().add(DRM_DUMB_HEIGHT_OFF).cast::<u32>(), 4); write(args.as_mut_ptr().add(DRM_DUMB_WIDTH_OFF).cast::<u32>(), 8); write(args.as_mut_ptr().add(DRM_DUMB_BPP_OFF).cast::<u32>(), 32); }
         assert_eq!(drm_gem_shmem_dumb_create(file.as_mut_ptr().cast(), dev.as_mut_ptr().cast(), args.as_mut_ptr().cast()), 0);
+        // SAFETY: the successful create call above populated args' handle field.
         let handle = unsafe { read(args.as_ptr().add(DRM_DUMB_HANDLE_OFF).cast::<u32>()) };
         assert_eq!(drm_gem_dumb_map_offset(file.as_mut_ptr().cast(), dev.as_mut_ptr().cast(), handle, &mut first), 0); assert_ne!(first, 0); assert_eq!(first % PAGE_SIZE, 0);
         assert_eq!(drm_gem_dumb_map_offset(file.as_mut_ptr().cast(), dev.as_mut_ptr().cast(), handle, &mut second), 0); assert_eq!(first, second);
@@ -519,6 +545,8 @@ mod tests {
         let info = format::drm_format_info(0x3432_5258).cast::<u8>(); let fb = drm_gem_fb_create_with_dirty(dev.as_mut_ptr().cast(), file.as_mut_ptr().cast(), info, cmd.as_ptr()); assert!(!fb.is_null());
         // SAFETY: successful creation retained the source GEM object in fb->obj[0].
         let object = unsafe { read(fb.cast::<u8>().add(DRM_FB_OBJECTS_OFF).cast::<*mut c_void>()) }; let handle = unsafe { read(dumb.as_ptr().add(DRM_DUMB_HANDLE_OFF).cast::<u32>()) };
+        // SAFETY: fb is the live framebuffer just created above; refcount is read
+        // after framebuffer_get's balanced increment, before framebuffer_put's decrement.
         framebuffer_get(fb); assert_eq!(unsafe { read(fb.cast::<u8>().add(DRM_FB_REFCOUNT_OFF).cast::<i32>()) }, 2); framebuffer_put(fb);
         // SAFETY: one reference remains after the balanced temporary get/put pair.
         assert_eq!(unsafe { read(fb.cast::<u8>().add(DRM_FB_REFCOUNT_OFF).cast::<i32>()) }, 1);

@@ -58,12 +58,14 @@ extern "C" fn nvme_auth_extract_key(secret: *const c_char, hash: u8) -> *mut Dhc
 }
 extern "C" fn nvme_auth_parse_key(secret: *const c_char, ret: *mut *mut DhchapKey) -> i32 {
     if ret.is_null() { return -EINVAL; }
-    if secret.is_null() { // SAFETY: ret was checked non-null.
+    if secret.is_null() { // SAFETY: `ret` was checked non-null at entry and the
+        // Linux KPI makes it a caller-owned out-parameter slot for one key pointer.
         unsafe { *ret = ptr::null_mut(); }; return 0;
     }
     let Some(s) = cstr(secret) else { return -EINVAL; };
     if s.len() < 10 || &s[..7] != b"DHHC-1:" || s[9] != b':' { return -EINVAL; }
     let hash = match (s[7], s[8]) { (a @ b'0'..=b'9', b @ b'0'..=b'9') => (a - b'0') * 10 + (b - b'0'), _ => return -EINVAL };
+    // SAFETY: s.len() >= 10 was just checked and s is the same NUL-terminated buffer cstr(secret) read from, so secret+10 lands within that allocation, at worst on the terminating NUL.
     let p = unsafe { secret.add(10) }; let key = nvme_auth_extract_key(p, hash);
     // SAFETY: ret was checked non-null and receives null on the error path.
     unsafe { *ret = if is_err(key) { ptr::null_mut() } else { key }; }
@@ -74,12 +76,15 @@ extern "C" fn nvme_auth_transform_key(key: *const DhchapKey, nqn: *const c_char)
     if key.is_null() { return err(ENOKEY); }
     // SAFETY: key is a live DhchapKey with len key bytes.
     let (len, hash, raw) = unsafe { ((*key).len, (*key).hash, core::slice::from_raw_parts(key_bytes(key.cast_mut()), (*key).len)) };
-    if hash == 0 { let out = nvme_auth_alloc_key(len as u32, hash); if out.is_null() { return err(ENOMEM); } // SAFETY: out owns len flexible bytes.
+    if hash == 0 { let out = nvme_auth_alloc_key(len as u32, hash); if out.is_null() { return err(ENOMEM); }
+        // SAFETY: `out` was just allocated for `len` bytes by nvme_auth_alloc_key, so
+        // its flexible array at KEY_OFFSET has room for the whole untransformed key.
         unsafe { ptr::copy_nonoverlapping(raw.as_ptr(), key_bytes(out), len); } return out; }
     let Some(nqn) = cstr(nqn) else { return err(EINVAL); }; let n = hash_len(hash); if n == 0 { return err(EINVAL); }
     let out = nvme_auth_alloc_key(n as u32, hash); if out.is_null() { return err(ENOMEM); }
     let mut message = [0u8; 4096]; if nqn.len().saturating_add(17) > message.len() { nvme_auth_free_key(out); return err(EINVAL); }
     message[..nqn.len()].copy_from_slice(nqn); message[nqn.len()..nqn.len() + 17].copy_from_slice(b"NVMe-over-Fabrics");
+    // SAFETY: out was just allocated above by nvme_auth_alloc_key(n, hash), so it owns n flexible bytes starting at KEY_OFFSET, matching key_bytes' contract.
     let r = hmac_once(hash, Some(raw), Some(&message[..nqn.len() + 17]), unsafe { key_bytes(out) }); if r != 0 { nvme_auth_free_key(out); return err(-r); } out
 }
 

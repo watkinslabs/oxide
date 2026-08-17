@@ -187,6 +187,7 @@ pub(crate) unsafe extern "C" fn sysfs_streq(a: *const u8, b: *const u8) -> bool 
         if av == bv { return true; }
         // SAFETY: a+i and b+i are the first unequal terminators or bytes; one-byte lookahead is only used after newline.
         return (av == 0 && bv == b'\n' && unsafe { *b.add(i + 1) } == 0) ||
+               // SAFETY: a+i is the first unequal byte (a newline here, per the check above); the same one-byte lookahead past a required terminator applies symmetrically to a.
                (av == b'\n' && unsafe { *a.add(i + 1) } == 0 && bv == 0);
     }
 }
