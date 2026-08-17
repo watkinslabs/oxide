@@ -368,11 +368,23 @@ impl FileOps for F2fsOps {
         let live = node.live()?;
         let fl = file.flags();
         let write = fl.contains(vfs::OpenFlags::O_WRONLY) || fl.contains(vfs::OpenFlags::O_RDWR);
-        if !write && !crate::verity::access::is_verity(live.flags) { return Ok(()); }
+        // An encrypted REGULAR file's key is resolved here whichever way the
+        // handle was asked for: reading and writing both need the plaintext.
+        // Regular only, because the reference gives a directory no open hook at
+        // all — a locked directory must still list, and requiring its key here
+        // would refuse the one thing it is allowed to do.
+        let encrypted = live.encrypted() && mode::file_type(live.mode) == FileType::Regular;
+        if !write && !encrypted && !crate::verity::access::is_verity(live.flags) {
+            return Ok(());
+        }
         let mut v = node.fs.volume.lock();
         // Verity first: a sealed file refuses a writable handle outright, and
         // there is nothing to acquire for a handle that is not going to exist.
         v.verity_file_open(&live, node.ino, write).map_err(errno_to_vfs)?;
+        // Then the key, once, so nothing below this handle resolves one from the
+        // medium — and so a file whose key is absent is refused by the open
+        // rather than by a read or a write at some later offset.
+        if encrypted { v.crypt_file_open(&live, node.ino).map_err(errno_to_vfs)?; }
         if write { v.dquot_initialize(node.ino).map_err(errno_to_vfs)?; }
         Ok(())
     }

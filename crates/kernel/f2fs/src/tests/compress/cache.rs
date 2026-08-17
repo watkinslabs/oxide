@@ -181,26 +181,24 @@ fn a_block_that_has_left_the_file_does_not_answer_for_it_afterwards() {
 }
 
 #[test]
-fn closing_the_last_holder_drops_what_that_file_cached() {
+fn evicting_the_holder_drops_what_that_file_cached() {
     let (mut v, ino) = volume(true);
     wrote(&mut v, ino, 0, &patterned(4 * BLKSIZE, 0x53));
-    v.open_inode(ino);
     assert_eq!(whole(&v, ino).unwrap().len(), 4 * BLKSIZE);
     assert_eq!(v.compress_cache.blocks(), 1);
-    v.close_inode(ino).unwrap();
+    v.evict_inode(ino).unwrap();
     assert_eq!(v.compress_cache.blocks(), 0);
 }
 
 #[test]
-fn one_files_blocks_survive_another_files_last_close() {
+fn one_files_blocks_survive_another_files_eviction() {
     let (mut v, ino) = volume(true);
     wrote(&mut v, ino, 0, &patterned(4 * BLKSIZE, 0x64));
     assert_eq!(whole(&v, ino).unwrap().len(), 4 * BLKSIZE);
     assert_eq!(v.compress_cache.blocks(), 1);
-    // A close of an inode that cached nothing must not take this one's block
-    // with it: the owner is recorded per block precisely so it cannot.
-    v.open_inode(ROOT_INO);
-    v.close_inode(ROOT_INO).unwrap();
+    // An eviction of an inode that cached nothing must not take this one's
+    // block with it: the owner is recorded per block precisely so it cannot.
+    v.evict_inode(ROOT_INO).unwrap();
     assert_eq!(v.compress_cache.blocks(), 1);
 }
 

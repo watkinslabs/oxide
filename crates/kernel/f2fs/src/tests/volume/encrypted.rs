@@ -14,11 +14,11 @@ use crate::crypto::uapi::*;
 use crate::crypto::MasterKey;
 
 /// The master key this image's root is encrypted under.
-fn master_bytes() -> [u8; 64] { core::array::from_fn(|i| (0x40 + i) as u8) }
-fn nonce() -> [u8; FILE_NONCE_SIZE] { core::array::from_fn(|i| (0x10 + i) as u8) }
+pub(super) fn master_bytes() -> [u8; 64] { core::array::from_fn(|i| (0x40 + i) as u8) }
+pub(super) fn nonce() -> [u8; FILE_NONCE_SIZE] { core::array::from_fn(|i| (0x10 + i) as u8) }
 
 /// A v2 policy naming the key above, with the narrowest padding.
-fn policy() -> Policy {
+pub(super) fn policy() -> Policy {
     let mk = MasterKey::new(&master_bytes()).unwrap();
     Policy {
         version: POLICY_V2,
@@ -44,7 +44,7 @@ fn dir_info(ino: u32) -> crate::crypto::Info {
 
 /// An image whose root is an encrypted directory holding `names`, with the
 /// context in an attribute block the way the format stores it.
-fn image(names: &[&[u8]]) -> Builder {
+pub(super) fn image(names: &[&[u8]]) -> Builder {
     let mut b = Builder::new();
     let info = dir_info(ROOT_INO);
     let mut s = nodes::Spec::dir(ROOT_INO);
@@ -198,7 +198,7 @@ fn the_keyed_hash_is_neither_of_the_two_unkeyed_hashes() {
     let mut v = folding_encrypted_root(&[b"README.txt"]).mount().unwrap();
     v.add_encryption_key(&master_bytes()).unwrap();
     let root = v.root().unwrap();
-    let info = v.crypt_info(&root, ROOT_INO).unwrap().unwrap();
+    let info = v.crypt_require_key(&root, ROOT_INO).unwrap().unwrap();
     let cf = crate::casefold::Casefold::load(crate::uapi::ENC_UTF8_12_1, 0).unwrap();
     let q = crate::casefold::Query::prepare(&cf, b"README.txt").unwrap();
     let keyed = info.dirhash(q.folded()).unwrap();

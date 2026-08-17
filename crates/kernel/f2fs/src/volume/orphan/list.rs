@@ -1,11 +1,12 @@
 //! The orphan list a volume carries, and what a checkpoint does with it.
 //!
-//! An inode whose last name is gone is NOT free while something still holds it
-//! open: its blocks are still readable through the open handle, and a reader
-//! that freed them would hand the same blocks to the next file. Freeing it at
-//! the last close is easy in memory and wrong on the medium — a crash between
-//! the unlink and that close leaves an inode no name reaches and no checkpoint
-//! mentions, whose blocks stay counted live forever.
+//! An inode whose last name is gone is NOT free: something may still hold it
+//! open, its blocks are still readable through that handle, and freeing them
+//! would hand the same blocks to the next file while the reader is pointed at
+//! them. So losing a name never frees anything — it parks. Recording the debt
+//! in memory alone is easy and wrong: a crash between the unlink and the last
+//! close leaves an inode no name reaches and no checkpoint mentions, whose
+//! blocks stay counted live forever.
 //!
 //! So the list is parked in the checkpoint pack itself, between the payload
 //! and the summaries, and the next mount frees what the crash could not. The
@@ -19,7 +20,7 @@ use syscall::errno::Errno;
 use sectors::SectorSource;
 
 use crate::flags::CP_ORPHAN_PRESENT_FLAG;
-use crate::uapi::{I_CTIME, I_CTIME_NSEC, I_LINKS};
+use crate::uapi::{I_CTIME, I_CTIME_NSEC, I_LINKS, I_SIZE};
 
 use super::super::dnode::{put32, put64};
 use super::super::Volume;
@@ -71,23 +72,28 @@ impl<S: SectorSource> Volume<S> {
         Ok(())
     }
 
-    /// Record a holder of `ino`. # C: O(log opens)
-    pub fn open_inode(&mut self, ino: u32) { *self.opens.entry(ino).or_insert(0) += 1; }
+    /// Reserve room on the list for a name that is about to go.
+    ///
+    /// Asked BEFORE the entry is taken out, which is the whole reason it is
+    /// separate from the parking itself: a removal that finds the list full
+    /// after the name is gone has an inode it can neither park nor free, and
+    /// the blocks stay counted live with nothing recording the debt. Refused
+    /// here, the caller still has a directory it has not touched.
+    /// # C: O(1)
+    pub(crate) fn reserve_orphan(&self) -> Result<(), Errno> {
+        if self.orphans.len() as u64 >= self.max_orphans() { return Err(Errno::Enospc); }
+        Ok(())
+    }
 
-    /// Whether anything still holds `ino`. # C: O(log opens)
-    pub fn inode_is_open(&self, ino: u32) -> bool { self.opens.contains_key(&ino) }
-
-    /// Drop a holder of `ino`, freeing it when it was the last one and the
-    /// inode is parked. This is the only place an orphan is reclaimed without
-    /// a crash in between.
-    /// # C: O(blocks it has) on the last close, O(log opens) otherwise
-    pub fn close_inode(&mut self, ino: u32) -> Result<(), Errno> {
-        let left = match self.opens.get_mut(&ino) {
-            Some(n) => { *n = n.saturating_sub(1); *n }
-            None => 0,
-        };
-        if left > 0 { return Ok(()); }
-        self.opens.remove(&ino);
+    /// Free `ino` now that the last reference to it is gone.
+    ///
+    /// The terminal point of an inode's life, and the only place a parked
+    /// inode is reclaimed without a crash in between: an inode whose last name
+    /// went while a handle still held it is on the list, and this is the moment
+    /// that handle is gone. One that was given a name in the meantime is no
+    /// longer on the list and is left where it is.
+    /// # C: O(blocks it has) when it was parked, O(1) otherwise
+    pub fn evict_inode(&mut self, ino: u32) -> Result<(), Errno> {
         if self.orphans.contains(&ino) { return self.release_orphan(ino); }
         // Nothing holds the file any more, so nothing is going to read its
         // clusters again soon; the blocks it cached are held for no one. A
@@ -97,21 +103,48 @@ impl<S: SectorSource> Volume<S> {
         Ok(())
     }
 
-    /// The last name of `ino` has gone: free it, or park it when something
-    /// still holds it open.
+    /// A name for `ino` has gone: drop the stored link count by what that name
+    /// was worth, and PARK the inode when it reaches zero.
     ///
-    /// The stored link count goes to zero either way. A parked inode that
-    /// still claims a link reads as reachable to anything that finds it
-    /// without the orphan list — a checker, or a mount whose pack was lost.
-    /// # C: O(blocks it has) when freed, O(1 block) when parked
-    pub(crate) fn drop_last_link(&mut self, ino: u32, now: (u64, u32)) -> Result<(), Errno> {
-        if !self.inode_is_open(ino) { return self.free_inode(ino); }
-        self.add_orphan(ino)?;
+    /// Parking rather than freeing is the contract, and the reason the orphan
+    /// list exists at all. A descriptor that still holds the file goes on
+    /// reading its blocks after the name is gone, so freeing here hands those
+    /// blocks to the next file while a reader is still pointed at them — the
+    /// reader then sees somebody else's bytes. The inode outlives its last
+    /// name, and `evict_inode` — the last reference, the only point that knows
+    /// no reader is left — is what frees it.
+    ///
+    /// Doing that in memory alone would be easy and wrong: a crash between the
+    /// removal and that last close leaves an inode no name reaches and no
+    /// checkpoint mentions, whose blocks stay counted live forever. The list is
+    /// written into the checkpoint pack, so the next mount frees what the crash
+    /// interrupted.
+    ///
+    /// A directory's name is worth TWO of its links — the entry in its parent
+    /// and its own `.` — and its parent loses the link the child's `..` held.
+    /// An emptied directory is truncated as it goes, because a parked directory
+    /// that still claims a size describes blocks its own index no longer names.
+    /// # C: O(1 block)
+    pub(crate) fn drop_nlink(&mut self, dir: u32, ino: u32, is_dir: bool, now: (u64, u32))
+        -> Result<(), Errno> {
+        if is_dir {
+            let up = self.read_inode(dir)?.links.saturating_sub(1).max(1);
+            self.stamp_inode(dir, |b| put32(b, I_LINKS, up))?;
+        }
+        let worth = if is_dir { 2 } else { 1 };
+        let left = self.read_inode(ino)?.links.saturating_sub(worth);
         self.stamp_inode(ino, |b| {
-            put32(b, I_LINKS, 0);
+            put32(b, I_LINKS, left);
+            if is_dir { put64(b, I_SIZE, 0); }
             put64(b, I_CTIME, now.0);
             put32(b, I_CTIME_NSEC, now.1);
-        })
+        })?;
+        // The stored count is at zero BEFORE the parking, so an inode on the
+        // list never claims a link it does not have: one that did would read as
+        // reachable to anything that finds it without the list — a checker, or a
+        // mount whose pack was lost.
+        if left == 0 { self.add_orphan(ino)?; }
+        Ok(())
     }
 
     /// Blocks the next checkpoint must set aside for the list. # C: O(1)

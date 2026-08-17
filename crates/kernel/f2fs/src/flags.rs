@@ -90,6 +90,9 @@ pub const OFFSET_BIT_MASK: u32 = (1 << OFFSET_BIT_SHIFT) - 1;
 pub const FADVISE_COLD_BIT: u8 = 0x01;
 /// The inode has lost track of its parent, so a recovery cannot trust `i_pino`.
 pub const FADVISE_LOST_PINO_BIT: u8 = 0x02;
+/// The name recorded in the inode is CIPHERTEXT, so nothing may print it or
+/// treat it as text.
+pub const FADVISE_ENC_NAME_BIT: u8 = 0x08;
 /// The inode's size must not be changed by a write past its end.
 pub const FADVISE_KEEP_SIZE_BIT: u8 = 0x10;
 

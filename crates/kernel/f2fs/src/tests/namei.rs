@@ -289,8 +289,12 @@ fn unlinking_frees_the_inodes_blocks() {
     v.commit().unwrap();
     let used = v.space().free;
     v.remove(ROOT_INO, b"big", false, NOW).unwrap();
+    // The name going parks the inode; the EVICTION is what frees it and
+    // gives back what it held. The two are separate events, and a descriptor
+    // may sit between them.
+    v.evict_inode(ino).unwrap();
     v.commit().unwrap();
-    assert!(v.space().free > used, "unlink freed nothing");
+    assert!(v.space().free > used, "the eviction freed nothing");
 }
 
 #[test]

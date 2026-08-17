@@ -40,9 +40,12 @@ impl<S: SectorSource> Volume<S> {
         // An encrypted directory stores ciphertext. With the key the query is
         // encrypted and compared as ciphertext; without it the query IS a
         // no-key name, which carries the hash the entry was filed under.
-        let crypt = self.crypt_info(inode, ino)?;
+        // A lookup ESTABLISHES the directory's key but does not require one:
+        // without it the query IS a no-key name, which is a valid query rather
+        // than a failure. Same place the reference's lookup hook sets it up.
+        let crypt = self.crypt_setup_info(inode, ino)?;
         let search = if inode.encrypted() {
-            Some(crate::crypto::setup(crypt.as_ref(), name, true).map_err(|e| e.errno())?)
+            Some(crate::crypto::setup(crypt.as_deref(), name, true).map_err(|e| e.errno())?)
         } else { None };
         // A locked directory cannot fold: the caller's name is a record, not
         // a spelling of anything.
@@ -140,7 +143,11 @@ impl<S: SectorSource> Volume<S> {
         // An encrypted directory is the exception — with the key its names are
         // decrypted, and without it they are presented as the encoded records
         // a later lookup decodes back.
-        let crypt = self.crypt_info(inode, ino)?;
+        //
+        // Established here, at the listing, and not required: this is where the
+        // reference's readdir hook sets the key up, and a locked directory
+        // lists.
+        let crypt = self.crypt_setup_info(inode, ino)?;
         if inode.inline_dentry() {
             let (area, layout) = self.inline_dir(inode, ino)?;
             let list = deblock::entries(&area, &layout).map_err(|_| self.corrupt_dirent())?;
@@ -174,10 +181,10 @@ impl<S: SectorSource> Volume<S> {
     /// allows, encoded where it does not, and unchanged where the directory
     /// does not encrypt at all.
     /// # C: O(name len)
-    fn present_entry(&self, crypt: &Option<crate::crypto::Info>, inode: &Inode,
+    fn present_entry(&self, crypt: &Option<alloc::sync::Arc<crate::crypto::Info>>, inode: &Inode,
                      e: deblock::Entry) -> Result<DirEntry, Errno> {
         if !inode.encrypted() { return Ok(into_entry(e)); }
-        let name = crate::crypto::present(crypt.as_ref(), e.hash, &e.name)
+        let name = crate::crypto::present(crypt.as_deref(), e.hash, &e.name)
             .map_err(|err| err.errno())?;
         Ok(DirEntry { name, ino: e.ino, file_type: e.file_type })
     }
@@ -215,7 +222,7 @@ impl<S: SectorSource> Volume<S> {
     /// derived per inode rather than fixed — the same computation the format
     /// itself does, and getting it wrong shifts every record.
     /// # C: O(1 block)
-    fn inline_dir(&self, inode: &Inode, ino: u32) -> Result<(Vec<u8>, Layout), Errno> {
+    pub(crate) fn inline_dir(&self, inode: &Inode, ino: u32) -> Result<(Vec<u8>, Layout), Errno> {
         let n = self.read_inode_ref(ino)?.1;
         let (at, len) = inode.inline_data_span();
         let area = n.block.get(at..at + len).ok_or_else(|| self.corrupt_dirent())?.to_vec();

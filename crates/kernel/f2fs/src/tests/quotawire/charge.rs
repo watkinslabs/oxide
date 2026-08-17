@@ -142,6 +142,10 @@ fn unlinking_returns_everything_the_file_held() {
     v.write_file(ino, 0, &vec![1u8; 3 * BLKSIZE]).unwrap();
     v.sync_data().unwrap();
     v.remove(ROOT_INO, b"f", false, NOW).unwrap();
+    // The name going parks the inode; the EVICTION is what frees it and
+    // gives back what it held. The two are separate events, and a descriptor
+    // may sit between them.
+    v.evict_inode(ino).unwrap();
     assert_eq!(inodes(&mut v), before.1, "the inode was not returned");
     assert_eq!(space(&mut v), before.0, "space was not returned");
 }
@@ -158,6 +162,10 @@ fn space_freed_makes_room_for_the_write_that_was_refused() {
     v.sync_data().unwrap();
     assert!(n < 3 * BLKSIZE, "the room was already gone, yet the write completed");
     v.remove(ROOT_INO, b"a", false, NOW).unwrap();
+    // The name going parks the inode; the EVICTION is what frees it and
+    // gives back what it held. The two are separate events, and a descriptor
+    // may sit between them.
+    v.evict_inode(a).unwrap();
     v.write_file(b, 0, &vec![2u8; 3 * BLKSIZE]).unwrap();
     v.sync_data().unwrap();
     assert_eq!(space(&mut v), 3 * BLKSIZE as u64);
@@ -306,6 +314,10 @@ fn a_freed_inode_leaves_no_attachment_for_the_next_file_to_take() {
     let mut v = with_quota(0, 0, true);
     let ino = v.create(ROOT_INO, b"f", &spec_of(OTHER), None).unwrap();
     v.remove(ROOT_INO, b"f", false, NOW).unwrap();
+    // The name going parks the inode; the EVICTION is what frees it and
+    // gives back what it held. The two are separate events, and a descriptor
+    // may sit between them.
+    v.evict_inode(ino).unwrap();
     let before = v.quota_record(USRQUOTA, OTHER).unwrap().curspace;
     v.charge_space(ino, BLKSIZE as u64).unwrap();
     assert_eq!(v.quota_record(USRQUOTA, OTHER).unwrap().curspace, before,

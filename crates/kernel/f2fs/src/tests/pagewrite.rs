@@ -312,6 +312,10 @@ fn unlinking_gives_back_the_owners_charge_for_a_reservation_too() {
     // last name going is the one path that meets a RESERVATION and has to
     // give it back — the file is gone and its bytes were never written.
     v.remove(ROOT_INO, b"q", false, NOW).unwrap();
+    // The name going parks the inode; the EVICTION is what frees it and
+    // gives back what it held. The two are separate events, and a descriptor
+    // may sit between them.
+    v.evict_inode(ino).unwrap();
     assert_eq!(charge(&mut v), before,
                "the owner is still paying for a block that never landed");
 }

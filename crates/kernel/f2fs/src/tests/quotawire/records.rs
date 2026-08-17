@@ -47,6 +47,10 @@ fn a_record_with_nothing_left_in_it_is_removed_rather_than_kept() {
         "the identity was not recorded in the first place",
     );
     v.remove(ROOT_INO, b"f", false, NOW).unwrap();
+    // The name going parks the inode; the EVICTION is what frees it and
+    // gives back what it held. The two are separate events, and a descriptor
+    // may sit between them.
+    v.evict_inode(ino).unwrap();
     v.commit().unwrap();
     assert_eq!(v.quota_next_record(USRQUOTA, OTHER).unwrap(), None);
     // Everything else the file held is still there.
