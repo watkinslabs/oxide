@@ -10,6 +10,7 @@
 // - raw.rs:   raw IPv6 routing, extension headers, and fragmentation.
 // - mld.rs:   MLD interface policy, reporting, and retry lifecycle.
 // - manual.rs: manually configured (rtnetlink) IPv6 address add/modify/remove.
+// - addr_table.rs: the IPv6 interface-address table, its inserts and its lifetimes.
 
 mod types;
 mod control;
@@ -21,6 +22,7 @@ mod ra;
 mod raw;
 mod mld;
 mod manual;
+mod addr_table;
 #[cfg(test)] mod ra_tests;
 #[cfg(test)] mod dad_tests;
 #[cfg(test)] mod manual_tests;

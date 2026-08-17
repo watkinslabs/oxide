@@ -119,18 +119,18 @@ fn remaining_lifetimes_are_recomputed_from_the_deadlines() {
     let mut r = row(Ipv6Addr::from_segments([0x2001, 0xdb8, 0, 0, 0, 0, 0, 1]));
     r.valid_until_ns = 3600 * SEC;
     r.preferred_until_ns = 1800 * SEC;
-    super::udp::refresh_lifetimes(&mut r, 0);
+    super::addr_table::refresh_lifetimes(&mut r, 0);
     assert_eq!(r.valid, 3600);
     assert_eq!(r.preferred, 1800);
-    super::udp::refresh_lifetimes(&mut r, 600 * SEC);
+    super::addr_table::refresh_lifetimes(&mut r, 600 * SEC);
     assert_eq!(r.valid, 3000);
     assert_eq!(r.preferred, 1200);
-    super::udp::refresh_lifetimes(&mut r, 3600 * SEC);
+    super::addr_table::refresh_lifetimes(&mut r, 3600 * SEC);
     assert_eq!(r.valid, 0);
     assert_eq!(r.preferred, 0);
 
     let mut infinite = row(Ipv6Addr::from_segments([0x2001, 0xdb8, 0, 0, 0, 0, 0, 2]));
-    super::udp::refresh_lifetimes(&mut infinite, 9_999 * SEC);
+    super::addr_table::refresh_lifetimes(&mut infinite, 9_999 * SEC);
     assert_eq!(infinite.valid, INFINITY_LIFE_TIME);
     assert_eq!(infinite.preferred, INFINITY_LIFE_TIME);
 }

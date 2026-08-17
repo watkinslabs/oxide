@@ -96,7 +96,7 @@ impl NetStack {
                     let mut all = self.v6_addrs.lock();
                     if let Some(rows) = all.get_mut(&lease.iface()) {
                         rows.retain_mut(|row| {
-                            super::udp::refresh_lifetimes(row, now_ns);
+                            super::addr_table::refresh_lifetimes(row, now_ns);
                             if !row.valid_at(now_ns) {
                                 removed.push(row.clone());
                                 return false;

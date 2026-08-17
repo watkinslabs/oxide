@@ -167,7 +167,7 @@ impl NetStack {
         let mut removed = rows.remove(index);
         if rows.is_empty() { all.remove(&iface); }
         drop(all);
-        super::udp::refresh_lifetimes(&mut removed, now_ns);
+        super::addr_table::refresh_lifetimes(&mut removed, now_ns);
         self.routes6.clear_src_hint(iface, addr);
         Some(removed)
     }
