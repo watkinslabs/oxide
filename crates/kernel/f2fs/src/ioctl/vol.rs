@@ -246,6 +246,8 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(1 directory read + attribute write)
     pub fn set_encryption_policy(&mut self, ino: u32, wire: &[u8]) -> Result<(), Errno> {
         self.writable_or_err()?;
+        // The policy is stored as an attribute, which may take a block.
+        self.dquot_initialize(ino)?;
         let inode = self.read_inode(ino)?;
         let facts = self.crypt_inode_facts(&inode);
         if !facts.is_dir { return Err(Errno::Enotdir); }

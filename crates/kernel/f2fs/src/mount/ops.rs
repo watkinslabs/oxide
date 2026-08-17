@@ -241,6 +241,27 @@ impl FileOps for F2fsOps {
         crate::ioctl::vfs::unlocked_ioctl(file, cred, cmd)
     }
 
+    /// What this filesystem owes an open, before the handle exists.
+    ///
+    /// A sealed file's metadata is established HERE: the descriptor is located
+    /// and parsed and its signature checked once, against this mount's policy,
+    /// and every read of the handle then consumes the result. A rejected
+    /// signature is therefore a refused open — which is where a caller can act
+    /// on it — rather than a read error at whichever offset first needed a
+    /// hash. Nothing else in this filesystem builds that record.
+    /// # C: O(1) for an ordinary file; O(descriptor bytes) on a sealed one's
+    /// first open
+    fn on_open_file(&self, file: &vfs::File) -> KResult<()> {
+        let inode = file.inode();
+        let node = F2fsOps::node(inode)?;
+        let live = node.live()?;
+        if !crate::verity::access::is_verity(live.flags) { return Ok(()); }
+        let fl = file.flags();
+        let write = fl.contains(vfs::OpenFlags::O_WRONLY) || fl.contains(vfs::OpenFlags::O_RDWR);
+        let v = node.fs.volume.lock();
+        v.verity_file_open(&live, node.ino, write).map_err(errno_to_vfs)
+    }
+
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let node = F2fsOps::node(inode)?;
         let live = node.live()?;

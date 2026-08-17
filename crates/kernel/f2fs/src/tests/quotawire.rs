@@ -18,6 +18,8 @@
 
 use super::*;
 use crate::mode::S_IFREG;
+use crate::uapi::BLKSIZE;
+use syscall::errno::Errno;
 use crate::opts::Options;
 use crate::quota::info::Revision;
 use crate::quota::uapi::QT_BLOCK_SIZE;

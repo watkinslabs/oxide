@@ -22,6 +22,9 @@ impl<S: SectorSource> Volume<S> {
     pub fn move_file_range(&mut self, src: u32, pos_in: u64, dst: u32, pos_out: u64, len: u64)
         -> Result<(), Errno> {
         let same = src == dst;
+        // Blocks change owner between the two files, so both identities are
+        // acquired before either side is touched.
+        self.dquot_initialize_pair(src, dst)?;
         // Both files' pending writes go down first: this rearranges the
         // addresses on either side, and a page not yet placed has none.
         self.flush_data_pages(src)?;

@@ -196,8 +196,12 @@ fn bringing_an_identitys_quota_record_in_can_be_made_to_fail() {
     o.usrquota = true;
     let mut v = b.mount_opts(o).unwrap();
     assert!(v.quota_record(USRQUOTA, UID).is_ok(), "the fixture holds no record to withhold");
+    // The site is the ACQUISITION an operation does before it allocates, which
+    // is the one place records are brought in. Reporting a record a caller
+    // asked for by name is not that site and is left alone.
     arm(&v, Fault::DquotInit);
-    assert_eq!(v.quota_record(USRQUOTA, UID), Err(Errno::Esrch));
+    assert_eq!(v.dquot_initialize(ROOT_INO), Err(Errno::Esrch));
+    assert!(v.quota_record(USRQUOTA, UID).is_ok());
 }
 
 /// The sites with no counterpart here, and why. Kept as a test so the list

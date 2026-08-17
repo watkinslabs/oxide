@@ -96,6 +96,7 @@ impl<S: SectorSource> Volume<S> {
     /// not.
     /// # C: O(bytes written + clusters touched * cluster bytes)
     pub fn write_compressed(&mut self, ino: u32, off: u64, data: &[u8]) -> Result<usize, Errno> {
+        self.dquot_initialize(ino)?;
         self.writable_or_err()?;
         if data.is_empty() { return Ok(0); }
         let inode = self.read_inode(ino)?;
@@ -310,6 +311,7 @@ impl<S: SectorSource> Volume<S> {
     /// the file's size now stops part way through it.
     /// # C: O(clusters released)
     pub fn truncate_compressed(&mut self, ino: u32, len: u64) -> Result<(), Errno> {
+        self.dquot_initialize(ino)?;
         self.writable_or_err()?;
         let inode = self.read_inode(ino)?;
         // A file truncated away entirely stops being a released file: there is

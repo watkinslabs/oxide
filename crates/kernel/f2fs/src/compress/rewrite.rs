@@ -57,6 +57,7 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(file bytes)
     fn rewrite_clusters(&mut self, ino: u32, want: Shape) -> Result<u64, Errno> {
         self.writable_or_err()?;
+        self.dquot_initialize(ino)?;
         let inode = self.read_inode(ino)?;
         let g = self.geometry(&inode)?;
         if inode.inline_data() { self.convert_inline(ino)?; }

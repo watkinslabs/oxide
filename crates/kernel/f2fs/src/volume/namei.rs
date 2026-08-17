@@ -109,9 +109,20 @@ impl<S: SectorSource> Volume<S> {
         let parent = self.read_inode(dir)?;
         if mode::file_type(parent.mode) != vfs::FileType::Directory { return Err(Errno::Enotdir); }
         if self.lookup(&parent, dir, name).is_ok() { return Err(Errno::Eexist); }
+        // Both identities this creation will charge — the directory that gains
+        // a name and the file that is about to exist — are acquired here,
+        // before anything is written. Every charge below then operates on
+        // records already held, so no allocation reads a quota file from
+        // underneath the node write it is part of.
+        self.dquot_initialize(dir)?;
+        self.dquot_initialize_new(spec.uid, spec.gid)?;
         let ft = mode::file_type(spec.mode);
         let is_dir = ft == vfs::FileType::Directory;
         let ino = self.alloc_nid()?;
+        // The number the request's identity belongs to is known now, so the
+        // attachment is made before the first thing that could charge it.
+        self.dquot_attach(ino, crate::volume::quotas::Owners::new(
+            spec.uid, spec.gid, crate::volume::quotas::DEFAULT_PROJID));
         let mut block = self.blank_inode(ino, spec, if is_dir { 2 } else { 1 });
         put32(&mut block, I_PINO, dir);
         let namelen = name.len().min(NAME_LEN);
@@ -180,6 +191,11 @@ impl<S: SectorSource> Volume<S> {
         if expect_dir && !victim_is_dir { return Err(Errno::Enotdir); }
         if !expect_dir && victim_is_dir { return Err(Errno::Eisdir); }
         if victim_is_dir && !self.dir_is_empty(&victim, hit.ino)? { return Err(Errno::Enotempty); }
+        // A removal gives space back on two identities — the directory losing
+        // an entry and the file losing its blocks — so both records are in hand
+        // before either is touched.
+        self.dquot_initialize(dir)?;
+        self.dquot_initialize(hit.ino)?;
         self.remove_dentry(dir, name)?;
         if victim_is_dir {
             // A directory's own two entries are its remaining links; both go
@@ -215,6 +231,9 @@ impl<S: SectorSource> Volume<S> {
         if mode::file_type(target.mode) == vfs::FileType::Directory { return Err(Errno::Eperm); }
         let parent = self.read_inode(dir)?;
         if self.lookup(&parent, dir, name).is_ok() { return Err(Errno::Eexist); }
+        // The directory gains an entry and may gain a block for it.
+        self.dquot_initialize(dir)?;
+        self.dquot_initialize(ino)?;
         self.add_dentry(dir, name, ino, ftype_byte(target.mode))?;
         let links = target.links.saturating_add(1);
         self.stamp_inode(ino, |b| {
@@ -236,6 +255,11 @@ impl<S: SectorSource> Volume<S> {
         let moving = self.read_inode(hit.ino)?;
         let moving_is_dir = mode::file_type(moving.mode) == vfs::FileType::Directory;
         let to_inode = self.read_inode(to)?;
+        // Both directories and the file being moved, before any of the three is
+        // written. The name being replaced, if there is one, is acquired below
+        // once it is known which name that is.
+        self.dquot_initialize_pair(from, to)?;
+        self.dquot_initialize(hit.ino)?;
         if let Ok(existing) = self.lookup(&to_inode, to, new) {
             if noreplace { return Err(Errno::Eexist); }
             if existing.ino == hit.ino { return Ok(()); }
@@ -247,6 +271,7 @@ impl<S: SectorSource> Volume<S> {
             if victim_is_dir != moving_is_dir {
                 return Err(if victim_is_dir { Errno::Eisdir } else { Errno::Enotdir });
             }
+            self.dquot_initialize(existing.ino)?;
             self.remove(to, new, victim_is_dir, now)?;
         }
         self.remove_dentry(from, old)?;
@@ -293,6 +318,10 @@ impl<S: SectorSource> Volume<S> {
     pub fn set_attr(&mut self, ino: u32, mode_bits: Option<u16>, owner: Option<(u32, u32)>,
                     now: (u64, u32)) -> Result<(), Errno> {
         self.writable_or_err()?;
+        // The identity this inode is charged against is about to change, so
+        // BOTH the one losing it and the one gaining it have to be in hand.
+        self.dquot_initialize(ino)?;
+        if let Some((uid, gid)) = owner { self.dquot_initialize_new(uid, gid)?; }
         let cur = self.read_inode(ino)?.mode;
         self.stamp_inode(ino, |b| {
             if let Some(m) = mode_bits {
@@ -304,7 +333,15 @@ impl<S: SectorSource> Volume<S> {
             }
             put64(b, I_CTIME, now.0);
             put32(b, I_CTIME_NSEC, now.1);
-        })
+        })?;
+        // The inode's allocations are charged against its owners, so an owner
+        // change moves which records they land on. Leaving the old attachment
+        // would keep charging the identity that no longer owns the file.
+        if let Some((uid, gid)) = owner {
+            let projid = self.read_inode(ino)?.projid;
+            self.dquot_attach(ino, crate::volume::quotas::Owners::new(uid, gid, projid));
+        }
+        Ok(())
     }
 
     /// Change an inode's stored times. # C: O(1 block)

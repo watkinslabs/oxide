@@ -53,6 +53,9 @@ impl<S: SectorSource> Volume<S> {
     /// blocks are kept until the commit, because an abort has to put them back.
     /// # C: O(1 block), plus the inline conversion when there is one
     pub fn start_atomic_write(&mut self, ino: u32, replace: bool) -> Result<(), Errno> {
+        // The span's shadow inode is charged to the same owners as the file it
+        // shadows, so their records are in hand before it is made.
+        self.dquot_initialize(ino)?;
         // Every buffered write of this file has to be on the medium before
         // its addresses are read: a page not yet placed has no address, and
         // this operation is about to rearrange the ones that exist.
@@ -106,6 +109,10 @@ impl<S: SectorSource> Volume<S> {
             rdev: 0,
             now: (self.clock, 0),
         };
+        // Its owners are the file's, and the file's records are already in
+        // hand — the span's entry point acquired them — so the shadow inherits
+        // the attachment rather than resolving one from the medium.
+        self.dquot_attach_like(cow, ino);
         let mut block = self.blank_inode(cow, &spec, 0);
         put32(&mut block, I_PINO, src.pino);
         self.write_node(cow, cow, block, Kind::FileNode)?;

@@ -36,6 +36,9 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(blocks in the span), plus a sync of the file
     pub fn commit_atomic_write(&mut self, ino: u32) -> Result<(), Errno> {
         self.writable_or_err()?;
+        // Moving the span's blocks charges the file and gives the shadow's
+        // charge back, both against the same owners.
+        self.dquot_initialize(ino)?;
         // Every buffered write of this file has to be on the medium before
         // its addresses are read: a page not yet placed has no address, and
         // this operation is about to rearrange the ones that exist.
@@ -60,6 +63,7 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(blocks the span wrote)
     pub fn abort_atomic_write(&mut self, ino: u32) -> Result<(), Errno> {
         if !self.is_atomic_file(ino) { return Ok(()); }
+        self.dquot_initialize(ino)?;
         self.finish_atomic_write(ino, true)
     }
 

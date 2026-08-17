@@ -55,6 +55,9 @@ impl<S: SectorSource> Volume<S> {
     pub fn enable_verity_signed(&mut self, ino: u32, hash_alg: u8, log_blocksize: u8,
                                 salt: &[u8], sig: &[u8]) -> Result<Vec<u8>, Errno> {
         self.writable_or_err()?;
+        // The hash tree is written past the file's own length and occupies
+        // real blocks, which are charged to the file's owners.
+        self.dquot_initialize(ino)?;
         // Every buffered write of this file has to be on the medium before
         // its addresses are read: a page not yet placed has no address, and
         // this operation is about to rearrange the ones that exist.
