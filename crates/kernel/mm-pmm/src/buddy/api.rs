@@ -194,6 +194,9 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
                     }
                     // SAFETY: candidate is on this live free list, so its intrusive next field is readable.
                     let ptr = unsafe { self.backing.page_ptr(Pfn(candidate)) };
+                    // SAFETY: `ptr` is the struct-page just resolved for a PFN still linked on
+                    // this order's free list under the held inner lock, so OFF_NEXT holds a
+                    // live intrusive link rather than allocated page contents.
                     let next = unsafe { read_u64(ptr, OFF_NEXT) };
                     if next == PFN_NULL || next >= g.pfn_max { break; }
                     candidate = next;

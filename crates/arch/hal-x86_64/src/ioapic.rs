@@ -325,6 +325,8 @@ pub unsafe fn clear_all() {
 
 /// # SAFETY: `va` names a live I/O APIC mapping under caller serialization.
 unsafe fn clear_at(va: u64) {
+    // SAFETY: `clear_at`'s precondition is a live mapped controller window under
+    // caller serialization; IOAPIC_VER is an architected always-present register.
     let maxred = unsafe { (read_reg_at(va, IOAPIC_VER) >> 16) & 0xff };
     for pin in 0..=maxred {
         let lo_idx = 0x10 + 2 * pin;
