@@ -193,16 +193,28 @@ impl UnixListener {
     }
 
     /// Queue a connection unless close or backlog state forbids it.
+    /// Security label the server end of a new connection will take. # C: O(categories)
+    ///
+    /// Resolved BEFORE the commit locks are taken. The module's answer can
+    /// allocate — a range copy interns a new context — and allocating under the
+    /// listener state lock and a socket's kind lock is a hazard whatever the
+    /// allocator does today. The listener's own label is read under a short
+    /// lock of its own and nothing else here needs one.
+    fn pending_server_sid(&self, pair: &UnixPair) -> u32 {
+        let owner_sid = self.state.lock().owner_sid;
+        security::network::server_end_label(owner_sid, pair.peer_sid(UnixEnd::A))
+    }
+
     /// # C: O(1)
     pub(crate) fn connect_pair(&self, pair: Arc<UnixPair>) -> Result<Arc<UnixPair>, UnixConnectError> {
+        let server_sid = self.pending_server_sid(&pair);
         let link = self.gc.link(&pair.gc_node(UnixEnd::A));
         let mut st = self.state.lock();
         if st.closed || st.receive_shutdown || !st.listening { return Err(UnixConnectError::Refused); }
         if st.accept_q.len() > st.backlog { return Err(UnixConnectError::Full); }
         pair.set_end_cred(UnixEnd::A, st.owner_cred.clone());
         pair.set_end_identity(UnixEnd::A, st.owner_identity.clone());
-        pair.set_end_sid(UnixEnd::A,
-            security::network::server_end_label(st.owner_sid, pair.peer_sid(UnixEnd::A)));
+        pair.set_end_sid(UnixEnd::A, server_sid);
         st.accept_q.push_back((pair.clone(), link));
         drop(st);
         self.accept_waiters.wake_all();
@@ -213,6 +225,7 @@ impl UnixListener {
     /// Atomically queue `pair` and commit the connecting socket state.
     /// # C: O(1)
     pub(crate) fn connect_socket(&self, pair: Arc<UnixPair>, sock: &Arc<crate::sock::InetSocket>) -> Result<(), crate::NetError> {
+        let server_sid = self.pending_server_sid(&pair);
         let link = self.gc.link(&pair.gc_node(UnixEnd::A));
         let mut st = self.state.lock();
         let mut kind = sock.kind.lock();
@@ -227,12 +240,11 @@ impl UnixListener {
         if st.accept_q.len() > st.backlog { return Err(crate::NetError::Eagain); }
         pair.set_end_cred(UnixEnd::A, st.owner_cred.clone());
         pair.set_end_identity(UnixEnd::A, st.owner_identity.clone());
-        // The server end's label, recorded at the same instant the connection
-        // is committed. The client reads it back as its peer's, and it is
-        // derived from both ends — the client's end was recorded before this
-        // call, so `peer_sid(A)` is the connecting socket's label.
-        pair.set_end_sid(UnixEnd::A,
-            security::network::server_end_label(st.owner_sid, pair.peer_sid(UnixEnd::A)));
+        // The server end's label, applied at the instant the connection is
+        // committed but RESOLVED above, before these locks: the client reads it
+        // back as its peer's, and it is derived from both ends because the
+        // client's end was recorded before this call.
+        pair.set_end_sid(UnixEnd::A, server_sid);
         use core::sync::atomic::Ordering::Acquire;
         if sock.read_shut.load(Acquire) { pair.shutdown_reader(UnixEnd::B); }
         if sock.write_shut.load(Acquire) { pair.close_writer(UnixEnd::B); }
