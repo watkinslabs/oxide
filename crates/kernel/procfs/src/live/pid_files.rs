@@ -199,24 +199,18 @@ pid_inode_ctor!(make_pid_wchan, pid_wchan_body, crate::ino::PID_INO_TAG_WCHAN);
 /// blocking entry points record their own `file:line` (`sched::park_site`) and
 /// that source position is what is served — the same fact the reference
 /// reports, spelled as a position instead of a symbol. Every "0" case is the
-/// reference's.
+/// reference's. Rendering lives in `crate::wchan_render`.
 /// # C: O(1)
 fn pid_wchan_body(tid: u32) -> Vec<u8> {
-    const NOT_BLOCKED: &[u8] = b"0";
-    if super::pid_access::ptrace_may_access(tid).is_err() { return NOT_BLOCKED.to_vec(); }
-    let Some(task) = sched::live::registry::lookup(tid) else { return NOT_BLOCKED.to_vec() };
+    // The reference refuses the reader BEFORE consulting the task's state, and
+    // prints the same `0` either way.
+    if super::pid_access::ptrace_may_access(tid).is_err() { return crate::wchan_render::body(None, false); }
+    let Some(task) = sched::live::registry::lookup(tid) else { return crate::wchan_render::body(None, false) };
     use core::sync::atomic::Ordering;
-    if !sched::park_site::reportable(task.state(), task.on_rq.load(Ordering::Relaxed),
-                                     task.on_cpu.load(Ordering::Relaxed)) {
-        return NOT_BLOCKED.to_vec();
-    }
-    let Some(site) = task.park_site.get() else { return NOT_BLOCKED.to_vec() };
-    // `seq_puts(m, symname)` — one value, no trailing newline.
-    let mut out = Vec::new();
-    out.extend_from_slice(site.file().as_bytes());
-    out.push(b':');
-    out.extend_from_slice(alloc::format!("{}", site.line()).as_bytes());
-    out
+    let reportable = sched::park_site::reportable(task.state(), task.on_rq.load(Ordering::Relaxed),
+                                                  task.on_cpu.load(Ordering::Relaxed));
+    let site = task.park_site.get().map(|s| (s.file(), s.line()));
+    crate::wchan_render::body(site, reportable)
 }
 
 /// Linux `auxv_read`: serve the mm's `saved_auxv` array, truncated at the

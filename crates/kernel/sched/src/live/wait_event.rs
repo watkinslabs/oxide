@@ -276,7 +276,7 @@ mod tests {
             wait_event_killable(&wait, false_then_true(&calls))
         };
         assert_eq!(out, WaitOutcome::Ready);
-        let site = crate::park_site::LAST_NOTE.get().expect("wait must record a site");
+        let site = crate::park_site::last_note().expect("wait must record a site");
         assert!(site.file().ends_with("wait_event.rs"));
         assert_eq!(site.line(), here, "the recorded site must be the CALLER's line");
     }
@@ -291,7 +291,7 @@ mod tests {
                 let out = unsafe {
                     wait_event_interruptible(&wait, false_then_true(&c))
                 };
-                ("interruptible", at, out, crate::park_site::LAST_NOTE.get())
+                ("interruptible", at, out, crate::park_site::last_note())
             },
             {
                 let c = AtomicU32::new(0);
@@ -299,7 +299,7 @@ mod tests {
                 let out = unsafe {
                     wait_event_uninterruptible(&wait, false_then_true(&c))
                 };
-                ("uninterruptible", at, out, crate::park_site::LAST_NOTE.get())
+                ("uninterruptible", at, out, crate::park_site::last_note())
             },
             {
                 let c = AtomicU32::new(0);
@@ -307,7 +307,7 @@ mod tests {
                 let out = unsafe {
                     wait_event_uninterruptible_until(&wait, 0, || 0, false_then_true(&c))
                 };
-                ("uninterruptible_until", at, out, crate::park_site::LAST_NOTE.get())
+                ("uninterruptible_until", at, out, crate::park_site::last_note())
             },
             {
                 let c = AtomicU32::new(0);
@@ -315,7 +315,7 @@ mod tests {
                 let out = unsafe {
                     wait_event(&wait, WaitState::Interruptible, 0, || 0, false_then_true(&c))
                 };
-                ("wait_event", at, out, crate::park_site::LAST_NOTE.get())
+                ("wait_event", at, out, crate::park_site::last_note())
             },
         ];
         for (name, at, out, site) in observed {

@@ -32,8 +32,10 @@ impl ParkSite {
         self.0.store(loc as *const Location<'static> as usize, Ordering::Relaxed);
     }
 
-    /// Forget the recorded site. # C: O(1)
-    pub fn clear(&self) { self.0.store(0, Ordering::Relaxed); }
+    // No `clear`: staleness is refused at read time by `reportable`, not by
+    // retracting the site on every wake. The reference has the same shape —
+    // `get_wchan` decides from the task's state, and nothing on the wakeup path
+    // pays for wchan bookkeeping.
 
     /// The recorded site, or `None` if nothing has been recorded. # C: O(1)
     pub fn get(&self) -> Option<&'static Location<'static>> {
@@ -67,16 +69,27 @@ pub const fn reportable(state: TaskState, on_rq: bool, on_cpu: bool) -> bool {
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub fn note(loc: &'static Location<'static>) {
     #[cfg(test)]
-    LAST_NOTE.set(loc);
+    LAST_NOTE.with(|s| s.set(loc));
     if let Some(task) = crate::live::schedule::current() { task.park_site.set(loc); }
 }
 
-/// Hosted test seam. A host build installs no runqueue, so [`note`] has no
-/// current task to attribute a site to; recording it here as well lets a test
-/// prove that a blocking entry point forwards its CALLER's position rather than
-/// its own — the one property the whole mechanism rests on.
+// Hosted test seam. A host build installs no runqueue, so `note` has no
+// current task to attribute a site to; recording it here as well lets a test
+// prove that a blocking entry point forwards its CALLER's position rather than
+// its own — the one property the whole mechanism rests on.
+//
+// THREAD-LOCAL, not a plain static: libtest runs tests on parallel worker
+// threads, so a shared slot lets one test's wait overwrite another's between
+// the call and the read — the same hazard the crate's `preempt` per-CPU state
+// is thread-local for.
 #[cfg(test)]
-pub(crate) static LAST_NOTE: ParkSite = ParkSite::new();
+std::thread_local! {
+    pub(crate) static LAST_NOTE: ParkSite = const { ParkSite::new() };
+}
+
+/// The site [`note`] last recorded on THIS thread. # C: O(1)
+#[cfg(test)]
+pub(crate) fn last_note() -> Option<&'static Location<'static>> { LAST_NOTE.with(|s| s.get()) }
 
 #[cfg(test)]
 mod tests {
@@ -86,7 +99,7 @@ mod tests {
     fn caller_site() -> &'static Location<'static> { Location::caller() }
 
     #[test]
-    fn a_recorded_site_reads_back_and_clears() {
+    fn a_recorded_site_reads_back() {
         let site = ParkSite::new();
         assert!(site.get().is_none(), "a fresh site must report nothing");
         let here = caller_site();
@@ -94,8 +107,18 @@ mod tests {
         let read = site.get().expect("recorded site must read back");
         assert_eq!(read.file(), here.file());
         assert_eq!(read.line(), here.line());
-        site.clear();
-        assert!(site.get().is_none(), "clear must retract the site");
+    }
+
+    /// A fresh task must not inherit a site — the read path relies on `None`
+    /// meaning "nothing recorded", which is the reference's no-symbol `0`.
+    #[test]
+    fn a_second_wait_replaces_the_first_rather_than_stacking() {
+        let site = ParkSite::new();
+        site.set(caller_site());
+        let first = site.get().expect("first site").line();
+        site.set(caller_site());
+        let second = site.get().expect("second site").line();
+        assert_ne!(first, second, "the latest wait is what wchan reports");
     }
 
     #[test]
