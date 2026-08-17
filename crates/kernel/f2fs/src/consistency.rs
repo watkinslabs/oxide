@@ -139,9 +139,16 @@ fn check_zoned(o: &mut Options, spec: &mut Spec) -> Result<(), Errno> {
     // the cleaner resets one. Turning it off is a volume that fills and stays
     // full.
     if o.background_gc == BackgroundGc::Off { return Err(Errno::Einval); }
-    if spec.discard_unit && o.discard_unit != DiscardUnit::Section {
-        o.discard_unit = DiscardUnit::Section;
-    }
+    // A SECTION whether or not the mount named the option, because on a zoned
+    // volume it is not a tuning choice. A section is a zone, and a zone comes
+    // back only when its write pointer is sent back to the start — which the
+    // drive will do for a whole zone and for nothing smaller. Announcing a
+    // block or a segment leaves the pointer where it was, so the space returns
+    // in the accounting and not on the drive: the volume fills and stays full.
+    // The reference sets this as the zoned DEFAULT, before it reads a single
+    // option, and then widens a narrower one a mount asks for. This runs only
+    // for a zoned volume, so the two cases collapse into one assignment.
+    o.discard_unit = DiscardUnit::Section;
     if spec.mode && o.mode != Mode::Lfs { return Err(Errno::Einval); }
     Ok(())
 }

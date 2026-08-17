@@ -56,8 +56,25 @@ pub enum Recovery {
 impl<S: SectorSource> Volume<S> {
     /// Replay everything an `fsync` promised since the last checkpoint, and
     /// checkpoint the result.
+    ///
+    /// A failure anywhere inside throws away everything the pass built
+    /// (`cleanup`). Nothing it built is on the medium — the nodes are in the
+    /// node mapping and the pages in the file mapping until the closing
+    /// checkpoint places them — so the half-built state exists only in memory,
+    /// and it is exactly the state that must not survive: this mount's next
+    /// checkpoint would publish it, and the machine's flusher would write it
+    /// whether or not this mount is still there.
     /// # C: O(chain length) blocks
     pub fn recover(&mut self) -> Result<Recovery, Errno> {
+        match self.replay_chain() {
+            Ok(r) => Ok(r),
+            Err(e) => { self.drop_failed_replay(); Err(e) }
+        }
+    }
+
+    /// The pass itself, in the order it has to run in.
+    /// # C: O(chain length) blocks
+    fn replay_chain(&mut self) -> Result<Recovery, Errno> {
         self.writable_or_err()?;
         let found = self.scan_fsync_chain()?;
         if found.is_empty() { return Ok(Recovery::Clean); }

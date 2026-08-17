@@ -19,6 +19,13 @@ impl<S: SectorSource> Volume<S> {
     /// them separately would lose it and report a corrupt tail.
     /// # C: O(region bytes)
     pub fn xattr_area(&self, inode: &Inode, ino: u32) -> Result<Vec<u8>, Errno> {
+        // The region is assembled into a buffer of its own, which is the
+        // allocation the reference makes — and injects at — before it reads
+        // either half. Every attribute read and every attribute write goes
+        // through here, so this is where an out-of-memory reaches them.
+        if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::Kmalloc) {
+            return Err(Errno::Enomem);
+        }
         let inline = match inode.inline_xattr_span() {
             Some((at, len)) => {
                 let n = self.read_inode_ref(ino)?.1;

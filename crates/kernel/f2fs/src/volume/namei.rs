@@ -111,6 +111,12 @@ impl<S: SectorSource> Volume<S> {
         if self.lookup(&parent, dir, name).is_ok() { return Err(Errno::Eexist); }
         let ft = mode::file_type(spec.mode);
         let is_dir = ft == vfs::FileType::Directory;
+        // The inode record itself, from the cache the reference keeps them in,
+        // and BEFORE the node id is taken — its order, so an injected failure
+        // here leaves no id handed out and nothing to give back.
+        if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::SlabAlloc) {
+            return Err(Errno::Enomem);
+        }
         let ino = self.alloc_nid()?;
         let mut block = self.blank_inode(ino, spec, if is_dir { 2 } else { 1 });
         put32(&mut block, I_PINO, dir);

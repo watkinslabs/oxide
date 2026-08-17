@@ -43,6 +43,7 @@ pub mod write;
 pub mod remount;
 pub mod freeze;
 pub mod wp;
+pub mod zdiscard;
 pub mod data;
 pub mod mapping;
 
@@ -284,15 +285,11 @@ impl F2fs {
         // traffic that left, not the intent.
         let mut announced: alloc::vec::Vec<u64> = alloc::vec::Vec::new();
         for (i, first_blk, len) in pieces {
-            let Some(dev) = self.devs.get(i) else { continue };
-            if !dev.supports_discard() { continue; }
-            let dev_block = u64::from(dev.block_size().max(1));
-            let byte = first_blk * BLKSIZE as u64;
-            let bytes = u64::from(len) * BLKSIZE as u64;
-            if byte % dev_block != 0 || bytes % dev_block != 0 { continue; }
-            let Ok(blocks) = u32::try_from(bytes / dev_block) else { continue };
-            let mut req = block::BlockRequest::new_discard(byte / dev_block, blocks);
-            if dev.submit_sync(&mut req).is_ok() { announced.push(bytes); }
+            // Which COMMAND this run becomes is the member's business, not
+            // this loop's: a sequential zone's blocks come back only when its
+            // write pointer goes back, so the same request is a zone reset
+            // there and a discard everywhere else.
+            if let Some(bytes) = self.submit_freed(i, first_blk, len) { announced.push(bytes); }
         }
         if announced.is_empty() { return; }
         let v = self.volume.lock();

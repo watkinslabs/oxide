@@ -34,22 +34,42 @@ struct ZonedDisk {
     /// the only one that touches the medium.
     finishes: bool,
     ops: Spinlock<Vec<(ZoneMgmtOp, u64)>, TaskList>,
+    /// Every ordinary discard the drive was given, as a first block and a
+    /// length. Recorded separately from the management commands because the
+    /// whole question on a zoned member is WHICH of the two arrives.
+    discards: Spinlock<Vec<(u64, u32)>, TaskList>,
 }
 
 impl ZonedDisk {
     /// # C: O(1)
     fn new(inner: Arc<MemDisk<TaskList>>, zones: Vec<RawZone>, finishes: bool) -> Arc<Self> {
-        Arc::new(Self { inner, zones, finishes, ops: Spinlock::new(Vec::new()) })
+        Arc::new(Self {
+            inner,
+            zones,
+            finishes,
+            ops: Spinlock::new(Vec::new()),
+            discards: Spinlock::new(Vec::new()),
+        })
     }
 
     /// Every management command this drive was given, in order. # C: O(1)
     fn ops(&self) -> Vec<(ZoneMgmtOp, u64)> { self.ops.lock().clone() }
+
+    /// Every ordinary discard this drive was given, in order. # C: O(1)
+    fn discards(&self) -> Vec<(u64, u32)> { self.discards.lock().clone() }
 }
 
 impl BlockDevice for ZonedDisk {
     fn block_size(&self) -> u32 { self.inner.block_size() }
     fn capacity_blocks(&self) -> u64 { self.inner.capacity_blocks() }
-    fn submit_sync(&self, req: &mut BlockRequest) -> BlockResult<()> { self.inner.submit_sync(req) }
+    fn supports_discard(&self) -> bool { true }
+    fn submit_sync(&self, req: &mut BlockRequest) -> BlockResult<()> {
+        if req.op == block::BlockOp::Discard {
+            self.discards.lock().push((req.start_block, req.len_blocks));
+            return Ok(());
+        }
+        self.inner.submit_sync(req)
+    }
     fn flush(&self) -> BlockResult<()> { self.inner.flush() }
     fn zone_report(&self) -> Option<ZoneReport> {
         Some(ZoneReport {
@@ -196,6 +216,129 @@ fn an_empty_and_a_live_zone(bytes: &[u8]) -> (u32, u32) {
         })
         .expect("an empty section no log stands in");
     (empty, live)
+}
+
+// ---- announcing freed space on a zoned member -----------------------------
+
+/// The zone this fixture makes sequential: one that tiles cleanly and lies
+/// wholly inside the main area, so a whole-zone run is a run the drive can be
+/// asked to reset.
+const SEQ_ZONE: u32 = 10;
+
+/// Zones tiling the WHOLE device from block zero, which is how a drive
+/// presents them and how the zone a block falls in is worked out — the zone
+/// index is the block over the zone size, on the drive as here.
+///
+/// Only `SEQ_ZONE` is sequential. A real zoned volume keeps its metadata in
+/// conventional zones, and making the rest conventional also keeps the
+/// write-pointer pass out of the way: it reconciles sequential zones only, so
+/// the mount arrives having sent no command and every command a test sees is
+/// the one it asked for.
+/// # C: O(zones)
+fn tiled(bytes: &[u8]) -> Vec<RawZone> {
+    let cap = bytes.len() as u64 / BLKSIZE as u64;
+    let per = u64::from(ZONE_BLKS);
+    // The one figure the sequential zone's report has to agree with, or the
+    // pass repairs it and the test sees that command instead.
+    let mut v = Volume::mount_with(MemImage::from_bytes(BS, bytes.to_vec()),
+                                   Options::defaults(), false).expect("probe mount");
+    v.load_segments().expect("segments");
+    let seq_start = u64::from(SEQ_ZONE) * per;
+    let segno = v.super_block().segno_of(u32::try_from(seq_start).expect("in range"));
+    let live = segno.is_some_and(|s| v.section_valid(s) > 0);
+    drop(v);
+    let mut out = Vec::new();
+    let mut at = 0u64;
+    while at < cap {
+        let len = per.min(cap - at);
+        let seq = at == seq_start && len == per;
+        out.push(RawZone {
+            start_block: at,
+            len_blocks: len,
+            capacity_blocks: len,
+            kind: if seq { RawType::SeqWriteRequired } else { RawType::Conventional },
+            wp_block: if seq { Some(if live { at + len } else { at }) } else { None },
+            cond: if !seq {
+                RawCond::NotWp
+            } else if live {
+                RawCond::Full
+            } else {
+                RawCond::Empty
+            },
+        });
+        at += len;
+    }
+    out
+}
+
+/// A mount over a tiled drive, with whatever the mount itself sent forgotten:
+/// these tests are about the commands a FREED RUN produces.
+/// # C: O(image bytes)
+fn tiled_mount(bytes: &[u8]) -> (Arc<F2fs>, Arc<ZonedDisk>) {
+    let (fs, dev) = mount(bytes, tiled(bytes), true);
+    let fs = fs.expect("mounts");
+    assert_eq!(dev.ops(), Vec::new(), "the mount itself sent a command");
+    // Through the REAL mount path, which is the one that used to leave this at
+    // the build-wide block default: a zoned volume that announced blocks would
+    // never produce a whole-zone run, so nothing below would ever be reset.
+    assert_eq!(fs.options().discard_unit, crate::opts::DiscardUnit::Section,
+               "a zoned mount came up announcing something smaller than a zone");
+    (fs, dev)
+}
+
+#[test]
+fn a_freed_whole_sequential_zone_is_reset_and_not_discarded() {
+    // The point of the whole path: an ordinary discard would leave the write
+    // pointer where it was, so the space would come back in the accounting and
+    // never on the drive.
+    let bytes = image();
+    let (fs, dev) = tiled_mount(&bytes);
+    let start = u64::from(SEQ_ZONE * ZONE_BLKS);
+    let bytes_freed = u64::from(ZONE_BLKS) * BLKSIZE as u64;
+    assert_eq!(fs.submit_freed(0, start, ZONE_BLKS), Some(bytes_freed));
+    assert_eq!(dev.ops(), vec![(ZoneMgmtOp::Reset, start)]);
+    assert!(dev.discards().is_empty(), "a sequential zone was sent a discard: {:?}",
+            dev.discards());
+}
+
+#[test]
+fn part_of_a_freed_sequential_zone_is_sent_nothing_at_all() {
+    // Refusing loses an optimisation. Sending it as a discard would report
+    // space as returned that the drive will still refuse to be written.
+    let bytes = image();
+    let (fs, dev) = tiled_mount(&bytes);
+    let start = u64::from(SEQ_ZONE * ZONE_BLKS);
+    assert_eq!(fs.submit_freed(0, start, 8), None);
+    assert_eq!(fs.submit_freed(0, start + 8, ZONE_BLKS - 8), None);
+    assert_eq!(dev.ops(), Vec::new());
+    assert!(dev.discards().is_empty());
+}
+
+#[test]
+fn a_freed_run_in_a_conventional_zone_is_discarded_as_usual() {
+    // The same volume, the same member, the other kind of zone: nothing about
+    // being a zoned drive changes what a conventional zone takes.
+    let bytes = image();
+    let (fs, dev) = tiled_mount(&bytes);
+    let start = u64::from(MAIN_BLKADDR + BLKS_PER_SEG);
+    assert_eq!(fs.submit_freed(0, start, 8), Some(8 * BLKSIZE as u64));
+    assert_eq!(dev.ops(), Vec::new(), "a conventional zone was sent a management command");
+    assert_eq!(dev.discards(), vec![(start, 8)]);
+}
+
+#[test]
+fn a_freed_run_spanning_two_zones_is_cut_at_the_boundary() {
+    // A reset addresses ONE zone. The sequential half is reset whole and the
+    // conventional half is discarded, which is the same pair of commands the
+    // reference's caller produces by announcing a section at a time.
+    let bytes = image();
+    let (fs, dev) = tiled_mount(&bytes);
+    let seq = u64::from(SEQ_ZONE * ZONE_BLKS);
+    let start = seq - u64::from(ZONE_BLKS);
+    assert_eq!(fs.submit_freed(0, start, ZONE_BLKS * 2),
+               Some(2 * u64::from(ZONE_BLKS) * BLKSIZE as u64));
+    assert_eq!(dev.ops(), vec![(ZoneMgmtOp::Reset, seq)]);
+    assert_eq!(dev.discards(), vec![(start, ZONE_BLKS)]);
 }
 
 #[test]

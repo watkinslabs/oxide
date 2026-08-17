@@ -133,6 +133,14 @@ impl<S: SectorSource> Volume<S> {
                 // request as falls inside it is served from one decompression
                 // rather than one per block.
                 Mapped::Compressed => {
+                    // A cluster unpacks into a buffer the size of the whole
+                    // cluster plus whatever the algorithm needs to work in —
+                    // the largest single allocation any read makes, and the one
+                    // the reference takes from the virtual allocator and
+                    // injects at.
+                    if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::Vmalloc) {
+                        return Err(Errno::Enomem);
+                    }
                     let plain = self.read_cluster(inode, ino, index)?;
                     let at = (index - plain.first) as usize * BLKSIZE + skew;
                     let n = (plain.data.len() - at).min(want - done);
@@ -184,6 +192,12 @@ impl<S: SectorSource> Volume<S> {
     fn fill_data_page(&self, inode: &Inode, ino: u32, index: u64, addr: u32,
                       crypt: Option<&crate::crypto::Info>, attest: bool)
         -> Result<Vec<u8>, Errno> {
+        // The mapping is asked for a page BEFORE the medium is: the lookup can
+        // fail for want of a page as easily as the read can fail for want of a
+        // block, and the reference injects at the lookup for that reason.
+        if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::PageGet) {
+            return Err(Errno::Enomem);
+        }
         self.data_cache.read(ino, index, || {
             self.io_account(crate::stats::iostat::Io::FsDataRead, BLKSIZE as u64, false);
             self.io_read_folio(0);
