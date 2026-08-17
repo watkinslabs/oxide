@@ -16,6 +16,7 @@
 //! - `replay`: the order the whole pass runs in, and what it protects first.
 //! - `policy`: what a mount does about a chain, given what it may write.
 //! - `rw`:     lifting a read-only mount's own read-only for the repair.
+//! - `report`: what the mount says about what it put back.
 
 pub mod marks;
 pub mod scan;
@@ -24,8 +25,10 @@ pub mod data;
 pub mod replay;
 pub mod policy;
 pub mod rw;
+pub mod report;
 
 pub use replay::{Recovery, Replayed};
+pub use report::Announce;
 pub use scan::Found;
 
 /// Shared test fixture, declared here so every recovery test module reaches

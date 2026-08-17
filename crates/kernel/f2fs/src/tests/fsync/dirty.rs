@@ -204,14 +204,15 @@ fn an_overwrite_that_leaves_the_inode_alone_is_still_data() {
 }
 
 #[test]
-fn the_two_table_predicates_answer_different_questions() {
+fn a_rewrite_does_not_unmake_the_node_the_checkpoint_holds() {
+    // The predicate the two parent reasons used to be derived from. A rewrite
+    // moves the node's block and leaves the checkpoint still naming the one it
+    // replaced, so the node is there and only its contents are behind — which
+    // is why "was it written" could never stand in for "did an entry change".
     let (mut v, ino) = checkpointed();
     assert!(v.node_is_checkpointed(ino));
-    assert!(!v.node_written_since_checkpoint(ino));
     v.write_file(ino, 0, b"x").expect("write");
-    assert!(v.node_is_checkpointed(ino), "a rewrite does not unmake the node");
-    assert!(v.node_written_since_checkpoint(ino));
+    assert!(v.node_is_checkpointed(ino));
     let fresh = v.create(ROOT_INO, b"h", &spec(), None).expect("create");
     assert!(!v.node_is_checkpointed(fresh), "the checkpoint has never heard of it");
-    assert!(v.node_written_since_checkpoint(fresh));
 }

@@ -55,15 +55,19 @@ fn the_directory_is_named_for_the_filesystem_and_the_device() {
     assert!(mount_files(&fs).iter().all(|a| a.dir == "vda"));
 }
 
-/// The four files this build publishes, and no placeholder for the four whose
-/// state does not exist.
+/// The seven files this build publishes, and no placeholder for the one whose
+/// state does not exist. `donation_list` is absent because there is no
+/// page-donation machinery for it to report on, and an empty list would say
+/// that nothing has donated rather than that nothing can.
 #[test]
 fn a_mount_publishes_exactly_the_files_it_can_fill() {
     let fs = mounted("/dev/vda");
     let files = mount_files(&fs);
     let mut names: Vec<&str> = files.iter().map(|a| a.name).collect();
     names.sort();
-    assert_eq!(names, ["discard_plist_info", "disk_map", "segment_bits", "segment_info"]);
+    assert_eq!(names, ["discard_plist_info", "disk_map", "inject_stats", "iostat_info",
+                       "segment_bits", "segment_info", "victim_bits"]);
+    assert!(!names.contains(&"donation_list"), "nothing here can fill it");
     for a in files.iter() { assert!(a.store.is_none(), "{} accepts a write", a.name); }
 }
 
@@ -206,4 +210,136 @@ fn the_discard_report_follows_the_live_queue() {
     let after = show(&files, "discard_plist_info");
     assert_ne!(empty, after, "the report did not follow the queue");
     assert!(after.contains("  0         1       1"), "{:?}", after.lines().nth(1));
+}
+
+/// The measurement switch is off at mount, so the report is EMPTY rather than
+/// a table of zeroes: the two say different things, and only one of them is
+/// true of a mount nobody asked to measure.
+#[test]
+fn the_iostat_report_is_empty_until_the_control_turns_it_on() {
+    let fs = mounted("/dev/vda");
+    let files = mount_files(&fs);
+    assert!(show(&files, "iostat_info").is_empty());
+    enable_iostat(&fs);
+    let body = show(&files, "iostat_info");
+    assert!(body.starts_with("time:"), "{body}");
+    assert!(body.contains("\n[WRITE]\n") && body.contains("\n[READ]\n"));
+}
+
+/// The published file follows the live mount, not a snapshot taken when the
+/// file was built.
+#[test]
+fn the_iostat_report_follows_what_the_mount_does() {
+    let fs = mounted("/dev/vda");
+    let files = mount_files(&fs);
+    enable_iostat(&fs);
+    let ino = make_file(&fs, "f");
+    fs.write(ino, 0, &alloc::vec![3u8; BLKSIZE]).expect("write");
+    let row = row_in(&show(&files, "iostat_info"), "[WRITE]", "app buffered data");
+    assert_eq!(row, (BLKSIZE as u64, 1));
+}
+
+/// The blocks a checkpoint hands back to the device are charged where the
+/// device is actually told about them, which is above the volume.
+#[test]
+fn announced_discards_reach_the_iostat_report() {
+    let fs = mounted("/dev/vda");
+    let files = mount_files(&fs);
+    assert!(fs.options().discard, "the fixture must be announcing freed space");
+    let ino = make_file(&fs, "f");
+    fs.write(ino, 0, &alloc::vec![3u8; 8 * BLKSIZE]).expect("write");
+    fs.checkpoint().expect("checkpoint");
+    enable_iostat(&fs);
+    // The guard is bound rather than passed inline: a lock taken in an
+    // argument lives until the end of the statement, and the call would take
+    // it again.
+    let root = fs.volume.lock().root_ino();
+    fs.remove(root, "f", false).expect("remove");
+    fs.checkpoint().expect("checkpoint");
+    let (bytes, count) = row_in(&show(&files, "iostat_info"), "[OTHER]", "fs discard");
+    assert!(count > 0, "nothing was charged for the runs handed to the device");
+    assert!(bytes >= BLKSIZE as u64, "a discard of no bytes was counted");
+}
+
+/// Every site is listed whether or not it is armed: a report of only the armed
+/// ones would make "never fired" and "never asked to fire" the same absence.
+#[test]
+fn the_injection_report_lists_every_site_and_counts_what_fired() {
+    use crate::fault::{Fault, Which};
+    let fs = mounted("/dev/vda");
+    let files = mount_files(&fs);
+    let before = show(&files, "inject_stats");
+    assert_eq!(before.lines().next().unwrap(), "fault_type\t\tinjected_count");
+    assert_eq!(before.lines().count(), 1 + crate::fault::FAULT_MAX as usize);
+    assert!(before.lines().skip(1).all(|l| l.split_whitespace().last() == Some("0")));
+
+    {
+        let v = fs.volume.lock();
+        v.set_fault(1, 0, Which::RATE).expect("rate");
+        v.set_fault(0, Fault::ReadIo.bit(), Which::TYPE).expect("type");
+        assert!(v.read_block(crate::test_image::MAIN_BLKADDR).is_err(), "the site did not fire");
+    }
+    let after = show(&files, "inject_stats");
+    let row = after.lines().find(|l| l.starts_with(Fault::ReadIo.name())).expect("the row");
+    assert_eq!(row.split_whitespace().last(), Some("1"));
+}
+
+/// The cleaner's memory is published as one digit per section, and it follows
+/// the live map rather than a copy taken when the file was built.
+#[test]
+fn the_victim_report_follows_the_cleaners_memory() {
+    let fs = mounted("/dev/vda");
+    let files = mount_files(&fs);
+    let sections = fs.volume.lock().section_count();
+    let empty = show(&files, "victim_bits");
+    assert_eq!(empty.lines().next().unwrap(), "format: victim_secmap bitmaps");
+    // The line labels are digits too, so the count is taken over the report's
+    // BITS — everything past the ten-wide label column — rather than over the
+    // whole text, which would count a section number as a section's state.
+    assert_eq!(bits_of(&empty), alloc::vec!['0'; sections as usize]);
+
+    fs.volume.lock().mark_victim_section(0);
+    let after = show(&files, "victim_bits");
+    assert_ne!(empty, after, "the report did not follow the map");
+    let digits = bits_of(&after);
+    assert_eq!(digits[0], '1');
+    assert_eq!(digits.len(), sections as usize);
+    assert!(digits[1..].iter().all(|&c| c == '0'));
+}
+
+/// Turn the published measurement control on, through the control itself
+/// rather than around it — a test that reached past it would pass while the
+/// control did nothing.
+fn enable_iostat(fs: &Arc<F2fs>) {
+    let attrs = crate::sysfs::mount_attrs(fs);
+    let a = attrs.iter().find(|a| a.name == "iostat_enable").expect("published");
+    (a.store.as_ref().expect("writable"))(b"1\n").expect("accepted");
+    assert!(fs.volume.lock().iostat_enabled());
+}
+
+/// # C: O(depth) blocks
+fn make_file(fs: &Arc<F2fs>, name: &str) -> u32 {
+    let root = fs.volume.lock().root_ino();
+    fs.make(root, name, crate::mode::S_IFREG | 0o644, 0, 0, 0, None, true).expect("create").ino() as u32
+}
+
+/// One row's `(bytes, count)` from the named section of the iostat report.
+/// The labels repeat across sections, so the section is part of the lookup.
+/// # C: O(len)
+fn row_in(body: &str, section: &str, label: &str) -> (u64, u64) {
+    let mut here = false;
+    for line in body.lines() {
+        if line.starts_with('[') { here = line == section; continue; }
+        if !here { continue; }
+        let Some(rest) = line.strip_prefix(&alloc::format!("{label}:")) else { continue };
+        let f: Vec<&str> = rest.split_whitespace().collect();
+        return (f[0].parse().unwrap(), f[1].parse().unwrap());
+    }
+    panic!("no row {label} in {section}\n{body}");
+}
+
+/// The report's bits, without the section numbers that label each line.
+/// # C: O(len)
+fn bits_of(body: &str) -> Vec<char> {
+    body.lines().skip(1).flat_map(|l| l.chars().skip(10)).filter(|c| *c != ' ').collect()
 }

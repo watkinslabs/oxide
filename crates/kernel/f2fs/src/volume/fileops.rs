@@ -38,6 +38,21 @@ impl<S: SectorSource> Volume<S> {
     /// written out.
     /// # C: O(bytes written)
     pub fn write_file(&mut self, ino: u32, off: u64, data: &[u8]) -> Result<usize, Errno> {
+        let put = self.write_file_inner(ino, off, data)?;
+        // The inode is read again rather than carried out of the writer: the
+        // three paths below return from different depths, and a file's
+        // compressed shape is only wanted when a reader has asked for the
+        // report. Off by default, so the extra read is paid by nobody who did
+        // not ask for it.
+        if put > 0 && self.iostat_enabled() {
+            let compressed = self.read_inode(ino).map(|i| i.compressed()).unwrap_or(false);
+            self.io_account(crate::stats::iostat::Io::AppBuffered, put as u64, compressed);
+        }
+        Ok(put)
+    }
+
+    /// # C: O(bytes written)
+    fn write_file_inner(&mut self, ino: u32, off: u64, data: &[u8]) -> Result<usize, Errno> {
         self.writable_or_err()?;
         if data.len() > MAX_IO_BYTES { return Err(Errno::Efbig); }
         if data.is_empty() { return Ok(0); }

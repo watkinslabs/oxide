@@ -16,13 +16,6 @@
 //! comparison, not a flag somebody has to remember to set. A flag would be a
 //! second copy of a truth the medium already holds, and the two would
 //! eventually disagree.
-//!
-//! Two predicates come out of the same place and must not be confused. Whether
-//! a node EXISTED at the last checkpoint decides whether a directory entry has
-//! to be restored for it; whether a node was WRITTEN since then decides
-//! whether the parent's attribute or directory blocks are only in the chain. A
-//! rewrite makes the second true and leaves the first true, and using one for
-//! the other turns every ordinary write into a checkpoint.
 
 use alloc::vec::Vec;
 
@@ -137,12 +130,6 @@ impl<S: SectorSource> Volume<S> {
             Ok(addr) => !crate::node::is_hole(addr),
             Err(_) => false,
         }
-    }
-
-    /// Whether `nid` was written since the last checkpoint, whether or not it
-    /// existed before it. # C: O(log dirty nodes)
-    pub(crate) fn node_written_since_checkpoint(&self, nid: u32) -> bool {
-        self.nat_dirty.contains_key(&nid)
     }
 
     /// Whether any node BELOW `ino` was written since the last checkpoint.

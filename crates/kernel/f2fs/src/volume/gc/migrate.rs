@@ -67,6 +67,16 @@ impl<S: SectorSource> Volume<S> {
         let inode = self.read_inode(o.ino)?;
         let dir = crate::mode::file_type(inode.mode) == vfs::FileType::Directory;
         let data = self.read_main_block(addr)?;
+        // Charged twice, to two different questions. It is a data block read,
+        // which is what the file-data figure counts; it is also a block the
+        // CLEANER read, which is the figure that says how much of the volume's
+        // read traffic is the cleaner's own work rather than anyone's request.
+        {
+            use crate::stats::iostat::Io;
+            self.io_account(Io::FsDataRead, BLKSIZE as u64, false);
+            self.io_account(Io::FsGdataRead, BLKSIZE as u64, false);
+            self.io_read_folio(0);
+        }
         // An ahead-of-demand pass on a mount that places by age puts what it
         // moves in a log of its own. These blocks are old — that is why they
         // were chosen — and appending them to the log a live writer is filling

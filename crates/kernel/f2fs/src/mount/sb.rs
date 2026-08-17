@@ -104,7 +104,7 @@ impl SuperOps for F2fsSuperOps {
         super::quota::accounts(&self.fs, kind)
     }
 
-    fn show_options(&self) -> String { crate::opts::show(self.fs.volume.lock().options()) }
+    fn show_options(&self) -> String { { let v = self.fs.volume.lock(); crate::opts::show(v.options(), v.super_block().feature) } }
 
     /// Write a checkpoint.
     ///

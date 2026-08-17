@@ -192,7 +192,7 @@ fn the_option_round_trips_through_its_own_rendering() {
     for unit in [DiscardUnit::Block, DiscardUnit::Segment, DiscardUnit::Section] {
         let mut o = Options::defaults();
         o.discard_unit = unit;
-        let shown = crate::opts::show(&o);
+        let shown = crate::opts::show(&o, 0);
         assert_eq!(crate::opts::parse(Options::defaults(), &shown).unwrap().discard_unit, unit);
     }
 }

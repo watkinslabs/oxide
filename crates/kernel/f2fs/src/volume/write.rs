@@ -71,7 +71,17 @@ impl<S: SectorSource> Volume<S> {
         // later would otherwise have to know to say so, and the one that
         // forgot would be indistinguishable from file data.
         let flags = if main { flags } else { flags | block::flags::META };
-        self.source.write_sectors_crypt(u64::from(addr), data, ctx, flags)
+        self.source.write_sectors_crypt(u64::from(addr), data, ctx, flags)?;
+        // Charged by the same derivation that set the flag. A main-area write
+        // is a node or a page of data and is charged by the typed writer that
+        // knows which; only the metadata areas can be classified from the
+        // address alone.
+        if !main {
+            use crate::stats::iostat::Io;
+            let kind = if self.segstate.cp_writing { Io::FsCpMeta } else { Io::FsMeta };
+            self.io_account(kind, BLKSIZE as u64, false);
+        }
+        Ok(())
     }
 
     /// Segments held back from the allocator so the cleaner always has
@@ -293,6 +303,10 @@ impl<S: SectorSource> Volume<S> {
             if owed { self.release_reserved_space(ino, BLKSIZE as u64)?; }
             return Err(e);
         }
+        {
+            use crate::stats::iostat::Io;
+            self.io_account(self.io_gc_kind(Io::FsNode, Io::FsGcNode), BLKSIZE as u64, false);
+        }
         self.nat_dirty.insert(nid, NatEntry { version: 0, ino, block_addr: addr });
         if was_new {
             // The id is a live node now, so the cache stops holding it: an id
@@ -374,6 +388,10 @@ impl<S: SectorSource> Volume<S> {
         let take = data.len().min(BLKSIZE);
         block[..take].copy_from_slice(&data[..take]);
         self.write_block_crypt(addr, &block, flags, ctx)?;
+        {
+            use crate::stats::iostat::Io;
+            self.io_account(self.io_gc_kind(Io::FsData, Io::FsGcData), BLKSIZE as u64, false);
+        }
         Ok(addr)
     }
 

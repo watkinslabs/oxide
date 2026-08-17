@@ -108,7 +108,7 @@ fn accounting_one_kind_each_way_is_refused() {
 #[test]
 fn the_legacy_arrangement_round_trips_through_its_own_rendering() {
     let o = p("jqfmt=vfsv1,usrjquota=aquota.user,grpjquota=aquota.group").unwrap();
-    let line = show(&o);
+    let line = show(&o, 0);
     assert!(line.contains(",jqfmt=vfsv1"), "{line}");
     assert!(line.contains(",usrjquota=aquota.user"), "{line}");
     assert!(line.contains(",grpjquota=aquota.group"), "{line}");

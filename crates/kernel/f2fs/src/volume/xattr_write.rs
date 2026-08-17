@@ -121,7 +121,30 @@ impl<S: SectorSource> Volume<S> {
             self.uncharge_space(ino, BLKSIZE as u64)?;
         }
         let blocks = self.count_blocks(ino)?;
-        self.stamp_inode(ino, |b| Self::set_iblocks(b, blocks))
+        self.stamp_inode(ino, |b| Self::set_iblocks(b, blocks))?;
+        self.note_xattr_write(ino, &inode);
+        Ok(())
+    }
+
+    /// Record that a DIRECTORY's attributes were rewritten, which an `fsync`
+    /// of a file below it has to account for.
+    ///
+    /// The two mounts answer differently, and the difference is the point. A
+    /// strict mount owes a consistent tree for every `fsync`, so it marks the
+    /// whole volume as owing a checkpoint rather than one directory; any other
+    /// mount owes only the file being synced, so the directory alone is
+    /// recorded and only a file whose parent it is pays.
+    ///
+    /// A file's own attributes are not recorded by either: they travel in the
+    /// file's inode block, which the chain already carries.
+    /// # C: O(log n)
+    fn note_xattr_write(&mut self, ino: u32, inode: &crate::node::Inode) {
+        if crate::mode::file_type(inode.mode) != vfs::FileType::Directory { return; }
+        if self.opts.fsync_mode == crate::opts::FsyncMode::Strict {
+            self.sbi.set(crate::sbflags::bits::NEED_CP);
+        } else {
+            self.ino_lists.add(crate::checkpoint::InoKind::XattrDir, ino);
+        }
     }
 
     /// Remove one attribute. # C: O(region bytes)

@@ -262,6 +262,11 @@ impl F2fs {
             }
             out
         };
+        // What was actually handed to a device, request by request. A run the
+        // filesystem decided to announce and a device refused to be told about
+        // are different things, and the figure that is worth reporting is the
+        // traffic that left, not the intent.
+        let mut announced: alloc::vec::Vec<u64> = alloc::vec::Vec::new();
         for (i, first_blk, len) in pieces {
             let Some(dev) = self.devs.get(i) else { continue };
             if !dev.supports_discard() { continue; }
@@ -271,7 +276,12 @@ impl F2fs {
             if byte % dev_block != 0 || bytes % dev_block != 0 { continue; }
             let Ok(blocks) = u32::try_from(bytes / dev_block) else { continue };
             let mut req = block::BlockRequest::new_discard(byte / dev_block, blocks);
-            let _ = dev.submit_sync(&mut req);
+            if dev.submit_sync(&mut req).is_ok() { announced.push(bytes); }
+        }
+        if announced.is_empty() { return; }
+        let v = self.volume.lock();
+        for bytes in announced {
+            v.io_account(crate::stats::iostat::Io::FsDiscard, bytes, false);
         }
     }
 
@@ -327,7 +337,7 @@ impl vfs::fs::FileSystem for F2fs {
     fn magic(&self) -> u64 { crate::uapi::F2FS_SUPER_MAGIC }
     fn fs_flags(&self) -> vfs::fs::FsFlags { vfs::fs::FsFlags::FS_REQUIRES_DEV }
     fn block_size(&self) -> u32 { BLKSIZE as u32 }
-    fn show_options(&self) -> String { crate::opts::show(self.volume.lock().options()) }
+    fn show_options(&self) -> String { { let v = self.volume.lock(); crate::opts::show(v.options(), v.super_block().feature) } }
     fn super_ops(&self) -> Option<Arc<dyn vfs::superblock::SuperOps>> {
         self.me
             .upgrade()

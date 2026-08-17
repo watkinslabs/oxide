@@ -42,7 +42,7 @@ fn with_a_file(name: &str, blocks: usize) -> Arc<F2fs> {
     let ino = {
         let dir = fs.root_inode().unwrap();
         let _ = dir;
-        fs.make(ROOT_INO, name, crate::mode::S_IFREG | 0o644, 0, 0, 0, None).unwrap()
+        fs.make(ROOT_INO, name, crate::mode::S_IFREG | 0o644, 0, 0, 0, None, true).unwrap()
     };
     let ino = ino.ino() as u32;
     fs.write(ino, 0, &vec![0xA5u8; blocks * BLKSIZE]).unwrap();
@@ -238,7 +238,7 @@ fn stopping_the_background_leaves_nothing_parked() {
 fn a_write_through_the_filesystem_goes_through_the_balance_path() {
     let fs = mounted();
     let before = fs.bg().balance_count();
-    fs.make(ROOT_INO, "g", crate::mode::S_IFREG | 0o644, 0, 0, 0, None).unwrap();
+    fs.make(ROOT_INO, "g", crate::mode::S_IFREG | 0o644, 0, 0, 0, None, true).unwrap();
     assert!(fs.bg().balance_count() > before,
             "the hook at the end of every operation is what counts this");
 }
@@ -248,22 +248,22 @@ fn every_mutating_operation_reaches_the_balance_path() {
     // The stamp is the observable proof that the hook is in place: it is set
     // by nothing else, and each of these calls must set it.
     let ops: Vec<(&str, fn(&Arc<F2fs>))> = vec![
-        ("make", |fs| { fs.make(ROOT_INO, "a", crate::mode::S_IFREG | 0o644, 0, 0, 0, None)
+        ("make", |fs| { fs.make(ROOT_INO, "a", crate::mode::S_IFREG | 0o644, 0, 0, 0, None, true)
                           .unwrap(); }),
         ("write", |fs| { let ino = fs.make(ROOT_INO, "b", crate::mode::S_IFREG | 0o644, 0, 0, 0,
-                                           None).unwrap().ino() as u32;
+                                           None, true).unwrap().ino() as u32;
                          fs.write(ino, 0, b"hello").unwrap(); }),
         ("truncate", |fs| { let ino = fs.make(ROOT_INO, "c", crate::mode::S_IFREG | 0o644, 0, 0,
-                                              0, None).unwrap().ino() as u32;
+                                              0, None, true).unwrap().ino() as u32;
                             fs.truncate(ino, 8).unwrap(); }),
-        ("link", |fs| { fs.make(ROOT_INO, "d", crate::mode::S_IFREG | 0o644, 0, 0, 0, None)
+        ("link", |fs| { fs.make(ROOT_INO, "d", crate::mode::S_IFREG | 0o644, 0, 0, 0, None, true)
                           .unwrap();
                         let ino = file_ino(fs, "d");
                         fs.link(ROOT_INO, "d2", ino).unwrap(); }),
-        ("rename", |fs| { fs.make(ROOT_INO, "e", crate::mode::S_IFREG | 0o644, 0, 0, 0, None)
+        ("rename", |fs| { fs.make(ROOT_INO, "e", crate::mode::S_IFREG | 0o644, 0, 0, 0, None, true)
                             .unwrap();
                           fs.rename(ROOT_INO, "e", ROOT_INO, "e2", false).unwrap(); }),
-        ("remove", |fs| { fs.make(ROOT_INO, "h", crate::mode::S_IFREG | 0o644, 0, 0, 0, None)
+        ("remove", |fs| { fs.make(ROOT_INO, "h", crate::mode::S_IFREG | 0o644, 0, 0, 0, None, true)
                             .unwrap();
                           fs.remove(ROOT_INO, "h", false).unwrap(); }),
     ];
