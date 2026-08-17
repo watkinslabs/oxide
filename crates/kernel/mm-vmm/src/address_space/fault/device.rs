@@ -30,6 +30,9 @@ impl AddressSpace {
         let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
         let pa = pa + (va_page - vma.start.as_u64());
         let pte_flags = vma.page_flags();
+        // SAFETY: `va_page` is page-aligned and `pa` is the offset-adjusted frame of a
+        // physically contiguous refcounted run whose owner keeps it alive for the life
+        // of this VMA; `inc_ref` below balances the AS-drop decrement once installed.
         let installed = unsafe {
             self.map_if_absent::<M>(Va(va_page), Pa(pa), pte_flags, PageSize::P4K)
         };
@@ -66,6 +69,9 @@ impl AddressSpace {
                 pte_flags |= hal::PageFlags::NO_CACHE | hal::PageFlags::WRITE_THROUGH;
             }
         }
+        // SAFETY: `va_page` is page-aligned and `base_pa + off` stays inside the device
+        // aperture the VMA was created over, which is unrefcounted MMIO owned by the
+        // driver for as long as the mapping exists, so there is no frame lifetime here.
         let installed = unsafe {
             self.map_if_absent::<M>(Va(va_page), Pa(base_pa + off), pte_flags, PageSize::P4K)
         };

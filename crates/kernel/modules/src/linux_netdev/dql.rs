@@ -95,6 +95,7 @@ mod tests {
 
     #[test]
     fn completion_returns_queue_budget() {
+        // SAFETY: LinuxDql is a plain-old-data ABI struct of integer counters, all valid when zero; init() below sets the fields this test depends on.
         let mut dql: LinuxDql = unsafe { core::mem::zeroed() };
         init(&mut dql, 1000);
         dql.limit = 4096;

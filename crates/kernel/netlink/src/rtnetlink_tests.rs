@@ -25,6 +25,12 @@
     mod notification_races;
     #[path = "rtnetlink_tests/address_semantics.rs"]
     mod address_semantics;
+    #[path = "rtnetlink_tests/address6_common.rs"]
+    mod address6_common;
+    #[path = "rtnetlink_tests/address6_semantics.rs"]
+    mod address6_semantics;
+    #[path = "rtnetlink_tests/address6_ordering.rs"]
+    mod address6_ordering;
     #[path = "rtnetlink_tests/strict_dumps.rs"]
     mod strict_dumps;
     #[path = "rtnetlink_tests/addr_fields.rs"]
@@ -538,21 +544,49 @@
         assert!(find_attr(attrs, ifa::IFA_BROADCAST).is_none());
     }
 
+    // An IPv6 address with no point-to-point peer reports IFA_ADDRESS alone —
+    // no IFA_LOCAL, and no IFA_LABEL: the label attribute names an IPv4 alias
+    // and the IPv6 fill does not emit one.
     #[test]
     fn build_newaddr6_reply_well_formed() {
         let addr = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
-        let ci = IfaCacheInfo { preferred: 1800, valid: 3600, cstamp: 0, tstamp: 0 };
-        let bytes = build_newaddr6_reply(1, 42, 2, "eth0", addr, 64, RT_SCOPE_UNIVERSE,
-            net::iface_addr::IFA_F_PERMANENT, ci, crate::flags::NLM_F_MULTI, None);
+        let ci = IfaCacheInfo { preferred: 1800, valid: 3600, cstamp: 11, tstamp: 12 };
+        let bytes = build_newaddr6_reply(1, 42, 2, addr, None, 64, RT_SCOPE_UNIVERSE,
+            net::iface_addr::IFA_F_PERMANENT, 0, 0, ci, crate::flags::NLM_F_MULTI, None);
         assert_eq!(u16::from_ne_bytes([bytes[4], bytes[5]]), RTM_NEWADDR);
         assert_eq!(bytes[Nlmsghdr::SIZE], AF_INET6);
         assert_eq!(bytes[Nlmsghdr::SIZE + 1], 64);
         assert_eq!(bytes[Nlmsghdr::SIZE + 2], net::iface_addr::IFA_F_PERMANENT as u8);
         let attrs = &bytes[Nlmsghdr::SIZE + Ifaddrmsg::SIZE..];
-        assert_eq!(find_attr(attrs, ifa::IFA_LOCAL).expect("IFA_LOCAL"), &addr);
+        assert_eq!(find_attr(attrs, ifa::IFA_ADDRESS).expect("IFA_ADDRESS"), &addr);
+        assert!(find_attr(attrs, ifa::IFA_LOCAL).is_none());
+        assert!(find_attr(attrs, ifa::IFA_LABEL).is_none());
+        assert!(find_attr(attrs, ifa::IFA_PROTO).is_none());
+        assert!(find_attr(attrs, ifa::IFA_RT_PRIORITY).is_none());
         let got_ci = find_attr(attrs, ifa::IFA_CACHEINFO).expect("IFA_CACHEINFO");
         assert_eq!(u32::from_ne_bytes(got_ci[0..4].try_into().unwrap()), 1800);
         assert_eq!(u32::from_ne_bytes(got_ci[4..8].try_into().unwrap()), 3600);
+        assert_eq!(u32::from_ne_bytes(got_ci[8..12].try_into().unwrap()), 11);
+        assert_eq!(u32::from_ne_bytes(got_ci[12..16].try_into().unwrap()), 12);
+    }
+
+    // A point-to-point row reports the local address in IFA_LOCAL and the peer
+    // in IFA_ADDRESS, and the two optional attributes appear once set.
+    #[test]
+    fn build_newaddr6_reply_reports_peer_proto_and_priority() {
+        let addr = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+        let mut peer = addr;
+        peer[15] = 2;
+        let ci = IfaCacheInfo { preferred: 0, valid: 0, cstamp: 0, tstamp: 0 };
+        let bytes = build_newaddr6_reply(1, 42, 2, addr, Some(peer), 128, RT_SCOPE_UNIVERSE,
+            0, 3, 1024, ci, 0, None);
+        let attrs = &bytes[Nlmsghdr::SIZE + Ifaddrmsg::SIZE..];
+        assert_eq!(find_attr(attrs, ifa::IFA_LOCAL).expect("IFA_LOCAL"), &addr);
+        assert_eq!(find_attr(attrs, ifa::IFA_ADDRESS).expect("IFA_ADDRESS"), &peer);
+        assert_eq!(find_attr(attrs, ifa::IFA_PROTO).expect("IFA_PROTO"), &[3]);
+        assert_eq!(u32::from_ne_bytes(
+            find_attr(attrs, ifa::IFA_RT_PRIORITY).expect("IFA_RT_PRIORITY").try_into().unwrap()),
+            1024);
     }
 
     #[test]

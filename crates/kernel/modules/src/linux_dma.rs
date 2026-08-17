@@ -550,6 +550,7 @@ fn map_sg_entry(dev: *mut LinuxDevice, ent: &ScatterList, dir: i32, attrs: u64) 
     let pa = if page != 0 {
         // SAFETY: a nonzero scatterlist page link names a live struct page descriptor for the map operation.
         let page = page as *mut LinuxPage;
+        // SAFETY: per the Linux DMA scatterlist contract, a nonzero page_link names a struct page the caller obtained from the page allocator (alloc_pages/kmalloc's backing pages), the same trust boundary every other page-taking KPI in this module relies on; linux_page_phys's valid_page check rejects a foreign magic before reading further fields.
         let base = match unsafe { linux_alloc::linux_page_phys(page) } { Some(v) => v, None => return DMA_MAPPING_ERROR };
         if !page_range_valid(page, ent.offset as usize, ent.length as usize) { return DMA_MAPPING_ERROR; }
         match base.checked_add(ent.offset as u64) { Some(v) => v, None => return DMA_MAPPING_ERROR }

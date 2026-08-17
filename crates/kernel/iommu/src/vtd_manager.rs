@@ -93,6 +93,9 @@ pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf],
     let mut manager = Vec::new();
     for unit in units {
         trace_stage(b"unit setup");
+        // SAFETY: `unit` came from the published DMAR table, so base and page count
+        // name a firmware-reserved remapping-unit window no other mapping claims;
+        // `activate_vtd`'s contract puts this before any requester bus-masters.
         let Some(regs) = (unsafe { VtdRegisters::map(unit.register_base, unit.register_pages) }) else { trace_failure(b"register map"); return VtdActivation::Failed; };
         let coherent = regs.cache_coherent();
         if !maintenance_available(coherent) { trace_failure(b"cache maintenance"); return VtdActivation::Failed; }

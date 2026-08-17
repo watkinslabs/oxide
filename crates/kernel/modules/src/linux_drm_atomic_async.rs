@@ -104,6 +104,7 @@ pub(super) extern "C" fn drm_atomic_helper_async_check(dev: *mut c_void, state: 
         let slot = unsafe { entry(state, DRM_ATOMIC_CRTCS_OFF, DRM_ATOMIC_CRTC_ENTRY_SIZE, index) };
         // SAFETY: new CRTC state is the ABI-pinned field at byte 24 of its transaction entry.
         let new = unsafe { read(slot.add(DRM_ENTRY_NEW_OFF).cast::<*mut u8>()) };
+        // SAFETY: change_flags is the ABI-pinned byte at offset 10 of the same non-null new CRTC state read above.
         if !new.is_null() && unsafe { *new.add(DRM_CRTC_STATE_CHANGE_FLAGS_OFF) & DRM_CRTC_STATE_MODESET_MASK } != 0 { return -LINUX_EINVAL; }
     }
     let mut candidate: *mut u8 = core::ptr::null_mut();
@@ -144,8 +145,11 @@ mod tests {
     static CALLED: AtomicU8 = AtomicU8::new(0);
     unsafe extern "C" fn accept(_plane: *mut c_void, _state: *mut c_void, flip: bool) -> i32 { CALLED.store((!flip) as u8, Ordering::SeqCst); 0 }
     unsafe extern "C" fn update(plane: *mut c_void, state: *mut c_void) {
+        // SAFETY: state is the fabricated transaction array from the enclosing test, sized for the one plane entry.
         let staged = unsafe { read(state.cast::<u8>().add(DRM_ATOMIC_PLANES_OFF).cast::<*mut u8>()) };
+        // SAFETY: staged is the plane entry's new-state field, non-null per the test fixture written before this call.
         let new = unsafe { read(staged.add(DRM_ENTRY_NEW_OFF).cast::<*mut u8>()) };
+        // SAFETY: plane is the fabricated plane record; CURRENT_OFF holds the current-state pointer the test wrote.
         let current = unsafe { read(plane.cast::<u8>().add(DRM_PLANE_STATE_CURRENT_OFF).cast::<*mut u8>()) };
         // SAFETY: test records reserve common coordinate and framebuffer fields for the in-place swap contract.
         unsafe { let old_fb = read(current.add(DRM_PLANE_STATE_FB_OFF).cast::<*mut c_void>()); write(current.add(DRM_PLANE_STATE_FB_OFF).cast::<*mut c_void>(), read(new.add(DRM_PLANE_STATE_FB_OFF).cast::<*mut c_void>())); write(new.add(DRM_PLANE_STATE_FB_OFF).cast::<*mut c_void>(), old_fb); for off in [DRM_PLANE_STATE_CRTC_X_OFF, DRM_PLANE_STATE_CRTC_Y_OFF, DRM_PLANE_STATE_SRC_X_OFF, DRM_PLANE_STATE_SRC_Y_OFF] { core::ptr::copy_nonoverlapping(new.add(off), current.add(off), 4); } }

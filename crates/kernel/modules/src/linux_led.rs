@@ -68,6 +68,7 @@ mod tests {
         assert_eq!(led_classdev_register_ext(null_mut(), led.as_mut_ptr(), core::ptr::null()), 0);
         // SAFETY: test array provides the documented native led class-device prefix and registration filled dev.
         assert!(!unsafe { led.as_ptr().add(LED_DEV_OFFSET).cast::<*mut LinuxDevice>().read_unaligned() }.is_null());
+        // SAFETY: same 432-byte test buffer registration initialized above; LED_MAX_BRIGHTNESS_OFFSET is the native led_classdev's fixed max_brightness field offset this module's ABI layout assumes.
         assert_eq!(unsafe { led.as_ptr().add(LED_MAX_BRIGHTNESS_OFFSET).cast::<u32>().read_unaligned() }, LED_DEFAULT_BRIGHTNESS);
         led_classdev_unregister(led.as_mut_ptr());
     }
