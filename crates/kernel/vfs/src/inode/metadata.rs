@@ -225,8 +225,15 @@ impl Inode {
     pub fn i_version_raw(&self) -> Option<&AtomicU64> { Some(&self.i_version) }
     /// `i_link` — inline fast-symlink body. # C: O(1)
     pub fn i_link(&self) -> Option<&[u8]> { self.i_link.as_deref() }
-    /// `i_xattrs` — the inode's own xattr store. # C: O(1)
-    pub fn simple_xattrs(&self) -> Option<&crate::xattr::SimpleXattrs> { self.i_xattrs.as_ref() }
+    /// `i_xattrs` — the inode's own xattr store, or `None` on a filesystem
+    /// whose superblock carries no attribute handlers. # C: O(1)
+    pub fn simple_xattrs(&self) -> Option<&crate::xattr::SimpleXattrs> { self.i_xattrs.get() }
+    /// State that this inode's filesystem HOLDS extended attributes (Linux
+    /// `sb->s_xattr`), turning an attribute read from "not supported" into
+    /// "no such attribute". Called where a node joins its superblock, for a
+    /// filesystem whose nodes are minted by producers that do not know it.
+    /// Idempotent. # C: O(1)
+    pub fn declare_xattr_store(&self) { self.i_xattrs.declare(); }
     /// The `i_op` vtable. # C: O(1)
     pub fn i_op(&self) -> &Arc<dyn InodeOps> { &self.i_op }
     /// The `i_fop` vtable. # C: O(1)

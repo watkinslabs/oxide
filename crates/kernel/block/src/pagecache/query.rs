@@ -42,12 +42,20 @@ impl PageCache {
     /// a hint (`POSIX_FADV_DONTNEED`), and the bytes still exist. Compare
     /// [`PageCache::invalidate_range`], which is truncate's unconditional
     /// removal and drops a dirty page with the rest.
+    ///
+    /// A page a USER PAGE TABLE maps is left alone for a second reason, and it
+    /// is not about losing bytes: the mapper would go on writing the frame this
+    /// cache had stopped tracking, and the next fill of the same offset would
+    /// hand out a different frame — two live copies of one page, disagreeing
+    /// about the file for as long as both existed. The reference's own hint
+    /// path skips a mapped folio for the same reason.
     /// # C: O(pages in range)
     pub fn try_invalidate_range(&self, inode: InodeId, lo: u64, hi: u64) -> usize {
         if hi < lo { return 0; }
         let Some(map) = self.mapping(inode) else { return 0; };
         let mut dropped = 0usize;
         for index in map.keys_in_range(lo, hi.saturating_add(1)) {
+            if self.page_user_mapped(inode, index) { continue; }
             if map.evict(index).is_some() { dropped += 1; }
         }
         // Every page counted here was clean when it left, so the machine's

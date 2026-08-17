@@ -387,6 +387,7 @@ fn errno_translation_keeps_each_meaning() {
     assert_eq!(errno_to_vfs(Errno::Euclean), VfsError::Euclean);
     assert_eq!(errno_to_vfs(Errno::Enotty), VfsError::Enotty);
     assert_eq!(errno_to_vfs(Errno::Emsgsize), VfsError::Emsgsize);
+    assert_eq!(errno_to_vfs(Errno::Eloop), VfsError::Eloop);
     // Anything without a closer meaning is an I/O error, not a silent success.
     assert_eq!(errno_to_vfs(Errno::Eio), VfsError::Eio);
     // The three signature refusals and ENOPKG have no spelling in this error

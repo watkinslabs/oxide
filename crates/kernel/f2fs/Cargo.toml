@@ -37,6 +37,11 @@ timekeeper = { path = "../timekeeper" }
 # only: the filesystem itself is reached FROM there, never the other way.
 [dev-dependencies]
 fs = { path = "../fs" }
+# A shared writable mapping needs a real machine frame, so the tests that prove
+# a store through one reaches the medium have to bring the frame allocator up
+# against a host pool. Test only: the running kernel's PMM is already up by the
+# time any filesystem mounts.
+boot-info = { path = "../../shared/boot-info" }
 
 [features]
 default = []

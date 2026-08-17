@@ -66,9 +66,26 @@ pub fn blocks_reported(stored: u64) -> u64 {
     stored.saturating_sub(1) << (crate::uapi::BLKSIZE_BITS - 9)
 }
 
-/// Read the inode numbered `ino` and build the interface's object for it.
-/// # C: O(1 block)
+/// Read the inode numbered `ino` and hand back the interface's object for it —
+/// the SAME object every time, for as long as anything holds one.
+///
+/// Going through the inode cache is not an optimisation. An inode number has to
+/// name ONE in-core object or nothing can be true of the file as a whole: two
+/// objects for one file each carry their own link count, their own reference
+/// count and their own cached shape, so neither can answer whether the file is
+/// still open, and the eviction that frees an unlinked file is never reached
+/// because no reference count ever falls to zero. Minting a fresh object per
+/// lookup, which is what this did, also silently un-shares every field a
+/// `write` through one handle should have made visible through another.
+///
+/// A filesystem realized without a superblock has no cache to go through, and
+/// builds directly — the volume-level paths that mount a medium without the
+/// layer above.
+/// # C: O(log N_ino), plus O(1 block) on a miss
 pub(crate) fn node_inode(fs: Arc<F2fs>, ino: u32) -> KResult<InodeRef> {
+    if let Some(sb) = fs.superblock() {
+        if let Some(hit) = sb.ilookup(u64::from(ino)) { hit.igrab(); return Ok(hit); }
+    }
     let (inode, rdev) = {
         let v = fs.volume.lock();
         let (inode, node) = v.read_inode_ref(ino).map_err(super::errno_to_vfs)?;
@@ -79,7 +96,12 @@ pub(crate) fn node_inode(fs: Arc<F2fs>, ino: u32) -> KResult<InodeRef> {
         };
         (inode, rdev)
     };
-    Ok(build(fs, ino, inode, rdev))
+    // Published through the cache, so a concurrent lookup that raced this read
+    // gets the object that won rather than a second one.
+    match fs.superblock() {
+        Some(sb) => Ok(sb.iget(u64::from(ino), || build(fs, ino, inode, rdev))),
+        None => Ok(build(fs, ino, inode, rdev)),
+    }
 }
 
 /// Build the interface object from an inode already read. # C: O(1)
@@ -103,12 +125,23 @@ pub(crate) fn build(fs: Arc<F2fs>, ino: u32, inode: Inode, rdev: u32) -> InodeRe
     // every page it touches, which stops agreeing with the file the moment
     // either side is written.
     let space = super::mapping::address_space(&fs, ino, ftype);
+    // The superblock this inode belongs to. Without it `iput` cannot find the
+    // instance that owns the keep-or-evict decision, so it balances the
+    // reference count in place and the terminal eviction — the only thing that
+    // frees an unlinked file — is never reached for any inode of this
+    // filesystem.
+    let weak_sb = fs.superblock().as_ref().map(alloc::sync::Arc::downgrade).unwrap_or_default();
     let node = F2fsNode { fs, ino };
     let mut b = InodeBuilder::new(u64::from(ino), mode_word, inode_ops, file_ops)
+        .sb(weak_sb)
         .size(size)
         .blocks(blocks)
         .owner(uid, gid)
-        .nlink(links.max(1))
+        // The stored count, NOT a count floored at one. A file whose last name
+        // is gone stores zero, and that zero is precisely what tells the layer
+        // above to evict rather than keep — floored to one it reads as a linked
+        // file and the eviction that frees it never happens.
+        .nlink(links)
         .times(atime, mtime, ctime)
         .private(Arc::new(node));
     if let Some(space) = space { b = b.mapping(space); }

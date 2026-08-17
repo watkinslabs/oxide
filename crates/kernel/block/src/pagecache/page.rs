@@ -14,7 +14,6 @@
 
 extern crate alloc;
 use alloc::sync::Arc;
-use alloc::vec;
 use alloc::vec::Vec;
 
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -22,6 +21,8 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use sync::{Inode as InodeClass, Spinlock};
 
 use crate::types::{InodeId, PageFlags, PAGE_BYTES};
+
+use super::store::PageBuf;
 
 /// Shared wait lists, indexed by a hash of the page address. Sized as the
 /// reference sizes its own page-wait table.
@@ -36,14 +37,15 @@ static PAGE_WAIT: [sched::live::WaitList; PAGE_WAIT_SLOTS] =
 /// Reconciliation with the spec struct: `offset`/`flags` are as written there;
 /// the spec's `refcount` is the `Arc` every handle to this page is held
 /// through, so the count lives in the allocation rather than beside it, and
-/// there is exactly one of it. The spec's `pfn: Pfn` and `inode: Weak<dyn
-/// Inode>` are a heap page buffer and an opaque `InodeId` here — see the
-/// module manifest in `pagecache.rs` for why.
+/// there is exactly one of it. The spec's `pfn: Pfn` is a [`PageBuf`], which is
+/// a heap buffer until something asks to MAP the page and the machine frame it
+/// was moved into from then on; `inode: Weak<dyn Inode>` is an opaque `InodeId`
+/// — see the module manifest in `pagecache.rs` for why.
 pub struct CachedPage {
     pub inode:  InodeId,
     pub offset: u64,
     pub flags:  AtomicU32,
-    pub data:   Spinlock<Vec<u8>, InodeClass>,
+    pub data:   Spinlock<PageBuf, InodeClass>,
     /// Owner note the filesystem hangs on the page, opaque here.
     ///
     /// A mapping whose index is a DEVICE address rather than a file offset
@@ -63,10 +65,33 @@ impl CachedPage {
         Arc::new(Self {
             inode, offset,
             flags: AtomicU32::new(PageFlags::UPTODATE.bits()),
-            data:  Spinlock::new(data),
+            data:  Spinlock::new(PageBuf::from_vec(data)),
             tag:   AtomicU64::new(0),
         })
     }
+
+    /// The machine frame this page's bytes live in, or `None` while they are on
+    /// the heap.
+    ///
+    /// What a shared writable mapping needs and the only thing that can satisfy
+    /// it: a user page table can point at a frame and cannot point at a heap
+    /// buffer. Answered without converting, because a residency question must
+    /// not allocate.
+    /// # C: O(1)
+    pub fn pa(&self) -> Option<u64> { self.data.lock().pa() }
+
+    /// Move this page's bytes into a machine frame if they are not in one
+    /// already, and report its address.
+    ///
+    /// The conversion is one-way and in place, so the page never has two
+    /// copies and the address, once handed out, does not change while the page
+    /// is resident. `None` is "this page cannot be mapped" — no allocator
+    /// installed, or no frame to be had — never a second copy.
+    /// # C: O(page) on the first call, O(1) after
+    pub fn to_frame(&self) -> Option<u64> { self.data.lock().to_frame() }
+
+    /// Whether a user page table maps this page right now. # C: O(1)
+    pub fn user_mapped(&self) -> bool { self.data.lock().user_mapped() }
 
     /// The placeholder the miss path publishes before it fetches: LOCKED by
     /// its creator and NOT uptodate, so any other finder waits rather than
@@ -75,7 +100,7 @@ impl CachedPage {
         Arc::new(Self {
             inode, offset,
             flags: AtomicU32::new(PageFlags::LOCKED.bits()),
-            data:  Spinlock::new(vec![0u8; PAGE_BYTES]),
+            data:  Spinlock::new(PageBuf::zeroed()),
             tag:   AtomicU64::new(0),
         })
     }
