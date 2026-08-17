@@ -70,8 +70,7 @@ fn a_shorter_buffer_is_zero_filled_into_the_frame() {
 #[test]
 fn dropping_a_framed_page_returns_its_reference() {
     with_frames();
-    let mut pa = 0u64;
-    { let mut buf = PageBuf::from_vec(pattern(9)); pa = buf.to_frame().expect("frame"); }
+    let pa = { let mut buf = PageBuf::from_vec(pattern(9)); buf.to_frame().expect("frame") };
     assert_eq!(released_for(pa), 1, "the page's own reference is dropped exactly once");
 }
 
