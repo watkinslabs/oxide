@@ -46,6 +46,8 @@ mod tests {
     #[test]
     fn reference_owner_releases_once_after_its_last_put() {
         let mut object = [0u8; 32]; RELEASES.store(0, Ordering::SeqCst);
+        // SAFETY: object is a 32-byte stack array, sized past both fixed offsets
+        // used below, owned exclusively by this test with no concurrent access.
         unsafe { write(object.as_mut_ptr().add(DRM_MODE_OBJECT_REFCOUNT_OFF).cast::<i32>(), 1); write(object.as_mut_ptr().add(DRM_MODE_OBJECT_FREE_CB_OFF).cast::<usize>(), release as *const () as usize); }
         get(object.as_mut_ptr().cast()); put(object.as_mut_ptr().cast()); assert_eq!(RELEASES.load(Ordering::SeqCst), 0); put(object.as_mut_ptr().cast()); assert_eq!(RELEASES.load(Ordering::SeqCst), 1);
     }

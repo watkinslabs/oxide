@@ -34,6 +34,7 @@ unsafe extern "C" fn devm_mdiobus_alloc_size(dev: *mut LinuxDevice, sizeof_priv:
     if base.is_null() { return null_mut(); }
     // SAFETY: all offsets were derived from the allocation size and alignment above.
     let bus = unsafe { base.add(off) as *mut LinuxMiiBus };
+    // SAFETY: header offset and priv_off were both derived from and bounds-checked against total/layout above; bus is the just-computed in-bounds pointer, not yet visible to any other caller.
     unsafe {
         ((base.add(off - size_of::<MdioHeader>())) as *mut MdioHeader).write(MdioHeader {
             magic: MDIO_MAGIC, total, align, off,

@@ -39,6 +39,7 @@ fn connector_check(connector: *mut c_void, state: *mut c_void) -> i32 {
     if table.is_null() { return 0; }
     // SAFETY: the optional atomic_check callback has the documented connector/transaction signature.
     let callback = unsafe { read(table.add(DRM_CONNECTOR_HELPER_ATOMIC_CHECK_OFF).cast::<usize>()) };
+    // SAFETY: ATOMIC_CHECK_OFF's ABI signature is atomic_check(connector, state) -> i32; both are the caller's own non-null pointers.
     if callback == 0 { 0 } else { unsafe { core::mem::transmute::<usize, unsafe extern "C" fn(*mut c_void, *mut c_void) -> i32>(callback)(connector, state) } }
 }
 
@@ -54,6 +55,7 @@ fn encoder_check(state: *mut c_void, connector_state: *mut u8) -> i32 {
     if table.is_null() { return 0; }
     // SAFETY: optional encoder atomic_check receives encoder, new CRTC state, and new connector state.
     let callback = unsafe { read(table.add(DRM_ENCODER_HELPER_ATOMIC_CHECK_OFF).cast::<usize>()) };
+    // SAFETY: ATOMIC_CHECK_OFF's ABI signature is atomic_check(encoder, crtc_state, connector_state) -> i32; all three are already-validated non-null transaction pointers.
     if callback == 0 { 0 } else { unsafe { core::mem::transmute::<usize, unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> i32>(callback)(encoder.cast(), crtc_state, connector_state.cast()) } }
 }
 
@@ -70,17 +72,25 @@ fn mode_validate_and_fixup(state: *mut c_void, connector_state: *mut u8) -> i32 
     // SAFETY: encoder helpers use the documented mode validation/fixup slots.
     let enc_table = unsafe { read(encoder.add(DRM_ENCODER_HELPER_PRIVATE_OFF).cast::<*const u8>()) };
     if !enc_table.is_null() {
+        // SAFETY: MODE_VALID_OFF is the encoder helper table's optional mode_valid slot, read from the non-null table above.
         let valid = unsafe { read(enc_table.add(DRM_ENCODER_HELPER_MODE_VALID_OFF).cast::<usize>()) };
+        // SAFETY: mode_valid's ABI signature is (encoder, mode) -> mode_status; mode is the crtc_state's own embedded requested-mode record.
         if valid != 0 && unsafe { core::mem::transmute::<usize, unsafe extern "C" fn(*mut c_void, *mut c_void) -> i32>(valid)(encoder.cast(), mode) } != DRM_MODE_STATUS_OK { return -LINUX_EINVAL; }
+        // SAFETY: MODE_FIXUP_OFF is the encoder helper table's optional mode_fixup slot, read from the same non-null table.
         let fixup = unsafe { read(enc_table.add(DRM_ENCODER_HELPER_MODE_FIXUP_OFF).cast::<usize>()) };
+        // SAFETY: mode_fixup's ABI signature is (encoder, mode, adjusted) -> bool; adjusted is the crtc_state's own embedded adjusted-mode record.
         if fixup != 0 && !unsafe { core::mem::transmute::<usize, unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> bool>(fixup)(encoder.cast(), mode, adjusted) } { return -LINUX_EINVAL; }
     }
     // SAFETY: CRTC helper table and callbacks remain live under the transaction modeset locks.
     let crtc_table = unsafe { read(crtc.cast::<u8>().add(DRM_CRTC_HELPER_PRIVATE_OFF).cast::<*const u8>()) };
     if crtc_table.is_null() { return 0; }
+    // SAFETY: MODE_VALID_OFF is the CRTC helper table's optional mode_valid slot, read from the non-null table above.
     let valid = unsafe { read(crtc_table.add(DRM_CRTC_HELPER_MODE_VALID_OFF).cast::<usize>()) };
+    // SAFETY: mode_valid's ABI signature is (crtc, mode) -> mode_status; crtc is the caller's own validated non-null pointer.
     if valid != 0 && unsafe { core::mem::transmute::<usize, unsafe extern "C" fn(*mut c_void, *mut c_void) -> i32>(valid)(crtc, mode) } != DRM_MODE_STATUS_OK { return -LINUX_EINVAL; }
+    // SAFETY: MODE_FIXUP_OFF is the CRTC helper table's optional mode_fixup slot, read from the same non-null table.
     let fixup = unsafe { read(crtc_table.add(DRM_CRTC_HELPER_MODE_FIXUP_OFF).cast::<usize>()) };
+    // SAFETY: mode_fixup's ABI signature is (crtc, mode, adjusted) -> bool; both mode records are the crtc_state's own embedded fields.
     if fixup != 0 && !unsafe { core::mem::transmute::<usize, unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> bool>(fixup)(crtc, mode, adjusted) } { return -LINUX_EINVAL; }
     0
 }
