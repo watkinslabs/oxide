@@ -167,8 +167,14 @@ impl<S: SectorSource> Volume<S> {
 
     /// One block of a directory's data, or `None` where the directory is
     /// sparse. # C: O(1 block)
-    fn dir_block(&self, inode: &Inode, ino: u32, index: u64)
+    pub(crate) fn dir_block(&self, inode: &Inode, ino: u32, index: u64)
         -> Result<Option<Vec<u8>>, Errno> {
+        // The mapping first, for the reason a file's own read consults it
+        // first: a directory block written but not yet placed has no address,
+        // and the tree would report the slot holding its reservation as a
+        // hole — so the entries just added would be missing from the very
+        // listing that follows the add.
+        if let Some(page) = self.data_cache.peek(ino, index) { return Ok(Some(page)); }
         match self.map_block(inode, ino, index)? {
             Mapped::At(addr) => Ok(Some(self.read_main_block(addr)?)),
             Mapped::Hole => Ok(None),

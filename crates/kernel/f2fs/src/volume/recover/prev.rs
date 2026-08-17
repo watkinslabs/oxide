@@ -84,7 +84,7 @@ impl<S: SectorSource> Volume<S> {
         // ran later would otherwise leave a run describing a released block.
         let h = if is_inode { crate::volume::Holder::Inode }
                 else { crate::volume::Holder::Direct(nid) };
-        self.note_mapping_change(owner_ino, h, slot, NULL_ADDR)?;
+        self.note_mapping_change(owner_ino, h, slot, NULL_ADDR, true)?;
         if is_inode {
             self.put_inode(owner_ino, block)?;
         } else {

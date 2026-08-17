@@ -65,6 +65,7 @@ fn victim_volume() -> (Volume<MemImage>, u32, u32, Vec<u8>) {
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     let data = payload(FILE_BLOCKS);
     v.write_file(ino, 0, &data).unwrap();
+    v.sync_data().unwrap();
     let victim = seg_of(addr_of(&v, ino, 0));
     // Sealing the log's segment writes its summary block out and moves the
     // log elsewhere, which is what makes the segment a candidate at all.
@@ -75,6 +76,7 @@ fn victim_volume() -> (Volume<MemImage>, u32, u32, Vec<u8>) {
 /// Rewrite the head of block `index`, which kills the copy in the victim.
 fn kill_block(v: &mut Volume<MemImage>, ino: u32, index: usize, mark: &[u8]) -> Vec<u8> {
     v.write_file(ino, (index * BLKSIZE) as u64, mark).unwrap();
+    v.sync_data().unwrap();
     whole(v, ino)
 }
 
@@ -227,9 +229,12 @@ fn a_node_segment_is_cleaned_through_the_node_table() {
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     let data = payload(2);
     v.write_file(ino, 0, &data).unwrap();
+    v.sync_data().unwrap();
     let nseg = seg_of(v.node_addr(ino).unwrap());
     // Each rewrite moves the inode block, leaving the previous copy dead.
-    for i in 0..3u8 { v.write_file(ino, 0, &[i; 8]).unwrap(); }
+    // Placed as they are made: allocation is what moves the inode block,
+    // and a page left pending would move it once at the end instead of thrice.
+    for i in 0..3u8 { v.write_file(ino, 0, &[i; 8]).unwrap(); v.sync_data().unwrap(); }
     let expect = whole(&v, ino);
     v.open_segment(CURSEG_WARM_NODE).unwrap();
     assert!(!v.is_current(nseg));
@@ -312,10 +317,12 @@ fn a_section_is_cleaned_whole_and_costed_whole() {
     let lo = v.logs()[CURSEG_WARM_DATA].segno;
     let g = v.create(ROOT_INO, b"g", &spec(), None).unwrap();
     v.write_file(g, 0, &payload(2)).unwrap();
+    v.sync_data().unwrap();
     seal_log_elsewhere(&mut v, CURSEG_WARM_DATA);
     let hi = v.logs()[CURSEG_WARM_DATA].segno;
     let h = v.create(ROOT_INO, b"h", &spec(), None).unwrap();
     v.write_file(h, 0, &payload(2)).unwrap();
+    v.sync_data().unwrap();
     seal_log_elsewhere(&mut v, CURSEG_WARM_DATA);
     assert_eq!(hi, lo + 1, "the fixture put the two files in adjacent segments");
     assert_eq!(lo % 2, 0, "which are a section once sections are two wide");

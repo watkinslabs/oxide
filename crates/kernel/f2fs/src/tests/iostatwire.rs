@@ -85,6 +85,9 @@ fn one_file_write_charges_the_application_and_the_writes_it_costs() {
     let mut v = measured();
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     v.write_file(ino, 0, &vec![7u8; BLKSIZE]).unwrap();
+    // The application's own figure is charged by the write; the blocks it
+    // costs are charged where they are chosen, which is at writeback.
+    v.sync_data().unwrap();
     let b = body(&v);
     assert_eq!(row(&b, "[WRITE]", "app buffered data"), (BLKSIZE as u64, 1));
     // The rollup is the sum of its parts and no site raises it directly.
@@ -104,6 +107,7 @@ fn the_cleaners_copies_are_charged_to_the_cleaner_and_not_to_the_file() {
     let mut v = measured();
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     v.write_file(ino, 0, &vec![7u8; 4 * BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     let addr = match v.map_block(&v.read_inode(ino).unwrap(), ino, 0).unwrap() {
         crate::volume::map::Mapped::At(a) => a,
         _ => panic!("the file's block is not a block"),
@@ -185,6 +189,10 @@ fn an_application_read_and_the_blocks_under_it_are_charged_apart() {
     let mut v = measured();
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     v.write_file(ino, 0, &vec![7u8; 2 * BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
+    // A page a write left in the mapping answers the read without the medium,
+    // so the figure this measures — what the medium moved — needs a cold one.
+    v.data_cache.forget_inode(ino);
     v.set_iostat_enabled(false);
     v.set_iostat_enabled(true);
     let inode = v.read_inode(ino).unwrap();

@@ -43,6 +43,10 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(blocks in the file), plus any run that has to be moved
     pub fn swap_activate(&mut self, ino: u32, max: u64) -> Result<SwapMap, Errno> {
         policy::swap_activate(&self.swap_facts(ino)?)?;
+        // Every buffered write of this file has to be on the medium before
+        // its addresses are read: a page not yet placed has no address, and
+        // this operation is about to rearrange the ones that exist.
+        self.flush_data_pages(ino)?;
         // A compressed file with nothing compressed stored stops being
         // compressed; one that holds compressed blocks was refused above.
         if self.read_inode(ino)?.compressed() {

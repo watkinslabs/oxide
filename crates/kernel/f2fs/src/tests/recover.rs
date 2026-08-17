@@ -73,7 +73,9 @@ fn a_write_to_a_file_nothing_promised_is_not_recovered() {
     let kept = v.create(ROOT_INO, b"kept", &spec(), None).expect("create kept");
     let lost = v.create(ROOT_INO, b"lost", &spec(), None).expect("create lost");
     v.write_file(kept, 0, &pattern(0x11)).expect("write kept");
+    v.sync_data().unwrap();
     v.write_file(lost, 0, &pattern(0x22)).expect("write lost");
+    v.sync_data().unwrap();
     v.commit().expect("commit");
     let want_kept = grow_and_fsync(&mut v, kept, 0xB1);
     let before_lost = whole(&v, lost);
@@ -89,7 +91,9 @@ fn two_files_written_and_fsynced_both_survive() {
     let a = v.create(ROOT_INO, b"a", &spec(), None).expect("create a");
     let b = v.create(ROOT_INO, b"b", &spec(), None).expect("create b");
     v.write_file(a, 0, &pattern(0x11)).expect("write a");
+    v.sync_data().unwrap();
     v.write_file(b, 0, &pattern(0x22)).expect("write b");
+    v.sync_data().unwrap();
     v.commit().expect("commit");
     let wa = grow_and_fsync(&mut v, a, 0xA1);
     let wb = grow_and_fsync(&mut v, b, 0xB2);
@@ -122,6 +126,7 @@ fn the_walk_starts_at_the_log_a_files_nodes_are_written_to() {
         let opts = Options { active_logs: logs, ..Options::defaults() };
         let (mut v, ino) = checkpointed_opts(b"f", opts);
         v.write_file(ino, 0, b"x").expect("write");
+        v.sync_data().unwrap();
         let start = v.fsync_chain_start();
         v.fsync(ino).expect("fsync");
         let block = v.read_block(start).expect("block");
@@ -182,6 +187,7 @@ fn a_chain_written_after_a_clean_unmount_is_still_replayed() {
     let mut v = test_image::with_root().mount_rw().expect("mount");
     let ino = v.create(ROOT_INO, b"j", &spec(), None).expect("create");
     v.write_file(ino, 0, b"committed").expect("write");
+    v.sync_data().unwrap();
     assert!(v.checkpoint().has(crate::flags::CP_UMOUNT_FLAG),
             "the image was left by a clean unmount and nothing has replaced it");
     assert_eq!(v.fsync(ino).expect("fsync"), crate::volume::fsync::CpReason::None);
@@ -272,7 +278,9 @@ fn two_files_fsynced_in_sequence_both_recover() {
     let b = v.create(ROOT_INO, b"b", &spec(), None).expect("create b");
     let body = pattern(0x11);
     v.write_file(a, 0, &body).expect("write a");
+    v.sync_data().unwrap();
     v.write_file(b, 0, &body).expect("write b");
+    v.sync_data().unwrap();
     v.commit().expect("commit");
     append_block(&mut v, a, 0xA1, true);
     append_block(&mut v, b, 0xB2, true);
@@ -302,6 +310,7 @@ fn an_inline_files_bytes_are_recovered_from_inside_its_inode() {
     let mut v = test_image::with_root().mount_rw().expect("mount");
     let ino = v.create(ROOT_INO, b"i", &spec(), None).expect("create");
     v.write_file(ino, 0, b"before").expect("write");
+    v.sync_data().unwrap();
     v.commit().expect("commit");
     assert!(v.read_inode(ino).expect("inode").inline_data());
     let inode = v.read_inode(ino).expect("inode");
@@ -372,7 +381,9 @@ fn two_files() -> (Volume<MemImage>, u32, u32, u32) {
     let a = v.create(ROOT_INO, b"a", &spec(), None).expect("create a");
     let b = v.create(ROOT_INO, b"b", &spec(), None).expect("create b");
     v.write_file(a, 0, &pattern(0x33)).expect("write a");
+    v.sync_data().unwrap();
     v.write_file(b, 0, &pattern(0x44)).expect("write b");
+    v.sync_data().unwrap();
     v.commit().expect("commit");
     let inode = v.read_inode(a).expect("inode");
     let m = v.map_block(&inode, a, 1).expect("map");

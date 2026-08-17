@@ -59,6 +59,7 @@ fn committed_victim() -> (Volume<MemImage>, u32, u32, Vec<u8>) {
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     let data = payload(FILE_BLOCKS);
     v.write_file(ino, 0, &data).unwrap();
+    v.sync_data().unwrap();
     let victim = seg_of(addr_of(&v, ino, 0));
     v.open_segment(CURSEG_WARM_DATA).unwrap();
     // The checkpoint that makes the victim's blocks state a crash returns to.
@@ -75,6 +76,7 @@ fn allocator_would_take(v: &Volume<MemImage>, segno: u32) -> bool {
 fn a_cleaned_segment_is_empty_and_still_not_free() {
     let (mut v, ino, victim, _) = committed_victim();
     v.write_file(ino, 0, b"AAAA").unwrap();
+    v.sync_data().unwrap();
     v.gc_segment(victim).unwrap();
     assert_eq!(v.seg_valid(victim), 0, "the cleaner emptied it");
     assert!(v.is_prefree(victim), "and is holding it");
@@ -87,6 +89,7 @@ fn a_held_segment_is_not_counted_as_free_space() {
     let (mut v, ino, victim, _) = committed_victim();
     let before = v.free_segment_count();
     v.write_file(ino, 0, b"AAAA").unwrap();
+    v.sync_data().unwrap();
     v.gc_segment(victim).unwrap();
     assert_eq!(v.free_segment_count(), before, "an emptied segment is not free space");
     v.commit().unwrap();
@@ -97,6 +100,7 @@ fn a_held_segment_is_not_counted_as_free_space() {
 fn the_checkpoint_hands_it_back_and_the_medium_agrees() {
     let (mut v, ino, victim, _) = committed_victim();
     v.write_file(ino, 0, b"AAAA").unwrap();
+    v.sync_data().unwrap();
     v.gc_segment(victim).unwrap();
     assert!(v.is_prefree(victim));
     v.commit().unwrap();
@@ -121,10 +125,12 @@ fn a_crash_after_cleaning_still_reads_the_checkpointed_file() {
     // written from here must go somewhere else: the checkpoint on the medium
     // still names all four blocks above.
     v.write_file(ino, 0, b"AAAA").unwrap();
+    v.sync_data().unwrap();
     v.gc_segment(victim).unwrap();
     let other = v.create(ROOT_INO, b"g", &spec(), None).unwrap();
     let filler = payload(6);
     v.write_file(other, 0, &filler).unwrap();
+    v.sync_data().unwrap();
     for i in 0..6u64 { v.write_file(other, i * BLKSIZE as u64, b"zzzz").unwrap(); }
     for i in 0..FILE_BLOCKS as u64 {
         assert_ne!(seg_of(addr_of(&v, other, i.min(5))), victim, "a write landed in the victim");
@@ -145,6 +151,7 @@ fn a_segment_emptied_by_ordinary_rewrites_is_held_too() {
     let (mut v, ino, victim, _) = committed_victim();
     for i in 0..FILE_BLOCKS as u64 {
         v.write_file(ino, i * BLKSIZE as u64, b"QQQQ").unwrap();
+        v.sync_data().unwrap();
     }
     assert_eq!(v.seg_valid(victim), 0, "every copy was rewritten out of place");
     assert!(v.is_prefree(victim));
@@ -160,6 +167,7 @@ fn a_log_leaving_an_empty_segment_holds_it() {
     let mut v = test_image::with_root().mount_rw().unwrap();
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     v.write_file(ino, 0, &payload(1)).unwrap();
+    v.sync_data().unwrap();
     v.commit().unwrap();
     let seg = seg_of(addr_of(&v, ino, 0));
     assert!(v.is_current(seg), "the log is still in it");
@@ -175,6 +183,7 @@ fn a_log_leaving_an_empty_segment_holds_it() {
 fn the_cleaner_takes_a_checkpoint_when_cleaning_alone_leaves_no_room() {
     let (mut v, ino, victim, _) = committed_victim();
     v.write_file(ino, 0, b"AAAA").unwrap();
+    v.sync_data().unwrap();
     let before = v.free_segment_count();
     // Cleaning produces prefree segments, which are not free. Meeting a
     // target therefore takes the checkpoint that turns them into space.
@@ -201,6 +210,7 @@ fn a_checkpoint_is_worth_taking_once_enough_is_held() {
 fn balancing_a_volume_short_of_room_finds_some_and_retires_it() {
     let (mut v, ino, victim, _) = committed_victim();
     v.write_file(ino, 0, b"AAAA").unwrap();
+    v.sync_data().unwrap();
     assert!(!v.has_enough_free_secs(0, 0), "the fixture is at the reserve");
     v.balance_fs(true).unwrap();
     assert_eq!(v.seg_valid(victim), 0, "the cleaner emptied the best victim");
@@ -223,6 +233,7 @@ fn nothing_is_held_across_a_mount() {
     // is the one that retired every reference an empty segment could have.
     let (mut v, ino, victim, _) = committed_victim();
     v.write_file(ino, 0, b"AAAA").unwrap();
+    v.sync_data().unwrap();
     v.gc_segment(victim).unwrap();
     v.commit().unwrap();
     let held = v.prefree_count();
@@ -235,6 +246,7 @@ fn nothing_is_held_across_a_mount() {
     // And the freed segment is usable straight away in the new mount.
     let ino2 = back.create(ROOT_INO, b"h", &spec(), None).unwrap();
     back.write_file(ino2, 0, &vec![7u8; BLKSIZE]).unwrap();
+    back.sync_data().unwrap();
     assert_eq!(whole(&back, ino2).len(), BLKSIZE);
 }
 
@@ -243,6 +255,7 @@ fn cleaning_ahead_of_demand_picks_a_victim_and_moves_the_cursor_on() {
     use crate::volume::gc::victim::Policy;
     let (mut v, ino, victim, _) = committed_victim();
     v.write_file(ino, 0, b"AAAA").unwrap();
+    v.sync_data().unwrap();
     let expect = whole(&v, ino);
     assert_eq!(v.pick_victim(Policy::Greedy, &[]), Some(victim));
     assert_eq!(v.gc_background().unwrap(), Some(victim));

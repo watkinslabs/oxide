@@ -76,6 +76,10 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(dirty table blocks + pack blocks)
     pub fn commit_with(&mut self, reason: CpReason) -> Result<(), Errno> {
         if !self.writable { return Ok(()); }
+        // Before the dirty test, not after: a mount whose only change is a
+        // buffered write has pages to place, and placing them is what makes
+        // it dirty in the sense the test means.
+        self.flush_all_data_pages()?;
         if !self.dirty { return Ok(()); }
         // Every metadata block written from here to the end of this call is
         // the checkpoint's, which is the only thing that tells it apart from

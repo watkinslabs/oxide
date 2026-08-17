@@ -22,6 +22,10 @@ impl<S: SectorSource> Volume<S> {
     pub fn move_file_range(&mut self, src: u32, pos_in: u64, dst: u32, pos_out: u64, len: u64)
         -> Result<(), Errno> {
         let same = src == dst;
+        // Both files' pending writes go down first: this rearranges the
+        // addresses on either side, and a page not yet placed has none.
+        self.flush_data_pages(src)?;
+        if src != dst { self.flush_data_pages(dst)?; }
         let src_inode = self.read_inode(src)?;
         let dst_inode = if same { src_inode.clone() } else { self.read_inode(dst)? };
         let sf = self.facts_of(&src_inode, src);

@@ -189,7 +189,45 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(1 block)
     pub(crate) fn set_holder_addr(&mut self, ino: u32, holder: Holder, ofs: usize, addr: u32)
         -> Result<(), Errno> {
-        self.note_mapping_change(ino, holder, ofs, addr)?;
+        self.set_holder_addr_inner(ino, holder, ofs, addr, true, true)
+    }
+
+    /// Write a RESERVATION into the slot: the node changes and nothing else
+    /// does.
+    ///
+    /// The stored run is deliberately left alone. It describes where the
+    /// file's blocks ARE, and a reservation names none — recomputing it here
+    /// would read the reservation as the end of the run, shorten the run to
+    /// nothing, and, because giving a run up is how this filesystem says an
+    /// inode is not worth remembering, take the file out of the read cache for
+    /// the life of the mount. Every buffered write to a file's first block did
+    /// exactly that. The run is recomputed where the address is chosen, which
+    /// is the one point it can be right.
+    /// # C: O(1 block)
+    pub(crate) fn set_holder_addr_reserved(&mut self, ino: u32, holder: Holder, ofs: usize)
+        -> Result<(), Errno> {
+        self.set_holder_addr_inner(ino, holder, ofs, crate::uapi::NEW_ADDR, true, false)
+    }
+
+    /// The same, LEAVING the mapping's page where it is.
+    ///
+    /// One caller: writeback, which is putting the page it holds at `addr`. It
+    /// is the only writer for which the mapping and the new address agree, so
+    /// it is the only one that must not drop the page — doing so would throw
+    /// away the only copy of a write and make the next read of that offset go
+    /// to the medium for bytes it already had. Every other writer changed the
+    /// block's contents under a mapping still holding the old ones, and for
+    /// those the drop is the whole point.
+    /// # C: O(1 block)
+    pub(crate) fn set_holder_addr_keeping_page(&mut self, ino: u32, holder: Holder, ofs: usize,
+                                               addr: u32) -> Result<(), Errno> {
+        self.set_holder_addr_inner(ino, holder, ofs, addr, false, true)
+    }
+
+    /// # C: O(1 block)
+    fn set_holder_addr_inner(&mut self, ino: u32, holder: Holder, ofs: usize, addr: u32,
+                             forget: bool, refresh: bool) -> Result<(), Errno> {
+        self.note_mapping_change(ino, holder, ofs, addr, forget)?;
         match holder {
             Holder::Inode => {
                 let inode = self.read_inode(ino)?;
@@ -198,6 +236,7 @@ impl<S: SectorSource> Volume<S> {
                 let at = inode.addr_base() + ofs * 4;
                 block[at..at + 4].copy_from_slice(&addr.to_le_bytes());
                 self.put_inode(ino, block)?;
+                if !refresh { return Ok(()); }
                 // The cached extent is computed from exactly these addresses,
                 // and a write moves blocks. Left alone it keeps answering
                 // with the address the block used to have, and every read of
@@ -251,15 +290,15 @@ impl<S: SectorSource> Volume<S> {
     /// the caches carry, so the notification sits in front of the write rather
     /// than after it: the run is invalidated even if the write then fails.
     /// # C: O(runs overlapping the block)
-    pub(crate) fn note_mapping_change(&mut self, ino: u32, holder: Holder, ofs: usize, addr: u32)
-        -> Result<(), Errno> {
+    pub(crate) fn note_mapping_change(&mut self, ino: u32, holder: Holder, ofs: usize, addr: u32,
+                                      forget: bool) -> Result<(), Errno> {
         let Ok(index) = self.file_offset_of(ino, holder, ofs) else { return Ok(()) };
         // The page mapping goes with the extent cache, at the same point and
         // for the same reason: the bytes at this file offset are about to stop
         // being the bytes the mapping holds. Dropped ahead of the write rather
         // than after it, so a write that then fails cannot leave a page
         // answering for an address the file no longer has.
-        self.data_cache.forget(ino, index);
+        if forget { self.data_cache.forget(ino, index); }
         let Ok(fofs) = u32::try_from(index) else { return Ok(()) };
         let inode = self.read_inode(ino)?;
         let g = self.extent_gate(&inode);

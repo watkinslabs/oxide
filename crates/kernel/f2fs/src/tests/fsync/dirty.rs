@@ -147,6 +147,9 @@ fn a_checkpointed_file_is_clean() {
 fn a_write_dirties_the_data_side() {
     let (mut v, ino) = checkpointed();
     v.write_file(ino, 0, b"x").expect("write");
+    // Asked after the pages are placed, which is the order `fsync` itself
+    // takes: the data goes down first and the decision reads what that left.
+    v.sync_data().expect("place");
     assert!(v.inode_dirty(ino).expect("dirty").data);
 }
 
@@ -198,6 +201,7 @@ fn an_overwrite_that_leaves_the_inode_alone_is_still_data() {
     v.commit().expect("commit");
     assert!(v.inode_dirty(ino).expect("clean").clean());
     v.write_file(ino, at, &vec![0x22; BLKSIZE]).expect("overwrite");
+    v.sync_data().expect("place");
     let d = v.inode_dirty(ino).expect("dirty");
     assert!(d.data, "a node below the inode was written");
     assert!(d.needs_sync(true));

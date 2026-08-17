@@ -28,6 +28,7 @@ fn ready(opts: Options) -> (Volume<MemImage>, u32) {
     let mut v = test_image::with_root().mount_opts(opts).expect("mount");
     let ino = v.create(ROOT_INO, b"f", &spec(), None).expect("create");
     v.write_file(ino, 0, &body()).expect("write");
+    v.sync_data().unwrap();
     v.commit().expect("commit");
     (v, ino)
 }
@@ -39,6 +40,7 @@ fn ready(opts: Options) -> (Volume<MemImage>, u32) {
 fn dirtied(opts: Options) -> (Volume<MemImage>, u32) {
     let (mut v, ino) = ready(opts);
     v.write_file(ino, 0, b"x").expect("write");
+    v.sync_data().unwrap();
     (v, ino)
 }
 
@@ -120,6 +122,7 @@ fn a_second_name_takes_the_checkpoint() {
     v.link(ROOT_INO, b"g", ino, NOW).expect("link");
     v.commit().expect("commit");
     v.write_file(ino, 0, b"x").expect("write");
+    v.sync_data().unwrap();
     assert_eq!(v.fsync(ino).expect("fsync"), CpReason::Hardlink);
 }
 
@@ -141,6 +144,7 @@ fn the_chain_path_writes_no_checkpoint() {
     let (mut v, ino) = ready(Options::defaults());
     let before = v.checkpoint().version;
     v.write_file(ino, 0, b"x").expect("write");
+    v.sync_data().unwrap();
     v.fsync(ino).expect("fsync");
     assert_eq!(v.checkpoint().version, before, "a chain must not cost a pack");
     assert!(v.is_dirty(), "the tables are still only in memory");
@@ -151,6 +155,7 @@ fn the_checkpoint_path_writes_one() {
     let (mut v, ino) = ready(Options::defaults());
     let before = v.checkpoint().version;
     v.write_file(ino, 0, b"x").expect("write");
+    v.sync_data().unwrap();
     v.create(ROOT_INO, b"g", &spec(), None).expect("create");
     assert!(v.fsync(ROOT_INO).expect("fsync").needed());
     assert_eq!(v.checkpoint().version, before + 1);
@@ -210,6 +215,7 @@ fn each_link_names_the_block_that_follows_it() {
     let before = log_pos(&v);
     v.fsync(ino).expect("first");
     v.write_file(ino, 0, b"y").expect("write");
+    v.sync_data().unwrap();
     v.fsync(ino).expect("second");
     let got = emitted(&v, before, log_pos(&v));
     assert!(got.len() >= 2);

@@ -187,6 +187,10 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(bytes written)
     pub fn pinned_write(&mut self, ino: u32, off: u64, data: &[u8]) -> Result<usize, Errno> {
         self.writable_or_err()?;
+        // Every buffered write of this file has to be on the medium before
+        // its addresses are read: a page not yet placed has no address, and
+        // this operation is about to rearrange the ones that exist.
+        self.flush_data_pages(ino)?;
         if data.is_empty() { return Ok(0); }
         policy::write_allowed(true, self.pinned_overwrite(ino, off, data.len())?)?;
         let mut done = 0usize;

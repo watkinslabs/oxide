@@ -57,6 +57,10 @@ impl Writeback for DevWriteback {
     fn sync_medium(&self) -> KResult<()> { self.dev.flush() }
 }
 
+/// Where a claimed batch is put. The installed target is one; a filesystem
+/// already inside its own writeback is the other — see [`writeback_mapping_with`].
+pub type Sink<'s> = &'s mut dyn FnMut(InodeId, &[PageOut<'_>], &mut [KResult<()>]);
+
 /// Write back up to `max` of one mapping's dirty pages and report how many
 /// reached the medium. The first failure is returned once every page in the
 /// batch has been attempted, so one bad block does not strand the rest.
@@ -64,7 +68,24 @@ impl Writeback for DevWriteback {
 pub fn writeback_mapping(map: &Arc<Mapping>, max: usize) -> (usize, KResult<()>) {
     let Some(wb) = map.writeback_target() else { return (0, Ok(())); };
     let batch = map.take_for_writeback(max);
-    submit_batch(map, &wb, batch)
+    submit_batch(map, &mut |ino, pages, results| wb.writepages(ino, pages, results), batch)
+}
+
+/// The same, into a sink the caller supplies instead of the installed target.
+///
+/// The installed target is entered from OUTSIDE the filesystem — the flusher
+/// and reclaim reach a mapping holding none of that filesystem's locks, so the
+/// target is free to take them. A filesystem's own flush points are the other
+/// direction: `fsync`, a checkpoint and a truncate are already holding the
+/// state the target would have to acquire, and calling through it would have
+/// them wait on themselves. They pass the sink directly, and the claim and the
+/// completion — which decide together whether a page is still dirty — stay in
+/// the one place either way.
+/// # Ctx: process # Sleeps: y # C: O(pages written)
+pub fn writeback_mapping_with(map: &Arc<Mapping>, max: usize, sink: Sink<'_>)
+    -> (usize, KResult<()>) {
+    let batch = map.take_for_writeback(max);
+    submit_batch(map, sink, batch)
 }
 
 /// Write back exactly the named page if it is dirty. Reclaim's cleaning step:
@@ -73,13 +94,14 @@ pub fn writeback_mapping(map: &Arc<Mapping>, max: usize) -> (usize, KResult<()>)
 pub fn writeback_page(map: &Arc<Mapping>, index: u64) -> bool {
     let Some(wb) = map.writeback_target() else { return false; };
     let Some(page) = map.take_index_for_writeback(index) else { return false; };
-    let (written, _) = submit_batch(map, &wb, alloc::vec![(index, page)]);
+    let (written, _) = submit_batch(map, &mut |ino, pages, results| wb.writepages(ino, pages, results),
+                                    alloc::vec![(index, page)]);
     written == 1
 }
 
 /// Put an already-claimed batch on the medium, keeping the global counters and
 /// the per-page state in step at every point.
-fn submit_batch(map: &Arc<Mapping>, wb: &Arc<dyn Writeback>, batch: Vec<(u64, Arc<super::page::CachedPage>)>)
+fn submit_batch(map: &Arc<Mapping>, sink: Sink<'_>, batch: Vec<(u64, Arc<super::page::CachedPage>)>)
     -> (usize, KResult<()>)
 {
     if batch.is_empty() { return (0, Ok(())); }
@@ -98,7 +120,7 @@ fn submit_batch(map: &Arc<Mapping>, wb: &Arc<dyn Writeback>, batch: Vec<(u64, Ar
     // Prefilled with a failure, so a target that returns without reporting a
     // page leaves that page re-dirtied rather than silently dropped.
     let mut results: Vec<KResult<()>> = (0..n).map(|_| Err(BlockError::Eio)).collect();
-    wb.writepages(map.ino(), &pages, &mut results);
+    sink(map.ino(), &pages, &mut results);
     drop(pages);
 
     let mut written = 0usize;

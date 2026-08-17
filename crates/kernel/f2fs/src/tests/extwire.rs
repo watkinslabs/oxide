@@ -92,6 +92,7 @@ fn a_cached_block_is_always_the_block_the_walk_would_have_found() {
     for step in 0..120u64 {
         let at = rng.below(span);
         v.write_file(ino, at * BLKSIZE as u64, &page((step & 0xff) as u8)).unwrap();
+        v.sync_data().unwrap();
         agree_upto(&v, ino, span);
     }
 }
@@ -103,10 +104,13 @@ fn a_cached_block_is_always_the_block_the_walk_would_have_found() {
 fn rewriting_a_block_moves_the_answer_the_cache_gives() {
     let (mut v, ino) = with_file(b"f");
     v.write_file(ino, 0, &page(1)).unwrap();
+    v.sync_data().unwrap();
     v.write_file(ino, BLKSIZE as u64, &page(2)).unwrap();
+    v.sync_data().unwrap();
     let inode = v.read_inode(ino).unwrap();
     let first = v.map_block(&inode, ino, 0).unwrap();
     v.write_file(ino, 0, &page(3)).unwrap();
+    v.sync_data().unwrap();
     let inode = v.read_inode(ino).unwrap();
     let after = v.map_block(&inode, ino, 0).unwrap();
     assert_ne!(first, after, "an out-of-place rewrite left the block where it was");
@@ -162,9 +166,11 @@ fn the_answers_agree_again_after_a_remount() {
 fn a_file_that_becomes_inline_answers_for_nothing() {
     let (mut v, ino) = with_file(b"f");
     v.write_file(ino, 0, &page(7)).unwrap();
+    v.sync_data().unwrap();
     agree_upto(&v, ino, 1);
     v.truncate_file(ino, 0).unwrap();
     v.write_file(ino, 0, b"small").unwrap();
+    v.sync_data().unwrap();
     agree_upto(&v, ino, 1);
 }
 
@@ -175,6 +181,7 @@ fn a_file_that_becomes_inline_answers_for_nothing() {
 fn the_report_counts_the_lookups_the_cache_answered() {
     let (mut v, ino) = with_file(b"f");
     for i in 0..8u64 { v.write_file(ino, i * BLKSIZE as u64, &page(1)).unwrap(); }
+    v.sync_data().unwrap();
     let before = v.counters();
     let inode = v.read_inode(ino).unwrap();
     for index in 0..8u64 { v.map_block(&inode, ino, index).unwrap(); }
@@ -195,6 +202,7 @@ fn the_report_counts_the_age_lookups_a_write_makes() {
         .unwrap();
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     for i in 0..8u64 { v.write_file(ino, i * BLKSIZE as u64, &page(1)).unwrap(); }
+    v.sync_data().unwrap();
     let c = v.counters();
     assert!(c.total_hit_ext[extent_of::BLOCK_AGE] > 0, "no age lookup was counted");
     assert!(c.allocated_data_blocks > 0, "no data block was counted as allocated");
@@ -216,3 +224,4 @@ fn a_mount_without_the_cache_still_answers_from_the_walk() {
     assert_eq!((trees[extent_of::READ], nodes[extent_of::READ]), (0, 0),
                "a mount that refused the cache built one anyway");
 }
+

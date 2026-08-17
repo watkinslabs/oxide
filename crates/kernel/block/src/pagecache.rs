@@ -47,4 +47,4 @@ pub use global::{
 pub use mapping::{Mapping, PageOut, Writeback};
 pub use page::CachedPage;
 pub use radix::RadixTree;
-pub use writeback::{flush_pass, reclaimable_pages, shrink, DevWriteback};
+pub use writeback::{flush_pass, reclaimable_pages, shrink, DevWriteback, Sink};

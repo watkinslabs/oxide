@@ -39,6 +39,7 @@ fn whole(v: &Volume<MemImage>, ino: u32) -> Vec<u8> {
 fn a_short_write_stays_inside_the_inode() {
     let (mut v, ino) = with_file();
     v.write_file(ino, 0, b"hello").unwrap();
+    v.sync_data().unwrap();
     let v = remount(v);
     let inode = v.read_inode(ino).unwrap();
     assert!(inode.inline_data());
@@ -50,7 +51,9 @@ fn a_short_write_stays_inside_the_inode() {
 fn a_write_at_an_offset_inside_the_inode_lands_where_it_was_put() {
     let (mut v, ino) = with_file();
     v.write_file(ino, 0, b"aaaaaaaa").unwrap();
+    v.sync_data().unwrap();
     v.write_file(ino, 3, b"XY").unwrap();
+    v.sync_data().unwrap();
     let v = remount(v);
     assert_eq!(whole(&v, ino), b"aaaXYaaa".to_vec());
 }
@@ -61,6 +64,7 @@ fn a_write_past_the_inline_region_converts_the_file() {
     let region = v.read_inode(ino).unwrap().inline_data_span().1;
     let data = vec![0xABu8; region + 1];
     v.write_file(ino, 0, &data).unwrap();
+    v.sync_data().unwrap();
     let v = remount(v);
     let inode = v.read_inode(ino).unwrap();
     assert!(!inode.inline_data());
@@ -72,8 +76,10 @@ fn a_write_past_the_inline_region_converts_the_file() {
 fn converting_keeps_the_bytes_that_were_already_inline() {
     let (mut v, ino) = with_file();
     v.write_file(ino, 0, b"keepme").unwrap();
+    v.sync_data().unwrap();
     let region = v.read_inode(ino).unwrap().inline_data_span().1;
     v.write_file(ino, region as u64, b"tail").unwrap();
+    v.sync_data().unwrap();
     let v = remount(v);
     let all = whole(&v, ino);
     assert_eq!(&all[..6], b"keepme");
@@ -85,6 +91,7 @@ fn a_multi_block_write_reads_back_whole() {
     let (mut v, ino) = with_file();
     let data: Vec<u8> = (0..3 * BLKSIZE).map(|i| (i % 251) as u8).collect();
     v.write_file(ino, 0, &data).unwrap();
+    v.sync_data().unwrap();
     let v = remount(v);
     assert_eq!(whole(&v, ino), data);
 }
@@ -93,7 +100,9 @@ fn a_multi_block_write_reads_back_whole() {
 fn a_write_spanning_a_block_boundary_lands_in_both() {
     let (mut v, ino) = with_file();
     v.write_file(ino, 0, &vec![1u8; 2 * BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     v.write_file(ino, BLKSIZE as u64 - 2, b"WXYZ").unwrap();
+    v.sync_data().unwrap();
     let v = remount(v);
     let all = whole(&v, ino);
     assert_eq!(&all[BLKSIZE - 2..BLKSIZE + 2], b"WXYZ");
@@ -105,7 +114,9 @@ fn a_write_spanning_a_block_boundary_lands_in_both() {
 fn a_write_past_the_end_leaves_a_hole_that_reads_as_zeroes() {
     let (mut v, ino) = with_file();
     v.write_file(ino, 0, &vec![9u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     v.write_file(ino, 3 * BLKSIZE as u64, b"far").unwrap();
+    v.sync_data().unwrap();
     let v = remount(v);
     let inode = v.read_inode(ino).unwrap();
     assert_eq!(inode.size, 3 * BLKSIZE as u64 + 3);
@@ -121,9 +132,11 @@ fn rewriting_a_block_moves_it_and_releases_the_old_one() {
     // somewhere else and give the first block back.
     let (mut v, ino) = with_file();
     v.write_file(ino, 0, &vec![1u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     let inode = v.read_inode(ino).unwrap();
     let Mapped::At(first) = v.map_block(&inode, ino, 0).unwrap() else { panic!("no block") };
     v.write_file(ino, 0, &vec![2u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     let inode = v.read_inode(ino).unwrap();
     let Mapped::At(second) = v.map_block(&inode, ino, 0).unwrap() else { panic!("no block") };
     assert_ne!(first, second);
@@ -139,8 +152,10 @@ fn an_uncommitted_write_cannot_damage_the_last_committed_state() {
     // at, and the crash would take the committed data with it.
     let (mut v, ino) = with_file();
     v.write_file(ino, 0, &vec![0xAAu8; 2 * BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     v.commit().unwrap();
     v.write_file(ino, 0, &vec![0xBBu8; 2 * BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     // No second commit: the medium must still describe the committed state.
     let bytes = v.into_source().snapshot();
     let v = Volume::mount_with(MemImage::from_bytes(BLKSIZE as u32, bytes),
@@ -154,6 +169,7 @@ fn overwriting_one_block_repeatedly_does_not_consume_the_volume() {
     // fill up rewriting one page.
     let (mut v, ino) = with_file();
     v.write_file(ino, 0, &vec![1u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     v.commit().unwrap();
     let after_first = v.space().free;
     for i in 0..40u8 { v.write_file(ino, 0, &vec![i; BLKSIZE]).unwrap(); }
@@ -170,7 +186,9 @@ fn a_write_reaching_a_direct_node_reads_back() {
     let apb = v.read_inode(ino).unwrap().addrs_per_inode() as u64;
     // Force the conversion out of inline first, then write far out.
     v.write_file(ino, 0, &vec![1u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     v.write_file(ino, apb * BLKSIZE as u64, b"direct").unwrap();
+    v.sync_data().unwrap();
     let v = remount(v);
     let inode = v.read_inode(ino).unwrap();
     assert!(matches!(v.map_block(&inode, ino, apb).unwrap(), Mapped::At(_)));
@@ -185,7 +203,9 @@ fn a_write_reaching_an_indirect_node_reads_back() {
     let apb = v.read_inode(ino).unwrap().addrs_per_inode() as u64;
     let index = apb + 2 * DEF_ADDRS_PER_BLOCK as u64;
     v.write_file(ino, 0, &vec![1u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     v.write_file(ino, index * BLKSIZE as u64, b"deep").unwrap();
+    v.sync_data().unwrap();
     let v = remount(v);
     let inode = v.read_inode(ino).unwrap();
     let mut buf = [0u8; 4];
@@ -201,7 +221,9 @@ fn a_write_reaching_the_double_indirect_node_reads_back() {
     let p = NIDS_PER_BLOCK as u64;
     let index = apb + 2 * d + 2 * d * p;
     v.write_file(ino, 0, &vec![1u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     v.write_file(ino, index * BLKSIZE as u64, b"dind").unwrap();
+    v.sync_data().unwrap();
     let v = remount(v);
     let inode = v.read_inode(ino).unwrap();
     let mut buf = [0u8; 4];
@@ -224,8 +246,11 @@ fn every_node_records_where_it_sits_in_the_tree() {
     let apb = v.read_inode(ino).unwrap().addrs_per_inode() as u64;
     let d = DEF_ADDRS_PER_BLOCK as u64;
     v.write_file(ino, 0, &vec![1u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     v.write_file(ino, apb * BLKSIZE as u64, b"a").unwrap();
+    v.sync_data().unwrap();
     v.write_file(ino, (apb + d) * BLKSIZE as u64, b"b").unwrap();
+    v.sync_data().unwrap();
     assert_eq!(node_ofs(&v, ino, ino), 0, "the inode is offset zero");
     assert_eq!(node_ofs(&v, v.inode_slot(ino, 0).unwrap(), ino), 1);
     assert_eq!(node_ofs(&v, v.inode_slot(ino, 1).unwrap(), ino), 2);
@@ -240,7 +265,9 @@ fn a_nodes_recorded_offset_agrees_with_the_index_walk() {
     let d = DEF_ADDRS_PER_BLOCK as u64;
     let index = apb as u64 + 2 * d;
     v.write_file(ino, 0, &vec![1u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     v.write_file(ino, index * BLKSIZE as u64, b"x").unwrap();
+    v.sync_data().unwrap();
     let p = crate::node::path::node_path(apb, index).unwrap();
     let ind = v.inode_slot(ino, 2).unwrap();
     assert_ne!(ind, 0);
@@ -260,7 +287,9 @@ fn a_double_indirect_middle_node_steps_by_its_whole_span() {
     let p_n = NIDS_PER_BLOCK as u64;
     let index = apb as u64 + 2 * d + 2 * d * p_n;
     v.write_file(ino, 0, &vec![1u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     v.write_file(ino, index * BLKSIZE as u64, b"x").unwrap();
+    v.sync_data().unwrap();
     let p = crate::node::path::node_path(apb, index).unwrap();
     let outer = v.inode_slot(ino, 4).unwrap();
     assert_ne!(outer, 0);
@@ -297,6 +326,7 @@ fn a_read_only_mount_refuses_to_write() {
 fn an_empty_write_changes_nothing() {
     let (mut v, ino) = with_file();
     v.write_file(ino, 0, b"abc").unwrap();
+    v.sync_data().unwrap();
     assert_eq!(v.write_file(ino, 99, b"").unwrap(), 0);
     assert_eq!(v.read_inode(ino).unwrap().size, 3);
 }
@@ -305,6 +335,7 @@ fn an_empty_write_changes_nothing() {
 fn truncating_an_inline_file_shortens_it() {
     let (mut v, ino) = with_file();
     v.write_file(ino, 0, b"abcdefgh").unwrap();
+    v.sync_data().unwrap();
     v.truncate_file(ino, 3).unwrap();
     let v = remount(v);
     assert_eq!(v.read_inode(ino).unwrap().size, 3);
@@ -315,6 +346,7 @@ fn truncating_an_inline_file_shortens_it() {
 fn truncating_to_zero_leaves_an_empty_file() {
     let (mut v, ino) = with_file();
     v.write_file(ino, 0, &vec![5u8; 2 * BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     v.truncate_file(ino, 0).unwrap();
     let v = remount(v);
     assert_eq!(v.read_inode(ino).unwrap().size, 0);
@@ -325,6 +357,7 @@ fn truncating_to_zero_leaves_an_empty_file() {
 fn truncating_releases_the_blocks_past_the_new_end() {
     let (mut v, ino) = with_file();
     v.write_file(ino, 0, &vec![5u8; 3 * BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     let inode = v.read_inode(ino).unwrap();
     let Mapped::At(gone) = v.map_block(&inode, ino, 2).unwrap() else { panic!("no block") };
     v.truncate_file(ino, BLKSIZE as u64).unwrap();
@@ -339,6 +372,7 @@ fn truncating_zeroes_the_tail_of_the_last_kept_block() {
     // otherwise expose the bytes that were truncated away.
     let (mut v, ino) = with_file();
     v.write_file(ino, 0, &vec![0xEEu8; 2 * BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     v.truncate_file(ino, BLKSIZE as u64 + 10).unwrap();
     v.truncate_file(ino, 2 * BLKSIZE as u64).unwrap();
     let v = remount(v);
@@ -352,7 +386,9 @@ fn truncating_frees_a_direct_node_whose_whole_range_is_gone() {
     let (mut v, ino) = with_file();
     let apb = v.read_inode(ino).unwrap().addrs_per_inode() as u64;
     v.write_file(ino, 0, &vec![1u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     v.write_file(ino, apb * BLKSIZE as u64, b"x").unwrap();
+    v.sync_data().unwrap();
     let nid = v.inode_slot(ino, 0).unwrap();
     assert_ne!(nid, 0);
     let node_addr = v.node_addr(nid).unwrap();
@@ -366,7 +402,9 @@ fn truncating_keeps_a_node_that_still_covers_a_block() {
     let (mut v, ino) = with_file();
     let apb = v.read_inode(ino).unwrap().addrs_per_inode() as u64;
     v.write_file(ino, apb * BLKSIZE as u64, b"keep").unwrap();
+    v.sync_data().unwrap();
     v.write_file(ino, (apb + 5) * BLKSIZE as u64, b"drop").unwrap();
+    v.sync_data().unwrap();
     v.truncate_file(ino, (apb + 1) * BLKSIZE as u64).unwrap();
     assert_ne!(v.inode_slot(ino, 0).unwrap(), 0);
     let v = remount(v);
@@ -380,6 +418,7 @@ fn truncating_keeps_a_node_that_still_covers_a_block() {
 fn extending_by_truncation_allocates_nothing() {
     let (mut v, ino) = with_file();
     v.write_file(ino, 0, &vec![1u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     v.commit().unwrap();
     let before = v.space().free;
     v.truncate_file(ino, 10 * BLKSIZE as u64).unwrap();
@@ -396,6 +435,7 @@ fn a_files_block_count_tracks_what_it_occupies() {
     let (mut v, ino) = with_file();
     assert_eq!(v.read_inode(ino).unwrap().blocks, 1);
     v.write_file(ino, 0, &vec![1u8; 2 * BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     let v = remount(v);
     // The inode block plus its two data blocks.
     assert_eq!(v.read_inode(ino).unwrap().blocks, 3);
@@ -460,6 +500,7 @@ fn a_file_that_is_both_compressed_and_encrypted_is_refused_rather_than_written_i
 fn a_written_file_is_still_reachable_by_name_after_a_remount() {
     let (mut v, ino) = with_file();
     v.write_file(ino, 0, b"payload").unwrap();
+    v.sync_data().unwrap();
     let v = remount(v);
     let root = v.root().unwrap();
     let hit = v.lookup(&root, ROOT_INO, b"f").unwrap();

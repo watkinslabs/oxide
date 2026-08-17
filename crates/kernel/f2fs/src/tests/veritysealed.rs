@@ -48,6 +48,7 @@ fn a_verity_file_refuses_a_write() {
     for log_bs in LOG_BS {
         let (mut v, ino) = with_file();
         v.write_file(ino, 0, b"sealed").unwrap();
+        v.sync_data().unwrap();
         make_verity(&mut v, ino, log_bs);
         assert!(v.read_inode(ino).unwrap().verity(), "log_bs {log_bs}");
         assert_eq!(v.write_file(ino, 0, b"x").err(), Some(Errno::Eperm), "log_bs {log_bs}");
@@ -59,6 +60,7 @@ fn a_verity_file_refuses_a_truncation() {
     for log_bs in LOG_BS {
         let (mut v, ino) = with_file();
         v.write_file(ino, 0, b"sealed").unwrap();
+        v.sync_data().unwrap();
         make_verity(&mut v, ino, log_bs);
         assert_eq!(v.truncate_file(ino, 0).err(), Some(Errno::Eperm), "log_bs {log_bs}");
     }
@@ -69,6 +71,7 @@ fn a_verity_files_data_still_reads() {
     for log_bs in LOG_BS {
         let (mut v, ino) = with_file();
         v.write_file(ino, 0, b"attested").unwrap();
+        v.sync_data().unwrap();
         make_verity(&mut v, ino, log_bs);
         let inode = v.read_inode(ino).unwrap();
         let mut buf = [0u8; 8];
@@ -85,6 +88,7 @@ fn a_read_reaching_past_a_verity_files_data_is_refused() {
     for log_bs in LOG_BS {
         let (mut v, ino) = with_file();
         v.write_file(ino, 0, &vec![7u8; 2 * BLKSIZE]).unwrap();
+        v.sync_data().unwrap();
         make_verity(&mut v, ino, log_bs);
         let inode = v.read_inode(ino).unwrap();
         let mut buf = vec![0u8; 64];
@@ -103,6 +107,7 @@ fn an_ordinary_file_is_not_clamped() {
     // near the end of an ordinary file would fail.
     let (mut v, ino) = with_file();
     v.write_file(ino, 0, &vec![7u8; 100]).unwrap();
+    v.sync_data().unwrap();
     let inode = v.read_inode(ino).unwrap();
     assert!(!inode.verity());
     let mut buf = vec![0u8; 64];
@@ -134,6 +139,7 @@ fn the_verity_record_is_reachable_by_index_and_invisible_by_name() {
 fn a_file_with_no_verity_record_reports_no_data() {
     let (mut v, ino) = with_file();
     v.write_file(ino, 0, b"plain").unwrap();
+    v.sync_data().unwrap();
     let inode = v.read_inode(ino).unwrap();
     assert_eq!(v.verity_attr(&inode, ino).err(), Some(Errno::Enodata));
 }

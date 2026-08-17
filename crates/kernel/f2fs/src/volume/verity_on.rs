@@ -55,6 +55,10 @@ impl<S: SectorSource> Volume<S> {
     pub fn enable_verity_signed(&mut self, ino: u32, hash_alg: u8, log_blocksize: u8,
                                 salt: &[u8], sig: &[u8]) -> Result<Vec<u8>, Errno> {
         self.writable_or_err()?;
+        // Every buffered write of this file has to be on the medium before
+        // its addresses are read: a page not yet placed has no address, and
+        // this operation is about to rearrange the ones that exist.
+        self.flush_data_pages(ino)?;
         // A file with an atomic-write span open is about to have its contents
         // replaced, so a tree built over them now would attest to bytes the
         // commit is going to move out from under it.
@@ -115,6 +119,11 @@ impl<S: SectorSource> Volume<S> {
         // fresh info replaces it rather than being left to be re-derived,
         // because it was just built and is known to be the one a read wants.
         self.verity_cache.borrow_mut().insert(ino, info);
+        // The tree and the descriptor were written through the buffered path,
+        // so they are pages until something places them. They have to BE on
+        // the medium before the drop below, which does not distinguish a page
+        // holding the tree from a page holding the file's data.
+        self.flush_data_pages(ino)?;
         // Every page of this file in the mapping was filed BEFORE the file was
         // sealed and therefore without an attestation. Serving one afterwards
         // would hand back bytes no tree ever attested to, under a flag that

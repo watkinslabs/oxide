@@ -94,6 +94,12 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(nodes the file has) blocks, or O(a checkpoint), or none
     fn sync_file(&mut self, ino: u32, datasync: bool) -> Result<CpReason, Errno> {
         if !self.writable { return Ok(CpReason::None); }
+        // The DATA first, always, and before the decision below reads what
+        // changed. The chain names node blocks and each node names the
+        // addresses of its file's data; writing the chain over pages that have
+        // not been placed would leave it naming reservations, and a replay
+        // would recover a file of holes where the caller was promised bytes.
+        self.flush_data_pages(ino)?;
         // Nothing to make durable is answered before the ladder, not inside
         // it: a checkpoint written for a file that has not changed makes the
         // whole volume pay for a call that had nothing to do.

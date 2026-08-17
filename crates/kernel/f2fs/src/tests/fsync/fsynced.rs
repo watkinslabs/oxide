@@ -25,6 +25,7 @@ fn fresh_file(opts: Options) -> (Volume<MemImage>, u32) {
     let mut v = test_image::with_root().mount_opts(opts).expect("mount");
     let ino = v.create(ROOT_INO, b"n", &spec(), None).expect("create");
     v.write_file(ino, 0, &vec![0x5A; 2 * BLKSIZE]).expect("write");
+    v.sync_data().unwrap();
     (v, ino)
 }
 
@@ -57,6 +58,7 @@ fn only_the_first_chain_write_of_a_new_file_carries_the_mark() {
     let first = v.fsync_chain_start();
     v.fsync(ino).expect("first");
     v.write_file(ino, 0, b"more").expect("write");
+    v.sync_data().unwrap();
     let second = v.fsync_chain_start();
     v.fsync(ino).expect("second");
     let mark = |addr: u32| {
@@ -92,6 +94,7 @@ fn a_strict_mount_stops_forcing_a_checkpoint_once_the_name_is_stated() {
     let _ = gone;
     assert_eq!(v.fsync(ino).expect("first"), CpReason::RecoverDir);
     v.write_file(ino, 0, b"more").expect("write");
+    v.sync_data().unwrap();
     assert_eq!(v.fsync(ino).expect("second"), CpReason::None);
 }
 
@@ -116,6 +119,7 @@ fn a_checkpoint_retires_the_parents_place_on_the_list() {
     v.commit().expect("commit");
     let after = v.create(ROOT_INO, b"a", &spec(), None).expect("create");
     v.write_file(after, 0, b"x").expect("write");
+    v.sync_data().unwrap();
     assert_eq!(v.fsync(after).expect("fsync"), CpReason::None,
                "the checkpoint made the parent durable, so the removal is paid for");
 }

@@ -48,6 +48,7 @@ fn seal_a_segment(v: &mut Volume<MemImage>, name: &[u8], at: u64) -> u32 {
     v.set_clock(at);
     let ino = v.create(ROOT_INO, name, &spec(), None).unwrap();
     v.write_file(ino, 0, &vec![0xA5u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     let seg = seg_of(addr_of(v, ino, 0));
     v.open_segment(CURSEG_WARM_DATA).unwrap();
     seg
@@ -93,6 +94,7 @@ fn a_volume_never_told_the_time_reports_the_age_it_was_mounted_with() {
     assert_eq!(v.seg_mtime_now(), 0);
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     v.write_file(ino, 0, &vec![1u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     assert_eq!(v.seg_mtime(seg_of(addr_of(&v, ino, 0))), 0);
 }
 
@@ -102,6 +104,7 @@ fn a_write_stamps_the_segment_it_lands_in() {
     v.set_clock(MOUNTED_AT + 90);
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     v.write_file(ino, 0, &vec![3u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     let seg = seg_of(addr_of(&v, ino, 0));
     assert_eq!(v.seg_mtime(seg), 90, "the segment carries when it was written");
 }
@@ -114,10 +117,12 @@ fn the_stamp_is_a_mean_over_the_blocks_the_segment_holds() {
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     v.set_clock(MOUNTED_AT + 100);
     v.write_file(ino, 0, &vec![1u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     let seg = seg_of(addr_of(&v, ino, 0));
     let after_first = v.seg_mtime(seg);
     v.set_clock(MOUNTED_AT + 300);
     v.write_file(ino, BLKSIZE as u64, &vec![2u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     assert_eq!(seg_of(addr_of(&v, ino, 1)), seg, "both blocks are in the one segment");
     let after_second = v.seg_mtime(seg);
     assert!(after_second > after_first, "the newer block moved it forward");
@@ -130,6 +135,7 @@ fn the_stamp_reaches_the_medium() {
     v.set_clock(MOUNTED_AT + 250);
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     v.write_file(ino, 0, &vec![9u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     let seg = seg_of(addr_of(&v, ino, 0));
     let stamped = v.seg_mtime(seg);
     assert_ne!(stamped, 0);
@@ -144,6 +150,7 @@ fn the_checkpoint_records_how_old_the_volume_got() {
     v.set_clock(MOUNTED_AT + 400);
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     v.write_file(ino, 0, &vec![4u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     let mut back = remount(v);
     assert_eq!(back.checkpoint().elapsed_time, 400, "the volume is 400 seconds old");
     // And the next mount counts from there rather than from zero.

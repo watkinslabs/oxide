@@ -181,6 +181,7 @@ fn a_block_the_replay_adopts_is_charged_to_the_identity_that_owns_it() {
                            now: NOW };
     let ino = v.create(ROOT_INO, b"f", &owned, None).expect("create");
     v.write_file(ino, 0, &pattern(0x5A)).expect("write");
+    v.sync_data().unwrap();
     v.commit().expect("commit");
     let before = v.quota_record(crate::volume::quotas::USRQUOTA, UID).expect("record").curspace;
     append_block(&mut v, ino, 0xC3, true);

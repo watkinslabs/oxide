@@ -80,6 +80,7 @@ fn scattered() -> (Volume<MemImage>, u32) {
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     for index in [2u64, 0, 1] {
         v.write_file(ino, index * BLK, &page(index as u8 + 1)).unwrap();
+        v.sync_data().unwrap();
     }
     // A checkpoint first: the rewrite's gate asks whether there is room for
     // the old blocks AND the new ones at once.
@@ -155,6 +156,7 @@ fn two_files() -> (Volume<MemImage>, u32, u32) {
     let dst = v.create(ROOT_INO, b"dst", &spec(), None).unwrap();
     for i in 0..2u64 { v.write_file(src, i * BLK, &page(i as u8 + 1)).unwrap(); }
     v.write_file(dst, 0, &page(9)).unwrap();
+    v.sync_data().unwrap();
     v.commit().unwrap();
     (v, src, dst)
 }
@@ -211,6 +213,7 @@ fn the_trim_command_destroys_the_bytes_and_keeps_the_file() {
     let mut v = test_image::with_root().mount_rw().unwrap();
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     for i in 0..3u64 { v.write_file(ino, i * BLK, &page(i as u8 + 1)).unwrap(); }
+    v.sync_data().unwrap();
     let before = v.read_inode(ino).unwrap();
     let held = addrs(&v, ino, 3);
     send(&mut v, ino, SEC_TRIM_FILE, &trim_payload(BLK, BLK, TRIM_FILE_ZEROOUT), &root())
@@ -228,6 +231,7 @@ fn a_trim_that_names_nothing_is_a_success_that_erases_nothing() {
     let mut v = test_image::with_root().mount_rw().unwrap();
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     v.write_file(ino, 0, &page(1)).unwrap();
+    v.sync_data().unwrap();
     send(&mut v, ino, SEC_TRIM_FILE, &trim_payload(0, 0, TRIM_FILE_ZEROOUT), &root()).unwrap();
     assert_eq!(tags(&v, ino, 1), vec![1]);
 }
@@ -249,6 +253,7 @@ fn a_request_that_ends_at_a_ragged_end_of_file_is_admitted() {
     for i in 0..3u64 { v.write_file(ino, i * BLK, &page(i as u8 + 1)).unwrap(); }
     // Seven bytes into a fourth block: the file's own end is not aligned.
     v.write_file(ino, 3 * BLK, &[4u8; 7]).unwrap();
+    v.sync_data().unwrap();
     let size = v.read_inode(ino).unwrap().size;
     assert_ne!(size % BLK, 0, "the fixture's end is aligned, so the case proves nothing");
 

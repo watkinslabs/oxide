@@ -200,6 +200,7 @@ fn a_file_with_blocks_cannot_be_pinned() {
     let (mut v, ino) = with_file();
     let region = v.read_inode(ino).unwrap().inline_data_span().1;
     v.write_file(ino, 0, &vec![7u8; region + 1]).unwrap();
+    v.sync_data().unwrap();
     assert_eq!(v.set_pin_file(ino, 1), Err(Errno::Efbig));
 }
 
@@ -367,6 +368,7 @@ fn the_cleaner_is_told_a_pinned_files_blocks_belong_to_it() {
         let plain = v2.create(ROOT_INO, b"plain", &spec(), None).unwrap();
         let region = v2.read_inode(plain).unwrap().inline_data_span().1;
         v2.write_file(plain, 0, &vec![1u8; region + 1]).unwrap();
+        v2.sync_data().unwrap();
         let a = addresses(&v2, plain, 1)[0];
         let s = summary_at(&v2, a);
         v2.pinned_owner_ino(&s).unwrap()

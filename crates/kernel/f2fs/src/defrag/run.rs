@@ -20,6 +20,10 @@ impl<S: SectorSource> Volume<S> {
     /// special-case.
     /// # C: O(blocks in the range)
     pub fn defragment_range(&mut self, ino: u32, start: u64, len: u64) -> Result<u64, Errno> {
+        // Every buffered write of this file has to be on the medium before
+        // its addresses are read: a page not yet placed has no address, and
+        // this operation is about to rearrange the ones that exist.
+        self.flush_data_pages(ino)?;
         self.writable_or_err()?;
         let inode = self.read_inode(ino)?;
         let blk = BLKSIZE as u64;

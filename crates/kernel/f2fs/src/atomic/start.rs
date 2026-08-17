@@ -53,6 +53,10 @@ impl<S: SectorSource> Volume<S> {
     /// blocks are kept until the commit, because an abort has to put them back.
     /// # C: O(1 block), plus the inline conversion when there is one
     pub fn start_atomic_write(&mut self, ino: u32, replace: bool) -> Result<(), Errno> {
+        // Every buffered write of this file has to be on the medium before
+        // its addresses are read: a page not yet placed has no address, and
+        // this operation is about to rearrange the ones that exist.
+        self.flush_data_pages(ino)?;
         let gate = self.atomic_gate(ino)?;
         let facts = self.atomic_facts(ino)?;
         if policy::start_atomic_write(&gate, &facts)? == StartAction::AlreadyOpen {

@@ -53,10 +53,13 @@ fn victim_volume() -> (Volume<MemImage>, u32, u32) {
     let mut v = test_image::with_root().mount_rw().unwrap();
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     v.write_file(ino, 0, &payload(FILE_BLOCKS)).unwrap();
+    v.sync_data().unwrap();
     let victim = seg_of(addr_of(&v, ino, 0));
     v.open_segment(CURSEG_WARM_DATA).unwrap();
     v.write_file(ino, 0, b"AAAA").unwrap();
+    v.sync_data().unwrap();
     v.write_file(ino, BLKSIZE as u64, b"BBBB").unwrap();
+    v.sync_data().unwrap();
     (v, ino, victim)
 }
 
@@ -88,11 +91,13 @@ fn a_volume_that_ages_into_the_policy_turns_it_on_at_the_next_checkpoint() {
     v.set_clock(1_000);
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     v.write_file(ino, 0, &vec![1u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     v.commit().unwrap();
     assert!(!v.atgc_enabled(), "a volume seconds old is not old enough");
     // Long enough for the format's own threshold to be reached.
     v.set_clock(1_000 + crate::atgc::DEF_AGE_THRESHOLD + 1);
     v.write_file(ino, 0, &vec![2u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     v.commit().unwrap();
     assert!(v.atgc_enabled(), "the volume aged past the threshold and the policy stayed off");
 }
@@ -104,6 +109,7 @@ fn a_mount_that_did_not_ask_for_the_policy_never_turns_it_on() {
     v.set_clock(1_000);
     let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
     v.write_file(ino, 0, &vec![1u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     v.set_clock(1_000 + crate::atgc::DEF_AGE_THRESHOLD + 1);
     v.commit().unwrap();
     assert!(!v.atgc_enabled());
@@ -266,6 +272,7 @@ fn an_id_is_never_left_recorded_as_handed_out() {
         let name = [b'f', b'0' + i as u8];
         let ino = v.create(ROOT_INO, &name, &spec(), None).unwrap();
         v.write_file(ino, 0, &vec![7u8; BLKSIZE]).unwrap();
+        v.sync_data().unwrap();
         v.remove(ROOT_INO, &name, false, NOW).unwrap();
         assert_eq!(v.free_nid_counts().1, 0, "an id stayed handed out after round {i}");
     }

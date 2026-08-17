@@ -136,6 +136,7 @@ fn a_hinted_files_data_page_reaches_the_medium_boosted() {
     v.set_io_prio(ino, IOPRIO_WRITE).unwrap();
     v.source_ref().take();
     v.write_file(ino, 0, &vec![0xA1u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     let seen = v.source_ref().take();
     let (boosted, _) = split(&seen);
     // Exactly one boosted write: the page itself. The node blocks around it
@@ -151,6 +152,7 @@ fn an_unhinted_files_data_page_reaches_the_medium_plain() {
     let (mut v, ino) = recorded();
     v.source_ref().take();
     v.write_file(ino, 0, &vec![0xA1u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     let seen = v.source_ref().take();
     let (boosted, plain) = split(&seen);
     assert!(boosted.is_empty(), "seen: {seen:?}");
@@ -162,9 +164,11 @@ fn clearing_the_hint_stops_the_boost() {
     let (mut v, ino) = recorded();
     v.set_io_prio(ino, IOPRIO_WRITE).unwrap();
     v.write_file(ino, 0, &vec![1u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     assert!(!split(&v.source_ref().take()).0.is_empty());
     v.set_io_prio(ino, IOPRIO_NONE).unwrap();
     v.write_file(ino, BLK, &vec![2u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     assert!(split(&v.source_ref().take()).0.is_empty());
 }
 
@@ -175,6 +179,7 @@ fn one_files_hint_does_not_boost_another_files_writes() {
     v.set_io_prio(hinted, IOPRIO_WRITE).unwrap();
     v.source_ref().take();
     v.write_file(other, 0, &vec![7u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     assert!(split(&v.source_ref().take()).0.is_empty());
 }
 
@@ -184,6 +189,7 @@ fn one_files_hint_does_not_boost_another_files_writes() {
 fn metadata_writes_are_marked_as_metadata() {
     let (mut v, ino) = recorded();
     v.write_file(ino, 0, &vec![3u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     v.source_ref().take();
     v.commit().unwrap();
     let seen = v.source_ref().take();
@@ -203,6 +209,7 @@ fn a_data_page_is_not_marked_as_metadata() {
     let (mut v, ino) = recorded();
     v.source_ref().take();
     v.write_file(ino, 0, &vec![4u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     let seen = v.source_ref().take();
     let data = u64::from(v.mapped_addr(ino, 0).unwrap().unwrap());
     let flags = seen.iter().find(|(a, _)| *a == data).expect("the data page was written").1;
@@ -222,6 +229,7 @@ fn the_ioctl_sets_the_hint_the_write_path_reads() {
     assert_eq!(v.io_prio(ino), IOPRIO_WRITE);
     v.source_ref().take();
     v.write_file(ino, 0, &vec![5u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
     assert_eq!(split(&v.source_ref().take()).0.len(), 1);
 }
 

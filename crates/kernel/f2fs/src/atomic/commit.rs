@@ -36,6 +36,10 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(blocks in the span), plus a sync of the file
     pub fn commit_atomic_write(&mut self, ino: u32) -> Result<(), Errno> {
         self.writable_or_err()?;
+        // Every buffered write of this file has to be on the medium before
+        // its addresses are read: a page not yet placed has no address, and
+        // this operation is about to rearrange the ones that exist.
+        self.flush_data_pages(ino)?;
         // A file with no span open is asked for its ordinary durability, which
         // is what a caller committing an empty transaction means.
         if !self.is_atomic_file(ino) { return self.fsync(ino).map(|_| ()); }
