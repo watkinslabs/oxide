@@ -20,8 +20,13 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
                 while cur != PFN_NULL {
                     kassert!(g.bitmap_get(order, cur >> o), "I3: free-list node not in bitmap");
                     kassert!(cur & ((1u64 << o) - 1) == 0, "I4: free-list node misaligned");
-                    // I9: a free block belongs to the zone whose list holds it.
-                    kassert!(g.zi(cur) == zi, "I9: free-list node in the wrong zone");
+                    // I9: the WHOLE block belongs to the zone whose list holds
+                    // it. Checking only the base is vacuous — the base is what
+                    // chose the list — and it is the tail that escapes a
+                    // bounded allocation's address limit when a merge crosses
+                    // a zone boundary.
+                    kassert!(g.layout.span_at(zi).contains(cur), "I9: free-list node in the wrong zone");
+                    kassert!(cur + (1u64 << o) <= g.layout.span_at(zi).end_pfn, "I9: free block straddles a zone boundary");
                     n += 1;
                     // SAFETY: `cur` is a head node on the free list.
                     let p = unsafe { self.backing.page_ptr(Pfn(cur)) };

@@ -26,6 +26,10 @@ pub(super) struct PmmInner {
     pub(super) spanned: [u64; NR_ZONES],
     pub(super) reserve: LowmemReserve,
     pub(super) wmark: [ZoneWatermarks; NR_ZONES],
+    /// Watermark tuning the boot path published, or `None` before it has run.
+    /// The marks stay zero until then, which leaves the gate open — a zone
+    /// cannot be held to a threshold nobody has computed yet.
+    pub(super) tunables: Option<crate::watermark::WatermarkTunables>,
     pub(super) allocated: u64,
     /// Permanently consumed boot pages.  These stay part of the allocator's
     /// `allocated` invariant but are reported separately from runtime users.
@@ -40,6 +44,28 @@ pub(super) struct PmmInner {
 }
 
 impl PmmInner {
+    /// Re-derive everything that is a function of the per-zone managed page
+    /// counts: the lowmem reserve matrix always, and the watermarks once the
+    /// boot path has published its tuning. Every mutation of `managed` must
+    /// end here, or the allocation gate keeps enforcing a threshold derived
+    /// from memory the allocator no longer owns.
+    ///
+    /// Returns the managed total and the watermark aggregate to publish once
+    /// the caller has dropped the lock, or `None` while no tuning exists.
+    /// # C: O(NR_ZONES^2)
+    pub(super) fn recompute_derived(&mut self) -> Option<(u64, ZoneWatermarks)> {
+        self.reserve = lowmem_reserve(self.managed, DEFAULT_LOWMEM_RESERVE_RATIO);
+        let total: u64 = self.managed.iter().sum();
+        let t = self.tunables?;
+        let mut agg = ZoneWatermarks::default();
+        for zi in 0..NR_ZONES {
+            let w = crate::watermark::derive_zone_watermarks(self.managed[zi], total, t, PAGE_SIZE_BYTES);
+            self.wmark[zi] = w;
+            agg.min += w.min; agg.low += w.low; agg.high += w.high;
+        }
+        Some((total, agg))
+    }
+
     /// Zone-list slot owning `pfn`. A PFN outside every span has no slot; the
     /// allocator never reaches one, so the last slot is used as a terminal
     /// rather than panicking inside a lock. # C: O(NR_ZONES)

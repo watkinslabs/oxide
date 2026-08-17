@@ -31,10 +31,17 @@ fn free_pages_must_strictly_exceed_the_mark() {
 fn the_reserve_owed_to_the_requesting_class_is_added_to_the_mark() {
     let a = area(&[(0, 100)]);
     let mut r = NO_RESERVE;
-    r[ZoneType::Dma.index()][ZoneType::Normal.index()] = 80;
-    // A DMA-bounded class owes nothing and passes; a normal class does not.
+    r[ZoneType::Dma.index()][ZoneType::Normal.index()] = 95;
+    // A DMA-bounded class owes nothing and clears a mark of 10 with 100 free;
+    // a normal class owes 95 on top of it and does not.
     assert!(ok(ZoneType::Dma, 0, 10, AllocWmark::Low, &r, ZoneType::Dma.index(), &a));
     assert!(!ok(ZoneType::Dma, 0, 10, AllocWmark::Low, &r, ZoneType::Normal.index(), &a));
+    // The sum is a strict floor: free equal to mark plus reserve is refused,
+    // one page more is admitted.
+    r[ZoneType::Dma.index()][ZoneType::Normal.index()] = 90;
+    assert!(!ok(ZoneType::Dma, 0, 10, AllocWmark::Low, &r, ZoneType::Normal.index(), &a));
+    r[ZoneType::Dma.index()][ZoneType::Normal.index()] = 89;
+    assert!(ok(ZoneType::Dma, 0, 10, AllocWmark::Low, &r, ZoneType::Normal.index(), &a));
 }
 
 #[test]

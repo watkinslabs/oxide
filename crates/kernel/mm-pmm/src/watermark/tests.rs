@@ -20,6 +20,7 @@ fn zone_watermarks_are_ordered_and_scale_with_managed_memory() {
 
 #[test]
 fn allocation_wakes_at_low_and_reclaims_only_before_min() {
+    let _g = super::PUBLISH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     super::MANAGED_PAGES.store(1_000_000, core::sync::atomic::Ordering::Release);
     super::MIN_PAGES.store(100, core::sync::atomic::Ordering::Release);
     super::LOW_PAGES.store(200, core::sync::atomic::Ordering::Release);
