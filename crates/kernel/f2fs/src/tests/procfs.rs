@@ -320,7 +320,7 @@ fn enable_iostat(fs: &Arc<F2fs>) {
 /// # C: O(depth) blocks
 fn make_file(fs: &Arc<F2fs>, name: &str) -> u32 {
     let root = fs.volume.lock().root_ino();
-    fs.make(root, name, crate::mode::S_IFREG | 0o644, 0, 0, 0, None).expect("create").ino() as u32
+    fs.make(root, name, crate::mode::S_IFREG | 0o644, 0, 0, 0, None, true).expect("create").ino() as u32
 }
 
 /// One row's `(bytes, count)` from the named section of the iostat report.
