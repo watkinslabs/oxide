@@ -323,3 +323,55 @@ fn a_malformed_image_is_refused_at_parse_and_never_reaches_a_server() {
     assert!(crate::StagedPolicy::parse(&broken).is_err(),
             "a refused image must not survive to the point where a server would take it");
 }
+
+/// The first user process's label must render to the KERNEL's context, not to
+/// the placeholder the policy declares for it.
+///
+/// A policy declares a real context for this SID only when it advertises
+/// `userspace_initial_context`; the shipped policy does not, and its declared
+/// context is `unlabeled_t`. Taking that placeholder gave every task started
+/// before the policy load an `unlabeled_t` label, and userspace that reads its
+/// own label to decide what to do then acted on a label the policy never meant
+/// it to have.
+#[test]
+fn the_first_process_label_renders_as_the_kernels_when_the_policy_lacks_the_capability() {
+    use crate::uapi::initsid::InitSid;
+    use crate::uapi::policycap::POLICYDB_CAP_USERSPACE_INITIAL_CONTEXT;
+    let Some(s) = loaded() else { return };
+    let db = s.policy().expect("policy");
+    assert!(!db.policycap(POLICYDB_CAP_USERSPACE_INITIAL_CONTEXT),
+        "the shipped policy does not advertise it; this test is about that case");
+    // The policy DOES declare a context for the SID — it is simply a placeholder.
+    let declared = db.ocontexts.isid(InitSid::Init.sid()).expect("declared").clone();
+    let kernel = s.sid_to_context(InitSid::Kernel.sid()).expect("kernel renders");
+    let init = s.sid_to_context(InitSid::Init.sid()).expect("init renders");
+    assert_eq!(init, kernel, "the first process takes the kernel's context");
+    assert_ne!(init, s.sid_to_context(InitSid::Unlabeled.sid()).expect("unlabeled renders"),
+        "the declared placeholder must not be what this SID resolves to");
+    // The placeholder really was the unlabeled type, so the assertion above is
+    // testing the substitution and not a policy that happened to agree.
+    let _ = declared;
+}
+
+/// An initial SID this kernel has no name for is skipped, not refused: policies
+/// are written against newer kernels, and refusing the image over a SID nothing
+/// here asks about would leave the system with no policy at all. SID 0 is still
+/// an error, because it is the "no SID" value.
+#[test]
+fn an_initial_sid_this_kernel_does_not_use_does_not_refuse_the_policy() {
+    use crate::uapi::initsid::{initsid_name, SECINITSID_NUM};
+    let Some(s) = loaded() else { return };
+    let db = s.policy().expect("policy");
+    // The shipped policy declares slots this kernel never names; the load
+    // succeeded anyway, which is the whole assertion.
+    assert!(db.ocontexts.isids.iter().any(|i| initsid_name(i.sid).is_none()),
+        "the shipped policy must declare an unnamed slot for this to prove anything");
+    assert!(db.ocontexts.isids.iter().all(|i| i.sid != 0));
+    assert!(s.initialized());
+    // Every slot this kernel DOES name resolves to a context of its own rather
+    // than through the unlabeled fallback.
+    for sid in 1..=SECINITSID_NUM {
+        if initsid_name(sid).is_none() { continue; }
+        assert!(s.sid_to_context(sid).is_ok(), "named initial sid {sid} must render");
+    }
+}

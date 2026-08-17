@@ -16,7 +16,20 @@ const CLIENT: u32 = 0x11;
 const CREATED: u32 = 0x77;
 const UNLABELED: u32 = 3;
 
-fn create() -> u32 { CREATED }
+/// The label the next socket created will take. Settable so one test can give
+/// the listener and the client DIFFERENT labels — with one constant for both,
+/// a test cannot tell an end reading its peer's label from an end reading its
+/// own.
+static NEXT_LABEL: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(CREATED);
+
+fn create() -> u32 { NEXT_LABEL.load(core::sync::atomic::Ordering::Acquire) }
+
+fn creating_with<T>(label: u32, f: impl FnOnce() -> T) -> T {
+    NEXT_LABEL.store(label, core::sync::atomic::Ordering::Release);
+    let made = f();
+    NEXT_LABEL.store(CREATED, core::sync::atomic::Ordering::Release);
+    made
+}
 fn server_end(listener: u32, client: u32) -> u32 { (listener << 8) | (client & 0xff) }
 
 fn context(label: u32) -> Option<Vec<u8>> {
@@ -50,34 +63,79 @@ impl Drop for Installed {
     fn drop(&mut self) { let _ = security::network::remove_socket_label(); }
 }
 
-/// The record side, through the real listen/connect/accept path: both ends of an
-/// established connection carry the other's label afterwards.
+/// The whole chain, through the SAME work functions the syscall shims call:
+/// bind, listen, connect, accept on real sockets, then each side reads the
+/// other's label back.
 ///
-/// This is the wiring proof. Every piece of this mechanism existed and was
-/// tested before, and `SO_PEERSEC` still answered `ENOPROTOOPT` on every running
-/// kernel, because no connect ever recorded anything.
+/// This is the wiring proof, and it has to drive the real `connect` — every
+/// piece of this mechanism existed and was unit-tested before, and `SO_PEERSEC`
+/// still answered `ENOPROTOOPT` on every running kernel, because no connect ever
+/// recorded anything. A test that stamps the labels onto a pair itself and then
+/// checks they are there would have passed against that kernel too.
 #[test]
-fn an_established_connection_records_both_ends_labels() {
+fn a_real_connect_records_both_ends_and_each_reads_the_others_label() {
+    let _installed = Installed::new();
+    let _serial = crate::unix_sock::test_support::guard();
+    let name = b"\0b2262-peersec-connect";
+
+    let server = creating_with(SERVER, || {
+        let sock = Arc::new(InetSocket::new_unix_in(network_namespace::initial()));
+        crate::sock::bind(&sock, crate::sock::BoundAddr::UnixListener(
+            crate::UnixAddr::from_sockaddr_path(name.to_vec()))).expect("bind");
+        sock
+    });
+    assert_eq!(server.security_label(), SERVER);
+    crate::sock::listen(&server, 4).expect("listen");
+
+    let client = creating_with(CLIENT, ||
+        Arc::new(InetSocket::new_unix_in(network_namespace::initial())));
+    assert_eq!(client.security_label(), CLIENT);
+    // Before it connects, the client has recorded no peer and reports the
+    // module's "unlabelled".
+    assert_eq!(recorded_peer_label(&client), Some(UNLABELED));
+
+    crate::sock::connect(&client, crate::sock::RemoteAddr::Unix(
+        crate::UnixAddr::from_sockaddr_path(name.to_vec())), true).expect("connect");
+    let accepted = crate::sock::accept(&server).expect("accept").new_sock;
+
+    // The accepted server socket reads the CONNECTING socket's own label.
+    assert_eq!(recorded_peer_label(&accepted), Some(CLIENT));
+    // The client reads the server end's label, derived from BOTH ends — not the
+    // listener's alone, and not the client's own.
+    assert_eq!(recorded_peer_label(&client), Some(server_end(SERVER, CLIENT)));
+    assert_ne!(recorded_peer_label(&client), Some(SERVER));
+    assert_ne!(recorded_peer_label(&client), Some(CLIENT));
+    // The two ends report DIFFERENT things, which is the whole point.
+    assert_ne!(recorded_peer_label(&client), recorded_peer_label(&accepted));
+
+    // And each renders to a context, which is what the option copies out.
+    for sock in [&client, &accepted] {
+        let label = recorded_peer_label(sock).expect("a reporting class");
+        let bytes = security::network::socket_label_context(label).expect("a context");
+        assert_eq!(bytes.last(), Some(&0), "the copied value is a C string");
+    }
+}
+
+/// The pair-level record, driven through the listener's other commit path — the
+/// one a connect that queues without a socket takes.
+#[test]
+fn a_queued_connection_records_the_server_ends_label() {
     let _installed = Installed::new();
     let _serial = crate::unix_sock::test_support::guard();
     let registry = UnixRegistry::new();
-    let addr = UnixAddr::from_abstract_or_test_path(String::from("\0peersec-record"));
+    let addr = UnixAddr::from_abstract_or_test_path(String::from("\0b2262-peersec-queued"));
     let listener = registry.bind_addr(addr.clone()).unwrap();
     listener.listen_with_cred(0, crate::sysctl::DEFAULT_SOMAXCONN, None, None, Some(SERVER));
 
     let client = UnixPair::new();
     client.set_end_sid(UnixEnd::B, CLIENT);
-    // Before the connection forms, neither end has recorded the other.
     assert_eq!(client.peer_sid(UnixEnd::B), security::network::NO_LABEL);
 
     registry.connect_pair_addr(&addr, client.clone()).unwrap();
     let (accepted, _pin) = listener.accept().unwrap();
     assert!(Arc::ptr_eq(&accepted, &client));
 
-    // The server end reads the connecting socket's own label.
     assert_eq!(accepted.peer_sid(UnixEnd::A), CLIENT);
-    // The client reads the server end's, which is derived from BOTH ends — not
-    // the listener's label alone.
     assert_eq!(accepted.peer_sid(UnixEnd::B), server_end(SERVER, CLIENT));
     assert_ne!(accepted.peer_sid(UnixEnd::B), SERVER);
 }
