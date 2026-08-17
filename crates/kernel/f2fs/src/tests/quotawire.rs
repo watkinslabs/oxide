@@ -10,6 +10,7 @@
 //! - `records`: identities the file has never held, and files the mount names.
 //! - `release`: space returned when an attribute or a directory block goes.
 //! - `project`: what a project's own tree reports as free.
+//! - `compress`: what a compressed cluster costs its owner.
 //!
 //! Every child is declared with an explicit path: a bare `mod x;` in a module
 //! loaded by path binds against the parent directory and would silently
@@ -33,3 +34,4 @@ use sectors::MemImage;
 #[path = "quotawire/records.rs"] mod records;
 #[path = "quotawire/release.rs"] mod release;
 #[path = "quotawire/project.rs"] mod project;
+#[path = "quotawire/compress.rs"] mod compress;

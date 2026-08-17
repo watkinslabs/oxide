@@ -15,6 +15,7 @@
 //! - `data`:   putting one node's worth of addresses back.
 //! - `replay`: the order the whole pass runs in, and what it protects first.
 //! - `policy`: what a mount does about a chain, given what it may write.
+//! - `rw`:     lifting a read-only mount's own read-only for the repair.
 
 pub mod marks;
 pub mod scan;
@@ -22,6 +23,7 @@ pub mod prev;
 pub mod data;
 pub mod replay;
 pub mod policy;
+pub mod rw;
 
 pub use replay::{Recovery, Replayed};
 pub use scan::Found;

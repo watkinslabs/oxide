@@ -56,6 +56,31 @@ impl<S: SectorSource> Volume<S> {
         }
         self.recover()
     }
+
+    /// Lift this mount's read-only for the length of a repair, if it owes one.
+    ///
+    /// Returns nothing: what was done is recorded in the status word, and the
+    /// end of the window reads it back from there. A second copy of that
+    /// answer held by the caller could disagree with the word every reporting
+    /// surface publishes.
+    /// # C: O(1)
+    pub(crate) fn begin_repair_write(&mut self) {
+        let need = super::rw::need_recovery(super::rw::Facts {
+            orphans_present: self.cp.has(crate::flags::CP_ORPHAN_PRESENT_FLAG),
+            replays: self.opts.recovery,
+            clean_umount: self.cp.has(crate::flags::CP_UMOUNT_FLAG),
+        });
+        if !super::rw::lift_read_only(need, self.source.writable(), self.writable) { return; }
+        self.writable = true;
+        self.sbi.set_transiently_writable(true);
+    }
+
+    /// Put the read-only back, if this mount lifted it. # C: O(1)
+    pub(crate) fn end_repair_write(&mut self) {
+        if !self.sbi.transiently_writable() { return; }
+        self.sbi.set_transiently_writable(false);
+        self.writable = false;
+    }
 }
 
 #[cfg(test)]

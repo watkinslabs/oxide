@@ -138,6 +138,36 @@ impl SbFlags {
     pub fn set_closing(&mut self, on: bool) {
         if on { self.set(bits::IS_CLOSE); } else { self.clear(bits::IS_CLOSE); }
     }
+
+    /// A freeze is part way through.
+    ///
+    /// Raised once the volume has satisfied itself the medium is clean, and
+    /// lowered by the thaw. What reads it is any path that would otherwise
+    /// take freeze protection for a write of its own: a volume being frozen
+    /// cannot wait on the freeze that is waiting on it. # C: O(1)
+    pub fn set_freezing(&mut self, on: bool) {
+        if on { self.set(bits::IS_FREEZING); } else { self.clear(bits::IS_FREEZING); }
+    }
+
+    /// Whether a freeze is part way through. # C: O(1)
+    pub fn freezing(&self) -> bool { self.is_set(bits::IS_FREEZING) }
+
+    /// A read-only mount is writing anyway, for the length of a repair.
+    ///
+    /// The ONLY thing that makes a read-only mount writable, and it is
+    /// transient by construction: recovery has to update the quota files it
+    /// replays against, and a mount that skipped that would come up with
+    /// accounting that disagrees with the tree it just rebuilt. What reads
+    /// the mark is every surface that reports "this happened on a read-only
+    /// filesystem", which is a materially different event from the same work
+    /// on a writable one. # C: O(1)
+    pub fn set_transiently_writable(&mut self, on: bool) {
+        if on { self.set(bits::IS_WRITABLE); } else { self.clear(bits::IS_WRITABLE); }
+    }
+
+    /// Whether a read-only mount has been made writable for a repair.
+    /// # C: O(1)
+    pub fn transiently_writable(&self) -> bool { self.is_set(bits::IS_WRITABLE) }
 }
 
 /// One flag, raised or lowered. # C: O(1)

@@ -4,7 +4,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::compress::algo::{COMPRESS_LZ4, COMPRESS_ZSTD};
+use crate::compress::algo::{COMPRESS_LZ4, COMPRESS_MAX};
 use crate::compress::cluster::{data_blocks, header, Geometry, COMPRESS_HEADER_SIZE};
 use crate::compress::CompressError;
 use crate::uapi::{BLKSIZE, COMPRESS_ADDR, NEW_ADDR, NULL_ADDR};
@@ -40,11 +40,10 @@ fn a_log_outside_what_the_format_admits_is_refused() {
 }
 
 #[test]
-fn an_unpackable_codec_is_refused_before_any_geometry_is_built() {
-    assert!(matches!(
-        Geometry::new(COMPRESS_ZSTD, 2, 0),
-        Err(CompressError::UnsupportedAlgorithm(_))
-    ));
+fn a_codec_number_the_format_does_not_name_is_refused_before_a_geometry() {
+    for n in COMPRESS_MAX..=255 {
+        assert_eq!(Geometry::new(n, 2, 0), Err(CompressError::UnknownAlgorithm(n)), "number {n}");
+    }
 }
 
 #[test]

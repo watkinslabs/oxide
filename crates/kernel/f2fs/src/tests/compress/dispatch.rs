@@ -8,8 +8,10 @@ use syscall::errno::Errno;
 use crate::checksum;
 use crate::compress::algo::{
     algorithm, Algorithm, COMPRESS_LZ4, COMPRESS_LZO, COMPRESS_LZORLE, COMPRESS_MAX, COMPRESS_ZSTD,
+    MAX_COMPRESS_LOG_SIZE, MIN_COMPRESS_LOG_SIZE,
 };
 use crate::compress::cluster::Geometry;
+use crate::compress::encode::{self, Stored};
 use crate::compress::{decompress_cluster, Chksum, CompressError};
 use crate::uapi::BLKSIZE;
 
@@ -42,10 +44,14 @@ fn every_codec_round_trips_its_own_number() {
 }
 
 #[test]
-fn the_codec_this_build_cannot_unpack_says_so_rather_than_guessing() {
-    assert_eq!(algorithm(COMPRESS_ZSTD), Err(CompressError::UnsupportedAlgorithm(Algorithm::Zstd)));
-    assert!(!Algorithm::Zstd.unpacks());
-    assert!(Algorithm::Lzo.unpacks() && Algorithm::Lz4.unpacks() && Algorithm::LzoRle.unpacks());
+fn every_codec_the_format_names_is_one_this_build_unpacks() {
+    // The predicate is what decides `UnsupportedAlgorithm`, so a codec
+    // dropping out of this list is a volume that reads as unsupported rather
+    // than as a file.
+    for a in [Algorithm::Lzo, Algorithm::Lz4, Algorithm::Zstd, Algorithm::LzoRle] {
+        assert!(a.unpacks(), "{a:?}");
+        assert_eq!(algorithm(a.stored()), Ok(a));
+    }
 }
 
 #[test]
@@ -64,28 +70,79 @@ fn only_the_unsupported_codec_reports_an_unsupported_operation() {
 }
 
 #[test]
-fn no_geometry_exists_for_a_codec_this_build_does_not_decode() {
-    // The structural guarantee behind the errno: a cluster of an unpackable
-    // codec cannot be handed to the decoder at all, so there is no path on
-    // which its stored bytes could be mistaken for the file's.
+fn a_geometry_exists_for_every_codec_the_format_names_and_no_other() {
+    // The structural guarantee behind the errno: a geometry is built only
+    // where a decoder exists, so there is no path on which a cluster's stored
+    // bytes could be handed to nothing and mistaken for the file's.
     for n in 0..=255u8 {
         match Geometry::new(n, 2, 0) {
-            Ok(g) => assert!(
-                matches!(g.algorithm(), Algorithm::Lzo | Algorithm::Lz4 | Algorithm::LzoRle),
-                "number {n} produced a geometry for a codec with no decoder"
-            ),
-            Err(CompressError::UnknownAlgorithm(m)) => assert_eq!(m, n),
-            Err(CompressError::UnsupportedAlgorithm(_)) => {}
+            Ok(g) => {
+                assert!(n < COMPRESS_MAX, "number {n} produced a geometry");
+                assert!(g.algorithm().unpacks(), "number {n} has no decoder");
+            }
+            Err(CompressError::UnknownAlgorithm(m)) => {
+                assert_eq!(m, n);
+                assert!(n >= COMPRESS_MAX, "number {n} names a codec");
+            }
             Err(e) => panic!("number {n}: unexpected {e:?}"),
         }
     }
 }
 
 #[test]
-fn a_file_written_with_an_undecodable_codec_reports_it_and_returns_nothing() {
-    let e = Geometry::new(COMPRESS_ZSTD, 2, 0).unwrap_err();
-    assert_eq!(e, CompressError::UnsupportedAlgorithm(Algorithm::Zstd));
-    assert_eq!(e.errno(), Errno::Eopnotsupp);
+fn a_zstd_cluster_round_trips_at_every_width_the_format_admits() {
+    // A cluster wider than 32 blocks is a MULTI-block frame for this codec,
+    // which is where a per-block encoder would silently write something with
+    // a worse ratio than the level asked for, and where a decoder that lost
+    // its tables across a block boundary would produce garbage.
+    for log in MIN_COMPRESS_LOG_SIZE..=MAX_COMPRESS_LOG_SIZE {
+        let g = Geometry::new(COMPRESS_ZSTD, log, 0).unwrap();
+        assert_eq!(g.algorithm(), Algorithm::Zstd);
+        let plain = patterned(g.bytes());
+        let Stored::Compressed(img) = encode::compress_cluster(&g, &plain).unwrap() else {
+            panic!("log {log}: a patterned cluster did not compress");
+        };
+        assert!(img.blocks < g.blocks(), "log {log}: {} blocks", img.blocks);
+        assert_eq!(decompress_cluster(&g, &img.bytes).unwrap().data, plain, "log {log}");
+    }
+}
+
+#[test]
+fn a_zstd_cluster_the_codec_refuses_reports_a_read_error() {
+    // Not a claim about the build: the bytes are not a frame, so the volume
+    // is what is wrong.
+    let g = Geometry::new(COMPRESS_ZSTD, 2, 0).unwrap();
+    let e = decompress_cluster(&g, &image(&[0xFFu8; 64], 0)).unwrap_err();
+    assert_eq!(e, CompressError::Decode);
+    assert_eq!(e.errno(), Errno::Eio);
+}
+
+#[test]
+fn the_stored_level_picks_an_effort_and_zero_means_the_default() {
+    use crate::compress::zstd::{effort, DEFAULT_LEVEL, DEFAULT_MAX_LEVEL, FAST_MAX_LEVEL};
+    // Zero is not a level the format has; it is what a file written without
+    // asking for one carries, and it must land where level one does.
+    assert_eq!(effort(0), effort(DEFAULT_LEVEL));
+    for l in 1..=FAST_MAX_LEVEL { assert_eq!(effort(l), zstd::Level::Fast, "level {l}"); }
+    for l in FAST_MAX_LEVEL + 1..=DEFAULT_MAX_LEVEL {
+        assert_eq!(effort(l), zstd::Level::Default, "level {l}");
+    }
+    for l in DEFAULT_MAX_LEVEL + 1..=255 {
+        assert_eq!(effort(l), zstd::Level::Best, "level {l}");
+    }
+}
+
+#[test]
+fn a_zstd_cluster_round_trips_at_every_level_the_codec_admits() {
+    for level in 0..=crate::compress::policy::ZSTD_MAX_LEVEL {
+        let g = Geometry::new(COMPRESS_ZSTD, 4, (level as u16) << 8).unwrap();
+        assert_eq!(g.level(), level);
+        let plain = patterned(g.bytes());
+        let Stored::Compressed(img) = encode::compress_cluster(&g, &plain).unwrap() else {
+            panic!("level {level}: a patterned cluster did not compress");
+        };
+        assert_eq!(decompress_cluster(&g, &img.bytes).unwrap().data, plain, "level {level}");
+    }
 }
 
 fn lz4_cluster(log: u8, flag: u16, plain: &[u8]) -> (Geometry, Vec<u8>) {

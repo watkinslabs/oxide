@@ -197,13 +197,24 @@ impl<S: SectorSource> Volume<S> {
         // kind unaccounted instead of failing the mount: refusing to mount
         // over a missing quota file leaves nobody able to put one there.
         vol.open_named_quota_files();
+        // A mount asked for read-only still finishes a repair a crash left,
+        // over a medium that will take the writes. Both halves below write —
+        // to the tree and to the quota files that account for it — so the
+        // window is opened around BOTH of them and closed on every exit,
+        // including the failing one: a mount that returned an error with the
+        // read-only still lifted would leave a volume nobody asked to be
+        // writable.
+        vol.begin_repair_write();
         // Before anything can allocate: a node id still owned by an
         // unreclaimed orphan handed to a new file would give two inodes one
         // number.
-        vol.recover_orphans()?;
-        vol.recovering = true;
-        let outcome = vol.recover_at_mount();
-        vol.recovering = false;
+        let mut outcome = vol.recover_orphans();
+        if outcome.is_ok() {
+            vol.recovering = true;
+            outcome = vol.recover_at_mount().map(|_| ());
+            vol.recovering = false;
+        }
+        vol.end_repair_write();
         outcome?;
         Ok(vol)
     }

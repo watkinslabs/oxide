@@ -69,12 +69,11 @@ pub fn mount_zoned(b: Builder, reports: &[Option<DevZones>]) -> Result<Volume<Sp
 /// # C: O(count)
 pub fn report(count: usize, len: u32, cap: u32, conv: usize) -> DevZones {
     let zones = (0..count)
-        .map(|i| Zone {
-            start_blk: (i as u64) * u64::from(len),
-            len_blks: len,
-            cap_blks: if i < conv { len } else { cap },
-            kind: if i < conv { ZoneType::Conventional } else { ZoneType::SeqWriteRequired },
-        })
+        .map(|i| Zone::fresh(
+            (i as u64) * u64::from(len),
+            len,
+            if i < conv { len } else { cap },
+            if i < conv { ZoneType::Conventional } else { ZoneType::SeqWriteRequired }))
         .collect();
     DevZones { blocks_per_zone: len, max_open_zones: None, zones }
 }

@@ -18,7 +18,7 @@ use crate::checksum;
 
 use super::algo::{Algorithm, CompressError};
 use super::cluster::{header, Geometry};
-use super::{lz4, lzo};
+use super::{lz4, lzo, zstd};
 
 /// What became of the checksum over a cluster's compressed bytes.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -54,9 +54,10 @@ pub fn decompress_cluster(g: &Geometry, image: &[u8]) -> Result<Cluster, Compres
         Algorithm::Lzo | Algorithm::LzoRle => {
             lzo::decompress(cdata, &mut data).map_err(|_| CompressError::Decode)?
         }
-        // Reached only if the support table and this dispatch disagree; the
-        // geometry refuses an unpackable codec when the file is opened.
-        other => return Err(CompressError::UnsupportedAlgorithm(other)),
+        // The destination is a whole cluster and is the bound the codec is
+        // given: the frame states no size the reader may trust, so the
+        // cluster's own width is what decides how much output is legitimate.
+        Algorithm::Zstd => zstd::decompress(cdata, &mut data)?,
     };
     if produced != rlen { return Err(CompressError::ShortOutput); }
     let chksum = if g.checksummed() {

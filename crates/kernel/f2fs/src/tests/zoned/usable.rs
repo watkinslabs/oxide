@@ -21,12 +21,8 @@ fn sb() -> SuperBlock {
 fn geom(sb: &SuperBlock, unusable: u32) -> Geometry {
     let per_sec = blks_per_sec(sb);
     let zones: Vec<Zone> = (0..4u64)
-        .map(|i| Zone {
-            start_blk: i * u64::from(per_sec),
-            len_blks: per_sec,
-            cap_blks: per_sec - unusable,
-            kind: ZoneType::SeqWriteRequired,
-        })
+        .map(|i| Zone::fresh(i * u64::from(per_sec), per_sec, per_sec - unusable,
+                             ZoneType::SeqWriteRequired))
         .collect();
     let r = DevZones { blocks_per_zone: per_sec, max_open_zones: None, zones };
     Geometry::build(FEATURE_BLKZONED, &[Some(r)], 6).expect("builds")

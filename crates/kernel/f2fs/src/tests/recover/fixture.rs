@@ -92,11 +92,17 @@ pub fn try_crash(v: Volume<MemImage>, write: bool, opts: Options)
     Volume::mount_with(img, opts, write)
 }
 
-/// The same bytes, mounted so that the chain is still THERE: a mount that may
-/// not write does not replay, which is the only way to look at a crash's tail
-/// rather than at its result.
+/// The same bytes, mounted so that the chain is still THERE.
+///
+/// Asking for a read-only MOUNT is not enough and has not been since the
+/// mount learned to lift its own read-only for a repair: a read-only mount
+/// over a writable medium replays like any other. What leaves the tail
+/// standing is declining the roll-forward, which is the one request that
+/// makes a mount walk past a chain it could have replayed — so that is what
+/// this fixture asks for, on a mount that also may not write.
 pub fn crash_ro(v: Volume<MemImage>) -> Volume<MemImage> {
-    remount(v.into_source().snapshot(), false)
+    remount_opts(v.into_source().snapshot(), false,
+                 Options { recovery: false, ..Options::defaults() })
 }
 
 /// A checkpointed file on a volume whose last checkpoint claims a clean

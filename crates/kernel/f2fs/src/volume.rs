@@ -34,6 +34,7 @@
 //! - `fsync`:   making one file durable without a whole checkpoint.
 //! - `crypto`:  the mount's master keys, and an inode's key when it has one.
 //! - `space`:  what `statfs` reports.
+//! - `zonewp`: what the segment tables say about a drive's zones.
 //! - `ioprio`: the per-file write-priority hint, and the request flags a
 //!             write carries because of it.
 
@@ -54,6 +55,7 @@ use crate::summary::{NatEntry, NatJournal, SitEntry, SitJournal};
 use crate::uapi::{BLKSIZE, NR_CURSEG_TYPE};
 
 pub mod mount;
+pub mod zonewp;
 pub mod curseg;
 pub mod segmap;
 pub mod nodes;
@@ -254,6 +256,13 @@ impl<S: SectorSource> Volume<S> {
     /// Raise or lower the closing mark, which a flush taken as if the volume
     /// were going away runs under. # C: O(1)
     pub fn set_closing(&mut self, on: bool) { self.sbi.set_closing(on); }
+
+    /// Raise or lower the freezing mark, which a snapshot is taken under.
+    /// # C: O(1)
+    pub fn set_freezing(&mut self, on: bool) { self.sbi.set_freezing(on); }
+
+    /// Whether a freeze is part way through. # C: O(1)
+    pub fn freezing(&self) -> bool { self.sbi.freezing() }
 
     /// The conditions this mount is in. # C: O(1)
     pub fn sbi_flags(&self) -> &crate::sbflags::SbFlags { &self.sbi }
