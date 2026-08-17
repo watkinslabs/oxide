@@ -17,11 +17,15 @@ fn every_armed_policy_is_named_in_bit_order() {
     assert_eq!(policy::ipu_text(set), " FORCE FSYNC HONOR_OPU_WRITE");
 }
 
-/// This build takes a fresh block for every write, so reporting any policy
-/// would say in-place update is armed where it can never happen.
+/// The report names the set the WRITER consults, position for position: a
+/// reader decodes the line by bit number, so a name that moved would rename
+/// somebody else's policy.
 #[test]
-fn this_build_arms_no_in_place_update_policy() {
-    assert_eq!(policy::ipu_policy(&crate::opts::Options::defaults()), 0);
+fn the_reported_names_sit_at_the_positions_the_writer_reads() {
+    assert_eq!(policy::IPU_NAMES.len(), ipu::MAX as usize);
+    assert_eq!(policy::IPU_NAMES[ipu::FORCE as usize], "FORCE");
+    assert_eq!(policy::IPU_NAMES[ipu::SSR as usize], "SSR");
+    assert_eq!(policy::IPU_NAMES[ipu::HONOR_OPU_WRITE as usize], "HONOR_OPU_WRITE");
 }
 
 /// A mount in no reportable condition prints no list at all — an empty

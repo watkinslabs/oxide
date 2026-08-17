@@ -272,6 +272,13 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(BLKSIZE)
     fn write_begin_page(&mut self, ino: u32, index: u64, skew: usize, data: &[u8], old: u32)
         -> Result<Vec<u8>, Errno> {
+        // A page to write into is GRABBED before anything is decided about
+        // where its block will go — the reference's own order, and where it
+        // injects. Failing here leaves the file exactly as it was; failing
+        // after the address is reserved would not.
+        if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::PageAlloc) {
+            return Err(Errno::Enomem);
+        }
         let inode = self.read_inode(ino)?;
         let crypt = self.crypt_info(&inode, ino)?;
         if inode.encrypted() && crypt.is_none() { return Err(Errno::Enokey); }

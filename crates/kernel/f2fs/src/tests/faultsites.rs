@@ -204,6 +204,126 @@ fn bringing_an_identitys_quota_record_in_can_be_made_to_fail() {
     assert!(v.quota_record(USRQUOTA, UID).is_ok());
 }
 
+#[test]
+fn loading_the_segment_table_can_be_made_to_fail() {
+    // The table is one entry per main segment, taken whole, and it is the
+    // largest allocation the size of the volume decides. A mount that has not
+    // needed it yet is the only place the site can be reached, which is why
+    // this arms before anything asks for it.
+    let mut v = test_image::with_root().mount_rw().unwrap();
+    arm(&v, Fault::Kvmalloc);
+    assert_eq!(v.load_segments(), Err(Errno::Enomem));
+    assert_eq!(v.fault_info().count(Fault::Kvmalloc), 1, "the site did not count its failure");
+}
+
+#[test]
+fn assembling_an_inodes_attribute_region_can_be_made_to_fail() {
+    let v = vol();
+    let inode = v.read_inode(ROOT_INO).unwrap();
+    assert!(v.xattr_area(&inode, ROOT_INO).is_ok(), "the fixture's own region does not assemble");
+    arm(&v, Fault::Kmalloc);
+    assert_eq!(v.xattr_area(&inode, ROOT_INO), Err(Errno::Enomem));
+}
+
+#[test]
+fn grabbing_a_page_to_write_into_can_be_made_to_fail() {
+    let mut v = vol();
+    let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
+    // A whole block first, so the file's bytes live in a BLOCK. A small file
+    // stays inside its inode, and an inline write never grabs a page at all.
+    v.write_file(ino, 0, &vec![1u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
+    arm(&v, Fault::PageAlloc);
+    // A part-block write is the one that has to hold the page before it can
+    // patch it, which is where a page is grabbed for writing.
+    assert_eq!(v.write_file(ino, 0, &[7u8; 100]), Err(Errno::Enomem));
+    // And the file's bytes are exactly as they were.
+    let inode = v.read_inode(ino).unwrap();
+    let mut buf = vec![0u8; BLKSIZE];
+    v.read_file(&inode, ino, 0, &mut buf).unwrap();
+    assert!(buf.iter().all(|&b| b == 1), "the refused write changed the file");
+}
+
+#[test]
+fn looking_a_page_up_in_the_file_mapping_can_be_made_to_fail() {
+    let mut v = vol();
+    let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
+    v.write_file(ino, 0, &vec![3u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
+    let addr = v.holder_addr(ino, crate::volume::Holder::Inode, 0).unwrap();
+    let inode = v.read_inode(ino).unwrap();
+    assert!(v.read_data_page(&inode, ino, 0, addr, None).is_ok(), "the fixture's page does not read");
+    arm(&v, Fault::PageGet);
+    assert_eq!(v.read_data_page(&inode, ino, 0, addr, None), Err(Errno::Enomem));
+}
+
+#[test]
+fn looking_a_sealed_files_page_up_can_be_made_to_fail_too() {
+    // The sibling of the test above, and not redundant with it. A sealed file
+    // is read by a DIFFERENT function — the attestation is a separate reader
+    // so that the tree climb stays out of the read half of a read-modify-write
+    // — and a site wired into only the ordinary one fires for an ordinary file
+    // and not for a sealed one, which is worse than not having it. Deleting
+    // either injection leaves one of these two red.
+    let mut v = vol();
+    let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
+    v.write_file(ino, 0, &vec![3u8; BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
+    v.enable_verity(ino, crate::verity::uapi::HASH_ALG_SHA256, 12, b"").unwrap();
+    let inode = v.read_inode(ino).unwrap();
+    assert!(inode.verity(), "the fixture is not sealed, so it reads by the other path");
+    v.verity_file_open(&inode, ino, false).unwrap();
+    let addr = v.holder_addr(ino, crate::volume::Holder::Inode, 0).unwrap();
+    v.data_cache.forget_inode(ino);
+    assert!(v.read_data_page(&inode, ino, 0, addr, None).is_ok(),
+            "the fixture's page does not read");
+    v.data_cache.forget_inode(ino);
+    arm(&v, Fault::PageGet);
+    assert_eq!(v.read_data_page(&inode, ino, 0, addr, None), Err(Errno::Enomem));
+}
+
+#[test]
+fn taking_an_inode_record_can_be_made_to_fail() {
+    let mut v = vol();
+    arm(&v, Fault::SlabAlloc);
+    assert_eq!(v.create(ROOT_INO, b"f", &spec(), None), Err(Errno::Enomem));
+    // Nothing was handed out: the site fires before the node id is taken, so
+    // the name is simply absent rather than half-created.
+    let root = v.read_inode(ROOT_INO).unwrap();
+    assert!(v.lookup(&root, ROOT_INO, b"f").is_err(), "a name was left behind");
+}
+
+#[test]
+fn unpacking_a_compressed_cluster_can_be_made_to_fail() {
+    // The buffer a cluster unpacks into is the largest single allocation any
+    // read makes, and the only one this filesystem would take from the virtual
+    // allocator.
+    let mut b = test_image::with_root();
+    b.feature |= crate::flags::FEATURE_COMPRESSION;
+    let mut v = b.mount_rw().unwrap();
+    let ino = v.create(ROOT_INO, b"c", &spec(), None).unwrap();
+    v.stamp_inode(ino, |blk| {
+        let f = crate::uapi::le32(blk, crate::uapi::I_FLAGS).unwrap_or(0)
+            | crate::flags::F2FS_COMPR_FL;
+        crate::volume::dnode::put32(blk, crate::uapi::I_FLAGS, f);
+        blk[crate::uapi::I_COMPRESS_ALGORITHM] = crate::compress::algo::COMPRESS_LZ4;
+        blk[crate::uapi::I_LOG_CLUSTER_SIZE] = 2;
+    })
+    .unwrap();
+    // Compressible bytes, or the cluster is stored plain and never unpacked.
+    let data = vec![0x5Au8; 8 * BLKSIZE];
+    v.write_compressed(ino, 0, &data).unwrap();
+    v.commit().unwrap();
+    let bytes = v.into_source().snapshot();
+    let v = Volume::mount_with(sectors::MemImage::from_bytes(BLKSIZE as u32, bytes),
+                               Options::defaults(), true).unwrap();
+    let inode = v.read_inode(ino).unwrap();
+    let mut buf = vec![0u8; 64];
+    assert!(v.read_file(&inode, ino, 7, &mut buf).is_ok(), "the fixture's cluster does not read");
+    arm(&v, Fault::Vmalloc);
+    assert_eq!(v.read_file(&inode, ino, BLKSIZE as u64 + 7, &mut buf), Err(Errno::Enomem));
+}
+
 /// The sites with no counterpart here, and why. Kept as a test so the list
 /// cannot drift from the enum: a site added to the ABI is either wired or
 /// named here.
@@ -213,15 +333,14 @@ fn every_site_is_either_wired_or_named_as_having_no_counterpart() {
         Fault::AllocNid, Fault::Orphan, Fault::Block, Fault::DirDepth, Fault::EvictInode,
         Fault::Truncate, Fault::ReadIo, Fault::Checkpoint, Fault::WriteIo, Fault::DquotInit,
         Fault::BlkaddrValidity, Fault::BlkaddrConsistence, Fault::NoSegment,
-        Fault::InconsistentFooter, Fault::SkipWrite,
+        Fault::InconsistentFooter, Fault::SkipWrite, Fault::Kmalloc, Fault::Kvmalloc,
+        Fault::PageAlloc, Fault::PageGet, Fault::SlabAlloc, Fault::Vmalloc,
     ];
-    // Six name a kernel memory allocator this filesystem does not own, two are
-    // reserved by the ABI for requests that can no longer fail, one names a
-    // filesystem-operation lock this design has no equivalent of, and two name
-    // timeouts on waits that never happen here.
+    // Two are reserved by the ABI for requests that can no longer fail, one
+    // names a filesystem-operation lock this design has no equivalent of, and
+    // two name timeouts on waits that never happen here.
     let unwired = [
-        Fault::Kmalloc, Fault::Kvmalloc, Fault::PageAlloc, Fault::PageGet, Fault::SlabAlloc,
-        Fault::Vmalloc, Fault::AllocBio, Fault::Discard, Fault::LockOp, Fault::AtomicTimeout,
+        Fault::AllocBio, Fault::Discard, Fault::LockOp, Fault::AtomicTimeout,
         Fault::LockTimeout,
     ];
     assert_eq!(wired.len() + unwired.len(), crate::fault::FAULT_MAX as usize,

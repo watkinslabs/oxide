@@ -46,6 +46,7 @@
 //! - `hash`:       the name hash that picks a directory bucket.
 //! - `dirent`:     entries, their four parallel arrays, and bucket addressing.
 //! - `xattr`:      the attribute region, assembled from its two halves.
+//! - `acl`:        the stored ACL record, and what a new object inherits.
 //! - `mode`:       the stored mode word, and the device number beside it.
 //! - `compress`:   compressed clusters, and the codecs that unpack them.
 //! - `casefold`:   case-insensitive name resolution.
@@ -56,6 +57,7 @@
 //! - `extent`:     the read and block-age extent caches, and their LRU.
 //! - `filemap`:    a file's data pages, keyed by inode and file offset.
 //! - `freenid`:    node ids nothing is using, and how one is handed out.
+//! - `shrink`:     giving the three unbounded caches back under memory pressure.
 //! - `atgc`:       age-threshold victim selection, and its candidate tree.
 //! - `fault`:      failures injected on purpose, at named sites and a rate.
 //! - `stats`:      what a mount has done, and what it looks like right now.
@@ -67,6 +69,7 @@
 //! - `sectrim`:    destroying a file's block contents where they lie.
 //! - `devices`:    the member devices a volume spans, and their address map.
 //! - `zoned`:      what a drive's zones permit, where they dictate placement.
+//! - `place`:      where a write lands: back on its own block, or a fresh one.
 //! - `volume`:     a mounted volume, read and written against a real medium.
 //! - `bg`:         the cleaner and discard threads, and the balance path.
 //! - `mount`:      the VFS-facing filesystem, its inodes and their operations.
@@ -92,6 +95,7 @@ pub mod node;
 pub mod hash;
 pub mod dirent;
 pub mod xattr;
+pub mod acl;
 pub mod mode;
 pub mod compress;
 pub mod casefold;
@@ -105,6 +109,7 @@ pub mod errrec;
 pub mod extent;
 pub mod filemap;
 pub mod freenid;
+pub mod shrink;
 pub mod atgc;
 pub mod fault;
 pub mod atomic;
@@ -113,6 +118,7 @@ pub mod swap;
 pub mod defrag;
 pub mod moverange;
 pub mod sectrim;
+pub mod place;
 pub mod volume;
 pub mod bg;
 pub mod mount;

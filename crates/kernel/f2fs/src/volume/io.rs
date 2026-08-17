@@ -133,6 +133,14 @@ impl<S: SectorSource> Volume<S> {
                 // request as falls inside it is served from one decompression
                 // rather than one per block.
                 Mapped::Compressed => {
+                    // A cluster unpacks into a buffer the size of the whole
+                    // cluster plus whatever the algorithm needs to work in —
+                    // the largest single allocation any read makes, and the one
+                    // the reference takes from the virtual allocator and
+                    // injects at.
+                    if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::Vmalloc) {
+                        return Err(Errno::Enomem);
+                    }
                     let plain = self.read_cluster(inode, ino, index)?;
                     let at = (index - plain.first) as usize * BLKSIZE + skew;
                     let n = (plain.data.len() - at).min(want - done);
@@ -191,6 +199,7 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(1) held, O(BLKSIZE) otherwise
     pub(crate) fn fill_data_page(&self, ino: u32, index: u64, addr: u32,
                                  crypt: Option<&crate::crypto::Info>) -> Result<Vec<u8>, Errno> {
+        self.page_get_fault()?;
         self.data_cache.read(ino, index, || {
             self.account_page_fetch();
             self.read_main_plain(addr, crypt, index)
@@ -205,12 +214,30 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(1) held, O(BLKSIZE + levels) otherwise
     fn fill_data_page_attested(&self, inode: &Inode, ino: u32, index: u64, addr: u32,
                                crypt: Option<&crate::crypto::Info>) -> Result<Vec<u8>, Errno> {
+        self.page_get_fault()?;
         self.data_cache.read(ino, index, || {
             self.account_page_fetch();
             let block = self.read_main_plain(addr, crypt, index)?;
             if !self.verity_check(inode, ino, index, &block)? { return Err(Errno::Eio); }
             Ok(block)
         })
+    }
+
+    /// Whether a caller asking the mapping for a page is to be told there is no
+    /// memory for one.
+    ///
+    /// The mapping is asked for a page BEFORE the medium is: the lookup can
+    /// fail for want of a page as easily as the read can fail for want of a
+    /// block, and the reference injects at the lookup for that reason. Both
+    /// readers below consult it, and neither may skip it — a site wired into
+    /// only one of them is a site that fires for an ordinary file and not for
+    /// a sealed one, which is worse than not having it.
+    /// # C: O(1)
+    fn page_get_fault(&self) -> Result<(), Errno> {
+        if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::PageGet) {
+            return Err(Errno::Enomem);
+        }
+        Ok(())
     }
 
     /// What a page that had to be FETCHED costs the report.

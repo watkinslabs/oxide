@@ -7,6 +7,7 @@ publish = false
 path = "src/lib.rs"
 [dependencies]
 sync    = { path = "../../shared/sync" }
+pmm     = { path = "../mm-pmm" }
 syscall = { path = "../syscall" }
 klog    = { path = "../../shared/klog" }
 vfs     = { path = "../vfs" }
@@ -30,6 +31,12 @@ utf8    = { path = "../../shared/utf8" }
 [target.'cfg(target_os = "oxide-kernel")'.dependencies]
 sched      = { path = "../sched" }
 timekeeper = { path = "../timekeeper" }
+
+# The syscall-side xattr/ACL policy half, so an integration test can drive a
+# real inode of this filesystem through the path a real `setxattr` takes. Test
+# only: the filesystem itself is reached FROM there, never the other way.
+[dev-dependencies]
+fs = { path = "../fs" }
 
 [features]
 default = []

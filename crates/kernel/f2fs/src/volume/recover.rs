@@ -14,6 +14,7 @@
 //! - `prev`:   taking a recovered block from whoever still holds it.
 //! - `data`:   putting one node's worth of addresses back.
 //! - `replay`: the order the whole pass runs in, and what it protects first.
+//! - `cleanup`: what a replay that failed part way through throws away.
 //! - `policy`: what a mount does about a chain, given what it may write.
 //! - `rw`:     lifting a read-only mount's own read-only for the repair.
 //! - `report`: what the mount says about what it put back.
@@ -23,6 +24,7 @@ pub mod scan;
 pub mod prev;
 pub mod data;
 pub mod replay;
+pub mod cleanup;
 pub mod policy;
 pub mod rw;
 pub mod report;

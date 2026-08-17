@@ -118,6 +118,12 @@ impl<S: SectorSource> Volume<S> {
         self.dquot_initialize_new(spec.uid, spec.gid)?;
         let ft = mode::file_type(spec.mode);
         let is_dir = ft == vfs::FileType::Directory;
+        // The inode record itself, from the cache the reference keeps them in,
+        // and BEFORE the node id is taken — its order, so an injected failure
+        // here leaves no id handed out and nothing to give back.
+        if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::SlabAlloc) {
+            return Err(Errno::Enomem);
+        }
         let ino = self.alloc_nid()?;
         // The number the request's identity belongs to is known now, so the
         // attachment is made before the first thing that could charge it.

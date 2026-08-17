@@ -263,6 +263,14 @@ impl<S: SectorSource> Volume<S> {
             };
         }
         if !self.dir_is_empty(&inode, ino)? { return Err(Errno::Enotempty); }
+        // Last, where the reference puts it: a caller that named a bad policy,
+        // a file, a directory with a different policy or a non-empty one hears
+        // about that first, and only a request that would otherwise have been
+        // honoured is refused for what the volume promises a repair tool.
+        if ino == self.root_ino()
+            && !crate::crypto::support::root_may_be_encrypted(self.sb.feature) {
+            return Err(Errno::Eperm);
+        }
         let nonce = self.fresh_nonce(ino);
         let ctx = crate::crypto::policy::Context { policy: want, nonce };
         let (bytes, used) = crate::crypto::policy::serialize(&ctx);
