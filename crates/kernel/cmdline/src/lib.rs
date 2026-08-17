@@ -25,6 +25,7 @@ pub mod console;
 pub mod earlycon;
 pub mod printk;
 pub mod faults;
+pub mod hung_task;
 pub mod init_path;
 pub mod sysrq;
 
