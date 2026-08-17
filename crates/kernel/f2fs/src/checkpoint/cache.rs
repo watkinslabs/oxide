@@ -35,25 +35,28 @@ use crate::uapi::BLKSIZE;
 
 /// Blocks one mount's metadata mapping holds before it stops taking more.
 ///
-/// The reference bounds the same mapping by memory pressure — the page cache
-/// reclaims from it like any other mapping — and neither the pressure nor the
-/// reclaim is observable from here. A fixed ceiling keeps the part that is
-/// visible: a full mapping stops taking new blocks and keeps the ones it has.
+/// RECLAIM IS THE PRIMARY BOUND, and it is the reference's only one: the
+/// per-cache free-memory share that gates the compressed-block cache has no
+/// metadata term, so the reference lets this mapping grow and lets page
+/// reclaim take from it like any other. That holds here too. Every block
+/// arrives clean — this cache inserts and never dirties — so the shared
+/// cache's shrinker may evict any of them, and an evicted block costs a
+/// re-read and nothing else.
 ///
-/// Declining rather than evicting is deliberate and is NOT a stand-in for an
-/// eviction policy this file should have grown. Choosing a victim is the
-/// mapping's job, not this filesystem's; a private replacement policy here
-/// would be a second answer to "which cached page goes next" beside the one
-/// the page cache keeps, and the two would disagree the moment either changed.
-/// When the page cache reclaims, this ceiling becomes its bound and nothing
-/// here has to be unwound.
+/// This ceiling is a SECOND bound on top of reclaim, for the one thing reclaim
+/// cannot express: it reacts to machine pressure after the fact, so one mount
+/// walking a large summary area in order could push the machine's file cache
+/// out before that feedback arrives. Sixteen MiB per MOUNT at this build's
+/// block size, and not a share of the volume, so no volume can make it grow.
 ///
-/// Four thousand and ninety-six blocks is 16 MiB per mount at this build's
-/// block size. It is per MOUNT and not a share of the volume, so no volume can
-/// make it grow. On any volume this comfortably holds the checkpoint packs and
-/// both small tables — the blocks that are read repeatedly — and what a large
-/// volume's summary area cannot fit is the part the cleaner reads once, in
-/// order, which is the right thing for a full mapping to decline.
+/// Declining at the ceiling rather than evicting is deliberate: choosing a
+/// victim is the shared cache's job, and a private replacement policy here
+/// would be a second answer to "which cached page goes next" that would
+/// disagree with the real one the moment either changed. Unlike the
+/// compressed-block cache — written when nothing reclaimed, so a full cache
+/// stayed full for the life of the mount — declining here is not a wall:
+/// reclaim keeps freeing slots, so the mapping follows a moving working set
+/// instead of freezing on whichever blocks were read first.
 pub const META_CACHE_MAX_BLOCKS: usize = 4096;
 
 // The mapping is indexed in pages and this cache is indexed in blocks, so the

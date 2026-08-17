@@ -60,7 +60,7 @@ impl<S: SectorSource> Volume<S> {
         // Offered AFTER the read rather than instead of it: the mapping is
         // filled by what the medium actually returned, so a block that could
         // not be read leaves nothing behind to be served later.
-        if false { self.meta_cache.store(addr, &buf); }
+        if meta { self.meta_cache.store(addr, &buf); }
         Ok(buf)
     }
 
@@ -77,7 +77,4 @@ impl<S: SectorSource> Volume<S> {
 
     /// Metadata blocks this mount is holding. # C: O(1)
     pub fn meta_cached_blocks(&self) -> usize { self.meta_cache.blocks() }
-
-    /// Metadata reads this mount answered without the device. # C: O(1)
-    pub fn meta_cache_hits(&self) -> u64 { self.meta_cache.hits() }
 }

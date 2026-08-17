@@ -43,7 +43,6 @@
 //!              mount's metadata mapping.
 
 use alloc::collections::{BTreeMap, BTreeSet};
-use alloc::vec;
 use alloc::vec::Vec;
 
 use syscall::errno::Errno;
@@ -56,7 +55,7 @@ use crate::node::Inode;
 use crate::opts::Options;
 use crate::sb::SuperBlock;
 use crate::summary::{NatEntry, NatJournal, SitEntry, SitJournal};
-use crate::uapi::{BLKSIZE, NR_CURSEG_TYPE};
+use crate::uapi::NR_CURSEG_TYPE;
 
 pub mod mount;
 pub mod zonewp;

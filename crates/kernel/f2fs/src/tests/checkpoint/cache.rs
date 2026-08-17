@@ -160,6 +160,58 @@ fn the_mapping_stops_at_its_bound_and_keeps_what_it_already_holds() {
 }
 
 #[test]
+fn a_forgotten_block_is_read_again() {
+    // What the write path does when it cannot know the bytes that landed. The
+    // mapping must go back to the medium afterwards, not keep answering with
+    // what the address used to hold.
+    let v = volume();
+    let addr = NAT_BLKADDR;
+    let first = v.read_block(addr).unwrap();
+    v.meta_cache.invalidate_range(addr, 1);
+    assert_eq!(v.meta_cache.blocks(), 0);
+    poison(&v, addr);
+    assert_ne!(v.read_block(addr).unwrap(), first, "a forgotten block was still answered");
+}
+
+#[test]
+fn resolving_the_same_inode_twice_reads_the_node_table_once() {
+    // The mapping driven by a REAL path rather than by `read_block` directly:
+    // resolving an inode consults the node table, and the second resolution of
+    // the same inode must not pay the medium for the table block again. A
+    // mapping nothing reached would pass every test above and change nothing.
+    let mut v = volume();
+    v.set_iostat_enabled(true);
+    let read = crate::stats::iostat::Io::FsMetaRead as usize;
+    v.root().unwrap();
+    let once = v.counters().iostat.bytes[read];
+    assert!(once > 0, "resolving an inode read no metadata at all");
+    v.root().unwrap();
+    assert_eq!(v.counters().iostat.bytes[read], once,
+               "the node table was read from the medium twice");
+    assert!(v.meta_cache.hits() > 0);
+}
+
+#[test]
+fn a_held_block_never_reaches_the_read_fault_site() {
+    // The injected failure is the DEVICE's, and a block the mapping answered
+    // submitted no request — so the site is not consulted and does not count.
+    // The reference decides the same way by placing the injection inside the
+    // submission the mapping's hit path never reaches.
+    let v = volume();
+    let addr = SIT_BLKADDR + 2;
+    let held = v.read_block(addr).unwrap();
+    v.set_fault(1, 0, crate::fault::Which::RATE).unwrap();
+    v.set_fault(0, crate::fault::Fault::ReadIo.bit(), crate::fault::Which::TYPE).unwrap();
+    assert_eq!(v.read_block(addr).unwrap(), held, "a held block was failed by the device's site");
+    assert_eq!(v.fault_info().count(crate::fault::Fault::ReadIo), 0,
+               "the site was consulted for an I/O that never happened");
+    // The control: an address the mapping does not hold still fails, so the
+    // site is armed and the case above is not simply a disarmed mount.
+    assert_eq!(v.read_block(MAIN_BLKADDR), Err(syscall::errno::Errno::Eio));
+    assert_eq!(v.fault_info().count(crate::fault::Fault::ReadIo), 1);
+}
+
+#[test]
 fn a_remount_starts_with_an_empty_mapping() {
     // What a mapping holds is one mount's, and a mount is the only proof a
     // write landed: a held block surviving into the next mount would let a
