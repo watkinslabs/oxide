@@ -83,6 +83,14 @@ impl<S: SectorSource> Volume<S> {
         self.update_writes.borrow_mut().record(ino);
     }
 
+    /// How many files have a rewrite in place that no barrier has reached.
+    ///
+    /// The reference keeps this as a list of inode numbers on the mount, for
+    /// the same reason and with the same lifetime: raised where a page is
+    /// rewritten where it lay, dropped by the barrier that makes it durable.
+    /// # C: O(1)
+    pub(crate) fn unfenced_inplace_files(&self) -> usize { self.update_writes.borrow().len() }
+
     /// Whether `ino` has a rewrite in place that no barrier has reached.
     /// # C: O(log files)
     pub(crate) fn owes_inplace_barrier(&self, ino: u32) -> bool {

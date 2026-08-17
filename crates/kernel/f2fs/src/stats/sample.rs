@@ -278,7 +278,13 @@ impl General {
             ndonate_files: c.donate_files,
             nquota_files: c.nquota_files,
             orphans: v.orphans.len() as u32,
-            append: c.append_ino, update: c.update_ino,
+            // Off the volume's own records rather than a counter: both are
+            // SETS whose members come and go, so a running total would drift
+            // the first time an entry was retired. Append is the list a
+            // checkpoint releases; update is the per-file record of a rewrite
+            // in place that no barrier has reached.
+            append: v.ino_lists.len(crate::checkpoint::InoKind::Append) as u32,
+            update: v.unfenced_inplace_files() as u32,
             aw_cnt: c.atomic_files, max_aw_cnt: c.max_aw_cnt,
             ndirty_dirs: c.ndirty_inode[dirty_of::DIR],
             ndirty_files: c.ndirty_inode[dirty_of::FILE],
