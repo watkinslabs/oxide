@@ -94,6 +94,37 @@ fn a_zoned_volume_widens_a_narrow_discard_unit_rather_than_refusing() {
     assert_eq!(o.discard_unit, DiscardUnit::Section);
 }
 
+/// A mount that names NOTHING gets the same answer. This is the reference's
+/// zoned DEFAULT, set before an option is read, and it is not a tuning choice:
+/// a section is a zone, and a zone's blocks come back only when the drive is
+/// asked to reset the whole of it. Announcing a block or a segment leaves the
+/// write pointer where it was, so the space returns in the accounting and
+/// never on the drive — the volume fills and stays full.
+///
+/// Asserted over an EMPTY spec, which is what the mount path passes: nothing
+/// there knows what a line named, and the clause used to be conditional on a
+/// line having named the option. Going through `resolve` instead would prove
+/// nothing — its feature-derived defaults already answer `Section`, and that
+/// path has no production caller.
+#[test]
+fn a_zoned_volume_that_names_no_discard_unit_still_gets_sections() {
+    let z = Facts { feature: FEATURE_BLKZONED, ..plain() };
+    let mut o = crate::opts::Options::defaults();
+    assert_eq!(o.discard_unit, DiscardUnit::Block, "the build-wide default is not the block");
+    let mut spec = Spec::default();
+    let cur = o.clone();
+    let sbi = crate::consistency::Sbi::at_mount(z, &cur);
+    crate::consistency::check_opt_consistency(&sbi, &mut o, &mut spec).expect("accepted");
+    assert_eq!(o.discard_unit, DiscardUnit::Section);
+    // And a volume with no zones is left alone: its default is the block.
+    let mut o = crate::opts::Options::defaults();
+    let cur = o.clone();
+    let sbi = crate::consistency::Sbi::at_mount(plain(), &cur);
+    crate::consistency::check_opt_consistency(&sbi, &mut o, &mut Spec::default())
+        .expect("accepted");
+    assert_eq!(o.discard_unit, DiscardUnit::Block);
+}
+
 #[test]
 fn a_zoned_volume_refuses_any_mode_but_lfs() {
     let z = Facts { feature: FEATURE_BLKZONED, ..plain() };

@@ -192,6 +192,21 @@ impl NodeCache {
         self.pages.invalidate_range(self.ino, off, off + BLKSIZE as u64);
     }
 
+    /// Forget every page held here, DIRTY ONES INCLUDED.
+    ///
+    /// For the one event that makes every node this mount has changed
+    /// worthless: a repair that failed part way. The pages left behind describe
+    /// a state that was never reached, and every one of them is still on the
+    /// machine's dirty list — so leaving them would have the flusher either
+    /// write half a repair or, once the mount is gone, hold them dirty forever
+    /// with nowhere to put them.
+    ///
+    /// Not for ordinary invalidation. A single node going out of use is
+    /// `forget`; this discards work, and the caller must already have decided
+    /// that the work is not wanted.
+    /// # C: O(pages held)
+    pub fn forget_all(&self) { self.pages.invalidate(self.ino); }
+
     /// Write back up to `max` dirty node pages through `sink`, reporting how
     /// many landed. # Ctx: process # Sleeps: y # C: O(pages written)
     pub fn flush(&self, max: usize, sink: Sink<'_>) -> (usize, KResult<()>) {

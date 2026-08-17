@@ -136,6 +136,15 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(segment table blocks)
     pub(crate) fn load_segments(&mut self) -> Result<(), Errno> {
         if self.sit.is_some() { return Ok(()); }
+        // The one allocation on this volume that scales with its SIZE: one
+        // entry per main segment, taken whole. The reference takes it the same
+        // way and injects here, and the reason the site is worth naming is
+        // that everything above it assumes the table loads — so what an
+        // injected failure exercises is every caller's out-of-memory path at
+        // once.
+        if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::Kvmalloc) {
+            return Err(Errno::Enomem);
+        }
         let segs = self.sb.segment_count_main;
         let blocks = sit::area_blocks(self.sb.segment_count_sit, self.sb.blks_per_seg());
         let mut out = Vec::with_capacity(segs as usize);
