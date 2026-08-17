@@ -4,7 +4,11 @@
 //! `locking.rs`   — `PG_LOCKED`: one fetch per miss however many race it.
 //! `writeback.rs` — the dirty list, the thresholds, `fsync`, the flusher.
 //! `reclaim.rs`   — the two-list LRU, and that eviction cannot lose a write.
+//! `fstarget.rs`  — the write side as a filesystem uses it: a whole-mapping
+//!                  target, a dirty mark that does not write back, and the
+//!                  writer's own balance.
 
+mod fstarget;
 mod locking;
 mod radix;
 mod reclaim;

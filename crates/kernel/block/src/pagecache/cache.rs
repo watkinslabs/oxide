@@ -260,16 +260,58 @@ impl PageCache {
         if data.len() != PAGE_BYTES { return Err(BlockError::Einval); }
         let page = self.read_page(inode, page_offset, dev)?;
         { let mut buf = page.data.lock(); buf.copy_from_slice(data); }
-        let map = self.mapping_or_create(inode);
-        if map.set_dirty(index_of(page_offset)) {
-            global::account_dirty(1);
-            if map.dirtied_when.load(Ordering::Acquire) == 0 {
-                map.dirtied_when.store(global::now_ns().max(1), Ordering::Release);
-            }
-            global::queue_dirty_inode(&map);
-        }
-        self.balance_dirty_pages(&map);
+        self.mark_dirty(inode, page_offset)?;
+        self.balance_dirty(inode);
         Ok(page)
+    }
+
+    /// Mark a resident page dirty — the reference's `->dirty_folio`, and the
+    /// ONLY way a page becomes dirty. Reports whether this call is what turned
+    /// it dirty.
+    ///
+    /// Does NOT balance. Balancing writes back, which re-enters the mapping's
+    /// writeback target, so a filesystem that dirties a page while holding the
+    /// lock its own target needs would deadlock on itself if the two were one
+    /// call. The reference splits them for the same reason and puts the
+    /// balance at the top of the write path, outside every filesystem lock —
+    /// see [`Self::balance_dirty`].
+    ///
+    /// Refused when the mapping has no writeback target. A dirty page with
+    /// nowhere to go is un-flushable: `fsync` reports success having written
+    /// nothing, the flusher walks it forever, and reclaim may never evict it.
+    /// # C: O(log dirty)
+    pub fn mark_dirty(&self, inode: InodeId, page_offset: u64) -> KResult<bool> {
+        if !aligned(page_offset) { return Err(BlockError::Einval); }
+        let map = self.mapping_or_create(inode);
+        if !map.has_writeback() { return Err(BlockError::Einval); }
+        if !map.set_dirty(index_of(page_offset)) { return Ok(false); }
+        global::account_dirty(1);
+        if map.dirtied_when.load(Ordering::Acquire) == 0 {
+            map.dirtied_when.store(global::now_ns().max(1), Ordering::Release);
+        }
+        global::queue_dirty_inode(&map);
+        Ok(true)
+    }
+
+    /// Act on the machine's dirty state after a write dirtied pages — the
+    /// reference's `balance_dirty_pages_ratelimited`.
+    ///
+    /// Called by the writer once its own locks are dropped, because over the
+    /// limit this writes back, which enters the mapping's writeback target.
+    /// # Ctx: process # Sleeps: y # C: O(pages written)
+    pub fn balance_dirty(&self, inode: InodeId) {
+        let Some(map) = self.mapping(inode) else { return; };
+        self.balance_dirty_pages(&map);
+    }
+
+    /// Write back up to `max` of `inode`'s dirty pages through its installed
+    /// target, reporting how many reached the medium.
+    /// # Ctx: process # Sleeps: y # C: O(pages written)
+    pub fn writeback(&self, inode: InodeId, max: usize) -> (usize, KResult<()>) {
+        let Some(map) = self.mapping(inode) else { return (0, Ok(())); };
+        let out = writeback_mapping(&map, max);
+        if map.nr_dirty() == 0 { map.dirtied_when.store(0, Ordering::Release); }
+        out
     }
 
     /// Act on the machine's dirty state after dirtying a page.
@@ -291,7 +333,16 @@ impl PageCache {
     /// # Ctx: process # Sleeps: y # C: O(dirty pages of this inode)
     pub fn fsync(&self, inode: InodeId, dev: &Arc<dyn BlockDevice>) -> KResult<()> {
         self.set_writeback(inode, DevWriteback::new(Arc::clone(dev)));
-        let Some(map) = self.mapping(inode) else { return dev.flush(); };
+        if self.mapping(inode).is_none() { return dev.flush(); }
+        self.sync(inode)
+    }
+
+    /// The same, through whatever target `inode` already has — what a
+    /// filesystem that installed its own calls, having no block device of its
+    /// own to name. A mapping with nothing to sync is not an error.
+    /// # Ctx: process # Sleeps: y # C: O(dirty pages of this inode)
+    pub fn sync(&self, inode: InodeId) -> KResult<()> {
+        let Some(map) = self.mapping(inode) else { return Ok(()); };
         let (_, result) = writeback_mapping(&map, usize::MAX);
         result?;
         map.dirtied_when.store(0, Ordering::Release);
