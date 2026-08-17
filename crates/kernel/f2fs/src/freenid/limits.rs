@@ -29,6 +29,10 @@ pub const SHRINK_NID_BATCH_SIZE: u32 = 8;
 /// one that is already short.
 pub const DEF_RAM_THRESHOLD: u32 = 1;
 
+/// Share of the node table that may be dirty before the caches are worth a
+/// checkpoint on their own, in percent.
+pub const DEF_DIRTY_NATS_RATIO: u32 = 10;
+
 /// The denominator `ram_thresh` is a numerator over.
 pub const RAM_THRESH_BASE: u64 = 100;
 

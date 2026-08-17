@@ -63,6 +63,7 @@ pub mod epoll_limits;
 pub mod pipe_limits;
 pub mod quota;
 pub mod fsreserve;
+pub mod fshalt;
 pub mod verity_keys;
 pub mod xattr;
 pub mod posix_acl;
@@ -88,7 +89,7 @@ pub use file::{arm_tty_audit, set_tty_audit_hook, tty_audit_armed, TtyAuditFacts
 pub use inode::{Inode, InodeBuilder, InodeRef, SealCarrier, F_ALL_SEALS, F_SEAL_EXEC, F_SEAL_FUTURE_WRITE, F_SEAL_GROW, F_SEAL_SEAL, F_SEAL_SHRINK, F_SEAL_WRITE, FileAttr, FiemapExtent, FileLockContext, FlockKind, FlockTry, RECORD_END_MAX, RecordLock, RecordOwner, RecordTry, record_lock_block_on, record_lock_unblock, get_next_ino, generic_update_time, inode_unlock, lock_rename, unlock_rename, RenameLockGuard, prepare_create_owner_mode, prepare_symlink_owner, I_DIRTY, I_DIRTY_ALL, I_DIRTY_INODE, I_DIRTY_SYNC, I_DIRTY_TIME, I_NEW, I_FREEING, I_LINKABLE, S_IMMUTABLE, S_APPEND, S_NOATIME, S_SWAPFILE, S_SYNC, S_ATIME, S_MTIME, S_CTIME, S_VERSION, POLL_IN, POLL_OUT, POLL_HUP, POLL_ERR, POLL_PRI, POLL_RDNORM, POLL_WRNORM, POLL_RDHUP};
 pub use fileattr::{FileAttrSource, clear_fileattr_hooks, fileattr_fill_flags, fileattr_fill_xflags, fileattr_get, fileattr_prepare_set, fileattr_set, set_fileattr_hooks};
 pub use inode_ops::{InodeOps, DefaultInodeOps, default_inode_ops, mk_mode, CreateCtx};
-pub use xattr::{SimpleXattrs, XattrError};
+pub use xattr::{SimpleXattrs, XattrError, XattrSlot};
 pub use file_ops::{FileOps, DefaultFileOps, default_file_ops, stream_write_iter_file, DirContext, DirEmit, FileIoctlCmd, FileIoctlReply, IoctlIntCmd};
 #[cfg(feature = "debug-getdents")]
 pub use file_ops::DirDebugBackend;
@@ -102,6 +103,7 @@ pub use errseq::{Errseq, ErrseqVal, MAX_ERRNO};
 pub use memory_accounting::{MemoryPageSnapshot, memory_page_snapshot};
 pub use types::{FileMode, FileType, Ino, KResult, OpenFlags, PollMask, StatxMask, VfsError};
 pub use poll_subs::{special_inode_needs_poll_subs, EpollNotify, PollSubscribers};
+pub use fshalt::{FsHaltHook, clear_fs_halt_hook, fs_halt, fs_halt_installed, set_fs_halt_hook};
 pub use fsreserve::{ReservedCaller, ReservedCallerHook, clear_reserved_caller_hook, reserved_caller, set_reserved_caller_hook};
 #[cfg(not(target_os = "oxide-kernel"))]
 pub use quota::take_logged_warnings;

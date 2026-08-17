@@ -22,6 +22,7 @@
 
 pub mod gc;
 pub mod discard;
+pub mod ckpt;
 pub mod balance;
 pub mod state;
 pub mod round;
@@ -43,6 +44,7 @@ pub mod run;
 pub mod run;
 
 pub use balance::{needs_checkpoint, BalanceFs, BgState};
+pub use ckpt::{CkptControl, IoClass, IoPrio};
 pub use discard::{DiscardControl, DiscardPolicy, DiscardType, IoAware};
 pub use gc::{GcKthread, GcMode, GcStep};
 pub use round::{discard_pass, drain_discards, gc_pass};

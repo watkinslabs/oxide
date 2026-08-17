@@ -226,9 +226,15 @@ impl Search {
     }
 
     /// A search for a caller cleaning ahead of demand, which is bounded and
-    /// resumes where the last one stopped. # C: O(1)
-    pub fn background(policy: Policy, offset: u32) -> Self {
-        Self { policy, offset, max_search: DEF_MAX_VICTIM_SEARCH }
+    /// resumes where the last one stopped.
+    ///
+    /// The bound is passed in rather than taken from the default, because it is
+    /// the one thing about an ahead-of-demand pass a tool can change: a volume
+    /// whose sections are cheap to cost wants a wider search, and one under a
+    /// latency budget wants a narrower one.
+    /// # C: O(1)
+    pub fn background(policy: Policy, offset: u32, max_search: u32) -> Self {
+        Self { policy, offset, max_search }
     }
 }
 

@@ -71,6 +71,11 @@ pub enum Corrupt {
 pub struct FreeNids {
     /// The share of memory the cache may take, in percent.
     pub ram_thresh: u32,
+    /// Share of the node table that may be dirty before the caches are worth a
+    /// checkpoint on their own, in percent. Live rather than a constant because a
+    /// volume with a large table and steady traffic wants it lower and a small
+    /// one wants it higher, and only a checkpoint retires the entries.
+    pub dirty_nats_ratio: u32,
     entries: BTreeMap<u32, Entry>,
     /// The free ids by the order they became free, oldest first. A second map
     /// rather than a queue because an id can also leave the free set from the
@@ -89,6 +94,7 @@ impl FreeNids {
     pub fn new(next_scan_nid: u32, available_nids: u32) -> Self {
         Self {
             ram_thresh: DEF_RAM_THRESHOLD,
+            dirty_nats_ratio: super::limits::DEF_DIRTY_NATS_RATIO,
             entries: BTreeMap::new(),
             order: BTreeMap::new(),
             next_seq: 0,

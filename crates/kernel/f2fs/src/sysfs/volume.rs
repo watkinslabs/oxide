@@ -90,8 +90,37 @@ pub(crate) fn attrs(fs: &Arc<F2fs>, dev: &str) -> Vec<Attr> {
         text(fs, dev, "encoding", encoding),
         text(fs, dev, "effective_lookup_mode", effective_lookup_mode),
         text(fs, dev, "features", features),
-        text(fs, dev, "extension_list", extension_list),
+        extension_list_attr(fs, dev),
     ]
+}
+
+/// The two extension lists, and the one write that changes them.
+///
+/// Writable because the change reaches the MEDIUM: the lists live in the
+/// superblock, so a name added here is seen by every later mount, which is what
+/// a tool writing it is asking for. A write that the medium refuses is undone
+/// by the volume before it returns, so what this file reports is always what the
+/// medium holds.
+/// # C: O(N extensions) to read; one block per superblock copy to write
+fn extension_list_attr(fs: &Arc<F2fs>, dir: &str) -> Attr {
+    let show_fs = Arc::clone(fs);
+    let store_fs = Arc::clone(fs);
+    Attr::rw(
+        dir,
+        "extension_list",
+        Arc::new(move || {
+            let text = { let mut v = show_fs.volume.lock();
+                         extension_list(&mut v).map_err(errno_to_vfs)? };
+            Ok(text.into_bytes())
+        }),
+        Arc::new(move |bytes: &[u8]| {
+            let line = core::str::from_utf8(bytes).map_err(|_| errno_to_vfs(Errno::Einval))?;
+            let c = crate::place::extlist::parse(line).map_err(errno_to_vfs)?;
+            store_fs.volume.lock().update_extension_list(c.name, c.hot, c.set)
+                .map_err(errno_to_vfs)?;
+            Ok(bytes.len())
+        }),
+    )
 }
 
 /// Segments in use, not full, and not the one a log is filling.
@@ -119,11 +148,11 @@ fn free_segments(v: &mut Vol) -> Result<u64, Errno> {
 }
 
 /// Discard requests waiting to be announced — RUNS, not blocks, because a
-/// request covers a run. The block count is `stat/undiscard_blks`.
-/// # C: O(N pending log N)
-fn pending_discard(v: &mut Vol) -> Result<u64, Errno> {
-    Ok(crate::volume::discard::coalesce(v.pending_discard.clone()).len() as u64)
-}
+/// request covers a run. The block count is `stat/undiscard_blks`, and both come
+/// off the discard control, which is the one thing that knows what is still
+/// outstanding.
+/// # C: O(MAX_PLIST_NUM)
+fn pending_discard(v: &mut Vol) -> Result<u64, Errno> { Ok(v.discard_runs_waiting()) }
 
 /// The Unicode version names resolve through, or that none does. # C: O(1)
 fn encoding(v: &mut Vol) -> Result<String, Errno> {
@@ -173,11 +202,6 @@ fn features(v: &mut Vol) -> Result<String, Errno> {
 
 /// The two extension lists the superblock carries: names whose files are
 /// placed as cold data, then names whose files are placed as hot.
-///
-/// Read-only here. Upstream accepts a write, which edits the list and then
-/// REWRITES THE SUPERBLOCK; this build has no superblock writer, and an
-/// attribute that took the write and changed only memory would report a
-/// persistent change it had not made.
 /// # C: O(N extensions)
 fn extension_list(v: &mut Vol) -> Result<String, Errno> {
     let sb = v.super_block();

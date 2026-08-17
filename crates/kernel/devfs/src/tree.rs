@@ -70,6 +70,15 @@ fn all_roots_ensure0() -> Vec<Arc<PseudoDir>> {
 /// single-devtmpfs-inode identity. An explicit non-zero `ns` targets that ns
 /// only (private-`/dev` construction). # C: O(ns·depth)
 pub fn register(ns: u64, full_path: &str, inode: InodeRef) {
+    // devtmpfs holds extended attributes: its superblock is the shared-memory
+    // one, which carries handlers for the security, trusted and user
+    // namespaces. So an attribute a caller has not set reads as ABSENT on a
+    // device node, never as unsupported — the login stack's label read on a
+    // terminal branches on exactly that difference. The nodes reaching this
+    // funnel are minted by a dozen unrelated driver crates that know nothing
+    // of the filesystem they join, so the property is stated HERE, at the join,
+    // rather than at each of their constructors.
+    inode.declare_xattr_store();
     if ns == 0 {
         for r in all_roots_ensure0() { r.insert_path(full_path, InodeRef::clone(&inode)); }
     } else {

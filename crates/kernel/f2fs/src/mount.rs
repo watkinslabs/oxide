@@ -9,6 +9,7 @@
 //! Module manifest:
 //! - `node`: what an inode of this filesystem is, built from a stored one.
 //! - `ops`:  the inode and file operations.
+//! - `falloc`: the `fallocate(2)` slot, and the swap-area hooks.
 //! - `quota`: the hooks `quotactl(2)` reaches this filesystem through.
 //! - `sb`:   `statfs` and the option tail.
 //! - `write`: the mutating operations, and the clock they share.
@@ -42,6 +43,7 @@ use crate::volume::Volume;
 
 pub mod node;
 pub mod devs;
+pub mod falloc;
 pub mod ops;
 pub mod prepare;
 pub mod quota;
@@ -242,7 +244,7 @@ impl F2fs {
     /// filesystem state; without one the medium still describes the state the
     /// mount started from.
     /// # C: O(dirty blocks)
-    pub fn mark_clean(&self) -> KResult<()> { self.checkpoint() }
+    pub fn mark_clean(&self) -> KResult<()> { self.checkpoint_now() }
 
     /// Write a checkpoint, then announce what it freed.
     ///
@@ -251,6 +253,16 @@ impl F2fs {
     /// one first destroys the state a crash would recover to.
     /// # C: O(dirty blocks + freed runs)
     pub fn checkpoint(&self) -> KResult<()> {
+        self.checkpoint_now()
+    }
+
+    /// Write one now, whatever the mount asked about merging.
+    ///
+    /// The path every caller that must NOT wait on another thread takes: the
+    /// unmount, a remount, and anything already holding what the thread would
+    /// need.
+    /// # C: O(a checkpoint)
+    pub fn checkpoint_now(&self) -> KResult<()> {
         let runs = {
             let mut v = self.volume.lock();
             v.commit().map_err(errno_to_vfs)?;
@@ -371,20 +383,31 @@ pub fn errno_to_vfs(err: Errno) -> VfsError {
         Errno::Enomem => VfsError::Enomem,
         Errno::Eopnotsupp => VfsError::Eopnotsupp,
         Errno::Enodata => VfsError::Enodata,
-        // A refusal is not a broken disk. Folding these into an I/O error tells
-        // the caller its medium failed when what happened is that the operation
-        // was not allowed — and a caller acting on `EIO` remounts read-only,
-        // reports corruption, or gives up on a file that is intact. `EPERM` in
-        // particular is what an immutable file answers, through a write, an
-        // attribute change, or a mapped store.
+        // Everything below was reaching userspace as EIO, which says the medium
+        // failed. Each of these is a refusal the caller can act on, and a
+        // program told EIO instead retries or reports a broken disk: a write
+        // over a quota limit is EDQUOT, a writable open of a sealed file is
+        // EPERM, a link past the count limit is EMLINK.
         Errno::Eperm => VfsError::Eperm,
         Errno::Eacces => VfsError::Eacces,
-        Errno::Etxtbsy => VfsError::Etxtbsy,
-        Errno::Ebusy => VfsError::Ebusy,
+        Errno::Edquot => VfsError::Edquot,
+        Errno::Emlink => VfsError::Emlink,
         Errno::Exdev => VfsError::Exdev,
-        Errno::Eloop => VfsError::Eloop,
-        Errno::Erange => VfsError::Erange,
+        Errno::Ebusy => VfsError::Ebusy,
+        Errno::Etxtbsy => VfsError::Etxtbsy,
         Errno::Eagain => VfsError::Eagain,
+        Errno::Erange => VfsError::Erange,
+        Errno::Eoverflow => VfsError::Eoverflow,
+        Errno::Euclean => VfsError::Euclean,
+        Errno::Enotty => VfsError::Enotty,
+        Errno::Emsgsize => VfsError::Emsgsize,
+        Errno::Ebadf => VfsError::Ebadf,
+        Errno::Efault => VfsError::Efault,
+        Errno::Esrch => VfsError::Esrch,
+        Errno::Eloop => VfsError::Eloop,
+        // EIO is the answer for a medium failure and for the errnos this
+        // interface's error type cannot spell (the three signature refusals and
+        // ENOPKG), which is recorded as an open issue rather than hidden here.
         _ => VfsError::Eio,
     }
 }

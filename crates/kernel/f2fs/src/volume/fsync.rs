@@ -143,6 +143,13 @@ impl<S: SectorSource> Volume<S> {
             return Ok(reason);
         }
         self.write_fsync_chain(ino, state.need_dentry_mark)?;
+        // The recovery info is now on the medium, so there is no longer written
+        // data this file needs a chain for — the reference drops the same record
+        // at the same point, once the chain is written and before the barrier.
+        self.ino_lists.remove(crate::checkpoint::InoKind::Append, ino);
+        // The recovery info is now on the medium, so there is no longer written
+        // data this file needs a chain for — the reference drops the same record
+        // at the same point, once the chain is written and before the barrier.
         // And THEN the barrier, which is what makes the call's promise true. The
         // chain is a run of node blocks a later mount goes looking for; a device
         // with a volatile cache has acknowledged them without putting them on

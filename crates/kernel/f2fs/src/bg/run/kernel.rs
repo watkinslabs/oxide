@@ -40,6 +40,13 @@ pub fn start(fs: &Arc<F2fs>) {
         && !spawn(fs, "f2fs_discard", discard_thread) {
         bg.discard_running.store(false, Ordering::Release);
     }
+    // Only where the mount asked for it. A thread nobody hands work to would
+    // park for ever, and the option is what says whether anybody will.
+    if fs.merges_checkpoints()
+        && !bg.ckpt_running.swap(true, Ordering::AcqRel)
+        && !spawn(fs, "f2fs_ckpt", ckpt_thread) {
+        bg.ckpt_running.store(false, Ordering::Release);
+    }
 }
 
 /// Hand one thread a weak reference to the mount and let the scheduler have
@@ -72,8 +79,10 @@ pub fn stop(fs: &F2fs) {
     bg.stopping.store(true, Ordering::Release);
     bg.waits.wake_gc();
     bg.waits.wake_discard();
+    bg.waits.wake_ckpt();
     bg.waits.wake_foreground();
-    while bg.gc_running.load(Ordering::Acquire) || bg.discard_running.load(Ordering::Acquire) {
+    while bg.gc_running.load(Ordering::Acquire) || bg.discard_running.load(Ordering::Acquire)
+        || bg.ckpt_running.load(Ordering::Acquire) {
         // SAFETY: unmount runs in process context holding no volume lock; the
         // threads being waited for need the CPU to observe the stop flag.
         unsafe { sched::live::schedule(); }
@@ -106,6 +115,41 @@ pub fn delegate_gc(fs: &Arc<F2fs>) -> bool {
             || bg.foreground_gen() != seen || bg.stopping())
     };
     true
+}
+
+/// Longest a caller waits for the merge thread before writing the checkpoint
+/// itself, in nanoseconds.
+///
+/// The same reasoning as the cleaner's wait: a thread that has taken this long
+/// is stuck on something the caller cannot see, and blocking a durability
+/// promise on it for ever is worse than making the promise twice.
+const CKPT_WAIT_NS: u64 = 5 * 1_000_000_000;
+
+/// Hand a checkpoint to the merge thread and wait for the write that serves it.
+///
+/// `None` means it was not handed over and the caller keeps the write. `Some`
+/// carries the result of the ONE write that served this caller and every other
+/// caller enrolled with it.
+/// # C: O(1) plus the wait
+pub fn delegate_checkpoint(fs: &Arc<F2fs>) -> Option<vfs::KResult<()>> {
+    let bg = fs.bg();
+    if !bg.ckpt_running.load(Ordering::Acquire) || bg.stopping() { return None; }
+    let deadline = now_ns().saturating_add(CKPT_WAIT_NS);
+    // Enrol BEFORE parking, and wait for the batch counter to move rather than
+    // for a flag: a write that completes between the enrolment and the park is
+    // then seen as done instead of waited out.
+    let seen = bg.enrol_checkpoint();
+    // SAFETY: process context in a sync path holding no volume lock; the
+    // condition takes only the short request lock, which no waker holds across
+    // its wake.
+    let _ = unsafe {
+        sched::live::wait_event_uninterruptible_until(&bg.waits.ckpt, deadline, now_ns,
+            || bg.checkpoint_served(seen) || bg.stopping())
+    };
+    // A caller released by the stop rather than by a write has not been served,
+    // and must not report the previous batch's result as its own.
+    if !bg.checkpoint_served(seen) { return None; }
+    Some(bg.checkpoint_result())
 }
 
 /// Whether this thread should wind up. # C: O(1)
@@ -152,6 +196,43 @@ extern "C" fn gc_thread(arg: usize) -> ! {
     // SAFETY: this thread holds no lock and owns nothing further; the weak
     // reference it was given has been dropped above.
     unsafe { sched::live::kthread_exit(0) }
+}
+
+extern "C" fn ckpt_thread(arg: usize) -> ! {
+    // SAFETY: `arg` is the `Weak<F2fs>` this thread was spawned with, leaked
+    // by `spawn` and owned by this thread alone until it is dropped below.
+    let weak = unsafe { Weak::from_raw(arg as *const F2fs) };
+    while !winding_up(&weak) {
+        let Some(fs) = weak.upgrade() else { break };
+        park_ckpt(&fs);
+        if fs.bg().stopping() { break; }
+        round::ckpt_pass(&fs);
+    }
+    // Anybody still enrolled is released rather than left parked: the mount is
+    // going away and the caller writes its own.
+    if let Some(fs) = weak.upgrade() {
+        fs.bg().ckpt_running.store(false, Ordering::Release);
+        fs.bg().waits.wake_ckpt();
+    }
+    drop(weak);
+    // SAFETY: this thread holds no lock and owns nothing further; the weak
+    // reference it was given has been dropped above.
+    unsafe { sched::live::kthread_exit(0) }
+}
+
+/// Park until somebody enrols a checkpoint, with no deadline of its own.
+///
+/// No interval, unlike the other two: a checkpoint is never written because
+/// time has passed — the periodic one is the cleaner's balance path asking for
+/// it — so this thread has nothing to do until a caller asks.
+/// # C: O(1) plus the sleep
+fn park_ckpt(fs: &Arc<F2fs>) {
+    let bg = fs.bg();
+    let cond = || bg.stopping() || bg.cprc.lock().wake;
+    // SAFETY: running kernel thread in process context holding no volume or
+    // background lock; the condition takes only the short request lock, which
+    // no waker holds across its wake.
+    let _ = unsafe { sched::live::wait_event_uninterruptible(&bg.waits.ckpt, cond) };
 }
 
 extern "C" fn discard_thread(arg: usize) -> ! {

@@ -122,10 +122,6 @@ pub struct Counters {
     pub ndirty_inode: [u32; dirty_of::MAX],
     /// Quota files this mount has open.
     pub nquota_files: u32,
-    /// Inodes appended to since the last checkpoint.
-    pub append_ino: u32,
-    /// Inodes overwritten since the last checkpoint.
-    pub update_ino: u32,
     /// Checkpoints asked for, by the kind of caller that asked.
     pub cp_call_count: [u32; call::MAX],
     /// Checkpoints actually written.
@@ -182,7 +178,6 @@ impl Counters {
             compr_inode: 0, compr_blocks: 0, swapfile_inode: 0,
             atomic_files: 0, max_aw_cnt: 0, donate_files: 0,
             ndirty_inode: [0; dirty_of::MAX], nquota_files: 0,
-            append_ino: 0, update_ino: 0,
             cp_call_count: [0; call::MAX], cp_count: 0,
             meta_count: [0; meta::MAX],
             segment_count: [0; alloc_of::MAX], block_count: [0; alloc_of::MAX],

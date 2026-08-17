@@ -431,3 +431,34 @@ fn a_directorys_state_reports_it_is_not_regular() {
     let (v, _) = ready(Options::defaults());
     assert!(!v.sync_state(ROOT_INO).expect("state").regular);
 }
+
+/// A file with data placed OUT of line is recorded as having written data, and
+/// the record is dropped by the two things that make it moot.
+///
+/// The record is per VOLUME, which is the point: it has to outlive whatever this
+/// mount stops holding about the file, so an `fsync` arriving later still knows
+/// there is recovery info worth writing.
+#[test]
+fn a_file_with_data_placed_out_of_line_is_recorded_until_it_is_recovered_or_checkpointed() {
+    use crate::checkpoint::InoKind;
+    let mut v = test_image::with_root().mount_rw().unwrap();
+    v.set_ipu_policy(crate::place::bits::DISABLE).unwrap();
+    let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
+    assert!(!v.ino_lists.exists(InoKind::Append, ino), "nothing has been placed yet");
+    v.write_file(ino, 0, &alloc::vec![0xA1u8; crate::uapi::BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
+    assert!(v.ino_lists.exists(InoKind::Append, ino), "a placed block was not recorded");
+
+    // The chain an `fsync` writes IS the recovery info, so the record is spent.
+    v.write_file(ino, 0, &alloc::vec![0xB2u8; crate::uapi::BLKSIZE]).unwrap();
+    v.fsync(ino).unwrap();
+    assert!(!v.ino_lists.exists(InoKind::Append, ino),
+            "the record outlived the chain that made it durable");
+
+    // And a checkpoint releases every list, because it makes every file durable.
+    v.write_file(ino, 0, &alloc::vec![0xC3u8; crate::uapi::BLKSIZE]).unwrap();
+    v.sync_data().unwrap();
+    assert!(v.ino_lists.exists(InoKind::Append, ino));
+    v.commit().unwrap();
+    assert!(!v.ino_lists.exists(InoKind::Append, ino), "a checkpoint left the record standing");
+}

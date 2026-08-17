@@ -157,3 +157,44 @@ fn the_age_policy_reports_what_the_mount_settled_on() {
     let a = super::super::volume::attrs(&fs, "vda");
     assert_eq!(show(&a, "atgc_enabled"), 0);
 }
+
+/// The dirty-node-table share written through the file is the one the balance
+/// decision compares against, and it is bounded as a percentage.
+#[test]
+fn the_dirty_node_share_reaches_the_decision_that_reads_it() {
+    let fs = mounted();
+    let a = attrs(&fs);
+    assert_eq!(show(&a, "dirty_nats_ratio"),
+               u64::from(crate::freenid::limits::DEF_DIRTY_NATS_RATIO));
+    store(&a, "dirty_nats_ratio", 40).expect("accepted");
+    assert_eq!(fs.volume.lock().dirty_nats_ratio(), 40, "the decision reads this");
+    assert_eq!(show(&a, "dirty_nats_ratio"), 40);
+    // A percentage, so a whole share is the bound; zero would make every cached
+    // entry excessive and every operation owe a checkpoint.
+    for bad in [0u64, 101, u64::from(u32::MAX)] {
+        assert!(store(&a, "dirty_nats_ratio", bad).is_err(), "{bad} was accepted");
+    }
+    assert_eq!(fs.volume.lock().dirty_nats_ratio(), 40, "a refusal changed it");
+    // And the share genuinely decides the answer. Asserted at the comparison
+    // rather than through the volume: the fixture's node table holds 232960 ids
+    // and a create dirties ONE entry, so no admissible share (1..=100) crosses
+    // the threshold and the volume-level answer is false either way.
+    // A filed row records that; what is pinned here is that the written value is
+    // what the comparison reads.
+    use crate::bg::balance::excess_dirty_nats_at;
+    assert!(excess_dirty_nats_at(10, 100, 10), "a tenth of the table is a tenth");
+    assert!(!excess_dirty_nats_at(9, 100, 10));
+    assert!(!excess_dirty_nats_at(0, 100, 1), "an empty table is never excessive");
+    assert!(excess_dirty_nats_at(1, 100, 1));
+    {
+        let mut v = fs.volume.lock();
+        let spec = crate::volume::NewInode { mode: crate::mode::S_IFREG | 0o644, uid: 0, gid: 0,
+                                             rdev: 0, now: (1_800_000_000, 0) };
+        v.create(crate::test_image::ROOT_INO, b"nat", &spec, None).unwrap();
+        assert!(v.cached_nats() > 0, "a create dirtied no node-table entry");
+        assert_eq!(v.excess_dirty_nats(),
+                   excess_dirty_nats_at(v.cached_nats(), v.max_nid() as usize,
+                                        v.dirty_nats_ratio() as usize),
+                   "the volume's answer is not the comparison's, at its own share");
+    }
+}

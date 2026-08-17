@@ -28,12 +28,21 @@ use crate::volume::Volume;
 /// Cached node-table entries past which the caches are worth a checkpoint on
 /// their own — a checkpoint is the only thing that retires them.
 pub const NAT_CACHE_THRESHOLD: usize = 100_000;
-/// Share of the node table that may be dirty before the same is true.
-pub const DIRTY_NAT_RATIO: usize = 10;
 /// Segments' worth of dirty metadata entries that make a checkpoint due.
 pub const DIRTY_THRESHOLD_SEGS: u64 = 4;
 /// Seconds between checkpoints on an otherwise quiet volume.
 pub const CP_INTERVAL_SECS: u64 = 60;
+
+/// Whether `cached` dirty node-table entries out of a table of `max` is enough
+/// to be worth a checkpoint on its own, at `ratio` percent.
+///
+/// Pure and separate from the volume that reads it, because the fixture's node
+/// table is large enough that no admissible share can cross the threshold on a
+/// handful of entries — so the comparison itself is only checkable here.
+/// # C: O(1)
+pub fn excess_dirty_nats_at(cached: usize, max: usize, ratio: usize) -> bool {
+    cached >= max.saturating_mul(ratio) / 100 && cached > 0
+}
 
 /// What the background balance sees when it decides.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
@@ -105,9 +114,8 @@ impl<S: SectorSource> Volume<S> {
     /// Whether enough of the node table is dirty to be worth a checkpoint.
     /// # C: O(1)
     pub fn excess_dirty_nats(&self) -> bool {
-        let max = self.max_nid() as usize;
-        self.cached_nats() >= max.saturating_mul(DIRTY_NAT_RATIO) / 100
-            && self.cached_nats() > 0
+        excess_dirty_nats_at(self.cached_nats(), self.max_nid() as usize,
+                             self.dirty_nats_ratio() as usize)
     }
 
     /// Whether the entries themselves have grown past what a mount should

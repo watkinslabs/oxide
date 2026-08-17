@@ -30,10 +30,19 @@ pub enum InoKind {
     TransDir = 0,
     /// A directory whose extended attributes were rewritten.
     XattrDir = 1,
+    /// A file that had a data block placed OUT of line since the last
+    /// checkpoint — one that grew, or whose page moved to a fresh block.
+    ///
+    /// Recorded per volume rather than on the file, which is what makes it
+    /// survive the file's in-core state being dropped: the reference keeps the
+    /// same fact on the inode while it is resident and moves it here when the
+    /// inode is evicted, so an `fsync` arriving afterwards still knows the file
+    /// has written data a chain can recover.
+    Append = 2,
 }
 
 /// How many lists there are.
-pub const INO_KINDS: usize = 2;
+pub const INO_KINDS: usize = 3;
 
 /// One list per kind, holding this checkpoint epoch's inode numbers.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -59,6 +68,10 @@ impl InoLists {
 
     /// Whether `kind` holds nothing. # C: O(1)
     pub fn is_empty(&self, kind: InoKind) -> bool { self.lists[kind as usize].is_empty() }
+
+    /// Forget one number on one list, for an event that has been made durable
+    /// on its own. # C: O(log n)
+    pub fn remove(&mut self, kind: InoKind, ino: u32) { self.lists[kind as usize].remove(&ino); }
 
     /// Drop every list, which a written checkpoint is what does.
     ///

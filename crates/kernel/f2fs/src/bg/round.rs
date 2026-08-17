@@ -159,7 +159,29 @@ pub fn discard_pass(fs: &Arc<F2fs>) -> DiscardPass {
         }
     };
     fs.announce_free(&round.runs);
+    // The device has answered, so the runs are no longer in flight. Lowered
+    // here rather than inside the round, because the round is what SUBMITS
+    // them: a count lowered at submission would never be non-zero and the
+    // report would say nothing was ever outstanding.
+    bg.dcc.lock().completed(round.runs.len());
     DiscardPass { round, wait_ms }
+}
+
+/// Serve every caller enrolled for a checkpoint, with ONE write.
+///
+/// The whole queue is taken before the write and the callers are released after
+/// it, so a caller that arrives while the write is in progress is enrolled for
+/// the next one — its own changes may not have been in the state this write
+/// captured.
+/// # C: O(a checkpoint)
+pub fn ckpt_pass(fs: &Arc<F2fs>) -> u32 {
+    let bg = fs.bg();
+    let count = bg.cprc.lock().take();
+    if count == 0 { return 0; }
+    let outcome = fs.checkpoint_now();
+    bg.cprc.lock().served(count, outcome);
+    bg.waits.wake_ckpt();
+    count
 }
 
 /// Issue everything still parked, whatever its length.
@@ -179,6 +201,7 @@ pub fn drain_discards(fs: &F2fs) {
         };
         if runs.is_empty() { return; }
         fs.announce_free(&runs);
+        bg.dcc.lock().completed(runs.len());
     }
 }
 

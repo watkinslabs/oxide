@@ -38,6 +38,8 @@ pub(crate) fn attrs(fs: &Arc<F2fs>, dev: &str) -> Vec<Attr> {
                |v| u64::from(v.iostat_enabled()), set_iostat_enable),
         num_rw(fs, dev, "readdir_ra",
                |v| u64::from(v.readdir_ra()), set_readdir_ra),
+        num_rw(fs, dev, "dirty_nats_ratio",
+               |v| u64::from(v.dirty_nats_ratio()), set_dirty_nats_ratio),
     ];
     out.extend(atgc::knobs::ALL.iter().map(|&k| atgc_knob(fs, dev, k)));
     out
@@ -136,6 +138,18 @@ fn set_iostat_enable(v: &mut Vol, n: u64) -> Result<(), Errno> {
 /// # C: O(1)
 fn set_readdir_ra(v: &mut Vol, n: u64) -> Result<(), Errno> {
     v.set_readdir_ra(n != 0);
+    Ok(())
+}
+
+/// Share of the node table that may be dirty before the caches are worth a
+/// checkpoint on their own.
+///
+/// Refused past a whole share and at zero: the value is a percentage, and zero
+/// would make every cached entry excessive and every operation owe a checkpoint.
+/// # C: O(1)
+fn set_dirty_nats_ratio(v: &mut Vol, n: u64) -> Result<(), Errno> {
+    if n == 0 || n > PERCENT { return Err(Errno::Einval); }
+    v.set_dirty_nats_ratio(n as u32);
     Ok(())
 }
 

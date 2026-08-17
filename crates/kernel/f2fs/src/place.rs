@@ -19,12 +19,14 @@
 //! - `ipu`:    whether one page's write lands back where it was.
 //! - `ssr`:    whether a log recycles a segment or opens a fresh one.
 //! - `tunables`: the thresholds one mount is running with.
+//! - `extlist`:  the written form of a change to the volume's extension lists.
 
 pub mod bits;
 pub mod limits;
 pub mod ipu;
 pub mod ssr;
 pub mod tunables;
+pub mod extlist;
 
 pub use tunables::Tunables;
 

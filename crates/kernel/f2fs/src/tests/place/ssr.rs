@@ -110,3 +110,41 @@ fn the_search_starts_where_the_log_and_the_mount_ask() {
     assert_eq!(ssr::next_segno_hint(false, true, 77), 0);
     assert_eq!(ssr::next_segno_hint(false, false, 77), 77);
 }
+
+/// The log's own type is asked for first, and the class walk never crosses into
+/// the other class: a data log must never be handed a segment the table calls a
+/// node segment, because the in-place writer refuses exactly that address.
+#[test]
+fn the_victim_search_asks_for_the_logs_own_type_first() {
+    use crate::uapi::{CURSEG_COLD_DATA, CURSEG_COLD_NODE, CURSEG_HOT_DATA, CURSEG_HOT_NODE,
+                      CURSEG_WARM_DATA, CURSEG_WARM_NODE, CURSEG_ALL_DATA_ATGC,
+                      CURSEG_COLD_DATA_PINNED, NR_CURSEG_DATA_TYPE};
+    for ty in [CURSEG_HOT_DATA, CURSEG_WARM_DATA, CURSEG_COLD_DATA,
+               CURSEG_HOT_NODE, CURSEG_WARM_NODE, CURSEG_COLD_NODE] {
+        let order = ssr::victim_type_order(ty);
+        assert_eq!(order[0], ty, "the log's own type is not asked for first");
+        let node = ty >= NR_CURSEG_DATA_TYPE;
+        for &c in &order { assert_eq!(c >= NR_CURSEG_DATA_TYPE, node, "the walk crossed class"); }
+        let mut seen = order;
+        seen.sort_unstable();
+        assert_eq!(seen[0] + 1, seen[1], "the walk repeated a type");
+        assert_eq!(seen[1] + 1, seen[2], "the walk repeated a type");
+    }
+    // A hot log walks up, away from itself; warm and cold walk down from the
+    // coldest, so both move away from the temperature they would contaminate.
+    assert_eq!(ssr::victim_type_order(CURSEG_HOT_DATA),
+               [CURSEG_HOT_DATA, CURSEG_WARM_DATA, CURSEG_COLD_DATA]);
+    assert_eq!(ssr::victim_type_order(CURSEG_WARM_DATA),
+               [CURSEG_WARM_DATA, CURSEG_COLD_DATA, CURSEG_HOT_DATA]);
+    assert_eq!(ssr::victim_type_order(CURSEG_COLD_DATA),
+               [CURSEG_COLD_DATA, CURSEG_WARM_DATA, CURSEG_HOT_DATA]);
+    assert_eq!(ssr::victim_type_order(CURSEG_HOT_NODE),
+               [CURSEG_HOT_NODE, CURSEG_WARM_NODE, CURSEG_COLD_NODE]);
+    assert_eq!(ssr::victim_type_order(CURSEG_WARM_NODE),
+               [CURSEG_WARM_NODE, CURSEG_COLD_NODE, CURSEG_HOT_NODE]);
+    // The two logs beyond the persisted six are cold data by temperature.
+    assert_eq!(ssr::victim_type_order(CURSEG_ALL_DATA_ATGC),
+               ssr::victim_type_order(CURSEG_COLD_DATA));
+    assert_eq!(ssr::victim_type_order(CURSEG_COLD_DATA_PINNED),
+               ssr::victim_type_order(CURSEG_COLD_DATA));
+}

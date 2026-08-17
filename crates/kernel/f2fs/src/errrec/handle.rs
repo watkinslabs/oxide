@@ -126,6 +126,14 @@ impl<S: SectorSource> Volume<S> {
             self.errrec.set(r);
             let _ = self.record_errors();
         }
+        // Before the arms below, as the reference panics before it marks the
+        // volume down or takes it read-only: those two are what a mount that
+        // SURVIVES the error does, and this one was told not to survive it.
+        // The demand goes to the layer that owns the machine (`vfs::fs_halt`);
+        // a build with no halt path installed is told so and carries on down
+        // the remaining arms, which is what the reference does when a halt is
+        // suppressed.
+        if out.halt { vfs::fs_halt(crate::mount::F2FS_NAME, reason.as_str()); }
         if out.shutdown { self.sbi.set(crate::sbflags::bits::IS_SHUTDOWN); }
         if out.go_readonly { self.writable = false; }
         out

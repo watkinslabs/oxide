@@ -169,6 +169,13 @@ impl<S: SectorSource> Volume<S> {
 
     /// # C: O(1)
     pub fn set_nid_ram_thresh(&mut self, v: u32) { self.free_nids.ram_thresh = v; }
+
+    /// Share of the node table that may be dirty before the caches are worth a
+    /// checkpoint on their own. # C: O(1)
+    pub fn dirty_nats_ratio(&self) -> u32 { self.free_nids.dirty_nats_ratio }
+
+    /// Retune it. # C: O(1)
+    pub fn set_dirty_nats_ratio(&mut self, v: u32) { self.free_nids.dirty_nats_ratio = v; }
 }
 
 #[cfg(test)]
