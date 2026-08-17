@@ -82,6 +82,9 @@ impl AddressSpace {
             // The backing lookup can race a normal fault.  Its final PTE
             // recheck must be serialized with the install, otherwise M::map
             // would replace a peer's leaf.
+            // SAFETY: `va` walks the loop in PAGE_SIZE_BYTES steps from a page-aligned
+            // start and `frame.pa` is a 4 KiB page-cache frame this iteration holds a
+            // reference on (taken above when the backing did not already hold one).
             let installed = unsafe {
                 self.map_if_absent::<M>(Va(va), Pa(frame.pa), flags, PageSize::P4K)
             };

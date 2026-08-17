@@ -116,6 +116,9 @@ impl AddressSpace {
                 if (0x7ffff6000000..0x7ffff8000000).contains(&va_page) {
                     crate::tailwatch::log_install(b"kbytes", 1, off as u64, va_page, pa, self.root_pa);
                 }
+                // SAFETY: `va_page` is page-aligned and `pa` is the freshly allocated frame
+                // whose BSS tail this arm just zeroed; it is unpublished and solely owned
+                // here, and dropped with `dec_ref` if the install loses the race.
                 let installed = unsafe {
                     self.map_if_absent::<M>(Va(va_page), Pa(pa), pte_flags, PageSize::P4K)
                 };
@@ -209,6 +212,9 @@ impl AddressSpace {
                         mark_referenced(spa);
                     }
                     let pte_flags = vma.page_flags() | wp;
+                    // SAFETY: `va_page` is page-aligned and `spa` is a resident page-cache frame
+                    // this fault holds a reference on — either already held by the backing lookup
+                    // or taken by the `inc_ref` above — so it stays live until the install wins.
                     let installed = unsafe {
                         self.map_if_absent::<M>(Va(va_page), Pa(spa), pte_flags, PageSize::P4K)
                     };
@@ -482,6 +488,9 @@ impl AddressSpace {
                     klog::write_raw(b"\n");
                 }
                 let pte_flags = vma.page_flags() | wp;
+                // SAFETY: `va_page` is page-aligned and `pa` is the frame this arm just filled
+                // from the backing file; the fault owns the only reference to it, and returns
+                // that reference via `dec_ref` if a sibling fault won the slot instead.
                 let installed = unsafe {
                     self.map_if_absent::<M>(Va(va_page), Pa(pa), pte_flags, PageSize::P4K)
                 };

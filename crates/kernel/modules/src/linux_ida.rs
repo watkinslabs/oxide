@@ -69,6 +69,7 @@ fn allocate_locked(xa: &mut LinuxXArray, min: usize, max: usize) -> i32 {
             let mut bitmap = Box::new(IdaBitmap { bits: [0; 128] }); bitmap.bits[0] = bits;
             if let Some(chosen) = first_zero(&bitmap.bits, bit, max.saturating_sub(chunk * IDA_BITMAP_BITS)) { set_bit(&mut bitmap.bits, chosen); let raw = Box::into_raw(bitmap).cast::<c_void>(); store_locked(xa, chunk, raw); return (chunk * IDA_BITMAP_BITS + chosen) as i32; }
         } else {
+            // SAFETY: entry is non-null and not a value-tagged small set (both cases handled in the arms above), so it is the raw IdaBitmap this xarray only ever stores via Box::into_raw in those same arms; the xarray lock this function's caller holds excludes concurrent mutation.
             let bitmap = unsafe { &mut *entry.cast::<IdaBitmap>() };
             if let Some(chosen) = first_zero(&bitmap.bits, bit, max.saturating_sub(chunk * IDA_BITMAP_BITS)) { set_bit(&mut bitmap.bits, chosen); return (chunk * IDA_BITMAP_BITS + chosen) as i32; }
         }
@@ -81,6 +82,7 @@ fn free_locked(xa: &mut LinuxXArray, id: usize) {
     let chunk = id / IDA_BITMAP_BITS; let bit = id % IDA_BITMAP_BITS; let entry = load_locked(xa, chunk);
     if entry.is_null() { return; }
     if is_value(entry) { if bit >= SMALL_BITS { return; } let bits = decode_value(entry); if bits & (1usize << bit) == 0 { return; } let new = bits & !(1usize << bit); if new == 0 { erase_locked(xa, chunk); } else { store_locked(xa, chunk, value(new)); } return; }
+    // SAFETY: entry is non-null and, having failed is_value above, is the raw IdaBitmap allocate_locked stored via Box::into_raw; this reborrow precedes the Box::from_raw below that frees it exactly once when the bitmap empties.
     let bitmap = unsafe { &mut *entry.cast::<IdaBitmap>() }; if !test_bit(&bitmap.bits, bit) { return; } clear_bit(&mut bitmap.bits, bit); if bitmap.bits.iter().all(|word| *word == 0) { let old = erase_locked(xa, chunk); unsafe { drop(Box::from_raw(old.cast::<IdaBitmap>())); } }
 }
 

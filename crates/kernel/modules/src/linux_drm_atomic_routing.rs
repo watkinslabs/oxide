@@ -81,9 +81,11 @@ unsafe fn selected_encoder(state: *mut u8, connector: *mut u8) -> *mut u8 {
     if !helpers.is_null() {
         // SAFETY: callback slots are ABI-pinned and nonzero functions use their documented signatures.
         let atomic = unsafe { read(helpers.add(DRM_CONNECTOR_HELPER_ATOMIC_BEST_ENCODER_OFF).cast::<usize>()) };
+        // SAFETY: atomic_best_encoder's ABI signature is (connector, state) -> *mut encoder; both are the caller's own non-null pointers.
         if atomic != 0 { return unsafe { core::mem::transmute::<usize, unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void>(atomic)(connector.cast(), state.cast()).cast() }; }
         // SAFETY: callback slots are ABI-pinned and nonzero functions use their documented signatures.
         let legacy = unsafe { read(helpers.add(DRM_CONNECTOR_HELPER_BEST_ENCODER_OFF).cast::<usize>()) };
+        // SAFETY: legacy best_encoder's ABI signature is (connector) -> *mut encoder, taking only the caller's own non-null connector.
         if legacy != 0 { return unsafe { core::mem::transmute::<usize, unsafe extern "C" fn(*mut c_void) -> *mut c_void>(legacy)(connector.cast()).cast() }; }
     }
     pick_single_encoder(transaction_device(state), connector).unwrap_or(core::ptr::null_mut()).cast()
@@ -95,6 +97,7 @@ fn set_best_encoder(state: *mut u8, new_connector: *mut u8, encoder: *mut u8) ->
     if !previous.is_null() {
         // SAFETY: committed connector state identifies the old CRTC used for the old encoder mask.
         let connector = unsafe { read(new_connector.cast::<*mut u8>()) };
+        // SAFETY: connector is the non-null owning connector just read from new_connector's own backpointer; its committed-state field is the same offset every acquire path uses.
         let committed = unsafe { read(connector.add(DRM_CONNECTOR_STATE_OFF).cast::<*mut u8>()) };
         if !committed.is_null() {
             // SAFETY: committed connector state stores its CRTC relation at the common state offset.
@@ -128,6 +131,7 @@ fn steal_encoder(state: *mut u8, encoder: *mut u8) -> Result<(), i32> {
     for index in 0..count {
         // SAFETY: index is bounded by transaction-owned connector entry capacity.
         let new = unsafe { read(entries.add(index * DRM_ATOMIC_CONNECTOR_ENTRY_SIZE + DRM_ATOMIC_ENTRY_NEW_OFF).cast::<*mut u8>()) };
+        // SAFETY: new is checked non-null before this read; best-encoder lives at the same offset every routing helper uses.
         if new.is_null() || unsafe { read(new.add(DRM_CONNECTOR_STATE_BEST_ENCODER_OFF).cast::<*mut u8>()) } != encoder { continue; }
         // SAFETY: old state is the current transaction's selected connector relation.
         let old_crtc = unsafe { read(new.add(DRM_CONNECTOR_STATE_CRTC_OFF).cast::<*mut c_void>()) };
@@ -183,6 +187,7 @@ mod tests {
         }
         DEVICES.lock().push(DeviceAllocation { dev: dev.as_mut_ptr() as usize, base: 0, layout: Layout::new::<u8>(), refs: 1, mode_config: true, objects: Vec::new(), planes: Vec::new(), crtcs: vec![CrtcRecord { ptr: crtc.as_mut_ptr() as usize, name: 0, layout: Layout::new::<u8>() }], encoders: vec![EncoderRecord { ptr: encoder.as_mut_ptr() as usize, name: 0, layout: Layout::new::<u8>() }], connectors: Vec::new(), clients: Vec::new(), vblank: None, primary_master: None, put_pending: false, unplugged: false });
         assert_eq!(update_connector_routing(state.as_mut_ptr().cast(), connector.as_mut_ptr().cast(), old_connector.as_mut_ptr().cast(), new_connector.as_mut_ptr().cast()), 0);
+        // SAFETY: reads back the best-encoder and encoder-mask fields routing just wrote into the fabricated new_connector/crtc_new records above.
         assert_eq!(unsafe { read(new_connector.as_ptr().add(DRM_CONNECTOR_STATE_BEST_ENCODER_OFF).cast::<*mut u8>()) }, encoder.as_mut_ptr()); assert_eq!(unsafe { read(crtc_new.as_ptr().add(DRM_CRTC_STATE_ENCODER_MASK_OFF).cast::<u32>()) }, 1); assert_ne!(crtc_new[DRM_CRTC_STATE_CONNECTORS_CHANGED_OFF] & DRM_CRTC_STATE_CONNECTORS_CHANGED_BIT, 0);
         DEVICES.lock().clear();
     }

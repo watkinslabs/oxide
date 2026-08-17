@@ -230,6 +230,8 @@ mod tests {
         let prepares = AtomicU32::new(0);
         // Hosted tests have no installed runqueue, but the helper still runs
         // its publication/prepare/recheck sequencing synchronously.
+        // SAFETY: hosted test in process context holding no lock a waker takes; with
+        // no runqueue installed the helper runs its prepare/recheck sequence inline.
         let out = unsafe {
             wait_event_uninterruptible_prepare(
                 &wait,
@@ -248,6 +250,8 @@ mod tests {
     fn uninterruptible_ready_predicate_never_publishes_a_waiter() {
         let wait = WaitList::new();
         let checks = AtomicU32::new(0);
+        // SAFETY: hosted test in process context; the ready predicate short-circuits
+        // before any waiter is published, so no runqueue is required.
         let out = unsafe {
             wait_event_uninterruptible(&wait, || {
                 checks.fetch_add(1, Ordering::Relaxed);
@@ -263,6 +267,8 @@ mod tests {
     fn timed_uninterruptible_ready_predicate_never_reads_the_clock() {
         let wait = WaitList::new();
         let clock_reads = AtomicU32::new(0);
+        // SAFETY: hosted test in process context; the predicate is immediately true so
+        // the helper returns before publishing a waiter or consulting the clock.
         let out = unsafe {
             wait_event_uninterruptible_until(&wait, 1, || {
                 clock_reads.fetch_add(1, Ordering::Relaxed);
@@ -279,6 +285,8 @@ mod tests {
         let reads = AtomicU32::new(0);
         // Hosted has no current task, so the timed wait performs its terminal
         // deadline recheck synchronously instead of trying to schedule.
+        // SAFETY: hosted test — no current task, so the timed wait takes its terminal
+        // synchronous recheck path and never schedules or touches a runqueue.
         unsafe {
             sleep_uninterruptible_until(7, || {
                 reads.fetch_add(1, Ordering::Relaxed);

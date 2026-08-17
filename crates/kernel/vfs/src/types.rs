@@ -45,6 +45,14 @@ pub const S_IFIFO:  Umode = 0o010000;
 /// (sticky) is defined here. All three are `Umode`.
 pub const S_ISVTX: Umode = 0o1000;
 
+/// The three permission classes of a `umode_t` (`S_IRWXU`/`S_IRWXG`/`S_IRWXO`).
+pub const S_IRWXU: Umode = 0o700;
+pub const S_IRWXG: Umode = 0o070;
+pub const S_IRWXO: Umode = 0o007;
+/// `S_IRWXUGO` — the nine permission bits. `S_IALLUGO`, which adds
+/// set-uid/set-gid/sticky, is defined by its consumer in `namei`.
+pub const S_IRWXUGO: Umode = S_IRWXU | S_IRWXG | S_IRWXO;
+
 impl FileType {
     /// `S_IFMT` type bits for this file type — the high half of the Linux
     /// `umode_t`/`i_mode` word. Inverse of `i_mode & S_IFMT`. # C: O(1)
