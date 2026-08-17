@@ -65,6 +65,23 @@ fn current_reserved_caller(res_gid: u32) -> vfs::ReservedCaller {
     }
 }
 
+/// Stop the machine because a mount was given `errors=panic` and hit the error
+/// it was told not to survive.
+///
+/// Installed from here because stopping the machine is this layer's business,
+/// not a filesystem's: a volume decides that its mount line asked for a halt,
+/// and the layer that owns the machine carries it out. The reason is written to
+/// the log FIRST — a panic message cannot carry it, and the reason is the whole
+/// diagnosis. # C: does not return
+fn fs_halt(fs: &'static str, reason: &'static str) {
+    klog::write_raw(b"[FATAL] ");
+    klog::write_raw(fs.as_bytes());
+    klog::write_raw(b": errors=panic, halting after: ");
+    klog::write_raw(reason.as_bytes());
+    klog::write_raw(b"\n");
+    hal::kassert!(false, "filesystem mounted errors=panic hit a critical error");
+}
+
 /// Install the VFS path-walk hooks (mount-crossing) AND the mount-ns
 /// provider at boot. Resolution is now always per-component
 /// (`d_lookup → i_op->lookup → d_add`); there is no whole-path delegate to
@@ -89,6 +106,7 @@ pub fn install_vfs_hooks() {
     fs::selinux::install();
     vfs::set_quota_sys_resource_hook(quota_has_sys_resource);
     vfs::set_reserved_caller_hook(current_reserved_caller);
+    vfs::set_fs_halt_hook(fs_halt);
     vfs::set_quota_wait_hooks(
         sched::live::quota_wait::park,
         sched::live::quota_wait::schedule_after_park,
