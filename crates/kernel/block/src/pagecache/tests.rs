@@ -109,7 +109,11 @@ pub(super) const POOL_PAGES: usize = 64;
 const FRAME_BASE: u64 = PAGE_BYTES as u64;
 
 static NEXT_FRAME: AtomicUsize = AtomicUsize::new(0);
-static RELEASED: AtomicUsize = AtomicUsize::new(0);
+/// Returns counted PER FRAME rather than in one total. A total is a shared
+/// counter every test in the binary steps, so an assertion on it is a race with
+/// whatever else is running; a frame belongs to exactly one test, because the
+/// allocator never hands the same one out twice.
+static RELEASED: [AtomicUsize; POOL_PAGES] = [const { AtomicUsize::new(0) }; POOL_PAGES];
 static POOL: AtomicUsize = AtomicUsize::new(0);
 /// What the provider answers for "does a user page table map this frame".
 /// Global rather than per frame: a test says which answer it is testing, and the
@@ -140,7 +144,16 @@ pub(super) fn test_frame_ptr(pa: u64) -> Option<*mut u8> {
     Some(unsafe { pool().add(idx) })
 }
 
-unsafe fn test_release(_pa: u64) { RELEASED.fetch_add(1, Ordering::AcqRel); }
+unsafe fn test_release(pa: u64) {
+    let Some(idx) = frame_index(pa) else { return };
+    RELEASED[idx].fetch_add(1, Ordering::AcqRel);
+}
+
+fn frame_index(pa: u64) -> Option<usize> {
+    let off = pa.checked_sub(FRAME_BASE)? as usize;
+    if off >= POOL_PAGES * PAGE_BYTES { return None; }
+    Some(off / PAGE_BYTES)
+}
 
 fn test_mapped(_pa: u64) -> bool { ALL_MAPPED.load(Ordering::Acquire) }
 
@@ -158,5 +171,7 @@ pub(super) fn with_frames() {
 /// Say whether the provider reports every frame as user-mapped.
 pub(super) fn set_all_mapped(on: bool) { ALL_MAPPED.store(on, Ordering::Release); }
 
-/// References the provider has been asked to return.
-pub(super) fn released() -> usize { RELEASED.load(Ordering::Acquire) }
+/// How many times THIS frame's reference has been returned. # C: O(1)
+pub(super) fn released_for(pa: u64) -> usize {
+    frame_index(pa).map_or(0, |i| RELEASED[i].load(Ordering::Acquire))
+}
