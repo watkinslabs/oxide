@@ -24,6 +24,8 @@
 //! - `xattrs`: the attribute region, assembled from its two halves.
 //! - `fileops`: writing a file's bytes, and shortening one.
 //! - `dirwrite`: adding and removing directory entries.
+//! - `dirstored`: placing and finding an entry by its STORED name, which a
+//!                replay does and which needs no key.
 //! - `namei`:  creating, removing and linking names.
 //! - `rename`: moving a name, exchanging two, and the whiteout form.
 //! - `tmpfile`: an inode no name reaches.
@@ -92,6 +94,7 @@ pub mod barrier;
 pub mod commit;
 pub mod fileops;
 pub mod dirwrite;
+pub mod dirstored;
 pub mod namei;
 pub mod rename;
 pub mod tmpfile;
@@ -119,7 +122,7 @@ pub mod readahead;
 pub use curseg::{Curseg, Kind, Summary};
 pub use dir::DirEntry;
 pub use dnode::Holder;
-pub use namei::NewInode;
+pub use namei::{NewInode, Removed};
 pub use rename::Rename;
 pub use nodes::NodeRef;
 
@@ -163,6 +166,15 @@ pub struct Volume<S: SectorSource> {
     /// one by. Never on the medium: an inode whose key is absent stays
     /// listable and removable, and only its contents and names are withheld.
     pub(crate) fscrypt_keys: BTreeMap<crate::crypto::KeyId, crate::crypto::MasterKey>,
+    /// The key each encrypted inode's contents and names are worked under, as
+    /// the operation that entered the file resolved it. The reference keeps
+    /// exactly this beside the inode and its en/decryption reads it with a raw
+    /// dereference; resolving it at the point of use instead put an attribute
+    /// read, a node read and a page lock that can block underneath every
+    /// partial block write. Interior mutability because a READ is one of the
+    /// entry points that fills it and a read takes `&self` — the same reason
+    /// `verity_cache` below has it.
+    pub(crate) crypt_cache: core::cell::RefCell<BTreeMap<u32, alloc::sync::Arc<crate::crypto::Info>>>,
     pub(crate) opts: Options,
     pub(crate) access: Access,
     pub(crate) writable: bool,
@@ -214,12 +226,12 @@ pub struct Volume<S: SectorSource> {
     /// moves live blocks, and replay is still reading the chain that names
     /// them.
     pub(crate) recovering: bool,
-    /// How many descriptions hold each inode open. An orphan is reclaimed
-    /// when this reaches zero, which is what makes the list finite.
-    pub(crate) opens: BTreeMap<u32, u32>,
-    /// Inodes whose last name is gone but which something still holds open.
-    /// They are recorded in the checkpoint so a crash before the last close
-    /// does not leak everything they own.
+    /// Inodes whose last name is gone and which nothing has evicted yet. They
+    /// are recorded in the checkpoint so a crash before the last reference goes
+    /// does not leak everything they own. What holds such an inode is the
+    /// layer above's reference to it, not a count kept here: a second count
+    /// beside that reference is free to disagree with it, and the one that was
+    /// here disagreed permanently because nothing on the open path wrote it.
     pub(crate) orphans: BTreeSet<u32>,
     /// Blocks released since the last checkpoint. They are still part of the
     /// checkpoint on the medium, so nothing may be announced to the device

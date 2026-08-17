@@ -71,8 +71,11 @@ impl<S: SectorSource> Volume<S> {
         // the way out. Doing it when the page was dirtied would leave the
         // mapping holding ciphertext, and every read of that offset would hand
         // the caller noise.
-        let crypt = self.crypt_info(&inode, ino)?;
-        if inode.encrypted() && crypt.is_none() { return Err(Errno::Enokey); }
+        //
+        // A page can only be dirty because a write put it there, and that write
+        // resolved the key at its entry — so the record is held, and this is a
+        // read of it rather than a second resolution from under the placement.
+        let crypt = self.crypt_info_held(&inode, ino)?;
         // The node already exists — the reservation is in it — but the walk is
         // the same one, and asking for it rather than remembering it is what
         // keeps this correct after a cleaner has moved the nodes underneath.
@@ -85,7 +88,7 @@ impl<S: SectorSource> Volume<S> {
                     .map_err(|e| e.errno())?;
             }
         }
-        let ctx = self.write_ctx(crypt.as_ref(), index);
+        let ctx = self.write_ctx(crypt.as_deref(), index);
         let is_dir = inode.mode & mode_ifmt() == mode_ifdir();
         let owner = match holder { Holder::Inode => ino, Holder::Direct(nid) => nid };
         let flags = self.data_write_flags(ino);

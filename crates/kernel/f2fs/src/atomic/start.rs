@@ -118,7 +118,10 @@ impl<S: SectorSource> Volume<S> {
         self.write_node(cow, cow, block, Kind::FileNode)?;
         self.valid_inode_count += 1;
         self.charge_inode(cow)?;
-        self.open_inode(cow);
+        // Parked and never named, so nothing but this span can reach it. The
+        // span's own record IS the hold: `finish_atomic_write` evicting it is
+        // what frees it, and a crash first leaves the reclaim to the next
+        // mount, which is what the list is for.
         self.add_orphan(cow)?;
         Ok(cow)
     }

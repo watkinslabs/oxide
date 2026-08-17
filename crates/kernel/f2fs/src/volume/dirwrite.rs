@@ -121,12 +121,18 @@ impl<S: SectorSource> Volume<S> {
         -> Result<(), Errno> {
         self.writable_or_err()?;
         if name.is_empty() || name.len() > NAME_LEN { return Err(Errno::Enametoolong); }
+        // A directory's own two entries are not a NAME for what they point at:
+        // `.` points at the directory itself and `..` at its parent, and
+        // treating either as a name would record the new directory as its own
+        // parent, and as its parent's parent. Decided from the plaintext, before
+        // the ciphertext shadows it below.
+        let own_entry = name == b"." || name == b"..";
         let inode = self.read_inode(dir)?;
         // Creating an entry needs the plaintext to encrypt, so it is the one
-        // directory operation that cannot proceed without the key.
-        let crypt = self.crypt_info(&inode, dir)?;
-        if inode.encrypted() && crypt.is_none() { return Err(Errno::Enokey); }
-        let want = self.entry_hash_crypt(&inode, crypt.as_ref(), name)?;
+        // directory operation that cannot proceed without the key. Resolved
+        // here, at the operation, and read as memory by everything below.
+        let crypt = self.crypt_require_key(&inode, dir)?;
+        let want = self.entry_hash_crypt(&inode, crypt.as_deref(), name)?;
         // What lands in the entry is the ciphertext, and every length decision
         // below is about THAT — a plaintext name and its stored form differ in
         // length, so sizing the record from the plaintext overflows the slot.
@@ -134,33 +140,35 @@ impl<S: SectorSource> Volume<S> {
             Some(c) => c.encrypt_name(name).map_err(|e| e.errno())?,
             None => Vec::from(name),
         };
-        let name: &[u8] = &stored;
-        let slots = dentry_slots(name.len());
-        if inode.inline_dentry() {
-            let (at, len) = inode.inline_data_span();
-            let l = Layout::inline(len);
-            let mut block = self.inode_bytes(dir)?;
-            if let Some(slot) = room_for(&block[at..at + len], &l, slots) {
-                place_entry_hashed(&mut block[at..at + len], &l, slot, name, want, ino, ft);
-                self.put_inode(dir, block)?;
-                self.unpark_orphan(ino);
-                return Ok(());
-            }
-            self.convert_inline_dir(dir)?;
-        }
-        self.add_regular_dentry(dir, name, ino, ft, slots, want)?;
-        // A name has landed. An inode parked for want of one — a file made
-        // without a name and then linked to it, or one whose last name went
-        // while something held it open and whose name a replay has just put
-        // back — is reachable again, and a mount that still found it on the
-        // orphan list would free a file that has a name.
+        self.add_stored_dentry(dir, &inode, &stored, want, ino, ft)?;
+        self.name_landed(dir, ino, own_entry)
+    }
+
+    /// What every dentry add owes the inode it just named, whichever of the two
+    /// layouts held the entry.
+    ///
+    /// The recorded parent is the newest name's directory, so a file linked into
+    /// a second directory names THAT one from then on; a checker reads the field
+    /// and a chain replay restores an entry from it, so a stale one describes a
+    /// name that is not where it says. Written on every add for that reason,
+    /// rather than at creation only.
+    /// # C: O(1 block)
+    fn name_landed(&mut self, dir: u32, ino: u32, own_entry: bool) -> Result<(), Errno> {
+        if own_entry { return Ok(()); }
+        self.stamp_inode(ino, |b| put32(b, I_PINO, dir))?;
+        // An inode parked for want of a name — a file made without one and then
+        // linked to it, or one whose last name went while something held it open
+        // and whose name a replay has just put back — is reachable again, and a
+        // mount that still found it on the orphan list would free a file that
+        // has a name.
         self.unpark_orphan(ino);
         Ok(())
     }
 
     /// Add to a directory whose entries live in blocks. # C: O(depth) blocks
     #[allow(clippy::too_many_arguments)]
-    fn add_regular_dentry(&mut self, dir: u32, name: &[u8], ino: u32, ft: u8, slots: usize,
+    pub(crate) fn add_regular_dentry(&mut self, dir: u32, name: &[u8], ino: u32, ft: u8,
+                          slots: usize,
                           want: u32) -> Result<(), Errno> {
         if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::DirDepth) {
             return Err(Errno::Enospc);
@@ -307,14 +315,14 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(name len)
     pub(crate) fn entry_key(&self, inode: &crate::node::Inode, dir: u32, name: &[u8])
         -> Result<(u32, Vec<u8>), Errno> {
-        let crypt = self.crypt_info(inode, dir)?;
+        let crypt = self.crypt_setup_info(inode, dir)?;
         let search = if inode.encrypted() {
-            Some(crate::crypto::setup(crypt.as_ref(), name, true).map_err(|e| e.errno())?)
+            Some(crate::crypto::setup(crypt.as_deref(), name, true).map_err(|e| e.errno())?)
         } else { None };
         let want = match &search {
             Some(s) => match s.hash() {
                 Some(h) => h,
-                None => self.entry_hash_crypt(inode, crypt.as_ref(), name)?,
+                None => self.entry_hash_crypt(inode, crypt.as_deref(), name)?,
             },
             None => self.entry_hash(inode, name)?,
         };
@@ -423,3 +431,8 @@ pub fn inline_entries(block: &[u8], at: usize, len: usize) -> Result<Vec<deblock
 #[cfg(test)]
 #[path = "../tests/dirwrite.rs"]
 mod tests;
+
+/// The recorded parent every dentry add owes the inode it names.
+#[cfg(test)]
+#[path = "../tests/pino.rs"]
+mod pino_tests;
