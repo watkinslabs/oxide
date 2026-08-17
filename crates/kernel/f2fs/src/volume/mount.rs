@@ -141,6 +141,13 @@ impl<S: SectorSource> Volume<S> {
         let meta_cache = crate::checkpoint::cache::Cache::new(
             sb.meta_ino, sb.cp_blkaddr, sb.main_blkaddr);
         let node_ino = sb.node_ino;
+        // The armed in-place policy follows the volume's SIZE and the recycling
+        // floor the reserve it was formatted with, so both are resolved from
+        // the superblock and the checkpoint before either is moved in.
+        let place = crate::place::Tunables::at_mount(
+            opts.mode == crate::opts::Mode::Lfs,
+            sb.segment_count_main,
+            cp.rsvd_segment_count.div_ceil(sb.segs_per_sec.max(1)).max(1));
         // On the heap from the moment it exists, and it never has a by-value
         // life: the reference allocates its per-mount info and fills it
         // through the pointer, and a mount that built one by value instead
@@ -200,6 +207,7 @@ impl<S: SectorSource> Volume<S> {
             // The volume's own metadata inode and its own area bounds: the
             // format says which inode number that is and where the metadata
             // ends, so nothing here picks either.
+            readdir_ra: true,
             meta_cache,
             // Keyed by the file's own inode number and its own page index, so
             // an out-of-place rewrite or a cleaner relocation — both of which
@@ -213,6 +221,10 @@ impl<S: SectorSource> Volume<S> {
             fault: crate::fault::Info::new(),
             devs,
             zoned,
+            place,
+            bg: None,
+            need_ipu: None,
+            sync_writeback: false,
         });
         // What the mount asked to have failed, armed before anything reads or
         // writes: a mount that named sites and then replayed a log without

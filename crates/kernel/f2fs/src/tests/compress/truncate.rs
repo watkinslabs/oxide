@@ -74,6 +74,9 @@ fn written(log: u8, blocks: usize) -> (Volume<MemImage>, u32, Vec<u8>) {
     let (mut v, ino) = with_compressed(log);
     let data = patterned(blocks * BLKSIZE);
     v.write_compressed(ino, 0, &data).unwrap();
+    // Placed, because the fixture is a file that EXISTS: a cluster whose
+    // blocks are still reservations has no addresses for a case to read.
+    v.sync_data().unwrap();
     (v, ino, data)
 }
 

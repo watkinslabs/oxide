@@ -111,6 +111,12 @@ impl<S: SectorSource> Volume<S> {
         if self.lookup(&parent, dir, name).is_ok() { return Err(Errno::Eexist); }
         let ft = mode::file_type(spec.mode);
         let is_dir = ft == vfs::FileType::Directory;
+        // The inode record itself, from the cache the reference keeps them in,
+        // and BEFORE the node id is taken — its order, so an injected failure
+        // here leaves no id handed out and nothing to give back.
+        if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::SlabAlloc) {
+            return Err(Errno::Enomem);
+        }
         let ino = self.alloc_nid()?;
         let mut block = self.blank_inode(ino, spec, if is_dir { 2 } else { 1 });
         put32(&mut block, I_PINO, dir);
@@ -205,7 +211,15 @@ impl<S: SectorSource> Volume<S> {
         self.touch(dir, now)
     }
 
-    /// Give an existing file a second name. # C: O(depth) blocks
+    /// Give an existing file a second name — or a FIRST one, for an inode that
+    /// has none.
+    ///
+    /// Both cases are here because they are the same operation on the medium
+    /// and differ only in what the link count was. An inode at zero links is
+    /// parked on the orphan list, so giving it a name has to lift it off:
+    /// leaving it there means the next mount reclaims a file that is now
+    /// reachable by name, which is a loss of live data rather than a leak.
+    /// # C: O(depth) blocks
     pub fn link(&mut self, dir: u32, name: &[u8], ino: u32, now: (u64, u32))
         -> Result<(), Errno> {
         self.writable_or_err()?;
@@ -216,67 +230,24 @@ impl<S: SectorSource> Volume<S> {
         let parent = self.read_inode(dir)?;
         if self.lookup(&parent, dir, name).is_ok() { return Err(Errno::Eexist); }
         self.add_dentry(dir, name, ino, ftype_byte(target.mode))?;
+        // A file that gains a name can no longer have its OLD entry restored
+        // from the recorded parent: the field now names one of several places
+        // it is reachable from, and a replay that rebuilt an entry from it
+        // would invent a name nobody created. The mark is what sends a later
+        // `fsync` of this file down the checkpoint path instead.
+        let advise = target.advise | FADVISE_LOST_PINO_BIT;
         let links = target.links.saturating_add(1);
         self.stamp_inode(ino, |b| {
             put32(b, I_LINKS, links);
+            b[I_ADVISE] = advise;
             put64(b, I_CTIME, now.0);
             put32(b, I_CTIME_NSEC, now.1);
         })?;
+        // Coming off the orphan list is NOT done here. `add_dentry` above owns
+        // it, for every caller that lands a name — a linked temporary file, a
+        // whiteout taking a vacated name, a replay putting an entry back — and
+        // a second unpark beside it would be a second answer to one question.
         self.touch(dir, now)
-    }
-
-    /// Move a name, replacing an existing one if `flags` allows.
-    /// # C: O(depth) blocks
-    pub fn rename(&mut self, from: u32, old: &[u8], to: u32, new: &[u8], noreplace: bool,
-                  now: (u64, u32)) -> Result<(), Errno> {
-        self.writable_or_err()?;
-        if old == b"." || old == b".." || new == b"." || new == b".." { return Err(Errno::Einval); }
-        let from_inode = self.read_inode(from)?;
-        let hit = self.lookup(&from_inode, from, old)?;
-        let moving = self.read_inode(hit.ino)?;
-        let moving_is_dir = mode::file_type(moving.mode) == vfs::FileType::Directory;
-        let to_inode = self.read_inode(to)?;
-        if let Ok(existing) = self.lookup(&to_inode, to, new) {
-            if noreplace { return Err(Errno::Eexist); }
-            if existing.ino == hit.ino { return Ok(()); }
-            let victim = self.read_inode(existing.ino)?;
-            let victim_is_dir = mode::file_type(victim.mode) == vfs::FileType::Directory;
-            if victim_is_dir && !self.dir_is_empty(&victim, existing.ino)? {
-                return Err(Errno::Enotempty);
-            }
-            if victim_is_dir != moving_is_dir {
-                return Err(if victim_is_dir { Errno::Eisdir } else { Errno::Enotdir });
-            }
-            self.remove(to, new, victim_is_dir, now)?;
-        }
-        self.remove_dentry(from, old)?;
-        self.add_dentry(to, new, hit.ino, hit.file_type)?;
-        if moving_is_dir && from != to {
-            // The moved directory's own second entry names its parent, and a
-            // stale one sends every walk back to the wrong place.
-            self.remove_dentry(hit.ino, b"..")?;
-            self.add_dentry(hit.ino, b"..", to, FT_DIR)?;
-            let up = self.read_inode(from)?.links.saturating_sub(1).max(1);
-            self.stamp_inode(from, |b| put32(b, I_LINKS, up))?;
-            let down = self.read_inode(to)?.links.saturating_add(1);
-            self.stamp_inode(to, |b| put32(b, I_LINKS, down))?;
-        }
-        self.stamp_inode(hit.ino, |b| {
-            put32(b, I_PINO, to);
-            put64(b, I_CTIME, now.0);
-            put32(b, I_CTIME_NSEC, now.1);
-        })?;
-        // The name's DESTINATION is the half a removal does not cover. The
-        // source directory was recorded when its entry was cleared; the
-        // destination gained an entry that a chain replay would have to add
-        // back, and a moved directory carries its own second entry with it.
-        if self.opts.fsync_mode == crate::opts::FsyncMode::Strict {
-            self.ino_lists.add(crate::checkpoint::InoKind::TransDir, to);
-            if moving_is_dir { self.ino_lists.add(crate::checkpoint::InoKind::TransDir, hit.ino); }
-        }
-        self.touch(from, now)?;
-        if from != to { self.touch(to, now)?; }
-        Ok(())
     }
 
     /// Stamp a directory's modification and change times. # C: O(1 block)

@@ -280,6 +280,51 @@ fn a_policy_on_a_directory_that_already_holds_entries_is_refused() {
     assert_eq!(v.set_encryption_policy(dir, &wire_v2()), Err(Errno::Enotempty));
 }
 
+/// A volume advertising lost+found tells a repair tool that the directory it
+/// reparents recovered orphans into is reachable. A tool holds no key, so a
+/// policy on the ROOT would put the whole tree — that directory included — out
+/// of its reach while the volume went on advertising the repair path.
+#[test]
+fn the_root_of_a_lost_found_volume_may_not_be_given_a_policy() {
+    let mut b = test_image::with_root();
+    b.feature |= crate::flags::FEATURE_LOST_FOUND;
+    let mut v = b.mount_rw().unwrap();
+    assert_eq!(v.set_encryption_policy(ROOT_INO, &wire_v2()), Err(Errno::Eperm));
+    assert!(!v.read_inode(ROOT_INO).unwrap().encrypted(), "the root was encrypted anyway");
+}
+
+/// The refusal is the FEATURE, not the root: a volume that promises no
+/// reparenting target has nothing to lose by encrypting its top directory.
+#[test]
+fn the_root_of_a_volume_without_the_feature_may_be_given_a_policy() {
+    let mut v = test_image::with_root().mount_rw().unwrap();
+    v.set_encryption_policy(ROOT_INO, &wire_v2()).unwrap();
+    assert!(v.read_inode(ROOT_INO).unwrap().encrypted());
+}
+
+/// And it is only the root. A policy anywhere below it leaves every directory
+/// above reachable without a key, which is all the repair path needs.
+#[test]
+fn a_directory_below_the_root_of_a_lost_found_volume_may_be_given_a_policy() {
+    let mut b = test_image::with_root();
+    b.feature |= crate::flags::FEATURE_LOST_FOUND;
+    let mut v = b.mount_rw().unwrap();
+    let dir = v.create(ROOT_INO, b"d", &spec(S_IFDIR | 0o755), None).unwrap();
+    v.set_encryption_policy(dir, &wire_v2()).unwrap();
+    assert!(v.read_inode(dir).unwrap().encrypted());
+}
+
+/// LAST of the refusals, where the reference puts it: a request that would
+/// have been refused for its own shape hears about that instead.
+#[test]
+fn a_root_that_is_not_empty_is_refused_for_being_full_and_not_for_the_feature() {
+    let mut b = test_image::with_root();
+    b.feature |= crate::flags::FEATURE_LOST_FOUND;
+    let mut v = b.mount_rw().unwrap();
+    v.create(ROOT_INO, b"child", &spec(S_IFREG | 0o644), None).unwrap();
+    assert_eq!(v.set_encryption_policy(ROOT_INO, &wire_v2()), Err(Errno::Enotempty));
+}
+
 /// Two inodes on one volume must never share a nonce, or their derived keys
 /// would repeat.
 #[test]

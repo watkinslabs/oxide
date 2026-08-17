@@ -109,6 +109,15 @@ impl<S: SectorSource> Volume<S> {
         self.free_nids.scan_free_nid_bits(max);
         if self.free_nids.need_build() {
             let plan = self.free_nids.build_plan(max);
+            // The table blocks this scan is about to walk, fetched first. They
+            // are consecutive in the table and therefore adjacent on the
+            // medium, so the scan below reads them out of the mapping instead
+            // of issuing one request per block.
+            if let Some(&head) = plan.reads.first() {
+                self.ra_meta_pages(crate::nat::locate(head).0,
+                                   crate::freenid::FREE_NID_PAGES,
+                                   crate::volume::readahead::RaMeta::Nat);
+            }
             for start in plan.reads {
                 let addr = crate::nat::block_addr(self.sb.nat_blkaddr, self.sb.blks_per_seg(),
                                                   start, &self.nat_bitmap);

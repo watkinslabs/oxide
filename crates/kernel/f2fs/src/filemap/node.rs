@@ -152,6 +152,14 @@ impl NodeCache {
         Some(bytes)
     }
 
+    /// Whether the mapping holds the block for `nid`, WITHOUT counting the
+    /// question as a read — what readahead asks before it fetches. Counting
+    /// these would report hits for reads nobody made.
+    /// # C: O(height)
+    pub fn holds(&self, nid: u32) -> bool {
+        self.pages.lookup(self.ino, Self::off(nid)).is_some()
+    }
+
     /// Count a read this mapping could not answer. # C: O(1)
     pub fn miss(&self) { self.misses.fetch_add(1, Ordering::Relaxed); }
 
@@ -192,10 +200,46 @@ impl NodeCache {
         self.pages.invalidate_range(self.ino, off, off + BLKSIZE as u64);
     }
 
+    /// Forget every page held here, DIRTY ONES INCLUDED.
+    ///
+    /// For the one event that makes every node this mount has changed
+    /// worthless: a repair that failed part way. The pages left behind describe
+    /// a state that was never reached, and every one of them is still on the
+    /// machine's dirty list — so leaving them would have the flusher either
+    /// write half a repair or, once the mount is gone, hold them dirty forever
+    /// with nowhere to put them.
+    ///
+    /// Not for ordinary invalidation. A single node going out of use is
+    /// `forget`; this discards work, and the caller must already have decided
+    /// that the work is not wanted.
+    /// # C: O(pages held)
+    pub fn forget_all(&self) { self.pages.invalidate(self.ino); }
+
     /// Write back up to `max` dirty node pages through `sink`, reporting how
     /// many landed. # Ctx: process # Sleeps: y # C: O(pages written)
     pub fn flush(&self, max: usize, sink: Sink<'_>) -> (usize, KResult<()>) {
         self.pages.writeback_with(self.ino, max, sink)
+    }
+
+    /// Write back the ONE node named, through `sink`, leaving its page here
+    /// and CLEAN.
+    ///
+    /// For the flush points that name their node — `fsync`'s chain and the
+    /// cleaner's move — which cannot use [`Self::flush`] because the order the
+    /// blocks reach the medium in is the thing they are choosing.
+    ///
+    /// Dirtied first, unconditionally. The page IS dirty on arrival from every
+    /// caller here, since a node is written into this mapping before it is
+    /// placed; the mark makes the claim below succeed for a caller that placed
+    /// the same node twice without changing it in between, which is what the
+    /// reference's own single-folio writer does for the cleaner.
+    /// # Ctx: process # Sleeps: y # C: O(1 page)
+    pub fn writeback_nid(&self, nid: u32, sink: Sink<'_>) -> (usize, KResult<()>) {
+        let off = Self::off(nid);
+        if self.pages.lookup(self.ino, off).is_none() { return (0, Ok(())); }
+        self.pages.set_writeback(self.ino, self.target.clone() as Arc<dyn Writeback>);
+        if self.pages.mark_dirty(self.ino, off).is_err() { return (0, Err(BlockError::Eio)); }
+        self.pages.writeback_page_with(self.ino, off, sink)
     }
 
     /// Act on the machine's dirty state after node pages were dirtied.

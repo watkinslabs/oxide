@@ -116,6 +116,23 @@ fn check_v2(p: &Policy, inode: &InodeFacts, fs: &FsFacts) -> Result<(), FscryptE
     Ok(())
 }
 
+/// Whether the volume's ROOT directory may be given a policy.
+///
+/// A volume advertising lost+found tells a repair tool that the directory it
+/// reparents recovered orphans into exists and is readable. A tool walking a
+/// broken volume holds no key, so a policy on the root would put the entire
+/// tree — including that directory — out of its reach, and the volume would
+/// still be advertising a repair path it no longer has.
+///
+/// The two cannot both stand and the bit wins: it is on the medium, where
+/// every later tool reads it, whereas the policy is a request that has not
+/// been honoured yet. Only the ROOT is refused; a policy anywhere below it
+/// leaves the reparenting target reachable.
+/// # C: O(1)
+pub fn root_may_be_encrypted(feature: u32) -> bool {
+    !crate::features::has_lost_found(feature)
+}
+
 /// Whether `p` may be used for `inode` on this volume. # C: O(1)
 pub fn check(p: &Policy, inode: &InodeFacts, fs: &FsFacts) -> Result<(), FscryptError> {
     match (p.version, p.key) {

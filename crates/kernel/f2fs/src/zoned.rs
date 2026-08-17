@@ -19,6 +19,7 @@
 //! - `geom`:    the per-volume figures those reports settle.
 //! - `usable`:  how much of a segment and a section may actually be written.
 //! - `wp`:      reconciling the drive's write pointers with the segment tables.
+//! - `discard`: what announcing a freed run means when the run is in a zone.
 //!
 //! The mount options a zoned volume forces or refuses are NOT here: they are
 //! decided with every other option-consistency rule, against the same feature
@@ -28,6 +29,7 @@ pub mod report;
 pub mod geom;
 pub mod usable;
 pub mod wp;
+pub mod discard;
 
 pub use report::{DevZones, Zone, ZoneCond, ZoneType};
 pub use geom::{Geometry, ZoneError};

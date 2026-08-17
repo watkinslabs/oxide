@@ -213,67 +213,6 @@ impl<S: SectorSource> Volume<S> {
         };
     }
 
-    /// Close a log's segment and open another.
-    ///
-    /// The closing segment's summary block goes to the summary area first.
-    /// That block is the only record of which node owns each block of the
-    /// segment; a segment closed without it cannot be cleaned, and the space
-    /// is lost for the life of the filesystem.
-    /// # C: O(main segments)
-    pub(crate) fn open_segment(&mut self, log: usize) -> Result<(), Errno> {
-        self.load_segments()?;
-        // The pinned log opens a whole SECTION, never a recycled segment: a
-        // pinned block may not be moved, so it may not share a section with
-        // blocks the cleaner is free to relocate.
-        if log == crate::uapi::CURSEG_COLD_DATA_PINNED { return self.open_pinned_section(); }
-        let old = self.curseg[log].segno;
-        if old != NULL_SEGNO {
-            let node = log >= NR_CURSEG_DATA_TYPE;
-            self.curseg[log].seal(node);
-            let at = sum_block_addr(self.sb.ssa_blkaddr, old);
-            let block = self.curseg[log].sum.clone();
-            self.write_block(at, &block)?;
-        }
-        // A segment the log is leaving empty is not free: the checkpoint on
-        // the medium still names what was in it. Held here rather than at the
-        // release that emptied it, because until now a log was appending to
-        // it and it was nobody else's to take.
-        self.retire_segment(old);
-        let hint = if old == NULL_SEGNO { 0 } else { old };
-        // Recycling is asked for by the mount and only possible when a
-        // partly-used segment exists; otherwise a fresh one is opened, which
-        // is what an append-only volume always does. The age-threshold log
-        // ALWAYS recycles, whatever the mount asked for: it exists to put old
-        // blocks beside other old blocks, and a fresh empty segment is the one
-        // place with nothing to put them beside.
-        if curseg::wants_recycle(self.opts.alloc_mode) || log == CURSEG_ALL_DATA_ATGC {
-            if let Some((segno, off)) = self.find_victim_seg(hint) {
-                let at = sum_block_addr(self.sb.ssa_blkaddr, segno);
-                let sum = self.read_block(at).unwrap_or_else(|_| vec![0u8; BLKSIZE]);
-                self.curseg[log].segno = segno;
-                self.curseg[log].next_blkoff = off;
-                self.curseg[log].alloc_type = ALLOC_SSR;
-                self.curseg[log].sum = sum;
-                return Ok(());
-            }
-        }
-        // Clean BEFORE the last segment goes, not after. The cleaner moves
-        // live blocks out of a victim, which needs somewhere to put them, so a
-        // volume with nothing free cannot clean at all — waiting until then
-        // strands the space permanently. A failure to clean is not reported
-        // here: it is only a failure if the allocation itself then fails.
-        let reserve = self.gc_reserve();
-        if !self.recovering && self.free_segment_count() <= reserve {
-            let _ = self.collect(reserve + 1);
-        }
-        let segno = self.find_free_seg(hint).ok_or(Errno::Enospc)?;
-        self.curseg[log].segno = segno;
-        self.curseg[log].next_blkoff = 0;
-        self.curseg[log].alloc_type = ALLOC_LFS;
-        self.curseg[log].sum = vec![0u8; BLKSIZE];
-        Ok(())
-    }
-
     /// Change a node block: file it in the node mapping, DIRTY.
     ///
     /// Nothing reaches the medium here and no address is chosen. The node's

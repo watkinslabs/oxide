@@ -96,6 +96,19 @@ pub fn clear_entry(area: &mut [u8], l: &Layout, slot: usize) -> Option<u32> {
     Some(ino)
 }
 
+/// Point the entry at `slot` at a different inode, leaving its name, its hash
+/// and the run of slots it spans exactly as they are.
+///
+/// The one primitive a swap is built from: re-adding a name would have to find
+/// room for it, so a swap done by removing both entries and adding them back
+/// crosswise can run out of space with one of the two names already gone.
+/// # C: O(1)
+pub fn set_entry_target(area: &mut [u8], l: &Layout, slot: usize, ino: u32, ft: u8) {
+    let at = l.dentry_off(slot);
+    put32(area, at + DE_INO, ino);
+    area[at + DE_FILE_TYPE] = ft;
+}
+
 /// Whether any slot of the area is in use. # C: O(bitmap bytes)
 pub fn area_is_empty(area: &[u8], l: &Layout) -> bool {
     (0..l.max).all(|i| !is_used(area, i))
@@ -237,27 +250,7 @@ impl<S: SectorSource> Volume<S> {
             self.ino_lists.add(crate::checkpoint::InoKind::TransDir, dir);
         }
         let inode = self.read_inode(dir)?;
-        // Removing an entry does NOT need the key: without it the caller
-        // passes back the encoded name a listing produced, which carries the
-        // stored hash and enough ciphertext to identify the entry. A locked
-        // directory that could not be emptied could never be removed either.
-        let crypt = self.crypt_info(&inode, dir)?;
-        let search = if inode.encrypted() {
-            Some(crate::crypto::setup(crypt.as_ref(), name, true).map_err(|e| e.errno())?)
-        } else { None };
-        let want = match &search {
-            Some(s) => match s.hash() {
-                Some(h) => h,
-                None => self.entry_hash_crypt(&inode, crypt.as_ref(), name)?,
-            },
-            None => self.entry_hash(&inode, name)?,
-        };
-        let stored: Vec<u8> = match &search {
-            // An abbreviated no-key name carries no full ciphertext, so there
-            // is nothing to compare byte for byte and the entry is not named.
-            Some(s) => Vec::from(s.disk_name().ok_or(Errno::Enoent)?),
-            None => Vec::from(name),
-        };
+        let (want, stored) = self.entry_key(&inode, dir, name)?;
         let name: &[u8] = &stored;
         if inode.inline_dentry() {
             let (at, len) = inode.inline_data_span();
@@ -303,6 +296,83 @@ impl<S: SectorSource> Volume<S> {
 }
 
 impl<S: SectorSource> Volume<S> {
+    /// The hash an entry is filed under and the name as the medium holds it.
+    ///
+    /// Finding an entry does NOT need the key: without it the caller passes
+    /// back the encoded name a listing produced, which carries the stored hash
+    /// and enough ciphertext to identify the entry. Shared by every operation
+    /// that has to locate an entry it did not create, because the folding and
+    /// encryption rules that decide both halves are subtle enough that a second
+    /// copy of them goes stale.
+    /// # C: O(name len)
+    pub(crate) fn entry_key(&self, inode: &crate::node::Inode, dir: u32, name: &[u8])
+        -> Result<(u32, Vec<u8>), Errno> {
+        let crypt = self.crypt_info(inode, dir)?;
+        let search = if inode.encrypted() {
+            Some(crate::crypto::setup(crypt.as_ref(), name, true).map_err(|e| e.errno())?)
+        } else { None };
+        let want = match &search {
+            Some(s) => match s.hash() {
+                Some(h) => h,
+                None => self.entry_hash_crypt(inode, crypt.as_ref(), name)?,
+            },
+            None => self.entry_hash(inode, name)?,
+        };
+        let stored: Vec<u8> = match &search {
+            // An abbreviated no-key name carries no full ciphertext, so there
+            // is nothing to compare byte for byte and the entry is not named.
+            Some(s) => Vec::from(s.disk_name().ok_or(Errno::Enoent)?),
+            None => Vec::from(name),
+        };
+        Ok((want, stored))
+    }
+
+    /// Point `name` in `dir` at `ino` in place, reporting the inode it named
+    /// before. The name, its hash and its slots are untouched.
+    /// # C: O(depth) blocks
+    pub(crate) fn set_dentry(&mut self, dir: u32, name: &[u8], ino: u32, ft: u8,
+                             now: (u64, u32)) -> Result<u32, Errno> {
+        self.writable_or_err()?;
+        // The walk below reads a block by its address and writes it back, so a
+        // dirty page of this directory still held in memory has to reach the
+        // medium first or the write here loses it.
+        self.flush_data_pages(dir)?;
+        let inode = self.read_inode(dir)?;
+        let (want, stored) = self.entry_key(&inode, dir, name)?;
+        let name: &[u8] = &stored;
+        if inode.inline_dentry() {
+            let (at, len) = inode.inline_data_span();
+            let l = Layout::inline(len);
+            let mut block = self.inode_bytes(dir)?;
+            let hit = deblock::find(&block[at..at + len], &l, want, name)
+                .map_err(|_| Errno::Eio)?
+                .ok_or(Errno::Enoent)?;
+            let was = hit.ino;
+            set_entry_target(&mut block[at..at + len], &l, hit.slot, ino, ft);
+            self.put_inode(dir, block)?;
+            // The directory's contents changed, so its own times move with
+            // them — the same stamp the reference's set-link takes.
+            self.touch(dir, now)?;
+            return Ok(was);
+        }
+        let l = Layout::block();
+        let depth = inode.current_depth.min(MAX_LOOKUP_DEPTH);
+        for level in 0..depth {
+            for index in bucket::search_range(want, level, inode.dir_level) {
+                let Mapped::At(addr) = self.map_block(&inode, dir, index)? else { continue };
+                let mut area = self.read_main_block(addr)?;
+                let Some(hit) = deblock::find(&area, &l, want, name).map_err(|_| Errno::Eio)?
+                    else { continue };
+                let was = hit.ino;
+                set_entry_target(&mut area, &l, hit.slot, ino, ft);
+                self.write_one_block(dir, index, 0, &area)?;
+                self.touch(dir, now)?;
+                return Ok(was);
+            }
+        }
+        Err(Errno::Enoent)
+    }
+
     /// The hash an entry of `dir` is stored under.
     ///
     /// A folding directory hashes the FOLDED name, so every spelling reaches

@@ -93,10 +93,33 @@ pub fn writeback_mapping_with(map: &Arc<Mapping>, max: usize, sink: Sink<'_>)
 /// page reclaim chose is the one that has to be cleaned. # C: O(1 page)
 pub fn writeback_page(map: &Arc<Mapping>, index: u64) -> bool {
     let Some(wb) = map.writeback_target() else { return false; };
-    let Some(page) = map.take_index_for_writeback(index) else { return false; };
-    let (written, _) = submit_batch(map, &mut |ino, pages, results| wb.writepages(ino, pages, results),
-                                    alloc::vec![(index, page)]);
+    let (written, _) = writeback_page_with(map, index,
+        &mut |ino, pages, results| wb.writepages(ino, pages, results));
     written == 1
+}
+
+/// Write back exactly the named page, into a sink the caller supplies.
+///
+/// [`writeback_mapping_with`] restricted to ONE named index — what a
+/// filesystem whose flush point chooses its pages one at a time needs, and it
+/// needs it because there is no other way to end a page's dirty state without
+/// losing the page. The alternative such a caller is left with is to place the
+/// bytes itself and then INVALIDATE the index, which throws away a page that
+/// is now clean and correct and sends the next read of it back to the medium.
+///
+/// The claim and the completion stay in `submit_batch` with every other
+/// writeback: a page is taken off the dirty list and marked under writeback in
+/// one locked step, and put back on it if the sink reports a failure. Nothing
+/// here is a way to clear the dirty bit and walk away — the page is under
+/// writeback for exactly as long as the sink is running, which is the same
+/// window the flusher and reclaim observe.
+///
+/// A page that is absent or already clean is `(0, Ok(()))`: someone else wrote
+/// it, which is not this caller's error.
+/// # Ctx: process # Sleeps: y # C: O(1 page)
+pub fn writeback_page_with(map: &Arc<Mapping>, index: u64, sink: Sink<'_>) -> (usize, KResult<()>) {
+    let Some(page) = map.take_index_for_writeback(index) else { return (0, Ok(())); };
+    submit_batch(map, sink, alloc::vec![(index, page)])
 }
 
 /// Put an already-claimed batch on the medium, keeping the global counters and

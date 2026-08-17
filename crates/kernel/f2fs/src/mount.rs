@@ -17,6 +17,8 @@
 //! - `freeze`: sealing the volume for a snapshot, and resuming after one.
 //! - `wp`:     settling the drives' write pointers against the volume.
 //! - `data`:   the way back from a dirty data page to this mount.
+//! - `mapping`: a regular file's address space, as the memory manager reaches
+//!              it — the fault's fill, residency, flush and eviction.
 
 use alloc::string::{String, ToString};
 use alloc::sync::{Arc, Weak};
@@ -41,7 +43,9 @@ pub mod write;
 pub mod remount;
 pub mod freeze;
 pub mod wp;
+pub mod zdiscard;
 pub mod data;
+pub mod mapping;
 
 /// The one name this filesystem is registered under.
 pub const F2FS_NAME: &str = "f2fs";
@@ -106,7 +110,7 @@ impl F2fs {
         let table = crate::devices::DevTable::scan(&sb);
         let reports = devs::zone_reports(&members);
         let src = devs::medium(&members, table, write)?;
-        let volume =
+        let mut volume =
             Volume::mount_devices(src, opts, write, &reports).map_err(errno_to_vfs)?;
         if volume.access() == Access::ReadOnly {
             klog::warn::warn_on(true, "f2fs: volume is marked read-only; mounting read-only");
@@ -115,6 +119,11 @@ impl F2fs {
         let bg = Arc::new(crate::bg::Bg::new(volume.options().background_gc,
                                              volume.options().discard_unit,
                                              volume.super_block().segs_per_sec));
+        // Before the volume is handed to anything that can allocate: the
+        // allocator reads the cleaner's mode to decide whether to recycle a
+        // segment, and a volume that could not see it would answer "nothing is
+        // urgent" for the life of the mount.
+        volume.attach_bg(Arc::clone(&bg));
         let fs = Arc::new_cyclic(|me| Self {
             devs: members,
             volume: sync::Spinlock::new(volume),
@@ -281,15 +290,11 @@ impl F2fs {
         // traffic that left, not the intent.
         let mut announced: alloc::vec::Vec<u64> = alloc::vec::Vec::new();
         for (i, first_blk, len) in pieces {
-            let Some(dev) = self.devs.get(i) else { continue };
-            if !dev.supports_discard() { continue; }
-            let dev_block = u64::from(dev.block_size().max(1));
-            let byte = first_blk * BLKSIZE as u64;
-            let bytes = u64::from(len) * BLKSIZE as u64;
-            if byte % dev_block != 0 || bytes % dev_block != 0 { continue; }
-            let Ok(blocks) = u32::try_from(bytes / dev_block) else { continue };
-            let mut req = block::BlockRequest::new_discard(byte / dev_block, blocks);
-            if dev.submit_sync(&mut req).is_ok() { announced.push(bytes); }
+            // Which COMMAND this run becomes is the member's business, not
+            // this loop's: a sequential zone's blocks come back only when its
+            // write pointer goes back, so the same request is a zone reset
+            // there and a discard everywhere else.
+            if let Some(bytes) = self.submit_freed(i, first_blk, len) { announced.push(bytes); }
         }
         if announced.is_empty() { return; }
         let v = self.volume.lock();
