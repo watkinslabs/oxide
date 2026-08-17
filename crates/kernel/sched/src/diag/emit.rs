@@ -1,4 +1,5 @@
-use core::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "debug-watchdog")]
+use core::sync::atomic::Ordering;
 
 #[cfg(feature = "debug-watchdog")]
 use crate::Task;
@@ -9,8 +10,6 @@ use super::current_task;
 use super::format::{col_dec, col_str, col_syscall, emit_syscall};
 #[cfg(feature = "debug-watchdog")]
 use super::ring::{dump_exit_recent, switches};
-
-static SYSRQ_ARMED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(feature = "debug-watchdog")]
 pub fn report_lockup(secs: u64, tid: u32, cur: Option<&Task>) {
@@ -175,12 +174,6 @@ pub fn note_init_exit(code: i32) {
     #[cfg(not(feature = "debug-watchdog"))]
     let _ = code;
 }
-
-/// Take the armed flag, if it is set. # C: O(1)
-pub(super) fn sysrq_disarm() -> bool { SYSRQ_ARMED.swap(false, Ordering::Relaxed) }
-
-/// Arm on the next byte. # C: O(1)
-pub(super) fn sysrq_arm() { SYSRQ_ARMED.store(true, Ordering::Relaxed); }
 
 /// The serial line's byte sink. Decoding lives in `super::sysrq`, which the
 /// `/proc/sysrq-trigger` write path shares — a second private key table here
