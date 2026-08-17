@@ -12,7 +12,6 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use syscall::errno::Errno;
 use vfs::xattr::XattrError;
 use vfs::idmap::Idmap;
 use vfs::setattr::{Iattr, ATTR_ATIME, ATTR_GID, ATTR_MODE, ATTR_MTIME, ATTR_SIZE, ATTR_UID};
@@ -23,6 +22,7 @@ use crate::flags::*;
 use crate::mode;
 
 use super::node::{node_inode, F2fsNode};
+use super::prepare;
 use super::write::{mk_mode, mknod_type, now};
 use super::errno_to_vfs;
 
@@ -31,7 +31,7 @@ pub struct F2fsOps;
 
 impl F2fsOps {
     /// The node behind an inode. # C: O(1)
-    fn node(inode: &Inode) -> KResult<&F2fsNode> {
+    pub(super) fn node(inode: &Inode) -> KResult<&F2fsNode> {
         inode.private::<F2fsNode>().ok_or(VfsError::Einval)
     }
 
@@ -79,61 +79,25 @@ impl F2fsOps {
             body: Option<&[u8]>, ctx: &CreateCtx, named: bool) -> KResult<InodeRef> {
         let (node, dir) = Self::dir_of(inode)?;
         if !node.fs.is_writable() { return Err(VfsError::Erofs); }
-        // The umask is applied here and not in the volume: it is a property of
+        // The umask is applied by `inherited` and not here: it is a property of
         // the caller, not of the medium — and it is only ever consulted when the
         // parent has no default ACL to inherit, which is what `inherit` decides.
+        // That is why `prepare` below is handed a zero umask.
         let kind = match ftype {
             FileType::Directory => vfs::posix_acl::NewKind::Dir,
             FileType::Symlink   => vfs::posix_acl::NewKind::Symlink,
             _                   => vfs::posix_acl::NewKind::Other,
         };
-        let got = Self::inherited(node, &dir, perm as u16, ctx.umask, kind)?;
+        let (uid, gid, prepared) = prepare::owner_mode(inode, ftype, perm as u16, ctx);
+        let got = prepare::inherited(node, &dir, prepared, ctx.umask, kind)?;
         let child = node.fs.make(node.ino, name, mk_mode(ftype, u32::from(got.mode)),
-                                 ctx.fsuid(), ctx.fsgid(), rdev, body, named)?;
+                                 uid, gid, rdev, body, named)?;
         if got.access.is_some() || got.default.is_some() {
-            Self::store_inherited(node, Self::node(&child)?.ino, &got)?;
+            prepare::store_inherited(node, Self::node(&child)?.ino, &got)?;
         }
         Ok(child)
     }
 
-    /// The parent's default ACL, folded with the requested mode and the umask
-    /// into what the new object gets.
-    ///
-    /// Kept out of line: the attribute region it reads is assembled in a buffer
-    /// the size of a block, and a create already spends most of the kernel stack
-    /// on the write path below it. # C: O(region bytes)
-    #[inline(never)]
-    fn inherited(node: &F2fsNode, dir: &crate::Inode, perm: u16, umask: u16,
-                 kind: vfs::posix_acl::NewKind) -> KResult<crate::acl::Inherited> {
-        let (enabled, parent) = {
-            let v = node.fs.volume.lock();
-            let enabled = v.options().acl;
-            let parent = if enabled && kind != vfs::posix_acl::NewKind::Symlink {
-                match v.get_xattr(dir, node.ino, crate::acl::name_default()) {
-                    Ok(bytes) => Some(bytes),
-                    Err(Errno::Enodata) | Err(Errno::Eopnotsupp) => None,
-                    Err(e) => return Err(errno_to_vfs(e)),
-                }
-            } else {
-                None
-            };
-            (enabled, parent)
-        };
-        crate::acl::inherit(parent.as_deref(), perm, umask, kind, enabled).map_err(errno_to_vfs)
-    }
-
-    /// Put the inherited ACLs on the object once it exists, the default one
-    /// first. Out of line for the same reason as `inherited`. # C: O(region bytes)
-    #[inline(never)]
-    fn store_inherited(node: &F2fsNode, ino: u32, got: &crate::acl::Inherited) -> KResult<()> {
-        for (name, value) in [(crate::acl::name_default(), &got.default),
-                              (crate::acl::name_access(),  &got.access)] {
-            let Some(bytes) = value else { continue };
-            node.fs.volume_now().set_xattr(ino, name, Some(bytes), false, false)
-                .map_err(errno_to_vfs)?;
-        }
-        Ok(())
-    }
 }
 
 impl InodeOps for F2fsOps {
@@ -254,11 +218,21 @@ impl InodeOps for F2fsOps {
     /// A file with no name, which the volume keeps on the same orphan list an
     /// unlink of an open file uses.
     fn tmpfile(&self, inode: &Inode, mode_bits: u32, ctx: &CreateCtx) -> KResult<InodeRef> {
-        let node = Self::writable_dir(inode)?;
-        // The umask belongs to the caller, not to the medium — the same split
-        // every other creation here makes.
-        let perm = mode_bits & !u32::from(ctx.umask);
-        node.fs.tmpfile(node.ino, mk_mode(FileType::Regular, perm), ctx.fsuid(), ctx.fsgid())
+        let (node, dir) = Self::dir_of(inode)?;
+        if !node.fs.is_writable() { return Err(VfsError::Erofs); }
+        // A file with no name is still a file created in this directory: it takes
+        // the same owner preparation and the same inherited ACL as a named one,
+        // because a later `linkat` gives it a name without revisiting either.
+        let (uid, gid, prepared) =
+            prepare::owner_mode(inode, FileType::Regular, mode_bits as u16, ctx);
+        let got = prepare::inherited(node, &dir, prepared, ctx.umask,
+                                     vfs::posix_acl::NewKind::Other)?;
+        let child = node.fs.tmpfile(node.ino, mk_mode(FileType::Regular, u32::from(got.mode)),
+                                    uid, gid)?;
+        if got.access.is_some() || got.default.is_some() {
+            prepare::store_inherited(node, Self::node(&child)?.ino, &got)?;
+        }
+        Ok(child)
     }
 
     fn truncate(&self, inode: &Inode, len: u64) -> KResult<()> {
@@ -295,6 +269,9 @@ impl InodeOps for F2fsOps {
                 .map_err(errno_to_vfs)?;
         }
         vfs::setattr::simple_setattr(inode, idmap, ia)?;
+        // A mode change has to reach the ACL as well as `i_mode`, or a `chmod`
+        // that narrows access would narrow only what `ls -l` prints.
+        if ia.valid & ATTR_MODE != 0 { prepare::acl_chmod(inode)?; }
         // A size change moves the block count too, and by a different amount:
         // shortening a file frees the nodes that held its tail as well as the
         // blocks themselves.
@@ -367,6 +344,37 @@ impl FileOps for F2fsOps {
     fn unlocked_ioctl(&self, file: &vfs::File, _idmap: &Idmap, cred: &vfs::Cred,
                       cmd: vfs::FileIoctlCmd) -> KResult<vfs::FileIoctlReply> {
         crate::ioctl::vfs::unlocked_ioctl(file, cred, cmd)
+    }
+
+    /// What this filesystem owes an open, before the handle exists.
+    ///
+    /// A sealed file's metadata is established HERE: the descriptor is located
+    /// and parsed and its signature checked once, against this mount's policy,
+    /// and every read of the handle then consumes the result. A rejected
+    /// signature is therefore a refused open — which is where a caller can act
+    /// on it — rather than a read error at whichever offset first needed a
+    /// hash. Nothing else in this filesystem builds that record.
+    /// A writable handle also brings this file's quota records in, once, here.
+    /// The reference does the same and for the same reason: everything the
+    /// handle goes on to do allocates, and an allocation may not go to a quota
+    /// file for a record while it is holding the state it is writing. The
+    /// per-operation acquisitions stay — the reference keeps both — because an
+    /// operation can reach this filesystem without a handle.
+    /// # C: O(1) for an ordinary read handle; O(descriptor bytes) on a sealed
+    /// file's first open, O(quota file) on an identity's first writable one
+    fn on_open_file(&self, file: &vfs::File) -> KResult<()> {
+        let inode = file.inode();
+        let node = F2fsOps::node(inode)?;
+        let live = node.live()?;
+        let fl = file.flags();
+        let write = fl.contains(vfs::OpenFlags::O_WRONLY) || fl.contains(vfs::OpenFlags::O_RDWR);
+        if !write && !crate::verity::access::is_verity(live.flags) { return Ok(()); }
+        let mut v = node.fs.volume.lock();
+        // Verity first: a sealed file refuses a writable handle outright, and
+        // there is nothing to acquire for a handle that is not going to exist.
+        v.verity_file_open(&live, node.ino, write).map_err(errno_to_vfs)?;
+        if write { v.dquot_initialize(node.ino).map_err(errno_to_vfs)?; }
+        Ok(())
     }
 
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
@@ -480,6 +488,14 @@ mod tests;
 #[cfg(test)]
 #[path = "../tests/acl_ops.rs"]
 mod acl_tests;
+/// Enforcement: a stored ACL deciding a permission check.
+#[cfg(test)]
+#[path = "../tests/acl_enforce.rs"]
+mod acl_enforce_tests;
+/// The owner ids and mode a create records, ahead of the ACL work.
+#[cfg(test)]
+#[path = "../tests/create_owner.rs"]
+mod create_owner_tests;
 /// The namespace operations, driven through the interface's own vtable.
 #[cfg(test)]
 #[path = "../tests/opsnamei.rs"]

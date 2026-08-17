@@ -35,9 +35,14 @@ fn with_data(bytes: &[u8]) -> (Volume<MemImage>, u32) {
     (v, ino)
 }
 
-/// Read the whole of a sealed file through the ordinary path.
+/// Read the whole of a sealed file through the ordinary path — after the OPEN,
+/// which is the only thing that establishes a sealed file's metadata.
+///
+/// A reader that skipped the open would be refused, and that is deliberate: the
+/// read path consumes the record and never builds one.
 fn read_all(v: &Volume<MemImage>, ino: u32) -> Result<Vec<u8>, Errno> {
     let inode = v.read_inode(ino).unwrap();
+    v.verity_file_open(&inode, ino, false)?;
     let mut buf = vec![0u8; inode.size as usize];
     v.read_file(&inode, ino, 0, &mut buf)?;
     Ok(buf)
@@ -373,4 +378,49 @@ fn a_hole_inside_a_verity_files_data_is_attested_like_any_other_block() {
     v.set_holder_addr(ino, holder, ofs, crate::uapi::NULL_ADDR).unwrap();
     let v = remount(v);
     assert_eq!(read_all(&v, ino).err(), Some(Errno::Eio));
+}
+
+#[test]
+fn a_read_of_a_sealed_file_nobody_opened_serves_nothing() {
+    // The invariant the read path relies on, stated as a test: the record is
+    // established by the open and consumed by the read, so a read reaching a
+    // sealed file with no record refuses rather than going and building one.
+    // Serving the bytes unattested is the failure this rules out; building the
+    // record here is the shape it rules out.
+    let data: Vec<u8> = (0..3 * BLKSIZE).map(|i| (i % 251) as u8).collect();
+    let (mut v, ino) = with_data(&data);
+    v.enable_verity(ino, HASH_ALG_SHA256, LOG_BS, b"").unwrap();
+    let v = remount(v);
+    let inode = v.read_inode(ino).unwrap();
+    let mut buf = vec![0u8; BLKSIZE];
+    assert_eq!(v.read_file(&inode, ino, 0, &mut buf).err(), Some(Errno::Eio),
+               "the read built the metadata itself");
+    // The same read succeeds once the file has been opened, so the refusal is
+    // about the missing record and not about the file.
+    v.verity_file_open(&inode, ino, false).unwrap();
+    v.read_file(&inode, ino, 0, &mut buf).unwrap();
+    assert_eq!(&buf[..], &data[..BLKSIZE]);
+}
+
+#[test]
+fn neither_arm_of_the_read_leaves_a_record_it_built_itself() {
+    // The Eio above is not enough on its own: a reader that BUILT the record
+    // and then failed the hash returns the same errno. What separates the two
+    // is whether the record exists afterwards, so that is what is asserted —
+    // for the mapped arm and for the hole arm, which calls the check
+    // separately and could have been left behind.
+    let data: Vec<u8> = (0..6 * BLKSIZE).map(|i| (i % 251) as u8).collect();
+    let (mut v, ino) = with_data(&data);
+    v.enable_verity(ino, HASH_ALG_SHA256, LOG_BS, b"").unwrap();
+    let (holder, ofs) = v.dnode_for_write(ino, 2).unwrap();
+    v.set_holder_addr(ino, holder, ofs, crate::uapi::NULL_ADDR).unwrap();
+    let v = remount(v);
+    let inode = v.read_inode(ino).unwrap();
+    let mut buf = vec![0u8; BLKSIZE];
+    // The hole arm.
+    assert_eq!(v.read_file(&inode, ino, 2 * BLKSIZE as u64, &mut buf).err(), Some(Errno::Eio));
+    assert!(v.verity_cache.borrow().is_empty(), "the hole arm built the metadata");
+    // The mapped arm.
+    assert_eq!(v.read_file(&inode, ino, 0, &mut buf).err(), Some(Errno::Eio));
+    assert!(v.verity_cache.borrow().is_empty(), "the mapped arm built the metadata");
 }

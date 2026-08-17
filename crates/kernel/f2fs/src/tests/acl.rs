@@ -4,6 +4,8 @@
 // comparison of the two forms is the point of most of this.
 
 use super::*;
+use vfs::posix_acl::{AclEntry, ACL_GROUP_OBJ, ACL_MASK, ACL_OTHER, ACL_UNDEFINED_ID, ACL_USER,
+                     ACL_USER_OBJ};
 
 const R: u16 = 4;
 const W: u16 = 2;

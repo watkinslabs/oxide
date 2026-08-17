@@ -292,6 +292,34 @@ pub trait InodeOps: Send + Sync {
         }
     }
 
+    /// `i_op->get_inode_acl` — the POSIX ACL of `ty` as entries, or `None` when
+    /// this object carries none.
+    ///
+    /// Default reads the attribute through THIS vtable's own `getxattr` and
+    /// decodes the interchange form, which is what a filesystem with an on-disk
+    /// record of its own already converts to at that boundary. An empty entry
+    /// list is no ACL, not an empty one. A backend with no xattr store reports
+    /// no ACL rather than an error: an object that cannot carry one has none.
+    ///
+    /// A stored value that will not decode is REPORTED, not ignored — falling
+    /// back to the mode bits would answer a permission question with a rule the
+    /// object does not carry. # C: O(N_entries) uncached
+    fn get_inode_acl(&self, inode: &Inode, ty: crate::posix_acl::AclType)
+        -> KResult<Option<Vec<crate::posix_acl::AclEntry>>> {
+        let value = match self.getxattr(inode, ty.xattr_name()) {
+            Ok(v) => v,
+            Err(XattrError::NotFound) | Err(XattrError::NotSup) => return Ok(None),
+            Err(XattrError::Exists) => return Err(VfsError::Eexist),
+            Err(XattrError::Fs(e)) => return Err(e),
+        };
+        match crate::posix_acl::from_xattr(&value) {
+            Ok(e) if e.is_empty() => Ok(None),
+            Ok(e) => Ok(Some(e)),
+            Err(syscall::errno::Errno::Eopnotsupp) => Err(VfsError::Eopnotsupp),
+            Err(_) => Err(VfsError::Einval),
+        }
+    }
+
     /// `i_op->setxattr` — store `name`→`value` honouring `create`/`replace`
     /// (XATTR_CREATE/XATTR_REPLACE) atomically. Default routes to `i_xattrs`.
     /// # C: O(log N_xattr)

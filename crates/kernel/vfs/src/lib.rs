@@ -62,6 +62,7 @@ pub mod fsnotify;
 pub mod epoll_limits;
 pub mod pipe_limits;
 pub mod quota;
+pub mod fsreserve;
 pub mod verity_keys;
 pub mod xattr;
 pub mod posix_acl;
@@ -101,6 +102,7 @@ pub use errseq::{Errseq, ErrseqVal, MAX_ERRNO};
 pub use memory_accounting::{MemoryPageSnapshot, memory_page_snapshot};
 pub use types::{FileMode, FileType, Ino, KResult, OpenFlags, PollMask, StatxMask, VfsError};
 pub use poll_subs::{special_inode_needs_poll_subs, EpollNotify, PollSubscribers};
+pub use fsreserve::{ReservedCaller, ReservedCallerHook, clear_reserved_caller_hook, reserved_caller, set_reserved_caller_hook};
 #[cfg(not(target_os = "oxide-kernel"))]
 pub use quota::take_logged_warnings;
 pub use quota::{DquotWarn, DquotWarns, QuotaWarnType, QuotaWarning, clear_quota_warn_hook, deliver_warning, set_quota_warn_hook};

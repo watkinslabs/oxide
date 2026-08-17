@@ -283,3 +283,43 @@ fn a_synchronous_collection_with_nothing_to_reclaim_says_so() {
     assert_eq!(send(&mut v, ino, GARBAGE_COLLECT, &1u32.to_le_bytes(), &Extra::default())
                    .map(|_| ()), Err(Errno::Eagain));
 }
+
+// ------------------------------------------------------------- the shutdown
+
+/// The command whose entire purpose is to stop the filesystem. It used to sync
+/// and report success, leaving the mount running, checkpointing enabled and
+/// the next mount told nothing — so the volume it was issued against reached
+/// fsck looking clean.
+#[test]
+fn every_shutdown_mode_stops_checkpointing_and_records_the_reason() {
+    for mode in [GOING_DOWN_FULLSYNC, GOING_DOWN_METASYNC, GOING_DOWN_NOSYNC,
+                 GOING_DOWN_METAFLUSH] {
+        let (mut v, ino) = sealable(&[0u8; 0]);
+        assert!(!v.sbi_flags().shutdown());
+        assert!(send(&mut v, ino, SHUTDOWN, &mode.to_le_bytes(), &Extra::default()).is_ok());
+        assert!(v.sbi_flags().shutdown(), "mode {mode} left the volume running");
+        assert_ne!(v.checkpoint().flags & crate::flags::CP_ERROR_FLAG, 0,
+                   "mode {mode} left checkpointing enabled");
+        // Read the reason back off the MEDIUM through a fresh mount, so the
+        // case cannot pass on in-memory state the command happened to set.
+        let bytes = v.into_source().snapshot();
+        let img = MemImage::from_bytes(crate::uapi::BLKSIZE as u32, bytes);
+        let again = Volume::mount_with(img, crate::opts::Options::defaults(), true)
+            .expect("remount");
+        assert_eq!(again.error_record().stops(crate::errrec::StopReason::Shutdown), 1,
+                   "mode {mode} recorded no reason for the next mount");
+    }
+}
+
+/// `NEED_FSCK` is the one mode that is NOT a shutdown: it marks the volume as
+/// wanting a repair and leaves the mount live.
+#[test]
+fn the_need_fsck_mode_marks_the_volume_without_stopping_it() {
+    let (mut v, ino) = sealable(&[0u8; 0]);
+    assert!(send(&mut v, ino, SHUTDOWN, &GOING_DOWN_NEED_FSCK.to_le_bytes(),
+                 &Extra::default()).is_ok());
+    assert!(!v.sbi_flags().shutdown(), "a repair request is not a shutdown");
+    assert!(v.sbi_flags().is_set(crate::sbflags::bits::NEED_FSCK));
+    assert!(v.sbi_flags().is_set(crate::sbflags::bits::CP_DISABLED_QUICK));
+    assert_eq!(v.error_record().stops(crate::errrec::StopReason::Shutdown), 0);
+}

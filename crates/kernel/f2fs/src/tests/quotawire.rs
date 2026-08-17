@@ -11,6 +11,9 @@
 //! - `release`: space returned when an attribute or a directory block goes.
 //! - `project`: what a project's own tree reports as free.
 //! - `compress`: what a compressed cluster costs its owner.
+//! - `acquire`:  that every entry point acquires before it allocates, driven
+//!               on a FRESH MOUNT — the only state in which a missing
+//!               acquisition is visible.
 //!
 //! Every child is declared with an explicit path: a bare `mod x;` in a module
 //! loaded by path binds against the parent directory and would silently
@@ -18,6 +21,8 @@
 
 use super::*;
 use crate::mode::S_IFREG;
+use crate::uapi::BLKSIZE;
+use syscall::errno::Errno;
 use crate::opts::Options;
 use crate::quota::info::Revision;
 use crate::quota::uapi::QT_BLOCK_SIZE;
@@ -35,3 +40,4 @@ use sectors::MemImage;
 #[path = "quotawire/release.rs"] mod release;
 #[path = "quotawire/project.rs"] mod project;
 #[path = "quotawire/compress.rs"] mod compress;
+#[path = "quotawire/acquire.rs"] mod acquire;

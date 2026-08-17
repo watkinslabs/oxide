@@ -133,7 +133,12 @@ pub struct Volume<S: SectorSource> {
     /// stopped checkpointing, seeded from the superblock and written back
     /// there. Cumulative across mounts, which is what makes it worth having:
     /// a fault that a repair cleared is invisible from the volume's contents.
-    pub(crate) errrec: crate::errrec::ErrorRecord,
+    /// Mutated from READ paths, which is why it is a cell: a corruption is
+    /// found while walking a node or parsing an inode, and every one of those
+    /// is a `&self` method. The reference takes a spinlock over the same two
+    /// arrays for exactly this reason. Pushing the record to the medium still
+    /// needs `&mut self` and happens where a write is possible.
+    pub(crate) errrec: core::cell::Cell<crate::errrec::ErrorRecord>,
     pub(crate) cp: Checkpoint,
     /// The checkpoint's head block and its payload blocks, joined, because
     /// the version bitmaps run from one into the next.
@@ -189,6 +194,15 @@ pub struct Volume<S: SectorSource> {
     /// write cost a whole quota file.
     pub(crate) dquots: BTreeMap<(usize, u32), crate::quota::Dqblk>,
     pub(crate) dq_dirty: BTreeSet<(usize, u32)>,
+    /// Which identities each live inode's allocations are charged against.
+    ///
+    /// Hung off the inode by the operation that is about to allocate, and
+    /// consulted by every charge — the reference keeps exactly this beside the
+    /// inode. Reading the owners off the medium at the charge instead put a
+    /// node read, and with it a page lock that can block, underneath every node
+    /// write in the filesystem. An inode with no entry is charged nothing: the
+    /// operation that would charge it is the one that puts the entry there.
+    pub(crate) dquot_owners: BTreeMap<u32, crate::volume::quotas::Owners>,
     /// The wall clock, in seconds, as the layer above last read it. Grace
     /// periods are absolute expiries, so a decision needs a now.
     pub(crate) clock: u64,

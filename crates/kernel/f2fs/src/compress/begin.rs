@@ -43,6 +43,10 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(bytes written + image clusters touched * cluster bytes)
     pub fn write_compressed(&mut self, ino: u32, off: u64, data: &[u8]) -> Result<usize, Errno> {
         self.writable_or_err()?;
+        // Every slot this write reserves is charged to the file's owners, so
+        // their records are in hand before the first reservation rather than
+        // fetched from a quota file underneath it.
+        self.dquot_initialize(ino)?;
         if data.is_empty() { return Ok(0); }
         let inode = self.read_inode(ino)?;
         let g = self.geometry(&inode)?;

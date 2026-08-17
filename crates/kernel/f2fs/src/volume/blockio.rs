@@ -76,7 +76,13 @@ impl<S: SectorSource> Volume<S> {
     /// block as if it were data.
     /// # C: O(BLKSIZE)
     pub fn read_main_block(&self, addr: u32) -> Result<Vec<u8>, Errno> {
-        if !self.sb_main_contains(addr) { return Err(Errno::Eio); }
+        if !self.sb_main_contains(addr) {
+            // A node or a file's address array named a block outside the area
+            // that can hold one, so the structure that named it is damaged and
+            // the volume must reach fsck saying so.
+            self.note_error(crate::errrec::Error::InvalidBlkaddr);
+            return Err(Errno::Eio);
+        }
         self.read_block(addr)
     }
 
