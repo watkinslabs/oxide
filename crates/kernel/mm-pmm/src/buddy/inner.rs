@@ -158,33 +158,19 @@ impl PmmInner {
         // SAFETY: head on free-list ⇒ PMM-owned page.
         let hp = unsafe { backing.page_ptr(Pfn(head)) };
         // SAFETY: header lives in first 32B of a PMM-owned page.
-        let mut next = unsafe { read_u64(hp, OFF_NEXT) };
-        // SURVIVAL GUARD (always on): a corrupt (overwritten-while-free) head
-        // node's `next` link would #GP the pop below. Clamp out-of-range links
-        // to PFN_NULL so the allocator survives (list truncated, frames leak) —
-        // logged upstream. Keeps the boot alive through the free-while-mapped bug.
-        if next != PFN_NULL && next >= self.pfn_max {
-            klog::write_raw(b"[FREELIST-HEAL] pop bad next="); klog::write_hex_u64(next);
-            klog::write_raw(b" head="); klog::write_hex_u64(head); klog::write_raw(b"\n");
-            next = PFN_NULL;
-        }
-        // debug-cow probe 1 (FREELIST CANARY): a free node's `next` link is
-        // either PFN_NULL or an in-range PFN. A `next` that is neither means
-        // the freed frame's FreeNode header was overwritten while it sat on
-        // the free list (a stale-TLB write, a write-while-free, or a buddy
-        // desync) — the same aliasing class as a double-alloc, seen from the
-        // link side. Name the corrupted node by its PA.
-        #[cfg(feature = "debug-cow")]
-        if next != PFN_NULL && next >= self.pfn_max {
-            klog::write_raw(b"[FREELIST-CORRUPT] pa=");
-            klog::write_hex_u64(head * PAGE_SIZE_BYTES);
-            klog::write_raw(b" bad-next=");
-            klog::write_hex_u64(next);
-            klog::write_raw(b"\n");
-        }
+        let next = unsafe { read_u64(hp, OFF_NEXT) };
+        // SAFETY: header lives in first 32B of the selected head page.
+        let prev = unsafe { read_u64(hp, OFF_PREV) };
+        kassert!(prev == PFN_NULL, "pmm free-list head prev mismatch");
+        kassert!(next == PFN_NULL || next < self.pfn_max, "pmm free-list next out of range");
         if next != PFN_NULL {
+            kassert!(next != head, "pmm free-list self link");
+            kassert!(self.zi(next) == zone, "pmm free-list next wrong zone");
             // SAFETY: `next` is on the free-list ⇒ PMM-owned page.
             let np = unsafe { backing.page_ptr(Pfn(next)) };
+            // SAFETY: next header is inside the validated in-range PMM page.
+            let next_prev = unsafe { read_u64(np, OFF_PREV) };
+            kassert!(next_prev == head, "pmm free-list next back-link mismatch");
             // SAFETY: write into next-node's prev field; PMM-owned page.
             unsafe { write_u64(np, OFF_PREV, PFN_NULL) };
         }
@@ -200,36 +186,33 @@ impl PmmInner {
         // SAFETY: pfn on free-list ⇒ PMM-owned page.
         let p = unsafe { backing.page_ptr(Pfn(pfn)) };
         // SAFETY: header read inside owned page.
-        let mut next = unsafe { read_u64(p, OFF_NEXT) };
+        let next = unsafe { read_u64(p, OFF_NEXT) };
         // SAFETY: header read inside owned page.
-        let mut prev = unsafe { read_u64(p, OFF_PREV) };
-        // SURVIVAL GUARD (always on, Linux-style defensive mm): a free node whose
-        // link is neither PFN_NULL nor an in-range pfn was overwritten while free
-        // (free-while-mapped). Dereferencing it below would #GP and kill the
-        // boot; instead clamp the bad link to PFN_NULL (truncating the list —
-        // some frames leak) so the kernel SURVIVES and the greeter can still come
-        // up. The corruption is still logged upstream (FWM-CORRUPT / poison).
-        if next != PFN_NULL && next >= self.pfn_max {
-            klog::write_raw(b"[FREELIST-HEAL] unlink bad next="); klog::write_hex_u64(next);
-            klog::write_raw(b" at pfn="); klog::write_hex_u64(pfn); klog::write_raw(b"\n");
-            next = PFN_NULL;
-        }
-        if prev != PFN_NULL && prev >= self.pfn_max {
-            klog::write_raw(b"[FREELIST-HEAL] unlink bad prev="); klog::write_hex_u64(prev);
-            klog::write_raw(b" at pfn="); klog::write_hex_u64(pfn); klog::write_raw(b"\n");
-            prev = PFN_NULL;
-        }
+        let prev = unsafe { read_u64(p, OFF_PREV) };
+        kassert!(next == PFN_NULL || next < self.pfn_max, "pmm free-list next out of range");
+        kassert!(prev == PFN_NULL || prev < self.pfn_max, "pmm free-list prev out of range");
         if prev == PFN_NULL {
+            kassert!(self.free_heads[z][order as usize] == pfn, "pmm free-list head mismatch");
             self.free_heads[z][order as usize] = next;
         } else {
+            kassert!(prev != pfn, "pmm free-list self link");
+            kassert!(self.zi(prev) == z, "pmm free-list prev wrong zone");
             // SAFETY: prev on free-list ⇒ PMM-owned page.
             let pp = unsafe { backing.page_ptr(Pfn(prev)) };
+            // SAFETY: prev header is inside the validated in-range PMM page.
+            let prev_next = unsafe { read_u64(pp, OFF_NEXT) };
+            kassert!(prev_next == pfn, "pmm free-list prev forward-link mismatch");
             // SAFETY: writing prev's next field inside its header.
             unsafe { write_u64(pp, OFF_NEXT, next) };
         }
         if next != PFN_NULL {
+            kassert!(next != pfn, "pmm free-list self link");
+            kassert!(self.zi(next) == z, "pmm free-list next wrong zone");
             // SAFETY: next on free-list ⇒ PMM-owned page.
             let np = unsafe { backing.page_ptr(Pfn(next)) };
+            // SAFETY: next header is inside the validated in-range PMM page.
+            let next_prev = unsafe { read_u64(np, OFF_PREV) };
+            kassert!(next_prev == pfn, "pmm free-list next back-link mismatch");
             // SAFETY: writing next's prev field inside its header.
             unsafe { write_u64(np, OFF_PREV, prev) };
         }

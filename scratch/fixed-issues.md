@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2266-pmm-free-list-corruption
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2266 | DEFECT | high | **PMM free-list corruption was hidden by truncating a bad link and leaking the rest of that list.** Both pop and unlink now reject an out-of-range, cross-zone, self, non-head, or non-reciprocal link with the allocator's invariant failure before a pointer is dereferenced or a list is mutated. A corrupt list cannot become ordinary allocation pressure. | B2266. `buddy::inner::{pop_free,unlink_free}`; `tests::alloc_free::{corrupt_free_list_head_next_panics_instead_of_leaking,corrupt_free_list_prev_panics_instead_of_truncating_the_list}`. **Positive control:** restoring the range clamps makes the head test return normally and the tail test reach only a later head-mismatch assertion, so both `should_panic` checks fail; restored checks pass. | B2266 |
+
 ### R95-pmm-zoned-allocator-contract
 
 | Status | Class | Sev | Issue | Evidence | Owner |

@@ -6,13 +6,13 @@
 // Sized dynamically: any pfn_max from a few MiB to multiple TiB. Bitmap
 // storage allocated from a `PageBacking::bitmap_storage` callback so the
 // boot-allocator owns the policy. No fixed-N region arrays; init takes
-// `&[UsableRegion]`. Single zone for v1 per `10§1`.
+// `&[UsableRegion]` and partitions it into the ordered zones of `10§1`.
 //
 // Invariants per `10§3` (held at every quiescent point):
 //   I1 (bitmap-truth): bitmap[o].is_set(p) ⇔ "block of order o at p is free".
 //   I2 (single-membership): a free order-o block sets exactly one bit in
 //      bitmap[o]; bits at other orders covering the same memory are clear.
-//   I3 (free-list ↔ bitmap): every block on free_list[o] has bit set;
+//   I3 (free-list ↔ bitmap): every block on free_list[zone][o] has bit set;
 //      every set bit is on free_list. Both directions.
 //   I4 (buddy alignment): order-o block at p has p aligned to 1<<o.
 //   I5 (no overlap).
@@ -20,6 +20,7 @@
 //                          == initial_free - allocated.
 //   I7 (poison-on-free): freed page first 16B == MAGIC u64 + order u8 + 7B 0.
 //   I8 (MAX_ORDER bound): order > MAX_ORDER ⇒ Err(InvalidOrder).
+//   I9 (zone partition): a free block lies fully in one zone.
 
 #![no_std]
 
