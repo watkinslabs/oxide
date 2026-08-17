@@ -176,6 +176,10 @@ impl<S: SectorSource> Volume<S> {
     pub fn gc_section(&mut self, first: u32) -> Result<u32, Errno> {
         self.load_segments()?;
         let per_sec = self.sb.segs_per_sec.max(1);
+        // The section's summary blocks, fetched before the first segment is
+        // cleaned: they are consecutive, and every segment below reads one.
+        self.ra_meta_pages(crate::uapi::sum_block_addr(self.sb.ssa_blkaddr, first), per_sec,
+                           crate::volume::readahead::RaMeta::Ssa);
         let mut moved = 0u32;
         for segno in first..(first + per_sec).min(self.sb.segment_count_main) {
             // A log inside the section stops the section being reclaimable,

@@ -78,6 +78,18 @@ impl Cache {
         Some(bytes)
     }
 
+    /// Whether the mapping holds page `index` of file `ino`, WITHOUT counting
+    /// the question as a read.
+    ///
+    /// Separate from `peek` because readahead asks it about every block of a
+    /// window and never takes the bytes: counting those as hits would report a
+    /// hit rate for reads nobody made, and the figure exists to say how much
+    /// of the reading this mapping answered.
+    /// # C: O(height)
+    pub fn holds(&self, ino: u32, index: u64) -> bool {
+        self.pages.lookup(Self::key(ino), Self::off(index)).is_some()
+    }
+
     /// Page `index` of file `ino`, fetching it with `fetch` on a miss.
     ///
     /// `fetch` runs at most once per miss and its bytes are what the mapping
