@@ -65,6 +65,8 @@ fn acquire(lock: *mut u8, ctx: *mut u8, slow: bool) -> i32 {
         }
         set_context(lock, ctx); record_lock(lock, ctx); return 0;
     }
+    // SAFETY: ctx was null-checked at function entry and interruptible is an
+    // ABI-pinned bool inside the same caller-owned acquire context.
     if slow && unsafe { read(ctx.add(DRM_MODESET_CTX_INTERRUPTIBLE_OFF).cast::<bool>()) } {
         if crate::linux_sync::mutex_lock_interruptible(mutex(lock)) != 0 { return -LINUX_ERESTARTSYS; }
     } else { crate::linux_sync::mutex_lock(mutex(lock)); }
@@ -148,6 +150,8 @@ mod tests {
     fn trylock_context_tracks_a_successful_lock_for_the_standard_drop_path() {
         let mut lock = [0u8; DRM_MODESET_LOCK_SIZE]; let mut ctx = [0u8; DRM_MODESET_ACQUIRE_CTX_SIZE];
         drm_modeset_lock_init(lock.as_mut_ptr().cast()); drm_modeset_acquire_init(ctx.as_mut_ptr().cast(), 0);
+        // SAFETY: ctx is a local stack array sized past DRM_MODESET_CTX_TRYLOCK_ONLY_OFF,
+        // already initialized above and exclusively owned by this test.
         unsafe { write(ctx.as_mut_ptr().add(DRM_MODESET_CTX_TRYLOCK_ONLY_OFF).cast::<bool>(), true); }
         assert_eq!(drm_modeset_lock(lock.as_mut_ptr().cast(), ctx.as_mut_ptr().cast()), 0); drm_modeset_drop_locks(ctx.as_mut_ptr().cast());
         assert!(list_empty(lock.as_mut_ptr().wrapping_add(DRM_MODESET_LOCK_HEAD_OFF)));

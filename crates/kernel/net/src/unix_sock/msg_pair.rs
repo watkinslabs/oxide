@@ -140,6 +140,27 @@ impl UnixMsgPair {
         }
     }
 
+    /// Record the security label of the socket owning `end`.
+    ///
+    /// A datagram pair records both labels exactly as a stream pair does, and
+    /// `SO_PEERSEC` still reports none for it: the socket's CLASS decides
+    /// whether a peer label is reportable, not whether one was recorded.
+    /// # C: O(1)
+    pub fn set_end_sid(&self, end: crate::UnixEnd, sid: u32) {
+        match end {
+            crate::UnixEnd::A => self.cred_a.set_sid(sid),
+            crate::UnixEnd::B => self.cred_b.set_sid(sid),
+        }
+    }
+
+    /// The PEER's security label as seen from `end`. # C: O(1)
+    pub fn peer_sid(&self, end: crate::UnixEnd) -> u32 {
+        match end {
+            crate::UnixEnd::A => self.cred_b.sid(),
+            crate::UnixEnd::B => self.cred_a.sid(),
+        }
+    }
+
     /// Peer (sender) creds for the reader on `end`.
     /// # C: O(1)
     pub fn peer_cred(&self, end: crate::UnixEnd) -> crate::PeerCred {

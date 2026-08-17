@@ -46,32 +46,76 @@ import rust_symbol_identity as rsi        # noqa: E402
 # tool report zero large frames on a binary that has nine.
 X86_SUB = re.compile(r"\ssub[qlwb]?\s+\$0x([0-9a-f]+),\s*%rsp\b")
 # aarch64: `sub sp, sp, #0x1234` / `#1234`, either disassembler.
-ARM_SUB = re.compile(r"\ssub\s+sp,\s*sp,\s*#(?:0x([0-9a-f]+)|(\d+))")
+#
+# The `, lsl #12` tail is NOT optional to parse. aarch64's immediate field is
+# 12 bits, so every reservation over 4095 bytes is emitted as a SHIFTED
+# immediate — `sub sp, sp, #0x7, lsl #12` is 28672 bytes, not 7. Reading the
+# immediate alone does not merely miss those frames, it reports them as a
+# handful of bytes, so the gate passed a 30016-byte frame while claiming the
+# binary's largest was 4176. Large frames are the only thing this gate exists
+# to catch, and on aarch64 large is exactly the set that carries this tail.
+ARM_SUB = re.compile(
+    r"\ssub\s+sp,\s*sp,\s*#(?:0x([0-9a-f]+)|(\d+))(\s*,\s*lsl\s*#(\d+))?")
 # aarch64 pre-index push that also opens the frame: `stp x29, x30, [sp, #-0x20]!`
 ARM_STP = re.compile(r"\sstp\s+.*\[sp,\s*#-(?:0x([0-9a-f]+)|(\d+))\]!")
 FUNC = re.compile(r"^\s*[0-9a-f]+\s*<(.+)>:")
+
+# x86_64 stack-clash probing has a SECOND shape, and reading only the first one
+# is the same class of blind spot the aarch64 `lsl #12` tail was. Past a
+# threshold LLVM stops unrolling the probes and emits a LOOP:
+#
+#     movq %rsp, %r11          <- copy
+#     subq $0xb000, %r11       <- the whole reservation, against the COPY
+#   L: subq $0x1000, %rsp      <- one page per iteration
+#     movq $0x0, (%rsp)
+#     cmpq %r11, %rsp
+#     jne  L
+#     subq $0x188, %rsp        <- sub-page tail
+#
+# Summing `sub …,%rsp` alone reads that 45448-byte frame as 4096+392: the three
+# 45 KiB ACPI-parse frames scored 4488, 6424 and 8040, all under or barely at
+# the 8192 ceiling. The reservation is the `sub` against the copy plus the
+# tail, and the loop-body `sub` is those same bytes counted a second time.
+X86_MOV_RSP = re.compile(r"\smovq?\s+%rsp,\s*%(r\w+)\b")
+X86_SUB_REG = re.compile(r"\ssub[qlwb]?\s+\$0x([0-9a-f]+),\s*%(r\w+)\b")
 
 
 def parse(objdump_out):
     """-> {function: reserved_bytes}. Sums every reservation in the body."""
     frames, fn, cur = {}, None, 0
+    # None | register name copied from %rsp | "ARMED" once its reservation was
+    # counted, meaning the next `sub …,%rsp` is this loop's body probe.
+    probe = None
     for line in objdump_out.splitlines():
         m = FUNC.match(line)
         if m:
             if fn is not None:
                 frames[fn] = cur
-            fn, cur = m.group(1), 0
+            fn, cur, probe = m.group(1), 0, None
             continue
         if fn is None:
             continue
+        m = X86_MOV_RSP.search(line)
+        if m and m.group(1) != "rsp":
+            probe = m.group(1)
+            continue
+        if probe is not None and probe != "ARMED":
+            m = X86_SUB_REG.search(line)
+            if m and m.group(2) == probe:
+                cur += int(m.group(1), 16)
+                probe = "ARMED"
+                continue
         for rx in (X86_SUB, ARM_SUB, ARM_STP):
             m = rx.search(line)
             if m:
-                hexv = m.group(1)
-                if hexv is not None:
-                    cur += int(hexv, 16)
-                elif m.lastindex and m.group(m.lastindex):
-                    cur += int(m.group(m.lastindex))
+                if m.group(1) is not None: v = int(m.group(1), 16)
+                elif m.group(2) is not None: v = int(m.group(2))
+                else: continue
+                if rx is ARM_SUB and m.group(4) is not None: v <<= int(m.group(4))
+                if rx is X86_SUB and probe == "ARMED":
+                    probe = None       # loop body: already counted against the copy
+                    break
+                cur += v
                 break
     if fn is not None:
         frames[fn] = cur
@@ -106,12 +150,36 @@ SELF_TEST_INPUT = """
   203004: sub     sp, sp, #0x400
   203008: ret
 
+0000000000206000 <arm_shifted_frame>:
+  206000: stp     x29, x30, [sp, #-0x60]!
+  206004: sub     sp, sp, #0x7, lsl #12
+  206008: sub     sp, sp, #0x4e0
+  20600c: ret
+
 0000000000204000 <leaf>:
   204000: ret
 
 0000000000205000 <llvm_syntax_x86>:
   205000: subq   $0x800, %rsp
   205008: retq
+
+0000000000207000 <loop_probed_x86>:
+  207000: pushq   %rbp
+  207001: movq    %rsp, %rbp
+  207004: pushq   %rbx
+  207005: movq    %rsp, %r11
+  207008: subq    $0xb000, %r11
+  20700f: subq    $0x1000, %rsp
+  207016: movq    $0x0, (%rsp)
+  20701e: cmpq    %r11, %rsp
+  207021: jne     0x20700f <loop_probed_x86+0xf>
+  207023: subq    $0x188, %rsp
+  20702a: retq
+
+0000000000208000 <rsp_copy_not_a_probe_x86>:
+  208000: movq    %rsp, %rdi
+  208003: subq    $0x30, %rsp
+  208007: retq
 """
 
 
@@ -125,12 +193,25 @@ def self_test():
         "probed_x86": 0x1000 + 0x1000 + 0x28,
         # aarch64 opens the frame with a pre-index stp, then extends it
         "arm_frame": 0x20 + 0x400,
+        # The shifted immediate every aarch64 frame over 4095 bytes uses.
+        # Read as a bare immediate this is 0x60 + 7 + 0x4e0 = 1383, and a real
+        # 30016-byte frame passed an 8192-byte ceiling on exactly that.
+        "arm_shifted_frame": 0x60 + (0x7 << 12) + 0x4e0,
         # a leaf that touches no stack must not be reported at all
         "leaf": 0,
         # llvm-objdump spelling: size suffix and a space after the comma. A
         # regex tuned to GNU objdump alone silently reports 0 here, which made
         # the whole gate pass on a binary with nine over-ceiling frames.
         "llvm_syntax_x86": 0x800,
+        # The x86 LOOP probe form. The reservation lives in the `sub` against
+        # the %rsp COPY plus the sub-page tail; the loop-body `sub …,%rsp` is
+        # the same bytes again. Summing `sub …,%rsp` alone reads this 45448-byte
+        # frame as 4488 — which is exactly what the three 45 KiB ACPI-parse
+        # frames scored while the gate reported the binary clean.
+        "loop_probed_x86": 0xb000 + 0x188,
+        # Control: a `mov %rsp,%reg` that is NOT a probe setup (an argument
+        # pointer) must not make the following ordinary reservation vanish.
+        "rsp_copy_not_a_probe_x86": 0x30,
     }
     bad = [(k, got.get(k), v) for k, v in want.items() if got.get(k) != v]
     for k, g, w in bad:

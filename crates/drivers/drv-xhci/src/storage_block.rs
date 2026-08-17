@@ -42,7 +42,18 @@ impl UsbStorageBlock {
 
 impl BlockDevice for UsbStorageBlock {
     fn block_size(&self) -> u32 { self.block_bytes }
-    fn queue_limits(&self) -> KResult<QueueLimits> { QueueLimits::for_logical_block_size(self.block_bytes) }
+    /// The topology, saying this disk may hold acknowledged writes in a cache.
+    ///
+    /// A filesystem above fences its commit record only if something says the
+    /// cache is there; silence would optimise away every barrier and leave an
+    /// `fsync` returning over volatile data. Said unconditionally rather than
+    /// read from the caching mode page, which this driver does not fetch: the
+    /// conservative direction costs a synchronise-cache a drive without one
+    /// completes immediately. # C: O(1)
+    fn queue_limits(&self) -> KResult<QueueLimits> {
+        Ok(QueueLimits::for_logical_block_size(self.block_bytes)?
+            .with_features(block::QueueFeatures::WRITE_CACHE))
+    }
     fn capacity_blocks(&self) -> u64 { self.capacity }
 
     fn submit_sync(&self, request: &mut BlockRequest) -> KResult<()> {

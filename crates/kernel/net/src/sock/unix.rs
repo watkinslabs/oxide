@@ -46,6 +46,11 @@ pub(super) fn connect(sock: &Arc<InetSocket>, addr: crate::UnixAddr, nonblock: b
         }
         candidate.set_end_identity(crate::UnixEnd::B, Some(c.thread_group.leader_pid()));
     }
+    // The connecting end's label, recorded alongside its credentials and read
+    // back by the accepted server socket as its peer's. Taken from the SOCKET,
+    // not the running task: a descriptor passed in over `SCM_RIGHTS` connects
+    // with the label it was created with.
+    candidate.set_end_sid(crate::UnixEnd::B, sock.security_label());
     let timeout = sock.opts.base.sndtimeo_ns.load(core::sync::atomic::Ordering::Acquire);
     let deadline_ns = crate::sock_clock::compute_deadline_ns(timeout);
     loop {

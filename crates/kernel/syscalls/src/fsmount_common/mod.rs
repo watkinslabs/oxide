@@ -12,6 +12,7 @@ mod fd;
 mod fscontext_ops;
 mod mount_ops;
 mod objects;
+mod fs_surfaces;
 mod registry;
 
 pub(crate) use caps::sample_caps;

@@ -9,14 +9,22 @@
 // mirroring Linux `vfs_setxattr` → `xattr_permission` → `handler->set`. This
 // module owns only STORAGE + the atomic flag check.
 //
-// Backends that own no xattr store (procfs/sysfs/devfs/…) leave the inode's
-// `i_xattrs` field `None`; their `i_op` xattr ops return [`XattrError::NotSup`]
-// so the caller reports `EOPNOTSUPP`.
+// Backends that own no xattr store (procfs/sysfs/pipefs/…) leave the inode's
+// `i_xattrs` slot undeclared; their `i_op` xattr ops return
+// [`XattrError::NotSup`] so the caller reports `EOPNOTSUPP`.
+//
+// Whether a filesystem holds attributes at all is the SUPERBLOCK's property
+// (Linux `sb->s_xattr`), not the individual constructor's, and a filesystem
+// whose nodes are minted by many unrelated producers can only state it where
+// the node JOINS that superblock. [`XattrSlot`] carries that one bit next to
+// the storage so the declaration can be made at the join point rather than at
+// every `InodeBuilder` call site.
 
 extern crate alloc;
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use sync::{Inode as InodeLockClass, Spinlock};
 
@@ -49,9 +57,50 @@ impl Default for SimpleXattrs {
     fn default() -> Self { Self::new() }
 }
 
+/// An inode's `i_xattrs` — the storage plus the one bit that says whether the
+/// owning superblock carries an attribute-handler set at all (Linux
+/// `sb->s_xattr`). Undeclared reads as "this filesystem cannot hold
+/// attributes" (`EOPNOTSUPP`); declared and empty reads as "no such attribute"
+/// (`ENODATA`), and the difference is what a caller branches on.
+///
+/// The storage is present either way and costs no allocation while empty, so
+/// [`declare`](Self::declare) can be made AFTER the inode is built — which is
+/// the only place a filesystem whose nodes are minted by unrelated driver
+/// crates can state the property. # C: O(1)
+pub struct XattrSlot {
+    declared: AtomicBool,
+    store:    SimpleXattrs,
+}
+
+impl XattrSlot {
+    /// A slot on a filesystem with no attribute handlers. # C: O(1)
+    pub const fn absent() -> Self { Self { declared: AtomicBool::new(false), store: SimpleXattrs::empty() } }
+
+    /// A declared slot holding `s` — the builder's `.xattrs(...)` form, used by
+    /// a backend that knows its own superblock at construction. # C: O(1)
+    pub fn with_store(s: SimpleXattrs) -> Self { Self { declared: AtomicBool::new(true), store: s } }
+
+    /// State that this inode's filesystem holds attributes. Idempotent, and
+    /// safe on an inode already published. # C: O(1)
+    pub fn declare(&self) { self.declared.store(true, Ordering::Release); }
+
+    /// The store, or `None` on a filesystem with no attribute handlers. # C: O(1)
+    pub fn get(&self) -> Option<&SimpleXattrs> {
+        if self.declared.load(Ordering::Acquire) { Some(&self.store) } else { None }
+    }
+}
+
+impl Default for XattrSlot {
+    fn default() -> Self { Self::absent() }
+}
+
 impl SimpleXattrs {
     /// An empty store. # C: O(1)
-    pub fn new() -> Self { Self { map: Spinlock::new(BTreeMap::new()) } }
+    pub fn new() -> Self { Self::empty() }
+
+    /// `const` empty store, so an [`XattrSlot`] can be built without an
+    /// allocation and without a runtime initialiser. # C: O(1)
+    pub const fn empty() -> Self { Self { map: Spinlock::new(BTreeMap::new()) } }
 
     /// Value bytes for `name`, or `None` if absent. # C: O(log N)
     pub fn get(&self, name: &str) -> Option<Vec<u8>> {

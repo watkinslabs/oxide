@@ -330,3 +330,36 @@ fn netlink_membership_and_listen_all_nsid_carry_their_capability_gates() {
     assert_eq!(::netlink::set_action(::netlink::sockopt::NETLINK_LISTEN_ALL_NSID),
         ::netlink::SetAction::PrivilegedFlag(::netlink::F_LISTEN_ALL_NSID));
 }
+
+// `socket(AF_NETLINK, SOCK_RAW, NETLINK_SELINUX)` answered EPROTONOSUPPORT
+// because the slot carried its own list of registered protocols and SELinux
+// was not on it. libselinux's userspace AVC treats that refusal as fatal, and
+// dbus-daemon then cannot start the session bus at all. The list now belongs
+// to the netlink crate, where it is ungated and testable — the slot file is
+// `cfg(target_os = "oxide-kernel")`, so nothing inside it compiles here.
+#[test]
+fn the_socket_slot_admits_every_netlink_family_with_a_kernel_end() {
+    let source = include_str!("041_socket.rs");
+    assert!(source.contains("::netlink::protocol_registered(spec.protocol)"),
+        "the slot asks the one owner which families exist");
+    assert!(!source.contains("fn netlink_protocol_registered"),
+        "no second list beside the owner's");
+    assert!(source.contains("::netlink::register_selinux_listener(&sock)"),
+        "a NETLINK_SELINUX socket must reach the notification registry, or it \
+         opens and never hears an enforcement or policy change");
+    assert!(::netlink::protocol_registered(::netlink::proto::NETLINK_SELINUX as u32));
+    assert!(!::netlink::protocol_registered(::netlink::proto::NETLINK_XFRM as u32));
+}
+
+#[test]
+fn a_netlink_bind_that_subscribes_a_group_carries_its_capability_gate() {
+    let source = include_str!("netlink_fd.rs");
+    assert!(source.contains(
+        "!::netlink::bind_groups_allowed(s.protocol, nl_groups, s.net_admin())"),
+        "bind nl_groups is the same subscription NETLINK_ADD_MEMBERSHIP makes");
+    use ::netlink::{bind_groups_allowed, proto};
+    assert!(bind_groups_allowed(proto::NETLINK_SELINUX, 1, false),
+        "the userspace AVC binds SELNLGRP_AVC unprivileged");
+    assert!(!bind_groups_allowed(proto::NETLINK_NETFILTER, 1, false));
+    assert!(bind_groups_allowed(proto::NETLINK_NETFILTER, 0, false));
+}

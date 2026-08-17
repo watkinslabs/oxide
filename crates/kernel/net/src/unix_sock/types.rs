@@ -66,6 +66,17 @@ pub struct EndCred {
     identity: Spinlock<Option<Arc<PidIdentity>>, UnixLockClass>,
     /// Linux `cred->group_info` for the same instant as the ids above.
     groups: Spinlock<sched::GroupList, UnixLockClass>,
+    /// Security label of the socket owning this end, recorded at the same
+    /// instant as the numbers above (`SO_PEERSEC` source).
+    ///
+    /// Each end holds its OWN label, so the peer label a reader wants is the
+    /// opposite end's — the same relation `peer_cred` already has. Storing the
+    /// peer's label on each end instead would write both fields twice and let
+    /// the two copies of one connection's labelling disagree.
+    ///
+    /// `security::network::NO_LABEL` until the connection forms, and after it
+    /// forms on a kernel where nothing labels sockets.
+    sid: AtomicU32,
 }
 
 impl EndCred {
@@ -75,8 +86,17 @@ impl EndCred {
             pid: AtomicU32::new(0), uid: AtomicU32::new(0), gid: AtomicU32::new(0),
             identity: Spinlock::new(None),
             groups: Spinlock::new(None),
+            sid: AtomicU32::new(security::network::NO_LABEL),
         }
     }
+
+    /// Record the label of the socket owning this end. # C: O(1)
+    pub fn set_sid(&self, sid: u32) {
+        self.sid.store(sid, core::sync::atomic::Ordering::Release);
+    }
+
+    /// Label of the socket owning this end. # C: O(1)
+    pub fn sid(&self) -> u32 { self.sid.load(core::sync::atomic::Ordering::Acquire) }
 
     /// # C: O(1)
     pub fn set(&self, cred: PeerCred) {

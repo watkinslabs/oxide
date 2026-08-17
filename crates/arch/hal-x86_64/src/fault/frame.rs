@@ -29,6 +29,8 @@ pub(crate) fn publish(regs: *mut PtRegs) -> FrameGuard {
     // SAFETY: exception entry passed the live stub-built frame; this reads its
     // scalar user/kernel return state before exposing the pointer to consumers.
     let rsp = unsafe { (*regs).rsp };
+    // SAFETY: same live entry-built frame as the `rsp` read above; `publish` has
+    // not yet stored `regs` anywhere, so no other CPU can be mutating the frame.
     let rip = unsafe { (*regs).rip };
     publish_at(cpu_slot(), regs, rsp, rip)
 }

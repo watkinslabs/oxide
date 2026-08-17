@@ -176,20 +176,25 @@ unsafe extern "C" fn phy_modify(phy: *mut LinuxPhyDevice, reg: u32, mask: u16, s
 /// # C: O(1)
 unsafe extern "C" fn __phy_modify(phy: *mut LinuxPhyDevice, reg: u32, mask: u16, set: u16) -> i32 {
     if phy.is_null() || reg as usize >= PHY_REGS { return -LINUX_EINVAL; }
+    // SAFETY: phy and reg were validated against PHY_REGS above; phy_read_c22 re-checks both but cannot fail here.
     let old = unsafe { phy_read_c22(phy, reg) }; if old < 0 { return old; }
+    // SAFETY: phy and reg were validated above and old >= 0 confirms the prior read on this same live pointer.
     unsafe { phy_write_c22(phy, reg, (old as u16 & !mask) | set) }
 }
 
 /// # C: O(1)
 unsafe extern "C" fn phy_select_page(phy: *mut LinuxPhyDevice, page: i32) -> i32 {
     if phy.is_null() { return -LINUX_EINVAL; }
+    // SAFETY: phy was null-checked above; reg (31) is within PHY_REGS so phy_read_c22's own bounds check also passes.
     let old = unsafe { phy_read_c22(phy, 31) }; if old < 0 { return old; }
+    // SAFETY: phy was null-checked above and old >= 0 confirms the prior read succeeded on this same live pointer.
     let ret = unsafe { phy_write_c22(phy, 31, page as u16) }; if ret < 0 { ret } else { old }
 }
 
 /// # C: O(1)
 unsafe extern "C" fn phy_restore_page(phy: *mut LinuxPhyDevice, oldpage: i32, ret: i32) -> i32 {
     if phy.is_null() { return ret; }
+    // SAFETY: phy was null-checked above and phy_write_c22 re-validates reg (31) against PHY_REGS before indexing phy->regs.
     let restore = unsafe { phy_write_c22(phy, 31, oldpage as u16) };
     if ret < 0 { ret } else { restore }
 }
@@ -199,6 +204,7 @@ unsafe extern "C" fn phy_read_paged(phy: *mut LinuxPhyDevice, page: i32, reg: u3
     // SAFETY: phy_select_page null-checks phy itself and only swaps phy->page, returning the previous page or -EINVAL for NULL.
     let old = unsafe { phy_select_page(phy, page) };
     if old < 0 { return old; }
+    // SAFETY: old >= 0 proves phy_select_page's null/bounds check passed, so phy is the same live pointer it validated.
     let val = unsafe { phy_read_c22(phy, reg) };
     // SAFETY: phy_restore_page null-checks phy and writes back exactly the page phy_select_page returned above, leaving no other state touched.
     unsafe { phy_restore_page(phy, old, val) }
@@ -209,6 +215,7 @@ unsafe extern "C" fn phy_write_paged(phy: *mut LinuxPhyDevice, page: i32, reg: u
     // SAFETY: phy_select_page null-checks phy; a negative result means phy was NULL and is filtered on the next line before phy->regs is touched.
     let old = unsafe { phy_select_page(phy, page) };
     if old < 0 { return old; }
+    // SAFETY: old >= 0 proves phy_select_page's null/bounds check passed, so phy is the same live pointer it validated.
     let ret = unsafe { phy_write_c22(phy, reg, val) };
     // SAFETY: phy_restore_page null-checks phy and restores the page saved by phy_select_page at the top of this function.
     unsafe { phy_restore_page(phy, old, ret) }
@@ -335,6 +342,7 @@ mod tests {
         let _modules = crate::test_serial::claim();
         // SAFETY: test initializes every field it reads before passing the local bus to the KPI.
         let mut bus: LinuxMiiBus = unsafe { core::mem::zeroed() };
+        // SAFETY: LinuxPhyDevice is a plain-old-data ABI struct of integer/pointer/Option fields, all valid when zero.
         let mut phy: LinuxPhyDevice = unsafe { core::mem::zeroed() };
         bus.read = Some(read); bus.write = Some(write); bus.mdio_map[3] = &mut phy;
         let busp = &mut bus as *mut LinuxMiiBus as *mut c_void;

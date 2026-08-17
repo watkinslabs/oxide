@@ -49,7 +49,13 @@ pub fn write_bool(ops: &mut dyn PolicyOps, name: &str, body: &[u8]) -> KResult<u
 pub fn write_commit(ops: &mut dyn PolicyOps, body: &[u8]) -> KResult<usize> {
     let apply = parse_flag(request_text(body)?)?;
     ops.check(PERM_SETBOOL)?;
-    if apply { ops.commit_bools()?; }
+    if apply {
+        ops.commit_bools()?;
+        // A commit re-evaluates every conditional rule, so the answers the
+        // policy gives changed even though the policy did not — the reference
+        // announces it exactly as it announces a load.
+        crate::notify::policy_changed(ops);
+    }
     Ok(body.len())
 }
 

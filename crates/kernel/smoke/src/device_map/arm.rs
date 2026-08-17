@@ -236,6 +236,9 @@ pub fn smoke_device_map_arm(_hhdm: u64) {
         // SAFETY: same contract as the GICD/PL011 maps above — single-CPU
         // pre-init, MmuOps state initialised, and ECAM_PA came from ACPI MCFG.
         let map_pa = w.base_pa + (u64::from(w.bus_start) << 20);
+        // SAFETY: single-CPU pre-init with MmuOps initialised; `map_pa` is the ACPI
+        // MCFG aperture biased to the reported first bus, and `base_va` is this
+        // iteration's own ECAM_WINDOW_BYTES slot, disjoint from every other window.
         unsafe { map_ecam_window::<ArmMmu>(base_va, map_pa, bus_cap); }
         windows[i] = hal_aarch64::pci::EcamWindow {
             base_va, segment: w.segment, bus_start: w.bus_start, bus_end: w.bus_end,

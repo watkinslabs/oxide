@@ -60,7 +60,7 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
         net::vsock_socket::make_vsock_socket_inode(Arc::new(
             net::vsock_socket::VsockSocket::new_type_in(spec.typ, net_namespace.clone())))
     } else if spec.family == AF_NETLINK {
-        if !netlink_protocol_registered(spec.protocol) {
+        if !::netlink::protocol_registered(spec.protocol) {
             return -(Errno::Eprotonosupport.as_i32() as i64);
         }
         let nl_proto = spec.protocol as u16;
@@ -80,6 +80,12 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
         // family events, VFS_DQUOT quota warnings) once subscribed to a group.
         if nl_proto == ::netlink::proto::NETLINK_GENERIC {
             ::netlink::genetlink::register_genl_listener(&sock);
+        }
+        // libselinux's userspace AVC subscribes SELNLGRP_AVC on a
+        // NETLINK_SELINUX socket to learn that the enforcement mode changed or
+        // a policy was loaded, and flushes its cached decisions when it does.
+        if nl_proto == ::netlink::proto::NETLINK_SELINUX {
+            ::netlink::register_selinux_listener(&sock);
         }
         ::netlink::make_netlink_socket_inode(sock)
     } else {
@@ -143,17 +149,4 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
         Ok(fd) => fd as i64,
         Err(e) => -(e as i64),
     }
-}
-
-fn netlink_protocol_registered(protocol: u32) -> bool {
-    let Ok(p) = u16::try_from(protocol) else { return false; };
-    matches!(p,
-        ::netlink::proto::NETLINK_ROUTE
-        | ::netlink::proto::NETLINK_USERSOCK
-        | ::netlink::proto::NETLINK_SOCK_DIAG
-        | ::netlink::proto::NETLINK_AUDIT
-        | ::netlink::proto::NETLINK_NETFILTER
-        | ::netlink::proto::NETLINK_KOBJECT_UEVENT
-        | ::netlink::proto::NETLINK_GENERIC
-    )
 }

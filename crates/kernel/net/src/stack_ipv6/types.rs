@@ -94,8 +94,11 @@ pub struct Udp6RxQueue {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Ipv6AddrOrigin {
+    /// Manually configured address: `IFA_F_PERMANENT` when its valid lifetime
+    /// is infinite, and the row a setter's `RTM_DELADDR` may remove.
     Static,
-    Slaac { prefix: Ipv6Addr, preferred_until_ns: u64, valid_until_ns: u64 },
+    /// Autoconfigured from the named on-link prefix.
+    Slaac { prefix: Ipv6Addr },
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -108,15 +111,38 @@ pub enum Ipv6AddrState {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Ipv6IfaceAddr {
     pub addr: Ipv6Addr,
+    /// `IFA_ADDRESS` when it names a point-to-point peer distinct from `addr`.
+    pub peer: Option<Ipv6Addr>,
     pub prefixlen: u8,
     pub preferred: u32,
     pub valid: u32,
+    /// Absolute deadlines the remaining lifetimes are recomputed against, for
+    /// every origin. `INFINITE_DEADLINE` means the lifetime never expires.
+    /// One carrier for both origins: a per-origin copy lets a readback age
+    /// against a deadline the expiry walker does not consult.
+    pub preferred_until_ns: u64,
+    pub valid_until_ns: u64,
     pub origin: Ipv6AddrOrigin,
     pub state: Ipv6AddrState,
     pub deprecated: bool,
     /// Privacy address generated for this prefix rather than the stable
     /// public address. Source selection owns the interpretation of this bit.
     pub temporary: bool,
+    /// The `IFA_F_*` bits the setter stated and the kernel keeps verbatim
+    /// (`IFA_F_NODAD`, `IFA_F_HOMEADDRESS`, `IFA_F_MANAGETEMPADDR`,
+    /// `IFA_F_NOPREFIXROUTE`, `IFA_F_MCAUTOJOIN`, `IFA_F_OPTIMISTIC`). The
+    /// kernel-owned bits are never stored here; `flags()` derives them.
+    pub user_flags: u32,
+    /// `IFA_PROTO`: which agent owns the address; 0 means the setter named
+    /// none, and the attribute is then not reported.
+    pub proto: u8,
+    /// `IFA_RT_PRIORITY`: metric of the prefix route this address installs.
+    /// Zero means unset, and the attribute is then not reported.
+    pub rt_priority: u32,
+    /// Creation and last-update stamps, centiseconds, as `IFA_CACHEINFO`
+    /// reports them.
+    pub cstamp: u32,
+    pub tstamp: u32,
     pub(crate) notify_pending: bool,
 }
 
@@ -131,28 +157,40 @@ pub(crate) struct PendingRa {
 impl Ipv6IfaceAddr {
     pub const PERMANENT: (u32, u32) = (u32::MAX, u32::MAX);
 
-    pub(crate) fn valid_at(&self, now_ns: u64) -> bool {
-        match self.origin {
-            Ipv6AddrOrigin::Static => true,
-            Ipv6AddrOrigin::Slaac { valid_until_ns, .. } => valid_until_ns > now_ns,
-        }
-    }
+    pub(crate) fn valid_at(&self, now_ns: u64) -> bool { self.valid_until_ns > now_ns }
 
-    pub(crate) fn preferred_at(&self, now_ns: u64) -> bool {
-        match self.origin {
-            Ipv6AddrOrigin::Static => self.preferred != 0,
-            Ipv6AddrOrigin::Slaac { preferred_until_ns, .. } => preferred_until_ns > now_ns,
-        }
-    }
+    pub(crate) fn preferred_at(&self, now_ns: u64) -> bool { self.preferred_until_ns > now_ns }
+
+    /// `IFA_ADDRESS` as the reference reports it: the peer for a
+    /// point-to-point row, the local address otherwise. # C: O(1)
+    pub fn address(&self) -> Ipv6Addr { self.peer.unwrap_or(self.addr) }
 
     pub(crate) fn usable_at(&self, now_ns: u64) -> bool {
         self.valid_at(now_ns) && self.state == Ipv6AddrState::Assigned
     }
 
+    /// The `ifa_scope` the address reports. Derived from the address, never
+    /// taken from the setter: the reference computes it in the add path and
+    /// maps the address type through the host/link/site ladder. A multicast
+    /// address carries no unicast scope bit and reports universe.
+    /// # C: O(1)
+    pub fn rt_scope(&self) -> u8 {
+        if self.addr.is_loopback() { crate::iface_addr::RT_SCOPE_HOST }
+        else if self.addr.is_multicast() { crate::iface_addr::RT_SCOPE_UNIVERSE }
+        else if self.addr.is_link_local() { crate::iface_addr::RT_SCOPE_LINK }
+        else if self.addr.is_site_local() { crate::iface_addr::RT_SCOPE_SITE }
+        else { crate::iface_addr::RT_SCOPE_UNIVERSE }
+    }
+
     pub fn flags(&self) -> u32 {
-        let mut flags = if matches!(self.origin, Ipv6AddrOrigin::Static) {
-            crate::iface_addr::IFA_F_PERMANENT
-        } else { 0 };
+        // The kernel owns PERMANENT/TEMPORARY/DEPRECATED/TENTATIVE/DADFAILED
+        // and clears PERMANENT the moment a finite valid lifetime is stated;
+        // everything else is the setter's word, kept verbatim.
+        let mut flags = self.user_flags;
+        if matches!(self.origin, Ipv6AddrOrigin::Static)
+            && self.valid_until_ns == super::ra::INFINITE_DEADLINE {
+            flags |= crate::iface_addr::IFA_F_PERMANENT;
+        }
         if self.temporary { flags |= crate::iface_addr::IFA_F_TEMPORARY; }
         if self.deprecated { flags |= crate::iface_addr::IFA_F_DEPRECATED; }
         flags |= match self.state {

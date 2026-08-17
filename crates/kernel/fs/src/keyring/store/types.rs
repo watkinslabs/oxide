@@ -136,6 +136,14 @@ pub struct Key {
     pub members: Vec<i32>,
     /// Keyring only: installed link restriction.
     pub restriction: Option<LinkRestriction>,
+    /// A reference the KERNEL holds, outside every keyring and every task.
+    ///
+    /// Linux keeps a machine-wide keyring alive with an ordinary `struct key *`
+    /// in a static — `.fs-verity` and the NVMe TLS keyring are reachable from
+    /// no keyring at all, so without a reference of their own the collector
+    /// would reap them the first time anything triggered one. This flag IS
+    /// that reference: [`Store::collect`] treats such a key as a root.
+    pub kernel_held: bool,
     /// `key->state`: [`KEY_IS_UNINSTANTIATED`], [`KEY_IS_POSITIVE`], or a
     /// negative `-errno` for a key that was negated or rejected. Every full
     /// lookup reads this BEFORE `key_validate`, so a negative key hands its

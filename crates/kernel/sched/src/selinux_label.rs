@@ -22,7 +22,7 @@ pub use label::TaskLabel;
 pub use exec::{ExecDomain, ExecInputs, ExecPlan, decide_exec_domain, image_sid};
 pub use attr::{
     ATTR_SLOTS, AttrRequest, AttrSlot, AttrWritePerm, attr_mode, attr_write_target,
-    parse_attr_write, render_slot, write_permission,
+    parse_attr_write, render_slot, slot_answer, write_permission,
 };
 // Naming the CALLING task needs a scheduler, so the live half rides the same
 // gate `live` does.
@@ -31,4 +31,4 @@ pub use exec::{exec_commit, exec_plan};
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub use attr::{read_attr, write_attr};
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
-pub use label::{current_fscreate_sid, current_sid};
+pub use label::{current_fscreate_sid, current_sid, current_sockcreate_sid};

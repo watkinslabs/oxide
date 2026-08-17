@@ -92,7 +92,10 @@ pub const KEY_POS_LINK:    u32 = KEY_NEED_LINK    << KEY_PERM_POS_SHIFT;
 pub const KEY_POS_SETATTR: u32 = KEY_NEED_SETATTR << KEY_PERM_POS_SHIFT;
 pub const KEY_USR_VIEW:    u32 = KEY_NEED_VIEW    << KEY_PERM_USR_SHIFT;
 pub const KEY_USR_READ:    u32 = KEY_NEED_READ    << KEY_PERM_USR_SHIFT;
+pub const KEY_USR_WRITE:   u32 = KEY_NEED_WRITE   << KEY_PERM_USR_SHIFT;
+pub const KEY_USR_SEARCH:  u32 = KEY_NEED_SEARCH  << KEY_PERM_USR_SHIFT;
 pub const KEY_USR_LINK:    u32 = KEY_NEED_LINK    << KEY_PERM_USR_SHIFT;
+pub const KEY_USR_SETATTR: u32 = KEY_NEED_SETATTR << KEY_PERM_USR_SHIFT;
 
 /// Default permission installed on an implicit thread/process keyring:
 /// `KEY_POS_ALL | KEY_USR_VIEW`.
@@ -103,6 +106,24 @@ pub const SESSION_KEYRING_PERM: u32 = KEY_POS_ALL | KEY_USR_VIEW | KEY_USR_READ;
 pub const NAMED_SESSION_KEYRING_PERM: u32 = KEY_POS_ALL | KEY_USR_VIEW | KEY_USR_READ | KEY_USR_LINK;
 /// `look_up_user_keyrings`: `(KEY_POS_ALL & ~KEY_POS_SETATTR) | KEY_USR_ALL`.
 pub const USER_KEYRING_PERM: u32 = (KEY_POS_ALL & !KEY_POS_SETATTR) | KEY_USR_ALL;
+
+/// The machine-wide keyring holding the certificates an fs-verity built-in
+/// signature must chain to. Owned by uid 0 / gid 0.
+pub const FS_VERITY_KEYRING_NAME: &str = ".fs-verity";
+/// Its permission mask: `KEY_POS_SEARCH | KEY_USR_VIEW | KEY_USR_READ |
+/// KEY_USR_WRITE | KEY_USR_SEARCH | KEY_USR_SETATTR`.
+///
+/// The consequence of that exact mask is the whole access policy, so it is
+/// worth stating: the OTHER byte is empty, so an unprivileged task can neither
+/// see nor touch the keyring; the USER byte belongs to uid 0 alone, which is
+/// what makes root the only party that may link a certificate in
+/// (`KEY_USR_WRITE`) or install a link restriction (`KEY_USR_SETATTR`); and
+/// the POSSESSOR byte grants SEARCH only, so nothing reached through it can
+/// write. No link restriction is installed here — root may add one with
+/// `KEYCTL_RESTRICT_KEYRING` to stop further additions, and that choice is
+/// the administrator's rather than the kernel's.
+pub const FS_VERITY_KEYRING_PERM: u32 = KEY_POS_SEARCH | KEY_USR_VIEW | KEY_USR_READ
+    | KEY_USR_WRITE | KEY_USR_SEARCH | KEY_USR_SETATTR;
 
 /// `KEYCTL_CAPABILITIES` byte 0/1 bits.
 pub const KEYCTL_CAPS0_CAPABILITIES:      u8 = 0x01;

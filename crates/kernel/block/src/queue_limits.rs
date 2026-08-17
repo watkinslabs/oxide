@@ -18,6 +18,15 @@ bitflags::bitflags! {
     pub struct QueueFeatures: u8 {
         const STABLE_WRITES = 1 << 0;
         const SYNCHRONOUS   = 1 << 1;
+        /// The device holds completed writes in a VOLATILE cache, so a write
+        /// it acknowledged is not yet on the medium. Everything that needs an
+        /// ordering guarantee has to issue a cache flush; a device without this
+        /// bit needs none, because there is nothing a power cut could lose.
+        const WRITE_CACHE   = 1 << 2;
+        /// The device can write one request straight through that cache, so its
+        /// completion means the data is on the medium. Without it the same
+        /// promise costs a flush after the write.
+        const FUA           = 1 << 3;
     }
 }
 
@@ -122,6 +131,17 @@ impl QueueLimits {
     /// Immutable queue features. # C: O(1)
     pub const fn features(self) -> QueueFeatures { self.features }
 
+    /// Whether writes this device acknowledged may still be volatile.
+    ///
+    /// The one question every durability promise is answered against. Named
+    /// rather than left as a flag test so the whole tree asks it the same way
+    /// and a device that gains a cache does not need every caller edited.
+    /// # C: O(1)
+    pub const fn write_cache(self) -> bool { self.features.contains(QueueFeatures::WRITE_CACHE) }
+
+    /// Whether the device can serve a forced-unit-access write itself. # C: O(1)
+    pub const fn fua(self) -> bool { self.features.contains(QueueFeatures::FUA) }
+
     /// Render one supported Linux `/sys/block/<dev>/queue` numeric leaf.
     /// # C: O(1)
     pub fn sysfs_value(self, name: &str) -> Option<u64> {
@@ -136,6 +156,7 @@ impl QueueLimits {
             "discard_max_bytes" => Some((self.max_discard_sectors as u64) * LINUX_SECTOR_BYTES as u64),
             "discard_granularity" => Some(self.discard_granularity.into()),
             "stable_writes" => Some(self.features.contains(QueueFeatures::STABLE_WRITES) as u64),
+            "fua" => Some(self.fua() as u64),
             _ => None,
         }
     }

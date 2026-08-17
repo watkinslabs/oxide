@@ -338,6 +338,13 @@ impl core::ops::Drop for Ext4Mount {
         // cleanly unmounted. Best-effort on teardown.
         let _ = self.st.mount.mark_state_clean();
         let _ = self.st.mount.commit_batch();
+        // The reports this mount published describe a volume that is no longer
+        // reachable. Withdrawing them here is the only place it can happen:
+        // the trees that host them cannot be named from a superblock
+        // operation, so the integrator left the withdrawal behind at mount.
+        if let Some(dev) = crate::sysfs::mount_dir(&self.st) {
+            crate::surfaces::run_withdraw(&dev);
+        }
     }
 }
 

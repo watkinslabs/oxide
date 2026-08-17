@@ -138,7 +138,10 @@ impl File {
         let n = self.f_op.write_more_file(self, off, buf, nonblock, iocb.more)?;
         #[cfg(feature = "debug-zram-lifecycle")]
         klog::write_raw(b"[ZRAM-TEST] vfs-write-fop\n");
-        self.pos.store(off + n as u64, Ordering::Release);
+        // A backend that owns its own cursor (a transaction file, whose answer
+        // is read back from offset zero of the same description) leaves it
+        // alone; see `FileOps::write_advances_pos`.
+        if self.f_op.write_advances_pos() { self.pos.store(off + n as u64, Ordering::Release); }
         drop(append_guard); // release i_rwsem (rank 40) before f_pos_lock (rank 35)
         drop(pos_guard); // release before the (possibly lock-taking) inotify hook
         // inotify IN_MODIFY hook (no-op when nothing installed).

@@ -9,6 +9,7 @@ use super::autofs::handle_autofs_dev_ioctl;
 use super::blk::handle_blk_ioctl;
 use super::loop_dev::{handle_loop_control_ioctl, handle_loop_ioctl};
 use super::common::{handle_common_ioctl, handle_nonchar_queue_ioctl, handle_socket_owner_ioctl};
+use super::f2fs::handle_f2fs_ioctl;
 use super::tty_ioctl::handle_tty_ioctl;
 
 /// `sys_ioctl(fd, request, arg)` - slot 16.
@@ -138,6 +139,14 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     // own operations already had their turn.
     if super::fs_unlocked_ioctl_applies(super::ioctl_file(&file)) {
         if let Some(rv) = handle_file_ioctl(cur, &file, req, arg) {
+            return rv;
+        }
+        // f2fs's own command set (`f2fs_ioctl`), reached with the number
+        // untouched. It runs AFTER the typed set above and claims only what
+        // neither the generic stage nor the typed stage owns, so no stage
+        // shadows another; and it recognises its own files by the backend
+        // state their inode carries, so a foreign inode falls through it.
+        if let Some(rv) = handle_f2fs_ioctl(cur, &file, &fdt, req, arg) {
             return rv;
         }
     }

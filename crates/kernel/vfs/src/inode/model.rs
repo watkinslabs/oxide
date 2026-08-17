@@ -139,7 +139,11 @@ pub struct Inode {
     pub(super) seal_carrier:   Option<Arc<dyn SealCarrier>>,
     pub(super) owner_persist:  Option<Arc<dyn OwnerPersist>>,
     pub(super) i_link:         Option<Box<[u8]>>,
-    pub(super) i_xattrs:       Option<crate::xattr::SimpleXattrs>,
+    pub(super) i_xattrs:       crate::xattr::XattrSlot,
+    /// `inode->i_acl` / `inode->i_default_acl`: the POSIX ACLs that DECIDE
+    /// access to this object, cached here because the store they come from is
+    /// the medium and a permission check runs per path component.
+    pub(super) i_acl:          super::acl::AclCache,
     pub(crate) i_dquot:        InodeDquots,
     pub(super) i_rwsem:        super::rwsem::InodeRwsem,
     /// `inode->i_flctx`: single owner for BSD flock and POSIX/OFD records.
@@ -158,11 +162,14 @@ impl Inode {
     /// superblock receives its own VFS metadata, locks, wait queues, and
     /// writeback state. # C: O(xattrs)
     pub(crate) fn clone_for_superblock(&self, sb: &Arc<SuperBlock>) -> InodeRef {
-        let xattrs = self.i_xattrs.as_ref().map(|old| {
-            let copy = crate::xattr::SimpleXattrs::new();
-            copy.replace_all(&old.entries());
-            copy
-        });
+        let xattrs = match self.i_xattrs.get() {
+            Some(old) => {
+                let copy = crate::xattr::SimpleXattrs::new();
+                copy.replace_all(&old.entries());
+                crate::xattr::XattrSlot::with_store(copy)
+            }
+            None => crate::xattr::XattrSlot::absent(),
+        };
         Arc::new(Inode {
             i_ino: self.i_ino,
             i_mode: AtomicU32::new(self.i_mode.load(Ordering::Relaxed)),
@@ -202,6 +209,7 @@ impl Inode {
             owner_persist: self.owner_persist.clone(),
             i_link: self.i_link.clone(),
             i_xattrs: xattrs,
+            i_acl: super::acl::AclCache::new(),
             i_dquot: InodeDquots::new(),
             i_rwsem: super::rwsem::InodeRwsem::new(),
             i_flctx: FileLockContext::new(),

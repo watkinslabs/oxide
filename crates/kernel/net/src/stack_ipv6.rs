@@ -9,6 +9,8 @@
 // - ra.rs:    router-advertisement route and SLAAC transactions.
 // - raw.rs:   raw IPv6 routing, extension headers, and fragmentation.
 // - mld.rs:   MLD interface policy, reporting, and retry lifecycle.
+// - manual.rs: manually configured (rtnetlink) IPv6 address add/modify/remove.
+// - addr_table.rs: the IPv6 interface-address table, its inserts and its lifetimes.
 
 mod types;
 mod control;
@@ -19,9 +21,13 @@ mod tx;
 mod ra;
 mod raw;
 mod mld;
+mod manual;
+mod addr_table;
 #[cfg(test)] mod ra_tests;
 #[cfg(test)] mod dad_tests;
+#[cfg(test)] mod manual_tests;
 
+pub use manual::{dad_applies, ipv6_disabled_in, Ipv6AddrMeta};
 pub use types::{Ipv6AddrOrigin, Ipv6AddrState, Ipv6IfaceAddr, Udp6Datagram, Udp6RxQueue};
 pub(crate) use types::PendingRa;
 pub(crate) use tx::ipv6_output_mtu;

@@ -5,6 +5,7 @@
 // - csum_trace: one-shot debug origin record for a rejected metadata checksum.
 // - blocks: inode reads, extent walks, file-block I/O, and inode flag helpers.
 // - dirs: directory mutation, directory lookup, and absolute path walk.
+// - errors: the volume's error history — recording an event, reading it back.
 // - io: raw byte-range block-device helpers shared by sibling modules.
 // - lifecycle: superblock state/mount-count/time writeback (mount = dirty,
 //   unmount = clean), the Linux ext4_setup_super / ext4_put_super half.
@@ -30,6 +31,7 @@ mod csum_trace;
 pub use core::set_ctx_id_hook;
 pub(crate) use csum_trace::first_csum_failure;
 mod dirs;
+mod errors;
 #[cfg(not(target_os = "oxide-kernel"))]
 mod faults;
 mod io;
@@ -143,6 +145,12 @@ pub struct Mount {
     pub sb: Superblock,
     pub(crate) state: Spinlock<MountState, SuperblockLockClass>,
     pub(crate) quota_sb: Spinlock<Weak<vfs::SuperBlock>, SuperblockLockClass>,
+    /// This volume's error history, seeded at open from the superblock and
+    /// extended by every filesystem error this mount finds. Lives on the mount
+    /// rather than beside the reports that read it, because the recorder and
+    /// the readers must not be able to disagree about it.
+    /// # Lk: leaf — taken only to read or add one event.
+    pub(crate) err: Spinlock<crate::errstat::ErrRecord, SuperblockLockClass>,
     #[cfg(not(target_os = "oxide-kernel"))]
     pub(crate) faults: faults::HostedFaults,
     /// Reentrant transaction gate — serializes EVERY top-level mutating op

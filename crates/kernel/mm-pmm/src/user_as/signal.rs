@@ -118,11 +118,16 @@ fn vma_at(ip: u64) -> Option<sched::signal_report::VmaAddr> {
     let mm = unsafe { cur.mm_ref() }?;
     let v = mm.find_vma(hal::UserVirtAddr::new(ip)?)?;
     let start = v.start.as_u64();
-    let (ino, off) = match &v.backing {
-        VmaBacking::File { backing, off } => (backing.ino(), off + ip.saturating_sub(start)),
-        _ => (0, 0),
+    // The MAPPING's file, never the process's executable: a fault inside a
+    // shared library belongs to that library, and the file-relative offset is
+    // only meaningful against the file it is an offset into. The name is copied
+    // by value inside `vma_addr_from` because it is borrowed from the backing
+    // under the mm lock while the report is emitted after that borrow ends.
+    let file = match &v.backing {
+        VmaBacking::File { backing, off } => backing.map_path().map(|p| (p, *off)),
+        _ => None,
     };
-    Some(sched::signal_report::VmaAddr { start, len: v.end.as_u64() - start, ino, file_off: off })
+    Some(sched::signal_report::vma_addr_from(start, v.end.as_u64(), ip, file))
 }
 
 /// Queue one classified fault signal. A signo the classifier could not map

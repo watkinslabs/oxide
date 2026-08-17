@@ -84,6 +84,18 @@ pub(super) fn set_mmap_rnd_bits(v: i64) { aslr::tunable::set_mmap_rnd_bits(v.max
 /// (`vfs::fdtable`), so `setrlimit(RLIMIT_NOFILE)`'s EPERM ceiling and this file
 /// can never disagree.
 pub(super) fn get_nr_open() -> i64 { vfs::fdtable::nr_open() as i64 }
+
+/// `/proc/sys/fs/verity/require_signatures`: whether every verity file must
+/// carry a valid built-in signature. A signature that is PRESENT is checked
+/// whatever this says; this decides only whether an ABSENT one is tolerated.
+/// # C: O(1)
+pub(super) fn get_verity_require_sigs() -> i64 {
+    i64::from(vfs::verity_keys::require_signatures())
+}
+/// # C: O(1)
+pub(super) fn set_verity_require_sigs(v: i64) {
+    vfs::verity_keys::set_require_signatures(v != 0);
+}
 pub(super) fn set_nr_open(value: i64) { let _ = vfs::fdtable::set_nr_open(value as u32); }
 pub(super) fn set_dmesg_restrict(value: i64) { klog::syslog::set_dmesg_restrict(value != 0); }
 /// `fs.mqueue.*` binds to the per-IPC-namespace values `mq_open` measures a

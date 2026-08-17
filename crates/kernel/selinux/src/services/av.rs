@@ -38,16 +38,7 @@ struct Vector {
 pub fn compute_av(db: &Policydb, map: &Mapping, sidtab: &Sidtab,
                   ssid: Sid, tsid: Sid, kernel_class: u16, seqno: u32) -> AvDecision {
     let mut avd = AvDecision::init(seqno);
-
-    let (Some(scontext), Some(tcontext)) = (valid(sidtab, ssid), valid(sidtab, tsid))
-        else { return avd };
-
-    if db.type_is_permissive(scontext.ty) { avd.flags |= AVD_FLAGS_PERMISSIVE; }
-    if db.type_is_neveraudit(scontext.ty) { avd.flags |= AVD_FLAGS_NEVERAUDIT; }
-    if avd.flags & AVD_FLAGS_PERMISSIVE != 0 && avd.flags & AVD_FLAGS_NEVERAUDIT != 0 {
-        avd.allowed = ALL_PERMS;
-        return avd;
-    }
+    let Some((scontext, tcontext)) = admit(db, sidtab, ssid, tsid, &mut avd) else { return avd };
 
     // An unknown class has no rules to consult, so the policy's own stance on
     // classes it does not describe is the whole answer.
@@ -61,6 +52,52 @@ pub fn compute_av(db: &Policydb, map: &Mapping, sidtab: &Sidtab,
     avd.auditallow = map.to_kernel_av(kernel_class, v.auditallow);
     avd.auditdeny = map.to_kernel_av(kernel_class, v.auditdeny);
     finish_audit(avd)
+}
+
+/// Same decision for a class named in the POLICY's numbering — what userspace
+/// writes to the `access` node. # C: O(attrs^2 * bucket)
+///
+/// The vectors are answered in POLICY bit numbering too, unmapped: the caller
+/// read the permission bit values out of `class/<name>/perms/` and compares
+/// against those, so translating into the kernel's numbering would answer a
+/// different question. No decision-cache lookup or insert happens here either
+/// — that cache is keyed by the kernel's class numbering and a policy value
+/// stored under it would be handed back to a kernel caller as its own.
+pub fn compute_av_user(db: &Policydb, sidtab: &Sidtab,
+                       ssid: Sid, tsid: Sid, policy_class: u32, seqno: u32) -> AvDecision {
+    let mut avd = AvDecision::init(seqno);
+    let Some((scontext, tcontext)) = admit(db, sidtab, ssid, tsid, &mut avd) else { return avd };
+
+    if db.symbols.class(policy_class).is_none() {
+        if db.allow_unknown { avd.allowed = ALL_PERMS; }
+        return finish_audit(avd);
+    }
+
+    let v = compute_vector(db, policy_class, scontext, tcontext, 0);
+    avd.allowed = v.allowed;
+    avd.auditallow = v.auditallow;
+    avd.auditdeny = v.auditdeny;
+    finish_audit(avd)
+}
+
+/// Resolve both operands and settle the source domain's blanket flags.
+///
+/// `None` means the answer is already complete: either a SID names nothing, or
+/// the domain is both permissive and never-audited, which grants everything
+/// without consulting a single rule.
+fn admit<'a>(db: &Policydb, sidtab: &'a Sidtab, ssid: Sid, tsid: Sid, avd: &mut AvDecision)
+    -> Option<(&'a ValidContext, &'a ValidContext)>
+{
+    let (Some(scontext), Some(tcontext)) = (valid(sidtab, ssid), valid(sidtab, tsid))
+        else { return None };
+
+    if db.type_is_permissive(scontext.ty) { avd.flags |= AVD_FLAGS_PERMISSIVE; }
+    if db.type_is_neveraudit(scontext.ty) { avd.flags |= AVD_FLAGS_NEVERAUDIT; }
+    if avd.flags & AVD_FLAGS_PERMISSIVE != 0 && avd.flags & AVD_FLAGS_NEVERAUDIT != 0 {
+        avd.allowed = ALL_PERMS;
+        return None;
+    }
+    Some((scontext, tcontext))
 }
 
 /// A neveraudit domain records nothing, whichever way the decision went.

@@ -193,12 +193,14 @@ fn dad_promotion_reannounces_joined_groups_with_link_local_source() {
     let link = Ipv6Addr::from_segments([0xfe80,0,0,0,0,0,0,0x844]);
     let group = Ipv6Addr::from_segments([0xff02,0,0,0,0,0,0,0x844]);
     stack.v6_addrs.lock().entry(iface).or_default().push(super::Ipv6IfaceAddr {
-        addr: link, prefixlen: 64, preferred: u32::MAX, valid: u32::MAX,
+        addr: link, peer: None, prefixlen: 64, preferred: u32::MAX, valid: u32::MAX,
+        preferred_until_ns: u64::MAX, valid_until_ns: u64::MAX,
         origin: super::Ipv6AddrOrigin::Static,
         state: super::Ipv6AddrState::Tentative {
             dad_until_ns: Some(1), retry_at_ns: 0, retrans_timer_ns: SEC,
         },
-        deprecated: false, temporary: false, notify_pending: false,
+        deprecated: false, temporary: false, user_flags: 0, proto: 0, rt_priority: 0,
+        cstamp: 0, tstamp: 0, notify_pending: false,
     });
     stack.join_ipv6_multicast(iface, group, Ipv6Addr::ANY).unwrap();
     let initial = lo.rx_pop().unwrap();

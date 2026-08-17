@@ -88,6 +88,14 @@ impl NtfsFs {
         Ok(node::node_inode(Arc::clone(self), info))
     }
 
+    /// The volume's name. # C: O(label length)
+    pub fn label(&self) -> String { self.volume.lock().label() }
+
+    /// Rename the volume. # C: O(record bytes)
+    pub fn set_label(&self, name: &str) -> KResult<()> {
+        self.volume.lock().set_label(name).map_err(errno_to_vfs)
+    }
+
     /// This mount's option set. # C: O(1)
     pub fn options(&self) -> Options { *self.volume.lock().options() }
 

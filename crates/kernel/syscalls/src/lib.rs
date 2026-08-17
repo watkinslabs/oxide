@@ -212,6 +212,10 @@ pub mod fspick_policy;
 // io_uring identity: which description is a ring, and each caller's errno when
 // it is not. Ungated so it is testable — `io_uring.rs` is kernel-only.
 pub mod io_uring_identity;
+// External io_uring command storage: who owns it, what keeps it alive across a
+// task hand-off, and which caller runs the one terminal completion. Ungated so
+// the ordering is testable — `io_uring/linux_cmd.rs` is kernel-only.
+pub mod io_uring_cmd_life;
 // acct (163): which pid numbering each target pid namespace's accounting
 // record carries. Ungated so the mapping is testable — `acct_exit.rs` is
 // kernel-only.

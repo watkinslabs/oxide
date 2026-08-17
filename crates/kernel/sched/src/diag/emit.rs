@@ -1,4 +1,5 @@
-use core::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "debug-watchdog")]
+use core::sync::atomic::Ordering;
 
 #[cfg(feature = "debug-watchdog")]
 use crate::Task;
@@ -9,8 +10,6 @@ use super::current_task;
 use super::format::{col_dec, col_str, col_syscall, emit_syscall};
 #[cfg(feature = "debug-watchdog")]
 use super::ring::{dump_exit_recent, switches};
-
-static SYSRQ_ARMED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(feature = "debug-watchdog")]
 pub fn report_lockup(secs: u64, tid: u32, cur: Option<&Task>) {
@@ -150,6 +149,7 @@ fn dump_tasks_emit() {
         if fux != 0 { klog::write_raw(b" fux="); klog::write_hex_u64(fux); }
         let wake_dl = t.wakeup_deadline_ns.load(Ordering::Relaxed);
         if wake_dl != 0 { klog::write_raw(b" wake_dl_ns="); klog::write_dec_u64(wake_dl); }
+        emit_wchan(t);
         // Non-blocking: a held exe_path lock must not wedge the dump's CPU.
         let shown = t.try_with_exe_path(|p| if let Some(p) = p {
             klog::write_raw(b" exe="); klog::write_raw(p.as_bytes());
@@ -161,6 +161,24 @@ fn dump_tasks_emit() {
         super::syscall_return::emit_syscall_return(t);
         klog::write_raw(b"\n");
     }
+}
+
+/// `/proc/<pid>/wchan` for the task dump: the source position of the wait a
+/// blocked task is sitting in. Printed only where the reference's `get_wchan`
+/// would answer — a task that is off-CPU, off every runqueue and blocked —
+/// because the recorded site is stale for anything else.
+/// # C: O(path length)
+#[cfg(feature = "debug-watchdog")]
+fn emit_wchan(t: &Task) {
+    if !crate::park_site::reportable(t.state(), t.on_rq.load(Ordering::Relaxed),
+                                     t.on_cpu.load(Ordering::Relaxed)) {
+        return;
+    }
+    let Some(site) = t.park_site.get() else { return };
+    klog::write_raw(b" wchan=");
+    klog::write_raw(site.file().as_bytes());
+    klog::write_raw(b":");
+    klog::write_dec_u64(site.line() as u64);
 }
 
 pub fn note_init_exit(code: i32) {
@@ -175,12 +193,6 @@ pub fn note_init_exit(code: i32) {
     #[cfg(not(feature = "debug-watchdog"))]
     let _ = code;
 }
-
-/// Take the armed flag, if it is set. # C: O(1)
-pub(super) fn sysrq_disarm() -> bool { SYSRQ_ARMED.swap(false, Ordering::Relaxed) }
-
-/// Arm on the next byte. # C: O(1)
-pub(super) fn sysrq_arm() { SYSRQ_ARMED.store(true, Ordering::Relaxed); }
 
 /// The serial line's byte sink. Decoding lives in `super::sysrq`, which the
 /// `/proc/sysrq-trigger` write path shares — a second private key table here

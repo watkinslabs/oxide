@@ -64,7 +64,9 @@ impl WaitList {
     /// # SAFETY: process context with a live runqueue; caller must schedule
     /// after dropping the resource gate and must finish/cancel on every exit.
     /// # C: O(1)
+    #[track_caller]
     pub unsafe fn prepare_to_wait(&self) {
+        crate::park_site::note(core::panic::Location::caller());
         // SAFETY: this is the named prepared-wait form of `park` and forwards
         // the caller's publication/schedule contract unchanged.
         unsafe { self.park(); }
@@ -75,7 +77,9 @@ impl WaitList {
     /// This is for a caller that owns the completion rule itself (for example,
     /// a private deadline sleep) and therefore publishes before it schedules.
     /// # C: O(N armed)
+    #[track_caller]
     pub unsafe fn prepare_to_wait_with_deadline(&self, deadline_ns: u64) {
+        crate::park_site::note(core::panic::Location::caller());
         // SAFETY: forwards the prepared-wait contract with the absolute
         // deadline retained for the scheduler deadline scanner.
         unsafe { self.park_with_deadline(deadline_ns); }
@@ -93,8 +97,10 @@ impl WaitList {
     /// it before scheduling, and finishes/cancels the prepared wait on every
     /// return path. The timer may fire in `[deadline_ns, deadline_ns + slack_ns]`.
     /// # C: O(N armed)
+    #[track_caller]
     pub unsafe fn prepare_to_wait_interruptible_with_deadline_range(&self, deadline_ns: u64,
                                                                     slack_ns: u64) {
+        crate::park_site::note(core::panic::Location::caller());
         // SAFETY: forwards the named prepared-wait contract while preserving
         // the caller-selected timer coalescing range.
         unsafe {
@@ -110,7 +116,9 @@ impl WaitList {
 
     /// Interruptible [`prepare_to_wait`]. # SAFETY: see that method.
     /// # C: O(1)
+    #[track_caller]
     pub unsafe fn prepare_to_wait_interruptible(&self) {
+        crate::park_site::note(core::panic::Location::caller());
         // SAFETY: forwards the prepared-wait contract while adding the
         // signal-after-publication check required for an interruptible wait.
         unsafe { self.park_with_wait_state(0, WaitState::Interruptible); }
@@ -119,7 +127,9 @@ impl WaitList {
 
     /// Timed interruptible [`prepare_to_wait`]. # SAFETY: see that method.
     /// # C: O(1)
+    #[track_caller]
     pub unsafe fn prepare_to_wait_interruptible_with_deadline(&self, deadline_ns: u64) {
+        crate::park_site::note(core::panic::Location::caller());
         // SAFETY: forwards the prepared-wait contract with the caller's
         // absolute deadline retained for the scheduler's deadline scanner.
         unsafe { self.park_with_wait_state(deadline_ns, WaitState::Interruptible); }

@@ -26,20 +26,19 @@ pub(crate) fn write_statfs(buf: u64, st: &SbStatFs) -> Result<(), i64> {
 // superblock at all (Linux `anon_inode` families live on their own pseudo-fs).
 pub(crate) const M_TMPFS: u64 = vfs::uapi::TMPFS_SUPER_MAGIC;
 
-/// `kstatfs` read directly from a known owning `Mount` (its `SuperBlock` +
-/// per-mount `MNT_*` flags). Used by `fstatfs` to report the fd's real backing
-/// mount/superblock rather than re-classifying by the dentry name string. # C: O(1)
-pub(crate) fn statfs_for_mount(m: &vfs::mount::Mount) -> SbStatFs {
-    statfs_for_sb_at_mount(&m.sb(), m.flags())
-}
-
 /// Linux `vfs_statfs(&path)`: the SUPERBLOCK supplies the fs accounting
-/// (`s_op->statfs` + the `statfs_by_dentry` defaults) and the MOUNT supplies
-/// `f_flags` (`calculate_f_flags`). Split from [`statfs_for_mount`] so
-/// `fstatfs` can report an open file's own superblock even when its owning
-/// mount lookup is the only thing that fails. # C: O(1)
-pub(crate) fn statfs_for_sb_at_mount(sb: &vfs::SuperBlock, mnt_flags: u64) -> SbStatFs {
-    let mut st = sb.statfs().unwrap_or_default();
+/// (`s_op->statfs_at` + the `statfs_by_dentry` defaults), narrowed to whatever
+/// the named object is confined to, and the MOUNT supplies `f_flags`
+/// (`calculate_f_flags`).
+///
+/// Takes the superblock rather than the mount so `fstatfs` can report an open
+/// file's own superblock even when its owning mount lookup is the only thing
+/// that fails. A filesystem with no per-object limits answers the same for
+/// every inode. # C: O(1)
+pub(crate) fn statfs_at_inode(sb: &vfs::SuperBlock, inode: &vfs::InodeRef, mnt_flags: u64)
+    -> SbStatFs
+{
+    let mut st = sb.statfs_at(inode).unwrap_or_default();
     st.f_flags = crate::statfs_abi::st_flags(mnt_flags, sb.s_flags());
     st
 }

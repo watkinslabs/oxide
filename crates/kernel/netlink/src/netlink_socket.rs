@@ -406,6 +406,15 @@ impl NetlinkSocket {
         if self.protocol == proto::NETLINK_NETFILTER {
             return netfilter::dispatch(self, &datagram, consumed);
         }
+        // A notification-only family's kernel socket registers no receive path.
+        // Netlink's kernel-socket unicast refuses the message outright in that
+        // case; falling through to the dispatch walk would instead answer a
+        // request nothing handled, and the reply would land in the reader's own
+        // queue where its only consumer expects notifications alone.
+        if crate::protocols::notification_only(self.protocol) {
+            if dest_groups == 0 { return Err(vfs::VfsError::Econnrefused); }
+            return Ok(consumed);
+        }
         // The walk itself never fails the send. Netlink core hands the whole
         // datagram to the protocol receive path and discards its verdict, so a
         // malformed or unhandled message becomes an NLMSG_ERROR reply, never a

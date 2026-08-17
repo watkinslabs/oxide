@@ -381,6 +381,9 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
     };
     // Populate only the bytes the initial-stack writer will touch. This is
     // after the CR3/mm swap, so the resolver installs leaves in this new mm.
+    // SAFETY: `mm_ref` needs no concurrent execve against this task; `cur` is the
+    // execing task itself and it still holds the thread-group exec-update write
+    // guard taken above, which is exactly what excludes a sibling execve.
     let mm = match unsafe { cur.mm_ref() } {
         Some(mm) => mm,
         None => return -(Errno::Enomem.as_i32() as i64),

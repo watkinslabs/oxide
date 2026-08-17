@@ -83,14 +83,15 @@ fn reference_decode(frame: &[u8], expect_len: usize) -> Vec<u8> {
 fn the_reference_decoder_accepts_every_frame_we_produce() {
     for (name, src) in corpus() {
         for level in [zstd::Level::Fast, zstd::Level::Default, zstd::Level::Best] {
-            // Our encoder emits one frame per call, so multi-block inputs are
-            // fed a block at a time -- which is also how zram uses it.
-            for chunk in src.chunks(128 * 1024).chain(src.is_empty().then_some(&src[..])) {
-                let frame = zstd::compress(chunk, level)
-                    .unwrap_or_else(|e| panic!("{name} at {level:?}: {e:?}"));
-                let back = reference_decode(&frame, chunk.len().max(1));
-                assert_eq!(back, chunk, "{name} at {level:?} survived the reference decoder");
-            }
+            // The WHOLE input in one call, including the entries past a
+            // block's ceiling: those become multi-block frames, and the point
+            // of this direction is that the reference accepts them. Feeding it
+            // a block at a time would leave the block-boundary logic -- the
+            // last-block flag, the cross-boundary match clamp -- unexercised.
+            let frame = zstd::compress(&src, level)
+                .unwrap_or_else(|e| panic!("{name} at {level:?}: {e:?}"));
+            let back = reference_decode(&frame, src.len().max(1));
+            assert_eq!(back, src, "{name} at {level:?} survived the reference decoder");
         }
     }
 }
@@ -114,11 +115,12 @@ fn we_decode_every_frame_the_reference_produces() {
 fn our_frames_never_expand_a_page_beyond_its_headers() {
     // zram stores the compressed form; an encoder that can expand a page by
     // more than a fixed overhead breaks its accounting.
-    const MAX_OVERHEAD: usize = 16;
+    // The bound is the encoder's own declared ceiling, which grows by one
+    // block header per block -- not a flat constant, or a multi-block frame
+    // would be measured against a single block's overhead.
     for (name, src) in corpus() {
-        if src.len() > 128 * 1024 { continue; }
         let frame = zstd::compress(&src, zstd::Level::Best).unwrap();
-        assert!(frame.len() <= src.len() + MAX_OVERHEAD,
+        assert!(frame.len() <= zstd::max_compressed_len(src.len()),
             "{name}: {} bytes in, {} out", src.len(), frame.len());
     }
 }
@@ -182,7 +184,6 @@ fn the_reference_decodes_our_dictionary_frames() {
     let handle = structured_zstd::decoding::DictionaryHandle::from_dictionary(theirs);
 
     for (name, src) in corpus() {
-        if src.len() > 128 * 1024 { continue; }
         let frame = zstd::compress_with_dict(&src, zstd::Level::Default, &ours).unwrap();
         let mut decoder = FrameDecoder::new();
         let mut out = vec![0u8; src.len().max(1)];

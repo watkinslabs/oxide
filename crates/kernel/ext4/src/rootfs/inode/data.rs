@@ -131,11 +131,32 @@ fn persist_xattr_entries(inode: &Inode, entries: &[(alloc::string::String, Vec<u
     Ok(())
 }
 
+/// `ext4_xattr_get` — the value for `name`.
+///
+/// The two ACL names are stored as this filesystem's own record, not as the
+/// interchange blob a caller sets and gets, so they convert here. Without the
+/// conversion `getfacl` is handed a version this format's reader rejects and the
+/// permission check cannot decode the ACL that is supposed to decide it.
+/// # C: O(log N_xattr)
+pub(crate) fn get_inode_xattr(inode: &Inode, name: &str) -> Result<Vec<u8>, XattrError> {
+    let store = inode.simple_xattrs().ok_or(XattrError::NotSup)?;
+    let stored = store.get(name).ok_or(XattrError::NotFound)?;
+    if vfs::posix_acl::AclType::from_xattr_name(name).is_some() {
+        return vfs::posix_acl::disk::xattr_from_disk(&stored).map_err(vfs::posix_acl::disk::xattr_error);
+    }
+    Ok(stored)
+}
+
 /// `ext4_xattr_set`: validate flags against the inode cache, commit the full
 /// new xattr set to disk, then publish it in-core. # C: O(N_xattr)+journal I/O
 pub(crate) fn set_inode_xattr(inode: &Inode, name: &str, value: Vec<u8>, create: bool, replace: bool)
     -> Result<(), XattrError>
 {
+    let value = if vfs::posix_acl::AclType::from_xattr_name(name).is_some() {
+        vfs::posix_acl::disk::disk_from_xattr(&value).map_err(vfs::posix_acl::disk::xattr_error)?
+    } else {
+        value
+    };
     let store = inode.simple_xattrs().ok_or(XattrError::NotSup)?;
     let mut entries = store.entries();
     let pos = entries.iter().position(|(n, _)| n == name);

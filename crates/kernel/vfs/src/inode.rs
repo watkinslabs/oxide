@@ -1,4 +1,5 @@
-// Module manifest: `model` owns the concrete inode types/state, `metadata`
+// Module manifest: `acl` owns the inode's cached POSIX ACLs and the fetch that
+// fills them, `model` owns the concrete inode types/state, `metadata`
 // owns field accessors and mutators, `rwsem` owns sleeping exclusion,
 // `locking` owns `i_rwsem` helpers,
 // `ops` owns the `i_op`/`i_fop` delegators, `builder` owns construction, and
@@ -7,6 +8,7 @@
 // shmem-backed `i_op->fileattr_{get,set}` body shared by every shmem-backed
 // mount (tmpfs and the device filesystem's directory tree).
 
+mod acl;
 mod builder;
 mod fileattr_shmem;
 mod flags;
@@ -18,6 +20,7 @@ mod model;
 mod ops;
 pub(crate) mod rwsem;
 
+pub use acl::{AclCache, AclSlot};
 pub use builder::InodeBuilder;
 pub use fileattr_shmem::{shmem_fileattr_get, shmem_fileattr_set};
 pub use flags::{
