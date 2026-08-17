@@ -3,6 +3,7 @@
 // Module manifest:
 //   `zone/types.rs`    — `ZoneType`, zone count, zone names.
 //   `zone/gfp.rs`      — allocation-flag zone bits and the flag→zone map.
+//   `zone/dma.rs`      — bus-master address bound resolved to zone bits.
 //   `zone/limits.rs`   — per-arch zone boundary derivation + PFN→zone lookup.
 //   `zone/zonelist.rs` — populated-zone fallback order and its walk.
 //   `zone/reserve.rs`  — lowmem reserve, the per-zone floor a fallback-capable
@@ -12,12 +13,14 @@
 
 mod types;
 mod gfp;
+mod dma;
 mod limits;
 mod zonelist;
 mod reserve;
 mod wmark;
 
 pub use types::{ZoneType, NR_ZONES};
+pub use dma::{gfp_for_pfn_limit, narrow_zone_bits};
 pub use gfp::{gfp_zone, grants_min_reserve, GfpError, GFP_ATOMIC, GFP_DMA, GFP_DMA32, GFP_HIGH, GFP_HIGHMEM, GFP_KSWAPD_RECLAIM, GFP_MOVABLE, GFP_ZONEMASK};
 pub use limits::{ZoneLayout, ZoneLimits, ZoneSpan};
 pub use zonelist::Zonelist;

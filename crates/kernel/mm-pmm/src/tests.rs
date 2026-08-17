@@ -5,6 +5,7 @@
 mod alloc_free;
 mod accounting;
 mod concurrent;
+mod dma_bound;
 mod init;
 mod reserve;
 mod watermark_gate;
