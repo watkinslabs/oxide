@@ -145,6 +145,33 @@ impl SuperOps for F2fsSuperOps {
     /// device's behalf have to be issued rather than waited on.
     fn thaw_fs(&self) -> KResult<()> { self.fs.thaw(); Ok(()) }
 
+    /// The last reference to an inode is gone.
+    ///
+    /// An inode with no names left is what the volume parked on its orphan
+    /// list, and this is the moment it can be freed: nothing can read it
+    /// through a handle any more. Without this the space of every temporary
+    /// file and every unlinked-while-open file stays held until the NEXT mount
+    /// reclaims the list — correct after a crash, and a leak for the whole life
+    /// of a mount that never crashes.
+    ///
+    /// A failure cannot be reported at this point. It leaves the inode parked,
+    /// which is the recoverable direction: the list is in the checkpoint, so
+    /// the next mount frees what this one could not.
+    fn evict_inode(&self, inode: &vfs::Inode) {
+        // The hold is dropped whether or not the inode is still parked: an
+        // unnamed file that was GIVEN a name in the meantime is no longer on
+        // the list, and a hold left behind for it would make a later unlink
+        // park a file nothing holds open.
+        if self.fs.is_writable() {
+            let mut v = self.fs.volume.lock();
+            let ino = inode.ino() as u32;
+            if v.inode_is_open(ino) && v.close_inode(ino).is_err() {
+                klog::warn::warn_on(true, "f2fs: could not free an unnamed inode; run fsck");
+            }
+        }
+        inode.set_state(vfs::inode::I_FREEING | vfs::inode::I_CLEAR, vfs::inode::I_DIRTY);
+    }
+
     /// Reconfigure from the new option line.
     ///
     /// The line is not decoration. `-o remount,background_gc=off` has to reach

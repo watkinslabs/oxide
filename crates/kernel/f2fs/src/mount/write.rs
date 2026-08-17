@@ -67,14 +67,33 @@ impl F2fs {
         self.balance(true)
     }
 
-    /// Move a name. # C: O(depth) blocks
-    pub fn rename(self: &Arc<Self>, from: u32, old: &str, to: u32, new: &str, noreplace: bool)
-        -> KResult<()> {
-        self.volume
-            .lock()
-            .rename(from, old.as_bytes(), to, new.as_bytes(), noreplace, now())
-            .map_err(errno_to_vfs)?;
+    /// Move a name, in whichever of the three forms `flags` asks for.
+    ///
+    /// The flags are carried through rather than reduced to a boolean: a form
+    /// this filesystem cannot do has to be refused, and a request narrowed to
+    /// "replace or not" on the way down cannot be.
+    /// # C: O(depth) blocks
+    pub fn rename(self: &Arc<Self>, from: u32, old: &str, to: u32, new: &str, flags: u32,
+                  owner: (u32, u32)) -> KResult<()> {
+        let r = crate::volume::Rename {
+            from, old: old.as_bytes(), to, new: new.as_bytes(), flags, owner, now: now(),
+        };
+        self.volume.lock().rename(&r).map_err(errno_to_vfs)?;
         self.balance(true)
+    }
+
+    /// Make an inode under `dir` that no name reaches. # C: O(1 block)
+    pub fn tmpfile(self: &Arc<Self>, dir: u32, mode_word: u16, uid: u32, gid: u32)
+        -> KResult<InodeRef> {
+        let spec = NewInode { mode: mode_word, uid, gid, rdev: 0, now: now() };
+        let ino = self.volume_now().tmpfile(dir, &spec).map_err(errno_to_vfs)?;
+        self.balance(true)?;
+        let inode = node_inode(Arc::clone(self), ino)?;
+        // An unnamed file's link count is ZERO and has to present as zero: that
+        // is how a caller tells a temporary file from an ordinary one, and how
+        // it knows the file disappears when the handle does.
+        inode.set_nlink(0);
+        Ok(inode)
     }
 
     /// Write into a file, reporting the bytes that landed. # C: O(bytes)
