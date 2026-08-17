@@ -346,6 +346,37 @@ impl FileOps for F2fsOps {
         crate::ioctl::vfs::unlocked_ioctl(file, cred, cmd)
     }
 
+    /// What this filesystem owes an open, before the handle exists.
+    ///
+    /// A sealed file's metadata is established HERE: the descriptor is located
+    /// and parsed and its signature checked once, against this mount's policy,
+    /// and every read of the handle then consumes the result. A rejected
+    /// signature is therefore a refused open — which is where a caller can act
+    /// on it — rather than a read error at whichever offset first needed a
+    /// hash. Nothing else in this filesystem builds that record.
+    /// A writable handle also brings this file's quota records in, once, here.
+    /// The reference does the same and for the same reason: everything the
+    /// handle goes on to do allocates, and an allocation may not go to a quota
+    /// file for a record while it is holding the state it is writing. The
+    /// per-operation acquisitions stay — the reference keeps both — because an
+    /// operation can reach this filesystem without a handle.
+    /// # C: O(1) for an ordinary read handle; O(descriptor bytes) on a sealed
+    /// file's first open, O(quota file) on an identity's first writable one
+    fn on_open_file(&self, file: &vfs::File) -> KResult<()> {
+        let inode = file.inode();
+        let node = F2fsOps::node(inode)?;
+        let live = node.live()?;
+        let fl = file.flags();
+        let write = fl.contains(vfs::OpenFlags::O_WRONLY) || fl.contains(vfs::OpenFlags::O_RDWR);
+        if !write && !crate::verity::access::is_verity(live.flags) { return Ok(()); }
+        let mut v = node.fs.volume.lock();
+        // Verity first: a sealed file refuses a writable handle outright, and
+        // there is nothing to acquire for a handle that is not going to exist.
+        v.verity_file_open(&live, node.ino, write).map_err(errno_to_vfs)?;
+        if write { v.dquot_initialize(node.ino).map_err(errno_to_vfs)?; }
+        Ok(())
+    }
+
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let node = F2fsOps::node(inode)?;
         let live = node.live()?;

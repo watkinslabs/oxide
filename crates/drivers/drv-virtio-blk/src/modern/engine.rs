@@ -169,6 +169,20 @@ impl BlkState {
 impl BlockDevice for BlkState {
     fn block_size(&self) -> u32 { self.blk_size }
 
+    /// The topology, carrying the negotiated cache mode as a queue FACT.
+    ///
+    /// Publishing it is what lets a filesystem above decide whether its commit
+    /// record needs a barrier. Without it the layer that sequences durability
+    /// reads "no volatile cache" for a write-back device and issues nothing, so
+    /// an `fsync` returns while the data is still in the device's cache — the
+    /// driver knowing the mode privately is not enough. Forced-unit-access is
+    /// deliberately absent: virtio has no per-request equivalent, so the
+    /// promise is kept by a flush after the write instead.
+    /// # C: O(1)
+    fn queue_limits(&self) -> KResult<block::QueueLimits> {
+        topology(self.blk_size, self.write_cache)
+    }
+
     fn capacity_blocks(&self) -> u64 {
         blk::capacity_blocks(self.capacity, self.blk_size)
     }
@@ -282,4 +296,49 @@ impl BlockDevice for BlkState {
 /// `F_FLUSH` indistinguishable from a real media failure. # C: O(1)
 pub(super) fn block_error_for_status(status: u8) -> BlockError {
     zoned::zone_block_error(status)
+}
+
+/// The queue topology this device publishes, as a function of the two facts it
+/// has: its logical block size and its post-negotiation cache mode.
+///
+/// Ungated and separate from the trait method so the mapping can be checked
+/// without a live device. What it decides is not cosmetic: the layer that
+/// sequences a filesystem's durability promises reads `WRITE_CACHE` from here,
+/// and a device that failed to publish it would have every barrier above it
+/// optimised away — an `fsync` would return with the data still in the device's
+/// cache. `FUA` is deliberately never set: virtio has no per-request
+/// forced-unit-access, so that promise is kept by a flush after the write.
+/// # C: O(1)
+pub(super) fn topology(blk_size: u32, write_cache: bool) -> KResult<block::QueueLimits> {
+    let mut f = block::QueueFeatures::empty();
+    if write_cache { f |= block::QueueFeatures::WRITE_CACHE; }
+    Ok(block::QueueLimits::for_logical_block_size(blk_size)?.with_features(f))
+}
+
+#[cfg(test)]
+mod topology_tests {
+    use super::topology;
+
+    /// A write-back device must SAY it holds acknowledged writes in a cache.
+    /// The cache mode is already known privately; publishing it is what lets a
+    /// filesystem's commit record be fenced.
+    #[test]
+    fn a_writeback_device_publishes_its_volatile_cache() {
+        let l = topology(512, true).unwrap();
+        assert!(l.write_cache());
+        assert!(!l.fua(), "virtio has no per-request forced unit access to claim");
+    }
+
+    /// A write-through device has no cache to empty, and saying it had one would
+    /// cost a barrier per commit for nothing.
+    #[test]
+    fn a_writethrough_device_publishes_no_cache() {
+        assert!(!topology(4096, false).unwrap().write_cache());
+    }
+
+    #[test]
+    fn the_logical_block_size_is_carried_through_either_way() {
+        assert_eq!(topology(4096, true).unwrap().logical_block_size(), 4096);
+        assert_eq!(topology(512, false).unwrap().logical_block_size(), 512);
+    }
 }

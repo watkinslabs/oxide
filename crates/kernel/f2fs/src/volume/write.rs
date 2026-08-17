@@ -31,76 +31,6 @@ impl<S: SectorSource> Volume<S> {
         Ok(())
     }
 
-    /// Put `data` at `addr`. # C: O(BLKSIZE)
-    pub(crate) fn write_block(&self, addr: u32, data: &[u8]) -> Result<(), Errno> {
-        self.write_block_flags(addr, data, block::RequestFlags::NONE)
-    }
-
-    /// The same, telling the medium what kind of block this is and how urgent.
-    ///
-    /// One implementation with the flags defaulted rather than two write
-    /// paths: a second entry point is a second place for the fault site, the
-    /// length check and the address check to be got wrong.
-    /// # C: O(BLKSIZE)
-    pub(crate) fn write_block_flags(&self, addr: u32, data: &[u8], flags: block::RequestFlags)
-        -> Result<(), Errno> {
-        self.write_block_crypt(addr, data, flags, None)
-    }
-
-    /// The same, handing the medium the encryption context this block's
-    /// contents belong under.
-    ///
-    /// `None` means the bytes are already what should land — either the file
-    /// is not encrypted, or this filesystem enciphered them itself. `Some`
-    /// means they are PLAINTEXT and the layer beneath must encrypt them; a
-    /// medium that ignored it would put the file's own bytes on the disk.
-    /// # C: O(BLKSIZE)
-    pub(crate) fn write_block_crypt(&self, addr: u32, data: &[u8],
-        flags: block::RequestFlags, ctx: Option<&block::crypto::Ctx>) -> Result<(), Errno> {
-        if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::WriteIo) {
-            return Err(Errno::Eio);
-        }
-        if data.len() != BLKSIZE { return Err(Errno::Einval); }
-        let main = self.sb.valid_main_blkaddr(addr);
-        if !main && u64::from(addr) >= self.sb.max_blkaddr() { return Err(Errno::Eio); }
-        // Everything OUTSIDE the main area is metadata by the layout's own
-        // definition — the checkpoint packs, both tables, the summary area and
-        // the orphan list are the only things there — so the address answers
-        // the question and no caller has to remember to. Derived here rather
-        // than passed in from each writer because a metadata writer added
-        // later would otherwise have to know to say so, and the one that
-        // forgot would be indistinguishable from file data.
-        let flags = if main { flags } else { flags | block::flags::META };
-        self.source.write_sectors_crypt(u64::from(addr), data, ctx, flags)?;
-        // Charged by the same derivation that set the flag. A main-area write
-        // is a node or a page of data and is charged by the typed writer that
-        // knows which; only the metadata areas can be classified from the
-        // address alone.
-        if !main {
-            use crate::stats::iostat::Io;
-            let kind = if self.segstate.cp_writing { Io::FsCpMeta } else { Io::FsMeta };
-            self.io_account(kind, BLKSIZE as u64, false);
-        }
-        // The mapping of metadata blocks is kept in step HERE, after the write
-        // landed and nowhere else, because this is the single point every
-        // metadata write in this filesystem goes through. A block rewritten
-        // without this would still be answered from the mapping with the bytes
-        // it held before — a stale read with no error anywhere, which is the
-        // one failure a read cache can produce.
-        if self.meta_cache.covers(addr) {
-            // A context means the LAYER BELOW transforms these bytes before
-            // they land, so what is now at the address is not what was passed
-            // down and cannot be filed as if it were. No metadata write
-            // carries one today; the mapping drops the block rather than
-            // depend on that staying true.
-            match ctx {
-                None => self.meta_cache.overwrite(addr, data),
-                Some(_) => self.meta_cache.invalidate_range(addr, 1),
-            }
-        }
-        Ok(())
-    }
-
     /// Segments held back from the allocator so the cleaner always has
     /// somewhere to move live blocks to.
     ///
@@ -122,20 +52,48 @@ impl<S: SectorSource> Volume<S> {
     /// without a shared count a full volume answers `ENOSPC` to every write
     /// while still handing out node blocks.
     ///
-    /// The root reserve comes off what is available here for the same reason
-    /// `statfs` reports it: it is space an ordinary allocation may not have.
+    /// The held-back space comes off what is available here only for a caller
+    /// the reserve is not FOR. `reserve_root=`/`reserve_node=` exist so that a
+    /// full volume is still writable by the reserved uid, the reserved group
+    /// and — where the call site honours it — a `CAP_SYS_RESOURCE` holder;
+    /// subtracting from everyone reserves space nobody can reach. `ino` is the
+    /// inode the allocation belongs to, `None` for a kernel-internal one,
+    /// which reaches the reserve.
+    ///
+    /// `statfs` still subtracts unconditionally, and that is not the same
+    /// question: it reports what an ORDINARY caller may use, which is the
+    /// figure a tool sizing a write wants.
     /// # C: O(1)
-    pub(crate) fn volume_has_room(&self, node: bool) -> Result<(), Errno> {
+    pub(crate) fn volume_has_room(&self, ino: Option<u32>, node: bool) -> Result<(), Errno> {
         if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::Block) {
             return Err(Errno::Enospc);
         }
-        let avail = self.cp.user_block_count.saturating_sub(u64::from(self.opts.reserve_root));
+        let r = self.reserve();
+        let quota_file = ino.is_some_and(|i| self.is_quota_file(i));
+        let caller = ino.and(vfs::reserved_caller(r.resgid));
+        // The block half of a NODE allocation honours the capability only when
+        // the node reserve is in force; the block-only path always does.
+        let cap = !node || r.nodes != 0;
+        let allow = crate::reserve::allow_reserved_root(&r, caller.as_ref(), quota_file, cap);
+        let avail = crate::reserve::available_blocks(self.cp.user_block_count, &r, allow);
         if self.valid_block_count + 1 > avail { return Err(Errno::Enospc); }
         if node {
-            let ids = u64::from(self.max_nid()).saturating_sub(u64::from(RESERVED_NODE_NUM));
+            let total = u64::from(self.max_nid()).saturating_sub(u64::from(RESERVED_NODE_NUM));
+            // The node half always honours the capability, whatever the block
+            // half above decided.
+            let allow = crate::reserve::allow_reserved_root(&r, caller.as_ref(), quota_file, true);
+            let ids = crate::reserve::available_nodes(total, &r, allow);
             if u64::from(self.valid_node_count) + 1 > ids { return Err(Errno::Enospc); }
         }
         Ok(())
+    }
+
+    /// The mount's held-back space and the identities it is held for. # C: O(1)
+    pub(crate) fn reserve(&self) -> crate::reserve::Reserve {
+        crate::reserve::Reserve {
+            blocks: self.opts.reserve_root, nodes: self.opts.reserve_node,
+            resuid: self.opts.resuid, resgid: self.opts.resgid,
+        }
     }
 
     /// Take a block for something that did not occupy one before.
@@ -144,8 +102,8 @@ impl<S: SectorSource> Volume<S> {
     /// nothing is a claim on the volume's remaining space, so the count is
     /// consulted exactly where the occupancy grows.
     /// # C: O(main segments) worst case
-    pub(crate) fn allocate_new_block(&mut self, kind: Kind, sum: Summary, old: u32, node: bool)
-        -> Result<u32, Errno> {
+    pub(crate) fn allocate_new_block(&mut self, ino: u32, kind: Kind, sum: Summary, old: u32,
+                                     node: bool) -> Result<u32, Errno> {
         // A DATA slot holding a reservation already holds the room: it was
         // counted against the volume when the slot was set, and this
         // allocation is what takes it up. Demanding room for it again refuses,
@@ -156,7 +114,7 @@ impl<S: SectorSource> Volume<S> {
         // and not yet written reads as `NEW_ADDR` and has been charged
         // NOTHING, so it is the one case where the same value must still ask.
         let reserved = old == NEW_ADDR && !node;
-        if crate::node::is_hole(old) && !reserved { self.volume_has_room(node)?; }
+        if crate::node::is_hole(old) && !reserved { self.volume_has_room(Some(ino), node)?; }
         self.allocate_block(kind, sum, old)
     }
 
@@ -252,7 +210,7 @@ impl<S: SectorSource> Volume<S> {
         let owed = was_new && nid != ino;
         if owed { self.reserve_space(ino, BLKSIZE as u64)?; }
         if was_new {
-            if let Err(e) = self.volume_has_room(true) {
+            if let Err(e) = self.volume_has_room(Some(ino), true) {
                 if owed { self.release_reserved_space(ino, BLKSIZE as u64)?; }
                 return Err(e);
             }
@@ -302,17 +260,17 @@ impl<S: SectorSource> Volume<S> {
 
     /// Write one page of a file's data out of place, releasing `old`.
     /// # C: O(BLKSIZE)
-    pub(crate) fn write_data(&mut self, owner: u32, ofs: u16, dir: bool, old: u32, data: &[u8])
-        -> Result<u32, Errno> {
-        self.write_data_flags(owner, ofs, dir, old, data, block::RequestFlags::NONE)
+    pub(crate) fn write_data(&mut self, ino: u32, owner: u32, ofs: u16, dir: bool, old: u32,
+                             data: &[u8]) -> Result<u32, Errno> {
+        self.write_data_flags(ino, owner, ofs, dir, old, data, block::RequestFlags::NONE)
     }
 
     /// The same, with what the file this page belongs to has been told about
     /// how urgent its writes are. # C: O(BLKSIZE)
-    pub(crate) fn write_data_flags(&mut self, owner: u32, ofs: u16, dir: bool, old: u32,
+    pub(crate) fn write_data_flags(&mut self, ino: u32, owner: u32, ofs: u16, dir: bool, old: u32,
                                    data: &[u8], flags: block::RequestFlags) -> Result<u32, Errno> {
         let kind = if dir { Kind::DirData } else { Kind::FileData };
-        self.write_data_kind_flags(kind, owner, ofs, old, data, flags)
+        self.write_data_kind_flags(ino, kind, owner, ofs, old, data, flags)
     }
 
     /// The same, into a named log.
@@ -321,16 +279,16 @@ impl<S: SectorSource> Volume<S> {
     /// one its temperature would pick, so the log is a parameter wherever the
     /// caller knows something the block's contents do not say.
     /// # C: O(BLKSIZE)
-    pub(crate) fn write_data_kind(&mut self, kind: Kind, owner: u32, ofs: u16, old: u32,
+    pub(crate) fn write_data_kind(&mut self, ino: u32, kind: Kind, owner: u32, ofs: u16, old: u32,
                                   data: &[u8]) -> Result<u32, Errno> {
-        self.write_data_kind_flags(kind, owner, ofs, old, data, block::RequestFlags::NONE)
+        self.write_data_kind_flags(ino, kind, owner, ofs, old, data, block::RequestFlags::NONE)
     }
 
     /// The same, carrying the hints this page's file was given. # C: O(BLKSIZE)
-    pub(crate) fn write_data_kind_flags(&mut self, kind: Kind, owner: u32, ofs: u16, old: u32,
-                                        data: &[u8], flags: block::RequestFlags)
+    pub(crate) fn write_data_kind_flags(&mut self, ino: u32, kind: Kind, owner: u32, ofs: u16,
+                                        old: u32, data: &[u8], flags: block::RequestFlags)
         -> Result<u32, Errno> {
-        self.write_data_crypt(kind, owner, ofs, old, data, flags, None)
+        self.write_data_crypt(ino, kind, owner, ofs, old, data, flags, None)
     }
 
     /// The same, for a page whose contents the layer beneath must encrypt.
@@ -340,7 +298,7 @@ impl<S: SectorSource> Volume<S> {
     /// happened to land, which is what lets an out-of-place write move a block
     /// without changing a byte of its ciphertext.
     /// # C: O(BLKSIZE)
-    pub(crate) fn write_data_crypt(&mut self, kind: Kind, owner: u32, ofs: u16, old: u32,
+    pub(crate) fn write_data_crypt(&mut self, ino: u32, kind: Kind, owner: u32, ofs: u16, old: u32,
                                    data: &[u8], flags: block::RequestFlags,
                                    ctx: Option<&block::crypto::Ctx>) -> Result<u32, Errno> {
         self.writable_or_err()?;
@@ -351,7 +309,7 @@ impl<S: SectorSource> Volume<S> {
             return Err(Errno::Einval);
         }
         let sum = Summary { nid: owner, version: 0, ofs_in_node: ofs };
-        let addr = self.allocate_new_block(kind, sum, old, false)?;
+        let addr = self.allocate_new_block(ino, kind, sum, old, false)?;
         let mut block = vec![0u8; BLKSIZE];
         let take = data.len().min(BLKSIZE);
         block[..take].copy_from_slice(&data[..take]);

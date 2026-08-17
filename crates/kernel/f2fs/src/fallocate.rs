@@ -58,6 +58,7 @@ impl<S: SectorSource> Volume<S> {
     pub fn fallocate(&mut self, ino: u32, mode: u32, offset: u64, len: u64)
         -> Result<(), Errno> {
         self.writable_or_err()?;
+        self.dquot_initialize(ino)?;
         // Every buffered write of this file has to be on the medium before
         // its addresses are read: a page not yet placed has no address, and
         // this operation is about to rearrange the ones that exist.

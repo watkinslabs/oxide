@@ -14,6 +14,8 @@
 //! - `nids`:   taking a node id, giving one back, and the cache that holds them.
 //! - `dnode`:  reaching — and creating — the node holding a block's address.
 //! - `trim`:   freeing the nodes a shortened file no longer needs.
+//! - `barrier`: asking the members to empty their write caches, and what a
+//!              refusal costs.
 //! - `commit`: writing a checkpoint to the other pack.
 //! - `nodes`:  a node id into a node block, and an inode out of one.
 //! - `map`:    a file's block index into a block address.
@@ -83,6 +85,7 @@ pub mod logopen;
 pub mod nids;
 pub mod dnode;
 pub mod trim;
+pub mod barrier;
 pub mod commit;
 pub mod fileops;
 pub mod dirwrite;
@@ -130,7 +133,12 @@ pub struct Volume<S: SectorSource> {
     /// stopped checkpointing, seeded from the superblock and written back
     /// there. Cumulative across mounts, which is what makes it worth having:
     /// a fault that a repair cleared is invisible from the volume's contents.
-    pub(crate) errrec: crate::errrec::ErrorRecord,
+    /// Mutated from READ paths, which is why it is a cell: a corruption is
+    /// found while walking a node or parsing an inode, and every one of those
+    /// is a `&self` method. The reference takes a spinlock over the same two
+    /// arrays for exactly this reason. Pushing the record to the medium still
+    /// needs `&mut self` and happens where a write is possible.
+    pub(crate) errrec: core::cell::Cell<crate::errrec::ErrorRecord>,
     pub(crate) cp: Checkpoint,
     /// The checkpoint's head block and its payload blocks, joined, because
     /// the version bitmaps run from one into the next.
@@ -186,6 +194,15 @@ pub struct Volume<S: SectorSource> {
     /// write cost a whole quota file.
     pub(crate) dquots: BTreeMap<(usize, u32), crate::quota::Dqblk>,
     pub(crate) dq_dirty: BTreeSet<(usize, u32)>,
+    /// Which identities each live inode's allocations are charged against.
+    ///
+    /// Hung off the inode by the operation that is about to allocate, and
+    /// consulted by every charge — the reference keeps exactly this beside the
+    /// inode. Reading the owners off the medium at the charge instead put a
+    /// node read, and with it a page lock that can block, underneath every node
+    /// write in the filesystem. An inode with no entry is charged nothing: the
+    /// operation that would charge it is the one that puts the entry there.
+    pub(crate) dquot_owners: BTreeMap<u32, crate::volume::quotas::Owners>,
     /// The wall clock, in seconds, as the layer above last read it. Grace
     /// periods are absolute expiries, so a decision needs a now.
     pub(crate) clock: u64,
@@ -290,6 +307,24 @@ pub struct Volume<S: SectorSource> {
     /// rearms a site without remounting, and the counters are what the report
     /// reads.
     pub(crate) fault: crate::fault::Info,
+    /// Which members hold writes no barrier has fenced yet.
+    ///
+    /// Live state, never on the medium: a mount that ends cleanly has fenced
+    /// everything by its last checkpoint, and a mount that does not has nothing
+    /// to hand on — the next mount replays from the pack, which was fenced when
+    /// it was written. Interior mutability because a WRITE is what raises a bit
+    /// and the write path takes `&self`, for the same reason the caches above
+    /// need it.
+    pub(crate) dirty_devs: core::cell::Cell<crate::devices::barrier::DirtyDevices>,
+    /// Files whose bytes were rewritten IN PLACE since the last barrier.
+    ///
+    /// A rewrite in place changes nothing about the file's recorded shape, so
+    /// it is invisible to the comparison `fsync` decides by — and the bytes are
+    /// nonetheless sitting in the device's cache. Without this record an
+    /// `fsync` on such a file writes nothing, fences nothing and reports
+    /// success over data a power cut still loses. Interior mutability because
+    /// the writeback path takes `&self`, as the caches above do.
+    pub(crate) update_writes: core::cell::RefCell<crate::devices::barrier::UpdateWrites>,
     /// The thresholds this mount's write-placement decisions compare against:
     /// which in-place-update policies are armed, and how much pressure the
     /// allocator takes before it recycles a segment (`placement`).

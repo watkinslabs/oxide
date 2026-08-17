@@ -52,6 +52,43 @@ pub trait SectorSource {
         self.write_sectors(sector, buf)
     }
 
+    /// Whether a write this medium acknowledged may still be VOLATILE.
+    ///
+    /// The question every durability promise is answered against. `false` is
+    /// the truthful answer for a medium with no cache behind it, and it makes
+    /// the promises below cost nothing rather than turning them into errors.
+    /// # C: O(1)
+    fn write_cache(&self) -> bool { false }
+
+    /// Write `buf`, keeping a promise about when it — and what came before it —
+    /// is on the MEDIUM rather than in the medium's cache.
+    ///
+    /// What a commit record is written through. The pre-flush half makes
+    /// everything written earlier durable before these bytes land, so the
+    /// record can never name blocks a power loss never finished writing; the
+    /// forced-unit-access half makes the record itself durable by the time this
+    /// returns. A caller that wrote the record with [`Self::write_sectors`] and
+    /// flushed afterwards would have neither guarantee, because the medium is
+    /// free to reorder the two.
+    ///
+    /// Deliberately no encryption context: every block written under a
+    /// durability promise is this filesystem's own metadata, which is never
+    /// enciphered by the layer below. A caller needing both would be asking for
+    /// a commit record whose bytes the medium transforms, and the transform
+    /// would have to be part of the ordering argument.
+    /// The default keeps both halves with barriers around an ordinary write,
+    /// which is what a medium with no per-request durability bit can do. It
+    /// claims no hardware forced-unit-access on purpose: this path cannot carry
+    /// the bit down, and claiming one it then dropped would report a promise
+    /// nothing kept. A medium whose device HAS one overrides this.
+    /// # C: as `write_sectors_flags`, plus up to two barriers
+    fn write_sectors_durable(&self, sector: u64, buf: &[u8], flags: block::RequestFlags,
+        want: block::Durability) -> Result<(), Errno> {
+        let seq = block::durability::sequence(self.write_cache(), false, want, true);
+        block::durability::submit::run_with(seq, || self.flush(),
+            |_| self.write_sectors_flags(sector, buf, flags))
+    }
+
     /// Read sectors whose contents are ENCRYPTED, handing back plaintext.
     ///
     /// `None` is an ordinary read and must stay exactly that: a medium may not
@@ -127,18 +164,42 @@ pub trait SectorSource {
     /// # C: depends on the medium
     fn flush(&self) -> Result<(), Errno> { Ok(()) }
 
-    /// Make durable everything written to media OTHER than the one the
-    /// volume's own commit record lands on.
+    /// Make durable everything written to ONE member of this medium.
     ///
     /// A volume spread over several devices must not let its commit record
-    /// become durable before the data it refers to on the other devices: the
-    /// record would then name blocks a power loss never finished writing.
-    /// The primary is deliberately excluded — its ordering is the commit's own
-    /// business, and flushing it here would turn one barrier into two.
+    /// become durable before the data it refers to on the other members: the
+    /// record would then name blocks a power loss never finished writing. WHICH
+    /// members are owed one is the filesystem's decision — it knows which it has
+    /// written to and which carries the record — so the choice is not made here;
+    /// this only aims a barrier at a named member.
     ///
-    /// A single medium has no other media, so the default does nothing.
+    /// A single medium is its own member zero, and any other index is a
+    /// filesystem asking for a member that does not exist.
     /// # C: depends on the medium
-    fn flush_devices(&self) -> Result<(), Errno> { Ok(()) }
+    fn flush_device(&self, member: usize) -> Result<(), Errno> {
+        if member == 0 { self.flush() } else { Err(Errno::Einval) }
+    }
+
+    /// How many members this medium is made of. # C: O(1)
+    fn members(&self) -> usize { 1 }
+}
+
+/// One command a [`MemImage`] was asked for, in arrival order.
+///
+/// Recorded because ORDER is the whole content of a durability promise: a
+/// barrier issued after the write it was meant to precede leaves the counts
+/// identical and the guarantee gone, so a test that only counts flushes cannot
+/// fail on the bug it exists to catch.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Cmd {
+    /// A write at a volume block address.
+    Write(u64),
+    /// A cache flush of this medium.
+    Flush,
+    /// A cache flush of every medium but the one the commit record lands on.
+    FlushOthers,
+    /// An erase at a volume block address.
+    Erase(u64),
 }
 
 /// A whole volume held in memory, addressed in units of `sector_size`.
@@ -148,6 +209,13 @@ pub trait SectorSource {
 /// refuses writes at the same place a read-only mount would.
 pub struct MemImage {
     bytes: sync::Spinlock<Vec<u8>, sync::TaskList>,
+    /// Every command this image was asked for, in order.
+    log: sync::Spinlock<Vec<Cmd>, sync::TaskList>,
+    /// Whether this image pretends to hold acknowledged writes in a volatile
+    /// cache. Off by default: an in-memory image is durable the instant it is
+    /// written, and that is the honest answer. A test that needs the barrier
+    /// path exercised turns it on.
+    write_cache: bool,
     /// Every erase this image was asked for, as sector and count. A discard
     /// leaves no trace in the bytes that a write of zeroes would not also
     /// leave, so the two are indistinguishable by content — recording the
@@ -166,9 +234,22 @@ impl MemImage {
 
     /// An image over bytes already laid out. # C: O(1)
     pub fn from_bytes(sector_size: u32, bytes: Vec<u8>) -> Self {
-        Self { bytes: sync::Spinlock::new(bytes), erased: sync::Spinlock::new(Vec::new()),
+        Self { bytes: sync::Spinlock::new(bytes), log: sync::Spinlock::new(Vec::new()),
+               write_cache: false, erased: sync::Spinlock::new(Vec::new()),
                sector_size, writable: true }
     }
+
+    /// Have this image behave as a device that holds acknowledged writes in a
+    /// volatile cache, so the barriers a durability promise needs are actually
+    /// issued at it. # C: O(1)
+    pub fn with_write_cache(mut self) -> Self { self.write_cache = true; self }
+
+    /// The commands this image has been asked for, in order. # C: O(commands)
+    pub fn commands(&self) -> Vec<Cmd> { self.log.lock().clone() }
+
+    /// Forget the recorded commands, so a test can assert over one phase of a
+    /// longer sequence. # C: O(1)
+    pub fn forget_commands(&self) { self.log.lock().clear(); }
 
     /// The erases this image has been asked for, in the order they arrived.
     /// # C: O(erases)
@@ -221,6 +302,18 @@ impl SectorSource for MemImage {
         let total = bytes.len();
         let (start, end) = self.span(sector, buf.len(), total).ok_or(Errno::Eio)?;
         bytes[start..end].copy_from_slice(buf);
+        drop(bytes);
+        self.log.lock().push(Cmd::Write(sector));
+        Ok(())
+    }
+
+    fn write_cache(&self) -> bool { self.write_cache }
+
+    /// Recorded, then nothing: the bytes are already where they will be read
+    /// from. What the record is for is the ORDER — a test asserts that the
+    /// barrier arrived before the block it was meant to fence.
+    fn flush(&self) -> Result<(), Errno> {
+        self.log.lock().push(Cmd::Flush);
         Ok(())
     }
 
@@ -234,6 +327,7 @@ impl SectorSource for MemImage {
         bytes[start..end].fill(0);
         drop(bytes);
         self.erased.lock().push((sector, count));
+        self.log.lock().push(Cmd::Erase(sector));
         Ok(())
     }
 

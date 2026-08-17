@@ -106,6 +106,7 @@ pub mod opts;
 pub mod consistency;
 pub mod fallocate;
 pub mod errrec;
+pub mod reserve;
 pub mod extent;
 pub mod filemap;
 pub mod freenid;

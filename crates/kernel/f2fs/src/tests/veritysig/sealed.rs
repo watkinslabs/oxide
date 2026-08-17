@@ -37,8 +37,11 @@ fn trusting(der: &str) -> Policy {
     p
 }
 
+/// Open the file and then read it, which is the order a reader gets. The
+/// signature is checked by the OPEN; the read consumes what the open left.
 fn read_all(v: &Volume<MemImage>, ino: u32) -> Result<Vec<u8>, Errno> {
     let inode = v.read_inode(ino).unwrap();
+    v.verity_file_open(&inode, ino, false)?;
     let mut buf = vec![0u8; inode.size as usize];
     v.read_file(&inode, ino, 0, &mut buf)?;
     Ok(buf)
@@ -195,4 +198,72 @@ fn requiring_signatures_leaves_an_ordinary_file_alone() {
     let attrs = crate::xattr::list(&v.xattr_area(&inode, ino).unwrap()).unwrap();
     assert!(attrs.iter().any(|a| a.index == XATTR_INDEX_VERITY && a.name == XATTR_NAME));
     assert_eq!(v.get_xattr(&inode, ino, "user.v").err(), Some(Errno::Enodata));
+}
+
+// --------------------------------------------- where the check actually is
+
+#[test]
+fn a_rejected_signature_is_refused_by_the_open_and_not_by_a_read() {
+    // The whole point of the shape: the signature is verified once, when the
+    // file is opened, so a caller learns the file is untrustworthy from
+    // `open` rather than from a read at whichever offset first wanted a hash.
+    // A reader that built the record lazily would let the open succeed and
+    // fail somewhere inside the data instead.
+    let (mut v, ino) = with_file();
+    v.set_verity_policy(trusting(CA_DER));
+    v.enable_verity_signed(ino, HASH_ALG_SHA256, LOG_BS, SALT, &unhex(SEALED_SIG)).unwrap();
+    let v = remount(v, trusting(OTHER_CA_DER));
+    let inode = v.read_inode(ino).unwrap();
+    assert_eq!(v.verity_file_open(&inode, ino, false).err(), Some(Errno::Enokey),
+               "the open did not check the signature");
+    // And a read attempted without a successful open serves nothing: there is
+    // no record for it to consume and it does not go and make one.
+    let mut buf = vec![0u8; BLKSIZE];
+    assert_eq!(v.read_file(&inode, ino, 0, &mut buf).err(), Some(Errno::Eio));
+}
+
+#[test]
+fn a_signature_is_verified_once_per_inode_and_not_per_block() {
+    // The record survives the open that made it, so removing the descriptor
+    // from under a live mount leaves the reads working. A read path that
+    // re-derived the record — and re-checked the signature — would fail here.
+    let (mut v, ino) = with_file();
+    v.set_verity_policy(trusting(CA_DER));
+    v.enable_verity_signed(ino, HASH_ALG_SHA256, LOG_BS, SALT, &unhex(SEALED_SIG)).unwrap();
+    let mut v = remount(v, trusting(CA_DER));
+    let inode = v.read_inode(ino).unwrap();
+    v.verity_file_open(&inode, ino, false).unwrap();
+    // Now make the descriptor unreachable. Nothing on the read path may need
+    // it again.
+    let area = v.xattr_area(&inode, ino).unwrap();
+    let attrs: Vec<_> = crate::xattr::list(&area)
+        .unwrap()
+        .into_iter()
+        .filter(|a| !(a.index == XATTR_INDEX_VERITY && a.name == XATTR_NAME))
+        .collect();
+    v.store_xattrs(ino, &attrs).unwrap();
+    let mut buf = vec![0u8; contents().len()];
+    v.read_file(&inode, ino, 0, &mut buf).expect("the read went back for the descriptor");
+    assert_eq!(buf, contents());
+}
+
+#[test]
+fn a_sealed_file_may_not_be_opened_for_writing() {
+    // Its hashes describe exactly the bytes it holds, so a writable handle is
+    // a handle that can only invalidate them. The refusal belongs at the open.
+    let (mut v, ino) = with_file();
+    v.set_verity_policy(trusting(CA_DER));
+    v.enable_verity_signed(ino, HASH_ALG_SHA256, LOG_BS, SALT, &unhex(SEALED_SIG)).unwrap();
+    let inode = v.read_inode(ino).unwrap();
+    assert_eq!(v.verity_file_open(&inode, ino, true).err(), Some(Errno::Eperm));
+    assert!(v.verity_file_open(&inode, ino, false).is_ok());
+}
+
+#[test]
+fn opening_an_unsealed_file_for_writing_is_left_alone() {
+    // The refusal is about verity files. An ordinary file is not a verity file
+    // with a missing seal.
+    let (v, ino) = with_file();
+    let inode = v.read_inode(ino).unwrap();
+    assert!(v.verity_file_open(&inode, ino, true).is_ok());
 }

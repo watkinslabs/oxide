@@ -255,3 +255,59 @@ fn a_disk_limit_is_read_in_quota_blocks_and_compared_in_bytes() {
     assert_eq!(d.bhardlimit, qi::units(8));
     assert_eq!(d.bhardlimit, 8 * 1024);
 }
+
+// -------------------------------------- where the records come from, and when
+
+#[test]
+fn a_charge_lands_only_against_records_the_operation_acquired() {
+    // The contract the charging path now has: it operates on records the
+    // operation's entry point brought in, and it never goes to the medium for
+    // one. An inode nothing acquired is charged nothing — which is what the
+    // reference does when an inode carries no attached record — and the same
+    // charge lands once the acquisition has happened.
+    let mut v = with_quota(0, 0, true);
+    let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
+    let before = space(&mut v);
+    // Drop what the create attached, leaving the state a charge would find if
+    // the operation reaching it had acquired nothing.
+    v.dquot_drop(ino);
+    v.charge_space(ino, BLKSIZE as u64).unwrap();
+    assert_eq!(space(&mut v), before,
+               "the charge read the owners off the medium instead of the attachment");
+    v.dquot_initialize(ino).unwrap();
+    v.charge_space(ino, BLKSIZE as u64).unwrap();
+    assert_eq!(space(&mut v), before + BLKSIZE as u64,
+               "the charge did not land against the acquired record");
+}
+
+#[test]
+fn an_owner_change_moves_later_charges_to_the_new_identity() {
+    // The attachment is what a charge reads, so an owner change has to replace
+    // it. A stale one keeps charging the identity that no longer owns the file.
+    let mut v = with_quota(0, 0, true);
+    let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
+    v.set_attr(ino, None, Some((OTHER, OTHER)), NOW).unwrap();
+    let before_uid = space(&mut v);
+    let before_other = v.quota_record(USRQUOTA, OTHER).unwrap().curspace;
+    // Charged WITHOUT going through an operation's entry point, so what lands
+    // is what the change itself left attached. Driving a write instead would
+    // pass either way: the write's own acquisition re-resolves the owners, so
+    // it cannot tell a change that re-attached from one that did not.
+    v.charge_space(ino, BLKSIZE as u64).unwrap();
+    assert_eq!(space(&mut v), before_uid, "the identity that no longer owns it was charged");
+    assert!(v.quota_record(USRQUOTA, OTHER).unwrap().curspace > before_other,
+            "the new owner was not charged");
+}
+
+#[test]
+fn a_freed_inode_leaves_no_attachment_for_the_next_file_to_take() {
+    // The number is handed out again, and an attachment left behind would
+    // charge this file's former owners for whatever takes it next.
+    let mut v = with_quota(0, 0, true);
+    let ino = v.create(ROOT_INO, b"f", &spec_of(OTHER), None).unwrap();
+    v.remove(ROOT_INO, b"f", false, NOW).unwrap();
+    let before = v.quota_record(USRQUOTA, OTHER).unwrap().curspace;
+    v.charge_space(ino, BLKSIZE as u64).unwrap();
+    assert_eq!(v.quota_record(USRQUOTA, OTHER).unwrap().curspace, before,
+               "a freed inode still carried its old owners");
+}

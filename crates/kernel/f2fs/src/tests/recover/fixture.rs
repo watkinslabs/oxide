@@ -42,7 +42,7 @@ pub fn checkpointed(name: &[u8]) -> (Volume<MemImage>, u32, Vec<u8>) {
 pub fn append_block(v: &mut Volume<MemImage>, ino: u32, byte: u8, fsync: bool) -> (u32, u32) {
     let data = vec![byte; BLKSIZE];
     let index = (BODY / BLKSIZE) as u16;
-    let at = v.write_data(ino, index, false, NULL_ADDR, &data).expect("data");
+    let at = v.write_data(ino, ino, index, false, NULL_ADDR, &data).expect("data");
     let inode = v.read_inode(ino).expect("inode");
     let mut block = v.inode_bytes(ino).expect("inode bytes");
     put32(&mut block, inode.addr_base() + index as usize * 4, at);

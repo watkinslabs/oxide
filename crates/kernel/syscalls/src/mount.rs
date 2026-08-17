@@ -43,6 +43,28 @@ fn quota_has_sys_resource() -> bool {
     sched::live::current().is_some_and(|cur| cur.has_cap(sched::cap::SYS_RESOURCE))
 }
 
+/// Ambient identity a filesystem's reserved-block pool is decided from: the
+/// id the access is charged to, whether the caller holds the group the volume
+/// reserved for (Linux `in_group_p`, which counts the fsgid itself), and
+/// `CAP_SYS_RESOURCE`. Read HERE rather than threaded, because the allocation
+/// that consults it happens far below the last entry point that carries a
+/// credential. # C: O(groups)
+fn current_reserved_caller(res_gid: u32) -> vfs::ReservedCaller {
+    use core::sync::atomic::Ordering;
+    match sched::live::current() {
+        None => vfs::ReservedCaller { fsuid: 0, in_res_group: true, cap_sys_resource: true },
+        Some(cur) => {
+            let fsuid = cur.creds.fsuid.load(Ordering::Acquire);
+            let fsgid = cur.creds.fsgid.load(Ordering::Acquire);
+            let in_res_group = fsgid == res_gid || cur.creds.vfs_group_list().contains(res_gid);
+            vfs::ReservedCaller {
+                fsuid, in_res_group,
+                cap_sys_resource: cur.has_cap(sched::cap::SYS_RESOURCE),
+            }
+        }
+    }
+}
+
 /// Install the VFS path-walk hooks (mount-crossing) AND the mount-ns
 /// provider at boot. Resolution is now always per-component
 /// (`d_lookup → i_op->lookup → d_add`); there is no whole-path delegate to
@@ -66,6 +88,7 @@ pub fn install_vfs_hooks() {
     selinux_runtime::task::set_fscreate_sid_source(current_fscreate_sid);
     fs::selinux::install();
     vfs::set_quota_sys_resource_hook(quota_has_sys_resource);
+    vfs::set_reserved_caller_hook(current_reserved_caller);
     vfs::set_quota_wait_hooks(
         sched::live::quota_wait::park,
         sched::live::quota_wait::schedule_after_park,

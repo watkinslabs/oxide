@@ -76,6 +76,37 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(dirty table blocks + pack blocks)
     pub fn commit_with(&mut self, reason: CpReason) -> Result<(), Errno> {
         if !self.writable { return Ok(()); }
+        let outcome = self.commit_attempt(reason);
+        // A sync that could not be completed leaves the medium describing the
+        // PREVIOUS state while this mount carries on believing its own, so
+        // checkpointing stops and the reason is recorded. Reporting the errno
+        // upwards and nothing else left the mount live and writing on top of a
+        // checkpoint it had failed to place, and told the next mount nothing.
+        // This is also the one path that makes `errors=` reachable from a real
+        // failure rather than only from a shutdown, which forces its own
+        // behaviour whatever the option says.
+        //
+        // Wrapping the WHOLE attempt, not only the pack write: a placement that
+        // fails is just as unrecorded as a pack that fails, and the early `?`
+        // returns below are exactly where the first attempt at this missed it.
+        if outcome.is_err() {
+            self.stop_checkpoint(crate::errrec::StopReason::MetaPage, false);
+        }
+        outcome
+    }
+
+    /// One attempt at the sync, reporting the first thing that would not land.
+    /// # C: O(dirty table blocks + pack blocks)
+    fn commit_attempt(&mut self, reason: CpReason) -> Result<(), Errno> {
+        // The error record goes down FIRST, and ahead of the dirty test below.
+        // A read path that found a corruption can only add to the record in
+        // memory — it has no write — so this is where it reaches the medium,
+        // and it must not be conditional on the checkpoint having anything of
+        // its own to write: a mount whose ONLY change is a fault it found is
+        // exactly the mount whose record the next mount and fsck need. Best
+        // effort, because a failure to record a fault must not turn into a
+        // failure of the sync that noticed it.
+        let _ = self.record_errors();
         // Before the dirty test, not after: a mount whose only change is a
         // buffered write has pages to place, and placing them is what makes
         // it dirty in the sense the test means.
@@ -121,18 +152,6 @@ impl<S: SectorSource> Volume<S> {
         // references they were being held against, and it must record the
         // free count that includes them.
         self.clear_prefree();
-        // Everything this checkpoint will refer to is now on the media. On a
-        // volume spread over several devices the ones that do NOT carry the
-        // pack must be durable before it lands, or the pack names blocks a
-        // power loss never finished writing. A mount that asked for no
-        // barriers has said it accepts that risk.
-        if self.opts.barrier {
-            self.source.flush_devices()?;
-            // A cache flush carries no bytes, so the figure worth having is
-            // how MANY were asked for; the byte total stays zero by
-            // construction rather than by an omission.
-            self.io_account(crate::stats::iostat::Io::FsFlush, 0, false);
-        }
         let version = self.cp.version.wrapping_add(1);
         let pack = match self.cp.pack { Pack::First => Pack::Second, Pack::Second => Pack::First };
         let start = match pack {
@@ -155,9 +174,30 @@ impl<S: SectorSource> Volume<S> {
         for i in 1..=payload { self.write_block(start + i, &vec![0u8; BLKSIZE])?; }
         self.write_orphans(start + 1 + payload)?;
         self.write_summaries(start, total, logs, &nat_journal, &sit_journal)?;
-        // The tail goes last. Until it lands the pack reads as torn and the
-        // other pack stays current, which is exactly the guarantee wanted.
-        self.write_block(start + total - 1, &head)?;
+        // Everything this checkpoint refers to has now been written. On a volume
+        // spread over several members, the ones that do NOT carry the pack are
+        // fenced HERE, after the last of it went down and before the block that
+        // makes it current: their caches must be empty, or the pack names blocks
+        // a power loss never finished writing. The member that carries the pack
+        // is left to the commit block below, whose own pre-flush fences it —
+        // asking here as well would cost a second barrier for one guarantee.
+        self.flush_device_cache()?;
+        // The tail goes last, and under a durability promise rather than as an
+        // ordinary write. Until it lands the pack reads as torn and the other
+        // pack stays current, which is the guarantee wanted — but only if the
+        // device cannot reorder it ahead of the pack it commits. Its pre-flush
+        // is what forbids that, and its forced-unit-access is what makes the
+        // checkpoint durable by the time this call returns rather than whenever
+        // the device gets round to it.
+        let promise = crate::devices::barrier::commit_block_durability(self.opts.barrier);
+        self.write_block_durable(start + total - 1, &head, promise)?;
+        // Its pre-flush put everything written before it on the medium, and
+        // that includes every page this mount rewrote IN PLACE — so no file is
+        // still owed a barrier on their account. Retired only when the promise
+        // was actually made: a mount that asked for no barriers wrote this
+        // block plain and fenced nothing, and forgetting the debt there would
+        // leave those bytes volatile with nothing left to say so.
+        if !promise.is_empty() { self.note_all_fenced(); }
         self.adopt(head, pack, payload, nat_bitmap, sit_bitmap, nat_journal, sit_journal)
     }
 

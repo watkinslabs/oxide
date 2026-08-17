@@ -138,3 +138,109 @@ fn a_read_only_source_refuses_a_hinted_write_at_the_same_place() {
     // around the read-only check.
     assert!(spy.seen().is_empty());
 }
+
+/// The same device, saying whether it holds acknowledged writes in a cache and
+/// whether it can write one request straight through — and recording barriers
+/// as well as requests, because a durability promise is a promise about ORDER.
+struct Cached {
+    inner: alloc::sync::Arc<Spy>,
+    log: sync::Spinlock<alloc::vec::Vec<&'static str>, sync::TaskList>,
+    features: block::QueueFeatures,
+}
+
+impl Cached {
+    fn new(features: block::QueueFeatures) -> alloc::sync::Arc<Self> {
+        alloc::sync::Arc::new(Self {
+            inner: Spy::new(SECTOR, 8),
+            log: sync::Spinlock::new(alloc::vec::Vec::new()),
+            features,
+        })
+    }
+    fn log(&self) -> alloc::vec::Vec<&'static str> { self.log.lock().clone() }
+}
+
+impl block::BlockDevice for Cached {
+    fn block_size(&self) -> u32 { SECTOR }
+    fn capacity_blocks(&self) -> u64 { 8 }
+    fn queue_limits(&self) -> block::KResult<block::QueueLimits> {
+        Ok(block::QueueLimits::for_logical_block_size(SECTOR)?.with_features(self.features))
+    }
+    fn flush(&self) -> block::KResult<()> { self.log.lock().push("flush"); Ok(()) }
+    fn submit_sync(&self, req: &mut block::BlockRequest) -> block::KResult<()> {
+        self.log.lock().push(if req.durability.contains(block::durability::FUA) {
+            "write-fua"
+        } else {
+            "write"
+        });
+        self.inner.submit_sync(req)
+    }
+}
+
+#[test]
+fn a_durable_write_through_a_cached_device_fences_it_on_both_sides() {
+    let dev = Cached::new(block::QueueFeatures::WRITE_CACHE);
+    let src = BlockSource::new(dev.clone()).writable(true).with_sector_size(SECTOR);
+    let want = block::durability::PREFLUSH | block::durability::FUA;
+    src.write_sectors_durable(2, &[0x44; SECTOR as usize], block::RequestFlags::NONE, want).unwrap();
+    assert_eq!(dev.log(), alloc::vec!["flush", "write", "flush"]);
+    assert!(src.write_cache(), "the medium must forward what the device said");
+}
+
+#[test]
+fn a_device_with_forced_unit_access_is_asked_once_and_fenced_once() {
+    let dev = Cached::new(block::QueueFeatures::WRITE_CACHE | block::QueueFeatures::FUA);
+    let src = BlockSource::new(dev.clone()).writable(true).with_sector_size(SECTOR);
+    let want = block::durability::PREFLUSH | block::durability::FUA;
+    src.write_sectors_durable(2, &[0x44; SECTOR as usize], block::RequestFlags::NONE, want).unwrap();
+    assert_eq!(dev.log(), alloc::vec!["flush", "write-fua"]);
+}
+
+#[test]
+fn a_device_with_no_cache_is_asked_for_nothing_but_the_write() {
+    let dev = Cached::new(block::QueueFeatures::empty());
+    let src = BlockSource::new(dev.clone()).writable(true).with_sector_size(SECTOR);
+    let want = block::durability::PREFLUSH | block::durability::FUA;
+    src.write_sectors_durable(2, &[0x44; SECTOR as usize], block::RequestFlags::NONE, want).unwrap();
+    assert_eq!(dev.log(), alloc::vec!["write"]);
+    assert!(!src.write_cache());
+}
+
+#[test]
+fn a_read_only_source_refuses_a_durable_write_without_fencing_anything() {
+    let dev = Cached::new(block::QueueFeatures::WRITE_CACHE);
+    let src = BlockSource::new(dev.clone()).with_sector_size(SECTOR);
+    let want = block::durability::PREFLUSH;
+    assert_eq!(src.write_sectors_durable(0, &[1u8; 4], block::RequestFlags::NONE, want),
+               Err(Errno::Erofs));
+    // The pre-flush is issued before the write, so a refusal is visible only as
+    // a barrier with nothing behind it — which is what this forbids.
+    assert_eq!(dev.log(), alloc::vec!["flush"]);
+}
+
+#[test]
+fn an_in_memory_image_keeps_the_promise_with_barriers_when_it_pretends_to_cache() {
+    let img = MemImage::new(SECTOR, 4).with_write_cache();
+    let want = block::durability::PREFLUSH | block::durability::FUA;
+    img.write_sectors_durable(1, &[0x5A; 16], block::RequestFlags::NONE, want).unwrap();
+    assert_eq!(img.commands(), alloc::vec![source::Cmd::Flush, source::Cmd::Write(1),
+                                           source::Cmd::Flush]);
+    assert_eq!(img.peek(SECTOR as usize, 16), alloc::vec![0x5A; 16]);
+}
+
+#[test]
+fn an_image_with_no_cache_writes_the_same_bytes_and_is_fenced_never() {
+    let img = MemImage::new(SECTOR, 4);
+    let want = block::durability::PREFLUSH | block::durability::FUA;
+    img.write_sectors_durable(1, &[0x5A; 16], block::RequestFlags::NONE, want).unwrap();
+    assert_eq!(img.commands(), alloc::vec![source::Cmd::Write(1)]);
+}
+
+#[test]
+fn a_single_medium_is_its_own_member_zero_and_has_no_others() {
+    let img = MemImage::new(SECTOR, 4).with_write_cache();
+    assert_eq!(img.members(), 1);
+    img.flush_device(0).unwrap();
+    assert_eq!(img.flush_device(1), Err(Errno::Einval),
+               "a filesystem asking for a member that does not exist must be told, not ignored");
+    assert_eq!(img.commands(), alloc::vec![source::Cmd::Flush]);
+}

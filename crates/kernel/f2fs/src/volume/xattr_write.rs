@@ -55,6 +55,9 @@ impl<S: SectorSource> Volume<S> {
                      replace: bool) -> Result<(), Errno> {
         self.writable_or_err()?;
         if create && replace { return Err(Errno::Einval); }
+        // An attribute list that outgrows the inode's own region takes a block,
+        // which is charged to the file's owners.
+        self.dquot_initialize(ino)?;
         let (index, key) = xattr::split_name(name).ok_or(Errno::Eopnotsupp)?;
         let inode = self.read_inode(ino)?;
         let area = self.xattr_area(&inode, ino)?;

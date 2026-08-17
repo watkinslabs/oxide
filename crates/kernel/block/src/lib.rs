@@ -14,6 +14,10 @@
 // can — so a mount that asked for inline crypto never silently gets plaintext.
 // `flags.rs` — the per-request op-flag word: what a submitter says about one
 // request beyond its operation, and the predicate a queue reads it through.
+// `durability.rs` — the pre-flush / forced-unit-access promise a submitter can
+// make about WHEN a write is on the medium, the decision that turns it into
+// device commands given what the device advertises, and the one place that
+// issues them in order.
 // `pagecache.rs` — the file page cache (`17§4`): per-inode radix trees of
 // `CachedPage`, the `PG_LOCKED` bit that collapses a racing miss to one fetch,
 // the per-inode dirty list and machine-wide dirty thresholds `kflushd` acts
@@ -41,6 +45,7 @@ pub mod completion;
 pub mod crypto;
 pub mod devbridge;
 pub mod direct;
+pub mod durability;
 pub mod elevator;
 pub mod flags;
 pub mod pagecache;
@@ -55,6 +60,7 @@ pub mod zoned;
 
 pub use bdev::{sync_bdevs, BdevMapping};
 pub use blockdev::{BlockCompletion, BlockDevice, BlockRequest, MemDisk};
+pub use durability::Durability;
 pub use flags::RequestFlags;
 pub use pagecache::{CachedPage, PageCache};
 pub use queue_limits::{QueueFeatures, QueueLimits, LINUX_SECTOR_BYTES, MAX_DISCARD_SECTORS};

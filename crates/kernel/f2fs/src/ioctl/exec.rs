@@ -102,14 +102,33 @@ pub fn exec<S: SectorSource>(v: &mut Volume<S>, ino: u32, c: &Ctx, r: &Req)
         Req::ResizeFs(blocks) => { v.resize_fs(*blocks)?; Outcome::Reply(Reply::done()) }
 
         Req::Shutdown(mode) => {
-            // Every mode but the last two takes the volume's state to the
-            // medium first; the ones that do not are what a caller reaches
-            // for when the medium is what it no longer trusts.
+            // Every mode but the last takes the volume's state to the medium
+            // first; the ones that do not are what a caller reaches for when
+            // the medium is what it no longer trusts.
             match *mode {
                 GOING_DOWN_FULLSYNC | GOING_DOWN_METASYNC | GOING_DOWN_METAFLUSH => {
                     if v.writable() { v.commit()?; }
                 }
                 _ => {}
+            }
+            // The command is a SHUTDOWN, so it stops checkpointing and records
+            // why. Syncing and reporting success left the volume running and
+            // told the next mount nothing, so the one command whose entire
+            // purpose is to stop the filesystem did not stop it.
+            //
+            // NEED_FSCK is the exception, and it is not a shutdown: it marks
+            // the volume as wanting a repair, disables quick checkpoints and
+            // then checkpoints so those marks land, leaving the mount live.
+            if *mode == GOING_DOWN_NEED_FSCK {
+                v.sbi.set(crate::sbflags::bits::NEED_FSCK);
+                v.sbi.set(crate::sbflags::bits::CP_DISABLED_QUICK);
+                // The reference also raises its dirty flag so a checkpoint
+                // follows; the checkpoint IS the next line here, so a flag to
+                // request one would be a second way of saying it. `IS_DIRTY`
+                // is derived in this build and cannot be set directly.
+                if v.writable() { v.commit()?; }
+            } else {
+                v.stop_checkpoint(crate::errrec::StopReason::Shutdown, false);
             }
             Outcome::Reply(Reply::done())
         }

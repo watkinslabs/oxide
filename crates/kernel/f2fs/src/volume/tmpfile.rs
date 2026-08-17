@@ -47,7 +47,14 @@ impl<S: SectorSource> Volume<S> {
         // pointing anywhere useful, and nothing could ever link it into a tree.
         if mode::file_type(spec.mode) == vfs::FileType::Directory { return Err(Errno::Eisdir); }
         if self.orphans_full() { return Err(Errno::Enospc); }
+        // A file with no name is charged exactly like one with a name, so both
+        // identities — the directory it is made under and the file itself —
+        // are acquired before anything is written.
+        self.dquot_initialize(dir)?;
+        self.dquot_initialize_new(spec.uid, spec.gid)?;
         let ino = self.alloc_nid()?;
+        self.dquot_attach(ino, crate::volume::quotas::Owners::new(
+            spec.uid, spec.gid, crate::volume::quotas::DEFAULT_PROJID));
         // Zero links from the moment it is written. An inode that claimed one
         // and then had it taken away is reachable to anything that reads the
         // medium in between, and a crash in that window leaves a file a checker
