@@ -18,7 +18,43 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
+/// The ON-DISK record every filesystem in the ext2/3/4 + f2fs family stores,
+/// which is not the interchange form this module's own codec carries.
+pub mod disk;
+
 use syscall::errno::Errno;
+
+use crate::types::{S_IRWXG, S_IRWXO, S_IRWXU, S_IRWXUGO};
+
+/// The attribute name each ACL is carried under. `getfacl`/`setfacl` name these
+/// directly, and a filesystem with its own on-disk record converts at the
+/// boundary they cross.
+pub const XATTR_NAME_ACL_ACCESS:  &str = "system.posix_acl_access";
+pub const XATTR_NAME_ACL_DEFAULT: &str = "system.posix_acl_default";
+
+/// Which of the two ACLs an object carries (`ACL_TYPE_ACCESS`/`ACL_TYPE_DEFAULT`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AclType {
+    /// The one that DECIDES access to this object.
+    Access,
+    /// The template a directory hands to what is created inside it.
+    Default,
+}
+
+impl AclType {
+    /// The attribute name this type is stored under. # C: O(1)
+    pub fn xattr_name(self) -> &'static str {
+        match self { AclType::Access => XATTR_NAME_ACL_ACCESS, AclType::Default => XATTR_NAME_ACL_DEFAULT }
+    }
+    /// The type an attribute name selects, if it names an ACL at all. # C: O(1)
+    pub fn from_xattr_name(name: &str) -> Option<Self> {
+        match name {
+            XATTR_NAME_ACL_ACCESS  => Some(AclType::Access),
+            XATTR_NAME_ACL_DEFAULT => Some(AclType::Default),
+            _ => None,
+        }
+    }
+}
 
 /// `ACL_*` entry tags.
 pub const ACL_USER_OBJ:  u16 = 0x01;
@@ -36,11 +72,6 @@ pub const ACL_HDR_LEN:   usize = 4;
 pub const ACL_ENTRY_LEN: usize = 8;
 /// `ACL_READ|ACL_WRITE|ACL_EXECUTE` — every legal `e_perm` bit.
 pub const ACL_PERM_MASK: u16 = 0o7;
-
-const S_IRWXUGO: u16 = 0o777;
-const S_IRWXU:   u16 = 0o700;
-const S_IRWXG:   u16 = 0o70;
-const S_IRWXO:   u16 = 0o7;
 
 /// One `struct posix_acl_entry`. `id` is `ACL_UNDEFINED_ID` for the four
 /// entries that name no id.
@@ -212,6 +243,93 @@ pub fn acl_create(parent_default: Option<&[AclEntry]>, mode: u16, umask: u16, ki
     })
 }
 
+/// `posix_acl_permission` — decide `want` (r/w/x bits) against an access ACL.
+/// `Ok(())` grants, `EACCES` denies, `EIO` is a malformed ACL — an unknown tag,
+/// or a sequence that never reaches `ACL_OTHER`. A malformed ACL is never a
+/// fall-through to the mode bits: the entries are the authority, and one that
+/// cannot be read means the object's permissions are unknown.
+///
+/// The order is the one the format fixes and the class the caller lands in is
+/// FINAL — a caller who matched a group entry that does not grant is refused
+/// rather than falling to `other`, and the group/named grant is tested against
+/// the entry's own bits BEFORE the mask narrows it, so the first entry whose
+/// own bits cover the request decides the answer either way.
+/// # C: O(N_entries)
+pub fn permission<G>(entries: &[AclEntry], caller_uid: u32, i_uid: u32, i_gid: u32,
+                     want: u16, in_group: G) -> Result<(), Errno>
+    where G: Fn(u32) -> bool
+{
+    let want = want & ACL_PERM_MASK;
+    let mut found = false;
+    for (i, e) in entries.iter().enumerate() {
+        match e.tag {
+            // The owner is normally decided by the mode bits before the ACL is
+            // consulted at all; this arm answers the callers that do not.
+            ACL_USER_OBJ  => if caller_uid == i_uid { return granted(e.perm, want); },
+            ACL_USER      => if caller_uid == e.id { return masked(entries, i, e.perm, want); },
+            ACL_GROUP_OBJ => if in_group(i_gid) {
+                found = true;
+                if e.perm & want == want { return masked(entries, i, e.perm, want); }
+            },
+            ACL_GROUP     => if in_group(e.id) {
+                found = true;
+                if e.perm & want == want { return masked(entries, i, e.perm, want); }
+            },
+            ACL_MASK      => {}
+            ACL_OTHER     => {
+                if found { return Err(Errno::Eacces); }
+                return granted(e.perm, want);
+            }
+            _ => return Err(Errno::Eio),
+        }
+    }
+    Err(Errno::Eio)
+}
+
+fn granted(perm: u16, want: u16) -> Result<(), Errno> {
+    if perm & want == want { Ok(()) } else { Err(Errno::Eacces) }
+}
+
+/// The verdict for an entry that the MASK limits: the mask entry follows the
+/// entry that matched, so the search starts after it.
+fn masked(entries: &[AclEntry], at: usize, perm: u16, want: u16) -> Result<(), Errno> {
+    match entries[at + 1..].iter().find(|m| m.tag == ACL_MASK) {
+        Some(m) => granted(perm & m.perm, want),
+        None    => granted(perm, want),
+    }
+}
+
+/// `__posix_acl_chmod_masq` — rewrite an access ACL so it says what the new mode
+/// says. Without it a `chmod` on an object carrying an ACL would change the mode
+/// bits and change nothing about the access the ACL grants, which is the one way
+/// a permission check can disagree with what `ls -l` reports.
+///
+/// The group bits land on the MASK when the ACL has one and on `GROUP_OBJ` when
+/// it does not — the same entry `equiv_mode` folds them out of. An ACL with
+/// neither cannot express them: `EIO`. # C: O(N_entries)
+pub fn chmod_masq(entries: &mut [AclEntry], mode: u16) -> Result<(), Errno> {
+    let mut group_obj: Option<usize> = None;
+    let mut mask_obj:  Option<usize> = None;
+    for (i, e) in entries.iter_mut().enumerate() {
+        match e.tag {
+            ACL_USER_OBJ  => e.perm = (mode & S_IRWXU) >> 6,
+            ACL_USER | ACL_GROUP => {}
+            ACL_GROUP_OBJ => group_obj = Some(i),
+            ACL_MASK      => mask_obj = Some(i),
+            ACL_OTHER     => e.perm = mode & S_IRWXO,
+            _ => return Err(Errno::Eio),
+        }
+    }
+    let i = match mask_obj { Some(i) => i, None => match group_obj {
+        Some(i) => i, None => return Err(Errno::Eio) } };
+    entries[i].perm = (mode & S_IRWXG) >> 3;
+    Ok(())
+}
+
 #[cfg(test)]
 #[path = "tests/posix_acl.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/posix_acl_permission.rs"]
+mod permission_tests;
