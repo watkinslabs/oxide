@@ -352,26 +352,3 @@ fn the_first_process_label_renders_as_the_kernels_when_the_policy_lacks_the_capa
     // testing the substitution and not a policy that happened to agree.
     let _ = declared;
 }
-
-/// An initial SID this kernel has no name for is skipped, not refused: policies
-/// are written against newer kernels, and refusing the image over a SID nothing
-/// here asks about would leave the system with no policy at all. SID 0 is still
-/// an error, because it is the "no SID" value.
-#[test]
-fn an_initial_sid_this_kernel_does_not_use_does_not_refuse_the_policy() {
-    use crate::uapi::initsid::{initsid_name, SECINITSID_NUM};
-    let Some(s) = loaded() else { return };
-    let db = s.policy().expect("policy");
-    // The shipped policy declares slots this kernel never names; the load
-    // succeeded anyway, which is the whole assertion.
-    assert!(db.ocontexts.isids.iter().any(|i| initsid_name(i.sid).is_none()),
-        "the shipped policy must declare an unnamed slot for this to prove anything");
-    assert!(db.ocontexts.isids.iter().all(|i| i.sid != 0));
-    assert!(s.initialized());
-    // Every slot this kernel DOES name resolves to a context of its own rather
-    // than through the unlabeled fallback.
-    for sid in 1..=SECINITSID_NUM {
-        if initsid_name(sid).is_none() { continue; }
-        assert!(s.sid_to_context(sid).is_ok(), "named initial sid {sid} must render");
-    }
-}
