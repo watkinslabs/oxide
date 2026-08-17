@@ -4,6 +4,21 @@ use alloc::vec::Vec;
 
 use syscall::errno::Errno;
 
+/// What a caller reports for a failed inline en/decryption.
+///
+/// A length that is not whole data units is the caller's error and stays
+/// `EINVAL`; everything else — an undeclared mode, a key nothing can serve —
+/// reaches the caller as a failed transfer, because from the volume's side
+/// that is what it is.
+/// # C: O(1)
+pub(crate) fn crypt_errno(e: block::BlockError) -> Errno {
+    match e {
+        block::BlockError::Einval => Errno::Einval,
+        block::BlockError::Eopnotsupp => Errno::Eopnotsupp,
+        _ => Errno::Eio,
+    }
+}
+
 /// Where a volume's bytes come from.
 pub trait SectorSource {
     /// Read `buf.len()` bytes starting at sector `sector`. A short read is an
@@ -36,6 +51,52 @@ pub trait SectorSource {
         let _ = flags;
         self.write_sectors(sector, buf)
     }
+
+    /// Read sectors whose contents are ENCRYPTED, handing back plaintext.
+    ///
+    /// `None` is an ordinary read and must stay exactly that: a medium may not
+    /// treat the absence of a context as a hint. `Some` says these sectors
+    /// hold ciphertext under that key at that data unit number, and the caller
+    /// wants what the file actually contains.
+    ///
+    /// The default does the crypto in software, which is the right answer for
+    /// every medium with nothing beneath it that can do it in line with the
+    /// transfer. What it deliberately does NOT do is ignore the context and
+    /// return the bytes as they lie — that would hand a caller ciphertext it
+    /// would go on to treat as file data.
+    /// # C: O(len(buf))
+    fn read_sectors_crypt(&self, sector: u64, buf: &mut [u8],
+        ctx: Option<&block::crypto::Ctx>) -> Result<(), Errno> {
+        self.read_sectors(sector, buf)?;
+        match ctx {
+            None => Ok(()),
+            Some(c) => block::crypto::fallback::decrypt(c, buf).map_err(crypt_errno),
+        }
+    }
+
+    /// Write sectors that must reach the medium ENCRYPTED, given plaintext.
+    ///
+    /// The same contract in the other direction, and the same refusal to
+    /// ignore the context: a medium that wrote `buf` as it stands would put
+    /// the file's own bytes on the disk while every layer above believed they
+    /// were encrypted.
+    /// # C: O(len(buf))
+    fn write_sectors_crypt(&self, sector: u64, buf: &[u8],
+        ctx: Option<&block::crypto::Ctx>, flags: block::RequestFlags) -> Result<(), Errno> {
+        let Some(c) = ctx else { return self.write_sectors_flags(sector, buf, flags) };
+        let mut ct = alloc::vec::Vec::from(buf);
+        block::crypto::fallback::encrypt(c, &mut ct).map_err(crypt_errno)?;
+        self.write_sectors_flags(sector, &ct, flags)
+    }
+
+    /// What the device beneath this medium can encrypt itself, if anything.
+    ///
+    /// `None` means nothing here does inline encryption in hardware, which is
+    /// not a refusal — the software path serves the same configuration and
+    /// writes the same bytes. It only means a raw key is the only kind that
+    /// can be used, because a hardware-wrapped key needs the hardware.
+    /// # C: O(1)
+    fn crypto_profile(&self) -> Option<&block::crypto::Profile> { None }
 
     /// Tell the medium it may forget `count` sectors from `sector` on, erasing
     /// whatever they hold.

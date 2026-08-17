@@ -107,18 +107,18 @@ impl<S: SectorSource> Volume<S> {
                     done += take;
                 }
                 Mapped::At(addr) => {
-                    let mut block = self.read_main_block(addr)?;
+                    // Both halves matter: the read must be accounted, and it
+                    // must come back as plaintext.
                     self.io_account(crate::stats::iostat::Io::FsDataRead, BLKSIZE as u64, false);
                     self.io_read_folio(0);
                     // Contents are encrypted in UNITS, which may be smaller
                     // than a block, and the index counts units from the start
                     // of the file — not blocks. Decryption comes before the
-                    // verity check because the tree attests to the plaintext.
-                    if let Some(c) = &crypt {
-                        let per = (BLKSIZE / c.data_unit_size()) as u64;
-                        c.crypt_contents(index * per, &mut block, false)
-                            .map_err(|e| e.errno())?;
-                    }
+                    // verity check because the tree attests to the plaintext,
+                    // and it happens inside this call whichever layer performs
+                    // it — the block layer for an inline inode, this one
+                    // otherwise.
+                    let block = self.read_main_plain(addr, crypt.as_ref(), index)?;
                     // A verity file's bytes are attested, not merely located:
                     // the block is checked against the tree before any of it
                     // reaches the caller.

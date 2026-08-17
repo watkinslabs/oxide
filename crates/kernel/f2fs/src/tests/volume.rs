@@ -5,6 +5,8 @@
 //! - `dirs`:  finding a name and listing a directory.
 //! - `space`: `statfs`, the segment table, and attribute regions.
 //! - `encrypted`: an encrypted directory, locked and unlocked.
+//! - `inlinecrypt`: the mount option that moves contents encryption down a
+//!                  layer, and the proof the medium is unchanged by it.
 
 use super::*;
 use crate::features::Access;
@@ -21,6 +23,8 @@ mod dirs;
 mod space;
 #[path = "volume/encrypted.rs"]
 mod encrypted;
+#[path = "volume/inlinecrypt.rs"]
+mod inlinecrypt;
 
 #[test]
 fn a_fixture_volume_mounts() {

@@ -225,11 +225,9 @@ impl<S: SectorSource> Volume<S> {
     fn write_page(&mut self, ino: u32, index: u64, skew: usize, data: &[u8],
                   slot: (Holder, usize, u32)) -> Result<u32, Errno> {
         let (holder, ofs, old) = slot;
-        let mut page = if crate::node::is_hole(old) {
-            vec![0u8; BLKSIZE]
-        } else {
-            self.read_main_block(old)?
-        };
+        // Which block the patch is applied ON TOP of, if any. Resolved before
+        // the key is looked up because reading it needs the key.
+        let base = if crate::node::is_hole(old) { None } else { Some(old) };
         let inode = self.read_inode(ino)?;
         // A read-modify-write of an encrypted block happens over PLAINTEXT:
         // the block on the medium is ciphertext, so it is decrypted, patched
@@ -238,22 +236,31 @@ impl<S: SectorSource> Volume<S> {
         // meant to change.
         let crypt = self.crypt_info(&inode, ino)?;
         if inode.encrypted() && crypt.is_none() { return Err(Errno::Enokey); }
-        if let (Some(c), false) = (&crypt, crate::node::is_hole(old)) {
-            let per = (BLKSIZE / c.data_unit_size()) as u64;
-            c.crypt_contents(index * per, &mut page, false).map_err(|e| e.errno())?;
-        }
+        let mut page = match base {
+            Some(addr) => self.read_main_plain(addr, crypt.as_ref(), index)?,
+            None => vec![0u8; BLKSIZE],
+        };
         page[skew..skew + data.len()].copy_from_slice(data);
+        // An inline inode hands the plaintext down with a context and the
+        // block layer enciphers it; a software one enciphers it here. Exactly
+        // one of the two runs — doing both would encipher it twice, and doing
+        // neither would put the file's bytes on the medium.
         if let Some(c) = &crypt {
-            let per = (BLKSIZE / c.data_unit_size()) as u64;
-            c.crypt_contents(index * per, &mut page, true).map_err(|e| e.errno())?;
+            if !c.uses_inline_crypto() {
+                c.crypt_contents(self.first_unit(c, index), &mut page, true)
+                    .map_err(|e| e.errno())?;
+            }
         }
+        let ctx = self.write_ctx(crypt.as_ref(), index);
         let is_dir = inode.mode & mode_ifmt() == mode_ifdir();
         let owner = match holder { Holder::Inode => ino, Holder::Direct(nid) => nid };
         // The hint belongs to the FILE, so it is read here — the one place a
         // page is written on behalf of a named inode — and not further down,
         // where `owner` may be a direct node and the file is no longer known.
         let flags = self.data_write_flags(ino);
-        self.write_data_flags(owner, ofs as u16, is_dir, old, &page, flags)
+        let kind = if is_dir { crate::volume::curseg::Kind::DirData }
+                   else { crate::volume::curseg::Kind::FileData };
+        self.write_data_crypt(kind, owner, ofs as u16, old, &page, flags, ctx.as_ref())
     }
 
     /// Shorten (or extend) a file to `len`.
@@ -298,7 +305,14 @@ impl<S: SectorSource> Volume<S> {
             let (holder, ofs) = self.dnode_for_write(ino, index)?;
             let old = self.holder_addr(ino, holder, ofs)?;
             if !crate::node::is_hole(old) {
-                let mut page = self.read_main_block(old)?;
+                // Over PLAINTEXT. Zeroing the tail of the CIPHERTEXT and
+                // writing that back encrypts bytes that were already
+                // encrypted: the block reads as noise afterwards, the tail is
+                // not zeroes, and nothing reports it. The writer below takes
+                // plaintext and puts the encryption back on.
+                let crypt = self.crypt_info(&inode, ino)?;
+                if inode.encrypted() && crypt.is_none() { return Err(Errno::Enokey); }
+                let mut page = self.read_main_plain(old, crypt.as_ref(), index)?;
                 page[skew..].fill(0);
                 self.write_one_block(ino, index, 0, &page)?;
             }

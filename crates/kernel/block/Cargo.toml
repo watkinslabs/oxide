@@ -24,6 +24,13 @@ drv      = { path = "../../drivers/drv" }
 vfs      = { path = "../../kernel/vfs" }
 bitflags = { version = "2", default-features = false }
 crc      = { path = "../../shared/crc" }
+# Inline encryption (blk-crypto): the software fallback performs the same
+# constructions a controller would, so the block layer needs the ciphers
+# directly rather than through any filesystem.
+crypt    = { path = "../../shared/crypt" }
+aes      = { path = "../../shared/aes" }
+sm4      = { path = "../../shared/sm4" }
+adiantum = { path = "../../shared/adiantum" }
 
 [features]
 default = []

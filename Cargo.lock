@@ -145,13 +145,17 @@ dependencies = [
 name = "block"
 version = "0.1.0"
 dependencies = [
+ "adiantum",
+ "aes",
  "bitflags",
  "cgroup",
  "crc",
+ "crypt",
  "drv",
  "hal",
  "klog",
  "sched",
+ "sm4",
  "softirq",
  "sync",
  "vfs",
