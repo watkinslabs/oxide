@@ -29,5 +29,9 @@ mod poison;
 
 pub use api::Pmm;
 pub use accounting::{PmmSnapshot, ZoneStat};
+#[cfg(test)]
+pub(crate) const TEST_FREE_NODE_NEXT_OFF: usize = free_node::OFF_NEXT;
+#[cfg(test)]
+pub(crate) const TEST_FREE_NODE_PREV_OFF: usize = free_node::OFF_PREV;
 #[cfg(all(test, feature = "debug-watchdog"))]
 pub(crate) use poison::take_test_mismatch;
