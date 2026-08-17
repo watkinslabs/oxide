@@ -44,6 +44,19 @@ impl<S: SectorSource> Volume<S> {
     /// # C: O(BLKSIZE)
     pub(crate) fn write_block_flags(&self, addr: u32, data: &[u8], flags: block::RequestFlags)
         -> Result<(), Errno> {
+        self.write_block_crypt(addr, data, flags, None)
+    }
+
+    /// The same, handing the medium the encryption context this block's
+    /// contents belong under.
+    ///
+    /// `None` means the bytes are already what should land — either the file
+    /// is not encrypted, or this filesystem enciphered them itself. `Some`
+    /// means they are PLAINTEXT and the layer beneath must encrypt them; a
+    /// medium that ignored it would put the file's own bytes on the disk.
+    /// # C: O(BLKSIZE)
+    pub(crate) fn write_block_crypt(&self, addr: u32, data: &[u8],
+        flags: block::RequestFlags, ctx: Option<&block::crypto::Ctx>) -> Result<(), Errno> {
         if crate::fault::time_to_inject(&self.fault, crate::fault::Fault::WriteIo) {
             return Err(Errno::Eio);
         }
@@ -58,7 +71,7 @@ impl<S: SectorSource> Volume<S> {
         // later would otherwise have to know to say so, and the one that
         // forgot would be indistinguishable from file data.
         let flags = if main { flags } else { flags | block::flags::META };
-        self.source.write_sectors_flags(u64::from(addr), data, flags)
+        self.source.write_sectors_crypt(u64::from(addr), data, ctx, flags)
     }
 
     /// Segments held back from the allocator so the cleaner always has
@@ -335,6 +348,19 @@ impl<S: SectorSource> Volume<S> {
     pub(crate) fn write_data_kind_flags(&mut self, kind: Kind, owner: u32, ofs: u16, old: u32,
                                         data: &[u8], flags: block::RequestFlags)
         -> Result<u32, Errno> {
+        self.write_data_crypt(kind, owner, ofs, old, data, flags, None)
+    }
+
+    /// The same, for a page whose contents the layer beneath must encrypt.
+    ///
+    /// The address this allocates is not part of the encryption: a data unit
+    /// number comes from the file and its offset, never from where the block
+    /// happened to land, which is what lets an out-of-place write move a block
+    /// without changing a byte of its ciphertext.
+    /// # C: O(BLKSIZE)
+    pub(crate) fn write_data_crypt(&mut self, kind: Kind, owner: u32, ofs: u16, old: u32,
+                                   data: &[u8], flags: block::RequestFlags,
+                                   ctx: Option<&block::crypto::Ctx>) -> Result<u32, Errno> {
         self.writable_or_err()?;
         // A page of data dropped on the way to the medium, while a checkpoint
         // is being re-enabled — the one window the reference arms this in.
@@ -347,7 +373,7 @@ impl<S: SectorSource> Volume<S> {
         let mut block = vec![0u8; BLKSIZE];
         let take = data.len().min(BLKSIZE);
         block[..take].copy_from_slice(&data[..take]);
-        self.write_block_flags(addr, &block, flags)?;
+        self.write_block_crypt(addr, &block, flags, ctx)?;
         Ok(addr)
     }
 

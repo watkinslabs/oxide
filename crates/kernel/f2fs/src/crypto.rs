@@ -46,6 +46,7 @@
 //! - `name`:     preparing a lookup and presenting a listing.
 //! - `symlink`:  an encrypted link's stored target.
 //! - `inherit`:  what a new file takes, and what an existing one may be.
+//! - `inline`:   choosing the block layer to encrypt file contents instead.
 
 use syscall::errno::Errno;
 
@@ -63,6 +64,7 @@ pub mod inode;
 pub mod name;
 pub mod symlink;
 pub mod inherit;
+pub mod inline;
 
 pub use inode::Info;
 pub use key::MasterKey;
@@ -121,6 +123,18 @@ pub enum FscryptError {
     /// A presented name that decodes to no well-formed record, and so names
     /// no entry.
     NoSuchName,
+    /// A hardware-wrapped key under a policy that cannot use one: the older
+    /// policy version, or a derivation rule whose key is per file. Neither can
+    /// be satisfied by a blob software cannot unwrap.
+    HwWrappedPolicy,
+    /// A hardware-wrapped key on a file whose contents nothing here can
+    /// encrypt: the mount did not ask for inline encryption, or no device
+    /// under it takes wrapped keys. Refused rather than served in software,
+    /// which for this key is not possible at all.
+    HwWrappedNoInline,
+    /// A filesystem-side crypto operation on an inode whose contents the block
+    /// layer encrypts. Doing it here as well would encipher the bytes twice.
+    InlineOnly,
 }
 
 impl FscryptError {
@@ -139,7 +153,8 @@ impl FscryptError {
             | Self::MutuallyExclusiveFlags(_) | Self::DirectKeyModesDiffer
             | Self::DirectKeyIvTooSmall | Self::IvInoLblkMode | Self::IvInoLblkVolume
             | Self::DataUnitSize | Self::V1WithCasefold | Self::NotEncryptable
-            | Self::BadKeySize(_) | Self::BadLength(_) => Errno::Einval,
+            | Self::BadKeySize(_) | Self::BadLength(_) | Self::HwWrappedPolicy
+            | Self::HwWrappedNoInline | Self::InlineOnly => Errno::Einval,
             // A mode another kernel carries is not a broken volume: the file
             // is intact and a different reader can open it.
             Self::UnsupportedMode(_) => Errno::Enopkg,

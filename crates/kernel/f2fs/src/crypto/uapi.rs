@@ -46,6 +46,13 @@ pub const FILE_NONCE_SIZE: usize = 16;
 /// above the maximum the format has nowhere to put the bytes.
 pub const MIN_KEY_SIZE: usize = 16;
 pub const MAX_RAW_KEY_SIZE: usize = 64;
+/// Largest hardware-wrapped key. Unlike a raw key there is no width the format
+/// fixes — how large a wrapped blob is depends on how the controller wraps it
+/// — so this is only the bound software imposes.
+pub const MAX_HW_WRAPPED_KEY_SIZE: usize = block::crypto::MAX_HW_WRAPPED_KEY_SIZE;
+/// Bytes of the secret a controller derives from a hardware-wrapped key, which
+/// is what keys every derivation such a key makes.
+pub const SW_SECRET_SIZE: usize = block::crypto::SW_SECRET_SIZE;
 
 // ------------------------------------------------------------ context layout
 
@@ -84,6 +91,14 @@ pub const HKDF_IV_INO_LBLK_64_KEY: u8 = 4;
 pub const HKDF_DIRHASH_KEY: u8 = 5;
 pub const HKDF_IV_INO_LBLK_32_KEY: u8 = 6;
 pub const HKDF_INODE_HASH_KEY: u8 = 7;
+/// The name of a HARDWARE-WRAPPED key, derived under its own context so that
+/// a wrapped key and a raw key can never share a name.
+///
+/// A wrapped key's derivations are keyed by the secret the controller derived
+/// from it, not by the key itself. Anyone who learned that secret could add it
+/// as an ordinary raw key; without a separate context the two would produce
+/// the same name, and a policy naming one would be satisfied by the other.
+pub const HKDF_KEY_IDENTIFIER_FOR_HW_WRAPPED: u8 = 8;
 
 /// The prefix every derivation's info string carries, terminator included.
 pub const HKDF_PREFIX: &[u8] = b"fscrypt\0";

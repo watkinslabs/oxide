@@ -218,17 +218,17 @@ impl<S: SectorSource> Volume<S> {
         };
         let crypt = self.crypt_info(&inode, ino)?;
         if inode.encrypted() && crypt.is_none() { return Err(Errno::Enokey); }
-        let mut page = self.read_main_block(addr)?;
-        if let Some(c) = &crypt {
-            let per = (BLKSIZE / c.data_unit_size()) as u64;
-            c.crypt_contents(index * per, &mut page, false).map_err(|e| e.errno())?;
-        }
+        let mut page = self.read_main_plain(addr, crypt.as_ref(), index)?;
         page[skew..skew + data.len()].copy_from_slice(data);
+        // Exactly one layer enciphers; see the out-of-place writer.
         if let Some(c) = &crypt {
-            let per = (BLKSIZE / c.data_unit_size()) as u64;
-            c.crypt_contents(index * per, &mut page, true).map_err(|e| e.errno())?;
+            if !c.uses_inline_crypto() {
+                c.crypt_contents(self.first_unit(c, index), &mut page, true)
+                    .map_err(|e| e.errno())?;
+            }
         }
-        self.write_block(addr, &page)?;
+        let ctx = self.write_ctx(crypt.as_ref(), index);
+        self.write_block_crypt(addr, &page, block::RequestFlags::NONE, ctx.as_ref())?;
         self.dirty = true;
         Ok(())
     }

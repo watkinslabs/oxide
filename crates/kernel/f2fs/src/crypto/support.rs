@@ -46,7 +46,7 @@ fn direct_key_ok(p: &Policy) -> Result<(), FscryptError> {
 
 /// Number of bits the largest data unit index on this volume occupies.
 /// # C: O(1)
-fn max_file_dun_bits(fs: &FsFacts, du_bits: u8) -> u32 {
+pub(super) fn max_file_dun_bits(fs: &FsFacts, du_bits: u8) -> u32 {
     let top = fs.max_file_bytes.saturating_sub(1);
     let used = u64::BITS - top.leading_zeros();
     used.saturating_sub(u32::from(du_bits))

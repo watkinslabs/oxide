@@ -8,6 +8,10 @@
 // a host-managed drive; every other driver takes the `None` default.
 // `completion.rs` — shared BlockIo softirq completion-handler registry.
 // `elevator.rs` — I/O-priority dispatch order for requests that had to wait.
+// `crypto.rs` — inline encryption (Linux blk-crypto): the profile a device
+// advertises, the encryption context a request carries, the keyslots a key is
+// programmed into, and the software fallback that serves a context no device
+// can — so a mount that asked for inline crypto never silently gets plaintext.
 // `flags.rs` — the per-request op-flag word: what a submitter says about one
 // request beyond its operation, and the predicate a queue reads it through.
 // `pagecache.rs` — `PageCache` (sync `read_page` / `write_page` /
@@ -32,6 +36,7 @@ pub mod bdev;
 mod bh_gate;
 pub mod blockdev;
 pub mod completion;
+pub mod crypto;
 pub mod devbridge;
 pub mod direct;
 pub mod elevator;

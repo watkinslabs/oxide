@@ -75,27 +75,30 @@ impl<S: SectorSource> Volume<S> {
         // A replacing span shows an empty file, so a base taken from the file
         // would resurrect bytes the span has already made invisible.
         let replace = self.atomic_is_replace(ino);
-        let (mut page, ciphered) = if !crate::node::is_hole(old) {
-            (self.read_main_block(old)?, true)
+        let base = if !crate::node::is_hole(old) {
+            Some(old)
         } else if replace {
-            (vec![0u8; BLKSIZE], false)
+            None
         } else {
-            match self.map_block(&inode, ino, index)? {
-                Mapped::At(a) => (self.read_main_block(a)?, true),
-                _ => (vec![0u8; BLKSIZE], false),
-            }
+            match self.map_block(&inode, ino, index)? { Mapped::At(a) => Some(a), _ => None }
         };
-        if let (Some(c), true) = (&crypt, ciphered) {
-            let per = (BLKSIZE / c.data_unit_size()) as u64;
-            c.crypt_contents(index * per, &mut page, false).map_err(|e| e.errno())?;
-        }
+        let mut page = match base {
+            Some(a) => self.read_main_plain(a, crypt.as_ref(), index)?,
+            None => vec![0u8; BLKSIZE],
+        };
         page[skew..skew + data.len()].copy_from_slice(data);
+        // Exactly one layer enciphers: this one for a software inode, the
+        // block layer for an inline one, from the context handed down below.
         if let Some(c) = &crypt {
-            let per = (BLKSIZE / c.data_unit_size()) as u64;
-            c.crypt_contents(index * per, &mut page, true).map_err(|e| e.errno())?;
+            if !c.uses_inline_crypto() {
+                c.crypt_contents(self.first_unit(c, index), &mut page, true)
+                    .map_err(|e| e.errno())?;
+            }
         }
+        let ctx = self.write_ctx(crypt.as_ref(), index);
         let owner = match holder { Holder::Inode => cow, Holder::Direct(nid) => nid };
-        let addr = self.write_data(owner, ofs as u16, false, old, &page)?;
+        let addr = self.write_data_crypt(crate::volume::curseg::Kind::FileData, owner,
+            ofs as u16, old, &page, block::RequestFlags::NONE, ctx.as_ref())?;
         self.set_holder_addr(cow, holder, ofs, addr)
     }
 
@@ -124,11 +127,7 @@ impl<S: SectorSource> Volume<S> {
             let take = (BLKSIZE - skew).min(want - done);
             match self.map_block(&cow_inode, cow, index)? {
                 Mapped::At(addr) => {
-                    let mut page = self.read_main_block(addr)?;
-                    if let Some(c) = &crypt {
-                        let per = (BLKSIZE / c.data_unit_size()) as u64;
-                        c.crypt_contents(index * per, &mut page, false).map_err(|e| e.errno())?;
-                    }
+                    let page = self.read_main_plain(addr, crypt.as_ref(), index)?;
                     buf[done..done + take].copy_from_slice(&page[skew..skew + take]);
                 }
                 _ if replace => buf[done..done + take].fill(0),
@@ -137,12 +136,7 @@ impl<S: SectorSource> Volume<S> {
                 // a span open back into this one.
                 _ => match self.map_block(inode, ino, index)? {
                     Mapped::At(addr) => {
-                        let mut page = self.read_main_block(addr)?;
-                        if let Some(c) = &crypt {
-                            let per = (BLKSIZE / c.data_unit_size()) as u64;
-                            c.crypt_contents(index * per, &mut page, false)
-                                .map_err(|e| e.errno())?;
-                        }
+                        let page = self.read_main_plain(addr, crypt.as_ref(), index)?;
                         if inode.verity() && !self.verity_check(inode, ino, index, &page)? {
                             return Err(Errno::Eio);
                         }

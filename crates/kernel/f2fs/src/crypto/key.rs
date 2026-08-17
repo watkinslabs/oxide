@@ -21,10 +21,18 @@ use super::uapi::*;
 use super::FscryptError;
 
 /// A master key held for derivation.
+///
+/// Two forms, and the difference is what the stored bytes ARE. Ordinarily they
+/// are the key: they key the derivation and every subkey comes out of it. For
+/// a hardware-wrapped key they are a blob only the controller can unwrap, the
+/// derivation is keyed by the SECRET the controller derived from that blob
+/// instead, and the blob itself is used for one thing — handing to the block
+/// layer as a file-contents key. Software never encrypts anything with it.
 #[derive(Clone)]
 pub struct MasterKey {
     raw: Vec<u8>,
     kdf: HkdfSha512,
+    hw_wrapped: bool,
 }
 
 impl MasterKey {
@@ -36,8 +44,33 @@ impl MasterKey {
         }
         // No salt: a master key is already pseudorandom, and there is nowhere
         // to persist a per-key salt.
-        Ok(Self { raw: Vec::from(raw), kdf: HkdfSha512::extract(&[], raw) })
+        Ok(Self { raw: Vec::from(raw), kdf: HkdfSha512::extract(&[], raw), hw_wrapped: false })
     }
+
+    /// A hardware-wrapped key: the blob I/O uses, and the secret the
+    /// controller derived from it.
+    ///
+    /// The secret keys the derivation; the blob does not, and could not — it
+    /// is not key material. The two are cryptographically isolated by the
+    /// controller, so software holding the secret learns nothing about what
+    /// the device encrypts with, which is exactly why the secret may be used
+    /// for everything that is not file contents.
+    /// # C: O(len(wrapped))
+    pub fn new_hw_wrapped(wrapped: &[u8], sw_secret: &[u8; SW_SECRET_SIZE])
+        -> Result<Self, FscryptError> {
+        if wrapped.len() < MIN_KEY_SIZE || wrapped.len() > MAX_HW_WRAPPED_KEY_SIZE {
+            return Err(FscryptError::BadKeySize(wrapped.len()));
+        }
+        Ok(Self {
+            raw: Vec::from(wrapped),
+            kdf: HkdfSha512::extract(&[], sw_secret),
+            hw_wrapped: true,
+        })
+    }
+
+    /// Whether this key can only be used by the controller that wrapped it.
+    /// # C: O(1)
+    pub fn is_hw_wrapped(&self) -> bool { self.hw_wrapped }
 
     /// Bytes of key material. # C: O(1)
     pub fn size(&self) -> usize { self.raw.len() }
@@ -64,7 +97,11 @@ impl MasterKey {
     /// # C: O(1)
     pub fn identifier(&self) -> [u8; KEY_IDENTIFIER_SIZE] {
         let mut id = [0u8; KEY_IDENTIFIER_SIZE];
-        let _ = self.expand(HKDF_KEY_IDENTIFIER, &[], &mut id);
+        // A wrapped key's name comes from its own context, so it can never
+        // collide with the name of the raw key someone might build from the
+        // secret the controller derived.
+        let ctx = if self.hw_wrapped { HKDF_KEY_IDENTIFIER_FOR_HW_WRAPPED } else { HKDF_KEY_IDENTIFIER };
+        let _ = self.expand(ctx, &[], &mut id);
         id
     }
 

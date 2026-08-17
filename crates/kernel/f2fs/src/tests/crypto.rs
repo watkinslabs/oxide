@@ -18,6 +18,8 @@
 //! - `names`:    padding, name ciphertext, and the keyed directory hash.
 //! - `nokey`:    the name a locked directory shows, and finding it again.
 //! - `tree`:     inheritance, the same-policy rule, and symbolic links.
+//! - `inline`:   handing contents encryption to the block layer, and the
+//!               agreement between the two implementations that makes it safe.
 
 #[path = "crypto/fixture.rs"] mod fixture;
 #[path = "crypto/context.rs"] mod context;
@@ -28,3 +30,4 @@
 #[path = "crypto/names.rs"] mod names;
 #[path = "crypto/nokey.rs"] mod nokey;
 #[path = "crypto/tree.rs"] mod tree;
+#[path = "crypto/inline.rs"] mod inline;

@@ -41,6 +41,15 @@ pub struct BlockRequest {
     /// nobody will poll for must stay on a queue whose completions are
     /// signalled, or it never completes at all.
     pub polled:       bool,
+    /// The key and starting data unit number this request's payload is
+    /// encrypted under, when it is encrypted at all.
+    ///
+    /// A request carrying one MUST be submitted through
+    /// [`crate::crypto::submit_sync`], never handed to a driver directly: a
+    /// driver that does not do inline encryption would write the plaintext it
+    /// was given and report success, which is indistinguishable downstream
+    /// from a device that encrypted.
+    pub crypt:        Option<crate::crypto::Ctx>,
 }
 
 impl Default for BlockRequest {
@@ -50,7 +59,7 @@ impl Default for BlockRequest {
     /// # C: O(1)
     fn default() -> Self {
         Self { op: BlockOp::Read, start_block: 0, len_blocks: 0, buffer: Vec::new(), ioprio: sched::ioprio::DEFAULT,
-               flags: crate::flags::RequestFlags::NONE, polled: false }
+               flags: crate::flags::RequestFlags::NONE, polled: false, crypt: None }
     }
 }
 
@@ -78,6 +87,16 @@ impl BlockRequest {
     /// # C: O(1)
     pub fn new_write(start_block: u64, len_blocks: u32, buffer: Vec<u8>) -> Self {
         Self { op: BlockOp::Write, start_block, len_blocks, buffer, ..Default::default() }
+    }
+
+    /// The same request with an encryption context on it.
+    ///
+    /// Attaching one commits the request to [`crate::crypto::submit_sync`];
+    /// see the field.
+    /// # C: O(1)
+    pub fn with_crypt(mut self, ctx: crate::crypto::Ctx) -> Self {
+        self.crypt = Some(ctx);
+        self
     }
 
     /// The same request with `flags` also set on it.
@@ -126,6 +145,16 @@ pub trait BlockDevice: Send + Sync {
     fn queue_limits(&self) -> KResult<QueueLimits> {
         QueueLimits::for_logical_block_size(self.block_size())
     }
+
+    /// What this device can encrypt in line with a transfer, or `None` when it
+    /// does no inline encryption.
+    ///
+    /// `None` is the honest answer for every driver that has not been taught
+    /// to program keys, and it is not a dead end: a request whose context the
+    /// device cannot serve is served in software instead. What `None` must
+    /// never be read as is permission to submit an encrypted request anyway.
+    /// # C: O(1)
+    fn crypto_profile(&self) -> Option<&crate::crypto::Profile> { None }
 
     /// Whether this device advertises a nonzero Linux discard limit.  Callers
     /// may issue `BlockOp::Discard` only when this is true; an unsupported

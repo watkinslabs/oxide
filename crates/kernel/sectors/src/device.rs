@@ -98,6 +98,43 @@ impl SectorSource for BlockSource {
         Ok(())
     }
 
+    fn crypto_profile(&self) -> Option<&block::crypto::Profile> { self.dev.crypto_profile() }
+
+    fn read_sectors_crypt(&self, sector: u64, buf: &mut [u8],
+        ctx: Option<&block::crypto::Ctx>) -> Result<(), Errno> {
+        let Some(c) = ctx else { return self.read_sectors(sector, buf) };
+        let (first, skew, blocks) = self.span(sector, buf.len())?;
+        // A device en/decrypts whole data units at the number it is given, so
+        // a request that does not start on one addresses the wrong unit. There
+        // is no read-modify-write that recovers this: the block before the
+        // skew belongs to a different unit.
+        if skew != 0 { return Err(Errno::Einval); }
+        let mut req = block::BlockRequest::new_read(first, blocks, self.dev.block_size())
+            .with_crypt(c.clone());
+        block::crypto::submit_sync(&*self.dev, &mut req).map_err(super::source::crypt_errno)?;
+        if req.buffer.len() < buf.len() { return Err(Errno::Eio); }
+        buf.copy_from_slice(&req.buffer[..buf.len()]);
+        Ok(())
+    }
+
+    fn write_sectors_crypt(&self, sector: u64, buf: &[u8],
+        ctx: Option<&block::crypto::Ctx>, flags: block::RequestFlags) -> Result<(), Errno> {
+        let Some(c) = ctx else { return self.write_sectors_flags(sector, buf, flags) };
+        if !self.writable { return Err(Errno::Erofs); }
+        let (first, skew, blocks) = self.span(sector, buf.len())?;
+        let whole = blocks as usize * self.dev.block_size().max(1) as usize;
+        // The read-modify-write an unaligned write would need cannot be done
+        // on encrypted sectors: the surrounding bytes on the medium belong to
+        // the same data units as the written ones, so patching plaintext into
+        // them and re-encrypting the span would re-encrypt bytes that were
+        // never decrypted. Refused rather than corrupted.
+        if skew != 0 || buf.len() != whole { return Err(Errno::Einval); }
+        let mut req = block::BlockRequest::new_write(first, blocks, alloc::vec::Vec::from(buf))
+            .with_flags(flags)
+            .with_crypt(c.clone());
+        block::crypto::submit_sync(&*self.dev, &mut req).map_err(super::source::crypt_errno)
+    }
+
     fn discard_sectors(&self, sector: u64, count: u64) -> Result<(), Errno> {
         if !self.writable { return Err(Errno::Erofs); }
         if !self.dev.supports_discard() { return Err(Errno::Eopnotsupp); }
