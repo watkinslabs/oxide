@@ -129,6 +129,9 @@ fn an_attribute_is_writable_exactly_when_something_reads_it() {
     controls.extend(["ram_thresh", "max_read_extent_count", "last_age_weight",
                      "hot_data_age_threshold", "warm_data_age_threshold", "iostat_enable",
                      "readdir_ra"]);
+    // The fourth owner is the placement pair: the armed in-place-update set and
+    // the three thresholds its arms compare against.
+    controls.extend(["ipu_policy", "min_ipu_util", "min_fsync_blocks", "min_ssr_sections"]);
     // The injection record is the third owner: its fields are written one at a
     // time, and every injection site consults them.
     controls.extend(["inject_rate", "inject_type", "inject_lock_timeout"]);

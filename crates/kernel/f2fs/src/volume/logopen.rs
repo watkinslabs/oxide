@@ -73,7 +73,7 @@ impl<S: SectorSource> Volume<S> {
                 soon, curseg::wants_recycle(self.opts.alloc_mode), old)
         };
         if recycle || log == CURSEG_ALL_DATA_ATGC {
-            if let Some((segno, off)) = self.find_victim_seg(hint) {
+            if let Some((segno, off)) = self.find_victim_seg(hint, log) {
                 let at = sum_block_addr(self.sb.ssa_blkaddr, segno);
                 let sum = self.read_block(at).unwrap_or_else(|_| vec![0u8; BLKSIZE]);
                 self.curseg[log].segno = segno;

@@ -81,6 +81,35 @@ impl<S: SectorSource> Volume<S> {
         Ok(())
     }
 
+    /// The occupancy the utilisation arms compare against. # C: O(1)
+    pub fn min_ipu_util(&self) -> u32 { self.place.min_ipu_util }
+
+    /// Retune it. # C: O(1)
+    pub fn set_min_ipu_util(&mut self, value: u64) -> Result<(), Errno> {
+        self.place.min_ipu_util = crate::place::tunables::store_threshold(value)?;
+        Ok(())
+    }
+
+    /// Dirty pages at or below which an `fsync` asks for in-place writes.
+    /// # C: O(1)
+    pub fn min_fsync_blocks(&self) -> u32 { self.place.min_fsync_blocks }
+
+    /// Retune it. # C: O(1)
+    pub fn set_min_fsync_blocks(&mut self, value: u64) -> Result<(), Errno> {
+        self.place.min_fsync_blocks = crate::place::tunables::store_threshold(value)?;
+        Ok(())
+    }
+
+    /// The floor of free sections kept above the reserve before recycling
+    /// starts. # C: O(1)
+    pub fn min_ssr_sections(&self) -> u32 { self.place.min_ssr_sections }
+
+    /// Retune it. # C: O(1)
+    pub fn set_min_ssr_sections(&mut self, value: u64) -> Result<(), Errno> {
+        self.place.min_ssr_sections = crate::place::tunables::store_threshold(value)?;
+        Ok(())
+    }
+
     /// Give the volume the background state its mount's threads share.
     ///
     /// Late rather than at construction: the state is built from what the

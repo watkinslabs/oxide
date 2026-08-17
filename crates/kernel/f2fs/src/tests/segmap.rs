@@ -143,7 +143,7 @@ fn a_recycling_candidate_is_partly_used_and_not_open() {
     // shape recycling exists for.
     let victim = test_image::SEG_MAIN - 1;
     v.update_seg(test_image::MAIN_BLKADDR + victim * BLKS_PER_SEG + 2, true).unwrap();
-    let (seg, off) = v.find_victim_seg(0).unwrap();
+    let (seg, off) = v.find_victim_seg(0, CURSEG_HOT_DATA).unwrap();
     assert_eq!(seg, victim);
     assert!(v.seg_valid(seg) > 0);
     assert!(v.seg_valid(seg) < BLKS_PER_SEG as u16);
@@ -160,7 +160,7 @@ fn a_segment_a_log_holds_open_is_never_recycled() {
         let seg = v.logs()[log].segno;
         v.update_seg(test_image::MAIN_BLKADDR + seg * BLKS_PER_SEG + 300, true).unwrap();
     }
-    assert_eq!(v.find_victim_seg(0), None);
+    assert_eq!(v.find_victim_seg(0, CURSEG_HOT_DATA), None);
 }
 
 #[test]
@@ -168,7 +168,7 @@ fn an_empty_segment_is_not_a_recycling_candidate() {
     // Recycling an empty segment is what opening a fresh one already does.
     let mut v = vol();
     v.load_segments().unwrap();
-    assert_eq!(v.find_victim_seg(0), None);
+    assert_eq!(v.find_victim_seg(0, CURSEG_HOT_DATA), None);
 }
 
 #[test]
@@ -229,4 +229,30 @@ fn a_table_block_leaves_other_slots_alone() {
     let block = sit_block(&[(1, e)]);
     let (_, off) = crate::sit::locate(0);
     assert_eq!(&block[off..off + SIT_ENTRY_SIZE], &vec![0u8; SIT_ENTRY_SIZE][..]);
+}
+
+/// The recycling search honours the segment TYPE the table records.
+///
+/// A data log handed a segment the table calls a node segment would write a
+/// file's bytes where the tables say a node lives, which the in-place writer's
+/// own guard refuses with `EUCLEAN` and a demand for a check — so the search
+/// must never offer one.
+#[test]
+fn the_recycling_search_honours_the_segments_type() {
+    use crate::uapi::{CURSEG_COLD_NODE, CURSEG_HOT_DATA, CURSEG_HOT_NODE, CURSEG_WARM_NODE};
+    let mut v = vol();
+    v.load_segments().unwrap();
+    let victim = test_image::SEG_MAIN - 1;
+    v.update_seg(test_image::MAIN_BLKADDR + victim * BLKS_PER_SEG + 2, true).unwrap();
+    v.stamp_seg_type(victim, CURSEG_WARM_NODE);
+    assert_eq!(v.find_victim_seg(0, CURSEG_HOT_DATA), None,
+               "a data log was handed a node segment");
+    assert_eq!(v.find_victim_seg(0, CURSEG_WARM_NODE).map(|(s, _)| s), Some(victim),
+               "the log's own type was not found");
+    // The rest of the log's own class is reached, so a node log is not confined
+    // to segments of exactly its own temperature.
+    for ty in [CURSEG_HOT_NODE, CURSEG_COLD_NODE] {
+        assert_eq!(v.find_victim_seg(0, ty).map(|(s, _)| s), Some(victim),
+                   "the class walk did not reach the candidate");
+    }
 }
