@@ -1,8 +1,7 @@
 use super::*;
 use super::double_free::{df_dump, df_note};
-use super::free_node::{read_u64, OFF_NEXT};
 #[cfg(feature = "debug-pmm")]
-use super::free_node::{OFF_ORDER, OFF_POISON, OFF_PREV};
+use super::free_node::{read_u64, OFF_NEXT, OFF_ORDER, OFF_POISON, OFF_PREV};
 use super::inner::PmmInner;
 
 /// PMM owner. Single-instance kernel-wide; constructed in the boot path
@@ -61,10 +60,16 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {    /// Allocate one buddy block of 
 
     /// Allocate one buddy block wholly below `max_exclusive`.
     ///
-    /// DMA masks are allocator constraints, not a driver's post-allocation
-    /// rejection loop: selecting a suitable free block under the buddy lock
-    /// preserves the ordinary ownership/accounting path without churning high
-    /// memory. # C: O(free blocks + MAX_ORDER), bounded by managed memory
+    /// A bus-master bound is not a second allocator. It is resolved to the
+    /// zone whose top it falls at or below and then handed to the ordinary
+    /// allocation, so the bounded request is measured against the same
+    /// watermark, owes the same lowmem reserve and enters the same reclaim
+    /// and out-of-memory retry as every other request. A block that still
+    /// lands outside the bound — which only a bound cutting through the
+    /// middle of a zone can produce — is returned and the request retried one
+    /// zone lower, terminating after the narrowest zone.
+    ///
+    /// # C: O(3 × NR_ZONES × MAX_ORDER) bounded
     /// # Ctx: any; brief IRQ-off
     /// # Lk: Buddy
     pub fn alloc_below(&self, order: Order, max_exclusive: Pfn) -> KResult<Pfn> {
@@ -72,67 +77,18 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {    /// Allocate one buddy block of 
         let limit = max_exclusive.0;
         let span = 1u64 << order.0;
         if limit < span { return Err(Error::NoMem); }
-        crate::watermark::before_allocation(self.free_pages(), span);
-        let pfn = {
-            let mut g = self.inner.lock_irqsave::<I>();
-            let upper = core::cmp::min(limit, g.pfn_max);
-            // Zones above the aperture cannot contain a qualifying block, and
-            // the walk descends, so the search stays inside the bound by
-            // construction; the per-candidate span check enforces it again for
-            // the zone the aperture cuts through.
-            let mut found = None;
-            let mut pos = 0usize;
-            'zones: while let Some(zi) = g.zonelist.entry(pos) {
-                pos += 1;
-                if g.layout.span_at(zi).start_pfn >= upper { continue; }
-                for k in order.0..=MAX_ORDER {
-                    let mut candidate = g.free_heads[zi][k as usize];
-                    while candidate != PFN_NULL {
-                        if candidate.checked_add(span).is_some_and(|end| end <= upper) {
-                            found = Some((candidate, k, zi));
-                            break 'zones;
-                        }
-                        // SAFETY: candidate is on this live free list, so its intrusive next field is readable.
-                        let ptr = unsafe { self.backing.page_ptr(Pfn(candidate)) };
-                        // SAFETY: `ptr` is the struct-page just resolved for a PFN still linked on
-                        // this order's free list under the held inner lock, so OFF_NEXT holds a
-                        // live intrusive link rather than allocated page contents.
-                        let next = unsafe { read_u64(ptr, OFF_NEXT) };
-                        if next == PFN_NULL || next >= g.pfn_max { break; }
-                        candidate = next;
-                    }
-                }
-            }
-            let Some((pfn, mut k, zi)) = found else { return Err(Error::NoMem); };
-            // SAFETY: `pfn` was found on free_list[k] while holding the buddy lock.
-            unsafe { g.unlink_free(&self.backing, pfn, k) };
-            g.bitmap_clear(k, pfn >> k);
-            g.free_count[zi][k as usize] -= 1;
-            while k > order.0 {
-                k -= 1;
-                let buddy = pfn + (1u64 << k);
-                // SAFETY: splitting the selected lower half creates one free, aligned upper buddy.
-                unsafe { g.push_free(&self.backing, buddy, k) };
-                g.bitmap_set(k, buddy >> k);
-                g.free_count[zi][k as usize] += 1;
-            }
-            // SAFETY: the selected block is no longer on a free list and is exclusively PMM-owned.
-            unsafe { g.verify_poison(&self.backing, pfn) };
-            g.allocated += span;
-            g.alloc_events += 1;
-            g.alloc_event_pages += span;
-            pfn
-        };
-        for k in 0..span {
-            // SAFETY: this allocation exclusively owns every page in its selected buddy block.
-            let p = unsafe { self.backing.page_ptr(Pfn(pfn + k)) };
-            hal::zerotrap::trap(p as *const u8, PAGE_SIZE_BYTES as usize);
-            // SAFETY: `p` spans one just-allocated PMM page and cannot alias another owner.
-            unsafe { core::ptr::write_bytes(p, 0, PAGE_SIZE_BYTES as usize) };
+        let layout = self.inner.lock_irqsave::<I>().layout;
+        let mut gfp = crate::zone::gfp_for_pfn_limit(&layout, limit);
+        loop {
+            let pfn = self.alloc_gfp(order, gfp)?;
+            if pfn.0.checked_add(span).is_some_and(|end| end <= limit) { return Ok(pfn); }
+            // SAFETY: `pfn` is this call's own order-`order` allocation. It has
+            // not been returned to any caller and no other owner exists, so
+            // this is its one and only free.
+            unsafe { self.free(pfn, order) };
+            let Some(next) = crate::zone::narrow_zone_bits(gfp) else { return Err(Error::NoMem); };
+            gfp = next;
         }
-        crate::watermark::after_allocation(self.free_pages());
-        hal::zerotrap::trap_buddy(pfn * hal::PAGE_SIZE_BYTES, b"ALLOC");
-        Ok(Pfn(pfn))
     }
 
     /// Reclaim/kill retry loop taken when the fast path found no block.
