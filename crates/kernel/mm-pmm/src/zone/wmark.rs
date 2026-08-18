@@ -56,6 +56,14 @@ fn effective_min(mark: u64, wmark: AllocWmark) -> u64 {
     }
 }
 
+/// Order-0 form of [`zone_watermark_ok`] for a pageset cache. The caller
+/// supplies the zone's atomically maintained total free-page count, which
+/// includes pages held outside the mergeable buddy free areas.
+/// # C: O(1)
+pub fn zone_watermark_ok_pages(mark: u64, wmark: AllocWmark, reserve: u64, free: u64) -> bool {
+    free > effective_min(mark, wmark).saturating_add(reserve)
+}
+
 /// May `zone` serve an order-`order` allocation whose highest permitted zone
 /// is `highest_zoneidx`? `mark` is the zone's watermark for `wmark`.
 /// # C: O(ORDERS)
@@ -68,12 +76,11 @@ pub fn zone_watermark_ok(
     highest_zoneidx: usize,
     area: &ZoneFreeArea,
 ) -> bool {
-    let min = effective_min(mark, wmark);
     // Pages inside a block bigger than the request cannot all be handed out,
     // so they do not count toward clearing the watermark.
     let free = free_pages(area).saturating_sub((1u64 << order) - 1);
     let idx = if highest_zoneidx < NR_ZONES { highest_zoneidx } else { NR_ZONES - 1 };
-    if free <= min.saturating_add(reserve[zone as usize][idx]) { return false; }
+    if !zone_watermark_ok_pages(mark, wmark, reserve[zone as usize][idx], free) { return false; }
     if order == 0 { return true; }
     // A base-page surplus does not imply the contiguity a high-order request
     // needs; require a block that can actually satisfy it.

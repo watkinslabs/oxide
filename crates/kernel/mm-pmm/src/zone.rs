@@ -25,7 +25,7 @@ pub use gfp::{gfp_zone, grants_min_reserve, GfpError, GFP_ATOMIC, GFP_DMA, GFP_D
 pub use limits::{ZoneLayout, ZoneLimits, ZoneSpan};
 pub use zonelist::Zonelist;
 pub use reserve::{lowmem_reserve, LowmemReserve, DEFAULT_LOWMEM_RESERVE_RATIO};
-pub use wmark::{slowpath_wmark, zone_watermark_ok, AllocWmark, ZoneFreeArea};
+pub use wmark::{slowpath_wmark, zone_watermark_ok, zone_watermark_ok_pages, AllocWmark, ZoneFreeArea};
 
 #[cfg(test)]
 #[path = "zone/tests.rs"]

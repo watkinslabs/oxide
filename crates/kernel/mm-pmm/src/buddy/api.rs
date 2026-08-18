@@ -1,13 +1,12 @@
 use super::*;
-use super::double_free::{df_dump, df_note};
-#[cfg(feature = "debug-pmm")]
-use super::free_node::{read_u64, OFF_NEXT, OFF_ORDER, OFF_POISON, OFF_PREV};
 use super::inner::PmmInner;
+use super::pcp::{PcpStorage, PcpZoneConfig};
 
 /// PMM owner. Single-instance kernel-wide; constructed in the boot path
-/// after the firmware memory map is parsed (`10§6.3`). All access goes
-/// through the `Buddy` spinlock per `10§7`. Generic over `IrqGate` per
-/// `06§3.1`: kernel targets pass `hal_x86_64::X86IrqGate` /
+/// after the firmware memory map is parsed (`10§6.3`). Global buddy-list
+/// transitions use the `Buddy` spinlock, while order-0 pagesets are separately
+/// IRQ-locked per CPU and zone. Generic over `IrqGate` per `06§3.1`: kernel
+/// targets pass `hal_x86_64::X86IrqGate` /
 /// `hal_aarch64::ArmIrqGate` to actually disable IRQs around the lock;
 /// hosted tests use `NoopIrq`.
 pub struct Pmm<B: PageBacking, I: IrqGate = NoopIrq> {
@@ -18,6 +17,29 @@ pub struct Pmm<B: PageBacking, I: IrqGate = NoopIrq> {
     /// own spinlock without violating `06§3.6` partial order.
     pub(super) backing: B,
     pub(super) inner: Spinlock<PmmInner, Buddy>,
+    /// Immutable copies of the global allocation topology. Per-CPU order-0
+    /// allocation reads these without taking the buddy lock.
+    pub(super) pfn_max: u64,
+    pub(super) layout: ZoneLayout,
+    pub(super) zonelist: Zonelist,
+    /// Mergeable buddy bitmaps remain authoritative for the global lists.
+    /// The distinct PCP bitmap records pages that have left those lists but
+    /// are still free in one CPU's cache.
+    pub(super) buddy_bitmaps: [&'static [AtomicU64]; ORDERS],
+    pub(super) pcp_bitmap: &'static [AtomicU64],
+    pub(super) pcp: &'static PcpStorage,
+    /// Exact free-page counters include both global buddy blocks and cached
+    /// order-0 pages. They are the lock-free watermark input for the PCP
+    /// allocation path.
+    pub(super) zone_free: [AtomicU64; NR_ZONES],
+    pub(super) pcp_free: [AtomicU64; NR_ZONES],
+    pub(super) pcp_zone: [PcpZoneConfig; NR_ZONES],
+    /// PCP-originated external allocations/frees. The global counters stay
+    /// beneath `inner`; snapshots combine the two transition sources.
+    pub(super) pcp_alloc_events: AtomicU64,
+    pub(super) pcp_alloc_event_pages: AtomicU64,
+    pub(super) pcp_free_events: AtomicU64,
+    pub(super) pcp_free_event_pages: AtomicU64,
     pub(super) _i: PhantomData<fn() -> I>,
 }
 
@@ -27,7 +49,7 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {    /// Allocate one buddy block of 
     ///
     /// # C: O(MAX_ORDER) bounded
     /// # Ctx: any; brief IRQ-off
-    /// # Lk: Buddy
+    /// # Lk: pageset for a local order-0 hit; Buddy for refill or larger blocks
     pub fn alloc(&self, order: Order) -> KResult<Pfn> {
         self.alloc_gfp(order, 0)
     }
@@ -39,7 +61,7 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {    /// Allocate one buddy block of 
     ///
     /// # C: O(NR_ZONES × MAX_ORDER) bounded
     /// # Ctx: any; brief IRQ-off
-    /// # Lk: Buddy
+    /// # Lk: pageset for a local order-0 hit; Buddy for refill or larger blocks
     pub fn alloc_gfp(&self, order: Order, gfp: u32) -> KResult<Pfn> {
         let Ok(zone) = crate::zone::gfp_zone(gfp) else { return Err(Error::InvalidOrder) };
         let hi = zone.index();
@@ -121,35 +143,67 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {    /// Allocate one buddy block of 
     /// the address bound of a constrained request unconditional.
     fn alloc_inner_zoned(&self, order: Order, hi: usize, wmark: AllocWmark) -> KResult<Pfn> {
         if order.0 > MAX_ORDER { return Err(Error::InvalidOrder); }
-        let pfn;
         let o = order.0;
-        {
-            let mut g = self.inner.lock_irqsave::<I>();
-            let mut taken: Option<u64> = None;
-            let mut pos = 0usize;
-            while let Some(zi) = g.zonelist.entry(pos) {
-                pos += 1;
-                if zi > hi { continue; }
-                let Some(zone) = ZoneType::from_index(zi) else { continue };
-                let mark = match wmark { AllocWmark::Low => g.wmark[zi].low, _ => g.wmark[zi].min };
-                let area = g.free_count[zi];
-                if !zone_watermark_ok(zone, o, mark, wmark, &g.reserve, hi, &area) { continue; }
-                // SAFETY: the buddy lock is held and `zi` came from the zonelist.
-                if let Some(p) = unsafe { g.take_block(&self.backing, zi, o) } { taken = Some(p); break; }
+        if o == 0 {
+            if let Some(pfn) = self.alloc_from_pcp(hi, wmark) {
+                self.zero_allocation(pfn, o);
+                return Ok(Pfn(pfn));
             }
-            let Some(p) = taken else { return Err(Error::NoMem); };
-            pfn = p;
-            // SAFETY: pfn is the popped (and possibly split-down) free block
-            // head; verify its node before releasing the lock.
-            unsafe { g.verify_poison(&self.backing, pfn) };
-            let pages = 1u64 << o;
-            g.allocated += pages;
-            g.alloc_events += 1;
-            g.alloc_event_pages += pages;
         }
-        // Zero outside the lock per `10§6.1`. Backing is held outside
-        // the spinlock so this loop never re-enters the Buddy lock.
-        let span = 1u64 << o;
+
+        // A PCP page is deliberately absent from the mergeable lists. A
+        // global miss drains eligible pagesets once before reporting no
+        // memory, so cached pages cannot strand a higher-order allocation.
+        let mut drained = false;
+        loop {
+            let taken = {
+                let mut g = self.inner.lock_irqsave::<I>();
+                let mut taken: Option<(u64, usize)> = None;
+                let mut pos = 0usize;
+                while let Some(zi) = g.zonelist.entry(pos) {
+                    pos += 1;
+                    if zi > hi { continue; }
+                    let Some(zone) = ZoneType::from_index(zi) else { continue };
+                    let mark = match wmark { AllocWmark::Low => g.wmark[zi].low, _ => g.wmark[zi].min };
+                    let mut area = g.free_count[zi];
+                    if o == 0 {
+                        area[0] = area[0].saturating_add(self.pcp_free[zi].load(Ordering::Acquire));
+                    }
+                    if !zone_watermark_ok(zone, o, mark, wmark, &g.reserve, hi, &area) { continue; }
+                    // SAFETY: the buddy lock is held and `zi` came from the zonelist.
+                    if let Some(pfn) = unsafe { g.take_block(&self.backing, zi, o) } {
+                        taken = Some((pfn, zi));
+                        break;
+                    }
+                }
+                if let Some((pfn, zi)) = taken {
+                    // SAFETY: pfn is the popped (and possibly split-down)
+                    // free block head; verify it before releasing the lock.
+                    unsafe { g.verify_poison(&self.backing, pfn) };
+                    let pages = 1u64 << o;
+                    g.allocated += pages;
+                    g.alloc_events += 1;
+                    g.alloc_event_pages += pages;
+                    Some((pfn, zi))
+                } else {
+                    None
+                }
+            };
+            if let Some((pfn, zi)) = taken {
+                self.zone_free[zi].fetch_sub(1u64 << o, Ordering::AcqRel);
+                self.zero_allocation(pfn, o);
+                return Ok(Pfn(pfn));
+            }
+            if drained || !self.drain_pcp_below(hi) { return Err(Error::NoMem); }
+            drained = true;
+        }
+    }
+
+    /// Zero one block after its allocator ownership transition. Backing is
+    /// held outside both lock domains, so no page write occurs under a buddy
+    /// or pageset lock.
+    fn zero_allocation(&self, pfn: u64, order: u8) {
+        let span = 1u64 << order;
         for k in 0..span {
             // SAFETY: pfn..pfn+span is the just-allocated block, owned
             // by the caller; backing.page_ptr is pure ptr arithmetic.
@@ -183,116 +237,13 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {    /// Allocate one buddy block of 
             // reference to it until the Pfn is returned to the caller.
             unsafe { core::ptr::write_bytes(p, 0, PAGE_SIZE_BYTES as usize) };
         }
-        Ok(Pfn(pfn))
     }
 
-    /// Free a buddy block; merge with its sibling iteratively up to
-    /// `MAX_ORDER` per `10§6.2`. Sibling existence checked via bitmap
-    /// (O(1) atomic), NOT free-list walk.
-    ///
-    /// # SAFETY: `pfn` is aligned to `1<<order` and was returned by a
-    /// prior `alloc(order)` (or `reserve_early`-released — not v1).
-    /// Double-free is detected by the bitmap-set check at entry.
-    /// # C: O(MAX_ORDER) bounded
-    /// # Ctx: any; brief IRQ-off
-    /// # Lk: Buddy
-    #[track_caller]
-    pub unsafe fn free(&self, pfn: Pfn, order: Order) {
-        // wrapping_mul: an out-of-range/garbage pfn (u64::MAX) must reach the
-        // range kassert below, not panic here with an overflow message.
-        hal::zerotrap::trap_buddy(pfn.0.wrapping_mul(hal::PAGE_SIZE_BYTES), b"FREE");
-        // Original freeing call-site (via the #[track_caller] chain on
-        // free_one_frame / dec_and_maybe_free_frame) — for the double-free
-        // diagnostic ring.
-        let loc = core::panic::Location::caller();
-        kassert!(order.0 <= MAX_ORDER, "pmm free invalid order");
-        let mut g = self.inner.lock_irqsave::<I>();
-        let mut p = pfn.0;
-        let mut o = order.0;
-        kassert!(p < g.pfn_max, "pmm free pfn out of range");
-        kassert!(p & ((1u64 << o) - 1) == 0, "pmm free pfn misaligned for order");
-        for ck in o..=MAX_ORDER {
-            if g.bitmap_get(ck, p >> ck) {
-                // klog (serial/fbcon) neither takes the buddy lock nor frees
-                // pages, so dumping while holding `g` is lock-order-safe.
-                df_dump(pfn.0, loc);
-                kassert!(false, "pmm double free detected by bitmap");
-            }
-        }
-        // Record this (good) free so a LATER double free of this pfn can
-        // name us as the prior freer. Only order-0 (the teardown granularity).
-        if order.0 == 0 { df_note(pfn.0, loc); }
-        let zone = g.zi(p);
-        loop {
-            if o == MAX_ORDER { break; }
-            let buddy = p ^ (1u64 << o);
-            if buddy + (1u64 << o) > g.pfn_max { break; }
-            // A merged block must stay inside one zone: its accounting belongs
-            // to one zone's lists, and a block straddling the boundary would
-            // let a bounded allocation take pages above its bound.
-            if g.zi(buddy) != zone { break; }
-            if !g.bitmap_get(o, buddy >> o) { break; }
-            // [debug-cow] FREE-WHILE-MAPPED trap: `buddy`'s bitmap says it is
-            // free, so its FreeNode header MUST still carry POISON_MAGIC. If a
-            // live owner overwrote the freed page (free-while-mapped / refcount
-            // underflow), the poison is gone and the next/prev links below are
-            // garbage — `unlink_free` would dereference them and #GP. Catch it
-            // HERE, deterministically, and name the frame + its last freer
-            // (df_dump reads the #[track_caller] free ring) so the premature
-            // free's call-site is known instead of a bare #GP. Gated on
-            // debug-pmm (the free-ring feature) — a minimal-overhead build that
-            // keeps the corruption's timing close to a prod boot, unlike
-            // debug-cow whose poison writes perturb it.
-            #[cfg(feature = "debug-pmm")]
-            {
-                // SAFETY: buddy is order-o free per bitmap ⇒ PMM-owned page.
-                let bp = unsafe { self.backing.page_ptr(Pfn(buddy)) };
-                // SAFETY: 32B header read from an owned page.
-                let m = unsafe { read_u64(bp, OFF_POISON) };
-                if m != POISON_MAGIC {
-                    // SAFETY: same owned page; dump the garbage links + order tag.
-                    let (nx, pv, od) = unsafe {
-                        (read_u64(bp, OFF_NEXT), read_u64(bp, OFF_PREV), read_u64(bp, OFF_ORDER))
-                    };
-                    klog::write_raw(b"[FWM-CORRUPT] free-node overwritten while free: pa=");
-                    klog::write_hex_u64(buddy * PAGE_SIZE_BYTES);
-                    klog::write_raw(b" pfn="); klog::write_hex_u64(buddy);
-                    klog::write_raw(b" order="); klog::write_dec_u64(o as u64);
-                    klog::write_raw(b" poison="); klog::write_hex_u64(m);
-                    klog::write_raw(b" next="); klog::write_hex_u64(nx);
-                    klog::write_raw(b" prev="); klog::write_hex_u64(pv);
-                    klog::write_raw(b" ordhdr="); klog::write_hex_u64(od);
-                    klog::write_raw(b" merged-from-free-of="); klog::write_hex_u64(pfn.0);
-                    klog::write_raw(b" at="); klog::write_raw(loc.file().as_bytes());
-                    klog::write_raw(b":"); klog::write_dec_u64(loc.line() as u64);
-                    klog::write_raw(b"\n[FWM-CORRUPT] last freer of the corrupt frame:\n");
-                    df_dump(buddy, loc);
-                }
-            }
-            // SAFETY: bitmap I3 says buddy is on free_list[o].
-            unsafe { g.unlink_free(&self.backing, buddy, o) };
-            g.bitmap_clear(o, buddy >> o);
-            g.free_count[zone][o as usize] -= 1;
-            if buddy < p { p = buddy; }
-            o += 1;
-        }
-        // SAFETY: p..p+(1<<o) is order-o aligned, in-range, not on any
-        // free-list (just merged out of it or it's the original).
-        unsafe { g.push_free(&self.backing, p, o) };
-        g.bitmap_set(o, p >> o);
-        g.free_count[zone][o as usize] += 1;
-        let pages = 1u64 << order.0;
-        g.allocated -= pages;
-        g.free_events += 1;
-        g.free_event_pages += pages;
-    }
-
-    /// Total free pages across all orders.
-    /// # C: O(MAX_ORDER)
+    /// Total free pages across global buddy areas and per-CPU pagesets.
+    /// # C: O(NR_ZONES)
     pub fn free_pages(&self) -> u64 {
-        let g = self.inner.lock_irqsave::<I>();
         let mut sum = 0u64;
-        for zi in 0..NR_ZONES { sum += g.zone_free_pages(zi); }
+        for zi in 0..NR_ZONES { sum += self.zone_free[zi].load(Ordering::Acquire); }
         sum
     }
 
@@ -310,13 +261,16 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {    /// Allocate one buddy block of 
     /// Total allocated pages.
     /// # C: O(1)
     pub fn allocated_pages(&self) -> u64 {
-        self.inner.lock_irqsave::<I>().allocated
+        let g = self.inner.lock_irqsave::<I>();
+        let mut cached = 0u64;
+        for zi in 0..NR_ZONES { cached += self.pcp_free[zi].load(Ordering::Acquire); }
+        g.allocated.saturating_sub(cached)
     }
 
     /// Total pfn span the PMM owns (`pfn_max`).
     /// # C: O(1)
     pub fn pfn_max(&self) -> u64 {
-        self.inner.lock_irqsave::<I>().pfn_max
+        self.pfn_max
     }
 
     /// Snapshot buddy ownership and successful allocation/free events under
@@ -324,16 +278,20 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {    /// Allocate one buddy block of 
     pub fn snapshot(&self) -> PmmSnapshot {
         let g = self.inner.lock_irqsave::<I>();
         let mut free_pages = 0u64;
-        for zi in 0..NR_ZONES { free_pages += g.zone_free_pages(zi); }
+        let mut cached = 0u64;
+        for zi in 0..NR_ZONES {
+            free_pages += self.zone_free[zi].load(Ordering::Acquire);
+            cached += self.pcp_free[zi].load(Ordering::Acquire);
+        }
         PmmSnapshot {
             managed_pages: g.initial_free,
             free_pages,
-            allocated_pages: g.allocated - g.reserved,
+            allocated_pages: g.allocated.saturating_sub(cached).saturating_sub(g.reserved),
             reserved_pages: g.reserved,
-            alloc_events: g.alloc_events,
-            alloc_event_pages: g.alloc_event_pages,
-            free_events: g.free_events,
-            free_event_pages: g.free_event_pages,
+            alloc_events: g.alloc_events + self.pcp_alloc_events.load(Ordering::Acquire),
+            alloc_event_pages: g.alloc_event_pages + self.pcp_alloc_event_pages.load(Ordering::Acquire),
+            free_events: g.free_events + self.pcp_free_events.load(Ordering::Acquire),
+            free_event_pages: g.free_event_pages + self.pcp_free_event_pages.load(Ordering::Acquire),
         }
     }
 

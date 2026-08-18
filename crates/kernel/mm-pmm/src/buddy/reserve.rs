@@ -60,12 +60,16 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
             g.allocated += 1;
             g.reserved += 1;
             g.managed[zi] -= 1;
+            self.zone_free[zi].fetch_sub(1, Ordering::AcqRel);
             p += 1;
         }
         // The reservation took pages out of a zone's managed count, so every
         // threshold derived from that count is now stale. Recompute before
         // releasing the lock; publish the aggregate after.
         let derived = g.recompute_derived();
+        for zi in 0..NR_ZONES {
+            self.pcp_zone[zi].refresh(g.wmark[zi], g.reserve[zi], g.managed[zi]);
+        }
         drop(g);
         if let Some((total, agg)) = derived {
             let right = crate::watermark::PublishGuard::acquire();

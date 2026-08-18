@@ -14,7 +14,11 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
         let derived = {
             let mut g = self.inner.lock_irqsave::<I>();
             g.tunables = Some(tunables);
-            g.recompute_derived()
+            let derived = g.recompute_derived();
+            for zi in 0..NR_ZONES {
+                self.pcp_zone[zi].refresh(g.wmark[zi], g.reserve[zi], g.managed[zi]);
+            }
+            derived
         };
         if let Some((total, agg)) = derived {
             let right = crate::watermark::PublishGuard::acquire();
@@ -35,7 +39,7 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
                 spanned_pages: g.spanned[zi],
                 present_pages: g.present[zi],
                 managed_pages: g.managed[zi],
-                free_pages: g.zone_free_pages(zi),
+                free_pages: self.zone_free[zi].load(Ordering::Acquire),
                 free_orders: g.free_count[zi],
                 wmark: g.wmark[zi],
                 lowmem_reserve: g.reserve[zi],
