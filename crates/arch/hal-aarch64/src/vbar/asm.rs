@@ -151,10 +151,11 @@ core::arch::global_asm!(
     "    mrs  x1, esr_el1",
     "    mrs  x2, elr_el1",
     "    mrs  x3, far_el1",
-    "    mrs  x7, tpidr_el1",          // x7: scratch (C args stop at x6)
+    "    mrs  x7, tpidr_el1",          // x7: bounds scratch
     "    ldr  x5, [x7, #40]",          // top
     "    sub  x4, x5, #{stack_bytes}", // lo
     "    mov  x6, #0",             // report site
+    "    mov  x7, x30",            // interrupted caller's link register
     "    bl   oxide_handle_bad_stack", // never returns
     ".Lspg_dflt_x1:",
     "    mrs  x0, tpidr_el1",
@@ -358,10 +359,11 @@ core::arch::global_asm!(
     "    mrs  x1, esr_el1",
     "    mrs  x2, elr_el1",
     "    mrs  x3, far_el1",
-    "    mrs  x7, tpidr_el1",          // x7: scratch (C args stop at x6)
+    "    mrs  x7, tpidr_el1",          // x7: bounds scratch
     "    ldr  x5, [x7, #40]",          // top
     "    sub  x4, x5, #{stack_bytes}", // lo
     "    mov  x6, #2",             // report site
+    "    mov  x7, x30",            // interrupted caller's link register
     "    bl   oxide_handle_bad_stack", // never returns
     ".Lspg_sync_x1:",
     "    mrs  x0, tpidr_el1",
@@ -725,10 +727,11 @@ core::arch::global_asm!(
     "    mrs  x1, esr_el1",
     "    mrs  x2, elr_el1",
     "    mrs  x3, far_el1",
-    "    mrs  x7, tpidr_el1",          // x7: scratch (C args stop at x6)
+    "    mrs  x7, tpidr_el1",          // x7: bounds scratch
     "    ldr  x5, [x7, #40]",          // top
     "    sub  x4, x5, #{stack_bytes}", // lo
     "    mov  x6, #1",             // report site
+    "    mov  x7, x30",            // interrupted caller's link register
     "    bl   oxide_handle_bad_stack", // never returns
     ".Lspg_irq_x1:",
     "    mrs  x0, tpidr_el1",

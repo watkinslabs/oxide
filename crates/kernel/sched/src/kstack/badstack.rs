@@ -15,7 +15,7 @@
 // Runs on the per-CPU overflow stack with ~4 KiB of room and DAIF masked, so:
 // no locks, no allocation, one small fixed buffer, atomics only.
 
-use super::{TEXT_HI, TEXT_LO, classify, span_of, stack_top_repeat};
+use super::{classify, kernel_text_bounds, span_of, stack_top_repeat};
 
 /// Return sites printed. The chain that matters is the innermost end; a deeper
 /// buffer costs overflow-stack bytes the report cannot spare.
@@ -58,7 +58,8 @@ pub fn report(sp: u64) {
     // SAFETY: [stack_lo, stack_hi) is the faulting slot's mapped stack; reading it as words is an aligned read of memory mapped for as long as the slot is handed out.
     let words = unsafe { core::slice::from_raw_parts(span.stack_lo as *const u64, n) };
     let mut chain = [0u64; CHAIN_MAX];
-    let got = classify::text_frames(words, TEXT_LO, TEXT_HI, &mut chain);
+    let (text_lo, text_hi) = kernel_text_bounds();
+    let got = classify::text_frames(words, text_lo, text_hi, &mut chain);
     klog::write_raw(b"[BADSTACK] chain innermost-first:");
     for a in chain.iter().take(got) {
         klog::write_raw(b" ");

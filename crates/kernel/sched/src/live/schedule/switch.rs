@@ -276,9 +276,10 @@ fn publish_forked_child_tid() {
 /// The ONE task-switch primitive `schedule()` per `13§8`.
 /// # SAFETY: caller is at a safe schedule point per `13§9`.
 /// # C: O(log N) CFS pick + O(1) ctx switch
-/// # Ctx: process|kthread|irq-exit-to-user; enters preempt-off
+/// # Ctx: process|kthread|irq-exit-to-user; enters preempt-off. IRQ-return
+/// callers set `keep_irqs_disabled` so their outer gate closes the IRQ window.
 #[track_caller]
-pub(super) unsafe fn schedule_once() {
+pub(super) unsafe fn schedule_once(keep_irqs_disabled: bool) {
     // Linux requires finish_task_switch(prev) to complete before the incoming
     // task can block again. Recover that invariant before adding this call's
     // own preempt-disable debt: otherwise the rq lock forgotten by the prior
@@ -366,8 +367,10 @@ pub(super) unsafe fn schedule_once() {
         if let Some(t) = super::migrate::unpark(me_cpu) { inner.put_prev_task(t); }
         drop(inner);
         crate::preempt::preempt_enable_no_check();
-        // SAFETY: restores the IRQ state this fn saved at entry; no switch.
-        unsafe { super::irq::restore(flags); }
+        if restore_saved_irqs(keep_irqs_disabled) {
+            // SAFETY: restores the IRQ state this fn saved at entry; no switch.
+            unsafe { super::irq::restore(flags); }
+        }
         return;
     }
 
@@ -686,9 +689,16 @@ pub(super) unsafe fn schedule_once() {
     // SAFETY: reached exactly once per resume; resumer owed one preempt-dec + one rq-lock release.
     unsafe { oxide_finish_task_switch(); }
     drop(prev_arc_opt);
-    // SAFETY: restores the IRQ state saved by THIS task's irq_save_disable.
-    unsafe { super::irq::restore(flags); }
+    if restore_saved_irqs(keep_irqs_disabled) {
+        // SAFETY: restores the IRQ state saved by THIS task's irq_save_disable.
+        unsafe { super::irq::restore(flags); }
+    }
 }
+
+/// Whether this scheduling caller restores the IRQ state it saved itself.
+/// # C: O(1)
+#[inline]
+fn restore_saved_irqs(keep_irqs_disabled: bool) -> bool { !keep_irqs_disabled }
 
 /// Linux `schedule`: repeat scheduling rounds until the resumed task has no
 /// pending reschedule request.  A request can arrive while this task was
@@ -703,7 +713,7 @@ pub(super) unsafe fn schedule_once() {
 pub unsafe fn schedule() {
     loop {
         // SAFETY: forwarded from this function's scheduler safe-point contract.
-        unsafe { schedule_once(); }
+        unsafe { schedule_once(false); }
         if !crate::preempt::should_resched() { break; }
     }
 }
@@ -790,5 +800,11 @@ mod tests {
         // SAFETY: no pending token remains; this must be a no-op.
         assert!(!unsafe { finish_lock_switch_pending(&rq) },
             "handoff was consumable more than once");
+    }
+
+    #[test]
+    fn irq_return_keeps_the_inner_irq_save_masked() {
+        assert!(!super::restore_saved_irqs(true));
+        assert!(super::restore_saved_irqs(false));
     }
 }
