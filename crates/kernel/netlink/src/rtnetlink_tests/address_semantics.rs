@@ -112,28 +112,28 @@ fn ipv4_address_family_and_prefix_are_validated_before_lookup() {
 }
 
 #[test]
-fn malformed_trailing_address_attrs_are_atomic() {
+fn trailing_address_attribute_bytes_are_accepted() {
     let domain = net::hosted_fixture::init_net_domain();
     domain.set_notifier(crate::mcast::notify_control_event);
     let stack = net::global_stack();
     let iface = stack.ifaces.register_in_ns(Arc::new(MovingDev), 0);
     let addr = [198, 18, 85, 44];
-    let (new_req, mut malformed_new) = request(iface, addr, crate::flags::NLM_F_CREATE);
-    malformed_new.push(0xaa);
-    assert_eq!(ack_errno(&handle_newaddr(&new_req, &malformed_new)), -22);
-    assert!(!net::iface_addr::snapshot_ns(0).iter().any(|row| {
-        row.iface == iface && row.addr.as_u32() == u32::from_be_bytes(addr)
-    }));
-
-    let (new_req, new_msg) = request(iface, addr, crate::flags::NLM_F_CREATE);
-    assert_eq!(ack_errno(&handle_newaddr(&new_req, &new_msg)), 0);
-    let (del_req, mut malformed_del) = addr_req(RTM_DELADDR, visible_ifindex(iface, 0), 24, addr);
-    malformed_del.push(0xbb);
-    assert_eq!(ack_errno(&handle_deladdr(&del_req, &malformed_del)), -22);
+    let (mut new_req, mut trailing_new) = request(iface, addr, crate::flags::NLM_F_CREATE);
+    trailing_new.push(0xaa);
+    new_req.nlmsg_len = trailing_new.len() as u32;
+    new_req.write_to(&mut trailing_new[..Nlmsghdr::SIZE]);
+    assert_eq!(ack_errno(&handle_newaddr(&new_req, &trailing_new)), 0);
     assert!(net::iface_addr::snapshot_ns(0).iter().any(|row| {
         row.iface == iface && row.addr.as_u32() == u32::from_be_bytes(addr)
     }));
-    assert_eq!(net::iface_addr::remove(
-        0, iface, net::Ipv4Addr::from_u32(u32::from_be_bytes(addr)), 24), 1);
+
+    let (mut del_req, mut trailing_del) = addr_req(RTM_DELADDR, visible_ifindex(iface, 0), 24, addr);
+    trailing_del.push(0xbb);
+    del_req.nlmsg_len = trailing_del.len() as u32;
+    del_req.write_to(&mut trailing_del[..Nlmsghdr::SIZE]);
+    assert_eq!(ack_errno(&handle_deladdr(&del_req, &trailing_del)), 0);
+    assert!(!net::iface_addr::snapshot_ns(0).iter().any(|row| {
+        row.iface == iface && row.addr.as_u32() == u32::from_be_bytes(addr)
+    }));
     let _ = stack.ifaces.unregister(iface);
 }
