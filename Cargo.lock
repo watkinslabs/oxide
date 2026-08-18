@@ -2671,6 +2671,7 @@ dependencies = [
  "kmacros",
  "landlock",
  "libc",
+ "md",
  "modules",
  "namespace-identity",
  "net",

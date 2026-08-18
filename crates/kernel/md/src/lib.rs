@@ -10,10 +10,13 @@ extern crate alloc;
 #[cfg(test)] extern crate std;
 
 // Module manifest: superblock owns v1 metadata validation; assembly owns data
-// views and personality construction; autostart owns boot-time discovery.
+// views and personality construction; control owns immutable ioctl queries;
+// autostart owns boot-time discovery.
 mod superblock;
 mod assembly;
+mod control;
 mod autostart;
+pub mod uapi;
 
 use alloc::sync::Arc;
 use alloc::vec;
@@ -22,6 +25,7 @@ use block::{BlockDevice, BlockError, BlockOp, BlockRequest, KResult, QueueLimits
 
 pub use superblock::{MetadataVersion, Superblock, read_superblock};
 pub use assembly::assemble;
+pub use control::{array_info, disk_info, is_md_device};
 
 /// Linux's fixed block major for MD arrays. # C: O(1)
 pub const MD_MAJOR: u32 = 9;
@@ -41,26 +45,31 @@ pub struct Array {
     members: Vec<Arc<dyn BlockDevice>>,
     block_size: u32,
     capacity: u64,
+    metadata: Option<control::Metadata>,
 }
 
 impl Array {
     /// Validate and create an MD linear array. # C: O(members)
     pub fn linear(members: Vec<Arc<dyn BlockDevice>>) -> KResult<Arc<Self>> {
-        Self::new(Level::Linear, members)
+        Self::new(Level::Linear, members, None)
     }
 
     /// Validate and create a chunk-striped RAID0 array. # C: O(members)
     pub fn raid0(members: Vec<Arc<dyn BlockDevice>>, chunk_blocks: u32) -> KResult<Arc<Self>> {
-        Self::new(Level::Raid0 { chunk_blocks }, members)
+        Self::new(Level::Raid0 { chunk_blocks }, members, None)
     }
 
     /// Validate and create a mirrored RAID1 array. Reads try surviving members
     /// in order; writes and flushes visit every member. # C: O(members)
     pub fn raid1(members: Vec<Arc<dyn BlockDevice>>) -> KResult<Arc<Self>> {
-        Self::new(Level::Raid1, members)
+        Self::new(Level::Raid1, members, None)
     }
 
-    fn new(level: Level, members: Vec<Arc<dyn BlockDevice>>) -> KResult<Arc<Self>> {
+    pub(crate) fn from_metadata(level: Level, members: Vec<Arc<dyn BlockDevice>>, metadata: control::Metadata) -> KResult<Arc<Self>> {
+        Self::new(level, members, Some(metadata))
+    }
+
+    fn new(level: Level, members: Vec<Arc<dyn BlockDevice>>, metadata: Option<control::Metadata>) -> KResult<Arc<Self>> {
         let Some(first) = members.first() else { return Err(BlockError::Einval); };
         let block_size = first.block_size();
         if members.iter().any(|member| member.block_size() != block_size || member.capacity_blocks() == 0) {
@@ -79,7 +88,7 @@ impl Array {
             Level::Raid1 => members.iter().map(|member| member.capacity_blocks()).min().ok_or(BlockError::Einval)?,
         };
         if capacity == 0 { return Err(BlockError::Einval); }
-        Ok(Arc::new(Self { level, members, block_size, capacity }))
+        Ok(Arc::new(Self { level, members, block_size, capacity, metadata }))
     }
 
     /// Array personality. # C: O(1)
@@ -221,7 +230,11 @@ fn named_minor(name: &str) -> Option<u32> {
 /// device number. # C: O(registry publication)
 pub fn publish(name: &str, array: Arc<Array>) -> u32 {
     let Some(minor) = named_minor(name) else { return 0; };
-    block::registry::register_with_driver_at(MD_DRIVER, name, name, None, Some(minor), array)
+    let existed = block::registry::by_name(name).is_some();
+    let device: Arc<dyn BlockDevice> = array.clone();
+    let index = block::registry::register_with_driver_at(MD_DRIVER, name, name, None, Some(minor), device);
+    if index != 0 && !existed { control::publish(minor, &array); }
+    index
 }
 
 /// MD has no global queues to start; array construction is explicitly owned by

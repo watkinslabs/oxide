@@ -17,6 +17,7 @@ crng = { path = "../crng" }
 aslr = { path = "../aslr" }
 block   = { path = "../block" }
 device-mapper = { path = "../device-mapper" }
+md = { path = "../md" }
 fatfs   = { path = "../fatfs" }
 overlayfs = { path = "../overlayfs" }
 exfatfs = { path = "../exfatfs" }

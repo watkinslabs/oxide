@@ -20,6 +20,11 @@ const ROLE_FAULTY: u16 = 0xfffe;
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum MetadataVersion { V1_0, V1_1, V1_2 }
 
+impl MetadataVersion {
+    /// Linux's version-1 minor metadata number. # C: O(1)
+    pub const fn minor_version(self) -> i32 { match self { Self::V1_0 => 0, Self::V1_1 => 1, Self::V1_2 => 2 } }
+}
+
 /// Validated v1 metadata for one MD member device. # C: O(max_dev)
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Superblock {
@@ -31,8 +36,10 @@ pub struct Superblock {
     component_sectors: u64,
     chunk_sectors: u32,
     raid_disks: u32,
+    ctime: u64,
     data_offset: u64,
     data_sectors: u64,
+    utime: u64,
     events: u64,
     dev_number: u32,
     roles: Vec<u16>,
@@ -63,11 +70,17 @@ impl Superblock {
     /// Number of active array roles. # C: O(1)
     pub const fn raid_disks(&self) -> u32 { self.raid_disks }
 
+    /// Creation timestamp encoded by the member metadata. # C: O(1)
+    pub const fn ctime(&self) -> u64 { self.ctime }
+
     /// Start of usable member data in 512-byte sectors. # C: O(1)
     pub const fn data_offset(&self) -> u64 { self.data_offset }
 
     /// Usable member data length in 512-byte sectors. # C: O(1)
     pub const fn data_sectors(&self) -> u64 { self.data_sectors }
+
+    /// Last metadata-update timestamp encoded by the member metadata. # C: O(1)
+    pub const fn utime(&self) -> u64 { self.utime }
 
     /// Metadata event counter used to select current members. # C: O(1)
     pub const fn events(&self) -> u64 { self.events }
@@ -126,9 +139,9 @@ fn parse(bytes: &[u8], super_sector: u64) -> KResult<Superblock> {
     let roles = (0..max_dev).map(|index| le16(bytes, HEADER_BYTES + index * 2)).collect::<KResult<Vec<_>>>()?;
     let dev_number = le32(bytes, 160)?;
     if dev_number as usize >= max_dev { return Err(BlockError::Einval); }
-    Ok(Superblock { features: le32(bytes, 8)?, uuid, name, level: le32(bytes, 72)? as i32, layout: le32(bytes, 76)?,
+    Ok(Superblock { features: le32(bytes, 8)?, uuid, name, ctime: le64(bytes, 64)?, level: le32(bytes, 72)? as i32, layout: le32(bytes, 76)?,
         component_sectors: le64(bytes, 80)?, chunk_sectors: le32(bytes, 88)?, raid_disks: le32(bytes, 92)?,
-        data_offset: le64(bytes, 128)?, data_sectors: le64(bytes, 136)?, events: le64(bytes, 200)?, dev_number, roles })
+        data_offset: le64(bytes, 128)?, data_sectors: le64(bytes, 136)?, utime: le64(bytes, 192)?, events: le64(bytes, 200)?, dev_number, roles })
 }
 
 /// Calculate the version-1 metadata checksum with its stored field zeroed. # C: O(metadata bytes)
@@ -208,5 +221,6 @@ mod tests {
             member.submit_sync(&mut write).expect("write metadata");
             assert_eq!(read_superblock(member.as_ref(), version).expect("read metadata").data_offset(), 16);
         }
+        assert_eq!((MetadataVersion::V1_0.minor_version(), MetadataVersion::V1_1.minor_version(), MetadataVersion::V1_2.minor_version()), (0, 1, 2));
     }
 }
