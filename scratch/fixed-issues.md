@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2271-ttwu-irq-drain
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 8af72be1b | DEFECT | med | **`sched_ttwu_pending` ran from the task-stack switch tail, adding its 2976 B wakeup subtree to every blocking path and causing an aarch64 task-stack overflow.** The target-side drain now runs from each architecture's IRQ stack and, for the no-IPI polling case, the idle loop; softirq-originated local wakes are drained before their IRQ stack returns. `schedule_once` and `oxide_finish_task_switch` no longer call it. This follows Linux 7.2-rc4's target-side IPI/idle placement. | B2271. The observed aarch64 fault was 240 B below the 16 KiB task-stack bound at `sched_ttwu_pending` / `CfsRunqueue::enqueue`. `cargo test -p sched` passed 1496 tests; the wrapper positive control failed when its activation call was removed and passed when restored. Both feature gates passed. The ARM stack gate passed with no switch-path call to `sched_ttwu_pending` in the release ELF. Final paired QEMU smoke completed with no `[BADSTACK]`; both guest harnesses reached their alive and serial-RX proofs. | B2271-dt-opp-constraints |
+
 ### B2271-rtnl-route-test-namespace
 
 | Status | Class | Sev | Issue | Evidence | Owner |
