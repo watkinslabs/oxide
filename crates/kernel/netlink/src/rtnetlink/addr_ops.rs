@@ -69,7 +69,6 @@ fn parse_newaddr_attrs(attrs: &[u8]) -> Option<NewAddrAttrs> {
         }
         off = next;
     }
-    if off != attrs.len() { return None; }
     let local = local.or(address)?;
     Some(NewAddrAttrs { local, address, broadcast, flags, proto, rt_priority, cacheinfo })
 }

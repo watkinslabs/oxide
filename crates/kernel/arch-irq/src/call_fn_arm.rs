@@ -24,6 +24,7 @@ fn exec(kind: u32, arg: u64) {
         Some(CallKind::MembarrierPrivateMb) => sched::membarrier::service_private_mb(arg),
         Some(CallKind::MembarrierPrivateSyncCore) => sched::membarrier::service_private_sync_core(arg),
         Some(CallKind::MembarrierPrivateRseq) => sched::membarrier::service_private_rseq(arg),
+        Some(CallKind::CpuFreq) => firmware::acpi::cpufreq::service_remote(arg),
         Some(CallKind::Stop) => loop {
             // SAFETY: terminal machine-stop handler; masking IRQs then WFI
             // keeps this CPU from executing pages the caller may replace.

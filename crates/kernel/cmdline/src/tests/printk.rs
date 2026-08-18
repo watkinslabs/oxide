@@ -69,12 +69,13 @@ fn initcall_debug_accepts_flag_and_boolean_forms() {
 fn a_recognised_but_unhonoured_parameter_is_named() {
     // The defect this guards is a knob that parses and does nothing. Each of
     // these must produce a boot-time line saying which subsystem it needs.
-    for p in [&b"softlockup_panic"[..], b"nmi_watchdog", b"hung_task_panic",
+    for p in [&b"softlockup_panic"[..], b"nmi_watchdog",
               b"log_buf_len", b"no_console_suspend", b"slub_debug", b"page_poison",
               b"debug_pagealloc", b"boot_delay"] {
         assert!(unsupported_parameter(p).is_some(), "parameter must announce that it is inert");
     }
-    for p in [&b"earlycon"[..], b"loglevel", b"panic_on_warn", b"panic", b"oops", b"initcall_debug"] {
+    for p in [&b"earlycon"[..], b"loglevel", b"panic_on_warn", b"panic", b"oops", b"initcall_debug",
+              b"hung_task_panic", b"hung_task_timeout_secs"] {
         assert_eq!(unsupported_parameter(p), None, "an implemented parameter must not be announced as inert");
     }
 }

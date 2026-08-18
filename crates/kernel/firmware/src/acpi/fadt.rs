@@ -10,6 +10,7 @@
 
 use crate::acpi::log::{alog_dec, alog_hex, alog_raw};
 use crate::acpi::read::read_u32_le;
+use sync::{Devices, Spinlock};
 
 /// Generic Address Structure: the 12-byte descriptor ACPI uses wherever a
 /// register may live in port, MMIO or PCI-config space.
@@ -29,6 +30,8 @@ pub const SPACE_PCI_CONFIG: u8 = 2;
 
 /// FADT flag bit 10: the RESET_REG field is meaningful.
 pub const FADT_RESET_REGISTER: u32 = 1 << 10;
+/// FADT flag bit 0: writeback and invalidate is available for deep C states.
+pub const FADT_WBINVD: u32 = 1;
 /// FADT flag: platform implements the reduced-hardware sleep register pair.
 pub const FADT_HW_REDUCED: u32 = 1 << 20;
 
@@ -45,7 +48,11 @@ const OFF_FACS32: usize = 36;
 const OFF_DSDT32: usize = 40;
 const OFF_PM1A_EVT32: usize = 56;
 const OFF_PM1B_EVT32: usize = 60;
+const OFF_PM2_CNT32: usize = 72;
+const OFF_PM_TIMER32: usize = 76;
 const OFF_PM1_EVT_LEN: usize = 88;
+const OFF_PM2_CNT_LEN: usize = 90;
+const OFF_PM_TIMER_LEN: usize = 91;
 const OFF_XFACS: usize = 132;
 const OFF_XPM1A_EVT: usize = 148;
 const OFF_XPM1B_EVT: usize = 160;
@@ -55,6 +62,8 @@ const OFF_RESET_VALUE: usize = 128;
 const OFF_XDSDT: usize = 140;
 const OFF_XPM1A_CNT: usize = 172;
 const OFF_XPM1B_CNT: usize = 184;
+const OFF_XPM2_CNT: usize = 196;
+const OFF_XPM_TIMER: usize = 208;
 const OFF_SLEEP_CONTROL: usize = 244;
 const OFF_SLEEP_STATUS: usize = 256;
 const OFF_PM1A_CNT32: usize = 64;
@@ -82,6 +91,9 @@ pub struct Fadt {
     pub pm1a_event: Gas,
     pub pm1b_event: Gas,
     pub pm1_event_len: u8,
+    pub pm2_control: Gas,
+    pub pm2_control_len: u8,
+    pub pm_timer: Gas,
     pub sleep_control: Gas,
     pub sleep_status: Gas,
 }
@@ -105,6 +117,22 @@ pub struct PowerRegisters {
     pub pm1b_control: Gas,
     pub sleep_control: Gas,
     pub sleep_status: Gas,
+}
+
+/// The fixed register set the ACPI C-state driver owns. Keeping precisely
+/// these values separate from S5 ownership prevents either path from
+/// silently interpreting the other's register offsets.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct CstateRegisters {
+    pub flags: u32,
+    pub pm1a_control: Gas,
+    pub pm1b_control: Gas,
+    pub pm1a_event: Gas,
+    pub pm1b_event: Gas,
+    pub pm1_event_len: u8,
+    pub pm2_control: Gas,
+    pub pm2_control_len: u8,
+    pub pm_timer: Gas,
 }
 
 /// Firmware-authorised S5 write sequence.
@@ -159,11 +187,19 @@ pub fn parse_fadt(t: &[u8]) -> Option<Fadt> {
     let len32 = if t.len() > OFF_PM1_CNT_LEN { t[OFF_PM1_CNT_LEN] } else { 0 };
     let pm1a_control = if xa.address != 0 { xa } else { port_gas(u32_at(t, OFF_PM1A_CNT32) as u64, len32) };
     let pm1b_control = if xb.address != 0 { xb } else { port_gas(u32_at(t, OFF_PM1B_CNT32) as u64, len32) };
-    let evt_len = if t.len() > OFF_PM1_EVT_LEN { t[OFF_PM1_EVT_LEN] } else { 0 };
+    let legacy_evt_len = if t.len() > OFF_PM1_EVT_LEN { t[OFF_PM1_EVT_LEN] } else { 0 };
     let xea = gas_at(t, OFF_XPM1A_EVT);
     let xeb = gas_at(t, OFF_XPM1B_EVT);
-    let pm1a_event = if xea.address != 0 { xea } else { port_gas(u32_at(t, OFF_PM1A_EVT32) as u64, evt_len) };
-    let pm1b_event = if xeb.address != 0 { xeb } else { port_gas(u32_at(t, OFF_PM1B_EVT32) as u64, evt_len) };
+    let pm1a_event = if xea.address != 0 { xea } else { port_gas(u32_at(t, OFF_PM1A_EVT32) as u64, legacy_evt_len) };
+    let pm1b_event = if xeb.address != 0 { xeb } else { port_gas(u32_at(t, OFF_PM1B_EVT32) as u64, legacy_evt_len) };
+    let evt_len = if legacy_evt_len != 0 { legacy_evt_len } else { gas_bytes(pm1a_event) };
+    let legacy_pm2_len = if t.len() > OFF_PM2_CNT_LEN { t[OFF_PM2_CNT_LEN] } else { 0 };
+    let pm_timer_len = if t.len() > OFF_PM_TIMER_LEN { t[OFF_PM_TIMER_LEN] } else { 0 };
+    let xpm2 = gas_at(t, OFF_XPM2_CNT);
+    let xpm_timer = gas_at(t, OFF_XPM_TIMER);
+    let pm2_control = if xpm2.address != 0 { xpm2 } else { port_gas(u32_at(t, OFF_PM2_CNT32) as u64, legacy_pm2_len) };
+    let pm2_len = if legacy_pm2_len != 0 { legacy_pm2_len } else { gas_bytes(pm2_control) };
+    let pm_timer = if xpm_timer.address != 0 { xpm_timer } else { port_gas(u32_at(t, OFF_PM_TIMER32) as u64, pm_timer_len) };
     Some(Fadt {
         revision: t[OFF_REVISION],
         flags: u32_at(t, OFF_FLAGS),
@@ -176,6 +212,9 @@ pub fn parse_fadt(t: &[u8]) -> Option<Fadt> {
         pm1a_event,
         pm1b_event,
         pm1_event_len: evt_len,
+        pm2_control,
+        pm2_control_len: pm2_len,
+        pm_timer,
         sleep_control: gas_at(t, OFF_SLEEP_CONTROL),
         sleep_status: gas_at(t, OFF_SLEEP_STATUS),
     })
@@ -185,6 +224,14 @@ pub fn parse_fadt(t: &[u8]) -> Option<Fadt> {
 fn port_gas(address: u64, byte_len: u8) -> Gas {
     if address == 0 { return Gas::default(); }
     Gas { space_id: SPACE_SYSTEM_IO, bit_width: byte_len.saturating_mul(8), bit_offset: 0, access_width: 0, address }
+}
+
+/// Width of an extended fixed register in bytes. A nonzero address with a
+/// zero width still identifies the architecturally fixed one-byte PM2 block.
+/// # C: O(1)
+fn gas_bytes(gas: Gas) -> u8 {
+    if gas.address == 0 { return 0; }
+    gas.bit_width.saturating_add(7).saturating_div(8).max(1)
 }
 
 /// The reset-register admission ladder.
@@ -225,6 +272,30 @@ pub fn reset_action(f: &Fadt) -> Option<ResetAction> {
 pub fn power_registers(f: &Fadt) -> PowerRegisters {
     PowerRegisters { flags: f.flags, pm1a_control: f.pm1a_control, pm1b_control: f.pm1b_control,
         sleep_control: f.sleep_control, sleep_status: f.sleep_status }
+}
+
+/// Extract the fixed registers the C-state provider consumes. # C: O(1)
+pub fn cstate_registers(f: &Fadt) -> CstateRegisters {
+    CstateRegisters {
+        flags: f.flags, pm1a_control: f.pm1a_control, pm1b_control: f.pm1b_control,
+        pm1a_event: f.pm1a_event, pm1b_event: f.pm1b_event, pm1_event_len: f.pm1_event_len,
+        pm2_control: f.pm2_control, pm2_control_len: f.pm2_control_len, pm_timer: f.pm_timer,
+    }
+}
+
+static CSTATE_REGISTERS: Spinlock<Option<CstateRegisters>, Devices> = Spinlock::new(None);
+
+/// Retain the fixed register set once the trusted table walker decoded it.
+/// # C: O(1)
+pub(crate) fn set_cstate_registers(registers: CstateRegisters) {
+    let mut present = CSTATE_REGISTERS.lock();
+    if present.is_none() { *present = Some(registers); }
+}
+
+/// Fixed C-state registers published by the table walk. # C: O(1)
+#[cfg_attr(not(all(target_arch = "x86_64", target_os = "oxide-kernel")), allow(dead_code))]
+pub(crate) fn cstate_registers_published() -> Option<CstateRegisters> {
+    *CSTATE_REGISTERS.lock()
 }
 
 fn system_register(gas: Gas) -> Option<Gas> {
@@ -287,6 +358,7 @@ pub unsafe fn decode_fadt(pa: u64, hhdm_offset: u64) {
     // firmware memory for this boot, under the same HHDM contract as FADT.
     unsafe { crate::acpi::install_dsdt(f.dsdt_pa, hhdm_offset); }
     crate::set_power_registers(power_registers(&f));
+    set_cstate_registers(cstate_registers(&f));
     crate::acpi::sleep_types::set_sleep_registers(crate::acpi::sleep_types::sleep_registers(&f));
     // SAFETY: the FADT-derived FACS address names a firmware table retained
     // in firmware memory for this boot, under the same HHDM contract as FADT.

@@ -10,6 +10,7 @@ mod context;
 mod cpu;
 mod cpuid;
 mod cpuid_fault;
+pub mod cpufreq;
 pub mod pkru;
 pub mod debugreg;
 mod fault;
@@ -43,10 +44,10 @@ mod uaccess;
 pub mod vmm;
 
 pub use context::{ContextX86_64, ForkRegs};
-pub use cpu::{get_user_fs_base, get_user_gs_base, halt, mmio_barrier, safe_halt, set_user_fs_base, set_user_gs_base, X86CpuOps};
+pub use cpu::{acpi_mwait, get_user_fs_base, get_user_gs_base, halt, mmio_barrier, safe_halt, set_user_fs_base, set_user_gs_base, writeback_invalidate_cache, X86CpuOps};
 pub use cpuid_fault::{cpuid_fault_kind, cpuid_fault_supported, set_cpuid_faulting,
     CPUID_FAULT_AMD, CPUID_FAULT_INTEL, CPUID_FAULT_NONE};
-pub use cpuid::{brand as cpuid_brand, family_model as cpuid_family_model, initial_apic_id, vendor as cpuid_vendor};
+pub use cpuid::{acpi_mwait_supported, brand as cpuid_brand, family_model as cpuid_family_model, hypervisor_present, initial_apic_id, vendor as cpuid_vendor};
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub use cpuid::tsc_khz_from_cpuid;
 pub use pkru::{arch_max_pkey, ospke_enabled, pkru_init_value, pkru_write_default, read_pkru, setup_pku, write_pkru};

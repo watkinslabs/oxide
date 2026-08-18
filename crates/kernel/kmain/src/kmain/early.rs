@@ -1,4 +1,6 @@
 use crate::{BootInfo, GLOBAL_ALLOC, zerotrap_tid};
+#[cfg(target_os = "oxide-kernel")]
+mod pmm_boot;
 #[cfg(feature = "debug-pmm")]
 use crate::BootMemRegion;
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-sched"))]
@@ -78,7 +80,7 @@ pub unsafe fn init(info: &BootInfo) {
     klog::set_caller_fn(klog_caller_id);
 
     log_boot_info(info);
-    init_pmm_and_arch(info);
+    pmm_boot::init(info);
     kalloc_smoke();
     debug_sched_smokes();
     debug_pf_smoke();
@@ -93,6 +95,15 @@ pub unsafe fn init(info: &BootInfo) {
     // reserved-in-the-memmap physical extent, and `retain` re-validates the
     // header before publishing anything.
     unsafe { retain_device_tree(info); }
+    #[cfg(target_arch = "aarch64")]
+    // PSCI CPU-on and every later terminal call use this one firmware-selected
+    // conduit; it must be installed before SMP can issue its first PSCI call.
+    let _ = firmware::fdt::psci::init();
+    let _ = firmware::fdt::populate_cpu_topology();
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: ACPI and DT CPU producers have both populated the shared table;
+    // this complete MPIDR identifies the boot CPU's logical slot.
+    unsafe { cpu::smp::set_boot_cpu_id(hal_aarch64::mpidr_el1() & hal_aarch64::MPIDR_HWID_MASK); }
     // Attach the persistent store to the region reserved above: enumerate
     // whatever the previous boot left there, then start recording. After the
     // direct map, because that is how the region is reached.
@@ -209,11 +220,6 @@ fn init_boot_percpu() {
 
 #[cfg(target_os = "oxide-kernel")]
 fn log_boot_info(info: &BootInfo) {
-    // Boot CPU identity is part of the handoff, not an ACPI side effect. DT-only
-    // arm boots have no RSDP; leaving BOOT_CPU_ID unset makes every timer IRQ
-    // fail the BSP gate, so deadline, watchdog, and device tick work never run.
-    // SAFETY: single boot CPU before AP bring-up; this is the sole writer.
-    unsafe { cpu::smp::set_boot_cpu_id(info.bsp_lapic_id); }
     debug_boot! { klog::kinfo!("init started"); }
     debug_boot! {
         if info.hhdm_offset != 0 { klog::kinfo!("hhdm: present"); }
@@ -233,6 +239,10 @@ fn log_boot_info(info: &BootInfo) {
     } else {
         debug_boot! { klog::kinfo!("rsdp: absent"); }
     }
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: the MADT producer above has completed before SMP consumers can
+    // resolve the boot APIC identity to a logical slot.
+    unsafe { cpu::smp::set_boot_cpu_id(u64::from(info.bsp_lapic_id)); }
     debug_boot! {
         if info.framebuffer.byte_len().is_some() {
             klog::write_raw(b"[INFO]  bootfb: base=");
@@ -431,7 +441,7 @@ fn init_pmm_and_arch(info: &BootInfo) {
         // SAFETY: the free hook only ever receives a `pa` that kstack obtained
         // from the paired `alloc_raw_frame` and has already unmapped, which is
         // `free_one_frame`'s not-currently-mapped precondition.
-        ::sched::kstack::init(pmm::setup::alloc_raw_frame, |pa| unsafe { pmm::setup::free_one_frame(pa) });
+        ::sched::kstack::init(pmm::setup::alloc_raw_frame_nowait, pmm::setup::alloc_raw_frame, |pa| unsafe { pmm::setup::free_one_frame(pa) });
         // debug-armctx: arm the aarch64 register-corruption post-mortem (fatal-
         // fault dump of kstack-slot ownership + arch_ctx + the switch ring).
         #[cfg(all(target_arch = "aarch64", feature = "debug-armctx"))]
@@ -449,7 +459,7 @@ fn init_pmm_and_arch(info: &BootInfo) {
         // init_boot_percpu; IRQs are still masked this early. `None` (frame
         // exhaustion) leaves the slot 0 ⇒ dispatcher stays on the interrupted
         // stack (pre-fix behavior, no crash).
-        match ::sched::kstack::alloc_leaked_top() {
+        match ::sched::kstack::alloc_leaked_top_with(pmm::setup::alloc_raw_frame_nowait) {
             Some(top) => {
                 #[cfg(target_arch = "x86_64")]
                 // SAFETY: BSP gs base set in init_boot_percpu; `top` outlives the kernel.

@@ -92,10 +92,28 @@ pub fn register_zone(desc: ZoneDesc, ops: Arc<dyn ZoneOps>) -> KResult<Arc<Therm
 pub fn register_cdev(ty: &str, ops: Arc<dyn CoolingOps>, now_ns: u64)
     -> KResult<Arc<CoolingDevice>>
 {
+    register_cdev_inner(ty, None, ops, now_ns)
+}
+
+/// Register a cooling device corresponding to an exact firmware namespace
+/// object. The class-visible type remains a provider kind; the object path is
+/// matching identity and is not exposed as that type. # C: O(N_zones * N_trips)
+pub fn register_cdev_for_path(ty: &str, path: &str, ops: Arc<dyn CoolingOps>, now_ns: u64)
+    -> KResult<Arc<CoolingDevice>>
+{
+    if path.is_empty() { return Err(VfsError::Einval); }
+    register_cdev_inner(ty, Some(path), ops, now_ns)
+}
+
+/// Build and publish one cooling device after its type and optional identity
+/// passed the public API's validation. # C: O(N_zones * N_trips)
+fn register_cdev_inner(ty: &str, path: Option<&str>, ops: Arc<dyn CoolingOps>, now_ns: u64)
+    -> KResult<Arc<CoolingDevice>>
+{
     if ty.is_empty() || ty.len() > crate::limits::NAME_LEN { return Err(VfsError::Einval); }
     let max_state = ops.max_state()?;
     let id = NEXT_CDEV.fetch_add(1, Ordering::Relaxed);
-    let cdev = Arc::new(CoolingDevice::new(id, ty, ops, max_state, now_ns));
+    let cdev = Arc::new(CoolingDevice::with_binding(id, ty, path, ops, max_state, now_ns));
     CDEVS.lock().push(Arc::clone(&cdev));
     for zone in zones() { bind_pair(&zone, &cdev); }
     notify(&cdev.name());

@@ -69,7 +69,8 @@ pub fn sample(now_ns: u64) {
                 capacity: CAPACITY_SCALE,
                 iowait_boost: 0,
             };
-            let _ = cpufreq::govern(&policy, &demand, now_ns);
+            let Some(target) = cpufreq::govern_target(&policy, &demand) else { continue; };
+            let _ = cpufreq::util::submit(cpu, &policy, target, now_ns);
             continue;
         }
         cpufreq::util::update_util(cpu, utilisation(load_percent), CAPACITY_SCALE, false,
@@ -79,4 +80,8 @@ pub fn sample(now_ns: u64) {
 
 /// Start resampling. Called once from kernel init, after the timer registry
 /// exists. # C: O(1)
-pub fn start() { timer::register_periodic(SAMPLE_PERIOD_NS, sample); }
+pub fn start() {
+    // SAFETY: kernel init installs this one scheduler handoff before sampling starts.
+    unsafe { cpufreq::set_deferred_transition(crate::cpufreq_work::defer); }
+    timer::register_periodic(SAMPLE_PERIOD_NS, sample);
+}

@@ -13,9 +13,11 @@ use crate::inode::{
     self, ExtentHeader, Inode, EXT4_EXT_MAGIC, I_BLOCK_LEN, S_IFDIR, S_IFMT, S_IFREG,
 };
 use crate::mount::{Mount, MountError};
-use crate::superblock::{SB_OFF_FREE_INODES, SB_OFF_LAST_ORPHAN, SUPERBLOCK_LEN, SUPERBLOCK_OFFSET};
+use crate::superblock::SB_OFF_FREE_INODES;
 
 mod create;
+mod anonymous;
+mod orphan;
 mod project;
 
 /// On-disk inode byte offset of `i_generation` — the inode's INCARNATION
@@ -62,12 +64,6 @@ pub(crate) fn stamp_new_inode_generation(bytes: &mut [u8]) {
     bytes[I_OFF_GENERATION..I_OFF_GENERATION + 4]
         .copy_from_slice(&next_inode_generation().to_le_bytes());
 }
-
-/// On-disk inode byte offset of `NEXT_ORPHAN` — Linux overloads `i_dtime`
-/// (@0x14) as the "next orphan inode number" pointer while an inode sits on
-/// the superblock orphan list. A small value (< `s_inodes_count`) is a list
-/// link; a large value is a genuine deletion timestamp (see `DELETED_DTIME`).
-const I_OFF_DTIME: usize = 0x14;
 
 extern crate alloc;
 use alloc::vec;
@@ -257,220 +253,6 @@ impl Mount {
             .copy_from_slice(&count.to_le_bytes());
         crate::csum::stamp_superblock_csum(&self.sb, &mut sb_buf);
         self.metadata_write(crate::superblock::SUPERBLOCK_OFFSET, &sb_buf)
-    }
-
-    /// Create an anonymous (O_TMPFILE) regular file in directory
-    /// `parent_ino`. Allocates an inode with `nlink=0` and the empty
-    /// extent tree, but does NOT add a directory entry — the inode
-    /// is "orphan" until a subsequent `linkat(AT_EMPTY_PATH)` adds
-    /// a name + bumps `nlink` to 1. If the last fd closes with
-    /// `nlink` still 0, `free_orphan_inode` frees the data blocks
-    /// and the inode itself.
-    /// # C: O(1) — one inode alloc + one inode I/O
-    pub fn create_anonymous(&self, parent_ino: u32, mode_perm: u16)
-        -> Result<u32, MountError>
-    {
-        self.create_anonymous_as(parent_ino, mode_perm, 0, 0)
-    }
-
-    /// Create an anonymous regular file with explicit owner ids. # C: O(1)
-    pub fn create_anonymous_as(&self, parent_ino: u32, mode_perm: u16, uid: u32, gid: u32)
-        -> Result<u32, MountError>
-    {
-        self.create_anonymous_inode(parent_ino, mode_perm, uid, gid).map(|(ino, _)| ino)
-    }
-
-    /// `create_anonymous_as` returning the freshly written in-memory `Inode`
-    /// alongside its number, so `tmpfile` instantiates from it rather than
-    /// re-reading the slot (Linux `ext4_tmpfile` → `d_tmpfile` uses the live
-    /// inode from `ext4_new_inode`). `orphan_add` only touches `i_dtime`
-    /// (`NEXT_ORPHAN`), which the VFS wrap does not read, so the returned
-    /// struct stays accurate across it.
-    /// # C: same as `create_anonymous_as`, minus one inode-table read
-    pub fn create_anonymous_inode(&self, parent_ino: u32, mode_perm: u16, uid: u32, gid: u32)
-        -> Result<(u32, Inode), MountError>
-    {
-        self.create_op(|m| {
-            let parent_group = (parent_ino - 1) / m.sb.inodes_per_group;
-            let new_ino = m.alloc_inode(parent_group)?;
-            let node = m.init_inode(parent_ino, new_ino, S_IFREG | (mode_perm & 0x0FFF), 0, uid, gid)?;
-            // Persist on the on-disk orphan list: a crash before a name is
-            // linked (or before the last fd closes) leaves the inode + its
-            // blocks recoverable by `orphan_cleanup` on the next mount,
-            // instead of leaking (Linux `ext4_orphan_add`).
-            m.orphan_add(new_ino)?;
-            Ok((new_ino, node))
-        })
-    }
-
-    /// `ext4_orphan_add`: push `ino` onto the head of the on-disk orphan list.
-    /// Sets the inode's `NEXT_ORPHAN` (`i_dtime`) to the previous head, then
-    /// points `s_last_orphan` at `ino`. The complementary in-memory set
-    /// (`RootfsState.orphans`) drives the fast last-close free path; this is
-    /// the crash-durable backing.
-    /// # C: O(1) — 1 SB read + 1 inode RW + 1 SB write
-    pub fn orphan_add(&self, ino: u32) -> Result<(), MountError> {
-        self.run_journaled(|m| {
-            let head = m.read_sb_last_orphan()?;
-            if head == ino { return Ok(()); } // already the list head
-            let (mut bytes, _off) = m.read_inode_bytes(ino)?;
-            bytes[I_OFF_DTIME..I_OFF_DTIME + 4].copy_from_slice(&head.to_le_bytes());
-            m.write_inode_bytes(ino, &bytes)?;
-            m.set_sb_last_orphan(ino)?;
-            Ok(())
-        })
-    }
-
-    /// `ext4_orphan_del`: splice `ino` out of the on-disk orphan list. If it
-    /// is the head, `s_last_orphan` is advanced to its `NEXT_ORPHAN`; otherwise
-    /// the chain is walked to find the predecessor and relink it past `ino`.
-    /// The inode's own `NEXT_ORPHAN` (`i_dtime`) is then cleared to 0 (the
-    /// caller — link or free — overwrites it appropriately). Idempotent: a
-    /// no-longer-listed inode is left untouched apart from the cleared link.
-    /// # C: O(N_orphans) worst-case chain walk
-    pub fn orphan_del(&self, ino: u32) -> Result<(), MountError> {
-        self.run_journaled(|m| {
-            let head = m.read_sb_last_orphan()?;
-            let (bytes, _off) = m.read_inode_bytes(ino)?;
-            let next = u32::from_le_bytes([
-                bytes[I_OFF_DTIME], bytes[I_OFF_DTIME + 1],
-                bytes[I_OFF_DTIME + 2], bytes[I_OFF_DTIME + 3],
-            ]);
-            if head == ino {
-                m.set_sb_last_orphan(next)?;
-            } else if head != 0 {
-                let mut cur = head;
-                let mut guard = m.sb.inodes_count;
-                while cur != 0 && cur != ino && guard > 0 {
-                    guard -= 1;
-                    let (mut cbytes, _o) = m.read_inode_bytes(cur)?;
-                    let cnext = u32::from_le_bytes([
-                        cbytes[I_OFF_DTIME], cbytes[I_OFF_DTIME + 1],
-                        cbytes[I_OFF_DTIME + 2], cbytes[I_OFF_DTIME + 3],
-                    ]);
-                    if cnext == ino {
-                        cbytes[I_OFF_DTIME..I_OFF_DTIME + 4].copy_from_slice(&next.to_le_bytes());
-                        m.write_inode_bytes(cur, &cbytes)?;
-                        break;
-                    }
-                    cur = cnext;
-                }
-            }
-            // Clear this inode's link field.
-            let (mut bytes2, _o2) = m.read_inode_bytes(ino)?;
-            bytes2[I_OFF_DTIME..I_OFF_DTIME + 4].copy_from_slice(&0u32.to_le_bytes());
-            m.write_inode_bytes(ino, &bytes2)?;
-            Ok(())
-        })
-    }
-
-    /// Read the on-disk `s_last_orphan` head. # C: O(1) SB read
-    pub fn read_sb_last_orphan(&self) -> Result<u32, MountError> {
-        let buf = self.read_meta_byte_range(SUPERBLOCK_OFFSET, SUPERBLOCK_LEN)?;
-        Ok(u32::from_le_bytes([
-            buf[SB_OFF_LAST_ORPHAN], buf[SB_OFF_LAST_ORPHAN + 1],
-            buf[SB_OFF_LAST_ORPHAN + 2], buf[SB_OFF_LAST_ORPHAN + 3],
-        ]))
-    }
-
-    /// Persist a new `s_last_orphan` value (re-stamps the SB csum).
-    /// # C: O(1) SB RW
-    pub(crate) fn set_sb_last_orphan(&self, val: u32) -> Result<(), MountError> {
-        let mut sb_buf = self.read_meta_byte_range(SUPERBLOCK_OFFSET, SUPERBLOCK_LEN)?;
-        sb_buf[SB_OFF_LAST_ORPHAN..SB_OFF_LAST_ORPHAN + 4].copy_from_slice(&val.to_le_bytes());
-        crate::csum::stamp_superblock_csum(&self.sb, &mut sb_buf);
-        self.metadata_write(SUPERBLOCK_OFFSET, &sb_buf)
-    }
-
-    /// `ext4_orphan_cleanup`: walk the on-disk orphan list at mount time,
-    /// reclaiming inodes left over from a crash. An inode with `nlink == 0`
-    /// (a never-named O_TMPFILE or a fully-unlinked-but-was-open file) is
-    /// freed (its data blocks + inode slot); one with `nlink > 0` (interrupted
-    /// truncate) is just removed from the list. Bounded by `s_inodes_count` to
-    /// defuse a corrupt cycle. Idempotent; a no-op when `s_last_orphan == 0`.
-    /// # C: O(N_orphans × N_extents)
-    pub fn orphan_cleanup(&self) -> Result<(), MountError> {
-        let mut head = self.read_sb_last_orphan()?;
-        let mut guard = self.sb.inodes_count;
-        while head != 0 && head <= self.sb.inodes_count && guard > 0 {
-            guard -= 1;
-            let (bytes, _off) = self.read_inode_bytes(head)?;
-            let next = u32::from_le_bytes([
-                bytes[I_OFF_DTIME], bytes[I_OFF_DTIME + 1],
-                bytes[I_OFF_DTIME + 2], bytes[I_OFF_DTIME + 3],
-            ]);
-            let links = u16::from_le_bytes([bytes[0x1A], bytes[0x1B]]);
-            if links == 0 {
-                // Frees blocks + inode AND advances s_last_orphan past `head`
-                // (its internal `orphan_del`), so the list shrinks as we go.
-                let _ = self.free_orphan_inode(head);
-            } else {
-                // nlink>0 orphan = a truncate interrupted by a crash: i_size is
-                // the truncate TARGET but blocks past it were not all freed.
-                // Resume the truncate (Linux `ext4_orphan_cleanup` →
-                // `ext4_truncate`) to reclaim the leaked blocks, THEN splice it
-                // off the list — else those blocks leak until an e2fsck.
-                let size = u32::from_le_bytes([bytes[0x04], bytes[0x05], bytes[0x06], bytes[0x07]]) as u64
-                    | ((u32::from_le_bytes([bytes[0x6C], bytes[0x6D], bytes[0x6E], bytes[0x6F]]) as u64) << 32);
-                let _ = self.truncate_inode(head, size);
-                let _ = self.orphan_del(head);
-            }
-            head = next;
-        }
-        Ok(())
-    }
-
-    /// Free an orphan inode (one with `nlink==0`, e.g. an O_TMPFILE
-    /// file whose last fd is being closed). Walks the extent tree
-    /// and frees each data block, then frees the inode bitmap slot.
-    /// Errors if the inode's recorded `nlink` is non-zero (the caller
-    /// would otherwise be unlinking a still-named file).
-    /// # C: O(N_extents) block frees + 1 inode-free
-    pub fn free_orphan_inode(&self, ino: u32) -> Result<(), MountError> {
-        self.run_journaled(|m| {
-            let links = {
-                let (b, _o) = m.read_inode_bytes(ino)?;
-                u16::from_le_bytes([b[0x1A], b[0x1B]])
-            };
-            if links != 0 {
-                // Caller raced with a linkat; nothing to do.
-                return Ok(());
-            }
-            // Detach from the on-disk orphan list before freeing — advances
-            // `s_last_orphan` / relinks the chain so it never dangles at a
-            // freed slot (Linux `ext4_orphan_del` precedes the truncate+free).
-            // This also clears `i_dtime`; the genuine deletion timestamp is
-            // re-stamped below.
-            m.orphan_del(ino)?;
-            // A directory reaching here (orphaned by a rename-over or a crash)
-            // stops counting toward its group's `bg_used_dirs_count`, exactly
-            // as `rmdir`'s immediate free does.
-            let is_dir = {
-                let (b, _o) = m.read_inode_bytes(ino)?;
-                (u16::from_le_bytes([b[0x00], b[0x01]]) & S_IFMT) == S_IFDIR
-            };
-            if is_dir {
-                let g = (ino - 1) / m.sb.inodes_per_group;
-                { let mut s = m.state.lock(); gdt::adjust_used_dirs(&mut s.gdt_buf, g, &m.sb, -1)?; }
-                m.persist_gdt_slot_meta(g)?;
-            }
-            // Free EVERY data + interior-node block at ANY tree depth (Linux
-            // `ext4_truncate` → `ext4_ext_remove_space`); a depth==0-only walk
-            // leaks a deep-tree file's blocks and its interior nodes.
-            m.truncate_inode_for_deletion(ino)?;
-            m.free_external_xattr_for_deletion(ino)?;
-            // Re-read after orphan_del + truncate rewrote the slot.
-            let (mut bytes, off) = m.read_inode_bytes(ino)?;
-            bytes[0x04..0x08].copy_from_slice(&0u32.to_le_bytes());
-            bytes[0x6C..0x70].copy_from_slice(&0u32.to_le_bytes());
-            bytes[0x1C..0x20].copy_from_slice(&0u32.to_le_bytes());
-            bytes[0x14..0x18].copy_from_slice(&DELETED_DTIME.to_le_bytes()); // i_dtime != 0
-            for b in &mut bytes[0x28..0x28 + I_BLOCK_LEN] { *b = 0; }
-            let _ = off;
-            m.write_inode_bytes(ino, &bytes)?;
-            m.free_inode(ino)?;
-            Ok(())
-        })
     }
 
     /// `__ext4_unlink`: drop `name` from `parent_ino` and

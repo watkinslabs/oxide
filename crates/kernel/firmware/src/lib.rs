@@ -37,7 +37,7 @@ pub unsafe fn init() -> KResult<()> { Ok(()) }
 
 /// Add-cpu hook fired for each MADT entry. Kernel installs the
 /// cpu_topology::add_cpu callback at boot.
-pub type AddCpu = unsafe fn(id: u32, flags: u32) -> bool;
+pub type AddCpu = unsafe fn(id: u64, flags: u32, acpi_uid: u32) -> bool;
 
 static ADD_CPU_HOOK: AtomicU64 = AtomicU64::new(0);
 
@@ -51,13 +51,13 @@ pub fn set_add_cpu_hook(f: AddCpu) {
 /// Fire the registered add-cpu callback. No-op when not installed.
 /// # SAFETY: forwards to caller-installed hook with the documented signature; only invoked from acpi.rs MADT walk inside an `unsafe { try_log_acpi }`.
 /// # C: O(1)
-pub unsafe fn fire_add_cpu(id: u32, flags: u32) -> bool {
+pub unsafe fn fire_add_cpu(id: u64, flags: u32, acpi_uid: u32) -> bool {
     let h = ADD_CPU_HOOK.load(Ordering::Acquire);
     if h == 0 { return false; }
-    // SAFETY: h was installed by `set_add_cpu_hook` with a matching `unsafe fn(u32,u32)->bool` ABI.
+    // SAFETY: h was installed by `set_add_cpu_hook` with the matching CPU hook ABI.
     let f: AddCpu = unsafe { core::mem::transmute(h) };
     // SAFETY: hook ABI matches the documented signature; caller of fire_add_cpu holds the same boot-path preconditions.
-    unsafe { f(id, flags) }
+    unsafe { f(id, flags, acpi_uid) }
 }
 
 pub use acpi::try_log_acpi;

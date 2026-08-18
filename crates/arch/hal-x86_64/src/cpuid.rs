@@ -188,6 +188,60 @@ pub fn brand() -> [u8; 48] {
     { [0u8; 48] }
 }
 
+#[cfg(any(test, all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+const CPUID_MWAIT: u32 = 5;
+#[cfg(any(test, all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+const CPUID_MWAIT_EXTENSIONS: u32 = 1;
+#[cfg(any(test, all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+const CPUID_MWAIT_INTERRUPT_BREAK: u32 = 1 << 1;
+#[cfg(any(test, all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+const MWAIT_CSTATE_BITS: u32 = 4;
+#[cfg(any(test, all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+const MWAIT_CSTATE_MASK: u32 = 0xf;
+
+/// Whether this CPU exposes the firmware-supplied MWAIT hint, including the
+/// interrupt-break contract an IRQ-off idle path requires. # C: O(1)
+pub fn acpi_mwait_supported(hint: u32) -> bool {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    {
+        // SAFETY: CPUID leaf zero is available on every x86_64 CPU.
+        let (max, _, _, _) = unsafe { cpuid(0) };
+        if max < CPUID_MWAIT { return false; }
+        // SAFETY: the maximum-leaf query admitted leaf five.
+        let (_, _, ecx, edx) = unsafe { cpuid(CPUID_MWAIT) };
+        return mwait_supported_from_cpuid(max, ecx, edx, hint);
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+    { let _ = hint; false }
+}
+
+/// True when the CPU is virtualized and port idle does not need an extra
+/// chipset-settle read. # C: O(1)
+pub fn hypervisor_present() -> bool {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    {
+        // SAFETY: leaf one exists on every x86_64 CPU.
+        let (_, _, ecx, _) = unsafe { cpuid(1) };
+        return ecx & (1 << 31) != 0;
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+    { false }
+}
+
+/// Pure MWAIT feature admission, shared by the runtime probe and hosted
+/// regression tests. # C: O(1)
+#[cfg(any(test, all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+fn mwait_supported_from_cpuid(max_leaf: u32, ecx: u32, edx: u32, hint: u32) -> bool {
+    if max_leaf < CPUID_MWAIT
+        || ecx & (CPUID_MWAIT_EXTENSIONS | CPUID_MWAIT_INTERRUPT_BREAK)
+            != CPUID_MWAIT_EXTENSIONS | CPUID_MWAIT_INTERRUPT_BREAK
+    {
+        return false;
+    }
+    let cstate = (((hint >> MWAIT_CSTATE_BITS) & MWAIT_CSTATE_MASK) + 1) & MWAIT_CSTATE_MASK;
+    ((edx >> (cstate * MWAIT_CSTATE_BITS)) & MWAIT_CSTATE_MASK) != 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,5 +261,14 @@ mod tests {
     fn initial_apic_id_uses_leaf_one_ebx_high_byte() {
         assert_eq!(initial_apic_id_from_leaf1(0x7a00_0000), 0x7a);
         assert_eq!(initial_apic_id_from_leaf1(0x00ff_ffff), 0);
+    }
+
+    #[test]
+    fn mwait_requires_the_named_hint_substate_and_irq_wake_contract() {
+        assert!(mwait_supported_from_cpuid(5, 3, 1 << 8, 0x10));
+        assert!(!mwait_supported_from_cpuid(4, 3, 1 << 8, 0x10));
+        assert!(!mwait_supported_from_cpuid(5, 1, 1 << 8, 0x10));
+        assert!(!mwait_supported_from_cpuid(5, 3, 0, 0x10));
+        assert!(!mwait_supported_from_cpuid(5, 3, 1 << 8, 0x20));
     }
 }

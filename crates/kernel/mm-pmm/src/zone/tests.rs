@@ -3,7 +3,10 @@
 // implementation file of the same name.
 
 #[path = "tests/gfp.rs"] mod gfp;
+#[path = "tests/core.rs"] mod core;
+#[path = "tests/dma.rs"] mod dma;
 #[path = "tests/limits.rs"] mod limits;
 #[path = "tests/zonelist.rs"] mod zonelist;
 #[path = "tests/reserve.rs"] mod reserve;
 #[path = "tests/wmark.rs"] mod wmark;
+#[path = "tests/migrate.rs"] mod migrate;

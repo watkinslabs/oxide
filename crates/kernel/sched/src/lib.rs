@@ -34,6 +34,8 @@ pub mod cputime;
 pub mod cpustat;
 #[cfg(target_os = "oxide-kernel")]
 pub mod cpufreq_hook;
+#[cfg(target_os = "oxide-kernel")]
+pub mod cpufreq_work;
 pub mod cputime_trace;
 /// Per-CPU software-event accumulators for CPU-context `perf_event_open`.
 pub mod perf_sw;
@@ -225,6 +227,7 @@ pub mod live;
 
 #[cfg(target_os = "oxide-kernel")] pub mod compat;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))] pub mod cred;
+pub mod hung_task;
 pub mod park_site;
 pub mod pkey_rights;
 pub mod prctl;
@@ -301,6 +304,10 @@ fn rcu_drain_tick(_now_ns: u64) { sync::rcu_process_callbacks(); }
 pub fn halt_forever() -> ! {
     loop {
         if live::global().is_some() {
+            // Linux flushes the target CPU's deferred wake list from the idle
+            // loop when polling avoided an IPI.  This is deliberately before
+            // `schedule()`, while the idle task has a near-empty stack.
+            let _ = live::ttwu::service_current_cpu();
             // SAFETY: boot-anchor / idle context; runqueue installed; preempt-off.
             unsafe { live::schedule(); }
             // B5 newidle balance: schedule() returned ⇒ this CPU has nothing

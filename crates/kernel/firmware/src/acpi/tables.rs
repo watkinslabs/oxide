@@ -143,7 +143,7 @@ pub unsafe fn decode_madt(pa: u64, hhdm_offset: u64) {
                     alog_raw(b" flags=");
                     alog_hex(flags as u64);
                     alog_raw(b"\n");
-                    let _ = crate::fire_add_cpu(apic_id as u32, flags);
+                    let _ = crate::fire_add_cpu(u64::from(apic_id), flags, u32::from(acpi_id));
                 }
                 1 if elen >= 12 => {
                     let ioapic_id = core::ptr::read_volatile(p.add(off + 2));
@@ -189,7 +189,7 @@ pub unsafe fn decode_madt(pa: u64, hhdm_offset: u64) {
                     alog_raw(b" flags=");
                     alog_hex(flags as u64);
                     alog_raw(b"\n");
-                    let _ = crate::fire_add_cpu(x2apic_id, flags);
+                    let _ = crate::fire_add_cpu(u64::from(x2apic_id), flags, acpi_uid);
                 }
                 11 if elen >= 80 => {
                     let cpu_iface = read_u32_le(p.add(off + 4));
@@ -203,7 +203,7 @@ pub unsafe fn decode_madt(pa: u64, hhdm_offset: u64) {
                     alog_raw(b" mpidr=");
                     alog_hex(mpidr);
                     alog_raw(b"\n");
-                    let _ = crate::fire_add_cpu(mpidr as u32, flags);
+                    let _ = crate::fire_add_cpu(mpidr, flags, acpi_uid);
                 }
                 12 if elen >= 24 => {
                     let gic_id   = read_u32_le(p.add(off + 4));

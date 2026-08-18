@@ -65,7 +65,7 @@ static REPORTED: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::
 #[no_mangle]
 pub unsafe extern "C" fn oxide_handle_bad_stack(bad_sp: u64, esr: u64, elr: u64,
                                                 far: u64, lo: u64, top: u64,
-                                                site: u64) -> ! {
+                                                site: u64, caller_lr: u64) -> ! {
     if REPORTED.fetch_add(1, Ordering::AcqRel) == 0 {
         klog::write_raw(b"[BADSTACK] exception entry with SP outside the current kernel stack site=");
         // 0 = default vector, 1 = kernel/EL0 IRQ vector, 2 = lower-EL sync (SVC + EL0 faults)
@@ -103,6 +103,8 @@ pub unsafe extern "C" fn oxide_handle_bad_stack(bad_sp: u64, esr: u64, elr: u64,
         klog::write_hex_u64(elr);
         klog::write_raw(b" far=");
         klog::write_hex_u64(far);
+        klog::write_raw(b" caller_lr=");
+        klog::write_hex_u64(caller_lr);
         klog::write_raw(b"\n");
         // PE identity, read with `mrs` only: which CPU took this is the first
         // question for an SMP-only fault, and `bad_sp` is where the frame WOULD

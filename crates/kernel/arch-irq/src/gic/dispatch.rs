@@ -122,7 +122,7 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
         if intid != 27
             && intid != 33
             && !crate::intid_is_v2m(intid)
-            && intid >= super::ids::SPI_BASE
+            && intid >= super::ids::PPI_BASE
             && intid < LPI_BASE
         {
             let _ = crate::invoke_arm_irq_handler(intid);
@@ -174,16 +174,19 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
             sched::live::preempt::task_tick();
         }
         if intid == super::sgi::RESCHED_SGI {
-            // Cross-CPU resched IPI: the sender already stamped this CPU's
-            // running task, but the switch happens at IRQ exit, and that same
-            // switch is what drains this CPU's deferred wake list — so the
-            // request is (re)asserted here rather than inferred from a tick.
+            // Cross-CPU resched IPI: the wake list is consumed below on this
+            // IRQ stack, then IRQ exit performs the requested switch.
             sched::preempt::set_need_resched();
         }
         if intid == super::sgi::CALL_FUNCTION_SGI {
             crate::call_fn::service();
         }
     }
+    // Linux's target CPU activates its claimed ttwu list from the IPI path,
+    // not from `finish_task_switch`.  This dispatcher owns the per-CPU IRQ
+    // stack, so both an IPI wake and a local wake deferred by an IRQ handler
+    // avoid extending the interrupted task's deepest switch stack.
+    let _ = sched::live::ttwu::service_current_cpu();
     // Linux `irq_exit`: drop the hardirq field before returning to the
     // interrupted stack. The vector calls the softirq handoff only after that
     // return, so `call_on_irq_stack` starts from an empty hard-IRQ stack.
@@ -258,6 +261,9 @@ unsafe extern "C" fn oxide_arm_softirq_drain() {
     // SAFETY: EOI was issued by the dispatcher; do_softirq's in_interrupt guard
     // blocks re-entry, and IRQs stay masked exactly as the vector entered.
     unsafe { sched::bh::do_softirq(); }
+    // A softirq can itself defer a local wake after the hard-IRQ service
+    // above.  Consume it before this fresh IRQ stack returns to the task.
+    let _ = sched::live::ttwu::service_current_cpu();
 }
 
 /// Linux `irqentry_exit` — the arm64 half. Called by the IRQ vector handler

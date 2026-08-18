@@ -88,3 +88,46 @@ fn an_empty_zone_never_passes() {
 fn free_pages_sums_the_area_by_order() {
     assert_eq!(crate::zone::wmark::free_pages(&area(&[(0, 3), (2, 5)])), 3 + 5 * 4);
 }
+
+// Provenance: the reserve discount is earned by the high-priority flag, and
+// the non-blocking discount nests inside it. Mapping "cannot block" straight
+// onto both is permissive — an allocation that never asked for the reserve
+// would drain what a blockable context is relying on.
+#[test]
+fn a_caller_that_did_not_ask_for_the_reserve_is_held_to_the_whole_minimum() {
+    use crate::zone::{grants_min_reserve, slowpath_wmark, GFP_ATOMIC, GFP_HIGH};
+    assert_eq!(slowpath_wmark(false, true), AllocWmark::Min);
+    assert_eq!(slowpath_wmark(false, false), AllocWmark::Min);
+    assert_eq!(slowpath_wmark(true, true), AllocWmark::MinReserve);
+    assert_eq!(slowpath_wmark(true, false), AllocWmark::MinNonBlock);
+    // The plain kernel allocation asks for nothing and earns nothing.
+    assert!(!grants_min_reserve(0));
+    assert!(grants_min_reserve(GFP_HIGH));
+    assert!(grants_min_reserve(GFP_ATOMIC));
+}
+
+#[test]
+fn each_rung_of_the_reserve_is_strictly_deeper_than_the_last() {
+    const MARK: u64 = 400;
+    const RESERVE: LowmemReserve = [[0; NR_ZONES]; NR_ZONES];
+    // The smallest free count each rung accepts is one above its floor.
+    fn floor(w: AllocWmark) -> u64 {
+        const MARK: u64 = 400;
+        const RESERVE: LowmemReserve = [[0; NR_ZONES]; NR_ZONES];
+        let mut area = [0u64; crate::ORDERS];
+        let mut n = 0u64;
+        loop {
+            area[0] = n;
+            if zone_watermark_ok(ZoneType::Normal, 0, MARK, w, &RESERVE, ZoneType::Normal.index(), &area) { return n; }
+            n += 1;
+            assert!(n <= MARK + 1, "no free count cleared {w:?}");
+        }
+    }
+    let plain = floor(AllocWmark::Min);
+    let reserve = floor(AllocWmark::MinReserve);
+    let non_block = floor(AllocWmark::MinNonBlock);
+    assert_eq!(plain, MARK + 1);
+    assert_eq!(reserve, MARK - MARK / 2 + 1);
+    assert_eq!(non_block, { let m = MARK - MARK / 2; m - m / 4 + 1 });
+    assert!(non_block < reserve && reserve < plain);
+}

@@ -75,6 +75,10 @@ fn spawn_kthreads() {
     // residency accounting under `/sys/devices/system/cpu/cpu*/cpuidle` real.
     // A platform provider that finds a deeper ladder replaces this table.
     step("cpuidle::generic::init", || { cpuidle::idle::generic::init(cpu::MAX_CPUS); });
+    #[cfg(target_arch = "x86_64")]
+    step("firmware::acpi::cpuidle::init", || { let _ = firmware::acpi::cpuidle::init(); });
+    #[cfg(target_arch = "aarch64")]
+    step("firmware::fdt::idle::init", || { let _ = firmware::fdt::idle::init(); });
     if step("spawn_timer_driver", sched::live::spawn_timer_driver).is_err() {
         klog::kerror!("fatal: timer driver spawn failed");
         sched::halt_forever();
@@ -90,6 +94,10 @@ fn spawn_kthreads() {
         klog::kerror!("fatal: kworker spawn failed");
         sched::halt_forever();
     }
+    #[cfg(target_arch = "aarch64")]
+    step("firmware::fdt::cpufreq::start_deferred", firmware::fdt::cpufreq::start_deferred);
+    #[cfg(target_arch = "aarch64")]
+    step("firmware::fdt::scmi::start_deferred", firmware::fdt::scmi::start_deferred);
     // The kernel -> userspace helper runs its exec on a worker thread, so its
     // backend is installed once the workers exist. The gate stays CLOSED here:
     // no helper may run until userspace is up, which is what `enable` below
@@ -126,9 +134,23 @@ fn spawn_kthreads() {
     // threshold, and ages out anything dirty long enough (`17§4.3`). Without
     // it a dirty page waits for an `fsync` that a writer may never issue, and
     // reclaim meets pages it is not allowed to drop.
+    // `hung_task_timeout_secs=` / `hung_task_panic` install BEFORE the
+    // detector starts, so its first scan already runs under the boot line's
+    // policy rather than one window of the build default.
+    {
+        let line = crate::boot_cmdline::get();
+        if let Some(secs) = cmdline::hung_task::timeout_secs(line) {
+            sched::hung_task::set_timeout_secs(secs);
+        }
+        sched::hung_task::set_panic_on_hung(cmdline::hung_task::panic_on_hung(line));
+    }
     let reclaim_failed = step("spawn_kswapd", || pmm::spawn_kswapd()).is_err()
         || step("block::pagecache::spawn_daemons", block::pagecache::spawn_daemons).is_err()
-        || step("sched::oom::spawn_oom_reaper", || sched::oom::spawn_oom_reaper()).is_err();
+        || step("sched::oom::spawn_oom_reaper", || sched::oom::spawn_oom_reaper()).is_err()
+        // The hung-task detector: a task stuck in an uninterruptible sleep past
+        // the window names ITSELF in the log, instead of a wedge being visible
+        // only to whoever happens to be at the console with a sysrq key.
+        || step("sched::live::spawn_khungtaskd", || sched::live::spawn_khungtaskd()).is_err();
     if reclaim_failed {
         klog::kerror!("fatal: reclaim kthread spawn failed");
         sched::halt_forever();

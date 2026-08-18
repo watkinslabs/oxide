@@ -207,7 +207,7 @@ unsafe fn ap_main_x86(percpu_base: u64, logical_cpu_id: u32) -> ! {
         //     interrupted stack once this AP takes IRQs. Guard-paged + leaked;
         //     `None` (frame exhaustion) leaves the slot 0 ⇒ dispatch on the
         //     interrupted stack (pre-fix behavior, no crash).
-        match sched::kstack::alloc_leaked_top() {
+        match sched::kstack::alloc_leaked_top_with(pmm::setup::alloc_raw_frame_nowait) {
             // SAFETY: this AP's gs base is set; `top` outlives the kernel.
             Some(top) => hal_x86_64::init_percpu_hardirq_stack(top),
             None => klog::write_raw(b"[IRQSTK] AP hardirq stack alloc failed; on task stack\n"),
@@ -436,6 +436,7 @@ pub unsafe fn bring_up_aps_x86(_info: &BootInfo) -> usize {
     let n = ::cpu::count() as usize;
     for i in 0..n {
         let (id, flags) = match ::cpu::get(i) { Some(t) => t, None => break };
+        let Some(id) = u32::try_from(id).ok() else { continue; };
         if id == bsp { continue; }
         if (flags & (::cpu::FLAG_ENABLED | ::cpu::FLAG_ONLINE_CAPABLE)) == 0 { continue; }
 

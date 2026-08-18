@@ -16,7 +16,9 @@ use crate::table::FreqTable;
 use crate::uapi::Relation;
 
 /// Who asked for a limit. Each source holds one, and the effective limit is
-/// the tightest of them.
+/// the tightest of them. Processor cooling devices own individual requests
+/// beneath the shared thermal source, because a shared clock domain may have
+/// more than one firmware CPU object cooling it.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum LimitSource {
     /// What userspace wrote to `scaling_min_freq` / `scaling_max_freq`.
@@ -70,6 +72,8 @@ pub struct Policy {
     pub hw: Limits,
     /// Time one transition costs, nanoseconds.
     pub transition_latency_ns: u64,
+    /// Table entry the platform selected for system suspend, if any.
+    suspend_index: Option<usize>,
     state: Spinlock<PolicyState, Devices>,
 }
 
@@ -79,6 +83,8 @@ pub struct PolicyState {
     /// Frequency the policy is at, kilohertz.
     pub cur: u32,
     pub requests: Vec<(LimitSource, Request)>,
+    /// Per-cooling-device constraints, keyed by the provider's opaque identity.
+    pub thermal_requests: Vec<(usize, Request)>,
     pub governor: &'static str,
     pub boost: bool,
     /// What a write to `scaling_setspeed` asked for, kilohertz.
@@ -90,8 +96,14 @@ impl Policy {
     /// Build a policy around a validated table. # C: O(N_entries)
     pub fn new(cpus: Vec<usize>, table: FreqTable, transition_latency_ns: u64, cur: u32,
                governor: &'static str) -> Option<Arc<Policy>>
+    { Self::new_with_suspend(cpus, table, transition_latency_ns, cur, None, governor) }
+
+    /// Build a policy with its platform-selected system-suspend OPP. # C: O(N_entries)
+    pub fn new_with_suspend(cpus: Vec<usize>, table: FreqTable, transition_latency_ns: u64, cur: u32,
+                            suspend_index: Option<usize>, governor: &'static str) -> Option<Arc<Policy>>
     {
         let (min, max) = table.cpuinfo(false)?;
+        if suspend_index.is_some_and(|index| index >= table.entries.len()) { return None; }
         let hw = Limits { min, max };
         let stats = crate::stats::Stats::new(&table.available(true), cur);
         Some(Arc::new(Policy {
@@ -100,10 +112,12 @@ impl Policy {
             table,
             hw,
             transition_latency_ns,
+            suspend_index,
             state: Spinlock::new(PolicyState {
                 limits: hw,
                 cur,
                 requests: LIMIT_SOURCES.iter().map(|src| (*src, Request::default())).collect(),
+                thermal_requests: Vec::new(),
                 governor,
                 boost: false,
                 setspeed: None,
@@ -122,19 +136,48 @@ impl Policy {
     pub fn boost(&self) -> bool { self.state.lock().boost }
     /// What `scaling_setspeed` last asked for. # C: O(1)
     pub fn setspeed(&self) -> Option<u32> { self.state.lock().setspeed }
+    /// Platform-selected suspend OPP table index. # C: O(1)
+    pub fn suspend_index(&self) -> Option<usize> { self.suspend_index }
+    /// Platform-selected suspend frequency, kilohertz. # C: O(1)
+    pub fn suspend_freq(&self) -> Option<u32> {
+        self.suspend_index.and_then(|index| self.table.entries.get(index)).map(|entry| entry.frequency)
+    }
+    /// Resolve the suspend OPP through the limits in force. # C: O(N_entries)
+    pub fn suspend_target_index(&self) -> Option<usize> {
+        let frequency = self.suspend_freq()?;
+        let state = self.state.lock();
+        self.table.resolve(frequency, state.limits.min, state.limits.max, Relation::Highest, state.boost)
+    }
 
     /// Run a closure against the mutable half. # C: O(closure)
     pub fn with_state<R>(&self, f: impl FnOnce(&mut PolicyState) -> R) -> R {
         f(&mut self.state.lock())
     }
 
-    /// Record one source's request and re-aggregate. # C: O(N_sources)
+    /// Record one source's request and re-aggregate. # C: O(N_sources + N_thermal)
     pub fn set_request(&self, source: LimitSource, request: Request) -> Limits {
         let mut state = self.state.lock();
         if let Some(slot) = state.requests.iter_mut().find(|(src, _)| *src == source) {
             slot.1 = request;
         }
-        let limits = aggregate(self.hw, &state.requests);
+        let limits = aggregate_thermal(self.hw, &state.requests, &state.thermal_requests);
+        state.limits = limits;
+        limits
+    }
+
+    /// Update one processor cooling device's independent thermal request.
+    /// Clearing it removes only that device's cap; another CPU in the same
+    /// policy continues to constrain the shared clock. # C: O(N_sources + N_thermal)
+    pub fn set_thermal_request(&self, key: usize, request: Request) -> Limits {
+        let mut state = self.state.lock();
+        let empty = request == Request::default();
+        if let Some(index) = state.thermal_requests.iter().position(|(entry, _)| *entry == key) {
+            if empty { state.thermal_requests.remove(index); }
+            else { state.thermal_requests[index].1 = request; }
+        } else if !empty {
+            state.thermal_requests.push((key, request));
+        }
+        let limits = aggregate_thermal(self.hw, &state.requests, &state.thermal_requests);
         state.limits = limits;
         limits
     }
@@ -164,6 +207,16 @@ impl Policy {
         body.push('\n');
         body
     }
+}
+
+/// Fold the stable limit-source set and every cooling-device request. # C: O(N_sources + N_thermal)
+fn aggregate_thermal(hw: Limits, requests: &[(LimitSource, Request)], thermal: &[(usize, Request)])
+    -> Limits
+{
+    let mut all = Vec::with_capacity(requests.len() + thermal.len());
+    all.extend(requests.iter().copied());
+    all.extend(thermal.iter().map(|(_, request)| (LimitSource::Thermal, *request)));
+    aggregate(hw, &all)
 }
 
 #[cfg(test)]

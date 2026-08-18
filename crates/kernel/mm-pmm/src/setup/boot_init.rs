@@ -39,7 +39,8 @@ pub const MAX_REGIONS: usize = 128;
 /// `init_from_boot_info` and remembered here.
 pub struct HhdmBacking {
     hhdm: u64,
-    bitmaps: [&'static [core::sync::atomic::AtomicU64]; ORDERS],
+    bitmaps: [&'static [core::sync::atomic::AtomicU64]; BITMAP_SLOTS],
+    pcp: &'static PcpStorage,
 }
 
 // The live PMM is reached from hard-IRQ paths (page-table allocation and
@@ -64,13 +65,16 @@ impl PageBacking for HhdmBacking {
     /// # C: O(1)
     fn bitmap_storage(
         &self,
-        order: u8,
+        slot: u8,
         len_u64: usize,
     ) -> &'static [core::sync::atomic::AtomicU64] {
-        let s = self.bitmaps[order as usize];
+        let s = self.bitmaps[slot as usize];
         debug_assert!(s.len() >= len_u64);
         &s[..len_u64]
     }
+
+    /// # C: O(1)
+    fn pcp_storage(&self) -> &'static PcpStorage { self.pcp }
 }
 
 // ---------------------------------------------------------------------------
@@ -84,6 +88,11 @@ struct PmmCell(UnsafeCell<MaybeUninit<Pmm<HhdmBacking, KernelIrqGate>>>);
 unsafe impl Sync for PmmCell {}
 
 static PMM_STORAGE: PmmCell = PmmCell(UnsafeCell::new(MaybeUninit::uninit()));
+struct PcpCell(UnsafeCell<MaybeUninit<PcpStorage>>);
+// SAFETY: `init_from_boot_info` initializes this exactly once before any CPU
+// can allocate, then the contained spinlocks provide the synchronization.
+unsafe impl Sync for PcpCell {}
+static PCP_STORAGE: PcpCell = PcpCell(UnsafeCell::new(MaybeUninit::uninit()));
 static PMM_READY: AtomicBool = AtomicBool::new(false);
 static DIRECT_MAP_BASE: AtomicU64 = AtomicU64::new(0);
 struct RegionBuf(UnsafeCell<[UsableRegion; MAX_REGIONS]>);
@@ -161,14 +170,23 @@ pub unsafe fn init_from_boot_info(
     // All math is overflow-safe; saturating semantics are fine
     // because oversized inputs just produce a too-large pool that
     // fails the next find-region step.
-    let mut per_order_words: [usize; ORDERS] = [0; ORDERS];
+    let mut per_order_words: [usize; BITMAP_SLOTS] = [0; BITMAP_SLOTS];
     let mut total_bytes: u64 = 0;
     let mut o = 0usize;
-    while o < ORDERS {
-        let stride = 1u64 << (o as u32);
-        let plus = pfn_max.saturating_add(stride.saturating_sub(1));
-        let blocks = plus >> (o as u32);
-        let words = blocks.saturating_add(63) >> 6;
+    while o < BITMAP_SLOTS {
+        let words = if o == PAGEBLOCK_TYPE_SLOT {
+            let pageblocks = pfn_max.saturating_add(crate::zone::PAGEBLOCK_PAGES - 1) / crate::zone::PAGEBLOCK_PAGES;
+            pageblocks.saturating_add(31) / 32
+        } else {
+            let blocks = if o == PCP_BITMAP_SLOT {
+                pfn_max
+            } else {
+                let stride = 1u64 << (o as u32);
+                let plus = pfn_max.saturating_add(stride.saturating_sub(1));
+                plus >> (o as u32)
+            };
+            blocks.saturating_add(63) >> 6
+        };
         per_order_words[o] = words as usize;
         total_bytes = total_bytes.saturating_add(words.saturating_mul(8));
         o += 1;
@@ -226,10 +244,10 @@ pub unsafe fn init_from_boot_info(
     }
 
     // Slice the pool into per-order bitmap views.
-    let mut bitmaps: [&'static [core::sync::atomic::AtomicU64]; ORDERS] = [&[][..]; ORDERS];
+    let mut bitmaps: [&'static [core::sync::atomic::AtomicU64]; BITMAP_SLOTS] = [&[][..]; BITMAP_SLOTS];
     let mut cursor: *mut u8 = pool_va;
     let mut o = 0usize;
-    while o < ORDERS {
+    while o < BITMAP_SLOTS {
         let words = per_order_words[o];
         if words > 0 {
             // SAFETY: cursor stays within `pool_va..pool_va+pool_bytes`
@@ -307,19 +325,27 @@ pub unsafe fn init_from_boot_info(
     // Retain the firmware-owned ranges too. Done here because this is the one
     // place the boot memory map is still readable.
     super::fwmap::publish(regions);
-    let backing = HhdmBacking { hhdm: info.hhdm_offset, bitmaps };
+    // SAFETY: single-CPU one-shot setup; this BSS storage has no reference
+    // until the completed PMM is published below.
+    let pcp = unsafe {
+        PcpStorage::init_in_place(PCP_STORAGE.0.get().cast::<PcpStorage>());
+        (&*PCP_STORAGE.0.get()).assume_init_ref()
+    };
+    let backing = HhdmBacking { hhdm: info.hhdm_offset, bitmaps, pcp };
     // SAFETY: same single-CPU init invariant; we read what we just wrote.
     let regs: &[UsableRegion] = unsafe {
         let base: *const UsableRegion = REGION_BUF.0.get() as *const UsableRegion;
         core::slice::from_raw_parts(base, n_regions)
     };
-    let pmm = Pmm::<HhdmBacking, KernelIrqGate>::init(backing, regs)
-        .map_err(SetupError::PmmInit)?;
     // SAFETY: PMM_STORAGE written only here, single-CPU, before
     // PMM_READY flips.
     let pmm_ref: &'static Pmm<HhdmBacking, KernelIrqGate> = unsafe {
         let cell = &mut *PMM_STORAGE.0.get();
-        cell.write(pmm);
+        let limits = crate::zone::apply_memory_core_request(
+            crate::zone::ZoneLimits::arch_default(pfn_max, PAGE_SIZE_BYTES), cmdline::get(), pfn_max, PAGE_SIZE_BYTES,
+        );
+        Pmm::<HhdmBacking, KernelIrqGate>::init_zoned_in_place(backing, regs, Some(limits), cell)
+            .map_err(SetupError::PmmInit)?;
         cell.assume_init_ref()
     };
     // SAFETY: `page_meta_ptr` names the page-aligned boot reservation carved
@@ -347,7 +373,7 @@ pub unsafe fn init_from_boot_info(
     // Every zone is seeded by this point, so the managed totals the watermarks
     // are proportional to are final. This is the one producer of both the
     // per-zone allocation gate and the aggregate the reclaim policy reads.
-    pmm_ref.refresh_watermarks(crate::watermark::WatermarkTunables::default());
+    pmm_ref.refresh_watermarks(crate::watermark::tunables::current());
     // A cached page can become a machine frame from the moment there is an
     // allocator to take one from, which is HERE — not at the kernel-only wiring
     // below. A hosted test that brings this PMM up gets the same page cache the

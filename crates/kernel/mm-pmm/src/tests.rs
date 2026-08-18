@@ -5,7 +5,10 @@
 mod alloc_free;
 mod accounting;
 mod concurrent;
+mod dma_bound;
 mod init;
+mod migratetype;
+mod pcp;
 mod reserve;
 mod watermark_gate;
 
@@ -28,7 +31,8 @@ const PAGE: usize = PAGE_SIZE_BYTES as usize;
 struct HostedBacking {
     pages: *mut u8,
     n_pages: u64,
-    bitmaps: [&'static [AtomicU64]; ORDERS],
+    bitmaps: [&'static [AtomicU64]; BITMAP_SLOTS],
+    pcp: &'static PcpStorage,
 }
 
 // SAFETY: backing buffer is leaked for the test process lifetime; only
@@ -45,10 +49,15 @@ impl HostedBacking {
     fn filled(n_pages: u64, fill: u8) -> Self {
         let buf = vec![fill; (n_pages.max(1) as usize) * PAGE].into_boxed_slice();
         let pages = Box::leak(buf).as_mut_ptr();
-        let mut bitmaps = [&[][..]; ORDERS];
-        for o in 0..ORDERS {
-            let blocks = (n_pages + (1u64 << o) - 1) >> o;
-            let words = ((blocks + 63) >> 6) as usize;
+        let mut bitmaps = [&[][..]; BITMAP_SLOTS];
+        for o in 0..BITMAP_SLOTS {
+            let words = if o == PAGEBLOCK_TYPE_SLOT {
+                let pageblocks = n_pages.saturating_add(crate::zone::PAGEBLOCK_PAGES - 1) / crate::zone::PAGEBLOCK_PAGES;
+                (pageblocks.saturating_add(31) / 32) as usize
+            } else {
+                let blocks = if o == PCP_BITMAP_SLOT { n_pages } else { (n_pages + (1u64 << o) - 1) >> o };
+                ((blocks + 63) >> 6) as usize
+            };
             let v: Vec<AtomicU64> = (0..words.max(1)).map(|_| AtomicU64::new(0)).collect();
             bitmaps[o] = Box::leak(v.into_boxed_slice());
         }
@@ -56,6 +65,7 @@ impl HostedBacking {
             pages,
             n_pages,
             bitmaps,
+            pcp: Box::leak(Box::new(PcpStorage::new())),
         }
     }
 }
@@ -67,17 +77,19 @@ impl PageBacking for HostedBacking {
         unsafe { self.pages.add((pfn.0 as usize) * PAGE) }
     }
 
-    fn bitmap_storage(&self, order: u8, len_u64: usize) -> &'static [AtomicU64] {
-        let s = self.bitmaps[order as usize];
+    fn bitmap_storage(&self, slot: u8, len_u64: usize) -> &'static [AtomicU64] {
+        let s = self.bitmaps[slot as usize];
         assert!(
             s.len() >= len_u64,
             "bitmap too small for order {}: have {} need {}",
-            order,
+            slot,
             s.len(),
             len_u64
         );
         s
     }
+
+    fn pcp_storage(&self) -> &'static PcpStorage { self.pcp }
 }
 
 fn build(n_pages: u64) -> Pmm<HostedBacking> {

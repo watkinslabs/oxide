@@ -93,7 +93,9 @@ impl ZoneLayout {
     pub fn new(limits: ZoneLimits, pfn_max: u64) -> Self {
         let mut spans = [ZoneSpan::default(); NR_ZONES];
         let mut cur = 0u64;
-        let movable_start = limits.movable_start_pfn.unwrap_or(pfn_max).min(pfn_max);
+        let movable_start = limits.movable_start_pfn
+            .and_then(|start| start.checked_add(super::PAGEBLOCK_PAGES - 1).map(|end| (end / super::PAGEBLOCK_PAGES) * super::PAGEBLOCK_PAGES))
+            .unwrap_or(pfn_max).min(pfn_max);
         // Movable, when requested, takes the tail; the addressable zones are
         // capped below it so no page belongs to two zones.
         let caps = [

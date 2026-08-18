@@ -62,6 +62,8 @@ pub mod ialloc;
 
 pub mod xattr;
 
+mod acl;
+
 pub mod journal;
 
 pub mod commit_timer;

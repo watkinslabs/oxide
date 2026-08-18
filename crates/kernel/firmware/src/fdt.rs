@@ -14,6 +14,12 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
+pub mod cpufreq;
+pub mod idle;
+pub mod psci;
+pub mod providers;
+pub mod scmi;
+
 /// Direct-map virtual address of the retained blob; 0 = none retained.
 static FDT_VA: AtomicU64 = AtomicU64::new(0);
 /// Byte length of the retained blob; 0 = none retained.
@@ -72,6 +78,26 @@ pub fn blob() -> Option<&'static [u8]> {
     // SAFETY: `retain` only stores a `va`/`len` pair it has validated against a
     // mapping the boot memmap keeps reserved for the life of the kernel.
     Some(unsafe { core::slice::from_raw_parts(va as *const u8, len as usize) })
+}
+
+/// Device-tree CPU nodes, including their complete MPIDR affinity and whether
+/// firmware marked each node available. # C: O(struct_block_size)
+pub fn cpu_nodes(out: &mut [::fdt::CpuNode]) -> usize {
+    blob().map(|tree| ::fdt::cpu_nodes(tree, out)).unwrap_or(0)
+}
+
+/// Publish every retained device-tree CPU into the shared topology before any
+/// policy or SMP consumer resolves a logical CPU. # C: O(struct_block_size)
+pub fn populate_cpu_topology() -> usize {
+    let mut nodes = [::fdt::CpuNode { mpidr: 0, enabled: false }; cpu::MAX_CPUS];
+    let count = cpu_nodes(&mut nodes).min(nodes.len());
+    let mut added = 0usize;
+    for node in &nodes[..count] {
+        let flags = if node.enabled { cpu::FLAG_ENABLED } else { 0 };
+        // SAFETY: called only from the boot CPU before AP startup.
+        if unsafe { cpu::add_cpu(node.mpidr, flags, u32::MAX) } { added += 1; }
+    }
+    added
 }
 
 /// Physical extent of the retained tree as `(pa, len)`, or `None` when none

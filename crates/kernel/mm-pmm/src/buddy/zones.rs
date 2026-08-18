@@ -14,9 +14,16 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
         let derived = {
             let mut g = self.inner.lock_irqsave::<I>();
             g.tunables = Some(tunables);
-            g.recompute_derived()
+            let derived = g.recompute_derived();
+            for zi in 0..NR_ZONES {
+                self.pcp_zone[zi].refresh(g.wmark[zi], g.reserve[zi], g.managed[zi]);
+            }
+            derived
         };
-        if let Some((total, agg)) = derived { crate::watermark::publish(total, agg); }
+        if let Some((total, agg)) = derived {
+            let right = crate::watermark::PublishGuard::acquire();
+            crate::watermark::publish(&right, total, agg);
+        }
     }
 
     /// Per-zone observation for the statistics files. # C: O(NR_ZONES*ORDERS)
@@ -30,10 +37,10 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
                 zone: ZoneType::from_index(zi).unwrap_or(ZoneType::Movable),
                 start_pfn: span.start_pfn,
                 spanned_pages: g.spanned[zi],
-                present_pages: g.managed[zi],
+                present_pages: g.present[zi],
                 managed_pages: g.managed[zi],
-                free_pages: g.zone_free_pages(zi),
-                free_orders: g.free_count[zi],
+                free_pages: self.zone_free[zi].load(Ordering::Acquire),
+                free_orders: g.free_area(zi),
                 wmark: g.wmark[zi],
                 lowmem_reserve: g.reserve[zi],
             };

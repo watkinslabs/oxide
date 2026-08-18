@@ -74,6 +74,8 @@ fn each_parsed_field_reads_from_its_own_offset_and_nowhere_else() {
     t[OFF_RESET_VALUE] = 0x5a;
     put_gas(&mut t, OFF_XPM1A_CNT, Gas { space_id: 1, bit_width: 16, bit_offset: 0, access_width: 2, address: 0x600 });
     put_gas(&mut t, OFF_XPM1B_CNT, Gas { space_id: 1, bit_width: 16, bit_offset: 0, access_width: 2, address: 0x604 });
+    put_gas(&mut t, OFF_XPM2_CNT, Gas { space_id: 1, bit_width: 8, bit_offset: 0, access_width: 1, address: 0x608 });
+    put_gas(&mut t, OFF_XPM_TIMER, Gas { space_id: 1, bit_width: 32, bit_offset: 0, access_width: 3, address: 0x60c });
     put_gas(&mut t, OFF_SLEEP_CONTROL, Gas { space_id: 0, bit_width: 8, bit_offset: 0, access_width: 1, address: 0x9000 });
     put_gas(&mut t, OFF_SLEEP_STATUS, Gas { space_id: 0, bit_width: 8, bit_offset: 0, access_width: 1, address: 0x9001 });
 
@@ -85,6 +87,9 @@ fn each_parsed_field_reads_from_its_own_offset_and_nowhere_else() {
     assert_eq!(f.reset_value, 0x5a);
     assert_eq!(f.pm1a_control.address, 0x600);
     assert_eq!(f.pm1b_control.address, 0x604);
+    assert_eq!(f.pm2_control.address, 0x608);
+    assert_eq!(f.pm2_control_len, 1);
+    assert_eq!(f.pm_timer.address, 0x60c);
     assert_eq!(f.sleep_control.address, 0x9000);
     assert_eq!(f.sleep_status.address, 0x9001);
     // The 64-bit pointer wins over the 32-bit one when both are present.
@@ -99,12 +104,19 @@ fn a_table_with_only_the_legacy_pointers_falls_back_to_them() {
     put_u32(&mut t, OFF_PM1A_CNT32, 0x0404);
     put_u32(&mut t, OFF_PM1B_CNT32, 0x0408);
     t[OFF_PM1_CNT_LEN] = 2;
+    put_u32(&mut t, OFF_PM2_CNT32, 0x0410);
+    put_u32(&mut t, OFF_PM_TIMER32, 0x0418);
+    t[OFF_PM2_CNT_LEN] = 1;
+    t[OFF_PM_TIMER_LEN] = 4;
     let f = parse_fadt(&t[..V2_LEN]).expect("a version-2 table parses");
     assert_eq!(f.dsdt_pa, 0x7fff_0000, "no 64-bit pointer, so the 32-bit one is the answer");
     assert_eq!(f.pm1a_control.address, 0x0404);
     assert_eq!(f.pm1a_control.space_id, SPACE_SYSTEM_IO, "a legacy PM block is always a port");
     assert_eq!(f.pm1a_control.bit_width, 16, "the block's byte length is a bit width here");
     assert_eq!(f.pm1b_control.address, 0x0408);
+    assert_eq!(f.pm2_control.address, 0x0410);
+    assert_eq!(f.pm2_control_len, 1);
+    assert_eq!(f.pm_timer.address, 0x0418);
     // Registers past this table's length read as absent, never as garbage.
     assert_eq!(f.sleep_control, Gas::default());
     assert_eq!(f.sleep_status, Gas::default());

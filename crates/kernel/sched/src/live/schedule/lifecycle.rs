@@ -120,13 +120,13 @@ pub unsafe fn preempt_schedule_irq<G: IrqGate>() {
         "IRQ-return schedule entered with IRQs enabled");
     loop {
         // SAFETY: the caller supplies the IRQ-off entry state and schedule()
-        // has no locks held across its return; restoring these saved flags
-        // remasks IRQs before the next `need_resched` check.
+        // has no locks held across its return; this round keeps its internal
+        // IRQ-save disabled so the outer restore below closes the return path.
         let flags = unsafe { G::save_enable() };
         // SAFETY: this is the IRQ-return safe point documented above. The
         // IRQ-return loop owns the recheck with IRQs remasked, so it invokes
         // one internal round rather than the public process-context loop.
-        unsafe { schedule_once(); }
+        unsafe { schedule_once(true); }
         // SAFETY: `flags` came from this iteration's matching save_enable.
         unsafe { G::restore(flags); }
         if !crate::preempt::should_resched() { break; }

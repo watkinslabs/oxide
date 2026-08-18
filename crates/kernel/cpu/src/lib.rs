@@ -12,7 +12,7 @@
 
 extern crate alloc;
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 pub mod mask;
 pub use mask::{AtomicCpuMask, CpuMask};
@@ -34,9 +34,14 @@ pub const LINUX_SOFTNET_DATA_BYTES: usize = 1088;
 const _: () = assert!(LINUX_SOFTNET_DATA_OFFSET + LINUX_SOFTNET_DATA_BYTES <= LINUX_MODULE_PERCPU_STRIDE);
 
 // Parallel atomic arrays — keeps the table `Sync` without a
-// Spinlock wrapper. `IDS[i] == u32::MAX` ⇒ slot empty.
-static IDS:   [AtomicU32; MAX_CPUS] = [const { AtomicU32::new(u32::MAX) }; MAX_CPUS];
+// Spinlock wrapper. `IDS[i] == u64::MAX` ⇒ slot empty. Arm MPIDR affinity
+// includes up to four levels, so truncating it to an APIC-sized value aliases
+// otherwise distinct CPU nodes.
+static IDS:   [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(u64::MAX) }; MAX_CPUS];
 static FLAGS: [AtomicU32; MAX_CPUS] = [const { AtomicU32::new(0)        }; MAX_CPUS];
+/// ACPI's logical-processor identifier. It is distinct from an x2APIC ID,
+/// and is how a Processor object or CPU Device's `_UID` joins this topology.
+static ACPI_UIDS: [AtomicU32; MAX_CPUS] = [const { AtomicU32::new(u32::MAX) }; MAX_CPUS];
 static COUNT: AtomicU32             = AtomicU32::new(0);
 
 /// MADT type-0 / type-9 / type-11 flags bit 0 = "enabled".
@@ -52,8 +57,8 @@ pub const FLAG_ONLINE_CAPABLE: u32 = 1 << 1;
 ///
 /// # SAFETY: caller is the boot path, single-threaded ACPI walk.
 /// # C: O(N_cpus)
-pub unsafe fn add_cpu(apic_or_mpidr_id: u32, flags: u32) -> bool {
-    if apic_or_mpidr_id == u32::MAX { return false; }
+pub unsafe fn add_cpu(apic_or_mpidr_id: u64, flags: u32, acpi_uid: u32) -> bool {
+    if apic_or_mpidr_id == u64::MAX { return false; }
     // Dedup against prior inserts.
     let n = COUNT.load(Ordering::Acquire) as usize;
     for i in 0..n {
@@ -64,6 +69,7 @@ pub unsafe fn add_cpu(apic_or_mpidr_id: u32, flags: u32) -> bool {
     if n >= MAX_CPUS { return false; }
     IDS[n].store(apic_or_mpidr_id, Ordering::Release);
     FLAGS[n].store(flags, Ordering::Release);
+    ACPI_UIDS[n].store(acpi_uid, Ordering::Release);
     COUNT.store((n + 1) as u32, Ordering::Release);
     true
 }
@@ -82,7 +88,7 @@ pub fn populated() -> bool { count() > 0 }
 /// Read entry `idx`. Returns `(id, flags)` or `None` past the
 /// inserted count.
 /// # C: O(1)
-pub fn get(idx: usize) -> Option<(u32, u32)> {
+pub fn get(idx: usize) -> Option<(u64, u32)> {
     if idx >= count() as usize { return None; }
     Some((
         IDS[idx].load(Ordering::Acquire),
@@ -94,19 +100,31 @@ pub fn get(idx: usize) -> Option<(u32, u32)> {
 /// (x86 APIC id, arm MPIDR affinity value). Scheduler and procfs state
 /// use dense logical ids; arch interrupt controllers use this hardware id.
 /// # C: O(1)
-pub fn hardware_id_for_logical(cpu: u32) -> Option<u32> {
+pub fn hardware_id_for_logical(cpu: u32) -> Option<u64> {
     get(cpu as usize).map(|(id, _)| id)
 }
 
 /// Translate a firmware/hardware id (x86 APIC id, arm MPIDR affinity value)
 /// into the dense logical CPU index used by scheduler/per-CPU arrays.
 /// # C: O(N_cpus)
-pub fn logical_id_for_hardware(id: u32) -> Option<u32> {
+pub fn logical_id_for_hardware(id: u64) -> Option<u32> {
     let n = count() as usize;
     for i in 0..n {
         if IDS[i].load(Ordering::Acquire) == id {
             return Some(i as u32);
         }
+    }
+    None
+}
+
+/// Translate an ACPI `Processor` ID or CPU-device `_UID` into the dense
+/// logical index. CPU performance objects name this UID, while interrupt
+/// routing names the APIC ID, so treating either as the other misbinds x2APIC
+/// machines. # C: O(N_cpus)
+pub fn logical_id_for_acpi_uid(uid: u32) -> Option<u32> {
+    let n = count() as usize;
+    for i in 0..n {
+        if ACPI_UIDS[i].load(Ordering::Acquire) == uid { return Some(i as u32); }
     }
     None
 }
@@ -130,11 +148,12 @@ mod tests {
     use super::*;
 
     fn reset() {
-        // Clear by writing u32::MAX to all slots and zeroing count.
+        // Clear by writing u64::MAX to all slots and zeroing count.
         // Hosted-test helper only — production never resets the table.
         for i in 0..MAX_CPUS {
-            IDS[i].store(u32::MAX, Ordering::Release);
+            IDS[i].store(u64::MAX, Ordering::Release);
             FLAGS[i].store(0, Ordering::Release);
+            ACPI_UIDS[i].store(u32::MAX, Ordering::Release);
         }
         COUNT.store(0, Ordering::Release);
     }
@@ -152,12 +171,13 @@ mod tests {
     fn add_cpu_grows_count() {
         reset();
         // SAFETY: hosted test owns the table single-threadedly via reset()+sequential calls.
-        unsafe { assert!(add_cpu(0, FLAG_ENABLED)); }
+        unsafe { assert!(add_cpu(0, FLAG_ENABLED, 3)); }
         // SAFETY: same — sequential second insert under the hosted-test single-thread invariant.
-        unsafe { assert!(add_cpu(1, FLAG_ENABLED)); }
+        unsafe { assert!(add_cpu(1, FLAG_ENABLED, 9)); }
         assert_eq!(count(), 2);
         assert_eq!(get(0), Some((0, FLAG_ENABLED)));
         assert_eq!(get(1), Some((1, FLAG_ENABLED)));
+        assert_eq!(logical_id_for_acpi_uid(9), Some(1));
         assert_eq!(enabled_count(), 2);
     }
 
@@ -165,9 +185,9 @@ mod tests {
     fn add_cpu_dedups() {
         reset();
         // SAFETY: hosted test owns the table single-threadedly via reset() + sequential calls.
-        unsafe { assert!(add_cpu(7, FLAG_ENABLED)); }
+        unsafe { assert!(add_cpu(7, FLAG_ENABLED, 7)); }
         // SAFETY: same — second insert with the same id should be rejected.
-        unsafe { assert!(!add_cpu(7, FLAG_ENABLED)); }
+        unsafe { assert!(!add_cpu(7, FLAG_ENABLED, 7)); }
         assert_eq!(count(), 1);
     }
 
@@ -175,7 +195,7 @@ mod tests {
     fn add_cpu_rejects_sentinel() {
         reset();
         // SAFETY: hosted test owns the table; u32::MAX is the empty-slot sentinel and must be rejected.
-        unsafe { assert!(!add_cpu(u32::MAX, FLAG_ENABLED)); }
+        unsafe { assert!(!add_cpu(u64::MAX, FLAG_ENABLED, 0)); }
         assert_eq!(count(), 0);
     }
 
@@ -184,14 +204,27 @@ mod tests {
         reset();
         // SAFETY: hosted test owns the table single-threadedly via reset() + sequential calls.
         unsafe {
-            assert!(add_cpu(0, FLAG_ENABLED));
-            assert!(add_cpu(2, FLAG_ENABLED));
-            assert!(add_cpu(6, FLAG_ENABLED));
+            assert!(add_cpu(0, FLAG_ENABLED, 0));
+            assert!(add_cpu(2, FLAG_ENABLED, 2));
+            assert!(add_cpu(6, FLAG_ENABLED, 6));
         }
         assert_eq!(hardware_id_for_logical(1), Some(2));
         assert_eq!(hardware_id_for_logical(3), None);
         assert_eq!(logical_id_for_hardware(6), Some(2));
         assert_eq!(logical_id_for_hardware(5), None);
+        assert_eq!(logical_id_for_acpi_uid(2), Some(1));
+        assert_eq!(logical_id_for_acpi_uid(5), None);
+    }
+
+    #[test]
+    fn full_mpidr_affinity_does_not_alias_its_low_word() {
+        reset();
+        let mpidr = 0x0000_0001_0000_0002u64;
+        // SAFETY: hosted test owns the table single-threadedly via reset() + insertion.
+        unsafe { assert!(add_cpu(mpidr, FLAG_ENABLED, 4)); }
+        assert_eq!(hardware_id_for_logical(0), Some(mpidr));
+        assert_eq!(logical_id_for_hardware(mpidr), Some(0));
+        assert_eq!(logical_id_for_hardware(2), None);
     }
 
     #[test]
@@ -199,9 +232,9 @@ mod tests {
         reset();
         // SAFETY: hosted test owns the table single-threadedly via reset() + sequential calls.
         unsafe {
-            assert!(add_cpu(0, FLAG_ENABLED));
-            assert!(add_cpu(1, 0));                       // disabled
-            assert!(add_cpu(2, FLAG_ONLINE_CAPABLE));    // hot-plug-capable
+            assert!(add_cpu(0, FLAG_ENABLED, 0));
+            assert!(add_cpu(1, 0, 1));                       // disabled
+            assert!(add_cpu(2, FLAG_ONLINE_CAPABLE, 2));    // hot-plug-capable
         }
         assert_eq!(count(), 3);
         assert_eq!(enabled_count(), 2);

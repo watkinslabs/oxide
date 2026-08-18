@@ -88,12 +88,34 @@ pub fn stack_top_repeat(span: &Span) -> (u64, u32) {
     let n = ((span.stack_hi - span.stack_lo) / 8) as usize;
     // SAFETY: [stack_lo, stack_hi) is this slot's mapped stack; reading it as words is a plain aligned read of memory that is mapped for the kernel's lifetime once handed out.
     let words = unsafe { core::slice::from_raw_parts(span.stack_lo as *const u64, n) };
-    classify::top_repeat(words, TEXT_LO, TEXT_HI)
+    let (text_lo, text_hi) = kernel_text_bounds();
+    classify::top_repeat(words, text_lo, text_hi)
 }
 
-/// Kernel text bounds that make a stack word a return site rather than data.
+/// Fallback text bounds for hosted tests, which do not link the kernel script.
+#[cfg(not(target_os = "oxide-kernel"))]
 const TEXT_LO: u64 = 0xffff_ffff_8000_0000;
+#[cfg(not(target_os = "oxide-kernel"))]
 const TEXT_HI: u64 = 0xffff_ffff_8200_0000;
+
+#[cfg(target_os = "oxide-kernel")]
+unsafe extern "C" {
+    static __text_boot_start: u8;
+    static __text_end: u8;
+}
+
+/// Linked core-image text bounds used to classify saved return addresses.
+/// # C: O(1)
+pub(crate) fn kernel_text_bounds() -> (u64, u64) {
+    #[cfg(target_os = "oxide-kernel")]
+    {
+        // Linker-script symbols bracket executable core text; their addresses
+        // are valid for the complete lifetime of the loaded kernel image.
+        (core::ptr::addr_of!(__text_boot_start) as u64, core::ptr::addr_of!(__text_end) as u64)
+    }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    { (TEXT_LO, TEXT_HI) }
+}
 
 /// Name the stack a faulting address belongs to, with its bounds.
 ///
@@ -115,17 +137,19 @@ static FRAME_FREE: AtomicU64 = AtomicU64::new(0);
 
 /// Install the PMM frame hooks + establish the window's top-level page-table
 /// entry so every later-forked address space inherits the shared kstack
-/// sub-tree. Call once at boot after the MMU + PMM are up, before spawning.
+/// sub-tree. `boot_alloc` must not enter task reclaim because this runs before
+/// any task can be selected; `runtime_alloc` serves ordinary task stacks after
+/// boot. Call once after the MMU + PMM are up, before spawning.
 /// # C: O(1)
-pub fn init(alloc: FrameAllocFn, free: FrameFreeFn) {
-    FRAME_ALLOC.store(alloc as usize as u64, Ordering::Release);
+pub fn init(boot_alloc: FrameAllocFn, runtime_alloc: FrameAllocFn, free: FrameFreeFn) {
+    FRAME_ALLOC.store(runtime_alloc as usize as u64, Ordering::Release);
     FRAME_FREE.store(free as usize as u64, Ordering::Release);
     // Establish the L4→…→leaf chain for the window (one sentinel page) so the
     // kernel-half PML4 entry exists in the master before any fork copies it;
     // on-demand stack maps then only add lower tables under the SHARED sub-tree
     // (visible to every AS without a further resync). The sentinel sits in slot
     // 0's guard region and is never handed out as a stack.
-    if let Some(pa) = alloc() {
+    if let Some(pa) = boot_alloc() {
         // SAFETY: fresh frame from the PMM hook; VA is this private window's
         // base, mapped once as an inert sentinel to publish the sub-tree.
         unsafe { <Mmu as MmuOps>::map(Va(KSTACK_VA_BASE), Pa(pa), PageFlags::READ, PageSize::P4K); }
@@ -280,7 +304,9 @@ impl Drop for GuardedStack {
 
 /// Allocate a guard-paged kernel stack, or `None` if frames/slots are
 /// exhausted (caller falls back / fails the spawn). # C: O(STACK_PAGES)
-pub fn alloc() -> Option<GuardedStack> {
+pub fn alloc() -> Option<GuardedStack> { alloc_from(frame_alloc) }
+
+fn alloc_from(frame_alloc: FrameAllocFn) -> Option<GuardedStack> {
     // Pick a slot WITHOUT holding the lock across frame alloc / mapping (those
     // take Buddy/PageTable-rank locks; KStack is a leaf above them).
     let slot = {
@@ -332,7 +358,15 @@ pub fn alloc() -> Option<GuardedStack> {
 /// for the kernel lifetime — an IRQ stack, like an x86 IST stack, is never
 /// freed. # C: O(STACK_PAGES)
 pub fn alloc_leaked_top() -> Option<u64> {
-    let s = alloc()?;
+    alloc_leaked_top_with(frame_alloc)
+}
+
+/// Allocate a permanent per-CPU IRQ stack using a caller-selected allocator.
+/// CPU-entry paths pass a NOWAIT allocator because they have no task context
+/// in which reclaim or OOM selection can run.
+/// # C: O(STACK_PAGES)
+pub fn alloc_leaked_top_with(alloc: FrameAllocFn) -> Option<u64> {
+    let s = alloc_from(alloc)?;
     let top = s.top() as u64;
     core::mem::forget(s);
     // Register it, so a guard-page hit on this stack can be NAMED. Without

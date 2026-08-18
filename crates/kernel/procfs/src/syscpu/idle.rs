@@ -75,7 +75,7 @@ impl InodeOps for DirOps {
         if !present() { return Err(VfsError::Enoent); }
         if data.state.is_none() {
             if let Some(state) = attrs::parse_state_dir(name) {
-                if state >= attrs::state_count() { return Err(VfsError::Enoent); }
+                if state >= attrs::state_count(data.cpu) { return Err(VfsError::Enoent); }
                 return Ok(make_state_dir(data.cpu, state));
             }
         }
@@ -92,7 +92,7 @@ impl FileOps for DirOps {
         let mut names: Vec<(String, FileType)> = table(data.state).iter()
             .map(|(attr, _)| (String::from(*attr), FileType::Regular)).collect();
         if data.state.is_none() {
-            for state in 0..attrs::state_count() {
+            for state in 0..attrs::state_count(data.cpu) {
                 names.push((attrs::state_dir(state), FileType::Directory));
             }
         }

@@ -178,10 +178,11 @@ Which state an idle CPU is put into, and the accounting that says whether the
 choice was good. A CPU that never sleeps deeply costs power a laptop does not
 have; one that sleeps too deeply pays a wakeup cost on every request.
 
-Ownership: `crates/kernel/cpuidle` owns the state table, the governors, the
-per-CPU counters and the attribute contract. `crates/kernel/sched` enters one
-cycle per park from its idle loop. `crates/kernel/procfs` projects the tree.
-Providers register the state table; they never publish a second one (`52§5`).
+Ownership: `crates/kernel/cpuidle` owns the per-CPU state tables, the
+governors, the counters and the attribute contract. `crates/kernel/sched`
+enters one cycle per park from its idle loop. `crates/kernel/procfs` projects
+the tree. Providers register one driver with a table for every logical CPU;
+they never publish a second provider (`52§5`).
 
 ### 14.1 Units (frozen)
 
@@ -197,13 +198,15 @@ speak; the conversion truncates.
 
 ### 14.2 Invariants (frozen)
 
-1. One driver at a time. A platform provider that finds a real state ladder
-   withdraws the registered one before publishing its own; two tables would
-   leave two meanings for one state index, and every counter, attribute and
-   governor decision is keyed by that index.
-2. The state table is a ladder: target residency and exit latency both
-   non-decreasing with index, and a polling state only at index zero. A table
-   that is not is refused, not sorted.
+1. One driver at a time. A platform provider that finds real ladders withdraws
+   the registered one before publishing its own; two providers would leave two
+   meanings for one state index. Each driver owns exactly one ladder per
+   logical CPU, so firmware may describe different states on sibling CPUs
+   without sharing counters or indexes between them.
+2. Every table is a ladder: target residency and exit latency both
+   non-decreasing with index, and a polling state only at index zero. A
+   provider normalises only its own firmware latency data before registration;
+   the core refuses a table that is still not a ladder.
 3. The two reasons a state is unavailable are recorded separately. A state the
    driver declared unusable cannot be re-enabled by a write to `disable`.
 4. `above` counts a sleep shorter than the entered state's own target
@@ -217,8 +220,24 @@ speak; the conversion truncates.
 7. The sleep-length estimate is bounded by the tick period. This kernel does
    not suppress the tick, so a state whose residency exceeds it cannot pay for
    itself, and a governor told otherwise would keep choosing one.
+8. A platform provider replaces generic halt only after it has one complete
+   unambiguous ladder for every enabled CPU. A malformed or missing CPU record
+   leaves generic halt registered for the entire machine.
 
-### 14.3 Governors
+### 14.3 Platform ladders
+
+ACPI reads each CPU's `_CST` package as exactly counted four-field rows. A
+row names either a SystemIO read or an MWAIT hint; unsupported fixed-hardware
+C1 falls back to architectural halt, while unsupported deeper hints are not
+published. C3 reads and clears the PM1 bus-master status before entry, enables
+the FADT bus-master reload bit, disables arbitration only while every enabled
+CPU is resident, and flushes the cache on platforms that require it.
+
+On aarch64, a CPU using PSCI and `cpu-idle-states` gets WFI followed by its DT
+states. The provider validates every suspend parameter and distinguishes a
+retention entry from a context-losing one before invoking firmware.
+
+### 14.4 Governors
 
 `menu` predicts a duration — the time to the next timer scaled by a
 correction factor learned per duration bucket, or a repeating interval
@@ -228,7 +247,7 @@ how often a sleep ran to the timer against how often something else cut it
 short, pulling the choice shallower as the interceptions outweigh the hits.
 `teo` is the default.
 
-### 14.4 Test contract (frozen)
+### 14.5 Test contract (frozen)
 
 - Unit reconciliation, table validation, the two mispredict classifications,
   both governors' selection and learning, the whole idle cycle against a
@@ -236,6 +255,9 @@ short, pulling the choice shallower as the interceptions outweigh the hits.
   ungated modules.
 - A microsecond declaration read as a nanosecond one, and a nanosecond
   accumulator reported unconverted, each fail a named test.
+- Per-CPU state selection, ACPI `_CST` shape and fixed-hardware admission,
+  PSCI DT-state parsing, and malformed-ladder rejection each have hosted
+  regression coverage.
 
 ## 15 CPU frequency scaling
 
@@ -292,13 +314,39 @@ eighty-percent-busy CPU asks for its full ceiling, and applies a
 wait-for-IO boost that doubles on each consecutive such wakeup and halves on
 every pass without one. `schedutil` is the default.
 
-### 15.4 Test contract (frozen)
+### 15.4 Platform providers (frozen)
+
+x86 ACPI builds a policy only from a complete `_PSS`/`_PCT` description. `_PPC`
+is a platform ceiling and `_PSD` forms a shared policy only when every declared
+member has the same states and control/status registers. System-I/O control
+uses the state status value for readback; FixedHardware uses the selected
+Intel or AMD P-state register. Normal transitions target the processor set
+the coordination type requires. A software-any policy is eligible for the
+non-sleeping local callback; software-all and hardware-all remain in the
+process-context transition path.
+
+The arm DT provider resolves `operating-points-v2` only through registered
+clock and regulator owners. It raises voltage before a rate increase, lowers
+it after a rate decrease, transitions every clock in a multi-clock OPP, and
+rolls back a refused sequence. Immutable auxiliary clocks are admitted only
+when every OPP retains their rate. The SCMI Performance provider instead owns
+the direct firmware performance domain and publishes its described levels as
+the policy table. Neither provider publishes a static table that cannot
+change the hardware.
+
+### 15.5 Test contract (frozen)
 
 - The resolution rule under every relation, the limit aggregation across
   sources, each governor's decision, the boost state machine, the statistics
   and every attribute's rendering are hosted tests over ungated modules.
 - A megahertz figure taken as kilohertz, and a nanosecond occupancy reported
   unconverted, each fail a named test.
+- ACPI P-state decode, `_PPC` indexing, shared-domain rejection, System-I/O
+  status readback, fast-callback admission and normal-versus-fast callback
+  separation have named regression tests.
+- DT OPP assembly, multi-clock sequencing, immutable auxiliary-clock
+  rejection, voltage ordering and rollback are hosted tests; both target
+  builds compile the provider and the SCMI transport.
 
 ## 16 Thermal
 

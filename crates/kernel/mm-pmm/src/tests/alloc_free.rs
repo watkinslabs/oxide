@@ -46,6 +46,13 @@ fn alloc_oom_returns_nomem() {
 }
 
 #[test]
+fn nowait_allocation_returns_nomem_without_a_slowpath() {
+    let pmm = build(4);
+    let _a = pmm.alloc_gfp_nowait(Order(2), 0).unwrap();
+    assert_eq!(pmm.alloc_gfp_nowait(Order(0), 0), Err(Error::NoMem));
+}
+
+#[test]
 fn alloc_below_selects_and_frees_a_low_buddy_block() {
     let pmm = build(4096);
     let p = pmm.alloc_below(Order(3), Pfn(128)).unwrap();
@@ -174,6 +181,38 @@ fn corrupted_free_page_caught_on_alloc() {
     // SAFETY: writing into a free page's poison u64; test-only.
     unsafe { core::ptr::write_unaligned(ptr as *mut u64, 0) };
     for _ in 0..64 { let _ = pmm.alloc(Order(0)).unwrap(); }
+}
+
+#[test]
+#[should_panic(expected = "free-list next out of range")]
+fn corrupt_free_list_head_next_panics_instead_of_leaking() {
+    let pmm = build(64);
+    // SAFETY: test-only write models a stale write into the free head's
+    // intrusive header before the allocation path reads it.
+    let ptr = unsafe { pmm.page_ptr(Pfn(0)) };
+    // SAFETY: this is the FreeNode next link; the test intentionally corrupts
+    // it with a non-PFN so allocation must reject the list.
+    unsafe { core::ptr::write_unaligned(ptr.add(crate::buddy::TEST_FREE_NODE_NEXT_OFF) as *mut u64, u64::MAX - 1) };
+    let _ = pmm.alloc(Order(0));
+}
+
+#[test]
+#[should_panic(expected = "free-list prev out of range")]
+fn corrupt_free_list_prev_panics_instead_of_truncating_the_list() {
+    let pmm = build_regions(4, &[
+        UsableRegion { start: Pfn(0), len_pfn: 1 },
+        UsableRegion { start: Pfn(2), len_pfn: 1 },
+    ]);
+    // These singleton seed ranges form a two-entry global order-0 list. The
+    // pageset path is intentionally not involved: this test exercises the
+    // global intrusive list corruption check the reserve path must preserve.
+    // SAFETY: test-only write models an overwritten backward link in the
+    // list tail. `reserve_early` removes that tail through `unlink_free`.
+    let ptr = unsafe { pmm.page_ptr(Pfn(0)) };
+    // SAFETY: this is the FreeNode previous link; deliberate corruption must
+    // fail rather than making the free-list head disappear.
+    unsafe { core::ptr::write_unaligned(ptr.add(crate::buddy::TEST_FREE_NODE_PREV_OFF) as *mut u64, u64::MAX - 1) };
+    let _ = pmm.reserve_early(Pfn(0), 1);
 }
 
 #[cfg(feature = "debug-watchdog")]

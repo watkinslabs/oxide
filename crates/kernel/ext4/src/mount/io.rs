@@ -16,7 +16,12 @@ impl Mount {
         // contents never reached the disk. The other two modes write the data
         // straight to its target and differ only in when.
         if self.behaviour().data.journals_data() { return self.metadata_write(byte_off, data); }
-        write_byte_range(&*self.dev, byte_off, data)
+        write_byte_range(&*self.dev, byte_off, data)?;
+        // Quota files and directories use the metadata path for their blocks,
+        // but a normal write may still target one of those blocks. Keep the
+        // two cache views coherent by making the next metadata read reload it.
+        self.invalidate_metadata_cache_range(byte_off, data.len());
+        Ok(())
     }
 
     /// Write one journal block, carrying this mount's `journal_ioprio=`.

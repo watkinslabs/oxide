@@ -6,20 +6,24 @@
 // Sized dynamically: any pfn_max from a few MiB to multiple TiB. Bitmap
 // storage allocated from a `PageBacking::bitmap_storage` callback so the
 // boot-allocator owns the policy. No fixed-N region arrays; init takes
-// `&[UsableRegion]`. Single zone for v1 per `10§1`.
+// `&[UsableRegion]` and partitions it into the ordered zones of `10§1`.
 //
 // Invariants per `10§3` (held at every quiescent point):
-//   I1 (bitmap-truth): bitmap[o].is_set(p) ⇔ "block of order o at p is free".
+//   I1 (bitmap-truth): buddy_bitmap[o].is_set(p) ⇔ "block of order o at p
+//      is on the mergeable buddy free list". Order-0 pages held in a per-CPU
+//      pageset are instead recorded in pcp_bitmap[p].
 //   I2 (single-membership): a free order-o block sets exactly one bit in
 //      bitmap[o]; bits at other orders covering the same memory are clear.
-//   I3 (free-list ↔ bitmap): every block on free_list[o] has bit set;
-//      every set bit is on free_list. Both directions.
+//   I3 (free-list ↔ bitmap): every block on free_list[zone][o] has bit set;
+//      every buddy bitmap bit is on that free_list. Per-CPU pagesets have the
+//      same bidirectional relation to pcp_bitmap.
 //   I4 (buddy alignment): order-o block at p has p aligned to 1<<o.
 //   I5 (no overlap).
 //   I6 (total accounting): sum_o (count(bitmap[o]) << o)
 //                          == initial_free - allocated.
 //   I7 (poison-on-free): freed page first 16B == MAGIC u64 + order u8 + 7B 0.
 //   I8 (MAX_ORDER bound): order > MAX_ORDER ⇒ Err(InvalidOrder).
+//   I9 (zone partition): a free block lies fully in one zone.
 
 #![no_std]
 
@@ -54,7 +58,7 @@ mod kswapd;
 #[cfg(target_os = "oxide-kernel")]
 mod memcg;
 
-pub use buddy::{Pmm, PmmSnapshot, ZoneStat};
+pub use buddy::{PcpStorage, Pmm, PmmSnapshot, ZoneStat};
 pub use page_meta::{reclaim_state, NativePage, PageFlags, PageMeta, PageMetaArr, ReclaimPageState};
 #[cfg(target_os = "oxide-kernel")]
 pub use kswapd::spawn_kswapd;
@@ -71,6 +75,18 @@ pub const MAX_ORDER: u8 = 20;
 
 /// Number of bitmap+free-list slots, indexed `0..=MAX_ORDER`.
 pub const ORDERS: usize = MAX_ORDER as usize + 1;
+
+/// Extra bitmap slot that records order-0 pages currently held in a per-CPU
+/// pageset. It is separate from the buddy order-0 bitmap because a PCP page
+/// cannot yet participate in buddy coalescing.
+pub const PCP_BITMAP_SLOT: usize = ORDERS;
+/// Compact two-bit pageblock migratetype map. It determines the list a page
+/// returns to after allocation, so freeing never needs a second owner table.
+pub const PAGEBLOCK_TYPE_SLOT: usize = ORDERS + 1;
+
+/// Total bitmap slices a backing supplies: one mergeable-buddy bitmap per
+/// order plus the per-CPU-pageset ownership bitmap.
+pub const BITMAP_SLOTS: usize = ORDERS + 2;
 
 /// Free-page poison constant per `10§3` I7. Read at offset 0 of every
 /// freed page; mismatch on alloc ⇒ kassert (corruption or double-free).
@@ -119,9 +135,19 @@ pub trait PageBacking: Send + Sync + 'static {
     /// the operation. Returned pointer must be stable for kernel lifetime.
     unsafe fn page_ptr(&self, pfn: Pfn) -> *mut u8;
 
-    /// Allocate/return zeroed bitmap storage for `words` u64s at `order`.
-    /// The returned slice must have length `words` and be zero-filled.
-    fn bitmap_storage(&self, order: u8, words: usize) -> &'static [AtomicU64];
+    /// Allocate/return zeroed bitmap storage for `slot`.
+    ///
+    /// Slots `0..ORDERS` are mergeable buddy free-area bitmaps.
+    /// [`PCP_BITMAP_SLOT`] is one bit per PFN and records pages owned by a
+    /// per-CPU pageset. [`PAGEBLOCK_TYPE_SLOT`] packs the permanent mobility
+    /// class of every pageblock. The returned slice must have length `words`
+    /// and be zero-filled.
+    fn bitmap_storage(&self, slot: u8, words: usize) -> &'static [AtomicU64];
+
+    /// Permanent storage for the PMM's per-CPU, per-zone pagesets. It must be
+    /// uniquely associated with this backing and remain valid for the PMM's
+    /// lifetime.
+    fn pcp_storage(&self) -> &'static PcpStorage;
 }
 
 // ---------------------------------------------------------------------------
