@@ -72,6 +72,8 @@ pub struct Policy {
     pub hw: Limits,
     /// Time one transition costs, nanoseconds.
     pub transition_latency_ns: u64,
+    /// Table entry the platform selected for system suspend, if any.
+    suspend_index: Option<usize>,
     state: Spinlock<PolicyState, Devices>,
 }
 
@@ -94,8 +96,14 @@ impl Policy {
     /// Build a policy around a validated table. # C: O(N_entries)
     pub fn new(cpus: Vec<usize>, table: FreqTable, transition_latency_ns: u64, cur: u32,
                governor: &'static str) -> Option<Arc<Policy>>
+    { Self::new_with_suspend(cpus, table, transition_latency_ns, cur, None, governor) }
+
+    /// Build a policy with its platform-selected system-suspend OPP. # C: O(N_entries)
+    pub fn new_with_suspend(cpus: Vec<usize>, table: FreqTable, transition_latency_ns: u64, cur: u32,
+                            suspend_index: Option<usize>, governor: &'static str) -> Option<Arc<Policy>>
     {
         let (min, max) = table.cpuinfo(false)?;
+        if suspend_index.is_some_and(|index| index >= table.entries.len()) { return None; }
         let hw = Limits { min, max };
         let stats = crate::stats::Stats::new(&table.available(true), cur);
         Some(Arc::new(Policy {
@@ -104,6 +112,7 @@ impl Policy {
             table,
             hw,
             transition_latency_ns,
+            suspend_index,
             state: Spinlock::new(PolicyState {
                 limits: hw,
                 cur,
@@ -127,6 +136,18 @@ impl Policy {
     pub fn boost(&self) -> bool { self.state.lock().boost }
     /// What `scaling_setspeed` last asked for. # C: O(1)
     pub fn setspeed(&self) -> Option<u32> { self.state.lock().setspeed }
+    /// Platform-selected suspend OPP table index. # C: O(1)
+    pub fn suspend_index(&self) -> Option<usize> { self.suspend_index }
+    /// Platform-selected suspend frequency, kilohertz. # C: O(1)
+    pub fn suspend_freq(&self) -> Option<u32> {
+        self.suspend_index.and_then(|index| self.table.entries.get(index)).map(|entry| entry.frequency)
+    }
+    /// Resolve the suspend OPP through the limits in force. # C: O(N_entries)
+    pub fn suspend_target_index(&self) -> Option<usize> {
+        let frequency = self.suspend_freq()?;
+        let state = self.state.lock();
+        self.table.resolve(frequency, state.limits.min, state.limits.max, Relation::Highest, state.boost)
+    }
 
     /// Run a closure against the mutable half. # C: O(closure)
     pub fn with_state<R>(&self, f: impl FnOnce(&mut PolicyState) -> R) -> R {

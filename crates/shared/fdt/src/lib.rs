@@ -58,7 +58,7 @@ pub use props::{
     bootargs_via_prefix, chosen_bootargs, memory_regions, contains_string, enum_cpus, first_memory_region, machine_model, pl011_clock_hz, simple_framebuffer, SimpleFramebuffer,
 };
 pub use cpu::{cpu_nodes, CpuNode};
-pub use opp::{cpu_opp_tables, ClockReference, CpuOppTable, OppVoltage, OperatingPoint};
+pub use opp::{cpu_opp_tables, ClockReference, CpuOppTable, OppVoltage, OperatingPoint, RequiredOpp};
 pub use provider::{fixed_providers, FixedClock, FixedFactorClock, FixedProviders, FixedRegulator};
 pub use scmi::{scmi_perf_protocols, ScmiCompletionIrq, ScmiCpuDomain, ScmiPerfProtocol, ScmiSharedMemory, ScmiSmcTransport};
 pub use idle::{cpu_idle_tables, CpuIdleState, CpuIdleTable};

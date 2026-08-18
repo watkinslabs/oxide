@@ -7,10 +7,17 @@ use alloc::vec::Vec;
 use crate::header::read_be_u32;
 use crate::walk::{walk, Event, Flow};
 
-use super::types::{ClockReference, CpuOppTable, OppVoltage, OperatingPoint};
+use super::types::{ClockReference, CpuOppTable, OppVoltage, OperatingPoint, RequiredOpp};
 
 struct RawCpu { mpidr: u64, enabled: bool, usable: bool, table: u32, clocks: Vec<u8>, regulator: Option<u32>, latency: u32 }
-struct RawTable { phandle: u32, enabled: bool, usable: bool, shared: bool, points: Vec<OperatingPoint> }
+struct RawTable { phandle: u32, enabled: bool, usable: bool, shared: bool, points: Vec<RawPoint> }
+
+#[derive(Clone)]
+struct RawPoint {
+    phandle: Option<u32>,
+    point: OperatingPoint,
+    required_phandles: Vec<u32>,
+}
 
 struct Frame {
     depth: u32,
@@ -29,9 +36,14 @@ struct Frame {
     shared: bool,
     rates: Option<Vec<u64>>,
     voltage: Option<OppVoltage>,
+    current_ua: Option<u32>,
+    level: Option<u32>,
+    supported_hw: Option<Vec<u32>>,
+    required_phandles: Option<Vec<u32>>,
+    suspend: bool,
     turbo: bool,
     unusable: bool,
-    points: Vec<OperatingPoint>,
+    points: Vec<RawPoint>,
 }
 
 impl Frame {
@@ -41,7 +53,9 @@ impl Frame {
             cpu_name: name == b"cpu" || name.starts_with(b"cpu@"), cpu_type: false, enabled,
             phandle: None, clock_cells: None, reg: None, table: None,
             clocks: None, regulator: None, latency: 0, shared: false, rates: None,
-            voltage: None, turbo: false, unusable: false, points: Vec::new(),
+            voltage: None, current_ua: None, level: None, supported_hw: None,
+            required_phandles: None, suspend: false, turbo: false, unusable: false,
+            points: Vec::new(),
         }
     }
 }
@@ -85,9 +99,22 @@ pub fn cpu_opp_tables(bytes: &[u8]) -> Vec<CpuOppTable> {
                     b"opp-microvolt" => match voltage(data) {
                         Some(voltage) => frame.voltage = Some(voltage), None => frame.unusable = true,
                     },
+                    b"opp-microamp" => match read_be_u32(data, 0).ok().filter(|_| data.len() == 4) {
+                        Some(current_ua) => frame.current_ua = Some(current_ua), None => frame.unusable = true,
+                    },
+                    b"opp-level" => match read_be_u32(data, 0).ok().filter(|_| data.len() == 4) {
+                        Some(level) => frame.level = Some(level), None => frame.unusable = true,
+                    },
+                    b"opp-supported-hw" => match u32s(data) {
+                        Some(masks) if !masks.is_empty() => frame.supported_hw = Some(masks),
+                        _ => frame.unusable = true,
+                    },
+                    b"required-opps" => match u32s(data) {
+                        Some(phandles) if phandles.iter().all(|phandle| *phandle != 0) => frame.required_phandles = Some(phandles),
+                        _ => frame.unusable = true,
+                    },
+                    b"opp-suspend" => frame.suspend = true,
                     b"turbo-mode" => frame.turbo = true,
-                    b"opp-supported-hw" | b"required-opps" | b"opp-microamp" | b"opp-level"
-                        | b"opp-suspend" => frame.unusable = true,
                     _ => {}
                 }
             }
@@ -106,10 +133,19 @@ pub fn cpu_opp_tables(bytes: &[u8]) -> Vec<CpuOppTable> {
                         }
                     }
                 }
-                if let Some(rates_hz) = frame.rates {
+                if frame.rates.is_some() || frame.level.is_some() {
                     if frame.enabled {
                         if let Some(parent) = stack.last_mut() {
-                            parent.points.push(OperatingPoint { rates_hz, voltage: frame.voltage, turbo: frame.turbo });
+                            parent.points.push(RawPoint {
+                                phandle: frame.phandle,
+                                point: OperatingPoint {
+                                    rates_hz: frame.rates.unwrap_or_default(), voltage: frame.voltage,
+                                    current_ua: frame.current_ua, level: frame.level,
+                                    supported_hw: frame.supported_hw, required_opps: Vec::new(),
+                                    suspend: frame.suspend, turbo: frame.turbo,
+                                },
+                                required_phandles: frame.required_phandles.unwrap_or_default(),
+                            });
                         }
                     }
                 }
@@ -124,6 +160,7 @@ pub fn cpu_opp_tables(bytes: &[u8]) -> Vec<CpuOppTable> {
         }
         Flow::Continue
     }).is_err() { return Vec::new(); }
+    let Some(targets) = required_targets(&tables) else { return Vec::new(); };
     let mut out = Vec::new();
     for cpu in cpus {
         if !cpu.enabled || !cpu.usable { continue; }
@@ -131,7 +168,7 @@ pub fn cpu_opp_tables(bytes: &[u8]) -> Vec<CpuOppTable> {
         let Some(table) = matching.next() else { continue; };
         if matching.next().is_some() { continue; }
         let Some(clocks) = clock_references(&cpu.clocks, &clocks) else { continue; };
-        let mut points = table.points.clone();
+        let Some(mut points) = resolve_points(table, &targets) else { continue; };
         if points.iter().any(|point| point.rates_hz.len() != clocks.len()) { continue; }
         points.sort_unstable_by_key(|point| point.primary_rate_hz());
         if points.iter().any(|point| point.primary_rate_hz().is_none())
@@ -142,6 +179,40 @@ pub fn cpu_opp_tables(bytes: &[u8]) -> Vec<CpuOppTable> {
         });
     }
     out
+}
+
+type RequiredTarget = (u32, u32, Option<u32>, Option<Vec<u32>>);
+
+fn required_targets(tables: &[RawTable]) -> Option<Vec<RequiredTarget>> {
+    let mut targets = Vec::new();
+    for table in tables {
+        if !table.enabled || !table.usable { continue; }
+        for point in &table.points {
+            let Some(phandle) = point.phandle else { continue; };
+            if targets.iter().any(|(existing, _, _, _)| *existing == phandle) { return None; }
+            targets.push((phandle, table.phandle, point.point.level, point.point.supported_hw.clone()));
+        }
+    }
+    Some(targets)
+}
+
+fn resolve_points(table: &RawTable, targets: &[RequiredTarget]) -> Option<Vec<OperatingPoint>> {
+    let mut points = Vec::with_capacity(table.points.len());
+    for raw in &table.points {
+        let mut point = raw.point.clone();
+        for phandle in &raw.required_phandles {
+            let (_, table_phandle, level, supported_hw) = targets.iter().find(|(target, _, _, _)| target == phandle)?;
+            let performance_state = (*level)?;
+            if *table_phandle == table.phandle || point.required_opps.iter().any(|required| required.table_phandle == *table_phandle) {
+                return None;
+            }
+            point.required_opps.push(RequiredOpp {
+                table_phandle: *table_phandle, performance_state, supported_hw: supported_hw.clone(),
+            });
+        }
+        points.push(point);
+    }
+    Some(points)
 }
 
 fn string(data: &[u8]) -> Option<&[u8]> { data.split(|byte| *byte == 0).next() }
@@ -155,6 +226,13 @@ fn rates(data: &[u8]) -> Option<Vec<u64>> {
         rates.push(rate);
     }
     Some(rates)
+}
+
+fn u32s(data: &[u8]) -> Option<Vec<u32>> {
+    if data.is_empty() || data.len() % 4 != 0 { return None; }
+    let mut values = Vec::with_capacity(data.len() / 4);
+    for offset in (0..data.len()).step_by(4) { values.push(read_be_u32(data, offset).ok()?); }
+    Some(values)
 }
 
 fn cells(data: &[u8], count: u32) -> Option<u64> {

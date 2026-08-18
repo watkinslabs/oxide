@@ -8,7 +8,7 @@ mod parse;
 mod types;
 
 pub use parse::cpu_opp_tables;
-pub use types::{ClockReference, CpuOppTable, OppVoltage, OperatingPoint};
+pub use types::{ClockReference, CpuOppTable, OppVoltage, OperatingPoint, RequiredOpp};
 
 #[cfg(test)]
 mod tests;

@@ -44,12 +44,20 @@ impl cpufreq::CpufreqOps for Driver {
         if rate % cpufreq::limits::HZ_PER_KHZ != 0 { return None; }
         u32::try_from(rate / cpufreq::limits::HZ_PER_KHZ).ok()
     }
+
+    fn suspend(&self, policy: &cpufreq::Policy) -> KResult<Option<usize>> {
+        match policy.suspend_target_index() {
+            Some(index) => { self.target_index(policy, index)?; Ok(Some(index)) }
+            None => Ok(None),
+        }
+    }
 }
 
 /// Register owner notifications and publish every currently complete policy. # C: O(FDT²)
 pub(super) fn init() -> usize {
     clk::subscribe_availability(owner_available);
     regulator::subscribe_availability(owner_available);
+    opp::subscribe_availability(owner_available);
     probe()
 }
 

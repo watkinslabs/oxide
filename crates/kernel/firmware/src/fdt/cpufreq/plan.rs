@@ -58,7 +58,7 @@ mod tests {
         ::fdt::CpuOppTable {
             cpu_mpidr, table_phandle: 1, clocks: alloc::vec![::fdt::ClockReference { provider: 2, arguments: alloc::vec![3] }],
             regulator_phandle: Some(4), shared, transition_latency_ns: 9,
-            points: alloc::vec![::fdt::OperatingPoint { rates_hz: alloc::vec![1_000_000], voltage: None, turbo: false }],
+            points: alloc::vec![::fdt::OperatingPoint { rates_hz: alloc::vec![1_000_000], voltage: None, turbo: false, ..::fdt::OperatingPoint::default() }],
         }
     }
 
@@ -86,7 +86,7 @@ mod tests {
     #[test]
     fn a_turbo_opp_does_not_become_the_initial_boost_disabled_rate() {
         let mut table = table(0, false);
-        table.points.push(::fdt::OperatingPoint { rates_hz: alloc::vec![2_000_000], voltage: None, turbo: true });
+        table.points.push(::fdt::OperatingPoint { rates_hz: alloc::vec![2_000_000], voltage: None, turbo: true, ..::fdt::OperatingPoint::default() });
         assert_eq!(initial_index(&table), Some(0));
         table.points[0].turbo = true;
         assert_eq!(initial_index(&table), None);

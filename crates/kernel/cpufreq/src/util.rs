@@ -38,6 +38,7 @@ pub fn update_util(cpu: usize, util: u64, capacity: u64, iowait: bool, now_ns: u
                    tick_ns: u64)
 {
     if cpu >= cpu::MAX_CPUS { return; }
+    if crate::suspended() { return; }
     let Some(policy) = crate::driver::policy_for(cpu) else { return; };
     if policy.governor() != UTIL_GOVERNOR { return; }
 

@@ -5,7 +5,7 @@ extern crate alloc;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use super::{DomainPlan, initial_index};
+use super::DomainPlan;
 
 /// One assembled policy and the hardware owners that program it.
 pub(crate) struct Domain { pub(crate) policy: Arc<cpufreq::Policy>, pub(crate) opp: Arc<opp::Domain> }
@@ -27,26 +27,42 @@ pub(crate) fn build(plan: DomainPlan) -> Option<Domain> {
     let regulator = match plan.table.regulator_phandle {
         Some(phandle) => Some(regulator::by_phandle(phandle)?), None => None,
     };
-    let mut points = Vec::with_capacity(plan.table.points.len());
-    let mut entries = Vec::with_capacity(plan.table.points.len());
-    for (index, point) in plan.table.points.iter().enumerate() {
+    let available: Vec<_> = plan.table.points.iter().filter(|point| {
+        opp::supports_hardware(plan.table.table_phandle, point.supported_hw.as_deref())
+            && point.required_opps.iter().all(|required| {
+                opp::supports_hardware(required.table_phandle, required.supported_hw.as_deref())
+            })
+    }).collect();
+    if available.is_empty() { return None; }
+    let mut points = Vec::with_capacity(available.len());
+    let mut entries = Vec::with_capacity(available.len());
+    for (index, point) in available.iter().enumerate() {
         let rate_hz = point.primary_rate_hz()?;
         if rate_hz % cpufreq::limits::HZ_PER_KHZ != 0 { return None; }
         let khz = u32::try_from(rate_hz / cpufreq::limits::HZ_PER_KHZ).ok()?;
         let voltage = point.voltage.map(|voltage| regulator::Voltage {
             target_uv: voltage.target_uv, min_uv: voltage.min_uv, max_uv: voltage.max_uv,
         });
-        points.push(opp::OperatingPoint { rates_hz: point.rates_hz.clone(), voltage });
+        let required_states = point.required_opps.iter().map(|required| opp::RequiredState {
+            table_phandle: required.table_phandle, performance_state: required.performance_state,
+        }).collect();
+        points.push(opp::OperatingPoint {
+            rates_hz: point.rates_hz.clone(), voltage, current_ua: point.current_ua,
+            performance_state: point.level, required_states,
+        });
         let flags = point.turbo.then_some(cpufreq::uapi::FLAG_BOOST).unwrap_or(0);
         entries.push(cpufreq::FreqEntry { frequency: khz, driver_data: u32::try_from(index).ok()?, flags });
     }
     let table = cpufreq::FreqTable::new(entries).ok()?;
-    let initial = initial_index(&plan.table)?;
-    let opp = Arc::new(opp::Domain::new(clocks, regulator, points).ok()?);
+    let initial = available.iter().rposition(|point| !point.turbo)?;
+    let suspend_index = available.iter().enumerate().filter(|(_, point)| point.suspend)
+        .max_by_key(|(_, point)| point.primary_rate_hz()).map(|(index, _)| index);
+    let opp = Arc::new(opp::Domain::new(plan.table.table_phandle, clocks, regulator, points).ok()?);
     opp.initialise(initial).ok()?;
     let current = table.entries.get(opp.current_index()?)?.frequency;
     let latency = u64::from(plan.table.transition_latency_ns).max(cpufreq::limits::DEFAULT_TRANSITION_LATENCY_NS);
-    let policy = cpufreq::Policy::new(plan.cpus, table, latency, current, cpufreq::governor::default_governor().name)?;
+    let policy = cpufreq::Policy::new_with_suspend(plan.cpus, table, latency, current, suspend_index,
+                                                   cpufreq::governor::default_governor().name)?;
     Some(Domain { policy, opp })
 }
 
@@ -96,8 +112,8 @@ mod tests {
             clocks: alloc::vec![::fdt::ClockReference { provider: clock_phandle, arguments: alloc::vec![5] }],
             regulator_phandle: Some(regulator_phandle), shared: false, transition_latency_ns: 0,
             points: alloc::vec![
-                ::fdt::OperatingPoint { rates_hz: alloc::vec![1_000_000], voltage: Some(::fdt::OppVoltage { target_uv: 900_000, min_uv: 900_000, max_uv: 900_000 }), turbo: false },
-                ::fdt::OperatingPoint { rates_hz: alloc::vec![2_000_000], voltage: Some(::fdt::OppVoltage { target_uv: 1_000_000, min_uv: 1_000_000, max_uv: 1_000_000 }), turbo: true },
+                ::fdt::OperatingPoint { rates_hz: alloc::vec![1_000_000], voltage: Some(::fdt::OppVoltage { target_uv: 900_000, min_uv: 900_000, max_uv: 900_000 }), turbo: false, ..::fdt::OperatingPoint::default() },
+                ::fdt::OperatingPoint { rates_hz: alloc::vec![2_000_000], voltage: Some(::fdt::OppVoltage { target_uv: 1_000_000, min_uv: 1_000_000, max_uv: 1_000_000 }), turbo: true, ..::fdt::OperatingPoint::default() },
             ],
         };
         let domain = build(DomainPlan { cpus: alloc::vec![0], table }).expect("domain");
@@ -127,8 +143,8 @@ mod tests {
             ],
             regulator_phandle: Some(regulator_phandle), shared: false, transition_latency_ns: 0,
             points: alloc::vec![
-                ::fdt::OperatingPoint { rates_hz: alloc::vec![1_000_000, 400_000_000], voltage: Some(::fdt::OppVoltage { target_uv: 900_000, min_uv: 900_000, max_uv: 900_000 }), turbo: false },
-                ::fdt::OperatingPoint { rates_hz: alloc::vec![2_000_000, 600_000_000], voltage: Some(::fdt::OppVoltage { target_uv: 1_000_000, min_uv: 1_000_000, max_uv: 1_000_000 }), turbo: false },
+                ::fdt::OperatingPoint { rates_hz: alloc::vec![1_000_000, 400_000_000], voltage: Some(::fdt::OppVoltage { target_uv: 900_000, min_uv: 900_000, max_uv: 900_000 }), turbo: false, ..::fdt::OperatingPoint::default() },
+                ::fdt::OperatingPoint { rates_hz: alloc::vec![2_000_000, 600_000_000], voltage: Some(::fdt::OppVoltage { target_uv: 1_000_000, min_uv: 1_000_000, max_uv: 1_000_000 }), turbo: false, ..::fdt::OperatingPoint::default() },
             ],
         };
         let domain = build(DomainPlan { cpus: alloc::vec![0], table }).expect("domain");
@@ -152,12 +168,47 @@ mod tests {
             ],
             regulator_phandle: None, shared: false, transition_latency_ns: 0,
             points: alloc::vec![
-                ::fdt::OperatingPoint { rates_hz: alloc::vec![1_000_000, 400_000_000], voltage: None, turbo: false },
-                ::fdt::OperatingPoint { rates_hz: alloc::vec![2_000_000, 400_000_000], voltage: None, turbo: false },
+                ::fdt::OperatingPoint { rates_hz: alloc::vec![1_000_000, 400_000_000], voltage: None, turbo: false, ..::fdt::OperatingPoint::default() },
+                ::fdt::OperatingPoint { rates_hz: alloc::vec![2_000_000, 400_000_000], voltage: None, turbo: false, ..::fdt::OperatingPoint::default() },
             ],
         };
         assert!(build(DomainPlan { cpus: alloc::vec![0], table: table.clone() }).is_some());
         table.points[1].rates_hz[1] = 600_000_000;
         assert!(build(DomainPlan { cpus: alloc::vec![0], table }).is_none());
+    }
+
+    #[test]
+    fn constrained_hardware_and_required_domains_filter_before_policy_publication() {
+        let clock_phandle = NEXT.fetch_add(3, Ordering::Relaxed);
+        let regulator_phandle = clock_phandle + 1;
+        let table_phandle = clock_phandle + 2;
+        let required_table = NEXT.fetch_add(1, Ordering::Relaxed);
+        let clock = Arc::new(Clock { rate: AtomicU64::new(0) });
+        let regulator = Arc::new(Regulator { voltage: AtomicU32::new(0) });
+        let _clock = clk::register(clk::ClockSpec::new(clock_phandle, alloc::vec![]).expect("clock"), clock).expect("clock");
+        let _regulator = regulator::register(regulator_phandle, regulator).expect("regulator");
+        let point = ::fdt::OperatingPoint {
+            rates_hz: alloc::vec![2_000_000], voltage: Some(::fdt::OppVoltage { target_uv: 1_000_000, min_uv: 1_000_000, max_uv: 1_000_000 }),
+            current_ua: Some(70_000), supported_hw: Some(alloc::vec![0b10]), suspend: true,
+            required_opps: alloc::vec![::fdt::RequiredOpp {
+                table_phandle: required_table, performance_state: 9, supported_hw: Some(alloc::vec![0b100]),
+            }],
+            ..::fdt::OperatingPoint::default()
+        };
+        let table = ::fdt::CpuOppTable {
+            cpu_mpidr: 0, table_phandle,
+            clocks: alloc::vec![::fdt::ClockReference { provider: clock_phandle, arguments: alloc::vec![] }],
+            regulator_phandle: Some(regulator_phandle), shared: false, transition_latency_ns: 0,
+            points: alloc::vec![point],
+        };
+        assert!(build(DomainPlan { cpus: alloc::vec![0], table: table.clone() }).is_none());
+        opp::register_supported_hardware(table_phandle, alloc::vec![0b10]).expect("cpu hardware");
+        assert!(build(DomainPlan { cpus: alloc::vec![0], table: table.clone() }).is_none());
+        opp::register_supported_hardware(required_table, alloc::vec![0b100]).expect("required hardware");
+        let domain = build(DomainPlan { cpus: alloc::vec![0], table }).expect("domain");
+        assert_eq!(domain.policy.suspend_index(), Some(0));
+        assert_eq!(domain.policy.suspend_freq(), Some(2_000));
+        assert_eq!(domain.opp.points()[0].current_ua, Some(70_000));
+        assert_eq!(domain.opp.current_rate_hz(), Some(2_000_000));
     }
 }

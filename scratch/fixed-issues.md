@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2271-dt-opp-constraints
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2271 | MISSING | high | **DT OPP tables with hardware-version masks, dependent performance states, regulator-current metadata, source performance levels, or a suspend OPP could not form a CPU policy.** The decoder now retains every constraint and resolves each required OPP to its table and performance state. A table-scoped platform binding supplies the hardware vector and optional performance owner; propertyless OPPs remain usable without a vector, while masked OPPs require every version-level group to match. Source and dependent states bracket the voltage-and-clock transition in directionally correct order. `opp-microamp` remains supply metadata rather than causing an invented generic regulator call. The highest eligible suspend OPP is selected, then resolved through the active policy limits during system suspend; governors and util updates pause until resume. | B2271. `fdt` 79, `opp` 10, `cpufreq` 104, and `firmware` 150 hosted tests; both kernel-target checks and the full feature gate pass. Final paired QEMU smoke: x86 reached `basic.target` in 46 s; arm answered the serial userspace probe in 54 s; both serial-RX probes passed. Retained logs: `target/boot-logs/{x86,arm}-attempt-1-pass.log`. | B2271-dt-opp-constraints |
+
 ### B2270-cpufreq-platform-providers
 
 | Status | Class | Sev | Issue | Evidence | Owner |

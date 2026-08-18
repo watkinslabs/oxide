@@ -134,3 +134,13 @@ fn a_policy_starts_at_the_hardware_range_and_the_frequency_it_was_built_with() {
     assert!(!policy.boost());
     assert_eq!(policy.setspeed(), None);
 }
+
+#[test]
+fn a_suspend_opp_is_resolved_against_the_limits_in_force() {
+    let policy = Policy::new_with_suspend(alloc::vec![0], table(), 10_000, 1_200_000, Some(3), "schedutil").expect("policy");
+    assert_eq!(policy.suspend_freq(), Some(800_000));
+    assert_eq!(policy.suspend_target_index(), Some(3));
+    policy.set_request(LimitSource::Platform, Request { min: Some(1_800_000), max: None });
+    assert_eq!(policy.suspend_target_index(), Some(1));
+    assert!(Policy::new_with_suspend(alloc::vec![0], table(), 10_000, 1_200_000, Some(4), "schedutil").is_none());
+}

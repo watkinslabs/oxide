@@ -5,9 +5,31 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 use vfs::{KResult, VfsError};
 
-/// Rates for every selected clock and, when the platform supplies one, a voltage range.
+/// A required OPP target's table and its selected performance state.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct OperatingPoint { pub rates_hz: Vec<u64>, pub voltage: Option<regulator::Voltage> }
+pub struct RequiredState { pub table_phandle: u32, pub performance_state: u32 }
+
+/// Rates for every selected clock and associated OPP supply/domain metadata.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OperatingPoint {
+    pub rates_hz: Vec<u64>,
+    pub voltage: Option<regulator::Voltage>,
+    /// Maximum point current retained for provider-specific regulator control.
+    pub current_ua: Option<u32>,
+    /// This table's PM-domain performance state.
+    pub performance_state: Option<u32>,
+    /// Other PM-domain states required by this OPP.
+    pub required_states: Vec<RequiredState>,
+}
+
+impl Default for OperatingPoint {
+    fn default() -> Self {
+        Self {
+            rates_hz: Vec::new(), voltage: None, current_ua: None,
+            performance_state: None, required_states: Vec::new(),
+        }
+    }
+}
 
 impl OperatingPoint {
     fn primary_rate_hz(&self) -> Option<u64> { self.rates_hz.first().copied() }
@@ -15,6 +37,7 @@ impl OperatingPoint {
 
 /// A DT OPP table bound to its real programmable hardware owners.
 pub struct Domain {
+    table_phandle: u32,
     clocks: Vec<Arc<clk::Clock>>,
     regulator: Option<Arc<regulator::Regulator>>,
     points: Vec<OperatingPoint>,
@@ -24,10 +47,10 @@ pub struct Domain {
 impl Domain {
     /// Bind strictly ordered operating points to their concrete rate and voltage owners.
     /// # C: O(clocks × points)
-    pub fn new(clocks: Vec<Arc<clk::Clock>>, regulator: Option<Arc<regulator::Regulator>>,
+    pub fn new(table_phandle: u32, clocks: Vec<Arc<clk::Clock>>, regulator: Option<Arc<regulator::Regulator>>,
                points: Vec<OperatingPoint>) -> KResult<Self>
     {
-        if clocks.is_empty() || points.is_empty() { return Err(VfsError::Einval); }
+        if table_phandle == 0 || clocks.is_empty() || points.is_empty() { return Err(VfsError::Einval); }
         let has_voltage = points[0].voltage.is_some();
         if has_voltage != regulator.is_some() { return Err(VfsError::Enodev); }
         let mut previous = 0u64;
@@ -37,9 +60,14 @@ impl Domain {
                 || point.rates_hz.iter().any(|rate| *rate == 0)
                 || point.voltage.is_some() != has_voltage { return Err(VfsError::Einval); }
             if !point.voltage.is_none_or(regulator::Voltage::valid) { return Err(VfsError::Einval); }
+            if point.required_states.iter().any(|required| required.table_phandle == 0
+                || required.table_phandle == table_phandle)
+                || point.required_states.iter().enumerate().any(|(index, required)| {
+                    point.required_states[..index].iter().any(|other| other.table_phandle == required.table_phandle)
+                }) { return Err(VfsError::Einval); }
             previous = primary;
         }
-        Ok(Self { clocks, regulator, points, transitioning: AtomicBool::new(false) })
+        Ok(Self { table_phandle, clocks, regulator, points, transitioning: AtomicBool::new(false) })
     }
 
     /// Immutable operating-point table in ascending first-clock rate order. # C: O(1)
@@ -76,11 +104,15 @@ impl Domain {
         if self.current_index().is_some() { return self.transition(index); }
         let next = self.points.get(index).ok_or(VfsError::Einval)?;
         let _guard = TransitionGuard::acquire(&self.transitioning);
+        self.set_required(next, true)?;
+        self.set_level(next)?;
         if let Some(regulator) = &self.regulator { regulator.set_voltage(next.voltage.ok_or(VfsError::Einval)?)?; }
         self.program_initial(next)
     }
 
     fn raise(&self, previous: &OperatingPoint, next: &OperatingPoint) -> KResult<()> {
+        self.set_required(next, true)?;
+        self.set_level(next)?;
         if let Some(regulator) = &self.regulator {
             regulator.set_voltage(next.voltage.ok_or(VfsError::Einval)?)?;
             if let Err(error) = self.program(previous, next, false) {
@@ -100,6 +132,8 @@ impl Domain {
                 return Err(error);
             }
         }
+        self.set_level(next)?;
+        self.set_required(next, false)?;
         Ok(())
     }
 
@@ -130,6 +164,25 @@ impl Domain {
 
     fn current_rates_hz(&self) -> Option<Vec<u64>> {
         self.clocks.iter().map(|clock| clock.rate_hz()).collect()
+    }
+
+    fn set_level(&self, point: &OperatingPoint) -> KResult<()> {
+        match point.performance_state {
+            Some(state) => super::set_performance_state(self.table_phandle, state), None => Ok(()),
+        }
+    }
+
+    fn set_required(&self, point: &OperatingPoint, scaling_up: bool) -> KResult<()> {
+        if scaling_up {
+            for required in &point.required_states {
+                super::set_performance_state(required.table_phandle, required.performance_state)?;
+            }
+        } else {
+            for required in point.required_states.iter().rev() {
+                super::set_performance_state(required.table_phandle, required.performance_state)?;
+            }
+        }
+        Ok(())
     }
 }
 

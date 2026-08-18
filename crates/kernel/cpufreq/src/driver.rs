@@ -7,7 +7,7 @@
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use sync::{Devices, Spinlock};
 use vfs::{KResult, VfsError};
 
@@ -37,6 +37,12 @@ pub trait CpufreqOps: Send + Sync {
     fn fast_switch(&self, policy: &Policy, index: usize) -> KResult<()> {
         self.target_index(policy, index)
     }
+
+    /// Establish this policy's suspend OPP and return its table index. # C: O(provider)
+    fn suspend(&self, policy: &Policy) -> KResult<Option<usize>> { let _ = policy; Ok(None) }
+
+    /// Resume provider state after a system suspend. # C: O(provider)
+    fn resume(&self, policy: &Policy) -> KResult<()> { let _ = policy; Ok(()) }
 }
 
 /// The registered driver.
@@ -47,6 +53,7 @@ static POLICIES: Spinlock<Vec<Arc<Policy>>, Devices> = Spinlock::new(Vec::new())
 /// Monotonic time of the last programmed transition, for the rate limit.
 static LAST_UPDATE_NS: AtomicU64 = AtomicU64::new(0);
 static DEFERRED_TRANSITION: AtomicUsize = AtomicUsize::new(0);
+static SUSPENDED: AtomicBool = AtomicBool::new(false);
 
 /// The registered driver, if there is one. # C: O(1)
 pub fn driver() -> Option<Arc<Driver>> { DRIVER.lock().clone() }
@@ -138,6 +145,7 @@ pub fn govern_target(policy: &Arc<Policy>, demand: &Demand) -> Option<Target> {
 
 /// Run the policy's governor and program whatever it asks for. # C: O(N_entries)
 pub fn govern(policy: &Arc<Policy>, demand: &Demand, now_ns: u64) -> KResult<Option<u32>> {
+    if suspended() { return Ok(None); }
     let Some(target) = govern_target(policy, demand) else { return Ok(None); };
     drive(policy, target, now_ns).map(Some)
 }
@@ -230,6 +238,7 @@ pub fn clear_for_tests() {
     POLICIES.lock().clear();
     LAST_UPDATE_NS.store(0, Ordering::Relaxed);
     DEFERRED_TRANSITION.store(0, Ordering::Relaxed);
+    SUSPENDED.store(false, Ordering::Relaxed);
 }
 
 /// One driver and one policy list for the whole process: every test that
@@ -247,3 +256,34 @@ pub fn test_guard() -> std::sync::MutexGuard<'static, ()> {
 
 /// Relation a limits-driven re-target uses. # C: O(1)
 pub const LIMIT_RELATION: Relation = Relation::Highest;
+
+/// Whether CPU-frequency governors are stopped for a system suspend. # C: O(1)
+pub fn suspended() -> bool { SUSPENDED.load(Ordering::Acquire) }
+
+/// Suspend all policy governors and let each driver establish its suspend OPP.
+/// Driver errors are isolated to their policy so system sleep can continue. # C: O(policies + provider)
+/// # Sleeps: yes
+pub fn suspend() {
+    if SUSPENDED.load(Ordering::Acquire) { return; }
+    let Some(driver) = driver() else { return; };
+    for policy in policies() {
+        if let Ok(Some(index)) = driver.ops.suspend(&policy) {
+            if let Some(entry) = policy.table.entries.get(index) {
+                policy.with_state(|state| state.cur = entry.frequency);
+            }
+        }
+    }
+    SUSPENDED.store(true, Ordering::Release);
+}
+
+/// Resume drivers and allow their governors to choose normal operating points. # C: O(policies + provider)
+/// # Sleeps: yes
+pub fn resume() {
+    if !SUSPENDED.swap(false, Ordering::AcqRel) { return; }
+    let Some(driver) = driver() else { return; };
+    for policy in policies() { let _ = driver.ops.resume(&policy); }
+}
+
+#[cfg(test)]
+#[path = "tests/driver.rs"]
+mod tests;
