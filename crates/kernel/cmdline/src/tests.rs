@@ -3,8 +3,10 @@
 // - `console`: `console=` classes, ordering and line settings.
 // - `earlycon`: every accepted `earlycon=` / `earlyprintk=` spelling.
 // - `printk`: loglevel, verbosity and `/dev/kmsg` policy decisions.
+// - `memory`: `kernelcore=` / `movablecore=` values and replacement rules.
 
 mod token;
 mod console;
 mod earlycon;
 mod printk;
+mod memory;

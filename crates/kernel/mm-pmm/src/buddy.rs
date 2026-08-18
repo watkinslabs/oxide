@@ -1,7 +1,7 @@
 use super::*;
 use crate::kassert;
 use crate::watermark::ZoneWatermarks;
-use crate::zone::{lowmem_reserve, zone_watermark_ok, AllocWmark, LowmemReserve, ZoneLayout, ZoneLimits, ZoneType, Zonelist, DEFAULT_LOWMEM_RESERVE_RATIO, NR_ZONES};
+use crate::zone::{lowmem_reserve, zone_watermark_ok, AllocWmark, LowmemReserve, MigrateType, MIGRATE_TYPES, ZoneLayout, ZoneLimits, ZoneType, Zonelist, DEFAULT_LOWMEM_RESERVE_RATIO, NR_ZONES};
 
 // Module manifest:
 //   `api.rs`        — the `Pmm` owner struct plus the allocate / query surface.
@@ -11,6 +11,7 @@ use crate::zone::{lowmem_reserve, zone_watermark_ok, AllocWmark, LowmemReserve, 
 //   `zones.rs`      — per-zone watermarks and the statistics rows.
 //   `reserve.rs`    — permanent boot-path reservations.
 //   `inner.rs`      — lock-protected state and the free-list primitives.
+//   `pageblock.rs`  — compact migratetype map and its atomic accessors.
 //   `accounting.rs` — the observation structs the query surface returns.
 //   `audit.rs`      — invariant walk.
 //   `free_node.rs`  — the intrusive free-node header layout.
@@ -26,6 +27,7 @@ mod double_free;
 mod free_node;
 mod free;
 mod inner;
+mod pageblock;
 mod pcp;
 #[cfg(any(test, feature = "debug-watchdog", feature = "debug-cow"))]
 mod poison;

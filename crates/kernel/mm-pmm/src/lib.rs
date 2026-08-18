@@ -80,10 +80,13 @@ pub const ORDERS: usize = MAX_ORDER as usize + 1;
 /// pageset. It is separate from the buddy order-0 bitmap because a PCP page
 /// cannot yet participate in buddy coalescing.
 pub const PCP_BITMAP_SLOT: usize = ORDERS;
+/// Compact two-bit pageblock migratetype map. It determines the list a page
+/// returns to after allocation, so freeing never needs a second owner table.
+pub const PAGEBLOCK_TYPE_SLOT: usize = ORDERS + 1;
 
 /// Total bitmap slices a backing supplies: one mergeable-buddy bitmap per
 /// order plus the per-CPU-pageset ownership bitmap.
-pub const BITMAP_SLOTS: usize = ORDERS + 1;
+pub const BITMAP_SLOTS: usize = ORDERS + 2;
 
 /// Free-page poison constant per `10§3` I7. Read at offset 0 of every
 /// freed page; mismatch on alloc ⇒ kassert (corruption or double-free).
@@ -136,8 +139,9 @@ pub trait PageBacking: Send + Sync + 'static {
     ///
     /// Slots `0..ORDERS` are mergeable buddy free-area bitmaps.
     /// [`PCP_BITMAP_SLOT`] is one bit per PFN and records pages owned by a
-    /// per-CPU pageset. The returned slice must have length `words` and be
-    /// zero-filled.
+    /// per-CPU pageset. [`PAGEBLOCK_TYPE_SLOT`] packs the permanent mobility
+    /// class of every pageblock. The returned slice must have length `words`
+    /// and be zero-filled.
     fn bitmap_storage(&self, slot: u8, words: usize) -> &'static [AtomicU64];
 
     /// Permanent storage for the PMM's per-CPU, per-zone pagesets. It must be

@@ -19,7 +19,7 @@ use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use hal::{Pfn, PAGE_SHIFT, PAGE_SIZE_BYTES};
-use crate::{BITMAP_SLOTS, Error as PmmError, PageBacking, PcpStorage, Pmm, UsableRegion, PCP_BITMAP_SLOT};
+use crate::{BITMAP_SLOTS, Error as PmmError, PAGEBLOCK_TYPE_SLOT, PageBacking, PcpStorage, Pmm, UsableRegion, PCP_BITMAP_SLOT};
 
 use boot_info::{BootInfo, BootMemKind, BootMemRegion};
 

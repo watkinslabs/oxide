@@ -20,6 +20,8 @@ pub const GFP_HIGHMEM: u32 = 0x02;
 pub const GFP_DMA32: u32 = 0x04;
 /// Allocation holds migratable content and may be placed in the movable zone.
 pub const GFP_MOVABLE: u32 = 0x08;
+/// Allocation can be reclaimed but does not hold migration-owned content.
+pub const GFP_RECLAIMABLE: u32 = 0x10;
 /// The flag bits that participate in zone selection.
 pub const GFP_ZONEMASK: u32 = GFP_DMA | GFP_HIGHMEM | GFP_DMA32 | GFP_MOVABLE;
 

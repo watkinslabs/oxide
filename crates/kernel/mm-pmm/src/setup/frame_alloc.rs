@@ -4,7 +4,7 @@ const ALLOCATOR_INTEGRITY_RETRY_COUNT: usize = 64;
 #[cfg(feature = "debug-cow")]
 use super::metadata::cow_dbg_rmap_report;
 
-fn alloc_frame_with_meta(refcount: u32, mapcount: u32) -> Option<u64> {
+fn alloc_frame_with_meta_gfp(refcount: u32, mapcount: u32, gfp: u32) -> Option<u64> {
     use core::sync::atomic::Ordering;
     let p = pmm_static()?;
     // Linux page-allocator invariant: a frame on the free list is
@@ -18,7 +18,7 @@ fn alloc_frame_with_meta(refcount: u32, mapcount: u32) -> Option<u64> {
     // the free list, leave it to its real owner — and try the next.
     // Bounded so a fully-corrupt heap still terminates with NoMem.
     for _ in 0..ALLOCATOR_INTEGRITY_RETRY_COUNT {
-        let Some(pa) = p.alloc(crate::Order(0)).ok().map(|pfn| pfn.0 * PAGE_BYTES) else {
+        let Some(pa) = p.alloc_gfp(crate::Order(0), gfp).ok().map(|pfn| pfn.0 * PAGE_BYTES) else {
             break;
         };
         if let Some(meta) = page_meta() {
@@ -83,6 +83,8 @@ fn alloc_frame_with_meta(refcount: u32, mapcount: u32) -> Option<u64> {
     None
 }
 
+fn alloc_frame_with_meta(refcount: u32, mapcount: u32) -> Option<u64> { alloc_frame_with_meta_gfp(refcount, mapcount, 0) }
+
 fn alloc_frame_with_meta_below(refcount: u32, mapcount: u32, max_pa: u64) -> Option<u64> {
     use core::sync::atomic::Ordering;
     let p = pmm_static()?;
@@ -141,7 +143,7 @@ pub fn alloc_object_frame() -> Option<u64> {
 
 /// Allocate and publish one PMM-owned movable object page. # C: O(pages)
 pub fn alloc_movable_object_frame(owner: movable::OwnerId) -> Option<u64> {
-    let pa = alloc_object_frame()?;
+    let pa = alloc_frame_with_meta_gfp(1, 0, crate::zone::GFP_HIGHMEM | crate::zone::GFP_MOVABLE)?;
     if crate::movable::publish(owner, pa).is_ok() { Some(pa) }
     else { release_object_frame(pa); None }
 }
@@ -192,7 +194,7 @@ pub fn release_movable_object_frame(owner: movable::OwnerId, pa: u64) -> bool {
 /// Migrate one registered movable object page to a fresh PMM frame. # C: O(pages)
 pub fn migrate_movable_object_frame(pa: u64, mode: movable::Mode) -> Result<u64, movable::MoveError> {
     if !super::page_lock::try_lock_page(pa) { return Err(movable::MoveError::Busy); }
-    let Some(destination) = alloc_object_frame() else { let _ = super::page_lock::unlock_page(pa); return Err(movable::MoveError::Busy); };
+    let Some(destination) = alloc_frame_with_meta_gfp(1, 0, crate::zone::GFP_HIGHMEM | crate::zone::GFP_MOVABLE) else { let _ = super::page_lock::unlock_page(pa); return Err(movable::MoveError::Busy); };
     if !super::page_lock::try_lock_page(destination) { release_object_frame(destination); let _ = super::page_lock::unlock_page(pa); return Err(movable::MoveError::Busy); }
     let result = crate::movable::migrate(pa, destination, mode);
     let _ = super::page_lock::unlock_page(destination);

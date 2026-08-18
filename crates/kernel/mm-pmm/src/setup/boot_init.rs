@@ -174,14 +174,19 @@ pub unsafe fn init_from_boot_info(
     let mut total_bytes: u64 = 0;
     let mut o = 0usize;
     while o < BITMAP_SLOTS {
-        let blocks = if o == PCP_BITMAP_SLOT {
-            pfn_max
+        let words = if o == PAGEBLOCK_TYPE_SLOT {
+            let pageblocks = pfn_max.saturating_add(crate::zone::PAGEBLOCK_PAGES - 1) / crate::zone::PAGEBLOCK_PAGES;
+            pageblocks.saturating_add(31) / 32
         } else {
-            let stride = 1u64 << (o as u32);
-            let plus = pfn_max.saturating_add(stride.saturating_sub(1));
-            plus >> (o as u32)
+            let blocks = if o == PCP_BITMAP_SLOT {
+                pfn_max
+            } else {
+                let stride = 1u64 << (o as u32);
+                let plus = pfn_max.saturating_add(stride.saturating_sub(1));
+                plus >> (o as u32)
+            };
+            blocks.saturating_add(63) >> 6
         };
-        let words = blocks.saturating_add(63) >> 6;
         per_order_words[o] = words as usize;
         total_bytes = total_bytes.saturating_add(words.saturating_mul(8));
         o += 1;
@@ -336,7 +341,10 @@ pub unsafe fn init_from_boot_info(
     // PMM_READY flips.
     let pmm_ref: &'static Pmm<HhdmBacking, KernelIrqGate> = unsafe {
         let cell = &mut *PMM_STORAGE.0.get();
-        Pmm::<HhdmBacking, KernelIrqGate>::init_in_place(backing, regs, cell)
+        let limits = crate::zone::apply_memory_core_request(
+            crate::zone::ZoneLimits::arch_default(pfn_max, PAGE_SIZE_BYTES), cmdline::get(), pfn_max, PAGE_SIZE_BYTES,
+        );
+        Pmm::<HhdmBacking, KernelIrqGate>::init_zoned_in_place(backing, regs, Some(limits), cell)
             .map_err(SetupError::PmmInit)?;
         cell.assume_init_ref()
     };

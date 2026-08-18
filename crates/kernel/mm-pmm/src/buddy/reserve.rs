@@ -32,9 +32,10 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
             // Remove from free-list at order o.
             // SAFETY: bitmap-truth says blk is on free_list[o].
             let zi = g.zi(blk);
-            unsafe { g.unlink_free(&self.backing, blk, o) };
+            let mt = g.migratetype(blk);
+            unsafe { g.unlink_free(&self.backing, blk, o, mt) };
             g.bitmap_clear(o, blk >> o);
-            g.free_count[zi][o as usize] -= 1;
+            g.free_count[zi][mt.index()][o as usize] -= 1;
             // Split down to order 0 along the half containing p.
             while o > 0 {
                 o -= 1;
@@ -43,16 +44,16 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
                 if p >= buddy {
                     // SAFETY: half is order-o aligned, in-range, not on
                     // any list (just split out).
-                    unsafe { g.push_free(&self.backing, blk, o) };
+                    unsafe { g.push_free(&self.backing, blk, o, mt) };
                     g.bitmap_set(o, blk >> o);
-                    g.free_count[zi][o as usize] += 1;
+                    g.free_count[zi][mt.index()][o as usize] += 1;
                     blk = buddy;
                 } else {
                     // SAFETY: buddy is order-o aligned, in-range, not on
                     // any list (just split out).
-                    unsafe { g.push_free(&self.backing, buddy, o) };
+                    unsafe { g.push_free(&self.backing, buddy, o, mt) };
                     g.bitmap_set(o, buddy >> o);
-                    g.free_count[zi][o as usize] += 1;
+                    g.free_count[zi][mt.index()][o as usize] += 1;
                 }
             }
             // blk now == p; consume it as permanently reserved.

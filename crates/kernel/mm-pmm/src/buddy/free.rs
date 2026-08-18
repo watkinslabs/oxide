@@ -68,11 +68,12 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
         let mut p = pfn;
         let mut o = order;
         let zone = g.zi(p);
+        let mt = g.migratetype(p);
         loop {
             if o == MAX_ORDER { break; }
             let buddy = p ^ (1u64 << o);
             if buddy + (1u64 << o) > g.pfn_max { break; }
-            if g.zi(buddy) != zone || !g.bitmap_get(o, buddy >> o) { break; }
+            if g.zi(buddy) != zone || g.migratetype(buddy) != mt || !g.bitmap_get(o, buddy >> o) { break; }
             #[cfg(feature = "debug-pmm")]
             {
                 // SAFETY: the buddy bitmap says this head is globally free.
@@ -100,15 +101,15 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
                 }
             }
             // SAFETY: bitmap truth names buddy as a global free-list node.
-            unsafe { g.unlink_free(&self.backing, buddy, o) };
+            unsafe { g.unlink_free(&self.backing, buddy, o, mt) };
             g.bitmap_clear(o, buddy >> o);
-            g.free_count[zone][o as usize] -= 1;
+            g.free_count[zone][mt.index()][o as usize] -= 1;
             if buddy < p { p = buddy; }
             o += 1;
         }
         // SAFETY: p is aligned, in-range and not on any global free list.
-        unsafe { g.push_free(&self.backing, p, o) };
+        unsafe { g.push_free(&self.backing, p, o, mt) };
         g.bitmap_set(o, p >> o);
-        g.free_count[zone][o as usize] += 1;
+        g.free_count[zone][mt.index()][o as usize] += 1;
     }
 }

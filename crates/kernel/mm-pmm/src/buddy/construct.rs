@@ -3,6 +3,7 @@
 // state that is a function of the resulting per-zone managed counts.
 use super::*;
 use super::inner::PmmInner;
+use super::pageblock::PageblockTypes;
 use super::pcp::PcpZoneConfig;
 use core::mem::MaybeUninit;
 
@@ -92,8 +93,13 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
         }
         let pcp_words = ((pfn_max + 63) >> 6) as usize;
         let pcp_bitmap = backing.bitmap_storage(PCP_BITMAP_SLOT as u8, pcp_words);
+        let pageblocks = PageblockTypes::new(backing.bitmap_storage(
+            PAGEBLOCK_TYPE_SLOT as u8, PageblockTypes::words_for(pfn_max),
+        ));
 
         let layout = ZoneLayout::new(limits.unwrap_or_else(|| ZoneLimits::arch_default(pfn_max, PAGE_SIZE_BYTES)), pfn_max);
+        let movable = layout.span(ZoneType::Movable);
+        pageblocks.set_range(movable.start_pfn, movable.end_pfn, MigrateType::Movable);
         let mut spanned = [0u64; NR_ZONES];
         for zi in 0..NR_ZONES { spanned[zi] = layout.span_at(zi).spanned_pages(); }
 
@@ -102,8 +108,9 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
             bitmaps,
             layout,
             zonelist: Zonelist::default(),
-            free_heads: [[PFN_NULL; ORDERS]; NR_ZONES],
-            free_count: [[0; ORDERS]; NR_ZONES],
+            pageblocks,
+            free_heads: [[[PFN_NULL; ORDERS]; MIGRATE_TYPES]; NR_ZONES],
+            free_count: [[[0; ORDERS]; MIGRATE_TYPES]; NR_ZONES],
             managed: [0; NR_ZONES],
             present: [0; NR_ZONES],
             spanned,
@@ -146,6 +153,7 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
             pfn_max,
             layout: inner.layout,
             zonelist: inner.zonelist,
+            pageblocks,
             buddy_bitmaps: inner.bitmaps,
             pcp_bitmap,
             pcp,
