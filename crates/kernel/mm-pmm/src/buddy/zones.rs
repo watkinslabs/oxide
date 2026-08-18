@@ -40,7 +40,7 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
                 present_pages: g.present[zi],
                 managed_pages: g.managed[zi],
                 free_pages: self.zone_free[zi].load(Ordering::Acquire),
-                free_orders: g.free_count[zi],
+                free_orders: g.free_area(zi),
                 wmark: g.wmark[zi],
                 lowmem_reserve: g.reserve[zi],
             };

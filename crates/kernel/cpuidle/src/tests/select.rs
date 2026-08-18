@@ -1,5 +1,5 @@
 use super::*;
-use crate::driver::{clear_for_tests, register, test_guard, IdleOps};
+use crate::driver::{clear_for_tests, register, register_per_cpu, test_guard, IdleOps};
 use crate::governor::{by_name, Kind};
 use crate::state::{Entry, IdleState};
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -17,7 +17,7 @@ fn tick_wakeup() -> bool { TICK_WOKE.load(Ordering::Relaxed) != 0 }
 struct Cpu { refuse: AtomicUsize, entered: AtomicUsize }
 
 impl IdleOps for Cpu {
-    fn enter(&self, index: usize, _state: &IdleState) -> KResult<usize> {
+    fn enter(&self, _cpu: usize, index: usize, _state: &IdleState) -> KResult<usize> {
         if self.refuse.load(Ordering::Relaxed) != 0 { return Err(VfsError::Ebusy); }
         self.entered.store(index, Ordering::Relaxed);
         CLOCK_NS.fetch_add(SLEEP_NS.load(Ordering::Relaxed), Ordering::Relaxed);
@@ -143,5 +143,37 @@ fn a_cpu_the_driver_was_not_built_for_selects_nothing() {
     assert!(select(&driver, &Conditions::new(7, 1_000_000, TICK_NS)).is_none());
     assert!(idle_cycle(&driver, &Conditions::new(7, 1_000_000, TICK_NS), clock, tick_wakeup)
             .is_none());
+    clear_for_tests();
+}
+
+struct PerCpu { entered: AtomicUsize }
+
+impl IdleOps for PerCpu {
+    fn enter(&self, cpu: usize, index: usize, _state: &IdleState) -> KResult<usize> {
+        self.entered.store(cpu * 10 + index, Ordering::Relaxed);
+        Ok(index)
+    }
+}
+
+#[test]
+fn each_cpu_selects_accounts_and_enters_its_own_firmware_ladder() {
+    let _guard = test_guard();
+    let ops = alloc::sync::Arc::new(PerCpu { entered: AtomicUsize::new(usize::MAX) });
+    let driver = register_per_cpu("platform_idle", alloc::vec![
+        alloc::vec![state(1, 1)],
+        alloc::vec![state(1, 1), state(40, 100)],
+    ], ops.clone()).expect("register per cpu");
+    assert_eq!(driver.states_for(0).map(|states| states.len()), Some(1));
+    assert_eq!(driver.states_for(1).map(|states| states.len()), Some(2));
+
+    let first = idle_cycle(&driver, &Conditions::new(0, 1_000_000, TICK_NS), clock, tick_wakeup)
+        .expect("CPU0 cycle");
+    let second = idle_cycle(&driver, &Conditions::new(1, 1_000_000, TICK_NS), clock, tick_wakeup)
+        .expect("CPU1 cycle");
+    assert_eq!(first.selection.index, 0, "CPU0 has no deeper state");
+    assert_eq!(second.selection.index, 1, "CPU1 may select its own C-state");
+    assert_eq!(ops.entered.load(Ordering::Relaxed), 11);
+    assert_eq!(driver.usage(0).expect("CPU0")[0].usage, 1);
+    assert_eq!(driver.usage(1).expect("CPU1")[1].usage, 1);
     clear_for_tests();
 }

@@ -283,6 +283,25 @@ fn drained_waking_task_is_unlinked_until_destination_activation() {
         crate::task::WakeDiagPhase::None);
 }
 
+/// The IRQ/idle wrapper must retain the same target-side activation rule as
+/// the raw list drainer.  Architecture dispatchers use this wrapper so an
+/// interrupt-triggered wake never reaches the task-stack switch tail.
+#[test]
+fn target_service_wrapper_activates_a_claimed_wake() {
+    const CPU: u32 = 62;
+    let cpus = Cpus::new(&[CPU]);
+    let rq = cpus.get(CPU).expect("test cpu installed");
+    let t = settled_sleeper(2011, CPU);
+
+    assert!(t.claim_wake());
+    wake_list_push(CPU, Arc::clone(&t));
+
+    assert!(service_pending_on(rq));
+    assert_eq!(t.state(), TaskState::Runnable);
+    assert!(t.on_rq.load(Ordering::Acquire));
+    assert!(!t.on_wake_list.load(Ordering::Acquire));
+}
+
 /// `sched_ttwu_pending` consumes the target's claimed wake list; it must not
 /// wait for the producer-side wake lock after unlinking it.  The old shape
 /// acquired `task_wake_lock` between `wake_list_drain` and activation, so this

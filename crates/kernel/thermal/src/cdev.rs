@@ -41,6 +41,9 @@ struct Stats {
 pub struct CoolingDevice {
     id: u32,
     ty: String,
+    /// Firmware namespace object this device represents, when binding must
+    /// distinguish identical class-visible processor types.
+    binding_path: Option<String>,
     ops: Arc<dyn CoolingOps>,
     max_state: u64,
     stats: Spinlock<Stats, Devices>,
@@ -51,10 +54,18 @@ impl CoolingDevice {
     pub fn new(id: u32, ty: &str, ops: Arc<dyn CoolingOps>, max_state: u64, now_ns: u64)
         -> CoolingDevice
     {
+        CoolingDevice::with_binding(id, ty, None, ops, max_state, now_ns)
+    }
+
+    /// Build a device associated with one firmware namespace object. # C: O(N_states)
+    pub fn with_binding(id: u32, ty: &str, binding_path: Option<&str>, ops: Arc<dyn CoolingOps>,
+                        max_state: u64, now_ns: u64) -> CoolingDevice
+    {
         let states = (max_state as usize).saturating_add(1);
         CoolingDevice {
             id,
             ty: String::from(ty),
+            binding_path: binding_path.map(String::from),
             ops,
             max_state,
             stats: Spinlock::new(Stats {
@@ -71,6 +82,8 @@ impl CoolingDevice {
     pub fn id(&self) -> u32 { self.id }
     /// Provider-declared kind, as `type` reads it back. # C: O(1)
     pub fn ty(&self) -> &str { &self.ty }
+    /// Firmware object path this device represents, if it has one. # C: O(1)
+    pub fn binding_path(&self) -> Option<&str> { self.binding_path.as_deref() }
     /// Deepest supported state. # C: O(1)
     pub fn max_state(&self) -> u64 { self.max_state }
     /// Class device name. # C: O(1)

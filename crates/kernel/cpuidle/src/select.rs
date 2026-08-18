@@ -48,10 +48,11 @@ impl Conditions {
 
 /// Ask the governor which state this CPU should enter. # C: O(N_states)
 pub fn select(driver: &Arc<Driver>, conditions: &Conditions) -> Option<Selection> {
+    let states = driver.states_for(conditions.cpu)?;
     driver.with_device(conditions.cpu, |device| {
         if !device.enabled { return None; }
         let input = SelectInput {
-            states: driver.states(),
+            states,
             usage: &device.usage,
             sleep_length_ns: conditions.sleep_length_ns,
             tick_ns: conditions.tick_ns,
@@ -67,10 +68,11 @@ pub fn select(driver: &Arc<Driver>, conditions: &Conditions) -> Option<Selection
 pub fn reflect(driver: &Arc<Driver>, cpu: usize, reflection: &Reflection, tick_ns: u64,
                requested: usize)
 {
+    let Some(states) = driver.states_for(cpu) else { return; };
     driver.with_device(cpu, |device| {
         match reflection.entered {
             Some(entered) => {
-                record_entry(driver.states(), &mut device.usage, entered,
+                record_entry(states, &mut device.usage, entered,
                              reflection.measured_ns);
                 device.last_residency_ns = reflection.measured_ns;
             }
@@ -79,7 +81,7 @@ pub fn reflect(driver: &Arc<Driver>, cpu: usize, reflection: &Reflection, tick_n
                 device.last_residency_ns = 0;
             }
         }
-        device.governor.reflect(driver.states(), reflection, tick_ns);
+        device.governor.reflect(states, reflection, tick_ns);
     });
 }
 
@@ -90,10 +92,10 @@ pub fn idle_cycle(driver: &Arc<Driver>, conditions: &Conditions, now_ns: fn() ->
                   tick_wakeup: fn() -> bool) -> Option<Cycle>
 {
     let selection = select(driver, conditions)?;
-    let state = driver.states().get(selection.index)?;
+    let state = driver.states_for(conditions.cpu)?.get(selection.index)?;
 
     let started = now_ns();
-    let entered = driver.ops().enter(selection.index, state).ok();
+    let entered = driver.ops().enter(conditions.cpu, selection.index, state).ok();
     let measured_ns = now_ns().saturating_sub(started);
 
     let reflection = Reflection {

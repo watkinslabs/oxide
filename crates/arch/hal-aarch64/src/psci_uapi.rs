@@ -24,6 +24,7 @@ pub const fn psci_fn64(index: u32) -> u32 { PSCI_FN_BASE_32 + PSCI_FN_64BIT + in
 
 /// Function indexes, in the order the interface assigns them.
 const IDX_VERSION:        u32 = 0;
+const IDX_CPU_SUSPEND:    u32 = 1;
 const IDX_CPU_OFF:        u32 = 2;
 const IDX_CPU_ON:         u32 = 3;
 const IDX_AFFINITY_INFO:  u32 = 4;
@@ -36,6 +37,9 @@ const IDX_SYSTEM_SUSPEND: u32 = 14;
 pub const PSCI_VERSION: u32 = psci_fn32(IDX_VERSION);
 /// `CPU_OFF`.
 pub const PSCI_CPU_OFF: u32 = psci_fn32(IDX_CPU_OFF);
+/// `CPU_SUSPEND` (SMC64). A retention state returns to its caller; a
+/// power-down state resumes at the physical entry point in argument two.
+pub const PSCI_CPU_SUSPEND_64: u32 = psci_fn64(IDX_CPU_SUSPEND);
 /// `CPU_ON` (SMC64).
 pub const PSCI_CPU_ON_64: u32 = psci_fn64(IDX_CPU_ON);
 /// `AFFINITY_INFO` (SMC64).
@@ -109,6 +113,60 @@ pub const fn version_minor(ver: u32) -> u32 { ver & PSCI_VERSION_MINOR_MASK }
 /// neither call exists, so a discovery attempt is not merely unsupported — the
 /// function ID means nothing and the result cannot be trusted.
 pub const PSCI_VERSION_1_0: u32 = psci_version(1, 0);
+
+/// Original power-state encoding fields accepted by `CPU_SUSPEND`.
+pub const PSCI_POWER_STATE_ID_MASK: u32 = 0x0000_FFFF;
+pub const PSCI_POWER_STATE_TYPE_MASK: u32 = 1 << 16;
+pub const PSCI_POWER_STATE_AFFINITY_MASK: u32 = 0x0300_0000;
+pub const PSCI_POWER_STATE_MASK: u32 = PSCI_POWER_STATE_ID_MASK | PSCI_POWER_STATE_TYPE_MASK
+    | PSCI_POWER_STATE_AFFINITY_MASK;
+/// PSCI 1.0 extended state ID and type fields.
+pub const PSCI_EXT_POWER_STATE_ID_MASK: u32 = 0x0FFF_FFFF;
+pub const PSCI_EXT_POWER_STATE_TYPE_MASK: u32 = 1 << 30;
+pub const PSCI_EXT_POWER_STATE_MASK: u32 = PSCI_EXT_POWER_STATE_ID_MASK | PSCI_EXT_POWER_STATE_TYPE_MASK;
+/// Bit `PSCI_FEATURES(CPU_SUSPEND)` uses to select the extended encoding.
+pub const PSCI_FEATURE_CPU_SUSPEND_EXTENDED_STATE: u32 = 1 << 1;
+
+/// Which `CPU_SUSPEND` state encoding firmware admits.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum CpuSuspendFormat { Unsupported, Original, Extended }
+
+/// Decide the CPU-suspend format from the version and feature-query result.
+/// PSCI 0.2 has the original form without a feature query; PSCI 1.0 and later
+/// report absence through `NOT_SUPPORTED` and the extended form through bit 1.
+/// # C: O(1)
+pub fn cpu_suspend_format(version_raw: u32, features_raw: i64) -> CpuSuspendFormat {
+    if version_major(version_raw) == 0 {
+        return if version_minor(version_raw) >= 2 { CpuSuspendFormat::Original }
+            else { CpuSuspendFormat::Unsupported };
+    }
+    if features_raw == PSCI_RET_NOT_SUPPORTED { return CpuSuspendFormat::Unsupported; }
+    if (features_raw as u32 & PSCI_FEATURE_CPU_SUSPEND_EXTENDED_STATE) != 0 {
+        CpuSuspendFormat::Extended
+    } else { CpuSuspendFormat::Original }
+}
+
+/// Whether `state` uses only fields defined by the selected encoding. # C: O(1)
+pub const fn power_state_valid(state: u32, format: CpuSuspendFormat) -> bool {
+    let valid = match format {
+        CpuSuspendFormat::Original => PSCI_POWER_STATE_MASK,
+        CpuSuspendFormat::Extended => PSCI_EXT_POWER_STATE_MASK,
+        CpuSuspendFormat::Unsupported => return false,
+    };
+    state & !valid == 0
+}
+
+/// Whether entering `state` loses EL1 context and therefore requires a resume
+/// entry rather than returning to the instruction after the firmware call.
+/// # C: O(1)
+pub const fn power_state_loses_context(state: u32, format: CpuSuspendFormat) -> bool {
+    let mask = match format {
+        CpuSuspendFormat::Original => PSCI_POWER_STATE_TYPE_MASK,
+        CpuSuspendFormat::Extended => PSCI_EXT_POWER_STATE_TYPE_MASK,
+        CpuSuspendFormat::Unsupported => return false,
+    };
+    state & mask != 0
+}
 
 #[cfg(test)]
 #[path = "psci_uapi/tests.rs"]

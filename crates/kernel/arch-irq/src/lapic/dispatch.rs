@@ -168,9 +168,8 @@ unsafe extern "C" fn oxide_irq_dispatch(regs: *mut hal_x86_64::PtRegs) {
             RESCHED_IPI_COUNT.fetch_add(1, Ordering::Relaxed);
             crate::irqstat::hit_resched();
             // Cross-CPU resched IPI: another CPU asked us to pick a new
-            // task. Set need_resched; the IRQ-exit slow path
-            // (`oxide_irq_exit_to_user` → the work loop) does the switch,
-            // which is also what drains this CPU's deferred wake list.
+            // task. Its claimed wake list is consumed below on the dedicated
+            // hardirq stack; the IRQ-exit slow path performs the switch.
             //
             // NOT the periodic tick: `task_tick` is the timeslice accountant,
             // so running it here charged a tick of the running SCHED_RR task's
@@ -219,6 +218,11 @@ unsafe extern "C" fn oxide_irq_dispatch(regs: *mut hal_x86_64::PtRegs) {
     // SAFETY: this vector's handler has returned; the LAPIC was mapped and enabled long before any STI.
     unsafe { eoi(); }
 
+    // Linux consumes target wake lists from the IPI/IRQ path, rather than the
+    // switch tail.  This also handles local wakes deferred by a device handler
+    // before returning to the interrupted task's stack.
+    let _ = sched::live::ttwu::service_current_cpu();
+
     sched::preempt::irq_exit();
     // `in_atomic()` before `sti`, not after: re-entering from inside the
     // unmasked window lets every nesting level open a fresh one and the frames
@@ -240,6 +244,9 @@ unsafe extern "C" fn oxide_irq_dispatch(regs: *mut hal_x86_64::PtRegs) {
         }
         sched::bh::softirq_tail_end();
     }
+    // Softirq work may publish another local deferred wake.  Finish it while
+    // still on the hardirq stack, before IRQ return can schedule.
+    let _ = sched::live::ttwu::service_current_cpu();
 }
 
 /// Linux `irqentry_exit` — the x86_64 half. Called by the IRQ-exit asm after

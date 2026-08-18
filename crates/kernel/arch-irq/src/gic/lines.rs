@@ -1,4 +1,4 @@
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::gic_trigger::icfgr_with_trigger;
 
@@ -8,6 +8,11 @@ use super::regs::{
     GICD_ISPENDR, GICD_VA, GICR_IGROUPR0, GICR_IPRIORITYR, GICR_ISENABLER0,
     GICR_ICFGR1, GICR_SGI_OFFSET, GICR_VA,
 };
+
+// Dynamic platform PPIs are discovered before AP startup. AP bring-up reads
+// this one GIC-owned registry and programs its private redistributor too.
+static REGISTERED_PPIS: AtomicU32 = AtomicU32::new(0);
+static LEVEL_PPIS: AtomicU32 = AtomicU32::new(0);
 
 /// Enable an SGI/PPI/SPI INTID. SGIs/PPIs (INTID < 32) live in the
 /// per-CPU Redistributor (SGI frame); SPIs (INTID >= 32) live in
@@ -26,6 +31,7 @@ pub unsafe fn enable_intid(intid: u32) {
     // SAFETY: GICD/GICR are Device-attr-mapped; offsets stay within their regions.
     unsafe {
         if intid < SPI_BASE {
+            remember_ppi(intid, false);
             // SGI/PPI: per-CPU banked in GICR SGI frame.
             let sgi_base   = gicr + GICR_SGI_OFFSET;
             let bit        = 1u32 << (intid & 31);
@@ -61,6 +67,7 @@ pub unsafe fn enable_intid_level(intid: u32) {
     if gicd == 0 || gicr == 0 { return; }
     if intid < SPI_BASE {
         if intid >= PPI_BASE {
+            remember_ppi(intid, true);
             let sgi_base = gicr + GICR_SGI_OFFSET;
             let icfgr = (sgi_base + GICR_ICFGR1 as u64) as *mut u32;
             // SAFETY: the PPI configuration register lives in this CPU's Device-mapped SGI frame; caller owns the disabled line before enable.
@@ -71,10 +78,51 @@ pub unsafe fn enable_intid_level(intid: u32) {
         }
         // SAFETY: same Device-mapped GIC bases; config was written before enabling the private line.
         unsafe { enable_intid(intid); }
+        // enable_intid records its default edge form for AP bring-up; restore
+        // this caller's explicit level form after that shared enable helper.
+        remember_ppi(intid, true);
         return;
     }
     // SAFETY: GICD region is Device-attr-mapped; offset stays inside.
     unsafe { spi_enable_common(gicd, intid, /*level=*/true); }
+}
+
+/// Program every pre-AP-start PPI on this PE's redistributor. # C: O(16)
+///
+/// # SAFETY: `gicr_va` names this online PE's mapped redistributor, with IRQs
+/// masked during its one-time GIC setup.
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+pub unsafe fn enable_registered_ppis_on(gicr_va: u64) {
+    let registered = REGISTERED_PPIS.load(Ordering::Acquire);
+    let levels = LEVEL_PPIS.load(Ordering::Acquire);
+    let sgi = gicr_va + GICR_SGI_OFFSET;
+    for intid in PPI_BASE..SPI_BASE {
+        let bit = 1u32 << intid;
+        if registered & bit == 0 { continue; }
+        // SAFETY: the AP owns its redistributor; each named PPI was registered
+        // before AP startup and only this PE programs its private frame.
+        unsafe {
+            let group = (sgi + GICR_IGROUPR0 as u64) as *mut u32;
+            core::ptr::write_volatile(group, core::ptr::read_volatile(group) | bit);
+            let icfgr = (sgi + GICR_ICFGR1 as u64) as *mut u32;
+            let cur = core::ptr::read_volatile(icfgr);
+            core::ptr::write_volatile(icfgr, icfgr_with_trigger(cur, intid, levels & bit != 0));
+            let prio = (sgi + GICR_IPRIORITYR as u64 + intid as u64) as *mut u8;
+            core::ptr::write_volatile(prio, 0x80);
+            let isenabler = (sgi + GICR_ISENABLER0 as u64) as *mut u32;
+            core::ptr::write_volatile(isenabler, bit);
+        }
+    }
+    // SAFETY: all writes above target this PE's Device-mapped redistributor.
+    unsafe { core::arch::asm!("dsb sy", "isb", options(nostack, preserves_flags)); }
+}
+
+fn remember_ppi(intid: u32, level: bool) {
+    if intid < PPI_BASE || intid >= SPI_BASE { return; }
+    let bit = 1u32 << intid;
+    REGISTERED_PPIS.fetch_or(bit, Ordering::Release);
+    if level { LEVEL_PPIS.fetch_or(bit, Ordering::Release); }
+    else { LEVEL_PPIS.fetch_and(!bit, Ordering::Release); }
 }
 
 /// Disable an SGI/PPI/SPI INTID owned by a driver during remove.

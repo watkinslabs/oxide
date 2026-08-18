@@ -6,6 +6,7 @@ use super::*;
 #[test]
 fn function_ids_match_the_interface_assignment() {
     assert_eq!(PSCI_VERSION,            0x8400_0000);
+    assert_eq!(PSCI_CPU_SUSPEND_64,     0xC400_0001);
     assert_eq!(PSCI_CPU_OFF,            0x8400_0002);
     assert_eq!(PSCI_CPU_ON_64,          0xC400_0003);
     assert_eq!(PSCI_AFFINITY_INFO_64,   0xC400_0004);
@@ -54,4 +55,20 @@ fn version_fields_round_trip() {
     assert_eq!(PSCI_VERSION_1_0, 0x0001_0000);
     assert_eq!(version_major(psci_version(0, 2)), 0);
     assert_eq!(version_minor(psci_version(0, 2)), 2);
+}
+
+#[test]
+fn cpu_suspend_format_and_state_masks_follow_the_firmware_feature_word() {
+    assert_eq!(cpu_suspend_format(psci_version(0, 1), 0), CpuSuspendFormat::Unsupported);
+    assert_eq!(cpu_suspend_format(psci_version(0, 2), 0), CpuSuspendFormat::Original);
+    assert_eq!(cpu_suspend_format(psci_version(1, 0), -1), CpuSuspendFormat::Unsupported);
+    assert_eq!(cpu_suspend_format(psci_version(1, 0), 0), CpuSuspendFormat::Original);
+    assert_eq!(cpu_suspend_format(psci_version(1, 0), 2), CpuSuspendFormat::Extended);
+    assert!(power_state_valid(0x0301_FFFF, CpuSuspendFormat::Original));
+    assert!(!power_state_valid(0x0400_0000, CpuSuspendFormat::Original));
+    assert!(power_state_loses_context(0x0001_0000, CpuSuspendFormat::Original));
+    assert!(!power_state_loses_context(0, CpuSuspendFormat::Original));
+    assert!(power_state_valid(0x4FFF_FFFF, CpuSuspendFormat::Extended));
+    assert!(!power_state_valid(0x8000_0000, CpuSuspendFormat::Extended));
+    assert!(power_state_loses_context(0x4000_0000, CpuSuspendFormat::Extended));
 }

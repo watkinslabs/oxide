@@ -121,6 +121,19 @@ mod tests {
         assert!(!klog::oops::panic_on_warn());
     }
 
+    /// The boot parameter must reach the WARN mechanism itself, not merely
+    /// set an otherwise unread global.  Linux `check_panic_on_warn()` runs
+    /// after it reports a WARN condition; the composed path here has the
+    /// same ordering and proves a warning does not return when enabled.
+    #[test]
+    fn panic_on_warn_boot_policy_stops_a_warn_event() {
+        let _g = serial();
+        install(decide(b"panic_on_warn"));
+        let hit = std::panic::catch_unwind(|| klog::warn::warn("test invariant"));
+        install(decide(b"root=/dev/oxide0"));
+        assert!(hit.is_err(), "the boot-line policy must stop at the WARN event");
+    }
+
     #[test]
     fn an_out_of_range_timeout_is_clamped_not_wrapped() {
         let _g = serial();

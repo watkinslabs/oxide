@@ -59,6 +59,9 @@ pub enum CallKind {
     /// Private membarrier barrier plus restartable-sequence fixup for `arg`'s
     /// current address space.
     MembarrierPrivateRseq = 7,
+    /// Program a self-contained CPU-frequency command. The target handler
+    /// takes no lock and performs only the admitted register write.
+    CpuFreq = 8,
 }
 
 impl CallKind {
@@ -78,6 +81,7 @@ impl CallKind {
             5 => Some(CallKind::MembarrierPrivateMb),
             6 => Some(CallKind::MembarrierPrivateSyncCore),
             7 => Some(CallKind::MembarrierPrivateRseq),
+            8 => Some(CallKind::CpuFreq),
             _ => None,
         }
     }

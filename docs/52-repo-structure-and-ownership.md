@@ -163,7 +163,8 @@ must use grouped paths from day one.
     attribute contract), `crates/kernel/cpufreq` owns frequency scaling (the
     operating-point table, the policy with its limit aggregation, the
     governors, the statistics) and `crates/kernel/cpuidle` owns idle-state
-    selection (the state table, the governors, the per-CPU accounting). All
+    selection (one firmware ladder per CPU, the governors, the per-CPU
+    accounting). All
     three are leaves over `vfs`, `sync`, `kstrtox` and `cpu`; each carries a
     kernel-only child for the one thing it cannot decide alone — thermal's
     workqueue sweep, cpuidle's clock and generic halt driver, cpufreq's
@@ -171,9 +172,24 @@ must use grouped paths from day one.
     `crates/kernel/procfs` projects the two per-CPU trees under
     `/sys/devices/system/cpu`. `crates/kernel/sched` calls into cpuidle from
     its idle loop and feeds cpufreq the demand signal; neither may depend on
-    `sched` in a host build. `crates/kernel/firmware` owns the ACPI providers.
-    The terminal action for a critical thermal trip is installed by kernel
-    init, because a device class does not own powering the machine down.
+    `sched` in a host build. `crates/kernel/clk` owns each DT clock-output
+    registry entry, rate callback, and post-registration listener fan-out;
+    `crates/kernel/regulator` owns the equivalent voltage-provider state.
+    `crates/kernel/opp` owns ordered rate/voltage transitions and rollback.
+    `crates/kernel/scmi` owns target-independent SCMI message layouts and the
+    Performance protocol's OPP/level translation. `crates/kernel/firmware`
+    owns ACPI and DT policy discovery, including ACPI `_CST` and PSCI idle
+    ladders, and ACPI processor cooling: one
+    firmware-path-identified thermal device per CPU object, with a distinct
+    cpufreq cap request even for CPUs sharing one policy. Thermal owns the
+    class-visible type and binding registry; cpufreq aggregates the requests.
+    Firmware also owns the FDT-selected SCMI shared-memory map and SMCCC
+    transport. Firmware owns its response-completion state, while kernel init
+    supplies the one GIC line-install bridge, so it does not depend upward on
+    the architecture IRQ owner. It resolves firmware references to these
+    owners but never duplicates clock, regulator, OPP, or SCMI protocol state. The
+    terminal action for a critical thermal trip is installed by kernel init,
+    because a device class does not own powering the machine down.
 17. `crates/kernel/overlayfs` owns union-mount semantics: the layer stack, the
     merged lookup, whiteouts and opaque directories, copy-up, the merged
     directory stream, and the four records a layer carries
@@ -372,6 +388,18 @@ Temporary exceptions are allowed only with:
 
 ## 12 Changelog
 
+- 2026-08-18: Added firmware-owned ACPI processor cooling registration. The
+  thermal class keeps a firmware object identity distinct from its visible type,
+  and cpufreq aggregates one thermal request per cooler on a shared policy.
+- 2026-08-18: Added `crates/kernel/scmi` for SCMI Performance v1–v4 message
+  ownership, and the aarch64 FDT SMC shared-memory cpufreq provider. Firmware
+  owns its SMCCC/MMIO transport, completion state, and publishes direct dynamic
+  policies rather than modelling SCMI as a synthetic clock or static DT OPP table.
+- 2026-08-17: Added DT clock, regulator and OPP ownership boundaries; firmware
+  resolves CPU policies through those concrete owners and cpufreq retains only
+  generic policy, governor and sysfs state. Clock and regulator registries own
+  post-registration listener fan-out, so deferred DT consumers cannot replace
+  one another's notification receiver.
 - 2026-08-16: Added `crates/kernel/wireless` (cfg80211 + nl80211),
   `crates/kernel/mac80211` (softmac) and `crates/drivers/drv-mac80211-hwsim`,
   with their dependency direction and lock order (`52§5` rule 20, `52§7` rule
@@ -386,6 +414,8 @@ Temporary exceptions are allowed only with:
   Bluetooth host stack, the `HciTransport` boundary that keeps transport
   drivers free of stack state, and the two primitive crates
   `crates/shared/aes` and `crates/shared/p256`.
+- 2026-08-18: Added the ACPI and PSCI firmware idle providers, the shared
+  DT idle-state decoder, and per-CPU cpuidle state-table ownership.
 - 2026-08-15: Added the power-supply and backlight device-class ownership
   boundaries, their ACPI providers under `firmware`, and `crates/shared/kstrtox`.
 - 2026-08-15: Added `crates/kernel/thermal`, `crates/kernel/cpufreq` and

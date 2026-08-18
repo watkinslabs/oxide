@@ -115,14 +115,15 @@ mod tests {
 
     #[test]
     fn lookup_prefers_longest_prefix() {
-    let _domain = net::hosted_fixture::init_net_domain();
+        let namespace = crate::netlink_tests::test_namespace();
+        let ns = namespace.id().as_u64();
         let req = Nlmsghdr { nlmsg_len: 36, nlmsg_type: rt::RTM_GETROUTE, nlmsg_flags: crate::flags::NLM_F_REQUEST, nlmsg_seq: 9, nlmsg_pid: 4 };
-        route_insert(RouteRow { ns: 0, table: RT_TABLE_MAIN as u32, protocol: RTPROT_STATIC, scope: RT_SCOPE_LINK, kind: RTN_UNICAST, dst: Some(([10, 0, 0, 0], 8)), gateway: None, oif_ifindex: 11, prefsrc: None, metric: 0, metrics: net::RouteMetrics::NONE, flags: 0, weight: 1, nh_flags: 0 });
-        route_insert(RouteRow { ns: 0, table: RT_TABLE_MAIN as u32, protocol: RTPROT_STATIC, scope: RT_SCOPE_LINK, kind: RTN_UNICAST, dst: Some(([10, 1, 0, 0], 16)), gateway: None, oif_ifindex: 12, prefsrc: None, metric: 0, metrics: net::RouteMetrics::NONE, flags: 0, weight: 1, nh_flags: 0 });
+        route_insert(RouteRow { ns, table: RT_TABLE_MAIN as u32, protocol: RTPROT_STATIC, scope: RT_SCOPE_LINK, kind: RTN_UNICAST, dst: Some(([10, 0, 0, 0], 8)), gateway: None, oif_ifindex: 11, prefsrc: None, metric: 0, metrics: net::RouteMetrics::NONE, flags: 0, weight: 1, nh_flags: 0 });
+        route_insert(RouteRow { ns, table: RT_TABLE_MAIN as u32, protocol: RTPROT_STATIC, scope: RT_SCOPE_LINK, kind: RTN_UNICAST, dst: Some(([10, 1, 0, 0], 16)), gateway: None, oif_ifindex: 12, prefsrc: None, metric: 0, metrics: net::RouteMetrics::NONE, flags: 0, weight: 1, nh_flags: 0 });
         let msg = lookup_msg(&req, [10, 1, 2, 3], 32);
-        let out = handle_getroute(0, &req, &msg);
-        assert_eq!(route_remove(0, RT_TABLE_MAIN as u32, Some(([10, 0, 0, 0], 8)), 11, None), 1);
-        assert_eq!(route_remove(0, RT_TABLE_MAIN as u32, Some(([10, 1, 0, 0], 16)), 12, None), 1);
+        let out = handle_getroute(ns, &req, &msg);
+        assert_eq!(route_remove(ns, RT_TABLE_MAIN as u32, Some(([10, 0, 0, 0], 8)), 11, None), 1);
+        assert_eq!(route_remove(ns, RT_TABLE_MAIN as u32, Some(([10, 1, 0, 0], 16)), 12, None), 1);
         assert_eq!(u16::from_ne_bytes([out[4], out[5]]), rt::RTM_NEWROUTE);
         assert_eq!(out[Nlmsghdr::SIZE + 1], 16);
         assert_eq!(attr_u32(&out, rt::rta::RTA_OIF), Some(12));
@@ -130,21 +131,22 @@ mod tests {
 
     #[test]
     fn dump_groups_equal_cost_routes_as_multipath() {
-    let _domain = net::hosted_fixture::init_net_domain();
+        let namespace = crate::netlink_tests::test_namespace();
+        let ns = namespace.id().as_u64();
         let dst = Some(([203, 0, 113, 0], 24));
-        let _ = route_remove(0, RT_TABLE_MAIN as u32, dst, 8811, Some([192, 0, 2, 1]));
-        let _ = route_remove(0, RT_TABLE_MAIN as u32, dst, 8812, Some([192, 0, 2, 2]));
-        route_insert(RouteRow { ns: 0, table: RT_TABLE_MAIN as u32, protocol: RTPROT_STATIC,
+        let _ = route_remove(ns, RT_TABLE_MAIN as u32, dst, 8811, Some([192, 0, 2, 1]));
+        let _ = route_remove(ns, RT_TABLE_MAIN as u32, dst, 8812, Some([192, 0, 2, 2]));
+        route_insert(RouteRow { ns, table: RT_TABLE_MAIN as u32, protocol: RTPROT_STATIC,
             scope: RT_SCOPE_LINK, kind: RTN_UNICAST, dst, gateway: Some([192, 0, 2, 1]),
             oif_ifindex: 8811, prefsrc: None, metric: 0, metrics: net::RouteMetrics::NONE, flags: 0, weight: 1, nh_flags: 0 });
-        route_insert(RouteRow { ns: 0, table: RT_TABLE_MAIN as u32, protocol: RTPROT_STATIC,
+        route_insert(RouteRow { ns, table: RT_TABLE_MAIN as u32, protocol: RTPROT_STATIC,
             scope: RT_SCOPE_LINK, kind: RTN_UNICAST, dst, gateway: Some([192, 0, 2, 2]),
             oif_ifindex: 8812, prefsrc: None, metric: 0, metrics: net::RouteMetrics::NONE, flags: 0, weight: 1, nh_flags: 0 });
         let req = Nlmsghdr { nlmsg_len: 28, nlmsg_type: rt::RTM_GETROUTE,
             nlmsg_flags: crate::flags::NLM_F_DUMP, nlmsg_seq: 10, nlmsg_pid: 4 };
-        let out = handle_getroute(0, &req, &[]);
-        assert_eq!(route_remove(0, RT_TABLE_MAIN as u32, dst, 8811, Some([192, 0, 2, 1])), 1);
-        assert_eq!(route_remove(0, RT_TABLE_MAIN as u32, dst, 8812, Some([192, 0, 2, 2])), 1);
+        let out = handle_getroute(ns, &req, &[]);
+        assert_eq!(route_remove(ns, RT_TABLE_MAIN as u32, dst, 8811, Some([192, 0, 2, 1])), 1);
+        assert_eq!(route_remove(ns, RT_TABLE_MAIN as u32, dst, 8812, Some([192, 0, 2, 2])), 1);
         assert!(dump_has_multipath_dst(&out, [203, 0, 113, 0]));
     }
 

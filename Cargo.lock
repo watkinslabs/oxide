@@ -279,6 +279,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "clk"
+version = "0.1.0"
+dependencies = [
+ "sync",
+ "vfs",
+]
+
+[[package]]
 name = "cmdline"
 version = "0.1.0"
 
@@ -1092,13 +1100,24 @@ version = "0.1.0"
 dependencies = [
  "aml",
  "backlight",
+ "clk",
+ "cpu",
+ "cpufreq",
+ "cpuidle",
  "crc",
  "ext4",
  "fdt",
  "hal",
+ "hal-aarch64",
+ "hal-x86_64",
  "klog",
+ "mmio-map",
+ "opp",
  "pci",
  "power-supply",
+ "regulator",
+ "sched",
+ "scmi",
  "sync",
  "thermal",
  "timekeeper",
@@ -1817,6 +1836,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
+name = "opp"
+version = "0.1.0"
+dependencies = [
+ "clk",
+ "regulator",
+ "sync",
+ "vfs",
+]
+
+[[package]]
 name = "overlayfs"
 version = "0.1.0"
 dependencies = [
@@ -1941,6 +1970,7 @@ dependencies = [
  "block",
  "boot-info",
  "cgroup",
+ "cmdline",
  "cpu",
  "drv-zram",
  "hal",
@@ -2175,6 +2205,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
+name = "regulator"
+version = "0.1.0"
+dependencies = [
+ "sync",
+ "vfs",
+]
+
+[[package]]
 name = "rtnl-link"
 version = "0.1.0"
 dependencies = [
@@ -2242,6 +2280,10 @@ dependencies = [
  "vfs",
  "vmm",
 ]
+
+[[package]]
+name = "scmi"
+version = "0.1.0"
 
 [[package]]
 name = "scoped-tls"

@@ -46,6 +46,13 @@ fn alloc_oom_returns_nomem() {
 }
 
 #[test]
+fn nowait_allocation_returns_nomem_without_a_slowpath() {
+    let pmm = build(4);
+    let _a = pmm.alloc_gfp_nowait(Order(2), 0).unwrap();
+    assert_eq!(pmm.alloc_gfp_nowait(Order(0), 0), Err(Error::NoMem));
+}
+
+#[test]
 fn alloc_below_selects_and_frees_a_low_buddy_block() {
     let pmm = build(4096);
     let p = pmm.alloc_below(Order(3), Pfn(128)).unwrap();

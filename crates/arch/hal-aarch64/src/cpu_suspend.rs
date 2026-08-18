@@ -20,7 +20,8 @@
 
 use crate::cpu_suspend_ctx::{SuspendCtx, OXIDE_SUSPEND_CTX_MAGIC};
 use crate::psci_probe::{preflight, suspend_call_result, SuspendRefusal, SuspendSupport};
-use crate::psci_uapi::{PsciStatus, PSCI_SYSTEM_SUSPEND_64};
+use crate::psci_uapi::{decode_status, power_state_loses_context, PsciStatus, PSCI_CPU_SUSPEND_64,
+                       PSCI_SYSTEM_SUSPEND_64};
 
 /// Cache-line stride used to push the saved context out to the point of
 /// coherency. The resume entry runs with `SCTLR_EL1.C` clear and reads the
@@ -287,4 +288,45 @@ pub unsafe fn system_suspend(support: SuspendSupport) -> Result<(), SuspendError
     // SAFETY: PSCI conduit is the platform's (HVC on QEMU virt); `entry_pa` is the resume entry's physical address and `ctx_pa` the cleaned block's. Returns only on failure.
     let raw = unsafe { crate::psci::conduit_call(PSCI_SYSTEM_SUSPEND_64, entry_pa, ctx_pa, 0) };
     Err(SuspendError::Firmware(suspend_call_result(raw).unwrap_err()))
+}
+
+/// Enter one PSCI CPU-idle state. Retention states return directly from the
+/// firmware call; power-down states save EL1 state and resume through the same
+/// physical entry used for system suspend.
+///
+/// # SAFETY: caller is the CPU idle loop with interrupts masked and no locks
+/// held across the firmware call. The idle loop restores IRQ admission after
+/// this function returns.
+/// # C: O(sleep)
+/// # Ctx: IRQ-off idle path
+pub unsafe fn cpu_suspend(state: u32) -> Result<(), PsciStatus> {
+    let format = crate::psci::cpu_suspend_format();
+    if !crate::psci_uapi::power_state_valid(state, format) { return Err(PsciStatus::InvalidParameters); }
+    if !power_state_loses_context(state, format) {
+        // SAFETY: the cached probe admitted CPU_SUSPEND; retention states pass
+        // no resume address and return normally after their wake event.
+        let raw = unsafe { crate::psci::conduit_call(PSCI_CPU_SUSPEND_64, u64::from(state), 0, 0) };
+        return match decode_status(raw as i32) { PsciStatus::Success => Ok(()), status => Err(status) };
+    }
+    let mut ctx = SuspendCtx::new();
+    ctx.ttbr0_identity_pa = crate::smp::identity_ttbr0_pa();
+    let ctx_va = &raw mut ctx as u64;
+    ctx.self_va = ctx_va;
+    // SAFETY: `ctx` is live in the kernel mapping and the resume entry is a
+    // linked kernel symbol, so both addresses can be translated at EL1.
+    let (ctx_pa, entry_pa) = unsafe { (va_to_pa(ctx_va), va_to_pa(resume_entry_va())) };
+    ctx.self_pa = ctx_pa;
+    if entry_pa == 0 || ctx.ttbr0_identity_pa == 0 || ctx_pa == 0 { return Err(PsciStatus::InvalidAddress); }
+    debug_assert_eq!(ctx.magic, OXIDE_SUSPEND_CTX_MAGIC);
+    // SAFETY: the save stub writes the supplied context only and returns zero
+    // after the resume entry restored this invocation's callee-saved state.
+    let saved = unsafe { oxide_arm_cpu_suspend_enter(&raw mut ctx) };
+    if saved == 0 { return Ok(()); }
+    // SAFETY: firmware resumes with caches off and reads this exact context by
+    // physical address, so every saved line must reach the point of coherency.
+    unsafe { clean_to_poc(ctx_va, core::mem::size_of::<SuspendCtx>()); }
+    // SAFETY: the validated power-down parameter and physical resume/context
+    // addresses satisfy PSCI_CPU_SUSPEND's entry contract. It returns only on failure.
+    let raw = unsafe { crate::psci::conduit_call(PSCI_CPU_SUSPEND_64, u64::from(state), entry_pa, ctx_pa) };
+    Err(decode_status(raw as i32))
 }

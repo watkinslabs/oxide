@@ -20,12 +20,16 @@ fn refused() -> power::Error {
 }
 
 fn prepare() -> power::KResult<()> {
+    cpufreq::suspend();
     drv::pm::dpm_set_transition(drv::pm::PmTransition::Suspend);
-    drv::pm::dpm_prepare().map_err(|_| refused())
+    match drv::pm::dpm_prepare() {
+        Ok(()) => Ok(()), Err(_) => { cpufreq::resume(); Err(refused()) }
+    }
 }
 fn suspend() -> power::KResult<()> { drv::pm::dpm_suspend().map_err(|_| refused()) }
 fn suspend_late() -> power::KResult<()> { drv::pm::dpm_suspend_late().map_err(|_| refused()) }
 fn suspend_noirq() -> power::KResult<()> { drv::pm::dpm_suspend_noirq().map_err(|_| refused()) }
+fn complete() { drv::pm::dpm_complete(); cpufreq::resume(); }
 
 /// Install the device-model half of the sequence and register the interrupt
 /// controllers' core callbacks.
@@ -44,7 +48,7 @@ pub fn init() {
         dpm_resume_noirq: Some(drv::pm::dpm_resume_noirq),
         dpm_resume_early: Some(drv::pm::dpm_resume_early),
         dpm_resume: Some(drv::pm::dpm_resume),
-        dpm_complete: Some(drv::pm::dpm_complete),
+        dpm_complete: Some(complete),
     });
 }
 

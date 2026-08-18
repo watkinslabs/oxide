@@ -75,6 +75,10 @@ fn spawn_kthreads() {
     // residency accounting under `/sys/devices/system/cpu/cpu*/cpuidle` real.
     // A platform provider that finds a deeper ladder replaces this table.
     step("cpuidle::generic::init", || { cpuidle::idle::generic::init(cpu::MAX_CPUS); });
+    #[cfg(target_arch = "x86_64")]
+    step("firmware::acpi::cpuidle::init", || { let _ = firmware::acpi::cpuidle::init(); });
+    #[cfg(target_arch = "aarch64")]
+    step("firmware::fdt::idle::init", || { let _ = firmware::fdt::idle::init(); });
     if step("spawn_timer_driver", sched::live::spawn_timer_driver).is_err() {
         klog::kerror!("fatal: timer driver spawn failed");
         sched::halt_forever();
@@ -90,6 +94,10 @@ fn spawn_kthreads() {
         klog::kerror!("fatal: kworker spawn failed");
         sched::halt_forever();
     }
+    #[cfg(target_arch = "aarch64")]
+    step("firmware::fdt::cpufreq::start_deferred", firmware::fdt::cpufreq::start_deferred);
+    #[cfg(target_arch = "aarch64")]
+    step("firmware::fdt::scmi::start_deferred", firmware::fdt::scmi::start_deferred);
     // The kernel -> userspace helper runs its exec on a worker thread, so its
     // backend is installed once the workers exist. The gate stays CLOSED here:
     // no helper may run until userspace is up, which is what `enable` below

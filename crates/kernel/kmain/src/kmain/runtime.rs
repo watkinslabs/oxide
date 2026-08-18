@@ -194,6 +194,8 @@ fn init_runtime_subsystems() {
     klog::oops::set_crash_kexec_hook(kexec::crashk::panic::crash_kexec);
     // SAFETY: same boot-path, single-CPU, called-once window as `power::init`.
     let _ = step("firmware::init", || unsafe { firmware::init() });
+    #[cfg(target_arch = "aarch64")]
+    step("firmware::fdt::providers::init", || { let _ = firmware::fdt::providers::init(); });
     ::sched::set_current_hook(|| sched::live::current());
     vmm::set_mmap_rwsem_wait_hooks(
         sched::live::inode_wait::park_rwsem,
@@ -322,6 +324,18 @@ pub(crate) fn init_network_and_pci() {
     // PCI enumeration owns its own phase logging. Avoid retaining `step`'s
     // formatting closure across firmware AML evaluation on the BSP stack.
     crate::pci_boot::enumerate_and_log();
+    // Register the platform-described policy before scheduler utilisation
+    // begins, so no cpufreq tree exists without its hardware transition path.
+    #[cfg(target_arch = "x86_64")]
+    step("firmware::acpi::cpufreq::init", || { let _ = firmware::acpi::cpufreq::init(); });
+    #[cfg(target_arch = "aarch64")]
+    step("firmware::fdt::scmi::set_completion_irq_installer", || {
+        firmware::fdt::scmi::set_completion_irq_installer(install_scmi_completion_irq);
+    });
+    #[cfg(target_arch = "aarch64")]
+    step("firmware::fdt::scmi::init", || { let _ = firmware::fdt::scmi::init(); });
+    #[cfg(target_arch = "aarch64")]
+    step("firmware::fdt::cpufreq::init", || { let _ = firmware::fdt::cpufreq::init(); });
     // The AML namespace is built by PCI routing above, so the ACPI power and
     // display devices can be published now. A machine that describes none
     // registers none, which is the same answer Linux gives on the same
@@ -331,6 +345,25 @@ pub(crate) fn init_network_and_pci() {
     // presents `/dev/video0`, so the whole V4L2 path — negotiation, buffers,
     // controls, events — is real rather than machinery with no caller.
     step("v4l2::vivid", drv_vivid::init);
+}
+
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+fn install_scmi_completion_irq(intid: u32, level: bool) -> bool {
+    if arch_irq::request_arm_irq_line_handler(intid, scmi_completion_irq).is_err() { return false; }
+    // SAFETY: GIC init completed before runtime device probing, and this SCMI
+    // transport owns the decoded FDT INTID until the boot-lifetime provider ends.
+    unsafe {
+        if level { arch_irq::gic::enable_intid_level(intid); }
+        else { arch_irq::gic::enable_intid(intid); }
+    }
+    true
+}
+
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+fn scmi_completion_irq(intid: u32) -> arch_irq::IrqReport {
+    let ret = if firmware::fdt::scmi::handle_completion_irq(intid) { arch_irq::IrqRet::Handled }
+    else { arch_irq::IrqRet::NotMine };
+    arch_irq::IrqReport::hard(ret)
 }
 
 /// Publish the ACPI-described power supplies and backlights, reporting what
@@ -346,6 +379,8 @@ fn publish_acpi_devices() {
     klog::write_dec_u64(counts.batteries as u64);
     klog::write_raw(b" backlights=");
     klog::write_dec_u64(counts.backlights as u64);
+    klog::write_raw(b" processor-cooling=");
+    klog::write_dec_u64(counts.processor_cooling as u64);
     klog::write_raw(b" thermal-zones=");
     klog::write_dec_u64(counts.thermal_zones as u64);
     klog::write_raw(b"\n");

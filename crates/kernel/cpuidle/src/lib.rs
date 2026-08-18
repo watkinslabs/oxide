@@ -36,7 +36,7 @@ pub mod usage;
 #[cfg(target_os = "oxide-kernel")]
 pub mod idle;
 
-pub use driver::{driver, register, Driver, IdleOps};
+pub use driver::{driver, register, register_per_cpu, Driver, IdleOps};
 pub use governor::{Governor, Kind, Reflection, SelectInput, Selection};
 pub use select::{idle_cycle, Conditions, Cycle};
 pub use state::{Entry, IdleState, TableError};

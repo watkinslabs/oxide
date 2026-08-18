@@ -1,46 +1,27 @@
 use super::*;
 use super::free_node::*;
+use super::pageblock::PageblockTypes;
 
-// ---------------------------------------------------------------------------
-// PmmInner — protected by the Buddy spinlock.
-// ---------------------------------------------------------------------------
-
-// Backing is held outside the lock so `Pmm::page_ptr` is lock-free
-// and slab (Slab class, rank 10) can safely call it while holding its
-// own spinlock — taking the lower-rank Buddy lock at that point would
-// violate the partial order in `06§3.6`. PageBacking trait methods are
-// pure pointer arithmetic over the boot-allocated backing structures
-// and are inherently `Send + Sync`.
+// Lock-protected buddy state. Free-list membership is split first by zone,
+// then by migratetype, then by order; the bitmap remains the sole truth for
+// whether an order block is globally free.
 pub(super) struct PmmInner {
-    pub(super) pfn_max: u64,                                    // exclusive upper bound
+    pub(super) pfn_max: u64,
     pub(super) bitmaps: [&'static [AtomicU64]; ORDERS],
-    /// Zone partition of `[0, pfn_max)`. Free state is kept per zone so a
-    /// bounded allocation reaches only the lists it is allowed to reach.
     pub(super) layout: ZoneLayout,
     pub(super) zonelist: Zonelist,
-    pub(super) free_heads: [[u64; ORDERS]; NR_ZONES],
-    pub(super) free_count: [[u64; ORDERS]; NR_ZONES],
-    /// Pages seeded into each zone's lists at boot.
+    pub(super) pageblocks: PageblockTypes,
+    pub(super) free_heads: [[[u64; ORDERS]; MIGRATE_TYPES]; NR_ZONES],
+    pub(super) free_count: [[[u64; ORDERS]; MIGRATE_TYPES]; NR_ZONES],
     pub(super) managed: [u64; NR_ZONES],
-    /// Pages the firmware map made usable inside each zone's span. A
-    /// permanent boot reservation leaves `managed` and not this, so the
-    /// difference is exactly what never reached the allocator.
     pub(super) present: [u64; NR_ZONES],
-    /// Pages each zone spans, holes included.
     pub(super) spanned: [u64; NR_ZONES],
     pub(super) reserve: LowmemReserve,
     pub(super) wmark: [ZoneWatermarks; NR_ZONES],
-    /// Watermark tuning the boot path published, or `None` before it has run.
-    /// The marks stay zero until then, which leaves the gate open — a zone
-    /// cannot be held to a threshold nobody has computed yet.
     pub(super) tunables: Option<crate::watermark::WatermarkTunables>,
     pub(super) allocated: u64,
-    /// Permanently consumed boot pages.  These stay part of the allocator's
-    /// `allocated` invariant but are reported separately from runtime users.
     pub(super) reserved: u64,
     pub(super) initial_free: u64,
-    /// Successful runtime buddy operations, recorded under the same lock as
-    /// the state transition so observation cannot race a half-transition.
     pub(super) alloc_events: u64,
     pub(super) alloc_event_pages: u64,
     pub(super) free_events: u64,
@@ -48,257 +29,263 @@ pub(super) struct PmmInner {
 }
 
 impl PmmInner {
-    /// Re-derive everything that is a function of the per-zone managed page
-    /// counts: the lowmem reserve matrix always, and the watermarks once the
-    /// boot path has published its tuning. Every mutation of `managed` must
-    /// end here, or the allocation gate keeps enforcing a threshold derived
-    /// from memory the allocator no longer owns.
-    ///
-    /// Returns the managed total and the watermark aggregate to publish once
-    /// the caller has dropped the lock, or `None` while no tuning exists.
+    /// Re-derive the allocation-gate values from the final zone totals.
     /// # C: O(NR_ZONES^2)
     pub(super) fn recompute_derived(&mut self) -> Option<(u64, ZoneWatermarks)> {
         self.reserve = lowmem_reserve(self.managed, DEFAULT_LOWMEM_RESERVE_RATIO);
         let total: u64 = self.managed.iter().sum();
-        let t = self.tunables?;
-        let mut agg = ZoneWatermarks::default();
+        let tunables = self.tunables?;
+        let mut aggregate = ZoneWatermarks::default();
         for zi in 0..NR_ZONES {
-            // Only the movable zone is capped here: a 64-bit direct map has no
-            // separate high-memory zone for the other half of the reference's
-            // condition to name.
             let cap = zi == ZoneType::Movable.index();
-            let w = crate::watermark::derive_zone_watermarks(self.managed[zi], total, t, PAGE_SIZE_BYTES, cap);
-            self.wmark[zi] = w;
-            agg.min += w.min; agg.low += w.low; agg.high += w.high; agg.promo += w.promo;
+            let wmark = crate::watermark::derive_zone_watermarks(self.managed[zi], total, tunables, PAGE_SIZE_BYTES, cap);
+            self.wmark[zi] = wmark;
+            aggregate.min += wmark.min; aggregate.low += wmark.low;
+            aggregate.high += wmark.high; aggregate.promo += wmark.promo;
         }
-        Some((total, agg))
+        Some((total, aggregate))
     }
 
-    /// Zone-list slot owning `pfn`. A PFN outside every span has no slot; the
-    /// allocator never reaches one, so the last slot is used as a terminal
-    /// rather than panicking inside a lock. # C: O(NR_ZONES)
+    /// Zone slot owning `pfn`, with a terminal slot for malformed callers.
+    /// # C: O(NR_ZONES)
     pub(super) fn zi(&self, pfn: u64) -> usize {
-        let i = self.layout.index_of(pfn);
-        if i < NR_ZONES { i } else { NR_ZONES - 1 }
+        let index = self.layout.index_of(pfn);
+        if index < NR_ZONES { index } else { NR_ZONES - 1 }
     }
 
-    pub(super) fn bitmap_get(&self, order: u8, idx: u64) -> bool {
-        let word = (idx >> 6) as usize;
-        let bit = (idx & 63) as u32;
+    /// Pageblock mobility type that owns a returned allocation. # C: O(1)
+    pub(super) fn migratetype(&self, pfn: u64) -> MigrateType { self.pageblocks.get(pfn) }
+
+    pub(super) fn bitmap_get(&self, order: u8, index: u64) -> bool {
+        let word = (index >> 6) as usize;
+        let bit = (index & 63) as u32;
         (self.bitmaps[order as usize][word].load(Ordering::Relaxed) >> bit) & 1 == 1
     }
 
-    pub(super) fn bitmap_set(&self, order: u8, idx: u64) {
-        let word = (idx >> 6) as usize;
-        let bit = (idx & 63) as u32;
+    pub(super) fn bitmap_set(&self, order: u8, index: u64) {
+        let word = (index >> 6) as usize;
+        let bit = (index & 63) as u32;
         self.bitmaps[order as usize][word].fetch_or(1u64 << bit, Ordering::Relaxed);
     }
 
-    pub(super) fn bitmap_clear(&self, order: u8, idx: u64) {
-        let word = (idx >> 6) as usize;
-        let bit = (idx & 63) as u32;
+    pub(super) fn bitmap_clear(&self, order: u8, index: u64) {
+        let word = (index >> 6) as usize;
+        let bit = (index & 63) as u32;
         self.bitmaps[order as usize][word].fetch_and(!(1u64 << bit), Ordering::Relaxed);
     }
 
-    /// Stamp the FreeNode into the head page of the order-o block at `pfn`.
-    ///
-    /// Tail pages are not free-list nodes.  Linux records buddy state in the
-    /// head `struct page`; keeping this header head-only has the same shape
-    /// and avoids faulting every usable RAM page into the boot working set.
-    ///
-    /// # SAFETY: block is order-aligned, in-range, currently NOT on any
-    /// free-list; pages are PMM-owned at call site; backing is the live
-    /// PageBacking impl handed to `Pmm::init`.
-    pub(super) unsafe fn stamp_block<B: PageBacking>(
-        &self,
-        backing: &B,
-        pfn: u64,
-        order: u8,
-        head_next: u64,
-        head_prev: u64,
-    ) {
-        // SAFETY: `pfn` is the block head and therefore names one complete
-        // PMM-owned page in which this intrusive header resides.
-        let p = unsafe { backing.page_ptr(Pfn(pfn)) };
-        // SAFETY: write the complete 32-byte head-node header.  No tail-page
-        // state exists for a free block.
+    /// # SAFETY: `pfn` is a free block head exclusively owned by PMM.
+    unsafe fn stamp_block<B: PageBacking>(&self, backing: &B, pfn: u64, order: u8, next: u64, prev: u64) {
+        // SAFETY: caller established that pfn names an owned block head.
+        let page = unsafe { backing.page_ptr(Pfn(pfn)) };
+        // SAFETY: the complete intrusive header lives at the start of pfn.
         unsafe {
-            write_u64(p, OFF_POISON, POISON_MAGIC);
-            write_u8(p, OFF_ORDER, order);
-            for i in 1..8 { write_u8(p, OFF_ORDER + i, 0); }
-            write_u64(p, OFF_NEXT, head_next);
-            write_u64(p, OFF_PREV, head_prev);
+            write_u64(page, OFF_POISON, POISON_MAGIC);
+            write_u8(page, OFF_ORDER, order);
+            for i in 1..8 { write_u8(page, OFF_ORDER + i, 0); }
+            write_u64(page, OFF_NEXT, next);
+            write_u64(page, OFF_PREV, prev);
         }
     }
 
-    /// Push `pfn` to head of free_list[order]. Stamps FreeNode header.
-    ///
-    /// # SAFETY: `pfn` is order-aligned, in-range, currently NOT on any
-    /// free-list; pages are PMM-owned at call site.
-    pub(super) unsafe fn push_free<B: PageBacking>(&mut self, backing: &B, pfn: u64, order: u8) {
-        let z = self.zi(pfn);
-        let head = self.free_heads[z][order as usize];
-        // SAFETY: pfn block PMM-owned per fn contract.
+    /// Push a block onto exactly its zone and pageblock-type free list.
+    /// # SAFETY: `pfn` is not free and the caller owns its complete span.
+    pub(super) unsafe fn push_free<B: PageBacking>(&mut self, backing: &B, pfn: u64, order: u8, mt: MigrateType) {
+        let zone = self.zi(pfn);
+        kassert!(self.migratetype(pfn) == mt, "pmm free block wrong migratetype");
+        let head = self.free_heads[zone][mt.index()][order as usize];
+        // SAFETY: caller owns pfn and it is not published on a free list.
         unsafe { self.stamp_block(backing, pfn, order, head, PFN_NULL) };
         if head != PFN_NULL {
-            // SAFETY: old head's page is on the free-list ⇒ PMM-owned.
-            let hp = unsafe { backing.page_ptr(Pfn(head)) };
-            // SAFETY: write old head's prev field inside its header.
-            unsafe { write_u64(hp, OFF_PREV, pfn) };
+            // SAFETY: the previous head is on this free list.
+            let page = unsafe { backing.page_ptr(Pfn(head)) };
+            // SAFETY: update the prior head's intrusive backward link.
+            unsafe { write_u64(page, OFF_PREV, pfn) };
         }
-        self.free_heads[z][order as usize] = pfn;
+        self.free_heads[zone][mt.index()][order as usize] = pfn;
     }
 
-    /// Pop head of free_list[order]. Caller updates bitmap + count.
-    ///
-    /// # SAFETY: free_list[order] is non-empty.
-    pub(super) unsafe fn pop_free<B: PageBacking>(&mut self, backing: &B, zone: usize, order: u8) -> u64 {
-        let head = self.free_heads[zone][order as usize];
+    /// Pop one block from a selected free list.
+    /// # SAFETY: the selected list is non-empty and caller holds Buddy.
+    pub(super) unsafe fn pop_free<B: PageBacking>(&mut self, backing: &B, zone: usize, order: u8, mt: MigrateType) -> u64 {
+        let head = self.free_heads[zone][mt.index()][order as usize];
         debug_assert!(head != PFN_NULL);
-        // SAFETY: head on free-list ⇒ PMM-owned page.
-        let hp = unsafe { backing.page_ptr(Pfn(head)) };
-        // SAFETY: header lives in first 32B of a PMM-owned page.
-        let next = unsafe { read_u64(hp, OFF_NEXT) };
-        // SAFETY: header lives in first 32B of the selected head page.
-        let prev = unsafe { read_u64(hp, OFF_PREV) };
+        // SAFETY: head belongs to the selected intrusive free list.
+        let page = unsafe { backing.page_ptr(Pfn(head)) };
+        // SAFETY: read the stable intrusive links before unlinking head.
+        let (next, prev) = unsafe { (read_u64(page, OFF_NEXT), read_u64(page, OFF_PREV)) };
         kassert!(prev == PFN_NULL, "pmm free-list head prev mismatch");
         kassert!(next == PFN_NULL || next < self.pfn_max, "pmm free-list next out of range");
         if next != PFN_NULL {
             kassert!(next != head, "pmm free-list self link");
             kassert!(self.zi(next) == zone, "pmm free-list next wrong zone");
-            // SAFETY: `next` is on the free-list ⇒ PMM-owned page.
-            let np = unsafe { backing.page_ptr(Pfn(next)) };
-            // SAFETY: next header is inside the validated in-range PMM page.
-            let next_prev = unsafe { read_u64(np, OFF_PREV) };
+            kassert!(self.migratetype(next) == mt, "pmm free-list next wrong migratetype");
+            // SAFETY: next is another node on this selected list.
+            let next_page = unsafe { backing.page_ptr(Pfn(next)) };
+            // SAFETY: read/write only next's intrusive header.
+            let next_prev = unsafe { read_u64(next_page, OFF_PREV) };
             kassert!(next_prev == head, "pmm free-list next back-link mismatch");
-            // SAFETY: write into next-node's prev field; PMM-owned page.
-            unsafe { write_u64(np, OFF_PREV, PFN_NULL) };
+            unsafe { write_u64(next_page, OFF_PREV, PFN_NULL) };
         }
-        self.free_heads[zone][order as usize] = next;
+        self.free_heads[zone][mt.index()][order as usize] = next;
         head
     }
 
-    /// Remove `pfn` from free_list[order] (used during merge / reserve).
-    ///
-    /// # SAFETY: `pfn` is currently on free_list[order]; page PMM-owned.
-    pub(super) unsafe fn unlink_free<B: PageBacking>(&mut self, backing: &B, pfn: u64, order: u8) {
-        let z = self.zi(pfn);
-        // SAFETY: pfn on free-list ⇒ PMM-owned page.
-        let p = unsafe { backing.page_ptr(Pfn(pfn)) };
-        // SAFETY: header read inside owned page.
-        let next = unsafe { read_u64(p, OFF_NEXT) };
-        // SAFETY: header read inside owned page.
-        let prev = unsafe { read_u64(p, OFF_PREV) };
+    /// Remove a known block from its selected free list.
+    /// # SAFETY: `pfn` is on the named list and caller holds Buddy.
+    pub(super) unsafe fn unlink_free<B: PageBacking>(&mut self, backing: &B, pfn: u64, order: u8, mt: MigrateType) {
+        let zone = self.zi(pfn);
+        kassert!(self.migratetype(pfn) == mt, "pmm unlink wrong migratetype");
+        // SAFETY: caller proved pfn is a node on a PMM free list.
+        let page = unsafe { backing.page_ptr(Pfn(pfn)) };
+        // SAFETY: its intrusive header is initialized and stable under Buddy.
+        let (next, prev) = unsafe { (read_u64(page, OFF_NEXT), read_u64(page, OFF_PREV)) };
         kassert!(next == PFN_NULL || next < self.pfn_max, "pmm free-list next out of range");
         kassert!(prev == PFN_NULL || prev < self.pfn_max, "pmm free-list prev out of range");
         if prev == PFN_NULL {
-            kassert!(self.free_heads[z][order as usize] == pfn, "pmm free-list head mismatch");
-            self.free_heads[z][order as usize] = next;
+            kassert!(self.free_heads[zone][mt.index()][order as usize] == pfn, "pmm free-list head mismatch");
+            self.free_heads[zone][mt.index()][order as usize] = next;
         } else {
-            kassert!(prev != pfn, "pmm free-list self link");
-            kassert!(self.zi(prev) == z, "pmm free-list prev wrong zone");
-            // SAFETY: prev on free-list ⇒ PMM-owned page.
-            let pp = unsafe { backing.page_ptr(Pfn(prev)) };
-            // SAFETY: prev header is inside the validated in-range PMM page.
-            let prev_next = unsafe { read_u64(pp, OFF_NEXT) };
-            kassert!(prev_next == pfn, "pmm free-list prev forward-link mismatch");
-            // SAFETY: writing prev's next field inside its header.
-            unsafe { write_u64(pp, OFF_NEXT, next) };
+            kassert!(self.zi(prev) == zone && self.migratetype(prev) == mt, "pmm free-list prev wrong class");
+            // SAFETY: prev is a peer node on this list.
+            let prev_page = unsafe { backing.page_ptr(Pfn(prev)) };
+            // SAFETY: update prev's forward link inside its header.
+            unsafe { write_u64(prev_page, OFF_NEXT, next) };
         }
         if next != PFN_NULL {
-            kassert!(next != pfn, "pmm free-list self link");
-            kassert!(self.zi(next) == z, "pmm free-list next wrong zone");
-            // SAFETY: next on free-list ⇒ PMM-owned page.
-            let np = unsafe { backing.page_ptr(Pfn(next)) };
-            // SAFETY: next header is inside the validated in-range PMM page.
-            let next_prev = unsafe { read_u64(np, OFF_PREV) };
-            kassert!(next_prev == pfn, "pmm free-list next back-link mismatch");
-            // SAFETY: writing next's prev field inside its header.
-            unsafe { write_u64(np, OFF_PREV, prev) };
+            kassert!(self.zi(next) == zone && self.migratetype(next) == mt, "pmm free-list next wrong class");
+            // SAFETY: next is a peer node on this list.
+            let next_page = unsafe { backing.page_ptr(Pfn(next)) };
+            // SAFETY: update next's backward link inside its header.
+            unsafe { write_u64(next_page, OFF_PREV, prev) };
         }
     }
 
-    /// Verify the free-node poison on the head page of a buddy block.
-    ///
-    /// # SAFETY: block is order-aligned, in-range, PMM-owned at call.
+    /// # SAFETY: `pfn` is the head of a globally free block.
     pub(super) unsafe fn verify_poison<B: PageBacking>(&self, backing: &B, pfn: u64) {
-        // SAFETY: `pfn` is the known free block head at this call site.
-        let p = unsafe { backing.page_ptr(Pfn(pfn)) };
-        // SAFETY: read the head-node poison before its block leaves the list.
-        let m = unsafe { read_u64(p, OFF_POISON) };
-        kassert!(m == POISON_MAGIC, "pmm poison mismatch on alloc");
+        // SAFETY: caller established pfn is a PMM free-list head.
+        let page = unsafe { backing.page_ptr(Pfn(pfn)) };
+        // SAFETY: inspect the fixed header before allocation overwrites it.
+        kassert!(unsafe { read_u64(page, OFF_POISON) } == POISON_MAGIC, "pmm poison mismatch on alloc");
     }
 
-    /// Greedy seed: place largest aligned blocks at `cur..end` onto
-    /// free-lists with bitmap bits set. Used by init + region-replay.
-    ///
-    /// # SAFETY: `cur..end` is in-range, never previously seeded.
+    /// # SAFETY: `start..end` is unseeded usable memory.
     pub(super) unsafe fn seed_range<B: PageBacking>(&mut self, backing: &B, start: u64, end: u64) {
-        // A block never straddles a zone boundary: it would belong to two
-        // zones' accounting at once and a merge across the boundary would
-        // hand a bounded allocation a block whose tail is out of bounds.
-        // Clip the region to each zone and seed the pieces independently.
-        for zi in 0..NR_ZONES {
-            let span = self.layout.span_at(zi);
+        for zone in 0..NR_ZONES {
+            let span = self.layout.span_at(zone);
             let lo = core::cmp::max(start, span.start_pfn);
             let hi = core::cmp::min(end, span.end_pfn);
-            if hi <= lo { continue; }
-            // SAFETY: `lo..hi` is a sub-range of the caller's never-seeded region.
-            unsafe { self.seed_within_zone(backing, zi, lo, hi) };
+            if hi > lo {
+                // SAFETY: this zone-clipped interval remains unseeded.
+                unsafe { self.seed_within_zone(backing, zone, lo, hi) };
+            }
         }
     }
 
-    /// # SAFETY: as `seed_range`, and `cur..end` lies inside zone `zi`.
-    unsafe fn seed_within_zone<B: PageBacking>(&mut self, backing: &B, zi: usize, mut cur: u64, end: u64) {
+    /// # SAFETY: `cur..end` is unseeded and wholly inside `zone`.
+    unsafe fn seed_within_zone<B: PageBacking>(&mut self, backing: &B, zone: usize, mut cur: u64, end: u64) {
         while cur < end {
-            let remaining = end - cur;
-            let mut o: u8 = MAX_ORDER;
-            loop {
-                let span = 1u64 << o;
-                if (cur & (span - 1)) == 0 && span <= remaining { break; }
-                if o == 0 { break; }
-                o -= 1;
+            let mut order = MAX_ORDER;
+            while order > 0 {
+                let span = 1u64 << order;
+                if cur & (span - 1) == 0 && span <= end - cur { break; }
+                order -= 1;
             }
-            let span = 1u64 << o;
-            // SAFETY: cur..cur+span is order-o aligned, in-range, never seeded.
-            unsafe { self.push_free(backing, cur, o) };
-            self.bitmap_set(o, cur >> o);
-            self.free_count[zi][o as usize] += 1;
-            self.managed[zi] += span;
-            self.present[zi] += span;
+            let span = 1u64 << order;
+            let mt = self.migratetype(cur);
+            // SAFETY: cur names a new aligned block in this unseeded range.
+            unsafe { self.push_free(backing, cur, order, mt) };
+            self.bitmap_set(order, cur >> order);
+            self.free_count[zone][mt.index()][order as usize] += 1;
+            self.managed[zone] += span;
+            self.present[zone] += span;
             cur += span;
         }
     }
 
-    /// Take a block of at least `order` from zone `zi`, splitting the surplus
-    /// back onto that zone's lists. `None` when the zone holds nothing large
-    /// enough. # C: O(MAX_ORDER)
-    ///
-    /// # SAFETY: caller holds the buddy lock; `zi` is a valid zone slot.
-    pub(super) unsafe fn take_block<B: PageBacking>(&mut self, backing: &B, zi: usize, order: u8) -> Option<u64> {
-        let mut k = order;
-        while k <= MAX_ORDER && self.free_heads[zi][k as usize] == PFN_NULL { k += 1; }
-        if k > MAX_ORDER { return None; }
-        // SAFETY: the loop exit condition proves this list is non-empty.
-        let pfn = unsafe { self.pop_free(backing, zi, k) };
-        self.bitmap_clear(k, pfn >> k);
-        self.free_count[zi][k as usize] -= 1;
-        while k > order {
-            k -= 1;
-            let buddy = pfn + (1u64 << k);
-            // SAFETY: the upper half of a block inside zone `zi` is itself
-            // inside zone `zi`, order-k aligned, and on no list.
-            unsafe { self.push_free(backing, buddy, k) };
-            self.bitmap_set(k, buddy >> k);
-            self.free_count[zi][k as usize] += 1;
+    /// Remove one block of `current_order` then split it to `order`, keeping
+    /// all remainders on `mt`'s list. # SAFETY: caller holds Buddy.
+    unsafe fn take_from_order<B: PageBacking>(&mut self, backing: &B, zone: usize, order: u8, current_order: u8, mt: MigrateType) -> u64 {
+        // SAFETY: caller selected a non-empty list at current_order.
+        let pfn = unsafe { self.pop_free(backing, zone, current_order, mt) };
+        self.bitmap_clear(current_order, pfn >> current_order);
+        self.free_count[zone][mt.index()][current_order as usize] -= 1;
+        let mut split = current_order;
+        while split > order {
+            split -= 1;
+            let buddy = pfn + (1u64 << split);
+            // SAFETY: buddy is an unlisted half of the selected free block.
+            unsafe { self.push_free(backing, buddy, split, mt) };
+            self.bitmap_set(split, buddy >> split);
+            self.free_count[zone][mt.index()][split as usize] += 1;
         }
-        Some(pfn)
+        pfn
     }
 
-    /// Free base pages currently on zone `zi`'s lists. # C: O(ORDERS)
-    pub(super) fn zone_free_pages(&self, zi: usize) -> u64 {
-        let mut sum = 0u64;
-        for o in 0..ORDERS { sum += self.free_count[zi][o] << o; }
-        sum
+    /// Claim a whole free fallback block before splitting it. Claiming keeps
+    /// future frees in the requester's class instead of permanently polluting
+    /// a movable pageblock with unmovable allocations.
+    unsafe fn claim_fallback<B: PageBacking>(&mut self, backing: &B, zone: usize, order: u8, requested: MigrateType, fallback: MigrateType) -> Option<u64> {
+        let minimum = order.max(crate::zone::PAGEBLOCK_ORDER);
+        for current_order in (minimum..=MAX_ORDER).rev() {
+            if self.free_heads[zone][fallback.index()][current_order as usize] == PFN_NULL { continue; }
+            // SAFETY: the check above proved this selected free list non-empty.
+            let pfn = unsafe { self.pop_free(backing, zone, current_order, fallback) };
+            self.bitmap_clear(current_order, pfn >> current_order);
+            self.free_count[zone][fallback.index()][current_order as usize] -= 1;
+            self.pageblocks.set_range(pfn, pfn + (1u64 << current_order), requested);
+            let mut split = current_order;
+            while split > order {
+                split -= 1;
+                let buddy = pfn + (1u64 << split);
+                // SAFETY: buddy remains an unlisted half of the claimed block.
+                unsafe { self.push_free(backing, buddy, split, requested) };
+                self.bitmap_set(split, buddy >> split);
+                self.free_count[zone][requested.index()][split as usize] += 1;
+            }
+            return Some(pfn);
+        }
+        None
+    }
+
+    /// Take a block from the preferred list, then claim a complete fallback
+    /// pageblock, then finally steal one fallback block without retyping it.
+    /// # SAFETY: caller holds Buddy and `zone` is a valid slot.
+    pub(super) unsafe fn take_block<B: PageBacking>(&mut self, backing: &B, zone: usize, order: u8, requested: MigrateType) -> Option<u64> {
+        for current_order in order..=MAX_ORDER {
+            if self.free_heads[zone][requested.index()][current_order as usize] != PFN_NULL {
+                // SAFETY: the selected preferred list is non-empty.
+                return Some(unsafe { self.take_from_order(backing, zone, order, current_order, requested) });
+            }
+        }
+        for fallback in requested.fallbacks() {
+            // SAFETY: caller holds Buddy; claim_fallback preserves list truth.
+            if let Some(pfn) = unsafe { self.claim_fallback(backing, zone, order, requested, fallback) } { return Some(pfn); }
+        }
+        for fallback in requested.fallbacks() {
+            for current_order in order..=MAX_ORDER {
+                if self.free_heads[zone][fallback.index()][current_order as usize] != PFN_NULL {
+                    // SAFETY: the selected fallback list is non-empty.
+                    return Some(unsafe { self.take_from_order(backing, zone, order, current_order, fallback) });
+                }
+            }
+        }
+        None
+    }
+
+    /// Aggregate free blocks by order across mobility classes. Watermarks
+    /// measure total reclaimable capacity, not one particular class.
+    /// # C: O(types×orders)
+    pub(super) fn free_area(&self, zone: usize) -> [u64; ORDERS] {
+        let mut out = [0u64; ORDERS];
+        for mt in 0..MIGRATE_TYPES { for order in 0..ORDERS { out[order] += self.free_count[zone][mt][order]; } }
+        out
+    }
+
+    /// Free base pages on every migratetype list in one zone. # C: O(types×orders)
+    pub(super) fn zone_free_pages(&self, zone: usize) -> u64 {
+        let mut pages = 0u64;
+        for mt in 0..MIGRATE_TYPES { for order in 0..ORDERS { pages += self.free_count[zone][mt][order] << order; } }
+        pages
     }
 }

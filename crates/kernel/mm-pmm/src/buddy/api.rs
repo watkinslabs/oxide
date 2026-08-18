@@ -1,6 +1,7 @@
 use super::*;
 use super::inner::PmmInner;
 use super::pcp::{PcpStorage, PcpZoneConfig};
+use super::pageblock::PageblockTypes;
 
 /// PMM owner. Single-instance kernel-wide; constructed in the boot path
 /// after the firmware memory map is parsed (`10§6.3`). Global buddy-list
@@ -22,6 +23,7 @@ pub struct Pmm<B: PageBacking, I: IrqGate = NoopIrq> {
     pub(super) pfn_max: u64,
     pub(super) layout: ZoneLayout,
     pub(super) zonelist: Zonelist,
+    pub(super) pageblocks: PageblockTypes,
     /// Mergeable buddy bitmaps remain authoritative for the global lists.
     /// The distinct PCP bitmap records pages that have left those lists but
     /// are still free in one CPU's cache.
@@ -63,21 +65,59 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {    /// Allocate one buddy block of 
     /// # Ctx: any; brief IRQ-off
     /// # Lk: pageset for a local order-0 hit; Buddy for refill or larger blocks
     pub fn alloc_gfp(&self, order: Order, gfp: u32) -> KResult<Pfn> {
-        let Ok(zone) = crate::zone::gfp_zone(gfp) else { return Err(Error::InvalidOrder) };
-        let hi = zone.index();
+        let (hi, mt) = self.alloc_gfp_prepare(order, gfp)?;
+        let mut r = self.alloc_inner_zoned(order, hi, AllocWmark::Low, mt);
+        // Exhaustion is not the answer until reclaim and the out-of-memory
+        // selector have both been given their turn: any allocation that
+        // cannot be satisfied enters the slowpath, not only a user fault.
+        if matches!(r, Err(Error::NoMem)) { r = self.alloc_slowpath(order, hi, gfp, mt); }
+        self.finish_allocation(r)
+    }
+
+    /// Allocate without direct reclaim or out-of-memory selection. This is
+    /// the PMM equivalent of a NOWAIT request: callers that cannot enter the
+    /// task/reclaim path receive `NoMem` after the ordinary low-watermark
+    /// zonelist walk.
+    ///
+    /// # C: O(NR_ZONES × MAX_ORDER) bounded
+    /// # Ctx: any; brief IRQ-off; does not sleep
+    /// # Lk: pageset for a local order-0 hit; Buddy for refill or larger blocks
+    pub(crate) fn alloc_gfp_nowait(&self, order: Order, gfp: u32) -> KResult<Pfn> {
+        let (hi, mt) = self.alloc_gfp_args(gfp)?;
+        match self.alloc_inner_zoned(order, hi, AllocWmark::Low, mt) {
+            Ok(pfn) => {
+                hal::zerotrap::trap_buddy(pfn.0 * hal::PAGE_SIZE_BYTES, b"ALLOC");
+                Ok(pfn)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn alloc_gfp_prepare(&self, order: Order, gfp: u32) -> KResult<(usize, MigrateType)> {
+        let (hi, mt) = self.alloc_gfp_args(gfp)?;
         // Preserve the allocator ABI: invalid orders are rejected by
         // `alloc_inner` before any order-derived arithmetic is evaluated.
         if order.0 <= MAX_ORDER {
             crate::watermark::before_allocation(self.free_pages(), 1u64 << order.0);
         }
-        let mut r = self.alloc_inner_zoned(order, hi, AllocWmark::Low);
-        // Exhaustion is not the answer until reclaim and the out-of-memory
-        // selector have both been given their turn: any allocation that
-        // cannot be satisfied enters the slowpath, not only a user fault.
-        if matches!(r, Err(Error::NoMem)) { r = self.alloc_slowpath(order, hi, gfp); }
-        if r.is_ok() { crate::watermark::after_allocation(self.free_pages()); }
-        if let Ok(pfn) = r { hal::zerotrap::trap_buddy(pfn.0 * hal::PAGE_SIZE_BYTES, b"ALLOC"); }
-        r
+        Ok((hi, mt))
+    }
+
+    fn alloc_gfp_args(&self, gfp: u32) -> KResult<(usize, MigrateType)> {
+        let Ok(zone) = crate::zone::gfp_zone(gfp) else { return Err(Error::InvalidOrder) };
+        let Ok(mt) = crate::zone::gfp_migratetype(gfp) else { return Err(Error::InvalidOrder) };
+        Ok((zone.index(), mt))
+    }
+
+    fn finish_allocation(&self, r: KResult<Pfn>) -> KResult<Pfn> {
+        match r {
+            Ok(pfn) => {
+                crate::watermark::after_allocation(self.free_pages());
+                hal::zerotrap::trap_buddy(pfn.0 * hal::PAGE_SIZE_BYTES, b"ALLOC");
+                Ok(pfn)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Allocate one buddy block wholly below `max_exclusive`.
@@ -117,7 +157,7 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {    /// Allocate one buddy block of 
     /// Policy lives in `crate::oom_entry`; this only supplies the three
     /// actions it drives.
     /// # C: bounded retries; # Ctx: blockable only; # Sleeps: yes
-    fn alloc_slowpath(&self, order: Order, hi: usize, gfp: u32) -> KResult<Pfn> {
+    fn alloc_slowpath(&self, order: Order, hi: usize, gfp: u32, mt: MigrateType) -> KResult<Pfn> {
         // The first thing the slowpath does, before deciding whether this
         // context may reclaim at all, is re-walk the zonelist against the min
         // watermark. How far into the reserve that attempt may reach is the
@@ -126,9 +166,9 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {    /// Allocate one buddy block of 
         // holds one.
         let allowed = crate::oom_entry::context_allows_slowpath();
         let wmark = crate::zone::slowpath_wmark(crate::zone::grants_min_reserve(gfp), allowed);
-        if let Ok(pfn) = self.alloc_inner_zoned(order, hi, wmark) { return Ok(pfn); }
+        if let Ok(pfn) = self.alloc_inner_zoned(order, hi, wmark, mt) { return Ok(pfn); }
         match crate::oom_entry::run_slowpath(order.0, allowed,
-            || self.alloc_inner_zoned(order, hi, wmark).ok(),
+            || self.alloc_inner_zoned(order, hi, wmark, mt).ok(),
             crate::oom_entry::reclaim_once,
             crate::oom_entry::invoke_oom)
         {
@@ -141,11 +181,11 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {    /// Allocate one buddy block of 
     /// take the first block a zone can give up without crossing its
     /// watermark. Every zone reached is at or below `hi`, which is what makes
     /// the address bound of a constrained request unconditional.
-    fn alloc_inner_zoned(&self, order: Order, hi: usize, wmark: AllocWmark) -> KResult<Pfn> {
+    fn alloc_inner_zoned(&self, order: Order, hi: usize, wmark: AllocWmark, mt: MigrateType) -> KResult<Pfn> {
         if order.0 > MAX_ORDER { return Err(Error::InvalidOrder); }
         let o = order.0;
         if o == 0 {
-            if let Some(pfn) = self.alloc_from_pcp(hi, wmark) {
+            if let Some(pfn) = self.alloc_from_pcp(hi, wmark, mt) {
                 self.zero_allocation(pfn, o);
                 return Ok(Pfn(pfn));
             }
@@ -165,13 +205,13 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {    /// Allocate one buddy block of 
                     if zi > hi { continue; }
                     let Some(zone) = ZoneType::from_index(zi) else { continue };
                     let mark = match wmark { AllocWmark::Low => g.wmark[zi].low, _ => g.wmark[zi].min };
-                    let mut area = g.free_count[zi];
+                    let mut area = g.free_area(zi);
                     if o == 0 {
                         area[0] = area[0].saturating_add(self.pcp_free[zi].load(Ordering::Acquire));
                     }
                     if !zone_watermark_ok(zone, o, mark, wmark, &g.reserve, hi, &area) { continue; }
                     // SAFETY: the buddy lock is held and `zi` came from the zonelist.
-                    if let Some(pfn) = unsafe { g.take_block(&self.backing, zi, o) } {
+                    if let Some(pfn) = unsafe { g.take_block(&self.backing, zi, o, mt) } {
                         taken = Some((pfn, zi));
                         break;
                     }
@@ -254,7 +294,7 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {    /// Allocate one buddy block of 
     pub fn free_orders(&self) -> [u64; ORDERS] {
         let g = self.inner.lock_irqsave::<I>();
         let mut out = [0u64; ORDERS];
-        for zi in 0..NR_ZONES { for o in 0..ORDERS { out[o] += g.free_count[zi][o]; } }
+        for zi in 0..NR_ZONES { for mt in 0..MIGRATE_TYPES { for o in 0..ORDERS { out[o] += g.free_count[zi][mt][o]; } } }
         out
     }
 
@@ -272,6 +312,9 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {    /// Allocate one buddy block of 
     pub fn pfn_max(&self) -> u64 {
         self.pfn_max
     }
+
+    #[cfg(test)]
+    pub(crate) fn pageblock_migratetype(&self, pfn: Pfn) -> MigrateType { self.pageblocks.get(pfn.0) }
 
     /// Snapshot buddy ownership and successful allocation/free events under
     /// one Buddy critical section. # C: O(MAX_ORDER); # Lk: Buddy

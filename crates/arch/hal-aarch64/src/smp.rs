@@ -363,7 +363,7 @@ pub unsafe extern "C" fn ap_main(ctx: *const ApContext) -> ! {
     // Publish this AP's logical id in the online bitmap (symmetry with x86;
     // aarch64 uses hardware-broadcast `tlbi vae1is` so no shootdown IPI runs,
     // but keeping the bitmap correct costs nothing).
-    if let Some(lg) = cpu::logical_id_for_hardware(aff0) {
+    if let Some(lg) = cpu::logical_id_for_hardware(crate::cpuid::mpidr_el1() & MPIDR_AFF_MASK) {
         // SAFETY: this AP is the sole writer for its own online bit.
         unsafe { cpu::smp::mark_online(lg); }
     }
@@ -470,7 +470,7 @@ pub unsafe fn bring_up_aps_psci() -> usize {
         if AP_PERCPU_BYTES != hal::PAGE_SIZE_BYTES as usize { continue; }
         let Some(percpu) = alloc_percpu_page() else { continue; };
         let percpu_base = percpu as u64;
-        let logical_cpu_id = cpu::logical_id_for_hardware((mpidr & MPIDR_AFF_MASK) as u32)
+        let logical_cpu_id = cpu::logical_id_for_hardware(mpidr & MPIDR_AFF_MASK)
             .unwrap_or((started + 1) as u32);
         let ctx = Box::leak(Box::new(ApContext { stack_top, percpu_base, online_signal: 0,
             logical_cpu_id, _pad: 0 }));

@@ -12,6 +12,7 @@ use vfs::{KResult, VfsError};
 use crate::driver::{driver, Driver};
 use crate::governor::{available_names, by_name};
 use crate::limits::ns_to_us;
+use crate::state::IdleState;
 use crate::uapi::{FLAG_OFF, NULL_TEXT, STATUS_DISABLED, STATUS_ENABLED};
 
 /// Read-only attribute mode.
@@ -44,8 +45,10 @@ pub fn parse_state_dir(name: &str) -> Option<usize> {
     name.strip_prefix("state").and_then(|digits| digits.parse().ok())
 }
 
-/// How many state directories a CPU publishes. # C: O(1)
-pub fn state_count() -> usize { driver().map_or(0, |drv| drv.states().len()) }
+/// How many state directories `cpu` publishes. # C: O(1)
+pub fn state_count(cpu: usize) -> usize {
+    driver().and_then(|drv| drv.states_for(cpu).map(<[IdleState]>::len)).unwrap_or(0)
+}
 
 fn line(text: &str) -> Vec<u8> {
     let mut body = String::from(text);
@@ -68,7 +71,7 @@ fn text_or_null(text: &str) -> &str { if text.is_empty() { NULL_TEXT } else { te
 /// declared by the driver and the third accumulated by the core, all three in
 /// nanoseconds internally, and all three are converted here. # C: O(1)
 pub fn show_state(drv: &Arc<Driver>, cpu: usize, index: usize, attr: &str) -> KResult<Vec<u8>> {
-    let state = drv.states().get(index).ok_or(VfsError::Enoent)?;
+    let state = drv.states_for(cpu).and_then(|states| states.get(index)).ok_or(VfsError::Enoent)?;
     let usage = drv.usage(cpu).ok_or(VfsError::Enoent)?;
     let counters = usage.get(index).copied().ok_or(VfsError::Enoent)?;
     match attr {
