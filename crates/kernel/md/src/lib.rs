@@ -9,10 +9,16 @@
 extern crate alloc;
 #[cfg(test)] extern crate std;
 
+mod superblock;
+mod assembly;
+
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use block::{BlockDevice, BlockError, BlockOp, BlockRequest, KResult, QueueLimits};
+
+pub use superblock::{MetadataVersion, Superblock, read_superblock};
+pub use assembly::assemble;
 
 /// Linux's fixed block major for MD arrays. # C: O(1)
 pub const MD_MAJOR: u32 = 9;
