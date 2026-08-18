@@ -441,7 +441,7 @@ fn init_pmm_and_arch(info: &BootInfo) {
         // SAFETY: the free hook only ever receives a `pa` that kstack obtained
         // from the paired `alloc_raw_frame` and has already unmapped, which is
         // `free_one_frame`'s not-currently-mapped precondition.
-        ::sched::kstack::init(pmm::setup::alloc_raw_frame, |pa| unsafe { pmm::setup::free_one_frame(pa) });
+        ::sched::kstack::init(pmm::setup::alloc_raw_frame_nowait, pmm::setup::alloc_raw_frame, |pa| unsafe { pmm::setup::free_one_frame(pa) });
         // debug-armctx: arm the aarch64 register-corruption post-mortem (fatal-
         // fault dump of kstack-slot ownership + arch_ctx + the switch ring).
         #[cfg(all(target_arch = "aarch64", feature = "debug-armctx"))]
@@ -459,7 +459,7 @@ fn init_pmm_and_arch(info: &BootInfo) {
         // init_boot_percpu; IRQs are still masked this early. `None` (frame
         // exhaustion) leaves the slot 0 ⇒ dispatcher stays on the interrupted
         // stack (pre-fix behavior, no crash).
-        match ::sched::kstack::alloc_leaked_top() {
+        match ::sched::kstack::alloc_leaked_top_with(pmm::setup::alloc_raw_frame_nowait) {
             Some(top) => {
                 #[cfg(target_arch = "x86_64")]
                 // SAFETY: BSP gs base set in init_boot_percpu; `top` outlives the kernel.

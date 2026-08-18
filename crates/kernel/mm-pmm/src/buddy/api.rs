@@ -65,22 +65,59 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {    /// Allocate one buddy block of 
     /// # Ctx: any; brief IRQ-off
     /// # Lk: pageset for a local order-0 hit; Buddy for refill or larger blocks
     pub fn alloc_gfp(&self, order: Order, gfp: u32) -> KResult<Pfn> {
-        let Ok(zone) = crate::zone::gfp_zone(gfp) else { return Err(Error::InvalidOrder) };
-        let Ok(mt) = crate::zone::gfp_migratetype(gfp) else { return Err(Error::InvalidOrder) };
-        let hi = zone.index();
-        // Preserve the allocator ABI: invalid orders are rejected by
-        // `alloc_inner` before any order-derived arithmetic is evaluated.
-        if order.0 <= MAX_ORDER {
-            crate::watermark::before_allocation(self.free_pages(), 1u64 << order.0);
-        }
+        let (hi, mt) = self.alloc_gfp_prepare(order, gfp)?;
         let mut r = self.alloc_inner_zoned(order, hi, AllocWmark::Low, mt);
         // Exhaustion is not the answer until reclaim and the out-of-memory
         // selector have both been given their turn: any allocation that
         // cannot be satisfied enters the slowpath, not only a user fault.
         if matches!(r, Err(Error::NoMem)) { r = self.alloc_slowpath(order, hi, gfp, mt); }
-        if r.is_ok() { crate::watermark::after_allocation(self.free_pages()); }
-        if let Ok(pfn) = r { hal::zerotrap::trap_buddy(pfn.0 * hal::PAGE_SIZE_BYTES, b"ALLOC"); }
-        r
+        self.finish_allocation(r)
+    }
+
+    /// Allocate without direct reclaim or out-of-memory selection. This is
+    /// the PMM equivalent of a NOWAIT request: callers that cannot enter the
+    /// task/reclaim path receive `NoMem` after the ordinary low-watermark
+    /// zonelist walk.
+    ///
+    /// # C: O(NR_ZONES × MAX_ORDER) bounded
+    /// # Ctx: any; brief IRQ-off; does not sleep
+    /// # Lk: pageset for a local order-0 hit; Buddy for refill or larger blocks
+    pub(crate) fn alloc_gfp_nowait(&self, order: Order, gfp: u32) -> KResult<Pfn> {
+        let (hi, mt) = self.alloc_gfp_args(gfp)?;
+        match self.alloc_inner_zoned(order, hi, AllocWmark::Low, mt) {
+            Ok(pfn) => {
+                hal::zerotrap::trap_buddy(pfn.0 * hal::PAGE_SIZE_BYTES, b"ALLOC");
+                Ok(pfn)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn alloc_gfp_prepare(&self, order: Order, gfp: u32) -> KResult<(usize, MigrateType)> {
+        let (hi, mt) = self.alloc_gfp_args(gfp)?;
+        // Preserve the allocator ABI: invalid orders are rejected by
+        // `alloc_inner` before any order-derived arithmetic is evaluated.
+        if order.0 <= MAX_ORDER {
+            crate::watermark::before_allocation(self.free_pages(), 1u64 << order.0);
+        }
+        Ok((hi, mt))
+    }
+
+    fn alloc_gfp_args(&self, gfp: u32) -> KResult<(usize, MigrateType)> {
+        let Ok(zone) = crate::zone::gfp_zone(gfp) else { return Err(Error::InvalidOrder) };
+        let Ok(mt) = crate::zone::gfp_migratetype(gfp) else { return Err(Error::InvalidOrder) };
+        Ok((zone.index(), mt))
+    }
+
+    fn finish_allocation(&self, r: KResult<Pfn>) -> KResult<Pfn> {
+        match r {
+            Ok(pfn) => {
+                crate::watermark::after_allocation(self.free_pages());
+                hal::zerotrap::trap_buddy(pfn.0 * hal::PAGE_SIZE_BYTES, b"ALLOC");
+                Ok(pfn)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Allocate one buddy block wholly below `max_exclusive`.

@@ -48,7 +48,7 @@ pub unsafe fn ap_init(aff0: u32) {
         // F699: arm THIS AP's per-CPU IRQ stack before its timer starts
         // ticking (below). Runs on the AP with TPIDR set by ap_main and IRQs
         // still masked; the shared C213 kstack window is visible via TTBR1.
-        match sched::kstack::alloc_leaked_top() {
+        match sched::kstack::alloc_leaked_top_with(pmm::setup::alloc_raw_frame_nowait) {
             Some(top) => hal_aarch64::set_irq_stack_top(top),
             None => klog::write_raw(b"[IRQSTK] AP hardirq stack alloc failed; on task stack\n"),
         }
