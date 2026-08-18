@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2271-pmm-migratetype-partition
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 1da599794 | MISSING | low | **`ZONE_MOVABLE` had neither a boot partition nor a consumer.** `cmdline::memory` now parses Linux-shaped `kernelcore=` and `movablecore=` inputs; boot resolves a pageblock-aligned movable tail above ordinary zones before seeding; and zram's migration-owned object allocator requests `GFP_HIGHMEM|GFP_MOVABLE`. The option no longer strands memory in an unallocatable zone. | B2271. `cargo test -p cmdline` passed 73 tests and `cargo test -p pmm` 290. Both feature gates passed; the final paired QEMU smoke completed with x86 and aarch64 alive plus serial-RX proofs after the independently fixed scheduler stack fault. | B2271-dt-opp-constraints |
+| FIXED 1da599794 | MISSING | med | **Buddy and PCP free state did not preserve Linux migratetypes.** Free lists and order-0 pagesets are now keyed by zone plus `Unmovable`/`Movable`/`Reclaimable`; GFP derives both selectors, fallback claims whole pageblocks before splitting, and coalescing cannot cross a migratetype boundary. CMA and high-atomic stay separate missing allocation classes rather than being falsely represented by this three-class partition. | B2271. Hosted migration tests cover movable-tail preference, pageblock fallback claiming, no cross-type merge, and no unmovable rise into `ZONE_MOVABLE`; changing the movable GFP-zone selection made the movable test fail, then passed after restoration. PMM 290/290, both feature gates, and final paired QEMU smoke passed. | B2271-dt-opp-constraints |
+
 ### B2271-ttwu-irq-drain
 
 | Status | Class | Sev | Issue | Evidence | Owner |
