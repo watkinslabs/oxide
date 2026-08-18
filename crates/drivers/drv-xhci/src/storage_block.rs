@@ -76,6 +76,17 @@ impl scsi::Transport for UsbStorageTransport {
         self.execute_with_timeout_inner(lun, command, data, direction, timeout_ms)
     }
 
+    fn retry_delay(&self, delay_ms: u32) -> KResult<()> {
+        if delay_ms == 0 { return Ok(()); }
+        let wait = sched::live::WaitList::new();
+        let deadline = sched::deadline::clock::now_ns().saturating_add(u64::from(delay_ms).saturating_mul(1_000_000));
+        // SAFETY: a storage command has completed and released the controller
+        // transaction lock before this retry delay; this is process context.
+        let _ = unsafe { sched::live::wait_event_uninterruptible_until(&wait, deadline,
+            sched::deadline::clock::now_ns, || false) };
+        Ok(())
+    }
+
     fn sg_io_max_transfer_bytes(&self) -> Option<usize> { Some(crate::device::STORAGE_MAX_TRANSFER_BYTES) }
 
     fn queue_limits(&self, block_size: u32) -> KResult<QueueLimits> {

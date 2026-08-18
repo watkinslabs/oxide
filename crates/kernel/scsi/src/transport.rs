@@ -36,7 +36,8 @@ impl CommandCompletion {
         Self { status: 0, host_status: 0, driver_status: 0, resid, sense: [0; SENSE_BYTES], sense_len: 0 }
     }
 
-    /// Build a CHECK CONDITION completion carrying fixed-format sense data.
+    /// Build a CHECK CONDITION completion carrying fixed- or descriptor-format
+    /// sense data unchanged.
     /// # C: O(sense bytes)
     pub fn check_condition(resid: u32, sense: &[u8]) -> Self {
         let mut stored = [0; SENSE_BYTES];
@@ -94,6 +95,12 @@ pub trait Transport: Send + Sync {
                             _timeout_ms: u32) -> KResult<CommandCompletion> {
         self.execute(lun, command, data, direction)
     }
+
+    /// Wait before the common block path reissues a retryable completion.
+    /// Hosts implement this only with a real process-context wait; the common
+    /// layer deliberately has no scheduler dependency and must not spin.
+    /// # C: one bounded wait
+    fn retry_delay(&self, _delay_ms: u32) -> KResult<()> { Err(block::BlockError::Eopnotsupp) }
 
     /// Largest payload the transport can execute through SG_IO. `None` means
     /// this adapter is deliberately block-only and must not advertise raw CDB
