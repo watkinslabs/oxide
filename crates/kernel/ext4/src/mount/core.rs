@@ -252,6 +252,19 @@ impl Mount {
         for block in staged { s.metadata_cache.insert(block.target_lba, block.data.clone()); }
     }
 
+    /// A direct data write has replaced these on-disk bytes without going
+    /// through `metadata_write`; discard any clean buffer that aliases them.
+    /// The next metadata reader must observe the write, not a stale cache line.
+    /// # C: O(N affected fs blocks)
+    pub(crate) fn invalidate_metadata_cache_range(&self, byte_off: u64, len: usize) {
+        if len == 0 { return; }
+        let bs = self.sb.block_size as u64;
+        let first = byte_off / bs;
+        let last = byte_off.saturating_add(len as u64).saturating_sub(1) / bs;
+        let mut state = self.state.lock();
+        for lba in first..=last { state.metadata_cache.remove(&lba); }
+    }
+
     /// Read one fs-block from the transaction shadow, then the clean metadata
     /// buffer cache, then the underlying device.  This is the ext4 equivalent
     /// of Linux's buffer-cache lookup before `sb_bread` submits I/O.
