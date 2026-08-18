@@ -3,6 +3,8 @@
 // state that is a function of the resulting per-zone managed counts.
 use super::*;
 use super::inner::PmmInner;
+use super::pcp::PcpZoneConfig;
+use core::mem::MaybeUninit;
 
 impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
     /// Build a PMM from one or more usable physical regions. Each
@@ -12,7 +14,26 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
     /// # C: O(n + N) where n=regions, N=max_pfn / smallest order
     /// # Ctx: pre-init, single-CPU
     pub fn init(backing: B, regions: &[UsableRegion]) -> KResult<Self> {
-        Self::init_zoned(backing, regions, None)
+        let mut out = MaybeUninit::uninit();
+        Self::init_in_place(backing, regions, &mut out)?;
+        // SAFETY: init_in_place returns Ok only after writing the complete PMM.
+        Ok(unsafe { out.assume_init() })
+    }
+
+    /// Construct a PMM directly in permanent storage, avoiding a full-PMM
+    /// bootstrap stack temporary.
+    ///
+    /// On success `out` is fully initialized; on error it remains
+    /// uninitialized and must not be read.
+    ///
+    /// # C: O(n + N) where n=regions, N=max_pfn / smallest order
+    /// # Ctx: pre-init, single-CPU
+    pub fn init_in_place(
+        backing: B,
+        regions: &[UsableRegion],
+        out: &mut MaybeUninit<Self>,
+    ) -> KResult<()> {
+        Self::init_zoned_in_place(backing, regions, None, out)
     }
 
     /// As [`Pmm::init`], with the zone boundaries supplied by the platform.
@@ -21,6 +42,23 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
     /// # C: O(n + N) where n=regions, N=max_pfn / smallest order
     /// # Ctx: pre-init, single-CPU
     pub fn init_zoned(backing: B, regions: &[UsableRegion], limits: Option<ZoneLimits>) -> KResult<Self> {
+        let mut out = MaybeUninit::uninit();
+        Self::init_zoned_in_place(backing, regions, limits, &mut out)?;
+        // SAFETY: init_zoned_in_place returns Ok only after writing `out`.
+        Ok(unsafe { out.assume_init() })
+    }
+
+    /// In-place form of [`Pmm::init_zoned`]. On success `out` is initialized;
+    /// on error it remains uninitialized.
+    ///
+    /// # C: O(n + N) where n=regions, N=max_pfn / smallest order
+    /// # Ctx: pre-init, single-CPU
+    pub fn init_zoned_in_place(
+        backing: B,
+        regions: &[UsableRegion],
+        limits: Option<ZoneLimits>,
+        out: &mut MaybeUninit<Self>,
+    ) -> KResult<()> {
         if regions.is_empty() { return Err(Error::OutOfRange); }
         let mut pfn_max: u64 = 0;
         let mut total: u64 = 0;
@@ -52,6 +90,8 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
             let words = ((blocks + 63) >> 6) as usize;
             bitmaps[o] = backing.bitmap_storage(o as u8, words);
         }
+        let pcp_words = ((pfn_max + 63) >> 6) as usize;
+        let pcp_bitmap = backing.bitmap_storage(PCP_BITMAP_SLOT as u8, pcp_words);
 
         let layout = ZoneLayout::new(limits.unwrap_or_else(|| ZoneLimits::arch_default(pfn_max, PAGE_SIZE_BYTES)), pfn_max);
         let mut spanned = [0u64; NR_ZONES];
@@ -95,6 +135,30 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
         // once every zone is seeded.
         let _ = inner.recompute_derived();
 
-        Ok(Self { backing, inner: Spinlock::new(inner), _i: PhantomData })
+        let zone_free = core::array::from_fn(|zi| AtomicU64::new(inner.zone_free_pages(zi)));
+        let pcp_free = core::array::from_fn(|_| AtomicU64::new(0));
+        let pcp_zone = core::array::from_fn(|zi| {
+            PcpZoneConfig::new(inner.wmark[zi], inner.reserve[zi], inner.managed[zi])
+        });
+        let pcp = backing.pcp_storage();
+        out.write(Self {
+            backing,
+            pfn_max,
+            layout: inner.layout,
+            zonelist: inner.zonelist,
+            buddy_bitmaps: inner.bitmaps,
+            pcp_bitmap,
+            pcp,
+            zone_free,
+            pcp_free,
+            pcp_zone,
+            pcp_alloc_events: AtomicU64::new(0),
+            pcp_alloc_event_pages: AtomicU64::new(0),
+            pcp_free_events: AtomicU64::new(0),
+            pcp_free_event_pages: AtomicU64::new(0),
+            inner: Spinlock::new(inner),
+            _i: PhantomData,
+        });
+        Ok(())
     }
 }

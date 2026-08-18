@@ -192,18 +192,20 @@ fn corrupt_free_list_head_next_panics_instead_of_leaking() {
 #[test]
 #[should_panic(expected = "free-list prev out of range")]
 fn corrupt_free_list_prev_panics_instead_of_truncating_the_list() {
-    let pmm = build(8);
-    let held: Vec<Pfn> = (0..4).map(|_| pmm.alloc(Order(0)).unwrap()).collect();
-    // SAFETY: pfn 0 and pfn 2 have allocated buddies, so these two frees
-    // form a two-entry order-0 list without coalescing.
-    unsafe { pmm.free(held[0], Order(0)); pmm.free(held[2], Order(0)); }
+    let pmm = build_regions(4, &[
+        UsableRegion { start: Pfn(0), len_pfn: 1 },
+        UsableRegion { start: Pfn(2), len_pfn: 1 },
+    ]);
+    // These singleton seed ranges form a two-entry global order-0 list. The
+    // pageset path is intentionally not involved: this test exercises the
+    // global intrusive list corruption check the reserve path must preserve.
     // SAFETY: test-only write models an overwritten backward link in the
     // list tail. `reserve_early` removes that tail through `unlink_free`.
-    let ptr = unsafe { pmm.page_ptr(held[0]) };
+    let ptr = unsafe { pmm.page_ptr(Pfn(0)) };
     // SAFETY: this is the FreeNode previous link; deliberate corruption must
     // fail rather than making the free-list head disappear.
     unsafe { core::ptr::write_unaligned(ptr.add(crate::buddy::TEST_FREE_NODE_PREV_OFF) as *mut u64, u64::MAX - 1) };
-    let _ = pmm.reserve_early(held[0], 1);
+    let _ = pmm.reserve_early(Pfn(0), 1);
 }
 
 #[cfg(feature = "debug-watchdog")]

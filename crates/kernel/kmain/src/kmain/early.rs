@@ -1,4 +1,6 @@
 use crate::{BootInfo, GLOBAL_ALLOC, zerotrap_tid};
+#[cfg(target_os = "oxide-kernel")]
+mod pmm_boot;
 #[cfg(feature = "debug-pmm")]
 use crate::BootMemRegion;
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-sched"))]
@@ -78,7 +80,7 @@ pub unsafe fn init(info: &BootInfo) {
     klog::set_caller_fn(klog_caller_id);
 
     log_boot_info(info);
-    init_pmm_and_arch(info);
+    pmm_boot::init(info);
     kalloc_smoke();
     debug_sched_smokes();
     debug_pf_smoke();
