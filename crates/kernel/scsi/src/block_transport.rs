@@ -5,7 +5,7 @@ extern crate alloc;
 use alloc::sync::Arc;
 use block::{BlockDevice, BlockError, BlockRequest, KResult, QueueLimits};
 
-use crate::{Command, DataDirection, Lun, Transport, READ_10, READ_16, READ_CAPACITY_10, READ_CAPACITY_16,
+use crate::{Command, CommandCompletion, DataDirection, Lun, Transport, READ_10, READ_16, READ_CAPACITY_10, READ_CAPACITY_16,
     SERVICE_ACTION_IN_16, SYNCHRONIZE_CACHE_10, TEST_UNIT_READY, WRITE_10, WRITE_16};
 
 /// Adapter for transports that already implement the block contract (libata
@@ -39,27 +39,27 @@ impl BlockTransport {
 }
 
 impl Transport for BlockTransport {
-    fn execute(&self, lun: Lun, command: &Command, data: &mut [u8], direction: DataDirection) -> KResult<()> {
+    fn execute(&self, lun: Lun, command: &Command, data: &mut [u8], direction: DataDirection) -> KResult<CommandCompletion> {
         if lun != Lun::ZERO { return Err(BlockError::Enxio); }
         match (command.opcode(), direction) {
-            (TEST_UNIT_READY, DataDirection::None) => Ok(()),
-            (SYNCHRONIZE_CACHE_10, DataDirection::None) => self.inner.flush(),
-            (READ_10 | READ_16, DataDirection::FromDevice) => self.rw(command, data, false),
-            (WRITE_10 | WRITE_16, DataDirection::ToDevice) => self.rw(command, data, true),
+            (TEST_UNIT_READY, DataDirection::None) => Ok(CommandCompletion::good()),
+            (SYNCHRONIZE_CACHE_10, DataDirection::None) => self.inner.flush().map(|_| CommandCompletion::good()),
+            (READ_10 | READ_16, DataDirection::FromDevice) => self.rw(command, data, false).map(|_| CommandCompletion::good()),
+            (WRITE_10 | WRITE_16, DataDirection::ToDevice) => self.rw(command, data, true).map(|_| CommandCompletion::good()),
             (READ_CAPACITY_10, DataDirection::FromDevice) => {
                 if data.len() < 8 { return Err(BlockError::Einval); }
                 data.fill(0);
                 let last_lba = self.inner.capacity_blocks().saturating_sub(1).min(u64::from(u32::MAX)) as u32;
                 data[..4].copy_from_slice(&last_lba.to_be_bytes());
                 data[4..8].copy_from_slice(&self.inner.block_size().to_be_bytes());
-                Ok(())
+                Ok(CommandCompletion::good())
             }
             (SERVICE_ACTION_IN_16, DataDirection::FromDevice) if command.bytes().get(1) == Some(&READ_CAPACITY_16) => {
                 if data.len() < 12 { return Err(BlockError::Einval); }
                 data.fill(0);
                 data[..8].copy_from_slice(&self.inner.capacity_blocks().saturating_sub(1).to_be_bytes());
                 data[8..12].copy_from_slice(&self.inner.block_size().to_be_bytes());
-                Ok(())
+                Ok(CommandCompletion::good())
             }
             _ => Err(BlockError::Eopnotsupp),
         }

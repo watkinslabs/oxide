@@ -16,6 +16,7 @@ mod block_transport;
 mod command;
 mod disk;
 mod scan;
+mod sg;
 mod transport;
 #[cfg(test)] mod tests;
 
@@ -24,4 +25,5 @@ pub use command::{Command, READ_10, READ_16, READ_CAPACITY_10, READ_CAPACITY_16,
     SYNCHRONIZE_CACHE_10, TEST_UNIT_READY, WRITE_10, WRITE_16};
 pub use disk::{Disk, init, publish, publish_block_transport, publish_lun};
 pub use scan::{ScannedLun, scan_and_publish, scan_lun};
-pub use transport::{DataDirection, Lun, Transport};
+pub use sg::{SG_IO, SG_IO_HDR_BYTES, SgHeader, SgIoTarget, command_allowed, sg_target};
+pub use transport::{CommandCompletion, DataDirection, Lun, SENSE_BYTES, Transport};
