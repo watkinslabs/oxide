@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2271-rtnl-route-test-namespace
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2271 | COVERAGE | low | **The IPv4 route lookup and route-dump tests wrote their synthetic rows to the initial namespace, where unrelated test traffic could participate in their FIB assertions.** Each test now creates one private network namespace and uses its identifier for every route insertion, query, dump, and cleanup. The route table remains namespace-scoped end to end, so parallel tests no longer share a synthetic FIB. | B2271. `RUST_TEST_THREADS=2 cargo test -p netlink 'rtnetlink_lookup::tests::'` passed 100 consecutive paired runs; `cargo test -p netlink` passed 366 tests. Positive control: changing the longest-prefix query back to namespace 0 makes `rtnetlink_lookup::tests::lookup_prefers_longest_prefix` fail (`left: 2`, `right: 24`); restoring the private-namespace query passes. Test-only change; no boot required. | B2271-dt-opp-constraints |
+
 ### B2271-psci-terminal-conduit
 
 | Status | Class | Sev | Issue | Evidence | Owner |
