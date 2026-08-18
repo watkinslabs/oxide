@@ -17,7 +17,7 @@ const NO_LUN: u8 = 0x1f;
 /// Geometry and device class observed while probing one addressed LUN.
 /// # C: O(1)
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct ScannedLun { lun: Lun, peripheral: u8, block_size: u32, capacity: u64 }
+pub struct ScannedLun { lun: Lun, peripheral: u8, removable: bool, block_size: u32, capacity: u64 }
 
 impl ScannedLun {
     /// Addressed LUN that answered INQUIRY. # C: O(1)
@@ -25,6 +25,9 @@ impl ScannedLun {
 
     /// SCSI peripheral-device type. # C: O(1)
     pub const fn peripheral(self) -> u8 { self.peripheral }
+
+    /// Whether INQUIRY marked the medium removable. # C: O(1)
+    pub const fn removable(self) -> bool { self.removable }
 
     /// Logical block size reported by the LUN. # C: O(1)
     pub const fn block_size(self) -> u32 { self.block_size }
@@ -42,6 +45,7 @@ pub fn scan_lun(transport: &dyn Transport, lun: Lun) -> KResult<Option<ScannedLu
     if !inquiry_done.is_good() { return Err(BlockError::Eio); }
     let peripheral = inquiry[0] & NO_LUN;
     if peripheral == NO_LUN { return Ok(None); }
+    let removable = inquiry[1] & 0x80 != 0;
 
     let mut capacity_10 = [0u8; CAPACITY_10_BYTES];
     let capacity_10_done = transport.execute(lun, &Command::capacity_10(), &mut capacity_10, DataDirection::FromDevice)?;
@@ -58,7 +62,7 @@ pub fn scan_lun(transport: &dyn Transport, lun: Lun) -> KResult<Option<ScannedLu
     };
     if block_size < 512 || !block_size.is_power_of_two() { return Err(BlockError::Einval); }
     let capacity = last.checked_add(1).ok_or(BlockError::Eoverflow)?;
-    Ok(Some(ScannedLun { lun, peripheral, block_size, capacity }))
+    Ok(Some(ScannedLun { lun, peripheral, removable, block_size, capacity }))
 }
 
 /// Probe every reported LUN and publish direct-access devices in the shared
@@ -70,8 +74,9 @@ pub fn scan_and_publish(transport: Arc<dyn Transport>, serial: Option<&str>) -> 
         let lun = Lun::new(raw_lun);
         let Ok(Some(found)) = scan_lun(transport.as_ref(), lun) else { continue; };
         if found.peripheral != DIRECT_ACCESS { continue; }
-        if let Some(name) = crate::publish_lun(Arc::clone(&transport), lun, found.block_size, found.capacity,
-                                                (lun == Lun::ZERO).then_some(serial).flatten()) {
+        if let Some(name) = crate::disk::publish_lun_with_media(Arc::clone(&transport), lun, found.block_size,
+                                                                 found.capacity, found.removable,
+                                                                 (lun == Lun::ZERO).then_some(serial).flatten()) {
             names.push(name);
         }
     }
