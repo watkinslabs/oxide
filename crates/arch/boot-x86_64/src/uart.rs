@@ -1,4 +1,4 @@
-// 16550A UART driver per `36§5` cmdline `oxide.console=ttyS0,115200`
+// 16550A UART driver per `36§5` cmdline `console=ttyS0,115200`
 // and `04§4.2` UART sink. COM1 lives at I/O port `0x3f8` on QEMU
 // `-serial stdio`; we configure 8N1 + 115200 baud + FIFO enabled at
 // boot, then `write_byte` poll-waits on LSR.THRE before each store.

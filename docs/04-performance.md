@@ -2,7 +2,7 @@
 
 FROZEN 2026-05-02. Dep:`02`,`08`.
 
-Sister of `03`. Modernity = what; this = how-fast. Perf is design constraint, not tuning phase. Debug per-feature, free-when-off. One logger, structured, per-target levels.
+Sister of `03`. Modernity = what; this = how-fast. Perf is design constraint, not tuning phase. Debug per-feature, free-when-off. One logger, structured records.
 
 ## 1 Hot paths (frozen budgets)
 
@@ -90,7 +90,7 @@ One logger. `klog`. Not `println!`/`log`/three traits.
 
 ### 4.0 Call-site gating (frozen)
 
-**Every `klog::*` call site is `cfg`-elidable.** Default builds emit zero log bytes. The runtime per-target level filter (§4.5) layers on top — it is *not* a substitute for compile-time elision. Specifically:
+**Every `klog::*` call site is `cfg`-elidable.** Default builds emit zero log bytes. The runtime console-level filter (§4.5) layers on top — it is *not* a substitute for compile-time elision. Specifically:
 
 - Each call to `kinfo!` / `kdebug!` / `kerror!` / `kfatal!` / `klog!` / `write_raw` / `write_hex_u64` / `write_dec_u64` / `set_byte_sink` MUST be inside one of:
   - a `#[cfg(feature = "debug-<sub>")]` block, attribute on enclosing fn/mod, or
@@ -116,7 +116,10 @@ warn!(target:"vmm", va=?va, "TLB shootdown took {} us", us);
 - `target` mandatory = subsystem (`"sched"`,`"vmm"`,`"net::tcp"`).
 - Format strings compile-time interned in `.klog_strings` ELF section. Userspace decoder resolves by addr.
 
-Per-target levels: cmdline `oxide.log=info,sched=debug,vmm=trace,net::tcp=warn`. Runtime change = single Relaxed store. Below-threshold call: macro short-circuits without touching args.
+The record layout reserves target identity. Console admission is one global level,
+set at boot by `loglevel=N`, `quiet`, `debug`, or `ignore_loglevel` (`36§5.2`);
+there is no private target-level cmdline spelling. Runtime change = single Release
+store. Below-threshold call: macro short-circuits without touching args.
 
 Levels:
 | Lvl | Use | Hot? |
@@ -169,9 +172,12 @@ NMI context cannot share the main per-CPU ring (NMI can preempt a CAS in progres
 
 Ring full at producer ⇒ increment per-CPU `dropped` counter (Relaxed), abandon record, return. **Producer never spins, never blocks.** Counter is itself logged hourly via a dedicated dropped-records record consumed by drainer.
 
-### 4.5 Per-target thresholds
+### 4.5 Console threshold
 
-Per-target levels: cmdline `oxide.log=info,sched=debug,vmm=trace,net::tcp=warn`. Runtime change = single Relaxed store. Below-threshold call: macro short-circuits without touching args (the fixed-bound CAS is the second cost; threshold check is the first).
+The record layout reserves target identity, while console admission follows the
+global `36§5.2` policy. Runtime change = single Release store. Below-threshold
+call: macro short-circuits without touching args (the fixed-bound CAS is the
+second cost; threshold check is the first).
 
 ### 4.6 Forbidden
 
