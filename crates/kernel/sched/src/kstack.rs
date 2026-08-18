@@ -88,12 +88,34 @@ pub fn stack_top_repeat(span: &Span) -> (u64, u32) {
     let n = ((span.stack_hi - span.stack_lo) / 8) as usize;
     // SAFETY: [stack_lo, stack_hi) is this slot's mapped stack; reading it as words is a plain aligned read of memory that is mapped for the kernel's lifetime once handed out.
     let words = unsafe { core::slice::from_raw_parts(span.stack_lo as *const u64, n) };
-    classify::top_repeat(words, TEXT_LO, TEXT_HI)
+    let (text_lo, text_hi) = kernel_text_bounds();
+    classify::top_repeat(words, text_lo, text_hi)
 }
 
-/// Kernel text bounds that make a stack word a return site rather than data.
+/// Fallback text bounds for hosted tests, which do not link the kernel script.
+#[cfg(not(target_os = "oxide-kernel"))]
 const TEXT_LO: u64 = 0xffff_ffff_8000_0000;
+#[cfg(not(target_os = "oxide-kernel"))]
 const TEXT_HI: u64 = 0xffff_ffff_8200_0000;
+
+#[cfg(target_os = "oxide-kernel")]
+unsafe extern "C" {
+    static __text_boot_start: u8;
+    static __text_end: u8;
+}
+
+/// Linked core-image text bounds used to classify saved return addresses.
+/// # C: O(1)
+pub(crate) fn kernel_text_bounds() -> (u64, u64) {
+    #[cfg(target_os = "oxide-kernel")]
+    {
+        // Linker-script symbols bracket executable core text; their addresses
+        // are valid for the complete lifetime of the loaded kernel image.
+        (core::ptr::addr_of!(__text_boot_start) as u64, core::ptr::addr_of!(__text_end) as u64)
+    }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    { (TEXT_LO, TEXT_HI) }
+}
 
 /// Name the stack a faulting address belongs to, with its bounds.
 ///
