@@ -9,8 +9,6 @@ path = "src/lib.rs"
 
 [dependencies]
 block = { path = "../block" }
-
-[dev-dependencies]
 sync = { path = "../../shared/sync" }
 
 [features]

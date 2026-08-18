@@ -9,6 +9,7 @@ use super::autofs::handle_autofs_dev_ioctl;
 use super::blk::handle_blk_ioctl;
 use super::device_mapper::handle_mapper_control_ioctl;
 use super::loop_dev::{handle_loop_control_ioctl, handle_loop_ioctl};
+use super::md::handle_md_ioctl;
 use super::common::{handle_common_ioctl, handle_nonchar_queue_ioctl, handle_socket_owner_ioctl};
 use super::f2fs::handle_f2fs_ioctl;
 use super::tty_ioctl::handle_tty_ioctl;
@@ -257,6 +258,7 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     // non-CharDev path returns ENOTTY — blkid/mkfs/udev probe them on /dev/vda.
     if file.inode().file_type() == vfs::FileType::BlockDev {
         if let Some(rv) = handle_blk_ioctl(&file, req, arg) { return rv; }
+        if let Some(rv) = handle_md_ioctl(&file, req, arg) { return rv; }
     }
     if file.inode().file_type() != vfs::FileType::CharDev {
         // Socket/pipe ioctls (Linux `sock_ioctl`): a socket is NOT a CharDev but
