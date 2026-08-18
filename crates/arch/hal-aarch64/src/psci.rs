@@ -19,6 +19,7 @@ pub use crate::psci_uapi::{decode_status, psci_version, version_major, version_m
     PSCI_CPU_SUSPEND_64, PSCI_FEATURES, PSCI_SYSTEM_OFF, PSCI_SYSTEM_RESET,
     PSCI_SYSTEM_SUSPEND_64, PSCI_VERSION, PSCI_VERSION_1_0};
 use crate::psci_probe::{classify_support, decode_support, encode_support, SuspendSupport};
+use crate::psci_conduit;
 
 /// Issue an SMC instruction with up to 4 arguments and return x0.
 ///
@@ -86,19 +87,20 @@ pub unsafe fn hvc(fn_id: u32, a1: u64, a2: u64, a3: u64) -> i64 {
 #[cfg(not(target_os = "oxide-kernel"))]
 pub unsafe fn hvc(_fn_id: u32, _a1: u64, _a2: u64, _a3: u64) -> i64 { -1 }
 
-/// PSCI conduit dispatch. QEMU `virt` (our only aarch64 target) runs the
-/// guest at EL1 with no EL3 → HVC. Real EL3 hardware uses SMC; the
-/// Linux-faithful selection reads the DTB `/psci` `method` or ACPI FADT
-/// ARM_BOOT_ARCH PSCI_USE_HVC bit (TASKS.md S4a-arm: wire detection when
-/// EL3 hardware is a target). Default HVC keeps the call site
-/// conduit-agnostic.
+/// PSCI conduit dispatch. Firmware selects HVC or SMC once from its PSCI
+/// description; a call before that selection fails closed.
 /// # SAFETY: forwards to the conduit instruction; see `hvc`/`smc`.
 /// # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
 #[inline]
 pub unsafe fn conduit_call(fn_id: u32, a1: u64, a2: u64, a3: u64) -> i64 {
-    // SAFETY: HVC is the QEMU virt conduit; see `hvc`.
-    unsafe { hvc(fn_id, a1, a2, a3) }
+    match psci_conduit::conduit() {
+        // SAFETY: the boot path accepted this firmware conduit before any PSCI caller ran.
+        Some(crate::smccc::Conduit::Smc) => unsafe { smc(fn_id, a1, a2, a3) },
+        // SAFETY: the boot path accepted this firmware conduit before any PSCI caller ran.
+        Some(crate::smccc::Conduit::Hvc) => unsafe { hvc(fn_id, a1, a2, a3) },
+        None => -1,
+    }
 }
 /// Hosted stub.
 /// # SAFETY: trivially safe.

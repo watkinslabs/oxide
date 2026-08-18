@@ -57,8 +57,8 @@ pub unsafe fn halt() -> ! {
 /// Reset the machine. Returns only on host (test) builds.
 /// x86_64: the reset ladder in `crate::reset` — the FADT-described register,
 /// then the keyboard controller, then the chipset reset port, then a triple
-/// fault. aarch64: PSCI SYSTEM_RESET (`hvc #0` with x0=0x84000009), which is
-/// the platform's single authoritative mechanism and needs no ladder.
+/// fault. aarch64: PSCI SYSTEM_RESET through the firmware-selected conduit,
+/// which is the platform's single authoritative mechanism and needs no ladder.
 /// # SAFETY: clobbers IDT (x86) / traps to EL2 (arm); irreversible.
 /// # C: O(1)
 pub unsafe fn restart() -> ! {
@@ -69,16 +69,10 @@ pub unsafe fn restart() -> ! {
     }
     #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
     {
-        // SAFETY: PSCI SMC32 SYSTEM_RESET; QEMU virt + EDK2 honour PSCI; irreversible reset.
-        unsafe {
-            core::arch::asm!(
-                "mov w0, #0x09",
-                "movk w0, #0x8400, lsl #16",
-                "hvc #0",
-                "b   .",
-                options(noreturn, nostack)
-            );
-        }
+        // SAFETY: early boot selected this PSCI conduit from firmware; SYSTEM_RESET is irreversible.
+        let _ = unsafe { hal_aarch64::psci::conduit_call(hal_aarch64::psci::PSCI_SYSTEM_RESET, 0, 0, 0) };
+        // SAFETY: a terminal PSCI call that returns cannot leave this CPU executing normal work.
+        unsafe { halt() }
     }
     #[cfg(not(target_os = "oxide-kernel"))]
     // SAFETY: host build path; halt only spin-loops on host with no privileged ops.
@@ -96,15 +90,8 @@ pub unsafe fn power_off() -> ! {
     }
     #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
     {
-        // SAFETY: PSCI SMC32 SYSTEM_OFF; QEMU virt + EDK2 honor PSCI; irreversible.
-        unsafe {
-            core::arch::asm!(
-                "mov w0, #0x08",
-                "movk w0, #0x8400, lsl #16",
-                "hvc #0",
-                options(nostack, preserves_flags)
-            );
-        }
+        // SAFETY: early boot selected this PSCI conduit from firmware; SYSTEM_OFF is irreversible.
+        let _ = unsafe { hal_aarch64::psci::conduit_call(hal_aarch64::psci::PSCI_SYSTEM_OFF, 0, 0, 0) };
     }
     // SAFETY: power_off only reaches here when the I/O write didn't shut us down (e.g. bare metal w/o ACPI); halt is the safe terminal state.
     unsafe { halt() }

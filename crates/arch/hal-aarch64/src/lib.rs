@@ -39,6 +39,8 @@ pub mod mmu_ops;
 pub mod pci;
 pub mod pl011;
 pub mod psci;
+// Boot-selected PSCI SMC/HVC state, shared by every PSCI operation.
+pub mod psci_conduit;
 pub mod smccc;
 // PSCI ABI numbers, status decode and the SYSTEM_SUSPEND admission ladder.
 // Ungated on purpose: `psci.rs` is aarch64-only, so a `#[cfg(test)]` block

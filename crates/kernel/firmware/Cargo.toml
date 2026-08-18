@@ -37,6 +37,9 @@ hal-x86_64 = { path = "../../arch/hal-x86_64" }
 hal-aarch64 = { path = "../../arch/hal-aarch64" }
 mmio-map = { path = "../mmio-map" }
 
+[dev-dependencies]
+fdt = { path = "../../shared/fdt", features = ["fixture"] }
+
 [features]
 default = []
 debug-acpi = []

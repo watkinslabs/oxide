@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2271-psci-terminal-conduit
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2271 | DEFECT | med | **Terminal PSCI reset and power-off bypassed the selected firmware conduit and carried duplicate raw function IDs.** The DT decoder now accepts a PSCI node's supported compatibility identifiers and exact `smc` or `hvc` method, and boot installs that selection before CPU startup. Every PSCI operation, including reset and power-off, uses the shared function IDs and one selected conduit; a missing or invalid selection fails closed before the terminal halt. | B2271. `fdt` 81, `firmware` 151, `hal-aarch64` 201, and `power` 203 hosted tests; both target checks and the full feature gate pass. Final paired QEMU smoke: x86 reached `basic.target` in 46.2 s; arm answered the serial userspace probe in 54.2 s; both emitted the serial-RX SysRq banner. Retained logs: `target/boot-logs/{x86,arm}-attempt-1-pass.log`. | B2271-dt-opp-constraints |
+
 ### B2271-dt-opp-constraints
 
 | Status | Class | Sev | Issue | Evidence | Owner |

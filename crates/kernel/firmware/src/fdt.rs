@@ -16,6 +16,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 pub mod cpufreq;
 pub mod idle;
+pub mod psci;
 pub mod providers;
 pub mod scmi;
 

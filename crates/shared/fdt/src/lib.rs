@@ -23,6 +23,7 @@
 //   provider — fixed, fixed-factor, and regulator provider decoder
 //   scmi     — SMC SCMI performance transport and CPU-domain decoder
 //   idle     — per-CPU PSCI idle-state phandle-graph decoder
+//   psci     — PSCI call-conduit decoder
 //   uapi     — userspace ABI paths and modes for the published tree
 //   of_tree  — blob → `/sys/firmware/devicetree` path/property entries (alloc)
 //   fixture  — wire-image builder for tests (feature `fixture`)
@@ -40,6 +41,7 @@ pub mod opp;
 pub mod provider;
 pub mod scmi;
 pub mod idle;
+pub mod psci;
 
 #[cfg(any(test, feature = "alloc"))]
 pub mod of_tree;
@@ -62,6 +64,7 @@ pub use opp::{cpu_opp_tables, ClockReference, CpuOppTable, OppVoltage, Operating
 pub use provider::{fixed_providers, FixedClock, FixedFactorClock, FixedProviders, FixedRegulator};
 pub use scmi::{scmi_perf_protocols, ScmiCompletionIrq, ScmiCpuDomain, ScmiPerfProtocol, ScmiSharedMemory, ScmiSmcTransport};
 pub use idle::{cpu_idle_tables, CpuIdleState, CpuIdleTable};
+pub use psci::{psci_conduit, PsciConduit};
 pub use build::{uefi_stub_tree, Builder, EfiFirmware, UefiHandoff};
 pub use uapi::{
     OF_PROC_NAME, OF_PROP_MODE, OF_RAW_MODE, OF_ROOT_DIR, OF_SECURE_PREFIX, OF_SECURE_PROP_MODE,

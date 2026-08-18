@@ -95,6 +95,10 @@ pub unsafe fn init(info: &BootInfo) {
     // reserved-in-the-memmap physical extent, and `retain` re-validates the
     // header before publishing anything.
     unsafe { retain_device_tree(info); }
+    #[cfg(target_arch = "aarch64")]
+    // PSCI CPU-on and every later terminal call use this one firmware-selected
+    // conduit; it must be installed before SMP can issue its first PSCI call.
+    let _ = firmware::fdt::psci::init();
     let _ = firmware::fdt::populate_cpu_topology();
     #[cfg(target_arch = "aarch64")]
     // SAFETY: ACPI and DT CPU producers have both populated the shared table;
