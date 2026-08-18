@@ -219,13 +219,25 @@ impl AddressDeviceDma {
         Some(true)
     }
     /// Publish the command-block wrapper for one Bulk-Only command. # C: O(CBW bytes)
-    pub fn submit_storage_cbw(&mut self, mmio: &Mmio, slot: u8, tag: u32, transfer_bytes: u32, device_to_host: bool, cdb: &[u8]) -> Option<u64> {
+    pub fn submit_storage_cbw(&mut self, mmio: &Mmio, slot: u8, tag: u32, transfer_bytes: u32, device_to_host: bool, lun: u8, cdb: &[u8]) -> Option<u64> {
         let storage = self._storage?;
         let dma = self.storage_dma.as_mut()?;
-        let cbw = crate::storage::command_block(tag, transfer_bytes, device_to_host, 0, cdb)?;
+        let cbw = crate::storage::command_block(tag, transfer_bytes, device_to_host, lun, cdb)?;
         for (offset, byte) in cbw.into_iter().enumerate() { if !dma.command.write8(offset as u64, byte) { return None; } }
         dma.command.clean_to_device();
         submit_transfer(mmio, slot, storage.bulk_out, &mut dma.bulk_out_producer, &dma.bulk_out_ring, dma.command.dma(), crate::storage::CBW_BYTES as u32)
+    }
+    /// Submit Bulk-Only GET_MAX_LUN through the device's retained EP0 buffer. # C: O(1)
+    pub fn submit_storage_max_lun(&mut self, mmio: &Mmio, slot: u8) -> Option<u64> {
+        let storage = self._storage?;
+        let td = crate::usb::get_mass_storage_max_lun_trbs(self.descriptor.dma(), storage.interface)?;
+        self.submit_ep0(mmio, slot, &td)
+    }
+    /// Read a successful Bulk-Only GET_MAX_LUN response. # C: O(1)
+    pub fn storage_max_lun(&self) -> Option<u8> {
+        self.descriptor.invalidate_from_device();
+        let lun = self.descriptor.read8(0)?;
+        (lun <= crate::storage::USB_BULK_MAX_LUN).then_some(lun)
     }
     /// Publish the data stage for a Bulk-Only command. # C: O(data bytes)
     pub fn submit_storage_data(&mut self, mmio: &Mmio, slot: u8, length: u32, device_to_host: bool) -> Option<u64> {

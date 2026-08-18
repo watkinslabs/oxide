@@ -29,17 +29,24 @@ fn detach(controller: &Arc<Controller>, matches: impl Fn(DeviceTopology) -> bool
 }
 
 fn detach_one(controller: &Arc<Controller>, device: &Arc<UsbDevice>) -> bool {
-    let name = device.state.lock_bh::<XhciBh>().storage_name.as_ref().map(|name| String::from(name.as_str()));
-    let detach = match name.as_deref() {
-        Some(name) => match block::registry::begin_forced_detach(name) {
-            Some(detach) => Some(detach),
-            None => return false,
-        },
-        None => None,
-    };
-    if let Some(detach) = detach {
-        device.state.lock_bh::<XhciBh>().storage_name.take();
-        detach.wait_for_drain();
+    let names: Vec<String> = device.state.lock_bh::<XhciBh>().storage_names.iter()
+        .map(|name| String::from(name.as_str())).collect();
+    let mut detaches = Vec::new();
+    for name in names {
+        let Some(detach) = block::registry::begin_forced_detach(&name) else {
+            let removed: Vec<String> = detaches.iter()
+                .map(|detach: &block::registry::ForcedDetach| String::from(detach.name())).collect();
+            device.state.lock_bh::<XhciBh>().storage_names.retain(|name| {
+                !removed.iter().any(|removed| removed == name.as_str())
+            });
+            for detach in detaches { detach.wait_for_drain(); }
+            return false;
+        };
+        detaches.push(detach);
+    }
+    if !detaches.is_empty() {
+        device.state.lock_bh::<XhciBh>().storage_names.clear();
+        for detach in detaches { detach.wait_for_drain(); }
     }
     crate::probe_input::remove_hid_input(&device.state.lock_bh::<XhciBh>());
     let mut state = controller.state.lock_bh::<XhciBh>();

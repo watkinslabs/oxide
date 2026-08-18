@@ -30,7 +30,7 @@ pub(crate) struct UsbDeviceState {
     pub(crate) decoder: Option<Box<crate::hid_report::ReportDecoder>>,
     pub(crate) evdev: Option<u32>,
     pub(crate) input_platform: Option<u32>,
-    pub(crate) storage_name: Option<block::ScsiDiskName>,
+    pub(crate) storage_names: Vec<block::ScsiDiskName>,
 }
 
 pub(crate) struct UsbDevice { _controller: Weak<Controller>, pub(crate) state: Spinlock<UsbDeviceState, DriverLockClass> }
@@ -40,7 +40,7 @@ impl UsbDevice {
     pub(crate) fn new(controller: &Arc<Controller>, mut device: Box<AddressDeviceDma>) -> Arc<Self> {
         let slot = device.slot();
         let layout = device.take_hid_layout();
-        Arc::new(Self { _controller: Arc::downgrade(controller), state: Spinlock::new(UsbDeviceState { device, slot, decoder: layout.map(|layout| Box::new(crate::hid_report::ReportDecoder::new(layout))), evdev: None, input_platform: None, storage_name: None }) })
+        Arc::new(Self { _controller: Arc::downgrade(controller), state: Spinlock::new(UsbDeviceState { device, slot, decoder: layout.map(|layout| Box::new(crate::hid_report::ReportDecoder::new(layout))), evdev: None, input_platform: None, storage_names: Vec::new() }) })
     }
 
     pub(crate) fn with_transport<T>(&self, f: impl FnOnce(&Mmio, Binding, &CommandTransport, &mut UsbDeviceState) -> T) -> Option<T> {
@@ -131,10 +131,10 @@ fn remove(bdf: pci::Bdf) {
         let _ = state.mmio.halt();
         state.irq.disable_and_free();
         for device in &state.devices {
-            let storage_name = device.state.lock_bh::<XhciBh>().storage_name.take();
-            if let Some(name) = storage_name {
-                if !block::unregister(name.as_str()) { device.state.lock_bh::<XhciBh>().storage_name = Some(name); }
-            }
+            let mut usb = device.state.lock_bh::<XhciBh>();
+            let names = core::mem::take(&mut usb.storage_names);
+            usb.storage_names = names.into_iter().filter(|name| !block::unregister(name.as_str())).collect();
+            drop(usb);
             crate::probe_input::remove_hid_input(&device.state.lock_bh::<XhciBh>());
         }
         restore_bus_master(controller.bdf, controller.command_orig);
@@ -286,12 +286,13 @@ fn storage_complete(irq: Binding, trb_pa: u64, slot: u8, endpoint: u8, length: u
     })
 }
 
-pub(crate) fn storage_command(device: &UsbDevice, tag: u32, cdb: &[u8], data_bytes: u32, device_to_host: bool, out: Option<&[u8]>) -> Option<Vec<u8>> {
+pub(crate) fn storage_command(device: &UsbDevice, tag: u32, lun: scsi::Lun, cdb: &[u8], data_bytes: u32, device_to_host: bool, out: Option<&[u8]>) -> Option<Vec<u8>> {
     device.with_transport(|mmio, irq, _, state| {
         let storage = state.device.storage_interface()?;
+        let lun = u8::try_from(lun.value()).ok().filter(|lun| *lun <= crate::storage::USB_BULK_MAX_LUN)?;
         if device_to_host != out.is_none() || out.is_some_and(|bytes| bytes.len() != data_bytes as usize) { return None; }
         if let Some(bytes) = out { if !state.device.set_storage_data(bytes) { return None; } }
-        let cbw = state.device.submit_storage_cbw(mmio, state.slot, tag, data_bytes, device_to_host, cdb)?;
+        let cbw = state.device.submit_storage_cbw(mmio, state.slot, tag, data_bytes, device_to_host, lun, cdb)?;
         if !storage_complete(irq, cbw, state.slot, storage.bulk_out, crate::storage::CBW_BYTES as u32) { return None; }
         if data_bytes != 0 {
             let data = state.device.submit_storage_data(mmio, state.slot, data_bytes, device_to_host)?;
@@ -304,15 +305,6 @@ pub(crate) fn storage_command(device: &UsbDevice, tag: u32, cdb: &[u8], data_byt
         if status != crate::storage::CswStatus::Passed || residue != 0 { return None; }
         if device_to_host { state.device.storage_data(data_bytes as usize) } else { Some(Vec::new()) }
     })?
-}
-
-pub(crate) fn probe_storage_capacity(device: &UsbDevice) -> Option<(u64, u32)> {
-    if device.state.lock_bh::<XhciBh>().device.storage_interface().is_none() { return None; }
-    let inquiry = storage_command(device, 1, &crate::storage::inquiry_cdb(), 36, true, None)?;
-    if inquiry.len() != 36 { return None; }
-    let capacity = storage_command(device, 2, &crate::storage::read_capacity10_cdb(), 8, true, None)?;
-    let (last_lba, block_bytes) = crate::storage::read_capacity10(&capacity)?;
-    Some((u64::from(last_lba).checked_add(1)?, block_bytes))
 }
 
 pub(crate) fn disable_slot(mmio: &Mmio, command: &CommandTransport, irq: Binding, slot: u8) {

@@ -14,10 +14,12 @@ const REQUEST_GET_DESCRIPTOR: u8 = 6;
 const REQUEST_SET_CONFIGURATION: u8 = 9;
 const REQUEST_SET_IDLE: u8 = 10;
 const REQUEST_SET_PROTOCOL: u8 = 11;
+const REQUEST_GET_MAX_LUN: u8 = 0xfe;
 const TYPE_STANDARD_DEVICE_IN: u8 = 0x80;
 const TYPE_STANDARD_DEVICE_OUT: u8 = 0;
 const TYPE_HID_INTERFACE_IN: u8 = 0x81;
 const TYPE_HID_INTERFACE_OUT: u8 = 0x21;
+const TYPE_MASS_STORAGE_INTERFACE_IN: u8 = 0xa1;
 const TYPE_HUB_DEVICE_IN: u8 = 0xa0;
 const TYPE_HUB_PORT_IN: u8 = 0xa3;
 const TYPE_HUB_PORT_OUT: u8 = 0x23;
@@ -63,6 +65,10 @@ pub const fn set_configuration(value: u8) -> Option<ControlSetup> {
 }
 /// HID Boot protocol selection for one interface. # C: O(1)
 pub const fn set_hid_boot_protocol(interface: u8) -> ControlSetup { ControlSetup { request_type: TYPE_HID_INTERFACE_OUT, request: REQUEST_SET_PROTOCOL, value: 0, index: interface as u16, length: 0 } }
+/// Bulk-Only Transport GET_MAX_LUN request for one configured interface. # C: O(1)
+pub const fn get_mass_storage_max_lun(interface: u8) -> ControlSetup {
+    ControlSetup { request_type: TYPE_MASS_STORAGE_INTERFACE_IN, request: REQUEST_GET_MAX_LUN, value: 0, index: interface as u16, length: 1 }
+}
 
 #[cfg(test)]
 mod tests {
@@ -75,6 +81,7 @@ mod tests {
         assert_eq!(get_hid_report_descriptor(3, 52), ControlSetup { request_type: 0x81, request: 6, value: 0x2200, index: 3, length: 52 });
         assert_eq!(set_hid_idle(3), ControlSetup { request_type: 0x21, request: 10, value: 0, index: 3, length: 0 });
         assert_eq!(set_hid_boot_protocol(3), ControlSetup { request_type: 0x21, request: 11, value: 0, index: 3, length: 0 });
+        assert_eq!(get_mass_storage_max_lun(3), ControlSetup { request_type: 0xa1, request: 0xfe, value: 0, index: 3, length: 1 });
     }
 
     #[test]

@@ -113,8 +113,6 @@ fn reset_root_port(controller: &Arc<Controller>, port: u8) -> RootReset {
 
 #[inline(never)]
 fn register_storage(device: &Arc<UsbDevice>) {
-    let Some((capacity, block_bytes)) = crate::probe::probe_storage_capacity(device) else { return; };
-    if let Some(name) = crate::storage_block::register(Arc::clone(device), capacity, block_bytes) {
-        device.state.lock_bh::<XhciBh>().storage_name = Some(name);
-    }
+    let names = crate::storage_block::register(Arc::clone(device));
+    if !names.is_empty() { device.state.lock_bh::<XhciBh>().storage_names = names; }
 }

@@ -46,6 +46,8 @@ pub const HUB_PORT_CHANGE_CONNECTION: u16 = 1;
 pub const HUB_PORT_CHANGE_RESET: u16 = 16;
 /// Largest USB2 hub change bitmap: bit zero plus 255 downstream ports. # C: O(1)
 pub const HUB_STATUS_MAX_BYTES: usize = 32;
+/// Bulk-Only Transport GET_MAX_LUN response length. # C: O(1)
+pub const MASS_STORAGE_MAX_LUN_BYTES: usize = 1;
 
 /// A validated, fixed-size hub interrupt status bitmap. # C: O(1)
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -144,6 +146,15 @@ pub fn get_hub_descriptor_trbs(buffer_pa: u64, length: usize) -> Option<[crate::
     Some([
         setup_stage(control::get_hub_descriptor(length as u16)),
         crate::ring::Trb::data_stage(buffer_pa, length as u32, true)?,
+        crate::ring::Trb::status_stage(true),
+    ])
+}
+
+/// Build the Bulk-Only Transport GET_MAX_LUN request for one interface. # C: O(1)
+pub fn get_mass_storage_max_lun_trbs(buffer_pa: u64, interface: u8) -> Option<[crate::ring::Trb; 3]> {
+    Some([
+        setup_stage(control::get_mass_storage_max_lun(interface)),
+        crate::ring::Trb::data_stage(buffer_pa, MASS_STORAGE_MAX_LUN_BYTES as u32, true)?,
         crate::ring::Trb::status_stage(true),
     ])
 }
@@ -397,6 +408,10 @@ mod tests {
         assert_eq!(mass_storage_interface(&bytes), Some(crate::storage::MassStorageInterface { configuration: 1, interface: 2, bulk_in: 0x81, bulk_in_packet: 512, bulk_out: 2, bulk_out_packet: 512 }));
         let mut wrong_protocol = bytes; wrong_protocol[16] = 0x62;
         assert!(mass_storage_interface(&wrong_protocol).is_none());
+        let max_lun = get_mass_storage_max_lun_trbs(0x90_000, 2).unwrap();
+        assert_eq!(max_lun[0].dword, [0x0000_fea1, 2 | ((MASS_STORAGE_MAX_LUN_BYTES as u32) << 16), 8,
+            (crate::ring::TRB_TYPE_SETUP << crate::ring::TRB_TYPE_SHIFT) | (1 << 6) | (3 << 16)]);
+        assert_eq!(max_lun[1].dword[2], MASS_STORAGE_MAX_LUN_BYTES as u32);
     }
     #[test]
     fn set_configuration_is_a_no_data_out_control_td() {

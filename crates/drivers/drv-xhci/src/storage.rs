@@ -6,6 +6,8 @@ pub const USB_CLASS_MASS_STORAGE: u8 = 8;
 pub const USB_SUBCLASS_SCSI: u8 = 6;
 /// Bulk-Only Transport interface protocol. # C: O(1)
 pub const USB_PROTOCOL_BULK_ONLY: u8 = 0x50;
+/// Largest Bulk-Only Transport LUN encoded in the command wrapper. # C: O(1)
+pub const USB_BULK_MAX_LUN: u8 = 0x0f;
 /// Bulk command block wrapper byte length. # C: O(1)
 pub const CBW_BYTES: usize = 31;
 /// Bulk command status wrapper byte length. # C: O(1)
@@ -40,7 +42,7 @@ pub enum CswStatus { Passed, Failed, PhaseError }
 
 /// Build a strict 31-byte Bulk-Only command wrapper. # C: O(1)
 pub fn command_block(tag: u32, transfer_bytes: u32, device_to_host: bool, lun: u8, cdb: &[u8]) -> Option<[u8; CBW_BYTES]> {
-    if lun > 15 || cdb.is_empty() || cdb.len() > 16 { return None; }
+    if lun > USB_BULK_MAX_LUN || cdb.is_empty() || cdb.len() > 16 { return None; }
     let mut cbw = [0u8; CBW_BYTES];
     cbw[0..4].copy_from_slice(&CBW_SIGNATURE.to_le_bytes());
     cbw[4..8].copy_from_slice(&tag.to_le_bytes());
@@ -67,29 +69,11 @@ pub fn command_status(bytes: &[u8], tag: u32, transfer_bytes: u32) -> Option<(Cs
     Some((status, residue))
 }
 
-/// Build SCSI INQUIRY for the standard 36-byte identity payload. # C: O(1)
-pub const fn inquiry_cdb() -> [u8; 6] { [0x12, 0, 0, 0, 36, 0] }
-
-/// Build SCSI TEST UNIT READY. # C: O(1)
-pub const fn test_unit_ready_cdb() -> [u8; 6] { [0, 0, 0, 0, 0, 0] }
-
-/// Build SCSI READ CAPACITY(10). # C: O(1)
-pub const fn read_capacity10_cdb() -> [u8; 10] { [0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0] }
-
 /// Build SCSI READ(10) for a nonzero logical-block count. # C: O(1)
 pub fn read10_cdb(lba: u32, blocks: u16) -> Option<[u8; 10]> { rw10_cdb(0x28, lba, blocks) }
 
 /// Build SCSI WRITE(10) for a nonzero logical-block count. # C: O(1)
 pub fn write10_cdb(lba: u32, blocks: u16) -> Option<[u8; 10]> { rw10_cdb(0x2a, lba, blocks) }
-
-/// Decode the fixed READ CAPACITY(10) response. # C: O(1)
-pub fn read_capacity10(bytes: &[u8]) -> Option<(u32, u32)> {
-    if bytes.len() != 8 { return None; }
-    let last_lba = u32::from_be_bytes(bytes[0..4].try_into().ok()?);
-    let block_bytes = u32::from_be_bytes(bytes[4..8].try_into().ok()?);
-    if last_lba == u32::MAX || !block_bytes.is_power_of_two() || block_bytes < 512 { return None; }
-    Some((last_lba, block_bytes))
-}
 
 fn rw10_cdb(opcode: u8, lba: u32, blocks: u16) -> Option<[u8; 10]> {
     if blocks == 0 { return None; }
@@ -127,13 +111,10 @@ mod tests {
     }
 
     #[test]
-    fn scsi_commands_and_capacity_use_scsi_byte_order() {
-        assert_eq!(inquiry_cdb(), [0x12, 0, 0, 0, 36, 0]);
-        assert_eq!(test_unit_ready_cdb(), [0; 6]);
-        assert_eq!(read_capacity10_cdb(), [0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    fn bulk_command_builder_keeps_lun_and_cdb_wire_order() {
         assert_eq!(read10_cdb(0x1122_3344, 0x5566).unwrap(), [0x28, 0, 0x11, 0x22, 0x33, 0x44, 0, 0x55, 0x66, 0]);
         assert!(write10_cdb(0, 0).is_none());
-        assert_eq!(read_capacity10(&[0, 0, 0, 99, 0, 0, 2, 0]), Some((99, 512)));
-        assert!(read_capacity10(&[0xff, 0xff, 0xff, 0xff, 0, 0, 2, 0]).is_none());
+        assert!(command_block(1, 0, false, USB_BULK_MAX_LUN, &[0]).is_some());
+        assert!(command_block(1, 0, false, USB_BULK_MAX_LUN + 1, &[0]).is_none());
     }
 }
