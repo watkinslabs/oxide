@@ -22,7 +22,10 @@ use crate::uapi::LOOP_MAJOR;
 /// the reference assigns, not a dynamic one: `losetup` and every udev rule
 /// address these devices by name, and tools that parse `/proc/devices` expect
 /// the fixed number.
-pub const LOOP_DRIVER: BlockDriver = BlockDriver { name: "loop", major: MajorRequest::Fixed(LOOP_MAJOR) };
+pub const LOOP_DRIVER: BlockDriver = BlockDriver {
+    name: "loop", major: MajorRequest::Fixed(LOOP_MAJOR),
+    minor_stride: block::registry::PARTITION_MINOR_COUNT, partitions: true,
+};
 
 /// Devices created before anything asks for one.
 ///

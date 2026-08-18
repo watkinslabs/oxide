@@ -16,6 +16,7 @@ mmio-map = { path = "../../kernel/mmio-map" }
 sync    = { path = "../../shared/sync" }
 pmm     = { path = "../../kernel/mm-pmm" }
 block   = { path = "../../kernel/block" }
+scsi    = { path = "../../kernel/scsi" }
 arch-irq = { path = "../../kernel/arch-irq" }
 pci-irq = { path = "../../kernel/pci-irq" }
 sched   = { path = "../../kernel/sched" }

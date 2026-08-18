@@ -1,0 +1,21 @@
+[package]
+name = "scsi"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+block = { path = "../block" }
+
+[dev-dependencies]
+sync = { path = "../../shared/sync" }
+
+[features]
+default = []
+hosted = ["block/hosted"]
+
+[lints]
+workspace = true

@@ -30,12 +30,31 @@ pub enum MajorRequest { Fixed(u32), Dynamic }
 
 /// Identity of one block driver, passed explicitly at publication time.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct BlockDriver { pub name: &'static str, pub major: MajorRequest }
+pub struct BlockDriver {
+    pub name: &'static str,
+    pub major: MajorRequest,
+    /// Distance between whole-disk minors. Partitionable disks reserve one
+    /// Linux partition-minor window; virtual devices that do not expose
+    /// partition minors may allocate every minor.
+    pub minor_stride: u32,
+    /// Whether the published disks may be scanned for child partitions.
+    pub partitions: bool,
+}
 impl BlockDriver {
     /// Make a driver with a Linux-assigned fixed major. # C: O(1)
-    pub const fn fixed(name: &'static str, major: u32) -> Self { Self { name, major: MajorRequest::Fixed(major) } }
+    pub const fn fixed(name: &'static str, major: u32) -> Self {
+        Self { name, major: MajorRequest::Fixed(major), minor_stride: PARTITION_MINOR_COUNT, partitions: true }
+    }
     /// Make a driver which owns a dynamically allocated Linux block major. # C: O(1)
-    pub const fn dynamic(name: &'static str) -> Self { Self { name, major: MajorRequest::Dynamic } }
+    pub const fn dynamic(name: &'static str) -> Self {
+        Self { name, major: MajorRequest::Dynamic, minor_stride: PARTITION_MINOR_COUNT, partitions: true }
+    }
+    /// Make an unpartitioned virtual block driver. Its caller can reserve an
+    /// individual minor, so an ABI-visible virtual-device number never shares
+    /// a partition window with a different published device. # C: O(1)
+    pub const fn unpartitioned_fixed(name: &'static str, major: u32) -> Self {
+        Self { name, major: MajorRequest::Fixed(major), minor_stride: 1, partitions: false }
+    }
 }
 
 /// Canonical device number allocated to one published disk.
@@ -45,6 +64,9 @@ pub struct DevNum { pub major: u32, pub minor: u32 }
 /// One registered block device.
 pub struct Disk {
     pub name: String,
+    /// Devtmpfs-relative block-node path. It may differ from `name`: mapper
+    /// devices are indexed as `dm-N` but published as `mapper/<name>`.
+    pub node_name: LifecycleMutex<String>,
     pub index: u32,
     pub driver: BlockDriver,
     pub number: DevNum,
@@ -99,7 +121,7 @@ impl Drop for PartitionRescan {
     }
 }
 
-struct DriverState { driver: BlockDriver, major: u32, next_minor: u32 }
+struct DriverState { driver: BlockDriver, major: u32, allocated_minors: Vec<u32> }
 pub(super) static TABLE: LifecycleMutex<Vec<Arc<Disk>>> = LifecycleMutex::new(Vec::new());
 static DRIVERS: LifecycleMutex<Vec<DriverState>> = LifecycleMutex::new(Vec::new());
 static NEXT_DISK_INDEX: AtomicU32 = AtomicU32::new(0);
@@ -118,8 +140,19 @@ pub fn set_remove_hook(f: DiskRemoveHook) {
 
 /// Register an explicitly-owned block device. # C: O(N_disks + N_drivers)
 pub fn register_with_driver(driver: BlockDriver, name: &str, serial: Option<&str>, dev: Arc<dyn BlockDevice>) -> u32 {
+    register_with_driver_at(driver, name, name, serial, None, dev)
+}
+
+/// Register one disk with an explicit devtmpfs path and, optionally, a
+/// caller-owned minor. The block registry remains the sole owner of the
+/// resulting `(major,minor)` and VFS block-node dispatch; this entry point is
+/// for virtual drivers whose ABI names and devtmpfs names differ from their
+/// internal disk identity. # C: O(N_disks + N_minors)
+pub fn register_with_driver_at(driver: BlockDriver, name: &str, node_name: &str,
+                               serial: Option<&str>, requested_minor: Option<u32>,
+                               dev: Arc<dyn BlockDevice>) -> u32 {
     if let Some(disk) = by_name(name) { return disk.index; }
-    let number = match allocate_number(driver) { Some(n) => n, None => return 0 };
+    let number = match allocate_number_at(driver, requested_minor) { Some(n) => n, None => return 0 };
     let max_discard_sectors = match dev.queue_limits() {
         Ok(limits) => limits.max_discard_sectors(),
         Err(_) => { release_number(driver, number); return 0; }
@@ -147,7 +180,7 @@ pub fn register_with_driver(driver: BlockDriver, name: &str, serial: Option<&str
             Err(existing.index)
         } else if let Some(index) = next_disk_index() {
             let disk = Arc::new(Disk {
-                name: name.to_string(), index, driver, number,
+                name: name.to_string(), node_name: LifecycleMutex::new(node_name.to_string()), index, driver, number,
                 serial: serial.filter(|s| !s.is_empty()).map(ToString::to_string), dev, mapping, stats,
                 partitions: LifecycleMutex::new(Vec::new()),
         life: LifecycleMutex::new(DiskLifecycle { holders: 0, openers: 0, lifecycle_held: false, reset_frozen: false, detached: false }),
@@ -168,10 +201,10 @@ pub fn register_with_driver(driver: BlockDriver, name: &str, serial: Option<&str
     };
     match drv::try_device_add(Arc::new(
         drv::Device::new("block", name.to_string(), 0, 0, 0)
-            .with_devnode("block", name.to_string(), Some((number.major, number.minor))))) {
+            .with_devnode("block", node_name.to_string(), Some((number.major, number.minor))))) {
         Ok(_) => {
             crate::devbridge::publish(number, bridge_disk);
-            super::partition::scan_after_registration(name);
+            if driver.partitions { super::partition::scan_after_registration(name); }
             index
         }
         Err(_) => {
@@ -208,34 +241,81 @@ pub fn register_with_serial(name: &str, serial: Option<&str>, dev: Arc<dyn Block
     register_with_driver(GENERIC_BLOCK_DRIVER, name, serial, dev)
 }
 
+#[cfg(test)]
 pub(crate) fn allocate_number(driver: BlockDriver) -> Option<DevNum> {
+    allocate_number_at(driver, None)
+}
+
+/// Reserve either the lowest free driver-compatible minor or an exact minor.
+/// The allocation set is explicit rather than a rollback-only cursor: removal
+/// of `loop0` or a mapper device must make THAT minor available again without
+/// ever aliasing another live disk. # C: O(N_drivers + N_minors)
+pub(crate) fn allocate_number_at(driver: BlockDriver, requested_minor: Option<u32>) -> Option<DevNum> {
+    if driver.minor_stride == 0 { return None; }
     // SAFETY: driver-number allocation is process-context publication work.
     let mut ds = unsafe { DRIVERS.lock() };
-    if let Some(d) = ds.iter_mut().find(|d| d.driver.name == driver.name) {
-        if d.driver.major != driver.major { return None; }
-        let minor = d.next_minor;
-        d.next_minor = d.next_minor.checked_add(PARTITION_MINOR_COUNT)?;
-        return Some(DevNum { major: d.major, minor });
-    }
-    let major = match driver.major {
-        MajorRequest::Fixed(major) => {
-            if ds.iter().any(|d| d.major == major) { return None; }
-            major
+    let position = match ds.iter().position(|d| d.driver.name == driver.name) {
+        Some(pos) if ds[pos].driver == driver => pos,
+        Some(_) => return None,
+        None => {
+            let major = match driver.major {
+                MajorRequest::Fixed(major) => {
+                    if ds.iter().any(|d| d.major == major) { return None; }
+                    major
+                }
+                MajorRequest::Dynamic => (DYNAMIC_MAJOR_FIRST..=DYNAMIC_MAJOR_LAST)
+                    .rev().find(|major| !ds.iter().any(|d| d.major == *major))?,
+            };
+            ds.push(DriverState { driver, major, allocated_minors: Vec::new() });
+            ds.len() - 1
         }
-        MajorRequest::Dynamic => (DYNAMIC_MAJOR_FIRST..=DYNAMIC_MAJOR_LAST)
-            .rev().find(|major| !ds.iter().any(|d| d.major == *major))?,
     };
-    ds.push(DriverState { driver, major, next_minor: PARTITION_MINOR_COUNT });
-    Some(DevNum { major, minor: 0 })
+    let state = &mut ds[position];
+    let minor = match requested_minor {
+        Some(minor) if minor < (1 << vfs::MINORBITS) && minor % driver.minor_stride == 0
+            && !state.allocated_minors.iter().any(|used| *used == minor) => minor,
+        Some(_) => return None,
+        None => (0..(1 << vfs::MINORBITS))
+            .step_by(driver.minor_stride as usize)
+            .find(|minor| !state.allocated_minors.iter().any(|used| *used == *minor))?,
+    };
+    state.allocated_minors.push(minor);
+    Some(DevNum { major: state.major, minor })
 }
 
 pub(crate) fn release_number(driver: BlockDriver, number: DevNum) {
     // SAFETY: driver-number release is process-context lifecycle work.
     let mut ds = unsafe { DRIVERS.lock() };
-    if let Some(pos) = ds.iter().position(|d| d.driver == driver && d.major == number.major && d.next_minor == number.minor.saturating_add(PARTITION_MINOR_COUNT)) {
-        ds[pos].next_minor = number.minor;
-        if number.minor == 0 { ds.remove(pos); }
+    if let Some(pos) = ds.iter().position(|d| d.driver == driver && d.major == number.major) {
+        let state = &mut ds[pos];
+        if let Some(minor) = state.allocated_minors.iter().position(|minor| *minor == number.minor) {
+            state.allocated_minors.remove(minor);
+        }
+        if state.allocated_minors.is_empty() { ds.remove(pos); }
     }
+}
+
+/// Move one published disk's devtmpfs node without changing its block identity
+/// or VFS dispatch. The new node is published only after the old model node
+/// is removed, and an add failure restores the old path. # C: O(N_devices)
+pub fn republish_node(name: &str, node_name: &str) -> bool {
+    let Some(disk) = by_name(name) else { return false; };
+    // SAFETY: node republishing is process-context device lifecycle work.
+    let old_node = unsafe { disk.node_name.lock() }.clone();
+    if old_node == node_name { return true; }
+    let Some(model) = drv::devices().into_iter().find(|d| d.bus == "block" && d.addr == name) else { return false; };
+    let number = disk.number;
+    drv::device_del(&model);
+    let publish = |path: &str| drv::try_device_add(Arc::new(
+        drv::Device::new("block", name.to_string(), 0, 0, 0)
+            .with_devnode("block", path.to_string(), Some((number.major, number.minor)))));
+    if publish(node_name).is_ok() {
+        // SAFETY: node republishing is process-context device lifecycle work.
+        *unsafe { disk.node_name.lock() } = node_name.to_string();
+        return true;
+    }
+    let _ = publish(&old_node);
+    false
 }
 
 /// Unpublish a disk and its owned device number. # C: O(N_disks + N_devices)

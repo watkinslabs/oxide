@@ -10,6 +10,7 @@ pub(crate) use crate::ioctl_owner::{fs_unlocked_ioctl_applies, ioctl_file, ioctl
 
 #[path = "016_ioctl/autofs.rs"] mod autofs;
 #[path = "016_ioctl/blk.rs"] mod blk;
+#[path = "016_ioctl/device_mapper.rs"] mod device_mapper;
 #[path = "016_ioctl/loop_dev.rs"] mod loop_dev;
 #[path = "016_ioctl/common.rs"] mod common;
 #[path = "016_ioctl/core.rs"] mod core;

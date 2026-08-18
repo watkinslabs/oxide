@@ -58,6 +58,12 @@ unsafe fn mount_root() {
         // /dev/loop-control. They hold no backing file until one is bound, so
         // publishing them costs a registry entry each and no I/O.
         step("drv_loop::init", drv_loop::registry::init);
+        // The mapper control node must exist before user space mounts an LVM
+        // root or asks udev to inspect volumes. Target creation remains lazy;
+        // this only publishes `/dev/mapper/control` and its fixed ABI owner.
+        step("device_mapper::init", || device_mapper::init().expect("device-mapper control registration failed"));
+        step("scsi::init", scsi::init);
+        step("md::init", md::init);
         let root_spec = crate::boot_cmdline::parameter_value(b"root")
             .expect("boot command line has no root=");
         let root_dev = block::registry::resolve_root_spec(root_spec)

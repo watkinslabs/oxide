@@ -1,0 +1,26 @@
+[package]
+name = "device-mapper"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+block   = { path = "../block" }
+syscall = { path = "../syscall" }
+sync    = { path = "../../shared/sync" }
+aes     = { path = "../../shared/aes" }
+crypt   = { path = "../../shared/crypt" }
+crng    = { path = "../crng" }
+vfs     = { path = "../vfs" }
+drv     = { path = "../../drivers/drv" }
+bitflags = { version = "2", default-features = false }
+
+[features]
+default = []
+hosted  = ["block/hosted"]
+
+[lints]
+workspace = true

@@ -82,6 +82,7 @@ pub fn start_deferred_partition_scans() {}
 pub fn rescan_partitions(name: &str) -> Option<Vec<Arc<Partition>>> {
     let rescan = super::try_partition_rescan(name)?;
     let disk = Arc::clone(rescan.disk());
+    if !disk.driver.partitions { return Some(Vec::new()); }
     unpublish_partitions(&disk);
     let capacity = disk.dev.capacity_blocks();
     let parts = partitions::read(disk.dev.as_ref()).into_iter().filter_map(|info| {

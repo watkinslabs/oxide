@@ -86,20 +86,16 @@ pub(super) fn publish_port(device_key: pci::Bdf, command_orig: u16,
         return None;
     };
     let dev = Arc::new(AhciBlk::new(ctrl, binding, blk_size, capacity));
-    let Some(name) = block::reserve_scsi_disk_name() else {
+    let Some(name) = scsi::publish_block_transport(dev.clone(), serial.as_deref()) else {
         dev.remove();
         return None;
     };
     let name_text = String::from(name.as_str());
-    let existed = block::registry::by_name(&name_text).is_some();
-    let idx = block::registry::register_with_driver(
-        block::registry::BlockDriver::fixed("sd", block::uapi::SCSI_DISK_MAJOR),
-        &name_text, serial.as_deref(), dev.clone());
-    if idx == 0 || existed {
-        if idx != 0 { let _ = block::registry::unregister(&name_text); }
+    let Some(idx) = block::registry::by_name(&name_text).map(|disk| disk.index) else {
+        let _ = block::registry::unregister(&name_text);
         dev.remove();
         return None;
-    }
+    };
     DEVICES.lock_bh::<AhciBh>().push(AhciRecord { device_key, command_orig, port, name, dev });
     Some(idx)
 }
