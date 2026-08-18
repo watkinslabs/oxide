@@ -43,8 +43,13 @@ impl Command {
     /// Operation code. # C: O(1)
     pub fn opcode(&self) -> u8 { self.bytes[0] }
 
+    /// Fixed INQUIRY command for the standard 36-byte response. # C: O(1)
     pub(crate) fn inquiry() -> Self { Self { bytes: [INQUIRY, 0, 0, 0, 36, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], len: 6 } }
+
+    /// Fixed READ CAPACITY(10) command. # C: O(1)
     pub(crate) fn capacity_10() -> Self { Self { bytes: [READ_CAPACITY_10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], len: 10 } }
+
+    /// Fixed SERVICE ACTION IN(16)/READ CAPACITY(16) command. # C: O(1)
     pub(crate) fn capacity_16() -> Self {
         Self { bytes: [SERVICE_ACTION_IN_16, READ_CAPACITY_16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], len: 16 }
     }
