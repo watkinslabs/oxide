@@ -9,10 +9,19 @@
 extern crate alloc;
 #[cfg(test)] extern crate std;
 
+// Module manifest: superblock owns v1 metadata validation; assembly owns data
+// views and personality construction; autostart owns boot-time discovery.
+mod superblock;
+mod assembly;
+mod autostart;
+
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use block::{BlockDevice, BlockError, BlockOp, BlockRequest, KResult, QueueLimits};
+
+pub use superblock::{MetadataVersion, Superblock, read_superblock};
+pub use assembly::assemble;
 
 /// Linux's fixed block major for MD arrays. # C: O(1)
 pub const MD_MAJOR: u32 = 9;
@@ -218,7 +227,7 @@ pub fn publish(name: &str, array: Arc<Array>) -> u32 {
 /// MD has no global queues to start; array construction is explicitly owned by
 /// its caller. This boot hook keeps its lifecycle visible in the rootfs phase.
 /// # C: O(1)
-pub fn init() {}
+pub fn init() { autostart::init(); }
 
 #[cfg(test)]
 mod tests {
