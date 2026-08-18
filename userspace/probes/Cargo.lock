@@ -11,6 +11,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ata_sat_probe"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "support",
+]
+
+[[package]]
 name = "drm_probe"
 version = "0.1.0"
 dependencies = [

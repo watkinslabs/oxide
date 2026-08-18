@@ -62,6 +62,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
         smoke-hda smoke-hda-x86 smoke-hda-arm \
         smoke-v4l2 smoke-v4l2-x86 smoke-v4l2-arm \
         smoke-ata-identity smoke-ata-identity-x86 smoke-ata-identity-arm \
+        smoke-ata-sat smoke-ata-sat-x86 smoke-ata-sat-arm \
         hosted-gate test-build-gate \
         smoke-hostshare smoke-hostshare-x86 smoke-hostshare-arm \
         smoke-ping smoke-ping-x86 smoke-ping-arm smoke-network-native-pci-x86 \
@@ -711,6 +712,7 @@ smoke-grub:
 # generic parser found a route and the ALSA card registered.
 V4L2_SMOKE_TIMEOUT ?= 900
 ATA_IDENTITY_SMOKE_TIMEOUT ?= 900
+ATA_SAT_SMOKE_TIMEOUT ?= 900
 HDA_SMOKE_TIMEOUT ?= 900
 # V4L2 acceptance. The probe is injected into a disposable boot root and run
 # as a unit before basic.target, so the verdict lands on the serial console
@@ -736,6 +738,17 @@ smoke-ata-identity-arm:
 	OXIDE_ATA_IDENTITY_SMOKE=1 SMOKE_ALIVE_PROBE= SMOKE_MARKER='ata_identity_probe: PASS' ./tools/boot-smoke.sh arm $(ATA_IDENTITY_SMOKE_TIMEOUT)
 
 smoke-ata-identity: smoke-ata-identity-x86 smoke-ata-identity-arm
+
+# ATA PASS-THROUGH(16)/(32) reaches the AHCI taskfile owner through shared
+# SG_IO. The serial debug shell invokes the probe after AHCI publishes `sd*`,
+# before unrelated user-session services can affect the result.
+smoke-ata-sat-x86:
+	OXIDE_ATA_SAT_SMOKE=1 SMOKE_MARKER='ata_sat_probe: PASS' SMOKE_ALIVE_CMD=/usr/local/bin/ata_sat_probe SMOKE_ALIVE_MARKER='ata_sat_probe: PASS' ./tools/boot-smoke.sh x86 $(ATA_SAT_SMOKE_TIMEOUT)
+
+smoke-ata-sat-arm:
+	OXIDE_ATA_SAT_SMOKE=1 SMOKE_MARKER='ata_sat_probe: PASS' SMOKE_ALIVE_CMD=/usr/local/bin/ata_sat_probe SMOKE_ALIVE_MARKER='ata_sat_probe: PASS' ./tools/boot-smoke.sh arm $(ATA_SAT_SMOKE_TIMEOUT)
+
+smoke-ata-sat: smoke-ata-sat-x86 smoke-ata-sat-arm
 
 smoke-hda-x86: x86
 	./tools/boot-smoke-hda.sh x86 $(HDA_SMOKE_TIMEOUT)

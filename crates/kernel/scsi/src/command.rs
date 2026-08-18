@@ -23,16 +23,20 @@ pub const SERVICE_ACTION_IN_16: u8 = 0x9e;
 /// READ CAPACITY(16) service action. # C: O(1)
 pub const READ_CAPACITY_16: u8 = 0x10;
 
+/// Largest CDB accepted by the shared SCSI layer. Individual transports may
+/// expose a lower SG_IO limit. # C: O(1)
+pub const MAX_CDB_BYTES: usize = 32;
+
 /// A bounded SCSI CDB. The mid-layer owns its bytes, so a transport never
 /// receives a pointer into a transient block request. # C: O(1)
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct Command { bytes: [u8; 16], len: u8 }
+pub struct Command { bytes: [u8; MAX_CDB_BYTES], len: u8 }
 
 impl Command {
     /// Make a CDB from its exact wire bytes. # C: O(CDB bytes)
     pub fn new(bytes: &[u8]) -> KResult<Self> {
-        if bytes.is_empty() || bytes.len() > 16 { return Err(BlockError::Einval); }
-        let mut cdb = [0u8; 16];
+        if bytes.is_empty() || bytes.len() > MAX_CDB_BYTES { return Err(BlockError::Einval); }
+        let mut cdb = [0u8; MAX_CDB_BYTES];
         cdb[..bytes.len()].copy_from_slice(bytes);
         Ok(Self { bytes: cdb, len: bytes.len() as u8 })
     }
@@ -43,14 +47,20 @@ impl Command {
     /// Operation code. # C: O(1)
     pub fn opcode(&self) -> u8 { self.bytes[0] }
 
+    fn fixed(bytes: &[u8]) -> Self {
+        let mut cdb = [0u8; MAX_CDB_BYTES];
+        cdb[..bytes.len()].copy_from_slice(bytes);
+        Self { bytes: cdb, len: bytes.len() as u8 }
+    }
+
     /// Fixed INQUIRY command for the standard 36-byte response. # C: O(1)
-    pub(crate) fn inquiry() -> Self { Self { bytes: [INQUIRY, 0, 0, 0, 36, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], len: 6 } }
+    pub(crate) fn inquiry() -> Self { Self::fixed(&[INQUIRY, 0, 0, 0, 36, 0]) }
 
     /// Fixed READ CAPACITY(10) command. # C: O(1)
-    pub(crate) fn capacity_10() -> Self { Self { bytes: [READ_CAPACITY_10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], len: 10 } }
+    pub(crate) fn capacity_10() -> Self { Self::fixed(&[READ_CAPACITY_10, 0, 0, 0, 0, 0, 0, 0, 0, 0]) }
 
     /// Fixed SERVICE ACTION IN(16)/READ CAPACITY(16) command. # C: O(1)
     pub(crate) fn capacity_16() -> Self {
-        Self { bytes: [SERVICE_ACTION_IN_16, READ_CAPACITY_16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], len: 16 }
+        Self::fixed(&[SERVICE_ACTION_IN_16, READ_CAPACITY_16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
     }
 }

@@ -143,6 +143,37 @@ impl Ahci {
         self.stage_command(&fis, false, 0, true)
     }
 
+    /// Stage one translated SAT or legacy ATA taskfile. # C: O(command)
+    pub(crate) fn start_taskfile(&mut self, taskfile: &ata::Taskfile, bytes: usize) -> bool {
+        let Ok(bytes) = u32::try_from(bytes) else { return false; };
+        self.stage_command(&regs::h2d_taskfile(taskfile), taskfile.protocol.writes(), bytes, true)
+    }
+
+    /// Read the terminal D2H register image produced by a taskfile command.
+    /// # C: O(1)
+    pub(crate) fn taskfile_result(&self, extend: bool) -> ata::TaskfileResult {
+        let rfis = self.receive_fis_va().wrapping_add(regs::RFIS_D2H_OFFSET as u64) as *const u8;
+        // SAFETY: the receive-FIS page is controller-owned DMA memory retained
+        // until port teardown, and caller observed slot-zero terminal state.
+        let read = |offset: usize| unsafe { core::ptr::read_volatile(rfis.add(offset)) };
+        let tfd = self.pr(regs::P_TFD);
+        let valid = read(0) == regs::FIS_TYPE_D2H;
+        ata::TaskfileResult {
+            extend,
+            status: if valid { read(2) } else { tfd as u8 },
+            error: if valid { read(3) } else { (tfd >> 8) as u8 },
+            lbal: if valid { read(4) } else { 0 },
+            lbam: if valid { read(5) } else { 0 },
+            lbah: if valid { read(6) } else { 0 },
+            device: if valid { read(7) } else { 0 },
+            hob_lbal: if valid { read(8) } else { 0 },
+            hob_lbam: if valid { read(9) } else { 0 },
+            hob_lbah: if valid { read(10) } else { 0 },
+            nsect: if valid { read(12) } else { 0 },
+            hob_nsect: if valid { read(13) } else { 0 },
+        }
+    }
+
     /// Return terminal task-file status only after slot zero stopped. # C: O(1)
     pub(crate) fn command_terminal_tfd(&self) -> Option<u32> {
         if self.pr(regs::P_CI) & COMMAND_SLOT_ZERO != 0 { return None; }

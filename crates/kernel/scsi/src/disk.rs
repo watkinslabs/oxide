@@ -52,6 +52,8 @@ impl Disk {
 
     pub(crate) fn sg_io_max_transfer_bytes(&self) -> Option<usize> { self.transport.sg_io_max_transfer_bytes() }
 
+    pub(crate) fn sg_io_max_cdb_bytes(&self) -> usize { self.transport.sg_io_max_cdb_bytes() }
+
     pub(crate) fn execute_sg_io(&self, command: &Command, data: &mut [u8], direction: DataDirection,
                                  timeout_ms: u32) -> KResult<CommandCompletion> {
         self.transport.execute_with_timeout(self.lun, command, data, direction, timeout_ms)

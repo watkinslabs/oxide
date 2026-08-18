@@ -14,6 +14,8 @@ use crate::lifecycle::{self, ControllerCleanupStep};
 use crate::port::Ahci;
 use crate::wait;
 
+#[path = "device/taskfile.rs"] mod taskfile;
+
 pub struct AhciBlk {
     ctrl:       Spinlock<Ahci, DriverLockClass>,
     irq:        IrqBinding,
@@ -305,14 +307,6 @@ impl AhciBlk {
 
     /// Quiesce for terminal shutdown with publication retained. # C: O(stop)
     pub(crate) fn shutdown(&self) { self.quiesce_and_free(); }
-}
-
-impl ata::Device for AhciBlk {
-    fn identify_page(&self) -> Option<[u8; ata::IDENTIFY_BYTES]> {
-        if self.unavailable() { return None; }
-        let page = self.ctrl.lock().identity_page();
-        if self.unavailable() { None } else { Some(page) }
-    }
 }
 
 impl BlockDevice for AhciBlk {

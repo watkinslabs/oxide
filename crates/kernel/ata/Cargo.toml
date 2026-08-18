@@ -9,6 +9,8 @@ path = "src/lib.rs"
 
 [dependencies]
 sync = { path = "../../shared/sync" }
+block = { path = "../block" }
+scsi = { path = "../scsi" }
 
 [lints]
 workspace = true

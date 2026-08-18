@@ -108,6 +108,8 @@ pub const fn irq_reports_link_change(pis: u32) -> bool {
 
 /// H2D Register FIS type byte (SATA spec §10.3.4).
 pub const FIS_TYPE_H2D: u8 = 0x27;
+/// D2H Register FIS type retained at the AHCI receive-buffer D2H slot.
+pub const FIS_TYPE_D2H: u8 = 0x34;
 /// FIS byte 1 bit 7 = C (command, not control) — set for a command FIS.
 pub const FIS_H2D_C: u8 = 1 << 7;
 
@@ -119,6 +121,11 @@ pub const ATA_FLUSH_EXT:     u8 = 0xEA;
 
 /// Device register LBA-mode bit (bit 6) for the H2D FIS.
 pub const ATA_DEV_LBA: u8 = 0x40;
+/// ATA device-select bit for the second legacy device position.
+pub const ATA_DEV1: u8 = 0x10;
+
+/// Offset of the received D2H Register FIS in an AHCI receive-FIS page.
+pub const RFIS_D2H_OFFSET: usize = 0x40;
 
 /// Byte offset (from ABAR) of port `n`'s register block. # C: O(1)
 #[inline]
@@ -214,6 +221,29 @@ pub fn h2d_fis(cmd: u8, lba: u64, count: u16, device: u8) -> [u8; 20] {
     f[11] = 0;                   // features[15:8]
     f[12] = (count & 0xFF) as u8;
     f[13] = ((count >> 8) & 0xFF) as u8;
+    f
+}
+
+/// Encode one validated ATA taskfile into an AHCI H2D Register FIS. AHCI has
+/// one device per active port, so the legacy device-one selector is cleared.
+/// # C: O(1)
+pub fn h2d_taskfile(taskfile: &ata::Taskfile) -> [u8; 20] {
+    let mut f = [0u8; 20];
+    f[0] = FIS_TYPE_H2D;
+    f[1] = FIS_H2D_C;
+    f[2] = taskfile.command;
+    f[3] = taskfile.feature;
+    f[4] = taskfile.lbal;
+    f[5] = taskfile.lbam;
+    f[6] = taskfile.lbah;
+    f[7] = taskfile.device & !ATA_DEV1;
+    f[8] = taskfile.hob_lbal;
+    f[9] = taskfile.hob_lbam;
+    f[10] = taskfile.hob_lbah;
+    f[11] = taskfile.hob_feature;
+    f[12] = taskfile.nsect;
+    f[13] = taskfile.hob_nsect;
+    f[16..20].copy_from_slice(&taskfile.auxiliary.to_le_bytes());
     f
 }
 
@@ -397,6 +427,14 @@ mod tests {
         // count[7:0]=8, count[15:8]=0.
         assert_eq!(f[12], 8);
         assert_eq!(f[13], 0);
+    }
+
+    #[test]
+    fn taskfile_fis_includes_the_32_byte_pass_through_auxiliary_register() {
+        let mut taskfile = ata::Taskfile::non_data(ATA_IDENTIFY);
+        taskfile.auxiliary = 0x1234_5678;
+        let fis = h2d_taskfile(&taskfile);
+        assert_eq!(&fis[16..20], &[0x78, 0x56, 0x34, 0x12]);
     }
 
     #[test]

@@ -20,7 +20,7 @@
 # sides already target `*-unknown-linux-gnu` through the same toolchain.
 [workspace]
 resolver = "2"
-members = ["support", "drm", "swapfile", "request_key", "sockopt_diff", "v4l2_capture", "ata_identity"]
+members = ["support", "drm", "swapfile", "request_key", "sockopt_diff", "v4l2_capture", "ata_identity", "ata_sat"]
 
 [workspace.package]
 version = "0.1.0"
