@@ -106,12 +106,14 @@ impl InodeOps for Ext4StatInodeOps {
         }
         if d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
         let (uid, gid, m) = vfs::prepare_create_owner_mode(ctx.idmap, inode, mode as u16,
-            0o1777, vfs::types::S_IFDIR, ctx.cred, ctx.umask);
-        super::super::quota::charge_new_inode(&d.st, d.ino, m, uid, gid)?;
-        let (ino, node) = match d.st.mount.create_dir_inode(d.ino, name.as_bytes(), m & 0o7777, uid, gid) {
+            0o1777, vfs::types::S_IFDIR, ctx.cred, 0);
+        let acl = crate::acl::inherit(inode, m, ctx.umask, vfs::posix_acl::NewKind::Dir)?;
+        super::super::quota::charge_new_inode(&d.st, d.ino, acl.mode, uid, gid)?;
+        let (ino, node) = match d.st.mount.create_dir_inode_with_acl(
+            d.ino, name.as_bytes(), acl.mode & 0o7777, uid, gid, &acl) {
             Ok(v) => v,
             Err(e) => {
-                let _ = super::super::quota::rollback_new_inode_charge(&d.st, d.ino, m, uid, gid);
+                let _ = super::super::quota::rollback_new_inode_charge(&d.st, d.ino, acl.mode, uid, gid);
                 return Err(super::regular::fs_err(&d.st, e));
             }
         };
@@ -149,12 +151,14 @@ impl InodeOps for Ext4StatInodeOps {
         if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
         if d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
         let (uid, gid, m) = vfs::prepare_create_owner_mode(ctx.idmap, inode, mode as u16,
-            0o7777, vfs::types::S_IFREG, ctx.cred, ctx.umask);
-        super::super::quota::charge_new_inode(&d.st, d.ino, m, uid, gid)?;
-        let (ino, node) = match d.st.mount.create_file_inode(d.ino, name.as_bytes(), m & 0o7777, uid, gid) {
+            0o7777, vfs::types::S_IFREG, ctx.cred, 0);
+        let acl = crate::acl::inherit(inode, m, ctx.umask, vfs::posix_acl::NewKind::Other)?;
+        super::super::quota::charge_new_inode(&d.st, d.ino, acl.mode, uid, gid)?;
+        let (ino, node) = match d.st.mount.create_file_inode_with_acl(
+            d.ino, name.as_bytes(), acl.mode & 0o7777, uid, gid, &acl) {
             Ok(v) => v,
             Err(e) => {
-                let _ = super::super::quota::rollback_new_inode_charge(&d.st, d.ino, m, uid, gid);
+                let _ = super::super::quota::rollback_new_inode_charge(&d.st, d.ino, acl.mode, uid, gid);
                 return Err(super::regular::fs_err(&d.st, e));
             }
         };
@@ -166,12 +170,14 @@ impl InodeOps for Ext4StatInodeOps {
         let d = Self::data(inode)?;
         if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
         let (uid, gid, m) = vfs::prepare_create_owner_mode(ctx.idmap, inode, mode as u16,
-            0o7777, vfs::types::S_IFREG, ctx.cred, ctx.umask);
-        super::super::quota::charge_new_inode(&d.st, d.ino, m, uid, gid)?;
-        let (ino, node) = match d.st.mount.create_anonymous_inode(d.ino, m & 0o7777, uid, gid) {
+            0o7777, vfs::types::S_IFREG, ctx.cred, 0);
+        let acl = crate::acl::inherit(inode, m, ctx.umask, vfs::posix_acl::NewKind::Other)?;
+        super::super::quota::charge_new_inode(&d.st, d.ino, acl.mode, uid, gid)?;
+        let (ino, node) = match d.st.mount.create_anonymous_inode_with_acl(
+            d.ino, acl.mode & 0o7777, uid, gid, &acl) {
             Ok(v) => v,
             Err(e) => {
-                let _ = super::super::quota::rollback_new_inode_charge(&d.st, d.ino, m, uid, gid);
+                let _ = super::super::quota::rollback_new_inode_charge(&d.st, d.ino, acl.mode, uid, gid);
                 return Err(super::regular::fs_err(&d.st, e));
             }
         };
@@ -251,14 +257,15 @@ impl InodeOps for Ext4StatInodeOps {
         let d = Self::data(inode)?;
         if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
         if d.st.lookup_child_ino(d.ino, name).is_some() { return Err(VfsError::Eexist); }
-        let (uid, gid, mode) = vfs::prepare_create_owner_mode(ctx.idmap, inode, mode,
-            mode, mode, ctx.cred, ctx.umask);
-        super::super::quota::charge_new_inode(&d.st, d.ino, mode, uid, gid)?;
-        let ino = match d.st.mount.create_mknod(d.ino, name.as_bytes(), mode, rdev, uid, gid) {
+        let (uid, gid, m) = vfs::prepare_create_owner_mode(ctx.idmap, inode, mode,
+            mode, mode, ctx.cred, 0);
+        let acl = crate::acl::inherit(inode, m, ctx.umask, vfs::posix_acl::NewKind::Other)?;
+        super::super::quota::charge_new_inode(&d.st, d.ino, acl.mode, uid, gid)?;
+        let ino = match d.st.mount.create_mknod_with_acl(d.ino, name.as_bytes(), acl.mode, rdev, uid, gid, &acl) {
             Ok(ino) => ino,
-            Err(_) => {
-                let _ = super::super::quota::rollback_new_inode_charge(&d.st, d.ino, mode, uid, gid);
-                return Err(VfsError::Eio);
+            Err(e) => {
+                let _ = super::super::quota::rollback_new_inode_charge(&d.st, d.ino, acl.mode, uid, gid);
+                return Err(super::regular::fs_err(&d.st, e));
             }
         };
         d.st.forget_created_ino(ino);
