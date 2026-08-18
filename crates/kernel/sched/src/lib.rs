@@ -304,6 +304,10 @@ fn rcu_drain_tick(_now_ns: u64) { sync::rcu_process_callbacks(); }
 pub fn halt_forever() -> ! {
     loop {
         if live::global().is_some() {
+            // Linux flushes the target CPU's deferred wake list from the idle
+            // loop when polling avoided an IPI.  This is deliberately before
+            // `schedule()`, while the idle task has a near-empty stack.
+            let _ = live::ttwu::service_current_cpu();
             // SAFETY: boot-anchor / idle context; runqueue installed; preempt-off.
             unsafe { live::schedule(); }
             // B5 newidle balance: schedule() returned ⇒ this CPU has nothing

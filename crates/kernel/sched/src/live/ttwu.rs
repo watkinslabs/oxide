@@ -14,7 +14,7 @@ use crate::live::runqueue::{RqIrq, Runqueue};
 use crate::Task;
 #[cfg(feature = "debug-watchdog")]
 use crate::task::WakeDiagPhase;
-use super::runqueue::global_for;
+use super::runqueue::{global, global_for};
 
 mod wake_list;
 pub use wake_list::{wake_list_debug, wake_list_push};
@@ -142,6 +142,28 @@ pub fn sched_ttwu_pending(cpu: u32, current: *mut Task, rq: &Runqueue) -> bool {
     }
     if more || (placed && preempt) { resched_curr(cpu); }
     placed
+}
+
+/// Activate the wake list claimed for `rq` on its owning CPU.
+///
+/// Linux runs this target-side half from the reschedule/call-function IPI and
+/// from the idle path, never from `finish_task_switch`: a blocking task is at
+/// its deepest stack point in that switch tail.  Architecture IRQ dispatchers
+/// call this while still on their dedicated IRQ stack; `halt_forever` supplies
+/// the no-IPI idle-polling case on the idle task's otherwise empty stack.
+///
+/// # C: O(deferred * log N)
+pub(crate) fn service_pending_on(rq: &Runqueue) -> bool {
+    let current = rq.current.load(Ordering::Acquire);
+    sched_ttwu_pending(rq.cpu as u32, current, rq)
+}
+
+/// Activate wakeups queued to this CPU, if its runqueue is installed.
+///
+/// # C: O(1) when no wake list is pending; O(deferred * log N) otherwise
+pub fn service_current_cpu() -> bool {
+    let Some(rq) = global() else { return false; };
+    service_pending_on(rq)
 }
 
 /// This CPU's index (gs:0 / TPIDR). Host build → 0.

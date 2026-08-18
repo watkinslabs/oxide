@@ -203,8 +203,6 @@ pub unsafe extern "C" fn oxide_finish_task_switch() {
         // executing) and this CPU holds no runqueue lock (so taking the
         // destination's lock nests nothing).
         super::migrate::place_parked(sched_current_cpu() as u32);
-        let current = rq.current.load(Ordering::Acquire);
-        super::super::ttwu::sched_ttwu_pending(rq.cpu as u32, current, rq);
         let raw = rq.reap_pending.swap(core::ptr::null_mut(), Ordering::AcqRel);
         if !raw.is_null() {
             // SAFETY: `raw` came from `Arc::into_raw` in schedule()'s zombie path; reclaim it and hand ownership to ZOMBIES.
@@ -303,10 +301,7 @@ pub(super) unsafe fn schedule_once() {
     // SAFETY: single-CPU here; restored by irq_restore on this task's resume.
     let flags = unsafe { super::irq::save_disable() };
     let now = now_ns();
-
     let me_cpu = sched_current_cpu() as u32;
-    let current = rq.current.load(Ordering::Acquire);
-    super::super::ttwu::sched_ttwu_pending(me_cpu, current, rq);
 
     let mut inner = rq.inner.lock();
     {
