@@ -100,6 +100,10 @@ pub trait Transport: Send + Sync {
     /// passthrough. # C: O(1)
     fn sg_io_max_transfer_bytes(&self) -> Option<usize> { None }
 
+    /// Largest CDB this raw transport can execute.  The common 16-byte
+    /// default preserves protocol adapters such as USB Bulk-Only. # C: O(1)
+    fn sg_io_max_cdb_bytes(&self) -> usize { 16 }
+
     /// Queue facts a transport can establish during discovery. The conservative
     /// default preserves logical-sector alignment without inventing cache or
     /// discard guarantees. # C: O(1)

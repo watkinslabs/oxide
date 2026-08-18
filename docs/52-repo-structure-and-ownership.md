@@ -250,11 +250,12 @@ must use grouped paths from day one.
     lives in the crate that needs it until a second consumer appears, at which
     point it moves to `crates/shared` (`69§9` OQ 2) and is never copied.
 24. `crates/kernel/ata` owns ATA's canonical block-`dev_t` lookup, retained
-    IDENTIFY page contract, and `HDIO_GET_IDENTITY` string normalization. An
-    ATA transport driver retains its native probe page and supplies one live
-    `ata::Device`; it may not keep a second identity registry. `syscalls`
-    owns user-memory copy only. `scsi` owns generic CDB transport and does not
-    retain or synthesize an ATA identity page.
+    IDENTIFY page contract, HDIO taskfile ABI, and ATA PASS-THROUGH(12/16/32)
+    translation. An ATA transport driver retains its native probe page and
+    supplies one live `ata::Device`; it may not keep a second identity registry
+    or a second taskfile executor. `syscalls` owns user-memory copy only.
+    `scsi` owns generic CDB transport and publication; it bounds raw CDBs per
+    transport but does not retain, synthesize, or translate ATA state.
 
 ## 6 Naming rules (frozen)
 
@@ -394,9 +395,10 @@ Temporary exceptions are allowed only with:
 
 ## 12 Changelog
 
-- 2026-08-18: Added `crates/kernel/ata` as the sole owner of live ATA identity
-  lookup and `HDIO_GET_IDENTITY` byte normalization. AHCI retains the native
-  IDENTIFY page; the syscall layer only copies the owner-produced ABI image.
+- 2026-08-18: Added `crates/kernel/ata` as the sole owner of live ATA identity,
+  HDIO taskfiles, and ATA PASS-THROUGH(12/16/32) translation. AHCI retains the
+  native IDENTIFY page and executes one owner-produced taskfile; the shared
+  SCSI layer publishes the disk and forwards only ATA CDBs to that owner.
 - 2026-08-18: Added firmware-owned ACPI processor cooling registration. The
   thermal class keeps a firmware object identity distinct from its visible type,
   and cpufreq aggregates one thermal request per cooler on a shared policy.

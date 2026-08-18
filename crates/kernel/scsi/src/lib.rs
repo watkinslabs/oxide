@@ -21,7 +21,7 @@ mod transport;
 #[cfg(test)] mod tests;
 
 pub use block_transport::BlockTransport;
-pub use command::{Command, READ_10, READ_16, READ_CAPACITY_10, READ_CAPACITY_16, SERVICE_ACTION_IN_16,
+pub use command::{Command, MAX_CDB_BYTES, READ_10, READ_16, READ_CAPACITY_10, READ_CAPACITY_16, SERVICE_ACTION_IN_16,
     SYNCHRONIZE_CACHE_10, TEST_UNIT_READY, WRITE_10, WRITE_16};
 pub use disk::{Disk, init, publish, publish_block_transport, publish_lun};
 pub use scan::{ScannedLun, scan_and_publish, scan_lun};

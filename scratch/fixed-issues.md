@@ -1,5 +1,11 @@
 # Fixed issues
 
+### F1234-ata-sat-pass-through
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED F1234 | MISSING | med | **AHCI-backed shared-SCSI `sd*` nodes could expose a retained IDENTIFY page but could not execute an ATA taskfile through SG_IO or the legacy HDIO raw-command ABI.** `ata` now owns ATA PASS-THROUGH(12/16/32) validation and taskfile translation, including the 32-byte variable CDB's auxiliary register; `scsi` keeps generic CDB publication and enforces each transport's maximum, so USB Bulk-Only remains at 16 bytes. The AHCI driver executes exactly that owner-produced taskfile and samples the result registers. `HDIO_DRIVE_CMD` and `HDIO_DRIVE_TASK` use the same device owner. A successful command with CK_COND returns descriptor-format ATA return sense without discarding transferred data; an ATA error returns descriptor sense plus the full residual. Set-features transfer-mode and TPM commands remain rejected as unsafe. | F1234. ATA unit tests cover PASS-THROUGH(12/16/32) register layouts, auxiliary FIS encoding, CK_COND data preservation, error result propagation, and legacy HDIO output. `cargo run -p xtask -- kernel --arch x86_64 --check` and `--arch aarch64 --check` passed; both GNU probe targets built. Live x86 and aarch64 QEMU acceptance each ran the exact SG_IO ATA(16), ATA(32), `HDIO_DRIVE_CMD`, and `HDIO_DRIVE_TASK` sequence against `/dev/sda`, returning serial `oxahci0`, SCSI CHECK CONDITION, ATA status `0x50`, and `ata_sat_probe: PASS`. | F1234-ata-sat-pass-through |
+
 ### B2271-panic-on-warn-coverage
 
 | Status | Class | Sev | Issue | Evidence | Owner |

@@ -121,10 +121,14 @@ impl SgIoTarget {
     /// `None` when this published SCSI disk is currently block-only. # C: O(1)
     pub fn max_transfer_bytes(&self) -> Option<usize> { self.disk.sg_io_max_transfer_bytes() }
 
+    /// Largest raw CDB this target's transport can execute. # C: O(1)
+    pub fn max_cdb_bytes(&self) -> usize { self.disk.sg_io_max_cdb_bytes() }
+
     /// Execute one pre-validated SG_IO CDB. # C: one command
     pub fn execute(&self, command: &Command, data: &mut [u8], direction: DataDirection,
                    timeout_ms: u32) -> KResult<CommandCompletion> {
         let max = self.max_transfer_bytes().ok_or(BlockError::Eopnotsupp)?;
+        if command.bytes().len() > self.max_cdb_bytes() { return Err(BlockError::Einval); }
         if data.len() > max { return Err(BlockError::Eio); }
         self.disk.execute_sg_io(command, data, direction, timeout_ms)
     }
@@ -220,5 +224,7 @@ mod tests {
         assert_eq!(completion.sense(), &[0x70, 0, 5, 0x20]);
         let mut too_big = [0u8; 17];
         assert_eq!(target.execute(&command, &mut too_big, DataDirection::FromDevice, 7_000), Err(BlockError::Eio));
+        let overlong = Command::new(&[0x12; 17]).expect("shared CDB bound");
+        assert_eq!(target.execute(&overlong, &mut [], DataDirection::None, 7_000), Err(BlockError::Einval));
     }
 }

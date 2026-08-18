@@ -86,7 +86,9 @@ pub(super) fn publish_port(device_key: pci::Bdf, command_orig: u16,
         return None;
     };
     let dev = Arc::new(AhciBlk::new(ctrl, binding, blk_size, capacity));
-    let Some(name) = scsi::publish_block_transport(dev.clone(), serial.as_deref()) else {
+    let ata_device: Arc<dyn ata::Device> = dev.clone();
+    let transport = ata::scsi_transport(dev.clone(), ata_device.clone());
+    let Some(name) = scsi::publish(transport, blk_size, capacity, serial.as_deref()) else {
         dev.remove();
         return None;
     };
@@ -101,7 +103,6 @@ pub(super) fn publish_port(device_key: pci::Bdf, command_orig: u16,
         dev.remove();
         return None;
     };
-    let ata_device: Arc<dyn ata::Device> = dev.clone();
     if !ata::register_target(dev_t, ata_device) {
         let _ = block::registry::unregister(&name_text);
         dev.remove();

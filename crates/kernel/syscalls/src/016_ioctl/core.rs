@@ -261,7 +261,8 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     if file.inode().file_type() == vfs::FileType::BlockDev {
         if let Some(rv) = handle_blk_ioctl(&file, req, arg) { return rv; }
         if let Some(rv) = handle_md_ioctl(&file, req, arg) { return rv; }
-        if let Some(rv) = handle_ata_ioctl(&file, req, arg) { return rv; }
+        if let Some(rv) = handle_ata_ioctl(&file, req, arg,
+            cur.has_cap(sched::cap::SYS_ADMIN), cur.has_cap(sched::cap::SYS_RAWIO)) { return rv; }
         if let Some(rv) = handle_scsi_ioctl(&file, req, arg, cur.has_cap(sched::cap::SYS_RAWIO)) { return rv; }
     }
     if file.inode().file_type() != vfs::FileType::CharDev {

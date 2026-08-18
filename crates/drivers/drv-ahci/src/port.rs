@@ -158,6 +158,9 @@ impl Ahci {
     /// Bytes one transfer carries in the contiguous PRDT data run. # C: O(1)
     pub const MAX_XFER: u64 = DATA_BYTES;
 
+    /// HHDM VA of this port's controller-owned receive-FIS page. # C: O(1)
+    pub(crate) fn receive_fis_va(&self) -> u64 { hhdm().wrapping_add(self.fb_pa) }
+
     /// Read a 32-bit HBA/port register at ABAR + `off`. # C: O(1)
     #[inline]
     pub(crate) fn r32(&self, off: u64) -> u32 {

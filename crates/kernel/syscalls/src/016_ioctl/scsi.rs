@@ -30,9 +30,11 @@ fn sg_io(target: ::scsi::SgIoTarget, open_for_write: bool, arg: u64, raw_io: boo
     let requested = hdr.dxfer_len() as usize;
     if requested > max_transfer { return put_header(arg, &hdr, err(Errno::Eio)); }
     if hdr.cmd_len() < 6 { return put_header(arg, &hdr, err(Errno::Emsgsize)); }
-    if hdr.cmd_len() > 16 { return put_header(arg, &hdr, err(Errno::Einval)); }
+    if hdr.cmd_len() as usize > ::scsi::MAX_CDB_BYTES || hdr.cmd_len() as usize > target.max_cdb_bytes() {
+        return put_header(arg, &hdr, err(Errno::Einval));
+    }
 
-    let mut cdb = [0u8; 16];
+    let mut cdb = [0u8; ::scsi::MAX_CDB_BYTES];
     if uaccess::copy_from_user(&mut cdb[..hdr.cmd_len() as usize], hdr.cmdp()).is_err() { return err(Errno::Efault); }
     let command = match ::scsi::Command::new(&cdb[..hdr.cmd_len() as usize]) {
         Ok(command) => command,

@@ -80,6 +80,8 @@ dependencies = [
 name = "ata"
 version = "0.1.0"
 dependencies = [
+ "block",
+ "scsi",
  "sync",
 ]
 

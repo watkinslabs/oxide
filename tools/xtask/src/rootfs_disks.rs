@@ -19,8 +19,10 @@ mod wait_diff;
 mod request_key;
 // - swapfile: Linux swapfile activation smoke over the mounted ext4 root.
 mod swapfile;
-// - ata_identity: live `HDIO_GET_IDENTITY` probe against the x86 AHCI disk.
+// - ata_identity: live `HDIO_GET_IDENTITY` probe against the AHCI disk.
 mod ata_identity;
+// - ata_sat: live SG_IO ATA PASS-THROUGH(16)/(32) probe against the AHCI disk.
+mod ata_sat;
 mod v4l2_capture;
 // - gnome_input_classify: opt-in Linux input discovery/classification proof.
 mod gnome_input_classify;
@@ -147,6 +149,9 @@ fn build_root(
     }
     if std::env::var_os("OXIDE_ATA_IDENTITY_SMOKE").is_some() {
         ata_identity::inject(&root_img, arch)?;
+    }
+    if std::env::var_os("OXIDE_ATA_SAT_SMOKE").is_some() {
+        ata_sat::inject(&root_img, arch)?;
     }
     if std::env::var_os("OXIDE_V4L2_SMOKE").is_some() {
         v4l2_capture::inject(&root_img, arch)?;
