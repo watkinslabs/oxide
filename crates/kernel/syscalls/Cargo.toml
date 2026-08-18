@@ -19,6 +19,7 @@ block   = { path = "../block" }
 device-mapper = { path = "../device-mapper" }
 md = { path = "../md" }
 scsi = { path = "../scsi" }
+ata = { path = "../ata" }
 fatfs   = { path = "../fatfs" }
 overlayfs = { path = "../overlayfs" }
 exfatfs = { path = "../exfatfs" }

@@ -95,13 +95,16 @@ impl Ahci {
         if !self.issue_poll(&fis, false, 512) { return false; }
         let p = hhdm().wrapping_add(self.data_pa) as *const u16;
         let mut words = [0u16; 256];
+        let mut identity = [0u8; 512];
         // SAFETY: the device filled the first 512 bytes of the owned DMA run;
         // these aligned volatile reads remain within its contiguous allocation.
         unsafe {
             for i in 0..words.len() {
                 words[i] = core::ptr::read_volatile(p.add(i));
+                identity[i * 2..i * 2 + 2].copy_from_slice(&words[i].to_ne_bytes());
             }
         }
+        self.identity = identity;
         self.sectors = regs::identify_sector_count(&words);
         self.blk_size = regs::identify_sector_size(&words);
         let (serial, serial_len) = regs::identify_serial(&words);
@@ -114,6 +117,9 @@ impl Ahci {
         };
         self.sectors > 0
     }
+
+    /// Return the retained native ATA IDENTIFY DEVICE page. # C: O(1)
+    pub(crate) fn identity_page(&self) -> [u8; 512] { self.identity }
 
     /// Stage and issue one interrupt-completing DMA transfer. # C: O(command)
     pub(crate) fn start_rw(&mut self, write: bool, lba: u64, count: u16) -> bool {

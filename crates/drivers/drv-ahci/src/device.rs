@@ -307,6 +307,14 @@ impl AhciBlk {
     pub(crate) fn shutdown(&self) { self.quiesce_and_free(); }
 }
 
+impl ata::Device for AhciBlk {
+    fn identify_page(&self) -> Option<[u8; ata::IDENTIFY_BYTES]> {
+        if self.unavailable() { return None; }
+        let page = self.ctrl.lock().identity_page();
+        if self.unavailable() { None } else { Some(page) }
+    }
+}
+
 impl BlockDevice for AhciBlk {
     fn block_size(&self) -> u32 { self.blk_size }
 

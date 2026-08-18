@@ -1,0 +1,55 @@
+use std::path::{Path, PathBuf};
+
+const PROBE_NAME: &str = "ata_identity_probe";
+const PROBE_DESTINATION: &str = "/usr/local/bin/ata_identity_probe";
+const SERVICE_NAME: &str = "ata-identity-smoke.service";
+const SERVICE_DESTINATION: &str = "/etc/systemd/system/ata-identity-smoke.service";
+const WANTS_DIRECTORY: &str = "/etc/systemd/system/basic.target.wants";
+const WANTS_DESTINATION: &str = "/etc/systemd/system/basic.target.wants/ata-identity-smoke.service";
+
+/// Inject one live AHCI `HDIO_GET_IDENTITY` probe into a boot root. # C: O(CC+debugfs)
+pub(super) fn inject(root_img: &Path, arch: &str) -> Result<(), u8> {
+    let bin = super::probe_cargo(arch, PROBE_NAME)?;
+    let service = write_service()?;
+    super::dbg(root_img, "mkdir /etc/systemd/system")?;
+    super::dbg(root_img, &format!("mkdir {WANTS_DIRECTORY}"))?;
+    super::dbg_ignore(root_img, &format!("rm {PROBE_DESTINATION}"));
+    super::dbg(root_img, &format!("write {} {PROBE_DESTINATION}", bin.display()))?;
+    super::dbg(root_img, &format!("sif {PROBE_DESTINATION} mode 0100755"))?;
+    super::dbg_ignore(root_img, &format!("rm {SERVICE_DESTINATION}"));
+    super::dbg(root_img, &format!("write {} {SERVICE_DESTINATION}", service.display()))?;
+    super::dbg_ignore(root_img, &format!("rm {WANTS_DESTINATION}"));
+    super::dbg(root_img, &format!("symlink {WANTS_DESTINATION} ../{SERVICE_NAME}"))?;
+    eprintln!("xtask rootfs: injected ATA identity smoke into {}", root_img.display());
+    Ok(())
+}
+
+fn write_service() -> Result<PathBuf, u8> {
+    let dir = PathBuf::from("target").join("smoke");
+    std::fs::create_dir_all(&dir).map_err(|error| {
+        eprintln!("xtask rootfs: mkdir smoke dir failed: {error}");
+        1u8
+    })?;
+    let path = dir.join(SERVICE_NAME);
+    let body = "[Unit]\n\
+Description=Oxide ATA identity smoke\n\
+DefaultDependencies=no\n\
+After=local-fs.target\n\
+Before=basic.target\n\
+\n\
+[Service]\n\
+Type=oneshot\n\
+User=root\n\
+StandardOutput=tty\n\
+StandardError=tty\n\
+TTYPath=/dev/ttyS0\n\
+ExecStart=/usr/local/bin/ata_identity_probe\n\
+\n\
+[Install]\n\
+WantedBy=basic.target\n";
+    std::fs::write(&path, body).map_err(|error| {
+        eprintln!("xtask rootfs: write service failed: {error}");
+        1u8
+    })?;
+    Ok(path)
+}

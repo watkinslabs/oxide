@@ -73,6 +73,9 @@ pub struct Ahci {
     pub blk_size:  u32,
     /// ATA IDENTIFY DEVICE serial, if the device reports a non-padding value.
     pub serial:    Option<String>,
+    /// Native-order bytes of the ATA IDENTIFY DEVICE page retained for its
+    /// user ABI owner after probe and runtime recovery.
+    pub identity:  [u8; 512],
 }
 
 // SAFETY justification: Ahci holds raw PAs/VAs into HHDM/MMIO stable for the
@@ -298,7 +301,7 @@ impl Ahci {
             let a = Ahci {
                 host: host.clone(), port,
                 clb_pa: 0, clb_dma: 0, fb_pa: 0, fb_dma: 0, ctba_pa: 0, ctba_dma: 0, data_pa: 0, data_dma: 0,
-                sectors: 0, blk_size: 512, serial: None,
+                sectors: 0, blk_size: 512, serial: None, identity: [0; 512],
             };
             if !a.comreset_link() { return Err("no SATA disk"); }
             // Device present + PHY up. Do NOT gate on PxSIG here: the signature
@@ -339,7 +342,7 @@ impl Ahci {
         let mut a = Ahci {
             host, port,
             clb_pa: clb, clb_dma: dmas[0], fb_pa: fb, fb_dma: dmas[1], ctba_pa: ct, ctba_dma: dmas[2], data_pa, data_dma,
-            sectors: 0, blk_size: 512, serial: None,
+            sectors: 0, blk_size: 512, serial: None, identity: [0; 512],
         };
 
         // Stop the port, program the bases, restart it.

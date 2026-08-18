@@ -77,6 +77,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ata"
+version = "0.1.0"
+dependencies = [
+ "sync",
+]
+
+[[package]]
 name = "audit"
 version = "0.1.0"
 dependencies = [
@@ -449,6 +456,7 @@ name = "drv-ahci"
 version = "0.1.0"
 dependencies = [
  "arch-irq",
+ "ata",
  "block",
  "drv",
  "hal",
@@ -2631,6 +2639,7 @@ version = "0.1.0"
 dependencies = [
  "arch-irq",
  "aslr",
+ "ata",
  "audit",
  "block",
  "bluetooth",

@@ -61,6 +61,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
         feature-gate feature-gate-x86 feature-gate-arm feature-gate-atexit \
         smoke-hda smoke-hda-x86 smoke-hda-arm \
         smoke-v4l2 smoke-v4l2-x86 smoke-v4l2-arm \
+        smoke-ata-identity smoke-ata-identity-x86 smoke-ata-identity-arm \
         hosted-gate test-build-gate \
         smoke-hostshare smoke-hostshare-x86 smoke-hostshare-arm \
         smoke-ping smoke-ping-x86 smoke-ping-arm smoke-network-native-pci-x86 \
@@ -709,6 +710,7 @@ smoke-grub:
 # exist — they appear only after the controller reset, a codec answered, the
 # generic parser found a route and the ALSA card registered.
 V4L2_SMOKE_TIMEOUT ?= 900
+ATA_IDENTITY_SMOKE_TIMEOUT ?= 900
 HDA_SMOKE_TIMEOUT ?= 900
 # V4L2 acceptance. The probe is injected into a disposable boot root and run
 # as a unit before basic.target, so the verdict lands on the serial console
@@ -723,6 +725,17 @@ smoke-v4l2:
 	OXIDE_V4L2_SMOKE=1 SMOKE_ALIVE_PROBE= SMOKE_MARKER='v4l2_probe: PASS' ./tools/boot-smoke.sh x86 $(V4L2_SMOKE_TIMEOUT) & p1=$$!; \
 	OXIDE_V4L2_SMOKE=1 SMOKE_ALIVE_PROBE= SMOKE_MARKER='v4l2_probe: PASS' ./tools/boot-smoke.sh arm $(V4L2_SMOKE_TIMEOUT) & p2=$$!; \
 	rc=0; wait $$p1 || rc=1; wait $$p2 || rc=1; exit $$rc
+
+# Both default QEMU profiles provide the same emulated AHCI disk. This
+# acceptance opens its real `sd*` node and checks the IDENTIFY page copied
+# through its ioctl, keeping the runtime contract in lockstep on both arches.
+smoke-ata-identity-x86:
+	OXIDE_ATA_IDENTITY_SMOKE=1 SMOKE_ALIVE_PROBE= SMOKE_MARKER='ata_identity_probe: PASS' ./tools/boot-smoke.sh x86 $(ATA_IDENTITY_SMOKE_TIMEOUT)
+
+smoke-ata-identity-arm:
+	OXIDE_ATA_IDENTITY_SMOKE=1 SMOKE_ALIVE_PROBE= SMOKE_MARKER='ata_identity_probe: PASS' ./tools/boot-smoke.sh arm $(ATA_IDENTITY_SMOKE_TIMEOUT)
+
+smoke-ata-identity: smoke-ata-identity-x86 smoke-ata-identity-arm
 
 smoke-hda-x86: x86
 	./tools/boot-smoke-hda.sh x86 $(HDA_SMOKE_TIMEOUT)

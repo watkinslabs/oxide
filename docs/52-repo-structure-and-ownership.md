@@ -249,6 +249,12 @@ must use grouped paths from day one.
     output-bounded and partial, which the whole-buffer form cannot express; it
     lives in the crate that needs it until a second consumer appears, at which
     point it moves to `crates/shared` (`69§9` OQ 2) and is never copied.
+24. `crates/kernel/ata` owns ATA's canonical block-`dev_t` lookup, retained
+    IDENTIFY page contract, and `HDIO_GET_IDENTITY` string normalization. An
+    ATA transport driver retains its native probe page and supplies one live
+    `ata::Device`; it may not keep a second identity registry. `syscalls`
+    owns user-memory copy only. `scsi` owns generic CDB transport and does not
+    retain or synthesize an ATA identity page.
 
 ## 6 Naming rules (frozen)
 
@@ -388,6 +394,9 @@ Temporary exceptions are allowed only with:
 
 ## 12 Changelog
 
+- 2026-08-18: Added `crates/kernel/ata` as the sole owner of live ATA identity
+  lookup and `HDIO_GET_IDENTITY` byte normalization. AHCI retains the native
+  IDENTIFY page; the syscall layer only copies the owner-produced ABI image.
 - 2026-08-18: Added firmware-owned ACPI processor cooling registration. The
   thermal class keeps a firmware object identity distinct from its visible type,
   and cpufreq aggregates one thermal request per cooler on a shared policy.
