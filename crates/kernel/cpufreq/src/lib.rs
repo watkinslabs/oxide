@@ -34,11 +34,11 @@ pub mod stats;
 pub mod table;
 pub mod uapi;
 
-#[cfg(target_os = "oxide-kernel")]
 pub mod util;
 
-pub use driver::{cur_freq, drive, govern, policies, policy_for, register_driver,
-                 register_policy, set_limits, CpufreqOps, Driver};
+pub use driver::{cur_freq, drive, govern, govern_target, policies, policy_for, register_driver,
+                 register_policy, set_limits, set_thermal_limit, CpufreqOps, Driver};
+pub use driver::{defer_transition, set_deferred_transition};
 pub use governor::{Demand, Snapshot, Target};
 pub use policy::{LimitSource, Limits, Policy, Request};
 pub use table::{FreqEntry, FreqTable, TableError};

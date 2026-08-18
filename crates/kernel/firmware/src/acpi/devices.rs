@@ -12,12 +12,15 @@ pub struct AcpiDeviceCounts {
     pub adapters: usize,
     pub batteries: usize,
     pub backlights: usize,
+    pub processor_cooling: usize,
     pub thermal_zones: usize,
 }
 
 impl AcpiDeviceCounts {
     /// Whether the platform published any of them. # C: O(1)
-    pub fn any(&self) -> bool { self.adapters + self.batteries + self.backlights + self.thermal_zones != 0 }
+    pub fn any(&self) -> bool {
+        self.adapters + self.batteries + self.backlights + self.processor_cooling + self.thermal_zones != 0
+    }
 }
 
 /// Scan the firmware namespace and publish every ACPI power and display
@@ -27,9 +30,8 @@ pub fn init_devices() -> AcpiDeviceCounts {
         adapters: super::ac::init(),
         batteries: super::battery::init(),
         backlights: super::video::init(),
-        // Last: a zone binds to the cooling devices already registered, and a
-        // fan published by another provider must exist before the zone that
-        // drives it looks for it.
+        // Before zones: a zone binds to cooling devices as it is registered.
+        processor_cooling: super::processor_thermal::init(),
         thermal_zones: super::thermal::init(),
     }
 }

@@ -28,6 +28,9 @@ pub fn midr_el1() -> u64 {
     { 0 }
 }
 
+/// Architected MPIDR affinity bits (Aff0 through Aff3).
+pub const MPIDR_HWID_MASK: u64 = 0x0000_00ff_00ff_ffff;
+
 /// Read the boot CPU's `MPIDR_EL1` hardware identity.
 /// # C: O(1)
 pub fn mpidr_el1() -> u64 {

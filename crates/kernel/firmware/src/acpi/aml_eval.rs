@@ -19,6 +19,28 @@ pub enum AmlField {
     Text(String),
 }
 
+/// One `_CST` package field kept in its firmware shape. The C-state register
+/// is binary data, not text: treating it as a string loses zero bytes in the
+/// address and silently changes the entry mechanism.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CstField {
+    Int(u64),
+    Buffer(Vec<u8>),
+}
+
+/// Evaluated `_CST` package before architecture-specific validation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CstPackage {
+    pub count: u64,
+    pub rows: Vec<Vec<CstField>>,
+}
+
+/// One firmware CPU scope and the ACPI UID that identifies its logical CPU.
+/// Legacy `Processor` objects carry that UID in their object header; modern
+/// ACPI CPU devices publish it through `_UID`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProcessorScope { pub path: String, pub uid: u32 }
+
 impl AmlField {
     /// Integer payload, or `None` when the field is text. # C: O(1)
     pub fn int(&self) -> Option<u64> {
@@ -91,8 +113,10 @@ fn field(context: &AmlContext, value: &AmlValue) -> Option<AmlField> {
 fn eval(context: &mut AmlContext, scope: &str, name: &str) -> Option<AmlValue> {
     let scope = AmlName::from_str(scope).ok()?;
     let path = AmlName::from_str(name).ok()?.resolve(&scope).ok()?;
-    context.namespace.get_handle(&path).ok()?;
-    context.invoke_method(&path, Args::EMPTY).ok()
+    match context.namespace.get_by_path(&path).ok()?.clone() {
+        AmlValue::Method { .. } => context.invoke_method(&path, Args::EMPTY).ok(),
+        value => Some(value),
+    }
 }
 
 /// Absolute namespace paths of every device whose `_HID` (or one of its
@@ -182,6 +206,58 @@ pub fn thermal_zones() -> Vec<String> {
     .unwrap_or_default()
 }
 
+/// Absolute namespace paths of every legacy ACPI `Processor` object. Modern
+/// firmware may use Device objects for CPUs, but firmware performance objects
+/// still commonly live beneath Processor scopes. # C: O(namespace)
+pub fn processors() -> Vec<String> {
+    aml_routes::with_namespace(|context| {
+        let mut processors = Vec::new();
+        let _ = context.namespace.traverse(|path, level| {
+            if level.typ == aml::LevelType::Processor { processors.push(path.as_string()); }
+            Ok(true)
+        });
+        Some(processors)
+    })
+    .unwrap_or_default()
+}
+
+/// Firmware CPU scopes paired with the ACPI UID MADT uses to identify the
+/// same logical processor. A device with a non-numeric `_UID` cannot match a
+/// MADT UID and is therefore not a usable CPU policy owner. # C: O(namespace)
+pub fn processor_scopes() -> Vec<ProcessorScope> {
+    aml_routes::with_namespace(|context| {
+        let mut candidates = Vec::new();
+        let _ = context.namespace.traverse(|path, level| {
+            if matches!(level.typ, aml::LevelType::Processor | aml::LevelType::Device) {
+                candidates.push((path.clone(), level.typ));
+            }
+            Ok(true)
+        });
+        let mut out = Vec::new();
+        for (path, level) in candidates {
+            let text = path.as_string();
+            let uid = match level {
+                aml::LevelType::Processor => match context.namespace.get_by_path(&path).ok()? {
+                    AmlValue::Processor { id, .. } => Some(u32::from(*id)),
+                    _ => continue,
+                },
+                aml::LevelType::Device => {
+                    if !identifiers(context, &text).iter().any(|id| id == "ACPI0007") { continue; }
+                    eval(context, &text, "_UID").and_then(|value| field(context, &value))
+                        .and_then(|field| match field {
+                            AmlField::Int(uid) => u32::try_from(uid).ok(),
+                            AmlField::Text(uid) => uid.parse().ok(),
+                        })
+                }
+                _ => continue,
+            };
+            if let Some(uid) = uid { out.push(ProcessorScope { path: text, uid }); }
+        }
+        Some(out)
+    })
+    .unwrap_or_default()
+}
+
 /// Absolute namespace paths of the devices a package of references names.
 ///
 /// Firmware associates a cooling device with a trip point by listing it in a
@@ -233,6 +309,69 @@ pub fn eval_package(scope: &str, name: &str) -> Option<Vec<AmlField>> {
     })
 }
 
+/// Evaluate a package whose elements are themselves packages, preserving the
+/// inner rows. Firmware performance states use one row per state, while
+/// control/status descriptors use one row per register. # C: O(AML + fields)
+pub fn eval_package_rows(scope: &str, name: &str) -> Option<Vec<Vec<AmlField>>> {
+    aml_routes::with_namespace(|context| {
+        let value = eval(context, scope, name)?;
+        package_rows(context, &value)
+    })
+}
+
+/// Evaluate a package whose elements are AML buffers, preserving their raw
+/// bytes. Resource-template methods use this form for register descriptors.
+/// # C: O(AML + bytes)
+pub fn eval_package_buffers(scope: &str, name: &str) -> Option<Vec<Vec<u8>>> {
+    aml_routes::with_namespace(|context| {
+        let AmlValue::Package(entries) = eval(context, scope, name)? else { return None; };
+        let mut out = Vec::with_capacity(entries.len());
+        for entry in entries.iter() {
+            let AmlValue::Buffer(bytes) = entry else { return None; };
+            out.push(bytes.lock().clone());
+        }
+        Some(out)
+    })
+}
+
+/// Evaluate a processor's C-state package without flattening register
+/// buffers. # C: O(AML + fields)
+pub fn eval_cst(scope: &str) -> Option<CstPackage> {
+    aml_routes::with_namespace(|context| {
+        let AmlValue::Package(entries) = eval(context, scope, "_CST")? else { return None; };
+        let AmlValue::Integer(count) = entries.first()? else { return None; };
+        let mut rows = Vec::with_capacity(entries.len().saturating_sub(1));
+        for row in entries.iter().skip(1) {
+            let AmlValue::Package(fields) = row else { rows.push(Vec::new()); continue; };
+            let mut values = Vec::with_capacity(fields.len());
+            for value in fields.iter() {
+                let field = match value {
+                    AmlValue::Buffer(bytes) => CstField::Buffer(bytes.lock().clone()),
+                    AmlValue::Integer(value) => CstField::Int(*value),
+                    _ => { values.clear(); break; }
+                };
+                values.push(field);
+            }
+            rows.push(values);
+        }
+        Some(CstPackage { count: *count, rows })
+    })
+}
+
+/// Decode one package-of-packages already read from the AML namespace.
+/// # C: O(fields)
+fn package_rows(context: &AmlContext, value: &AmlValue) -> Option<Vec<Vec<AmlField>>> {
+    let AmlValue::Package(rows) = value else { return None; };
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows.iter() {
+        let AmlValue::Package(fields) = row else { return None; };
+        let mut values = Vec::with_capacity(fields.len());
+        for value in fields.iter() { values.push(field(context, value)?); }
+        out.push(values);
+    }
+    Some(out)
+}
+
 /// Evaluate a method with one integer argument, discarding its result.
 /// # C: O(AML)
 pub fn eval_with_integer(scope: &str, name: &str, arg: u64) -> bool {
@@ -249,6 +388,7 @@ pub fn eval_with_integer(scope: &str, name: &str, arg: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::boxed::Box;
 
     #[test]
     fn a_packed_identifier_decodes_to_its_text_form() {
@@ -263,5 +403,21 @@ mod tests {
         assert_eq!(AmlField::Text(String::from("OXP-1")).text(), "OXP-1");
         assert_eq!(AmlField::Int(42).int(), Some(42));
         assert_eq!(AmlField::Text(String::from("x")).int(), None);
+    }
+
+    #[test]
+    fn named_packages_are_read_without_invoking_them_as_methods() {
+        let mut context = AmlContext::new(Box::new(super::super::aml_handler::FirmwareHandler),
+                                          aml::DebugVerbosity::None);
+        let scope = AmlName::from_str("\\CPU0").expect("scope");
+        context.namespace.add_level(scope.clone(), aml::LevelType::Processor).expect("scope level");
+        let pss = AmlName::from_str("_PSS").expect("name").resolve(&scope).expect("PSS path");
+        context.namespace.add_value(pss, AmlValue::Package(alloc::vec![AmlValue::Package(alloc::vec![
+            AmlValue::Integer(2400), AmlValue::Integer(41),
+        ])])).expect("PSS value");
+        let value = eval(&mut context, "\\CPU0", "_PSS").expect("named package");
+        assert_eq!(package_rows(&context, &value), Some(alloc::vec![alloc::vec![
+            AmlField::Int(2400), AmlField::Int(41),
+        ]]));
     }
 }

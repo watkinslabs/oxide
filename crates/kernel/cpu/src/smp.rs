@@ -16,7 +16,7 @@
 
 
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use crate as cpu_topology;
 
@@ -67,7 +67,7 @@ pub unsafe fn mark_online(cpu: u32) {
 /// Boot-CPU id snapshot — captured at boot via `set_boot_cpu_id`.
 /// Used by `enumerate_aps` to filter the boot CPU out of the
 /// "secondaries to start" list.
-static BOOT_CPU_ID: AtomicU32 = AtomicU32::new(u32::MAX);
+static BOOT_CPU_ID: AtomicU64 = AtomicU64::new(u64::MAX);
 
 /// Online-count, incremented by each AP as it finishes its bring-
 /// up sequence (P4-08+). Boot CPU stamps 1 before letting any AP
@@ -80,7 +80,7 @@ static ONLINE: AtomicU32 = AtomicU32::new(0);
 /// # SAFETY: caller is the boot path; this is the single writer
 /// for `BOOT_CPU_ID`.
 /// # C: O(1)
-pub unsafe fn set_boot_cpu_id(id: u32) {
+pub unsafe fn set_boot_cpu_id(id: u64) {
     BOOT_CPU_ID.store(id, Ordering::Release);
     // Boot CPU itself counts as online from the moment we enter
     // kernel_main. Stamp here so observers see online_count()>=1.
@@ -96,7 +96,7 @@ pub unsafe fn set_boot_cpu_id(id: u32) {
 /// Boot CPU's APIC id / MPIDR. `u32::MAX` if `set_boot_cpu_id`
 /// hasn't run yet.
 /// # C: O(1)
-pub fn boot_cpu_id() -> u32 { BOOT_CPU_ID.load(Ordering::Acquire) }
+pub fn boot_cpu_id() -> u64 { BOOT_CPU_ID.load(Ordering::Acquire) }
 
 /// Number of CPUs that have completed bring-up. Boot CPU counts
 /// as 1 from `set_boot_cpu_id` onward; each AP increments on
@@ -114,7 +114,7 @@ pub fn ap_arrived() -> u32 { ONLINE.fetch_add(1, Ordering::AcqRel) + 1 }
 /// include `FLAG_ENABLED` or `FLAG_ONLINE_CAPABLE`, excluding
 /// the boot CPU id. Order matches MADT order.
 /// # C: O(N_cpus)
-pub fn enumerate_aps() -> Vec<u32> {
+pub fn enumerate_aps() -> Vec<u64> {
     let boot = boot_cpu_id();
     let n = cpu_topology::count() as usize;
     let mut out = Vec::with_capacity(n);
@@ -149,7 +149,7 @@ mod tests {
     use super::*;
 
     fn reset() {
-        BOOT_CPU_ID.store(u32::MAX, Ordering::Release);
+        BOOT_CPU_ID.store(u64::MAX, Ordering::Release);
         ONLINE.store(0, Ordering::Release);
         ONLINE_MASK.clear();
     }

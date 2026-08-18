@@ -62,7 +62,7 @@ pub unsafe fn enable(va: u64) -> LapicStatus {
 /// # C: O(spin) bounded by hardware delivery latency
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub unsafe fn send_resched_ipi(target_cpu: u32) -> bool {
-    let target_apic_id = match ::cpu::hardware_id_for_logical(target_cpu) {
+    let target_apic_id = match ::cpu::hardware_id_for_logical(target_cpu).and_then(|id| u32::try_from(id).ok()) {
         Some(id) => id,
         None => return false,
     };
@@ -104,7 +104,7 @@ pub unsafe fn send_nmi_ipi(apic_id: u32) -> bool {
 /// # C: O(1)
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 fn diag_nmi_poke(cpu: u32) {
-    let apic_id = match ::cpu::hardware_id_for_logical(cpu) {
+    let apic_id = match ::cpu::hardware_id_for_logical(cpu).and_then(|id| u32::try_from(id).ok()) {
         Some(id) => id,
         None => return,
     };

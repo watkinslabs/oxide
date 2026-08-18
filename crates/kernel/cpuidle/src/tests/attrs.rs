@@ -3,7 +3,7 @@ use crate::driver::{clear_for_tests, register, test_guard, IdleOps};
 use crate::state::{Entry, IdleState};
 struct Cpu;
 impl IdleOps for Cpu {
-    fn enter(&self, index: usize, _state: &IdleState) -> KResult<usize> { Ok(index) }
+    fn enter(&self, _cpu: usize, index: usize, _state: &IdleState) -> KResult<usize> { Ok(index) }
 }
 
 fn state(name: &str, latency_us: u64, residency_us: u64) -> IdleState {
@@ -41,7 +41,7 @@ fn time_reports_microseconds_converted_from_the_nanoseconds_it_accumulates() {
     let (_guard, drv) = setup();
     assert_eq!(body(&drv, 2, "time"), "0\n");
     drv.with_device(0, |device| {
-        crate::usage::record_entry(drv.states(), &mut device.usage, 2, 250_000);
+        crate::usage::record_entry(drv.states_for(0).expect("CPU0"), &mut device.usage, 2, 250_000);
     });
     assert_eq!(body(&drv, 2, "time"), "250\n");
     assert_eq!(body(&drv, 2, "usage"), "1\n");
@@ -72,8 +72,8 @@ fn an_undeclared_name_reads_as_the_explicit_null_marker() {
 fn the_mispredict_counters_are_published() {
     let (_guard, drv) = setup();
     drv.with_device(0, |device| {
-        crate::usage::record_entry(drv.states(), &mut device.usage, 2, 10_000);
-        crate::usage::record_entry(drv.states(), &mut device.usage, 2, 900_000);
+        crate::usage::record_entry(drv.states_for(0).expect("CPU0"), &mut device.usage, 2, 10_000);
+        crate::usage::record_entry(drv.states_for(0).expect("CPU0"), &mut device.usage, 2, 900_000);
         crate::usage::record_rejection(&mut device.usage, 3);
     });
     assert_eq!(body(&drv, 2, "above"), "1\n");
@@ -161,6 +161,6 @@ fn every_published_state_attribute_actually_renders() {
     for (name, _) in DIR_ATTRS {
         assert!(show_dir(&drv, name).is_ok(), "{name} is listed but does not render");
     }
-    assert_eq!(state_count(), 4);
+    assert_eq!(state_count(0), 4);
     clear_for_tests();
 }

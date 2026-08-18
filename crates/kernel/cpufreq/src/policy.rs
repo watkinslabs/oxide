@@ -16,7 +16,9 @@ use crate::table::FreqTable;
 use crate::uapi::Relation;
 
 /// Who asked for a limit. Each source holds one, and the effective limit is
-/// the tightest of them.
+/// the tightest of them. Processor cooling devices own individual requests
+/// beneath the shared thermal source, because a shared clock domain may have
+/// more than one firmware CPU object cooling it.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum LimitSource {
     /// What userspace wrote to `scaling_min_freq` / `scaling_max_freq`.
@@ -79,6 +81,8 @@ pub struct PolicyState {
     /// Frequency the policy is at, kilohertz.
     pub cur: u32,
     pub requests: Vec<(LimitSource, Request)>,
+    /// Per-cooling-device constraints, keyed by the provider's opaque identity.
+    pub thermal_requests: Vec<(usize, Request)>,
     pub governor: &'static str,
     pub boost: bool,
     /// What a write to `scaling_setspeed` asked for, kilohertz.
@@ -104,6 +108,7 @@ impl Policy {
                 limits: hw,
                 cur,
                 requests: LIMIT_SOURCES.iter().map(|src| (*src, Request::default())).collect(),
+                thermal_requests: Vec::new(),
                 governor,
                 boost: false,
                 setspeed: None,
@@ -128,13 +133,30 @@ impl Policy {
         f(&mut self.state.lock())
     }
 
-    /// Record one source's request and re-aggregate. # C: O(N_sources)
+    /// Record one source's request and re-aggregate. # C: O(N_sources + N_thermal)
     pub fn set_request(&self, source: LimitSource, request: Request) -> Limits {
         let mut state = self.state.lock();
         if let Some(slot) = state.requests.iter_mut().find(|(src, _)| *src == source) {
             slot.1 = request;
         }
-        let limits = aggregate(self.hw, &state.requests);
+        let limits = aggregate_thermal(self.hw, &state.requests, &state.thermal_requests);
+        state.limits = limits;
+        limits
+    }
+
+    /// Update one processor cooling device's independent thermal request.
+    /// Clearing it removes only that device's cap; another CPU in the same
+    /// policy continues to constrain the shared clock. # C: O(N_sources + N_thermal)
+    pub fn set_thermal_request(&self, key: usize, request: Request) -> Limits {
+        let mut state = self.state.lock();
+        let empty = request == Request::default();
+        if let Some(index) = state.thermal_requests.iter().position(|(entry, _)| *entry == key) {
+            if empty { state.thermal_requests.remove(index); }
+            else { state.thermal_requests[index].1 = request; }
+        } else if !empty {
+            state.thermal_requests.push((key, request));
+        }
+        let limits = aggregate_thermal(self.hw, &state.requests, &state.thermal_requests);
         state.limits = limits;
         limits
     }
@@ -164,6 +186,16 @@ impl Policy {
         body.push('\n');
         body
     }
+}
+
+/// Fold the stable limit-source set and every cooling-device request. # C: O(N_sources + N_thermal)
+fn aggregate_thermal(hw: Limits, requests: &[(LimitSource, Request)], thermal: &[(usize, Request)])
+    -> Limits
+{
+    let mut all = Vec::with_capacity(requests.len() + thermal.len());
+    all.extend(requests.iter().copied());
+    all.extend(thermal.iter().map(|(_, request)| (LimitSource::Thermal, *request)));
+    aggregate(hw, &all)
 }
 
 #[cfg(test)]

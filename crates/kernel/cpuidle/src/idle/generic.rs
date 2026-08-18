@@ -30,7 +30,7 @@ struct Generic;
 
 impl IdleOps for Generic {
     /// # C: O(1)
-    fn enter(&self, index: usize, _state: &IdleState) -> KResult<usize> {
+    fn enter(&self, _cpu: usize, index: usize, _state: &IdleState) -> KResult<usize> {
         // The idle path is reached with interrupts MASKED, so the park is what
         // admits them — Linux `raw_safe_halt`, one instruction pair. The bare
         // architectural halt was here, and it parked a core the tick, the

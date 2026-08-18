@@ -51,13 +51,21 @@ impl ZoneOps for AcpiZone {
     fn get_trend(&self) -> Option<Trend> { None }
 
     /// Whether `cdev` is one of the devices the firmware associated with
-    /// `trip`. Matched by namespace path: binding by position instead would
-    /// attach a fan to whichever trip happened to be listed alongside it.
+    /// `trip`. Matched by namespace identity instead of the class-visible
+    /// type: binding by position would attach a fan to whichever trip happened
+    /// to be listed alongside it.
     /// # C: O(N_bound)
     fn should_bind(&self, trip: usize, cdev: &CoolingDevice) -> Option<BindSpec> {
         let names = self.bindings.get(trip)?;
-        if names.iter().any(|path| path == cdev.ty()) { Some(BindSpec::default()) } else { None }
+        if matches_path(names, cdev) { Some(BindSpec::default()) } else { None }
     }
+}
+
+/// Whether this cooling device is the exact ACPI object firmware named.
+/// # C: O(N_bound)
+fn matches_path(names: &[String], cdev: &CoolingDevice) -> bool {
+    let Some(path) = cdev.binding_path() else { return false; };
+    names.iter().any(|name| name == path)
 }
 
 impl AcpiZone {

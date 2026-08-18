@@ -1,0 +1,17 @@
+[package]
+name = "opp"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+clk = { path = "../clk" }
+regulator = { path = "../regulator" }
+sync = { path = "../../shared/sync" }
+vfs = { path = "../vfs" }
+
+[lints]
+workspace = true

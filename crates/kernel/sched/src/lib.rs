@@ -34,6 +34,8 @@ pub mod cputime;
 pub mod cpustat;
 #[cfg(target_os = "oxide-kernel")]
 pub mod cpufreq_hook;
+#[cfg(target_os = "oxide-kernel")]
+pub mod cpufreq_work;
 pub mod cputime_trace;
 /// Per-CPU software-event accumulators for CPU-context `perf_event_open`.
 pub mod perf_sw;

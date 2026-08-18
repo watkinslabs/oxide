@@ -18,6 +18,11 @@
 //   header   — header decode/validation, token constants, `totalsize` probe
 //   walk     — the single struct-block walker + `find_prop`
 //   props    — the concrete boot-path properties read through `walk`
+//   cpu      — `/cpus` hardware identities and availability
+//   opp      — CPU OPP-table phandle-graph decoder
+//   provider — fixed, fixed-factor, and regulator provider decoder
+//   scmi     — SMC SCMI performance transport and CPU-domain decoder
+//   idle     — per-CPU PSCI idle-state phandle-graph decoder
 //   uapi     — userspace ABI paths and modes for the published tree
 //   of_tree  — blob → `/sys/firmware/devicetree` path/property entries (alloc)
 //   fixture  — wire-image builder for tests (feature `fixture`)
@@ -30,6 +35,11 @@ pub mod header;
 pub mod uapi;
 pub mod props;
 pub mod walk;
+pub mod cpu;
+pub mod opp;
+pub mod provider;
+pub mod scmi;
+pub mod idle;
 
 #[cfg(any(test, feature = "alloc"))]
 pub mod of_tree;
@@ -47,6 +57,11 @@ pub use header::{
 pub use props::{
     bootargs_via_prefix, chosen_bootargs, memory_regions, contains_string, enum_cpus, first_memory_region, machine_model, pl011_clock_hz, simple_framebuffer, SimpleFramebuffer,
 };
+pub use cpu::{cpu_nodes, CpuNode};
+pub use opp::{cpu_opp_tables, ClockReference, CpuOppTable, OppVoltage, OperatingPoint};
+pub use provider::{fixed_providers, FixedClock, FixedFactorClock, FixedProviders, FixedRegulator};
+pub use scmi::{scmi_perf_protocols, ScmiCompletionIrq, ScmiCpuDomain, ScmiPerfProtocol, ScmiSharedMemory, ScmiSmcTransport};
+pub use idle::{cpu_idle_tables, CpuIdleState, CpuIdleTable};
 pub use build::{uefi_stub_tree, Builder, EfiFirmware, UefiHandoff};
 pub use uapi::{
     OF_PROC_NAME, OF_PROP_MODE, OF_RAW_MODE, OF_ROOT_DIR, OF_SECURE_PREFIX, OF_SECURE_PROP_MODE,

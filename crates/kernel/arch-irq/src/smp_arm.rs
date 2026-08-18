@@ -38,6 +38,7 @@ pub unsafe fn ap_init(aff0: u32) {
         crate::gic::ap_cpu_interface_enable(ap_va);
         crate::gic::enable_sgi_on(ap_va, crate::gic::RESCHED_SGI);
         crate::gic::enable_sgi_on(ap_va, crate::gic::CALL_FUNCTION_SGI);
+        crate::gic::enable_registered_ppis_on(ap_va);
         // Enable this AP's CNTV virtual-timer PPI (INTID 27) + arm it
         // periodic so the AP preempts on its own tick, not just resched
         // SGIs. The dispatcher's UART/softirq work is BSP-gated; an AP

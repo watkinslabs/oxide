@@ -95,6 +95,11 @@ pub unsafe fn init(info: &BootInfo) {
     // reserved-in-the-memmap physical extent, and `retain` re-validates the
     // header before publishing anything.
     unsafe { retain_device_tree(info); }
+    let _ = firmware::fdt::populate_cpu_topology();
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: ACPI and DT CPU producers have both populated the shared table;
+    // this complete MPIDR identifies the boot CPU's logical slot.
+    unsafe { cpu::smp::set_boot_cpu_id(hal_aarch64::mpidr_el1() & hal_aarch64::MPIDR_HWID_MASK); }
     // Attach the persistent store to the region reserved above: enumerate
     // whatever the previous boot left there, then start recording. After the
     // direct map, because that is how the region is reached.
@@ -211,11 +216,6 @@ fn init_boot_percpu() {
 
 #[cfg(target_os = "oxide-kernel")]
 fn log_boot_info(info: &BootInfo) {
-    // Boot CPU identity is part of the handoff, not an ACPI side effect. DT-only
-    // arm boots have no RSDP; leaving BOOT_CPU_ID unset makes every timer IRQ
-    // fail the BSP gate, so deadline, watchdog, and device tick work never run.
-    // SAFETY: single boot CPU before AP bring-up; this is the sole writer.
-    unsafe { cpu::smp::set_boot_cpu_id(info.bsp_lapic_id); }
     debug_boot! { klog::kinfo!("init started"); }
     debug_boot! {
         if info.hhdm_offset != 0 { klog::kinfo!("hhdm: present"); }
@@ -235,6 +235,10 @@ fn log_boot_info(info: &BootInfo) {
     } else {
         debug_boot! { klog::kinfo!("rsdp: absent"); }
     }
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: the MADT producer above has completed before SMP consumers can
+    // resolve the boot APIC identity to a logical slot.
+    unsafe { cpu::smp::set_boot_cpu_id(u64::from(info.bsp_lapic_id)); }
     debug_boot! {
         if info.framebuffer.byte_len().is_some() {
             klog::write_raw(b"[INFO]  bootfb: base=");

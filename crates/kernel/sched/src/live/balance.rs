@@ -131,9 +131,9 @@ pub unsafe fn balance_once() -> u32 {
 
     // Snapshot loads.
     let mut loads: alloc::vec::Vec<CpuLoad> = alloc::vec::Vec::new();
-    for i in 0..cpu::count() {
-        if let Some((id, _)) = cpu::get(i as usize) {
-            // SAFETY: per fn contract; CPU id is one ACPI MADT enumerated and is bounded by MAX_CPUS.
+    for id in 0..cpu::count() {
+        if cpu::get(id as usize).is_some() {
+            // SAFETY: per fn contract; topology slots are dense logical IDs bounded by MAX_CPUS.
             let rq_opt = unsafe { global_for(id) };
             if let Some(rq) = rq_opt {
                 loads.push(CpuLoad {
@@ -235,8 +235,8 @@ pub unsafe fn newidle_balance() -> u32 {
     let mut busy_cpu: Option<u32> = None;
     let mut busy_load = 1u32;
     let n = cpu::count();
-    for i in 0..n {
-        if let Some((id, _)) = cpu::get(i as usize) {
+    for id in 0..n {
+        if cpu::get(id as usize).is_some() {
             if id == me { continue; }
             // SAFETY: enumerated CPU; global_for None unless it's scheduling.
             if let Some(rq) = unsafe { global_for(id) } {

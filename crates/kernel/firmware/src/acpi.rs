@@ -15,7 +15,10 @@
 // - `battery`: control-method battery, published to the power-supply class.
 // - `ac`: AC adapter, published to the power-supply class.
 // - `thermal`: thermal zones, published to the thermal class.
+// - `processor_thermal`: ACPI CPU cooling devices backed by cpufreq limits.
 // - `video`: display brightness, published to the backlight class.
+// - `cpufreq`: processor-performance descriptions and their platform driver.
+// - `cpuidle`: processor C-state descriptions and their platform driver.
 
 pub use aml::{AmlError, RegionAccess, RegionAccessDirection, value::RegionSpace};
 
@@ -31,7 +34,10 @@ mod power_action;
 pub mod ac;
 pub mod aml_eval;
 pub mod battery;
+pub mod cpufreq;
+pub mod cpuidle;
 pub mod thermal;
+pub mod processor_thermal;
 pub mod video;
 #[cfg(target_os = "oxide-kernel")]
 mod iort;
@@ -39,7 +45,7 @@ mod read;
 mod rsdp;
 mod tables;
 
-pub use fadt::{Fadt, Gas, PowerOffAction, PowerRegisters, ResetAction, SPACE_SYSTEM_IO, SPACE_SYSTEM_MEMORY, decode_fadt, parse_fadt, power_registers, poweroff_action as build_poweroff_action, reset_action};
+pub use fadt::{CstateRegisters, Fadt, Gas, PowerOffAction, PowerRegisters, ResetAction, SPACE_SYSTEM_IO, SPACE_SYSTEM_MEMORY, cstate_registers, decode_fadt, parse_fadt, power_registers, poweroff_action as build_poweroff_action, reset_action};
 pub use facs::{Facs, WakingVectorWrites, facs, facs_pa, parse_facs, waking_vector_writes};
 pub use sleep_types::{SleepRegisters, SleepState, sleep_action, sleep_types, state_declared, wake_status_registers, PM1_WAKE_STATUS};
 pub use aml_handler::{RegionBackend, install_region_backend};

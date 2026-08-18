@@ -39,6 +39,7 @@ pub mod mmu_ops;
 pub mod pci;
 pub mod pl011;
 pub mod psci;
+pub mod smccc;
 // PSCI ABI numbers, status decode and the SYSTEM_SUSPEND admission ladder.
 // Ungated on purpose: `psci.rs` is aarch64-only, so a `#[cfg(test)]` block
 // there builds nothing on a hosted x86 run (`docs/53`).
@@ -64,7 +65,7 @@ mod signal;
 mod vbar;
 mod uaccess;
 pub mod vmm;
-pub use cpuid::{midr_el1, mpidr_el1};
+pub use cpuid::{midr_el1, mpidr_el1, MPIDR_HWID_MASK};
 pub use regs::{TCR_EL1_BASE, TCR_EL1_KERNEL, TCR_EL1_TBI0, 
     read_mair_el1, read_sctlr_el1, read_tcr_el1, read_ttbr0_el1, read_ttbr1_el1,
 };

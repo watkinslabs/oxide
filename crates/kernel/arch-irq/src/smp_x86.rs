@@ -436,6 +436,7 @@ pub unsafe fn bring_up_aps_x86(_info: &BootInfo) -> usize {
     let n = ::cpu::count() as usize;
     for i in 0..n {
         let (id, flags) = match ::cpu::get(i) { Some(t) => t, None => break };
+        let Some(id) = u32::try_from(id).ok() else { continue; };
         if id == bsp { continue; }
         if (flags & (::cpu::FLAG_ENABLED | ::cpu::FLAG_ONLINE_CAPABLE)) == 0 { continue; }
 

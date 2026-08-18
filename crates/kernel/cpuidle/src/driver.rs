@@ -1,8 +1,8 @@
-// The idle driver: one state table for the machine, and the per-CPU counters
-// and predictor that go with it.
+// The idle driver: one provider, with each CPU's state table, counters and
+// predictor kept together.
 //
-// One driver at a time. A second registered table would leave two answers to
-// "what is state 2", and every counter, attribute and governor decision is
+// One provider at a time. A second provider would leave two answers for a
+// CPU's state index, and every counter, attribute and governor decision is
 // keyed by that index.
 
 use alloc::string::String;
@@ -20,7 +20,7 @@ pub trait IdleOps: Send + Sync {
     /// Put this CPU into `index`, returning the state actually entered — a
     /// driver may substitute a shallower one. `Err` means it refused, and the
     /// CPU did not sleep. # C: O(1)
-    fn enter(&self, index: usize, state: &IdleState) -> KResult<usize>;
+    fn enter(&self, cpu: usize, index: usize, state: &IdleState) -> KResult<usize>;
 }
 
 /// Everything one CPU carries.
@@ -36,7 +36,7 @@ pub struct Device {
 /// The registered driver.
 pub struct Driver {
     name: String,
-    states: Vec<IdleState>,
+    state_tables: Vec<Vec<IdleState>>,
     ops: Arc<dyn IdleOps>,
     devices: Spinlock<Vec<Device>, Devices>,
     governor: Spinlock<Governor, Devices>,
@@ -45,8 +45,15 @@ pub struct Driver {
 impl Driver {
     /// Driver name, as `current_driver` reads it back. # C: O(1)
     pub fn name(&self) -> &str { &self.name }
-    /// The state table. # C: O(1)
-    pub fn states(&self) -> &[IdleState] { &self.states }
+    /// State table for `cpu`. Every table is paired with exactly one device,
+    /// because firmware may describe a different ladder for each CPU. # C: O(1)
+    pub fn states_for(&self, cpu: usize) -> Option<&[IdleState]> {
+        self.state_tables.get(cpu).map(Vec::as_slice)
+    }
+
+    /// Bootstrap CPU's table. Kept for consumers whose operation is explicitly
+    /// machine-wide; per-CPU selection and attributes use `states_for`. # C: O(1)
+    pub fn states(&self) -> &[IdleState] { self.states_for(0).unwrap_or(&[]) }
     /// The governor every CPU runs. # C: O(1)
     pub fn governor(&self) -> Governor { *self.governor.lock() }
     /// The provider. # C: O(1)
@@ -97,17 +104,30 @@ pub fn driver() -> Option<Arc<Driver>> { DRIVER.lock().clone() }
 pub fn register(name: &str, states: Vec<IdleState>, ops: Arc<dyn IdleOps>, cpus: usize)
     -> Result<Arc<Driver>, TableError>
 {
-    validate(&states)?;
+    let cpus = cpus.max(1);
+    let tables = (0..cpus).map(|_| states.clone()).collect();
+    register_per_cpu(name, tables, ops)
+}
+
+/// Register a platform provider whose firmware declares one state ladder per
+/// logical CPU. Empty or malformed ladders refuse the complete provider: a
+/// partial replacement would leave the generic fallback's state indexes mixed
+/// with platform indexes. # C: O(N_cpus * N_states)
+pub fn register_per_cpu(name: &str, state_tables: Vec<Vec<IdleState>>, ops: Arc<dyn IdleOps>)
+    -> Result<Arc<Driver>, TableError>
+{
+    if state_tables.is_empty() { return Err(TableError::Empty); }
+    for states in &state_tables { validate(states)?; }
     let governor = default_governor();
-    let devices: Vec<Device> = (0..cpus.max(1)).map(|_| Device {
-        usage: new_usage(&states),
+    let devices: Vec<Device> = state_tables.iter().map(|states| Device {
+        usage: new_usage(states),
         governor: GovState::new(governor.kind),
         last_residency_ns: 0,
         enabled: true,
     }).collect();
     let driver = Arc::new(Driver {
         name: String::from(name),
-        states,
+        state_tables,
         ops,
         devices: Spinlock::new(devices),
         governor: Spinlock::new(governor),

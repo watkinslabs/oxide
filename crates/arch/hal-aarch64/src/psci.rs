@@ -15,9 +15,9 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
 pub use crate::psci_uapi::{decode_status, psci_version, version_major, version_minor,
-    PsciStatus, PSCI_AFFINITY_INFO_64, PSCI_CPU_OFF, PSCI_CPU_ON_64, PSCI_FEATURES,
-    PSCI_SYSTEM_OFF, PSCI_SYSTEM_RESET, PSCI_SYSTEM_SUSPEND_64, PSCI_VERSION,
-    PSCI_VERSION_1_0};
+    CpuSuspendFormat, PsciStatus, PSCI_AFFINITY_INFO_64, PSCI_CPU_OFF, PSCI_CPU_ON_64,
+    PSCI_CPU_SUSPEND_64, PSCI_FEATURES, PSCI_SYSTEM_OFF, PSCI_SYSTEM_RESET,
+    PSCI_SYSTEM_SUSPEND_64, PSCI_VERSION, PSCI_VERSION_1_0};
 use crate::psci_probe::{classify_support, decode_support, encode_support, SuspendSupport};
 
 /// Issue an SMC instruction with up to 4 arguments and return x0.
@@ -124,6 +124,13 @@ pub unsafe fn cpu_on(target_mpidr: u64, entry_pa: u64, context_id: u64) -> PsciS
 /// Cached `SYSTEM_SUSPEND` probe result, encoded by `psci_probe`. Zero means
 /// unprobed, which admits nothing.
 static SUSPEND_SUPPORT: AtomicU64 = AtomicU64::new(0);
+const CPU_SUSPEND_UNPROBED: u64 = 0;
+const CPU_SUSPEND_UNSUPPORTED: u64 = 1;
+const CPU_SUSPEND_ORIGINAL: u64 = 2;
+const CPU_SUSPEND_EXTENDED: u64 = 3;
+/// Cached CPU-suspend state format. Firmware's answer is boot-static, so the
+/// provider probes it once before publishing any state that may call it.
+static CPU_SUSPEND_FORMAT: AtomicU64 = AtomicU64::new(CPU_SUSPEND_UNPROBED);
 
 /// `PSCI_VERSION`. Returns the raw major/minor word; 0 when no conduit answers.
 /// # SAFETY: caller asserts the platform conduit is configured.
@@ -167,4 +174,40 @@ pub unsafe fn probe_system_suspend() -> SuspendSupport {
 /// # C: O(1)
 pub fn system_suspend_support() -> SuspendSupport {
     decode_support(SUSPEND_SUPPORT.load(Ordering::Acquire))
+}
+
+/// Probe `CPU_SUSPEND` and cache the power-state encoding it accepts.
+/// # SAFETY: caller is the boot path and the platform PSCI conduit is usable.
+/// # C: O(two PSCI calls at most)
+pub unsafe fn probe_cpu_suspend() -> CpuSuspendFormat {
+    // SAFETY: the version query is read-only and the feature query runs only
+    // after PSCI 1.0 makes that query meaningful.
+    let format = unsafe {
+        let ver = version();
+        let features = if version_major(ver) >= 1 { features(PSCI_CPU_SUSPEND_64) } else { 0 };
+        crate::psci_uapi::cpu_suspend_format(ver, features)
+    };
+    let encoded = match format {
+        CpuSuspendFormat::Unsupported => CPU_SUSPEND_UNSUPPORTED,
+        CpuSuspendFormat::Original => CPU_SUSPEND_ORIGINAL,
+        CpuSuspendFormat::Extended => CPU_SUSPEND_EXTENDED,
+    };
+    CPU_SUSPEND_FORMAT.store(encoded, Ordering::Release);
+    format
+}
+
+/// Cached `CPU_SUSPEND` format, failing closed until the provider probed it.
+/// # C: O(1)
+pub fn cpu_suspend_format() -> CpuSuspendFormat {
+    match CPU_SUSPEND_FORMAT.load(Ordering::Acquire) {
+        CPU_SUSPEND_ORIGINAL => CpuSuspendFormat::Original,
+        CPU_SUSPEND_EXTENDED => CpuSuspendFormat::Extended,
+        _ => CpuSuspendFormat::Unsupported,
+    }
+}
+
+/// Validate a firmware-provided `CPU_SUSPEND` parameter against the format the
+/// platform advertised. # C: O(1)
+pub fn cpu_suspend_state_valid(state: u32) -> bool {
+    crate::psci_uapi::power_state_valid(state, cpu_suspend_format())
 }

@@ -142,6 +142,36 @@ pub fn safe_halt() {
     }
 }
 
+/// Enable interrupts and enter the firmware-selected monitor-wait state.
+/// The probe tied the hint to CPUID leaf five before this path was published,
+/// and `sti` is adjacent to `mwait` so a wakeup cannot land in between.
+/// # C: O(sleep)
+/// # Ctx: idle path, entered with interrupts masked
+pub fn acpi_mwait(hint: u32) {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    {
+        // SAFETY: the ACPI C-state provider admitted this CPUID-supported
+        // hint; at CPL0 `sti; mwait` atomically opens the interrupt wake path.
+        unsafe { core::arch::asm!("sti; mwait", in("eax") hint, in("ecx") 1u32, options(nostack)); }
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+    { let _ = hint; }
+}
+
+/// Write back and invalidate the local cache before a C3 entry on a platform
+/// whose fixed table explicitly authorises that operation. # C: O(1)
+/// # Ctx: idle path, interrupts masked
+pub fn writeback_invalidate_cache() {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    {
+        // SAFETY: this is a privileged architectural cache operation; the
+        // C-state provider only calls it after firmware declared it usable.
+        unsafe { core::arch::asm!("wbinvd", options(nostack)); }
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+    { core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst); }
+}
+
 /// Memory barrier ordering MMIO writes per `06§2`.
 /// # C: O(1)
 pub fn mmio_barrier() {

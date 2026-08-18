@@ -21,6 +21,21 @@ timekeeper = { path = "../timekeeper" }
 power-supply = { path = "../power-supply" }
 backlight = { path = "../backlight" }
 thermal = { path = "../thermal" }
+cpu = { path = "../cpu" }
+cpufreq = { path = "../cpufreq" }
+cpuidle = { path = "../cpuidle" }
+clk = { path = "../clk" }
+regulator = { path = "../regulator" }
+opp = { path = "../opp" }
+scmi = { path = "../scmi" }
+sched = { path = "../sched" }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+hal-x86_64 = { path = "../../arch/hal-x86_64" }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+hal-aarch64 = { path = "../../arch/hal-aarch64" }
+mmio-map = { path = "../mmio-map" }
 
 [features]
 default = []

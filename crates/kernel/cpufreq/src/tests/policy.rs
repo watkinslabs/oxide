@@ -65,6 +65,19 @@ fn a_floor_above_the_effective_ceiling_is_pulled_down_to_it() {
 }
 
 #[test]
+fn cooling_requests_for_sibling_processors_are_aggregated_independently() {
+    let policy = policy();
+    policy.set_thermal_request(0, Request { min: None, max: Some(1_800_000) });
+    policy.set_thermal_request(1, Request { min: None, max: Some(1_200_000) });
+    assert_eq!(policy.limits().max, 1_200_000);
+    policy.set_thermal_request(0, Request::default());
+    assert_eq!(policy.limits().max, 1_200_000,
+               "releasing one processor cannot release its sibling's thermal cap");
+    policy.set_thermal_request(1, Request::default());
+    assert_eq!(policy.limits().max, HW.max);
+}
+
+#[test]
 fn a_request_outside_the_hardware_range_cannot_widen_it() {
     let limits = aggregate(HW, &requests(
         Request { min: Some(100_000), max: Some(9_000_000) },

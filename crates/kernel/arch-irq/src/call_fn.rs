@@ -73,6 +73,7 @@ fn exec(kind: u32, arg: u64) {
         Some(CallKind::MembarrierPrivateMb) => sched::membarrier::service_private_mb(arg),
         Some(CallKind::MembarrierPrivateSyncCore) => sched::membarrier::service_private_sync_core(arg),
         Some(CallKind::MembarrierPrivateRseq) => sched::membarrier::service_private_rseq(arg),
+        Some(CallKind::CpuFreq) => firmware::acpi::cpufreq::service_remote(arg),
         Some(CallKind::Stop) => {
             // Publish BEFORE parking: the waiter frees nothing, but it does
             // proceed to overwrite the pages this CPU was running out of, so
@@ -107,7 +108,7 @@ pub fn service() {
 /// wait on it.
 /// # SAFETY: LAPIC enabled.
 unsafe fn send_ipi(logical_cpu: u32) -> bool {
-    let apic = match cpu::hardware_id_for_logical(logical_cpu) {
+    let apic = match cpu::hardware_id_for_logical(logical_cpu).and_then(|id| u32::try_from(id).ok()) {
         Some(a) => a,
         None => return false,
     };

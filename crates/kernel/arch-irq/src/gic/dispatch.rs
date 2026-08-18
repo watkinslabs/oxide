@@ -122,7 +122,7 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
         if intid != 27
             && intid != 33
             && !crate::intid_is_v2m(intid)
-            && intid >= super::ids::SPI_BASE
+            && intid >= super::ids::PPI_BASE
             && intid < LPI_BASE
         {
             let _ = crate::invoke_arm_irq_handler(intid);
