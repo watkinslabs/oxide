@@ -144,6 +144,16 @@ fn plain_rename(s: &RenameSides<'_>, from_name: &[u8], to_name: &[u8], whiteout:
         }
     }
 
+    // A whiteout is a freshly allocated character device in the source
+    // directory, so it receives that directory's default ACL before the
+    // rename transaction links the marker at the vacated name.
+    let whiteout_acl = if whiteout {
+        let parent = s.st.wrap_any_ino(s.from_p).ok_or(VfsError::Eio)?;
+        Some(crate::acl::inherit(&parent, WHITEOUT_MODE, 0, vfs::posix_acl::NewKind::Other)?)
+    } else {
+        None
+    };
+
     // The overwritten destination keeps its quota charge and its blocks until
     // it is EVICTED, exactly like an unlinked-but-open file: Linux
     // `ext4_rename` only `ext4_dec_count`s the victim and `ext4_orphan_add`s
@@ -159,8 +169,8 @@ fn plain_rename(s: &RenameSides<'_>, from_name: &[u8], to_name: &[u8], whiteout:
         (true, Some(raw)) => { super::super::quota::release_existing_inode_usage(s.st, raw)?; true }
         _ => false,
     };
-    if whiteout {
-        if let Err(e) = super::super::quota::charge_new_inode(s.st, s.from_p, WHITEOUT_MODE, 0, 0) {
+    if let Some(acl) = whiteout_acl.as_ref() {
+        if let Err(e) = super::super::quota::charge_new_inode(s.st, s.from_p, acl.mode, 0, 0) {
             rollback_dir_quota(s, dir_quota_released, dest_raw.as_ref());
             return Err(e);
         }
@@ -178,7 +188,9 @@ fn plain_rename(s: &RenameSides<'_>, from_name: &[u8], to_name: &[u8], whiteout:
         }
         m.dir_link(s.to_p, to_name, s.target, ftype)?;
         m.dir_unlink(s.from_p, from_name)?;
-        if whiteout { m.create_mknod(s.from_p, from_name, WHITEOUT_MODE, 0, 0, 0)?; }
+        if let Some(acl) = whiteout_acl.as_ref() {
+            m.create_mknod_with_acl(s.from_p, from_name, acl.mode, 0, 0, 0, acl)?;
+        }
         if cross_dir_move {
             // `ext4_rename_dir_prepare`/`_finish` + `ext4_dec_count(old.dir)` /
             // `ext4_inc_count(new.dir)`: the moved directory's `..` follows it.
@@ -193,8 +205,8 @@ fn plain_rename(s: &RenameSides<'_>, from_name: &[u8], to_name: &[u8], whiteout:
     });
     if let Err(e) = rename {
         mount.refresh_cached_meta();
-        if whiteout {
-            let _ = super::super::quota::rollback_new_inode_charge(s.st, s.from_p, WHITEOUT_MODE, 0, 0);
+        if let Some(acl) = whiteout_acl.as_ref() {
+            let _ = super::super::quota::rollback_new_inode_charge(s.st, s.from_p, acl.mode, 0, 0);
         }
         rollback_dir_quota(s, dir_quota_released, dest_raw.as_ref());
         return Err(super::regular::vfs_error_from_mount(e));

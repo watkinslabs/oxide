@@ -42,6 +42,32 @@ impl Mount {
         uid: u32,
         gid: u32,
     ) -> Result<(u32, inode::Inode), MountError> {
+        self.create_file_inode_inner(parent_ino, name, mode_perm, uid, gid, None)
+    }
+
+    /// Create a regular inode and persist the already-decided ACLs before its
+    /// name becomes visible. # C: same as `create_file_inode`
+    pub(crate) fn create_file_inode_with_acl(
+        &self,
+        parent_ino: u32,
+        name: &[u8],
+        mode_perm: u16,
+        uid: u32,
+        gid: u32,
+        acl: &crate::acl::Inherited,
+    ) -> Result<(u32, inode::Inode), MountError> {
+        self.create_file_inode_inner(parent_ino, name, mode_perm, uid, gid, Some(acl))
+    }
+
+    fn create_file_inode_inner(
+        &self,
+        parent_ino: u32,
+        name: &[u8],
+        mode_perm: u16,
+        uid: u32,
+        gid: u32,
+        acl: Option<&crate::acl::Inherited>,
+    ) -> Result<(u32, inode::Inode), MountError> {
         // Serialize the whole create (Linux `ext4_lock_group` + txn): concurrent
         // creates must not double-allocate an inode/block or race the shadow.
         // `create_op` holds `op_lock` for the op and defers the batch commit.
@@ -49,6 +75,7 @@ impl Mount {
             let parent_group = (parent_ino - 1) / m.sb.inodes_per_group;
             let new_ino = m.alloc_inode(parent_group)?;
             let node = m.init_inode(parent_ino, new_ino, S_IFREG | (mode_perm & 0x0FFF), 1, uid, gid)?;
+            if let Some(acl) = acl { acl.store(m, new_ino)?; }
             m.dir_link(parent_ino, name, new_ino, dir::DT_REG)?;
             Ok((new_ino, node))
         })
@@ -86,6 +113,32 @@ impl Mount {
         uid: u32,
         gid: u32,
     ) -> Result<(u32, inode::Inode), MountError> {
+        self.create_dir_inode_inner(parent_ino, name, mode_perm, uid, gid, None)
+    }
+
+    /// Create a directory and persist its inherited ACLs before publishing the
+    /// directory entry. # C: same as `create_dir_inode`
+    pub(crate) fn create_dir_inode_with_acl(
+        &self,
+        parent_ino: u32,
+        name: &[u8],
+        mode_perm: u16,
+        uid: u32,
+        gid: u32,
+        acl: &crate::acl::Inherited,
+    ) -> Result<(u32, inode::Inode), MountError> {
+        self.create_dir_inode_inner(parent_ino, name, mode_perm, uid, gid, Some(acl))
+    }
+
+    fn create_dir_inode_inner(
+        &self,
+        parent_ino: u32,
+        name: &[u8],
+        mode_perm: u16,
+        uid: u32,
+        gid: u32,
+        acl: Option<&crate::acl::Inherited>,
+    ) -> Result<(u32, inode::Inode), MountError> {
         self.create_op(|m| {
             let bs = m.sb.block_size as usize;
             let parent_group = (parent_ino - 1) / m.sb.inodes_per_group;
@@ -109,6 +162,7 @@ impl Mount {
             m.append_block(new_ino, &blk)?;
             m.set_inode_size(new_ino, bs as u64)?;
             node.size = bs as u64;
+            if let Some(acl) = acl { acl.store(m, new_ino)?; }
             m.dir_link(parent_ino, name, new_ino, dir::DT_DIR)?;
             let ng = (new_ino - 1) / m.sb.inodes_per_group;
             {
@@ -185,6 +239,34 @@ impl Mount {
         uid: u32,
         gid: u32,
     ) -> Result<u32, MountError> {
+        self.create_mknod_inner(parent_ino, name, mode, rdev, uid, gid, None)
+    }
+
+    /// Create a special inode with its inherited access ACL in the allocation
+    /// transaction before the inode is linked. # C: same as `create_mknod`
+    pub(crate) fn create_mknod_with_acl(
+        &self,
+        parent_ino: u32,
+        name: &[u8],
+        mode: u16,
+        rdev: u32,
+        uid: u32,
+        gid: u32,
+        acl: &crate::acl::Inherited,
+    ) -> Result<u32, MountError> {
+        self.create_mknod_inner(parent_ino, name, mode, rdev, uid, gid, Some(acl))
+    }
+
+    fn create_mknod_inner(
+        &self,
+        parent_ino: u32,
+        name: &[u8],
+        mode: u16,
+        rdev: u32,
+        uid: u32,
+        gid: u32,
+        acl: Option<&crate::acl::Inherited>,
+    ) -> Result<u32, MountError> {
         let ftype = mode & S_IFMT;
         let dirent_dt = match ftype {
             S_IFCHR => dir::DT_CHR,
@@ -209,6 +291,7 @@ impl Mount {
                 bytes[0x28..0x2C].copy_from_slice(&rdev.to_le_bytes());
             }
             m.write_inode_bytes(new_ino, &bytes)?;
+            if let Some(acl) = acl { acl.store(m, new_ino)?; }
             m.dir_link(parent_ino, name, new_ino, dirent_dt)?;
             Ok(new_ino)
         })
