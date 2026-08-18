@@ -3,24 +3,33 @@
 extern crate alloc;
 
 use alloc::sync::Arc;
+use alloc::string::String;
 use alloc::vec::Vec;
 use block::{BlockDevice, BlockError, BlockRequest, KResult, QueueLimits};
 
 use crate::{Array, MetadataVersion, Superblock, read_superblock};
 
-struct DataMember { inner: Arc<dyn BlockDevice>, start: u64, capacity: u64 }
+struct Member { inner: Arc<dyn BlockDevice>, claim: Option<MemberClaim> }
+
+struct MemberClaim { disk: String }
+
+impl Drop for MemberClaim {
+    fn drop(&mut self) { let _ = block::registry::release(&self.disk); }
+}
+
+struct DataMember { inner: Arc<dyn BlockDevice>, start: u64, capacity: u64, _claim: Option<MemberClaim> }
 
 impl DataMember {
-    fn new(inner: Arc<dyn BlockDevice>, superblock: &Superblock) -> KResult<Arc<Self>> {
-        let sectors_per_block = u64::from(inner.block_size()) / 512;
+    fn new(member: Member, superblock: &Superblock) -> KResult<Arc<Self>> {
+        let sectors_per_block = u64::from(member.inner.block_size()) / 512;
         if sectors_per_block == 0 || superblock.data_offset() % sectors_per_block != 0
             || superblock.data_sectors() % sectors_per_block != 0 { return Err(BlockError::Einval); }
         let start = superblock.data_offset() / sectors_per_block;
         let capacity = superblock.data_sectors() / sectors_per_block;
-        if start.checked_add(capacity).ok_or(BlockError::Eoverflow)? > inner.capacity_blocks() || capacity == 0 {
+        if start.checked_add(capacity).ok_or(BlockError::Eoverflow)? > member.inner.capacity_blocks() || capacity == 0 {
             return Err(BlockError::Einval);
         }
-        Ok(Arc::new(Self { inner, start, capacity }))
+        Ok(Arc::new(Self { inner: member.inner, start, capacity, _claim: member.claim }))
     }
 }
 
@@ -43,20 +52,36 @@ impl BlockDevice for DataMember {
 /// Read v1 member metadata and assemble a complete supported MD array. Every
 /// supplied member must describe the same current, non-degraded array. # C: O(members × 4 KiB)
 pub fn assemble(members: Vec<Arc<dyn BlockDevice>>, version: MetadataVersion) -> KResult<Arc<Array>> {
-    let mut found: Vec<(Superblock, Arc<dyn BlockDevice>)> = members.into_iter()
-        .map(|member| read_superblock(member.as_ref(), version).map(|superblock| (superblock, member)))
-        .collect::<KResult<_>>()?;
-    let Some((reference, _)) = found.first() else { return Err(BlockError::Einval); };
-    let reference = reference.clone();
-    if found.iter().any(|(superblock, _)| !reference.same_array(superblock) || superblock.events() != reference.events()) {
-        return Err(BlockError::Einval);
+    assemble_members(members.into_iter().map(|inner| Member { inner, claim: None }).collect(), version)
+}
+
+/// Assemble registered block components while holding each parent disk against
+/// removal until the resulting array is unpublished. # C: O(members × 4 KiB)
+pub(crate) fn assemble_registered(members: Vec<(String, Arc<dyn BlockDevice>)>, version: MetadataVersion) -> KResult<Arc<Array>> {
+    let mut claimed = Vec::with_capacity(members.len());
+    for (disk, inner) in members {
+        if !block::registry::claim(&disk) { return Err(BlockError::Ebusy); }
+        claimed.push(Member { inner, claim: Some(MemberClaim { disk }) });
     }
+    assemble_members(claimed, version)
+}
+
+fn assemble_members(members: Vec<Member>, version: MetadataVersion) -> KResult<Arc<Array>> {
+    let mut found: Vec<(Superblock, Member)> = members.into_iter()
+        .map(|member| read_superblock(member.inner.as_ref(), version).map(|superblock| (superblock, member)))
+        .collect::<KResult<_>>()?;
+    let Some((reference, _)) = found.iter().max_by_key(|(superblock, _)| superblock.events()) else { return Err(BlockError::Einval); };
+    let reference = reference.clone();
+    if reference.features() != 0 || found.iter().any(|(superblock, _)| superblock.features() != 0) { return Err(BlockError::Eopnotsupp); }
+    if found.iter().any(|(superblock, _)| !reference.same_array(superblock)
+        || superblock.events().saturating_add(1) < reference.events()) { return Err(BlockError::Einval); }
     let roles = reference.raid_disks() as usize;
-    if roles == 0 || found.len() != roles || found.iter().any(|(superblock, _)| !superblock.is_active_member()) { return Err(BlockError::Einval); }
-    found.sort_unstable_by_key(|(superblock, _)| superblock.member_role());
-    if found.iter().enumerate().any(|(role, (superblock, _))| superblock.member_role() != Some(role as u16)) { return Err(BlockError::Einval); }
-    let block_size = found[0].1.block_size();
-    if found.iter().any(|(_, member)| member.block_size() != block_size) { return Err(BlockError::Einval); }
+    if roles == 0 || found.len() != roles { return Err(BlockError::Einval); }
+    found.sort_unstable_by_key(|(superblock, _)| reference.roles().get(superblock.dev_number() as usize).copied());
+    if found.iter().enumerate().any(|(role, (superblock, _))|
+        reference.roles().get(superblock.dev_number() as usize).copied() != Some(role as u16)) { return Err(BlockError::Einval); }
+    let block_size = found[0].1.inner.block_size();
+    if found.iter().any(|(_, member)| member.inner.block_size() != block_size) { return Err(BlockError::Einval); }
     let data_members = found.into_iter().map(|(superblock, member)| DataMember::new(member, &superblock).map(|member| member as Arc<dyn BlockDevice>))
         .collect::<KResult<Vec<_>>>()?;
     match reference.level() {
@@ -64,6 +89,7 @@ pub fn assemble(members: Vec<Arc<dyn BlockDevice>>, version: MetadataVersion) ->
         0 => {
             let sectors_per_block = block_size / 512;
             if sectors_per_block == 0 || reference.chunk_sectors() == 0 || reference.chunk_sectors() % sectors_per_block != 0 { return Err(BlockError::Einval); }
+            if data_members.iter().any(|member| member.capacity_blocks() != data_members[0].capacity_blocks()) { return Err(BlockError::Eopnotsupp); }
             Array::raid0(data_members, reference.chunk_sectors() / sectors_per_block)
         }
         1 => Array::raid1(data_members),

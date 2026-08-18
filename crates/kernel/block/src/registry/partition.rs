@@ -19,6 +19,7 @@ pub struct Partition {
     pub number: u32,
     pub start_lba: u64,
     pub sectors: u64,
+    pub is_raid: bool,
     pub uuid: Option<String>,
     pub label: Option<String>,
     pub dev: Arc<dyn BlockDevice>,
@@ -95,7 +96,7 @@ pub fn rescan_partitions(name: &str) -> Option<Vec<Arc<Partition>>> {
         let dev = PartitionDevice::new(Arc::clone(&disk.dev), info.start_lba, sectors)?;
         Some(Arc::new(Partition {
             name, number_dev: DevNum { major: disk.number.major, minor: disk.number.minor.checked_add(info.number)? },
-            number: info.number, start_lba: info.start_lba, sectors,
+            number: info.number, start_lba: info.start_lba, sectors, is_raid: info.is_raid,
             uuid: info.uuid, label: info.label, dev,
         }))
     }).collect();

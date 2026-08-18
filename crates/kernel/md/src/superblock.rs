@@ -23,6 +23,7 @@ pub enum MetadataVersion { V1_0, V1_1, V1_2 }
 /// Validated v1 metadata for one MD member device. # C: O(max_dev)
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Superblock {
+    features: u32,
     uuid: [u8; 16],
     name: [u8; 32],
     level: i32,
@@ -38,6 +39,9 @@ pub struct Superblock {
 }
 
 impl Superblock {
+    /// Version-1 metadata feature bitmap. # C: O(1)
+    pub const fn features(&self) -> u32 { self.features }
+
     /// Array UUID shared by every member of one MD set. # C: O(1)
     pub const fn uuid(&self) -> [u8; 16] { self.uuid }
 
@@ -122,7 +126,7 @@ fn parse(bytes: &[u8], super_sector: u64) -> KResult<Superblock> {
     let roles = (0..max_dev).map(|index| le16(bytes, HEADER_BYTES + index * 2)).collect::<KResult<Vec<_>>>()?;
     let dev_number = le32(bytes, 160)?;
     if dev_number as usize >= max_dev { return Err(BlockError::Einval); }
-    Ok(Superblock { uuid, name, level: le32(bytes, 72)? as i32, layout: le32(bytes, 76)?,
+    Ok(Superblock { features: le32(bytes, 8)?, uuid, name, level: le32(bytes, 72)? as i32, layout: le32(bytes, 76)?,
         component_sectors: le64(bytes, 80)?, chunk_sectors: le32(bytes, 88)?, raid_disks: le32(bytes, 92)?,
         data_offset: le64(bytes, 128)?, data_sectors: le64(bytes, 136)?, events: le64(bytes, 200)?, dev_number, roles })
 }
@@ -163,13 +167,13 @@ mod tests {
     fn put32(bytes: &mut [u8], offset: usize, value: u32) { bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes()); }
     fn put64(bytes: &mut [u8], offset: usize, value: u64) { bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes()); }
 
-    fn image() -> [u8; SUPERBLOCK_BYTES] {
+    fn image(super_offset: u64) -> [u8; SUPERBLOCK_BYTES] {
         let mut bytes = [0u8; SUPERBLOCK_BYTES];
         put32(&mut bytes, 0, MAGIC); put32(&mut bytes, 4, VERSION);
         bytes[16..32].copy_from_slice(b"md-v1-fixture-01");
         bytes[32..40].copy_from_slice(b"test:md0");
         put32(&mut bytes, 72, (-1i32) as u32); put64(&mut bytes, 80, 120); put32(&mut bytes, 92, 2);
-        put64(&mut bytes, 128, 16); put64(&mut bytes, 136, 120); put64(&mut bytes, 144, 8);
+        put64(&mut bytes, 128, 16); put64(&mut bytes, 136, 120); put64(&mut bytes, 144, super_offset);
         put32(&mut bytes, 160, 1); put64(&mut bytes, 200, 9); put32(&mut bytes, 220, 2);
         bytes[256..258].copy_from_slice(&0u16.to_le_bytes()); bytes[258..260].copy_from_slice(&1u16.to_le_bytes());
         let csum = checksum(&bytes, 260).expect("checksum");
@@ -180,7 +184,7 @@ mod tests {
     #[test]
     fn v1_2_metadata_is_read_and_validated_before_assembly() {
         let member: Arc<dyn BlockDevice> = block::MemDisk::<TaskList>::new(512, 256);
-        let mut write = BlockRequest::new_write(8, 8, image().to_vec());
+        let mut write = BlockRequest::new_write(8, 8, image(8).to_vec());
         member.submit_sync(&mut write).expect("write metadata");
         let found = read_superblock(member.as_ref(), MetadataVersion::V1_2).expect("read metadata");
         assert_eq!(found.level(), -1); assert_eq!(found.data_offset(), 16); assert_eq!(found.events(), 9);
@@ -190,9 +194,19 @@ mod tests {
     #[test]
     fn corrupt_metadata_checksum_is_rejected() {
         let member: Arc<dyn BlockDevice> = block::MemDisk::<TaskList>::new(512, 256);
-        let mut bytes = image(); bytes[72] = 0;
+        let mut bytes = image(8); bytes[72] = 0;
         let mut write = BlockRequest::new_write(8, 8, bytes.to_vec());
         member.submit_sync(&mut write).expect("write metadata");
         assert_eq!(read_superblock(member.as_ref(), MetadataVersion::V1_2), Err(BlockError::Einval));
+    }
+
+    #[test]
+    fn v1_metadata_uses_each_defined_superblock_placement() {
+        let member: Arc<dyn BlockDevice> = block::MemDisk::<TaskList>::new(512, 256);
+        for (version, sector) in [(MetadataVersion::V1_0, 240), (MetadataVersion::V1_1, 0), (MetadataVersion::V1_2, 8)] {
+            let mut write = BlockRequest::new_write(sector, 8, image(sector).to_vec());
+            member.submit_sync(&mut write).expect("write metadata");
+            assert_eq!(read_superblock(member.as_ref(), version).expect("read metadata").data_offset(), 16);
+        }
     }
 }

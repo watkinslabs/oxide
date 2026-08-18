@@ -20,6 +20,9 @@ const MBR_PARTITION_OFFSET: usize = 446;
 const MBR_PARTITION_BYTES: usize = 16;
 const MBR_PARTITION_COUNT: usize = 4;
 const GPT_PROTECTIVE_TYPE: u8 = 0xee;
+const LINUX_RAID_MBR_TYPE: u8 = 0xfd;
+const LINUX_RAID_GPT_TYPE: [u8; 16] = [0x0f, 0x88, 0x9d, 0xa1, 0xfc, 0x05, 0x3b, 0x4d,
+    0xa0, 0x06, 0x74, 0x3f, 0x0f, 0x84, 0x91, 0x1e];
 
 /// One partition discovered from a validated on-media table.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -27,6 +30,7 @@ pub struct PartitionInfo {
     pub number: u32,
     pub start_lba: u64,
     pub sectors: u64,
+    pub is_raid: bool,
     pub uuid: Option<String>,
     pub label: Option<String>,
 }
@@ -105,7 +109,7 @@ fn parse_mbr(mbr: &[u8]) -> Vec<PartitionInfo> {
     mbr_entries(mbr).filter_map(|(number, kind, start, sectors)| {
         if kind == 0 || sectors == 0 { return None; }
         Some(PartitionInfo {
-            number, start_lba: u64::from(start), sectors: u64::from(sectors),
+            number, start_lba: u64::from(start), sectors: u64::from(sectors), is_raid: kind == LINUX_RAID_MBR_TYPE,
             uuid: Some(alloc::format!("{signature:08x}-{number:02x}")), label: None,
         })
     }).collect()
@@ -139,7 +143,8 @@ fn parse_gpt_at(bytes: &[u8], block_bytes: usize) -> Vec<PartitionInfo> {
         let sectors = end_lba.checked_sub(start_lba)?.checked_add(1)?;
         let number = u32::try_from(index + 1).ok()?;
         Some(PartitionInfo {
-            number, start_lba, sectors, uuid: Some(guid(&entry[16..32])), label: utf16_label(&entry[56..]),
+            number, start_lba, sectors, is_raid: entry[..16] == LINUX_RAID_GPT_TYPE,
+            uuid: Some(guid(&entry[16..32])), label: utf16_label(&entry[56..]),
         })
     }).collect()
 }
@@ -179,7 +184,7 @@ mod tests {
         disk[440..444].copy_from_slice(&0x1234_abcd_u32.to_le_bytes());
         let e = &mut disk[MBR_PARTITION_OFFSET..MBR_PARTITION_OFFSET + MBR_PARTITION_BYTES];
         e[4] = 0x83; e[8..12].copy_from_slice(&2048u32.to_le_bytes()); e[12..16].copy_from_slice(&4096u32.to_le_bytes());
-        assert_eq!(parse(&disk), vec![PartitionInfo { number: 1, start_lba: 2048, sectors: 4096, uuid: Some("1234abcd-01".into()), label: None }]);
+        assert_eq!(parse(&disk), vec![PartitionInfo { number: 1, start_lba: 2048, sectors: 4096, is_raid: false, uuid: Some("1234abcd-01".into()), label: None }]);
     }
 
     #[test]
@@ -204,6 +209,26 @@ mod tests {
         assert_eq!(node_name("mmcblk0", 3).as_deref(), Some("mmcblk0p3"));
         assert_eq!(node_name("", 1), None);
         assert_eq!(node_name("sda", 0), None);
+    }
+
+    #[test]
+    fn linux_raid_partition_types_survive_mbr_and_gpt_parsing() {
+        let mut mbr = mbr();
+        let entry = &mut mbr[MBR_PARTITION_OFFSET..MBR_PARTITION_OFFSET + MBR_PARTITION_BYTES];
+        entry[4] = LINUX_RAID_MBR_TYPE; entry[8..12].copy_from_slice(&1u32.to_le_bytes()); entry[12..16].copy_from_slice(&8u32.to_le_bytes());
+        assert!(parse(&mbr)[0].is_raid);
+
+        let mut disk = vec![0; SECTOR_BYTES * 34];
+        disk[MBR_SIGNATURE_OFFSET..SECTOR_BYTES].copy_from_slice(&[0x55, 0xaa]); disk[MBR_PARTITION_OFFSET + 4] = GPT_PROTECTIVE_TYPE;
+        let entry = &mut disk[SECTOR_BYTES * 2..SECTOR_BYTES * 2 + GPT_ENTRY_MIN_BYTES];
+        entry[..16].copy_from_slice(&LINUX_RAID_GPT_TYPE); entry[32..40].copy_from_slice(&2u64.to_le_bytes()); entry[40..48].copy_from_slice(&9u64.to_le_bytes());
+        let entries_crc = crc::crc32(&disk[SECTOR_BYTES * 2..SECTOR_BYTES * 2 + GPT_ENTRY_MIN_BYTES]);
+        let header = &mut disk[SECTOR_BYTES..SECTOR_BYTES * 2];
+        header[..8].copy_from_slice(GPT_SIGNATURE); header[8..12].copy_from_slice(&0x0001_0000u32.to_le_bytes()); header[12..16].copy_from_slice(&(GPT_HEADER_MIN_BYTES as u32).to_le_bytes());
+        header[24..32].copy_from_slice(&1u64.to_le_bytes()); header[32..40].copy_from_slice(&33u64.to_le_bytes()); header[40..48].copy_from_slice(&34u64.to_le_bytes()); header[48..56].copy_from_slice(&32u64.to_le_bytes());
+        header[72..80].copy_from_slice(&2u64.to_le_bytes()); header[80..84].copy_from_slice(&1u32.to_le_bytes()); header[84..88].copy_from_slice(&(GPT_ENTRY_MIN_BYTES as u32).to_le_bytes()); header[88..92].copy_from_slice(&entries_crc.to_le_bytes());
+        let header_crc = crc::crc32(&header[..GPT_HEADER_MIN_BYTES]); header[16..20].copy_from_slice(&header_crc.to_le_bytes());
+        assert!(parse(&disk)[0].is_raid);
     }
 
     #[test]
@@ -236,7 +261,7 @@ mod tests {
         let header_crc = crc::crc32(&header[..GPT_HEADER_MIN_BYTES]);
         header[16..20].copy_from_slice(&header_crc.to_le_bytes());
         assert_eq!(parse(&disk), vec![PartitionInfo {
-            number: 1, start_lba: 2048, sectors: 2048,
+            number: 1, start_lba: 2048, sectors: 2048, is_raid: false,
             uuid: Some("00112233-4455-6677-8899-aabbccddeeff".into()), label: Some("root".into()),
         }]);
         disk[SECTOR_BYTES * 2 + 32] ^= 1;
@@ -268,7 +293,7 @@ mod tests {
         let mut write = BlockRequest::new_write(0, 3, disk);
         dev.submit_sync(&mut write).expect("4Kn fixture write");
         assert_eq!(read(dev.as_ref()), vec![PartitionInfo {
-            number: 1, start_lba: 3, sectors: 4,
+            number: 1, start_lba: 3, sectors: 4, is_raid: false,
             uuid: Some("00112233-4455-6677-8899-aabbccddeeff".into()), label: None,
         }]);
     }

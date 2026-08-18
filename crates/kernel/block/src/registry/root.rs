@@ -165,12 +165,12 @@ mod tests {
         let disk = super::super::by_name(NAME).expect("published fixture");
         let part = Arc::new(Partition {
             name: "partition-root-fixture1".into(), number_dev: super::super::DevNum { major: disk.number.major, minor: disk.number.minor + 1 }, number: 1, start_lba: 2, sectors: 4,
-            uuid: Some("1234abcd-01".into()), label: Some("rootfs".into()),
+            is_raid: false, uuid: Some("1234abcd-01".into()), label: Some("rootfs".into()),
             dev: PartitionDevice::new(Arc::clone(&disk.dev), 2, 4).expect("bounded fixture partition"),
         });
         let next = Arc::new(Partition {
             name: "partition-root-fixture2".into(), number_dev: super::super::DevNum { major: disk.number.major, minor: disk.number.minor + 2 }, number: 2, start_lba: 6, sectors: 2,
-            uuid: Some("1234abcd-02".into()), label: Some("rescue".into()),
+            is_raid: false, uuid: Some("1234abcd-02".into()), label: Some("rescue".into()),
             dev: PartitionDevice::new(Arc::clone(&disk.dev), 6, 2).expect("bounded fixture partition"),
         });
         disk.publish_partitions(alloc::vec![part, next]);
