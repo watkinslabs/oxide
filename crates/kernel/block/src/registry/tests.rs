@@ -155,6 +155,23 @@ fn holders_openers_and_quiesce_gate_are_distinct_and_atomic() {
 }
 
 #[test]
+fn opener_seal_keeps_the_control_opener_and_refuses_new_opens() {
+    const NAME: &str = "registry-open-seal";
+    let dev: Arc<dyn crate::BlockDevice> = MemDisk::<TaskList>::new(512, 8);
+    let index = register(NAME, dev);
+    let dev_t = dev_t_of(NAME, index).expect("published dev_t");
+    assert!(open_by_dev(dev_t), "the control file owns one opener");
+    let seal = seal_openers(dev_t, 1).expect("retain that opener");
+    assert_eq!(try_open_by_dev(dev_t), Err(OpenFailure::Closing));
+    assert_eq!(opener_count(NAME), Some(1));
+    drop(seal);
+    assert!(open_by_dev(dev_t), "dropping the seal restores opener admission");
+    assert!(close_by_dev(dev_t));
+    assert!(close_by_dev(dev_t));
+    assert!(unregister(NAME));
+}
+
+#[test]
 fn quiesce_waits_for_previously_admitted_async_submission() {
     const NAME: &str = "registry-async-lifecycle";
     let inner = DeferredDevice::new();

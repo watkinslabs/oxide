@@ -23,6 +23,7 @@ fn errno_of(err: block::BlockError) -> Errno {
         block::BlockError::Ebusy => Errno::Ebusy,
         block::BlockError::Einval => Errno::Einval,
         block::BlockError::Enospc => Errno::Enospc,
+        block::BlockError::Erofs => Errno::Erofs,
         block::BlockError::Enomem => Errno::Enomem,
         block::BlockError::Eagain => Errno::Eagain,
         block::BlockError::Eopnotsupp => Errno::Eopnotsupp,

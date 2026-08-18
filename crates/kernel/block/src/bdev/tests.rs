@@ -67,6 +67,19 @@ fn raw_write_is_cached_and_dirty_until_writeback() {
     assert!(on_medium(disk.as_ref(), 1000, 300).iter().all(|&b| b == 0xAB));
 }
 
+#[test]
+fn write_seal_rejects_later_raw_writes_but_drains_existing_dirty_pages() {
+    let disk = medium(64);
+    let mapping = mapping_over(disk.clone());
+    assert_eq!(mapping.write_at(0, &[0xA5; 512]), Ok(512));
+    mapping.seal_writes();
+    assert_eq!(mapping.write_at(512, &[0x5A; 512]), Err(BlockError::Erofs));
+    assert_eq!(mapping.write_and_wait(), Ok(()));
+    assert_eq!(on_medium(disk.as_ref(), 0, 512), vec![0xA5; 512]);
+    mapping.unseal_writes();
+    assert_eq!(mapping.write_at(512, &[0x5A; 512]), Ok(512));
+}
+
 // A write spanning a page boundary dirties both pages, and both are written.
 #[test]
 fn write_across_a_page_boundary_dirties_both_pages() {

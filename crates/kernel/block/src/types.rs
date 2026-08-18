@@ -28,6 +28,7 @@ pub enum BlockError {
     Ebusy   = 16,
     Einval  = 22,
     Enospc  = 28,
+    Erofs   = 30,
     /// A drive refused because it already holds its limit of ACTIVE zones.
     /// Not a media failure and not a permanent refusal: finishing or
     /// resetting a zone makes the same request succeed, which is why this
