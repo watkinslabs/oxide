@@ -1,7 +1,7 @@
 //! Multiple-device (MD) block mapping core.
 //!
-//! The reference design keeps array geometry immutable once published, and
-//! each I/O is split at exactly the
+//! Array geometry remains immutable once published while lifecycle admission
+//! owns the writable/read-only state; each I/O is split at exactly the
 //! component or stripe boundary before being submitted to a member device.
 
 #![no_std]
@@ -10,10 +10,11 @@ extern crate alloc;
 #[cfg(test)] extern crate std;
 
 // Module manifest: superblock owns v1 metadata validation; assembly owns data
-// views and personality construction; control owns immutable ioctl queries;
-// autostart owns boot-time discovery.
+// views and personality construction; lifecycle owns write-state admission;
+// control owns ioctl state; autostart owns boot-time discovery.
 mod superblock;
 mod assembly;
+mod lifecycle;
 mod control;
 mod autostart;
 pub mod uapi;
@@ -25,7 +26,7 @@ use block::{BlockDevice, BlockError, BlockOp, BlockRequest, KResult, QueueLimits
 
 pub use superblock::{MetadataVersion, Superblock, read_superblock};
 pub use assembly::assemble;
-pub use control::{array_info, disk_info, is_md_device};
+pub use control::{array_info, disk_info, is_md_device, restart_array_read_write, stop_array_read_only};
 
 /// Linux's fixed block major for MD arrays. # C: O(1)
 pub const MD_MAJOR: u32 = 9;
@@ -39,13 +40,14 @@ pub enum Level {
     Raid1,
 }
 
-/// An immutable MD array made from live block components. # C: O(1) construction
+/// An MD array with immutable geometry over live block components. # C: O(1) construction
 pub struct Array {
     level: Level,
     members: Vec<Arc<dyn BlockDevice>>,
     block_size: u32,
     capacity: u64,
     metadata: Option<control::Metadata>,
+    lifecycle: lifecycle::State,
 }
 
 impl Array {
@@ -88,11 +90,22 @@ impl Array {
             Level::Raid1 => members.iter().map(|member| member.capacity_blocks()).min().ok_or(BlockError::Einval)?,
         };
         if capacity == 0 { return Err(BlockError::Einval); }
-        Ok(Arc::new(Self { level, members, block_size, capacity, metadata }))
+        Ok(Arc::new(Self { level, members, block_size, capacity, metadata, lifecycle: lifecycle::State::new() }))
     }
 
     /// Array personality. # C: O(1)
     pub fn level(&self) -> Level { self.level }
+
+    /// Begin the read-only transition. # C: O(1)
+    pub(crate) fn begin_read_only(&self) -> KResult<()> { self.lifecycle.begin_read_only() }
+    /// Wait for modifying requests admitted before the seal. # C: O(in-flight writes)
+    pub(crate) fn wait_for_writers(&self) { self.lifecycle.wait_for_writers(); }
+    /// Finish the read-only transition after the final cache drain. # C: O(in-flight writes)
+    pub(crate) fn finish_read_only(&self) -> KResult<()> { self.lifecycle.finish_read_only() }
+    /// Cancel a failed read-only transition. # C: O(1)
+    pub(crate) fn cancel_read_only(&self) { self.lifecycle.cancel_read_only(); }
+    /// Return the array to writable service. # C: O(1)
+    pub(crate) fn restart_read_write(&self) -> KResult<()> { self.lifecycle.restart_read_write() }
 
     fn validate(&self, request: &BlockRequest) -> KResult<()> {
         let end = request.start_block.checked_add(u64::from(request.len_blocks)).ok_or(BlockError::Einval)?;
@@ -114,7 +127,8 @@ impl Array {
             BlockOp::WriteZeroes { .. } | BlockOp::Discard | BlockOp::Flush => Vec::new(),
         };
         Ok(BlockRequest { op: source.op, start_block, len_blocks, buffer, ioprio: source.ioprio,
-            flags: source.flags, durability: source.durability, polled: source.polled, crypt: source.crypt.clone() })
+            flags: source.flags, durability: source.durability, polled: source.polled, crypt: source.crypt.clone(),
+            writeback: source.writeback })
     }
 
     fn submit_piece(&self, member: usize, member_block: u64, request: &mut BlockRequest,
@@ -201,6 +215,7 @@ impl BlockDevice for Array {
     fn queue_limits(&self) -> KResult<QueueLimits> { QueueLimits::for_logical_block_size(self.block_size) }
     fn capacity_blocks(&self) -> u64 { self.capacity }
     fn submit_sync(&self, request: &mut BlockRequest) -> KResult<()> {
+        let _write = self.lifecycle.admit(request)?;
         self.validate(request)?;
         match self.level {
             Level::Linear => self.submit_linear(request),

@@ -1,4 +1,4 @@
-//! Immutable MD ioctl state derived from each published assembled array.
+//! MD ioctl state and lifecycle control derived from each published array.
 
 extern crate alloc;
 
@@ -7,6 +7,7 @@ use alloc::vec::Vec;
 use sync::{Spinlock, StackedBlock as MdControlClass};
 
 use crate::{Array, MD_DRIVER, uapi};
+use block::{BlockError, KResult};
 
 pub(crate) struct Metadata {
     pub(crate) minor_version: i32,
@@ -45,6 +46,45 @@ pub fn disk_info(dev_t: u32, number: i32) -> Option<uapi::DiskInfo> {
     Some(lookup(disk.number.minor)?.disk_info(number))
 }
 
+/// Put a live assembled array into read-only service. New opens and writes
+/// close before the block-device mapping drains its existing dirty pages;
+/// later writes observe `EROFS` until [`restart_array_read_write`].
+/// # C: O(dirty pages + in-flight writes) # Ctx: process # Sleeps: yes
+pub fn stop_array_read_only(dev_t: u32) -> KResult<()> {
+    let (_disk, array) = live_array(dev_t)?;
+    // Retain the ioctl file's one opener while excluding every new opener.
+    let seal = block::registry::seal_openers(dev_t, 1)?;
+    let disk = seal.disk();
+    // The mapping lock orders this boundary after every raw write that became
+    // dirty before the seal and before every write attempted after it.
+    disk.mapping.seal_writes();
+    if let Err(error) = array.begin_read_only() {
+        // Another lifecycle operation owns the sealing boundary, or this
+        // array is already read-only and must remain sealed.
+        return Err(error);
+    }
+    array.wait_for_writers();
+    if let Err(error) = disk.mapping.write_and_wait() {
+        array.cancel_read_only();
+        disk.mapping.unseal_writes();
+        return Err(error);
+    }
+    if let Err(error) = array.finish_read_only() {
+        array.cancel_read_only();
+        disk.mapping.unseal_writes();
+        return Err(error);
+    }
+    Ok(())
+}
+
+/// Return a live read-only array to read-write service. # C: O(disks + arrays)
+pub fn restart_array_read_write(dev_t: u32) -> KResult<()> {
+    let (disk, array) = live_array(dev_t)?;
+    array.restart_read_write()?;
+    disk.mapping.unseal_writes();
+    Ok(())
+}
+
 pub(crate) fn publish(minor: u32, array: &Arc<Array>) {
     let mut arrays = ARRAYS.lock();
     arrays.retain(|entry| entry.array.strong_count() != 0);
@@ -65,6 +105,13 @@ fn lookup(minor: u32) -> Option<Arc<Array>> {
         Some(array) => Some(array),
         None => { arrays.remove(index); None }
     }
+}
+
+fn live_array(dev_t: u32) -> KResult<(Arc<block::registry::Disk>, Arc<Array>)> {
+    let disk = block::registry::by_dev(dev_t).ok_or(BlockError::Enxio)?;
+    if disk.driver != MD_DRIVER { return Err(BlockError::Enxio); }
+    let array = lookup(disk.number.minor).ok_or(BlockError::Enxio)?;
+    Ok((disk, array))
 }
 
 impl Array {

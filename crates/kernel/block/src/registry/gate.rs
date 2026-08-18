@@ -6,16 +6,80 @@ use sync::{Devices as DevicesClass, Spinlock};
 use crate::blockdev::{BlockCompletion, BlockDevice, BlockRequest};
 use crate::queue_limits::QueueLimits;
 use crate::types::{BlockError, KResult};
-use super::core::{Disk, DISK_REMOVE_HOOK, TABLE, by_name, release_number};
+use super::core::{Disk, DISK_REMOVE_HOOK, TABLE, by_name, disk_for_dev, release_number};
 
 /// Holder/open state is separate from both exclusive removal and reset queue
 /// freeze. A reset keeps the published disk, its `dev_t`, and its users live.
 pub(super) struct DiskLifecycle {
     pub(super) holders: u32,
     pub(super) openers: u32,
+    pub(super) closing: bool,
     pub(super) lifecycle_held: bool,
     pub(super) reset_frozen: bool,
     pub(super) detached: bool,
+}
+
+/// Why a canonical block open was not admitted.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum OpenFailure { Missing, Closing }
+
+/// A live-device lifecycle owner that excludes new file opens while retaining
+/// a bounded population of existing openers. It mirrors the MD control path:
+/// the control file remains usable while all additional device opens fail.
+pub struct OpenSeal { disk: Arc<Disk>, active: bool }
+impl OpenSeal {
+    /// Disk retained until the lifecycle owner releases the open seal. # C: O(1)
+    pub fn disk(&self) -> &Arc<Disk> { &self.disk }
+}
+impl Drop for OpenSeal {
+    fn drop(&mut self) {
+        if !self.active { return; }
+        // SAFETY: this token exclusively set the live disk's closing state.
+        unsafe { self.disk.life.lock() }.closing = false;
+        self.active = false;
+    }
+}
+
+/// Refuse new opens while retaining at most `allowed_openers` existing files.
+/// The caller keeps the returned token across its cache drain and state
+/// transition, then dropping it reopens normal admission. # C: O(N_disks)
+pub fn seal_openers(dev_t: u32, allowed_openers: u32) -> KResult<OpenSeal> {
+    let disk = disk_for_dev(dev_t).ok_or(BlockError::Enxio)?;
+    // SAFETY: a lifecycle control operation runs in process context and owns
+    // the closing transition while this mutex protects opener admission.
+    let mut life = unsafe { disk.life.lock() };
+    if life.lifecycle_held || life.reset_frozen || life.detached || life.closing || life.openers > allowed_openers {
+        return Err(BlockError::Ebusy);
+    }
+    life.closing = true;
+    drop(life);
+    Ok(OpenSeal { disk, active: true })
+}
+
+/// Open a registered block device by packed `dev_t`, retaining one opener.
+/// # C: O(N_disks)
+pub fn try_open_by_dev(dev_t: u32) -> Result<(), OpenFailure> {
+    let Some(disk) = disk_for_dev(dev_t) else { return Err(OpenFailure::Missing); };
+    // SAFETY: VFS open is process context; a contended lifecycle must sleep.
+    let mut life = unsafe { disk.life.lock() };
+    if life.closing { return Err(OpenFailure::Closing); }
+    if life.lifecycle_held || life.detached { return Err(OpenFailure::Missing); }
+    let Some(next) = life.openers.checked_add(1) else { return Err(OpenFailure::Missing); };
+    life.openers = next;
+    Ok(())
+}
+
+/// Boolean compatibility form of [`try_open_by_dev`]. # C: O(N_disks)
+pub fn open_by_dev(dev_t: u32) -> bool { try_open_by_dev(dev_t).is_ok() }
+
+/// Release the opener acquired by [`open_by_dev`]. # C: O(N_disks)
+pub fn close_by_dev(dev_t: u32) -> bool {
+    let Some(disk) = disk_for_dev(dev_t) else { return false; };
+    // SAFETY: VFS close is process context; it may wait for a concurrent open.
+    let mut life = unsafe { disk.life.lock() };
+    if life.openers == 0 { return false; }
+    life.openers -= 1;
+    true
 }
 pub(super) struct DiskIo {
     pub(super) in_flight: u32,
@@ -233,7 +297,7 @@ pub fn try_quiesce(name: &str) -> Option<DiskQuiesce> {
     let disk = by_name(name)?;
     // SAFETY: lifecycle serialization is process-context work on a stable Arc.
     let mut life = unsafe { disk.life.lock() };
-    if life.lifecycle_held || life.reset_frozen || life.detached || life.holders != 0 || life.openers != 0 { return None; }
+    if life.lifecycle_held || life.reset_frozen || life.detached || life.closing || life.holders != 0 || life.openers != 0 { return None; }
     life.lifecycle_held = true;
     drop(life);
     let mut io = disk.io.lock_bh::<crate::bh_gate::BlockBh>();
@@ -255,7 +319,7 @@ pub fn try_freeze_for_reset(name: &str) -> Option<DiskQuiesce> {
     let disk = by_name(name)?;
     // SAFETY: reset and removal serialize through one process-context lifecycle state.
     let mut life = unsafe { disk.life.lock() };
-    if life.lifecycle_held || life.reset_frozen || life.detached { return None; }
+    if life.lifecycle_held || life.reset_frozen || life.detached || life.closing { return None; }
     life.reset_frozen = true;
     drop(life);
     disk.io.lock_bh::<crate::bh_gate::BlockBh>().closed = true;

@@ -1,4 +1,4 @@
-//! Assemble supported immutable MD personalities from v1 member metadata.
+//! Assemble supported MD personalities with immutable geometry from v1 metadata.
 
 extern crate alloc;
 

@@ -69,7 +69,7 @@ impl BdevMapping {
         let blocks = (bytes / bs) as u32;
         payload.truncate((blocks as usize).saturating_mul(bs as usize));
         crate::charge_io(payload.len() as u64, true);
-        let req = BlockRequest::new_write(off / bs, blocks, payload);
+        let req = BlockRequest::new_write(off / bs, blocks, payload).as_writeback();
         let me = Arc::clone(self);
         self.dev.submit(req, Box::new(move |_req, result| me.complete_page(idx, result)));
     }

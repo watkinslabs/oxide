@@ -63,6 +63,9 @@ pub struct BdevMapping {
     /// Surprise removal permanently rejects cached I/O from retained block
     /// file descriptions after the registry unlinks the disk.
     pub(super) dead: AtomicBool,
+    /// A lifecycle owner has closed raw block-device writes while preserving
+    /// reads and the dirty writeback it must drain before the transition ends.
+    pub(super) writes_sealed: AtomicBool,
 }
 
 impl BdevMapping {
@@ -78,6 +81,7 @@ impl BdevMapping {
             #[cfg(target_os = "oxide-kernel")]
             writeback_wait: sched::live::WaitList::new(),
             dead: AtomicBool::new(false),
+            writes_sealed: AtomicBool::new(false),
         })
     }
 
@@ -101,6 +105,26 @@ impl BdevMapping {
     pub(super) fn check_live(&self) -> KResult<()> {
         if self.dead.load(Ordering::Acquire) { return Err(BlockError::Eio); }
         Ok(())
+    }
+
+    fn check_writable(&self) -> KResult<()> {
+        if self.writes_sealed.load(Ordering::Acquire) { return Err(BlockError::Erofs); }
+        Ok(())
+    }
+
+    /// Reject new raw writes while a lifecycle owner drains dirty pages. The
+    /// mapping lock orders this seal against a writer's final dirty transition.
+    /// # C: O(1)
+    pub fn seal_writes(&self) {
+        let _state = self.st.lock_bh::<crate::bh_gate::BlockBh>();
+        self.writes_sealed.store(true, Ordering::Release);
+    }
+
+    /// Reopen raw writes after the owning device returned to writable state.
+    /// # C: O(1)
+    pub fn unseal_writes(&self) {
+        let _state = self.st.lock_bh::<crate::bh_gate::BlockBh>();
+        self.writes_sealed.store(false, Ordering::Release);
     }
 
     /// Pages handed to the driver whose completion has not run. # C: O(1)
@@ -187,6 +211,7 @@ impl BdevMapping {
     fn stage_in(&self, idx: u64, inner: usize, src: &[u8]) -> KResult<()> {
         let mut g = self.st.lock_bh::<crate::bh_gate::BlockBh>();
         if self.dead.load(Ordering::Acquire) { return Err(BlockError::Eio); }
+        if self.writes_sealed.load(Ordering::Acquire) { return Err(BlockError::Erofs); }
         let page = g.pages.get_mut(&idx).ok_or(BlockError::Eio)?;
         page[inner..inner + src.len()].copy_from_slice(src);
         g.dirty.set_dirty(idx);
@@ -250,6 +275,7 @@ impl BdevMapping {
     pub fn write_iter(&self, off: u64, len: usize,
                       mut src: impl FnMut(usize, &mut [u8]) -> KResult<()>) -> KResult<usize> {
         self.check_live()?;
+        self.check_writable()?;
         let Some(len) = self.clamp(off, len) else { return Ok(0); };
         let mut stage = vec![0u8; PAGE_BYTES];
         let mut done = 0usize;

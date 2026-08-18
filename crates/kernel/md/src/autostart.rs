@@ -67,7 +67,7 @@ mod tests {
 
     use alloc::sync::Arc;
     use alloc::vec;
-    use block::{BlockDevice, BlockRequest, MemDisk};
+    use block::{BlockDevice, BlockError, BlockRequest, MemDisk};
     use sync::TaskList;
 
     use super::*;
@@ -124,6 +124,20 @@ mod tests {
         let mut write = BlockRequest::new_write(128, 1, vec![0x5a; 512]); array.dev.submit_sync(&mut write).expect("array write");
         let mut read = BlockRequest::new_read(17, 1, 512); right.submit_sync(&mut read).expect("member read");
         assert_eq!(read.buffer, vec![0x5a; 512]);
+        assert!(block::registry::open_by_dev(dev_t), "simulate the controlling MD file");
+        assert_eq!(array.mapping.write_at(0, &[0xa5; 512]), Ok(512), "raw write is dirty before transition");
+        assert_eq!(array.mapping.dirty_pages(), 1);
+        assert_eq!(crate::stop_array_read_only(dev_t), Ok(()));
+        assert_eq!(array.mapping.dirty_pages(), 0, "read-only transition drained cached raw data");
+        let mut drained = BlockRequest::new_read(17, 1, 512); left.submit_sync(&mut drained).expect("drained member read");
+        assert_eq!(drained.buffer, vec![0xa5; 512]);
+        assert_eq!(array.mapping.write_at(0, &[0x44; 512]), Err(BlockError::Erofs));
+        let mut direct = BlockRequest::new_write(0, 1, vec![0x44; 512]);
+        assert_eq!(array.dev.submit_sync(&mut direct), Err(BlockError::Erofs));
+        assert_eq!(crate::stop_array_read_only(dev_t), Err(BlockError::Enxio), "repeated read-only transition is ENXIO");
+        assert_eq!(crate::restart_array_read_write(dev_t), Ok(()));
+        assert_eq!(array.mapping.write_at(0, &[0x44; 512]), Ok(512));
+        assert!(block::registry::close_by_dev(dev_t));
         let name = array.name.clone();
         assert!(block::registry::unregister(&name));
         let plain: Arc<dyn BlockDevice> = MemDisk::<TaskList>::new(512, 8);

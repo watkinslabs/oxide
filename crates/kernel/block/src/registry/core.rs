@@ -183,7 +183,7 @@ pub fn register_with_driver_at(driver: BlockDriver, name: &str, node_name: &str,
                 name: name.to_string(), node_name: LifecycleMutex::new(node_name.to_string()), index, driver, number,
                 serial: serial.filter(|s| !s.is_empty()).map(ToString::to_string), dev, mapping, stats,
                 partitions: LifecycleMutex::new(Vec::new()),
-        life: LifecycleMutex::new(DiskLifecycle { holders: 0, openers: 0, lifecycle_held: false, reset_frozen: false, detached: false }),
+        life: LifecycleMutex::new(DiskLifecycle { holders: 0, openers: 0, closing: false, lifecycle_held: false, reset_frozen: false, detached: false }),
                 io,
             });
             t.push(disk.clone());
@@ -350,32 +350,7 @@ pub fn release(name: &str) -> bool {
     true
 }
 
-/// Open one registered block device by its packed `dev_t`. The per-disk
-/// lifecycle mutex serializes this increment against `unregister`, while the
-/// table lock is held only long enough to acquire the disk's stable `Arc`.
-/// # C: O(N_disks)
-pub fn open_by_dev(dev_t: u32) -> bool {
-    let Some(disk) = disk_for_dev(dev_t) else { return false; };
-    // SAFETY: VFS open is process context; a contended disk lifecycle must
-    // sleep, never spin with the device registry or interrupts held.
-    let mut life = unsafe { disk.life.lock() };
-    if life.lifecycle_held || life.detached { return false; }
-    let Some(next) = life.openers.checked_add(1) else { return false; };
-    life.openers = next;
-    true
-}
-
-/// Release the opener acquired by [`open_by_dev`]. # C: O(N_disks)
-pub fn close_by_dev(dev_t: u32) -> bool {
-    let Some(disk) = disk_for_dev(dev_t) else { return false; };
-    // SAFETY: VFS close is process context; it may wait for a concurrent open.
-    let mut life = unsafe { disk.life.lock() };
-    if life.openers == 0 { return false; }
-    life.openers -= 1;
-    true
-}
-
-fn disk_for_dev(dev_t: u32) -> Option<Arc<Disk>> {
+pub(super) fn disk_for_dev(dev_t: u32) -> Option<Arc<Disk>> {
     if let Some(disk) = by_dev(dev_t) { return Some(disk); }
     let (major, minor) = decode_dev(dev_t);
     snapshot().into_iter().find(|disk| disk.partitions().into_iter()
@@ -388,7 +363,7 @@ pub(crate) fn try_partition_rescan(name: &str) -> Option<PartitionRescan> {
     let disk = by_name(name)?;
     // SAFETY: partition rescans serialize with open and removal lifecycle work.
     let mut life = unsafe { disk.life.lock() };
-    if life.lifecycle_held || life.reset_frozen || life.detached || life.holders != 0 || life.openers != 0 { return None; }
+    if life.lifecycle_held || life.reset_frozen || life.detached || life.closing || life.holders != 0 || life.openers != 0 { return None; }
     life.lifecycle_held = true;
     drop(life);
     Some(PartitionRescan { disk, active: true })

@@ -10,6 +10,7 @@ path = "src/lib.rs"
 [dependencies]
 block = { path = "../block" }
 sync = { path = "../../shared/sync" }
+sched = { path = "../sched" }
 
 [features]
 default = []
