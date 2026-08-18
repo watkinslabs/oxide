@@ -38,16 +38,19 @@ impl ScannedLun {
 /// # C: O(one inquiry and one or two capacity commands)
 pub fn scan_lun(transport: &dyn Transport, lun: Lun) -> KResult<Option<ScannedLun>> {
     let mut inquiry = [0u8; INQUIRY_BYTES];
-    transport.execute(lun, &Command::inquiry(), &mut inquiry, DataDirection::FromDevice)?;
+    let inquiry_done = transport.execute(lun, &Command::inquiry(), &mut inquiry, DataDirection::FromDevice)?;
+    if !inquiry_done.is_good() { return Err(BlockError::Eio); }
     let peripheral = inquiry[0] & NO_LUN;
     if peripheral == NO_LUN { return Ok(None); }
 
     let mut capacity_10 = [0u8; CAPACITY_10_BYTES];
-    transport.execute(lun, &Command::capacity_10(), &mut capacity_10, DataDirection::FromDevice)?;
+    let capacity_10_done = transport.execute(lun, &Command::capacity_10(), &mut capacity_10, DataDirection::FromDevice)?;
+    if !capacity_10_done.is_good() { return Err(BlockError::Eio); }
     let last_10 = u32::from_be_bytes(capacity_10[..4].try_into().map_err(|_| BlockError::Eio)?);
     let (last, block_size) = if last_10 == u32::MAX {
         let mut capacity_16 = [0u8; CAPACITY_16_BYTES];
-        transport.execute(lun, &Command::capacity_16(), &mut capacity_16, DataDirection::FromDevice)?;
+        let capacity_16_done = transport.execute(lun, &Command::capacity_16(), &mut capacity_16, DataDirection::FromDevice)?;
+        if !capacity_16_done.is_good() { return Err(BlockError::Eio); }
         (u64::from_be_bytes(capacity_16[..8].try_into().map_err(|_| BlockError::Eio)?),
          u32::from_be_bytes(capacity_16[8..12].try_into().map_err(|_| BlockError::Eio)?))
     } else {

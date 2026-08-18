@@ -5,7 +5,8 @@ extern crate alloc;
 use alloc::sync::Arc;
 use block::{BlockDevice, BlockError, BlockOp, BlockRequest, KResult, QueueLimits};
 
-use crate::{Command, DataDirection, Lun, Transport, READ_10, READ_16, SYNCHRONIZE_CACHE_10, WRITE_10, WRITE_16};
+use crate::{Command, CommandCompletion, DataDirection, Lun, Transport, READ_10, READ_16, SYNCHRONIZE_CACHE_10,
+    WRITE_10, WRITE_16};
 
 /// The `sd`-style block device above one addressed SCSI transport. # C: O(1)
 pub struct Disk { transport: Arc<dyn Transport>, lun: Lun, block_size: u32, capacity: u64 }
@@ -44,8 +45,16 @@ impl Disk {
         if request.buffer.len() != bytes { return Err(BlockError::Einval); }
         if request.len_blocks == 0 { return Ok(()); }
         let command = self.cdb(write, request.start_block, request.len_blocks)?;
-        self.transport.execute(self.lun, &command, &mut request.buffer,
-            if write { DataDirection::ToDevice } else { DataDirection::FromDevice })
+        let completion = self.transport.execute(self.lun, &command, &mut request.buffer,
+            if write { DataDirection::ToDevice } else { DataDirection::FromDevice })?;
+        completion.is_good().then_some(()).ok_or(BlockError::Eio)
+    }
+
+    pub(crate) fn sg_io_max_transfer_bytes(&self) -> Option<usize> { self.transport.sg_io_max_transfer_bytes() }
+
+    pub(crate) fn execute_sg_io(&self, command: &Command, data: &mut [u8], direction: DataDirection,
+                                 timeout_ms: u32) -> KResult<CommandCompletion> {
+        self.transport.execute_with_timeout(self.lun, command, data, direction, timeout_ms)
     }
 }
 
@@ -62,8 +71,9 @@ impl BlockDevice for Disk {
         }
     }
     fn flush(&self) -> KResult<()> {
-        self.transport.execute(self.lun, &Command::new(&[SYNCHRONIZE_CACHE_10, 0, 0, 0, 0, 0, 0, 0, 0, 0])?,
-            &mut [], DataDirection::None)
+        let completion = self.transport.execute(self.lun,
+            &Command::new(&[SYNCHRONIZE_CACHE_10, 0, 0, 0, 0, 0, 0, 0, 0, 0])?, &mut [], DataDirection::None)?;
+        completion.is_good().then_some(()).ok_or(BlockError::Eio)
     }
 }
 
@@ -80,8 +90,17 @@ pub fn publish_lun(transport: Arc<dyn Transport>, lun: Lun, block_size: u32, cap
     let disk = Disk::new(transport, lun, block_size, capacity).ok()?;
     let name = block::reserve_scsi_disk_name()?;
     let index = block::registry::register_with_driver(
-        block::registry::BlockDriver::fixed("sd", block::uapi::SCSI_DISK_MAJOR), name.as_str(), serial, disk);
-    (index != 0).then_some(name)
+        block::registry::BlockDriver::fixed("sd", block::uapi::SCSI_DISK_MAJOR), name.as_str(), serial, disk.clone());
+    if index == 0 { return None; }
+    let Some(dev_t) = block::registry::dev_t_of(name.as_str(), index) else {
+        let _ = block::registry::unregister(name.as_str());
+        return None;
+    };
+    if !crate::sg::register_target(dev_t, disk) {
+        let _ = block::registry::unregister(name.as_str());
+        return None;
+    }
+    Some(name)
 }
 
 /// Publish an existing physical endpoint through the SCSI mid-layer. # C: O(registry publication)

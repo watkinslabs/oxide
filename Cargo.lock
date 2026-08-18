@@ -2689,6 +2689,7 @@ dependencies = [
  "procfs",
  "pstore",
  "sched",
+ "scsi",
  "security",
  "selinux",
  "selinux-runtime",

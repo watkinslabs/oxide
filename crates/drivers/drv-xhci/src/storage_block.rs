@@ -5,12 +5,14 @@ extern crate alloc;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use block::{BlockError, KResult, QueueLimits};
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::probe::{control_complete, storage_command, UsbDevice};
 
 struct UsbStorageTransport {
     device: Arc<UsbDevice>,
     max_lun: scsi::Lun,
+    next_tag: AtomicU32,
 }
 
 impl UsbStorageTransport {
@@ -21,32 +23,60 @@ impl UsbStorageTransport {
             if !control_complete(irq, done, state.slot) { return Some(scsi::Lun::ZERO); }
             Some(scsi::Lun::new(u64::from(state.device.storage_max_lun().unwrap_or(0))))
         }).flatten()?;
-        Some(Arc::new(Self { device, max_lun }))
+        Some(Arc::new(Self { device, max_lun, next_tag: AtomicU32::new(1) }))
+    }
+
+    fn next_tag(&self) -> u32 { self.next_tag.fetch_add(1, Ordering::Relaxed) }
+
+    fn request_sense(&self, lun: scsi::Lun, timeout_ms: u32) -> KResult<Vec<u8>> {
+        let result = storage_command(&self.device, self.next_tag(), lun, &[0x03, 0, 0, 0, scsi::SENSE_BYTES as u8, 0],
+            scsi::SENSE_BYTES as u32, true, None, timeout_ms).ok_or(BlockError::Eio)?;
+        if result.status != crate::storage::CswStatus::Passed || result.residue != 0 { return Err(BlockError::Eio); }
+        Ok(result.data)
+    }
+
+    fn execute_with_timeout_inner(&self, lun: scsi::Lun, command: &scsi::Command, data: &mut [u8],
+                                  direction: scsi::DataDirection, timeout_ms: u32) -> KResult<scsi::CommandCompletion> {
+        if lun > self.max_lun { return Err(BlockError::Enxio); }
+        if data.len() > crate::device::STORAGE_MAX_TRANSFER_BYTES { return Err(BlockError::Einval); }
+        let device_to_host = matches!(direction, scsi::DataDirection::FromDevice);
+        let out = match direction {
+            scsi::DataDirection::FromDevice => None,
+            scsi::DataDirection::ToDevice | scsi::DataDirection::None => Some(&data[..]),
+        };
+        let result = storage_command(&self.device, self.next_tag(), lun, command.bytes(), data.len() as u32,
+            device_to_host, out, timeout_ms).ok_or(BlockError::Eio)?;
+        let transferred = data.len().checked_sub(result.residue as usize).ok_or(BlockError::Eio)?;
+        if device_to_host {
+            if result.data.len() != data.len() { return Err(BlockError::Eio); }
+            data[..transferred].copy_from_slice(&result.data[..transferred]);
+        }
+        match result.status {
+            crate::storage::CswStatus::Passed => Ok(scsi::CommandCompletion::good_with_resid(result.residue)),
+            crate::storage::CswStatus::Failed => {
+                let sense = if command.opcode() == 0x03 { Vec::new() }
+                    else { self.request_sense(lun, timeout_ms).unwrap_or_else(|_| Vec::new()) };
+                Ok(scsi::CommandCompletion::check_condition(result.residue, &sense))
+            }
+            crate::storage::CswStatus::PhaseError => Err(BlockError::Eio),
+        }
     }
 }
 
 impl scsi::Transport for UsbStorageTransport {
     fn max_lun(&self) -> scsi::Lun { self.max_lun }
 
-    fn execute(&self, lun: scsi::Lun, command: &scsi::Command, data: &mut [u8], direction: scsi::DataDirection) -> KResult<()> {
-        if lun > self.max_lun { return Err(BlockError::Enxio); }
-        if data.len() > crate::device::STORAGE_MAX_TRANSFER_BYTES { return Err(BlockError::Einval); }
-        let cdb = command.bytes();
-        match direction {
-            scsi::DataDirection::FromDevice => {
-                let response = storage_command(&self.device, 3, lun, cdb, data.len() as u32, true, None).ok_or(BlockError::Eio)?;
-                if response.len() != data.len() { return Err(BlockError::Eio); }
-                data.copy_from_slice(&response);
-                Ok(())
-            }
-            scsi::DataDirection::ToDevice => {
-                storage_command(&self.device, 3, lun, cdb, data.len() as u32, false, Some(data)).map(|_| ()).ok_or(BlockError::Eio)
-            }
-            scsi::DataDirection::None => {
-                storage_command(&self.device, 4, lun, cdb, 0, false, Some(&[])).map(|_| ()).ok_or(BlockError::Eio)
-            }
-        }
+    fn execute(&self, lun: scsi::Lun, command: &scsi::Command, data: &mut [u8],
+               direction: scsi::DataDirection) -> KResult<scsi::CommandCompletion> {
+        self.execute_with_timeout_inner(lun, command, data, direction, 1_000)
     }
+
+    fn execute_with_timeout(&self, lun: scsi::Lun, command: &scsi::Command, data: &mut [u8],
+                            direction: scsi::DataDirection, timeout_ms: u32) -> KResult<scsi::CommandCompletion> {
+        self.execute_with_timeout_inner(lun, command, data, direction, timeout_ms)
+    }
+
+    fn sg_io_max_transfer_bytes(&self) -> Option<usize> { Some(crate::device::STORAGE_MAX_TRANSFER_BYTES) }
 
     fn queue_limits(&self, block_size: u32) -> KResult<QueueLimits> {
         if block_size as usize > crate::device::STORAGE_MAX_TRANSFER_BYTES { return Err(BlockError::Einval); }

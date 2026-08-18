@@ -6,7 +6,7 @@ use alloc::sync::Arc;
 use block::{BlockDevice, BlockError, BlockRequest, KResult};
 use sync::TaskList;
 
-use crate::{BlockTransport, Command, DataDirection, Disk, Lun, Transport, READ_CAPACITY_10, READ_CAPACITY_16,
+use crate::{BlockTransport, Command, CommandCompletion, DataDirection, Disk, Lun, Transport, READ_CAPACITY_10, READ_CAPACITY_16,
     SERVICE_ACTION_IN_16, scan_lun};
 
 struct MultiLunFixture;
@@ -14,16 +14,16 @@ struct MultiLunFixture;
 impl Transport for MultiLunFixture {
     fn max_lun(&self) -> Lun { Lun::new(1) }
 
-    fn execute(&self, lun: Lun, command: &Command, data: &mut [u8], direction: DataDirection) -> KResult<()> {
+    fn execute(&self, lun: Lun, command: &Command, data: &mut [u8], direction: DataDirection) -> KResult<CommandCompletion> {
         if direction != DataDirection::FromDevice { return Err(BlockError::Einval); }
         match (lun.value(), command.opcode()) {
-            (0, 0x12) => { data.fill(0); Ok(()) }
-            (1, 0x12) => { data.fill(0); data[0] = 0x1f; Ok(()) }
+            (0, 0x12) => { data.fill(0); Ok(CommandCompletion::good()) }
+            (1, 0x12) => { data.fill(0); data[0] = 0x1f; Ok(CommandCompletion::good()) }
             (0, READ_CAPACITY_10) => {
-                data.fill(0); data[..4].copy_from_slice(&u32::MAX.to_be_bytes()); data[4..8].copy_from_slice(&512u32.to_be_bytes()); Ok(())
+                data.fill(0); data[..4].copy_from_slice(&u32::MAX.to_be_bytes()); data[4..8].copy_from_slice(&512u32.to_be_bytes()); Ok(CommandCompletion::good())
             }
             (0, SERVICE_ACTION_IN_16) if command.bytes().get(1) == Some(&READ_CAPACITY_16) => {
-                data.fill(0); data[..8].copy_from_slice(&9u64.to_be_bytes()); data[8..12].copy_from_slice(&4096u32.to_be_bytes()); Ok(())
+                data.fill(0); data[..8].copy_from_slice(&9u64.to_be_bytes()); data[8..12].copy_from_slice(&4096u32.to_be_bytes()); Ok(CommandCompletion::good())
             }
             _ => Err(BlockError::Eio),
         }
