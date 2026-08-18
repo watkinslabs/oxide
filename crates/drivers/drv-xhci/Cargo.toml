@@ -20,6 +20,7 @@ softirq = { path = "../../kernel/softirq" }
 input = { path = "../../kernel/input" }
 iommu = { path = "../../kernel/iommu" }
 block = { path = "../../kernel/block" }
+scsi = { path = "../../kernel/scsi" }
 usb-core = { path = "../usb-core" }
 klog = { path = "../../shared/klog", optional = true }
 

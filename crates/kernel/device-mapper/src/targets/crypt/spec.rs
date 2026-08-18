@@ -98,7 +98,7 @@ pub fn parse_cipher(s: &str) -> DmResult<CipherSpec> {
         // encrypted under, so two volumes differing only in it are different
         // volumes.
         "essiv" => IvMode::Essiv(iv_opts.ok_or(Errno::Einval)?.to_string()),
-        _ => return Err(Errno::Enotsup),
+        _ => return Err(Errno::Enotsupp),
     };
 
     Ok(CipherSpec { cipher: cipher.to_string(), key_count, chain, iv, text: s.to_string() })

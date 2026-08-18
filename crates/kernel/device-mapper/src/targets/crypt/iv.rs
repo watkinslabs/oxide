@@ -8,7 +8,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use aes::block::{AesKey, BLOCK_LEN};
-use crypt::{Digest, Sha256, Sha512};
+use crypt::{Sha256, Sha512};
 
 use super::spec::IvMode;
 

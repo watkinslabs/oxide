@@ -166,8 +166,7 @@ impl MappedDevice {
     pub fn suspend(&self, lockfs: bool, noflush: bool) -> DmResult<()> {
         let (flags, map) = { let s = self.state.lock(); (s.flags, s.active.clone()) };
         let steps = crate::suspend::plan_suspend(flags, lockfs, noflush, map.is_some())?;
-        self.run(&steps, map.as_deref(), None);
-        Ok(())
+        self.run(&steps, map.as_deref(), None)
     }
 
     /// Resume the device, swapping in a loaded table if one is waiting.
@@ -184,11 +183,10 @@ impl MappedDevice {
         // is here so a later change to it fails loudly instead of silently
         // corrupting an in-flight write.
         if !crate::suspend::swap_is_quiesced(&steps) { return Err(Errno::Einval); }
-        self.run(&steps, map.as_deref(), new.as_deref());
-        Ok(())
+        self.run(&steps, map.as_deref(), new.as_deref())
     }
 
-    fn run(&self, steps: &[Step], live: Option<&Table>, incoming: Option<&Table>) {
+    fn run(&self, steps: &[Step], live: Option<&Table>, incoming: Option<&Table>) -> DmResult<()> {
         for step in steps {
             match step {
                 Step::SetNoflushSuspending => { self.state.lock().flags |= DmFlags::NOFLUSH_SUSPENDING; }
@@ -207,7 +205,7 @@ impl MappedDevice {
                     if let Some(t) = live { t.postsuspend(); }
                     self.state.lock().flags -= DmFlags::POST_SUSPENDING;
                 }
-                Step::Preresume => { let t = incoming.or(live); if let Some(t) = t { let _ = t.preresume(); } }
+                Step::Preresume => { let t = incoming.or(live); if let Some(t) = t { t.preresume()?; } }
                 Step::SwapTable => {
                     let mut s = self.state.lock();
                     if let Some(t) = s.inactive.take() { s.active = Some(t); }
@@ -220,6 +218,7 @@ impl MappedDevice {
                 Step::PresuspendUndo => { if let Some(t) = live { t.presuspend_undo(); } }
             }
         }
+        Ok(())
     }
 
     /// Re-admit I/O and dispose of whatever parked while it was blocked.

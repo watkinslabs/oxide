@@ -65,7 +65,7 @@ fn ctr(c: &mut Ctr<'_>) -> DmResult<Arc<dyn DmTarget>> {
         .map_err(|e| { c.error = Some("Invalid feature arguments"); e })?;
     let spec = parse_cipher(c.argv[0])
         .map_err(|e| { c.error = Some("Unknown cipher specification"); e })?;
-    if spec.cipher != "aes" { return Err(c.fail("Unsupported bulk cipher", Errno::Enotsup)); }
+    if spec.cipher != "aes" { return Err(c.fail("Unsupported bulk cipher", Errno::Enotsupp)); }
     let key_source = parse_key(c.argv[1])
         .map_err(|e| { c.error = Some("Error decoding and setting key"); e })?;
     let iv_offset = parse_u64(c.argv[2]).ok_or_else(|| c.fail("Invalid iv_offset sector", Errno::Einval))?;

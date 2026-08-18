@@ -7,6 +7,7 @@ use crate::ioctl_user as user;
 
 use super::autofs::handle_autofs_dev_ioctl;
 use super::blk::handle_blk_ioctl;
+use super::device_mapper::handle_mapper_control_ioctl;
 use super::loop_dev::{handle_loop_control_ioctl, handle_loop_ioctl};
 use super::common::{handle_common_ioctl, handle_nonchar_queue_ioctl, handle_socket_owner_ioctl};
 use super::f2fs::handle_f2fs_ioctl;
@@ -122,6 +123,13 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     // backend state their inode owns, so a foreign inode never reaches it.
     if let Some(rv) = v4l2::node::handle_ioctl(&file, req, arg) { return rv; }
     if let Some(rv) = handle_autofs_dev_ioctl(file.inode(), req, arg) {
+        return rv;
+    }
+    // Device mapper owns every command arriving on `/dev/mapper/control`.
+    // This is before generic character dispatch so the control ABI is the
+    // same for its devtmpfs node and an equivalent mknod-created node.
+    if let Some(rv) = handle_mapper_control_ioctl(file.inode(), req, arg,
+        cur.has_cap(sched::cap::SYS_ADMIN)) {
         return rv;
     }
     // `/dev/loop-control` owns every command sent to it; a `/dev/loopN` owns
