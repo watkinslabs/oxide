@@ -1,4 +1,4 @@
-// PL011 UART driver per `36§5` cmdline `oxide.console=ttyAMA0,115200`
+// PL011 UART driver per `36§5` cmdline `console=ttyAMA0,115200`
 // and `04§4.2` UART sink. On QEMU `virt`, PL011 lives at MMIO base
 // `0x0900_0000`. Init sequence: disable → wait BUSY → flush LCR_H →
 // program IBRD/FBRD → set 8N1 + FIFO → re-enable. ARM ARM "PrimeCell

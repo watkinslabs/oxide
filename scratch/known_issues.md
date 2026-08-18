@@ -61,7 +61,13 @@ of this file, a pure process omission). Two more were flipped and then put
 back: the machinery existed but nothing at mount reached it, which is the
 failure mode this reconcile was supposed to catch, not commit.
 
+| Class | blocker | critical | high | med | low | Total |
 |---|---:|---:|---:|---:|---:|---:|
+| COVERAGE | 0 | 0 | 11 | 70 | 70 | 151 |
+| DEFECT | 2 | 5 | 27 | 69 | 79 | 182 |
+| INFRA | 0 | 0 | 11 | 41 | 43 | 95 |
+| MISSING | 1 | 0 | 49 | 147 | 128 | 325 |
+| **Total** | **3** | **5** | **98** | **327** | **320** | **753** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -940,7 +946,6 @@ here now.
 | OPEN | MISSING | med | `console=<dev>,<baud><parity><bits><flow>` is parsed in full and consumed only by the BOOT console. The runtime serial console programs 115200-8N1 unconditionally, so `console=ttyS0,9600n8` changes the early UART and not the one userspace talks to. | `cmdline::console::parse_options` + `serial_options_in` are consumed by `bootparam::install`; `drv_serial` has no baud input. `cmdline::tests::console::options_decode_baud_parity_bits_and_flow` pins the parse. | |
 | OPEN | MISSING | low | `console=ttynull` names a console this kernel has no device for, so it falls through to "no parseable entry" and both classes stay registered — the opposite of what the parameter asks. Needs a null tty device before the name can mean anything. | `cmdline::console::classify` returns `None` for `ttynull`, pinned by `a_device_name_this_kernel_drives_no_console_for_is_not_classified`; `console_classes_in` then reports `(true, true)`. | |
 | OPEN | COVERAGE | low | The `debug-panic` Cargo feature is declared, default-on, and catalogued as "full caller-saved reg dump on panic", but adds no register dump — it only ever gated the panic TEXT, and the text is now unconditional (a panic must always say so). The feature is currently inert. | `docs/41` §3 row `debug-panic`; `docs/38§10`. The x86 handler's `#[cfg(feature = "debug-panic")]` block was the whole of its effect and is gone; `kernel-bin-aarch64` never declared the feature at all. | |
-| OPEN | INFRA | med | Three FROZEN specs describe a boot-parameter surface that no longer matches the code, and a frozen-spec revision needs its own `R<NN>` lane rather than riding a `B` branch. `36§5` lists an `oxide.*`-namespaced scheme (`oxide.log=`, `oxide.smp=`, `oxide.pti=`, `oxide.kaslr=`, `oxide.console=`, `oxide.root=`) of which only `oxide.bootargs=grub` is real, and marks `oxide.kaslr` "(v2)" against the no-deferral rule; `04§4` does not mention the printk knobs; `41` carries the stale `debug-panic` row above. | `docs/36-bootloader-handoff.md` §5 vs `crates/kernel/cmdline`; all three docs carry `FROZEN 2026-05-02`. Operational surface documented meanwhile in `scratch/boot-debugging.md`. | NEXT |
 | OPEN | INFRA | low | `keep_bootcon` doubles every line on aarch64: the boot console and the real serial console drive the same PL011, so both fan out to one wire. Matches what keeping a boot console means, but the reference deduplicates when the real console takes over the SAME device, and this does not. | `target/boot-logs/arm.log` from `make smoke-debug-arm`: every line after `initcall init_serial_console returned` appears twice; the x86 log does not double. | |
 
 ### B1989-membarrier-sync-core-and-rseq
