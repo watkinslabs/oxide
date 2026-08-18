@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2271-panic-on-warn-coverage
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED bb0045be9 | MISSING | med | **`panic_on_warn` had no WARN reporting path.** The implementation now distinguishes a WARN condition from an ordinary warning-level log: `klog::warn::{warn_on,warn_on_once}` reports and counts the invariant, and only then applies `panic_on_warn`; `kwarn!` remains an ordinary log-level macro. Both architecture boot entries call `bootparam::init`, which installs the parsed policy before normal device initialization. | Implementation: `bb0045be9` (`klog::warn`, `bootparam::policy`, and both arch boot entries), with live WARN sites in boot-console, filesystem, and simplefb paths. B2271 added the composed policy→WARN regression; `cargo test -p bootparam` 15/15 and `cargo test -p klog` 72/72 pass. **Negative control:** replacing the test line with a policy that omits `panic_on_warn` makes the composed test fail because the WARN event returns; restored green. Reference Linux 7.2-rc4: `kernel/panic.c::check_panic_on_warn` runs after WARN reporting and panics only when the parameter is set. | B2271-dt-opp-constraints |
+
 ### B2271-pmm-migratetype-partition
 
 | Status | Class | Sev | Issue | Evidence | Owner |
