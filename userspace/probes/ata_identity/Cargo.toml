@@ -1,0 +1,13 @@
+[package]
+name = "ata_identity_probe"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "ata_identity_probe"
+path = "src/main.rs"
+
+[dependencies]
+libc = { workspace = true }
+support = { workspace = true }

@@ -3,6 +3,14 @@
 version = 4
 
 [[package]]
+name = "ata_identity_probe"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "support",
+]
+
+[[package]]
 name = "drm_probe"
 version = "0.1.0"
 dependencies = [

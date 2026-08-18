@@ -96,7 +96,18 @@ pub(super) fn publish_port(device_key: pci::Bdf, command_orig: u16,
         dev.remove();
         return None;
     };
-    DEVICES.lock_bh::<AhciBh>().push(AhciRecord { device_key, command_orig, port, name, dev });
+    let Some(dev_t) = block::registry::dev_t_of(&name_text, idx) else {
+        let _ = block::registry::unregister(&name_text);
+        dev.remove();
+        return None;
+    };
+    let ata_device: Arc<dyn ata::Device> = dev.clone();
+    if !ata::register_target(dev_t, ata_device) {
+        let _ = block::registry::unregister(&name_text);
+        dev.remove();
+        return None;
+    }
+    DEVICES.lock_bh::<AhciBh>().push(AhciRecord { device_key, command_orig, port, name, dev_t, dev });
     Some(idx)
 }
 
@@ -150,15 +161,18 @@ fn media_work(_arg: usize) {
 
 fn remove_departed_disk(name: &str) {
     let Some(detach) = block::registry::begin_forced_detach(name) else { return; };
-    detach.wait_for_drain();
     let record = {
         let mut devices = DEVICES.lock_bh::<AhciBh>();
         devices.iter().position(|record| record.name.as_str() == name).map(|idx| devices.remove(idx))
     };
     if let Some(record) = record {
+        let _ = ata::unregister_target(record.dev_t);
+        detach.wait_for_drain();
         let (host, port) = record.dev.watch_identity();
         record.dev.remove();
         let _ = install_watcher_after_detach(record.device_key, record.command_orig, host, port);
+    } else {
+        detach.wait_for_drain();
     }
     unregister_completion_if_idle();
 }

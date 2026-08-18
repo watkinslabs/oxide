@@ -60,6 +60,7 @@ pub(crate) mod imp {
         pub(crate) command_orig: u16,
         pub(crate) port:       u32,
         pub(crate) name:       block::ScsiDiskName,
+        pub(crate) dev_t:      u32,
         pub(crate) dev:        Arc<AhciBlk>,
     }
 
@@ -135,7 +136,10 @@ pub(crate) type AhciBh = sync::NoopBh;
     pub fn remove(device_key: pci::Bdf) -> bool {
         let (records, watches) = hotplug::remove_controller(device_key);
         if records.is_empty() && watches.is_empty() { return false; }
-        for rec in &records { let _ = block::registry::unregister(rec.name.as_str()); }
+        for rec in &records {
+            let _ = ata::unregister_target(rec.dev_t);
+            let _ = block::registry::unregister(rec.name.as_str());
+        }
         for rec in records.into_iter().rev() { rec.dev.remove(); }
         for watch in watches.into_iter().rev() { watch.release(); }
         unregister_completion_if_idle();
@@ -146,15 +150,10 @@ pub(crate) type AhciBh = sync::NoopBh;
     /// unregistering userspace-visible block publication.
     /// # C: O(N_ahci + port shutdown)
     pub fn shutdown(device_key: pci::Bdf) -> bool {
-        let devices: Vec<Arc<AhciBlk>> = DEVICES
-            .lock_bh::<AhciBh>()
-            .iter()
-            .filter(|rec| rec.device_key == device_key)
-            .map(|rec| rec.dev.clone())
-            .collect();
-        let (_records, watches) = hotplug::remove_controller(device_key);
-        if devices.is_empty() && watches.is_empty() { return false; }
-        for dev in devices.into_iter().rev() { dev.shutdown(); }
+        let (records, watches) = hotplug::remove_controller(device_key);
+        if records.is_empty() && watches.is_empty() { return false; }
+        for rec in &records { let _ = ata::unregister_target(rec.dev_t); }
+        for rec in records.into_iter().rev() { rec.dev.shutdown(); }
         for watch in watches.into_iter().rev() { watch.release(); }
         unregister_completion_if_idle();
         true
