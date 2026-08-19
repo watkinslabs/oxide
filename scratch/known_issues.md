@@ -843,6 +843,12 @@ here now.
 | OPEN | DEFECT | med | Load average counts only runnable tasks; the reference also counts uninterruptible-sleep tasks, so loadavg reads low under I/O-wait-heavy load. | `crates/kernel/sched/src/loadavg.rs:5-6` | unowned |
 | OPEN | MISSING | med | `RLIMIT_SIGPENDING` charging is only the decision half; queues are bounded by a fixed `RT_QUEUE_CAP` in the interim. The comment frames this as deferred, which Discipline rule 3 forbids. | `crates/kernel/sched/src/rlimit/pending.rs:9-16` | unowned |
 
+### B2281-boot-compat-failures
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| OPEN | DEFECT | high | `/dev/loopN` reserves 16 minors per device but its ioctl bridge treats the raw minor as the loop number. Thus the published `/dev/loop1` at 7:16 resolves as nonexistent `loop16`, falls through to the generic ioctl owner, and makes `udisksd` log `LOOP_GET_STATUS64: ENOTTY` for loop1 through loop7. | `boot.txt` at 107.340--107.629: repeated `udisksd` loop1--loop7 `Inappropriate ioctl for device`; `drv-loop::LOOP_DRIVER` used `PARTITION_MINOR_COUNT` while `syscalls/016_ioctl/loop_dev.rs::device_of` passes `devt.minor()` directly to `registry::device`. | B2281-boot-compat-failures |
+
 ### B1979-gnome-segfault-regression-triage
 
 | Status | Class | Sev | Issue | Evidence | Owner |

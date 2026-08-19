@@ -10,7 +10,8 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use block::registry::{BlockDriver, MajorRequest};
+use block::registry::BlockDriver;
+#[cfg(test)] use block::registry::MajorRequest;
 use syscall::errno::Errno;
 use sync::{Spinlock, TaskList as LoopLockClass};
 
@@ -22,10 +23,7 @@ use crate::uapi::LOOP_MAJOR;
 /// the reference assigns, not a dynamic one: `losetup` and every udev rule
 /// address these devices by name, and tools that parse `/proc/devices` expect
 /// the fixed number.
-pub const LOOP_DRIVER: BlockDriver = BlockDriver {
-    name: "loop", major: MajorRequest::Fixed(LOOP_MAJOR),
-    minor_stride: block::registry::PARTITION_MINOR_COUNT, partitions: true,
-};
+pub const LOOP_DRIVER: BlockDriver = BlockDriver::unpartitioned_fixed("loop", LOOP_MAJOR);
 
 /// Devices created before anything asks for one.
 ///
@@ -141,6 +139,15 @@ mod tests {
     fn the_driver_owns_the_reference_major() {
         assert_eq!(LOOP_DRIVER.major, MajorRequest::Fixed(7));
         assert_eq!(LOOP_DRIVER.name, "loop");
+    }
+
+    /// The default loop layout names each device by its raw minor: `/dev/loop1`
+    /// is 7:1, not the second 16-minor disk window.  The ioctl bridge receives
+    /// that raw minor and resolves it as the loop-device number.
+    #[test]
+    fn default_loop_layout_uses_one_minor_per_device() {
+        assert_eq!(LOOP_DRIVER.minor_stride, 1);
+        assert!(!LOOP_DRIVER.partitions);
     }
 
     /// A distribution opens `/dev/loop0` before it ever speaks to the control
