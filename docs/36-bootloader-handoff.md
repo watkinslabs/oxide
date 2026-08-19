@@ -135,7 +135,7 @@ Single-threaded boot until `smp_init`.
 - GRUB multiboot2 boot in QEMU q35 under SeaBIOS and OVMF → "hello via UART" + clean QEMU exit (ISA-debug-exit).
 - GRUB EFI-stub boot in QEMU `virt` under OVMF: same sequence.
 - Both arches: `BootInfo.rsdp_pa` non-zero, MADT decodes, memmap total ≈ QEMU `-m`.
-- Both arches: the firmware framebuffer round-trips base, pitch, geometry, and channel masks; simplefb registers with WC policy before PCI; an overlapping native scanout evicts its aperture and a non-overlapping native scanout removes the temporary owner before it takes ownership. Both preserve the live VT renderer and repaint it through the new scanout.
+- Both arches: the firmware framebuffer round-trips base, pitch, geometry, and channel masks; simplefb registers with WC policy before PCI; an overlapping native scanout evicts its aperture and a non-overlapping native scanout removes the temporary owner before it takes ownership. Native handoff preserves each live VT's cells, resizes its text grid from the native scanout geometry, then repaints through the new scanout.
 - x86_64: RGB framebuffer tag round-trips through multiboot2.
 - aarch64: OVMF publishes the RAM framebuffer through GOP before the EFI-stub captures it.
 - Cmdline parse: exact names do not consume prefixes, a later scalar wins, a malformed `loglevel=` is ignored, and both serial `console=` spellings select their matching sink.
