@@ -74,7 +74,9 @@ Per `06§12`. Pre-`smp_init`: trivially sequential. Post-`smp_init`: full memory
 
 ## 5 Cmdline tokens consumed at boot
 
-`oxide.smp=N`, `oxide.pti=on|off`, `oxide.kaslr=on|off`, `oxide.console=...`, `oxide.root=...`, `oxide.log=<per-target levels>`. Per `36§5`.
+`root=`, `console=`, `earlycon`, `earlyprintk=`, `keep_bootcon`, `loglevel=`,
+`quiet`, `debug`, `ignore_loglevel`, `printk.time=`, `printk.devkmsg=`,
+`initcall_debug`, `panic=`, `oops=panic`, and `panic_on_warn`. Per `36§5`.
 
 ## 6 Failure points + handling
 
@@ -96,4 +98,3 @@ Per `06§12`. Pre-`smp_init`: trivially sequential. Post-`smp_init`: full memory
 ## 8 Changelog
 
 (none)
-

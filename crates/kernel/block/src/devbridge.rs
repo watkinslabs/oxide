@@ -26,7 +26,7 @@ use vfs::types::{KResult, VfsError};
 
 use crate::blockdev::{BlockDevice, BlockRequest};
 use crate::types::{BlockError, KResult as BlockResult, BlockOp};
-use crate::registry::{by_dev, close_by_dev, open_by_dev, partition_by_dev, DevNum, Disk, Partition};
+use crate::registry::{by_dev, close_by_dev, partition_by_dev, try_open_by_dev, DevNum, Disk, OpenFailure, Partition};
 
 /// Block-layer error as the errno a file operation returns. Both enums carry
 /// the Linux numeric value, so this is a name-to-name mapping of one code.
@@ -39,6 +39,7 @@ fn block_err(e: BlockError) -> VfsError {
         BlockError::Ebusy      => VfsError::Ebusy,
         BlockError::Einval     => VfsError::Einval,
         BlockError::Enospc     => VfsError::Enospc,
+        BlockError::Erofs      => VfsError::Erofs,
         BlockError::Eopnotsupp => VfsError::Eopnotsupp,
         BlockError::Eoverflow  => VfsError::Eoverflow,
         BlockError::Etoomanyrefs => VfsError::Etoomanyrefs,
@@ -139,7 +140,9 @@ impl PartitionBlkOps {
 impl BlockDevOps for PartitionBlkOps {
     fn open(&self, devt: Devt) -> KResult<()> { partition_by_dev(devt.raw()).is_some().then_some(()).ok_or(VfsError::Enxio) }
     fn open_file(&self, devt: Devt, _file: &vfs::File) -> KResult<()> {
-        if open_by_dev(devt.raw()) { Ok(()) } else { Err(VfsError::Enxio) }
+        match try_open_by_dev(devt.raw()) {
+            Ok(()) => Ok(()), Err(OpenFailure::Closing) => Err(VfsError::Enodev), Err(OpenFailure::Missing) => Err(VfsError::Enxio),
+        }
     }
     fn release_file(&self, devt: Devt, _file: &vfs::File) {
         let _ = self.mapping.write_and_wait();
@@ -166,7 +169,9 @@ impl BlockDevOps for DiskBlkOps {
         if by_dev(devt.raw()).is_some() { Ok(()) } else { Err(VfsError::Enxio) }
     }
     fn open_file(&self, devt: Devt, _file: &vfs::File) -> KResult<()> {
-        if open_by_dev(devt.raw()) { Ok(()) } else { Err(VfsError::Enxio) }
+        match try_open_by_dev(devt.raw()) {
+            Ok(()) => Ok(()), Err(OpenFailure::Closing) => Err(VfsError::Enodev), Err(OpenFailure::Missing) => Err(VfsError::Enxio),
+        }
     }
     /// Final release of one description. When it is the LAST opener, the
     /// device's dirty pages are written back here (Linux `bdev_release` syncs

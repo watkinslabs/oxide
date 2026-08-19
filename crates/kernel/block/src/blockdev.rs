@@ -61,6 +61,10 @@ pub struct BlockRequest {
     /// was given and report success, which is indistinguishable downstream
     /// from a device that encrypted.
     pub crypt:        Option<crate::crypto::Ctx>,
+    /// This write comes from the block special file's own dirty-page drain,
+    /// not a new caller write. Lifecycle owners may admit it while sealing
+    /// new writes so pre-existing cache state reaches the medium.
+    pub writeback:    bool,
 }
 
 impl Default for BlockRequest {
@@ -70,7 +74,7 @@ impl Default for BlockRequest {
     /// # C: O(1)
     fn default() -> Self {
         Self { op: BlockOp::Read, start_block: 0, len_blocks: 0, buffer: Vec::new(), ioprio: sched::ioprio::DEFAULT,
-               flags: crate::flags::RequestFlags::NONE, polled: false, crypt: None,
+               flags: crate::flags::RequestFlags::NONE, polled: false, crypt: None, writeback: false,
                durability: crate::durability::Durability::NONE }
     }
 }
@@ -118,6 +122,12 @@ impl BlockRequest {
     /// # C: O(1)
     pub fn with_crypt(mut self, ctx: crate::crypto::Ctx) -> Self {
         self.crypt = Some(ctx);
+        self
+    }
+
+    /// Mark this as cache writeback after a caller write was admitted. # C: O(1)
+    pub fn as_writeback(mut self) -> Self {
+        self.writeback = true;
         self
     }
 

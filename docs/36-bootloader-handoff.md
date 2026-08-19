@@ -29,7 +29,7 @@ Multiboot2 info tags consumed:
 
 | Tag | Use |
 |---|---|
-| 1 (boot command line) | `/proc/cmdline`, `oxide.*` tokens (`§5`) |
+| 1 (boot command line) | `/proc/cmdline`, Linux-spelled tokens (`§5`) |
 | 6 (memory map) | `BootInfo.memmap`, carved around the loaded kernel image |
 | 15 (ACPI 2.0 RSDP) | `BootInfo.rsdp_pa` — preferred; carries the XSDT the MADT walk needs |
 | 14 (ACPI 1.0 RSDP) | fallback only; RSDT-only |
@@ -136,7 +136,7 @@ Single-threaded boot until `smp_init`.
 - GRUB EFI-stub boot in QEMU `virt` under OVMF: same sequence.
 - Both arches: `BootInfo.rsdp_pa` non-zero, MADT decodes, memmap total ≈ QEMU `-m`.
 - x86_64: RGB framebuffer tag round-trips base, pitch, geometry, channel masks; native scanout wins, otherwise simplefb registers with WC policy.
-- Cmdline parse: invalid `oxide.smp=abc` logs warn, ignores; valid keys take effect.
+- Cmdline parse: exact names do not consume prefixes, a later scalar wins, a malformed `loglevel=` is ignored, and both serial `console=` spellings select their matching sink.
 - Memory map sanity: PMM init reports total ≈ QEMU `-m`.
 
 ## 8 Failure modes

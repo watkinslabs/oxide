@@ -72,6 +72,7 @@ fn block_err(error: block::BlockError) -> i64 {
         block::BlockError::Ebusy => err(Errno::Ebusy),
         block::BlockError::Einval => err(Errno::Einval),
         block::BlockError::Enospc => err(Errno::Enospc),
+        block::BlockError::Erofs => err(Errno::Erofs),
         block::BlockError::Eopnotsupp => err(Errno::Eopnotsupp),
         block::BlockError::Eoverflow => err(Errno::Eoverflow),
         block::BlockError::Etoomanyrefs => err(Errno::Etoomanyrefs),

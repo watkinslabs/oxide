@@ -140,6 +140,7 @@ fn block_errno(e: block::types::BlockError) -> i64 {
         block::types::BlockError::Ebusy => errno(Errno::Ebusy),
         block::types::BlockError::Einval => errno(Errno::Einval),
         block::types::BlockError::Enospc => errno(Errno::Enospc),
+        block::types::BlockError::Erofs => errno(Errno::Erofs),
         block::types::BlockError::Eopnotsupp => errno(Errno::Eopnotsupp),
         block::types::BlockError::Eoverflow => errno(Errno::Eoverflow),
         block::types::BlockError::Etoomanyrefs => errno(Errno::Etoomanyrefs),

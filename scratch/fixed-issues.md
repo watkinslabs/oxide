@@ -1,5 +1,11 @@
 # Fixed issues
 
+### R96-boot-cmdline-spec
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED R96 | INFRA | med | **Frozen boot documents published private `oxide.*` cmdline spellings although the parser and both arch boot paths use Linux-spelled tokens.** `36` now has one Linux-shaped handoff and parser contract; `04` identifies the implemented global console threshold instead of inventing `oxide.log`; the boot-flow list and both UART comments name `console=`. `41` already correctly stated that `debug-panic` is gone, so no false revision was made there. | R96 source audit covered token, console, earlycon, printk, fault, hung-task, memory and sysrq owners; `bootparam::policy` applies the one global console policy. `cargo test -p cmdline --lib` 73/73 and `cargo test -p bootparam --lib` 15/15. `xtask doc-check` manifest pass; its only xref finding is the unchanged `docs/52` reference to absent `64§10`. Search finds no stale private cmdline spelling in published docs or Rust comments. | R96-boot-cmdline-spec |
+
 ### F1234-ata-sat-pass-through
 
 | Status | Class | Sev | Issue | Evidence | Owner |
