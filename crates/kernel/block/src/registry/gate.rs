@@ -56,6 +56,87 @@ pub fn seal_openers(dev_t: u32, allowed_openers: u32) -> KResult<OpenSeal> {
     Ok(OpenSeal { disk, active: true })
 }
 
+/// Controlled final-removal owner. It closes future opens and holder claims
+/// while one control description completes its cache drain, then unpublishes
+/// the disk after every earlier request has retired.
+pub struct ControlledRemoval { disk: Arc<Disk>, active: bool }
+impl ControlledRemoval {
+    /// Disk held by this final lifecycle transaction. # C: O(1)
+    pub fn disk(&self) -> &Arc<Disk> { &self.disk }
+
+    /// Close submission, wait for all earlier I/O, and unpublish the disk.
+    /// # C: O(N_disks + N_devices + in-flight I/O) # Ctx: process # Sleeps: yes
+    pub fn unregister(mut self) -> bool {
+        self.disk.io.lock_bh::<crate::bh_gate::BlockBh>().closed = true;
+        self.wait_for_drain();
+        let disk = self.disk.clone();
+        let name = disk.name.clone();
+        let removed = {
+            // SAFETY: this token owns the only destructive lifecycle state.
+            let mut table = unsafe { TABLE.lock() };
+            let Some(pos) = table.iter().position(|entry| Arc::ptr_eq(entry, &disk)) else { return false; };
+            table.remove(pos);
+            true
+        };
+        if !removed { return false; }
+        disk.io.lock_bh::<crate::bh_gate::BlockBh>().detached = true;
+        // SAFETY: final removal owns the lifecycle state until publication is gone.
+        unsafe { disk.life.lock() }.detached = true;
+        disk.mapping.mark_dead();
+        super::partition::unpublish_partitions(&disk);
+        crate::devbridge::unpublish(disk.number);
+        release_number(disk.driver, disk.number);
+        if let Some(dev) = drv::devices().into_iter().find(|dev| dev.bus == "block" && dev.addr == name) { drv::device_del(&dev); }
+        // SAFETY: removal copies the process-context hook before calling it unlocked.
+        let hook = *unsafe { DISK_REMOVE_HOOK.lock() };
+        if let Some(f) = hook { f(&name); }
+        self.active = false;
+        true
+    }
+
+    fn wait_for_drain(&self) {
+        #[cfg(target_os = "oxide-kernel")]
+        {
+            let wait = Arc::clone(&self.disk.io.lock_bh::<crate::bh_gate::BlockBh>().drain_wait);
+            // SAFETY: this process-context owner closed admission before sleeping.
+            unsafe { sched::live::wait_event_uninterruptible(&wait, || self.disk.io.lock_bh::<crate::bh_gate::BlockBh>().in_flight == 0); }
+        }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        while self.disk.io.lock_bh::<crate::bh_gate::BlockBh>().in_flight != 0 {
+            #[cfg(any(test, feature = "hosted"))]
+            std::thread::yield_now();
+            #[cfg(not(any(test, feature = "hosted")))]
+            core::hint::spin_loop();
+        }
+    }
+}
+impl Drop for ControlledRemoval {
+    fn drop(&mut self) {
+        if !self.active { return; }
+        self.disk.io.lock_bh::<crate::bh_gate::BlockBh>().closed = false;
+        // SAFETY: an aborted owner restores only the state it exclusively acquired.
+        let mut life = unsafe { self.disk.life.lock() };
+        life.closing = false;
+        life.lifecycle_held = false;
+        self.active = false;
+    }
+}
+
+/// Close a live disk against new holders and opens while retaining at most the
+/// caller's control descriptions until [`ControlledRemoval::unregister`].
+/// # C: O(N_disks)
+pub fn begin_controlled_removal(dev_t: u32, allowed_openers: u32) -> KResult<ControlledRemoval> {
+    let disk = disk_for_dev(dev_t).ok_or(BlockError::Enxio)?;
+    // SAFETY: the control ioctl owns this process-context lifecycle transition.
+    let mut life = unsafe { disk.life.lock() };
+    if life.lifecycle_held || life.reset_frozen || life.detached || life.closing
+        || life.holders != 0 || life.openers > allowed_openers { return Err(BlockError::Ebusy); }
+    life.closing = true;
+    life.lifecycle_held = true;
+    drop(life);
+    Ok(ControlledRemoval { disk, active: true })
+}
+
 /// Open a registered block device by packed `dev_t`, retaining one opener.
 /// # C: O(N_disks)
 pub fn try_open_by_dev(dev_t: u32) -> Result<(), OpenFailure> {
@@ -75,6 +156,12 @@ pub fn open_by_dev(dev_t: u32) -> bool { try_open_by_dev(dev_t).is_ok() }
 /// Release the opener acquired by [`open_by_dev`]. # C: O(N_disks)
 pub fn close_by_dev(dev_t: u32) -> bool {
     let Some(disk) = disk_for_dev(dev_t) else { return false; };
+    close_disk(&disk)
+}
+
+/// Release an opener through a retained disk after it has been unpublished.
+/// # C: O(1)
+pub fn close_disk(disk: &Disk) -> bool {
     // SAFETY: VFS close is process context; it may wait for a concurrent open.
     let mut life = unsafe { disk.life.lock() };
     if life.openers == 0 { return false; }

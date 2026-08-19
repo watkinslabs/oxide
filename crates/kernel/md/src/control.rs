@@ -7,6 +7,7 @@ use alloc::vec::Vec;
 use sync::{Spinlock, StackedBlock as MdControlClass};
 
 use crate::{Array, MD_DRIVER, uapi};
+use crate::lifecycle::StopStart;
 use block::{BlockError, KResult};
 
 pub(crate) struct Metadata {
@@ -73,6 +74,38 @@ pub fn stop_array_read_only(dev_t: u32) -> KResult<()> {
         array.cancel_read_only();
         disk.mapping.unseal_writes();
         return Err(error);
+    }
+    Ok(())
+}
+
+/// Fully stop an MD array. The control description remains the sole opener
+/// through cache writeback; then the canonical MD node is unpublished. Closing
+/// that retained control description releases the final member claims.
+/// # C: O(dirty pages + in-flight I/O + disks) # Ctx: process # Sleeps: yes
+pub fn stop_array(dev_t: u32) -> KResult<()> {
+    let (_disk, array) = live_array(dev_t)?;
+    let removal = block::registry::begin_controlled_removal(dev_t, 1)?;
+    let disk = Arc::clone(removal.disk());
+    disk.mapping.seal_writes();
+    let start = match array.begin_stop() {
+        Ok(start) => start,
+        Err(error) => { disk.mapping.unseal_writes(); return Err(error); }
+    };
+    if start == StopStart::Sealing { array.wait_for_writers(); }
+    if let Err(error) = disk.mapping.write_and_wait() {
+        if start == StopStart::Sealing { array.cancel_read_only(); }
+        disk.mapping.unseal_writes();
+        return Err(error);
+    }
+    if start == StopStart::Sealing { if let Err(error) = array.finish_read_only() {
+        array.cancel_read_only();
+        disk.mapping.unseal_writes();
+        return Err(error);
+    } }
+    if !removal.unregister() {
+        if start == StopStart::Sealing { array.cancel_read_only(); }
+        disk.mapping.unseal_writes();
+        return Err(BlockError::Ebusy);
     }
     Ok(())
 }

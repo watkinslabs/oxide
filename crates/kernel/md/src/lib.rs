@@ -26,7 +26,7 @@ use block::{BlockDevice, BlockError, BlockOp, BlockRequest, KResult, QueueLimits
 
 pub use superblock::{MetadataVersion, Superblock, read_superblock};
 pub use assembly::assemble;
-pub use control::{array_info, disk_info, is_md_device, restart_array_read_write, stop_array_read_only};
+pub use control::{array_info, disk_info, is_md_device, restart_array_read_write, stop_array, stop_array_read_only};
 
 /// Linux's fixed block major for MD arrays. # C: O(1)
 pub const MD_MAJOR: u32 = 9;
@@ -98,6 +98,8 @@ impl Array {
 
     /// Begin the read-only transition. # C: O(1)
     pub(crate) fn begin_read_only(&self) -> KResult<()> { self.lifecycle.begin_read_only() }
+    /// Begin a final stop from writable or read-only service. # C: O(1)
+    pub(crate) fn begin_stop(&self) -> KResult<lifecycle::StopStart> { self.lifecycle.begin_stop() }
     /// Wait for modifying requests admitted before the seal. # C: O(in-flight writes)
     pub(crate) fn wait_for_writers(&self) { self.lifecycle.wait_for_writers(); }
     /// Finish the read-only transition after the final cache drain. # C: O(in-flight writes)
