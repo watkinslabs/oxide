@@ -2,7 +2,7 @@
 
 extern crate alloc;
 
-use alloc::{boxed::Box, vec::Vec};
+use alloc::{boxed::Box, string::String, vec::Vec};
 
 use crate::context;
 use crate::platform::DmaPage;
@@ -18,7 +18,7 @@ struct StorageDma {
 }
 
 /// Input context, output device context, and endpoint-zero transfer ring.
-pub struct AddressDeviceDma { bdf: pci::Bdf, dma_mask: u64, input: DmaPage, output: DmaPage, ep0: DmaPage, descriptor: DmaPage, context_bytes: u8, speed: u8, topology: crate::context::DeviceTopology, slot: u8, device_protocol: u8, hub_descriptor: Option<crate::usb::HubDescriptor>, hub_needs_power: bool, hub_events: [u8; crate::usb::HUB_STATUS_MAX_BYTES], hub_events_len: u8, _hid: Option<crate::usb::HidInterface>, hid_layout: Option<Box<crate::hid_report::ReportLayout>>, _hub: Option<crate::usb::HubInterface>, _storage: Option<crate::storage::MassStorageInterface>, hid_ring: Option<HidDma>, hub_ring: Option<HubDma>, storage_dma: Option<StorageDma>, ep0_ring: CommandRing }
+pub struct AddressDeviceDma { bdf: pci::Bdf, dma_mask: u64, input: DmaPage, output: DmaPage, ep0: DmaPage, descriptor: DmaPage, context_bytes: u8, speed: u8, topology: crate::context::DeviceTopology, slot: u8, device_protocol: u8, usb_serial: Option<String>, hub_descriptor: Option<crate::usb::HubDescriptor>, hub_needs_power: bool, hub_events: [u8; crate::usb::HUB_STATUS_MAX_BYTES], hub_events_len: u8, _hid: Option<crate::usb::HidInterface>, hid_layout: Option<Box<crate::hid_report::ReportLayout>>, _hub: Option<crate::usb::HubInterface>, _storage: Option<crate::storage::MassStorageInterface>, hid_ring: Option<HidDma>, hub_ring: Option<HubDma>, storage_dma: Option<StorageDma>, ep0_ring: CommandRing }
 
 /// Maximum chained USB-storage transfer accepted by one retained endpoint ring.
 pub const STORAGE_MAX_TRANSFER_BYTES: usize = DmaPage::BYTES * crate::ring::COMMAND_USABLE_TRBS;
@@ -45,7 +45,7 @@ impl AddressDeviceDma {
         }
         input.clean_to_device(); output.clean_to_device(); ep0.clean_to_device();
         let ep0_ring = CommandRing::new(ep0.dma())?;
-        Some(Self { bdf, dma_mask, input, output, ep0, descriptor, context_bytes, speed, topology, slot: 0, device_protocol: 0, hub_descriptor: None, hub_needs_power: false, hub_events: [0; crate::usb::HUB_STATUS_MAX_BYTES], hub_events_len: 0, _hid: None, hid_layout: None, _hub: None, _storage: None, hid_ring: None, hub_ring: None, storage_dma: None, ep0_ring })
+        Some(Self { bdf, dma_mask, input, output, ep0, descriptor, context_bytes, speed, topology, slot: 0, device_protocol: 0, usb_serial: None, hub_descriptor: None, hub_needs_power: false, hub_events: [0; crate::usb::HUB_STATUS_MAX_BYTES], hub_events_len: 0, _hid: None, hid_layout: None, _hub: None, _storage: None, hid_ring: None, hub_ring: None, storage_dma: None, ep0_ring })
     }
 
     /// Input-context device DMA address for Address Device. # C: O(1)
@@ -59,10 +59,47 @@ impl AddressDeviceDma {
         self.descriptor.invalidate_from_device();
         let mut bytes = [0u8; crate::usb::DEVICE_DESC_BYTES];
         for (offset, byte) in bytes.iter_mut().enumerate() { *byte = self.descriptor.read8(offset as u64)?; }
-        let descriptor = crate::usb::device_descriptor(&bytes)?;
+        let descriptor = crate::usb::device_descriptor(&bytes);
+        #[cfg(feature = "debug-boot")]
+        if descriptor.is_none() {
+            klog::write_raw(b"[WARN]  xhci: descriptor invalid len=");
+            klog::write_hex_u64(u64::from(bytes[0]));
+            klog::write_raw(b" type=");
+            klog::write_hex_u64(u64::from(bytes[1]));
+            klog::write_raw(b" ep0=");
+            klog::write_hex_u64(u64::from(bytes[7]));
+            klog::write_raw(b" configs=");
+            klog::write_hex_u64(u64::from(bytes[17]));
+            klog::write_raw(b"\n");
+        }
+        let descriptor = descriptor?;
+        if crate::usb::ep0_packet_size(self.speed, descriptor.max_packet0).is_none() {
+            #[cfg(feature = "debug-boot")]
+            {
+                klog::write_raw(b"[WARN]  xhci: descriptor EP0/speed mismatch speed=");
+                klog::write_hex_u64(u64::from(self.speed));
+                klog::write_raw(b" ep0=");
+                klog::write_hex_u64(u64::from(descriptor.max_packet0));
+                klog::write_raw(b"\n");
+            }
+            return None;
+        }
         self.device_protocol = descriptor.device_protocol;
         Some(descriptor)
     }
+    /// Retain the completed UTF-16LE USB serial descriptor for SCSI-disk
+    /// publication. # C: O(serial bytes)
+    pub fn read_usb_serial(&mut self) -> Option<()> {
+        self.descriptor.invalidate_from_device();
+        let length = usize::from(self.descriptor.read8(0)?);
+        if !(2..=crate::usb::STRING_DESC_MAX_BYTES).contains(&length) { return None; }
+        let mut bytes = Vec::with_capacity(length);
+        for offset in 0..length { bytes.push(self.descriptor.read8(offset as u64)?); }
+        self.usb_serial = crate::usb::string_descriptor(&bytes);
+        self.usb_serial.as_ref().map(|_| ())
+    }
+    /// USB serial retained from the standard device string descriptor. # C: O(1)
+    pub fn usb_serial(&self) -> Option<&str> { self.usb_serial.as_deref() }
     /// Read the first configuration header after the completed header transfer. # C: O(9)
     pub fn configuration_header(&self) -> Option<crate::usb::ConfigurationHeader> {
         self.descriptor.invalidate_from_device();
@@ -95,10 +132,7 @@ impl AddressDeviceDma {
         for (word, value) in link.dword.iter().enumerate() {
             if !ring.write32(((TRBS_PER_SEGMENT - 1) * TRB_BYTES + word * 4) as u64, *value) { return None; }
         }
-        self.output.invalidate_from_device();
-        let stride = self.context_bytes as u64;
-        let mut output_slot = [0u32; 8];
-        for (index, word) in output_slot.iter_mut().enumerate() { *word = self.output.read32(stride + (index * 4) as u64)?; }
+        let output_slot = self.output_slot_words()?;
         let words = context::configure_hid_words(self.context_bytes, output_slot, self.speed, hid, ring.dma())?;
         for word in words { if !self.input.write32(word.offset as u64, word.value) { return None; } }
         ring.clean_to_device(); self.input.clean_to_device();
@@ -109,10 +143,7 @@ impl AddressDeviceDma {
     pub fn prepare_hub_endpoint(&mut self) -> Option<bool> {
         let Some(hub) = self._hub else { return Some(false); };
         let (ring, producer) = transfer_ring(self.bdf, self.dma_mask)?;
-        self.output.invalidate_from_device();
-        let stride = self.context_bytes as u64;
-        let mut output_slot = [0u32; 8];
-        for (index, word) in output_slot.iter_mut().enumerate() { *word = self.output.read32(stride + (index * 4) as u64)?; }
+        let output_slot = self.output_slot_words()?;
         let words = context::configure_hub_words(self.context_bytes, output_slot, self.speed, hub, ring.dma())?;
         for word in words { if !self.input.write32(word.offset as u64, word.value) { return None; } }
         ring.clean_to_device(); self.input.clean_to_device();
@@ -124,10 +155,7 @@ impl AddressDeviceDma {
         if self.storage_dma.is_some() { return Some(true); }
         let (bulk_in_ring, bulk_in_producer) = transfer_ring(self.bdf, self.dma_mask)?;
         let (bulk_out_ring, bulk_out_producer) = transfer_ring(self.bdf, self.dma_mask)?;
-        self.output.invalidate_from_device();
-        let stride = self.context_bytes as u64;
-        let mut output_slot = [0u32; 8];
-        for (index, word) in output_slot.iter_mut().enumerate() { *word = self.output.read32(stride + (index * 4) as u64)?; }
+        let output_slot = self.output_slot_words()?;
         let words = context::configure_storage_words(self.context_bytes, output_slot, self.speed, storage, bulk_in_ring.dma(), bulk_out_ring.dma())?;
         for word in words { if !self.input.write32(word.offset as u64, word.value) { return None; } }
         self.input.clean_to_device();
@@ -209,10 +237,7 @@ impl AddressDeviceDma {
     /// Build the controller input context that identifies this slot as a hub. # C: O(1)
     pub fn prepare_hub_slot(&mut self, hci_version: u16) -> Option<bool> {
         let hub = self.hub_descriptor?;
-        self.output.invalidate_from_device();
-        let stride = self.context_bytes as u64;
-        let mut output_slot = [0u32; 8];
-        for (index, word) in output_slot.iter_mut().enumerate() { *word = self.output.read32(stride + (index * 4) as u64)?; }
+        let output_slot = self.output_slot_words()?;
         let words = context::update_hub_slot_words(self.context_bytes, output_slot, hci_version, self.speed, self.device_protocol, hub)?;
         for word in words { if !self.input.write32(word.offset as u64, word.value) { return None; } }
         self.input.clean_to_device();
@@ -245,6 +270,11 @@ impl AddressDeviceDma {
         let dma = self.storage_dma.as_mut()?;
         if length == 0 || length as usize > STORAGE_MAX_TRANSFER_BYTES { return None; }
         ensure_storage_pages(self.bdf, self.dma_mask, &mut dma.data, length as usize)?;
+        if device_to_host {
+            for page in dma.data.iter().take(pages_for(length as usize)?) {
+                page.prepare_for_device_write();
+            }
+        }
         let (endpoint, producer, ring) = if device_to_host { (storage.bulk_in, &mut dma.bulk_in_producer, &dma.bulk_in_ring) } else { (storage.bulk_out, &mut dma.bulk_out_producer, &dma.bulk_out_ring) };
         submit_transfer_pages(mmio, slot, endpoint, producer, ring, &dma.data, length as usize)
     }
@@ -252,6 +282,7 @@ impl AddressDeviceDma {
     pub fn submit_storage_csw(&mut self, mmio: &Mmio, slot: u8) -> Option<u64> {
         let storage = self._storage?;
         let dma = self.storage_dma.as_mut()?;
+        dma.status.prepare_for_device_write();
         submit_transfer(mmio, slot, storage.bulk_in, &mut dma.bulk_in_producer, &dma.bulk_in_ring, dma.status.dma(), crate::storage::CSW_BYTES as u32)
     }
     /// Read a completed data-stage payload after its matching IN completion. # C: O(data bytes)
@@ -301,6 +332,7 @@ impl AddressDeviceDma {
         let endpoint_id = (hid.endpoint & 0x0f).checked_mul(2)?.checked_add(1)?;
         let dma = self.hid_ring.as_mut()?;
         if dma.pending != 0 { return None; }
+        dma.report.prepare_for_device_write();
         let trb = Trb::normal(dma.report.dma(), u32::from(hid.max_packet))?;
         let (pa, _) = dma.producer.push(trb);
         let index = pa.checked_sub(dma.ring.dma())?.checked_div(TRB_BYTES as u64)? as usize;
@@ -316,6 +348,7 @@ impl AddressDeviceDma {
         let endpoint_id = (hub.endpoint & 0x0f).checked_mul(2)?.checked_add(1)?;
         let dma = self.hub_ring.as_mut()?;
         if dma.pending != 0 { return None; }
+        dma.status.prepare_for_device_write();
         let trb = Trb::normal(dma.status.dma(), u32::from(hub.max_packet))?;
         let (pa, _) = dma.producer.push(trb);
         let index = pa.checked_sub(dma.ring.dma())?.checked_div(TRB_BYTES as u64)? as usize;
@@ -380,13 +413,14 @@ impl AddressDeviceDma {
     /// Whether an interrupt status bitmap still awaits process-context service. # C: O(1)
     pub fn hub_events_pending(&self) -> bool { self.hub_events_len != 0 }
     /// Rebuild the input context from controller output for Linux's EP0 MPS update. # C: O(1)
-    pub fn prepare_evaluate_ep0(&self, max_packet: u8) -> Option<bool> {
+    pub fn prepare_evaluate_ep0(&self, descriptor_max_packet: u8) -> Option<bool> {
+        let max_packet = crate::usb::ep0_packet_size(self.speed, descriptor_max_packet)?;
         let stride = self.context_bytes as u64;
         let ep0 = 2 * stride;
         self.output.invalidate_from_device();
         let mut output_ep0 = [0u32; 5];
         for (index, word) in output_ep0.iter_mut().enumerate() { *word = self.output.read32(ep0 + (index * 4) as u64)?; }
-        if ((output_ep0[1] >> 16) & 0xffff) as u8 == max_packet { return Some(false); }
+        if ((output_ep0[1] >> 16) & 0xffff) as u16 == max_packet { return Some(false); }
         let words = context::evaluate_ep0_words(self.context_bytes, output_ep0, max_packet)?;
         for word in words { if !self.input.write32(word.offset as u64, word.value) { return None; } }
         self.input.clean_to_device();
@@ -395,6 +429,10 @@ impl AddressDeviceDma {
     /// Publish one complete EP0 control-transfer TD and ring endpoint zero. # C: O(TRBs)
     pub fn submit_ep0(&mut self, mmio: &Mmio, slot: u8, trbs: &[Trb]) -> Option<u64> {
         if !(2..=3).contains(&trbs.len()) { return None; }
+        // Every retained EP0 data buffer is handed back to the controller
+        // before the TD becomes visible.  This includes GET_DESCRIPTOR and
+        // GET_MAX_LUN DMA_FROM_DEVICE transfers on non-coherent ARM systems.
+        self.descriptor.prepare_for_device_write();
         let mut completion = 0;
         for trb in trbs {
             let (pa, _) = self.ep0_ring.push(*trb);
@@ -425,6 +463,19 @@ impl AddressDeviceDma {
         for offset in 0..header.total_length { bytes.push(self.descriptor.read8(offset as u64)?); }
         Some(bytes)
     }
+
+    /// Copy the Device Context's slot context.  Unlike an Input Context, a
+    /// Device Context has no input-control context, so its slot is at offset
+    /// zero; EP0 begins at one context stride. # C: O(1)
+    fn output_slot_words(&self) -> Option<[u32; 8]> {
+        self.output.invalidate_from_device();
+        let mut output_slot = [0u32; 8];
+        for (index, word) in output_slot.iter_mut().enumerate() {
+            *word = self.output.read32((index * 4) as u64)?;
+        }
+        Some(output_slot)
+    }
+
 }
 
 fn transfer_ring(bdf: pci::Bdf, dma_mask: u64) -> Option<(DmaPage, CommandRing)> {

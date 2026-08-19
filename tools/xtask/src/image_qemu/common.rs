@@ -150,6 +150,17 @@ pub(super) fn ensure_ahci_extra_img(
     ensure_storage_img(repo, id, arch, "ahci1")
 }
 
+/// Ensure the USB Bulk-Only SCSI acceptance disk exists.  This has a distinct
+/// backing file so the transport's data path cannot alias an AHCI fixture.
+/// # C: O(1)
+pub(super) fn ensure_usb_storage_img(
+    repo: &std::path::Path,
+    id: Option<&str>,
+    arch: &str,
+) -> std::path::PathBuf {
+    ensure_storage_img(repo, id, arch, "usb-scsi")
+}
+
 pub(super) fn ensure_virtio_blk_extra_img(
     repo: &std::path::Path,
     id: Option<&str>,

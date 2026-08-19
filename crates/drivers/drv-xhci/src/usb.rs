@@ -1,5 +1,8 @@
 //! Strict USB descriptor validation shared by physical xHCI enumeration.
 
+extern crate alloc;
+
+use alloc::string::String;
 use usb_core::control::{self, ControlSetup};
 
 fn setup_stage(setup: ControlSetup) -> crate::ring::Trb {
@@ -12,12 +15,16 @@ pub use usb_core::control::DESC_DEVICE;
 pub const DEVICE_DESC_BYTES: usize = 18;
 /// USB configuration descriptor type. # C: O(1)
 pub use usb_core::control::DESC_CONFIGURATION;
+/// USB string descriptor type. # C: O(1)
+pub const DESC_STRING: u8 = 3;
 /// Exact USB configuration descriptor header byte length. # C: O(1)
 pub const CONFIG_DESC_HEADER_BYTES: usize = 9;
 /// Largest configuration descriptor accepted by the one-page enumeration buffer. # C: O(1)
 pub const CONFIG_DESC_MAX_BYTES: usize = 4096;
 /// Maximum report descriptor fitting the xHCI-owned enumeration page. # C: O(1)
 pub const HID_REPORT_DESC_MAX_BYTES: usize = 4096;
+/// USB's maximum string descriptor transfer length. # C: O(1)
+pub const STRING_DESC_MAX_BYTES: usize = 255;
 /// USB hub descriptor type. # C: O(1)
 pub use usb_core::control::DESC_HUB;
 /// USB hub class code. # C: O(1)
@@ -161,7 +168,7 @@ pub fn get_mass_storage_max_lun_trbs(buffer_pa: u64, interface: u8) -> Option<[c
 
 /// Parsed fixed USB device descriptor fields needed by enumeration. # C: O(1)
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct DeviceDescriptor { pub vendor: u16, pub product: u16, pub device_class: u8, pub device_protocol: u8, pub max_packet0: u8, pub configurations: u8 }
+pub struct DeviceDescriptor { pub vendor: u16, pub product: u16, pub device_class: u8, pub device_protocol: u8, pub max_packet0: u8, pub serial_index: u8, pub configurations: u8 }
 
 /// Parsed fixed configuration-descriptor header. # C: O(1)
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -244,12 +251,39 @@ pub fn mass_storage_interface(bytes: &[u8]) -> Option<crate::storage::MassStorag
     None
 }
 
-/// Parse one exact USB2 device descriptor. # C: O(1)
+/// Parse one exact USB device descriptor.
+///
+/// `bMaxPacketSize0` remains in its wire encoding: USB 3.x uses `9` for a
+/// 512-byte EP0 packet, while USB 2.0 carries the packet count directly.
+/// # C: O(1)
 pub fn device_descriptor(bytes: &[u8]) -> Option<DeviceDescriptor> {
     if bytes.len() < DEVICE_DESC_BYTES || bytes[0] as usize != DEVICE_DESC_BYTES || bytes[1] != DESC_DEVICE { return None; }
     let max_packet0 = bytes[7];
-    if !matches!(max_packet0, 8 | 16 | 32 | 64) || bytes[17] == 0 { return None; }
-    Some(DeviceDescriptor { vendor: u16::from_le_bytes([bytes[8], bytes[9]]), product: u16::from_le_bytes([bytes[10], bytes[11]]), device_class: bytes[4], device_protocol: bytes[6], max_packet0, configurations: bytes[17] })
+    if !matches!(max_packet0, 8 | 9 | 16 | 32 | 64) || bytes[17] == 0 { return None; }
+    Some(DeviceDescriptor { vendor: u16::from_le_bytes([bytes[8], bytes[9]]), product: u16::from_le_bytes([bytes[10], bytes[11]]), device_class: bytes[4], device_protocol: bytes[6], max_packet0, serial_index: bytes[16], configurations: bytes[17] })
+}
+
+/// Decode one exact USB UTF-16LE string descriptor into a UTF-8 string. # C: O(bytes)
+pub fn string_descriptor(bytes: &[u8]) -> Option<String> {
+    let length = usize::from(*bytes.first()?);
+    if !(2..=STRING_DESC_MAX_BYTES).contains(&length) || length % 2 != 0 || bytes.len() < length || bytes[1] != DESC_STRING { return None; }
+    let mut text = String::new();
+    let units = bytes[2..length].chunks_exact(2).map(|unit| u16::from_le_bytes([unit[0], unit[1]]));
+    for scalar in core::char::decode_utf16(units) { text.push(scalar.ok()?); }
+    (!text.is_empty()).then_some(text)
+}
+
+/// Decode a descriptor's EP0 packet field against its xHCI port speed. USB
+/// 2.0 carries literal values; SuperSpeed's `9` expands to 512 bytes. # C: O(1)
+pub fn ep0_packet_size(speed: u8, descriptor_value: u8) -> Option<u16> {
+    match speed {
+        1 => matches!(descriptor_value, 8 | 16 | 32 | 64).then_some(u16::from(descriptor_value)),
+        2 => (descriptor_value == 8).then_some(8),
+        3 => (descriptor_value == 64).then_some(64),
+        4 | 5 if descriptor_value == 9 => Some(1u16 << descriptor_value),
+        4 | 5 => None,
+        _ => None,
+    }
 }
 
 /// Parse the first nine bytes needed for Linux's two-stage configuration fetch. # C: O(1)
@@ -317,6 +351,15 @@ pub fn get_device_descriptor_trbs(buffer_pa: u64) -> Option<[crate::ring::Trb; 3
     ])
 }
 
+/// Build a standard IN GET_DESCRIPTOR(String) request using the primary
+/// language ID. The returned UTF-16LE descriptor is decoded by
+/// [`string_descriptor`]. # C: O(1)
+pub fn get_string_descriptor_trbs(buffer_pa: u64, index: u8) -> Option<[crate::ring::Trb; 3]> {
+    if index == 0 { return None; }
+    let setup = ControlSetup { request_type: 0x80, request: 6, value: u16::from_le_bytes([index, DESC_STRING]), index: 0x0409, length: STRING_DESC_MAX_BYTES as u16 };
+    Some([setup_stage(setup), crate::ring::Trb::data_stage(buffer_pa, STRING_DESC_MAX_BYTES as u32, true)?, crate::ring::Trb::status_stage(true)])
+}
+
 /// Build a standard IN GET_DESCRIPTOR(Configuration, index) EP0 TD. # C: O(1)
 pub fn get_configuration_descriptor_trbs(buffer_pa: u64, index: u8, length: usize) -> Option<[crate::ring::Trb; 3]> {
     if !(CONFIG_DESC_HEADER_BYTES..=CONFIG_DESC_MAX_BYTES).contains(&length) { return None; }
@@ -361,10 +404,31 @@ pub fn set_hid_boot_protocol_trbs(interface: u8) -> [crate::ring::Trb; 2] {
 mod tests {
     use super::*;
     #[test]
-    fn device_descriptor_requires_exact_header_and_ep0_geometry() {
+    fn device_descriptor_keeps_the_wire_ep0_encoding() {
         let mut bytes = [0u8; DEVICE_DESC_BYTES]; bytes[0] = 18; bytes[1] = DESC_DEVICE; bytes[7] = 64; bytes[8] = 0x34; bytes[9] = 0x12; bytes[10] = 0x78; bytes[11] = 0x56; bytes[17] = 1;
-        assert_eq!(device_descriptor(&bytes), Some(DeviceDescriptor { vendor: 0x1234, product: 0x5678, device_class: 0, device_protocol: 0, max_packet0: 64, configurations: 1 }));
+        assert_eq!(device_descriptor(&bytes), Some(DeviceDescriptor { vendor: 0x1234, product: 0x5678, device_class: 0, device_protocol: 0, max_packet0: 64, serial_index: 0, configurations: 1 }));
         bytes[7] = 7; assert!(device_descriptor(&bytes).is_none());
+        bytes[7] = 9; assert_eq!(device_descriptor(&bytes).unwrap().max_packet0, 9);
+    }
+    #[test]
+    fn string_descriptor_is_exact_utf16le_and_carries_its_wire_index() {
+        assert_eq!(string_descriptor(&[12, DESC_STRING, b'o', 0, b'x', 0, b'i', 0, b'd', 0, b'e', 0]).as_deref(), Some("oxide"));
+        assert_eq!(string_descriptor(&[6, DESC_STRING, 0x3d, 0xd8, 0x80, 0xde]).as_deref(), Some("🚀"));
+        assert!(string_descriptor(&[5, DESC_STRING, b'x', 0, 0]).is_none());
+        let td = get_string_descriptor_trbs(0x90_000, 7).unwrap();
+        assert_eq!(td[0].dword[0], 0x0307_0680);
+        assert_eq!(td[0].dword[1], 0x00ff_0409);
+    }
+    #[test]
+    fn ep0_packet_size_follows_speed_specific_usb_encoding() {
+        assert_eq!(ep0_packet_size(1, 8), Some(8));
+        assert_eq!(ep0_packet_size(1, 64), Some(64));
+        assert_eq!(ep0_packet_size(2, 8), Some(8));
+        assert_eq!(ep0_packet_size(3, 64), Some(64));
+        assert_eq!(ep0_packet_size(4, 9), Some(512));
+        assert_eq!(ep0_packet_size(5, 9), Some(512));
+        assert_eq!(ep0_packet_size(3, 9), None);
+        assert_eq!(ep0_packet_size(4, 64), None);
     }
     #[test]
     fn device_descriptor_request_is_standard_in_control_td() {

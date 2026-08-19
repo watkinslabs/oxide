@@ -34,9 +34,6 @@ pub enum CmdStatus {
 /// MAPC opcode (ICID → Collection-table entry → target RD).
 #[cfg(target_arch = "aarch64")]
 pub const ITS_CMD_MAPC: u8 = 0x09;
-/// MAPD opcode (DeviceID → ITT base + size).
-#[cfg(target_arch = "aarch64")]
-pub const ITS_CMD_MAPD: u8 = 0x08;
 /// MAPTI opcode (Device+EventID → LPI INTID + ICID, full ITT entry).
 #[cfg(target_arch = "aarch64")]
 pub const ITS_CMD_MAPTI: u8 = 0x0a;
@@ -51,17 +48,6 @@ pub const ITS_CMD_SYNC: u8 = 0x05;
 /// ITS → RD pending-table → CPU dispatch path.
 #[cfg(target_arch = "aarch64")]
 pub const ITS_CMD_INT: u8 = 0x03;
-
-/// Build a MAPD command (ARM IHI 0069 §5.13.4).
-/// `size` = number-of-EventID-bits - 1; ITT must be 256-byte aligned.
-/// # C: O(1)
-#[cfg(target_arch = "aarch64")]
-pub fn cmd_mapd(device_id: u32, itt_pa: u64, size: u32) -> [u64; 4] {
-    let dw0 = ITS_CMD_MAPD as u64 | ((device_id as u64) << 32);
-    let dw1 = (size & 0x1f) as u64;
-    let dw2 = (1u64 << 63) | (itt_pa & 0x000F_FFFF_FFFF_FF00);
-    [dw0, dw1, dw2, 0]
-}
 
 /// Build a MAPTI command (ARM IHI 0069 §5.13.6). Maps
 /// (DeviceID, EventID) → (LPI pINTID, ICID).
@@ -128,10 +114,10 @@ pub fn cmd_mapc(icid: u16, rdbase: u32) -> [u64; 4] {
 /// (Stalled) is masked out of the comparison.
 ///
 /// # SAFETY: caller asserts cmdq + BASERs programmed and
-/// GITS_CTLR.Enabled latched; HHDM covers the queue PMM frame;
-/// runs single-CPU pre-init IRQ-off.
+/// GITS_CTLR.Enabled latched; HHDM covers the queue PMM frame; and the
+/// caller serializes this ITS command queue against every other poster.
 /// # C: O(polls) — typically tens of cycles on QEMU.
-/// # Ctx: pre-init, IRQ-off, single-CPU
+/// # Ctx: pre-init or caller-held ITS command lock
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 pub unsafe fn cmd_post(hhdm: u64, cmd: [u64; 4]) -> CmdStatus {
     let its_va = ITS_VA.load(Ordering::Acquire);

@@ -61,6 +61,19 @@ impl DmaPage {
         if let Some(va) = self.va() { pmm::dma::invalidate_from_device(va, PAGE as usize); }
     }
 
+    /// Hand a reusable page to the controller for a device-written transfer.
+    ///
+    /// A freshly cleared page may still have dirty CPU cache lines on a
+    /// non-coherent machine.  Clean those lines before invalidating them so a
+    /// later eviction cannot overwrite the controller's reply.
+    /// # C: O(page bytes on non-coherent architectures)
+    pub fn prepare_for_device_write(&self) {
+        if let Some(va) = self.va() {
+            pmm::dma::clean_to_device(va, PAGE as usize);
+            pmm::dma::invalidate_from_device(va, PAGE as usize);
+        }
+    }
+
     /// Write one controller-visible dword within this DMA page. # C: O(1)
     pub fn write32(&self, offset: u64, value: u32) -> bool {
         if offset & 3 != 0 || offset.checked_add(4).is_none_or(|end| end > PAGE) { return false; }

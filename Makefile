@@ -63,6 +63,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
         smoke-v4l2 smoke-v4l2-x86 smoke-v4l2-arm \
         smoke-ata-identity smoke-ata-identity-x86 smoke-ata-identity-arm \
         smoke-ata-sat smoke-ata-sat-x86 smoke-ata-sat-arm \
+        smoke-usb-scsi smoke-usb-scsi-x86 smoke-usb-scsi-arm \
         hosted-gate test-build-gate \
         smoke-hostshare smoke-hostshare-x86 smoke-hostshare-arm \
         smoke-ping smoke-ping-x86 smoke-ping-arm smoke-network-native-pci-x86 \
@@ -713,6 +714,7 @@ smoke-grub:
 V4L2_SMOKE_TIMEOUT ?= 900
 ATA_IDENTITY_SMOKE_TIMEOUT ?= 900
 ATA_SAT_SMOKE_TIMEOUT ?= 900
+USB_SCSI_SMOKE_TIMEOUT ?= 900
 HDA_SMOKE_TIMEOUT ?= 900
 # V4L2 acceptance. The probe is injected into a disposable boot root and run
 # as a unit before basic.target, so the verdict lands on the serial console
@@ -749,6 +751,21 @@ smoke-ata-sat-arm:
 	OXIDE_ATA_SAT_SMOKE=1 SMOKE_MARKER='ata_sat_probe: PASS' SMOKE_ALIVE_CMD=/usr/local/bin/ata_sat_probe SMOKE_ALIVE_MARKER='ata_sat_probe: PASS' ./tools/boot-smoke.sh arm $(ATA_SAT_SMOKE_TIMEOUT)
 
 smoke-ata-sat: smoke-ata-sat-x86 smoke-ata-sat-arm
+
+# The x86 native PCI profile and ARM's default topology each carry a native
+# PCI xHCI controller and USB Bulk-Only disk. The serial-shell probe proves
+# shared SCSI discovery and commands rather than controller enumeration alone.
+# Start that command only after udev is serving the published block-device
+# kobjects; the serial debug shell itself is available earlier.
+smoke-usb-scsi-x86:
+	OXIDE_QEMU_PROFILE=native-pci OXIDE_USB_SCSI_SMOKE=1 SMOKE_MARKER='usb_scsi_probe: PASS' SMOKE_ALIVE_READY_MARKER='Started systemd-udevd.service' SMOKE_ALIVE_CMD=/usr/local/bin/usb_scsi_probe SMOKE_ALIVE_MARKER='usb_scsi_probe: PASS' ./tools/boot-smoke.sh x86 $(USB_SCSI_SMOKE_TIMEOUT)
+
+smoke-usb-scsi-arm:
+	OXIDE_USB_SCSI_SMOKE=1 SMOKE_MARKER='usb_scsi_probe: PASS' SMOKE_ALIVE_READY_MARKER='Started systemd-udevd.service' SMOKE_ALIVE_CMD=/usr/local/bin/usb_scsi_probe SMOKE_ALIVE_MARKER='usb_scsi_probe: PASS' ./tools/boot-smoke.sh arm $(USB_SCSI_SMOKE_TIMEOUT)
+
+smoke-usb-scsi:
+	$(MAKE) smoke-usb-scsi-x86
+	$(MAKE) smoke-usb-scsi-arm
 
 smoke-hda-x86: x86
 	./tools/boot-smoke-hda.sh x86 $(HDA_SMOKE_TIMEOUT)

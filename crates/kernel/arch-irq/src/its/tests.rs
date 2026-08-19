@@ -38,19 +38,6 @@ use super::*;
 
     #[test]
     #[cfg(target_arch = "aarch64")]
-    fn cmd_mapd_encoding() {
-        // DeviceID=0x10, ITT_pa=0x4a6f3000, Size=4.
-        let c = cmd_mapd(0x10, 0x4a6f3000, 4);
-        assert_eq!(c[0] & 0xFF, 0x08);                  // opcode
-        assert_eq!((c[0] >> 32) & 0xFFFF_FFFF, 0x10);   // DeviceID
-        assert_eq!(c[1] & 0x1f, 4);                     // Size
-        assert!(c[2] & (1 << 63) != 0);                 // Valid
-        assert_eq!(c[2] & 0x000F_FFFF_FFFF_FF00, 0x4a6f3000);
-        assert_eq!(c[3], 0);
-    }
-
-    #[test]
-    #[cfg(target_arch = "aarch64")]
     fn cmd_mapti_encoding() {
         let c = cmd_mapti(0x10, 0, 8192, 0);
         assert_eq!(c[0] & 0xFF, 0x0a);

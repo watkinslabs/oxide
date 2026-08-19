@@ -163,20 +163,22 @@ pub fn free_pci_msi(irq: u32) {
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 mod arm {
     use super::*;
+    use sync::{Devices, Spinlock};
 
     const GICV2M_SETSPI_NSR_OFFSET: u64 = 0x40;
     const ITS_DEVICE_SLOTS: usize = 32;
     const ITS_ITT_FRAME_BYTES: usize = 0x1000;
     const ITS_ITT_WORD_BYTES: usize = core::mem::size_of::<u64>();
-    const ITS_EVENT_ID_BITS: u32 = 4;
-    const ITS_EVENT_COUNT: u32 = 1 << ITS_EVENT_ID_BITS;
+    const ITS_ITT_EVENT_COUNT: u32 = 16;
     const ITS_BOOT_COLLECTION: u16 = 0;
     const ITS_BOOT_RDBASE: u32 = 0;
+    const ITS_DEVICE_EMPTY: u32 = u32::MAX;
 
     static DEVICE_IDS: [AtomicU32; ITS_DEVICE_SLOTS] =
-        [const { AtomicU32::new(0) }; ITS_DEVICE_SLOTS];
+        [const { AtomicU32::new(ITS_DEVICE_EMPTY) }; ITS_DEVICE_SLOTS];
     static DEVICE_ITTS: [AtomicU64; ITS_DEVICE_SLOTS] =
         [const { AtomicU64::new(0) }; ITS_DEVICE_SLOTS];
+    static ITS_COMMANDS: Spinlock<(), Devices> = Spinlock::new(());
 
     pub(super) fn alloc(requester_id: u32, event_id: u32) -> Option<MsiMessage> {
         if let Some(message) = alloc_its(requester_id, event_id) {
@@ -198,7 +200,11 @@ mod arm {
     }
 
     fn alloc_its(requester_id: u32, event_id: u32) -> Option<MsiMessage> {
-        if event_id >= ITS_EVENT_COUNT { return None; }
+        if event_id >= ITS_ITT_EVENT_COUNT { return None; }
+        // Linux serializes every post against the ITS command queue; a device
+        // probe can run after interrupt enable and must not assume boot's
+        // single-CPU command context still exists.
+        let _commands = ITS_COMMANDS.lock();
         let address = super::super::its::translater_pa();
         if address == 0 { return None; }
         let device_id = firmware::acpi::iort_msi_device_id(requester_id)
@@ -258,7 +264,7 @@ mod arm {
         }
         for i in 0..ITS_DEVICE_SLOTS {
             if DEVICE_IDS[i]
-                .compare_exchange(0, device_id, Ordering::AcqRel, Ordering::Acquire)
+                .compare_exchange(ITS_DEVICE_EMPTY, device_id, Ordering::AcqRel, Ordering::Acquire)
                 .is_err()
             {
                 continue;
@@ -266,7 +272,7 @@ mod arm {
             let itt_pa = match pmm::setup::alloc_raw_frame() {
                 Some(pa) => pa,
                 None => {
-                    DEVICE_IDS[i].store(0, Ordering::Release);
+                    DEVICE_IDS[i].store(ITS_DEVICE_EMPTY, Ordering::Release);
                     return None;
                 }
             };
@@ -284,39 +290,21 @@ mod arm {
                     ITS_ITT_FRAME_BYTES,
                 );
             }
-            // SAFETY: ITS is enabled; MAPC binds the boot collection to RDbase 0.
-            let mapc_ok = cmd_ok(unsafe {
-                super::super::its::cmd_post(
-                    hhdm,
-                    super::super::its::cmd_mapc(
-                        ITS_BOOT_COLLECTION,
-                        ITS_BOOT_RDBASE,
-                    ),
-                )
-            });
-            // SAFETY: MAPC was posted above; SYNC targets the same RDbase.
-            let mapc_sync_ok = cmd_ok(unsafe {
-                super::super::its::cmd_post(
-                    hhdm,
-                    super::super::its::cmd_sync(ITS_BOOT_RDBASE),
-                )
-            });
-            if !mapc_ok || !mapc_sync_ok {
-                // SAFETY: failed setup never published this frame to a driver.
-                unsafe { pmm::setup::free_one_frame(itt_pa); }
-                DEVICE_IDS[i].store(0, Ordering::Release);
-                return None;
-            }
-            let mapd = super::super::its::cmd_mapd(
+            let Some(mapd) = super::super::its::cmd_mapd(
                 device_id,
                 itt_pa,
-                ITS_EVENT_ID_BITS,
-            );
+                ITS_ITT_EVENT_COUNT,
+            ) else {
+                // SAFETY: this freshly allocated frame was not published to the ITS.
+                unsafe { pmm::setup::free_one_frame(itt_pa); }
+                DEVICE_IDS[i].store(ITS_DEVICE_EMPTY, Ordering::Release);
+                return None;
+            };
             // SAFETY: zeroed aligned ITT remains owned until MAPD completes.
             if !cmd_ok(unsafe { super::super::its::cmd_post(hhdm, mapd) }) {
                 // SAFETY: failed MAPD did not publish this ITT to hardware.
                 unsafe { pmm::setup::free_one_frame(itt_pa); }
-                DEVICE_IDS[i].store(0, Ordering::Release);
+                DEVICE_IDS[i].store(ITS_DEVICE_EMPTY, Ordering::Release);
                 return None;
             }
             // SAFETY: MAPD was posted above; SYNC targets the boot RDbase.
@@ -329,7 +317,7 @@ mod arm {
             if !mapd_sync_ok {
                 // SAFETY: failed synchronization did not publish local ownership.
                 unsafe { pmm::setup::free_one_frame(itt_pa); }
-                DEVICE_IDS[i].store(0, Ordering::Release);
+                DEVICE_IDS[i].store(ITS_DEVICE_EMPTY, Ordering::Release);
                 return None;
             }
             DEVICE_ITTS[i].store(itt_pa, Ordering::Release);

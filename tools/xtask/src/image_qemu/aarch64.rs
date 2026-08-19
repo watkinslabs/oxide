@@ -2,11 +2,18 @@ use std::process::Command;
 
 use crate::run;
 
-use super::common::{ensure_ahci_extra_img, ensure_ahci_img, ensure_nvme_extra_img, ensure_nvme_img, ensure_virtio_blk_extra_img, ssh_fwd_netdev, which};
+use super::common::{ensure_ahci_extra_img, ensure_ahci_img, ensure_nvme_extra_img, ensure_nvme_img, ensure_usb_storage_img, ensure_virtio_blk_extra_img, ssh_fwd_netdev, which};
 
 const ARM_GRUB_REQUIRED_MODULES: [&str; 2] = ["modinfo.sh", "linux.mod"];
 const ARM_GRUB_MODULES_DIR: &str = "vendor/grub/arm64-efi";
 const ARM_OVMF: &str = "vendor/firmware/ovmf-aarch64.fd";
+
+fn arm_usb_scsi_devices() -> [&'static str; 2] {
+    [
+        "qemu-xhci,id=xhci,bus=pcie.0",
+        "usb-storage,drive=usb0,bus=xhci.0,serial=oxide-usb0",
+    ]
+}
 
 fn arm_grub_modules_missing(mods: &std::path::Path) -> Vec<&'static str> {
     ARM_GRUB_REQUIRED_MODULES.into_iter().filter(|name| !mods.join(name).is_file()).collect()
@@ -120,6 +127,11 @@ pub(super) fn qemu_run_aarch64_grub(
     // D3.6: AHCI/SATA scratch disk for the drv-ahci bring-up (lockstep w/ x86).
     let ahci_img = ensure_ahci_img(repo, id, "aarch64");
     let ahci_drive = format!("id=sata0,if=none,format=raw,file={}", ahci_img.display());
+    // ARM must expose the same native USB-host class that x86's PCI profile
+    // exercises. Its own backing file gives the BOT/SCSI path a stable disk.
+    let usb_scsi_img = ensure_usb_storage_img(repo, id, "aarch64");
+    let usb_scsi_drive = format!("id=usb0,if=none,format=raw,file={}", usb_scsi_img.display());
+    let usb_scsi_devices = arm_usb_scsi_devices();
     let smp_str = smp.to_string();
     let headless = std::env::var("OXIDE_QEMU_HEADLESS").is_ok();
     let gpu_dev = super::common::virtio_gpu_device_arg(None);
@@ -230,6 +242,11 @@ pub(super) fn qemu_run_aarch64_grub(
         "-device", "ich9-ahci,id=ahci,bus=pcie.0",
         "-drive", ahci_drive.as_str(),
         "-device", "ide-hd,drive=sata0,bus=ahci.0,serial=oxahci0",
+        // PCI xHCI plus a Bulk-Only transparent-SCSI disk: this is native
+        // hardware topology, not a synthetic block-device shortcut.
+        "-device", usb_scsi_devices[0],
+        "-drive", usb_scsi_drive.as_str(),
+        "-device", usb_scsi_devices[1],
         "-chardev", uart_chardev.as_str(),
         "-serial", "chardev:ser0",
         "-display", if headless { "none" } else { "gtk" },
@@ -298,7 +315,7 @@ pub(super) fn qemu_run_aarch64_grub(
 
 #[cfg(test)]
 mod tests {
-    use super::{arm_launch_vendor_missing, ARM_GRUB_MODULES_DIR, ARM_OVMF};
+    use super::{arm_launch_vendor_missing, arm_usb_scsi_devices, ARM_GRUB_MODULES_DIR, ARM_OVMF};
     use std::path::{Path, PathBuf};
 
     struct Fixture(PathBuf);
@@ -345,5 +362,13 @@ mod tests {
     fn arm_launch_vendor_missing_linux() {
         let f = fixture("missing-linux", &[ARM_OVMF, "vendor/grub/arm64-efi/modinfo.sh"]);
         assert_eq!(arm_launch_vendor_missing(f.repo()), [format!("{ARM_GRUB_MODULES_DIR}/linux.mod")]);
+    }
+
+    #[test]
+    fn arm_default_topology_exposes_one_pci_xhci_scsi_disk() {
+        assert_eq!(arm_usb_scsi_devices(), [
+            "qemu-xhci,id=xhci,bus=pcie.0",
+            "usb-storage,drive=usb0,bus=xhci.0,serial=oxide-usb0",
+        ]);
     }
 }

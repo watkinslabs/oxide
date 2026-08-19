@@ -13,7 +13,7 @@ use crate::probe::{add_usb_device, address_port_device, Controller, UsbDevice, X
 static ROOT_WORK_QUEUED: AtomicBool = AtomicBool::new(false);
 static ROOT_WORK_RESCAN: AtomicBool = AtomicBool::new(false);
 
-enum RootReset { Complete, Pending, Failed }
+enum RootReset { Complete, Failed }
 
 /// Queue process-context root-hub discovery from the USB softirq. # C: O(1)
 pub(crate) fn queue_root_work() -> bool {
@@ -100,15 +100,42 @@ fn service_port_change(controller: &Arc<Controller>, port: u8) -> Option<Arc<Usb
 }
 
 fn reset_root_port(controller: &Arc<Controller>, port: u8) -> RootReset {
-    let state = controller.state.lock_bh::<XhciBh>();
-    let Some(protocol) = state.mmio.protocol_for_port(port) else { return RootReset::Failed; };
-    if !protocol.is_usb2() { return if state.mmio.reset_usb3_port(port) { RootReset::Complete } else { RootReset::Failed }; }
-    let Some(status) = state.mmio.port_status(port) else { return RootReset::Failed; };
-    if crate::ports::reset_completed(status) {
-        return if state.mmio.finish_usb2_reset(port) { RootReset::Complete } else { RootReset::Failed };
+    let (mmio, protocol) = {
+        let state = controller.state.lock_bh::<XhciBh>();
+        let Some(protocol) = state.mmio.protocol_for_port(port) else { return RootReset::Failed; };
+        (Arc::clone(&state.mmio), protocol)
+    };
+    if !protocol.is_usb2() { return if mmio.reset_usb3_port(port) { RootReset::Complete } else { RootReset::Failed }; }
+    for _ in 0..crate::ports::USB2_RESET_TRIES {
+        let Some(status) = mmio.port_status(port) else { return RootReset::Failed; };
+        if status & crate::ports::PORT_CONNECT == 0 { return RootReset::Failed; }
+        if status & crate::ports::PORT_RESET == 0 && !mmio.request_usb2_reset(port) {
+            return RootReset::Failed;
+        }
+        let mut delay_time_ns = 0;
+        while let Some(wait_ns) = crate::ports::usb2_root_reset_wait_ns(delay_time_ns) {
+            root_delay_ns(wait_ns);
+            let Some(status) = mmio.port_status(port) else { return RootReset::Failed; };
+            if status & crate::ports::PORT_RESET == 0 && status & crate::ports::PORT_CONNECT != 0 {
+                if crate::ports::reset_completed(status) {
+                    return if mmio.finish_usb2_reset(port) { RootReset::Complete } else { RootReset::Failed };
+                }
+                break;
+            }
+            if status & crate::ports::PORT_CONNECT == 0 { return RootReset::Failed; }
+            delay_time_ns = crate::ports::usb2_root_reset_next_delay_time_ns(delay_time_ns, wait_ns);
+        }
     }
-    if status & crate::ports::PORT_RESET != 0 { return RootReset::Pending; }
-    if state.mmio.request_usb2_reset(port) { RootReset::Pending } else { RootReset::Failed }
+    RootReset::Failed
+}
+
+fn root_delay_ns(delay_ns: u64) {
+    let wait = sched::live::WaitList::new();
+    let deadline = sched::deadline::clock::now_ns().saturating_add(delay_ns);
+    // SAFETY: root-hub process work holds no controller lock across the
+    // uninterruptible reset delay, matching the worker-owned reset contract.
+    let _ = unsafe { sched::live::wait_event_uninterruptible_until(&wait,
+        deadline, sched::deadline::clock::now_ns, || false) };
 }
 
 #[inline(never)]

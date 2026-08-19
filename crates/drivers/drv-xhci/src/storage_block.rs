@@ -3,6 +3,7 @@
 extern crate alloc;
 
 use alloc::sync::Arc;
+use alloc::string::String;
 use alloc::vec::Vec;
 use block::{BlockError, KResult, QueueLimits};
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -11,19 +12,31 @@ use crate::probe::{control_complete, storage_command, UsbDevice};
 
 struct UsbStorageTransport {
     device: Arc<UsbDevice>,
+    serial: Option<String>,
     max_lun: scsi::Lun,
     next_tag: AtomicU32,
 }
 
 impl UsbStorageTransport {
     fn new(device: Arc<UsbDevice>) -> Option<Arc<Self>> {
-        let max_lun = device.with_transport(|mmio, irq, _, state| {
-            state.device.storage_interface()?;
-            let Some(done) = state.device.submit_storage_max_lun(mmio, state.slot) else { return Some(scsi::Lun::ZERO); };
-            if !control_complete(irq, done, state.slot) { return Some(scsi::Lun::ZERO); }
-            Some(scsi::Lun::new(u64::from(state.device.storage_max_lun().unwrap_or(0))))
-        }).flatten()?;
-        Some(Arc::new(Self { device, max_lun, next_tag: AtomicU32::new(1) }))
+        let (max_lun, serial) = {
+            let _transaction = device.lock_transfer();
+            let (irq, slot, done, serial) = device.with_transport(|mmio, irq, _, state| {
+                state.device.storage_interface()?;
+                let slot = state.slot;
+                let done = state.device.submit_storage_max_lun(mmio, slot)?;
+                Some((irq, slot, done, state.device.usb_serial().map(String::from)))
+            })??;
+            let max_lun = if control_complete(irq, done, slot) {
+                device.with_transport(|_, _, _, state| state.device.storage_max_lun())?.unwrap_or(0)
+            } else {
+                // USB Bulk-Only permits a STALL here; scan the required LUN 0.
+                0
+            };
+            (max_lun, serial)
+        };
+        let max_lun = scsi::Lun::new(u64::from(max_lun));
+        Some(Arc::new(Self { device, serial, max_lun, next_tag: AtomicU32::new(1) }))
     }
 
     fn next_tag(&self) -> u32 { self.next_tag.fetch_add(1, Ordering::Relaxed) }
@@ -45,7 +58,8 @@ impl UsbStorageTransport {
             scsi::DataDirection::ToDevice | scsi::DataDirection::None => Some(&data[..]),
         };
         let result = storage_command(&self.device, self.next_tag(), lun, command.bytes(), data.len() as u32,
-            device_to_host, out, timeout_ms).ok_or(BlockError::Eio)?;
+            device_to_host, out, timeout_ms);
+        let Some(result) = result else { return Err(BlockError::Eio); };
         let transferred = data.len().checked_sub(result.residue as usize).ok_or(BlockError::Eio)?;
         if device_to_host {
             if result.data.len() != data.len() { return Err(BlockError::Eio); }
@@ -88,5 +102,5 @@ impl scsi::Transport for UsbStorageTransport {
 /// # C: O(LUNs × inquiry/capacity)
 pub(crate) fn register(device: Arc<UsbDevice>) -> Vec<block::ScsiDiskName> {
     let Some(transport) = UsbStorageTransport::new(device) else { return Vec::new(); };
-    scsi::scan_and_publish(transport, None)
+    scsi::scan_and_publish(transport.clone(), transport.serial.as_deref())
 }

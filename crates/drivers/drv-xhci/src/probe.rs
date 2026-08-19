@@ -33,16 +33,37 @@ pub(crate) struct UsbDeviceState {
     pub(crate) storage_names: Vec<block::ScsiDiskName>,
 }
 
-pub(crate) struct UsbDevice { _controller: Weak<Controller>, pub(crate) state: Spinlock<UsbDeviceState, DriverLockClass> }
+pub(crate) struct UsbDevice {
+    _controller: Weak<Controller>,
+    /// Serializes one process-context Bulk-Only transaction while its
+    /// short submit/read phases take the bottom-half-safe state locks.
+    transfer: sched::live::Mutex<()>,
+    pub(crate) state: Spinlock<UsbDeviceState, DriverLockClass>,
+}
 
 impl UsbDevice {
     /// Construct the input-facing device before taking the controller lock. # C: O(input registration)
     pub(crate) fn new(controller: &Arc<Controller>, mut device: Box<AddressDeviceDma>) -> Arc<Self> {
         let slot = device.slot();
         let layout = device.take_hid_layout();
-        Arc::new(Self { _controller: Arc::downgrade(controller), state: Spinlock::new(UsbDeviceState { device, slot, decoder: layout.map(|layout| Box::new(crate::hid_report::ReportDecoder::new(layout))), evdev: None, input_platform: None, storage_names: Vec::new() }) })
+        Arc::new(Self {
+            _controller: Arc::downgrade(controller),
+            transfer: sched::live::Mutex::new(()),
+            state: Spinlock::new(UsbDeviceState { device, slot, decoder: layout.map(|layout| Box::new(crate::hid_report::ReportDecoder::new(layout))), evdev: None, input_platform: None, storage_names: Vec::new() }),
+        })
     }
 
+    /// Take the one sleeping Bulk-Only transaction owner in process context.
+    /// No xHCI spinlock may be held by the caller. # C: O(park)
+    pub(crate) fn lock_transfer(&self) -> sched::live::MutexGuard<'_, ()> {
+        // SAFETY: all callers are workqueue/block process context and take this
+        // lock before any short-lived xHCI bottom-half lock.
+        unsafe { self.transfer.lock() }
+    }
+
+    /// Run one non-sleeping xHCI state transition under the bottom-half locks.
+    /// The callback must submit or inspect only; it must not wait for a device
+    /// completion or otherwise schedule. # C: O(1)
     pub(crate) fn with_transport<T>(&self, f: impl FnOnce(&Mmio, Binding, &CommandTransport, &mut UsbDeviceState) -> T) -> Option<T> {
         let controller = self._controller.upgrade()?;
         let mut controller = controller.state.lock_bh::<XhciBh>();
@@ -196,6 +217,16 @@ fn fetch_first_configuration(mmio: &Mmio, irq: Binding, device: &mut AddressDevi
     true
 }
 
+/// Fetch the standard USB serial string after EP0 is usable. A device without
+/// a serial, or one that declines the optional request, remains enumerable.
+/// # C: O(serial descriptor bytes)
+fn fetch_device_serial(mmio: &Mmio, irq: Binding, device: &mut AddressDeviceDma, slot: u8, index: u8) {
+    if index == 0 { return; }
+    let Some(td) = crate::usb::get_string_descriptor_trbs(device.descriptor_pa(), index) else { return; };
+    let Some(status_pa) = device.submit_ep0(mmio, slot, &td) else { return; };
+    if control_complete(irq, status_pa, slot) { let _ = device.read_usb_serial(); }
+}
+
 fn configure_device_endpoint(mmio: &Mmio, command: &CommandTransport, irq: Binding, device: &mut AddressDeviceDma, slot: u8) -> bool {
     let prepared = if device.hid_interface().is_some() { device.prepare_hid_endpoint() } else if device.hub_interface().is_some() { device.prepare_hub_endpoint() } else { device.prepare_storage_endpoints() };
     match prepared {
@@ -280,10 +311,9 @@ fn arm_hub_interrupt_in(mmio: &Mmio, device: &mut AddressDeviceDma, slot: u8) ->
 
 fn storage_complete(irq: Binding, trb_pa: u64, slot: u8, endpoint: u8, length: u32, timeout_ns: u64) -> bool {
     let endpoint_id = (endpoint & 0x0f).checked_mul(2).and_then(|id| id.checked_add(u8::from(endpoint & 0x80 != 0)));
-    irq.wait_transfer_completion(trb_pa, timeout_ns).is_some_and(|completion| {
-        completion.completion_code == crate::ring::COMPLETION_SUCCESS && completion.slot == slot
-            && Some(completion.endpoint_id) == endpoint_id && completion.residual <= length
-    })
+    let Some(completion) = irq.wait_transfer_completion(trb_pa, timeout_ns) else { return false; };
+    completion.completion_code == crate::ring::COMPLETION_SUCCESS && completion.slot == slot
+        && Some(completion.endpoint_id) == endpoint_id && completion.residual <= length
 }
 
 fn storage_remaining(deadline_ns: u64) -> Option<u64> {
@@ -301,25 +331,41 @@ pub(crate) struct StorageCommandResult {
 
 pub(crate) fn storage_command(device: &UsbDevice, tag: u32, lun: scsi::Lun, cdb: &[u8], data_bytes: u32,
                               device_to_host: bool, out: Option<&[u8]>, timeout_ms: u32) -> Option<StorageCommandResult> {
-    device.with_transport(|mmio, irq, _, state| {
-        let deadline_ns = sched::deadline::clock::now_ns().saturating_add(u64::from(timeout_ms).saturating_mul(1_000_000));
+    let _transaction = device.lock_transfer();
+    let deadline_ns = sched::deadline::clock::now_ns().saturating_add(u64::from(timeout_ms).saturating_mul(1_000_000));
+    let lun = u8::try_from(lun.value()).ok().filter(|lun| *lun <= crate::storage::USB_BULK_MAX_LUN)?;
+    if device_to_host != out.is_none() || out.is_some_and(|bytes| bytes.len() != data_bytes as usize) { return None; }
+    let Some(Some((irq, slot, storage, cbw))) = device.with_transport(|mmio, irq, _, state| {
         let storage = state.device.storage_interface()?;
-        let lun = u8::try_from(lun.value()).ok().filter(|lun| *lun <= crate::storage::USB_BULK_MAX_LUN)?;
-        if device_to_host != out.is_none() || out.is_some_and(|bytes| bytes.len() != data_bytes as usize) { return None; }
         if let Some(bytes) = out { if !state.device.set_storage_data(bytes) { return None; } }
-        let cbw = state.device.submit_storage_cbw(mmio, state.slot, tag, data_bytes, device_to_host, lun, cdb)?;
-        if !storage_complete(irq, cbw, state.slot, storage.bulk_out, crate::storage::CBW_BYTES as u32, storage_remaining(deadline_ns)?) { return None; }
-        if data_bytes != 0 {
-            let data = state.device.submit_storage_data(mmio, state.slot, data_bytes, device_to_host)?;
-            let endpoint = if device_to_host { storage.bulk_in } else { storage.bulk_out };
-            if !storage_complete(irq, data, state.slot, endpoint, data_bytes, storage_remaining(deadline_ns)?) { return None; }
-        }
-        let csw = state.device.submit_storage_csw(mmio, state.slot)?;
-        if !storage_complete(irq, csw, state.slot, storage.bulk_in, crate::storage::CSW_BYTES as u32, storage_remaining(deadline_ns)?) { return None; }
+        let slot = state.slot;
+        let cbw = state.device.submit_storage_cbw(mmio, slot, tag, data_bytes, device_to_host, lun, cdb)?;
+        Some((irq, slot, storage, cbw))
+    }) else { return None; };
+    if !storage_complete(irq, cbw, slot, storage.bulk_out, crate::storage::CBW_BYTES as u32, storage_remaining(deadline_ns)?) { return None; }
+    if data_bytes != 0 {
+        let Some(Some(data)) = device.with_transport(|mmio, irq, _, state| {
+            let storage = state.device.storage_interface()?;
+            let slot = state.slot;
+            let trb = state.device.submit_storage_data(mmio, slot, data_bytes, device_to_host)?;
+            Some((irq, slot, storage, trb))
+        }) else { return None; };
+        let endpoint = if device_to_host { data.2.bulk_in } else { data.2.bulk_out };
+        if !storage_complete(data.0, data.3, data.1, endpoint, data_bytes, storage_remaining(deadline_ns)?) { return None; }
+    }
+    let Some(Some((irq, slot, storage, csw))) = device.with_transport(|mmio, irq, _, state| {
+        let storage = state.device.storage_interface()?;
+        let slot = state.slot;
+        let trb = state.device.submit_storage_csw(mmio, slot)?;
+        Some((irq, slot, storage, trb))
+    }) else { return None; };
+    if !storage_complete(irq, csw, slot, storage.bulk_in, crate::storage::CSW_BYTES as u32, storage_remaining(deadline_ns)?) { return None; }
+    let Some(result) = device.with_transport(|_, _, _, state| {
         let (status, residue) = state.device.storage_csw(tag, data_bytes)?;
         let data = if device_to_host { state.device.storage_data(data_bytes as usize)? } else { Vec::new() };
         Some(StorageCommandResult { data, status, residue })
-    })?
+    }) else { return None; };
+    result
 }
 
 pub(crate) fn disable_slot(mmio: &Mmio, command: &CommandTransport, irq: Binding, slot: u8) {
@@ -380,7 +426,10 @@ fn address_enabled_device(bdf: pci::Bdf, mmio: &Mmio, command: &CommandTransport
             probe_stage(b"[INFO]  xhci: device descriptor\n");
             if let Some(descriptor) = device.device_descriptor() {
                 match device.prepare_evaluate_ep0(descriptor.max_packet0) {
-                    Some(false) => if fetch_first_configuration(mmio, irq, &mut device, slot) && configure_device_endpoint(mmio, command, irq, &mut device, slot) && set_device_configuration(mmio, irq, &mut device, slot) && set_hid_idle(mmio, irq, &mut device, slot) && fetch_hid_report_descriptor(mmio, irq, &mut device, slot) && configure_hub_device(mmio, command, irq, &mut device, slot) && arm_hub_interrupt_in(mmio, &mut device, slot) { return Some(device); },
+                    Some(false) => {
+                        fetch_device_serial(mmio, irq, &mut device, slot, descriptor.serial_index);
+                        if fetch_first_configuration(mmio, irq, &mut device, slot) && configure_device_endpoint(mmio, command, irq, &mut device, slot) && set_device_configuration(mmio, irq, &mut device, slot) && set_hid_idle(mmio, irq, &mut device, slot) && fetch_hid_report_descriptor(mmio, irq, &mut device, slot) && configure_hub_device(mmio, command, irq, &mut device, slot) && arm_hub_interrupt_in(mmio, &mut device, slot) { return Some(device); }
+                    },
                     Some(true) => {
                         #[cfg(feature = "debug-boot")]
                         probe_stage(b"[INFO]  xhci: ep0 evaluate submit\n");
@@ -389,6 +438,7 @@ fn address_enabled_device(bdf: pci::Bdf, mmio: &Mmio, command: &CommandTransport
                                 if irq.wait_command_completion(evaluate_pa, 1_000_000_000).is_some_and(|completion| completion.completion_code == crate::ring::COMPLETION_SUCCESS && completion.slot == slot) {
                                     #[cfg(feature = "debug-boot")]
                                     probe_stage(b"[INFO]  xhci: ep0 evaluate complete\n");
+                                    fetch_device_serial(mmio, irq, &mut device, slot, descriptor.serial_index);
                                     if fetch_first_configuration(mmio, irq, &mut device, slot) && configure_device_endpoint(mmio, command, irq, &mut device, slot) && set_device_configuration(mmio, irq, &mut device, slot) && set_hid_idle(mmio, irq, &mut device, slot) && fetch_hid_report_descriptor(mmio, irq, &mut device, slot) && configure_hub_device(mmio, command, irq, &mut device, slot) && arm_hub_interrupt_in(mmio, &mut device, slot) { return Some(device); }
                                 }
                             }
