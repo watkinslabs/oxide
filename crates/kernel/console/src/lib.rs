@@ -28,13 +28,15 @@ extern crate alloc;
 // - `vt_console`/`vt_tty`/`vt_input`: the video VTs.
 // - `vcs`:       `/dev/vcs*` screen dumps.
 // - `devnodes`:  device-model registration of every node above.
+// - `boot_progress`: fixed major-stage records for the primary UART and VT.
 //
-// Everything but `ids`/`identity`/`nodes`/`devnum` reaches `tty::live`,
-// `sched::live` or a UART driver, so it exists only in a kernel build; the
-// identity DECISION is ungated and host-tested.
+// Everything but `ids`/`identity`/`nodes`/`devnum`/`boot_progress` reaches
+// `tty::live`, `sched::live` or a UART driver, so it exists only in a kernel
+// build; the identity and progress decisions are ungated and host-tested.
 
 mod devnum;
 mod tty_audit;
+pub mod boot_progress;
 pub mod identity;
 pub mod ids;
 pub mod nodes;

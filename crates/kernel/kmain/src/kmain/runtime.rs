@@ -28,7 +28,7 @@ pub(crate) fn init_prefix(info: &BootInfo) {
     // a native display probe evicts this generic aperture before it modesets.
     step("init_simple_framebuffer", || init_simple_framebuffer(info));
     if drv_simplefb::present() {
-        boot_status(b"[INFO]  boot: graphical console ready\r\n");
+        console::boot_progress::publish(console::boot_progress::Phase::GraphicalConsole);
     }
     // Wire the control-event notifier BEFORE any netdev registers. Linux
     // installs the rtnetlink notifier chain before device registration; here
@@ -41,6 +41,7 @@ pub(crate) fn init_prefix(info: &BootInfo) {
 #[cfg(target_os = "oxide-kernel")]
 #[inline(never)]
 pub(crate) fn init_suffix(info: &BootInfo) {
+    console::boot_progress::publish(console::boot_progress::Phase::SecondaryCpus);
     step("init_x2apic_and_smp", || init_smp(info));
     // NB: the AP master page-table gets each device's MMIO mapping propagated
     // eagerly inside `mmio_map::map_pages` (resync per splice), so APs can't #PF
@@ -323,9 +324,7 @@ fn install_drv_sysfs_hooks() {
 #[cfg(target_os = "oxide-kernel")]
 #[inline(never)]
 pub(crate) fn init_network_and_pci() {
-    if drv_simplefb::present() {
-        boot_status(b"[INFO]  boot: probing devices\r\n");
-    }
+    console::boot_progress::publish(console::boot_progress::Phase::DeviceProbe);
     init_network_sockets();
     // PCI enumeration owns its own phase logging. Avoid retaining `step`'s
     // formatting closure across firmware AML evaluation on the BSP stack.
@@ -351,19 +350,6 @@ pub(crate) fn init_network_and_pci() {
     // presents `/dev/video0`, so the whole V4L2 path — negotiation, buffers,
     // controls, events — is real rather than machinery with no caller.
     step("v4l2::vivid", drv_vivid::init);
-}
-
-/// Put the first two boot milestones on both real consoles synchronously.
-///
-/// The normal klog framebuffer sink is deliberately nonblocking: it must not
-/// wait while an arbitrary caller holds a kernel lock.  This early boot path
-/// has no such lock, and a visible status line is more important than avoiding
-/// that one bounded VT acquisition, so write the live VT directly as well as
-/// preserving a serial/ring record.
-#[cfg(target_os = "oxide-kernel")]
-fn boot_status(message: &'static [u8]) {
-    klog::write_primary_raw(message);
-    fbcon::kernel::vt_write(1, message);
 }
 
 #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]

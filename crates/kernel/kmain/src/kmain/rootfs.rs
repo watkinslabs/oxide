@@ -19,6 +19,7 @@ use super::entry::step;
 #[cfg(target_os = "oxide-kernel")]
 #[inline(never)]
 pub unsafe fn init(info: &BootInfo) {
+    console::boot_progress::publish(console::boot_progress::Phase::RootFilesystem);
     // SAFETY: forwarded boot-entry contract — single CPU, no user address space
     // live, so republishing the kernel-half master has no concurrent copier.
     #[cfg(target_arch = "x86_64")]
@@ -30,6 +31,7 @@ pub unsafe fn init(info: &BootInfo) {
     log_dev_null_owner();
     debug_boot_rootfs();
     step("load_keymap", load_keymap);
+    console::boot_progress::publish(console::boot_progress::Phase::Userspace);
     step("handoff_to_userspace", || handoff_to_userspace(info));
 }
 
