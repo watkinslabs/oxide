@@ -49,6 +49,14 @@ pub fn mpidr_el1() -> u64 {
     { 0 }
 }
 
+/// The affinity fields of MPIDR_EL1, the firmware CPU identity used by DT and
+/// ACPI GICC records. The U and MT bits describe the topology encoding, not a
+/// CPU, and must not participate in a CPU-table lookup. # C: O(1)
+pub const MPIDR_AFFINITY_MASK: u64 = 0x0000_00ff_00ff_ffff;
+
+/// This PE's firmware CPU identity. # C: O(1)
+pub fn mpidr_affinity() -> u64 { mpidr_el1() & MPIDR_AFFINITY_MASK }
+
 /// Read `ID_AA64ISAR0_EL1` (Instruction Set Attribute Register 0): the
 /// crypto/CRC feature fields. Privileged at EL1, no memory effects.
 /// # C: O(1)
