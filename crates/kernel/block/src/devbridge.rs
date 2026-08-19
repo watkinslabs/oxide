@@ -26,7 +26,7 @@ use vfs::types::{KResult, VfsError};
 
 use crate::blockdev::{BlockDevice, BlockRequest};
 use crate::types::{BlockError, KResult as BlockResult, BlockOp};
-use crate::registry::{by_dev, close_by_dev, partition_by_dev, try_open_by_dev, DevNum, Disk, OpenFailure, Partition};
+use crate::registry::{by_dev, close_by_dev, close_disk, partition_by_dev, try_open_by_dev, DevNum, Disk, OpenFailure, Partition};
 
 /// Block-layer error as the errno a file operation returns. Both enums carry
 /// the Linux numeric value, so this is a name-to-name mapping of one code.
@@ -178,9 +178,9 @@ impl BlockDevOps for DiskBlkOps {
     /// when it looks like the last opener is leaving): the device pass of
     /// `sync(2)` skips a disk nobody has open, so without this a raw write
     /// followed by a close would leave dirty pages nothing would ever flush.
-    fn release_file(&self, devt: Devt, _file: &vfs::File) {
+    fn release_file(&self, _devt: Devt, _file: &vfs::File) {
         if self.disk.opener_count() == 1 { let _ = self.disk.mapping.write_and_wait(); }
-        let _ = close_by_dev(devt.raw());
+        let _ = close_disk(&self.disk);
     }
     /// Linux `blkdev_read_iter` — through the device's page cache, not
     /// straight at the driver.

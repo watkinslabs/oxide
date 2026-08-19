@@ -172,6 +172,46 @@ fn opener_seal_keeps_the_control_opener_and_refuses_new_opens() {
 }
 
 #[test]
+fn controlled_removal_retains_only_the_control_opener_until_unpublish() {
+    const NAME: &str = "registry-controlled-removal";
+    let index = register(NAME, MemDisk::<TaskList>::new(512, 8));
+    let dev_t = dev_t_of(NAME, index).expect("published dev_t");
+    let disk = by_name(NAME).expect("registered disk");
+    assert!(open_by_dev(dev_t), "the control file owns one opener");
+    let removal = begin_controlled_removal(dev_t, 1).expect("one control opener may stop the disk");
+    assert_eq!(try_open_by_dev(dev_t), Err(OpenFailure::Closing));
+    assert!(!claim(NAME), "controlled removal closes new holder admission");
+    assert!(removal.unregister());
+    assert!(by_name(NAME).is_none(), "completed removal unpublishes the disk");
+    assert_eq!(disk.opener_count(), 1, "the retained control opener remains releasable");
+    assert!(close_disk(&disk));
+}
+
+#[test]
+fn controlled_removal_waits_for_preexisting_submission() {
+    const NAME: &str = "registry-controlled-removal-drain";
+    let inner = DeferredDevice::new();
+    let dev: Arc<dyn BlockDevice> = inner.clone();
+    let index = register(NAME, dev);
+    let dev_t = dev_t_of(NAME, index).expect("published dev_t");
+    let disk = by_name(NAME).expect("registered disk");
+    assert!(open_by_dev(dev_t));
+    disk.dev.submit(BlockRequest::new_flush(), Box::new(|_, result| assert_eq!(result, Ok(()))));
+    let removal = begin_controlled_removal(dev_t, 1).expect("control opener may begin final removal");
+    let stop = std::thread::spawn(move || removal.unregister());
+    let mut saw_closed_admission = false;
+    for _ in 0..10_000 {
+        let mut later = BlockRequest::new_flush();
+        if disk.dev.submit_sync(&mut later) == Err(BlockError::Ebusy) { saw_closed_admission = true; break; }
+        std::thread::yield_now();
+    }
+    assert!(saw_closed_admission, "final removal must wait rather than unlink a live request");
+    inner.finish();
+    assert!(stop.join().expect("removal thread"));
+    assert!(close_disk(&disk));
+}
+
+#[test]
 fn quiesce_waits_for_previously_admitted_async_submission() {
     const NAME: &str = "registry-async-lifecycle";
     let inner = DeferredDevice::new();

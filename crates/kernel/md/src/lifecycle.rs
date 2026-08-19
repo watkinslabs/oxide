@@ -8,6 +8,11 @@ const READ_WRITE: u8 = 0;
 const SEALING: u8 = 1;
 const READ_ONLY: u8 = 2;
 
+/// Starting state of a final array stop. A previously completed read-only
+/// transition has already drained its writable population.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub(crate) enum StopStart { Sealing, ReadOnly }
+
 /// Array-owned mutable lifecycle state. New writes are closed before raw
 /// block-cache writeback drains; that drain is the one permitted writer while
 /// the state is sealing.
@@ -57,6 +62,16 @@ impl State {
         match self.mode.compare_exchange(READ_WRITE, SEALING, Ordering::AcqRel, Ordering::Acquire) {
             Ok(_) => Ok(()),
             Err(READ_ONLY) => Err(BlockError::Enxio),
+            Err(_) => Err(BlockError::Ebusy),
+        }
+    }
+
+    /// Begin final shutdown from either writable or already read-only service.
+    /// # C: O(1)
+    pub(crate) fn begin_stop(&self) -> KResult<StopStart> {
+        match self.mode.compare_exchange(READ_WRITE, SEALING, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => Ok(StopStart::Sealing),
+            Err(READ_ONLY) => Ok(StopStart::ReadOnly),
             Err(_) => Err(BlockError::Ebusy),
         }
     }
@@ -128,5 +143,13 @@ mod tests {
         drop(token);
         state.finish_read_only().expect("read-only");
         assert!(matches!(state.admit(&writeback), Err(BlockError::Erofs)));
+    }
+
+    #[test]
+    fn final_stop_accepts_an_already_read_only_array() {
+        let state = State::new();
+        state.begin_read_only().expect("seal");
+        state.finish_read_only().expect("read-only");
+        assert_eq!(state.begin_stop(), Ok(StopStart::ReadOnly));
     }
 }
