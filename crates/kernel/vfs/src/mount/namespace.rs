@@ -151,7 +151,9 @@ pub fn bind_submounts_rec_at(src_mnt_hint: Option<u64>, src: &Arc<Dentry>, tgt: 
 pub fn move_mount(from: &Arc<Dentry>, to: &Arc<Dentry>) -> KResult<()> {
     let namespace = current_namespace();
     let from_m = mount_exact_at(namespace.id(), from).ok_or(VfsError::Einval)?;
-    move_mount_m(from_m, to, None, None)
+    move_mount_m(from_m, to, None, None)?;
+    propagate_moved_mount(to);
+    Ok(())
 }
 
 /// As [`move_mount`] but identifies the SOURCE mount by the `mnt_id` the path
@@ -178,7 +180,9 @@ pub fn move_mount_by_id_to(from_id: u64, to_mnt_id: Option<u64>, to: &Arc<Dentry
     // [D32] Uniform cross-ns guard: `mount_by_id` is the ns-AGNOSTIC arena
     // lookup, so a by-id handle MUST pass `check_mnt` before any mutation.
     if !check_mnt(&from_m) { return Err(VfsError::Einval); }
-    move_mount_m(from_m, to, to_mnt_id, None)
+    move_mount_m(from_m, to, to_mnt_id, None)?;
+    propagate_moved_mount(to);
+    Ok(())
 }
 
 /// As [`move_mount_by_id_to`] but preserves the caller's mount-aware target
@@ -189,7 +193,15 @@ pub fn move_mount_by_id_to(from_id: u64, to_mnt_id: Option<u64>, to: &Arc<Dentry
 pub fn move_mount_by_id_to_rendered(from_id: u64, to_mnt_id: Option<u64>, to: &Arc<Dentry>, rendered: String) -> KResult<()> {
     let from_m = mount_by_id(from_id).ok_or(VfsError::Einval)?;
     if !check_mnt(&from_m) { return Err(VfsError::Einval); }
-    move_mount_m(from_m, to, to_mnt_id, Some(rendered))
+    move_mount_m(from_m, to, to_mnt_id, Some(rendered))?;
+    propagate_moved_mount(to);
+    Ok(())
+}
+
+/// Deliver a completed MS_MOVE attachment to the destination parent's peers.
+/// # C: O(N_mounts × depth)
+fn propagate_moved_mount(to: &Arc<Dentry>) {
+    if !is_ns_root_dentry(to) { propagate_mount(to); }
 }
 
 /// Shared MS_MOVE body for both [`move_mount`] variants. `dest_hint` is the

@@ -35,12 +35,17 @@ pub fn copy_mnt_ns_map(from: &mntns::MntNamespaceRef, to: &mntns::MntNamespaceRe
     let to_ns = to.id();
     let src = mounts_in_ns(from_ns);
     let from_root = root_mount_id(from_ns);
+    let same_user_ns = namespace_identity::NamespacePin::ptr_eq(
+        &from.owner_user_namespace(), &to.owner_user_namespace());
     let reservation = mntns::MountReservation::reserve(to, src.len() as u64)?;
     let mut map = Vec::new();
     let _w = MOUNT_WRITE.lock();
     for m in src.iter() {
         let prop = Propagation::from_u8(m.propagation.load(Ordering::Acquire));
         let clone = match prop {
+            Propagation::Shared if same_user_ns => {
+                clone_mnt(m, CloneType::MakeShared, m.peer_group.load(Ordering::Acquire), m, to_ns)
+            }
             Propagation::Shared => {
                 let c = clone_mnt(m, CloneType::Slave, 0, m, to_ns);
                 c.peer_group.store(m.peer_group.load(Ordering::Acquire), Ordering::Release);
@@ -63,8 +68,7 @@ pub fn copy_mnt_ns_map(from: &mntns::MntNamespaceRef, to: &mntns::MntNamespaceRe
     // RDONLY, retune atime, or unmount a node to reveal what it covers. Without
     // this stamp `unshare(CLONE_NEWUSER|CLONE_NEWNS)` is a privilege-escalation
     // surface rather than a sandbox.
-    if !namespace_identity::NamespacePin::ptr_eq(
-        &from.owner_user_namespace(), &to.owner_user_namespace()) {
+    if !same_user_ns {
         locked::lock_mnt_ns(to_ns);
     }
     mntns::bump_gen(to_ns);
