@@ -13,6 +13,10 @@ static LAST_H: AtomicU32 = AtomicU32::new(0);
 /// Pixel-buffer length the sink was handed, to prove the rect is the small
 /// part of a large surface rather than the surface itself.
 static LAST_LEN: AtomicUsize = AtomicUsize::new(0);
+static GEOMETRY_COUNT: AtomicUsize = AtomicUsize::new(0);
+static GEOMETRY_ROWS: AtomicU32 = AtomicU32::new(0);
+static GEOMETRY_COLS: AtomicU32 = AtomicU32::new(0);
+static GEOMETRY_YPIXEL: AtomicU32 = AtomicU32::new(0);
 
 fn count_flush(pixels: &[u8], rect: FlushRect) {
     FLUSH_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -21,6 +25,13 @@ fn count_flush(pixels: &[u8], rect: FlushRect) {
     LAST_W.store(rect.w, Ordering::Relaxed);
     LAST_H.store(rect.h, Ordering::Relaxed);
     LAST_LEN.store(pixels.len(), Ordering::Relaxed);
+}
+
+fn capture_geometry(rows: u16, cols: u16, ypixel: u16) {
+    GEOMETRY_COUNT.fetch_add(1, Ordering::Relaxed);
+    GEOMETRY_ROWS.store(u32::from(rows), Ordering::Relaxed);
+    GEOMETRY_COLS.store(u32::from(cols), Ordering::Relaxed);
+    GEOMETRY_YPIXEL.store(u32::from(ypixel), Ordering::Relaxed);
 }
 
 fn last_rect() -> (u32, u32, u32, u32) {
@@ -42,6 +53,13 @@ fn arm_flush_probe() {
         c.store(0, Ordering::Relaxed);
     }
     LAST_LEN.store(0, Ordering::Relaxed);
+}
+
+fn arm_geometry_probe() {
+    GEOMETRY_COUNT.store(0, Ordering::Relaxed);
+    GEOMETRY_ROWS.store(0, Ordering::Relaxed);
+    GEOMETRY_COLS.store(0, Ordering::Relaxed);
+    GEOMETRY_YPIXEL.store(0, Ordering::Relaxed);
 }
 
 /// Run the pending `FbconFlush` softirq.
@@ -229,6 +247,37 @@ fn scanout_rebind_resizes_the_live_console_to_the_native_mode() {
     assert_eq!(LAST_LEN.load(Ordering::Relaxed), (NATIVE_XRES * NATIVE_YRES * 4) as usize);
     assert_eq!(kernel::console_dims(), Some((48, 128)));
     assert!(kernel::screen_dump(false).starts_with(b"firmware status"));
+    kernel::kernel_unregister();
+}
+
+#[test]
+fn scanout_rebind_notifies_the_numbered_vt_geometry_consumer() {
+    let _guard = CONSOLE_TEST_DOMAIN.lock();
+    kernel::kernel_unregister();
+    arm_geometry_probe();
+    kernel::set_geometry_sink(capture_geometry);
+    kernel::kernel_init(TEST_XRES, TEST_YRES, count_flush);
+    assert_eq!(GEOMETRY_COUNT.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        (
+            GEOMETRY_ROWS.load(Ordering::Relaxed),
+            GEOMETRY_COLS.load(Ordering::Relaxed),
+            GEOMETRY_YPIXEL.load(Ordering::Relaxed),
+        ),
+        (30, 80, TEST_YRES),
+    );
+
+    assert!(kernel::kernel_rebind(NATIVE_XRES, NATIVE_YRES, count_flush));
+    assert_eq!(GEOMETRY_COUNT.load(Ordering::Relaxed), 2);
+    assert_eq!(
+        (
+            GEOMETRY_ROWS.load(Ordering::Relaxed),
+            GEOMETRY_COLS.load(Ordering::Relaxed),
+            GEOMETRY_YPIXEL.load(Ordering::Relaxed),
+        ),
+        (48, 128, NATIVE_YRES),
+        "the early firmware geometry must not survive the native rebind",
+    );
     kernel::kernel_unregister();
 }
 

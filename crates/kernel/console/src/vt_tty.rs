@@ -107,11 +107,10 @@ fn build(vt: u8) -> &'static VtTty {
         default_termios(),
         Some(sink),
     ));
-    // Seed the VT winsize from the framebuffer cell grid (Linux: a VT's
-    // winsize is its console geometry, not the 80×24 serial default). So
-    // full-screen apps (htop/btop) on the video console see the real size.
-    if let Some((rows, cols)) = fbcon::kernel::console_dims() {
-        tty.set_winsize(tty::pty::Winsize { rows, cols, xpixel: 0, ypixel: 0 });
+    // A VT created after fbcon comes up must inherit the same native geometry
+    // that an existing VT receives through `sync_framebuffer_winsizes`.
+    if let Some((rows, cols, ypixel)) = fbcon::kernel::console_geometry() {
+        tty.set_winsize(crate::framebuffer::winsize(rows, cols, ypixel));
     }
     let raw = Arc::into_raw(tty);
     // build() leaks the Arc for the kernel lifetime (numbered VTs never
@@ -147,6 +146,31 @@ pub fn vt_tty(vt: u8) -> &'static VtTty {
             // build()→CAS over a leaked Arc<VtTty>; &* is valid for the
             // kernel lifetime, methods take &self.
             unsafe { &*(won as *const VtTty) }
+        }
+    }
+}
+
+/// Apply a committed framebuffer geometry to every already-open numbered VT.
+///
+/// TIOCGWINSZ must follow the text grid after firmware hands the display to a
+/// native scanout. A changed foreground pgrp receives SIGWINCH after its tty
+/// state is committed, so full-screen programs redraw with the new dimensions.
+/// # C: O(N_VT + P) foreground-pgrp tasks
+pub fn sync_framebuffer_winsizes(rows: u16, cols: u16, ypixel: u16) {
+    let winsize = crate::framebuffer::winsize(rows, cols, ypixel);
+    for raw in &VT_TTYS {
+        let raw = raw.load(Ordering::Acquire);
+        if raw == 0 { continue; }
+        // SAFETY: each nonzero slot was published by vt_tty after build leaked
+        // its owning Arc for the kernel lifetime; this shared reference stays
+        // valid while set_winsize and fg_pgrp operate through interior locks.
+        let tty = unsafe { &*(raw as *const VtTty) };
+        let changed = tty.set_winsize(winsize);
+        let pgrp = tty.fg_pgrp();
+        if changed && pgrp != 0 {
+            for task in sched::live::registry::tasks_in_pgrp(pgrp) {
+                sched::live::send_sig_priv_group(&task, sched::Signum::Sigwinch as u32);
+            }
         }
     }
 }
