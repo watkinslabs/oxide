@@ -31,6 +31,15 @@ pub const PORT_RESET_CHANGE: u32 = 1 << 21;
 pub const PORT_WARM_RESET_CHANGE: u32 = 1 << 19;
 /// Port Status Change Event TRB type. # C: O(1)
 pub const TRB_PORT_STATUS: u32 = 34;
+/// Root-hub USB2 reset-status polling interval. # C: O(1)
+pub const USB2_ROOT_RESET_WAIT_NS: u64 = 60_000_000;
+/// USB2 reset-status polling interval after the root-hub recovery polls. # C: O(1)
+pub const USB2_RESET_LONG_WAIT_NS: u64 = 200_000_000;
+/// Maximum elapsed USB2 root-port reset wait. # C: O(1)
+pub const USB2_RESET_TIMEOUT_NS: u64 = 800_000_000;
+/// Maximum root-port reset attempts before giving up. # C: O(1)
+pub const USB2_RESET_TRIES: u8 = 5;
+const USB2_RESET_SHORT_WAIT_NS: u64 = 10_000_000;
 
 /// Decode the physical port ID from a valid port-status event TRB. # C: O(1)
 pub fn event_port_id(parameter: u32, control: u32, max_ports: u8) -> Option<u8> {
@@ -68,9 +77,31 @@ pub fn reset_request(portsc: u32) -> Option<u32> {
     (portsc & PORT_CONNECT != 0 && portsc & PORT_RESET == 0).then_some(neutral_portsc(portsc) | PORT_RESET)
 }
 
-/// A USB 2 reset has completed only after reset is deasserted and its change is visible. # C: O(1)
+/// A USB 2 reset has completed after the device reconnects enabled and reset
+/// is deasserted. The reset-change bit is acknowledged after that observation.
+/// # C: O(1)
 pub fn reset_completed(portsc: u32) -> bool {
-    portsc & (PORT_CONNECT | PORT_RESET | PORT_RESET_CHANGE) == PORT_CONNECT | PORT_RESET_CHANGE
+    portsc & (PORT_CONNECT | PORT_ENABLED | PORT_RESET) == PORT_CONNECT | PORT_ENABLED
+}
+
+/// Select the next root-hub USB2 reset observation delay. # C: O(1)
+pub const fn usb2_root_reset_wait_ns(delay_time_ns: u64) -> Option<u64> {
+    if delay_time_ns >= USB2_RESET_TIMEOUT_NS { return None; }
+    Some(if delay_time_ns < USB2_ROOT_RESET_WAIT_NS * 2 {
+        USB2_ROOT_RESET_WAIT_NS
+    } else {
+        USB2_RESET_LONG_WAIT_NS
+    })
+}
+
+/// Advance the root-hub reset loop using its post-observation delay rule.
+/// # C: O(1)
+pub const fn usb2_root_reset_next_delay_time_ns(delay_time_ns: u64, wait_ns: u64) -> u64 {
+    delay_time_ns.saturating_add(if delay_time_ns >= USB2_RESET_SHORT_WAIT_NS * 2 {
+        USB2_RESET_LONG_WAIT_NS
+    } else {
+        wait_ns
+    })
 }
 
 #[cfg(test)]
@@ -96,20 +127,34 @@ mod tests {
     }
 
     #[test]
-    fn reset_requires_connected_port_and_observes_reset_change() {
+    fn reset_requires_connected_enabled_port_but_not_reset_change() {
         assert_eq!(reset_request(PORT_CONNECT), Some(PORT_CONNECT | PORT_RESET));
         assert_eq!(reset_request(PORT_CONNECT | PORT_ENABLED | PORT_CHANGE_MASK), Some(PORT_CONNECT | PORT_RESET));
         assert_eq!(reset_request(0), None);
         assert_eq!(reset_request(PORT_CONNECT | PORT_RESET), None);
-        assert!(reset_completed(PORT_CONNECT | PORT_RESET_CHANGE));
+        assert!(reset_completed(PORT_CONNECT | PORT_ENABLED));
+        assert!(reset_completed(PORT_CONNECT | PORT_ENABLED | PORT_RESET_CHANGE));
         assert!(!reset_completed(PORT_CONNECT));
-        assert!(!reset_completed(PORT_CONNECT | PORT_RESET | PORT_RESET_CHANGE));
+        assert!(!reset_completed(PORT_CONNECT | PORT_ENABLED | PORT_RESET | PORT_RESET_CHANGE));
+        assert!(!reset_completed(PORT_CONNECT | PORT_RESET_CHANGE));
     }
 
     #[test]
     fn reset_completion_stays_visible_until_the_root_hub_consumes_it() {
         assert_eq!(acknowledge_nonreset_changes((1 << 17) | PORT_RESET_CHANGE), 1 << 17);
         assert_eq!(acknowledge_nonreset_changes(PORT_RESET_CHANGE), 0);
+    }
+
+    #[test]
+    fn root_usb2_reset_uses_the_root_hub_poll_and_recovery_schedule() {
+        assert_eq!(usb2_root_reset_wait_ns(0), Some(USB2_ROOT_RESET_WAIT_NS));
+        assert_eq!(usb2_root_reset_wait_ns(USB2_ROOT_RESET_WAIT_NS), Some(USB2_ROOT_RESET_WAIT_NS));
+        assert_eq!(usb2_root_reset_next_delay_time_ns(0, USB2_ROOT_RESET_WAIT_NS), USB2_ROOT_RESET_WAIT_NS);
+        assert_eq!(usb2_root_reset_next_delay_time_ns(USB2_ROOT_RESET_WAIT_NS, USB2_ROOT_RESET_WAIT_NS),
+            USB2_ROOT_RESET_WAIT_NS + USB2_RESET_LONG_WAIT_NS);
+        assert_eq!(usb2_root_reset_wait_ns(USB2_ROOT_RESET_WAIT_NS + USB2_RESET_LONG_WAIT_NS),
+            Some(USB2_RESET_LONG_WAIT_NS));
+        assert_eq!(usb2_root_reset_wait_ns(USB2_RESET_TIMEOUT_NS), None);
     }
 
     #[test]

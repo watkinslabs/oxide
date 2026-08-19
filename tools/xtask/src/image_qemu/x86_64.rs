@@ -2,7 +2,7 @@ use std::process::Command;
 
 use crate::run;
 
-use super::common::{ensure_ahci_extra_img, ensure_ahci_img, ensure_nvme_extra_img, ensure_nvme_img, ensure_virtio_blk_extra_img, ssh_fwd_netdev, which};
+use super::common::{ensure_ahci_extra_img, ensure_ahci_img, ensure_nvme_extra_img, ensure_nvme_img, ensure_usb_storage_img, ensure_virtio_blk_extra_img, ssh_fwd_netdev, which};
 #[path = "x86_display.rs"] mod x86_display;
 use x86_display::display_plan;
 
@@ -77,6 +77,15 @@ impl HardwareProfile {
                 "usb-kbd,bus=xhci.0",
                 "usb-tablet,bus=xhci.0",
             ],
+        }
+    }
+
+    /// USB mass storage is a native xHCI acceptance device, not part of the
+    /// default virtio transport profile.
+    fn usb_storage_device(self) -> Option<&'static str> {
+        match self {
+            Self::Default => None,
+            Self::NativePci => Some("usb-storage,drive=usb0,bus=xhci.0,serial=oxide-usb0"),
         }
     }
 }
@@ -192,6 +201,8 @@ pub(super) fn qemu_run_grub_x86_64(
     // D3.6: AHCI/SATA scratch disk for the drv-ahci bring-up.
     let ahci_img = ensure_ahci_img(repo, id, "x86_64");
     let ahci_drive = format!("id=sata0,if=none,format=raw,file={}", ahci_img.display());
+    let usb_scsi_img = ensure_usb_storage_img(repo, id, "x86_64");
+    let usb_scsi_drive = format!("id=usb0,if=none,format=raw,file={}", usb_scsi_img.display());
     let smp_str = smp.to_string();
     // KVM by default when /dev/kvm exists (a heavy glibc GNOME root is
     // impractically slow under TCG). Force TCG with OXIDE_QEMU_TCG=1 for the
@@ -319,6 +330,9 @@ pub(super) fn qemu_run_grub_x86_64(
     ]);
     for device in profile.input_devices() {
         c.args(["-device", device]);
+    }
+    if let Some(device) = profile.usb_storage_device() {
+        c.args(["-drive", usb_scsi_drive.as_str(), "-device", device]);
     }
     if let Some(device) = profile.iommu_device() {
         c.args(["-device", device]);
@@ -459,6 +473,9 @@ mod tests {
             "usb-kbd,bus=xhci.0",
             "usb-tablet,bus=xhci.0",
         ]);
+        assert_eq!(HardwareProfile::Default.usb_storage_device(), None);
+        assert_eq!(HardwareProfile::NativePci.usb_storage_device(),
+            Some("usb-storage,drive=usb0,bus=xhci.0,serial=oxide-usb0"));
     }
 
     #[test]

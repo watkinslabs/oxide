@@ -3,7 +3,7 @@
 // remove, matching the rest of the driver-core lifecycle.
 // `gic_trigger` owns host-testable GIC ICFGR field encoding, `gic_group` the
 // GICD_IGROUPR interrupt-group encoding, and `spurious` the generic unhandled-
-// delivery detector.
+// delivery detector. `its_mapd` owns host-testable ITS MAPD encoding.
 
 #![no_std]
 
@@ -30,6 +30,8 @@ mod gic_group;
 mod gic_lpi_layout;
 #[cfg(any(test, all(target_os = "oxide-kernel", target_arch = "aarch64")))]
 mod gic_trigger;
+#[cfg(any(test, target_arch = "aarch64"))]
+mod its_mapd;
 mod line;
 mod msi;
 mod msi_context;
@@ -345,12 +347,11 @@ pub fn alloc_arm_spi() -> Option<u32> {
 }
 
 /// Allocate one LPI INTID for a GICv3 ITS-backed MSI/MSI-X vector.
-/// LPI 8192 is reserved for the early ITS self-test mapping; runtime
-/// drivers start at 8193.
+/// The first architected LPI is available to the first discovered device.
 /// # C: O(N²) over the small MSI table.
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 pub fn alloc_arm_lpi() -> Option<u32> {
-    let first = crate::gic::LPI_BASE + 1;
+    let first = crate::gic::LPI_BASE;
     let limit = first + ARM_MSI_SLOTS as u32;
     for lpi in first..limit {
         let mut seen = false;

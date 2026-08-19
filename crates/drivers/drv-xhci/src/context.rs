@@ -119,9 +119,9 @@ pub fn address_device(bytes: &mut [u8], context_bytes: u8, port: u8, portsc: u32
 }
 
 /// Exact writes for Linux's post-descriptor EP0 Evaluate Context update. # C: O(1)
-pub fn evaluate_ep0_words(context_bytes: u8, output_ep0: [u32; 5], max_packet: u8) -> Option<[ContextWord; 7]> {
+pub fn evaluate_ep0_words(context_bytes: u8, output_ep0: [u32; 5], max_packet: u16) -> Option<[ContextWord; 7]> {
     let stride = context_bytes as usize;
-    if !matches!(stride, 32 | 64) || !matches!(max_packet, 8 | 16 | 32 | 64) { return None; }
+    if !matches!(stride, 32 | 64) || !matches!(max_packet, 8 | 16 | 32 | 64 | 512) { return None; }
     let ep0 = EP0_CONTEXT * stride;
     let words = [
         ContextWord { offset: 0, value: 0 },
@@ -148,8 +148,14 @@ pub fn configure_endpoint_words(context_bytes: u8, output_slot: [u32; 8], speed:
         let number = endpoint.address & 0x0f;
         if number == 0 || endpoint.max_packet == 0 || endpoint.ring_pa & 0xf != 0 { return None; }
         let in_dir = endpoint.address & 0x80 != 0;
-        let endpoint_id = number.checked_mul(2)?.checked_add(u8::from(in_dir))?;
-        if endpoint_id > 31 || add_flags & (1 << endpoint_id) != 0 { return None; }
+        // The xHCI Device Context Index (DCI) addresses both the endpoint
+        // doorbell target and the Input Control Context add flag.  An Input
+        // Context has one extra leading Input Control Context, so its endpoint
+        // context lives one context stride after the matching DCI in the
+        // controller's output Device Context.
+        let endpoint_dci = number.checked_mul(2)?.checked_add(u8::from(in_dir))?;
+        let input_context = endpoint_dci.checked_add(1)?;
+        if endpoint_dci > 31 || add_flags & (1 << endpoint_dci) != 0 { return None; }
         let (ty, interval, average) = match endpoint.kind {
             EndpointType::Bulk => (if in_dir { EP_TYPE_BULK_IN } else { EP_TYPE_BULK_OUT }, 0, 0),
             EndpointType::Interrupt => {
@@ -165,9 +171,9 @@ pub fn configure_endpoint_words(context_bytes: u8, output_slot: [u32; 8], speed:
                 (if in_dir { EP_TYPE_INTERRUPT_IN } else { EP_TYPE_INTERRUPT_OUT }, interval, u32::from(endpoint.max_packet))
             }
         };
-        add_flags |= 1 << endpoint_id;
-        last_id = last_id.max(endpoint_id);
-        normalized.push((endpoint_id, ty, interval, average, endpoint.max_packet, endpoint.ring_pa));
+        add_flags |= 1 << endpoint_dci;
+        last_id = last_id.max(endpoint_dci);
+        normalized.push((input_context, ty, interval, average, endpoint.max_packet, endpoint.ring_pa));
     }
     let slot = SLOT_CONTEXT * stride;
     let mut slot0 = output_slot[0] & !SLOT_CONTEXT_ENTRIES_MASK;
@@ -181,8 +187,8 @@ pub fn configure_endpoint_words(context_bytes: u8, output_slot: [u32; 8], speed:
         ContextWord { offset: slot + 16, value: output_slot[4] }, ContextWord { offset: slot + 20, value: output_slot[5] },
         ContextWord { offset: slot + 24, value: output_slot[6] }, ContextWord { offset: slot + 28, value: output_slot[7] },
     ]);
-    for (endpoint_id, ty, interval, average, max_packet, ring_pa) in normalized {
-        let endpoint = endpoint_id as usize * stride;
+    for (input_context, ty, interval, average, max_packet, ring_pa) in normalized {
+        let endpoint = input_context as usize * stride;
         words.extend_from_slice(&[
             ContextWord { offset: endpoint, value: u32::from(interval) << 16 },
             ContextWord { offset: endpoint + 4, value: EP_ERROR_COUNT | ty | (u32::from(max_packet) << 16) },
@@ -294,6 +300,7 @@ mod tests {
         assert_eq!(words[3], ContextWord { offset: 132, value: 0x0008_0026 });
         assert_eq!(words[4], ContextWord { offset: 136, value: 0x8001 });
         assert!(evaluate_ep0_words(32, [0; 5], 7).is_none());
+        assert_eq!(evaluate_ep0_words(64, [0; 5], 512).unwrap()[3].value, 512 << 16);
     }
     #[test]
     fn hid_context_uses_xhci_endpoint_id_and_linux_interval_encoding() {
@@ -301,8 +308,8 @@ mod tests {
         let words = configure_hid_words(64, [3, 4, 5, 6, 7, 8, 9, 10], 1, hid, 0x90_000).unwrap();
         assert_eq!(words[1], ContextWord { offset: 4, value: 1 | (1 << 3) });
         assert_eq!(words[2], ContextWord { offset: 64, value: (3 << 27) | 3 });
-        assert_eq!(words[10], ContextWord { offset: 192, value: 6 << 16 });
-        assert_eq!(words[11], ContextWord { offset: 196, value: EP_ERROR_COUNT | EP_TYPE_INTERRUPT_IN | (8 << 16) });
+        assert_eq!(words[10], ContextWord { offset: 256, value: 6 << 16 });
+        assert_eq!(words[11], ContextWord { offset: 260, value: EP_ERROR_COUNT | EP_TYPE_INTERRUPT_IN | (8 << 16) });
     }
     #[test]
     fn storage_context_uses_two_generic_bulk_endpoint_contexts() {
@@ -310,9 +317,9 @@ mod tests {
         let words = configure_storage_words(64, [3, 4, 5, 6, 7, 8, 9, 10], 3, storage, 0xa0_000, 0x90_000).unwrap();
         assert_eq!(words[1], ContextWord { offset: 4, value: 1 | (1 << 4) | (1 << 5) });
         assert_eq!(words[2], ContextWord { offset: 64, value: (5 << 27) | 3 });
-        assert!(words.contains(&ContextWord { offset: 260, value: EP_ERROR_COUNT | EP_TYPE_BULK_OUT | (512 << 16) }));
-        assert!(words.contains(&ContextWord { offset: 324, value: EP_ERROR_COUNT | EP_TYPE_BULK_IN | (512 << 16) }));
-        assert!(words.contains(&ContextWord { offset: 272, value: 0 }));
+        assert!(words.contains(&ContextWord { offset: 324, value: EP_ERROR_COUNT | EP_TYPE_BULK_OUT | (512 << 16) }));
+        assert!(words.contains(&ContextWord { offset: 388, value: EP_ERROR_COUNT | EP_TYPE_BULK_IN | (512 << 16) }));
+        assert!(words.contains(&ContextWord { offset: 336, value: 0 }));
         assert!(configure_endpoint_words(64, [0; 8], 3, &[EndpointConfig { address: 0x81, max_packet: 8, interval: 0, kind: EndpointType::Interrupt, ring_pa: 0x90_000 }]).is_none());
     }
     #[test]
