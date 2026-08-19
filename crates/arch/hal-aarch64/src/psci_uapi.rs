@@ -40,9 +40,6 @@ pub const PSCI_VERSION: u32 = psci_fn32(IDX_VERSION);
 pub const PSCI_CPU_SUSPEND_64: u32 = psci_fn64(IDX_CPU_SUSPEND);
 /// `CPU_OFF`.
 pub const PSCI_CPU_OFF: u32 = psci_fn32(IDX_CPU_OFF);
-/// `CPU_SUSPEND` (SMC64). A retention state returns to its caller; a
-/// power-down state resumes at the physical entry point in argument two.
-pub const PSCI_CPU_SUSPEND_64: u32 = psci_fn64(IDX_CPU_SUSPEND);
 /// `CPU_ON` (SMC64).
 pub const PSCI_CPU_ON_64: u32 = psci_fn64(IDX_CPU_ON);
 /// `AFFINITY_INFO` (SMC64).

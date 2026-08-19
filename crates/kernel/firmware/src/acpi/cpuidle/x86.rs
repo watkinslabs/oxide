@@ -170,11 +170,6 @@ fn firmware_tables(count: usize) -> Option<Vec<Vec<CstState>>> {
 /// Configure C3's hardware-defined coherency guard before registration.
 /// # C: O(1)
 fn c3_config(registers: CstateRegisters, intel: bool) -> Option<C3Config> {
-    let control_a = io_register(registers.pm1a_control, None)?;
-    if !set_bit(control_a, BUS_MASTER_RELOAD) { return None; }
-    if registers.pm1b_control.address != 0 && !set_bit(io_register(registers.pm1b_control, None)?, BUS_MASTER_RELOAD) {
-        return None;
-    }
     let enabled_cpus = count_enabled().max(1);
     let check_bus_master = enabled_cpus == 1 || intel;
     if !check_bus_master && registers.flags & FADT_WBINVD == 0 { return None; }
@@ -183,8 +178,15 @@ fn c3_config(registers: CstateRegisters, intel: bool) -> Option<C3Config> {
     let status_b = if check_bus_master && registers.pm1b_event.address != 0 {
         Some(status_register(registers.pm1b_event, registers.pm1_event_len)?)
     } else { None };
-    let arbitration = if registers.pm2_control_len == 0 { None }
-                      else { io_register(registers.pm2_control, Some(8)) };
+    // PM2 control owns both bus-master reload and arbitration disable.  C3
+    // remains usable when firmware omits it: bus-master status is still
+    // checked, while arbitration is left unchanged.  When it is present,
+    // leave bus-master reload enabled for all subsequent C3 entries.
+    let arbitration = if registers.pm2_control_len == 0 { None } else {
+        let register = io_register(registers.pm2_control, Some(8))?;
+        if !set_bit(register, BUS_MASTER_RELOAD) { return None; }
+        Some(register)
+    };
     Some(C3Config { check_bus_master, status_a, status_b, arbitration, cache_flush: !check_bus_master, enabled_cpus })
 }
 
@@ -254,5 +256,14 @@ mod tests {
     fn c3_without_a_bus_check_requires_cache_writeback_authorization() {
         let registers = CstateRegisters { flags: 0, ..CstateRegisters::default() };
         assert!(c3_config(registers, false).is_none());
+    }
+
+    #[test]
+    fn cst_c3_keeps_bus_master_status_check_without_pm2_arbitration() {
+        let event = Gas { space_id: SPACE_SYSTEM_IO, bit_width: 32, bit_offset: 0, access_width: 0, address: 0x400 };
+        let registers = CstateRegisters { pm1a_event: event, pm1_event_len: 4, ..CstateRegisters::default() };
+        let c3 = c3_config(registers, true).expect("CST C3 without PM2 control");
+        assert!(c3.check_bus_master);
+        assert!(c3.arbitration.is_none());
     }
 }

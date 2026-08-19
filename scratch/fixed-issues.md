@@ -1,5 +1,13 @@
 # Fixed issues
 
+### F1239-firmware-cpuidle-completion
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED F1239 | DEFECT | high | **The aarch64 PSCI UAPI declared `PSCI_CPU_SUSPEND_64` twice, so every firmware consumer failed to build before either architecture could be checked.** One declaration now owns the SMC64 contract. | F1239: `cargo check -p firmware` reproduced `E0428`; focused cpuidle, firmware, FDT, and both HAL suites pass after the duplicate removal. | F1239-firmware-cpuidle-providers |
+| FIXED F1239 | DEFECT | high | **ACPI C3 set bus-master reload in PM1 control instead of the PM2 control register that owns it.** A `_CST` C3 ladder without PM2 arbitration is valid when bus-master status remains checked; a present PM2 control register is now validated once and retains reload across entries. | F1239: `cst_c3_keeps_bus_master_status_check_without_pm2_arbitration`; `cargo test -p firmware -p cpuidle -p fdt -p hal-aarch64 -p hal-x86_64` passes. | F1239-firmware-cpuidle-providers |
+| FIXED F1239 | DEFECT | high | **Device-tree topology publication could accept a map that omitted the executing CPU or aliased two firmware identities.** It now validates the bounded complete CPU list before mutation and uses the boot PE's affinity identity on aarch64; the old unused topology parser is removed. | F1239: `firmware::fdt::tests::cpu_topology_requires_the_boot_cpu_and_unique_ids`; `cargo check -p kmain` passes. | F1239-firmware-cpuidle-providers |
+
 ### F1238-early-fbcon-handoff
 
 | Status | Class | Sev | Issue | Evidence | Owner |

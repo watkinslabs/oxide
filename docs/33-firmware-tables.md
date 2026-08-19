@@ -57,8 +57,8 @@ Tables checksummed; malformed or unchecksummed DMAR/IVRS: log warn, publish no I
 
 Walked at boot from boot-handed phys ptr. Convert to in-memory tree via `fdt-rs`-style parse. Used to:
 - Enumerate CPUs (`/cpus/cpu@N`).
-- Register enabled CPU MPIDR affinities into the same logical topology that
-  ACPI MADT fills before PSCI SMP startup.
+- Register CPU MPIDR affinities and their firmware availability into the same
+  logical topology that ACPI MADT fills before PSCI SMP startup.
 - Resolve per-CPU `cpu-idle-states` phandles for PSCI CPU_SUSPEND.
 - Find GIC nodes (`compatible = "arm,gic-v3"`).
 - Find Generic Timer (`compatible = "arm,armv8-timer"`).

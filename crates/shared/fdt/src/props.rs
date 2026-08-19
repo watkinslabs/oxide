@@ -216,19 +216,17 @@ pub fn memory_regions(bytes: &[u8], out: &mut [(u64, u64)]) -> usize {
     n
 }
 
-/// Enumerate enabled `/cpus/cpu@*` nodes → each CPU's `reg`, which on arm64 is
-/// the MPIDR_EL1 affinity a PSCI `CPU_ON` targets. Fills `out` with up to
-/// `out.len()` MPIDRs in device-tree order and returns the total enabled-node
-/// count seen, which may exceed `out.len()`. `/cpus`
+/// Enumerate `/cpus/cpu@*` → each CPU's `reg`, which on arm64 is the MPIDR_EL1
+/// affinity a PSCI `CPU_ON` targets. Fills `out` with up to `out.len()` MPIDRs
+/// in device-tree order (index 0 is typically the boot CPU) and returns the
+/// total cpu-node count seen, which may exceed `out.len()`. `/cpus`
 /// `#address-cells` (FDT default 2; arm64 QEMU `virt` uses 1) governs how many
 /// big-endian cells each `reg` occupies; cells fold low-order into the u64.
 /// # C: O(struct_block_size)
 pub fn enum_cpus(bytes: &[u8], out: &mut [u64]) -> usize {
     let mut cpus_depth: i32 = -1;
     let mut addr_cells: u32 = 2;
-    let mut cpu_depth: i32 = -1;
-    let mut cpu_mpidr = None;
-    let mut cpu_enabled = true;
+    let mut in_cpu = false;
     let mut count = 0usize;
     let _ = walk(bytes, |ev| {
         match ev {
@@ -236,50 +234,29 @@ pub fn enum_cpus(bytes: &[u8], out: &mut [u64]) -> usize {
                 let d = depth as i32;
                 if d == 1 && name == b"cpus" { cpus_depth = d; }
                 else if cpus_depth >= 0 && d == cpus_depth + 1
-                    && (name == b"cpu" || name.starts_with(b"cpu@")) {
-                    cpu_depth = d;
-                    cpu_mpidr = None;
-                    cpu_enabled = true;
-                }
+                    && (name == b"cpu" || name.starts_with(b"cpu@")) { in_cpu = true; }
             }
             Event::EndNode { depth } => {
                 let d = depth as i32;
-                if d == cpu_depth {
-                    if cpu_enabled {
-                        if let Some(mpidr) = cpu_mpidr {
-                            if count < out.len() { out[count] = mpidr; }
-                            count += 1;
-                        }
-                    }
-                    cpu_depth = -1;
-                }
+                if in_cpu && d == cpus_depth + 1 { in_cpu = false; }
                 if d == cpus_depth { cpus_depth = -1; }
             }
             Event::Prop { name, data, depth } => {
                 let d = depth as i32;
-                if cpus_depth >= 0 && d == cpus_depth && cpu_depth < 0
+                if cpus_depth >= 0 && d == cpus_depth && !in_cpu
                     && name == b"#address-cells" && data.len() >= 4 {
                     if let Ok(v) = read_be_u32(data, 0) {
                         if v >= 1 && v <= 2 { addr_cells = v; }
                     }
                 }
-                if d == cpu_depth {
-                    match name {
-                        b"reg" => {
-                            if data.len() >= 4 * addr_cells as usize {
-                                let mut mpidr = 0u64;
-                                for c in 0..addr_cells as usize {
-                                    let cell = read_be_u32(data, c * 4).unwrap_or(0) as u64;
-                                    mpidr = (mpidr << 32) | cell;
-                                }
-                                cpu_mpidr = Some(mpidr);
-                            }
-                        }
-                        b"status" => {
-                            cpu_enabled = matches!(data.split(|byte| *byte == 0).next(), Some(b"ok" | b"okay"));
-                        }
-                        _ => {}
+                if in_cpu && name == b"reg" && data.len() >= 4 * addr_cells as usize {
+                    let mut mpidr = 0u64;
+                    for c in 0..addr_cells as usize {
+                        let cell = read_be_u32(data, c * 4).unwrap_or(0) as u64;
+                        mpidr = (mpidr << 32) | cell;
                     }
+                    if count < out.len() { out[count] = mpidr; }
+                    count += 1;
                 }
             }
         }

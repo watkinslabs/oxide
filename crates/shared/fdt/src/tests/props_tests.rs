@@ -75,17 +75,6 @@ fn enum_cpus_reports_the_full_count_past_the_output_capacity() {
 }
 
 #[test]
-fn enum_cpus_ignores_disabled_nodes() {
-    let blob = Fdt::new().begin("").begin("cpus").prop_u32("#address-cells", 1)
-        .begin("cpu@0").prop_u32("reg", 0).end()
-        .begin("cpu@1").prop_u32("reg", 1).prop_str("status", "disabled").end()
-        .end().end().finish();
-    let mut out = [u64::MAX; 2];
-    assert_eq!(enum_cpus(&blob, &mut out), 1);
-    assert_eq!(out[0], 0);
-}
-
-#[test]
 fn pl011_clock_via_phandle() {
     assert_eq!(pl011_clock_hz(&virt_like()), Some(24_000_000));
 }

@@ -96,14 +96,18 @@ pub unsafe fn init(info: &BootInfo) {
     // header before publishing anything.
     unsafe { retain_device_tree(info); }
     #[cfg(target_arch = "aarch64")]
+    let fdt_boot_cpu_id = hal_aarch64::mpidr_affinity();
+    #[cfg(target_arch = "x86_64")]
+    let fdt_boot_cpu_id = u64::from(info.bsp_lapic_id);
+    let _ = firmware::fdt::populate_cpu_topology(fdt_boot_cpu_id);
+    #[cfg(target_arch = "aarch64")]
     // PSCI CPU-on and every later terminal call use this one firmware-selected
     // conduit; it must be installed before SMP can issue its first PSCI call.
     let _ = firmware::fdt::psci::init();
-    let _ = firmware::fdt::populate_cpu_topology();
     #[cfg(target_arch = "aarch64")]
     // SAFETY: ACPI and DT CPU producers have both populated the shared table;
     // this complete MPIDR identifies the boot CPU's logical slot.
-    unsafe { cpu::smp::set_boot_cpu_id(hal_aarch64::mpidr_el1() & hal_aarch64::MPIDR_HWID_MASK); }
+    unsafe { cpu::smp::set_boot_cpu_id(fdt_boot_cpu_id); }
     // Attach the persistent store to the region reserved above: enumerate
     // whatever the previous boot left there, then start recording. After the
     // direct map, because that is how the region is reached.
