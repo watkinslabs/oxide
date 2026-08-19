@@ -3,6 +3,7 @@
 //! Skips (passes) if the image is absent so CI stays green.
 
 extern crate alloc;
+mod common;
 use alloc::sync::Arc;
 use std::cell::RefCell;
 use std::fs::File;
@@ -77,6 +78,35 @@ fn check_one(m: &ext4::Mount, path: &str, disk_path: &str) {
         panic!("content mismatch {path} at 0x{:x}", i);
     }
     eprintln!("MATCH: {path} read through ext4 == on-disk");
+}
+
+/// Read each system dconf GVariant database through the same rootfs inode
+/// frame store used by a private `mmap(2)` fault.  The large live image is an
+/// opt-in fixture, so normal CI remains independent of a locally composed
+/// Fedora root.
+#[test]
+fn configured_root_dconf_databases_read_through_framecache() {
+    let Some(path) = std::env::var_os("OXIDE_ROOTFS_IMG") else {
+        eprintln!("SKIP: set OXIDE_ROOTFS_IMG to a Fedora root image");
+        return;
+    };
+    let file = File::open(&path).expect("open configured root image");
+    let cap = file.metadata().expect("stat configured root image").len() / SECTOR as u64;
+    let disk: Arc<dyn BlockDevice> = Arc::new(FileDisk { f: RefCell::new(file), cap });
+    common::boot_hosted_pmm();
+    let mount = ext4::rootfs::Ext4Mount::open(disk).expect("mount configured root image");
+    let fs: Arc<dyn vfs::fs::FileSystem> = mount.clone();
+    let root = fs.root();
+    let _sb = common::realize_sb(fs, root, 0xDC0F_0001, alloc::string::String::from("ext4"));
+
+    for path in [b"/etc/dconf/db/local".as_slice(), b"/etc/dconf/db/site", b"/etc/dconf/db/distro"] {
+        let inode = mount.state().lookup_inode_any(path).expect("resolve dconf database");
+        let mapping = inode.i_mapping().expect("dconf inode frame mapping");
+        let mut got = alloc::vec![0u8; inode.size() as usize];
+        let n = mapping.read_at(0, &mut got).expect("frame-cache dconf read");
+        assert_eq!(n, got.len(), "short frame-cache read for {}", core::str::from_utf8(path).unwrap());
+        assert!(got.starts_with(b"GVariant"), "{} did not retain its GVariant header", core::str::from_utf8(path).unwrap());
+    }
 }
 
 #[test]
