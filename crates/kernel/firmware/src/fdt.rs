@@ -87,17 +87,30 @@ pub fn cpu_nodes(out: &mut [::fdt::CpuNode]) -> usize {
 }
 
 /// Publish every retained device-tree CPU into the shared topology before any
-/// policy or SMP consumer resolves a logical CPU. # C: O(struct_block_size)
-pub fn populate_cpu_topology() -> usize {
+/// policy or SMP consumer resolves a logical CPU. The boot CPU must be in the
+/// validated map: without that identity an SMP bring-up could attempt to start
+/// the PE already executing this path. # C: O(struct_block_size + cpus²)
+pub fn populate_cpu_topology(boot_id: u64) -> bool {
+    if cpu::populated() { return cpu::logical_id_for_hardware(boot_id).is_some(); }
     let mut nodes = [::fdt::CpuNode { mpidr: 0, enabled: false }; cpu::MAX_CPUS];
-    let count = cpu_nodes(&mut nodes).min(nodes.len());
-    let mut added = 0usize;
+    let count = cpu_nodes(&mut nodes);
+    if count == 0 || count > nodes.len() || !valid_cpu_nodes(&nodes[..count], boot_id) { return false; }
     for node in &nodes[..count] {
         let flags = if node.enabled { cpu::FLAG_ENABLED } else { 0 };
         // SAFETY: called only from the boot CPU before AP startup.
-        if unsafe { cpu::add_cpu(node.mpidr, flags, u32::MAX) } { added += 1; }
+        if !unsafe { cpu::add_cpu(node.mpidr, flags, u32::MAX) } { return false; }
     }
-    added
+    true
+}
+
+/// Reject a topology that cannot identify one boot CPU or aliases two PEs.
+/// # C: O(cpus²)
+fn valid_cpu_nodes(nodes: &[::fdt::CpuNode], boot_id: u64) -> bool {
+    if !nodes.iter().any(|node| node.mpidr == boot_id) { return false; }
+    for (index, node) in nodes.iter().enumerate() {
+        if node.mpidr == u64::MAX || nodes[..index].iter().any(|prior| prior.mpidr == node.mpidr) { return false; }
+    }
+    true
 }
 
 /// Physical extent of the retained tree as `(pa, len)`, or `None` when none
@@ -122,6 +135,18 @@ mod tests {
     use super::*;
     use alloc::boxed::Box;
     use alloc::vec::Vec;
+
+    #[test]
+    fn cpu_topology_requires_the_boot_cpu_and_unique_ids() {
+        let nodes = [
+            ::fdt::CpuNode { mpidr: 0, enabled: true },
+            ::fdt::CpuNode { mpidr: 0x1_0000_0002, enabled: true },
+        ];
+        assert!(valid_cpu_nodes(&nodes, 0x1_0000_0002));
+        assert!(!valid_cpu_nodes(&nodes, 3));
+        assert!(!valid_cpu_nodes(&[nodes[0], nodes[0]], 0));
+        assert!(!valid_cpu_nodes(&[::fdt::CpuNode { mpidr: u64::MAX, enabled: true }], u64::MAX));
+    }
 
     /// Smallest legal blob: a header, a struct block holding an empty root
     /// node, and no strings.

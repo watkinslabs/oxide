@@ -49,6 +49,9 @@ pub fn mpidr_el1() -> u64 {
     { 0 }
 }
 
+/// This PE's firmware CPU identity. # C: O(1)
+pub fn mpidr_affinity() -> u64 { mpidr_el1() & MPIDR_HWID_MASK }
+
 /// Read `ID_AA64ISAR0_EL1` (Instruction Set Attribute Register 0): the
 /// crypto/CRC feature fields. Privileged at EL1, no memory effects.
 /// # C: O(1)

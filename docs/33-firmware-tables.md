@@ -9,7 +9,10 @@ Parse static ACPI tables (x86, optionally arm) and DT (arm primary; x86 fallback
 ## 2 Invariants (frozen)
 
 1. Parsed once at boot; results cached as static tables.
-2. No AML interpreter; only static tables: MADT, FADT, MCFG, DMAR, IVRS, SRAT, SLIT, HMAT, PPTT, HPET (sanity), DSDT skipped.
+2. Static-table decoding owns MADT, FADT, MCFG, DMAR, IVRS, SRAT, SLIT,
+   HMAT, PPTT and HPET (sanity). The constrained AML reader evaluates only
+   named provider objects, including `_CST`; it does not create a second
+   firmware namespace or expose general-purpose AML execution.
 3. DT (FDT/DTB): walked once, converted to in-memory tree; published via `/sys/firmware/devicetree/base/`.
 4. Memory map authoritative source: UEFI memory map + ACPI E820 (x86) or DT `/memory` node (arm).
 
@@ -34,7 +37,7 @@ pub fn dtb() -> Option<&'static Fdt>;
 | RSDP | root pointer to RSDT/XSDT |
 | XSDT | enumerate other tables |
 | MADT | local APIC list (CPUs), IO-APICs, ints overrides; AP startup |
-| FADT | reset register, sleep registers (we don't sleep); SCI int |
+| FADT | reset register, sleep and fixed C-state registers; SCI int |
 | MCFG | PCIe ECAM regions |
 | DMAR | Intel DMA-remapping hardware units and device scopes |
 | IVRS | AMD I/O-virtualization hardware units and device entries |
@@ -44,7 +47,9 @@ pub fn dtb() -> Option<&'static Fdt>;
 | PPTT | CPU topology (cache hierarchy) |
 | HPET | sanity check; not used |
 
-Skipped: DSDT, SSDT, ECDT, FACS (no S3), all _table-with-AML.
+Skipped: ECDT and arbitrary AML control paths. DSDT/SSDT are consumed only by
+the constrained named-object readers their providers require; FACS is not a
+general firmware service.
 
 Tables checksummed; malformed or unchecksummed DMAR/IVRS: log warn, publish no IOMMU units, keep direct DMA.
 
@@ -52,6 +57,9 @@ Tables checksummed; malformed or unchecksummed DMAR/IVRS: log warn, publish no I
 
 Walked at boot from boot-handed phys ptr. Convert to in-memory tree via `fdt-rs`-style parse. Used to:
 - Enumerate CPUs (`/cpus/cpu@N`).
+- Register CPU MPIDR affinities and their firmware availability into the same
+  logical topology that ACPI MADT fills before PSCI SMP startup.
+- Resolve per-CPU `cpu-idle-states` phandles for PSCI CPU_SUSPEND.
 - Find GIC nodes (`compatible = "arm,gic-v3"`).
 - Find Generic Timer (`compatible = "arm,armv8-timer"`).
 - Find PCIe host (`compatible = "pci-host-ecam-generic"`).
