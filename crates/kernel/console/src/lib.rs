@@ -29,12 +29,14 @@ extern crate alloc;
 // - `vcs`:       `/dev/vcs*` screen dumps.
 // - `devnodes`:  device-model registration of every node above.
 // - `boot_progress`: fixed major-stage records for the primary UART and VT.
+// - `framebuffer`: framebuffer geometry translated to the VT winsize ABI.
 //
 // Everything but `ids`/`identity`/`nodes`/`devnum`/`boot_progress` reaches
 // `tty::live`, `sched::live` or a UART driver, so it exists only in a kernel
 // build; the identity and progress decisions are ungated and host-tested.
 
 mod devnum;
+mod framebuffer;
 mod tty_audit;
 pub mod boot_progress;
 pub mod identity;

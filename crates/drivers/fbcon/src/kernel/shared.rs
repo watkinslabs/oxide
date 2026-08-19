@@ -22,6 +22,7 @@ pub(crate) struct VtState {
     pub(crate) renderer: VcRenderer,
     pub(crate) cols: u16,
     pub(crate) rows: u16,
+    pub(crate) ypixel: u16,
 }
 
 impl VtState {
@@ -123,6 +124,9 @@ pub type FlushFn = fn(pixels: &[u8], rect: FlushRect);
 pub(crate) static FLUSH_FN: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
 pub type ReplyFn = crate::answerback::ReplyFn;
+/// Consumer notified after fbcon commits a new terminal geometry.
+pub type GeometrySink = fn(rows: u16, cols: u16, ypixel: u16);
+pub(crate) static GEOMETRY_SINK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
 pub(crate) static READY: AtomicBool = AtomicBool::new(false);
 pub(crate) static DIRTY: AtomicBool = AtomicBool::new(false);

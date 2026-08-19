@@ -315,6 +315,7 @@ pub fn publish_console_scanout(device_key: virtio::VirtioChildDeviceKey) {
     let Some((w, h)) = dimensions_for_key(device_key) else { return };
     let Some(idx) = install_console_fbdev(device_key) else { return };
     if !commit_console_owner_key(device_key, idx) { return; }
+    fbcon::kernel::set_geometry_sink(console::vt_tty::sync_framebuffer_winsizes);
     // A firmware framebuffer may have been displaying boot status since
     // `init_prefix`. Its aperture cannot describe this guest-RAM scanout, so
     // replace that temporary owner explicitly before installing the native one.

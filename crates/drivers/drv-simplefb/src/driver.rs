@@ -98,6 +98,7 @@ fn unpublish_console() {}
 
 #[cfg(target_os = "oxide-kernel")]
 fn publish_console(fb: BootFramebuffer) {
+    fbcon::kernel::set_geometry_sink(console::vt_tty::sync_framebuffer_winsizes);
     if !fbcon::kernel::kernel_rebind(fb.width, fb.height, flush_pixels) {
         fbcon::kernel::kernel_init(fb.width, fb.height, flush_pixels);
     }

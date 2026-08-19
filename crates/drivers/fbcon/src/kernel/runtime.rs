@@ -2,8 +2,8 @@ use core::sync::atomic::Ordering;
 use vtdata::Consw;
 
 use crate::kernel::shared::{
-    lock_vt, queue_answerback, try_lock_vt, DIRTY, FLUSH_FN, READY, ReplyFn, VcCell, VtState,
-    FlushFn, flush_softirq,
+    lock_vt, queue_answerback, try_lock_vt, DIRTY, FLUSH_FN, GEOMETRY_SINK, READY, GeometrySink,
+    ReplyFn, VcCell, VtState, FlushFn, flush_softirq,
 };
 
 pub fn set_reply_sink(f: ReplyFn) {
@@ -12,6 +12,29 @@ pub fn set_reply_sink(f: ReplyFn) {
 
 pub fn drain_answerback() {
     crate::answerback::drain();
+}
+
+/// Register the numbered-VT geometry consumer and converge it immediately
+/// when fbcon is already live.
+/// # C: O(1)
+pub fn set_geometry_sink(f: GeometrySink) {
+    GEOMETRY_SINK.store(f as *mut (), Ordering::Release);
+    let geometry = lock_vt().as_ref().map(|st| (st.rows, st.cols, st.ypixel));
+    if let Some((rows, cols, ypixel)) = geometry {
+        f(rows, cols, ypixel);
+    }
+}
+
+/// Publish a committed text geometry after the fbcon state lock is released.
+/// # C: O(1)
+fn publish_geometry(rows: u16, cols: u16, ypixel: u16) {
+    let raw = GEOMETRY_SINK.load(Ordering::Acquire);
+    if raw.is_null() { return; }
+    // SAFETY: GEOMETRY_SINK is written only by set_geometry_sink from a
+    // GeometrySink function pointer cast through `*mut ()`; this restores the
+    // exact signature after all fbcon state for the new geometry is committed.
+    let f: GeometrySink = unsafe { core::mem::transmute::<*mut (), GeometrySink>(raw) };
+    f(rows, cols, ypixel);
 }
 
 pub fn kernel_init(xres: u32, yres: u32, flush: FlushFn) {
@@ -34,10 +57,12 @@ pub fn kernel_init(xres: u32, yres: u32, flush: FlushFn) {
         renderer,
         cols,
         rows,
+        ypixel: yres.min(u32::from(u16::MAX)) as u16,
     });
     FLUSH_FN.store(flush as *mut (), Ordering::Release);
     READY.store(true, Ordering::Release);
     DIRTY.store(true, Ordering::Release);
+    publish_geometry(rows, cols, yres.min(u32::from(u16::MAX)) as u16);
     crate::kernel::shared::repaint();
 }
 
@@ -56,6 +81,7 @@ pub fn kernel_rebind(xres: u32, yres: u32, flush: FlushFn) -> bool {
         let Some(st) = guard.as_mut() else { return false; };
         st.cols = cols;
         st.rows = rows;
+        st.ypixel = yres.min(u32::from(u16::MAX)) as u16;
         for cell in st.vc_cons.iter_mut().flatten() {
             cell.vc.resize(cols, rows);
         }
@@ -71,6 +97,7 @@ pub fn kernel_rebind(xres: u32, yres: u32, flush: FlushFn) -> bool {
     }
     softirq::set_handler(softirq::Slot::FbconFlush, flush_softirq);
     FLUSH_FN.store(flush as *mut (), Ordering::Release);
+    publish_geometry(rows, cols, yres.min(u32::from(u16::MAX)) as u16);
     if repaint { softirq::raise(softirq::Slot::FbconFlush); }
     true
 }
@@ -87,6 +114,7 @@ pub fn kernel_unregister() {
     READY.store(false, Ordering::Release);
     DIRTY.store(false, Ordering::Release);
     FLUSH_FN.store(core::ptr::null_mut(), Ordering::Release);
+    GEOMETRY_SINK.store(core::ptr::null_mut(), Ordering::Release);
     crate::answerback::clear_sink();
     *lock_vt() = None;
 }

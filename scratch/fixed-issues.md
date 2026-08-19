@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2280-console-native-handoff
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 8f6311716 | DEFECT | high | **A firmware-to-native framebuffer handoff changed fbcon's pixels and cell grid but not the live `/dev/ttyN` winsize.** An already-open VT therefore kept reporting the early firmware rows and columns after its renderer had moved to the native scanout, so full-screen terminal programs could retain the wrong layout. Fbcon now publishes each committed grid after its state lock is released; numbered VTs apply it to every live `TtyStruct` and deliver `SIGWINCH` to a changed foreground process group. Later-open VTs seed the same rows, columns and scanline height from the active native geometry. | B2280. `fbcon::tests::scanout_rebind_notifies_the_numbered_vt_geometry_consumer` proves a 640x480 80x30 firmware mode becomes the 1024x768 128x48 native VT report; forcing the callback to retain 80x30@480 turns it RED, restored code passes. `console::framebuffer::tests::native_framebuffer_geometry_replaces_the_early_winsize` pins the 160x50@800 native ABI form. `cargo test -p fbcon` (66) and `cargo test -p console` (10), both target `xtask kernel --check` runs, and `make -j2 feature-gate` passed. | B2280-console-native-handoff |
+
 ### B2278-serial-console-visibility
 
 | Status | Class | Sev | Issue | Evidence | Owner |
