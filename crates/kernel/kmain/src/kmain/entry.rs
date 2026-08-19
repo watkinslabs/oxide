@@ -22,11 +22,13 @@ pub(super) fn step<T>(name: &'static str, f: impl FnOnce() -> T) -> T { klog::in
 /// # Ctx: pre-init, IRQ-off, single-CPU
 #[cfg(target_os = "oxide-kernel")]
 pub unsafe fn kernel_main(info: &BootInfo) -> ! {
+    console::boot_progress::publish(console::boot_progress::Phase::EarlyKernel);
     klog::initcall::level("early");
     // SAFETY: `kernel_main`'s own boot-entry contract (valid kernel stack and
     // per-CPU base, IRQs off, single CPU, `info` a valid BootInfo) is exactly
     // what these two phases require, and it is forwarded unchanged.
     unsafe { super::early::init(info); }
+    console::boot_progress::publish(console::boot_progress::Phase::RuntimeSetup);
     klog::initcall::level("runtime");
     // Keep runtime's strict phases as separate call frames. The PCI/AML phase
     // can recurse deeply, so it must not retain the setup or SMP/display
@@ -36,6 +38,7 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     super::runtime::init_suffix(info);
     // Runtime emits stage-level `step` timing itself. Do not retain an outer
     // timestamp under the deepest firmware/PCI initialization call chain.
+    console::boot_progress::publish(console::boot_progress::Phase::KernelWorkers);
     spawn_kthreads();
     klog::initcall::level("rootfs");
     let t = klog::initcall::start("rootfs::init");
