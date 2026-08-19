@@ -54,6 +54,8 @@ fn drain_flush() {
 // grid, so one text row is 16 scanlines of a 480-scanline surface.
 const TEST_XRES: u32 = 640;
 const TEST_YRES: u32 = 480;
+const NATIVE_XRES: u32 = 1024;
+const NATIVE_YRES: u32 = 768;
 const TEST_CELL_H: u32 = 16;
 
 #[test]
@@ -212,7 +214,7 @@ fn console_bring_up_flushes_the_whole_surface() {
 }
 
 #[test]
-fn scanout_rebind_preserves_the_live_console() {
+fn scanout_rebind_resizes_the_live_console_to_the_native_mode() {
     let _guard = CONSOLE_TEST_DOMAIN.lock();
     kernel::kernel_unregister();
     kernel::kernel_init(TEST_XRES, TEST_YRES, count_flush);
@@ -220,9 +222,12 @@ fn scanout_rebind_preserves_the_live_console() {
     drain_flush();
     arm_flush_probe();
 
-    assert!(kernel::kernel_rebind(count_flush));
+    assert!(kernel::kernel_rebind(NATIVE_XRES, NATIVE_YRES, count_flush));
     drain_flush();
     assert_eq!(flushes(), 1, "the native scanout receives a full repaint");
+    assert_eq!(last_rect(), (0, 0, NATIVE_XRES, NATIVE_YRES));
+    assert_eq!(LAST_LEN.load(Ordering::Relaxed), (NATIVE_XRES * NATIVE_YRES * 4) as usize);
+    assert_eq!(kernel::console_dims(), Some((48, 128)));
     assert!(kernel::screen_dump(false).starts_with(b"firmware status"));
     kernel::kernel_unregister();
 }

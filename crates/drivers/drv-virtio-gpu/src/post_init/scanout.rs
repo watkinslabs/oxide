@@ -319,7 +319,7 @@ pub fn publish_console_scanout(device_key: virtio::VirtioChildDeviceKey) {
     // `init_prefix`. Its aperture cannot describe this guest-RAM scanout, so
     // replace that temporary owner explicitly before installing the native one.
     let _ = drv_simplefb::detach_firmware_scanout();
-    if !fbcon::kernel::kernel_rebind(fbcon_flush_pixels) {
+    if !fbcon::kernel::kernel_rebind(w, h, fbcon_flush_pixels) {
         fbcon::kernel::kernel_init(w, h, fbcon_flush_pixels);
     }
     // Register the fbcon printk console only if a `console=tty<n>` token asked

@@ -16,10 +16,7 @@ pub fn drain_answerback() {
 
 pub fn kernel_init(xres: u32, yres: u32, flush: FlushFn) {
     softirq::set_handler(softirq::Slot::FbconFlush, flush_softirq);
-    let font = crate::font::active();
-    let (cell_w, cell_h) = (font.width.max(1), font.height.max(1));
-    let cols = (xres / cell_w).max(1) as u16;
-    let rows = (yres / cell_h).max(1) as u16;
+    let (cols, rows) = text_geometry(xres, yres);
     let mut renderer = crate::vcrender::VcRenderer::new();
     renderer.con_init(cols as u32, rows as u32);
     let mut sys = alloc::boxed::Box::new(VcCell {
@@ -44,18 +41,46 @@ pub fn kernel_init(xres: u32, yres: u32, flush: FlushFn) {
     crate::kernel::shared::repaint();
 }
 
-/// Replace the scanout sink without discarding the live foreground VT.
+/// Replace the scanout sink and resize every live VT to its visible geometry.
 ///
-/// Firmware and native scanouts can use different pixel geometry, but the
-/// existing renderer remains a valid source surface; the new sink clips or
-/// accepts its damage according to its own extent.
+/// Firmware and native scanouts can report different modes. The native
+/// framebuffer owns the new text grid, while each `Vc` preserves the cells it
+/// already contains before the foreground is rendered into the new surface.
 /// # C: O(framebuffer pixels)
-pub fn kernel_rebind(flush: FlushFn) -> bool {
-    if !READY.load(Ordering::Acquire) || lock_vt().is_none() { return false; }
+pub fn kernel_rebind(xres: u32, yres: u32, flush: FlushFn) -> bool {
+    if !READY.load(Ordering::Acquire) || xres == 0 || yres == 0 { return false; }
+    let (cols, rows) = text_geometry(xres, yres);
+    let mut repaint = false;
+    {
+        let mut guard = lock_vt();
+        let Some(st) = guard.as_mut() else { return false; };
+        st.cols = cols;
+        st.rows = rows;
+        for cell in st.vc_cons.iter_mut().flatten() {
+            cell.vc.resize(cols, rows);
+        }
+        st.renderer.con_init(u32::from(cols), u32::from(rows));
+        let fg = st.fg as usize;
+        if !st.graphics[fg] {
+            if let Some(cell) = st.vc_cons[fg].as_mut() {
+                vtdata::switch(&mut cell.vc, &mut st.renderer);
+                DIRTY.store(true, Ordering::Release);
+                repaint = true;
+            }
+        }
+    }
     softirq::set_handler(softirq::Slot::FbconFlush, flush_softirq);
     FLUSH_FN.store(flush as *mut (), Ordering::Release);
-    crate::kernel::force_repaint();
+    if repaint { softirq::raise(softirq::Slot::FbconFlush); }
     true
+}
+
+/// Convert a scanout's visible pixel extent into the active font's text grid.
+/// # C: O(1)
+fn text_geometry(xres: u32, yres: u32) -> (u16, u16) {
+    let font = crate::font::active();
+    let (cell_w, cell_h) = (font.width.max(1), font.height.max(1));
+    ((xres / cell_w).max(1) as u16, (yres / cell_h).max(1) as u16)
 }
 
 pub fn kernel_unregister() {

@@ -98,7 +98,7 @@ fn unpublish_console() {}
 
 #[cfg(target_os = "oxide-kernel")]
 fn publish_console(fb: BootFramebuffer) {
-    if !fbcon::kernel::kernel_rebind(flush_pixels) {
+    if !fbcon::kernel::kernel_rebind(fb.width, fb.height, flush_pixels) {
         fbcon::kernel::kernel_init(fb.width, fb.height, flush_pixels);
     }
     if cmdline::console_classes().1 { klog::set_aux_sink(fbcon::kernel::vt_console_sink); }
