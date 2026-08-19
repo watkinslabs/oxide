@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2277-early-console-framebuffer-mode
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 40a07dc44 | DEFECT | high | **Native scanout handoff retained the firmware-sized fbcon grid, so the new framebuffer could leave unused native pixels around the live console.** Rebinding now preserves every VT's cells, resizes each grid from the native width and height, recreates the renderer at that extent, and repaints the foreground VT through the native sink. | B2277: `fbcon::tests::scanout_rebind_resizes_the_live_console_to_the_native_mode` proves a 640x480 firmware VT repaints as one 1024x768 surface with a 128x48 grid while retaining its text. **Positive control:** forcing the old 640x480 geometry makes that test fail on its full-surface assertion; restored code passes. Both kernel target checks and final paired `make smoke` passed: x86 userspace + serial RX at 46 s; aarch64 userspace + serial RX at 55 s. | B2277-early-console-framebuffer-mode |
+
 ### F1239-firmware-cpuidle-completion
 
 | Status | Class | Sev | Issue | Evidence | Owner |
