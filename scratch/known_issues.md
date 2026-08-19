@@ -847,7 +847,7 @@ here now.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| OPEN | DEFECT | high | `/dev/loopN` reserves 16 minors per device but its ioctl bridge treats the raw minor as the loop number. Thus the published `/dev/loop1` at 7:16 resolves as nonexistent `loop16`, falls through to the generic ioctl owner, and makes `udisksd` log `LOOP_GET_STATUS64: ENOTTY` for loop1 through loop7. | `boot.txt` at 107.340--107.629: repeated `udisksd` loop1--loop7 `Inappropriate ioctl for device`; `drv-loop::LOOP_DRIVER` used `PARTITION_MINOR_COUNT` while `syscalls/016_ioctl/loop_dev.rs::device_of` passes `devt.minor()` directly to `registry::device`. | B2281-boot-compat-failures |
+| FIXED 85072ceaa | DEFECT | high | `/dev/loopN` reserved 16 minors per device while its ioctl bridge treated the raw minor as the loop number. Thus the published `/dev/loop1` at 7:16 resolved as nonexistent `loop16`, fell through to the generic ioctl owner, and made `udisksd` log `LOOP_GET_STATUS64: ENOTTY` for loop1 through loop7. The driver now publishes default loop devices as unpartitioned: raw minor `N` names `loopN`, matching the reference default. | `boot.txt` at 107.340--107.629: repeated `udisksd` loop1--loop7 `Inappropriate ioctl for device`; `drv-loop::LOOP_DRIVER` used `PARTITION_MINOR_COUNT` while `syscalls/016_ioctl/loop_dev.rs::device_of` passes `devt.minor()` directly to `registry::device`. `registry::default_loop_layout_uses_one_minor_per_device` is green, and fails when the old 16-minor layout is restored. | B2281-boot-compat-failures |
 
 ### B1979-gnome-segfault-regression-triage
 
