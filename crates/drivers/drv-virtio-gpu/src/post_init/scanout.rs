@@ -315,8 +315,13 @@ pub fn publish_console_scanout(device_key: virtio::VirtioChildDeviceKey) {
     let Some((w, h)) = dimensions_for_key(device_key) else { return };
     let Some(idx) = install_console_fbdev(device_key) else { return };
     if !commit_console_owner_key(device_key, idx) { return; }
-
-    fbcon::kernel::kernel_init(w, h, fbcon_flush_pixels);
+    // A firmware framebuffer may have been displaying boot status since
+    // `init_prefix`. Its aperture cannot describe this guest-RAM scanout, so
+    // replace that temporary owner explicitly before installing the native one.
+    let _ = drv_simplefb::detach_firmware_scanout();
+    if !fbcon::kernel::kernel_rebind(fbcon_flush_pixels) {
+        fbcon::kernel::kernel_init(w, h, fbcon_flush_pixels);
+    }
     // Register the fbcon printk console only if a `console=tty<n>` token asked
     // for it (Linux `register_console` per `console=`). The VT ttys + scanout
     // are set up regardless; this gates only klog fan-out to the framebuffer.

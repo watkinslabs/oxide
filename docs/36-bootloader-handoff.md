@@ -37,7 +37,7 @@ Multiboot2 info tags consumed:
 
 Not supplied by this handoff, and therefore owned by the kernel:
 - HHDM base: installed by the trampoline, reported as `BootInfo.hhdm_offset`.
-- Framebuffer request: optional type-5 header tag with loader-selected geometry. The type-8 information tag becomes a `simple-framebuffer` platform device only after PCI/native display probing found no scanout; its driver owns the WC mapping and fbdev/fbcon registration (`35`).
+- Framebuffer request: optional type-5 header tag with loader-selected geometry. The type-8 information tag becomes a `simple-framebuffer` platform device once VT and the driver model are ready, before PCI probing; its driver owns the WC mapping and fbdev/fbcon registration until a native display driver evicts the overlapping aperture (`35`).
 - CPU topology and AP startup: ACPI MADT plus the kernel's own INIT/SIPI trampoline (`13§11`). The handoff carries no CPU table.
 - GDT/IDT/PIC state: the trampoline's GDT is temporary; `_start_rust` installs kernel-owned GDT/TSS/IDT and remaps+masks the legacy 8259 before the first `sti` (`20§3`).
 
@@ -135,7 +135,9 @@ Single-threaded boot until `smp_init`.
 - GRUB multiboot2 boot in QEMU q35 under SeaBIOS and OVMF → "hello via UART" + clean QEMU exit (ISA-debug-exit).
 - GRUB EFI-stub boot in QEMU `virt` under OVMF: same sequence.
 - Both arches: `BootInfo.rsdp_pa` non-zero, MADT decodes, memmap total ≈ QEMU `-m`.
-- x86_64: RGB framebuffer tag round-trips base, pitch, geometry, channel masks; native scanout wins, otherwise simplefb registers with WC policy.
+- Both arches: the firmware framebuffer round-trips base, pitch, geometry, and channel masks; simplefb registers with WC policy before PCI; an overlapping native scanout evicts its aperture and a non-overlapping native scanout removes the temporary owner before it takes ownership. Both preserve the live VT renderer and repaint it through the new scanout.
+- x86_64: RGB framebuffer tag round-trips through multiboot2.
+- aarch64: OVMF publishes the RAM framebuffer through GOP before the EFI-stub captures it.
 - Cmdline parse: exact names do not consume prefixes, a later scalar wins, a malformed `loglevel=` is ignored, and both serial `console=` spellings select their matching sink.
 - Memory map sanity: PMM init reports total ≈ QEMU `-m`.
 

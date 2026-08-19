@@ -207,9 +207,12 @@ pub(super) fn qemu_run_aarch64_grub(
         "-device", "virtio-blk-pci,drive=home,bus=pcie.0,serial=oxide-home,disable-legacy=on,num-queues=2",
         "-netdev", netdev.as_str(),
         "-device", "virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on",
-        // virtio-gpu scanout + keyboard for the graphical console (fbcon
-        // paints here; no GOP on this path). Without them only serial gets
-        // output and the GTK window stays blank.
+        // OVMF owns this RAM framebuffer before the kernel starts and exposes
+        // it through GOP. The kernel binds it immediately, then hands the
+        // console to virtio-GPU once that native PCI driver is ready.
+        "-device", "ramfb",
+        // Native scanout + keyboard for the graphical console after the
+        // firmware framebuffer handoff.
         "-device", gpu_dev.as_str(),
         "-device", "virtio-keyboard-pci,bus=pcie.0",
         // F458: virtio-mouse (relative pointer) → /dev/input/event1. Relative

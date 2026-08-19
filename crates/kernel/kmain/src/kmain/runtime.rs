@@ -23,6 +23,13 @@ pub(crate) fn init_prefix(info: &BootInfo) {
     step("init_ps2_keyboard", || init_ps2_keyboard(info));
     step("init_runtime_subsystems", init_runtime_subsystems);
     step("init_vt_and_drv_hooks", init_vt_and_drv_hooks);
+    // The bootloader already owns a valid scanout. Publish it before PCI so
+    // kernel and userspace status have a real `console=tty0` from this point;
+    // a native display probe evicts this generic aperture before it modesets.
+    step("init_simple_framebuffer", || init_simple_framebuffer(info));
+    if drv_simplefb::present() {
+        boot_status(b"[INFO]  boot: graphical console ready\r\n");
+    }
     // Wire the control-event notifier BEFORE any netdev registers. Linux
     // installs the rtnetlink notifier chain before device registration; here
     // `init_network_and_pci` probes virtio-net and emits eth0's boot-time
@@ -35,10 +42,6 @@ pub(crate) fn init_prefix(info: &BootInfo) {
 #[inline(never)]
 pub(crate) fn init_suffix(info: &BootInfo) {
     step("init_x2apic_and_smp", || init_smp(info));
-    // Generic firmware framebuffer is a fallback, not a competitor to a
-    // native scanout. PCI probing runs first so any native display driver can
-    // claim its hardware before the bootloader surface is published here.
-    step("init_simple_framebuffer", || init_simple_framebuffer(info));
     // NB: the AP master page-table gets each device's MMIO mapping propagated
     // eagerly inside `mmio_map::map_pages` (resync per splice), so APs can't #PF
     // on a virtio notify/config VA mid-enumeration — no post-enum resync needed.
@@ -320,6 +323,9 @@ fn install_drv_sysfs_hooks() {
 #[cfg(target_os = "oxide-kernel")]
 #[inline(never)]
 pub(crate) fn init_network_and_pci() {
+    if drv_simplefb::present() {
+        boot_status(b"[INFO]  boot: probing devices\r\n");
+    }
     init_network_sockets();
     // PCI enumeration owns its own phase logging. Avoid retaining `step`'s
     // formatting closure across firmware AML evaluation on the BSP stack.
@@ -345,6 +351,19 @@ pub(crate) fn init_network_and_pci() {
     // presents `/dev/video0`, so the whole V4L2 path — negotiation, buffers,
     // controls, events — is real rather than machinery with no caller.
     step("v4l2::vivid", drv_vivid::init);
+}
+
+/// Put the first two boot milestones on both real consoles synchronously.
+///
+/// The normal klog framebuffer sink is deliberately nonblocking: it must not
+/// wait while an arbitrary caller holds a kernel lock.  This early boot path
+/// has no such lock, and a visible status line is more important than avoiding
+/// that one bounded VT acquisition, so write the live VT directly as well as
+/// preserving a serial/ring record.
+#[cfg(target_os = "oxide-kernel")]
+fn boot_status(message: &'static [u8]) {
+    klog::write_primary_raw(message);
+    fbcon::kernel::vt_write(1, message);
 }
 
 #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]

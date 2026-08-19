@@ -41,8 +41,8 @@ pub fn present() -> bool { PRESENT.load(Ordering::Acquire) }
 fn flush_pixels(pixels: &[u8], rect: fbcon::kernel::FlushRect) {
     let mut live = LIVE.lock();
     let Some(live) = live.as_mut() else { return };
-    // SAFETY: Live owns the WC mapping for `bytes`; removal first excludes this
-    // callback via LIVE, then unregisters fbcon, before Mapping::unmap runs.
+    // SAFETY: Live owns the WC mapping for `bytes`; removal first clears LIVE,
+    // making later callbacks return before Mapping::unmap drops this alias.
     let dst = unsafe { core::slice::from_raw_parts_mut(live.fb_va as *mut u8, live.bytes as usize) };
     format::copy_damage(pixels, dst, rect, live.fb);
 }
@@ -69,19 +69,22 @@ pub fn present_xrgb(pixels: &[u8], stride_px: u32, width: u32, height: u32,
     true
 }
 
-fn detach() {
+fn detach(keep_console: bool) -> bool {
     let live = LIVE.lock().take();
-    let Some(live) = live else { return };
+    let Some(live) = live else { return false };
     PRESENT.store(false, Ordering::Release);
     if live.drm_card != u32::MAX { let _ = drm::unregister(live.drm_card); }
     RESOURCES.lock().clear();
-    unpublish_console();
+    if !keep_console { unpublish_console(); }
     let _ = fbdev::unregister(live.idx);
     let _ = fbdev::release_aperture(live.aperture);
     drop(live.mapping);
+    true
 }
 
-fn detach_aperture(_key: fbdev::ApertureKey) { detach(); }
+// An overlapping native scanout replaces the firmware mapping immediately
+// afterward. Keep the VT renderer and its log sink intact for that rebind.
+fn detach_aperture(_key: fbdev::ApertureKey) { let _ = detach(true); }
 
 #[cfg(target_os = "oxide-kernel")]
 fn unpublish_console() {
@@ -95,7 +98,9 @@ fn unpublish_console() {}
 
 #[cfg(target_os = "oxide-kernel")]
 fn publish_console(fb: BootFramebuffer) {
-    fbcon::kernel::kernel_init(fb.width, fb.height, flush_pixels);
+    if !fbcon::kernel::kernel_rebind(flush_pixels) {
+        fbcon::kernel::kernel_init(fb.width, fb.height, flush_pixels);
+    }
     if cmdline::console_classes().1 { klog::set_aux_sink(fbcon::kernel::vt_console_sink); }
     fbcon::kernel::set_reply_sink(console::vt_reply_sink);
     tty::live::set_app_cursor_query(fbcon::kernel::fg_app_cursor);
@@ -123,7 +128,7 @@ impl drv::Driver for SimpleFbDriver {
         attach_firmware_scanout(fb, dev)
     }
 
-    fn remove(&self, _dev: &drv::Device) { detach(); }
+    fn remove(&self, _dev: &drv::Device) { let _ = detach(false); }
     fn shutdown(&self, _dev: &drv::Device) {}
 }
 
@@ -136,6 +141,12 @@ pub fn attach_native_scanout(fb: BootFramebuffer) -> drv::KResult<()> {
     attach_scanout(fb, u32::MAX)
 }
 
+/// Remove the temporary firmware scanout before a non-overlapping native GPU
+/// publishes its own console, retaining the VT until its new sink binds.
+/// Returns whether a firmware scanout was live.
+/// # C: O(1)
+pub fn detach_firmware_scanout() -> bool { detach(true) }
+
 /// Attach the boot framebuffer as Linux simpledrm does: publish its one fixed
 /// KMS pipeline while it owns the firmware aperture. Native PCI DRM drivers
 /// evict this aperture before taking hardware ownership.
@@ -144,7 +155,7 @@ fn attach_firmware_scanout(fb: BootFramebuffer, parent: &Arc<drv::Device>) -> dr
     let card = drm::register_with_parent(Arc::new(SimpleDrm {
         unique: String::from(DEVICE_ADDR), width: fb.width, height: fb.height,
     }), Some(parent));
-    if card == u32::MAX { detach(); return Err(drv::Error::ProbeFailed); }
+    if card == u32::MAX { let _ = detach(false); return Err(drv::Error::ProbeFailed); }
     let Some(key) = drm::node::ScanoutDriverKey::from_raw(SIMPLEDRM_KEY) else { unreachable!() };
     drm::node::set_scanout_ops(card, drm::node::ScanoutOps {
         driver_key: key, create_from_pa, destroy_resource, present: present_drm,
