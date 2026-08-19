@@ -16,6 +16,6 @@ pub use shared::{FlushFn, ReplyFn};
 #[cfg(test)]
 pub(crate) use shared::CONSOLE_TEST_DOMAIN;
 pub use runtime::{
-    drain_answerback, kernel_init, kernel_unregister, set_reply_sink, set_vt_graphics_mode,
+    drain_answerback, kernel_init, kernel_rebind, kernel_unregister, set_reply_sink, set_vt_graphics_mode,
     switch_vt, tick_drain, vt_console_sink, vt_write,
 };

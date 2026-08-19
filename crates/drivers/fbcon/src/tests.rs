@@ -211,6 +211,22 @@ fn console_bring_up_flushes_the_whole_surface() {
     kernel::kernel_unregister();
 }
 
+#[test]
+fn scanout_rebind_preserves_the_live_console() {
+    let _guard = CONSOLE_TEST_DOMAIN.lock();
+    kernel::kernel_unregister();
+    kernel::kernel_init(TEST_XRES, TEST_YRES, count_flush);
+    kernel::vt_write(1, b"firmware status");
+    drain_flush();
+    arm_flush_probe();
+
+    assert!(kernel::kernel_rebind(count_flush));
+    drain_flush();
+    assert_eq!(flushes(), 1, "the native scanout receives a full repaint");
+    assert!(kernel::screen_dump(false).starts_with(b"firmware status"));
+    kernel::kernel_unregister();
+}
+
 // The defect this exists to prevent: one changed console line must upload
 // that line's scanlines, not the frame. The sink still receives the whole
 // pixel buffer — the rect is what bounds the work.

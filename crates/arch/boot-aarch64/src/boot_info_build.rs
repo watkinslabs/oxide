@@ -4,7 +4,14 @@ use crate::dtb;
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 use crate::selfboot;
 use core::cell::UnsafeCell;
-use boot_info::{BootInfo, BootMemRegion};
+use boot_info::{BootFramebuffer, BootInfo, BootMemRegion};
+
+/// Prefer a DT simple-framebuffer when it exists, otherwise retain the GOP
+/// surface captured by the EFI stub.  Some EFI firmware supplies a DTB for
+/// memory discovery without describing its active display there.
+fn select_framebuffer(dtb: Option<BootFramebuffer>, efi: BootFramebuffer) -> BootFramebuffer {
+    dtb.unwrap_or(efi)
+}
 
 static EMPTY_BOOT_REGIONS: [BootMemRegion; 0] = [];
 
@@ -477,7 +484,8 @@ pub(crate) unsafe fn build_boot_info() -> &'static BootInfo {
     unsafe { build_selfboot_memmap(info); }
     use hal::TimerOps;
     info.boot_ns = hal_aarch64::ArmTimerOps::monotonic_ns().0;
-    info.framebuffer = selfboot::framebuffer();
+    let efi_framebuffer = selfboot::framebuffer();
+    info.framebuffer = efi_framebuffer;
     // The boot handoff has no CPU table. Keep the same u32 representation
     // consumed by ACPI CPU topology while deriving it from this boot CPU.
     info.bsp_lapic_id = hal_aarch64::mpidr_el1() as u32;
@@ -500,7 +508,7 @@ pub(crate) unsafe fn build_boot_info() -> &'static BootInfo {
     let dtb_len = if dtb_pa != 0 { unsafe { dtb_totalsize(dtb_pa) } } else { 0 };
     info.dtb_pa = if dtb_len != 0 { dtb_pa } else { 0 };
     info.dtb_len = dtb_len;
-    info.framebuffer = if dtb_len != 0 {
+    let dtb_framebuffer = if dtb_len != 0 {
         let va = selfboot::ARM_SELFBOOT_HHDM + dtb_pa;
         // SAFETY: the validated DTB header bounds this HHDM-mapped blob.
         let blob = unsafe { core::slice::from_raw_parts(va as *const u8, dtb_len as usize) };
@@ -510,8 +518,9 @@ pub(crate) unsafe fn build_boot_info() -> &'static BootInfo {
             red: boot_info::BootFramebufferBitfield { offset: fb.red.0, length: fb.red.1 },
             green: boot_info::BootFramebufferBitfield { offset: fb.green.0, length: fb.green.1 },
             blue: boot_info::BootFramebufferBitfield { offset: fb.blue.0, length: fb.blue.1 }, _pad: [0; 2],
-        }).unwrap_or(boot_info::BootFramebuffer::EMPTY)
-    } else { boot_info::BootFramebuffer::EMPTY };
+        })
+    } else { None };
+    info.framebuffer = select_framebuffer(dtb_framebuffer, efi_framebuffer);
     // Checksum taken HERE, at scan time, so the kernel can prove before it
     // publishes anything that the tree it is about to hand userspace is the
     // one the boot stub read (`36§4.1`).
@@ -574,4 +583,26 @@ pub(crate) unsafe fn publish_psci_ap_params() {
     } else { 0 };
     let n = n.min(mpidrs.len());
     hal_aarch64::smp::set_psci_ap_params(ap_l0_pa, ttbr1_pa, ttbr0_kernel_pa, load_base, &mpidrs[..n]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::select_framebuffer;
+    use boot_info::BootFramebuffer;
+
+    #[test]
+    fn absent_dtb_framebuffer_keeps_efi_gop() {
+        let mut efi = BootFramebuffer::EMPTY;
+        efi.base_pa = 0x8_0000_0000;
+        assert_eq!(select_framebuffer(None, efi), efi);
+    }
+
+    #[test]
+    fn dtb_framebuffer_is_preferred_when_available() {
+        let mut dtb = BootFramebuffer::EMPTY;
+        dtb.base_pa = 0x9_0000_0000;
+        let mut efi = BootFramebuffer::EMPTY;
+        efi.base_pa = 0x8_0000_0000;
+        assert_eq!(select_framebuffer(Some(dtb), efi), dtb);
+    }
 }

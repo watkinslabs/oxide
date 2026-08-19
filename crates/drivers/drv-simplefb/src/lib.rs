@@ -17,4 +17,4 @@ mod driver;
 mod format;
 mod mode;
 
-pub use driver::{attach_native_scanout, configure_probe, device_addr, driver, present, present_xrgb};
+pub use driver::{attach_native_scanout, configure_probe, detach_firmware_scanout, device_addr, driver, present, present_xrgb};

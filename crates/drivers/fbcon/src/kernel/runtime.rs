@@ -44,6 +44,20 @@ pub fn kernel_init(xres: u32, yres: u32, flush: FlushFn) {
     crate::kernel::shared::repaint();
 }
 
+/// Replace the scanout sink without discarding the live foreground VT.
+///
+/// Firmware and native scanouts can use different pixel geometry, but the
+/// existing renderer remains a valid source surface; the new sink clips or
+/// accepts its damage according to its own extent.
+/// # C: O(framebuffer pixels)
+pub fn kernel_rebind(flush: FlushFn) -> bool {
+    if !READY.load(Ordering::Acquire) || lock_vt().is_none() { return false; }
+    softirq::set_handler(softirq::Slot::FbconFlush, flush_softirq);
+    FLUSH_FN.store(flush as *mut (), Ordering::Release);
+    crate::kernel::force_repaint();
+    true
+}
+
 pub fn kernel_unregister() {
     READY.store(false, Ordering::Release);
     DIRTY.store(false, Ordering::Release);
