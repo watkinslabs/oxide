@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2278-serial-console-visibility
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 59d376d50 | DEFECT | high | **Normal boot left the early serial and foreground framebuffer consoles with no named progress from early initialization through PID 1.** The UART was healthy: the boot console was live before kernel entry, and the real serial handoff came later. The quiet interval instead came from suppressing every initcall record unless `initcall_debug` was requested. A fixed set of truthful major phases now announces the work before it starts: early initialization, runtime setup, graphical-console readiness, device probing, SMP, kernel workers, root mount, and userspace handoff. Each reaches the primary serial route immediately and the live foreground VT once the framebuffer exists. | B2278. `console::boot_progress::tests::phase_reaches_primary_serial_and_the_foreground_vt` proves the root-mount phase reaches both an exact primary serial capture and a rendered foreground-VT dump; routing the write to VT 2 makes it fail, then restored code passes. `cargo test -p console` passed 9 tests; both full feature-gated target checks passed. Final paired `make smoke` passed first attempt: x86 records every phase before PID 1 at 43.402 s and AArch64 before PID 1 at 47.507 s; both reached `OXIDE-ALIVE-OK` and answered serial RX. Retained raw-log SHA-256: x86 `0d6c150aeba50239cc31043baf3dfda55a5ee5f892345314c1266ff9cd146749`, AArch64 `05672c117c412d09eb8516ee727a9b8576c63b7bab26f89b5c8bc5e209d1da4e`. | B2278-serial-console-visibility |
+
 ### B2277-early-console-framebuffer-mode
 
 | Status | Class | Sev | Issue | Evidence | Owner |
