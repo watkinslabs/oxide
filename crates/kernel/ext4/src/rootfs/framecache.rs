@@ -168,7 +168,19 @@ impl Ext4FrameStore {
     /// # C: O(PG/bs) on miss, O(log N) on hit
     fn ensure_page(&self, idx: u64) -> KResult<u64> {
         if let Some(page) = self.pages.lock().get(&idx) { return Ok(page.pa); }
-        let dinode = self.st.mount.read_inode(self.ino).map_err(|_| VfsError::Eio)?;
+        let dinode = self.st.mount.read_inode(self.ino).map_err(|_e| {
+            // DIAG (debug-fillverify): inode-table errors otherwise collapse
+            // to EIO before the range-read diagnostic can identify them.
+            #[cfg(feature = "debug-fillverify")]
+            {
+                klog::write_raw(b"[FILLVERIFY] read-inode failed ino=");
+                klog::write_dec_u64(self.ino as u64);
+                klog::write_raw(b" page="); klog::write_dec_u64(idx);
+                klog::write_raw(b" why="); klog::write_raw(debug::fill_error_label(_e));
+                klog::write_raw(b"\n");
+            }
+            VfsError::Eio
+        })?;
         if !dinode.is_reg() { return Err(VfsError::Eio); }
         self.fill_window(&dinode, idx)
     }
