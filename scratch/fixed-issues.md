@@ -2979,3 +2979,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 18134b788 | DEFECT | low | **The `_S5` routing test duplicated the sleep-package decoder instead of exercising its production owner.** It now calls `sleep_types::sleep_type_pair` for both the packed one-value form and the separate multi-value form, so changes to the decoder cannot leave this caller's test green through a private copy. | F1244. `s5_uses_packed_single_or_first_two_package_values` passes through the shared decoder. Positive control changed that decoder's packed PM1b result to zero and the test failed with `Some((5, 0))` versus `Some((5, 6))`; restored GREEN. Full firmware suite: 152 passed. | F1244 |
+
+### F1245-arch-irq-phantom-tests
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 69a84a82c | INFRA | med | **All `arch-irq` tests now compile and run hosted.** Before the fix, 84 declarations produced only 69 listed tests because 15 lived beneath target-gated hardware modules. Eleven meaningful ITS and local-APIC encoding and policy tests now live with pure, ungated production owners. Four vacuous tests were removed: three compared derived enum variants, and one manually combined constants without calling production code. The final crate has 80 declarations and 80 listed/running tests. | F1245. `cargo test -p arch-irq` passes 80/80. Positive control removed MAPTI's device-ID field and `its_encoding::tests::mapti_names_device_event_lpi_and_collection` failed with encoded word 10 instead of 68719476746; restored GREEN. Kernel target checks and `debug-all` checks pass on x86_64 and aarch64; 176 hosted crate checks and 176 isolated test builds pass. | F1245 |
