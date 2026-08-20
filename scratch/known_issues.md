@@ -64,10 +64,10 @@ failure mode this reconcile was supposed to catch, not commit.
 | Class | blocker | critical | high | med | low | Total |
 |---|---:|---:|---:|---:|---:|---:|
 | COVERAGE | 0 | 0 | 11 | 68 | 68 | 147 |
-| DEFECT | 2 | 4 | 27 | 69 | 76 | 178 |
+| DEFECT | 2 | 4 | 27 | 69 | 75 | 177 |
 | INFRA | 0 | 0 | 11 | 41 | 42 | 94 |
 | MISSING | 1 | 0 | 49 | 145 | 119 | 314 |
-| **Total** | **3** | **4** | **98** | **323** | **305** | **733** |
+| **Total** | **3** | **4** | **98** | **323** | **304** | **732** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -733,7 +733,6 @@ here now.
 | OPEN | MISSING | low | There is no `mmap_changing` counter, so no op returns EAGAIN for a concurrent non-cooperative address-space change; the VMA tree locks serialise instead. A monitor that relies on the EAGAIN to detect a racing `mremap` will not see it. | `ioctl/*` have no equivalent of the counter check that precedes every reference handler | — |
 | OPEN | MISSING | low | `UFFDIO_MOVE` moves 4 KiB leaves and swap entries only. A page in migration reports EAGAIN and a poisoned one EFAULT (both matching the reference), but there is no large-folio path because none exists in this kernel. | `work/movepg.rs::classify` | — |
 | OPEN | COVERAGE | med | The page work itself (`work/{install,wp,poison,movepg}.rs`) is target-gated and has no hosted coverage; the hosted build substitutes a stand-in that reports the range complete. Every DECISION around it is ungated and tested, and both arches boot, but a defect confined to the leaf manipulation would not be caught hosted. Closing it needs a hosted page-table fixture of the kind `vmm`'s copy-on-write model tests use. | `work/hosted.rs`; `make smoke` passes both arches | — |
-| OPEN | DEFECT | low | The UDP autobind right is checked inside the bind owner (`InetSocket::ensure_bound_locked`), i.e. during the protocol send, whereas the reference checks it in the send hook before the protocol runs. Same verdict, later position: an argument error from the address parse can preempt it. Not duplicated into the hook, since a second copy is exactly the split this branch removed. | `net::sock::lifecycle::ensure_bound_locked` calls `landlock_addr::check_autobind_udp`; `sock::udp` reaches it on every unbound UDP send. | [CLAIMED B2294-udp-autobind-send-admission 2026-08-20] |
 | OPEN | INFRA | low | `cargo test -p security` failed once in ~4 runs with 244/1 and no reported failure name (the summary line and the failure list disagreed); green on every re-run. Untouched by this branch — the crate's registry statics are process-global and its tests install into them concurrently. | Observed 2026-08-07 on this box; `-p security` green 3/3 after. | unowned |
 | OPEN | INFRA | low | Restoring a positive-control file with `mv file.bak file` preserves the ORIGINAL mtime, so cargo does not rebuild and the next run silently re-uses the CONTROL binary. This produced a deterministic "restored code still fails" reading for three runs. `touch` after any such restore. | `net::socket_security::tests::the_sandbox_answers_before_the_module_registry` reported red against pristine source until the file was touched. | unowned |
 | OPEN | COVERAGE | low | `packet_tests.rs::packet_tx_ring_file()` registers an interface into the process-global interface table for namespace 0 and brings it up, with no claim on that table. `net`'s own `assert_initial_domain_held` choke point (`B1949`) is `#[cfg(test)]` **within `net`**, so it compiles out of `socket`'s test binary and cannot see this. The two packet tests each get their own ifindex, so they do not collide today, and the claim added here does not cover the interface table. | Not observed to fail: 0 occurrences across the 40 baseline and 140 post-fix `socket` runs. Structural, not measured — a future socket test that asserts on namespace-0 interface or MIB state would race these two. | unassigned |
