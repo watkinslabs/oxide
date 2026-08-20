@@ -42,6 +42,11 @@ pub(super) fn dev_devpath(dev: &drv::Device) -> Option<String> {
     if dev.bus == "input" {
         return crate::input::dev_devpath(dev);
     }
+    if dev.bus == "sound" {
+        if let Some(path) = crate::char_class::sound_device_devpath(&dev.addr) {
+            return Some(alloc::format!("/{}", path));
+        }
+    }
     Some(alloc::format!("/{}", dev_canon_exact(dev)?))
 }
 
@@ -51,6 +56,11 @@ fn dev_index_target(dev: &drv::Device) -> Option<Vec<u8>> {
     }
     if dev.bus == "input" {
         return crate::input::dev_index_target(dev);
+    }
+    if dev.bus == "sound" {
+        if let Some(path) = crate::char_class::sound_device_devpath(&dev.addr) {
+            return Some(alloc::format!("../../{}", path).into_bytes());
+        }
     }
     Some(alloc::format!("../../{}", dev_canon_exact(dev)?).into_bytes())
 }

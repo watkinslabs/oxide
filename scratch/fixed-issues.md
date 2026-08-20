@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2306-alsa-card-sysfs-parent
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 97ddf15db | DEFECT | low | **ALSA control and PCM class devices now live below their owning `cardN` sysfs device, whose writable `uevent` emits the card-complete change event Fedora requests through `controlC*/../uevent`.** `/sys/class/sound` and `/sys/dev/char` point to the same nested canonical path; remove/re-add remains derived from the live driver-model children. | B2306. Linux 7.2.0-rc4 makes each allocated sound device a child of the card device. `alsa_control_is_nested_below_a_card_with_a_replayable_uevent` failed with `ENOENT` when the parent `uevent` lookup was disconnected and passes restored; all 174 sysfs tests pass. Both target checks, 176 isolated hosted checks, 176 isolated test builds, debug-all, frame, task-stack and IRQ-stack gates pass on both architectures. Final paired smoke passed attempt 1: x86 userspace at 46 s and ARM64 at 57 s, both with serial RX. | B2306-alsa-card-sysfs-parent |
+
 ### F1241-s3-syscall-msr-reinit
 
 | Status | Class | Sev | Issue | Evidence | Owner |

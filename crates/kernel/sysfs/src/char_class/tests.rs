@@ -85,20 +85,54 @@ fn class_uevent_write_reemits_model_event() {
     netlink::register_uevent_listener(&listener);
 
     let root = make_virtual_class_inode("sound", INO_VIRT_SOUND);
-    let dir = root.lookup("controlC12").expect("sound device dir");
+    let card = root.lookup("card12").expect("sound card dir");
+    let dir = card.lookup("controlC12").expect("sound device dir");
     let uevent = dir.lookup("uevent").expect("uevent attr");
     assert_eq!(uevent.write(0, b"change\n"), Ok("change\n".len()));
     let msg = (0..64)
         .filter_map(|_| listener.dequeue().map(|(msg, _src)| msg))
-        .find(|msg| msg.windows(b"DEVPATH=/devices/virtual/sound/controlC12".len())
-            .any(|w| w == b"DEVPATH=/devices/virtual/sound/controlC12"))
+        .find(|msg| msg.windows(b"DEVPATH=/devices/virtual/sound/card12/controlC12".len())
+            .any(|w| w == b"DEVPATH=/devices/virtual/sound/card12/controlC12"))
         .expect("matching uevent message");
     assert!(msg.windows(b"ACTION=change".len()).any(|w| w == b"ACTION=change"));
-    assert!(msg.windows(b"DEVPATH=/devices/virtual/sound/controlC12".len()).any(|w| w == b"DEVPATH=/devices/virtual/sound/controlC12"));
+    assert!(msg.windows(b"DEVPATH=/devices/virtual/sound/card12/controlC12".len()).any(|w| w == b"DEVPATH=/devices/virtual/sound/card12/controlC12"));
     assert!(msg.windows(b"SUBSYSTEM=sound".len()).any(|w| w == b"SUBSYSTEM=sound"));
     assert!(msg.windows(b"DEVNAME=snd/controlC12".len()).any(|w| w == b"DEVNAME=snd/controlC12"));
 
     drv::device_del(&dev);
+}
+
+#[test]
+fn alsa_control_is_nested_below_a_card_with_a_replayable_uevent() {
+    let control = add_char("sound", "controlC13", "snd/controlC13", (116, 416));
+    let pcm = add_char("sound", "pcmC13D0p", "snd/pcmC13D0p", (116, 432));
+    let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &network_namespace::initial()));
+    listener.set_group_mask(1);
+    netlink::register_uevent_listener(&listener);
+
+    let root = make_virtual_class_inode("sound", INO_VIRT_SOUND);
+    let class = make_sys_class_inode("sound", INO_CLASS_SOUND);
+    assert_eq!(class.lookup("card13").expect("card class link").readlink().expect("card target"),
+        b"../../devices/virtual/sound/card13".to_vec());
+    assert_eq!(class.lookup("controlC13").expect("control class link").readlink().expect("control target"),
+        b"../../devices/virtual/sound/card13/controlC13".to_vec());
+    assert_eq!(root.lookup("controlC13").err(), Some(VfsError::Enoent));
+    let card = root.lookup("card13").expect("card parent");
+    assert!(card.lookup("controlC13").is_ok());
+    assert!(card.lookup("pcmC13D0p").is_ok());
+    let uevent = card.lookup("uevent").expect("card uevent");
+    assert_eq!(uevent.write(0, b"change\n"), Ok("change\n".len()));
+    let msg = (0..64)
+        .filter_map(|_| listener.dequeue().map(|(msg, _src)| msg))
+        .find(|msg| msg.windows(b"DEVPATH=/devices/virtual/sound/card13".len())
+            .any(|w| w == b"DEVPATH=/devices/virtual/sound/card13"))
+        .expect("matching card uevent");
+    assert!(msg.windows(b"ACTION=change".len()).any(|w| w == b"ACTION=change"));
+    assert!(msg.windows(b"SUBSYSTEM=sound".len()).any(|w| w == b"SUBSYSTEM=sound"));
+
+    drv::device_del(&pcm);
+    drv::device_del(&control);
+    assert_eq!(root.lookup("card13").err(), Some(VfsError::Enoent));
 }
 
 #[test]
@@ -179,12 +213,14 @@ fn sound_class_separates_sysfs_leaf_from_devtmpfs_path() {
     let link = class.lookup("controlC9").expect("sound class link");
     assert_eq!(
         link.readlink().expect("readlink"),
-        b"../../devices/virtual/sound/controlC9".to_vec()
+        b"../../devices/virtual/sound/card9/controlC9".to_vec()
     );
     assert_eq!(class.lookup("snd").err(), Some(VfsError::Enoent));
 
     let root = make_virtual_class_inode("sound", INO_VIRT_SOUND);
-    let dir = root.lookup("controlC9").expect("sound device dir");
+    assert_eq!(root.lookup("controlC9").err(), Some(VfsError::Enoent));
+    let card = root.lookup("card9").expect("sound card dir");
+    let dir = card.lookup("controlC9").expect("sound device dir");
     let uevent = dir.lookup("uevent").expect("uevent attr");
     let mut buf = [0u8; 64];
     let n = uevent.read(0, &mut buf).expect("read uevent");
@@ -194,7 +230,7 @@ fn sound_class_separates_sysfs_leaf_from_devtmpfs_path() {
     );
 
     drv::device_del(&dev);
-    assert_eq!(root.lookup("controlC9").err(), Some(VfsError::Enoent));
+    assert_eq!(root.lookup("card9").err(), Some(VfsError::Enoent));
 }
 
 #[test]
@@ -271,16 +307,16 @@ fn class_device_links_to_model_parent_when_present() {
     drv::try_device_add(Arc::clone(&dev)).expect("test sound registration");
 
     let root = make_virtual_class_inode("sound", INO_VIRT_SOUND);
-    let dir = root.lookup("controlC10").expect("sound device dir");
+    let dir = root.lookup("card10").expect("sound card dir").lookup("controlC10").expect("sound device dir");
     let device = dir.lookup("device").expect("parent device link");
     assert_eq!(
         device.readlink().expect("readlink"),
-        b"../../../virtio/virtio-snd-parent0".to_vec()
+        b"../../../../virtio/virtio-snd-parent0".to_vec()
     );
 
     drv::device_del(&dev);
     drv::device_del(&parent);
-    assert_eq!(root.lookup("controlC10").err(), Some(VfsError::Enoent));
+    assert_eq!(root.lookup("card10").err(), Some(VfsError::Enoent));
 }
 
 #[test]
@@ -303,16 +339,16 @@ fn class_device_parent_link_tracks_remove_readd_model_state() {
     );
     drv::try_device_add(Arc::clone(&first)).expect("first sound registration");
 
-    let dir = root.lookup("controlC11").expect("first sound device dir");
+    let dir = root.lookup("card11").expect("first sound card dir").lookup("controlC11").expect("first sound device dir");
     let device = dir.lookup("device").expect("first parent device link");
     assert_eq!(
         device.readlink().expect("readlink"),
-        b"../../../virtio/virtio-snd-readd-parent0".to_vec()
+        b"../../../../virtio/virtio-snd-readd-parent0".to_vec()
     );
     assert!(class.lookup("controlC11").is_ok());
 
     drv::device_del(&first);
-    assert_eq!(root.lookup("controlC11").err(), Some(VfsError::Enoent));
+    assert_eq!(root.lookup("card11").err(), Some(VfsError::Enoent));
     assert_eq!(class.lookup("controlC11").err(), Some(VfsError::Enoent));
 
     let second = Arc::new(
@@ -322,19 +358,19 @@ fn class_device_parent_link_tracks_remove_readd_model_state() {
     );
     drv::try_device_add(Arc::clone(&second)).expect("second sound registration");
 
-    let dir = root.lookup("controlC11").expect("readded sound device dir");
+    let dir = root.lookup("card11").expect("readded sound card dir").lookup("controlC11").expect("readded sound device dir");
     let device = dir.lookup("device").expect("readded parent device link");
     assert_eq!(
         device.readlink().expect("readlink"),
-        b"../../../virtio/virtio-snd-readd-parent0".to_vec()
+        b"../../../../virtio/virtio-snd-readd-parent0".to_vec()
     );
     let link = class.lookup("controlC11").expect("readded class link");
     assert_eq!(
         link.readlink().expect("readlink"),
-        b"../../devices/virtual/sound/controlC11".to_vec()
+        b"../../devices/virtual/sound/card11/controlC11".to_vec()
     );
 
     drv::device_del(&second);
     drv::device_del(&parent);
-    assert_eq!(root.lookup("controlC11").err(), Some(VfsError::Enoent));
+    assert_eq!(root.lookup("card11").err(), Some(VfsError::Enoent));
 }
