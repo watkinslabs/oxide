@@ -861,7 +861,7 @@ here now.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| OPEN | MISSING | med | The active-open fast-open route-metrics probe (`sock/tcp_fastopen.rs::plan`) still calls `route_metrics_for_dst_in`, i.e. unmarked, so `TCP_FASTOPEN`'s `route_no_cookie` decision reads the wrong route for a marked socket. One-line change to pass `super::sock_mark(sock)`; file not owned by this branch. | `route_metrics_for_dst_in` retained as the unmarked wrapper solely for this caller | unclaimed |
+| OPEN | MISSING | med | The active-open fast-open route-metrics probe (`sock/tcp_fastopen.rs::plan`) still calls `route_metrics_for_dst_in`, i.e. unmarked, so `TCP_FASTOPEN`'s `route_no_cookie` decision reads the wrong route for a marked socket. One-line change to pass `super::sock_mark(sock)`; file not owned by this branch. | `route_metrics_for_dst_in` retained as the unmarked wrapper solely for this caller | CLAIMED B2301-fastopen-marked-route-metrics 2026-08-20 |
 | OPEN | MISSING | low | ICMP-driven PMTU updates for raw and UDP endpoints still update unmarked (`stack_icmp.rs`, two call sites): those endpoint types carry no mark at all, unlike `TcpEntry`. Reference takes the mark from the originating socket when one is matched. | `update_pmtu_v4(..., UNMARKED)` at the raw4 and UDP branches | unclaimed |
 | OPEN | MISSING | low | `SockBase::bound_ifindex` and `TcpBindReservation::bound_ifindex` are two atomics holding the same `sk_bound_dev_if` — a live mirror of the kind the mark work deliberately avoided. Noticed while choosing where the mark cell should live. | both fields written independently | unclaimed |
 
