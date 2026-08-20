@@ -26,13 +26,23 @@ impl FileSystemType for Ty {
 }
 fn ctx() -> FsContext { FsContext::for_mount(Arc::new(Ty), 0) }
 
+/// Observe the log through the same destructive, oldest-first operation used
+/// by the fscontext file rather than through a test-only snapshot API.
+fn drain_log(fc: &mut FsContext) -> Vec<String> {
+    let mut messages = Vec::new();
+    while let Some(message) = fc.fetch_message(usize::MAX).unwrap() {
+        messages.push(message);
+    }
+    messages
+}
+
 #[test]
 fn level_tagged_messages_accumulate_oldest_first() {
     let mut fc = ctx();
     fc.errorf("boom");
     fc.warnf("careful");
     fc.infof("fyi");
-    let log = fc.log_messages();
+    let log = drain_log(&mut fc);
     assert_eq!(log.len(), 3);
     assert_eq!(log[0], "e boom\n");
     assert_eq!(log[1], "w careful\n");
@@ -47,7 +57,7 @@ fn ring_is_bounded_dropping_oldest() {
         let m = format!("m{i}");
         fc.errorf(&m);
     }
-    let log = fc.log_messages();
+    let log = drain_log(&mut fc);
     assert_eq!(log.len(), FC_LOG_MAX, "ring capped at FC_LOG_MAX");
     // The first 3 (m0..m2) were dropped; the window starts at m3.
     assert_eq!(log[0], "e m3\n", "oldest entries evicted: {:?}", log);
@@ -59,7 +69,7 @@ fn invalf_logs_and_returns_einval() {
     let mut fc = ctx();
     let r: KResult<()> = fc.invalf("nope");
     assert_eq!(r.unwrap_err(), VfsError::Einval);
-    assert_eq!(fc.log_messages(), &["e nope\n".to_string()]);
+    assert_eq!(drain_log(&mut fc), ["e nope\n".to_string()]);
 }
 
 #[test]
@@ -74,8 +84,9 @@ fn unknown_parameter_is_logged_through_invalf() {
     // A path value, however, has no legacy form → logged invalf.
     let e2 = vfs_parse_fs_param(&mut fc, &FsParameter::path("upperdir", "/u")).unwrap_err();
     assert_eq!(e2, VfsError::Einval);
-    assert!(fc.log_messages().iter().any(|m| m.starts_with("e ") && m.contains("path")),
-        "unsupported value type logged: {:?}", fc.log_messages());
+    let log = drain_log(&mut fc);
+    assert!(log.iter().any(|m| m.starts_with("e ") && m.contains("path")),
+        "unsupported value type logged: {log:?}");
 }
 
 #[test]
@@ -84,18 +95,9 @@ fn multiple_sources_is_logged() {
     vfs_parse_fs_string(&mut fc, "source", "/dev/a").unwrap();
     let e = vfs_parse_fs_string(&mut fc, "source", "/dev/b").unwrap_err();
     assert_eq!(e, VfsError::Einval);
-    assert!(fc.log_messages().iter().any(|m| m.contains("Multiple sources")),
-        "multiple-sources diagnostic logged: {:?}", fc.log_messages());
-}
-
-#[test]
-fn take_log_drains_the_ring() {
-    let mut fc = ctx();
-    fc.errorf("a");
-    fc.warnf("b");
-    let drained = fc.take_log();
-    assert_eq!(drained, vec!["e a\n".to_string(), "w b\n".to_string()]);
-    assert!(fc.log_messages().is_empty(), "ring emptied after take_log");
+    let log = drain_log(&mut fc);
+    assert!(log.iter().any(|m| m.contains("Multiple sources")),
+        "multiple-sources diagnostic logged: {log:?}");
 }
 
 // `read(2)` on the context descriptor is the ONLY way userspace ever sees these
@@ -121,7 +123,6 @@ fn a_short_buffer_reports_emsgsize_and_leaves_the_message_queued() {
     fc.errorf("a long enough diagnostic");
     let want = "e a long enough diagnostic\n";
     assert_eq!(fc.fetch_message(want.len() - 1).unwrap_err(), VfsError::Emsgsize);
-    assert_eq!(fc.log_messages().len(), 1, "still queued after EMSGSIZE");
     // Exactly-fitting is a fit — the count is the byte length, newline
     // included and no NUL.
     assert_eq!(fc.fetch_message(want.len()).unwrap().as_deref(), Some(want));
@@ -163,7 +164,7 @@ fn an_empty_ring_is_enodata_not_a_zero_length_read() {
     let mut fc = ctx();
     let mut buf = [0u8; 64];
     assert_eq!(fc.read_message(&mut buf).unwrap_err(), VfsError::Enodata);
-    assert!(fc.log_messages().is_empty());
+    assert_eq!(fc.fetch_message(64).unwrap(), None);
 }
 
 // A short buffer must not consume the message — the caller retries larger and

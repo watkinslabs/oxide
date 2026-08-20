@@ -225,8 +225,6 @@ impl FsContext {
     pub fn warnf(&mut self, msg: &str) { self.logfc('w', msg); }
     pub fn infof(&mut self, msg: &str) { self.logfc('i', msg); }
     pub fn invalf<T>(&mut self, msg: &str) -> KResult<T> { self.errorf(msg); Err(crate::types::VfsError::Einval) }
-    pub fn log_messages(&self) -> &[String] { &self.log }
-    pub fn take_log(&mut self) -> Vec<String> { core::mem::take(&mut self.log) }
 }
 
 pub fn put_fs_context(mut fc: FsContext) {
