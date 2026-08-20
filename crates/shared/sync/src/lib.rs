@@ -355,6 +355,9 @@ pub trait BhGate: 'static {
     /// `in_interrupt()` true on this CPU and stops it rescheduling.
     /// # C: O(1)
     unsafe fn disable();
+    /// Diagnose the pair while the acquisition trace is still live.
+    /// Production gates normally use this no-op default. # C: O(1)
+    fn check_enable() {}
     /// Linux `local_bh_enable` — drop the count and drain anything that became
     /// pending while bottom halves were off.
     /// # SAFETY: must pair a prior `disable`, at a point where a softirq drain
@@ -720,6 +723,7 @@ impl<T, C: LockClass, B: BhGate> Drop for LockBhGuard<'_, T, C, B> {
         #[cfg(feature = "debug-smp")]
         self.lock.owner.store(0, Ordering::Relaxed);
         self.lock.locked.store(false, Ordering::Release);
+        B::check_enable();
         crate::preempt_gate::release(self.preempt);
         // SAFETY: pairs the B::disable in lock_bh; the lock is released, so a drain here may take it.
         unsafe { B::enable(); }
@@ -735,12 +739,14 @@ mod tests {
     /// scheduler's real `preempt_count`.
     struct CountingBh;
     static BH_DEPTH: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
+    static BH_CHECK_DEPTH: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
     /// Set by the fake "softirq" if it ever observes bottom halves enabled
     /// while the lock is still held — the exact bug `lock_bh` must prevent.
     static BH_REENTERED_HELD: AtomicBool = AtomicBool::new(false);
 
     impl BhGate for CountingBh {
         unsafe fn disable() { BH_DEPTH.fetch_add(1, Ordering::AcqRel); }
+        fn check_enable() { BH_CHECK_DEPTH.store(BH_DEPTH.load(Ordering::Acquire), Ordering::Release); }
         unsafe fn enable()  { BH_DEPTH.fetch_sub(1, Ordering::AcqRel); }
     }
 
@@ -825,6 +831,18 @@ mod tests {
             TAKEN_IN_DRAIN.load(Ordering::Acquire),
             "lock must be released before local_bh_enable drains, or the drain self-deadlocks"
         );
+    }
+
+    #[test]
+    fn lock_bh_checks_the_pair_before_enabling() {
+        let _serial = crate::test_serial::gate();
+        BH_DEPTH.store(0, Ordering::Release);
+        BH_CHECK_DEPTH.store(0, Ordering::Release);
+        let lock = Spinlock::<(), Buddy>::new(());
+        drop(lock.lock_bh::<CountingBh>());
+        assert_eq!(BH_CHECK_DEPTH.load(Ordering::Acquire), 1,
+            "diagnostic must observe the outstanding disable credit");
+        assert_eq!(BH_DEPTH.load(Ordering::Acquire), 0);
     }
 
     #[test]

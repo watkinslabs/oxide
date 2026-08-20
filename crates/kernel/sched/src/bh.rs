@@ -213,6 +213,15 @@ pub struct SchedBh;
 impl sync::BhGate for SchedBh {
     /// # C: O(1)
     unsafe fn disable() { local_bh_disable(); }
+    fn check_enable() {
+        #[cfg(feature = "debug-preempt")]
+        if preempt::softirq_count() < SOFTIRQ_DISABLE_OFFSET {
+            klog::write_raw(b"[PREEMPT-LEAK] lock_bh enable lost disable credit preempt_count=0x");
+            klog::write_hex_u64(preempt::preempt_count() as u64);
+            sync::preempt_gate::write_held_stack();
+            klog::write_raw(b"\n");
+        }
+    }
     /// # SAFETY: `lock_bh`'s guard releases the lock before calling this, so the
     /// inline drain may take that lock; caller is at a legal schedule point.
     /// # C: O(1) + drain
