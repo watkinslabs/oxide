@@ -28,24 +28,29 @@ pub const ATTRS: [PowerAttr; 6] = [
 /// The read-only attributes under `/sys/power/suspend_stats`.
 pub const STATS_ATTRS: [&str; 16] = attrs::STATS_ATTRS;
 
-/// Read one `/sys/power` attribute. # C: O(1)
+/// Read one `/sys/power` attribute.
+/// # C: O(N_wakeups) for `wakeup_count`, O(1) otherwise
+/// # Sleeps: `wakeup_count` waits for active wakeup sources
 pub fn show(attr: &str) -> KResult<Vec<u8>> {
     let o = ops::suspend_ops();
     let body = match attr {
         "state"     => attrs::render_state(state::pm_states(o)),
         "mem_sleep" => attrs::render_mem_sleep(state::mem_sleep_states(o),
                            tunables::mem_sleep_current()),
-        "wakeup_count" => {
-            let (count, quiet) = wakeup::SYSTEM.get_wakeup_count();
-            if !quiet { return Err(Error::Intr); }
-            attrs::render_u64(u64::from(count))
-        }
+        "wakeup_count" => return render_wakeup_count(
+            wakeup::SYSTEM.get_wakeup_count_blocking()),
         "pm_async"          => attrs::render_bool(tunables::pm_async()),
         "pm_debug_messages" => attrs::render_bool(tunables::pm_debug_messages()),
         "sync_on_suspend"   => attrs::render_bool(tunables::sync_on_suspend()),
         _ => return Err(Error::Nodata),
     };
     Ok(attrs::bytes(body))
+}
+
+/// Render Linux `pm_get_wakeup_count`'s result for sysfs. # C: O(1)
+fn render_wakeup_count(count: Option<u32>) -> KResult<Vec<u8>> {
+    let Some(count) = count else { return Err(Error::Intr) };
+    Ok(attrs::bytes(attrs::render_u64(u64::from(count))))
 }
 
 /// Read one `/sys/power/suspend_stats` attribute. # C: O(1)

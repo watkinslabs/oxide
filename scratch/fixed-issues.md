@@ -1,5 +1,11 @@
 # Fixed issues
 
+### F1240-wakeup-count-wait
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 98e108f86 | MISSING | med | **`/sys/power/wakeup_count` now waits interruptibly until every active wakeup source has finished instead of returning `EINTR` immediately.** The combined event word remains the condition truth; final-source deactivation atomically registers the event and wakes count readers, while the reader publishes on the wait list before rechecking. A signal returns `EINTR` only while work remains, and a final deactivation racing that signal wins after the reference's final counter recheck. | F1240. `power::suspend::wakeup::tests` covers multiple active sources, signal interruption, the signal/deactivation race, and last-source-only waking; disconnecting the last-source condition turns its positive control RED. `power::suspend::sysfs_api::tests` covers waited rendering and `EINTR` mapping. Power 208 and focused sysfs 10 pass; both kernel target checks pass. Paired SMP=2 smoke: ARM64 attempt 1 in 56 s; x86_64 attempt 2 in 45 s after one documented serial-input timeout; both serial-RX probes pass. | F1240-wakeup-count-wait |
+
 ### B2297-tcp6-passive-flowinfo
 
 | Status | Class | Sev | Issue | Evidence | Owner |

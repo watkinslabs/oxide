@@ -29,6 +29,11 @@ pub struct WakeupCounters {
     abort: AtomicU32,
     /// Up to two IRQ numbers credited with the wakeup.
     wakeup_irq: [AtomicU32; 2],
+    /// Readers of `/sys/power/wakeup_count` waiting for all active sources.
+    waiters: sched::live::WaitList,
+    /// Test-visible proof that the public deactivation path rang the waiters.
+    #[cfg(test)]
+    waiter_wakeups: AtomicU32,
 }
 
 /// A counter snapshot: registered events, events in progress.
@@ -44,6 +49,9 @@ impl WakeupCounters {
             saved: AtomicU32::new(0),
             abort: AtomicU32::new(0),
             wakeup_irq: [AtomicU32::new(0), AtomicU32::new(0)],
+            waiters: sched::live::WaitList::new(),
+            #[cfg(test)]
+            waiter_wakeups: AtomicU32::new(0),
         }
     }
 
@@ -61,7 +69,19 @@ impl WakeupCounters {
     /// A wakeup source finished: the event moves from in-progress to
     /// registered. One add does both, so no reader observes it in neither.
     /// # C: O(1)
-    pub fn source_deactivate(&self) { self.combined.fetch_add(MAX_IN_PROGRESS, Ordering::SeqCst); }
+    pub fn source_deactivate(&self) {
+        let before = self.combined.fetch_add(MAX_IN_PROGRESS, Ordering::SeqCst);
+        let after = before.wrapping_add(MAX_IN_PROGRESS);
+        if split(after).in_progress == 0 { self.wake_count_waiters(); }
+    }
+
+    /// Wake readers only after the final in-progress event is registered.
+    /// Safe from interrupt context. # C: O(N_waiters)
+    fn wake_count_waiters(&self) {
+        #[cfg(test)]
+        self.waiter_wakeups.fetch_add(1, Ordering::SeqCst);
+        self.waiters.wake_all();
+    }
 
     /// Post an unconditional abort, the "hard" wakeup a source reports when it
     /// knows the machine must not sleep.
@@ -128,6 +148,55 @@ impl WakeupCounters {
     pub fn get_wakeup_count(&self) -> (u32, bool) {
         let c = self.counts();
         (c.registered, c.in_progress == 0)
+    }
+
+    /// Read the registered count after waiting interruptibly for every active
+    /// source to finish. `None` is Linux's failed `pm_get_wakeup_count`, which
+    /// the sysfs owner maps to `EINTR`.
+    /// # C: O(N_wakeups)
+    /// # Sleeps: while a wakeup source remains active
+    pub fn get_wakeup_count_blocking(&self) -> Option<u32> {
+        self.get_wakeup_count_with_wait(|counters| counters.wait_for_quiet())
+    }
+
+    /// Blocking-read loop with the park operation supplied for hosted tests.
+    /// Re-read after every wait outcome: Linux does a final `split_counters`
+    /// after `finish_wait`, so a last-source deactivation racing a signal wins
+    /// and returns the count rather than a spurious interruption.
+    /// # C: O(N_wakeups)
+    pub(super) fn get_wakeup_count_with_wait(&self,
+        mut wait: impl FnMut(&Self) -> sched::WaitOutcome) -> Option<u32>
+    {
+        loop {
+            let before = self.counts();
+            if before.in_progress == 0 { return Some(before.registered); }
+            let outcome = wait(self);
+            let after = self.counts();
+            if after.in_progress == 0 { return Some(after.registered); }
+            if outcome.interrupted() { return None; }
+        }
+    }
+
+    /// Production wait corresponding to Linux's
+    /// `wait_event_interruptible(wakeup_count_wait_queue, !in_progress)`.
+    /// # C: O(N_wakeups)
+    fn wait_for_quiet(&self) -> sched::WaitOutcome {
+        #[cfg(target_os = "oxide-kernel")]
+        {
+            // SAFETY: `/sys/power/wakeup_count` reads run in process context
+            // without a wakeup-source or runqueue lock held. `self` is SYSTEM
+            // and therefore outlives every waiter.
+            unsafe {
+                sched::live::wait_event_interruptible(&self.waiters,
+                    || self.counts().in_progress == 0)
+            }
+        }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        {
+            // Hosted tests supply the wait action to
+            // `get_wakeup_count_with_wait`; there is no live hosted runqueue.
+            sched::WaitOutcome::Interrupted
+        }
     }
 
     /// Arm the comparison against `count`. Succeeds only when `count` is still

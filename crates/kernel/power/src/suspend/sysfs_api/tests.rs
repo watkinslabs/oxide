@@ -104,11 +104,27 @@ fn wakeup_count_reads_the_registered_count() {
 }
 
 #[test]
-fn reading_wakeup_count_with_an_event_in_progress_reports_the_interruption() {
+fn a_blocking_wakeup_count_read_renders_after_the_source_finishes() {
+    let _g = crate::suspend::test_lock();
+    quiesce();
+    let before = wakeup::SYSTEM.counts().registered;
+    wakeup::SYSTEM.source_activate();
+    let count = wakeup::SYSTEM.get_wakeup_count_with_wait(|counters| {
+        counters.source_deactivate();
+        sched::WaitOutcome::Ready
+    });
+    let want = alloc::format!("{}\n", before + 1).into_bytes();
+    assert_eq!(render_wakeup_count(count), Ok(want));
+}
+
+#[test]
+fn a_signal_while_a_wakeup_source_remains_active_is_eintr() {
     let _g = crate::suspend::test_lock();
     quiesce();
     wakeup::SYSTEM.source_activate();
-    assert_eq!(show("wakeup_count"), Err(Error::Intr));
+    let count = wakeup::SYSTEM.get_wakeup_count_with_wait(
+        |_| sched::WaitOutcome::Interrupted);
+    assert_eq!(render_wakeup_count(count), Err(Error::Intr));
     wakeup::SYSTEM.source_deactivate();
 }
 
