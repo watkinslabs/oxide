@@ -229,14 +229,7 @@ mod tests {
 
     #[test]
     fn s5_uses_packed_single_or_first_two_package_values() {
-        let context = AmlContext::new(Box::new(FirmwareHandler), DebugVerbosity::None);
-        let types = |values: &[AmlValue]| {
-            let first = values.first()?.as_integer(&context).ok()? as u8;
-            let second = if values.len() == 1 { (values.first()?.as_integer(&context).ok()? >> 8) as u8 }
-                else { values.get(1)?.as_integer(&context).ok()? as u8 };
-            Some((first, second))
-        };
-        assert_eq!(types(&[AmlValue::Integer(0x0605)]), Some((5, 6)));
-        assert_eq!(types(&[AmlValue::Integer(5), AmlValue::Integer(6), AmlValue::Integer(7)]), Some((5, 6)));
+        assert_eq!(sleep_types::sleep_type_pair(&[0x0605]), Some((5, 6)));
+        assert_eq!(sleep_types::sleep_type_pair(&[5, 6, 7]), Some((5, 6)));
     }
 }

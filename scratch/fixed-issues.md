@@ -2973,3 +2973,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 947c2360a | DEFECT | low | **`SO_PEERSEC` collapsed a recorded label's render error into `ENOPROTOOPT`, falsely reporting that the option was unavailable.** The socket-label boundary is now explicitly tri-state: no label or no installed module remains absence, while a renderer returns bytes or an error. The SELinux adapter preserves allocation failure as `ENOMEM` and maps an invalid or unknown SID to `EINVAL`; the target-only `getsockopt` shim returns either error before applying the absent-context length ladder. This matches Linux `selinux_socket_getpeersec_stream`, which returns `security_sid_to_context`'s error verbatim and uses `ENOPROTOOPT` only when no peer SID exists. | F1243. `security::network::peer::tests::absence_and_a_render_failure_remain_distinct` proves `Ok(None)` and `Err(EINVAL)` remain distinct. Positive control restored the old collapse and failed with `left: Ok(None), right: Err(Einval)`; restored GREEN. Full suites: security 491, net 2,574, SELinux runtime 55, all passed. Kernel target checks passed on x86_64 and aarch64. | F1243 |
+
+### F1244-aml-s5-test-owner
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 18134b788 | DEFECT | low | **The `_S5` routing test duplicated the sleep-package decoder instead of exercising its production owner.** It now calls `sleep_types::sleep_type_pair` for both the packed one-value form and the separate multi-value form, so changes to the decoder cannot leave this caller's test green through a private copy. | F1244. `s5_uses_packed_single_or_first_two_package_values` passes through the shared decoder. Positive control changed that decoder's packed PM1b result to zero and the test failed with `Some((5, 0))` versus `Some((5, 6))`; restored GREEN. Full firmware suite: 152 passed. | F1244 |
