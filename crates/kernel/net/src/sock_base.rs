@@ -27,7 +27,9 @@ pub struct SockBase {
     pub broadcast: AtomicI32,
     pub oobinline: AtomicI32,
     pub sndbuf: AtomicI32,
-    pub rcvbuf: AtomicI32,
+    /// `sk_rcvbuf`, also retained by the socket error queue so every error
+    /// admission reads the live receive budget instead of a published copy.
+    pub rcvbuf: Arc<AtomicI32>,
     /// `SOCK_RCVBUF_LOCK`: set once a write names a receive size, after which
     /// the transport follows it instead of autotuning.
     pub rcvbuf_locked: AtomicBool,
@@ -69,7 +71,7 @@ impl SockBase {
             broadcast: AtomicI32::new(0),
             oobinline: AtomicI32::new(0),
             sndbuf: AtomicI32::new(sndbuf),
-            rcvbuf: AtomicI32::new(rcvbuf),
+            rcvbuf: Arc::new(AtomicI32::new(rcvbuf)),
             rcvbuf_locked: AtomicBool::new(false),
             sndtimeo_ns: AtomicI64::new(0),
             rcvtimeo_ns: AtomicI64::new(0),

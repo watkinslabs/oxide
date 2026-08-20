@@ -39,6 +39,8 @@ impl InetSocket {
             _ => crate::sysctl::BufPersonality::Generic,
         };
         let (sndbuf, rcvbuf) = crate::sysctl::initial_bufs(&owner.net_namespace, personality);
+        let mut opts = SockOpts::default();
+        opts.base.rcvbuf = error.rcvbuf_cell();
         let sock = Self {
             family: core::sync::atomic::AtomicU16::new(AF_INET), local_port: Spinlock::new(None),
             local_ip: Spinlock::new(Ipv4Addr::ANY), peer: Arc::new(Spinlock::new(None)),
@@ -50,7 +52,7 @@ impl InetSocket {
             packet_fanout: Spinlock::new(None),
             packet_rings: SockBhLock::new(PacketRings::default()),
             packet_tx: PacketTxGate::new(),
-            opts: SockOpts::default(), error,
+            opts, error,
             read_shut: core::sync::atomic::AtomicBool::new(false),
             write_shut: core::sync::atomic::AtomicBool::new(false),
             released: core::sync::atomic::AtomicBool::new(false),
