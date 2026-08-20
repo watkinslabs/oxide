@@ -3,8 +3,10 @@
 //
 // Everything firmware does not preserve across S3 is here and nowhere else:
 // the control registers, the descriptor-table registers, the segment
-// selectors and their MSR bases, the syscall MSRs, and the callee-saved
-// general registers. The general-register half is a [`PtRegs`] — `54§1.7`
+// selectors and their MSR bases, and the callee-saved general registers. The
+// syscall MSRs are deliberately rebuilt from the live kernel on resume, as
+// Linux does, rather than carried in this record. The general-register half
+// is a [`PtRegs`] — `54§1.7`
 // admits exactly ONE register-frame type per arch, so this record embeds it
 // rather than declaring a second GPR layout the rest of the port cannot read.
 //
@@ -52,10 +54,6 @@ pub struct SavedCpuState {
     pub cr3: u64,
     pub cr4: u64,
     pub efer: u64,
-    pub star: u64,
-    pub lstar: u64,
-    pub cstar: u64,
-    pub sfmask: u64,
     pub fs_base: u64,
     /// `IA32_GS_BASE`: the per-CPU base the kernel dereferences `gs:` through.
     pub gs_base: u64,
