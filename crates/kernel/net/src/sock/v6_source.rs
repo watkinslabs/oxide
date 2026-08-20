@@ -24,7 +24,7 @@ pub(crate) fn v6_connect_source(sock: &InetSocket, dst_ip: crate::Ipv6Addr)
     let net_ns = sock.net_ns();
     let stack = super::stack();
     let mark = super::sock_mark(sock);
-    let iface = match super::iface::v6_egress_iface(sock)? {
+    let iface = match super::iface::bound_iface(sock)? {
         Some(id) => id,
         None => stack.routes6.lookup_policy_mark_in(net_ns, dst_ip, stack.policy_rules(), mark)
             .ok_or(NetError::Enetunreach)?.iface,

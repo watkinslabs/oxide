@@ -126,12 +126,14 @@ impl InetSocket {
                                         ipv6_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
                                         max_pacing_rate: Arc<core::sync::atomic::AtomicU64>,
                                         mark: Arc<core::sync::atomic::AtomicI32>,
+                                        bound_ifindex: Arc<core::sync::atomic::AtomicU32>,
                                         owner: Arc<crate::SocketOwner>) -> Self {
         let mut sock = Self::new_owned(owner, bpf_filter, error, SockKind::TcpInit);
         sock.opts.ip_mtu_discover = ip_mtu_discover;
         sock.opts.ipv6_mtu_discover = ipv6_mtu_discover;
         sock.opts.base.generic.use_max_pacing_rate_cell(max_pacing_rate);
         sock.opts.base.mark = mark;
+        sock.opts.base.bound_ifindex = bound_ifindex;
         sock
     }
 
@@ -186,6 +188,7 @@ impl InetSocket {
         let sock = Arc::new(Self::new_tcp_with_transport_state_owned(
             entry.error.clone(), entry.bpf_filter.clone(), entry.ip_mtu_discover.clone(),
             entry.ipv6_mtu_discover.clone(), entry.max_pacing_rate.clone(), entry.mark.clone(),
+            entry.bound_ifindex_cell(),
             listener.owner.clone()));
         let family = listener.family.load(core::sync::atomic::Ordering::Acquire);
         sock.family.store(family, core::sync::atomic::Ordering::Release);
@@ -206,7 +209,6 @@ impl InetSocket {
                 }
             }
         }
-        sock.opts.base.bound_ifindex.store(bound_ifindex, core::sync::atomic::Ordering::Release);
         // Linux `sk_clone_lock` copies the listening `struct sock` wholesale,
         // so an accepted child starts with the listener's buffer sizing and
         // its `sk_userlocks` — which is why `setsockopt(SO_RCVBUF)` on a
@@ -331,7 +333,8 @@ mod tests {
             ip: crate::IpAddr::V4(crate::Ipv4Addr::new(192, 0, 2, 1)), port: 443,
         };
         let bind = Arc::new(crate::stack::TcpBindReservation::new_owned(
-            listener.owner.clone(), local, None, false, false, false));
+            listener.owner.clone(), local, false, false, false,
+            Arc::new(core::sync::atomic::AtomicU32::new(0))));
         let entry = Arc::new(crate::stack::TcpEntry::new_bound_with_error(
             crate::TcpConn::new_client(local, remote, 1), listener.error.clone(), Some(bind)));
         let child = InetSocket::from_accepted_tcp(&listener, entry);
@@ -357,6 +360,34 @@ mod tests {
         assert!(Arc::ptr_eq(&child.opts.base.mark, &entry.mark));
         child.opts.base.mark.store(0x4455, Ordering::Release);
         assert_eq!(entry.mark(), 0x4455, "a post-accept SO_MARK write reaches TCP routing");
+    }
+
+    #[test]
+    fn accepted_tcp_socket_owns_the_transport_childs_live_bound_device() {
+        let _domain = crate::hosted_fixture::init_net_domain();
+        let listener = InetSocket::new_tcp();
+        let stack = crate::global_stack();
+        let first = stack.ifaces.register(Arc::new(crate::LoopbackDev::new()));
+        let next = stack.ifaces.register(Arc::new(crate::LoopbackDev::new()));
+        let local = crate::Endpoint {
+            ip: crate::IpAddr::V4(crate::Ipv4Addr::LOOPBACK), port: 41004,
+        };
+        let remote = crate::Endpoint {
+            ip: crate::IpAddr::V4(crate::Ipv4Addr::new(192, 0, 2, 3)), port: 443,
+        };
+        let bind = Arc::new(crate::stack::TcpBindReservation::new_owned(
+            listener.owner.clone(), local, false, false, false,
+            Arc::new(core::sync::atomic::AtomicU32::new(first.raw()))));
+        let entry = Arc::new(crate::stack::TcpEntry::new_bound_with_error(
+            crate::TcpConn::new_client(local, remote, 1), listener.error.clone(), Some(bind)));
+
+        let child = InetSocket::from_accepted_tcp(&listener, entry.clone());
+
+        assert!(Arc::ptr_eq(&child.opts.base.bound_ifindex,
+            &entry.bind.as_ref().unwrap().bound_ifindex));
+        child.set_bound_iface(Some(next)).unwrap();
+        assert_eq!(entry.bound_iface(), Some(next),
+            "a post-accept SO_BINDTODEVICE write reaches TCP routing");
     }
 
     /// One accepted child, with the header fields the passive open recorded.

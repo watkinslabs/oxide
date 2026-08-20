@@ -280,7 +280,7 @@ impl NetStack {
     {
         let entry = super::tcp_listener_deliver::build_passive_child(req.local, req.own_mss,
             req.path_mtu.load(::core::sync::atomic::Ordering::Acquire), req.metrics, &[],
-            listener, req.iface, req.ipv6);
+            listener, req.bound_iface(), req.iface, req.ipv6);
         {
             let mut conn = entry.conn.lock();
             // What the SYN carried — the saved packet and its network-header

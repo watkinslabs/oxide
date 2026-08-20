@@ -111,6 +111,7 @@ fn the_tcp_reservation_draws_from_the_socket_window_too() {
         crate::SocketOwner::root(owner.clone(), 0),
         crate::addr::IpAddr::V4(crate::Ipv4Addr::ANY), 0, None, false, false, false,
         packed(window.0, window.1),
+        alloc::sync::Arc::new(core::sync::atomic::AtomicU32::new(0)),
     ).expect("a ten-port window has room for one reservation");
     let port = bind.local.port;
     assert!((window.0..=window.1).contains(&port),

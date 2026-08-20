@@ -76,6 +76,9 @@ pub(crate) struct TcpReq {
     /// whatever the listening socket's mark became while the handshake ran:
     /// an accepted connection's mark is the one its request answered with.
     pub(crate) mark: i32,
+    /// `sk_bound_dev_if` captured when this request was admitted. A later
+    /// listener rebind must not rewrite the child the request becomes.
+    pub(crate) bound_ifindex: u32,
     pub(crate) iface: NetIfaceId,
     pub(crate) ipv6: bool,
     /// Retransmit and deferral accounting for this request.
@@ -124,7 +127,9 @@ impl TcpReq {
             syn_bytes,
             listener: Arc::downgrade(listener),
             bind: listener.bind.clone(),
-            mark, iface, ipv6,
+            mark,
+            bound_ifindex: listener.bound_iface().map(NetIfaceId::raw).unwrap_or(0),
+            iface, ipv6,
             rsk: StackBhLock::new(conn.rsk),
             last_oow_ack_ns: AtomicU64::new(0),
             syn_backlog_reserved: AtomicBool::new(true),
@@ -143,7 +148,9 @@ impl TcpReq {
     pub(crate) fn net_ns(&self) -> u64 { self.bind.net_ns() }
 
     /// # C: O(1)
-    pub(crate) fn bound_iface(&self) -> Option<NetIfaceId> { self.bind.bound_iface() }
+    pub(crate) fn bound_iface(&self) -> Option<NetIfaceId> {
+        match self.bound_ifindex { 0 => None, raw => Some(NetIfaceId::from_raw(raw)) }
+    }
 
     /// The listening socket this request will be handed to. # C: O(1)
     pub(crate) fn listener(&self) -> Option<Arc<TcpListenEntry>> { self.listener.upgrade() }

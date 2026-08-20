@@ -66,8 +66,8 @@ failure mode this reconcile was supposed to catch, not commit.
 | COVERAGE | 0 | 0 | 11 | 68 | 66 | 145 |
 | DEFECT | 2 | 4 | 27 | 69 | 70 | 172 |
 | INFRA | 0 | 0 | 11 | 41 | 39 | 91 |
-| MISSING | 1 | 0 | 49 | 142 | 116 | 308 |
-| **Total** | **3** | **4** | **98** | **320** | **291** | **716** |
+| MISSING | 1 | 0 | 49 | 142 | 115 | 307 |
+| **Total** | **3** | **4** | **98** | **320** | **290** | **715** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -856,12 +856,6 @@ here now.
 | OPEN | MISSING | low | `Route6Entry` carries no route TYPE, so the IPv6 local-input decision tests table membership instead. No divergence is reachable today — the local table holds only the loopback prefix and anycast ownership lives in a separate map that the shared local-input owner already consults — but any later insertion of an unreachable/blackhole/prohibit row under the local table would be delivered locally. **The ledger row that raised this was also wrong about the reference**: it delivers an anycast route locally exactly as it does a local one, so an anycast row in the local table is not the divergence the row claimed. | `net::route6::Route6Entry` has no `kind`; `net::stack_ipv6::rx` tests `lookup_in_table_in(.., RT_TABLE_LOCAL, ..).is_some()`; contrast `net::route::RouteEntry::kind`. | unclaimed |
 | OPEN | MISSING | med | `SO_TXTIME` still generates nothing. The option's clock, deadline mode and error-report flag are stored, the per-message departure time now rides the packet, and both error-queue codes exist and are tested — but the transmit path is strict-priority FIFO by band with no deadline-ordered structure, no watchdog, and no missed-deadline report, so `publish_txtime` still has no non-test caller. The reference holds a deadline-ordered queue with a watchdog and reports a late packet on the error queue when the socket asked for error reports. Closing it is a transmit-scheduling lane, not a socket-option one. | `net::netdev::tx_dispatch` orders by band only; `net::socket_error::queue::publish_txtime` has no non-test caller. | unclaimed |
 | OPEN | MISSING | med | There is no transform subsystem, so a datagram the UDP encapsulation handler classifies as an encapsulated security payload is consumed and dropped instead of being decapsulated and re-injected. The classifier itself now matches the reference exactly (keepalive eaten, non-ESP marker passed through as control traffic, everything else consumed), so the row's original "stored with zero consumers" wording is no longer true — what is absent is everything downstream of the classification: a security-association table, the decrypt, and the re-injection. `UDP_ENCAP_L2TPINUDP` is in the same position with no tunnel subsystem. | `net::sock_opts::sol_udp::encap::rx_verdict` and its `tests_udp_encap` cases; nothing consumes the security-payload verdict. | unclaimed |
-
-### B1980-tcp-so-mark-routing
-
-| Status | Class | Sev | Issue | Evidence | Owner |
-|---|---|---|---|---|---|
-| OPEN | MISSING | low | `SockBase::bound_ifindex` and `TcpBindReservation::bound_ifindex` are two atomics holding the same `sk_bound_dev_if` — a live mirror of the kind the mark work deliberately avoided. Noticed while choosing where the mark cell should live. | both fields written independently | unclaimed |
 
 ### B1982-missing-sched-proc-surface
 

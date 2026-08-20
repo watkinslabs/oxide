@@ -25,7 +25,8 @@ pub(super) fn bind_tcp(sock: &alloc::sync::Arc<InetSocket>, ip: crate::IpAddr,
     let policy = super::bind_port_policy(sock, requested_port);
     if !policy.defer {
         let bind = stack().tcp_reserve_owned(sock.owner.clone(), ip, requested_port, iface,
-            reuseaddr, reuseport, tcp_v6only(sock, ip), policy.range)?;
+            reuseaddr, reuseport, tcp_v6only(sock, ip), policy.range,
+            sock.opts.base.bound_ifindex_cell())?;
         *local_port = Some(bind.local.port);
         *sock.tcp_bind.lock() = Some(bind);
     }
@@ -43,19 +44,20 @@ fn ensure_tcp_bind(sock: &InetSocket, local_ip: crate::IpAddr,
                    local_port: &mut Option<u16>, peer: Option<(crate::IpAddr, u16)>)
     -> Result<Arc<crate::stack::TcpBindReservation>, NetError> {
     if let Some(bind) = sock.tcp_bind.lock().as_ref().cloned() { return Ok(bind); }
-    let iface = match local_ip {
-        crate::IpAddr::V4(_) => super::iface::v4_egress_iface(sock)?,
-        crate::IpAddr::V6(_) => super::iface::v6_egress_iface(sock)?,
-    };
+    // TCP routes from `sk_bound_dev_if`; IP_UNICAST_IF/IPV6_UNICAST_IF are
+    // datagram egress hints and do not become a TCP bind or route constraint.
+    let iface = bound_iface(sock)?;
     let reuseaddr = sock.opts.base.reuseaddr.load(Ordering::Acquire) != 0;
     let reuseport = sock.opts.base.reuseport.load(Ordering::Acquire) != 0;
     let v6only = tcp_v6only(sock, local_ip);
     let policy = super::bind_port_policy(sock, 0);
     let bind = match peer {
         Some(peer) => stack().tcp_reserve_connect_owned(sock.owner.clone(), local_ip, 0, iface,
-            reuseaddr, reuseport, v6only, peer, policy.range)?,
+            reuseaddr, reuseport, v6only, peer, policy.range,
+            sock.opts.base.bound_ifindex_cell())?,
         None => stack().tcp_reserve_owned(sock.owner.clone(), local_ip, 0, iface,
-            reuseaddr, reuseport, v6only, policy.range)?,
+            reuseaddr, reuseport, v6only, policy.range,
+            sock.opts.base.bound_ifindex_cell())?,
     };
     *local_port = Some(bind.local.port);
     *sock.tcp_bind.lock() = Some(bind.clone());
@@ -202,13 +204,13 @@ pub(crate) fn connect_tcp4_locked(sock: &InetSocket, local_port: &mut Option<u16
         // transparent socket opens the connection from the foreign address, a
         // freebind one has no route out of it.
         crate::transparent::screen_v4_socket_source(net_ns, configured, dst_ip,
-            super::iface::v4_egress_iface(sock)?.is_some(),
+            bound_iface(sock)?.is_some(),
             super::nonlocal::permission(sock), false)?;
         configured
     } else if dst_ip.is_loopback() {
         Ipv4Addr::LOOPBACK
     } else {
-        let iface = super::iface::v4_egress_iface(sock)?;
+        let iface = bound_iface(sock)?;
         iface.and_then(|id| stack().route_v4_on_iface_in(net_ns, dst_ip, id,
             super::sock_mark(sock)).ok().flatten()
             .and_then(|route| route.src_hint))
@@ -233,13 +235,13 @@ pub(crate) fn connect_tcp4_mapped_locked(sock: &InetSocket, local_port: &mut Opt
     let net_ns = sock.net_ns();
     let local_ip = if configured != Ipv4Addr::ANY {
         crate::transparent::screen_v4_socket_source(net_ns, configured, dst_ip,
-            super::iface::v4_egress_iface(sock)?.is_some(),
+            bound_iface(sock)?.is_some(),
             super::nonlocal::permission(sock), false)?;
         configured
     } else if dst_ip.is_loopback() {
         Ipv4Addr::LOOPBACK
     } else {
-        let iface = super::iface::v4_egress_iface(sock)?;
+        let iface = bound_iface(sock)?;
         iface.and_then(|id| stack().route_v4_on_iface_in(net_ns, dst_ip, id,
             super::sock_mark(sock)).ok().flatten()
             .and_then(|route| route.src_hint))
@@ -274,4 +276,34 @@ pub(crate) fn connect_tcp6_locked(sock: &InetSocket, local_port: &mut Option<u16
     };
     connect_tcp(sock, local_port, crate::IpAddr::V6(local_ip),
         crate::IpAddr::V6(dst_ip), remote_port, source, data)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tcp_reservation_shares_bound_device_and_ignores_unicast_if() {
+        let _domain = crate::hosted_fixture::init_net_domain();
+        let owner = crate::net_ns::test_support::allocate_namespace();
+        let ns = owner.id().as_u64();
+        let stack = crate::global_stack();
+        let hinted = stack.ifaces.register_in_ns(
+            Arc::new(crate::LoopbackDev::new()), ns);
+        let bound = stack.ifaces.register_in_ns(
+            Arc::new(crate::LoopbackDev::new()), ns);
+        let hinted_ifindex = stack.ifaces.ifindex_in_ns(hinted, ns).unwrap();
+        let sock = InetSocket::new_tcp_in(owner);
+        sock.opts.ip.set_unicast_if(hinted_ifindex);
+        let mut local_port = None;
+
+        let bind = ensure_tcp_bind(&sock, crate::IpAddr::V4(crate::Ipv4Addr::LOOPBACK),
+            &mut local_port, None).unwrap();
+
+        assert_eq!(bind.bound_iface(), None,
+            "IP_UNICAST_IF is not TCP sk_bound_dev_if");
+        assert!(Arc::ptr_eq(&sock.opts.base.bound_ifindex, &bind.bound_ifindex));
+        sock.set_bound_iface(Some(bound)).unwrap();
+        assert_eq!(bind.bound_iface(), Some(bound));
+    }
 }
