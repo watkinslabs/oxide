@@ -158,6 +158,11 @@ impl UnixPair {
             let events = if oob { vfs::POLL_IN | vfs::POLL_PRI } else { vfs::POLL_IN };
             super::super::wake_peer_subs(self, end, events);
         }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        match end {
+            UnixEnd::A => self.a_to_b_waiters.wake_all(),
+            UnixEnd::B => self.b_to_a_waiters.wake_all(),
+        }
         Ok(n)
     }
 }

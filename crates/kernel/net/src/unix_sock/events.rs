@@ -1,4 +1,3 @@
-#[cfg(target_os = "oxide-kernel")]
 use super::{UnixEnd, UnixMsgPair, UnixPair};
 
 /// F181a: wake the PEER end's epoll subscribers (the end whose
@@ -6,7 +5,6 @@ use super::{UnixEnd, UnixMsgPair, UnixPair};
 /// a_to_b (peer = B), so wake end_b_subs; vice versa.
 /// Falls back to global epoll broadcast when peer's subs slot is
 /// empty (binding race) so no events get silently swallowed.
-#[cfg(target_os = "oxide-kernel")]
 pub(crate) fn wake_peer_subs(pair: &UnixPair, end: UnixEnd, events: u32) {
     let slot = match end {
         UnixEnd::A => pair.end_b_subs.lock().clone(),
@@ -18,11 +16,11 @@ pub(crate) fn wake_peer_subs(pair: &UnixPair, end: UnixEnd, events: u32) {
             return;
         }
     }
+    #[cfg(target_os = "oxide-kernel")]
     sched::live::notify_epoll_waiters();
 }
 
 /// F181a: msgpair sibling of `wake_peer_subs`.
-#[cfg(target_os = "oxide-kernel")]
 pub(crate) fn wake_msgpair_peer_subs(pair: &UnixMsgPair, end: UnixEnd, events: u32) {
     let slot = match end {
         UnixEnd::A => pair.end_b_subs.lock().clone(),
@@ -34,5 +32,6 @@ pub(crate) fn wake_msgpair_peer_subs(pair: &UnixMsgPair, end: UnixEnd, events: u
             return;
         }
     }
+    #[cfg(target_os = "oxide-kernel")]
     sched::live::notify_epoll_waiters();
 }

@@ -225,7 +225,6 @@ pub(crate) fn service_packet_ring_timers(now_ns: u64) {
     for socket in sockets {
         if socket.released.load(Ordering::Acquire) { continue; }
         if socket.service_packet_v3_timer(now_ns) {
-            #[cfg(target_os = "oxide-kernel")]
             socket.recv_waiters.wake_all();
             socket.poll_subs.notify();
         }

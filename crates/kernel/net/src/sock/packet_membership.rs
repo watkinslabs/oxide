@@ -176,7 +176,6 @@ pub(crate) fn detach_packet_device(rtnl: &crate::RtnlGuard<'_>,
             drop(kind);
             socket.error.set(syscall::errno::Errno::Enetdown as i32);
             socket.poll_subs.notify();
-            #[cfg(target_os = "oxide-kernel")]
             socket.recv_waiters.wake_all();
         }
     }

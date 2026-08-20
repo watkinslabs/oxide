@@ -67,9 +67,8 @@ pub struct UdpRxQueue {
     /// Datagrams waiting for a reader, each carrying the header fields the
     /// ancillary messages publish.
     pub(crate) state: crate::fib_lock::FibLock<UdpRxState, StackLockClass>,
-    /// F162: blocking sys_recvfrom waiters (kernel only).
-    #[cfg(target_os = "oxide-kernel")]
-    pub waiters: sched::live::WaitList,
+    /// Blocking receive waiters owned by this socket endpoint.
+    pub waiters: crate::sock_wait::SockWaitQueue,
     /// Canonical owning socket error state.
     pub error: Arc<crate::SocketError>,
     /// Connected peer filter. `None` accepts datagrams from any peer.

@@ -167,9 +167,9 @@ pub mod sock_intr;
 // and are the input every ancillary-message decision reads, so they sit outside
 // the gate covering the blocking receive machinery that produces them.
 pub mod recv_result;
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub mod sock_io;
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub mod sock_recv;
 #[cfg(target_os = "oxide-kernel")]
 pub(crate) mod sock_vfs_read;

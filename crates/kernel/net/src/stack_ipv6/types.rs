@@ -61,8 +61,7 @@ pub struct Udp6RxQueue {
     pub bound_ip: Ipv6Addr,
     pub bound_port: u16,
     state: Spinlock<Udp6RxState, StackLockClass>,
-    #[cfg(target_os = "oxide-kernel")]
-    pub waiters: sched::live::WaitList,
+    pub waiters: crate::sock_wait::SockWaitQueue,
     pub error: Arc<crate::SocketError>,
     /// Connected peer filter. `None` accepts datagrams from any peer.
     pub peer: Arc<Spinlock<Option<(Ipv6Addr, u16)>, StackLockClass>>,
@@ -261,8 +260,7 @@ impl Udp6RxQueue {
             bound_ip,
             bound_port,
             state: Spinlock::new(Udp6RxState { accepting: true, datagrams: VecDeque::new() }),
-            #[cfg(target_os = "oxide-kernel")]
-            waiters: sched::live::WaitList::new(),
+            waiters: crate::sock_wait::SockWaitQueue::new(),
             error,
             peer,
             reuseaddr,
@@ -288,7 +286,6 @@ impl Udp6RxQueue {
         if !state.accepting { return false; }
         if !self.error.publish(entry, connected, hard) { return false; }
         drop(state);
-        #[cfg(target_os = "oxide-kernel")]
         self.waiters.wake_all();
         let slot = self.poll_subs.lock().clone();
         if let Some(weak) = slot {
@@ -303,7 +300,6 @@ impl Udp6RxQueue {
         if !state.accepting { return false; }
         if !self.error.set(errno) { return false; }
         drop(state);
-        #[cfg(target_os = "oxide-kernel")]
         self.waiters.wake_all();
         let slot = self.poll_subs.lock().clone();
         if let Some(weak) = slot {
@@ -371,7 +367,6 @@ impl Udp6RxQueue {
             }
         }
         drop(state);
-        #[cfg(target_os = "oxide-kernel")]
         self.waiters.wake_all();
         if let Some(weak) = self.poll_subs.lock().clone() {
             if let Some(subs) = weak.upgrade() { subs.notify_mask(vfs::POLL_IN); }
@@ -385,7 +380,6 @@ impl Udp6RxQueue {
         if !state.accepting { return; }
         state.accepting = false;
         drop(state);
-        #[cfg(target_os = "oxide-kernel")]
         self.waiters.wake_all();
         if let Some(weak) = self.poll_subs.lock().clone() {
             if let Some(subs) = weak.upgrade() { subs.notify_mask(vfs::POLL_IN | vfs::POLL_HUP); }
@@ -410,7 +404,6 @@ impl Udp6RxQueue {
     }
 
     /// Register the current task as a waiter only while the endpoint is idle. # C: O(1)
-    #[cfg(target_os = "oxide-kernel")]
     pub fn park_if_idle(&self, read_shut: &core::sync::atomic::AtomicBool, deadline_ns: u64) -> bool {
         let state = self.state.lock();
         if !state.datagrams.is_empty() || self.error.has()

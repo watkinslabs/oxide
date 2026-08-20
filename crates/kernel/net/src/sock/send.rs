@@ -2,7 +2,6 @@ use super::*;
 use crate::sock_v6::RAW_NO_PORT;
 
 /// Arm, recheck, and park one blocking TCP sender on canonical ACK readiness. # C: O(retx) + park
-#[cfg(target_os = "oxide-kernel")]
 pub fn wait_transmit(sock: &InetSocket, deadline_ns: u64) -> bool {
     let entry = match &*sock.kind.lock() {
         SockKind::TcpConn(entry) => entry.clone(), _ => return false,
@@ -11,7 +10,7 @@ pub fn wait_transmit(sock: &InetSocket, deadline_ns: u64) -> bool {
         .max(0) as usize;
     if !entry.arm_transmit_wait(&sock.write_shut, cap, deadline_ns) { return true; }
     // SAFETY: arm_transmit_wait published current before dropping conn.
-    unsafe { sched::live::schedule::schedule(); }
+    unsafe { entry.poll_subs.sleep().wait(); }
     entry.poll_subs.sleep().remove_current();
     true
 }

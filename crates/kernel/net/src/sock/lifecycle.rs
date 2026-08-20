@@ -126,7 +126,7 @@ impl InetSocket {
     }
 }
 
-#[cfg(all(test, target_os = "oxide-kernel"))]
+#[cfg(test)]
 mod tests {
     use super::InetSocket;
     use alloc::sync::Arc;
@@ -135,6 +135,7 @@ mod tests {
 
     #[test]
     fn stale_bind_to_device_update_returns_enodev() {
+        let _domain = crate::hosted_fixture::init_net_domain();
         let stack = crate::global_stack();
         let owner = network_namespace::initial();
         let iface = stack.ifaces.register_in_ns(
@@ -170,17 +171,17 @@ mod tests {
     #[test]
     fn udp_receive_reports_pending_error_before_queued_datagram() {
         let sock = InetSocket::new_udp();
-        let endpoint = Arc::new(crate::UdpRxQueue::new(crate::Ipv4Addr::ANY, 41_234));
-        assert!(endpoint.enqueue((
+        let endpoint = Arc::new(crate::UdpRxQueue::new_with_error(
+            crate::Ipv4Addr::ANY, 41_234, sock.error.clone()));
+        assert!(endpoint.enqueue(crate::stack::UdpDatagram::plain(
             crate::Ipv4Addr::LOOPBACK, 53, crate::Ipv4Addr::LOOPBACK,
             crate::NetIfaceId::from_raw(1), 64, vec![1, 2, 3],
         )));
         *sock.udp4.lock() = Some(endpoint);
         sock.set_pending_recv_error(Errno::Econnrefused as i32);
-        assert_eq!(
-            crate::sock_io::recvfrom_opts(&sock, 8, crate::sock_io::RecvOptions::default()),
-            Err(crate::NetError::Econnrefused),
-        );
+        assert!(matches!(crate::sock_io::recvfrom_opts(
+            &sock, 8, crate::sock_io::RecvOptions::default()),
+            Err(crate::NetError::Econnrefused)));
         assert_eq!(
             crate::sock_io::recvfrom_opts(&sock, 8, crate::sock_io::RecvOptions::default())
                 .unwrap().payload,

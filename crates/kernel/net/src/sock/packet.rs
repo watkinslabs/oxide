@@ -86,7 +86,6 @@ pub(crate) fn teardown_packet_namespace(net_ns: u64) -> bool {
         socket.release_packet_rings();
         socket.error.set(syscall::errno::Errno::Enetdown as i32);
         socket.poll_subs.notify();
-        #[cfg(target_os = "oxide-kernel")]
         socket.recv_waiters.wake_all();
     }
     removed
@@ -274,7 +273,6 @@ fn deliver(net_ns: u64, iface: NetIfaceId, observation: Observation<'_>, origin:
         if queued { woken.push(sock); }
     }
     for sock in woken {
-        #[cfg(target_os = "oxide-kernel")]
         sock.recv_waiters.wake_all();
         sock.poll_subs.notify();
     }

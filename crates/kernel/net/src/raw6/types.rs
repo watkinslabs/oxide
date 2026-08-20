@@ -80,8 +80,7 @@ pub struct Raw6Endpoint {
     pub error: Arc<SocketError>,
     pub(crate) router_alert: Option<Arc<crate::sock_opts::sol_ipv6::Ipv6RouterAlert>>,
     pub(super) state: crate::fib_lock::FibLock<Raw6State, LockClass>,
-    #[cfg(target_os = "oxide-kernel")]
-    pub waiters: sched::live::WaitList,
+    pub waiters: crate::sock_wait::SockWaitQueue,
     pub(super) poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, LockClass>,
 }
 
@@ -121,8 +120,7 @@ impl Raw6Endpoint {
                 checksum: Raw6Checksum::for_protocol(protocol),
                 header_included: protocol == crate::addr::IpProto::Raw as u8,
             }),
-            #[cfg(target_os = "oxide-kernel")]
-            waiters: sched::live::WaitList::new(),
+            waiters: crate::sock_wait::SockWaitQueue::new(),
             poll_subs: Spinlock::new(None),
         }
     }
@@ -300,7 +298,6 @@ impl Raw6Endpoint {
     /// Atomically publish read shutdown against receive wait registration. # C: O(1)
     pub fn shutdown_read(&self, read_shut: &core::sync::atomic::AtomicBool) {
         self.shutdown_read_with(read_shut, || {
-            #[cfg(target_os = "oxide-kernel")]
             self.waiters.wake_all();
         });
     }
@@ -319,7 +316,6 @@ impl Raw6Endpoint {
         if !state.accepting { return; }
         state.accepting = false;
         drop(state);
-        #[cfg(target_os = "oxide-kernel")]
         self.waiters.wake_all();
         let poll = self.poll_subs.lock().clone();
         if let Some(subs) = poll.and_then(|weak| weak.upgrade()) {
@@ -327,8 +323,7 @@ impl Raw6Endpoint {
         }
     }
 
-    /// Park a kernel reader only while the queue is empty and live. # C: O(1)
-    #[cfg(target_os = "oxide-kernel")]
+    /// Park a reader only while the queue is empty and live. # C: O(1)
     pub fn arm_recv_wait(&self, read_shut: &core::sync::atomic::AtomicBool,
                          deadline_ns: u64) -> bool {
         self.arm_recv_wait_with(read_shut, || {
@@ -369,7 +364,6 @@ impl Raw6Endpoint {
     pub fn header_included(&self) -> bool { self.state.lock().header_included }
 
     pub(super) fn notify_receive(&self) {
-        #[cfg(target_os = "oxide-kernel")]
         self.waiters.wake_all();
         let poll = self.poll_subs.lock().clone();
         if let Some(subs) = poll.and_then(|weak| weak.upgrade()) { subs.notify(); }

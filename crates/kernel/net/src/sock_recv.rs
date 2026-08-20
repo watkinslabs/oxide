@@ -18,7 +18,7 @@ pub fn recv_blocking(sock: &Arc<InetSocket>, max_len: usize, opts: RecvOptions, 
         // `sock_intr_errno(*timeo)` — ERESTARTSYS with no SO_RCVTIMEO,
         // EINTR with one, because a timed wait cannot carry its remaining
         // time across a restart.
-        if sched::live::deliverable_signals_self() != 0 {
+        if crate::sock_intr::signal_pending_self() {
             return Err(crate::sock_intr::sock_intr_net(deadline_ns));
         }
         if deadline_ns != 0 && monotonic_ns_safe() >= deadline_ns { return Err(NetError::Eagain); }
@@ -83,7 +83,7 @@ fn wait_recv_source_after_generation(sock: &InetSocket, deadline_ns: u64, offset
         WaitKind::Unix(pair, end) => {
             if let crate::unix_sock::stream::ArmStreamRead::Parked = pair.arm_stream_read_after(end, offset, deadline_ns) {
                 // SAFETY: pair armed current under its incoming-ring lock.
-                unsafe { sched::live::schedule::schedule(); }
+                unsafe { pair.reader_waiters(end).wait(); }
                 pair.reader_waiters(end).remove_current();
             }
             false
@@ -94,7 +94,7 @@ fn wait_recv_source_after_generation(sock: &InetSocket, deadline_ns: u64, offset
                 crate::unix_sock::msg_pair::ArmMsgReadAfter::DatagramShutdown => return true,
                 crate::unix_sock::msg_pair::ArmMsgReadAfter::Parked => {
                     // SAFETY: pair armed current under its incoming-queue lock.
-                    unsafe { sched::live::schedule::schedule(); }
+                    unsafe { pair.reader_waiters(end).wait(); }
                     pair.reader_waiters(end).remove_current();
                 }
                 _ => {}
@@ -107,7 +107,7 @@ fn wait_recv_source_after_generation(sock: &InetSocket, deadline_ns: u64, offset
                 crate::unix_sock::dgram::ArmDgramRead::Shutdown => true,
                 crate::unix_sock::dgram::ArmDgramRead::Parked => {
                     // SAFETY: queue armed current under its message lock.
-                    unsafe { sched::live::schedule::schedule(); }
+                    unsafe { q.waiters.wait(); }
                     q.waiters.remove_current();
                     false
                 }
@@ -118,7 +118,7 @@ fn wait_recv_source_after_generation(sock: &InetSocket, deadline_ns: u64, offset
         WaitKind::Raw4(endpoint) => {
             if endpoint.arm_recv_wait(&sock.read_shut, deadline_ns) {
                 // SAFETY: endpoint armed current while receive admission was locked.
-                unsafe { sched::live::schedule::schedule(); }
+                unsafe { endpoint.waiters.wait(); }
                 endpoint.waiters.remove_current();
             }
             false
@@ -126,7 +126,7 @@ fn wait_recv_source_after_generation(sock: &InetSocket, deadline_ns: u64, offset
         WaitKind::Raw6(endpoint) => {
             if endpoint.arm_recv_wait(&sock.read_shut, deadline_ns) {
                 // SAFETY: endpoint armed current while receive admission was locked.
-                unsafe { sched::live::schedule::schedule(); }
+                unsafe { endpoint.waiters.wait(); }
                 endpoint.waiters.remove_current();
             }
             false
@@ -134,7 +134,7 @@ fn wait_recv_source_after_generation(sock: &InetSocket, deadline_ns: u64, offset
         WaitKind::Tcp(entry) => {
             if crate::sock_io::arm_tcp_read_after_mode(sock, &entry, offset, deadline_ns, include_urgent) {
                 // SAFETY: arm_tcp_read published current under entry.conn.
-                unsafe { sched::live::schedule::schedule(); }
+                unsafe { entry.poll_subs.sleep().wait(); }
                 entry.poll_subs.sleep().remove_current();
             }
             false
@@ -142,7 +142,10 @@ fn wait_recv_source_after_generation(sock: &InetSocket, deadline_ns: u64, offset
         WaitKind::Udp => { wait_udp(sock, deadline_ns); false }
         WaitKind::Yield => {
             // SAFETY: process ctx; no receive wait source exists for this kind.
+            #[cfg(target_os = "oxide-kernel")]
             unsafe { sched::live::tick_yield(); }
+            #[cfg(not(target_os = "oxide-kernel"))]
+            std::thread::yield_now();
             false
         }
     }
@@ -163,7 +166,7 @@ fn wait_packet(sock: &InetSocket, deadline_ns: u64) {
     drop(q);
     drop(kind);
     // SAFETY: current task is parked on the packet receive wait list.
-    unsafe { sched::live::schedule::schedule(); }
+    unsafe { sock.recv_waiters.wait(); }
     sock.recv_waiters.remove_current();
 }
 
@@ -185,12 +188,12 @@ fn wait_udp(sock: &InetSocket, deadline_ns: u64) {
     if let Some(q) = v6_q {
         if !q.park_if_idle(&sock.read_shut, deadline_ns) { return; }
         // SAFETY: process ctx; current task is parked on the UDP6 read wait list.
-        unsafe { sched::live::schedule::schedule(); }
+        unsafe { q.waiters.wait(); }
         q.waiters.remove_current();
     } else if let Some(q) = udp_q {
         if !q.park_if_idle(&sock.read_shut, deadline_ns) { return; }
         // SAFETY: process ctx; current task is parked on the UDP read wait list.
-        unsafe { sched::live::schedule::schedule(); }
+        unsafe { q.waiters.wait(); }
         q.waiters.remove_current();
     } else {
         let kind = sock.kind.lock();
@@ -200,7 +203,58 @@ fn wait_udp(sock: &InetSocket, deadline_ns: u64) {
         unsafe { sock.recv_waiters.prepare_to_wait_interruptible_with_deadline(deadline_ns); }
         drop(kind);
         // SAFETY: current task is parked on the fallback receive wait list.
-        unsafe { sched::live::schedule::schedule(); }
+        unsafe { sock.recv_waiters.wait(); }
         sock.recv_waiters.remove_current();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::sync::Arc;
+    use alloc::vec;
+    use core::time::Duration;
+
+    fn wait_until(mut ready: impl FnMut() -> bool) {
+        let until = std::time::Instant::now() + Duration::from_secs(1);
+        while !ready() {
+            assert!(std::time::Instant::now() < until, "receive path did not publish its wait");
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn blocking_udp_receive_parks_on_the_endpoint_queue_and_wakes_on_delivery() {
+        let sock = Arc::new(InetSocket::new_udp());
+        let endpoint = Arc::new(crate::UdpRxQueue::new_with_error(
+            crate::Ipv4Addr::ANY, 41_235, sock.error.clone()));
+        *sock.udp4.lock() = Some(endpoint.clone());
+        let receiver = sock.clone();
+        let thread = std::thread::spawn(move || recv_blocking(&receiver, 8,
+            RecvOptions::default(), crate::sock_clock::monotonic_ns_safe() + 1_000_000_000));
+
+        wait_until(|| endpoint.waiters.has_waiters());
+        let wake = std::time::Instant::now();
+        assert!(endpoint.enqueue(crate::stack::UdpDatagram::plain(
+            crate::Ipv4Addr::LOOPBACK, 53, crate::Ipv4Addr::LOOPBACK,
+            crate::NetIfaceId::from_raw(1), 64, vec![1, 2, 3])));
+        assert_eq!(thread.join().unwrap().unwrap().payload, vec![1, 2, 3]);
+        assert!(wake.elapsed() < Duration::from_millis(250), "delivery did not wake the receiver");
+    }
+
+    #[test]
+    fn blocking_unix_stream_receive_uses_the_production_pair_wake() {
+        let pair = crate::UnixPair::new();
+        let sock = Arc::new(InetSocket::new_unix_pair_end_in(
+            network_namespace::initial(), pair.clone(), crate::UnixEnd::B));
+        let receiver = sock.clone();
+        let thread = std::thread::spawn(move || recv_blocking(&receiver, 8,
+            RecvOptions::default(), crate::sock_clock::monotonic_ns_safe() + 1_000_000_000));
+
+        wait_until(|| pair.reader_waiters(crate::UnixEnd::B).has_waiters());
+        let wake = std::time::Instant::now();
+        assert_eq!(pair.write(crate::UnixEnd::A, &[4, 5, 6]), Ok(3));
+        assert_eq!(thread.join().unwrap().unwrap().payload, vec![4, 5, 6]);
+        assert!(wake.elapsed() < Duration::from_millis(250), "write did not wake the receiver");
     }
 }

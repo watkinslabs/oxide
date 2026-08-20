@@ -10,7 +10,9 @@ mod packet;
 pub use crate::recv_result::{recv_empty, recv_empty_with, Received, RecvOptions};
 pub(crate) use crate::sock_error::pending_net_error;
 pub use tcp_read::tcp_recv_eof;
-pub(crate) use tcp_read::{arm_tcp_read_after_mode, read_tcp_blocking, tcp_vfs_error};
+pub(crate) use tcp_read::{arm_tcp_read_after_mode, tcp_vfs_error};
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) use tcp_read::read_tcp_blocking;
 
 /// F164: blocking TCP write. Repeatedly tcp_send into the conn,
 /// parking on the entry sleep queue (woken by `deliver_tcp` on every
@@ -71,31 +73,23 @@ pub(crate) fn write_tcp_blocking(
                 }
                 // F168: signal-interruptible — return short success
                 // if we already accepted some bytes, else EINTR.
-                #[cfg(target_os = "oxide-kernel")]
                 // Linux `sk_stream_wait_memory`
                 // returns `sock_intr_errno(*timeo)`, and `tcp_sendmsg_locked`'s
                 // `do_error:` returns the PARTIAL count when anything was
                 // copied — the short-success arm below is that rule.
-                if sched::live::deliverable_signals_self() != 0 {
+                if crate::sock_intr::signal_pending_self() {
                     if total > 0 { return Ok(total); }
                     return Err(crate::sock_intr::sock_intr_vfs(deadline_ns));
                 }
                 // F169: SO_SNDTIMEO expiry → short success or Eagain.
-                #[cfg(target_os = "oxide-kernel")]
                 if deadline_ns != 0 && monotonic_ns_safe() >= deadline_ns {
                     if total > 0 { return Ok(total); }
                     return Err(vfs::VfsError::Eagain);
                 }
-                #[cfg(target_os = "oxide-kernel")]
                 if entry.arm_transmit_wait(&sock.write_shut, sndbuf_cap, deadline_ns) {
                     // SAFETY: arm_transmit_wait registered current under conn.
-                    unsafe { sched::live::schedule::schedule(); }
+                    unsafe { entry.poll_subs.sleep().wait(); }
                     entry.poll_subs.sleep().remove_current();
-                }
-                #[cfg(not(target_os = "oxide-kernel"))]
-                {
-                    if total > 0 { return Ok(total); }
-                    return Err(vfs::VfsError::Eagain);
                 }
             }
             Err(_) => {
@@ -132,12 +126,10 @@ pub(crate) fn read_unix_stream_blocking(
         }
         if pair.take_reset(end) { return Err(vfs::VfsError::Econnreset); }
         if pair.is_eof(end) { return Ok(0); }
-        #[cfg(target_os = "oxide-kernel")]
         // A signal interrupts this blocking socket wait through the shared rule.
-        if sched::live::deliverable_signals_self() != 0 {
+        if crate::sock_intr::signal_pending_self() {
             return Err(crate::sock_intr::sock_intr_vfs(deadline_ns));
         }
-        #[cfg(target_os = "oxide-kernel")]
         if deadline_ns != 0 && monotonic_ns_safe() >= deadline_ns {
             return Err(vfs::VfsError::Eagain);
         }
@@ -147,7 +139,6 @@ pub(crate) fn read_unix_stream_blocking(
         // emptiness check and the park and lose the wakeup (Linux
         // prepare_to_wait). A blocked D-Bus stream read that peers with a
         // writer on another CPU would otherwise stall forever.
-        #[cfg(target_os = "oxide-kernel")]
         {
             use crate::unix_sock::stream::ReadOutcome;
             match pair.read_or_park(end, buf.len(), deadline_ns, passcred, inline) {
@@ -164,13 +155,11 @@ pub(crate) fn read_unix_stream_blocking(
                 // SAFETY: process ctx; preempt-off owned by syscall stub; we
                 // are on the reader wait list (armed under the ring lock).
                 ReadOutcome::Parked => unsafe {
-                    sched::live::schedule::schedule();
+                    pair.reader_waiters(end).wait();
                     pair.reader_waiters(end).remove_current();
                 }
             }
         }
-        #[cfg(not(target_os = "oxide-kernel"))]
-        return Err(vfs::VfsError::Eagain);
     }
 }
 
@@ -195,16 +184,13 @@ pub(crate) fn read_unix_msg_blocking(
         if pair.take_reset(end) { return Err(vfs::VfsError::Econnreset); }
         // recv returns None only when nothing pending AND not EOF
         // (EOF returns Some(empty)). So fall through to park.
-        #[cfg(target_os = "oxide-kernel")]
         // A signal interrupts this blocking socket wait through the shared rule.
-        if sched::live::deliverable_signals_self() != 0 {
+        if crate::sock_intr::signal_pending_self() {
             return Err(crate::sock_intr::sock_intr_vfs(deadline_ns));
         }
-        #[cfg(target_os = "oxide-kernel")]
         if deadline_ns != 0 && monotonic_ns_safe() >= deadline_ns {
             return Err(vfs::VfsError::Eagain);
         }
-        #[cfg(target_os = "oxide-kernel")]
         match pair.arm_read(end, deadline_ns) {
             crate::unix_sock::msg_pair::ArmMsgRead::Retry => continue,
             crate::unix_sock::msg_pair::ArmMsgRead::Reset => {
@@ -216,7 +202,7 @@ pub(crate) fn read_unix_msg_blocking(
                 // SAFETY: arm_read enrolled current while holding the pair lock;
                 // syscall context owns preemption before schedule can park it.
                 unsafe {
-                    sched::live::schedule::schedule();
+                    pair.reader_waiters(end).wait();
                     pair.reader_waiters(end).remove_current();
                     if !reader_shutdown && pair.kind == crate::UnixMsgKind::Datagram
                         && pair.reader_shutdown(end) && !pair.has_msg(end)
@@ -226,8 +212,6 @@ pub(crate) fn read_unix_msg_blocking(
                 }
             },
         }
-        #[cfg(not(target_os = "oxide-kernel"))]
-        return Err(vfs::VfsError::Eagain);
     }
 }
 
