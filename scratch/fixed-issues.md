@@ -1,5 +1,11 @@
 # Fixed issues
 
+### F1241-s3-syscall-msr-reinit
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 54aa5751f | DEFECT | low | **x86 S3 resume now rebuilds STAR, LSTAR, CSTAR, SFMASK, and EFER.SCE from the running kernel instead of restoring saved syscall-entry values.** The processor-state record no longer carries the syscall MSRs. Boot, AP bring-up, and resume share one installer; AMD receives a kernel-owned compatibility entry that returns `ENOSYS`, while Intel retains Linux's rule of avoiding the ignored CSTAR write. | F1241. The kernel-owned MSR-image regression was RED against the saved-value-shaped stub and is GREEN after the change. `cargo test -p hal-x86_64` passes 209 tests; default and `debug-ssh` kernel checks pass on both architectures; the linked x86 ELF disassembles the compatibility entry as `rax = -ENOSYS; sysretl`. Paired smoke passed first attempt (x86 48 s, ARM64 57 s), both with serial RX. Live `echo HELLO; id` over SSH completed in 0.34 s on x86 and 3.04 s on warm ARM64. Real S3 execution remains separately tracked as hardware-only coverage. | F1241-s3-syscall-msr-reinit |
+
 ### F1240-wakeup-count-wait
 
 | Status | Class | Sev | Issue | Evidence | Owner |

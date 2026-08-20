@@ -7,11 +7,10 @@ use super::*;
 /// Every control register, MSR and descriptor the record must carry, named
 /// once. A restore that drops one of these leaves the CPU running on
 /// firmware's value, which on S3 means "whatever the platform reset to".
-fn saved_words(s: &SavedCpuState) -> [(&'static str, u64); 16] {
+fn saved_words(s: &SavedCpuState) -> [(&'static str, u64); 12] {
     [
         ("cr0", s.cr0), ("cr2", s.cr2), ("cr3", s.cr3), ("cr4", s.cr4),
-        ("efer", s.efer), ("star", s.star), ("lstar", s.lstar),
-        ("cstar", s.cstar), ("sfmask", s.sfmask),
+        ("efer", s.efer),
         ("fs_base", s.fs_base), ("gs_base", s.gs_base), ("kernel_gs_base", s.kernel_gs_base),
         ("gdt", s.gdt.base), ("idt", s.idt.base),
         ("tr", s.tr as u64), ("ldt", s.ldt as u64),
@@ -23,8 +22,7 @@ fn the_record_round_trips_every_word_a_deep_sleep_loses() {
     let mut s = SavedCpuState::new();
     // Distinct values so a field that aliases another is visible.
     s.cr0 = 0x8005_0033; s.cr2 = 0x1111; s.cr3 = 0x2000; s.cr4 = 0x3406b0;
-    s.efer = 0xd01; s.star = 0x0023_0010_0000_0000; s.lstar = 0xffff_ffff_8100_1000;
-    s.cstar = 0xffff_ffff_8100_2000; s.sfmask = 0x4_0700;
+    s.efer = 0xd01;
     s.fs_base = 0x7fff_0000_0000; s.gs_base = 0xffff_8000_0001_0000;
     s.kernel_gs_base = 0x7fff_0000_1000;
     s.gdt = DescPtr { limit: 0x7f, base: 0xffff_ffff_8200_0000 };
@@ -35,7 +33,7 @@ fn the_record_round_trips_every_word_a_deep_sleep_loses() {
     for (name, value) in words {
         assert_ne!(value, 0, "{name} did not survive the record");
     }
-    // No two fields share storage: sixteen distinct values must stay distinct.
+    // No two fields share storage: twelve distinct values must stay distinct.
     for i in 0..words.len() {
         for j in (i + 1)..words.len() {
             assert_ne!(words[i].1, words[j].1, "{} aliases {}", words[i].0, words[j].0);
