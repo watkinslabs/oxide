@@ -80,9 +80,11 @@ pub enum TcpExt {
     /// whose sequence numbers decoded to no cookie this host minted. Ordinary
     /// traffic produces these; a sustained count is a forgery attempt.
     SyncookiesFailed,
+    /// Out-of-window request answers suppressed by `tcp_invalid_ratelimit`.
+    TcpAckSkippedSynRecv,
 }
 
-const TCP_EXT_COUNTERS: usize = 8;
+const TCP_EXT_COUNTERS: usize = 9;
 
 impl TcpExt {
     /// # C: O(1)
@@ -330,11 +332,11 @@ pub fn render_proc_netstat(net_ns: u64) -> Vec<u8> {
     let v = |m: TcpExt| get_tcp_ext(net_ns, m);
     let mut s = alloc::string::String::new();
     let _ = writeln!(s, "TcpExt: TCPFastOpenPassive TCPFastOpenPassiveFail \
-TCPFastOpenPassiveAltKey TCPFastOpenCookieReqd TCPFastOpenListenOverflow");
-    let _ = writeln!(s, "TcpExt: {} {} {} {} {}",
+TCPFastOpenPassiveAltKey TCPFastOpenCookieReqd TCPFastOpenListenOverflow TCPACKSkippedSynRecv");
+    let _ = writeln!(s, "TcpExt: {} {} {} {} {} {}",
         v(TcpExt::TcpFastOpenPassive), v(TcpExt::TcpFastOpenPassiveFail),
         v(TcpExt::TcpFastOpenPassiveAltKey), v(TcpExt::TcpFastOpenCookieReqd),
-        v(TcpExt::TcpFastOpenListenOverflow));
+        v(TcpExt::TcpFastOpenListenOverflow), v(TcpExt::TcpAckSkippedSynRecv));
     s.into_bytes()
 }
 

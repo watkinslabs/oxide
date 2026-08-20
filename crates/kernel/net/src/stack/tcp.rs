@@ -242,8 +242,8 @@ impl NetStack {
                         .map_or(0, |dev| dev.hardware_type()),
                 }), seg,
             ) else { return Ok(()); };
-            return self.deliver_tcp_to_request(net_ns, src_ip, dst_ip, &seg[..keep], &hdr, key,
-                &tables, req);
+            return self.deliver_tcp_to_request_at(net_ns, src_ip, dst_ip, &seg[..keep], &hdr, key,
+                &tables, req, crate::tcp_conn::ka_now_ns());
         }
         if let Some(entry) = slot.and_then(|slot| slot.sock().cloned()) {
             if entry.bound_iface().is_some_and(|id| id != iface) { return Ok(()); }

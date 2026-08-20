@@ -122,6 +122,8 @@ pub enum NetSysctlKey {
     Ipv6UseTempaddrAll, Ipv6UseTempaddrDefault,
     Ipv6TempValidLftAll, Ipv6TempValidLftDefault,
     Ipv6TempPreferredLftAll, Ipv6TempPreferredLftDefault,
+    /// `net.ipv4.tcp_invalid_ratelimit`, in milliseconds.
+    TcpInvalidRatelimit,
 }
 
 /// One slot of a three-value socket-buffer window. # C: O(1)
@@ -159,7 +161,8 @@ impl NetSysctlKey {
     const IPV6_TEMP_VALID_LFT_DEFAULT: usize = Self::IPV6_TEMP_VALID_LFT_ALL + 1;
     const IPV6_TEMP_PREFERRED_LFT_ALL: usize = Self::IPV6_TEMP_VALID_LFT_DEFAULT + 1;
     const IPV6_TEMP_PREFERRED_LFT_DEFAULT: usize = Self::IPV6_TEMP_PREFERRED_LFT_ALL + 1;
-    const COUNT: usize = Self::IPV6_TEMP_PREFERRED_LFT_DEFAULT + 1;
+    const TCP_INVALID_RATELIMIT: usize = Self::IPV6_TEMP_PREFERRED_LFT_DEFAULT + 1;
+    const COUNT: usize = Self::TCP_INVALID_RATELIMIT + 1;
 
     const fn index(self) -> usize {
         match self {
@@ -192,6 +195,7 @@ impl NetSysctlKey {
             Self::Ipv6TempValidLftDefault => Self::IPV6_TEMP_VALID_LFT_DEFAULT,
             Self::Ipv6TempPreferredLftAll => Self::IPV6_TEMP_PREFERRED_LFT_ALL,
             Self::Ipv6TempPreferredLftDefault => Self::IPV6_TEMP_PREFERRED_LFT_DEFAULT,
+            Self::TcpInvalidRatelimit => Self::TCP_INVALID_RATELIMIT,
         }
     }
 
@@ -230,6 +234,7 @@ impl NetSysctlKey {
             Self::IPV6_TEMP_VALID_LFT_DEFAULT => Self::Ipv6TempValidLftDefault,
             Self::IPV6_TEMP_PREFERRED_LFT_ALL => Self::Ipv6TempPreferredLftAll,
             Self::IPV6_TEMP_PREFERRED_LFT_DEFAULT => Self::Ipv6TempPreferredLftDefault,
+            Self::TCP_INVALID_RATELIMIT => Self::TcpInvalidRatelimit,
             _ => {
                 let relative = index - Self::BASE_COUNT;
                 let dev = match Ipv4ConfDev::from_index(relative / Ipv4ConfKey::COUNT) {
@@ -264,6 +269,8 @@ impl NetSysctlKey {
             Self::IPV6_USE_TEMPADDR_ALL | Self::IPV6_USE_TEMPADDR_DEFAULT => 0,
             Self::IPV6_TEMP_VALID_LFT_ALL | Self::IPV6_TEMP_VALID_LFT_DEFAULT => 172_800,
             Self::IPV6_TEMP_PREFERRED_LFT_ALL | Self::IPV6_TEMP_PREFERRED_LFT_DEFAULT => 86_400,
+            Self::TCP_INVALID_RATELIMIT =>
+                crate::tcp_conn::reqsk::INVALID_RATELIMIT_DEFAULT_MS as i64,
             _ if index >= Self::WMEM_BASE && index < Self::RMEM_BASE =>
                 crate::sysctl::DEFAULT_TCP_WMEM[index - Self::WMEM_BASE],
             _ if index >= Self::RMEM_BASE && index < Self::BASE_COUNT =>

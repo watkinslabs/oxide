@@ -74,6 +74,8 @@ pub const NET_SYSCTLS: &[Node] = &[
             // pause off; each recurrence doubles it up to sixty-four times.
             File("tcp_fastopen_blackhole_timeout_sec",
                 NetInt(net::net_ns::NetSysctlKey::TcpFastopenBlackholeTimeout, None)),
+            File("tcp_invalid_ratelimit", NetInt(
+                net::net_ns::NetSysctlKey::TcpInvalidRatelimit, Some((0, INT_MAX)))),
         ]),
         Dir("ipv6", &[
             File("ip_nonlocal_bind",   NetInt(net::net_ns::NetSysctlKey::Ipv6NonlocalBind, Some((0, 1)))),

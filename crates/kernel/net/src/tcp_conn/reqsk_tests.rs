@@ -18,7 +18,19 @@ fn a_firing_is_the_unit_the_option_converts_its_seconds_against() {
 }
 
 fn req(num_timeout: u8, acked: bool) -> ReqSock {
-    ReqSock { num_timeout, acked, expires_ns: 0, num_retrans: 0 }
+    ReqSock { num_timeout, acked, ..Default::default() }
+}
+
+#[test]
+fn invalid_answer_limit_is_per_request_and_exempts_data() {
+    let a = core::sync::atomic::AtomicU64::new(0);
+    let b = core::sync::atomic::AtomicU64::new(0);
+    assert!(admit_oow_answer(&a, 10, 500, false));
+    assert!(!admit_oow_answer(&a, 509, 500, false));
+    assert!(admit_oow_answer(&b, 11, 500, false), "another request owns another allowance");
+    assert!(admit_oow_answer(&a, 509, 500, true), "data without SYN cannot form an ACK loop");
+    assert!(admit_oow_answer(&a, 510, 500, false));
+    assert!(admit_oow_answer(&a, 510, 0, false), "zero disables the interval");
 }
 
 /// The count a listener asking for `seconds` of deferral stores.
