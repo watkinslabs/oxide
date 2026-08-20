@@ -7,14 +7,7 @@ use crate::flags;
 
 use super::ack::build_ack;
 use super::rtnetlink_addr::{cache_to_net, IfaCacheInfo};
-use super::uapi::{ifa, Ifaddrmsg, AF_INET, AF_INET6};
-use super::addr6_ops::{handle_deladdr6_in, handle_newaddr6_in};
-
-/// A family for which rtnetlink registers no `RTM_NEWADDR`/`RTM_DELADDR`
-/// handler, and none is registered for `PF_UNSPEC` either. Not
-/// `EAFNOSUPPORT`: the dispatch falls back to the family-agnostic table and
-/// reports the missing operation.
-const EOPNOTSUPP: i32 = -(vfs::VfsError::Eopnotsupp as i32);
+use super::uapi::{ifa, Ifaddrmsg};
 
 #[derive(Copy, Clone)]
 struct NewAddrAttrs {
@@ -73,26 +66,17 @@ fn parse_newaddr_attrs(attrs: &[u8]) -> Option<NewAddrAttrs> {
     Some(NewAddrAttrs { local, address, broadcast, flags, proto, rt_priority, cacheinfo })
 }
 
-/// Handle RTM_NEWADDR.
+/// Handle AF_INET RTM_NEWADDR in the socket's captured network namespace.
 /// # C: O(N attrs + addr_table size)
-pub fn handle_newaddr(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
-    handle_newaddr_in(net::netdev::current_net_ns(), req, full_msg)
-}
-
-/// Handle RTM_NEWADDR in the socket's captured network namespace.
-/// # C: O(N attrs + addr_table size)
-pub fn handle_newaddr_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
+pub(crate) fn handle_newaddr4_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
     let ifa_off = Nlmsghdr::SIZE;
     if full_msg.len() < ifa_off + Ifaddrmsg::SIZE { return build_ack(req, -22); }
-    let family = full_msg[ifa_off];
     let prefixlen = full_msg[ifa_off + 1];
     let ifa_flags = full_msg[ifa_off + 2] as u32;
     let scope = full_msg[ifa_off + 3];
     let ifindex = u32::from_ne_bytes([
         full_msg[ifa_off + 4], full_msg[ifa_off + 5], full_msg[ifa_off + 6], full_msg[ifa_off + 7],
     ]);
-    if family == AF_INET6 { return handle_newaddr6_in(ns, req, full_msg); }
-    if family != AF_INET { return build_ack(req, EOPNOTSUPP); }
     if prefixlen > 32 { return build_ack(req, -22); }
     let attrs = &full_msg[ifa_off + Ifaddrmsg::SIZE..];
     let parsed = match parse_newaddr_attrs(attrs) {
@@ -170,24 +154,15 @@ pub fn handle_newaddr_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
     build_ack(req, 0)
 }
 
-/// Handle RTM_DELADDR.
+/// Handle AF_INET RTM_DELADDR in the socket's captured network namespace.
 /// # C: O(N attrs + addr_table size)
-pub fn handle_deladdr(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
-    handle_deladdr_in(net::netdev::current_net_ns(), req, full_msg)
-}
-
-/// Handle RTM_DELADDR in the socket's captured network namespace.
-/// # C: O(N attrs + addr_table size)
-pub fn handle_deladdr_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
+pub(crate) fn handle_deladdr4_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
     let ifa_off = Nlmsghdr::SIZE;
     if full_msg.len() < ifa_off + Ifaddrmsg::SIZE { return build_ack(req, -22); }
-    let family = full_msg[ifa_off];
     let prefixlen = full_msg[ifa_off + 1];
     let ifindex = u32::from_ne_bytes([
         full_msg[ifa_off + 4], full_msg[ifa_off + 5], full_msg[ifa_off + 6], full_msg[ifa_off + 7],
     ]);
-    if family == AF_INET6 { return handle_deladdr6_in(ns, req, full_msg); }
-    if family != AF_INET { return build_ack(req, EOPNOTSUPP); }
     if prefixlen > 32 { return build_ack(req, -22); }
     let attrs = &full_msg[ifa_off + Ifaddrmsg::SIZE..];
     let parsed = match parse_newaddr_attrs(attrs) {

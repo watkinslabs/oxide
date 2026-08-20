@@ -132,7 +132,7 @@ fn parse_header(full_msg: &[u8]) -> Option<Ifa6Header> {
 
 /// Handle `RTM_NEWADDR` for `AF_INET6` in the socket's network namespace.
 /// # C: O(N attrs + addr_table size)
-pub fn handle_newaddr6_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
+pub(crate) fn handle_newaddr6_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
     let Some(hdr) = parse_header(full_msg) else { return build_ack(req, errno::EINVAL) };
     let attrs = &full_msg[Nlmsghdr::SIZE + Ifaddrmsg::SIZE..];
     let Some(parsed) = parse_newaddr6_attrs(attrs) else { return build_ack(req, errno::EINVAL) };
@@ -215,7 +215,7 @@ pub fn handle_newaddr6_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
 
 /// Handle `RTM_DELADDR` for `AF_INET6` in the socket's network namespace.
 /// # C: O(N attrs + addr_table size)
-pub fn handle_deladdr6_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
+pub(crate) fn handle_deladdr6_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
     let Some(hdr) = parse_header(full_msg) else { return build_ack(req, errno::EINVAL) };
     let attrs = &full_msg[Nlmsghdr::SIZE + Ifaddrmsg::SIZE..];
     let Some(parsed) = parse_newaddr6_attrs(attrs) else { return build_ack(req, errno::EINVAL) };
