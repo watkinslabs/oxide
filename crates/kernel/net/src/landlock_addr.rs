@@ -68,25 +68,59 @@ pub fn addr_verdict(client: Option<&Arc<Domain>>, proto: Proto, op: Op, bytes: &
     }
 }
 
+/// Proof that the current send was admitted to autobind, or needed no bind.
+pub struct UdpAutobindAdmission { _private: () }
+
+/// Admit an unconditional UDP autobind against the running domain.
+/// # C: O(N_layers × N_rules)
+pub fn admit_autobind_udp(sock: &crate::sock::InetSocket)
+    -> Result<UdpAutobindAdmission, NetError>
+{
+    admit_autobind_udp_for(sock, current_domain().as_ref())
+}
+
+/// Produce the send-path proof, checking bind-zero only while unbound.
+/// # C: O(N_layers × N_rules)
+pub fn admit_udp_send_autobind_for(sock: &crate::sock::InetSocket,
+                                   client: Option<&Arc<Domain>>)
+    -> Result<UdpAutobindAdmission, NetError>
+{
+    if sock.local_port.lock().is_some() {
+        return Ok(UdpAutobindAdmission { _private: () });
+    }
+    admit_autobind_udp_for(sock, client)
+}
+
+/// Produce the send-path proof against the running domain.
+/// # C: O(N_layers × N_rules)
+pub fn admit_udp_send_autobind(sock: &crate::sock::InetSocket)
+    -> Result<UdpAutobindAdmission, NetError>
+{
+    admit_udp_send_autobind_for(sock, current_domain().as_ref())
+}
+
 /// Gate UDP's implicit local-port allocation as though the caller had bound
 /// port zero on this socket family. # C: O(N_layers × N_rules)
 pub fn check_autobind_udp(sock: &crate::sock::InetSocket) -> Result<(), NetError> {
-    check_autobind_udp_for(sock, current_domain().as_ref())
+    admit_autobind_udp(sock).map(|_| ())
 }
 
 /// The implicit-bind decision against an already resolved caller domain.
 /// Keeping this half target-neutral lets the family-specific socket paths prove
 /// that both wire address shapes ask for the same right. # C: O(N_layers × N_rules)
-fn check_autobind_udp_for(sock: &crate::sock::InetSocket,
-                          client: Option<&Arc<Domain>>) -> Result<(), NetError> {
+pub fn admit_autobind_udp_for(sock: &crate::sock::InetSocket,
+                             client: Option<&Arc<Domain>>)
+    -> Result<UdpAutobindAdmission, NetError>
+{
     use core::sync::atomic::Ordering;
-    if sock_proto(sock) != Proto::Udp { return Ok(()); }
+    if sock_proto(sock) != Proto::Udp { return Err(NetError::Einval); }
     let family = sock.family.load(Ordering::Acquire);
     let len = if family == netcheck::AF_INET6 { netcheck::SOCKADDR_IN6_LEN }
         else { netcheck::SOCKADDR_IN_LEN };
     let mut port_zero = [0u8; netcheck::SOCKADDR_IN6_LEN];
     port_zero[..2].copy_from_slice(&family.to_le_bytes());
-    addr_verdict(client, Proto::Udp, Op::Bind, &port_zero[..len], family)
+    addr_verdict(client, Proto::Udp, Op::Bind, &port_zero[..len], family)?;
+    Ok(UdpAutobindAdmission { _private: () })
 }
 
 /// Domain that published the pathname socket bound at `addr`. The outer `None`

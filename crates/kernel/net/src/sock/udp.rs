@@ -44,11 +44,22 @@ pub fn socket_sendto_ctl(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payloa
     msg: &crate::send_control::Raw4Control, tx: crate::TxMeta)
     -> Result<usize, NetError>
 {
+    let admission = crate::landlock_addr::admit_udp_send_autobind(sock)?;
+    socket_sendto_ctl_admitted(sock, dst, dst_port, payload, msg, tx, &admission)
+}
+
+/// Transmit after the common send boundary supplied its autobind proof.
+/// # C: O(payload)
+pub(crate) fn socket_sendto_ctl_admitted(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16,
+    payload: &[u8], msg: &crate::send_control::Raw4Control, tx: crate::TxMeta,
+    admission: &crate::landlock_addr::UdpAutobindAdmission)
+    -> Result<usize, NetError>
+{
     let net_ns = sock.net_ns();
     let eno = sock.take_pending_recv_error();
     if eno != 0 { return Err(crate::sock_io::pending_net_error(eno)); }
     if crate::udp::udp4_payload_too_large(payload.len()) { return Err(NetError::Emsgsize); }
-    let src_port = sock.ensure_bound()?;
+    let src_port = sock.ensure_bound_after_send_admission(admission)?;
     // `IP_PKTINFO`'s `ipi_spec_dst` and `ipi_ifindex` stand in for the bound
     // source and the egress interface for this datagram.
     let src_ip = msg.v4_source(*sock.local_ip.lock());

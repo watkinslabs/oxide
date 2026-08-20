@@ -50,7 +50,7 @@ fn settled(socket_flowinfo_send: bool, supplied: u32) -> Option<u32> {
     let message = Message { requested_len: 4, payload: alloc::vec![0u8; 4],
         name: Some(addr6(supplied)), ..Message::default() };
     match crate::send::prepare(&ctx, &target, &message, 0).expect("prepared") {
-        PreparedSend::Inet(InetPrepared::Transport(_, control)) => control.raw6.flowinfo,
+        PreparedSend::Inet(InetPrepared::Transport(_, control, _)) => control.raw6.flowinfo,
         _ => panic!("a UDP6 send prepares a transport message"),
     }
 }

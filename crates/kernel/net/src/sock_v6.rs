@@ -191,7 +191,8 @@ fn xmit_raw6_with_sticky(sock: &InetSocket, endpoint: &crate::raw6::Raw6Endpoint
 /// records carries none.
 pub(crate) const RAW_NO_PORT: u16 = 0;
 
-fn ensure_udp6_bound(sock: &InetSocket, dst_ip: crate::Ipv6Addr, scope_id: u32)
+fn ensure_udp6_bound(sock: &InetSocket, dst_ip: crate::Ipv6Addr, scope_id: u32,
+    _admission: &crate::landlock_addr::UdpAutobindAdmission)
     -> Result<u16, NetError>
 {
     let src_port = {
@@ -202,7 +203,6 @@ fn ensure_udp6_bound(sock: &InetSocket, dst_ip: crate::Ipv6Addr, scope_id: u32)
         match *slot {
             Some(p) => p,
             None    => {
-                crate::landlock_addr::check_autobind_udp(sock)?;
                 // Linux `inet6_autobind` keeps the local address already named.
                 let bind_ip = *sock.local_ip6.lock();
                 let policy = crate::sock::bind_port_policy(sock, 0);
@@ -228,9 +228,13 @@ fn ensure_udp6_bound(sock: &InetSocket, dst_ip: crate::Ipv6Addr, scope_id: u32)
 }
 
 fn sendto_v4_mapped(sock: &InetSocket, dst_ip: crate::Ipv4Addr, dst_port: u16,
-                    payload: &[u8], tx: crate::TxMeta) -> Result<usize, NetError> {
+                    payload: &[u8], tx: crate::TxMeta,
+                    admission: &crate::landlock_addr::UdpAutobindAdmission)
+    -> Result<usize, NetError>
+{
     if crate::udp::udp4_payload_too_large(payload.len()) { return Err(NetError::Emsgsize); }
-    let src_port = ensure_udp6_bound(sock, crate::Ipv6Addr::from_v4_mapped(dst_ip), 0)?;
+    let src_port = ensure_udp6_bound(sock, crate::Ipv6Addr::from_v4_mapped(dst_ip), 0,
+        admission)?;
     let bound = if dst_ip.is_multicast() {
         crate::sock_mcast::bound_iface(sock, dst_ip)?
     } else {
@@ -304,6 +308,21 @@ pub fn sendto_v6_ctl(sock: &InetSocket,
                   payload: &[u8],
                   msg: &crate::send_control::Raw6Control,
                   tx: crate::TxMeta) -> Result<usize, NetError> {
+    let admission = crate::landlock_addr::admit_udp_send_autobind(sock)?;
+    sendto_v6_ctl_admitted(sock, dst_ip, dst_port, scope_id, payload, msg, tx, &admission)
+}
+
+/// Transmit after the common send boundary supplied its autobind proof.
+/// # C: O(payload)
+pub(crate) fn sendto_v6_ctl_admitted(sock: &InetSocket,
+                  dst_ip: crate::Ipv6Addr, dst_port: u16,
+                  scope_id: u32,
+                  payload: &[u8],
+                  msg: &crate::send_control::Raw6Control,
+                  tx: crate::TxMeta,
+                  admission: &crate::landlock_addr::UdpAutobindAdmission)
+    -> Result<usize, NetError>
+{
     let eno = sock.take_pending_recv_error();
     if eno != 0 { return Err(crate::sock_error::pending_net_error(eno)); }
     crate::inet_tx::validate_udp6_mapped_destination(
@@ -311,10 +330,10 @@ pub fn sendto_v6_ctl(sock: &InetSocket,
         sock.opts.ipv6_v6only.load(core::sync::atomic::Ordering::Acquire) != 0,
     )?;
     if let Some(dst_ip) = dst_ip.to_v4_mapped() {
-        return sendto_v4_mapped(sock, dst_ip, dst_port, payload, tx);
+        return sendto_v4_mapped(sock, dst_ip, dst_port, payload, tx, admission);
     }
     if crate::udp::udp6_payload_too_large(payload.len()) { return Err(NetError::Emsgsize); }
-    let src_port = ensure_udp6_bound(sock, dst_ip, scope_id)?;
+    let src_port = ensure_udp6_bound(sock, dst_ip, scope_id, admission)?;
     let sticky = sock.opts.ipv6.sticky_pktinfo();
     // `-1` is the reference's "use the socket's own choice" for both.
     let hop = msg.v6_hop_limit(resolve_v6_hop_limit(sock, dst_ip));
