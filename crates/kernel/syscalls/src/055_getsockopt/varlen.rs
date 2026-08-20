@@ -74,15 +74,19 @@ pub(super) fn peername(sock: &Arc<InetSocket>, optval: u64, optlen_p: u64) -> i6
 /// `SO_PEERSEC`: the context of the peer whose label this socket recorded when
 /// its connection formed. # C: O(label)
 ///
-/// Three distinct states collapse onto one refusal, all of them `ENOPROTOOPT`
-/// with nothing written: a socket whose class never carries a peer label, a
-/// socket that recorded none, and a kernel where nothing labels sockets. A
-/// caller cannot tell them apart, and does not need to — in each case there is
-/// no context to hand it.
+/// A socket whose class never carries a peer label, a socket that recorded
+/// none, and a kernel where nothing labels sockets all return `ENOPROTOOPT`
+/// with nothing written. Once a label exists, a failure to render it is not
+/// absence: the security module's `EINVAL` or `ENOMEM` reaches the caller.
 pub(super) fn peersec(sock: &Arc<InetSocket>, optval: u64, optlen_p: u64) -> i64 {
     let requested = match requested(optlen_p) { Ok(v) => v, Err(e) => return errno(e) };
-    let label = net::sock_opts::peersec::recorded_peer_label(sock)
-        .and_then(security::network::socket_label_context);
+    let label = match net::sock_opts::peersec::recorded_peer_label(sock) {
+        Some(label) => match security::network::socket_label_context(label) {
+            Ok(context) => context,
+            Err(error) => return errno(error),
+        },
+        None => None,
+    };
     match varlen::peersec_len(label.as_ref().map(Vec::len), requested) {
         Err((0, error)) => errno(error),
         // The needed length is published BEFORE the refusal, because the caller
