@@ -75,6 +75,8 @@ fn ipv6_default_policy_is_snapshotted_at_interface_creation() {
     let owner = owner();
     let ns = owner.id().as_u64();
     let _state = crate::net_ns::materialize_state(&owner);
+    crate::sysctl::set_value(&owner, crate::net_ns::NetSysctlKey::Ipv6DisableDefault, 1)
+        .unwrap();
     crate::sysctl::set_value(&owner, crate::net_ns::NetSysctlKey::Ipv6OptimisticDadDefault, 7)
         .unwrap();
     crate::sysctl::set_value(&owner, crate::net_ns::NetSysctlKey::Ipv6UseOptimisticDefault, -3)
@@ -84,6 +86,8 @@ fn ipv6_default_policy_is_snapshotted_at_interface_creation() {
     }), &owner).unwrap();
     let first_id = first.id();
     assert!(stack.publish_iface(first));
+    crate::sysctl::set_value(&owner, crate::net_ns::NetSysctlKey::Ipv6DisableDefault, 0)
+        .unwrap();
     crate::sysctl::set_value(&owner, crate::net_ns::NetSysctlKey::Ipv6OptimisticDadDefault, 0)
         .unwrap();
     crate::sysctl::set_value(&owner, crate::net_ns::NetSysctlKey::Ipv6UseOptimisticDefault, 0)
@@ -91,6 +95,7 @@ fn ipv6_default_policy_is_snapshotted_at_interface_creation() {
     assert!(stack.ifaces.ipv6_optimistic_dad_in(first_id, ns));
     assert!(stack.ifaces.ipv6_use_optimistic_in(first_id, ns));
     let first_conf = stack.ifaces.ipv6_conf_by_name_in("optimistic0", ns).unwrap();
+    assert_eq!(first_conf.value(crate::netdev::Ipv6ConfKey::DisableIpv6), 1);
     assert_eq!(first_conf.value(crate::netdev::Ipv6ConfKey::OptimisticDad), 7);
     assert_eq!(first_conf.value(crate::netdev::Ipv6ConfKey::UseOptimistic), -3);
 
@@ -101,6 +106,35 @@ fn ipv6_default_policy_is_snapshotted_at_interface_creation() {
     assert!(stack.publish_iface(second));
     assert!(!stack.ifaces.ipv6_optimistic_dad_in(second_id, ns));
     assert!(!stack.ifaces.ipv6_use_optimistic_in(second_id, ns));
+    assert!(!stack.ifaces.ipv6_disabled_in(second_id, ns));
+}
+
+#[test]
+fn ipv6_all_disable_propagates_to_live_interfaces() {
+    let stack = crate::NetStack::new();
+    let owner = owner();
+    let ns = owner.id().as_u64();
+    let _state = crate::net_ns::materialize_state(&owner);
+    let first = stack.prepare_iface(Arc::new(DummyDev {
+        name: "disable0", mtu: 1500, stats: NetStats::default(),
+    }), &owner).unwrap();
+    let second = stack.prepare_iface(Arc::new(DummyDev {
+        name: "disable1", mtu: 1500, stats: NetStats::default(),
+    }), &owner).unwrap();
+    let first_id = first.id();
+    let second_id = second.id();
+    assert!(stack.publish_iface(first));
+    assert!(stack.publish_iface(second));
+
+    stack.ifaces.set_ipv6_disabled_all_in(ns, -4);
+    assert!(stack.ifaces.ipv6_disabled_in(first_id, ns));
+    assert!(stack.ifaces.ipv6_disabled_in(second_id, ns));
+    assert_eq!(stack.ifaces.ipv6_conf_by_name_in("disable1", ns).unwrap()
+        .value(crate::netdev::Ipv6ConfKey::DisableIpv6), -4);
+    stack.ifaces.ipv6_conf_by_name_in("disable0", ns).unwrap()
+        .set_value(crate::netdev::Ipv6ConfKey::DisableIpv6, 0);
+    assert!(!stack.ifaces.ipv6_disabled_in(first_id, ns));
+    assert!(stack.ifaces.ipv6_disabled_in(second_id, ns));
 }
 
 #[test]
