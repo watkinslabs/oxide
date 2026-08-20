@@ -96,6 +96,34 @@ fn slaac_is_tentative_until_dad_timer_and_emits_correct_solicitation() {
 }
 
 #[test]
+fn use_optimistic_restores_preferred_source_ranking() {
+    let _domain = crate::hosted_fixture::init_net_domain();
+    let stack = NetStack::new();
+    let dev = Arc::new(FailProbeDev { attempts: AtomicUsize::new(0) });
+    let iface = stack.ifaces.register(dev as Arc<dyn crate::NetDev>);
+    let lease = stack.ifaces.acquire_ingress(iface).unwrap();
+    let addr = Ipv6Addr::from_segments([0x2001,0xdb8,0x844,8,0,0,0,1]);
+    let dst = Ipv6Addr::from_segments([0x2001,0xdb8,0x844,8,0,0,0,2]);
+    let preferred = Ipv6Addr::from_segments([0x2001,0xdb8,0x999,0,0,0,0,1]);
+    let rtnl = stack.rtnl_lock();
+    let mut meta = super::Ipv6AddrMeta::PERMANENT;
+    meta.user_flags = crate::iface_addr::IFA_F_OPTIMISTIC;
+    let row = stack.add_ipv6_prefix_generation_rtnl(&rtnl, lease.net_ns(), iface,
+        lease.generation(), addr, None, 64, meta, true).unwrap();
+    stack.add_ipv6_prefix_generation_rtnl(&rtnl, lease.net_ns(), iface,
+        lease.generation(), preferred, None, 64, super::Ipv6AddrMeta::PERMANENT, false).unwrap();
+    drop(rtnl);
+    assert!(matches!(row.state, super::Ipv6AddrState::Tentative { .. }));
+    assert!(stack.v6_addr_owned_by(iface, addr));
+    assert_eq!(stack.v6_select_source(iface, dst, None), Some(preferred));
+
+    let conf = stack.ifaces.ipv6_conf_by_name_in("dadfail0", lease.net_ns()).unwrap();
+    conf.set_value(crate::netdev::Ipv6ConfKey::UseOptimistic, 7);
+    assert_eq!(conf.value(crate::netdev::Ipv6ConfKey::UseOptimistic), 7);
+    assert_eq!(stack.v6_select_source(iface, dst, None), Some(addr));
+}
+
+#[test]
 fn matching_ns_or_na_fails_dad_and_address_stays_unusable() {
     let _domain = crate::hosted_fixture::init_net_domain();
     for advertisement_kind in [crate::ndp::NDP_NS, crate::ndp::NDP_NA] {

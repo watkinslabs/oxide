@@ -71,7 +71,7 @@ impl NetStack {
     pub fn v6_addr_owned_by(&self, iface: NetIfaceId, ip: crate::addr::Ipv6Addr) -> bool {
         let now_ns = self.ra_now_ns();
         self.v6_addrs.lock().get(&iface)
-            .map(|rows| rows.iter().any(|row| row.addr == ip && row.usable_at(now_ns)))
+            .map(|rows| rows.iter().any(|row| row.addr == ip && row.owned_at(now_ns)))
             .unwrap_or(false)
     }
     /// True when an interface has active ownership of an IPv6 multicast group. # C: O(N groups)
@@ -105,7 +105,7 @@ impl NetStack {
         let Some(net_ns) = self.ifaces.namespace(iface) else { return false };
         self.v6_addrs.lock().iter().any(|(id, addrs)| {
             self.ifaces.namespace(*id) == Some(net_ns)
-                && addrs.iter().any(|addr| addr.addr == ip && addr.usable_at(now_ns))
+                && addrs.iter().any(|addr| addr.addr == ip && addr.owned_at(now_ns))
         })
     }
     /// Pick an IPv6 source address bound to `iface`, if one exists. # C: O(N addrs)

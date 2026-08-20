@@ -13,15 +13,21 @@ pub(crate) mod errno {
 }
 
 use net::iface_addr::{IFA_F_HOMEADDRESS, IFA_F_MANAGETEMPADDR, IFA_F_MCAUTOJOIN, IFA_F_NODAD,
-    IFA_F_NOPREFIXROUTE, INFINITY_LIFE_TIME};
+    IFA_F_NOPREFIXROUTE, IFA_F_OPTIMISTIC, INFINITY_LIFE_TIME};
 
-/// The `IFA_F_*` bits a setter may state on an IPv6 address; every other bit it
-/// sends is dropped. `IFA_F_OPTIMISTIC` is absent because optimistic DAD is off
-/// (the reference clears the bit unless the interface enables it, and no
-/// interface here does), and `IFA_F_PERMANENT` is absent because the kernel
-/// owns it: it holds exactly while the valid lifetime is infinite.
-pub(crate) const USER_FLAG_MASK: u32 = IFA_F_NODAD | IFA_F_HOMEADDRESS | IFA_F_MANAGETEMPADDR
+/// Setter-owned IPv6 address bits independent of interface policy.
+const USER_FLAG_MASK: u32 = IFA_F_NODAD | IFA_F_HOMEADDRESS | IFA_F_MANAGETEMPADDR
     | IFA_F_NOPREFIXROUTE | IFA_F_MCAUTOJOIN;
+
+/// Apply the interface's optimistic-DAD policy before checking flag conflicts.
+/// # C: O(1)
+pub(crate) fn user_flags(claimed: u32, optimistic_dad: bool) -> Result<u32, i32> {
+    let flags = claimed & (USER_FLAG_MASK | if optimistic_dad { IFA_F_OPTIMISTIC } else { 0 });
+    if flags & IFA_F_NODAD != 0 && flags & IFA_F_OPTIMISTIC != 0 {
+        return Err(errno::EINVAL);
+    }
+    Ok(flags)
+}
 
 /// The prefix length an `IFA_F_MANAGETEMPADDR` address must have: temporary
 /// addresses are generated from a 64-bit interface identifier.
@@ -121,20 +127,25 @@ mod tests {
         assert_eq!(errno::EADDRNOTAVAIL, -99);
     }
 
-    // The setter owns NODAD, HOMEADDRESS, MANAGETEMPADDR, NOPREFIXROUTE and
-    // MCAUTOJOIN. Every other bit it sends is dropped, including the ones the
-    // kernel derives, so a caller cannot declare its own address already
-    // verified, already failed, or permanent past its lifetime.
     #[test]
-    fn only_the_setter_owned_flags_survive_the_mask() {
+    fn optimistic_policy_controls_the_setter_owned_flag() {
         for kernel_owned in [IFA_F_SECONDARY, IFA_F_DADFAILED, IFA_F_DEPRECATED,
-            IFA_F_TENTATIVE, IFA_F_PERMANENT, IFA_F_OPTIMISTIC, IFA_F_STABLE_PRIVACY]
+            IFA_F_TENTATIVE, IFA_F_PERMANENT, IFA_F_STABLE_PRIVACY]
         {
-            assert_eq!(kernel_owned & USER_FLAG_MASK, 0, "flag {kernel_owned:#x} is not the setter's");
+            assert_eq!(user_flags(kernel_owned, true), Ok(0),
+                "flag {kernel_owned:#x} is not the setter's");
         }
-        assert_eq!(u32::MAX & USER_FLAG_MASK,
-            IFA_F_NODAD | IFA_F_HOMEADDRESS | IFA_F_MANAGETEMPADDR | IFA_F_NOPREFIXROUTE
-                | IFA_F_MCAUTOJOIN);
+        assert_eq!(user_flags(u32::MAX & !IFA_F_NODAD, true), Ok(
+            IFA_F_HOMEADDRESS | IFA_F_MANAGETEMPADDR | IFA_F_NOPREFIXROUTE
+                | IFA_F_MCAUTOJOIN | IFA_F_OPTIMISTIC));
+        assert_eq!(user_flags(IFA_F_OPTIMISTIC, false), Ok(0));
+        assert_eq!(user_flags(IFA_F_OPTIMISTIC, true), Ok(IFA_F_OPTIMISTIC));
+    }
+
+    #[test]
+    fn nodad_conflicts_only_with_an_enabled_optimistic_request() {
+        assert_eq!(user_flags(IFA_F_NODAD | IFA_F_OPTIMISTIC, false), Ok(IFA_F_NODAD));
+        assert_eq!(user_flags(IFA_F_NODAD | IFA_F_OPTIMISTIC, true), Err(errno::EINVAL));
     }
 
     #[test]

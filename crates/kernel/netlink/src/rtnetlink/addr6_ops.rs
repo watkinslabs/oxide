@@ -25,7 +25,7 @@ use super::uapi::{ifa, Ifaddrmsg};
 #[path = "addr6_ops/decide.rs"]
 pub(crate) mod decide;
 
-use decide::{errno, AddrType, Lifetimes, USER_FLAG_MASK};
+use decide::{errno, AddrType, Lifetimes};
 
 const IN6_ADDR_LEN: usize = 16;
 const CACHEINFO_LEN: usize = 16;
@@ -137,7 +137,7 @@ pub(crate) fn handle_newaddr6_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Ve
     let attrs = &full_msg[Nlmsghdr::SIZE + Ifaddrmsg::SIZE..];
     let Some(parsed) = parse_newaddr6_attrs(attrs) else { return build_ack(req, errno::EINVAL) };
     let Some((local, peer)) = extract_addr6(&parsed) else { return build_ack(req, errno::EINVAL) };
-    let user_flags = parsed.flags.unwrap_or(hdr.ifa_flags) & USER_FLAG_MASK;
+    let claimed_flags = parsed.flags.unwrap_or(hdr.ifa_flags);
     let Some(lifetimes) = Lifetimes::from_cacheinfo(parsed.cacheinfo) else {
         return build_ack(req, errno::EINVAL);
     };
@@ -151,6 +151,11 @@ pub(crate) fn handle_newaddr6_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Ve
         return build_ack(req, errno::ENODEV);
     };
     if lease.net_ns() != ns { return build_ack(req, errno::ENODEV); }
+    let user_flags = match decide::user_flags(claimed_flags,
+        stack.ifaces.ipv6_optimistic_dad_in(iface, ns)) {
+        Ok(flags) => flags,
+        Err(err) => return build_ack(req, err),
+    };
     let Some(label) = stack.ifaces.name_in_ns(iface, ns) else {
         return build_ack(req, errno::ENODEV);
     };

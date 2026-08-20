@@ -114,6 +114,11 @@ pub enum NetSysctlKey {
     /// `net.ipv4.tcp_no_ssthresh_metrics_save` — the cache neither stores nor
     /// believes a slow-start threshold (`crate::tcp_metrics`).
     TcpNoSsthreshMetricsSave,
+    /// `net.ipv6.conf.{all,default}.optimistic_dad` and `use_optimistic`.
+    /// Interface registration snapshots the default pair; the all pair is an
+    /// independent namespace-wide override.
+    Ipv6OptimisticDadAll, Ipv6OptimisticDadDefault,
+    Ipv6UseOptimisticAll, Ipv6UseOptimisticDefault,
 }
 
 /// One slot of a three-value socket-buffer window. # C: O(1)
@@ -141,7 +146,11 @@ impl NetSysctlKey {
     const TCP_ABORT_ON_OVERFLOW: usize = Self::TCP_MAX_SYN_BACKLOG + 1;
     const TCP_NOMETRICS_SAVE: usize = Self::TCP_ABORT_ON_OVERFLOW + 1;
     const TCP_NO_SSTHRESH_METRICS_SAVE: usize = Self::TCP_NOMETRICS_SAVE + 1;
-    const COUNT: usize = Self::TCP_NO_SSTHRESH_METRICS_SAVE + 1;
+    const IPV6_OPTIMISTIC_DAD_ALL: usize = Self::TCP_NO_SSTHRESH_METRICS_SAVE + 1;
+    const IPV6_OPTIMISTIC_DAD_DEFAULT: usize = Self::IPV6_OPTIMISTIC_DAD_ALL + 1;
+    const IPV6_USE_OPTIMISTIC_ALL: usize = Self::IPV6_OPTIMISTIC_DAD_DEFAULT + 1;
+    const IPV6_USE_OPTIMISTIC_DEFAULT: usize = Self::IPV6_USE_OPTIMISTIC_ALL + 1;
+    const COUNT: usize = Self::IPV6_USE_OPTIMISTIC_DEFAULT + 1;
 
     const fn index(self) -> usize {
         match self {
@@ -164,6 +173,10 @@ impl NetSysctlKey {
             Self::TcpAbortOnOverflow => Self::TCP_ABORT_ON_OVERFLOW,
             Self::TcpNoMetricsSave => Self::TCP_NOMETRICS_SAVE,
             Self::TcpNoSsthreshMetricsSave => Self::TCP_NO_SSTHRESH_METRICS_SAVE,
+            Self::Ipv6OptimisticDadAll => Self::IPV6_OPTIMISTIC_DAD_ALL,
+            Self::Ipv6OptimisticDadDefault => Self::IPV6_OPTIMISTIC_DAD_DEFAULT,
+            Self::Ipv6UseOptimisticAll => Self::IPV6_USE_OPTIMISTIC_ALL,
+            Self::Ipv6UseOptimisticDefault => Self::IPV6_USE_OPTIMISTIC_DEFAULT,
         }
     }
 
@@ -192,6 +205,10 @@ impl NetSysctlKey {
             Self::TCP_ABORT_ON_OVERFLOW => Self::TcpAbortOnOverflow,
             Self::TCP_NOMETRICS_SAVE => Self::TcpNoMetricsSave,
             Self::TCP_NO_SSTHRESH_METRICS_SAVE => Self::TcpNoSsthreshMetricsSave,
+            Self::IPV6_OPTIMISTIC_DAD_ALL => Self::Ipv6OptimisticDadAll,
+            Self::IPV6_OPTIMISTIC_DAD_DEFAULT => Self::Ipv6OptimisticDadDefault,
+            Self::IPV6_USE_OPTIMISTIC_ALL => Self::Ipv6UseOptimisticAll,
+            Self::IPV6_USE_OPTIMISTIC_DEFAULT => Self::Ipv6UseOptimisticDefault,
             _ => {
                 let relative = index - Self::BASE_COUNT;
                 let dev = match Ipv4ConfDev::from_index(relative / Ipv4ConfKey::COUNT) {
@@ -221,6 +238,8 @@ impl NetSysctlKey {
             Self::TCP_MAX_SYN_BACKLOG => crate::listen_queue::DEFAULT_MAX_SYN_BACKLOG,
             Self::TCP_ABORT_ON_OVERFLOW => crate::listen_queue::DEFAULT_ABORT_ON_OVERFLOW,
             Self::TCP_NOMETRICS_SAVE | Self::TCP_NO_SSTHRESH_METRICS_SAVE => 0,
+            Self::IPV6_OPTIMISTIC_DAD_ALL | Self::IPV6_OPTIMISTIC_DAD_DEFAULT
+                | Self::IPV6_USE_OPTIMISTIC_ALL | Self::IPV6_USE_OPTIMISTIC_DEFAULT => 0,
             _ if index >= Self::WMEM_BASE && index < Self::RMEM_BASE =>
                 crate::sysctl::DEFAULT_TCP_WMEM[index - Self::WMEM_BASE],
             _ if index >= Self::RMEM_BASE && index < Self::BASE_COUNT =>

@@ -85,9 +85,5 @@ pub const NET_SYSCTLS: &[Node] = &[
             // The IPv6 source-filter ceiling is global, not per-namespace.
             File("mld_max_msf",        NetGlobalIntHook(get_mld_max_msf, set_mld_max_msf,
                 Some(net::sysctl::MLD_MAX_MSF_BOUNDS))),
-            Dir("conf", &[
-                Dir("all",     &[ File("disable_ipv6", NetInt(net::net_ns::NetSysctlKey::Ipv6DisableAll, Some((0, 1)))) ]),
-                Dir("default", &[ File("disable_ipv6", NetInt(net::net_ns::NetSysctlKey::Ipv6DisableDefault, Some((0, 1)))) ]),
-            ]),
         ]),
 ];

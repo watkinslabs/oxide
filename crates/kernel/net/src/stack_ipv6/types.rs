@@ -169,6 +169,13 @@ impl Ipv6IfaceAddr {
         self.valid_at(now_ns) && self.state == Ipv6AddrState::Assigned
     }
 
+    /// An optimistic tentative address may receive before DAD completes. # C: O(1)
+    pub(crate) fn owned_at(&self, now_ns: u64) -> bool {
+        self.usable_at(now_ns) || self.valid_at(now_ns)
+            && matches!(self.state, Ipv6AddrState::Tentative { .. })
+            && self.user_flags & crate::iface_addr::IFA_F_OPTIMISTIC != 0
+    }
+
     /// The `ifa_scope` the address reports. Derived from the address, never
     /// taken from the setter: the reference computes it in the add path and
     /// maps the address type through the host/link/site ladder. A multicast
