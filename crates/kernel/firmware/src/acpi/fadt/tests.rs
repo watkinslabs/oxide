@@ -69,6 +69,10 @@ fn each_parsed_field_reads_from_its_own_offset_and_nowhere_else() {
     t[OFF_REVISION] = 5;
     put_u32(&mut t, OFF_FLAGS, 0xdead_beef);
     put_u32(&mut t, OFF_DSDT32, 0x1234_5678);
+    t[OFF_SCI_INT..OFF_SCI_INT + 2].copy_from_slice(&9u16.to_le_bytes());
+    put_u32(&mut t, OFF_SMI_CMD, 0x00b2);
+    t[OFF_ACPI_ENABLE] = 0xa1;
+    t[OFF_ACPI_DISABLE] = 0xa0;
     put_u64(&mut t, OFF_XDSDT, 0x0000_1111_2222_3333);
     put_gas(&mut t, OFF_RESET_REG, Gas { space_id: 1, bit_width: 8, bit_offset: 2, access_width: 3, address: 0xabcd });
     t[OFF_RESET_VALUE] = 0x5a;
@@ -76,6 +80,11 @@ fn each_parsed_field_reads_from_its_own_offset_and_nowhere_else() {
     put_gas(&mut t, OFF_XPM1B_CNT, Gas { space_id: 1, bit_width: 16, bit_offset: 0, access_width: 2, address: 0x604 });
     put_gas(&mut t, OFF_XPM2_CNT, Gas { space_id: 1, bit_width: 8, bit_offset: 0, access_width: 1, address: 0x608 });
     put_gas(&mut t, OFF_XPM_TIMER, Gas { space_id: 1, bit_width: 32, bit_offset: 0, access_width: 3, address: 0x60c });
+    put_gas(&mut t, OFF_XGPE0_BLK, Gas { space_id: 1, bit_width: 16, bit_offset: 0, access_width: 1, address: 0x620 });
+    put_gas(&mut t, OFF_XGPE1_BLK, Gas { space_id: 0, bit_width: 16, bit_offset: 0, access_width: 1, address: 0xfed8_1000 });
+    t[OFF_GPE0_LEN] = 4;
+    t[OFF_GPE1_LEN] = 2;
+    t[OFF_GPE1_BASE] = 0x40;
     put_gas(&mut t, OFF_SLEEP_CONTROL, Gas { space_id: 0, bit_width: 8, bit_offset: 0, access_width: 1, address: 0x9000 });
     put_gas(&mut t, OFF_SLEEP_STATUS, Gas { space_id: 0, bit_width: 8, bit_offset: 0, access_width: 1, address: 0x9001 });
 
@@ -85,11 +94,18 @@ fn each_parsed_field_reads_from_its_own_offset_and_nowhere_else() {
     assert_eq!(f.reset_register.address, 0xabcd);
     assert_eq!(f.reset_register.bit_offset, 2);
     assert_eq!(f.reset_value, 0x5a);
+    assert_eq!(f.sci_interrupt, 9);
+    assert_eq!(f.smi_command, 0x00b2);
+    assert_eq!(f.acpi_enable, 0xa1);
+    assert_eq!(f.acpi_disable, 0xa0);
     assert_eq!(f.pm1a_control.address, 0x600);
     assert_eq!(f.pm1b_control.address, 0x604);
     assert_eq!(f.pm2_control.address, 0x608);
     assert_eq!(f.pm2_control_len, 1);
     assert_eq!(f.pm_timer.address, 0x60c);
+    assert_eq!(f.gpe0_block.address, 0x620);
+    assert_eq!(f.gpe1_block.address, 0xfed8_1000);
+    assert_eq!((f.gpe0_block_len, f.gpe1_block_len, f.gpe1_base), (4, 2, 0x40));
     assert_eq!(f.sleep_control.address, 0x9000);
     assert_eq!(f.sleep_status.address, 0x9001);
     // The 64-bit pointer wins over the 32-bit one when both are present.
@@ -106,8 +122,13 @@ fn a_table_with_only_the_legacy_pointers_falls_back_to_them() {
     t[OFF_PM1_CNT_LEN] = 2;
     put_u32(&mut t, OFF_PM2_CNT32, 0x0410);
     put_u32(&mut t, OFF_PM_TIMER32, 0x0418);
+    put_u32(&mut t, OFF_GPE0_BLK32, 0x0420);
+    put_u32(&mut t, OFF_GPE1_BLK32, 0x0424);
     t[OFF_PM2_CNT_LEN] = 1;
     t[OFF_PM_TIMER_LEN] = 4;
+    t[OFF_GPE0_LEN] = 4;
+    t[OFF_GPE1_LEN] = 2;
+    t[OFF_GPE1_BASE] = 0x20;
     let f = parse_fadt(&t[..V2_LEN]).expect("a version-2 table parses");
     assert_eq!(f.dsdt_pa, 0x7fff_0000, "no 64-bit pointer, so the 32-bit one is the answer");
     assert_eq!(f.pm1a_control.address, 0x0404);
@@ -117,6 +138,9 @@ fn a_table_with_only_the_legacy_pointers_falls_back_to_them() {
     assert_eq!(f.pm2_control.address, 0x0410);
     assert_eq!(f.pm2_control_len, 1);
     assert_eq!(f.pm_timer.address, 0x0418);
+    assert_eq!(f.gpe0_block, port_gas(0x0420, 4));
+    assert_eq!(f.gpe1_block, port_gas(0x0424, 2));
+    assert_eq!(f.gpe1_base, 0x20);
     // Registers past this table's length read as absent, never as garbage.
     assert_eq!(f.sleep_control, Gas::default());
     assert_eq!(f.sleep_status, Gas::default());

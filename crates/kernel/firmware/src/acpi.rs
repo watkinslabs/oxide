@@ -12,6 +12,7 @@
 // - `pci_osc`: PCI root capability and ownership negotiation.
 // - `power_action`: FADT and AML-derived terminal S5 action.
 // - `aml_eval`: namespace read side for the ACPI device drivers below.
+// - `events`: SCI/GPE detection, deferred AML dispatch, and notifications.
 // - `battery`: control-method battery, published to the power-supply class.
 // - `ac`: AC adapter, published to the power-supply class.
 // - `thermal`: thermal zones, published to the thermal class.
@@ -33,6 +34,7 @@ mod pci_osc;
 mod power_action;
 pub mod ac;
 pub mod aml_eval;
+pub mod events;
 pub mod battery;
 pub mod cpufreq;
 pub mod cpuidle;
@@ -45,10 +47,10 @@ mod read;
 mod rsdp;
 mod tables;
 
-pub use fadt::{CstateRegisters, Fadt, Gas, PowerOffAction, PowerRegisters, ResetAction, SPACE_SYSTEM_IO, SPACE_SYSTEM_MEMORY, cstate_registers, decode_fadt, parse_fadt, power_registers, poweroff_action as build_poweroff_action, reset_action};
+pub use fadt::{CstateRegisters, EventRegisters, Fadt, Gas, PowerOffAction, PowerRegisters, ResetAction, SPACE_SYSTEM_IO, SPACE_SYSTEM_MEMORY, cstate_registers, decode_fadt, event_registers, parse_fadt, power_registers, poweroff_action as build_poweroff_action, reset_action};
 pub use facs::{Facs, WakingVectorWrites, facs, facs_pa, parse_facs, waking_vector_writes};
 pub use sleep_types::{SleepRegisters, SleepState, sleep_action, sleep_types, state_declared, wake_status_registers, PM1_WAKE_STATUS};
-pub use aml_handler::{RegionBackend, install_region_backend};
+pub use aml_handler::{RegionBackend, install_region_backend, system_memory_location};
 pub use iommu::{AmdIvhdAlias, AmdIvhdScope, AmdIvhdSpecial, AmdIvmd, AMD_SPECIAL_HPET, AMD_SPECIAL_IOAPIC, DMAR_RMRR_SCOPE_UNIT, DmarRmrr, DmarScope, IommuError, IommuKind, IommuUnit, MAX_DMAR_PATH_BYTES, MAX_DMAR_RMRR_SCOPES, amd_ivmd, amd_ivmd_count, amd_vi_alias, amd_vi_alias_count, amd_vi_alias_for_requester, amd_vi_special, amd_vi_special_count, amd_vi_unit_for_requester, decode_dmar, decode_ivrs, dmar_rmrr, dmar_rmrr_count, dmar_scope, dmar_scope_count, dmar_x2apic_opt_out, iommu_unit, iommu_unit_count, iommu_unit_for_segment, parse_dmar, parse_ivrs};
 pub use aml_routes::{PciIntxRoute, install_dsdt, install_ssdt, pci_intx_route, pci_osc_control, prepare_pci_intx_routes};
 pub use pci_osc::{PciOscControl, OSC_PCIE_AER_CONTROL};

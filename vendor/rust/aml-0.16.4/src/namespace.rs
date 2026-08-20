@@ -260,6 +260,43 @@ impl Namespace {
         }
     }
 
+    /// Search for a namespace level using the same upward lookup as named
+    /// objects. AML `Notify` targets device-like levels, not stored values.
+    pub fn search_level(&self, path: &AmlName, starting_scope: &AmlName) -> Result<(AmlName, LevelType), AmlError> {
+        if path.search_rules_apply() {
+            let mut scope = starting_scope.clone();
+            assert!(scope.is_absolute());
+            loop {
+                let name = path.resolve(&scope)?;
+                if let Ok(level) = self.level_at(&name) { return Ok((name, level.typ)); }
+                match scope.parent() {
+                    Ok(parent) => scope = parent,
+                    Err(AmlError::RootHasNoParent) => break,
+                    Err(err) => return Err(err),
+                }
+            }
+            Err(AmlError::LevelDoesNotExist(path.clone()))
+        } else {
+            let name = path.resolve(starting_scope)?;
+            Ok((name.clone(), self.level_at(&name)?.typ))
+        }
+    }
+
+    fn level_at(&self, path: &AmlName) -> Result<&NamespaceLevel, AmlError> {
+        let path = path.clone().normalize()?;
+        let mut level = &self.root;
+        for component in path.0.iter() {
+            match component {
+                NameComponent::Root => {}
+                NameComponent::Segment(seg) => {
+                    level = level.children.get(seg).ok_or_else(|| AmlError::LevelDoesNotExist(path.clone()))?;
+                }
+                NameComponent::Prefix => unreachable!(),
+            }
+        }
+        Ok(level)
+    }
+
     pub fn search_for_level(&self, level_name: &AmlName, starting_scope: &AmlName) -> Result<AmlName, AmlError> {
         if level_name.search_rules_apply() {
             let mut scope = starting_scope.clone().normalize()?;

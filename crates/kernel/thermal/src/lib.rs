@@ -44,7 +44,8 @@ pub use cdev::{CoolingDevice, CoolingOps};
 pub use governor::{available_names, by_name, Governor};
 pub use monitor::Cadence;
 pub use registry::{apply_cdev, cdev_by_name, cooling_devices, device_names, next_deadline_ns,
-                   register_cdev, register_cdev_for_path, register_zone, set_change_hook, set_critical_hook,
+                   rebind_zone, reconfigure_zone, register_cdev, register_cdev_for_path, register_zone,
+                   set_change_hook, set_critical_hook,
                    set_crossing_hook, tick, unregister_cdev, update_all, update_zone,
                    zone_by_name, zones};
 pub use trip::{Bucket, Trip, TripDesc};

@@ -63,6 +63,7 @@ pub use boot_info::{BootInfo, BootMemKind, BootMemRegion};
 // - `entry`: kernel_main orchestration and final handoff.
 // - `early`: boot CPU, allocator, memory, and early subsystem bring-up.
 // - `runtime`: IRQ, console, SMP, and runtime hook installation.
+// - `acpi_sci`: x86 FADT SCI routing into the ACPI event owner.
 // - `rootfs`: PCI, mounts, rootfs, keymap, and first-userspace handoff.
 // - `hooks`: shared tick and diagnostics hooks used by the boot path.
 // - `tests`: crate-local layout checks.
@@ -72,6 +73,8 @@ mod kmain {
     pub mod hooks;
     pub mod rootfs;
     pub mod runtime;
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+    pub mod acpi_sci;
     // Joins the device model and the interrupt controllers to the suspend
     // sequence (`32a§5`, `32a§7`).
     #[cfg(target_os = "oxide-kernel")]

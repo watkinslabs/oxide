@@ -28,6 +28,9 @@ struct RootRoutes { segment: u16, bus: u8, table: PciRoutingTable, osc: Option<P
 struct RouteContext { aml: Box<AmlContext>, roots: Vec<RootRoutes> }
 static CONTEXT: Spinlock<Option<RouteContext>, Devices> = Spinlock::new(None);
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct GpeMethod { pub path: alloc::string::String, pub number: u8, pub edge: bool }
+
 /// Retain the DSDT table for later namespace construction.
 ///
 /// # SAFETY: `pa` is the validated FADT DSDT address and `hhdm_offset` maps
@@ -212,9 +215,67 @@ pub fn prepare_pci_intx_routes() -> bool {
 /// # C: O(AML table bytes) on first call
 #[inline(never)]
 pub(crate) fn with_namespace<R>(f: impl FnOnce(&mut AmlContext) -> Option<R>) -> Option<R> {
-    let mut context = CONTEXT.lock();
-    if context.is_none() { *context = build_context(); }
-    f(&mut context.as_mut()?.aml)
+    let result = {
+        let mut context = CONTEXT.lock();
+        if context.is_none() { *context = build_context(); }
+        match context.as_mut() {
+            Some(context) => f(&mut context.aml),
+            None => None,
+        }
+    };
+    // Notify delivery may evaluate more AML, so it must begin only after the
+    // one namespace owner has been released.
+    super::events::dispatch_notifications();
+    result
+}
+
+/// Every `_Lxx`/`_Exx` method below `\\_GPE`, in namespace order.
+/// # C: O(namespace)
+pub(crate) fn gpe_methods() -> Vec<GpeMethod> {
+    with_namespace(|context| {
+        let mut levels = Vec::new();
+        let _ = context.namespace.traverse(|path, level| {
+            let text = path.as_string();
+            if text == "\\_GPE" || text.starts_with("\\_GPE.") {
+                levels.push((path.clone(), level.values.clone()));
+            }
+            Ok(true)
+        });
+        let mut methods = Vec::new();
+        for (scope, values) in levels {
+            for (name, handle) in values {
+                if !matches!(context.namespace.get(handle), Ok(AmlValue::Method { .. })) { continue; }
+                let Some((number, edge)) = decode_gpe_method(name.as_str()) else { continue; };
+                let prefix = scope.as_string();
+                let path = if prefix == "\\" { alloc::format!("\\{}", name.as_str()) }
+                    else { alloc::format!("{}.{}", prefix, name.as_str()) };
+                methods.push(GpeMethod { path, number, edge });
+            }
+        }
+        Some(methods)
+    }).unwrap_or_default()
+}
+
+fn decode_gpe_method(name: &str) -> Option<(u8, bool)> {
+    let bytes = name.as_bytes();
+    if bytes.len() != 4 || bytes[0] != b'_' { return None; }
+    let edge = match bytes[1] { b'E' => true, b'L' => false, _ => return None };
+    let hi = hex(bytes[2])?;
+    let lo = hex(bytes[3])?;
+    Some(((hi << 4) | lo, edge))
+}
+
+fn hex(byte: u8) -> Option<u8> {
+    match byte { b'0'..=b'9' => Some(byte - b'0'), b'A'..=b'F' => Some(byte - b'A' + 10), _ => None }
+}
+
+/// Execute one discovered GPE method under the one namespace owner.
+/// # C: O(AML)
+pub(crate) fn invoke_gpe_method(path: &str) -> bool {
+    with_namespace(|context| {
+        let path = AmlName::from_str(path).ok()?;
+        Some(context.invoke_method(&path, Args::default()).is_ok())
+    }).unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -231,5 +292,13 @@ mod tests {
     fn s5_uses_packed_single_or_first_two_package_values() {
         assert_eq!(sleep_types::sleep_type_pair(&[0x0605]), Some((5, 6)));
         assert_eq!(sleep_types::sleep_type_pair(&[5, 6, 7]), Some((5, 6)));
+    }
+    #[test]
+    fn only_exact_uppercase_gpe_method_names_decode() {
+        assert_eq!(decode_gpe_method("_L2A"), Some((0x2a, false)));
+        assert_eq!(decode_gpe_method("_EFF"), Some((0xff, true)));
+        for name in ["L2A", "_Q2A", "_L2", "_L2a", "_L2G"] {
+            assert_eq!(decode_gpe_method(name), None);
+        }
     }
 }

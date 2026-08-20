@@ -15,6 +15,8 @@ use vfs::{KResult, VfsError};
 
 use crate::cdev::{CoolingDevice, CoolingOps};
 use crate::governor::input::aggregate;
+use crate::monitor::Cadence;
+use crate::trip::{Trip, TripDesc};
 use crate::uapi::Direction;
 use crate::zone::bind;
 use crate::zone::pass::{self, Outcome};
@@ -143,6 +145,48 @@ fn bind_pair(zone: &Arc<ThermalZone>, cdev: &Arc<CoolingDevice>) {
     // A device bound to a zone that is already hot has no crossing to react
     // to; the next pass must push it rather than leave it idle.
     if bound { pass::desynchronise(zone); }
+}
+
+fn detach_cdevs(state: &mut crate::zone::state::ZoneState) -> Vec<Arc<CoolingDevice>> {
+    let mut cdevs: Vec<Arc<CoolingDevice>> = Vec::new();
+    for instance in &state.instances {
+        if !cdevs.iter().any(|old| Arc::ptr_eq(old, &instance.cdev)) {
+            cdevs.push(Arc::clone(&instance.cdev));
+        }
+    }
+    state.instances.clear();
+    state.next_instance = 0;
+    cdevs
+}
+
+/// Replace a firmware zone's trip ladder and cadence, then rebuild every
+/// cooling-device binding against the provider's current description. Old
+/// requests are removed before the devices are offered to the new ladder.
+/// # C: O(N_instances + N_cdevs * N_trips)
+pub fn reconfigure_zone(zone: &Arc<ThermalZone>, trips: Vec<Trip>, cadence: Cadence,
+                        now_ns: u64) {
+    let old_cdevs = {
+        let mut state = zone.state.lock();
+        let cdevs = detach_cdevs(&mut state);
+        state.trips = trips.into_iter().map(TripDesc::new).collect();
+        state.cadence = cadence;
+        state.window = None;
+        state.deadline_ns = None;
+        cdevs
+    };
+    for cdev in &old_cdevs { let _ = apply_cdev(cdev, now_ns); }
+    for cdev in cooling_devices() { bind_pair(zone, &cdev); }
+    notify(&zone.name());
+}
+
+/// Rebuild only a firmware zone's cooling-device bindings. Trip temperatures,
+/// cadence, and current sensor window remain owned by the existing ladder.
+/// # C: O(N_instances + N_cdevs * N_trips)
+pub fn rebind_zone(zone: &Arc<ThermalZone>, now_ns: u64) {
+    let old_cdevs = detach_cdevs(&mut zone.state.lock());
+    for cdev in &old_cdevs { let _ = apply_cdev(cdev, now_ns); }
+    for cdev in cooling_devices() { bind_pair(zone, &cdev); }
+    notify(&zone.name());
 }
 
 /// Drive `cdev` to the deepest state any zone currently asks of it.

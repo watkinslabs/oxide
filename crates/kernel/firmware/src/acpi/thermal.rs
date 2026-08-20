@@ -9,7 +9,7 @@ pub mod decode;
 pub mod trips;
 
 use alloc::string::String;
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use sync::{Devices, Spinlock};
 use thermal::{BindSpec, CoolingDevice, Cadence, ThermalZone, Trend, ZoneDesc, ZoneOps,
@@ -18,6 +18,8 @@ use vfs::{KResult, VfsError};
 
 use super::aml_eval;
 use trips::Ladder;
+
+static ZONES: Spinlock<Vec<Weak<AcpiZone>>, Devices> = Spinlock::new(Vec::new());
 
 /// Object that reports the zone's current temperature.
 const TMP: &str = "_TMP";
@@ -30,18 +32,22 @@ const SCP_ACTIVE: u64 = 0;
 /// One firmware-described thermal zone.
 pub struct AcpiZone {
     scope: String,
+    description: Spinlock<Description, Devices>,
+    published: Spinlock<Option<Arc<ThermalZone>>, Devices>,
+}
+
+struct Description {
     /// Kelvin offset this platform's firmware uses, millidegrees.
     offset_mc: i64,
     /// Namespace paths of the devices associated with each trip, in trip
     /// order. Empty where the firmware named none.
     bindings: Vec<Vec<String>>,
-    published: Spinlock<Option<Arc<ThermalZone>>, Devices>,
 }
 
 impl ZoneOps for AcpiZone {
     fn get_temp(&self) -> KResult<i32> {
         let raw = aml_eval::eval_integer(&self.scope, TMP).ok_or(VfsError::Eio)?;
-        let temp = decode::to_millicelsius(raw, self.offset_mc);
+        let temp = decode::to_millicelsius(raw, self.description.lock().offset_mc);
         if temp == TEMP_INVALID { return Err(VfsError::Eio); }
         Ok(temp)
     }
@@ -56,7 +62,8 @@ impl ZoneOps for AcpiZone {
     /// to be listed alongside it.
     /// # C: O(N_bound)
     fn should_bind(&self, trip: usize, cdev: &CoolingDevice) -> Option<BindSpec> {
-        let names = self.bindings.get(trip)?;
+        let description = self.description.lock();
+        let names = description.bindings.get(trip)?;
         if matches_path(names, cdev) { Some(BindSpec::default()) } else { None }
     }
 }
@@ -79,9 +86,24 @@ impl AcpiZone {
     /// Re-read the zone now, because a firmware notification means the
     /// temperature or the trip ladder moved and the polling cadence is too
     /// slow to be the answer. # C: O(AML)
-    pub fn notified(&self, now_ns: u64) {
+    pub fn notified(&self, event: u64, now_ns: u64) {
         let published = self.published.lock().clone();
-        if let Some(zone) = published { thermal::update_zone(&zone, now_ns); }
+        let Some(zone) = published else { return; };
+        if event == 0x81 {
+            let Some(ladder) = Ladder::read(&self.scope) else { return; };
+            *self.description.lock() = Description {
+                offset_mc: ladder.offset_mc,
+                bindings: ladder.bindings,
+            };
+            let cadence = Cadence { polling_ms: ladder.polling_ms,
+                                    passive_ms: ladder.passive_ms };
+            thermal::reconfigure_zone(&zone, ladder.trips, cadence, now_ns);
+        } else if event == 0x82 {
+            let Some(ladder) = Ladder::read(&self.scope) else { return; };
+            self.description.lock().bindings = ladder.bindings;
+            thermal::rebind_zone(&zone, now_ns);
+        }
+        thermal::update_zone(&zone, now_ns);
     }
 }
 
@@ -108,8 +130,10 @@ fn register_one(scope: &str) -> Option<Arc<ThermalZone>> {
 
     let zone = Arc::new(AcpiZone {
         scope: String::from(scope),
-        offset_mc: ladder.offset_mc,
-        bindings: ladder.bindings,
+        description: Spinlock::new(Description {
+            offset_mc: ladder.offset_mc,
+            bindings: ladder.bindings,
+        }),
         published: Spinlock::new(None),
     });
     zone.set_cooling_mode();
@@ -119,7 +143,22 @@ fn register_one(scope: &str) -> Option<Arc<ThermalZone>> {
                                        passive_ms: ladder.passive_ms });
     let published = thermal::register_zone(desc, zone.clone() as Arc<dyn ZoneOps>).ok()?;
     *zone.published.lock() = Some(Arc::clone(&published));
+    ZONES.lock().push(Arc::downgrade(&zone));
     Some(published)
+}
+
+/// Deliver one AML notification to its exact thermal zone. Unknown values are
+/// consumed by the ACPI device but do not fabricate a thermal transition.
+/// # C: O(N + AML)
+pub(crate) fn notified(scope: &str, event: u64) -> bool {
+    let zone = ZONES.lock().iter().filter_map(Weak::upgrade)
+        .find(|zone| zone.scope == scope);
+    let Some(zone) = zone else { return false; };
+    match event {
+        0x80 | 0x81 | 0x82 => zone.notified(event, timekeeper::monotonic_ns()),
+        _ => {}
+    }
+    true
 }
 
 /// The zone's kind, as `type` reads it back: the last component of its

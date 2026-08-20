@@ -179,6 +179,18 @@ pub fn legacy_irq_flags(irq: u8) -> Option<u32> {
         None
     }
 }
+/// Decode an SCI source override as ACPI does: each compatible field defaults
+/// independently to level-triggered and active-low, rather than to the ISA
+/// bus defaults used by ordinary legacy IRQs. # C: O(1)
+pub fn acpi_sci_characteristics(flags: u32) -> (bool, bool) {
+    const FIELD_MASK: u32 = 3;
+    const TRIGGER_SHIFT: u32 = 2;
+    const LEVEL: u32 = 3;
+    const ACTIVE_LOW: u32 = 3;
+    let trigger = (flags >> TRIGGER_SHIFT) & FIELD_MASK;
+    let polarity = flags & FIELD_MASK;
+    (trigger == 0 || trigger == LEVEL, polarity == 0 || polarity == ACTIVE_LOW)
+}
 /// True if firmware published an SPCR serial console. # C: O(1)
 pub fn spcr_present() -> bool { SPCR_PRESENT.load(Ordering::Acquire) }
 /// SPCR console UART base (MMIO PA or x86 I/O port per `spcr_addr_space`). # C: O(1)
@@ -289,4 +301,13 @@ mod tests {
     use super::*;
     // SAFETY: hosted-test path; init has no side effects.
     #[test] fn init_ok() { unsafe { assert!(init().is_ok()); } }
+
+    #[test]
+    fn sci_compatible_trigger_and_polarity_default_independently() {
+        assert_eq!(acpi_sci_characteristics(0), (true, true));
+        assert_eq!(acpi_sci_characteristics(3 << 2), (true, true));
+        assert_eq!(acpi_sci_characteristics(3), (true, true));
+        assert_eq!(acpi_sci_characteristics((1 << 2) | 3), (false, true));
+        assert_eq!(acpi_sci_characteristics((3 << 2) | 1), (true, false));
+    }
 }

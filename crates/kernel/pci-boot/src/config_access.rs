@@ -2,8 +2,22 @@
 // sysfs can serve `config` (and the identity attributes derived from it)
 // without an arch dependency.
 
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicPtr, Ordering};
 use pci::uapi::CFG_SPACE_SIZE;
 use firmware::acpi::{AmlError, RegionAccess, RegionAccessDirection, RegionSpace};
+use sync::{Devices, Spinlock};
+
+const PAGE_BYTES: u64 = hal::PAGE_SIZE_BYTES;
+
+#[derive(Copy, Clone)]
+struct MemoryPage { pa: u64, va: u64 }
+
+struct MemoryPages { entries: Box<[MemoryPage]> }
+
+static MEMORY_PAGES: AtomicPtr<MemoryPages> = AtomicPtr::new(core::ptr::null_mut());
+static MEMORY_PAGE_WRITER: Spinlock<(), Devices> = Spinlock::new(());
 
 /// Whether a `[off, off+len)` access stays inside the addressable space.
 /// # C: O(1)
@@ -103,12 +117,65 @@ pub(crate) fn install_aml_region_backend() {
 fn operation_region_access(access: RegionAccess, value: u64) -> Result<u64, AmlError> {
     let write = (access.direction == RegionAccessDirection::Write).then_some(value);
     let value = match access.space {
-        RegionSpace::SystemMemory => None,
+        RegionSpace::SystemMemory => system_memory_access(access.base, access.offset,
+                                                           access.width, write),
         RegionSpace::SystemIo => system_io_access(access.base, access.offset, access.width, write),
         RegionSpace::PciConfig => pci_config_access(access, write),
         _ => None,
     };
     value.ok_or(AmlError::RegionAccessUnavailable)
+}
+
+/// Access one naturally aligned firmware SystemMemory register through a
+/// boot-lifetime device mapping. FADT event pages are touched during SCI init,
+/// so the hard handler only traverses the immutable published page table and
+/// never maps or allocates. # C: O(N_pages)
+fn system_memory_access(base: u64, offset: u64, width: u64, write: Option<u64>) -> Option<u64> {
+    let (page_pa, in_page) = firmware::acpi::system_memory_location(
+        base, offset, width, PAGE_BYTES)?;
+    let va = mapped_page(page_pa)?.checked_add(in_page)? as *mut u8;
+    Some(match (width, write) {
+        // SAFETY: mapped_page retains a device mapping for the boot lifetime;
+        // system_memory_location checked width alignment and page extent.
+        (8, None) => u64::from(unsafe { core::ptr::read_volatile(va.cast::<u8>()) }),
+        (16, None) => u64::from(unsafe { core::ptr::read_volatile(va.cast::<u16>()) }),
+        (32, None) => u64::from(unsafe { core::ptr::read_volatile(va.cast::<u32>()) }),
+        (64, None) => unsafe { core::ptr::read_volatile(va.cast::<u64>()) },
+        (8, Some(value)) => { unsafe { core::ptr::write_volatile(va.cast::<u8>(), value as u8) }; 0 }
+        (16, Some(value)) => { unsafe { core::ptr::write_volatile(va.cast::<u16>(), value as u16) }; 0 }
+        (32, Some(value)) => { unsafe { core::ptr::write_volatile(va.cast::<u32>(), value as u32) }; 0 }
+        (64, Some(value)) => { unsafe { core::ptr::write_volatile(va.cast::<u64>(), value) }; 0 }
+        _ => return None,
+    })
+}
+
+fn published_memory_page(pa: u64) -> Option<u64> {
+    let pointer = MEMORY_PAGES.load(Ordering::Acquire);
+    if pointer.is_null() { return None; }
+    // SAFETY: snapshots are leaked after publication and never mutated.
+    let pages = unsafe { &*pointer };
+    pages.entries.iter().find(|entry| entry.pa == pa).map(|entry| entry.va)
+}
+
+fn mapped_page(pa: u64) -> Option<u64> {
+    if let Some(va) = published_memory_page(pa) { return Some(va); }
+    let _writer = MEMORY_PAGE_WRITER.lock();
+    if let Some(va) = published_memory_page(pa) { return Some(va); }
+    // SAFETY: this is a firmware-declared SystemMemory register page. The
+    // immutable page cache becomes its sole boot-lifetime MMIO owner.
+    let mapping = unsafe { mmio_map::map_owned(pa, 1) };
+    let va = mapping.base_va();
+    let _mapping = Box::leak(Box::new(mapping));
+    let mut entries = Vec::new();
+    let previous = MEMORY_PAGES.load(Ordering::Acquire);
+    if !previous.is_null() {
+        // SAFETY: published snapshots are leaked and immutable.
+        entries.extend_from_slice(unsafe { &(*previous).entries });
+    }
+    entries.push(MemoryPage { pa, va });
+    let snapshot = Box::into_raw(Box::new(MemoryPages { entries: entries.into_boxed_slice() }));
+    MEMORY_PAGES.store(snapshot, Ordering::Release);
+    Some(va)
 }
 
 fn system_io_access(base: u64, offset: u64, width: u64, write: Option<u64>) -> Option<u64> {

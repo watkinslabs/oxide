@@ -10,6 +10,8 @@ use vfs::{KResult, VfsError};
 use super::aml_eval;
 use super::battery::props::device_name;
 
+static ADAPTERS: Spinlock<alloc::vec::Vec<Weak<AcpiAc>>, Devices> = Spinlock::new(alloc::vec::Vec::new());
+
 /// Hardware identifier of an ACPI AC adapter.
 pub const AC_HID: &str = "ACPI0003";
 /// `_PSR` reporting mains connected.
@@ -94,5 +96,17 @@ fn register_one(scope: &str) -> Option<Arc<PowerSupply>> {
     );
     let psy = power_supply::register(desc, adapter.clone() as Arc<dyn SupplyOps>).ok()?;
     *adapter.published.lock() = Arc::downgrade(&psy);
+    ADAPTERS.lock().push(Arc::downgrade(&adapter));
     Some(psy)
+}
+
+/// Deliver one AML notification to its exact AC adapter. # C: O(N)
+pub(crate) fn notified(scope: &str, _event: u64) -> bool {
+    let adapter = ADAPTERS.lock().iter().filter_map(Weak::upgrade)
+        .find(|adapter| adapter.scope == scope);
+    let Some(adapter) = adapter else { return false; };
+    adapter.cached.lock().expires_ns = 0;
+    let _ = adapter.refresh();
+    if let Some(psy) = adapter.published.lock().upgrade() { power_supply::changed(&psy); }
+    true
 }

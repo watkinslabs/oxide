@@ -41,6 +41,9 @@ pub struct ZoneState {
     /// The reading before it, for the fallback trend.
     pub last_temperature: i32,
     pub trips: Vec<TripDesc>,
+    /// Ordinary and throttled polling cadences. Firmware may replace these
+    /// together with its trip ladder after a threshold notification.
+    pub cadence: Cadence,
     pub instances: Vec<Instance>,
     pub governor: &'static Governor,
     /// Current sensor-failure backoff, milliseconds.
@@ -59,7 +62,6 @@ pub struct ZoneState {
 pub struct ThermalZone {
     id: u32,
     ty: String,
-    cadence: Cadence,
     ops: Arc<dyn ZoneOps>,
     pub(crate) state: Spinlock<ZoneState, Devices>,
 }
@@ -73,13 +75,13 @@ impl ThermalZone {
         ThermalZone {
             id,
             ty: desc.ty,
-            cadence: desc.cadence,
             ops,
             state: Spinlock::new(ZoneState {
                 mode: Mode::Enabled,
                 temperature: TEMP_INVALID,
                 last_temperature: TEMP_INVALID,
                 trips: desc.trips.into_iter().map(TripDesc::new).collect(),
+                cadence: desc.cadence,
                 instances: Vec::new(),
                 governor,
                 backoff_ms: RECHECK_DELAY_MS,
@@ -97,7 +99,7 @@ impl ThermalZone {
     /// Class device name. # C: O(1)
     pub fn name(&self) -> String { crate::uapi::zone_name(self.id) }
     /// The declared cadences. # C: O(1)
-    pub fn cadence(&self) -> Cadence { self.cadence }
+    pub fn cadence(&self) -> Cadence { self.state.lock().cadence }
     /// The provider. # C: O(1)
     pub fn ops(&self) -> &Arc<dyn ZoneOps> { &self.ops }
 

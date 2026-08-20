@@ -13,6 +13,8 @@ use crate::{
         Parser,
         Propagate,
     },
+    name_object::{super_name, Target},
+    namespace::LevelType,
     pkg_length::{pkg_length, PkgLength},
     term_object::{term_arg, term_list},
     AmlContext,
@@ -38,10 +40,71 @@ where
             def_fatal(),
             def_if_else(),
             def_noop(),
+            def_notify(),
             def_return(),
             def_while()
         ),
     )
+}
+
+fn def_notify<'a, 'c>() -> impl Parser<'a, 'c, ()>
+where
+    'c: 'a,
+{
+    /* DefNotify := 0x86 NotifyObject NotifyValue */
+    opcode(opcode::DEF_NOTIFY_OP)
+        .then(comment_scope(
+            DebugVerbosity::Scopes,
+            "DefNotify",
+            super_name().then(term_arg()).map_with_context(|(target, value), context| {
+                let value = try_with_context!(context, value.as_integer(context));
+                let Target::Name(name) = target else {
+                    return (Err(Propagate::Err(AmlError::InvalidNotifyTarget)), context);
+                };
+                let (path, typ) = try_with_context!(context,
+                    context.namespace.search_level(&name, &context.current_scope));
+                if !matches!(typ, LevelType::Device | LevelType::Processor | LevelType::ThermalZone) {
+                    return (Err(Propagate::Err(AmlError::InvalidNotifyTarget)), context);
+                }
+                context.handler.notify(&path, value);
+                (Ok(()), context)
+            }),
+        ))
+        .discard_result()
+}
+
+#[cfg(test)]
+mod notify_tests {
+    use super::*;
+    use crate::{AmlName, Handler, RegionAccess};
+    use alloc::boxed::Box;
+    use std::sync::Mutex;
+
+    static SEEN: Mutex<Option<(alloc::string::String, u64)>> = Mutex::new(None);
+
+    struct NotifyHandler;
+    impl Handler for NotifyHandler {
+        fn access(&self, _: RegionAccess, _: u64) -> Result<u64, AmlError> {
+            Err(AmlError::RegionAccessUnavailable)
+        }
+        fn notify(&self, path: &AmlName, value: u64) {
+            *SEEN.lock().unwrap() = Some((path.as_string(), value));
+        }
+    }
+
+    #[test]
+    fn notify_resolves_a_device_and_delivers_the_integer() {
+        *SEEN.lock().unwrap() = None;
+        let mut context = AmlContext::new(Box::new(NotifyHandler), DebugVerbosity::None);
+        context.namespace.add_level(AmlName::from_str("\\DEV0").unwrap(), LevelType::Device).unwrap();
+        let bytes = [opcode::DEF_NOTIFY_OP, b'\\', b'D', b'E', b'V', b'0', opcode::BYTE_CONST, 0x80];
+        let (rest, _, ()) = match statement_opcode().parse(&bytes, &mut context) {
+            Ok(result) => result,
+            Err(_) => panic!("notify parse failed"),
+        };
+        assert!(rest.is_empty());
+        assert_eq!(*SEEN.lock().unwrap(), Some((alloc::string::String::from("\\DEV0"), 0x80)));
+    }
 }
 
 fn def_break<'a, 'c>() -> impl Parser<'a, 'c, ()>

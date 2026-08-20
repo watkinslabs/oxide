@@ -377,18 +377,29 @@ fn scmi_completion_irq(intid: u32) -> arch_irq::IrqReport {
 #[inline(never)]
 fn publish_acpi_devices() {
     let counts = firmware::acpi::init_devices();
-    if !counts.any() { return; }
-    klog::write_raw(b"[BOOT]  acpi devices: adapters=");
-    klog::write_dec_u64(counts.adapters as u64);
-    klog::write_raw(b" batteries=");
-    klog::write_dec_u64(counts.batteries as u64);
-    klog::write_raw(b" backlights=");
-    klog::write_dec_u64(counts.backlights as u64);
-    klog::write_raw(b" processor-cooling=");
-    klog::write_dec_u64(counts.processor_cooling as u64);
-    klog::write_raw(b" thermal-zones=");
-    klog::write_dec_u64(counts.thermal_zones as u64);
-    klog::write_raw(b"\n");
+    if counts.any() {
+        klog::write_raw(b"[BOOT]  acpi devices: adapters=");
+        klog::write_dec_u64(counts.adapters as u64);
+        klog::write_raw(b" batteries=");
+        klog::write_dec_u64(counts.batteries as u64);
+        klog::write_raw(b" backlights=");
+        klog::write_dec_u64(counts.backlights as u64);
+        klog::write_raw(b" processor-cooling=");
+        klog::write_dec_u64(counts.processor_cooling as u64);
+        klog::write_raw(b" thermal-zones=");
+        klog::write_dec_u64(counts.thermal_zones as u64);
+        klog::write_raw(b"\n");
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        firmware::acpi::events::set_sci_installer(super::acpi_sci::install);
+        let gpes = firmware::acpi::events::init();
+        if gpes != 0 {
+            klog::write_raw(b"[BOOT]  acpi event GPEs=");
+            klog::write_dec_u64(gpes as u64);
+            klog::write_raw(b"\n");
+        }
+    }
 }
 
 #[cfg(target_os = "oxide-kernel")]
