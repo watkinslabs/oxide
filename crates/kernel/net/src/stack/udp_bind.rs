@@ -56,6 +56,7 @@ impl NetStack {
         self.bind_udp_socket_owned(crate::SocketOwner::root(namespace, owner_uid), bind_ip,
             port, iface, error, reuseaddr, reuseport, ip_mtu_discover,
             Arc::new(::core::sync::atomic::AtomicI32::new(0)),
+            Arc::new(::core::sync::atomic::AtomicI32::new(0)),
             Arc::new(::core::sync::atomic::AtomicI32::new(0)), peer, bpf_filter, mcast)
     }
 
@@ -66,6 +67,7 @@ impl NetStack {
                            reuseaddr: Arc<::core::sync::atomic::AtomicI32>,
                            reuseport: Arc<::core::sync::atomic::AtomicI32>,
                            ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+                           mark: Arc<::core::sync::atomic::AtomicI32>,
                            gro: Arc<::core::sync::atomic::AtomicI32>,
                            encap_type: Arc<::core::sync::atomic::AtomicI32>,
                            peer: Arc<Spinlock<Option<(Ipv4Addr, u16)>, StackLockClass>>,
@@ -113,7 +115,7 @@ impl NetStack {
         let q = Arc::new(UdpRxQueue::new_socket(
             net_ns, bind_ip, port, error, reuseaddr,
             Arc::new(::core::sync::atomic::AtomicI32::new(i32::from(reuseport_member))),
-            ip_mtu_discover, gro, encap_type, owner, peer, bpf_filter, mcast,
+            ip_mtu_discover, mark, gro, encap_type, owner, peer, bpf_filter, mcast,
         ));
         q.bound_ifindex.store(iface.map(|i| i.raw()).unwrap_or(0),
             ::core::sync::atomic::Ordering::Release);

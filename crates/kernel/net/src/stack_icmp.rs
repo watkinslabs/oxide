@@ -138,6 +138,13 @@ enum UdpReuseGroup {
 }
 
 impl UdpErrorTarget {
+    fn mark(&self) -> u32 {
+        match self {
+            Self::V4(endpoint) => endpoint.mark(),
+            Self::V6(endpoint) => endpoint.mark(),
+        }
+    }
+
     fn bound_iface(&self) -> Option<NetIfaceId> {
         use core::sync::atomic::Ordering;
         let raw = match self {
@@ -286,8 +293,7 @@ pub fn handle_error_in(stack: &NetStack, net_ns: u64, iface: crate::NetIfaceId, 
             if let Some(mtu) = frag_mtu {
                 if crate::uapi::ip_pmtudisc_accepts_pmtu(endpoint.pmtudisc()) {
                     update_pmtu_v4(stack, net_ns, orig_hdr.dst,
-                        endpoint.snapshot().bound_iface, mtu,
-                        crate::stack_binddev::UNMARKED);
+                        endpoint.snapshot().bound_iface, mtu, endpoint.mark());
                 }
             }
             endpoint.publish_quoted_error(raw_entry.clone(), hard, orig_ip);
@@ -343,7 +349,7 @@ pub fn handle_error_in(stack: &NetStack, net_ns: u64, iface: crate::NetIfaceId, 
                     let mode = target.pmtudisc();
                     if crate::uapi::ip_pmtudisc_accepts_pmtu(mode) {
                         update_pmtu_v4(stack, net_ns, orig_hdr.dst, target.bound_iface(), mtu,
-                            crate::stack_binddev::UNMARKED);
+                            target.mark());
                     }
                     if mode == crate::uapi::IP_PMTUDISC_DONT { return; }
                     target.publish(entry, true);

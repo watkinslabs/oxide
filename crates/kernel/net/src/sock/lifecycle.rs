@@ -133,7 +133,8 @@ impl InetSocket {
         let (port, endpoint) = alloc_ephemeral_udp4_owned(
             self.owner.clone(), bind_ip, self.error.clone(), iface,
             self.opts.base.reuseaddr.clone(), self.opts.base.reuseport.clone(),
-            self.opts.ip_mtu_discover.clone(), self.opts.udp.gro.clone(),
+            self.opts.ip_mtu_discover.clone(), self.opts.base.mark_cell(),
+            self.opts.udp.gro.clone(),
             self.opts.udp.encap_type.clone(),
             self.peer.clone(), self.bpf_filter.clone(), self.mcast.clone(),
             policy.range,

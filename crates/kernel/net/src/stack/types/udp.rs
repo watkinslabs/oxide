@@ -76,6 +76,9 @@ pub struct UdpRxQueue {
     pub reuseaddr: Arc<::core::sync::atomic::AtomicI32>,
     pub reuseport: Arc<::core::sync::atomic::AtomicI32>,
     pub ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+    /// Live `sk_mark` shared with the owning socket for route-sensitive ICMP
+    /// PMTU learning.
+    pub(crate) mark: Arc<::core::sync::atomic::AtomicI32>,
     /// `UDP_GRO`, shared with the owning socket: while set, arriving
     /// datagrams of one flow coalesce into a single receive.
     pub gro: Arc<::core::sync::atomic::AtomicI32>,
@@ -97,6 +100,11 @@ impl UdpRxQueue {
     /// SO_REUSEPORT membership captured when this endpoint was bound. # C: O(1)
     pub(crate) fn reuseport_member(&self) -> bool {
         self.reuseport.load(::core::sync::atomic::Ordering::Acquire) != 0
+    }
+
+    /// Current route mark of the owning socket. # C: O(1)
+    pub(crate) fn mark(&self) -> u32 {
+        self.mark.load(::core::sync::atomic::Ordering::Acquire) as u32
     }
 }
 

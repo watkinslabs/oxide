@@ -92,6 +92,9 @@ pub struct Raw4Endpoint {
     /// with no second socket lookup and no mirrored copy to fall out of date.
     pub ip_opts: Arc<crate::sock_opts::sol_ip::IpOpts>,
     ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
+    /// Live `sk_mark` shared with the owning socket. ICMP PMTU learning must
+    /// resolve the same policy route a later transmit from that socket uses.
+    mark: Arc<core::sync::atomic::AtomicI32>,
     pub waiters: crate::sock_wait::SockWaitQueue,
     pub(super) poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, LockClass>,
 }
@@ -110,15 +113,17 @@ impl Raw4Endpoint {
                ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>) -> Arc<Self> {
         Self::new_owned_with_pmtudisc(protocol, crate::SocketOwner::root(net_namespace, 0),
             bpf, mcast, error, ip_mtu_discover,
-            Arc::new(crate::sock_opts::sol_ip::IpOpts::default()))
+            Arc::new(crate::sock_opts::sol_ip::IpOpts::default()),
+            Arc::new(core::sync::atomic::AtomicI32::new(0)))
     }
 
     /// Build one endpoint retaining the socket's canonical owner. # C: O(1)
     pub fn new_owned_with_pmtudisc(protocol: u8, owner: Arc<crate::SocketOwner>,
                bpf: Arc<SocketFilter>, mcast: Arc<SocketMcast>, error: Arc<SocketError>,
                ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
-               ip_opts: Arc<crate::sock_opts::sol_ip::IpOpts>) -> Arc<Self> {
-        Self::new_inner(protocol, owner, None, bpf, mcast, error, ip_mtu_discover, ip_opts)
+               ip_opts: Arc<crate::sock_opts::sol_ip::IpOpts>,
+               mark: Arc<core::sync::atomic::AtomicI32>) -> Arc<Self> {
+        Self::new_inner(protocol, owner, None, bpf, mcast, error, ip_mtu_discover, ip_opts, mark)
     }
 
     /// Build one ICMP datagram endpoint whose identifier the kernel owns. # C: O(1)
@@ -126,17 +131,19 @@ impl Raw4Endpoint {
                mcast: Arc<SocketMcast>, error: Arc<SocketError>,
                reuse: Arc<core::sync::atomic::AtomicI32>,
                ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
-               ip_opts: Arc<crate::sock_opts::sol_ip::IpOpts>) -> Arc<Self> {
+               ip_opts: Arc<crate::sock_opts::sol_ip::IpOpts>,
+               mark: Arc<core::sync::atomic::AtomicI32>) -> Arc<Self> {
         let ident = crate::ping::new_ident(crate::ping::PingFamily::V4, reuse);
         Self::new_inner(crate::addr::IpProto::Icmp as u8, owner, Some(ident), bpf, mcast, error,
-            ip_mtu_discover, ip_opts)
+            ip_mtu_discover, ip_opts, mark)
     }
 
     fn new_inner(protocol: u8, owner: Arc<crate::SocketOwner>,
                ping: Option<Arc<crate::ping::PingIdent>>, bpf: Arc<SocketFilter>,
                mcast: Arc<SocketMcast>, error: Arc<SocketError>,
                ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
-               ip_opts: Arc<crate::sock_opts::sol_ip::IpOpts>) -> Arc<Self> {
+               ip_opts: Arc<crate::sock_opts::sol_ip::IpOpts>,
+               mark: Arc<core::sync::atomic::AtomicI32>) -> Arc<Self> {
         Arc::new(Self {
             protocol,
             owner,
@@ -159,6 +166,7 @@ impl Raw4Endpoint {
             error,
             ip_opts,
             ip_mtu_discover,
+            mark,
             waiters: crate::sock_wait::SockWaitQueue::new(),
             poll_subs: Spinlock::new(None),
         })
@@ -166,6 +174,11 @@ impl Raw4Endpoint {
 
     /// Exact IPv4 protocol selected at socket creation. # C: O(1)
     pub fn protocol(&self) -> u8 { self.protocol }
+
+    /// Current route mark of the owning socket. # C: O(1)
+    pub fn mark(&self) -> u32 {
+        self.mark.load(core::sync::atomic::Ordering::Acquire) as u32
+    }
 
     /// Whether this endpoint is an ICMP datagram endpoint rather than a raw
     /// one: it owns an echo identifier and rejects the raw-only options. # C: O(1)

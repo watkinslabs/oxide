@@ -83,6 +83,9 @@ pub struct Udp6RxQueue {
     pub v6only: Arc<core::sync::atomic::AtomicI32>,
     /// Canonical Linux `inet_sk(sk)->pmtudisc`, shared with the owning socket.
     pub ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
+    /// Live `sk_mark` shared with the owning dual-stack socket. IPv4 ICMP
+    /// errors matched through this endpoint use it for policy routing.
+    pub(crate) mark: Arc<core::sync::atomic::AtomicI32>,
     /// Canonical Linux `inet6_sk(sk)->pmtudisc`, shared with the owning socket.
     pub ipv6_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
     /// `UDP_NO_CHECK6_RX`, shared with the owning socket: a zero-checksum
@@ -229,6 +232,11 @@ impl Udp6RxQueue {
         self.reuseport.load(core::sync::atomic::Ordering::Acquire) != 0
     }
 
+    /// Current route mark of the owning socket. # C: O(1)
+    pub(crate) fn mark(&self) -> u32 {
+        self.mark.load(core::sync::atomic::Ordering::Acquire) as u32
+    }
+
     /// IPV6_V6ONLY mode captured when this endpoint was bound. # C: O(1)
     pub(crate) fn v6only_at_bind(&self) -> bool {
         self.v6only.load(core::sync::atomic::Ordering::Acquire) != 0
@@ -247,6 +255,7 @@ impl Udp6RxQueue {
             crate::SocketOwner::root(network_namespace::initial(), 0),
             Arc::new(core::sync::atomic::AtomicI32::new(0)), Arc::new(Spinlock::new(None)),
             Arc::new(core::sync::atomic::AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)),
+            Arc::new(core::sync::atomic::AtomicI32::new(0)),
             Arc::new(core::sync::atomic::AtomicI32::new(crate::uapi::IPV6_PMTUDISC_WANT)),
             Arc::new(core::sync::atomic::AtomicI32::new(0)),
             Arc::new(core::sync::atomic::AtomicI32::new(0)),
@@ -262,6 +271,7 @@ impl Udp6RxQueue {
                       v6only: Arc<core::sync::atomic::AtomicI32>,
                       peer: Arc<Spinlock<Option<(Ipv6Addr, u16)>, StackLockClass>>,
                       ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
+                      mark: Arc<core::sync::atomic::AtomicI32>,
                       ipv6_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
                       no_check6_rx: Arc<core::sync::atomic::AtomicI32>,
                       gro: Arc<core::sync::atomic::AtomicI32>,
@@ -280,6 +290,7 @@ impl Udp6RxQueue {
             reuseport,
             v6only,
             ip_mtu_discover,
+            mark,
             ipv6_mtu_discover,
             no_check6_rx,
             gro,

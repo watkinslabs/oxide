@@ -74,6 +74,7 @@ pub fn alloc_ephemeral_udp4(net_ns: u64, bind_ip: Ipv4Addr,
     alloc_ephemeral_udp4_owned(crate::SocketOwner::root(namespace, owner_uid), bind_ip,
         error, iface, reuseaddr, reuseport, ip_mtu_discover,
         Arc::new(core::sync::atomic::AtomicI32::new(0)),
+        Arc::new(core::sync::atomic::AtomicI32::new(0)),
         Arc::new(core::sync::atomic::AtomicI32::new(0)), peer, bpf_filter, mcast,
         crate::local_port::NAMESPACE_WINDOW)
 }
@@ -84,6 +85,7 @@ pub fn alloc_ephemeral_udp4_owned(owner: Arc<crate::SocketOwner>, bind_ip: Ipv4A
                             reuseaddr: Arc<core::sync::atomic::AtomicI32>,
                             reuseport: Arc<core::sync::atomic::AtomicI32>,
                             ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
+                            mark: Arc<core::sync::atomic::AtomicI32>,
                             gro: Arc<core::sync::atomic::AtomicI32>,
                             encap_type: Arc<core::sync::atomic::AtomicI32>,
                             peer: Arc<Spinlock<Option<(Ipv4Addr, u16)>, SockLockClass>>,
@@ -100,7 +102,7 @@ pub fn alloc_ephemeral_udp4_owned(owner: Arc<crate::SocketOwner>, bind_ip: Ipv4A
     for p in crate::secure_seq::bind_port_scan(range.start, range.count()) {
         if let Ok(endpoint) = crate::global_stack().bind_udp_socket_owned(
             owner.clone(), bind_ip, p, iface, error.clone(), reuseaddr.clone(), reuseport.clone(),
-            ip_mtu_discover.clone(), gro.clone(), encap_type.clone(),
+            ip_mtu_discover.clone(), mark.clone(), gro.clone(), encap_type.clone(),
             peer.clone(), bpf_filter.clone(), mcast.clone(),
         ) {
             return Ok((p, endpoint));
@@ -149,6 +151,7 @@ pub fn alloc_ephemeral_udp6(net_ns: u64, bind_ip: crate::Ipv6Addr,
         else { network_namespace::lookup_u64(net_ns).ok_or(NetError::Enodev)? };
     alloc_ephemeral_udp6_owned(crate::SocketOwner::root(namespace, owner_uid), bind_ip,
         error, iface, reuseaddr, reuseport, v6only, peer, ip_mtu_discover,
+        Arc::new(core::sync::atomic::AtomicI32::new(0)),
         ipv6_mtu_discover, Arc::new(core::sync::atomic::AtomicI32::new(0)),
         Arc::new(core::sync::atomic::AtomicI32::new(0)),
         Arc::new(core::sync::atomic::AtomicI32::new(0)), bpf_filter, mcast,
@@ -163,6 +166,7 @@ pub fn alloc_ephemeral_udp6_owned(owner: Arc<crate::SocketOwner>, bind_ip: crate
                             v6only: Arc<core::sync::atomic::AtomicI32>,
                             peer: Arc<Spinlock<Option<(crate::Ipv6Addr, u16)>, SockLockClass>>,
                             ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
+                            mark: Arc<core::sync::atomic::AtomicI32>,
                             ipv6_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
                             no_check6_rx: Arc<core::sync::atomic::AtomicI32>,
                             gro: Arc<core::sync::atomic::AtomicI32>,
@@ -179,7 +183,7 @@ pub fn alloc_ephemeral_udp6_owned(owner: Arc<crate::SocketOwner>, bind_ip: crate
         if let Ok(endpoint) = crate::global_stack().bind_udp6_socket_owned(
             owner.clone(), bind_ip, p, iface, error.clone(), reuseaddr.clone(), reuseport.clone(),
             v6only.clone(),
-            peer.clone(), ip_mtu_discover.clone(), ipv6_mtu_discover.clone(),
+            peer.clone(), ip_mtu_discover.clone(), mark.clone(), ipv6_mtu_discover.clone(),
             no_check6_rx.clone(), gro.clone(), encap_type.clone(),
             bpf_filter.clone(), mcast.clone(),
         ) {
