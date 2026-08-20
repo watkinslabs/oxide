@@ -66,8 +66,8 @@ failure mode this reconcile was supposed to catch, not commit.
 | COVERAGE | 0 | 0 | 11 | 68 | 66 | 145 |
 | DEFECT | 2 | 4 | 27 | 69 | 70 | 172 |
 | INFRA | 0 | 0 | 11 | 41 | 39 | 91 |
-| MISSING | 1 | 0 | 49 | 143 | 117 | 310 |
-| **Total** | **3** | **4** | **98** | **321** | **292** | **718** |
+| MISSING | 1 | 0 | 49 | 142 | 117 | 309 |
+| **Total** | **3** | **4** | **98** | **320** | **292** | **717** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -861,7 +861,6 @@ here now.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| OPEN | MISSING | med | The active-open fast-open route-metrics probe (`sock/tcp_fastopen.rs::plan`) still calls `route_metrics_for_dst_in`, i.e. unmarked, so `TCP_FASTOPEN`'s `route_no_cookie` decision reads the wrong route for a marked socket. One-line change to pass `super::sock_mark(sock)`; file not owned by this branch. | `route_metrics_for_dst_in` retained as the unmarked wrapper solely for this caller | CLAIMED B2301-fastopen-marked-route-metrics 2026-08-20 |
 | OPEN | MISSING | low | ICMP-driven PMTU updates for raw and UDP endpoints still update unmarked (`stack_icmp.rs`, two call sites): those endpoint types carry no mark at all, unlike `TcpEntry`. Reference takes the mark from the originating socket when one is matched. | `update_pmtu_v4(..., UNMARKED)` at the raw4 and UDP branches | unclaimed |
 | OPEN | MISSING | low | `SockBase::bound_ifindex` and `TcpBindReservation::bound_ifindex` are two atomics holding the same `sk_bound_dev_if` — a live mirror of the kind the mark work deliberately avoided. Noticed while choosing where the mark cell should live. | both fields written independently | unclaimed |
 
