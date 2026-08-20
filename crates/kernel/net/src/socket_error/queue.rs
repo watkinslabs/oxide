@@ -6,6 +6,8 @@
 //! re-derives it from the record that becomes the new head.
 
 use alloc::collections::VecDeque;
+use alloc::sync::Arc;
+use core::sync::atomic::{AtomicI32, Ordering};
 use sync::{Socket as SocketLockClass};
 
 use super::entry::SocketErrorEntry;
@@ -17,6 +19,9 @@ use crate::addr::IpAddr;
 /// transport owner.
 pub struct SocketError {
     state: crate::fib_lock::FibLock<SocketErrorState, SocketLockClass>,
+    /// The socket's live `sk_rcvbuf` cell. Error admission reads this same
+    /// word as the ordinary receive path rather than retaining a copy.
+    rcvbuf: Arc<AtomicI32>,
     /// `IPV6_RECVPATHMTU`'s one-slot report. Not part of the queue and not
     /// governed by its budget or its pending errno — see `super::pathmtu`.
     pub pathmtu: super::pathmtu::PathMtuSlot,
@@ -32,7 +37,6 @@ struct SocketErrorState {
     recverr6: bool,
     recverr_rfc4884_4: bool,
     recverr_rfc4884_6: bool,
-    rmem_limit: usize,
     rmem_used: usize,
     zerocopy_next_id: u32,
     queue: VecDeque<SocketErrorEntry>,
@@ -40,11 +44,11 @@ struct SocketErrorState {
 
 impl SocketErrorState {
     /// Append one record when the receive-memory budget allows it. # C: O(1)
-    fn enqueue(&mut self, entry: SocketErrorEntry) -> bool {
+    fn enqueue(&mut self, entry: SocketErrorEntry, rmem_limit: usize) -> bool {
         let charge = entry.charged_bytes();
         // A record that would fill the budget exactly is already too much: the
         // budget is a strict ceiling on what the queue may hold.
-        if self.rmem_used + charge >= self.rmem_limit { return false; }
+        if self.rmem_used + charge >= rmem_limit { return false; }
         self.rmem_used += charge;
         self.queue.push_back(entry);
         true
@@ -66,14 +70,16 @@ impl SocketErrorState {
 
 impl SocketError {
     /// Empty socket error state. # C: O(1)
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
+        let rcvbuf = Arc::new(AtomicI32::new(SOCK_ERRQUEUE_RMEM_DEFAULT as i32));
         Self {
             state: crate::fib_lock::FibLock::new(SocketErrorState {
                 errno: 0, errno_soft: 0, recverr4: false, recverr6: false,
                 recverr_rfc4884_4: false, recverr_rfc4884_6: false,
-                rmem_limit: SOCK_ERRQUEUE_RMEM_DEFAULT, rmem_used: 0, zerocopy_next_id: 0,
+                rmem_used: 0, zerocopy_next_id: 0,
                 queue: VecDeque::new(),
             }),
+            rcvbuf,
             pathmtu: super::pathmtu::PathMtuSlot::new(),
         }
     }
@@ -125,14 +131,18 @@ impl SocketError {
         soft
     }
 
-    /// Track the receive-memory budget the error queue may occupy. # C: O(1)
-    pub fn set_rmem_limit(&self, bytes: usize) { self.state.lock().rmem_limit = bytes; }
+    /// The receive-budget cell an owning socket embeds in its generic base.
+    /// # C: O(1)
+    pub(crate) fn rcvbuf_cell(&self) -> Arc<AtomicI32> { self.rcvbuf.clone() }
 
-    /// Adopt the socket's receive budget. The error queue is admitted against
-    /// the SAME number the ordinary receive queue is, so one `SO_RCVBUF` write
-    /// names both; a socket that never names one keeps the default. A negative
-    /// budget cannot admit anything. # C: O(1)
-    pub fn adopt_rcvbuf(&self, bytes: i32) { self.set_rmem_limit(bytes.max(0) as usize); }
+    #[cfg(test)]
+    pub(crate) fn set_rmem_limit(&self, bytes: usize) {
+        self.rcvbuf.store(bytes.min(i32::MAX as usize) as i32, Ordering::Release);
+    }
+
+    fn rmem_limit(&self) -> usize {
+        self.rcvbuf.load(Ordering::Acquire).max(0) as usize
+    }
 
     /// Enable or disable IPv4 extended-error delivery. Disabling drops every
     /// queued record except the transmit-completion origins, and leaves the
@@ -179,7 +189,7 @@ impl SocketError {
         } else { state.recverr_rfc4884_4 };
         if !rfc4884 { entry.data = 0; }
         state.errno = entry.errno;
-        if recverr { state.enqueue(entry); }
+        if recverr { state.enqueue(entry, self.rmem_limit()); }
         true
     }
 
@@ -193,18 +203,20 @@ impl SocketError {
             IpAddr::V6(_) => state.recverr6,
         };
         if !recverr { return false; }
-        state.enqueue(SocketErrorEntry::local(errno, destination, port, info))
+        state.enqueue(SocketErrorEntry::local(errno, destination, port, info), self.rmem_limit())
     }
 
     /// Publish one transmit timestamp. Timestamp records are independent of
     /// RECVERR and never become the pending errno. # C: O(1) amortized
     pub fn publish_timestamping(&self, tstype: u32, tskey: u32, v6: bool, ifindex: u32) -> bool {
-        self.state.lock().enqueue(SocketErrorEntry::timestamping(tstype, tskey, v6, ifindex))
+        self.state.lock().enqueue(SocketErrorEntry::timestamping(tstype, tskey, v6, ifindex),
+            self.rmem_limit())
     }
 
     /// Publish one transmit-time scheduling failure. # C: O(1) amortized
     pub fn publish_txtime(&self, errno: i32, code: u8, txtime: u64, v6: bool) -> bool {
-        self.state.lock().enqueue(SocketErrorEntry::txtime(errno, code, txtime, v6))
+        self.state.lock().enqueue(SocketErrorEntry::txtime(errno, code, txtime, v6),
+            self.rmem_limit())
     }
 
     /// Claim the next zero-copy send identifier for this socket. # C: O(1)
@@ -225,7 +237,7 @@ impl SocketError {
             if tail.origin == SO_EE_ORIGIN_ZEROCOPY && tail.extend_zerocopy(lo, len) { return true; }
         }
         let hi = lo.wrapping_add(len - 1);
-        state.enqueue(SocketErrorEntry::zerocopy(lo, hi, copied, v6))
+        state.enqueue(SocketErrorEntry::zerocopy(lo, hi, copied, v6), self.rmem_limit())
     }
 
     /// Pop the oldest extended error, preserving FIFO publication order.

@@ -132,19 +132,40 @@ fn the_error_queue_budget_follows_the_socket_receive_budget() {
 
     let widened = SocketError::new();
     widened.set_recverr4(true);
-    widened.adopt_rcvbuf((SOCK_ERRQUEUE_RECORD_OVERHEAD * 2) as i32);
+    widened.set_rmem_limit(SOCK_ERRQUEUE_RECORD_OVERHEAD * 2);
     assert!(publish(&widened, 1));
     assert!(!publish(&widened, 2), "the named size bounds the queue");
 
     let narrowed = SocketError::new();
     narrowed.set_recverr4(true);
-    narrowed.adopt_rcvbuf(SOCK_ERRQUEUE_RECORD_OVERHEAD as i32);
+    narrowed.set_rmem_limit(SOCK_ERRQUEUE_RECORD_OVERHEAD);
     assert!(!publish(&narrowed, 1), "a budget one record wide holds none");
 
     let negative = SocketError::new();
     negative.set_recverr4(true);
-    negative.adopt_rcvbuf(-1);
+    negative.rcvbuf_cell().store(-1, core::sync::atomic::Ordering::Release);
     assert!(!publish(&negative, 1), "a negative budget admits nothing");
+}
+
+#[test]
+fn error_admission_reads_the_socket_receive_budget_cell_directly() {
+    use core::sync::atomic::Ordering;
+
+    let sock = crate::sock::InetSocket::new_udp();
+    sock.error.set_recverr4(true);
+    let dst = crate::addr::IpAddr::V4(crate::Ipv4Addr::LOOPBACK);
+    let publish = |port| sock.error.publish_local(Errno::Emsgsize as i32, dst, port, 1200);
+
+    // This is deliberately a direct generic-base write, with no setsockopt
+    // synchronizer to republish it into SocketError.
+    sock.opts.base.rcvbuf.store((SOCK_ERRQUEUE_RECORD_OVERHEAD * 2) as i32,
+        Ordering::Release);
+    assert!(publish(1));
+    assert!(!publish(2), "the error queue reads the socket's live cell");
+
+    assert!(sock.error.take_extended().is_some());
+    sock.opts.base.rcvbuf.store(SOCK_ERRQUEUE_RECORD_OVERHEAD as i32, Ordering::Release);
+    assert!(!publish(3), "a later direct write is visible without synchronization");
 }
 
 #[test]
