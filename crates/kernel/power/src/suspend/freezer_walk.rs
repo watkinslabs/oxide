@@ -22,7 +22,7 @@ pub fn facts_of(task: &Task) -> TaskFreezeFacts {
         kernel_thread: task.kernel_thread.load(Ordering::Acquire),
         nofreeze: task.nofreeze.load(Ordering::Acquire),
         suspend_task: task.suspend_task.load(Ordering::Acquire),
-        frozen: task.freeze_reasons.load(Ordering::Acquire) & freeze_reason::SLEEP != 0,
+        frozen: task.frozen.load(Ordering::Acquire),
         oom_victim: task.oom_victim.load(Ordering::Acquire),
     }
 }
@@ -35,7 +35,9 @@ pub fn facts_of(task: &Task) -> TaskFreezeFacts {
 /// # C: O(N_tasks)
 fn round(phase: FreezePhase) -> u32 {
     for task in sched::registry::snapshot() {
-        if !freezer::counts_outstanding(phase, facts_of(&task)) { continue; }
+        if !freezer::freezing(phase, facts_of(&task)) { continue; }
+        // Retain the sleep reason even when another freezer already has the
+        // task parked, so a concurrent cgroup thaw cannot resume it mid-sleep.
         sched::live::freeze_task_for(&task, freeze_reason::SLEEP);
     }
     sched::registry::snapshot().iter()
@@ -63,7 +65,12 @@ fn run_pass(phase: FreezePhase, now_ms: fn() -> u64) -> KResult<()> {
     }
 }
 
-fn back_off(_us: u64) { sched::preempt::set_need_resched(); }
+fn back_off(_us: u64) {
+    // The low-level delay remains tracked separately, but a request-based
+    // freezer must at least hand the CPU to its targets before recounting.
+    sched::preempt::set_need_resched();
+    let _ = sched::live::cond_resched();
+}
 
 /// Release every system-sleep claim. Tasks the cgroup freezer still holds stay
 /// parked, which is what the reason bitmask is for.

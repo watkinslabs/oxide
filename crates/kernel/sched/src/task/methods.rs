@@ -298,7 +298,9 @@ impl Task {
             need_resched: AtomicBool::new(false),
             frozen:   AtomicBool::new(false),
             freeze_reasons: core::sync::atomic::AtomicU8::new(0),
-            nofreeze: AtomicBool::new(false),
+            // Linux kthreads start with PF_NOFREEZE and opt in with
+            // set_freezable(); userspace is freezable by default.
+            nofreeze: AtomicBool::new(!starts_in_user),
             suspend_task: AtomicBool::new(false),
             yield_pending: AtomicBool::new(false),
             kthread_stop: AtomicBool::new(false),

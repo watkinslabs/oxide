@@ -44,13 +44,17 @@ pub mod work {
     /// section. Split from `NOTIFY_RESUME` exactly as Linux split it out of
     /// `_TIF_NOTIFY_RESUME`.
     pub const RSEQ: u32 = 1 << 4;
+    /// A freezer owner requested that this task enter the refrigerator. Linux
+    /// reaches this through fake-signal/jobctl work; the separate private bit
+    /// keeps the request distinct from a userspace-visible signal.
+    pub const FREEZE: u32 = 1 << 5;
 
     /// Linux `EXIT_TO_USER_MODE_WORK` — the set tested to decide whether the
     /// loop is entered at all. `_TIF_UPROBE` and `_TIF_PATCH_PENDING` are
     /// deliberately absent: this kernel has neither uprobes nor livepatching,
     /// so there is no state a bit could describe. `_TIF_NOTIFY_SIGNAL` is the
     /// Landlock TSYNC task-work wakeup implemented by this port.
-    pub const MASK: u32 = NEED_RESCHED | SIGPENDING | NOTIFY_SIGNAL | NOTIFY_RESUME | RSEQ;
+    pub const MASK: u32 = NEED_RESCHED | SIGPENDING | NOTIFY_SIGNAL | NOTIFY_RESUME | RSEQ | FREEZE;
 
     /// Linux `EXIT_TO_USER_MODE_WORK_LOOP` = `EXIT_TO_USER_MODE_WORK &
     /// ~_TIF_RSEQ`.
@@ -76,13 +80,15 @@ pub fn signal_pending(pending: u64, blocked: u64) -> bool {
 /// already read with interrupts disabled.
 /// # C: O(1)
 pub fn work_flags(need_resched: bool, sigpending: u64, blocked: u64,
-                  notify_signal: bool, notify_resume: bool, rseq: bool) -> u32 {
+                  notify_signal: bool, notify_resume: bool, rseq: bool,
+                  freeze: bool) -> u32 {
     let mut w = 0;
     if need_resched { w |= work::NEED_RESCHED; }
     if signal_pending(sigpending, blocked) { w |= work::SIGPENDING; }
     if notify_signal { w |= work::NOTIFY_SIGNAL; }
     if notify_resume { w |= work::NOTIFY_RESUME; }
     if rseq { w |= work::RSEQ; }
+    if freeze { w |= work::FREEZE; }
     w
 }
 
@@ -124,8 +130,8 @@ pub fn runs_on_return(from_user: bool, w: u32) -> bool { from_user && enters_loo
 /// resume work. rseq is serviced last because `rseq_exit_to_user_mode_restart`
 /// re-runs the whole loop when it fires.
 /// # C: O(1)
-pub fn pass_order() -> [u32; 5] {
-    [work::NEED_RESCHED, work::NOTIFY_SIGNAL, work::SIGPENDING,
+pub fn pass_order() -> [u32; 6] {
+    [work::NEED_RESCHED, work::NOTIFY_SIGNAL, work::FREEZE, work::SIGPENDING,
      work::NOTIFY_RESUME, work::RSEQ]
 }
 

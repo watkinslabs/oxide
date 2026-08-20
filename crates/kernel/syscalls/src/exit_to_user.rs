@@ -116,8 +116,9 @@ fn work_flags() -> u32 {
     // a pass another item earned; the syscall tail calls `rseq_writeback()`
     // directly before this loop, so a return with no other work still gets it.
     let rseq = cur.rseq_ptr.load(Ordering::Acquire) != 0;
+    let freeze = sched::live::freezer::freeze_requested(&cur);
     sched::exit_to_user::work_flags(need_resched, pending, blocked,
-                                    notify_signal, false, rseq)
+                                    notify_signal, false, rseq, freeze)
 }
 
 /// Linux `exit_to_user_mode_loop(regs, ti_work)`.
@@ -174,6 +175,7 @@ pub unsafe fn exit_to_user_mode_loop(regs: *mut UserRegs, syscall_rv: Option<i64
     loop {
         let w = work_flags();
         let want_notify = (w & work::NOTIFY_SIGNAL) != 0;
+        let want_freeze = (w & work::FREEZE) != 0;
         let want_signal = (w & work::SIGPENDING) != 0 || owe_signal_arm || want_notify;
         let bounded = passes < sched::exit_to_user::MAX_PASSES;
         if !(sched::exit_to_user::should_continue(w, passes) || (want_signal && bounded)) { break; }
@@ -199,6 +201,11 @@ pub unsafe fn exit_to_user_mode_loop(regs: *mut UserRegs, syscall_rv: Option<i64
         // Linux `get_signal()` clears TIF_NOTIFY_SIGNAL and runs task_work
         // before it dequeues an ordinary signal.
         if want_notify { sched::landlock_tsync::run_current_work(); }
+        if want_freeze {
+            // SAFETY: this is the return-to-user safe point, after the entry
+            // path released its locks and enabled interrupts.
+            unsafe { sched::live::freezer::freeze_current_if_requested(); }
+        }
         if want_signal {
             owe_signal_arm = false;
             // SAFETY: forwarded contract — `regs` is the live entry frame and

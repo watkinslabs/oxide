@@ -201,12 +201,6 @@ pub fn fatal_kill_pending_self() -> bool {
     super::schedule::current().map(|t| fatal_kill_pending(&t)).unwrap_or(false)
 }
 
-/// Whether the running task is held by the cgroup freezer. # C: O(1)
-pub fn frozen_self() -> bool {
-    use core::sync::atomic::Ordering;
-    super::schedule::current().map(|t| t.frozen.load(Ordering::Acquire)).unwrap_or(false)
-}
-
 /// F168: if `task` is currently Sleeping (parked on some
 /// WaitList), transition to Runnable and enqueue so the parked
 /// helper observes the just-set pending signal on its next
@@ -250,34 +244,6 @@ pub fn vfork_done(child: &crate::Task) {
     if child.vfork_pending.swap(false, Ordering::AcqRel) {
         super::vfork_wait::wake(child);
     }
-}
-
-/// cgroup v2 freezer (`cgroup.freeze=1`): mark `task` frozen and pull it
-/// off the runqueue. A running task yields on the next `need_resched` and
-/// the enqueue chokepoint won't re-add it; a sleeping task stays parked
-/// (the chokepoint blocks its wake-enqueue) until thawed.
-/// Dequeued from the runqueue it is ACTUALLY on (`rq_locate`, Linux
-/// `task_rq_lock`): the caller's CPU is not necessarily the task's, and
-/// removing from the wrong tree left a frozen task runnable elsewhere.
-/// # C: O(N_cpus · N) runqueue remove
-pub fn freeze_task(task: &alloc::sync::Arc<crate::Task>) {
-    freeze_task_for(task, crate::freeze_reason::CGROUP);
-}
-
-/// Park `task` on behalf of `reason`, one bit of
-/// [`crate::freeze_reason`]. The task stays parked until every reason that
-/// claimed it has released it, so a system-sleep thaw does not resume a task
-/// the cgroup freezer still holds.
-/// # C: O(N_cpus · N) runqueue remove
-pub fn freeze_task_for(task: &alloc::sync::Arc<crate::Task>, reason: u8) {
-    task.freeze_reasons.fetch_or(reason, Ordering::AcqRel);
-    task.frozen.store(true, Ordering::Release);
-    let found = super::rq_locate::dequeue_from_owning_rq_with(
-        // SAFETY: `global_for` is sound for any index; it yields `None` for a
-        // CPU that has not completed `install_global`, which the walk skips.
-        &|c| unsafe { super::runqueue::global_for(c) }, task.tid);
-    if let Some((_, cpu)) = found { super::resched_curr(cpu); }
-    crate::preempt::set_need_resched();
 }
 
 /// VFS fasync (`O_ASYNC`) SIGIO delivery (Linux `send_sigio` -> `do_send_sig_info`
@@ -355,32 +321,4 @@ fn send_sigio_to_task(t: &alloc::sync::Arc<crate::Task>, info: crate::task::SigI
 /// # C: O(1)
 pub fn install_sigio_hook() {
     vfs::file::set_sigio_hook(send_sigio);
-}
-
-/// cgroup v2 thaw (`cgroup.freeze=0`): clear the frozen flag and
-/// re-enqueue if the task is runnable (a still-blocked task re-enqueues on
-/// its own wake, now that the chokepoint admits it).
-///
-/// Placement goes through `place_runnable` (Linux `ttwu`'s `select_task_rq` +
-/// `on_cpu` handshake), NOT a raw enqueue onto the caller's runqueue: the
-/// thawed task may be `on_cpu` on another CPU (thaw races a `need_resched`
-/// yield it has not finished), and only `select_task_rq` honours
-/// `cpus_allowed`. `try_to_wake_up` is the wrong entry point here — the task is
-/// already Runnable, so its Sleeping->Runnable claim would drop the placement.
-/// # C: O(N_cpus + log N)
-pub fn unfreeze_task(task: &alloc::sync::Arc<crate::Task>) {
-    unfreeze_task_for(task, crate::freeze_reason::CGROUP);
-}
-
-/// Release `reason`'s claim on `task` and resume it once no reason remains.
-/// # C: O(N_cpus + log N)
-pub fn unfreeze_task_for(task: &alloc::sync::Arc<crate::Task>, reason: u8) {
-    let before = task.freeze_reasons.fetch_and(!reason, Ordering::AcqRel);
-    if before & !reason != 0 { return; }
-    task.frozen.store(false, Ordering::Release);
-    if task.state() != crate::TaskState::Runnable { return; }
-    // SAFETY: thaw site in process context; the caller's Arc keeps `task` alive
-    // across placement.
-    unsafe { super::ttwu::place_runnable(alloc::sync::Arc::clone(task), false); }
-    crate::preempt::set_need_resched();
 }

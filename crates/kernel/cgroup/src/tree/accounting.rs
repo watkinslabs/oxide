@@ -394,10 +394,28 @@ impl Tree {
         out
     }
 
+    /// All live tasks in a node's subtree — process leaders and threads.
+    /// # C: O(subtree + tasks)
+    pub fn subtree_tids(&self, id: u64) -> Vec<u64> {
+        let mut out = Vec::new();
+        self.collect_tids(id, &mut out);
+        out
+    }
+
     fn collect_pids(&self, id: u64, out: &mut Vec<u64>) {
         if let Some(n) = self.nodes.get(&id) {
             out.extend(n.procs.iter().copied());
             for &c in n.children.values() { self.collect_pids(c, out); }
+        }
+    }
+
+    fn collect_tids(&self, id: u64, out: &mut Vec<u64>) {
+        if let Some(n) = self.nodes.get(&id) {
+            out.extend(n.procs.iter()
+                .filter(|pid| !self.exited_procs.contains(pid)).copied());
+            out.extend(self.thread_cg.iter()
+                .filter_map(|(tid, (_, owner))| (*owner == id).then_some(*tid)));
+            for &c in n.children.values() { self.collect_tids(c, out); }
         }
     }
 

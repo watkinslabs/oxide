@@ -22,8 +22,8 @@ pub enum SleepWake {
     /// Linux `get_signal` (handler frame, job-control stop, SIG_DFL terminate,
     /// or an ERESTART* restart decision).
     Deliver,
-    /// Linux `TIF_NOTIFY_SIGNAL`: pseudo-signal task work must run before the
-    /// syscall is restarted, but there is no userspace signal to deliver.
+    /// Linux fake-signal work: task work or a freezer checkpoint must run
+    /// before the syscall is restarted, but no userspace signal is delivered.
     Notify,
 }
 
@@ -58,7 +58,11 @@ impl Task {
     /// # C: O(N_sig)
     pub fn sleep_wake(&self) -> SleepWake {
         use core::sync::atomic::Ordering;
-        if self.notify_signal.load(Ordering::Acquire) { return SleepWake::Notify; }
+        if self.notify_signal.load(Ordering::Acquire)
+            || self.freeze_reasons.load(Ordering::Acquire) != 0
+        {
+            return SleepWake::Notify;
+        }
         let deliverable = self.deliverable_signals();
         let unmasked = self.pending_signals() & !self.sigmask.load(Ordering::Acquire);
         let mut ignored = unmasked & !deliverable;
@@ -149,7 +153,9 @@ impl WaitOutcome {
 /// # C: O(N_sig)
 pub fn signal_pending_state(task: &Task, state: WaitState) -> bool {
     if matches!(state, WaitState::Uninterruptible) { return false; }
-    if task.notify_signal.load(core::sync::atomic::Ordering::Acquire) {
+    if task.notify_signal.load(core::sync::atomic::Ordering::Acquire)
+        || task.freeze_reasons.load(core::sync::atomic::Ordering::Acquire) != 0
+    {
         return matches!(state, WaitState::Interruptible);
     }
     let deliverable = task.deliverable_signals();
@@ -192,6 +198,18 @@ mod tests {
         assert!(t.sleep_wake().interrupted());
         assert!(signal_pending_state(&t, WaitState::Interruptible));
         assert!(!signal_pending_state(&t, WaitState::Killable));
+        assert_eq!(t.deliverable_signals(), 0);
+    }
+
+    #[test]
+    fn a_freezer_request_has_the_fake_signal_wake_shape() {
+        let t = task();
+        t.freeze_reasons.store(crate::freeze_reason::CGROUP, Ordering::Release);
+
+        assert_eq!(t.sleep_wake(), SleepWake::Notify);
+        assert!(signal_pending_state(&t, WaitState::Interruptible));
+        assert!(!signal_pending_state(&t, WaitState::Killable));
+        assert!(!signal_pending_state(&t, WaitState::Uninterruptible));
         assert_eq!(t.deliverable_signals(), 0);
     }
 
