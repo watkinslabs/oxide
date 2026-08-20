@@ -377,6 +377,10 @@ pub fn alloc_arm_lpi() -> Option<u32> {
 }
 
 
+#[cfg(any(test, all(target_os = "oxide-kernel", target_arch = "aarch64")))]
+mod its_encoding;
+#[cfg(any(test, all(target_os = "oxide-kernel", target_arch = "x86_64")))]
+mod lapic_encoding;
 #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))] pub mod gic;
 #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))] pub mod its;
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))] pub mod lapic;

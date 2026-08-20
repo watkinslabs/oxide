@@ -18,6 +18,3 @@ pub use lines::{disable_intid, enable_intid, enable_intid_level, enable_register
 pub use lpi::{lpi_set_config, lpis_enable, LpisStatus, LPI_BASE, LPI_PROP_DEFAULT};
 pub use sgi::{enable_sgi_on, install_diag_hooks, send_call_function_ipi, send_resched_ipi, send_sgi,
               CALL_FUNCTION_SGI, RESCHED_SGI};
-
-#[cfg(test)]
-mod tests;

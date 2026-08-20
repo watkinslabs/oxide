@@ -131,24 +131,3 @@ pub unsafe fn baser_setup(hhdm: u64, slots_out: &mut [BaserSlot; GITS_BASER_COUN
     }
     programmed
 }
-
-/// EventID-bits field of GITS_TYPER, [12:8] (ARM IHI 0069 §11.5.13).
-/// # C: O(1)
-#[cfg(target_arch = "aarch64")]
-pub fn typer_id_bits(typer: u64) -> u32 { ((typer >> 8) & 0x1f) as u32 + 1 }
-/// DeviceID-bits field of GITS_TYPER, [17:13].
-/// # C: O(1)
-#[cfg(target_arch = "aarch64")]
-pub fn typer_devbits(typer: u64) -> u32 { ((typer >> 13) & 0x1f) as u32 + 1 }
-/// ITT entry-size in bytes, [7:4] (raw value + 1).
-/// # C: O(1)
-#[cfg(target_arch = "aarch64")]
-pub fn typer_itt_entry_size(typer: u64) -> u32 { ((typer >> 4) & 0xf) as u32 + 1 }
-/// Whether the ITS supports physical LPIs ([0]; always 1 on real GICv3 ITS).
-/// # C: O(1)
-#[cfg(target_arch = "aarch64")]
-pub fn typer_phys_lpi(typer: u64) -> bool { (typer & 1) != 0 }
-/// Whether the ITS supports virtual LPIs ([1]).
-/// # C: O(1)
-#[cfg(target_arch = "aarch64")]
-pub fn typer_virt_lpi(typer: u64) -> bool { (typer & (1 << 1)) != 0 }

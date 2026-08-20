@@ -1,6 +1,7 @@
 use core::sync::atomic::Ordering;
 
-use super::ipi::{build_icr_lo, wait_icr_idle, write_icr};
+use super::ipi::{wait_icr_idle, write_icr};
+use crate::lapic_encoding::build_icr_lo;
 use super::regs::{
     enable_x2apic_for_ap, enable_x2apic_transport, rdmsr, read_register, select_eoi_path, write_register, wrmsr, APIC_GLOBAL_ENABLE, LAPIC_BASE_VA,
     MSR_IA32_APIC_BASE, REG_SVR, REG_VERSION, SPURIOUS_VECTOR, SVR_ENABLE,

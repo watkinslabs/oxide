@@ -44,15 +44,7 @@ const MSR_X2APIC_EOI: u32 = 0x80B;
 /// First x2APIC register MSR. Each 16-byte LAPIC register slot has one MSR.
 #[cfg(target_arch = "x86_64")]
 const MSR_X2APIC_ICR: u32 = 0x830;
-/// xAPIC's ICR-high destination field is only eight bits wide.
-#[cfg(target_arch = "x86_64")]
-const XAPIC_DESTINATION_MAX: u32 = u8::MAX as u32;
-
-/// Whether an APIC ID can be represented by the active ICR format. # C: O(1)
-#[cfg(target_arch = "x86_64")]
-const fn icr_destination_fits(x2apic: bool, destination: u32) -> bool {
-    x2apic || destination <= XAPIC_DESTINATION_MAX
-}
+use crate::lapic_encoding::{icr_destination_fits, x2apic_permitted};
 
 
 /// True iff EOI must go through the x2APIC EOI MSR (0x80B) instead of the xAPIC
@@ -107,11 +99,6 @@ pub(super) fn select_eoi_path() {
 /// # C: O(1)
 #[cfg(target_arch = "x86_64")]
 pub(crate) fn x2apic_active() -> bool { X2APIC_EOI.load(Ordering::Acquire) }
-
-/// Returns whether bare-metal x2APIC transport can be selected.
-/// # C: O(1)
-#[cfg(target_arch = "x86_64")]
-pub(crate) const fn x2apic_permitted(cpu_supports: bool, remap_x2apic: bool) -> bool { cpu_supports && remap_x2apic }
 
 /// Selects x2APIC MSR transport on this CPU after interrupt remapping permits it.
 /// # C: O(1)
@@ -286,21 +273,5 @@ pub fn busy_wait_us(us: u64) {
     for _ in 0..iters {
         // SAFETY: `pause` is a microarchitectural hint, no side effects.
         unsafe { core::arch::asm!("pause", options(nomem, nostack, preserves_flags)); }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn xapic_rejects_wide_apic_ids_but_x2apic_accepts_them() {
-        assert!(icr_destination_fits(false, XAPIC_DESTINATION_MAX));
-        assert!(!icr_destination_fits(false, XAPIC_DESTINATION_MAX + 1));
-        assert!(icr_destination_fits(true, u32::MAX));
-    }
-    #[test]
-    fn bare_metal_x2apic_requires_remapped_destinations() {
-        assert!(!x2apic_permitted(false, true)); assert!(!x2apic_permitted(true, false)); assert!(x2apic_permitted(true, true));
     }
 }
