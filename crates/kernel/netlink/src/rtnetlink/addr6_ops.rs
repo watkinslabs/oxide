@@ -165,7 +165,7 @@ pub(crate) fn handle_newaddr6_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Ve
     };
     let dev_flags = stack.ifaces.iface_flags(iface).unwrap_or(0);
     let dad = net::stack_ipv6::dad_applies(dev_flags, user_flags);
-    let (tickets, published) = {
+    let (tickets, published, mc_work) = {
         let rtnl = stack.rtnl_lock();
         if stack.ifaces.control_ready_in_ns(&rtnl, iface, ns).is_none() {
             return build_ack(req, errno::ENODEV);
@@ -173,6 +173,7 @@ pub(crate) fn handle_newaddr6_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Ve
         let generation = lease.generation();
         let Some(existing) = stack.ipv6_addr_row_rtnl(&rtnl, ns, iface, generation, addr)
             else { return build_ack(req, errno::ENODEV) };
+        let mut mc_work = None;
         let row = if let Some(existing) = existing {
             // The reference screens by address alone, so a repeat add of one
             // address is EEXIST whatever prefix length it names, and a replace
@@ -204,8 +205,29 @@ pub(crate) fn handle_newaddr6_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Ve
                                                           loopback_dev) {
                 return build_ack(req, err);
             }
-            stack.add_ipv6_prefix_generation_rtnl(&rtnl, ns, iface, generation, addr,
-                peer.map(net::Ipv6Addr), hdr.prefixlen, meta, dad)
+            if addr.is_multicast() {
+                let joined = match stack.add_ipv6_mc_autojoin_rtnl(&rtnl, &lease.namespace(),
+                    ns, iface, generation, addr)
+                {
+                    Ok(work) => work,
+                    Err(net::NetError::Enodev) => return build_ack(req, errno::ENODEV),
+                    Err(_) => return build_ack(req, errno::EINVAL),
+                };
+                let row = stack.add_ipv6_prefix_generation_rtnl(&rtnl, ns, iface, generation, addr,
+                    peer.map(net::Ipv6Addr), hdr.prefixlen, meta, dad);
+                if row.is_none() {
+                    let rollback = stack.remove_ipv6_mc_autojoin_rtnl(&rtnl, &lease.namespace(),
+                        ns, iface, generation, addr);
+                    drop(rtnl);
+                    stack.finish_ipv6_mc_autojoin(rollback);
+                    return build_ack(req, errno::ENODEV);
+                }
+                mc_work = Some(joined);
+                row
+            } else {
+                stack.add_ipv6_prefix_generation_rtnl(&rtnl, ns, iface, generation, addr,
+                    peer.map(net::Ipv6Addr), hdr.prefixlen, meta, dad)
+            }
         };
         let Some(change) = row else { return build_ack(req, errno::ENODEV) };
         let published = change.row.addr;
@@ -213,9 +235,10 @@ pub(crate) fn handle_newaddr6_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Ve
             change.routes);
         if let Some(ticket) = stack.stage_addr6_rtnl(&rtnl, &lease, label,
             net::control_event::EventKind::New, change.row) { tickets.push(ticket); }
-        (tickets, published)
+        (tickets, published, mc_work)
     };
     if let Some(ticket) = tickets.last().copied() { net::control_event::publish(ticket); }
+    if let Some(work) = mc_work { stack.finish_ipv6_mc_autojoin(work); }
     // The reference kicks DAD from this path rather than waiting for the next
     // address-verification pass, so a solicitation leaves before the caller's
     // ack does.
@@ -248,7 +271,7 @@ pub(crate) fn handle_deladdr6_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Ve
     let Some(label) = stack.ifaces.name_in_ns(iface, ns) else {
         return build_ack(req, errno::ENODEV);
     };
-    let tickets = {
+    let (tickets, mc_work) = {
         let rtnl = stack.rtnl_lock();
         if stack.ifaces.control_ready_in_ns(&rtnl, iface, ns).is_none() {
             return build_ack(req, errno::ENODEV);
@@ -266,8 +289,11 @@ pub(crate) fn handle_deladdr6_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Ve
             change.routes);
         if let Some(ticket) = stack.stage_addr6_rtnl(&rtnl, &lease, label,
             net::control_event::EventKind::Delete, change.row) { tickets.push(ticket); }
-        tickets
+        let mc_work = addr.is_multicast().then(|| stack.remove_ipv6_mc_autojoin_rtnl(&rtnl,
+            &lease.namespace(), ns, iface, generation, addr));
+        (tickets, mc_work)
     };
     if let Some(ticket) = tickets.last().copied() { net::control_event::publish(ticket); }
+    if let Some(work) = mc_work { stack.finish_ipv6_mc_autojoin(work); }
     build_ack(req, 0)
 }
