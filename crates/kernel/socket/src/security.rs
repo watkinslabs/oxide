@@ -9,6 +9,10 @@
 use crate::{Error, KResult, Message, SendFile, SendKind};
 use crate::send::SendContext;
 
+pub(crate) struct SendAdmission {
+    pub(crate) udp_autobind: Option<net::landlock_addr::UdpAutobindAdmission>,
+}
+
 /// Describe the retained send target to the one message security boundary.
 /// # C: O(1)
 #[inline(never)]
@@ -31,12 +35,20 @@ pub(crate) fn security_sock(target: &SendFile) -> KResult<net::socket_security::
 /// # C: O(N_layers × N_rules)
 #[inline(never)]
 pub(crate) fn admit(ctx: &SendContext<'_>, target: &SendFile, message: &Message, flags: u32)
-    -> KResult<()>
+    -> KResult<SendAdmission>
 {
     let sock = security_sock(target)?;
     // The one point every send reaches the namespace-keyed policy registry.
     #[cfg(test)]
     crate::test_support::assert_policy_owned(sock.namespace);
     net::socket_security::sendmsg(ctx.sandbox(), sock, message.name.as_deref(), flags as u64)
-        .map_err(Error::from)
+        .map_err(Error::from)?;
+    let udp_autobind = match target.kind() {
+        SendKind::Inet(socket) if matches!(*socket.kind.lock(), net::sock::SockKind::Udp) => {
+            Some(net::landlock_addr::admit_udp_send_autobind_for(socket, ctx.sandbox())
+                .map_err(Error::from)?)
+        }
+        _ => None,
+    };
+    Ok(SendAdmission { udp_autobind })
 }

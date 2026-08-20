@@ -105,6 +105,25 @@ impl InetSocket {
         if self.released.load(Ordering::Acquire) { return Err(NetError::Einval); }
         if let Some(port) = *local_port { return Ok(port); }
         crate::landlock_addr::check_autobind_udp(self)?;
+        self.ensure_bound_locked_admitted(local_port)
+    }
+
+    /// Allocate after the common send boundary supplied its bind-zero proof.
+    /// # C: O(N)
+    pub(crate) fn ensure_bound_after_send_admission(&self,
+        _admission: &crate::landlock_addr::UdpAutobindAdmission) -> Result<u16, NetError>
+    {
+        use core::sync::atomic::Ordering;
+        let mut local_port = self.local_port.lock();
+        if self.released.load(Ordering::Acquire) { return Err(NetError::Einval); }
+        if let Some(port) = *local_port { return Ok(port); }
+        self.ensure_bound_locked_admitted(&mut local_port)
+    }
+
+    fn ensure_bound_locked_admitted(&self, local_port: &mut Option<u16>)
+        -> Result<u16, NetError>
+    {
+        use core::sync::atomic::Ordering;
         let net_ns = self.net_ns();
         let iface = stack().bound_iface_in(net_ns, self.opts.base.bound_ifindex.load(Ordering::Acquire))?;
         // Linux `inet_autobind` keeps whatever local address the socket already

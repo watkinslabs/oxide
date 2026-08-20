@@ -10,7 +10,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use landlock::abi::RulesetAttr;
-use landlock::uapi::ACCESS_NET_CONNECT_SEND_UDP;
+use landlock::uapi::{ACCESS_NET_BIND_UDP, ACCESS_NET_CONNECT_SEND_UDP};
 use landlock::{Domain, Ruleset};
 use security::network::{self, Context, Operation, Verdict};
 
@@ -104,6 +104,21 @@ fn the_hook_precedes_every_family_validation_it_could_be_masked_by() {
     assert_eq!(crate::send::prepare(&ctx, &udp, &message(Some(alloc::vec![0u8]), 4), 0).err(),
         Some(Error::Eacces));
     assert_eq!(network::remove_namespace(namespace), 1);
+}
+
+#[test]
+fn udp_autobind_admission_precedes_destination_parsing() {
+    let rules = Ruleset::new(&RulesetAttr { handled_net: ACCESS_NET_BIND_UDP,
+        ..Default::default() });
+    let domain = Domain::merge(None, &rules).unwrap();
+    let (_guard, owner, _namespace) = fixture();
+    let task = task(706);
+    let ctx = SendContext::with_sandbox(&task, Some(domain));
+    let target = udp_target(&owner);
+    // The one-byte name is malformed, but an unbound UDP send first asks for
+    // the bind-zero right at the common send boundary.
+    assert_eq!(crate::send::prepare(&ctx, &target,
+        &message(Some(alloc::vec![0u8]), 4), 0).err(), Some(Error::Eacces));
 }
 
 #[test]
