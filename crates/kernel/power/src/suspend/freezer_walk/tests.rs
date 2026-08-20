@@ -13,6 +13,7 @@ fn task() -> Arc<Task> {
     // these tests want a userspace one, so the flag is set explicitly rather
     // than inherited from how the fixture happens to be built.
     t.kernel_thread.store(false, Ordering::Release);
+    t.nofreeze.store(false, Ordering::Release);
     t
 }
 
@@ -63,13 +64,12 @@ fn the_oom_victim_flag_reaches_the_decision() {
 }
 
 #[test]
-fn frozen_reads_the_sleep_reason_and_not_the_cgroup_one() {
+fn frozen_reads_the_tasks_acknowledgement_not_a_request_bit() {
     let t = task();
-    t.freeze_reasons.store(freeze_reason::CGROUP, Ordering::Release);
-    assert!(!facts_of(&t).frozen, "a cgroup-frozen task read as already sleep-frozen");
-    // ...so the sleep pass still counts it outstanding and parks it itself.
-    assert!(freezer::counts_outstanding(FreezePhase::user(), facts_of(&t)));
     t.freeze_reasons.store(freeze_reason::SLEEP, Ordering::Release);
+    assert!(!facts_of(&t).frozen, "publishing a request falsely acknowledged it");
+    assert!(freezer::counts_outstanding(FreezePhase::user(), facts_of(&t)));
+    t.frozen.store(true, Ordering::Release);
     assert!(facts_of(&t).frozen);
     assert!(!freezer::counts_outstanding(FreezePhase::user(), facts_of(&t)));
 }

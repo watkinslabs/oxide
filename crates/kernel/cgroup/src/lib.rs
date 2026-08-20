@@ -209,10 +209,10 @@ pub fn write_file(cgid: u64, file: &str, buf: &str) -> KResult<()> {
         }
         "cgroup.freeze" => {
             let v = match buf.trim() { "1" => true, "0" => false, _ => return Err(VfsError::Einval) };
-            let pids = { let mut t = TREE.lock(); t.set_frozen(cgid, v); t.subtree_pids(cgid) };
-            // Actually freeze/thaw each member task via the scheduler.
+            let tids = { let mut t = TREE.lock(); t.set_frozen(cgid, v); t.subtree_tids(cgid) };
+            // Freeze/thaw every member task, including non-leader threads.
             if let Some(hook) = freeze_hook() {
-                for p in pids { hook(p, v); }
+                for tid in tids { hook(tid, v); }
             }
             // `frozen` field changed → cgroup.events IN_MODIFY.
             notify_events_self(cgid);
@@ -348,6 +348,10 @@ pub fn record_memory_event(cgid: u64, event: MemoryEvent) {
 /// cgroup OOM selection.  Membership stays owned by the hierarchy; task
 /// liveness and signal delivery remain scheduler-owned. # C: O(subtree)
 pub fn subtree_pids(cgid: u64) -> Vec<u64> { TREE.lock().subtree_pids(cgid) }
+
+/// Snapshot every live task beneath `cgid`, including non-leader threads.
+/// # C: O(subtree + tasks)
+pub fn subtree_tids(cgid: u64) -> Vec<u64> { TREE.lock().subtree_tids(cgid) }
 
 /// Whether an OOM at `cgid` must kill the whole cgroup rather than one
 /// selected process (`memory.oom.group`). # C: O(log n)

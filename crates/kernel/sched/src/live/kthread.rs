@@ -190,6 +190,8 @@ mod tests {
         let t = kthread(7001);
         assert!(!should_stop(&t));
         assert!(!is_parked(&t));
+        assert!(t.nofreeze.load(Ordering::Acquire),
+            "Linux kthreads start PF_NOFREEZE until they opt in");
     }
 
     #[test]

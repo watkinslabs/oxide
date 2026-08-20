@@ -61,7 +61,12 @@ impl Task {
         // notifies a real parent instead of auto-reaping. The borrowed-mm
         // sibling below deliberately does NOT clear the bit — a kernel thread
         // that borrows someone else's mm is still a kernel thread.
-        if new.is_some() { self.kernel_thread.store(false, core::sync::atomic::Ordering::Release); }
+        if new.is_some() {
+            self.kernel_thread.store(false, core::sync::atomic::Ordering::Release);
+            // A kernel helper that execs has become userspace. Drop the
+            // kthread's default PF_NOFREEZE at the same ownership boundary.
+            self.nofreeze.store(false, core::sync::atomic::Ordering::Release);
+        }
         // SAFETY: this fn is itself `unsafe` and forwards its contract
         // unchanged — caller is the running task on its own CPU (or holds the
         // runqueue invariant for it) with preempt off, so the mm slot has a
