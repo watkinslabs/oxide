@@ -95,6 +95,7 @@ pub fn enter(state: SuspendState) -> KResult<()> {
     let acpi = acpi_state(state).ok_or(Error::Inval)?;
     let action = sleep_action(acpi).ok_or(Error::Inval)?;
     let plan = build_plan(action).ok_or(Error::Io)?;
+    if !firmware::acpi::events::arm_wakeup_gpes() { return Err(Error::Io); }
     // SAFETY: single-CPU, interrupts disabled, one transition at a time.
     unsafe { *CELL.plan.get() = Some(plan); }
     if acpi == AcpiState::S3 { return enter_deep(); }

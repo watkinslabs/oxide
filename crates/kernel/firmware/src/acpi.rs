@@ -12,6 +12,7 @@
 // - `pci_osc`: PCI root capability and ownership negotiation.
 // - `power_action`: FADT and AML-derived terminal S5 action.
 // - `aml_eval`: namespace read side for the ACPI device drivers below.
+// - `device_model`: canonical ACPI device wake and power-resource ownership.
 // - `events`: SCI/GPE detection, deferred AML dispatch, and notifications.
 // - `battery`: control-method battery, published to the power-supply class.
 // - `ac`: AC adapter, published to the power-supply class.
@@ -34,6 +35,7 @@ mod pci_osc;
 mod power_action;
 pub mod ac;
 pub mod aml_eval;
+mod device_model;
 pub mod events;
 pub mod battery;
 pub mod cpufreq;
@@ -55,6 +57,8 @@ pub use iommu::{AmdIvhdAlias, AmdIvhdScope, AmdIvhdSpecial, AmdIvmd, AMD_SPECIAL
 pub use aml_routes::{PciIntxRoute, install_dsdt, install_ssdt, pci_intx_route, pci_osc_control, prepare_pci_intx_routes};
 pub use pci_osc::{PciOscControl, OSC_PCIE_AER_CONTROL};
 pub use devices::init_devices;
+pub use device_model::{WakeDeviceInfo, finish_wake_devices, prepare_wake_devices,
+    set_wake_device_enabled, wake_device_count, wake_device_info};
 pub use power_action::poweroff_action;
 pub(crate) use power_action::set_power_registers;
 pub use rsdp::{RsdpStatus, try_log_acpi, try_log_rsdp, try_log_xsdt};

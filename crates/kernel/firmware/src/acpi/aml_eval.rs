@@ -41,6 +41,29 @@ pub struct CstPackage {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProcessorScope { pub path: String, pub uid: u32 }
 
+/// One ACPI device's `_PRW` wake declaration.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PrwDevice {
+    pub path: String,
+    /// `None` selects the fixed FADT GPE blocks. A named device selects a GPE
+    /// block installed by that device's driver.
+    pub gpe_device: Option<String>,
+    pub gpe_number: u8,
+    /// Deepest system sleep state from which this source can wake.
+    pub sleep_state: u8,
+    pub default_enabled: bool,
+    pub power_resources: Vec<String>,
+}
+
+/// One canonical AML `PowerResource` namespace object. Device `_PRx` and
+/// `_PRW` packages refer to this object by path; they do not own its state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PowerResourceDecl {
+    pub path: String,
+    pub system_level: u8,
+    pub order: u16,
+}
+
 impl AmlField {
     /// Integer payload, or `None` when the field is text. # C: O(1)
     pub fn int(&self) -> Option<u64> {
@@ -204,6 +227,79 @@ pub fn thermal_zones() -> Vec<String> {
         Some(zones)
     })
     .unwrap_or_default()
+}
+
+/// Decode every device `_PRW` package in the namespace. Malformed packages
+/// are not wake sources; they cannot safely select a GPE. # C: O(namespace + AML)
+pub(crate) fn wake_devices() -> Vec<PrwDevice> {
+    aml_routes::with_namespace(|context| {
+        let mut scopes = Vec::new();
+        let _ = context.namespace.traverse(|path, level| {
+            if level.typ == aml::LevelType::Device { scopes.push(path.clone()); }
+            Ok(true)
+        });
+        let mut out = Vec::new();
+        for scope in scopes {
+            let text = scope.as_string();
+            let Some(value) = eval(context, &text, "_PRW") else { continue; };
+            let ids = identifiers(context, &text);
+            let button = ids.iter().any(|id| matches!(id.as_str(), "PNP0C0D" | "PNP0C0E"));
+            if let Some(device) = decode_prw(context, &scope, value, button) { out.push(device); }
+        }
+        Some(out)
+    }).unwrap_or_default()
+}
+
+/// Decode every namespace `PowerResource` object once. # C: O(namespace)
+pub(crate) fn power_resources() -> Vec<PowerResourceDecl> {
+    aml_routes::with_namespace(|context| {
+        let mut paths = Vec::new();
+        let _ = context.namespace.traverse(|path, level| {
+            if level.typ == aml::LevelType::PowerResource { paths.push(path.clone()); }
+            Ok(true)
+        });
+        let mut out = Vec::new();
+        for path in paths {
+            if let Ok(AmlValue::PowerResource { system_level, resource_order }) =
+                context.namespace.get_by_path(&path) {
+                out.push(PowerResourceDecl { path: path.as_string(),
+                    system_level: *system_level, order: *resource_order });
+            }
+        }
+        Some(out)
+    }).unwrap_or_default()
+}
+
+fn decode_prw(context: &AmlContext, scope: &AmlName, value: AmlValue,
+              button: bool) -> Option<PrwDevice> {
+    const S4: u8 = 4;
+    const S5: u8 = 5;
+    let AmlValue::Package(entries) = value else { return None; };
+    if entries.len() < 2 { return None; }
+    let (gpe_device, gpe_number) = match entries.first()? {
+        AmlValue::Integer(number) => (None, u8::try_from(*number).ok()?),
+        AmlValue::Package(gpe) if gpe.len() >= 2 => {
+            let AmlValue::String(name) = gpe.first()? else { return None; };
+            let AmlValue::Integer(number) = gpe.get(1)? else { return None; };
+            let relative = AmlName::from_str(name).ok()?;
+            let resolved = context.namespace.search_for_level(&relative, scope).ok()?;
+            (Some(resolved.as_string()), u8::try_from(*number).ok()?)
+        }
+        _ => return None,
+    };
+    let AmlValue::Integer(state) = entries.get(1)? else { return None; };
+    let mut sleep_state = u8::try_from(*state).ok()?;
+    if sleep_state > S5 { return None; }
+    if button && sleep_state == S5 { sleep_state = S4; }
+    let mut power_resources = Vec::new();
+    for value in entries.iter().skip(2) {
+        let AmlValue::String(name) = value else { return None; };
+        let relative = AmlName::from_str(name).ok()?;
+        let resolved = context.namespace.search_for_level(&relative, scope).ok()?;
+        power_resources.push(resolved.as_string());
+    }
+    Some(PrwDevice { path: scope.as_string(), gpe_device, gpe_number,
+        sleep_state, default_enabled: button, power_resources })
 }
 
 /// Absolute namespace paths of every legacy ACPI `Processor` object. Modern
@@ -385,39 +481,28 @@ pub fn eval_with_integer(scope: &str, name: &str, arg: u64) -> bool {
     .is_some()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use alloc::boxed::Box;
-
-    #[test]
-    fn a_packed_identifier_decodes_to_its_text_form() {
-        assert_eq!(eisa_id_to_string(0x0A0C_D041), "PNP0C0A");
-        assert_eq!(eisa_id_to_string(0x0000_D041), "PNP0000");
-        assert_eq!(eisa_id_to_string(0x0303_D041), "PNP0303");
-    }
-
-    #[test]
-    fn an_integer_field_still_yields_a_text_identity() {
-        assert_eq!(AmlField::Int(42).text(), "42");
-        assert_eq!(AmlField::Text(String::from("OXP-1")).text(), "OXP-1");
-        assert_eq!(AmlField::Int(42).int(), Some(42));
-        assert_eq!(AmlField::Text(String::from("x")).int(), None);
-    }
-
-    #[test]
-    fn named_packages_are_read_without_invoking_them_as_methods() {
-        let mut context = AmlContext::new(Box::new(super::super::aml_handler::FirmwareHandler),
-                                          aml::DebugVerbosity::None);
-        let scope = AmlName::from_str("\\CPU0").expect("scope");
-        context.namespace.add_level(scope.clone(), aml::LevelType::Processor).expect("scope level");
-        let pss = AmlName::from_str("_PSS").expect("name").resolve(&scope).expect("PSS path");
-        context.namespace.add_value(pss, AmlValue::Package(alloc::vec![AmlValue::Package(alloc::vec![
-            AmlValue::Integer(2400), AmlValue::Integer(41),
-        ])])).expect("PSS value");
-        let value = eval(&mut context, "\\CPU0", "_PSS").expect("named package");
-        assert_eq!(package_rows(&context, &value), Some(alloc::vec![alloc::vec![
-            AmlField::Int(2400), AmlField::Int(41),
-        ]]));
-    }
+/// Evaluate a no-argument control method, discarding its result. # C: O(AML)
+pub(crate) fn eval_no_args(scope: &str, name: &str) -> bool {
+    aml_routes::with_namespace(|context| {
+        let scope = AmlName::from_str(scope).ok()?;
+        let path = AmlName::from_str(name).ok()?.resolve(&scope).ok()?;
+        context.namespace.get_handle(&path).ok()?;
+        context.invoke_method(&path, Args::EMPTY).ok().map(|_| ())
+    }).is_some()
 }
+
+/// Evaluate a method with integer arguments, discarding its result. # C: O(AML)
+pub(crate) fn eval_with_integers(scope: &str, name: &str, args: &[u64]) -> bool {
+    aml_routes::with_namespace(|context| {
+        let scope = AmlName::from_str(scope).ok()?;
+        let path = AmlName::from_str(name).ok()?.resolve(&scope).ok()?;
+        context.namespace.get_handle(&path).ok()?;
+        let values = args.iter().copied().map(AmlValue::Integer).collect();
+        let args = Args::from_list(values).ok()?;
+        context.invoke_method(&path, args).ok().map(|_| ())
+    }).is_some()
+}
+
+#[cfg(test)]
+#[path = "aml_eval/tests.rs"]
+mod tests;
