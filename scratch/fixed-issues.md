@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2297-tcp6-passive-flowinfo
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED ab90e3662 | MISSING | low | **An accepted native-IPv6 TCP child discarded the opening packet's traffic class and flow label.** Passive-open state now retains the received flowinfo without growing the interrupt-stack TCB. Accept finalization snapshots the listener's flow-send and reflection flags, publishes the full receive word, and replaces the child's transmit label with the received 20-bit label only when reflection is enabled. IPv4 and mapped-IPv4 children retain their separate header snapshot. | B2297. `the_passive_child_records_the_ipv6_opening_flowinfo` drives the production child builder; `an_accepted_ipv6_child_reflects_the_opening_flow_label` drives accept finalization. Removing ingress capture and retaining the listener's label each turn their respective test RED; restored code passes. Full hosted net suite: 2,561 passed. | B2297-tcp6-passive-flowinfo |
+| FIXED ab90e3662 | MISSING | low | **Folded duplicate of the accepted-IPv6 flowinfo row.** Its claim that `peer_flowinfo` read `rcv_flowinfo` was stale: peer naming reads the transmit label behind `SNDFLOW`; receive flowinfo is a separate stored word, and `REPFLOW` conditionally copies only its label into transmit state. Both halves now follow that split. | B2297 reference audit and the two production-boundary tests above. | B2297-tcp6-passive-flowinfo |
+
 ### B2280-console-native-handoff
 
 | Status | Class | Sev | Issue | Evidence | Owner |
