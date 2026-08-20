@@ -109,7 +109,7 @@ fn use_optimistic_restores_preferred_source_ranking() {
     let mut meta = super::Ipv6AddrMeta::PERMANENT;
     meta.user_flags = crate::iface_addr::IFA_F_OPTIMISTIC;
     let row = stack.add_ipv6_prefix_generation_rtnl(&rtnl, lease.net_ns(), iface,
-        lease.generation(), addr, None, 64, meta, true).unwrap();
+        lease.generation(), addr, None, 64, meta, true).unwrap().row;
     stack.add_ipv6_prefix_generation_rtnl(&rtnl, lease.net_ns(), iface,
         lease.generation(), preferred, None, 64, super::Ipv6AddrMeta::PERMANENT, false).unwrap();
     drop(rtnl);

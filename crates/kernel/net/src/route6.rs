@@ -8,9 +8,12 @@ use crate::addr::{Ipv6Addr, NetIfaceId};
 use crate::fib_lock::FibLock;
 use crate::policy_rule::{PolicyRuleTable, AF_INET6, RT_TABLE_MAIN};
 
+pub const IP6_RT_PRIO_ADDRCONF: u32 = 256;
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Route6Origin {
     Static,
+    AddressPrefix { metric: u32, valid_until_ns: u64 },
     RouterAdvertisementDefault { router: Ipv6Addr, valid_until_ns: u64 },
     RouterAdvertisementPrefix { valid_until_ns: u64 },
 }
@@ -18,7 +21,7 @@ pub enum Route6Origin {
 impl Route6Origin {
     pub(crate) fn ra_router(self) -> Option<Ipv6Addr> {
         match self {
-            Self::Static => None,
+            Self::Static | Self::AddressPrefix { .. } => None,
             Self::RouterAdvertisementDefault { router, .. } => Some(router),
             Self::RouterAdvertisementPrefix { .. } => None,
         }
@@ -28,10 +31,20 @@ impl Route6Origin {
         matches!(self, Self::RouterAdvertisementPrefix { .. })
     }
 
+    /// Metric carried by an address-created prefix route. # C: O(1)
+    pub fn metric(self) -> u32 {
+        match self { Self::AddressPrefix { metric, .. } => metric, _ => 0 }
+    }
+
+    pub(crate) fn is_address_prefix(self) -> bool {
+        matches!(self, Self::AddressPrefix { .. })
+    }
+
     fn live_at(self, now_ns: u64) -> bool {
         match self {
             Self::Static => true,
-            Self::RouterAdvertisementDefault { valid_until_ns, .. }
+            Self::AddressPrefix { valid_until_ns, .. }
+            | Self::RouterAdvertisementDefault { valid_until_ns, .. }
             | Self::RouterAdvertisementPrefix { valid_until_ns } => valid_until_ns > now_ns,
         }
     }
@@ -66,6 +79,11 @@ impl Route6Entry {
         if rem == 0 { return true; }
         let mask = !0u8 << (8 - rem);
         (dst[full] & mask) == (addr[full] & mask)
+    }
+
+    fn preferred_to(&self, old: Self) -> bool {
+        self.prefix_len > old.prefix_len
+            || self.prefix_len == old.prefix_len && self.origin.metric() < old.origin.metric()
     }
 }
 
@@ -116,10 +134,7 @@ impl Route6Table {
         let mut best: Option<Route6Entry> = None;
         for e in g.iter() {
             if e.table != table || !e.origin.live_at(now_ns) || !e.matches(addr) { continue; }
-            match best {
-                Some(b) if b.prefix_len >= e.prefix_len => {}
-                _ => best = Some(*e),
-            }
+            if best.is_none_or(|old| e.preferred_to(old)) { best = Some(*e); }
         }
         best
     }
@@ -167,7 +182,7 @@ impl Route6Table {
             for route in routes {
                 if route.table != rule.table || route.iface != iface
                     || !route.origin.live_at(now_ns) || !route.matches(addr) { continue; }
-                if best.is_none_or(|old: Route6Entry| old.prefix_len < route.prefix_len) {
+                if best.is_none_or(|old: Route6Entry| route.preferred_to(old)) {
                     best = Some(*route);
                 }
             }
@@ -355,6 +370,20 @@ mod tests {
         t.add(Route6Entry { table: RT_TABLE_MAIN, dst: v6([0x2001, 0xdb8, 0x10, 0, 0, 0, 0, 0]), prefix_len: 48, iface: NetIfaceId::from_raw(3), gateway: None, src_hint: None, origin: Route6Origin::Static });
         let r = t.lookup(v6([0x2001, 0xdb8, 0x10, 0, 0, 0, 0, 1])).unwrap();
         assert_eq!(r.iface, NetIfaceId::from_raw(3));
+    }
+
+    #[test]
+    fn lower_metric_breaks_an_equal_prefix_tie() {
+        let t = Route6Table::new();
+        let dst = v6([0x2001, 0xdb8, 0x10, 0, 0, 0, 0, 0]);
+        t.add(Route6Entry { table: RT_TABLE_MAIN, dst, prefix_len: 48,
+            iface: NetIfaceId::from_raw(1), gateway: None, src_hint: None,
+            origin: Route6Origin::AddressPrefix { metric: 4096, valid_until_ns: u64::MAX } });
+        t.add(Route6Entry { table: RT_TABLE_MAIN, dst, prefix_len: 48,
+            iface: NetIfaceId::from_raw(2), gateway: None, src_hint: None,
+            origin: Route6Origin::AddressPrefix { metric: 256, valid_until_ns: u64::MAX } });
+        assert_eq!(t.lookup(v6([0x2001, 0xdb8, 0x10, 0, 0, 0, 0, 1])).unwrap().iface,
+            NetIfaceId::from_raw(2));
     }
 
     #[test]
