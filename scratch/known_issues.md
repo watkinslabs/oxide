@@ -861,7 +861,7 @@ here now.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| OPEN | MISSING | low | `SockBase::bound_ifindex` and `TcpBindReservation::bound_ifindex` are two atomics holding the same `sk_bound_dev_if` — a live mirror of the kind the mark work deliberately avoided. Noticed while choosing where the mark cell should live. | both fields written independently | unclaimed |
+| OPEN | MISSING | low | `SockBase::bound_ifindex` and `TcpBindReservation::bound_ifindex` are two atomics holding the same `sk_bound_dev_if` — a live mirror of the kind the mark work deliberately avoided. Noticed while choosing where the mark cell should live. | both fields written independently | CLAIMED B2303-bound-ifindex-shared-cell 2026-08-20 |
 
 ### B1982-missing-sched-proc-surface
 
