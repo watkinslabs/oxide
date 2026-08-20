@@ -42,10 +42,11 @@ pub(crate) struct TcpTimers {
     cleanup: TimerSlot,
 }
 
-/// Timer ownership and the poll subscriber slot share one allocation, keeping
-/// the interrupt-path TcpEntry itself within its stack-size budget.
+/// Timer ownership and the socket wait/poll state share one allocation,
+/// keeping the interrupt-path TcpEntry itself within its stack-size budget.
 pub(crate) struct TcpAsyncState {
     timers: TcpTimers,
+    sleep: crate::sock_wait::SockWaitQueue,
     subscribers: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, StackLockClass>,
     /// The owning open file description (Linux `sk->sk_socket->file`), which
     /// urgent arrival signals through its `f_owner`. Weak, and published by
@@ -57,9 +58,13 @@ pub(crate) struct TcpAsyncState {
 impl TcpAsyncState {
     /// # C: O(1)
     pub(crate) const fn new() -> Self {
-        Self { timers: TcpTimers::new(), subscribers: Spinlock::new(None),
+        Self { timers: TcpTimers::new(), sleep: crate::sock_wait::SockWaitQueue::new(),
+               subscribers: Spinlock::new(None),
                owner_file: Spinlock::new(alloc::sync::Weak::new()) }
     }
+
+    /// Socket sleep queue shared by connect, receive, and transmit. # C: O(1)
+    pub(crate) fn sleep(&self) -> &crate::sock_wait::SockWaitQueue { &self.sleep }
 
     /// The owning description, while a descriptor is bound. # C: O(1)
     pub(crate) fn owner_file(&self) -> Option<alloc::sync::Arc<vfs::File>> {
@@ -411,8 +416,7 @@ impl NetStack {
             entry.set_error(give_up_cause(entry.soft_error()));
             entry.release_backlog();
             super::tcp_listener::remove_tcp_entry_exact(&tables, &key, entry);
-            #[cfg(target_os = "oxide-kernel")]
-            entry.rx_waiters.wake_all();
+            entry.poll_subs.sleep().wake_all();
             return;
         }
 
@@ -435,8 +439,7 @@ impl NetStack {
             let bytes = entry.conn.lock().retx_q.back().map_or(0, |segment| segment.payload.len());
             entry.conn.lock().note_paced_output_at(now_ns, bytes, max_rate);
         }
-        #[cfg(target_os = "oxide-kernel")]
-        if !segments.is_empty() { entry.rx_waiters.wake_all(); }
+        if !segments.is_empty() { entry.poll_subs.sleep().wake_all(); }
         self.refresh_tcp_timers(entry);
     }
 
@@ -470,8 +473,7 @@ impl NetStack {
             entry.set_error(give_up_cause(entry.soft_error()));
             entry.release_backlog();
             super::tcp_listener::remove_tcp_entry_exact(&tables, &key, entry);
-            #[cfg(target_os = "oxide-kernel")]
-            entry.rx_waiters.wake_all();
+            entry.poll_subs.sleep().wake_all();
             return;
         }
         self.refresh_tcp_timers(entry);
@@ -496,8 +498,7 @@ impl NetStack {
             let tables = self.inet_tables(entry.net_ns());
             entry.release_backlog();
             super::tcp_listener::remove_tcp_entry_exact(&tables, &key, entry);
-            #[cfg(target_os = "oxide-kernel")]
-            entry.rx_waiters.wake_all();
+            entry.poll_subs.sleep().wake_all();
             return;
         }
         self.refresh_tcp_timers(entry);

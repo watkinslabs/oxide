@@ -470,6 +470,16 @@ fn connect_close_serializes_with_wait_arm_and_wakes_after_publication() {
 }
 
 #[test]
+fn tcp_accept_arms_the_listener_socket_queue_on_a_host() {
+    let stack = NetStack::new();
+    let owner = namespace();
+    let listener = listener(&stack, &owner, 41_019);
+    assert_eq!(listener.arm_accept_wait(u64::MAX), TcpAcceptWait::Parked);
+    assert!(listener.accept_waiters.has_waiters());
+    listener.accept_waiters.cancel_current_park();
+}
+
+#[test]
 fn connect_wait_classifies_pending_reset_as_terminal() {
     let stack = NetStack::new();
     let owner = namespace();

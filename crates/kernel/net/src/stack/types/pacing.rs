@@ -77,8 +77,6 @@ impl TcpEntry {
             accept_backlog_reserved: ::core::sync::atomic::AtomicBool::new(false),
             accepted: ::core::sync::atomic::AtomicBool::new(false),
             fastopen_qlen: ::core::sync::atomic::AtomicBool::new(false),
-            #[cfg(target_os = "oxide-kernel")]
-            rx_waiters: sched::live::WaitList::new(),
             poll_subs: alloc::boxed::Box::new(super::super::tcp_timer::TcpAsyncState::new()) }
     }
 }

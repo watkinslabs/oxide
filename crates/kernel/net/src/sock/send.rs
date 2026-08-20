@@ -12,7 +12,7 @@ pub fn wait_transmit(sock: &InetSocket, deadline_ns: u64) -> bool {
     if !entry.arm_transmit_wait(&sock.write_shut, cap, deadline_ns) { return true; }
     // SAFETY: arm_transmit_wait published current before dropping conn.
     unsafe { sched::live::schedule::schedule(); }
-    entry.rx_waiters.remove_current();
+    entry.poll_subs.sleep().remove_current();
     true
 }
 

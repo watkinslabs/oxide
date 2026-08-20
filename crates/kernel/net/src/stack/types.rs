@@ -197,9 +197,6 @@ pub struct TcpEntry {
     /// acknowledgement that finishes the handshake, by the reset that ends it,
     /// or by teardown, whichever reaches it first.
     pub fastopen_qlen: ::core::sync::atomic::AtomicBool,
-    /// F158: blocking-read waiters (kernel only).
-    #[cfg(target_os = "oxide-kernel")]
-    pub rx_waiters: sched::live::WaitList,
     /// F181a: per-fd epoll subscribers (deliver_tcp wakes).
     pub(crate) poll_subs: alloc::boxed::Box<super::tcp_timer::TcpAsyncState>,
 }

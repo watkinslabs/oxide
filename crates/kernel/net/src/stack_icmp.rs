@@ -376,8 +376,7 @@ pub fn handle_error_in(stack: &NetStack, net_ns: u64, iface: crate::NetIfaceId, 
                     crate::socket_error::IcmpTcpVerdict::Fatal => {
                         entry.conn.lock().state = crate::tcp_state::TcpState::Closed;
                         entry.set_error(eno);
-                        #[cfg(target_os = "oxide-kernel")]
-                        entry.rx_waiters.wake_all();
+                        entry.poll_subs.sleep().wake_all();
                     }
                     crate::socket_error::IcmpTcpVerdict::Report => { entry.set_error(eno); }
                     crate::socket_error::IcmpTcpVerdict::Soft => { entry.set_soft_error(eno); }

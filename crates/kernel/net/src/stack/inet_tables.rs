@@ -106,7 +106,6 @@ impl InetTables {
             for listener in listeners {
                 listener.closed.store(true, ::core::sync::atomic::Ordering::Release);
                 for child in listener.close_accept_queue() { child.close_and_wake(); }
-                #[cfg(target_os = "oxide-kernel")]
                 listener.accept_waiters.wake_all();
             }
         }

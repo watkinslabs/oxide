@@ -135,7 +135,7 @@ fn wait_recv_source_after_generation(sock: &InetSocket, deadline_ns: u64, offset
             if crate::sock_io::arm_tcp_read_after_mode(sock, &entry, offset, deadline_ns, include_urgent) {
                 // SAFETY: arm_tcp_read published current under entry.conn.
                 unsafe { sched::live::schedule::schedule(); }
-                entry.rx_waiters.remove_current();
+                entry.poll_subs.sleep().remove_current();
             }
             false
         }

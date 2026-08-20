@@ -200,7 +200,7 @@ impl InetSocket {
     /// # C: backend-dependent
     pub fn write(&self, _off: u64, buf: &[u8]) -> vfs::KResult<usize> {
         // F164: snapshot kind out of its lock for parity with read();
-        // a TCP write may park on entry.rx_waiters until the peer's
+        // a TCP write may park on the entry sleep queue until the peer's
         // ACK frees send_buf space — we must not hold sock.kind.lock()
         // across the park.
         enum K {
