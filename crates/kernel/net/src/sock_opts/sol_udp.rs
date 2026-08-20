@@ -19,6 +19,7 @@ pub mod table;
 pub mod encap;
 pub mod cork;
 pub mod segment;
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub mod emit;
 #[cfg(test)]
 mod tests;
