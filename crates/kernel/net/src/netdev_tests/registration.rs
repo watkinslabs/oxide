@@ -81,6 +81,12 @@ fn ipv6_default_policy_is_snapshotted_at_interface_creation() {
         .unwrap();
     crate::sysctl::set_value(&owner, crate::net_ns::NetSysctlKey::Ipv6UseOptimisticDefault, -3)
         .unwrap();
+    crate::sysctl::set_value(&owner, crate::net_ns::NetSysctlKey::Ipv6UseTempaddrDefault, 2)
+        .unwrap();
+    crate::sysctl::set_value(&owner, crate::net_ns::NetSysctlKey::Ipv6TempValidLftDefault, 1234)
+        .unwrap();
+    crate::sysctl::set_value(&owner,
+        crate::net_ns::NetSysctlKey::Ipv6TempPreferredLftDefault, 567).unwrap();
     let first = stack.prepare_iface(Arc::new(DummyDev {
         name: "optimistic0", mtu: 1500, stats: NetStats::default(),
     }), &owner).unwrap();
@@ -92,12 +98,17 @@ fn ipv6_default_policy_is_snapshotted_at_interface_creation() {
         .unwrap();
     crate::sysctl::set_value(&owner, crate::net_ns::NetSysctlKey::Ipv6UseOptimisticDefault, 0)
         .unwrap();
+    crate::sysctl::set_value(&owner, crate::net_ns::NetSysctlKey::Ipv6UseTempaddrDefault, 0)
+        .unwrap();
     assert!(stack.ifaces.ipv6_optimistic_dad_in(first_id, ns));
     assert!(stack.ifaces.ipv6_use_optimistic_in(first_id, ns));
     let first_conf = stack.ifaces.ipv6_conf_by_name_in("optimistic0", ns).unwrap();
     assert_eq!(first_conf.value(crate::netdev::Ipv6ConfKey::DisableIpv6), 1);
     assert_eq!(first_conf.value(crate::netdev::Ipv6ConfKey::OptimisticDad), 7);
     assert_eq!(first_conf.value(crate::netdev::Ipv6ConfKey::UseOptimistic), -3);
+    assert_eq!(first_conf.value(crate::netdev::Ipv6ConfKey::UseTempaddr), 2);
+    assert_eq!(first_conf.value(crate::netdev::Ipv6ConfKey::TempValidLft), 1234);
+    assert_eq!(first_conf.value(crate::netdev::Ipv6ConfKey::TempPreferredLft), 567);
 
     let second = stack.prepare_iface(Arc::new(DummyDev {
         name: "ordinary0", mtu: 1500, stats: NetStats::default(),

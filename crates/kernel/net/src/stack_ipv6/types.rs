@@ -128,6 +128,8 @@ pub struct Ipv6IfaceAddr {
     /// Privacy address generated for this prefix rather than the stable
     /// public address. Source selection owns the interpretation of this bit.
     pub temporary: bool,
+    /// Public /64 address whose `IFA_F_MANAGETEMPADDR` policy owns this row.
+    pub temporary_parent: Option<Ipv6Addr>,
     /// The `IFA_F_*` bits the setter stated and the kernel keeps verbatim
     /// (`IFA_F_NODAD`, `IFA_F_HOMEADDRESS`, `IFA_F_MANAGETEMPADDR`,
     /// `IFA_F_NOPREFIXROUTE`, `IFA_F_MCAUTOJOIN`, `IFA_F_OPTIMISTIC`). The

@@ -239,6 +239,44 @@ fn managetempaddr_demands_a_64_bit_prefix() {
     assert_eq!(ack_errno(&handle_newaddr(&req, &msg)), 0);
 }
 
+#[test]
+fn managed_public_address_creates_updates_and_deletes_its_temporary_child() {
+    let fx = fixture();
+    let conf = net::global_stack().ifaces.ipv6_conf_by_name_in("eth-stable", 0).unwrap();
+    conf.set_value(net::netdev::Ipv6ConfKey::UseTempaddr, 1);
+    conf.set_value(net::netdev::Ipv6ConfKey::TempValidLft, 100);
+    conf.set_value(net::netdev::Ipv6ConfKey::TempPreferredLft, 50);
+    let (mut req, mut msg) = addr6_req(RTM_NEWADDR, fx.ifindex, 64, GLOBAL, 0, 0);
+    put_nlattr(&mut msg, ifa::IFA_FLAGS, &IFA_F_MANAGETEMPADDR.to_ne_bytes());
+    cacheinfo_attr(&mut msg, 80, 200);
+    seal(&mut req, &mut msg);
+    assert_eq!(ack_errno(&handle_newaddr(&req, &msg)), 0);
+    let rows = net::global_stack().v6_addr_snapshot_in(0).into_iter()
+        .filter(|(iface, _)| *iface == fx.iface).map(|(_, row)| row).collect::<Vec<_>>();
+    let child = rows.iter().find(|row| row.temporary).expect("one privacy child");
+    assert_eq!(child.temporary_parent, Some(net::Ipv6Addr(GLOBAL)));
+    assert_eq!(&child.addr.0[..8], &GLOBAL[..8]);
+    assert_eq!((child.valid, child.preferred), (100, 50));
+    assert!(matches!(child.state, net::stack_ipv6::Ipv6AddrState::Tentative { .. }));
+
+    let child_addr = child.addr;
+    let (mut req, mut msg) = addr6_req(RTM_NEWADDR, fx.ifindex, 64, GLOBAL, 0,
+        crate::flags::NLM_F_REPLACE);
+    put_nlattr(&mut msg, ifa::IFA_FLAGS, &IFA_F_MANAGETEMPADDR.to_ne_bytes());
+    cacheinfo_attr(&mut msg, 20, 30);
+    seal(&mut req, &mut msg);
+    assert_eq!(ack_errno(&handle_newaddr(&req, &msg)), 0);
+    let updated = net::global_stack().v6_addr_snapshot_in(0).into_iter()
+        .find(|(iface, row)| *iface == fx.iface && row.addr == child_addr).unwrap().1;
+    assert_eq!((updated.valid, updated.preferred), (30, 20));
+
+    let (req, msg) = addr6_req(RTM_NEWADDR, fx.ifindex, 64, GLOBAL, 0,
+        crate::flags::NLM_F_REPLACE);
+    assert_eq!(ack_errno(&handle_newaddr(&req, &msg)), 0);
+    assert!(net::global_stack().v6_addr_snapshot_in(0).into_iter()
+        .filter(|(iface, _)| *iface == fx.iface).all(|(_, row)| !row.temporary));
+}
+
 // IFA_LOCAL is the local address; a differing IFA_ADDRESS is the peer, and it
 // reads back in the attribute the reference reports it in.
 #[test]

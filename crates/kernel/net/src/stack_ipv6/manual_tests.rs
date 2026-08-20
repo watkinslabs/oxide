@@ -16,7 +16,8 @@ fn row(addr: Ipv6Addr) -> Ipv6IfaceAddr {
         preferred: INFINITY_LIFE_TIME, valid: INFINITY_LIFE_TIME,
         preferred_until_ns: u64::MAX, valid_until_ns: u64::MAX,
         origin: Ipv6AddrOrigin::Static, state: Ipv6AddrState::Assigned,
-        deprecated: false, temporary: false, user_flags: 0, proto: 0, rt_priority: 0,
+        deprecated: false, temporary: false, temporary_parent: None,
+        user_flags: 0, proto: 0, rt_priority: 0,
         cstamp: 0, tstamp: 0, notify_pending: false,
     }
 }

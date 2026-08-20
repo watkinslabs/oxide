@@ -43,6 +43,16 @@ impl IfaceRegistry {
             .is_some_and(|e| e.ipv6_conf.value(Ipv6ConfKey::UseOptimistic) != 0)
     }
 
+    /// Privacy-extension policy and lifetime ceilings for one live interface. # C: O(N)
+    pub fn ipv6_tempaddr_policy_in(&self, iface: NetIfaceId, ns: u64) -> Option<(i64, u32, u32)> {
+        let g = self.inner.lock();
+        let conf = &g.entries.iter().find(|e| e.id == iface && e.ns == ns && e.ingress.live())?
+            .ipv6_conf;
+        Some((conf.value(Ipv6ConfKey::UseTempaddr),
+            conf.value(Ipv6ConfKey::TempValidLft).clamp(0, u32::MAX as i64) as u32,
+            conf.value(Ipv6ConfKey::TempPreferredLft).clamp(0, u32::MAX as i64) as u32))
+    }
+
     /// Resolve one Linux-visible interface index to its device AND its receive
     /// queues — Linux `netdev_get_by_index_lock` followed by
     /// `__netif_get_rx_queue`. Both come out together because a caller that
