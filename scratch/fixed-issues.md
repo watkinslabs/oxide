@@ -1835,6 +1835,7 @@ evidence has one canonical home.
 | FIXED 312217c07 | DEFECT | high | TCP output re-resolved its route per segment with `stack_binddev::UNMARKED`, so a marked socket transmitted over the unmarked route | `stack_binddev::mark_tests::a_marked_tcp_connection_transmits_over_the_route_its_mark_selects` — RED with `UNMARKED` restored at `stack/ipv4.rs` | B1980 |
 | FIXED 312217c07 | DEFECT | high | route metrics / MSS / path MTU were queried unmarked, so a marked socket started from another route's metrics | `route_metrics_come_from_...`, `tcp_mss_comes_from_...`, `path_mtu_comes_from_...` | B1980 |
 | FIXED 312217c07 | DEFECT | med | a passive child carried no mark, so a marked listener's requests answered and transmitted unmarked | `a_passive_child_takes_the_listening_socket_mark_as_its_own` | B1980 |
+| FIXED 15c758908 | MISSING | low | `SockBase::bound_ifindex` and `TcpBindReservation::bound_ifindex` were two atomics holding the same `sk_bound_dev_if` — a live mirror of the kind the mark work deliberately avoided. | B2303 makes the TCP socket and active reservation share one bound-device cell; TCP ignores datagram-only unicast-interface hints, while passive children retain the request-time bound-device snapshot. | B2303-bound-ifindex-shared-cell |
 
 ### B1987-oom-fault-leg-livelocks
 
