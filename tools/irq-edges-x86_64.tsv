@@ -19,6 +19,7 @@ oxide_irq_dispatch	drv_virtio_vsock::registry::raise_rx
 oxide_irq_dispatch	drv_virtio_input::drain::queue::raise_drain
 oxide_irq_dispatch	drv_ahci::irq::hard_handler
 oxide_irq_dispatch	modules::linux_irq::linux_irq_dispatch
+oxide_irq_dispatch	kmain::kmain::acpi_sci::irq
 oxide_irq_dispatch	kmain::kmain::hooks::tick_poll_combined
 softirq::run_pending_mode::<sched::bh::SchedHandlerAccounting>	fbcon::kernel::shared::flush_softirq
 softirq::run_pending_mode::<sched::bh::SchedHandlerAccounting>	drv_virtio_input::drain::queue::drain_softirq

@@ -21,6 +21,8 @@ use super::aml_eval;
 use decode::{parse_bif, parse_bix, parse_bst, Info, State};
 use props::Reading;
 
+static BATTERIES: Spinlock<Vec<Weak<AcpiBattery>>, Devices> = Spinlock::new(Vec::new());
+
 /// Hardware identifier of a control-method battery.
 pub const BATTERY_HID: &str = "PNP0C0A";
 /// `_STA` bit reporting that the battery is physically installed.
@@ -187,7 +189,21 @@ fn register_one(scope: &str) -> Option<Arc<PowerSupply>> {
     );
     let psy = power_supply::register(desc, battery.clone() as Arc<dyn SupplyOps>).ok()?;
     *battery.published.lock() = Arc::downgrade(&psy);
+    BATTERIES.lock().push(Arc::downgrade(&battery));
     Some(psy)
+}
+
+/// Deliver one AML notification to its exact battery provider. The event
+/// invalidates the timed cache and publishes even when the sampled values are
+/// unchanged, matching a firmware-originated change indication. # C: O(N)
+pub(crate) fn notified(scope: &str, _event: u64) -> bool {
+    let battery = BATTERIES.lock().iter().filter_map(Weak::upgrade)
+        .find(|battery| battery.scope == scope);
+    let Some(battery) = battery else { return false; };
+    battery.cached.lock().expires_ns = 0;
+    let _ = battery.refresh();
+    if let Some(psy) = battery.published.lock().upgrade() { power_supply::changed(&psy); }
+    true
 }
 
 /// Namespace paths of the batteries the firmware publishes, for callers that

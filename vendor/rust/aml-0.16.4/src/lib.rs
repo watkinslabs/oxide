@@ -739,6 +739,8 @@ pub trait Handler: Send + Sync {
     fn access(&self, access: RegionAccess, value: u64) -> Result<u64, AmlError>;
 
     fn handle_fatal_error(&self, _fatal_type: u8, _fatal_code: u32, _fatal_arg: u64) {}
+
+    fn notify(&self, _path: &AmlName, _value: u64) {}
 }
 
 /// Used when an [`AmlContext`] encounters an error.
@@ -767,6 +769,7 @@ pub enum AmlError {
     WrongParser,
     /// Returned when a `DefFatal` op is encountered. This is separately reported using [`Handler::handle_fatal_error`].
     FatalError,
+    InvalidNotifyTarget,
 
     /*
      * Errors produced manipulating AML names.

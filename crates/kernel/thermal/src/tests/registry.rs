@@ -4,7 +4,7 @@ use crate::monitor::Cadence;
 use crate::trip::Trip;
 use crate::uapi::TripType;
 use crate::zone::desc::BindSpec;
-use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::sync::Mutex;
 
 /// One global class: serialise every test that registers into it.
@@ -32,6 +32,18 @@ impl ZoneOps for Sensor {
     fn get_temp(&self) -> KResult<i32> { Ok(self.temp.load(Ordering::Relaxed)) }
     fn should_bind(&self, trip: usize, _cdev: &CoolingDevice) -> Option<BindSpec> {
         if self.binds && trip == 0 { Some(BindSpec::default()) } else { None }
+    }
+}
+
+struct ReconfigurableSensor { temp: AtomicI32, binds: AtomicBool }
+impl ZoneOps for ReconfigurableSensor {
+    fn get_temp(&self) -> KResult<i32> { Ok(self.temp.load(Ordering::Relaxed)) }
+    fn should_bind(&self, trip: usize, _cdev: &CoolingDevice) -> Option<BindSpec> {
+        if self.binds.load(Ordering::Relaxed) && trip == 0 {
+            Some(BindSpec::default())
+        } else {
+            None
+        }
     }
 }
 
@@ -87,6 +99,69 @@ fn a_zone_registered_after_a_device_is_bound_to_it() {
     let sensor = Arc::new(Sensor { temp: AtomicI32::new(30_000), binds: true });
     let zone = register_zone(desc("bang_bang"), sensor).expect("zone");
     assert_eq!(zone.bindings().len(), 1);
+    clear_for_tests();
+}
+
+#[test]
+fn reconfiguration_replaces_the_ladder_cadence_and_old_cooling_request() {
+    let _guard = fresh();
+    let sensor = Arc::new(ReconfigurableSensor {
+        temp: AtomicI32::new(65_000),
+        binds: AtomicBool::new(true),
+    });
+    let zone = register_zone(desc("bang_bang"), sensor.clone()).expect("zone");
+    let fan = Arc::new(Fan { state: AtomicU64::new(0), max: 1 });
+    register_cdev("Fan", fan.clone(), 0).expect("cdev");
+    update_zone(&zone, 0);
+    assert_eq!(fan.state.load(Ordering::Relaxed), 1);
+
+    sensor.binds.store(false, Ordering::Relaxed);
+    let cadence = Cadence { polling_ms: 7_000, passive_ms: 2_000 };
+    reconfigure_zone(&zone,
+        alloc::vec![Trip::new(TripType::Critical, 110_000)], cadence, 1);
+
+    assert_eq!(zone.trip_count(), 1);
+    assert_eq!(zone.trip(0).expect("trip").trip.temperature, 110_000);
+    assert_eq!(zone.cadence(), cadence);
+    assert!(zone.bindings().is_empty());
+    assert_eq!(fan.state.load(Ordering::Relaxed), 0,
+               "a removed binding must release its stale request");
+    clear_for_tests();
+}
+
+#[test]
+fn reconfiguration_can_remove_the_last_firmware_trip() {
+    let _guard = fresh();
+    let sensor = Arc::new(Sensor { temp: AtomicI32::new(30_000), binds: false });
+    let zone = register_zone(desc("step_wise"), sensor).expect("zone");
+    reconfigure_zone(&zone, alloc::vec![], Cadence::polled(9_000), 0);
+    assert_eq!(zone.trip_count(), 0, "a removed firmware threshold must not remain armed");
+    assert_eq!(zone.cadence(), Cadence::polled(9_000));
+    clear_for_tests();
+}
+
+#[test]
+fn a_binding_refresh_preserves_the_trip_ladder_and_cadence() {
+    let _guard = fresh();
+    let sensor = Arc::new(ReconfigurableSensor {
+        temp: AtomicI32::new(65_000),
+        binds: AtomicBool::new(true),
+    });
+    let zone = register_zone(desc("bang_bang"), sensor.clone()).expect("zone");
+    let before_trip = zone.trip(0).expect("trip").trip;
+    let before_cadence = zone.cadence();
+    let fan = Arc::new(Fan { state: AtomicU64::new(0), max: 1 });
+    register_cdev("Fan", fan.clone(), 0).expect("cdev");
+    update_zone(&zone, 0);
+    assert_eq!(fan.state.load(Ordering::Relaxed), 1);
+
+    sensor.binds.store(false, Ordering::Relaxed);
+    rebind_zone(&zone, 1);
+
+    assert_eq!(zone.trip(0).expect("trip").trip, before_trip);
+    assert_eq!(zone.cadence(), before_cadence);
+    assert!(zone.bindings().is_empty());
+    assert_eq!(fan.state.load(Ordering::Relaxed), 0);
     clear_for_tests();
 }
 

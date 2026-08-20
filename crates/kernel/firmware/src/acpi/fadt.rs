@@ -46,13 +46,22 @@ pub const FADT_V2_LEN: usize = 132;
 const OFF_REVISION: usize = 8;
 const OFF_FACS32: usize = 36;
 const OFF_DSDT32: usize = 40;
+const OFF_SCI_INT: usize = 46;
+const OFF_SMI_CMD: usize = 48;
+const OFF_ACPI_ENABLE: usize = 52;
+const OFF_ACPI_DISABLE: usize = 53;
 const OFF_PM1A_EVT32: usize = 56;
 const OFF_PM1B_EVT32: usize = 60;
 const OFF_PM2_CNT32: usize = 72;
 const OFF_PM_TIMER32: usize = 76;
+const OFF_GPE0_BLK32: usize = 80;
+const OFF_GPE1_BLK32: usize = 84;
 const OFF_PM1_EVT_LEN: usize = 88;
 const OFF_PM2_CNT_LEN: usize = 90;
 const OFF_PM_TIMER_LEN: usize = 91;
+const OFF_GPE0_LEN: usize = 92;
+const OFF_GPE1_LEN: usize = 93;
+const OFF_GPE1_BASE: usize = 94;
 const OFF_XFACS: usize = 132;
 const OFF_XPM1A_EVT: usize = 148;
 const OFF_XPM1B_EVT: usize = 160;
@@ -64,6 +73,8 @@ const OFF_XPM1A_CNT: usize = 172;
 const OFF_XPM1B_CNT: usize = 184;
 const OFF_XPM2_CNT: usize = 196;
 const OFF_XPM_TIMER: usize = 208;
+const OFF_XGPE0_BLK: usize = 220;
+const OFF_XGPE1_BLK: usize = 232;
 const OFF_SLEEP_CONTROL: usize = 244;
 const OFF_SLEEP_STATUS: usize = 256;
 const OFF_PM1A_CNT32: usize = 64;
@@ -83,6 +94,10 @@ pub struct Fadt {
     /// FACS physical address. Zero on a hardware-reduced platform, which
     /// has no FACS at all — and therefore no firmware waking vector.
     pub facs_pa: u64,
+    pub sci_interrupt: u16,
+    pub smi_command: u32,
+    pub acpi_enable: u8,
+    pub acpi_disable: u8,
     pub pm1a_control: Gas,
     pub pm1b_control: Gas,
     /// PM1 event blocks: status half then enable half, `pm1_event_len`
@@ -94,8 +109,33 @@ pub struct Fadt {
     pub pm2_control: Gas,
     pub pm2_control_len: u8,
     pub pm_timer: Gas,
+    pub gpe0_block: Gas,
+    pub gpe1_block: Gas,
+    pub gpe0_block_len: u8,
+    pub gpe1_block_len: u8,
+    pub gpe1_base: u8,
     pub sleep_control: Gas,
     pub sleep_status: Gas,
+}
+
+/// FADT-owned event registers consumed by the SCI/GPE owner.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct EventRegisters {
+    pub flags: u32,
+    pub sci_interrupt: u16,
+    pub smi_command: u32,
+    pub acpi_enable: u8,
+    pub acpi_disable: u8,
+    pub pm1a_control: Gas,
+    pub pm1b_control: Gas,
+    pub pm1a_event: Gas,
+    pub pm1b_event: Gas,
+    pub pm1_event_len: u8,
+    pub gpe0_block: Gas,
+    pub gpe1_block: Gas,
+    pub gpe0_block_len: u8,
+    pub gpe1_block_len: u8,
+    pub gpe1_base: u8,
 }
 
 /// What a reset through the FADT register costs the caller.
@@ -200,6 +240,12 @@ pub fn parse_fadt(t: &[u8]) -> Option<Fadt> {
     let pm2_control = if xpm2.address != 0 { xpm2 } else { port_gas(u32_at(t, OFF_PM2_CNT32) as u64, legacy_pm2_len) };
     let pm2_len = if legacy_pm2_len != 0 { legacy_pm2_len } else { gas_bytes(pm2_control) };
     let pm_timer = if xpm_timer.address != 0 { xpm_timer } else { port_gas(u32_at(t, OFF_PM_TIMER32) as u64, pm_timer_len) };
+    let gpe0_len = if t.len() > OFF_GPE0_LEN { t[OFF_GPE0_LEN] } else { 0 };
+    let gpe1_len = if t.len() > OFF_GPE1_LEN { t[OFF_GPE1_LEN] } else { 0 };
+    let xgpe0 = gas_at(t, OFF_XGPE0_BLK);
+    let xgpe1 = gas_at(t, OFF_XGPE1_BLK);
+    let gpe0_block = if xgpe0.address != 0 { xgpe0 } else { port_gas(u32_at(t, OFF_GPE0_BLK32) as u64, gpe0_len) };
+    let gpe1_block = if xgpe1.address != 0 { xgpe1 } else { port_gas(u32_at(t, OFF_GPE1_BLK32) as u64, gpe1_len) };
     Some(Fadt {
         revision: t[OFF_REVISION],
         flags: u32_at(t, OFF_FLAGS),
@@ -207,6 +253,10 @@ pub fn parse_fadt(t: &[u8]) -> Option<Fadt> {
         reset_value: if t.len() > OFF_RESET_VALUE { t[OFF_RESET_VALUE] } else { 0 },
         dsdt_pa,
         facs_pa,
+        sci_interrupt: if t.len() >= OFF_SCI_INT + 2 { u16::from_le_bytes([t[OFF_SCI_INT], t[OFF_SCI_INT + 1]]) } else { 0 },
+        smi_command: u32_at(t, OFF_SMI_CMD),
+        acpi_enable: if t.len() > OFF_ACPI_ENABLE { t[OFF_ACPI_ENABLE] } else { 0 },
+        acpi_disable: if t.len() > OFF_ACPI_DISABLE { t[OFF_ACPI_DISABLE] } else { 0 },
         pm1a_control,
         pm1b_control,
         pm1a_event,
@@ -215,10 +265,40 @@ pub fn parse_fadt(t: &[u8]) -> Option<Fadt> {
         pm2_control,
         pm2_control_len: pm2_len,
         pm_timer,
+        gpe0_block,
+        gpe1_block,
+        gpe0_block_len: gpe0_len,
+        gpe1_block_len: gpe1_len,
+        gpe1_base: if t.len() > OFF_GPE1_BASE { t[OFF_GPE1_BASE] } else { 0 },
         sleep_control: gas_at(t, OFF_SLEEP_CONTROL),
         sleep_status: gas_at(t, OFF_SLEEP_STATUS),
     })
 }
+
+/// Extract only the fixed event state consumed by SCI/GPE initialization.
+/// # C: O(1)
+pub fn event_registers(f: &Fadt) -> EventRegisters {
+    EventRegisters {
+        flags: f.flags,
+        sci_interrupt: f.sci_interrupt, smi_command: f.smi_command,
+        acpi_enable: f.acpi_enable, acpi_disable: f.acpi_disable,
+        pm1a_control: f.pm1a_control, pm1b_control: f.pm1b_control,
+        pm1a_event: f.pm1a_event, pm1b_event: f.pm1b_event,
+        pm1_event_len: f.pm1_event_len,
+        gpe0_block: f.gpe0_block, gpe1_block: f.gpe1_block,
+        gpe0_block_len: f.gpe0_block_len, gpe1_block_len: f.gpe1_block_len,
+        gpe1_base: f.gpe1_base,
+    }
+}
+
+static EVENT_REGISTERS: Spinlock<Option<EventRegisters>, Devices> = Spinlock::new(None);
+
+pub(crate) fn set_event_registers(registers: EventRegisters) {
+    let mut present = EVENT_REGISTERS.lock();
+    if present.is_none() { *present = Some(registers); }
+}
+
+pub(crate) fn event_registers_published() -> Option<EventRegisters> { *EVENT_REGISTERS.lock() }
 
 /// Synthesise a port-space GAS for a legacy 32-bit PM block address.
 fn port_gas(address: u64, byte_len: u8) -> Gas {
@@ -359,6 +439,7 @@ pub unsafe fn decode_fadt(pa: u64, hhdm_offset: u64) {
     unsafe { crate::acpi::install_dsdt(f.dsdt_pa, hhdm_offset); }
     crate::set_power_registers(power_registers(&f));
     set_cstate_registers(cstate_registers(&f));
+    set_event_registers(event_registers(&f));
     crate::acpi::sleep_types::set_sleep_registers(crate::acpi::sleep_types::sleep_registers(&f));
     // SAFETY: the FADT-derived FACS address names a firmware table retained
     // in firmware memory for this boot, under the same HHDM contract as FADT.
