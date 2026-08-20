@@ -319,7 +319,7 @@ mod tests {
         let entry = Arc::new(crate::stack::TcpEntry::new_bound_with_error(
             conn, listener.error.clone(), None));
         let child = InetSocket::from_accepted_tcp(&listener, entry.clone());
-        crate::sock_opts::record_accepted_header(&child, &entry);
+        crate::sock_opts::record_accepted_header(&child, &listener, &entry);
         child
     }
 
@@ -338,5 +338,31 @@ mod tests {
         let child = accepted_with_header(0, 0, 0);
         assert_eq!(child.opts.ip_mcast_ttl.load(Ordering::Acquire), 1);
         assert_eq!(child.opts.ip_rcv_tos.load(Ordering::Acquire), 0);
+    }
+    #[test]
+    fn an_accepted_ipv6_child_reflects_the_opening_flow_label() {
+        let listener = InetSocket::new_tcp6();
+        listener.opts.ipv6.set_flag(crate::sock_opts::sol_ipv6::flag::REPFLOW, true);
+        listener.opts.ipv6.set_flag(crate::sock_opts::sol_ipv6::flag::SNDFLOW, true);
+        listener.opts.ipv6.set_flow_label(0x11111);
+        let local = crate::Endpoint {
+            ip: crate::IpAddr::V6(crate::Ipv6Addr::LOOPBACK), port: 41002,
+        };
+        let remote = crate::Endpoint {
+            ip: crate::IpAddr::V6(crate::Ipv6Addr([0x20, 1, 0x0d, 0xb8, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 1])), port: 443,
+        };
+        let mut conn = crate::TcpConn::new_client(local, remote, 1);
+        conn.rcv_iif = 0x02c5_4321;
+        let entry = Arc::new(crate::stack::TcpEntry::new_bound_with_error(
+            conn, listener.error.clone(), None));
+        let child = InetSocket::from_accepted_tcp(&listener, entry.clone());
+
+        crate::sock_opts::record_accepted_header(&child, &listener, &entry);
+
+        assert_eq!(child.opts.ipv6.rcv_flowinfo(), 0x02c5_4321);
+        assert_eq!(child.opts.ipv6.flow_label(), 0x54321);
+        assert!(child.opts.ipv6.flag(crate::sock_opts::sol_ipv6::flag::REPFLOW));
+        assert!(child.opts.ipv6.flag(crate::sock_opts::sol_ipv6::flag::SNDFLOW));
     }
 }

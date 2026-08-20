@@ -40,6 +40,21 @@ fn an_ordinary_passive_open_leaves_a_request_and_no_connection() {
 }
 
 #[test]
+fn the_passive_child_records_the_ipv6_opening_flowinfo() {
+    let _domain = crate::hosted_fixture::init_net_domain();
+    let stack = NetStack::new();
+    let (iface, _lo, listener) = fixture(&stack, 7_612);
+    let mut packet = [0u8; crate::ipv6::IPV6_HDR_LEN];
+    packet[..4].copy_from_slice(&0x62c5_4321u32.to_be_bytes());
+
+    let child = super::tcp_listener_deliver::build_passive_child(
+        listener.local, 1_460, 1_500, crate::route_metrics::RouteMetrics::NONE,
+        &packet, &listener, iface, true);
+
+    assert_eq!(child.conn.lock().rcv_iif, 0x02c5_4321);
+}
+
+#[test]
 fn a_retransmitted_syn_ack_carries_the_same_negotiation_as_the_first() {
     // The first answer and every later one are built from the one record the
     // SYN produced. Anything that re-derived the negotiation instead could

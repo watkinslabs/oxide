@@ -529,16 +529,6 @@ pub const DATA_RETRIES_DEFAULT: u32 = 15;
 /// FIN-WAIT-2 hold time a connection runs with until `TCP_LINGER2` names one.
 pub const LINGER2_DEFAULT_NS: u64 = 60_000_000_000;
 
-/// What the network header of a passive open's opening packet carried, and the
-/// interface it arrived on — the state `IP_PKTOPTIONS` publishes on the
-/// accepted socket. An IPv6 open records nothing: the option is an IPv4-level
-/// one, and its IPv6 twin reports its own header's fields. A zero interface
-/// index is what "nothing was recorded" means. # C: O(1)
-pub fn passive_rcv_header(packet: &[u8], ipv6: bool, iif: u32) -> (u32, u8, u8) {
-    if ipv6 || packet.len() < crate::ipv4::IPV4_HDR_LEN { return (0, 0, 0); }
-    (iif, packet[8], packet[1])
-}
-
 #[cfg(test)]
 mod size_tests {
     /// A half-open passive connection is a request, not a connection, and the
