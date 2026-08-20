@@ -245,17 +245,21 @@ impl NetStack {
         dst: crate::Ipv6Addr, hint: Option<crate::Ipv6Addr>, prefs: i32) -> Option<crate::Ipv6Addr>
     {
         let now_ns = self.ra_now_ns();
+        let use_optimistic = self.ifaces.namespace(iface).is_some_and(|ns|
+            self.ifaces.ipv6_use_optimistic_in(iface, ns));
         let all = self.v6_addrs.lock();
         let addrs = all.get(&iface)?;
-        addrs.iter().filter(|row| row.usable_at(now_ns)).min_by_key(|row| {
+        addrs.iter().filter(|row| row.owned_at(now_ns)).min_by_key(|row| {
             let src_scope = ipv6_scope(row.addr);
             let dst_scope = ipv6_scope(dst);
             let scope_penalty = if src_scope < dst_scope {
                 16u8.saturating_add(dst_scope - src_scope)
             } else { src_scope - dst_scope };
-            (row.addr != dst, scope_penalty, !row.preferred_at(now_ns),
+            let optimistic = row.user_flags & crate::iface_addr::IFA_F_OPTIMISTIC != 0;
+            (row.addr != dst, scope_penalty,
+                !row.preferred_at(now_ns) || optimistic && !use_optimistic,
                 source_preference_penalty(row.temporary, prefs), hint != Some(row.addr),
-                u8::MAX - common_prefix_len(row.addr, dst))
+                u8::MAX - common_prefix_len(row.addr, dst), optimistic)
         }).map(|row| row.addr)
     }
 }

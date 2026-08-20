@@ -95,7 +95,8 @@ impl IfaceRegistry {
             mcast_report: Arc::new(McastReportState::new()),
             packet_filter: Arc::new(PacketDeviceFilter::new()),
             arp: Arc::new(crate::arp::ArpCache::new()),
-            ndp: Arc::new(crate::neigh::NeighCache::new()), ingress: gate.clone() });
+            ndp: Arc::new(crate::neigh::NeighCache::new()),
+            ipv6_conf: Arc::new(Ipv6DevConf::from_default(ns)), ingress: gate.clone() });
         IfaceRegistration {
             id, gate, owner: owner.clone(), registry: self, armed: true,
         }
@@ -217,6 +218,7 @@ impl IfaceRegistry {
             packet_filter: Arc::new(PacketDeviceFilter::new()),
             arp: Arc::new(crate::arp::ArpCache::new()),
             ndp: Arc::new(crate::neigh::NeighCache::new()),
+            ipv6_conf: Arc::new(Ipv6DevConf::from_default(ns)),
             ingress: Arc::new(IngressGate::new(ns, 1)) });
         id
     }

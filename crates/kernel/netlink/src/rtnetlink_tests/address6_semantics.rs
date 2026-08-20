@@ -10,8 +10,22 @@ use super::*;
 use super::address6_common::*;
 
 use net::iface_addr::{IFA_F_DADFAILED, IFA_F_DEPRECATED, IFA_F_MANAGETEMPADDR, IFA_F_MCAUTOJOIN,
-    IFA_F_NODAD, IFA_F_NOPREFIXROUTE, IFA_F_PERMANENT, IFA_F_SECONDARY, IFA_F_TENTATIVE,
+    IFA_F_NODAD, IFA_F_NOPREFIXROUTE, IFA_F_OPTIMISTIC, IFA_F_PERMANENT, IFA_F_SECONDARY, IFA_F_TENTATIVE,
     INFINITY_LIFE_TIME};
+
+struct OptimisticAll;
+impl OptimisticAll {
+    fn set() -> Self {
+        net::sysctl::set_value_in(0, net::net_ns::NetSysctlKey::Ipv6OptimisticDadAll, 1).unwrap();
+        Self
+    }
+}
+impl Drop for OptimisticAll {
+    fn drop(&mut self) {
+        net::sysctl::set_value_in(0, net::net_ns::NetSysctlKey::Ipv6OptimisticDadAll, 0).unwrap();
+        net::sysctl::set_value_in(0, net::net_ns::NetSysctlKey::Ipv6UseOptimisticAll, 0).unwrap();
+    }
+}
 
 // The reported failure, as a contract: the add succeeds, and the address is in
 // the table the receive path and the dumps read.
@@ -108,6 +122,47 @@ fn nodad_assigns_the_address_without_verification() {
     assert_eq!(row.flags() & IFA_F_NODAD, IFA_F_NODAD);
     assert!(net::global_stack().v6_addr_owned_by(fx.iface, net::Ipv6Addr(GLOBAL)),
         "an address that skipped DAD is immediately usable");
+}
+
+#[test]
+fn optimistic_dad_policy_keeps_the_tentative_address_live() {
+    let fx = fixture();
+    let _policy = OptimisticAll::set();
+    let (mut req, mut msg) = addr6_req(RTM_NEWADDR, fx.ifindex, 64, GLOBAL, 0, 0);
+    put_nlattr(&mut msg, ifa::IFA_FLAGS, &IFA_F_OPTIMISTIC.to_ne_bytes());
+    seal(&mut req, &mut msg);
+    assert_eq!(ack_errno(&handle_newaddr(&req, &msg)), 0);
+    let row = row_for(fx.iface, GLOBAL).unwrap();
+    assert!(matches!(row.state, net::stack_ipv6::Ipv6AddrState::Tentative { .. }));
+    assert_eq!(row.flags() & (IFA_F_TENTATIVE | IFA_F_OPTIMISTIC),
+        IFA_F_TENTATIVE | IFA_F_OPTIMISTIC);
+    assert!(net::global_stack().v6_addr_owned_by(fx.iface, net::Ipv6Addr(GLOBAL)),
+        "an optimistic address receives while DAD is pending");
+}
+
+#[test]
+fn nodad_and_enabled_optimistic_dad_are_mutually_exclusive() {
+    let fx = fixture();
+    let _policy = OptimisticAll::set();
+    let (mut req, mut msg) = addr6_req(RTM_NEWADDR, fx.ifindex, 64, GLOBAL, 0, 0);
+    let flags = IFA_F_NODAD | IFA_F_OPTIMISTIC;
+    put_nlattr(&mut msg, ifa::IFA_FLAGS, &flags.to_ne_bytes());
+    seal(&mut req, &mut msg);
+    assert_eq!(ack_errno(&handle_newaddr(&req, &msg)), -22);
+    assert!(row_for(fx.iface, GLOBAL).is_none());
+}
+
+#[test]
+fn disabled_optimistic_dad_clears_the_bit_before_conflict_validation() {
+    let fx = fixture();
+    let (mut req, mut msg) = addr6_req(RTM_NEWADDR, fx.ifindex, 64, GLOBAL, 0, 0);
+    let flags = IFA_F_NODAD | IFA_F_OPTIMISTIC;
+    put_nlattr(&mut msg, ifa::IFA_FLAGS, &flags.to_ne_bytes());
+    seal(&mut req, &mut msg);
+    assert_eq!(ack_errno(&handle_newaddr(&req, &msg)), 0);
+    let row = row_for(fx.iface, GLOBAL).unwrap();
+    assert_eq!(row.flags() & IFA_F_OPTIMISTIC, 0);
+    assert_eq!(row.flags() & IFA_F_NODAD, IFA_F_NODAD);
 }
 
 // A finite valid lifetime is what strips IFA_F_PERMANENT; a preferred lifetime

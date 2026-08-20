@@ -1,6 +1,32 @@
 use super::*;
 
 impl IfaceRegistry {
+    /// Retain one live interface's IPv6 configuration owner. # C: O(N)
+    pub fn ipv6_conf_by_name_in(&self, name: &str, ns: u64) -> Option<Arc<Ipv6DevConf>> {
+        let g = self.inner.lock();
+        g.entries.iter().find(|e| e.name == name && e.ns == ns
+            && e.ingress.live() && e.ingress.ready())
+            .map(|e| Arc::clone(&e.ipv6_conf))
+    }
+
+    /// Whether this interface permits an optimistic-DAD address. # C: O(N)
+    pub fn ipv6_optimistic_dad_in(&self, iface: NetIfaceId, ns: u64) -> bool {
+        if crate::sysctl::value_in(ns, crate::net_ns::NetSysctlKey::Ipv6OptimisticDadAll)
+            .unwrap_or(0) != 0 { return true; }
+        let g = self.inner.lock();
+        g.entries.iter().find(|e| e.id == iface && e.ns == ns && e.ingress.live())
+            .is_some_and(|e| e.ipv6_conf.value(Ipv6ConfKey::OptimisticDad) != 0)
+    }
+
+    /// Whether source selection may use this interface's optimistic address. # C: O(N)
+    pub fn ipv6_use_optimistic_in(&self, iface: NetIfaceId, ns: u64) -> bool {
+        if crate::sysctl::value_in(ns, crate::net_ns::NetSysctlKey::Ipv6UseOptimisticAll)
+            .unwrap_or(0) != 0 { return true; }
+        let g = self.inner.lock();
+        g.entries.iter().find(|e| e.id == iface && e.ns == ns && e.ingress.live())
+            .is_some_and(|e| e.ipv6_conf.value(Ipv6ConfKey::UseOptimistic) != 0)
+    }
+
     /// Resolve one Linux-visible interface index to its device AND its receive
     /// queues — Linux `netdev_get_by_index_lock` followed by
     /// `__netif_get_rx_queue`. Both come out together because a caller that
