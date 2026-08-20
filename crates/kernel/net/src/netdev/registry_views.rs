@@ -1,6 +1,22 @@
 use super::*;
 
 impl IfaceRegistry {
+    /// Apply `conf/all/disable_ipv6` to every live interface in one namespace.
+    /// A concurrently created interface copies the already-updated default. # C: O(N)
+    pub fn set_ipv6_disabled_all_in(&self, ns: u64, value: i64) {
+        let g = self.inner.lock();
+        for entry in g.entries.iter().filter(|entry| entry.ns == ns && entry.ingress.live()) {
+            entry.ipv6_conf.set_value(Ipv6ConfKey::DisableIpv6, value);
+        }
+    }
+
+    /// Whether IPv6 is disabled on this exact interface. # C: O(N)
+    pub fn ipv6_disabled_in(&self, iface: NetIfaceId, ns: u64) -> bool {
+        let g = self.inner.lock();
+        g.entries.iter().find(|e| e.id == iface && e.ns == ns && e.ingress.live())
+            .is_some_and(|e| e.ipv6_conf.value(Ipv6ConfKey::DisableIpv6) != 0)
+    }
+
     /// Retain one live interface's IPv6 configuration owner. # C: O(N)
     pub fn ipv6_conf_by_name_in(&self, name: &str, ns: u64) -> Option<Arc<Ipv6DevConf>> {
         let g = self.inner.lock();

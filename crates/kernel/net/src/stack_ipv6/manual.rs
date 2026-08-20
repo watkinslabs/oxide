@@ -50,10 +50,9 @@ pub fn dad_applies(dev_flags: u32, user_flags: u32) -> bool {
     dev_flags & (iff::IFF_NOARP | iff::IFF_LOOPBACK) == 0
 }
 
-/// `net.ipv6.conf.all.disable_ipv6` for one live namespace. # C: O(log N)
-pub fn ipv6_disabled_in(ns: u64) -> bool {
-    crate::sysctl::value_in(ns, crate::net_ns::NetSysctlKey::Ipv6DisableAll)
-        .is_some_and(|value| value != 0)
+/// The live interface's inherited `net.ipv6.conf.*.disable_ipv6` policy. # C: O(N)
+pub fn ipv6_disabled_in(ns: u64, iface: NetIfaceId) -> bool {
+    crate::sock::stack().ifaces.ipv6_disabled_in(iface, ns)
 }
 
 impl NetStack {

@@ -15,6 +15,7 @@ const ROOT_PATH: &str = "/proc/sys/net/ipv6/conf";
 const DIR_PERM: u16 = 0o555;
 const SPECIAL_NAMES: &[&str] = &["all", "default"];
 const DEV_LEAVES: &[(&str, net::netdev::Ipv6ConfKey)] = &[
+    ("disable_ipv6", net::netdev::Ipv6ConfKey::DisableIpv6),
     ("optimistic_dad", net::netdev::Ipv6ConfKey::OptimisticDad),
     ("use_optimistic", net::netdev::Ipv6ConfKey::UseOptimistic),
 ];
@@ -38,16 +39,51 @@ fn dir_inode(path: &str, kind: ConfDirKind) -> InodeRef {
 }
 
 fn special_leaf(kind: &ConfDirKind, name: &str) -> Option<Leaf> {
+    if name == "disable_ipv6" {
+        return Some(match kind {
+            ConfDirKind::All => Leaf::PerNetIntHook(
+                disable_ipv6_all_get, disable_ipv6_all_set, None),
+            ConfDirKind::Default => Leaf::PerNetIntHook(
+                disable_ipv6_default_get, disable_ipv6_default_set, None),
+            ConfDirKind::Iface { .. } => return None,
+        });
+    }
     let key = match (kind, name) {
-        (ConfDirKind::All, "disable_ipv6") => net::net_ns::NetSysctlKey::Ipv6DisableAll,
         (ConfDirKind::All, "optimistic_dad") => net::net_ns::NetSysctlKey::Ipv6OptimisticDadAll,
         (ConfDirKind::All, "use_optimistic") => net::net_ns::NetSysctlKey::Ipv6UseOptimisticAll,
-        (ConfDirKind::Default, "disable_ipv6") => net::net_ns::NetSysctlKey::Ipv6DisableDefault,
         (ConfDirKind::Default, "optimistic_dad") => net::net_ns::NetSysctlKey::Ipv6OptimisticDadDefault,
         (ConfDirKind::Default, "use_optimistic") => net::net_ns::NetSysctlKey::Ipv6UseOptimisticDefault,
         _ => return None,
     };
-    Some(NetInt(key, if name == "disable_ipv6" { Some((0, 1)) } else { None }))
+    Some(NetInt(key, None))
+}
+
+fn disable_ipv6_all_get(ns: &network_namespace::NetworkNamespaceRef, _key: usize)
+    -> Result<i64, ()>
+{
+    net::sysctl::value(ns, net::net_ns::NetSysctlKey::Ipv6DisableAll).ok_or(())
+}
+
+fn disable_ipv6_default_get(ns: &network_namespace::NetworkNamespaceRef, _key: usize)
+    -> Result<i64, ()>
+{
+    net::sysctl::value(ns, net::net_ns::NetSysctlKey::Ipv6DisableDefault).ok_or(())
+}
+
+fn disable_ipv6_all_set(ns: &network_namespace::NetworkNamespaceRef, _key: usize, value: i64)
+    -> Result<(), ()>
+{
+    net::sysctl::set_value(ns, net::net_ns::NetSysctlKey::Ipv6DisableDefault, value)?;
+    net::sysctl::set_value(ns, net::net_ns::NetSysctlKey::Ipv6DisableAll, value)?;
+    net::sock::stack().ifaces.set_ipv6_disabled_all_in(ns.id().as_u64(), value);
+    Ok(())
+}
+
+fn disable_ipv6_default_set(ns: &network_namespace::NetworkNamespaceRef, _key: usize, value: i64)
+    -> Result<(), ()>
+{
+    net::sysctl::set_value(ns, net::net_ns::NetSysctlKey::Ipv6DisableDefault, value)?;
+    Ok(())
 }
 
 struct DevIntHandler {
@@ -58,7 +94,8 @@ struct DevIntHandler {
 impl ProcHandler for DevIntHandler {
     fn format(&self) -> Vec<u8> { alloc::format!("{}\n", self.conf.value(self.key)).into_bytes() }
     fn store(&self, src: &[u8]) -> Result<(), ()> {
-        self.conf.set_value(self.key, crate::proc_handler::parse_single_i64(src)?);
+        let value = crate::proc_handler::parse_single_i64(src)?;
+        self.conf.set_value(self.key, value);
         Ok(())
     }
 }

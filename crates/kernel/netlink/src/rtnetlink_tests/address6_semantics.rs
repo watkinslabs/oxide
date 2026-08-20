@@ -47,6 +47,22 @@ fn a_link_local_add_succeeds_and_lands_in_the_one_address_table() {
     assert_eq!(row.preferred, INFINITY_LIFE_TIME);
 }
 
+#[test]
+fn disable_ipv6_is_enforced_by_the_selected_interface() {
+    let fx = fixture();
+    let conf = net::global_stack().ifaces.ipv6_conf_by_name_in("eth-stable", 0).unwrap();
+    conf.set_value(net::netdev::Ipv6ConfKey::DisableIpv6, 1);
+    let (req, msg) = addr6_req(RTM_NEWADDR, fx.ifindex, 64, GLOBAL, 0,
+        crate::flags::NLM_F_CREATE);
+    assert_eq!(ack_errno(&handle_newaddr(&req, &msg)), -13);
+
+    conf.set_value(net::netdev::Ipv6ConfKey::DisableIpv6, 0);
+    assert_eq!(ack_errno(&handle_newaddr(&req, &msg)), 0);
+    conf.set_value(net::netdev::Ipv6ConfKey::DisableIpv6, 1);
+    let (req, msg) = addr6_req(RTM_DELADDR, fx.ifindex, 64, GLOBAL, 0, 0);
+    assert_eq!(ack_errno(&handle_deladdr(&req, &msg)), -6);
+}
+
 // The address must reach the RTM_GETADDR dump, which is what a manager reads
 // back to decide whether its own request took effect.
 #[test]

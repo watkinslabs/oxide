@@ -196,7 +196,9 @@ pub(crate) fn handle_newaddr6_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Ve
             if let Some(err) = decide::reject_manage_tempaddr(user_flags, hdr.prefixlen) {
                 return build_ack(req, err);
             }
-            if net::stack_ipv6::ipv6_disabled_in(ns) { return build_ack(req, errno::EACCES); }
+            if net::stack_ipv6::ipv6_disabled_in(ns, iface) {
+                return build_ack(req, errno::EACCES);
+            }
             let loopback_dev = dev_flags & net::netdev::iff::IFF_LOOPBACK != 0;
             if let Some(err) = decide::reject_address_type(AddrType::of(addr), user_flags,
                                                           loopback_dev) {
@@ -239,7 +241,7 @@ pub(crate) fn handle_deladdr6_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Ve
     };
     if lease.net_ns() != ns { return build_ack(req, errno::ENODEV); }
     // No IPv6 on the device is ENXIO here, not the add path's EACCES.
-    if net::stack_ipv6::ipv6_disabled_in(ns) { return build_ack(req, errno::ENXIO); }
+    if net::stack_ipv6::ipv6_disabled_in(ns, iface) { return build_ack(req, errno::ENXIO); }
     let Some(label) = stack.ifaces.name_in_ns(iface, ns) else {
         return build_ack(req, errno::ENODEV);
     };
