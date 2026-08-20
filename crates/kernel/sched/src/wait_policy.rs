@@ -29,6 +29,12 @@ use crate::task::WaitState;
 /// # C: O(1)
 pub const fn poll_family() -> WaitState { WaitState::Interruptible }
 
+/// An event-driven kernel worker while its work queue is empty.
+///
+/// Ordinary idle time is not an uninterruptible resource wait and therefore
+/// must not enter the hung-task candidate set. # C: O(1)
+pub const fn event_worker() -> WaitState { WaitState::Interruptible }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -65,5 +71,18 @@ mod tests {
         let t = sleeper(7003, Signum::Sigkill);
         assert!(!signal_pending_state(&t, WaitState::Uninterruptible));
         assert_ne!(poll_family(), WaitState::Uninterruptible);
+    }
+
+    #[test]
+    fn an_idle_event_worker_is_not_a_hung_task_candidate() {
+        let observation = crate::hung_task::Observation {
+            state: crate::TaskState::Sleeping,
+            wait: event_worker(),
+            switch_count: 7,
+            last_switch_count: 7,
+            last_switch_ns: 0,
+            now_ns: 121_000_000_000,
+        };
+        assert_eq!(crate::hung_task::classify(observation, 120), crate::hung_task::Verdict::Skip);
     }
 }

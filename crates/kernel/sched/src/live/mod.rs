@@ -88,7 +88,7 @@ pub use ksoftirqd::spawn_ksoftirqd;
 #[cfg(target_os = "oxide-kernel")] pub use khungtaskd::spawn_khungtaskd;
 pub use wait_list::WaitList;
 pub use wait_event::{wait_event, wait_event_interruptible, wait_event_interruptible_until,
-                     wait_event_killable, wait_event_uninterruptible,
+                     wait_event_killable, wait_event_uninterruptible, wait_event_worker,
                      wait_event_uninterruptible_prepare,
                      wait_event_uninterruptible_until, sleep_uninterruptible_until};
 pub use mutex::{Mutex, MutexGuard};

@@ -22,7 +22,7 @@ use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
-use sched::live::{WaitList, wait_event_killable, wait_event_uninterruptible};
+use sched::live::{WaitList, wait_event_killable, wait_event_uninterruptible, wait_event_worker};
 use sync::Spinlock;
 use syscall::errno::Errno;
 
@@ -188,7 +188,7 @@ extern "C" fn khelper(arg: usize) -> ! {
             // SAFETY: running kthread with no queue lock held; the generic
             // loop rechecks publication after its waiter is visible.
             None => { let _ = unsafe {
-                wait_event_uninterruptible(&PENDING_WAIT,
+                wait_event_worker(&PENDING_WAIT,
                     || !PENDING.lock_irqsave::<UmhIrq>().is_empty())
             }; },
         }
