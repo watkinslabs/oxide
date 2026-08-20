@@ -64,10 +64,10 @@ failure mode this reconcile was supposed to catch, not commit.
 | Class | blocker | critical | high | med | low | Total |
 |---|---:|---:|---:|---:|---:|---:|
 | COVERAGE | 0 | 0 | 11 | 68 | 66 | 145 |
-| DEFECT | 2 | 4 | 27 | 69 | 72 | 174 |
+| DEFECT | 2 | 4 | 27 | 69 | 71 | 173 |
 | INFRA | 0 | 0 | 11 | 41 | 39 | 91 |
 | MISSING | 1 | 0 | 49 | 144 | 117 | 311 |
-| **Total** | **3** | **4** | **98** | **322** | **294** | **721** |
+| **Total** | **3** | **4** | **98** | **322** | **293** | **720** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -849,7 +849,6 @@ here now.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | OPEN | COVERAGE | med | The raw IPv4 local-error report has no hosted test and cannot get one where it lives. `net::sock` declares `mod send;` under `#[cfg(target_os = "oxide-kernel")]`, so `sendto_raw4` and `RemoteAddr` do not exist in a hosted build and any `#[cfg(test)]` block reaching them is a phantom. The raw IPv6 twin IS covered end to end because `sock_v6.rs` is ungated. Closing it means moving the raw4 send body into an ungated module and leaving the gated file a shim. | The raw4 change is proven only by `make feature-gate-x86`/`-arm`. | unclaimed |
-| OPEN | DEFECT | low | The two UDP/IPv4 `report_send_failure` sites do not subtract the socket's `IP_OPTIONS` byte count from the MTU they report, so a UDP4 socket carrying header options is told an MTU that is too large by exactly the option area. The reference subtracts the option length at its IPv4 local-error call. The IPv6 sites and both raw sites were fixed on this branch; these two were not, because `sock/udp.rs` was owned by another lane during the wave. One-line change per site: pass `sock.opts.ip.options_len()` where `0` is passed today. | `net/src/sock/udp.rs`, the two `report_send_failure` calls; contrast the threaded `header_bytes` at the `sock_v6.rs` and `sock/send.rs` sites. | CLAIMED B2298-udp4-option-error-mtu 2026-08-20 |
 | OPEN | DEFECT | low | The error queue's receive budget is a PUBLISHED COPY of `SO_RCVBUF`, not a read-through. The reference admits an error record against the same `sk_rcvbuf` word the ordinary receive queue uses; here `setsockopt` republishes the value into `SocketError` alongside the raw/TCP syncs. Observably identical for every path that goes through the option table, but a future writer that sets the budget without going through `sync_rcvbuf` would leave the two disagreeing. Closing it means giving `SockBase::rcvbuf` the `Arc<AtomicI32>` shape `mark` now has and handing the same cell to `SocketError`. | `syscalls::054_setsockopt::main::sync_rcvbuf` -> `SocketError::adopt_rcvbuf`; pinned by `socket_error::tests::queue::the_error_queue_budget_follows_the_socket_receive_budget`. | unclaimed |
 | OPEN | COVERAGE | med | `net::sock::ops`'s test module has never executed. It is `#[cfg(all(test, target_os = "oxide-kernel"))]` inside a file that is itself target-gated, so `cargo test -p net sock::ops` reports `0 passed; 2294 filtered out` — the pre-existing `unix_dgram_af_unspec_connect_clears_peer` is a phantom. Three AF_UNIX connect-path tests written for this branch were deleted rather than shipped as phantoms; the decision they would have covered is instead pinned in the ungated `unix_sock::writable` tests. | Measured on this branch: the filtered-out count does not move when tests are added to that module. | unclaimed |
 | FIXED | MISSING | low | IPv4-backed UDP6 records carry their own IPv4 header state and the AF_INET6 receive arm fills `Received`'s IPv4 metadata as well as its IPv6 common metadata, so `IP_RECVTOS`, `IP_RECVOPTS`, `IP_PKTINFO`, `IP_TTL`, original destination, checksum, and fragment size all use the IPv4 ancillary path. | `89fb585f1`; full hosted net suite 2,550 passed. | B2292 |
