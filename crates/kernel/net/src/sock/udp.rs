@@ -107,6 +107,7 @@ pub(crate) fn socket_sendto_ctl_admitted(sock: &InetSocket, dst: Ipv4Addr, dst_p
     // among them retargets the route lookup at its first hop.
     // A control message replaces the socket's own option area outright.
     let ip_options = msg.v4_options(sock.opts.ip.options());
+    let option_bytes = ip_options.as_ref().map_or(0, |opts| opts.len() as u32);
     // `SO_NO_CHECK`: the datagram leaves with a zero checksum field, which an
     // IPv4 receiver reads as "not computed".
     let no_check = sock.opts.base.generic.flag(crate::sock_opts::sol_socket::flag::NO_CHECK_TX);
@@ -123,8 +124,9 @@ pub(crate) fn socket_sendto_ctl_admitted(sock: &InetSocket, dst: Ipv4Addr, dst_p
                 stack().send_udp_pmtu_to_bound_opts_owned(
                     &sock.owner, src_ip, src_port, dst, dst_port, segment, bound_iface, tos, ttl,
                     pmtudisc, ip_options.as_ref(), no_check, tx,
-                ).map_err(|error| crate::socket_error::report_send_failure(&sock.error, net_ns,
-                    crate::addr::IpAddr::V4(dst), dst_port, bound_iface, error))?;
+                ).map_err(|error| crate::socket_error::report_send_failure_pmtu(&sock.error,
+                    net_ns, crate::addr::IpAddr::V4(dst), dst_port, bound_iface, error, false,
+                    option_bytes))?;
             }
             if crate::inet_tx::drains_loopback(multicast, mcast_loop) { drain_loopback(); }
             return Ok(payload.len());
@@ -133,8 +135,8 @@ pub(crate) fn socket_sendto_ctl_admitted(sock: &InetSocket, dst: Ipv4Addr, dst_p
     stack().send_udp_pmtu_to_bound_opts_owned(
         &sock.owner, src_ip, src_port, dst, dst_port, payload, bound_iface, tos, ttl, pmtudisc,
         ip_options.as_ref(), no_check, tx,
-    ).map_err(|error| crate::socket_error::report_send_failure(&sock.error, net_ns,
-        crate::addr::IpAddr::V4(dst), dst_port, bound_iface, error))?;
+    ).map_err(|error| crate::socket_error::report_send_failure_pmtu(&sock.error, net_ns,
+        crate::addr::IpAddr::V4(dst), dst_port, bound_iface, error, false, option_bytes))?;
     if crate::inet_tx::drains_loopback(multicast, mcast_loop) { drain_loopback(); }
     Ok(payload.len())
 }
