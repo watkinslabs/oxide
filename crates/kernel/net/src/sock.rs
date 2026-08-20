@@ -74,7 +74,7 @@ mod inode;
 #[cfg(target_os = "oxide-kernel")]
 mod io;
 mod write_more_policy;
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 mod udp;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 mod raw;
@@ -114,7 +114,7 @@ pub mod send_fastopen;
 pub(crate) mod tcp_lifecycle;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 mod ops;
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 mod send;
 #[cfg(test)]
 mod unix_connect_tests;
@@ -174,7 +174,7 @@ pub use connect_admission::{
 pub use legacy_ioctl::legacy_ioctl_errno;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub use inode::*;
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub use udp::*;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub(crate) use raw_bind::*;
@@ -182,7 +182,7 @@ pub(crate) use raw_bind::*;
 pub use shutdown::*;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub use ops::*;
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub use send::*;
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub use crate::sock_io::{recvfrom, recvfrom_opts, Received, RecvOptions};

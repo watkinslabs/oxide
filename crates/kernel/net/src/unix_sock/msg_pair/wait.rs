@@ -1,14 +1,10 @@
 use super::{UnixEnd, UnixMsgKind, UnixMsgPair};
-#[cfg(target_os = "oxide-kernel")]
 use super::message_charge;
 
-#[cfg(target_os = "oxide-kernel")]
 pub enum ArmMsgRead { Retry, Reset, Eof, Parked { reader_shutdown: bool } }
 
-#[cfg(target_os = "oxide-kernel")]
 pub enum ArmMsgReadAfter { Retry, Reset, Eof, DatagramShutdown, Parked }
 
-#[cfg(target_os = "oxide-kernel")]
 pub enum ArmMsgWrite { Retry, PeerClosed, MessageTooLarge, Parked }
 
 impl UnixMsgPair {
@@ -42,7 +38,6 @@ impl UnixMsgPair {
     }
 
     /// Atomically recheck a message receive and park the caller. # C: O(1)
-    #[cfg(target_os = "oxide-kernel")]
     pub fn arm_read_after_generation(&self, end: UnixEnd, shutdown_generation: u64,
         deadline_ns: u64) -> ArmMsgReadAfter {
         let g = match end { UnixEnd::A => self.b_to_a.lock(), UnixEnd::B => self.a_to_b.lock() };
@@ -62,7 +57,6 @@ impl UnixMsgPair {
     }
 
     /// Arm a receive without a pre-attempt shutdown snapshot. # C: O(1)
-    #[cfg(target_os = "oxide-kernel")]
     pub fn arm_read(&self, end: UnixEnd, deadline_ns: u64) -> ArmMsgRead {
         let g = match end { UnixEnd::A => self.b_to_a.lock(), UnixEnd::B => self.a_to_b.lock() };
         if !g.msgs.is_empty() { return ArmMsgRead::Retry; }
@@ -79,7 +73,6 @@ impl UnixMsgPair {
     }
 
     /// Atomically recheck atomic-record capacity and park one writer. # C: O(1)
-    #[cfg(target_os = "oxide-kernel")]
     pub fn arm_write(&self, end: UnixEnd, len: usize, cap: usize, deadline_ns: u64) -> ArmMsgWrite {
         let g = match end { UnixEnd::A => self.a_to_b.lock(), UnixEnd::B => self.b_to_a.lock() };
         if self.peer_gone(end) || g.closed_writer || g.reader_shutdown {
@@ -96,8 +89,7 @@ impl UnixMsgPair {
     }
 
     /// WaitList for writers on `end`. # C: O(1)
-    #[cfg(target_os = "oxide-kernel")]
-    pub fn writer_waiters(&self, end: UnixEnd) -> &sched::live::WaitList {
+    pub fn writer_waiters(&self, end: UnixEnd) -> &crate::sock_wait::SockWaitQueue {
         match end { UnixEnd::A => &self.a_to_b_writers, UnixEnd::B => &self.b_to_a_writers }
     }
 

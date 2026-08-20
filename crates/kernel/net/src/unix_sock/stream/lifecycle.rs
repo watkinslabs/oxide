@@ -5,7 +5,6 @@ use vfs;
 
 const ECONNRESET: i32 = syscall::errno::Errno::Econnreset as i32;
 
-#[cfg(target_os = "oxide-kernel")]
 pub enum ArmStreamRead {
     Retry,
     Reset,
@@ -13,12 +12,10 @@ pub enum ArmStreamRead {
     Parked,
 }
 
-#[cfg(target_os = "oxide-kernel")]
 pub enum ArmStreamWrite { Retry, PeerClosed, Parked }
 
 impl UnixPair {
     /// Atomically recheck stream send capacity and park one writer. # C: O(1)
-    #[cfg(target_os = "oxide-kernel")]
     pub fn arm_stream_write(&self, end: UnixEnd, cap: usize, deadline_ns: u64) -> ArmStreamWrite {
         let outgoing = match end { UnixEnd::A => &self.a_to_b, UnixEnd::B => &self.b_to_a };
         let g = outgoing.lock();
@@ -34,13 +31,11 @@ impl UnixPair {
     }
     /// Atomically recheck a boundary-aware stream read and park its caller.
     /// # C: O(1)
-    #[cfg(target_os = "oxide-kernel")]
     pub fn arm_stream_read(&self, end: UnixEnd, deadline_ns: u64) -> ArmStreamRead {
         self.arm_stream_read_after(end, 0, deadline_ns)
     }
 
     /// Atomically park until bytes exist beyond a non-consuming peek offset. # C: O(1)
-    #[cfg(target_os = "oxide-kernel")]
     pub fn arm_stream_read_after(&self, end: UnixEnd, offset: usize, deadline_ns: u64) -> ArmStreamRead {
         let read_ring = match end {
             UnixEnd::A => &self.b_to_a,
@@ -107,6 +102,8 @@ impl UnixPair {
             super::super::wake_peer_subs(self, end.other(), vfs::POLL_IN | vfs::POLL_RDHUP);
             super::super::wake_peer_subs(self, end, vfs::POLL_OUT);
         }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        self.reader_waiters(end).wake_all();
     }
 
     /// Shut down `end`'s send half and publish EOF after queued bytes drain.
@@ -120,6 +117,8 @@ impl UnixPair {
             self.writer_waiters(end).wake_all();
             super::super::wake_peer_subs(self, end, vfs::POLL_IN | vfs::POLL_RDHUP);
         }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        self.reader_waiters(end.other()).wake_all();
     }
 
     /// Destroy one endpoint at final file release.
@@ -159,6 +158,11 @@ impl UnixPair {
             let mut mask = vfs::POLL_IN | vfs::POLL_HUP | vfs::POLL_RDHUP;
             if unread { mask |= vfs::POLL_ERR; }
             super::super::wake_peer_subs(self, end, mask);
+        }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        {
+            self.reader_waiters(end).wake_all();
+            self.reader_waiters(end.other()).wake_all();
         }
     }
 

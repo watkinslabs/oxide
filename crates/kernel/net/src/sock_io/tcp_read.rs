@@ -26,23 +26,18 @@ pub(crate) fn read_tcp_blocking(
         if eno != 0 { return Err(tcp_vfs_error(eno)); }
         if sock.read_shut.load(core::sync::atomic::Ordering::Acquire) { return Ok(0); }
         if tcp_recv_eof(entry.conn.lock().state) { return Ok(0); }
-        #[cfg(target_os = "oxide-kernel")]
         // Linux `tcp_recvmsg_locked`: `sock_intr_errno(timeo)`.
-        if sched::live::deliverable_signals_self() != 0 {
+        if crate::sock_intr::signal_pending_self() {
             return Err(crate::sock_intr::sock_intr_vfs(deadline_ns));
         }
-        #[cfg(target_os = "oxide-kernel")]
         if deadline_ns != 0 && super::monotonic_ns_safe() >= deadline_ns {
             return Err(vfs::VfsError::Eagain);
         }
-        #[cfg(target_os = "oxide-kernel")]
         if arm_tcp_read(sock, entry, deadline_ns) {
             // SAFETY: arm_tcp_read published current under entry.conn.
-            unsafe { sched::live::schedule::schedule(); }
+            unsafe { entry.poll_subs.sleep().wait(); }
             entry.poll_subs.sleep().remove_current();
         }
-        #[cfg(not(target_os = "oxide-kernel"))]
-        return Err(vfs::VfsError::Eagain);
     }
 }
 
@@ -64,13 +59,11 @@ pub fn tcp_recv_eof(st: crate::tcp_state::TcpState) -> bool {
 
 /// Atomically recheck TCP receive shutdown/data state and park current.
 /// # C: O(1)
-#[cfg(target_os = "oxide-kernel")]
 pub(crate) fn arm_tcp_read(sock: &InetSocket, entry: &alloc::sync::Arc<TcpEntry>, deadline_ns: u64) -> bool {
     arm_tcp_read_after(sock, entry, 0, deadline_ns)
 }
 
 /// Atomically park until bytes exist beyond a non-consuming peek offset. # C: O(1)
-#[cfg(target_os = "oxide-kernel")]
 pub(crate) fn arm_tcp_read_after(sock: &InetSocket, entry: &alloc::sync::Arc<TcpEntry>, offset: usize, deadline_ns: u64) -> bool {
     arm_tcp_read_after_mode(sock, entry, offset, deadline_ns, false)
 }

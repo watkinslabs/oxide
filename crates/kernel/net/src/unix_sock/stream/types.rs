@@ -25,14 +25,10 @@ pub struct UnixPair {
     pub b_to_a: Spinlock<UnixRing, UnixLockClass>,
     /// Reader of a_to_b (UnixEnd::B's read side) parks here.
     /// Writer (UnixEnd::A's write) wakes it after pushing.
-    #[cfg(target_os = "oxide-kernel")]
-    pub a_to_b_waiters: sched::live::WaitList,
-    #[cfg(target_os = "oxide-kernel")]
-    pub b_to_a_waiters: sched::live::WaitList,
-    #[cfg(target_os = "oxide-kernel")]
-    pub a_to_b_writers: sched::live::WaitList,
-    #[cfg(target_os = "oxide-kernel")]
-    pub b_to_a_writers: sched::live::WaitList,
+    pub a_to_b_waiters: crate::sock_wait::SockWaitQueue,
+    pub b_to_a_waiters: crate::sock_wait::SockWaitQueue,
+    pub a_to_b_writers: crate::sock_wait::SockWaitQueue,
+    pub b_to_a_writers: crate::sock_wait::SockWaitQueue,
     /// End A's epoll subscribers (the InetSocket on end A). Wakeable
     /// when a_to_b advances? No - end A reads from b_to_a. So this
     /// is woken when end B writes (write(end=B) advances b_to_a).
