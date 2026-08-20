@@ -104,6 +104,7 @@ fn v6_delivery_uses_the_raw_table_and_shared_socket_option_state() {
         alloc::sync::Arc::new(crate::bpf_filter::SocketFilter::new()),
         alloc::sync::Arc::new(crate::mcast_filter::SocketMcast::new()),
         alloc::sync::Arc::new(crate::socket_error::SocketError::new()),
+        alloc::sync::Arc::new(crate::sock_opts::sol_ip::IpOpts::default()),
         Some(options.router_alert()),
     ));
     stack.register_raw6(&endpoint);
@@ -132,6 +133,7 @@ fn v6_isolate_excludes_a_receiver_owned_by_another_namespace() {
         alloc::sync::Arc::new(crate::bpf_filter::SocketFilter::new()),
         alloc::sync::Arc::new(crate::mcast_filter::SocketMcast::new()),
         alloc::sync::Arc::new(crate::socket_error::SocketError::new()),
+        alloc::sync::Arc::new(crate::sock_opts::sol_ip::IpOpts::default()),
         Some(options.router_alert()),
     ));
     stack.register_raw6(&endpoint);

@@ -182,6 +182,96 @@ fn one_message_controls_drive_route_and_extension_header_construction() {
 }
 
 #[test]
+fn a_foreign_per_message_source_reads_the_live_nonlocal_permission() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
+    let (stack, dev) = routed_capture(256);
+    let sock = crate::sock::InetSocket::new_raw6(IpProto::Udp as u8);
+    let endpoint = match &*sock.kind.lock() {
+        crate::sock::SockKind::Raw6(endpoint) => endpoint.clone(),
+        _ => unreachable!("the constructor publishes a raw IPv6 endpoint"),
+    };
+    let opts = sock.opts.ip.clone();
+    let foreign = Ipv6Addr::from_segments([0x2001, 0xdb8, 0, 9, 0, 0, 0, 1]);
+    let control = crate::send_control::Raw6Control {
+        source: Some(foreign), ..crate::send_control::Raw6Control::default()
+    };
+
+    assert_eq!(stack.send_raw6(&endpoint, ROUTE_DST, None, None, b"first", 64,
+        crate::uapi::IPV6_PMTUDISC_WANT, &control, crate::TxMeta::NONE), Err(NetError::Einval));
+    opts.set_flag(crate::sock_opts::sol_ip::flag::FREEBIND, true);
+    stack.send_raw6(&endpoint, ROUTE_DST, None, None, b"second", 64,
+        crate::uapi::IPV6_PMTUDISC_WANT, &control, crate::TxMeta::NONE).unwrap();
+    opts.set_flag(crate::sock_opts::sol_ip::flag::FREEBIND, false);
+    opts.set_flag(crate::sock_opts::sol_ip::flag::TRANSPARENT, true);
+    stack.send_raw6(&endpoint, ROUTE_DST, None, None, b"third", 64,
+        crate::uapi::IPV6_PMTUDISC_WANT, &control, crate::TxMeta::NONE).unwrap();
+
+    let packets = dev.packets.lock();
+    assert_eq!(packets.len(), 2);
+    assert!(packets.iter().all(|packet| crate::ipv6::Ipv6Hdr::parse(packet).unwrap().src == foreign));
+}
+
+#[test]
+fn a_bound_foreign_source_is_not_screened_again_at_send() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
+    let (stack, dev) = routed_capture(256);
+    let endpoint = Raw6Endpoint::standalone(network_namespace::initial(), IpProto::Udp as u8);
+    let foreign = Ipv6Addr::from_segments([0x2001, 0xdb8, 0, 10, 0, 0, 0, 1]);
+    endpoint.bind(super::Raw6Address::new(foreign, 0), None);
+
+    stack.send_raw6(&endpoint, ROUTE_DST, None, None, b"bound", 64,
+        crate::uapi::IPV6_PMTUDISC_WANT, &crate::send_control::Raw6Control::default(),
+        crate::TxMeta::NONE).unwrap();
+
+    assert_eq!(crate::ipv6::Ipv6Hdr::parse(&dev.packets.lock()[0]).unwrap().src, foreign);
+}
+
+#[test]
+fn a_global_control_source_may_be_owned_on_another_interface() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
+    let (stack, dev) = routed_capture(256);
+    let other = stack.ifaces.register(Arc::new(CaptureDev {
+        mtu: 256, packets: Spinlock::new(Vec::new()),
+    }) as Arc<dyn NetDev>);
+    let source = Ipv6Addr::from_segments([0x2001, 0xdb8, 0, 11, 0, 0, 0, 1]);
+    stack.add_v6_addr(other, source);
+    let endpoint = Raw6Endpoint::standalone(network_namespace::initial(), IpProto::Udp as u8);
+    let control = crate::send_control::Raw6Control {
+        source: Some(source), ..crate::send_control::Raw6Control::default()
+    };
+
+    stack.send_raw6(&endpoint, ROUTE_DST, None, None, b"global", 64,
+        crate::uapi::IPV6_PMTUDISC_WANT, &control, crate::TxMeta::NONE).unwrap();
+
+    assert_eq!(crate::ipv6::Ipv6Hdr::parse(&dev.packets.lock()[0]).unwrap().src, source);
+}
+
+#[test]
+fn a_link_local_control_source_requires_an_explicit_interface_even_with_permission() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
+    let (stack, dev) = routed_capture(256);
+    let sock = crate::sock::InetSocket::new_raw6(IpProto::Udp as u8);
+    sock.opts.ip.set_flag(crate::sock_opts::sol_ip::flag::TRANSPARENT, true);
+    let endpoint = match &*sock.kind.lock() {
+        crate::sock::SockKind::Raw6(endpoint) => endpoint.clone(),
+        _ => unreachable!("the constructor publishes a raw IPv6 endpoint"),
+    };
+    let source = Ipv6Addr::from_segments([0xfe80, 0, 0, 0, 0, 0, 0, 9]);
+    let no_iface = crate::send_control::Raw6Control {
+        source: Some(source), ..crate::send_control::Raw6Control::default()
+    };
+    assert_eq!(stack.send_raw6(&endpoint, ROUTE_DST, None, None, b"no-iface", 64,
+        crate::uapi::IPV6_PMTUDISC_WANT, &no_iface, crate::TxMeta::NONE), Err(NetError::Einval));
+    let iface = stack.routes6.lookup_in(0, ROUTE_DST).unwrap().iface;
+    let with_iface = crate::send_control::Raw6Control {
+        source: Some(source), iface: Some(iface), ..crate::send_control::Raw6Control::default()
+    };
+    stack.send_raw6(&endpoint, ROUTE_DST, None, None, b"with-iface", 64,
+        crate::uapi::IPV6_PMTUDISC_WANT, &with_iface, crate::TxMeta::NONE).unwrap();
+    assert_eq!(crate::ipv6::Ipv6Hdr::parse(&dev.packets.lock()[0]).unwrap().src, source);
+}
+
+#[test]
 fn per_message_dontfrag_rejects_packet_over_route_mtu() {
     let _initial_net = crate::hosted_fixture::init_net_domain();
     let (stack, dev) = routed_capture(64);

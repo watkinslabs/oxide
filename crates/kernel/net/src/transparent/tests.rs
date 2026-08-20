@@ -137,9 +137,22 @@ fn a_socket_bound_through_freebind_cannot_source_from_its_own_bound_address() {
 }
 
 #[test]
-fn an_ipv6_source_a_socket_selected_is_never_overwritten() {
-    // IPv6 route output has no owned-source test at all: an explicit source is
-    // what leaves the host, foreign or not, with no permission consulted.
+fn an_ipv6_control_source_uses_the_shared_nonlocal_permission() {
+    let namespace = crate::net_ns::test_support::allocate_namespace();
+    crate::net_ns::materialize_state(&namespace);
+    let ns = namespace.id().as_u64();
+    let foreign = crate::Ipv6Addr::from_segments([0x2001, 0xdb8, 0, 1, 0, 0, 0, 9]);
+    assert_eq!(screen_v6_control_source(ns, foreign, false, none()), Err(crate::NetError::Einval));
+    assert_eq!(screen_v6_control_source(ns, foreign, true, none()), Ok(()));
+    assert_eq!(screen_v6_control_source(ns, foreign, false, freebind()), Ok(()));
+    assert_eq!(screen_v6_control_source(ns, foreign, false, transparent()), Ok(()));
+    assert_eq!(screen_v6_control_source(ns, crate::Ipv6Addr::ANY, false, none()), Ok(()));
+    crate::sysctl::set_value_in(ns, crate::net_ns::NetSysctlKey::Ipv6NonlocalBind, 1).unwrap();
+    assert_eq!(screen_v6_control_source(ns, foreign, false, none()), Ok(()));
+}
+
+#[test]
+fn an_admitted_ipv6_source_is_never_overwritten() {
     let foreign = crate::Ipv6Addr([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9]);
     assert!(v6_source_is_verbatim(foreign));
     assert!(!v6_source_is_verbatim(crate::Ipv6Addr::ANY));
