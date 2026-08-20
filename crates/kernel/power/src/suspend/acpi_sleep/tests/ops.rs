@@ -45,3 +45,22 @@ fn valid_refuses_mem_while_the_facts_do_not_support_it() {
     assert!(!valid(SuspendState::Mem));
     assert!(!valid(SuspendState::Standby));
 }
+
+#[test]
+fn platform_callbacks_wire_device_prepare_and_runtime_mask_restore() {
+    let source = include_str!("../../acpi_sleep.rs");
+    assert!(source.contains("acpi::prepare_wake_devices(state)"),
+        "the platform late phase no longer prepares ACPI wake devices");
+    let restore = source.find("events::restore_runtime_gpes()").expect("runtime restore call");
+    let finish = source.find("acpi::finish_wake_devices()").expect("device finish call");
+    assert!(restore < finish, "runtime GPEs must return before device wake controls are disabled");
+}
+
+#[test]
+fn platform_enter_arms_the_wake_mask_before_issuing_sleep_writes() {
+    let source = include_str!("../enter.rs");
+    let entry = &source[source.find("pub fn enter").expect("platform enter")..];
+    let arm = entry.find("events::arm_wakeup_gpes()").expect("wake-mask arm call");
+    let issue = entry.find("enter_deep()").expect("sleep entry call");
+    assert!(arm < issue, "sleep registers can be written before wake GPEs are armed");
+}

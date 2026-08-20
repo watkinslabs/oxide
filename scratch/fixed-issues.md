@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2307-acpi-gpe-wake-sources
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED e1b13d527 | MISSING | high | **ACPI S1/S3 entry now arms a device-selected wake-GPE mask instead of retaining the runtime GPE mask.** One canonical ACPI device owner holds each decoded `_PRW`, wake policy, sleep-state limit, validity and prepare count. Suspend prepares selected devices, saves every runtime enable byte, disables runtime sources, clears stale status and arms only prepared fixed-block GPEs; resume restores the exact mask before finishing device wake control. The event layer owns register state only and has no shadow device-policy list. | B2307. `e1b13d527`. `_PRW` tests cover integer and named-device forms, malformed bounds and button S5-to-S4 policy. Mask tests cover exact write order, inclusive state selection, read-before-write admission and failure rollback. Positive control removing the arm call made `platform_enter_arms_the_wake_mask_before_issuing_sleep_writes` RED; changing wake-bit insertion made the exact mask test RED, both restored GREEN. Firmware 177 and power 210 tests pass; both target checks, debug-all, 176-crate hosted/test-build isolation, frame/task-stack/IRQ-stack gates and paired smoke pass. Smoke attempt 1: x86 46 s, ARM64 56 s, both serial RX. | B2307-acpi-gpe-wake-sources |
+| FIXED e1b13d527 | MISSING | med | **Wake power resources now have one canonical owner and shared-use count instead of being rejected by the GPE event layer.** Every AML `PowerResource` owns its namespace path, order, system-level limit, cached state and reference count. Device `_PRW` lists contain deduplicated indices to those objects, power on in ascending order before `_DSW`/`_PSW`, power off in reverse order after wake, and roll partial failures back in the opposite direction. Shared resources execute `_ON` only at 0-to-1 and `_OFF` only at 1-to-0. | B2307. `e1b13d527`. Hosted tests prove two devices see one resource/refcount, deduplication, ordering, deepest-state limiting, transition edges and ordered rollback. Removing deduplication made `resource_lists_are_deduplicated_ordered_and_limit_the_sleep_state` RED with `[1, 0, 0]` instead of `[1, 0]`; restored GREEN. Full verification is recorded in the row above. | B2307-acpi-gpe-wake-sources |
+
 ### B2306-alsa-card-sysfs-parent
 
 | Status | Class | Sev | Issue | Evidence | Owner |

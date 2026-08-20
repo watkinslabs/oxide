@@ -17,7 +17,7 @@ pub mod plan;
 pub mod io;
 pub mod enter;
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 use firmware::acpi::{SleepState as AcpiState, sleep_action};
 
@@ -31,6 +31,7 @@ use admit::PlatformFacts;
 /// holds, and publishing it would resume the machine into whatever occupies
 /// the first page.
 static RESUME_VECTOR: AtomicU64 = AtomicU64::new(0);
+static TARGET_STATE: AtomicU8 = AtomicU8::new(0);
 
 /// The resume address, if the arch layer could place its stub. # C: O(1)
 pub fn resume_vector() -> Option<u64> {
@@ -54,17 +55,34 @@ pub fn platform_facts() -> PlatformFacts {
 
 fn valid(state: SuspendState) -> bool { admit::admits(platform_facts(), state) }
 
-fn begin(_state: SuspendState) -> KResult<()> { Ok(()) }
+fn begin(state: SuspendState) -> KResult<()> {
+    let state = match state {
+        SuspendState::Standby => AcpiState::S1,
+        SuspendState::Mem => AcpiState::S3,
+        _ => return Err(crate::decide::Error::Inval),
+    };
+    TARGET_STATE.store(state as u8, Ordering::Release);
+    Ok(())
+}
 
 fn prepare() -> KResult<()> { Ok(()) }
 
-fn prepare_late() -> KResult<()> { Ok(()) }
+fn prepare_late() -> KResult<()> {
+    let state = TARGET_STATE.load(Ordering::Acquire);
+    if state == 0 || !firmware::acpi::prepare_wake_devices(state) {
+        return Err(crate::decide::Error::Io);
+    }
+    Ok(())
+}
 
-fn wake() {}
+fn wake() {
+    let _ = firmware::acpi::events::restore_runtime_gpes();
+    firmware::acpi::finish_wake_devices();
+}
 
 fn finish() {}
 
-fn end() {}
+fn end() { TARGET_STATE.store(0, Ordering::Release); }
 
 /// The one ACPI platform sleep table. Installed by [`init`].
 pub static ACPI_SUSPEND_OPS: PlatformSuspendOps = PlatformSuspendOps {

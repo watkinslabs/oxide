@@ -183,6 +183,10 @@ must use grouped paths from day one.
     firmware-path-identified thermal device per CPU object, with a distinct
     cpufreq cap request even for CPUs sharing one policy. Thermal owns the
     class-visible type and binding registry; cpufreq aggregates the requests.
+    Firmware's canonical ACPI device model also owns `_PRW` wake policy and the
+    single registry of shared AML `PowerResource` state/reference counts;
+    `acpi::events` owns only GPE hardware blocks and mask transitions, and may
+    not retain a parallel wake-device list.
     Firmware also owns the FDT-selected SCMI shared-memory map and SMCCC
     transport. Firmware owns its response-completion state, while kernel init
     supplies the one GIC line-install bridge, so it does not depend upward on
@@ -395,6 +399,8 @@ Temporary exceptions are allowed only with:
 
 ## 12 Changelog
 
+- 2026-08-20: Added canonical firmware-owned ACPI `_PRW` device and shared
+  `PowerResource` ownership; the SCI/GPE layer retains register masks only.
 - 2026-08-18: Added `crates/kernel/ata` as the sole owner of live ATA identity,
   HDIO taskfiles, and ATA PASS-THROUGH(12/16/32) translation. AHCI retains the
   native IDENTIFY page and executes one owner-produced taskfile; the shared

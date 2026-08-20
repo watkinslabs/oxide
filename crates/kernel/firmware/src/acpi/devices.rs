@@ -26,6 +26,7 @@ impl AcpiDeviceCounts {
 /// Scan the firmware namespace and publish every ACPI power and display
 /// device it describes. # C: O(namespace + AML)
 pub fn init_devices() -> AcpiDeviceCounts {
+    let _ = super::device_model::init();
     AcpiDeviceCounts {
         adapters: super::ac::init(),
         batteries: super::battery::init(),

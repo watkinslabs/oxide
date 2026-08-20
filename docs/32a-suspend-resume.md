@@ -147,6 +147,17 @@ registers. Firmware resumes in real mode at the waking vector; the resume
 trampoline re-enters long mode with the kernel page tables and jumps to the
 saved instruction pointer.
 
+ACPI wake ownership follows the namespace rather than the interrupt layer. One
+canonical ACPI device record owns its `_PRW` GPE, sleep-state limit, policy bit,
+prepare count, and references to wake power resources. Each AML
+`PowerResource` is one shared owner of its path, ordering, system-level limit,
+cached state, and use count; device lists contain only references to that
+owner. Suspend powers resources on in firmware order, executes `_DSW` (or
+`_PSW`), then the event layer saves the runtime GPE mask and arms only prepared
+fixed-block GPEs. Resume restores that exact mask before disabling device wake
+and releasing resources in reverse order. The event layer owns register state
+only and never keeps a second wake-device policy list.
+
 **aarch64 / PSCI.** `mem` is `SYSTEM_SUSPEND`, admitted only when `PSCI_FEATURES`
 reports it. The call takes the physical resume entry point and a context
 identifier; the caller saves the EL1 system-register state (translation-table
