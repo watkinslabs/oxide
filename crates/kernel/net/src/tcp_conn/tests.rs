@@ -476,6 +476,15 @@ fn an_ipv6_passive_open_records_nothing_at_the_ipv4_level() {
 }
 
 #[test]
+fn an_ipv6_passive_open_records_traffic_class_and_flow_label() {
+    let mut packet = [0u8; crate::ipv6::IPV6_HDR_LEN];
+    packet[..4].copy_from_slice(&0x62c5_4321u32.to_be_bytes());
+    assert_eq!(super::passive_v6_flowinfo(&packet, true), 0x02c5_4321);
+    assert_eq!(super::passive_v6_flowinfo(&packet, false), 0);
+    assert_eq!(super::passive_v6_flowinfo(&packet[..12], true), 0);
+}
+
+#[test]
 fn a_packet_too_short_to_hold_a_header_records_nothing() {
     assert_eq!(super::passive_rcv_header(&[0x45, 0x2c, 0, 0], false, 9), (0, 0, 0));
 }

@@ -118,13 +118,26 @@ pub fn inherit_tcp_keepalive_opts(dst: &InetSocket, src: &InetSocket) {
     dst.opts.tcp_keepcnt.store(src.opts.tcp_keepcnt.load(Ordering::Acquire), Ordering::Release);
 }
 
-/// Record on an accepted socket what the IPv4 header of the packet that
-/// opened the connection carried. The interface index and hop limit land in
-/// the multicast fields, which is where `IP_PKTOPTIONS` reads them from and
-/// where a connection has no other use for them. # C: O(1)
-pub fn record_accepted_header(dst: &InetSocket, entry: &TcpEntry) {
+/// Record on an accepted socket what the network header of the packet that
+/// opened the connection carried. IPv4 publishes its receive snapshot through
+/// `IP_PKTOPTIONS`; IPv6 retains flowinfo and, when reflection was requested,
+/// uses the received label for the child's transmit label. # C: O(1)
+pub fn record_accepted_header(dst: &InetSocket, src: &InetSocket, entry: &TcpEntry) {
     use core::sync::atomic::Ordering;
-    let (iif, ttl, tos) = { let c = entry.conn.lock(); (c.rcv_iif, c.rcv_ttl, c.rcv_tos) };
+    let (iif, ttl, tos, ipv6) = { let c = entry.conn.lock();
+        (c.rcv_iif, c.rcv_ttl, c.rcv_tos, matches!(c.local.ip, crate::IpAddr::V6(_))) };
+    let flowinfo = if ipv6 { iif } else { 0 };
+    let repflow = src.opts.ipv6.flag(sol_ipv6::flag::REPFLOW);
+    dst.opts.ipv6.set_flag(sol_ipv6::flag::REPFLOW, repflow);
+    dst.opts.ipv6.set_flag(sol_ipv6::flag::SNDFLOW,
+        src.opts.ipv6.flag(sol_ipv6::flag::SNDFLOW));
+    dst.opts.ipv6.set_rcv_flowinfo(flowinfo);
+    dst.opts.ipv6.set_flow_label(if repflow {
+        flowinfo & sol_ipv6::uapi::IPV6_FLOWINFO_FLOWLABEL
+    } else {
+        src.opts.ipv6.flow_label()
+    });
+    if ipv6 { return; }
     if iif == 0 { return; }
     dst.opts.ip_mcast_ifindex.store(iif, Ordering::Release);
     dst.opts.ip_mcast_ttl.store(ttl as i32, Ordering::Release);

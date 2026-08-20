@@ -13,6 +13,7 @@
 // - delivery.rs   : transmit snapshots and ACK-derived delivery-rate samples.
 // - chrono.rs     : send-state duration accounting for TCP_INFO.
 // - route_policy.rs: selected IPv4 route metrics applied to a new TCB.
+// - passive_header.rs: network-header state retained across passive open.
 // - active_fastopen.rs: the client half of fast open — a SYN carrying data,
 //                   and what its answer teaches.
 // - synrecv.rs    : which acknowledgement may complete, or end, a half-open
@@ -41,8 +42,9 @@ pub mod route_policy;
 pub mod reqsk;
 pub mod synrecv;
 pub mod syncookie;
+mod passive_header;
 
-pub use types::passive_rcv_header;
+pub use passive_header::{passive_rcv_header, passive_v6_flowinfo};
 pub use types::{
     Endpoint, OutOfOrderSegment, RecvBuf, TcpChrono, TcpCongestionControl, TcpConn, TcpConnError, UnackedSegment, OWN_MSS_DEFAULT,
     OWN_WSCALE, DATA_RETRIES_DEFAULT, DELACK_ATO_MIN_NS, DELACK_MAX_DEFAULT_NS, LINGER2_DEFAULT_NS,
