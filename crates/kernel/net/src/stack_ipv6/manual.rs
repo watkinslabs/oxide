@@ -12,6 +12,9 @@ use alloc::{string::String, vec::Vec};
 
 use crate::addr::{Ipv6Addr, NetIfaceId};
 use crate::control_event::EventKind;
+use crate::mcast_filter::{FilterMode, SourceFilter6};
+use crate::mcast_state::V6ReportWork;
+use crate::netdev::NetResult;
 use crate::netdev::iff;
 use crate::route6::{Route6Entry, Route6Origin};
 use crate::stack::NetStack;
@@ -19,6 +22,9 @@ use crate::stack::NetStack;
 use super::{Ipv6AddrOrigin, Ipv6AddrState, Ipv6IfaceAddr};
 
 const TEMPADDR_RETRIES: usize = 8;
+const MCAUTOJOIN_OWNER: usize = usize::MAX;
+
+pub struct Ipv6McAutojoinWork(Option<V6ReportWork>);
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Ipv6PrefixRouteChange {
@@ -71,6 +77,32 @@ pub fn ipv6_disabled_in(ns: u64, iface: NetIfaceId) -> bool {
 }
 
 impl NetStack {
+    /// Add the address subsystem's socket-owned multicast membership.
+    /// # Lk: matching stack RTNL held. # C: O(N)
+    pub fn add_ipv6_mc_autojoin_rtnl(&self, rtnl: &crate::RtnlGuard<'_>,
+        namespace: &network_namespace::NetworkNamespaceRef, ns: u64, iface: NetIfaceId,
+        generation: u64, group: Ipv6Addr) -> NetResult<Ipv6McAutojoinWork>
+    {
+        let filter = SourceFilter6 { mode: FilterMode::Exclude, sources: Vec::new() };
+        self.set_ipv6_multicast_rtnl(rtnl, namespace, ns, generation, MCAUTOJOIN_OWNER,
+            iface, group, Ipv6Addr::ANY, Some(&filter)).map(Ipv6McAutojoinWork)
+    }
+
+    /// Remove the address subsystem's socket-owned multicast membership.
+    /// # Lk: matching stack RTNL held. # C: O(N)
+    pub fn remove_ipv6_mc_autojoin_rtnl(&self, rtnl: &crate::RtnlGuard<'_>,
+        namespace: &network_namespace::NetworkNamespaceRef, ns: u64, iface: NetIfaceId,
+        generation: u64, group: Ipv6Addr) -> Ipv6McAutojoinWork
+    {
+        Ipv6McAutojoinWork(self.release_ipv6_multicast_rtnl(rtnl, Some(namespace), ns,
+            generation, MCAUTOJOIN_OWNER, iface, group))
+    }
+
+    /// Emit deferred MLD work after the caller releases RTNL. # C: O(N)
+    pub fn finish_ipv6_mc_autojoin(&self, work: Ipv6McAutojoinWork) {
+        self.finish_v6_multicast(work.0);
+    }
+
     /// The row `iface` already holds for `addr`, at any prefix length — the
     /// reference screens `RTM_NEWADDR` by address alone, so a second add of one
     /// address naming a different prefix length is a replace, not a new row.
