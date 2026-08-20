@@ -11,6 +11,7 @@
 // No target gate: every decision in this file must run under hosted tests.
 
 use alloc::vec::Vec;
+use syscall::errno::Errno;
 use sync::{Namespace, Spinlock};
 
 /// The label id that means "no label was specified".
@@ -37,7 +38,7 @@ pub struct SocketLabelOps {
     /// module at all.
     pub unlabeled: u32,
     /// Rendered context of one label id, as userspace reads it.
-    pub context: fn(u32) -> Option<Vec<u8>>,
+    pub context: fn(u32) -> Result<Vec<u8>, Errno>,
     /// Label the server end of a new connection takes: the listening socket's
     /// identity carrying the connecting socket's sensitivity.
     ///
@@ -100,14 +101,15 @@ pub fn server_end_label(listener: u32, client: u32) -> u32 {
 /// length published beside this value counts it: a module that returned an
 /// unterminated context would have every caller allocate one byte short and
 /// read past the end of its own buffer on the retry.
-pub fn socket_label_context(label: u32) -> Option<Vec<u8>> {
-    if label == NO_LABEL { return None; }
+pub fn socket_label_context(label: u32) -> Result<Option<Vec<u8>>, Errno> {
+    if label == NO_LABEL { return Ok(None); }
     let ops = *SOCKET_LABEL.lock();
-    let mut bytes = (ops?.context)(label)?;
+    let Some(ops) = ops else { return Ok(None) };
+    let mut bytes = (ops.context)(label)?;
     // A module that already terminated its answer is not given a second NUL:
     // the published length would then exceed the string by two.
     if bytes.last() != Some(&0) { bytes.push(0); }
-    Some(bytes)
+    Ok(Some(bytes))
 }
 
 #[cfg(test)]
@@ -118,13 +120,13 @@ mod tests {
     const UNLABELED: u32 = 3;
 
     fn create() -> u32 { CREATED }
-    fn context(label: u32) -> Option<Vec<u8>> {
+    fn context(label: u32) -> Result<Vec<u8>, Errno> {
         match label {
-            CREATED => Some(Vec::from(&b"system_u:system_r:peer_t:s0"[..])),
-            UNLABELED => Some(Vec::from(&b"unlabeled"[..])),
+            CREATED => Ok(Vec::from(&b"system_u:system_r:peer_t:s0"[..])),
+            UNLABELED => Ok(Vec::from(&b"unlabeled"[..])),
             // Already terminated, to prove the terminator is not doubled.
-            9 => Some(Vec::from(&b"terminated\0"[..])),
-            _ => None,
+            9 => Ok(Vec::from(&b"terminated\0"[..])),
+            _ => Err(Errno::Einval),
         }
     }
 
@@ -157,7 +159,7 @@ mod tests {
         let _exclusive = exclusive();
         assert_eq!(new_socket_label(), NO_LABEL);
         assert_eq!(unlabeled_socket_label(), NO_LABEL);
-        assert_eq!(socket_label_context(CREATED), None);
+        assert_eq!(socket_label_context(CREATED), Ok(None));
         assert!(install_socket_label(ops()));
         assert_eq!(new_socket_label(), CREATED);
         assert_eq!(unlabeled_socket_label(), UNLABELED);
@@ -182,11 +184,11 @@ mod tests {
     fn a_rendered_context_is_terminated_exactly_once() {
         let _exclusive = exclusive();
         assert!(install_socket_label(ops()));
-        let bytes = socket_label_context(CREATED).unwrap();
+        let bytes = socket_label_context(CREATED).unwrap().unwrap();
         assert_eq!(bytes, b"system_u:system_r:peer_t:s0\0");
         assert_eq!(bytes.len(), b"system_u:system_r:peer_t:s0".len() + 1);
         // A module that terminated its own answer is not given a second NUL.
-        assert_eq!(socket_label_context(9).unwrap(), b"terminated\0");
+        assert_eq!(socket_label_context(9).unwrap().unwrap(), b"terminated\0");
         assert!(remove_socket_label());
     }
 
@@ -225,12 +227,12 @@ mod tests {
     /// The absent-label id is not a lookup that happens to miss: it is refused
     /// before the module is consulted, so no module can ever render it.
     #[test]
-    fn the_absent_label_renders_to_nothing_even_with_a_module_installed() {
+    fn absence_and_a_render_failure_remain_distinct() {
         let _exclusive = exclusive();
         assert!(install_socket_label(ops()));
-        assert_eq!(socket_label_context(NO_LABEL), None);
-        // An id the module does not know is also nothing, not an empty string.
-        assert_eq!(socket_label_context(4096), None);
+        assert_eq!(socket_label_context(NO_LABEL), Ok(None));
+        // An existing label the module cannot render is an error, not absence.
+        assert_eq!(socket_label_context(4096), Err(Errno::Einval));
         assert!(remove_socket_label());
     }
 }

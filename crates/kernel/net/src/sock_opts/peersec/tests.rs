@@ -32,11 +32,11 @@ fn creating_with<T>(label: u32, f: impl FnOnce() -> T) -> T {
 }
 fn server_end(listener: u32, client: u32) -> u32 { (listener << 8) | (client & 0xff) }
 
-fn context(label: u32) -> Option<Vec<u8>> {
-    if label == security::network::NO_LABEL { return None; }
+fn context(label: u32) -> Result<Vec<u8>, syscall::errno::Errno> {
+    if label == security::network::NO_LABEL { return Err(syscall::errno::Errno::Einval); }
     let mut out = Vec::from(&b"label:"[..]);
     out.push(b'0' + (label % 10) as u8);
-    Some(out)
+    Ok(out)
 }
 
 fn ops() -> security::network::SocketLabelOps {
@@ -111,7 +111,8 @@ fn a_real_connect_records_both_ends_and_each_reads_the_others_label() {
     // And each renders to a context, which is what the option copies out.
     for sock in [&client, &accepted] {
         let label = recorded_peer_label(sock).expect("a reporting class");
-        let bytes = security::network::socket_label_context(label).expect("a context");
+        let bytes = security::network::socket_label_context(label)
+            .expect("the render succeeds").expect("a context");
         assert_eq!(bytes.last(), Some(&0), "the copied value is a C string");
     }
 }
@@ -220,5 +221,5 @@ fn with_no_module_installed_no_socket_reports_a_peer_label() {
     // The class still reports, but the label it reports is the absent one, which
     // the shim above turns into `ENOPROTOOPT`.
     assert_eq!(recorded_peer_label(&sock), Some(security::network::NO_LABEL));
-    assert_eq!(security::network::socket_label_context(security::network::NO_LABEL), None);
+    assert_eq!(security::network::socket_label_context(security::network::NO_LABEL), Ok(None));
 }
