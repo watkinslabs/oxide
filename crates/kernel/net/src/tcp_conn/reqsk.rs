@@ -30,6 +30,9 @@ pub const PRESSURE_QLEN_MIN: usize = 8;
 /// against, which is what makes a firing the unit the deferral counts in.
 pub const TIMEOUT_INIT_NS: u64 = 1_000_000_000;
 
+/// Default `net.ipv4.tcp_invalid_ratelimit`, in milliseconds.
+pub const INVALID_RATELIMIT_DEFAULT_MS: u64 = 500;
+
 /// What one firing of a request's timer does.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Recalc {
@@ -109,6 +112,28 @@ impl ReqSock {
             // an acknowledgement. One last SYN-ACK goes out as the period ends
             // to solicit the acknowledgement that completes the connection.
             resend: !self.acked || self.num_timeout.saturating_add(1) >= defer_accept,
+        }
+    }
+}
+
+/// Admit one request answer under `tcp_invalid_ratelimit`. # C: O(1)
+pub fn admit_oow_answer(last_word: &core::sync::atomic::AtomicU64, now_ns: u64,
+                        interval_ns: u64, data_without_syn: bool) -> bool {
+    use core::sync::atomic::Ordering;
+    const PRESENT: u64 = 1 << 63;
+    const CLOCK_MASK: u64 = !PRESENT;
+    if data_without_syn { return true; }
+    let now = now_ns & CLOCK_MASK;
+    let mut observed = last_word.load(Ordering::Acquire);
+    loop {
+        if observed & PRESENT != 0 {
+            let last = observed & CLOCK_MASK;
+            if now >= last && now - last < interval_ns { return false; }
+        }
+        match last_word.compare_exchange_weak(observed, PRESENT | now,
+            Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return true,
+            Err(actual) => observed = actual,
         }
     }
 }

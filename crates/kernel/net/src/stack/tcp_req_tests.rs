@@ -88,6 +88,28 @@ fn a_duplicate_syn_re_solicits_the_answer_without_taking_a_second_slot() {
 }
 
 #[test]
+fn repeated_syn_answers_are_limited_and_a_sent_answer_pushes_the_request_timer() {
+    let _domain = crate::hosted_fixture::init_net_domain();
+    let stack = NetStack::new();
+    let (iface, lo, _listener) = fixture(&stack, 7_611);
+    deliver(&stack, iface, 7_611, 40_011, flags::SYN, CLIENT_SEQ, 0, syn_options());
+    drain(&lo);
+    let req = request(&stack, 7_611, 40_011).expect("a request");
+    req.rsk.lock().expires_ns = 1;
+    let skipped = crate::mib::get_tcp_ext(0, crate::mib::TcpExt::TcpAckSkippedSynRecv);
+
+    deliver(&stack, iface, 7_611, 40_011, flags::SYN, CLIENT_SEQ, 0, syn_options());
+    assert!(sent(&lo).is_some(), "the first repeated SYN is answered");
+    assert_eq!(req.rsk.lock().expires_ns, crate::tcp_conn::RTO_MAX_DEFAULT_NS
+        .min(crate::tcp_conn::reqsk::TIMEOUT_INIT_NS));
+    drain(&lo);
+
+    deliver(&stack, iface, 7_611, 40_011, flags::SYN, CLIENT_SEQ, 0, syn_options());
+    assert!(sent(&lo).is_none(), "a replay inside the interval is silent");
+    assert_eq!(crate::mib::get_tcp_ext(0, crate::mib::TcpExt::TcpAckSkippedSynRecv), skipped + 1);
+}
+
+#[test]
 fn a_reset_ends_a_half_open_request_and_returns_its_slot() {
     let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
@@ -244,4 +266,10 @@ fn a_segment_outside_the_request_window_is_answered_with_an_acknowledgement() {
     assert_eq!(answer.flags & (flags::RST | flags::ACK), flags::ACK,
         "the peer is told where the window is, not reset");
     assert_eq!(answer.ack, CLIENT_SEQ.wrapping_add(1));
+    drain(&lo);
+    let skipped = crate::mib::get_tcp_ext(0, crate::mib::TcpExt::TcpAckSkippedSynRecv);
+    deliver(&stack, iface, 7_610, 40_010, flags::ACK, CLIENT_SEQ.wrapping_add(1 << 20),
+        synack.seq.wrapping_add(1), Default::default());
+    assert!(sent(&lo).is_none(), "the same out-of-window ACK is limited per request");
+    assert_eq!(crate::mib::get_tcp_ext(0, crate::mib::TcpExt::TcpAckSkippedSynRecv), skipped + 1);
 }

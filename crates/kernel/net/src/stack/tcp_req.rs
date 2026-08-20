@@ -17,7 +17,7 @@
 use super::*;
 use crate::syncookies::{tsopt::Decoded, Rebuild};
 use crate::tcp_conn::reqsk::ReqSock;
-use ::core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use ::core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 /// One entry in the connection table. A half-open passive connection is a
 /// [`TcpReq`]; everything else is a full socket.
@@ -80,6 +80,9 @@ pub(crate) struct TcpReq {
     pub(crate) ipv6: bool,
     /// Retransmit and deferral accounting for this request.
     pub(crate) rsk: StackBhLock<ReqSock>,
+    /// Last out-of-window ACK or repeated-SYN answer. Per request, because
+    /// unrelated half-open peers must never consume one another's allowance.
+    pub(crate) last_oow_ack_ns: AtomicU64,
     pub(crate) syn_backlog_reserved: AtomicBool,
     /// Still in the listener's young population: no timer firing yet.
     pub(crate) syn_backlog_young_reserved: AtomicBool,
@@ -123,6 +126,7 @@ impl TcpReq {
             bind: listener.bind.clone(),
             mark, iface, ipv6,
             rsk: StackBhLock::new(conn.rsk),
+            last_oow_ack_ns: AtomicU64::new(0),
             syn_backlog_reserved: AtomicBool::new(true),
             syn_backlog_young_reserved: AtomicBool::new(true),
             timer: super::tcp_timer::ReqTimer::new(),
