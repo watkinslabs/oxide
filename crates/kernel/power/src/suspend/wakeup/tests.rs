@@ -21,6 +21,54 @@ fn an_event_moves_from_in_progress_to_registered() {
 }
 
 #[test]
+fn a_blocking_read_waits_until_every_active_source_finishes() {
+    let w = WakeupCounters::new();
+    w.source_activate();
+    w.source_activate();
+    let mut waits = 0;
+
+    let count = w.get_wakeup_count_with_wait(|counters| {
+        waits += 1;
+        counters.source_deactivate();
+        sched::WaitOutcome::Ready
+    });
+
+    assert_eq!(count, Some(2));
+    assert_eq!(waits, 2, "the reader returned before the final source finished");
+}
+
+#[test]
+fn a_signal_interrupts_a_blocking_read_while_work_remains() {
+    let w = WakeupCounters::new();
+    w.source_activate();
+    let count = w.get_wakeup_count_with_wait(|_| sched::WaitOutcome::Interrupted);
+    assert_eq!(count, None);
+    assert_eq!(w.counts().in_progress, 1);
+}
+
+#[test]
+fn final_deactivation_wins_a_race_with_signal_delivery() {
+    let w = WakeupCounters::new();
+    w.source_activate();
+    let count = w.get_wakeup_count_with_wait(|counters| {
+        counters.source_deactivate();
+        sched::WaitOutcome::Interrupted
+    });
+    assert_eq!(count, Some(1));
+}
+
+#[test]
+fn only_the_final_deactivation_wakes_count_readers() {
+    let w = WakeupCounters::new();
+    w.source_activate();
+    w.source_activate();
+    w.source_deactivate();
+    assert_eq!(w.waiter_wakeups.load(Ordering::SeqCst), 0);
+    w.source_deactivate();
+    assert_eq!(w.waiter_wakeups.load(Ordering::SeqCst), 1);
+}
+
+#[test]
 fn deactivate_is_one_atomic_step() {
     // The single add is what makes an event never observable in neither field.
     // Assert the invariant directly: after any number of activate/deactivate
