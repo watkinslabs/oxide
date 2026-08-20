@@ -257,4 +257,37 @@ mod tests {
         assert_eq!(thread.join().unwrap().unwrap().payload, vec![4, 5, 6]);
         assert!(wake.elapsed() < Duration::from_millis(250), "write did not wake the receiver");
     }
+
+    #[test]
+    fn mapped_udp6_receive_retains_the_ipv4_ancillary_header() {
+        let src = crate::Ipv4Addr::new(198, 51, 100, 9);
+        let dst = crate::Ipv4Addr::new(192, 0, 2, 4);
+        let options = crate::ipv4_options::received(
+            &[7, 11, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            &crate::ipv4_options::NoUnicast, dst, 0x0102_0304).unwrap();
+        let sock = Arc::new(InetSocket::new_udp6());
+        let endpoint = Arc::new(crate::stack_ipv6::Udp6RxQueue::new_with_error(
+            crate::Ipv6Addr::ANY, 41_236, sock.error.clone()));
+        assert!(endpoint.enqueue(crate::stack_ipv6::Udp6Datagram {
+            src: crate::Ipv6Addr::from_v4_mapped(src), sport: 53,
+            dst: crate::Ipv6Addr::from_v4_mapped(dst), dport: 41_236,
+            iface: crate::NetIfaceId::from_raw(7), hop_limit: 63, traffic_class: 0x2c,
+            flowinfo: 0, ext_headers: vec![], frag_max: 0,
+            ipv4: Some(crate::stack_ipv6::MappedIpv4Ancillary {
+                src, dst, ttl: 63, tos: 0x2c, options: options.clone(),
+            }), checksum: Some(0x1234), payload: vec![1],
+        }));
+        *sock.udp6.lock() = Some(endpoint);
+
+        let received = crate::sock_io::recvfrom_opts(
+            &sock, 8, crate::sock_io::RecvOptions::default()).unwrap();
+        assert_eq!((received.tos, received.ttl), (Some(0x2c), Some(63)));
+        assert_eq!(received.options, options);
+        let msgs = crate::cmsg::plan(&crate::cmsg::Want {
+            tos: true, recvopts: true, ..Default::default()
+        }, &received.rx_meta(None));
+        assert_eq!(msgs.iter().map(|m| (m.level, m.kind)).collect::<alloc::vec::Vec<_>>(),
+            vec![(crate::cmsg::SOL_IP, crate::cmsg::IP_TOS),
+                (crate::cmsg::SOL_IP, crate::cmsg::IP_RECVOPTS)]);
+    }
 }

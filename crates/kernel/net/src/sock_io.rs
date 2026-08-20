@@ -433,8 +433,14 @@ fn recvfrom_non_tcp_opts(
         let mut out = alloc::vec::Vec::with_capacity(take);
         out.extend_from_slice(&d.payload[..take]);
         let scope_id = if d.src.is_link_local() { d.iface.raw() } else { 0 };
+        let (peer, pktinfo, ttl, tos, options) = match d.ipv4 {
+            Some(v4) => (Some((v4.src, d.sport)), Some((v4.dst, d.iface)),
+                Some(v4.ttl), Some(v4.tos), v4.options),
+            None => (None, None, None, None, Default::default()),
+        };
         return Ok(Received {
             payload: out, full_len,
+            peer, pktinfo, ttl, tos, options,
             peer6: Some((d.src, d.sport, scope_id)),
             pktinfo6: Some((d.dst, d.iface)),
             hoplimit: Some(d.hop_limit), tclass: Some(d.traffic_class),

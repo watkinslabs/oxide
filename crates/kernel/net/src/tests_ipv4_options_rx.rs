@@ -56,6 +56,29 @@ fn a_delivered_datagram_carries_the_filled_option_area_to_its_socket() {
 }
 
 #[test]
+fn a_mapped_udp6_delivery_keeps_its_ipv4_option_area_and_tos() {
+    let _domain = crate::hosted_fixture::init_net_domain();
+    let stack = NetStack::new();
+    let (id, _lo) = stack.register_loopback();
+    let endpoint = stack.bind_udp6(crate::Ipv6Addr::ANY, PORT).unwrap();
+    let area = [IPOPT_RR, 11, 4, 0, 0, 0, 0, 0, 0, 0, 0, IPOPT_END];
+    let mut packet = datagram(&area, b"mapped");
+    packet[1] = 0x2c;
+    packet[10..12].fill(0);
+    let hlen = IPV4_HDR_LEN + area.len();
+    let sum = ip_checksum(&packet[..hlen]).to_be_bytes();
+    packet[10..12].copy_from_slice(&sum);
+
+    stack.deliver_rx(id, &packet).unwrap();
+    let d = endpoint.recv(false).expect("the mapped datagram reaches its IPv6 socket");
+    let ipv4 = d.ipv4.expect("an IPv4-backed receive retains its IPv4 header state");
+    assert_eq!((ipv4.src, ipv4.dst, ipv4.ttl, ipv4.tos),
+        (Ipv4Addr::LOOPBACK, Ipv4Addr::LOOPBACK, 64, 0x2c));
+    assert_eq!(&ipv4.options.data[3..7], &Ipv4Addr::LOOPBACK.octets());
+    assert_eq!(ipv4.options.data[2], 8);
+}
+
+#[test]
 fn a_delivered_timestamp_option_reaches_its_socket_stamped() {
     let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
