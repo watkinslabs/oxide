@@ -1,13 +1,11 @@
 use crate::netdev::NetError;
 use crate::sock::{drain_loopback, InetSocket};
-#[cfg(target_os = "oxide-kernel")]
 use crate::stack::TcpConnectWait;
 use crate::stack::TcpEntry;
 
 /// F159: blocking wait for TCP connect's SYN-ACK. # C: blocks until Established or Closed
 pub(crate) fn connect_wait_established(
     sock: &InetSocket,
-    #[cfg_attr(not(target_os = "oxide-kernel"), allow(unused_variables))]
     entry: &alloc::sync::Arc<TcpEntry>) -> Result<(), NetError>
 {
     let deadline_ns = crate::sock_clock::compute_deadline_ns(
@@ -26,20 +24,17 @@ pub(crate) fn connect_wait_established(
             // than the generic would-block errno.
             return Err(NetError::Einprogress);
         }
-        #[cfg(target_os = "oxide-kernel")]
         match entry.arm_connect_wait(deadline_ns) {
             TcpConnectWait::Established => return Ok(()),
             TcpConnectWait::Closed => {
                 return Err(crate::sock_error::terminal_connect_error(
-                    sock.take_pending_recv_error()));
+                    sock.error.take()));
             }
             TcpConnectWait::Parked => {
                 // SAFETY: arm_connect_wait registered current under conn.
-                unsafe { sched::live::schedule::schedule(); }
-                entry.rx_waiters.remove_current();
+                unsafe { entry.poll_subs.sleep().wait(); }
+                entry.poll_subs.sleep().remove_current();
             }
         }
-        #[cfg(not(target_os = "oxide-kernel"))]
-        return Err(NetError::Eio);
     }
 }

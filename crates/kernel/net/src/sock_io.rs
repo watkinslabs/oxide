@@ -13,7 +13,7 @@ pub use tcp_read::tcp_recv_eof;
 pub(crate) use tcp_read::{arm_tcp_read_after_mode, read_tcp_blocking, tcp_vfs_error};
 
 /// F164: blocking TCP write. Repeatedly tcp_send into the conn,
-/// parking on `entry.rx_waiters` (woken by `deliver_tcp` on every
+/// parking on the entry sleep queue (woken by `deliver_tcp` on every
 /// input — ACKs that pop retx_q free up send-buffer headroom) until
 /// either every byte is queued or the connection terminates.
 /// Returns short on partial-write only after at least one byte
@@ -90,7 +90,7 @@ pub(crate) fn write_tcp_blocking(
                 if entry.arm_transmit_wait(&sock.write_shut, sndbuf_cap, deadline_ns) {
                     // SAFETY: arm_transmit_wait registered current under conn.
                     unsafe { sched::live::schedule::schedule(); }
-                    entry.rx_waiters.remove_current();
+                    entry.poll_subs.sleep().remove_current();
                 }
                 #[cfg(not(target_os = "oxide-kernel"))]
                 {

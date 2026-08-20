@@ -4,13 +4,12 @@ impl TcpEntry {
     /// Publish a transport error and wake all socket observers. # C: O(1)
     pub fn set_error(&self, errno: i32) -> bool {
         // Hold the connection resource lock while publishing the error. Wait
-        // registration holds this lock until the task is on rx_waiters, so a
+        // registration holds this lock until the task is on the sleep queue, so a
         // publisher cannot pass the recheck and wake before the park exists.
         let conn = self.conn.lock();
         if !self.error.set(errno) { return false; }
         drop(conn);
-        #[cfg(target_os = "oxide-kernel")]
-        self.rx_waiters.wake_all();
+        self.poll_subs.sleep().wake_all();
         let slot = self.poll_subs.lock().clone();
         if let Some(weak) = slot {
             if let Some(s) = weak.upgrade() { s.notify_mask(vfs::POLL_ERR | vfs::POLL_OUT); }
@@ -53,8 +52,7 @@ impl TcpEntry {
     /// Publish terminal connection state before waking every blocked observer. # C: O(1)
     pub fn close_and_wake(&self) {
         self.close_with(|| {
-            #[cfg(target_os = "oxide-kernel")]
-            self.rx_waiters.wake_all();
+            self.poll_subs.sleep().wake_all();
         });
     }
 
@@ -134,11 +132,10 @@ impl TcpEntry {
     }
 
     /// Atomically classify or arm a blocking active-open wait. # C: O(1)
-    #[cfg(target_os = "oxide-kernel")]
     pub fn arm_connect_wait(&self, deadline_ns: u64) -> TcpConnectWait {
         self.arm_connect_wait_with(|| {
             // SAFETY: the connection lock serializes state publication with wait registration.
-            unsafe { self.rx_waiters.prepare_to_wait_interruptible_with_deadline(deadline_ns); }
+            unsafe { self.poll_subs.sleep().prepare_to_wait_interruptible_with_deadline(deadline_ns); }
         })
     }
 
@@ -153,12 +150,11 @@ impl TcpEntry {
     }
 
     /// Atomically recheck TCP transmit capacity and arm current on the ACK wait list. # C: O(retx)
-    #[cfg(target_os = "oxide-kernel")]
     pub fn arm_transmit_wait(&self, write_shut: &::core::sync::atomic::AtomicBool,
         sndbuf_cap: usize, deadline_ns: u64) -> bool {
         self.arm_transmit_wait_with(write_shut, sndbuf_cap, || {
             // SAFETY: process context; connection lock serializes ACK and close publication.
-            unsafe { self.rx_waiters.prepare_to_wait_interruptible_with_deadline(deadline_ns); }
+            unsafe { self.poll_subs.sleep().prepare_to_wait_interruptible_with_deadline(deadline_ns); }
         })
     }
 

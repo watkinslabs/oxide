@@ -119,6 +119,8 @@ mod send;
 #[cfg(test)]
 mod unix_connect_tests;
 #[cfg(test)]
+mod tcp_connect_wait_tests;
+#[cfg(test)]
 mod packet_tests;
 #[cfg(test)]
 mod packet_membership_tests;

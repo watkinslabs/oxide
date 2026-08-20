@@ -218,8 +218,7 @@ impl TcpListenEntry {
             save_syn: ::core::sync::atomic::AtomicU8::new(0),
             synq_overflow_ns: crate::syncookies::overflow::new_cell(),
             closed: ::core::sync::atomic::AtomicBool::new(false),
-            #[cfg(target_os = "oxide-kernel")]
-            accept_waiters: sched::live::WaitList::new(),
+            accept_waiters: alloc::boxed::Box::new(crate::sock_wait::SockWaitQueue::new()),
             poll_subs: Spinlock::new(None),
             reuseport_group: crate::reuseport::new_slot(),
         }
@@ -302,7 +301,6 @@ impl TcpListenEntry {
         if self.closed.load(::core::sync::atomic::Ordering::Acquire) { return false; }
         queue.push_back(entry);
         drop(queue);
-        #[cfg(target_os = "oxide-kernel")]
         self.accept_waiters.wake_all();
         if let Some(weak) = self.poll_subs.lock().clone() {
             if let Some(subs) = weak.upgrade() { subs.notify_mask(vfs::POLL_IN); }
@@ -313,7 +311,6 @@ impl TcpListenEntry {
     /// Close admission and take every completed unaccepted child. # C: O(N)
     pub fn close_accept_queue(&self) -> Vec<Arc<TcpEntry>> {
         self.close_accept_queue_with(|| {
-            #[cfg(target_os = "oxide-kernel")]
             self.accept_waiters.wake_all();
         })
     }
@@ -347,7 +344,6 @@ impl TcpListenEntry {
     }
 
     /// Atomically recheck the accept queue and park an interruptible caller. # C: O(1)
-    #[cfg(target_os = "oxide-kernel")]
     pub fn arm_accept_wait(&self, deadline_ns: u64) -> TcpAcceptWait {
         self.arm_accept_wait_with(|| {
             // SAFETY: queue lock serializes child and close publication with

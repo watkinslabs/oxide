@@ -116,17 +116,19 @@ fn duplicate_listener_registration_is_rejected() {
 fn exact_accept_wait_gate_rechecks_ready_and_removed_states() {
     let table = VsockTable::new();
     let listener = table.add_listener(Some(owner(112)), 20_112).expect("listener registered");
-    assert_eq!(table.accept_wait_would_park_exact(&listener), AcceptWait::Armed);
+    assert_eq!(table.arm_accept_wait_exact(&listener, u64::MAX), AcceptWait::Armed);
+    assert!(listener.accept_waiters.has_waiters());
+    listener.accept_waiters.cancel_current_park();
 
     let conn = child(owner(112), 20_112, 30_112);
     assert!(table.publish_accept(owner(112), 20_112, conn.clone()));
     assert!(table.complete_accept(&conn));
-    assert_eq!(table.accept_wait_would_park_exact(&listener), AcceptWait::Ready);
+    assert_eq!(table.arm_accept_wait_exact(&listener, u64::MAX), AcceptWait::Ready);
     assert!(alloc::sync::Arc::ptr_eq(
         &table.pop_accept_exact(&listener).expect("ready child"), &conn));
 
     assert!(table.remove_listener_exact(&listener));
-    assert_eq!(table.accept_wait_would_park_exact(&listener), AcceptWait::Removed);
+    assert_eq!(table.arm_accept_wait_exact(&listener, u64::MAX), AcceptWait::Removed);
     assert!(table.remove_conn(&conn));
 }
 

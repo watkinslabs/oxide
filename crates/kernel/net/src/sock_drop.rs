@@ -68,8 +68,7 @@ impl InetSocket {
                 let _ = stk.send_tcp_entry_segment_in(entry, src, dst, &seg_bytes, tos);
                 drain_loopback();
             }
-            #[cfg(target_os = "oxide-kernel")]
-            entry.rx_waiters.wake_all();
+            entry.poll_subs.sleep().wake_all();
         }
         // Linux `reuseport_detach_sock`: leaving the bind key leaves the group.
         crate::reuseport::slot::leave(&self.reuseport_group);

@@ -3,7 +3,7 @@ use crate::stack::TcpEntry;
 
 /// Block until TCP receive data or a terminal receive state is visible.
 /// # C: blocks until recv_buf non-empty or terminal state
-/// # Lk: takes entry.conn briefly between yields; entry.rx_waiters during park
+/// # Lk: takes entry.conn briefly between yields; entry sleep queue during park
 /// # Ctx: process; preempt-off; runqueue installed
 pub(crate) fn read_tcp_blocking(
     sock: &InetSocket,
@@ -39,7 +39,7 @@ pub(crate) fn read_tcp_blocking(
         if arm_tcp_read(sock, entry, deadline_ns) {
             // SAFETY: arm_tcp_read published current under entry.conn.
             unsafe { sched::live::schedule::schedule(); }
-            entry.rx_waiters.remove_current();
+            entry.poll_subs.sleep().remove_current();
         }
         #[cfg(not(target_os = "oxide-kernel"))]
         return Err(vfs::VfsError::Eagain);
@@ -91,7 +91,7 @@ pub(crate) fn arm_tcp_read_after_mode(sock: &InetSocket, entry: &alloc::sync::Ar
     }
     // SAFETY: process context; TCP receive and shutdown mutate under conn
     // before waking rx_waiters, so publication cannot miss either transition.
-    unsafe { entry.rx_waiters.prepare_to_wait_interruptible_with_deadline(deadline_ns); }
+    unsafe { entry.poll_subs.sleep().prepare_to_wait_interruptible_with_deadline(deadline_ns); }
     drop(c);
     true
 }
