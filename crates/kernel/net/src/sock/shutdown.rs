@@ -89,23 +89,20 @@ fn shutdown_admitted(sock: &InetSocket, how: ShutdownHow) -> Result<(), NetError
                 sock.peer6_scope.store(0, Release);
                 sock.read_shut.store(false, Release);
                 sock.write_shut.store(false, Release);
-                #[cfg(target_os = "oxide-kernel")]
-                entry.rx_waiters.wake_all();
+                entry.poll_subs.sleep().wake_all();
                 sock.poll_subs.notify_mask(vfs::POLL_IN | vfs::POLL_OUT | vfs::POLL_HUP);
                 return Ok(());
             }
             if how.read() {
                 let c = entry.conn.lock();
                 drop(c);
-                #[cfg(target_os = "oxide-kernel")]
-                entry.rx_waiters.wake_all();
+                entry.poll_subs.sleep().wake_all();
             }
             if how.write() {
                 let conn = entry.conn.lock();
                 drop(conn);
                 drain_loopback();
-                #[cfg(target_os = "oxide-kernel")]
-                entry.rx_waiters.wake_all();
+                entry.poll_subs.sleep().wake_all();
             }
             // Linux `inet_shutdown` ends with an unconditional
             // `sk->sk_state_change(sk)` — "wake up anyone sleeping in poll".

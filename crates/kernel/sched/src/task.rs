@@ -120,17 +120,16 @@ pub struct Task {
     /// which the return-to-user work loop then re-services on every pass,
     /// re-scheduling immediately after being given the CPU (B1476).
     pub need_resched: AtomicBool,
-    /// Held off every runqueue (enqueue no-op) until thawed. Set whenever
-    /// `freeze_reasons` is non-empty; the two never disagree.
+    /// Frozen acknowledgement. Set only by the target at a safe checkpoint;
+    /// once set, the enqueue chokepoint holds it off every runqueue.
     pub frozen:   AtomicBool,
-    /// Why the task is frozen: the cgroup v2 freezer, the system-sleep freezer
-    /// (`32a§10`), or both. A thaw for one reason leaves a task the other
-    /// reason still holds parked, matching the reference's `freezing()`
-    /// disjunction over its freezer sources.
+    /// Pending/held freezer requests: cgroup v2, system sleep (`32a§10`), or
+    /// both. A task may temporarily have a request without `frozen` while it
+    /// finishes kernel work and reaches its own checkpoint.
     pub freeze_reasons: AtomicU8,
-    /// Linux `PF_NOFREEZE`: never frozen, in either freeze pass. A thread that
-    /// must keep running across a suspend — the one driving it, and the ones
-    /// servicing tasks parking — carries this.
+    /// Linux `PF_NOFREEZE`: never frozen by system sleep. Kernel threads start
+    /// with it and explicitly opt in at a lock-free checkpoint; userspace does
+    /// not. The cgroup v2 freezer is independent of this flag.
     pub nofreeze: AtomicBool,
     /// Linux `PF_SUSPEND_TASK`: this task asked for the suspend. Freezing it
     /// would deadlock the machine against itself.

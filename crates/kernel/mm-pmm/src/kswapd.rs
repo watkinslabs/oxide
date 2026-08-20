@@ -4,7 +4,7 @@
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use sched::live::WaitList;
+use sched::live::{WaitList, wait_event_worker};
 use sync::{Reclaim, Spinlock};
 
 use crate::watermark::watermark_snapshot;
@@ -37,15 +37,12 @@ pub(crate) fn wake_kswapd() {
     WAIT.wake_one();
 }
 
-fn take_request_or_park() -> bool {
+fn take_request() -> bool {
     let mut request = REQUEST.lock();
     if request.pending {
         request.pending = false;
         return true;
     }
-    // SAFETY: request is the condition gate; publish while holding it so a
-    // waker cannot set pending and miss this task before the outer schedule.
-    unsafe { WAIT.prepare_to_wait(); }
     false
 }
 
@@ -65,10 +62,10 @@ fn reclaim_to_high() {
 
 extern "C" fn kswapd(_arg: usize) -> ! {
     loop {
-        if take_request_or_park() { reclaim_to_high(); }
-        // SAFETY: after a request pass, or after publication to WAIT, this is
-        // a runnable kthread with no subsystem lock held.
-        unsafe { sched::live::schedule(); }
+        // SAFETY: event-worker context with no subsystem lock held; the shared
+        // loop publishes before rechecking `REQUEST`, so a wake cannot be lost.
+        let _ = unsafe { wait_event_worker(&WAIT, take_request) };
+        reclaim_to_high();
     }
 }
 

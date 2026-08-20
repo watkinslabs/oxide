@@ -51,13 +51,27 @@ pub fn server_end_sid(listener: Sid, client: Sid) -> Sid {
     crate::with(|s| s.sid_mls_copy(listener, client).unwrap_or(listener)).unwrap_or(listener)
 }
 
+/// Why a socket label could not be rendered for userspace.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ContextError {
+    /// The server is absent or the label has no SID-table entry.
+    InvalidLabel,
+    /// Rendering could not allocate the context string.
+    NoMemory,
+}
+
 /// Rendered context of one label id. # C: O(categories)
 ///
 /// The terminator is the security boundary's business, not this module's: it is
 /// appended once, there, so the length published beside the value always counts
 /// it.
-pub fn context(label: Sid) -> Option<Vec<u8>> {
-    crate::with(|s| s.sid_to_context(label).ok())?.map(alloc::string::String::into_bytes)
+pub fn context(label: Sid) -> Result<Vec<u8>, ContextError> {
+    let rendered = crate::with(|s| s.sid_to_context(label))
+        .ok_or(ContextError::InvalidLabel)?;
+    rendered.map(alloc::string::String::into_bytes).map_err(|error| match error {
+        selinux::Error::NoMemory => ContextError::NoMemory,
+        _ => ContextError::InvalidLabel,
+    })
 }
 
 /// Label reported for a peer no label was ever recorded for. # C: O(1)

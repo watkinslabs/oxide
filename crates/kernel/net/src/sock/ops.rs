@@ -69,7 +69,8 @@ pub fn bind_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr,
                 let (port, endpoint) = if port == 0 {
                     alloc_ephemeral_udp4_owned(sock.owner.clone(), ip, sock.error.clone(), iface,
                                          sock.opts.base.reuseaddr.clone(), sock.opts.base.reuseport.clone(),
-                                         sock.opts.ip_mtu_discover.clone(), sock.opts.udp.gro.clone(),
+                                         sock.opts.ip_mtu_discover.clone(), sock.opts.base.mark_cell(),
+                                         sock.opts.udp.gro.clone(),
                                          sock.opts.udp.encap_type.clone(),
                                          sock.peer.clone(), sock.bpf_filter.clone(), sock.mcast.clone(),
                                          policy.range)?
@@ -77,7 +78,8 @@ pub fn bind_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr,
                     (port, stack().bind_udp_socket_owned(
                         sock.owner.clone(), ip, port, iface, sock.error.clone(),
                         sock.opts.base.reuseaddr.clone(), sock.opts.base.reuseport.clone(),
-                        sock.opts.ip_mtu_discover.clone(), sock.opts.udp.gro.clone(),
+                        sock.opts.ip_mtu_discover.clone(), sock.opts.base.mark_cell(),
+                        sock.opts.udp.gro.clone(),
                         sock.opts.udp.encap_type.clone(),
                         sock.peer.clone(), sock.bpf_filter.clone(), sock.mcast.clone(),
                     )?)
@@ -108,7 +110,7 @@ pub fn bind_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr,
                                          sock.opts.base.reuseaddr.clone(), sock.opts.base.reuseport.clone(),
                                          sock.opts.ipv6_v6only.clone(),
                                          sock.peer6.clone(), sock.opts.ip_mtu_discover.clone(),
-                                         sock.opts.ipv6_mtu_discover.clone(),
+                                         sock.opts.base.mark_cell(), sock.opts.ipv6_mtu_discover.clone(),
                                          sock.opts.udp.no_check6_rx.clone(), sock.opts.udp.gro.clone(),
                                          sock.opts.udp.encap_type.clone(),
                                          sock.bpf_filter.clone(), sock.mcast.clone(),
@@ -119,7 +121,7 @@ pub fn bind_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr,
                         sock.opts.base.reuseaddr.clone(), sock.opts.base.reuseport.clone(),
                         sock.opts.ipv6_v6only.clone(),
                         sock.peer6.clone(), sock.opts.ip_mtu_discover.clone(),
-                        sock.opts.ipv6_mtu_discover.clone(),
+                        sock.opts.base.mark_cell(), sock.opts.ipv6_mtu_discover.clone(),
                         sock.opts.udp.no_check6_rx.clone(), sock.opts.udp.gro.clone(),
                         sock.opts.udp.encap_type.clone(),
                         sock.bpf_filter.clone(), sock.mcast.clone(),
@@ -349,7 +351,7 @@ pub fn accept(sock: &alloc::sync::Arc<InetSocket>) -> Result<Accepted, NetError>
         (c.remote.ip, c.remote.port)
     };
     let new_sock = InetSocket::from_accepted_tcp(sock, entry.clone());
-    record_accepted_header(&new_sock, &entry);
+    record_accepted_header(&new_sock, sock, &entry);
     inherit_tcp_keepalive_opts(&new_sock, sock);
     inherit_tcp_oobinline(&new_sock, sock);
     new_sock.opts.tcp.inherit(&sock.opts.tcp);

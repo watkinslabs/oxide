@@ -73,9 +73,8 @@ pub struct TcpListenEntry {
     /// Listener close linearizes child admission and accept publication here.
     pub closed: ::core::sync::atomic::AtomicBool,
     pub local: Endpoint,
-    /// F160: blocking-accept waiters.
-    #[cfg(target_os = "oxide-kernel")]
-    pub accept_waiters: sched::live::WaitList,
+    /// Socket sleep queue for blocking accept.
+    pub accept_waiters: alloc::boxed::Box<crate::sock_wait::SockWaitQueue>,
     /// F181a: per-fd epoll subscribers (POLL_IN on accept_q growth).
     pub poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, StackLockClass>,
     /// SO_REUSEPORT group reached from the listen table on the delivery path.

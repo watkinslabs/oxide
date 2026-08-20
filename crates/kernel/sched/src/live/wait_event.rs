@@ -110,6 +110,15 @@ pub unsafe fn wait_event_interruptible(wq: &WaitList, cond: impl FnMut() -> bool
     unsafe { wait_event_at(Location::caller(), wq, WaitState::Interruptible, 0, || 0, cond) }
 }
 
+/// Event-driven kernel-worker idle wait. # SAFETY: see [`wait_event`].
+/// # C: O(N_wakeups)
+#[track_caller]
+pub unsafe fn wait_event_worker(wq: &WaitList, cond: impl FnMut() -> bool) -> WaitOutcome {
+    // SAFETY: forwarded contract; the named policy keeps ordinary worker idle
+    // time outside the uninterruptible hung-task candidate set.
+    unsafe { wait_event_at(Location::caller(), wq, crate::wait_policy::event_worker(), 0, || 0, cond) }
+}
+
 /// Linux `wait_event(wq, cond)` for a wait which deliberately ignores signals.
 ///
 /// # SAFETY: process context on the running task's own CPU, with the runqueue

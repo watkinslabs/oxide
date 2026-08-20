@@ -1,6 +1,6 @@
 // [TCPRX] delivery-side trace for the SA_RESTART TCP-recv re-entry hunt.
 // Answers ONE question a boot cannot otherwise answer: when the peer's bytes
-// land, had the receiver actually published itself on `entry.rx_waiters`?
+// land, had the receiver actually published itself on the entry sleep queue?
 // Feature-gated — a default build compiles the empty arm and emits nothing.
 
 /// Report one TCP delivery's receive-buffer growth and the parked-receiver

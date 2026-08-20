@@ -29,6 +29,8 @@
     mod address6_common;
     #[path = "rtnetlink_tests/address6_semantics.rs"]
     mod address6_semantics;
+    #[path = "rtnetlink_tests/address6_autojoin.rs"]
+    mod address6_autojoin;
     #[path = "rtnetlink_tests/address6_ordering.rs"]
     mod address6_ordering;
     #[path = "rtnetlink_tests/strict_dumps.rs"]

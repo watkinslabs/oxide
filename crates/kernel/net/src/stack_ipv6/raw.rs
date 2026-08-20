@@ -40,6 +40,9 @@ impl NetStack {
         if let Some(id) = bound {
             if self.ifaces.lookup_in_ns(id, endpoint.net_ns()).is_none() { return Err(NetError::Enodev); }
         }
+        if control.source.is_some_and(Ipv6Addr::is_link_local) && bound.is_none() {
+            return Err(NetError::Einval);
+        }
         let controlled_route = match control.iface {
             Some(id) => Some(self.longest_prefix_route6_on_iface(endpoint.net_ns(), id, route_dst)
                 .ok_or(NetError::Enetunreach)?),
@@ -51,12 +54,8 @@ impl NetStack {
             (route.iface, iface, crate::route6::next_hop6_for(route.gateway, route_dst))
         } else { self.route_v6_iface_in(endpoint.net_ns(), route_dst, bound, tx.mark)? };
         if let Some(source) = control.source {
-            if !self.v6_addr_owned_by(iface_id, source) { return Err(NetError::Einval); }
-        }
-        if control.source.is_none() && !local.addr.is_unspecified()
-            && !self.v6_addr_owned_by(iface_id, local.addr)
-        {
-            return Err(NetError::Eaddrnotavail);
+            crate::transparent::screen_v6_control_source(endpoint.net_ns(), source,
+                self.v6_dst_is_local(iface_id, source), endpoint.ip_opts.nonlocal())?;
         }
         let route_hint = controlled_route.and_then(|route| route.src_hint)
             .or_else(|| self.routes6.lookup_in(endpoint.net_ns(), route_dst)

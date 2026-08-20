@@ -10,7 +10,6 @@ use super::{EndCred, GcNode, GcRights, UnixEnd};
 
 mod wait;
 mod endpoint;
-#[cfg(target_os = "oxide-kernel")]
 pub use wait::{ArmMsgRead, ArmMsgReadAfter, ArmMsgWrite};
 
 const ECONNRESET: i32 = syscall::errno::Errno::Econnreset as i32;
@@ -36,14 +35,10 @@ pub struct UnixMsgPair {
     pub kind: UnixMsgKind,
     pub a_to_b: Spinlock<UnixMsgRing, UnixLockClass>,
     pub b_to_a: Spinlock<UnixMsgRing, UnixLockClass>,
-    #[cfg(target_os = "oxide-kernel")]
-    pub a_to_b_waiters: sched::live::WaitList,
-    #[cfg(target_os = "oxide-kernel")]
-    pub b_to_a_waiters: sched::live::WaitList,
-    #[cfg(target_os = "oxide-kernel")]
-    pub a_to_b_writers: sched::live::WaitList,
-    #[cfg(target_os = "oxide-kernel")]
-    pub b_to_a_writers: sched::live::WaitList,
+    pub a_to_b_waiters: crate::sock_wait::SockWaitQueue,
+    pub b_to_a_waiters: crate::sock_wait::SockWaitQueue,
+    pub a_to_b_writers: crate::sock_wait::SockWaitQueue,
+    pub b_to_a_writers: crate::sock_wait::SockWaitQueue,
     /// F181a: per-end epoll subscribers — see `UnixPair`.
     pub end_a_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, UnixLockClass>,
     pub end_b_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, UnixLockClass>,
@@ -99,14 +94,10 @@ impl UnixMsgPair {
                 reader_shutdown: false, shutdown_generation: 0, bytes: 0 }),
             b_to_a: Spinlock::new(UnixMsgRing { msgs: VecDeque::new(), closed_writer: false,
                 reader_shutdown: false, shutdown_generation: 0, bytes: 0 }),
-            #[cfg(target_os = "oxide-kernel")]
-            a_to_b_waiters: sched::live::WaitList::new(),
-            #[cfg(target_os = "oxide-kernel")]
-            b_to_a_waiters: sched::live::WaitList::new(),
-            #[cfg(target_os = "oxide-kernel")]
-            a_to_b_writers: sched::live::WaitList::new(),
-            #[cfg(target_os = "oxide-kernel")]
-            b_to_a_writers: sched::live::WaitList::new(),
+            a_to_b_waiters: crate::sock_wait::SockWaitQueue::new(),
+            b_to_a_waiters: crate::sock_wait::SockWaitQueue::new(),
+            a_to_b_writers: crate::sock_wait::SockWaitQueue::new(),
+            b_to_a_writers: crate::sock_wait::SockWaitQueue::new(),
             end_a_subs: Spinlock::new(None),
             end_b_subs: Spinlock::new(None),
             error_a: Spinlock::new(Arc::new(crate::SocketError::new())),
@@ -199,8 +190,7 @@ impl UnixMsgPair {
 
     /// WaitList the reader of `end` should park on.
     /// # C: O(1)
-    #[cfg(target_os = "oxide-kernel")]
-    pub fn reader_waiters(&self, end: UnixEnd) -> &sched::live::WaitList {
+    pub fn reader_waiters(&self, end: UnixEnd) -> &crate::sock_wait::SockWaitQueue {
         match end {
             UnixEnd::A => &self.b_to_a_waiters,
             UnixEnd::B => &self.a_to_b_waiters,
@@ -295,6 +285,11 @@ impl UnixMsgPair {
             };
             waiters.wake_all();
             wake_msgpair_peer_subs(self, end, vfs::POLL_IN);
+        }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        match end {
+            UnixEnd::A => self.a_to_b_waiters.wake_all(),
+            UnixEnd::B => self.b_to_a_waiters.wake_all(),
         }
         Ok(n)
     }
@@ -398,6 +393,13 @@ impl UnixMsgPair {
                 wake_msgpair_peer_subs(self, end, vfs::POLL_IN | vfs::POLL_RDHUP);
             }
         }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        if self.kind == UnixMsgKind::SeqPacket {
+            match end {
+                UnixEnd::A => self.a_to_b_waiters.wake_all(),
+                UnixEnd::B => self.b_to_a_waiters.wake_all(),
+            }
+        }
     }
 
     /// Shut down `end`'s receive half while preserving queued records.
@@ -417,6 +419,8 @@ impl UnixMsgPair {
             wake_msgpair_peer_subs(self, end.other(), vfs::POLL_IN | vfs::POLL_RDHUP);
             wake_msgpair_peer_subs(self, end, vfs::POLL_OUT);
         }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        self.reader_waiters(end).wake_all();
     }
 
     /// Destroy one endpoint and discard records it will never receive.
@@ -461,6 +465,11 @@ impl UnixMsgPair {
                 if dropped.0 { mask |= vfs::POLL_ERR; }
             }
             wake_msgpair_peer_subs(self, end, mask);
+        }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        {
+            self.reader_waiters(end).wake_all();
+            self.reader_waiters(end.other()).wake_all();
         }
     }
 

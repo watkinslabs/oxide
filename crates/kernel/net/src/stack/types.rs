@@ -58,7 +58,7 @@ pub enum TcpConnectWait {
 pub struct TcpBindReservation {
     pub owner: Arc<crate::SocketOwner>,
     pub local: Endpoint,
-    pub(crate) bound_ifindex: ::core::sync::atomic::AtomicU32,
+    pub(crate) bound_ifindex: Arc<::core::sync::atomic::AtomicU32>,
     pub(crate) reuseaddr: bool,
     pub(crate) reuseport: bool,
     pub(crate) v6only: bool,
@@ -71,20 +71,20 @@ impl TcpBindReservation {
     pub(crate) fn new(namespace: network_namespace::NetworkNamespaceRef, local: Endpoint,
                       iface: Option<NetIfaceId>, reuseaddr: bool,
                       reuseport: bool, owner_uid: u32, v6only: bool) -> Self {
-        Self::new_owned(crate::SocketOwner::root(namespace, owner_uid), local, iface,
-            reuseaddr, reuseport, v6only)
+        Self::new_owned(crate::SocketOwner::root(namespace, owner_uid), local,
+            reuseaddr, reuseport, v6only,
+            Arc::new(::core::sync::atomic::AtomicU32::new(
+                iface.map(NetIfaceId::raw).unwrap_or(0))))
     }
 
     /// Build a reservation retaining the socket's canonical owner. # C: O(1)
     pub(crate) fn new_owned(owner: Arc<crate::SocketOwner>, local: Endpoint,
-                      iface: Option<NetIfaceId>, reuseaddr: bool,
-                      reuseport: bool, v6only: bool) -> Self {
+                      reuseaddr: bool, reuseport: bool, v6only: bool,
+                      bound_ifindex: Arc<::core::sync::atomic::AtomicU32>) -> Self {
         Self {
             owner,
             local,
-            bound_ifindex: ::core::sync::atomic::AtomicU32::new(
-                iface.map(|id| id.raw()).unwrap_or(0),
-            ),
+            bound_ifindex,
             reuseaddr, reuseport, v6only,
             role: ::core::sync::atomic::AtomicU8::new(TCP_BIND_BOUND),
         }
@@ -179,7 +179,8 @@ pub struct TcpEntry {
     /// handshake, because an accepted connection's mark is its own from then
     /// on.
     pub mark: Arc<::core::sync::atomic::AtomicI32>,
-    /// Shared local bind owner. Passive children share their listener's bind.
+    /// Local bind owner. An active connection shares its socket reservation;
+    /// a passive child owns a request-time clone of its listener's state.
     pub bind: Option<Arc<TcpBindReservation>>,
     /// Filter snapshot/shared socket owner used before TCP state processing.
     pub bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
@@ -197,9 +198,6 @@ pub struct TcpEntry {
     /// acknowledgement that finishes the handshake, by the reset that ends it,
     /// or by teardown, whichever reaches it first.
     pub fastopen_qlen: ::core::sync::atomic::AtomicBool,
-    /// F158: blocking-read waiters (kernel only).
-    #[cfg(target_os = "oxide-kernel")]
-    pub rx_waiters: sched::live::WaitList,
     /// F181a: per-fd epoll subscribers (deliver_tcp wakes).
     pub(crate) poll_subs: alloc::boxed::Box<super::tcp_timer::TcpAsyncState>,
 }
@@ -396,6 +394,12 @@ impl TcpEntry {
     /// # C: O(1)
     pub fn bound_iface(&self) -> Option<NetIfaceId> {
         self.bind.as_ref().and_then(|bind| bind.bound_iface())
+    }
+
+    /// This connection's `sk_bound_dev_if` cell. # C: O(1)
+    pub fn bound_ifindex_cell(&self) -> Arc<::core::sync::atomic::AtomicU32> {
+        self.bind.as_ref().map(|bind| bind.bound_ifindex.clone())
+            .unwrap_or_else(|| Arc::new(::core::sync::atomic::AtomicU32::new(0)))
     }
 
     /// The `SO_MARK` every route lookup this connection makes is selected

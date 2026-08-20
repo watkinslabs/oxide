@@ -10,17 +10,15 @@ mod probe;
 mod regs;
 
 pub use baser::{
-    baser_setup, typer_devbits, typer_id_bits, typer_itt_entry_size, typer_phys_lpi,
-    typer_virt_lpi, BaserSlot, BaserType, GITS_BASER_COUNT,
+    baser_setup, BaserSlot, BaserType, GITS_BASER_COUNT,
 };
 pub use cmdq::{cmdq_pa, cmdq_setup, CmdqStatus};
-pub use commands::{
-    cmd_int, cmd_inv, cmd_mapc, cmd_mapti, cmd_post, cmd_sync, ctlr_enable, CmdStatus,
-    ITS_CMD_INT, ITS_CMD_INV, ITS_CMD_MAPC, ITS_CMD_MAPTI, ITS_CMD_SYNC,
+pub use commands::{cmd_post, ctlr_enable, CmdStatus};
+pub use crate::its_encoding::{
+    cmd_int, cmd_inv, cmd_mapc, cmd_mapti, cmd_sync, typer_devbits, typer_id_bits,
+    typer_itt_entry_size, typer_phys_lpi, typer_virt_lpi, ITS_CMD_INT, ITS_CMD_INV,
+    ITS_CMD_MAPC, ITS_CMD_MAPTI, ITS_CMD_SYNC,
 };
 pub use crate::its_mapd::{cmd_mapd, ITS_CMD_MAPD};
 pub use probe::{enable, translater_pa, ItsStatus};
 pub use regs::GITS_TRANSLATER;
-
-#[cfg(test)]
-mod tests;

@@ -14,7 +14,6 @@ use super::*;
 /// otherwise — this also defends a former master demoted to slave/private whose
 /// stale `mnt_slave_list` must no longer receive its events. # C: O(N_mounts)
 pub(super) fn propagation_targets(parent: &Arc<Mount>) -> Vec<Arc<Mount>> {
-    let ns = parent.namespace_id();
     // IS_MNT_SHARED(dest) gate: only a SHARED parent originates propagation.
     if Propagation::from_u8(parent.propagation.load(Ordering::Acquire)) != Propagation::Shared {
         return Vec::new();
@@ -24,7 +23,7 @@ pub(super) fn propagation_targets(parent: &Arc<Mount>) -> Vec<Arc<Mount>> {
     let mut seen: Vec<u64> = alloc::vec![parent.mnt_id];
     // Peers: shared mounts in the same group (excluding parent).
     if pg != 0 {
-        for m in mounts_in_ns(ns) {
+        for m in all_mounts() {
             if m.mnt_id == parent.mnt_id { continue; }
             if Propagation::from_u8(m.propagation.load(Ordering::Acquire)) == Propagation::Shared
                 && m.peer_group.load(Ordering::Acquire) == pg {
@@ -32,14 +31,14 @@ pub(super) fn propagation_targets(parent: &Arc<Mount>) -> Vec<Arc<Mount>> {
             }
         }
     }
-    // Transitive slaves of {parent} ∪ peers, restricted to the same ns (a
-    // cross-ns slave clone receives via its own ns's machinery, not here).
+    // Transitive slaves of {parent} ∪ peers. A shared group can cross mount
+    // namespaces, so its listeners must be collected globally.
     let mut frontier: Vec<Arc<Mount>> = alloc::vec![parent.clone()];
     frontier.extend(out.iter().cloned());
     while let Some(m) = frontier.pop() {
         for w in m.mnt_slave_list.lock().iter() {
             if let Some(s) = w.upgrade() {
-                if s.namespace_id() != ns || seen.contains(&s.mnt_id) { continue; }
+                if seen.contains(&s.mnt_id) { continue; }
                 seen.push(s.mnt_id);
                 frontier.push(s.clone());
                 out.push(s);
@@ -138,9 +137,8 @@ pub fn propagate_mount(at: &Arc<Dentry>) -> usize {
     let grp = make_shared_group(&newm);
     let mut n = 0;
     for peer in targets {
-        if peer.namespace_id() != ns { continue; }
-        let base = match peer.mnt_root().or_else(|| peer.mountpoint()).or_else(global_root) { Some(b) => b, None => continue };
-        let Some(dst) = descend(&base, &rel) else { continue; };
+        let peer_ns = peer.namespace_id();
+        let Some(dst) = propagation_destination(&peer, &rel) else { continue; };
         // A copy landing on a PEER of the parent group is itself shared in the
         // new group (CL_MAKE_SHARED); a copy on a SLAVE becomes a slave of the
         // source (CL_SLAVE) — receives master events, never originates.
@@ -149,13 +147,47 @@ pub fn propagate_mount(at: &Arc<Dentry>) -> usize {
         let ty = if is_peer { CloneType::MakeShared } else { CloneType::Slave };
         // Clone the source subtree (freshly-created `newm` is childless at this
         // point, so this is one node) and splice it at `dst` under the target.
-        let nodes = copy_tree(&newm, &new_mp, ty, grp, &newm, ns, true, None);
+        let nodes = copy_tree(&newm, &new_mp, ty, grp, &newm, peer_ns, true, None);
         // The peer copy's root lands at `dst` under this `peer` mount; pass the
         // exact parent id because bind-shared roots make dentry-only derivation
         // ambiguous.
-        n += commit_tree(nodes, &dst, peer.mnt_id, None, ns);
+        n += commit_tree(nodes, &dst, peer.mnt_id, None, peer_ns);
     }
     n
+}
+
+/// Resolve the target mountpoint beneath one propagation peer. Intermediate
+/// components cross mounts in *that peer's* namespace; the final component
+/// deliberately does not, because it is the dentry the propagated clone must
+/// cover. # C: O(components × N_mounts)
+fn propagation_destination(peer: &Arc<Mount>, rel: &str) -> Option<Arc<Dentry>> {
+    let comps: Vec<&str> = rel.split('/').filter(|c| !c.is_empty()).collect();
+    let Some((last, parents)) = comps.split_last() else { return peer.mnt_root(); };
+    let mut cur = peer.mnt_root().or_else(|| peer.mountpoint()).or_else(global_root)?;
+    let mut cur_mnt = peer.mnt_id;
+    for comp in parents {
+        let inode = cur.inode()?;
+        let mut child = match crate::dcache::d_lookup(&cur, comp) {
+            Some(d) if !d.is_negative() => d,
+            _ => {
+                let child_inode = inode.lookup(comp).ok()?;
+                crate::dcache::d_add(&cur, comp, child_inode)
+            }
+        };
+        while let Some(mount) = __lookup_mnt(cur_mnt, &child) {
+            child = mount.mnt_root()?;
+            cur_mnt = mount.mnt_id;
+        }
+        cur = child;
+    }
+    let inode = cur.inode()?;
+    match crate::dcache::d_lookup(&cur, last) {
+        Some(d) if !d.is_negative() => Some(d),
+        _ => {
+            let child_inode = inode.lookup(last).ok()?;
+            Some(crate::dcache::d_add(&cur, last, child_inode))
+        }
+    }
 }
 
 /// Peer group id of the mount rooted exactly at dentry `d`, or 0. # C: O(log N)

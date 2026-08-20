@@ -27,7 +27,9 @@ pub struct SockBase {
     pub broadcast: AtomicI32,
     pub oobinline: AtomicI32,
     pub sndbuf: AtomicI32,
-    pub rcvbuf: AtomicI32,
+    /// `sk_rcvbuf`, also retained by the socket error queue so every error
+    /// admission reads the live receive budget instead of a published copy.
+    pub rcvbuf: Arc<AtomicI32>,
     /// `SOCK_RCVBUF_LOCK`: set once a write names a receive size, after which
     /// the transport follows it instead of autotuning.
     pub rcvbuf_locked: AtomicBool,
@@ -44,8 +46,9 @@ pub struct SockBase {
     pub timestamping: AtomicI32,
     /// `sk_tskey`: the transmit-record key this socket reports next.
     pub tskey: AtomicU32,
-    /// `sk_bound_dev_if`: 0 means no bound egress/ingress interface.
-    pub bound_ifindex: AtomicU32,
+    /// `sk_bound_dev_if`, shared with the live transport owner. A connected
+    /// TCP route and `SO_BINDTODEVICE` therefore read the same word.
+    pub bound_ifindex: Arc<AtomicU32>,
     pub passcred: ScmCredentials,
     pub scm_security: ScmSecurity,
     /// The flag word and indexed scalars the generic table owns.
@@ -69,7 +72,7 @@ impl SockBase {
             broadcast: AtomicI32::new(0),
             oobinline: AtomicI32::new(0),
             sndbuf: AtomicI32::new(sndbuf),
-            rcvbuf: AtomicI32::new(rcvbuf),
+            rcvbuf: Arc::new(AtomicI32::new(rcvbuf)),
             rcvbuf_locked: AtomicBool::new(false),
             sndtimeo_ns: AtomicI64::new(0),
             rcvtimeo_ns: AtomicI64::new(0),
@@ -77,7 +80,7 @@ impl SockBase {
             mark: Arc::new(AtomicI32::new(0)),
             timestamping: AtomicI32::new(0),
             tskey: AtomicU32::new(0),
-            bound_ifindex: AtomicU32::new(0),
+            bound_ifindex: Arc::new(AtomicU32::new(0)),
             passcred: ScmCredentials::new(),
             scm_security: ScmSecurity::new(),
             generic: sol::GenericSockOpts::default(),
@@ -100,6 +103,9 @@ impl SockBase {
     /// mark this socket carries at transmit time rather than a stale copy.
     /// # C: O(1)
     pub fn mark_cell(&self) -> Arc<AtomicI32> { self.mark.clone() }
+
+    /// The socket's one `sk_bound_dev_if` cell. # C: O(1)
+    pub fn bound_ifindex_cell(&self) -> Arc<AtomicU32> { self.bound_ifindex.clone() }
 
     /// `sock_sndtimeo` in nanoseconds, `0` for no timeout. # C: O(1)
     pub fn sndtimeo(&self) -> i64 { self.sndtimeo_ns.load(Ordering::Acquire) }

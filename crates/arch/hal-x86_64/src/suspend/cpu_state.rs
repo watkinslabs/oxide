@@ -23,8 +23,7 @@ use super::state::SavedCpuState;
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 use super::state::DescPtr;
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-use crate::msr::{IA32_CSTAR, IA32_EFER, IA32_FMASK, IA32_FS_BASE, IA32_GS_BASE,
-    IA32_KERNEL_GS_BASE, IA32_LSTAR, IA32_STAR};
+use crate::msr::{IA32_EFER, IA32_FS_BASE, IA32_GS_BASE, IA32_KERNEL_GS_BASE};
 
 /// Access-byte offset within an 8-byte segment descriptor (Intel SDM Vol. 3
 /// Fig. 3-8). The type nibble is its low four bits.
@@ -56,10 +55,6 @@ pub unsafe fn save_processor_state(s: &mut SavedCpuState) {
     // SAFETY: `rdmsr` is privileged but legal at CPL=0 and has no memory effect; every selector below is architectural.
     unsafe {
         s.efer = crate::cpu::rdmsr(IA32_EFER);
-        s.star = crate::cpu::rdmsr(IA32_STAR);
-        s.lstar = crate::cpu::rdmsr(IA32_LSTAR);
-        s.cstar = crate::cpu::rdmsr(IA32_CSTAR);
-        s.sfmask = crate::cpu::rdmsr(IA32_FMASK);
         s.fs_base = crate::cpu::rdmsr(IA32_FS_BASE);
         s.gs_base = crate::cpu::rdmsr(IA32_GS_BASE);
         s.kernel_gs_base = crate::cpu::rdmsr(IA32_KERNEL_GS_BASE);
@@ -98,6 +93,10 @@ pub unsafe fn restore_processor_state(s: &SavedCpuState) {
         reload_kernel_selectors();
         load_idt(&s.idt);
         clear_tss_busy(s.gdt.base, s.tr);
+        // Linux calls syscall_init() while repairing the processor context:
+        // entry addresses and selector policy belong to this kernel, not to
+        // whatever values happened to be saved before the sleep.
+        crate::syscall::install_syscall_msrs();
         load_tr(s.tr);
         load_ldt(s.ldt);
         load_data_selectors(s.ds, s.es);
@@ -105,10 +104,6 @@ pub unsafe fn restore_processor_state(s: &SavedCpuState) {
         crate::cpu::wrmsr(IA32_FS_BASE, s.fs_base);
         crate::cpu::wrmsr(IA32_GS_BASE, s.gs_base);
         crate::cpu::wrmsr(IA32_KERNEL_GS_BASE, s.kernel_gs_base);
-        crate::cpu::wrmsr(IA32_STAR, s.star);
-        crate::cpu::wrmsr(IA32_LSTAR, s.lstar);
-        crate::cpu::wrmsr(IA32_CSTAR, s.cstar);
-        crate::cpu::wrmsr(IA32_FMASK, s.sfmask);
     }
 }
 

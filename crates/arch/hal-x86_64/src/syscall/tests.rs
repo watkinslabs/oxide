@@ -17,6 +17,20 @@ fn efer_sce_bit_position() {
 }
 
 #[test]
+fn resume_rebuilds_the_syscall_msrs_from_kernel_owned_values() {
+    let image = syscall_msr_image(0xffff_ffff_8100_1000, 0xffff_ffff_8100_2000, false);
+    assert_eq!(image.star,
+        ((crate::idt::KERNEL_CS as u64) << 32) | ((crate::gdt::USER_CS32 as u64) << 48));
+    assert_eq!(image.lstar, 0xffff_ffff_8100_1000);
+    assert_eq!(image.cstar, Some(0xffff_ffff_8100_2000));
+    assert_eq!(image.sfmask, SFMASK_BITS);
+
+    // Linux avoids CSTAR writes on Intel, where the MSR is ignored and can
+    // fault under TDX, while still rebuilding every syscall MSR that applies.
+    assert_eq!(syscall_msr_image(1, 2, true).cstar, None);
+}
+
+#[test]
 fn syscall_kstack_size_is_4k() {
     assert_eq!(core::mem::size_of::<SyscallKStack>(), 4096);
 }

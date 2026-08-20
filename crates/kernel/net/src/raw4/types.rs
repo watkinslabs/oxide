@@ -92,8 +92,10 @@ pub struct Raw4Endpoint {
     /// with no second socket lookup and no mirrored copy to fall out of date.
     pub ip_opts: Arc<crate::sock_opts::sol_ip::IpOpts>,
     ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
-    #[cfg(target_os = "oxide-kernel")]
-    pub waiters: sched::live::WaitList,
+    /// Live `sk_mark` shared with the owning socket. ICMP PMTU learning must
+    /// resolve the same policy route a later transmit from that socket uses.
+    mark: Arc<core::sync::atomic::AtomicI32>,
+    pub waiters: crate::sock_wait::SockWaitQueue,
     pub(super) poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, LockClass>,
 }
 
@@ -111,15 +113,17 @@ impl Raw4Endpoint {
                ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>) -> Arc<Self> {
         Self::new_owned_with_pmtudisc(protocol, crate::SocketOwner::root(net_namespace, 0),
             bpf, mcast, error, ip_mtu_discover,
-            Arc::new(crate::sock_opts::sol_ip::IpOpts::default()))
+            Arc::new(crate::sock_opts::sol_ip::IpOpts::default()),
+            Arc::new(core::sync::atomic::AtomicI32::new(0)))
     }
 
     /// Build one endpoint retaining the socket's canonical owner. # C: O(1)
     pub fn new_owned_with_pmtudisc(protocol: u8, owner: Arc<crate::SocketOwner>,
                bpf: Arc<SocketFilter>, mcast: Arc<SocketMcast>, error: Arc<SocketError>,
                ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
-               ip_opts: Arc<crate::sock_opts::sol_ip::IpOpts>) -> Arc<Self> {
-        Self::new_inner(protocol, owner, None, bpf, mcast, error, ip_mtu_discover, ip_opts)
+               ip_opts: Arc<crate::sock_opts::sol_ip::IpOpts>,
+               mark: Arc<core::sync::atomic::AtomicI32>) -> Arc<Self> {
+        Self::new_inner(protocol, owner, None, bpf, mcast, error, ip_mtu_discover, ip_opts, mark)
     }
 
     /// Build one ICMP datagram endpoint whose identifier the kernel owns. # C: O(1)
@@ -127,17 +131,19 @@ impl Raw4Endpoint {
                mcast: Arc<SocketMcast>, error: Arc<SocketError>,
                reuse: Arc<core::sync::atomic::AtomicI32>,
                ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
-               ip_opts: Arc<crate::sock_opts::sol_ip::IpOpts>) -> Arc<Self> {
+               ip_opts: Arc<crate::sock_opts::sol_ip::IpOpts>,
+               mark: Arc<core::sync::atomic::AtomicI32>) -> Arc<Self> {
         let ident = crate::ping::new_ident(crate::ping::PingFamily::V4, reuse);
         Self::new_inner(crate::addr::IpProto::Icmp as u8, owner, Some(ident), bpf, mcast, error,
-            ip_mtu_discover, ip_opts)
+            ip_mtu_discover, ip_opts, mark)
     }
 
     fn new_inner(protocol: u8, owner: Arc<crate::SocketOwner>,
                ping: Option<Arc<crate::ping::PingIdent>>, bpf: Arc<SocketFilter>,
                mcast: Arc<SocketMcast>, error: Arc<SocketError>,
                ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
-               ip_opts: Arc<crate::sock_opts::sol_ip::IpOpts>) -> Arc<Self> {
+               ip_opts: Arc<crate::sock_opts::sol_ip::IpOpts>,
+               mark: Arc<core::sync::atomic::AtomicI32>) -> Arc<Self> {
         Arc::new(Self {
             protocol,
             owner,
@@ -160,14 +166,19 @@ impl Raw4Endpoint {
             error,
             ip_opts,
             ip_mtu_discover,
-            #[cfg(target_os = "oxide-kernel")]
-            waiters: sched::live::WaitList::new(),
+            mark,
+            waiters: crate::sock_wait::SockWaitQueue::new(),
             poll_subs: Spinlock::new(None),
         })
     }
 
     /// Exact IPv4 protocol selected at socket creation. # C: O(1)
     pub fn protocol(&self) -> u8 { self.protocol }
+
+    /// Current route mark of the owning socket. # C: O(1)
+    pub fn mark(&self) -> u32 {
+        self.mark.load(core::sync::atomic::Ordering::Acquire) as u32
+    }
 
     /// Whether this endpoint is an ICMP datagram endpoint rather than a raw
     /// one: it owns an echo identifier and rejects the raw-only options. # C: O(1)
@@ -325,7 +336,6 @@ impl Raw4Endpoint {
         state.datagrams.push_back(datagram);
         state.queued_bytes += bytes;
         drop(state);
-        #[cfg(target_os = "oxide-kernel")]
         self.waiters.wake_all();
         let poll = self.poll_subs.lock().clone();
         if let Some(subs) = poll.and_then(|weak| weak.upgrade()) { subs.notify(); }
@@ -351,7 +361,6 @@ impl Raw4Endpoint {
     /// Atomically publish read shutdown against receive wait registration. # C: O(1)
     pub fn shutdown_read(&self, read_shut: &core::sync::atomic::AtomicBool) {
         self.shutdown_read_with(read_shut, || {
-            #[cfg(target_os = "oxide-kernel")]
             self.waiters.wake_all();
         });
     }
@@ -370,7 +379,6 @@ impl Raw4Endpoint {
         if !state.accepting { return; }
         state.accepting = false;
         drop(state);
-        #[cfg(target_os = "oxide-kernel")]
         self.waiters.wake_all();
         let poll = self.poll_subs.lock().clone();
         if let Some(subs) = poll.and_then(|weak| weak.upgrade()) {
@@ -378,8 +386,7 @@ impl Raw4Endpoint {
         }
     }
 
-    /// Park a kernel reader only while the queue is empty and live. # C: O(1)
-    #[cfg(target_os = "oxide-kernel")]
+    /// Park a reader only while the queue is empty and live. # C: O(1)
     pub fn arm_recv_wait(&self, read_shut: &core::sync::atomic::AtomicBool,
                          deadline_ns: u64) -> bool {
         self.arm_recv_wait_with(read_shut, || {

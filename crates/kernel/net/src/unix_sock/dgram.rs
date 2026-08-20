@@ -90,10 +90,8 @@ pub struct UnixDgramQueue {
     wmem: core::sync::atomic::AtomicUsize,
     shutdown_generation: core::sync::atomic::AtomicU64,
     released: core::sync::atomic::AtomicBool,
-    #[cfg(target_os = "oxide-kernel")]
-    pub waiters: sched::live::WaitList,
-    #[cfg(target_os = "oxide-kernel")]
-    pub writers: sched::live::WaitList,
+    pub waiters: crate::sock_wait::SockWaitQueue,
+    pub writers: crate::sock_wait::SockWaitQueue,
     /// F181a: epoll subscribers of the owning InetSocket.
     pub subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, UnixLockClass>,
     /// Wait queues of OTHER sockets that are connected to this
@@ -135,10 +133,8 @@ impl UnixDgramQueue {
             wmem: core::sync::atomic::AtomicUsize::new(0),
             shutdown_generation: core::sync::atomic::AtomicU64::new(0),
             released: core::sync::atomic::AtomicBool::new(false),
-            #[cfg(target_os = "oxide-kernel")]
-            waiters: sched::live::WaitList::new(),
-            #[cfg(target_os = "oxide-kernel")]
-            writers: sched::live::WaitList::new(),
+            waiters: crate::sock_wait::SockWaitQueue::new(),
+            writers: crate::sock_wait::SockWaitQueue::new(),
             peer_writer_subs: Spinlock::new(Vec::new()),
             subs: Spinlock::new(None),
             gc: GcNode::new(),
@@ -227,6 +223,8 @@ impl UnixDgramQueue {
                 subs.notify_mask(vfs::POLL_OUT | vfs::POLL_WRNORM);
             } else { sched::live::notify_epoll_waiters(); }
         }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        self.waiters.wake_all();
     }
 
     /// Linux `sock_wfree`: settle one original skb allocation charge.
@@ -335,6 +333,8 @@ impl UnixDgramQueue {
         drop(q);
         #[cfg(target_os = "oxide-kernel")]
         { self.waiters.wake_all(); self.writers.wake_all(); }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        self.waiters.wake_all();
     }
 
     /// Close the queue at final fput and release all unread messages.
@@ -352,6 +352,8 @@ impl UnixDgramQueue {
         super::collect_scm_rights();
         #[cfg(target_os = "oxide-kernel")]
         { self.waiters.wake_all(); self.writers.wake_all(); }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        self.waiters.wake_all();
     }
 
     /// Pop one dgram if any.
@@ -408,7 +410,6 @@ impl UnixDgramQueue {
         self.queued_bytes.load(core::sync::atomic::Ordering::Acquire)
     }
 
-    #[cfg(target_os = "oxide-kernel")]
     pub fn arm_read(&self, generation: u64, deadline_ns: u64) -> ArmDgramRead {
         let q = self.msgs.lock();
         if !q.is_empty() { return ArmDgramRead::Retry; }
@@ -483,7 +484,6 @@ impl UnixDgramQueue {
     }
 }
 
-#[cfg(target_os = "oxide-kernel")]
 pub enum ArmDgramRead { Retry, Shutdown, Parked }
 
 #[cfg(target_os = "oxide-kernel")]

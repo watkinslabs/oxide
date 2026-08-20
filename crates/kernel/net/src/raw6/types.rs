@@ -78,10 +78,13 @@ pub struct Raw6Endpoint {
     pub bpf_filter: Arc<SocketFilter>,
     pub mcast: Arc<SocketMcast>,
     pub error: Arc<SocketError>,
+    /// Live shared inet option word. IPv6 FREEBIND and TRANSPARENT write the
+    /// same storage as their IPv4 option numbers, so transmit reads this
+    /// handle rather than a construction-time snapshot.
+    pub ip_opts: Arc<crate::sock_opts::sol_ip::IpOpts>,
     pub(crate) router_alert: Option<Arc<crate::sock_opts::sol_ipv6::Ipv6RouterAlert>>,
     pub(super) state: crate::fib_lock::FibLock<Raw6State, LockClass>,
-    #[cfg(target_os = "oxide-kernel")]
-    pub waiters: sched::live::WaitList,
+    pub waiters: crate::sock_wait::SockWaitQueue,
     pub(super) poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, LockClass>,
 }
 
@@ -90,30 +93,34 @@ impl Raw6Endpoint {
     pub fn new(net_namespace: network_namespace::NetworkNamespaceRef, protocol: u8, bpf_filter: Arc<SocketFilter>,
                mcast: Arc<SocketMcast>, error: Arc<SocketError>) -> Self {
         Self::new_owned(crate::SocketOwner::root(net_namespace, 0), protocol, bpf_filter,
-            mcast, error, None)
+            mcast, error, Arc::new(crate::sock_opts::sol_ip::IpOpts::default()), None)
     }
 
     /// Build an endpoint retaining the socket's canonical owner. # C: O(1)
     pub fn new_owned(owner: Arc<crate::SocketOwner>, protocol: u8,
                bpf_filter: Arc<SocketFilter>, mcast: Arc<SocketMcast>,
-               error: Arc<SocketError>, router_alert: Option<Arc<crate::sock_opts::sol_ipv6::Ipv6RouterAlert>>) -> Self {
-        Self::new_inner(owner, protocol, None, bpf_filter, mcast, error, router_alert)
+               error: Arc<SocketError>, ip_opts: Arc<crate::sock_opts::sol_ip::IpOpts>,
+               router_alert: Option<Arc<crate::sock_opts::sol_ipv6::Ipv6RouterAlert>>) -> Self {
+        Self::new_inner(owner, protocol, None, bpf_filter, mcast, error, ip_opts, router_alert)
     }
 
     /// Build one ICMP datagram endpoint whose identifier the kernel owns. # C: O(1)
     pub fn new_ping(owner: Arc<crate::SocketOwner>, bpf_filter: Arc<SocketFilter>,
                mcast: Arc<SocketMcast>, error: Arc<SocketError>,
-               reuse: Arc<core::sync::atomic::AtomicI32>) -> Self {
+               reuse: Arc<core::sync::atomic::AtomicI32>,
+               ip_opts: Arc<crate::sock_opts::sol_ip::IpOpts>) -> Self {
         let ident = crate::ping::new_ident(crate::ping::PingFamily::V6, reuse);
-        Self::new_inner(owner, crate::icmpv6::IPPROTO_ICMPV6, Some(ident), bpf_filter, mcast, error, None)
+        Self::new_inner(owner, crate::icmpv6::IPPROTO_ICMPV6, Some(ident), bpf_filter,
+            mcast, error, ip_opts, None)
     }
 
     fn new_inner(owner: Arc<crate::SocketOwner>, protocol: u8,
                ping: Option<Arc<crate::ping::PingIdent>>,
                bpf_filter: Arc<SocketFilter>, mcast: Arc<SocketMcast>,
-               error: Arc<SocketError>, router_alert: Option<Arc<crate::sock_opts::sol_ipv6::Ipv6RouterAlert>>) -> Self {
+               error: Arc<SocketError>, ip_opts: Arc<crate::sock_opts::sol_ip::IpOpts>,
+               router_alert: Option<Arc<crate::sock_opts::sol_ipv6::Ipv6RouterAlert>>) -> Self {
         Self {
-            owner, protocol, ping, bpf_filter, mcast, error, router_alert,
+            owner, protocol, ping, bpf_filter, mcast, error, ip_opts, router_alert,
             state: crate::fib_lock::FibLock::new(Raw6State {
                 accepting: true, local: Raw6Address::UNSPECIFIED, explicit_local: false, peer: None,
                 bound_iface: None, datagrams: VecDeque::new(), queued_bytes: 0,
@@ -121,8 +128,7 @@ impl Raw6Endpoint {
                 checksum: Raw6Checksum::for_protocol(protocol),
                 header_included: protocol == crate::addr::IpProto::Raw as u8,
             }),
-            #[cfg(target_os = "oxide-kernel")]
-            waiters: sched::live::WaitList::new(),
+            waiters: crate::sock_wait::SockWaitQueue::new(),
             poll_subs: Spinlock::new(None),
         }
     }
@@ -300,7 +306,6 @@ impl Raw6Endpoint {
     /// Atomically publish read shutdown against receive wait registration. # C: O(1)
     pub fn shutdown_read(&self, read_shut: &core::sync::atomic::AtomicBool) {
         self.shutdown_read_with(read_shut, || {
-            #[cfg(target_os = "oxide-kernel")]
             self.waiters.wake_all();
         });
     }
@@ -319,7 +324,6 @@ impl Raw6Endpoint {
         if !state.accepting { return; }
         state.accepting = false;
         drop(state);
-        #[cfg(target_os = "oxide-kernel")]
         self.waiters.wake_all();
         let poll = self.poll_subs.lock().clone();
         if let Some(subs) = poll.and_then(|weak| weak.upgrade()) {
@@ -327,8 +331,7 @@ impl Raw6Endpoint {
         }
     }
 
-    /// Park a kernel reader only while the queue is empty and live. # C: O(1)
-    #[cfg(target_os = "oxide-kernel")]
+    /// Park a reader only while the queue is empty and live. # C: O(1)
     pub fn arm_recv_wait(&self, read_shut: &core::sync::atomic::AtomicBool,
                          deadline_ns: u64) -> bool {
         self.arm_recv_wait_with(read_shut, || {
@@ -369,7 +372,6 @@ impl Raw6Endpoint {
     pub fn header_included(&self) -> bool { self.state.lock().header_included }
 
     pub(super) fn notify_receive(&self) {
-        #[cfg(target_os = "oxide-kernel")]
         self.waiters.wake_all();
         let poll = self.poll_subs.lock().clone();
         if let Some(subs) = poll.and_then(|weak| weak.upgrade()) { subs.notify(); }

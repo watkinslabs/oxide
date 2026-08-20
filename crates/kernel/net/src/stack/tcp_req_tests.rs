@@ -40,6 +40,39 @@ fn an_ordinary_passive_open_leaves_a_request_and_no_connection() {
 }
 
 #[test]
+fn the_passive_child_records_the_ipv6_opening_flowinfo() {
+    let _domain = crate::hosted_fixture::init_net_domain();
+    let stack = NetStack::new();
+    let (iface, _lo, listener) = fixture(&stack, 7_612);
+    let mut packet = [0u8; crate::ipv6::IPV6_HDR_LEN];
+    packet[..4].copy_from_slice(&0x62c5_4321u32.to_be_bytes());
+
+    let child = super::tcp_listener_deliver::build_passive_child(
+        listener.local, 1_460, 1_500, crate::route_metrics::RouteMetrics::NONE,
+        &packet, &listener, listener.bound_iface(), iface, true);
+
+    assert_eq!(child.conn.lock().rcv_iif, 0x02c5_4321);
+}
+
+#[test]
+fn passive_child_owns_a_bound_device_snapshot() {
+    let _domain = crate::hosted_fixture::init_net_domain();
+    let stack = NetStack::new();
+    let (iface, _lo, listener) = fixture(&stack, 7_613);
+    let child = super::tcp_listener_deliver::build_passive_child(
+        listener.local, 1_460, 1_500, crate::route_metrics::RouteMetrics::NONE,
+        &[], &listener, Some(iface), iface, false);
+    let later = NetIfaceId::from_raw(iface.raw().wrapping_add(1));
+
+    listener.bind.bound_ifindex.store(later.raw(),
+        ::core::sync::atomic::Ordering::Release);
+
+    assert_eq!(child.bound_iface(), Some(iface));
+    assert!(!Arc::ptr_eq(&child.bind.as_ref().unwrap().bound_ifindex,
+        &listener.bind.bound_ifindex));
+}
+
+#[test]
 fn a_retransmitted_syn_ack_carries_the_same_negotiation_as_the_first() {
     // The first answer and every later one are built from the one record the
     // SYN produced. Anything that re-derived the negotiation instead could
@@ -85,6 +118,28 @@ fn a_duplicate_syn_re_solicits_the_answer_without_taking_a_second_slot() {
         "a repeated SYN must not consume a second backlog slot");
     let synack = head(&sent(&lo).expect("the repeated SYN is answered again"));
     assert_eq!(synack.flags & (flags::SYN | flags::ACK), flags::SYN | flags::ACK);
+}
+
+#[test]
+fn repeated_syn_answers_are_limited_and_a_sent_answer_pushes_the_request_timer() {
+    let _domain = crate::hosted_fixture::init_net_domain();
+    let stack = NetStack::new();
+    let (iface, lo, _listener) = fixture(&stack, 7_611);
+    deliver(&stack, iface, 7_611, 40_011, flags::SYN, CLIENT_SEQ, 0, syn_options());
+    drain(&lo);
+    let req = request(&stack, 7_611, 40_011).expect("a request");
+    req.rsk.lock().expires_ns = 1;
+    let skipped = crate::mib::get_tcp_ext(0, crate::mib::TcpExt::TcpAckSkippedSynRecv);
+
+    deliver(&stack, iface, 7_611, 40_011, flags::SYN, CLIENT_SEQ, 0, syn_options());
+    assert!(sent(&lo).is_some(), "the first repeated SYN is answered");
+    assert_eq!(req.rsk.lock().expires_ns, crate::tcp_conn::RTO_MAX_DEFAULT_NS
+        .min(crate::tcp_conn::reqsk::TIMEOUT_INIT_NS));
+    drain(&lo);
+
+    deliver(&stack, iface, 7_611, 40_011, flags::SYN, CLIENT_SEQ, 0, syn_options());
+    assert!(sent(&lo).is_none(), "a replay inside the interval is silent");
+    assert_eq!(crate::mib::get_tcp_ext(0, crate::mib::TcpExt::TcpAckSkippedSynRecv), skipped + 1);
 }
 
 #[test]
@@ -244,4 +299,10 @@ fn a_segment_outside_the_request_window_is_answered_with_an_acknowledgement() {
     assert_eq!(answer.flags & (flags::RST | flags::ACK), flags::ACK,
         "the peer is told where the window is, not reset");
     assert_eq!(answer.ack, CLIENT_SEQ.wrapping_add(1));
+    drain(&lo);
+    let skipped = crate::mib::get_tcp_ext(0, crate::mib::TcpExt::TcpAckSkippedSynRecv);
+    deliver(&stack, iface, 7_610, 40_010, flags::ACK, CLIENT_SEQ.wrapping_add(1 << 20),
+        synack.seq.wrapping_add(1), Default::default());
+    assert!(sent(&lo).is_none(), "the same out-of-window ACK is limited per request");
+    assert_eq!(crate::mib::get_tcp_ext(0, crate::mib::TcpExt::TcpAckSkippedSynRecv), skipped + 1);
 }

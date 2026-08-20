@@ -117,7 +117,8 @@ fn tcp_transport_state_retains_one_owner_arc() {
     let local = Endpoint { ip: IpAddr::V4(Ipv4Addr::LOOPBACK), port: 40007 };
     let remote = Endpoint { ip: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7)), port: 443 };
     let bind = Arc::new(super::TcpBindReservation::new_owned(
-        owner.clone(), local, None, false, false, false));
+        owner.clone(), local, false, false, false,
+        Arc::new(core::sync::atomic::AtomicU32::new(0))));
     let entry = TcpEntry::new_bound_with_error(
         TcpConn::new_client(local, remote, 6), Arc::new(crate::SocketError::new()),
         Some(bind.clone()));

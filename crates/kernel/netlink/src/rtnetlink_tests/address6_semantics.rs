@@ -10,8 +10,22 @@ use super::*;
 use super::address6_common::*;
 
 use net::iface_addr::{IFA_F_DADFAILED, IFA_F_DEPRECATED, IFA_F_MANAGETEMPADDR, IFA_F_MCAUTOJOIN,
-    IFA_F_NODAD, IFA_F_NOPREFIXROUTE, IFA_F_PERMANENT, IFA_F_SECONDARY, IFA_F_TENTATIVE,
+    IFA_F_NODAD, IFA_F_NOPREFIXROUTE, IFA_F_OPTIMISTIC, IFA_F_PERMANENT, IFA_F_SECONDARY, IFA_F_TENTATIVE,
     INFINITY_LIFE_TIME};
+
+struct OptimisticAll;
+impl OptimisticAll {
+    fn set() -> Self {
+        net::sysctl::set_value_in(0, net::net_ns::NetSysctlKey::Ipv6OptimisticDadAll, 1).unwrap();
+        Self
+    }
+}
+impl Drop for OptimisticAll {
+    fn drop(&mut self) {
+        net::sysctl::set_value_in(0, net::net_ns::NetSysctlKey::Ipv6OptimisticDadAll, 0).unwrap();
+        net::sysctl::set_value_in(0, net::net_ns::NetSysctlKey::Ipv6UseOptimisticAll, 0).unwrap();
+    }
+}
 
 // The reported failure, as a contract: the add succeeds, and the address is in
 // the table the receive path and the dumps read.
@@ -31,6 +45,22 @@ fn a_link_local_add_succeeds_and_lands_in_the_one_address_table() {
     assert_eq!(row.flags() & IFA_F_TENTATIVE, IFA_F_TENTATIVE);
     assert_eq!(row.valid, INFINITY_LIFE_TIME);
     assert_eq!(row.preferred, INFINITY_LIFE_TIME);
+}
+
+#[test]
+fn disable_ipv6_is_enforced_by_the_selected_interface() {
+    let fx = fixture();
+    let conf = net::global_stack().ifaces.ipv6_conf_by_name_in("eth-stable", 0).unwrap();
+    conf.set_value(net::netdev::Ipv6ConfKey::DisableIpv6, 1);
+    let (req, msg) = addr6_req(RTM_NEWADDR, fx.ifindex, 64, GLOBAL, 0,
+        crate::flags::NLM_F_CREATE);
+    assert_eq!(ack_errno(&handle_newaddr(&req, &msg)), -13);
+
+    conf.set_value(net::netdev::Ipv6ConfKey::DisableIpv6, 0);
+    assert_eq!(ack_errno(&handle_newaddr(&req, &msg)), 0);
+    conf.set_value(net::netdev::Ipv6ConfKey::DisableIpv6, 1);
+    let (req, msg) = addr6_req(RTM_DELADDR, fx.ifindex, 64, GLOBAL, 0, 0);
+    assert_eq!(ack_errno(&handle_deladdr(&req, &msg)), -6);
 }
 
 // The address must reach the RTM_GETADDR dump, which is what a manager reads
@@ -110,6 +140,47 @@ fn nodad_assigns_the_address_without_verification() {
         "an address that skipped DAD is immediately usable");
 }
 
+#[test]
+fn optimistic_dad_policy_keeps_the_tentative_address_live() {
+    let fx = fixture();
+    let _policy = OptimisticAll::set();
+    let (mut req, mut msg) = addr6_req(RTM_NEWADDR, fx.ifindex, 64, GLOBAL, 0, 0);
+    put_nlattr(&mut msg, ifa::IFA_FLAGS, &IFA_F_OPTIMISTIC.to_ne_bytes());
+    seal(&mut req, &mut msg);
+    assert_eq!(ack_errno(&handle_newaddr(&req, &msg)), 0);
+    let row = row_for(fx.iface, GLOBAL).unwrap();
+    assert!(matches!(row.state, net::stack_ipv6::Ipv6AddrState::Tentative { .. }));
+    assert_eq!(row.flags() & (IFA_F_TENTATIVE | IFA_F_OPTIMISTIC),
+        IFA_F_TENTATIVE | IFA_F_OPTIMISTIC);
+    assert!(net::global_stack().v6_addr_owned_by(fx.iface, net::Ipv6Addr(GLOBAL)),
+        "an optimistic address receives while DAD is pending");
+}
+
+#[test]
+fn nodad_and_enabled_optimistic_dad_are_mutually_exclusive() {
+    let fx = fixture();
+    let _policy = OptimisticAll::set();
+    let (mut req, mut msg) = addr6_req(RTM_NEWADDR, fx.ifindex, 64, GLOBAL, 0, 0);
+    let flags = IFA_F_NODAD | IFA_F_OPTIMISTIC;
+    put_nlattr(&mut msg, ifa::IFA_FLAGS, &flags.to_ne_bytes());
+    seal(&mut req, &mut msg);
+    assert_eq!(ack_errno(&handle_newaddr(&req, &msg)), -22);
+    assert!(row_for(fx.iface, GLOBAL).is_none());
+}
+
+#[test]
+fn disabled_optimistic_dad_clears_the_bit_before_conflict_validation() {
+    let fx = fixture();
+    let (mut req, mut msg) = addr6_req(RTM_NEWADDR, fx.ifindex, 64, GLOBAL, 0, 0);
+    let flags = IFA_F_NODAD | IFA_F_OPTIMISTIC;
+    put_nlattr(&mut msg, ifa::IFA_FLAGS, &flags.to_ne_bytes());
+    seal(&mut req, &mut msg);
+    assert_eq!(ack_errno(&handle_newaddr(&req, &msg)), 0);
+    let row = row_for(fx.iface, GLOBAL).unwrap();
+    assert_eq!(row.flags() & IFA_F_OPTIMISTIC, 0);
+    assert_eq!(row.flags() & IFA_F_NODAD, IFA_F_NODAD);
+}
+
 // A finite valid lifetime is what strips IFA_F_PERMANENT; a preferred lifetime
 // of zero deprecates the address on arrival. The two stamps the setter sends
 // are discarded — they are the kernel's to publish.
@@ -166,6 +237,44 @@ fn managetempaddr_demands_a_64_bit_prefix() {
     put_nlattr(&mut msg, ifa::IFA_FLAGS, &IFA_F_MANAGETEMPADDR.to_ne_bytes());
     seal(&mut req, &mut msg);
     assert_eq!(ack_errno(&handle_newaddr(&req, &msg)), 0);
+}
+
+#[test]
+fn managed_public_address_creates_updates_and_deletes_its_temporary_child() {
+    let fx = fixture();
+    let conf = net::global_stack().ifaces.ipv6_conf_by_name_in("eth-stable", 0).unwrap();
+    conf.set_value(net::netdev::Ipv6ConfKey::UseTempaddr, 1);
+    conf.set_value(net::netdev::Ipv6ConfKey::TempValidLft, 100);
+    conf.set_value(net::netdev::Ipv6ConfKey::TempPreferredLft, 50);
+    let (mut req, mut msg) = addr6_req(RTM_NEWADDR, fx.ifindex, 64, GLOBAL, 0, 0);
+    put_nlattr(&mut msg, ifa::IFA_FLAGS, &IFA_F_MANAGETEMPADDR.to_ne_bytes());
+    cacheinfo_attr(&mut msg, 80, 200);
+    seal(&mut req, &mut msg);
+    assert_eq!(ack_errno(&handle_newaddr(&req, &msg)), 0);
+    let rows = net::global_stack().v6_addr_snapshot_in(0).into_iter()
+        .filter(|(iface, _)| *iface == fx.iface).map(|(_, row)| row).collect::<Vec<_>>();
+    let child = rows.iter().find(|row| row.temporary).expect("one privacy child");
+    assert_eq!(child.temporary_parent, Some(net::Ipv6Addr(GLOBAL)));
+    assert_eq!(&child.addr.0[..8], &GLOBAL[..8]);
+    assert_eq!((child.valid, child.preferred), (100, 50));
+    assert!(matches!(child.state, net::stack_ipv6::Ipv6AddrState::Tentative { .. }));
+
+    let child_addr = child.addr;
+    let (mut req, mut msg) = addr6_req(RTM_NEWADDR, fx.ifindex, 64, GLOBAL, 0,
+        crate::flags::NLM_F_REPLACE);
+    put_nlattr(&mut msg, ifa::IFA_FLAGS, &IFA_F_MANAGETEMPADDR.to_ne_bytes());
+    cacheinfo_attr(&mut msg, 20, 30);
+    seal(&mut req, &mut msg);
+    assert_eq!(ack_errno(&handle_newaddr(&req, &msg)), 0);
+    let updated = net::global_stack().v6_addr_snapshot_in(0).into_iter()
+        .find(|(iface, row)| *iface == fx.iface && row.addr == child_addr).unwrap().1;
+    assert_eq!((updated.valid, updated.preferred), (30, 20));
+
+    let (req, msg) = addr6_req(RTM_NEWADDR, fx.ifindex, 64, GLOBAL, 0,
+        crate::flags::NLM_F_REPLACE);
+    assert_eq!(ack_errno(&handle_newaddr(&req, &msg)), 0);
+    assert!(net::global_stack().v6_addr_snapshot_in(0).into_iter()
+        .filter(|(iface, _)| *iface == fx.iface).all(|(_, row)| !row.temporary));
 }
 
 // IFA_LOCAL is the local address; a differing IFA_ADDRESS is the peer, and it
@@ -228,6 +337,101 @@ fn proto_and_route_priority_round_trip() {
     let row = row_for(fx.iface, GLOBAL).unwrap();
     assert_eq!(row.proto, 3);
     assert_eq!(row.rt_priority, 4096);
+}
+
+fn address_prefix_routes(iface: net::NetIfaceId) -> Vec<net::Route6Entry> {
+    net::global_stack().routes6.snapshot_in(0).into_iter().filter(|route| {
+        route.iface == iface && matches!(route.origin, net::Route6Origin::AddressPrefix { .. })
+    }).collect()
+}
+
+#[test]
+fn an_address_installs_a_canonical_kernel_prefix_route_with_its_priority() {
+    let fx = fixture();
+    let mut dirty = GLOBAL;
+    dirty[8] = 0x12; dirty[15] = 0x34;
+    let (mut req, mut msg) = addr6_req(RTM_NEWADDR, fx.ifindex, 64, dirty, 0, 0);
+    put_nlattr(&mut msg, ifa::IFA_RT_PRIORITY, &777u32.to_ne_bytes());
+    seal(&mut req, &mut msg);
+    assert_eq!(ack_errno(&handle_newaddr(&req, &msg)), 0);
+    let routes = address_prefix_routes(fx.iface);
+    assert_eq!(routes.len(), 1);
+    assert_eq!(routes[0].dst.0, [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    assert_eq!(routes[0].prefix_len, 64);
+    assert_eq!(routes[0].origin.metric(), 777);
+
+    let wire = super::route_ops::build_newroute6_reply(1, 2, routes[0], false);
+    assert_eq!(wire[Nlmsghdr::SIZE + 5], super::uapi::RTPROT_KERNEL);
+    let attrs = &wire[Nlmsghdr::SIZE + super::uapi::Rtmsg::SIZE..];
+    assert_eq!(u32::from_ne_bytes(find_attr(attrs, rta::RTA_PRIORITY)
+        .expect("RTA_PRIORITY").try_into().unwrap()), 777);
+}
+
+#[test]
+fn noprefixroute_suppresses_and_replace_reconciles_the_owned_route() {
+    let fx = fixture();
+    let (mut req, mut msg) = addr6_req(RTM_NEWADDR, fx.ifindex, 64, GLOBAL, 0, 0);
+    put_nlattr(&mut msg, ifa::IFA_FLAGS, &IFA_F_NOPREFIXROUTE.to_ne_bytes());
+    seal(&mut req, &mut msg);
+    assert_eq!(ack_errno(&handle_newaddr(&req, &msg)), 0);
+    assert!(address_prefix_routes(fx.iface).is_empty());
+
+    let (mut req, mut msg) = addr6_req(RTM_NEWADDR, fx.ifindex, 64, GLOBAL, 0,
+        crate::flags::NLM_F_REPLACE);
+    put_nlattr(&mut msg, ifa::IFA_RT_PRIORITY, &2048u32.to_ne_bytes());
+    seal(&mut req, &mut msg);
+    assert_eq!(ack_errno(&handle_newaddr(&req, &msg)), 0);
+    assert_eq!(address_prefix_routes(fx.iface)[0].origin.metric(), 2048);
+
+    let (mut req, mut msg) = addr6_req(RTM_NEWADDR, fx.ifindex, 64, GLOBAL, 0,
+        crate::flags::NLM_F_REPLACE);
+    put_nlattr(&mut msg, ifa::IFA_FLAGS, &IFA_F_NOPREFIXROUTE.to_ne_bytes());
+    seal(&mut req, &mut msg);
+    assert_eq!(ack_errno(&handle_newaddr(&req, &msg)), 0);
+    assert!(address_prefix_routes(fx.iface).is_empty());
+}
+
+#[test]
+fn a_shared_prefix_route_survives_until_its_last_eligible_address_is_deleted() {
+    let fx = fixture();
+    let mut second = GLOBAL; second[15] = 2;
+    for addr in [GLOBAL, second] {
+        let (req, msg) = addr6_req(RTM_NEWADDR, fx.ifindex, 64, addr, 0, 0);
+        assert_eq!(ack_errno(&handle_newaddr(&req, &msg)), 0);
+    }
+    assert_eq!(address_prefix_routes(fx.iface).len(), 1);
+    let (req, msg) = addr6_req(RTM_DELADDR, fx.ifindex, 64, GLOBAL, 0, 0);
+    assert_eq!(ack_errno(&handle_deladdr(&req, &msg)), 0);
+    assert_eq!(address_prefix_routes(fx.iface).len(), 1);
+    let (req, msg) = addr6_req(RTM_DELADDR, fx.ifindex, 64, second, 0, 0);
+    assert_eq!(ack_errno(&handle_deladdr(&req, &msg)), 0);
+    assert!(address_prefix_routes(fx.iface).is_empty());
+}
+
+#[test]
+fn finite_and_noprefixroute_peers_follow_the_prefix_cleanup_ladder() {
+    let fx = fixture();
+    let (mut req, mut msg) = addr6_req(RTM_NEWADDR, fx.ifindex, 64, GLOBAL, 0, 0);
+    cacheinfo_attr(&mut msg, 30, 60);
+    seal(&mut req, &mut msg);
+    assert_eq!(ack_errno(&handle_newaddr(&req, &msg)), 0);
+    let (req, msg) = addr6_req(RTM_DELADDR, fx.ifindex, 64, GLOBAL, 0, 0);
+    assert_eq!(ack_errno(&handle_deladdr(&req, &msg)), 0);
+    assert_eq!(address_prefix_routes(fx.iface).len(), 1,
+        "a finite address leaves its independently expiring route");
+
+    let mut permanent = GLOBAL; permanent[7] = 1; permanent[15] = 1;
+    let mut guarded = permanent; guarded[15] = 2;
+    let (req, msg) = addr6_req(RTM_NEWADDR, fx.ifindex, 64, permanent, 0, 0);
+    assert_eq!(ack_errno(&handle_newaddr(&req, &msg)), 0);
+    let (mut req, mut msg) = addr6_req(RTM_NEWADDR, fx.ifindex, 64, guarded, 0, 0);
+    put_nlattr(&mut msg, ifa::IFA_FLAGS, &IFA_F_NOPREFIXROUTE.to_ne_bytes());
+    seal(&mut req, &mut msg);
+    assert_eq!(ack_errno(&handle_newaddr(&req, &msg)), 0);
+    let (req, msg) = addr6_req(RTM_DELADDR, fx.ifindex, 64, permanent, 0, 0);
+    assert_eq!(ack_errno(&handle_deladdr(&req, &msg)), 0);
+    assert!(address_prefix_routes(fx.iface).iter().any(|route| route.matches(net::Ipv6Addr(guarded))),
+        "a same-prefix NOPREFIXROUTE address guards the pre-existing route");
 }
 
 // A replace rewrites the lifetimes, the proto and the priority the setter

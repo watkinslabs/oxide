@@ -34,8 +34,7 @@ pub struct Listener {
     pub backlog_cap: AtomicUsize,
     pub bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
     poll_subs: Spinlock<Option<Weak<vfs::PollSubscribers>>, SockLockClass>,
-    #[cfg(target_os = "oxide-kernel")]
-    pub accept_waiters: sched::live::WaitList,
+    pub accept_waiters: alloc::boxed::Box<crate::sock_wait::SockWaitQueue>,
 }
 
 impl Listener {
@@ -45,8 +44,7 @@ impl Listener {
         Self { owner, local_port: port, transport_type, backlog: Spinlock::new(VecDeque::new()),
             backlog_cap: AtomicUsize::new(crate::sysctl::DEFAULT_SOMAXCONN), bpf_filter,
             poll_subs: Spinlock::new(None),
-            #[cfg(target_os = "oxide-kernel")]
-            accept_waiters: sched::live::WaitList::new() }
+            accept_waiters: alloc::boxed::Box::new(crate::sock_wait::SockWaitQueue::new()) }
     }
     /// Register the owning socket's canonical readiness source. # C: O(1)
     pub fn register_poll_subs(&self, subs: &Arc<vfs::PollSubscribers>) {
@@ -109,7 +107,6 @@ impl VsockTable {
             }
         }
         for l in listeners.iter() { l.backlog.lock().clear(); l.notify_poll(vfs::POLL_IN);
-            #[cfg(target_os = "oxide-kernel")]
             l.accept_waiters.wake_all(); }
     }
     /// Close and remove only one transport owner's connections. # C: O(N conns + N listeners + backlog)
@@ -126,7 +123,6 @@ impl VsockTable {
             }
         }
         for l in listeners.iter() { l.backlog.lock().retain(|c| c.owner != owner); l.notify_poll(vfs::POLL_IN);
-            #[cfg(target_os = "oxide-kernel")]
             l.accept_waiters.wake_all(); }
     }
     /// Register a listener unless an exact or wildcard owner already has the port. # C: O(N listeners)
@@ -145,7 +141,6 @@ impl VsockTable {
         conns.retain(|c| !pending.iter().any(|child| Arc::ptr_eq(c, child))); drop(conns); drop(listeners);
         for child in pending.iter() { super::super::close(child); }
         removed.notify_poll(vfs::POLL_HUP);
-        #[cfg(target_os = "oxide-kernel")]
         removed.accept_waiters.wake_all();
         true
     }

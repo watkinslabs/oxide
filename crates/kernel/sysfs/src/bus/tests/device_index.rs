@@ -166,7 +166,7 @@ fn sys_dev_char_indexes_virtual_char_class_devices() {
     let sound_link = index.lookup(&sound_index).expect("sound char index link");
     assert_eq!(
         sound_link.readlink().expect("readlink"),
-        b"../../devices/virtual/sound/controlC8".to_vec());
+        b"../../devices/virtual/sound/card8/controlC8".to_vec());
     let graphics_link = index.lookup(&graphics_index).expect("graphics char index link");
     assert_eq!(
         graphics_link.readlink().expect("readlink"),
@@ -329,7 +329,7 @@ fn sys_dev_char_index_tracks_remove_readd_same_devt() {
     let link = index.lookup(&sound_index).expect("first sound char index");
     assert_eq!(
         link.readlink().expect("readlink"),
-        b"../../devices/virtual/sound/controlC12".to_vec());
+        b"../../devices/virtual/sound/card12/controlC12".to_vec());
 
     drv::device_del(&first);
     assert_eq!(index.lookup(&sound_index).err(), Some(VfsError::Enoent));
@@ -342,7 +342,7 @@ fn sys_dev_char_index_tracks_remove_readd_same_devt() {
     let link = index.lookup(&sound_index).expect("readded sound char index");
     assert_eq!(
         link.readlink().expect("readlink"),
-        b"../../devices/virtual/sound/controlC12".to_vec());
+        b"../../devices/virtual/sound/card12/controlC12".to_vec());
 
     drv::device_del(&second);
     assert_eq!(index.lookup(&sound_index).err(), Some(VfsError::Enoent));

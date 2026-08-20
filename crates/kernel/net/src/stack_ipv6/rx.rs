@@ -144,7 +144,7 @@ impl NetStack {
             || self.v6_local_route_in(net_ns, ip),
             || self.v6_addrs.lock().iter().any(|(id, addrs)| {
                 self.ifaces.lookup_in_ns(*id, net_ns).is_some()
-                    && addrs.iter().any(|addr| addr.addr == ip && addr.usable_at(self.ra_now_ns()))
+                    && addrs.iter().any(|addr| addr.addr == ip && addr.owned_at(self.ra_now_ns()))
             }))
     }
 

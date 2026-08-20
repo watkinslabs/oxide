@@ -105,6 +105,25 @@ impl InetSocket {
         if self.released.load(Ordering::Acquire) { return Err(NetError::Einval); }
         if let Some(port) = *local_port { return Ok(port); }
         crate::landlock_addr::check_autobind_udp(self)?;
+        self.ensure_bound_locked_admitted(local_port)
+    }
+
+    /// Allocate after the common send boundary supplied its bind-zero proof.
+    /// # C: O(N)
+    pub(crate) fn ensure_bound_after_send_admission(&self,
+        _admission: &crate::landlock_addr::UdpAutobindAdmission) -> Result<u16, NetError>
+    {
+        use core::sync::atomic::Ordering;
+        let mut local_port = self.local_port.lock();
+        if self.released.load(Ordering::Acquire) { return Err(NetError::Einval); }
+        if let Some(port) = *local_port { return Ok(port); }
+        self.ensure_bound_locked_admitted(&mut local_port)
+    }
+
+    fn ensure_bound_locked_admitted(&self, local_port: &mut Option<u16>)
+        -> Result<u16, NetError>
+    {
+        use core::sync::atomic::Ordering;
         let net_ns = self.net_ns();
         let iface = stack().bound_iface_in(net_ns, self.opts.base.bound_ifindex.load(Ordering::Acquire))?;
         // Linux `inet_autobind` keeps whatever local address the socket already
@@ -114,7 +133,8 @@ impl InetSocket {
         let (port, endpoint) = alloc_ephemeral_udp4_owned(
             self.owner.clone(), bind_ip, self.error.clone(), iface,
             self.opts.base.reuseaddr.clone(), self.opts.base.reuseport.clone(),
-            self.opts.ip_mtu_discover.clone(), self.opts.udp.gro.clone(),
+            self.opts.ip_mtu_discover.clone(), self.opts.base.mark_cell(),
+            self.opts.udp.gro.clone(),
             self.opts.udp.encap_type.clone(),
             self.peer.clone(), self.bpf_filter.clone(), self.mcast.clone(),
             policy.range,
@@ -126,7 +146,7 @@ impl InetSocket {
     }
 }
 
-#[cfg(all(test, target_os = "oxide-kernel"))]
+#[cfg(test)]
 mod tests {
     use super::InetSocket;
     use alloc::sync::Arc;
@@ -135,6 +155,7 @@ mod tests {
 
     #[test]
     fn stale_bind_to_device_update_returns_enodev() {
+        let _domain = crate::hosted_fixture::init_net_domain();
         let stack = crate::global_stack();
         let owner = network_namespace::initial();
         let iface = stack.ifaces.register_in_ns(
@@ -170,17 +191,17 @@ mod tests {
     #[test]
     fn udp_receive_reports_pending_error_before_queued_datagram() {
         let sock = InetSocket::new_udp();
-        let endpoint = Arc::new(crate::UdpRxQueue::new(crate::Ipv4Addr::ANY, 41_234));
-        assert!(endpoint.enqueue((
+        let endpoint = Arc::new(crate::UdpRxQueue::new_with_error(
+            crate::Ipv4Addr::ANY, 41_234, sock.error.clone()));
+        assert!(endpoint.enqueue(crate::stack::UdpDatagram::plain(
             crate::Ipv4Addr::LOOPBACK, 53, crate::Ipv4Addr::LOOPBACK,
             crate::NetIfaceId::from_raw(1), 64, vec![1, 2, 3],
         )));
         *sock.udp4.lock() = Some(endpoint);
         sock.set_pending_recv_error(Errno::Econnrefused as i32);
-        assert_eq!(
-            crate::sock_io::recvfrom_opts(&sock, 8, crate::sock_io::RecvOptions::default()),
-            Err(crate::NetError::Econnrefused),
-        );
+        assert!(matches!(crate::sock_io::recvfrom_opts(
+            &sock, 8, crate::sock_io::RecvOptions::default()),
+            Err(crate::NetError::Econnrefused)));
         assert_eq!(
             crate::sock_io::recvfrom_opts(&sock, 8, crate::sock_io::RecvOptions::default())
                 .unwrap().payload,

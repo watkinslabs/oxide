@@ -5,6 +5,18 @@ use sync::{Spinlock, Socket as StackLockClass};
 
 use crate::addr::{Ipv6Addr, NetIfaceId};
 
+/// IPv4 header state retained when an AF_INET6 endpoint receives a mapped
+/// IPv4 datagram. The IPv6 common control path still reads the ordinary
+/// fields below; this record feeds the additional IPv4 control path.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MappedIpv4Ancillary {
+    pub src: crate::Ipv4Addr,
+    pub dst: crate::Ipv4Addr,
+    pub ttl: u8,
+    pub tos: u8,
+    pub options: crate::ipv4_options::Compiled,
+}
+
 /// One queued IPv6 UDP datagram plus every header field the ancillary
 /// messages publish. `dst` + `iface` back IPV6_PKTINFO; `hop_limit` backs
 /// IPV6_HOPLIMIT (avahi enforces == 255 for on-link mDNS, RFC 6762 §11);
@@ -25,6 +37,7 @@ pub struct Udp6Datagram {
     /// `(next-header kind, whole header bytes)`, in the order they arrived.
     pub ext_headers: Vec<(u8, Vec<u8>)>,
     pub frag_max: u32,
+    pub ipv4: Option<MappedIpv4Ancillary>,
     /// Whole-datagram checksum retained by the validating receive pass, set
     /// only for a v4-mapped delivery: IP_CHECKSUM is an IPv4-level option, and
     /// a v4-mapped receive publishes the IPv4 ancillary level. `None` for a
@@ -40,7 +53,7 @@ impl Udp6Datagram {
                  traffic_class: u8, payload: Vec<u8>) -> Self
     {
         Self { src, sport, dst, dport: 0, iface, hop_limit, traffic_class, flowinfo: 0,
-               ext_headers: Vec::new(), frag_max: 0, checksum: None, payload }
+               ext_headers: Vec::new(), frag_max: 0, ipv4: None, checksum: None, payload }
     }
 }
 
@@ -61,8 +74,7 @@ pub struct Udp6RxQueue {
     pub bound_ip: Ipv6Addr,
     pub bound_port: u16,
     state: Spinlock<Udp6RxState, StackLockClass>,
-    #[cfg(target_os = "oxide-kernel")]
-    pub waiters: sched::live::WaitList,
+    pub waiters: crate::sock_wait::SockWaitQueue,
     pub error: Arc<crate::SocketError>,
     /// Connected peer filter. `None` accepts datagrams from any peer.
     pub peer: Arc<Spinlock<Option<(Ipv6Addr, u16)>, StackLockClass>>,
@@ -71,6 +83,9 @@ pub struct Udp6RxQueue {
     pub v6only: Arc<core::sync::atomic::AtomicI32>,
     /// Canonical Linux `inet_sk(sk)->pmtudisc`, shared with the owning socket.
     pub ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
+    /// Live `sk_mark` shared with the owning dual-stack socket. IPv4 ICMP
+    /// errors matched through this endpoint use it for policy routing.
+    pub(crate) mark: Arc<core::sync::atomic::AtomicI32>,
     /// Canonical Linux `inet6_sk(sk)->pmtudisc`, shared with the owning socket.
     pub ipv6_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
     /// `UDP_NO_CHECK6_RX`, shared with the owning socket: a zero-checksum
@@ -128,6 +143,8 @@ pub struct Ipv6IfaceAddr {
     /// Privacy address generated for this prefix rather than the stable
     /// public address. Source selection owns the interpretation of this bit.
     pub temporary: bool,
+    /// Public /64 address whose `IFA_F_MANAGETEMPADDR` policy owns this row.
+    pub temporary_parent: Option<Ipv6Addr>,
     /// The `IFA_F_*` bits the setter stated and the kernel keeps verbatim
     /// (`IFA_F_NODAD`, `IFA_F_HOMEADDRESS`, `IFA_F_MANAGETEMPADDR`,
     /// `IFA_F_NOPREFIXROUTE`, `IFA_F_MCAUTOJOIN`, `IFA_F_OPTIMISTIC`). The
@@ -169,6 +186,13 @@ impl Ipv6IfaceAddr {
         self.valid_at(now_ns) && self.state == Ipv6AddrState::Assigned
     }
 
+    /// An optimistic tentative address may receive before DAD completes. # C: O(1)
+    pub(crate) fn owned_at(&self, now_ns: u64) -> bool {
+        self.usable_at(now_ns) || self.valid_at(now_ns)
+            && matches!(self.state, Ipv6AddrState::Tentative { .. })
+            && self.user_flags & crate::iface_addr::IFA_F_OPTIMISTIC != 0
+    }
+
     /// The `ifa_scope` the address reports. Derived from the address, never
     /// taken from the setter: the reference computes it in the add path and
     /// maps the address type through the host/link/site ladder. A multicast
@@ -208,6 +232,11 @@ impl Udp6RxQueue {
         self.reuseport.load(core::sync::atomic::Ordering::Acquire) != 0
     }
 
+    /// Current route mark of the owning socket. # C: O(1)
+    pub(crate) fn mark(&self) -> u32 {
+        self.mark.load(core::sync::atomic::Ordering::Acquire) as u32
+    }
+
     /// IPV6_V6ONLY mode captured when this endpoint was bound. # C: O(1)
     pub(crate) fn v6only_at_bind(&self) -> bool {
         self.v6only.load(core::sync::atomic::Ordering::Acquire) != 0
@@ -226,6 +255,7 @@ impl Udp6RxQueue {
             crate::SocketOwner::root(network_namespace::initial(), 0),
             Arc::new(core::sync::atomic::AtomicI32::new(0)), Arc::new(Spinlock::new(None)),
             Arc::new(core::sync::atomic::AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)),
+            Arc::new(core::sync::atomic::AtomicI32::new(0)),
             Arc::new(core::sync::atomic::AtomicI32::new(crate::uapi::IPV6_PMTUDISC_WANT)),
             Arc::new(core::sync::atomic::AtomicI32::new(0)),
             Arc::new(core::sync::atomic::AtomicI32::new(0)),
@@ -241,6 +271,7 @@ impl Udp6RxQueue {
                       v6only: Arc<core::sync::atomic::AtomicI32>,
                       peer: Arc<Spinlock<Option<(Ipv6Addr, u16)>, StackLockClass>>,
                       ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
+                      mark: Arc<core::sync::atomic::AtomicI32>,
                       ipv6_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
                       no_check6_rx: Arc<core::sync::atomic::AtomicI32>,
                       gro: Arc<core::sync::atomic::AtomicI32>,
@@ -252,14 +283,14 @@ impl Udp6RxQueue {
             bound_ip,
             bound_port,
             state: Spinlock::new(Udp6RxState { accepting: true, datagrams: VecDeque::new() }),
-            #[cfg(target_os = "oxide-kernel")]
-            waiters: sched::live::WaitList::new(),
+            waiters: crate::sock_wait::SockWaitQueue::new(),
             error,
             peer,
             reuseaddr,
             reuseport,
             v6only,
             ip_mtu_discover,
+            mark,
             ipv6_mtu_discover,
             no_check6_rx,
             gro,
@@ -279,7 +310,6 @@ impl Udp6RxQueue {
         if !state.accepting { return false; }
         if !self.error.publish(entry, connected, hard) { return false; }
         drop(state);
-        #[cfg(target_os = "oxide-kernel")]
         self.waiters.wake_all();
         let slot = self.poll_subs.lock().clone();
         if let Some(weak) = slot {
@@ -294,7 +324,6 @@ impl Udp6RxQueue {
         if !state.accepting { return false; }
         if !self.error.set(errno) { return false; }
         drop(state);
-        #[cfg(target_os = "oxide-kernel")]
         self.waiters.wake_all();
         let slot = self.poll_subs.lock().clone();
         if let Some(weak) = slot {
@@ -347,6 +376,7 @@ impl Udp6RxQueue {
         let decision = admit(state.datagrams.back().map(|q| &q.gro), same_flow, len,
             checksum_zero,
             crate::udp_gro::coalescable_receive(offered, datagram.frag_max)
+                && datagram.ipv4.as_ref().map_or(true, |v4| v4.options.is_empty())
                 && self.gro_enabled(), batch);
         match decision {
             GroAdmit::Merge => {
@@ -362,7 +392,6 @@ impl Udp6RxQueue {
             }
         }
         drop(state);
-        #[cfg(target_os = "oxide-kernel")]
         self.waiters.wake_all();
         if let Some(weak) = self.poll_subs.lock().clone() {
             if let Some(subs) = weak.upgrade() { subs.notify_mask(vfs::POLL_IN); }
@@ -376,7 +405,6 @@ impl Udp6RxQueue {
         if !state.accepting { return; }
         state.accepting = false;
         drop(state);
-        #[cfg(target_os = "oxide-kernel")]
         self.waiters.wake_all();
         if let Some(weak) = self.poll_subs.lock().clone() {
             if let Some(subs) = weak.upgrade() { subs.notify_mask(vfs::POLL_IN | vfs::POLL_HUP); }
@@ -401,7 +429,6 @@ impl Udp6RxQueue {
     }
 
     /// Register the current task as a waiter only while the endpoint is idle. # C: O(1)
-    #[cfg(target_os = "oxide-kernel")]
     pub fn park_if_idle(&self, read_shut: &core::sync::atomic::AtomicBool, deadline_ns: u64) -> bool {
         let state = self.state.lock();
         if !state.datagrams.is_empty() || self.error.has()
@@ -431,5 +458,5 @@ fn udp6_same_flow(a: &Udp6Datagram, b: &Udp6Datagram) -> bool {
     a.src == b.src && a.sport == b.sport && a.dst == b.dst && a.dport == b.dport
         && a.iface == b.iface && a.hop_limit == b.hop_limit
         && a.traffic_class == b.traffic_class && a.flowinfo == b.flowinfo
-        && a.ext_headers == b.ext_headers
+        && a.ext_headers == b.ext_headers && a.ipv4 == b.ipv4
 }

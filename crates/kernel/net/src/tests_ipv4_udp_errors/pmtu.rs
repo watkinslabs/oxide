@@ -2,6 +2,122 @@
 // FRAG_NEEDED route-cache update, and which sockets may write that cache.
 
 use super::*;
+use crate::policy_rule::{AF_INET, FR_ACT_TO_TBL, PolicyRule};
+use crate::route::{RouteEntry, RouteRecord};
+
+const MARK: u32 = 0x21;
+const MARK_TABLE: u32 = 101;
+
+/// Two output routes to the same peer: the main table uses `main_iface`, while
+/// an fwmark rule selects `marked_iface`. Distinct PMTU cache keys make a write
+/// to the wrong route observable rather than merely proving argument plumbing.
+fn marked_pmtu_stack() -> (NetStack, crate::NetIfaceId, crate::NetIfaceId) {
+    let stack = NetStack::new();
+    let main_iface = stack.ifaces.register(Arc::new(PmtuDev {
+        tx: AtomicUsize::new(0), flags: AtomicUsize::new(0),
+    }));
+    let marked_iface = stack.ifaces.register(Arc::new(PmtuDev {
+        tx: AtomicUsize::new(0), flags: AtomicUsize::new(0),
+    }));
+    stack.routes.add(RouteEntry::main(REMOTE, 32, main_iface, None, Some(LOCAL)));
+    stack.routes.add_record_in(0, RouteRecord::kernel(RouteEntry {
+        table: MARK_TABLE, dst: REMOTE, prefix_len: 32, iface: marked_iface,
+        gateway: None, src_hint: Some(LOCAL),
+    }));
+    let rtnl = stack.rtnl_lock();
+    stack.policy_rules().insert_rtnl(&rtnl, PolicyRule {
+        ns: 0, family: AF_INET, priority: 100, table: MARK_TABLE,
+        action: FR_ACT_TO_TBL, dst_len: 0, src_len: 0, tos: 0, flags: 0,
+        fwmark: 0x20, fwmask: 0xf0,
+    });
+    drop(rtnl);
+    (stack, main_iface, marked_iface)
+}
+
+fn assert_only_marked_route_learned(stack: &NetStack, main: crate::NetIfaceId,
+                                    marked: crate::NetIfaceId) {
+    let dst = crate::IpAddr::V4(REMOTE);
+    assert_eq!(stack.path_mtu_mark_in(0, dst, None, false, MARK), Ok(1_200));
+    assert_eq!(stack.path_mtu_mark_in(0, dst, None, false, 0), Ok(1_500));
+    assert_eq!(stack.path_mtu_mark_in(0, dst, Some(marked), false, MARK), Ok(1_200));
+    assert_eq!(stack.path_mtu_mark_in(0, dst, Some(main), false, 0), Ok(1_500));
+}
+
+#[test]
+fn udp_frag_needed_uses_the_live_socket_mark_route() {
+    let _domain = crate::hosted_fixture::init_net_domain();
+    let (stack, main, marked) = marked_pmtu_stack();
+    let mark = Arc::new(AtomicI32::new(0));
+    stack.bind_udp_socket_owned(
+        crate::SocketOwner::root(network_namespace::initial(), 1_000),
+        LOCAL, LOCAL_PORT, None, Arc::new(SocketError::new()), flag(), flag(),
+        Arc::new(AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)), mark.clone(), flag(), flag(),
+        Arc::new(Spinlock::<_, StackLockClass>::new(Some((REMOTE, REMOTE_PORT)))),
+        Arc::new(crate::bpf_filter::SocketFilter::new()),
+        Arc::new(crate::mcast_filter::SocketMcast::new()),
+    ).unwrap();
+    // This is deliberately after bind: Linux reads `sk_mark` from the matched
+    // socket when the error arrives rather than snapshotting it at bind.
+    mark.store(MARK as i32, Ordering::Release);
+
+    crate::stack_icmp::handle_error(
+        &stack, main, REMOTE, crate::icmp::ICMP_TYPE_DEST_UNREACH, 4,
+        &frag_needed_quote(1_500, 1_200),
+    );
+    assert_only_marked_route_learned(&stack, main, marked);
+}
+
+#[test]
+fn mapped_udp_frag_needed_uses_the_live_dual_stack_socket_mark_route() {
+    let _domain = crate::hosted_fixture::init_net_domain();
+    let (stack, main, marked) = marked_pmtu_stack();
+    let mark = Arc::new(AtomicI32::new(0));
+    stack.bind_udp6_socket_owned(
+        crate::SocketOwner::root(network_namespace::initial(), 1_000),
+        crate::Ipv6Addr::ANY, LOCAL_PORT, None, Arc::new(SocketError::new()), flag(), flag(),
+        flag(), Arc::new(Spinlock::new(Some((
+            crate::Ipv6Addr::from_v4_mapped(REMOTE), REMOTE_PORT,
+        )))), Arc::new(AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)), mark.clone(),
+        Arc::new(AtomicI32::new(crate::uapi::IPV6_PMTUDISC_WANT)), flag(), flag(), flag(),
+        Arc::new(crate::bpf_filter::SocketFilter::new()),
+        Arc::new(crate::mcast_filter::SocketMcast::new()),
+    ).unwrap();
+    mark.store(MARK as i32, Ordering::Release);
+
+    crate::stack_icmp::handle_error(
+        &stack, main, REMOTE, crate::icmp::ICMP_TYPE_DEST_UNREACH, 4,
+        &frag_needed_quote(1_500, 1_200),
+    );
+    assert_only_marked_route_learned(&stack, main, marked);
+}
+
+#[test]
+fn raw_frag_needed_uses_the_live_socket_mark_route() {
+    let _domain = crate::hosted_fixture::init_net_domain();
+    let (stack, main, marked) = marked_pmtu_stack();
+    let mark = Arc::new(AtomicI32::new(0));
+    let endpoint = crate::raw4::Raw4Endpoint::new_owned_with_pmtudisc(
+        crate::addr::IpProto::Icmp as u8,
+        crate::SocketOwner::root(network_namespace::initial(), 0),
+        Arc::new(crate::bpf_filter::SocketFilter::new()),
+        Arc::new(crate::mcast_filter::SocketMcast::new()), Arc::new(SocketError::new()),
+        Arc::new(AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)),
+        Arc::new(crate::sock_opts::sol_ip::IpOpts::default()), mark.clone(),
+    );
+    endpoint.bind(LOCAL, None).unwrap();
+    endpoint.connect(REMOTE, None).unwrap();
+    stack.register_raw4(&endpoint);
+    mark.store(MARK as i32, Ordering::Release);
+    let mut quote = alloc::vec![0u8; 8 + crate::ipv4::IPV4_HDR_LEN + 8];
+    quote[6..8].copy_from_slice(&1_200u16.to_be_bytes());
+    crate::Ipv4Hdr::build(LOCAL, REMOTE, crate::addr::IpProto::Icmp, 8, 1)
+        .write_to(&mut quote[8..8 + crate::ipv4::IPV4_HDR_LEN]);
+
+    crate::stack_icmp::handle_error(
+        &stack, main, REMOTE, crate::icmp::ICMP_TYPE_DEST_UNREACH, 4, &quote,
+    );
+    assert_only_marked_route_learned(&stack, main, marked);
+}
 
 #[test]
 fn pmtudisc_dont_suppresses_frag_needed_pending_and_extended_errors() {

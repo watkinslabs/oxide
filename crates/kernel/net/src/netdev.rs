@@ -1,12 +1,14 @@
 // Module manifest: ingress owns generation admission; tx_dispatch owns
 // queued/direct hardware serialization; registration owns publication;
-// packet_filter/packet_metadata own driver packet contracts.
+// packet_filter/packet_metadata own driver packet contracts; ipv6_conf owns
+// per-interface IPv6 policy; mcast_report and registry_state own registry
+// synchronization state; stats owns sysfs counter projection.
 
 extern crate alloc;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::string::String;
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use sync::{Spinlock, Socket as SocketLockClass};
 
@@ -34,6 +36,14 @@ mod registry_views;
 mod device;
 #[path = "netdev/rx_queue.rs"]
 pub mod rx_queue;
+#[path = "netdev/ipv6_conf.rs"]
+mod ipv6_conf;
+#[path = "netdev/mcast_report.rs"]
+mod mcast_report;
+#[path = "netdev/registry_state.rs"]
+mod registry_state;
+#[path = "netdev/stats.rs"]
+mod stats;
 pub use ingress::{EgressLease, IngressLease};
 pub(crate) use ingress::ControlEffectLease;
 pub(crate) use ingress::{IfaceTeardown, IfaceUnregisterClaim};
@@ -45,6 +55,10 @@ pub(crate) use packet_filter::PacketDeviceFilter;
 pub use error::{NetError, NetResult};
 pub use device::{NetDev, WanSettings};
 pub use rx_queue::{HdsConfig, QueueCaps, RxQueue, RxQueues};
+pub use ipv6_conf::{Ipv6ConfKey, Ipv6DevConf};
+pub(crate) use mcast_report::McastReportState;
+pub(crate) use registry_state::{IfaceRegistryLock, RegistryInner};
+pub use stats::STAT_FIELDS;
 
 type NetdevChangeHook = fn(&str, Option<&Arc<drv::Device>>);
 static NETDEV_CHANGE_HOOK: Spinlock<Option<NetdevChangeHook>, SocketLockClass> = Spinlock::new(None);
@@ -98,85 +112,8 @@ pub struct IfaceSnapshot {
     pub stats: NetStats,
 }
 
-/// Linux `/sys/class/net/<if>/statistics/` field names, in Linux's
-/// registration order. Every name resolves to a
-/// u64 decimal. `sysfs` reads this for both `readdir` and per-field
-/// `lookup`. Names match Linux exactly.
-pub const STAT_FIELDS: &[&str] = &[
-    "rx_packets", "tx_packets", "rx_bytes", "tx_bytes",
-    "rx_errors", "tx_errors", "rx_dropped", "tx_dropped",
-    "multicast", "collisions",
-    "rx_length_errors", "rx_over_errors", "rx_crc_errors",
-    "rx_frame_errors", "rx_fifo_errors", "rx_missed_errors",
-    "tx_aborted_errors", "tx_carrier_errors", "tx_fifo_errors",
-    "tx_heartbeat_errors", "tx_window_errors",
-    "rx_compressed", "tx_compressed", "rx_nohandler",
-];
-
-impl NetStats {
-    /// Value of one `/sys/class/net/<if>/statistics/` field. Returns
-    /// `None` for a name not in `STAT_FIELDS` (ENOENT). Fields with no
-    /// backing counter yet (error-detail / compressed / multicast /
-    /// collisions) report 0 — matching a NIC with no such events, the
-    /// real Linux value for those, not a fabrication.
-    /// # C: O(1)
-    pub fn field(&self, name: &str) -> Option<u64> {
-        Some(match name {
-            "rx_packets" => self.rx_packets,
-            "tx_packets" => self.tx_packets,
-            "rx_bytes"   => self.rx_bytes,
-            "tx_bytes"   => self.tx_bytes,
-            "rx_errors"  => self.rx_errors,
-            "tx_errors"  => self.tx_errors,
-            "rx_dropped" => self.rx_dropped,
-            "tx_dropped" => self.tx_dropped,
-            n if STAT_FIELDS.contains(&n) => 0,
-            _ => return None,
-        })
-    }
-}
-
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum NamespaceDropAction { Destroy, MoveToInitial }
-
-/// Registered iface — the registry assigns the `NetIfaceId`.
-pub(crate) struct McastReportState {
-    state: AtomicU8,
-}
-
-impl McastReportState {
-    const LIVE: u8 = 1 << 0;
-    const V4: u8 = 1 << 1;
-    const V6: u8 = 1 << 2;
-
-    fn new() -> Self { Self { state: AtomicU8::new(Self::LIVE) } }
-    pub(crate) fn live(&self) -> bool {
-        self.state.load(Ordering::Acquire) & Self::LIVE != 0
-    }
-    pub(crate) fn retire(&self) {
-        self.state.fetch_and(!Self::LIVE, Ordering::AcqRel);
-        while self.state.load(Ordering::Acquire) & (Self::V4 | Self::V6) != 0 {
-            sync::relax();
-        }
-    }
-    pub(crate) fn try_v4(&self) -> bool { self.try_drive(Self::V4) }
-    pub(crate) fn release_v4(&self) { self.state.fetch_and(!Self::V4, Ordering::Release); }
-    pub(crate) fn try_v6(&self) -> bool { self.try_drive(Self::V6) }
-    pub(crate) fn release_v6(&self) { self.state.fetch_and(!Self::V6, Ordering::Release); }
-
-    fn try_drive(&self, bit: u8) -> bool {
-        let mut state = self.state.load(Ordering::Acquire);
-        loop {
-            if state & Self::LIVE == 0 || state & bit != 0 { return false; }
-            match self.state.compare_exchange_weak(state, state | bit,
-                Ordering::AcqRel, Ordering::Acquire)
-            {
-                Ok(_) => return true,
-                Err(next) => state = next,
-            }
-        }
-    }
-}
 
 pub struct IfaceEntry {
     pub id:   NetIfaceId,
@@ -216,6 +153,7 @@ pub struct IfaceEntry {
     pub(crate) arp: Arc<crate::arp::ArpCache>,
     /// IPv6 half of the same neighbour table.
     pub(crate) ndp: Arc<crate::neigh::NeighCache<crate::Ipv6Addr>>,
+    pub(crate) ipv6_conf: Arc<Ipv6DevConf>,
     ingress: Arc<IngressGate>,
     /// This device's receive queues. Held by `Arc` because a memory-provider
     /// binding outlives the registry row: a provider bound to a queue keeps
@@ -230,66 +168,10 @@ pub struct IfaceRegistry {
     pub(crate) inner: IfaceRegistryLock,
 }
 
-/// The interface table is read from NET_RX softirq and mutated from process
-/// control paths. Linux protects this class with BH-safe networking locks; a
-/// plain spinlock lets the softirq interrupt its own lock holder and deadlock.
-pub(crate) struct IfaceRegistryLock(Spinlock<RegistryInner, SocketLockClass>);
-
-impl IfaceRegistryLock {
-    const fn new(value: RegistryInner) -> Self { Self(Spinlock::new(value)) }
-
-    #[inline]
-    fn lock(&self) -> sync::LockBhGuard<'_, RegistryInner, SocketLockClass, sched::bh::SchedBh> {
-        self.0.lock_bh::<sched::bh::SchedBh>()
-    }
-}
-
-pub(crate) struct RegistryInner {
-    // 0 = unseeded (see `RegistryInner::alloc_id`); a real iface id is never 0.
-    next: u32,
-    pub(crate) entries: Vec<IfaceEntry>,
-}
-
-// Hosted tests construct MANY independent `NetStack`/`IfaceRegistry`
-// instances (one or more per test), each of which used to start its own
-// `next` counter at 1 — so two concurrently-running tests' first-registered
-// interface (e.g. both calling `register_loopback()`, which keys into the
-// process-global `iface_addr`/`routes` tables at the shared init namespace,
-// `network_namespace::initial()`) could allocate the SAME `NetIfaceId`,
-// colliding in those tables and intermittently failing whichever test lost
-// the race (`stack::core::register_loopback_in_rtnl`'s `iface_addr::
-// snapshot_ns(0).find(..).unwrap()` panicking on a row the other test just
-// removed/never wrote). A real kernel only ever builds ONE `IfaceRegistry`
-// (the boot-time global stack), so seeding every registry's block from one
-// shared counter changes nothing there while giving every hosted-test
-// registry a disjoint id range, independent of whether any specific test
-// remembers to take the `hosted_fixture::init_net_domain()` mutex.
-#[cfg(not(target_os = "oxide-kernel"))]
-static NEXT_IFACE_ID_BLOCK: AtomicU32 = AtomicU32::new(1);
-#[cfg(not(target_os = "oxide-kernel"))]
-const IFACE_ID_BLOCK_STRIDE: u32 = 1_000_000;
-
-impl RegistryInner {
-    /// Allocate the next `NetIfaceId` in this registry, seeding `next` from
-    /// the shared block counter on first use (hosted only; kernel target
-    /// keeps the original fixed start of 1 — see `NEXT_IFACE_ID_BLOCK`). # C: O(1)
-    fn alloc_id(&mut self) -> u32 {
-        if self.next == 0 {
-            #[cfg(not(target_os = "oxide-kernel"))]
-            { self.next = NEXT_IFACE_ID_BLOCK.fetch_add(IFACE_ID_BLOCK_STRIDE, Ordering::Relaxed); }
-            #[cfg(target_os = "oxide-kernel")]
-            { self.next = 1; }
-        }
-        let id = self.next;
-        self.next += 1;
-        id
-    }
-}
-
 impl IfaceRegistry {
     /// # C: O(1)
     pub const fn new() -> Self {
-        Self { inner: IfaceRegistryLock::new(RegistryInner { next: 0, entries: Vec::new() }) }
+        Self { inner: IfaceRegistryLock::new(RegistryInner::new()) }
     }
 
     /// Hosted cleanup for a registry not owned by a `NetStack`.

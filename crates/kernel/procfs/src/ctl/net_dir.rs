@@ -74,6 +74,8 @@ pub const NET_SYSCTLS: &[Node] = &[
             // pause off; each recurrence doubles it up to sixty-four times.
             File("tcp_fastopen_blackhole_timeout_sec",
                 NetInt(net::net_ns::NetSysctlKey::TcpFastopenBlackholeTimeout, None)),
+            File("tcp_invalid_ratelimit", NetInt(
+                net::net_ns::NetSysctlKey::TcpInvalidRatelimit, Some((0, INT_MAX)))),
         ]),
         Dir("ipv6", &[
             File("ip_nonlocal_bind",   NetInt(net::net_ns::NetSysctlKey::Ipv6NonlocalBind, Some((0, 1)))),
@@ -85,9 +87,5 @@ pub const NET_SYSCTLS: &[Node] = &[
             // The IPv6 source-filter ceiling is global, not per-namespace.
             File("mld_max_msf",        NetGlobalIntHook(get_mld_max_msf, set_mld_max_msf,
                 Some(net::sysctl::MLD_MAX_MSF_BOUNDS))),
-            Dir("conf", &[
-                Dir("all",     &[ File("disable_ipv6", NetInt(net::net_ns::NetSysctlKey::Ipv6DisableAll, Some((0, 1)))) ]),
-                Dir("default", &[ File("disable_ipv6", NetInt(net::net_ns::NetSysctlKey::Ipv6DisableDefault, Some((0, 1)))) ]),
-            ]),
         ]),
 ];

@@ -242,8 +242,8 @@ impl NetStack {
                         .map_or(0, |dev| dev.hardware_type()),
                 }), seg,
             ) else { return Ok(()); };
-            return self.deliver_tcp_to_request(net_ns, src_ip, dst_ip, &seg[..keep], &hdr, key,
-                &tables, req);
+            return self.deliver_tcp_to_request_at(net_ns, src_ip, dst_ip, &seg[..keep], &hdr, key,
+                &tables, req, crate::tcp_conn::ka_now_ns());
         }
         if let Some(entry) = slot.and_then(|slot| slot.sock().cloned()) {
             if entry.bound_iface().is_some_and(|id| id != iface) { return Ok(()); }
@@ -427,11 +427,12 @@ impl NetStack {
             self.refresh_tcp_timers(&entry);
             // F159+F181a: wake conn rx + targeted epoll.
             #[cfg(target_os = "oxide-kernel")]
+            super::tcp_rx_trace::deliver(hdr.dst_port, _pre_len, _post_len,
+                entry.poll_subs.sleep().has_waiters());
+            #[cfg(not(target_os = "oxide-kernel"))]
+            let _ = post_state;
+            entry.poll_subs.sleep().wake_all();
             {
-                let _ = post_state;
-                super::tcp_rx_trace::deliver(hdr.dst_port, _pre_len, _post_len,
-                    entry.rx_waiters.has_waiters());
-                entry.rx_waiters.wake_all();
                 let slot = entry.poll_subs.lock().clone();
                 if let Some(weak) = slot {
                     if let Some(s) = weak.upgrade() { s.notify(); }

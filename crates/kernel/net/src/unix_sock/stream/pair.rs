@@ -14,14 +14,10 @@ impl UnixPair {
         alloc::sync::Arc::new(Self {
             a_to_b: Spinlock::new(UnixRing::new()),
             b_to_a: Spinlock::new(UnixRing::new()),
-            #[cfg(target_os = "oxide-kernel")]
-            a_to_b_waiters: sched::live::WaitList::new(),
-            #[cfg(target_os = "oxide-kernel")]
-            b_to_a_waiters: sched::live::WaitList::new(),
-            #[cfg(target_os = "oxide-kernel")]
-            a_to_b_writers: sched::live::WaitList::new(),
-            #[cfg(target_os = "oxide-kernel")]
-            b_to_a_writers: sched::live::WaitList::new(),
+            a_to_b_waiters: crate::sock_wait::SockWaitQueue::new(),
+            b_to_a_waiters: crate::sock_wait::SockWaitQueue::new(),
+            a_to_b_writers: crate::sock_wait::SockWaitQueue::new(),
+            b_to_a_writers: crate::sock_wait::SockWaitQueue::new(),
             end_a_subs: Spinlock::new(None),
             end_b_subs: Spinlock::new(None),
             error_a: Spinlock::new(alloc::sync::Arc::new(crate::SocketError::new())),
@@ -156,8 +152,7 @@ impl UnixPair {
     /// Returns the WaitList the reader of `end` should park on.
     /// `end == A` reads from b_to_a; `end == B` reads from a_to_b.
     /// # C: O(1)
-    #[cfg(target_os = "oxide-kernel")]
-    pub fn reader_waiters(&self, end: UnixEnd) -> &sched::live::WaitList {
+    pub fn reader_waiters(&self, end: UnixEnd) -> &crate::sock_wait::SockWaitQueue {
         match end {
             UnixEnd::A => &self.b_to_a_waiters,
             UnixEnd::B => &self.a_to_b_waiters,
@@ -165,8 +160,7 @@ impl UnixPair {
     }
 
     /// Returns the WaitList for writers on `end`. # C: O(1)
-    #[cfg(target_os = "oxide-kernel")]
-    pub fn writer_waiters(&self, end: UnixEnd) -> &sched::live::WaitList {
+    pub fn writer_waiters(&self, end: UnixEnd) -> &crate::sock_wait::SockWaitQueue {
         match end {
             UnixEnd::A => &self.a_to_b_writers,
             UnixEnd::B => &self.b_to_a_writers,

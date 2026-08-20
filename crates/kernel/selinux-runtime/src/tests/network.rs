@@ -39,12 +39,12 @@ fn the_unconnected_peer_label_is_unlabeled_and_never_the_absent_id() {
 /// move. Both answers must be defined rather than a panic: sockets are created
 /// on this path during early boot, before any policy exists.
 #[test]
-fn with_no_server_installed_a_label_renders_to_nothing_and_a_range_copy_is_the_identity() {
+fn with_no_server_installed_rendering_fails_and_a_range_copy_is_the_identity() {
     // `check.rs` documents that hosted tests leave the global server
     // uninstalled; this test depends on that and asserts it rather than
     // assuming it.
     assert!(!crate::installed());
-    assert_eq!(context(InitSid::Kernel.sid()), None);
+    assert_eq!(context(InitSid::Kernel.sid()), Err(ContextError::InvalidLabel));
     assert_eq!(server_end_sid(InitSid::Kernel.sid(), InitSid::Init.sid()),
         InitSid::Kernel.sid());
     assert_eq!(server_end_sid(7, 9), 7);

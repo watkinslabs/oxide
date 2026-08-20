@@ -65,6 +65,38 @@ fn char_by_addr(class: &'static str, addr: &str) -> Option<CharDevInfo> {
     char_devs(class).into_iter().find(|d| d.addr == addr)
 }
 
+fn sound_card_number(addr: &str) -> Option<u32> {
+    let digits = if let Some(rest) = addr.strip_prefix("controlC") {
+        rest
+    } else if let Some(rest) = addr.strip_prefix("pcmC") {
+        rest.split_once('D')?.0
+    } else {
+        return None;
+    };
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) { return None; }
+    digits.parse().ok()
+}
+
+pub(crate) fn sound_device_devpath(addr: &str) -> Option<String> {
+    Some(alloc::format!("devices/virtual/sound/card{}/{}", sound_card_number(addr)?, addr))
+}
+
+fn sound_card_devs(card: u32) -> Vec<CharDevInfo> {
+    char_devs("sound").into_iter()
+        .filter(|d| sound_card_number(&d.addr) == Some(card))
+        .collect()
+}
+
+fn sound_cards() -> Vec<u32> {
+    let mut cards = Vec::new();
+    for dev in char_devs("sound") {
+        let Some(card) = sound_card_number(&dev.addr) else { continue };
+        if !cards.contains(&card) { cards.push(card); }
+    }
+    cards.sort_unstable();
+    cards
+}
+
 fn uevent_body(info: &CharDevInfo) -> Vec<u8> {
     let mut body = alloc::format!(
         "MAJOR={}\nMINOR={}\nDEVNAME={}\n",
@@ -97,7 +129,8 @@ fn parent_root_leaf(bus: &str) -> &'static str {
 
 fn parent_device_target(info: &CharDevInfo) -> Option<Vec<u8>> {
     Some(alloc::format!(
-        "../../../{}/{}",
+        "{}{}/{}",
+        if sound_card_number(&info.addr).is_some() { "../../../../" } else { "../../../" },
         parent_root_leaf(info.parent_bus?),
         info.parent_addr.as_deref()?,
     )
@@ -124,7 +157,14 @@ impl FileOps for CharUeventOps {
     }
     fn write(&self, inode: &Inode, _o: u64, b: &[u8]) -> KResult<usize> {
         let d = inode.private::<CharUeventData>().ok_or(VfsError::Einval)?;
-        let devpath = alloc::format!("/devices/virtual/{}/{}", d.class, d.info.addr);
+        let devpath = if d.class == "sound" {
+            match sound_card_number(&d.info.addr) {
+                Some(card) => alloc::format!("/devices/virtual/sound/card{}/{}", card, d.info.addr),
+                None => alloc::format!("/devices/virtual/sound/{}", d.info.addr),
+            }
+        } else {
+            alloc::format!("/devices/virtual/{}/{}", d.class, d.info.addr)
+        };
         let devname = alloc::format!("DEVNAME={}", d.info.devname);
         let maj = alloc::format!("MAJOR={}", d.info.dev_t.0);
         let min = alloc::format!("MINOR={}", d.info.dev_t.1);
@@ -159,7 +199,9 @@ impl InodeOps for CharDevDirOps {
             )),
             "uevent" => Ok(make_char_uevent_inode(d.class, info)),
             "subsystem" => Ok(crate::make_symlink_inode(
-                alloc::format!("../../../../class/{}", d.class).into_bytes(),
+                alloc::format!("{}class/{}",
+                    if d.class == "sound" && sound_card_number(&d.addr).is_some() { "../../../../../" } else { "../../../../" },
+                    d.class).into_bytes(),
             )),
             "device" => Ok(crate::make_symlink_inode(
                 parent_device_target(&info).ok_or(VfsError::Enoent)?,
@@ -195,6 +237,61 @@ fn make_char_dev_dir(class: &'static str, addr: String) -> InodeRef {
     .build()
 }
 
+struct SoundCardData { card: u32 }
+
+struct SoundCardUeventOps;
+impl FileOps for SoundCardUeventOps {
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
+    fn read(&self, _inode: &Inode, _off: u64, _buf: &mut [u8]) -> KResult<usize> { Ok(0) }
+    fn write(&self, inode: &Inode, _off: u64, buf: &[u8]) -> KResult<usize> {
+        let d = inode.private::<SoundCardData>().ok_or(VfsError::Einval)?;
+        let devpath = alloc::format!("/devices/virtual/sound/card{}", d.card);
+        ::netlink::emit_uevent(crate::uevent_action(buf), &devpath, "sound");
+        Ok(buf.len())
+    }
+}
+
+fn make_sound_card_uevent(card: u32) -> InodeRef {
+    InodeBuilder::new(crate::ids::SOUND_CARD_ATTR, mk_mode(FileType::Regular, RW_PERM),
+        crate::kobject::attr_inode_ops(), Arc::new(SoundCardUeventOps))
+        .private(Arc::new(SoundCardData { card })).build()
+}
+
+struct SoundCardDirOps;
+impl InodeOps for SoundCardDirOps {
+    fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
+        let d = inode.private::<SoundCardData>().ok_or(VfsError::Einval)?;
+        if sound_card_devs(d.card).is_empty() { return Err(VfsError::Enoent); }
+        match name {
+            "uevent" => Ok(make_sound_card_uevent(d.card)),
+            "subsystem" => Ok(crate::make_symlink_inode(b"../../../../class/sound".to_vec())),
+            _ => {
+                let info = char_by_addr("sound", name).ok_or(VfsError::Enoent)?;
+                if sound_card_number(&info.addr) != Some(d.card) { return Err(VfsError::Enoent); }
+                Ok(make_char_dev_dir("sound", info.addr))
+            }
+        }
+    }
+}
+impl FileOps for SoundCardDirOps {
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
+        let d = inode.private::<SoundCardData>().ok_or(VfsError::Einval)?;
+        let devs = sound_card_devs(d.card);
+        let mut entries = crate::readdir::DirEntries::new(inode);
+        entries.push("uevent", FileType::Regular);
+        entries.push("subsystem", FileType::Symlink);
+        for dev in devs.iter() { entries.push(&dev.addr, FileType::Directory); }
+        entries.emit(ctx)
+    }
+}
+
+fn make_sound_card_dir(card: u32) -> InodeRef {
+    InodeBuilder::new(crate::ids::SOUND_CARD_DIR, mk_mode(FileType::Directory, DIR_PERM),
+        Arc::new(SoundCardDirOps), Arc::new(SoundCardDirOps))
+        .private(Arc::new(SoundCardData { card })).build()
+}
+
 struct VirtualClassData {
     class: &'static str,
 }
@@ -206,6 +303,12 @@ impl InodeOps for VirtualClassOps {
             .private::<VirtualClassData>()
             .ok_or(VfsError::Einval)?
             .class;
+        if class == "sound" {
+            if let Some(card) = name.strip_prefix("card").and_then(|n| n.parse::<u32>().ok()) {
+                if sound_cards().contains(&card) { return Ok(make_sound_card_dir(card)); }
+            }
+            if sound_card_number(name).is_some() { return Err(VfsError::Enoent); }
+        }
         if char_by_addr(class, name).is_some() {
             Ok(make_char_dev_dir(class, String::from(name)))
         } else {
@@ -222,8 +325,16 @@ impl FileOps for VirtualClassOps {
             .ok_or(VfsError::Einval)?
             .class;
         let devs = char_devs(class);
-        crate::readdir::emit_names(inode, ctx, devs.iter().map(|d| d.addr.as_str()),
-            FileType::Directory)
+        if class != "sound" {
+            return crate::readdir::emit_names(inode, ctx, devs.iter().map(|d| d.addr.as_str()), FileType::Directory);
+        }
+        let cards = sound_cards();
+        let mut entries = crate::readdir::DirEntries::new(inode);
+        for card in cards { entries.push(&alloc::format!("card{}", card), FileType::Directory); }
+        for dev in devs.iter().filter(|d| sound_card_number(&d.addr).is_none()) {
+            entries.push(&dev.addr, FileType::Directory);
+        }
+        entries.emit(ctx)
     }
 }
 
@@ -246,11 +357,28 @@ struct SysClassOps;
 impl InodeOps for SysClassOps {
     fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
         let class = inode.private::<SysClassData>().ok_or(VfsError::Einval)?.class;
+        if class == "sound" {
+            if let Some(card) = name.strip_prefix("card").and_then(|n| n.parse::<u32>().ok()) {
+                if sound_cards().contains(&card) {
+                    return Ok(crate::make_symlink_inode_ino(
+                        alloc::format!("../../devices/virtual/sound/card{}", card).into_bytes(),
+                        INO_CHAR_LINK));
+                }
+            }
+        }
         if char_by_addr(class, name).is_none() {
             return Err(VfsError::Enoent);
         }
+        let target = if class == "sound" {
+            match sound_card_number(name) {
+                Some(card) => alloc::format!("../../devices/virtual/sound/card{}/{}", card, name),
+                None => alloc::format!("../../devices/virtual/sound/{}", name),
+            }
+        } else {
+            alloc::format!("../../devices/virtual/{}/{}", class, name)
+        };
         Ok(crate::make_symlink_inode_ino(
-            alloc::format!("../../devices/virtual/{}/{}", class, name).into_bytes(),
+            target.into_bytes(),
             INO_CHAR_LINK,
         ))
     }
@@ -261,8 +389,12 @@ impl FileOps for SysClassOps {
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let class = inode.private::<SysClassData>().ok_or(VfsError::Einval)?.class;
         let devs = char_devs(class);
-        crate::readdir::emit_names(inode, ctx, devs.iter().map(|d| d.addr.as_str()),
-            FileType::Symlink)
+        let mut entries = crate::readdir::DirEntries::new(inode);
+        if class == "sound" {
+            for card in sound_cards() { entries.push(&alloc::format!("card{}", card), FileType::Symlink); }
+        }
+        for dev in devs.iter() { entries.push(&dev.addr, FileType::Symlink); }
+        entries.emit(ctx)
     }
 }
 

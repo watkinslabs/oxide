@@ -20,11 +20,9 @@ mod send;
 mod trace;
 mod types;
 
-#[cfg(target_os = "oxide-kernel")]
 pub use lifecycle::ArmStreamRead;
 #[cfg(target_os = "oxide-kernel")]
 pub use lifecycle::ArmStreamWrite;
-#[cfg(target_os = "oxide-kernel")]
 pub use read::ReadOutcome;
 pub use oob::{at_mark, limit, step, OobStep};
 pub use recv::{stream_recv_continues, StreamFiles};

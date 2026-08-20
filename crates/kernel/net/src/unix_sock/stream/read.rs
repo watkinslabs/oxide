@@ -7,7 +7,6 @@ use super::super::{GcRights, UnixEnd};
 
 /// Outcome of [`UnixPair::read_or_park`]: data drained, peer-closed EOF, or the
 /// caller was registered on the reader wait list and must now `schedule()`.
-#[cfg(target_os = "oxide-kernel")]
 pub enum ReadOutcome {
     Data(Vec<u8>),
     Reset,
@@ -100,7 +99,6 @@ impl UnixPair {
     /// stalled the D-Bus private-connection stream read (gdm greeter). Caller
     /// MUST `schedule()` after a `Parked` return (the ring lock is released
     /// here). # C: O(min(max, queue))
-    #[cfg(target_os = "oxide-kernel")]
     pub fn read_or_park(&self, end: UnixEnd, max: usize, deadline_ns: u64, passcred: bool,
         inline: bool) -> ReadOutcome {
         let read_ring = match end {

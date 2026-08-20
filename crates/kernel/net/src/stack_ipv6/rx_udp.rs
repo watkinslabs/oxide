@@ -73,6 +73,7 @@ impl NetStack {
                 flowinfo: crate::cmsg::flowinfo(traffic_class, ancillary.flow_label),
                 ext_headers: ancillary.ext_headers.clone(),
                 frag_max: ancillary.frag_max,
+                ipv4: None,
                 // IP_CHECKSUM is an IPv4-level option; a native IPv6 receive
                 // publishes the IPv6 ancillary level, which has no counterpart.
                 checksum: None,

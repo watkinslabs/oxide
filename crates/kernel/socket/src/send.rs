@@ -138,7 +138,8 @@ pub(crate) enum InetPrepared {
     /// The settled transmit overrides live on the heap, not in this enum: the
     /// value would otherwise be copied into three stack frames that all sit
     /// under the deepest send path in the tree, once each.
-    Transport(crate::address::InetAddress, alloc::boxed::Box<net::send_control::SendControl>),
+    Transport(crate::address::InetAddress, alloc::boxed::Box<net::send_control::SendControl>,
+        Option<net::landlock_addr::UdpAutobindAdmission>),
 }
 
 pub(crate) enum PreparedSend {
@@ -158,7 +159,7 @@ pub(crate) enum PreparedSend {
 pub(crate) fn prepare(ctx: &SendContext<'_>, target: &SendFile, message: &Message, flags: u32)
     -> KResult<PreparedSend>
 {
-    crate::security::admit(ctx, target, message, flags)?;
+    let admission = crate::security::admit(ctx, target, message, flags)?;
     match target.kind() {
         SendKind::File => Err(Error::Enotsock),
         SendKind::Netlink(socket) => {
@@ -203,7 +204,7 @@ pub(crate) fn prepare(ctx: &SendContext<'_>, target: &SendFile, message: &Messag
                 Some(&address))?;
             crate::control_family::settle(socket, &address, &mut control, flags as u64);
             Ok(PreparedSend::Inet(InetPrepared::Transport(address,
-                alloc::boxed::Box::new(control))))
+                alloc::boxed::Box::new(control), admission.udp_autobind)))
         }
     }
 }
@@ -256,12 +257,13 @@ fn tcp_urgent_tail(ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSocket>,
 fn send_inet(ctx: &SendContext<'_>, target: &SendFile, socket: &Arc<net::sock::InetSocket>,
     message: &Message, flags: u32, prepared: Box<InetPrepared>) -> KResult<usize>
 {
-    let (dest, control) = match *prepared {
+    let (dest, control, autobind) = match *prepared {
         InetPrepared::Packet =>
             return crate::packet::send(socket, &message.payload, message.name.as_deref()),
         InetPrepared::Unix(scm) =>
             return send_unix_prepared(ctx, target, socket, message, flags, scm),
-        InetPrepared::Transport(address, control) => (address.remote(), control),
+        InetPrepared::Transport(address, control, autobind) =>
+            (address.remote(), control, autobind),
     };
     let nonblock = target.nonblock() || flags as u64 & net::uapi::MSG_DONTWAIT != 0;
     let signals_pipe = match &*socket.kind.lock() {
@@ -298,7 +300,9 @@ fn send_inet(ctx: &SendContext<'_>, target: &SendFile, socket: &Arc<net::sock::I
     let mut total = 0usize;
     loop {
         let end = if stream { body } else { message.payload.len() };
-        match net::sock::sendto(socket, &message.payload[total..end], dest.clone(), ctx.creds(), &control) {
+        match net::sock::sendto(socket, &message.payload[total..end], dest.clone(), ctx.creds(),
+            &control, autobind.as_ref())
+        {
             Ok(bytes) if stream && bytes != 0 => {
                 total += bytes;
                 if total >= body {

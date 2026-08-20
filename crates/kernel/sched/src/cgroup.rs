@@ -212,3 +212,65 @@ pub fn install() {
     cgroup::set_tid_display_hook(tid_display_hook);
     cgroup::set_migrate_hook(migrate_hook);
 }
+
+#[cfg(test)]
+mod freezer_tests {
+    use super::*;
+    use alloc::sync::Arc;
+
+    #[test]
+    fn a_cgroup_freeze_write_reaches_its_registered_user_task() {
+        let _ = cgroup::realize_tree();
+        let name = "b2304-freezer-hook";
+        let cgid = cgroup::mkdir_child(cgroup::ROOT_CGROUP, name, 0, 0).unwrap();
+        let task = Arc::new(Task::new(
+            97_006, "cgroup-freeze-test", crate::SchedClass::Normal { weight: 1024 }));
+        task.kernel_thread.store(false, CgOrd::Release);
+        task.nofreeze.store(false, CgOrd::Release);
+        task.vtgid.store(606, CgOrd::Release);
+        task.vtid.store(606, CgOrd::Release);
+        crate::registry::insert(&task);
+        install();
+        assert_eq!(cgroup::inode::make_cg_file(cgid, "cgroup.procs").write(0, b"606").unwrap(), 3);
+
+        assert_eq!(cgroup::inode::make_cg_file(cgid, "cgroup.freeze").write(0, b"1").unwrap(), 1);
+        assert_eq!(task.freeze_reasons.load(CgOrd::Acquire), crate::freeze_reason::CGROUP,
+            "the VFS hierarchy freeze write did not reach its registered task");
+
+        assert_eq!(cgroup::inode::make_cg_file(cgid, "cgroup.freeze").write(0, b"0").unwrap(), 1);
+        cgroup::on_exit(task.tid as u64, task.tid as u64);
+        cgroup::rmdir_child(cgroup::ROOT_CGROUP, name).unwrap();
+    }
+
+    #[test]
+    fn cgroup_freeze_reaches_every_thread_not_only_the_process_leader() {
+        let _ = cgroup::realize_tree();
+        let name = "b2304-freezer-threads";
+        let cgid = cgroup::mkdir_child(cgroup::ROOT_CGROUP, name, 0, 0).unwrap();
+        let mm = vmm::AddressSpace::new(0).expect("hosted address space");
+        let leader = Arc::new(Task::new_user(
+            97_007, "freeze-leader", crate::SchedClass::Normal { weight: 1024 },
+            Arc::clone(&mm)));
+        let thread = Arc::new(Task::new_user(
+            97_008, "freeze-thread", crate::SchedClass::Normal { weight: 1024 },
+            mm));
+        thread.tgid.store(leader.tid, CgOrd::Release);
+        crate::registry::insert(&leader);
+        crate::registry::insert(&thread);
+        install();
+        cgroup::attach_into(cgid, leader.visible_pid() as u64).unwrap();
+        cgroup::charge_thread(leader.tid as u64, thread.tid as u64);
+
+        cgroup::write_file(cgid, "cgroup.freeze", "1").unwrap();
+        assert_eq!(leader.freeze_reasons.load(CgOrd::Acquire), crate::freeze_reason::CGROUP);
+        assert_eq!(thread.freeze_reasons.load(CgOrd::Acquire), crate::freeze_reason::CGROUP,
+            "a non-leader thread escaped the cgroup freezer");
+
+        cgroup::write_file(cgid, "cgroup.freeze", "0").unwrap();
+        assert_eq!(leader.freeze_reasons.load(CgOrd::Acquire), 0);
+        assert_eq!(thread.freeze_reasons.load(CgOrd::Acquire), 0);
+        cgroup::on_exit(thread.tid as u64, leader.tid as u64);
+        cgroup::on_exit(leader.tid as u64, leader.tid as u64);
+        cgroup::rmdir_child(cgroup::ROOT_CGROUP, name).unwrap();
+    }
+}

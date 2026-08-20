@@ -50,6 +50,23 @@ fn synack_retries(listener: &TcpListenEntry) -> u8 {
     }
 }
 
+/// Per-namespace interval converted at the decision site from the ABI's
+/// millisecond unit to the packet clock's nanoseconds. # C: O(log N)
+fn invalid_ratelimit_ns(net_ns: u64) -> u64 {
+    const NS_PER_MS: u64 = 1_000_000;
+    let ms = crate::sysctl::value_in(net_ns, crate::net_ns::NetSysctlKey::TcpInvalidRatelimit)
+        .unwrap_or(reqsk::INVALID_RATELIMIT_DEFAULT_MS as i64).max(0) as u64;
+    ms.saturating_mul(NS_PER_MS)
+}
+
+fn admit_request_answer(net_ns: u64, req: &TcpReq, now_ns: u64,
+                        data_without_syn: bool) -> bool {
+    if reqsk::admit_oow_answer(&req.last_oow_ack_ns,
+        now_ns, invalid_ratelimit_ns(net_ns), data_without_syn) { return true; }
+    crate::mib::bump_tcp_ext(net_ns, crate::mib::TcpExt::TcpAckSkippedSynRecv);
+    false
+}
+
 impl NetStack {
     /// Hosted compatibility helper: fire each request through the same
     /// per-request callback production uses.
@@ -189,9 +206,9 @@ impl NetStack {
     /// # C: O(log N + segment)
     #[inline(never)]
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn deliver_tcp_to_request(&self, net_ns: u64, src_ip: IpAddr, dst_ip: IpAddr,
+    pub(crate) fn deliver_tcp_to_request_at(&self, net_ns: u64, src_ip: IpAddr, dst_ip: IpAddr,
         seg: &[u8], hdr: &crate::tcp_hdr::TcpHdr, key: TcpKey,
-        tables: &super::inet_tables::InetTables, req: &Arc<TcpReq>) -> NetResult<()>
+        tables: &super::inet_tables::InetTables, req: &Arc<TcpReq>, now_ns: u64) -> NetResult<()>
     {
         let Some(listener) = req.listener() else {
             drop_request(tables, &key, req);
@@ -205,9 +222,15 @@ impl NetStack {
             // kept and the same SYN-ACK goes out again; creating a second
             // request would take another backlog slot for one connection.
             synrecv::ReqVerdict::ResendSynack => {
+                if !admit_request_answer(net_ns, req, now_ns, false) { return Ok(()); }
                 let segment = req.synack();
-                self.send_tcp_segment_in(net_ns, dst_ip, src_ip, &segment, 0,
-                    req.bound_iface(), TcpTxPolicy::Listener(&listener))
+                let result = self.send_tcp_segment_in(net_ns, dst_ip, src_ip, &segment, 0,
+                    req.bound_iface(), TcpTxPolicy::Listener(&listener));
+                if result.is_ok() {
+                    req.rsk.lock().arm(now_ns, crate::tcp_conn::RTO_MAX_DEFAULT_NS);
+                    super::tcp_timer::arm_req(req);
+                }
+                result
             }
             // The segment acknowledged something this side never sent. The
             // request is left exactly as it was — a segment that failed this
@@ -219,6 +242,8 @@ impl NetStack {
                     req.bound_iface(), TcpTxPolicy::Listener(&listener))
             }
             synrecv::ReqVerdict::AckAndDrop => {
+                let data_without_syn = payload_len != 0 && hdr.flags & tcp_flags::SYN == 0;
+                if !admit_request_answer(net_ns, req, now_ns, data_without_syn) { return Ok(()); }
                 let segment = req.open_conn().build_segment(tcp_flags::ACK, &[]);
                 self.send_tcp_segment_in(net_ns, dst_ip, src_ip, &segment, 0,
                     req.bound_iface(), TcpTxPolicy::Listener(&listener))
@@ -255,7 +280,7 @@ impl NetStack {
     {
         let entry = super::tcp_listener_deliver::build_passive_child(req.local, req.own_mss,
             req.path_mtu.load(::core::sync::atomic::Ordering::Acquire), req.metrics, &[],
-            listener, req.iface, req.ipv6);
+            listener, req.bound_iface(), req.iface, req.ipv6);
         {
             let mut conn = entry.conn.lock();
             // What the SYN carried — the saved packet and its network-header

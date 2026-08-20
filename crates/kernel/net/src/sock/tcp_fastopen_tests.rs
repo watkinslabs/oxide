@@ -4,6 +4,9 @@
 use super::*;
 use network_namespace::NetworkNamespaceRef;
 use crate::addr::Ipv4Addr;
+use crate::policy_rule::{AF_INET, FR_ACT_TO_TBL, PolicyRule};
+use crate::route::{RouteEntry, RouteRecord};
+use crate::route_metrics::RouteMetrics;
 use crate::tcp_conn::fastopen::Cookie;
 use crate::tcp_fastopen::{self, Open, Source, TFO_CLIENT_ENABLE, TFO_CLIENT_NO_COOKIE, TFO_DEFAULT,
     TFO_SERVER_ENABLE};
@@ -92,6 +95,39 @@ fn the_namespace_bit_licenses_it_too_and_is_read_live() {
     crate::sysctl::set_value(&sock.owner.net_namespace,
         crate::net_ns::NetSysctlKey::TcpFastopen,
         (tcp_fastopen::TFO_DEFAULT | TFO_CLIENT_NO_COOKIE) as i64).expect("the write");
+    assert_eq!(plan(&sock, src(), dst(), Source::Write), Open::Data { cookie: None });
+}
+
+#[test]
+fn the_route_no_cookie_metric_comes_from_the_table_the_socket_mark_selects() {
+    let _domain = crate::hosted_fixture::init_net_domain();
+    const MARK: u32 = 0x21;
+    const MARK_MASK: u32 = 0xf0;
+    const MARK_TABLE: u32 = 101;
+    let sock = socket();
+    let net_ns = sock.net_ns();
+    let IpAddr::V4(remote) = dst() else { unreachable!() };
+    let iface = crate::NetIfaceId::from_raw(71);
+    let stack = crate::sock::stack();
+    stack.routes.add_record_in(net_ns, RouteRecord::kernel(
+        RouteEntry::main(remote, 32, iface, None, None)));
+    stack.routes.add_record_in(net_ns, RouteRecord {
+        metrics: RouteMetrics { fastopen_no_cookie: 1, ..RouteMetrics::NONE },
+        ..RouteRecord::kernel(RouteEntry {
+            table: MARK_TABLE, dst: remote, prefix_len: 32,
+            iface, gateway: None, src_hint: None,
+        })
+    });
+    let rtnl = stack.rtnl_lock();
+    stack.policy_rules().insert_rtnl(&rtnl, PolicyRule {
+        ns: net_ns, family: AF_INET, priority: 100, table: MARK_TABLE,
+        action: FR_ACT_TO_TBL, dst_len: 0, src_len: 0, tos: 0, flags: 0,
+        fwmark: 0x20, fwmask: MARK_MASK,
+    });
+    drop(rtnl);
+
+    assert_eq!(plan(&sock, src(), dst(), Source::Write), Open::Request { exp: false });
+    sock.opts.base.mark.store(MARK as i32, ::core::sync::atomic::Ordering::Release);
     assert_eq!(plan(&sock, src(), dst(), Source::Write), Open::Data { cookie: None });
 }
 

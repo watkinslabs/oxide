@@ -69,6 +69,7 @@ use hooks::*;
 // leaves bind to — a collision that only fails on a kernel-target build.
 mod kernel_dir;
 mod net_dir;
+mod ipv6_conf;
 
 /// One `ctl_table` leaf's `proc_handler` class + default value. # C: n/a
 enum Leaf {
@@ -394,6 +395,7 @@ pub fn register_sysctl_table(boot_id: &'static [u8]) {
     );
     // The nested ctl_table tree (live-bound leaves).
     register_tree("/proc/sys", SYSCTL_TREE);
+    ipv6_conf::register();
     // net/ipv4/conf/<dev>/* writable per-iface knobs (all/default/lo/eth0).
     for (dev, dev_key) in IPV4_CONF_DEVS.iter().copied() {
         for (leaf, leaf_key) in IPV4_CONF_LEAVES.iter().copied() {

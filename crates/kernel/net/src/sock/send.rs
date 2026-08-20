@@ -2,7 +2,6 @@ use super::*;
 use crate::sock_v6::RAW_NO_PORT;
 
 /// Arm, recheck, and park one blocking TCP sender on canonical ACK readiness. # C: O(retx) + park
-#[cfg(target_os = "oxide-kernel")]
 pub fn wait_transmit(sock: &InetSocket, deadline_ns: u64) -> bool {
     let entry = match &*sock.kind.lock() {
         SockKind::TcpConn(entry) => entry.clone(), _ => return false,
@@ -11,8 +10,8 @@ pub fn wait_transmit(sock: &InetSocket, deadline_ns: u64) -> bool {
         .max(0) as usize;
     if !entry.arm_transmit_wait(&sock.write_shut, cap, deadline_ns) { return true; }
     // SAFETY: arm_transmit_wait published current before dropping conn.
-    unsafe { sched::live::schedule::schedule(); }
-    entry.rx_waiters.remove_current();
+    unsafe { entry.poll_subs.sleep().wait(); }
+    entry.poll_subs.sleep().remove_current();
     true
 }
 
@@ -81,10 +80,11 @@ fn sendto_raw4(sock: &InetSocket, endpoint: &alloc::sync::Arc<crate::raw4::Raw4E
 
 /// `sendto`/`send` typed work function for supported socket families. # C: O(payload bytes)
 pub fn sendto(sock: &InetSocket, payload: &[u8], dest: Option<RemoteAddr>, creds: SenderCreds,
-    control: &crate::send_control::SendControl)
+    control: &crate::send_control::SendControl,
+    autobind: Option<&crate::landlock_addr::UdpAutobindAdmission>)
     -> Result<usize, NetError>
 {
-    let sent = sendto_inner(sock, payload, dest, creds, control);
+    let sent = sendto_inner(sock, payload, dest, creds, control, autobind);
     // A completed transmit publishes the record its timestamping bits asked
     // for, once, here — the one place that knows both the socket's own bits
     // and the override this message settled over them.
@@ -100,7 +100,8 @@ pub fn sendto(sock: &InetSocket, payload: &[u8], dest: Option<RemoteAddr>, creds
 
 #[inline(never)]
 fn sendto_inner(sock: &InetSocket, payload: &[u8], dest: Option<RemoteAddr>, creds: SenderCreds,
-    control: &crate::send_control::SendControl)
+    control: &crate::send_control::SendControl,
+    autobind: Option<&crate::landlock_addr::UdpAutobindAdmission>)
     -> Result<usize, NetError>
 {
     // No security decision here. The transport is entered only after the one
@@ -139,6 +140,9 @@ fn sendto_inner(sock: &InetSocket, payload: &[u8], dest: Option<RemoteAddr>, cre
         let pending = sock.take_pending_recv_error();
         if pending != 0 { return Err(crate::sock_io::pending_net_error(pending)); }
     }
+    let udp_autobind = if matches!(*sock.kind.lock(), SockKind::Udp) {
+        Some(autobind.ok_or(NetError::Einval)?)
+    } else { None };
     if sock.write_shut.load(core::sync::atomic::Ordering::Acquire) { return Err(NetError::Epipe); }
     if let SockKind::UnixMsgPair(pair, end) = &*sock.kind.lock() {
         return pair.clone().send(*end, payload).map_err(|e| match e {
@@ -197,12 +201,14 @@ fn sendto_inner(sock: &InetSocket, payload: &[u8], dest: Option<RemoteAddr>, cre
         }
     }
     if let Some(RemoteAddr::Inet6 { ip, port, scope_id }) = dest {
-        return crate::sock_v6::sendto_v6_ctl(sock, ip, port, scope_id, payload, &control.raw6, tx);
+        return crate::sock_v6::sendto_v6_ctl_admitted(sock, ip, port, scope_id, payload,
+            &control.raw6, tx, udp_autobind.ok_or(NetError::Einval)?);
     }
     if sock.family.load(core::sync::atomic::Ordering::Acquire) == AF_INET6 {
         let (ip, port) = sock.peer6.lock().ok_or(NetError::Edestaddrreq)?;
         let scope_id = sock.peer6_scope.load(core::sync::atomic::Ordering::Acquire);
-        return crate::sock_v6::sendto_v6_ctl(sock, ip, port, scope_id, payload, &control.raw6, tx);
+        return crate::sock_v6::sendto_v6_ctl_admitted(sock, ip, port, scope_id, payload,
+            &control.raw6, tx, udp_autobind.ok_or(NetError::Einval)?);
     }
     let (dst_ip, dst_port) = match dest {
         Some(RemoteAddr::Inet { ip, port }) => (ip, port),
@@ -210,5 +216,6 @@ fn sendto_inner(sock: &InetSocket, payload: &[u8], dest: Option<RemoteAddr>, cre
         Some(RemoteAddr::Inet6 { .. }) => unreachable!(),
         None => sock.peer.lock().ok_or(NetError::Edestaddrreq)?,
     };
-    socket_sendto_ctl(sock, dst_ip, dst_port, payload, &control.raw4, tx)
+    socket_sendto_ctl_admitted(sock, dst_ip, dst_port, payload, &control.raw4, tx,
+        udp_autobind.ok_or(NetError::Einval)?)
 }

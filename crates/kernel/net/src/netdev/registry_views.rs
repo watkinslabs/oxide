@@ -1,6 +1,58 @@
 use super::*;
 
 impl IfaceRegistry {
+    /// Apply `conf/all/disable_ipv6` to every live interface in one namespace.
+    /// A concurrently created interface copies the already-updated default. # C: O(N)
+    pub fn set_ipv6_disabled_all_in(&self, ns: u64, value: i64) {
+        let g = self.inner.lock();
+        for entry in g.entries.iter().filter(|entry| entry.ns == ns && entry.ingress.live()) {
+            entry.ipv6_conf.set_value(Ipv6ConfKey::DisableIpv6, value);
+        }
+    }
+
+    /// Whether IPv6 is disabled on this exact interface. # C: O(N)
+    pub fn ipv6_disabled_in(&self, iface: NetIfaceId, ns: u64) -> bool {
+        let g = self.inner.lock();
+        g.entries.iter().find(|e| e.id == iface && e.ns == ns && e.ingress.live())
+            .is_some_and(|e| e.ipv6_conf.value(Ipv6ConfKey::DisableIpv6) != 0)
+    }
+
+    /// Retain one live interface's IPv6 configuration owner. # C: O(N)
+    pub fn ipv6_conf_by_name_in(&self, name: &str, ns: u64) -> Option<Arc<Ipv6DevConf>> {
+        let g = self.inner.lock();
+        g.entries.iter().find(|e| e.name == name && e.ns == ns
+            && e.ingress.live() && e.ingress.ready())
+            .map(|e| Arc::clone(&e.ipv6_conf))
+    }
+
+    /// Whether this interface permits an optimistic-DAD address. # C: O(N)
+    pub fn ipv6_optimistic_dad_in(&self, iface: NetIfaceId, ns: u64) -> bool {
+        if crate::sysctl::value_in(ns, crate::net_ns::NetSysctlKey::Ipv6OptimisticDadAll)
+            .unwrap_or(0) != 0 { return true; }
+        let g = self.inner.lock();
+        g.entries.iter().find(|e| e.id == iface && e.ns == ns && e.ingress.live())
+            .is_some_and(|e| e.ipv6_conf.value(Ipv6ConfKey::OptimisticDad) != 0)
+    }
+
+    /// Whether source selection may use this interface's optimistic address. # C: O(N)
+    pub fn ipv6_use_optimistic_in(&self, iface: NetIfaceId, ns: u64) -> bool {
+        if crate::sysctl::value_in(ns, crate::net_ns::NetSysctlKey::Ipv6UseOptimisticAll)
+            .unwrap_or(0) != 0 { return true; }
+        let g = self.inner.lock();
+        g.entries.iter().find(|e| e.id == iface && e.ns == ns && e.ingress.live())
+            .is_some_and(|e| e.ipv6_conf.value(Ipv6ConfKey::UseOptimistic) != 0)
+    }
+
+    /// Privacy-extension policy and lifetime ceilings for one live interface. # C: O(N)
+    pub fn ipv6_tempaddr_policy_in(&self, iface: NetIfaceId, ns: u64) -> Option<(i64, u32, u32)> {
+        let g = self.inner.lock();
+        let conf = &g.entries.iter().find(|e| e.id == iface && e.ns == ns && e.ingress.live())?
+            .ipv6_conf;
+        Some((conf.value(Ipv6ConfKey::UseTempaddr),
+            conf.value(Ipv6ConfKey::TempValidLft).clamp(0, u32::MAX as i64) as u32,
+            conf.value(Ipv6ConfKey::TempPreferredLft).clamp(0, u32::MAX as i64) as u32))
+    }
+
     /// Resolve one Linux-visible interface index to its device AND its receive
     /// queues — Linux `netdev_get_by_index_lock` followed by
     /// `__netif_get_rx_queue`. Both come out together because a caller that

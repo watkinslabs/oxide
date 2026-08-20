@@ -43,7 +43,6 @@ impl VsockTable {
         if *c.st.lock() != VsockState::Connected { return false; }
         c.accept_ready.store(true, Ordering::Release);
         listener.notify_poll(vfs::POLL_IN);
-        #[cfg(target_os = "oxide-kernel")]
         listener.accept_waiters.wake_all();
         true
     }
@@ -141,17 +140,10 @@ impl VsockTable {
     }
 
     /// Atomically recheck one exact listener and arm an interruptible acceptor. # C: O(N)
-    #[cfg(target_os = "oxide-kernel")]
     pub fn arm_accept_wait_exact(&self, listener: &Arc<Listener>, deadline_ns: u64) -> AcceptWait {
         self.arm_accept_wait_exact_with(listener, || {
             // SAFETY: registry and backlog locks serialize removal/enqueue with registration.
             unsafe { listener.accept_waiters.prepare_to_wait_interruptible_with_deadline(deadline_ns); }
         })
-    }
-
-    /// Hosted observation of the canonical exact-listener wait gate. # C: O(N)
-    #[cfg(not(target_os = "oxide-kernel"))]
-    pub fn accept_wait_would_park_exact(&self, listener: &Arc<Listener>) -> AcceptWait {
-        self.arm_accept_wait_exact_with(listener, || {})
     }
 }

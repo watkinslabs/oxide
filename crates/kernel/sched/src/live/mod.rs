@@ -20,6 +20,7 @@
 //   `schedule` — the one `schedule()` switch primitive (`13§8`) +
 //                `finish_task_switch` handoff; IRQ-exit routes through
 //                it via `oxide_irq_exit_to_user` (`14§5.6`/`14§6.5`).
+//   `freezer`  — request/acknowledgement, refrigerator, and thaw transitions.
 //
 // Replaces the `kernel/src/ksched.rs` Vec-shim per the P2-13b
 // branch in state.md.
@@ -49,6 +50,7 @@ pub mod rcu_wait;
 pub mod zombies;
 pub mod send;
 pub mod sigpend;
+pub mod freezer;
 pub mod sb_freeze;
 pub mod quota_wait;
 pub mod inode_wait;
@@ -86,7 +88,7 @@ pub use ksoftirqd::spawn_ksoftirqd;
 #[cfg(target_os = "oxide-kernel")] pub use khungtaskd::spawn_khungtaskd;
 pub use wait_list::WaitList;
 pub use wait_event::{wait_event, wait_event_interruptible, wait_event_interruptible_until,
-                     wait_event_killable, wait_event_uninterruptible,
+                     wait_event_killable, wait_event_uninterruptible, wait_event_worker,
                      wait_event_uninterruptible_prepare,
                      wait_event_uninterruptible_until, sleep_uninterruptible_until};
 pub use mutex::{Mutex, MutexGuard};
@@ -101,11 +103,12 @@ pub use threaded_irq::{request as request_threaded_irq, free as free_threaded_ir
 pub use send::{force_fatal_sig, force_sig_fault, force_sig_pkey_fault, force_sig_info_to_task, send_sig_priv_group,
                send_sig_priv_self, send_sig_self_info, send_signal, SendErr};
 pub use sigpend::{
-    deliverable_signals, deliverable_signals_self, fatal_kill_pending, fatal_kill_pending_self, frozen_self,
+    deliverable_signals, deliverable_signals_self, fatal_kill_pending, fatal_kill_pending_self,
     send_signal_self, signal_wake_up,
-    wake_if_sleeping, vfork_done, freeze_task, freeze_task_for, unfreeze_task, unfreeze_task_for,
+    wake_if_sleeping, vfork_done,
     zap_other_threads, Signum,
 };
+pub use freezer::{frozen_self, freeze_task, freeze_task_for, unfreeze_task, unfreeze_task_for};
 pub use tick_deadline::{post_expired_timer_signals, service_task_timers,
     tick_wake_expired};
 pub use vfs_context::{current_vfs_lookup_context, VfsLookupContext};

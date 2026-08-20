@@ -29,7 +29,7 @@ fn ping4(namespace: &network_namespace::NetworkNamespaceRef) -> Arc<Raw4Endpoint
         Arc::new(crate::SocketError::new()),
         Arc::new(AtomicI32::new(0)),
         Arc::new(AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)),
-        Arc::new(crate::sock_opts::sol_ip::IpOpts::default()))
+        Arc::new(crate::sock_opts::sol_ip::IpOpts::default()), Arc::new(AtomicI32::new(0)))
 }
 
 fn ping6(namespace: &network_namespace::NetworkNamespaceRef) -> Arc<crate::raw6::Raw6Endpoint> {
@@ -38,7 +38,8 @@ fn ping6(namespace: &network_namespace::NetworkNamespaceRef) -> Arc<crate::raw6:
         Arc::new(crate::bpf_filter::SocketFilter::new()),
         Arc::new(crate::mcast_filter::SocketMcast::new()),
         Arc::new(crate::SocketError::new()),
-        Arc::new(AtomicI32::new(0))))
+        Arc::new(AtomicI32::new(0)),
+        Arc::new(crate::sock_opts::sol_ip::IpOpts::default())))
 }
 
 fn probe(seq: u16, caller_ident: u16) -> alloc::vec::Vec<u8> {

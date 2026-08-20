@@ -67,9 +67,8 @@ pub struct UdpRxQueue {
     /// Datagrams waiting for a reader, each carrying the header fields the
     /// ancillary messages publish.
     pub(crate) state: crate::fib_lock::FibLock<UdpRxState, StackLockClass>,
-    /// F162: blocking sys_recvfrom waiters (kernel only).
-    #[cfg(target_os = "oxide-kernel")]
-    pub waiters: sched::live::WaitList,
+    /// Blocking receive waiters owned by this socket endpoint.
+    pub waiters: crate::sock_wait::SockWaitQueue,
     /// Canonical owning socket error state.
     pub error: Arc<crate::SocketError>,
     /// Connected peer filter. `None` accepts datagrams from any peer.
@@ -77,6 +76,9 @@ pub struct UdpRxQueue {
     pub reuseaddr: Arc<::core::sync::atomic::AtomicI32>,
     pub reuseport: Arc<::core::sync::atomic::AtomicI32>,
     pub ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+    /// Live `sk_mark` shared with the owning socket for route-sensitive ICMP
+    /// PMTU learning.
+    pub(crate) mark: Arc<::core::sync::atomic::AtomicI32>,
     /// `UDP_GRO`, shared with the owning socket: while set, arriving
     /// datagrams of one flow coalesce into a single receive.
     pub gro: Arc<::core::sync::atomic::AtomicI32>,
@@ -98,6 +100,11 @@ impl UdpRxQueue {
     /// SO_REUSEPORT membership captured when this endpoint was bound. # C: O(1)
     pub(crate) fn reuseport_member(&self) -> bool {
         self.reuseport.load(::core::sync::atomic::Ordering::Acquire) != 0
+    }
+
+    /// Current route mark of the owning socket. # C: O(1)
+    pub(crate) fn mark(&self) -> u32 {
+        self.mark.load(::core::sync::atomic::Ordering::Acquire) as u32
     }
 }
 

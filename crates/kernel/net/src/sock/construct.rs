@@ -39,6 +39,8 @@ impl InetSocket {
             _ => crate::sysctl::BufPersonality::Generic,
         };
         let (sndbuf, rcvbuf) = crate::sysctl::initial_bufs(&owner.net_namespace, personality);
+        let mut opts = SockOpts::default();
+        opts.base.rcvbuf = error.rcvbuf_cell();
         let sock = Self {
             family: core::sync::atomic::AtomicU16::new(AF_INET), local_port: Spinlock::new(None),
             local_ip: Spinlock::new(Ipv4Addr::ANY), peer: Arc::new(Spinlock::new(None)),
@@ -50,7 +52,7 @@ impl InetSocket {
             packet_fanout: Spinlock::new(None),
             packet_rings: SockBhLock::new(PacketRings::default()),
             packet_tx: PacketTxGate::new(),
-            opts: SockOpts::default(), error,
+            opts, error,
             read_shut: core::sync::atomic::AtomicBool::new(false),
             write_shut: core::sync::atomic::AtomicBool::new(false),
             released: core::sync::atomic::AtomicBool::new(false),
@@ -123,11 +125,15 @@ impl InetSocket {
                                         ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
                                         ipv6_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
                                         max_pacing_rate: Arc<core::sync::atomic::AtomicU64>,
+                                        mark: Arc<core::sync::atomic::AtomicI32>,
+                                        bound_ifindex: Arc<core::sync::atomic::AtomicU32>,
                                         owner: Arc<crate::SocketOwner>) -> Self {
         let mut sock = Self::new_owned(owner, bpf_filter, error, SockKind::TcpInit);
         sock.opts.ip_mtu_discover = ip_mtu_discover;
         sock.opts.ipv6_mtu_discover = ipv6_mtu_discover;
         sock.opts.base.generic.use_max_pacing_rate_cell(max_pacing_rate);
+        sock.opts.base.mark = mark;
+        sock.opts.base.bound_ifindex = bound_ifindex;
         sock
     }
 
@@ -181,7 +187,9 @@ impl InetSocket {
                                     entry: Arc<crate::stack::TcpEntry>) -> Arc<Self> {
         let sock = Arc::new(Self::new_tcp_with_transport_state_owned(
             entry.error.clone(), entry.bpf_filter.clone(), entry.ip_mtu_discover.clone(),
-            entry.ipv6_mtu_discover.clone(), entry.max_pacing_rate.clone(), listener.owner.clone()));
+            entry.ipv6_mtu_discover.clone(), entry.max_pacing_rate.clone(), entry.mark.clone(),
+            entry.bound_ifindex_cell(),
+            listener.owner.clone()));
         let family = listener.family.load(core::sync::atomic::Ordering::Acquire);
         sock.family.store(family, core::sync::atomic::Ordering::Release);
         entry.register_poll_subs(&sock.poll_subs);
@@ -201,7 +209,6 @@ impl InetSocket {
                 }
             }
         }
-        sock.opts.base.bound_ifindex.store(bound_ifindex, core::sync::atomic::Ordering::Release);
         // Linux `sk_clone_lock` copies the listening `struct sock` wholesale,
         // so an accepted child starts with the listener's buffer sizing and
         // its `sk_userlocks` — which is why `setsockopt(SO_RCVBUF)` on a
@@ -268,6 +275,36 @@ mod tests {
     use ::core::sync::atomic::{AtomicI32, Ordering};
 
     #[test]
+    fn raw_and_udp_endpoints_share_their_production_sockets_live_mark() {
+        let _domain = crate::hosted_fixture::init_net_domain();
+
+        let udp4 = Arc::new(InetSocket::new_udp());
+        crate::sock::bind(&udp4, crate::sock::BoundAddr::Inet {
+            ip: crate::Ipv4Addr::ANY, port: 0,
+        }).unwrap();
+        let udp4_endpoint = udp4.udp4.lock().clone().expect("IPv4 bind published its endpoint");
+        udp4.opts.base.mark.store(0x21, Ordering::Release);
+        assert_eq!(udp4_endpoint.mark(), 0x21);
+
+        let udp6 = Arc::new(InetSocket::new_udp6());
+        crate::sock::bind(&udp6, crate::sock::BoundAddr::Inet6 {
+            ip: crate::Ipv6Addr::ANY, port: 0, scope_id: 0,
+        }).unwrap();
+        let udp6_endpoint = udp6.udp6.lock().clone().expect("IPv6 bind published its endpoint");
+        udp6.opts.base.mark.store(0x32, Ordering::Release);
+        assert_eq!(udp6_endpoint.mark(), 0x32);
+
+        let raw = InetSocket::new_raw4_in(
+            crate::addr::IpProto::Udp as u8, network_namespace::initial());
+        let endpoint = match &*raw.kind.lock() {
+            SockKind::Raw4(endpoint) => endpoint.clone(),
+            _ => panic!("raw constructor published the wrong endpoint kind"),
+        };
+        raw.opts.base.mark.store(0x43, Ordering::Release);
+        assert_eq!(endpoint.mark(), 0x43);
+    }
+
+    #[test]
     fn accepted_tcp_socket_shares_both_transport_pmtu_modes() {
         let ip_pmtu = Arc::new(AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT));
         let ipv6_pmtu = Arc::new(AtomicI32::new(crate::uapi::IPV6_PMTUDISC_WANT));
@@ -296,11 +333,61 @@ mod tests {
             ip: crate::IpAddr::V4(crate::Ipv4Addr::new(192, 0, 2, 1)), port: 443,
         };
         let bind = Arc::new(crate::stack::TcpBindReservation::new_owned(
-            listener.owner.clone(), local, None, false, false, false));
+            listener.owner.clone(), local, false, false, false,
+            Arc::new(core::sync::atomic::AtomicU32::new(0))));
         let entry = Arc::new(crate::stack::TcpEntry::new_bound_with_error(
             crate::TcpConn::new_client(local, remote, 1), listener.error.clone(), Some(bind)));
         let child = InetSocket::from_accepted_tcp(&listener, entry);
         assert!(Arc::ptr_eq(&child.owner, &listener.owner));
+    }
+
+    #[test]
+    fn accepted_tcp_socket_owns_the_transport_childs_live_mark() {
+        let listener = InetSocket::new_tcp();
+        let local = crate::Endpoint {
+            ip: crate::IpAddr::V4(crate::Ipv4Addr::LOOPBACK), port: 41003,
+        };
+        let remote = crate::Endpoint {
+            ip: crate::IpAddr::V4(crate::Ipv4Addr::new(192, 0, 2, 2)), port: 443,
+        };
+        let entry = Arc::new(crate::stack::TcpEntry::new_bound_with_error(
+            crate::TcpConn::new_client(local, remote, 1), listener.error.clone(), None));
+        entry.mark.store(0x2233, Ordering::Release);
+
+        let child = InetSocket::from_accepted_tcp(&listener, entry.clone());
+
+        assert_eq!(child.opts.base.mark.load(Ordering::Acquire), 0x2233);
+        assert!(Arc::ptr_eq(&child.opts.base.mark, &entry.mark));
+        child.opts.base.mark.store(0x4455, Ordering::Release);
+        assert_eq!(entry.mark(), 0x4455, "a post-accept SO_MARK write reaches TCP routing");
+    }
+
+    #[test]
+    fn accepted_tcp_socket_owns_the_transport_childs_live_bound_device() {
+        let _domain = crate::hosted_fixture::init_net_domain();
+        let listener = InetSocket::new_tcp();
+        let stack = crate::global_stack();
+        let first = stack.ifaces.register(Arc::new(crate::LoopbackDev::new()));
+        let next = stack.ifaces.register(Arc::new(crate::LoopbackDev::new()));
+        let local = crate::Endpoint {
+            ip: crate::IpAddr::V4(crate::Ipv4Addr::LOOPBACK), port: 41004,
+        };
+        let remote = crate::Endpoint {
+            ip: crate::IpAddr::V4(crate::Ipv4Addr::new(192, 0, 2, 3)), port: 443,
+        };
+        let bind = Arc::new(crate::stack::TcpBindReservation::new_owned(
+            listener.owner.clone(), local, false, false, false,
+            Arc::new(core::sync::atomic::AtomicU32::new(first.raw()))));
+        let entry = Arc::new(crate::stack::TcpEntry::new_bound_with_error(
+            crate::TcpConn::new_client(local, remote, 1), listener.error.clone(), Some(bind)));
+
+        let child = InetSocket::from_accepted_tcp(&listener, entry.clone());
+
+        assert!(Arc::ptr_eq(&child.opts.base.bound_ifindex,
+            &entry.bind.as_ref().unwrap().bound_ifindex));
+        child.set_bound_iface(Some(next)).unwrap();
+        assert_eq!(entry.bound_iface(), Some(next),
+            "a post-accept SO_BINDTODEVICE write reaches TCP routing");
     }
 
     /// One accepted child, with the header fields the passive open recorded.
@@ -319,7 +406,7 @@ mod tests {
         let entry = Arc::new(crate::stack::TcpEntry::new_bound_with_error(
             conn, listener.error.clone(), None));
         let child = InetSocket::from_accepted_tcp(&listener, entry.clone());
-        crate::sock_opts::record_accepted_header(&child, &entry);
+        crate::sock_opts::record_accepted_header(&child, &listener, &entry);
         child
     }
 
@@ -338,5 +425,31 @@ mod tests {
         let child = accepted_with_header(0, 0, 0);
         assert_eq!(child.opts.ip_mcast_ttl.load(Ordering::Acquire), 1);
         assert_eq!(child.opts.ip_rcv_tos.load(Ordering::Acquire), 0);
+    }
+    #[test]
+    fn an_accepted_ipv6_child_reflects_the_opening_flow_label() {
+        let listener = InetSocket::new_tcp6();
+        listener.opts.ipv6.set_flag(crate::sock_opts::sol_ipv6::flag::REPFLOW, true);
+        listener.opts.ipv6.set_flag(crate::sock_opts::sol_ipv6::flag::SNDFLOW, true);
+        listener.opts.ipv6.set_flow_label(0x11111);
+        let local = crate::Endpoint {
+            ip: crate::IpAddr::V6(crate::Ipv6Addr::LOOPBACK), port: 41002,
+        };
+        let remote = crate::Endpoint {
+            ip: crate::IpAddr::V6(crate::Ipv6Addr([0x20, 1, 0x0d, 0xb8, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 1])), port: 443,
+        };
+        let mut conn = crate::TcpConn::new_client(local, remote, 1);
+        conn.rcv_iif = 0x02c5_4321;
+        let entry = Arc::new(crate::stack::TcpEntry::new_bound_with_error(
+            conn, listener.error.clone(), None));
+        let child = InetSocket::from_accepted_tcp(&listener, entry.clone());
+
+        crate::sock_opts::record_accepted_header(&child, &listener, &entry);
+
+        assert_eq!(child.opts.ipv6.rcv_flowinfo(), 0x02c5_4321);
+        assert_eq!(child.opts.ipv6.flow_label(), 0x54321);
+        assert!(child.opts.ipv6.flag(crate::sock_opts::sol_ipv6::flag::REPFLOW));
+        assert!(child.opts.ipv6.flag(crate::sock_opts::sol_ipv6::flag::SNDFLOW));
     }
 }

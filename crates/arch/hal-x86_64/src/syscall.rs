@@ -42,7 +42,7 @@ const _: () = assert!(PT_REGS_VECTOR_SYSCALL_IMM as u64 == PT_REGS_VECTOR_SYSCAL
 // kernel-target-only; the two RFLAGS/EFER bit values below are additionally
 // pinned by the host unit tests in `syscall/tests.rs`.
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-use crate::msr::{IA32_EFER, IA32_FMASK, IA32_LSTAR, IA32_STAR};
+use crate::msr::{IA32_CSTAR, IA32_EFER, IA32_FMASK, IA32_LSTAR, IA32_STAR};
 
 #[cfg(any(test, all(target_arch = "x86_64", target_os = "oxide-kernel")))]
 const EFER_SCE: u64 = 1 << 0;
@@ -53,6 +53,30 @@ const EFER_SCE: u64 = 1 << 0;
 /// safety once it's enabled.
 #[cfg(any(test, all(target_arch = "x86_64", target_os = "oxide-kernel")))]
 const SFMASK_BITS: u64 = (1 << 9) | (1 << 10) | (1 << 18);
+
+#[cfg(any(test, all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+struct SyscallMsrImage {
+    star: u64,
+    lstar: u64,
+    cstar: Option<u64>,
+    sfmask: u64,
+}
+
+#[cfg(any(test, all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+/// Build the syscall-entry MSR image owned by the running kernel.
+/// # C: O(1)
+fn syscall_msr_image(lstar: u64, cstar: u64, intel: bool) -> SyscallMsrImage {
+    SyscallMsrImage {
+        star: ((crate::idt::KERNEL_CS as u64) << 32) | ((crate::gdt::USER_CS32 as u64) << 48),
+        lstar,
+        // Intel ignores CSTAR, and a write can raise #VE in a TDX guest.
+        // AMD uses it for compatibility-mode SYSCALL, which this kernel
+        // deliberately answers with ENOSYS.
+        cstar: if intel { None } else { Some(cstar) },
+        sfmask: SFMASK_BITS,
+    }
+}
 
 /// Static scratch kernel stack for syscall entry. 4 KiB, BSS,
 /// 16-byte aligned.
@@ -307,14 +331,25 @@ core::arch::global_asm!(
     "    swapgs",
     "    iretq",
     ".size oxide_syscall_entry, . - oxide_syscall_entry",
+    // There is no 32-bit syscall table. AMD cannot disable compatibility-mode
+    // SYSCALL, so give CSTAR Linux's safe refusal shape instead of leaving a
+    // firmware or pre-suspend address installed.
+    ".globl oxide_syscall32_ignore",
+    ".type  oxide_syscall32_ignore, @function",
+    "oxide_syscall32_ignore:",
+    "    mov rax, {enosys}",
+    "    sysret",
+    ".size oxide_syscall32_ignore, . - oxide_syscall32_ignore",
     user_cs = const USER_CS_SELECTOR,
     user_ss = const USER_SS_SELECTOR,
     vec_syscall = const PT_REGS_VECTOR_SYSCALL_IMM,
+    enosys = const -(syscall::Errno::Enosys.as_i32()),
 );
 
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 extern "C" {
     fn oxide_syscall_entry();
+    fn oxide_syscall32_ignore();
 }
 
 /// Asm-callable mirror of the tail of Linux's `do_syscall_64()`,
@@ -422,47 +457,37 @@ pub unsafe fn init_percpu_syscall_kstack(top: u64) {
     unsafe { set_syscall_kstack(top); }
 }
 
-/// Set IA32_LSTAR / IA32_STAR / IA32_FMASK + EFER.SCE for `syscall`
-/// entry. One-shot per boot, called by `_start_rust` after the
+/// Rebuild IA32_STAR/LSTAR/CSTAR/FMASK + EFER.SCE for `syscall` entry.
+/// Called at boot, on AP bring-up, and after S3 resume, always after the
 /// kernel-owned GDT is in place (STAR's selector pair is keyed to
-/// KERNEL_CS=0x28 / KERNEL_DS=0x30).
+/// KERNEL_CS=0x28 / KERNEL_DS=0x30). Values come from the running kernel,
+/// never from firmware or the pre-suspend MSR image.
 ///
-/// # SAFETY: caller is the boot path; runs single-CPU with IRQs
-/// masked. MSR values agree with the kernel-owned GDT layout.
+/// # SAFETY: caller runs at CPL0 with IRQs masked after loading the
+/// kernel-owned GDT. MSR values agree with that GDT layout.
 /// # C: O(1)
-/// # Ctx: pre-init, IRQ-off, single-CPU
+/// # Ctx: IRQ-off, current CPU exclusively owned by boot/AP/resume path
 pub unsafe fn install_syscall_msrs() {
     #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
     {
-        // NOTE: do NOT init gs:[8] here — install_syscall_msrs runs in EARLY
-        // boot (before set_percpu_base sets gs). kmain calls
-        // init_percpu_syscall_kstack after gs is up; per-task tops then come
-        // from set_syscall_kstack on each switch.
+        // Do not touch gs:[8] here. The boot caller has not installed GS yet,
+        // and AP/resume callers must preserve the stack slot they already own.
 
-        // SAFETY: privileged MSR writes at CPL=0; values constructed
-        // from kernel-controlled constants matching the GDT.
+        // SAFETY: privileged MSR writes at CPL=0; values are constructed
+        // from kernel-controlled constants and entry symbols matching the GDT.
         unsafe {
             let efer = rdmsr(IA32_EFER);
             wrmsr(IA32_EFER, efer | EFER_SCE);
 
-            // STAR[47:32] = kernel CS base = 0x28 → kernel SS = 0x30.
-            // STAR[63:48] = (USER_CS32 | 3) = 0x3B. sysretq derives
-            //   CS = STAR[63:48] + 16  → 0x4B (= USER_CS with RPL=3)
-            //   SS = STAR[63:48] +  8  → 0x43 (= USER_DS with RPL=3)
-            // On Intel SYSRET, RPL is force-ORed to 3 on both CS and
-            // SS. On AMD (and KVM emulating AMD-style SYSRET), the OR
-            // happens only for CS — SS comes out exactly as
-            // STAR[63:48]+8 with no RPL fixup. If STAR[63:48] were
-            // 0x38 (no RPL bits), SS on AMD/KVM-AMD would land as
-            // 0x40 (RPL=0), and the next CPL3 IRQ would push that
-            // bare-RPL SS into its iretq frame; iretq back to ring 3
-            // then #GP's because SS.RPL != CS.RPL. Linux bakes RPL=3
-            // into STAR's user-selector for the same reason.
-            let star: u64 = (0x28u64 << 32) | (((crate::gdt::USER_CS32 as u64) & 0xFFFF) << 48);
-            wrmsr(IA32_STAR, star);
-
-            wrmsr(IA32_LSTAR, oxide_syscall_entry as *const () as usize as u64);
-            wrmsr(IA32_FMASK, SFMASK_BITS);
+            let image = syscall_msr_image(
+                oxide_syscall_entry as *const () as usize as u64,
+                oxide_syscall32_ignore as *const () as usize as u64,
+                crate::cpuid::vendor() == *b"GenuineIntel",
+            );
+            wrmsr(IA32_STAR, image.star);
+            wrmsr(IA32_LSTAR, image.lstar);
+            if let Some(cstar) = image.cstar { wrmsr(IA32_CSTAR, cstar); }
+            wrmsr(IA32_FMASK, image.sfmask);
         }
     }
 }

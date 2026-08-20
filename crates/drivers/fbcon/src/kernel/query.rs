@@ -7,6 +7,12 @@ pub fn console_dims() -> Option<(u16, u16)> {
     lock_vt().as_ref().map(|st| (st.rows, st.cols))
 }
 
+/// Return the active VT grid plus its visible scanline count.
+/// # C: O(1)
+pub fn console_geometry() -> Option<(u16, u16, u16)> {
+    lock_vt().as_ref().map(|st| (st.rows, st.cols, st.ypixel))
+}
+
 pub fn force_repaint() {
     if !READY.load(Ordering::Acquire) {
         return;

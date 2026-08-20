@@ -369,6 +369,10 @@ impl NetStack {
                         dst: Ipv6Addr::from_v4_mapped(hdr.dst), dport: udp.dst_port,
                         iface, hop_limit: hdr.ttl, traffic_class: hdr.tos,
                         flowinfo: 0, ext_headers: alloc::vec::Vec::new(), frag_max,
+                        ipv4: Some(crate::stack_ipv6::MappedIpv4Ancillary {
+                            src: hdr.src, dst: hdr.dst, ttl: hdr.ttl, tos: hdr.tos,
+                            options: rx_options.clone(),
+                        }),
                         checksum: rx.complete,
                         payload: body[..keep].to_vec(),
                     }, udp.checksum == 0, gro_offered);

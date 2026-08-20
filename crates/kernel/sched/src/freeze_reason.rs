@@ -1,10 +1,10 @@
-// Why a task is parked in the freezer.
+// Who has requested or still holds a task in the freezer.
 //
 // Two independent subsystems park tasks with the same mechanism — the cgroup
 // v2 freezer and the system-sleep freezer (`32a§10`) — and each must be able
 // to release its own claim without resuming a task the other still holds. One
-// bitmask per task, rather than a second `frozen` flag beside the first, which
-// would be a split source of truth about whether a task may run.
+// bitmask per task. `Task::frozen` is the target's acknowledgement, not a
+// second policy store: requests may be pending briefly before it becomes true.
 
 /// `cgroup.freeze=1` on the task's cgroup.
 pub const CGROUP: u8 = 1 << 0;

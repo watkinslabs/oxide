@@ -9,12 +9,6 @@ use crate::netdev::NetResult;
 use crate::stack::NetStack;
 
 impl NetStack {
-    /// Metrics from the exact IPv4 route selected for a new transport TCB. # C: O(N)
-    pub(crate) fn route_metrics_for_dst_in(&self, net_ns: u64, dst: IpAddr,
-        bound: Option<NetIfaceId>) -> crate::RouteMetrics {
-        self.route_metrics_for_dst_mark_in(net_ns, dst, bound, UNMARKED)
-    }
-
     /// Metrics from the IPv4 route this socket's `SO_MARK` selects. A mark
     /// that names another routing table names another route, whose metrics are
     /// the ones the connection actually runs under. # C: O(N)

@@ -8,6 +8,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use namespace_identity::NamespaceKind;
 use vfs::fs::FileSystem;
 use vfs::inode::Inode;
 use vfs::mount::Propagation;
@@ -187,9 +188,9 @@ fn mount_generation_and_pollpri() {
     assert!(vfs::mount::mount_generation() > g3, "umount bumped");
 }
 
-// (5) copy_mnt_ns isolates a child ns: it gets an independent copy (fresh
-// mnt_id), a later mount in the child is invisible to the parent, and a SHARED
-// parent mount is demoted to a SLAVE in the child (no propagate-back leak).
+// (5) copy_mnt_ns gives a same-user-namespace child an independent mount-tree
+// copy (fresh mnt_id) while retaining SHARED peer membership. A later mount is
+// visible in the parent only when the shared-propagation path publishes it.
 #[test]
 fn copy_mnt_ns_isolates_child() {
     let _g = guard();
@@ -206,20 +207,17 @@ fn copy_mnt_ns_isolates_child() {
     let child = vfs::mount::snapshot().into_iter()
         .find(|m| m.mount_point_str() == "/base").unwrap();
     assert_ne!(child.mnt_id, base_id, "fresh mnt_id in child");
-    // The shared mount became a SLAVE in the child (containment).
-    assert_eq!(Propagation::from_u8(child.propagation.load(Ordering::Acquire)), Propagation::Slave,
-        "child-ns clone of a shared mount is a slave");
+    assert_eq!(Propagation::from_u8(child.propagation.load(Ordering::Acquire)), Propagation::Shared,
+        "same-user-ns clone keeps a shared source shared");
     // A new mount in the child is invisible to the parent.
     common::register("/only-child", fs(0x7002)).expect("child-only");
     select_namespace(&parent);
     assert!(common::mount_root_at("/only-child").is_none(), "parent can't see child's mount");
 }
 
-// (5b) D16: copy_mnt_ns now clones via the shared `clone_mnt` primitive. Pin the
-// CL_* fidelity it inherits: the child clone SHARES the source SuperBlock (one
-// extra `s_active`), a SHARED source is demoted to a SLAVE chained onto the
-// source's slave list (master link set, source group id preserved), and a
-// PRIVATE source clones private.
+// (5b) D16: copy_mnt_ns clones via the shared `clone_mnt` primitive. Pin the
+// same-user-namespace fidelity: the child shares the source SuperBlock, keeps
+// a shared source in its peer group, and keeps a private source private.
 #[test]
 fn copy_mnt_ns_clone_mnt_fidelity() {
     let _g = guard();
@@ -241,14 +239,74 @@ fn copy_mnt_ns_clone_mnt_fidelity() {
     // SB shared with the source (Linux `clone_mnt` `atomic_inc(&sb->s_active)`).
     assert!(Arc::ptr_eq(sh.sb(), sh_child.sb()), "child clone shares the source SB");
     assert_eq!(sh.sb().s_active(), sh_active + 1, "clone took one extra s_active");
-    // CL_SLAVE demotion: child is a slave, source group id preserved.
+    // Same-user copy: shared source stays a peer in its original group.
     assert_eq!(Propagation::from_u8(sh_child.propagation.load(Ordering::Acquire)),
-        Propagation::Slave, "shared source → slave clone");
+        Propagation::Shared, "shared source → shared clone");
     assert_eq!(sh_child.peer_group.load(Ordering::Acquire), sh_pg,
-        "demoted slave keeps the source peer group id");
+        "shared clone stays in the source peer group");
     // CL_PRIVATE: a private source stays private.
     assert_eq!(Propagation::from_u8(pv_child.propagation.load(Ordering::Acquire)),
         Propagation::Private, "private source → private clone");
+}
+
+#[test]
+fn copy_mnt_ns_other_user_demotes_shared_mount_and_locks_tree() {
+    let _g = guard();
+    let parent = set_namespace(0xC80);
+    common::register("/", fs(0x8001)).expect("root");
+    common::register("/shared", fs(0x8002)).expect("shared");
+    common::set_propagation("/shared", Propagation::Shared).expect("share source");
+    let source = common::mount_at_path_exact("/shared").expect("source shared mount");
+    let parent_user = namespace_identity::initial(NamespaceKind::User);
+    let child_user = namespace_identity::allocate(NamespaceKind::User, parent_user.clone(),
+        Some(parent_user)).expect("child user namespace");
+    let child = vfs::mntns::allocate(child_user).expect("child mount namespace");
+
+    vfs::mount::copy_mnt_ns(&parent, &child).expect("cross-user mount namespace copy");
+    select_namespace(&child);
+    let copied = common::mount_at_path_exact("/shared").expect("copied shared mount");
+    assert_eq!(Propagation::from_u8(copied.propagation.load(Ordering::Acquire)), Propagation::Slave,
+        "cross-user copy demotes a shared source to a slave");
+    assert_eq!(copied.peer_group.load(Ordering::Acquire), source.peer_group.load(Ordering::Acquire),
+        "demoted slave retains its source peer-group identity");
+    assert!(copied.is_locked(), "cross-user copied tree is mount-locked");
+}
+
+// systemd prepares credentials in a same-user mount namespace. It makes the
+// workspace parent slave, then moves the finished tmpfs under shared /run; the
+// manager namespace must receive that final mount.
+#[test]
+fn credential_workspace_move_propagates_to_manager_namespace() {
+    let _g = guard();
+    let manager = set_namespace(0xC81);
+    let worker = vfs::mntns::allocate(manager.owner_user_namespace()).expect("worker namespace allocation");
+    common::register("/", fs(0x8101)).expect("manager root");
+    common::register("/run", fs(0x8102)).expect("manager runtime");
+    common::register("/dev", fs(0x8103)).expect("manager devices");
+    vfs::mount::set_propagation_recursive(&common::dentry("/"), Propagation::Shared)
+        .expect("manager mounts shared");
+    let manager_run = common::mount_at_path_exact("/run").expect("manager /run");
+
+    vfs::mount::copy_mnt_ns(&manager, &worker).expect("worker mount namespace");
+    select_namespace(&worker);
+    let worker_run = common::mount_at_path_exact("/run").expect("worker /run");
+    assert_eq!(Propagation::from_u8(worker_run.propagation.load(Ordering::Acquire)), Propagation::Shared,
+        "same-user worker keeps /run shared");
+    assert_eq!(worker_run.peer_group.load(Ordering::Acquire), manager_run.peer_group.load(Ordering::Acquire),
+        "worker /run remains a manager /run peer");
+    vfs::mount::set_propagation_recursive(&common::dentry("/dev"), Propagation::Slave)
+        .expect("private credential workspace parent");
+    common::register("/dev/shm", fs(0x8104)).expect("credential workspace");
+    let workspace = common::mount_at_path_exact("/dev/shm").expect("workspace mount");
+    let final_dir = common::dentry("/run/credentials/serial-getty@ttyS0.service");
+    vfs::mount::move_mount_by_id(workspace.mnt_id, &final_dir).expect("move credential store into /run");
+    assert_ne!(vfs::mount::root_mount_id(worker.id()), Some(workspace.mnt_id),
+        "credential move must not be treated as a move onto the namespace root");
+
+    select_namespace(&manager);
+    let published = vfs::mount::mount_at_path_exact_under(manager_run.mnt_id, &final_dir)
+        .expect("manager sees the credential store");
+    assert_eq!(published.mnt_root().and_then(|d| d.inode()).map(|i| i.ino()), Some(0x8104));
 }
 
 // (8) ns reap: when the last task of a child ns exits, its per-ns mounts are

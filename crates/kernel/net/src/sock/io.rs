@@ -200,7 +200,7 @@ impl InetSocket {
     /// # C: backend-dependent
     pub fn write(&self, _off: u64, buf: &[u8]) -> vfs::KResult<usize> {
         // F164: snapshot kind out of its lock for parity with read();
-        // a TCP write may park on entry.rx_waiters until the peer's
+        // a TCP write may park on the entry sleep queue until the peer's
         // ACK frees send_buf space — we must not hold sock.kind.lock()
         // across the park.
         enum K {
@@ -219,6 +219,12 @@ impl InetSocket {
         // longer carries a verdict of its own, so this is the one place a
         // `write(2)`-shaped send is admitted.
         crate::sock_opts::check_send(self).map_err(vfs_from_neterr)?;
+        let autobind = if matches!(k, K::Other)
+            && matches!(*self.kind.lock(), SockKind::Udp)
+        {
+            Some(crate::landlock_addr::admit_udp_send_autobind(self)
+                .map_err(vfs_from_neterr)?)
+        } else { None };
         match k {
             K::Unix(pair, end) => match pair.write(end, buf) {
                 Ok(n) => Ok(n),
@@ -235,7 +241,8 @@ impl InetSocket {
             },
             K::Tcp(entry) => self.write_tcp_blocking_entry(&entry, buf, false),
             K::Other => crate::sock::sendto(self, buf, None, current_sender_creds(),
-                &crate::send_control::SendControl::default()).map_err(vfs_from_neterr),
+                &crate::send_control::SendControl::default(), autobind.as_ref())
+                .map_err(vfs_from_neterr),
         }
     }
 

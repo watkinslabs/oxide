@@ -1,8 +1,6 @@
 // The transmit half of level 17: the only part that needs the live UDP send
 // path, so the only part that cannot be exercised hosted. Every decision it
 // acts on is made in `table`, `cork`, or `segment`.
-#![cfg(target_os = "oxide-kernel")]
-
 use crate::NetError;
 use crate::sock::{InetSocket, RemoteAddr};
 

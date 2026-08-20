@@ -132,6 +132,27 @@ fn sticky_options_widen_the_udp_header() {
     assert_eq!(&packet[IPV4_HDR_LEN + 7..IPV4_HDR_LEN + 11], &[0; 4]);
 }
 
+#[test]
+fn udp_socket_local_error_reports_mtu_after_the_selected_option_area() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
+    let stack = crate::global_stack();
+    let (_dev, iface) = device(stack, 1_500, SRC);
+    stack.routes.add(RouteEntry::main(DST, 32, iface, None, Some(SRC)));
+    resolve(stack, iface, DST);
+    let sock = crate::sock::InetSocket::new_udp();
+    sock.set_bound_iface(Some(iface)).unwrap();
+    sock.opts.ip_mtu_discover.store(crate::uapi::IP_PMTUDISC_DO, Ordering::Release);
+    sock.opts.ip.set_options(compiled(
+        &[IPOPT_RR, 11, 4, 0, 0, 0, 0, 0, 0, 0, 0, IPOPT_END]));
+    sock.error.set_recverr4(true);
+
+    assert_eq!(crate::sock::socket_sendto(&sock, DST, DPORT, &[0u8; 1_472]),
+        Err(crate::NetError::Emsgsize));
+
+    let report = sock.error.take_extended().expect("local size report");
+    assert_eq!(report.info, 1_488, "the 12-byte option area comes off the path MTU");
+}
+
 /// The option area is part of the header on EVERY fragment: it comes out of
 /// the fragmentable payload budget, and the uncopied record route survives
 /// only on the fragment carrying the first octet.

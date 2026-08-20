@@ -71,6 +71,42 @@ fn udp_autobind_checks_the_bind_right_before_allocating_a_port() {
 }
 
 #[test]
+fn udp6_autobind_asks_for_the_ipv6_bind_zero_right() {
+    let sock = crate::sock::InetSocket::new_udp6();
+    let allowed = net_domain(ACCESS_NET_BIND_UDP, &[(0, ACCESS_NET_BIND_UDP)]);
+    assert!(admit_autobind_udp_for(&sock, Some(&allowed)).is_ok());
+    let denied = net_domain(ACCESS_NET_BIND_UDP, &[(53, ACCESS_NET_BIND_UDP)]);
+    assert!(matches!(admit_autobind_udp_for(&sock, Some(&denied)), Err(NetError::Eacces)));
+}
+
+#[test]
+fn udp6_connect_checks_before_allocating_an_endpoint() {
+    let source = include_str!("../sock_v6.rs");
+    let connect = source.find("pub(crate) fn connect_udp6_locked")
+        .expect("UDP6 connect owner");
+    let send = source.find("fn ensure_udp6_bound")
+        .expect("UDP6 send autobind owner");
+    let body = &source[connect..send];
+    let check = body.find("crate::landlock_addr::check_autobind_udp(sock)?;")
+        .expect("UDP6 connect autobind asks for the bind right");
+    let allocate = body.find("alloc_ephemeral_udp6_owned(")
+        .expect("UDP6 connect autobind allocates an endpoint");
+    assert!(check < allocate);
+}
+
+#[test]
+fn udp6_send_allocation_requires_the_pre_protocol_admission() {
+    let source = include_str!("../sock_v6.rs");
+    let start = source.find("fn ensure_udp6_bound").expect("UDP6 send autobind owner");
+    let body = &source[start..];
+    let token = body.find("_admission: &crate::landlock_addr::UdpAutobindAdmission")
+        .expect("UDP6 allocation requires the typed send admission");
+    let allocate = body.find("alloc_ephemeral_udp6_owned(")
+        .expect("UDP6 autobind allocates an endpoint");
+    assert!(token < allocate);
+}
+
+#[test]
 fn a_send_on_a_tcp_socket_asks_for_the_tcp_connect_right() {
     // The UDP right does not stand in for the TCP one: a policy that named
     // only UDP ports must not confine a TCP send, and vice versa.

@@ -14,6 +14,7 @@ impl UdpRxQueue {
             Arc::new(::core::sync::atomic::AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)),
             Arc::new(::core::sync::atomic::AtomicI32::new(0)),
             Arc::new(::core::sync::atomic::AtomicI32::new(0)),
+            Arc::new(::core::sync::atomic::AtomicI32::new(0)),
             crate::SocketOwner::root(network_namespace::initial(), 0),
             Arc::new(Spinlock::new(None)), Arc::new(crate::bpf_filter::SocketFilter::new()),
             Arc::new(crate::mcast_filter::SocketMcast::new()))
@@ -24,6 +25,7 @@ impl UdpRxQueue {
                       reuseaddr: Arc<::core::sync::atomic::AtomicI32>,
                       reuseport: Arc<::core::sync::atomic::AtomicI32>,
                       ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+                      mark: Arc<::core::sync::atomic::AtomicI32>,
                       gro: Arc<::core::sync::atomic::AtomicI32>,
                       encap_type: Arc<::core::sync::atomic::AtomicI32>,
                       owner: Arc<crate::SocketOwner>,
@@ -33,9 +35,8 @@ impl UdpRxQueue {
         Self {
             owner, bound_ip, bound_port,
             state: crate::fib_lock::FibLock::new(UdpRxState { accepting: true, datagrams: VecDeque::new() }),
-            #[cfg(target_os = "oxide-kernel")]
-            waiters: sched::live::WaitList::new(),
-            error, peer, reuseaddr, reuseport, ip_mtu_discover, gro, encap_type,
+            waiters: crate::sock_wait::SockWaitQueue::new(),
+            error, peer, reuseaddr, reuseport, ip_mtu_discover, mark, gro, encap_type,
             bound_ifindex: ::core::sync::atomic::AtomicU32::new(0),
             poll_subs: Spinlock::new(None), bpf_filter, mcast,
             reuseport_group: crate::reuseport::new_slot(),
@@ -47,7 +48,6 @@ impl UdpRxQueue {
         let state = self.state.lock();
         if !state.accepting || !self.error.set(errno) { return false; }
         drop(state);
-        #[cfg(target_os = "oxide-kernel")]
         self.waiters.wake_all();
         let slot = self.poll_subs.lock().clone();
         if let Some(weak) = slot {
@@ -62,7 +62,6 @@ impl UdpRxQueue {
         let state = self.state.lock();
         if !state.accepting || !self.error.publish(entry, connected, hard) { return false; }
         drop(state);
-        #[cfg(target_os = "oxide-kernel")]
         self.waiters.wake_all();
         let slot = self.poll_subs.lock().clone();
         if let Some(weak) = slot {
@@ -131,7 +130,6 @@ impl UdpRxQueue {
             }
         }
         drop(state);
-        #[cfg(target_os = "oxide-kernel")]
         self.waiters.wake_all();
         if let Some(weak) = self.poll_subs.lock().clone() {
             if let Some(subs) = weak.upgrade() { subs.notify_mask(vfs::POLL_IN); }
@@ -145,7 +143,6 @@ impl UdpRxQueue {
         if !state.accepting { return; }
         state.accepting = false;
         drop(state);
-        #[cfg(target_os = "oxide-kernel")]
         self.waiters.wake_all();
         if let Some(weak) = self.poll_subs.lock().clone() {
             if let Some(subs) = weak.upgrade() { subs.notify_mask(vfs::POLL_IN | vfs::POLL_HUP); }
@@ -170,7 +167,6 @@ impl UdpRxQueue {
     }
 
     /// Register the current task as a waiter only while the endpoint is idle. # C: O(1)
-    #[cfg(target_os = "oxide-kernel")]
     pub fn park_if_idle(&self, read_shut: &::core::sync::atomic::AtomicBool, deadline_ns: u64) -> bool {
         let state = self.state.lock();
         if !state.datagrams.is_empty() || self.error.has()

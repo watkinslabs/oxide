@@ -245,26 +245,33 @@ impl NetStack {
         dst: crate::Ipv6Addr, hint: Option<crate::Ipv6Addr>, prefs: i32) -> Option<crate::Ipv6Addr>
     {
         let now_ns = self.ra_now_ns();
+        let use_optimistic = self.ifaces.namespace(iface).is_some_and(|ns|
+            self.ifaces.ipv6_use_optimistic_in(iface, ns));
+        let prefer_temporary = self.ifaces.namespace(iface).and_then(|ns|
+            self.ifaces.ipv6_tempaddr_policy_in(iface, ns)).is_some_and(|policy| policy.0 > 1);
         let all = self.v6_addrs.lock();
         let addrs = all.get(&iface)?;
-        addrs.iter().filter(|row| row.usable_at(now_ns)).min_by_key(|row| {
+        addrs.iter().filter(|row| row.owned_at(now_ns)).min_by_key(|row| {
             let src_scope = ipv6_scope(row.addr);
             let dst_scope = ipv6_scope(dst);
             let scope_penalty = if src_scope < dst_scope {
                 16u8.saturating_add(dst_scope - src_scope)
             } else { src_scope - dst_scope };
-            (row.addr != dst, scope_penalty, !row.preferred_at(now_ns),
-                source_preference_penalty(row.temporary, prefs), hint != Some(row.addr),
-                u8::MAX - common_prefix_len(row.addr, dst))
+            let optimistic = row.user_flags & crate::iface_addr::IFA_F_OPTIMISTIC != 0;
+            (row.addr != dst, scope_penalty,
+                !row.preferred_at(now_ns) || optimistic && !use_optimistic,
+                source_preference_penalty(row.temporary, prefs, prefer_temporary),
+                hint != Some(row.addr),
+                u8::MAX - common_prefix_len(row.addr, dst), optimistic)
         }).map(|row| row.addr)
     }
 }
 
-fn source_preference_penalty(temporary: bool, prefs: i32) -> bool {
+fn source_preference_penalty(temporary: bool, prefs: i32, prefer_temporary: bool) -> bool {
     use crate::sock_opts::sol_ipv6::uapi::{IPV6_PREFER_SRC_PUBLIC, IPV6_PREFER_SRC_TMP};
     if prefs & IPV6_PREFER_SRC_TMP != 0 { return !temporary; }
     if prefs & IPV6_PREFER_SRC_PUBLIC != 0 { return temporary; }
-    false
+    temporary != prefer_temporary
 }
 
 fn ipv6_scope(addr: crate::Ipv6Addr) -> u8 {
