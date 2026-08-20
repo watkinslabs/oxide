@@ -49,6 +49,7 @@ impl NetStack {
             valid_until_ns: super::ra::lifetime_deadline(now_ns, valid),
             origin: Ipv6AddrOrigin::Static,
             state: Ipv6AddrState::Assigned, deprecated: preferred == 0, temporary,
+            temporary_parent: None,
             user_flags: 0, proto: 0, rt_priority: 0,
             cstamp: crate::iface_addr::now_centisecs(), tstamp: crate::iface_addr::now_centisecs(),
             notify_pending: false,
@@ -99,7 +100,7 @@ impl NetStack {
                     state: Ipv6AddrState::Tentative {
                         dad_until_ns: None, retry_at_ns: now_ns,
                         retrans_timer_ns: retrans_timer_ns.unwrap_or(super::ra::DAD_DELAY_NS) },
-                    deprecated: preferred == 0, temporary: false,
+                    deprecated: preferred == 0, temporary: false, temporary_parent: None,
                     user_flags: 0, proto: 0, rt_priority: 0, cstamp: stamp, tstamp: stamp,
                     notify_pending: false,
                 });

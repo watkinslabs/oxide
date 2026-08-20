@@ -227,7 +227,8 @@ fn dad_promotion_reannounces_joined_groups_with_link_local_source() {
         state: super::Ipv6AddrState::Tentative {
             dad_until_ns: Some(1), retry_at_ns: 0, retrans_timer_ns: SEC,
         },
-        deprecated: false, temporary: false, user_flags: 0, proto: 0, rt_priority: 0,
+        deprecated: false, temporary: false, temporary_parent: None,
+        user_flags: 0, proto: 0, rt_priority: 0,
         cstamp: 0, tstamp: 0, notify_pending: false,
     });
     stack.join_ipv6_multicast(iface, group, Ipv6Addr::ANY).unwrap();
@@ -330,6 +331,10 @@ fn source_selection_honors_public_and_temporary_preferences() {
     stack.add_v6_addr_meta(iface, public, 64, u32::MAX, u32::MAX);
     stack.add_v6_addr_meta_with_temporary(iface, temporary, 64, u32::MAX, u32::MAX, true);
 
+    assert_eq!(stack.v6_select_source(iface, dst, None), Some(public));
+    stack.ifaces.ipv6_conf_by_name_in("lo", 0).unwrap()
+        .set_value(crate::netdev::Ipv6ConfKey::UseTempaddr, 2);
+    assert_eq!(stack.v6_select_source(iface, dst, None), Some(temporary));
     assert_eq!(stack.v6_select_source_with_prefs(iface, dst, None,
         crate::sock_opts::sol_ipv6::uapi::IPV6_PREFER_SRC_PUBLIC), Some(public));
     assert_eq!(stack.v6_select_source_with_prefs(iface, dst, None,

@@ -18,6 +18,9 @@ const DEV_LEAVES: &[(&str, net::netdev::Ipv6ConfKey)] = &[
     ("disable_ipv6", net::netdev::Ipv6ConfKey::DisableIpv6),
     ("optimistic_dad", net::netdev::Ipv6ConfKey::OptimisticDad),
     ("use_optimistic", net::netdev::Ipv6ConfKey::UseOptimistic),
+    ("use_tempaddr", net::netdev::Ipv6ConfKey::UseTempaddr),
+    ("temp_valid_lft", net::netdev::Ipv6ConfKey::TempValidLft),
+    ("temp_prefered_lft", net::netdev::Ipv6ConfKey::TempPreferredLft),
 ];
 
 enum ConfDirKind {
@@ -53,6 +56,12 @@ fn special_leaf(kind: &ConfDirKind, name: &str) -> Option<Leaf> {
         (ConfDirKind::All, "use_optimistic") => net::net_ns::NetSysctlKey::Ipv6UseOptimisticAll,
         (ConfDirKind::Default, "optimistic_dad") => net::net_ns::NetSysctlKey::Ipv6OptimisticDadDefault,
         (ConfDirKind::Default, "use_optimistic") => net::net_ns::NetSysctlKey::Ipv6UseOptimisticDefault,
+        (ConfDirKind::All, "use_tempaddr") => net::net_ns::NetSysctlKey::Ipv6UseTempaddrAll,
+        (ConfDirKind::Default, "use_tempaddr") => net::net_ns::NetSysctlKey::Ipv6UseTempaddrDefault,
+        (ConfDirKind::All, "temp_valid_lft") => net::net_ns::NetSysctlKey::Ipv6TempValidLftAll,
+        (ConfDirKind::Default, "temp_valid_lft") => net::net_ns::NetSysctlKey::Ipv6TempValidLftDefault,
+        (ConfDirKind::All, "temp_prefered_lft") => net::net_ns::NetSysctlKey::Ipv6TempPreferredLftAll,
+        (ConfDirKind::Default, "temp_prefered_lft") => net::net_ns::NetSysctlKey::Ipv6TempPreferredLftDefault,
         _ => return None,
     };
     Some(NetInt(key, None))
@@ -127,7 +136,8 @@ impl FileOps for ConfDirOps {
         let Some(data) = inode.private::<ConfDirData>() else { return Err(VfsError::Enoent) };
         let names: Vec<(String, FileType)> = match &data.kind {
             ConfDirKind::All | ConfDirKind::Default => crate::readdir::typed(
-                &["disable_ipv6", "optimistic_dad", "use_optimistic"], FileType::Regular),
+                &["disable_ipv6", "optimistic_dad", "use_optimistic", "use_tempaddr",
+                    "temp_valid_lft", "temp_prefered_lft"], FileType::Regular),
             ConfDirKind::Iface { .. } => crate::readdir::typed(
                 &DEV_LEAVES.iter().map(|(name, _)| *name).collect::<Vec<_>>(), FileType::Regular),
         };

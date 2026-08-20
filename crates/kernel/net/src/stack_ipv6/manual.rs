@@ -17,6 +17,8 @@ use crate::stack::NetStack;
 
 use super::{Ipv6AddrOrigin, Ipv6AddrState, Ipv6IfaceAddr};
 
+const TEMPADDR_RETRIES: usize = 8;
+
 /// Everything a setter may state about a manual IPv6 address. The kernel-owned
 /// bits (`IFA_F_PERMANENT`, `IFA_F_TENTATIVE`, `IFA_F_DADFAILED`,
 /// `IFA_F_DEPRECATED`, `IFA_F_TEMPORARY`) are never carried here — they are
@@ -102,7 +104,7 @@ impl NetStack {
                     retrans_timer_ns: super::ra::DAD_DELAY_NS }
             } else { Ipv6AddrState::Assigned },
             deprecated: meta.preferred_lft == 0,
-            temporary: false,
+            temporary: false, temporary_parent: None,
             user_flags: meta.user_flags,
             proto: meta.proto,
             rt_priority: meta.rt_priority,
@@ -115,6 +117,10 @@ impl NetStack {
         match rows.iter().position(|existing| existing.addr == addr) {
             Some(index) => rows[index] = row.clone(),
             None => rows.push(row.clone()),
+        }
+        drop(all);
+        if meta.user_flags & crate::iface_addr::IFA_F_MANAGETEMPADDR != 0 {
+            self.sync_managed_tempaddrs_rtnl(rtnl, ns, iface, generation, addr, false);
         }
         Some(row)
     }
@@ -135,6 +141,7 @@ impl NetStack {
         let now_ns = self.ra_now_ns();
         let mut all = self.v6_addrs.lock();
         let row = all.get_mut(&iface)?.iter_mut().find(|row| row.addr == addr)?;
+        let was_managed = row.user_flags & crate::iface_addr::IFA_F_MANAGETEMPADDR != 0;
         row.user_flags = meta.user_flags;
         row.proto = meta.proto;
         if meta.rt_priority != 0 { row.rt_priority = meta.rt_priority; }
@@ -145,7 +152,10 @@ impl NetStack {
         row.deprecated = !row.preferred_at(now_ns);
         row.tstamp = crate::iface_addr::now_centisecs();
         if let Some(peer) = peer.filter(|peer| *peer != addr) { row.peer = Some(peer); }
-        Some(row.clone())
+        let row = row.clone();
+        drop(all);
+        self.sync_managed_tempaddrs_rtnl(rtnl, ns, iface, generation, addr, was_managed);
+        Some(row)
     }
 
     /// Remove the exact manual IPv6 address/prefix a setter named, returning
@@ -165,11 +175,67 @@ impl NetStack {
         let rows = all.get_mut(&iface)?;
         let index = rows.iter().position(|row| row.addr == addr && row.prefixlen == prefixlen)?;
         let mut removed = rows.remove(index);
+        rows.retain(|row| row.temporary_parent != Some(addr));
         if rows.is_empty() { all.remove(&iface); }
         drop(all);
         super::addr_table::refresh_lifetimes(&mut removed, now_ns);
         self.routes6.clear_src_hint(iface, addr);
         Some(removed)
+    }
+
+    /// Synchronize RFC 4941 children after a public address add or replace.
+    /// # Lk: matching stack RTNL held. # C: O(N + retry count)
+    fn sync_managed_tempaddrs_rtnl(&self, rtnl: &crate::RtnlGuard<'_>, ns: u64,
+        iface: NetIfaceId, generation: u64, parent: Ipv6Addr, was_managed: bool)
+    {
+        if self.ifaces.control_generation_in_ns(rtnl, iface, ns) != Some(generation) { return; }
+        let Some((use_tempaddr, max_valid, max_preferred)) =
+            self.ifaces.ipv6_tempaddr_policy_in(iface, ns) else { return };
+        let mut candidates = [[0u8; 8]; TEMPADDR_RETRIES];
+        for candidate in &mut candidates { crng::fill(candidate); }
+        let now_ns = self.ra_now_ns();
+        let stamp = crate::iface_addr::now_centisecs();
+        let mut all = self.v6_addrs.lock();
+        let Some(rows) = all.get_mut(&iface) else { return };
+        let Some(public) = rows.iter().find(|row| row.addr == parent && !row.temporary).cloned()
+            else { return };
+        let managed = public.user_flags & crate::iface_addr::IFA_F_MANAGETEMPADDR != 0;
+        if was_managed && !managed {
+            rows.retain(|row| row.temporary_parent != Some(parent));
+            return;
+        }
+        if !managed { return; }
+        let valid = public.valid.min(max_valid);
+        let preferred = public.preferred.min(max_preferred).min(valid);
+        for child in rows.iter_mut().filter(|row| row.temporary_parent == Some(parent)) {
+            child.valid = valid;
+            child.preferred = preferred;
+            child.valid_until_ns = super::ra::lifetime_deadline(now_ns, valid);
+            child.preferred_until_ns = super::ra::lifetime_deadline(now_ns, preferred);
+            child.deprecated = preferred == 0;
+            child.tstamp = stamp;
+        }
+        if use_tempaddr <= 0 || valid == 0 || preferred == 0
+            || rows.iter().any(|row| row.temporary_parent == Some(parent)) { return; }
+        for iid in candidates {
+            let mut bytes = parent.0;
+            bytes[8..].copy_from_slice(&iid);
+            let addr = Ipv6Addr(bytes);
+            if rows.iter().any(|row| row.addr == addr) { continue; }
+            rows.push(Ipv6IfaceAddr {
+                addr, peer: None, prefixlen: 64, preferred, valid,
+                preferred_until_ns: super::ra::lifetime_deadline(now_ns, preferred),
+                valid_until_ns: super::ra::lifetime_deadline(now_ns, valid),
+                origin: Ipv6AddrOrigin::Static,
+                state: Ipv6AddrState::Tentative { dad_until_ns: None, retry_at_ns: now_ns,
+                    retrans_timer_ns: super::ra::DAD_DELAY_NS },
+                deprecated: false, temporary: true, temporary_parent: Some(parent),
+                user_flags: public.user_flags & crate::iface_addr::IFA_F_OPTIMISTIC,
+                proto: public.proto, rt_priority: 0, cstamp: stamp, tstamp: stamp,
+                notify_pending: false,
+            });
+            break;
+        }
     }
 
     /// Stage one manual IPv6 address event for post-RTNL publication.
