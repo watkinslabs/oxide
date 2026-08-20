@@ -69,7 +69,8 @@ mod tests {
             Arc::new(net::SocketError::new()),
             Arc::new(core::sync::atomic::AtomicI32::new(0)),
             Arc::new(core::sync::atomic::AtomicI32::new(net::uapi::IP_PMTUDISC_WANT)),
-            Arc::new(net::sock_opts::sol_ip::IpOpts::default()))
+            Arc::new(net::sock_opts::sol_ip::IpOpts::default()),
+            Arc::new(core::sync::atomic::AtomicI32::new(0)))
     }
 
     // The identifier is the local port column, and a raw ICMP socket in the

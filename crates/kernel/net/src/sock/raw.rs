@@ -14,7 +14,7 @@ impl InetSocket {
         let endpoint = crate::raw4::Raw4Endpoint::new_owned_with_pmtudisc(
             protocol, sock.owner.clone(),
             sock.bpf_filter.clone(), sock.mcast.clone(), sock.error.clone(),
-            sock.opts.ip_mtu_discover.clone(), sock.opts.ip.clone(),
+            sock.opts.ip_mtu_discover.clone(), sock.opts.ip.clone(), sock.opts.base.mark_cell(),
         );
         endpoint.register_poll_subs(&sock.poll_subs);
         stack().register_raw4(&endpoint);
@@ -55,7 +55,7 @@ impl InetSocket {
         let endpoint = crate::raw4::Raw4Endpoint::new_ping(
             sock.owner.clone(), sock.bpf_filter.clone(), sock.mcast.clone(),
             sock.error.clone(), sock.opts.base.reuseaddr.clone(),
-            sock.opts.ip_mtu_discover.clone(), sock.opts.ip.clone(),
+            sock.opts.ip_mtu_discover.clone(), sock.opts.ip.clone(), sock.opts.base.mark_cell(),
         );
         endpoint.register_poll_subs(&sock.poll_subs);
         *sock.kind.lock() = SockKind::Raw4(endpoint);

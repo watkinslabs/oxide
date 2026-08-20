@@ -48,7 +48,8 @@ mod tests {
             Arc::new(crate::SocketError::new()),
             Arc::new(core::sync::atomic::AtomicI32::new(0)),
             Arc::new(core::sync::atomic::AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)),
-            Arc::new(crate::sock_opts::sol_ip::IpOpts::default()))
+            Arc::new(crate::sock_opts::sol_ip::IpOpts::default()),
+            Arc::new(core::sync::atomic::AtomicI32::new(0)))
     }
 
     #[test]

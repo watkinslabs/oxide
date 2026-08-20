@@ -273,6 +273,36 @@ mod tests {
     use ::core::sync::atomic::{AtomicI32, Ordering};
 
     #[test]
+    fn raw_and_udp_endpoints_share_their_production_sockets_live_mark() {
+        let _domain = crate::hosted_fixture::init_net_domain();
+
+        let udp4 = Arc::new(InetSocket::new_udp());
+        crate::sock::bind(&udp4, crate::sock::BoundAddr::Inet {
+            ip: crate::Ipv4Addr::ANY, port: 0,
+        }).unwrap();
+        let udp4_endpoint = udp4.udp4.lock().clone().expect("IPv4 bind published its endpoint");
+        udp4.opts.base.mark.store(0x21, Ordering::Release);
+        assert_eq!(udp4_endpoint.mark(), 0x21);
+
+        let udp6 = Arc::new(InetSocket::new_udp6());
+        crate::sock::bind(&udp6, crate::sock::BoundAddr::Inet6 {
+            ip: crate::Ipv6Addr::ANY, port: 0, scope_id: 0,
+        }).unwrap();
+        let udp6_endpoint = udp6.udp6.lock().clone().expect("IPv6 bind published its endpoint");
+        udp6.opts.base.mark.store(0x32, Ordering::Release);
+        assert_eq!(udp6_endpoint.mark(), 0x32);
+
+        let raw = InetSocket::new_raw4_in(
+            crate::addr::IpProto::Udp as u8, network_namespace::initial());
+        let endpoint = match &*raw.kind.lock() {
+            SockKind::Raw4(endpoint) => endpoint.clone(),
+            _ => panic!("raw constructor published the wrong endpoint kind"),
+        };
+        raw.opts.base.mark.store(0x43, Ordering::Release);
+        assert_eq!(endpoint.mark(), 0x43);
+    }
+
+    #[test]
     fn accepted_tcp_socket_shares_both_transport_pmtu_modes() {
         let ip_pmtu = Arc::new(AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT));
         let ipv6_pmtu = Arc::new(AtomicI32::new(crate::uapi::IPV6_PMTUDISC_WANT));

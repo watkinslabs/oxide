@@ -23,7 +23,8 @@ fn owned_endpoint(protocol: u8, opts: Arc<IpOpts>) -> Arc<Raw4Endpoint> {
         crate::SocketOwner::root(network_namespace::initial(), 0),
         Arc::new(SocketFilter::new()), Arc::new(SocketMcast::new()),
         Arc::new(crate::SocketError::new()),
-        Arc::new(core::sync::atomic::AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)), opts)
+        Arc::new(core::sync::atomic::AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)), opts,
+        Arc::new(core::sync::atomic::AtomicI32::new(0)))
 }
 
 /// A route to `DST` over a capture device, with the next hop already resolved
