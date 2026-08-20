@@ -861,7 +861,7 @@ here now.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| OPEN | MISSING | low | ICMP-driven PMTU updates for raw and UDP endpoints still update unmarked (`stack_icmp.rs`, two call sites): those endpoint types carry no mark at all, unlike `TcpEntry`. Reference takes the mark from the originating socket when one is matched. | `update_pmtu_v4(..., UNMARKED)` at the raw4 and UDP branches | unclaimed |
+| OPEN | MISSING | low | ICMP-driven PMTU updates for raw and UDP endpoints still update unmarked (`stack_icmp.rs`, two call sites): those endpoint types carry no mark at all, unlike `TcpEntry`. Reference takes the mark from the originating socket when one is matched. | `update_pmtu_v4(..., UNMARKED)` at the raw4 and UDP branches | CLAIMED B2302-icmp-pmtu-socket-mark 2026-08-20 |
 | OPEN | MISSING | low | `SockBase::bound_ifindex` and `TcpBindReservation::bound_ifindex` are two atomics holding the same `sk_bound_dev_if` — a live mirror of the kind the mark work deliberately avoided. Noticed while choosing where the mark cell should live. | both fields written independently | unclaimed |
 
 ### B1982-missing-sched-proc-surface
