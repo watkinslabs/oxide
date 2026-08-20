@@ -110,13 +110,24 @@ pub fn screen_v4_socket_source(net_ns: u64, src: crate::Ipv4Addr, dst: crate::Ip
         dst.is_multicast() || dst.is_broadcast(), oif_pinned, any_source(sock, hdrincl))
 }
 
-/// Whether an IPv6 source address a socket selected is used verbatim.
-///
-/// It always is. IPv6 route output never screens an explicit source for
-/// locality — the family has no equivalent of the IPv4 owned-source test — so
-/// a socket bound to a foreign address answers from that address with no
-/// permission consulted, and no source-selection step may overwrite it. The
-/// permission still gates the bind that produced the address.
+/// Screen a per-message IPv6 source. The unspecified address asks route
+/// selection to choose and is always valid. A locally owned unicast or anycast
+/// source is valid; a foreign one needs the namespace or live socket nonlocal-
+/// bind permission. The refusal is `EINVAL`, the control-message parser's
+/// invalid-source answer. # C: O(1)
+pub fn screen_v6_control_source(net_ns: u64, source: crate::Ipv6Addr, owned: bool,
+    sock: SockNonlocal)
+    -> Result<(), NetError>
+{
+    if source.is_unspecified() || owned || crate::bind_screen::can_nonlocal(sock,
+        crate::bind_screen::v6_sysctl_nonlocal(net_ns)) { Ok(()) }
+    else { Err(NetError::Einval) }
+}
+
+/// Whether an admitted IPv6 source is used verbatim. A bound source was
+/// admitted at bind; a per-message source was admitted by
+/// [`screen_v6_control_source`]. Route selection fills only an unspecified
+/// source and must not overwrite either explicit form.
 /// # C: O(1)
 pub fn v6_source_is_verbatim(src: crate::Ipv6Addr) -> bool { !src.is_unspecified() }
 
