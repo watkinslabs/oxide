@@ -187,6 +187,12 @@ must use grouped paths from day one.
     single registry of shared AML `PowerResource` state/reference counts;
     `acpi::events` owns only GPE hardware blocks and mask transitions, and may
     not retain a parallel wake-device list.
+    Outside ACPI, each canonical `drv::Device` owns its wake capability, the
+    user-selected wake policy, and the identity of its attached wake IRQ.
+    `crates/kernel/arch-irq` owns that IRQ descriptor's balanced wake-enable
+    depth and its armed, suspended, and pending delivery state. Suspend wiring
+    only walks those owners and orders arm, mask, replay, and disarm; it may not
+    retain a second device-policy list or IRQ-state table.
     Firmware also owns the FDT-selected SCMI shared-memory map and SMCCC
     transport. Firmware owns its response-completion state, while kernel init
     supplies the one GIC line-install bridge, so it does not depend upward on

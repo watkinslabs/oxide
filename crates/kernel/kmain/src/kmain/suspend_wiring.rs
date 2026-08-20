@@ -28,7 +28,34 @@ fn prepare() -> power::KResult<()> {
 }
 fn suspend() -> power::KResult<()> { drv::pm::dpm_suspend().map_err(|_| refused()) }
 fn suspend_late() -> power::KResult<()> { drv::pm::dpm_suspend_late().map_err(|_| refused()) }
-fn suspend_noirq() -> power::KResult<()> { drv::pm::dpm_suspend_noirq().map_err(|_| refused()) }
+fn arm_wake_irqs() {
+    for device in drv::devices() {
+        if !device.may_wakeup() { continue; }
+        if let Some(irq) = device.wake_irq() { let _ = arch_irq::irq_set_irq_wake(irq, true); }
+    }
+}
+
+fn disarm_wake_irqs() {
+    for device in drv::devices() {
+        if !device.may_wakeup() { continue; }
+        if let Some(irq) = device.wake_irq() { let _ = arch_irq::irq_set_irq_wake(irq, false); }
+    }
+}
+
+fn suspend_noirq() -> power::KResult<()> {
+    arm_wake_irqs();
+    arch_irq::suspend_device_irqs();
+    if drv::pm::dpm_suspend_noirq().is_ok() { return Ok(()); }
+    arch_irq::resume_device_irqs();
+    disarm_wake_irqs();
+    Err(refused())
+}
+
+fn resume_noirq() {
+    drv::pm::dpm_resume_noirq();
+    arch_irq::resume_device_irqs();
+    disarm_wake_irqs();
+}
 fn complete() { drv::pm::dpm_complete(); cpufreq::resume(); }
 
 /// Install the device-model half of the sequence and register the interrupt
@@ -45,7 +72,7 @@ pub fn init() {
         dpm_suspend: Some(suspend),
         dpm_suspend_late: Some(suspend_late),
         dpm_suspend_noirq: Some(suspend_noirq),
-        dpm_resume_noirq: Some(drv::pm::dpm_resume_noirq),
+        dpm_resume_noirq: Some(resume_noirq),
         dpm_resume_early: Some(drv::pm::dpm_resume_early),
         dpm_resume: Some(drv::pm::dpm_resume),
         dpm_complete: Some(complete),

@@ -365,6 +365,18 @@ pub unsafe fn mask_vector(vector: u8) {
     unsafe { mask_at(va, pin); }
 }
 
+/// Unmask the routed I/O-APIC pin for `vector`, if one remains installed.
+/// # SAFETY: caller serializes I/O-APIC indirect access and owns the vector.
+/// # C: O(1)
+pub unsafe fn unmask_vector(vector: u8) {
+    let Some((va, pin)) = pin_for_vector(vector) else { return; };
+    let index = 0x10 + 2 * pin;
+    // SAFETY: `pin_for_vector` returned a live published controller route.
+    let value = unsafe { read_reg_at(va, index) } & !RTE_MASK;
+    // SAFETY: same mapped route and caller serialization as the read above.
+    unsafe { write_reg_at(va, index, value); }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

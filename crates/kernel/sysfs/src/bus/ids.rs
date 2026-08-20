@@ -16,6 +16,7 @@ pub(super) const INO_DEVICE_DIR:    Ino = 0x5102_1000;
 pub(super) const INO_DRIVER_DIR:    Ino = 0x5102_1100;
 pub(super) const INO_ATTR:          Ino = 0x5102_2000;
 pub(super) const INO_DRIVER_ATTR:   Ino = 0x5102_3000;
+pub(super) const INO_DEVICE_POWER:  Ino = 0x5102_4000;
 
 pub(super) fn bus_devices_ino(bus: &str) -> Ino {
     match bus {

@@ -20,7 +20,8 @@ pub fn install(interrupt: u16) -> bool {
     // SAFETY: PCI boot mapped every MADT I/O APIC before this provider phase;
     // the line handler owns `vector` before the level source is unmasked.
     if unsafe { arch_irq::program_x86_intx_gsi(gsi, vector,
-        arch_irq::lapic::local_apic_id(), level, active_low) } { return true; }
+        arch_irq::lapic::local_apic_id(), level, active_low) }
+        && arch_irq::irq_set_irq_wake(u32::from(vector), true).is_ok() { return true; }
     let _ = arch_irq::free_irq_line_handler(u32::from(vector));
     let _ = arch_irq::free_x86_vector(vector);
     false

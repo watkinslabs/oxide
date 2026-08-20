@@ -5,6 +5,7 @@
 //! - `device_index`: character indexes, device attributes, and parent topology.
 //! - `driver_binding`: driver bind/unbind and lifecycle behavior.
 //! - `pci_dev_attrs`: the PCI function attribute directory userspace reads.
+//! - `power_wakeup`: per-device wake capability and policy attribute.
 //! - `uevent_replay`: replayed device uevents and nested paths.
 
 extern crate alloc;
@@ -13,6 +14,7 @@ mod block_index;
 mod device_index;
 mod driver_binding;
 mod pci_dev_attrs;
+mod power_wakeup;
 mod topology_liveness;
 mod uevent_replay;
 
