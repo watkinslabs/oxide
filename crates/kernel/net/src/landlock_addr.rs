@@ -71,6 +71,14 @@ pub fn addr_verdict(client: Option<&Arc<Domain>>, proto: Proto, op: Op, bytes: &
 /// Gate UDP's implicit local-port allocation as though the caller had bound
 /// port zero on this socket family. # C: O(N_layers × N_rules)
 pub fn check_autobind_udp(sock: &crate::sock::InetSocket) -> Result<(), NetError> {
+    check_autobind_udp_for(sock, current_domain().as_ref())
+}
+
+/// The implicit-bind decision against an already resolved caller domain.
+/// Keeping this half target-neutral lets the family-specific socket paths prove
+/// that both wire address shapes ask for the same right. # C: O(N_layers × N_rules)
+fn check_autobind_udp_for(sock: &crate::sock::InetSocket,
+                          client: Option<&Arc<Domain>>) -> Result<(), NetError> {
     use core::sync::atomic::Ordering;
     if sock_proto(sock) != Proto::Udp { return Ok(()); }
     let family = sock.family.load(Ordering::Acquire);
@@ -78,7 +86,7 @@ pub fn check_autobind_udp(sock: &crate::sock::InetSocket) -> Result<(), NetError
         else { netcheck::SOCKADDR_IN_LEN };
     let mut port_zero = [0u8; netcheck::SOCKADDR_IN6_LEN];
     port_zero[..2].copy_from_slice(&family.to_le_bytes());
-    addr_verdict(current_domain().as_ref(), Proto::Udp, Op::Bind, &port_zero[..len], family)
+    addr_verdict(client, Proto::Udp, Op::Bind, &port_zero[..len], family)
 }
 
 /// Domain that published the pathname socket bound at `addr`. The outer `None`

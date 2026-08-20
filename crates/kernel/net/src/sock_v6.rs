@@ -17,6 +17,9 @@ pub(crate) fn connect_udp6_locked(sock: &InetSocket, local_port: &mut Option<u16
     if sock.released.load(core::sync::atomic::Ordering::Acquire) {
         return Err(NetError::Einval);
     }
+    if local_port.is_none() {
+        crate::landlock_addr::check_autobind_udp(sock)?;
+    }
     let iface = scoped_iface(sock, dst_ip, scope_id)?;
     // Linux's mapped-IPv4 connect uses the IPv4 route and publishes its
     // selected source as a mapped IPv6 socket name before getsockname can
@@ -199,6 +202,7 @@ fn ensure_udp6_bound(sock: &InetSocket, dst_ip: crate::Ipv6Addr, scope_id: u32)
         match *slot {
             Some(p) => p,
             None    => {
+                crate::landlock_addr::check_autobind_udp(sock)?;
                 // Linux `inet6_autobind` keeps the local address already named.
                 let bind_ip = *sock.local_ip6.lock();
                 let policy = crate::sock::bind_port_policy(sock, 0);
