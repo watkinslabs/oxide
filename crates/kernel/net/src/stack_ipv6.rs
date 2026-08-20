@@ -28,7 +28,8 @@ mod addr_table;
 #[cfg(test)] mod manual_tests;
 
 pub use manual::{dad_applies, ipv6_disabled_in, Ipv6AddrMeta};
-pub use types::{Ipv6AddrOrigin, Ipv6AddrState, Ipv6IfaceAddr, Udp6Datagram, Udp6RxQueue};
+pub use types::{Ipv6AddrOrigin, Ipv6AddrState, Ipv6IfaceAddr, MappedIpv4Ancillary,
+    Udp6Datagram, Udp6RxQueue};
 pub(crate) use types::PendingRa;
 pub(crate) use tx::ipv6_output_mtu;
 #[cfg(test)] pub(crate) use ra::DAD_DELAY_NS;
