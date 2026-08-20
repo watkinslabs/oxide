@@ -101,7 +101,7 @@ impl ConnectTransaction<'_> {
                     super::tcp_lifecycle::connect_tcp4_mapped_locked(
                         sock, &mut local_port, ip, port, source, data)?
                 } else {
-                    let _ = crate::sock_v6::scoped_iface(sock, ip, scope_id)?;
+                    apply_tcp6_scope(sock, ip, scope_id)?;
                     sock.peer6_scope.store(scope_id, core::sync::atomic::Ordering::Release);
                     super::tcp_lifecycle::connect_tcp6_locked(
                         sock, &mut local_port, ip, port, source, data)?
@@ -168,7 +168,7 @@ impl ConnectTransaction<'_> {
                     drop(local_port);
                     return finish_tcp_connect(sock, open, nonblock);
                 }
-                let _ = crate::sock_v6::scoped_iface(sock, ip, scope_id)?;
+                apply_tcp6_scope(sock, ip, scope_id)?;
                 sock.peer6_scope.store(scope_id, core::sync::atomic::Ordering::Release);
                 let open = super::tcp_lifecycle::connect_tcp6_locked(
                     sock, &mut local_port, ip, port, crate::tcp_fastopen::Source::Connect, &[],
@@ -195,6 +195,17 @@ impl ConnectTransaction<'_> {
     }
 }
 
+/// Apply a link-local TCP peer's explicit scope as `sk_bound_dev_if`. # C: O(N_ifaces)
+fn apply_tcp6_scope(sock: &InetSocket, ip: crate::Ipv6Addr, scope_id: u32)
+    -> Result<(), NetError>
+{
+    let scoped = crate::sock_v6::scoped_iface(sock, ip, scope_id)?;
+    if scope_id == 0 || !ip.is_link_local() { return Ok(()); }
+    let scoped = scoped.ok_or(NetError::Einval)?;
+    sock.opts.base.bound_ifindex.store(scoped.raw(), core::sync::atomic::Ordering::Release);
+    Ok(())
+}
+
 fn finish_tcp_connect(sock: &InetSocket, open: super::tcp_lifecycle::TcpOpen,
                       nonblock: bool) -> Result<(), NetError> {
     let opened = if open.entry().is_none() {
@@ -205,5 +216,25 @@ fn finish_tcp_connect(sock: &InetSocket, open: super::tcp_lifecycle::TcpOpen,
         super::fastopen_result::ConnectResult::Einprogress => Err(NetError::Einprogress),
         super::fastopen_result::ConnectResult::Wait =>
             super::tcp_connect_wait::connect_wait_established(sock, open.entry().unwrap()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_link_local_tcp_scope_becomes_bound_device() {
+        let _domain = crate::hosted_fixture::init_net_domain();
+        let stack = crate::global_stack();
+        let (iface, _) = stack.register_loopback();
+        let sock = InetSocket::new_tcp6();
+        let link_local = crate::Ipv6Addr([0xfe, 0x80, 0, 0, 0, 0, 0, 0,
+                                         0, 0, 0, 0, 0, 0, 0, 1]);
+
+        apply_tcp6_scope(&sock, link_local, iface.raw()).unwrap();
+
+        assert_eq!(sock.opts.base.bound_ifindex.load(
+            core::sync::atomic::Ordering::Acquire), iface.raw());
     }
 }

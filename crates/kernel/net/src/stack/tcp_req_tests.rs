@@ -49,9 +49,27 @@ fn the_passive_child_records_the_ipv6_opening_flowinfo() {
 
     let child = super::tcp_listener_deliver::build_passive_child(
         listener.local, 1_460, 1_500, crate::route_metrics::RouteMetrics::NONE,
-        &packet, &listener, iface, true);
+        &packet, &listener, listener.bound_iface(), iface, true);
 
     assert_eq!(child.conn.lock().rcv_iif, 0x02c5_4321);
+}
+
+#[test]
+fn passive_child_owns_a_bound_device_snapshot() {
+    let _domain = crate::hosted_fixture::init_net_domain();
+    let stack = NetStack::new();
+    let (iface, _lo, listener) = fixture(&stack, 7_613);
+    let child = super::tcp_listener_deliver::build_passive_child(
+        listener.local, 1_460, 1_500, crate::route_metrics::RouteMetrics::NONE,
+        &[], &listener, Some(iface), iface, false);
+    let later = NetIfaceId::from_raw(iface.raw().wrapping_add(1));
+
+    listener.bind.bound_ifindex.store(later.raw(),
+        ::core::sync::atomic::Ordering::Release);
+
+    assert_eq!(child.bound_iface(), Some(iface));
+    assert!(!Arc::ptr_eq(&child.bind.as_ref().unwrap().bound_ifindex,
+        &listener.bind.bound_ifindex));
 }
 
 #[test]

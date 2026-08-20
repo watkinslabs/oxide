@@ -117,7 +117,8 @@ impl NetStack {
     {
         let hdr = match crate::tcp_hdr::parse_prevalidated(seg) { Ok(h) => h, Err(_) => return Ok(()) };
         let entry = super::tcp_listener_deliver::build_passive_child(
-            local_ep, own_mss, path_mtu, metrics, packet, listener, iface, ipv6);
+            local_ep, own_mss, path_mtu, metrics, packet, listener,
+            listener.bound_iface(), iface, ipv6);
         {
             let mut conn = entry.conn.lock();
             // The SYN this connection came from was answered and dropped, so

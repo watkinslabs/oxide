@@ -1,5 +1,5 @@
 use super::*;
-use ::core::sync::atomic::Ordering;
+use ::core::sync::atomic::{AtomicU32, Ordering};
 
 mod frag;
 
@@ -78,7 +78,7 @@ impl NetStack {
                     && candidate.reuseaddr && old.reuseaddr)
                 && old.local.port == candidate.local.port
                 && addr_overlap(old, candidate)
-                && iface_overlap(old.bound_iface(), candidate.bound_iface())
+                && iface_overlap(entry.bound_iface(), candidate.bound_iface())
                 && !may_share(old, candidate)
         })
     }
@@ -88,18 +88,26 @@ impl NetStack {
         owner: &Arc<crate::SocketOwner>,
         binds: &mut BTreeMap<u16, Vec<alloc::sync::Weak<TcpBindReservation>>>,
         local_ip: IpAddr, port: u16, iface: Option<NetIfaceId>, reuseaddr: bool,
-        reuseport: bool, v6only: bool)
+        reuseport: bool, v6only: bool, bound_ifindex: &Arc<AtomicU32>)
         -> Option<Arc<TcpBindReservation>>
     {
-        let bind = Arc::new(TcpBindReservation::new_owned(
-            owner.clone(), Endpoint { ip: local_ip, port }, iface, reuseaddr,
-            reuseport, v6only,
+        let proposed = iface.map(NetIfaceId::raw).unwrap_or(0);
+        let candidate = Arc::new(TcpBindReservation::new_owned(
+            owner.clone(), Endpoint { ip: local_ip, port }, reuseaddr,
+            reuseport, v6only, Arc::new(AtomicU32::new(proposed)),
         ));
         let group = binds.entry(port).or_default();
-        if reservation_conflict(group, &bind) || self.tcp_transport_conflict(tables, &bind) {
+        if reservation_conflict(group, &candidate)
+            || self.tcp_transport_conflict(tables, &candidate)
+        {
             if group.is_empty() { binds.remove(&port); }
             return None;
         }
+        bound_ifindex.store(proposed, Ordering::Release);
+        let bind = Arc::new(TcpBindReservation::new_owned(
+            owner.clone(), Endpoint { ip: local_ip, port }, reuseaddr,
+            reuseport, v6only, bound_ifindex.clone(),
+        ));
         group.push(Arc::downgrade(&bind));
         Some(bind)
     }
@@ -127,11 +135,12 @@ impl NetStack {
     /// Reserve a TCP local name retaining one socket's canonical owner. # C: O(range * N_port)
     pub fn tcp_reserve_owned(&self, owner: Arc<crate::SocketOwner>, local_ip: IpAddr,
                           requested_port: u16, iface: Option<NetIfaceId>, reuseaddr: bool,
-                          reuseport: bool, v6only: bool, port_range: u32)
+                          reuseport: bool, v6only: bool, port_range: u32,
+                          bound_ifindex: Arc<AtomicU32>)
         -> NetResult<Arc<TcpBindReservation>>
     {
         self.tcp_reserve_peer_owned(owner, local_ip, requested_port, iface, reuseaddr,
-            reuseport, v6only, None, port_range)
+            reuseport, v6only, None, port_range, bound_ifindex)
     }
 
     /// Auto-bind for an outbound connection — Linux `inet_hash_connect`.
@@ -152,11 +161,12 @@ impl NetStack {
     pub fn tcp_reserve_connect_owned(&self, owner: Arc<crate::SocketOwner>, local_ip: IpAddr,
                                   requested_port: u16, iface: Option<NetIfaceId>,
                                   reuseaddr: bool, reuseport: bool, v6only: bool,
-                                  peer: (IpAddr, u16), port_range: u32)
+                                  peer: (IpAddr, u16), port_range: u32,
+                                  bound_ifindex: Arc<AtomicU32>)
         -> NetResult<Arc<TcpBindReservation>>
     {
         self.tcp_reserve_peer_owned(owner, local_ip, requested_port, iface, reuseaddr,
-            reuseport, v6only, Some(peer), port_range)
+            reuseport, v6only, Some(peer), port_range, bound_ifindex)
     }
 
     fn tcp_reserve_peer_in(&self, net_ns: u64, local_ip: IpAddr, requested_port: u16,
@@ -168,13 +178,14 @@ impl NetStack {
             else { network_namespace::lookup_u64(net_ns).ok_or(NetError::Enodev)? };
         self.tcp_reserve_peer_owned(crate::SocketOwner::root(namespace, owner_uid),
             local_ip, requested_port, iface, reuseaddr, reuseport, v6only, peer,
-            crate::local_port::NAMESPACE_WINDOW)
+            crate::local_port::NAMESPACE_WINDOW,
+            Arc::new(AtomicU32::new(iface.map(NetIfaceId::raw).unwrap_or(0))))
     }
 
     fn tcp_reserve_peer_owned(&self, owner: Arc<crate::SocketOwner>, local_ip: IpAddr,
                            requested_port: u16, iface: Option<NetIfaceId>, reuseaddr: bool,
                            reuseport: bool, v6only: bool, peer: Option<(IpAddr, u16)>,
-                           port_range: u32)
+                           port_range: u32, bound_ifindex: Arc<AtomicU32>)
         -> NetResult<Arc<TcpBindReservation>>
     {
         // Draw the boot secret here, in process context: the passive-open
@@ -193,7 +204,7 @@ impl NetStack {
         if requested_port != 0 {
             return self.tcp_try_reserve_locked(&tables, &owner, &mut binds,
                 local_ip, requested_port, iface,
-                reuseaddr, reuseport, v6only).ok_or(NetError::Eaddrinuse);
+                reuseaddr, reuseport, v6only, &bound_ifindex).ok_or(NetError::Eaddrinuse);
         }
         let range = crate::local_port::range_in(net_ns, port_range).ok_or(NetError::Enodev)?;
         // Peer known (`connect`) → keyed 4-tuple offset, Linux
@@ -211,7 +222,7 @@ impl NetStack {
         for (step, port) in scan.enumerate() {
             if let Some(bind) = self.tcp_try_reserve_locked(&tables, &owner, &mut binds,
                 local_ip, port, iface,
-                reuseaddr, reuseport, v6only)
+                reuseaddr, reuseport, v6only, &bound_ifindex)
             {
                 // Linux charges the walk length back to the perturb bucket so
                 // the next connect to this destination resumes further along.
@@ -255,8 +266,9 @@ impl NetStack {
         let tables = self.inet_tables(bind.net_ns());
         let mut binds = tables.tcp_binds.lock();
         if !self.tcp_bind_registered_locked(&mut binds, bind) { return Err(NetError::Einval); }
-        let candidate = TcpBindReservation::new_owned(bind.owner.clone(), bind.local, iface,
-            bind.reuseaddr, bind.reuseport, bind.v6only);
+        let candidate = TcpBindReservation::new_owned(bind.owner.clone(), bind.local,
+            bind.reuseaddr, bind.reuseport, bind.v6only,
+            Arc::new(AtomicU32::new(iface.map(NetIfaceId::raw).unwrap_or(0))));
         if let Some(group) = binds.get_mut(&bind.local.port) {
             for weak in group.iter() {
                 let Some(old) = weak.upgrade() else { continue; };
@@ -269,7 +281,7 @@ impl NetStack {
                 }
             }
         }
-        bind.bound_ifindex.store(iface.map(|id| id.raw()).unwrap_or(0), Ordering::Release);
+        bind.bound_ifindex.store(iface.map(NetIfaceId::raw).unwrap_or(0), Ordering::Release);
         Ok(())
     }
 

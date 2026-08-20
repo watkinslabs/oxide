@@ -124,7 +124,7 @@ impl NetStack {
                 &tables, &listener, local_ep, own_mss, path_mtu, metrics, plan, ipv6);
         }
         let new_entry = build_passive_child(local_ep, own_mss, path_mtu, metrics, packet, &listener,
-            iface, ipv6);
+            bound, iface, ipv6);
         plan.install(&new_entry);
         let resp = match new_entry.conn.lock().input_prevalidated(src_ip, dst_ip, seg) {
             Ok(resp) => resp,
@@ -293,7 +293,8 @@ fn select_listener_for_syn(stack: &NetStack, net_ns: u64, iface: NetIfaceId, src
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_passive_child(local_ep: Endpoint, own_mss: u16, path_mtu: u32,
     metrics: crate::route_metrics::RouteMetrics, packet: &[u8],
-    listener: &Arc<TcpListenEntry>, iface: NetIfaceId, ipv6: bool) -> Arc<TcpEntry>
+    listener: &Arc<TcpListenEntry>, bound: Option<NetIfaceId>, iface: NetIfaceId,
+    ipv6: bool) -> Arc<TcpEntry>
 {
     // This runs on the SOFTIRQ stack — the 16 KiB per-CPU hardirq stack whose
     // measured peak is already ~14.5 KiB (`sched::kstack`). A `TcpConn` is 584
@@ -324,6 +325,8 @@ pub(super) fn build_passive_child(local_ep: Endpoint, own_mss: u16, path_mtu: u3
         Arc::new(::core::sync::atomic::AtomicI32::new(
             listener.mark.load(::core::sync::atomic::Ordering::Acquire))),
     ));
+    child.bind.as_ref().unwrap().bound_ifindex.store(bound.map(NetIfaceId::raw).unwrap_or(0),
+        ::core::sync::atomic::Ordering::Release);
     {
         let mut conn = child.conn.lock();
         conn.own_mss = own_mss;

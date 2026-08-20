@@ -60,3 +60,17 @@ fn a_destination_no_route_covers_is_unreachable_not_unspecified() {
     let unrouted = Ipv6Addr([0x20, 0x01, 0x0d, 0xb8, 0xde, 0xad, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
     assert_eq!(v6_connect_source(&sock, unrouted), Err(NetError::Enetunreach));
 }
+
+#[test]
+fn tcp_source_selection_ignores_ipv6_unicast_if() {
+    let _domain = crate::hosted_fixture::init_net_domain();
+    let routed = routed_to_remote();
+    let stack = stack();
+    let (hinted, _) = stack.register_loopback();
+    let hinted_ifindex = stack.ifaces.ifindex_in_ns(hinted, 0).unwrap();
+    let sock = InetSocket::new_tcp6();
+    sock.opts.ipv6.set_unicast_if(hinted_ifindex);
+
+    assert_eq!(v6_connect_source(&sock, REMOTE), Ok(OWNED));
+    assert_ne!(routed, hinted);
+}
