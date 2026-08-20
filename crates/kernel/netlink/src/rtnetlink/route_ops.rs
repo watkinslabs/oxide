@@ -118,6 +118,7 @@ pub(crate) fn build_newroute6_reply(seq: u32, pid: u32, row: net::Route6Entry,
     let is_local = row.dst.is_loopback() && row.prefix_len == 128 && row.gateway.is_none();
     let protocol = match row.origin {
         net::Route6Origin::Static => RTPROT_STATIC,
+        net::Route6Origin::AddressPrefix { .. } => super::uapi::RTPROT_KERNEL,
         net::Route6Origin::RouterAdvertisementDefault { .. }
         | net::Route6Origin::RouterAdvertisementPrefix { .. } => RTPROT_RA,
     };
@@ -134,6 +135,8 @@ pub(crate) fn build_newroute6_reply(seq: u32, pid: u32, row: net::Route6Entry,
     put_nlattr_u32(&mut body, rta::RTA_OIF,
         net::global_stack().ifaces.ifindex(row.iface).unwrap_or(row.iface.raw()));
     if let Some(source) = row.src_hint { put_nlattr(&mut body, rta::RTA_PREFSRC, &source.0); }
+    if row.origin.metric() != 0 { put_nlattr_u32(&mut body, rta::RTA_PRIORITY,
+        row.origin.metric()); }
     if row.table > u8::MAX as u32 { put_nlattr_u32(&mut body, rta::RTA_TABLE, row.table); }
     let total = crate::Nlmsghdr::SIZE + body.len();
     let hdr = crate::Nlmsghdr { nlmsg_len: total as u32, nlmsg_type: RTM_NEWROUTE,

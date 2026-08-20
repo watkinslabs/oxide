@@ -339,6 +339,101 @@ fn proto_and_route_priority_round_trip() {
     assert_eq!(row.rt_priority, 4096);
 }
 
+fn address_prefix_routes(iface: net::NetIfaceId) -> Vec<net::Route6Entry> {
+    net::global_stack().routes6.snapshot_in(0).into_iter().filter(|route| {
+        route.iface == iface && matches!(route.origin, net::Route6Origin::AddressPrefix { .. })
+    }).collect()
+}
+
+#[test]
+fn an_address_installs_a_canonical_kernel_prefix_route_with_its_priority() {
+    let fx = fixture();
+    let mut dirty = GLOBAL;
+    dirty[8] = 0x12; dirty[15] = 0x34;
+    let (mut req, mut msg) = addr6_req(RTM_NEWADDR, fx.ifindex, 64, dirty, 0, 0);
+    put_nlattr(&mut msg, ifa::IFA_RT_PRIORITY, &777u32.to_ne_bytes());
+    seal(&mut req, &mut msg);
+    assert_eq!(ack_errno(&handle_newaddr(&req, &msg)), 0);
+    let routes = address_prefix_routes(fx.iface);
+    assert_eq!(routes.len(), 1);
+    assert_eq!(routes[0].dst.0, [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    assert_eq!(routes[0].prefix_len, 64);
+    assert_eq!(routes[0].origin.metric(), 777);
+
+    let wire = super::route_ops::build_newroute6_reply(1, 2, routes[0], false);
+    assert_eq!(wire[Nlmsghdr::SIZE + 5], super::uapi::RTPROT_KERNEL);
+    let attrs = &wire[Nlmsghdr::SIZE + super::uapi::Rtmsg::SIZE..];
+    assert_eq!(u32::from_ne_bytes(find_attr(attrs, rta::RTA_PRIORITY)
+        .expect("RTA_PRIORITY").try_into().unwrap()), 777);
+}
+
+#[test]
+fn noprefixroute_suppresses_and_replace_reconciles_the_owned_route() {
+    let fx = fixture();
+    let (mut req, mut msg) = addr6_req(RTM_NEWADDR, fx.ifindex, 64, GLOBAL, 0, 0);
+    put_nlattr(&mut msg, ifa::IFA_FLAGS, &IFA_F_NOPREFIXROUTE.to_ne_bytes());
+    seal(&mut req, &mut msg);
+    assert_eq!(ack_errno(&handle_newaddr(&req, &msg)), 0);
+    assert!(address_prefix_routes(fx.iface).is_empty());
+
+    let (mut req, mut msg) = addr6_req(RTM_NEWADDR, fx.ifindex, 64, GLOBAL, 0,
+        crate::flags::NLM_F_REPLACE);
+    put_nlattr(&mut msg, ifa::IFA_RT_PRIORITY, &2048u32.to_ne_bytes());
+    seal(&mut req, &mut msg);
+    assert_eq!(ack_errno(&handle_newaddr(&req, &msg)), 0);
+    assert_eq!(address_prefix_routes(fx.iface)[0].origin.metric(), 2048);
+
+    let (mut req, mut msg) = addr6_req(RTM_NEWADDR, fx.ifindex, 64, GLOBAL, 0,
+        crate::flags::NLM_F_REPLACE);
+    put_nlattr(&mut msg, ifa::IFA_FLAGS, &IFA_F_NOPREFIXROUTE.to_ne_bytes());
+    seal(&mut req, &mut msg);
+    assert_eq!(ack_errno(&handle_newaddr(&req, &msg)), 0);
+    assert!(address_prefix_routes(fx.iface).is_empty());
+}
+
+#[test]
+fn a_shared_prefix_route_survives_until_its_last_eligible_address_is_deleted() {
+    let fx = fixture();
+    let mut second = GLOBAL; second[15] = 2;
+    for addr in [GLOBAL, second] {
+        let (req, msg) = addr6_req(RTM_NEWADDR, fx.ifindex, 64, addr, 0, 0);
+        assert_eq!(ack_errno(&handle_newaddr(&req, &msg)), 0);
+    }
+    assert_eq!(address_prefix_routes(fx.iface).len(), 1);
+    let (req, msg) = addr6_req(RTM_DELADDR, fx.ifindex, 64, GLOBAL, 0, 0);
+    assert_eq!(ack_errno(&handle_deladdr(&req, &msg)), 0);
+    assert_eq!(address_prefix_routes(fx.iface).len(), 1);
+    let (req, msg) = addr6_req(RTM_DELADDR, fx.ifindex, 64, second, 0, 0);
+    assert_eq!(ack_errno(&handle_deladdr(&req, &msg)), 0);
+    assert!(address_prefix_routes(fx.iface).is_empty());
+}
+
+#[test]
+fn finite_and_noprefixroute_peers_follow_the_prefix_cleanup_ladder() {
+    let fx = fixture();
+    let (mut req, mut msg) = addr6_req(RTM_NEWADDR, fx.ifindex, 64, GLOBAL, 0, 0);
+    cacheinfo_attr(&mut msg, 30, 60);
+    seal(&mut req, &mut msg);
+    assert_eq!(ack_errno(&handle_newaddr(&req, &msg)), 0);
+    let (req, msg) = addr6_req(RTM_DELADDR, fx.ifindex, 64, GLOBAL, 0, 0);
+    assert_eq!(ack_errno(&handle_deladdr(&req, &msg)), 0);
+    assert_eq!(address_prefix_routes(fx.iface).len(), 1,
+        "a finite address leaves its independently expiring route");
+
+    let mut permanent = GLOBAL; permanent[7] = 1; permanent[15] = 1;
+    let mut guarded = permanent; guarded[15] = 2;
+    let (req, msg) = addr6_req(RTM_NEWADDR, fx.ifindex, 64, permanent, 0, 0);
+    assert_eq!(ack_errno(&handle_newaddr(&req, &msg)), 0);
+    let (mut req, mut msg) = addr6_req(RTM_NEWADDR, fx.ifindex, 64, guarded, 0, 0);
+    put_nlattr(&mut msg, ifa::IFA_FLAGS, &IFA_F_NOPREFIXROUTE.to_ne_bytes());
+    seal(&mut req, &mut msg);
+    assert_eq!(ack_errno(&handle_newaddr(&req, &msg)), 0);
+    let (req, msg) = addr6_req(RTM_DELADDR, fx.ifindex, 64, permanent, 0, 0);
+    assert_eq!(ack_errno(&handle_deladdr(&req, &msg)), 0);
+    assert!(address_prefix_routes(fx.iface).iter().any(|route| route.matches(net::Ipv6Addr(guarded))),
+        "a same-prefix NOPREFIXROUTE address guards the pre-existing route");
+}
+
 // A replace rewrites the lifetimes, the proto and the priority the setter
 // restated, and leaves the verification state alone.
 #[test]

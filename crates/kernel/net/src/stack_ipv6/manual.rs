@@ -8,16 +8,29 @@
 
 extern crate alloc;
 
-use alloc::string::String;
+use alloc::{string::String, vec::Vec};
 
 use crate::addr::{Ipv6Addr, NetIfaceId};
 use crate::control_event::EventKind;
 use crate::netdev::iff;
+use crate::route6::{Route6Entry, Route6Origin};
 use crate::stack::NetStack;
 
 use super::{Ipv6AddrOrigin, Ipv6AddrState, Ipv6IfaceAddr};
 
 const TEMPADDR_RETRIES: usize = 8;
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Ipv6PrefixRouteChange {
+    pub removed: Vec<Route6Entry>,
+    pub added: Vec<Route6Entry>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Ipv6AddrChange {
+    pub row: Ipv6IfaceAddr,
+    pub routes: Ipv6PrefixRouteChange,
+}
 
 /// Everything a setter may state about a manual IPv6 address. The kernel-owned
 /// bits (`IFA_F_PERMANENT`, `IFA_F_TENTATIVE`, `IFA_F_DADFAILED`,
@@ -83,7 +96,7 @@ impl NetStack {
                                            iface: NetIfaceId, generation: u64, addr: Ipv6Addr,
                                            peer: Option<Ipv6Addr>, prefixlen: u8,
                                            meta: Ipv6AddrMeta, dad: bool)
-        -> Option<Ipv6IfaceAddr>
+        -> Option<Ipv6AddrChange>
     {
         if self.ifaces.control_generation_in_ns(rtnl, iface, ns) != Some(generation) {
             return None;
@@ -122,7 +135,10 @@ impl NetStack {
         if meta.user_flags & crate::iface_addr::IFA_F_MANAGETEMPADDR != 0 {
             self.sync_managed_tempaddrs_rtnl(rtnl, ns, iface, generation, addr, false);
         }
-        Some(row)
+        let routes = if meta.user_flags & crate::iface_addr::IFA_F_NOPREFIXROUTE == 0 {
+            self.install_ipv6_prefix_route_rtnl(rtnl, ns, iface, addr, prefixlen, true)
+        } else { Ipv6PrefixRouteChange::default() };
+        Some(Ipv6AddrChange { row, routes })
     }
 
     /// Apply a `NLM_F_REPLACE` update to an existing manual IPv6 address. The
@@ -133,7 +149,7 @@ impl NetStack {
     pub fn modify_ipv6_prefix_generation_rtnl(&self, rtnl: &crate::RtnlGuard<'_>, ns: u64,
                                               iface: NetIfaceId, generation: u64, addr: Ipv6Addr,
                                               peer: Option<Ipv6Addr>, meta: Ipv6AddrMeta)
-        -> Option<Ipv6IfaceAddr>
+        -> Option<Ipv6AddrChange>
     {
         if self.ifaces.control_generation_in_ns(rtnl, iface, ns) != Some(generation) {
             return None;
@@ -141,6 +157,8 @@ impl NetStack {
         let now_ns = self.ra_now_ns();
         let mut all = self.v6_addrs.lock();
         let row = all.get_mut(&iface)?.iter_mut().find(|row| row.addr == addr)?;
+        let had_prefixroute = row.valid_until_ns == super::ra::INFINITE_DEADLINE
+            && row.user_flags & crate::iface_addr::IFA_F_NOPREFIXROUTE == 0;
         let was_managed = row.user_flags & crate::iface_addr::IFA_F_MANAGETEMPADDR != 0;
         row.user_flags = meta.user_flags;
         row.proto = meta.proto;
@@ -155,7 +173,12 @@ impl NetStack {
         let row = row.clone();
         drop(all);
         self.sync_managed_tempaddrs_rtnl(rtnl, ns, iface, generation, addr, was_managed);
-        Some(row)
+        let routes = if row.user_flags & crate::iface_addr::IFA_F_NOPREFIXROUTE == 0 {
+            self.install_ipv6_prefix_route_rtnl(rtnl, ns, iface, addr, row.prefixlen, false)
+        } else if had_prefixroute {
+            self.cleanup_ipv6_prefix_route_rtnl(rtnl, ns, iface, addr, row.prefixlen)
+        } else { Ipv6PrefixRouteChange::default() };
+        Some(Ipv6AddrChange { row, routes })
     }
 
     /// Remove the exact manual IPv6 address/prefix a setter named, returning
@@ -165,7 +188,7 @@ impl NetStack {
     pub fn remove_ipv6_prefix_generation_rtnl(&self, rtnl: &crate::RtnlGuard<'_>, ns: u64,
                                               iface: NetIfaceId, generation: u64,
                                               addr: Ipv6Addr, prefixlen: u8)
-        -> Option<Ipv6IfaceAddr>
+        -> Option<Ipv6AddrChange>
     {
         if self.ifaces.control_generation_in_ns(rtnl, iface, ns) != Some(generation) {
             return None;
@@ -180,7 +203,107 @@ impl NetStack {
         drop(all);
         super::addr_table::refresh_lifetimes(&mut removed, now_ns);
         self.routes6.clear_src_hint(iface, addr);
-        Some(removed)
+        let routes = if removed.valid_until_ns == super::ra::INFINITE_DEADLINE
+            && removed.user_flags & crate::iface_addr::IFA_F_NOPREFIXROUTE == 0
+        {
+            self.cleanup_ipv6_prefix_route_rtnl(rtnl, ns, iface, addr, prefixlen)
+        } else { Ipv6PrefixRouteChange::default() };
+        Some(Ipv6AddrChange { row: removed, routes })
+    }
+
+    /// Reconcile the one shared, address-created route for a local prefix.
+    /// Static and router-advertisement routes are separate owners and are
+    /// never removed here. # Lk: matching stack RTNL held. # C: O(N)
+    fn install_ipv6_prefix_route_rtnl(&self, rtnl: &crate::RtnlGuard<'_>, ns: u64,
+        iface: NetIfaceId, addr: Ipv6Addr, prefixlen: u8, preserve_existing: bool)
+        -> Ipv6PrefixRouteChange
+    {
+        if self.ifaces.control_ready_in_ns(rtnl, iface, ns).is_none() {
+            return Ipv6PrefixRouteChange::default();
+        }
+        let prefix = super::ra::canonical_prefix(addr, prefixlen);
+        let existing = self.routes6.snapshot_in(ns).into_iter().find(|route| {
+            route.iface == iface && route.table == crate::policy_rule::RT_TABLE_MAIN
+                && route.prefix_len == prefixlen && route.dst == prefix
+                && route.origin.is_address_prefix()
+        });
+        let eligible = self.v6_addrs.lock().get(&iface).into_iter().flatten()
+            .filter(|row| row.prefixlen == prefixlen
+                && super::ra::canonical_prefix(row.addr, row.prefixlen) == prefix
+                && row.user_flags & crate::iface_addr::IFA_F_NOPREFIXROUTE == 0)
+            .cloned().collect::<Vec<_>>();
+        let replacement = eligible.first().map(|first| {
+            let selected = eligible.iter().find(|row| row.addr == addr).unwrap_or(first);
+            let metric = if preserve_existing {
+                existing.map(|route| route.origin.metric()).unwrap_or_else(|| {
+                    if selected.rt_priority == 0 { crate::route6::IP6_RT_PRIO_ADDRCONF }
+                    else { selected.rt_priority }
+                })
+            } else if selected.rt_priority == 0 { crate::route6::IP6_RT_PRIO_ADDRCONF }
+            else { selected.rt_priority };
+            Route6Entry { table: crate::policy_rule::RT_TABLE_MAIN, dst: prefix,
+                prefix_len: prefixlen, iface, gateway: None, src_hint: None,
+                origin: Route6Origin::AddressPrefix { metric,
+                    valid_until_ns: eligible.iter().map(|row| row.valid_until_ns).max().unwrap() } }
+        });
+        if existing == replacement { return Ipv6PrefixRouteChange::default(); }
+        let added = replacement.into_iter().collect::<Vec<_>>();
+        let removed = self.routes6.replace_in_changes(ns, |route| {
+            route.iface == iface && route.table == crate::policy_rule::RT_TABLE_MAIN
+                && route.prefix_len == prefixlen && route.dst == prefix
+                && route.origin.is_address_prefix()
+        }, added.clone());
+        Ipv6PrefixRouteChange { removed, added }
+    }
+
+    /// Apply the permanent-address prefix cleanup ladder after one row stops
+    /// owning its route. # Lk: matching stack RTNL held. # C: O(N)
+    fn cleanup_ipv6_prefix_route_rtnl(&self, rtnl: &crate::RtnlGuard<'_>, ns: u64,
+        iface: NetIfaceId, removed_addr: Ipv6Addr, prefixlen: u8) -> Ipv6PrefixRouteChange
+    {
+        if self.ifaces.control_ready_in_ns(rtnl, iface, ns).is_none() {
+            return Ipv6PrefixRouteChange::default();
+        }
+        let prefix = super::ra::canonical_prefix(removed_addr, prefixlen);
+        let existing = self.routes6.snapshot_in(ns).into_iter().find(|route| {
+            route.iface == iface && route.table == crate::policy_rule::RT_TABLE_MAIN
+                && route.prefix_len == prefixlen && route.dst == prefix
+                && route.origin.is_address_prefix()
+        });
+        let Some(existing) = existing else { return Ipv6PrefixRouteChange::default() };
+        let peers = self.v6_addrs.lock().get(&iface).into_iter().flatten().filter(|row| {
+            row.addr != removed_addr && row.prefixlen == prefixlen
+                && super::ra::canonical_prefix(row.addr, row.prefixlen) == prefix
+        }).cloned().collect::<Vec<_>>();
+        if peers.iter().any(|row| row.valid_until_ns == super::ra::INFINITE_DEADLINE
+            || row.user_flags & crate::iface_addr::IFA_F_NOPREFIXROUTE != 0)
+        {
+            return Ipv6PrefixRouteChange::default();
+        }
+        let replacement = peers.iter().map(|row| row.valid_until_ns).max().map(|deadline| {
+            let mut route = existing;
+            route.origin = Route6Origin::AddressPrefix {
+                metric: existing.origin.metric(), valid_until_ns: deadline };
+            route
+        });
+        if replacement == Some(existing) { return Ipv6PrefixRouteChange::default(); }
+        let added = replacement.into_iter().collect::<Vec<_>>();
+        let removed = self.routes6.replace_in_changes(ns, |route| *route == existing, added.clone());
+        Ipv6PrefixRouteChange { removed, added }
+    }
+
+    /// Stage route notifications caused by one address mutation. # C: O(1)
+    pub fn stage_ipv6_prefix_route_change_rtnl(&self, rtnl: &crate::RtnlGuard<'_>,
+        lease: &crate::netdev::IngressLease, change: Ipv6PrefixRouteChange) -> Vec<u64>
+    {
+        let mut tickets = Vec::new();
+        if let Some(ticket) = self.stage_route6(rtnl, lease, EventKind::Delete, change.removed) {
+            tickets.push(ticket);
+        }
+        if let Some(ticket) = self.stage_route6(rtnl, lease, EventKind::New, change.added) {
+            tickets.push(ticket);
+        }
+        tickets
     }
 
     /// Synchronize RFC 4941 children after a public address add or replace.
