@@ -66,8 +66,8 @@ failure mode this reconcile was supposed to catch, not commit.
 | COVERAGE | 0 | 0 | 11 | 68 | 66 | 145 |
 | DEFECT | 2 | 4 | 27 | 69 | 70 | 172 |
 | INFRA | 0 | 0 | 11 | 41 | 39 | 91 |
-| MISSING | 1 | 0 | 49 | 142 | 117 | 309 |
-| **Total** | **3** | **4** | **98** | **320** | **292** | **717** |
+| MISSING | 1 | 0 | 49 | 142 | 116 | 308 |
+| **Total** | **3** | **4** | **98** | **320** | **291** | **716** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -861,7 +861,6 @@ here now.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| OPEN | MISSING | low | ICMP-driven PMTU updates for raw and UDP endpoints still update unmarked (`stack_icmp.rs`, two call sites): those endpoint types carry no mark at all, unlike `TcpEntry`. Reference takes the mark from the originating socket when one is matched. | `update_pmtu_v4(..., UNMARKED)` at the raw4 and UDP branches | CLAIMED B2302-icmp-pmtu-socket-mark 2026-08-20 |
 | OPEN | MISSING | low | `SockBase::bound_ifindex` and `TcpBindReservation::bound_ifindex` are two atomics holding the same `sk_bound_dev_if` — a live mirror of the kind the mark work deliberately avoided. Noticed while choosing where the mark cell should live. | both fields written independently | unclaimed |
 
 ### B1982-missing-sched-proc-surface
