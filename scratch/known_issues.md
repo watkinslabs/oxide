@@ -64,10 +64,10 @@ failure mode this reconcile was supposed to catch, not commit.
 | Class | blocker | critical | high | med | low | Total |
 |---|---:|---:|---:|---:|---:|---:|
 | COVERAGE | 0 | 0 | 11 | 68 | 66 | 145 |
-| DEFECT | 2 | 4 | 26 | 69 | 67 | 168 |
+| DEFECT | 2 | 4 | 26 | 69 | 68 | 169 |
 | INFRA | 0 | 0 | 11 | 40 | 39 | 90 |
 | MISSING | 1 | 0 | 49 | 141 | 115 | 306 |
-| **Total** | **3** | **4** | **97** | **318** | **287** | **709** |
+| **Total** | **3** | **4** | **97** | **318** | **288** | **710** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -76,6 +76,7 @@ row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
+| IN-PROGRESS B2305 | DEFECT | low | **Healthy idle `khelper` and `kswapd0` threads are reported as hung after 120 seconds.** Both workers publish an uninterruptible sleep while waiting for ordinary queue work, so `khungtaskd` treats their expected idle state as a dead wait and the boot-smoke oracle kills and retries a healthy boot. Linux parks `kswapd` interruptibly, and its usermode-helper work runs through workers whose idle wait is not a hung-task candidate. | B2305. F1245 post-merge ARM smoke attempt 1 reported `khelper` at `umh/src/spawn/queue.rs:191` and `kswapd0` at `mm-pmm/src/kswapd.rs:48`, then attempt 2 passed in 54 s. Linux 7.2-rc4 `kswapd_try_to_sleep` uses `TASK_INTERRUPTIBLE`; both oxide sites use the uninterruptible wait-list path. | B2305-hungtask-idle-kthreads |
 | FIXED 4da622f28 | DEFECT | low | The IPv4 address-write path answered EINVAL for trailing bytes that cannot start an attribute; both address handlers now accept the trailing bytes under liberal attribute parsing. | `rtnetlink_tests::address_semantics::trailing_address_attribute_bytes_are_accepted` covers add and delete; `netlink/src/rtnetlink/addr_ops.rs::parse_newaddr_attrs` leaves an incomplete tail unconsumed. | 4da622f28 |
 | FIXED dec681e73 | MISSING | low | `RTM_NEWADDR`/`RTM_DELADDR` now select a handler by `(family, message type)`, with a family-agnostic fallback, before entering the IPv4 or IPv6 implementation. | `netlink/src/rtnetlink/dispatch.rs`; `lookup_is_keyed_by_family_and_message_type` has a family-key-removal positive control. | dec681e73 |
 | FIXED `67fe8241a` | MISSING | low | Optimistic DAD now follows Linux's per-namespace `all`/`default` and per-interface policy: new interfaces inherit defaults, enabled setters retain `IFA_F_OPTIMISTIC`, optimistic tentative addresses receive immediately, and `use_optimistic` controls source ranking. | `optimistic_dad_policy_keeps_the_tentative_address_live`, `use_optimistic_restores_preferred_source_ranking`, `ipv6_default_policy_is_snapshotted_at_interface_creation`, and `nodad_conflicts_only_with_an_enabled_optimistic_request`. | `67fe8241a` |
