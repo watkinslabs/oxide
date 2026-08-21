@@ -48,10 +48,9 @@ pub fn unlock_pi(uaddr: u64, private: bool) -> i64 {
                     if tbl[i].owner_tid != vpid { return e(Errno::Einval); }
                     let top = tbl[i].top_waiter().expect("checked above");
                     let newval = handoff_word(tbl[i].waiters[top].tid);
-                    // SAFETY: 4-aligned user word verified present+writable by
-                    // `read_word`; single naturally-aligned RMW under the
-                    // active address space.
-                    let curval = unsafe { cmpxchg_user_u32(uaddr, uval, newval) };
+                    let curval = match cmpxchg_user_u32(uaddr, uval, newval) {
+                        Ok(v) => v, Err(Errno::Eagain) => continue, Err(err) => return e(err),
+                    };
                     if curval != uval {
                         let err = handoff_race(uval, curval);
                         if err == Errno::Eagain { continue; }
@@ -83,8 +82,9 @@ pub fn unlock_pi(uaddr: u64, private: bool) -> i64 {
                     // No kernel waiter. Linux preserves NEITHER `FUTEX_WAITERS`
                     // nor `FUTEX_OWNER_DIED` here — we are the owner and the
                     // futex becomes plainly free.
-                    // SAFETY: same validated word as `read_word` above.
-                    let curval = unsafe { cmpxchg_user_u32(uaddr, uval, 0) };
+                    let curval = match cmpxchg_user_u32(uaddr, uval, 0) {
+                        Ok(v) => v, Err(Errno::Eagain) => continue, Err(err) => return e(err),
+                    };
                     if curval != uval { continue; }
                 }
             }

@@ -89,7 +89,7 @@ pub use mmu::{
     ENTRIES_PER_TABLE, L0_SHIFT, L1_SHIFT, L2_SHIFT, L3_SHIFT, PTE_PHYS_MASK,
 };
 pub use pt_regs::PtRegsAArch64;
-pub use uaccess::{raw_copy_from_user, raw_copy_to_user};
+pub use uaccess::{raw_cmpxchg_user_u32, raw_copy_from_user, raw_copy_to_user};
 
 /// IRQ gate: save DAIF, set the I (IRQ) bit. Restore DAIF on release.
 /// Per `06§3.1` we mask IRQ only — FIQ is not used in our model.

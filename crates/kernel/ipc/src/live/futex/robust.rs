@@ -1,6 +1,6 @@
-use super::core::{FUTEX_BITSET_MATCH_ANY, cmpxchg_user_u32, current_key, load_user_u32,
-                  user_addr_accessible, wake_key};
+use super::core::{FUTEX_BITSET_MATCH_ANY, cmpxchg_user_u32, current_key, load_user_u32, wake_key};
 use crate::robust_decode::{DeathAction, DeathSite, RobustPtr, death_verdict};
+use syscall::errno::Errno;
 
 /// Robust-futex bits. glibc stores the owner's TID in the low 30 bits of a
 /// robust mutex word; the kernel ORs OWNER_DIED on owner death.
@@ -133,14 +133,14 @@ fn handle_futex_death(futex_uaddr: u64, owner_tid: u32, pi: bool, site: DeathSit
         }
         // The new word keeps FUTEX_WAITERS as-is and ORs in OWNER_DIED.
         let mval = (uval & FUTEX_WAITERS) | FUTEX_OWNER_DIED;
-        if !user_addr_accessible(futex_uaddr, true) { return Err(()); }
         // A plain load-then-store would silently drop a concurrent userspace
         // unlock, so this must be a compare-and-swap that retries whenever
         // the observed value no longer matches `uval` — the word is live.
-        // SAFETY: page verified present+writable by user_addr_accessible; a
-        // single naturally-aligned RMW on the same 4-aligned user word under
-        // the active CR3/TTBR0.
-        let nval = unsafe { cmpxchg_user_u32(futex_uaddr, uval, mval) };
+        let nval = match cmpxchg_user_u32(futex_uaddr, uval, mval) {
+            Ok(v) => v,
+            Err(Errno::Eagain) => continue,
+            Err(_) => return Err(()),
+        };
         if nval == uval {
             // Wake robust non-PI futexes here; a PI futex's waiter wakeup
             // happens through the PI-state exit path instead — waking it here
