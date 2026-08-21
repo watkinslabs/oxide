@@ -55,6 +55,7 @@ pub(super) fn current_mm_cpumask_full() -> cpu::CpuMask {
 /// # C: O(1) on x86 (256-entry copy); O(1) on arm
 /// # Ctx: pre-init, IRQ-off, single-CPU
 pub unsafe fn init(hhdm_offset: u64) {
+    vmm::set_truncate_unmap_hook(super::unmap_truncated_file_range);
     if !GLOBAL_AS_PTR.load(Ordering::Acquire).is_null() {
         return;
     }

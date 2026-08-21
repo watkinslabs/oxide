@@ -104,6 +104,27 @@ impl AddressSpace {
         g.find_containing(va).cloned()
     }
 
+    /// Tear a leaf only while `va` still belongs to the named file page.
+    /// Caller holds the page-table lock before entering, preserving lock order.
+    /// # C: O(log N)
+    pub fn tear_file_page_if<F: FnOnce() -> bool>(
+        &self, va: UserVirtAddr, owner: &crate::FileRmap, page_index: u64, tear: F,
+    ) -> bool {
+        let tree = self.vmas.read();
+        let Some(vma) = tree.find_containing(va) else { return false; };
+        if !vma.file_rmap.as_ref().is_some_and(|known| core::ptr::eq(known.as_ref(), owner)) {
+            return false;
+        }
+        let index = match &vma.backing {
+            VmaBacking::File { off, .. } =>
+                (off + va.as_u64() - vma.start.as_u64()) / hal::PAGE_SIZE_BYTES,
+            _ => return false,
+        };
+        if index != page_index || !tear() { return false; }
+        self.accounting.remove_pte(vma);
+        true
+    }
+
     /// Visit the live VMA tree while retaining its read lock.  Fault
     /// diagnostics use this instead of allocating a snapshot from the fault
     /// path, where an allocation would perturb the failure being observed.
