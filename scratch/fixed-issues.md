@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2328-arm-exec-null-svc-frame
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 9682d02e7 | DEFECT | high | **aarch64 syscall entry now binds its live saved register frame to the task before process IRQs can schedule.** The exception assembly passes `sp` as an explicit dispatcher argument, matching Linux 7.2.0-rc4's `el0_svc(regs)` → `do_el0_svc(regs)` chain. Syscall code reads only the task-owned pointer across blocking and migration; the mutable per-CPU slot is no longer a fallback source of truth. This closes the race where IRQ enable preceded the old per-CPU read, a switch installed a fresh task's zero frame, and `execve` cleared address zero. | B2328. Before: ARM same-EL write abort `ESR=0x96000044`, `FAR=0`; exact ELF resolved to `memset` in `SvcFrame::install_exec_state` from `execve_inner`. Positive control reverses the production bind/enable sequencer and the hosted test fails exactly with `[enable, bind]` versus `[bind, enable]`; restored GREEN. Syscalls focused test, both target checks, 176 hosted checks, 176 isolated test builds, both all-feature checks, and paired frame/task-stack/exception-stack/IRQ-stack gates pass. Four independent post-fix ARM boots reached userspace first attempt with serial RX in 54, 55, 54, and 55 s; final paired smoke also passed x86_64 first attempt in 46 s. | B2328-arm-exec-null-svc-frame |
+
 ### B2326-devfs-directory-xattrs
 
 | Status | Class | Sev | Issue | Evidence | Owner |
