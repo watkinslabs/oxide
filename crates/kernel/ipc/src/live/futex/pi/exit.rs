@@ -2,10 +2,11 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use sched::Task;
+use syscall::errno::Errno;
 
 use crate::futex_pi_rules::{dead_owner_handoff_word, owner_died_word};
 
-use super::super::core::{cmpxchg_user_u32, load_user_u32, user_addr_accessible};
+use super::super::core::{cmpxchg_user_u32, load_user_u32};
 use super::state::{Grant, PI_TABLE, PiState, grant_and_wake, reboost};
 
 /// Linux `exit_pi_state_list` — run for every dying thread, from BOTH exit
@@ -47,10 +48,11 @@ pub fn exit_pi_state_list(owner_tid: u32) {
                     Some(top) => {
                         let next_tid = tbl[i].waiters[top].tid;
                         let newval = dead_owner_handoff_word(uval, next_tid);
-                        // SAFETY: word verified present+writable by
-                        // `read_word_for_exit`; single naturally-aligned RMW in
-                        // the dying task's still-live address space.
-                        unsafe { cmpxchg_user_u32(uaddr, uval, newval) };
+                        match cmpxchg_user_u32(uaddr, uval, newval) {
+                            Ok(_) => {}
+                            Err(Errno::Eagain) => continue,
+                            Err(_) => { drop_state(&mut tbl, i); continue; }
+                        }
                         let w = tbl[i].waiters.swap_remove(top);
                         tbl[i].owner = Some(w.task.clone());
                         tbl[i].owner_tid = w.tid;
@@ -63,11 +65,8 @@ pub fn exit_pi_state_list(owner_tid: u32) {
                         }
                     }
                     None => {
-                        // SAFETY: the same word `read_word_for_exit` just
-                        // proved in-range, 4-aligned and present+writable; a
-                        // single naturally-aligned RMW in the dying task's
-                        // still-active address space.
-                        unsafe { cmpxchg_user_u32(uaddr, uval, owner_died_word(uval)) };
+                        if cmpxchg_user_u32(uaddr, uval, owner_died_word(uval)) ==
+                            Err(Errno::Eagain) { continue; }
                         drop_state(&mut tbl, i);
                     }
                 },
@@ -84,12 +83,9 @@ pub fn exit_pi_state_list(owner_tid: u32) {
 /// Fault-safe read of the futex word during a thread's exit. The dying thread
 /// may be exiting BECAUSE its memory is bad, so an unmapped word aborts this
 /// entry rather than faulting the kernel on the exit path.
-/// # C: O(page-table depth)
+/// # C: O(page faults)
 fn read_word_for_exit(uaddr: u64) -> Option<u32> {
     if uaddr == 0 || uaddr >= hal::USER_VA_END || (uaddr & 0x3) != 0 { return None; }
-    // The probe gates the raw `cmpxchg_user_u32` that follows this read; the
-    // read itself recovers through the exception table.
-    if !user_addr_accessible(uaddr, true) { return None; }
     load_user_u32(uaddr).ok()
 }
 
