@@ -10,7 +10,7 @@
 //! in a bottom-half/IRQ context (Linux `in_interrupt()` guard, replacing the
 //! old per-CPU `IN_PROGRESS` bool).
 use crate::preempt::{
-    self, SOFTIRQ_DISABLE_OFFSET, SOFTIRQ_OFFSET,
+    self, SOFTIRQ_DISABLE_OFFSET, SOFTIRQ_LOCK_OFFSET, SOFTIRQ_OFFSET,
 };
 
 struct SchedHandlerAccounting;
@@ -66,6 +66,13 @@ pub fn local_bh_disable() {
     preempt::preempt_count_add(SOFTIRQ_DISABLE_OFFSET);
 }
 
+/// `spin_lock_bh` accounting: one BH-disable credit and one spinning-lock
+/// preemption credit in the canonical count. # C: O(1)
+#[inline]
+fn local_bh_disable_lock() {
+    preempt::preempt_count_add(SOFTIRQ_LOCK_OFFSET);
+}
+
 /// Whether this `local_bh_enable` may drain pending softirqs inline.
 ///
 /// Refused inside a hard-IRQ handler (the tail drains on return), and refused
@@ -115,6 +122,29 @@ pub unsafe fn local_bh_enable() {
     }
     if interrupt { return; }
     // SAFETY: caller asserted a safe schedule point.
+    unsafe { preempt::preempt_check_resched(); }
+}
+
+/// `spin_unlock_bh` accounting counterpart. The softirq drain remains
+/// protected by one serving-softirq credit; the final subtraction releases
+/// the lock's preemption credit and exposes the reschedule point. # C: O(1) + drain
+unsafe fn local_bh_enable_lock() {
+    debug_assert!(preempt::softirq_count() >= SOFTIRQ_DISABLE_OFFSET,
+        "local_bh_enable_lock without disable");
+    debug_assert!(preempt::preempt_count() & preempt::PREEMPT_MASK != 0,
+        "local_bh_enable_lock without lock credit");
+    let interrupt = preempt::hardirq_count() != 0;
+    if bh_enable_may_drain(interrupt, preempt::irqs_disabled(),
+        preempt::softirq_count() == SOFTIRQ_DISABLE_OFFSET, softirq::pending()) {
+        preempt::preempt_count_sub(SOFTIRQ_LOCK_OFFSET - SOFTIRQ_OFFSET);
+        // SAFETY: the retained serving-softirq credit excludes scheduling and re-entry.
+        unsafe { do_softirq_own_stack(); }
+        preempt::preempt_count_sub(SOFTIRQ_OFFSET);
+    } else {
+        preempt::preempt_count_sub(SOFTIRQ_LOCK_OFFSET);
+    }
+    if interrupt { return; }
+    // SAFETY: `LockBhGuard` released its lock before reaching this owner.
     unsafe { preempt::preempt_check_resched(); }
 }
 
@@ -212,10 +242,11 @@ pub struct SchedBh;
 
 impl sync::BhGate for SchedBh {
     /// # C: O(1)
-    unsafe fn disable() { local_bh_disable(); }
+    unsafe fn disable() { local_bh_disable_lock(); }
     fn check_enable() {
         #[cfg(feature = "debug-preempt")]
-        if preempt::softirq_count() < SOFTIRQ_DISABLE_OFFSET {
+        if preempt::softirq_count() < SOFTIRQ_DISABLE_OFFSET
+            || preempt::preempt_count() & preempt::PREEMPT_MASK == 0 {
             klog::write_raw(b"[PREEMPT-LEAK] lock_bh enable lost disable credit preempt_count=0x");
             klog::write_hex_u64(preempt::preempt_count() as u64);
             sync::preempt_gate::write_held_stack();
@@ -228,7 +259,7 @@ impl sync::BhGate for SchedBh {
     unsafe fn enable() {
         // SAFETY: pairs the disable() above via LockBhGuard::drop, which has
         // already released the lock — so a drain here cannot self-deadlock.
-        unsafe { local_bh_enable(); }
+        unsafe { local_bh_enable_lock(); }
     }
 }
 
@@ -405,6 +436,36 @@ mod tests {
             assert_eq!(preempt::softirq_count(), preempt::SOFTIRQ_DISABLE_OFFSET);
         }
         assert_eq!(preempt::preempt_count(), 0);
+    }
+
+    #[test]
+    fn spin_lock_bh_owns_both_accounting_credits() {
+        preempt::_test_reset();
+        preempt::install_spinlock_gate();
+        let lock = sync::Spinlock::<(), sync::Buddy>::new(());
+        {
+            let _guard = lock.lock_bh::<SchedBh>();
+            assert_eq!(preempt::preempt_count(), preempt::SOFTIRQ_LOCK_OFFSET);
+            assert_eq!(preempt::softirq_count(), preempt::SOFTIRQ_DISABLE_OFFSET);
+        }
+        assert_eq!(preempt::preempt_count(), 0);
+    }
+
+    #[test]
+    fn spin_unlock_bh_drains_with_only_the_serving_credit() {
+        static SEEN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+        fn handler() { SEEN.store(preempt::preempt_count(), core::sync::atomic::Ordering::Relaxed); }
+        let _state = own_softirq_state();
+        preempt::_test_reset();
+        softirq::set_handler(softirq::Slot::BlockIo, handler);
+        let lock = sync::Spinlock::<(), sync::Buddy>::new(());
+        {
+            let _guard = lock.lock_bh::<SchedBh>();
+            softirq::raise(softirq::Slot::BlockIo);
+        }
+        assert_eq!(SEEN.load(core::sync::atomic::Ordering::Relaxed), preempt::SOFTIRQ_OFFSET);
+        assert_eq!(preempt::preempt_count(), 0);
+        softirq::clear_handler(softirq::Slot::BlockIo);
     }
 
     #[test]
