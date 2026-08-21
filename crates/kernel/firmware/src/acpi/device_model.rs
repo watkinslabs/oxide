@@ -8,7 +8,7 @@
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 
 use super::aml_eval;
 
@@ -21,8 +21,17 @@ struct PowerResource {
     path: String,
     system_level: u8,
     order: u16,
-    refs: AtomicUsize,
-    state: AtomicU8,
+    owner: ResourceLock<ResourceState>,
+}
+
+struct ResourceState { refs: usize, state: u8 }
+
+type ResourceLock<T> = sched::live::Mutex<T>;
+
+fn resource_lock<T>(owner: &ResourceLock<T>) -> sched::live::MutexGuard<'_, T> {
+    // SAFETY: reconciliation is single-CPU boot work; later ACPI preparation
+    // runs in process context without a spinlock, and AML may itself sleep.
+    unsafe { owner.lock() }
 }
 
 struct WakeDevice {
@@ -89,7 +98,7 @@ fn build_registry(
     let resources: Vec<PowerResource> = resource_decls.into_iter().map(|decl| {
         let state = initial_state(&decl.path);
         PowerResource { path: decl.path, system_level: decl.system_level,
-            order: decl.order, refs: AtomicUsize::new(0), state: AtomicU8::new(state) }
+            order: decl.order, owner: ResourceLock::new(ResourceState { refs: 0, state }) }
     }).collect();
     let mut devices = Vec::new();
     for decl in device_decls {
@@ -139,37 +148,47 @@ pub(crate) fn activate_fixed_gpes(mut contains: impl FnMut(u8) -> bool) {
 
 fn reconcile_unused_resources(registry: &Registry) {
     for resource in &registry.resources {
-        if resource.refs.load(Ordering::Acquire) == 0
-            && resource.state.load(Ordering::Acquire) == RESOURCE_ON
-            && aml_eval::eval_no_args(&resource.path, "_OFF") {
-            resource.state.store(RESOURCE_OFF, Ordering::Release);
-        }
+        reconcile_resource(resource,
+            &mut |path| aml_eval::eval_no_args(path, "_OFF"));
     }
+}
+
+fn reconcile_resource(resource: &PowerResource,
+                      transition: &mut impl FnMut(&str) -> bool) {
+    let mut owner = resource_lock(&resource.owner);
+    if owner.refs != 0 || owner.state != RESOURCE_ON { return; }
+    owner.state = if transition(&resource.path) { RESOURCE_OFF } else { RESOURCE_UNKNOWN };
 }
 
 fn resource_on(resource: &PowerResource,
                transition: &mut impl FnMut(&str, bool) -> bool) -> bool {
-    if resource.refs.fetch_add(1, Ordering::AcqRel) != 0 { return true; }
-    if transition(&resource.path, true) {
-        resource.state.store(RESOURCE_ON, Ordering::Release);
+    let mut owner = resource_lock(&resource.owner);
+    if owner.refs != 0 {
+        owner.refs += 1;
         return true;
     }
-    resource.state.store(RESOURCE_UNKNOWN, Ordering::Release);
-    resource.refs.fetch_sub(1, Ordering::AcqRel);
+    owner.refs = 1;
+    if transition(&resource.path, true) {
+        owner.state = RESOURCE_ON;
+        return true;
+    }
+    owner.state = RESOURCE_UNKNOWN;
+    owner.refs = 0;
     false
 }
 
 fn resource_off(resource: &PowerResource,
                 transition: &mut impl FnMut(&str, bool) -> bool) -> bool {
-    let Ok(previous) = resource.refs.fetch_update(Ordering::AcqRel, Ordering::Acquire,
-        |count| (count != 0).then_some(count - 1)) else { return true; };
-    if previous > 1 { return true; }
+    let mut owner = resource_lock(&resource.owner);
+    if owner.refs == 0 { return true; }
+    owner.refs -= 1;
+    if owner.refs != 0 { return true; }
     if transition(&resource.path, false) {
-        resource.state.store(RESOURCE_OFF, Ordering::Release);
+        owner.state = RESOURCE_OFF;
         return true;
     }
-    resource.state.store(RESOURCE_UNKNOWN, Ordering::Release);
-    resource.refs.fetch_add(1, Ordering::AcqRel);
+    owner.state = RESOURCE_UNKNOWN;
+    owner.refs = 1;
     false
 }
 
