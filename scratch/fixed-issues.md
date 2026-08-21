@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2324-audit-count-test-modules
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED e7cbf53f0 | INFRA | med | **The scoped kernel-code audit now follows stacked `#[cfg(test)]` plus `#[path = "..."]` module declarations to their real file and child-module subtree.** Test-only files are classified from Rust's module graph rather than a filename convention, so netfilter's external expression tests no longer create eight false `panic!(fmt)` violations while ordinary production modules remain in scope. | B2324. `a_path_overridden_test_module_gates_its_real_file_and_subtree` covers the declaration file, overridden root file, descendants, and a production neighbor. Ignoring the path override makes it RED because the real test stem is absent; restored GREEN. All 35 spec-lint tests pass. `make audit-counts` now reports enforced `extern-std=0`, `panic-fmt=0`, `static-mut=0` while retaining the raw 124/211/10 counts. | B2324-audit-count-test-modules |
+
 ### B2319-filecred-lsm-slots
 
 | Status | Class | Sev | Issue | Evidence | Owner |
