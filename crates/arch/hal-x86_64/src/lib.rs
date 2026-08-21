@@ -106,7 +106,7 @@ pub use tss::io_bitmap::{
     tss_update_io_bitmap, IO_BITMAP_BITS, IO_BITMAP_BYTES, IO_BITMAP_LONGS,
     IO_BITMAP_OFFSET_INVALID, IO_BITMAP_OFFSET_VALID_ALL, IO_BITMAP_OFFSET_VALID_MAP,
 };
-pub use uaccess::{raw_copy_from_user, raw_copy_to_user};
+pub use uaccess::{raw_cmpxchg_user_u32, raw_copy_from_user, raw_copy_to_user};
 
 #[cfg(test)]
 mod tests;

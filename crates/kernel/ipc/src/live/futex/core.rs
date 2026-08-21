@@ -155,30 +155,6 @@ pub(crate) fn current_key(uaddr: u64, private: bool) -> Option<Key> {
     }
 }
 
-/// True iff user VA `va` resolves to a present page in the ACTIVE address
-/// space, and — when `need_write` — that page is user-writable, so a CPL=0
-/// load (or store) through `va` will NOT #PF. The robust-list exit walk
-/// (`robust::exit_robust_list`) uses this to stay fault-safe: it runs on the
-/// exit/fault path of a possibly-CRASHING task whose `robust_list_head` and
-/// mutex words may be corrupt or unmapped, and a raw `read_volatile` of an
-/// unmapped user VA there would #PF the kernel (→ double-fault/hang), a worse
-/// regression than a stranded waiter. Translates via the SAME arch MMU walk
-/// `current_key` uses for shared-futex keying (the active CR3/TTBR0). O(1) per
-/// node, no lock/alloc, IRQ/exit-context safe. Mirrors Linux `get_user`
-/// returning -EFAULT (the walk aborts) instead of faulting the kernel.
-/// # C: O(page-table depth)
-pub(super) fn user_addr_accessible(va: u64, need_write: bool) -> bool {
-    use hal::{MmuOps, PageFlags, Va};
-    #[cfg(target_arch = "x86_64")]
-    let r = hal_x86_64::mmu_ops::X86Mmu::translate(Va(va));
-    #[cfg(target_arch = "aarch64")]
-    let r = hal_aarch64::mmu_ops::ArmMmu::translate(Va(va));
-    match r {
-        Some((_, flags)) => !need_write || flags.contains(PageFlags::WRITE),
-        None => false,
-    }
-}
-
 /// Current monotonic ns, arch-dispatched (same clock `202_futex.rs` uses to
 /// compute the absolute deadline). `wait::dispatch_timed` uses this to decide
 /// whether a woken `FUTEX_WAIT`'s deadline has genuinely elapsed (`ETIMEDOUT`)
@@ -213,23 +189,11 @@ pub(super) fn store_user_u32(uaddr: u64, val: u32) -> Result<(), Errno> {
     crate::useraccess::write_u32(uaddr, val)
 }
 
-/// Atomically swap `new` into the user word if it still holds `old`,
-/// returning the value actually seen. Robust-list death cleanup needs this —
-/// a plain load-then-store silently drops a concurrent userspace unlock, so
-/// the caller must retry when the returned value differs from `old`.
-/// # SAFETY: caller validated `uaddr` is a 4-aligned, present, writable user
-/// word and that current's mm is the active CR3/TTBR0.
-/// # C: O(1)
-pub(super) unsafe fn cmpxchg_user_u32(uaddr: u64, old: u32, new: u32) -> u32 {
-    use core::sync::atomic::{AtomicU32, Ordering};
-    // SAFETY: caller guarantees a 4-aligned mapped writable user word under the
-    // active address space; AtomicU32 has the same layout as u32, and the
-    // access is a single naturally-aligned RMW.
-    let cell = unsafe { &*(uaddr as *const AtomicU32) };
-    match cell.compare_exchange(old, new, Ordering::SeqCst, Ordering::SeqCst) {
-        Ok(v) => v,
-        Err(v) => v,
-    }
+/// Atomically swap `new` into the user word if it still holds `old`, returning
+/// the value seen or EFAULT through the architecture exception table.
+/// # C: O(page faults)
+pub(super) fn cmpxchg_user_u32(uaddr: u64, old: u32, new: u32) -> Result<u32, Errno> {
+    crate::useraccess::cmpxchg_u32(uaddr, old, new)
 }
 
 /// Remove the waiter with `tid` from WAITERS; returns true if it was present

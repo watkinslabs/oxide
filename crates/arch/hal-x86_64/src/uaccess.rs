@@ -31,12 +31,30 @@ oxide_raw_copy_to_user:
     .long 4b - .
     .popsection
     .size oxide_raw_copy_to_user, . - oxide_raw_copy_to_user
+
+    .global oxide_raw_cmpxchg_user_u32
+    .type oxide_raw_cmpxchg_user_u32, @function
+oxide_raw_cmpxchg_user_u32:
+    mov eax, esi
+5:  lock cmpxchg dword ptr [rdi], edx
+    mov dword ptr [rcx], eax
+    xor eax, eax
+    ret
+6:  mov eax, 1
+    ret
+    .pushsection __ex_table,"a"
+    .balign 8
+    .long 5b - .
+    .long 6b - .
+    .popsection
+    .size oxide_raw_cmpxchg_user_u32, . - oxide_raw_cmpxchg_user_u32
 "#);
 
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 extern "C" {
     fn oxide_raw_copy_from_user(dst: *mut u8, src: *const u8, len: usize) -> usize;
     fn oxide_raw_copy_to_user(dst: *mut u8, src: *const u8, len: usize) -> usize;
+    fn oxide_raw_cmpxchg_user_u32(uaddr: *mut u32, old: u32, new: u32, seen: *mut u32) -> u32;
 }
 
 /// Copy from user and return bytes not copied. # C: O(len + page faults)
@@ -65,6 +83,27 @@ pub unsafe fn raw_copy_to_user(dst: *mut u8, src: *const u8, len: usize) -> usiz
     {
         // SAFETY: hosted caller supplies valid nonoverlapping spans.
         unsafe { core::ptr::copy_nonoverlapping(src, dst, len); }
+        0
+    }
+}
+
+/// Atomically replace a user word; 0 succeeds and 1 reports a fault. # C: O(page faults)
+pub unsafe fn raw_cmpxchg_user_u32(uaddr: *mut u32, old: u32, new: u32, seen: *mut u32) -> u32 {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    {
+        // SAFETY: caller supplies a user word and live output; asm recovers the faultable RMW through its extable entry.
+        unsafe { oxide_raw_cmpxchg_user_u32(uaddr, old, new, seen) }
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+    {
+        use core::sync::atomic::{AtomicU32, Ordering};
+        // SAFETY: hosted caller supplies a naturally aligned live AtomicU32-compatible word.
+        let cell = unsafe { &*(uaddr as *const AtomicU32) };
+        let value = match cell.compare_exchange(old, new, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(v) | Err(v) => v,
+        };
+        // SAFETY: caller supplies a live output word that does not alias the user word.
+        unsafe { seen.write(value); }
         0
     }
 }
