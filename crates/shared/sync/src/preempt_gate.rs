@@ -257,10 +257,10 @@ pub(crate) fn acquire(rank: u16) -> PreemptToken {
 
 /// Join the held-lock trace WITHOUT touching the count.
 ///
-/// A `lock_bh` acquisition raises only the softirq field — the reference's
-/// `spin_lock_bh` does the same, and adding a preempt level here would make
-/// this kernel's count disagree with it. But a diagnostic that cannot see the
-/// section is worse than useless: a sleep taken inside one reported `held=[]`
+/// A `lock_bh` acquisition's `BhGate` raises its combined BH-disable and
+/// spinning-lock credits. This helper joins only the diagnostic trace because
+/// that canonical gate already owns both accounting fields. A diagnostic that
+/// cannot see the section is worse than useless: a sleep taken inside one reported `held=[]`
 /// and named no lock at all, which is the report the boot wedge produces.
 /// The returned token carries no enable half, so its release pops the trace
 /// and nothing else.

@@ -349,8 +349,8 @@ impl IrqGate for NoopIrq {
 // ---------------------------------------------------------------------------
 
 pub trait BhGate: 'static {
-    /// Linux `local_bh_disable` — raise this CPU's softirq count so softirqs
-    /// cannot run here.
+    /// Enter `spin_lock_bh` accounting: raise this CPU's BH-disable field and
+    /// its spinning-lock preemption credit.
     /// # SAFETY: must pair 1:1 with `enable`; an unbalanced disable pins
     /// `in_interrupt()` true on this CPU and stops it rescheduling.
     /// # C: O(1)
@@ -358,8 +358,8 @@ pub trait BhGate: 'static {
     /// Diagnose the pair while the acquisition trace is still live.
     /// Production gates normally use this no-op default. # C: O(1)
     fn check_enable() {}
-    /// Linux `local_bh_enable` — drop the count and drain anything that became
-    /// pending while bottom halves were off.
+    /// Leave `spin_lock_bh` accounting and drain anything that became pending
+    /// while bottom halves were off.
     /// # SAFETY: must pair a prior `disable`, at a point where a softirq drain
     /// and a reschedule are legal (lock already released).
     /// # C: O(1) + drain
@@ -773,10 +773,8 @@ mod tests {
         assert_eq!(crate::preempt_gate::held_trace().1, outside, "and leave when it does");
     }
 
-    /// ...while changing NOTHING about the count. The reference's
-    /// `spin_lock_bh` raises only the softirq field; adding a preempt level
-    /// here would make this kernel's accounting disagree with it, and a
-    /// diagnostic must not move the state it observes.
+    /// ...while changing nothing beyond the canonical gate's own accounting.
+    /// The trace helper must not add another credit beside the gate.
     #[test]
     fn joining_the_trace_does_not_change_the_bottom_half_accounting() {
         BH_DEPTH.store(0, Ordering::Release);
