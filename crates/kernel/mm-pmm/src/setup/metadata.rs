@@ -314,7 +314,7 @@ pub fn page_index_for_pa(pa: u64) -> u32 {
 /// munmap, and address-space teardown.
 /// # SAFETY: same as `dec_and_maybe_free_frame`.
 /// # Ctx: process
-/// # Sleeps: yes
+/// # Sleeps: no
 /// # C: O(1)
 pub unsafe fn rmap_aware_dec_and_maybe_free(pa: u64) {
     const FINAL_PTE_MAPCOUNT: u32 = 1;
@@ -328,22 +328,27 @@ pub unsafe fn rmap_aware_dec_and_maybe_free(pa: u64) {
         unsafe { dec_and_maybe_free_frame(pa); }
         return;
     }
-    if !super::page_lock::lock_page(pa) { return; }
-    let is_final_mapping = page_meta()
-        .and_then(|meta| meta.mapcount(pfn))
-        == Some(FINAL_PTE_MAPCOUNT);
-    let detached = if is_final_mapping {
-        page_meta().map(|meta| super::rmap::take_final_rmap_locked(meta, pfn))
-    } else { None };
-    // SAFETY: caller has removed one PTE and the page lock serializes its
-    // mapcount transition with every other rmap-aware release.
-    unsafe { dec_and_maybe_free_frame(pa); }
-    let _ = super::page_lock::unlock_page(pa);
+    let (detached, zero) = {
+        let _owner = super::rmap::lock_owner(pfn);
+        let is_final_mapping = page_meta()
+            .and_then(|meta| meta.mapcount(pfn))
+            == Some(FINAL_PTE_MAPCOUNT);
+        let detached = if is_final_mapping {
+            page_meta().map(|meta| super::rmap::take_final_rmap_locked(meta, pfn))
+        } else { None };
+        // SAFETY: caller removed one PTE and the non-sleeping rmap owner lock
+        // serializes mapcount with every other owner transition.
+        let zero = unsafe { super::refs::dec_mapping_ref(pa, false) };
+        (detached, zero)
+    };
     if let Some(owner) = detached {
-        // SAFETY: the matching owner was detached under the page lock above;
+        // SAFETY: the matching owner was detached under the owner lock above;
         // release occurs only after that lock is visible as free.
         unsafe { super::rmap::release_detached(owner); }
     }
+    // SAFETY: `zero` is the result of the matching decrement above, and the
+    // owner lock is gone before the free path acquires Buddy/Reclaim locks.
+    unsafe { super::refs::finish_mapping_ref(pa, zero); }
 }
 
 /// Revoke single-mapper write reuse before a page is shared with swap.

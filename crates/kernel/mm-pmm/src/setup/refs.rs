@@ -222,7 +222,7 @@ pub unsafe fn repair_frame_counts(pa: u64, val: u32) {
 /// be reachable via any live PTE.
 /// # C: O(1) amortised
 #[track_caller]
-pub unsafe fn dec_and_maybe_free_frame(pa: u64) {
+pub(super) unsafe fn dec_mapping_ref(pa: u64, free: bool) -> bool {
     let pfn = hal::Pfn(pa / hal::PAGE_SIZE_BYTES);
     if let Some(meta) = page_meta() {
         #[cfg(feature = "debug-atexit")]
@@ -308,7 +308,7 @@ pub unsafe fn dec_and_maybe_free_frame(pa: u64) {
                     m.refcount.store(0, core::sync::atomic::Ordering::Release);
                     m.mapcount.store(0, core::sync::atomic::Ordering::Release);
                 }
-                return;
+                return false;
             }
             if new == 0 {
                 // DIAG (debug-watchdog): free-while-mapped RED-HANDED trap —
@@ -333,9 +333,9 @@ pub unsafe fn dec_and_maybe_free_frame(pa: u64) {
                 }
                 // SAFETY: refcount just reached 0; the single free-on-zero choke
                 // point enforces never-free-a-mapped-page + noreclaim/leak gates.
-                unsafe { release_frame_on_zero(pa); }
+                if free { unsafe { release_frame_on_zero(pa); } }
             }
-            return;
+            return new == 0;
         }
         // PageMeta is installed but this pfn has NO slot ⇒ it is OUTSIDE the
         // PMM-managed RAM range: device/MMIO memory mapped via
@@ -344,11 +344,31 @@ pub unsafe fn dec_and_maybe_free_frame(pa: u64) {
         // be returned to the buddy (Linux `vm_normal_page` returns NULL for
         // PFNMAP, so zap_pte_range never frees them). Freeing it would hand a
         // live device frame to the allocator → free-while-mapped aliasing.
-        return;
+        return false;
     }
     // Pre-init only (no PageMeta yet): the buddy isn't refcount-tracked, so a
     // direct free is the documented fallback. Post-init, the branch above
     // handles both in-range (dec) and out-of-range (skip) frames.
     // SAFETY: same as free_one_frame; caller assertion stands.
-    unsafe { free_one_frame(pa); }
+    if free { unsafe { free_one_frame(pa); } }
+    false
+}
+
+/// Finish a mapping-reference transition after its rmap owner lock is gone.
+/// This keeps Buddy/Reclaim acquisition outside the PageTable→AnonVma owner
+/// critical section while preserving one free-on-zero choke point.
+/// # SAFETY: `zero` came from `dec_mapping_ref(pa, false)` for this frame.
+/// # C: O(1) amortised
+pub(super) unsafe fn finish_mapping_ref(pa: u64, zero: bool) {
+    if zero {
+        // SAFETY: the matching decrement reached zero and the owner lock was
+        // released, so the canonical free path may acquire lower-rank locks.
+        unsafe { release_frame_on_zero(pa); }
+    }
+}
+
+#[track_caller]
+pub unsafe fn dec_and_maybe_free_frame(pa: u64) {
+    // SAFETY: forwards the public function's reference-ownership contract.
+    unsafe { let _ = dec_mapping_ref(pa, true); }
 }

@@ -101,6 +101,7 @@ pub mod rss;
 mod fault;
 mod fork;
 mod layout_state;
+mod lifecycle;
 mod mdwe;
 mod mempolicy;
 mod mmap_ops;
@@ -167,6 +168,12 @@ pub struct AddressSpace {
     /// reference aliasing. Zero means no teardown (boot-anchor AS,
     /// hosted tests).
     teardown: core::sync::atomic::AtomicU64,
+    /// Linux `mm_users`: task-owned uses, distinct from `Arc` structural pins
+    /// (`mm_count`). Last-user teardown is explicit and sleepable; the final
+    /// structural drop releases only the root page-table frame.
+    mm_users: core::sync::atomic::AtomicU32,
+    exit_mmap: core::sync::atomic::AtomicU64,
+    exit_done: core::sync::atomic::AtomicBool,
     /// Linux `mm_struct::exe_file` analogue. Captured at `execve`
     /// time as the path the user named, NOT the inode-canonical path.
     /// `/proc/<pid>/exe` readlinks to this. Threads sharing this mm
@@ -257,37 +264,6 @@ pub struct AddressSpace {
     ldt: crate::ldt::LdtState,
 }
 
-impl Drop for AddressSpace {
-    fn drop(&mut self) {
-        self.debug_lifetime_event(b"drop-enter");
-        // Remove this root from cross-mm discovery before the teardown hook
-        // can free its page-table frames. Existing snapshots hold an Arc and
-        // therefore cannot observe this final Drop.
-        unregister_live_address_space(self.root_pa);
-        #[cfg(feature = "debug-swap")]
-        {
-            let vma_count = self.vmas.read().len();
-            klog::write_raw(b"[AS-DROP] root=");
-            klog::write_hex_u64(self.root_pa);
-            klog::write_raw(b" cpumask=");
-            klog::write_hex_u64(self.cpumask.load(core::sync::atomic::Ordering::Acquire).low_word());
-            klog::write_raw(b" vmas=");
-            klog::write_dec_u64(vma_count as u64);
-            klog::write_raw(b"\n");
-        }
-        let raw = self.teardown.load(core::sync::atomic::Ordering::Acquire);
-        if raw != 0 {
-            // SAFETY: `set_teardown` installs `td` as an `unsafe extern "C" fn(u64)` cast through `as usize` to a u64; the inverse transmute restores the same fn-ptr, ABI guarantees match, and zero is checked above so we never transmute a null.
-            let td: unsafe extern "C" fn(u64) = unsafe {
-                core::mem::transmute(raw as usize)
-            };
-            // SAFETY: `td` accepts the AS's own `root_pa` per the installer contract; the AS is in its final Drop (Arc strong count hit zero) so the root is no longer active on any CPU and no concurrent walker remains.
-            unsafe { td(self.root_pa); }
-        }
-        accounting::unregister_page_table_owner(self.root_pa);
-    }
-}
-
 impl AddressSpace {
     /// Emit one ownership-transition record from the canonical mm object.
     /// The record adds no shadow registry: root, VMA count, and CPU residency
@@ -331,6 +307,9 @@ impl AddressSpace {
             brk:     core::sync::atomic::AtomicU64::new(0),
             brk_max: core::sync::atomic::AtomicU64::new(0),
             teardown: core::sync::atomic::AtomicU64::new(0),
+            mm_users: core::sync::atomic::AtomicU32::new(0),
+            exit_mmap: core::sync::atomic::AtomicU64::new(0),
+            exit_done: core::sync::atomic::AtomicBool::new(false),
             exe_path: Spinlock::new(None),
             mmap_base: core::sync::atomic::AtomicU64::new(0),
             mmap_topdown: core::sync::atomic::AtomicBool::new(true),
@@ -354,24 +333,6 @@ impl AddressSpace {
         register_live_address_space(root_pa, Arc::downgrade(&as_));
         as_.debug_lifetime_event(b"new");
         Ok(as_)
-    }
-
-    /// Install a teardown callback fired from `Drop` with this AS's
-    /// `root_pa`. The kernel passes its arch-specific walker that
-    /// recursively frees user-half PT levels + each leaf frame +
-    /// the root frame itself. Without this, every fork/exec leaks a
-    /// few KiB of page tables plus every demand-faulted user page.
-    ///
-    /// Idempotent: a second call replaces the prior callback. The
-    /// boot-anchor AS deliberately leaves it unset (its root is the
-    /// shared master kernel-half template; freeing would crash).
-    /// # C: O(1)
-    pub fn set_teardown(&self, td: unsafe extern "C" fn(u64)) {
-        // SAFETY: cast a function pointer to u64 for atomic storage.
-        // ABI guarantees fn-ptr fits in usize; usize fits in u64 on
-        // both arches we target.
-        let raw = (td as usize) as u64;
-        self.teardown.store(raw, core::sync::atomic::Ordering::Release);
     }
 
     /// Acquire this mm's page-table serialization lock. Callers must hold it

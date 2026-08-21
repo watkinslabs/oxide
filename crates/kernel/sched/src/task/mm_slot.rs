@@ -55,6 +55,7 @@ impl Task {
     /// to call on an actively-scheduled task from another CPU.
     /// # C: O(1)
     pub unsafe fn replace_mm(&self, new: Option<Arc<AddressSpace>>) {
+        let old_user = !self.kernel_thread.load(core::sync::atomic::Ordering::Acquire);
         // Owning a user address space is what makes a task a user-mode thread:
         // a helper started from the kernel that reaches `execve` stops being a
         // kernel thread at exactly this point, and from here on its exit
@@ -71,7 +72,7 @@ impl Task {
         // unchanged — caller is the running task on its own CPU (or holds the
         // runqueue invariant for it) with preempt off, so the mm slot has a
         // single mutator across the swap.
-        unsafe { self.replace_mm_inner(new, true); }
+        unsafe { self.replace_mm_inner(new, true, true, old_user); }
     }
 
     /// The same swap for an mm this task only BORROWED (a kernel thread
@@ -85,7 +86,7 @@ impl Task {
         // SAFETY: this fn is itself `unsafe` and forwards `replace_mm`'s
         // contract unchanged — caller is the running task on its own CPU with
         // preempt off, so the mm slot has a single mutator across the swap.
-        unsafe { self.replace_mm_inner(new, false); }
+        unsafe { self.replace_mm_inner(new, false, false, false); }
     }
 
     /// Swap the mm slot and hand the departing address space BACK to the
@@ -127,8 +128,12 @@ impl Task {
         old
     }
 
-    unsafe fn replace_mm_inner(&self, new: Option<Arc<AddressSpace>>, latch_rss: bool) {
+    unsafe fn replace_mm_inner(&self, new: Option<Arc<AddressSpace>>, latch_rss: bool,
+                               new_user: bool, old_user: bool) {
         self.debug_check_canary("replace_mm");
+        if new_user {
+            if let Some(mm) = new.as_ref() { mm.mmget(); }
+        }
         // SAFETY: forwards this fn's contract unchanged.
         let old = unsafe { self.swap_mm_slot(new) };
         // Everything below runs with the pin RELEASED, and everything below
@@ -145,10 +150,15 @@ impl Task {
         #[cfg(target_os = "oxide-kernel")]
         if let Some(m) = old {
             m.debug_lifetime_event(b"task-replace-mm-old");
-            crate::live::schedule::park_active_mm(m);
+            crate::live::schedule::park_active_mm(Arc::clone(&m));
+            if old_user { crate::live::zombies::reclaim::defer_mmput(m); }
+            else { drop(m); }
         }
         #[cfg(not(target_os = "oxide-kernel"))]
-        drop(old); // hosted: no live CR3 to protect
+        if let Some(m) = old {
+            if old_user { AddressSpace::mmput(m); }
+            else { drop(m); }
+        }
     }
 }
 
@@ -176,12 +186,14 @@ mod tests {
         unsafe { t.replace_mm(Some(old)); }
 
         let new = vmm::AddressSpace::new(0).expect("hosted address space");
+        new.mmget(); // direct swap bypasses replace_mm_inner's ownership step
         // SAFETY: hosted single-threaded test; `t` is not on any runqueue, so the
         // swap has no concurrent mm reader to race.
         let returned = unsafe { t.swap_mm_slot(Some(new)) };
         let returned = returned.expect("the swap must hand the old mm back, not drop it");
         assert!(Arc::ptr_eq(&returned, &keep), "a different address space came back");
         assert!(Arc::strong_count(&returned) >= 2, "the caller and this test both hold it");
+        AddressSpace::mmput(returned);
     }
 
     /// ...and the pin really is free by then, so the release cannot deadlock
@@ -195,12 +207,13 @@ mod tests {
         unsafe { t.replace_mm(Some(old)); }
 
         let new = vmm::AddressSpace::new(0).expect("hosted address space");
+        new.mmget(); // direct swap bypasses replace_mm_inner's ownership step
         // SAFETY: hosted single-threaded test; the only reference to `t`'s mm slot
         // is this thread, so nothing observes the departing mm mid-swap.
         let returned = unsafe { t.swap_mm_slot(Some(new)) };
         assert!(t.mm_pin_lock.try_lock().is_some(),
             "mm_pin_lock still held while the caller owns the departing mm");
-        drop(returned);
+        AddressSpace::mmput(returned.expect("departing mm"));
     }
 
     /// Replacing with the SAME address space keeps its registry membership and
@@ -212,10 +225,13 @@ mod tests {
         let mm = vmm::AddressSpace::new(0).expect("hosted address space");
         // SAFETY: hosted single-threaded test; this task is not scheduled.
         unsafe { t.replace_mm(Some(Arc::clone(&mm))); }
+        mm.mmget(); // direct swap bypasses replace_mm_inner's ownership step
         // SAFETY: hosted single-threaded test replacing the slot with the same mm;
         // `t` is unscheduled, so no concurrent reader can see the identity swap.
         let returned = unsafe { t.swap_mm_slot(Some(Arc::clone(&mm))) };
-        assert!(Arc::ptr_eq(&returned.expect("same mm handed back"), &mm));
+        let returned = returned.expect("same mm handed back");
+        assert!(Arc::ptr_eq(&returned, &mm));
         assert!(t.mm_pin_lock.try_lock().is_some());
+        AddressSpace::mmput(returned);
     }
 }

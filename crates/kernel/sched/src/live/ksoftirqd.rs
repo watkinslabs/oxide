@@ -26,6 +26,12 @@ fn this_cpu() -> usize {
     { 0 }
 }
 
+fn pending_work() -> bool {
+    softirq::pending()
+        || super::zombies::reclaim::pending() != 0
+        || super::zombies::reclaim::pending_mmput() != 0
+}
+
 /// Linux `run_ksoftirqd`: drain this CPU's softirqs while pending, yielding
 /// between passes so a flood stays preemptible (`cond_resched`), then park on
 /// THIS CPU's list until woken. `arg` is the CPU this thread is pinned to —
@@ -61,7 +67,7 @@ extern "C" fn ksoftirqd(arg: usize) -> ! {
         // fallback is needed to repair a missed wake.
         // SAFETY: running kthread in process context with no resource lock;
         // the predicate is lock-free and the generic loop owns the schedule.
-        let _ = unsafe { wait_event_interruptible(&WAIT[my_cpu], softirq::pending) };
+        let _ = unsafe { wait_event_interruptible(&WAIT[my_cpu], pending_work) };
     }
 }
 
@@ -74,6 +80,10 @@ fn wake() {
     let c = this_cpu();
     if c < MAX_CPUS { WAIT[c].wake_one(); }
 }
+
+/// Wake this CPU's process-context drainer for non-softirq deferred teardown.
+/// # C: O(1)
+pub(super) fn wake_current() { wake(); }
 
 /// Lock-free publication kick: interrupt this CPU so IRQ tail transfers the
 /// global process-only bit to ksoftirqd through the IRQ-save wait-list path.

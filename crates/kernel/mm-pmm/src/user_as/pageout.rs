@@ -67,8 +67,8 @@ fn reclaim_isolated_anon_page(isolated: crate::reclaim::Isolation) -> bool {
     crate::kassert!(crate::setup::release_isolated_lru(isolated).is_ok(), "reclaim release lru invariant");
     let _ = crate::setup::unlock_page(pa);
     // The source PTEs are all non-present before their physical references
-    // are released. `rmap_aware_dec...` takes the page lock itself, hence it
-    // must run only after the transaction's lock has been dropped.
+    // are released. `rmap_aware_dec...` owns the transition through its
+    // non-sleeping anon-vma gate and runs after the I/O page lock is dropped.
     for _ in NO_RECLAIMED_MAPPINGS..reclaimed {
         // SAFETY: one exact source PTE was replaced by a swap PTE per loop.
         unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa); }
