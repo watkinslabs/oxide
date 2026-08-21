@@ -7,7 +7,7 @@ use syscall::errno::Errno;
 
 use crate::futex_pi_rules::{OwnerLookup, PiLockStep, attach_owner_result, lock_pi_step};
 
-use super::super::core::{Key, cmpxchg_user_u32, current_key, load_user_u32, user_addr_accessible};
+use super::super::core::{Key, cmpxchg_user_u32, current_key, load_user_u32};
 use super::state::{Grant, PI_TABLE, PiState, PiWaiter, find, reboost};
 
 fn e(err: Errno) -> i64 { -(err.as_i32() as i64) }
@@ -36,16 +36,9 @@ fn classify_owner(tid: u32) -> (OwnerLookup, Option<Arc<Task>>) {
     (OwnerLookup::Alive, Some(t))
 }
 
-/// Read the futex word without faulting the kernel on an unmapped page.
-///
-/// The writability probe stays: every caller follows this read with the raw
-/// `cmpxchg_user_u32` RMW, which has no exception-table fixup of its own, so a
-/// read-only or absent page must be refused before the word is touched. The
-/// read itself goes through the exception table, so it recovers even when the
-/// mapping disappears between the probe and the load.
-/// # C: O(page-table depth)
+/// Read the futex word through the fault-recovering user-access owner.
+/// # C: O(page faults)
 pub(super) fn read_word(uaddr: u64) -> Result<u32, Errno> {
-    if !user_addr_accessible(uaddr, true) { return Err(Errno::Efault); }
     load_user_u32(uaddr)
 }
 
@@ -84,15 +77,17 @@ pub fn lock_pi(uaddr: u64, private: bool, deadline_ns: u64, trylock: bool) -> i6
             };
             match step {
                 PiLockStep::TakeUncontended { newval } => {
-                    // SAFETY: 4-aligned user word verified present+writable by
-                    // `read_word`; single naturally-aligned RMW under the
-                    // active address space.
-                    if unsafe { cmpxchg_user_u32(uaddr, uval, newval) } != uval { continue; }
+                    let seen = match cmpxchg_user_u32(uaddr, uval, newval) {
+                        Ok(v) => v, Err(Errno::Eagain) => continue, Err(err) => return e(err),
+                    };
+                    if seen != uval { continue; }
                     return 0;
                 }
                 PiLockStep::PublishWaitersThenAttach { newval, owner_tid } => {
-                    // SAFETY: same validated word as `read_word` above.
-                    if unsafe { cmpxchg_user_u32(uaddr, uval, newval) } != uval { continue; }
+                    let seen = match cmpxchg_user_u32(uaddr, uval, newval) {
+                        Ok(v) => v, Err(Errno::Eagain) => continue, Err(err) => return e(err),
+                    };
+                    if seen != uval { continue; }
                     let (lookup, owner) = classify_owner(owner_tid);
                     if let Err(err) = attach_owner_result(lookup, read_word(uaddr).ok() != Some(newval)) {
                         // The word keeps FUTEX_WAITERS: harmless, and Linux

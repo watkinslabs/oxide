@@ -105,12 +105,14 @@ pub fn cmp_requeue_pi(uaddr1: u64, uaddr2: u64, nr_wake: i64, nr_requeue: i64, c
             if let Ok(PiLockStep::TakeUncontended { newval }) =
                 lock_pi_step(uval2, wtid, have2, true)
             {
-                // SAFETY: 4-aligned user word verified present+writable by
-                // `read_word`; single naturally-aligned RMW under the active AS.
-                if unsafe { cmpxchg_user_u32(uaddr2, uval2, newval) } == uval2 {
-                    let w = tbl[src].waiters.swap_remove(top);
-                    grant_and_wake(&w, Grant::Owner);
-                    woken = 1;
+                match cmpxchg_user_u32(uaddr2, uval2, newval) {
+                    Err(err) => return e(err),
+                    Ok(seen) if seen == uval2 => {
+                        let w = tbl[src].waiters.swap_remove(top);
+                        grant_and_wake(&w, Grant::Owner);
+                        woken = 1;
+                    }
+                    Ok(_) => {}
                 }
             }
         }

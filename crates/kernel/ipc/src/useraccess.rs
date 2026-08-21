@@ -26,6 +26,12 @@ pub fn write_u32(uptr: u64, v: u32) -> Result<(), Errno> {
     uaccess::copy_to_user(uptr, &v.to_ne_bytes())
 }
 
+/// Atomically replace a user word if it equals `old`, returning the word seen.
+/// # C: O(page faults)
+pub fn cmpxchg_u32(uptr: u64, old: u32, new: u32) -> Result<u32, Errno> {
+    uaccess::cmpxchg_user_u32(uptr, old, new)
+}
+
 /// # C: O(1)
 pub fn read_i32(uptr: u64) -> Result<i32, Errno> {
     read_u32(uptr).map(|v| v as i32)

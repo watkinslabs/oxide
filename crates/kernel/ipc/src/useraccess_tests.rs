@@ -18,6 +18,9 @@ fn the_scalar_helpers_round_trip_through_a_real_buffer() {
     write_u32(p, 0xdead_beef).expect("u32 out");
     assert_eq!(read_u32(p), Ok(0xdead_beef));
     assert_eq!(read_i32(p), Ok(0xdead_beefu32 as i32));
+    assert_eq!(cmpxchg_u32(p, 0, 1), Ok(0xdead_beef));
+    assert_eq!(cmpxchg_u32(p, 0xdead_beef, 1), Ok(0xdead_beef));
+    assert_eq!(read_u32(p), Ok(1));
 }
 
 #[test]
@@ -59,6 +62,7 @@ fn an_address_the_copy_cannot_reach_is_efault_every_way_round() {
     assert_eq!(read_timespec(KERNEL_SIDE), Err(Errno::Efault));
     assert_eq!(write_i64(KERNEL_SIDE, 0), Err(Errno::Efault));
     assert_eq!(write_u32(KERNEL_SIDE, 0), Err(Errno::Efault));
+    assert_eq!(cmpxchg_u32(KERNEL_SIDE, 0, 1), Err(Errno::Efault));
     assert_eq!(read_bytes(KERNEL_SIDE, &mut one), Err(Errno::Efault));
     assert_eq!(write_bytes(KERNEL_SIDE, &[0u8]), Err(Errno::Efault));
 }
@@ -74,6 +78,7 @@ fn a_null_pointer_is_efault_rather_than_a_dereference_of_zero() {
     assert_eq!(read_timespec(0), Err(Errno::Efault));
     assert_eq!(write_i64(0, 0), Err(Errno::Efault));
     assert_eq!(write_u32(0, 0), Err(Errno::Efault));
+    assert_eq!(cmpxchg_u32(0, 0, 1), Err(Errno::Efault));
     assert_eq!(read_bytes(0, &mut one), Err(Errno::Efault));
     assert_eq!(write_bytes(0, &[0u8]), Err(Errno::Efault));
 }
