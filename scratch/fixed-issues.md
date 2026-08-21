@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2319-filecred-lsm-slots
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 2fef7bfc3 | DEFECT | high | **Each active security module now owns an independent typed slot in `FileCred` instead of competing for one overwriteable object.** The VFS retains one composite map keyed by each module's private blob type; attaching or clearing one blob cannot replace another module's state. This follows Linux 7.2.0-rc4's single composite file-security allocation with one registered offset per LSM, while retaining Rust type-safe recovery. | B2319. `security_modules_keep_independent_file_slots` attaches two distinct module blobs and retrieves both; restoring the former overwrite behavior makes it fail because the first slot disappears, then restored code passes. `clearing_one_security_slot_preserves_the_others` proves a module-local clear leaves its peer intact. | B2319-filecred-lsm-slots |
+
 ### B2312-acpi-power-resource-lock
 
 | Status | Class | Sev | Issue | Evidence | Owner |
