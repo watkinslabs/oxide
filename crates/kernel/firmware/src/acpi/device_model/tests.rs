@@ -12,6 +12,12 @@ fn device(path: &str, resources: &[&str]) -> aml_eval::PrwDevice {
         power_resources: resources.iter().map(|path| String::from(*path)).collect() }
 }
 
+fn named_device(path: &str, gpe_device: &str) -> aml_eval::PrwDevice {
+    let mut device = device(path, &[]);
+    device.gpe_device = Some(String::from(gpe_device));
+    device
+}
+
 #[test]
 fn devices_reference_one_canonical_power_resource_owner() {
     let registry = build_registry(vec![resource("\\PR00", 4, 9)],
@@ -38,6 +44,21 @@ fn an_unresolved_power_resource_invalidates_the_prw_owner() {
     let registry = build_registry(Vec::new(), vec![device("\\DEV0", &["\\MISSING"])],
         |_| RESOURCE_UNKNOWN);
     assert!(registry.devices.is_empty());
+}
+
+#[test]
+fn a_named_gpe_device_never_aliases_the_fixed_fadt_blocks() {
+    let registry = build_registry(Vec::new(), vec![device("\\FIX0", &[]),
+        named_device("\\NAM0", "\\GPD0")], |_| RESOURCE_UNKNOWN);
+    let controlled = RefCell::new(Vec::new());
+    activate_fixed(&registry, &mut |gpe| gpe == 7, &mut |device| {
+        controlled.borrow_mut().push(device.path.clone());
+        true
+    });
+    assert!(registry.devices[0].valid.load(Ordering::Acquire));
+    assert!(!registry.devices[1].valid.load(Ordering::Acquire),
+        "a named block remains invalid until its hardware-owning driver installs it");
+    assert_eq!(*controlled.borrow(), vec![String::from("\\FIX0")]);
 }
 
 #[test]
