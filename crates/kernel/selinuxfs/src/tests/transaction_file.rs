@@ -27,6 +27,10 @@ const INIT_SUBJECT: &str = "system_u:system_r:kernel_t:s0";
 const INIT_EXEC: &str = "system_u:object_r:init_exec_t:s0";
 /// Context the policy says that pairing produces.
 const INIT_LABEL: &str = "system_u:system_r:init_t:s0";
+/// Context of the display-manager process that opens the PAM session.
+const GDM_SUBJECT: &str = "system_u:system_r:xdm_t:s0";
+/// Context the distribution assigns to numbered virtual terminals.
+const TTY_LABEL: &str = "system_u:object_r:tty_device_t:s0";
 
 /// One open description on a transaction node, as userspace opens it.
 fn description(kind: TxKind) -> Arc<File> {
@@ -122,6 +126,20 @@ fn the_create_node_answers_a_pairing_no_rule_names() {
     let request = alloc::format!("{INIT_SUBJECT} {INIT_SUBJECT} {class}");
     let answer = ask(TxKind::Create, request.as_bytes());
     assert_eq!(answer, INIT_SUBJECT);
+}
+
+#[test]
+fn the_relabel_node_answers_the_context_pam_selinux_sets_on_a_tty() {
+    if !live_policy() { return }
+    // pam_selinux gets the tty's current context, writes it with the process
+    // context and the chr_file class to `relabel`, then hands this answer to
+    // setfilecon. These are the Fedora policy's xdm and `/dev/ttyN` labels.
+    let class = published_class("chr_file");
+    let request = alloc::format!("{GDM_SUBJECT} {TTY_LABEL} {class}");
+    let answer = ask(TxKind::Relabel, request.as_bytes());
+    assert!(!answer.is_empty(),
+            "an empty relabel answer is what pam_selinux hands to setfilecon");
+    assert_eq!(answer, TTY_LABEL);
 }
 
 #[test]

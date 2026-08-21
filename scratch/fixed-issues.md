@@ -6,6 +6,12 @@
 |---|---|---|---|---|---|
 | FIXED 2fef7bfc3 | DEFECT | high | **Each active security module now owns an independent typed slot in `FileCred` instead of competing for one overwriteable object.** The VFS retains one composite map keyed by each module's private blob type; attaching or clearing one blob cannot replace another module's state. This follows Linux 7.2.0-rc4's single composite file-security allocation with one registered offset per LSM, while retaining Rust type-safe recovery. | B2319. `security_modules_keep_independent_file_slots` attaches two distinct module blobs and retrieves both; restoring the former overwrite behavior makes it fail because the first slot disappears, then restored code passes. `clearing_one_security_slot_preserves_the_others` proves a module-local clear leaves its peer intact. | B2319-filecred-lsm-slots |
 
+### B2315-pam-selinux-relabel-context
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED e1024cac2 | DEFECT | high | **`pam_selinux`'s empty tty context was the already-fixed B2263 SELinux `relabel` transaction cursor defect, not an empty inode label.** The module first reads the tty label into `prev_tty_context`, then writes the process label, that tty label and the `chr_file` class to `/sys/fs/selinux/relabel`; the string it later hands to `setfilecon` and prints as `""` is the transaction's computed `tty_context`. Before B2263, every transaction write advanced the same open description's cursor past its staged answer, so the immediate read returned zero bytes. B2263 made SELinux transaction writes leave that cursor at zero, matching Linux 7.2-rc4's `selinux_transaction_write` plus `simple_transaction_read`. | B2315 re-read the Linux-PAM call chain and Linux 7.2-rc4 transaction implementation, then added `the_relabel_node_answers_the_context_pam_selinux_sets_on_a_tty` at 39e92e37f. The test drives one real VFS description and the Fedora policy's real `xdm_t`, `tty_device_t` and `chr_file` values; it answers `system_u:object_r:tty_device_t:s0`. **Positive control:** restoring the pre-B2263 cursor advance makes it RED with exactly `an empty relabel answer is what pam_selinux hands to setfilecon`; restored GREEN. This is the same mechanism the existing B2263 fixed row already names for `relabel` and `setfilecon("")`; the later B2257 OPEN row duplicated it with an incorrect `getfilecon` theory. | B2315-pam-selinux-relabel-context |
+
 ### B2307-acpi-gpe-wake-sources
 
 | Status | Class | Sev | Issue | Evidence | Owner |
