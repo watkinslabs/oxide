@@ -77,6 +77,7 @@ impl PseudoDir {
             // a fresh default that would silently undo a mount option.
             attr: Spinlock::new(*self.attr.lock()),
             dir_iops: Arc::clone(&self.dir_iops),
+            dir_xattrs: self.dir_xattrs,
         })
     }
 }
