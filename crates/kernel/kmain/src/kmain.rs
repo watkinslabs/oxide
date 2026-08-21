@@ -79,6 +79,8 @@ mod kmain {
     // sequence (`32a§5`, `32a§7`).
     #[cfg(target_os = "oxide-kernel")]
     pub mod suspend_wiring;
+    #[cfg(target_os = "oxide-kernel")]
+    pub mod hibernate_wiring;
     #[cfg(test)]
     pub mod tests;
 }

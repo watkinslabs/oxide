@@ -19,6 +19,7 @@ use super::freezer::{self, FreezeOutcome, FreezePhase, TaskFreezeFacts};
 /// Read `task`'s freeze-relevant facts. # C: O(1)
 pub fn facts_of(task: &Task) -> TaskFreezeFacts {
     TaskFreezeFacts {
+        reaped: task.reaped.load(Ordering::Acquire),
         kernel_thread: task.kernel_thread.load(Ordering::Acquire),
         nofreeze: task.nofreeze.load(Ordering::Acquire),
         suspend_task: task.suspend_task.load(Ordering::Acquire),
@@ -33,25 +34,47 @@ pub fn facts_of(task: &Task) -> TaskFreezeFacts {
 /// the attempt rather than the result would declare the pass done with tasks
 /// still running.
 /// # C: O(N_tasks)
-fn round(phase: FreezePhase) -> u32 {
+fn round(phase: FreezePhase, number: u64) -> u32 {
+    trace_round_begin(number);
+    let mut traced = 0u32;
     for task in sched::registry::snapshot() {
-        if !freezer::freezing(phase, facts_of(&task)) { continue; }
+        if !request_needed(phase, facts_of(&task)) { continue; }
+        trace_task(number, traced, &task, false);
         // Retain the sleep reason even when another freezer already has the
         // task parked, so a concurrent cgroup thaw cannot resume it mid-sleep.
         sched::live::freeze_task_for(&task, freeze_reason::SLEEP);
+        trace_task(number, traced, &task, true);
+        traced = traced.saturating_add(1);
     }
-    sched::registry::snapshot().iter()
+    let outstanding = sched::registry::snapshot().iter()
         .filter(|t| freezer::counts_outstanding(phase, facts_of(t)))
-        .count() as u32
+        .count() as u32;
+    #[cfg(feature = "debug-hibernate")]
+    if number == FREEZER_LATE_DETAIL_ROUND {
+        let mut detailed = 0u32;
+        for task in sched::registry::snapshot() {
+            if !freezer::counts_outstanding(phase, facts_of(&task)) { continue; }
+            trace_outstanding(&task, detailed);
+            detailed = detailed.saturating_add(1);
+        }
+    }
+    trace_round_end(number, outstanding);
+    outstanding
+}
+
+fn request_needed(phase: FreezePhase, facts: TaskFreezeFacts) -> bool {
+    freezer::counts_outstanding(phase, facts)
 }
 
 fn run_pass(phase: FreezePhase, now_ms: fn() -> u64) -> KResult<()> {
     freezer::set_phase(phase);
     let start = now_ms();
     let mut sleep_us = freezer::FREEZE_SLEEP_MIN_US;
+    let mut number = 1u64;
     loop {
-        let outstanding = round(phase);
+        let outstanding = round(phase, number);
         let elapsed = now_ms().saturating_sub(start);
+        trace_decision(number, outstanding, elapsed);
         match freezer::round_decision(outstanding, elapsed, super::wakeup::pm_wakeup_pending()) {
             Some(FreezeOutcome::Done) => return Ok(()),
             Some(outcome) => {
@@ -60,10 +83,126 @@ fn run_pass(phase: FreezePhase, now_ms: fn() -> u64) -> KResult<()> {
                 // EBUSY; the distinction is in the log, not the errno.
                 return Err(Error::Busy);
             }
-            None => { back_off(sleep_us); sleep_us = freezer::next_sleep_us(sleep_us); }
+            None => {
+                trace_backoff(number, sleep_us, false);
+                back_off(sleep_us);
+                trace_backoff(number, sleep_us, true);
+                sleep_us = freezer::next_sleep_us(sleep_us);
+                number = number.saturating_add(1);
+            }
         }
     }
 }
+
+#[cfg(feature = "debug-hibernate")]
+fn traced_round(number: u64) -> bool { number == 1 || number % FREEZER_TRACE_ROUNDS == 0 }
+
+#[cfg(feature = "debug-hibernate")]
+const FREEZER_TRACE_ROUNDS: u64 = 128;
+
+#[cfg(feature = "debug-hibernate")]
+const FREEZER_TRACE_TASKS: u32 = 64;
+
+#[cfg(feature = "debug-hibernate")]
+const FREEZER_LATE_DETAIL_ROUND: u64 = 128;
+
+#[cfg(feature = "debug-hibernate")]
+fn trace_round_begin(number: u64) {
+    if !traced_round(number) { return; }
+    klog::write_raw(b"[hibernate] freezer round="); klog::write_dec_u64(number);
+    klog::write_raw(b" begin\n");
+}
+
+#[cfg(not(feature = "debug-hibernate"))]
+#[inline(always)]
+fn trace_round_begin(_: u64) {}
+
+#[cfg(feature = "debug-hibernate")]
+fn trace_task(number: u64, ordinal: u32, task: &Task, after: bool) {
+    if number != 1 || ordinal >= FREEZER_TRACE_TASKS { return; }
+    let facts = facts_of(task);
+    klog::write_raw(b"[hibernate] freezer task="); klog::write_dec_u64(task.tid as u64);
+    klog::write_raw(if after { b" after" } else { b" before" });
+    klog::write_raw(b" state="); klog::write_raw(&[task.state().linux_char()]);
+    klog::write_raw(b" reaped="); klog::write_dec_u64(facts.reaped as u64);
+    klog::write_raw(b" kernel="); klog::write_dec_u64(facts.kernel_thread as u64);
+    klog::write_raw(b" nofreeze="); klog::write_dec_u64(facts.nofreeze as u64);
+    klog::write_raw(b" suspend="); klog::write_dec_u64(facts.suspend_task as u64);
+    klog::write_raw(b" frozen="); klog::write_dec_u64(facts.frozen as u64);
+    klog::write_raw(b" reasons=");
+    klog::write_dec_u64(task.freeze_reasons.load(Ordering::Acquire) as u64);
+    klog::write_raw(b"\n");
+}
+
+#[cfg(not(feature = "debug-hibernate"))]
+#[inline(always)]
+fn trace_task(_: u64, _: u32, _: &Task, _: bool) {}
+
+#[cfg(feature = "debug-hibernate")]
+fn trace_outstanding(task: &Task, ordinal: u32) {
+    if ordinal >= FREEZER_TRACE_TASKS { return; }
+    let facts = facts_of(task);
+    let comm = task.comm_bytes();
+    klog::write_raw(b"[hibernate] freezer outstanding tid=");
+    klog::write_dec_u64(task.tid as u64);
+    klog::write_raw(b" comm="); klog::write_raw(Task::comm_trim(&comm).as_bytes());
+    klog::write_raw(b" state="); klog::write_raw(&[task.state().linux_char()]);
+    klog::write_raw(b" reaped="); klog::write_dec_u64(facts.reaped as u64);
+    klog::write_raw(b" exiting=");
+    klog::write_dec_u64(task.exiting.load(Ordering::Acquire) as u64);
+    klog::write_raw(b" frozen="); klog::write_dec_u64(facts.frozen as u64);
+    klog::write_raw(b" reasons=");
+    klog::write_dec_u64(task.freeze_reasons.load(Ordering::Acquire) as u64);
+    klog::write_raw(b" cpu="); klog::write_dec_u64(task.cpu.load(Ordering::Acquire) as u64);
+    klog::write_raw(b" on_cpu=");
+    klog::write_dec_u64(task.on_cpu.load(Ordering::Acquire) as u64);
+    klog::write_raw(b" on_rq=");
+    klog::write_dec_u64(task.on_rq.load(Ordering::Acquire) as u64);
+    klog::write_raw(b" on_wake=");
+    klog::write_dec_u64(task.on_wake_list.load(Ordering::Acquire) as u64);
+    klog::write_raw(b" last_syscall=");
+    klog::write_dec_u64(task.last_syscall_nr.load(Ordering::Acquire) as u64);
+    klog::write_raw(b" nsyscalls=");
+    klog::write_dec_u64(task.nsyscalls.load(Ordering::Acquire));
+    klog::write_raw(b"\n");
+}
+
+#[cfg(feature = "debug-hibernate")]
+fn trace_round_end(number: u64, outstanding: u32) {
+    if !traced_round(number) { return; }
+    klog::write_raw(b"[hibernate] freezer round="); klog::write_dec_u64(number);
+    klog::write_raw(b" end outstanding="); klog::write_dec_u64(outstanding as u64);
+    klog::write_raw(b"\n");
+}
+
+#[cfg(not(feature = "debug-hibernate"))]
+#[inline(always)]
+fn trace_round_end(_: u64, _: u32) {}
+
+#[cfg(feature = "debug-hibernate")]
+fn trace_decision(number: u64, outstanding: u32, elapsed_ms: u64) {
+    if !traced_round(number) { return; }
+    klog::write_raw(b"[hibernate] freezer round="); klog::write_dec_u64(number);
+    klog::write_raw(b" outstanding="); klog::write_dec_u64(outstanding as u64);
+    klog::write_raw(b" elapsed_ms="); klog::write_dec_u64(elapsed_ms);
+    klog::write_raw(b"\n");
+}
+
+#[cfg(not(feature = "debug-hibernate"))]
+#[inline(always)]
+fn trace_decision(_: u64, _: u32, _: u64) {}
+
+#[cfg(feature = "debug-hibernate")]
+fn trace_backoff(number: u64, sleep_us: u64, after: bool) {
+    if !traced_round(number) { return; }
+    klog::write_raw(b"[hibernate] freezer round="); klog::write_dec_u64(number);
+    klog::write_raw(if after { b" backoff_end_us=" } else { b" backoff_begin_us=" });
+    klog::write_dec_u64(sleep_us); klog::write_raw(b"\n");
+}
+
+#[cfg(not(feature = "debug-hibernate"))]
+#[inline(always)]
+fn trace_backoff(_: u64, _: u64, _: bool) {}
 
 fn back_off(us: u64) {
     let (earliest, slack) = backoff_window(timekeeper::monotonic_ns(), us);

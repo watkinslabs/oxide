@@ -25,6 +25,7 @@ fn exec(kind: u32, arg: u64) {
         Some(CallKind::MembarrierPrivateSyncCore) => sched::membarrier::service_private_sync_core(arg),
         Some(CallKind::MembarrierPrivateRseq) => sched::membarrier::service_private_rseq(arg),
         Some(CallKind::CpuFreq) => firmware::acpi::cpufreq::service_remote(arg),
+        Some(CallKind::CpuOffline) => request_offline_tail(),
         Some(CallKind::Stop) => loop {
             // SAFETY: terminal machine-stop handler; masking IRQs then WFI
             // keeps this CPU from executing pages the caller may replace.
@@ -34,9 +35,73 @@ fn exec(kind: u32, arg: u64) {
     }
 }
 
+// Keep terminal hotplug admission out of ordinary call-function IRQ frames.
+#[inline(never)]
+fn request_offline_tail() {
+    let cpu = this_cpu();
+    let (curr_idle, nr_running) = match sched::live::runqueue::global() {
+        Some(rq) => (rq.curr_is_idle(), rq.nr_running.load(core::sync::atomic::Ordering::Acquire)),
+        None => (false, 0),
+    };
+    let wake = sched::live::wake_list_debug(cpu as u32);
+    if !curr_idle || nr_running != 0 || wake.0 || wake.1 != 0
+        || !::cpu::smp::request_offline_tail(cpu as u32)
+    { ::cpu::smp::reject_offline(cpu as u32); }
+}
+
+/// Queue the terminal CPU-down call through the sole SGI call transport.
+/// # C: O(SGI delivery)
+pub fn request_cpu_offline(target: u32) -> bool {
+    let sender = this_cpu();
+    let target = target as usize;
+    if sender == target || !cpu::smp::online_cpumask().contains(target) { return false; }
+    QUEUES.lock_slot(sender, target, || { service(); sync::spin_relax::relax(); });
+    let need_ipi = QUEUES.push(sender, target, CallKind::CpuOffline.as_u32(), sender as u64);
+    // SAFETY: target was resolved from the canonical online set.
+    !need_ipi || unsafe { send_ipi(target as u32) }
+}
+
 /// Drain every call queued for this CPU.
 /// # C: O(queued entries)
 pub fn service() { QUEUES.drain(this_cpu(), exec); }
+
+/// Complete an admitted CPU-down after the vector returned through ordinary
+/// IRQ accounting and the post-dispatch softirq/wake tail. # C: O(1)
+/// # Ctx: IRQ tail, DAIF.I set, hardirq/softirq accounting retired
+pub fn finish_cpu_offline_tail() {
+    let cpu = this_cpu();
+    if !::cpu::smp::offline_tail_requested(cpu as u32) { return; }
+    let (curr_idle, nr_running) = match sched::live::runqueue::global() {
+        Some(rq) => (rq.curr_is_idle(), rq.nr_running.load(core::sync::atomic::Ordering::Acquire)),
+        None => (false, 0),
+    };
+    let wake = sched::live::wake_list_debug(cpu as u32);
+    let pending = softirq::local_pending_bits();
+    if !curr_idle || nr_running != 0 || wake.0 || wake.1 != 0 || pending != 0 {
+        ::cpu::smp::reject_offline(cpu as u32); return;
+    }
+    // SAFETY: the post-dispatch tail owns this PE's timer and CPU interface;
+    // all local deferred work has been drained and new placement is excluded.
+    unsafe {
+        hal_aarch64::timer::timer_disarm();
+        crate::gic::cpu_interface_disable();
+    }
+    // SAFETY: this PE is idle and has completed the ordinary IRQ tail.
+    if !unsafe { ::cpu::smp::mark_offline(cpu as u32) } {
+        ::cpu::smp::reject_offline(cpu as u32); return;
+    }
+    ::cpu::smp::finish_offline(cpu as u32);
+    // SAFETY: PSCI CPU_OFF is the architecture hotplug play-dead primitive
+    // and does not return on success.
+    let status = unsafe { hal_aarch64::psci::cpu_off() };
+    // Firmware refusal leaves this PE executing; restore canonical topology
+    // before publishing refusal to the sender.
+    // SAFETY: firmware refusal leaves this same PE executing and therefore
+    // exclusively owning its canonical online-state transition.
+    unsafe { ::cpu::smp::mark_online(cpu as u32); }
+    let _ = status;
+    ::cpu::smp::reject_offline(cpu as u32);
+}
 
 /// Send the call-function SGI to one logical CPU.
 /// # SAFETY: GIC CPU interfaces and the call-function SGI are enabled.

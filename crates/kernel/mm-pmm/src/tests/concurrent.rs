@@ -29,6 +29,35 @@ fn concurrent_alloc_free_smoke() {
 }
 
 #[test]
+fn concurrent_pcp_drain_refill_keeps_one_owner_per_page() {
+    let n_pages = 2048u64;
+    let pmm = Arc::new(build(n_pages));
+    let mut workers = Vec::new();
+    for _ in 0..3 {
+        let pmm = Arc::clone(&pmm);
+        workers.push(thread::spawn(move || {
+            for _ in 0..2_000 {
+                if let Ok(pfn) = pmm.alloc(Order(0)) {
+                    // SAFETY: this worker owns pfn until this exact free.
+                    unsafe { pmm.free(pfn, Order(0)) };
+                }
+            }
+        }));
+    }
+    let drainer = {
+        let pmm = Arc::clone(&pmm);
+        thread::spawn(move || { for _ in 0..2_000 { pmm.drain_pcp_for_test(); } })
+    };
+    for worker in workers { worker.join().unwrap(); }
+    drainer.join().unwrap();
+    pmm.drain_pcp_for_test();
+    assert_eq!(pmm.allocated_pages(), 0);
+    assert_eq!(pmm.free_pages(), n_pages);
+    // SAFETY: every worker joined and the final drain completed.
+    unsafe { pmm.audit() };
+}
+
+#[test]
 fn concurrent_unique_pfns_no_overlap() {
     // Each thread allocs a batch, holds them, threads compare for overlap.
     let n_pages = 1024u64;

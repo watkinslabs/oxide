@@ -119,6 +119,7 @@ impl SuperBlock {
     /// gate stops NEW ones; existing holders drop on their syscall return).
     /// # C: O(dirty)
     pub fn freeze_super(&self) -> KResult<()> {
+        let umount = self.s_umount.write();
         {
             let _g = FREEZE_WAIT_LOCK.lock();
             if self.s_writers_frozen.compare_exchange(
@@ -126,7 +127,13 @@ impl SuperBlock {
                 return Err(crate::types::VfsError::Ebusy);
             }
         }
+        // Linux drops s_umount before taking the WRITE freeze side: ordinary
+        // writers acquire in the opposite order (sb_start_write -> s_umount).
+        // Retaining it here both inverts that order and carries a lock into the
+        // scheduler while an admitted writer drains.
+        drop(umount);
         self.wait_for_writers_drained();
+        let _umount = self.s_umount.write();
         // New writers now rejected; flush dirty state before sealing on-disk.
         self.s_writers_frozen.store(SB_FREEZE_PAGEFAULT, Ordering::Release);
         if let Err(e) = self.sync_fs(true) {
@@ -144,6 +151,7 @@ impl SuperBlock {
     /// then drop the level back to UNFROZEN (writers re-admitted). `Einval` if
     /// not frozen. # C: O(1)
     pub fn thaw_super(&self) -> KResult<()> {
+        let _umount = self.s_umount.write();
         if !self.is_frozen() { return Err(crate::types::VfsError::Einval); }
         self.s_op.thaw_fs()?;
         self.unfreeze_and_wake();

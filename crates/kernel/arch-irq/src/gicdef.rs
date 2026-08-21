@@ -54,6 +54,8 @@ pub const WAKER_CHILDREN_ASLEEP: u32 = 1 << 2;
 pub const SPI_BASE: u32 = 32;
 /// Largest INTID a distributor reports through its type register.
 pub const MAX_SHARED_INTID: u32 = 1020;
+/// First architected Locality-specific Peripheral Interrupt.
+pub const LPI_BASE: u32 = 8192;
 
 /// Implemented INTID count from the distributor's type register. # C: O(1)
 pub const fn gic_irqs(typer: u32) -> u32 {

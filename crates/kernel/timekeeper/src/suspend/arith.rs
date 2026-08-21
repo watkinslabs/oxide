@@ -69,6 +69,43 @@ pub fn sleep_ns(cs: &Clocksource, at_suspend: u64, at_resume: u64) -> u64 {
     cycles_to_ns(cs, cycle_delta(cs, at_suspend, at_resume))
 }
 
+/// Which clock may account one completed system-sleep interval.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum SleepMeasure {
+    /// An in-process suspend: prefer the nonstop monotonic counter and fall
+    /// back to the persistent clock when that counter stopped or reset.
+    Suspend,
+    /// A cold hibernate resume: the new boot's monotonic epoch is unrelated,
+    /// so only the persistent clock is admissible.
+    Hibernate,
+}
+
+/// Turn the architecture continuation discriminator into the permitted clock
+/// source. The original/thaw side is still an in-process suspend; only the
+/// restored side crossed a cold boot. # C: O(1)
+pub const fn resume_measure(restored: bool) -> SleepMeasure {
+    if restored { SleepMeasure::Hibernate } else { SleepMeasure::Suspend }
+}
+
+/// Forward delta of two absolute persistent-clock readings. A clock that went
+/// backwards supplies no duration rather than a wrapped multi-century sleep.
+/// # C: O(1)
+pub fn persistent_delta_ns(at_suspend: Option<u64>, at_resume: Option<u64>) -> u64 {
+    at_resume.zip(at_suspend).and_then(|(now, then)| now.checked_sub(then)).unwrap_or(0)
+}
+
+/// Select the Linux-shaped sleep-time source: nonstop clocksource first for a
+/// normal suspend, persistent clock as fallback; persistent clock exclusively
+/// for a cold hibernate resume. # C: O(1)
+pub fn select_sleep_ns(measure: SleepMeasure, monotonic_ns: u64,
+                       persistent_at_suspend: Option<u64>, persistent_now: Option<u64>) -> u64 {
+    let persistent_ns = persistent_delta_ns(persistent_at_suspend, persistent_now);
+    match measure {
+        SleepMeasure::Suspend if monotonic_ns != 0 => monotonic_ns,
+        SleepMeasure::Suspend | SleepMeasure::Hibernate => persistent_ns,
+    }
+}
+
 /// How each clock moves across a sleep of `ns` (`32a§7`).
 ///
 /// The split is the contract: `CLOCK_MONOTONIC` excludes the sleep, and

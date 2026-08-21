@@ -8,6 +8,8 @@ extern crate alloc;
 use alloc::sync::Arc;
 use alloc::string::String;
 use alloc::vec::Vec;
+#[cfg(feature = "debug-hibernate")]
+use core::sync::atomic::AtomicU16;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use sync::{Spinlock, TaskList as DriverLockClass};
@@ -20,6 +22,7 @@ use virtio::blk;
 
 mod state;
 pub use state::{
+    arm_hibernate_sync_trace,
     transport_profile,
     wanted_features,
     BlkInit,
@@ -38,7 +41,7 @@ mod queues;
 mod request;
 use request::InHeader;
 mod pm_impl;
-pub use pm_impl::{freeze_blk, BlkFreeze};
+pub use pm_impl::{freeze_blk, prepare_restore_blk, unquiesce_blk, BlkFreeze};
 mod zoned;
 mod teardown;
 mod wait;

@@ -252,7 +252,7 @@ impl PipeData {
             {
                 // A read that has copied nothing returns straight out on a
                 // deliverable signal, having done every wakeup it owed.
-                if sched::live::deliverable_signals_self() != 0 {
+                if sched::live::interruptible_work_pending_self() {
                     return Err(VfsError::Erestartsys);
                 }
                 // SAFETY: running task; preempt-off; park bumps the Arc + marks
@@ -265,7 +265,7 @@ impl PipeData {
                     drop(g);
                     return Ok(0);
                 }
-                if sched::live::deliverable_signals_self() != 0 {
+                if sched::live::interruptible_work_pending_self() {
                     self.read_waiters.cancel_current_park();
                     drop(g);
                     return Err(VfsError::Erestartsys);
@@ -313,7 +313,7 @@ impl PipeData {
             #[cfg(target_os = "oxide-kernel")]
             // A write that has placed no bytes reports the interruption; the
             // dumper's rule keeps it waiting for room instead.
-            if write_wait_aborted(abort, sched::live::deliverable_signals_self() != 0,
+            if write_wait_aborted(abort, sched::live::interruptible_work_pending_self(),
                                   sched::live::fatal_kill_pending_self(), sched::live::frozen_self()) {
                 return Err(VfsError::Erestartsys);
             }

@@ -1,19 +1,14 @@
 // x86_64 AP startup via LAPIC INIT/SIPI (Intel SDM Vol 3 §8.4) per `13§11`.
-//
-// No bootloader parks APs for us, so the kernel starts each one itself:
-// copy a real-mode→long-mode
-// trampoline to a low phys page, identity-map it in the kernel master
-// PML4, then INIT → SIPI → SIPI off the ACPI MADT topology (`cpu::get`).
-// The trampoline (16→32→64) loads the master CR3 (PAE+LME+**NXE** — the
-// kernel uses NX-marked PTEs; NXE off makes bit 63 reserved → #PF),
+// No bootloader parks APs for us, so the kernel starts each one itself: copy a real-mode→long-mode
+// trampoline to low RAM, identity-map it, then INIT → SIPI → SIPI from MADT topology.
+// It loads master CR3 with PAE+LME+NXE (NXE-off reserves kernel PTE bit 63),
 // sets the per-AP stack, and `jmp`s `oxide_ap_entry_64` → `ap_main_x86`.
 //
 // STATUS: ENABLED (F428). `bring_up_aps_x86` INIT/SIPI-starts each MADT AP
 // to long mode; `ap_main_x86` then makes it a full scheduling target:
 // GS_BASE, syscall MSRs (EFER.SCE/STAR/LSTAR/SFMASK), IDTR, LAPIC
 // enable, per-CPU runqueue + TSS + syscall-kstack + LAPIC timer, then `sti`
-// idle. User tasks DO migrate onto the AP and issue `syscall` here — so the
-// per-AP syscall-MSR install is mandatory (without it the AP #UDs on
+// idle. User tasks migrate here, so per-AP syscall-MSR install is mandatory or it #UDs on
 // `syscall`/`sysretq`).
 
 #![cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
@@ -21,6 +16,8 @@
 use alloc::boxed::Box;
 
 use boot_info::BootInfo;
+mod hotplug;
+pub use hotplug::{disable_secondary_cpus, enable_secondary_cpus};
 
 /// Per-AP context the boot CPU publishes in the trampoline data block.
 /// Layout is read-only after publish.
@@ -180,6 +177,7 @@ unsafe fn ap_main_x86(percpu_base: u64, logical_cpu_id: u32) -> ! {
     // SAFETY: AP at CPL=0, long mode, kernel master CR3, gs = this AP's
     // per-CPU area (cpu_id = logical_cpu_id at offset 0); sole owner of its state.
     unsafe {
+        let cold = sched::live::global().is_none();
         // 1. Per-CPU runqueue + idle task. `this_cpu()` (gs:0) is the dense
         //    logical CPU id, so install_default_runqueue populates GLOBALS[cpu].
         //    own slot (register_timers + schedule-hook are idempotent).
@@ -197,20 +195,22 @@ unsafe fn ap_main_x86(percpu_base: u64, logical_cpu_id: u32) -> ! {
         //     corrupts the live stack → triple fault (the -smp 2 flake).
         //     SAFETY: this AP is the sole writer of its own TSS slot; the
         //     allocator is live (BSP brought it up pre-SMP); runs IRQ-off.
-        hal_x86_64::setup_ist_stacks(logical_cpu_id as u16);
+        if cold { hal_x86_64::setup_ist_stacks(logical_cpu_id as u16); }
         // 3. Seed this AP's syscall-kstack slot (gs:[8]); per-task tops then
         //    come from set_syscall_kstack on each switch. Use this AP's stack
         //    top as the pre-first-switch scratch.
-        hal_x86_64::init_percpu_syscall_kstack(hal_x86_64::boot_syscall_kstack_top());
+        if cold { hal_x86_64::init_percpu_syscall_kstack(hal_x86_64::boot_syscall_kstack_top()); }
         // 3b. F699: arm THIS AP's per-CPU hardirq stack (gs:[24]) BEFORE the
         //     `sti` below, so the IRQ handler + do_softirq run off the
         //     interrupted stack once this AP takes IRQs. Guard-paged + leaked;
         //     `None` (frame exhaustion) leaves the slot 0 ⇒ dispatch on the
         //     interrupted stack (pre-fix behavior, no crash).
-        match sched::kstack::alloc_leaked_top_with(pmm::setup::alloc_raw_frame_nowait) {
-            // SAFETY: this AP's gs base is set; `top` outlives the kernel.
-            Some(top) => hal_x86_64::init_percpu_hardirq_stack(top),
-            None => klog::write_raw(b"[IRQSTK] AP hardirq stack alloc failed; on task stack\n"),
+        if cold {
+            match sched::kstack::alloc_leaked_top_with(pmm::setup::alloc_raw_frame_nowait) {
+                // SAFETY: this AP's gs base is set; `top` outlives the kernel.
+                Some(top) => hal_x86_64::init_percpu_hardirq_stack(top),
+                None => klog::write_raw(b"[IRQSTK] AP hardirq stack alloc failed; on task stack\n"),
+            }
         }
         // 4. Arm this AP's LAPIC timer (same period as the BSP's elf path) so
         //    it preempts + wakes from idle. The LAPIC MMIO VA aliases per-CPU.
@@ -220,7 +220,6 @@ unsafe fn ap_main_x86(percpu_base: u64, logical_cpu_id: u32) -> ! {
         // 5. Mark ourselves online only after the per-CPU scheduler and timer
         //    state exists. The BSP may send a resched IPI immediately after
         //    observing online_count reach the target.
-        let _ = ::cpu::smp::ap_arrived();
         // Publish this AP's logical id in the online bitmap so the TLB
         // shootdown sender targets it (and waits for its ACK). Set AFTER the
         // LAPIC + IDT are live so the AP can actually service a shootdown IPI.
@@ -339,6 +338,7 @@ extern "C" {
     static oxide_ap_tramp_cpu: u8;
 }
 
+
 /// Reserve the AP real-mode trampoline page (`TRAMP_PA`) from the PMM so
 /// the buddy allocator never hands it out — `bring_up_aps_x86` copies the
 /// 16→32→64 trampoline blob there at SMP bring-up. MUST be called right
@@ -352,13 +352,13 @@ pub fn reserve_trampoline_page() {
     if let Some(p) = pmm::setup::pmm_static() {
         // pfn = TRAMP_PA >> 12 = 8. One 4 KiB page covers the blob + its
         // GDT/data block (all within [TRAMP_PA, TRAMP_PA+0x1000)).
-        let _ = p.reserve_early(hal::Pfn(TRAMP_PA >> 12), 1);
+        let _ = p.reserve_early_nosave(hal::Pfn(TRAMP_PA >> 12), 1);
         // The S3 resume stub needs the same treatment and the same timing
         // (`32a§9`): firmware re-enters in real mode at a physical address, so
         // its page must never have been handed to the allocator. Without the
         // reservation the deep state is refused outright rather than entered
         // with nowhere to come back to.
-        let _ = p.reserve_early(hal::Pfn(hal_x86_64::suspend::WAKEUP_TRAMP_PA >> 12), 1);
+        let _ = p.reserve_early_nosave(hal::Pfn(hal_x86_64::suspend::WAKEUP_TRAMP_PA >> 12), 1);
         hal_x86_64::suspend::set_wakeup_page_reserved();
     }
 }
@@ -445,6 +445,7 @@ pub unsafe fn bring_up_aps_x86(_info: &BootInfo) -> usize {
         let stack_top = Box::leak(stack).as_ptr() as u64 + AP_STACK_BYTES as u64;
         let Some(percpu) = pmm::setup::alloc_percpu_page() else { continue; };
         let percpu_base = percpu as u64;
+        hotplug::retain(i, id, stack_top & !0xf, percpu_base);
         // SAFETY: per-AP slots within the copied blob; we bring up one
         // AP at a time (wait for online below) so no writer races.
         unsafe {
@@ -454,36 +455,16 @@ pub unsafe fn bring_up_aps_x86(_info: &BootInfo) -> usize {
         }
 
         let before = ::cpu::smp::online_count();
-        let vec = (TRAMP_PA >> 12) as u8;
         // SAFETY: LAPIC enabled by the BSP; INIT then two SIPIs per Intel
         // SDM Vol 3 §8.4.4.1; wait_icr_idle bounds each delivery.
-        let started_ipi = unsafe {
-            if !crate::lapic::write_icr(id, crate::lapic::icr_lo_init_assert()) {
-                false
-            } else {
-                crate::lapic::wait_icr_idle();
-                crate::lapic::busy_wait_us(10_000);
-                if !crate::lapic::write_icr(id, crate::lapic::icr_lo_sipi(vec)) {
-                    false
-                } else {
-                    crate::lapic::wait_icr_idle();
-                    crate::lapic::busy_wait_us(200);
-                    if !crate::lapic::write_icr(id, crate::lapic::icr_lo_sipi(vec)) {
-                        false
-                    } else {
-                        crate::lapic::wait_icr_idle();
-                        true
-                    }
-                }
-            }
-        };
+        let started_ipi = unsafe { hotplug::start_ap(id) };
         if !started_ipi {
             klog::write_raw(b"[SMP] AP ICR destination unsupported\n");
             continue;
         }
         // Wait (bounded) for the AP to increment the online count.
         let mut spins = 0u32;
-        while ::cpu::smp::online_count() == before && spins < 50_000_000 {
+        while ::cpu::smp::online_count() == before && spins < hotplug::AP_ONLINE_SPINS {
             spins = spins.wrapping_add(1);
             // SAFETY: pause is a microarch hint, no side effects.
             unsafe { core::arch::asm!("pause", options(nomem, nostack, preserves_flags)); }

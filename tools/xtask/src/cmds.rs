@@ -76,6 +76,7 @@ pub(crate) fn cmd_kernel(rest: &[String]) -> Result<(), u8> {
     let clean_kernel = rest.iter().any(|a| a == "--clean-kernel");
     if clean_kernel {
         let mut k = Command::new("cargo");
+        use_shared_kernel_target(&mut k);
         k.args([
             "clean",
             "-Z", "unstable-options",
@@ -93,6 +94,7 @@ pub(crate) fn cmd_kernel(rest: &[String]) -> Result<(), u8> {
     // recompile. Build lock serializes builds, so sharing target/ is safe. An
     // id'd build then snapshots its ELF below. Profile codegen is non-incremental.
     let mut c = Command::new("cargo");
+    use_shared_kernel_target(&mut c);
     c.args([
         if check_only { "check" } else { "build" },
         "-Z", "build-std=core,compiler_builtins,alloc",
@@ -128,6 +130,13 @@ pub(crate) fn cmd_kernel(rest: &[String]) -> Result<(), u8> {
         })?;
     }
     Ok(())
+}
+
+/// Force kernel compilation into the shared repository target directory that
+/// `kernel_elf_build` snapshots. An inherited override would build elsewhere
+/// and then silently copy a stale ELF from `target/` into the requested image.
+fn use_shared_kernel_target(command: &mut Command) {
+    command.env_remove("CARGO_TARGET_DIR");
 }
 
 
@@ -216,3 +225,17 @@ pub(crate) fn parse_arg(args: &[String], flag: &str) -> Option<String> {
 
 #[allow(dead_code)]
 fn _osstr_keepalive(_: &OsStr) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kernel_build_cannot_inherit_a_different_snapshot_directory() {
+        let mut command = Command::new("cargo");
+        command.env("CARGO_TARGET_DIR", "/tmp/wrong-kernel-target");
+        use_shared_kernel_target(&mut command);
+        let entry = command.get_envs().find(|(key, _)| *key == OsStr::new("CARGO_TARGET_DIR"));
+        assert!(matches!(entry, Some((_, None))));
+    }
+}

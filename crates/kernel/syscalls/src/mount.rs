@@ -122,10 +122,10 @@ pub fn install_vfs_hooks() {
     // to answer before the change lands.
     crate::deleg_break::init();
     vfs::set_file_lock_wait_hooks(
-        sched::live::inode_wait::park,
+        sched::live::inode_wait::park_interruptible,
         sched::live::inode_wait::schedule_after_park,
         sched::live::inode_wait::wake,
-        || sched::live::current().is_none_or(|cur| sched::live::sigpend::deliverable_signals(cur) != 0),
+        || sched::live::current().is_none_or(sched::interruptible_work_pending),
     );
     // The mount engine NEVER resolves a mount-point STRING to a dentry
     // (`docs/16§3`): every caller hands `register*`/`move_mount`/… the

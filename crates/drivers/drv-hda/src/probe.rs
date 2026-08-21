@@ -5,7 +5,6 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::card::{self, Device};
 use crate::controller::Hda;
@@ -68,14 +67,10 @@ fn alloc_frames(addr64: bool) -> Option<Frames> {
     if ok { Some(frames) } else { free_frames(&frames); None }
 }
 
-/// The controller whose interrupt the shared handler services. One HD-Audio
-/// function is the normal case; a second is left polled.
-static IRQ_OWNER: AtomicU32 = AtomicU32::new(0);
-
-fn hard_handler() {
-    let raw = IRQ_OWNER.load(Ordering::Acquire);
+fn hard_handler(raw: usize) {
+    let Ok(raw) = u32::try_from(raw) else { return; };
     let Some(owner) = sound::SoundOwnerKey::from_raw(raw) else { return; };
-    card::with_device(owner, |device| device.hda.handle_interrupt());
+    card::handle_interrupt(owner);
 }
 
 fn bring_up(bdf: pci::Bdf, mmio_base: u64, mapping: mmio_map::Mapping) -> bool {
@@ -95,7 +90,8 @@ fn bring_up(bdf: pci::Bdf, mmio_base: u64, mapping: mmio_map::Mapping) -> bool {
 
     let mut hda = Hda {
         regs,
-        rings: Rings::new(frames.ring, hhdm + frames.ring),
+        rings: Arc::new(crate::ownership::RegLock::new(
+            Rings::new(frames.ring, hhdm + frames.ring))),
         playback: Stream::new(playback_index, playback_index + 1, frames.playback_bdl,
                               hhdm + frames.playback_bdl, frames.playback_buffer,
                               hhdm + frames.playback_buffer),
@@ -112,9 +108,8 @@ fn bring_up(bdf: pci::Bdf, mmio_base: u64, mapping: mmio_map::Mapping) -> bool {
         interrupts: false,
     };
 
-    let irq = pci_irq::request_msi_only(bdf, arch_irq::DeviceAction::Hda, hard_handler);
-    if irq.is_some() { IRQ_OWNER.store(owner.raw(), Ordering::Release); }
-    hda.interrupts = irq.is_some();
+    let irq = pci_irq::request_msi_only_context(
+        bdf, arch_irq::DeviceAction::Hda, hard_handler, owner.raw() as usize);
 
     let Some(present) = hda.bring_up() else {
         if let Some(binding) = irq { binding.release(); }
@@ -136,8 +131,8 @@ fn bring_up(bdf: pci::Bdf, mmio_base: u64, mapping: mmio_map::Mapping) -> bool {
         free_frames(&frames);
         return false;
     }
-    card::insert(Device { key: bdf, owner, hda, vendor_id, jack_elems: alloc::vec::Vec::new(),
-                          frames: frame_list(&frames), mapping: Some(mapping) });
+    card::insert(Device::new(bdf, owner, hda, vendor_id, frame_list(&frames), mapping));
+    if irq.is_some() { card::with_device(owner, |device| device.hda.enable_interrupts()); }
     if !sound::ops::register(owner, &card::SOUND_OPS) {
         teardown(bdf, &frames, irq);
         return false;
@@ -152,7 +147,7 @@ fn bring_up(bdf: pci::Bdf, mmio_base: u64, mapping: mmio_map::Mapping) -> bool {
 }
 
 fn teardown(bdf: pci::Bdf, frames: &Frames, irq: Option<pci_irq::Binding>) {
-    if let Some(mut device) = card::remove(bdf) { device.hda.quiesce(); }
+    if let Some(device) = card::remove(bdf) { device.with_offline(|state| state.hda.quiesce()); }
     let _ = card::owner_key(bdf).map(sound::cancel_card_reservation);
     if let Some(binding) = irq { binding.release(); }
     free_frames(frames);
@@ -211,15 +206,17 @@ impl drv::Driver for HdaDriver {
             sound::unregister_card(owner);
             sound::elem::unregister_card(owner);
         }
-        if let Some(mut device) = card::remove(bdf) {
-            device.hda.quiesce();
-            for (pa, order) in device.frames.iter() {
+        if let Some(device) = card::remove(bdf) {
+            device.with_offline(|state| {
+            state.hda.quiesce();
+            for (pa, order) in state.frames.iter() {
                 // SAFETY: each address came from this driver's own probe-time
                 // `alloc_contig` at the same order, and the controller was
                 // quiesced above so no engine still reads them.
                 unsafe { pmm::setup::free_contig(*pa, pmm::Order(*order)); }
             }
-            if let Some(mut mapping) = device.mapping.take() { mapping.unmap(); }
+            if let Some(mut mapping) = state.mapping.take() { mapping.unmap(); }
+            });
         }
     }
 

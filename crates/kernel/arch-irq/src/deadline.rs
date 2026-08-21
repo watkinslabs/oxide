@@ -1,20 +1,41 @@
 #[cfg(target_os = "oxide-kernel")]
 use hal::{Nanos, TimerOps};
 
+/// Translate an absolute `CLOCK_MONOTONIC` expiry into the architecture
+/// counter's absolute domain.
+///
+/// Linux `clockevents_program_event()` performs this boundary explicitly:
+/// `delta = expires - ktime_get()`, then the clockevent device receives that
+/// relative delta.  TSC-deadline and CNTV_CVAL are absolute raw-counter
+/// compares, while Oxide's scheduler deadlines are `CLOCK_MONOTONIC` and
+/// therefore exclude suspended time.  Passing the scheduler value straight
+/// to the compare register makes every post-resume deadline already expired
+/// and produces a one-cycle interrupt storm.
+/// # C: O(1)
+fn raw_deadline(deadline_ns: u64, monotonic_now_ns: u64, raw_now_ns: u64) -> u64 {
+    raw_now_ns.saturating_add(deadline_ns.saturating_sub(monotonic_now_ns))
+}
+
 fn program(deadline_ns: u64) {
     #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
     {
+        let monotonic_now = timekeeper::monotonic_ns();
+        let raw_now = hal_x86_64::X86TimerOps::monotonic_ns().0;
+        let raw = raw_deadline(deadline_ns, monotonic_now, raw_now);
         // SAFETY: LAPIC timer vector is installed and this CPU owns its local timer/MSR.
         unsafe {
             if crate::lapic::timer_deadline_mode() {
-                hal_x86_64::X86TimerOps::set_oneshot(Nanos(deadline_ns));
+                hal_x86_64::X86TimerOps::set_oneshot(Nanos(raw));
             }
         }
     }
     #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
     {
+        let monotonic_now = timekeeper::monotonic_ns();
+        let raw_now = hal_aarch64::ArmTimerOps::monotonic_ns().0;
+        let raw = raw_deadline(deadline_ns, monotonic_now, raw_now);
         // SAFETY: this CPU owns CNTV_CVAL/CTL and INTID 27 is enabled during timer bring-up.
-        unsafe { hal_aarch64::ArmTimerOps::set_oneshot(Nanos(deadline_ns)); }
+        unsafe { hal_aarch64::ArmTimerOps::set_oneshot(Nanos(raw)); }
     }
     #[cfg(not(target_os = "oxide-kernel"))]
     let _ = deadline_ns;
@@ -77,4 +98,22 @@ pub fn service_wait_deadlines() {
     // instead of inheriting the coarse scheduler tick.
     #[cfg(target_os = "oxide-kernel")]
     sched::rseq::slice_timer_expired();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::raw_deadline;
+
+    #[test]
+    fn clockevent_translation_preserves_relative_expiry_across_suspend_offset() {
+        assert_eq!(raw_deadline(150, 100, 100), 150);
+        assert_eq!(raw_deadline(150, 100, 600), 650,
+            "500 ns excluded from CLOCK_MONOTONIC must remain in the raw compare domain");
+    }
+
+    #[test]
+    fn expired_and_overflowing_deadlines_are_bounded() {
+        assert_eq!(raw_deadline(99, 100, 600), 600);
+        assert_eq!(raw_deadline(u64::MAX, 0, 10), u64::MAX);
+    }
 }

@@ -39,7 +39,7 @@ pub fn now_ns() -> u64 { 0 }
 /// Whether the running task has a signal that would be delivered on return to
 /// userspace — Linux `signal_pending(current)`. # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
-pub fn signal_pending() -> bool { sched::live::deliverable_signals_self() != 0 }
+pub fn signal_pending() -> bool { sched::live::interruptible_work_pending_self() }
 
 /// # C: O(1)
 #[cfg(not(target_os = "oxide-kernel"))]

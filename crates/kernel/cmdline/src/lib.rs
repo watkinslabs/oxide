@@ -18,6 +18,7 @@
 // - `faults`: what a fatal kernel event does (`panic=`, `oops=`).
 // - `init_path`: `init=` / `rdinit=`.
 // - `memory`: `kernelcore=` / `movablecore=` request grammar.
+// - `hibernate`: ordered resume/disable boot-option decisions.
 // - `tests`: parser contract tests.
 
 pub mod token;
@@ -29,6 +30,7 @@ pub mod faults;
 pub mod hung_task;
 pub mod init_path;
 pub mod memory;
+pub mod hibernate;
 pub mod sysrq;
 
 pub use slot::{get, install_arch_default, is_set, set};

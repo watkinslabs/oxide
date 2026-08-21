@@ -100,6 +100,40 @@ fn a_counter_that_did_not_move_injects_nothing() {
 }
 
 #[test]
+fn ordinary_suspend_prefers_a_working_nonstop_counter() {
+    assert_eq!(select_sleep_ns(SleepMeasure::Suspend, 7_000,
+        Some(1_000_000), Some(1_100_000)), 7_000);
+}
+
+#[test]
+fn original_hibernate_unwind_still_uses_the_nonstop_counter() {
+    // Until the restored architecture continuation explicitly discriminates
+    // itself, hibernate failure/thaw is an ordinary in-process resume.
+    let measure = resume_measure(false);
+    assert_eq!(measure, SleepMeasure::Suspend);
+    assert_eq!(select_sleep_ns(measure, 42_000,
+        Some(1_000_000), Some(9_000_000)), 42_000);
+}
+
+#[test]
+fn reset_or_backwards_monotonic_uses_the_persistent_delta() {
+    let reset_delta = sleep_ns(&Clocksource::nanoseconds(), 50_000, 10);
+    assert_eq!(reset_delta, 0, "a new counter epoch must be rejected");
+    assert_eq!(select_sleep_ns(SleepMeasure::Suspend, reset_delta,
+        Some(2_000_000_000), Some(7_000_000_000)), 5_000_000_000);
+}
+
+#[test]
+fn hibernate_never_trusts_the_new_boots_monotonic_epoch() {
+    let measure = resume_measure(true);
+    assert_eq!(measure, SleepMeasure::Hibernate);
+    assert_eq!(select_sleep_ns(measure, 123_456,
+        Some(10_000), Some(90_000)), 80_000);
+    assert_eq!(persistent_delta_ns(Some(90_000), Some(10_000)), 0,
+        "a backwards persistent clock must not wrap");
+}
+
+#[test]
 fn the_platform_clocksource_is_the_full_width_nanosecond_shape() {
     assert_eq!(super::PLATFORM_CLOCKSOURCE, Clocksource::nanoseconds());
 }

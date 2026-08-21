@@ -89,7 +89,7 @@ pub fn dispatch_waitv_timed(entries: &[WaitvEntry], deadline_ns: u64) -> i64 {
         if deadline_ns != 0 && now_monotonic_ns() >= deadline_ns {
             return -(Errno::Etimedout.as_i32() as i64);
         }
-        if sched::live::deliverable_signals_self() != 0 {
+        if sched::live::interruptible_work_pending_self() {
             // A pending signal returns -ERESTARTSYS, never a bare -EINTR.
             // Unlike the legacy single-futex wait, the futex2 waiters arm NO
             // restart block even with a timeout — the absolute deadline they

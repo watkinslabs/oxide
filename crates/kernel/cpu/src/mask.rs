@@ -161,17 +161,21 @@ impl AtomicCpuMask {
     }
 
     /// Publish one CPU as present in the set. # C: O(1)
-    pub fn set(&self, cpu: usize, order: Ordering) {
+    pub fn set(&self, cpu: usize, order: Ordering) -> bool {
         if cpu < MAX_CPUS {
-            self.words[cpu / CPU_MASK_WORD_BITS].fetch_or(1u64 << (cpu % CPU_MASK_WORD_BITS), order);
+            let bit = 1u64 << (cpu % CPU_MASK_WORD_BITS);
+            return self.words[cpu / CPU_MASK_WORD_BITS].fetch_or(bit, order) & bit == 0;
         }
+        false
     }
 
     /// Remove one CPU from the published set. # C: O(1)
-    pub fn clear_cpu(&self, cpu: usize, order: Ordering) {
+    pub fn clear_cpu(&self, cpu: usize, order: Ordering) -> bool {
         if cpu < MAX_CPUS {
-            self.words[cpu / CPU_MASK_WORD_BITS].fetch_and(!(1u64 << (cpu % CPU_MASK_WORD_BITS)), order);
+            let bit = 1u64 << (cpu % CPU_MASK_WORD_BITS);
+            return self.words[cpu / CPU_MASK_WORD_BITS].fetch_and(!bit, order) & bit != 0;
         }
+        false
     }
 
     #[cfg(test)]

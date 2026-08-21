@@ -15,7 +15,9 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
 pub use crate::psci_uapi::{decode_status, psci_version, version_major, version_minor,
-    CpuSuspendFormat, PsciStatus, PSCI_AFFINITY_INFO_64, PSCI_CPU_OFF, PSCI_CPU_ON_64,
+    affinity_level_is_off, CpuSuspendFormat, PsciStatus, PSCI_AFFINITY_INFO_64,
+    PSCI_AFFINITY_LEVEL_OFF, PSCI_AFFINITY_LEVEL_ON, PSCI_AFFINITY_LEVEL_ON_PENDING,
+    PSCI_CPU_OFF, PSCI_CPU_ON_64,
     PSCI_CPU_SUSPEND_64, PSCI_FEATURES, PSCI_SYSTEM_OFF, PSCI_SYSTEM_RESET,
     PSCI_SYSTEM_SUSPEND_64, PSCI_VERSION, PSCI_VERSION_1_0};
 use crate::psci_probe::{classify_support, decode_support, encode_support, SuspendSupport};
@@ -121,6 +123,26 @@ pub unsafe fn cpu_on(target_mpidr: u64, entry_pa: u64, context_id: u64) -> PsciS
     // SAFETY: per fn contract — PSCI_CPU_ON_64 via the platform conduit (HVC on QEMU virt; SMC faults at EL1 there).
     let raw = unsafe { conduit_call(PSCI_CPU_ON_64, target_mpidr, entry_pa, context_id) };
     decode_status(raw as i32)
+}
+
+/// `PSCI_CPU_OFF`: power down the calling PE. Success never returns; a
+/// returned status is a firmware refusal and the caller remains live.
+/// # SAFETY: caller has removed this PE from scheduler/IRQ targeting and runs
+/// with maskable interrupts disabled at an architecture hotplug boundary.
+/// # C: O(firmware transition)
+pub unsafe fn cpu_off() -> PsciStatus {
+    // SAFETY: forwarded CPU-hotplug contract; CPU_OFF takes no arguments.
+    let raw = unsafe { conduit_call(PSCI_CPU_OFF, 0, 0, 0) };
+    decode_status(raw as i32)
+}
+
+/// Query affinity level 0 for one PE. Zero means physically off; positive
+/// values mean on or on-pending; negative values are firmware errors.
+/// # SAFETY: caller uses the configured PSCI conduit from an online PE.
+/// # C: O(firmware query)
+pub unsafe fn affinity_info(target_mpidr: u64) -> i64 {
+    // SAFETY: AFFINITY_INFO is read-only and level zero names one PE.
+    unsafe { conduit_call(PSCI_AFFINITY_INFO_64, target_mpidr, 0, 0) }
 }
 
 /// Cached `SYSTEM_SUSPEND` probe result, encoded by `psci_probe`. Zero means

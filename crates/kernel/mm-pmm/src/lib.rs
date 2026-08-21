@@ -58,10 +58,10 @@ mod kswapd;
 #[cfg(target_os = "oxide-kernel")]
 mod memcg;
 
-pub use buddy::{PcpStorage, Pmm, PmmSnapshot, ZoneStat};
+pub use buddy::{FreePfnSnapshot, FreePfnWorkspace, HibernateFrame, HibernateSavedFrame, PcpStorage, Pmm, PmmSnapshot, ZoneStat};
 pub use page_meta::{reclaim_state, NativePage, PageFlags, PageMeta, PageMetaArr, ReclaimPageState};
 #[cfg(target_os = "oxide-kernel")]
-pub use kswapd::spawn_kswapd;
+pub use kswapd::{hibernate_reclaimable_pages, reclaim_for_hibernate, spawn_kswapd};
 #[cfg(target_os = "oxide-kernel")]
 pub use memcg::install_memcg_pressure_policy;
 
@@ -83,10 +83,12 @@ pub const PCP_BITMAP_SLOT: usize = ORDERS;
 /// Compact two-bit pageblock migratetype map. It determines the list a page
 /// returns to after allocation, so freeing never needs a second owner table.
 pub const PAGEBLOCK_TYPE_SLOT: usize = ORDERS + 1;
+/// One bit per PFN excluded from hibernation images by PMM ownership.
+pub const HIBERNATE_FORBIDDEN_SLOT: usize = ORDERS + 2;
 
 /// Total bitmap slices a backing supplies: one mergeable-buddy bitmap per
 /// order plus the per-CPU-pageset ownership bitmap.
-pub const BITMAP_SLOTS: usize = ORDERS + 2;
+pub const BITMAP_SLOTS: usize = ORDERS + 3;
 
 /// Free-page poison constant per `10§3` I7. Read at offset 0 of every
 /// freed page; mismatch on alloc ⇒ kassert (corruption or double-free).
@@ -140,8 +142,9 @@ pub trait PageBacking: Send + Sync + 'static {
     /// Slots `0..ORDERS` are mergeable buddy free-area bitmaps.
     /// [`PCP_BITMAP_SLOT`] is one bit per PFN and records pages owned by a
     /// per-CPU pageset. [`PAGEBLOCK_TYPE_SLOT`] packs the permanent mobility
-    /// class of every pageblock. The returned slice must have length `words`
-    /// and be zero-filled.
+    /// class of every pageblock. [`HIBERNATE_FORBIDDEN_SLOT`] is PMM's one
+    /// per-PFN nosave truth. The returned slice must have length `words` and
+    /// be zero-filled.
     fn bitmap_storage(&self, slot: u8, words: usize) -> &'static [AtomicU64];
 
     /// Permanent storage for the PMM's per-CPU, per-zone pagesets. It must be

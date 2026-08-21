@@ -14,7 +14,10 @@
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use boot_info::{BootMemKind, BootMemRegion};
+use boot_info::BootMemKind;
+
+use super::topology::MemoryRegion;
+use hal::PAGE_SIZE_BYTES;
 
 /// Firmware ranges retained. Machines describe few; the bound only has to
 /// cover the description tables, not the whole map.
@@ -48,17 +51,22 @@ pub fn is_firmware_kind(kind: BootMemKind) -> bool {
     matches!(kind, BootMemKind::AcpiReclaim | BootMemKind::AcpiNvs)
 }
 
-/// Retain every firmware range in `map`. Called once, during early init.
+/// Derive every firmware byte range from the canonical normalized topology.
+/// Called once during early init; this cache preserves the legacy slice API
+/// but cannot disagree with the topology owner.
 /// # C: O(map.len)
-pub fn publish(map: &[BootMemRegion]) {
+pub fn publish(map: &[MemoryRegion]) {
     let mut n = 0usize;
     for r in map {
         if n >= MAX_FIRMWARE_REGIONS { break; }
         if !is_firmware_kind(r.kind) { continue; }
-        if r.len == 0 { continue; }
+        if r.end.0 <= r.start.0 { continue; }
         // SAFETY: single-CPU early init is the only writer of `BUF`, and no
         // reader can observe the entry before `COUNT` is released below.
-        unsafe { (*BUF.0.get())[n] = FirmwareRegion { start: r.base_pa, end: r.base_pa + r.len }; }
+        unsafe { (*BUF.0.get())[n] = FirmwareRegion {
+            start: r.start.0.saturating_mul(PAGE_SIZE_BYTES),
+            end: r.end.0.saturating_mul(PAGE_SIZE_BYTES),
+        }; }
         n += 1;
     }
     COUNT.store(n, Ordering::Release);

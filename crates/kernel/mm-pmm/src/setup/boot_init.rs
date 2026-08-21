@@ -18,6 +18,10 @@ pub enum SetupError {
     NoSpaceForPageMeta,
     /// More usable regions than `MAX_REGIONS`. Bump the bound.
     TooManyRegions,
+    /// More normalized boot-map entries than the retained topology bound.
+    TooManyTopologyRegions,
+    /// Page-normalized boot-map entries overlap.
+    OverlappingTopology,
     /// `Pmm::init` rejected the inputs.
     PmmInit(PmmError),
     /// Already initialized in this boot.
@@ -49,9 +53,16 @@ pub struct HhdmBacking {
 // into the allocator and spin indefinitely.  Hosted tests deliberately keep
 // using `NoopIrq` through their own `Pmm<HostedBacking>` instances.
 #[cfg(target_arch = "x86_64")]
-type KernelIrqGate = hal_x86_64::X86IrqGate;
+pub type KernelIrqGate = hal_x86_64::X86IrqGate;
 #[cfg(target_arch = "aarch64")]
-type KernelIrqGate = hal_aarch64::ArmIrqGate;
+pub type KernelIrqGate = hal_aarch64::ArmIrqGate;
+
+/// Concrete live-kernel PMM type used by integration adapters.
+pub type KernelPmm = Pmm<HhdmBacking, KernelIrqGate>;
+/// One live-kernel hibernation frame with ownership tied to the boot PMM.
+pub type KernelHibernateFrame = crate::HibernateFrame<'static, HhdmBacking, KernelIrqGate>;
+/// Saved continuation state: owned like a hibernation frame but image-saveable.
+pub type KernelHibernateSavedFrame = crate::HibernateSavedFrame<'static, HhdmBacking, KernelIrqGate>;
 
 impl PageBacking for HhdmBacking {
     /// # SAFETY: caller asserts `pfn` is within Usable RAM the
@@ -105,13 +116,13 @@ static REGION_BUF: RegionBuf = RegionBuf(UnsafeCell::new(
 /// Entries of `REGION_BUF` that `init_from_boot_info` filled.
 static REGION_COUNT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
-/// The usable-RAM ranges this PMM was seeded from, in boot-map order — the
-/// reference's `pfn_mapped`. Empty before `init_from_boot_info` succeeds.
+/// Cached usable-RAM projection derived from [`memory_topology`], in physical
+/// order — the reference's `pfn_mapped`. Empty before setup succeeds.
 ///
 /// Published because a caller building page tables that must cover all of RAM
 /// (kexec's identity map) needs the same list the buddy was seeded with; a
-/// second list derived from a high-water mark would map holes as RAM and could
-/// disagree with this one about where memory actually is.
+/// The cache exists for the legacy slice API; the normalized topology remains
+/// the sole classification owner.
 /// # C: O(1)
 pub fn usable_regions() -> &'static [UsableRegion] {
     let n = REGION_COUNT.load(Ordering::Acquire);
@@ -152,14 +163,15 @@ pub unsafe fn init_from_boot_info(
     let regions: &[BootMemRegion] = unsafe {
         core::slice::from_raw_parts(info.memmap_ptr, info.memmap_count as usize)
     };
+    super::topology::publish(regions)?;
 
-    // Compute pfn_max across all Usable regions.
+    let topology = super::topology::memory_topology();
+
+    // Compute pfn_max from the one normalized topology owner.
     let mut pfn_max: u64 = 0;
-    for r in regions {
+    for r in topology {
         if r.kind != BootMemKind::Usable { continue; }
-        let end_pa = r.base_pa.saturating_add(r.len);
-        let end_pfn = end_pa >> PAGE_SHIFT;
-        if end_pfn > pfn_max { pfn_max = end_pfn; }
+        if r.end.0 > pfn_max { pfn_max = r.end.0; }
     }
     if pfn_max == 0 {
         return Err(SetupError::NoUsableRegion);
@@ -178,7 +190,7 @@ pub unsafe fn init_from_boot_info(
             let pageblocks = pfn_max.saturating_add(crate::zone::PAGEBLOCK_PAGES - 1) / crate::zone::PAGEBLOCK_PAGES;
             pageblocks.saturating_add(31) / 32
         } else {
-            let blocks = if o == PCP_BITMAP_SLOT {
+            let blocks = if o == PCP_BITMAP_SLOT || o == HIBERNATE_FORBIDDEN_SLOT {
                 pfn_max
             } else {
                 let stride = 1u64 << (o as u32);
@@ -228,15 +240,17 @@ pub unsafe fn init_from_boot_info(
 
     // Pick the first Usable region with `len >= pool_bytes + slack`.
     let needed = pool_bytes.saturating_add(PAGE_SIZE_BYTES);
-    let chosen_idx = regions
+    let chosen_idx = topology
         .iter()
-        .position(|r| r.kind == BootMemKind::Usable && r.len >= needed)
+        .position(|r| r.kind == BootMemKind::Usable
+            && r.end.0.saturating_sub(r.start.0).saturating_mul(PAGE_SIZE_BYTES) >= needed)
         .ok_or(SetupError::NoSpaceForBitmaps)?;
-    let chosen = regions[chosen_idx];
+    let chosen = topology[chosen_idx];
+    let chosen_base_pa = chosen.start.0.saturating_mul(PAGE_SIZE_BYTES);
 
     // Carve the pool from the front of `chosen`. HHDM gives us a
     // kernel VA covering the whole pool at `hhdm + chosen.base_pa`.
-    let pool_va: *mut u8 = info.hhdm_offset.wrapping_add(chosen.base_pa) as *mut u8;
+    let pool_va: *mut u8 = info.hhdm_offset.wrapping_add(chosen_base_pa) as *mut u8;
     // SAFETY: pool memory is RAM (chosen.kind == Usable), HHDM-mapped by the bootloader, page-aligned (boot memmap entries are page-aligned), and not yet touched by any kernel subsystem because we run before kernel_main hands control to anything else.
     unsafe {
         hal::zerotrap::trap(pool_va as *const u8, (pool_bytes / 8) as usize);
@@ -280,18 +294,17 @@ pub unsafe fn init_from_boot_info(
 
     // Build the UsableRegion list, shrinking the chosen region.
     let mut n_regions = 0usize;
-    for (i, r) in regions.iter().enumerate() {
+    for (i, r) in topology.iter().enumerate() {
         if r.kind != BootMemKind::Usable { continue; }
         if n_regions >= MAX_REGIONS {
             return Err(SetupError::TooManyRegions);
         }
+        let base_pa = r.start.0.saturating_mul(PAGE_SIZE_BYTES);
+        let len = r.end.0.saturating_sub(r.start.0).saturating_mul(PAGE_SIZE_BYTES);
         let (base_pa, len) = if i == chosen_idx {
-            (
-                r.base_pa.saturating_add(pool_bytes),
-                r.len.saturating_sub(pool_bytes),
-            )
+            (base_pa.saturating_add(pool_bytes), len.saturating_sub(pool_bytes))
         } else {
-            (r.base_pa, r.len)
+            (base_pa, len)
         };
         let mut start_pfn = base_pa
             .checked_add(PAGE_SIZE_BYTES - 1)
@@ -322,9 +335,9 @@ pub unsafe fn init_from_boot_info(
     }
 
     REGION_COUNT.store(n_regions, Ordering::Release);
-    // Retain the firmware-owned ranges too. Done here because this is the one
-    // place the boot memory map is still readable.
-    super::fwmap::publish(regions);
+    // The firmware projection is derived from the same retained topology; it
+    // is a byte-range cache for existing consumers, not an independent map.
+    super::fwmap::publish(topology);
     // SAFETY: single-CPU one-shot setup; this BSS storage has no reference
     // until the completed PMM is published below.
     let pcp = unsafe {
@@ -404,7 +417,7 @@ fn install_oom_accounting(pmm: &Pmm<HhdmBacking, KernelIrqGate>) {
 /// frame allocators (e.g. the one registered with `MmuOps`) that
 /// can't capture state in a closure.
 /// # C: O(1)
-pub fn pmm_static() -> Option<&'static Pmm<HhdmBacking, KernelIrqGate>> {
+pub fn pmm_static() -> Option<&'static KernelPmm> {
     if !PMM_READY.load(Ordering::Acquire) { return None; }
     // SAFETY: PMM_READY went true only after the cell was written;
     // no further writes occur. The reference's lifetime is tied to

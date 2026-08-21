@@ -237,6 +237,18 @@ fn abandoning_an_undelivered_slot_frees_the_sender() {
 }
 
 #[test]
+fn a_terminal_handler_can_publish_completion_before_it_stops() {
+    let q = q();
+    q.lock_slot(A, T, || {});
+    q.push(A, T, 9, A as u64);
+    q.drain(T, |_, sender| {
+        q.complete_terminal(sender as usize, T);
+        assert!(q.is_complete(A, T), "CPU-down sender must be released before target play-dead");
+    });
+    assert!(q.is_complete(A, T));
+}
+
+#[test]
 fn out_of_range_cpu_ids_clamp_instead_of_indexing_out_of_bounds() {
     let q = q();
     q.lock_slot(999, 999, || {});

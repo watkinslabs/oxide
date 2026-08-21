@@ -19,6 +19,7 @@ use vfs::{SbStatFs, SuperBlock, SuperOps, VfsError};
 
 /// A `SuperOps` that counts freeze/thaw/sync calls and can be told to fail
 /// `freeze_fs` (the unwind path).
+#[derive(Default)]
 struct CountingOps {
     freezes: AtomicU32,
     thaws:   AtomicU32,
@@ -26,6 +27,8 @@ struct CountingOps {
     fail_freeze: bool,
 }
 impl SuperOps for CountingOps {
+    fn power_freeze_capable(&self) -> bool { true }
+
     fn statfs(&self) -> vfs::KResult<SbStatFs> { Ok(SbStatFs::default()) }
     fn sync_fs(&self, _wait: bool) -> vfs::KResult<()> {
         self.syncs.fetch_add(1, Ordering::Relaxed); Ok(())
@@ -37,6 +40,17 @@ impl SuperOps for CountingOps {
     fn thaw_fs(&self) -> vfs::KResult<()> {
         self.thaws.fetch_add(1, Ordering::Relaxed); Ok(())
     }
+}
+
+#[test]
+fn power_freeze_requires_explicit_persistent_backend() {
+    struct PseudoOps;
+    impl SuperOps for PseudoOps {
+        fn statfs(&self) -> vfs::KResult<SbStatFs> { Ok(SbStatFs::default()) }
+    }
+
+    assert!(!PseudoOps.power_freeze_capable(), "pseudo/default super ops stay outside power freeze");
+    assert!(CountingOps::default().power_freeze_capable(), "persistent backend opts into power freeze");
 }
 
 /// Backend exposing the counting `SuperOps` as its `s_op`.

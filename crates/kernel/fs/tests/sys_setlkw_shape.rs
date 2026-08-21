@@ -10,7 +10,7 @@
 extern crate alloc;
 
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use fs::posix_lock::{getlk, owner_for, resolve, setlk, setlkw, LockReq, F_RDLCK, F_UNLCK, F_WRLCK};
@@ -28,6 +28,7 @@ static SCHEDULES: AtomicUsize = AtomicUsize::new(0);
 /// Holder state a `schedule` hook releases to stand in for the holder process
 /// exiting while the waiter is parked.
 static HOLDER: Mutex<Option<Arc<FdTable>>> = Mutex::new(None);
+static INTERRUPT_TASK: AtomicPtr<sched::Task> = AtomicPtr::new(core::ptr::null_mut());
 /// Schedule count after which the interrupt hook fires, so a REGRESSED
 /// implementation fails its assertion instead of spinning forever.
 const RUNAWAY_SCHEDULES: usize = 8;
@@ -49,6 +50,14 @@ fn noop_schedule() {}
 fn record_wake(key: usize) { WOKEN_KEY.store(key, Ordering::Release); }
 fn never_interrupted() -> bool { false }
 fn always_interrupted() -> bool { true }
+
+fn freezer_interrupted() -> bool {
+    let task = INTERRUPT_TASK.load(Ordering::Acquire);
+    if task.is_null() { return false; }
+    // SAFETY: the synchronous test publishes its stack-owned task only across
+    // the `setlkw` call and clears this slot before that task is dropped.
+    sched::interruptible_work_pending(unsafe { &*task })
+}
 
 /// Stands in for "the holder process exited while we were parked": the first
 /// yield drops the holder's descriptor table, which is what must release the
@@ -223,6 +232,31 @@ fn a_parked_setlkw_is_interruptible() {
     assert_eq!(ino.file_lock_context().record_lock_kind(files_owner(&waiter_t), 0), None,
         "an interrupted wait leaves no lock behind");
     drop(holder_t);
+}
+
+#[test]
+fn a_signal_less_freezer_request_interrupts_setlkw() {
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    reset_hooks();
+    let ino = regular_inode();
+    let (holder_t, _hfd, holder_f) = table_with(&ino);
+    let (waiter_t, _wfd, waiter_f) = table_with(&ino);
+    let held = resolve(&req(F_WRLCK, RANGE_START, TO_EOF), files_owner(&holder_t), HOLDER_PID).unwrap();
+    assert_eq!(setlk(&holder_f, &held), 0);
+
+    let task = sched::Task::new(0x72f0, "setlkw-freeze",
+        sched::SchedClass::Normal { weight: 1024 });
+    task.freeze_reasons.store(sched::freeze_reason::SLEEP, Ordering::Release);
+    assert_eq!(task.deliverable_signals(), 0, "the control must contain no user signal");
+    INTERRUPT_TASK.store(&task as *const sched::Task as *mut sched::Task, Ordering::Release);
+    vfs::set_file_lock_wait_hooks(noop_park, noop_schedule, record_wake, freezer_interrupted);
+    let want = resolve(&req(F_WRLCK, RANGE_START, RANGE_LEN), files_owner(&waiter_t), WAITER_PID).unwrap();
+    let rv = setlkw(&waiter_f, &want);
+    vfs::clear_file_lock_wait_hooks();
+    INTERRUPT_TASK.store(core::ptr::null_mut(), Ordering::Release);
+
+    assert_eq!(rv, erestartsys(), "the fake freezer wake must end F_SETLKW's interruptible park");
+    assert_eq!(ino.file_lock_context().record_lock_kind(files_owner(&waiter_t), 0), None);
 }
 
 #[test]

@@ -21,8 +21,11 @@ pub fn build_icr_lo(vector: u8, delivery: u8, level_assert: bool, level_trigger:
     value
 }
 
-/// Canonical level-asserted, edge-triggered INIT IPI. # C: O(1)
-pub fn icr_lo_init_assert() -> u32 { build_icr_lo(0, 0b101, true, false) }
+/// Canonical level-triggered INIT assertion. # C: O(1)
+pub fn icr_lo_init_assert() -> u32 { build_icr_lo(0, 0b101, true, true) }
+
+/// Matching level-triggered INIT deassertion. # C: O(1)
+pub fn icr_lo_init_deassert() -> u32 { build_icr_lo(0, 0b101, false, true) }
 
 /// Startup IPI carrying the real-mode trampoline page. # C: O(1)
 pub fn icr_lo_sipi(startup_page: u8) -> u32 {
@@ -49,7 +52,8 @@ mod tests {
 
     #[test]
     fn init_ipi_value_matches_the_sdm() {
-        assert_eq!(icr_lo_init_assert(), 0x4500);
+        assert_eq!(icr_lo_init_assert(), 0xc500);
+        assert_eq!(icr_lo_init_deassert(), 0x8500);
     }
 
     #[test]

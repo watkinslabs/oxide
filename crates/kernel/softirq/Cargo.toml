@@ -18,6 +18,11 @@ cpu = { path = "../cpu" }
 hal = { path = "../../arch/hal" }
 hal-x86_64 = { path = "../../arch/hal-x86_64" }
 hal-aarch64 = { path = "../../arch/hal-aarch64" }
+klog = { path = "../../shared/klog", optional = true }
+
+[features]
+default = []
+debug-hibernate = ["dep:klog"]
 
 [lints]
 workspace = true

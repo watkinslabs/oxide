@@ -15,6 +15,7 @@
 // - `reset`:   the x86 reset ladder's order and port encodings — host-tested.
 // - `suspend`: the reversible sleep states per `32a` — states, sequence,
 //              freezer, wakeup accounting, s2idle, core callbacks, sysfs.
+// - `hibernate`: persistent image format and storage transaction per `32b`.
 
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
@@ -26,6 +27,8 @@ extern crate std;
 pub mod uapi;
 pub mod decide;
 pub mod suspend;
+pub mod hibernate;
+pub mod transition;
 pub mod cad;
 pub mod machine;
 pub mod reset;
@@ -39,7 +42,7 @@ pub use decide::{check_magic, classify_cmd, pid_ns_reboot, reboot_precheck, rest
     Error, KResult, NsRebootSignal, RebootAction, TerminalCmd};
 pub use cad::{cad_action, cad_enabled, set_cad, CadAction};
 pub use machine::{halt, init, power_off, restart, restart_with_command,
-    set_driver_shutdown_hook, terminal};
+    set_driver_shutdown_hook, set_machine_shutdown_hook, terminal, terminal_claimed};
 pub use reset::{ladder, reset_control_writes, ResetRung};
 pub use suspend::{pm_suspend, pm_system_irq_wakeup, pm_system_wakeup, pm_wakeup_pending,
     StateSet, SuspendBackend, SuspendState};

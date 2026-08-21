@@ -20,7 +20,7 @@ fn deleg_break_wait(inode: &vfs::InodeRef) -> bool {
     #[cfg(target_arch = "aarch64")] let now = || hal_aarch64::ArmTimerOps::monotonic_ns().0;
     let deadline = now().saturating_add(vfs::file::LEASE_BREAK_NS);
     while vfs::file::lease_conflict(inode, flavour, true) {
-        if sched::live::sigpend::deliverable_signals(cur) != 0 { return false; }
+        if sched::interruptible_work_pending(cur) { return false; }
         if now() >= deadline {
             vfs::file::lease_force_break(inode, flavour, true);
             break;

@@ -51,6 +51,8 @@ fn process_only_slot_waits_for_process_drain() {
     PROCESS_HITS.store(0, Ordering::Relaxed);
     set_handler(Slot::NetNsReap, process_handler);
     raise_process(Slot::NetNsReap);
+    assert!(pending());
+    assert!(!local_pending(), "migration-safe process work does not pin this CPU");
     // SAFETY: hosted test models an IRQ-tail accounting bracket.
     unsafe { run_pending(); }
     assert_eq!(PROCESS_HITS.load(Ordering::Relaxed), 0);
@@ -112,6 +114,20 @@ fn clear_handler_removes_handler_and_pending_bit() {
     // SAFETY: hosted unit test; no IRQs to coordinate with; sole caller of run_pending in this thread.
     unsafe { run_pending(); }
     assert_eq!(T_HITS.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn clear_pending_preserves_the_installed_handler() {
+    let _state = own_softirq_state();
+    T_HITS.store(0, Ordering::Relaxed);
+    set_handler(Slot::FbconFlush, t_handler);
+    raise(Slot::FbconFlush);
+    clear_pending(Slot::FbconFlush);
+    assert!(!pending());
+    raise(Slot::FbconFlush);
+    // SAFETY: hosted test exclusively owns the modeled CPU's softirq state.
+    unsafe { run_pending(); }
+    assert_eq!(T_HITS.load(Ordering::Relaxed), 1, "handler remains installed");
 }
 
 #[test]

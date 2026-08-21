@@ -344,7 +344,7 @@ fn sys_epoll_wait_timeout(args: &syscall::SyscallArgs, timeout_ns: Option<u64>) 
             if let Some(d) = deadline_ns {
                 if current_ns >= d { return 0; }
             }
-            if has_unmasked_signal() { return -(Errno::Eintr.as_i32() as i64); }
+            if interruptible_work_pending() { return -(Errno::Eintr.as_i32() as i64); }
             #[cfg(feature = "debug-wakelat")]
             sched::live::wakelat::note_wait(wl_tid, sched::live::wakelat::KIND_EPOLL);
             let park_dl = match (deadline_ns, ep.next_poll_deadline()) {
@@ -363,7 +363,7 @@ fn sys_epoll_wait_timeout(args: &syscall::SyscallArgs, timeout_ns: Option<u64>) 
                 }
                 // Catch a signal published just before Sleeping was installed;
                 // later signals observe Sleeping and wake through the scheduler.
-                if has_unmasked_signal() { ep.waiters.wake_all(); }
+                if interruptible_work_pending() { ep.waiters.wake_all(); }
                 // SAFETY: prepare_park installed this task on ep.waiters.
                 unsafe { sched::live::park_yield(); }
                 #[cfg(feature = "debug-epoll")]
@@ -381,10 +381,4 @@ fn sys_epoll_wait_timeout(args: &syscall::SyscallArgs, timeout_ns: Option<u64>) 
 }
 
 #[cfg(target_os = "oxide-kernel")]
-fn has_unmasked_signal() -> bool {
-    let Some(cur) = sched::current() else { return false; };
-    const FORCED: u64 = (1u64 << 8) | (1u64 << 18);
-    let pending = cur.pending_signals();
-    let masked = cur.sigmask.load(Ordering::Acquire);
-    (pending & !masked) | (pending & FORCED) != 0
-}
+fn interruptible_work_pending() -> bool { sched::live::interruptible_work_pending_self() }

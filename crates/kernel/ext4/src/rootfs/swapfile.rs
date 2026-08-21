@@ -26,7 +26,13 @@ pub struct SwapFileDevice {
 /// Stable identity plus the direct block-device view owned by one active
 /// ext4 swapfile. The identity is inode-based, so hard links and path aliases
 /// resolve to the same PMM swap area.
-pub struct SwapFileBacking { pub name: String, pub device: Arc<dyn BlockDevice> }
+pub struct SwapFileBacking {
+    pub name: String,
+    pub device: Arc<dyn BlockDevice>,
+    pub resume_device: Option<String>,
+    pub resume_pages: Vec<u64>,
+    pub raw_device: Arc<dyn BlockDevice>,
+}
 
 /// Return the inode-stable PMM area identity for an ext4 regular file.
 ///
@@ -63,10 +69,28 @@ pub fn swapfile_backing(inode: &InodeRef) -> Result<SwapFileBacking, VfsError> {
         Some(name) => name,
         None => { inode.release_swapfile(); return Err(VfsError::Einval); }
     };
+    let resume_device = resume_device_name(inode);
     match SwapFileDevice::new(inode.clone(), file, size) {
-        Ok(device) => Ok(SwapFileBacking { name, device: Arc::new(device) }),
+        Ok(device) => {
+            let resume_pages = match device.resume_pages() {
+                Ok(pages) => pages,
+                Err(_) if resume_device.is_none() => Vec::new(),
+                Err(error) => { drop(device); return Err(error); }
+            };
+            let raw_device = device.device.clone();
+            Ok(SwapFileBacking { name, device: Arc::new(device), resume_device,
+                resume_pages, raw_device })
+        }
         Err(error) => { inode.release_swapfile(); Err(error) }
     }
+}
+
+fn resume_device_name(inode: &Inode) -> Option<String> {
+    let dev = u32::try_from(inode.i_sb()?.s_dev).ok()?;
+    if let Some(partition) = block::registry::partition_by_dev(dev) {
+        return Some(partition.name.clone());
+    }
+    block::registry::by_dev(dev).map(|disk| disk.name.clone())
 }
 
 impl SwapFileDevice {
@@ -100,6 +124,34 @@ impl SwapFileDevice {
     fn extent_at(&self, block: u64) -> Option<&Extent> {
         self.extents.iter().find(|extent| extent.logical.checked_add(extent.blocks)
             .is_some_and(|end| block >= extent.logical && block < end))
+    }
+
+    fn resume_pages(&self) -> Result<Vec<u64>, VfsError> {
+        let blocks_per_page = SWAP_PAGE_BYTES.checked_div(self.block_size() as u64)
+            .filter(|blocks| *blocks != 0).ok_or(VfsError::Einval)?;
+        let page_count = self.capacity.checked_div(blocks_per_page).ok_or(VfsError::Einval)?;
+        let mut pages = Vec::new();
+        pages.try_reserve_exact(page_count as usize).map_err(|_| VfsError::Enomem)?;
+        for page in 0..page_count {
+            let logical = page.checked_mul(blocks_per_page).ok_or(VfsError::Einval)?;
+            let end = logical.checked_add(blocks_per_page).ok_or(VfsError::Einval)?;
+            let extent = self.extent_at(logical).ok_or(VfsError::Einval)?;
+            let physical = extent.physical.checked_add(logical - extent.logical)
+                .ok_or(VfsError::Einval)?;
+            if !physical.is_multiple_of(blocks_per_page) { return Err(VfsError::Einval); }
+            let mut at = logical;
+            let mut expected = physical;
+            while at < end {
+                let run = self.extent_at(at).ok_or(VfsError::Einval)?;
+                let mapped = run.physical.checked_add(at - run.logical).ok_or(VfsError::Einval)?;
+                if mapped != expected { return Err(VfsError::Einval); }
+                let run_end = run.logical.checked_add(run.blocks).ok_or(VfsError::Einval)?.min(end);
+                expected = expected.checked_add(run_end - at).ok_or(VfsError::Einval)?;
+                at = run_end;
+            }
+            pages.push(physical / blocks_per_page);
+        }
+        Ok(pages)
     }
 
     fn transfer(&self, request: &mut BlockRequest) -> KResult<()> {
@@ -232,5 +284,27 @@ mod tests {
         drop(device);
         assert!(!inode.is_swapfile(), "swapoff makes the file mutable again");
         inode.claim_swapfile().expect("the file can be re-activated after swapoff");
+    }
+
+    #[test]
+    fn resume_geometry_requires_each_page_to_be_one_aligned_physical_run() {
+        let backing = MemDisk::<TaskList>::new(DEVICE_BLOCK_BYTES, 64);
+        let inode = vfs::InodeBuilder::new(SWAP_INO,
+            vfs::mk_mode(vfs::FileType::Regular, SWAP_MODE),
+            vfs::default_inode_ops(), vfs::default_file_ops()).build();
+        inode.claim_swapfile().unwrap();
+        let aligned = SwapFileDevice { device: backing.clone(), extents: alloc::vec![
+            Extent { logical: 0, physical: 8, blocks: 8 },
+            Extent { logical: 8, physical: 24, blocks: 8 },
+        ], capacity: 16, inode: inode.clone() };
+        assert_eq!(aligned.resume_pages().unwrap(), alloc::vec![1, 3]);
+        drop(aligned);
+
+        inode.claim_swapfile().unwrap();
+        let split = SwapFileDevice { device: backing, extents: alloc::vec![
+            Extent { logical: 0, physical: 8, blocks: 4 },
+            Extent { logical: 4, physical: 20, blocks: 4 },
+        ], capacity: 8, inode };
+        assert_eq!(split.resume_pages(), Err(VfsError::Einval));
     }
 }

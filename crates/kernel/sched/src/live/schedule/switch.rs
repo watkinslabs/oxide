@@ -156,17 +156,26 @@ unsafe fn finish_lock_switch_pending(rq: &Runqueue) -> bool {
 pub unsafe extern "C" fn oxide_finish_task_switch() {
     sync::note_qs();
     let Some(rq) = global() else { return };
+    if rq.switched_from.load(Ordering::Acquire).is_null() { return; }
     // A duplicate/delayed tail has no handoff debt. In particular, if
     // schedule() repaired the pending switch before blocking again, a later
     // stale tail must not unlock a new owner's rq guard or decrement its
     // preempt count a second time.
     // SAFETY: finish_task_switch runs on this runqueue's incoming task.
+    super::provenance::finish(b"before-rq-release", 2);
+    super::provenance::normalize_finish();
+    // SAFETY: `switched_from` proves this incoming task owns the forgotten
+    // runqueue guard published by the immediately preceding context switch.
     if !unsafe { finish_lock_switch_pending(rq) } { return; }
+    #[cfg(feature = "debug-preempt")]
+    super::provenance::finish(b"after-rq-release", 1);
     // rq.inner is no longer held, so consume the scheduler's preempt debt
     // before any deferred destructor can block. This kernel's lazy-mm release
     // can synchronously write back file-backed VMAs; leaving the debt live
     // made its valid block look atomic and corrupted the nested switch count.
     crate::preempt::preempt_enable_no_check();
+    #[cfg(feature = "debug-preempt")]
+    super::provenance::finish(b"after-sched-release", 0);
     // The deferred mm can run file-backed VMA destruction and synchronous
     // writeback. The helper above has released rq.inner, matching the required
     // finish-switch ordering before a potentially sleeping final mmdrop, and
@@ -280,6 +289,7 @@ fn publish_forked_child_tid() {
 /// callers set `keep_irqs_disabled` so their outer gate closes the IRQ window.
 #[track_caller]
 pub(super) unsafe fn schedule_once(keep_irqs_disabled: bool) {
+    super::provenance::schedule_entry();
     // Linux requires finish_task_switch(prev) to complete before the incoming
     // task can block again. Recover that invariant before adding this call's
     // own preempt-disable debt: otherwise the rq lock forgotten by the prior

@@ -39,6 +39,7 @@ pub mod stream_fmt;
 pub mod bdl;
 pub mod ring;
 pub mod elemkey;
+mod ownership;
 
 #[cfg(target_os = "oxide-kernel")] mod platform;
 #[cfg(target_os = "oxide-kernel")] pub mod regs;

@@ -110,6 +110,7 @@ debug-vmm  = ["pmm/debug-vmm", "kmacros/debug-vmm", "smoke/debug-vmm"]  # device
 debug-irq  = ["pmm/debug-irq", "kmacros/debug-irq", "smoke/debug-irq", "syscalls/debug-irq"]  # LAPIC/GIC enable diag + timer-IRQ soak + tick logs
 debug-acpi = ["firmware/debug-acpi", "kmacros/debug-acpi", "smoke/debug-acpi"]  # forwarded; impl in crates/firmware
 debug-power = ["power/debug-power"]  # `32§11` per-attempt reboot trace: which reset-ladder rung was reached
+debug-hibernate = ["power/debug-hibernate", "hal-x86_64/debug-hibernate", "softirq/debug-hibernate", "drv-virtio-blk/debug-hibernate"]  # `32b§14`: bounded hibernation diagnostics
 debug-sched = ["sched/debug-sched","fs/debug-sched", "kmacros/debug-sched", "smoke/debug-sched"]  # first-kthread coroutine smoke + Context::switch trace
 debug-smp = ["sched/debug-smp", "sync/debug-smp", "syscalls/debug-smp"]  # spin-stall probe: names the lock CLASS rank of any Spinlock::lock() that spins past SPIN_WARN_ITERS (busy-spin livelock hunt)
 debug-task-fpu-provenance = ["sched/debug-task-fpu-provenance"]  # validates each Task's FP/SIMD save-area identity before raw scheduler/ptrace access
@@ -207,7 +208,7 @@ debug-eager-fork = ["syscalls/debug-eager-fork"]  # TEST
 debug-atexit = ["syscalls/debug-atexit", "vmm/debug-atexit", "pmm/debug-atexit", "hal/debug-zerotrap"]  # targeted dynamic-loader stderr / atexit probes
 debug-audit = ["audit/debug-audit"]  # [AUDIT] lost-record warning
 debug-trace = ["kmacros/debug-trace", "console/debug-trace", "smoke/debug-trace", "syscalls/debug-trace", "pci-boot/debug-trace"]  # structured dtrace! probes — direct UART emit bypassing klog/lock (CAT-wedge-class debugging)
-debug-all  = ["debug-pmm","debug-vmm","debug-irq","debug-acpi","debug-sched","debug-boot","debug-cgroup","debug-modules","debug-syscall","debug-watchdog-detail","sched/debug-syscall"]
+debug-all  = ["debug-pmm","debug-vmm","debug-irq","debug-acpi","debug-sched","debug-boot","debug-cgroup","debug-modules","debug-syscall","debug-watchdog-detail","debug-hibernate","sched/debug-syscall"]
 
 [lints]
 workspace = true

@@ -1,6 +1,7 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::regs::{GICR_CTLR, GICR_PENDBASER, GICR_PROPBASER, GICR_VA};
+pub use crate::gicdef::LPI_BASE;
 
 // ---- LPI bring-up (F56-04) ------------------------------------------------
 
@@ -76,15 +77,13 @@ static LPIS_ENABLED: core::sync::atomic::AtomicBool =
 #[cfg(target_arch = "aarch64")]
 static LPI_PROP_PA: AtomicU64 = AtomicU64::new(0);
 
-/// First LPI INTID (per ARM ARM, LPIs occupy [8192, 8192 + N)).
-#[cfg(target_arch = "aarch64")]
-pub const LPI_BASE: u32 = 8192;
-
 /// Default LPI configuration byte: priority 0xA0 + Group1 RES1 +
 /// Enable=1. ARM IHI 0069 §11.2.1 byte layout: [7:2] priority,
 /// [1] RES1, [0] Enable.
 #[cfg(target_arch = "aarch64")]
-pub const LPI_PROP_DEFAULT: u8 = 0xA0 | 0x02 | 0x01;
+pub const LPI_PROP_ENABLED: u8 = 0x01;
+#[cfg(target_arch = "aarch64")]
+pub const LPI_PROP_DEFAULT: u8 = 0xA0 | 0x02 | LPI_PROP_ENABLED;
 
 /// Bring up LPIs on the boot CPU's redistributor: allocate + zero the global
 /// LPI configuration table and the per-RD pending table, both at the granule

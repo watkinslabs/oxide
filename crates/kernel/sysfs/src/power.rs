@@ -35,10 +35,11 @@ fn map_err(e: power::Error) -> VfsError {
         power::Error::Intr   => VfsError::Eintr,
         power::Error::Nomem  => VfsError::Enomem,
         power::Error::Nodata => VfsError::Enodata,
+        power::Error::Nospc  => VfsError::Enospc,
     }
 }
 
-/// `SysfsOps` for the six `/sys/power/*` attributes: forwards to
+/// `SysfsOps` for the `/sys/power/*` attributes: forwards to
 /// `sysfs_api::show`/`store`.
 struct PowerOps;
 impl SysfsOps for PowerOps {

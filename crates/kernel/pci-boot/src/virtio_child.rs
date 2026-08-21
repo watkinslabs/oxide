@@ -227,6 +227,8 @@ impl virtio::VirtioChildDriverOps<VirtioChildSession> for VirtioBlkOps {
     fn shutdown_child(device_key: virtio::VirtioChildDeviceKey) {
         let _ = drv_virtio_blk::modern::shutdown_blk(device_key);
     }
+
+    fn pm() -> Option<&'static drv::DevPmOps> { Some(super::virtio_pm::block_ops()) }
 }
 static VIRTIO_BLK_DRV: virtio::VirtioChildDriver<PciVirtioChildBus, VirtioBlkOps> =
     virtio::VirtioChildDriver::new();

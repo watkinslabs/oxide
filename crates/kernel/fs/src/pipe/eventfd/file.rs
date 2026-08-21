@@ -113,7 +113,7 @@ impl FileOps for EventfdFileOps {
                 // zero" and "we're on the wait list" (B1422).
                 let g = d.counter.lock();
                 if *g != 0 { drop(g); continue; }
-                if sched::live::deliverable_signals_self() != 0 {
+                if sched::live::interruptible_work_pending_self() {
                     drop(g);
                     return Err(VfsError::Erestartsys);
                 }
@@ -155,7 +155,7 @@ impl FileOps for EventfdFileOps {
                 // that frees capacity cannot wake an empty list.
                 let g = d.counter.lock();
                 if counter::write_fits(*g, add) { drop(g); continue; }
-                if sched::live::deliverable_signals_self() != 0 {
+                if sched::live::interruptible_work_pending_self() {
                     drop(g);
                     return Err(VfsError::Erestartsys);
                 }

@@ -150,9 +150,9 @@ pub(crate) fn break_lease_for_open(inode: &vfs::InodeRef, flags: u32) -> Option<
     #[cfg(target_arch = "aarch64")] let now = || hal_aarch64::ArmTimerOps::monotonic_ns().0;
     let deadline = now().saturating_add(vfs::file::LEASE_BREAK_NS);
     // Wait for the holder to downgrade/release; force-break on timeout. Yields
-    // the CPU like F_SETLKW; interruptible by a deliverable signal.
+    // the CPU like F_SETLKW; interruptible by signal or freezer work.
     while vfs::file::lease_conflict(inode, flavour, writes) {
-        if sched::live::sigpend::deliverable_signals(cur) != 0 {
+        if sched::interruptible_work_pending(cur) {
             return Some(-(Errno::Eintr.as_i32() as i64));
         }
         if now() >= deadline { vfs::file::lease_force_break(inode, flavour, writes); break; }

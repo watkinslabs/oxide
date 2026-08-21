@@ -130,11 +130,26 @@ pub(crate) static GEOMETRY_SINK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_
 
 pub(crate) static READY: AtomicBool = AtomicBool::new(false);
 pub(crate) static DIRTY: AtomicBool = AtomicBool::new(false);
+/// Linux `console_irqwork_blocked`: while set, console writers still update
+/// the retained VT image but must not publish a per-CPU deferred flush.  The
+/// accumulated damage is queued once on resume.
+pub(crate) static SUSPENDED: AtomicBool = AtomicBool::new(false);
+
+/// Publish deferred repaint work unless the console lifecycle has blocked it.
+/// # C: O(1)
+pub(crate) fn queue_flush() {
+    if !SUSPENDED.load(Ordering::Acquire) {
+        softirq::raise(softirq::Slot::FbconFlush);
+    }
+}
 
 /// The `FbconFlush` handler. Runs in softirq context, where bottom halves are
 /// already accounted for on this processor, so the plain acquisition is the
 /// correct one — and the only one in the file. # C: O(damaged region)
 pub(crate) fn flush_softirq() {
+    if SUSPENDED.load(Ordering::Acquire) {
+        return;
+    }
     if !DIRTY.swap(false, Ordering::AcqRel) {
         return;
     }
@@ -164,6 +179,12 @@ fn blit(st: Option<&mut VtState>) {
             f(pixels_as_bytes(st.renderer.pixels()), rect);
         }
     }
+}
+
+/// Lifecycle-owned synchronous flush after deferred publication is blocked.
+/// # C: O(damaged region)
+pub(crate) fn blit_for_suspend(st: Option<&mut VtState>) {
+    if DIRTY.swap(false, Ordering::AcqRel) { blit(st); }
 }
 
 pub(crate) fn queue_answerback(vt: u8, bytes: &[u8]) {

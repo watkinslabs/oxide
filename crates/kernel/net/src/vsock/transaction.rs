@@ -188,7 +188,7 @@ pub fn connect_wait(c: &Arc<VsockConn>) -> Result<(), crate::NetError> {
                     return Err(c.connect_error.lock().unwrap_or(crate::NetError::Enotconn)),
                 VsockState::Connecting | VsockState::RcvShutdown => {}
             }
-            if sched::live::deliverable_signals_self() != 0 {
+            if sched::live::interruptible_work_pending_self() {
                 let _ = cancel_connect(c);
                 return Err(crate::NetError::Eintr);
             }

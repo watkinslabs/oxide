@@ -44,6 +44,7 @@ pub fn request_platform_msi(action: crate::irqstat::DeviceAction, handler: fn())
             let _ = super::free_x86_vector(vector);
             return None;
         }
+        let _ = crate::msi_suspend::install(vector as u32);
         return Some(vtd_x86_msi(vector, x86_bsp_apic_id()));
     }
     #[cfg(not(target_arch = "x86_64"))]
@@ -55,6 +56,7 @@ pub fn request_platform_msi(action: crate::irqstat::DeviceAction, handler: fn())
 
 /// Withdraw a non-PCI architecture MSI after its producer is masked. # C: O(1)
 pub fn free_platform_msi(message: MsiMessage) {
+    crate::msi_suspend::uninstall(message.irq);
     crate::irqstat::unregister_msi(message.irq);
     #[cfg(target_arch = "x86_64")]
     if let Ok(vector) = u8::try_from(message.irq) { let _ = super::free_x86_vector(vector); }
@@ -107,13 +109,19 @@ pub fn register_pci_msi_handler(irq: u32, action: crate::irqstat::DeviceAction, 
         let installed = u8::try_from(irq)
             .ok()
             .is_some_and(|vector| super::register_msi_handler(vector, handler).is_ok());
-        if installed { let _ = crate::irqstat::register_msi(irq, action); }
+        if installed {
+            let _ = crate::irqstat::register_msi(irq, action);
+            let _ = crate::msi_suspend::install(irq);
+        }
         return installed;
     }
     #[cfg(target_arch = "aarch64")]
     {
         let installed = super::register_msi_handler(irq, handler).is_ok();
-        if installed { let _ = crate::irqstat::register_msi(irq, action); }
+        if installed {
+            let _ = crate::irqstat::register_msi(irq, action);
+            let _ = crate::msi_suspend::install(irq);
+        }
         return installed;
     }
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
@@ -131,13 +139,19 @@ pub fn register_pci_msi_context_handler(irq: u32, action: crate::irqstat::Device
     {
         let installed = u8::try_from(irq).ok().is_some_and(|vector|
             super::msi_context::register_x86(vector, handler, arg).is_ok());
-        if installed { let _ = crate::irqstat::register_msi(irq, action); }
+        if installed {
+            let _ = crate::irqstat::register_msi(irq, action);
+            let _ = crate::msi_suspend::install(irq);
+        }
         return installed;
     }
     #[cfg(target_arch = "aarch64")]
     {
         let installed = super::msi_context::register_arm(irq, handler, arg).is_ok();
-        if installed { let _ = crate::irqstat::register_msi(irq, action); }
+        if installed {
+            let _ = crate::irqstat::register_msi(irq, action);
+            let _ = crate::msi_suspend::install(irq);
+        }
         return installed;
     }
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
@@ -147,6 +161,7 @@ pub fn register_pci_msi_context_handler(irq: u32, action: crate::irqstat::Device
 /// Remove the handler and release one PCI message ID.
 /// # C: O(N_irq_slots)
 pub fn free_pci_msi(irq: u32) {
+    crate::msi_suspend::uninstall(irq);
     crate::irqstat::unregister_msi(irq);
     #[cfg(target_arch = "x86_64")]
     if let Ok(vector) = u8::try_from(irq) {
@@ -154,10 +169,29 @@ pub fn free_pci_msi(irq: u32) {
     }
     #[cfg(target_arch = "aarch64")]
     {
+        arm::forget_lpi_route(irq);
         let _ = super::free_arm_spi(irq);
     }
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     let _ = irq;
+}
+
+/// Dispatch the handler owned by one x86 MSI vector without re-entering the
+/// lifecycle admission path (used by IRQ entry and pending replay). # C: O(1)
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn invoke_x86_owned(irq: u32) -> bool {
+    let Ok(vector) = u8::try_from(irq) else { return false; };
+    if crate::msi_context::invoke_x86(vector) { return true; }
+    if vector < hal_x86_64::VEC_MSI_POOL_FIRST || vector > hal_x86_64::VEC_MSI_POOL_LAST {
+        return false;
+    }
+    let index = (vector - hal_x86_64::VEC_MSI_POOL_FIRST) as usize;
+    let raw = crate::MSI_HANDLERS[index].load(core::sync::atomic::Ordering::Acquire);
+    if raw.is_null() { return false; }
+    // SAFETY: register_msi_handler stored an ABI-compatible `fn()` here.
+    let handler: fn() = unsafe { core::mem::transmute(raw) };
+    handler();
+    true
 }
 
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
@@ -178,6 +212,9 @@ mod arm {
         [const { AtomicU32::new(ITS_DEVICE_EMPTY) }; ITS_DEVICE_SLOTS];
     static DEVICE_ITTS: [AtomicU64; ITS_DEVICE_SLOTS] =
         [const { AtomicU64::new(0) }; ITS_DEVICE_SLOTS];
+    const LPI_ROUTE_EMPTY: u64 = u64::MAX;
+    static LPI_ROUTES: [AtomicU64; super::super::ARM_MSI_SLOTS] =
+        [const { AtomicU64::new(LPI_ROUTE_EMPTY) }; super::super::ARM_MSI_SLOTS];
     static ITS_COMMANDS: Spinlock<(), Devices> = Spinlock::new(());
 
     pub(super) fn alloc(requester_id: u32, event_id: u32) -> Option<MsiMessage> {
@@ -253,7 +290,53 @@ mod arm {
             let _ = super::super::free_arm_spi(lpi);
             return None;
         }
+        if !remember_lpi_route(lpi, device_id, event_id) {
+            let _ = super::super::free_arm_spi(lpi);
+            return None;
+        }
         Some(MsiMessage { irq: lpi, address, data: event_id })
+    }
+
+    fn lpi_slot(lpi: u32) -> Option<usize> {
+        super::super::ARM_MSI_SPIS.iter().position(|slot|
+            slot.load(Ordering::Acquire) == lpi)
+    }
+
+    fn remember_lpi_route(lpi: u32, device_id: u32, event_id: u32) -> bool {
+        let Some(slot) = lpi_slot(lpi) else { return false; };
+        LPI_ROUTES[slot].store((u64::from(device_id) << 32) | u64::from(event_id),
+            Ordering::Release);
+        true
+    }
+
+    pub(super) fn forget_lpi_route(lpi: u32) {
+        if let Some(slot) = lpi_slot(lpi) {
+            LPI_ROUTES[slot].store(LPI_ROUTE_EMPTY, Ordering::Release);
+        }
+    }
+
+    pub(super) fn set_lpi_enabled(lpi: u32, enabled: bool) -> bool {
+        let Some(slot) = lpi_slot(lpi) else { return false; };
+        let route = LPI_ROUTES[slot].load(Ordering::Acquire);
+        if route == LPI_ROUTE_EMPTY { return false; }
+        let device_id = (route >> 32) as u32;
+        let event_id = route as u32;
+        let _commands = ITS_COMMANDS.lock();
+        let hhdm = hal_aarch64::mmu_ops::hhdm_offset();
+        let config = if enabled { super::super::gic::LPI_PROP_DEFAULT }
+            else { super::super::gic::LPI_PROP_DEFAULT & !super::super::gic::LPI_PROP_ENABLED };
+        // SAFETY: the route was published only after this LPI's property table
+        // entry and ITS DeviceID/EventID mapping became live.
+        if !unsafe { super::super::gic::lpi_set_config(hhdm, lpi, config) } { return false; }
+        // SAFETY: the command lock serializes the live ITS queue; this route's
+        // mapping remains owned until free_pci_msi clears it.
+        let inv = unsafe { super::super::its::cmd_post(hhdm,
+            super::super::its::cmd_inv(device_id, event_id)) };
+        // SAFETY: the same serialized queue targets the boot collection that
+        // owns every currently allocated physical LPI.
+        let sync = unsafe { super::super::its::cmd_post(hhdm,
+            super::super::its::cmd_sync(ITS_BOOT_RDBASE)) };
+        cmd_ok(inv) && cmd_ok(sync)
     }
 
     fn ensure_device(device_id: u32) -> Option<()> {
@@ -331,6 +414,22 @@ mod arm {
     }
 }
 
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+/// Toggle the parent controller for one allocated ARM MSI. # C: O(1)
+pub(crate) fn set_arm_irq_enabled(irq: u32, enabled: bool) -> bool {
+    if arm_msi_is_lpi(irq) { return arm::set_lpi_enabled(irq, enabled); }
+    // SAFETY: an allocated non-LPI ARM MSI is a GICv2m SPI owned by this
+    // descriptor; its Distributor line is the correct parent controller.
+    unsafe {
+        if enabled { crate::gic::enable_intid(irq); }
+        else { crate::gic::disable_intid(irq); }
+    }
+    true
+}
+
+#[cfg(any(test, target_arch = "aarch64"))]
+const fn arm_msi_is_lpi(irq: u32) -> bool { irq >= crate::gicdef::LPI_BASE }
+
 #[cfg(all(test, target_arch = "x86_64"))]
 mod tests {
     use super::{alloc_pci_msi, direct_x86_msi, free_pci_msi, vtd_x86_msi, MsiMessage, X86_APIC_MSI_ADDRESS};
@@ -342,6 +441,13 @@ mod tests {
         assert_eq!(direct_x86_msi(0x51, 0x100), None);
         assert_eq!(vtd_x86_msi(0x51, 0xab12_3456), MsiMessage { irq: 0x51,
             address: 0x00ab_1234_fee5_6000, data: 0x51 });
+    }
+
+    #[test]
+    fn arm_lpis_never_enter_the_distributor_spi_register_path() {
+        assert!(!super::arm_msi_is_lpi(crate::gicdef::MAX_SHARED_INTID));
+        assert!(super::arm_msi_is_lpi(crate::gicdef::LPI_BASE));
+        assert!(super::arm_msi_is_lpi(crate::gicdef::LPI_BASE + 31));
     }
 
     #[test]

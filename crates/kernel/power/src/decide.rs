@@ -18,7 +18,7 @@ use crate::uapi::*;
 /// and a caller can act on the difference — one means rebuild, the other means
 /// this machine.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum Error { Inval, Perm, Io, Busy, Nosys, Opnotsupp, Again, Intr, Nomem, Nodata }
+pub enum Error { Inval, Perm, Io, Busy, Nosys, Opnotsupp, Again, Intr, Nomem, Nodata, Nospc }
 
 pub type KResult<T> = core::result::Result<T, Error>;
 
@@ -43,6 +43,8 @@ pub enum RebootAction {
     /// handled here, exactly as `reboot.c` calls out to `kernel_kexec()` —
     /// this crate owns the machine's own reset paths, not the image store.
     Kexec,
+    /// `LINUX_REBOOT_CMD_SW_SUSPEND`: run the shared hibernation entry.
+    Hibernate,
 }
 
 /// Validate the `reboot(2)` magic pair. Four
@@ -80,8 +82,6 @@ pub fn reboot_precheck(cap_sys_boot: bool, magic1: u32, magic2: u32) -> KResult<
 /// syscalls landed would have been a split truth, with one half of the pair
 /// accepting an image the other half refused to boot.
 ///
-/// `SW_SUSPEND` still falls through to `default: ret = -EINVAL`, the answer a
-/// kernel built without `CONFIG_HIBERNATION` gives.
 /// # C: O(1)
 pub fn classify_cmd(cmd: u32) -> KResult<RebootAction> {
     match cmd {
@@ -92,6 +92,7 @@ pub fn classify_cmd(cmd: u32) -> KResult<RebootAction> {
         LINUX_REBOOT_CMD_CAD_ON => Ok(RebootAction::SetCad(true)),
         LINUX_REBOOT_CMD_CAD_OFF => Ok(RebootAction::SetCad(false)),
         LINUX_REBOOT_CMD_KEXEC => Ok(RebootAction::Kexec),
+        LINUX_REBOOT_CMD_SW_SUSPEND => Ok(RebootAction::Hibernate),
         _ => Err(Error::Inval),
     }
 }
@@ -194,12 +195,12 @@ mod tests {
     }
 
     #[test]
-    fn kexec_is_a_command_and_sw_suspend_is_still_einval() {
+    fn kexec_and_sw_suspend_are_distinct_commands() {
         // KEXEC stopped being EINVAL when `kexec_load(2)` landed: refusing to
         // boot an image this kernel had just accepted and staged would be one
         // half of the pair contradicting the other.
         assert_eq!(classify_cmd(LINUX_REBOOT_CMD_KEXEC), Ok(RebootAction::Kexec));
-        assert_eq!(classify_cmd(LINUX_REBOOT_CMD_SW_SUSPEND), Err(Error::Inval));
+        assert_eq!(classify_cmd(LINUX_REBOOT_CMD_SW_SUSPEND), Ok(RebootAction::Hibernate));
         assert_eq!(classify_cmd(0xDEAD_BEEF), Err(Error::Inval));
         // A child pid namespace still has no KEXEC arm, so it stays EINVAL there.
         assert_eq!(pid_ns_reboot(LINUX_REBOOT_CMD_KEXEC), Err(Error::Inval));

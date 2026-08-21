@@ -56,16 +56,10 @@ pub(crate) static TZ_DSTTIME:     AtomicI32 = AtomicI32::new(0);
 /// monotonic timer is up.
 /// # C: O(1)
 pub fn init_wall_clock_from_rtc() {
-    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-    {
-        let secs = hal_x86_64::read_rtc_unix_secs();
-        if secs != 0 {
-            let rtc_ns = secs.saturating_mul(1_000_000_000);
-            timekeeper::seed_realtime(rtc_ns);
-        }
+    #[cfg(target_os = "oxide-kernel")]
+    if let Some(rtc_ns) = timekeeper::suspend::persistent_clock_ns() {
+        timekeeper::seed_realtime(rtc_ns);
     }
-    // aarch64: no CMOS RTC; PL031/devtree RTC init is a follow-up (offset stays
-    // 0 → 1970, as before — no regression).
 }
 
 /// # C: O(1)

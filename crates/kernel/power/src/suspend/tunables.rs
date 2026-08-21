@@ -11,7 +11,6 @@ static SYNC_ON_SUSPEND: AtomicBool = AtomicBool::new(true);
 static PM_ASYNC: AtomicBool = AtomicBool::new(true);
 static PM_DEBUG_MESSAGES: AtomicBool = AtomicBool::new(false);
 static MEM_SLEEP_CURRENT: AtomicU8 = AtomicU8::new(SuspendState::ToIdle as u8);
-static TRANSITION_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 /// Whether step 0 of `32a§5` runs. # C: O(1)
 pub fn sync_on_suspend() -> bool { SYNC_ON_SUSPEND.load(Ordering::Acquire) }
@@ -43,15 +42,15 @@ pub fn set_mem_sleep_current(s: SuspendState) { MEM_SLEEP_CURRENT.store(s as u8,
 /// Whether a sleep transition is running. A second one is refused rather than
 /// queued: two transitions racing would each unwind the other's steps.
 /// # C: O(1)
-pub fn transition_in_progress() -> bool { TRANSITION_IN_PROGRESS.load(Ordering::Acquire) }
+pub fn transition_in_progress() -> bool { crate::transition::in_progress() }
 
 /// Claim the transition. False when one is already running. # C: O(1)
 pub fn try_claim_transition() -> bool {
-    TRANSITION_IN_PROGRESS.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok()
+    crate::transition::try_claim_legacy()
 }
 
 /// Release the transition claim. # C: O(1)
-pub fn release_transition() { TRANSITION_IN_PROGRESS.store(false, Ordering::Release); }
+pub fn release_transition() { crate::transition::release(); }
 
 /// Parse a `/sys/power` boolean attribute write: a decimal `0` or `1`, with an
 /// optional trailing newline. Anything else is rejected.

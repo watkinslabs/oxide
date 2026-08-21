@@ -56,6 +56,8 @@ fn the_declared_field_offsets_reproduce_every_conformant_table_length() {
     // all five from our constants proves the whole layout, not one field.
     assert_eq!(OFF_FLAGS + 4, V1_LEN, "version 1 ends after the flags word");
     assert_eq!(OFF_RESET_VALUE + 4, V2_LEN, "version 2 ends after the minor-revision byte");
+    assert_eq!(OFF_ARM_BOOT_FLAGS, OFF_RESET_VALUE + 1);
+    assert_eq!(OFF_MINOR_REVISION + 1, V2_LEN);
     assert_eq!(OFF_SLEEP_CONTROL, V3_LEN, "version 3 ends where the sleep control register begins");
     assert_eq!(OFF_SLEEP_STATUS + GAS_LEN, V5_LEN, "version 5 ends after the sleep status register");
     assert_eq!(V5_LEN + 8, V6_LEN, "version 6 adds only the hypervisor id");
@@ -76,6 +78,8 @@ fn each_parsed_field_reads_from_its_own_offset_and_nowhere_else() {
     put_u64(&mut t, OFF_XDSDT, 0x0000_1111_2222_3333);
     put_gas(&mut t, OFF_RESET_REG, Gas { space_id: 1, bit_width: 8, bit_offset: 2, access_width: 3, address: 0xabcd });
     t[OFF_RESET_VALUE] = 0x5a;
+    t[OFF_ARM_BOOT_FLAGS..OFF_ARM_BOOT_FLAGS + 2].copy_from_slice(&3u16.to_le_bytes());
+    t[OFF_MINOR_REVISION] = 1;
     put_gas(&mut t, OFF_XPM1A_CNT, Gas { space_id: 1, bit_width: 16, bit_offset: 0, access_width: 2, address: 0x600 });
     put_gas(&mut t, OFF_XPM1B_CNT, Gas { space_id: 1, bit_width: 16, bit_offset: 0, access_width: 2, address: 0x604 });
     put_gas(&mut t, OFF_XPM2_CNT, Gas { space_id: 1, bit_width: 8, bit_offset: 0, access_width: 1, address: 0x608 });
@@ -90,6 +94,8 @@ fn each_parsed_field_reads_from_its_own_offset_and_nowhere_else() {
 
     let f = parse_fadt(&t[..V6_LEN]).expect("a full-length table parses");
     assert_eq!(f.revision, 5);
+    assert_eq!(f.minor_revision, 1);
+    assert_eq!(f.arm_boot_flags, 3);
     assert_eq!(f.flags, 0xdead_beef);
     assert_eq!(f.reset_register.address, 0xabcd);
     assert_eq!(f.reset_register.bit_offset, 2);

@@ -19,6 +19,13 @@ firmware = { path = "../firmware" }
 sched    = { path = "../sched" }
 timekeeper = { path = "../timekeeper" }
 cpu      = { path = "../cpu" }
+pmm      = { path = "../mm-pmm" }
+boot-info = { path = "../../shared/boot-info" }
+syscall  = { path = "../syscall" }
+crypt    = { path = "../../shared/crypt" }
+cmdline  = { path = "../cmdline" }
+lz4_flex = { version = "0.14.0", default-features = false, features = ["alloc", "safe-encode", "safe-decode"] }
+lzo1x    = { path = "../../shared/lzo1x" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64 = { path = "../../arch/hal-x86_64" }
@@ -40,6 +47,7 @@ default = []
 # unconditionally by `machine::terminal`, so a production reboot is still
 # visible without it.
 debug-power = []
+debug-hibernate = []
 
 [lints]
 workspace = true

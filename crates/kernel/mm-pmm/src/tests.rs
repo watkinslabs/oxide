@@ -6,6 +6,7 @@ mod alloc_free;
 mod accounting;
 mod concurrent;
 mod dma_bound;
+mod hibernate;
 mod init;
 mod migratetype;
 mod pcp;
@@ -55,7 +56,8 @@ impl HostedBacking {
                 let pageblocks = n_pages.saturating_add(crate::zone::PAGEBLOCK_PAGES - 1) / crate::zone::PAGEBLOCK_PAGES;
                 (pageblocks.saturating_add(31) / 32) as usize
             } else {
-                let blocks = if o == PCP_BITMAP_SLOT { n_pages } else { (n_pages + (1u64 << o) - 1) >> o };
+                let blocks = if o == PCP_BITMAP_SLOT || o == HIBERNATE_FORBIDDEN_SLOT { n_pages }
+                    else { (n_pages + (1u64 << o) - 1) >> o };
                 ((blocks + 63) >> 6) as usize
             };
             let v: Vec<AtomicU64> = (0..words.max(1)).map(|_| AtomicU64::new(0)).collect();

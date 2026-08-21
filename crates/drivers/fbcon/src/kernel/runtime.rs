@@ -2,8 +2,8 @@ use core::sync::atomic::Ordering;
 use vtdata::Consw;
 
 use crate::kernel::shared::{
-    lock_vt, queue_answerback, try_lock_vt, DIRTY, FLUSH_FN, GEOMETRY_SINK, READY, GeometrySink,
-    ReplyFn, VcCell, VtState, FlushFn, flush_softirq,
+    lock_vt, queue_answerback, queue_flush, try_lock_vt, DIRTY, FLUSH_FN, GEOMETRY_SINK, READY,
+    SUSPENDED, GeometrySink, ReplyFn, VcCell, VtState, FlushFn, flush_softirq,
 };
 
 pub fn set_reply_sink(f: ReplyFn) {
@@ -98,7 +98,7 @@ pub fn kernel_rebind(xres: u32, yres: u32, flush: FlushFn) -> bool {
     softirq::set_handler(softirq::Slot::FbconFlush, flush_softirq);
     FLUSH_FN.store(flush as *mut (), Ordering::Release);
     publish_geometry(rows, cols, yres.min(u32::from(u16::MAX)) as u16);
-    if repaint { softirq::raise(softirq::Slot::FbconFlush); }
+    if repaint { queue_flush(); }
     true
 }
 
@@ -112,6 +112,7 @@ fn text_geometry(xres: u32, yres: u32) -> (u16, u16) {
 
 pub fn kernel_unregister() {
     READY.store(false, Ordering::Release);
+    SUSPENDED.store(false, Ordering::Release);
     DIRTY.store(false, Ordering::Release);
     FLUSH_FN.store(core::ptr::null_mut(), Ordering::Release);
     GEOMETRY_SINK.store(core::ptr::null_mut(), Ordering::Release);
@@ -146,7 +147,7 @@ pub fn vt_console_sink(bytes: &[u8]) {
             }
         }
     }
-    softirq::raise(softirq::Slot::FbconFlush);
+    queue_flush();
 }
 
 pub fn tick_drain() {
@@ -183,7 +184,7 @@ pub fn vt_write(vt: u8, bytes: &[u8]) {
         queue_answerback(vt, r.as_slice());
     }
     if blitted {
-        softirq::raise(softirq::Slot::FbconFlush);
+        queue_flush();
     }
 }
 
@@ -205,7 +206,7 @@ pub fn switch_vt(n: u8) {
             }
         }
     }
-    softirq::raise(softirq::Slot::FbconFlush);
+    queue_flush();
 }
 
 pub fn set_vt_graphics_mode(n: u8, graphics: bool) {
@@ -228,6 +229,33 @@ pub fn set_vt_graphics_mode(n: u8, graphics: bool) {
         }
     }
     if repaint {
-        softirq::raise(softirq::Slot::FbconFlush);
+        queue_flush();
     }
+}
+
+/// Flush the visible console and prevent later writers from queueing
+/// framebuffer softirq work until [`console_resume`].  Writers continue to
+/// update the retained VT image, so no text is lost while device callbacks and
+/// secondary CPUs are quiesced.  Mirrors Linux `console_suspend_all()`.
+/// # C: O(damaged region + NR_CPUS)
+/// # Sleeps: no
+pub fn console_suspend() {
+    SUSPENDED.store(true, Ordering::Release);
+    {
+        // This acquisition waits for any handler that passed the suspended
+        // check before publication, then consumes every damage record that
+        // existed before the lifecycle boundary.
+        let mut state = lock_vt();
+        super::shared::blit_for_suspend(state.as_mut());
+    }
+    // Producers now observe SUSPENDED and the VT lock synchronized any
+    // already-running handler, so stale wake publications can be cancelled.
+    softirq::clear_pending(softirq::Slot::FbconFlush);
+}
+
+/// Re-enable deferred framebuffer output and publish accumulated damage once.
+/// # C: O(1)
+pub fn console_resume() {
+    SUSPENDED.store(false, Ordering::Release);
+    if DIRTY.load(Ordering::Acquire) { queue_flush(); }
 }

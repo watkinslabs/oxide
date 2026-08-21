@@ -21,6 +21,7 @@ extern crate alloc;
 pub mod acpi;
 pub mod driver_blob;
 pub mod fdt;
+pub mod psci;
 pub mod memreserve;
 pub mod smbios;
 

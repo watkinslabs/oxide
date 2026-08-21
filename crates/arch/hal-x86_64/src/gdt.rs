@@ -65,8 +65,14 @@ pub(crate) unsafe fn write_system_descriptor(index: usize, lo: u64, hi: u64) {
     // so the array is reached through its UnsafeCell, and the caller's
     // contract restricts the index to a pair it exclusively owns.
     let gdt = unsafe { &mut *GDT.0.get() };
-    gdt[index] = lo;
-    gdt[index + 1] = hi;
+    // Descriptor memory is also mutated/read by the processor (`ltr` marks a
+    // TSS busy). Volatile publication prevents the compiler from deleting a
+    // rewrite whose Rust value appears unchanged across that hardware action.
+    // SAFETY: caller owns this descriptor pair and both indices are in range.
+    unsafe {
+        core::ptr::write_volatile(&mut gdt[index], lo);
+        core::ptr::write_volatile(&mut gdt[index + 1], hi);
+    }
 }
 
 /// User CS64 selector (DPL=3, L=1). Used by `iretq` to ring 3 and
@@ -143,6 +149,27 @@ const fn tss_high(base: u64) -> u64 {
     (base >> 32) & 0xFFFF_FFFF
 }
 
+/// Rebuild CPU `cpu`'s complete TSS descriptor as available.
+///
+/// `ltr` changes TYPE from available (0x9) to busy (0xB). AP restart and
+/// processor-state restore must therefore republish the descriptor before
+/// loading TR; changing only the type bit would leave stale base/limit state.
+/// # SAFETY: the caller owns the stopped/current CPU's TSS descriptor pair;
+/// no other CPU may load or rewrite that pair concurrently.
+/// # C: O(1)
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub(crate) unsafe fn reset_tss_descriptor(cpu: usize) {
+    let (lo, hi) = tss_descriptor(cpu);
+    // SAFETY: each CPU owns exactly the descriptor pair derived here, and
+    // `cpu < NR_TSS` keeps both entries inside the shared GDT.
+    unsafe { write_system_descriptor(10 + cpu * 2, lo, hi); }
+}
+
+fn tss_descriptor(cpu: usize) -> (u64, u64) {
+    let base = crate::tss::tss_base_addr(cpu);
+    (tss_low(base, crate::tss::KERNEL_TSS_LIMIT), tss_high(base))
+}
+
 /// Build an 8-byte descriptor: base=0, limit=0xFFFFF, given access +
 /// flags nibble. The CPU ignores base/limit for CS/DS in 64-bit
 /// mode, but the descriptor must still be well-formed.
@@ -168,9 +195,8 @@ pub struct GdtPointer {
 #[repr(C, align(8))]
 struct Gdt(UnsafeCell<[u64; GDT_LEN]>);
 
-// SAFETY: cross-thread access mediated by single-threaded boot install
-// (`install_kernel_gdt`); after install, entries are read-only from
-// kernel code and the CPU dereferences via GDTR asynchronously.
+// SAFETY: initial population is single-threaded; later each stopped/current
+// CPU exclusively rewrites its disjoint TSS pair before loading TR.
 unsafe impl Sync for Gdt {}
 
 static GDT: Gdt = Gdt(UnsafeCell::new([0u64; GDT_LEN]));
@@ -239,12 +265,11 @@ pub unsafe fn install_kernel_gdt() {
     // Inclusive last valid byte of the TSS. It must cover the appended I/O
     // permission windows, or the CPU would refuse to consult a bitmap that
     // `ioperm`/`iopl` had legitimately installed and #GP on a permitted port.
-    let tss_limit = crate::tss::KERNEL_TSS_LIMIT;
     let mut i = 0usize;
     while i < crate::tss::NR_TSS {
-        let base = crate::tss::tss_base_addr(i);
-        gdt[10 + i * 2] = tss_low(base, tss_limit);   // low half
-        gdt[11 + i * 2] = tss_high(base);             // high half
+        let (lo, hi) = tss_descriptor(i);
+        gdt[10 + i * 2] = lo;                         // low half
+        gdt[11 + i * 2] = hi;                         // high half
         i += 1;
     }
 
@@ -399,6 +424,16 @@ mod tests {
     fn tss_access_byte_marks_avail_64bit_tss() {
         // P=1, DPL=0, S=0, TYPE=9 ⇒ 0x89.
         assert_eq!(ACCESS_TSS_AVAIL, 0x89);
+    }
+
+    #[test]
+    fn rebuilding_tss_descriptor_replaces_busy_type() {
+        let (available, _) = tss_descriptor(1);
+        let busy = available | (2u64 << 40);
+        assert_eq!((busy >> 40) & 0x0f, 0x0b);
+        let (rebuilt, _) = tss_descriptor(1);
+        assert_eq!((rebuilt >> 40) & 0x0f, 0x09);
+        assert_eq!(rebuilt, available);
     }
 
     #[test]

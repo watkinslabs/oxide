@@ -12,7 +12,7 @@ use super::accounting::TmpfsSb;
 use super::flags::{F_SEAL_FUTURE_WRITE, F_SEAL_GROW, F_SEAL_SHRINK, F_SEAL_WRITE};
 use super::inode::{fsid_of, iget_or_build};
 use super::limits::PG;
-use super::page::ensure_page;
+use super::page::with_resident;
 use super::quota::{self, QuotaOwner};
 
 /// One published shmem page.  The cgid is immutable page ownership: task
@@ -172,12 +172,7 @@ impl TmpfsFileData {
             let idx   = (cur / PG) as u64;
             let pgoff = cur % PG;
             let chunk = (PG - pgoff).min(n - done);
-            let migrating = {
-                let mut g = self.pages.lock();
-                match g.get(&idx).copied() {
-                    Some(ShmemPage::Migrating { token, .. }) => Some(token),
-                    Some(_) => {
-                        let pa = ensure_page(&mut g, idx, self)?;
+            let present = with_resident(self, idx, false, |pa| {
                     let base = pmm::setup::frame_ptr(pa).ok_or(VfsError::Eio)?;
                     // SAFETY: pa is an inode-owned frame; HHDM mirror readable;
                     // [pgoff..pgoff+chunk] is within the page granule.
@@ -185,15 +180,9 @@ impl TmpfsFileData {
                         let src = base.add(pgoff) as *const u8;
                         core::ptr::copy_nonoverlapping(src, buf[done..].as_mut_ptr(), chunk);
                     }
-                        None
-                    }
-                    None => { buf[done..done + chunk].fill(0); None }
-                }
-            };
-            if let Some(token) = migrating {
-                super::migration::wait_and_restart(token);
-                continue;
-            }
+                    Ok(())
+            })?;
+            if present.is_none() { buf[done..done + chunk].fill(0); }
             done += chunk;
         }
         Ok(n)
@@ -209,12 +198,7 @@ impl TmpfsFileData {
             let idx   = (cur / PG) as u64;
             let pgoff = cur % PG;
             let chunk = (PG - pgoff).min(src.len() - done);
-            let migrating = {
-                let mut g = self.pages.lock();
-                if let Some(ShmemPage::Migrating { token, .. }) = g.get(&idx).copied() {
-                    Some(token)
-                } else {
-                    let pa = ensure_page(&mut g, idx, self)?;
+            with_resident(self, idx, true, |pa| {
                     let base = pmm::setup::frame_ptr(pa).ok_or(VfsError::Eio)?;
             // SAFETY: pa is an inode-owned frame; HHDM mirror writable;
             // [pgoff..pgoff+chunk] within the page granule; non-overlapping.
@@ -222,13 +206,8 @@ impl TmpfsFileData {
                 let dst = base.add(pgoff);
                 core::ptr::copy_nonoverlapping(src[done..].as_ptr(), dst, chunk);
             }
-                    None
-                }
-            };
-            if let Some(token) = migrating {
-                super::migration::wait_and_restart(token);
-                continue;
-            }
+                    Ok(())
+            })?;
             done += chunk;
         }
         if end > self.len.load(Ordering::Acquire) { self.len.store(end, Ordering::Release); }
@@ -254,6 +233,7 @@ impl TmpfsFileData {
             // last page so a later grow re-reads zeros (Linux truncate).
             let keep = (len as usize).div_ceil(PG) as u64;
             let stale: Vec<u64> = g.range(keep..).map(|(&k, _)| k).collect();
+            let mut swapped = Vec::new();
             let mut freed = 0u64;
             for idx in stale {
                 if let Some(page) = g.remove(&idx) {
@@ -265,7 +245,7 @@ impl TmpfsFileData {
                             cgroup::uncharge_memory(cgid, cgroup::MemoryKind::Shmem, PG as u64);
                             vfs::memory_accounting::account_shmem_remove(1);
                         }
-                        ShmemPage::Swapped { entry, .. } => { let _ = pmm::swap::free_page(entry); }
+                        ShmemPage::Swapped { entry, .. } => swapped.push(entry),
                         ShmemPage::Migrating { .. } => unreachable!("truncate preflight excludes migrating shmem pages"),
                     }
                     freed += 1;
@@ -273,16 +253,19 @@ impl TmpfsFileData {
             }
             self.unacct_blocks(freed); // return reclaimed blocks to the mount and the owner
             let tail = len as usize % PG;
-            if tail != 0 {
-                let tail_idx = len / PG as u64;
-                if g.contains_key(&tail_idx) {
-                    let pa = ensure_page(&mut g, tail_idx, self)?;
+            let tail_idx = len / PG as u64;
+            let tail_present = tail != 0 && g.contains_key(&tail_idx);
+            drop(g);
+            for entry in swapped { let _ = pmm::swap::free_page(entry); }
+            if tail_present {
+                with_resident(self, tail_idx, false, |pa| {
                     let base = pmm::setup::frame_ptr(pa).ok_or(VfsError::Eio)?;
                     // SAFETY: inode-owned frame; zero [tail..PG] within the granule.
                     hal::zerotrap::trap(unsafe { base.add(tail) } as *const u8, PG - tail);
                     // SAFETY: base is page-aligned and tail..PG stays within the frame.
                     unsafe { core::ptr::write_bytes(base.add(tail), 0, PG - tail); }
-                }
+                    Ok(())
+                })?;
             }
         }
         self.len.store(len, Ordering::Release);
@@ -299,12 +282,7 @@ impl TmpfsFileData {
             let idx = pos / PG as u64;
             let pgoff = (pos as usize) % PG;
             let chunk = (PG - pgoff).min((end - pos) as usize);
-            let migrating = {
-                let mut g = self.pages.lock();
-                if let Some(ShmemPage::Migrating { token, .. }) = g.get(&idx).copied() {
-                    Some(token)
-                } else {
-                    let pa = ensure_page(&mut g, idx, self)?;
+            with_resident(self, idx, true, |pa| {
                     if zero_range {
                         let base = pmm::setup::frame_ptr(pa).ok_or(VfsError::Eio)?;
                 // SAFETY: pa is an inode-owned frame; range lies within page.
@@ -312,13 +290,8 @@ impl TmpfsFileData {
                 // SAFETY: pgoff and chunk were computed to stay within this frame.
                         unsafe { core::ptr::write_bytes(base.add(pgoff), 0, chunk); }
                     }
-                    None
-                }
-            };
-            if let Some(token) = migrating {
-                super::migration::wait_and_restart(token);
-                continue;
-            }
+                    Ok(())
+            })?;
             pos += chunk as u64;
         }
         if !keep_size && end > old {

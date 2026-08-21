@@ -12,9 +12,10 @@ mod lpi;
 pub(crate) mod regs;
 mod sgi;
 
-pub use bringup::{ap_cpu_interface_enable, enable, gicr_base, GicStatus, GICR_STRIDE};
+pub use bringup::{ap_cpu_interface_enable, cpu_interface_disable, enable, gicr_base, GicStatus, GICR_STRIDE};
 pub use dispatch::{LAST_INTID, TICK_COUNT, UART_IRQ_FIRES};
 pub use lines::{disable_intid, enable_intid, enable_intid_level, enable_registered_ppis_on, ispendr_word};
-pub use lpi::{lpi_set_config, lpis_enable, LpisStatus, LPI_BASE, LPI_PROP_DEFAULT};
+pub use lpi::{lpi_set_config, lpis_enable, LpisStatus, LPI_BASE, LPI_PROP_DEFAULT,
+              LPI_PROP_ENABLED};
 pub use sgi::{enable_sgi_on, install_diag_hooks, send_call_function_ipi, send_resched_ipi, send_sgi,
               CALL_FUNCTION_SGI, RESCHED_SGI};

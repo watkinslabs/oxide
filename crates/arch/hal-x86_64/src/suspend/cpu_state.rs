@@ -23,18 +23,16 @@ use super::state::SavedCpuState;
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 use super::state::DescPtr;
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-use crate::msr::{IA32_EFER, IA32_FS_BASE, IA32_GS_BASE, IA32_KERNEL_GS_BASE};
+use crate::msr::{IA32_CR_PAT, IA32_EFER, IA32_FS_BASE, IA32_GS_BASE, IA32_KERNEL_GS_BASE};
 
-/// Access-byte offset within an 8-byte segment descriptor (Intel SDM Vol. 3
-/// Fig. 3-8). The type nibble is its low four bits.
-#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-const DESC_ACCESS_BYTE: usize = 5;
-/// Type-nibble bit 1: the TSS is busy. `ltr` requires it clear.
-#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-const TSS_TYPE_BUSY: u8 = 1 << 1;
-/// Selector index mask: bits 15..3 scale by 8 into the descriptor table.
-#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-const SELECTOR_INDEX_MASK: u16 = !0x7;
+#[cfg(any(test, all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+const CR4_OSXSAVE: u64 = 1 << 18;
+
+/// XGETBV/XSETBV are legal only after CR4.OSXSAVE is live. Keeping this
+/// predicate pure gives hosted tests a positive control for the faulting case.
+/// # C: O(1)
+#[cfg(any(test, all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+const fn xcr0_accessible(cr4: u64) -> bool { cr4 & CR4_OSXSAVE != 0 }
 
 /// Capture everything a deep sleep does not preserve.
 ///
@@ -55,6 +53,9 @@ pub unsafe fn save_processor_state(s: &mut SavedCpuState) {
     // SAFETY: `rdmsr` is privileged but legal at CPL=0 and has no memory effect; every selector below is architectural.
     unsafe {
         s.efer = crate::cpu::rdmsr(IA32_EFER);
+        s.xcr0 = if xcr0_accessible(s.cr4) { read_xcr0() } else { 0 };
+        s.pat = if crate::pat::enabled() { crate::cpu::rdmsr(IA32_CR_PAT) } else { 0 };
+        s.cpuid_faulting = u64::from(crate::cpuid_faulting_enabled());
         s.fs_base = crate::cpu::rdmsr(IA32_FS_BASE);
         s.gs_base = crate::cpu::rdmsr(IA32_GS_BASE);
         s.kernel_gs_base = crate::cpu::rdmsr(IA32_KERNEL_GS_BASE);
@@ -86,25 +87,46 @@ pub unsafe fn restore_processor_state(s: &SavedCpuState) {
     unsafe {
         crate::cpu::wrmsr(IA32_EFER, s.efer);
         write_cr4(s.cr4);
+        if xcr0_accessible(s.cr4) { write_xcr0(s.xcr0); }
+        if s.pat != 0 { crate::cpu::wrmsr(IA32_CR_PAT, s.pat); }
         write_cr3(s.cr3);
         write_cr2(s.cr2);
         write_cr0(s.cr0);
         load_gdt(&s.gdt);
         reload_kernel_selectors();
         load_idt(&s.idt);
-        clear_tss_busy(s.gdt.base, s.tr);
         // Linux calls syscall_init() while repairing the processor context:
         // entry addresses and selector policy belong to this kernel, not to
         // whatever values happened to be saved before the sleep.
         crate::syscall::install_syscall_msrs();
-        load_tr(s.tr);
+        crate::tss::reload_saved_tr(s.tr);
         load_ldt(s.ldt);
         load_data_selectors(s.ds, s.es);
         // Bases last: a selector load clobbers the matching base MSR.
         crate::cpu::wrmsr(IA32_FS_BASE, s.fs_base);
         crate::cpu::wrmsr(IA32_GS_BASE, s.gs_base);
         crate::cpu::wrmsr(IA32_KERNEL_GS_BASE, s.kernel_gs_base);
+        crate::set_cpuid_faulting(s.cpuid_faulting != 0);
     }
+}
+
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+unsafe fn read_xcr0() -> u64 {
+    let lo: u32;
+    let hi: u32;
+    // SAFETY: the caller proved CR4.OSXSAVE; ECX=0 names XCR0.
+    unsafe { core::arch::asm!("xgetbv", in("ecx") 0u32, out("eax") lo, out("edx") hi,
+                              options(nomem, nostack, preserves_flags)); }
+    (u64::from(hi) << 32) | u64::from(lo)
+}
+
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+unsafe fn write_xcr0(value: u64) {
+    // SAFETY: the value was captured from this admitted CPU and CR4.OSXSAVE
+    // was restored first; ECX=0 names XCR0.
+    unsafe { core::arch::asm!("xsetbv", in("ecx") 0u32, in("eax") value as u32,
+                              in("edx") (value >> 32) as u32,
+                              options(nostack, preserves_flags)); }
 }
 
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
@@ -182,38 +204,11 @@ read_selector!(read_gs, "mov {:x}, gs");
 read_selector!(store_tr, "str {:x}");
 read_selector!(store_ldt, "sldt {:x}");
 
-/// # SAFETY: `sel` names a present TSS descriptor in the loaded GDT whose
-/// busy bit has been cleared.
-#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-unsafe fn load_tr(sel: u16) {
-    if sel == 0 { return; }
-    // SAFETY: per fn contract — `ltr` is legal at CPL=0 against an available 64-bit TSS descriptor.
-    unsafe { core::arch::asm!("ltr {:x}", in(reg) sel, options(nostack, preserves_flags)); }
-}
-
 /// # SAFETY: `sel` is zero or names an LDT descriptor in the loaded GDT.
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 unsafe fn load_ldt(sel: u16) {
     // SAFETY: per fn contract — `lldt` is legal at CPL=0; selector 0 means "no LDT", which is the common case.
     unsafe { core::arch::asm!("lldt {:x}", in(reg) sel, options(nostack, preserves_flags)); }
-}
-
-/// Clear the busy bit in the GDT's TSS descriptor so `ltr` can reload it.
-///
-/// The CPU marks the descriptor of the task register it loads BUSY, and the
-/// saved TR names exactly that descriptor. `ltr` against a busy descriptor
-/// raises `#GP`, so the resume leaves the machine with no task register and
-/// the first ring transition faults with no stack to fault on.
-///
-/// # SAFETY: `gdt_base` is the linear address of the loaded GDT and `sel`
-/// indexes a system descriptor within it.
-#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-unsafe fn clear_tss_busy(gdt_base: u64, sel: u16) {
-    if sel == 0 || gdt_base == 0 { return; }
-    let entry = gdt_base + (sel & SELECTOR_INDEX_MASK) as u64;
-    let access = (entry as *mut u8).wrapping_add(DESC_ACCESS_BYTE);
-    // SAFETY: per fn contract — `entry` is inside the loaded GDT, which is kernel-writable memory this CPU owns on the resume path.
-    unsafe { core::ptr::write_volatile(access, core::ptr::read_volatile(access) & !TSS_TYPE_BUSY); }
 }
 
 /// Reload CS/SS and the kernel data selectors against the freshly loaded GDT.
@@ -247,3 +242,16 @@ pub unsafe fn save_processor_state(_s: &mut SavedCpuState) {}
 /// Hosted build counterpart of the restore. # SAFETY: no-op. # C: O(1)
 #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
 pub unsafe fn restore_processor_state(_s: &SavedCpuState) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn xcr0_access_requires_osxsave() {
+        assert!(!xcr0_accessible(0));
+        assert!(!xcr0_accessible(CR4_OSXSAVE - 1));
+        assert!(xcr0_accessible(CR4_OSXSAVE));
+        assert!(xcr0_accessible(CR4_OSXSAVE | (1 << 7)));
+    }
+}

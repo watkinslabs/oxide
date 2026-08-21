@@ -127,6 +127,38 @@ fn task_lift_vruntime_respects_floor() {
 }
 
 #[test]
+fn wake_placement_preserves_accumulated_cpu_debt() {
+    let t = Task::new(2, "debtor", SchedClass::Normal { weight: 1024 });
+    t.vruntime.store(1_000, Ordering::Release);
+    t.lift_vruntime(100);
+    assert_eq!(t.vruntime.load(Ordering::Acquire), 1_000,
+        "a timed wake must not rewind prior runtime");
+}
+
+#[test]
+fn wake_placement_lifts_a_stale_sleeper_to_the_floor() {
+    let t = Task::new(3, "sleeper", SchedClass::Normal { weight: 1024 });
+    t.vruntime.store(10, Ordering::Release);
+    t.lift_vruntime(100);
+    assert_eq!(t.vruntime.load(Ordering::Acquire), 100,
+        "a sleeper cannot re-enter behind the runqueue floor");
+}
+
+#[test]
+fn repeated_coordinator_wakes_cannot_jump_a_queued_victim() {
+    let victim = Arc::new(Task::new(20, "victim", SchedClass::Normal { weight: 1024 }));
+    victim.vruntime.store(500, Ordering::Release);
+    let coordinator = Arc::new(Task::new(10, "coordinator", SchedClass::Normal { weight: 1024 }));
+    coordinator.vruntime.store(1_000, Ordering::Release);
+    let mut q = crate::CfsRunqueue::new();
+    q.enqueue(Arc::clone(&victim));
+    for _ in 0..8 { coordinator.lift_vruntime(q.min_vruntime()); }
+    q.enqueue(coordinator);
+    assert!(Arc::ptr_eq(&q.pick_leftmost().expect("one queued task"), &victim),
+        "backoff timer wakes cannot repeatedly buy head-of-queue placement");
+}
+
+#[test]
 fn task_kernel_stack_starts_null() {
     let t = Task::new(1, "t", SchedClass::Normal { weight: 1024 });
     assert!(t.kernel_stack.load(Ordering::Acquire).is_null());

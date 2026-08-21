@@ -66,7 +66,7 @@ pub use io_context::current_ioprio;
 pub use namespaces::TaskNamespaceSnapshot;
 pub use restart::RestartBlock;
 pub use signals::{SaHandler, SigActions, SignalPending, SA_IMMUTABLE, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK};
-pub use sigwake::{SleepWake, WaitOutcome, WaitState, signal_pending_state};
+pub use sigwake::{interruptible_work_pending, SleepWake, WaitOutcome, WaitState, signal_pending_state};
 pub use types::{SchedClass, SchedPolicy, SigInfo, TaskState, RT_QUEUE_CAP};
 #[cfg(feature = "debug-watchdog")]
 pub use types::WakeDiagPhase;

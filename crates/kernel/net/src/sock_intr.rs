@@ -139,10 +139,12 @@ pub const fn wait_verdict(shut: bool, nonblock: bool, signal_pending: bool, dead
     WaitVerdict::Park
 }
 
-/// Whether the calling task has a signal that would interrupt a sleep.
+/// Whether the calling task has signal or fake-signal work that interrupts a
+/// sleep. Linux's `signal_pending(current)` includes the freezer's pending
+/// thread work even when no userspace signal is deliverable.
 /// # C: O(pending sets)
 #[cfg(target_os = "oxide-kernel")]
-pub fn signal_pending_self() -> bool { sched::live::deliverable_signals_self() != 0 }
+pub fn signal_pending_self() -> bool { sched::live::interruptible_work_pending_self() }
 
 /// Hosted builds have no task carrying signals, so no wait is interruptible.
 /// # C: O(1)

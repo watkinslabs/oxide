@@ -81,6 +81,9 @@ pub struct SuspendCtx {
     pub fp: u64,
     pub x19: u64, pub x20: u64, pub x21: u64, pub x22: u64, pub x23: u64,
     pub x24: u64, pub x25: u64, pub x26: u64, pub x27: u64, pub x28: u64,
+    /// Live per-thread permission-overlay rights. This register is outside
+    /// FPSIMD and is restored after feature-gated TCR2_EL1 enablement.
+    pub por_el0: u64,
 }
 
 impl SuspendCtx {
@@ -97,6 +100,7 @@ impl SuspendCtx {
             x18: 0, sp: 0, lr: 0, fp: 0,
             x19: 0, x20: 0, x21: 0, x22: 0, x23: 0,
             x24: 0, x25: 0, x26: 0, x27: 0, x28: 0,
+            por_el0: 0,
         }
     }
 

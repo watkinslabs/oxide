@@ -24,6 +24,11 @@ static WAKE_PENDING: [AtomicBool; cpu::MAX_CPUS] =
 pub fn wake_list_push(cpu: u32, task: Arc<Task>) -> bool {
     let i = cpu as usize;
     if i >= cpu::MAX_CPUS { return false; }
+    if !cpu::smp::accepts_work(cpu) {
+        let target = super::select_task_rq(&task);
+        if target != cpu { return wake_list_push(target, task); }
+        return false;
+    }
     if task.on_wake_list.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() { return false; }
     // Claim the batch before publishing the node.  The post-publication check
     // below closes the target's clear-between-claim-and-link race.

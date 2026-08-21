@@ -43,7 +43,7 @@ pub(super) fn park_for_grant(me: &Arc<Task>, grant: &AtomicU32, key: Key, tid: u
             if grant_kind(grant) != Grant::Pending { return Ok(()); }
             return Err(-(Errno::Etimedout.as_i32() as i64));
         }
-        if sched::live::deliverable_signals_self() != 0 {
+        if sched::live::interruptible_work_pending_self() {
             unqueue(key, tid);
             if grant_kind(grant) != Grant::Pending { return Ok(()); }
             return Err(syscall::restart::restart_nointr());

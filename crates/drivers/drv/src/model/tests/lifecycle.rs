@@ -97,6 +97,23 @@ fn failed_probe_leaves_device_unbound_and_retriable() {
 }
 
 #[test]
+fn parent_probe_publishes_child_inside_one_outer_hotplug_transaction() {
+    let _model = crate::model::test_claim::claim_model();
+    register_driver(&NESTED_CHILD_DRV);
+    let parent = device_add(Arc::new(Device::new(
+        "platform", String::from("nested-parent-test0"), 0, NESTED_PARENT_ID, 0)));
+
+    assert_eq!(parent.bound(), Some("nested-child-test"));
+    let child = devices().into_iter().find(|device|
+        device.bus == "nested-bus" && device.addr == NESTED_CHILD_ADDR)
+        .expect("nested probe child must publish");
+    assert_eq!(child.parent(), Some(("platform", "nested-parent-test0")));
+
+    device_del(&child);
+    device_del(&parent);
+}
+
+#[test]
 fn device_del_unbinds_bound_driver_once() {
     let _model = crate::model::test_claim::claim_model();
     REMOVE_HITS.store(0, Ordering::Release);

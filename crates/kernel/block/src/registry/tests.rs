@@ -155,6 +155,20 @@ fn holders_openers_and_quiesce_gate_are_distinct_and_atomic() {
 }
 
 #[test]
+fn raii_target_claim_retains_canonical_device_until_drop() {
+    const NAME: &str = "registry-raii-claim";
+    let dev: Arc<dyn crate::BlockDevice> = MemDisk::<TaskList>::new(512, 8);
+    register(NAME, dev.clone());
+    let claim = claim_target(NAME).expect("published target is claimable");
+    assert!(Arc::ptr_eq(&claim.device(), &by_name(NAME).unwrap().dev));
+    assert_eq!(holder_count(NAME), Some(1));
+    assert!(!unregister(NAME), "a live target claim blocks disappearance");
+    drop(claim);
+    assert_eq!(holder_count(NAME), Some(0));
+    assert!(unregister(NAME));
+}
+
+#[test]
 fn opener_seal_keeps_the_control_opener_and_refuses_new_opens() {
     const NAME: &str = "registry-open-seal";
     let dev: Arc<dyn crate::BlockDevice> = MemDisk::<TaskList>::new(512, 8);

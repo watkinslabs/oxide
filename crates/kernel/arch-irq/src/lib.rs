@@ -33,8 +33,10 @@ mod gic_trigger;
 #[cfg(any(test, target_arch = "aarch64"))]
 mod its_mapd;
 mod line;
+mod irq_sync;
 mod msi;
 mod msi_context;
+mod msi_suspend;
 #[cfg(target_arch = "x86_64")]
 mod ioapic;
 mod spurious;
@@ -43,6 +45,7 @@ pub use line::{irq_line_disabled, irq_set_irq_wake, resume_device_irqs,
     suspend_device_irqs, LineHandler};
 pub use irqstat::DeviceAction;
 pub use msi::{alloc_pci_msi, free_pci_msi, free_platform_msi, register_pci_msi_context_handler, register_pci_msi_handler, request_platform_msi, MsiMessage};
+pub use msi_suspend::{set_source_mask as set_msi_source_mask, SourceMask as MsiSourceMask};
 #[cfg(target_arch = "x86_64")]
 pub use ioapic::{program_x86_intx_gsi, program_x86_ioapic};
 pub use spurious::{IrqReport, IrqRet};

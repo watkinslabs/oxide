@@ -17,6 +17,14 @@ fn function_ids_match_the_interface_assignment() {
 }
 
 #[test]
+fn affinity_info_distinguishes_on_off_and_on_pending() {
+    assert!(!affinity_level_is_off(PSCI_AFFINITY_LEVEL_ON));
+    assert!(affinity_level_is_off(PSCI_AFFINITY_LEVEL_OFF));
+    assert!(!affinity_level_is_off(PSCI_AFFINITY_LEVEL_ON_PENDING));
+    assert!(!affinity_level_is_off(PsciStatus::Denied as i64));
+}
+
+#[test]
 fn smc64_ids_carry_the_calling_convention_bit_and_smc32_ids_do_not() {
     assert_ne!(PSCI_SYSTEM_SUSPEND_64 & PSCI_FN_64BIT, 0);
     assert_ne!(PSCI_CPU_ON_64 & PSCI_FN_64BIT, 0);

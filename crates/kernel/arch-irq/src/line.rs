@@ -18,12 +18,14 @@ struct LineDescriptor {
     handler: AtomicPtr<()>,
     spurious: Spinlock<SpuriousState, Devices>,
     wake: WakeState,
+    in_flight: crate::irq_sync::InFlight,
 }
 
 impl LineDescriptor {
     const fn new() -> Self {
         Self { handler: AtomicPtr::new(core::ptr::null_mut()),
-            spurious: Spinlock::new(SpuriousState::new()), wake: WakeState::new() }
+            spurious: Spinlock::new(SpuriousState::new()), wake: WakeState::new(),
+            in_flight: crate::irq_sync::InFlight::new() }
     }
 
     fn install(&self, handler: LineHandler) {
@@ -238,19 +240,26 @@ fn arm_line_disabled<const N: usize>(
 fn invoke_line(descriptor: &LineDescriptor, irq: u32) -> bool {
     let raw = descriptor.handler.load(Ordering::Acquire);
     if raw.is_null() { return false; }
-    if descriptor.spurious.lock().disabled() { return false; }
-    match descriptor.wake.dispatch() {
-        WakeDispatch::Wake => {
-            disable_line(irq);
-            power::pm_system_irq_wakeup(irq);
-            return true;
+    let in_flight = {
+        let spurious = descriptor.spurious.lock();
+        if spurious.disabled() { return false; }
+        match descriptor.wake.dispatch() {
+            WakeDispatch::Wake => {
+                disable_line(irq);
+                power::pm_system_irq_wakeup(irq);
+                return true;
+            }
+            WakeDispatch::Suspended => return true,
+            WakeDispatch::Run => {}
         }
-        WakeDispatch::Suspended => return true,
-        WakeDispatch::Run => {}
-    }
+        descriptor.in_flight.enter()
+    };
     // SAFETY: raw was installed by a line-handler registration path with LineHandler ABI.
     let f: LineHandler = unsafe { core::mem::transmute(raw) };
     let report = f(irq);
+    // Suspend holds `spurious` while masking and synchronizing. Publish this
+    // handler's completion before reacquiring that guard for storm accounting.
+    drop(in_flight);
     let disable = descriptor.spurious.lock().note(now_ns(), report);
     if disable { disable_line(irq); }
     true

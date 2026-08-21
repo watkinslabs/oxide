@@ -38,7 +38,7 @@ pub unsafe fn reserve() {
 /// Remove `[base, base+size)` from the page allocator. # C: O(size / page size)
 fn take(base: u64, size: u64) -> bool {
     let Some(pmm) = pmm::setup::pmm_static() else { return false };
-    pmm.reserve_early(hal::Pfn(base / PAGE_SIZE), size / PAGE_SIZE).is_ok()
+    pmm.reserve_early_nosave(hal::Pfn(base / PAGE_SIZE), size / PAGE_SIZE).is_ok()
 }
 
 /// The usable-RAM ranges the allocator was seeded from. # C: O(N_ranges)

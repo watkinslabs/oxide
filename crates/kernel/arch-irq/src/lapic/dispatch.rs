@@ -193,13 +193,16 @@ unsafe extern "C" fn oxide_irq_dispatch(regs: *mut hal_x86_64::PtRegs) {
             // per-vector handler if installed.
             crate::MSI_FIRES.fetch_add(1, Ordering::Relaxed);
             crate::irqstat::hit_msi(v as u32);
-            let context = crate::msi_context::invoke_x86(v);
-            let idx = (v - hal_x86_64::VEC_MSI_POOL_FIRST) as usize;
-            let raw = crate::MSI_HANDLERS[idx].load(Ordering::Acquire);
-            if !context && !raw.is_null() {
-                // SAFETY: raw was installed via `register_msi_handler` with the documented `fn()` signature; reverse cast restores the ABI-compatible fn pointer.
-                let f: fn() = unsafe { core::mem::transmute(raw) };
-                f();
+            match crate::msi_suspend::begin(v as u32) {
+                crate::msi_suspend::Dispatch::Run(in_flight) => {
+                    let _ = crate::msi::invoke_x86_owned(v as u32);
+                    drop(in_flight);
+                }
+                crate::msi_suspend::Dispatch::Wake => {
+                    power::pm_system_irq_wakeup(v as u32);
+                }
+                crate::msi_suspend::Dispatch::Suspended
+                | crate::msi_suspend::Dispatch::Absent => {}
             }
             let _ = crate::invoke_x86_line_handler(v);
         }
@@ -247,6 +250,7 @@ unsafe extern "C" fn oxide_irq_dispatch(regs: *mut hal_x86_64::PtRegs) {
     // Softirq work may publish another local deferred wake.  Finish it while
     // still on the hardirq stack, before IRQ return can schedule.
     let _ = sched::live::ttwu::service_current_cpu();
+    crate::call_fn::finish_cpu_offline_tail();
 }
 
 /// Linux `irqentry_exit` — the x86_64 half. Called by the IRQ-exit asm after

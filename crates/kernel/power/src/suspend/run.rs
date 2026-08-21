@@ -80,6 +80,14 @@ fn replay(undos: &[Undo], state: SuspendState, be: &SuspendBackend, t: Tables, c
     for u in undos { apply(*u, state, be, t, c); }
 }
 
+fn replay_outer(undos: &[Undo], state: SuspendState, be: &SuspendBackend,
+                t: Tables, c: &mut Cycle, thaw: bool) {
+    for undo in undos {
+        if !thaw && *undo == Undo::ThawProcesses { continue; }
+        apply(*undo, state, be, t, c);
+    }
+}
+
 /// Record a failure against the step group that produced it.
 fn record(step: Step) {
     if let Some(s) = sequence::stat_step(step) { STATS.save_failed_step(s); }
@@ -159,17 +167,17 @@ pub fn enter_state(state: SuspendState, be: &SuspendBackend, t: Tables) -> KResu
         return Err(e);
     }
 
-    let outcome = devices_and_enter(state, be, t, &mut c);
+    let outcome = devices_and_enter_cycle(state, be, t, &mut c, true);
     super::wakeup::SYSTEM.disarm();
     super::freezer::set_phase(super::freezer::FreezePhase::idle());
     outcome
 }
 
-fn devices_and_enter(state: SuspendState, be: &SuspendBackend, t: Tables,
-                     c: &mut Cycle) -> KResult<()> {
+fn devices_and_enter_cycle(state: SuspendState, be: &SuspendBackend, t: Tables,
+                           c: &mut Cycle, thaw: bool) -> KResult<()> {
     // Steps 3-6. Each failure unwinds the whole table suffix for its step.
     if let Err(e) = platform::begin(t, state) {
-        replay(sequence::unwind_from(Step::PlatformBegin), state, be, t, c);
+        replay_outer(sequence::unwind_from(Step::PlatformBegin), state, be, t, c, thaw);
         return Err(e);
     }
     (be.console_suspend)();
@@ -178,7 +186,7 @@ fn devices_and_enter(state: SuspendState, be: &SuspendBackend, t: Tables,
         if let Err(e) = call() {
             record(step);
             if sequence::runs_platform_recover(step) { platform::recover(t, state); }
-            replay(sequence::unwind_from(step), state, be, t, c);
+            replay_outer(sequence::unwind_from(step), state, be, t, c, thaw);
             return Err(e);
         }
     }
@@ -190,7 +198,7 @@ fn devices_and_enter(state: SuspendState, be: &SuspendBackend, t: Tables,
         match inner(state, be, t, c) {
             Err((step, e)) => {
                 record(step);
-                replay(sequence::unwind_from(step), state, be, t, c);
+                replay_outer(sequence::unwind_from(step), state, be, t, c, thaw);
                 return Err(e);
             }
             Ok(s) => {
@@ -202,8 +210,23 @@ fn devices_and_enter(state: SuspendState, be: &SuspendBackend, t: Tables,
 
     // The outer half of a completed cycle runs whether or not the platform
     // enter reported an error: the machine is awake and the devices are down.
-    replay(&UNWIND_ORDER[INNER_UNWIND_END..], state, be, t, c);
+    replay_outer(&UNWIND_ORDER[INNER_UNWIND_END..], state, be, t, c, thaw);
     match enter_err { Some(e) => Err(e), None => Ok(()) }
+}
+
+/// Enter only the device/platform half while an outer owner retains frozen
+/// tasks and the shared transition claim. # C: O(N_devices)
+/// # Sleeps: yes
+pub fn suspend_devices_and_enter(state: SuspendState, be: &SuspendBackend,
+                                 t: Tables) -> KResult<()> {
+    if state == SuspendState::On { return Err(Error::Inval); }
+    if state != SuspendState::ToIdle && !super::state::valid_state(t.suspend, state) {
+        return Err(Error::Inval);
+    }
+    let mut cycle = Cycle { irq_state: 0 };
+    let result = devices_and_enter_cycle(state, be, t, &mut cycle, false);
+    super::wakeup::SYSTEM.disarm();
+    result
 }
 
 /// Enter `state`, doing the admission checks a `/sys/power/state` write does.
@@ -217,9 +240,8 @@ pub fn pm_suspend(state: SuspendState, be: &SuspendBackend, t: Tables) -> KResul
     if state != SuspendState::ToIdle && !super::state::valid_state(t.suspend, state) {
         return Err(Error::Inval);
     }
-    if !tunables::try_claim_transition() { return Err(Error::Busy); }
+    let _claim = crate::transition::try_claim().ok_or(Error::Busy)?;
     let r = enter_state(state, be, t);
-    tunables::release_transition();
     STATS.save_errno(match r { Ok(()) => 0, Err(e) => errno_of(e) });
     r
 }
@@ -229,7 +251,7 @@ pub fn errno_of(e: Error) -> i32 {
     match e {
         Error::Inval => -22, Error::Perm => -1, Error::Io => -5, Error::Busy => -16,
         Error::Nosys => -38, Error::Opnotsupp => -95, Error::Again => -11, Error::Intr => -4,
-        Error::Nomem => -12, Error::Nodata => -61,
+        Error::Nomem => -12, Error::Nodata => -61, Error::Nospc => -28,
     }
 }
 

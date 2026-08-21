@@ -93,6 +93,7 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
         }
         let pcp_words = ((pfn_max + 63) >> 6) as usize;
         let pcp_bitmap = backing.bitmap_storage(PCP_BITMAP_SLOT as u8, pcp_words);
+        let hibernate_forbidden = backing.bitmap_storage(HIBERNATE_FORBIDDEN_SLOT as u8, pcp_words);
         let pageblocks = PageblockTypes::new(backing.bitmap_storage(
             PAGEBLOCK_TYPE_SLOT as u8, PageblockTypes::words_for(pfn_max),
         ));
@@ -156,6 +157,7 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
             pageblocks,
             buddy_bitmaps: inner.bitmaps,
             pcp_bitmap,
+            hibernate_forbidden,
             pcp,
             zone_free,
             pcp_free,

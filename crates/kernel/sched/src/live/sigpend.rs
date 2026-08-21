@@ -179,6 +179,13 @@ pub fn deliverable_signals_self() -> u64 {
     super::schedule::current().map(deliverable_signals).unwrap_or(0)
 }
 
+/// Whether the running task must leave an interruptible wait for real signal
+/// delivery or fake-signal work such as the system freezer.
+/// # C: O(N_sig)
+pub fn interruptible_work_pending_self() -> bool {
+    super::schedule::current().is_some_and(crate::interruptible_work_pending)
+}
+
 /// Whether an UNSURVIVABLE kill is pending for `task` — a `SIGKILL` in either
 /// the thread-private or the process-directed set. Distinct from
 /// [`deliverable_signals`]: a signal being deliverable means an ordinary

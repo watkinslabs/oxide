@@ -3,18 +3,29 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-use alloc::vec::Vec;
-use sync::{Spinlock, TaskList as HdaLockClass};
+use alloc::{sync::Arc, vec::Vec};
+use core::ops::DerefMut;
+use core::sync::atomic::{AtomicBool, Ordering};
+use sync::{Devices as HdaRegistryClass, Spinlock};
 
-use crate::controller::Hda;
+use crate::controller::{Hda, IrqEndpoint};
 use crate::elemkey::{self, ElemKind};
+use crate::ownership::ControllerLocks;
 use crate::stream;
+use crate::transport::Rings;
 use crate::widget;
 
 /// One probed controller.
 pub struct Device {
     pub key: pci::Bdf,
     pub owner: sound::SoundOwnerKey,
+    online: AtomicBool,
+    locks: ControllerLocks<DeviceState, Rings>,
+    irq: IrqEndpoint,
+}
+
+/// Process-context state for one controller.
+pub struct DeviceState {
     pub hda: Hda,
     /// Codec vendor id, kept for the card identity string.
     pub vendor_id: u32,
@@ -27,7 +38,43 @@ pub struct Device {
     pub mapping: Option<mmio_map::Mapping>,
 }
 
-static DEVICES: Spinlock<Vec<Device>, HdaLockClass> = Spinlock::new(Vec::new());
+impl Device {
+    /// # C: O(1)
+    pub fn new(key: pci::Bdf, owner: sound::SoundOwnerKey, hda: Hda, vendor_id: u32,
+               frames: Vec<(u64, u8)>, mapping: mmio_map::Mapping) -> Self {
+        let irq = IrqEndpoint::new(&hda);
+        let reg = Arc::clone(&hda.rings);
+        Self {
+            key, owner, online: AtomicBool::new(true), irq,
+            locks: ControllerLocks::from_reg(DeviceState {
+                hda, vendor_id, jack_elems: Vec::new(), frames, mapping: Some(mapping),
+            }, reg),
+        }
+    }
+
+    /// Run cleanup after this controller has left the lookup registry.
+    /// # C: O(1) plus callback
+    pub fn with_offline<R>(&self, f: impl FnOnce(&mut DeviceState) -> R) -> R {
+        // SAFETY: remove set `online=false` and unpublished this handle; this
+        // process-context acquire waits for any operation already in flight.
+        let mut state = unsafe { self.locks.process.lock() };
+        f(&mut state)
+    }
+}
+
+pub type DeviceHandle = Arc<Device>;
+
+static DEVICES: Spinlock<Vec<DeviceHandle>, HdaRegistryClass> = Spinlock::new(Vec::new());
+
+/// Acquire the controller directory with its hard-IRQ lookup excluded. The
+/// guard covers lookup/publish only and is dropped before controller work.
+/// # C: O(1) plus contention
+fn lock_devices() -> impl DerefMut<Target = Vec<DeviceHandle>> {
+    #[cfg(target_arch = "x86_64")]
+    { DEVICES.lock_irqsave::<hal_x86_64::X86IrqGate>() }
+    #[cfg(target_arch = "aarch64")]
+    { DEVICES.lock_irqsave::<hal_aarch64::ArmIrqGate>() }
+}
 
 /// Owner keys carry a tag so they cannot collide with another sound
 /// transport's key space.
@@ -41,25 +88,39 @@ pub fn owner_key(bdf: pci::Bdf) -> Option<sound::SoundOwnerKey> {
 }
 
 /// Run `f` over the device owning `owner`. # C: O(devices)
-pub fn with_device<R>(owner: sound::SoundOwnerKey, f: impl FnOnce(&mut Device) -> R) -> Option<R> {
-    let mut guard = DEVICES.lock();
-    guard.iter_mut().find(|device| device.owner == owner).map(f)
+pub fn with_device<R>(owner: sound::SoundOwnerKey,
+                      f: impl FnOnce(&mut DeviceState) -> R) -> Option<R> {
+    let device = lock_devices().iter().find(|device| device.owner == owner).cloned()?;
+    // SAFETY: sound callbacks run in process context and hold no spinlock;
+    // registry lookup ended before this possibly sleeping acquisition.
+    let mut state = unsafe { device.locks.process.lock() };
+    if !device.online.load(Ordering::Acquire) { return None; }
+    Some(f(&mut state))
 }
 
 /// Publish a probed controller. # C: O(devices)
-pub fn insert(device: Device) { DEVICES.lock().push(device); }
+pub fn insert(device: Device) { lock_devices().push(Arc::new(device)); }
 
 /// Remove a controller, returning it so the caller can free its frames.
 /// # C: O(devices)
-pub fn remove(key: pci::Bdf) -> Option<Device> {
-    let mut guard = DEVICES.lock();
+pub fn remove(key: pci::Bdf) -> Option<DeviceHandle> {
+    let mut guard = lock_devices();
     let index = guard.iter().position(|device| device.key == key)?;
+    guard[index].online.store(false, Ordering::Release);
     Some(guard.remove(index))
 }
 
 /// Owner of the controller at `key`. # C: O(devices)
 pub fn owner_of(key: pci::Bdf) -> Option<sound::SoundOwnerKey> {
-    DEVICES.lock().iter().find(|device| device.key == key).map(|device| device.owner)
+    lock_devices().iter().find(|device| device.key == key).map(|device| device.owner)
+}
+
+/// Service one IRQ without acquiring process state. # C: O(devices + responses)
+pub fn handle_interrupt(owner: sound::SoundOwnerKey) -> bool {
+    let Some(device) = lock_devices().iter().find(|device| device.owner == owner).cloned()
+        else { return false; };
+    if !device.online.load(Ordering::Acquire) { return false; }
+    device.irq.handle(&device.locks.reg)
 }
 
 fn hex4(value: u32, out: &mut [u8; 4]) {

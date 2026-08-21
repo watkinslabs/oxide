@@ -30,7 +30,10 @@ extern crate std;
 use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
 mod account;
+mod hibernate_diag;
 pub use account::{HandlerAccounting, Unaccounted};
+pub use hibernate_diag::{hibernate_irq_restore, hibernate_witness, HibernateWitness};
+use hibernate_diag::witness_stage as hibernate_witness_stage;
 
 /// Softirq slot identifiers. Add new entries at the bottom; never
 /// reorder existing variants — handlers index by `as u32`.
@@ -286,12 +289,22 @@ pub fn set_handler(slot: Slot, f: fn()) -> *mut () {
 /// CPU. Drivers call this from remove after stopping publication of new work.
 /// # C: O(NR_CPUS)
 pub fn clear_handler(slot: Slot) -> *mut () {
+    clear_pending(slot);
+    HANDLERS[slot as usize].swap(core::ptr::null_mut(), Ordering::AcqRel)
+}
+
+/// Clear a slot's pending publication on every CPU without removing its
+/// handler.  The subsystem that owns the slot may use this only after it has
+/// closed every producer and synchronized with the handler's state.  This is
+/// the softirq half of Linux's suspend/remove pattern: stop queueing deferred
+/// work, flush its shared state, then cancel a stale per-CPU wake publication.
+/// # C: O(NR_CPUS)
+pub fn clear_pending(slot: Slot) {
     let bit = 1u32 << (slot as u32);
     for pending in PENDING.iter() {
         pending.fetch_and(!bit, Ordering::AcqRel);
     }
     PROCESS_PENDING.fetch_and(!bit, Ordering::AcqRel);
-    HANDLERS[slot as usize].swap(core::ptr::null_mut(), Ordering::AcqRel)
 }
 
 /// Raise `slot` on THIS CPU — Linux `__raise_softirq_irqoff` / `or_softirq_
@@ -315,12 +328,21 @@ pub fn raise_process(slot: Slot) {
     if old & bit == 0 { kick_process_drainer(); }
 }
 
-/// True iff this CPU has a slot pending (Linux `local_softirq_pending()`).
+/// True iff this CPU or the migration-safe process drainer has work. # C: O(1)
+///
+/// Scheduler drainers use this combined predicate. CPU-hotplug admission must
+/// use [`local_pending`], because globally claimable process work does not pin
+/// any particular CPU online.
 /// # C: O(1)
 pub fn pending() -> bool {
-    PENDING[this_cpu()].load(Ordering::Acquire) != 0
-        || PROCESS_PENDING.load(Ordering::Acquire) != 0
+    local_pending() || PROCESS_PENDING.load(Ordering::Acquire) != 0
 }
+
+/// Whether this CPU's own pending mask requires it to remain online. # C: O(1)
+pub fn local_pending() -> bool { PENDING[this_cpu()].load(Ordering::Acquire) != 0 }
+
+/// This CPU's exact pending mask for CPU-hotplug admission diagnostics. # C: O(1)
+pub fn local_pending_bits() -> u32 { PENDING[this_cpu()].load(Ordering::Acquire) }
 
 /// `__do_softirq` core: drain THIS CPU's pending mask with Linux's restart
 /// gate. NOT a public entry point — call `sched::bh::do_softirq` (or
@@ -337,11 +359,13 @@ pub fn pending() -> bool {
 ///
 /// # C: O(N_handlers_with_work) per drain pass; bounded by the restart gate.
 unsafe fn run_pending_mode<A: HandlerAccounting>(process_context: bool) {
+    hibernate_witness_stage(1, 0, 0, usize::MAX);
     // This CPU's slot. Stable for the drain: callers (`sched::bh::do_softirq`)
     // run with `in_serving_softirq` set, so preemption/migration is off and
     // `this_cpu` can't change under us. Re-entry is already excluded by the
     // caller's `in_interrupt()` guard — no flag here.
     let c = this_cpu();
+    hibernate_witness_stage(2, 0, 0, usize::MAX);
     RUNS.fetch_add(1, Ordering::Relaxed);
     // Linux `__do_softirq` restart gate, on THIS CPU's pending mask. A handler
     // that re-raises its own bit (NetRx re-armed by each RX MSI under a packet
@@ -352,6 +376,7 @@ unsafe fn run_pending_mode<A: HandlerAccounting>(process_context: bool) {
     // !need_resched() && --max_restart`; otherwise `wakeup_softirqd()` and
     // return, leaving still-pending bits set for this CPU's ksoftirqd to finish.
     let end = jiffies().wrapping_add(MAX_SOFTIRQ_TIME);
+    hibernate_witness_stage(3, 0, 0, usize::MAX);
     let mut max_restart = MAX_SOFTIRQ_RESTART;
     loop {
         // `set_softirq_pending(0)` — claim this CPU's set, run each handler.
@@ -361,6 +386,7 @@ unsafe fn run_pending_mode<A: HandlerAccounting>(process_context: bool) {
         } else {
             PROCESS_PENDING.load(Ordering::Acquire)
         };
+        hibernate_witness_stage(4, local_bits, process_bits, usize::MAX);
         if local_bits == 0 && process_bits == 0 {
             break;
         }
@@ -382,6 +408,7 @@ unsafe fn run_pending_mode<A: HandlerAccounting>(process_context: bool) {
             b &= !(1u32 << idx);
             let raw = HANDLERS[idx].load(Ordering::Acquire);
             if !raw.is_null() {
+                hibernate_witness_stage(5, local_bits, process_bits, idx);
                 HANDLER_CALLS.fetch_add(1, Ordering::Relaxed);
                 if let Some(class) = stat_class_for_index(idx) {
                     STAT_CALLS[class as usize][c].fetch_add(1, Ordering::Relaxed);
@@ -389,7 +416,11 @@ unsafe fn run_pending_mode<A: HandlerAccounting>(process_context: bool) {
                 // SAFETY: raw was stored via set_handler which casts a non-null `fn()` through `*mut ()`; reverse-cast restores the original ABI-compatible fn pointer; handlers are responsible for their own safety contracts.
                 let f: fn() = unsafe { core::mem::transmute::<*mut (), fn()>(raw) };
                 let snapshot = A::before();
+                hibernate_witness_stage(6, local_bits, process_bits, idx);
+                hibernate_witness_stage(7, local_bits, process_bits, idx);
                 f();
+                hibernate_witness_stage(8, local_bits, process_bits, idx);
+                hibernate_witness_stage(9, local_bits, process_bits, idx);
                 A::after(snapshot);
             }
         }

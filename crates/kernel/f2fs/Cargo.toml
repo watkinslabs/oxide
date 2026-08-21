@@ -23,6 +23,7 @@ adiantum = { path = "../../shared/adiantum" }
 zstd    = { path = "../../shared/zstd" }
 siphash = { path = "../../shared/siphash" }
 utf8    = { path = "../../shared/utf8" }
+lzo1x   = { path = "../../shared/lzo1x" }
 
 
 # The background threads. Only the kernel build has a scheduler to park

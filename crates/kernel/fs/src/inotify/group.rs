@@ -21,7 +21,7 @@ use crate::inotify::validate::{FAN_CLASS_PRE_CONTENT, FAN_ENABLE_AUDIT, FAN_REPO
 /// on a deliverable signal. Hosted builds install no scheduler and never take
 /// the blocking arm. # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
-pub(crate) fn signals_pending() -> bool { sched::live::deliverable_signals_self() != 0 }
+pub(crate) fn signals_pending() -> bool { sched::live::interruptible_work_pending_self() }
 #[cfg(not(target_os = "oxide-kernel"))]
 pub(crate) fn signals_pending() -> bool { false }
 

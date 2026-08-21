@@ -29,6 +29,7 @@ fn freeze_then_thaw_toggles_frozen_state() {
     let st = m.state().clone();
     let s_op = m.super_ops().expect("ext4 installs its own super_ops");
 
+    assert!(s_op.power_freeze_capable(), "persistent ext4 opts into system power freeze");
     assert!(!st.frozen.load(Ordering::Acquire), "starts thawed");
 
     s_op.sync_fs(true).expect("sync_fs flushes + barriers cleanly");

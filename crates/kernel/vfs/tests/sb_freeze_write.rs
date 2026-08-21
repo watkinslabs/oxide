@@ -201,6 +201,10 @@ fn freeze_waits_for_inflight_writer_before_freeze_fs() {
     thread::sleep(Duration::from_millis(20));
     assert!(!freeze_done.load(Ordering::Acquire), "freeze waits for in-flight writer");
     assert_eq!(ops.freezes.load(Ordering::Acquire), 0, "freeze_fs not called before writer drains");
+    // Linux releases s_umount while draining the WRITE freeze level. A
+    // reader must therefore enter here even though freeze_super is blocked on
+    // the still-active writer; retaining s_umount would deadlock this control.
+    sb.with_s_umount_read(|| ());
 
     {
         let mut release = data.release.lock().unwrap_or_else(|e| e.into_inner());

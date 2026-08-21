@@ -236,6 +236,10 @@ must use grouped paths from day one.
     crates. Any consumer needing these primitives uses them; no crate carries
     a second copy.
 
+19a. `crates/shared/lzo1x` owns bounds-checked LZO1X-1/LZO-RLE encoding and
+    decoding plus reusable direct-dictionary work memory. Filesystems, swap,
+    and hibernation consume it; none carries a second match finder or decoder.
+
 20. `crates/kernel/wireless` owns cfg80211 (`66`): the radio registry, channels,
     regulatory state, the scan/BSS cache, the connect state machine, key rules,
     station reporting, and the nl80211 family. It is a leaf over `netlink`,
@@ -263,7 +267,8 @@ must use grouped paths from day one.
     adapter. Each registers through `syscalls::fsmount_common::registry` and
     nowhere else.
 23. A COMPRESSION codec has one owner, never a copy per filesystem:
-    `crates/shared/zstd` owns Zstandard, `miniz_oxide` DEFLATE, `lzokay` LZO.
+    `crates/shared/zstd` owns Zstandard, `miniz_oxide` DEFLATE, and
+    `crates/shared/lzo1x` LZO1X/LZO-RLE.
     The LZ4 BLOCK decoder that the read-only image formats need is
     output-bounded and partial, which the whole-buffer form cannot express; it
     lives in the crate that needs it until a second consumer appears, at which

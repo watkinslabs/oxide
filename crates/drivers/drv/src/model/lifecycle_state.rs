@@ -58,6 +58,7 @@ impl Lifecycle {
 }
 
 fn register_device(d: Arc<Device>, parent: Option<&Arc<Device>>) -> KResult<Arc<Device>> {
+    let _hotplug = super::hotplug::operation()?;
     crate::path::validate_sysfs_relpath(&d)?;
     {
         let mut devices = DEVICES.lock();
@@ -102,6 +103,7 @@ pub fn try_device_add_with_parent(
 /// teardown callbacks. Concurrent removers and new binds lose the state claim.
 /// # C: O(N_devices + remove)
 pub fn device_del(d: &Arc<Device>) {
+    let Ok(_hotplug) = super::hotplug::operation() else { return; };
     let _recovery = d.recovery.lock();
     let owns_removal = {
         let devices = DEVICES.lock();

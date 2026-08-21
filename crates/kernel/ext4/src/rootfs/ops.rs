@@ -1,6 +1,7 @@
 use alloc::sync::Arc;
 
 mod mountfs;
+mod sync_policy;
 
 use block::types::InodeId;
 use super::inode::{build_file_inode, build_stat_inode, ext4_wrap_ino};

@@ -745,18 +745,13 @@ impl Task {
         self.io_syscw.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Lift this task's vruntime to `floor` if it's currently below;
-    /// `13§5` invariant 5. F211: also see `set_vruntime_to_floor`.
+    /// Lift this task's vruntime to `floor` if it's currently below. Wake
+    /// placement must never erase CPU debt accumulated before the sleep.
+    /// `13§5` invariant 5.
     /// # C: O(1)
     pub fn lift_vruntime(&self, floor: u64) {
         self.debug_check_canary("lift_vruntime");
         let cur = self.vruntime.load(Ordering::Acquire);
         if cur < floor { self.vruntime.store(floor, Ordering::Release); }
-    }
-    /// F211 sleeper credit on wake (Linux place_entity).
-    /// # C: O(1)
-    pub fn set_vruntime_to_floor(&self, f: u64) {
-        self.debug_check_canary("set_vruntime_to_floor");
-        self.vruntime.store(f, Ordering::Release);
     }
 }

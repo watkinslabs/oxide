@@ -545,7 +545,7 @@ impl<T, C: LockClass> Spinlock<T, C> {
         // count balances; omitting this leaks one level per context switch and
         // the CPU stops rescheduling entirely.
         #[cfg(feature = "debug-preempt")]
-        crate::preempt_gate::release_forgotten();
+        crate::preempt_gate::release_forgotten(C::rank());
         #[cfg(not(feature = "debug-preempt"))]
         crate::preempt_gate::release(crate::preempt_gate::installed_release());
     }

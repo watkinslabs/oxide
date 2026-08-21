@@ -66,7 +66,7 @@ impl FileOps for TimerfdFileOps {
                 // A deliverable signal ends the wait; the read is restarted
                 // rather than reported as EINTR, so an SA_RESTART handler
                 // resumes it transparently.
-                if sched::live::sigpend::deliverable_signals_self() != 0 {
+                if sched::live::sigpend::interruptible_work_pending_self() {
                     drop(state);
                     return Err(VfsError::Erestartsys);
                 }

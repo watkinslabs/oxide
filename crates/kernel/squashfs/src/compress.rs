@@ -106,7 +106,7 @@ fn zlib(src: &[u8], out_len: usize) -> Result<Vec<u8>, Errno> {
 
 fn lzo(src: &[u8], out_len: usize) -> Result<Vec<u8>, Errno> {
     let mut out = alloc::vec![0u8; out_len];
-    let got = lzokay::decompress::decompress(src, &mut out).map_err(|_| Errno::Eio)?;
+    let got = lzo1x::decode::decompress(src, &mut out).map_err(|_| Errno::Eio)?;
     out.truncate(got);
     Ok(out)
 }

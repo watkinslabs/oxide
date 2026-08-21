@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 
 use crate::BlockDevice;
 
-use super::{by_dev, by_name, decode_root_dev, partition_by_label, partition_by_name, partition_by_uuid_offset};
+use super::{Disk, by_dev, by_name, decode_root_dev, snapshot};
 #[cfg(test)]
 use super::encode_dev;
 
@@ -44,13 +44,38 @@ pub fn parse_root_spec(value: &[u8]) -> Option<RootSpec<'_>> {
 /// Resolve a boot `root=` value only through the published block registry.
 /// # C: O(N_disks)
 pub fn resolve_root_spec(value: &[u8]) -> Option<Arc<dyn BlockDevice>> {
+    resolve_root_owner(value).map(|(_, dev)| dev)
+}
+
+/// Resolve a supported spelling to the canonical parent lifecycle owner and
+/// exact whole-disk or partition backend. # C: O(disks + partitions)
+pub(crate) fn resolve_root_owner(value: &[u8]) -> Option<(Arc<Disk>, Arc<dyn BlockDevice>)> {
     match parse_root_spec(value)? {
-        RootSpec::Name(name) => by_name(name).map(|disk| disk.dev.clone())
-            .or_else(|| partition_by_name(name).map(|part| part.dev.clone())),
-        RootSpec::PartUuid { uuid, offset } => partition_by_uuid_offset(uuid, offset).map(|part| part.dev.clone()),
-        RootSpec::PartLabel(label) => partition_by_label(label).map(|part| part.dev.clone()),
-        RootSpec::DevNum(dev) => by_dev(dev).map(|disk| disk.dev.clone()),
+        RootSpec::Name(name) => by_name(name).map(|disk| (disk.clone(), disk.dev.clone()))
+            .or_else(|| find_partition(|part| part.name == name)),
+        RootSpec::PartUuid { uuid, offset } => {
+            let disks = snapshot();
+            let (disk, base) = disks.into_iter().find_map(|disk| {
+                disk.partitions().into_iter()
+                    .find(|part| part.uuid.as_deref().is_some_and(|id| id.eq_ignore_ascii_case(uuid)))
+                    .map(|part| (disk, part))
+            })?;
+            let number = i64::from(base.number).checked_add(i64::from(offset))?;
+            let number = u32::try_from(number).ok().filter(|number| *number != 0)?;
+            let part = disk.partitions().into_iter().find(|part| part.number == number)?;
+            Some((disk, part.dev.clone()))
+        }
+        RootSpec::PartLabel(label) => find_partition(|part| part.label.as_deref() == Some(label)),
+        RootSpec::DevNum(dev) => by_dev(dev).map(|disk| (disk.clone(), disk.dev.clone()))
+            .or_else(|| find_partition(|part| super::encode_dev(part.number_dev.major, part.number_dev.minor) == dev)),
     }
+}
+
+fn find_partition(predicate: impl Fn(&super::Partition) -> bool) -> Option<(Arc<Disk>, Arc<dyn BlockDevice>)> {
+    snapshot().into_iter().find_map(|disk| {
+        disk.partitions().into_iter().find(|part| predicate(part))
+            .map(|part| (disk, part.dev.clone()))
+    })
 }
 
 fn parse_part_uuid(value: &[u8]) -> Option<RootSpec<'_>> {
@@ -149,6 +174,7 @@ mod tests {
         let dev = encode_dev(disk.number.major, disk.number.minor);
         assert!(resolve_root_spec(format_devnum(disk.number.major, disk.number.minor).as_bytes()).is_some());
         assert!(resolve_root_spec(alloc::format!("{dev:x}").as_bytes()).is_some());
+        assert!(super::super::claim_target_spec(format_devnum(disk.number.major, disk.number.minor).as_bytes()).is_some());
         assert!(super::super::unregister(NAME));
         assert_ne!(index, 0);
     }
@@ -173,11 +199,15 @@ mod tests {
             is_raid: false, uuid: Some("1234abcd-02".into()), label: Some("rescue".into()),
             dev: PartitionDevice::new(Arc::clone(&disk.dev), 6, 2).expect("bounded fixture partition"),
         });
+        let (partition_major, partition_minor) = (part.number_dev.major, part.number_dev.minor);
+        let partition_dev = encode_dev(partition_major, partition_minor);
         disk.publish_partitions(alloc::vec![part, next]);
 
         assert_eq!(resolve_root_spec(b"/dev/partition-root-fixture1").expect("partition node").capacity_blocks(), 4);
         assert_eq!(resolve_root_spec(b"PARTUUID=1234ABCD-01").expect("partition uuid").capacity_blocks(), 4);
         assert_eq!(resolve_root_spec(b"PARTLABEL=rootfs").expect("partition label").capacity_blocks(), 4);
+        assert_eq!(resolve_root_spec(format_devnum(partition_major, partition_minor).as_bytes()).expect("partition devnum").capacity_blocks(), 4);
+        assert_eq!(super::super::claim_target_spec(alloc::format!("{partition_dev:x}").as_bytes()).expect("packed partition claim").device().capacity_blocks(), 4);
         assert_eq!(resolve_root_spec(b"PARTUUID=1234abcd-01/PARTNROFF=1").expect("partition offset").capacity_blocks(), 2);
         assert!(resolve_root_spec(b"PARTUUID=1234abcd-01/PARTNROFF=-1").is_none());
         assert!(super::super::unregister(NAME));

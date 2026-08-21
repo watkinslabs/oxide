@@ -71,6 +71,10 @@ pub struct Uart16550State {
     pub dlm: u8,
 }
 
+#[cfg(target_arch = "x86_64")]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+struct SuspendedPort { regs: Uart16550State, runtime: bool }
+
 /// Read the port's programming. `fcr` is the driver's shadow of the
 /// write-only FIFO control register.
 /// # C: O(1)
@@ -107,6 +111,37 @@ pub fn restore<R: SerialRegs>(r: &mut R, s: &Uart16550State) {
     r.write(REG_IER, s.ier);
 }
 
+#[cfg(any(target_arch = "x86_64", test))]
+fn poll_byte<R: SerialRegs>(r: &mut R, byte: u8) {
+    const LSR_THR_EMPTY: u8 = 1 << 5;
+    const POLL_LIMIT: u32 = 100_000;
+    let mut n = 0;
+    while n < POLL_LIMIT && r.read(REG_LSR) & LSR_THR_EMPTY == 0 { n += 1; }
+    r.write(REG_RBR, byte);
+}
+
+#[cfg(any(target_arch = "x86_64", test))]
+fn suspend_runtime<R: SerialRegs, const N: usize>(r: &mut R,
+    tx: &mut crate::tx::TxEngine<N>) -> SuspendedPort
+{
+    let regs = save(r, fifo_mode());
+    let runtime = tx.runtime();
+    tx.stop_runtime();
+    r.write(REG_IER, tx.ier());
+    while let Some(byte) = tx.pop_for_poll() { poll_byte(r, byte); }
+    quiesce(r, &regs);
+    SuspendedPort { regs, runtime }
+}
+
+#[cfg(any(target_arch = "x86_64", test))]
+fn resume_runtime<R: SerialRegs, const N: usize>(r: &mut R,
+    tx: &mut crate::tx::TxEngine<N>, mut saved: SuspendedPort)
+{
+    if saved.runtime { tx.start_runtime(); } else { tx.stop_runtime(); }
+    saved.regs.ier = tx.ier();
+    restore(r, &saved.regs);
+}
+
 // ---- the machine's port ----------------------------------------------------
 
 #[cfg(target_arch = "x86_64")]
@@ -140,7 +175,7 @@ mod port {
         }
     }
 
-    pub static SAVED: Spinlock<Option<Uart16550State>, PmListClass> = Spinlock::new(None);
+    pub static SAVED: Spinlock<Option<SuspendedPort>, PmListClass> = Spinlock::new(None);
 
     /// The live port, or `None` when nothing was detected. # C: O(1)
     pub fn detected() -> Option<Port> {
@@ -149,36 +184,32 @@ mod port {
     }
 }
 
-#[cfg(not(target_arch = "x86_64"))]
-mod port {
-    use super::*;
-    use sync::{Spinlock, TaskList as PmListClass};
-
-    /// No 16550 off x86; the accessor exists so the callbacks compile.
-    pub struct Port;
-    impl SerialRegs for Port {
-        fn read(&self, _off: u16) -> u8 { 0 }
-        fn write(&mut self, _off: u16, _v: u8) {}
-    }
-    pub static SAVED: Spinlock<Option<Uart16550State>, PmListClass> = Spinlock::new(None);
-    /// No port off x86. # C: O(1)
-    pub fn detected() -> Option<Port> { None }
-}
-
+#[cfg(target_arch = "x86_64")]
 fn do_suspend(_dev: &Device) -> KResult<()> {
     let Some(mut p) = port::detected() else { return Ok(()) };
-    let s = save(&mut p, fifo_mode());
-    quiesce(&mut p, &s);
+    let mut tx = super::PORT.lock_irqsave::<hal_x86_64::X86IrqGate>();
+    let s = suspend_runtime(&mut p, &mut tx);
+    super::RX_ENABLED.store(false, core::sync::atomic::Ordering::Release);
+    drop(tx);
     *port::SAVED.lock() = Some(s);
     Ok(())
 }
 
+#[cfg(not(target_arch = "x86_64"))]
+fn do_suspend(_dev: &Device) -> KResult<()> { Ok(()) }
+
+#[cfg(target_arch = "x86_64")]
 fn do_resume(_dev: &Device) -> KResult<()> {
-    let saved = *port::SAVED.lock();
+    let saved = port::SAVED.lock().take();
     let (Some(s), Some(mut p)) = (saved, port::detected()) else { return Ok(()) };
-    restore(&mut p, &s);
+    let mut tx = super::PORT.lock_irqsave::<hal_x86_64::X86IrqGate>();
+    resume_runtime(&mut p, &mut tx, s);
+    super::RX_ENABLED.store(tx.runtime(), core::sync::atomic::Ordering::Release);
     Ok(())
 }
+
+#[cfg(not(target_arch = "x86_64"))]
+fn do_resume(_dev: &Device) -> KResult<()> { Ok(()) }
 
 /// The 16550's sleep callbacks. Hibernation shares the system-sleep pair: the
 /// port's programming is reproduced from the saved values either way, and the

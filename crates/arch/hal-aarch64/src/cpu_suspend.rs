@@ -134,6 +134,7 @@ core::arch::global_asm!(
     "  movk x9, #:abs_g2_nc:oxide_arm_resume_high",
     "  movk x9, #:abs_g3:oxide_arm_resume_high",
     "  br x9",
+    ".global oxide_arm_resume_high",
     "oxide_arm_resume_high:",
     // Still on the identity TTBR0, so the physical block pointer in x0 is
     // readable. Pick up its kernel VA before handing TTBR0 back.
@@ -197,6 +198,8 @@ extern "C" {
     fn oxide_arm_cpu_suspend_enter(ctx: *mut SuspendCtx) -> u64;
     /// Physical resume entry point handed to firmware.
     fn oxide_arm_resume_entry();
+    /// MMU-on continuation shared by system suspend and hibernation restore.
+    fn oxide_arm_resume_high();
 }
 
 /// Why a `SYSTEM_SUSPEND` attempt did not put the machine to sleep.
@@ -254,6 +257,27 @@ unsafe fn clean_to_poc(va: u64, len: usize) {
 /// # C: O(1)
 fn resume_entry_va() -> u64 { oxide_arm_resume_entry as *const () as u64 }
 
+/// Address of the sole saved-context restoration continuation.
+/// # C: O(1)
+pub fn hibernate_continuation_va() -> u64 { oxide_arm_resume_high as *const () as u64 }
+
+/// Reinstall feature-gated per-CPU controls that reset to architecturally
+/// unknown/default values but cannot be accessed unconditionally by the
+/// assembly continuation. `setup_poe(false)` restores TCR2_EL1.E0POE and
+/// CPACR_EL1.E0POE from the canonical BSP capability latch and seeds POR_EL0;
+/// on CPUs without FEAT_S1POE it is inert.
+///
+/// # SAFETY: called on the resumed PE with interrupts masked, after the saved
+/// kernel image and its capability latch are live, before user execution.
+/// # C: O(1)
+/// # Ctx: IRQ-off, resumed CPU
+pub(crate) unsafe fn restore_cpu_extensions_after_reset(por_el0: u64) {
+    // SAFETY: this CPU is the sole owner of its TCR2/CPACR/POR registers and
+    // the restored capability latch gates every optional system-register access.
+    unsafe { crate::setup_poe(false); }
+    crate::write_por(por_el0);
+}
+
 /// Enter the platform's deep sleep state.
 ///
 /// Saves EL1 state, hands firmware the physical resume entry and the physical
@@ -268,6 +292,7 @@ fn resume_entry_va() -> u64 { oxide_arm_resume_entry as *const () as u64 }
 /// # Ctx: IRQ-off, single-CPU
 pub unsafe fn system_suspend(support: SuspendSupport) -> Result<(), SuspendError> {
     let mut ctx = SuspendCtx::new();
+    ctx.por_el0 = crate::read_por();
     ctx.ttbr0_identity_pa = crate::smp::identity_ttbr0_pa();
     let ctx_va = &raw mut ctx as u64;
     ctx.self_va = ctx_va;
@@ -282,7 +307,12 @@ pub unsafe fn system_suspend(support: SuspendSupport) -> Result<(), SuspendError
     debug_assert_eq!(ctx.magic, OXIDE_SUSPEND_CTX_MAGIC);
     // SAFETY: the stub writes only through the `ctx` pointer it is handed and preserves every callee-saved register; a 0 return is the resume entry having already restored this frame.
     let saved = unsafe { oxide_arm_cpu_suspend_enter(&raw mut ctx) };
-    if saved == 0 { return Ok(()); }
+    if saved == 0 {
+        // SAFETY: the resume entry restored the base EL1 context; this CPU is
+        // still IRQ-off and exclusively owns its optional extension state.
+        unsafe { restore_cpu_extensions_after_reset(ctx.por_el0); }
+        return Ok(());
+    }
     // SAFETY: `ctx` is live and fully written by the stub above; the resume entry reads it with caches off, so the block must reach memory first.
     unsafe { clean_to_poc(ctx_va, core::mem::size_of::<SuspendCtx>()); }
     // SAFETY: PSCI conduit is the platform's (HVC on QEMU virt); `entry_pa` is the resume entry's physical address and `ctx_pa` the cleaned block's. Returns only on failure.
@@ -309,6 +339,7 @@ pub unsafe fn cpu_suspend(state: u32) -> Result<(), PsciStatus> {
         return match decode_status(raw as i32) { PsciStatus::Success => Ok(()), status => Err(status) };
     }
     let mut ctx = SuspendCtx::new();
+    ctx.por_el0 = crate::read_por();
     ctx.ttbr0_identity_pa = crate::smp::identity_ttbr0_pa();
     let ctx_va = &raw mut ctx as u64;
     ctx.self_va = ctx_va;
@@ -321,7 +352,11 @@ pub unsafe fn cpu_suspend(state: u32) -> Result<(), PsciStatus> {
     // SAFETY: the save stub writes the supplied context only and returns zero
     // after the resume entry restored this invocation's callee-saved state.
     let saved = unsafe { oxide_arm_cpu_suspend_enter(&raw mut ctx) };
-    if saved == 0 { return Ok(()); }
+    if saved == 0 {
+        // SAFETY: same reset-resume boundary as system_suspend above.
+        unsafe { restore_cpu_extensions_after_reset(ctx.por_el0); }
+        return Ok(());
+    }
     // SAFETY: firmware resumes with caches off and reads this exact context by
     // physical address, so every saved line must reach the point of coherency.
     unsafe { clean_to_poc(ctx_va, core::mem::size_of::<SuspendCtx>()); }

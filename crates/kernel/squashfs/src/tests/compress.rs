@@ -2,6 +2,7 @@
 //! is distinguished from an unknown one, and a decoded block is bounded by
 //! what the CALLER expects, never by what the medium claims.
 
+use alloc::vec;
 use alloc::vec::Vec;
 
 use super::{Codec, CodecError};
@@ -11,7 +12,12 @@ const SAMPLE: &[u8] = b"squashfs test payload, repeated repeated repeated repeat
 
 fn zlib_bytes(src: &[u8]) -> Vec<u8> { miniz_oxide::deflate::compress_to_vec_zlib(src, 6) }
 
-fn lzo_bytes(src: &[u8]) -> Vec<u8> { lzokay::compress::compress(src).expect("lzo compress") }
+fn lzo_bytes(src: &[u8]) -> Vec<u8> {
+    let mut out = vec![0u8; lzo1x::encode::worst_size(src.len())];
+    let size = lzo1x::encode::compress(src, &mut out, false).expect("lzo compress");
+    out.truncate(size);
+    out
+}
 
 fn lz4_bytes(src: &[u8]) -> Vec<u8> {
     let mut out = alloc::vec![0u8; lz4_flex::block::get_maximum_output_size(src.len())];

@@ -29,9 +29,26 @@ pub fn report_lockup(secs: u64, tid: u32, cur: Option<&Task>) {
         super::syscall_return::emit_syscall_return(t);
     }
     emit_lockup_context();
+    emit_hibernate_softirq();
     emit_timer_state();
     klog::write_raw(b"\n");
     dump_tasks();
+}
+
+#[cfg(feature = "debug-watchdog")]
+fn emit_hibernate_softirq() {
+    let witness = softirq::hibernate_witness();
+    if !witness.active { return; }
+    klog::write_raw(b" hibernate_softirq_stage=");
+    klog::write_dec_u64(witness.stage as u64);
+    klog::write_raw(b" local=0x");
+    klog::write_hex_u64(witness.local_bits as u64);
+    klog::write_raw(b" process=0x");
+    klog::write_hex_u64(witness.process_bits as u64);
+    if witness.slot != u32::MAX {
+        klog::write_raw(b" slot=");
+        klog::write_dec_u64(witness.slot as u64);
+    }
 }
 
 /// Emit the live scheduler gates that decide whether this CPU can take a

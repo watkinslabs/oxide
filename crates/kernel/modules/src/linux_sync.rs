@@ -553,7 +553,7 @@ fn atomic_i32_word(p: *mut i32) -> &'static AtomicI32 {
     unsafe { &*(p as *const AtomicI32) }
 }
 #[cfg(target_os = "oxide-kernel")]
-fn signal_pending() -> bool { sched::live::deliverable_signals_self() != 0 }
+fn signal_pending() -> bool { sched::live::interruptible_work_pending_self() }
 #[cfg(not(target_os = "oxide-kernel"))]
 fn signal_pending() -> bool { false }
 #[cfg(test)]

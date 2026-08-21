@@ -50,7 +50,7 @@ pub fn sys_rt_sigsuspend(args: &SyscallArgs) -> i64 {
     let _ = unsafe {
         sched::live::wait_event_interruptible(
             &SIGSUSPENDERS,
-            || sched::live::sigpend::deliverable_signals_self() != 0,
+            || sched::live::sigpend::interruptible_work_pending_self(),
         )
     };
     // Linux `sigsuspend` ends with `-ERESTARTNOHAND`; both a condition wake

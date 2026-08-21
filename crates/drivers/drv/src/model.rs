@@ -20,20 +20,16 @@ use sync::{Spinlock, TaskList as DriverListClass};
 use crate::KResult;
 
 mod lifecycle_state;
+mod hotplug;
+mod types;
 mod wakeup;
 pub use lifecycle_state::{device_del, try_device_add, try_device_add_with_parent};
+pub use hotplug::{HotplugGuard, freeze_hotplug};
+pub use types::NodeFactory;
 mod driver;
 pub use driver::Driver;
 mod error;
 pub use error::{bound_pci_error_handlers, with_bound_pci_error_handlers, PciChannelState, PciErrorHandlers, PciErsResult};
-
-/// Factory that mints the `/dev` node inode for a device (devtmpfs path).
-/// Boxed + `Arc` so the registry, the `Device`, and the `DEVTMPFS_HOOK`
-/// callback share one closure. `InodeRef` is the only `vfs` type drv names
-/// (see Cargo.toml note on the acyclic drv->vfs edge). A device that wants a
-/// bespoke `/dev` node (e.g. the mem pseudo-devices' custom `FileOps`) supplies
-/// one; a plain char/block node is built from `dev_t` by devtmpfs when absent.
-pub type NodeFactory = Arc<dyn Fn() -> vfs::InodeRef + Send + Sync>;
 
 /// Bus resource range associated with a device, usually a PCI BAR. `flags`
 /// uses Linux `IORESOURCE_*` values so sysfs can expose the same contract.

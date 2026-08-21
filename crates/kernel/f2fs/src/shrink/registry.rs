@@ -36,7 +36,8 @@ pub fn install() {
     if INSTALLED.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
         return;
     }
-    let shrinker = pmm::shrinker::Shrinker { count_objects: count, scan_objects: scan };
+    let shrinker = pmm::shrinker::Shrinker { class: pmm::shrinker::ShrinkerClass::Independent,
+        count_objects: count, scan_objects: scan };
     if pmm::shrinker::register_shrinker(shrinker).is_err() {
         INSTALLED.store(false, Ordering::Release);
     }

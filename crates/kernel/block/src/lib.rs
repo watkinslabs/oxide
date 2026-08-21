@@ -49,6 +49,7 @@ pub mod durability;
 pub mod elevator;
 pub mod flags;
 pub mod pagecache;
+pub mod pageio;
 pub mod partitions;
 pub mod queue_limits;
 pub mod registry;

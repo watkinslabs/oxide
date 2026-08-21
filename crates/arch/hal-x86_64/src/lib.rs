@@ -17,6 +17,8 @@ mod fault;
 mod exception_table;
 mod fpu;
 mod gdt;
+// Suspend-to-disk header and collision-safe restore plan (`32b§11`).
+pub mod hibernate;
 mod idt;
 pub mod ioapic;
 pub mod io;
@@ -45,7 +47,7 @@ pub mod vmm;
 
 pub use context::{ContextX86_64, ForkRegs};
 pub use cpu::{acpi_mwait, get_user_fs_base, get_user_gs_base, halt, mmio_barrier, safe_halt, set_user_fs_base, set_user_gs_base, writeback_invalidate_cache, X86CpuOps};
-pub use cpuid_fault::{cpuid_fault_kind, cpuid_fault_supported, set_cpuid_faulting,
+pub use cpuid_fault::{cpuid_fault_kind, cpuid_fault_supported, cpuid_faulting_enabled, set_cpuid_faulting,
     CPUID_FAULT_AMD, CPUID_FAULT_INTEL, CPUID_FAULT_NONE};
 pub use cpuid::{acpi_mwait_supported, brand as cpuid_brand, family_model as cpuid_family_model, hypervisor_present, initial_apic_id, vendor as cpuid_vendor};
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]

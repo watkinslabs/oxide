@@ -43,7 +43,7 @@ impl SuperBlock {
             s_sysfs_name: Spinlock::new(String::new()),
             s_uuid: Spinlock::new(([0u8; 16], 0)),
             s_root: RwLock::new(None),
-            s_umount: RwLock::new(()),
+            s_umount: crate::rwsem::VfsRwsem::<sync::Superblock>::new(),
             s_fs_info: Spinlock::new(s_fs_info),
             icache: Spinlock::new(BTreeMap::new()),
             s_wb: Spinlock::new(BTreeMap::new()),

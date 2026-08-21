@@ -1,8 +1,12 @@
 use crate::{BootInfo, GLOBAL_ALLOC, zerotrap_tid};
 #[cfg(target_os = "oxide-kernel")]
 mod pmm_boot;
-#[cfg(feature = "debug-pmm")]
-use crate::BootMemRegion;
+#[cfg(target_os = "oxide-kernel")]
+mod firmware_clock;
+#[cfg(target_os = "oxide-kernel")]
+mod boot_cpu;
+#[cfg(target_os = "oxide-kernel")]
+mod boot_diag;
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-sched"))]
 use crate::kthread;
 
@@ -30,23 +34,6 @@ fn klog_caller_id() -> u32 {
     match sched::live::current() { Some(c) => c.tid, None => CALLER_ID_MASK | klog_cpu_id() }
 }
 
-/// Echo the boot command line the way Linux does at `start_kernel`. This is
-/// the only boot-time evidence that distinguishes "the bootloader's line
-/// arrived" from "the arch default was installed because the transport
-/// dropped it" — a distinction otherwise invisible, since a kernel that
-/// ignores every parameter still boots and looks healthy.
-/// # C: O(cmdline length)
-#[cfg(target_os = "oxide-kernel")]
-fn log_boot_cmdline() {
-    // Label and line go out through the same raw route so they assemble into
-    // ONE log line: the level macros terminate their record, which would put
-    // the command line on a line of its own and break both reading and
-    // grepping it. The slot already ends in '\n' (Linux `/proc/cmdline`
-    // convention), so this record is terminated.
-    klog::write_raw(b"Kernel command line: ");
-    klog::write_raw(crate::boot_cmdline::get());
-}
-
 /// Early boot bring-up before runtime device and filesystem init.
 ///
 /// Out of line (Linux `noinline_for_stack`): kernel_main is this phase's only
@@ -59,7 +46,7 @@ fn log_boot_cmdline() {
 #[cfg(target_os = "oxide-kernel")]
 #[inline(never)]
 pub unsafe fn init(info: &BootInfo) {
-    init_boot_percpu();
+    boot_cpu::init();
 
     fs::init();
     // SAFETY: kernel_main is called once per boot from a single CPU
@@ -79,7 +66,7 @@ pub unsafe fn init(info: &BootInfo) {
     // spliced by another caller's fragments (Linux `prb_reserve_in_last`).
     klog::set_caller_fn(klog_caller_id);
 
-    log_boot_info(info);
+    boot_diag::log(info);
     pmm_boot::init(info);
     kalloc_smoke();
     debug_sched_smokes();
@@ -87,14 +74,9 @@ pub unsafe fn init(info: &BootInfo) {
 
     // SAFETY: PMM up; HHDM offset known; single-CPU pre-init.
     unsafe { pmm::user_as::init(info.hhdm_offset); }
-    // Take ownership of the firmware's device tree. Its pages are already
-    // carved out of usable RAM by the boot memmap, so reaching it through the
-    // direct map stays valid for the life of the kernel; this is what lets
-    // `/sys/firmware/fdt` and `/sys/firmware/devicetree` exist later in init.
-    // SAFETY: after the direct map is known; `dtb_pa`/`dtb_len` name a
-    // reserved-in-the-memmap physical extent, and `retain` re-validates the
-    // header before publishing anything.
-    unsafe { retain_device_tree(info); }
+    // SAFETY: PMM, MMU/HHDM and page-table allocation are live; the retained
+    // FDT extent remains reserved for kernel life.
+    unsafe { firmware_clock::init(info); }
     #[cfg(target_arch = "aarch64")]
     let fdt_boot_cpu_id = hal_aarch64::mpidr_affinity();
     #[cfg(target_arch = "x86_64")]
@@ -103,7 +85,7 @@ pub unsafe fn init(info: &BootInfo) {
     #[cfg(target_arch = "aarch64")]
     // PSCI CPU-on and every later terminal call use this one firmware-selected
     // conduit; it must be installed before SMP can issue its first PSCI call.
-    let _ = firmware::fdt::psci::init();
+    let _ = firmware::psci::init(info.rsdp_pa != 0);
     #[cfg(target_arch = "aarch64")]
     // SAFETY: ACPI and DT CPU producers have both populated the shared table;
     // this complete MPIDR identifies the boot CPU's logical slot.
@@ -139,7 +121,7 @@ pub unsafe fn init(info: &BootInfo) {
     drv::set_devtmpfs_del_hook(devfs::del_device_node);
     // SAFETY: boot-only single-writer, pre-userspace; install_arch_default is idempotent (no-op if the slot is set) and cannot race a procfs reader here.
     unsafe { crate::boot_cmdline::install_arch_default(); }
-    log_boot_cmdline();
+    boot_diag::log_cmdline();
     // The security server, once the command line it reads is installed and
     // before the first user process needs a label (`62§10`). Installed even
     // when the command line disables the module: userspace reads its state to
@@ -170,123 +152,6 @@ pub unsafe fn init(info: &BootInfo) {
     debug_boot_smokes();
 }
 
-/// Publish the boot-retained device tree at its direct-map address. No-op when
-/// the handoff carries none (x86_64, and any arm64 firmware describing itself
-/// with ACPI only) or when the direct map is not established.
-/// # SAFETY: caller runs on the boot path after `hhdm_offset` is live; the
-/// extent named by `dtb_pa`/`dtb_len` is reserved in the boot memmap.
-/// # C: O(1)
-#[cfg(target_os = "oxide-kernel")]
-unsafe fn retain_device_tree(info: &BootInfo) {
-    if info.dtb_pa == 0 || info.dtb_len == 0 || info.hhdm_offset == 0 { return; }
-    let va = info.hhdm_offset.wrapping_add(info.dtb_pa);
-    // SAFETY: `va` is the direct-map mirror of a memmap-reserved physical
-    // extent of `dtb_len` bytes, which stays mapped for the life of the kernel.
-    unsafe { firmware::fdt::retain(va, info.dtb_pa, info.dtb_len, info.dtb_crc32); }
-}
-
-#[cfg(target_os = "oxide-kernel")]
-fn init_boot_percpu() {
-    #[repr(align(16))]
-    struct PerCpuBootPage(core::cell::UnsafeCell<[u8; 4096]>);
-    // SAFETY: BSS-resident; sole writer is the boot CPU during its own bring-up here, before any other context can observe the cell.
-    unsafe impl Sync for PerCpuBootPage {}
-    static BOOT_PERCPU: PerCpuBootPage =
-        PerCpuBootPage(core::cell::UnsafeCell::new([0u8; 4096]));
-
-    let p = BOOT_PERCPU.0.get() as *mut u8;
-    // SAFETY: BSS-resident page; this is the boot path's single writer.  The
-    // module slot is read through gs/TPIDR by loaded driver per-CPU code.
-    unsafe {
-        core::ptr::write_volatile(p as *mut u32, 0u32);
-        core::ptr::write_volatile(p.add(cpu::LINUX_MODULE_PERCPU_OFFSET) as *mut usize, 0usize);
-        core::ptr::write_volatile(p.add(cpu::LINUX_NUMA_NODE_OFFSET) as *mut i32, 0i32);
-    }
-    // SAFETY: `p` is the BSS-resident per-CPU page above, and this runs on the
-    // boot CPU before any AP or IRQ can observe the per-CPU base, so these
-    // privileged CR4/MSR writes have no concurrent reader.
-    #[cfg(target_arch = "x86_64")]
-    unsafe {
-        use hal::CpuOps;
-        // Force CR4.FSGSBASE off before the first GS base exists. The
-        // bootloader may leave it set, and while it is set ring 3 can
-        // `wrgsbase` the kernel per-CPU base out from under every `gs:[…]`
-        // the entry asm and the percpu accessors perform.
-        hal_x86_64::clear_cr4_fsgsbase();
-        hal_x86_64::X86CpuOps::set_percpu_base(p);
-        hal_x86_64::init_percpu_syscall_kstack(hal_x86_64::boot_syscall_kstack_top());
-    }
-    // SAFETY: `p` is the BSS-resident per-CPU page above, and this runs on the
-    // boot CPU before any AP or IRQ can observe TPIDR_EL1.
-    #[cfg(target_arch = "aarch64")]
-    unsafe { use hal::CpuOps; hal_aarch64::ArmCpuOps::set_percpu_base(p); }
-}
-
-#[cfg(target_os = "oxide-kernel")]
-fn log_boot_info(info: &BootInfo) {
-    debug_boot! { klog::kinfo!("init started"); }
-    debug_boot! {
-        if info.hhdm_offset != 0 { klog::kinfo!("hhdm: present"); }
-        else { klog::kinfo!("hhdm: absent"); }
-    }
-    if info.rsdp_pa != 0 {
-        debug_acpi! {
-            klog::write_raw(b"[INFO]  rsdp: ");
-            klog::write_hex_u64(info.rsdp_pa);
-            klog::write_raw(b"\n");
-        }
-        firmware::set_add_cpu_hook(cpu::add_cpu);
-        // SAFETY: `info.rsdp_pa` is the boot-stub-supplied kernel VA
-        // for the RSDP (HHDM-mapped); the bootloader keeps the
-        // backing memory alive past kernel handoff per `36§3`.
-        unsafe { firmware::try_log_acpi(info.rsdp_pa, info.hhdm_offset); }
-    } else {
-        debug_boot! { klog::kinfo!("rsdp: absent"); }
-    }
-    #[cfg(target_arch = "x86_64")]
-    // SAFETY: the MADT producer above has completed before SMP consumers can
-    // resolve the boot APIC identity to a logical slot.
-    unsafe { cpu::smp::set_boot_cpu_id(u64::from(info.bsp_lapic_id)); }
-    debug_boot! {
-        if info.framebuffer.byte_len().is_some() {
-            klog::write_raw(b"[INFO]  bootfb: base=");
-            klog::write_hex_u64(info.framebuffer.base_pa);
-            klog::write_raw(b" width=");
-            klog::write_dec_u64(info.framebuffer.width as u64);
-            klog::write_raw(b" height=");
-            klog::write_dec_u64(info.framebuffer.height as u64);
-            klog::write_raw(b" pitch=");
-            klog::write_dec_u64(info.framebuffer.pitch as u64);
-            klog::write_raw(b" bpp=");
-            klog::write_dec_u64(info.framebuffer.bpp as u64);
-            klog::write_raw(b"\n");
-        } else {
-            klog::write_raw(b"[INFO]  bootfb: absent\n");
-        }
-    }
-    // SMBIOS/DMI decode (independent of ACPI/RSDP): populate /sys/class/dmi/id/*
-    // so systemd-detect-virt identifies the QEMU/KVM VM via `sys_vendor`/
-    // `product_name`. Without it detect_vm() returns NONE.
-    #[cfg(target_arch = "x86_64")]
-    // SAFETY: the legacy BIOS ROM area [0xF0000,0x100000) is HHDM-mapped readable
-    // per the boot handoff; init_x86 bounds every read to that window and to the
-    // SMBIOS structure-table length declared in the anchor.
-    unsafe { firmware::smbios::init_x86(info.hhdm_offset); }
-    if info.memmap_count != 0 {
-        debug_boot! { klog::kinfo!("memmap: present"); }
-        debug_pmm! {
-            // SAFETY: kernel_main fn-contract guarantees memmap_ptr is a
-            // valid slice of length memmap_count for this call.
-            let regions: &[BootMemRegion] = unsafe {
-                core::slice::from_raw_parts(info.memmap_ptr, info.memmap_count as usize)
-            };
-            pmm::boot::log_memmap(regions);
-        }
-    } else {
-        debug_boot! { klog::kinfo!("memmap: absent"); }
-    }
-}
-
 #[cfg(target_os = "oxide-kernel")]
 fn init_pmm_and_arch(info: &BootInfo) {
     // SAFETY: kernel_main fn-contract; single-CPU, IRQs off, info
@@ -314,6 +179,7 @@ fn init_pmm_and_arch(info: &BootInfo) {
     // SAFETY: PMM just initialised, single-CPU, before any allocation from it.
     if pmm.is_ok() { unsafe { kexec::crashk::boot::reserve(); } }
     if pmm.is_ok() {
+        power::hibernate::settings::init(pmm::watermark::tunables::total_managed_pages());
         // `init_from_boot_info` has already reserved and published the PMM's
         // canonical struct-page array directly from the boot map. Only now
         // may a heap-growth allocation receive PMM frames.
@@ -386,6 +252,7 @@ fn init_pmm_and_arch(info: &BootInfo) {
             pmm::setup::release_movable_object_frame,
         )).is_ok(), "zram PMM page-provider installation");
         pmm::kassert!(pmm::shrinker::register_shrinker(pmm::shrinker::Shrinker {
+            class: pmm::shrinker::ShrinkerClass::Independent,
             count_objects: drv_zram::reclaimable_pages,
             scan_objects: drv_zram::reclaim_pages,
         }).is_ok(), "zram shrinker registration");
@@ -393,6 +260,7 @@ fn init_pmm_and_arch(info: &BootInfo) {
         // the inactive half of its LRU, writes back a dirty page rather than
         // dropping it, and frees only clean idle ones.
         pmm::kassert!(pmm::shrinker::register_shrinker(pmm::shrinker::Shrinker {
+            class: pmm::shrinker::ShrinkerClass::LruBacked,
             count_objects: block::pagecache::reclaimable_pages,
             scan_objects: block::pagecache::shrink,
         }).is_ok(), "page cache shrinker registration");
@@ -405,6 +273,8 @@ fn init_pmm_and_arch(info: &BootInfo) {
             Err(pmm::setup::SetupError::NoUsableRegion)  => klog::kerror!("pmm: no usable region"),
             Err(pmm::setup::SetupError::NoSpaceForBitmaps) => klog::kerror!("pmm: pool too big"),
             Err(pmm::setup::SetupError::NoSpaceForPageMeta) => klog::kerror!("pmm: struct-page pool too big"),
+            Err(pmm::setup::SetupError::TooManyTopologyRegions) => klog::kerror!("pmm: too many topology regions"),
+            Err(pmm::setup::SetupError::OverlappingTopology) => klog::kerror!("pmm: overlapping topology"),
             Err(pmm::setup::SetupError::TooManyRegions)  => klog::kerror!("pmm: too many regions"),
             Err(pmm::setup::SetupError::PmmInit(_))      => klog::kerror!("pmm: Pmm::init refused"),
             Err(pmm::setup::SetupError::AlreadyInit)     => klog::kerror!("pmm: already init"),

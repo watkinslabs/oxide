@@ -72,6 +72,12 @@ struct TransportRecord {
     device_key: virtio::VirtioChildDeviceKey,
     bdf: pci::Bdf,
     command_orig: u16,
+    cfg_va: u64,
+    hhdm: u64,
+    drv_features: u64,
+    config_msix: u16,
+    queue_resources: [virtio::VirtQueueResource; virtio::MAX_RESOURCE_QUEUES],
+    queue_msix: [u16; virtio::MAX_RESOURCE_QUEUES],
     mappings: TransportMappings,
     vring_frames: Vec<virtio::VirtioDmaFrame>,
     msix: Vec<MsixBinding>,
@@ -190,14 +196,39 @@ pub(crate) fn publish_transport_record(
     device_key: virtio::VirtioChildDeviceKey,
     bdf: pci::Bdf,
     command_orig: u16,
+    cfg_va: u64,
+    hhdm: u64,
+    drv_features: u64,
+    queue_resources: [virtio::VirtQueueResource; virtio::MAX_RESOURCE_QUEUES],
     mappings: TransportMappings,
     vring_frames: Vec<virtio::VirtioDmaFrame>,
     msix: Vec<MsixBinding>,
 ) {
+    // SAFETY: cfg_va is the retained Device-attr common-cfg mapping from the
+    // successful probe and the config-vector field is an aligned u16.
+    let config_msix = unsafe {
+        core::ptr::read_volatile(
+            (cfg_va + virtio::common_cfg::CFG_MSIX_CONFIG_NUMQ) as *const u16,
+        )
+    };
+    let queue_msix = core::array::from_fn(|index| {
+        let queue = queue_resources[index];
+        if queue.is_runtime_valid() {
+            virtio::read_queue_msix_vector(cfg_va, queue.index)
+        } else {
+            virtio::VIRTIO_MSI_NO_VECTOR
+        }
+    });
     let rec = TransportRecord {
         device_key,
         bdf,
         command_orig,
+        cfg_va,
+        hhdm,
+        drv_features,
+        config_msix,
+        queue_resources,
+        queue_msix,
         mappings,
         vring_frames,
         msix,
@@ -208,6 +239,107 @@ pub(crate) fn publish_transport_record(
         release_transport_record(old);
     }
     records.push(rec);
+}
+
+#[derive(Clone, Copy)]
+struct RestoreQueue {
+    resource: virtio::VirtQueueResource,
+    desc_dma: u64,
+    driver_dma: u64,
+    device_dma: u64,
+    msix: u16,
+}
+
+#[derive(Clone, Copy)]
+struct RestoreFacts {
+    cfg_va: u64,
+    hhdm: u64,
+    drv_features: u64,
+    config_msix: u16,
+    queues: [Option<RestoreQueue>; virtio::MAX_RESOURCE_QUEUES],
+}
+
+fn restore_facts(rec: &TransportRecord) -> Option<RestoreFacts> {
+    let mut queues = [None; virtio::MAX_RESOURCE_QUEUES];
+    for (index, resource) in rec.queue_resources.iter().copied().enumerate() {
+        if !resource.is_runtime_valid() { continue; }
+        let dma = |pa| rec.vring_frames.iter().find(|frame| frame.pa == pa).map(|frame| frame.dma);
+        queues[index] = Some(RestoreQueue {
+            resource,
+            desc_dma: dma(resource.desc_pa)?,
+            driver_dma: dma(resource.driver_pa)?,
+            device_dma: dma(resource.device_pa)?,
+            msix: rec.queue_msix[index],
+        });
+    }
+    Some(RestoreFacts {
+        cfg_va: rec.cfg_va,
+        hhdm: rec.hhdm,
+        drv_features: rec.drv_features,
+        config_msix: rec.config_msix,
+        queues,
+    })
+}
+
+fn wait_restore_poll() {
+    #[cfg(target_os = "oxide-kernel")]
+    {
+        let deadline = sched::deadline::clock::now_ns().saturating_add(1_000_000);
+        // SAFETY: device restore runs from the normal DPM process-context walk.
+        unsafe { sched::live::sleep_uninterruptible_until(deadline, sched::deadline::clock::now_ns); }
+    }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    sync::spin_relax::relax();
+}
+
+fn zero_restore_page(hhdm: u64, pa: u64) {
+    let va = hhdm.wrapping_add(pa) as *mut u64;
+    // SAFETY: pa is a retained transport-owned ring frame reachable through
+    // the established HHDM; reset completion proves the device cannot access
+    // it while the exact page is cleared and republished.
+    unsafe {
+        for index in 0..(VIRTIO_PCI_PAGE_SIZE as usize / core::mem::size_of::<u64>()) {
+            core::ptr::write_volatile(va.add(index), 0);
+        }
+    }
+    virtio::dma::clean_to_device(hhdm.wrapping_add(pa), VIRTIO_PCI_PAGE_SIZE as usize);
+}
+
+/// Reset and rebuild one retained virtio transport from its sole runtime
+/// resource record. Queue frames and DMA mappings remain owned by that record;
+/// no replacement transport or second child publication is created.
+/// # Ctx: process
+/// # Sleeps: yes
+/// # C: O(retained queues + reset latency)
+pub(crate) fn restore_transport_record(device_key: virtio::VirtioChildDeviceKey) -> bool {
+    let facts = {
+        let records = TRANSPORT_MMIO.lock();
+        records.iter().find(|rec| rec.device_key == device_key).and_then(restore_facts)
+    };
+    let Some(facts) = facts else { return false };
+    if facts.hhdm == 0 { return false; }
+    let negotiated = virtio::negotiate_features_with_wait(
+        facts.cfg_va, facts.drv_features, wait_restore_poll,
+    );
+    if !negotiated.features_ok || negotiated.drv_features != facts.drv_features
+        || virtio::set_config_msix_vector(facts.cfg_va, facts.config_msix) != facts.config_msix
+    {
+        virtio::set_failed(facts.cfg_va);
+        return false;
+    }
+    for queue in facts.queues.into_iter().flatten() {
+        zero_restore_page(facts.hhdm, queue.resource.desc_pa);
+        zero_restore_page(facts.hhdm, queue.resource.driver_pa);
+        zero_restore_page(facts.hhdm, queue.resource.device_pa);
+        if !virtio::restore_queue(
+            facts.cfg_va, queue.resource, queue.desc_dma, queue.driver_dma,
+            queue.device_dma, queue.msix,
+        ) {
+            virtio::set_failed(facts.cfg_va);
+            return false;
+        }
+    }
+    virtio::set_driver_ok(facts.cfg_va) & virtio::VIRTIO_STATUS_DRIVER_OK != 0
 }
 
 pub(crate) fn unpublish_transport_record(device_key: virtio::VirtioChildDeviceKey) {

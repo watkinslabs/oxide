@@ -57,6 +57,26 @@ pub fn cpuid_fault_kind() -> u8 {
 /// # C: O(1)
 pub fn cpuid_fault_supported() -> bool { cpuid_fault_kind() != CPUID_FAULT_NONE }
 
+/// Whether this CPU currently traps ring-3 CPUID. This is CPU register state,
+/// not policy: hibernation records it so the restored current thread cannot
+/// briefly run with the restore kernel's setting.
+/// # C: O(1)
+pub fn cpuid_faulting_enabled() -> bool {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    // SAFETY: the capability owner admits the corresponding vendor MSR before
+    // reading it; unsupported CPUs take the no-access arm.
+    unsafe {
+        return match cpuid_fault_kind() {
+            CPUID_FAULT_INTEL => rdmsr(msr::MISC_FEATURES_ENABLES)
+                & msr::MISC_FEATURES_ENABLES_CPUID_FAULT != 0,
+            CPUID_FAULT_AMD => rdmsr(msr::K7_HWCR) & msr::K7_HWCR_CPUID_USER_DIS != 0,
+            _ => false,
+        };
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+    { false }
+}
+
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 fn probe() -> u8 {
     // SAFETY: `cpuid` is unprivileged with no memory effect; leaf 0 returns

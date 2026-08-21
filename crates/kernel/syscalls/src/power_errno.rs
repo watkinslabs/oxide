@@ -19,5 +19,6 @@ pub fn of(e: power::Error) -> Errno {
         power::Error::Intr   => Errno::Eintr,
         power::Error::Nomem  => Errno::Enomem,
         power::Error::Nodata => Errno::Enodata,
+        power::Error::Nospc  => Errno::Enospc,
     }
 }

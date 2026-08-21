@@ -264,7 +264,7 @@ fn wait_loop(uaddr: u64, op_full: u32, val: u32, bitset: u32, private: bool, dea
         if deadline_ns != 0 && now_monotonic_ns() >= deadline_ns {
             return -(Errno::Etimedout.as_i32() as i64);
         }
-        if sched::live::deliverable_signals_self() != 0 {
+        if sched::live::interruptible_work_pending_self() {
             // Linux `__futex_wait` ends an interrupted wait with
             // `-ERESTARTSYS`; the wait's caller then either
             // returns it as-is (no timeout) or arms `futex_wait_restart` with

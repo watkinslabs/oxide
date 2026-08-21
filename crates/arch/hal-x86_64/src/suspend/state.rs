@@ -53,7 +53,15 @@ pub struct SavedCpuState {
     pub cr2: u64,
     pub cr3: u64,
     pub cr4: u64,
+    /// XCR0 selects the extended register components XSAVE/XRSTOR carry.
+    /// Zero means the kernel is using the architectural FXSAVE fallback.
+    pub xcr0: u64,
     pub efer: u64,
+    /// Page-attribute layout used to interpret every PAT bit in the restored
+    /// page tables. Zero means PAT was not enabled on this CPU.
+    pub pat: u64,
+    /// Vendor CPUID-fault MSR bit for the current thread (0/1).
+    pub cpuid_faulting: u64,
     pub fs_base: u64,
     /// `IA32_GS_BASE`: the per-CPU base the kernel dereferences `gs:` through.
     pub gs_base: u64,

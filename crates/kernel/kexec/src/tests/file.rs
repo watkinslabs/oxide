@@ -81,6 +81,11 @@ fn the_slots_the_lock_and_the_reboot_entry_behave_as_one_state_machine() {
     assert!(!store::kexec_loaded());
     assert_eq!(store::kernel_kexec(), Err(Error::Inval));
 
+    let transition = power::transition::try_claim().expect("positive control owns transition");
+    assert_eq!(store::kernel_kexec(), Err(Error::Busy),
+        "system transition must precede the empty-image decision");
+    drop(transition);
+
     // An unload with nothing loaded succeeds — it is not an error to ask for a
     // state the machine is already in.
     assert_eq!(store::do_kexec_load(&mut f, 0, Vec::new(), 0, Limits::default(), &src), Ok(()));

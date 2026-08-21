@@ -41,14 +41,22 @@ impl BlkState {
         let is_in = device_writes_data(type_);
         let data_len: u32 = if is_flush { 0 } else { data.len() as u32 };
         if data_len as usize > blk::BOUNCE_DATA_BYTES { return Err(BlockError::Einval); }
+        #[cfg(feature = "debug-hibernate")]
+        let trace = claim_hibernate_sync_trace();
+        #[cfg(feature = "debug-hibernate")]
+        if trace != 0 { self.log_hibernate_turn(trace, b"before", type_, sector); }
         self.acquire_turn();
+        #[cfg(feature = "debug-hibernate")]
+        if trace != 0 { self.log_hibernate_turn(trace, b"after", type_, sector); }
         if self.poisoned.load(core::sync::atomic::Ordering::Acquire) {
             self.release_turn();
             #[cfg(feature = "debug-boot")]
             log_submit_failure(b"poisoned-turn", type_, sector, data_len, BlockError::Eio);
             return Err(BlockError::Eio);
         }
-        let result = self.do_request(h, type_, sector, data, is_in, is_flush, data_len);
+        #[cfg(not(feature = "debug-hibernate"))]
+        let trace = 0;
+        let result = self.do_request(h, type_, sector, data, is_in, is_flush, data_len, trace);
         #[cfg(feature = "debug-boot")]
         if let Err(error) = result { log_submit_failure(b"request", type_, sector, data_len, error); }
         if matches!(result, Err(BlockError::Eio)) && self.poisoned.load(core::sync::atomic::Ordering::Acquire) {
@@ -60,5 +68,23 @@ impl BlkState {
         }
         self.release_turn();
         result
+    }
+
+    #[cfg(feature = "debug-hibernate")]
+    fn log_hibernate_turn(&self, trace: u16, boundary: &[u8], type_: u32, sector: u64) {
+        let (busy, pending, deferred) = {
+            let ring = self.requestq.lock();
+            (ring.busy, ring.pending.len(), ring.deferred.len())
+        };
+        klog::write_raw(b"[hibernate] blk_sync="); klog::write_dec_u64(trace as u64);
+        klog::write_raw(b" turn="); klog::write_raw(boundary);
+        klog::write_raw(b" type="); klog::write_dec_u64(type_ as u64);
+        klog::write_raw(b" sector="); klog::write_dec_u64(sector);
+        klog::write_raw(b" poisoned=");
+        klog::write_dec_u64(self.poisoned.load(core::sync::atomic::Ordering::Acquire) as u64);
+        klog::write_raw(b" busy="); klog::write_dec_u64(busy as u64);
+        klog::write_raw(b" pending="); klog::write_dec_u64(pending as u64);
+        klog::write_raw(b" deferred="); klog::write_dec_u64(deferred as u64);
+        klog::write_raw(b"\n");
     }
 }

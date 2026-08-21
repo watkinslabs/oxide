@@ -115,6 +115,11 @@ fn bind_msix_with<R: pci::ConfigSpaceReader>(_: &R, group: &mut MsixGroup,
         return None;
     }
     write_msix_entry(entry.entry_va, message.address, message.data);
+    if !crate::suspend::bind_msix(message.irq, entry.entry_va) {
+        write_msix_mask(entry.entry_va);
+        arch_irq::free_pci_msi(message.irq);
+        return None;
+    }
     group.vectors.push(MsixVector { irq: message.irq, entry_va: entry.entry_va });
     Some(message.irq)
 }
@@ -127,6 +132,11 @@ fn bind_msix_context_with<R: pci::ConfigSpaceReader>(_: &R, group: &mut MsixGrou
         return None;
     }
     write_msix_entry(entry.entry_va, message.address, message.data);
+    if !crate::suspend::bind_msix(message.irq, entry.entry_va) {
+        write_msix_mask(entry.entry_va);
+        arch_irq::free_pci_msi(message.irq);
+        return None;
+    }
     group.vectors.push(MsixVector { irq: message.irq, entry_va: entry.entry_va });
     Some(message.irq)
 }
@@ -168,6 +178,13 @@ pub(crate) fn request_msix<R: pci::ConfigSpaceReader>(r: &R, bdf: pci::Bdf, msi_
     write_msix_entry(entry_va, message.address, message.data);
     r.write32(bdf, cfg, pci::msix_control_value(r.read32(bdf, cfg), true));
     let _ = r.read32(bdf, cfg);
+    if !crate::suspend::bind_msix(message.irq, entry_va) {
+        write_msix_mask(entry_va);
+        r.write32(bdf, cfg, pci::msix_control_value(r.read32(bdf, cfg), false));
+        let _ = pci::restore_intx_disabled(r, bdf, prior_command);
+        arch_irq::free_pci_msi(message.irq);
+        return None;
+    }
     Some(single_binding(bdf, message.irq, prior_command, Mode::Msix { cap_off, entry_va }))
 }
 

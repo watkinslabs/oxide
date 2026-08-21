@@ -221,7 +221,7 @@ where F: FnMut(usize, &[u8]) -> Result<usize, i64>
         // Linux `tcp_recvmsg_locked`:
         // `copied = sock_intr_errno(timeo)` on the nothing-copied arm, while a
         // partial transfer breaks out and returns the count.
-        if sched::live::deliverable_signals_self() != 0 {
+        if sched::live::interruptible_work_pending_self() {
             super::rx_trace::event(b"intr");
             return crate::net_errno::recv_interrupted(deadline, total);
         }
@@ -262,7 +262,7 @@ fn tcp_oob_with_copy(sock: &Arc<InetSocket>, user: &RecvUser, flags: u64,
         }
         if nonblock { return Err(err(Errno::Eagain)); }
         // Same `sock_intr_errno(timeo)` rule as the ordinary receive above.
-        if sched::live::deliverable_signals_self() != 0 {
+        if sched::live::interruptible_work_pending_self() {
             return Err(crate::net_errno::sock_intr_errno(deadline));
         }
         if net::sock_recv::deadline_expired(deadline) { return Err(err(Errno::Eagain)); }

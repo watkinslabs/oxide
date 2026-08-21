@@ -68,6 +68,8 @@ const OFF_XPM1B_EVT: usize = 160;
 const OFF_FLAGS: usize = 112;
 const OFF_RESET_REG: usize = 116;
 const OFF_RESET_VALUE: usize = 128;
+const OFF_ARM_BOOT_FLAGS: usize = 129;
+const OFF_MINOR_REVISION: usize = 131;
 const OFF_XDSDT: usize = 140;
 const OFF_XPM1A_CNT: usize = 172;
 const OFF_XPM1B_CNT: usize = 184;
@@ -87,6 +89,8 @@ const GAS_LEN: usize = 12;
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub struct Fadt {
     pub revision: u8,
+    pub minor_revision: u8,
+    pub arm_boot_flags: u16,
     pub flags: u32,
     pub reset_register: Gas,
     pub reset_value: u8,
@@ -248,6 +252,10 @@ pub fn parse_fadt(t: &[u8]) -> Option<Fadt> {
     let gpe1_block = if xgpe1.address != 0 { xgpe1 } else { port_gas(u32_at(t, OFF_GPE1_BLK32) as u64, gpe1_len) };
     Some(Fadt {
         revision: t[OFF_REVISION],
+        minor_revision: if t.len() > OFF_MINOR_REVISION { t[OFF_MINOR_REVISION] } else { 0 },
+        arm_boot_flags: if t.len() >= OFF_ARM_BOOT_FLAGS + 2 {
+            u16::from_le_bytes([t[OFF_ARM_BOOT_FLAGS], t[OFF_ARM_BOOT_FLAGS + 1]])
+        } else { 0 },
         flags: u32_at(t, OFF_FLAGS),
         reset_register: gas_at(t, OFF_RESET_REG),
         reset_value: if t.len() > OFF_RESET_VALUE { t[OFF_RESET_VALUE] } else { 0 },
@@ -431,6 +439,8 @@ pub unsafe fn decode_fadt(pa: u64, hhdm_offset: u64) {
     alog_dec(f.revision as u64);
     alog_raw(b" flags=");
     alog_hex(f.flags as u64);
+    alog_raw(b" arm_boot_flags=");
+    alog_hex(f.arm_boot_flags as u64);
     alog_raw(b" dsdt=");
     alog_hex(f.dsdt_pa);
     alog_raw(b"\n");
@@ -438,6 +448,7 @@ pub unsafe fn decode_fadt(pa: u64, hhdm_offset: u64) {
     // firmware memory for this boot, under the same HHDM contract as FADT.
     unsafe { crate::acpi::install_dsdt(f.dsdt_pa, hhdm_offset); }
     crate::set_power_registers(power_registers(&f));
+    crate::acpi::psci::publish(f.arm_boot_flags);
     set_cstate_registers(cstate_registers(&f));
     set_event_registers(event_registers(&f));
     crate::acpi::sleep_types::set_sleep_registers(crate::acpi::sleep_types::sleep_registers(&f));

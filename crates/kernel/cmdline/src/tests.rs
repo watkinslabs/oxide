@@ -4,6 +4,7 @@
 // - `earlycon`: every accepted `earlycon=` / `earlyprintk=` spelling.
 // - `printk`: loglevel, verbosity and `/dev/kmsg` policy decisions.
 // - `memory`: `kernelcore=` / `movablecore=` values and replacement rules.
+// - hibernation boot options are colocated with their ordered parser.
 
 mod token;
 mod console;

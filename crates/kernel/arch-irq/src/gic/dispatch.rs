@@ -93,7 +93,15 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
             crate::irqstat::hit_msi(intid);
             // Route only to the owning MSI handler. Unregistered device
             // interrupts are not converted into shared softirq guesses.
-            let _ = crate::invoke_arm_spi_handler(intid);
+            match crate::msi_suspend::begin(intid) {
+                crate::msi_suspend::Dispatch::Run(in_flight) => {
+                    let _ = crate::invoke_arm_spi_handler(intid);
+                    drop(in_flight);
+                }
+                crate::msi_suspend::Dispatch::Wake => power::pm_system_irq_wakeup(intid),
+                crate::msi_suspend::Dispatch::Suspended
+                | crate::msi_suspend::Dispatch::Absent => {}
+            }
             let _ = crate::invoke_arm_spi_line_handler(intid);
         }
         // CNTV virtual timer INTID is 27 on QEMU virt. Reload TVAL
@@ -211,6 +219,7 @@ unsafe extern "C" fn oxide_arm_irq_after_dispatch() {
     // SAFETY: `oxide_arm_softirq_drain` neither sleeps nor returns through the
     // interrupted frame; the HAL trampoline preserves the caller stack/DAIF.
     unsafe { hal_aarch64::call_on_irq_stack(oxide_arm_softirq_drain); }
+    crate::call_fn::finish_cpu_offline_tail();
 }
 
 /// Softirq drain (Linux `invoke_softirq` -> `do_softirq_own_stack`) on a fresh

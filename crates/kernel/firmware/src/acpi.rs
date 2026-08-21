@@ -4,6 +4,7 @@
 // - `rsdp`: RSDP parse flow, XSDT/RSDT walk, public entrypoints.
 // - `tables`: per-table decoders and published ACPI-discovered state.
 // - `fadt`: FADT decode and the reset-register admission ladder.
+// - `psci`: FADT ARM boot flags and the retained PSCI conduit binding.
 // - `facs`: FACS decode and the firmware-waking-vector write plan.
 // - `sleep_types`: `_Sx` SLP_TYP ownership and the PM1 status register.
 // - `iommu`: checksum-validated DMAR/IVRS inventory and boot publication.
@@ -26,6 +27,7 @@ pub use aml::{AmlError, RegionAccess, RegionAccessDirection, value::RegionSpace}
 
 mod log;
 pub mod fadt;
+pub mod psci;
 pub mod facs;
 pub mod sleep_types;
 mod iommu;

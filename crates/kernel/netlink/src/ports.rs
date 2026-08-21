@@ -132,7 +132,7 @@ pub(crate) fn unicast_port(sender: &NetlinkSocket, destination_port_id: u32, byt
 /// arrives. `None` means "try again". # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
 fn wait_for_space(target: &NetlinkSocket, len: usize, deadline: u64) -> Option<Unicast> {
-    if sched::live::deliverable_signals_self() != 0 { return Some(Unicast::Interrupted); }
+    if sched::live::interruptible_work_pending_self() { return Some(Unicast::Interrupted); }
     let queue = target.rx_queue.lock();
     if crate::admission::attach_verdict(queue.bytes, len, target.base.rcvbuf_bytes(),
         target.rx_congested.load(Ordering::Acquire))
@@ -147,7 +147,7 @@ fn wait_for_space(target: &NetlinkSocket, len: usize, deadline: u64) -> Option<U
     // SAFETY: the running task is parked on that wait list.
     unsafe { sched::live::schedule::schedule(); }
     target.space_waiters.remove_current();
-    if sched::live::deliverable_signals_self() != 0 { return Some(Unicast::Interrupted); }
+    if sched::live::interruptible_work_pending_self() { return Some(Unicast::Interrupted); }
     if net::sock_intr::deadline_expired(deadline) { return Some(Unicast::Again); }
     None
 }

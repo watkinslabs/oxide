@@ -128,10 +128,12 @@ fn push_to(rq: &Runqueue, task: Arc<Task>) {
 pub unsafe fn balance_once() -> u32 {
     let online = cpu::smp::online_count();
     if online < 2 { return 0; }
+    let online_mask = cpu::smp::online_cpumask();
 
     // Snapshot loads.
     let mut loads: alloc::vec::Vec<CpuLoad> = alloc::vec::Vec::new();
     for id in 0..cpu::count() {
+        if !online_mask.contains(id as usize) || !cpu::smp::accepts_work(id) { continue; }
         if cpu::get(id as usize).is_some() {
             // SAFETY: per fn contract; topology slots are dense logical IDs bounded by MAX_CPUS.
             let rq_opt = unsafe { global_for(id) };
@@ -234,8 +236,10 @@ pub unsafe fn newidle_balance() -> u32 {
     // Find the busiest remote CPU (>1 runnable so pulling actually unloads it).
     let mut busy_cpu: Option<u32> = None;
     let mut busy_load = 1u32;
+    let online = cpu::smp::online_cpumask();
     let n = cpu::count();
     for id in 0..n {
+        if !online.contains(id as usize) || !cpu::smp::accepts_work(id) { continue; }
         if cpu::get(id as usize).is_some() {
             if id == me { continue; }
             // SAFETY: enumerated CPU; global_for None unless it's scheduling.

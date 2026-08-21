@@ -180,6 +180,7 @@ pub fn do_kexec_load<F: Frames, S: SegmentSource>(
 /// about the slot's contents.
 /// # C: O(image size); # Lk: KEXEC_LOCK, SLOTS
 pub fn kernel_kexec() -> KResult<()> {
+    let _transition = power::transition::try_claim().ok_or(Error::Busy)?;
     with_kexec_lock(|| {
         let s = SLOTS.lock();
         match s.normal.as_ref() {

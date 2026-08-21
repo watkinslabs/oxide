@@ -16,65 +16,15 @@
 //     schedules iff count returned to zero and need_resched is set.
 
 use core::sync::atomic::{AtomicPtr, Ordering};
-#[cfg(target_os = "oxide-kernel")]
-use core::sync::atomic::AtomicU32;
 
-#[cfg(target_os = "oxide-kernel")]
-use cpu::MAX_CPUS;
-
-/// Cacheline-padded per-CPU slot so adjacent CPUs' preempt count never
-/// shares a cache line (`04§6` / `06§4`).
-#[cfg(target_os = "oxide-kernel")]
-#[repr(C, align(64))]
-struct Pcpu<T>(T);
-
-#[cfg(target_os = "oxide-kernel")]
-const PC_ZERO: Pcpu<AtomicU32>  = Pcpu(AtomicU32::new(0));
-
-/// THE preempt count on the kernel target. Hosted builds keep it in
-/// thread-local storage instead (below) and never compile this array, so there
-/// is exactly one owner of the count in either build.
-#[cfg(target_os = "oxide-kernel")]
-static PREEMPT_COUNT: [Pcpu<AtomicU32>;  MAX_CPUS] = [PC_ZERO; MAX_CPUS];
-
-// Hosted preemption context. One per OS thread, because a hosted test process
-// is many threads sharing one address space: a single static slot would make
-// one thread's `local_bh_disable` visible to every other thread, which is both
-// unlike a real CPU and a source of cross-test interference.
-#[cfg(not(target_os = "oxide-kernel"))]
-std::thread_local! {
-    static HOSTED_PREEMPT_COUNT: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
-}
-
-/// Current CPU index, clamped to `MAX_CPUS`. Reads the per-CPU base
-/// register (`gs:0` on x86, `TPIDR_EL1` on arm). Callers index a per-CPU
-/// slot with this; the brief read→use window is safe because the running
-/// task is never migrated off its CPU mid-flight (only queued tasks
-/// migrate, via the balancer).
-///
-/// Hosted/test builds have no real per-CPU register. Their local preemption
-/// state therefore lives in thread-local storage; the synthetic CPU index is
-/// only the pre-task diagnostic anchor. A real kernel has exactly one running
-/// thread per CPU, so this distinction exists only for hosted multi-threaded
-/// tests.
-/// # C: O(1)
-#[inline]
-fn this_cpu() -> usize {
-    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-    { use hal::CpuOps; (hal_x86_64::X86CpuOps::current_cpu() as usize).min(MAX_CPUS - 1) }
-    #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
-    { use hal::CpuOps; (hal_aarch64::ArmCpuOps::current_cpu() as usize).min(MAX_CPUS - 1) }
-    #[cfg(not(target_os = "oxide-kernel"))]
-    { 0 }
-}
-
-/// Hosted execution has one preemption context per OS thread. A test process
-/// can create more workers than the kernel's fixed CPU maximum, so assigning
-/// hosted workers into that array aliases unrelated contexts. # C: O(1)
-#[cfg(not(target_os = "oxide-kernel"))]
-fn hosted_preempt<R>(f: impl FnOnce(&core::cell::Cell<u32>) -> R) -> R {
-    HOSTED_PREEMPT_COUNT.with(f)
-}
+// Module manifest: `local` owns migration-safe per-CPU count access;
+// `terminal_irq` owns terminal CPU-hotplug IRQ accounting transfer.
+mod local;
+mod terminal_irq;
+use local::{preempt_count_add_local, preempt_count_load, preempt_count_sub_local};
+pub use local::preempt_count_on;
+pub use terminal_irq::TerminalIrqExit;
+pub(crate) use local::{preempt_count_set, this_cpu};
 
 /// Level `schedule()` runs its own body at: one `preempt_disable`, taken on
 /// entry and paid back by the resumer in `finish_task_switch`. Linux's
@@ -95,50 +45,6 @@ pub mod resched;
 pub use resched::{need_resched, need_resched_on, set_need_resched, set_need_resched_on,
                   take_need_resched};
 
-#[inline]
-#[cfg(target_os = "oxide-kernel")]
-fn preempt_count_slot() -> &'static AtomicU32 { &PREEMPT_COUNT[this_cpu()].0 }
-
-fn preempt_count_load() -> u32 {
-    #[cfg(not(target_os = "oxide-kernel"))]
-    { return hosted_preempt(core::cell::Cell::get); }
-    #[cfg(target_os = "oxide-kernel")]
-    { preempt_count_slot().load(Ordering::Acquire) }
-}
-
-fn preempt_count_add_local(n: u32) {
-    #[cfg(not(target_os = "oxide-kernel"))]
-    { hosted_preempt(|count| count.set(count.get().wrapping_add(n))); }
-    #[cfg(target_os = "oxide-kernel")]
-    { preempt_count_slot().fetch_add(n, Ordering::AcqRel); }
-}
-
-// Checked BEFORE the sub: afterwards the wrapped count is indistinguishable from deep nesting.
-#[track_caller] fn preempt_count_sub_local(n: u32) -> u32 {
-    #[cfg(feature = "debug-preempt")] debug::check_preempt_sub(preempt_count_load(), n);
-    #[cfg(not(target_os = "oxide-kernel"))]
-    { return hosted_preempt(|count| {
-        let prev = count.get();
-        count.set(prev.wrapping_sub(n));
-        prev
-    }); }
-    #[cfg(target_os = "oxide-kernel")]
-    { preempt_count_slot().fetch_sub(n, Ordering::AcqRel) }
-}
-
-/// Live count of an ARBITRARY CPU. The per-CPU state is a plain array, so a
-/// CPU that is still ticking can read a wedged one's — which is the only way
-/// to observe a leaked HARDIRQ/SOFTIRQ field on a CPU that has stopped taking
-/// ticks. Feeds the sysrq per-CPU dump (`diag::percpu::dump_cpus`).
-/// Out-of-range yields 0.
-/// # C: O(1)
-pub fn preempt_count_on(cpu: usize) -> u32 {
-    #[cfg(not(target_os = "oxide-kernel"))]
-    { let _ = cpu; return 0; }
-    #[cfg(target_os = "oxide-kernel")]
-    PREEMPT_COUNT.get(cpu).map_or(0, |s| s.0.load(Ordering::Acquire))
-}
-
 /// Hook installed by the kernel side so `preempt_enable` can call
 /// `schedule()` when discipline allows. v1 single fn pointer; SMP
 /// will continue to share one schedule() entry point per `13§8`.
@@ -157,16 +63,6 @@ pub unsafe fn set_schedule_hook(hook: unsafe fn()) {
 /// Current preempt count on this CPU.
 /// # C: O(1)
 pub fn preempt_count() -> u32 { preempt_count_load() }
-
-/// Replace this CPU's live count after a diagnosed accounting violation.
-/// The scheduler and softirq runner are the only recovery owners; ordinary
-/// nesting must use the paired add/sub helpers. # C: O(1)
-pub(crate) fn preempt_count_set(value: u32) {
-    #[cfg(not(target_os = "oxide-kernel"))]
-    { hosted_preempt(|count| count.set(value)); }
-    #[cfg(target_os = "oxide-kernel")]
-    { preempt_count_slot().store(value, Ordering::Release); }
-}
 
 // ---- Linux preempt_count bit-field layout ----
 //

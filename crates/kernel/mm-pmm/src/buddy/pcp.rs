@@ -89,13 +89,6 @@ impl PcpList {
         out
     }
 
-    /// # SAFETY: both lists are exclusively held by the caller.
-    pub(super) unsafe fn absorb<B: PageBacking>(&mut self, backing: &B, pfn_max: u64, from: &mut Self) {
-        while let Some(pfn) = unsafe { from.pop(backing, pfn_max) } {
-            // SAFETY: pfn is private after pop and becomes this list's head.
-            unsafe { self.push(backing, pfn) };
-        }
-    }
 }
 
 /// Permanent pageset storage. Each mobility class has its own cache so a
@@ -118,7 +111,6 @@ impl PcpStorage {
     pub(super) fn list(&self, cpu: usize, zone: usize, mt: MigrateType) -> &Spinlock<PcpList, Buddy> {
         &self.lists[(cpu.min(cpu::MAX_CPUS - 1) * NR_ZONES + zone) * MIGRATE_TYPES + mt.index()]
     }
-    pub(super) fn current(&self, zone: usize, mt: MigrateType) -> &Spinlock<PcpList, Buddy> { self.list(current_cpu(), zone, mt) }
 }
 
 #[inline]
@@ -132,6 +124,23 @@ pub(super) fn current_cpu() -> usize {
 }
 
 impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
+    fn with_current_pcp<R>(&self, zone: usize, mt: MigrateType,
+                           f: impl FnOnce(&mut PcpList) -> R) -> R {
+        // SAFETY: this outer local-IRQ pin is paired below. It must precede
+        // current_cpu(): selecting first permits migration before the list
+        // lock's own irqsave, violating per-CPU pageset ownership.
+        let flags = unsafe { I::save_disable() };
+        let cpu = current_cpu();
+        let out = {
+            let mut pcp = self.pcp.list(cpu, zone, mt).lock_irqsave::<I>();
+            f(&mut pcp)
+        };
+        // SAFETY: paired with the outer save_disable after the nested list
+        // guard restored the already-disabled intermediate state.
+        unsafe { I::restore(flags); }
+        out
+    }
+
     fn pcp_word_bit(&self, pfn: u64) -> (&AtomicU64, u64) { (&self.pcp_bitmap[(pfn >> 6) as usize], 1u64 << (pfn & 63)) }
     fn pcp_mark(&self, pfn: u64) { let (word, bit) = self.pcp_word_bit(pfn); kassert!(word.fetch_or(bit, Ordering::AcqRel) & bit == 0, "pmm double free in per-cpu pageset"); }
     fn pcp_unmark(&self, pfn: u64) { let (word, bit) = self.pcp_word_bit(pfn); kassert!(word.fetch_and(!bit, Ordering::AcqRel) & bit != 0, "pmm per-cpu pageset bitmap missing page"); }
@@ -155,8 +164,10 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
     }
 
     fn pop_current_pcp(&self, zone: usize, mt: MigrateType) -> Option<u64> {
-        let pfn = { let mut pcp = self.pcp.current(zone, mt).lock_irqsave::<I>(); unsafe { pcp.pop(&self.backing, self.pfn_max) } }?;
-        self.verify_pcp_page(pfn, zone, mt); self.pcp_unmark(pfn);
+        let pfn = self.with_current_pcp(zone, mt, |pcp| {
+            let pfn = unsafe { pcp.pop(&self.backing, self.pfn_max) }?;
+            self.verify_pcp_page(pfn, zone, mt); self.pcp_unmark(pfn); Some(pfn)
+        })?;
         self.pcp_free[zone].fetch_sub(1, Ordering::AcqRel); self.zone_free[zone].fetch_sub(1, Ordering::AcqRel);
         self.pcp_alloc_events.fetch_add(1, Ordering::Relaxed); self.pcp_alloc_event_pages.fetch_add(1, Ordering::Relaxed); Some(pfn)
     }
@@ -176,7 +187,6 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
                 let Some(pfn) = (unsafe { g.take_block(&self.backing, zone, 0, mt) }) else { break; };
                 // SAFETY: pfn just left the global free lists.
                 unsafe { g.verify_poison(&self.backing, pfn) };
-                self.pcp_mark(pfn);
                 // SAFETY: pfn is private to this refill staging list.
                 unsafe { refill.push(&self.backing, pfn) };
                 g.allocated += 1;
@@ -184,30 +194,40 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
         }
         let count = refill.count();
         if count == 0 { return None; }
-        let pfn = {
-            let mut pcp = self.pcp.current(zone, mt).lock_irqsave::<I>();
-            // SAFETY: refill is private and the destination cache is held.
-            unsafe { pcp.absorb(&self.backing, self.pfn_max, &mut refill) };
-            // SAFETY: the nonempty refill was absorbed into this list.
-            let pfn = unsafe { pcp.pop(&self.backing, self.pfn_max) }.expect("pcp refill lost its head");
-            self.pcp_free[zone].fetch_add(count - 1, Ordering::AcqRel); self.zone_free[zone].fetch_sub(1, Ordering::AcqRel); pfn
-        };
-        self.verify_pcp_page(pfn, zone, mt); self.pcp_unmark(pfn);
+        let pfn = self.with_current_pcp(zone, mt, |pcp| {
+            // SAFETY: refill is a nonempty private batch from Buddy.
+            let pfn = unsafe { refill.pop(&self.backing, self.pfn_max) }
+                .expect("pcp refill lost its head");
+            while let Some(cached) = unsafe { refill.pop(&self.backing, self.pfn_max) } {
+                self.pcp_mark(cached);
+                // SAFETY: cached becomes PCP-owned with its bitmap bit under
+                // the same list lock that publishes the intrusive link.
+                unsafe { pcp.push(&self.backing, cached) };
+            }
+            self.pcp_free[zone].fetch_add(count - 1, Ordering::AcqRel);
+            self.zone_free[zone].fetch_sub(1, Ordering::AcqRel); pfn
+        });
+        self.verify_pcp_node(pfn, zone, mt);
         self.pcp_alloc_events.fetch_add(1, Ordering::Relaxed); self.pcp_alloc_event_pages.fetch_add(1, Ordering::Relaxed); Some(pfn)
     }
 
     pub(super) fn free_to_pcp(&self, pfn: u64) {
         let zone = self.layout.index_of(pfn); let mt = self.pcp_type(pfn);
-        kassert!(zone < NR_ZONES, "pmm pcp free pfn outside zone layout"); self.pcp_mark(pfn);
+        kassert!(zone < NR_ZONES, "pmm pcp free pfn outside zone layout");
         for order in 0..=MAX_ORDER { kassert!(!self.buddy_marked(pfn, order), "pmm double free detected by bitmap"); }
         let high = self.pcp_zone[zone].high(); let batch = self.pcp_zone[zone].batch.load(Ordering::Acquire).max(1);
-        let drain = {
-            let mut pcp = self.pcp.current(zone, mt).lock_irqsave::<I>();
+        let drain = self.with_current_pcp(zone, mt, |pcp| {
+            self.pcp_mark(pfn);
             // SAFETY: caller owns pfn and the selected type list is held.
             unsafe { pcp.push(&self.backing, pfn) };
-            let drain = if pcp.count() > high { unsafe { pcp.take(&self.backing, self.pfn_max, batch) } } else { PcpList::empty() };
-            self.zone_free[zone].fetch_add(1, Ordering::AcqRel); self.pcp_free[zone].fetch_add(1, Ordering::AcqRel); self.pcp_free[zone].fetch_sub(drain.count(), Ordering::AcqRel); drain
-        };
+            let drain = if pcp.count() > high {
+                let list = unsafe { pcp.take(&self.backing, self.pfn_max, batch) };
+                self.release_pcp_batch(zone, mt, list)
+            } else { PcpList::empty() };
+            self.zone_free[zone].fetch_add(1, Ordering::AcqRel);
+            self.pcp_free[zone].fetch_add(1, Ordering::AcqRel);
+            self.pcp_free[zone].fetch_sub(drain.count(), Ordering::AcqRel); drain
+        });
         self.pcp_free_events.fetch_add(1, Ordering::Relaxed); self.pcp_free_event_pages.fetch_add(1, Ordering::Relaxed);
         if drain.count() != 0 { self.drain_pcp_list(zone, mt, drain); }
     }
@@ -218,7 +238,11 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
             let zi = zone.index();
             for mt_index in 0..MIGRATE_TYPES { for cpu in 0..cpu::MAX_CPUS {
                 let mt = MigrateType::from_index(mt_index);
-                let list = { let mut pcp = self.pcp.list(cpu, zi, mt).lock_irqsave::<I>(); unsafe { pcp.take(&self.backing, self.pfn_max, u64::MAX) } };
+                let list = {
+                    let mut pcp = self.pcp.list(cpu, zi, mt).lock_irqsave::<I>();
+                    let list = unsafe { pcp.take(&self.backing, self.pfn_max, u64::MAX) };
+                    self.release_pcp_batch(zi, mt, list)
+                };
                 if list.count() == 0 { continue; }
                 drained = true; self.pcp_free[zi].fetch_sub(list.count(), Ordering::AcqRel); self.drain_pcp_list(zi, mt, list);
             }}
@@ -229,18 +253,35 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
     fn drain_pcp_list(&self, zone: usize, mt: MigrateType, mut list: PcpList) {
         let drained = list.count(); let mut g = self.inner.lock_irqsave::<I>();
         while let Some(pfn) = unsafe { list.pop(&self.backing, self.pfn_max) } {
-            self.verify_pcp_page(pfn, zone, mt);
+            self.verify_pcp_node(pfn, zone, mt);
             // SAFETY: pfn is detached and Buddy owns the global transition.
             unsafe { self.return_to_buddy(&mut g, pfn, 0, core::panic::Location::caller()) };
-            self.pcp_unmark(pfn);
         }
         g.allocated -= drained;
     }
 
+    /// Remove bitmap ownership from a just-detached batch while the source
+    /// PCP lock still excludes every list publisher. The returned intrusive
+    /// list is private staging and may subsequently enter Buddy without an
+    /// interval in which both owners claim the PFN.
+    fn release_pcp_batch(&self, zone: usize, mt: MigrateType, mut list: PcpList) -> PcpList {
+        let mut private = PcpList::empty();
+        while let Some(pfn) = unsafe { list.pop(&self.backing, self.pfn_max) } {
+            self.verify_pcp_page(pfn, zone, mt); self.pcp_unmark(pfn);
+            // SAFETY: pfn is private after its list removal and bitmap clear.
+            unsafe { private.push(&self.backing, pfn) };
+        }
+        private
+    }
+
     fn verify_pcp_page(&self, pfn: u64, zone: usize, mt: MigrateType) {
+        self.verify_pcp_node(pfn, zone, mt);
+        kassert!(self.pcp_marked(pfn), "pmm pcp list page absent from bitmap");
+    }
+
+    fn verify_pcp_node(&self, pfn: u64, zone: usize, mt: MigrateType) {
         kassert!(self.layout.index_of(pfn) == zone, "pmm pcp page in wrong zone");
         kassert!(self.pcp_type(pfn) == mt, "pmm pcp page wrong migratetype");
-        kassert!(self.pcp_marked(pfn), "pmm pcp list page absent from bitmap");
         // SAFETY: PCP membership makes this free node PMM-owned.
         let page = unsafe { self.backing.page_ptr(Pfn(pfn)) };
         // SAFETY: inspect only the fixed free-node header.
@@ -249,9 +290,14 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
     }
 
     #[cfg(test)]
+    /// Cached pages per zone. # C: O(N_zones)
     pub(crate) fn pcp_cached_pages(&self) -> [u64; NR_ZONES] { core::array::from_fn(|zone| self.pcp_free[zone].load(Ordering::Acquire)) }
     #[cfg(test)]
+    /// High watermark for one zone. # C: O(1)
     pub(crate) fn pcp_high_pages(&self, zone: ZoneType) -> u64 { self.pcp_zone[zone.index()].high() }
+    #[cfg(test)]
+    /// Drain all hosted-test PCP zones. # C: O(N_cached_pages)
+    pub(crate) fn drain_pcp_for_test(&self) { let _ = self.drain_pcp_below(NR_ZONES - 1); }
 }
 
 #[cfg(test)]

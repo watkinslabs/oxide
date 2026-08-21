@@ -24,6 +24,7 @@ use sync::{RwLock, Spinlock, Superblock as SbClass};
 use crate::dentry::Dentry;
 use crate::inode::{Inode, InodeRef};
 use crate::quota::QuotaInfo;
+use crate::rwsem::VfsRwsem;
 use crate::types::Ino;
 
 mod attrs;
@@ -182,7 +183,7 @@ pub struct SuperBlock {
     s_root: RwLock<Option<Arc<Dentry>>, SbClass>,
     /// `s_umount` — Linux superblock rwsem analogue; quota on/off take it
     /// exclusive, other targeted quota ops take it shared.
-    s_umount: RwLock<(), SbClass>,
+    s_umount: VfsRwsem<SbClass>,
     /// `s_fs_info` — backend-private state slot (Linux `super_block.s_fs_info`):
     /// the ext4 on-disk-sb struct / tmpfs arena / pseudo-fs context a backend
     /// hangs off its instance. Typed `Arc<dyn Any>` like `inode.i_private`;

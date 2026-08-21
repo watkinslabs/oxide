@@ -96,7 +96,7 @@ fn read_notifications(inode: &Inode, q: &crate::watch_queue::WatchQueue, buf: &m
             Ok(None) => {
                 #[cfg(target_os = "oxide-kernel")]
                 {
-                    if sched::live::deliverable_signals_self() != 0 { return Err(VfsError::Erestartsys); }
+                    if sched::live::interruptible_work_pending_self() { return Err(VfsError::Erestartsys); }
                     // SAFETY: process ctx; runqueue installed; current is Sleeping until a poster's wake fires; no lock is held here.
                     unsafe { sched::live::schedule::schedule(); }
                 }

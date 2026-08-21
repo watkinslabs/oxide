@@ -18,6 +18,7 @@ static ALL_STORES: Spinlock<Vec<Weak<Ext4FrameStore>>, TaskListClass> = Spinlock
 pub(super) fn register_store(s: &Arc<Ext4FrameStore>) {
     ALL_STORES.lock().push(Arc::downgrade(s));
     let _ = pmm::shrinker::register_shrinker(pmm::shrinker::Shrinker {
+        class: pmm::shrinker::ShrinkerClass::LruBacked,
         count_objects: count_clean_pages,
         scan_objects: scan_clean_pages,
     });

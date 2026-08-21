@@ -21,6 +21,13 @@ pub struct SimpleFramebuffer {
     pub blue: (u8, u8),
 }
 
+/// MMIO resource of the first enabled ARM PrimeCell PL031 RTC.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct Pl031Rtc {
+    pub base_pa: u64,
+    pub size: u64,
+}
+
 fn framebuffer_format(name: &[u8]) -> Option<(u8, (u8, u8), (u8, u8), (u8, u8))> {
     match name {
         b"r5g6b5" => Some((16, (11, 5), (5, 6), (0, 5))),
@@ -39,6 +46,65 @@ fn cells(data: &[u8], count: u32) -> Option<u64> {
     let mut value = 0u64;
     for cell in 0..count as usize { value = (value << 32) | read_be_u32(data, cell * 4).ok()? as u64; }
     Some(value)
+}
+
+/// Decode the first enabled root-bus `arm,pl031` RTC resource.
+///
+/// QEMU's ARM `virt` machine exposes the PL031 as a root-bus child. The root
+/// bus cell widths therefore govern `reg`; accepting a fixed 64-bit tuple
+/// would decode 32-bit board descriptions incorrectly. A missing `status`
+/// means enabled, while every explicit value other than `ok`/`okay` is
+/// unavailable, matching the DT availability rule.
+/// # C: O(struct_block_size)
+pub fn pl031_rtc(bytes: &[u8]) -> Option<Pl031Rtc> {
+    let mut address_cells = 2u32;
+    let mut size_cells = 1u32;
+    let mut candidate_depth = u32::MAX;
+    let mut compatible = false;
+    let mut enabled = true;
+    let mut reg = None;
+    let mut found = None;
+    walk(bytes, |event| {
+        match event {
+            Event::BeginNode { depth: 1, .. } => {
+                candidate_depth = 1;
+                compatible = false;
+                enabled = true;
+                reg = None;
+            }
+            Event::Prop { name, data, depth: 0 } => match name {
+                b"#address-cells" => address_cells = read_be_u32(data, 0).unwrap_or(0),
+                b"#size-cells" => size_cells = read_be_u32(data, 0).unwrap_or(0),
+                _ => {}
+            },
+            Event::Prop { name, data, depth } if depth == candidate_depth => match name {
+                b"compatible" => compatible = contains_string(data, b"arm,pl031"),
+                b"status" => enabled = matches!(data.split(|byte| *byte == 0).next(), Some(b"okay" | b"ok")),
+                b"reg" => {
+                    let offset = address_cells as usize * 4;
+                    reg = cells(data, address_cells)
+                        .zip(cells(data.get(offset..).unwrap_or(&[]), size_cells));
+                }
+                _ => {}
+            },
+            Event::EndNode { depth } if depth == candidate_depth => {
+                if compatible && enabled {
+                    if let Some((base_pa, size)) = reg {
+                        if base_pa != 0 && size >= core::mem::size_of::<u32>() as u64
+                            && base_pa.checked_add(size).is_some()
+                        {
+                            found = Some(Pl031Rtc { base_pa, size });
+                            return Flow::Stop;
+                        }
+                    }
+                }
+                candidate_depth = u32::MAX;
+            }
+            _ => {}
+        }
+        Flow::Continue
+    }).ok()?;
+    found
 }
 
 fn referenced_resource(bytes: &[u8], target: u32, address_cells: u32, size_cells: u32) -> Option<(u64, u64)> {

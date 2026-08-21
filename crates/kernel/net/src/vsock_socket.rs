@@ -409,7 +409,7 @@ impl VsockSocket {
                         // no timeo fields), so the wait is always untimed and `sock_intr_errno`
                         // necessarily yields ERESTARTSYS. Timed waits use their socket timeouts;
                         // wiring those options is a separate gap, tracked in the plan.
-                        if sched::live::deliverable_signals_self() != 0 {
+                        if sched::live::interruptible_work_pending_self() {
                             // A signal uses the receive timeout's shared rule.
                             return Err(crate::sock_intr::sock_intr_vfs(
                                 self.recv_deadline_ns()));

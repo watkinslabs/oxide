@@ -47,10 +47,12 @@ pub use common_cfg::{
 };
 
 pub mod queue_cfg;
+mod queue_restore;
 pub use queue_cfg::read_queue_msix_vector;
 pub use queue_cfg::{
     program_queue, program_queue_set, ProgrammedQueues, QueueRing, VirtioDmaFrame, VirtioQueueAllocator,
 };
+pub use queue_restore::restore_queue;
 
 pub mod dma;
 

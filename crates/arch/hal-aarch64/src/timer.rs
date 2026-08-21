@@ -189,3 +189,12 @@ pub unsafe fn timer_periodic(period: u32) {
         core::arch::asm!("msr cntv_ctl_el0, {c}", c = in(reg) on, options(nomem, nostack, preserves_flags));
     }
 }
+
+/// Disarm this PE's virtual timer before CPU hotplug power-down. # C: O(1)
+/// # SAFETY: caller runs on this PE with IRQs masked and owns its timer state.
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+pub unsafe fn timer_disarm() {
+    set_period(0);
+    // SAFETY: CNTV_CTL_EL0 is this PE's local timer control register.
+    unsafe { core::arch::asm!("msr cntv_ctl_el0, xzr", options(nomem, nostack, preserves_flags)); }
+}

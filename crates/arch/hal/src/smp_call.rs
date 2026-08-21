@@ -62,6 +62,10 @@ pub enum CallKind {
     /// Program a self-contained CPU-frequency command. The target handler
     /// takes no lock and performs only the admitted register write.
     CpuFreq = 8,
+    /// Enter the architecture CPU-hotplug play-dead state after publishing
+    /// the canonical online-set transition. `arg` identifies the sender whose
+    /// queue slot must be released before the target stops executing.
+    CpuOffline = 9,
 }
 
 impl CallKind {
@@ -82,6 +86,7 @@ impl CallKind {
             6 => Some(CallKind::MembarrierPrivateSyncCore),
             7 => Some(CallKind::MembarrierPrivateRseq),
             8 => Some(CallKind::CpuFreq),
+            9 => Some(CallKind::CpuOffline),
             _ => None,
         }
     }

@@ -31,6 +31,7 @@ pub mod devnode;
 pub mod dirent;
 pub mod readdir;
 pub mod readdir_cookie;
+mod rwsem;
 pub mod fdtable;
 pub mod file;
 pub mod fileattr;

@@ -21,6 +21,24 @@ pub(super) static BLK_COMPL: WaitList = WaitList::new();
 #[cfg(target_os = "oxide-kernel")]
 pub(super) static BLK_TURN: WaitList = WaitList::new();
 
+#[cfg(feature = "debug-hibernate")]
+static HIBERNATE_SYNC_TRACE: AtomicU16 = AtomicU16::new(0);
+
+/// Arm allocation-free traces of the first 512 synchronous image I/Os.
+pub fn arm_hibernate_sync_trace() {
+    #[cfg(feature = "debug-hibernate")]
+    HIBERNATE_SYNC_TRACE.store(512, Ordering::Release);
+}
+
+#[cfg(feature = "debug-hibernate")]
+pub(super) fn claim_hibernate_sync_trace() -> u16 {
+    match HIBERNATE_SYNC_TRACE.fetch_update(Ordering::AcqRel, Ordering::Acquire,
+        |remaining| remaining.checked_sub(1)) {
+        Ok(remaining) => 513 - remaining,
+        Err(_) => 0,
+    }
+}
+
 /// Rouse every block waiter regardless of which condition it sleeps on. For
 /// abort-everything transitions (poison / shutdown / device removal) where a
 /// sleeper on EITHER queue must re-check and bail — waking only one queue after
@@ -198,10 +216,12 @@ const WANTED_FEATURES: u64 =
     virtio::VIRTIO_F_VERSION_1 | virtio::VIRTIO_BLK_F_BLK_SIZE | virtio::VIRTIO_BLK_F_FLUSH
     | virtio::VIRTIO_BLK_F_MQ | virtio::VIRTIO_BLK_F_ZONED;
 
+/// Requested transport feature mask. # C: O(1)
 pub const fn wanted_features() -> u64 {
     WANTED_FEATURES
 }
 
+/// Transport profile used for probe and thaw. # C: O(1)
 pub const fn transport_profile() -> virtio::VirtioTransportProfile {
     #[cfg(target_os = "oxide-kernel")]
     let completion_irq = Some(wake_completions as fn());

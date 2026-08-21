@@ -55,6 +55,18 @@ pub const PSCI_FEATURES: u32 = psci_fn32(IDX_PSCI_FEATURES);
 /// `32a§9`. Arguments: physical resume entry point, context identifier.
 pub const PSCI_SYSTEM_SUSPEND_64: u32 = psci_fn64(IDX_SYSTEM_SUSPEND);
 
+/// `AFFINITY_INFO` level-zero states. These are successful query results,
+/// distinct from the negative [`PsciStatus`] return codes.
+pub const PSCI_AFFINITY_LEVEL_ON: i64 = 0;
+pub const PSCI_AFFINITY_LEVEL_OFF: i64 = 1;
+pub const PSCI_AFFINITY_LEVEL_ON_PENDING: i64 = 2;
+
+/// Whether one successful level-zero `AFFINITY_INFO` result proves the PE is
+/// physically off. # C: O(1)
+pub const fn affinity_level_is_off(value: i64) -> bool {
+    value == PSCI_AFFINITY_LEVEL_OFF
+}
+
 /// Status codes returned in x0.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum PsciStatus {

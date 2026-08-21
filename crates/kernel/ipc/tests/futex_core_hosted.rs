@@ -323,6 +323,10 @@ pub mod live {
         })
     }
 
+    pub fn interruptible_work_pending_self() -> bool {
+        current().is_some_and(|task| task.signal_pending.load(Ordering::Acquire))
+    }
+
     /// SAFETY: test-only mock of the real scheduler's block-until-woken.
     pub unsafe fn schedule() { std::thread::park(); }
 
