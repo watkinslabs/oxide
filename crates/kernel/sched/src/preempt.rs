@@ -190,7 +190,8 @@ pub const SOFTIRQ_MASK: u32 = 0xff << SOFTIRQ_SHIFT;
 /// field distinguishes "bh disabled by process" (even) from "serving a
 /// softirq" (odd), exactly as Linux (`SOFTIRQ_DISABLE_OFFSET`).
 pub const SOFTIRQ_DISABLE_OFFSET: u32 = 2 * SOFTIRQ_OFFSET;
-
+/// `spin_lock_bh`: BH-disable plus one spinning-lock credit in this canonical count.
+pub const SOFTIRQ_LOCK_OFFSET: u32 = SOFTIRQ_DISABLE_OFFSET + PREEMPT_DISABLED;
 /// The softirq field of this CPU's count (Linux `softirq_count()`).
 /// # C: O(1)
 pub fn softirq_count() -> u32 { preempt_count() & SOFTIRQ_MASK }
