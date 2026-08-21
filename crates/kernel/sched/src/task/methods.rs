@@ -297,6 +297,7 @@ impl Task {
         class: SchedClass,
         mm: Option<Arc<AddressSpace>>,
     ) -> Self {
+        if let Some(mm) = mm.as_ref() { mm.mmget(); }
         let starts_in_user = mm.is_some();
         let pid = Arc::new(crate::pid::PidIdentity::new(tid));
         let thread_group = Arc::new(crate::thread_group::ThreadGroup::new(Arc::clone(&pid)));

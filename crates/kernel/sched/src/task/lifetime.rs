@@ -6,6 +6,13 @@ use super::Task;
 
 impl Drop for Task {
     fn drop(&mut self) {
+        // Production exit clears this slot before the final schedule. This is
+        // the process-context backstop for unpublished/hosted tasks and failed
+        // spawn paths: a task-owned use must reach mmput, never become an Arc
+        // drop that silently bypasses last-user teardown.
+        if !self.kernel_thread.load(Ordering::Acquire) {
+            if let Some(mm) = self.mm.get_mut().take() { vmm::AddressSpace::mmput(mm); }
+        }
         // Release the lazily-allocated debug-register shadows. No other
         // reference to this task exists here, so the claim is uncontended.
         self.debugregs.free();
