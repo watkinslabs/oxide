@@ -164,6 +164,8 @@ pub unsafe extern "C" fn oxide_finish_task_switch() {
     // SAFETY: finish_task_switch runs on this runqueue's incoming task.
     super::provenance::finish(b"before-rq-release", 2);
     super::provenance::normalize_finish();
+    // SAFETY: `switched_from` proves this incoming task owns the forgotten
+    // runqueue guard published by the immediately preceding context switch.
     if !unsafe { finish_lock_switch_pending(rq) } { return; }
     #[cfg(feature = "debug-preempt")]
     super::provenance::finish(b"after-rq-release", 1);

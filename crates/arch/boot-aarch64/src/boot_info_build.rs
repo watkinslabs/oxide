@@ -36,6 +36,14 @@ static MEMMAP_STORAGE: MemmapStorage = MemmapStorage(UnsafeCell::new([
     };
     MAX_BOOT_REGIONS
 ]));
+static MEMMAP_WORKSPACE: MemmapStorage = MemmapStorage(UnsafeCell::new([
+    BootMemRegion {
+        base_pa: 0,
+        len:     0,
+        kind:    boot_info::BootMemKind::Reserved,
+    };
+    MAX_BOOT_REGIONS
+]));
 
 /// Stub boot info. Real impl walks the DTB `/memory` node.
 ///
@@ -210,7 +218,10 @@ unsafe fn build_selfboot_memmap(info: &mut BootInfo) {
 
     let empty = BootMemRegion { base_pa: 0, len: 0,
         kind: boot_info::BootMemKind::Reserved };
-    let mut regions = [empty; MAX_BOOT_REGIONS];
+    // SAFETY: boot is single-CPU and this unpublished workspace is disjoint
+    // from the retained MEMMAP_STORAGE consumed after this function returns.
+    let regions = unsafe { &mut *MEMMAP_WORKSPACE.0.get() };
+    regions.fill(empty);
     let nregions;
     let mut acpi_blk = (0, 0);
     // Publish the DTB-resolved PL011 UARTCLK before consuming the memmap, so the
@@ -223,7 +234,7 @@ unsafe fn build_selfboot_memmap(info: &mut BootInfo) {
         // SAFETY: EFI stub retained exactly `map_size` bytes in the loaded
         // kernel image, whose physical extent is HHDM-mapped for this boot.
         let bytes = unsafe { core::slice::from_raw_parts(map_va as *const u8, map_size as usize) };
-        nregions = efi_topology::decode(bytes, desc_size as usize, &mut regions)
+        nregions = efi_topology::decode(bytes, desc_size as usize, regions)
             .expect("ARM EFI memory map is malformed or too large");
         // SAFETY: reads HHDM-mapped ACPI tables, each bounded by its header.
         acpi_blk = unsafe { acpi_extent() }.unwrap_or((0, 0));

@@ -40,10 +40,11 @@ pub fn memory_topology() -> &'static [MemoryRegion] {
 /// # C: O(map.len * MAX_MEMORY_REGIONS)
 /// # Ctx: single-CPU, pre-PMM initialization
 pub(super) fn publish(map: &[BootMemRegion]) -> Result<(), SetupError> {
-    let mut out = [EMPTY; MAX_MEMORY_REGIONS];
-    let count = normalize(map, &mut out)?;
-    // SAFETY: setup is single-shot and no reader exists until PMM publication.
-    unsafe { (&mut *TOPOLOGY.0.get())[..count].copy_from_slice(&out[..count]) };
+    // SAFETY: setup is single-shot and no reader exists until COUNT publishes
+    // the completed normalized prefix. Failed normalization leaves COUNT zero.
+    let out = unsafe { &mut *TOPOLOGY.0.get() };
+    out.fill(EMPTY);
+    let count = normalize(map, out)?;
     COUNT.store(count, Ordering::Release);
     Ok(())
 }

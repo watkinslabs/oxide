@@ -188,7 +188,10 @@ pub fn enable_secondary_cpus() {
             // the sole CPU-hotplug controller.
             let online = unsafe { hal_aarch64::smp::restart_cpu(logical as u32) };
             cpu::smp::finish_thaw_cpu(logical as u32, online);
-            if !online { klog::write_raw(b"[CPU-HOTPLUG] arm PE restart failed; ownership retained\n"); }
+            power::hibernate::log::cpu_off(logical as u32,
+                power::hibernate::log::CpuOffPhase::Unwind,
+                if online { power::hibernate::log::CpuOffResult::Ok }
+                else { power::hibernate::log::CpuOffResult::Refused });
         }
     }
 }

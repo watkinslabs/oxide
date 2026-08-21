@@ -113,10 +113,8 @@ pub unsafe fn power_off() -> ! {
     #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
     {
         // SAFETY: early boot selected this PSCI conduit from firmware; SYSTEM_OFF is irreversible.
-        let raw = unsafe { hal_aarch64::psci::conduit_call(hal_aarch64::psci::PSCI_SYSTEM_OFF, 0, 0, 0) };
-        klog::write_raw(b"PSCI SYSTEM_OFF returned ");
-        klog::write_hex_u64(raw as u64);
-        klog::write_raw(b"\n");
+        let _raw = unsafe { hal_aarch64::psci::conduit_call(hal_aarch64::psci::PSCI_SYSTEM_OFF, 0, 0, 0) };
+        klog::announce("PSCI SYSTEM_OFF returned");
     }
     // SAFETY: power_off only reaches here when the I/O write didn't shut us down (e.g. bare metal w/o ACPI); halt is the safe terminal state.
     unsafe { halt() }

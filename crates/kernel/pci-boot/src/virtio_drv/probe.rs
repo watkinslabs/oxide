@@ -1,3 +1,5 @@
+use alloc::boxed::Box;
+
 use super::probe_state::VirtioProbeState;
 use super::runtime::VirtioPciRuntime;
 use super::{unpublish_transport_record, unpublish_transport_record_by_bdf, VirtioProbeDevres};
@@ -50,7 +52,7 @@ impl VirtioPciAcquisition {
         self,
         d: &pci::PciDevice,
         profile: virtio::VirtioTransportProfile,
-    ) -> Option<VirtioProbe> {
+    ) -> Option<Box<VirtioProbe>> {
         let bdf = d.bdf;
         let mut state = VirtioProbeState::from_caps(bdf, &self.vcaps, &self.bars, self.cmd_orig)?;
         let runtime = VirtioPciRuntime::current(bdf);
@@ -119,12 +121,12 @@ impl VirtioPciAcquisition {
             bringup.programmed_queues.as_ref(),
             self.cmd_orig,
         );
-        Some(VirtioProbe {
+        Some(Box::new(VirtioProbe {
             child_facts,
             #[cfg(feature = "debug-boot")]
             trace,
             devres,
-        })
+        }))
     }
 }
 

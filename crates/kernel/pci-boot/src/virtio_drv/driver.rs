@@ -1,3 +1,5 @@
+use alloc::boxed::Box;
+
 use super::address::{parse_pci_addr, pci_device_from_pci_model};
 use super::probe::{
     publish_transport_mmio, unpublish_transport_mmio, unpublish_transport_mmio_bdf, VirtioProbe,
@@ -88,7 +90,7 @@ impl VirtioPciTransport {
         self,
         d: &pci::PciDevice,
         profile: virtio::VirtioTransportProfile,
-    ) -> Option<VirtioProbe> {
+    ) -> Option<Box<VirtioProbe>> {
         if !virtio::is_modern(d.vendor_id, d.device_id) {
             return None;
         }

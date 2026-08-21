@@ -194,6 +194,7 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
             pfn_max: self.pfn_max, free_pages }
     }
 
+    /// Allocate and capture the free-PFN snapshot. # C: O(PFN_max + free blocks)
     pub fn hibernate_free_snapshot(&self) -> FreePfnSnapshot {
         let workspace = self.hibernate_free_workspace();
         self.hibernate_free_snapshot_into(workspace)

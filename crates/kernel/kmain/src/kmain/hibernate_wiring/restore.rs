@@ -177,6 +177,8 @@ fn prepare(mut restore: SafeRestore<Frame>, mut memory: RestoreMemory,
     // SAFETY: every root/table allocation is zeroed, exclusively pinned by
     // `restore`, HHDM mapped, and excluded from every image destination.
     plan_begin(power::hibernate::log::RestorePlanPhase::Tables);
+    // SAFETY: every callback result is a zeroed frame pinned by `restore` and
+    // excluded from all admitted image destinations until terminal entry.
     let tables = unsafe { arch::build_temporary_tables(&header, root_pa, hhdm, direct, text, || {
         match allocate(&mut restore, &mut memory) {
             Ok((_, pa)) => Some(pa),
@@ -222,9 +224,13 @@ fn prepare(mut restore: SafeRestore<Frame>, mut memory: RestoreMemory,
     // SAFETY: generic ownership pins every physical node/source and the HHDM
     // maps the admitted canonical RAM interval for this allocation-free walk.
     plan_begin(power::hibernate::log::RestorePlanPhase::ChainValidation);
+    // SAFETY: generic ownership pins every chain node and source while the
+    // admitted direct-map interval covers each validated physical page.
+    let chain = unsafe {
+        arch::validate_collision_chain(restore.collision_head_pa(), hhdm, direct, &safe)
+    };
     plan_result(power::hibernate::log::RestorePlanPhase::ChainValidation,
-        unsafe { arch::validate_collision_chain(restore.collision_head_pa(), hhdm, direct, &safe) }
-            .map_err(map_x86))?;
+        chain.map_err(map_x86))?;
     plan_begin(power::hibernate::log::RestorePlanPhase::TerminalControl);
     let control = plan_result(power::hibernate::log::RestorePlanPhase::TerminalControl,
         arch::terminal_control(&header, restore.collision_head_pa(), hhdm).map_err(map_x86))?;

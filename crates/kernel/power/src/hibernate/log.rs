@@ -86,10 +86,23 @@ impl From<crate::Error> for SnapshotResult {
     }
 }
 
+#[cfg(feature = "debug-hibernate")]
+/// # C: O(1)
 pub fn image_created() { klog::kinfo!("hibernate: image created"); }
+#[cfg(not(feature = "debug-hibernate"))]
+/// # C: O(1)
+pub fn image_created() {}
+
+#[cfg(feature = "debug-hibernate")]
+/// # C: O(1)
 pub fn image_resumed() { klog::kinfo!("hibernate: image resumed"); }
+#[cfg(not(feature = "debug-hibernate"))]
+/// # C: O(1)
+pub fn image_resumed() {}
 
 /// Normal rejection boundary; wording includes durable marker-consumption truth.
+#[cfg(feature = "debug-hibernate")]
+/// # C: O(1)
 pub fn rejected(invariant: Invariant, consumed: bool) {
     match (invariant, consumed) {
         (Invariant::Policy, false) => klog::kerror!("hibernate: rejected policy; marker not consumed"),
@@ -111,6 +124,12 @@ pub fn rejected(invariant: Invariant, consumed: bool) {
     }
 }
 
+#[cfg(not(feature = "debug-hibernate"))]
+/// # C: O(1)
+pub fn rejected(_: Invariant, _: bool) {}
+
+#[cfg(feature = "debug-hibernate")]
+/// # C: O(1)
 pub fn rollback(step: Step, outcome: Rollback) {
     match (step, outcome) {
         (Step::Serialize, Rollback::NotPublished) =>
@@ -131,7 +150,12 @@ pub fn rollback(step: Step, outcome: Rollback) {
     }
 }
 
+#[cfg(not(feature = "debug-hibernate"))]
+/// # C: O(1)
+pub fn rollback(_: Step, _: Rollback) {}
+
 #[cfg(feature = "debug-hibernate")]
+/// # C: O(1)
 pub fn phase(step: Step) {
     klog::write_raw(b"[hibernate] phase=");
     klog::write_raw(step_name(step));
@@ -140,9 +164,11 @@ pub fn phase(step: Step) {
 
 #[cfg(not(feature = "debug-hibernate"))]
 #[inline(always)]
+/// # C: O(1)
 pub fn phase(_: Step) {}
 
 #[cfg(feature = "debug-hibernate")]
+/// # C: O(1)
 pub fn serialize_phase(phase: SerializePhase, boundary: SerializeBoundary) {
     klog::write_raw(b"[hibernate] serialize=");
     klog::write_raw(match phase {
@@ -157,9 +183,11 @@ pub fn serialize_phase(phase: SerializePhase, boundary: SerializeBoundary) {
 
 #[cfg(not(feature = "debug-hibernate"))]
 #[inline(always)]
+/// # C: O(1)
 pub fn serialize_phase(_: SerializePhase, _: SerializeBoundary) {}
 
 #[cfg(feature = "debug-hibernate")]
+/// # C: O(1)
 pub fn serialize_work(work: SerializeWork, boundary: SerializeBoundary, index: usize, value: usize) {
     klog::write_raw(b"[hibernate] serialize_work=");
     klog::write_raw(match work {
@@ -179,9 +207,11 @@ pub fn serialize_work(work: SerializeWork, boundary: SerializeBoundary, index: u
 
 #[cfg(not(feature = "debug-hibernate"))]
 #[inline(always)]
+/// # C: O(1)
 pub fn serialize_work(_: SerializeWork, _: SerializeBoundary, _: usize, _: usize) {}
 
 #[cfg(feature = "debug-hibernate")]
+/// # C: O(name.len + mode.len)
 pub fn target(name: &str, offset: u64, mode: &str) {
     klog::write_raw(b"[hibernate] target="); klog::write_raw(name.as_bytes());
     klog::write_raw(b" offset="); klog::write_dec_u64(offset);
@@ -190,9 +220,11 @@ pub fn target(name: &str, offset: u64, mode: &str) {
 
 #[cfg(not(feature = "debug-hibernate"))]
 #[inline(always)]
+/// # C: O(1)
 pub fn target(_: &str, _: u64, _: &str) {}
 
 #[cfg(feature = "debug-hibernate")]
+/// # C: O(1)
 pub fn counts(image_pages: u64, stream_pages: u64, direct: u64, collision: u64) {
     klog::write_raw(b"[hibernate] image_pages="); klog::write_dec_u64(image_pages);
     klog::write_raw(b" image_bytes=");
@@ -206,9 +238,11 @@ pub fn counts(image_pages: u64, stream_pages: u64, direct: u64, collision: u64) 
 
 #[cfg(not(feature = "debug-hibernate"))]
 #[inline(always)]
+/// # C: O(1)
 pub fn counts(_: u64, _: u64, _: u64, _: u64) {}
 
 #[cfg(feature = "debug-hibernate")]
+/// # C: O(1)
 pub fn resume_phase(path: ResumePath, phase: ResumePhase) {
     klog::write_raw(b"[hibernate] resume_path=");
     klog::write_raw(match path { ResumePath::Cold => b"cold", ResumePath::Test => b"test" });
@@ -219,9 +253,11 @@ pub fn resume_phase(path: ResumePath, phase: ResumePhase) {
 
 #[cfg(not(feature = "debug-hibernate"))]
 #[inline(always)]
+/// # C: O(1)
 pub fn resume_phase(_: ResumePath, _: ResumePhase) {}
 
 #[cfg(feature = "debug-hibernate")]
+/// # C: O(1)
 pub fn durability(boundary: Durability) {
     let name: &[u8] = match boundary {
         Durability::PayloadFlushed => b"payload_flushed",
@@ -235,9 +271,11 @@ pub fn durability(boundary: Durability) {
 
 #[cfg(not(feature = "debug-hibernate"))]
 #[inline(always)]
+/// # C: O(1)
 pub fn durability(_: Durability) {}
 
 #[cfg(feature = "debug-hibernate")]
+/// # C: O(1)
 pub fn noirq_phase(phase: NoirqPhase) {
     let name: &[u8] = match phase {
         NoirqPhase::WakeBegin => b"wake_begin", NoirqPhase::WakeEnd => b"wake_end",
@@ -252,9 +290,11 @@ pub fn noirq_phase(phase: NoirqPhase) {
 
 #[cfg(not(feature = "debug-hibernate"))]
 #[inline(always)]
+/// # C: O(1)
 pub fn noirq_phase(_: NoirqPhase) {}
 
 #[cfg(feature = "debug-hibernate")]
+/// # C: O(1)
 pub fn noirq_irq(kind: IrqKind, irq: u32, phase: IrqPhase, active: usize) {
     klog::write_raw(b"[hibernate] noirq_irq=");
     klog::write_raw(match kind { IrqKind::Line => b"line", IrqKind::Msi => b"msi" });
@@ -270,9 +310,11 @@ pub fn noirq_irq(kind: IrqKind, irq: u32, phase: IrqPhase, active: usize) {
 
 #[cfg(not(feature = "debug-hibernate"))]
 #[inline(always)]
+/// # C: O(1)
 pub fn noirq_irq(_: IrqKind, _: u32, _: IrqPhase, _: usize) {}
 
 #[cfg(feature = "debug-hibernate")]
+/// # C: O(1)
 pub fn cpu_off(cpu: u32, phase: CpuOffPhase, result: CpuOffResult) {
     klog::write_raw(b"[hibernate] cpu_off="); klog::write_dec_u64(cpu as u64);
     klog::write_raw(b" phase=");
@@ -291,9 +333,11 @@ pub fn cpu_off(cpu: u32, phase: CpuOffPhase, result: CpuOffResult) {
 
 #[cfg(not(feature = "debug-hibernate"))]
 #[inline(always)]
+/// # C: O(1)
 pub fn cpu_off(_: u32, _: CpuOffPhase, _: CpuOffResult) {}
 
 #[cfg(feature = "debug-hibernate")]
+/// # C: O(1)
 pub fn cpu_off_callfn(cpu: u32, curr_idle: bool, nr_running: u32,
     wake_pending: bool, wake_count: u64, softirq_pending: u32)
 {
@@ -308,9 +352,11 @@ pub fn cpu_off_callfn(cpu: u32, curr_idle: bool, nr_running: u32,
 
 #[cfg(not(feature = "debug-hibernate"))]
 #[inline(always)]
+/// # C: O(1)
 pub fn cpu_off_callfn(_: u32, _: bool, _: u32, _: bool, _: u64, _: u32) {}
 
 #[cfg(feature = "debug-hibernate")]
+/// # C: O(1)
 pub fn cpu_off_transport(sender: u32, target: u32, state: CpuCallTransport) {
     klog::write_raw(b"[hibernate] cpu_off_transport sender=");
     klog::write_dec_u64(sender as u64);
@@ -327,9 +373,11 @@ pub fn cpu_off_transport(sender: u32, target: u32, state: CpuCallTransport) {
 
 #[cfg(not(feature = "debug-hibernate"))]
 #[inline(always)]
+/// # C: O(1)
 pub fn cpu_off_transport(_: u32, _: u32, _: CpuCallTransport) {}
 
 #[cfg(feature = "debug-hibernate")]
+/// # C: O(1)
 pub fn cpu_off_transport_facts(sender: u32, target: u32, online: bool,
     hardware_id: Option<u64>)
 {
@@ -346,9 +394,11 @@ pub fn cpu_off_transport_facts(sender: u32, target: u32, online: bool,
 
 #[cfg(not(feature = "debug-hibernate"))]
 #[inline(always)]
+/// # C: O(1)
 pub fn cpu_off_transport_facts(_: u32, _: u32, _: bool, _: Option<u64>) {}
 
 #[cfg(feature = "debug-hibernate")]
+/// # C: O(1)
 pub fn snapshot_phase(phase: SnapshotPhase, boundary: SnapshotBoundary, pages: u64) {
     klog::write_primary_raw(b"[hibernate] arch_snapshot=");
     klog::write_primary_raw(match phase {
@@ -365,9 +415,11 @@ pub fn snapshot_phase(phase: SnapshotPhase, boundary: SnapshotBoundary, pages: u
 
 #[cfg(not(feature = "debug-hibernate"))]
 #[inline(always)]
+/// # C: O(1)
 pub fn snapshot_phase(_: SnapshotPhase, _: SnapshotBoundary, _: u64) {}
 
 #[cfg(feature = "debug-hibernate")]
+/// # C: O(1)
 pub fn snapshot_progress(phase: SnapshotPhase, done: u64, total: u64) {
     klog::write_primary_raw(b"[hibernate] arch_snapshot=");
     klog::write_primary_raw(match phase {
@@ -381,9 +433,11 @@ pub fn snapshot_progress(phase: SnapshotPhase, done: u64, total: u64) {
 
 #[cfg(not(feature = "debug-hibernate"))]
 #[inline(always)]
+/// # C: O(1)
 pub fn snapshot_progress(_: SnapshotPhase, _: u64, _: u64) {}
 
 #[cfg(feature = "debug-hibernate")]
+/// # C: O(1)
 pub fn snapshot_result(result: SnapshotResult) {
     klog::write_raw(b"[hibernate] arch_snapshot=callback result=");
     klog::write_raw(snapshot_result_name(result));
@@ -404,9 +458,11 @@ fn snapshot_result_name(result: SnapshotResult) -> &'static [u8] {
 
 #[cfg(not(feature = "debug-hibernate"))]
 #[inline(always)]
+/// # C: O(1)
 pub fn snapshot_result(_: SnapshotResult) {}
 
 #[cfg(feature = "debug-hibernate")]
+/// # C: O(1)
 pub fn snapshot_admission(saveable: u64, capacity: u64, retained: u64) {
     klog::write_primary_raw(b"[hibernate] arch_snapshot=final_free saveable=");
     klog::write_primary_dec_u64(saveable);
@@ -417,9 +473,11 @@ pub fn snapshot_admission(saveable: u64, capacity: u64, retained: u64) {
 
 #[cfg(not(feature = "debug-hibernate"))]
 #[inline(always)]
+/// # C: O(1)
 pub fn snapshot_admission(_: u64, _: u64, _: u64) {}
 
 #[cfg(feature = "debug-hibernate")]
+/// # C: O(1)
 pub fn topology_region(index: usize, start: u64, end: u64, kind: u8) {
     klog::write_raw(b"[hibernate] topology index=");
     klog::write_dec_u64(index as u64);
@@ -431,9 +489,11 @@ pub fn topology_region(index: usize, start: u64, end: u64, kind: u8) {
 
 #[cfg(not(feature = "debug-hibernate"))]
 #[inline(always)]
+/// # C: O(1)
 pub fn topology_region(_: usize, _: u64, _: u64, _: u8) {}
 
 #[cfg(feature = "debug-hibernate")]
+/// # C: O(1)
 pub fn arch_continuation(phase: ArchContinuation, result: u64) {
     klog::write_raw(b"[hibernate] arch_continuation=");
     klog::write_raw(match phase {
@@ -448,6 +508,7 @@ pub fn arch_continuation(phase: ArchContinuation, result: u64) {
 
 #[cfg(not(feature = "debug-hibernate"))]
 #[inline(always)]
+/// # C: O(1)
 pub fn arch_continuation(_: ArchContinuation, _: u64) {}
 
 #[cfg(feature = "debug-hibernate")]

@@ -16,6 +16,8 @@ pub(super) fn init() {
         core::ptr::write_volatile(p.add(cpu::LINUX_NUMA_NODE_OFFSET) as *mut i32, 0);
     }
     #[cfg(target_arch = "x86_64")]
+    // SAFETY: the boot CPU is the sole early per-CPU-base owner and firmware
+    // state is normalized before any user or secondary CPU can execute.
     unsafe {
         use hal::CpuOps;
         // Firmware may leave FSGSBASE enabled, which would let userspace

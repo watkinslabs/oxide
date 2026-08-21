@@ -28,7 +28,8 @@ impl<F> SafeRestore<F> {
         self.collision_head_pa = self.control_pfn(indices[0]).ok_or(Error::Nodata)?
             .checked_mul(PAGE_SIZE as u64).ok_or(Error::Inval)?;
 
-        let mut page = [0u8; PAGE_SIZE];
+        let mut page = crate::hibernate::scratch::zeroed::<u8, PAGE_SIZE>()
+            .ok_or(Error::Nomem)?;
         let mut node = 0usize;
         let mut count = 0usize;
         for collision_index in 0..collisions {

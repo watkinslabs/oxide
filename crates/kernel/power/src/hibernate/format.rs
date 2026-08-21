@@ -155,6 +155,7 @@ pub fn map_entry(page: &Page, index: usize) -> Option<u64> {
 pub fn map_next(page: &Page) -> u64 { get_u64(page, MAP_ENTRIES * 8) }
 
 #[cfg(test)]
+/// # C: O(entries.len)
 pub fn encode_map(entries: &[u64], next: u64) -> Result<Page, FormatError> {
     let mut page = [0u8; PAGE_SIZE];
     encode_map_into(&mut page, entries, next)?;
@@ -162,6 +163,7 @@ pub fn encode_map(entries: &[u64], next: u64) -> Result<Page, FormatError> {
 }
 
 #[cfg(test)]
+/// # C: O(MAP_ENTRIES)
 pub fn decode_map(page: &Page) -> ([u64; MAP_ENTRIES], u64) {
     let mut entries = [0u64; MAP_ENTRIES];
     for (i, value) in entries.iter_mut().enumerate() { *value = map_entry(page, i).unwrap(); }

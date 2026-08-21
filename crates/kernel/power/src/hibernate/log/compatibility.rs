@@ -29,4 +29,5 @@ pub fn compatibility(header: &Header, current: &Compatibility, writer: bool) {
 
 #[cfg(not(feature = "debug-hibernate"))]
 #[inline(always)]
+/// # C: O(1)
 pub fn compatibility(_: &Header, _: &Compatibility, _: bool) {}

@@ -275,6 +275,7 @@ mod tests {
         assert_eq!(online_count(), 2);
         // SAFETY: test owns CPU 1's lifecycle transition.
         assert!(unsafe { mark_offline(1) });
+        // SAFETY: test still exclusively owns CPU 1's lifecycle state.
         assert!(!unsafe { mark_offline(1) });
         assert_eq!(online_count(), 1);
     }

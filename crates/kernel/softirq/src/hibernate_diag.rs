@@ -42,6 +42,7 @@ pub fn hibernate_irq_restore(active: bool) {
 }
 
 /// Lock-free state consumable by watchdog/NMI diagnostics. # C: O(1)
+/// Snapshot the bounded hibernation softirq witness. # C: O(1)
 pub fn hibernate_witness() -> HibernateWitness {
     #[cfg(feature = "debug-hibernate")]
     return HibernateWitness {
@@ -56,6 +57,7 @@ pub fn hibernate_witness() -> HibernateWitness {
 }
 
 #[inline(always)]
+/// Publish one bounded diagnostic stage. # C: O(1)
 pub(crate) fn witness_stage(stage: u32, local: u32, process: u32, slot: usize) {
     #[cfg(feature = "debug-hibernate")]
     if ACTIVE.load(Ordering::Acquire) {

@@ -76,6 +76,8 @@ pub fn evict_target(cpu: u32, task: &Task) -> Option<u32> {
     // SAFETY: `global_for` is sound for any index and yields `None` for a CPU
     // that has not completed `install_global`, which the scan skips.
     evict_target_for_with(
+        // SAFETY: each queried index is range-checked by `global_for`, and a
+        // missing runqueue is represented as `None` rather than dereferenced.
         &|c| unsafe { global_for(c) }, cpu, task, transition_target(task),
     )
 }

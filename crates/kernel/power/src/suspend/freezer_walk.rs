@@ -103,6 +103,7 @@ const FREEZER_TRACE_ROUNDS: u64 = 128;
 #[cfg(feature = "debug-hibernate")]
 const FREEZER_TRACE_TASKS: u32 = 64;
 
+#[cfg(feature = "debug-hibernate")]
 const FREEZER_LATE_DETAIL_ROUND: u64 = 128;
 
 #[cfg(feature = "debug-hibernate")]

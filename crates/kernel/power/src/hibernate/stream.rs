@@ -68,6 +68,7 @@ pub fn decode_info(page: &Page) -> Result<ImageInfo, Error> {
 pub struct PfnPageWriter<'a> { page: &'a mut Page, start: usize, count: usize }
 
 impl<'a> PfnPageWriter<'a> {
+    /// # C: O(1)
     pub fn new(info: ImageInfo, page_index: usize, page: &'a mut Page) -> Result<Self, Error> {
         if layout(info.copied_pages, info.zero_pages)? != info { return Err(Error::Counts); }
         if page_index as u64 >= info.pfn_pages { return Err(Error::Bounds); }
@@ -76,8 +77,11 @@ impl<'a> PfnPageWriter<'a> {
         clear(page);
         Ok(Self { page, start, count: core::cmp::min(PFNS_PER_PAGE, total.saturating_sub(start)) })
     }
+    /// # C: O(1)
     pub const fn start(&self) -> usize { self.start }
+    /// # C: O(1)
     pub const fn count(&self) -> usize { self.count }
+    /// # C: O(1)
     pub fn put(&mut self, slot: usize, value: u64) -> Result<(), Error> {
         if slot >= self.count { return Err(Error::Bounds); }
         put_u64(self.page, slot * 8, value);
@@ -99,6 +103,7 @@ pub fn encode_pfn_page_into(info: ImageInfo, page_index: usize, page: &mut Page,
 }
 
 #[cfg(test)]
+/// # C: O(PFNS_PER_PAGE)
 pub fn encode_pfns(copied: &[u64], zero: &[u64], page_index: usize) -> Result<Page, Error> {
     let info = layout(copied.len() as u64, zero.len() as u64)?;
     let mut page = [0; PAGE_SIZE];

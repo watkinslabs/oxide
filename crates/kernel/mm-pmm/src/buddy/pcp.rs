@@ -290,10 +290,13 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
     }
 
     #[cfg(test)]
+    /// Cached pages per zone. # C: O(N_zones)
     pub(crate) fn pcp_cached_pages(&self) -> [u64; NR_ZONES] { core::array::from_fn(|zone| self.pcp_free[zone].load(Ordering::Acquire)) }
     #[cfg(test)]
+    /// High watermark for one zone. # C: O(1)
     pub(crate) fn pcp_high_pages(&self, zone: ZoneType) -> u64 { self.pcp_zone[zone.index()].high() }
     #[cfg(test)]
+    /// Drain all hosted-test PCP zones. # C: O(N_cached_pages)
     pub(crate) fn drain_pcp_for_test(&self) { let _ = self.drain_pcp_below(NR_ZONES - 1); }
 }
 

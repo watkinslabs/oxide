@@ -60,6 +60,7 @@ fn descriptor(irq: u32) -> Option<&'static Descriptor> {
     }
 }
 
+/// Publish one MSI lifecycle descriptor. # C: O(1)
 pub(crate) fn install(irq: u32) -> bool {
     let Some(descriptor) = descriptor(irq) else { return false; };
     let mut state = descriptor.state.lock();
@@ -70,6 +71,7 @@ pub(crate) fn install(irq: u32) -> bool {
     true
 }
 
+/// Withdraw one MSI lifecycle descriptor after draining handlers. # C: O(active handlers)
 pub(crate) fn uninstall(irq: u32) {
     let Some(descriptor) = descriptor(irq) else { return; };
     descriptor.in_flight.synchronize();
@@ -88,6 +90,7 @@ pub fn set_source_mask(irq: u32, mask: SourceMask, arg0: u64, arg1: u64) -> bool
     true
 }
 
+/// Adjust one MSI wake-depth owner. # C: O(1)
 pub(crate) fn set_wake(irq: u32, enabled: bool) -> Option<bool> {
     let descriptor = descriptor(irq)?;
     let mut state = descriptor.state.lock();
@@ -105,6 +108,7 @@ pub(crate) fn set_wake(irq: u32, enabled: bool) -> Option<bool> {
 
 pub(crate) enum Dispatch<'a> { Run(InFlightGuard<'a>), Wake, Suspended, Absent }
 
+/// Admit, defer, or suppress one MSI dispatch. # C: O(1)
 pub(crate) fn begin(irq: u32) -> Dispatch<'static> {
     let Some(descriptor) = descriptor(irq) else { return Dispatch::Absent; };
     let mut state = descriptor.state.lock();
@@ -148,6 +152,7 @@ fn suspend_descriptor<I: IrqGate>(descriptor: &Descriptor, _irq: u32) {
     log::noirq_irq(IrqKind::Msi, _irq, IrqPhase::SyncEnd, descriptor.in_flight.active());
 }
 
+/// Mask and synchronize every installed MSI descriptor. # C: O(N_msi + active handlers)
 pub(crate) fn suspend_all() {
     #[cfg(target_arch = "x86_64")]
     for (index, descriptor) in DESCRIPTORS.iter().enumerate() {
@@ -183,6 +188,7 @@ fn resume_descriptor<I: IrqGate>(descriptor: &Descriptor, _irq: u32) -> bool {
     replay
 }
 
+/// Unmask installed MSI descriptors and replay pending owners. # C: O(N_msi)
 pub(crate) fn resume_all() {
     #[cfg(target_arch = "x86_64")]
     for (index, descriptor) in DESCRIPTORS.iter().enumerate() {

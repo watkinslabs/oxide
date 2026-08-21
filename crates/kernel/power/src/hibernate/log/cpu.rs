@@ -14,4 +14,5 @@ pub fn cpu_coordinator(cpu: u32, current: bool, idle: bool, pinned: bool) {
 
 #[cfg(not(feature = "debug-hibernate"))]
 #[inline(always)]
+/// # C: O(1)
 pub fn cpu_coordinator(_: u32, _: bool, _: bool, _: bool) {}

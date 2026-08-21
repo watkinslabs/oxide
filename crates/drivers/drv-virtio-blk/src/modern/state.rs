@@ -216,10 +216,12 @@ const WANTED_FEATURES: u64 =
     virtio::VIRTIO_F_VERSION_1 | virtio::VIRTIO_BLK_F_BLK_SIZE | virtio::VIRTIO_BLK_F_FLUSH
     | virtio::VIRTIO_BLK_F_MQ | virtio::VIRTIO_BLK_F_ZONED;
 
+/// Requested transport feature mask. # C: O(1)
 pub const fn wanted_features() -> u64 {
     WANTED_FEATURES
 }
 
+/// Transport profile used for probe and thaw. # C: O(1)
 pub const fn transport_profile() -> virtio::VirtioTransportProfile {
     #[cfg(target_os = "oxide-kernel")]
     let completion_irq = Some(wake_completions as fn());

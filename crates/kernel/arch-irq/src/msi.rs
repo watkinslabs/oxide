@@ -415,6 +415,7 @@ mod arm {
 }
 
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+/// Toggle the parent controller for one allocated ARM MSI. # C: O(1)
 pub(crate) fn set_arm_irq_enabled(irq: u32, enabled: bool) -> bool {
     if arm_msi_is_lpi(irq) { return arm::set_lpi_enabled(irq, enabled); }
     // SAFETY: an allocated non-LPI ARM MSI is a GICv2m SPI owned by this

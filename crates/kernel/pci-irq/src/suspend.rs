@@ -45,10 +45,12 @@ fn mask_msix(entry_va: u64, _: u64, masked: bool) {
     }
 }
 
+/// Bind one MSI capability's source mask. # C: O(1)
 pub(crate) fn bind_msi(irq: u32, bdf: pci::Bdf, cap_off: u8) -> bool {
     arch_irq::set_msi_source_mask(irq, mask_msi, pack_bdf(bdf), u64::from(cap_off))
 }
 
+/// Bind one MSI-X table entry's source mask. # C: O(1)
 pub(crate) fn bind_msix(irq: u32, entry_va: u64) -> bool {
     arch_irq::set_msi_source_mask(irq, mask_msix, entry_va, 0)
 }

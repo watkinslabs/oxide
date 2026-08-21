@@ -25,28 +25,7 @@ fn exec(kind: u32, arg: u64) {
         Some(CallKind::MembarrierPrivateSyncCore) => sched::membarrier::service_private_sync_core(arg),
         Some(CallKind::MembarrierPrivateRseq) => sched::membarrier::service_private_rseq(arg),
         Some(CallKind::CpuFreq) => firmware::acpi::cpufreq::service_remote(arg),
-        Some(CallKind::CpuOffline) => {
-            let cpu = this_cpu();
-            let (curr_idle, nr_running) = match sched::live::runqueue::global() {
-                Some(rq) => (rq.curr_is_idle(),
-                    rq.nr_running.load(core::sync::atomic::Ordering::Acquire)),
-                None => (false, 0),
-            };
-            let idle = curr_idle && nr_running == 0;
-            let wake = sched::live::wake_list_debug(cpu as u32);
-            let pending = softirq::local_pending_bits();
-            power::hibernate::log::cpu_off_callfn(cpu as u32, curr_idle, nr_running,
-                wake.0, wake.1 as u64, pending);
-            if !idle || wake.0 || wake.1 != 0 {
-                power::hibernate::log::cpu_off(cpu as u32,
-                    power::hibernate::log::CpuOffPhase::Callfn,
-                    power::hibernate::log::CpuOffResult::Refused);
-                ::cpu::smp::reject_offline(cpu as u32); return;
-            }
-            if !::cpu::smp::request_offline_tail(cpu as u32) {
-                ::cpu::smp::reject_offline(cpu as u32);
-            }
-        }
+        Some(CallKind::CpuOffline) => request_offline_tail(),
         Some(CallKind::Stop) => loop {
             // SAFETY: terminal machine-stop handler; masking IRQs then WFI
             // keeps this CPU from executing pages the caller may replace.
@@ -54,6 +33,20 @@ fn exec(kind: u32, arg: u64) {
         },
         None => {}
     }
+}
+
+// Keep terminal hotplug admission out of ordinary call-function IRQ frames.
+#[inline(never)]
+fn request_offline_tail() {
+    let cpu = this_cpu();
+    let (curr_idle, nr_running) = match sched::live::runqueue::global() {
+        Some(rq) => (rq.curr_is_idle(), rq.nr_running.load(core::sync::atomic::Ordering::Acquire)),
+        None => (false, 0),
+    };
+    let wake = sched::live::wake_list_debug(cpu as u32);
+    if !curr_idle || nr_running != 0 || wake.0 || wake.1 != 0
+        || !::cpu::smp::request_offline_tail(cpu as u32)
+    { ::cpu::smp::reject_offline(cpu as u32); }
 }
 
 /// Queue the terminal CPU-down call through the sole SGI call transport.
@@ -97,15 +90,14 @@ pub fn finish_cpu_offline_tail() {
     if !unsafe { ::cpu::smp::mark_offline(cpu as u32) } {
         ::cpu::smp::reject_offline(cpu as u32); return;
     }
-    power::hibernate::log::cpu_off(cpu as u32,
-        power::hibernate::log::CpuOffPhase::Callfn,
-        power::hibernate::log::CpuOffResult::Ok);
     ::cpu::smp::finish_offline(cpu as u32);
     // SAFETY: PSCI CPU_OFF is the architecture hotplug play-dead primitive
     // and does not return on success.
     let status = unsafe { hal_aarch64::psci::cpu_off() };
     // Firmware refusal leaves this PE executing; restore canonical topology
     // before publishing refusal to the sender.
+    // SAFETY: firmware refusal leaves this same PE executing and therefore
+    // exclusively owning its canonical online-state transition.
     unsafe { ::cpu::smp::mark_online(cpu as u32); }
     let _ = status;
     ::cpu::smp::reject_offline(cpu as u32);

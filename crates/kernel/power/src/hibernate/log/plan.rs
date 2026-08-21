@@ -15,6 +15,7 @@ pub enum RestorePlanReason {
 }
 
 #[cfg(feature = "debug-hibernate")]
+/// # C: O(1)
 pub fn restore_plan(phase: RestorePlanPhase, result: Option<SnapshotResult>) {
     klog::write_raw(b"[hibernate] restore_plan=");
     klog::write_raw(match phase {
@@ -41,9 +42,11 @@ pub fn restore_plan(phase: RestorePlanPhase, result: Option<SnapshotResult>) {
 
 #[cfg(not(feature = "debug-hibernate"))]
 #[inline(always)]
+/// # C: O(1)
 pub fn restore_plan(_: RestorePlanPhase, _: Option<SnapshotResult>) {}
 
 #[cfg(feature = "debug-hibernate")]
+/// # C: O(1)
 pub fn restore_plan_reason(reason: RestorePlanReason) {
     klog::write_raw(b"[hibernate] restore_plan_reason=");
     klog::write_raw(match reason {
@@ -64,9 +67,11 @@ pub fn restore_plan_reason(reason: RestorePlanReason) {
 
 #[cfg(not(feature = "debug-hibernate"))]
 #[inline(always)]
+/// # C: O(1)
 pub fn restore_plan_reason(_: RestorePlanReason) {}
 
 #[cfg(feature = "debug-hibernate")]
+/// # C: O(1)
 pub fn restore_plan_facts(root: u64, trampoline: u64, stack: u64, start: u64, end: u64) {
     klog::write_raw(b"[hibernate] restore_plan_facts root="); klog::write_hex_u64(root);
     klog::write_raw(b" trampoline="); klog::write_hex_u64(trampoline);
@@ -78,9 +83,11 @@ pub fn restore_plan_facts(root: u64, trampoline: u64, stack: u64, start: u64, en
 
 #[cfg(not(feature = "debug-hibernate"))]
 #[inline(always)]
+/// # C: O(1)
 pub fn restore_plan_facts(_: u64, _: u64, _: u64, _: u64, _: u64) {}
 
 #[cfg(feature = "debug-hibernate")]
+/// # C: O(1)
 pub fn restore_plan_collision(index: u64, source: u64, destination: u64) {
     klog::write_raw(b"[hibernate] restore_plan_collision index="); klog::write_dec_u64(index);
     klog::write_raw(b" source="); klog::write_hex_u64(source);
@@ -90,4 +97,5 @@ pub fn restore_plan_collision(index: u64, source: u64, destination: u64) {
 
 #[cfg(not(feature = "debug-hibernate"))]
 #[inline(always)]
+/// # C: O(1)
 pub fn restore_plan_collision(_: u64, _: u64, _: u64) {}

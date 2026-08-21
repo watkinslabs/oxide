@@ -5,6 +5,7 @@
 //! PCI transport driver internals directly.
 
 use super::virtio_drv;
+use alloc::boxed::Box;
 
 pub(super) struct VirtioChildSession {
     bdf: pci::Bdf,
@@ -12,7 +13,7 @@ pub(super) struct VirtioChildSession {
     child_addr: alloc::string::String,
     transport: virtio_drv::VirtioPciTransport,
     profile: virtio::VirtioTransportProfile,
-    probe: virtio_drv::VirtioProbe,
+    probe: Box<virtio_drv::VirtioProbe>,
     transport_lease: virtio::VirtioProbeLease,
 }
 

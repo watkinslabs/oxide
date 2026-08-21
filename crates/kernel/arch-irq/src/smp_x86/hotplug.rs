@@ -137,6 +137,8 @@ pub fn disable_secondary_cpus() -> bool {
         // SAFETY: successful target publication proves play-dead entry; INIT
         // completes x86's physical CPU-down half before snapshot work proceeds.
         log::cpu_off(cpu, CpuOffPhase::ConfirmDead, CpuOffResult::Begin);
+        // SAFETY: the target published successful play-dead entry, so only
+        // the hotplug coordinator can inspect its retained startup record.
         if !unsafe { confirm_dead(logical) } {
             log::cpu_off(cpu, CpuOffPhase::ConfirmDead, CpuOffResult::Refused);
             enable_secondary_cpus(); return false;
@@ -158,7 +160,6 @@ pub fn enable_secondary_cpus() {
             cpu::smp::finish_thaw_cpu(logical as u32, online);
             log::cpu_off(logical as u32, CpuOffPhase::Unwind,
                 if online { CpuOffResult::Ok } else { CpuOffResult::Refused });
-            if !online { klog::write_raw(b"[CPU-HOTPLUG] x86 AP restart failed; ownership retained\n"); }
         }
     }
 }

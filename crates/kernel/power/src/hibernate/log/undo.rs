@@ -6,6 +6,7 @@ use super::super::sequence::Undo;
 pub enum UndoBoundary { Begin, End }
 
 #[cfg(feature = "debug-hibernate")]
+/// # C: O(1)
 pub fn undo(action: Undo, boundary: UndoBoundary) {
     klog::write_raw(b"[hibernate] undo=");
     klog::write_raw(action_name(action));
@@ -18,6 +19,7 @@ pub fn undo(action: Undo, boundary: UndoBoundary) {
 
 #[cfg(not(feature = "debug-hibernate"))]
 #[inline(always)]
+/// # C: O(1)
 pub fn undo(_: Undo, _: UndoBoundary) {}
 
 #[cfg(any(test, feature = "debug-hibernate"))]

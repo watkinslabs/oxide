@@ -19,6 +19,7 @@ impl InFlight {
         while self.0.load(Ordering::Acquire) != 0 { core::hint::spin_loop(); }
     }
 
+    /// Number of handlers admitted but not retired. # C: O(1)
     pub(crate) fn active(&self) -> usize { self.0.load(Ordering::Acquire) }
 }
 

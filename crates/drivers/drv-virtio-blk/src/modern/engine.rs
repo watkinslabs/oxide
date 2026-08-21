@@ -28,7 +28,7 @@ impl BlkState {
 
     #[allow(clippy::too_many_arguments)]
     pub(super) fn do_request(&self, h: u64, type_: u32, sector: u64, data: &mut [u8],
-                  is_in: bool, is_flush: bool, data_len: u32, trace: u16) -> KResult<InHeader> {
+                  is_in: bool, is_flush: bool, data_len: u32, _trace: u16) -> KResult<InHeader> {
         let bounce = h.wrapping_add(self.bounce_pa) as *mut u8;
         // Zone append answers with the sector its data landed at ahead of the
         // status byte, so its device-writable tail is wider. Declaring one
@@ -110,17 +110,24 @@ impl BlkState {
             }
         }
 
+        #[cfg(feature = "debug-hibernate")]
         let used = h.wrapping_add(self.requestq.res.device_pa) as *const u16;
         #[cfg(feature = "debug-hibernate")]
-        if trace != 0 {
-            self.log_hibernate_request(trace, b"wait_begin", type_, sector, target,
-                unsafe { core::ptr::read_volatile(used.add(1)) });
+        if _trace != 0 {
+            // SAFETY: `used` addresses the retained used-ring header and the
+            // volatile read observes the device-owned index for diagnostics.
+            let used_index = unsafe { core::ptr::read_volatile(used.add(1)) };
+            self.log_hibernate_request(_trace, b"wait_begin", type_, sector, target,
+                used_index);
         }
         let result = self.wait_for_completion(h, target);
         #[cfg(feature = "debug-hibernate")]
-        if trace != 0 {
-            self.log_hibernate_request(trace, if result.is_ok() { b"wait_end" } else { b"wait_error" },
-                type_, sector, target, unsafe { core::ptr::read_volatile(used.add(1)) });
+        if _trace != 0 {
+            // SAFETY: `used` remains the retained used-ring header until this
+            // synchronous request completes or reports its bounded failure.
+            let used_index = unsafe { core::ptr::read_volatile(used.add(1)) };
+            self.log_hibernate_request(_trace, if result.is_ok() { b"wait_end" } else { b"wait_error" },
+                type_, sector, target, used_index);
         }
         result?;
         core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
