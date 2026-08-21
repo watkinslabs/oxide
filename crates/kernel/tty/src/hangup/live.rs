@@ -7,6 +7,7 @@
 // exit) and must not drift between them; the slot supplies the tty identity it
 // resolved and performs the tty-side state change.
 
+use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
 
 use super::decide::session_member_action;
@@ -27,12 +28,16 @@ use super::disassociate::PgrpSignal;
 /// terminal, which is the count of terminal references released.
 /// # Ctx: syscall path, current task on this CPU; no tty/driver lock held.
 /// # C: O(N_tasks)
-pub fn hangup_session(tty_ino: vfs::Ino, tty_sid: u32, tty_pgrp: u32) -> usize {
-    if tty_sid == 0 { return 0; }
+pub fn hangup_session(
+    tty_ino: vfs::Ino,
+    tty_session: Option<Arc<sched::pid::PidIdentity>>,
+    tty_pgrp: Option<Arc<sched::pid::PidIdentity>>,
+) -> usize {
+    let Some(tty_session) = tty_session else { return 0 };
     let mut refs = 0;
     for tid in sched::live::registry::live_tids() {
         let Some(task) = sched::live::registry::lookup(tid) else { continue };
-        if task.sid() != tty_sid { continue; }
+        if !Arc::ptr_eq(&task.session(), &tty_session) { continue; }
         let owns = task.ctty_ino() == Some(tty_ino);
         let leader = sched::session::is_session_leader(&task);
         let action = session_member_action(owns, leader);
@@ -46,7 +51,7 @@ pub fn hangup_session(tty_ino: vfs::Ino, tty_sid: u32, tty_pgrp: u32) -> usize {
         // blocked SIGHUP in its main thread still loses the terminal, and the
         // SIGCONT arm runs `prepare_signal`'s stop-flush + group resume rather
         // than merely setting a bit on one thread.
-        if leader && tty_pgrp != 0 { task.thread_group.set_tty_old_pgrp(tty_pgrp); }
+        if leader { task.thread_group.set_tty_old_pgrp(tty_pgrp.as_ref().map(Arc::clone)); }
         if action.sighup {
             sched::live::send_sig_priv_group(&task, sched::Signum::Sighup as u32);
         }
@@ -65,12 +70,11 @@ pub fn hangup_session(tty_ino: vfs::Ino, tty_sid: u32, tty_pgrp: u32) -> usize {
 /// anything.
 /// # Ctx: syscall path, current task on this CPU.
 /// # C: O(N_tasks)
-pub fn clear_session_ctty(tty_ino: vfs::Ino, sid: u32) -> usize {
-    if sid == 0 { return 0; }
+pub fn clear_session_ctty(tty_ino: vfs::Ino, session: &Arc<sched::pid::PidIdentity>) -> usize {
     let mut cleared = 0;
     for tid in sched::live::registry::live_tids() {
         let Some(task) = sched::live::registry::lookup(tid) else { continue };
-        if task.sid() != sid { continue; }
+        if !Arc::ptr_eq(&task.session(), session) { continue; }
         if task.ctty_ino() != Some(tty_ino) { continue; }
         task.set_ctty(None);
         cleared += 1;

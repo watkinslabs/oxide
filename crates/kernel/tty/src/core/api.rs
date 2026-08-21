@@ -110,6 +110,12 @@ pub trait TtyDriver {
     /// # C: O(P) fg-pgrp tasks
     fn signal_fg_pgrp(&mut self, sig: Sig);
 
+    /// Publish the canonical `tty->ctrl.pgrp` identity to a driver that must
+    /// raise ISIG without a back-pointer. The identity is shared, never copied
+    /// as a namespace-relative number. Default: no driver-side consumer.
+    /// # C: O(1)
+    fn set_foreground_pgrp(&mut self, _pgrp: Option<alloc::sync::Arc<sched::pid::PidIdentity>>) {}
+
     /// Driver-specific ioctl hook. Return `Some(ret)` if handled (ret is
     /// the syscall return value), `None` to let the core's generic TIOC*
     /// handling run. Default: not handled.

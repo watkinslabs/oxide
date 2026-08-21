@@ -1,4 +1,5 @@
 use alloc::collections::VecDeque;
+use alloc::sync::Arc;
 
 use super::termios::{
     cc, iflag, lflag, oflag, read_iflag, read_lflag, read_oflag, read_vintr, Winsize,
@@ -78,10 +79,10 @@ pub struct Pair {
     /// final fd). Subsequent reads on the opposite side return EOF.
     pub hung_up: bool,
     /// Foreground process group id per `28§4` / TIOCSPGRP.
-    pub foreground_pgid: u32,
+    pub foreground_pgrp: Option<Arc<sched::pid::PidIdentity>>,
     /// Controlling-session id per `28§4` / TIOCSCTTY. TIOCGSID reads
     /// this; 0 means no session has claimed the pty yet.
-    pub session_pid: u32,
+    pub session: Option<Arc<sched::pid::PidIdentity>>,
     /// Linux `struct termios` byte image (60 B). TCGETS copies out;
     /// TCSETS copies in wholesale. Hot-path readers (`master_write`,
     /// `slave_read`) consult `read_lflag` / `read_vintr`.
@@ -163,7 +164,7 @@ impl Pair {
         Self {
             pts_num,
             m_to_s: Ring::new(), s_to_m: Ring::new(),
-            hung_up: false, foreground_pgid: 0, session_pid: 0,
+            hung_up: false, foreground_pgrp: None, session: None,
             termios: [0u8; TERMIOS_BYTES],
             winsize: Winsize::default_pty(),
             pending_sigint: false,

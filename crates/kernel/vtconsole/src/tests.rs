@@ -71,8 +71,8 @@ struct RecordingSignal {
 }
 
 impl FgSignal for RecordingSignal {
-    fn raise(&mut self, pgrp: u32, sig: Sig) {
-        self.log.borrow_mut().push((pgrp, sig));
+    fn raise(&mut self, pgrp: Option<&sched::pid::PidIdentity>, sig: Sig) {
+        self.log.borrow_mut().push((pgrp.map_or(0, |id| id.tid), sig));
     }
 }
 
@@ -172,7 +172,7 @@ fn password_mode_echo_off_reads_line_but_screen_blank() {
 #[test]
 fn ctrl_c_raises_sigint_on_fg_pgrp() {
     let (tty, _consw, sig) = build(20, 3);
-    set_fg_pgrp(&tty, 4242);
+    set_fg_pgrp(&tty, std::sync::Arc::new(sched::pid::PidIdentity::new(4242)));
     tty.receive_from_driver(b"\x03");
     let log = sig.log.borrow();
     assert_eq!(log.len(), 1, "expected exactly one signal");

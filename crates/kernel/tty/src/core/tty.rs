@@ -1,4 +1,5 @@
 use ::core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use alloc::sync::Arc;
 
 use sync::{Spinlock, Tty as TtyClass};
 
@@ -61,9 +62,9 @@ pub struct TtyStruct<D: TtyDriver, W: TtyWait> {
     /// `winsize` (rows/cols/xpixel/ypixel) — TIOCGWINSZ/TIOCSWINSZ.
     winsize: Spinlock<Winsize, TtyClass>,
     /// Foreground process group — TIOCGPGRP/TIOCSPGRP. 0 = unset.
-    fg_pgrp: AtomicU32,
+    fg_pgrp: Spinlock<Option<Arc<sched::pid::PidIdentity>>, TtyClass>,
     /// Controlling session id — TIOCSCTTY/TIOCGSID. 0 = unset.
-    sid: AtomicU32,
+    session: Spinlock<Option<Arc<sched::pid::PidIdentity>>, TtyClass>,
     /// Open reference count (Linux `tty_struct::count`). `open()` bumps,
     /// `close()` drops; the driver's `open()`/`close()` hooks fire on the
     /// 0→1 / 1→0 edges only (first open powers the device, last close
@@ -111,8 +112,8 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
             flip: Spinlock::new(super::flip::FlipRing::new()),
             wait,
             winsize: Spinlock::new(Winsize::default_pty()),
-            fg_pgrp: AtomicU32::new(0),
-            sid: AtomicU32::new(0),
+            fg_pgrp: Spinlock::new(None),
+            session: Spinlock::new(None),
             open_count: AtomicU32::new(0),
             exclusive: AtomicBool::new(false),
             subs: alloc::sync::Arc::new(vfs::PollSubscribers::new()),
@@ -439,32 +440,68 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
     /// Foreground pgrp (TIOCGPGRP). 0 = unset.
     /// # C: O(1)
     pub fn fg_pgrp(&self) -> u32 {
-        self.fg_pgrp.load(Ordering::Acquire)
+        self.fg_pgrp.lock().as_ref().map_or(0, |id| id.tid)
+    }
+
+    /// Strong PID identity held by `tty->ctrl.pgrp`. # C: O(1)
+    pub fn foreground_pgrp(&self) -> Option<Arc<sched::pid::PidIdentity>> {
+        self.fg_pgrp.lock().as_ref().map(Arc::clone)
     }
 
     /// Set foreground pgrp (TIOCSPGRP / tcsetpgrp).
     /// # C: O(1)
     pub fn set_fg_pgrp(&self, pgid: u32) {
-        self.fg_pgrp.store(pgid, Ordering::Release)
+        let pgrp = if pgid == 0 { None } else {
+            sched::registry::tasks_in_pgrp(pgid).into_iter().next().map(|task| task.pgrp())
+        };
+        #[cfg(test)]
+        let pgrp = pgrp.or_else(|| (pgid != 0)
+            .then(|| Arc::new(sched::pid::PidIdentity::new(pgid))));
+        self.set_foreground_pgrp(pgrp);
+    }
+
+    /// Install the already-resolved foreground process-group identity.
+    /// # C: O(1)
+    pub fn set_foreground_pgrp(&self, pgrp: Option<Arc<sched::pid::PidIdentity>>) {
+        self.inner.lock_irqsave::<W::Irq>().driver
+            .set_foreground_pgrp(pgrp.as_ref().map(Arc::clone));
+        *self.fg_pgrp.lock() = pgrp;
     }
 
     /// Controlling session id (TIOCGSID). 0 = unset.
     /// # C: O(1)
     pub fn sid(&self) -> u32 {
-        self.sid.load(Ordering::Acquire)
+        self.session.lock().as_ref().map_or(0, |id| id.tid)
+    }
+
+    /// Strong PID identity held by `tty->ctrl.session`. # C: O(1)
+    pub fn session(&self) -> Option<Arc<sched::pid::PidIdentity>> {
+        self.session.lock().as_ref().map(Arc::clone)
     }
 
     /// Claim this tty as the controlling tty of session `sid` (TIOCSCTTY).
     /// # C: O(1)
     pub fn set_ctty(&self, sid: u32) {
-        self.sid.store(sid, Ordering::Release)
+        let session = if sid == 0 { None } else {
+            sched::registry::try_snapshot().and_then(|tasks| tasks.into_iter()
+                .find(|task| task.session().tid == sid).map(|task| task.session()))
+        };
+        #[cfg(test)]
+        let session = session.or_else(|| (sid != 0)
+            .then(|| Arc::new(sched::pid::PidIdentity::new(sid))));
+        *self.session.lock() = session;
+    }
+
+    /// Install the already-resolved controlling-session identity. # C: O(1)
+    pub fn set_session(&self, session: Option<Arc<sched::pid::PidIdentity>>) {
+        *self.session.lock() = session;
     }
 
     /// Release the controlling tty (TIOCNOTTY): clear sid + fg pgrp.
     /// # C: O(1)
     pub fn notty(&self) {
-        self.sid.store(0, Ordering::Release);
-        self.fg_pgrp.store(0, Ordering::Release);
+        self.set_session(None);
+        self.set_foreground_pgrp(None);
     }
 
     /// Generic TIOC* ioctl dispatch shared by every device class. The
@@ -510,8 +547,8 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
         // Drop the controlling-tty linkage (Linux clears tty->session /
         // tty->pgrp on hangup) and wake any parked reader so it observes
         // the hung-up EOF immediately rather than sleeping.
-        self.sid.store(0, Ordering::Release);
-        self.fg_pgrp.store(0, Ordering::Release);
+        self.set_session(None);
+        self.set_foreground_pgrp(None);
         self.wait.wake_all();
         // Hangup flips POLLHUP + read→EOF: wake poll/select/epoll waiters too
         // (same rationale as receive_from_driver). `tty_release` wakes both the

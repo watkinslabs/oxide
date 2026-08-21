@@ -17,8 +17,11 @@ pub(crate) fn session() -> u32 {
     crate::static_console::session()
 }
 
-pub(crate) fn set_session_and_fg(sid: u32, pgid: u32) {
-    crate::static_console::set_session_and_fg(sid, pgid);
+pub(crate) fn set_session_and_fg(
+    session: alloc::sync::Arc<sched::pid::PidIdentity>,
+    pgrp: alloc::sync::Arc<sched::pid::PidIdentity>,
+) {
+    crate::static_console::set_session_and_fg(session, pgrp);
 }
 
 pub(crate) fn poll(gen: u64) -> u32 {

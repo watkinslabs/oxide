@@ -30,7 +30,7 @@ fn child_of(parent: &Arc<Task>, tid: u32) -> Arc<Task> {
     let c = published(tid);
     c.parent_tid.store(parent.tid, Ordering::Release);
     c.set_parent_weak(Some(Arc::downgrade(parent)));
-    c.set_pgid(parent.pgid());
+    c.set_pgrp(parent.pgrp());
     c
 }
 

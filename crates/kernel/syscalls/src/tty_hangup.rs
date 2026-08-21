@@ -46,21 +46,21 @@ pub(crate) fn is_pty(target: &CttyTarget) -> bool {
 /// `tty->ctrl.session` — the session this tty is the controlling terminal of,
 /// or 0 when it is nobody's.
 /// # C: O(1)
-pub(crate) fn session(target: &CttyTarget) -> u32 {
+pub(crate) fn session(target: &CttyTarget) -> Option<Arc<sched::pid::PidIdentity>> {
     match target {
-        CttyTarget::Serial => console::static_console::session(),
-        CttyTarget::Vt(vt) => console::vt_tty::vt_tty(*vt).sid(),
-        CttyTarget::Pts(pair) => pair.with_pair(|p| p.session_pid),
+        CttyTarget::Serial => console::static_console::session_identity(),
+        CttyTarget::Vt(vt) => console::vt_tty::vt_tty(*vt).session(),
+        CttyTarget::Pts(pair) => pair.with_pair(|p| p.session.as_ref().map(Arc::clone)),
     }
 }
 
 /// `tty->ctrl.pgrp` — the foreground process group, or 0.
 /// # C: O(1)
-pub(crate) fn foreground_pgrp(target: &CttyTarget) -> u32 {
+pub(crate) fn foreground_pgrp(target: &CttyTarget) -> Option<Arc<sched::pid::PidIdentity>> {
     match target {
-        CttyTarget::Serial => console::static_console::foreground_pgid(),
-        CttyTarget::Vt(vt) => console::vt_tty::vt_tty(*vt).fg_pgrp(),
-        CttyTarget::Pts(pair) => pair.with_pair(|p| p.foreground_pgid),
+        CttyTarget::Serial => console::static_console::foreground_pgrp(),
+        CttyTarget::Vt(vt) => console::vt_tty::vt_tty(*vt).foreground_pgrp(),
+        CttyTarget::Pts(pair) => pair.with_pair(|p| p.foreground_pgrp.as_ref().map(Arc::clone)),
     }
 }
 
@@ -77,8 +77,8 @@ pub(crate) fn hangup(target: &CttyTarget, kind: HangupKind) {
             // path ; `master_hangup` is that state
             // change — EOF on slave read, EIO on slave write.
             p.master_hangup();
-            p.session_pid = 0;
-            p.foreground_pgid = 0;
+            p.session = None;
+            p.foreground_pgrp = None;
         }),
     }
 }
@@ -92,8 +92,8 @@ pub(crate) fn clear_linkage(target: &CttyTarget) {
         CttyTarget::Serial => console::static_console::notty(),
         CttyTarget::Vt(vt) => console::vt_tty::notty(*vt),
         CttyTarget::Pts(pair) => pair.with_pair(|p| {
-            p.session_pid = 0;
-            p.foreground_pgid = 0;
+            p.session = None;
+            p.foreground_pgrp = None;
         }),
     }
 }
@@ -123,7 +123,7 @@ pub(crate) fn disassociate_ctty(task: &sched::Task, cause: tty::hangup::Disassoc
     let ctty_ino = ctty.as_ref().map(|i| i.ino());
     let target = ctty.as_ref().and_then(|i| resolve(i));
     let facts = ctty_ino.map(|_| match &target {
-        Some(t) => CttyFacts { is_pty: is_pty(t), fg_pgrp: foreground_pgrp(t) },
+        Some(t) => CttyFacts { is_pty: is_pty(t), fg_pgrp: foreground_pgrp(t).as_ref().map_or(0, |id| id.tid) },
         // The terminal inode names no device we can reach any more. There is
         // nothing to revoke or signal, but the session still loses it — the
         // pty-shaped facts select exactly that (no vhangup, no foreground
@@ -131,8 +131,9 @@ pub(crate) fn disassociate_ctty(task: &sched::Task, cause: tty::hangup::Disassoc
         None => CttyFacts { is_pty: true, fg_pgrp: 0 },
     });
     let saved_pgrp = task.thread_group.tty_old_pgrp();
+    let saved_pgrp_key = saved_pgrp.as_ref().map_or(0, |id| id.tid);
     let act = tty::hangup::disassociate_ctty(
-        cause, sched::session::is_session_leader(task), facts, saved_pgrp);
+        cause, sched::session::is_session_leader(task), facts, saved_pgrp_key);
 
     if act.vhangup_session {
         if let (Some(ino), Some(t)) = (ctty_ino, target.as_ref()) {
@@ -147,13 +148,13 @@ pub(crate) fn disassociate_ctty(task: &sched::Task, cause: tty::hangup::Disassoc
         }
     }
     if let Some(f) = facts { tty::hangup::signal_pgrp(f.fg_pgrp, act.fg_pgrp); }
-    tty::hangup::signal_pgrp(saved_pgrp, act.old_pgrp);
+    tty::hangup::signal_pgrp(saved_pgrp_key, act.old_pgrp);
     if act.clear_linkage {
         if let Some(t) = target.as_ref() { clear_linkage(t); }
     }
-    if act.clear_old_pgrp { task.thread_group.set_tty_old_pgrp(0); }
+    if act.clear_old_pgrp { task.thread_group.set_tty_old_pgrp(None); }
     if act.clear_session_ctty {
-        if let Some(ino) = ctty_ino { tty::hangup::clear_session_ctty(ino, task.sid()); }
+        if let Some(ino) = ctty_ino { tty::hangup::clear_session_ctty(ino, &task.session()); }
     }
     if act.clear_own_ctty { task.set_ctty(None); }
 }

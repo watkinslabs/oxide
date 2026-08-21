@@ -91,8 +91,8 @@ pub fn acquire_ctty_on_open(inode: &InodeRef, flags: u32) {
     };
     let vpid = cur.vtgid.load(Ordering::Acquire);
     let my_pid = if vpid != 0 { vpid } else { cur.tid };
-    let sid = cur.sid();
-    let is_leader = sid != 0 && sid == my_pid;
+    let session = cur.session();
+    let is_leader = session.nr_in_or_tid(&sched::live::registry::reader_pid_ns()) == my_pid;
     let has_ctty = cur.ctty_ino().is_some();
     let tty_sid = match tgt {
         TtyTarget::Serial => serial::session(),
@@ -107,10 +107,10 @@ pub fn acquire_ctty_on_open(inode: &InodeRef, flags: u32) {
     {
         return;
     }
-    let pgid = cur.pgid();
+    let pgrp = cur.pgrp();
     cur.set_ctty(Some(Arc::clone(inode)));
     match tgt {
-        TtyTarget::Serial => serial::set_session_and_fg(sid, pgid),
-        TtyTarget::Vt(vt) => vt_tty::set_session_and_fg(vt, sid, pgid),
+        TtyTarget::Serial => serial::set_session_and_fg(session, pgrp),
+        TtyTarget::Vt(vt) => vt_tty::set_session_and_fg(vt, session, pgrp),
     }
 }

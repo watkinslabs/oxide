@@ -100,10 +100,9 @@ impl SerialOut for KernelUart {
 /// fg pgrp; the test impl records `(pgrp, sig)` so the harness can assert
 /// ^C → SIGINT. Generic — no `dyn` (07§5).
 pub trait FgSignal {
-    /// Deliver `sig` to process group `pgrp` (0 = unset → no-op in the
-    /// kernel; recorded in tests).
+    /// Deliver `sig` to the stable process-group identity (`None` = unset).
     /// # C: O(P) tasks in the fg pgrp
-    fn raise(&mut self, pgrp: u32, sig: Sig);
+    fn raise(&mut self, pgrp: Option<&sched::pid::PidIdentity>, sig: Sig);
 }
 
 /// `FgSignal` that drops every signal (no fg pgrp signal channel wired).
@@ -113,13 +112,13 @@ pub trait FgSignal {
 pub struct NoSignal;
 
 impl FgSignal for NoSignal {
-    fn raise(&mut self, _pgrp: u32, _sig: Sig) {}
+    fn raise(&mut self, _pgrp: Option<&sched::pid::PidIdentity>, _sig: Sig) {}
 }
 
 /// The serial tty driver (Linux serial `tty_driver` / `uart_ops`). Owns
-/// the UART sink `U`, the fg-pgrp signal sink `S`, and a shadow of the fg
-/// pgrp the core last published (so ISIG ^C/^\/^Z can target it — same
-/// pattern as the VT driver).
+/// the UART sink `U`, the fg-pgrp signal sink `S`, and a reference to the
+/// SAME stable process-group identity held by the tty core (so ISIG
+/// ^C/^\/^Z can target it without a back-pointer).
 ///
 /// Generic over the UART sink (`U: SerialOut`) and the signal sink
 /// (`S: FgSignal`) — monomorphized, never `dyn`.
@@ -129,10 +128,10 @@ pub struct SerialTtyDriver<U: SerialOut, S: FgSignal = NoSignal> {
     out: U,
     /// Signal sink for ISIG (^C/^\/^Z) on the fg pgrp.
     sig: S,
-    /// Shadow of the fg pgrp last set by the core (TIOCSPGRP). ISIG
-    /// targets it. The kernel core also tracks this on `TtyStruct`; the
-    /// driver keeps a copy so `signal_fg_pgrp` needs no back-pointer.
-    fg_pgrp: u32,
+    /// Shared reference to the tty core's canonical process-group identity.
+    /// `TtyStruct::set_foreground_pgrp` is the only mutation path and gives
+    /// both layers an `Arc` to the same object; no numeric owner is copied.
+    fg_pgrp: Option<alloc::sync::Arc<sched::pid::PidIdentity>>,
 }
 
 impl<U: SerialOut> SerialTtyDriver<U, NoSignal> {
@@ -148,7 +147,7 @@ impl<U: SerialOut, S: FgSignal> SerialTtyDriver<U, S> {
     /// Build with an explicit fg-pgrp signal sink.
     /// # C: O(1)
     pub fn with_signal(out: U, sig: S) -> Self {
-        Self { out, sig, fg_pgrp: 0 }
+        Self { out, sig, fg_pgrp: None }
     }
 
     /// The UART sink (test introspection / TX readback).
@@ -163,13 +162,6 @@ impl<U: SerialOut, S: FgSignal> SerialTtyDriver<U, S> {
         &self.sig
     }
 
-    /// Publish the fg pgrp into the driver shadow so `signal_fg_pgrp`
-    /// targets it. The assembly factory keeps this in sync with the
-    /// core's `set_fg_pgrp`.
-    /// # C: O(1)
-    pub fn set_fg_pgrp(&mut self, pgrp: u32) {
-        self.fg_pgrp = pgrp;
-    }
 }
 
 impl<U: SerialOut, S: FgSignal> TtyDriver for SerialTtyDriver<U, S> {
@@ -189,8 +181,14 @@ impl<U: SerialOut, S: FgSignal> TtyDriver for SerialTtyDriver<U, S> {
     /// (Linux `isig` → `kill_pgrp` on the serial line's fg pgrp).
     /// # C: O(P) fg-pgrp tasks
     fn signal_fg_pgrp(&mut self, sig: Sig) {
-        let pgrp = self.fg_pgrp;
-        self.sig.raise(pgrp, sig);
+        self.sig.raise(self.fg_pgrp.as_deref(), sig);
+    }
+
+    fn set_foreground_pgrp(
+        &mut self,
+        pgrp: Option<alloc::sync::Arc<sched::pid::PidIdentity>>,
+    ) {
+        self.fg_pgrp = pgrp;
     }
 
     /// Termios change (TCSETS*): reprogram the UART baud from `c_ospeed`
@@ -226,16 +224,14 @@ pub fn assemble<U: SerialOut, S: FgSignal, W: TtyWait>(
     TtyStruct::new(SerialTtyDriver::with_signal(out, sig), wait)
 }
 
-/// Set the fg pgrp on BOTH the core and the driver shadow (keeps ISIG
-/// targeting in sync). Use instead of `TtyStruct::set_fg_pgrp` alone when
-/// the driver must raise signals on that pgrp.
+/// Resolve and publish the foreground group through the tty core's single
+/// mutation path. The driver receives the same stable identity reference.
 /// # C: O(1)
 pub fn set_fg_pgrp<U: SerialOut, S: FgSignal, W: TtyWait>(
     tty: &TtyStruct<SerialTtyDriver<U, S>, W>,
-    pgrp: u32,
+    pgrp: alloc::sync::Arc<sched::pid::PidIdentity>,
 ) {
-    tty.set_fg_pgrp(pgrp);
-    tty.with_driver(|d| d.set_fg_pgrp(pgrp));
+    tty.set_foreground_pgrp(Some(pgrp));
 }
 
 #[cfg(test)]

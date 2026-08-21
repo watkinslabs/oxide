@@ -372,7 +372,7 @@ fn zombie_candidate(t: &Task) -> Candidate {
         tracer_tgid: tgid_of(tracer_tid),
         vpid: crate::registry::leader_tgid_nr_in(t, &crate::registry::reader_pid_ns())
             .unwrap_or(0),
-        pgid:        t.pgid(),
+        pgid:        t.pgrp().tid,
         exit_signal: t.exit_signal.load(Ordering::Acquire),
     }
 }

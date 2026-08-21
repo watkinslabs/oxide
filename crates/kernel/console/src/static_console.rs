@@ -42,17 +42,15 @@ pub struct KernelFgSignal;
 
 impl serialtty::FgSignal for KernelFgSignal {
     /// # C: O(P) tasks in the fg pgrp
-    fn raise(&mut self, pgrp: u32, sig: Sig) {
+    fn raise(&mut self, pgrp: Option<&sched::pid::PidIdentity>, sig: Sig) {
         let signo = sig.signo() as u32;
-        if pgrp == 0 {
-            return;
-        }
+        let Some(pgrp) = pgrp else { return; };
         if sched::bit_for(signo).is_none() { return; }
         // Linux n_tty `__isig` -> `kill_pgrp(..., SEND_SIG_PRIV)`: the ^C/^\/^Z
         // signals are kernel-generated and PROCESS-directed, and they must WAKE
         // the target — the bit-only post this replaced left a shell parked in
         // `read()` until something else happened to wake it.
-        for t in sched::live::registry::tasks_in_pgrp(pgrp) {
+        for t in sched::live::registry::tasks_in_pgrp_identity(pgrp) {
             sched::live::send_sig_priv_group(&t, signo);
         }
     }
@@ -244,8 +242,8 @@ pub fn close() {
 //
 // `016_ioctl` routes the non-pty console branch here so the tty owns
 // termios / fg_pgrp / sid (the Linux contract: the tty_struct is the
-// source of truth, not a side table). `serialtty::set_fg_pgrp` keeps the
-// driver's ISIG-target shadow in sync with the core.
+// source of truth, not a side table). The driver holds another `Arc` to the
+// SAME identity solely so ISIG delivery needs no back-pointer.
 
 /// TCGETS: snapshot the console termios image.
 /// # C: O(1)
@@ -340,12 +338,17 @@ pub fn foreground_pgid() -> u32 {
     console().map(|t| t.fg_pgrp()).unwrap_or(0)
 }
 
-/// TIOCSPGRP / tcsetpgrp: set the fg pgrp on BOTH the core and the
-/// driver's ISIG-target shadow (keeps ^C → SIGINT aimed at the live fg).
+/// Canonical `tty->ctrl.pgrp` identity. # C: O(1)
+pub fn foreground_pgrp() -> Option<Arc<sched::pid::PidIdentity>> {
+    console().and_then(|tty| tty.foreground_pgrp())
+}
+
+/// TIOCSPGRP / tcsetpgrp: publish one stable foreground-group identity to the
+/// core and driver (keeps ^C → SIGINT aimed at the live group).
 /// # C: O(1)
-pub fn set_foreground_pgid(pgid: u32) {
+pub fn set_foreground_pgrp(pgrp: Arc<sched::pid::PidIdentity>) {
     if let Some(tty) = console() {
-        serialtty::set_fg_pgrp(tty, pgid);
+        tty.set_foreground_pgrp(Some(pgrp));
     }
 }
 
@@ -371,14 +374,22 @@ pub fn session() -> u32 {
     console().map(|t| t.sid()).unwrap_or(0)
 }
 
+/// Canonical `tty->ctrl.session` identity. # C: O(1)
+pub fn session_identity() -> Option<Arc<sched::pid::PidIdentity>> {
+    console().and_then(|tty| tty.session())
+}
+
 /// TIOCSCTTY: claim the console as controlling tty of `sid` and seed the
 /// fg pgrp with `pgid` (POSIX: session leader acquiring a ctty sets the
 /// fg pgrp to its own pgrp — without it bash trips SIGTTIN and stops).
 /// # C: O(1)
-pub fn set_session_and_fg(sid: u32, pgid: u32) {
+pub fn set_session_and_fg(
+    session: Arc<sched::pid::PidIdentity>,
+    pgrp: Arc<sched::pid::PidIdentity>,
+) {
     if let Some(tty) = console() {
-        tty.set_ctty(sid);
-        serialtty::set_fg_pgrp(tty, pgid);
+        tty.set_session(Some(session));
+        tty.set_foreground_pgrp(Some(pgrp));
     }
 }
 
@@ -392,7 +403,6 @@ pub fn set_session_and_fg(sid: u32, pgid: u32) {
 pub fn hangup(kind: tty::HangupKind) {
     if let Some(t) = console() {
         t.hangup(kind);
-        t.with_driver(|d| d.set_fg_pgrp(0));
     }
 }
 
@@ -401,6 +411,5 @@ pub fn hangup(kind: tty::HangupKind) {
 pub fn notty() {
     if let Some(tty) = console() {
         tty.notty();
-        tty.with_driver(|d| d.set_fg_pgrp(0));
     }
 }

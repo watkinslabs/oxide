@@ -307,18 +307,6 @@ pub fn nr_chain_in(t: &Task, reader: &NamespaceRef) -> Vec<u32> {
     match vnr_in(t, reader) { Some(nr) => alloc::vec![nr], None => Vec::new() }
 }
 
-/// Numbers the process, process group or session named `nr` in `owner` carries
-/// from `reader`'s level inward — Linux's `task_tgid_nr_ns` /
-/// `task_pgrp_nr_ns` / `task_session_nr_ns` rows. Empty when the number names
-/// no live task, which is how a group whose leader has exited reports.
-/// # C: O(N_tasks + depth)
-pub fn group_chain(owner: &NamespaceRef, nr: u32, reader: &NamespaceRef) -> Vec<u32> {
-    match lookup_in_namespace(owner, nr) {
-        Some(t) => nr_chain_in(&t, reader),
-        None => Vec::new(),
-    }
-}
-
 /// The PROCESS number `t` carries as `viewer`'s pid namespace numbers it — the
 /// value every `si_pid` must hold, because a signal's pid field is read by the
 /// RECEIVER, in the receiver's namespace. 0 when the viewer's namespace does

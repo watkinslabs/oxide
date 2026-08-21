@@ -28,7 +28,9 @@ fn current_has_sys_admin() -> bool {
 /// orphan scan walks the task registry and allocates.
 /// # C: O(pgrp size)
 fn slave_jobctl(pair: &LockedPair, ino: Ino, access: tty::jobctl::Access) -> KResult<()> {
-    let (fg, sid, lflag) = pair.with_pair(|p| (p.foreground_pgid, p.session_pid, p.lflag()));
+    let (fg, sid, lflag) = pair.with_pair(|p| (
+        p.foreground_pgrp.as_ref().map_or(0, |id| id.tid),
+        p.session.as_ref().map_or(0, |id| id.tid), p.lflag()));
     tty::jobctl::check(fg, sid, ino, lflag, access)
 }
 
@@ -107,7 +109,7 @@ impl FileOps for PtyMasterFileOps {
             if g.pending_sigint  { bits |= sched::Signum::Sigint.bit();  g.pending_sigint  = false; }
             if g.pending_sigquit { bits |= sched::Signum::Sigquit.bit(); g.pending_sigquit = false; }
             if g.pending_sigtstp { bits |= sched::Signum::Sigtstp.bit(); g.pending_sigtstp = false; }
-            (n, bits, g.foreground_pgid, echoed)
+            (n, bits, g.foreground_pgrp.as_ref().map_or(0, |id| id.tid), echoed)
         };
         // Linux `pty_write` → `tty_insert_flip_string_and_push_buffer` →
         // `n_tty_receive_buf` → `wake_up_interruptible_poll(&to->read_wait,
@@ -141,7 +143,7 @@ impl FileOps for PtyMasterFileOps {
         let fg = {
             let mut g = pair.inner.lock();
             g.master_hangup();
-            g.foreground_pgid
+            g.foreground_pgrp.as_ref().map_or(0, |id| id.tid)
         };
         // Linux wakes BOTH halves' read/write queues on master last-close,
         // then hangs up the slave: the slave's poll must report

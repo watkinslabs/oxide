@@ -74,17 +74,22 @@ pub struct ThreadGroup {
     /// checkpoint/restore recreates a process' timers under their old ids.
     /// Process-wide, and reset to 0 by execve exactly as Linux resets it.
     pub timer_create_restore_ids: AtomicBool,
-    /// POSIX process-group id (Linux `PIDTYPE_PGID` on `task->signal`). Every
+    /// POSIX process-group identity (Linux
+    /// `signal_struct::pids[PIDTYPE_PGID]`). Every
     /// thread of a process is in ONE process group — `setpgid(2)` moves the
     /// whole process, never a single thread — so this is process-wide state,
     /// exactly like the `posix_timers` above. It previously lived on `Task`
     /// and was byte-copied per thread at `CLONE_THREAD`, which made a threaded
     /// process's `setpgid` visible only to the thread that ran it: `kill(-pgid)`
-    /// and tty job control then reached a subset of the process.
-    pgid: AtomicU32,
-    /// POSIX session id (Linux `PIDTYPE_SID` on `task->signal`). Process-wide
-    /// for the same reason as `pgid`.
-    sid: AtomicU32,
+    /// and tty job control then reached a subset of the process. This is an
+    /// `Arc<PidIdentity>`, not a cached number: membership, tty ownership and
+    /// `/proc` share object identity, while namespace numbers are derived only
+    /// at UAPI boundaries (Linux `pid_vnr`).
+    pgrp: Spinlock<Arc<PidIdentity>, TaskListClass>,
+    /// POSIX session identity (Linux `signal_struct::pids[PIDTYPE_SID]`).
+    /// Process-wide for the same reason as `pgrp`, and likewise translated to
+    /// a namespace-relative number only at a UAPI boundary.
+    session: Spinlock<Arc<PidIdentity>, TaskListClass>,
     /// Linux `signal_struct::leader` — set exactly once by `setsid(2)`. Gates
     /// the `setsid` EPERM re-entry check and the `setpgid` "target is a session
     /// leader" EPERM.
@@ -171,7 +176,7 @@ pub struct ThreadGroup {
     /// The one reader is a leader's exit with no controlling terminal left,
     /// which owes that group SIGHUP+SIGCONT — without it a job stopped at the
     /// instant of a carrier drop stays stopped with nothing able to resume it.
-    tty_old_pgrp: AtomicU32,
+    tty_old_pgrp: Spinlock<Option<Arc<PidIdentity>>, TaskListClass>,
     user_ns: AtomicU64,
     system_ns: AtomicU64,
     /// Linux `signal_struct::sum_sched_runtime` — the process-wide scheduler
@@ -216,14 +221,13 @@ fn release_reference(_task: Arc<Task>) {}
 impl ThreadGroup {
     /// Create a one-task group around its leader PID identity. # C: O(1)
     pub fn new(leader: Arc<PidIdentity>) -> Self {
-        let seed = leader.tid;
         Self {
+            pgrp: Spinlock::new(Arc::clone(&leader)),
+            session: Spinlock::new(Arc::clone(&leader)),
             leader,
             posix_timers: UnsafeCell::new(alloc::vec![PosixTimer::default(); PosixTimer::SLOTS]),
             rlimits: Spinlock::new(crate::rlimit::DEFAULT_RLIMITS),
             timer_create_restore_ids: AtomicBool::new(false),
-            pgid: AtomicU32::new(seed),
-            sid:  AtomicU32::new(seed),
             session_leader: AtomicBool::new(false),
             is_child_subreaper: AtomicBool::new(false),
             exec_update: crate::rwsem::RwSem::new(()),
@@ -235,7 +239,7 @@ impl ThreadGroup {
             shared_sigqueue: crate::sigqueue::new_queues(),
             signalfd_poll: alloc::sync::Arc::new(vfs::PollSubscribers::new()),
             ctty: Spinlock::new(None),
-            tty_old_pgrp: AtomicU32::new(0),
+            tty_old_pgrp: Spinlock::new(None),
             user_ns: AtomicU64::new(0),
             system_ns: AtomicU64::new(0),
             sched_runtime_ns: AtomicU64::new(0),
@@ -257,17 +261,20 @@ impl ThreadGroup {
     /// covering live and already-exited threads alike. # C: O(1)
     pub fn group_acct(&self) -> &group_acct::GroupAcct { &self.group_acct }
 
-    /// Process group id shared by every thread of this process. # C: O(1)
-    pub fn pgid(&self) -> u32 { self.pgid.load(Ordering::Acquire) }
+    /// Linux `task_pgrp()`: the canonical PID identity naming this process
+    /// group. The strong reference keeps every namespace number alive after
+    /// the group leader exits. # C: O(1)
+    pub fn pgrp(&self) -> Arc<PidIdentity> { Arc::clone(&self.pgrp.lock()) }
 
-    /// Move the whole process into process group `pgid`. # C: O(1)
-    pub fn set_pgid(&self, pgid: u32) { self.pgid.store(pgid, Ordering::Release); }
+    /// Linux `change_pid(..., PIDTYPE_PGID, pgrp)`. # C: O(1)
+    pub fn set_pgrp(&self, pgrp: Arc<PidIdentity>) { *self.pgrp.lock() = pgrp; }
 
-    /// Session id shared by every thread of this process. # C: O(1)
-    pub fn sid(&self) -> u32 { self.sid.load(Ordering::Acquire) }
+    /// Linux `task_session()`: the canonical PID identity naming this
+    /// session. # C: O(1)
+    pub fn session(&self) -> Arc<PidIdentity> { Arc::clone(&self.session.lock()) }
 
-    /// Move the whole process into session `sid`. # C: O(1)
-    pub fn set_sid(&self, sid: u32) { self.sid.store(sid, Ordering::Release); }
+    /// Linux `change_pid(..., PIDTYPE_SID, session)`. # C: O(1)
+    pub fn set_session(&self, session: Arc<PidIdentity>) { *self.session.lock() = session; }
 
     /// Linux `signal_struct::leader`. # C: O(1)
     pub fn is_session_leader(&self) -> bool { self.session_leader.load(Ordering::Acquire) }
@@ -316,11 +323,13 @@ impl ThreadGroup {
     /// The foreground group saved when this session's terminal was hung up
     /// under it (Linux `signal_struct::tty_old_pgrp`), 0 when none.
     /// # C: O(1)
-    pub fn tty_old_pgrp(&self) -> u32 { self.tty_old_pgrp.load(Ordering::Acquire) }
+    pub fn tty_old_pgrp(&self) -> Option<Arc<PidIdentity>> {
+        self.tty_old_pgrp.lock().as_ref().map(Arc::clone)
+    }
 
     /// Record (or, with 0, forget) the saved foreground group. # C: O(1)
-    pub fn set_tty_old_pgrp(&self, pgrp: u32) {
-        self.tty_old_pgrp.store(pgrp, Ordering::Release);
+    pub fn set_tty_old_pgrp(&self, pgrp: Option<Arc<PidIdentity>>) {
+        *self.tty_old_pgrp.lock() = pgrp;
     }
 
     /// Commit one fully initialized clone-thread member. # C: O(1)

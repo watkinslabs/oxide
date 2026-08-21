@@ -224,15 +224,9 @@ pub unsafe fn spawn_user_thread_with_vpid(
     // it's made visible via registry/runqueue.
     if vpid_tgid != 0 { task.vtgid.store(vpid_tgid, Ordering::Release); }
     if vpid_tid  != 0 { task.vtid.store(vpid_tid,   Ordering::Release); }
-    // B118: pgid/sid live in VPID space, not the opaque internal tid.
-    // Task::new_user seeds both to the internal tid; for a user task with
-    // a stamped vpid (init = 1) re-seed to vtgid so getpgid/getsid and
-    // ps PGRP/SID report Linux pids. Forks override via clone (inherit
-    // parent); kthreads (vpid 0) keep the internal tid (not user-visible).
-    if vpid_tgid != 0 {
-        task.set_pgid(vpid_tgid);
-        task.set_sid(vpid_tgid);
-    }
+    // The fresh thread group's pgrp/session both reference this task's PID
+    // identity. Publishing mappings on that identity supplies every visible
+    // number; there is no numeric shadow to re-seed.
 
     // SAFETY: task is local; no concurrent reader. install_stack allocates a
     // guard-paged kernel stack (Linux CONFIG_VMAP_STACK) and stores its top.
@@ -295,8 +289,6 @@ pub unsafe fn new_user_task_unpublished(
     let task = dup::unique_mut(&mut arc);
     if vpid_tgid != 0 {
         task.vtgid.store(vpid_tgid, Ordering::Release);
-        task.set_pgid(vpid_tgid);
-        task.set_sid(vpid_tgid);
     }
     if vpid_tid != 0 { task.vtid.store(vpid_tid, Ordering::Release); }
     // SAFETY: `task` is unpublished; no concurrent reader of kernel_stack exists yet.

@@ -46,7 +46,7 @@ fn fixture() -> (Arc<Task>, Arc<Task>) {
     let c = published(CHILD);
     c.parent_tid.store(p.tid, Ordering::Release);
     c.set_parent_weak(Some(Arc::downgrade(&p)));
-    c.set_pgid(p.pgid());
+    c.set_pgrp(p.pgrp());
     c.exit_status.store(STATUS, Ordering::Release);
     for _ in 0..CHILD_FAULTS { crate::rusage_charge::fault(&c, false); }
     (p, c)
@@ -243,4 +243,3 @@ fn two_reapers_released_in_turn_consume_one_zombie_exactly_once() {
     assert_eq!(p.thread_group.child_acct().snapshot().minflt, CHILD_FAULTS,
         "one reap, one accounting pass");
 }
-

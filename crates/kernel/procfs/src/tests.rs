@@ -5,7 +5,7 @@
 extern crate alloc;
 use crate::pseudo::*;
 
-use alloc::string::ToString;
+use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -346,4 +346,24 @@ fn pid_stat_projects_the_split_cpu_clocks_not_scheduler_runtime() {
     assert!(source.contains("task.stime_ns.load"));
     assert!(source.contains("else if f == 15"));
     assert!(!source.contains("ns_to_clk_tck(task.sum_exec_runtime_ns"));
+}
+
+#[test]
+fn pid_stat_reads_job_control_from_the_canonical_pid_identities() {
+    use sched::task::{SchedClass, Task};
+
+    sched::registry::clear_for_tests();
+    let leader = alloc::sync::Arc::new(Task::new(
+        42, "leader", SchedClass::Normal { weight: 1024 }));
+    let member = alloc::sync::Arc::new(Task::new(
+        43, "member", SchedClass::Normal { weight: 1024 }));
+    member.set_pgrp(leader.pgrp());
+    member.set_session(leader.session());
+    sched::registry::insert(&leader);
+    sched::registry::insert(&member);
+
+    let body = String::from_utf8(crate::pid_stat::body(member.tid)).expect("ASCII stat");
+    let fields: Vec<&str> = body.split_whitespace().collect();
+    assert_eq!(fields[4], "42", "field 5 is pgrp");
+    assert_eq!(fields[5], "42", "field 6 is session");
 }

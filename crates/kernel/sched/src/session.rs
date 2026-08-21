@@ -53,7 +53,7 @@ pub fn process_vpid(t: &Task) -> u32 {
 /// recognised as one skips the SIGHUP its session is owed.
 /// # C: O(1)
 pub fn is_session_leader(t: &Task) -> bool {
-    t.thread_group.is_session_leader() || t.sid() == process_vpid(t)
+    t.thread_group.is_session_leader() || Arc::ptr_eq(&t.session(), &t.pid)
 }
 
 /// Whether `a` and `b` are threads of one process (Linux `same_thread_group`).
@@ -87,15 +87,15 @@ pub fn getppid(cur: &Task) -> u32 {
 /// to a live task in the caller's pid namespace or the call is ESRCH.
 /// # C: O(log N_tasks) init-ns; O(N_tasks) otherwise
 pub fn getpgid(cur: &Task, pid: i32) -> Result<u32, Errno> {
-    if pid == 0 { return Ok(cur.pgid()); }
-    Ok(lookup_user_pid(cur, pid).ok_or(Errno::Esrch)?.pgid())
+    let target = if pid == 0 { None } else { Some(lookup_user_pid(cur, pid).ok_or(Errno::Esrch)?) };
+    Ok(target.as_deref().unwrap_or(cur).pgrp().nr_in_or_tid(&pid_ns(cur)))
 }
 
 /// Linux `SYSCALL_DEFINE1(getsid)`. Same shape as `getpgid`, on the session id.
 /// # C: O(log N_tasks) init-ns; O(N_tasks) otherwise
 pub fn getsid(cur: &Task, pid: i32) -> Result<u32, Errno> {
-    if pid == 0 { return Ok(cur.sid()); }
-    Ok(lookup_user_pid(cur, pid).ok_or(Errno::Esrch)?.sid())
+    let target = if pid == 0 { None } else { Some(lookup_user_pid(cur, pid).ok_or(Errno::Esrch)?) };
+    Ok(target.as_deref().unwrap_or(cur).session().nr_in_or_tid(&pid_ns(cur)))
 }
 
 /// Resolve a userspace-supplied positive pid inside the caller's pid namespace.
@@ -134,7 +134,7 @@ pub fn setpgid(cur: &Task, pid: i32, pgid: i32) -> Result<(), Errno> {
     if is_our_child(cur, &p) {
         // A parent may only move a child that is still in the same session and
         // has not yet exec'd — POSIX's fork/setpgid/exec job-control window.
-        if p.sid() != cur.sid() { return Err(Errno::Eperm); }
+        if !Arc::ptr_eq(&p.session(), &cur.session()) { return Err(Errno::Eperm); }
         if !p.forknoexec.load(Ordering::Acquire) { return Err(Errno::Eacces); }
     } else if !is_callers_group_leader(&p, cur) {
         // Neither our child nor ourselves: Linux hides the task's existence.
@@ -147,14 +147,20 @@ pub fn setpgid(cur: &Task, pid: i32, pgid: i32) -> Result<(), Errno> {
         // Joining an EXISTING group: it must exist and live in our session.
         // (`pgid == pid` creates the group led by the target, so no member
         // exists yet and Linux skips this check entirely.)
-        let sid = cur.sid();
-        let joinable = registry::tasks_in_pgrp(pgid as u32)
+        let session = cur.session();
+        let joinable = registry::tasks_in_pgrp_nr(&pid_ns(cur), pgid as u32)
             .into_iter()
-            .any(|g| g.sid() == sid);
+            .any(|g| Arc::ptr_eq(&g.session(), &session));
         if !joinable { return Err(Errno::Eperm); }
     }
 
-    p.set_pgid(pgid as u32);
+    let pgrp = if pgid == pid {
+        Arc::clone(&p.pid)
+    } else {
+        registry::tasks_in_pgrp_nr(&pid_ns(cur), pgid as u32).into_iter()
+            .next().map(|g| g.pgrp()).ok_or(Errno::Eperm)?
+    };
+    p.set_pgrp(pgrp);
     Ok(())
 }
 
@@ -169,11 +175,11 @@ pub fn setpgid(cur: &Task, pid: i32, pgid: i32) -> Result<(), Errno> {
 pub fn setsid(cur: &Task) -> Result<u32, Errno> {
     let session = process_vpid(cur);
     if cur.thread_group.is_session_leader() { return Err(Errno::Eperm); }
-    if !registry::tasks_in_pgrp(session).is_empty() { return Err(Errno::Eperm); }
+    if !registry::tasks_in_pgrp_nr(&pid_ns(cur), session).is_empty() { return Err(Errno::Eperm); }
     if !cur.thread_group.claim_session_leader() { return Err(Errno::Eperm); }
 
-    cur.set_sid(session);
-    cur.set_pgid(session);
+    cur.set_session(Arc::clone(&cur.pid));
+    cur.set_pgrp(Arc::clone(&cur.pid));
     // Linux `proc_clear_tty(group_leader)`: a new session starts with no
     // controlling terminal, for EVERY thread of the process — the terminal
     // lives on the thread group, as it does on Linux's `signal_struct`.

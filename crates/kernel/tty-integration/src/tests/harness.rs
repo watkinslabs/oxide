@@ -107,14 +107,14 @@ impl RecordingSignal {
 }
 
 impl vtconsole::FgSignal for RecordingSignal {
-    fn raise(&mut self, pgrp: u32, sig: Sig) {
-        self.log.borrow_mut().push((pgrp, sig));
+    fn raise(&mut self, pgrp: Option<&sched::pid::PidIdentity>, sig: Sig) {
+        self.log.borrow_mut().push((pgrp.map_or(0, |id| id.tid), sig));
     }
 }
 
 impl serialtty::FgSignal for RecordingSignal {
-    fn raise(&mut self, pgrp: u32, sig: Sig) {
-        self.log.borrow_mut().push((pgrp, sig));
+    fn raise(&mut self, pgrp: Option<&sched::pid::PidIdentity>, sig: Sig) {
+        self.log.borrow_mut().push((pgrp.map_or(0, |id| id.tid), sig));
     }
 }
 
@@ -181,9 +181,9 @@ pub fn vt_row(tty: &VtTty, r: u16) -> String {
     })
 }
 
-/// Set the fg pgrp on the VT stack (core + driver shadow).
+/// Install one stable fg-pgrp identity on the VT stack.
 pub fn vt_set_pgrp(tty: &VtTty, pgrp: u32) {
-    vt_set_fg_pgrp(tty, pgrp);
+    vt_set_fg_pgrp(tty, std::sync::Arc::new(sched::pid::PidIdentity::new(pgrp)));
 }
 
 // --- serial stack assembly ----------------------------------------------
@@ -209,7 +209,7 @@ pub fn build_serial_termios(t: [u8; TERMIOS_BYTES]) -> (SerTty, RecordingOut, Re
     (tty, out, sig)
 }
 
-/// Set the fg pgrp on the serial stack (core + driver shadow).
+/// Install one stable fg-pgrp identity on the serial stack.
 pub fn ser_set_pgrp(tty: &SerTty, pgrp: u32) {
-    ser_set_fg_pgrp(tty, pgrp);
+    ser_set_fg_pgrp(tty, std::sync::Arc::new(sched::pid::PidIdentity::new(pgrp)));
 }

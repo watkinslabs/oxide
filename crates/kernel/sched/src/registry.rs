@@ -49,7 +49,7 @@ pub use tid::{insert, lookup, try_wake_stopped, LOOKUPS};
 #[cfg(target_os = "oxide-kernel")]
 pub use vpid::caller_pid_ns;
 pub use vpid::{
-    display_vpid, display_vtid, group_chain, lookup_by_vpid, lookup_in_namespace, live_vpids,
+    display_vpid, display_vtid, lookup_by_vpid, lookup_in_namespace, live_vpids,
     leader_tgid_nr_in, nr_chain_in, parent_vpid, reader_pid_ns, resolve_user_pid, tgid_nr_in, tgid_nr_seen_by,
     vnr_in,
 };
@@ -57,5 +57,5 @@ pub use vpid::{
 pub(crate) use wait::wait_candidate_matches;
 pub use wait::{
     child_stop_event, has_children, has_wait_children, task_rusage_both, task_rusage_self, task_rusage_thread,
-    tasks_in_pgrp, WaitChildSnapshot,
+    tasks_in_pgrp, tasks_in_pgrp_identity, tasks_in_pgrp_nr, WaitChildSnapshot,
 };

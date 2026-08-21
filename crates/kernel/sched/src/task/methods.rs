@@ -88,16 +88,39 @@ impl Task {
 
     /// Process group id (Linux `task_pgrp`). Owned by the thread group, so
     /// every thread of the process reports and moves as one. # C: O(1)
-    pub fn pgid(&self) -> u32 { self.thread_group.pgid() }
+    pub fn pgrp(&self) -> Arc<crate::pid::PidIdentity> { self.thread_group.pgrp() }
 
     /// Move this task's whole process into process group `pgid`. # C: O(1)
-    pub fn set_pgid(&self, pgid: u32) { self.thread_group.set_pgid(pgid); }
+    pub fn set_pgrp(&self, pgrp: Arc<crate::pid::PidIdentity>) { self.thread_group.set_pgrp(pgrp); }
 
     /// Session id (Linux `task_session`). # C: O(1)
-    pub fn sid(&self) -> u32 { self.thread_group.sid() }
+    pub fn session(&self) -> Arc<crate::pid::PidIdentity> { self.thread_group.session() }
 
     /// Move this task's whole process into session `sid`. # C: O(1)
-    pub fn set_sid(&self, sid: u32) { self.thread_group.set_sid(sid); }
+    pub fn set_session(&self, session: Arc<crate::pid::PidIdentity>) {
+        self.thread_group.set_session(session);
+    }
+
+    /// Hosted-fixture shorthand for constructing an otherwise unnumbered
+    /// process-group identity. Production must move references, never ids.
+    #[cfg(test)]
+    pub fn set_pgid(&self, pgid: u32) {
+        self.set_pgrp(Arc::new(crate::pid::PidIdentity::new(pgid)));
+    }
+
+    /// Hosted-fixture shorthand; see [`Self::set_pgid`].
+    #[cfg(test)]
+    pub fn set_sid(&self, sid: u32) {
+        self.set_session(Arc::new(crate::pid::PidIdentity::new(sid)));
+    }
+
+    /// Initial-namespace fixture view of the pgrp identity.
+    #[cfg(test)]
+    pub fn pgid(&self) -> u32 { self.pgrp().tid }
+
+    /// Initial-namespace fixture view of the session identity.
+    #[cfg(test)]
+    pub fn sid(&self) -> u32 { self.session().tid }
 
     /// Controlling terminal of this task's PROCESS (Linux
     /// `current->signal->tty`). # C: O(1); # Lk: TaskList

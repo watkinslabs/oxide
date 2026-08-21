@@ -18,7 +18,7 @@ pub fn wait_for(vpid: u32) -> i32 {
     let Some(me) = sched::live::current() else { return -(Errno::Echild.as_i32()) };
     let tid = me.tid;
     let tgid = me.tgid.load(core::sync::atomic::Ordering::Acquire);
-    let pgid = me.pgid();
+    let pgid = me.pgrp().tid;
     let pid = vpid as i32;
     loop {
         if let Some((_child, code)) = sched::live::reap_one(tid, tgid, pid, pgid, WAIT_FOR_EXIT) {

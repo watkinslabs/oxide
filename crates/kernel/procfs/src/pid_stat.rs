@@ -12,6 +12,9 @@ pub fn body(tid: u32) -> Vec<u8> {
     let task = match sched::live::registry::lookup(tid) { Some(t) => t, None => return out };
     let vpid = sched::live::registry::display_vpid(tid);
     let ppid = sched::live::registry::parent_vpid(tid);
+    let reader = sched::live::registry::reader_pid_ns();
+    let pgrp = task.pgrp().nr_in_or_tid(&reader) as u64;
+    let session = task.session().nr_in_or_tid(&reader) as u64;
     push_u64(&mut out, vpid);
     // `comm` (field 2): the exec'd program's basename (Linux), not the generic
     // fork-time name — `ps`/`top`/`pidof` key off this.
@@ -58,7 +61,9 @@ pub fn body(tid: u32) -> Vec<u8> {
     // parses it.
     let rsslim = task.rlimit(sched::rlimit::rlim::RSS).0;
     for f in 5u32..=52 {
-        if f == 14 { push(&mut out, b" "); push_u64(&mut out, utime); }
+        if f == 5 { push(&mut out, b" "); push_u64(&mut out, pgrp); }
+        else if f == 6 { push(&mut out, b" "); push_u64(&mut out, session); }
+        else if f == 14 { push(&mut out, b" "); push_u64(&mut out, utime); }
         else if f == 15 { push(&mut out, b" "); push_u64(&mut out, stime); }
         else if f == 22 { push(&mut out, b" "); push_u64(&mut out, starttime); }
         else if f == 25 { push(&mut out, b" "); push_u64(&mut out, rsslim); }

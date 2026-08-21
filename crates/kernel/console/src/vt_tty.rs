@@ -34,14 +34,14 @@ use crate::static_console::KernelFgSignal;
 pub const N_VT: usize = 63;
 
 /// The VT console `tty_driver` (Linux `vt.c` con_ops). Owns the VT id it
-/// renders to, a shadow of the fg pgrp the core last published (so ISIG
-/// can target it without a back-pointer — same pattern as
-/// `SerialTtyDriver`), and the fg-pgrp signal sink.
+/// renders to, a reference to the SAME stable process-group identity held by
+/// the tty core (so ISIG can target it without a back-pointer), and the
+/// fg-pgrp signal sink.
 pub struct VtConsoleDriver {
     /// 1-based VT id this driver renders to (`fbcon::kernel::vt_write`).
     vt: u8,
-    /// Shadow of the fg pgrp (TIOCSPGRP) so `signal_fg_pgrp` targets it.
-    fg_pgrp: u32,
+    /// Shared reference to the tty core's canonical process-group identity.
+    fg_pgrp: Option<Arc<sched::pid::PidIdentity>>,
     /// ISIG sink: raises a real signal on the fg pgrp via the scheduler
     /// registry (reused from `static_console`, not duplicated).
     sig: KernelFgSignal,
@@ -51,14 +51,7 @@ impl VtConsoleDriver {
     /// Build a VT console driver rendering to VT `vt` (1-based).
     /// # C: O(1)
     pub fn new(vt: u8) -> Self {
-        Self { vt, fg_pgrp: 0, sig: KernelFgSignal }
-    }
-
-    /// Publish the fg pgrp into the driver shadow so `signal_fg_pgrp`
-    /// targets it (kept in sync with the core by `set_fg_pgrp`).
-    /// # C: O(1)
-    pub fn set_fg_pgrp(&mut self, pgrp: u32) {
-        self.fg_pgrp = pgrp;
+        Self { vt, fg_pgrp: None, sig: KernelFgSignal }
     }
 }
 
@@ -76,8 +69,11 @@ impl TtyDriver for VtConsoleDriver {
     /// # C: O(P) fg-pgrp tasks
     fn signal_fg_pgrp(&mut self, sig: Sig) {
         use serialtty::FgSignal;
-        let pgrp = self.fg_pgrp;
-        self.sig.raise(pgrp, sig);
+        self.sig.raise(self.fg_pgrp.as_deref(), sig);
+    }
+
+    fn set_foreground_pgrp(&mut self, pgrp: Option<Arc<sched::pid::PidIdentity>>) {
+        self.fg_pgrp = pgrp;
     }
 
     /// Termios change (TCSETS*): the VT emulator has no baud to reprogram.
@@ -175,13 +171,12 @@ pub fn sync_framebuffer_winsizes(rows: u16, cols: u16, ypixel: u16) {
     }
 }
 
-/// Set the fg pgrp on BOTH the core and the driver shadow (keeps ISIG
-/// targeting in sync) — the VT counterpart of `serialtty::set_fg_pgrp`.
+/// Publish the same foreground-group identity through the tty core and driver
+/// — the VT counterpart of `serialtty::set_fg_pgrp`.
 /// # C: O(1)
-pub fn set_fg_pgrp(vt: u8, pgrp: u32) {
+pub fn set_fg_pgrp(vt: u8, pgrp: Arc<sched::pid::PidIdentity>) {
     let tty = vt_tty(vt);
-    tty.set_fg_pgrp(pgrp);
-    tty.with_driver(|d| d.set_fg_pgrp(pgrp));
+    tty.set_foreground_pgrp(Some(pgrp));
 }
 
 /// Claim VT `vt` as the controlling tty of session `sid` and seed the fg
@@ -189,11 +184,14 @@ pub fn set_fg_pgrp(vt: u8, pgrp: u32) {
 /// pgrp to its own pgrp). The VT counterpart of
 /// `static_console::set_session_and_fg`.
 /// # C: O(1)
-pub fn set_session_and_fg(vt: u8, sid: u32, pgid: u32) {
+pub fn set_session_and_fg(
+    vt: u8,
+    session: Arc<sched::pid::PidIdentity>,
+    pgrp: Arc<sched::pid::PidIdentity>,
+) {
     let tty = vt_tty(vt);
-    tty.set_ctty(sid);
-    tty.set_fg_pgrp(pgid);
-    tty.with_driver(|d| d.set_fg_pgrp(pgid));
+    tty.set_session(Some(session));
+    tty.set_foreground_pgrp(Some(pgrp));
 }
 
 /// Linux `__tty_hangup` on VT `vt`. The VT counterpart of
@@ -202,14 +200,13 @@ pub fn set_session_and_fg(vt: u8, sid: u32, pgid: u32) {
 pub fn hangup(vt: u8, kind: tty::HangupKind) {
     let tty = vt_tty(vt);
     tty.hangup(kind);
-    tty.with_driver(|d| d.set_fg_pgrp(0));
 }
 
-/// Release the controlling tty for VT `vt` (clear sid + fg pgrp + driver
-/// shadow). The VT counterpart of `static_console::notty`.
+/// Release the controlling tty for VT `vt` (clear sid and every reference to
+/// its foreground-group identity). The VT counterpart of
+/// `static_console::notty`.
 /// # C: O(1)
 pub fn notty(vt: u8) {
     let tty = vt_tty(vt);
     tty.notty();
-    tty.with_driver(|d| d.set_fg_pgrp(0));
 }

@@ -9,7 +9,7 @@ pub(crate) struct ReaderClock {
 
 impl ReaderClock {
     /// Retain the current reader's TIME namespace for one proc render. # C: O(1)
-    #[cfg(target_os = "oxide-kernel")]
+    #[cfg(any(target_os = "oxide-kernel", test))]
     pub(crate) fn current() -> Self {
         Self { owner: sched::current().and_then(|task| task.namespace_owner(NamespaceKind::Time)) }
     }

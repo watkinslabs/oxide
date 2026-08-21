@@ -25,6 +25,7 @@ path = "src/lib.rs"
 tty       = { path = "../tty", features = ["hosted"] }
 vtconsole = { path = "../vtconsole", features = ["hosted"] }
 serialtty = { path = "../serialtty", features = ["hosted"] }
+sched     = { path = "../sched", features = ["hosted"] }
 vtdata    = { path = "../vt" }
 
 [lints]
