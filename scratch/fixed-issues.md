@@ -1,5 +1,17 @@
 # Fixed issues
 
+### B2319-filecred-lsm-slots
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 2fef7bfc3 | DEFECT | high | **Each active security module now owns an independent typed slot in `FileCred` instead of competing for one overwriteable object.** The VFS retains one composite map keyed by each module's private blob type; attaching or clearing one blob cannot replace another module's state. This follows Linux 7.2.0-rc4's single composite file-security allocation with one registered offset per LSM, while retaining Rust type-safe recovery. | B2319. `security_modules_keep_independent_file_slots` attaches two distinct module blobs and retrieves both; restoring the former overwrite behavior makes it fail because the first slot disappears, then restored code passes. `clearing_one_security_slot_preserves_the_others` proves a module-local clear leaves its peer intact. | B2319-filecred-lsm-slots |
+
+### B2312-acpi-power-resource-lock
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 0b7f349da | DEFECT | med | **ACPI power-resource state, use count, firmware transition, and failure rollback now have one per-resource sleeping-mutex owner.** A second acquire cannot observe the 0-to-1 reference edge until `_ON` finishes, release cannot execute `_OFF` during `_ON`, and failed transitions restore their reference count and cached `UNKNOWN` state before unlocking. Unused-resource reconciliation uses the same owner and invalidates the cached state when `_OFF` fails. This matches Linux 7.2-rc4's `acpi_power_resource::resource_lock` ownership. | B2312. `transition_and_accounting_share_one_exclusive_owner` checks that the transition callback cannot acquire the owner. **Positive control:** dropping the owner before `_ON` made it RED with `state and references must stay hidden until the firmware transition finishes`; restored GREEN. `failed_unused_reconciliation_invalidates_the_cached_state_under_the_owner` covers the adjacent `_OFF` failure rule. Firmware 179/179, both kernel target checks, 176-crate hosted and test-build isolation, debug-all, frame/task-stack/IRQ-stack gates pass. Final paired smoke passed attempt 1: x86 userspace in 48 s and ARM64 in 58 s, both with serial RX. | B2312-acpi-power-resource-lock |
+
 ### B2315-pam-selinux-relabel-context
 
 | Status | Class | Sev | Issue | Evidence | Owner |
