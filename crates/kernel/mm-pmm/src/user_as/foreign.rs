@@ -162,6 +162,77 @@ pub fn evict_foreign_pages_in_range(target: &AddressSpace, addr: u64, len: u64) 
     0
 }
 
+/// Unmap every private and shared PTE in a truncated file-page range.
+/// FileRmap supplies candidates; each leaf is revalidated under the target
+/// mmap read lock and page-table lock before TLB-gather teardown. # C: O(VMAs + PTEs)
+pub fn unmap_truncated_file_range(owner: &vmm::FileRmap, first: u64, end: u64) -> usize {
+    let mut unmapped = 0usize;
+    let _ = owner.walk_range(first, end, |target, mut va, mut page, pages| {
+        for _ in 0..pages {
+            let _pt = target.lock_page_table();
+            let mut ops = FileGatherOps {
+                root_pa: target.root_pa(), hhdm: hhdm_offset(), target: &target,
+                owner, page,
+            };
+            let mut gather = crate::tlb_gather::TlbGather::new(target.cpumask_full());
+            if gather.unmap_one(&mut ops, va) { unmapped += 1; }
+            gather.finish(&mut ops);
+            va += PAGE_BYTES;
+            page += 1;
+        }
+    });
+    unmapped
+}
+
+struct FileGatherOps<'a> {
+    root_pa: u64,
+    hhdm: u64,
+    target: &'a AddressSpace,
+    owner: &'a vmm::FileRmap,
+    page: u64,
+}
+
+impl crate::tlb_gather::GatherOps for FileGatherOps<'_> {
+    fn tear_leaf(&mut self, va: u64) -> Option<u64> {
+        let uva = hal::UserVirtAddr::new(va)?;
+        let mut torn = None;
+        self.target.tear_file_page_if(uva, self.owner, self.page, || {
+            // SAFETY: target is Arc-pinned by the rmap walk, its page-table
+            // lock is held by the caller, and HHDM covers its page tables.
+            torn = unsafe {
+                #[cfg(target_arch = "x86_64")]
+                { hal::pt_walker::unmap_4k_at_root::<hal_x86_64::vmm::PtWalkerX86>(self.root_pa, va, self.hhdm) }
+                #[cfg(target_arch = "aarch64")]
+                { hal::pt_walker::unmap_4k_at_root::<hal_aarch64::vmm::PtWalkerArm>(self.root_pa, va, self.hhdm) }
+                #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+                { None }
+            };
+            torn.is_some()
+        });
+        torn
+    }
+
+    fn invalidate_local(&mut self, va: u64) {
+        // SAFETY: privileged removal of a stale user translation.
+        unsafe {
+            #[cfg(target_arch = "x86_64")]
+            { hal_x86_64::flush_local_va(va); }
+            #[cfg(target_arch = "aarch64")]
+            { hal_aarch64::flush_local_va(va); }
+        }
+    }
+
+    fn shootdown_others(&mut self, targets: cpu::CpuMask) {
+        hal::tlb::shootdown_others_all(targets.as_words());
+    }
+
+    fn free_frame(&mut self, pa: u64) {
+        // SAFETY: TlbGather completed local and remote invalidation before
+        // returning this formerly-present mapping reference.
+        unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa); }
+    }
+}
+
 /// Kernel-side [`crate::tlb_gather::GatherOps`] over a foreign page-table root.
 struct ForeignGatherOps<'a> { root_pa: u64, hhdm: u64, target: &'a AddressSpace }
 

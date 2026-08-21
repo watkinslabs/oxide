@@ -49,7 +49,7 @@ pub(super) fn child_vma(vma: &Vma) -> Vma {
     c
 }
 
-/// Publish the child's anon and shared-file reverse-map edges after its Arc
+/// Publish the child's anon and file reverse-map edges after its Arc
 /// exists. Every fork implementation must use this same step. # C: O(N_vmas)
 pub(super) fn attach_child_rmaps(child: &Arc<AddressSpace>) {
     let child_weak = Arc::downgrade(child);

@@ -7,14 +7,32 @@
 
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicPtr, Ordering};
 use sync::{AnonVma as FileRmapClass, Spinlock};
 
 use crate::{address_space::AddressSpace, Error, KResult};
+
+/// Machine-owned teardown half installed by PMM at user-address-space init.
+/// FileRmap remains the one interval owner; PMM only mutates verified leaves.
+pub type TruncateUnmapHook = fn(&FileRmap, u64, u64) -> usize;
+
+static TRUNCATE_UNMAP: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Install the PMM leaf-teardown half. # C: O(1)
+pub fn set_truncate_unmap_hook(hook: TruncateUnmapHook) {
+    TRUNCATE_UNMAP.store(hook as *mut (), Ordering::Release);
+}
+
+/// Whether boot installed the machine half. # C: O(1)
+pub fn truncate_unmap_hook_installed() -> bool {
+    !TRUNCATE_UNMAP.load(Ordering::Acquire).is_null()
+}
 
 /// One `address_space->i_mmap` interval. `file_page_start` is the backing
 /// page index corresponding to `start`; it makes split VMAs and nonzero file
 /// offsets exact without deriving ownership from a virtual address.
 pub struct FileRmapTarget {
+    seq:             u64,
     mm:              Weak<AddressSpace>,
     start:           u64,
     end:             u64,
@@ -24,6 +42,7 @@ pub struct FileRmapTarget {
 
 struct FileRmapState {
     targets: Vec<FileRmapTarget>,
+    next_seq: u64,
     pending_writable: usize,
     writable_denied: bool,
 }
@@ -61,6 +80,7 @@ impl FileRmap {
         Arc::new(Self {
             state: Spinlock::new(FileRmapState {
                 targets: Vec::new(),
+                next_seq: 1,
                 pending_writable: 0,
                 writable_denied: false,
             }),
@@ -85,8 +105,11 @@ impl FileRmap {
         file_page_start: u64,
         may_write: bool,
     ) {
-        self.state.lock().targets.push(FileRmapTarget {
-            mm, start, end, file_page_start, may_write,
+        let mut state = self.state.lock();
+        let seq = state.next_seq;
+        state.next_seq = state.next_seq.wrapping_add(1).max(1);
+        state.targets.push(FileRmapTarget {
+            seq, mm, start, end, file_page_start, may_write,
         });
     }
 
@@ -130,24 +153,57 @@ impl FileRmap {
     /// set only: caller must hold the target PTE lock and verify both the PA
     /// and VMA before replacing the leaf. # C: O(N_vmas_for_file)
     pub fn walk_page<F: FnMut(Arc<AddressSpace>, u64)>(&self, page_index: u64, mut f: F) -> KResult<()> {
-        let mut visits = Vec::new();
-        let state = self.state.lock();
-        for target in state.targets.iter() {
-            let pages = (target.end - target.start) / hal::PAGE_SIZE_BYTES;
-            if page_index < target.file_page_start { continue; }
-            let delta = page_index - target.file_page_start;
-            if delta >= pages { continue; }
-            if let Some(mm) = target.mm.upgrade() {
-                visits.try_reserve(1).map_err(|_| Error::NoMem)?;
-                visits.push((mm, target.start + delta * hal::PAGE_SIZE_BYTES));
-            }
+        self.walk_range(page_index, page_index.saturating_add(1), |mm, va, _, pages| {
+            debug_assert_eq!(pages, 1);
+            f(mm, va);
+        })
+    }
+
+    /// Yield the live VMA spans intersecting file-page range `[first, end)`.
+    /// One stable sequence cursor makes this allocation-free: truncate cannot
+    /// abandon PTE revocation because heap allocation failed. The callback
+    /// runs after the interval lock is dropped. # C: O(N_vmas² + visits)
+    pub fn walk_range<F: FnMut(Arc<AddressSpace>, u64, u64, u64)>(
+        &self, first: u64, end: u64, mut f: F,
+    ) -> KResult<()> {
+        if end <= first { return Ok(()); }
+        let mut after = 0u64;
+        loop {
+            let visit = {
+                let state = self.state.lock();
+                state.targets.iter().filter(|target| target.seq > after).find_map(|target| {
+                    let pages = (target.end - target.start) / hal::PAGE_SIZE_BYTES;
+                    let target_end = target.file_page_start.saturating_add(pages);
+                    let lo = first.max(target.file_page_start);
+                    let hi = end.min(target_end);
+                    if hi <= lo { return None; }
+                    let mm = target.mm.upgrade()?;
+                    let delta = lo - target.file_page_start;
+                    Some((target.seq, mm, target.start + delta * hal::PAGE_SIZE_BYTES, lo, hi - lo))
+                })
+            };
+            let Some((seq, mm, va, page, pages)) = visit else { break; };
+            after = seq;
+            // Never call into an mm while the i_mmap interval lock is held: a
+            // concurrent munmap/mprotect detaches under its VMA lock and must
+            // not invert that order against pageout's PTE/VMA revalidation.
+            f(mm, va, page, pages);
         }
-        drop(state);
-        // Never call into an mm while the i_mmap interval lock is held: a
-        // concurrent munmap/mprotect detaches under its VMA lock and must not
-        // invert that order against pageout's PTE/VMA revalidation.
-        for (mm, va) in visits { f(mm, va); }
         Ok(())
+    }
+
+    /// Remove every private and shared PTE covering `[first, end)` before a
+    /// truncate drops those file pages. PMM supplies TLB/refcount effects.
+    /// # C: O(N_vmas + mapped pages)
+    pub fn unmap_truncate_range(&self, first: u64, end: u64) -> usize {
+        let raw = TRUNCATE_UNMAP.load(Ordering::Acquire);
+        if raw.is_null() { return 0; }
+        // SAFETY: the slot is written only by `set_truncate_unmap_hook` from
+        // this exact function type; Release/Acquire publishes a static address.
+        let unmap: TruncateUnmapHook = unsafe {
+            core::mem::transmute::<*mut (), TruncateUnmapHook>(raw)
+        };
+        unmap(self, first, end)
     }
 
     /// # C: O(N_vmas_for_file)
@@ -307,5 +363,36 @@ mod tests {
         mm.munmap(uva(0x4000), 2 * hal::PAGE_SIZE_BYTES as usize).unwrap();
         assert_eq!(rmap.live_target_count(), 0);
         assert_eq!(rmap.commit_write_seal(|| true), Ok(true));
+    }
+
+    #[test]
+    fn private_and_shared_vmas_share_the_canonical_file_interval_owner() {
+        let rmap = FileRmap::new();
+        let backing: Arc<dyn FileBacking> =
+            Arc::new(TestBacking { rmap: Arc::clone(&rmap) });
+        let mm = AddressSpace::new(0x11_000).unwrap();
+        for (va, flags) in [(0x4000, VmaFlags::PRIVATE), (0x8000, VmaFlags::SHARED)] {
+            mm.mmap_with_may(
+                Some(uva(va)),
+                2 * hal::PAGE_SIZE_BYTES as usize,
+                VmaProt::READ,
+                VmaProt::READ | VmaProt::WRITE,
+                flags,
+                VmaBacking::File { backing: Arc::clone(&backing), off: 7 * hal::PAGE_SIZE_BYTES },
+                false,
+            ).unwrap();
+        }
+        let mut hits = Vec::new();
+        rmap.walk_range(8, 9, |target, va, page, pages| {
+            hits.push((target.root_pa(), va, page, pages));
+        }).unwrap();
+        hits.sort_unstable();
+        assert_eq!(hits, alloc::vec![(0x11_000, 0x5000, 8, 1), (0x11_000, 0x9000, 8, 1)]);
+        let mut tears = 0;
+        assert!(!mm.tear_file_page_if(uva(0x5000), &rmap, 7, || { tears += 1; true }));
+        assert_eq!(tears, 0, "a stale page-index candidate cannot tear a leaf");
+        mm.account_pte_install_at(uva(0x5000));
+        assert!(mm.tear_file_page_if(uva(0x5000), &rmap, 8, || { tears += 1; true }));
+        assert_eq!(tears, 1, "the live private file page reaches the machine half once");
     }
 }

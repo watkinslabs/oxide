@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use vfs::inode::Inode;
 use vfs::mapping::AddressSpaceOps;
@@ -20,6 +20,16 @@ use vfs::{Cred, FileType, Idmap, InodeRef, KResult};
 /// path issues — the page-drop call under test. Doubles as the inode's backend
 /// state (`i_private`) so the truncate hook can update `len`.
 struct RecMapping { calls: Mutex<Vec<(u64, u64)>>, len: AtomicU64 }
+
+static ORDER_OWNER: AtomicUsize = AtomicUsize::new(0);
+static ORDER: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+
+fn record_unmap(owner: &vmm::FileRmap, _first: u64, _end: u64) -> usize {
+    if owner as *const vmm::FileRmap as usize == ORDER_OWNER.load(Ordering::Acquire) {
+        ORDER.lock().unwrap().push("unmap");
+    }
+    0
+}
 
 impl RecMapping {
     fn calls(&self) -> Vec<(u64, u64)> { self.calls.lock().unwrap().clone() }
@@ -101,4 +111,41 @@ fn no_mapping_inode_truncates_without_invalidate() {
     let mut ia = size_change(10);
     notify_change(&Idmap::identity(), &inode, &mut ia, &Cred::root()).unwrap();
     assert_eq!(inode.size(), 10);
+}
+
+#[test]
+fn truncate_unmaps_then_drops_then_unmaps_again() {
+    struct OrderedMapping { len: AtomicU64 }
+    impl AddressSpaceOps for OrderedMapping {
+        fn shared_frame(&self, _off: u64) -> vfs::KResult<Option<vfs::SharedFrame>> { Ok(None) }
+        fn read_at(&self, _off: u64, _dst: &mut [u8]) -> vfs::KResult<usize> { Ok(0) }
+        fn size(&self) -> u64 { self.len.load(Ordering::Acquire) }
+        fn invalidate_range(&self, _start: u64, _end: u64) -> usize {
+            ORDER.lock().unwrap().push("drop");
+            0
+        }
+    }
+    struct OrderedOps;
+    impl InodeOps for OrderedOps {
+        fn truncate(&self, inode: &Inode, len: u64) -> KResult<()> {
+            inode.set_size(len);
+            if let Some(m) = inode.private::<OrderedMapping>() {
+                m.len.store(len, Ordering::Release);
+            }
+            Ok(())
+        }
+    }
+
+    let map = Arc::new(OrderedMapping { len: AtomicU64::new(16384) });
+    let inode = InodeBuilder::new(3, mk_mode(FileType::Regular, 0o644), Arc::new(OrderedOps), default_file_ops())
+        .owner(0, 0).size(16384).mapping(map.clone()).private(map).build();
+    let owner = inode.file_rmap();
+    ORDER_OWNER.store(Arc::as_ptr(&owner) as usize, Ordering::Release);
+    ORDER.lock().unwrap().clear();
+    vmm::set_truncate_unmap_hook(record_unmap);
+
+    let mut ia = size_change(4096);
+    notify_change(&Idmap::identity(), &inode, &mut ia, &Cred::root()).unwrap();
+    assert_eq!(*ORDER.lock().unwrap(), vec!["unmap", "drop", "unmap"]);
+    ORDER_OWNER.store(0, Ordering::Release);
 }
