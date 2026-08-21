@@ -35,7 +35,7 @@ fn fwm_teardown_backstop(va: u64, pa: u64, root_pa: u64, hhdm: u64) {
 #[cfg(target_arch = "x86_64")]
 pub unsafe extern "C" fn exit_mmap(root_pa: u64) {
     let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
-    // debug-atexit: the dec context for note_final_free — as_teardown runs
+    // debug-atexit: the dec context for note_final_free — exit_mmap runs
     // in the REAPER's task context, so current-mm is the wrong identity;
     // the dying AS root is the honest one. UP single-threaded teardown.
     #[cfg(feature = "debug-atexit")]
@@ -97,7 +97,7 @@ pub unsafe extern "C" fn exit_mmap(root_pa: u64) {
     let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
     #[cfg(feature = "debug-arm-mprotect")]
     crate::arm_mprotect_trace::checkpoint(root_pa);
-    // debug-atexit: the dec context for note_final_free — as_teardown runs
+    // debug-atexit: the dec context for note_final_free — exit_mmap runs
     // in the REAPER's task context, so current-mm is the wrong identity;
     // the dying AS root is the honest one. UP single-threaded teardown.
     #[cfg(feature = "debug-atexit")]
@@ -153,7 +153,8 @@ pub unsafe extern "C" fn mmdrop(root_pa: u64) {
     unsafe { crate::setup::free_one_frame(root_pa); }
 }
 
-/// Convenience wrapper: install `as_teardown` on a freshly-built AS.
+/// Install the last-user `exit_mmap` and final structural `mmdrop` owners on
+/// a freshly-built address space.
 /// Boot-anchor + hosted-test code paths SHOULD NOT call this — their
 /// roots are either fake (test) or shared kernel state (boot).
 /// # C: O(1)

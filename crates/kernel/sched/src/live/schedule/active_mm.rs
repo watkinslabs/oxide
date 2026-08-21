@@ -23,14 +23,12 @@ pub(crate) fn sched_current_cpu() -> usize {
 /// TO a kthread/idle (`next.mm == None`) it goes lazy-TLB: it keeps the
 /// outgoing task's page-table root in CR3 WITHOUT issuing a fresh `activate`,
 /// and keeps its `mm_cpumask` bit set - but it does NOT hold that task's `mm`
-/// Arc. The task can then exit, be reaped, and drop the last `Arc<AddressSpace>`
-/// on another CPU, so `as_teardown` frees the root frame out from under this
-/// CPU's live CR3 (PMM reuse then clobbers e.g. the LAPIC PML4 entry -> the
-/// intermittent `#PF` on EOI). This slot holds an EXTRA `Arc<AddressSpace>`
-/// (Linux `mmgrab`) for the root we are lazily resident on, so its refcount
-/// cannot reach zero - hence `as_teardown` cannot run - while a CPU holds it in
-/// CR3. The grab is released (Linux `mmdrop`) when the CPU activates a real
-/// user root. Indexed by logical CPU; null = this CPU holds no lazy grab.
+/// Arc. The task can then exit and release the last task-user reference on
+/// another CPU, but the root must remain live beneath this CPU's CR3. This
+/// slot holds an EXTRA structural `Arc<AddressSpace>` (Linux `mmgrab`) for the
+/// root we are lazily resident on, so final `mmdrop` cannot run while a CPU
+/// holds it in CR3. The grab is released (Linux `mmdrop`) when the CPU
+/// activates a real user root. Indexed by logical CPU; null = no lazy grab.
 const NULL_AS: AtomicPtr<AddressSpace> = AtomicPtr::new(core::ptr::null_mut());
 static ACTIVE_MM: [AtomicPtr<AddressSpace>; cpu::MAX_CPUS] = [NULL_AS; cpu::MAX_CPUS];
 
@@ -85,11 +83,11 @@ pub(super) fn active_mm_grab(cpu: usize, mm: &Arc<AddressSpace>, rq: &Runqueue) 
 }
 
 /// Transfer this CPU's lazy-TLB grab to `rq->prev_mm` for release by the
-/// incoming task after it unlocks the runqueue. Address-space destruction can
-/// drop file-backed VMAs, perform synchronous writeback and sleep; doing that
-/// from the pre-switch rq critical section self-deadlocks on the next
-/// `schedule()`. Does not touch `mm_cpumask`: the released mm can be the same
-/// mm being switched into, whose bit was just restored. # C: O(1)
+/// incoming task after it unlocks the runqueue. The structural `mmdrop` is
+/// non-sleeping, but reclaiming an `Arc` inside the runqueue lock would make
+/// that lock an implicit lifecycle owner. Does not touch `mm_cpumask`: the
+/// released mm can be the one being switched into, whose bit was restored.
+/// # C: O(1)
 pub(super) fn active_mm_defer_drop(cpu: usize, rq: &Runqueue) {
     if cpu >= cpu::MAX_CPUS { return; }
     let prev = ACTIVE_MM[cpu].swap(core::ptr::null_mut(), Ordering::AcqRel);
@@ -100,9 +98,9 @@ pub(super) fn active_mm_defer_drop(cpu: usize, rq: &Runqueue) {
 }
 
 /// Release the lazy-TLB reference deferred by `active_mm_defer_drop`.
-/// Called only after the incoming task has released the rq lock, so the final
-/// address-space destructor may block without recursively taking that lock.
-/// # C: O(1) excluding address-space destruction
+/// Called only after the incoming task has released the rq lock. The final
+/// structural release owns only the private root frame.
+/// # C: O(1)
 pub(super) fn active_mm_finish_drop(rq: &Runqueue) {
     let prev = rq.prev_mm.swap(core::ptr::null_mut(), Ordering::AcqRel);
     if !prev.is_null() {
@@ -118,7 +116,7 @@ pub(super) fn active_mm_finish_drop(rq: &Runqueue) {
 /// final `mmdrop` runs in `finish_task_switch` AFTER the next root is live).
 /// Called by `Task::replace_mm` for the Arc it displaces: on `sys_exit` /
 /// signal-death the dying task clears its `mm` BEFORE the final `schedule()`,
-/// so dropping the last Arc there would run `as_teardown` - freeing the root
+/// so dropping the structural Arc there could run `mmdrop` - freeing the root
 /// frame for PMM reuse - while this CPU still has it in CR3/TTBR0 (every
 /// kernel page-walk then traverses a clobbered root: the intermittent
 /// random-victim exec/ld.so corruption). Parking defers the drop to the next
