@@ -32,6 +32,7 @@ pub fn truncate_unmap_hook_installed() -> bool {
 /// page index corresponding to `start`; it makes split VMAs and nonzero file
 /// offsets exact without deriving ownership from a virtual address.
 pub struct FileRmapTarget {
+    seq:             u64,
     mm:              Weak<AddressSpace>,
     start:           u64,
     end:             u64,
@@ -41,6 +42,7 @@ pub struct FileRmapTarget {
 
 struct FileRmapState {
     targets: Vec<FileRmapTarget>,
+    next_seq: u64,
     pending_writable: usize,
     writable_denied: bool,
 }
@@ -78,6 +80,7 @@ impl FileRmap {
         Arc::new(Self {
             state: Spinlock::new(FileRmapState {
                 targets: Vec::new(),
+                next_seq: 1,
                 pending_writable: 0,
                 writable_denied: false,
             }),
@@ -102,8 +105,11 @@ impl FileRmap {
         file_page_start: u64,
         may_write: bool,
     ) {
-        self.state.lock().targets.push(FileRmapTarget {
-            mm, start, end, file_page_start, may_write,
+        let mut state = self.state.lock();
+        let seq = state.next_seq;
+        state.next_seq = state.next_seq.wrapping_add(1).max(1);
+        state.targets.push(FileRmapTarget {
+            seq, mm, start, end, file_page_start, may_write,
         });
     }
 
@@ -154,30 +160,35 @@ impl FileRmap {
     }
 
     /// Yield the live VMA spans intersecting file-page range `[first, end)`.
-    /// The callback runs after the interval lock is dropped. # C: O(N_vmas + visits)
+    /// One stable sequence cursor makes this allocation-free: truncate cannot
+    /// abandon PTE revocation because heap allocation failed. The callback
+    /// runs after the interval lock is dropped. # C: O(N_vmas² + visits)
     pub fn walk_range<F: FnMut(Arc<AddressSpace>, u64, u64, u64)>(
         &self, first: u64, end: u64, mut f: F,
     ) -> KResult<()> {
         if end <= first { return Ok(()); }
-        let mut visits = Vec::new();
-        let state = self.state.lock();
-        for target in state.targets.iter() {
-            let pages = (target.end - target.start) / hal::PAGE_SIZE_BYTES;
-            let target_end = target.file_page_start.saturating_add(pages);
-            let lo = first.max(target.file_page_start);
-            let hi = end.min(target_end);
-            if hi <= lo { continue; }
-            if let Some(mm) = target.mm.upgrade() {
-                visits.try_reserve(1).map_err(|_| Error::NoMem)?;
-                let delta = lo - target.file_page_start;
-                visits.push((mm, target.start + delta * hal::PAGE_SIZE_BYTES, lo, hi - lo));
-            }
+        let mut after = 0u64;
+        loop {
+            let visit = {
+                let state = self.state.lock();
+                state.targets.iter().filter(|target| target.seq > after).find_map(|target| {
+                    let pages = (target.end - target.start) / hal::PAGE_SIZE_BYTES;
+                    let target_end = target.file_page_start.saturating_add(pages);
+                    let lo = first.max(target.file_page_start);
+                    let hi = end.min(target_end);
+                    if hi <= lo { return None; }
+                    let mm = target.mm.upgrade()?;
+                    let delta = lo - target.file_page_start;
+                    Some((target.seq, mm, target.start + delta * hal::PAGE_SIZE_BYTES, lo, hi - lo))
+                })
+            };
+            let Some((seq, mm, va, page, pages)) = visit else { break; };
+            after = seq;
+            // Never call into an mm while the i_mmap interval lock is held: a
+            // concurrent munmap/mprotect detaches under its VMA lock and must
+            // not invert that order against pageout's PTE/VMA revalidation.
+            f(mm, va, page, pages);
         }
-        drop(state);
-        // Never call into an mm while the i_mmap interval lock is held: a
-        // concurrent munmap/mprotect detaches under its VMA lock and must not
-        // invert that order against pageout's PTE/VMA revalidation.
-        for (mm, va, page, pages) in visits { f(mm, va, page, pages); }
         Ok(())
     }
 
