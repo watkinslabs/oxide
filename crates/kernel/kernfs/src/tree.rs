@@ -98,6 +98,11 @@ pub struct PseudoDir {
     /// inherited by every child dir. One choke point: `as_inode` is the only
     /// place a pseudo-directory inode is constructed.
     pub(crate) dir_iops: Arc<dyn vfs::InodeOps>,
+    /// Whether directory inodes in this tree are born with an xattr store.
+    /// Like `dir_iops`, this is an owning-filesystem property fixed at the
+    /// root and inherited by every directory node; it is not a second path
+    /// registry or a per-producer choice.
+    pub(crate) dir_xattrs: bool,
 }
 
 pub trait PseudoDirHooks: Send + Sync {
@@ -115,13 +120,26 @@ impl PseudoDir {
     /// Tree root with the pseudo-filesystem inode-op default (no fileattr
     /// vector). # C: O(1)
     pub fn new_root(root_ino: Ino, fsid: u64) -> Arc<PseudoDir> {
-        Self::new_root_with_fileattr(root_ino, fsid, DirFileattr::Absent)
+        Self::new_root_with_options(root_ino, fsid, DirFileattr::Absent, false)
     }
 
     /// Tree root whose directory inodes publish `fileattr`. The device
     /// filesystem passes [`DirFileattr::Shmem`] because its tree is a
     /// shmem-backed mount. # C: O(1)
     pub fn new_root_with_fileattr(root_ino: Ino, fsid: u64, fileattr: DirFileattr) -> Arc<PseudoDir> {
+        Self::new_root_with_options(root_ino, fsid, fileattr, false)
+    }
+
+    /// Tree root whose directory inodes carry the owning filesystem's xattr
+    /// surface. Linux kernfs installs its xattr handlers on the superblock, so
+    /// sysfs uses this constructor and every directory it creates inherits the
+    /// same answer. # C: O(1)
+    pub fn new_root_with_xattrs(root_ino: Ino, fsid: u64) -> Arc<PseudoDir> {
+        Self::new_root_with_options(root_ino, fsid, DirFileattr::Absent, true)
+    }
+
+    fn new_root_with_options(root_ino: Ino, fsid: u64, fileattr: DirFileattr,
+                             dir_xattrs: bool) -> Arc<PseudoDir> {
         Arc::new(PseudoDir {
             ino: root_ino,
             path: String::new(),
@@ -132,11 +150,12 @@ impl PseudoDir {
             hooks: Spinlock::new(None),
             attr: Spinlock::new(DirAttr::default()),
             dir_iops: Arc::new(PseudoDirOps::new(fileattr)),
+            dir_xattrs,
         })
     }
 
     fn child_at(path: String, fsid: u64, sb: Weak<SuperBlock>,
-                dir_iops: Arc<dyn vfs::InodeOps>) -> Arc<PseudoDir> {
+                dir_iops: Arc<dyn vfs::InodeOps>, dir_xattrs: bool) -> Arc<PseudoDir> {
         Arc::new(PseudoDir {
             ino: dir_ino(&path),
             path,
@@ -147,6 +166,7 @@ impl PseudoDir {
             hooks: Spinlock::new(None),
             attr: Spinlock::new(DirAttr::default()),
             dir_iops,
+            dir_xattrs,
         })
     }
 
@@ -192,6 +212,9 @@ impl PseudoDir {
             .sb(sbw2.clone());
             if sbw2.upgrade().is_none() {
                 b = b.fsid(me.fsid);
+            }
+            if me.dir_xattrs {
+                b = b.xattrs(vfs::SimpleXattrs::new());
             }
             b.build()
         };
@@ -242,7 +265,9 @@ impl PseudoDir {
         let mut cp = self.path.clone();
         cp.push('/');
         cp.push_str(name);
-        let d = PseudoDir::child_at(cp, self.fsid, self.sb_weak(), Arc::clone(&self.dir_iops));
+        let d = PseudoDir::child_at(
+            cp, self.fsid, self.sb_weak(), Arc::clone(&self.dir_iops), self.dir_xattrs,
+        );
         g.insert(String::from(name), PseudoEntry::Dir(Arc::clone(&d)));
         d
     }
@@ -414,7 +439,9 @@ impl PseudoDir {
         let mut cp = self.path.clone();
         cp.push('/');
         cp.push_str(name);
-        let d = PseudoDir::child_at(cp, self.fsid, self.sb_weak(), Arc::clone(&self.dir_iops));
+        let d = PseudoDir::child_at(
+            cp, self.fsid, self.sb_weak(), Arc::clone(&self.dir_iops), self.dir_xattrs,
+        );
         g.insert(String::from(name), PseudoEntry::Dir(Arc::clone(&d)));
         Ok(d.as_inode())
     }
