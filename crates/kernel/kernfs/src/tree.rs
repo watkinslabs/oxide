@@ -130,6 +130,16 @@ impl PseudoDir {
         Self::new_root_with_options(root_ino, fsid, fileattr, false)
     }
 
+    /// Tree root combining an owning filesystem's directory `fileattr` vector
+    /// with its xattr handler surface. devtmpfs is shmem-backed and therefore
+    /// owns both; keeping the pair on the root lets every child inherit one
+    /// filesystem answer. # C: O(1)
+    pub fn new_root_with_fileattr_and_xattrs(
+        root_ino: Ino, fsid: u64, fileattr: DirFileattr,
+    ) -> Arc<PseudoDir> {
+        Self::new_root_with_options(root_ino, fsid, fileattr, true)
+    }
+
     /// Tree root whose directory inodes carry the owning filesystem's xattr
     /// surface. Linux kernfs installs its xattr handlers on the superblock, so
     /// sysfs uses this constructor and every directory it creates inherits the

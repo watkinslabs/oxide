@@ -41,7 +41,9 @@ static ROOTS: Spinlock<BTreeMap<u64, Arc<PseudoDir>>, TaskListClass> = Spinlock:
 fn ns_root(ns: u64) -> Arc<PseudoDir> {
     let mut g = ROOTS.lock();
     if let Some(r) = g.get(&ns) { return Arc::clone(r); }
-    let r = PseudoDir::new_root_with_fileattr(0x5000_0001, crate::DEVFS_FSID, DirFileattr::Shmem);
+    let r = PseudoDir::new_root_with_fileattr_and_xattrs(
+        0x5000_0001, crate::DEVFS_FSID, DirFileattr::Shmem,
+    );
     g.insert(ns, Arc::clone(&r));
     r
 }
@@ -53,7 +55,9 @@ fn ns_root(ns: u64) -> Arc<PseudoDir> {
 fn all_roots_ensure0() -> Vec<Arc<PseudoDir>> {
     let mut g = ROOTS.lock();
     if !g.contains_key(&0) {
-        let r = PseudoDir::new_root_with_fileattr(0x5000_0001, crate::DEVFS_FSID, DirFileattr::Shmem);
+        let r = PseudoDir::new_root_with_fileattr_and_xattrs(
+            0x5000_0001, crate::DEVFS_FSID, DirFileattr::Shmem,
+        );
         g.insert(0, r);
     }
     g.values().map(Arc::clone).collect()
@@ -150,6 +154,7 @@ fn reap_namespace(ns: u64) { ROOTS.lock().remove(&ns); }
 #[cfg(test)]
 mod ns_visibility_tests {
     use super::*;
+    use vfs::XattrError;
 
     fn child_namespace() -> vfs::mntns::MntNamespaceRef {
         let init = vfs::mntns::initial();
@@ -187,6 +192,20 @@ mod ns_visibility_tests {
         assert!(lookup(child_id, "/dev/input/s1b_event0").is_some(),
             "runtime-registered node visible in child mount ns (devtmpfs is shared)");
         assert!(lookup(0, "/dev/input/s1b_event0").is_some(), "and in ns0");
+    }
+
+    #[test]
+    fn private_mount_namespace_directories_keep_the_devtmpfs_xattr_surface() {
+        let init = vfs::mntns::initial();
+        let child = child_namespace();
+        let child_id = child.id();
+        register_dir(0, "/dev/b2326-xattr/inner");
+        snapshot_ns(&init, &child);
+
+        for ns in [0, child_id] {
+            let inode = lookup(ns, "/dev/b2326-xattr/inner").expect("dev directory");
+            assert_eq!(inode.getxattr("security.selinux"), Err(XattrError::NotFound));
+        }
     }
 
     /// Per-ns umount (umount2 → `unregister_subtree`) detaches ONLY the target
@@ -241,4 +260,3 @@ mod ns_visibility_tests {
         assert!(lookup(a_id, "/dev/s1b_inode_hot0").is_none(), "gone in ns a");
     }
 }
-
