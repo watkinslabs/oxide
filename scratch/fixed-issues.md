@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2325-sysfs-xattr-store
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED a5d372987 | DEFECT | med | **Every sysfs inode now carries the trusted, security, and user extended-attribute storage surface owned by its kernfs tree.** The sysfs root selects xattr-capable directory construction once; implicit child directories inherit that immutable tree property, while the single `register` publication funnel declares the same filesystem capability on producer-built leaves. An absent label therefore reports `ENODATA`, and stored attributes round-trip, instead of reporting `EOPNOTSUPP`. | B2325. Linux 7.2.0-rc4 installs `kernfs_xattr_handlers` once on the sysfs superblock. `every_sysfs_node_uses_the_filesystems_xattr_surface` covers the root, an implicitly created directory, and a registered leaf. Removing the leaf declaration makes the leaf fail with `NotSup`; removing the root capability makes the root fail with `NotSup`; restored code passes. kernfs 44/44 and sysfs 177/177 pass, as do both kernel target checks, both all-feature checks, and both 176-crate isolation gates. | B2325-sysfs-xattr-store |
+
 ### B2324-audit-count-test-modules
 
 | Status | Class | Sev | Issue | Evidence | Owner |

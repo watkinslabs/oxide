@@ -9,7 +9,7 @@
 // mirroring Linux `vfs_setxattr` → `xattr_permission` → `handler->set`. This
 // module owns only STORAGE + the atomic flag check.
 //
-// Backends that own no xattr store (procfs/sysfs/pipefs/…) leave the inode's
+// Backends that own no xattr store (procfs/pipefs/…) leave the inode's
 // `i_xattrs` slot undeclared; their `i_op` xattr ops return
 // [`XattrError::NotSup`] so the caller reports `EOPNOTSUPP`.
 //

@@ -22,7 +22,7 @@ static SYS_ROOT: Spinlock<Option<Arc<PseudoDir>>, LockClass> = Spinlock::new(Non
 pub fn sys_root() -> Arc<PseudoDir> {
     let mut g = SYS_ROOT.lock();
     if let Some(r) = g.as_ref() { return Arc::clone(r); }
-    let r = PseudoDir::new_root(kernfs::dir_ino("/sys"), SYSFS_FSID);
+    let r = PseudoDir::new_root_with_xattrs(kernfs::dir_ino("/sys"), SYSFS_FSID);
     *g = Some(Arc::clone(&r));
     r
 }
@@ -37,6 +37,10 @@ fn rel(full: &str) -> &str {
 /// Cross-crate writers (procfs `/sys/kernel/*`) call this instead of
 /// `devfs::register`. # C: O(depth)
 pub fn register(full_path: &str, inode: InodeRef) {
+    // kernfs installs one trusted/security/user handler set on the sysfs
+    // superblock. Leaves come from many producer crates, so the filesystem
+    // states that ownership fact here, at its one publication funnel.
+    inode.declare_xattr_store();
     sys_root().insert_path(rel(full_path), inode);
 }
 
@@ -102,6 +106,7 @@ fn drop_cached_under(root: Arc<Dentry>, rel: &str) {
 mod tests {
     use alloc::string::String;
     use alloc::sync::Arc;
+    use vfs::XattrError;
     use vfs::fs::FileSystem;
     use vfs::superblock::FileSystemType;
     use vfs::LookupFlags;
@@ -171,5 +176,35 @@ mod tests {
         assert!(vfs::d_lookup(&parent, "leaf").is_some(), "leaf cached before invalidation");
         super::drop_cached(path);
         assert!(vfs::d_lookup(&parent, "leaf").is_none(), "leaf dropped by sysfs-root dcache walk");
+    }
+
+    // Linux attaches the kernfs xattr handlers to the sysfs superblock. The
+    // equivalent property must therefore cover the root, directories created
+    // implicitly by the tree walker, and leaves supplied by unrelated
+    // producers through `register`.
+    #[test]
+    fn every_sysfs_node_uses_the_filesystems_xattr_surface() {
+        let leaf = crate::make_body_inode(
+            b"xattr\n".to_vec(), crate::ids::STALE_UEVENT,
+        );
+        crate::register("/sys/xattr-surface/leaf", Arc::clone(&leaf));
+
+        let tree = crate::sys_root();
+        let nodes = [
+            tree.as_inode(),
+            tree.lookup_path("xattr-surface").expect("implicit directory"),
+            tree.lookup_path("xattr-surface/leaf").expect("registered leaf"),
+        ];
+        for (index, inode) in nodes.into_iter().enumerate() {
+            assert_eq!(
+                inode.getxattr("security.selinux"),
+                Err(XattrError::NotFound),
+                "sysfs node {index} reports an absent label, not unsupported",
+            );
+            let value = alloc::vec![index as u8];
+            inode.setxattr("trusted.oxide-test", value.clone(), false, false)
+                .expect("sysfs node stores a trusted attribute");
+            assert_eq!(inode.getxattr("trusted.oxide-test"), Ok(value));
+        }
     }
 }
