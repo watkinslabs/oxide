@@ -42,7 +42,7 @@ fn cooked_slave_read_drains_one_line_at_a_time() {
 #[test]
 fn cooked_vintr_records_pending_sigint_and_drops_byte() {
     let mut p = cooked(0);
-    p.foreground_pgid = 7;
+    p.foreground_pgrp = Some(alloc::sync::Arc::new(sched::pid::PidIdentity::new(7)));
     p.master_write(b"a\x03b\n");
     assert!(p.pending_sigint, "VINTR must set pending_sigint under ISIG");
     let mut buf = [0u8; 16];

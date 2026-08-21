@@ -124,7 +124,7 @@ fn candidate_locked(g: &Registry, t: &Task) -> Candidate {
         tracer_tid,
         tracer_tgid: parent_tgid_locked(g, tracer_tid),
         vpid:        super::leader_tgid_nr_in(t, &super::reader_pid_ns()).unwrap_or(0),
-        pgid:        t.pgid(),
+        pgid:        t.pgrp().nr_in_or_tid(&super::reader_pid_ns()),
         exit_signal: t.exit_signal.load(Ordering::Acquire),
     }
 }
@@ -216,6 +216,30 @@ pub fn tasks_in_pgrp(pgid: u32) -> Vec<Arc<Task>> {
     let g = REG.lock_irqsave::<RegIrq>();
     g.by_tid.values()
         .filter_map(|w| w.upgrade())
-        .filter(|t| !t.reaped.load(Ordering::Acquire) && t.pgid() == pgid)
+        .filter(|t| !t.reaped.load(Ordering::Acquire) && t.pgrp().tid == pgid)
+        .collect()
+}
+
+/// Snapshot every live task holding this exact process-group identity.
+/// Internal owners pass the stable object rather than round-tripping through
+/// a namespace-relative number. # C: O(N_tasks)
+pub fn tasks_in_pgrp_identity(pgrp: &crate::pid::PidIdentity) -> Vec<Arc<Task>> {
+    let g = REG.lock_irqsave::<RegIrq>();
+    g.by_tid.values()
+        .filter_map(|w| w.upgrade())
+        .filter(|t| !t.reaped.load(Ordering::Acquire)
+            && core::ptr::eq(Arc::as_ref(&t.pgrp()), pgrp))
+        .collect()
+}
+
+/// Snapshot every live task whose process-group identity has number `pgid`
+/// in `namespace`. The identity, not a leader lookup, remains authoritative
+/// after that leader exits. # C: O(N_tasks * depth)
+pub fn tasks_in_pgrp_nr(namespace: &namespace_identity::NamespaceRef, pgid: u32) -> Vec<Arc<Task>> {
+    let g = REG.lock_irqsave::<RegIrq>();
+    g.by_tid.values()
+        .filter_map(|w| w.upgrade())
+        .filter(|t| !t.reaped.load(Ordering::Acquire)
+            && t.pgrp().nr_in_or_tid(namespace) == pgid)
         .collect()
 }

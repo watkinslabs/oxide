@@ -124,7 +124,7 @@ fn send_one(t: &Arc<sched::Task>, sig: i32, src: SigSource, target: SigTarget) -
 /// # C: O(N_tasks)
 fn send_pgrp(cur: &sched::Task, task: &Arc<sched::Task>, sig: i32, src: SigSource) -> i64 {
     let mut fold = crate::kill_policy::PgrpFold::new();
-    for t in &sched::live::registry::tasks_in_pgrp(task.pgid()) {
+    for t in &sched::live::registry::tasks_in_pgrp(task.pgrp().tid) {
         if t.tid != t.tgid.load(Ordering::Acquire) { continue; }
         if !crate::signal::sig_perm_check(cur, t, sig) {
             fold.visit(-(Errno::Eperm.as_i32() as i64));

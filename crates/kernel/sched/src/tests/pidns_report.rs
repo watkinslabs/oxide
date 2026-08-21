@@ -124,14 +124,53 @@ fn a_group_is_named_by_the_readers_numbering() {
     let inner = nested(&root);
     let task = leader(0x2041, &inner);
     let own = task.vtgid.load(Ordering::Acquire);
-    task.set_pgid(own);
 
-    let inside = registry::group_chain(&inner, own, &inner);
-    let outside = registry::group_chain(&inner, own, &root);
+    let inside = task.pgrp().nr_chain_from_or_tid(&inner);
+    let outside = task.pgrp().nr_chain_from_or_tid(&root);
     assert_eq!(inside, alloc::vec![own]);
     assert_eq!(outside.len(), 2);
     assert_eq!(outside[0], registry::tgid_nr_in(&task, &root).unwrap());
     assert_ne!(outside[0], own);
+}
+
+#[test]
+fn a_process_group_identity_outlives_its_leader_and_keeps_every_namespace_number() {
+    let _guard = registry_test_lock();
+    registry::clear_for_tests();
+    let root = initial(NamespaceKind::Pid);
+    let inner = nested(&root);
+    let group_leader = leader(0x2048, &inner);
+    let member = leader(0x2049, &inner);
+    let pgrp = group_leader.pgrp();
+    let inner_nr = pgrp.nr_in_or_tid(&inner);
+    let root_nr = pgrp.nr_in_or_tid(&root);
+    member.set_pgrp(Arc::clone(&pgrp));
+
+    group_leader.reaped.store(true, Ordering::Release);
+    drop(group_leader);
+
+    assert_eq!(member.pgrp().nr_in_or_tid(&inner), inner_nr);
+    assert_eq!(member.pgrp().nr_in_or_tid(&root), root_nr);
+    let visible = registry::tasks_in_pgrp_nr(&root, root_nr);
+    assert_eq!(visible.len(), 1);
+    assert!(Arc::ptr_eq(&visible[0], &member));
+}
+
+#[test]
+fn getpgid_and_getsid_project_the_targets_identities_into_the_callers_namespace() {
+    let _guard = registry_test_lock();
+    registry::clear_for_tests();
+    let root = initial(NamespaceKind::Pid);
+    let inner = nested(&root);
+    let caller = leader(0x204a, &root);
+    let target = leader(0x204b, &inner);
+    let target_pid = registry::tgid_nr_in(&target, &root).unwrap();
+
+    assert_eq!(crate::session::getpgid(&caller, target_pid as i32),
+        Ok(target.pgrp().nr_in_or_tid(&root)));
+    assert_eq!(crate::session::getsid(&caller, target_pid as i32),
+        Ok(target.session().nr_in_or_tid(&root)));
+    assert_ne!(target.pgrp().nr_in_or_tid(&root), target.pgrp().nr_in_or_tid(&inner));
 }
 
 #[test]

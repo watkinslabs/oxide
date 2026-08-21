@@ -123,15 +123,15 @@ fn pair_hangup_flag_set() {
 #[test]
 fn pair_foreground_pgid_defaults_zero() {
     let p = Pair::new(0);
-    assert_eq!(p.foreground_pgid, 0);
+    assert!(p.foreground_pgrp.is_none());
 }
 
 #[test]
 fn pair_foreground_pgid_round_trip() {
     // Mirrors TIOCSPGRP then TIOCGPGRP from userspace.
     let mut p = Pair::new(0);
-    p.foreground_pgid = 4099;
-    assert_eq!(p.foreground_pgid, 4099);
+    p.foreground_pgrp = Some(alloc::sync::Arc::new(sched::pid::PidIdentity::new(4099)));
+    assert_eq!(p.foreground_pgrp.as_ref().map(|p| p.tid), Some(4099));
 }
 
 #[test]

@@ -17,6 +17,7 @@ path = "src/lib.rs"
 
 [dependencies]
 tty    = { path = "../tty" }
+sched  = { path = "../sched" }
 vtdata = { path = "../vt" }
 fbcon  = { path = "../../drivers/fbcon" }
 

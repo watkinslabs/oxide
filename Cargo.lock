@@ -2453,6 +2453,7 @@ dependencies = [
  "drv-serial",
  "fbcon",
  "proptest",
+ "sched",
  "tty",
 ]
 
@@ -2919,6 +2920,7 @@ dependencies = [
 name = "tty-integration"
 version = "0.1.0"
 dependencies = [
+ "sched",
  "serialtty",
  "tty",
  "vtconsole",
@@ -3096,6 +3098,7 @@ version = "0.1.0"
 dependencies = [
  "fbcon",
  "proptest",
+ "sched",
  "tty",
  "vtdata",
 ]

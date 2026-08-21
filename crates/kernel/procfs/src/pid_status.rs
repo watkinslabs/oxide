@@ -61,15 +61,13 @@ pub fn body(tid: u32, owner: &namespace_identity::NamespaceRef) -> Vec<u8> {
     // level inward to the task's own — the direct read-out of the per-level
     // numbering a nested PID namespace gives its tasks.
     let reader = sched::live::registry::reader_pid_ns();
-    let own = task.namespace_owner(namespace_identity::NamespaceKind::Pid)
-        .unwrap_or_else(|| namespace_identity::initial(namespace_identity::NamespaceKind::Pid));
     let ns_pid = widen(sched::live::registry::nr_chain_in(&task, &reader));
     let ns_tgid = match sched::live::registry::lookup(task.tgid.load(Ordering::Acquire)) {
         Some(leader) => widen(sched::live::registry::nr_chain_in(&leader, &reader)),
         None => ns_pid.clone(),
     };
-    let ns_pgid = widen(sched::live::registry::group_chain(&own, task.pgid(), &reader));
-    let ns_sid = widen(sched::live::registry::group_chain(&own, task.sid(), &reader));
+    let ns_pgid = widen(task.pgrp().nr_chain_from_or_tid(&reader));
+    let ns_sid = widen(task.session().nr_chain_from_or_tid(&reader));
     let (uid, gid, groups) = crate::status_ids::translate(owner,
         [c.ruid.load(Ordering::Acquire), c.euid.load(Ordering::Acquire),
          c.suid.load(Ordering::Acquire), c.fsuid.load(Ordering::Acquire)],

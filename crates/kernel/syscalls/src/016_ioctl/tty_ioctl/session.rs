@@ -59,15 +59,15 @@ fn sctty(
     // Store the inode on the calling PROCESS so a `/dev/tty` open can redirect
     // to it from any of its threads.
     cur.set_ctty(Some(file.inode().clone()));
-    let pgid = cur.pgid();
-    let sid = cur.sid();
+    let pgrp = cur.pgrp();
+    let session = cur.session();
     if let Some(pair) = pty_pair {
-        pair.with_pair(|p| { p.foreground_pgid = pgid; p.session_pid = sid; });
+        pair.with_pair(|p| { p.foreground_pgrp = Some(pgrp); p.session = Some(session); });
         return 0;
     }
     match con {
-        Some(console::TtyTarget::Serial) => console::static_console::set_session_and_fg(sid, pgid),
-        Some(console::TtyTarget::Vt(vt)) => console::vt_tty::set_session_and_fg(vt, sid, pgid),
+        Some(console::TtyTarget::Serial) => console::static_console::set_session_and_fg(session, pgrp),
+        Some(console::TtyTarget::Vt(vt)) => console::vt_tty::set_session_and_fg(vt, session, pgrp),
         None => return enotty(),
     }
     0
@@ -83,11 +83,14 @@ fn gsid(
 ) -> i64 {
     if let Err(rv) = validate_user_buf(arg, INT_BYTES, INT_BYTES) { return rv; }
     let sid: u32 = if let Some(pair) = pty_pair {
-        pair.with_pair(|p| p.session_pid)
+        let ns = sched::live::registry::reader_pid_ns();
+        pair.with_pair(|p| p.session.as_ref().map_or(0, |id| id.nr_in_or_tid(&ns)))
     } else {
         match con {
-            Some(console::TtyTarget::Serial) => console::static_console::session(),
-            Some(console::TtyTarget::Vt(vt)) => console::vt_tty::vt_tty(vt).sid(),
+            Some(console::TtyTarget::Serial) => console::static_console::session_identity()
+                .map_or(0, |id| id.nr_in_or_tid(&sched::live::registry::reader_pid_ns())),
+            Some(console::TtyTarget::Vt(vt)) => console::vt_tty::vt_tty(vt).session()
+                .map_or(0, |id| id.nr_in_or_tid(&sched::live::registry::reader_pid_ns())),
             None => return enotty(),
         }
     };

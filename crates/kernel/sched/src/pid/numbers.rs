@@ -121,6 +121,22 @@ impl PidIdentity {
         0
     }
 
+    /// Namespace-visible number with the initial-namespace fallback used by
+    /// pre-mapping kernel tasks and hosted fixtures. # C: O(depth)
+    pub fn nr_in_or_tid(&self, namespace: &NamespaceRef) -> u32 {
+        let nr = self.nr_in(namespace);
+        if nr != 0 { nr } else if namespace.is_initial() { self.tid } else { 0 }
+    }
+
+    /// Namespace-number chain with the same initial-namespace fallback.
+    /// # C: O(depth)
+    pub fn nr_chain_from_or_tid(&self, namespace: &NamespaceRef) -> Vec<u32> {
+        let chain = self.nr_chain_from(namespace);
+        if !chain.is_empty() { chain }
+        else if namespace.is_initial() { alloc::vec![self.tid] }
+        else { Vec::new() }
+    }
+
     /// Namespace-visible thread number for one exact live namespace owner.
     /// # C: O(depth)
     pub fn visible_tid(&self, namespace: &NamespaceRef) -> Option<u32> {

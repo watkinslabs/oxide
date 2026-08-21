@@ -114,6 +114,27 @@ fn registry_tasks_in_pgrp_filters_by_pgid() {
 }
 
 #[test]
+fn registry_identity_lookup_does_not_alias_equal_namespace_numbers() {
+    let _g = registry_test_lock();
+    crate::registry::clear_for_tests();
+    let a = Arc::new(Task::new(13, "a", SchedClass::Normal { weight: 1024 }));
+    let b = Arc::new(Task::new(14, "b", SchedClass::Normal { weight: 1024 }));
+    let c = Arc::new(Task::new(15, "c", SchedClass::Normal { weight: 1024 }));
+    let group = Arc::new(crate::pid::PidIdentity::new(99));
+    a.set_pgrp(Arc::clone(&group));
+    b.set_pgrp(Arc::clone(&group));
+    c.set_pgrp(Arc::new(crate::pid::PidIdentity::new(99)));
+    crate::registry::insert(&a);
+    crate::registry::insert(&b);
+    crate::registry::insert(&c);
+
+    let members = crate::registry::tasks_in_pgrp_identity(&group);
+    let tids: alloc::vec::Vec<u32> = members.iter().map(|task| task.tid).collect();
+    assert_eq!(tids.len(), 2);
+    assert!(tids.contains(&13) && tids.contains(&14) && !tids.contains(&15));
+}
+
+#[test]
 fn registry_tasks_in_pgrp_skips_reaped_pidfd_pinned_tasks() {
     let _g = registry_test_lock();
     crate::registry::clear_for_tests();

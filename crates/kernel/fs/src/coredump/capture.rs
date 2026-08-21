@@ -152,8 +152,8 @@ pub unsafe fn build_image(
         identity: CoreIdentity {
             pid: cx.vpid as i32,
             ppid: sched::live::registry::parent_vpid(cur.tid) as i32,
-            pgrp: cur.pgid() as i32,
-            sid: cur.sid() as i32,
+            pgrp: cur.pgrp().nr_in_or_tid(&sched::live::registry::reader_pid_ns()) as i32,
+            sid: cur.session().nr_in_or_tid(&sched::live::registry::reader_pid_ns()) as i32,
             uid: cx.uid, gid: cx.gid,
             signo: cx.signo,
             sigpend: sched::live::sigpend::all_pending(&cur),

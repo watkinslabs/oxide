@@ -34,7 +34,7 @@ fn fixture() -> (Arc<Task>, Arc<Task>) {
     let c = published(CHILD);
     c.parent_tid.store(p.tid, Ordering::Release);
     c.set_parent_weak(Some(Arc::downgrade(&p)));
-    c.set_pgid(p.pgid());
+    c.set_pgrp(p.pgrp());
     (p, c)
 }
 

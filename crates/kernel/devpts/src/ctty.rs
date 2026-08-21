@@ -33,17 +33,17 @@ pub fn acquire_ctty_on_open(inode: &InodeRef, flags: u32) {
     let Some(cur) = sched::live::current() else { return; };
     let vpid = cur.vtgid.load(Ordering::Acquire);
     let my_pid = if vpid != 0 { vpid } else { cur.tid };
-    let sid = cur.sid();
-    let is_leader = sid != 0 && sid == my_pid;
+    let session = cur.session();
+    let is_leader = session.nr_in_or_tid(&sched::live::registry::reader_pid_ns()) == my_pid;
     let has_ctty = cur.ctty_ino().is_some();
-    let tty_sid = pair.with_pair(|p| p.session_pid);
-    if !should_acquire_ctty(kind_can_be_ctty(kind), o_noctty, is_leader, has_ctty, tty_sid != 0) {
+    let tty_has_session = pair.with_pair(|p| p.session.is_some());
+    if !should_acquire_ctty(kind_can_be_ctty(kind), o_noctty, is_leader, has_ctty, tty_has_session) {
         return;
     }
-    let pgid = cur.pgid();
+    let pgrp = cur.pgrp();
     cur.set_ctty(Some(Arc::clone(inode)));
     // `__proc_set_tty` claims the tty for the leader's session AND seeds the
     // foreground process group with the leader's, without which `tcgetpgrp`
     // reads 0 and every subsequent job-control decision is unanchored.
-    pair.with_pair(|p| { p.session_pid = sid; p.foreground_pgid = pgid; });
+    pair.with_pair(|p| { p.session = Some(session); p.foreground_pgrp = Some(pgrp); });
 }

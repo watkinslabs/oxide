@@ -121,7 +121,7 @@ pub mod net_raw;
 #[cfg(any(target_os = "oxide-kernel", test))]
 pub mod net_icmp;
 
-#[cfg(target_os = "oxide-kernel")] pub mod pid_stat;
+#[cfg(any(target_os = "oxide-kernel", test))] pub mod pid_stat;
 #[cfg(target_os = "oxide-kernel")] pub mod pid_status;
 #[cfg(any(target_os = "oxide-kernel", test))] pub mod status_render;
 #[cfg(any(target_os = "oxide-kernel", test))] pub mod mem_render;

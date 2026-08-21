@@ -89,7 +89,6 @@ fn sigint_chain_smoke(fs: &Arc<DevptsFs>) {
     let fake = alloc::sync::Arc::new(Task::new(
         fake_tid, "pty-smoke-target", SchedClass::Normal { weight: 1024 },
     ));
-    fake.set_pgid(fake_tid);
     sched::live::registry::insert(&fake);
 
     let allocation = allocate_pair(fs, 0, 0, 0).expect("pty index space");
@@ -97,7 +96,7 @@ fn sigint_chain_smoke(fs: &Arc<DevptsFs>) {
     let pair = allocation.pair();
     pair.with_pair(|p| {
         kassert!(p.lflag() != 0, "cooked default");
-        p.foreground_pgid = fake_tid;
+        p.foreground_pgrp = Some(alloc::sync::Arc::clone(&fake.pid));
     });
 
     let n1 = master.write(

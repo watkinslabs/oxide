@@ -9,6 +9,8 @@
 // `302_prlimit64.rs` call into this module rather than re-deriving
 // the rule.
 
+use alloc::sync::Arc;
+
 /// Linux signal-permission check per `kill(2)`: sender may signal
 /// receiver if sender holds CAP_KILL OR sender's real/effective uid
 /// matches receiver's real or saved-set uid. SIGCONT is additionally
@@ -58,7 +60,7 @@ pub(crate) fn sig_perm_check(cur: &sched::Task, target: &sched::Task, sig: i32) 
     let ts = target.creds.suid.load(Ordering::Acquire);
     if ce == tr || ce == ts || cr == tr || cr == ts { return true; }
     // SIGCONT (18) — same session bypass.
-    if sig == Signum::Sigcont as i32 && cur.sid() == target.sid() {
+    if sig == Signum::Sigcont as i32 && Arc::ptr_eq(&cur.session(), &target.session()) {
         return true;
     }
     false
@@ -165,8 +167,9 @@ mod tests {
     fn sig_perm_sigcont_allowed_same_session_different_uid() {
         let cur = task(1, 1000);
         let target = task(2, 2000);
-        cur.set_sid(42);
-        target.set_sid(42);
+        let session = Arc::new(sched::pid::PidIdentity::new(42));
+        cur.set_session(Arc::clone(&session));
+        target.set_session(session);
         assert!(sig_perm_check(&cur, &target, sched::Signum::Sigcont as i32));
     }
 
@@ -174,8 +177,8 @@ mod tests {
     fn sig_perm_sigcont_denied_different_session_different_uid() {
         let cur = task(1, 1000);
         let target = task(2, 2000);
-        cur.set_sid(42);
-        target.set_sid(43);
+        cur.set_session(Arc::new(sched::pid::PidIdentity::new(42)));
+        target.set_session(Arc::new(sched::pid::PidIdentity::new(43)));
         assert!(!sig_perm_check(&cur, &target, sched::Signum::Sigcont as i32));
     }
 

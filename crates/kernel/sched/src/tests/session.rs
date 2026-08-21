@@ -31,8 +31,8 @@ fn published(tid: u32) -> Arc<Task> {
 fn child_of(parent: &Arc<Task>, tid: u32) -> Arc<Task> {
     let c = proc(tid);
     c.parent_tid.store(parent.tid, Ordering::Release);
-    c.set_pgid(parent.pgid());
-    c.set_sid(parent.sid());
+    c.set_pgrp(parent.pgrp());
+    c.set_session(parent.session());
     crate::registry::insert(&c);
     c
 }
@@ -362,11 +362,12 @@ fn the_saved_foreground_group_is_process_wide_and_starts_unset() {
     crate::registry::clear_for_tests();
     let leader = published(600);
     let worker = thread_in(&leader, 601);
-    assert_eq!(leader.thread_group.tty_old_pgrp(), 0, "nothing saved yet");
-    leader.thread_group.set_tty_old_pgrp(77);
-    assert_eq!(worker.thread_group.tty_old_pgrp(), 77);
-    leader.thread_group.set_tty_old_pgrp(0);
-    assert_eq!(worker.thread_group.tty_old_pgrp(), 0, "cleared once consumed");
+    assert!(leader.thread_group.tty_old_pgrp().is_none(), "nothing saved yet");
+    let saved = Arc::new(crate::pid::PidIdentity::new(77));
+    leader.thread_group.set_tty_old_pgrp(Some(Arc::clone(&saved)));
+    assert!(Arc::ptr_eq(&worker.thread_group.tty_old_pgrp().unwrap(), &saved));
+    leader.thread_group.set_tty_old_pgrp(None);
+    assert!(worker.thread_group.tty_old_pgrp().is_none(), "cleared once consumed");
 }
 
 #[test]

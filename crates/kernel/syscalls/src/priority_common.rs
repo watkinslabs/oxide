@@ -31,10 +31,11 @@ pub(crate) fn for_each_target(which: u64, who: u32, mut f: impl FnMut(&alloc::sy
             if let Some(t) = t { f(&t); }
         }
         Which::Pgrp => {
+            let ns = sched::live::registry::reader_pid_ns();
             let pgid = if who == 0 {
-                sched::live::current().map(|c| c.pgid()).unwrap_or(0)
+                sched::live::current().map(|c| c.pgrp().nr_in_or_tid(&ns)).unwrap_or(0)
             } else { who };
-            for t in sched::live::registry::tasks_in_pgrp(pgid) { f(&t); }
+            for t in sched::live::registry::tasks_in_pgrp_nr(&ns, pgid) { f(&t); }
         }
         Which::User => {
             let Some(cur) = sched::live::current() else { return; };

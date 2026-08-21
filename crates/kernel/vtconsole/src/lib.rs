@@ -52,10 +52,9 @@ pub const DEFAULT_ROWS: u16 = 25;
 /// `signal_fg_pgrp` receives the fg pgrp id resolved by the driver from
 /// the owning `TtyStruct` (recorded at `write`/RX time via `set_fg_pgrp`).
 pub trait FgSignal {
-    /// Deliver `sig` to process group `pgrp` (0 = unset → no-op in the
-    /// kernel; recorded in tests).
+    /// Deliver `sig` to the stable process-group identity (`None` = unset).
     /// # C: O(P) tasks in the fg pgrp
-    fn raise(&mut self, pgrp: u32, sig: Sig);
+    fn raise(&mut self, pgrp: Option<&sched::pid::PidIdentity>, sig: Sig);
 }
 
 /// `FgSignal` that drops every signal (no fg pgrp wired). Default for a
@@ -64,14 +63,14 @@ pub trait FgSignal {
 pub struct NoSignal;
 
 impl FgSignal for NoSignal {
-    fn raise(&mut self, _pgrp: u32, _sig: Sig) {}
+    fn raise(&mut self, _pgrp: Option<&sched::pid::PidIdentity>, _sig: Sig) {}
 }
 
 /// The VT console tty driver (Linux console `tty_driver` + `con_write`).
 /// Owns the multi-VT screen buffers (`vc_cons[N_VT]`), the active VT
 /// index (`fg`, Linux `fg_console`), one ECMA-48 emulator, the renderer
-/// `R`, the fg-pgrp signal sink `S`, and a shadow of the fg pgrp the core
-/// last set (so ISIG can target it).
+/// `R`, the fg-pgrp signal sink `S`, and a reference to the SAME stable
+/// process-group identity held by the tty core (so ISIG can target it).
 ///
 /// Generic over the renderer (`R: Consw`) and the signal sink
 /// (`S: FgSignal`) — monomorphized, never `dyn`.
@@ -89,10 +88,10 @@ pub struct VtConsoleDriver<R: Consw, S: FgSignal = NoSignal> {
     renderer: R,
     /// Signal sink for ISIG (^C/^\/^Z) on the fg pgrp.
     sig: S,
-    /// Shadow of the fg pgrp last published by the core (TIOCSPGRP). The
-    /// kernel core also tracks this on `TtyStruct`; the driver keeps a
-    /// copy so `signal_fg_pgrp` knows the target without a back-pointer.
-    fg_pgrp: u32,
+    /// Shared reference to the tty core's canonical process-group identity.
+    /// `TtyStruct::set_foreground_pgrp` publishes the same `Arc` here; no
+    /// numeric owner is copied.
+    fg_pgrp: Option<alloc::sync::Arc<sched::pid::PidIdentity>>,
 }
 
 impl<R: Consw> VtConsoleDriver<R, NoSignal> {
@@ -118,7 +117,7 @@ impl<R: Consw, S: FgSignal> VtConsoleDriver<R, S> {
         renderer.con_init(cols as u32, rows as u32);
         let mut vc = v.into_boxed_slice();
         vtdata::switch(&mut vc[0], &mut renderer);
-        Self { vc, fg: 0, em: Emulator::new(), renderer, sig, fg_pgrp: 0 }
+        Self { vc, fg: 0, em: Emulator::new(), renderer, sig, fg_pgrp: None }
     }
 
     /// The active (foreground) VT screen buffer.
@@ -184,8 +183,14 @@ impl<R: Consw, S: FgSignal> TtyDriver for VtConsoleDriver<R, S> {
     /// ISIG: deliver `sig` to the recorded fg pgrp via the signal sink.
     /// # C: O(P) fg-pgrp tasks
     fn signal_fg_pgrp(&mut self, sig: Sig) {
-        let pgrp = self.fg_pgrp;
-        self.sig.raise(pgrp, sig);
+        self.sig.raise(self.fg_pgrp.as_deref(), sig);
+    }
+
+    fn set_foreground_pgrp(
+        &mut self,
+        pgrp: Option<alloc::sync::Arc<sched::pid::PidIdentity>>,
+    ) {
+        self.fg_pgrp = pgrp;
     }
 
     /// Termios change: the VT console honours OPOST/ICANON via the ldisc;
@@ -195,13 +200,6 @@ impl<R: Consw, S: FgSignal> TtyDriver for VtConsoleDriver<R, S> {
 }
 
 impl<R: Consw, S: FgSignal> VtConsoleDriver<R, S> {
-    /// Publish the fg pgrp into the driver shadow so `signal_fg_pgrp`
-    /// targets it. The assembly factory keeps this in sync with the
-    /// core's `set_fg_pgrp`.
-    /// # C: O(1)
-    pub fn set_fg_pgrp(&mut self, pgrp: u32) {
-        self.fg_pgrp = pgrp;
-    }
 }
 
 /// Assemble a `TtyStruct` around a `VtConsoleDriver`. This is the T5
@@ -224,16 +222,14 @@ pub fn assemble<R: Consw, S: FgSignal, W: TtyWait>(
     TtyStruct::new(drv, wait)
 }
 
-/// Set the fg pgrp on BOTH the core and the driver shadow (keeps ISIG
-/// targeting in sync). Use instead of `TtyStruct::set_fg_pgrp` alone when
-/// the driver must raise signals on that pgrp.
+/// Resolve and publish the foreground group through the tty core's single
+/// mutation path. The driver receives the same stable identity reference.
 /// # C: O(1)
 pub fn set_fg_pgrp<R: Consw, S: FgSignal, W: TtyWait>(
     tty: &TtyStruct<VtConsoleDriver<R, S>, W>,
-    pgrp: u32,
+    pgrp: alloc::sync::Arc<sched::pid::PidIdentity>,
 ) {
-    tty.set_fg_pgrp(pgrp);
-    tty.with_driver(|d| d.set_fg_pgrp(pgrp));
+    tty.set_foreground_pgrp(Some(pgrp));
 }
 
 #[cfg(test)]

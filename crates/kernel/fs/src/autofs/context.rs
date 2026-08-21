@@ -70,7 +70,7 @@ fn current_identity() -> (u32, u32, u32) {
         Some(task) => (
             task.creds.fsuid.load(Ordering::Acquire),
             task.creds.fsgid.load(Ordering::Acquire),
-            task.pgid(),
+            task.pgrp().nr_in_or_tid(&sched::live::registry::reader_pid_ns()),
         ),
         None => (0, 0, 0),
     }

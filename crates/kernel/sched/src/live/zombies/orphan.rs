@@ -22,13 +22,13 @@ fn members(pgid: u32) -> Vec<PgrpMember> {
             });
             PgrpMember {
                 tid: p.tid,
-                sid: p.sid(),
+                sid: p.session().tid,
                 exiting: matches!(p.state(), TaskState::Zombie),
                 thread_group_empty: p.thread_group.is_single_member(),
                 stopped: matches!(p.state(), TaskState::Stopped),
                 parent_is_init,
-                parent_pgid: parent.as_ref().map(|q| q.pgid()).unwrap_or(0),
-                parent_sid: parent.as_ref().map(|q| q.sid()).unwrap_or(0),
+                parent_pgid: parent.as_ref().map(|q| q.pgrp().tid).unwrap_or(0),
+                parent_sid: parent.as_ref().map(|q| q.session().tid).unwrap_or(0),
             }
         })
         .collect()
@@ -54,13 +54,13 @@ fn kill_pgrp(pgid: u32, sig: Signum) {
 ///     reference parent is the reparenting father and nothing is excluded.
 /// # C: O(N_tasks)
 pub fn kill_orphaned_pgrp(task: &Task, reparenting_father: Option<&Task>) {
-    let pgrp = task.pgid();
-    let session = task.sid();
+    let pgrp = task.pgrp().tid;
+    let session = task.session().tid;
     let (parent_pgid, parent_sid, ignored) = match reparenting_father {
-        Some(f) => (f.pgid(), f.sid(), None),
+        Some(f) => (f.pgrp().tid, f.session().tid, None),
         None => {
             let Some(p) = task.parent() else { return };
-            (p.pgid(), p.sid(), Some(task.tid))
+            (p.pgrp().tid, p.session().tid, Some(task.tid))
         }
     };
     let members = members(pgrp);

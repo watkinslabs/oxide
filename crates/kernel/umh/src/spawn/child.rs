@@ -44,9 +44,6 @@ pub fn start(info: &mut SubprocessInfo) -> Result<Arc<sched::Task>, i32> {
     // through its own PID identity, so the number is returned when the helper
     // is released.
     task.alloc_pid_mappings(&[], true).map_err(|_| -(Errno::Eagain.as_i32()))?;
-    let vpid = task.vtgid.load(core::sync::atomic::Ordering::Acquire);
-    task.set_pgid(vpid);
-    task.set_sid(vpid);
 
     stage!(b"task-built");
     let fdt = Arc::new(vfs::FdTable::new());

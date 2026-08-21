@@ -127,7 +127,7 @@ pub(super) fn handle_tty_ioctl(
                     p.set_winsize(ws);
                     let fired = p.pending_sigwinch;
                     if fired { p.pending_sigwinch = false; }
-                    (fired, p.foreground_pgid)
+                    (fired, p.foreground_pgrp.as_ref().map_or(0, |id| id.tid))
                 }),
                 // Store on the resolved tty + raise SIGWINCH on its live fg
                 // pgrp when it changed. Serial and video VT are independent.
@@ -320,7 +320,7 @@ pub(super) fn handle_tty_ioctl(
                 _ => return -(Errno::Einval.as_i32() as i64),
             };
             let fg = match &pty_pair {
-                Some(pair) => pair.with_pair(|p| p.foreground_pgid),
+                Some(pair) => pair.with_pair(|p| p.foreground_pgrp.as_ref().map_or(0, |id| id.tid)),
                 None => return -(Errno::Eio.as_i32() as i64),
             };
             if fg != 0 {
@@ -392,27 +392,39 @@ pub(super) fn handle_tty_ioctl(
             // value bash falls back to "no job control" mode.
             if let Some(pair) = &pty_pair {
                 if req == TIOCGPGRP {
-                    let pgid = pair.with_pair(|p| p.foreground_pgid);
+                    let ns = sched::live::registry::reader_pid_ns();
+                    let pgid = pair.with_pair(|p| p.foreground_pgrp.as_ref()
+                        .map_or(0, |id| id.nr_in_or_tid(&ns)));
                     if let Err(rv) = user::put_u32(arg, pgid) { return rv; }
                 } else {
                     let pgid = match user::get_u32(arg) { Ok(v) => v, Err(rv) => return rv };
-                    pair.with_pair(|p| p.foreground_pgid = pgid);
+                    let ns = sched::live::registry::reader_pid_ns();
+                    let Some(pgrp) = sched::live::registry::tasks_in_pgrp_nr(&ns, pgid)
+                        .into_iter().next().map(|t| t.pgrp())
+                    else { return -(Errno::Esrch.as_i32() as i64) };
+                    pair.with_pair(|p| p.foreground_pgrp = Some(pgrp));
                 }
             } else {
                 let tgt = con_tty!(con);
                 if req == TIOCGPGRP {
                     let pgid = match tgt {
-                        console::TtyTarget::Serial => console::static_console::foreground_pgid(),
-                        console::TtyTarget::Vt(vt) => console::vt_tty::vt_tty(vt).fg_pgrp(),
+                        console::TtyTarget::Serial => console::static_console::foreground_pgrp()
+                            .map_or(0, |id| id.nr_in_or_tid(&sched::live::registry::reader_pid_ns())),
+                        console::TtyTarget::Vt(vt) => console::vt_tty::vt_tty(vt).foreground_pgrp()
+                            .map_or(0, |id| id.nr_in_or_tid(&sched::live::registry::reader_pid_ns())),
                     };
                     if let Err(rv) = user::put_u32(arg, pgid) { return rv; }
                 } else {
                     let pgid = match user::get_u32(arg) { Ok(v) => v, Err(rv) => return rv };
-                    // Set the fg pgrp on the TtyStruct (+ driver shadow) so
-                    // ISIG (^C) targets the live fg.
+                    let ns = sched::live::registry::reader_pid_ns();
+                    let Some(pgrp) = sched::live::registry::tasks_in_pgrp_nr(&ns, pgid)
+                        .into_iter().next().map(|t| t.pgrp())
+                    else { return -(Errno::Esrch.as_i32() as i64) };
+                    // Publish the same stable identity to the tty core and
+                    // driver so ISIG (^C) targets the live group.
                     match tgt {
-                        console::TtyTarget::Serial => console::static_console::set_foreground_pgid(pgid),
-                        console::TtyTarget::Vt(vt) => console::vt_tty::set_fg_pgrp(vt, pgid),
+                        console::TtyTarget::Serial => console::static_console::set_foreground_pgrp(pgrp),
+                        console::TtyTarget::Vt(vt) => console::vt_tty::set_fg_pgrp(vt, pgrp),
                     }
                 }
             }

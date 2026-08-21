@@ -56,7 +56,10 @@ where
     R: FnMut(WaitChildSnapshot) -> Result<(), i64>,
 {
     let w = match sched::live::current() {
-        Some(c) => (c.tid, c.tgid.load(core::sync::atomic::Ordering::Acquire), c.pgid()),
+        Some(c) => {
+            let ns = sched::live::registry::reader_pid_ns();
+            (c.tid, c.tgid.load(core::sync::atomic::Ordering::Acquire), c.pgrp().nr_in_or_tid(&ns))
+        }
         None    => return -(Errno::Einval.as_i32() as i64),
     };
     loop {

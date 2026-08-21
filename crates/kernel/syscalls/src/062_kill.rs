@@ -55,7 +55,11 @@ pub fn sys_kill(args: &SyscallArgs) -> i64 {
                 None => -(Errno::Esrch.as_i32() as i64),
             }
         }
-        PidClass::CallerPgrp => post_pgrp(cur, cur.pgid(), sig, src),
+        PidClass::CallerPgrp => {
+            let ns = cur.namespace_owner(namespace_identity::NamespaceKind::Pid)
+                .unwrap_or_else(|| namespace_identity::initial(namespace_identity::NamespaceKind::Pid));
+            post_pgrp(cur, cur.pgrp().nr_in_or_tid(&ns), sig, src)
+        }
         PidClass::Pgrp(pgid) => post_pgrp(cur, pgid, sig, src),
         PidClass::Broadcast  => post_broadcast(cur, sig, src),
     }
@@ -116,7 +120,9 @@ fn is_group_leader(t: &sched::Task) -> bool {
 /// Linux `__kill_pgrp_info`. # C: O(N_tasks)
 fn post_pgrp(cur: &sched::Task, pgid: u32, sig: i32, src: SigSource) -> i64 {
     let mut fold = PgrpFold::new();
-    for t in &sched::live::registry::tasks_in_pgrp(pgid) {
+    let ns = cur.namespace_owner(namespace_identity::NamespaceKind::Pid)
+        .unwrap_or_else(|| namespace_identity::initial(namespace_identity::NamespaceKind::Pid));
+    for t in &sched::live::registry::tasks_in_pgrp_nr(&ns, pgid) {
         if !is_group_leader(t) { continue; }
         fold.visit(post_one(cur, t, sig, src));
     }
