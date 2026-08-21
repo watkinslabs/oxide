@@ -64,10 +64,10 @@ failure mode this reconcile was supposed to catch, not commit.
 | Class | blocker | critical | high | med | low | Total |
 |---|---:|---:|---:|---:|---:|---:|
 | COVERAGE | 0 | 0 | 11 | 68 | 65 | 144 |
-| DEFECT | 1 | 4 | 23 | 66 | 64 | 158 |
+| DEFECT | 1 | 4 | 22 | 66 | 64 | 157 |
 | INFRA | 0 | 0 | 11 | 41 | 39 | 91 |
 | MISSING | 1 | 0 | 49 | 142 | 115 | 307 |
-| **Total** | **2** | **4** | **94** | **317** | **283** | **700** |
+| **Total** | **2** | **4** | **93** | **317** | **283** | **699** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
