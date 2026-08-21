@@ -356,7 +356,7 @@ impl Vma {
             Some(crate::anon_vma::AnonVma::new())
         } else { None };
         let file_rmap = match &backing {
-            VmaBacking::File { backing, .. } if flags.contains(VmaFlags::SHARED) => backing.file_rmap(),
+            VmaBacking::File { backing, .. } => backing.file_rmap(),
             _ => None,
         };
         Self {

@@ -3047,6 +3047,12 @@ against the row's own evidence.
 |---|---|---|---|---|---|
 | FIXED 39a648f13 | DEFECT | blocker | **The five aarch64 frames over the 8192 B ceiling were fixed together in B2249.** ACPI IOMMU parsing now fills one heap inventory by reference, the EFI stub retains its memory-map buffer outside the stack, and f2fs heap-owns its volume rather than carrying it by value through registration. This row was a stale duplicate of the three detailed B2249 closure rows already retained here. | B2314 revalidated the linked kernel after B2311: `make frame-gate-arm` scans 15,509 functions, reports zero at or above 8192 B, and PASSes; largest frame is 5,856 B. B2249 positive controls and before/after measurements are retained in the detailed closure rows. | 39a648f13 |
 
+### B2320-truncate-mmap-invalidation
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED fc23f5e3e | DEFECT | high | **Truncate now revokes every private and shared user PTE before the canonical inode page cache forgets the affected pages, then repeats the revocation after removal to catch a private COW raced through the first pass.** Every file VMA attaches to the inode's one `FileRmap`; that owner walks live spans allocation-free, and PMM revalidates each file page beneath the target mmap and page-table locks before the existing TLB gather performs shootdown, accounting, and frame release. | B2320. Linux 7.2.0-rc4 uses the same unmap → page removal → unmap ordering. `truncate_unmaps_then_drops_then_unmaps_again` observes exactly that order; deleting the second production call makes it fail with `["unmap", "drop"]` versus `["unmap", "drop", "unmap"]`, restored GREEN. The private/shared owner and stale-index revalidation test passes. Full suites: vmm 464, pmm 291, VFS 1,916. Both target checks, all-feature checks, debug-all links, 176 hosted checks, 176 isolated test builds, and paired frame/task-stack/exception-stack/IRQ-stack gates pass. Final paired smoke passed first attempt with serial RX: x86_64 48 s, aarch64 58 s. | B2320 |
+
 ### B2322-address-space-teardown-owner
 
 | Status | Class | Sev | Issue | Evidence | Owner |

@@ -224,7 +224,14 @@ pub fn simple_setattr(inode: &Inode, idmap: &Idmap, ia: &Iattr) -> KResult<()> {
         // straddles the new size (the backend `truncate` zeroed its tail). On
         // grow nothing is resident past the new size, so this is a no-op — exactly
         // Linux. Inodes without an `i_mapping` (no page cache) skip it.
-        if let Some(m) = inode.i_mapping() { m.invalidate_range(ia.size, u64::MAX); }
+        if let Some(m) = inode.i_mapping() {
+            let first = ia.size.saturating_add(hal::PAGE_SIZE_BYTES - 1)
+                & !(hal::PAGE_SIZE_BYTES - 1);
+            let rmap = inode.file_rmap();
+            rmap.unmap_truncate_range(first / hal::PAGE_SIZE_BYTES, u64::MAX);
+            m.invalidate_range(ia.size, u64::MAX);
+            rmap.unmap_truncate_range(first / hal::PAGE_SIZE_BYTES, u64::MAX);
+        }
     }
     if ia.valid & (ATTR_UID | ATTR_GID) != 0 {
         let uid = if ia.valid & ATTR_UID != 0 { idmap.map_in_uid(ia.uid) } else { inode.uid().unwrap_or(0) };

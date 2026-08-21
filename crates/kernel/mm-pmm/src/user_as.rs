@@ -50,7 +50,7 @@ pub use signal::force_user_fault_arm;
 use state::current_cpu_idx;
 use state::{current_mm_cpumask_full, HHDM_OFFSET};
 pub use state::{clone_global_arc, hhdm_offset, init, with};
-pub use foreign::{evict_foreign_pages_in_range, mprotect_pages, read_foreign_user, rmap_walk_anon_pa, write_foreign_user};
+pub use foreign::{evict_foreign_pages_in_range, mprotect_pages, read_foreign_user, rmap_walk_anon_pa, unmap_truncated_file_range, write_foreign_user};
 #[cfg(feature = "debug-cow")]
 use foreign::read_foreign_leaf;
 #[cfg(all(feature = "debug-mount", target_arch = "x86_64"))]
