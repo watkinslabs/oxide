@@ -69,6 +69,25 @@ fn child_modules_of_a_named_file_live_in_its_own_directory() {
 }
 
 #[test]
+fn a_path_overridden_test_module_gates_its_real_file_and_subtree() {
+    let dir = std::env::temp_dir().join(format!("spec-lint-test-path-{}", std::process::id()));
+    let src = dir.join("crates/kernel/netfilter/src");
+    std::fs::create_dir_all(src.join("nft_expr_tests")).unwrap();
+    std::fs::write(src.join("nft_expr.rs"),
+        "#[cfg(test)]\n#[path = \"nft_expr_tests.rs\"]\nmod tests;\n").unwrap();
+    std::fs::write(src.join("nft_expr_tests.rs"), "mod action;\n").unwrap();
+    std::fs::write(src.join("nft_expr_tests/action.rs"), "fn test_only() {}\n").unwrap();
+
+    let roots = test_gated_roots(&dir);
+    let stem = src.join("nft_expr_tests");
+    assert!(roots.contains(&stem));
+    assert!(under_module_root(&src.join("nft_expr_tests.rs"), &stem));
+    assert!(under_module_root(&src.join("nft_expr_tests/action.rs"), &stem));
+    assert!(!under_module_root(&src.join("nft_expr/action.rs"), &stem));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn a_crate_only_ever_dev_depended_on_is_dev_only() {
     let dir = std::env::temp_dir().join(format!("spec-lint-devonly-{}", std::process::id()));
     for (p, toml) in [
