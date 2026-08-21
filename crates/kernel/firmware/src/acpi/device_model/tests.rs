@@ -20,8 +20,8 @@ fn devices_reference_one_canonical_power_resource_owner() {
     assert_eq!(registry.resources.len(), 1);
     assert_eq!(registry.devices[0].resources, vec![0]);
     assert_eq!(registry.devices[1].resources, vec![0]);
-    registry.resources[registry.devices[0].resources[0]].refs.store(2, Ordering::Release);
-    assert_eq!(registry.resources[registry.devices[1].resources[0]].refs.load(Ordering::Acquire), 2);
+    resource_lock(&registry.resources[registry.devices[0].resources[0]].owner).refs = 2;
+    assert_eq!(resource_lock(&registry.resources[registry.devices[1].resources[0]].owner).refs, 2);
 }
 
 #[test]
@@ -69,5 +69,34 @@ fn ordered_power_on_failure_rolls_back_in_reverse_order() {
     assert_eq!(*calls.borrow(), vec![(String::from("\\ONE"), true),
         (String::from("\\TWO"), true), (String::from("\\THREE"), true),
         (String::from("\\TWO"), false), (String::from("\\ONE"), false)]);
-    assert!(registry.resources.iter().all(|resource| resource.refs.load(Ordering::Acquire) == 0));
+    assert!(registry.resources.iter().all(|resource| resource_lock(&resource.owner).refs == 0));
+}
+
+#[test]
+fn transition_and_accounting_share_one_exclusive_owner() {
+    let registry = build_registry(vec![resource("\\PR00", 5, 0)], Vec::new(),
+        |_| RESOURCE_OFF);
+    let resource = &registry.resources[0];
+    let mut transition = |_: &str, _: bool| {
+        assert!(resource.owner.try_lock().is_none(),
+            "state and references must stay hidden until the firmware transition finishes");
+        true
+    };
+    assert!(resource_on(resource, &mut transition));
+    let owner = resource_lock(&resource.owner);
+    assert_eq!((owner.refs, owner.state), (1, RESOURCE_ON));
+}
+
+#[test]
+fn failed_unused_reconciliation_invalidates_the_cached_state_under_the_owner() {
+    let registry = build_registry(vec![resource("\\PR00", 5, 0)], Vec::new(),
+        |_| RESOURCE_ON);
+    let resource = &registry.resources[0];
+    let mut transition = |_: &str| {
+        assert!(resource.owner.try_lock().is_none());
+        false
+    };
+    reconcile_resource(resource, &mut transition);
+    let owner = resource_lock(&resource.owner);
+    assert_eq!((owner.refs, owner.state), (0, RESOURCE_UNKNOWN));
 }
