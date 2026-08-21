@@ -367,6 +367,7 @@ pub mod setns_flags;
 /// `dispatch/mod.rs`, which is kernel-gated: a `#[cfg(test)]` block inside a
 /// gated module compiles away silently and its tests never run.
 #[path = "dispatch/entry_order.rs"] pub mod dispatch_entry_order;
+#[path = "dispatch/frame_order.rs"] pub mod dispatch_frame_order;
 #[cfg(any(target_os = "oxide-kernel", test))]
 #[path = "101_ptrace/decide.rs"] pub mod s101_ptrace_decide;
 #[cfg(any(target_os = "oxide-kernel", test))]

@@ -7,9 +7,9 @@ pub use ::fs::sig_dispatch::UserRegs;
 /// `arch_do_signal_or_restart`. ONE accessor for both arches so no caller has
 /// to know which per-CPU slot or stack offset holds it.
 ///
-/// aarch64 prefers the TASK-owned pointer: it survives a blocking syscall's
-/// context switches, where the per-CPU slot is only a pre-dispatch fallback
-/// another task can overwrite (F206).
+/// aarch64 uses only the TASK-owned pointer installed from the explicit entry
+/// argument before IRQs open. The per-CPU slot is an architecture/switch cache,
+/// not a second authority another task can make us rediscover (B2328/F206).
 /// # C: O(1)
 pub fn current_user_regs() -> *mut UserRegs {
     #[cfg(target_arch = "aarch64")]
@@ -19,7 +19,7 @@ pub fn current_user_regs() -> *mut UserRegs {
             .map(|task| task.svc_frame.load(Ordering::Acquire))
             .filter(|frame| *frame != 0)
             .map(|frame| frame as *mut UserRegs)
-            .unwrap_or_else(hal_aarch64::current_svc_frame)
+            .unwrap_or(core::ptr::null_mut())
     }
     #[cfg(target_arch = "x86_64")]
     { hal_x86_64::current_pt_regs() }
