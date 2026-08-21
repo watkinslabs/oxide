@@ -200,6 +200,15 @@ must use grouped paths from day one.
     owners but never duplicates clock, regulator, OPP, or SCMI protocol state. The
     terminal action for a critical thermal trip is installed by kernel init,
     because a device class does not own powering the machine down.
+    `crates/kernel/power` additionally owns the one hibernation transaction,
+    physical-snapshot view, persistent image format, collision restore plan,
+    and public policy (`32b`). `mm-pmm` remains the sole owner of topology and
+    free/exact-PFN claims; the canonical swap area owns image-slot reservation;
+    `block` owns the exclusive resume-device token and durable I/O; each HAL
+    owns only its saved continuation and stackless final restore. Suspend,
+    hibernate, resume, and kexec-preserve-context share one transition claim.
+    None may retain a second device list, page-allocation map, swap-slot map,
+    or page-table encoder.
 17. `crates/kernel/overlayfs` owns union-mount semantics: the layer stack, the
     merged lookup, whiteouts and opaque directories, copy-up, the merged
     directory stream, and the four records a layer carries
@@ -439,6 +448,9 @@ Temporary exceptions are allowed only with:
   `crates/shared/aes` and `crates/shared/p256`.
 - 2026-08-18: Added the ACPI and PSCI firmware idle providers, the shared
   DT idle-state decoder, and per-CPU cpuidle state-table ownership.
+- 2026-08-21: Added hibernation ownership: power owns the transaction and
+  format, PMM owns PFN truth, swap owns image slots, block owns durable device
+  I/O, and each HAL owns only its continuation and final restore.
 - 2026-08-15: Added the power-supply and backlight device-class ownership
   boundaries, their ACPI providers under `firmware`, and `crates/shared/kstrtox`.
 - 2026-08-15: Added `crates/kernel/thermal`, `crates/kernel/cpufreq` and
