@@ -65,11 +65,23 @@ fn run_pass(phase: FreezePhase, now_ms: fn() -> u64) -> KResult<()> {
     }
 }
 
-fn back_off(_us: u64) {
-    // The low-level delay remains tracked separately, but a request-based
-    // freezer must at least hand the CPU to its targets before recounting.
-    sched::preempt::set_need_resched();
-    let _ = sched::live::cond_resched();
+fn back_off(us: u64) {
+    let (earliest, slack) = backoff_window(timekeeper::monotonic_ns(), us);
+    // SAFETY: the suspend owner runs in process context, holds no scheduler or
+    // timer lock here, and the local timed wait owns its complete lifetime.
+    unsafe {
+        sched::live::sleep_uninterruptible_range_until(
+            earliest, slack, timekeeper::monotonic_ns,
+        );
+    }
+}
+
+/// Linux `usleep_range(us / 2, us)` as an absolute earliest deadline plus its
+/// coalescing slack. # C: O(1)
+fn backoff_window(now_ns: u64, us: u64) -> (u64, u64) {
+    let earliest_delta = (us / 2).saturating_mul(1_000);
+    let latest_delta = us.saturating_mul(1_000);
+    (now_ns.saturating_add(earliest_delta), latest_delta.saturating_sub(earliest_delta))
 }
 
 /// Release every system-sleep claim. Tasks the cgroup freezer still holds stay

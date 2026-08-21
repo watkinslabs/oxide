@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2329-freezer-backoff-sleep
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 3f700b5fe | MISSING | low | **Freezer retries now sleep in Linux's bounded half-to-full backoff window instead of merely yielding.** The 1, 2, 4, and 8 ms cadence feeds the scheduler's canonical uninterruptible deadline wait with an explicit slack range; the existing wait loop remains the sole publication, wakeup, cancellation, and timer owner rather than creating a freezer-local timing path. | B2329. Linux 7.2.0-rc4 uses `usleep_range(sleep_usecs / 2, sleep_usecs)` between freezer passes. `the_backoff_sleeps_in_linuxs_half_to_full_window` pins 1 ms to [0.5, 1] ms and 8 ms to [4, 8] ms; making the earliest deadline equal the full interval turns the positive control RED with `(1010000, 0)` rather than `(510000, 500000)`, restored GREEN. Power 211/211 and scheduler 1514/1514 pass, as do both target checks, 176 hosted checks, 176 isolated test builds, both all-feature checks, and paired frame/task-stack/exception-stack/IRQ-stack gates. Final smoke reached userspace with serial RX on attempt 1: x86_64 in 46 s and aarch64 in 57 s. | B2329-freezer-backoff-sleep |
+
 ### B2328-arm-exec-null-svc-frame
 
 | Status | Class | Sev | Issue | Evidence | Owner |
