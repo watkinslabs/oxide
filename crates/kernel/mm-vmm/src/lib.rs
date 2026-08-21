@@ -59,7 +59,10 @@ pub use address_space::rss::{self, RssPages};
 pub use anon_vma::{AnonVma, RmapTarget};
 pub use coredump_filter::{CoredumpFilter, FilterParseError};
 pub use ldt::{any_ldt_in_use, LdtError, LdtState, LdtView};
-pub use file_rmap::{FileRmap, WritableMapReservation, WriteSealError};
+pub use file_rmap::{
+    set_truncate_unmap_hook, truncate_unmap_hook_installed, FileRmap,
+    TruncateUnmapHook, WritableMapReservation, WriteSealError,
+};
 pub use migration::{migration_attach_marker, migration_begin, migration_drop_marker_mapping, migration_finish, migration_pending_then, migration_restore_marker_mapping};
 pub use recency::vma_has_recency;
 pub use vma::{EXEC_STACK_VMA_FLAGS, FaultAccess, FaultKind, FileBacking, FileBackingError, FileMmapSetup, SharedFrame, Vma, VmaBacking, VmaFlags, VmaProt};
