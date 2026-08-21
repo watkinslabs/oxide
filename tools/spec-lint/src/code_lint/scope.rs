@@ -109,22 +109,42 @@ pub fn test_gated_roots(root: &Path) -> Vec<PathBuf> {
         for p in walk::files_with_ext(&d, "rs", &["target"]) {
             let Some(dir) = child_mod_dir(&p) else { continue };
             let text = read(&p);
-            let mut pending = false;
+            let mut pending_test = false;
+            let mut pending_path: Option<PathBuf> = None;
             for l in text.lines() {
                 let t = l.trim();
                 if t.is_empty() || t.starts_with("//") { continue; }
-                if t.starts_with("#[") { pending = is_test_cfg_attr(t); continue; }
-                if pending {
+                if t.starts_with("#[") {
+                    pending_test |= is_test_cfg_attr(t);
+                    if let Some(path) = path_attr(t) { pending_path = Some(path); }
+                    continue;
+                }
+                if pending_test {
                     if let Some(name) = file_mod_name(t) {
                         // The stem covers `x.rs` and everything under `x/`.
-                        out.push(dir.join(name));
+                        // A stacked `#[path = "..."]` owns the location;
+                        // resolving from the declared module name would lint
+                        // the real test subtree as production code.
+                        let stem = match pending_path.take() {
+                            Some(path) => p.parent().unwrap_or(Path::new("")).join(path)
+                                .with_extension(""),
+                            None => dir.join(name),
+                        };
+                        out.push(stem);
                     }
                 }
-                pending = false;
+                pending_test = false;
+                pending_path = None;
             }
         }
     }
     out
+}
+
+fn path_attr(t: &str) -> Option<PathBuf> {
+    let value = t.strip_prefix("#[path")?.trim_start().strip_prefix('=')?.trim();
+    let value = value.strip_suffix(']')?.trim();
+    Some(PathBuf::from(value.strip_prefix('"')?.strip_suffix('"')?))
 }
 
 /// Directory holding the child modules `p` declares. `lib.rs`/`main.rs`/`mod.rs`
