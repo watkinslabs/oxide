@@ -7,6 +7,7 @@
 
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicPtr, Ordering};
 use sync::{AnonVma as FileRmapClass, Spinlock};
 
 use crate::{address_space::AddressSpace, Error, KResult};
@@ -15,16 +16,17 @@ use crate::{address_space::AddressSpace, Error, KResult};
 /// FileRmap remains the one interval owner; PMM only mutates verified leaves.
 pub type TruncateUnmapHook = fn(&FileRmap, u64, u64) -> usize;
 
-static TRUNCATE_UNMAP: Spinlock<Option<TruncateUnmapHook>, FileRmapClass> =
-    Spinlock::new(None);
+static TRUNCATE_UNMAP: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
 /// Install the PMM leaf-teardown half. # C: O(1)
 pub fn set_truncate_unmap_hook(hook: TruncateUnmapHook) {
-    *TRUNCATE_UNMAP.lock() = Some(hook);
+    TRUNCATE_UNMAP.store(hook as *mut (), Ordering::Release);
 }
 
 /// Whether boot installed the machine half. # C: O(1)
-pub fn truncate_unmap_hook_installed() -> bool { TRUNCATE_UNMAP.lock().is_some() }
+pub fn truncate_unmap_hook_installed() -> bool {
+    !TRUNCATE_UNMAP.load(Ordering::Acquire).is_null()
+}
 
 /// One `address_space->i_mmap` interval. `file_page_start` is the backing
 /// page index corresponding to `start`; it makes split VMAs and nonzero file
@@ -183,8 +185,14 @@ impl FileRmap {
     /// truncate drops those file pages. PMM supplies TLB/refcount effects.
     /// # C: O(N_vmas + mapped pages)
     pub fn unmap_truncate_range(&self, first: u64, end: u64) -> usize {
-        let hook = *TRUNCATE_UNMAP.lock();
-        hook.map_or(0, |unmap| unmap(self, first, end))
+        let raw = TRUNCATE_UNMAP.load(Ordering::Acquire);
+        if raw.is_null() { return 0; }
+        // SAFETY: the slot is written only by `set_truncate_unmap_hook` from
+        // this exact function type; Release/Acquire publishes a static address.
+        let unmap: TruncateUnmapHook = unsafe {
+            core::mem::transmute::<*mut (), TruncateUnmapHook>(raw)
+        };
+        unmap(self, first, end)
     }
 
     /// # C: O(N_vmas_for_file)
