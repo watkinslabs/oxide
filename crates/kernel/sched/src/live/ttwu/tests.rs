@@ -243,6 +243,25 @@ fn drained_wake_of_a_still_running_task_is_re_deferred() {
         "once switched off it becomes enqueueable");
 }
 
+#[test]
+fn on_cpu_handoff_requeues_without_spinning_in_the_irq_tail() {
+    const CPU: u32 = 61;
+    let cpus = Cpus::new(&[CPU]);
+    let rq = cpus.get(CPU).unwrap();
+    let t = parked_but_still_running(2010, CPU);
+    assert!(t.claim_wake());
+    assert!(wake_list_push(CPU, Arc::clone(&t)));
+    assert!(!sched_ttwu_pending(CPU, core::ptr::null_mut(), rq));
+    assert!(t.on_wake_list.load(Ordering::Acquire),
+        "unfinished switch ownership must remain on a wake list");
+    assert!(rq.inner.try_lock().is_some(),
+        "IRQ-tail wake deferral must not wait while owning the runqueue");
+
+    t.on_cpu.store(false, Ordering::Release);
+    assert!(sched_ttwu_pending(CPU, core::ptr::null_mut(), rq));
+    assert!(t.on_rq.load(Ordering::Acquire));
+}
+
 /// A deferred wake is deliberately shown as unlinked between the lock-free
 /// list drain and destination activation.  `on_wake_list` names list
 /// membership, not wake ownership: the `Waking` state retains that ownership

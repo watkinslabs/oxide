@@ -160,7 +160,8 @@ static INSTALLED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBoo
 pub(super) fn install() {
     use core::sync::atomic::Ordering;
     if INSTALLED.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() { return; }
-    let shrinker = pmm::shrinker::Shrinker { count_objects, scan_objects };
+    let shrinker = pmm::shrinker::Shrinker { class: pmm::shrinker::ShrinkerClass::LruBacked,
+        count_objects, scan_objects };
     if pmm::shrinker::register_shrinker(shrinker).is_err() {
         INSTALLED.store(false, Ordering::Release);
     }

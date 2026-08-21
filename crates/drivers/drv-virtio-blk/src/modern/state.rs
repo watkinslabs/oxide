@@ -21,6 +21,24 @@ pub(super) static BLK_COMPL: WaitList = WaitList::new();
 #[cfg(target_os = "oxide-kernel")]
 pub(super) static BLK_TURN: WaitList = WaitList::new();
 
+#[cfg(feature = "debug-hibernate")]
+static HIBERNATE_SYNC_TRACE: AtomicU16 = AtomicU16::new(0);
+
+/// Arm allocation-free traces of the first 512 synchronous image I/Os.
+pub fn arm_hibernate_sync_trace() {
+    #[cfg(feature = "debug-hibernate")]
+    HIBERNATE_SYNC_TRACE.store(512, Ordering::Release);
+}
+
+#[cfg(feature = "debug-hibernate")]
+pub(super) fn claim_hibernate_sync_trace() -> u16 {
+    match HIBERNATE_SYNC_TRACE.fetch_update(Ordering::AcqRel, Ordering::Acquire,
+        |remaining| remaining.checked_sub(1)) {
+        Ok(remaining) => 513 - remaining,
+        Err(_) => 0,
+    }
+}
+
 /// Rouse every block waiter regardless of which condition it sleeps on. For
 /// abort-everything transitions (poison / shutdown / device removal) where a
 /// sleeper on EITHER queue must re-check and bail — waking only one queue after

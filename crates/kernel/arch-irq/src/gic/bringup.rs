@@ -139,3 +139,11 @@ pub unsafe fn ap_cpu_interface_enable(ap_gicr_va: u64) {
         );
     }
 }
+
+/// Disable Group-1 delivery on this PE before PSCI CPU_OFF. # C: O(1)
+/// # SAFETY: caller runs on the target PE with IRQs masked.
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+pub unsafe fn cpu_interface_disable() {
+    // SAFETY: ICC_IGRPEN1_EL1 is local to this PE; zero blocks new IRQ delivery.
+    unsafe { core::arch::asm!("msr s3_0_c12_c12_7, xzr", "isb", options(nomem, nostack, preserves_flags)); }
+}

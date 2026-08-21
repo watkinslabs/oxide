@@ -29,6 +29,7 @@ pub struct Pmm<B: PageBacking, I: IrqGate = NoopIrq> {
     /// are still free in one CPU's cache.
     pub(super) buddy_bitmaps: [&'static [AtomicU64]; ORDERS],
     pub(super) pcp_bitmap: &'static [AtomicU64],
+    pub(super) hibernate_forbidden: &'static [AtomicU64],
     pub(super) pcp: &'static PcpStorage,
     /// Exact free-page counters include both global buddy blocks and cached
     /// order-0 pages. They are the lock-free watermark input for the PCP

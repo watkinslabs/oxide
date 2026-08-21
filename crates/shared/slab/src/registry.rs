@@ -110,7 +110,8 @@ pub fn snapshots() -> Vec<CacheSnapshot> {
 /// Install the single slab shrinker into PMM.  Duplicate installation is
 /// benign because PMM identifies callback pairs. # C: O(number of caches)
 pub fn register_shrinker() -> Result<(), RegistryError> {
-    match shrinker::register_shrinker(Shrinker { count_objects: reclaimable_pages, scan_objects: scan_reclaimable }) {
+    match shrinker::register_shrinker(Shrinker { class: shrinker::ShrinkerClass::Independent,
+        count_objects: reclaimable_pages, scan_objects: scan_reclaimable }) {
         Ok(()) | Err(shrinker::ShrinkerError::Duplicate) => Ok(()),
         Err(shrinker::ShrinkerError::NoMem) => Err(RegistryError::NoMem),
     }

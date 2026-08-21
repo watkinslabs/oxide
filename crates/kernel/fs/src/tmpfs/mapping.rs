@@ -3,7 +3,7 @@ use core::sync::atomic::Ordering;
 use vfs::{AddressSpaceOps, KResult};
 
 use super::file::{ShmemPage, TmpfsFileData};
-use super::page::ensure_page;
+use super::page::with_resident;
 use super::limits::PG;
 
 /// The tmpfs inode's persistent, sparse shmem address_space. Every mapper of
@@ -12,22 +12,12 @@ impl AddressSpaceOps for TmpfsFileData {
     /// MAP_SHARED backing frame, allocating on first touch. # C: O(log N_pages)
     fn shared_frame(&self, off: u64) -> KResult<Option<vfs::SharedFrame>> {
         let idx = off / PG as u64;
-        loop {
-            let migrating = {
-                let mut g = self.pages.lock();
-                match g.get(&idx).copied() {
-                    Some(ShmemPage::Migrating { token, .. }) => Some(token),
-                    _ => {
-                        let pa = ensure_page(&mut g, idx, self)?;
-                        // SAFETY: index lock keeps this terminal resident
-                        // state live until this map reference is recorded.
-                        unsafe { pmm::setup::inc_ref(pa); }
-                        return Ok(Some(vfs::SharedFrame { pa, map_ref_held: true }));
-                    }
-                }
-            };
-            super::migration::wait_and_restart(migrating.expect("migrating branch token"));
-        }
+        with_resident(self, idx, true, |pa| {
+            // SAFETY: index lock keeps this terminal resident state live until
+            // this map reference is recorded.
+            unsafe { pmm::setup::inc_ref(pa); }
+            Ok(vfs::SharedFrame { pa, map_ref_held: true })
+        })
     }
 
     /// Return only a stable resident page. Holes, swapped entries, and an

@@ -14,24 +14,22 @@ use crate::live::runqueue::{RqIrq, Runqueue};
 use crate::Task;
 #[cfg(feature = "debug-watchdog")]
 use crate::task::WakeDiagPhase;
-use super::runqueue::{global, global_for};
+use super::runqueue::global_for;
 
 mod wake_list;
+mod cpu_target;
 pub use wake_list::{wake_list_debug, wake_list_push};
+
 use wake_list::{wake_list_finish, wake_list_take};
+pub use cpu_target::{resched_curr, service_current_cpu};
+use cpu_target::this_cpu;
+#[cfg(test)]
+use cpu_target::service_pending_on;
 #[cfg(any(test, feature = "hosted"))]
 pub use wake_list::wake_list_drain;
 
 #[cfg(feature = "debug-watchdog")]
-#[inline]
-pub(super) fn wake_diag_now_ns() -> u64 {
-    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-    { use hal::TimerOps; hal_x86_64::X86TimerOps::monotonic_ns().0 }
-    #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
-    { use hal::TimerOps; hal_aarch64::ArmTimerOps::monotonic_ns().0 }
-    #[cfg(not(target_os = "oxide-kernel"))]
-    { 0 }
-}
+use cpu_target::wake_diag_now_ns;
 
 
 /// The per-task decision is made INSIDE the rq lock, immediately before the
@@ -101,19 +99,24 @@ pub fn sched_ttwu_pending(cpu: u32, current: *mut Task, rq: &Runqueue) -> bool {
             node = next;
             continue;
         }
-        #[cfg(feature = "debug-watchdog")]
-        task.wake_diag_mark(WakeDiagPhase::Waiting, wake_diag_now_ns());
-        while matches!(task.pending_wake(current), PendingWake::Defer) {
-            // This lock-held conditional `on_cpu` handoff is not a scheduler
-            // wait: parking while the target rq is held would deadlock
-            // activation. Route each relax step through the one generic spin
-            // path so a masked-IRQ waiter still services cross-CPU work that
-            // can release its peer.
-            sync::spin_relax::relax();
-        }
         match task.pending_wake(current) {
             PendingWake::Drop  => {}
-            PendingWake::Defer => unreachable!(),
+            PendingWake::Defer => {
+                // A callback can observe the outgoing task before its switch
+                // tail clears `on_cpu`. Never spin in IRQ context: the
+                // interrupted task may hold a lock needed by the CPU that must
+                // finish that handoff. Keep the wake on its canonical owner;
+                // IRQ return completes the switch, and a later drain activates
+                // it. Linux's queued wake callback runs after that same
+                // finish-task handoff rather than waiting in the interrupt.
+                let owner = task.cpu.load(Ordering::Acquire) as usize;
+                let target = if owner < cpu::MAX_CPUS
+                    && cpu::smp::online_cpumask().contains(owner)
+                    && cpu::smp::accepts_work(owner as u32) { owner } else { cpu as usize };
+                requeue[target] |= wake_list_push(target as u32, task);
+                node = next;
+                continue;
+            }
             PendingWake::Ready => {
                 // SAFETY: `current` is this CPU's running task, kept alive by
                 // the runqueue's strong reference for this locked decision.
@@ -124,7 +127,7 @@ pub fn sched_ttwu_pending(cpu: u32, current: *mut Task, rq: &Runqueue) -> bool {
                 let curr = if raw.is_null() { None } else { Some(cand_of(unsafe { &*raw })) };
                 #[cfg(feature = "debug-watchdog")]
                 task.wake_diag_mark(WakeDiagPhase::Activating, wake_diag_now_ns());
-                task.set_vruntime_to_floor(inner.cfs.min_vruntime());
+                task.lift_vruntime(inner.cfs.min_vruntime());
                 preempt |= curr.is_none_or(|c| wakeup_preempt(cand_of(&task), c));
                 inner.enqueue(Arc::clone(&task));
                 placed = true;
@@ -144,39 +147,6 @@ pub fn sched_ttwu_pending(cpu: u32, current: *mut Task, rq: &Runqueue) -> bool {
     placed
 }
 
-/// Activate the wake list claimed for `rq` on its owning CPU.
-///
-/// Linux runs this target-side half from the reschedule/call-function IPI and
-/// from the idle path, never from `finish_task_switch`: a blocking task is at
-/// its deepest stack point in that switch tail.  Architecture IRQ dispatchers
-/// call this while still on their dedicated IRQ stack; `halt_forever` supplies
-/// the no-IPI idle-polling case on the idle task's otherwise empty stack.
-///
-/// # C: O(deferred * log N)
-pub(crate) fn service_pending_on(rq: &Runqueue) -> bool {
-    let current = rq.current.load(Ordering::Acquire);
-    sched_ttwu_pending(rq.cpu as u32, current, rq)
-}
-
-/// Activate wakeups queued to this CPU, if its runqueue is installed.
-///
-/// # C: O(1) when no wake list is pending; O(deferred * log N) otherwise
-pub fn service_current_cpu() -> bool {
-    let Some(rq) = global() else { return false; };
-    service_pending_on(rq)
-}
-
-/// This CPU's index (gs:0 / TPIDR). Host build → 0.
-#[inline]
-fn this_cpu() -> u32 {
-    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-    { use hal::CpuOps; (hal_x86_64::X86CpuOps::current_cpu() as usize).min(cpu::MAX_CPUS - 1) as u32 }
-    #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
-    { use hal::CpuOps; (hal_aarch64::ArmCpuOps::current_cpu() as usize).min(cpu::MAX_CPUS - 1) as u32 }
-    #[cfg(not(target_os = "oxide-kernel"))]
-    { 0 }
-}
-
 /// Choose the CPU to wake `task` on (Linux `select_task_rq`): the idlest
 /// online runqueue (fewest `nr_running`) among the task's allowed CPUs,
 /// biased to the caller's local CPU on ties (wake-affine: a not-busier
@@ -184,9 +154,15 @@ fn this_cpu() -> u32 {
 /// cpuset). UP / single online CPU → that CPU.
 /// # C: O(N_cpus)
 pub fn select_task_rq(task: &Task) -> u32 {
+    let online = cpu::smp::online_cpumask();
     // SAFETY: `global_for` is sound for any index; it yields `None` for a CPU
     // that has not completed `install_global`, which the walk skips.
-    select_task_rq_with(&|c| unsafe { global_for(c) }, this_cpu(), task)
+    select_task_rq_with(&|c| {
+        if !online.contains(c as usize) || !cpu::smp::accepts_work(c) { None } else {
+            // SAFETY: online publication follows runqueue installation.
+            unsafe { global_for(c) }
+        }
+    }, this_cpu(), task)
 }
 
 /// [`select_task_rq`] over an injected CPU->runqueue accessor, so the placement
@@ -225,22 +201,6 @@ where F: Fn(u32) -> Option<&'a Runqueue> {
         }
     }
     best.unwrap_or(local)
-}
-
-/// Make `cpu` reschedule (Linux `resched_curr`): set its per-CPU
-/// `need_resched`; if it's a REMOTE CPU, send a reschedule IPI so it
-/// re-enters `schedule()` promptly — waking its idle `hlt`/`wfi`, or
-/// preempting its current user task at the next IRQ-exit. Local: the next
-/// return-to-user / idle-loop schedule consumes the flag.
-/// # C: O(1)
-pub fn resched_curr(cpu: u32) {
-    crate::preempt::set_need_resched_on(cpu as usize);
-    if cpu != this_cpu() {
-        // Hook installed at boot (set_send_resched_ipi_hook). Arch glue
-        // translates this dense scheduler CPU id to APIC/GIC routing state.
-        // SAFETY: non-blocking IPI/SGI to an online CPU; no-op if the hook is unset.
-        unsafe { let _ = super::send_resched_ipi(cpu); }
-    }
 }
 
 /// Honor a changed `cpus_allowed` (sched_setaffinity / cpuset): move `task`
@@ -284,9 +244,15 @@ pub fn update_affinity(task: &Arc<Task>, user: Option<cpu::CpuMask>, cpuset: Opt
 }
 
 fn relocate_for_affinity_live(task: &Arc<Task>, allowed: cpu::CpuMask) {
+    let online = cpu::smp::online_cpumask();
     // SAFETY: `global_for` is sound for any index and yields `None` for a CPU
     // that has not completed `install_global`, which the walk skips.
-    relocate_for_affinity_with(&|c| unsafe { global_for(c) }, task, allowed)
+    relocate_for_affinity_with(&|c| {
+        if !online.contains(c as usize) || !cpu::smp::accepts_work(c) { None } else {
+            // SAFETY: online publication follows runqueue installation.
+            unsafe { global_for(c) }
+        }
+    }, task, allowed)
 }
 
 /// Place `task` on `target`, falling back to `fallback` when `target` has no
@@ -470,7 +436,7 @@ where F: Fn(u32) -> Option<&'a Runqueue> {
         {
             let mut inner = rq.inner.lock_irqsave::<RqIrq>();
             // Sleeper credit on wake (F211).
-            task.set_vruntime_to_floor(inner.cfs.min_vruntime());
+            task.lift_vruntime(inner.cfs.min_vruntime());
             // Linux `ttwu_do_activate` -> `wakeup_preempt`: the wake only takes
             // the CPU away from the running task when the class/policy/priority
             // comparison says it should. Resching unconditionally here made

@@ -59,6 +59,23 @@ impl Driver for FailingProbeDrv {
 }
 static FAILING_PROBE_DRV: FailingProbeDrv = FailingProbeDrv;
 
+const NESTED_PARENT_ID: u16 = 0x6205;
+const NESTED_CHILD_ADDR: &str = "nested-child-test0";
+struct NestedChildDrv;
+impl Driver for NestedChildDrv {
+    fn bus(&self) -> &'static str { "platform" }
+    fn name(&self) -> &'static str { "nested-child-test" }
+    fn matches(&self, dev: &Device) -> bool {
+        dev.bus == "platform" && dev.device_id == NESTED_PARENT_ID
+    }
+    fn probe(&self, parent: &Arc<Device>) -> KResult<()> {
+        try_device_add_with_parent(Arc::new(Device::new(
+            "nested-bus", String::from(NESTED_CHILD_ADDR), 0, 1, 0)
+            .with_parent("platform", parent.addr.clone())), parent).map(|_| ())
+    }
+}
+static NESTED_CHILD_DRV: NestedChildDrv = NestedChildDrv;
+
 static PCI_IDENTITY_PROBES: AtomicU32 = AtomicU32::new(0);
 struct PciIdentityDrv;
 impl Driver for PciIdentityDrv {

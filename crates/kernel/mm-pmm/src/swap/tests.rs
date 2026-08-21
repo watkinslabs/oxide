@@ -95,6 +95,109 @@ fn draining_area_refuses_fork_reference_before_child_pte_publication() {
 }
 
 #[test]
+fn hibernation_lease_excludes_pageout_and_swapoff_then_rolls_back() {
+    let _guard = swap_test_lock();
+    let disk = MemDisk::<TaskList>::new(TEST_BLOCK_BYTES, TEST_DEVICE_BLOCKS);
+    write_linux_swap_header(&disk, &[]);
+    let name = "swap-hibernate-lease";
+    assert_ne!(block::registry::register(name, disk), REGISTRY_REJECTED_INDEX);
+    let kind = activate_registered(name).unwrap();
+    let lease = hibernate::reserve(kind, 2).unwrap();
+    assert_eq!(lease.pages(), &[FIRST_DATA_PAGE, FIRST_DATA_PAGE + 1]);
+    assert_eq!(begin_drain(kind), Err(SwapError::Busy));
+    assert_eq!(deactivate(kind), Err(SwapError::Busy));
+    let data = alloc::vec![TEST_PAGE_BYTE; hal::PAGE_SIZE_BYTES as usize];
+    let entry = store_page(&data, TEST_MEMCG).unwrap();
+    assert_eq!(entry.offset(), FIRST_DATA_PAGE + 2);
+    free_page(entry).unwrap();
+    drop(lease);
+    let entry = store_page(&data, TEST_MEMCG).unwrap();
+    assert_eq!(entry.offset(), FIRST_DATA_PAGE);
+    free_page(entry).unwrap();
+    deactivate(kind).unwrap();
+    assert!(block::registry::unregister(name));
+}
+
+#[test]
+fn hibernation_lease_resolves_the_selected_canonical_area_name() {
+    let _guard = swap_test_lock();
+    let disk = MemDisk::<TaskList>::new(TEST_BLOCK_BYTES, TEST_DEVICE_BLOCKS);
+    write_linux_swap_header(&disk, &[]);
+    let name = "swap-hibernate-name";
+    assert_ne!(block::registry::register(name, disk), REGISTRY_REJECTED_INDEX);
+    let kind = activate_registered(name).unwrap();
+    assert!(matches!(hibernate::begin_named("missing"), Err(SwapError::NoSuchArea)));
+    let dev_path = alloc::format!("/dev/{name}");
+    drop(hibernate::begin_named(&dev_path).unwrap());
+    let lease = hibernate::begin_named(name).unwrap();
+    assert_eq!(begin_drain(kind), Err(SwapError::Busy));
+    drop(lease);
+    deactivate(kind).unwrap();
+    assert!(block::registry::unregister(name));
+}
+
+#[test]
+fn swapfile_hibernation_uses_persistent_raw_page_geometry() {
+    let _guard = swap_test_lock();
+    let logical = MemDisk::<TaskList>::new(TEST_BLOCK_BYTES, TEST_DEVICE_BLOCKS);
+    write_linux_swap_header(&logical, &[]);
+    let raw = MemDisk::<TaskList>::new(TEST_BLOCK_BYTES, TEST_DEVICE_BLOCKS * 2);
+    let blocks_per_page = hal::PAGE_SIZE_BYTES / TEST_BLOCK_BYTES as u64;
+    let logical_pages = TEST_DEVICE_BLOCKS / blocks_per_page;
+    let header_page = 4u64;
+    let geometry = SwapFileGeometry { device_name: String::from("vda2"),
+        pages: (header_page..header_page + logical_pages).collect(), device: raw.clone() };
+    let kind = activate_file_with_priority(String::from("ext4:fs:42"),
+        String::from("/swapfile"), logical, DEFAULT_PRIORITY, geometry).unwrap();
+    let raw_device: Arc<dyn BlockDevice> = raw.clone();
+    let wrong_device: Arc<dyn BlockDevice> = MemDisk::<TaskList>::new(TEST_BLOCK_BYTES, TEST_DEVICE_BLOCKS * 2);
+    assert_eq!(hibernate::begin_target_device(&wrong_device, header_page).err(), Some(SwapError::NoSuchArea));
+    let mut lease = hibernate::begin_target_device(&raw_device, header_page).unwrap();
+    lease.reserve(2).unwrap();
+    assert_eq!(lease.header_page(), header_page);
+    assert_eq!(lease.pages(), &[header_page + 1, header_page + 2]);
+    let bytes = alloc::vec![TEST_PAGE_BYTE; hal::PAGE_SIZE_BYTES as usize];
+    lease.write_page(header_page + 1, &bytes).unwrap();
+    let mut request = BlockRequest::new_read((header_page + 1) * blocks_per_page,
+        blocks_per_page as u32, TEST_BLOCK_BYTES);
+    raw.submit_sync(&mut request).unwrap();
+    assert_eq!(request.buffer, bytes);
+    drop(lease);
+    deactivate(kind).unwrap();
+}
+
+#[test]
+fn swapfile_activation_rejects_aliasing_persistent_pages() {
+    let _guard = swap_test_lock();
+    let logical = MemDisk::<TaskList>::new(TEST_BLOCK_BYTES, TEST_DEVICE_BLOCKS);
+    write_linux_swap_header(&logical, &[]);
+    let raw = MemDisk::<TaskList>::new(TEST_BLOCK_BYTES, TEST_DEVICE_BLOCKS);
+    let blocks_per_page = hal::PAGE_SIZE_BYTES / TEST_BLOCK_BYTES as u64;
+    let logical_pages = (TEST_DEVICE_BLOCKS / blocks_per_page) as usize;
+    let geometry = SwapFileGeometry { device_name: String::from("vda2"),
+        pages: alloc::vec![1; logical_pages], device: raw };
+    assert_eq!(activate_file(String::from("ext4:fs:bad"), String::from("/bad"),
+        logical, geometry), Err(SwapError::Inval));
+}
+
+#[test]
+fn hibernation_lease_reservation_failure_restores_every_slot() {
+    let _guard = swap_test_lock();
+    let disk = MemDisk::<TaskList>::new(TEST_BLOCK_BYTES, TEST_DEVICE_BLOCKS);
+    write_linux_swap_header(&disk, &[]);
+    let name = "swap-hibernate-rollback";
+    assert_ne!(block::registry::register(name, disk), REGISTRY_REJECTED_INDEX);
+    let kind = activate_registered(name).unwrap();
+    assert!(matches!(hibernate::reserve(kind, TEST_DEVICE_BLOCKS as usize), Err(SwapError::NoSpace)));
+    let page = alloc::vec![TEST_PAGE_BYTE; hal::PAGE_SIZE_BYTES as usize];
+    let entry = store_page(&page, TEST_MEMCG).unwrap();
+    assert_eq!(entry.offset(), FIRST_DATA_PAGE);
+    free_page(entry).unwrap();
+    deactivate(kind).unwrap();
+    assert!(block::registry::unregister(name));
+}
+
+#[test]
 fn activation_rejects_non_swap_disk_without_leaking_claim() {
     let _guard = swap_test_lock();
     let disk = MemDisk::<TaskList>::new(TEST_BLOCK_BYTES, TEST_DEVICE_BLOCKS);
@@ -128,8 +231,13 @@ fn file_backing_records_linux_proc_swaps_identity_and_path() {
     write_linux_swap_header(&disk, &[]);
     let identity = alloc::string::String::from("ext4:test-fsid:test-ino");
     let path = alloc::string::String::from("/var/tmp/swapfile");
-    let device: Arc<dyn BlockDevice> = disk;
-    let kind = activate_file_with_priority(identity.clone(), path.clone(), device, DEFAULT_PRIORITY).unwrap();
+    let device: Arc<dyn BlockDevice> = disk.clone();
+    let blocks_per_page = hal::PAGE_SIZE_BYTES / TEST_BLOCK_BYTES as u64;
+    let pages = (0..TEST_DEVICE_BLOCKS / blocks_per_page).collect();
+    let geometry = SwapFileGeometry { device_name: String::from("swap-backing"),
+        pages, device: disk };
+    let kind = activate_file_with_priority(identity.clone(), path.clone(), device,
+        DEFAULT_PRIORITY, geometry).unwrap();
     let info = snapshot().into_iter().find(|area| area.kind == kind).unwrap();
     assert_eq!(info.name, identity);
     assert_eq!(info.display_name, path);

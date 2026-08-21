@@ -165,6 +165,11 @@ pub trait SuperOps: Send + Sync {
     /// `EOPNOTSUPP` for a decodable-handle request rather than minting one that
     /// can never be opened. # C: O(1)
     fn export_can_decode_fh(&self) -> bool { true }
+    /// True when this backend owns persistent state that system power
+    /// transitions must freeze. The default is false: pseudo filesystems have
+    /// no backing image and may host the command that starts the transition.
+    /// # C: O(1)
+    fn power_freeze_capable(&self) -> bool { false }
     /// `freeze_fs` — quiesce on-disk state for a consistent snapshot (FIFREEZE).
     /// Called once writers are blocked and dirty state synced. Default no-op
     /// (pseudo-fs with no backing store). # C: FS-dependent

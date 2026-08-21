@@ -66,6 +66,16 @@ unsafe fn mount_root() {
         step("device_mapper::init", || device_mapper::init().expect("device-mapper control registration failed"));
         step("scsi::init", scsi::init);
         step("md::init", md::init);
+        let _resume = step("hibernate::software_resume",
+            crate::kmain::hibernate_wiring::software_resume);
+        #[cfg(feature = "debug-hibernate")]
+        for disk in block::registry::snapshot() {
+            klog::write_raw(b"[hibernate] boot block name=");
+            klog::write_raw(disk.name.as_bytes());
+            klog::write_raw(b" serial=");
+            klog::write_raw(disk.serial.as_deref().unwrap_or("").as_bytes());
+            klog::write_raw(b"\n");
+        }
         let root_spec = crate::boot_cmdline::parameter_value(b"root")
             .expect("boot command line has no root=");
         let root_dev = block::registry::resolve_root_spec(root_spec)

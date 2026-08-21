@@ -60,7 +60,7 @@ media mount at all.
 |---|---|
 | DEFLATE / zlib | `miniz_oxide` |
 | Zstandard | `zstd` (`crates/shared/zstd`) |
-| LZO | `lzokay` |
+| LZO | `lzo1x` (`crates/shared/lzo1x`) |
 | LZ4 block | per-crate decoder, because the image formats need PARTIAL output-bounded decode |
 | XZ / LZMA | none in tree |
 

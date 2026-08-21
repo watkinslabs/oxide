@@ -9,23 +9,15 @@ use hal::pt_walker::SwapEntry;
 use sync::{Spinlock, TaskList};
 pub use discard::SwapDiscard;
 mod discard;
+mod layout;
+pub use layout::SwapFileGeometry;
+use layout::*;
+pub mod hibernate;
 const SWAP_AREA_COUNT: usize = SwapEntry::MAX_KIND as usize + 1;
-const SWAP_HEADER_PAGE: u64 = 0;
-const FIRST_DATA_PAGE: u64 = SWAP_HEADER_PAGE + 1;
-/// Width of every 32-bit little-endian field in the Linux swap header.
-const SWAP_HEADER_U32_BYTES: usize = core::mem::size_of::<u32>();
-/// Linux swap-header format version accepted by the `SWAPSPACE2` signature.
-const SWAPSPACE2_VERSION: u32 = 1;
 /// Initial PTE reference held by a slot made visible after a successful write.
 const INITIAL_SLOT_PTE_REFS: u32 = 1;
-const SWAP_HEADER_VERSION_OFFSET: usize = 1024;
-const SWAP_HEADER_LAST_PAGE_OFFSET: usize = SWAP_HEADER_VERSION_OFFSET + SWAP_HEADER_U32_BYTES;
-const SWAP_HEADER_BAD_PAGE_COUNT_OFFSET: usize = SWAP_HEADER_LAST_PAGE_OFFSET + SWAP_HEADER_U32_BYTES;
-const SWAP_HEADER_BAD_PAGES_OFFSET: usize = SWAP_HEADER_BAD_PAGE_COUNT_OFFSET + SWAP_HEADER_U32_BYTES;
-const SWAP_MAGIC: &[u8; 10] = b"SWAPSPACE2";
 /// Linux's implicit priority when `SWAP_FLAG_PREFER` is absent.
 pub const DEFAULT_PRIORITY: i32 = -2;
-struct SwapLayout { slots: usize, bad_pages: Vec<u32> }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SwapError {
     Busy,
@@ -52,6 +44,7 @@ enum Slot {
     Reserved,
     Writing,
     Releasing,
+    Hibernate,
     /// `refs` is the number of swap PTEs; `memcg` is the one canonical
     /// cgroup charge for their shared anonymous contents.
     Used { refs: u32, memcg: u64 },
@@ -62,10 +55,12 @@ struct Area {
     backing: SwapBacking,
     claimed: bool,
     draining: bool,
+    hibernating: bool,
     priority: i32,
     discard: SwapDiscard,
     device: Arc<dyn BlockDevice>,
     blocks_per_page: u32,
+    file_geometry: Option<SwapFileGeometry>,
     /// Sparse authoritative slot state. Absent entries are free; permanently
     /// unavailable header/bad pages are kept separately, so swapon never
     /// allocates RAM proportional to the logical swap device size.
@@ -79,7 +74,10 @@ impl Area {
         self.slots.values().filter(|slot| matches!(slot, Slot::Used { .. })).count() as u64
     }
     fn has_live_slots(&self) -> bool {
-        self.slots.values().any(|slot| matches!(slot, Slot::Writing | Slot::Releasing | Slot::Used { .. }))
+        self.hibernating || self.slots.values().any(|slot| matches!(slot, Slot::Writing | Slot::Releasing | Slot::Hibernate | Slot::Used { .. }))
+    }
+    fn has_hibernate_slots(&self) -> bool {
+        self.hibernating
     }
     fn page_block(&self, offset: u64) -> Result<u64> {
         offset.checked_mul(self.blocks_per_page as u64).ok_or(SwapError::Inval)
@@ -181,6 +179,7 @@ pub struct AreaInfo {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum SwapBacking { BlockDevice, File }
 
+
 /// Activate a block-registry disk and retain its canonical consumer claim for
 /// the lifetime of the area. Production `swapon` uses this entry point.
 /// # C: O(device pages + N_disks + header I/O)
@@ -211,7 +210,7 @@ fn activate_registered_inner(name: &str, priority: Option<i32>, discard: SwapDis
         Err(error) => { let _ = block::registry::release(name); return Err(error); }
     };
     match activate_inner(String::from(name), String::from(name), SwapBacking::BlockDevice,
-                         disk.dev.clone(), true, priority, discard, layout) {
+                         disk.dev.clone(), true, priority, discard, layout, None) {
         Ok(kind) => Ok(kind),
         Err(error) => {
             let _ = block::registry::release(name);
@@ -225,71 +224,46 @@ fn activate_registered_inner(name: &str, priority: Option<i32>, discard: SwapDis
 /// releases it when this canonical area drops. # C: O(device pages + header I/O)
 pub fn activate_device_with_priority(name: String, device: Arc<dyn BlockDevice>, priority: i32) -> Result<u8> {
     let layout = read_swap_layout(&device)?;
-    activate_inner(name.clone(), name, SwapBacking::BlockDevice, device, false, Some(priority), SwapDiscard::None, layout)
+    activate_inner(name.clone(), name, SwapBacking::BlockDevice, device, false,
+        Some(priority), SwapDiscard::None, layout, None)
 }
 
 /// Activate an ext4-backed swapfile. `name` is the inode-stable canonical
 /// identity; `display_name` is the pathname supplied to `swapon`, retained by
 /// the same area record for Linux `/proc/swaps` presentation. # C: O(header I/O)
-pub fn activate_file(name: String, display_name: String, device: Arc<dyn BlockDevice>) -> Result<u8> {
+pub fn activate_file(name: String, display_name: String, device: Arc<dyn BlockDevice>,
+                     geometry: SwapFileGeometry) -> Result<u8> {
     let layout = read_swap_layout(&device)?;
-    activate_inner(name, display_name, SwapBacking::File, device, false, None, SwapDiscard::None, layout)
+    activate_inner(name, display_name, SwapBacking::File, device, false, None,
+        SwapDiscard::None, layout, Some(geometry))
 }
 
 /// Activate an ext4-backed swapfile with an explicit Linux swap priority.
 /// # C: O(header I/O)
 pub fn activate_file_with_priority(name: String, display_name: String,
-                                   device: Arc<dyn BlockDevice>, priority: i32) -> Result<u8>
+                                   device: Arc<dyn BlockDevice>, priority: i32,
+                                   geometry: SwapFileGeometry) -> Result<u8>
 {
     let layout = read_swap_layout(&device)?;
-    activate_inner(name, display_name, SwapBacking::File, device, false, Some(priority), SwapDiscard::None, layout)
+    activate_inner(name, display_name, SwapBacking::File, device, false, Some(priority),
+        SwapDiscard::None, layout, Some(geometry))
 }
 
 /// Activate an ext4-backed swapfile with Linux priority and discard policy.
 /// # C: O(header I/O + activation discard)
 pub fn activate_file_with_options(name: String, display_name: String, device: Arc<dyn BlockDevice>,
-                                  priority: Option<i32>, discard: SwapDiscard) -> Result<u8>
+                                  priority: Option<i32>, discard: SwapDiscard,
+                                  geometry: SwapFileGeometry) -> Result<u8>
 {
     let layout = read_swap_layout(&device)?;
-    activate_inner(name, display_name, SwapBacking::File, device, false, priority, discard, layout)
-}
-
-fn read_swap_layout(device: &Arc<dyn BlockDevice>) -> Result<SwapLayout> {
-    let block_size = device.block_size() as u64;
-    let page_size = hal::PAGE_SIZE_BYTES;
-    if block_size == 0 || page_size % block_size != 0 { return Err(SwapError::Inval); }
-    let blocks_per_page = u32::try_from(page_size / block_size).map_err(|_| SwapError::Inval)?;
-    let pages = device.capacity_blocks() / blocks_per_page as u64;
-    if pages <= FIRST_DATA_PAGE { return Err(SwapError::Inval); }
-    let mut request = BlockRequest::new_read(SWAP_HEADER_PAGE, blocks_per_page, device.block_size());
-    device.submit_sync(&mut request).map_err(SwapError::from)?;
-    let page = request.buffer;
-    let magic_at = page.len().checked_sub(SWAP_MAGIC.len()).ok_or(SwapError::Inval)?;
-    if page.get(magic_at..) != Some(SWAP_MAGIC) { return Err(SwapError::Inval); }
-    let word = |off: usize| -> Result<u32> {
-        let bytes: [u8; SWAP_HEADER_U32_BYTES] = page.get(off..off + SWAP_HEADER_U32_BYTES).ok_or(SwapError::Inval)?.try_into().map_err(|_| SwapError::Inval)?;
-        Ok(u32::from_le_bytes(bytes))
-    };
-    if word(SWAP_HEADER_VERSION_OFFSET)? != SWAPSPACE2_VERSION { return Err(SwapError::Inval); }
-    let last_page = word(SWAP_HEADER_LAST_PAGE_OFFSET)? as u64;
-    if last_page < FIRST_DATA_PAGE || last_page >= pages { return Err(SwapError::Inval); }
-    let bad_count = word(SWAP_HEADER_BAD_PAGE_COUNT_OFFSET)? as usize;
-    let bad_end = SWAP_HEADER_BAD_PAGES_OFFSET.checked_add(bad_count.checked_mul(SWAP_HEADER_U32_BYTES).ok_or(SwapError::Inval)?).ok_or(SwapError::Inval)?;
-    if bad_end > magic_at { return Err(SwapError::Inval); }
-    let mut bad_pages = Vec::new();
-    bad_pages.try_reserve_exact(bad_count).map_err(|_| SwapError::NoMem)?;
-    for index in 0..bad_count {
-        let bad = word(SWAP_HEADER_BAD_PAGES_OFFSET + index * SWAP_HEADER_U32_BYTES)?;
-        if (bad as u64) < FIRST_DATA_PAGE || (bad as u64) > last_page || bad_pages.contains(&bad) { return Err(SwapError::Inval); }
-        bad_pages.push(bad);
-    }
-    let slots = usize::try_from(last_page.checked_add(1).ok_or(SwapError::Inval)?).map_err(|_| SwapError::Inval)?;
-    Ok(SwapLayout { slots, bad_pages })
+    activate_inner(name, display_name, SwapBacking::File, device, false, priority, discard,
+        layout, Some(geometry))
 }
 
 fn activate_inner(name: String, display_name: String, backing: SwapBacking,
                   device: Arc<dyn BlockDevice>, claimed: bool, priority: Option<i32>,
-                  discard: SwapDiscard, layout: SwapLayout) -> Result<u8> {
+                  discard: SwapDiscard, layout: SwapLayout,
+                  file_geometry: Option<SwapFileGeometry>) -> Result<u8> {
     let block_size = device.block_size() as u64;
     let page_size = hal::PAGE_SIZE_BYTES;
     if block_size == 0 || page_size % block_size != 0 { return Err(SwapError::Inval); }
@@ -297,7 +271,10 @@ fn activate_inner(name: String, display_name: String, backing: SwapBacking,
     let mut reserved = layout.bad_pages;
     reserved.sort_unstable();
     let discard = discard.for_device(device.supports_discard());
-    let mut area = Area { name, display_name, backing, claimed, draining: false, priority: DEFAULT_PRIORITY, discard, device: device.clone(), blocks_per_page,
+    if backing == SwapBacking::File {
+        validate_file_geometry(file_geometry.as_ref().ok_or(SwapError::Inval)?, layout.slots)?;
+    } else if file_geometry.is_some() { return Err(SwapError::Inval); }
+    let mut area = Area { name, display_name, backing, claimed, draining: false, hibernating: false, priority: DEFAULT_PRIORITY, discard, device: device.clone(), blocks_per_page, file_geometry,
         slots: BTreeMap::new(), slot_count: layout.slots, reserved, next_free: FIRST_DATA_PAGE as usize };
     // Linux's activation discard is best effort: failed discard is reported but
     // does not reject a usable swap area.
@@ -312,6 +289,7 @@ fn activate_inner(name: String, display_name: String, backing: SwapBacking,
     areas.areas[kind] = Some(area);
     Ok(kind as u8)
 }
+
 
 /// Remove an inactive swap area. `swapoff` must migrate every used page before
 /// this operation; rejecting a nonempty area prevents losing a live PTE's data.
@@ -332,7 +310,7 @@ pub fn deactivate(kind: u8) -> Result<()> {
 pub fn begin_drain(kind: u8) -> Result<()> {
     let mut areas = AREAS.lock();
     let area = areas.areas.get_mut(kind as usize).and_then(Option::as_mut).ok_or(SwapError::NoSuchArea)?;
-    if area.draining { return Err(SwapError::Busy); }
+    if area.draining || area.has_hibernate_slots() { return Err(SwapError::Busy); }
     area.draining = true;
     Ok(())
 }

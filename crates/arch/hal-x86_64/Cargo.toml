@@ -28,7 +28,8 @@ debug-irq = []
 # default-on via boot-x86_64 so the handler prints in every build; without
 # it the NMI is still handled (print skipped) and iretq-resumes.
 debug-watchdog = []
-debug-all = ["debug-irq", "debug-watchdog"]
+debug-hibernate = []
+debug-all = ["debug-irq", "debug-watchdog", "debug-hibernate"]
 # Kalloc corruption hunt (docs/02, dev-only): compile the in-kernel #DB
 # (vector 1) hardware-watchpoint handler in `fault.rs` + the DR0/DR1 arming
 # primitives in `regs.rs`. Paired with kalloc's `debug-hw-watchpoint` hook,

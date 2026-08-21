@@ -68,14 +68,14 @@ pub mod wakelat;
 
 pub use chroot_refs::chroot_fs_refs;
 pub use ttwu::{try_to_wake_up, ttwu_deferred, select_task_rq, resched_curr, relocate_for_affinity,
-    update_affinity};
+    update_affinity, wake_list_debug};
 
 pub use runqueue::{global, Runqueue};
 pub use schedule::{
     current, current_mount_ns, current_chroot_root, mark_done, schedule,
     cond_resched, oxide_finish_task_switch, park_yield, preempt_schedule_irq, sched_yield, tick_yield,
     install_default_runqueue, runqueue_active, RunStats,
-    install_sched_switch_hook, SchedSwitchFn,
+    install_sched_switch_hook, pin_current_to_cpu, unpin_current_cpu, SchedSwitchFn,
 };
 pub use spawn::{arm_user_entry, new_user_task_unpublished};
 pub use spawn::{next_tid, publish_new_task, spawn_kernel_thread, spawn_user_thread,
@@ -104,7 +104,8 @@ pub use threaded_irq::{request as request_threaded_irq, free as free_threaded_ir
 pub use send::{force_fatal_sig, force_sig_fault, force_sig_pkey_fault, force_sig_info_to_task, send_sig_priv_group,
                send_sig_priv_self, send_sig_self_info, send_signal, SendErr};
 pub use sigpend::{
-    deliverable_signals, deliverable_signals_self, fatal_kill_pending, fatal_kill_pending_self,
+    deliverable_signals, deliverable_signals_self, interruptible_work_pending_self,
+    fatal_kill_pending, fatal_kill_pending_self,
     send_signal_self, signal_wake_up,
     wake_if_sleeping, vfork_done,
     zap_other_threads, Signum,

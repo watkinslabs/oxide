@@ -57,7 +57,7 @@ pub use header::{
     FDT_LAST_COMPAT_VERSION, FDT_MAGIC, FDT_MAX_TOTALSIZE, FDT_RSVMAP_ENTRY_LEN,
 };
 pub use props::{
-    bootargs_via_prefix, chosen_bootargs, memory_regions, contains_string, enum_cpus, first_memory_region, machine_model, pl011_clock_hz, simple_framebuffer, SimpleFramebuffer,
+    bootargs_via_prefix, chosen_bootargs, memory_regions, contains_string, enum_cpus, first_memory_region, machine_model, pl011_clock_hz, pl031_rtc, simple_framebuffer, Pl031Rtc, SimpleFramebuffer,
 };
 pub use cpu::{cpu_nodes, CpuNode};
 pub use opp::{cpu_opp_tables, ClockReference, CpuOppTable, OppVoltage, OperatingPoint, RequiredOpp};

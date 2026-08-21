@@ -18,6 +18,7 @@ pub mod cpufreq;
 pub mod idle;
 pub mod psci;
 pub mod providers;
+pub mod rtc;
 pub mod scmi;
 
 /// Direct-map virtual address of the retained blob; 0 = none retained.

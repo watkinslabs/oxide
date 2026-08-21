@@ -45,14 +45,14 @@ impl vfs::FileOps for NetlinkFileOps {
                     {
                         // Interrupted receives derive their errno from the
                         // effective receive timeout.
-                        if sched::live::deliverable_signals_self() != 0 {
+                        if sched::live::interruptible_work_pending_self() {
                             return Err(net::sock_intr::sock_intr_vfs(s.recv_deadline_ns()));
                         }
                         if s.arm_receive_wait() {
                             // SAFETY: this syscall process is parked through the socket wait owner.
                             unsafe { sched::live::schedule::schedule(); }
                             s.waiters.remove_current();
-                            if sched::live::deliverable_signals_self() != 0 {
+                            if sched::live::interruptible_work_pending_self() {
                                 return Err(net::sock_intr::sock_intr_vfs(s.recv_deadline_ns()));
                             }
                         }

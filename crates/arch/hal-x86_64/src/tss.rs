@@ -282,12 +282,12 @@ pub unsafe fn install_tss() {
     unsafe { install_tss_for_cpu(0); }
 }
 
-/// Load CPU `cpu`'s task register with its own per-CPU TSS selector
+/// Rebuild and load CPU `cpu`'s task register with its own per-CPU TSS selector
 /// (`TSS_SEL + cpu*0x10`). Called from AP bring-up AFTER the AP's gs /
 /// per-CPU area is established. Each CPU ltr's a DISTINCT descriptor, so
 /// the busy bit is per-descriptor (no cross-CPU #GP on the same selector).
 /// # SAFETY: caller is the owning CPU's bring-up, CPL=0, IRQs masked; the
-/// GDT descriptor at `TSS_SEL + cpu*0x10` is present + TYPE=0x9 (available).
+/// GDT is loaded and no other CPU can load or rewrite this CPU's descriptor.
 /// # C: O(1)
 pub unsafe fn install_tss_for_cpu(cpu: u16) {
     #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
@@ -299,7 +299,12 @@ pub unsafe fn install_tss_for_cpu(cpu: u16) {
         // TSS header's own (mostly zero) bytes.
         // SAFETY: this is CPU `cpu`'s own bring-up, single-threaded, and it is the sole writer of its TSS slot.
         unsafe { io_bitmap::init_for_cpu(cpu as usize); }
-        // SAFETY: single `ltr`; legal at CPL=0; descriptor available per fn contract.
+        // The prior incarnation marked this shared-GDT entry busy. INIT resets
+        // TR, not the descriptor bytes, so every CPU bring-up republishes the
+        // complete available descriptor before `ltr`.
+        // SAFETY: this stopped/current CPU exclusively owns its descriptor pair.
+        unsafe { crate::gdt::reset_tss_descriptor(cpu as usize); }
+        // SAFETY: single `ltr`; legal at CPL=0; reset above made the descriptor available.
         unsafe { oxide_load_tr(sel); }
     }
     #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
@@ -308,6 +313,25 @@ pub unsafe fn install_tss_for_cpu(cpu: u16) {
         // memory and keeps the hosted TSS image identical to the kernel's.
         unsafe { io_bitmap::init_for_cpu(cpu as usize); }
     }
+}
+
+/// Republish the descriptor named by a saved TR and load it.
+/// # SAFETY: `sel` names this stopped/current CPU's canonical per-CPU TSS;
+/// the kernel GDT is loaded and IRQs are masked.
+/// # C: O(1)
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub(crate) unsafe fn reload_saved_tr(sel: u16) {
+    if sel == 0 { return; }
+    if let Some(offset) = sel.checked_sub(TSS_SEL) {
+        let cpu = usize::from(offset >> 4);
+        if offset & 0x0f == 0 && cpu < NR_TSS {
+            // SAFETY: validated selector maps one-to-one to the caller-owned descriptor.
+            unsafe { crate::gdt::reset_tss_descriptor(cpu); }
+        }
+    }
+    // SAFETY: caller guarantees the saved selector is canonical; preserving
+    // `ltr` here also preserves fail-closed behavior for a corrupt record.
+    unsafe { oxide_load_tr(sel); }
 }
 
 #[cfg(test)]

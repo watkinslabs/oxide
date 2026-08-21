@@ -1,7 +1,7 @@
 use core::sync::atomic::Ordering;
 use vtdata::Emulator;
 
-use crate::kernel::shared::{lock_vt, try_lock_vt, DIRTY, READY};
+use crate::kernel::shared::{lock_vt, queue_flush, try_lock_vt, DIRTY, READY};
 
 pub fn console_dims() -> Option<(u16, u16)> {
     lock_vt().as_ref().map(|st| (st.rows, st.cols))
@@ -30,7 +30,7 @@ pub fn force_repaint() {
             }
         }
     }
-    softirq::raise(softirq::Slot::FbconFlush);
+    queue_flush();
 }
 
 pub fn scrolldelta(lines: isize) {
@@ -55,7 +55,7 @@ pub fn scrolldelta(lines: isize) {
             }
         }
     }
-    softirq::raise(softirq::Slot::FbconFlush);
+    queue_flush();
 }
 
 pub fn screen_dump(with_attr: bool) -> alloc::vec::Vec<u8> {
@@ -116,7 +116,7 @@ pub fn resize_vt(vt: u8, cols: u16, rows: u16) -> bool {
         }
     }
     if blitted {
-        softirq::raise(softirq::Slot::FbconFlush);
+        queue_flush();
     }
     true
 }

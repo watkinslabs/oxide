@@ -95,7 +95,7 @@ fn accept_common(args: &SyscallArgs, flags: u64) -> i64 {
                 // `__skb_wait_for_more_packets`:
                 // `err = sock_intr_errno(timeo)` off `sock_rcvtimeo`.
                 let wait = net::sock_intr::accept_wait_verdict(nonblock,
-                    sched::live::deliverable_signals_self() != 0,
+                    sched::live::interruptible_work_pending_self(),
                     deadline.is_some_and(|dl| now() >= dl),
                     deadline.unwrap_or(net::sock_intr::NO_TIMEOUT));
                 match wait {
@@ -205,7 +205,7 @@ fn vsock_accept_file(vs: &Arc<net::vsock_socket::VsockSocket>, addr_p: u64, len_
     let conn = loop {
         if let Some(c) = net::vsock::TABLE.pop_accept_exact(&listener) { break c; }
         match net::sock_intr::accept_wait_verdict(nonblock,
-            sched::live::deliverable_signals_self() != 0, false, vs.recv_deadline_ns()) {
+            sched::live::interruptible_work_pending_self(), false, vs.recv_deadline_ns()) {
             net::sock_intr::AcceptWaitVerdict::Eagain => return Err(-(Errno::Eagain.as_i32() as i64)),
             net::sock_intr::AcceptWaitVerdict::Interrupted(_) =>
                 return Err(crate::net_errno::sock_intr_errno(vs.recv_deadline_ns())),

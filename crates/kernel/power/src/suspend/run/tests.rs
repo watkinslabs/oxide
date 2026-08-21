@@ -212,6 +212,20 @@ fn a_complete_freeze_cycle_runs_the_idle_table() {
 }
 
 #[test]
+fn hibernation_suspend_mode_reuses_only_the_device_half() {
+    let _g = crate::suspend::test_lock();
+    reset();
+    let claim = crate::transition::try_claim().unwrap();
+    assert_eq!(suspend_devices_and_enter(SuspendState::Mem, &backend(), tables()), Ok(()));
+    let events = trace();
+    for outer in [M_SYNC, M_FREEZE_U, M_FREEZE_K, M_THAW] {
+        assert!(!events.contains(&outer), "device-only cycle repeated outer step {outer}");
+    }
+    assert!(events.contains(&M_DPREP) && events.contains(&M_PENTER));
+    drop(claim);
+}
+
+#[test]
 fn every_failure_point_unwinds_exactly_what_the_table_says() {
     let _g = crate::suspend::test_lock();
     for state in [SuspendState::Mem, SuspendState::ToIdle] {
@@ -375,4 +389,5 @@ fn errnos_are_the_linux_values() {
     assert_eq!(errno_of(Error::Again), -11);
     assert_eq!(errno_of(Error::Nomem), -12);
     assert_eq!(errno_of(Error::Nodata), -61);
+    assert_eq!(errno_of(Error::Nospc), -28);
 }

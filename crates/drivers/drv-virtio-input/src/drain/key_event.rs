@@ -57,7 +57,7 @@ fn handle_vt_switch(keycode: u16, pressed: bool) -> bool {
 #[cfg(target_os = "oxide-kernel")]
 fn deferred_cad(_arg: usize) {
     // SAFETY: runs on a kworker in process context, exactly where Linux's `deferred_cad` work item runs; the restart is irreversible by contract.
-    unsafe { power::terminal(power::TerminalCmd::Restart) }
+    let _ = unsafe { power::terminal(power::TerminalCmd::Restart) };
 }
 
 fn handle_ctrl_alt_del(keycode: u16, pressed: bool) -> bool {

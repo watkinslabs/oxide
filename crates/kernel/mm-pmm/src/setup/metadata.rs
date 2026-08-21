@@ -295,6 +295,16 @@ pub fn reclaim_snapshot() -> Option<crate::reclaim::ReclaimSnapshot> {
     Some(unsafe { (&*ptr).snapshot() })
 }
 
+/// Run one bounded anonymous two-list aging generation for hibernation
+/// reclaim. # C: O(budget); # Lk: TaskList
+pub(crate) fn age_anon_for_hibernate(budget: usize) -> crate::reclaim::Aging {
+    let Some(meta) = page_meta() else { return crate::reclaim::Aging::default(); };
+    let ptr = RECLAIM_PTR.load(core::sync::atomic::Ordering::Acquire);
+    if ptr.is_null() { return crate::reclaim::Aging::default(); }
+    // SAFETY: init_page_meta publishes the allocation once and PMM never frees it.
+    unsafe { (&*ptr).age_anon(meta, budget).unwrap_or_default() }
+}
+
 /// Snapshot the owning cgroup for a resident page. # C: O(1)
 pub fn memcg_for_pa(pa: u64) -> u64 {
     page_meta().and_then(|meta| meta.memcg(hal::Pfn(pa / hal::PAGE_SIZE_BYTES))).unwrap_or(0)

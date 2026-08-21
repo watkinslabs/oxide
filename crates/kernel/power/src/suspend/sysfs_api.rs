@@ -16,13 +16,18 @@ use super::state::SuspendState;
 pub struct PowerAttr { pub name: &'static str, pub writable: bool }
 
 /// The attributes directly under `/sys/power`.
-pub const ATTRS: [PowerAttr; 6] = [
+pub const ATTRS: [PowerAttr; 11] = [
     PowerAttr { name: "state",             writable: true },
     PowerAttr { name: "mem_sleep",         writable: true },
     PowerAttr { name: "wakeup_count",      writable: true },
     PowerAttr { name: "pm_async",          writable: true },
     PowerAttr { name: "pm_debug_messages", writable: true },
     PowerAttr { name: "sync_on_suspend",   writable: true },
+    PowerAttr { name: "disk",              writable: true },
+    PowerAttr { name: "resume",            writable: true },
+    PowerAttr { name: "resume_offset",     writable: true },
+    PowerAttr { name: "image_size",        writable: true },
+    PowerAttr { name: "reserved_size",     writable: true },
 ];
 
 /// The read-only attributes under `/sys/power/suspend_stats`.
@@ -34,7 +39,8 @@ pub const STATS_ATTRS: [&str; 16] = attrs::STATS_ATTRS;
 pub fn show(attr: &str) -> KResult<Vec<u8>> {
     let o = ops::suspend_ops();
     let body = match attr {
-        "state"     => attrs::render_state(state::pm_states(o)),
+        "state"     => crate::hibernate::sysfs::append_state(
+            attrs::render_state(state::pm_states(o))),
         "mem_sleep" => attrs::render_mem_sleep(state::mem_sleep_states(o),
                            tunables::mem_sleep_current()),
         "wakeup_count" => return render_wakeup_count(
@@ -42,7 +48,7 @@ pub fn show(attr: &str) -> KResult<Vec<u8>> {
         "pm_async"          => attrs::render_bool(tunables::pm_async()),
         "pm_debug_messages" => attrs::render_bool(tunables::pm_debug_messages()),
         "sync_on_suspend"   => attrs::render_bool(tunables::sync_on_suspend()),
-        _ => return Err(Error::Nodata),
+        _ => return crate::hibernate::sysfs::show(attr).unwrap_or(Err(Error::Nodata)),
     };
     Ok(attrs::bytes(body))
 }
@@ -76,7 +82,7 @@ pub fn store(attr: &str, buf: &[u8]) -> KResult<()> {
         "pm_async"          => set_bool(buf, tunables::set_pm_async),
         "pm_debug_messages" => set_bool(buf, tunables::set_pm_debug_messages),
         "sync_on_suspend"   => set_bool(buf, tunables::set_sync_on_suspend),
-        _ => Err(Error::Inval),
+        _ => crate::hibernate::sysfs::store(attr, buf).unwrap_or(Err(Error::Inval)),
     }
 }
 
@@ -85,6 +91,10 @@ fn set_bool(buf: &[u8], set: fn(bool)) -> KResult<()> {
 }
 
 fn store_state(buf: &[u8]) -> KResult<()> {
+    if matches!(buf, b"disk" | b"disk\n") {
+        if !crate::hibernate::entry::available() { return Err(Error::Inval); }
+        return crate::hibernate::entry::hibernate();
+    }
     let o = ops::suspend_ops();
     let written = state::decode_state(state::pm_states(o), buf);
     if written == SuspendState::On { return Err(Error::Inval); }

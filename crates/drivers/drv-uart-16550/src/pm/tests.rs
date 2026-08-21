@@ -191,3 +191,33 @@ fn the_callback_table_covers_all_three_transitions_and_no_others() {
     assert!(PM_OPS.prepare.is_none() && PM_OPS.complete.is_none());
     assert!(PM_OPS.suspend_late.is_none() && PM_OPS.suspend_noirq.is_none());
 }
+
+#[test]
+fn sleep_stops_runtime_before_polled_output_and_resume_rejoins_one_ier_owner() {
+    let mut f = Fake::programmed();
+    let mut tx = crate::tx::TxEngine::<8>::new();
+    tx.start_runtime();
+    tx.enqueue(b"queued");
+    f.data[REG_IER as usize] = tx.ier();
+
+    let saved = suspend_runtime(&mut f, &mut tx);
+    assert!(!tx.runtime());
+    assert_eq!(tx.ier(), IER_NONE);
+    assert_eq!(f.data[REG_IER as usize], IER_NONE);
+
+    let writes = f.writes.len();
+    if tx.runtime() {
+        let transition = tx.enqueue(b"debug");
+        if transition.ier_changed { f.write(REG_IER, tx.ier()); }
+    } else {
+        for &byte in b"debug" { poll_byte(&mut f, byte); }
+    }
+    assert_eq!(f.data[REG_IER as usize], IER_NONE,
+        "polled diagnostics must not resurrect the interrupt source");
+    assert!(f.writes.len() > writes, "polled diagnostics must remain visible");
+
+    resume_runtime(&mut f, &mut tx, saved);
+    assert!(tx.runtime());
+    assert_eq!(f.data[REG_IER as usize], tx.ier(),
+        "resume must publish one matching runtime and hardware IER truth");
+}

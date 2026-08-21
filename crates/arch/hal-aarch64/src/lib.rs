@@ -32,6 +32,8 @@ pub mod cpuid;
 mod fault;
 mod exception_table;
 mod fpu;
+// Suspend-to-disk header and collision-safe restore plan (`32b§11`).
+pub mod hibernate;
 pub mod por;
 pub mod hw_breakpoint;
 mod mmu;

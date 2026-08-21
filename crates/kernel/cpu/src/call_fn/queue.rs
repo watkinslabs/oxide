@@ -232,4 +232,11 @@ impl CallQueues {
             .state
             .store(SlotState::Idle as u32, Ordering::Release);
     }
+
+    /// Release a terminal call from inside its target handler, before that
+    /// handler enters an architecture state which cannot return. # C: O(1)
+    pub fn complete_terminal(&self, sender: usize, target: usize) {
+        self.slots[Self::idx(sender, target)]
+            .state.store(SlotState::Idle as u32, Ordering::Release);
+    }
 }

@@ -50,7 +50,7 @@ pub(super) fn mq_clock_realtime_ns() -> u64 { timekeeper::realtime_ns() }
 /// `None` = park again.
 /// # C: O(N_sig)
 pub(super) fn mq_wait_verdict(deadline: Option<u64>) -> Option<i64> {
-    let signalled = sched::live::deliverable_signals_self() != 0;
+    let signalled = sched::live::interruptible_work_pending_self();
     let timed_out = deadline.map(|d| mq_clock_monotonic_ns() >= d).unwrap_or(false);
     mqueue_wait::wq_sleep_verdict(false, signalled, timed_out).to_return()
 }

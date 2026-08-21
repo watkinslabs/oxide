@@ -3,12 +3,13 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-use core::cell::RefCell;
+use alloc::sync::Arc;
 
 use crate::bdl::Geometry;
 use crate::generic::{self, OutputRoute, Plan};
 use crate::graph::{self, Codec, CodecBus};
 use crate::regs::Regs;
+use crate::ownership::RegLock;
 use crate::stream::Stream;
 use crate::transport::{self, Rings};
 use crate::uapi::*;
@@ -19,29 +20,28 @@ use crate::widget;
 /// driver lock is held.
 pub struct CodecPort<'a> {
     regs: Regs,
-    rings: RefCell<&'a mut Rings>,
+    rings: &'a RegLock<Rings>,
     addr: u8,
 }
 
 impl<'a> CodecPort<'a> {
     /// # C: O(1)
-    pub fn new(regs: Regs, rings: &'a mut Rings, addr: u8) -> Self {
-        Self { regs, rings: RefCell::new(rings), addr }
+    pub fn new(regs: Regs, rings: &'a RegLock<Rings>, addr: u8) -> Self {
+        Self { regs, rings, addr }
     }
 }
 
 impl CodecBus for CodecPort<'_> {
     fn command(&self, nid: u8, cmd: u16, payload: u16) -> Option<u32> {
         let command = verb::make_verb(self.addr, nid, cmd, payload)?;
-        let mut rings = self.rings.borrow_mut();
-        transport::exec(&self.regs, &mut rings, command)
+        transport::exec(&self.regs, self.rings, command)
     }
 }
 
 /// Everything one controller owns.
 pub struct Hda {
     pub regs: Regs,
-    pub rings: Rings,
+    pub rings: Arc<RegLock<Rings>>,
     pub playback: Stream,
     pub capture: Stream,
     pub codec: Option<Codec>,
@@ -61,15 +61,62 @@ pub struct Hda {
 /// Jacks the driver tracks presence for.
 pub const MAX_JACKS: usize = 4;
 
+/// Immutable hard-IRQ endpoint for one controller. It shares only the
+/// bounded register/ring state with process-side codec commands.
+pub struct IrqEndpoint {
+    regs: Regs,
+    playback_index: u8,
+    capture_index: u8,
+}
+
+impl IrqEndpoint {
+    /// # C: O(1)
+    pub fn new(hda: &Hda) -> Self {
+        Self {
+            regs: hda.regs,
+            playback_index: hda.playback.index,
+            capture_index: hda.capture.index,
+        }
+    }
+
+    /// Acknowledge one controller interrupt and publish completed responses.
+    /// # C: O(new responses)
+    pub fn handle(&self, ring_lock: &RegLock<Rings>) -> bool {
+        let mut rings = transport::lock_regs(ring_lock);
+        let status = self.regs.r32(REG_INTSTS);
+        if status == 0 || status == u32::MAX { return false; }
+        for index in [self.playback_index, self.capture_index] {
+            if status & (1u32 << index) == 0 { continue; }
+            let sd_status = self.regs.r8(self.regs.sd(index) + SD_STS);
+            self.regs.w8(self.regs.sd(index) + SD_STS, SD_INT_MASK as u8);
+            let _ = sd_status;
+        }
+        let rirb = self.regs.r8(REG_RIRBSTS);
+        if rirb & RIRBSTS_INT_MASK != 0 {
+            self.regs.w8(REG_RIRBSTS, RIRBSTS_INT_MASK);
+            if rirb & RIRBSTS_IRQ != 0 { transport::update_rirb(&self.regs, &mut rings); }
+        }
+        true
+    }
+}
+
 impl Hda {
     /// Take the controller out of reset, start the command rings, and return
     /// the codec-presence mask. # C: O(reset timeouts)
     pub fn bring_up(&mut self) -> Option<u16> {
         let present = transport::reset_link(&self.regs)?;
         transport::clear_interrupts(&self.regs, self.streams);
-        transport::init_cmd_io(&self.regs, &mut self.rings, self.interrupts);
+        transport::init_cmd_io(&self.regs, &mut transport::lock_regs(&self.rings), self.interrupts);
         if self.interrupts { self.regs.set32(REG_INTCTL, INT_CTRL_EN | INT_GLOBAL_EN); }
         Some(present)
+    }
+
+    /// Enable controller and response interrupts after the IRQ endpoint is
+    /// reachable from the registry. # C: O(1)
+    pub fn enable_interrupts(&mut self) {
+        self.regs.set8(REG_RIRBCTL, RIRBCTL_IRQ_EN);
+        self.regs.set32(REG_INTCTL, INT_CTRL_EN | INT_GLOBAL_EN);
+        self.interrupts = true;
     }
 
     /// Enumerate the first codec slot that answers with an audio function
@@ -77,7 +124,7 @@ impl Hda {
     pub fn enumerate(&mut self, present: u16) -> bool {
         for addr in 0..MAX_CODECS {
             if present & (1 << addr) == 0 { continue; }
-            let port = CodecPort::new(self.regs, &mut self.rings, addr);
+            let port = CodecPort::new(self.regs, &self.rings, addr);
             let Some(codec) = graph::parse(&port, addr) else { continue; };
             let plan = generic::build(&codec);
             if plan.primary().is_none() && plan.primary_capture().is_none() { continue; }
@@ -88,10 +135,10 @@ impl Hda {
         false
     }
 
-    fn port(&mut self) -> Option<CodecPort<'_>> {
+    fn port(&self) -> Option<CodecPort<'_>> {
         let addr = self.codec.as_ref()?.addr;
         let regs = self.regs;
-        Some(CodecPort::new(regs, &mut self.rings, addr))
+        Some(CodecPort::new(regs, &self.rings, addr))
     }
 
     /// Put the function group and every widget into D0. # C: O(widgets)
@@ -270,28 +317,6 @@ impl Hda {
                      widget::amp_set_payload(output, index, left, right, mute, gain)).is_some()
     }
 
-    /// Service one controller interrupt: acknowledge every stream that
-    /// completed a period and drain the response ring.
-    /// # C: O(streams + new responses)
-    pub fn handle_interrupt(&mut self) -> bool {
-        let status = self.regs.r32(REG_INTSTS);
-        if status == 0 || status == u32::MAX { return false; }
-        for index in [self.playback.index, self.capture.index] {
-            if status & (1u32 << index) == 0 { continue; }
-            let sd_status = self.regs.r8(self.regs.sd(index) + SD_STS);
-            self.regs.w8(self.regs.sd(index) + SD_STS, SD_INT_MASK as u8);
-            let _ = sd_status;
-        }
-        let rirb = self.regs.r8(REG_RIRBSTS);
-        if rirb & RIRBSTS_INT_MASK != 0 {
-            // Acknowledge before draining, so a response arriving during the
-            // drain still raises the next interrupt.
-            self.regs.w8(REG_RIRBSTS, RIRBSTS_INT_MASK);
-            if rirb & RIRBSTS_IRQ != 0 { transport::update_rirb(&self.regs, &mut self.rings); }
-        }
-        true
-    }
-
     /// Drain the queued unsolicited responses, re-sense every jack they
     /// name, and report the ones whose presence changed. Sensing needs a
     /// codec round trip, so this runs in process context rather than in the
@@ -339,10 +364,11 @@ impl Hda {
 
     /// Take one queued unsolicited response. # C: O(UNSOL_QUEUE)
     pub fn take_unsolicited(&mut self) -> Option<(u32, u32)> {
-        if self.rings.unsolicited_count == 0 { return None; }
-        let head = self.rings.unsolicited[0];
-        self.rings.unsolicited.copy_within(1.., 0);
-        self.rings.unsolicited_count -= 1;
+        let mut rings = transport::lock_regs(&self.rings);
+        if rings.unsolicited_count == 0 { return None; }
+        let head = rings.unsolicited[0];
+        rings.unsolicited.copy_within(1.., 0);
+        rings.unsolicited_count -= 1;
         Some(head)
     }
 

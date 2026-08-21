@@ -62,7 +62,7 @@ pub(super) fn connect(sock: &Arc<InetSocket>, addr: crate::UnixAddr, nonblock: b
             Err(NetError::Eagain) if nonblock => return Err(NetError::Eagain),
             Err(NetError::Eagain) => {
                 // A signal interrupts through `sock_intr_errno(timeo)`.
-                if sched::live::deliverable_signals_self() != 0 {
+                if sched::live::interruptible_work_pending_self() {
                     return Err(crate::sock_intr::sock_intr_net(deadline_ns));
                 }
                 if crate::sock_clock::deadline_expired(deadline_ns) {

@@ -16,6 +16,7 @@ pub use shared::{FlushFn, GeometrySink, ReplyFn};
 #[cfg(test)]
 pub(crate) use shared::CONSOLE_TEST_DOMAIN;
 pub use runtime::{
-    drain_answerback, kernel_init, kernel_rebind, kernel_unregister, set_geometry_sink, set_reply_sink, set_vt_graphics_mode,
-    switch_vt, tick_drain, vt_console_sink, vt_write,
+    console_resume, console_suspend, drain_answerback, kernel_init, kernel_rebind, kernel_unregister,
+    set_geometry_sink, set_reply_sink, set_vt_graphics_mode, switch_vt, tick_drain,
+    vt_console_sink, vt_write,
 };

@@ -29,6 +29,7 @@ mod config_access;
 mod aer;
 mod topology;
 mod virtio_bus;
+mod virtio_pm;
 mod virtio_child;
 mod virtio_drv;
 mod trace;

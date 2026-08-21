@@ -21,6 +21,8 @@ pub const FREEZE_SLEEP_MAX_US: u64 = 8_000;
 /// The per-task facts the freeze decision reads.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub struct TaskFreezeFacts {
+    /// Removed from the live task table, but still Arc-pinned by another owner.
+    pub reaped: bool,
     /// A kernel thread rather than a userspace task.
     pub kernel_thread: bool,
     /// Marked never-freeze; must keep running across the transition.
@@ -58,7 +60,7 @@ impl FreezePhase {
 /// the demand would otherwise apply to it.
 /// # C: O(1)
 pub fn freezing(phase: FreezePhase, facts: TaskFreezeFacts) -> bool {
-    if facts.nofreeze || facts.suspend_task { return false; }
+    if facts.reaped || facts.nofreeze || facts.suspend_task { return false; }
     if facts.oom_victim { return false; }
     if phase.freezing_kernel { return true; }
     phase.freezing_user && !facts.kernel_thread

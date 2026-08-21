@@ -12,6 +12,17 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
     /// # C: O(len_pfn × MAX_ORDER)
     /// # Ctx: pre-init, single-CPU
     pub fn reserve_early(&self, start: Pfn, len_pfn: u64) -> KResult<()> {
+        self.reserve_early_inner(start, len_pfn, false)
+    }
+
+    /// Permanently reserve a boot range whose contents must not enter a hibernation image.
+    /// # C: O(len_pfn × MAX_ORDER)
+    /// # Ctx: pre-init, single-CPU
+    pub fn reserve_early_nosave(&self, start: Pfn, len_pfn: u64) -> KResult<()> {
+        self.reserve_early_inner(start, len_pfn, true)
+    }
+
+    fn reserve_early_inner(&self, start: Pfn, len_pfn: u64, nosave: bool) -> KResult<()> {
         let mut g = self.inner.lock_irqsave::<I>();
         let end = start.0.checked_add(len_pfn).ok_or(Error::OutOfRange)?;
         if end > g.pfn_max { return Err(Error::OutOfRange); }
@@ -25,6 +36,7 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
             let Some(mut o) = k else {
                 // Page already allocated/reserved by an earlier call,
                 // or outside seeded RAM. Skip.
+                if nosave { self.hibernate_forbid(Pfn(p)); }
                 p += 1;
                 continue;
             };
@@ -33,6 +45,7 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
             // SAFETY: bitmap-truth says blk is on free_list[o].
             let zi = g.zi(blk);
             let mt = g.migratetype(blk);
+            // SAFETY: bitmap-truth says this exact block is linked on the derived list.
             unsafe { g.unlink_free(&self.backing, blk, o, mt) };
             g.bitmap_clear(o, blk >> o);
             g.free_count[zi][mt.index()][o as usize] -= 1;
@@ -61,6 +74,7 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
             g.allocated += 1;
             g.reserved += 1;
             g.managed[zi] -= 1;
+            if nosave { self.hibernate_forbid(Pfn(p)); }
             self.zone_free[zi].fetch_sub(1, Ordering::AcqRel);
             p += 1;
         }

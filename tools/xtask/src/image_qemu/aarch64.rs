@@ -7,6 +7,7 @@ use super::common::{ensure_ahci_extra_img, ensure_ahci_img, ensure_nvme_extra_im
 const ARM_GRUB_REQUIRED_MODULES: [&str; 2] = ["modinfo.sh", "linux.mod"];
 const ARM_GRUB_MODULES_DIR: &str = "vendor/grub/arm64-efi";
 const ARM_OVMF: &str = "vendor/firmware/ovmf-aarch64.fd";
+const DEFAULT_MEMORY: &str = "2G";
 
 fn arm_usb_scsi_devices() -> [&'static str; 2] {
     [
@@ -158,6 +159,8 @@ pub(super) fn qemu_run_aarch64_grub(
     let netdev = ssh_fwd_netdev();
     let pcap_args = super::common::pcap_filter_args();
     let share_args = super::common::host_share_args();
+    let memory = super::common::qemu_memory(DEFAULT_MEMORY)?;
+    let hibernate_args = super::common::hibernate_disk_args()?;
     // Per-launch vhost-vsock guest CID (host-global — see qemu_vsock_cid), so
     // concurrent worktree boots don't collide on a hardcoded CID. cid / cid+1.
     let vsock_cid: u32 = std::env::var("OXIDE_QEMU_VSOCK_CID").ok()
@@ -196,7 +199,7 @@ pub(super) fn qemu_run_aarch64_grub(
         "-machine", "virt,gic-version=3,its=on",
         "-cpu", "cortex-a72",
         "-smp", &smp_str,
-        "-m", "2G",
+        "-m", memory.as_str(),
         "-bios", ovmf.to_str().unwrap(),
         "-cdrom", iso.to_str().unwrap(),
         "-boot", "d",
@@ -255,6 +258,7 @@ pub(super) fn qemu_run_aarch64_grub(
         "-display", if headless { "none" } else { "gtk" },
         "-no-reboot",
     ]);
+    c.args(&hibernate_args);
     if std::env::var_os("OXIDE_VIRTIO_NET_MULTIDEV_SMOKE").is_some() {
         c.args([
             "-netdev", "user,id=net1",
@@ -318,7 +322,7 @@ pub(super) fn qemu_run_aarch64_grub(
 
 #[cfg(test)]
 mod tests {
-    use super::{arm_launch_vendor_missing, arm_usb_scsi_devices, ARM_GRUB_MODULES_DIR, ARM_OVMF};
+    use super::{arm_launch_vendor_missing, arm_usb_scsi_devices, ARM_GRUB_MODULES_DIR, ARM_OVMF, DEFAULT_MEMORY};
     use std::path::{Path, PathBuf};
 
     struct Fixture(PathBuf);
@@ -374,4 +378,7 @@ mod tests {
             "usb-storage,drive=usb0,bus=xhci.0,serial=oxide-usb0",
         ]);
     }
+
+    #[test]
+    fn arm_default_memory_remains_two_gib() { assert_eq!(DEFAULT_MEMORY, "2G"); }
 }

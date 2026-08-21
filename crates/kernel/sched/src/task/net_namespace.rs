@@ -1,4 +1,5 @@
 use alloc::sync::Arc;
+use core::sync::atomic::Ordering;
 
 use network_namespace::{NetworkNamespaceId, NetworkNamespaceRef};
 
@@ -75,6 +76,11 @@ impl Task {
         // machine permanently less admissible with every deadline task that has
         // ever exited.
         crate::deadline::live::leave_class(self);
+        // Linux `do_task_dead()` publishes PF_NOFREEZE before the terminal
+        // schedule. A Zombie can remain in the task table until its parent
+        // reaps it, but it has no execution path left on which to acknowledge
+        // a later freezer request and therefore must not count as outstanding.
+        self.nofreeze.store(true, Ordering::Release);
         self.set_state(TaskState::Zombie);
         crate::registry::publish_pidfd_exit(self);
     }

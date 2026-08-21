@@ -167,6 +167,17 @@ pub fn signal_pending_state(task: &Task, state: WaitState) -> bool {
     }
 }
 
+/// Linux `signal_pending(current)` as consumed by an interruptible wait.
+///
+/// The thread flag Linux calls `TIF_SIGPENDING` also stays set for fake-signal
+/// work while a task is freezing. A wait loop that consults only the actual
+/// deliverable signal bitmap wakes for the freezer, then immediately re-arms
+/// and never reaches the return-to-user refrigerator.
+/// # C: O(N_sig)
+pub fn interruptible_work_pending(task: &Task) -> bool {
+    signal_pending_state(task, WaitState::Interruptible)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,6 +222,8 @@ mod tests {
         assert!(!signal_pending_state(&t, WaitState::Killable));
         assert!(!signal_pending_state(&t, WaitState::Uninterruptible));
         assert_eq!(t.deliverable_signals(), 0);
+        assert!(interruptible_work_pending(&t),
+            "a signal-less freezer wake must break an interruptible syscall wait");
     }
 
     #[test]

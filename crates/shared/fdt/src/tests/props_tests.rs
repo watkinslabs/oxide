@@ -158,6 +158,40 @@ fn compatible_matching_is_whole_element_not_substring() {
 }
 
 #[test]
+fn pl031_uses_root_bus_cells_and_requires_an_enabled_exact_match() {
+    let mut disabled_reg = Vec::new();
+    disabled_reg.extend_from_slice(&0u32.to_be_bytes());
+    disabled_reg.extend_from_slice(&0x0901_0000u32.to_be_bytes());
+    disabled_reg.extend_from_slice(&0x1000u32.to_be_bytes());
+    let mut enabled_reg = Vec::new();
+    enabled_reg.extend_from_slice(&0u32.to_be_bytes());
+    enabled_reg.extend_from_slice(&0x0902_0000u32.to_be_bytes());
+    enabled_reg.extend_from_slice(&0x1000u32.to_be_bytes());
+    let blob = Fdt::new().begin("")
+        .prop_u32("#address-cells", 2).prop_u32("#size-cells", 1)
+        .begin("rtc@9010000").prop_str("compatible", "arm,pl031")
+        .prop_str("status", "disabled").prop("reg", &disabled_reg).end()
+        .begin("not-rtc@9020000").prop_str("compatible", "arm,pl031-extended")
+        .prop("reg", &enabled_reg).end()
+        .begin("rtc@9020000").prop("reg", &enabled_reg)
+        .prop_str("compatible", "arm,primecell\0arm,pl031").end()
+        .end().finish();
+    assert_eq!(pl031_rtc(&blob), Some(Pl031Rtc { base_pa: 0x0902_0000, size: 0x1000 }));
+}
+
+#[test]
+fn pl031_rejects_a_short_register_window() {
+    let mut reg = Vec::new();
+    reg.extend_from_slice(&0x0901_0000u32.to_be_bytes());
+    reg.extend_from_slice(&3u32.to_be_bytes());
+    let blob = Fdt::new().begin("")
+        .prop_u32("#address-cells", 1).prop_u32("#size-cells", 1)
+        .begin("rtc@9010000").prop_str("compatible", "arm,pl031").prop("reg", &reg).end()
+        .end().finish();
+    assert_eq!(pl031_rtc(&blob), None);
+}
+
+#[test]
 fn machine_model_prefers_model_then_compatible() {
     assert_eq!(machine_model(&virt_like()), Some(&b"linux,dummy-virt"[..]));
     let only_compat = Fdt::new().begin("").prop_str("compatible", "acme,board").end().finish();

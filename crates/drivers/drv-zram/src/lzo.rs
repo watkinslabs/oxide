@@ -1,6 +1,5 @@
 //! Linux zcomp-compatible LZO1X codec with reusable per-CPU work memory.
 
-use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -10,7 +9,7 @@ use sync::{Spinlock, TaskList, MAX_CPUS};
 /// One LZO1X match dictionary belongs to one CPU's zcomp stream. It is
 /// allocated on the first LZO request and reused for the device lifetime.
 #[derive(Default)]
-struct Stream { dictionary: Option<Box<lzokay::compress::Dict>> }
+struct Stream { dictionary: Option<lzo1x::encode::Workspace> }
 
 /// Return the bounded logical CPU that owns one zcomp stream. # C: O(1)
 fn current_cpu() -> usize {
@@ -41,19 +40,28 @@ impl Streams {
 
     /// Compress one zram page as an LZO1X stream. # C: O(page bytes)
     pub(crate) fn compress(&self, input: &[u8]) -> KResult<Vec<u8>> {
+        self.compress_mode(input, false)
+    }
+
+    /// Compress one zram page as a version-one LZO-RLE stream. # C: O(page bytes)
+    pub(crate) fn compress_rle(&self, input: &[u8]) -> KResult<Vec<u8>> {
+        self.compress_mode(input, true)
+    }
+
+    fn compress_mode(&self, input: &[u8], rle: bool) -> KResult<Vec<u8>> {
         let mut stream = self.streams[current_cpu()].lock();
-        if stream.dictionary.is_none() { stream.dictionary = Some(lzokay::compress::Dict::new()); }
-        let dictionary = stream.dictionary.as_deref_mut().ok_or(BlockError::Enomem)?;
-        let mut output = vec![0; lzokay::compress::compress_worst_size(input.len())];
-        let size = lzokay::compress::compress_no_alloc(input, &mut output, dictionary).map_err(|_| BlockError::Eio)?;
+        if stream.dictionary.is_none() { stream.dictionary = Some(lzo1x::encode::Workspace::new()); }
+        let dictionary = stream.dictionary.as_mut().ok_or(BlockError::Enomem)?;
+        let mut output = vec![0; lzo1x::encode::worst_size(input.len())];
+        let size = lzo1x::encode::compress_with(input, &mut output, rle, dictionary)
+            .ok_or(BlockError::Eio)?;
         output.truncate(size);
         Ok(output)
     }
-
 }
 
 /// Decode one LZO1X stream into an exact zram page. # C: O(page bytes)
 pub(crate) fn decompress(input: &[u8], output: &mut [u8]) -> KResult<()> {
-    let size = lzokay::decompress::decompress(input, output).map_err(|_| BlockError::Eio)?;
+    let size = lzo1x::decode::decompress(input, output).map_err(|_| BlockError::Eio)?;
     if size == output.len() { Ok(()) } else { Err(BlockError::Eio) }
 }

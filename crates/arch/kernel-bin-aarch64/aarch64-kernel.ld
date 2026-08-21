@@ -68,6 +68,12 @@ SECTIONS {
         __ex_table_end = .;
     }
 
+    .note.gnu.build-id ALIGN(4) : AT(ADDR(.note.gnu.build-id) - KERNEL_BASE + KERNEL_PHYS) {
+        __build_id_start = .;
+        KEEP(*(.note.gnu.build-id))
+        __build_id_end = .;
+    }
+
     .data ALIGN(4K) : AT(ADDR(.data) - KERNEL_BASE + KERNEL_PHYS) {
         __data_start = .;
         *(.data .data.*)
@@ -119,6 +125,8 @@ SECTIONS {
      * its first byte must be its entry point. */
     ASSERT(__relocate_kernel_start == oxide_kexec_arm_relocate_start,
            "kexec control page must start with the trampoline entry point")
+    ASSERT(__build_id_end - __build_id_start == 36,
+           "kernel must carry one SHA-1 GNU build-id note")
 
     /DISCARD/ : {
         *(.eh_frame)

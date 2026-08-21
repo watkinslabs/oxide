@@ -78,7 +78,8 @@ debug-getdents = ["kmain/debug-getdents"]
 debug-getdents-detail = ["kmain/debug-getdents-detail"]
 debug-csum-origin = ["kmain/debug-csum-origin"]
 debug-syscall-return = ["kmain/debug-syscall-return"]
-debug-all  = ["debug-boot", "debug-irq", "debug-watchdog"]
+debug-hibernate = ["kmain/debug-hibernate"]
+debug-all  = ["debug-boot", "debug-irq", "debug-watchdog", "debug-hibernate"]
 
 [lints]
 workspace = true

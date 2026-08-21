@@ -71,7 +71,17 @@ pub fn sys_swapon(args: &SyscallArgs) -> i64 {
             };
             #[cfg(any(feature = "debug-boot", feature = "debug-swap"))]
             { klog::write_raw(b"[SWAPON] activate "); klog::write_raw(backing.name.as_bytes()); klog::write_raw(b"\n"); }
-            pmm::swap::activate_file_with_options(backing.name, path, backing.device, flags.priority, discard)
+            let resume_device = match backing.resume_device {
+                Some(name) => name,
+                None => return errno(Errno::Einval),
+            };
+            let geometry = pmm::swap::SwapFileGeometry {
+                device_name: resume_device,
+                pages: backing.resume_pages,
+                device: backing.raw_device,
+            };
+            pmm::swap::activate_file_with_options(backing.name, path, backing.device,
+                flags.priority, discard, geometry)
         }
         // `claim_swapfile` accepts S_ISBLK and S_ISREG only.
         _ => return errno(Errno::Einval),

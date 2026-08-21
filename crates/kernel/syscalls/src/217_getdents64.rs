@@ -111,7 +111,7 @@ impl vfs::DirEmit for GetdentsActor {
 }
 
 /// Linux `signal_pending(current)`. # C: O(1)
-fn signal_pending() -> bool { sched::live::sigpend::deliverable_signals_self() != 0 }
+fn signal_pending() -> bool { sched::live::sigpend::interruptible_work_pending_self() }
 
 /// Shared getdents core. Linux `SYSCALL_DEFINE3(getdents{,64})`:
 ///

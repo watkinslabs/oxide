@@ -6,6 +6,13 @@ use crate::selfboot;
 use core::cell::UnsafeCell;
 use boot_info::{BootFramebuffer, BootInfo, BootMemRegion};
 
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+mod dtb_helpers;
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+use dtb_helpers::{acpi_extent, dtb_totalsize, publish_pl011_clock, read_dtb_memory_all};
+mod efi_topology;
+mod memmap;
+
 /// Prefer a DT simple-framebuffer when it exists, otherwise retain the GOP
 /// surface captured by the EFI stub.  Some EFI firmware supplies a DTB for
 /// memory discovery without describing its active display there.
@@ -201,66 +208,38 @@ unsafe fn build_selfboot_memmap(info: &mut BootInfo) {
 
     let pa = DTB_PHYS_ADDR.load(core::sync::atomic::Ordering::Acquire);
 
-    // Usable RAM regions, in priority order:
-    //   1. DTB `/memory` extent (U-Boot `booti` / `-kernel`, or any EFI
-    //      firmware that publishes an FDT) — one contiguous block.
-    //   2. EFI `EfiConventionalMemory` regions captured by `efi_stub_setup`
-    //      (QEMU EDK2 in ACPI mode exposes NO FDT, so the DTB read fails).
-    //      Type-7 is genuinely-free DRAM — it excludes the kernel image, ACPI
-    //      tables (this EDK2 keeps them in BootServicesData), runtime,
-    //      reserved + MMIO — so no carve-out is needed and nothing the kernel
-    //      still reads post-boot is ever marked usable.
-    //   3. Last resort: a conservative 1 GiB at the QEMU virt base.
-    let mut regions: [(u64, u64); selfboot::EFI_RAM_MAX] = [(0, 0); selfboot::EFI_RAM_MAX];
-    let mut nregions = 0usize;
-    // ACPI table extent to pin Reserved when reclaiming boot-services; (0,0)=none.
-    let mut acpi_blk: (u64, u64) = (0, 0);
+    let empty = BootMemRegion { base_pa: 0, len: 0,
+        kind: boot_info::BootMemKind::Reserved };
+    let mut regions = [empty; MAX_BOOT_REGIONS];
+    let nregions;
+    let mut acpi_blk = (0, 0);
     // Publish the DTB-resolved PL011 UARTCLK before consuming the memmap, so the
     // runtime UART driver's baud reprogram uses the real reference clock.
     // SAFETY: pa is the bootloader DTB pointer; helper bounds reads by header.
     unsafe { publish_pl011_clock(pa); }
-    // SAFETY: pa is the bootloader DTB pointer; helper bounds reads by header.
-    // A kernel entered through EFI takes its memory from the EFI memory map;
-    // only a device-tree-only boot reads `/memory`. That order matters here for
-    // a second reason — the EFI branch also reclaims boot-services memory once
-    // the ACPI tables are pinned, and the synthesized device tree describes
-    // only conventional RAM, so preferring the tree would quietly give the
-    // machine less memory than the map it was built from.
-    {
-            let nr = selfboot::EFI_RAM_COUNT.load(core::sync::atomic::Ordering::Acquire) as usize;
-            if nr > 0 {
-                while nregions < nr && nregions < selfboot::EFI_RAM_MAX {
-                    let b = selfboot::EFI_RAM_BASE[nregions].load(core::sync::atomic::Ordering::Acquire);
-                    let pages = selfboot::EFI_RAM_PAGES[nregions].load(core::sync::atomic::Ordering::Acquire);
-                    regions[nregions] = (b, pages.saturating_mul(0x1000));
-                    nregions += 1;
-                }
-                // Reclaim BootServices Code/Data (3/4) too — but ONLY once we
-                // can pin the ACPI tables the kernel reads in place (this EDK2
-                // stashes the live ACPI in type4; reclaiming it raw → pci
-                // devices=0). acpi_extent() bounds the RSDP+XSDT+listed tables.
-                // SAFETY: reads the HHDM-mapped RSDP/XSDT; each table bounded by its header.
-                if let Some(ext) = unsafe { acpi_extent() } {
-                    acpi_blk = ext;
-                    let nbs = selfboot::EFI_BS_COUNT.load(core::sync::atomic::Ordering::Acquire) as usize;
-                    let mut j = 0usize;
-                    while j < nbs && nregions < selfboot::EFI_RAM_MAX {
-                        let b = selfboot::EFI_BS_BASE[j].load(core::sync::atomic::Ordering::Acquire);
-                        let pages = selfboot::EFI_BS_PAGES[j].load(core::sync::atomic::Ordering::Acquire);
-                        regions[nregions] = (b, pages.saturating_mul(0x1000));
-                        nregions += 1;
-                        j += 1;
-                    }
-                }
-            } else {
-                // SAFETY: pa is the bootloader DTB pointer; helper bounds reads by header.
-                nregions = unsafe { read_dtb_memory_all(pa, &mut regions) }
-                    .min(selfboot::EFI_RAM_MAX);
-                if nregions == 0 {
-                    regions[0] = (0x4000_0000, 0x4000_0000);
-                    nregions = 1;
-                }
-            }
+    if let Some((map_pa, map_size, desc_size, _)) = selfboot::retained_efi_memmap() {
+        let map_va = selfboot::ARM_SELFBOOT_HHDM.checked_add(map_pa)
+            .expect("ARM EFI map address overflow");
+        // SAFETY: EFI stub retained exactly `map_size` bytes in the loaded
+        // kernel image, whose physical extent is HHDM-mapped for this boot.
+        let bytes = unsafe { core::slice::from_raw_parts(map_va as *const u8, map_size as usize) };
+        nregions = efi_topology::decode(bytes, desc_size as usize, &mut regions)
+            .expect("ARM EFI memory map is malformed or too large");
+        // SAFETY: reads HHDM-mapped ACPI tables, each bounded by its header.
+        acpi_blk = unsafe { acpi_extent() }.unwrap_or((0, 0));
+    } else {
+        let mut dt_regions = [(0u64, 0u64); selfboot::EFI_RAM_MAX];
+        // SAFETY: pa is the bootloader DTB pointer; helper bounds its walk.
+        let mut nr = unsafe { read_dtb_memory_all(pa, &mut dt_regions) }
+            .min(dt_regions.len());
+        if nr == 0 {
+            dt_regions[0] = (0x4000_0000, 0x4000_0000);
+            nr = 1;
+        }
+        for (dst, &(base_pa, len)) in regions.iter_mut().zip(dt_regions[..nr].iter()) {
+            *dst = BootMemRegion { base_pa, len, kind: boot_info::BootMemKind::Usable };
+        }
+        nregions = nr;
     }
 
     // Kernel image physical extent (page-rounded): VMA - KB + load_base.
@@ -290,35 +269,11 @@ unsafe fn build_selfboot_memmap(info: &mut BootInfo) {
 
     // SAFETY: boot-only single-writer of the 'static MEMMAP_STORAGE.
     let storage = unsafe { &mut *MEMMAP_STORAGE.0.get() };
-    let mut n = 0usize;
-    let mut push = |s: u64, e: u64, k: boot_info::BootMemKind, n: &mut usize| {
-        if e > s && *n < MAX_BOOT_REGIONS {
-            storage[*n] = BootMemRegion { base_pa: s, len: e - s, kind: k };
-            *n += 1;
-        }
-    };
-    // Walk each usable region, emitting Usable for the gaps and the carve
-    // kind where a reserved block overlaps it.
-    for ri in 0..nregions {
-        let (base, size) = regions[ri];
-        if size == 0 { continue; }
-        let ram_end = base.saturating_add(size);
-        let mut cur = base;
-        for &(bs, be, bk) in blocks.iter() {
-            if be == 0 || be <= base || bs >= ram_end { continue; }
-            // Clamp to what this region still has left. Blocks can nest — the
-            // device tree the EFI stub synthesizes lives in the kernel image's
-            // own BSS — and emitting a nested block again would put two
-            // overlapping entries in the memmap describing the same pages.
-            let bs = bs.max(base).max(cur);
-            let be = be.min(ram_end);
-            if be <= bs { continue; }
-            if bs > cur { push(cur, bs, boot_info::BootMemKind::Usable, &mut n); }
-            push(bs, be, bk, &mut n);
-            cur = cur.max(be);
-        }
-        if cur < ram_end { push(cur, ram_end, boot_info::BootMemKind::Usable, &mut n); }
-    }
+    let mut n = efi_topology::overlay(&regions[..nregions], &blocks, storage)
+        .expect("ARM boot topology exceeds retained capacity");
+    // A malformed firmware map must not make the loaded image disappear from
+    // physical truth; EFI normally reaches it through the loader descriptor.
+    memmap::retain_kernel_image(storage, &mut n, kstart, kend);
 
     // Diagnostic: per-EFI-type RAM tally (MiB), so the free-vs-reserved
     // split is visible rather than inferred. Empty on the DTB path (the
@@ -341,128 +296,6 @@ unsafe fn build_selfboot_memmap(info: &mut BootInfo) {
 
     info.memmap_count = n as u32;
     info.memmap_ptr = storage.as_ptr();
-}
-
-/// Page-aligned `[lo, hi)` physical extent of the ACPI tables the kernel
-/// reads in place: RSDP + XSDT + every XSDT-listed table. `firmware::acpi`
-/// walks the XSDT and never chases FADT→DSDT, so this is exactly the set
-/// that must stay valid; pinning it Reserved lets the rest of boot-services
-/// be reclaimed. `None` when there is no RSDP (DTB / `-kernel` path).
-/// # SAFETY: reads the HHDM-mapped RSDP/XSDT; each table is bounded by the
-/// length in its own header and the entry count by the XSDT length.
-/// # C: O(n_tables)
-#[cfg(target_os = "oxide-kernel")]
-unsafe fn acpi_extent() -> Option<(u64, u64)> {
-    let h = selfboot::ARM_SELFBOOT_HHDM;
-    let rsdp_pa = selfboot::EFI_RSDP_PA.load(core::sync::atomic::Ordering::Acquire);
-    if rsdp_pa == 0 { return None; }
-    // SAFETY: HHDM covers all RAM; ACPI fields are not guaranteed aligned.
-    let rd32 = |pa: u64| -> u32 { unsafe { core::ptr::read_unaligned((h + pa) as *const u32) } };
-    // SAFETY: HHDM covers all RAM; ACPI fields are not guaranteed aligned.
-    let rd64 = |pa: u64| -> u64 { unsafe { core::ptr::read_unaligned((h + pa) as *const u64) } };
-    let xsdt_pa = rd64(rsdp_pa + 24); // ACPI 2.0 XsdtAddress @ offset 24
-    if xsdt_pa == 0 { return None; }
-    let xsdt_len = rd32(xsdt_pa + 4) as u64; // SDT header Length @ offset 4
-    if xsdt_len < 36 || xsdt_len > 4096 { return None; }
-    let mut lo = rsdp_pa.min(xsdt_pa);
-    let mut hi = (rsdp_pa + 36).max(xsdt_pa + xsdt_len);
-    let n = ((xsdt_len - 36) / 8).min(64);
-    let mut i = 0u64;
-    while i < n {
-        let tpa = rd64(xsdt_pa + 36 + i * 8);
-        i += 1;
-        if tpa == 0 { continue; }
-        let mut tlen = rd32(tpa + 4) as u64;
-        if tlen < 36 { tlen = 36; }
-        if tlen > 0x10_0000 { tlen = 0x10_0000; }
-        if tpa < lo { lo = tpa; }
-        if tpa + tlen > hi { hi = tpa + tlen; }
-    }
-    Some((lo & !0xFFF, (hi + 0xFFF) & !0xFFF))
-}
-
-/// Every DTB `/memory` reg entry → `out`, returning the count. Reads the blob
-/// at phys `pa` (HHDM-mapped); 0 on invalid/missing DTB.
-///
-/// All entries, not just the first: RAM is one block on QEMU `virt` and several
-/// on a machine whose firmware describes it in pieces, and taking only the
-/// first silently discards the rest.
-/// # SAFETY: `pa` is the bootloader DTB pointer; header totalsize bounds the read.
-/// # C: O(dtb)
-#[cfg(target_os = "oxide-kernel")]
-unsafe fn read_dtb_memory_all(pa: u64, out: &mut [(u64, u64)]) -> usize {
-    // SAFETY: same contract as this fn's caller; the helper bounds by header.
-    let Some(blob) = (unsafe { dtb_blob(pa) }) else { return 0 };
-    dtb::memory_regions(blob, out)
-}
-
-/// HHDM-mapped slice of the whole DTB at phys `pa`, bounded by its own header.
-/// # SAFETY: `pa` is the bootloader DTB pointer; the 8-byte header prefix bounds
-/// the full-blob slice that follows.
-/// # C: O(1)
-#[cfg(target_os = "oxide-kernel")]
-unsafe fn dtb_blob(pa: u64) -> Option<&'static [u8]> {
-    if pa == 0 { return None; }
-    let va = selfboot::ARM_SELFBOOT_HHDM + pa;
-    // SAFETY: reads the HHDM-mapped magic+totalsize prefix.
-    let ts = unsafe { dtb_totalsize(pa) } as usize;
-    if ts < dtb::FDT_HEADER_LEN || ts > dtb::FDT_MAX_TOTALSIZE { return None; }
-    // SAFETY: blob bounded by its own header totalsize; HHDM-mapped.
-    Some(unsafe { core::slice::from_raw_parts(va as *const u8, ts) })
-}
-
-/// DTB `/memory` reg → `(base, size)`. Reads the blob at phys `pa`
-/// (HHDM-mapped). `None` on invalid/missing DTB.
-/// # SAFETY: `pa` is the bootloader DTB pointer; header totalsize bounds the read.
-/// # C: O(dtb)
-#[cfg(target_os = "oxide-kernel")]
-#[allow(dead_code)]
-unsafe fn read_dtb_memory(pa: u64) -> Option<(u64, u64)> {
-    if pa == 0 { return None; }
-    let va = selfboot::ARM_SELFBOOT_HHDM + pa;
-    // SAFETY: dtb_totalsize reads magic+totalsize from the HHDM-mapped header.
-    let ts = unsafe { dtb_totalsize(pa) } as usize;
-    if ts < 40 || ts > 4 * 1024 * 1024 { return None; }
-    // SAFETY: blob bounded by its own header totalsize; HHDM-mapped. The full
-    // blob (not an 8-byte prefix) is what dtb::parse_header needs to pass its
-    // length checks inside first_memory_region.
-    let blob = unsafe { core::slice::from_raw_parts(va as *const u8, ts) };
-    dtb::first_memory_region(blob)
-}
-
-/// Resolve the PL011 `UARTCLK` from the DTB clock tree and publish it to
-/// `hal_aarch64::pl011` (Linux `pl011_probe`→`clk_get_rate`). The runtime UART
-/// driver's TCSETS baud reprogram then computes the divisor against the real
-/// reference clock instead of an assumed constant. No-op if the DTB is
-/// missing/invalid or describes no PL011 clock (the hal keeps its 24 MHz
-/// fallback). # SAFETY: `pa` is the bootloader DTB pointer; the read is bounded
-/// by the header totalsize and HHDM-mapped. # C: O(dtb)
-#[cfg(target_os = "oxide-kernel")]
-unsafe fn publish_pl011_clock(pa: u64) {
-    if pa == 0 { return; }
-    let va = selfboot::ARM_SELFBOOT_HHDM + pa;
-    // SAFETY: reads the HHDM-mapped magic+totalsize prefix.
-    let ts = unsafe { dtb_totalsize(pa) } as usize;
-    if ts < 40 || ts > 4 * 1024 * 1024 { return; }
-    // SAFETY: blob bounded by its own header totalsize; HHDM-mapped.
-    let blob = unsafe { core::slice::from_raw_parts(va as *const u8, ts) };
-    if let Some(hz) = dtb::pl011_clock_hz(blob) {
-        hal_aarch64::pl011::set_uartclk_hz(hz);
-    }
-}
-
-/// DTB `totalsize` at phys `pa` (HHDM-mapped); 0 if the magic is wrong or the
-/// size is out of range. The size is needed BEFORE the blob can be bounded, so
-/// this reads the 8-byte magic+totalsize prefix rather than going through
-/// `dtb::parse_header` (whose `totalsize <= len` check rejects any prefix).
-/// # SAFETY: `pa` is the bootloader DTB pointer; the 8-byte read is HHDM-mapped.
-/// # C: O(1)
-#[cfg(target_os = "oxide-kernel")]
-unsafe fn dtb_totalsize(pa: u64) -> u64 {
-    let va = selfboot::ARM_SELFBOOT_HHDM + pa;
-    // SAFETY: HHDM-mapped; read the 8-byte magic+totalsize prefix.
-    let head = unsafe { core::slice::from_raw_parts(va as *const u8, 8) };
-    dtb::totalsize_from_prefix(head).unwrap_or(0) as u64
 }
 
 /// Build a `BootInfo` from the self-bootstrap trampoline + DTB. HHDM

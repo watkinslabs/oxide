@@ -1,4 +1,6 @@
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use power::hibernate::log::{self, IrqKind, IrqPhase};
+use sync::IrqGate;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(super) enum Dispatch { Run, Wake, Suspended }
@@ -73,6 +75,9 @@ impl WakeState {
 /// Adjust one installed IRQ descriptor's balanced system-wakeup depth.
 /// # C: O(1) x86, O(N) aarch64
 pub fn irq_set_irq_wake(line: u32, enabled: bool) -> Result<(), ()> {
+    if let Some(result) = crate::msi_suspend::set_wake(line, enabled) {
+        return result.then_some(()).ok_or(());
+    }
     #[cfg(target_arch = "x86_64")]
     {
         if line < hal_x86_64::VEC_MSI_POOL_FIRST as u32
@@ -109,30 +114,48 @@ fn set_arm_irq_wake<const N: usize>(line: u32, enabled: bool,
 pub fn suspend_device_irqs() {
     #[cfg(target_arch = "x86_64")]
     for (index, descriptor) in super::X86_LINES.iter().enumerate() {
-        if !descriptor.installed() || descriptor.spurious.lock().disabled() { continue; }
-        if descriptor.wake.suspend() {
-            super::disable_line(u32::from(hal_x86_64::VEC_MSI_POOL_FIRST) + index as u32);
-        }
+        if !descriptor.installed() { continue; }
+        let line = u32::from(hal_x86_64::VEC_MSI_POOL_FIRST) + index as u32;
+        suspend_descriptor::<hal_x86_64::X86IrqGate>(descriptor, line,
+            || super::disable_line(line));
     }
     #[cfg(target_arch = "aarch64")]
     suspend_arm_lines(&super::ARM_FIXED_LINES);
     #[cfg(target_arch = "aarch64")]
     suspend_arm_lines(&super::ARM_MSI_LINES);
+    crate::msi_suspend::suspend_all();
 }
 
 #[cfg(target_arch = "aarch64")]
 fn suspend_arm_lines<const N: usize>(lines: &[super::ArmLineDescriptor; N]) {
     for descriptor in lines {
         let line = descriptor.intid.load(Ordering::Acquire);
-        if line == 0 || !descriptor.line.installed()
-            || descriptor.line.spurious.lock().disabled() { continue; }
-        if descriptor.line.wake.suspend() { super::disable_line(line); }
+        if line == 0 || !descriptor.line.installed() { continue; }
+        suspend_descriptor::<hal_aarch64::ArmIrqGate>(&descriptor.line, line,
+            || super::disable_line(line));
+    }
+}
+
+fn suspend_descriptor<I: IrqGate>(descriptor: &super::LineDescriptor, irq: u32,
+    mask: impl FnOnce())
+{
+    let spurious = descriptor.spurious.lock_irqsave::<I>();
+    if spurious.disabled() { return; }
+    log::noirq_irq(IrqKind::Line, irq, IrqPhase::Descriptor, descriptor.in_flight.active());
+    if descriptor.wake.suspend() {
+        log::noirq_irq(IrqKind::Line, irq, IrqPhase::MaskBegin, descriptor.in_flight.active());
+        mask();
+        log::noirq_irq(IrqKind::Line, irq, IrqPhase::MaskEnd, descriptor.in_flight.active());
+        log::noirq_irq(IrqKind::Line, irq, IrqPhase::SyncBegin, descriptor.in_flight.active());
+        descriptor.in_flight.synchronize();
+        log::noirq_irq(IrqKind::Line, irq, IrqPhase::SyncEnd, descriptor.in_flight.active());
     }
 }
 
 /// Replay a delivery consumed as a wake event, then re-enable suspended IRQs.
 /// # C: O(N_IRQ descriptors + pending handlers)
 pub fn resume_device_irqs() {
+    crate::msi_suspend::resume_all();
     #[cfg(target_arch = "x86_64")]
     for (index, descriptor) in super::X86_LINES.iter().enumerate() {
         let (suspended, pending) = descriptor.wake.resume();
@@ -161,6 +184,22 @@ fn resume_arm_lines<const N: usize>(lines: &[super::ArmLineDescriptor; N]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::sync::atomic::AtomicU32;
+
+    static IRQ_STATE: AtomicU32 = AtomicU32::new(0);
+
+    struct TestIrqGate;
+    impl IrqGate for TestIrqGate {
+        unsafe fn save_enable() -> u64 { 0 }
+        unsafe fn save_disable() -> u64 {
+            assert_eq!(IRQ_STATE.swap(1, Ordering::SeqCst), 0);
+            7
+        }
+        unsafe fn restore(flags: u64) {
+            assert_eq!(flags, 7);
+            assert_eq!(IRQ_STATE.swap(2, Ordering::SeqCst), 1);
+        }
+    }
 
     #[test]
     fn balanced_depth_arms_only_on_the_outer_edges() {
@@ -185,5 +224,16 @@ mod tests {
         assert_eq!(state.dispatch(), Dispatch::Suspended);
         assert_eq!(state.resume(), (true, true));
         assert_eq!(state.dispatch(), Dispatch::Run);
+    }
+
+    #[test]
+    fn descriptor_irq_gate_spans_suspend_decision_and_hardware_mask() {
+        IRQ_STATE.store(0, Ordering::SeqCst);
+        let descriptor = super::super::LineDescriptor::new();
+        suspend_descriptor::<TestIrqGate>(&descriptor, 7, || {
+            assert_eq!(IRQ_STATE.load(Ordering::SeqCst), 1,
+                "hardware mask must run while the descriptor IRQ gate is held");
+        });
+        assert_eq!(IRQ_STATE.load(Ordering::SeqCst), 2);
     }
 }

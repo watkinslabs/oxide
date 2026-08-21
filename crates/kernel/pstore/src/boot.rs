@@ -67,7 +67,7 @@ pub unsafe fn reserve(info: &BootInfo) {
     };
     let Some(pmm) = pmm::setup::pmm_static() else { return };
     let pages = (want as u64) / hal::PAGE_SIZE_BYTES;
-    if pmm.reserve_early(hal::Pfn(pa / hal::PAGE_SIZE_BYTES), pages).is_err() { return; }
+    if pmm.reserve_early_nosave(hal::Pfn(pa / hal::PAGE_SIZE_BYTES), pages).is_err() { return; }
     REGION_PA.store(pa as usize, Ordering::Release);
     REGION_LEN.store(want, Ordering::Release);
 }

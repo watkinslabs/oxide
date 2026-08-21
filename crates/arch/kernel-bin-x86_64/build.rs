@@ -10,5 +10,6 @@ fn main() {
     let script = format!("{manifest}/x86_64-kernel.ld");
     println!("cargo:rustc-link-arg=-T{script}");
     println!("cargo:rustc-link-arg=-no-pie");
+    println!("cargo:rustc-link-arg=--build-id=sha1");
     println!("cargo:rerun-if-changed={script}");
 }

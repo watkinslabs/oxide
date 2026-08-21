@@ -143,7 +143,7 @@ pub fn fill(p: &PipeData, src: &[u8]) -> usize {
 /// # C: O(1) + park
 pub fn ipipe_prep(p: &PipeData, nonblock: bool) -> KResult<bool> {
     #[cfg(target_os = "oxide-kernel")]
-    if sched::live::deliverable_signals_self() != 0 { return Err(VfsError::Erestartsys); }
+    if sched::live::interruptible_work_pending_self() { return Err(VfsError::Erestartsys); }
     loop {
         if queued(p) != 0 { return Ok(true); }
         if p.writers.load(Ordering::Acquire) == 0 { return Ok(false); } // EOF
@@ -182,7 +182,7 @@ pub fn opipe_prep(p: &PipeData, nonblock: bool) -> KResult<()> {
         if space(p) != 0 { return Ok(()); }
         if nonblock { return Err(VfsError::Eagain); }
         #[cfg(target_os = "oxide-kernel")]
-        if sched::live::deliverable_signals_self() != 0 { return Err(VfsError::Erestartsys); }
+        if sched::live::interruptible_work_pending_self() { return Err(VfsError::Erestartsys); }
         #[cfg(target_os = "oxide-kernel")]
         {
             // Linux `wait_event_interruptible_exclusive(pipe->wr_wait,

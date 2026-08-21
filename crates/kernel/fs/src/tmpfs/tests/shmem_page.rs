@@ -16,17 +16,31 @@ fn swapped_index_keeps_immutable_memcg_but_has_no_resident_frame() {
     assert_eq!(resident.cgid(), swapped.cgid());
 }
 
-fn migrating_fixture(pa: u64, cgid: u64) -> (TmpfsFileData, hal::pt_walker::MigrationEntry) {
-    let token = vmm::migration_begin(pa).expect("test migration token");
-    let mut pages = BTreeMap::new();
-    pages.insert(7, ShmemPage::Migrating { pa, cgid, token });
-    (TmpfsFileData {
+fn fixture(pages: BTreeMap<u64, ShmemPage>) -> TmpfsFileData {
+    TmpfsFileData {
         self_ref: Spinlock::new(Weak::new()),
         pages: Spinlock::<BTreeMap<u64, ShmemPage>, TaskList>::new(pages),
         len: AtomicU64::new(0), acct: super::super::accounting::TmpfsSb::unlimited(),
         owner: sync::Spinlock::new(Default::default()), inode: sync::Spinlock::new(alloc::sync::Weak::new()),
         seals: AtomicU32::new(0),
-    }, token)
+    }
+}
+
+fn migrating_fixture(pa: u64, cgid: u64) -> (TmpfsFileData, hal::pt_walker::MigrationEntry) {
+    let token = vmm::migration_begin(pa).expect("test migration token");
+    let mut pages = BTreeMap::new();
+    pages.insert(7, ShmemPage::Migrating { pa, cgid, token });
+    (fixture(pages), token)
+}
+
+#[test]
+fn sleepable_resolution_drops_index_lock_and_reuses_racing_winner() {
+    let data = fixture(BTreeMap::new());
+    assert!(super::super::page::unlocked_resolution_reuses_winner_for_test(&data, 7, 0x90_000));
+    assert!(matches!(data.pages.lock().get(&7),
+        Some(ShmemPage::Resident { pa: 0x90_000, cgid: 0 })));
+    // Synthetic state owns neither a PMM frame nor a published shmem count.
+    core::mem::forget(data);
 }
 
 fn assert_failed_mapped_pageout_restores_resident(force: fn(), invoke_failure: impl FnOnce(hal::pt_walker::MigrationEntry) -> bool) {

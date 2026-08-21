@@ -58,6 +58,10 @@ pub mod idle;
 pub mod kthread;
 pub mod kstack;
 pub mod preempt;
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+mod fpu_hibernate;
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+pub use fpu_hibernate::{flush_current_fpu_for_hibernate, restore_current_fpu_after_hibernate};
 // Why a task is parked in the freezer — cgroup, system sleep, or both.
 pub mod freeze_reason;
 // Per-mm LDT <-> LDTR glue (Linux `switch_ldt`); no-op on aarch64.
@@ -112,7 +116,7 @@ pub use cmdline::argv_to_cmdline;
 pub use rt::{RtRunqueue, RT_PRIO_COUNT};
 pub use registry::kernel_stack_bytes_snapshot;
 pub use runqueue::RunqueueInner;
-pub use task::{cap, securebits, ArchFpuBuf, Creds, GroupList, PosixTimer, SaHandler, SigActions, SignalPending, SchedClass, SchedPolicy, SigInfo, SleepWake, WaitOutcome, WaitState, signal_pending_state, Task, TaskState, TASK_COMM_LEN, SUID_DUMP_DISABLE, SUID_DUMP_ROOT, SUID_DUMP_USER, RT_QUEUE_CAP, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK};
+pub use task::{cap, securebits, ArchFpuBuf, Creds, GroupList, PosixTimer, SaHandler, SigActions, SignalPending, SchedClass, SchedPolicy, SigInfo, interruptible_work_pending, SleepWake, WaitOutcome, WaitState, signal_pending_state, Task, TaskState, TASK_COMM_LEN, SUID_DUMP_DISABLE, SUID_DUMP_ROOT, SUID_DUMP_USER, RT_QUEUE_CAP, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK};
 
 /// Maximum size in bytes of a per-arch HAL `Context` record (per
 /// `13§5` + `14§5.2` / `14§6.2`). `Task` carries an opaque buffer

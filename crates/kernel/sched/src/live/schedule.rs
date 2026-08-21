@@ -22,6 +22,7 @@ mod irq;
 mod lifecycle;
 pub mod migrate;
 mod ownership;
+mod provenance;
 mod switch;
 
 pub use active_mm::park_active_mm;
@@ -32,4 +33,5 @@ pub use lifecycle::{
     current, current_chroot_root, current_mount_ns, install_default_runqueue,
     mark_done, preempt_schedule_irq, runqueue_active, uninstall_global_with_stats,
 };
+pub use migrate::{pin_current_to_cpu, unpin_current_cpu};
 pub use switch::{oxide_finish_task_switch, park_yield, sched_yield, schedule, tick_yield};

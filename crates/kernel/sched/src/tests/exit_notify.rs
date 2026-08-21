@@ -205,6 +205,8 @@ fn mark_done_publishes_the_zombie_without_a_context_switch() {
     assert!(crate::live::zombies::has_zombies(init.tid),
         "the parent must be able to wait4 as soon as the child's exit path has run");
     assert_eq!(dying.state(), TaskState::Zombie, "and the task is published dead");
+    assert!(dying.nofreeze.load(Ordering::Acquire),
+        "a terminal task has no checkpoint left and must carry Linux PF_NOFREEZE");
 }
 
 /// The notification runs BEFORE the namespace release inside `mark_done`: the

@@ -107,16 +107,6 @@ pub static EFI_RAM_BASE: [AtomicU64; EFI_RAM_MAX] =
 /// Per-region page count (4 KiB) of each captured block.
 pub static EFI_RAM_PAGES: [AtomicU64; EFI_RAM_MAX] =
     [const { AtomicU64::new(0) }; EFI_RAM_MAX];
-/// BootServices Code/Data (types 3/4) regions — reclaimable after
-/// ExitBootServices, BUT this EDK2 stashes the live ACPI tables in type4.
-/// They are added to the usable map ONLY once `build_selfboot_memmap` has
-/// pinned the ACPI table extent as Reserved (else they corrupt ACPI →
-/// pci devices=0). Captured separately from `EFI_RAM_*` for that gating.
-pub static EFI_BS_COUNT: AtomicU64 = AtomicU64::new(0);
-pub static EFI_BS_BASE: [AtomicU64; EFI_RAM_MAX] =
-    [const { AtomicU64::new(0) }; EFI_RAM_MAX];
-pub static EFI_BS_PAGES: [AtomicU64; EFI_RAM_MAX] =
-    [const { AtomicU64::new(0) }; EFI_RAM_MAX];
 /// Total pages per EFI memory type (0..=14), summed across the EFI memory
 /// map by `efi_stub_setup`. Diagnostic: shows exactly where guest RAM goes
 /// (firmware-reserved vs boot-services vs ACPI vs free conventional).
@@ -153,3 +143,4 @@ mod efi_memmap;
 mod synth_fdt;
 
 pub use efi::efi_stub_setup;
+pub(crate) use efi_memmap::retained as retained_efi_memmap;

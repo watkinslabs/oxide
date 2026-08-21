@@ -358,3 +358,65 @@ fn a_mask_naming_no_installed_cpu_strands_nothing() {
 
     assert_eq!(cpus.holder(t.tid), Some(HERE), "affinity is broken before a task is lost");
 }
+
+/// Linux's CPU-down stopper may run the transition coordinator on the
+/// surviving CPU without rewriting its user/cpuset affinity. The internal pin
+/// must likewise override placement while leaving every policy mask intact.
+#[test]
+fn transition_pin_moves_to_primary_without_rewriting_affinity() {
+    const HERE: u32 = 49;
+    const PRIMARY: u32 = 50;
+    let cpus = Cpus::new(&[HERE, PRIMARY]);
+    let t = running_on(4010, HERE, 1u64 << HERE);
+    t.user_cpus_allowed.store(m(1u64 << HERE), Ordering::Release);
+    t.cpuset_cpus_allowed.store(m((1u64 << HERE) | (1u64 << PRIMARY)), Ordering::Release);
+    let before = (
+        t.cpus_allowed.load(Ordering::Acquire),
+        t.user_cpus_allowed.load(Ordering::Acquire),
+        t.cpuset_cpus_allowed.load(Ordering::Acquire),
+    );
+
+    assert_eq!(migrate::evict_target_for_with(
+        &|c| cpus.get(c), HERE, &t, Some(PRIMARY),
+    ), Some(PRIMARY));
+    assert_eq!(before, (
+        t.cpus_allowed.load(Ordering::Acquire),
+        t.user_cpus_allowed.load(Ordering::Acquire),
+        t.cpuset_cpus_allowed.load(Ordering::Acquire),
+    ), "transition placement is not a fourth affinity writer");
+}
+
+/// Once on the surviving CPU, the transition pin prevents ordinary affinity
+/// eviction from moving the coordinator back onto a CPU being removed.
+#[test]
+fn transition_pin_holds_primary_even_when_affinity_excludes_it() {
+    const PRIMARY: u32 = 51;
+    const SECONDARY: u32 = 52;
+    let cpus = Cpus::new(&[PRIMARY, SECONDARY]);
+    let t = running_on(4011, PRIMARY, 1u64 << SECONDARY);
+    assert_eq!(migrate::evict_target_for_with(
+        &|c| cpus.get(c), PRIMARY, &t, Some(PRIMARY),
+    ), None, "coordinator must remain on the surviving CPU through teardown");
+}
+
+#[test]
+fn boot_cpu_idle_can_own_transition_but_cannot_migrate() {
+    assert!(migrate::coordinator_can_pin(SchedClass::Idle, 0, 0));
+    assert!(!migrate::coordinator_can_pin(SchedClass::Idle, 1, 0),
+        "a per-CPU idle task must never migrate to the surviving CPU");
+    assert!(migrate::coordinator_can_pin(SchedClass::Normal { weight: 1024 }, 1, 0),
+        "an ordinary coordinator remains migratable to the surviving CPU");
+}
+
+/// Releasing the internal pin restores the canonical affinity decision; the
+/// coordinator is then evicted from a CPU its preserved mask excludes.
+#[test]
+fn removing_transition_pin_restores_preserved_affinity() {
+    const PRIMARY: u32 = 53;
+    const ALLOWED: u32 = 54;
+    let cpus = Cpus::new(&[PRIMARY, ALLOWED]);
+    let t = running_on(4012, PRIMARY, 1u64 << ALLOWED);
+    assert_eq!(migrate::evict_target_for_with(
+        &|c| cpus.get(c), PRIMARY, &t, None,
+    ), Some(ALLOWED));
+}

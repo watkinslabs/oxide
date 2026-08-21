@@ -94,6 +94,49 @@ pub(super) fn host_share_args() -> Vec<String> {
     out
 }
 
+fn parse_qemu_memory(value: &str) -> Option<String> {
+    let split = value.find(|ch: char| !ch.is_ascii_digit()).unwrap_or(value.len());
+    let (amount, suffix) = value.split_at(split);
+    if amount.is_empty() || amount.parse::<u64>().ok()? == 0 { return None; }
+    if !matches!(suffix, "" | "M" | "G" | "T") { return None; }
+    Some(value.to_string())
+}
+
+/// Canonical guest-memory value, with a validated acceptance override. # C: O(1)
+pub(super) fn qemu_memory(default: &str) -> Result<String, u8> {
+    let Ok(value) = std::env::var("OXIDE_QEMU_MEMORY") else { return Ok(default.to_string()); };
+    parse_qemu_memory(&value).ok_or_else(|| {
+        eprintln!("xtask qemu: OXIDE_QEMU_MEMORY must be a positive byte count or use M/G/T suffix");
+        2
+    })
+}
+
+fn hibernate_disk_args_for(path: Option<std::ffi::OsString>) -> Result<Vec<String>, u8> {
+    let Some(path) = path else { return Ok(Vec::new()); };
+    let path = std::path::PathBuf::from(path);
+    let path = std::fs::canonicalize(&path).map_err(|error| {
+        eprintln!("xtask qemu: cannot resolve hibernation disk {}: {error}", path.display());
+        2
+    })?;
+    let metadata = std::fs::metadata(&path).map_err(|_| 2u8)?;
+    if !metadata.is_file() || metadata.len() == 0 || path.to_string_lossy().contains(',') {
+        eprintln!("xtask qemu: hibernation disk must be a nonempty regular file with no comma in its path");
+        return Err(2);
+    }
+    eprintln!("xtask qemu: persistent hibernation disk -> {}", path.display());
+    Ok(vec![
+        "-drive".to_string(),
+        format!("if=none,id=hibernate,format=raw,cache=none,file={}", path.display()),
+        "-device".to_string(),
+        "virtio-blk-pci,drive=hibernate,bus=pcie.0,addr=0x1e,serial=oxide-hibernate,disable-legacy=on,num-queues=1".to_string(),
+    ])
+}
+
+/// Optional persistent raw hibernation disk shared by both launchers. # C: O(1)
+pub(super) fn hibernate_disk_args() -> Result<Vec<String>, u8> {
+    hibernate_disk_args_for(std::env::var_os("OXIDE_QEMU_HIBERNATE_DISK"))
+}
+
 /// D3.5: ensure a small raw NVMe scratch disk exists at
 /// `target/builds/<id>/nvme-<arch>.img` (16 MiB, zeroed). Created if missing so the
 /// `nvme` QEMU device always has a backing file. Returns its path. # C: O(1)
@@ -224,4 +267,38 @@ pub fn virtio_gpu_device_arg(id: Option<&str>) -> String {
 
 fn env_dim(key: &str, dflt: u32) -> u32 {
     std::env::var(key).ok().and_then(|v| v.parse::<u32>().ok()).filter(|v| *v > 0).unwrap_or(dflt)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{hibernate_disk_args_for, parse_qemu_memory};
+
+    #[test]
+    fn memory_override_accepts_only_positive_qemu_sizes() {
+        assert_eq!(parse_qemu_memory("4096"), Some("4096".into()));
+        assert_eq!(parse_qemu_memory("2G"), Some("2G".into()));
+        for value in ["", "0", "2g", "-1G", "2GB", "1.5G"] {
+            assert_eq!(parse_qemu_memory(value), None, "{value}");
+        }
+    }
+
+    #[test]
+    fn hibernation_disk_is_one_modern_virtio_block_device() {
+        let path = std::env::temp_dir().join(format!("oxide-hibernate-disk-{}", std::process::id()));
+        std::fs::write(&path, [0u8; 512]).unwrap();
+        let args = hibernate_disk_args_for(Some(path.clone().into_os_string())).unwrap();
+        assert_eq!(args.len(), 4);
+        assert!(args[1].contains("id=hibernate,format=raw,cache=none"));
+        assert!(args[3].contains("serial=oxide-hibernate"));
+        assert!(args[3].contains("bus=pcie.0,addr=0x1e"));
+        assert!(args[3].contains("num-queues=1"));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn missing_hibernation_disk_is_rejected() {
+        let path = std::env::temp_dir().join(format!("oxide-hibernate-missing-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        assert!(hibernate_disk_args_for(Some(path.into_os_string())).is_err());
+    }
 }

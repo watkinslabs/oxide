@@ -97,6 +97,10 @@ pub(super) fn unpublish_transport(device_key: virtio::VirtioChildDeviceKey) {
     virtio_drv::VirtioPciTransport.unpublish_key(device_key);
 }
 
+pub(super) fn restore_transport(device_key: virtio::VirtioChildDeviceKey) -> bool {
+    super::virtio_transport::restore_transport_record(device_key)
+}
+
 fn pci_device_from_child(dev: &drv::Device) -> Option<pci::PciDevice> {
     pci_device_from_bdf(parent_bdf(dev)?)
 }

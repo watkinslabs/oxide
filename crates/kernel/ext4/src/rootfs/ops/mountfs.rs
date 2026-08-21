@@ -3,6 +3,7 @@ use alloc::sync::Arc;
 use vfs::superblock::SB_RDONLY;
 
 use super::RootfsState;
+use super::sync_policy::sync_fs_needs_barrier;
 
 /// `super_operations` for an ext4 mount (Linux `ext4_statfs`): live on-disk
 /// block/inode accounting read from the per-mount `RootfsState`. Installed as
@@ -18,21 +19,9 @@ impl Ext4SuperOps {
     }
 }
 
-/// Whether a `sync_fs` pass owes the backing device a durability barrier.
-///
-/// Only the WAITING pass does. The non-waiting pass exists to start work, not to
-/// finish it: a barrier there orders writes nobody has waited for, while still
-/// costing a full device flush — and since the sync path issues BOTH passes,
-/// answering `true` for both doubles every whole-filesystem sync's device
-/// flushes.
-///
-/// `-o nobarrier` removes the flush entirely: the mount has told us its device
-/// either does not need one or is lying about it. That option had no effect at
-/// all before this, so a mount that asked to trade durability for speed paid
-/// for the durability anyway. # C: O(1)
-fn sync_fs_needs_barrier(wait: bool, barrier: bool) -> bool { wait && barrier }
-
 impl vfs::SuperOps for Ext4SuperOps {
+    fn power_freeze_capable(&self) -> bool { true }
+
     /// Linux `ext4_statfs`. `f_blocks` merges
     /// `s_blocks_count_hi` so a >16 TiB filesystem is not truncated to its low
     /// 32 bits; `f_bavail` subtracts `s_r_blocks_count` (the super-user reserve)

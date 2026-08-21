@@ -15,6 +15,7 @@ fn every_kind_round_trips_through_its_wire_value() {
         CallKind::MembarrierPrivateSyncCore,
         CallKind::MembarrierPrivateRseq,
         CallKind::CpuFreq,
+        CallKind::CpuOffline,
     ] {
         assert_eq!(CallKind::from_u32(k.as_u32()), Some(k), "round trip failed for {:?}", k);
     }
@@ -28,6 +29,7 @@ fn kinds_have_distinct_wire_values() {
     assert_ne!(CallKind::MembarrierPrivateMb.as_u32(), CallKind::MembarrierPrivateSyncCore.as_u32());
     assert_ne!(CallKind::MembarrierPrivateSyncCore.as_u32(), CallKind::MembarrierPrivateRseq.as_u32());
     assert_ne!(CallKind::MembarrierPrivateRseq.as_u32(), CallKind::CpuFreq.as_u32());
+    assert_ne!(CallKind::CpuFreq.as_u32(), CallKind::CpuOffline.as_u32());
 }
 
 #[test]

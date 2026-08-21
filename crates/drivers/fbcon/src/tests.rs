@@ -378,6 +378,37 @@ fn a_flush_with_no_damage_uploads_nothing() {
     kernel::kernel_unregister();
 }
 
+// Linux suspends console irq-work before CPU teardown: the last visible
+// damage is flushed synchronously, writes during the suspended interval stay
+// in the retained console image without pinning their current CPU, and resume
+// publishes that accumulated damage once.
+#[test]
+fn console_suspend_blocks_softirq_publication_until_resume() {
+    let _guard = CONSOLE_TEST_DOMAIN.lock();
+    kernel::kernel_unregister();
+    kernel::kernel_init(TEST_XRES, TEST_YRES, count_flush);
+    drain_flush();
+
+    arm_flush_probe();
+    kernel::vt_console_sink(b"before suspend");
+    assert!(softirq::local_pending());
+    kernel::console_suspend();
+    assert_eq!(flushes(), 1, "pre-suspend damage flushed synchronously");
+    assert!(!softirq::local_pending(), "stale per-CPU publication cancelled");
+
+    arm_flush_probe();
+    kernel::vt_console_sink(b"while suspended");
+    assert!(!softirq::local_pending(), "console logging cannot pin a dying CPU");
+    drain_flush();
+    assert_eq!(flushes(), 0, "no framebuffer device access while suspended");
+
+    kernel::console_resume();
+    assert!(softirq::local_pending(), "retained damage queued on resume");
+    drain_flush();
+    assert_eq!(flushes(), 1, "suspended output becomes visible after resume");
+    kernel::kernel_unregister();
+}
+
 // A repaint (VT switch, unblank, scanout restore) legitimately damages
 // everything: the device's copy is stale, so the full frame must go up.
 #[test]

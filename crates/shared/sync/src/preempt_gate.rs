@@ -67,6 +67,8 @@ static HELD_RANKS: [[AtomicU16; HELD_LOCK_DEPTH]; crate::MAX_CPUS] =
 static HELD_DEPTH: [AtomicU8; crate::MAX_CPUS] = [const { AtomicU8::new(0) }; crate::MAX_CPUS];
 #[cfg(feature = "debug-preempt")]
 static HELD_OVERFLOW: [AtomicU8; crate::MAX_CPUS] = [const { AtomicU8::new(0) }; crate::MAX_CPUS];
+#[cfg(feature = "debug-preempt")]
+static FORGOTTEN_MISMATCH_REPORTED: AtomicU8 = AtomicU8::new(0);
 
 /// Where each held frame was acquired, as a `&'static Location` the compiler
 /// supplies through `#[track_caller]`. A rank names a lock CLASS, and a class
@@ -315,7 +317,25 @@ pub(crate) fn installed_release() -> PreemptToken {
 /// # C: O(1)
 #[cfg(feature = "debug-preempt")]
 #[inline]
-pub(crate) fn release_forgotten() {
+pub(crate) fn release_forgotten(expected_rank: u16) {
+    let cpu = cpu_slot(installed_cpu());
+    let actual_rank = held_rank();
+    if actual_rank != expected_rank
+        && FORGOTTEN_MISMATCH_REPORTED.compare_exchange(
+            0, 1, Ordering::AcqRel, Ordering::Relaxed,
+        ).is_ok()
+    {
+        klog::write_raw(b"[PREEMPT-PROVENANCE] forgotten-release cpu=");
+        klog::write_dec_u64(cpu as u64);
+        klog::write_raw(b" expected_rank=");
+        klog::write_dec_u64(expected_rank as u64);
+        klog::write_raw(b" actual_rank=");
+        klog::write_dec_u64(actual_rank as u64);
+        klog::write_raw(b" ops_installed=");
+        klog::write_dec_u64((!OPS.load(Ordering::Acquire).is_null()) as u64);
+        write_held_stack_on(cpu);
+        klog::write_raw(b"\n");
+    }
     trace_pop(installed_cpu());
     let p = OPS.load(Ordering::Acquire);
     if p.is_null() { return; }

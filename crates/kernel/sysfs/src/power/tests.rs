@@ -4,13 +4,14 @@ use alloc::vec::Vec;
 /// Every `power::Error` variant, exhaustively — a match arm added in
 /// `map_err` for a variant that does not exist here would be dead code, and
 /// one dropped from `map_err` for a variant still listed here fails to build.
-const ALL_ERRORS: [power::Error; 9] = [
+const ALL_ERRORS: [power::Error; 11] = [
     power::Error::Inval, power::Error::Perm, power::Error::Io, power::Error::Busy,
-    power::Error::Nosys, power::Error::Again, power::Error::Intr, power::Error::Nomem,
-    power::Error::Nodata,
+    power::Error::Nosys, power::Error::Opnotsupp, power::Error::Again,
+    power::Error::Intr, power::Error::Nomem, power::Error::Nodata,
+    power::Error::Nospc,
 ];
 
-/// `map_err` is total and injective: nine inputs, nine distinct `VfsError`
+/// `map_err` is total and injective: every input has a distinct `VfsError`
 /// outputs. A collision here would mean two power-crate errors surface as
 /// the same errno to userspace.
 #[test]

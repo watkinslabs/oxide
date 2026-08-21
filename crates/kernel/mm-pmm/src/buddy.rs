@@ -29,12 +29,15 @@ mod free;
 mod inner;
 mod pageblock;
 mod pcp;
+#[path = "hibernate.rs"]
+mod hibernate;
 #[cfg(any(test, feature = "debug-watchdog", feature = "debug-cow"))]
 mod poison;
 
 pub use api::Pmm;
 pub use accounting::{PmmSnapshot, ZoneStat};
 pub use pcp::PcpStorage;
+pub use hibernate::{FreePfnSnapshot, FreePfnWorkspace, HibernateFrame, HibernateSavedFrame};
 #[cfg(test)]
 pub(crate) const TEST_FREE_NODE_NEXT_OFF: usize = free_node::OFF_NEXT;
 #[cfg(test)]

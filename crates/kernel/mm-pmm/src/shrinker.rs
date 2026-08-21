@@ -10,9 +10,15 @@ use sync::{Spinlock, TaskList};
 /// where the owner can make that guarantee.
 #[derive(Copy, Clone)]
 pub struct Shrinker {
+    pub class: ShrinkerClass,
     pub count_objects: fn() -> usize,
     pub scan_objects: fn(usize) -> usize,
 }
+
+/// Whether the shrinker's objects already occur in the canonical anon/file
+/// LRU counts used by hibernation sizing.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ShrinkerClass { Independent, LruBacked }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ShrinkerError { Duplicate, NoMem }
@@ -39,6 +45,23 @@ pub fn shrinker_count() -> usize {
     callbacks.into_iter().fold(0usize, |count, shrinker| count.saturating_add((shrinker.count_objects)()))
 }
 
+/// Count reclaimable objects not already represented by an LRU page count.
+/// # C: O(number of shrinkers)
+pub fn independent_shrinker_count() -> usize {
+    let callbacks = { SHRINKERS.lock().clone() };
+    callbacks.into_iter().filter(|shrinker| shrinker.class == ShrinkerClass::Independent)
+        .fold(0usize, |count, shrinker| count.saturating_add((shrinker.count_objects)()))
+}
+
+/// Linux-shaped hibernation lower-bound population: every reclaim LRU plus
+/// only shrinker pages not already represented there. # C: O(1)
+pub(crate) fn hibernate_reclaimable_pages(state: crate::reclaim::ReclaimSnapshot,
+                                           independent: usize) -> usize {
+    let lru = state.inactive_anon.saturating_add(state.active_anon)
+        .saturating_add(state.inactive_file).saturating_add(state.active_file) as usize;
+    lru.saturating_add(independent)
+}
+
 /// Run registered cache reclaim outside registry serialization. Each callback
 /// receives only the still-unmet budget, preventing one owner from consuming
 /// an unbounded direct-reclaim scan. # C: O(number of shrinkers)
@@ -57,7 +80,8 @@ pub fn shrinker_scan(target: usize) -> usize {
 mod tests {
     use core::sync::atomic::{AtomicUsize, Ordering};
 
-    use super::{register_shrinker, shrinker_count, shrinker_scan, Shrinker, ShrinkerError};
+    use super::{independent_shrinker_count, register_shrinker, shrinker_count,
+        shrinker_scan, Shrinker, ShrinkerClass, ShrinkerError};
 
     static COUNT: AtomicUsize = AtomicUsize::new(0);
     static SCANNED: AtomicUsize = AtomicUsize::new(0);
@@ -69,12 +93,22 @@ mod tests {
 
     #[test]
     fn callbacks_register_once_and_scan_only_the_requested_budget() {
-        let shrinker = Shrinker { count_objects: count, scan_objects: scan };
+        let shrinker = Shrinker { class: ShrinkerClass::Independent,
+            count_objects: count, scan_objects: scan };
         let _ = register_shrinker(shrinker);
         assert_eq!(register_shrinker(shrinker), Err(ShrinkerError::Duplicate));
         assert!(shrinker_count() >= RECLAIMABLE_OBJECTS);
+        assert!(independent_shrinker_count() >= RECLAIMABLE_OBJECTS);
         assert_eq!(shrinker_scan(REQUESTED_OBJECTS), REQUESTED_OBJECTS);
         assert!(SCANNED.load(Ordering::SeqCst) >= REQUESTED_OBJECTS);
         COUNT.fetch_add(0, Ordering::SeqCst);
+    }
+
+
+    #[test]
+    fn hibernate_minimum_counts_lrus_and_only_independent_shrinkers() {
+        let state = crate::reclaim::ReclaimSnapshot { inactive_anon: 2, active_anon: 3,
+            inactive_file: 5, active_file: 7, ..Default::default() };
+        assert_eq!(super::hibernate_reclaimable_pages(state, 11), 28);
     }
 }

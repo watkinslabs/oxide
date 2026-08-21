@@ -7,7 +7,7 @@
 // via `hal_aarch64::smp::set_ap_init_hook`.
 
 
-use hal::{MmuOps, Pa, PageFlags, PageSize, Va};
+use hal::{MmuOps, Pa, PageFlags, PageSize, TimerOps, Va};
 use hal_aarch64::mmu_ops::ArmMmu;
 
 fn device_flags() -> PageFlags {
@@ -24,6 +24,7 @@ fn device_flags() -> PageFlags {
 /// tables (TTBR1) tolerate the device map (own TLB flushed by `map`).
 /// # C: O(map depth) + O(spin until ChildrenAsleep)
 pub unsafe fn ap_init(aff0: u32) {
+    let cold = sched::live::global().is_none();
     let base_va = crate::gic::gicr_base();
     if base_va == 0 { return; } // GIC not up (shouldn't happen post-boot)
     let stride = crate::gic::GICR_STRIDE;
@@ -44,13 +45,15 @@ pub unsafe fn ap_init(aff0: u32) {
         // SGIs. The dispatcher's UART/softirq work is BSP-gated; an AP
         // tick only reschedules. Period matches the BSP (10_000).
         crate::gic::enable_sgi_on(ap_va, 27);
-        sched::live::install_default_runqueue();
+        if cold { sched::live::install_default_runqueue(); }
         // F699: arm THIS AP's per-CPU IRQ stack before its timer starts
         // ticking (below). Runs on the AP with TPIDR set by ap_main and IRQs
         // still masked; the shared C213 kstack window is visible via TTBR1.
-        match sched::kstack::alloc_leaked_top_with(pmm::setup::alloc_raw_frame_nowait) {
-            Some(top) => hal_aarch64::set_irq_stack_top(top),
-            None => klog::write_raw(b"[IRQSTK] AP hardirq stack alloc failed; on task stack\n"),
+        if cold {
+            match sched::kstack::alloc_leaked_top_with(pmm::setup::alloc_raw_frame_nowait) {
+                Some(top) => hal_aarch64::set_irq_stack_top(top),
+                None => klog::write_raw(b"[IRQSTK] AP hardirq stack alloc failed; on task stack\n"),
+            }
         }
         hal_aarch64::timer::timer_periodic(10_000);
     }
@@ -94,4 +97,98 @@ pub fn publish_madt_mpidrs() {
         i += 1;
     }
     if k > 0 { hal_aarch64::smp::set_psci_ap_mpidrs(&mpidrs[..k]); }
+}
+
+const CPU_HOTPLUG_SPINS: u32 = 50_000_000;
+const CPU_KILL_NS: u64 = 100_000_000;
+
+fn physically_off(logical: usize) -> bool {
+    let Some(mpidr) = cpu::hardware_id_for_logical(logical as u32) else { return false; };
+    let start = hal_aarch64::ArmTimerOps::monotonic_ns().0;
+    let mut spins = 0;
+    loop {
+        // SAFETY: read-only PSCI affinity query from the online boot PE.
+        let state = unsafe { hal_aarch64::psci::affinity_info(mpidr) };
+        if hal_aarch64::psci::affinity_level_is_off(state) { return true; }
+        if state < 0 { return false; }
+        spins += 1;
+        let now = hal_aarch64::ArmTimerOps::monotonic_ns().0;
+        if (start != 0 && now.wrapping_sub(start) >= CPU_KILL_NS)
+            || (start == 0 && spins >= CPU_HOTPLUG_SPINS) { return false; }
+        core::hint::spin_loop();
+    }
+}
+
+/// Offline every online secondary through the shared call-function SGI.
+/// Returns false after rolling back successful prior transitions. # C: O(N CPUs)
+pub fn disable_secondary_cpus() -> bool {
+    if !cpu::smp::begin_freeze() { return false; }
+    let boot = cpu::logical_id_for_hardware(cpu::smp::boot_cpu_id()).unwrap_or(0) as usize;
+    let online = cpu::smp::online_cpumask();
+    for logical in (0..cpu::MAX_CPUS).rev() {
+        if logical == boot || !online.contains(logical) { continue; }
+        power::hibernate::log::cpu_off(logical as u32,
+            power::hibernate::log::CpuOffPhase::Request,
+            power::hibernate::log::CpuOffResult::Begin);
+        if !cpu::smp::request_offline(logical as u32)
+        {
+            power::hibernate::log::cpu_off(logical as u32,
+                power::hibernate::log::CpuOffPhase::Request,
+                power::hibernate::log::CpuOffResult::Refused);
+            cpu::smp::cancel_offline(logical as u32); enable_secondary_cpus(); return false;
+        }
+        power::hibernate::log::cpu_off(logical as u32,
+            power::hibernate::log::CpuOffPhase::Request,
+            power::hibernate::log::CpuOffResult::Ok);
+        power::hibernate::log::cpu_off(logical as u32,
+            power::hibernate::log::CpuOffPhase::Callfn,
+            power::hibernate::log::CpuOffResult::Begin);
+        if !crate::call_fn::request_cpu_offline(logical as u32) {
+            power::hibernate::log::cpu_off(logical as u32,
+                power::hibernate::log::CpuOffPhase::Callfn,
+                power::hibernate::log::CpuOffResult::Refused);
+            cpu::smp::cancel_offline(logical as u32); enable_secondary_cpus(); return false;
+        }
+        let mut spins = 0;
+        while cpu::smp::offline_result(logical as u32).is_none() && spins < CPU_HOTPLUG_SPINS {
+            spins += 1; core::hint::spin_loop();
+        }
+        if cpu::smp::offline_result(logical as u32) != Some(true) {
+            power::hibernate::log::cpu_off(logical as u32,
+                power::hibernate::log::CpuOffPhase::OfflineResult,
+                power::hibernate::log::CpuOffResult::Refused);
+            cpu::smp::cancel_offline(logical as u32); enable_secondary_cpus(); return false;
+        }
+        power::hibernate::log::cpu_off(logical as u32,
+            power::hibernate::log::CpuOffPhase::OfflineResult,
+            power::hibernate::log::CpuOffResult::Ok);
+        power::hibernate::log::cpu_off(logical as u32,
+            power::hibernate::log::CpuOffPhase::ConfirmDead,
+            power::hibernate::log::CpuOffResult::Begin);
+        if !physically_off(logical) {
+            power::hibernate::log::cpu_off(logical as u32,
+                power::hibernate::log::CpuOffPhase::ConfirmDead,
+                power::hibernate::log::CpuOffResult::Refused);
+            enable_secondary_cpus(); return false;
+        }
+        power::hibernate::log::cpu_off(logical as u32,
+            power::hibernate::log::CpuOffPhase::ConfirmDead,
+            power::hibernate::log::CpuOffResult::Ok);
+    }
+    cpu::smp::online_count() == 1
+}
+
+/// Restart exactly the PEs successfully frozen by the matching down pass.
+/// # C: O(N CPUs)
+pub fn enable_secondary_cpus() {
+    let frozen = cpu::smp::frozen_cpumask();
+    for logical in 0..cpu::MAX_CPUS {
+        if frozen.contains(logical) {
+            // SAFETY: frozen record proves this logical PE is offline; thaw is
+            // the sole CPU-hotplug controller.
+            let online = unsafe { hal_aarch64::smp::restart_cpu(logical as u32) };
+            cpu::smp::finish_thaw_cpu(logical as u32, online);
+            if !online { klog::write_raw(b"[CPU-HOTPLUG] arm PE restart failed; ownership retained\n"); }
+        }
+    }
 }

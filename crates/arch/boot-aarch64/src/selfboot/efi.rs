@@ -1,4 +1,4 @@
-use super::{EFI_BS_BASE, EFI_BS_COUNT, EFI_BS_PAGES, EFI_CMDLINE, EFI_CMDLINE_LEN, EFI_CMDLINE_MAX, EFI_FB_BASE, EFI_FB_BLUE_MASK, EFI_FB_BYTES, EFI_FB_FORMAT, EFI_FB_GREEN_MASK, EFI_FB_HEIGHT, EFI_FB_PIXELS_PER_SCANLINE, EFI_FB_RED_MASK, EFI_FB_RESERVED_MASK, EFI_FB_WIDTH, EFI_RAM_BASE, EFI_RAM_COUNT, EFI_RAM_MAX, EFI_RAM_PAGES, EFI_RSDP_PA, EFI_SYSTAB_PA, EFI_TYPE_PAGES};
+use super::{EFI_CMDLINE, EFI_CMDLINE_LEN, EFI_CMDLINE_MAX, EFI_FB_BASE, EFI_FB_BLUE_MASK, EFI_FB_BYTES, EFI_FB_FORMAT, EFI_FB_GREEN_MASK, EFI_FB_HEIGHT, EFI_FB_PIXELS_PER_SCANLINE, EFI_FB_RED_MASK, EFI_FB_RESERVED_MASK, EFI_FB_WIDTH, EFI_RAM_BASE, EFI_RAM_COUNT, EFI_RAM_MAX, EFI_RAM_PAGES, EFI_RSDP_PA, EFI_SYSTAB_PA, EFI_TYPE_PAGES};
 use core::sync::atomic::Ordering;
 
 /// EFI device-tree config-table GUID (gFdtTableGuid,
@@ -249,7 +249,6 @@ pub unsafe extern "C" fn efi_stub_setup(handle: u64, systab: *const u8) -> u64 {
             // stride is the firmware-reported desc_size (>= 40).
             if desc_size >= 40 {
                 let mut n = 0usize;
-                let mut nb = 0usize;
                 let mut off: u64 = 0;
                 // Reset per-type tallies (loop may re-run on a stale map_key).
                 let mut k = 0usize;
@@ -269,19 +268,9 @@ pub unsafe extern "C" fn efi_stub_setup(handle: u64, systab: *const u8) -> u64 {
                         EFI_RAM_PAGES[n].store(pages, core::sync::atomic::Ordering::Release);
                         n += 1;
                     }
-                    // types 3/4 = BootServices Code/Data → reclaimable, but
-                    // gated on ACPI being pinned (this EDK2 stores the live
-                    // ACPI tables in type4; build_selfboot_memmap reserves the
-                    // ACPI extent before adding these).
-                    if (ty == 3 || ty == 4) && pages != 0 && nb < EFI_RAM_MAX {
-                        EFI_BS_BASE[nb].store(phys, core::sync::atomic::Ordering::Release);
-                        EFI_BS_PAGES[nb].store(pages, core::sync::atomic::Ordering::Release);
-                        nb += 1;
-                    }
                     off += desc_size;
                 }
                 EFI_RAM_COUNT.store(n as u64, core::sync::atomic::Ordering::Release);
-                EFI_BS_COUNT.store(nb as u64, core::sync::atomic::Ordering::Release);
                 // Keep the map itself, not just the tallies drawn from it. The
                 // firmware's buffer is boot-services memory that stops being
                 // promised the moment ExitBootServices returns, and the next

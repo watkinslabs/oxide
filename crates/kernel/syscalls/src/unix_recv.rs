@@ -49,7 +49,7 @@ fn wait_nonblock_after(sock: &Arc<InetSocket>, nonblock: bool, flags: u64, deadl
     // errno for both the stream and the datagram/seqpacket flavours, so an
     // untimed recv is RESTARTABLE and only an SO_RCVTIMEO recv reports a
     // real EINTR.
-    if sched::live::deliverable_signals_self() != 0 {
+    if sched::live::interruptible_work_pending_self() {
         return Err(crate::net_errno::sock_intr_errno(deadline));
     }
     if net::sock_recv::deadline_expired(deadline) { return Err(err(Errno::Eagain)); }

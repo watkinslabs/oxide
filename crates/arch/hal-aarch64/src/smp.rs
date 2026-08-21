@@ -1,11 +1,7 @@
-// aarch64 AP startup boot-CPU side. PSCI CPU_ON brings each
-// secondary up at `oxide_ap_entry_arm` with x0 = context_id.
-// Per-AP context is a `ApContext` allocated by the boot CPU,
-// holding the AP's per-CPU page + stack top. The AP reads
+// aarch64 AP startup boot-CPU side. PSCI CPU_ON brings each secondary up at `oxide_ap_entry_arm` with x0 = context_id.
+// Per-AP context is a `ApContext` allocated by the boot CPU, holding the AP's per-CPU page + stack top. The AP reads
 // these from x0 and finishes its bring-up in `ap_main`.
-//
-// This is the boot-CPU outgoing half. AP-side asm prologue +
-// Rust entry land in `smp_arm_entry.rs` (the `global_asm!`
+// This is the boot-CPU outgoing half. AP-side asm prologue + Rust entry land in `smp_arm_entry.rs` (the `global_asm!`
 // trampoline + `ap_main`).
 
 #![cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
@@ -13,13 +9,13 @@
 use alloc::boxed::Box;
 use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
 
+mod hotplug;
+pub use hotplug::restart_cpu;
+
 const AP_STACK_BYTES: usize = 16 * 1024;
 const AP_PERCPU_BYTES: usize = 4096;
 const AP_ONLINE_SPINS: u32 = 50_000_000;
-
-/// Installed by the memory owner before SMP starts. Keeping this injection at
-/// the HAL boundary avoids making HAL depend on PMM while ensuring AP per-CPU
-/// pages have the same canonical PMM/memcg lifecycle as x86.
+/// Memory-owner hook keeps HAL independent of PMM while AP pages use canonical PMM/memcg lifecycle.
 static PERCPU_ALLOC_HOOK: AtomicUsize = AtomicUsize::new(0);
 
 /// Install the permanent per-CPU page allocator before `bring_up_aps_psci`.
@@ -36,10 +32,7 @@ fn alloc_percpu_page() -> Option<*mut u8> {
     hook()
 }
 
-/// Per-AP context. The AP receives a pointer to this in x0
-/// when PSCI CPU_ON jumps it into `oxide_ap_entry_arm`. Layout
-/// is read-only after the boot CPU publishes it, so plain
-/// fields suffice.
+/// Per-AP context passed in x0; read-only after boot CPU publication.
 #[repr(C)]
 pub struct ApContext {
     /// Top of the AP's kernel stack (16-byte-aligned).
@@ -358,8 +351,6 @@ pub unsafe extern "C" fn ap_main(ctx: *const ApContext) -> ! {
             }
         }
     }
-    // Mark ourselves online via the boot CPU's cpu::smp::ap_arrived.
-    let _ = cpu::smp::ap_arrived();
     // Publish this AP's logical id in the online bitmap (symmetry with x86;
     // aarch64 uses hardware-broadcast `tlbi vae1is` so no shootdown IPI runs,
     // but keeping the bitmap correct costs nothing).
@@ -398,27 +389,6 @@ pub unsafe extern "C" fn ap_main(ctx: *const ApContext) -> ! {
         // SAFETY: WFI is legal at EL1; parks until an IRQ wakes us.
         unsafe { core::arch::asm!("wfi"); }
     }
-}
-
-/// Clean a VA range to the Point of Coherency so a CPU running with caches
-/// off (a freshly-`CPU_ON`'d AP, before it sets SCTLR.C) reads the data from
-/// RAM rather than a stale line. 64-byte stride covers the QEMU `virt` line
-/// size; `dsb sy` orders the cleans before the `CPU_ON` SMC/HVC.
-/// # SAFETY: `va..va+len` is a live mapped kernel allocation; `dc cvac` at
-/// EL1 cleans by VA with no side effects beyond cache state.
-/// # C: O(len / line)
-unsafe fn clean_dcache_to_poc(va: u64, len: usize) {
-    const LINE: u64 = 64;
-    let mut p = va & !(LINE - 1);
-    let end = va + len as u64;
-    while p < end {
-        // SAFETY: dc cvac cleans the cache line for VA p to PoC; p is within
-        // a live kernel mapping; no memory is read or written by the op.
-        unsafe { core::arch::asm!("dc cvac, {x}", x = in(reg) p, options(nostack, preserves_flags)); }
-        p += LINE;
-    }
-    // SAFETY: dsb sy drains the cache-maintenance ops before the caller's CPU_ON.
-    unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
 }
 
 /// Boot-CPU AP startup via PSCI `CPU_ON`. For each non-BSP
@@ -485,13 +455,14 @@ pub unsafe fn bring_up_aps_psci() -> usize {
         let bb_va = bb as *const ApBootBlock as u64;
         // SAFETY: bb is a fresh heap allocation; clean its bytes to PoC so the
         // AP (caches off) reads the boot block from RAM.
-        unsafe { clean_dcache_to_poc(bb_va, core::mem::size_of::<ApBootBlock>()); }
+        unsafe { hotplug::clean_dcache_to_poc(bb_va, core::mem::size_of::<ApBootBlock>()); }
         // The kernel heap lives in the kernel-image high half (not HHDM), so
         // VA-HHDM gives garbage. Translate the boot block's kernel VA to its
         // physical address via the MMU (AT S1E1R) — what the AP reads MMU-off
         // through the identity map.
         // SAFETY: bb_va is a live mapped kernel VA; AT s1e1r reads PAR_EL1 only.
         let bb_pa = unsafe { va_to_pa(bb_va) };
+        hotplug::retain(logical_cpu_id, mpidr, entry_pa, bb_pa);
         let before = cpu::smp::online_count();
         // SAFETY: PSCI conduit configured (HVC on QEMU virt); entry_pa is the
         // trampoline's load-time phys; bb_pa is cleaned and identity-mapped.

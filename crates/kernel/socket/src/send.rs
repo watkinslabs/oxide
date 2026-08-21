@@ -316,7 +316,7 @@ fn send_inet(ctx: &SendContext<'_>, target: &SendFile, socket: &Arc<net::sock::I
             Err(net::NetError::Eagain) => {
                 // Linux `sk_stream_wait_memory` -> `sock_intr_errno(*timeo)`;
                 // a partial transfer reports its count, as `do_error:` does.
-                if sched::live::deliverable_signals_self() != 0 {
+                if sched::live::interruptible_work_pending_self() {
                     return if total != 0 { Ok(total) }
                         else { Err(Error::from(net::sock_intr::sock_intr_net(deadline))) };
                 }
@@ -378,7 +378,7 @@ fn send_unix_blocking(ctx: &SendContext<'_>, target: &SendFile,
             Err(Error::Eagain) => {
                 // Linux `unix_dgram_sendmsg`/`unix_stream_sendmsg`:
                 // `sock_intr_errno(timeo)`.
-                if sched::live::deliverable_signals_self() != 0 {
+                if sched::live::interruptible_work_pending_self() {
                     return if total == 0 {
                         Err(Error::from(net::sock_intr::sock_intr_net(deadline)))
                     } else { Ok(total) };

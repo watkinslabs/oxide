@@ -28,7 +28,7 @@ impl BlkState {
 
     #[allow(clippy::too_many_arguments)]
     pub(super) fn do_request(&self, h: u64, type_: u32, sector: u64, data: &mut [u8],
-                  is_in: bool, is_flush: bool, data_len: u32) -> KResult<InHeader> {
+                  is_in: bool, is_flush: bool, data_len: u32, trace: u16) -> KResult<InHeader> {
         let bounce = h.wrapping_add(self.bounce_pa) as *mut u8;
         // Zone append answers with the sector its data landed at ahead of the
         // status byte, so its device-writable tail is wider. Declaring one
@@ -110,7 +110,19 @@ impl BlkState {
             }
         }
 
-        self.wait_for_completion(h, target)?;
+        let used = h.wrapping_add(self.requestq.res.device_pa) as *const u16;
+        #[cfg(feature = "debug-hibernate")]
+        if trace != 0 {
+            self.log_hibernate_request(trace, b"wait_begin", type_, sector, target,
+                unsafe { core::ptr::read_volatile(used.add(1)) });
+        }
+        let result = self.wait_for_completion(h, target);
+        #[cfg(feature = "debug-hibernate")]
+        if trace != 0 {
+            self.log_hibernate_request(trace, if result.is_ok() { b"wait_end" } else { b"wait_error" },
+                type_, sector, target, unsafe { core::ptr::read_volatile(used.add(1)) });
+        }
+        result?;
         core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
 
         let mut in_header: InHeader = [0u8; VIRTIO_BLK_MAX_IN_HEADER_BYTES];
@@ -144,6 +156,19 @@ impl BlkState {
             }
         }
         Ok(in_header)
+    }
+
+    #[cfg(feature = "debug-hibernate")]
+    fn log_hibernate_request(&self, trace: u16, phase: &[u8], type_: u32, sector: u64,
+        target: u16, used: u16)
+    {
+        klog::write_raw(b"[hibernate] blk_sync="); klog::write_dec_u64(trace as u64);
+        klog::write_raw(b" request="); klog::write_raw(phase);
+        klog::write_raw(b" type="); klog::write_dec_u64(type_ as u64);
+        klog::write_raw(b" sector="); klog::write_dec_u64(sector);
+        klog::write_raw(b" target="); klog::write_dec_u64(target as u64);
+        klog::write_raw(b" used="); klog::write_dec_u64(used as u64);
+        klog::write_raw(b"\n");
     }
 
     /// Issue the device barrier, or skip it when the negotiated cache mode is

@@ -10,6 +10,7 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 
 mod multi_msi;
 mod msix;
+mod suspend;
 pub use msix::{begin_msix, MsixEntry, MsixGroup};
 
 /// One BAR mapping that contains an MSI-X table. Drivers retain ownership of
@@ -237,6 +238,12 @@ fn request_msi<R: pci::ConfigSpaceReader>(r: &R, bdf: pci::Bdf, cap_off: u8,
         arch_irq::free_pci_msi(message.irq);
         return None;
     }
+    if !suspend::bind_msi(message.irq, bdf, cap_off) {
+        let _ = pci::disable_msi(r, bdf, cap_off);
+        let _ = pci::restore_intx_disabled(r, bdf, prior_command);
+        arch_irq::free_pci_msi(message.irq);
+        return None;
+    }
     Some(single_binding(bdf, message.irq, prior_command, Mode::Msi { cap_off }))
 }
 
@@ -249,6 +256,12 @@ fn request_msi_context<R: pci::ConfigSpaceReader>(r: &R, bdf: pci::Bdf, cap_off:
     }
     let prior_command = pci::set_intx_disabled(r, bdf, true);
     if !pci::program_msi_single(r, bdf, cap_off, message.address, message.data) {
+        let _ = pci::restore_intx_disabled(r, bdf, prior_command);
+        arch_irq::free_pci_msi(message.irq);
+        return None;
+    }
+    if !suspend::bind_msi(message.irq, bdf, cap_off) {
+        let _ = pci::disable_msi(r, bdf, cap_off);
         let _ = pci::restore_intx_disabled(r, bdf, prior_command);
         arch_irq::free_pci_msi(message.irq);
         return None;
@@ -267,6 +280,12 @@ fn request_msi_context_message<R: pci::ConfigSpaceReader>(r: &R, bdf: pci::Bdf, 
     }
     let prior_command = pci::set_intx_disabled(r, bdf, true);
     if !block.program(r, bdf, cap_off, cap, message_number as usize) {
+        let _ = pci::restore_intx_disabled(r, bdf, prior_command);
+        block.release();
+        return None;
+    }
+    if !suspend::bind_msi(target.irq, bdf, cap_off) {
+        let _ = pci::disable_msi(r, bdf, cap_off);
         let _ = pci::restore_intx_disabled(r, bdf, prior_command);
         block.release();
         return None;

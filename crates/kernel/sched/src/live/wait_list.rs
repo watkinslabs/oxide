@@ -268,7 +268,7 @@ impl WaitList {
     /// task was publishing itself Sleeping must not be missed.
     /// # C: O(1)
     fn check_pending_after_park(&self) {
-        if super::sigpend::deliverable_signals_self() != 0 {
+        if super::sigpend::interruptible_work_pending_self() {
             if let Some(cur) = super::schedule::current() {
                 if let Some(task) = crate::registry::lookup(cur.tid) {
                     super::sigpend::wake_if_sleeping(&task);

@@ -23,9 +23,9 @@ use crate::misc::misc_common::errno;
 ///
 /// Order: CAP_SYS_BOOT → magic pair → `reboot_pid_ns` → command. RESTART /
 /// POWER_OFF / HALT / RESTART2 are irreversible and never return; CAD_ON /
-/// CAD_OFF latch `C_A_D` and return 0; KEXEC and SW_SUSPEND are EINVAL, the
-/// answer a kernel built without CONFIG_KEXEC_CORE / CONFIG_HIBERNATION gives.
-/// # C: O(N_devices) on a terminal command, O(1) otherwise
+/// CAD_OFF latch `C_A_D` and return 0; KEXEC and SW_SUSPEND route to their
+/// subsystem-owned transactions.
+/// # C: O(N_devices + N_tasks) on a machine transition, O(1) otherwise
 pub fn sys_reboot(args: &SyscallArgs) -> i64 {
     let magic1 = args.a0 as u32;
     let magic2 = args.a1 as u32;
@@ -48,13 +48,20 @@ pub fn sys_reboot(args: &SyscallArgs) -> i64 {
         Ok(power::RebootAction::SetCad(on)) => { power::set_cad(on); 0 }
         Ok(power::RebootAction::Terminal(t)) => {
             // SAFETY: CAP_SYS_BOOT + magic pair + initial pid namespace all validated above; the transition is irreversible per the reboot(2) contract.
-            unsafe { power::terminal(t) }
+            match unsafe { power::terminal(t) } {
+                Ok(never) => match never {},
+                Err(error) => errno(crate::power_errno::of(error)),
+            }
         }
         Ok(power::RebootAction::Restart2) => restart2(arg),
         // `kernel_kexec()`: boots the image `kexec_load(2)` staged, and does
         // not return when it succeeds. EINVAL when nothing is loaded — which
         // is what `systemctl kexec` reads to fall back to a plain reboot.
         Ok(power::RebootAction::Kexec) => crate::kexec_abi::encode(kexec::kernel_kexec()),
+        Ok(power::RebootAction::Hibernate) => match power::hibernate::entry::hibernate() {
+            Ok(()) => 0,
+            Err(e) => errno(crate::power_errno::of(e)),
+        },
         Err(e) => errno(crate::power_errno::of(e)),
     }
 }
@@ -79,7 +86,10 @@ fn restart2(arg: u64) -> i64 {
     }
     let len = power::restart2_cmd_len(&raw);
     // SAFETY: CAP_SYS_BOOT + magic pair + initial pid namespace validated by the caller, and the command string is now fully copied in; irreversible by contract.
-    unsafe { power::restart_with_command(&raw[..len]) }
+    match unsafe { power::restart_with_command(&raw[..len]) } {
+        Ok(never) => match never {},
+        Err(error) => errno(crate::power_errno::of(error)),
+    }
 }
 
 /// `reboot_pid_ns`: record the reboot

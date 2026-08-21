@@ -74,6 +74,31 @@ fn exec(kind: u32, arg: u64) {
         Some(CallKind::MembarrierPrivateSyncCore) => sched::membarrier::service_private_sync_core(arg),
         Some(CallKind::MembarrierPrivateRseq) => sched::membarrier::service_private_rseq(arg),
         Some(CallKind::CpuFreq) => firmware::acpi::cpufreq::service_remote(arg),
+        Some(CallKind::CpuOffline) => {
+            let cpu = this_cpu();
+            let (curr_idle, nr_running) = match sched::live::runqueue::global() {
+                Some(rq) => (rq.curr_is_idle(),
+                    rq.nr_running.load(core::sync::atomic::Ordering::Acquire)),
+                None => (false, 0),
+            };
+            let idle = curr_idle && nr_running == 0;
+            let wake = sched::live::wake_list_debug(cpu as u32);
+            let pending = softirq::local_pending_bits();
+            power::hibernate::log::cpu_off_callfn(cpu as u32, curr_idle, nr_running,
+                wake.0, wake.1 as u64, pending);
+            if !idle || wake.0 || wake.1 != 0 {
+                power::hibernate::log::cpu_off(cpu as u32,
+                    power::hibernate::log::CpuOffPhase::Callfn,
+                    power::hibernate::log::CpuOffResult::Refused);
+                ::cpu::smp::reject_offline(cpu as u32); return;
+            }
+            if !::cpu::smp::request_offline_tail(cpu as u32) {
+                power::hibernate::log::cpu_off(cpu as u32,
+                    power::hibernate::log::CpuOffPhase::Callfn,
+                    power::hibernate::log::CpuOffResult::Refused);
+                ::cpu::smp::reject_offline(cpu as u32);
+            }
+        }
         Some(CallKind::Stop) => {
             // Publish BEFORE parking: the waiter frees nothing, but it does
             // proceed to overwrite the pages this CPU was running out of, so
@@ -92,6 +117,35 @@ fn exec(kind: u32, arg: u64) {
     }
 }
 
+/// Queue the terminal CPU-down call through the sole call-function transport.
+/// Completion is the target's canonical offline publication, not a returning
+/// call handler. # C: O(IPI delivery)
+pub fn request_cpu_offline(target: u32) -> bool {
+    let sender = this_cpu();
+    let target = target as usize;
+    let online = cpu::smp::online_cpumask().contains(target);
+    power::hibernate::log::cpu_off_transport_facts(sender as u32, target as u32,
+        online, cpu::hardware_id_for_logical(target as u32));
+    if sender == target {
+        power::hibernate::log::cpu_off_transport(sender as u32, target as u32,
+            power::hibernate::log::CpuCallTransport::SameCpu);
+        return false;
+    }
+    if !online {
+        power::hibernate::log::cpu_off_transport(sender as u32, target as u32,
+            power::hibernate::log::CpuCallTransport::Offline);
+        return false;
+    }
+    QUEUES.lock_slot(sender, target, || { service(); sync::spin_relax::relax(); });
+    let need_ipi = QUEUES.push(sender, target, CallKind::CpuOffline.as_u32(), sender as u64);
+    if !need_ipi {
+        power::hibernate::log::cpu_off_transport(sender as u32, target as u32,
+            power::hibernate::log::CpuCallTransport::Queued);
+    }
+    // SAFETY: target was resolved from the canonical online set.
+    !need_ipi || unsafe { send_cpu_offline_ipi(sender as u32, target as u32) }
+}
+
 /// Drain every call queued for this CPU.
 ///
 /// Called from the call-function IPI dispatch AND from every lock spin in
@@ -103,23 +157,80 @@ pub fn service() {
     QUEUES.drain(this_cpu(), exec);
 }
 
+/// Complete an admitted CPU-down only after the ordinary IRQ tail drained
+/// local softirqs and deferred wakes. Linux enters play-dead from CPU-hotplug
+/// thread context after interrupt accounting, never from inside an IPI body.
+/// # C: O(1)
+/// # Ctx: IRQ tail, IRQs masked, hardirq/softirq accounting retired
+pub fn finish_cpu_offline_tail() {
+    let cpu = this_cpu();
+    if !::cpu::smp::offline_tail_requested(cpu as u32) { return; }
+    let (curr_idle, nr_running) = match sched::live::runqueue::global() {
+        Some(rq) => (rq.curr_is_idle(), rq.nr_running.load(core::sync::atomic::Ordering::Acquire)),
+        None => (false, 0),
+    };
+    let wake = sched::live::wake_list_debug(cpu as u32);
+    let pending = softirq::local_pending_bits();
+    power::hibernate::log::cpu_off_callfn(cpu as u32, curr_idle, nr_running,
+        wake.0, wake.1 as u64, pending);
+    if !curr_idle || nr_running != 0 || wake.0 || wake.1 != 0 || pending != 0 {
+        ::cpu::smp::reject_offline(cpu as u32); return;
+    }
+    // SAFETY: the IRQ tail owns this CPU's local timer and no local work
+    // remains admitted after the second idle/pending proof.
+    unsafe { crate::lapic::timer_disarm(); }
+    // SAFETY: this CPU is idle, its ordinary IRQ tail has completed, and the
+    // requested hotplug state excludes new scheduler placement.
+    if !unsafe { ::cpu::smp::mark_offline(cpu as u32) } {
+        ::cpu::smp::reject_offline(cpu as u32); return;
+    }
+    power::hibernate::log::cpu_off(cpu as u32,
+        power::hibernate::log::CpuOffPhase::Callfn,
+        power::hibernate::log::CpuOffResult::Ok);
+    ::cpu::smp::finish_offline(cpu as u32);
+    loop {
+        // SAFETY: x86 CPU-hotplug play-dead state. INIT resets this processor
+        // and SIPI re-enters the retained AP trampoline.
+        unsafe { core::arch::asm!("cli", "hlt", options(nomem, nostack)); }
+    }
+}
+
 /// Send the call-function IPI to one logical CPU. Returns false when the
 /// logical id has no hardware id — nothing was sent, so the caller must not
 /// wait on it.
 /// # SAFETY: LAPIC enabled.
-unsafe fn send_ipi(logical_cpu: u32) -> bool {
+#[derive(Copy, Clone)]
+enum IpiResult { NoHardware, Icr(bool) }
+
+unsafe fn send_ipi_result(logical_cpu: u32) -> IpiResult {
     let apic = match cpu::hardware_id_for_logical(logical_cpu).and_then(|id| u32::try_from(id).ok()) {
         Some(a) => a,
-        None => return false,
+        None => return IpiResult::NoHardware,
     };
     let lo = crate::lapic::build_icr_lo(hal_x86_64::VEC_CALL_FUNCTION, 0b000, true, false);
     // SAFETY: serialize prior ICR write, then deliver the fixed IPI.
     unsafe {
         crate::lapic::wait_icr_idle();
-        let _ = crate::lapic::write_icr(apic, lo);
+        let sent = crate::lapic::write_icr(apic, lo);
         crate::lapic::wait_icr_idle();
+        IpiResult::Icr(sent)
     }
-    true
+}
+
+unsafe fn send_cpu_offline_ipi(sender: u32, target: u32) -> bool {
+    // SAFETY: caller resolved target from the canonical online set.
+    let result = unsafe { send_ipi_result(target) };
+    power::hibernate::log::cpu_off_transport(sender, target, match result {
+        IpiResult::NoHardware => power::hibernate::log::CpuCallTransport::NoHardware,
+        IpiResult::Icr(false) => power::hibernate::log::CpuCallTransport::IcrRefused,
+        IpiResult::Icr(true) => power::hibernate::log::CpuCallTransport::IcrSent,
+    });
+    !matches!(result, IpiResult::NoHardware)
+}
+
+unsafe fn send_ipi(logical_cpu: u32) -> bool {
+    // SAFETY: caller resolved target from the canonical online set.
+    !matches!(unsafe { send_ipi_result(logical_cpu) }, IpiResult::NoHardware)
 }
 
 /// The `hal::smp_call` hook: run `kind`/`arg` on every online CPU in `mask`

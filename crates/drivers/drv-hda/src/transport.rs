@@ -7,6 +7,7 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use crate::platform::{now_ns, udelay};
+use crate::ownership::RegLock;
 use crate::regs::Regs;
 use crate::ring;
 use crate::uapi::*;
@@ -205,22 +206,38 @@ fn immediate_command(regs: &Regs, command: u32) -> Option<u32> {
 }
 
 /// Put one command and wait for its response. # C: O(RESPONSE_TIMEOUT_NS)
-pub fn exec(regs: &Regs, rings: &mut Rings, command: u32) -> Option<u32> {
+pub fn exec(regs: &Regs, ring_lock: &RegLock<Rings>, command: u32) -> Option<u32> {
     let addr = verb::verb_addr(command) as usize;
     if addr >= MAX_CODECS as usize { return None; }
-    if !send_corb(regs, rings, command) {
-        rings.pending[addr] = 0;
+    let sent = {
+        let mut rings = lock_regs(ring_lock);
+        send_corb(regs, &mut rings, command)
+    };
+    if !sent {
+        lock_regs(ring_lock).pending[addr] = 0;
         return immediate_command(regs, command);
     }
     let deadline = now_ns() + RESPONSE_TIMEOUT_NS;
     loop {
-        update_rirb(regs, rings);
-        if rings.pending[addr] == 0 { return Some(rings.response[addr]); }
+        {
+            let mut rings = lock_regs(ring_lock);
+            update_rirb(regs, &mut rings);
+            if rings.pending[addr] == 0 { return Some(rings.response[addr]); }
+        }
         if now_ns() >= deadline { break; }
         udelay(RESPONSE_POLL_US);
     }
     // The ring never answered: forget the outstanding command so the next
     // one is not matched against this response, and try the direct path.
-    rings.pending[addr] = 0;
+    lock_regs(ring_lock).pending[addr] = 0;
     immediate_command(regs, command)
+}
+
+/// Acquire one controller's register state with its local hard IRQ excluded.
+/// # C: O(1) plus bounded IRQ-handler contention
+pub fn lock_regs(rings: &RegLock<Rings>) -> impl core::ops::DerefMut<Target = Rings> + '_ {
+    #[cfg(target_arch = "x86_64")]
+    { rings.lock_irqsave::<hal_x86_64::X86IrqGate>() }
+    #[cfg(target_arch = "aarch64")]
+    { rings.lock_irqsave::<hal_aarch64::ArmIrqGate>() }
 }

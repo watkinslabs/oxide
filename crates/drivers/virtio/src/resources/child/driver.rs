@@ -53,6 +53,10 @@ pub trait VirtioChildDriverOps<S: VirtioChildTransportSession>: Sync {
     /// Quiesce child runtime state for power/reboot shutdown.
     /// # C: O(child_shutdown)
     fn shutdown_child(device_key: VirtioChildDeviceKey);
+
+    /// Child sleep callbacks, when the child's runtime state does not survive
+    /// a transport reset unchanged. # C: O(1)
+    fn pm() -> Option<&'static drv::DevPmOps> { None }
 }
 
 /// Shared virtio child model-driver adapter.
@@ -102,6 +106,8 @@ where
             run_child_shutdown(device_key, O::shutdown_child);
         }
     }
+
+    fn pm(&self) -> Option<&'static drv::DevPmOps> { O::pm() }
 }
 
 /// Run a child probe against a transport session, publishing transport-owned

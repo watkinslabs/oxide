@@ -1,4 +1,4 @@
-//! PSCI conduit installation from the retained device tree.
+//! PSCI conduit decode from the retained device tree.
 
 /// Decode a PSCI method and hand it to the architecture-owned conduit slot.
 /// Returns false when firmware supplied no complete PSCI node. # C: O(FDT)
@@ -9,18 +9,19 @@ where F: FnOnce(::fdt::PsciConduit) {
     true
 }
 
-/// Install the architecture's PSCI conduit before any PSCI operation may run.
-/// # C: O(FDT)
+/// Return the retained DT's PSCI conduit. # C: O(FDT)
 #[cfg(target_arch = "aarch64")]
-pub fn init() -> bool {
-    let Some(tree) = super::blob() else { return false; };
+pub(crate) fn conduit() -> Option<crate::psci::Conduit> {
+    let Some(tree) = super::blob() else { return None; };
+    let mut selected = None;
     configure_from(tree, |conduit| {
-        let conduit = match conduit {
-            ::fdt::PsciConduit::Smc => hal_aarch64::smccc::Conduit::Smc,
-            ::fdt::PsciConduit::Hvc => hal_aarch64::smccc::Conduit::Hvc,
-        };
-        hal_aarch64::psci_conduit::configure(conduit);
+        selected = Some(match conduit {
+            ::fdt::PsciConduit::Smc => crate::psci::Conduit::Smc,
+            ::fdt::PsciConduit::Hvc => crate::psci::Conduit::Hvc,
+        });
     })
+    .then_some(())?;
+    selected
 }
 
 #[cfg(test)]

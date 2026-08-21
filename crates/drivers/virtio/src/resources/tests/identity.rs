@@ -257,6 +257,12 @@ struct ModelFaultState {
 struct ModelFaultBus;
 struct ModelFaultOps;
 
+fn model_fault_freeze(_dev: &drv::Device) -> drv::KResult<()> { Ok(()) }
+static MODEL_FAULT_PM: drv::DevPmOps = drv::DevPmOps {
+    freeze: Some(model_fault_freeze),
+    ..drv::DevPmOps::none()
+};
+
 struct ModelFaultSession {
     key: VirtioChildDeviceKey,
     addr: String,
@@ -409,6 +415,15 @@ impl VirtioChildDriverOps<ModelFaultSession> for ModelFaultOps {
             .events
             .push(("shutdown", device_key.raw() as u64));
     }
+
+    fn pm() -> Option<&'static drv::DevPmOps> { Some(&MODEL_FAULT_PM) }
+}
+
+#[test]
+fn child_model_driver_forwards_its_power_callbacks() {
+    let forwarded = drv::Driver::pm(&MODEL_FAULT_DRV).expect("child PM table");
+    assert!(core::ptr::eq(forwarded, &MODEL_FAULT_PM));
+    assert!(forwarded.freeze.is_some());
 }
 
 #[test]
