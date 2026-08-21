@@ -12,7 +12,7 @@
 // directory tree: promoting every `/dev` inode would DIVERGE from the
 // reference, not converge on it.
 
-use vfs::{FileAttr, VfsError};
+use vfs::{FileAttr, VfsError, XattrError};
 use vfs::inode::{FS_IMMUTABLE_FL, FS_SYNC_FL};
 
 use crate::tests::TEST_SERIAL;
@@ -29,6 +29,24 @@ fn dev_directories_report_a_chattr_word() {
         let fa = i.fileattr_get().unwrap_or_else(|e| panic!("get {p}: {e:?}"));
         assert_eq!(fa.flags, 0, "fresh dir has no chattr flags: {p}");
         assert_eq!(fa.fsx_xflags, 0, "fresh dir has no xflags: {p}");
+    }
+}
+
+#[test]
+fn every_dev_directory_uses_the_shmem_xattr_surface() {
+    let _g = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    crate::register_dir(DIR_PATH);
+    for (index, path) in ["/dev", "/dev/b1976attr", DIR_PATH].into_iter().enumerate() {
+        let inode = crate::lookup(path).expect("dev directory");
+        assert_eq!(
+            inode.getxattr("security.selinux"),
+            Err(XattrError::NotFound),
+            "{path} reports an absent label, not unsupported",
+        );
+        let value = alloc::vec![index as u8];
+        inode.setxattr("trusted.oxide-test", value.clone(), false, false)
+            .expect("devtmpfs directory stores a trusted attribute");
+        assert_eq!(inode.getxattr("trusted.oxide-test"), Ok(value));
     }
 }
 
