@@ -20,6 +20,7 @@ use alloc::vec::Vec;
 
 use crate::Task;
 use sync::{Spinlock, TaskList as TaskListClass};
+use vmm::AddressSpace;
 
 /// Released tasks awaiting their final drop.
 ///
@@ -29,6 +30,9 @@ use sync::{Spinlock, TaskList as TaskListClass};
 /// static path, not how often it is taken, that the stack budget is spent on.
 /// Growing costs an allocation, whose own depth is a fraction of the teardown's.
 static RELEASED: Spinlock<Vec<Arc<Task>>, TaskListClass> = Spinlock::new(Vec::new());
+/// Last `mm_users` references awaiting their sleepable `exit_mmap` half.
+/// Structural `Arc` pins remain the sole `mm_count` truth.
+static MM_RELEASED: Spinlock<Vec<Arc<AddressSpace>>, TaskListClass> = Spinlock::new(Vec::new());
 
 /// Hand `task`'s reference to the drainer instead of dropping it here.
 ///
@@ -40,6 +44,21 @@ static RELEASED: Spinlock<Vec<Arc<Task>>, TaskListClass> = Spinlock::new(Vec::ne
 /// # Ctx: any, including the switch tail
 pub fn defer_release(task: Arc<Task>) {
     RELEASED.lock().push(task);
+    #[cfg(target_os = "oxide-kernel")]
+    super::super::ksoftirqd::wake_current();
+}
+
+/// Release one task-owned mm use without ever running the sleepable last-user
+/// teardown on the caller's stack. Non-final uses disappear immediately; the
+/// final use transfers its structural pin to the process-context drainer.
+/// # Ctx: any
+/// # C: O(1) amortized
+pub fn defer_mmput(mm: Arc<AddressSpace>) {
+    if let Some(last) = AddressSpace::mmput_async(mm) {
+        MM_RELEASED.lock().push(last);
+        #[cfg(target_os = "oxide-kernel")]
+        super::super::ksoftirqd::wake_current();
+    }
 }
 
 /// Drop every deferred reference. Process context only: a task's teardown
@@ -55,8 +74,11 @@ pub fn defer_release(task: Arc<Task>) {
 /// # Sleeps: yes — a dropped task's file/mount teardown can block
 pub fn drain_released() {
     loop {
+        let mms = core::mem::take(&mut *MM_RELEASED.lock());
+        for mm in mms.iter() { mm.finish_mmput(); }
+        drop(mms);
         let batch = core::mem::take(&mut *RELEASED.lock());
-        if batch.is_empty() { return; }
+        if batch.is_empty() && MM_RELEASED.lock().is_empty() { return; }
         drop(batch);
     }
 }
@@ -64,6 +86,10 @@ pub fn drain_released() {
 /// Deferred references not yet dropped. Diagnostics and tests.
 /// # C: O(1)
 pub fn pending() -> usize { RELEASED.lock().len() }
+
+/// Deferred last-user address spaces not yet torn down. Diagnostics/tests.
+/// # C: O(1)
+pub fn pending_mmput() -> usize { MM_RELEASED.lock().len() }
 
 #[cfg(test)]
 mod tests {
@@ -124,5 +150,20 @@ mod tests {
         defer_release(task(9120));
         drain_released();
         assert_eq!(pending(), 0, "the drain empties what was queued while it ran");
+    }
+
+    #[test]
+    fn final_mm_user_waits_for_the_process_context_drain() {
+        let _g = test_lock();
+        drain_released();
+        let mm = AddressSpace::new(0).expect("address space");
+        mm.mmget();
+        let weak = Arc::downgrade(&mm);
+        defer_mmput(mm);
+        assert_eq!(pending_mmput(), 1);
+        assert!(weak.upgrade().is_some(), "async mmput retains the structural pin");
+        drain_released();
+        assert_eq!(pending_mmput(), 0);
+        assert!(weak.upgrade().is_none(), "drain runs exit_mmap then mmdrop");
     }
 }

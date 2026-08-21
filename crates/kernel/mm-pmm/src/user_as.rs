@@ -59,7 +59,7 @@ use foreign::read_foreign_leaf_pa;
 pub use teardown::classify_x86_pf;
 #[cfg(target_arch = "aarch64")]
 pub use teardown::classify_arm_abort;
-pub use teardown::{as_teardown, install_teardown, prot_from_linux};
+pub use teardown::{exit_mmap, install_teardown, mmdrop, prot_from_linux};
 #[cfg(all(feature = "debug-mount", target_arch = "x86_64"))]
 pub use debug::{install_lock_step_hook, lock_step_hook};
 #[cfg(feature = "debug-cow")]

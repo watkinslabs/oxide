@@ -33,9 +33,9 @@ fn fwm_teardown_backstop(va: u64, pa: u64, root_pa: u64, hhdm: u64) {
 }
 
 #[cfg(target_arch = "x86_64")]
-pub unsafe extern "C" fn as_teardown(root_pa: u64) {
+pub unsafe extern "C" fn exit_mmap(root_pa: u64) {
     let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
-    // debug-atexit: the dec context for note_final_free — as_teardown runs
+    // debug-atexit: the dec context for note_final_free — exit_mmap runs
     // in the REAPER's task context, so current-mm is the wrong identity;
     // the dying AS root is the honest one. UP single-threaded teardown.
     #[cfg(feature = "debug-atexit")]
@@ -87,20 +87,17 @@ pub unsafe extern "C" fn as_teardown(root_pa: u64) {
             root_pa, hhdm, &mut free_leaf, &mut free_swap, &mut free_migration, &mut free_table,
         );
     }
-    // Free the root frame itself.
-    // SAFETY: root_pa is the AS-private root; no longer reachable.
-    unsafe { crate::setup::free_one_frame(root_pa); }
     #[cfg(feature = "debug-atexit")]
     crate::setup::set_dec_ctx(0);
 }
 
-/// aarch64 mirror of `as_teardown`.
+/// aarch64 mirror of `exit_mmap`.
 #[cfg(target_arch = "aarch64")]
-pub unsafe extern "C" fn as_teardown(root_pa: u64) {
+pub unsafe extern "C" fn exit_mmap(root_pa: u64) {
     let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
     #[cfg(feature = "debug-arm-mprotect")]
     crate::arm_mprotect_trace::checkpoint(root_pa);
-    // debug-atexit: the dec context for note_final_free — as_teardown runs
+    // debug-atexit: the dec context for note_final_free — exit_mmap runs
     // in the REAPER's task context, so current-mm is the wrong identity;
     // the dying AS root is the honest one. UP single-threaded teardown.
     #[cfg(feature = "debug-atexit")]
@@ -142,16 +139,27 @@ pub unsafe extern "C" fn as_teardown(root_pa: u64) {
             root_pa, hhdm, &mut free_leaf, &mut free_swap, &mut free_migration, &mut free_table,
         );
     }
-    // SAFETY: root_pa is the AS-private root; no longer reachable.
+}
+
+/// Final structural release after every task user and lazy-TLB/observer pin is
+/// gone. Last-user teardown already removed every user leaf and subordinate
+/// table, so this atomic-safe half owns only the private root frame.
+/// # Ctx: any
+/// # Sleeps: no
+/// # C: O(1)
+pub unsafe extern "C" fn mmdrop(root_pa: u64) {
+    // SAFETY: the final AddressSpace Arc is gone and exit_mmap completed, so
+    // no CPU, PTE walker, or observer can retain this private root.
     unsafe { crate::setup::free_one_frame(root_pa); }
 }
 
-/// Convenience wrapper: install `as_teardown` on a freshly-built AS.
+/// Install the last-user `exit_mmap` and final structural `mmdrop` owners on
+/// a freshly-built address space.
 /// Boot-anchor + hosted-test code paths SHOULD NOT call this — their
 /// roots are either fake (test) or shared kernel state (boot).
 /// # C: O(1)
 pub fn install_teardown(as_: &Arc<AddressSpace>) {
-    as_.set_teardown(as_teardown);
+    as_.set_lifecycle(exit_mmap, mmdrop);
 }
 
 /// Translate Linux `PROT_*` bits (per `15§6.2`) to `VmaProt`.

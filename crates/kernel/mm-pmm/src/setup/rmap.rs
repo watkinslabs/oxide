@@ -2,16 +2,29 @@
 //!
 //! `PageMeta::mapping` is the sole rmap owner/type truth.  As Linux does for
 //! `struct page->mapping`, its low alignment bit tags an anonymous mapping; an
-//! untagged non-null pointer is a file mapping.  The page lock protects
-//! the complete owner tuple (tagged pointer, index, and rmap flags), including
-//! `Arc` cloning and final-owner removal.
+//! untagged non-null pointer is a file mapping. A bounded owner-lock table
+//! protects the complete tuple (tagged pointer, index, and rmap flags), while
+//! the independent sleeping page lock remains reserved for I/O serialization.
 
 use alloc::sync::Arc;
 
-use super::{metadata::page_meta, page_lock::{lock_page, unlock_page}};
+use sync::{AnonVma as AnonVmaClass, Guard, Spinlock};
+
+use super::metadata::page_meta;
 
 const ANON_RMAP_TAG: usize = 1;
 const RMAP_TAG_MASK: usize = ANON_RMAP_TAG;
+const OWNER_LOCKS: usize = 256;
+static OWNER_LOCK: [Spinlock<(), AnonVmaClass>; OWNER_LOCKS] =
+    [const { Spinlock::new(()) }; OWNER_LOCKS];
+
+/// Page-owner serialization, ordered PageTable(20) -> AnonVma(25). This is a
+/// spinlock because PTE removal holds the page-table spinlock; no holder may
+/// sleep. Hash collisions serialize unrelated pages but never duplicate owner
+/// state: `PageMeta::mapping` remains the sole truth.
+pub(super) fn lock_owner(pfn: hal::Pfn) -> Guard<'static, (), AnonVmaClass> {
+    OWNER_LOCK[pfn.0 as usize & (OWNER_LOCKS - 1)].lock()
+}
 
 enum PreviousOwner {
     None,
@@ -25,16 +38,6 @@ pub(super) struct DetachedOwner {
 }
 
 fn pfn(pa: u64) -> hal::Pfn { hal::Pfn(pa / hal::PAGE_SIZE_BYTES) }
-
-#[cfg(test)]
-fn lock(meta: &crate::PageMetaArr, pfn: hal::Pfn) -> bool {
-    meta.try_lock_page(pfn).unwrap_or(false)
-}
-
-#[cfg(test)]
-fn unlock(meta: &crate::PageMetaArr, pfn: hal::Pfn) {
-    let _ = meta.unlock_page(pfn);
-}
 
 fn anon_raw(raw: *const vmm::AnonVma) -> *mut () {
     let bits = raw as usize;
@@ -74,21 +77,21 @@ fn detach_locked(meta: &crate::PageMetaArr, pfn: hal::Pfn) -> PreviousOwner {
     previous(old)
 }
 
-/// Clone an anonymous owner while the caller holds the page lock.
+/// Clone an anonymous owner while the caller holds the rmap owner lock.
 fn clone_anon_locked(meta: &crate::PageMetaArr, pfn: hal::Pfn) -> Option<Arc<vmm::AnonVma>> {
     let raw = meta.mapping(pfn)?;
     if raw.is_null() || !is_anon(raw) { return None; }
     let owner = untag(raw) as *const vmm::AnonVma;
-    // SAFETY: the caller's page lock prevents detach/final drop until this clone owns a count.
+    // SAFETY: the caller's owner lock prevents detach/final drop until this clone owns a count.
     unsafe { Arc::increment_strong_count(owner); Some(Arc::from_raw(owner)) }
 }
 
-/// Clone a file owner while the caller holds the page lock.
+/// Clone a file owner while the caller holds the rmap owner lock.
 fn clone_file_locked(meta: &crate::PageMetaArr, pfn: hal::Pfn) -> Option<Arc<vmm::FileRmap>> {
     let raw = meta.mapping(pfn)?;
     if raw.is_null() || is_anon(raw) { return None; }
     let owner = raw as *const vmm::FileRmap;
-    // SAFETY: the caller's page lock prevents detach/final drop until this clone owns a count.
+    // SAFETY: the caller's owner lock prevents detach/final drop until this clone owns a count.
     unsafe { Arc::increment_strong_count(owner); Some(Arc::from_raw(owner)) }
 }
 
@@ -96,16 +99,18 @@ fn clone_file_locked(meta: &crate::PageMetaArr, pfn: hal::Pfn) -> Option<Arc<vmm
 ///
 /// # SAFETY: `pa` names a managed live frame whose caller owns its rmap edge.
 /// # Ctx: process
-/// # Sleeps: yes
+/// # Sleeps: no
 /// # C: O(1)
 pub unsafe fn set_anon_rmap_for_pa(pa: u64, av: &Arc<vmm::AnonVma>, page_index: u32) {
     let Some(meta) = page_meta() else { return; };
     let pfn = pfn(pa);
-    if !lock_page(pa) { return; }
-    let raw = anon_raw(Arc::into_raw(Arc::clone(av)));
-    let old = replace_locked(meta, pfn, raw, page_index);
-    let _ = meta.set_flags(pfn, crate::PageFlags::ANON | crate::PageFlags::ANON_EXCLUSIVE);
-    let _ = unlock_page(pa);
+    let old = {
+        let _owner = lock_owner(pfn);
+        let raw = anon_raw(Arc::into_raw(Arc::clone(av)));
+        let old = replace_locked(meta, pfn, raw, page_index);
+        let _ = meta.set_flags(pfn, crate::PageFlags::ANON | crate::PageFlags::ANON_EXCLUSIVE);
+        old
+    };
     // SAFETY: replace_locked detached the exact former Arc owner.
     unsafe { drop_previous(old); }
 }
@@ -114,45 +119,42 @@ pub unsafe fn set_anon_rmap_for_pa(pa: u64, av: &Arc<vmm::AnonVma>, page_index: 
 ///
 /// # SAFETY: `pa` names a managed live frame whose caller owns its rmap edge.
 /// # Ctx: process
-/// # Sleeps: yes
+/// # Sleeps: no
 /// # C: O(1)
 pub unsafe fn set_file_rmap_for_pa(pa: u64, rmap: &Arc<vmm::FileRmap>, page_index: u32) {
     let Some(meta) = page_meta() else { return; };
     let pfn = pfn(pa);
-    if !lock_page(pa) { return; }
-    let raw = Arc::into_raw(Arc::clone(rmap)) as *mut ();
-    let old = replace_locked(meta, pfn, raw, page_index);
-    let _ = unlock_page(pa);
+    let old = {
+        let _owner = lock_owner(pfn);
+        let raw = Arc::into_raw(Arc::clone(rmap)) as *mut ();
+        replace_locked(meta, pfn, raw, page_index)
+    };
     // SAFETY: replace_locked detached the exact former Arc owner.
     unsafe { drop_previous(old); }
 }
 
-/// Clone the resident frame's canonical file rmap while the page lock keeps
+/// Clone the resident frame's canonical file rmap while the owner lock keeps
 /// its raw Arc owner alive.
 /// # Ctx: process
-/// # Sleeps: yes
+/// # Sleeps: no
 /// # C: O(1)
 pub fn file_rmap_for_pa(pa: u64) -> Option<Arc<vmm::FileRmap>> {
     let meta = page_meta()?;
     let pfn = pfn(pa);
-    if !lock_page(pa) { return None; }
-    let result = clone_file_locked(meta, pfn);
-    let _ = unlock_page(pa);
-    result
+    let _owner = lock_owner(pfn);
+    clone_file_locked(meta, pfn)
 }
 
-/// Clone the resident frame's canonical anonymous rmap while the page lock
+/// Clone the resident frame's canonical anonymous rmap while the owner lock
 /// keeps its raw Arc owner alive.
 /// # Ctx: process
-/// # Sleeps: yes
+/// # Sleeps: no
 /// # C: O(1)
 pub fn anon_vma_for_pa(pa: u64) -> Option<Arc<vmm::AnonVma>> {
     let meta = page_meta()?;
     let pfn = pfn(pa);
-    if !lock_page(pa) { return None; }
-    let result = clone_anon_locked(meta, pfn);
-    let _ = unlock_page(pa);
-    result
+    let _owner = lock_owner(pfn);
+    clone_anon_locked(meta, pfn)
 }
 
 fn clear_locked(meta: &crate::PageMetaArr, pfn: hal::Pfn, file: bool) -> PreviousOwner {
@@ -166,17 +168,19 @@ fn clear_locked(meta: &crate::PageMetaArr, pfn: hal::Pfn, file: bool) -> Previou
 ///
 /// # SAFETY: caller owns the frame's anonymous rmap edge.
 /// # Ctx: process
-/// # Sleeps: yes
+/// # Sleeps: no
 /// # C: O(1)
 pub unsafe fn clear_anon_rmap_for_pa(pa: u64) {
     let Some(meta) = page_meta() else { return; };
     let pfn = pfn(pa);
-    if !lock_page(pa) { return; }
-    let memcg = meta.memcg(pfn).unwrap_or(cgroup::NO_MEMCG);
-    let old = clear_locked(meta, pfn, false);
-    let was_anon = matches!(old, PreviousOwner::Anon(_));
-    if was_anon { let _ = meta.set_memcg(pfn, cgroup::NO_MEMCG); }
-    let _ = unlock_page(pa);
+    let (old, was_anon, memcg) = {
+        let _owner = lock_owner(pfn);
+        let memcg = meta.memcg(pfn).unwrap_or(cgroup::NO_MEMCG);
+        let old = clear_locked(meta, pfn, false);
+        let was_anon = matches!(old, PreviousOwner::Anon(_));
+        if was_anon { let _ = meta.set_memcg(pfn, cgroup::NO_MEMCG); }
+        (old, was_anon, memcg)
+    };
     // SAFETY: clear_locked detached the exact former Arc owner.
     unsafe { drop_previous(old); }
     if was_anon && memcg != cgroup::NO_MEMCG {
@@ -188,20 +192,21 @@ pub unsafe fn clear_anon_rmap_for_pa(pa: u64) {
 ///
 /// # SAFETY: caller owns the frame's file rmap edge.
 /// # Ctx: process
-/// # Sleeps: yes
+/// # Sleeps: no
 /// # C: O(1)
 pub unsafe fn clear_file_rmap_for_pa(pa: u64) {
     let Some(meta) = page_meta() else { return; };
     let pfn = pfn(pa);
-    if !lock_page(pa) { return; }
-    let old = clear_locked(meta, pfn, true);
-    let _ = unlock_page(pa);
+    let old = {
+        let _owner = lock_owner(pfn);
+        clear_locked(meta, pfn, true)
+    };
     // SAFETY: clear_locked detached the exact former Arc owner.
     unsafe { drop_previous(old); }
 }
 
 /// Remove whichever typed rmap owner is installed while the caller already
-/// owns the page lock. # C: O(1)
+/// owns the rmap owner lock. # C: O(1)
 pub(super) fn take_final_rmap_locked(meta: &crate::PageMetaArr, pfn: hal::Pfn) -> DetachedOwner {
     let memcg = meta.memcg(pfn).unwrap_or(cgroup::NO_MEMCG);
     let old = detach_locked(meta, pfn);
@@ -210,9 +215,9 @@ pub(super) fn take_final_rmap_locked(meta: &crate::PageMetaArr, pfn: hal::Pfn) -
     DetachedOwner { owner: old, memcg: was_anon.then_some(memcg).filter(|id| *id != cgroup::NO_MEMCG) }
 }
 
-/// Drop a detached rmap owner after releasing its page lock. # C: O(1)
+/// Drop a detached rmap owner after releasing its owner lock. # C: O(1)
 pub(super) unsafe fn release_detached(owner: DetachedOwner) {
-    // SAFETY: take_final_rmap_locked removed this exact Arc ownership under the page lock.
+    // SAFETY: take_final_rmap_locked removed this exact Arc ownership under the owner lock.
     unsafe { drop_previous(owner.owner); }
     if let Some(memcg) = owner.memcg { cgroup::uncharge_memcg(memcg, hal::PAGE_SIZE_BYTES); }
 }
@@ -234,7 +239,7 @@ mod tests {
         let pfn = hal::Pfn(0);
         let anon = vmm::AnonVma::new();
         let file = vmm::FileRmap::new();
-        assert!(lock(&meta, pfn));
+        let owner = lock_owner(pfn);
         let old = replace_locked(&meta, pfn, anon_raw(Arc::into_raw(Arc::clone(&anon))), 3);
         assert!(matches!(old, PreviousOwner::None));
         let anon_raw = meta.mapping(pfn).unwrap();
@@ -245,7 +250,7 @@ mod tests {
         assert!(!is_anon(file_raw));
         assert_eq!(meta.page_index(pfn), Some(7));
         let old = detach_locked(&meta, pfn);
-        unlock(&meta, pfn);
+        drop(owner);
         // SAFETY: both owners were detached exactly once by this test.
         unsafe { drop_previous(old); }
         // SAFETY: the replaced anonymous owner was detached exactly once.
@@ -258,19 +263,19 @@ mod tests {
         let pfn = hal::Pfn(0);
         let anon = vmm::AnonVma::new();
 
-        assert!(lock(&meta, pfn));
+        let owner = lock_owner(pfn);
         let old = replace_locked(&meta, pfn, anon_raw(Arc::into_raw(Arc::clone(&anon))), 0);
         assert!(matches!(old, PreviousOwner::None));
         let retained = clone_anon_locked(&meta, pfn).expect("locked clone");
-        unlock(&meta, pfn);
+        drop(owner);
 
-        assert!(lock(&meta, pfn));
+        let owner = lock_owner(pfn);
         let detached = detach_locked(&meta, pfn);
-        unlock(&meta, pfn);
+        drop(owner);
         // SAFETY: detach_locked transferred the raw slot reference exactly once.
         unsafe { drop_previous(detached); }
 
-        // The clone acquired under the page lock remains a valid independent owner
+        // The clone acquired under the owner lock remains a valid independent owner
         // after final detach drops the PageMeta-held reference.
         assert_eq!(Arc::strong_count(&anon), 2);
         drop(anon);
@@ -282,29 +287,49 @@ mod tests {
         let meta: &'static crate::PageMetaArr = alloc::boxed::Box::leak(alloc::boxed::Box::new(meta()));
         let pfn = hal::Pfn(0);
         let anon = vmm::AnonVma::new();
-        assert!(lock(meta, pfn));
+        let owner = lock_owner(pfn);
         let old = replace_locked(meta, pfn, anon_raw(Arc::into_raw(Arc::clone(&anon))), 0);
         assert!(matches!(old, PreviousOwner::None));
-        unlock(meta, pfn);
+        drop(owner);
 
         let entered = StdArc::new(Barrier::new(2));
         let reader_entered = StdArc::clone(&entered);
         let reader = thread::spawn(move || {
             reader_entered.wait();
-            assert!(lock(meta, pfn));
+            let owner = lock_owner(pfn);
             let clone = clone_anon_locked(meta, pfn);
-            unlock(meta, pfn);
+            drop(owner);
             clone
         });
 
-        assert!(lock(meta, pfn));
+        let owner = lock_owner(pfn);
         let detached = detach_locked(meta, pfn);
-        unlock(meta, pfn);
+        drop(owner);
         entered.wait();
         // Publishing null before unlock makes the reader's eventual lookup empty.
         // SAFETY: detach_locked transferred the raw slot reference exactly once.
         unsafe { drop_previous(detached); }
         assert!(reader.join().unwrap().is_none());
         assert_eq!(Arc::strong_count(&anon), 1);
+    }
+
+    #[test]
+    fn rmap_owner_progress_is_independent_of_the_sleeping_page_lock() {
+        let meta = meta();
+        let pfn = hal::Pfn(0);
+        assert_eq!(meta.try_lock_page(pfn), Some(true));
+        {
+            let _owner = lock_owner(pfn);
+            assert!(meta.flags(pfn).unwrap().contains(crate::PageFlags::LOCKED),
+                "owner transition must not consume the I/O page lock");
+            let anon = vmm::AnonVma::new();
+            let old = replace_locked(&meta, pfn,
+                anon_raw(Arc::into_raw(Arc::clone(&anon))), 0);
+            assert!(matches!(old, PreviousOwner::None));
+            let detached = detach_locked(&meta, pfn);
+            // SAFETY: this test detached the one raw owner it installed.
+            unsafe { drop_previous(detached); }
+        }
+        assert_eq!(meta.unlock_page(pfn), Some(true));
     }
 }
