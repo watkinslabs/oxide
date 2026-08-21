@@ -73,3 +73,9 @@ fn frozen_reads_the_tasks_acknowledgement_not_a_request_bit() {
     assert!(facts_of(&t).frozen);
     assert!(!freezer::counts_outstanding(FreezePhase::user(), facts_of(&t)));
 }
+
+#[test]
+fn the_backoff_sleeps_in_linuxs_half_to_full_window() {
+    assert_eq!(backoff_window(10_000, 1_000), (510_000, 500_000));
+    assert_eq!(backoff_window(10_000, 8_000), (4_010_000, 4_000_000));
+}

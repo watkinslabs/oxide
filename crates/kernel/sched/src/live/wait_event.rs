@@ -184,14 +184,17 @@ pub unsafe fn wait_event_uninterruptible_until(wq: &WaitList, deadline_ns: u64,
                                                now: impl Fn() -> u64,
                                                cond: impl FnMut() -> bool) -> WaitOutcome {
     // SAFETY: forwards this function's contract to the shared timed loop.
-    unsafe { wait_event_uninterruptible_until_at(Location::caller(), wq, deadline_ns, now, cond) }
+    unsafe {
+        wait_event_uninterruptible_until_at(Location::caller(), wq, deadline_ns, None, now, cond)
+    }
 }
 
 /// [`wait_event_uninterruptible_until`] with a caller-supplied wait site.
 /// # SAFETY: see [`wait_event_uninterruptible_until`].
 /// # C: O(N_wakeups)
 unsafe fn wait_event_uninterruptible_until_at(site: &'static Location<'static>, wq: &WaitList,
-                                              deadline_ns: u64, now: impl Fn() -> u64,
+                                              deadline_ns: u64, slack_ns: Option<u64>,
+                                              now: impl Fn() -> u64,
                                               mut cond: impl FnMut() -> bool) -> WaitOutcome {
     let timed = deadline_ns != 0;
     if cond() { return WaitOutcome::Ready; }
@@ -199,7 +202,14 @@ unsafe fn wait_event_uninterruptible_until_at(site: &'static Location<'static>, 
     loop {
         // SAFETY: forwarded sleepable-context contract; this is the timed
         // prepared publication owned by the shared predicate-wait loop.
-        unsafe { wq.park_with_deadline(deadline_ns); }
+        unsafe {
+            match slack_ns {
+                Some(slack) => wq.park_with_wait_state_range(
+                    deadline_ns, slack, WaitState::Uninterruptible,
+                ),
+                None => wq.park_with_deadline(deadline_ns),
+            }
+        }
         if cond() { break; }
         if timed && now() >= deadline_ns {
             wq.cancel_current_park();
@@ -237,7 +247,32 @@ pub unsafe fn sleep_uninterruptible_until(deadline_ns: u64, now: impl Fn() -> u6
     // SAFETY: the local wait list lives through its sole deadline wait; the
     // caller satisfies the shared timed-wait process-context contract.
     let _ = unsafe {
-        wait_event_uninterruptible_until_at(Location::caller(), &wait, deadline_ns, now, || false)
+        wait_event_uninterruptible_until_at(
+            Location::caller(), &wait, deadline_ns, None, now, || false,
+        )
+    };
+}
+
+/// Sleep once until an absolute monotonic deadline, allowing the timer owner
+/// to coalesce the wake by at most `slack_ns`.
+///
+/// This is Linux `schedule_hrtimeout_range(..., HRTIMER_MODE_ABS)` for callers
+/// such as `usleep_range`: the timer may wake in
+/// `[deadline_ns, deadline_ns + slack_ns]`.
+/// # SAFETY: process context on a running task with no scheduler/deadline lock.
+/// # Ctx: process
+/// # Sleeps: yes
+/// # C: O(1) plus scheduler wakeup
+#[track_caller]
+pub unsafe fn sleep_uninterruptible_range_until(deadline_ns: u64, slack_ns: u64,
+                                                now: impl Fn() -> u64) {
+    let wait = WaitList::new();
+    // SAFETY: the local wait list lives through its sole ranged deadline wait;
+    // the caller satisfies the shared timed-wait process-context contract.
+    let _ = unsafe {
+        wait_event_uninterruptible_until_at(
+            Location::caller(), &wait, deadline_ns, Some(slack_ns), now, || false,
+        )
     };
 }
 
@@ -402,6 +437,21 @@ mod tests {
             sleep_uninterruptible_until(7, || {
                 reads.fetch_add(1, Ordering::Relaxed);
                 7
+            });
+        }
+        assert_eq!(reads.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn ranged_deadline_sleep_rechecks_the_earliest_boundary() {
+        let reads = AtomicU32::new(0);
+        // Hosted has no current task, so publication is a no-op and the
+        // earliest-boundary check returns synchronously.
+        // SAFETY: hosted test has no runqueue and therefore cannot schedule.
+        unsafe {
+            sleep_uninterruptible_range_until(500, 500, || {
+                reads.fetch_add(1, Ordering::Relaxed);
+                500
             });
         }
         assert_eq!(reads.load(Ordering::Relaxed), 1);
