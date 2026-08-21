@@ -9,7 +9,7 @@
 // explicit boot-time `register_driver` calls without changing this contract.
 //
 // Module manifest:
-// - `tests`: hosted driver-model lifecycle, binding, hook-order, and devtmpfs/sysfs tests.
+// - `wakeup` / `tests`: device wake state; hosted lifecycle and hook coverage.
 
 use alloc::string::String;
 use alloc::sync::Arc;
@@ -20,6 +20,7 @@ use sync::{Spinlock, TaskList as DriverListClass};
 use crate::KResult;
 
 mod lifecycle_state;
+mod wakeup;
 pub use lifecycle_state::{device_del, try_device_add, try_device_add_with_parent};
 mod driver;
 pub use driver::Driver;
@@ -119,6 +120,7 @@ pub struct Device {
     pub uevent_env: Vec<String>,
     /// Bus resources, e.g. PCI BAR windows.
     pub resources: Vec<Resource>,
+    pub(crate) wakeup: wakeup::Wakeup,
 }
 
 impl Device {
@@ -134,7 +136,7 @@ impl Device {
             dma_mask: AtomicU64::new(if bus == "pci" { PCI_DEFAULT_DMA_MASK } else { 0 }), coherent_dma_mask: AtomicU64::new(if bus == "pci" { PCI_DEFAULT_DMA_MASK } else { 0 }),
             driver: Spinlock::new(None), driver_override: Spinlock::new(None),
             dev_class: "", devname: None, dev_t: None, node_factory: None,
-            uevent_env: Vec::new(), resources: Vec::new(),
+            uevent_env: Vec::new(), resources: Vec::new(), wakeup: wakeup::Wakeup::new(),
         }
     }
     /// Currently-bound driver name, if any. # C: O(1)
@@ -217,6 +219,20 @@ impl Device {
         self.resources = resources;
         self
     }
+    /// Initialize wakeup capability and its default policy together. # C: O(1)
+    pub fn init_wakeup(&self, enabled: bool) { self.wakeup.init(enabled); }
+    /// Change whether hardware can wake the system. # C: O(1)
+    pub fn set_wakeup_capable(&self, capable: bool) { self.wakeup.set_capable(capable); }
+    /// Whether hardware advertises system-wakeup capability. # C: O(1)
+    pub fn can_wakeup(&self) -> bool { self.wakeup.capable() }
+    /// Change the user policy bit; enabling an incapable device fails. # C: O(1)
+    pub fn set_wakeup_enabled(&self, enabled: bool) -> bool { self.wakeup.set_enabled(enabled) }
+    /// Capability and policy both permit this device to wake the system. # C: O(1)
+    pub fn may_wakeup(&self) -> bool { self.wakeup.may_wakeup() }
+    /// Attach or detach the IRQ owned as this device's wake line. # C: O(1)
+    pub fn set_wake_irq(&self, irq: Option<u32>) { self.wakeup.set_irq(irq); }
+    /// Attached wake IRQ, if the driver supplied one. # C: O(1)
+    pub fn wake_irq(&self) -> Option<u32> { self.wakeup.irq() }
 }
 
 static DEVICES: Spinlock<Vec<Arc<Device>>, DriverListClass> = Spinlock::new(Vec::new());

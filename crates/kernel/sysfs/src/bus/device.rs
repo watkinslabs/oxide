@@ -8,10 +8,11 @@ use vfs::{default_file_ops, mk_mode, DirContext, FileOps, FileType, Inode, Inode
 use crate::kobject::{make_attr_inode, Attribute, AttrGroup, SysfsOps};
 use crate::{DIR_PERM, LNK_PERM, RO_PERM, RW_PERM};
 
-use super::ids::{INO_ATTR, INO_DEVICE_DIR, INO_SYMLINK};
+use super::ids::{INO_ATTR, INO_DEVICE_DIR, INO_DEVICE_POWER, INO_SYMLINK};
 use super::index::dev_devpath;
 
 const DEV_ATTR: Attribute = Attribute { name: "dev", mode: RO_PERM };
+const WAKEUP_ATTR: Attribute = Attribute { name: "wakeup", mode: RW_PERM };
 const PCI_RESOURCE_NAMES: [&str; 6] = ["resource0", "resource1", "resource2", "resource3", "resource4", "resource5"];
 
 pub(super) fn modalias(dev: &drv::Device) -> String {
@@ -173,6 +174,60 @@ pub(super) fn dev_store(dev: &drv::Device, attr: &str, buf: &[u8]) -> KResult<us
     }
 }
 
+pub(super) fn power_wakeup_show(dev: &drv::Device) -> Option<Vec<u8>> {
+    if !dev.can_wakeup() { return None; }
+    Some(if dev.may_wakeup() { b"enabled\n".to_vec() } else { b"disabled\n".to_vec() })
+}
+
+pub(super) fn power_wakeup_store(dev: &drv::Device, buf: &[u8]) -> KResult<usize> {
+    if !dev.can_wakeup() { return Err(VfsError::Einval); }
+    let value = core::str::from_utf8(buf).map_err(|_| VfsError::Einval)?.trim();
+    let enabled = match value { "enabled" => true, "disabled" => false, _ => return Err(VfsError::Einval) };
+    if !dev.set_wakeup_enabled(enabled) { return Err(VfsError::Einval); }
+    Ok(buf.len())
+}
+
+struct DevicePowerKobj { device: Arc<drv::Device> }
+impl SysfsOps for DevicePowerKobj {
+    fn show(&self, attr: &str) -> KResult<Vec<u8>> {
+        dev_canon_exact(&self.device).ok_or(VfsError::Enodev)?;
+        match attr { "wakeup" => power_wakeup_show(&self.device).ok_or(VfsError::Enoent),
+            _ => Err(VfsError::Enoent) }
+    }
+
+    fn store(&self, attr: &str, buf: &[u8]) -> KResult<usize> {
+        dev_canon_exact(&self.device).ok_or(VfsError::Enodev)?;
+        match attr { "wakeup" => power_wakeup_store(&self.device, buf), _ => Err(VfsError::Erofs) }
+    }
+}
+
+struct DevicePowerDirData { device: Arc<drv::Device> }
+struct DevicePowerDirOps;
+impl InodeOps for DevicePowerDirOps {
+    fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
+        let data = inode.private::<DevicePowerDirData>().ok_or(VfsError::Einval)?;
+        dev_canon_exact(&data.device).ok_or(VfsError::Enodev)?;
+        if name != "wakeup" || !data.device.can_wakeup() { return Err(VfsError::Enoent); }
+        let ops: Arc<dyn SysfsOps> = Arc::new(DevicePowerKobj { device: Arc::clone(&data.device) });
+        Ok(make_attr_inode(&WAKEUP_ATTR, ops, INO_ATTR))
+    }
+}
+impl FileOps for DevicePowerDirOps {
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
+        let data = inode.private::<DevicePowerDirData>().ok_or(VfsError::Einval)?;
+        dev_canon_exact(&data.device).ok_or(VfsError::Enodev)?;
+        let mut entries = crate::readdir::DirEntries::new(inode);
+        if data.device.can_wakeup() { entries.push("wakeup", FileType::Regular); }
+        entries.emit(ctx)
+    }
+}
+
+fn make_device_power_inode(device: Arc<drv::Device>) -> InodeRef {
+    InodeBuilder::new(INO_DEVICE_POWER, mk_mode(FileType::Directory, DIR_PERM),
+        Arc::new(DevicePowerDirOps), Arc::new(DevicePowerDirOps))
+        .private(Arc::new(DevicePowerDirData { device })).build()
+}
+
 struct DeviceLinkData {
     device: Arc<drv::Device>,
     target: Vec<u8>,
@@ -229,6 +284,7 @@ impl InodeOps for DeviceDirOps {
         if name == "net" && crate::net_class::has_parented_net(dev) {
             return Ok(crate::net_class::make_parent_net_inode(Arc::clone(dev)));
         }
+        if name == "power" { return Ok(make_device_power_inode(Arc::clone(dev))); }
         // Nested child-device directory: a device whose model parent is this
         // one lives *under* it (Linux sysfs topology), e.g. `virtioN` under its
         // PCI function. Only nesting-bus children are placed here; class devices
@@ -304,6 +360,7 @@ impl FileOps for DeviceDirOps {
         if bound {
             entries.push(("driver", FileType::Symlink));
         }
+        entries.push(("power", FileType::Directory));
         // Nested child-device dirs (owned names; e.g. `virtioN` under a PCI fn).
         let child_names: Vec<String> = drv::devices().into_iter()
             .filter(|c| is_nesting_bus(c.bus)

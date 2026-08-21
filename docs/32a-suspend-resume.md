@@ -114,6 +114,11 @@ sources.
 
 Each device carries `power/wakeup`, `enabled` or `disabled`, plus the
 `wakeup_count`/`event_count`/`active_count` statistics of its source.
+The canonical device owns capability, policy, and its attached wake IRQ. The
+IRQ descriptor separately owns balanced wake-enable depth and the
+armed/suspended/pending delivery state because those properties belong to the
+shared interrupt line. The suspend sequence traverses those owners; it keeps no
+second wake-device or wake-IRQ registry.
 
 ## 7 Core callbacks
 
