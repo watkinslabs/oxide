@@ -464,8 +464,12 @@ core::arch::global_asm!(
     "    mrs  x9, tpidr_el1",
     "    mov  x10, sp",
     "    str  x10, [x9, #24]",
-    // Shuffle Linux SVC args (x8=nr, x0..x4=a0..a4) into Rust SysV
-    // (x0=nr, x1..x5=a0..a4). Bottom-up so we don't clobber sources.
+    // Pass the live entry frame explicitly, like Linux do_el0_svc(regs).
+    // It must not be rediscovered from the per-CPU cache after IRQs open:
+    // a context switch can replace that cache before the task owns the frame.
+    "    mov  x6, sp",
+    // Shuffle Linux SVC args (x8=nr, x0..x4=a0..a4) into Rust AAPCS64
+    // (x0=nr, x1..x5=a0..a4, x6=frame). Bottom-up so we don't clobber sources.
     "    mov  x5, x4",
     "    mov  x4, x3",
     "    mov  x3, x2",

@@ -430,24 +430,38 @@ fn dispatch_routed_syscall(entry: (Option<u64>, u64), nr: u64, args: &SyscallArg
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64) -> u64 {
+pub unsafe extern "C" fn oxide_syscall_dispatch(
+    nr: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64,
+    #[cfg(target_arch = "aarch64")] entry_frame: *mut hal_aarch64::SvcFrame,
+) -> u64 {
     // Linux `vtime_user_exit`: the architectural syscall entry has crossed
     // into kernel mode; close the user interval before any dispatch work.
     sched::cpustat::user_exit();
+    let dispatch_task = sched::current();
+    // Linux hands `pt_regs *` from el0_svc directly to the syscall path. Bind
+    // that same explicit entry argument to the task BEFORE opening IRQs. The
+    // old order opened IRQs and then re-read a per-CPU cache; a switch to a
+    // first-syscall task could replace it with zero in between.
+    #[cfg(target_arch = "aarch64")]
+    let process_irqs = crate::dispatch_frame_order::bind_then_enable(
+        entry_frame,
+        |frame| {
+            if let Some(task) = dispatch_task {
+                task.svc_frame.store(frame as u64, core::sync::atomic::Ordering::Release);
+            }
+        },
+        super::process_irq::ProcessIrqs::enable,
+    );
     // Architectural entry masks IRQs while it saves the user frame. Ordinary
     // syscall work is process context: timers, completion IRQs and wakeups
     // must run while it blocks. Dropping this guard restores the entry mask
     // before the return-to-user work loop starts its flag-check discipline.
+    #[cfg(target_arch = "x86_64")]
     let process_irqs = super::process_irq::ProcessIrqs::enable();
-    let dispatch_task = sched::current();
     let orig_nr = nr;
     #[cfg(target_arch = "aarch64")]
     let nr = syscall::arm_abi::aarch64_nr_to_x86(nr);
     debug_ssh! { crate::signal_trace::dispatch_entry(orig_nr, nr); }
-    #[cfg(target_arch = "aarch64")]
-    if let Some(c) = dispatch_task {
-        c.svc_frame.store(hal_aarch64::current_svc_frame() as u64, core::sync::atomic::Ordering::Release);
-    }
     // SAFETY: `syscall_a5` reads the sixth argument out of the per-CPU entry
     // save block, which the arch stub filled for THIS syscall before calling
     // here and which nothing else writes until the next entry.
