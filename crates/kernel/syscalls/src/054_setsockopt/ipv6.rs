@@ -169,7 +169,8 @@ fn set_pktoptions(sock: &Arc<InetSocket>, optval: u64, optlen: u32,
         Ok(v) => v, Err(e) => return errno(e),
     };
     let slots = match pktoptions::admit_stream(
-        entries.iter().map(|e| (e.level, e.ty, e.data(layout, &bytes))), caps)
+        entries.iter().map(|e| (e.level, e.ty, e.data(layout, &bytes))), caps,
+        |info| validate_pktoptions_pktinfo(sock, info))
     { Ok(s) => s, Err(e) => return errno(e) };
     for (slot, area) in [(Sticky::HopOpts, slots.hop),
         (Sticky::RthdrDstOpts, slots.dst_before_routing),
@@ -179,6 +180,34 @@ fn set_pktoptions(sock: &Arc<InetSocket>, optval: u64, optlen: u32,
         sock.opts.ipv6.set_header(slot, area);
     }
     0
+}
+
+/// Screen one packet-info message against the live socket and namespace.
+/// The stream does not retain the per-datagram choice, but Linux still rejects
+/// a device or source that this socket could not use for a send. # C: O(N)
+fn validate_pktoptions_pktinfo(sock: &InetSocket,
+    info: net::sock_opts::sol_ipv6::pktoptions::Pktinfo)
+    -> Result<(), Errno>
+{
+    let bound_raw = sock.opts.base.bound_ifindex.load(Ordering::Acquire);
+    if bound_raw != 0 && info.ifindex != 0 && info.ifindex != bound_raw {
+        return Err(Errno::Einval);
+    }
+    let selected = if info.ifindex != 0 { info.ifindex } else { bound_raw };
+    let iface = if selected == 0 { None } else {
+        match net::sock::stack().bound_iface_in(sock.net_ns(), selected) {
+            Ok(iface) => iface,
+            Err(net::NetError::Enodev) => return Err(Errno::Enodev),
+            Err(_) => return Err(Errno::Einval),
+        }
+    };
+    if info.addr.is_link_local() && iface.is_none() { return Err(Errno::Einval); }
+    if !info.addr.is_unspecified()
+        && net::sock::nonlocal::screen_v6(sock, info.addr, iface).is_err()
+    {
+        return Err(Errno::Einval);
+    }
+    Ok(())
 }
 
 /// `IPV6_PKTINFO`: the sticky source address and outgoing interface.
