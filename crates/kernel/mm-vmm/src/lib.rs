@@ -155,6 +155,8 @@ mod tests_cow_isolation;
 // fault behaviour against the production file-fault arms.
 #[cfg(test)]
 mod tests_pagecache;
+#[cfg(test)]
+mod tests_recency_fault;
 
 // fork+COW GLOBAL refcount-invariant proptest: refcount(pa) == live PTEs + base
 // across all ASes, asserted after every op over 200k randomized fork/COW/
