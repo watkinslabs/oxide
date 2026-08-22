@@ -91,6 +91,7 @@ mod tests {
     use super::*;
     #[test]
     fn affected_object_exports_and_null_rejection_are_present() {
+        let _modules = crate::test_serial::claim();
         export_symbols();
         assert!(crate::symtab::is_exported("drm_atomic_add_affected_connectors"));
         assert!(crate::symtab::is_exported("drm_atomic_add_affected_planes"));

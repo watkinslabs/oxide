@@ -487,6 +487,7 @@ mod tests {
 
     #[test]
     fn generic_gem_entry_points_are_module_exports() {
+        let _modules = crate::test_serial::claim();
         export_symbols();
         for name in ["drm_gem_private_object_init", "drm_gem_object_release", "drm_gem_handle_create", "drm_gem_handle_delete", "drm_gem_object_lookup", "drm_gem_release", "drm_gem_dumb_map_offset", "drm_mode_size_dumb", "drm_gem_shmem_dumb_create", "drm_gem_shmem_prime_import_no_map"] { assert!(crate::symtab::is_exported(name)); }
     }

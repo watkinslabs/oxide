@@ -157,5 +157,5 @@ mod tests {
         assert!(list_empty(lock.as_mut_ptr().wrapping_add(DRM_MODESET_LOCK_HEAD_OFF)));
     }
     #[test]
-    fn modeset_lock_exports_are_present() { export_symbols(); for name in ["drm_modeset_acquire_init", "drm_modeset_lock", "drm_modeset_backoff", "drm_modeset_unlock"] { assert!(crate::symtab::is_exported(name)); } }
+    fn modeset_lock_exports_are_present() { let _modules = crate::test_serial::claim(); export_symbols(); for name in ["drm_modeset_acquire_init", "drm_modeset_lock", "drm_modeset_backoff", "drm_modeset_unlock"] { assert!(crate::symtab::is_exported(name)); } }
 }

@@ -235,6 +235,7 @@ mod tests {
 
     #[test]
     fn shadow_state_entry_points_are_module_exports() {
+        let _modules = crate::test_serial::claim();
         export_symbols();
         for name in ["drm_gem_reset_shadow_plane", "drm_gem_duplicate_shadow_plane_state", "drm_gem_destroy_shadow_plane_state"] { assert!(crate::symtab::is_exported(name)); }
     }
@@ -269,6 +270,7 @@ mod tests {
 
     #[test]
     fn atomic_validation_exports_are_present() {
+        let _modules = crate::test_serial::claim();
         export_symbols();
         for name in ["drm_atomic_helper_check_plane_state", "drm_atomic_helper_check_crtc_primary_plane"] { assert!(crate::symtab::is_exported(name)); }
     }

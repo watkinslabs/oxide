@@ -32,6 +32,7 @@ mod tests {
 
     #[test]
     fn diagnostic_entry_points_are_module_exports() {
+        let _modules = crate::test_serial::claim();
         export_symbols();
         assert!(crate::symtab::is_exported("__drm_dev_dbg"));
         assert!(crate::symtab::is_exported("__drm_err"));

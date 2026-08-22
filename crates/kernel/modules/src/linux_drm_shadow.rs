@@ -72,6 +72,7 @@ mod tests {
 
     #[test]
     fn shadow_access_entry_points_are_module_exports() {
+        let _modules = crate::test_serial::claim();
         export_symbols();
         assert!(crate::symtab::is_exported("drm_gem_begin_shadow_fb_access"));
         assert!(crate::symtab::is_exported("drm_gem_end_shadow_fb_access"));

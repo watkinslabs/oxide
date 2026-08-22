@@ -26,5 +26,5 @@ mod tests {
     }
 
     #[test]
-    fn header_validator_is_a_module_export() { export_symbols(); assert!(crate::symtab::is_exported("drm_edid_header_is_valid")); }
+    fn header_validator_is_a_module_export() { let _modules = crate::test_serial::claim(); export_symbols(); assert!(crate::symtab::is_exported("drm_edid_header_is_valid")); }
 }
