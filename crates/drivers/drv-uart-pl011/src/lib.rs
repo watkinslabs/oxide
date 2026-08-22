@@ -67,14 +67,16 @@ static RX_ENABLED: AtomicBool = AtomicBool::new(false);
 static BSP_APIC: AtomicU64 = AtomicU64::new(0);
 static DEV_WINDOW_BASE: AtomicU64 = AtomicU64::new(0);
 static DELIVER: AtomicU64 = AtomicU64::new(0);
+/// SysRq arm deadline for this hardware port.
+static SYSRQ_ARMED_UNTIL_NS: AtomicU64 = AtomicU64::new(0);
 
 #[inline]
 fn deliver(b: u8) {
     let p = DELIVER.load(Ordering::Acquire);
     if p == 0 { return; }
-    // SAFETY: p was stored from a `fn(u8)` by configure_probe.
-    let f: fn(u8) = unsafe { core::mem::transmute(p as usize) };
-    f(b);
+    // SAFETY: p was stored from this exact function-pointer type.
+    let f: fn(&'static AtomicU64, u8) = unsafe { core::mem::transmute(p as usize) };
+    f(&SYSRQ_ARMED_UNTIL_NS, b);
 }
 
 /// True once a PL011 UART has been detected + registered by `init`.
@@ -90,7 +92,9 @@ pub fn rx_enabled() -> bool { RX_ENABLED.load(Ordering::Acquire) }
 /// Install boot-probe parameters used when the drv core calls
 /// `UartPl011Drv::probe`.
 /// # C: O(1)
-pub fn configure_probe(bsp_apic: u8, dev_window_base: u64, dlv: fn(u8)) {
+pub fn configure_probe(bsp_apic: u8, dev_window_base: u64,
+    dlv: fn(&'static AtomicU64, u8)) {
+    SYSRQ_ARMED_UNTIL_NS.store(0, Ordering::Relaxed);
     BSP_APIC.store(bsp_apic as u64, Ordering::Release);
     DEV_WINDOW_BASE.store(dev_window_base, Ordering::Release);
     DELIVER.store(dlv as usize as u64, Ordering::Release);
@@ -174,8 +178,8 @@ mod imp {
     /// the indication for bytes that arrived during it, which silently wedges
     /// the input line (see `crate::rx`).
     /// # C: O(bytes pending)
-    pub fn rx_isr(dlv: fn(u8)) {
-        let _ = rx_isr_claimed(dlv);
+    pub fn rx_isr() {
+        let _ = rx_isr_claimed(super::deliver);
     }
 
     fn rx_isr_claimed(dlv: fn(u8)) -> bool {
@@ -211,7 +215,8 @@ mod imp {
     /// at boot). Returns true on detection.
     /// # SAFETY: PL011 Device VA published; single-CPU, IRQs masked.
     /// # C: O(1)
-    pub(super) unsafe fn init(_bsp_apic: u8, _dev_window_base: u64, dlv: fn(u8)) -> bool {
+    pub(super) unsafe fn init(_bsp_apic: u8, _dev_window_base: u64,
+        dlv: fn(&'static AtomicU64, u8)) -> bool {
         let va = hal_aarch64::pl011::base_va();
         if va == 0 { return false; }
         BASE.store(va, Ordering::Release);
@@ -272,11 +277,12 @@ mod imp {
     pub fn set_baud(_baud: u32) {}
     /// No PL011 on non-arm arches.
     /// # C: O(1)
-    pub fn rx_isr(_dlv: fn(u8)) {}
+    pub fn rx_isr() {}
     /// No PL011 on non-arm arches; detect fails.
     /// # SAFETY: shell; no side effects.
     /// # C: O(1)
-    pub(super) unsafe fn init(_bsp_apic: u8, _dev_window_base: u64, _dlv: fn(u8)) -> bool { false }
+    pub(super) unsafe fn init(_bsp_apic: u8, _dev_window_base: u64,
+        _dlv: fn(&'static core::sync::atomic::AtomicU64, u8)) -> bool { false }
     /// No PL011 on non-arm arches.
     /// # SAFETY: shell; no side effects.
     /// # C: O(1)
@@ -305,8 +311,8 @@ impl drv::Driver for UartPl011Drv {
         if p == 0 {
             return Err(drv::Error::ProbeFailed);
         }
-        // SAFETY: p was stored from a `fn(u8)` by configure_probe.
-        let dlv: fn(u8) = unsafe { core::mem::transmute(p as usize) };
+        // SAFETY: p was stored from this exact function-pointer type.
+        let dlv: fn(&'static AtomicU64, u8) = unsafe { core::mem::transmute(p as usize) };
         let bsp_apic = BSP_APIC.load(Ordering::Acquire) as u8;
         let dev_window_base = DEV_WINDOW_BASE.load(Ordering::Acquire);
         // SAFETY: driver-core bind runs on the same boot path that previously

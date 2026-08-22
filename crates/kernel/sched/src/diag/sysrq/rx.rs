@@ -83,9 +83,12 @@ pub fn decide(armed_until_ns: u64, now_ns: u64, b: u8) -> RxStep {
     RxStep::Passthrough
 }
 
-/// The deadline the line is armed until, in CLOCK_MONOTONIC nanoseconds;
-/// `DISARMED` when no break is outstanding.
-static ARMED_UNTIL_NS: AtomicU64 = AtomicU64::new(DISARMED);
+/// Advance one UART's arm/key state at an explicit time. # C: O(1)
+pub fn advance(port: &AtomicU64, now_ns: u64, b: u8) -> RxStep {
+    let step = decide(port.swap(DISARMED, Ordering::Relaxed), now_ns, b);
+    port.store(step.next_armed_until(), Ordering::Relaxed);
+    step
+}
 
 /// The serial line's byte sink: a break arms, the next byte inside the window
 /// is the command. Returns true when the byte was consumed by sysrq rather
@@ -101,15 +104,15 @@ static ARMED_UNTIL_NS: AtomicU64 = AtomicU64::new(DISARMED);
 /// kernel's tick for seconds, leaving a window that outlives its own deadline.
 /// The counter keeps running regardless.
 ///
-/// The state is taken before the decision and republished after, so the window
-/// between them reads as DISARMED — a concurrent byte can only fail to
-/// dispatch, never dispatch on a stale deadline. `known_issues.md` carries the
-/// per-port state this word should be, which is a `drv-serial` change.
+/// `armed_until_ns` belongs to the UART driver instance, just as the
+/// reference keeps the deadline in its port object. The state is taken before
+/// the decision and republished after, so the window between them reads as
+/// DISARMED — a concurrent byte on this port can only fail to dispatch, never
+/// dispatch on a stale deadline.
 /// # C: see `perform`
-pub fn rx(b: u8) -> bool {
+pub fn rx(armed_until_ns: &AtomicU64, b: u8) -> bool {
     let now = timekeeper::monotonic_ns();
-    let step = decide(ARMED_UNTIL_NS.swap(DISARMED, Ordering::Relaxed), now, b);
-    ARMED_UNTIL_NS.store(step.next_armed_until(), Ordering::Relaxed);
+    let step = advance(armed_until_ns, now, b);
     match step {
         RxStep::Run(cmd) => { perform(cmd, effective_mask(mask_value(), always_enabled())); true }
         RxStep::Armed(_) => true,
