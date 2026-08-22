@@ -4944,3 +4944,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED B2584 | DEFECT/MISSING | med | The three historical membarrier rows claiming that PRIVATE_EXPEDITED_SYNC_CORE, PRIVATE_EXPEDITED_RSEQ, and their REGISTER commands were refused are stale ledger residue. | `syscalls/src/membarrier.rs` advertises all four commands in `QUERY_MASK` and admits each in `decide`; `mm-vmm/src/address_space/membarrier.rs` owns the per-mm SYNC_CORE/RSEQ registration bits and readiness state; the scheduler's `rseq_preempt_return` and the membarrier return-to-user hooks provide the corresponding live consumers. Existing B1989 tests cover command admission, query-mask consistency, sync-core registration, and RSEQ forced fixup. No source change was needed. | B2584 |
+
+### B2585-stale-zcrx-virtio-rows
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2585 | MISSING | low | The two historical zero-copy receive rows were stale: they described reference behavior that intentionally refuses virtio-net's device-less registration and uses copy delivery when no capable buffer-provider device exists. | F855 rechecked the reference contract and current Oxide implementation. Virtio-net has no queue-management capability, so `EOPNOTSUPP` is the correct registration result; `IORING_OP_RECV_ZC` correctly copies from ordinary fragments, while by-reference delivery requires a capable provider device. Existing `netdev::rx_queue` and `io_uring` ZCRX tests pin these distinctions. No source change was needed. | B2585 |
