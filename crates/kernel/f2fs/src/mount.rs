@@ -281,18 +281,22 @@ impl F2fs {
     /// segments it writes.
     /// # C: O(nodes the file has) blocks, or O(a checkpoint)
     pub fn sync_file(&self, ino: u32, datasync: bool) -> KResult<()> {
-        let runs = {
+        let reason = {
             let mut v = self.volume_now();
-            let r = if datasync { v.fdatasync(ino) } else { v.fsync(ino) };
-            let reason = r.map_err(errno_to_vfs)?;
-            // ONLY a checkpoint retires what a release freed. The chain path
-            // deliberately writes none, so every block this mount has freed is
-            // still part of the state a crash recovers to — announcing one to
-            // the device destroys exactly that state, and the loss lands on
-            // whichever file happened to own the block before it moved.
-            if reason.needed() { v.take_discards() } else { alloc::vec::Vec::new() }
+            let reason = v.fsync_for_mount(ino, datasync).map_err(errno_to_vfs)?;
+            reason
         };
-        self.queue_discards(runs);
+        if reason.needed() {
+            // The volume lock is deliberately released before enrollment: the
+            // merge thread needs that same lock to write its checkpoint. A
+            // direct commit here would serialize every fsync behind the caller
+            // and can deadlock when the checkpoint worker is the one serving it.
+            let fs = self.me.upgrade().ok_or(vfs::VfsError::Eio)?;
+            fs.checkpoint_merged(true)?;
+            // Only a completed checkpoint may retire blocks freed by release.
+            let runs = self.volume.lock().take_discards();
+            self.queue_discards(runs);
+        }
         Ok(())
     }
 
