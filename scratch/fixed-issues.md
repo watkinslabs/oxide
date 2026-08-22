@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2469-stale-hugetlb-rss-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED ac2049dee | DEFECT/MISSING | med | Stale hugetlb RSS, meminfo/sysfs, cgroup, and SHM_HUGETLB rows are covered by the canonical hugetlb implementation and were folded into one record. | VMM/procfs/cgroup/IPC/sysfs checks and target builds passed. | Chris Watkins |
+
 ### B2468-keyring-global-process-identity
 
 | Status | Class | Sev | Issue | Evidence | Owner |
