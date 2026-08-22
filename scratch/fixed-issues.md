@@ -1,5 +1,11 @@
 # Fixed issues
 
+### R129-stale-virtio-blk-poll-queues-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED R129 | MISSING | low | **The virtio-blk polling-queue configurability row was stale.** The dedicated interrupt-free polling queue, queue partition, and zero-queue behavior were already implemented and merged by F851/PR #4963; the remaining wording described a missing caller that no longer existed in the current implementation. | `drv_virtio_blk::modern::queues::{usable_queue_count,poll_queue_index}` and the F851 transport/probe path; `requesting_no_poll_queues_leaves_every_queue_interrupt_driven` plus the end-to-end polling tests. | R129 |
+
 ### R128-stale-keyring-real-uid-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
