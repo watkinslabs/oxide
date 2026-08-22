@@ -48,7 +48,7 @@ fn this_cpu() -> u32 { use hal::CpuOps; hal_aarch64::ArmCpuOps::current_cpu() }
 #[cfg(not(target_os = "oxide-kernel"))]
 fn this_cpu() -> u32 { 0 }
 
-/// # C: O(due timers) per 100 ms wake
+/// # C: O(due timers) per registered deadline or bounded idle wake
 extern "C" fn driver(_arg: usize) -> ! {
     loop {
         let now = now_ns();
