@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2561-exfat-setattr-persistence
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2561 | MISSING | low | exFAT mounted inodes now persist the representable chmod and timestamp changes in their exact entry set; ownership remains mount-synthesized because exFAT stores no uid/gid. | `ExfatOps::setattr` runs the VFS attribute gate, rewrites the file attribute and DOS timestamp fields, and reseals the complete entry set through `Volume::write_entry_set`, preserving long-name and benign secondary entries. Full exFAT library suite: 194/194. | B2561-exfat-setattr-persistence |
+
 ### B2560-selinux-create-time-inode-label
 
 | Status | Class | Sev | Issue | Evidence | Owner |

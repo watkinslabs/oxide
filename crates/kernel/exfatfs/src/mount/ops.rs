@@ -15,12 +15,15 @@ use alloc::sync::Arc;
 
 use vfs::{CreateCtx, DirContext, FileOps, FileType, Inode, InodeOps, InodeRef, KResult,
           VfsError};
+use vfs::setattr::{Iattr, ATTR_GID, ATTR_UID};
 
 use crate::ident::{self, Position};
 use crate::volume::{DirEntry, DirHandle};
 
 use super::node::{node_inode, ExfatNode};
 use super::{errno_to_vfs, now};
+use crate::attrs::attrs_for_mode;
+use crate::time::{from_unix, truncate_atime, without_centiseconds};
 
 /// The operations, for every inode of this filesystem.
 pub struct ExfatOps;
@@ -106,6 +109,27 @@ impl InodeOps for ExfatOps {
         node.fs.volume.lock().truncate_file(&mut entry, len, now()).map_err(errno_to_vfs)?;
         inode.set_size(len);
         Ok(())
+    }
+
+    /// Persist the representable mode and timestamps in the exact exFAT entry
+    /// set this inode came from. Ownership remains mount-synthesized because
+    /// exFAT stores no uid/gid fields. # C: O(set bytes)
+    fn setattr(&self, inode: &Inode, idmap: &vfs::Idmap, ia: &Iattr) -> KResult<()> {
+        let node = Self::node(inode)?;
+        let mut entry = node.entry.clone().ok_or(VfsError::Eisdir)?;
+        let v = node.fs.volume.lock();
+        if !v.writable() { return Err(VfsError::Erofs); }
+        let opts = *v.options();
+        let uid = if ia.valid & ATTR_UID != 0 { idmap.map_in_uid(ia.uid) } else { opts.uid };
+        let gid = if ia.valid & ATTR_GID != 0 { idmap.map_in_gid(ia.gid) } else { opts.gid };
+        if uid != opts.uid || gid != opts.gid { return Err(VfsError::Eperm); }
+        vfs::simple_setattr(inode, idmap, ia)?;
+        entry.set.file.attr = attrs_for_mode(entry.set.file.attr, inode.perm().unwrap_or(0));
+        let access = truncate_atime(inode.atime().unwrap_or_default());
+        let modify = inode.mtime().unwrap_or_default();
+        entry.set.file.access = from_unix(access);
+        entry.set.file.modify = without_centiseconds(from_unix(modify));
+        v.write_entry_set(&entry).map_err(errno_to_vfs)
     }
 }
 
