@@ -1,10 +1,8 @@
 //! The inode and file operations of a mounted NTFS volume.
 //!
-//! `link` is absent, and unlike on FAT and exFAT that is a GAP rather than a
-//! property of the format: NTFS counts hard links and every record carries as
-//! many `$FILE_NAME` attributes as it has names. Adding one means inserting a
-//! second index entry and raising the count, which is not done here yet — see
-//! the ledger. The slot's default answers `EPERM`.
+//! NTFS counts hard links and every record carries as many `$FILE_NAME`
+//! attributes as it has names. The volume operation coordinates the new name
+//! and count under the filesystem's one lock.
 
 use alloc::sync::Arc;
 
@@ -78,6 +76,17 @@ impl InodeOps for NtfsOps {
     fn unlink(&self, inode: &Inode, name: &str) -> KResult<()> {
         let node = Self::dir_of(inode)?;
         node.fs.volume.lock().unlink(node.info.number, name, now()).map_err(errno_to_vfs)
+    }
+
+    fn link(&self, inode: &Inode, target: &InodeRef, name: &str, _ctx: &CreateCtx)
+        -> KResult<()> {
+        let node = Self::dir_of(inode)?;
+        let target_node = Self::node(target)?;
+        if !Arc::ptr_eq(&node.fs, &target_node.fs) { return Err(VfsError::Exdev); }
+        node.fs.volume.lock().link(node.info.number, name, target_node.info.number, now())
+            .map_err(errno_to_vfs)?;
+        target.inc_nlink();
+        Ok(())
     }
 
     fn rename(&self, inode: &Inode, old_name: &str, new_dir: &Inode, new_name: &str, flags: u32,

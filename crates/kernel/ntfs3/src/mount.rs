@@ -8,6 +8,7 @@
 //! - `node`: what an inode of this filesystem is, and the mode it presents.
 //! - `ops`:  the inode and file operations.
 //! - `sb`:   `statfs`, the option tail, and the dirty flag at unmount.
+//! - `tests`: mounted block-device to VFS operation coverage.
 
 use alloc::string::{String, ToString};
 use alloc::sync::{Arc, Weak};
@@ -23,6 +24,10 @@ use crate::volume::Volume;
 pub mod node;
 pub mod ops;
 pub mod sb;
+
+#[cfg(test)]
+#[path = "mount/tests.rs"]
+mod tests;
 
 /// The one name this filesystem is registered under.
 pub const NTFS_NAME: &str = "ntfs3";
@@ -120,7 +125,9 @@ pub fn errno_to_vfs(err: Errno) -> VfsError {
         Errno::Eexist => VfsError::Eexist,
         Errno::Enospc => VfsError::Enospc,
         Errno::Erofs => VfsError::Erofs,
+        Errno::Eperm => VfsError::Eperm,
         Errno::Enametoolong => VfsError::Enametoolong,
+        Errno::Emlink => VfsError::Emlink,
         Errno::Efbig => VfsError::Efbig,
         Errno::Enomem => VfsError::Enomem,
         Errno::Eacces => VfsError::Eacces,
