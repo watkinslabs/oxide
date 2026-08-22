@@ -33,6 +33,8 @@ pub struct Stream {
     pub bdl_va: u64,
     pub buffer_pa: u64,
     pub buffer_va: u64,
+    /// This descriptor's slot in the controller-global DMA position buffer.
+    pub posbuf_va: u64,
     pub geometry: Geometry,
     pub frame_bytes: u32,
     /// Byte offset the driver has filled to.
@@ -46,9 +48,10 @@ pub struct Stream {
 
 impl Stream {
     /// # C: O(1)
-    pub fn new(index: u8, tag: u8, bdl_pa: u64, bdl_va: u64, buffer_pa: u64, buffer_va: u64) -> Self {
+    pub fn new(index: u8, tag: u8, bdl_pa: u64, bdl_va: u64, buffer_pa: u64,
+               buffer_va: u64, posbuf_va: u64) -> Self {
         Self {
-            index, tag, bdl_pa, bdl_va, buffer_pa, buffer_va,
+            index, tag, bdl_pa, bdl_va, buffer_pa, buffer_va, posbuf_va,
             geometry: Geometry { period_bytes: MAX_PERIOD_BYTES, periods: PERIODS },
             frame_bytes: 4, write_off: 0, laps: 0, last_position: 0, running: false,
         }
@@ -103,6 +106,10 @@ impl Stream {
         self.geometry = geometry;
         self.frame_bytes = frame_bytes.max(1);
         self.reset(regs);
+        // SAFETY: `posbuf_va` is this stream's aligned u32 slot in the
+        // probe-owned DMA page, kept alive until controller teardown.
+        unsafe { core::ptr::write_volatile(self.posbuf_va as *mut u32, 0); }
+        pmm::dma::clean_to_device(self.posbuf_va, core::mem::size_of::<u32>());
 
         let base = regs.sd(self.index);
         let tagged = (regs.r32(base + SD_CTL) & !SD_CTL_STREAM_TAG_MASK)
@@ -113,6 +120,7 @@ impl Stream {
         regs.w16(base + SD_LVI, (entries.len() - 1) as u16);
         regs.w32(base + SD_BDLPL, self.bdl_pa as u32);
         regs.w32(base + SD_BDLPU, (self.bdl_pa >> 32) as u32);
+        regs.set32(REG_DPLBASE, DPLBASE_ENABLE);
         regs.set32(base + SD_CTL, SD_INT_MASK);
         true
     }
@@ -134,7 +142,11 @@ impl Stream {
     pub fn position(&self, regs: &Regs) -> u32 {
         let buffer = self.geometry.buffer_bytes();
         if buffer == 0 { return 0; }
-        regs.r32(regs.sd(self.index) + SD_LPIB) % buffer
+        pmm::dma::invalidate_from_device(self.posbuf_va, core::mem::size_of::<u32>());
+        // SAFETY: `posbuf_va` is this stream's aligned slot in the live
+        // probe-owned DMA page, and invalidation made the device write visible.
+        let posbuf = unsafe { core::ptr::read_volatile(self.posbuf_va as *const u32) };
+        crate::position::select(posbuf, regs.r32(regs.sd(self.index) + SD_LPIB), buffer)
     }
 
     /// Frames the hardware has consumed since setup, counting laps so the
