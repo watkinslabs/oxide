@@ -77,6 +77,22 @@ fn a_rename_over_an_existing_name_replaces_it() {
 }
 
 #[test]
+fn a_replacing_move_rewrites_the_destination_without_recording_a_new_parent() {
+    let mut v = vol();
+    let src = v.create(ROOT_INO, b"src", &spec(S_IFDIR | 0o755), None).unwrap();
+    let dst = v.create(ROOT_INO, b"dst", &spec(S_IFDIR | 0o755), None).unwrap();
+    let moved = v.create(src, b"old", &spec(S_IFREG | 0o644), None).unwrap();
+    v.create(dst, b"new", &spec(S_IFREG | 0o644), None).unwrap();
+
+    mv(&mut v, src, b"old", dst, b"new", 0).unwrap();
+    let v = remount(v);
+    assert_eq!(look(&v, dst, b"new").unwrap().ino, moved);
+    let inode = v.read_inode(moved).unwrap();
+    assert_eq!(inode.pino, src, "replacement added a new entry instead of rewriting one");
+    assert_ne!(inode.advise & FADVISE_LOST_PINO_BIT, 0);
+}
+
+#[test]
 fn a_rename_that_refuses_to_replace_reports_the_clash() {
     let mut v = vol();
     v.create(ROOT_INO, b"a", &spec(S_IFREG | 0o644), None).unwrap();
