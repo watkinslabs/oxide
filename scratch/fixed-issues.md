@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2580-stale-f2fs-fsync-remount-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2580 | DEFECT | high | **The recorded intermittent F2FS fsync/remount zero-data failure is stale on current main.** The fsync/checkpoint handoff was subsequently corrected, and the historical failure no longer reproduces in whole-suite runs. | `44b927653` moves merged fsync checkpoint work outside the volume lock; 40 consecutive `cargo test -p f2fs --lib --quiet` runs on current main passed, each reporting 3,712 tests with 0 failures, including `mount::tests::syncing_the_file_places_it_and_a_remount_finds_it`. No new source behavior changed. | B2580 |
+
 ### B2579-stale-test-build-gate-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
