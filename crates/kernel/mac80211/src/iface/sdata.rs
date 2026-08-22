@@ -71,6 +71,8 @@ pub struct SdataState {
     pub assocresp_ies: Vec<u8>,
     /// Whether four-address frames are in use.
     pub use_4addr: bool,
+    /// Whether an access point may bridge frames between associated peers.
+    pub ap_isolate: bool,
     /// Monitor capture flags.
     pub mntr_flags: u32,
     /// Whether power save is requested on this interface.
@@ -114,7 +116,7 @@ impl Sdata {
                 chandef: None, keys: KeySet::default(), mlme: MlmeState::default(),
                 seq: 0, frags: DefragCache::default(), stats: IfaceStats::default(),
                 beacon: None, proberesp_ies: Vec::new(), assocresp_ies: Vec::new(),
-                use_4addr: false, mntr_flags: 0, ps: false, tsf: 0,
+                use_4addr: false, ap_isolate: false, mntr_flags: 0, ps: false, tsf: 0,
             }),
         }
     }

@@ -21,7 +21,7 @@ use crate::scan::ScanRequest;
 use crate::sme::ConnectParams;
 use crate::sta::{StationInfo, StationParams};
 use crate::uapi::enums::IfType;
-use crate::wdev::Wdev;
+use crate::wdev::{BssParams, Wdev};
 use crate::wiphy::Wiphy;
 
 use super::station_report;
@@ -46,6 +46,7 @@ pub enum Call {
     Disassoc(u16, bool),
     StartAp { beacon_interval: u16, dtim: u8 },
     StopAp,
+    ChangeBss(BssParams),
     MgmtTx { len: usize, offchan: bool },
     SetChannel(u32),
     SetPowerMgmt(bool),
@@ -65,6 +66,7 @@ pub struct Program {
     pub add_key_fails: Option<Errno>,
     pub connect_fails: Option<Errno>,
     pub start_ap_fails: Option<Errno>,
+    pub change_bss_fails: Option<Errno>,
     pub mgmt_tx_fails: Option<Errno>,
     pub stations: usize,
     pub surveys: usize,
@@ -198,6 +200,12 @@ impl Cfg80211Ops for FakeOps {
     }
     fn stop_ap(&self, _w: &Arc<Wiphy>, _d: &Arc<Wdev>) -> Result<(), Errno> {
         self.record(Call::StopAp); Ok(())
+    }
+    fn change_bss(&self, _w: &Arc<Wiphy>, _d: &Arc<Wdev>, p: &BssParams)
+        -> Result<(), Errno>
+    {
+        self.record(Call::ChangeBss(p.clone()));
+        match self.prog().change_bss_fails { Some(e) => Err(e), None => Ok(()) }
     }
     fn set_wiphy_params(&self, _w: &Arc<Wiphy>) -> Result<(), Errno> {
         self.record(Call::SetWiphyParams); Ok(())

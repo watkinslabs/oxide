@@ -202,11 +202,12 @@ fn set_bss_inner(attrs: &[u8], ctx: GenlCtx) -> Result<(), Errno> {
     let req = parse_bss(attrs)?;
     if req.is_empty() { return Ok(()); }
     // The driver sees the whole resulting set, not the delta: a radio
-    // programs its beacon from all of it at once.
-    let params = wdev.with(|w| { req.apply(&mut w.bss); w.bss.clone() });
-    match wiphy.ops.change_bss(&wiphy, &wdev, &params) {
-        Ok(()) => Ok(()),
-        Err(Errno::Eopnotsupp) => Ok(()),
-        Err(e) => Err(e),
-    }
+    // programs its beacon from all of it at once. Publish the delta only
+    // after the driver accepts it, so a refusal leaves observable state
+    // unchanged and a concurrent edit of another field is not overwritten.
+    let mut params = wdev.with(|w| w.bss.clone());
+    req.apply(&mut params);
+    wiphy.ops.change_bss(&wiphy, &wdev, &params)?;
+    wdev.with(|w| req.apply(&mut w.bss));
+    Ok(())
 }
