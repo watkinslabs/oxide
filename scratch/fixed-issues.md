@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2461-tfo-child-failure-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 244880293 | COVERAGE | low | **The alleged TCP Fast Open child-allocation failure is an architectural mismatch; the reachable full-backlog refusal is now covered at listener delivery.** | B2461 pins the production backlog refusal and preserves the already-published child. | B2461-tfo-child-failure-row |
+
 ### B2459-compat-batch-single-owner-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |

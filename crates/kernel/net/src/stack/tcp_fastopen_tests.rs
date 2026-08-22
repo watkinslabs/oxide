@@ -283,6 +283,27 @@ fn a_full_bound_falls_back_to_an_ordinary_handshake() {
 }
 
 #[test]
+fn a_full_accept_backlog_drops_the_next_syn_before_building_a_child() {
+    let _domain = crate::hosted_fixture::init_net_domain();
+    let stack = NetStack::new();
+    let (iface, listener) = fixture(&stack, 714, 2);
+    let keys = crate::tcp_fastopen::ns_keys(&listener.owner.net_namespace).expect("drawn key");
+    let peer = IpAddr::V4(SERVER);
+    let cookie = crate::tcp_fastopen::gen(&keys.primary, peer, peer, false);
+    // Linux's "full" predicate admits one entry beyond the numeric backlog;
+    // a zero backlog therefore makes the second completed child the refusal.
+    listener.backlog.store(0, Ordering::Release);
+
+    let first = syn(&stack, iface, 714, 50_723, Some(cookie), b"one").expect("first child");
+    assert_eq!(listener.accept_q.lock().len(), 1);
+    assert!(syn(&stack, iface, 714, 50_724, Some(cookie), b"two").is_none(),
+        "the refused SYN never leaves an unreachable child in the connection table");
+    assert_eq!(listener.accept_q.lock().len(), 1, "the published child is preserved");
+    assert_eq!(listener.fastopen.qlen(), 1, "the refused child gives its TFO charge back");
+    assert!(first.is(&stack.tcp_accept(&listener).expect("the first child remains acceptable")));
+}
+
+#[test]
 fn data_in_a_syn_that_presented_nothing_is_not_taken() {
     let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
