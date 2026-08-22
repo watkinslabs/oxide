@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2569-stale-f2fs-ipu-fixture-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2569 | INFRA | low | The alleged in-progress F2FS fixture-policy defect was stale. The small fixture intentionally disables the mount-derived in-place policy so placement tests isolate their subject; the real mount path remains covered separately. | F1215 is already merged and its fixed ledger records the in-place policy owner. `tests/placement.rs::a_small_volume_arms_the_in_place_set_at_mount` mounts the same image without the test override and passes; the fixture override is deliberate test isolation, not missing production behavior. | B2569-stale-f2fs-ipu-fixture-row |
+
 ### FIXED F1248-fscrypt-policy-boundaries
 
 | Status | Class | Sev | Issue | Evidence | Owner |
