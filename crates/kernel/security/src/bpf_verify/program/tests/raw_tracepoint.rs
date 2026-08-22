@@ -20,4 +20,3 @@ fn raw_tracepoint_program_may_read_its_link_cookie() {
     assert_eq!(verify_program(uapi::prog_type::SOCKET_FILTER, 0, &program, &[]),
                Err(VerifyError::UnsupportedOpcode));
 }
-
