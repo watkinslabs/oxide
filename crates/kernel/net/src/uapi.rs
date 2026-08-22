@@ -9,6 +9,7 @@ pub const MSG_WAITALL: u64 = 0x100;
 pub const MSG_OOB: u64 = 0x01;
 pub const MSG_DONTROUTE: u64 = 0x04;
 pub const MSG_ERRQUEUE: u64 = 0x2000;
+pub const MSG_MORE: u64 = 0x8000;
 /// Ask a supported transport to retain user pages until transmit completion.
 pub const MSG_ZEROCOPY: u64 = 0x400_0000;
 /// Open the connection with this message's first bytes in the SYN.

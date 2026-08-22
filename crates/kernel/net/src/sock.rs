@@ -144,6 +144,8 @@ mod packet_receive_effects_tests;
 mod shutdown_tests;
 #[cfg(test)]
 mod types_tests;
+#[cfg(test)]
+mod send_tests;
 
 pub use globals::*;
 pub use types::*;

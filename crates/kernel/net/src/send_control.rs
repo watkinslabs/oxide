@@ -51,6 +51,9 @@ pub struct SendControl {
     /// no out-of-band channel and reports that before it screens the message
     /// type, so the flag has to reach the transport.
     pub oob: bool,
+    /// Transient TCP cork for this message. Unlike `TCP_CORK`, this lasts for
+    /// one send only; the next send without `MSG_MORE` releases queued bytes.
+    pub more: bool,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -90,6 +93,7 @@ impl SendControl {
     pub fn apply_flags(&mut self, flags: u64) {
         self.raw4.dont_route = flags & crate::uapi::MSG_DONTROUTE != 0;
         self.oob = flags & crate::uapi::MSG_OOB != 0;
+        self.more = flags & crate::uapi::MSG_MORE != 0;
     }
 }
 
