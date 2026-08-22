@@ -5025,3 +5025,6 @@ against the row's own evidence.
 ### B2605-io-uring-stack-negative-result-duplicate
 
 | FIXED B2605 | COVERAGE | low | This B1986 negative-result row duplicated the already-folded stack-gate evidence. The C300 records preserve the same result: splitting the io_uring submission frames makes the aarch64 path deeper or leaves it unchanged, so the remaining stack work belongs to the transmit chain rather than another io_uring split. | Existing FOLDED C300 stack-gate entries record the measurements and reverted experiments; no source change is required. | B2605 |
+### B2606-mapped-write-negative-controls-row
+
+| FIXED B2606 | COVERAGE | low | The F1223 mapped-write row was non-actionable evidence, not an open defect: its three proposed mutations were intentionally unobservable or semantically neutral in this single-threaded fixture, and the production behaviors were already correct. Keeping it OPEN only invited a repeat of experiments that the row itself records as non-reddening. | F1223 recorded both-direction measurements (3,590/3,590) and removed the green-by-construction test rather than asserting a false invariant; no source change is required. | B2606 |
