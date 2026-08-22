@@ -29,6 +29,32 @@ impl vmm::FileBacking for FakeHugeBacking {
 
 const HUGE_2M: u64 = 2 * 1024 * 1024;
 
+struct StatBacking {
+    resident: u64,
+    swapped: u64,
+    huge: u64,
+}
+
+impl vmm::FileBacking for StatBacking {
+    fn read_at(&self, _off: u64, _dst: &mut [u8]) -> Result<usize, vmm::FileBackingError> { Ok(0) }
+    fn size_hint(&self) -> u64 { 0 }
+    fn huge_page_size(&self) -> u64 { self.huge }
+    fn page_counts(&self) -> (u64, u64) { (self.resident, self.swapped) }
+}
+
+fn make_stat_segment(ns: namespace_identity::NamespaceId, id: i32, size: usize,
+                     backing: Arc<dyn vmm::FileBacking>) -> Arc<ShmSegment> {
+    Arc::new(ShmSegment {
+        id, key: core::sync::atomic::AtomicI32::new(id), ns, size,
+        mode: core::sync::atomic::AtomicU32::new(0o600),
+        uid: core::sync::atomic::AtomicU32::new(10),
+        gid: core::sync::atomic::AtomicU32::new(20),
+        cuid: 10, cgid: 20, cpid: 77,
+        nattch: core::sync::atomic::AtomicI64::new(0),
+        creator: Spinlock::new(None), backing,
+    })
+}
+
 fn shim(want: crate::sysv_shm::SegBacking) -> Result<Arc<dyn vmm::FileBacking>, Errno> {
     Ok(match want {
         crate::sysv_shm::SegBacking::Shmem => backing(),
@@ -81,6 +107,27 @@ fn ipc_info_and_shm_info_do_not_require_valid_shmid() {
     let si = encode_shm_info(&segs, ns);
     assert_eq!(get_u32(&si, SHM_INFO_USED_IDS_OFF), 2);
     assert_eq!(get_u64(&si, SHM_INFO_TOT_OFF), 3);
+}
+
+#[test]
+fn shm_info_counts_resident_swapped_and_huge_pages() {
+    let _shm = crate::sysv_shm::test_claim::claim_shm();
+    let ns = crate::ipc_namespace::current().unwrap().key();
+    let shmem: Arc<dyn vmm::FileBacking> = Arc::new(StatBacking {
+        resident: 1, swapped: 1, huge: 0,
+    });
+    let huge: Arc<dyn vmm::FileBacking> = Arc::new(StatBacking {
+        resident: 1, swapped: 0, huge: HUGE_2M,
+    });
+    let segs = alloc::vec![
+        make_stat_segment(ns, 1, (3 * PAGE_SIZE) as usize, shmem),
+        make_stat_segment(ns, 2, (2 * PAGE_SIZE) as usize, huge),
+    ];
+
+    let si = encode_shm_info(&segs, ns);
+    assert_eq!(get_u64(&si, SHM_INFO_RSS_OFF), 1 + HUGE_2M / PAGE_SIZE,
+               "shm_rss counts base pages, including each allocated huge page's full granule");
+    assert_eq!(get_u64(&si, SHM_INFO_SWP_OFF), 1, "shm_swp counts held non-resident shmem pages");
 }
 
 #[test]

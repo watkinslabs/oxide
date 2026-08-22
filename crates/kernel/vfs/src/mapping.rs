@@ -202,6 +202,10 @@ pub trait AddressSpaceOps: Send + Sync {
     /// # C: O(log N_pages)
     fn backing_holds_page(&self, _off: u64) -> bool { false }
 
+    /// Populated pages as `(resident, swapped)`, in the address space's own
+    /// page granule. Sparse holes contribute to neither total. # C: O(populated pages)
+    fn page_counts(&self) -> (u64, u64) { (0, 0) }
+
     /// Copy bytes from the cache starting at file offset `off` into `dst`
     /// (the `MAP_PRIVATE` / read-fault fill, Linux `do_cow_fault`'s read
     /// of the cache page before the private COW copy). Short reads

@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2475-shm-info-residency
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 3f0601b67 | DEFECT | med | SHM_INFO now reports resident/swapped backing pages and huge-page units in base pages. | IPC/fs/vmm/vfs tests and target checks passed. | Chris Watkins |
+
+<<<<<<< HEAD
 ### B2474-bpf-verifier-access-errno
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -450,6 +457,13 @@
 |---|---|---|---|---|---|
 | FIXED 123db9946 | DEFECT | med | **BPF program loading now preserves Linux's access-denied verifier result for unreadable registers, out-of-range stack accesses, and uninitialised stack reads.** Structural bytecode failures remain `EINVAL`, while the production `BPF_PROG_LOAD` verifier funnel maps all four access-error variants, including the already-correct context-access case, to `EACCES`. | B2474. Linux 7.2.0-rc4 returns `-EACCES` from its register-read and stack-access verification paths. The loader-level regression exercises an unreadable R0, a read below the 512-byte stack, and an unwritten in-range stack slot; unchanged production was RED with `EINVAL`, restored code is GREEN with `EACCES`. Security 493/493 and both kernel target checks pass. Smoke omitted because this changes only rejected `BPF_PROG_LOAD` errno reporting and is not boot-visible. | B2474-bpf-verifier-access-errno |
 >>>>>>> 17fbf09ee (docs: close B2474 BPF verifier errno)
+=======
+### B2475-shm-info-residency
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 3f0601b67 | MISSING | low | **`SHM_INFO` now reports populated resident and swapped shared-memory pages instead of leaving both fields zero.** The backing address space is the single accounting owner: tmpfs folds resident and in-flight-migration entries into RSS and evicted entries into swap, while hugetlbfs reports its allocated huge pages. The ABI encoder converts each backing-granule count to base pages, preserves sparse holes as uncounted, and keeps the existing requested-size `shm_tot` meaning. | B2475. Linux 7.2.0-rc4 totals resident and swapped pages across the IPC namespace and reports allocated huge pages in base-page units. `shm_info_counts_resident_swapped_and_huge_pages` drives the production encoder with one resident base page, one swapped base page, one hole, and one allocated 2 MiB page. **RED:** before the production implementation it failed with RSS 0 versus 513. **GREEN:** the focused case and full IPC 284/284, filesystem 1392/1392, VMM 466/466, and VFS 391/391 suites pass, as do both kernel target checks. No boot was required because this is a query-only syscall result with no boot-path effect. | B2475-shm-info-residency |
+>>>>>>> 8bf4789d2 (docs: close SHM_INFO residency row)
 
 ### B2329-freezer-backoff-sleep
 

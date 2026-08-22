@@ -31,6 +31,11 @@ impl AddressSpaceOps for HugetlbfsFileData {
         self.body.lock().pages.contains_key(&(off / self.huge_bytes()))
     }
 
+    /// Huge pages are resident and never swapped. The count remains in the
+    /// file's huge-page granule; ABI callers convert it to base pages.
+    /// # C: O(1)
+    fn page_counts(&self) -> (u64, u64) { (self.body.lock().pages.len() as u64, 0) }
+
     /// # C: O(dst.len)
     fn read_at(&self, off: u64, dst: &mut [u8]) -> KResult<usize> { self.read_bytes(off, dst) }
 
