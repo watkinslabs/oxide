@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2425-stale-perf-throttle-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2042 | MISSING | low | **The open sampling-throttle row was a stale duplicate of the existing B2042 implementation.** | B2425 revalidated the live throttle owner and exact-limit transition. | B2425-stale-perf-throttle-row |
+
 ### B2423-stale-perf-set-output-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
