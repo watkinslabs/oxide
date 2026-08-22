@@ -80,6 +80,7 @@ pub mod fs_dir;
 pub mod paths;
 pub mod pseudo;
 pub mod reg;
+mod root_children;
 pub use reg::{proc_reg, register, PROCFS_FSID};
 pub use paths::{child_under, parse_proc_path, ProcPath};
 pub use pseudo::{

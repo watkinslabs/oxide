@@ -3310,3 +3310,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED a51e03a09 | COVERAGE | low | **`SECCOMP_GET_NOTIF_SIZES` obtains all three reported sizes from one notification-wire owner.** The syscall publishes the tuple directly from the notification module's wire constants, eliminating arithmetic duplication. | B2368's notification-size regression changes one wire size and fails the reported tuple; restored owner passes. | B2368-seccomp-notif-sizes-owner |
+
+### B2369-procfs-root-child-coverage
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 3756fe251 | COVERAGE | low | **The `/proc` root's registry-backed static directories now come from a hosted-tested helper, so dropping `/proc/fs` from the root child map turns a test red.** | B2369. The production root builder uses the same helper for `fs`, `net`, and `sys`; the positive control omitted `fs` and failed the root listing assertion. | B2369-procfs-root-child-coverage |

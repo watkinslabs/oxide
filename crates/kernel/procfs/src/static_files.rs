@@ -60,16 +60,7 @@ pub fn build_proc_root() -> alloc::collections::BTreeMap<alloc::string::String, 
         c.insert(crate::devicetree::PROC_DEVICE_TREE.to_string(),
                  crate::proc_links::make_fixed_link(crate::ids::PROC_DEVICE_TREE_LINK, t));
     }
-    let reg = crate::reg::proc_reg();
-    reg.ensure_dir_path("sys");
-    reg.ensure_dir_path("net");
-    c.insert("sys".to_string(),         reg.lookup_path("sys").unwrap() as InodeRef);
-    c.insert("net".to_string(),         reg.lookup_path("net").unwrap() as InodeRef);
-    // `/proc/fs` — where filesystems publish their own `/proc` files. Held as
-    // a root child for the same reason `sys` and `net` are: the root lists the
-    // children it holds, so a directory reachable only through the registry
-    // resolves by name yet never appears in a listing of `/proc`.
-    c.insert("fs".to_string(),          crate::fs_dir::proc_fs_inode());
+    crate::root_children::insert(&mut c);
     c
 }
 
