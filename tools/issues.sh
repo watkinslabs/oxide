@@ -8,10 +8,11 @@
 #   tools/issues.sh                 render the ledger
 #   tools/issues.sh --count         row count
 #   tools/issues.sh --status-count  `STATUS<TAB>n` totals
+#   tools/issues.sh --summary       live class/severity totals
 set -euo pipefail
 
 root=$(git rev-parse --show-toplevel)
-curated="$root/scratch/known_issues.md"
+curated=${ISSUES_LEDGER:-"$root/scratch/known_issues.md"}
 
 rows() { grep -c '^| \(OPEN\|IN-PROGRESS\|FIXED\)' "$1" 2>/dev/null || true; }
 
@@ -21,7 +22,42 @@ status_rows() {
   grep -ho '^| \(OPEN\|IN-PROGRESS\|FIXED\)' "$@" 2>/dev/null | sed 's/^| //' || true
 }
 
+summary() {
+  awk -F'|' '
+    function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
+    BEGIN {
+      classes[1]="COVERAGE"; classes[2]="DEFECT"; classes[3]="INFRA"; classes[4]="MISSING"
+      sevs[1]="blocker"; sevs[2]="critical"; sevs[3]="high"; sevs[4]="med"; sevs[5]="low"
+      for (i=1; i<=4; i++) class_ok[classes[i]]=1
+      for (i=1; i<=5; i++) sev_ok[sevs[i]]=1
+    }
+    /^\| *(OPEN|IN-PROGRESS)/ {
+      class=trim($3); sev=tolower(trim($4))
+      if (!(class in class_ok)) { printf "issues: unknown class %s\n", class > "/dev/stderr"; bad=1; next }
+      if (!(sev in sev_ok)) { printf "issues: unknown severity %s\n", sev > "/dev/stderr"; bad=1; next }
+      count[class,sev]++; class_total[class]++; sev_total[sev]++; total++
+    }
+    END {
+      if (bad) exit 2
+      print "| Class | blocker | critical | high | med | low | Total |"
+      print "|---|---:|---:|---:|---:|---:|---:|"
+      for (i=1; i<=4; i++) {
+        class=classes[i]
+        printf "| %s", class
+        for (j=1; j<=5; j++) printf " | %d", count[class,sevs[j]]
+        printf " | %d |\n", class_total[class]
+      }
+      printf "| **Total**"
+      for (j=1; j<=5; j++) printf " | **%d**", sev_total[sevs[j]]
+      printf " | **%d** |\n", total
+    }
+  ' "$curated"
+}
+
 case "${1:-}" in
+  --summary)
+    summary
+    ;;
   --status-count)
     for st in OPEN IN-PROGRESS FIXED; do
       printf '%s\t%s\n' "$st" "$(status_rows "$curated" | grep -cx "$st" || true)"

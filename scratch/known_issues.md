@@ -32,42 +32,22 @@ work and become `IN-PROGRESS <branch>` when the current integration finishes.
 
 | Class | Means |
 |---|---|
+| `DEFECT` | behaviour diverges from Linux — wrong answer, wrong order, wrong lifetime |
+| `MISSING` | Linux surface that is absent, or present-but-unconsumed (stored and never read) |
+| `COVERAGE` | the behaviour may be right, but no check here can fail if it stops being right |
+| `INFRA` | tooling, gates, docs, images, or the dev box itself |
 
 `Sev`: `blocker` (merge gate) | `high` (wrong answer reaching userspace) |
 `med` (missing surface) | `low` (hygiene, tooling, cosmetics).
 
 ## Open-work summary
 
-This is a derived view of the live `OPEN` and `IN-PROGRESS` rows below, not a
-second ledger. Regenerate it — never hand-adjust it — in the same change
-whenever a row is added, moved, or reclassified:
+This is a generated view of the live `OPEN` and `IN-PROGRESS` rows below, not a
+second ledger. It is deliberately not stored in this file. Render it with:
 
 ```
-awk -F'|' '/^\| *(OPEN|IN-PROGRESS)/{c=$3;s=toupper($4);gsub(/ /,"",c);gsub(/ /,"",s);print c" "s}' \
-  scratch/known_issues.md | sort | uniq -c
+tools/issues.sh --summary
 ```
-
-Hand-adjustment is what made the previous table wrong by 70 rows: it read 339
-against an actual 409, and understated `MISSING high` and `INFRA high` by
-exactly the rows a lane would have picked up first. D551 regenerated it, and
-F1178 regenerated it again after adding eighteen rows — the table it replaced
-was 78 rows behind the file. F1185 regenerated it a third time after three
-concurrent lanes each appended a table instead of replacing the one above, so
-the file carried three stacked tables and a reader taking the first was 44
-rows out. D564 regenerated it a fourth time after moving 33 f2fs rows the two
-f2fs completion waves had closed without flipping (one of the 33 — the
-`set_clock` row — was already marked `FIXED` but had never been relocated out
-of this file, a pure process omission). Two more were flipped and then put
-back: the machinery existed but nothing at mount reached it, which is the
-failure mode this reconcile was supposed to catch, not commit.
-
-| Class | blocker | critical | high | med | low | Total |
-|---|---:|---:|---:|---:|---:|---:|
-| COVERAGE | 0 | 0 | 10 | 68 | 64 | 142 |
-| DEFECT | 1 | 4 | 17 | 62 | 59 | 143 |
-| INFRA | 0 | 0 | 11 | 40 | 39 | 90 |
-| MISSING | 1 | 0 | 49 | 140 | 111 | 301 |
-| **Total** | **2** | **4** | **87** | **310** | **273** | **676** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
