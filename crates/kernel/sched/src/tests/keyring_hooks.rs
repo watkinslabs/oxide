@@ -78,11 +78,11 @@ fn member(tid: u32, leader: &Arc<Task>) -> Arc<Task> {
 }
 
 #[test]
-fn exit_reports_the_dying_tid_and_the_namespace_visible_tgid() {
+fn exit_reports_the_dying_tid_and_the_global_tgid() {
     let _r = record();
     let task = leader(4101, 77);
     keyring_hooks::run_keyring_exit(&task);
-    assert_eq!(exit_records(4101), std::vec![(4101, 77, true)]);
+    assert_eq!(exit_records(4101), std::vec![(4101, 4101, true)]);
 }
 
 #[test]
@@ -93,13 +93,13 @@ fn exit_is_last_thread_only_for_the_final_member_of_the_group() {
     // Two live members: neither death releases the process keyring.
     keyring_hooks::run_keyring_exit(&thread);
     keyring_hooks::run_keyring_exit(&boss);
-    assert_eq!(exit_records(4111), std::vec![(4111, 91, false)]);
-    assert_eq!(exit_records(4110), std::vec![(4110, 91, false)]);
+    assert_eq!(exit_records(4111), std::vec![(4111, 4110, false)]);
+    assert_eq!(exit_records(4110), std::vec![(4110, 4110, false)]);
     // The sibling leaves the group; the survivor is now the last thread.
     thread.mark_done();
     let _ = thread.thread_group.finish_exit(Arc::clone(&thread));
     keyring_hooks::run_keyring_exit(&boss);
-    assert_eq!(exit_records(4110), std::vec![(4110, 91, false), (4110, 91, true)]);
+    assert_eq!(exit_records(4110), std::vec![(4110, 4110, false), (4110, 4110, true)]);
 }
 
 #[test]

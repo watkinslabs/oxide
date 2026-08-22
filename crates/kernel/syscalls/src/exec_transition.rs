@@ -231,7 +231,8 @@ pub(crate) fn commit(cur: &sched::Task, t: &ExecTransition) {
     // stops a key the pre-exec program left behind from being visible across a
     // setuid exec, so it belongs at the credential commit — the same point the
     // euid/fsuid/capability transition above lands.
-    fs::keyring::exec_keys(cur.tid, cur.vtgid.load(Ordering::Acquire));
+    fs::keyring::exec_keys(cur.tid, fs::keyring::process_key_identity(
+        cur.tgid.load(Ordering::Acquire), cur.vtgid.load(Ordering::Acquire)));
 }
 
 /// Draw this exec's address randomisation (`aslr::ExecRnd`).
