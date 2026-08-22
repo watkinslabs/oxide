@@ -282,6 +282,25 @@ fn creating_a_name_in_a_locked_directory_is_refused_and_leaks_no_inode() {
     assert_eq!(v.checkpoint().valid_inode_count, before);
 }
 
+/// Creation is the production fscrypt inheritance call site: the child takes
+/// the directory's whole policy before its name is published, but receives a
+/// nonce of its own so the two inodes never derive the same key.
+#[test]
+fn creating_in_an_encrypted_directory_persists_a_fresh_child_context() {
+    let mut v = image(&[]).mount_rw().unwrap();
+    v.add_encryption_key(&master_bytes()).unwrap();
+    let parent = v.root().unwrap();
+    let parent_ctx = v.crypt_context(&parent, ROOT_INO).unwrap().unwrap();
+    let ino = v.create(ROOT_INO, b"child", &spec(), Some(b"secret body")).unwrap();
+    let child = v.read_inode(ino).unwrap();
+    let child_ctx = v.crypt_context(&child, ino).unwrap().expect("inherited context");
+    assert!(child.encrypted());
+    assert!(!child.inline_data(), "encrypted contents need an addressable data unit");
+    assert_eq!(child_ctx.policy, parent_ctx.policy);
+    assert_ne!(child_ctx.nonce, parent_ctx.nonce);
+    assert_eq!(v.read_whole(&child, ino).unwrap(), b"secret body");
+}
+
 /// An atomic span of an encrypted file works off the record its own entry
 /// resolved: the span's block writer consumes one and cannot make one.
 #[test]

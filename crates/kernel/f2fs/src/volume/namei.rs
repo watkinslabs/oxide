@@ -196,6 +196,9 @@ impl<S: SectorSource> Volume<S> {
             block[I_INLINE] |= INLINE_DENTRY | INLINE_DATA | DATA_EXIST;
             put32(&mut block, I_CURRENT_DEPTH, 1);
         } else if !compressed
+            // Inline bytes have no data-unit address for fscrypt to derive an
+            // IV from. Linux excludes an encrypted regular file here too.
+            && dir_crypt.is_none()
             && self.opts.inline_data
             && matches!(ft, vfs::FileType::Regular | vfs::FileType::Symlink)
         {
@@ -212,6 +215,24 @@ impl<S: SectorSource> Volume<S> {
             put32(&mut block, base + 4, spec.rdev);
         }
         self.write_node(ino, ino, block, self.node_kind(spec.mode))?;
+        // Linux prepares the policy before allocating the inode, then stores
+        // the resulting fresh context with the inode metadata before the name
+        // is published. The parent's held record is the prepared policy here:
+        // it was resolved above, before `alloc_nid`, and no second xattr read
+        // is needed. Special files deliberately remain plaintext, just as
+        // `fscrypt_prepare_new_inode` requires.
+        if matches!(ft,
+            vfs::FileType::Regular | vfs::FileType::Directory | vfs::FileType::Symlink)
+        {
+            let child = self.read_inode(ino)?;
+            let facts = self.crypt_inode_facts(&child);
+            let fs = self.crypt_fs_facts(&child);
+            if let Some(ctx) = crate::crypto::inherit::context_for_new(
+                dir_crypt.as_deref(), &facts, &fs, self.fresh_nonce(ino),
+            ).map_err(|e| e.errno())? {
+                self.crypt_store_new_context(ino, &ctx)?;
+            }
+        }
         self.valid_inode_count += 1;
         self.charge_inode(ino)?;
         if is_dir { self.init_dir(ino, dir)?; }
