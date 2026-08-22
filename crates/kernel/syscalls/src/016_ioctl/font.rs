@@ -82,10 +82,12 @@ fn font_op(arg: u64) -> i64 {
         }
         vt::KD_FONT_OP_GET => {
             let (w, h, c, data) = fbcon::font::get_font(user::FONT_GLYPH_STRIDE);
-            // The caller's charcount is its buffer capacity (in glyphs). Too
-            // small is ENOSPC with the caller's struct untouched — the
-            // reference reports the shortfall by refusing, not by writing back.
-            if data_ptr != 0 && c > ld_u32(&op, OP_CHARCOUNT) { return errno(Errno::Enospc); }
+            // The caller's dimensions and (when copying glyphs) charcount are
+            // capacities. Refuse a short field with the struct untouched.
+            if let Err(rv) = user::font_get_fits(
+                ld_u32(&op, OP_WIDTH), ld_u32(&op, OP_HEIGHT), ld_u32(&op, OP_CHARCOUNT),
+                w, h, c, data_ptr != 0,
+            ) { return rv; }
             if data_ptr != 0 {
                 let bytes = c as usize * user::FONT_GLYPH_STRIDE;
                 let n = bytes.min(data.len());

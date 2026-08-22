@@ -6,6 +6,7 @@ use crate::ioctl_uapi::{DEDUPE_INFO_BYTES, DEDUPE_RANGE_BYTES, PAGE_BYTES};
 
 const EINVAL: i64 = -(Errno::Einval.as_i32() as i64);
 const ENOMEM: i64 = -(Errno::Enomem.as_i32() as i64);
+const ENOSPC: i64 = -(Errno::Enospc.as_i32() as i64);
 
 /// TIOCLINUX subcode byte: `*(char *)arg`.
 pub(crate) const TIOCL_SUBCODE: u64 = 0;
@@ -65,6 +66,17 @@ pub(crate) fn dedupe_payload_bytes(count: u16) -> Result<u64, i64> {
 pub(crate) fn font_glyph_bytes(charcount: u32) -> Result<usize, i64> {
     if charcount == 0 || charcount > FONT_MAX_GLYPHS { return Err(EINVAL); }
     Ok(charcount as usize * FONT_GLYPH_STRIDE)
+}
+
+/// Admit a loaded font against the dimensions and glyph capacity the GET
+/// caller supplied. A null data pointer asks for metadata only, so its glyph
+/// count is not a buffer bound. # C: O(1)
+pub(crate) fn font_get_fits(cap_width: u32, cap_height: u32, cap_glyphs: u32,
+                            width: u32, height: u32, glyphs: u32, copies_data: bool)
+    -> Result<(), i64> {
+    if copies_data && glyphs > cap_glyphs { return Err(ENOSPC); }
+    if width > cap_width || height > cap_height { return Err(ENOSPC); }
+    Ok(())
 }
 
 /// Byte span of a `struct unipair[]`, or `EINVAL` past the entry ceiling.
