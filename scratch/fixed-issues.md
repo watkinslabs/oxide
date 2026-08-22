@@ -30,6 +30,12 @@
 |---|---|---|---|---|---|
 | FIXED B2558 | MISSING | low | The FAT short-name case row was stale: directory parsing already decodes the complete `Record` and passes its case byte to the mount's `shortname=` display rule. | `Volume::parse_dir` calls `short_name(record, entry)`, which invokes `Record::parse` and `short_name_with`; the existing `volume::tests::write::a_write_keeps_the_fields_it_does_not_change` proves a WinNT mixed-case short name survives a write and lookup. No production change is warranted. | Chris Watkins |
 
+### B2559-stale-key-request-actor-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2559 | MISSING | low | The in-kernel `request_key` actor row is not an actionable missing implementation on this tree: the reference's sole in-kernel implementor belongs to a network filesystem that is absent here, while the existing `/sbin/request-key` actor consumes the same `HelperArgs` contract. | `fs/src/keyring/construct/upcall.rs` owns the userspace upcall; the row's own reference audit identifies the absent network filesystem boundary. No production change is warranted until that filesystem exists. | Chris Watkins |
+
 ### B2553-stale-keyring-coverage-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
