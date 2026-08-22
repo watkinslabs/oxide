@@ -101,6 +101,8 @@ fn an_extended_window_option_in_a_request_refuses_the_channel() {
     let mut chan = Channel::new();
     let req = opts(&[RawOpt::le16(u::CONF_EWS, 200)]);
     assert_eq!(parse_conf_req(&mut chan, basic_link(), &req), Err(Refused));
+    assert!(!chan.conf(CONF_EWS_RECV),
+            "the reference refuses before publishing its otherwise dead receive bit");
 }
 
 #[test]
