@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2541-mmsg-waitforone-blocking-fixture
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2541 | COVERAGE | low | The hosted `recvmmsg` fixture can now block a first receive on a real host condition variable, release it with a delivered message, and prove that `MSG_WAITFORONE` changes subsequent receives to `MSG_DONTWAIT`. | The focused test was RED when `entry_flags` stopped adding `MSG_DONTWAIT`; the restored composition and all 28 mmsg-batch tests pass. | Chris Watkins |
+
 ### B2540-vsock-connected-read-hosted-coverage
 
 | Status | Class | Sev | Issue | Evidence | Owner |
