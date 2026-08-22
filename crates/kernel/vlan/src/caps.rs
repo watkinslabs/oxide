@@ -3,7 +3,7 @@
 // and which address it starts with.
 
 use net::addr::MacAddr;
-use net::netdev::NetDev;
+use net::netdev::{NetDev, NetDevFeatures};
 use syscall::errno::Errno;
 
 use crate::uapi::{ARPHRD_ETHER, VLAN_HLEN};
@@ -23,25 +23,34 @@ pub struct RealDevCaps {
     /// Interface inserts the tag itself when handed one out of band. Without
     /// it the tag is pushed into the frame before the interface sees it.
     pub hw_tag_insert: bool,
+    /// Full lower-device feature word, retained so CTAG and STAG decisions
+    /// remain protocol-specific after VLAN creation.
+    pub features: NetDevFeatures,
 }
 
 impl RealDevCaps {
     /// Read the properties of a live lower interface.
     ///
-    /// Three of the fields have no driver-facing accessor to read them from,
-    /// and take the value every interface this kernel drives actually has: no
-    /// interface refuses tags, none spends the tag bytes from its own budget
-    /// (only a MACsec interface does), and none inserts tags in hardware.
+    /// The lower driver owns the feature word; this snapshot keeps one
+    /// decision source for VLAN admission, MTU accounting, and tag placement.
     /// # C: O(1)
     pub fn from_netdev(dev: &dyn NetDev) -> Self {
+        let features = dev.features();
         Self {
             mtu: dev.mtu(),
             hardware_type: dev.hardware_type(),
             mac: dev.mac(),
-            vlan_challenged: false,
-            reduces_vlan_mtu: false,
-            hw_tag_insert: false,
+            vlan_challenged: features.has(net::netdev::NetDevFeatures::VLAN_CHALLENGED),
+            reduces_vlan_mtu: features.has(net::netdev::NetDevFeatures::VLAN_MTU_REDUCED),
+            hw_tag_insert: features.hw_vlan_tx(crate::uapi::ETH_P_8021Q)
+                || features.hw_vlan_tx(crate::uapi::ETH_P_8021AD),
+            features,
         }
+    }
+
+    /// Whether this lower device inserts the requested VLAN protocol. # C: O(1)
+    pub const fn hw_tag_insert_for(&self, proto: u16) -> bool {
+        self.features.hw_vlan_tx(proto)
     }
 }
 

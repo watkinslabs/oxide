@@ -7,7 +7,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use net::addr::{MacAddr, NetIfaceId};
-use net::netdev::{NamespaceDropAction, NetDev, NetResult};
+use net::netdev::{NamespaceDropAction, NetDev, NetDevFeatures, NetResult};
 use net::pkt::Pkt;
 use sync::{Socket as SocketLockClass, Spinlock};
 
@@ -21,6 +21,8 @@ pub struct FakeDev {
     pub mtu: u32,
     pub hardware_type: u16,
     pub sent: Spinlock<Vec<Vec<u8>>, SocketLockClass>,
+    pub features: NetDevFeatures,
+    pub vlan_tags: Spinlock<Vec<(u16, u16)>, SocketLockClass>,
 }
 
 impl FakeDev {
@@ -28,9 +30,11 @@ impl FakeDev {
         Arc::new(Self {
             name: String::from(name), mac: MacAddr(mac), mtu,
             hardware_type: ARPHRD_ETHER, sent: Spinlock::new(Vec::new()),
+            features: NetDevFeatures::NONE, vlan_tags: Spinlock::new(Vec::new()),
         })
     }
     pub fn frames(&self) -> Vec<Vec<u8>> { self.sent.lock().clone() }
+    pub fn tags(&self) -> Vec<(u16, u16)> { self.vlan_tags.lock().clone() }
 }
 
 impl NetDev for FakeDev {
@@ -38,8 +42,14 @@ impl NetDev for FakeDev {
     fn mac(&self) -> MacAddr { self.mac }
     fn mtu(&self) -> u32 { self.mtu }
     fn hardware_type(&self) -> u16 { self.hardware_type }
+    fn features(&self) -> NetDevFeatures { self.features }
     fn xmit(&self, pkt: Pkt) -> NetResult<()> { self.xmit_raw(pkt.data()) }
     fn xmit_raw(&self, frame: &[u8]) -> NetResult<()> {
+        self.sent.lock().push(frame.to_vec());
+        Ok(())
+    }
+    fn xmit_vlan(&self, frame: &[u8], proto: u16, tci: u16) -> NetResult<()> {
+        self.vlan_tags.lock().push((proto, tci));
         self.sent.lock().push(frame.to_vec());
         Ok(())
     }
@@ -54,12 +64,13 @@ pub fn plain_caps(mtu: u32) -> RealDevCaps {
     RealDevCaps {
         mtu, hardware_type: ARPHRD_ETHER, mac: MacAddr(REAL_MAC),
         vlan_challenged: false, reduces_vlan_mtu: false, hw_tag_insert: false,
+        features: NetDevFeatures::NONE,
     }
 }
 
 /// A VLAN interface on a fresh fake lower interface, brought up.
 pub fn vlan_on(real: &Arc<FakeDev>, vlan_id: u16, proto: u16) -> Arc<VlanDev> {
-    let caps = plain_caps(real.mtu);
+    let caps = RealDevCaps::from_netdev(real.as_ref());
     let dev = Arc::new(VlanDev::new(
         String::from("eth0.test"), vlan_id, proto, NetIfaceId(7),
         real.clone() as Arc<dyn NetDev>, caps, MacAddr::ZERO));

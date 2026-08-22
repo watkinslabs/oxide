@@ -1,9 +1,10 @@
+use alloc::sync::Arc;
 use net::addr::MacAddr;
 use syscall::errno::Errno;
 
 use super::support::{plain_caps, FakeDev, REAL_MAC};
 use crate::caps::*;
-use crate::uapi::{ARPHRD_ETHER, VLAN_HLEN};
+use crate::uapi::{ARPHRD_ETHER, ETH_P_8021AD, VLAN_HLEN};
 
 #[test]
 fn plain_ethernet_carries_vlans() {
@@ -61,4 +62,19 @@ fn properties_are_read_from_the_live_interface() {
     assert_eq!(caps.mac, MacAddr(REAL_MAC));
     assert_eq!(caps.hardware_type, ARPHRD_ETHER);
     assert!(!caps.hw_tag_insert, "no driver here inserts tags itself");
+}
+
+#[test]
+fn vlan_features_are_read_from_the_live_interface() {
+    let mut dev = FakeDev::new("eth0", REAL_MAC, 9000);
+    let dev = Arc::get_mut(&mut dev).unwrap();
+    dev.features = net::netdev::NetDevFeatures(
+        net::netdev::NetDevFeatures::VLAN_CHALLENGED
+            | net::netdev::NetDevFeatures::VLAN_MTU_REDUCED
+            | net::netdev::NetDevFeatures::HW_VLAN_CTAG_TX);
+    let caps = RealDevCaps::from_netdev(dev);
+    assert!(caps.vlan_challenged);
+    assert!(caps.reduces_vlan_mtu);
+    assert!(caps.hw_tag_insert);
+    assert!(!caps.hw_tag_insert_for(ETH_P_8021AD));
 }
