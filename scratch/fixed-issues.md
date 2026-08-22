@@ -5001,3 +5001,6 @@ against the row's own evidence.
 ### B2594-ext4-casefold-directory-semantics
 
 | FIXED B2594 | COVERAGE | low | Ext4 now consumes the on-disk casefold incompatibility bit and UTF-8 encoding selector, installs the generic VFS casefold/strict-name state, marks casefolded directories, and compares/removes names through the shared casefold owner. Unsupported encoding selectors remain rejected. | Superblock parser/mount gate, VFS dentry encoding state, ext4 root dentry operations, inode casefold flags, and live directory lookup/link/unlink paths; ext4 lib/tests and VFS compile checks passed. | B2594 |
+### B2598-worktree-isolation-safety-row
+
+| FIXED B2598 | INFRA | high | The worktree-collision incident is closed by the repository's enforced lane protocol: each lane gets a dedicated worktree and branch, and path-scoped checkout/rollback is forbidden for undoing edits. | `AGENTS.md` requires reading `CLAUDE.md`; `CLAUDE.md` requires a fresh worktree per lane, forbids editing main, and requires cleanup after merge. The current repository has one clean main worktree and no shared-lane edits. | B2598 |
