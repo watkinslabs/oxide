@@ -1,5 +1,11 @@
 # Fixed issues
 
+### R124-duplicate-perf-event-ring-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED R124 | MISSING | med | **The second open `perf_event_open` ring-buffer row duplicated the survivor immediately above it.** Both rows described the same still-open ring-buffer/mmap/sampling gap; the second added no distinct requirement, and its fork-inheritance clause was already fixed independently. | The survivor row remains in `scratch/known_issues.md`; `fs::perf::inherit` and its fork/exit tests remain present, while the duplicate row is removed only as bookkeeping. | R124 |
+
 ### R123-netdev-vlan-features
 
 | Status | Class | Sev | Issue | Evidence | Owner |
