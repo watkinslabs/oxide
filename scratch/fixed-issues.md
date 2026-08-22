@@ -3226,3 +3226,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 5cd7d365a | DEFECT | med | **The claim that `POSIX_FADV_NOREUSE` is a no-op was stale: the file mode, mapping propagation, and resident-file fault recency gate are already wired.** The narrower open coverage row remains separate. | B2353's production recency regression drove an ordinary resident-file fault and a NOREUSE fault; removing the production guard changed the expected promotion count and made the control RED. | B2353-stale-fadvise-noreuse-row |
+
+### B2354-ioctl-dead-test-helper
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 87ca17ed4 | COVERAGE | low | **The target-gated ioctl dispatcher no longer carries an unused test-only credential fixture.** Its sole credential path is the production current-task owner; the broader phantom syscall-test row remains open. | B2354 removed the dead helper and narrowed the existing phantom-test boundary without changing production behavior. | 87ca17ed4 |
