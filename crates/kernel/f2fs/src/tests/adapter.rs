@@ -11,12 +11,15 @@
 use super::*;
 use crate::opts::Options;
 use crate::test_image::{self, ROOT_INO};
+use alloc::boxed::Box;
+use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use block::{BlockDevice, BlockRequest, MemDisk};
 use sync::TaskList;
 use vfs::fs::FileSystem;
+use vfs::superblock::{SimpleSuperOps, SuperBlock, SuperOps};
 use vfs::{CreateCtx, DirEmit, File, FileOps, FileType, OpenFlags, VfsError};
 
 const BS: u32 = BLKSIZE as u32;
@@ -49,6 +52,22 @@ fn mounted() -> (Arc<F2fs>, Arc<MemDisk<TaskList>>) {
 fn remount(dev: &Arc<MemDisk<TaskList>>) -> Arc<F2fs> {
     let fresh = disk(&drain(dev));
     F2fs::open_with(fresh, "/dev/fake", true, Options::defaults()).expect("remount")
+}
+
+/// Realize `fs` into the inode cache the VFS lookup path owns. # C: O(1)
+fn realize(fs: &Arc<F2fs>) -> Arc<SuperBlock> {
+    let any: Arc<dyn FileSystem> = fs.clone();
+    let root = Some(fs.root_inode().expect("root inode"));
+    let s_op: Arc<dyn SuperOps> = any.super_ops().unwrap_or_else(|| Arc::new(SimpleSuperOps {
+        magic: any.magic(), block_size: any.block_size(), options: any.show_options(),
+    }));
+    let ty: Arc<dyn vfs::FileSystemType> = vfs::fs::FsType::new(
+        any.name(), any.magic(), any.fs_flags(),
+        Box::new(|_, _, _, _, _, _| unreachable!("fixture is already mounted")));
+    let sb = SuperBlock::from_ops(ty, s_op, root, any.magic(), 0xF2F5_0002, any.block_size(),
+                                 String::from("f2fs"), Arc::new(()));
+    any.set_sb(Arc::downgrade(&sb)).expect("set superblock");
+    sb
 }
 
 #[test]
@@ -107,6 +126,19 @@ fn a_file_created_through_the_interface_is_found_again() {
     assert_eq!(made.file_type(), FileType::Regular);
     let found = root.lookup("hello").unwrap();
     assert_eq!(found.ino(), made.ino());
+}
+
+#[test]
+fn repeated_lookups_share_one_inode_and_its_cached_shape() {
+    let (fs, _dev) = mounted();
+    let sb = realize(&fs);
+    let root = sb.s_root_inode().unwrap();
+    root.create_child("shared", 0o644, &CreateCtx::root()).unwrap();
+    let first = root.lookup("shared").unwrap();
+    let second = root.lookup("shared").unwrap();
+    assert!(Arc::ptr_eq(&first, &second), "one inode number must name one in-core inode");
+    first.write(0, b"shared shape").unwrap();
+    assert_eq!(second.size(), 12, "a sibling handle must see the cached size move");
 }
 
 #[test]
