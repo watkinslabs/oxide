@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2579-stale-test-build-gate-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2579 | INFRA | high | **The recorded isolated test-build failures are stale.** The six crates named by the row now build their test targets independently on current main; the row's old warning/error list no longer reproduces. | `cargo test --no-run --quiet -p block`, `netfilter`, `f2fs`, `ntfs3`, `squashfs`, and `ima` each exited 0 on current main. No source behavior changed. | B2579 |
+
 ### B2578-stale-mount-linked-hosted-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
