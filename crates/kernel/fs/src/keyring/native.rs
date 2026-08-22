@@ -125,6 +125,7 @@ mod tests {
         let p = nvme_tls_psk_refresh(core::ptr::null_mut(), c"nqn.2014-08.org.nvmexpress:host".as_ptr(), c"nqn.2014-08.org.nvmexpress:subsys".as_ptr(), 1, b"secret".as_ptr().cast_mut(), 6, c"digest".as_ptr());
         assert!((p as usize) < usize::MAX - 4095);
         let s = serial_of(p).unwrap();
+        STORE.lock().collect();
         assert_eq!(STORE.lock().keys[&s].payload, b"secret");
         key_revoke(p); assert!(STORE.lock().keys[&s].revoked);
         assert!(STORE.lock().keys[&s].payload.is_empty());
