@@ -8,6 +8,7 @@ mod header_tests;
 mod uapi_tests;
 mod of_tree_tests;
 mod props_tests;
+mod reserved_tests;
 mod walk_tests;
 
 pub use crate::fixture::{virt_like, Fdt};

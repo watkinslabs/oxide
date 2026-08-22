@@ -9,7 +9,8 @@ use boot_info::{BootFramebuffer, BootInfo, BootMemRegion};
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 mod dtb_helpers;
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
-use dtb_helpers::{acpi_extent, dtb_totalsize, publish_pl011_clock, read_dtb_memory_all};
+use dtb_helpers::{acpi_extent, dtb_totalsize, publish_pl011_clock, read_dtb_memory_all,
+                  read_dtb_reserved_all};
 mod efi_topology;
 mod memmap;
 
@@ -266,13 +267,24 @@ unsafe fn build_selfboot_memmap(info: &mut BootInfo) {
     // Reserved blocks (kernel image, DTB blob, ACPI tables), sorted by start
     // for the per-region gap walk. An absent block is (0,0) and skipped; a
     // block not inside a given region is skipped too.
-    let mut blocks: [(u64, u64, boot_info::BootMemKind); 3] = [
-        (kstart, kend, boot_info::BootMemKind::KernelImage),
-        (dstart, dend, boot_info::BootMemKind::Reserved),
-        (acpi_blk.0, acpi_blk.1, boot_info::BootMemKind::Reserved),
-    ];
+    const DT_RESERVED_MAX: usize = 32;
+    let mut blocks = [(0u64, 0u64, boot_info::BootMemKind::Reserved); DT_RESERVED_MAX + 3];
+    blocks[0] = (kstart, kend, boot_info::BootMemKind::KernelImage);
+    blocks[1] = (dstart, dend, boot_info::BootMemKind::Reserved);
+    blocks[2] = (acpi_blk.0, acpi_blk.1, boot_info::BootMemKind::Reserved);
+    let mut reserved = [(0u64, 0u64); DT_RESERVED_MAX];
+    // SAFETY: `pa` is the bootloader's retained, header-bounded DTB pointer.
+    let nr_reserved = unsafe { read_dtb_reserved_all(pa, &mut reserved) };
+    assert!(nr_reserved <= reserved.len(), "ARM DTB reservation table exceeds retained capacity");
+    let mut block_count = 3usize;
+    for &(base, len) in &reserved[..nr_reserved] {
+        let start = base & !0xFFF;
+        let Some(end) = base.checked_add(len).and_then(|v| v.checked_add(0xFFF)) else { continue };
+        blocks[block_count] = (start, end & !0xFFF, boot_info::BootMemKind::Reserved);
+        block_count += 1;
+    }
     let mut a = 1usize;
-    while a < 3 {
+    while a < block_count {
         let mut b = a;
         while b > 0 && blocks[b - 1].0 > blocks[b].0 { blocks.swap(b - 1, b); b -= 1; }
         a += 1;
@@ -280,7 +292,7 @@ unsafe fn build_selfboot_memmap(info: &mut BootInfo) {
 
     // SAFETY: boot-only single-writer of the 'static MEMMAP_STORAGE.
     let storage = unsafe { &mut *MEMMAP_STORAGE.0.get() };
-    let mut n = efi_topology::overlay(&regions[..nregions], &blocks, storage)
+    let mut n = efi_topology::overlay(&regions[..nregions], &blocks[..block_count], storage)
         .expect("ARM boot topology exceeds retained capacity");
     // A malformed firmware map must not make the loaded image disappear from
     // physical truth; EFI normally reaches it through the loader descriptor.

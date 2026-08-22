@@ -39,6 +39,13 @@ pub(super) unsafe fn read_dtb_memory_all(pa: u64, out: &mut [(u64, u64)]) -> usi
     dtb::memory_regions(blob, out)
 }
 
+/// Every firmware-owned DTB range. # SAFETY: `pa` names a firmware DTB. # C: O(dtb)
+pub(super) unsafe fn read_dtb_reserved_all(pa: u64, out: &mut [(u64, u64)]) -> usize {
+    // SAFETY: caller supplies the firmware pointer; header bounds the result.
+    let Some(blob) = (unsafe { dtb_blob(pa) }) else { return 0 };
+    dtb::reserved_regions(blob, out)
+}
+
 /// HHDM-mapped complete DTB. # SAFETY: `pa` names its readable header. # C: O(1)
 pub(super) unsafe fn dtb_blob(pa: u64) -> Option<&'static [u8]> {
     if pa == 0 { return None; }

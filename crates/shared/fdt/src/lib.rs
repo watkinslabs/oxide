@@ -18,6 +18,7 @@
 //   header   — header decode/validation, token constants, `totalsize` probe
 //   walk     — the single struct-block walker + `find_prop`
 //   props    — the concrete boot-path properties read through `walk`
+//   reserved — firmware-owned physical-memory ranges
 //   cpu      — `/cpus` hardware identities and availability
 //   opp      — CPU OPP-table phandle-graph decoder
 //   provider — fixed, fixed-factor, and regulator provider decoder
@@ -35,6 +36,7 @@ pub mod build;
 pub mod header;
 pub mod uapi;
 pub mod props;
+pub mod reserved;
 pub mod walk;
 pub mod cpu;
 pub mod opp;
@@ -59,6 +61,7 @@ pub use header::{
 pub use props::{
     bootargs_via_prefix, chosen_bootargs, memory_regions, contains_string, enum_cpus, first_memory_region, machine_model, pl011_clock_hz, pl031_rtc, simple_framebuffer, Pl031Rtc, SimpleFramebuffer,
 };
+pub use reserved::reserved_regions;
 pub use cpu::{cpu_nodes, CpuNode};
 pub use opp::{cpu_opp_tables, ClockReference, CpuOppTable, OppVoltage, OperatingPoint, RequiredOpp};
 pub use provider::{fixed_providers, FixedClock, FixedFactorClock, FixedProviders, FixedRegulator};
