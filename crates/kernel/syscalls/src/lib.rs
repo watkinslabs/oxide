@@ -54,6 +54,14 @@ mod pkey;
 // the twelve cases written beside it had never compiled once.
 #[path = "siocgif/decide.rs"]
 pub(crate) mod siocgif_decide;
+// The live SIOC* adapter is kernel-gated because its copy boundary uses the
+// exception-table uaccess shim. Include the exact production module in hosted
+// tests as well: its tests use ordinary stack buffers, and this makes a
+// missing production entry point fail the hosted build instead of silently
+// reporting five decision-only cases.
+#[cfg(test)]
+#[path = "siocgif/hosted.rs"]
+mod siocgif_hosted;
 // The vDSO image's dynamic-symbol walk. Ungated because `vdso.rs` is
 // kernel-only AND its one case carried an aarch64 arch gate on top, so it
 // could never have compiled in any build that runs tests.

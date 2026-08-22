@@ -12,23 +12,27 @@
 //       char             ifr_hwaddr[6 in sa_data];
 //   };
 
-#![cfg(target_os = "oxide-kernel")]
-
 // Module manifest: route_ioctl owns rtentry ABI parsing; arp_ioctl owns arpreq
 // ABI decoding and canonical neighbour mutation; ipv4_addr_ioctl owns legacy
 // IPv4 destination/delete ABI parsing; legacy_device_ioctl owns terminal
 // legacy device ABI results; WAN owns `ndo_siocwandev`; multicast and bridge
 // (BRCTL/SIOCDEVPRIVATE) own their own ABI shims.
-mod route_ioctl;
-mod arp_ioctl;
-mod bridge;
-mod device_map_ioctl;
-mod ethtool;
-mod hardware_broadcast_ioctl;
-mod ipv4_addr_ioctl;
-mod legacy_device_ioctl;
-mod multicast_ioctl;
-mod wan_ioctl;
+#[cfg(any(not(test), target_os = "oxide-kernel"))]
+#[path = "siocgif/route_ioctl.rs"] mod route_ioctl;
+#[cfg(all(test, not(target_os = "oxide-kernel")))]
+mod route_ioctl {
+    pub(super) fn add(_net_ns: u64, _arg: u64) -> i64 { -(syscall::errno::Errno::Enosys.as_i32() as i64) }
+    pub(super) fn delete(_net_ns: u64, _arg: u64) -> i64 { -(syscall::errno::Errno::Enosys.as_i32() as i64) }
+}
+#[path = "siocgif/arp_ioctl.rs"] mod arp_ioctl;
+#[path = "siocgif/bridge.rs"] mod bridge;
+#[path = "siocgif/device_map_ioctl.rs"] mod device_map_ioctl;
+#[path = "siocgif/ethtool.rs"] mod ethtool;
+#[path = "siocgif/hardware_broadcast_ioctl.rs"] mod hardware_broadcast_ioctl;
+#[path = "siocgif/ipv4_addr_ioctl.rs"] mod ipv4_addr_ioctl;
+#[path = "siocgif/legacy_device_ioctl.rs"] mod legacy_device_ioctl;
+#[path = "siocgif/multicast_ioctl.rs"] mod multicast_ioctl;
+#[path = "siocgif/wan_ioctl.rs"] mod wan_ioctl;
 
 use alloc::vec::Vec;
 use crate::siocgif_decide as decide;
@@ -292,6 +296,19 @@ fn siocgifindex(net_ns: u64, arg: u64) -> i64 {
     }
 }
 
+/// Run a fixed-size `ifreq` operation after the exception-table copy-in.  The
+/// decision and device lookup live in the slice form below so hosted tests can
+/// exercise the exact production owner without inventing a user address.
+fn with_ifreq<F>(net_ns: u64, arg: u64, f: F) -> i64
+where F: FnOnce(u64, &mut [u8; IFREQ_SIZE]) -> i64 {
+    let Some(mut req) = read_ifreq(arg) else { return -(Errno::Efault.as_i32() as i64); };
+    let rv = f(net_ns, &mut req);
+    if rv == 0 && uaccess::copy_to_user(arg, &req).is_err() {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    rv
+}
+
 fn siocgifmtu(net_ns: u64, arg: u64) -> i64 {
     let name = match read_ifname(arg) { Some(n) => n, None => return -(Errno::Efault.as_i32() as i64) };
     match net::sock::stack().ifaces.lookup_name_in_ns(&name, net_ns) {
@@ -304,16 +321,24 @@ fn siocgifmtu(net_ns: u64, arg: u64) -> i64 {
 }
 
 fn siocgifmetric(net_ns: u64, arg: u64) -> i64 {
-    let name = match read_ifname(arg) { Some(n) => n, None => return -(Errno::Efault.as_i32() as i64) };
+    with_ifreq(net_ns, arg, siocgifmetric_inner)
+}
+
+fn siocgifmetric_inner(net_ns: u64, req: &mut [u8; IFREQ_SIZE]) -> i64 {
+    let name = match copied_ifname(req) { Some(n) => n, None => return -(Errno::Efault.as_i32() as i64) };
     if net::sock::stack().ifaces.lookup_name_in_ns(&name, net_ns).is_none() {
         return -(Errno::Enodev.as_i32() as i64);
     }
-    if write_ifreq_bytes(arg, 16, &0i32.to_ne_bytes()) { 0 }
-    else { -(Errno::Efault.as_i32() as i64) }
+    req[16..20].copy_from_slice(&0i32.to_ne_bytes());
+    0
 }
 
 fn siocsifmetric(net_ns: u64, arg: u64) -> i64 {
-    let name = match read_ifname(arg) { Some(name) => name, None => return -(Errno::Efault.as_i32() as i64) };
+    with_ifreq(net_ns, arg, siocsifmetric_inner)
+}
+
+fn siocsifmetric_inner(net_ns: u64, req: &mut [u8; IFREQ_SIZE]) -> i64 {
+    let name = match copied_ifname(req) { Some(name) => name, None => return -(Errno::Efault.as_i32() as i64) };
     if net::sock::stack().ifaces.lookup_name_in_ns(&name, net_ns).is_none() {
         return -(Errno::Enodev.as_i32() as i64);
     }
@@ -321,9 +346,13 @@ fn siocsifmetric(net_ns: u64, arg: u64) -> i64 {
 }
 
 fn siocgifcount(net_ns: u64, arg: u64) -> i64 {
+    with_ifreq(net_ns, arg, siocgifcount_inner)
+}
+
+fn siocgifcount_inner(net_ns: u64, req: &mut [u8; IFREQ_SIZE]) -> i64 {
     let count = net::sock::stack().ifaces.snapshot_devs_in_ns(net_ns).len() as i32;
-    if write_ifreq_bytes(arg, 16, &count.to_ne_bytes()) { 0 }
-    else { -(Errno::Efault.as_i32() as i64) }
+    req[16..20].copy_from_slice(&count.to_ne_bytes());
+    0
 }
 
 fn siocsifmtu(net_ns: u64, arg: u64) -> i64 {
@@ -364,7 +393,11 @@ fn siocsifmtu(net_ns: u64, arg: u64) -> i64 {
 }
 
 fn siocgifhwaddr(net_ns: u64, arg: u64) -> i64 {
-    let name = match read_ifname(arg) { Some(n) => n, None => return -(Errno::Efault.as_i32() as i64) };
+    with_ifreq(net_ns, arg, siocgifhwaddr_inner)
+}
+
+fn siocgifhwaddr_inner(net_ns: u64, req: &mut [u8; IFREQ_SIZE]) -> i64 {
+    let name = match copied_ifname(req) { Some(n) => n, None => return -(Errno::Efault.as_i32() as i64) };
     match net::sock::stack().ifaces.lookup_name_in_ns(&name, net_ns) {
         Some((_, dev)) => {
             let mac = dev.mac();
@@ -372,15 +405,19 @@ fn siocgifhwaddr(net_ns: u64, arg: u64) -> i64 {
             let mut data = [0u8; 8];
             data[..2].copy_from_slice(&hardware_type.to_ne_bytes());
             data[2..].copy_from_slice(&mac.0);
-            if write_ifreq_bytes(arg, 16, &data) { 0 }
-            else { -(Errno::Efault.as_i32() as i64) }
+            req[16..24].copy_from_slice(&data);
+            0
         }
         None => -(Errno::Enodev.as_i32() as i64),
     }
 }
 
 fn siocgifmap(net_ns: u64, arg: u64) -> i64 {
-    let name = match read_ifname(arg) { Some(n) => n, None => return -(Errno::Efault.as_i32() as i64) };
+    with_ifreq(net_ns, arg, siocgifmap_inner)
+}
+
+fn siocgifmap_inner(net_ns: u64, req: &mut [u8; IFREQ_SIZE]) -> i64 {
+    let name = match copied_ifname(req) { Some(n) => n, None => return -(Errno::Efault.as_i32() as i64) };
     let Some((_, dev)) = net::sock::stack().ifaces.lookup_name_in_ns(&name, net_ns) else {
         return -(Errno::Enodev.as_i32() as i64);
     };
@@ -392,8 +429,8 @@ fn siocgifmap(net_ns: u64, arg: u64) -> i64 {
     bytes[18] = map.irq;
     bytes[19] = map.dma;
     bytes[20] = map.port;
-    if write_ifreq_bytes(arg, 16, &bytes) { 0 }
-    else { -(Errno::Efault.as_i32() as i64) }
+    req[16..40].copy_from_slice(&bytes);
+    0
 }
 
 fn siocsifhwaddr(net_ns: u64, arg: u64) -> i64 {
@@ -444,15 +481,19 @@ fn siocgiftxqlen(net_ns: u64, arg: u64) -> i64 {
 }
 
 fn siocgifpflags(net_ns: u64, arg: u64) -> i64 {
-    let name = match read_ifname(arg) { Some(name) => name, None => return -(Errno::Efault.as_i32() as i64) };
+    with_ifreq(net_ns, arg, siocgifpflags_inner)
+}
+
+fn siocgifpflags_inner(net_ns: u64, req: &mut [u8; IFREQ_SIZE]) -> i64 {
+    let name = match copied_ifname(req) { Some(name) => name, None => return -(Errno::Efault.as_i32() as i64) };
     let (_, dev) = match net::sock::stack().ifaces.lookup_name_in_ns(&name, net_ns) {
         Some(row) => row, None => return -(Errno::Enodev.as_i32() as i64),
     };
     let Some(flags) = dev.private_flags() else {
         return -(Errno::Eopnotsupp.as_i32() as i64);
     };
-    if write_ifreq_bytes(arg, 16, &flags.to_ne_bytes()) { 0 }
-    else { -(Errno::Efault.as_i32() as i64) }
+    req[16..20].copy_from_slice(&flags.to_ne_bytes());
+    0
 }
 
 fn siocsifpflags(net_ns: u64, arg: u64) -> i64 {
@@ -658,7 +699,10 @@ fn siocsifbrdaddr(net_ns: u64, arg: u64) -> i64 {
 }
 
 fn siocgifname(net_ns: u64, arg: u64) -> i64 {
-    let req = match read_ifreq(arg) { Some(req) => req, None => return -(Errno::Efault.as_i32() as i64) };
+    with_ifreq(net_ns, arg, siocgifname_inner)
+}
+
+fn siocgifname_inner(net_ns: u64, req: &mut [u8; IFREQ_SIZE]) -> i64 {
     let idx = i32::from_ne_bytes([req[16], req[17], req[18], req[19]]);
     if idx <= 0 { return -(Errno::Enodev.as_i32() as i64); }
     let bytes = match net::sock::stack().ifaces.lookup_ifindex_in_ns(idx as u32, net_ns) {
@@ -670,8 +714,8 @@ fn siocgifname(net_ns: u64, arg: u64) -> i64 {
     let bytes = bytes.as_bytes();
     let mut name = [0u8; IFNAMSIZ];
     name[..bytes.len().min(IFNAMSIZ)].copy_from_slice(&bytes[..bytes.len().min(IFNAMSIZ)]);
-    if uaccess::copy_to_user(arg, &name).is_ok() { 0 }
-    else { -(Errno::Efault.as_i32() as i64) }
+    req[..IFNAMSIZ].copy_from_slice(&name);
+    0
 }
 
 fn siocsifname(net_ns: u64, arg: u64) -> i64 {

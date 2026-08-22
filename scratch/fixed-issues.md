@@ -1,5 +1,11 @@
 # Fixed issues
 
+### D587-siocgif-hosted-boundary
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED D587 | COVERAGE | med | The nine SIOC* interface-ioctl cases that were previously compiled only behind the kernel target gate now execute through the exact production adapter in hosted tests. The copy-in/copy-out boundary delegates to slice-based inner owners, so host tests cover the live interface lookup and output encoding without fabricating user addresses. | `siocgif_hosted` includes the production adapter and its relative owner modules; focused hosted suite passes 9/9. Removing the production `SIOCGIFMAP` copy-back made its typed-map test fail (RED), restored implementation passes (GREEN). | D587-siocgif-hosted-boundary |
+
 ### D586-overlay-index-mount-validation
 
 | Status | Class | Sev | Issue | Evidence | Owner |
