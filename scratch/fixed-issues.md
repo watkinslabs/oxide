@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2411-stale-devfs-fileattr-test-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED eb2f746e0 | COVERAGE | low | **The devfs file-attribute suite now constructs its publication state and passes when selected alone.** | B2411 revalidated the isolated fileattr tests and devfs suite on the completed fixture. | B2411-stale-devfs-fileattr-test-row |
+
 ### B2412-acpi-battery-alarm
 
 | Status | Class | Sev | Issue | Evidence | Owner |
