@@ -54,7 +54,14 @@ impl Mount {
     /// stops being able to write.
     /// # C: O(1)
     pub(crate) fn data_reserve_flags(&self, ino: u32) -> ReserveFlags {
-        if self.sb.is_quota_inode(ino) { ReserveFlags::QUOTA_FILE } else { ReserveFlags::DATA }
+        let visible = self.quota_sb.lock().upgrade()
+            .map(|sb| crate::quota::is_active_quota_file(&sb, ino))
+            .unwrap_or(false);
+        if self.sb.is_quota_inode(ino) || visible {
+            ReserveFlags::QUOTA_FILE
+        } else {
+            ReserveFlags::DATA
+        }
     }
 
     /// Allocate one previously-free filesystem block, stating what claim the

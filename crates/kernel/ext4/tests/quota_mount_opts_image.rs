@@ -21,6 +21,7 @@ const SECTOR: u32 = 512;
 const EXT4_SUPERBLOCK_OFFSET: usize = 1024;
 const EXT4_RO_COMPAT_OFF: usize = EXT4_SUPERBLOCK_OFFSET + 0x64;
 const EXT4_PRJ_QUOTA_INUM_OFF: usize = EXT4_SUPERBLOCK_OFFSET + ext4::superblock::SB_OFF_PRJ_QUOTA_INUM;
+const EXT4_R_BLOCKS_LO_OFF: usize = EXT4_SUPERBLOCK_OFFSET + ext4::superblock::SB_OFF_R_BLOCKS_LO;
 const EXT4_FEATURE_RO_COMPAT_QUOTA: u32 = ext4::superblock::RO_COMPAT_QUOTA;
 const EXT4_FEATURE_RO_COMPAT_PROJECT: u32 = ext4::superblock::RO_COMPAT_PROJECT;
 const HELLO_INO: u32 = 12;
@@ -97,6 +98,21 @@ fn seed_visible_user_quota_file(disk: &Arc<dyn BlockDevice>) -> u32 {
     ino
 }
 
+/// Keep one real free block aside as the superblock's root reserve.
+fn reserve_one_block(disk: &Arc<dyn BlockDevice>) {
+    const HEAD_SECTORS: u32 = 8;
+    let mut req = BlockRequest {
+        op: BlockOp::Read, start_block: 0, len_blocks: HEAD_SECTORS,
+        buffer: alloc::vec![0u8; HEAD_SECTORS as usize * SECTOR as usize],
+        ..Default::default()
+    };
+    disk.submit_sync(&mut req).expect("read superblock");
+    req.buffer[EXT4_R_BLOCKS_LO_OFF..EXT4_R_BLOCKS_LO_OFF + 4]
+        .copy_from_slice(&1u32.to_le_bytes());
+    req.op = BlockOp::Write;
+    disk.submit_sync(&mut req).expect("write root reserve");
+}
+
 fn mount_opts(disk: Arc<dyn BlockDevice>, data: &str)
     -> vfs::KResult<(Arc<ext4::rootfs::Ext4Mount>, Arc<SuperBlock>)>
 {
@@ -164,6 +180,25 @@ fn a_journalled_quota_file_option_loads_that_visible_file_at_mount() {
     let raw = m.state().mount.read_inode(qino).expect("raw quota inode");
     assert_ne!(raw.i_flags & FS_IMMUTABLE_FL, 0, "the live quota file is protected immutable");
     assert_eq!(m.state().opts().journalled_file(kind), Some(USR_QUOTA_FILE));
+}
+
+#[test]
+fn a_visible_journalled_quota_file_can_spend_the_root_block_reserve() {
+    common::boot_hosted_pmm();
+    let disk = plain_disk();
+    let qino = seed_visible_user_quota_file(&disk);
+    reserve_one_block(&disk);
+    let (m, _sb) = mount_opts(disk, "rw,usrjquota=aquota.user,jqfmt=vfsv1").expect("mount");
+    assert!(!m.state().mount.sb.is_quota_inode(qino), "fixture must use a visible quota inode");
+    m.state().mount.set_alloc_cred_for_tests(1000, &[], false);
+    while m.state().mount.state_free_blocks() > m.state().mount.sb.r_blocks_count {
+        m.state().mount.alloc_block_nofail(0).expect("consume ordinary free block");
+    }
+    assert_eq!(m.state().mount.state_free_blocks(), m.state().mount.sb.r_blocks_count);
+    let before = m.state().mount.state_free_blocks();
+    m.state().mount.write_at(qino, 1024 * 1024, b"x")
+        .expect("Linux lets an active quota file spend the root reserve");
+    assert!(m.state().mount.state_free_blocks() < before, "the write must allocate a real block");
 }
 
 #[test]
