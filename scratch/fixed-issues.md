@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2438-kdfontop-get-dimensions
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED b5c5e0457 | MISSING | low | **KDFONTOP/KD_FONT_OP_GET now refuses callers with insufficient width or height capacity.** | B2438 adds the shared production decision and wires the ioctl arm to return ENOSPC before copying. | B2438-kdfontop-get-dimensions |
+
 ### B2437-bpf-link-registry-single-name
 
 | Status | Class | Sev | Issue | Evidence | Owner |
