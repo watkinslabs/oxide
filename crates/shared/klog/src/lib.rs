@@ -19,6 +19,8 @@ pub use console::{
     CON_ENABLED, MAX_CONSOLES,
 };
 
+pub mod console_pm;
+
 pub mod lock;
 pub use lock::{clear_cpu_fn, set_cpu_fn, CpuFn};
 

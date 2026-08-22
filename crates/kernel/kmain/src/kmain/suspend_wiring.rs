@@ -134,11 +134,11 @@ pub fn hotplug_lock() -> drv::model::HotplugGuard { drv::model::freeze_hotplug()
 /// Flush framebuffer-console damage and block new per-CPU flush publications.
 /// UART/polled diagnostics remain available while the device graph is down.
 /// # C: O(console damage + NR_CPUS)
-fn console_suspend() { fbcon::kernel::console_suspend(); }
+fn console_suspend() { let _ = klog::console_pm::run_if_suspend_enabled(fbcon::kernel::console_suspend); }
 
 /// Re-enable framebuffer-console deferred output after device recovery.
 /// # C: O(1)
-fn console_resume() { fbcon::kernel::console_resume(); }
+fn console_resume() { let _ = klog::console_pm::run_if_suspend_enabled(fbcon::kernel::console_resume); }
 
 /// Install the device-model half of the sequence and register the interrupt
 /// controllers' core callbacks.
