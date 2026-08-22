@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2501-tiocsti-gate-audit-input
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 438bf78bd | MISSING | med | TIOCSTI now follows the Linux capability/ctty/usercopy/audit/input ordering across tty paths. | TTY/procfs/fs tests and target checks passed. | Chris Watkins |
+
 ### B2500-ext4-journalled-quota-root-reserve
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -3883,6 +3889,7 @@ against the row's own evidence.
 | FIXED e41310ec3 | COVERAGE | high | **The linked x86_64 S3 waking trampoline now executes in both a deterministic firmware-entry harness and a real Q35/SeaBIOS suspend-resume cycle.** The permanent micro-gate extracts the exact 4 KiB linked blob, enters it at the physical waking vector in 16-bit mode, and requires its own 16→32→64 transition to establish the patched page tables, control registers, EFER bits, and selectors before reaching the oracle. The end-to-end gate boots the distribution image, selects `deep`, observes QEMU enter S3, posts the wake, and requires the same shell to report one successful suspend. | B2332. The micro-gate's positive control replaces the firmware entry byte with `hlt`: RED timeout, restored GREEN with `S3-TRAMPOLINE-PASS`. `make accept-s3-resume-x86` observed QMP `suspended`, returned through processor-state restore, and read `S3-SUCCESS=1`. That runtime exposed a global sysfs inode collision that made `/sys/power/mem_sleep` alias `/sys/class/power_supply`; the power leaves moved to unique blocks, and restoring the old block makes `power_inode_blocks_do_not_alias_device_classes` fail. ARM is deliberately not claimed as executed: QEMU virt declines PSCI `SYSTEM_SUSPEND`, matching Linux 7.2-rc4's rule that deep suspend is installed only after `PSCI_FEATURES` admits it. The unavailable runtime path remains pinned by 10 PSCI probe tests, 11 admission/table tests, and 12 exact save/restore-order tests; ARM boot smoke passed with serial RX in 56 s. | e41310ec3 |
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 ### B2336-bpf-program-streams
 
 | Status | Type | Severity | Issue | Evidence | Fixed by |
@@ -4091,3 +4098,10 @@ against the row's own evidence.
 |---|---|---|---|---|---|
 | FIXED 12ab2186d | DEFECT | low | **`PTRACE_GETREGSET` and `PTRACE_SETREGSET` now accept a readable `struct iovec` in a read-only VMA, perform the register transfer, and report `EFAULT` only when the final `iov_len` write-back faults.** The iovec preflight is the same range-only admission as Linux `access_ok`; fault-recovering reads, transfer, and write-back execute in reference order through one hosted decision boundary. | B2499. Linux 7.2.0-rc4 `kernel/ptrace.c::ptrace_request` was verified first. The positive control restored the writable-VMA preflight: the focused test went RED because transfer remained false; range-only preflight restored GREEN and observed the transfer before write-back `EFAULT`. The complete ptrace suite passed 114/114; x86_64 and aarch64 kernel target checks and `make feature-gate` passed. Final paired smoke passed on attempt 1 with serial RX: x86_64 46 s, aarch64 56 s. | B2499 |
 >>>>>>> 98e2f5100 (chore(ledger): close ptrace regset iovec ordering)
+=======
+### B2501-tiocsti-gate-audit-input
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED d6f2eede6 | MISSING | med | **`TIOCSTI` now pushes one byte through every terminal endpoint's canonical input path.** One tty-owned ladder enforces the live `dev.tty.legacy_tiocsti` switch and initial-namespace `CAP_SYS_ADMIN` override, requires the caller's controlling terminal for an unprivileged request, performs usercopy only after those gates, flushes typed terminal audit data, emits a distinct `ioctl=TIOCSTI` record, then injects. Serial and VT terminals enter `TtyStruct`; PTY slaves enter N_TTY, while a privileged PTY-master request enters the master's own raw input queue. | B2501. Linux 7.2.0-rc4 gate and effect ordering verified before design. Positive control initially omitted both policy gates: `disabled_legacy_mode_refuses_a_non_admin_before_usercopy` and its controlling-terminal sibling were RED; restored ladder GREEN 5/5. Full `tty` 214/214, `audit` 120/120, `devpts` 29/29, `procfs` 243/243, `console` 10/10; both kernel targets built. | d6f2eede6 |
+>>>>>>> ca8fabbe8 (docs(issues): close TIOCSTI injection gap)
