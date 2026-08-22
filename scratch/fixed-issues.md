@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2496-f2fs-quota-owner-transfer
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 7cc132b95 | DEFECT | med | F2FS chown now transfers accumulated inode/reserved quota usage and rejects EDQUOT before ownership change. | Quota/F2FS tests and target checks passed. | Chris Watkins |
+
+<<<<<<< HEAD
 ### B2495-hda-dma-position-buffer
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -694,6 +701,13 @@
 |---|---|---|---|---|---|
 | FIXED 41cb68050 | DEFECT | low | **HD-Audio stream delay now prefers the controller's DMA position buffer while retaining the link-position fallback for controllers that report zero or an invalid sentinel.** Probe owns one page containing the controller's eight-byte stream slots; controller bring-up publishes its DMA address through `DPLBASE`/`DPUBASE`, each stream enables and clears its slot, and quiesce disables the shared position buffer after stopping the streams. PCM progress and writable-space decisions therefore use the less-laggy hardware position without creating a second accounting owner. | B2495. Linux 7.2.0-rc4 allocates one eight-byte slot per stream, programs the shared position-buffer base, prefers a valid nonzero slot and falls back to `SD_LPIB`. The authentic positive control reproduced the former live LPIB-only decision and failed with `left: 2048`, `right: 3072`; restored GREEN. `drv-hda` 89/89 and `sound` 48/48 pass, as do both target checks and the full feature gate. Dedicated HD-Audio smoke enumerated the controller, duplex codec, control node and both PCM nodes on attempt 1: x86 in 179 s and ARM64 in 177 s. | B2495-hda-dma-position-buffer |
 >>>>>>> ca7e4f9ec (docs: close B2495 HDA position issue)
+=======
+### B2496-f2fs-quota-owner-transfer
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 7cc132b95 | DEFECT | med | **An F2FS chown now atomically moves the file's accumulated block and inode usage to each changed quota identity, and refuses with `EDQUOT` before changing the inode when any destination has no room.** The canonical tree walk counts sparse data, metadata nodes, attributes, and claimed reservations once; every destination is checked before source or destination counters change, and the inode owner is stamped only after transfer succeeds. Later allocations remain attached to the new identities. | B2496. Linux 7.2.0-rc4 reaches quota transfer from `f2fs_setattr` before the uid/gid update. Both production `Volume::set_attr` tests were RED: usage stayed on the former owner and an over-limit target returned success; restored code makes them 2/2 GREEN. Quota call-site suite 68/68 and full F2FS suite 3,699/3,699 pass; x86_64 and aarch64 target checks pass. Boot smoke was not run because boot mounts ext4 and never reaches an F2FS chown. | B2496-f2fs-quota-owner-transfer |
+>>>>>>> d6c265e0d (doc: close F2FS quota transfer issue)
 
 ### B2329-freezer-backoff-sleep
 
