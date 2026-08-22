@@ -3244,3 +3244,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 51ac73bee | MISSING | low | **RFCOMM's steal-a-channel ioctl is intentionally refused, so the open row described implemented compatibility rather than a missing operation.** The ABI number remains defined while production dispatch returns `EINVAL`, matching Linux's four-operation device ioctl. | B2355's production classifier test and positive control pinned the refusal. | B2355-stale-rfcomm-stealdlc-row |
+
+### B2357-arp-no-discarding-learn
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 0ddbcf105 | COVERAGE | low | **ARP test convenience insertion no longer discards transmit jobs released by neighbour resolution.** Production uses the canonical `learn_at` result; test helpers return those jobs instead of dropping them. | B2357's queued-egress regression pinned one returned job and its resumed data frame. | 0ddbcf105 |
