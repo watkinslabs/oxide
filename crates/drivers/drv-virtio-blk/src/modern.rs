@@ -23,6 +23,7 @@ use virtio::blk;
 mod state;
 pub use state::{
     arm_hibernate_sync_trace,
+    completion_interrupt_count,
     transport_profile,
     wanted_features,
     BlkInit,
@@ -32,6 +33,8 @@ pub use state::{
 };
 #[cfg(target_os = "oxide-kernel")]
 pub use state::wake_completions;
+#[cfg(test)]
+pub(crate) use state::note_completion_interrupt_for_tests;
 use state::*;
 
 mod drain;

@@ -1,5 +1,11 @@
 # Fixed issues
 
+### R130-virtio-blk-poll-interrupt-counter
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED R130 | COVERAGE | low | **virtio-blk now records completion notifications at the IRQ entry point, allowing the interrupt cost of polling to be distinguished from the interrupt-driven path.** | `modern::wake_completions` increments the monotonic counter before raising the block softirq; dedicated polling only drains its interrupt-free queue. `interrupt_accounting_distinguishes_irq_from_polling` proves the production accounting helper advances once while a poll leaves it unchanged. | R130 |
+
 ### R129-stale-virtio-blk-poll-queues-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
