@@ -32,42 +32,22 @@ work and become `IN-PROGRESS <branch>` when the current integration finishes.
 
 | Class | Means |
 |---|---|
+| `DEFECT` | behaviour diverges from Linux — wrong answer, wrong order, wrong lifetime |
+| `MISSING` | Linux surface that is absent, or present-but-unconsumed (stored and never read) |
+| `COVERAGE` | the behaviour may be right, but no check here can fail if it stops being right |
+| `INFRA` | tooling, gates, docs, images, or the dev box itself |
 
 `Sev`: `blocker` (merge gate) | `high` (wrong answer reaching userspace) |
 `med` (missing surface) | `low` (hygiene, tooling, cosmetics).
 
 ## Open-work summary
 
-This is a derived view of the live `OPEN` and `IN-PROGRESS` rows below, not a
-second ledger. Regenerate it — never hand-adjust it — in the same change
-whenever a row is added, moved, or reclassified:
+This is a generated view of the live `OPEN` and `IN-PROGRESS` rows below, not a
+second ledger. It is deliberately not stored in this file. Render it with:
 
 ```
-awk -F'|' '/^\| *(OPEN|IN-PROGRESS)/{c=$3;s=toupper($4);gsub(/ /,"",c);gsub(/ /,"",s);print c" "s}' \
-  scratch/known_issues.md | sort | uniq -c
+tools/issues.sh --summary
 ```
-
-Hand-adjustment is what made the previous table wrong by 70 rows: it read 339
-against an actual 409, and understated `MISSING high` and `INFRA high` by
-exactly the rows a lane would have picked up first. D551 regenerated it, and
-F1178 regenerated it again after adding eighteen rows — the table it replaced
-was 78 rows behind the file. F1185 regenerated it a third time after three
-concurrent lanes each appended a table instead of replacing the one above, so
-the file carried three stacked tables and a reader taking the first was 44
-rows out. D564 regenerated it a fourth time after moving 33 f2fs rows the two
-f2fs completion waves had closed without flipping (one of the 33 — the
-`set_clock` row — was already marked `FIXED` but had never been relocated out
-of this file, a pure process omission). Two more were flipped and then put
-back: the machinery existed but nothing at mount reached it, which is the
-failure mode this reconcile was supposed to catch, not commit.
-
-| Class | blocker | critical | high | med | low | Total |
-|---|---:|---:|---:|---:|---:|---:|
-| COVERAGE | 0 | 0 | 10 | 68 | 64 | 142 |
-| DEFECT | 1 | 4 | 17 | 62 | 59 | 143 |
-| INFRA | 0 | 0 | 11 | 40 | 39 | 90 |
-| MISSING | 1 | 0 | 49 | 140 | 111 | 301 |
-| **Total** | **2** | **4** | **87** | **310** | **273** | **676** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -870,7 +850,6 @@ here now.
 | OPEN | DEFECT | high | **The socket destructor runs inline on whoever drops the last reference, so a 4,544 B teardown cascade is charged to every path in the kernel that can touch a socket.** (D551: `stack-gate` is GREEN on both arches as of 44765839c, so this is no longer a failing gate — it is a deep path with ~4 KB of headroom left, and the gate will fail on the next thing that lands on top of it.) `Drop for InetSocket` calls `release_file`, and from there: `release_file` 352 -> `tcp_fastopen::drain_client` 624 -> `net_ns::state::materialize_state` 1,168 -> `NsNet` / `UnixListener` / `UnixPair` drops -> `Arc<Task>` -> FdTable -> `filp_close` -> `File` -> mount -> `MntNamespace` -> `generic_shutdown_super` -> writeback. The reference does not do this: `__sk_free` hands `__sk_destruct` to `call_rcu`, so the destructor runs from an RCU callback in process context. **RETRACTION (B1996): the `in_interrupt()` branch in `release_file` is NOT a split truth and must not be "unified" away.** It is the reference's own distinction between close-time protocol shutdown (`inet_release`: process context, synchronous, takes RTNL) and final destruction from an arbitrary context (`__sk_destruct`: deferred). Making the deferral unconditional was tried and is WRONG — it breaks the contract that a close releases its device references immediately, and seven hosted tests assert exactly that (`final_close_flushes_every_unique_device_reference`, `process_context_final_drop_still_releases_inline`, `socket_anycast_is_not_multicast_and_close_releases_device_ref`, and four more). Closing this row is therefore NOT about when the destructor runs. It is about making the destructor path SHALLOW: the deep frames under it (`tcp_fastopen::drain_client` 624, `materialize_state` 1,168) have to shrink, or the owned state has to be moved out of the socket into a queued bundle so the drop itself is a hand-off. Routing individual `Arc<InetSocket>` drop sites through the reaper was also tried and does not work: the destructor edge exists at many sites (`packet_fanout::rollover` keeps it even after `packet::deliver` is routed), the gate got WORSE (13,024 -> 13,040), and the same seven tests fail. | B1995, measured on aarch64 at `621c7cfe8`: `Arc<InetSocket>::drop_slow` subtree = 4,544 B, reached on the ceiling path from `packet::deliver`'s upgraded socket references. It is larger than every net transmit frame on that path combined. | unowned |
 | OPEN | DEFECT | med | **`net_ns::state::materialize_state` reserves 1,168 B of stack to insert one map entry.** The body is a `BTreeMap` lookup and an `Arc::new(NsNet::new())`; the frame is that large because `NsNet` is built as a stack temporary and then copied into the `Arc` allocation. It is the single largest frame on the aarch64 ceiling path and it is reached from a destructor. Any large structure constructed by value and then moved into an allocation has the same shape, so the fix is a construction pattern, not one call site. | B1995. `stack-depth-gate --show-path` on the `Arc<InetSocket>::drop_slow` subtree: `materialize_state` +1,168, against a body whose own work is O(log N) on a map. | unowned |
 | OPEN | COVERAGE | low | Negative result, recorded so the next lane does not re-run it: the io_uring submission frames are at their floor and **splitting them makes the gate worse**, because the ~30 opcode arms already coalesce into one well-coloured frame. Marking `io_uring::dispatch::router::run` `#[inline(never)]` moved the deepest path 12992 → **13024** (FAIL); marking `dispatch_op` `#[inline(never)]` moved it to **13136** (FAIL, `submit_sqes` 416 → 320 + a new 240 B `dispatch_op` frame). Splitting the `oxide_syscall_dispatch` exit tail into an `#[inline(never)]` `syscall_exit_work` — the mirror of the `syscall_entry_work` split a prior lane made — was exactly neutral (12992, dispatch frame still 304), so the exit work was already overlapping the routes rather than summing with them. All three were reverted. | Three measured aarch64 builds; `submit_sqes` prologue is `sub sp, sp, #0x140` of which 96 B is the callee-saved spill, leaving ~224 B of genuinely-live ABI data (`Sqe` 72, `Op` 40, `SyscallArgs` 48, `SelectedBuf`/`ScratchFd`). | B1986 |
-| OPEN | INFRA | low | The `known_issues.md` open-work summary was destroyed by a merge, not merely stale: the `Class \| Means` table's four body rows had been overwritten with count rows, the `## Open-work summary` heading and its "derived view" prose were gone, and two different count tables (260 and 270) were stacked under one header with no severity columns. Restored and recounted here. This is the third time in one day the derived view has gone wrong, and it goes wrong at conflict-resolution time — the failure mode CLAUDE.md names under "Conflict resolution is where coverage dies". A generated summary (a `tools/issues.sh --summary` mode emitting the table) would remove the class entirely. | `git show fa37a3e7d:scratch/known_issues.md` carries the intended structure; `2e0b28a58`/`ddbed7a2b`/`db42f6639` are the merges that flattened it. Live recount at `14b9a7828`: 260 OPEN/IN-PROGRESS rows, both stacked tables disagreeing with each other. | unclaimed |
 
 ### B1987-oom-fault-leg-livelocks
 
