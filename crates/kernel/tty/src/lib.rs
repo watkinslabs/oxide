@@ -34,6 +34,10 @@ pub mod ioctl;
 pub mod registry;
 pub use registry::{DevId, TtyRegistry};
 
+/// Number of distinct numbered-VT slots (`tty1..=tty63`). VT 0 is the
+/// foreground alias rather than an independently backed terminal.
+pub const N_VT: usize = 63;
+
 // No subsystem-level `init()` entrypoint: the line discipline, pty pairs,
 // and tty_struct are constructed by their consumers (console::install,
 // devpts::allocate_pair, the VT registry). Per-module results use the

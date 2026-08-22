@@ -65,6 +65,12 @@
 |---|---|---|---|---|---|
 | FIXED 060373b4b | INFRA | low | **The nanosleep syscall comments contain no prohibited external path/line citations or fenced non-Rust doctest bodies; the ledger row was stale.** | B2378. Focused source scans confirm both nanosleep files are clean. | B2378-clock-nanosleep-citation-debt |
 
+### B2379-sysfs-numbered-vt-devices
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 4d0eda084 | MISSING | med | **The sysfs tty class now publishes every numbered VT that `/dev` publishes.** | B2379. The production-path test lists and opens all numbered VTs and verifies each live `dev` attribute. | B2379-sysfs-numbered-vt-devices |
+
 ### B2329-freezer-backoff-sleep
 
 | Status | Class | Sev | Issue | Evidence | Owner |

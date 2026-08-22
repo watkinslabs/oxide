@@ -101,3 +101,44 @@ fn tty_devices_expose_subsystem_symlink() {
     let link = dir.lookup("subsystem").expect("subsystem symlink");
     assert_eq!(link.readlink().expect("readlink"), b"../../../../class/tty".to_vec());
 }
+
+/// Every numbered VT published in `/dev` also appears in the tty class and
+/// reports the matching Linux `4:N` device number. The class symlink and the
+/// virtual-device directory are separate production lookup paths.
+#[test]
+fn numbered_vts_are_published_in_both_tty_trees() {
+    let class = make_sys_class_tty_inode();
+    let devices = make_sys_devices_virtual_tty_inode();
+
+    struct Names(Vec<String>);
+    impl vfs::DirEmit for Names {
+        fn emit(&mut self, name: &str, _ino: u64, _d: FileType, _next: u64) -> bool {
+            self.0.push(String::from(name));
+            true
+        }
+    }
+    fn listed(dir: &InodeRef) -> Vec<String> {
+        let mut names = Names(Vec::new());
+        let mut ctx = DirContext::new(0, &mut names);
+        dir.readdir(&mut ctx).expect("list tty directory");
+        names.0
+    }
+    let class_names = listed(&class);
+    let device_names = listed(&devices);
+
+    for vt in 1..=tty::N_VT {
+        let name = alloc::format!("tty{vt}");
+        assert!(class_names.iter().any(|listed| listed == &name));
+        assert!(device_names.iter().any(|listed| listed == &name));
+        class.lookup(&name).expect("numbered VT class symlink");
+        let dir = devices.lookup(&name).expect("numbered VT device directory");
+        let dev = dir.lookup("dev").expect("numbered VT dev attribute");
+        let mut buf = [0u8; 16];
+        let n = dev.read(0, &mut buf).expect("read numbered VT dev attribute");
+        assert_eq!(&buf[..n], alloc::format!("4:{vt}\n").as_bytes());
+    }
+
+    let past_last = alloc::format!("tty{}", tty::N_VT + 1);
+    assert!(class.lookup(&past_last).is_err());
+    assert!(devices.lookup(&past_last).is_err());
+}
