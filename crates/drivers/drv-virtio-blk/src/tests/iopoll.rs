@@ -116,3 +116,16 @@ fn the_poll_queue_avail_flags_suppress_device_notifications() {
         "the device is told not to signal this queue's completions");
     assert_eq!(driver_area[1], 0, "only the flags field is written; avail.idx is the device's");
 }
+
+/// The IRQ entry point is the only producer of the completion-interrupt
+/// counter. A poll of the interrupt-free ring leaves it unchanged, while the
+/// production entry-point helper advances it exactly once.
+#[test]
+fn interrupt_accounting_distinguishes_irq_from_polling() {
+    let before = crate::modern::completion_interrupt_count();
+    assert_eq!(state_with_poll_queue().poll_completions(), 0);
+    assert_eq!(crate::modern::completion_interrupt_count(), before);
+
+    crate::modern::note_completion_interrupt_for_tests();
+    assert_eq!(crate::modern::completion_interrupt_count(), before + 1);
+}

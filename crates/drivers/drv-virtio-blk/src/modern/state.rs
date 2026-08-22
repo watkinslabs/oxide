@@ -1,4 +1,5 @@
 use super::*;
+use core::sync::atomic::AtomicU64;
 
 /// Virtio device ID for block devices.
 pub const VIRTIO_ID_BLOCK: u16 = 2;
@@ -23,6 +24,27 @@ pub(super) static BLK_TURN: WaitList = WaitList::new();
 
 #[cfg(feature = "debug-hibernate")]
 static HIBERNATE_SYNC_TRACE: AtomicU16 = AtomicU16::new(0);
+
+/// Number of completion notifications delivered through the virtio-blk IRQ
+/// entry point. Polling a dedicated queue must not increment this counter;
+/// it is runtime evidence that the polled path avoided a device interrupt.
+static COMPLETION_INTERRUPTS: AtomicU64 = AtomicU64::new(0);
+
+#[inline]
+fn note_completion_interrupt() {
+    COMPLETION_INTERRUPTS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Read the cumulative completion-interrupt count for diagnostics and tests.
+/// # C: O(1)
+pub fn completion_interrupt_count() -> u64 {
+    COMPLETION_INTERRUPTS.load(Ordering::Relaxed)
+}
+
+#[cfg(test)]
+pub(crate) fn note_completion_interrupt_for_tests() {
+    note_completion_interrupt();
+}
 
 /// Arm allocation-free traces of the first 512 synchronous image I/Os.
 pub fn arm_hibernate_sync_trace() {
@@ -53,6 +75,7 @@ pub(super) fn wake_all_blk_waiters() {
 
 #[cfg(target_os = "oxide-kernel")]
 pub fn wake_completions() {
+    note_completion_interrupt();
     block::completion::raise();
 }
 
