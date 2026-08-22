@@ -24,6 +24,12 @@
 |---|---|---|---|---|---|
 | FIXED B2557 | DEFECT | low | The old shared-images syntax observation is stale: the current `../images/build.sh` parses successfully. The checkout remains user-owned and dirty, so no files there were changed. | `bash -n ../images/build.sh` exits 0 on the current script; the historical B1672 observation is retained only in the existing fixed ledger history. | Chris Watkins |
 
+### B2558-stale-fat-short-case-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2558 | MISSING | low | The FAT short-name case row was stale: directory parsing already decodes the complete `Record` and passes its case byte to the mount's `shortname=` display rule. | `Volume::parse_dir` calls `short_name(record, entry)`, which invokes `Record::parse` and `short_name_with`; the existing `volume::tests::write::a_write_keeps_the_fields_it_does_not_change` proves a WinNT mixed-case short name survives a write and lookup. No production change is warranted. | Chris Watkins |
+
 ### B2553-stale-keyring-coverage-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
