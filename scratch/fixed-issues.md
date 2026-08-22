@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2423-stale-perf-set-output-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 1133162ce | DEFECT | low | **The open `PERF_EVENT_IOC_SET_OUTPUT` row was stale: unmapped detach and compatible ring redirection are already implemented.** | B2423 revalidated detach, redirect, and the live perf output owner. | B2423-stale-perf-set-output-row |
+
 ### B2422-stale-fileattr-errno-owner-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
