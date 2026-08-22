@@ -3166,3 +3166,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED B2343 | MISSING | low | **nl80211 capability gates now read the radio's immutable advertisement.** Wiphy flags own IBSS RSN, AP/station four-address mode and off-channel TX; extended-feature bits gate authentication and scan modes; `GET_WIPHY` publishes the flag-backed attributes. | B2343 production tests on the original branch pinned the wiphy-flag and extended-feature predicates across seven capability cases. | B2343 |
+
+### B2344-f2fs-statfs-reservations
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 1e435c091 | DEFECT | low | **f2fs `statfs` now counts an outstanding block reservation before writeback places the block.** `Volume::space` reads the live block count, seeded from the checkpoint and updated by placed blocks and unplaced reservations. | B2344's production mapped-write test drove the real reservation and superblock operation; the original branch reported the expected free-space decrement. | 1e435c091 |
