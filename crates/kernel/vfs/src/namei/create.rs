@@ -38,6 +38,7 @@ pub fn vfs_create_at(dir: &VfsPath, name: &str, mode: u32, ctx: &CreateCtx<'_>)
     // The parent's `i_rwsem` is held EXCLUSIVE across the backend create, so a
     // second creator of the same name sees the first one's entry.
     let inode = { let _g = dir.inode.inode_lock(); dir.inode.create_child(name, mode, ctx)? };
+    crate::namei::inode_created(&dir.inode, &inode, name);
     let dentry = publish(dir, name, &inode);
     Ok((inode, dentry))
 }

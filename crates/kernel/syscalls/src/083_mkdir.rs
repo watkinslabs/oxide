@@ -96,6 +96,7 @@ pub fn sys_mkdir(args: &SyscallArgs) -> i64 {
             #[cfg(feature = "debug-mount")]
             if p.contains("/run/systemd/journal") { crate::mount_common::mnt_log("mkdir", &p, 0); }
             drop_child_cache(&parent, &name);
+            vfs::notify_inode_created(&parent.inode, &name);
             vfs::fire_dirent_create(&parent.inode, &name, true);
             0
         }

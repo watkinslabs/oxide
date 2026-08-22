@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2560-selinux-create-time-inode-label
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2560 | MISSING | high | Newly created inodes now receive the SELinux filename-transition label before publication. | The VFS create owner invokes the installed create hook for regular files; mkdir, mknod, symlink, and Unix-socket bind call the same hook after their backend creates. The hook delegates to the existing `label_new_inode` decision, preserving the parent/name transition contract. VFS 391/391 and fs 1401/1401 pass. | B2560-selinux-create-time-inode-label |
+
 ### B2554-fat-setattr-persistence
 
 | Status | Class | Sev | Issue | Evidence | Owner |
