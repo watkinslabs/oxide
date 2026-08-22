@@ -40,6 +40,7 @@ extern crate alloc;
 mod devnum;
 mod framebuffer;
 mod open_binding;
+mod runtime_serial;
 mod tty_audit;
 pub mod boot_progress;
 pub mod identity;

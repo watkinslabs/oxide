@@ -69,6 +69,36 @@ static DEV_WINDOW_BASE: AtomicU64 = AtomicU64::new(0);
 static DELIVER: AtomicU64 = AtomicU64::new(0);
 /// SysRq arm deadline for this hardware port.
 static SYSRQ_ARMED_UNTIL_NS: AtomicU64 = AtomicU64::new(0);
+static CONSOLE_LINE: AtomicU64 = AtomicU64::new(0);
+
+/// PL011 LCRH width/parity bits for one Linux console option tuple. # C: O(1)
+pub const fn line_control_bits(parity: u8, bits: u8) -> u32 {
+    let width = match bits { 5 => 0, 6 => 1, 7 => 2, _ => 3 } << 5;
+    let parity = match parity {
+        b'o' => 1 << 1,
+        b'e' => (1 << 1) | (1 << 2),
+        _ => 0,
+    };
+    width | parity
+}
+
+/// PL011 CR hardware CTS/RTS bits. # C: O(1)
+pub const fn flow_control_bits(flow: bool) -> u32 {
+    if flow { (1 << 15) | (1 << 14) } else { 0 }
+}
+
+/// Retain the parsed runtime-console line until hardware probe. # C: O(1)
+pub fn configure_line(baud: u32, parity: u8, bits: u8, flow: bool) {
+    let packed = u64::from(baud) | (u64::from(parity) << 32)
+        | (u64::from(bits) << 40) | (u64::from(flow) << 48);
+    CONSOLE_LINE.store(packed, Ordering::Release);
+}
+
+#[cfg(target_arch = "aarch64")]
+fn configured_line() -> (u32, u8, u8, bool) {
+    let p = CONSOLE_LINE.load(Ordering::Acquire);
+    (p as u32, (p >> 32) as u8, (p >> 40) as u8, (p >> 48) & 1 != 0)
+}
 
 #[inline]
 fn deliver(b: u8) {
@@ -171,6 +201,28 @@ mod imp {
         }
     }
 
+    /// Apply the complete runtime-console line setup after probe. # C: O(1)
+    pub fn set_line(baud: u32, parity: u8, bits: u8, flow: bool) {
+        let va = base(); if va == 0 || baud == 0 { return; }
+        let (ibrd, fbrd) = super::pl011_divisor(hal_aarch64::pl011::uartclk_hz(), baud);
+        let _port = PORT.lock_irqsave::<hal_aarch64::ArmIrqGate>();
+        // SAFETY: one serialized disable/drain/configure/restore transaction.
+        unsafe {
+            let cr = core::ptr::read_volatile((va + PL011_CR) as *const u32);
+            let lcrh = core::ptr::read_volatile((va + PL011_LCRH) as *const u32);
+            core::ptr::write_volatile((va + PL011_CR) as *mut u32, cr & !CR_UARTEN);
+            let mut n = 0u32;
+            while n < 100_000 && (core::ptr::read_volatile((va + PL011_FR) as *const u32) & FR_BUSY) != 0 { n += 1; }
+            core::ptr::write_volatile((va + PL011_IBRD) as *mut u32, ibrd);
+            core::ptr::write_volatile((va + PL011_FBRD) as *mut u32, fbrd);
+            let next_lcrh = (lcrh & (1 << 4)) | super::line_control_bits(parity, bits);
+            core::ptr::write_volatile((va + PL011_LCRH) as *mut u32, next_lcrh);
+            let flow_mask = (1 << 15) | (1 << 14);
+            let next_cr = (cr & !flow_mask) | super::flow_control_bits(flow);
+            core::ptr::write_volatile((va + PL011_CR) as *mut u32, next_cr);
+        }
+    }
+
     /// RX interrupt service: drain the FIFO empty, then re-check the masked
     /// interrupt status and drain again while it is still asserted. The RX and
     /// RX-timeout interrupts are cleared by emptying the FIFO, so nothing here
@@ -225,6 +277,8 @@ mod imp {
             BASE.store(0, Ordering::Release);
             return false;
         }
+        let (baud, parity, bits, flow) = super::configured_line();
+        set_line(baud, parity, bits, flow);
         // SAFETY: GIC is up; PL011 owns SPI 33 and it is level-sensitive.
         unsafe { arch_irq::gic::enable_intid_level(PL011_INTID); }
         // SAFETY: PL011 was enabled by boot mapping and is now owned by this driver.
@@ -275,6 +329,8 @@ mod imp {
     /// No PL011 on non-arm arches; baud no-op.
     /// # C: O(1)
     pub fn set_baud(_baud: u32) {}
+    /// No PL011 on non-arm arches; line setup no-op.
+    pub fn set_line(_baud: u32, _parity: u8, _bits: u8, _flow: bool) {}
     /// No PL011 on non-arm arches.
     /// # C: O(1)
     pub fn rx_isr() {}
@@ -293,7 +349,7 @@ mod imp {
     pub(super) unsafe fn shutdown() {}
 }
 
-pub use imp::{console_to_polled, emit, rx_isr, set_baud};
+pub use imp::{console_to_polled, emit, rx_isr, set_baud, set_line};
 
 // ------------------------------------------------ drv model
 /// The PL011 console as a drv model driver. Probe performs detection; a
@@ -344,7 +400,20 @@ pub static UART_DRIVER: &dyn drv::Driver = &UartPl011Drv;
 
 #[cfg(test)]
 mod tests {
-    use super::{pl011_divisor, UARTCLK_HZ};
+    use super::{flow_control_bits, line_control_bits, pl011_divisor, UARTCLK_HZ};
+
+    #[test]
+    fn console_line_options_encode_data_bits_and_parity() {
+        assert_eq!(line_control_bits(b'n', 8), 0x03 << 5);
+        assert_eq!(line_control_bits(b'o', 7), (0x02 << 5) | (1 << 1));
+        assert_eq!(line_control_bits(b'e', 7), (0x02 << 5) | (1 << 1) | (1 << 2));
+    }
+
+    #[test]
+    fn console_hardware_flow_enables_cts_and_rts() {
+        assert_eq!(flow_control_bits(false), 0);
+        assert_eq!(flow_control_bits(true), (1 << 15) | (1 << 14));
+    }
 
     // Reference divisors for the standard qemu-virt 24 MHz UARTCLK, cross-checked
     // against Linux `pl011_calc_divisor` (div = round(uartclk*4/baud); ibrd=div>>6,
