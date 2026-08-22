@@ -9,6 +9,7 @@ pub mod lflag {
     pub const NOFLSH:  u32 = 0o000200; // don't flush queues on ISIG
     pub const TOSTOP:  u32 = 0o000400; // SIGTTOU on bg-pgrp write
     pub const ECHOCTL: u32 = 0o001000; // echo control chars as ^X
+    pub const ECHOKE:  u32 = 0o004000; // visual erase for VKILL
     pub const IEXTEN:  u32 = 0o100000; // enable VWERASE/VLNEXT/VEOL2 (impl-defined input)
 }
 
@@ -30,14 +31,25 @@ pub mod oflag {
     pub const ONLRET: u32 = 0o000040; // \n moves to col 0 (ignored)
 }
 
+/// Linux c_cflag bits used by `tty_std_termios`.
+pub mod cflag {
+    pub const B38400: u32 = 0x0000_000f;
+    pub const CS8:    u32 = 0x0000_0030;
+    pub const CREAD:  u32 = 0x0000_0080;
+    pub const HUPCL:  u32 = 0x0000_0400;
+}
+
 /// Default c_lflag at pair creation: matches Linux `stty sane`
 /// — ICANON | ECHO | ISIG | ECHOE | ECHOK | ECHOCTL.
 pub const DEFAULT_LFLAG: u32 = lflag::ICANON | lflag::ECHO | lflag::ISIG
-    | lflag::ECHOE | lflag::ECHOK | lflag::ECHOCTL | lflag::IEXTEN;
-/// Default c_iflag at pair creation: ICRNL (Enter sends \r → \n).
-pub const DEFAULT_IFLAG: u32 = iflag::ICRNL;
+    | lflag::ECHOE | lflag::ECHOK | lflag::ECHOCTL | lflag::ECHOKE | lflag::IEXTEN;
+/// Default c_iflag at pair creation: CR translation plus software flow control.
+pub const DEFAULT_IFLAG: u32 = iflag::ICRNL | iflag::IXON;
 /// Default c_oflag at pair creation: OPOST | ONLCR (\n → \r\n on output).
 pub const DEFAULT_OFLAG: u32 = oflag::OPOST | oflag::ONLCR;
+/// Default character format and line speed from Linux `tty_std_termios`.
+pub const DEFAULT_CFLAG: u32 = cflag::B38400 | cflag::CS8 | cflag::CREAD | cflag::HUPCL;
+pub const DEFAULT_SPEED: u32 = 38_400;
 
 /// Linux x86_64 `struct termios` size. Userspace tcgetattr / tcsetattr
 /// pass exactly this many bytes through TCGETS / TCSETS.
@@ -106,10 +118,17 @@ pub const DEFAULT_VSTART: u8 = 0x11;
 pub const DEFAULT_VSTOP:  u8 = 0x13;
 /// Default c_cc[VWERASE] = 0x17 (^W).
 pub const DEFAULT_VWERASE: u8 = 0x17;
+/// Default c_cc[VREPRINT] = 0x12 (^R).
+pub const DEFAULT_VREPRINT: u8 = 0x12;
+/// Default c_cc[VDISCARD] = 0x0F (^O).
+pub const DEFAULT_VDISCARD: u8 = 0x0F;
+/// Default c_cc[VLNEXT] = 0x16 (^V).
+pub const DEFAULT_VLNEXT: u8 = 0x16;
+/// Default c_cc[VMIN] = 1 byte.
+pub const DEFAULT_VMIN: u8 = 1;
 
-/// Build a default termios byte image. Matches Linux pty defaults:
-/// c_lflag = ICANON|ECHO|ISIG, c_iflag = ICRNL, c_oflag = OPOST|ONLCR,
-/// c_cc[VINTR] = 0x03, others 0.
+/// Build Linux `tty_std_termios`, the default inherited by serial and VT
+/// drivers and the basis of the PTY driver defaults.
 /// # C: O(1)
 pub const fn default_termios() -> [u8; TERMIOS_BYTES] {
     let mut t = [0u8; TERMIOS_BYTES];
@@ -123,6 +142,11 @@ pub const fn default_termios() -> [u8; TERMIOS_BYTES] {
     t[TERMIOS_OFF_OFLAG + 1] = ol[1];
     t[TERMIOS_OFF_OFLAG + 2] = ol[2];
     t[TERMIOS_OFF_OFLAG + 3] = ol[3];
+    let cf = DEFAULT_CFLAG.to_le_bytes();
+    t[TERMIOS_OFF_CFLAG    ] = cf[0];
+    t[TERMIOS_OFF_CFLAG + 1] = cf[1];
+    t[TERMIOS_OFF_CFLAG + 2] = cf[2];
+    t[TERMIOS_OFF_CFLAG + 3] = cf[3];
     let lf = DEFAULT_LFLAG.to_le_bytes();
     t[TERMIOS_OFF_LFLAG    ] = lf[0];
     t[TERMIOS_OFF_LFLAG + 1] = lf[1];
@@ -137,6 +161,19 @@ pub const fn default_termios() -> [u8; TERMIOS_BYTES] {
     t[TERMIOS_OFF_CC + cc::VSTART] = DEFAULT_VSTART;
     t[TERMIOS_OFF_CC + cc::VSTOP ] = DEFAULT_VSTOP;
     t[TERMIOS_OFF_CC + cc::VWERASE] = DEFAULT_VWERASE;
+    t[TERMIOS_OFF_CC + cc::VREPRINT] = DEFAULT_VREPRINT;
+    t[TERMIOS_OFF_CC + cc::VDISCARD] = DEFAULT_VDISCARD;
+    t[TERMIOS_OFF_CC + cc::VLNEXT] = DEFAULT_VLNEXT;
+    t[TERMIOS_OFF_CC + cc::VMIN] = DEFAULT_VMIN;
+    let speed = DEFAULT_SPEED.to_le_bytes();
+    t[TERMIOS_OFF_ISPEED    ] = speed[0];
+    t[TERMIOS_OFF_ISPEED + 1] = speed[1];
+    t[TERMIOS_OFF_ISPEED + 2] = speed[2];
+    t[TERMIOS_OFF_ISPEED + 3] = speed[3];
+    t[TERMIOS_OFF_OSPEED    ] = speed[0];
+    t[TERMIOS_OFF_OSPEED + 1] = speed[1];
+    t[TERMIOS_OFF_OSPEED + 2] = speed[2];
+    t[TERMIOS_OFF_OSPEED + 3] = speed[3];
     t
 }
 

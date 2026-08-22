@@ -117,9 +117,14 @@ fn default_termios_populates_full_c_cc_set() {
     assert_eq!(t[TERMIOS_OFF_CC + cc::VKILL],  DEFAULT_VKILL);
     assert_eq!(t[TERMIOS_OFF_CC + cc::VEOF],   DEFAULT_VEOF);
     assert_eq!(t[TERMIOS_OFF_CC + cc::VSUSP],  DEFAULT_VSUSP);
-    // Remaining slots stay zero.
+    assert_eq!(t[TERMIOS_OFF_CC + cc::VSTART],   DEFAULT_VSTART);
+    assert_eq!(t[TERMIOS_OFF_CC + cc::VSTOP],    DEFAULT_VSTOP);
+    assert_eq!(t[TERMIOS_OFF_CC + cc::VREPRINT], DEFAULT_VREPRINT);
+    assert_eq!(t[TERMIOS_OFF_CC + cc::VDISCARD], DEFAULT_VDISCARD);
+    assert_eq!(t[TERMIOS_OFF_CC + cc::VWERASE],  DEFAULT_VWERASE);
+    assert_eq!(t[TERMIOS_OFF_CC + cc::VLNEXT],   DEFAULT_VLNEXT);
     assert_eq!(t[TERMIOS_OFF_CC + cc::VTIME],  0);
-    assert_eq!(t[TERMIOS_OFF_CC + cc::VMIN],   0);
+    assert_eq!(t[TERMIOS_OFF_CC + cc::VMIN],   DEFAULT_VMIN);
     assert_eq!(t[TERMIOS_OFF_CC + cc::VEOL],   0);
 }
 
@@ -260,9 +265,10 @@ fn ixon_vstart_resumes_slave_writes() {
 
 #[test]
 fn ixon_off_passes_ctrl_chars_through() {
-    // IXON is OFF in cooked default — the master_write should let ^S/^Q
-    // through to the slave as data.
     let mut p = cooked(0);
+    let ifl = p.iflag() & !iflag::IXON;
+    p.termios[TERMIOS_OFF_IFLAG..TERMIOS_OFF_IFLAG + 4]
+        .copy_from_slice(&ifl.to_le_bytes());
     p.master_write(b"\x13\n");
     let mut buf = [0u8; 8];
     let n = p.slave_read(&mut buf);

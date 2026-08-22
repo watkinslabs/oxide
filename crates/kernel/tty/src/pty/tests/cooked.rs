@@ -92,11 +92,17 @@ fn raw_mode_no_echo_on_master_write() {
 fn default_termios_has_canonical_flags_and_vintr() {
     let t = default_termios();
     assert_eq!(read_lflag(&t), DEFAULT_LFLAG);
-    assert_eq!(read_iflag(&t), DEFAULT_IFLAG);
+    assert_eq!(read_iflag(&t), iflag::ICRNL | iflag::IXON);
     assert_eq!(read_oflag(&t), DEFAULT_OFLAG);
     assert_eq!(read_vintr(&t), DEFAULT_VINTR);
-    // c_cflag defaults zero in v1 (no baud / parity tracking yet).
-    assert_eq!(read_termios_u32(&t, TERMIOS_OFF_CFLAG), 0);
+    assert_ne!(read_lflag(&t) & 0x0000_0800, 0, "ECHOKE");
+    assert_eq!(read_termios_u32(&t, TERMIOS_OFF_CFLAG), 0x0000_04bf);
+    assert_eq!(read_termios_u32(&t, TERMIOS_OFF_ISPEED), 38_400);
+    assert_eq!(read_termios_u32(&t, TERMIOS_OFF_OSPEED), 38_400);
+    assert_eq!(t[TERMIOS_OFF_CC + cc::VMIN], 1);
+    assert_eq!(t[TERMIOS_OFF_CC + cc::VREPRINT], 0x12);
+    assert_eq!(t[TERMIOS_OFF_CC + cc::VDISCARD], 0x0f);
+    assert_eq!(t[TERMIOS_OFF_CC + cc::VLNEXT], 0x16);
     assert_eq!(t[TERMIOS_OFF_LINE], 0);
 }
 
