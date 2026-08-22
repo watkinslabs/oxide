@@ -55,6 +55,39 @@ static IRQ_PIN: AtomicU64 = AtomicU64::new(u64::MAX);
 /// tty-delivery callback, stored from `init`'s parameter so
 /// the bare-`fn()` MSI handler trampoline can reach it without args.
 static DELIVER: AtomicU64 = AtomicU64::new(0);
+/// Line requested by the last serial `console=` token, packed as
+/// baud:32 | parity:8 | bits:8 | flow:1. Stored before probe and consumed by
+/// the real UART owner after it publishes the detected base.
+static CONSOLE_LINE: AtomicU64 = AtomicU64::new(0);
+
+/// 16550 LCR data-width/parity bits for one Linux console option tuple.
+/// One stop bit is the console default. # C: O(1)
+pub const fn line_control_bits(parity: u8, bits: u8) -> u8 {
+    let width = match bits { 5 => 0, 6 => 1, 7 => 2, _ => 3 };
+    let parity = match parity {
+        b'o' => 1 << 3,
+        b'e' => (1 << 3) | (1 << 4),
+        _ => 0,
+    };
+    width | parity
+}
+
+/// 16550 automatic CTS/RTS enable bit. RTS itself remains asserted in MCR;
+/// AFE decides whether hardware may modulate it. # C: O(1)
+pub const fn modem_control_bits(flow: bool) -> u8 { if flow { 1 << 5 } else { 0 } }
+
+/// Retain the parsed runtime-console line until hardware probe. # C: O(1)
+pub fn configure_line(baud: u32, parity: u8, bits: u8, flow: bool) {
+    let packed = u64::from(baud) | (u64::from(parity) << 32)
+        | (u64::from(bits) << 40) | (u64::from(flow) << 48);
+    CONSOLE_LINE.store(packed, Ordering::Release);
+}
+
+#[cfg(target_arch = "x86_64")]
+fn configured_line() -> (u32, u8, u8, bool) {
+    let p = CONSOLE_LINE.load(Ordering::Acquire);
+    (p as u32, (p >> 32) as u8, (p >> 40) as u8, (p >> 48) & 1 != 0)
+}
 
 /// True once a 16550 UART has been detected + registered by `init`.
 /// # C: O(1)
@@ -205,6 +238,24 @@ mod imp {
         }
     }
 
+    /// Apply the complete runtime-console line setup after probe. # C: O(1)
+    pub fn set_line(baud: u32, parity: u8, bits: u8, flow: bool) {
+        let b = base();
+        if b == 0 || baud == 0 { return; }
+        let divisor = (115_200 / baud).clamp(1, 0xFFFF) as u16;
+        let _port = PORT.lock_irqsave::<hal_x86_64::X86IrqGate>();
+        // SAFETY: one serialized DLAB/LCR/MCR transaction on the detected UART.
+        unsafe {
+            let old_lcr = inb(b + LCR);
+            outb(b + LCR, old_lcr | 0x80);
+            outb(b + RBR, divisor as u8);
+            outb(b + IER, (divisor >> 8) as u8);
+            outb(b + LCR, super::line_control_bits(parity, bits));
+            let mcr = inb(b + MCR);
+            outb(b + MCR, (mcr & !(1 << 5)) | super::modem_control_bits(flow));
+        }
+    }
+
     /// COM interrupt handler. Each IIR pass services receive before transmit,
     /// fills at most one hardware FIFO, and calls tty delivery only after
     /// dropping the aliased-register lock. As Linux serial8250 does for an ISA
@@ -297,6 +348,8 @@ mod imp {
             let mcr = inb(port + MCR);
             outb(port + MCR, tx::irq_mcr(mcr));
         }
+        let (baud, parity, bits, flow) = super::configured_line();
+        set_line(baud, parity, bits, flow);
         // Route IRQ4 → an RX-drain vector via the I/O APIC, if present.
         use hal::{MmuOps, Pa, PageFlags, PageSize, Va};
         let ioapic_pa = firmware::ioapic_pa();
@@ -422,6 +475,8 @@ mod imp {
     /// No 16550 on non-x86 arches; baud no-op.
     /// # C: O(1)
     pub fn set_baud(_baud: u32) {}
+    /// No 16550 on non-x86 arches; line setup no-op.
+    pub fn set_line(_baud: u32, _parity: u8, _bits: u8, _flow: bool) {}
     /// No 16550 on non-x86 arches.
     /// # C: O(1)
     pub fn rx_isr() {}
@@ -444,7 +499,7 @@ mod imp {
     pub unsafe fn console_to_polled() {}
 }
 
-pub use imp::{console_to_polled, emit, rx_isr, set_baud};
+pub use imp::{console_to_polled, emit, rx_isr, set_baud, set_line};
 
 // ------------------------------------------------ drv model
 /// The 16550 console as a drv model driver. Probe performs detection and

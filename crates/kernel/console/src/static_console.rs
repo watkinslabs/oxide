@@ -87,10 +87,16 @@ fn console() -> Option<&'static KernelConsoleTty> {
 /// lifetime, so the RX sink + device nodes may dereference it freely.
 /// # C: O(1)
 pub fn install() {
+    let options = cmdline::console::serial_options_in(cmdline::get())
+        .unwrap_or(cmdline::console::ConsoleOptions::default_8n1());
+    let line = crate::runtime_serial::from_options(options);
+    // Probe happens later in the boot sequence, so the driver retains this
+    // tuple and applies it at the first moment its register base is live.
+    drv_serial::configure_line(line.baud, line.parity, line.bits, line.flow);
     let tty: Arc<KernelConsoleTty> = Arc::new(TtyStruct::with_termios(
         SerialTtyDriver::with_signal(KernelUart, KernelFgSignal),
         KernelWait::new(),
-        default_termios(),
+        crate::runtime_serial::termios(line),
     ));
     let raw = Arc::into_raw(tty) as u64;
     CONSOLE_PTR.store(raw, Ordering::Release);

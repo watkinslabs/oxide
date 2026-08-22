@@ -87,8 +87,14 @@ pub fn console_to_polled() {
 /// arch UART (16550 divisor latch on x86; firmware-fixed on PL011). # C: O(1)
 pub fn set_baud(baud: u32) { uart::set_baud(baud); }
 
-/// RX interrupt drain — delegates to the active UART crate, whose port-local
-/// callback enters this crate's `deliver` boundary.
+/// Stage the full `console=` line for the selected UART. The per-arch owner
+/// applies it after probe, when its I/O base is live. # C: O(1)
+pub fn configure_line(baud: u32, parity: u8, bits: u8, flow: bool) {
+    uart::configure_line(baud, parity, bits, flow);
+}
+
+/// RX interrupt drain — delegates to the active UART crate, passing this
+/// crate's `deliver` as the byte callback.
 /// # C: O(bytes pending)
 pub fn rx_isr() { uart::rx_isr(); }
 
