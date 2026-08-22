@@ -1,5 +1,11 @@
 # Fixed issues
 
+### R128-stale-keyring-real-uid-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED R128 | DEFECT | low | **Per-user keyrings are already keyed by real UID rather than a namespace-relative PID value.** | B2464’s merged implementation uses the global task identity for keyring resolution, exec cleanup, and exit cleanup; its regression distinguishes equal visible PIDs in separate namespaces. | R128 |
+
 ### R127-stale-hda-position-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
