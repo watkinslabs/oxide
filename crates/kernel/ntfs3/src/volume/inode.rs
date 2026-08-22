@@ -167,20 +167,32 @@ impl<S: SectorSource> Volume<S> {
         let raw = self.attribute_bytes(&bytes, &attrs, attr)?;
         if raw.len() < REPARSE_OFF_MOUNT_BUFFER { return Err(Errno::Eio); }
         let tag = le32(&raw, REPARSE_OFF_TAG);
-        let (base, off_at, len_at) = match tag {
-            IO_REPARSE_TAG_SYMLINK =>
-                (REPARSE_OFF_SYMLINK_BUFFER, REPARSE_OFF_SYMLINK_PRINT_OFF,
-                 REPARSE_OFF_SYMLINK_PRINT_LEN),
-            IO_REPARSE_TAG_MOUNT_POINT =>
-                (REPARSE_OFF_MOUNT_BUFFER, REPARSE_OFF_SYMLINK_SUB_OFF,
-                 REPARSE_OFF_SYMLINK_SUB_LEN),
+        let field = |at: usize| usize::from(u16::from_le_bytes([raw[at], raw[at + 1]]));
+        let (start, len) = match tag {
+            IO_REPARSE_TAG_SYMLINK => {
+                let off = field(REPARSE_OFF_SYMLINK_PRINT_OFF);
+                (REPARSE_OFF_SYMLINK_BUFFER.checked_add(off).ok_or(Errno::Eio)?,
+                 field(REPARSE_OFF_SYMLINK_PRINT_LEN))
+            }
+            IO_REPARSE_TAG_MOUNT_POINT => {
+                let off = field(REPARSE_OFF_SYMLINK_SUB_OFF);
+                (REPARSE_OFF_MOUNT_BUFFER.checked_add(off).ok_or(Errno::Eio)?,
+                 field(REPARSE_OFF_SYMLINK_SUB_LEN))
+            }
+            tag if tag & IO_REPARSE_TAG_NAME_SURROGATE != 0
+                && tag & IO_REPARSE_TAG_MICROSOFT == 0 => {
+                if raw.len() < REPARSE_OFF_GENERIC_BUFFER { return Err(Errno::Eio); }
+                let declared = usize::from(u16::from_le_bytes([
+                    raw[REPARSE_OFF_DATA_LEN], raw[REPARSE_OFF_DATA_LEN + 1],
+                ]));
+                let len = declared.checked_sub(REPARSE_OFF_GENERIC_BUFFER)
+                    .ok_or(Errno::Eio)?;
+                (REPARSE_OFF_GENERIC_BUFFER, len)
+            }
             // A tag this implementation does not know is not a link, and
             // following it as one would produce a path from arbitrary bytes.
             _ => return Err(Errno::Einval),
         };
-        let off = usize::from(u16::from_le_bytes([raw[off_at], raw[off_at + 1]]));
-        let len = usize::from(u16::from_le_bytes([raw[len_at], raw[len_at + 1]]));
-        let start = base.checked_add(off).ok_or(Errno::Eio)?;
         let stop = start.checked_add(len).ok_or(Errno::Eio)?;
         if stop > raw.len() { return Err(Errno::Eio); }
         let units: Vec<u16> = raw[start..stop].chunks_exact(2)

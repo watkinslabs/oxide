@@ -6,10 +6,20 @@ use vfs::{mk_mode, FileOps, FileType, InodeBuilder, InodeOps, InodeRef};
 
 use crate::attrs::make_mode;
 use crate::time::to_unix;
-use crate::uapi::IO_REPARSE_TAG_SYMLINK;
+use crate::uapi::IO_REPARSE_TAG_NAME_SURROGATE;
 use crate::volume::NodeInfo;
 
 use super::{ops::NtfsOps, NtfsFs};
+
+/// Translate the record shape into the VFS object type it presents as.
+/// # C: O(1)
+fn file_type(reparse_tag: Option<u32>, is_dir: bool) -> FileType {
+    if reparse_tag.is_some_and(|tag| tag & IO_REPARSE_TAG_NAME_SURROGATE != 0) {
+        FileType::Symlink
+    }
+    else if is_dir { FileType::Directory }
+    else { FileType::Regular }
+}
 
 /// One inode of a mounted NTFS volume.
 pub struct NtfsNode {
@@ -19,16 +29,13 @@ pub struct NtfsNode {
 
 /// Build the inode for one record.
 ///
-/// A reparse point whose tag is a symbolic link presents as one; a junction or
-/// a tag this implementation does not know presents as the file it also is,
-/// because presenting it as a link that cannot be read makes the whole path
-/// unreachable.
+/// A name-surrogate reparse point presents as a link. Other tags retain the
+/// record's ordinary file/directory type: WOF compression and vendor metadata
+/// are not paths merely because they share the reparse attribute container.
 /// # C: O(1)
 pub(crate) fn node_inode(fs: Arc<NtfsFs>, info: NodeInfo) -> InodeRef {
     let opts = fs.options();
-    let ftype = if info.reparse_tag == Some(IO_REPARSE_TAG_SYMLINK) { FileType::Symlink }
-                else if info.is_dir { FileType::Directory }
-                else { FileType::Regular };
+    let ftype = file_type(info.reparse_tag, info.is_dir);
     let inode_ops: Arc<dyn InodeOps> = Arc::new(NtfsOps);
     let file_ops: Arc<dyn FileOps> = Arc::new(NtfsOps);
     let ino = crate::ident::inode_number(info.number);
@@ -47,3 +54,7 @@ pub(crate) fn node_inode(fs: Arc<NtfsFs>, info: NodeInfo) -> InodeRef {
         .private(Arc::new(node))
         .build()
 }
+
+#[cfg(test)]
+#[path = "node/tests.rs"]
+mod tests;
