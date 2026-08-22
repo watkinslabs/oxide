@@ -271,6 +271,12 @@
 |---|---|---|---|---|---|
 | FIXED R103 | DEFECT | med | The older OPEN row claiming ext4 always deferred quota dquot persistence was stale after the journalled mark-dirty fix. | B2514 makes `Ext4QuotaOps::mark_dirty` synchronously write dquots for the QUOTA feature and named journalled quota files while retaining deferred behavior for plain quota files; its live no-`Q_SYNC` reader test and qtree failure tests cover the distinction. | Chris Watkins |
 
+### R104-stale-rseq-slice-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED R104 | MISSING | low | The older OPEN row claiming the rseq slice-extension grant was fixed at a constant was stale after the tunable owner merged. | B2504’s `sched::rseq_slice` owns the bounded atomic duration, `try_grant_slice` derives its deadline from it, and tracefs exposes `/sys/kernel/debug/rseq/slice_ext_nsec` with the Linux range/error contract. | Chris Watkins |
+
 ### R97-io-uring-spec-current-opcodes
 
 | Status | Class | Sev | Issue | Evidence | Owner |
