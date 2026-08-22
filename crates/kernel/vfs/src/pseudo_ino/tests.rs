@@ -37,6 +37,15 @@ fn region_names_are_unique() {
 }
 
 #[test]
+fn selinuxfs_is_claimed_by_the_single_shared_registry() {
+    let owners: alloc::vec::Vec<&'static Region> =
+        REGIONS.iter().filter(|r| r.name() == "selinuxfs").collect();
+    assert_eq!(owners.len(), 1, "selinuxfs must have exactly one registered inode band");
+    assert_eq!(owners[0].start(), 0x7B00_0000);
+    assert_eq!(owners[0].end(), 0x7B0F_FFFF);
+}
+
+#[test]
 fn the_compile_time_check_is_the_same_check() {
     assert!(REGIONS_ARE_DISJOINT);
     assert!(all_disjoint(REGIONS));

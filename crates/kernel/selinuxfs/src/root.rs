@@ -15,7 +15,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use kernfs::PseudoDir;
 use sync::{SecurityPolicy as LockClass, Spinlock};
-use vfs::pseudo_ino::{overlaps, Region, RegionAllocator, REGIONS};
+use vfs::pseudo_ino::{RegionAllocator, SELINUXFS};
 use vfs::{Ino, InodeRef};
 
 use crate::nodes::{booleans, caps, classes, enforce, initcon, load, misc, stats, transaction};
@@ -23,26 +23,8 @@ use crate::nodes::{booleans, caps, classes, enforce, initcon, load, misc, stats,
 /// Filesystem identity reported as `st_dev` for every node here.
 pub const SELINUXFS_FSID: u64 = 0x0102_1994_0000_0007;
 
-/// Inode numbers this filesystem mints.
-const SELINUXFS_INOS: Region = Region::new("selinuxfs", 0x7B00_0000, 0x7B0F_FFFF);
-
-/// Whether a region collides with none of the declared ones. # C: O(regions)
-const fn disjoint_from_declared(r: &Region) -> bool {
-    let mut i = 0;
-    while i < REGIONS.len() {
-        if overlaps(&REGIONS[i], r) { return false; }
-        i += 1;
-    }
-    true
-}
-
-// A number minted into another owner's range resolves to that owner's object
-// somewhere far from here; the collision is caught at build time instead.
-const _: () = assert!(disjoint_from_declared(&SELINUXFS_INOS),
-                      "selinuxfs inode region collides with a declared region");
-
 /// Allocator for this filesystem's inode numbers.
-static NEXT_INO: RegionAllocator = RegionAllocator::new(&SELINUXFS_INOS);
+static NEXT_INO: RegionAllocator = RegionAllocator::new(&SELINUXFS);
 
 /// The mount root.
 static ROOT: Spinlock<Option<Arc<PseudoDir>>, LockClass> = Spinlock::new(None);
