@@ -347,6 +347,12 @@ impl SecurityServer {
         services::sid_to_context(&l.db, &l.sidtab, sid)
     }
 
+    /// Rendered context of a SID without substituting the unlabeled context. # C: O(categories)
+    pub fn sid_to_context_force(&self, sid: Sid) -> Result<String> {
+        let Some(l) = self.loaded.as_ref() else { return initial_sid_context(sid) };
+        services::sid_to_context_force(&l.db, &l.sidtab, sid)
+    }
+
     /// One SID's user, role and type carrying another's MLS range.
     /// # C: O(categories)
     ///
