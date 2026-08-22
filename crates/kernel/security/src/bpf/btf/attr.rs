@@ -42,15 +42,6 @@ pub(super) fn get_fd_by_id(a: &Attr, caps: Caps) -> Result<u32, Errno> {
     Ok(a.u32_at(o::START_ID))
 }
 
-pub(super) fn get_next_id(a: &Attr, caps: Caps) -> Result<u32, Errno> {
-    use uapi::off::object_id as o;
-    attr::check_attr(a, o::NEXT_LAST_END)?;
-    let start = a.u32_at(o::START_ID);
-    if start >= i32::MAX as u32 { return Err(Errno::Einval); }
-    if !caps.sys_admin { return Err(Errno::Eperm); }
-    Ok(start)
-}
-
 pub(super) fn object_info(a: &Attr) -> Result<(i32, u32, u64), Errno> {
     use uapi::off::object_info as o;
     attr::check_attr(a, o::LAST_END)?;

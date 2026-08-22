@@ -66,11 +66,32 @@ pub(crate) fn get_fd_by_id(a: &Attr, caps: Caps) -> Result<i64, Errno> {
 /// Copy the least live BTF ID greater than the requested starting ID.
 /// # C: O(log(live objects))
 pub(crate) fn get_next_id(a: &Attr, attr_ptr: u64, caps: Caps) -> Result<i64, Errno> {
-    let start = attr::get_next_id(a, caps)?;
-    let next = object::next_id(start)?;
-    let output = attr_ptr
-        .checked_add(super::super::uapi::off::object_id::NEXT_ID as u64)
-        .ok_or(Errno::Efault)?;
-    user::write_bytes(output, &next.to_ne_bytes())?;
-    Ok(0)
+    super::super::command::next_id::get_next_id(a, attr_ptr, caps,
+        |start| object::next_id(start).ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec::Vec;
+    use super::*;
+
+    fn admin() -> Caps {
+        Caps { bpf: false, sys_admin: true, net_admin: false, perfmon: false }
+    }
+
+    #[test]
+    fn btf_enumeration_uses_the_shared_next_id_ladder() {
+        let object = BtfObject::register(Vec::new(), parse::BtfIndex::empty_for_test())
+            .expect("register BTF object");
+        let mut a = Attr::zeroed();
+        let mut out = [0u8; super::super::super::uapi::ATTR_SIZE];
+        assert_eq!(get_next_id(&a, out.as_mut_ptr() as u64, admin()), Ok(0));
+        let at = super::super::super::uapi::off::object_id::NEXT_ID;
+        let id = u32::from_ne_bytes(out[at..at + 4].try_into().unwrap());
+        assert!(object::get_by_id(id).is_ok());
+
+        a.bytes[super::super::super::uapi::off::object_id::NEXT_LAST_END] = 1;
+        assert_eq!(get_next_id(&a, out.as_mut_ptr() as u64, admin()), Err(Errno::Einval));
+        drop(object);
+    }
 }
