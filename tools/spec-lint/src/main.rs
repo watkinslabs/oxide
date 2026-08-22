@@ -7,6 +7,7 @@ use std::process::ExitCode;
 
 mod audit;
 mod doc_lint;
+mod external_citation_lint;
 mod code_lint;
 mod length_lint;
 mod manifest_lint;
@@ -76,6 +77,7 @@ fn main() -> ExitCode {
 
 fn run_all(root: &Path, f: &mut Findings) {
     doc_lint::run(root, f);
+    external_citation_lint::run(root, f);
     manifest_lint::run(root, f);
     xref_lint::run(root, f);
     code_lint::run(root, f);
@@ -117,4 +119,3 @@ pub fn is_charter(stem: &str) -> bool {
     let two = &stem[..2];
     matches!(two, "00"|"01"|"02"|"03"|"04"|"05"|"06"|"07"|"08"|"09")
 }
-
