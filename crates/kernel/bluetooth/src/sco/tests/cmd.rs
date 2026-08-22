@@ -5,7 +5,8 @@ use crate::sco::cmd::{AcceptSyncConn, EnhancedSetupSyncConn, SetupSyncConn};
 use crate::sco::param::ESCO_PARAM_CVSD;
 use crate::uapi::bt::{BdAddr, BT_VOICE_CVSD_16BIT, BT_VOICE_TRANSPARENT};
 use crate::uapi::hci::{EDR_ESCO_MASK, ESCO_2EV3};
-use crate::uapi::sco::{self as u, BtCodec, BT_CODEC_MSBC};
+use crate::uapi::sco::{self as u, BtCodec, BT_CODEC_CVSD, BT_CODEC_MSBC,
+                       BT_CODEC_TRANSPARENT};
 
 #[test]
 fn the_setup_command_round_trips_at_its_documented_width() {
@@ -63,6 +64,28 @@ fn the_enhanced_setup_carries_the_codec_and_data_path_contract() {
     assert_eq!(&w[54..56], &ESCO_PARAM_CVSD[0].max_latency.to_le_bytes());
     assert_eq!(&w[56..58], &ESCO_PARAM_CVSD[0].pkt_type.to_le_bytes());
     assert_eq!(w[58], ESCO_PARAM_CVSD[0].retrans_effort);
+}
+
+#[test]
+fn every_enhanced_codec_uses_its_linux_pcm_profile() {
+    let profiles = [
+        (BT_CODEC_CVSD, u::SCO_CVSD_PCM_BANDWIDTH, u::HCI_CODING_FORMAT_PCM,
+         u::SCO_TRANSPORT_UNIT_CVSD),
+        (BT_CODEC_TRANSPARENT, u::SCO_BANDWIDTH, BT_CODEC_TRANSPARENT,
+         u::SCO_TRANSPORT_UNIT_CODEC),
+        (BT_CODEC_MSBC, u::SCO_MSBC_PCM_BANDWIDTH, u::HCI_CODING_FORMAT_PCM,
+         u::SCO_TRANSPORT_UNIT_CODEC),
+    ];
+    for (id, bandwidth, format, transport) in profiles {
+        let codec = BtCodec { id, cid: 0, vid: 0, data_path: 3, num_caps: 0 };
+        let cp = EnhancedSetupSyncConn::new(7, codec, &ESCO_PARAM_CVSD[0]).unwrap();
+        assert_eq!((cp.in_bandwidth, cp.out_bandwidth), (bandwidth, bandwidth));
+        assert_eq!((cp.in_coding_format.id, cp.out_coding_format.id), (format, format));
+        assert_eq!((cp.in_transport_unit_size, cp.out_transport_unit_size),
+                   (transport, transport));
+    }
+    let unknown = BtCodec { id: 0xff, cid: 0, vid: 0, data_path: 0, num_caps: 0 };
+    assert!(EnhancedSetupSyncConn::new(7, unknown, &ESCO_PARAM_CVSD[0]).is_none());
 }
 
 #[test]
