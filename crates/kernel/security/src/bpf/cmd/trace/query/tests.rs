@@ -6,12 +6,14 @@
 
 use alloc::vec;
 use alloc::vec::Vec;
+use alloc::sync::Arc;
 
 use syscall::errno::Errno;
 
 use super::*;
 use super::super::super::super::{
-    make_bpf_prog_inode, make_bpf_iter_link_inode, prog_facts, IterTarget, PerfHooks,
+    make_bpf_prog_inode, make_bpf_iter_link_inode, prime_bpf_raw_tracepoint_link_with,
+    prog_facts, IterTarget, PerfHooks, RawTracepointHooks,
 };
 use super::super::super::super::uapi::{fd_type, off::task_fd_query as o};
 
@@ -78,14 +80,19 @@ fn a_link_is_classified_before_the_perf_predicate_is_consulted() {
 /// before `perf_get_event()`, even if that predicate would claim the inode.
 #[test]
 fn a_raw_tracepoint_link_is_classified_before_perf() {
-    fn raw(inode: &vfs::InodeRef) -> Option<RawTracepointLinkInfo> {
-        Some(RawTracepointLinkInfo {
-            prog: inode.clone(), name: "sys_enter", cookie: 0,
-        })
-    }
+    fn attach(_: &[u8], _: u64, _: vfs::InodeRef, _: u64)
+        -> Result<&'static str, Errno> { unreachable!() }
+    fn detach(_: &str, _: u64) {}
     let prog = make_bpf_prog_inode(
         super::super::super::super::uapi::prog_type::RAW_TRACEPOINT, Vec::new());
-    assert!(matches!(classify_with(&prog, hooks(true), raw),
+    let fdt = Arc::new(vfs::FdTable::new());
+    let primer = prime_bpf_raw_tracepoint_link_with(
+        Arc::clone(&fdt), 1, prog, 0,
+        RawTracepointHooks { attach, detach },
+    ).unwrap();
+    assert_eq!(primer.settle("sys_enter"), 0);
+    let file = fdt.get(0).unwrap();
+    assert!(matches!(classify(file.inode(), hooks(true)),
                      QueriedFd::RawTracepoint(_)));
 }
 

@@ -79,6 +79,8 @@ pub const ITER_SLOT_BYTES: usize = iter::targets::SLOT_BYTES;
 /// Bytes of context an iterator program addresses. # C: O(1)
 pub fn iter_context_bytes() -> usize { iter::targets::CONTEXT_BYTES }
 pub(crate) use link::{prime_bpf_cgroup_link, prime_bpf_raw_tracepoint_link};
+#[cfg(test)]
+pub(crate) use link::prime_bpf_raw_tracepoint_link_with;
 pub(crate) use fd::{install_fd, install_fd_access};
 
 /// `bpf_prog_get(ufd)`: the program one descriptor holds, together with the

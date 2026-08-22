@@ -48,15 +48,7 @@ pub(crate) enum QueriedFd {
 /// `file->f_op == &bpf_link_fops` first, `perf_get_event()` second.
 /// # C: O(1)
 pub(crate) fn classify(inode: &InodeRef, perf: PerfHooks) -> QueriedFd {
-    classify_with(inode, perf, raw_tracepoint_link_info)
-}
-
-fn classify_with(
-    inode: &InodeRef,
-    perf: PerfHooks,
-    raw_info: fn(&InodeRef) -> Option<RawTracepointLinkInfo>,
-) -> QueriedFd {
-    if let Some(info) = raw_info(inode) {
+    if let Some(info) = raw_tracepoint_link_info(inode) {
         return QueriedFd::RawTracepoint(info);
     }
     if objfd::link_kind(inode).is_some() { return QueriedFd::OtherLink; }
