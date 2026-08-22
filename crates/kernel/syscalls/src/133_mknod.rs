@@ -105,6 +105,7 @@ pub(crate) fn mknod_impl(dirfd: i32, raw: String, mode: u16, dev: u32) -> i64 {
     match r {
         Ok(())  => {
             drop_child_cache(&parent, &name);
+            vfs::notify_inode_created(&parent.inode, &name);
             // `mknod` never creates a directory (`S_IFDIR` is EPERM above), so
             // the create notification is always the non-directory form.
             vfs::fire_dirent_create(&parent.inode, &name, false);

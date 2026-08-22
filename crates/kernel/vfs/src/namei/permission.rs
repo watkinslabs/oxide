@@ -134,6 +134,26 @@ static INODE_MAC_HOOK: sync::Spinlock<Option<InodeMacHook>, sync::Inode> =
 /// calling task's own label, and this crate sits below the task.
 pub fn set_inode_mac_hook(hook: InodeMacHook) { *INODE_MAC_HOOK.lock() = Some(hook); }
 
+/// Label hook for a freshly materialised inode. # C: O(1)
+pub type InodeCreateHook = fn(&InodeRef, &InodeRef, &str);
+
+static INODE_CREATE_HOOK: sync::Spinlock<Option<InodeCreateHook>, sync::Inode> =
+    sync::Spinlock::new(None);
+
+/// Install the create-time inode label hook. # C: O(1)
+pub fn set_inode_create_hook(hook: InodeCreateHook) { *INODE_CREATE_HOOK.lock() = Some(hook); }
+
+/// Apply the installed create-time label decision, if any. # C: O(1)
+pub fn inode_created(dir: &InodeRef, inode: &InodeRef, name: &str) {
+    let hook = *INODE_CREATE_HOOK.lock();
+    if let Some(label) = hook { label(dir, inode, name); }
+}
+
+/// Apply the installed hook after an operation that does not return its inode. # C: O(lookup)
+pub fn notify_inode_created(dir: &InodeRef, name: &str) {
+    if let Ok(inode) = dir.lookup(name) { inode_created(dir, &inode, name); }
+}
+
 /// Ask the installed module, or allow when none is installed. # C: O(1)
 fn mac_permission(inode: &InodeRef, mask: u32) -> KResult<()> {
     let hook = *INODE_MAC_HOOK.lock();

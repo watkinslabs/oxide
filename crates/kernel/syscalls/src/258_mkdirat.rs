@@ -104,6 +104,7 @@ pub fn sys_mkdirat(args: &SyscallArgs) -> i64 {
             #[cfg(feature = "debug-mount")]
             trace_runtime_dir("mkdirat", raw, Some(&p), 0);
             drop_child_cache(&parent, &name);
+            vfs::notify_inode_created(&parent.inode, &name);
             vfs::fire_dirent_create(&parent.inode, &name, true);
             0
         }

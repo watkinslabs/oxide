@@ -30,6 +30,7 @@ fn create_unix_sock_node_bytes(path: &[u8]) -> Result<Option<UnixSockNode>, i64>
     };
     match r {
         Ok(()) => {
+            vfs::notify_inode_created(&parent.inode, &name);
             let inode = match parent.inode.lookup(&name) {
                 Ok(i) => i,
                 Err(e) => return Err(crate::namei_common::errno_from_vfs(e)),
