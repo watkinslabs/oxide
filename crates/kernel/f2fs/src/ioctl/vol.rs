@@ -309,22 +309,6 @@ impl<S: SectorSource> Volume<S> {
         Ok(())
     }
 
-    /// A nonce for a newly encrypted inode.
-    ///
-    /// Derived from the volume's own identity and the inode number rather
-    /// than from a generator this crate does not have, so two inodes on one
-    /// volume never share one and two volumes never produce the same pair.
-    /// # C: O(1)
-    fn fresh_nonce(&self, ino: u32) -> [u8; crate::crypto::uapi::FILE_NONCE_SIZE] {
-        let mut n = [0u8; crate::crypto::uapi::FILE_NONCE_SIZE];
-        for (i, b) in n.iter_mut().enumerate() {
-            *b = self.sb.uuid.get(i).copied().unwrap_or(0)
-                ^ (ino.rotate_left(i as u32 * 5) as u8)
-                ^ (self.cp.version as u8);
-        }
-        n
-    }
-
     /// One kind of a verity file's metadata, from `offset`, at most `length`
     /// bytes.
     ///
