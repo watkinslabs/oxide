@@ -67,11 +67,13 @@ pub fn route(op: ControlOp, endpoint: Option<Endpoint>, arg_error: Option<Errno>
         // socket, and no protocol gets a say.
         Endpoint::NotSocket => Err(Errno::Enotsock),
         // AF_NETLINK's protocol operations carry the "no such operation" stub
-        // for listen and accept, and real implementations for shutdown (which
-        // performs its own admission and then refuses) and the name query.
+        // for listen and accept. Listen still reaches its owner because the
+        // generic security decision precedes that stub and needs the clamped
+        // backlog; accept has no protocol-independent work left to perform.
         Endpoint::Netlink => match op {
-            ControlOp::Listen | ControlOp::Accept => Err(Errno::Eopnotsupp),
-            ControlOp::Shutdown | ControlOp::GetPeerName => Ok(Endpoint::Netlink),
+            ControlOp::Accept => Err(Errno::Eopnotsupp),
+            ControlOp::Shutdown | ControlOp::Listen | ControlOp::GetPeerName =>
+                Ok(Endpoint::Netlink),
         },
         Endpoint::Vsock => Ok(Endpoint::Vsock),
         Endpoint::Inet  => Ok(Endpoint::Inet),
@@ -160,13 +162,11 @@ mod tests {
     }
 
     #[test]
-    fn netlink_refuses_listen_and_accept_as_unsupported_not_as_a_non_socket() {
-        // The distinction is the whole point: EOPNOTSUPP says "this socket has
-        // no such operation", ENOTSOCK says "this is not a socket". A caller
-        // that probes for a listening-capable fd tells them apart.
-        assert_eq!(route_op(ControlOp::Listen, Some(Endpoint::Netlink)), Err(Errno::Eopnotsupp));
+    fn netlink_listen_reaches_security_while_accept_is_unsupported_in_the_router() {
+        // Listen's owner performs generic security admission before returning
+        // the protocol's EOPNOTSUPP. Accept has no such remaining generic rung.
+        assert_eq!(route_op(ControlOp::Listen, Some(Endpoint::Netlink)), Ok(Endpoint::Netlink));
         assert_eq!(route_op(ControlOp::Accept, Some(Endpoint::Netlink)), Err(Errno::Eopnotsupp));
-        assert_ne!(route_op(ControlOp::Listen, Some(Endpoint::Netlink)), Err(Errno::Enotsock));
     }
 
     #[test]

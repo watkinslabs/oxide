@@ -17,7 +17,7 @@ pub fn sys_listen(args: &SyscallArgs) -> i64 {
         Err(error) => return -(error.as_i32() as i64),
     };
     match target {
-        Routed::Netlink(netlink) => match netlink.socket().listen() {
+        Routed::Netlink(netlink) => match netlink.socket().listen(backlog) {
             Ok(()) => 0, Err(error) => errno_from_neterr(error),
         },
         // D3.3: AF_VSOCK listen — register the bound port in the vsock
