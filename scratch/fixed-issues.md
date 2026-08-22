@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2524-stale-ext4-reserved-block-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED f9b3f7145 | DEFECT | med | Ext4 reserved-block admission already honors reserved uid/gid and CAP_SYS_RESOURCE decisions; the former open premise was stale. | Ext4 reserve/mount-option tests and target checks passed. | Chris Watkins |
+
 ### B2523-tcp-urgent-arrival-callsite
 
 | Status | Class | Sev | Issue | Evidence | Owner |
