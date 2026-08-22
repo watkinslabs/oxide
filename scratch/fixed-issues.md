@@ -4939,6 +4939,12 @@ against the row's own evidence.
 |---|---|---|---|---|---|
 | FIXED B2583 | MISSING | low | The historical disabled-hook blocklist row was stale-by-design. This kernel publishes only BPF-LSM hooks that have live callsites; an unimplemented or deliberately withheld hook is absent from the attach-target registry and therefore cannot be named or attached. | `security/src/bpf_lsm/hooks.rs::HOOKS` contains only `bpf_lsm_file_open`; `hook_by_stub_name` rejects unpublished and near-miss names, while `security/src/bpf_lsm/registry.rs` resolves only that canonical enum. The existing hook registry tests pin uniqueness, publication, and rejection of unpublished stubs. No source change was needed. | B2583 |
 
+### B2588-cgroupfs-namespace-root-stale
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2588 | MISSING | med | The historical row claiming that cgroup2 mounts ignore the caller's cgroup namespace is stale ledger residue. The mount now resolves the caller namespace root before constructing the filesystem view. | `cgroup::fs::realize_tree` reads `state::caller_ns_root`, resolves that path in the canonical cgroup tree, and the linked `cgroup::tests::mount_ns` cases cover hierarchy-root, namespaced-root, and removed-root fallback behavior. This is the B2013 implementation already present on current main; no source change was needed. | B2588 |
+
 ### B2584-stale-membarrier-rows
 
 | Status | Class | Sev | Issue | Evidence | Owner |
