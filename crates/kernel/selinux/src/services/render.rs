@@ -22,6 +22,12 @@ const LEVEL_SEP: char = '-';
 
 /// Rendered context of one SID. # C: O(categories)
 pub fn sid_to_context(db: &Policydb, sidtab: &Sidtab, sid: Sid) -> Result<String> {
+    let context = sidtab.search(sid).ok_or(Error::UnknownSid)?;
+    context_to_string(db, context)
+}
+
+/// Rendered context of one SID, including a retained unmapped value. # C: O(categories)
+pub fn sid_to_context_force(db: &Policydb, sidtab: &Sidtab, sid: Sid) -> Result<String> {
     let context = sidtab.search_force(sid).ok_or(Error::UnknownSid)?;
     context_to_string(db, context)
 }

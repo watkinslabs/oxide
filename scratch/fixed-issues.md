@@ -3202,3 +3202,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED cd0aebe8d | DEFECT | low | **SELinux filesystem transaction requests consume their defined field prefix and ignore later fields.** Missing required fields and invalid class values remain errors; a context request remains one complete context. | B2349's production transaction tests covered access, create, relabel, member, and validate-transition parsing. | B2349-selinuxfs-trailing-request-fields |
+
+### B2350-selinux-force-context
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2350 | MISSING | low | **A `CAP_MAC_ADMIN` caller can read a retained raw label after the loaded policy drops its type; other callers see the policy's unlabeled context.** The canonical SID table supplies ordinary and force renderers, and the inode-label hook selects via current-task capability. | B2350's service and live xattr tests pinned both renderer selection and capability gating. | B2350 |

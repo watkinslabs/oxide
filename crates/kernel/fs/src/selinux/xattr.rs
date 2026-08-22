@@ -65,10 +65,17 @@ pub fn inode_getsecurity(inode: &InodeRef, suffix: &str) -> Result<Vec<u8>, i64>
     // No label to report while the object has no filesystem type or no class
     // the policy names: nothing has been decided for it, so the store answers.
     let Some(sid) = super::label::inode_sid(inode) else { return Err(EOPNOTSUPP) };
-    let text = selinux_runtime::with(|s| s.sid_to_context(sid))
+    let force = sched::current().is_some_and(|t| t.has_cap(sched::cap::MAC_ADMIN));
+    let text = selinux_runtime::with(|s| render_context(force,
+        || s.sid_to_context(sid), || s.sid_to_context_force(sid)))
         .ok_or(EOPNOTSUPP)?
         .map_err(|_| -(Errno::Einval.as_i32() as i64))?;
     Ok(getsecurity_value(&text))
+}
+
+/// Choose ordinary or raw retained-context rendering at the capability boundary. # C: O(renderer)
+fn render_context<T>(force: bool, ordinary: impl FnOnce() -> T, raw: impl FnOnce() -> T) -> T {
+    if force { raw() } else { ordinary() }
 }
 
 /// Price a label write against the label being written. # C: O(rules)
@@ -100,4 +107,15 @@ fn relabel(inode: &InodeRef, ssid: u32, isid: u32, class: u16, value: Option<&[u
     // re-read answers correctly either way.
     inode.clear_security_sid();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_context;
+
+    #[test]
+    fn cap_mac_admin_alone_selects_the_retained_raw_context() {
+        assert_eq!(render_context(false, || "policy", || "raw"), "policy");
+        assert_eq!(render_context(true, || "policy", || "raw"), "raw");
+    }
 }

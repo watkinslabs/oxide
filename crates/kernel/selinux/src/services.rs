@@ -29,7 +29,7 @@ pub use constraint::constraint_eval;
 pub use transition::{change_sid, change_sid_user, compute_sid, is_socket_class, member_sid,
                      member_sid_user, transition_sid, transition_sid_user, ClassValue,
                      TransitionKind, TransitionRequest};
-pub use render::{context_to_string, sid_to_context};
+pub use render::{context_to_string, sid_to_context, sid_to_context_force};
 pub use parse::{context_from_string, string_to_sid};
 pub use objects::{genfs_sid, initial_sid_context, load_initial_sids};
 pub use validtrans::{validate_transition, validate_transition_user};

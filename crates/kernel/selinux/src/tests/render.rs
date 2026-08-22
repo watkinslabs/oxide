@@ -7,7 +7,8 @@ use crate::services::fixture::*;
 use crate::context::{Context, ValidContext};
 use crate::error::Error;
 use crate::policydb::Policydb;
-use crate::services::{context_from_string, context_to_string, sid_to_context};
+use crate::services::{context_from_string, context_to_string, sid_to_context,
+                      sid_to_context_force};
 use crate::sidtab::Sidtab;
 
 fn render(db: &Policydb, c: &ValidContext) -> String {
@@ -110,6 +111,20 @@ fn a_sid_renders_the_context_it_names() {
     let out = sid_to_context(&db, &sidtab, crate::uapi::initsid::InitSid::Kernel.sid())
         .expect("render");
     assert_eq!(out, "system_u:system_r:init_t:s0");
+}
+
+#[test]
+fn only_the_force_renderer_exposes_a_retained_unmapped_context() {
+    let db = policy();
+    let mut sidtab = Sidtab::new();
+    crate::services::load_initial_sids(&db, &mut sidtab).expect("initial sids");
+    let raw = "retired_u:retired_r:retired_t:s9";
+    let sid = sidtab.context_to_sid(Context::Unmapped(raw.to_string())).expect("unmapped sid");
+    let ordinary = sid_to_context(&db, &sidtab, sid).expect("ordinary rendering");
+    let unlabeled = sid_to_context(&db, &sidtab, crate::uapi::initsid::InitSid::Unlabeled.sid())
+        .expect("unlabeled rendering");
+    assert_eq!(ordinary, unlabeled);
+    assert_eq!(sid_to_context_force(&db, &sidtab, sid).expect("forced rendering"), raw);
 }
 
 #[test]
