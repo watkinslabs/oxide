@@ -42,6 +42,18 @@ fn an_empty_file_claims_no_clusters() {
 }
 
 #[test]
+fn keep_size_preallocation_reserves_clusters_without_growing() {
+    let mut v = test_image::empty();
+    let mut made = v.create_file(&DirHandle::Root, "reserve", stamp()).unwrap();
+    let before = v.used_clusters();
+    v.preallocate_file(&mut made, 0, (CLUSTER * 2) as u64, stamp()).unwrap();
+    assert_eq!(made.size(), 0);
+    assert_eq!(v.used_clusters(), before + 2);
+    v.write_file(&mut made, 0, b"x", stamp()).unwrap();
+    assert_eq!(v.find_entry(&v.root_chain(), "reserve").unwrap().size(), 1);
+}
+
+#[test]
 fn creating_a_name_that_exists_is_refused() {
     let mut v = test_image::empty();
     let dir = root(&v);
@@ -572,4 +584,3 @@ fn a_builder_written_volume_and_a_written_one_agree() {
     assert_eq!(v.read_whole(&a).unwrap().len(), v.read_whole(&c).unwrap().len());
     assert_eq!(a.set.entries, c.set.entries);
 }
-

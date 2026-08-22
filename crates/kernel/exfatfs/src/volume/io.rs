@@ -15,6 +15,28 @@ use crate::uapi::MAX_NUM_CLUSTER;
 use super::Volume;
 
 impl<S: SectorSource> Volume<S> {
+    /// Reserve clusters through the requested range without changing the
+    /// visible file size. # C: O(clusters allocated)
+    pub fn preallocate_file(&mut self, entry: &mut super::DirEntry, offset: u64, len: u64,
+                            now: crate::time::Stamp) -> Result<(), Errno> {
+        if entry.set.is_dir() { return Err(Errno::Eisdir); }
+        if !self.writable { return Err(Errno::Erofs); }
+        let end = offset.checked_add(len).ok_or(Errno::Efbig)?;
+        if end > self.geo.max_bytes() { return Err(Errno::Efbig); }
+        if len == 0 || end <= entry.set.stream.size { return Ok(()); }
+        let mut chain = self.chain_of(&entry.set);
+        let needed = self.geo.clusters_for(end);
+        if needed > chain.size {
+            let more = needed - chain.size;
+            self.alloc_clusters(&mut chain, more, false)?;
+        }
+        entry.set.stream.start_cluster = if chain.is_empty() { 0 } else { chain.dir };
+        entry.set.stream.flags = chain.flags;
+        entry.set.stream.size = u64::from(chain.size) * self.geo.cluster_bytes();
+        entry.set.file.modify = now;
+        self.write_entry_set(entry)
+    }
+
     /// Read from a file, returning how many bytes were read.
     ///
     /// A read stops at the file's length: the tail of the last cluster is not
