@@ -4932,3 +4932,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED B2582 | MISSING | high | The historical “no raw tracepoint registry” row was stale on current main. `BPF_RAW_TRACEPOINT_OPEN` already resolves the requested name through the tracefs event registry, which contains built-in syscall events and runtime registrations, and the canonical raw-event descriptor owns the attached probe list. | `security/src/bpf/cmd/trace.rs::raw_tracepoint_open` -> `syscalls/src/321_bpf.rs::attach_raw_tracepoint` -> `tracefs/src/raw_bpf.rs::attach` -> `tracefs/src/eventfs.rs::raw_event_by_name`; the registry and raw-link tests cover lookup, attach, detach, and unknown-name `ENOENT`. No source change was needed; the known row was ledger residue. | B2582 |
+
+### B2583-bpf-disabled-hook-blocklist-stale
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2583 | MISSING | low | The historical disabled-hook blocklist row was stale-by-design. This kernel publishes only BPF-LSM hooks that have live callsites; an unimplemented or deliberately withheld hook is absent from the attach-target registry and therefore cannot be named or attached. | `security/src/bpf_lsm/hooks.rs::HOOKS` contains only `bpf_lsm_file_open`; `hook_by_stub_name` rejects unpublished and near-miss names, while `security/src/bpf_lsm/registry.rs` resolves only that canonical enum. The existing hook registry tests pin uniqueness, publication, and rejection of unpublished stubs. No source change was needed. | B2583 |
