@@ -25,6 +25,7 @@ pub fn route(inode: &Inode) -> Option<TtyTarget> {
         // its read/write/poll already use, so its ioctls cannot disagree with
         // its I/O about which line it is.
         TtyBinding::PreferredConsole => match cmdline::preferred_console() {
+            cmdline::ConsoleKind::Null => return None,
             cmdline::ConsoleKind::Serial => TtyTarget::Serial,
             cmdline::ConsoleKind::Vt(_) => TtyTarget::Vt(foreground_vt()),
         },

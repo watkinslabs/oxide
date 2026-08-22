@@ -26,12 +26,16 @@ fn vt_fops() -> Arc<dyn FileOps> { Arc::new(crate::vt_console::ConsoleFileOps) }
 fn system_console_fops() -> Arc<dyn FileOps> { Arc::new(crate::vt_console::SystemConsoleFileOps) }
 #[cfg(target_os = "oxide-kernel")]
 fn serial_fops() -> Arc<dyn FileOps> { Arc::new(crate::serial::SerialFileOps) }
+#[cfg(target_os = "oxide-kernel")]
+fn ttynull_fops() -> Arc<dyn FileOps> { Arc::new(crate::null::NullFileOps) }
 #[cfg(not(target_os = "oxide-kernel"))]
 fn vt_fops() -> Arc<dyn FileOps> { vfs::default_file_ops() }
 #[cfg(not(target_os = "oxide-kernel"))]
 fn system_console_fops() -> Arc<dyn FileOps> { vfs::default_file_ops() }
 #[cfg(not(target_os = "oxide-kernel"))]
 fn serial_fops() -> Arc<dyn FileOps> { vfs::default_file_ops() }
+#[cfg(not(target_os = "oxide-kernel"))]
+fn ttynull_fops() -> Arc<dyn FileOps> { vfs::default_file_ops() }
 
 /// Shared console tty construction: the number, the device number, and the
 /// `ConsoleData` that makes the inode resolvable, all from ONE place.
@@ -78,4 +82,15 @@ pub fn make_system_console_inode() -> InodeRef {
 pub fn make_serial_inode() -> InodeRef {
     tty_inode(ids::tty_ino(ids::SERIAL_INO_LB), devnum::serial_rdev(),
               SERIAL_CONSOLE_MODE, TtyBinding::Serial, serial_fops())
+}
+
+/// Build the sink-only `/dev/ttynull` device. Linux allocates its tty driver a
+/// dynamic major and accepts every write without emitting bytes. # C: O(1)
+pub fn make_ttynull_inode() -> InodeRef {
+    InodeBuilder::new(ids::tty_ino(ids::TTYNULL_INO_LB),
+                      mk_mode(FileType::CharDev, CONSOLE_MODE),
+                      default_inode_ops(), ttynull_fops())
+        .fsid(devfs::DEVFS_FSID)
+        .rdev(devnum::ttynull_rdev())
+        .build()
 }

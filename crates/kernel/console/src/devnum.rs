@@ -10,6 +10,10 @@ const LINUX_TTY_ALIAS_MINOR: u32 = 0;
 const LINUX_SYSTEM_CONSOLE_MINOR: u32 = 1;
 const LINUX_VCS_MINOR: u32 = 0;
 const LINUX_VCSA_MINOR: u32 = 128;
+// Linux assigns ttynull a dynamic char-device major. Reserve the first dynamic
+// major in this fixed device table; no other in-tree character driver uses it.
+const LINUX_TTYNULL_MAJOR: u32 = 240;
+const LINUX_TTYNULL_MINOR: u32 = 0;
 
 #[cfg(target_arch = "x86_64")]
 const LINUX_SERIAL_MAJOR: u32 = LINUX_VT_MAJOR;
@@ -38,6 +42,10 @@ pub(crate) const fn vt_rdev(vt: u8) -> u32 {
 
 pub(crate) const fn serial_rdev() -> u32 {
     rdev(LINUX_SERIAL_MAJOR, LINUX_SERIAL_MINOR)
+}
+
+pub(crate) const fn ttynull_rdev() -> u32 {
+    rdev(LINUX_TTYNULL_MAJOR, LINUX_TTYNULL_MINOR)
 }
 
 pub(crate) const fn vcs_rdev(attr: bool) -> u32 {

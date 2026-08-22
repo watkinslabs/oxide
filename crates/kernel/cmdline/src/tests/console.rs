@@ -29,9 +29,18 @@ fn no_entry_keeps_both_sinks() {
 
 #[test]
 fn a_device_name_this_kernel_drives_no_console_for_is_not_classified() {
-    assert_eq!(classify(b"ttynull"), None);
     assert_eq!(classify(b"hvc0"), None);
-    assert_eq!(classify(b""), None);
+}
+
+#[test]
+fn ttynull_is_the_only_sink_when_requested() {
+    assert_eq!(classify(b"ttynull"), Some(ConsoleKind::Null));
+    assert_eq!(preferred_console_in(b"console=ttynull"), ConsoleKind::Null);
+    assert_eq!(active_consoles_in(b"console=ttynull").as_slice(), &[ConsoleKind::Null]);
+    assert_eq!(console_classes_in(b"console=ttynull"), (false, false),
+        "the null console suppresses both output-producing classes");
+    assert_eq!(classify(b"null"), Some(ConsoleKind::Null), "Linux console=null alias");
+    assert_eq!(classify(b""), Some(ConsoleKind::Null), "Linux empty console alias");
 }
 
 #[test]
@@ -121,8 +130,10 @@ fn no_entry_reports_the_arch_default_pair() {
 
 /// A name no console is driven for takes no slot, and cannot displace one.
 #[test]
-fn an_undriven_name_is_not_reported() {
+fn a_null_console_is_reported_but_an_undriven_name_is_not() {
     let a = active_consoles_in(b"console=ttynull console=ttyS0 console=tty0");
+    assert_eq!(a.as_slice(), &[ConsoleKind::Serial, ConsoleKind::Null, ConsoleKind::Vt(0)]);
+    let a = active_consoles_in(b"console=hvc0 console=ttyS0 console=tty0");
     assert_eq!(a.as_slice(), &[ConsoleKind::Serial, ConsoleKind::Vt(0)]);
 }
 

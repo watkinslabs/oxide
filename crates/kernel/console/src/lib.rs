@@ -26,6 +26,7 @@ extern crate alloc;
 // - `routing`:   live `binding → tty` resolution + open-time ctty acquisition.
 // - `open_binding`: foreground aliases resolved exactly once for each open.
 // - `serial`/`static_console`: the UART line.
+// - `null`:      the sink-only ttynull line.
 // - `vt_console`/`vt_tty`/`vt_input`: the video VTs.
 // - `vcs`:       `/dev/vcs*` screen dumps.
 // - `devnodes`:  device-model registration of every node above.
@@ -44,6 +45,7 @@ pub mod boot_progress;
 pub mod identity;
 pub mod ids;
 pub mod nodes;
+pub mod null;
 
 #[cfg(target_os = "oxide-kernel")] pub mod devnodes;
 #[cfg(target_os = "oxide-kernel")] pub mod routing;
@@ -58,7 +60,7 @@ pub use identity::{binding_of, is_console_tty, ConsoleData, TtyBinding, TtyTarge
 pub use ids::{FG_VT_INO_LB, MAX_VT_INO_LB, SERIAL_INO_LB, SYSTEM_CONSOLE_INO_LB,
               TTY_ALIAS_INO_LB, TTY_INO_BASE};
 pub use nodes::{make_console_inode, make_serial_inode, make_system_console_inode,
-                make_tty_alias_inode};
+                make_tty_alias_inode, make_ttynull_inode};
 
 #[cfg(target_os = "oxide-kernel")]
 pub use devnodes::{register_devnodes, try_register_devnodes};

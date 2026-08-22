@@ -69,6 +69,7 @@ fn every_reported_console_names_a_published_tty() {
 /// consumers match on it; the serial line takes the published node name.
 #[test]
 fn console_line_names_match_the_published_nodes() {
+    assert_eq!(console_line_name(cmdline::ConsoleKind::Null), "ttynull");
     assert_eq!(console_line_name(cmdline::ConsoleKind::Serial), "ttyS0");
     assert_eq!(console_line_name(cmdline::ConsoleKind::Vt(0)), "tty0");
     assert_eq!(console_line_name(cmdline::ConsoleKind::Vt(3)), "tty3");
