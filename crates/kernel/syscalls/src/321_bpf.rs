@@ -11,7 +11,7 @@ pub fn sys_bpf(args: &SyscallArgs) -> i64 {
     match security::bpf::object_path_command(args) {
         Some(security::bpf::uapi::cmd::OBJ_PIN) => obj_pin(args),
         Some(security::bpf::uapi::cmd::OBJ_GET) => obj_get(args),
-        _ => security::bpf::sys_bpf(args, PERF_HOOKS),
+        _ => security::bpf::sys_bpf(args, PERF_HOOKS, RAW_TRACEPOINT_HOOKS),
     }
 }
 
@@ -21,6 +21,25 @@ const PERF_HOOKS: security::bpf::PerfHooks = security::bpf::PerfHooks {
     is_perf: is_perf_event_fd,
     attached_prog: perf_event_prog,
 };
+
+/// Raw BPF probes attach to tracefs's canonical event definitions; the
+/// security owner retains the fd/link lifecycle and supplies the runner.
+const RAW_TRACEPOINT_HOOKS: security::bpf::RawTracepointHooks =
+    security::bpf::RawTracepointHooks {
+        attach: attach_raw_tracepoint,
+        detach: detach_raw_tracepoint,
+    };
+
+fn attach_raw_tracepoint(
+    name: &[u8],
+    id: u64,
+    prog: vfs::InodeRef,
+    cookie: u64,
+) -> Result<&'static str, Errno> {
+    tracefs::attach_raw_bpf(name, id, prog, cookie, security::bpf::run_raw_tracepoint)
+}
+
+fn detach_raw_tracepoint(name: &str, id: u64) { tracefs::detach_raw_bpf(name, id); }
 
 fn is_perf_event_fd(inode: &vfs::InodeRef) -> bool { ::fs::perf::is_perf_inode(inode) }
 

@@ -69,14 +69,18 @@ pub use prog::inode::{
 };
 pub use map::inode::{BpfMapInode, make_bpf_map_inode};
 pub use link::{
-    BpfCgroupLinkInode, BpfLsmLinkInode, make_bpf_cgroup_link_inode, make_bpf_lsm_link_inode,
+    BpfCgroupLinkInode, BpfLsmLinkInode, BpfRawTracepointLinkInode,
+    RawTracepointHooks, RawTracepointLinkInfo, raw_tracepoint_link_info,
+    make_bpf_cgroup_link_inode, make_bpf_lsm_link_inode,
 };
 pub use iter::{BpfIterLinkInode, IterTarget, make_bpf_iter_link_inode};
 /// Width of one iterator context slot. # C: O(1)
 pub const ITER_SLOT_BYTES: usize = iter::targets::SLOT_BYTES;
 /// Bytes of context an iterator program addresses. # C: O(1)
 pub fn iter_context_bytes() -> usize { iter::targets::CONTEXT_BYTES }
-pub(crate) use link::prime_bpf_cgroup_link;
+pub(crate) use link::{prime_bpf_cgroup_link, prime_bpf_raw_tracepoint_link};
+#[cfg(test)]
+pub(crate) use link::prime_bpf_raw_tracepoint_link_with;
 pub(crate) use fd::{install_fd, install_fd_access};
 
 /// `bpf_prog_get(ufd)`: the program one descriptor holds, together with the
@@ -146,8 +150,26 @@ pub fn make_bpf_token_inode(token: BpfTokenInode) -> InodeRef {
 /// `perf` carries the two perf-subsystem answers `BPF_TASK_FD_QUERY` needs;
 /// only that command consults them.
 /// # C: O(1) admit; O(log N) for map ops; O(insn_cnt) for PROG_LOAD
-pub fn sys_bpf(args: &SyscallArgs, perf: PerfHooks) -> i64 {
-    match dispatch::dispatch(args, perf) { Ok(v) => v, Err(e) => -(e.as_i32() as i64) }
+pub fn sys_bpf(args: &SyscallArgs, perf: PerfHooks, raw_tracepoint: RawTracepointHooks) -> i64 {
+    match dispatch::dispatch(args, perf, raw_tracepoint) {
+        Ok(v) => v, Err(e) => -(e.as_i32() as i64),
+    }
+}
+
+/// Execute one raw-tracepoint program against the site's register-wide
+/// argument vector. The attachment cookie is per link, so the same program
+/// attached twice observes the cookie of the link currently invoking it.
+/// # C: O(program instructions)
+pub fn run_raw_tracepoint(prog: &InodeRef, args: &[u64], cookie: u64) {
+    const MAX_RAW_ARGS: usize = 12;
+    let Some(prog) = prog.private::<BpfProgInode>() else { return; };
+    let mut context = [0u8; MAX_RAW_ARGS * core::mem::size_of::<u64>()];
+    for (slot, value) in args.iter().take(MAX_RAW_ARGS).enumerate() {
+        let at = slot * core::mem::size_of::<u64>();
+        context[at..at + core::mem::size_of::<u64>()].copy_from_slice(&value.to_ne_bytes());
+    }
+    let mut state = crate::bpf_interp::HelperState { attach_cookie: cookie, ..Default::default() };
+    let _ = crate::bpf_interp::run_program_with_state(&prog, &context, &[], &[], &mut state);
 }
 
 /// Decode the `BPF_OBJ_PIN` pathname after the common attribute protocol.

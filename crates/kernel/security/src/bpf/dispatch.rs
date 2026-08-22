@@ -39,6 +39,7 @@ pub(super) fn object_attr(args: &SyscallArgs) -> Result<attr::Attr, Errno> {
 pub(super) fn dispatch(
     args: &SyscallArgs,
     perf: super::PerfHooks,
+    raw_tracepoint: super::RawTracepointHooks,
 ) -> Result<i64, Errno> {
     let mut c = args.a0 as u32;
     let a = user::fetch_attr(args.a1, args.a2 as u32)?;
@@ -84,7 +85,7 @@ pub(super) fn dispatch(
         cmd::MAP_LOOKUP_AND_DELETE_BATCH => batch(&a, args.a1, BatchOp::LookupAndDelete),
         cmd::MAP_UPDATE_BATCH           => batch(&a, args.a1, BatchOp::Update),
         cmd::MAP_DELETE_BATCH           => batch(&a, args.a1, BatchOp::Delete),
-        cmd::RAW_TRACEPOINT_OPEN        => command::trace::raw_tracepoint_open(&a),
+        cmd::RAW_TRACEPOINT_OPEN        => command::trace::raw_tracepoint_open(&a, raw_tracepoint),
         cmd::TASK_FD_QUERY              => command::trace::task_fd_query(&a, args.a1, caps, perf),
         cmd::PROG_STREAM_READ_BY_FD     => command::stream::read(&a),
         cmd::PROG_ASSOC_STRUCT_OPS      => command::struct_ops::assoc(&a),

@@ -20,6 +20,13 @@ use vfs::{FileType, Ino, InodeRef, KResult, VfsError};
 
 use crate::percpu_ring::{self, Record, KIND_MARK, KIND_SCHED_SWITCH, KIND_SYS_ENTER, KIND_SYS_EXIT, PAYLOAD};
 use crate::predicate::{EventRecord, FieldVal, FilterSlot};
+use crate::raw_bpf::{self, RawEvent};
+
+#[path = "ring/syscall_events.rs"]
+mod syscall_events;
+pub(crate) use syscall_events::{
+    RAW_SYS_ENTER, RAW_SYS_EXIT, set_sys_enter, set_sys_exit, sys_enter_on, sys_exit_on,
+};
 
 /// Per-event compiled-filter slots, shared with the eventfs `filter` files
 /// (`eventfs::BUILTIN` points each `EventDesc.filter` here). The emit site
@@ -130,88 +137,6 @@ pub(crate) fn set_sched_switch(on: bool) {
     sched::live::install_sched_switch_hook(if on { Some(record_sched_switch) } else { None });
     #[cfg(not(target_os = "oxide-kernel"))]
     let _ = record_sched_switch;
-}
-
-/// sys_enter tracepoint hook — fires per syscall in dispatch (syscall ctx, not
-/// the deepest hot path but frequent). Wait-free record.
-/// Payload: [comm 16 null-pad][nr u32 LE]. # C: O(1)
-fn record_sys_enter(nr: u32) {
-    if !tracing_on() { return; }
-    let (pid, comm) = cur_task();
-    if FILTER_SYS_ENTER.has_filter() {
-        let f = [
-            ("id",         FieldVal::Int(nr as i64)),
-            ("common_pid", FieldVal::Int(pid as i64)),
-        ];
-        if !FILTER_SYS_ENTER.passes(&EventRecord::new(&f)) { return; }
-    }
-    let mut pl = [0u8; PAYLOAD];
-    pl[..16].copy_from_slice(&comm);
-    pl[16..20].copy_from_slice(&nr.to_le_bytes());
-    percpu_ring::record(this_cpu(), now_ns(), pid, KIND_SYS_ENTER, &pl[..20]);
-}
-
-/// sys_exit tracepoint hook. Payload: [comm 16][nr u32 LE][ret i64 LE].
-/// # C: O(1)
-fn record_sys_exit(nr: u32, ret: i64) {
-    if !tracing_on() { return; }
-    let (pid, comm) = cur_task();
-    if FILTER_SYS_EXIT.has_filter() {
-        let f = [
-            ("id",         FieldVal::Int(nr as i64)),
-            ("ret",        FieldVal::Int(ret)),
-            ("common_pid", FieldVal::Int(pid as i64)),
-        ];
-        if !FILTER_SYS_EXIT.passes(&EventRecord::new(&f)) { return; }
-    }
-    let mut pl = [0u8; PAYLOAD];
-    pl[..16].copy_from_slice(&comm);
-    pl[16..20].copy_from_slice(&nr.to_le_bytes());
-    pl[20..28].copy_from_slice(&ret.to_le_bytes());
-    percpu_ring::record(this_cpu(), now_ns(), pid, KIND_SYS_EXIT, &pl[..28]);
-}
-
-const SYSCALL_EVENT_ENTER: u8 = 1 << 0;
-const SYSCALL_EVENT_EXIT: u8 = 1 << 1;
-
-/// Linux `sys_tracepoint_refcount` represented as the exact enabled-event
-/// mask. Setter serialization mirrors tracepoints_mutex -> tasklist_lock; the
-/// syscall hot path reads neither this lock nor this mask.
-static SYSCALL_EVENTS_ON: Spinlock<u8, TracepointClass> = Spinlock::new(0);
-
-/// Change one syscall trace event and publish the union's zero/nonzero edge to
-/// every live task. Hook installation precedes setting the work bit; clearing
-/// the work bit precedes hook removal, so a task that observes the bit always
-/// has a callable hook. # C: O(N_tasks) only on the family zero/nonzero edge
-fn set_syscall_event(bit: u8, on: bool, install: fn(bool)) {
-    let mut events = SYSCALL_EVENTS_ON.lock();
-    let was_on = *events & bit != 0;
-    if was_on == on { return; }
-    let family_was_on = *events != 0;
-    if on { install(true); }
-    if on { *events |= bit; } else { *events &= !bit; }
-    let family_is_on = *events != 0;
-    if family_was_on != family_is_on {
-        sched::syscall_work::set_tracepoint_active(family_is_on);
-    }
-    if !on { install(false); }
-}
-
-fn install_sys_enter(on: bool) {
-    syscall::tracepoint::install_sys_enter_hook(if on { Some(record_sys_enter) } else { None });
-}
-
-fn install_sys_exit(on: bool) {
-    syscall::tracepoint::install_sys_exit_hook(if on { Some(record_sys_exit) } else { None });
-}
-
-/// Enable/disable the sys_enter tracepoint. # C: O(N_tasks) on family edge
-pub(crate) fn set_sys_enter(on: bool) {
-    set_syscall_event(SYSCALL_EVENT_ENTER, on, install_sys_enter);
-}
-/// Enable/disable the sys_exit tracepoint. # C: O(N_tasks) on family edge
-pub(crate) fn set_sys_exit(on: bool) {
-    set_syscall_event(SYSCALL_EVENT_EXIT, on, install_sys_exit);
 }
 
 /// Trim a null-padded comm field to its stored bytes. # C: O(n)
@@ -352,8 +277,6 @@ pub(crate) fn control_inode_ops() -> Arc<dyn InodeOps> {
 }
 
 pub(crate) fn sched_switch_on() -> bool { SCHED_SWITCH_ON.load(Ordering::Acquire) }
-pub(crate) fn sys_enter_on() -> bool { *SYSCALL_EVENTS_ON.lock() & SYSCALL_EVENT_ENTER != 0 }
-pub(crate) fn sys_exit_on() -> bool { *SYSCALL_EVENTS_ON.lock() & SYSCALL_EVENT_EXIT != 0 }
 
 /// Build an `events/.../enable` inode for the eventfs model (per-event
 /// tracepoint get/set fn pointers). # C: O(1)

@@ -15,7 +15,7 @@ use syscall::errno::Errno;
 use super::super::attr::{self, Attr, Caps};
 use super::super::uapi;
 use super::super::user;
-use super::super::BpfProgInode;
+use super::super::{BpfProgInode, RawTracepointHooks};
 use super::objfd;
 
 #[path = "trace/query.rs"]
@@ -66,13 +66,12 @@ fn read_tp_name(ptr: u64) -> Result<Vec<u8>, Errno> {
     Ok(out)
 }
 
-/// Resolve one tracepoint by name. This kernel registers none, so every
-/// name is unknown. # C: O(registered tracepoints)
-fn tracepoint_by_name(_name: &[u8]) -> Option<()> { None }
-
 /// `bpf_raw_tracepoint_open()`. No capability of its own: the right to
 /// attach was decided when the program was loaded. # C: O(name length)
-pub(in super::super) fn raw_tracepoint_open(a: &Attr) -> Result<i64, Errno> {
+pub(in super::super) fn raw_tracepoint_open(
+    a: &Attr,
+    hooks: RawTracepointHooks,
+) -> Result<i64, Errno> {
     use uapi::off::raw_tracepoint as o;
     attr::check_attr(a, o::LAST_END)?;
     let inode = objfd::prog_from_fd(a.u32_at(o::PROG_FD))?;
@@ -84,8 +83,10 @@ pub(in super::super) fn raw_tracepoint_open(a: &Attr) -> Result<i64, Errno> {
         TpNameSource::User => read_tp_name(name_ptr)?,
         TpNameSource::LoadTime => Vec::new(),
     };
-    tracepoint_by_name(&name).ok_or(Errno::Enoent)?;
-    Err(Errno::Enoent)
+    let cookie = a.u64_at(o::COOKIE);
+    let primer = super::super::prime_bpf_raw_tracepoint_link(inode.clone(), cookie, hooks)?;
+    let canonical = (hooks.attach)(&name, primer.id(), inode, cookie)?;
+    Ok(primer.settle(canonical))
 }
 
 /// Resolve one descriptor of another task. `-ENOENT` when the pid names
@@ -113,7 +114,7 @@ pub(in super::super) fn task_fd_query(
     let kind = query::classify(&inode, perf);
     // `event->prog` is read only once the descriptor is known to be a perf
     // event; no other kind has one.
-    let prog = (kind == query::QueriedFd::PerfEvent)
+    let prog = matches!(&kind, query::QueriedFd::PerfEvent)
         .then(|| (perf.attached_prog)(&inode))
         .flatten()
         .and_then(|p| super::super::prog_facts(&p));
@@ -134,6 +135,13 @@ mod tests {
         super::super::super::PerfHooks { is_perf: never, attached_prog: no_prog }
     }
 
+    fn no_raw() -> RawTracepointHooks {
+        fn attach(_: &[u8], _: u64, _: vfs::InodeRef, _: u64)
+            -> Result<&'static str, Errno> { Err(Errno::Enoent) }
+        fn detach(_: &str, _: u64) {}
+        RawTracepointHooks { attach, detach }
+    }
+
     #[test]
     fn check_attr_boundaries_are_the_uapi_offsetofends() {
         assert_eq!(uapi::off::raw_tracepoint::LAST_END, 24);
@@ -152,9 +160,9 @@ mod tests {
         let fd = uapi::off::raw_tracepoint::PROG_FD;
         a.bytes[fd..fd + 4].copy_from_slice(&u32::MAX.to_ne_bytes());
         a.bytes[12] = 1;
-        assert_eq!(raw_tracepoint_open(&a), Err(Errno::Ebadf));
+        assert_eq!(raw_tracepoint_open(&a, no_raw()), Err(Errno::Ebadf));
         a.bytes[uapi::off::raw_tracepoint::LAST_END] = 1;
-        assert_eq!(raw_tracepoint_open(&a), Err(Errno::Einval));
+        assert_eq!(raw_tracepoint_open(&a, no_raw()), Err(Errno::Einval));
     }
 
     #[test]
@@ -176,12 +184,6 @@ mod tests {
         assert_eq!(name_verdict(TpNameSource::LoadTime, 0x1000), Err(Errno::Einval));
         assert_eq!(name_verdict(TpNameSource::User, 0), Ok(()));
         assert_eq!(name_verdict(TpNameSource::User, 0x1000), Ok(()));
-    }
-
-    #[test]
-    fn no_tracepoint_name_resolves_in_this_kernel() {
-        assert_eq!(tracepoint_by_name(b"sys_enter"), None);
-        assert_eq!(tracepoint_by_name(b""), None);
     }
 
     /// The capability is checked before the `flags` field and before the

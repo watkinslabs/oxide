@@ -158,9 +158,20 @@ fn helper_state_is_shared_with_the_caller() {
         raw(0x85, 0, 0, 0, 3),
         raw(0x95, 0, 0, 0, 0),
     ]);
-    let mut state = HelperState { retval: 12 };
+    let mut state = HelperState { retval: 12, ..Default::default() };
     assert_eq!(run_with_helpers_and_state(&p, &[], &helpers, &mut state), Some(12));
     assert_eq!(state.retval, 77);
+}
+
+#[test]
+fn attach_cookie_helper_reads_the_current_links_cookie() {
+    let p = cat(&[
+        raw(0x85, 0, 0, 0, crate::bpf::uapi::func_id::GET_ATTACH_COOKIE as i32),
+        raw(0x95, 0, 0, 0, 0),
+    ]);
+    let mut state = HelperState { attach_cookie: 0x1234_5678_9abc_def0, ..Default::default() };
+    assert_eq!(run_with_helpers_and_state(&p, &[], &[], &mut state),
+               Some(0x1234_5678_9abc_def0u64 as i64));
 }
 
 fn alu64_imm(opc: u8, a: i32, b: i32) -> Option<i64> {

@@ -18,17 +18,17 @@ use super::route_c::dispatch_route_c;
 /// at the current task's syscall-work word and never enters the AtomicPtr hook
 /// wrapper. # C: O(1)
 #[inline]
-fn fire_sys_enter_if_armed(task: Option<&sched::Task>, nr: u32) {
+fn fire_sys_enter_if_armed(task: Option<&sched::Task>, nr: u32, args: &SyscallArgs) {
     if !sched::syscall_work::tracepoint_pending(task) { return; }
-    syscall::tracepoint::fire_sys_enter(nr);
+    syscall::tracepoint::fire_sys_enter(nr, args);
 }
 
 /// Linux `syscall_exit_work` tracepoint leg. Re-read the task word at exit: an
 /// event may have been enabled or disabled while this syscall slept. # C: O(1)
 #[inline]
-fn fire_sys_exit_if_armed(task: Option<&sched::Task>, nr: u32, rv: i64) {
+fn fire_sys_exit_if_armed(task: Option<&sched::Task>, nr: u32, rv: i64, args: &SyscallArgs) {
     if !sched::syscall_work::tracepoint_pending(task) { return; }
-    syscall::tracepoint::fire_sys_exit(nr, rv);
+    syscall::tracepoint::fire_sys_exit(nr, rv, args);
 }
 
 /// Emit a focused syscall ledger for the compositor while diagnosing display
@@ -486,7 +486,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
     trace_sshd_listener_enter(nr, &args);
     #[cfg(feature = "debug-swap")]
     trace_swapon_process(b"enter", nr, None);
-    fire_sys_enter_if_armed(dispatch_task, nr as u32);
+    fire_sys_enter_if_armed(dispatch_task, nr as u32, &args);
     debug_syscall! { sched::trace::entry(nr, a0, a1, a2, a3); }
     debug_gnome_syscall! { sched::trace::entry(nr, a0, a1, a2, a3); }
     #[cfg(feature = "debug-desktop")]
@@ -546,7 +546,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(
     debug_gnome_syscall! { sched::trace::ret(nr, rv); }
     #[cfg(feature = "debug-desktop")]
     trace_mutter_syscall(b"exit", nr, a0, a1, a2, a3, a4, a5, Some(rv));
-    fire_sys_exit_if_armed(dispatch_task, nr as u32, rv);
+    fire_sys_exit_if_armed(dispatch_task, nr as u32, rv, &args);
     debug_sched! {
         klog::write_raw(b"[INFO]  syscall: nr=");
         klog::write_hex_u64(nr);

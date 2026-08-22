@@ -191,6 +191,7 @@ pub mod func_id {
     pub const KTIME_GET_COARSE_NS:    u32 = 160;
     pub const GET_RETVAL:             u32 = 186;
     pub const SET_RETVAL:             u32 = 187;
+    pub const GET_ATTACH_COOKIE:      u32 = 174;
     pub const SKB_LOAD_BYTES:         u32 = 26;
     pub const SK_SELECT_REUSEPORT:    u32 = 82;
     /// The two stack-walking helpers. Neither has a runner here, so no
