@@ -103,6 +103,10 @@ impl UnixPair {
         // gate, and keep the ring Spinlock only around the snapshot/commit.
         // SAFETY: this receive runs in process context and holds no spinlock.
         let _recv_gate = unsafe { self.recv_gate.lock() };
+        // Reserve the snapshot while only the sleepable receive gate is held.
+        // `Vec::extend` below must not grow while the ring Spinlock is held:
+        // kernel allocation may reclaim and enter the scheduler.
+        let mut out = Vec::with_capacity(max);
         let mut g = match end {
             UnixEnd::A => self.b_to_a.lock(),
             UnixEnd::B => self.a_to_b.lock(),
@@ -137,7 +141,7 @@ impl UnixPair {
         // caller ends its receive instead of sleeping on data it may not glue.
         let ended_at_cursor = run.cause == StopCause::Sender && run.stop <= window.head;
         if ring_off >= data_end && report_count == 0 && !ended_at_cursor { return Ok(None); }
-        let out: Vec<u8> = g.buf.iter().skip(ring_off).take(take).copied().collect();
+        out.extend(g.buf.iter().skip(ring_off).take(take).copied());
         // Do not invoke the usercopy while the receive-ring Spinlock is held:
         // a demand fault can enter inode_wait and schedule here.
         drop(g);
