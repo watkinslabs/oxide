@@ -44,16 +44,23 @@ fn established(port: u16) -> TcpConn {
 /// Feed one URG segment and report whether it announced a new urgent pointer —
 /// the exact gate the receive path evaluates. # C: O(payload)
 fn urg_segment(server: &mut TcpConn, port: u16, seq: u32, payload: &[u8], urg_ptr: u16) -> bool {
+    let wire = urg_wire(port, seq, payload, urg_ptr);
+    let pre = server.peek_urgent();
+    let _ = server.input_prevalidated(lo_ip(), lo_ip(), &wire).unwrap();
+    urgent_arrived(pre, server.peek_urgent())
+}
+
+/// Build one checksummed TCP urgent segment for the production receive path.
+/// # C: O(payload)
+fn urg_wire(port: u16, seq: u32, payload: &[u8], urg_ptr: u16) -> alloc::vec::Vec<u8> {
     let lo = crate::addr::Ipv4Addr::LOOPBACK;
     let mut hdr = crate::tcp_hdr::TcpHdr { src_port: port, dst_port: 80, seq, ack: 0,
         data_offset: 5, flags: crate::tcp_hdr::flags::ACK | crate::tcp_hdr::flags::URG,
         window: 65535, checksum: 0, urg_ptr };
     let mut wire = alloc::vec![0u8; crate::tcp_hdr::TCP_HDR_MIN_LEN + payload.len()];
-    hdr.build_into(lo, lo, &mut wire[..crate::tcp_hdr::TCP_HDR_MIN_LEN]);
     wire[crate::tcp_hdr::TCP_HDR_MIN_LEN..].copy_from_slice(payload);
-    let pre = server.peek_urgent();
-    let _ = server.input_prevalidated(lo_ip(), lo_ip(), &wire).unwrap();
-    urgent_arrived(pre, server.peek_urgent())
+    hdr.build_into(lo, lo, &mut wire);
+    wire
 }
 
 fn entry(conn: TcpConn) -> TcpEntry {
@@ -146,4 +153,32 @@ fn the_transport_entry_carries_the_owning_description() {
     FIRES.store(0, Ordering::Release);
     assert!(!sk_send_sigurg(e.owner_file()));
     assert_eq!(FIRES.load(Ordering::Acquire), 0);
+}
+
+// This is the composition boundary the smaller tests above cannot hold: a
+// wire segment enters the stack's real TCP receive path, changes the live
+// connection's urgent state, and the callsite signals the bound description.
+#[test]
+fn production_delivery_signals_the_owner_on_a_new_urgent_pointer() {
+    vfs::file::set_sigio_hook(capture);
+    let stack = NetStack::new();
+    let conn = established(5106);
+    let seq = conn.rcv_nxt;
+    let entry = Arc::new(entry(conn));
+    let file = owner_file(25_106);
+    entry.register_file(&file);
+    stack.inet_tables(0).tcp_conns.lock().insert(TcpKey {
+        local_ip: lo_ip(), local_port: 80,
+        remote_ip: lo_ip(), remote_port: 5106,
+    }, crate::stack::TcpSlot::Sock(entry));
+    FIRES.store(0, Ordering::Release);
+    SIG.store(0, Ordering::Release);
+    OWNER.store(0, Ordering::Release);
+
+    let wire = urg_wire(5106, seq, b"abc", 2);
+    let _ = stack.deliver_tcp(0, NetIfaceId::from_raw(1), lo_ip(), lo_ip(), &wire);
+
+    assert_eq!(FIRES.load(Ordering::Acquire), 1, "the receive callsite signals once");
+    assert_eq!(SIG.load(Ordering::Acquire), vfs::file::SIGURG);
+    assert_eq!(OWNER.load(Ordering::Acquire), 25_106);
 }
