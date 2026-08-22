@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2477-atomic-serial-latest-link
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED bd56813ef | INFRA | low | Serial-log `latest` publication is now staged and atomically renamed, avoiding an absent-link race. | Xtask tests and target checks passed. | Chris Watkins |
+
+<<<<<<< HEAD
 ### B2476-tiocvhangup-ioctl-entry
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -478,6 +485,13 @@
 |---|---|---|---|---|---|
 | FIXED 438bf78bd | MISSING | med | **`TIOCVHANGUP` now revokes the tty named by the open file description.** The ioctl uses its distinct `CAP_SYS_ADMIN` gate, then converges with `vhangup(2)` on one session-walk and per-open revocation owner. | B2476. Linux 7.2.0-rc4 gates this ioctl on `CAP_SYS_ADMIN` and calls the same tty-vhangup mechanism on the fd target. The hosted admission and source-callsite tests were RED before implementation; deleting the production dispatch arm makes the callsite test RED, restored GREEN. Tty 209/209 passes. Syscalls 1,989 pass with the same seven unrelated failures reproduced on clean main. Both feature target gates pass. Final paired smoke passed attempt 1 with serial RX: x86_64 48 s, aarch64 99 s. | B2476 |
 >>>>>>> 278c22dcb (doc: close TIOCVHANGUP ioctl gap)
+=======
+### B2477-atomic-serial-latest-link
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED bd56813ef | DEFECT | low | **The stable per-architecture `latest` serial-log link is now replaced atomically.** The live xtask log-path funnel creates a uniquely named relative symlink in the same directory, renames it over the published link in one operation, and removes the staged link if publication fails. Readers therefore see either the previous boot or the newly published boot, never the remove-and-recreate hole. | B2477. Linux 7.2.0-rc4's VFS rename path performs destination replacement under its rename locks. The deterministic staging-boundary regression observed the old implementation's missing `latest` link (RED); the atomic implementation keeps the old target readable until publication and then exposes the new target (GREEN). Xtask 80/80 and both kernel target checks pass. Smoke omitted because this changes only host-side evidence-link publication, not the boot image or guest-visible behaviour. | B2477-atomic-serial-latest-link |
+>>>>>>> 2010198b5 (docs: close B2477 atomic serial latest link)
 
 ### B2329-freezer-backoff-sleep
 
