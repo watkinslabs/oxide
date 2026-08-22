@@ -51,7 +51,7 @@ fn device(stack: &NetStack, addr: Ipv4Addr) -> (Arc<Capture>, NetIfaceId) {
 
 fn resolve(stack: &NetStack, iface: NetIfaceId, hop: Ipv4Addr) {
     if let Some(cache) = stack.ifaces.arp_cache_in_ns(iface, 0) {
-        cache.insert(hop, MacAddr([2, 0, 0, 0, 0, 2]));
+        assert!(cache.insert(hop, MacAddr([2, 0, 0, 0, 0, 2])).is_empty());
     }
 }
 

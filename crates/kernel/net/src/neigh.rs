@@ -127,8 +127,11 @@ impl<A: NeighAddr> NeighCache<A> {
     /// timestamp. Callers in process / driver context read the
     /// clock once and pass it in so test code can pin time.
     /// # C: O(log N)
-    pub fn insert_at(&self, ip: A, mac: MacAddr, now_ns: u64) {
-        let _ = self.learn_at(ip, mac, NudState::Reachable, now_ns);
+    #[cfg(test)]
+    pub(crate) fn insert_at(&self, ip: A, mac: MacAddr, now_ns: u64)
+        -> Vec<crate::netdev::tx_dispatch::TxJob>
+    {
+        self.learn_at(ip, mac, NudState::Reachable, now_ns)
     }
 
     /// Learn one neighbour with the NUD state justified by its ARP evidence.
@@ -153,16 +156,12 @@ impl<A: NeighAddr> NeighCache<A> {
         entry.pending.drain(..).collect()
     }
 
-    /// Learn one neighbour using the current monotonic timestamp. # C: O(log N)
-    pub fn learn(&self, ip: A, mac: MacAddr, state: NudState) {
-        let _ = self.learn_at(ip, mac, state, now_ns_safe());
-    }
-
     /// Timestamp-less insert. On kernel builds reads monotonic_ns
     /// itself; on hosted-test builds stamps 0 (entry never stales).
     /// Production driver callers don't need to thread a clock.
     /// # C: O(log N)
-    pub fn insert(&self, ip: A, mac: MacAddr) {
+    #[cfg(test)]
+    pub(crate) fn insert(&self, ip: A, mac: MacAddr) -> Vec<crate::netdev::tx_dispatch::TxJob> {
         self.insert_at(ip, mac, now_ns_safe())
     }
 
@@ -370,4 +369,3 @@ fn now_ns_safe() -> u64 {
     #[allow(unreachable_code)]
     0
 }
-

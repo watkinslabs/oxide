@@ -14,7 +14,7 @@ mod forwarding;
 /// # C: O(log N)
 fn resolve_neighbour(stack: &NetStack, iface: crate::NetIfaceId, ns: u64, hop: Ipv4Addr) {
     if let Some(cache) = stack.ifaces.arp_cache_in_ns(iface, ns) {
-        cache.insert(hop, MacAddr([2, 0, 0, 0, 0, 2]));
+        assert!(cache.insert(hop, MacAddr([2, 0, 0, 0, 0, 2])).is_empty());
     }
 }
 

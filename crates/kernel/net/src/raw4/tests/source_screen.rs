@@ -35,7 +35,7 @@ fn routed(stack: &NetStack) {
     stack.routes.add(RouteEntry::main(DST, 32, iface, None,
         Some(Ipv4Addr::new(192, 0, 2, 10))));
     if let Some(cache) = stack.ifaces.arp_cache_in_ns(iface, 0) {
-        cache.insert(DST, MacAddr([2, 0, 0, 0, 0, 2]));
+        assert!(cache.insert(DST, MacAddr([2, 0, 0, 0, 0, 2])).is_empty());
     }
 }
 

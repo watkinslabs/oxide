@@ -14,7 +14,7 @@ fn routed_capture(stack: &NetStack, mtu: u32, dst: Ipv4Addr)
     // resolved. Without it Linux queues the packet on the neighbour and emits
     // only an ARP request.
     if let Some(cache) = stack.ifaces.arp_cache_in_ns(iface, 0) {
-        cache.insert(dst, crate::MacAddr([2, 0, 0, 0, 0, 2]));
+        assert!(cache.insert(dst, crate::MacAddr([2, 0, 0, 0, 0, 2])).is_empty());
     }
     (iface, dev)
 }
