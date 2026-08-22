@@ -1,5 +1,11 @@
 # Fixed issues
 
+### R97-io-uring-spec-current-opcodes
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 06d62a828 | DOC | low | The io_uring specification now enumerates the executable opcode set from the live dispatch surface. | Spec-lint and documentation checks passed. | Chris Watkins |
+
 ### B2528-posix-acl-chmod-stores
 
 | Status | Class | Sev | Issue | Evidence | Owner |
