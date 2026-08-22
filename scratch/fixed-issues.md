@@ -264,6 +264,12 @@
 |---|---|---|---|---|---|
 | FIXED f8de79770 | DEFECT | med | NTFS junctions, symlinks, and NAME_SURROGATE reparse points now present as links and decode readlink payloads. | NTFS node/volume tests and target checks passed. | Chris Watkins |
 
+### B2563-stale-ntfs-reparse-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2563 | MISSING | med | The older NTFS junction/reparse row was a stale duplicate of B2518, not a second unfixed implementation. | Current `ntfs3::node_inode` classifies junctions and NAME_SURROGATE tags as links, and `Volume::read_link` decodes their payloads; B2518 already records the production tests and target checks. | B2563-stale-ntfs-reparse-row |
+
 ### B2517-loginuid-sessionid-task-identity
 
 | Status | Class | Sev | Issue | Evidence | Owner |
