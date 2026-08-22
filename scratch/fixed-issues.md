@@ -3130,3 +3130,9 @@ against the row's own evidence.
 | Status | Type | Severity | Issue | Evidence | Fixed by |
 |---|---|---|---|---|---|
 | FIXED B2337 | MISSING | med | **The descriptor-held `BPF_ENABLE_STATS` switch now controls atomic program-owned `run_cnt` and `run_time_ns` accumulation, and `OBJ_GET_INFO_BY_FD` reports both through the extensible `bpf_prog_info` record.** Both loaded-program interpreter entry points sample the switch at entry and charge the complete run; disabled runs do not sample the clock or mutate counters. | `bpf::prog::stats::tests::*` pins enabled and disabled accounting; `bpf::btf::info::tests::program_info_copy_reads_the_program_owned_run_count` runs a loaded program and reads its count through the production encoder. Removing the interpreter accounting wrapper makes `loaded_program_runner_reaches_its_owned_counter` fail 0 != 1; restored control passes. Security: 504/504 passed. | B2337 |
+
+### B2338-wireless-scan-monotonic
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2338 | DEFECT | low | **`GET_SCAN` now ages and expires BSS entries against the canonical monotonic clock, not against the newest cached entry.** One clock snapshot drives expiry and every `SEEN_MS_AGO` value in the multipart reply, and scan-start timestamps use the same owner. | Linux 7.2-rc4 uses `jiffies` for both `NL80211_BSS_SEEN_MS_AGO` and `cfg80211_bss_expire`. `a_reported_network_carries_the_attributes_a_supplicant_reads` drives the public dump handler with a two-second-old newest entry and requires `SEEN_MS_AGO=2000`; disconnecting the clock owner makes it RED at zero. `a_dump_expires_a_result_older_than_the_live_monotonic_deadline` proves the public handler removes an otherwise newest cache entry after the 30-second deadline. Wireless 308/308 passed. | B2338 |
