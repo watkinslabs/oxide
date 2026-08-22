@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2545-stale-udev-networkmanager-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2545 | COVERAGE | low | The old NetworkManager device-list row was already a negative triage result, not an open defect: udev wrote the device database entry and NetworkManager emitted its own device-add events. It is removed from the open ledger so the unresolved IPv6 router-solicitation failure remains separately visible. | B1717 boot log and NM trace recorded `/run/udev/data/n2` plus `udev-add[eth0,2]`/`udev-add[lo,1]`; no implementation change is warranted. | Chris Watkins |
+
 ### B2544-stale-sticky-ipv6-pktinfo-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
