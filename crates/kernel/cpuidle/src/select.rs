@@ -20,6 +20,8 @@ pub struct Cycle {
     pub entered: Option<usize>,
     /// Measured residency, nanoseconds.
     pub measured_ns: u64,
+    /// The periodic tick reached its unsuppressed wakeup boundary.
+    pub tick_wakeup: bool,
 }
 
 /// What the kernel knows about this CPU's idle at the moment it goes idle.
@@ -88,8 +90,8 @@ pub fn reflect(driver: &Arc<Driver>, cpu: usize, reflection: &Reflection, tick_n
 /// Run one whole idle cycle. `now_ns` is read either side of the entry, so the
 /// measured residency is the sleep and not the decision that preceded it.
 /// # C: O(N_states)
-pub fn idle_cycle(driver: &Arc<Driver>, conditions: &Conditions, now_ns: fn() -> u64,
-                  tick_wakeup: fn() -> bool) -> Option<Cycle>
+pub fn idle_cycle(driver: &Arc<Driver>, conditions: &Conditions, now_ns: fn() -> u64)
+                  -> Option<Cycle>
 {
     let selection = select(driver, conditions)?;
     let state = driver.states_for(conditions.cpu)?.get(selection.index)?;
@@ -98,14 +100,16 @@ pub fn idle_cycle(driver: &Arc<Driver>, conditions: &Conditions, now_ns: fn() ->
     let entered = driver.ops().enter(conditions.cpu, selection.index, state).ok();
     let measured_ns = now_ns().saturating_sub(started);
 
+    let tick_wakeup = entered.is_some() && !conditions.tick_stopped
+        && measured_ns >= conditions.tick_ns;
     let reflection = Reflection {
         entered,
         measured_ns: if entered.is_some() { measured_ns } else { 0 },
-        tick_wakeup: tick_wakeup(),
+        tick_wakeup,
         poll_time_limit: false,
     };
     reflect(driver, conditions.cpu, &reflection, conditions.tick_ns, selection.index);
-    Some(Cycle { selection, entered, measured_ns: reflection.measured_ns })
+    Some(Cycle { selection, entered, measured_ns: reflection.measured_ns, tick_wakeup })
 }
 
 #[cfg(test)]

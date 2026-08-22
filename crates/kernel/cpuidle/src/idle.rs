@@ -31,15 +31,10 @@ pub fn sleep_length_ns(now_ns: u64, tick_ns: u64) -> u64 {
 
 fn now_ns() -> u64 { timekeeper::monotonic_ns() }
 
-/// Whether the tick is what woke this CPU. Without tick suppression every
-/// sleep that ran its full length ended at a tick, so the estimate is that a
-/// sleep which reached the ceiling was ended by it. # C: O(1)
-fn tick_wakeup() -> bool { false }
-
 /// Run one idle cycle on `cpu`, or report that no driver has published a
 /// state table and the caller should halt directly. # C: O(N_states)
 pub fn enter_idle(cpu: usize, tick_ns: u64) -> bool {
     let Some(driver) = crate::driver::driver() else { return false; };
     let conditions = Conditions::new(cpu, sleep_length_ns(now_ns(), tick_ns), tick_ns);
-    idle_cycle(&driver, &conditions, now_ns, tick_wakeup).is_some()
+    idle_cycle(&driver, &conditions, now_ns).is_some()
 }

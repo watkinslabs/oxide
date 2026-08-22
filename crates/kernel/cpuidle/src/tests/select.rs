@@ -9,10 +9,8 @@ use vfs::{KResult, VfsError};
 static CLOCK_NS: AtomicU64 = AtomicU64::new(0);
 /// How far the clock advances across one entry.
 static SLEEP_NS: AtomicU64 = AtomicU64::new(0);
-static TICK_WOKE: AtomicUsize = AtomicUsize::new(0);
 
 fn clock() -> u64 { CLOCK_NS.load(Ordering::Relaxed) }
-fn tick_wakeup() -> bool { TICK_WOKE.load(Ordering::Relaxed) != 0 }
 
 struct Cpu { refuse: AtomicUsize, entered: AtomicUsize }
 
@@ -35,7 +33,6 @@ fn setup(sleep_ns: u64) -> (std::sync::MutexGuard<'static, ()>, alloc::sync::Arc
     let guard = test_guard();
     CLOCK_NS.store(0, Ordering::Relaxed);
     SLEEP_NS.store(sleep_ns, Ordering::Relaxed);
-    TICK_WOKE.store(0, Ordering::Relaxed);
     let ops = alloc::sync::Arc::new(Cpu {
         refuse: AtomicUsize::new(0), entered: AtomicUsize::new(usize::MAX),
     });
@@ -45,12 +42,21 @@ fn setup(sleep_ns: u64) -> (std::sync::MutexGuard<'static, ()>, alloc::sync::Arc
     (guard, ops, driver)
 }
 
+#[test]
+fn a_sleep_reaching_the_unsuppressed_tick_is_reported_as_tick_woken() {
+    let (_guard, _ops, driver) = setup(TICK_NS);
+    let cycle = idle_cycle(&driver, &Conditions::new(0, TICK_NS, TICK_NS), clock)
+        .expect("cycle");
+    assert!(cycle.tick_wakeup, "the live cycle must feed the tick wakeup to its governor");
+    clear_for_tests();
+}
+
 const TICK_NS: u64 = 10_000_000;
 
 #[test]
 fn one_cycle_selects_enters_measures_and_accounts() {
     let (_guard, ops, driver) = setup(500_000);
-    let cycle = idle_cycle(&driver, &Conditions::new(0, 1_000_000, TICK_NS), clock, tick_wakeup)
+    let cycle = idle_cycle(&driver, &Conditions::new(0, 1_000_000, TICK_NS), clock)
         .expect("cycle");
     assert_eq!(cycle.entered, Some(cycle.selection.index));
     assert_eq!(cycle.measured_ns, 500_000);
@@ -65,7 +71,7 @@ fn one_cycle_selects_enters_measures_and_accounts() {
 #[test]
 fn the_residency_measured_is_the_sleep_and_not_the_decision_before_it() {
     let (_guard, _ops, driver) = setup(0);
-    let cycle = idle_cycle(&driver, &Conditions::new(0, 1_000_000, TICK_NS), clock, tick_wakeup)
+    let cycle = idle_cycle(&driver, &Conditions::new(0, 1_000_000, TICK_NS), clock)
         .expect("cycle");
     assert_eq!(cycle.measured_ns, 0);
     clear_for_tests();
@@ -77,7 +83,7 @@ fn a_refused_entry_counts_as_a_rejection_of_the_state_that_was_asked_for() {
     let requested = select(&driver, &Conditions::new(0, 1_000_000, TICK_NS))
         .expect("selection").index;
     ops.refuse.store(1, Ordering::Relaxed);
-    let cycle = idle_cycle(&driver, &Conditions::new(0, 1_000_000, TICK_NS), clock, tick_wakeup)
+    let cycle = idle_cycle(&driver, &Conditions::new(0, 1_000_000, TICK_NS), clock)
         .expect("cycle");
     assert_eq!(cycle.entered, None);
     assert_eq!(cycle.measured_ns, 0);
@@ -99,7 +105,7 @@ fn a_second_driver_registration_is_refused() {
 #[test]
 fn selecting_a_governor_resets_every_predictor_but_keeps_the_counters() {
     let (_guard, _ops, driver) = setup(500_000);
-    idle_cycle(&driver, &Conditions::new(0, 1_000_000, TICK_NS), clock, tick_wakeup);
+    idle_cycle(&driver, &Conditions::new(0, 1_000_000, TICK_NS), clock);
     let before = driver.usage(0).expect("usage");
     assert!(before.iter().any(|slot| slot.usage > 0));
 
@@ -114,7 +120,7 @@ fn selecting_a_governor_resets_every_predictor_but_keeps_the_counters() {
 fn a_run_of_long_sleeps_settles_on_the_deepest_state() {
     let (_guard, ops, driver) = setup(50_000_000);
     for _ in 0..20 {
-        idle_cycle(&driver, &Conditions::new(0, 100_000_000, TICK_NS), clock, tick_wakeup);
+        idle_cycle(&driver, &Conditions::new(0, 100_000_000, TICK_NS), clock);
     }
     assert_eq!(ops.entered.load(Ordering::Relaxed), 3);
     let usage = driver.usage(0).expect("usage");
@@ -127,7 +133,7 @@ fn a_run_of_long_sleeps_settles_on_the_deepest_state() {
 fn a_run_of_very_short_sleeps_is_visible_as_too_deep_and_pulls_the_choice_up() {
     let (_guard, ops, driver) = setup(2_000);
     for _ in 0..40 {
-        idle_cycle(&driver, &Conditions::new(0, 100_000_000, TICK_NS), clock, tick_wakeup);
+        idle_cycle(&driver, &Conditions::new(0, 100_000_000, TICK_NS), clock);
     }
     let usage = driver.usage(0).expect("usage");
     let too_deep: u64 = usage.iter().map(|slot| slot.above).sum();
@@ -141,7 +147,7 @@ fn a_run_of_very_short_sleeps_is_visible_as_too_deep_and_pulls_the_choice_up() {
 fn a_cpu_the_driver_was_not_built_for_selects_nothing() {
     let (_guard, _ops, driver) = setup(0);
     assert!(select(&driver, &Conditions::new(7, 1_000_000, TICK_NS)).is_none());
-    assert!(idle_cycle(&driver, &Conditions::new(7, 1_000_000, TICK_NS), clock, tick_wakeup)
+    assert!(idle_cycle(&driver, &Conditions::new(7, 1_000_000, TICK_NS), clock)
             .is_none());
     clear_for_tests();
 }
@@ -166,9 +172,9 @@ fn each_cpu_selects_accounts_and_enters_its_own_firmware_ladder() {
     assert_eq!(driver.states_for(0).map(|states| states.len()), Some(1));
     assert_eq!(driver.states_for(1).map(|states| states.len()), Some(2));
 
-    let first = idle_cycle(&driver, &Conditions::new(0, 1_000_000, TICK_NS), clock, tick_wakeup)
+    let first = idle_cycle(&driver, &Conditions::new(0, 1_000_000, TICK_NS), clock)
         .expect("CPU0 cycle");
-    let second = idle_cycle(&driver, &Conditions::new(1, 1_000_000, TICK_NS), clock, tick_wakeup)
+    let second = idle_cycle(&driver, &Conditions::new(1, 1_000_000, TICK_NS), clock)
         .expect("CPU1 cycle");
     assert_eq!(first.selection.index, 0, "CPU0 has no deeper state");
     assert_eq!(second.selection.index, 1, "CPU1 may select its own C-state");
