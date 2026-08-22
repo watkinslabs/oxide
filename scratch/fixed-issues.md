@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2498-oom-coredump-self-free
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED f4d594b00 | DEFECT | med | OOM self-free detection now rejects an address space with an active coredump latch before proceeding. | Scheduler tests and target/smoke checks passed. | Chris Watkins |
+
+<<<<<<< HEAD
 ### B2497-f2fs-encrypted-child-context
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -722,6 +729,13 @@
 |---|---|---|---|---|---|
 | FIXED 4080cb2c6 | MISSING | high | **A child created inside an encrypted f2fs directory now inherits the parent's complete encryption policy and persists a fresh per-inode nonce before its dentry is published.** The production create path resolves the parent key before allocation, writes the child inode, stores the indexed fscrypt context and encryption flag, and excludes the encrypted child from inline data so its contents always have a data-unit address. Special files remain plaintext. | B2497. Linux 7.2.0-rc4 uses `f2fs_new_inode` -> `fscrypt_prepare_new_inode`, then `f2fs_init_inode_metadata` -> `fscrypt_set_context` before linking the name. Authentic RED: `creating_in_an_encrypted_directory_persists_a_fresh_child_context` failed because `crypt_context` returned `None`; GREEN asserts the inherited policy, distinct nonce, encrypted flag, non-inline storage, and plaintext readback of data written by the real `Volume::create` path. Full f2fs: 3698/3698; `make x86` and `make arm` pass. Smoke skipped because both boot images mount ext4 and cannot reach this F2FS create path. | B2497-f2fs-encrypted-child-context |
 >>>>>>> c73423839 (docs: close f2fs encrypted child context row)
+=======
+### B2498-oom-coredump-self-free
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED f4d594b00 | DEFECT | med | **OOM no longer treats an exiting process that is actively writing a core as memory that will promptly return by itself.** The ledger premise was partly stale: coredump already latches its canonical address-space state for the complete dump, and the OOM reaper already reads it. The missing consumer was OOM's self-free admission. That path now holds the task's mm once, refuses while its coredump latch is set, then applies the existing group-exit/fatal-signal rule. | B2498. Linux 7.2.0-rc4 rejects `__task_will_free_mem` when the process has a live core state because the dump may sleep. Before the fix, the production-path test reports `will_free_mem == true` after setting the real mm coredump latch; restored code reports false. Scheduler 1,536/1,536 passes; both x86_64 and aarch64 all-feature target checks pass. Final paired smoke passed attempt 1 with serial RX: x86_64 46 s, aarch64 56 s. | B2498-oom-coredump-self-free |
+>>>>>>> d2fdc29d1 (docs: close OOM coredump self-free gap)
 
 ### B2329-freezer-backoff-sleep
 

@@ -235,9 +235,10 @@ fn report(task: &Arc<Task>) {
 /// selector. Requires an mm — a task that has already dropped one has nothing
 /// left to give back.
 /// # C: O(1)
-fn will_free_mem(task: &Arc<Task>) -> bool {
-    task.clone_mm_for_oom().is_some()
-        && (task.thread_group.group_exit_status().is_some() || fatal_signal_pending(task))
+pub(super) fn will_free_mem(task: &Arc<Task>) -> bool {
+    let Some(mm) = task.clone_mm_for_oom() else { return false };
+    if mm.coredumping() { return false; }
+    task.thread_group.group_exit_status().is_some() || fatal_signal_pending(task)
 }
 
 /// A pending SIGKILL, whether posted at the thread or at the process.
