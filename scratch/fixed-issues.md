@@ -77,6 +77,12 @@
 |---|---|---|---|---|---|
 | FIXED c4d48a6ea | MISSING | low | **`net.ipv4.tcp_reordering` is per network namespace and is the single baseline used by TCP metrics.** | B2381. Namespace sysctl and production metrics callsites now share the same baseline owner. | B2381-tcp-reordering-sysctl |
 
+### B2384-userspace-netlink-multicast
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 221227a93 | MISSING | low | **Userspace netlink group sends now broadcast to subscribed peers while preserving the independent unicast/protocol-input path.** | B2384. Generic and SELinux multicast production tests cover fanout, exclusions, credentials, accounting, wakeups, and protocol input. | B2384-userspace-netlink-multicast |
+
 ### B2329-freezer-backoff-sleep
 
 | Status | Class | Sev | Issue | Evidence | Owner |
