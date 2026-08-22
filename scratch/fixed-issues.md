@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2484-selinuxfs-pseudo-inode-owner
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2484 | MISSING | med | SELinuxfs pseudo-inode ownership is already canonical; the recorded row was stale. | SELinuxfs tests and target checks passed. | Chris Watkins |
+
+<<<<<<< HEAD
 ### B2483-test-build-gate-diagnostics
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -540,6 +547,13 @@
 |---|---|---|---|---|---|
 | FIXED c9229a8c4 | INFRA | med | **`make test-build-gate` now retains each failed crate's first-pass Cargo output, so a transient failure cannot erase its own cause by succeeding on a diagnostic rerun.** Each parallel worker owns one temporary log; failures render that original log and classify a missing Cargo target directory separately from a compiler or test-target failure. | B2483. Linux 7.2.0-rc4 has no corresponding repository gate; the production path is `Makefile::test-build-gate` → `tools/test-build-check.sh`. The focused control makes the first fake Cargo invocation fail with `couldn't create a temp dir` and the next succeed: before the fix the gate exited 1 with only the crate name and the control reported `original diagnostic was lost`; restored GREEN preserves the error and reports `infrastructure failure: target directory vanished`. The focused self-test passes, all 177 workspace crates build their test targets in isolation, and x86_64 plus aarch64 kernel target checks pass. Boot smoke is not applicable because the change cannot enter a kernel image or boot path. | B2483-test-build-gate-diagnostics |
 >>>>>>> 2a665c271 (docs: close test-build diagnostic issue)
+=======
+### B2484-selinuxfs-pseudo-inode-owner
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED e23216ef4 | INFRA | low | **The shared VFS pseudo-inode registry now owns selinuxfs's entire inode-number band.** `selinuxfs` constructs its allocator from `vfs::pseudo_ino::SELINUXFS`; the private region declaration and its second overlap walk are gone, so the repository has one compile-time source of truth for the band. | B2484. Linux 7.2.0-rc4's selinuxfs creates nodes through its one filesystem inode owner (`sel_make_inode`) and assigns its special identities there. `selinuxfs_is_claimed_by_the_single_shared_registry` was RED at zero owners before the registry entry and GREEN at exactly one after it. Full VFS 392/392 and selinuxfs 81/81 pass; both x86_64 and aarch64 kernel target checks pass. | B2484-selinuxfs-pseudo-inode-owner |
+>>>>>>> 2f290c28b (docs: close B2484 selinuxfs inode owner)
 
 ### B2329-freezer-backoff-sleep
 
