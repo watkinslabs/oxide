@@ -5046,3 +5046,7 @@ against the row's own evidence.
 ### B2612-lint-ratchet-historical-snapshot
 
 | FIXED B2612 | INFRA | high | This older lint-ratchet snapshot duplicated the same tree-wide baseline failure retained by the newer OPEN ratchet row. The historical 2379/66 measurement is folded; the current ratchet remains OPEN and is not being bypassed conceptually by this ledger correction. | The later OPEN ratchet row records the current measurement and the byte-identical main/branch comparison. No lint run or source change is required. | B2612 |
+
+### B2613-lint-ratchet-snapshot-2
+
+| FIXED B2613 | INFRA | high | This later historical lint-ratchet snapshot also duplicated the standing tree-wide failure retained by the current OPEN row. Its 2380/66 measurement is folded without changing the ratchet status. | The current OPEN ratchet row is the live source of truth; the older F1216 snapshot adds no distinct defect or source change. | B2613 |
