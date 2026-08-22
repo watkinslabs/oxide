@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2429-stale-perf-pinned-vm-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2042 | MISSING | low | **The open perf pinned-VM row was a stale duplicate of the existing per-address-space pinned-page accounting.** | B2429 revalidated the canonical charge/release path and perf mmap admission. | B2429-stale-perf-pinned-vm-row |
+
 ### B2425-stale-perf-throttle-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
