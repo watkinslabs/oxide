@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2503-ntfs-hard-link-creation
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 06623d838 | MISSING | med | NTFS hard-link creation now updates indexed names, parent identity, link count, and rollback state. | NTFS tests and target checks passed. | Chris Watkins |
+
+<<<<<<< HEAD
 ### B2502-fault-vma-admission-order
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -768,6 +775,13 @@
 |---|---|---|---|---|---|
 | FIXED d3934dd8b | DEFECT | low | **An active visible ext4 quota file named by `usrjquota=` or `grpjquota=` now receives the same root-block reserve claim as a hidden superblock quota inode.** `data_reserve_flags` asks the canonical live VFS quota owner whether the allocating inode is an active quota file, so accounting can record a full filesystem instead of being the first write refused by it. | B2500. Linux 7.2.0-rc4 `ext4_mb_new_blocks` calls `ext4_is_quota_file` and adds `EXT4_MB_USE_ROOT_BLOCKS`. Authentic production control: a mounted `/aquota.user`, unprivileged allocation credentials, and exactly one real block left inside `r_blocks_count`; removing the active-file arm makes `Mount::write_at` fail `NoSpace`, restoring it allocates the block and passes. Journalled quota mount suite 15/15, full ext4 suite PASS, both target builds PASS. Paired smoke PASS on attempt 1 with serial RX: x86 46 s, ARM 57 s. | B2500-ext4-journalled-quota-root-reserve |
 >>>>>>> 1cc9122d1 (docs: close ext4 journalled quota reserve row)
+=======
+### B2503-ntfs-hard-link-creation
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 06623d838 | MISSING | med | **NTFS hard links create and remove the matching on-medium name records.** The mounted inode operation rejects directories, cross-filesystem targets, an existing name and the 4000-link ceiling; otherwise it adds a parent index key and an indexed `$FILE_NAME`, increments the MFT and cached inode counts, and stamps change time. A full parent index restores the target record before returning `ENOSPC`. Unlink removes the exact parent-and-name attribute while decrementing a multiply named record, so the medium never carries more name attributes than its count. | B2503. Linux 7.2.0-rc4 uses `ntfs_link` → `ntfs_link_inode` → `ni_add_name`, with the directory and `NTFS_LINK_MAX` gates ahead of publication. Production reaches `Volume::link` through `syscalls::086_link` → `Inode::link_child` → `NtfsOps::link`. Baseline and explicit positive-control runs with the backend slot restored to `EPERM` failed the mounted block-device test; restored GREEN covers shared identity/data, both cached and remounted counts, surviving unlink, exact attribute removal and full-index rollback. NTFS passed 196/196 tests; x86_64 and aarch64 kernel checks and both all-feature target gates passed. Boot smoke was skipped because the ext4 boot path neither mounts nor probes NTFS. | B2503-ntfs-hard-link-creation |
+>>>>>>> d5adc1e79 (doc: close NTFS hard-link issue)
 
 ### B2329-freezer-backoff-sleep
 
