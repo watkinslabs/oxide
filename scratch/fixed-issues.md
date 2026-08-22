@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2531-stale-tmpfs-mpol-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED current | MISSING | low | The tmpfs `mpol=` row is stale on the current single-node UMA kernel: policy parsing, node-mask admission, and invalid-node refusals are implemented, while every admitted policy has the same node-0 allocation result until NUMA allocation exists. | `fs/src/tmpfs/mount_opts/mpol.rs`; `mm-vmm/src/mempolicy/nodemask.rs::nodes_with_memory`; tmpfs mount-option tests and mempolicy node-mask tests. | Chris Watkins |
+
 ### B2529-rtnetlink-link-dispatch
 
 | Status | Class | Sev | Issue | Evidence | Owner |
