@@ -53,19 +53,23 @@ fn internal_sb(size: HugePageSize) -> Arc<HugetlbfsSb> {
 /// `page_size_log` (0 = the default granule), with `bytes` worth of pages
 /// reserved up front.
 ///
-/// Reserving here is what makes `mmap(MAP_HUGETLB)` and
-/// `memfd_create(MFD_HUGETLB)` fail at the call rather than at a fault the
-/// program cannot handle — the same reason the file-backed path reserves at
-/// `mmap`.
+/// Reserving makes `mmap(MAP_HUGETLB)` fail at the call rather than at a fault
+/// the program cannot handle. SysV `SHM_NORESERVE` instead defers the charge to
+/// the normal unreserved-page fault path.
 /// # C: O(pages)
-pub fn hugetlb_file_setup(bytes: u64, page_size_log: u32, perm: u16, uid: u32, gid: u32)
-    -> Result<InodeRef, HugetlbSetupError>
-{
+pub fn hugetlb_file_setup(
+    bytes: u64,
+    page_size_log: u32,
+    perm: u16,
+    uid: u32,
+    gid: u32,
+    reserve: bool,
+) -> Result<InodeRef, HugetlbSetupError> {
     let size = hugetlb::size_from_log(page_size_log).ok_or(HugetlbSetupError::NoSuchSize)?;
     let acct = internal_sb(size);
     let inode = super::file::make_file_inode(perm, uid, gid, Weak::new(), acct)
         .ok_or(HugetlbSetupError::NoSpace)?;
-    if bytes != 0 {
+    if reserve && bytes != 0 {
         super::file::reserve_mapping(&inode, 0, bytes).map_err(|_| HugetlbSetupError::NoMemory)?;
     }
     Ok(inode)

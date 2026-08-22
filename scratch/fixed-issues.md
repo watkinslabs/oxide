@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2489-shm-noreserve-backing
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 356a9c35b | DEFECT | med | SHM_NORESERVE now propagates through huge SysV shared-memory backing and hugetlb setup. | IPC/fs/PMM suites and target checks passed. | Chris Watkins |
+
+<<<<<<< HEAD
 ### B2488-raw4-local-error-hosted-test
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -610,6 +617,13 @@
 |---|---|---|---|---|---|
 | FIXED a98927eeb | COVERAGE | med | **A raw IPv4 size refusal now has a hosted test at the exact production `sendto_raw4` boundary, proving that `EMSGSIZE` is paired with the requested local-origin extended-error record.** The row's claimed gating obstacle was stale: B2291 had already made `sock::send` and `RemoteAddr` available to hosted builds, so moving the send body again would only have duplicated ownership. | B2488. Linux 7.2.0-rc4's non-header-included IPv4 append path calls `ip_local_error` with `EMSGSIZE`, the destination, port, and payload MTU before returning the refusal. `a_raw_ipv4_size_refusal_reports_the_local_error` enters Oxide's live raw-send owner over a namespace-private 1,280-byte route and checks the errno, local origin, destination, zero raw port, and MTU. Temporarily bypassing only the production report call made it RED at the missing queued record; restoring the call made it GREEN. The focused test and full net suite pass (2,575/2,575), as do x86_64 and aarch64 kernel target checks and the complete both-architecture feature gate. Boot smoke is omitted because the permanent change is hosted test coverage only and cannot enter a kernel image. | B2488-raw4-local-error-hosted-test |
 >>>>>>> 046ca1e9b (docs: close B2488 raw IPv4 error coverage)
+=======
+### B2489-shm-noreserve-backing
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 356a9c35b | MISSING | low | **`SHM_NORESERVE` now defers huge SysV shared-memory reservation until a page fault.** The IPC registry carries the flag's reservation decision in its backing plan, and the syscall passes it to hugetlbfs's single setup owner, whose existing fault path charges unreserved pages on demand. Ordinary shmem was already lazy and remains unchanged. | B2489. Linux 7.2.0-rc4 `ipc/shm.c::newseg` passes `VMA_NORESERVE_BIT` to `hugetlb_file_setup` for `SHM_HUGETLB | SHM_NORESERVE` and creates ordinary shmem with `VM_NORESERVE` outside strict overcommit. The initial focused REDs failed because `SegBacking::Huge` had no reservation field and hugetlbfs had no unreserved setup argument. Forcing the restored production planner to reserve made `shm_noreserve_defers_a_huge_segments_page_reservation` fail with `reserve: true` instead of `false`; restored GREEN. IPC 284/284, fs 1393/1393, and PMM 311/311 pass, as do x86_64 and aarch64 all-feature target checks. Final paired smoke reached userspace with serial RX on attempt 1: x86_64 in 46 s and aarch64 in 56 s. | B2489-shm-noreserve-backing |
+>>>>>>> 972c2cc96 (doc: close SHM_NORESERVE backing issue)
 
 ### B2329-freezer-backoff-sleep
 

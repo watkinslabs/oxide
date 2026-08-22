@@ -105,7 +105,9 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
                     Ok(l) => l, Err(e) => return -(e.as_i32() as i64),
                 };
                 let log = size.shift();
-                let inode = match ::fs::hugetlbfs::hugetlb_file_setup(len, log, 0o777, 0, 0) {
+                let inode = match ::fs::hugetlbfs::hugetlb_file_setup(
+                    len, log, 0o777, 0, 0, true,
+                ) {
                     Ok(i)  => i,
                     Err(e) => return -(huge_setup_errno(e).as_i32() as i64),
                 };

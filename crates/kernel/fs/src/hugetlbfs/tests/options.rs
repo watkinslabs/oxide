@@ -237,7 +237,7 @@ fn an_anonymous_huge_page_file_reports_the_huge_size_as_its_block_size() {
     // The kernel-private mount carries no superblock, and a program reading
     // `st_blksize` off an `MFD_HUGETLB` file must still learn the unit it has
     // to align to.
-    let inode = crate::hugetlbfs::hugetlb_file_setup(0, 0, 0o600, 0, 0).expect("setup");
+    let inode = crate::hugetlbfs::hugetlb_file_setup(0, 0, 0o600, 0, 0, true).expect("setup");
     assert_eq!(inode.blksize() as u64, HugePageSize::Huge2M.bytes());
     assert_eq!(inode.huge_page_size(), HugePageSize::Huge2M.bytes());
 }
@@ -245,12 +245,22 @@ fn an_anonymous_huge_page_file_reports_the_huge_size_as_its_block_size() {
 #[test]
 fn an_anonymous_huge_page_file_can_name_the_gigantic_granule() {
     let inode = crate::hugetlbfs::hugetlb_file_setup(
-        0, HugePageSize::Huge1G.shift(), 0o600, 0, 0).expect("setup");
+        0, HugePageSize::Huge1G.shift(), 0o600, 0, 0, true).expect("setup");
     assert_eq!(inode.blksize() as u64, HugePageSize::Huge1G.bytes());
 }
 
 #[test]
 fn a_size_log_no_pool_serves_is_refused_by_the_internal_mount() {
-    assert_eq!(crate::hugetlbfs::hugetlb_file_setup(0, 16, 0o600, 0, 0).err(),
+    assert_eq!(crate::hugetlbfs::hugetlb_file_setup(0, 16, 0o600, 0, 0, true).err(),
                Some(crate::hugetlbfs::HugetlbSetupError::NoSuchSize));
+}
+
+#[test]
+fn an_unreserved_internal_file_defers_the_pool_charge_until_fault() {
+    let bytes = HugePageSize::Huge2M.bytes();
+    assert_eq!(crate::hugetlbfs::hugetlb_file_setup(bytes, 0, 0o600, 0, 0, true).err(),
+               Some(crate::hugetlbfs::HugetlbSetupError::NoMemory));
+    let inode = crate::hugetlbfs::hugetlb_file_setup(bytes, 0, 0o600, 0, 0, false)
+        .expect("SHM_NORESERVE does not promise a page at setup");
+    assert_eq!(inode.huge_page_size(), bytes);
 }
