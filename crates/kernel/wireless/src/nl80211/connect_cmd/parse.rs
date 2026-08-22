@@ -82,24 +82,32 @@ pub fn crypto(wiphy: &Arc<Wiphy>, attrs: &[u8]) -> Result<Crypto, Errno> {
 /// radio has to have advertised. # C: O(1)
 pub fn valid_auth_type(wiphy: &Arc<Wiphy>, ty: u32, command: u8) -> bool {
     if ty > auth_type::MAX { return false; }
-    let sae_ok = wiphy.caps.features & feature_flags::SAE != 0;
+    let caps = &wiphy.caps;
+    let ext = |bit| caps.has_ext_feature(bit);
+    let sae_ok = caps.features & feature_flags::SAE != 0;
+    use crate::uapi::enums::ext_feature as ef;
     match command {
         cmd::AUTHENTICATE => match ty {
             auth_type::SAE => sae_ok,
-            // No radio here advertises the offloads the remaining algorithms
-            // need, so offering one would promise something nothing serves.
             auth_type::FILS_SK | auth_type::FILS_SK_PFS | auth_type::FILS_PK
-                | auth_type::EPPKE | auth_type::IEEE8021X => false,
+                => ext(ef::FILS_STA),
+            auth_type::EPPKE => ext(ef::EPPKE),
+            auth_type::IEEE8021X => ext(ef::IEEE8021X_AUTH),
             _ => true,
         },
         cmd::CONNECT => match ty {
-            auth_type::SAE => sae_ok,
-            auth_type::FILS_SK | auth_type::FILS_SK_PFS | auth_type::FILS_PK
-                | auth_type::EPPKE | auth_type::IEEE8021X => false,
+            auth_type::SAE => sae_ok || ext(ef::SAE_OFFLOAD),
+            auth_type::FILS_SK => ext(ef::FILS_SK_OFFLOAD),
+            auth_type::FILS_SK_PFS | auth_type::FILS_PK => false,
+            auth_type::EPPKE => ext(ef::EPPKE),
+            auth_type::IEEE8021X => ext(ef::IEEE8021X_AUTH),
             _ => true,
         },
-        cmd::START_AP => !matches!(ty, auth_type::SAE | auth_type::FILS_SK
-            | auth_type::FILS_SK_PFS | auth_type::FILS_PK),
+        cmd::START_AP => match ty {
+            auth_type::SAE => ext(ef::SAE_OFFLOAD_AP),
+            auth_type::FILS_SK | auth_type::FILS_SK_PFS | auth_type::FILS_PK => false,
+            _ => true,
+        },
         _ => false,
     }
 }

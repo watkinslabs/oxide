@@ -3,6 +3,7 @@
 //
 // Module manifest:
 // - `caps`:     the capability advertisement — bands, channels, rates, ciphers.
+// - `flags`:    immutable radio capability bits.
 // - `config`:   the writable device configuration and its validation.
 // - `registry`: the global radio list, registration and lookup.
 
@@ -21,6 +22,8 @@ use crate::wdev::Wdev;
 
 #[path = "wiphy/caps.rs"]
 pub mod caps;
+#[path = "wiphy/flags.rs"]
+pub mod flags;
 #[path = "wiphy/config.rs"]
 pub mod config;
 #[path = "wiphy/registry.rs"]

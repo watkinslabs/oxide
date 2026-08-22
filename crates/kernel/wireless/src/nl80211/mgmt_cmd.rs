@@ -20,6 +20,7 @@ use crate::uapi::attr as a;
 use crate::uapi::cmd;
 use crate::uapi::enums::IfType;
 use crate::wdev::MgmtRegistration;
+use crate::wiphy::flags as wiphy_flags;
 
 use super::{chandef, msg, resolve};
 
@@ -119,11 +120,17 @@ fn tx_inner(attrs: &[u8], ctx: GenlCtx) -> Result<(u64, bool), Errno> {
     let wait_ms = match msg::get_u32(attrs, a::DURATION) {
         None => 0,
         Some(v) => {
+            if !wiphy.caps.has_flag(wiphy_flags::OFFCHAN_TX) {
+                return Err(Errno::Einval);
+            }
             if !(MIN_REMAIN_ON_CHANNEL_MS..=wiphy.caps.max_remain_on_channel_duration)
                 .contains(&v) { return Err(Errno::Einval); }
             v
         }
     };
+    if offchan && !wiphy.caps.has_flag(wiphy_flags::OFFCHAN_TX) {
+        return Err(Errno::Einval);
+    }
     let def = match msg::get_u32(attrs, a::WIPHY_FREQ) {
         None => None,
         Some(_) => Some(chandef::parse(&wiphy, attrs)?),
@@ -178,4 +185,3 @@ pub fn release_port(portid: u32, net_ns: u64) {
 pub fn registrations(wdev: &alloc::sync::Arc<crate::wdev::Wdev>) -> Vec<MgmtRegistration> {
     wdev.with(|w| w.mgmt_regs.clone())
 }
-

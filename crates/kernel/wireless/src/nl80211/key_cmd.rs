@@ -21,6 +21,7 @@ use crate::uapi::nested::key as k;
 use crate::uapi::{ciphers, cmd};
 use crate::wdev::Wdev;
 use crate::wiphy::Wiphy;
+use crate::wiphy::flags as wiphy_flags;
 
 use super::{msg, resolve};
 
@@ -42,9 +43,7 @@ fn key_caps(wiphy: &Arc<Wiphy>, iftype: IfType) -> KeyCaps {
         igtk: caps.cipher_suites.iter().any(|&c| ciphers::is_mgmt_cipher(c)),
         beacon_protection,
         ext_key_id: caps.has_ext_feature(ext_feature::EXT_KEY_ID),
-        // No radio advertises a secured ad-hoc network here, so a group key
-        // addressed to one peer has no configuration that would accept it.
-        ibss_rsn: false,
+        ibss_rsn: caps.has_flag(wiphy_flags::IBSS_RSN),
     }
 }
 

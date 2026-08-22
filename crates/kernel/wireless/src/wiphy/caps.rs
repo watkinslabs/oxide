@@ -101,6 +101,8 @@ pub struct WiphyCaps {
     pub available_antennas_rx: u32,
     /// `feature_flags` bits.
     pub features: u32,
+    /// Immutable radio capability bits from `wiphy::flags`.
+    pub flags: u32,
     /// `ext_feature` bit positions the radio sets.
     pub ext_features: Vec<u32>,
     /// Whether the radio manages its own regulatory domain and ignores the
@@ -135,7 +137,7 @@ impl Default for WiphyCaps {
             max_scan_ie_len: 2048, max_sched_scan_ie_len: 0, max_num_pmkids: 0,
             max_remain_on_channel_duration: 5000, max_ap_assoc_sta: 0,
             available_antennas_tx: 0, available_antennas_rx: 0,
-            features: 0, ext_features: Vec::new(),
+            features: 0, flags: 0, ext_features: Vec::new(),
             self_managed_reg: false, ap_sme: false, signal_dbm: true,
             mgmt_stypes: Vec::new(),
         }
@@ -153,6 +155,8 @@ impl WiphyCaps {
     }
     /// Whether an extended feature bit is set. # C: O(N features)
     pub fn has_ext_feature(&self, bit: u32) -> bool { self.ext_features.contains(&bit) }
+    /// Whether an immutable radio capability bit is set. # C: O(1)
+    pub fn has_flag(&self, bit: u32) -> bool { self.flags & bit != 0 }
     /// Band record for a band. # C: O(N bands)
     pub fn band(&self, band: Band) -> Option<&WiphyBand> {
         self.bands.iter().find(|b| b.band == band)

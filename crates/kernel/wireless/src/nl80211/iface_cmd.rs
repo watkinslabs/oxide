@@ -22,6 +22,7 @@ use crate::uapi::nested::{self, mntr_flag};
 use crate::uapi::cmd;
 use crate::wdev::Wdev;
 use crate::wiphy::{registry, Wiphy};
+use crate::wiphy::flags as wiphy_flags;
 
 use super::{chandef, event, msg, resolve};
 
@@ -89,7 +90,7 @@ fn new_inner(attrs: &[u8], ctx: GenlCtx) -> Result<(Arc<Wiphy>, Arc<Wdev>), Errn
     if name.is_empty() { return Err(Errno::Einval); }
     let iftype = iftype_of(attrs)?;
     let addr = address_request(&wiphy, attrs, iftype)?;
-    let use_4addr = four_addr(attrs)?;
+    let use_4addr = four_addr(&wiphy, attrs, iftype)?;
     if !wiphy.supports_iftype(iftype) { return Err(Errno::Eopnotsupp); }
     let mntr_flags = monitor_flags(&wiphy, attrs, iftype)?;
     // A name already in use anywhere would give userspace two interfaces it
@@ -130,14 +131,22 @@ fn address_request(wiphy: &Arc<Wiphy>, attrs: &[u8], iftype: IfType)
     Ok(Some(mac))
 }
 
-/// Whether four-address frames were asked for. No radio here advertises the
-/// capability, so asking for it is refused rather than silently dropped.
-/// # C: O(N attrs)
-fn four_addr(attrs: &[u8]) -> Result<Option<bool>, Errno> {
+/// Whether four-address frames were asked for. # C: O(N attrs)
+fn four_addr(wiphy: &Arc<Wiphy>, attrs: &[u8], iftype: IfType)
+    -> Result<Option<bool>, Errno>
+{
     match msg::get_u8(attrs, a::_4ADDR) {
         None => Ok(None),
         Some(0) => Ok(Some(false)),
-        Some(_) => Err(Errno::Eopnotsupp),
+        Some(_) => {
+            let flag = match iftype {
+                IfType::ApVlan => wiphy_flags::FOUR_ADDR_AP,
+                IfType::Station => wiphy_flags::FOUR_ADDR_STATION,
+                _ => return Err(Errno::Eopnotsupp),
+            };
+            if wiphy.caps.has_flag(flag) { Ok(Some(true)) }
+            else { Err(Errno::Eopnotsupp) }
+        }
     }
 }
 
@@ -178,7 +187,7 @@ fn set_inner(attrs: &[u8], ctx: GenlCtx)
         None => old,
         Some(v) => IfType::from_u32(v).ok_or(Errno::Einval)?,
     };
-    let use_4addr = four_addr(attrs)?;
+    let use_4addr = four_addr(&wiphy, attrs, new_type)?;
     let mntr_flags = monitor_flags(&wiphy, attrs, new_type)?;
     let changed = new_type != old || use_4addr.is_some() || mntr_flags != 0;
     if new_type != old {
@@ -299,4 +308,3 @@ fn set_cqm_inner(attrs: &[u8], ctx: GenlCtx) -> Result<(), Errno> {
     }
     Err(Errno::Einval)
 }
-
