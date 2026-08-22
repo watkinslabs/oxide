@@ -632,6 +632,36 @@ impl Task {
             .expect("Task::state corrupt")
     }
 
+    /// Linux `/proc` and task-dump state character, including the sleep class.
+    /// # C: O(1)
+    pub fn linux_state_char(&self) -> u8 {
+        self.debug_check_canary("linux_state_char");
+        let raw = self.state.load(Ordering::Acquire);
+        let state = TaskState::from_u8(raw).expect("Task::linux_state_char corrupt");
+        if matches!(state, TaskState::Sleeping)
+            && !matches!(WaitState::from_state_bits(raw), WaitState::Interruptible)
+        {
+            b'D'
+        } else {
+            state.linux_char()
+        }
+    }
+
+    /// Long-form Linux `/proc` state label, including the sleep class.
+    /// # C: O(1)
+    pub fn linux_status_label(&self) -> &'static str {
+        self.debug_check_canary("linux_status_label");
+        let raw = self.state.load(Ordering::Acquire);
+        let state = TaskState::from_u8(raw).expect("Task::linux_status_label corrupt");
+        if matches!(state, TaskState::Sleeping)
+            && !matches!(WaitState::from_state_bits(raw), WaitState::Interruptible)
+        {
+            "D (disk sleep)"
+        } else {
+            state.linux_status_label()
+        }
+    }
+
     /// CAS state transition. Returns `Ok(())` on success, `Err(current)`
     /// if the observed state didn't match `from`.
     /// # C: O(1)

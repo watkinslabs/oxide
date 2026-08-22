@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2466-uninterruptible-task-state-reporting
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED f72f59014 | DEFECT | low | Uninterruptible and killable sleepers now report Linux `D`, while interruptible sleepers report `S`, through one atomic task-state boundary. | Sched/procfs tests, target checks, and smoke passed. | Chris Watkins |
+
 ### B2465-cross-worktree-log-verification
 
 | Status | Class | Sev | Issue | Evidence | Owner |

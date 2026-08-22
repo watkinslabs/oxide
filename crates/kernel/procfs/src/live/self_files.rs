@@ -126,7 +126,7 @@ fn self_stat_body() -> Vec<u8> {
     push_u64(&mut body, vpid);
     push(&mut body, b" (");
     push(&mut body, name.as_bytes());
-    let state_char = cur.map(|c| c.state().linux_char()).unwrap_or(b'R');
+    let state_char = cur.map(|c| c.linux_state_char()).unwrap_or(b'R');
     push(&mut body, b") ");
     body.push(state_char);
     body.push(b' ');

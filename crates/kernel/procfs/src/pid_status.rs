@@ -76,7 +76,7 @@ pub fn body(tid: u32, owner: &namespace_identity::NamespaceRef) -> Vec<u8> {
     let s = Status {
         name:   &name,
         umask:  task.umask(),
-        state:  task.state().linux_status_label(),
+        state:  task.linux_status_label(),
         tgid:   vpid,
         // Linux `task_numa_group_id` — no NUMA balancing, so no group.
         ngid:   0,

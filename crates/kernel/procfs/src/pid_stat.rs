@@ -20,7 +20,7 @@ pub fn body(tid: u32) -> Vec<u8> {
     // fork-time name — `ps`/`top`/`pidof` key off this.
     let comm = task.comm();
     push(&mut out, b" ("); push(&mut out, comm.as_bytes()); push(&mut out, b") ");
-    out.push(task.state().linux_char()); out.push(b' ');
+    out.push(task.linux_state_char()); out.push(b' ');
     push_u64(&mut out, ppid);
     // Fields 14/15 are Linux's split user/system CPU clocks, converted to
     // USER_HZ. `sum_exec_runtime` is scheduler runtime, not a substitute for
