@@ -241,6 +241,12 @@
 |---|---|---|---|---|---|
 | FIXED 99597f975 | INFRA | low / med | Duplicate frozen security-contract rows are closed by one correction: the contract now records the live seccomp filter surface. | Seccomp tests and specification checks passed. | Chris Watkins |
 
+### R99-stale-io-uring-opcode-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED R99 | INFRA | low | The older OPEN row repeating the frozen io_uring deferred-opcode premise was stale and duplicated the existing R97 closure. | `docs/30-io-uring.md` enumerates the live opcode surface; `io_uring_abi::ops::op_supported` and `probe_claims_every_dispatched_opcode` enforce the same BIND/LISTEN/PROVIDE_BUFFERS/REMOVE_BUFFERS/MSG_RING/SOCKET set. | Chris Watkins |
+
 ### R97-io-uring-spec-current-opcodes
 
 | Status | Class | Sev | Issue | Evidence | Owner |
