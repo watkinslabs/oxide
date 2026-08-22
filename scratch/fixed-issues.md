@@ -12,6 +12,12 @@
 |---|---|---|---|---|---|
 | FIXED B2555 | MISSING | med | FAT now implements `FALLOC_FL_KEEP_SIZE` preallocation without changing the visible file size. | `FatOps::fallocate` and `Volume::preallocate_file_cached` allocate the exact required cluster range, preserve `i_size`, and retain the live first-cluster identity for subsequent writes; the production-path regression proves the free-cluster count changes while size remains 5 bytes. Full FAT library suite: 337/337. | Chris Watkins |
 
+### B2556-stale-test-manifest-correction
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2556 | INFRA | med | The test-manifest row was stale: the explicit child `#[path = "tests/<name>.rs"]` bindings are already present, so bare module resolution cannot compile the implementation files as tests. | `crates/kernel/fatfs/src/cluster_alloc/tests.rs` explicitly binds `entry`, `alloc`, `free`, `count`, and `zero`; the current FAT library run executes 337 tests successfully. No production change is warranted. | Chris Watkins |
+
 ### B2553-stale-keyring-coverage-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
