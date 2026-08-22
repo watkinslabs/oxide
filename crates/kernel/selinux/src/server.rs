@@ -219,7 +219,9 @@ impl SecurityServer {
     pub fn compute(&mut self, ssid: Sid, tsid: Sid, kernel_class: u16) -> AvDecision {
         if let Some(avd) = self.avc.lookup(ssid, tsid, kernel_class) { return avd; }
         let seqno = self.state.seqno;
-        let Some(l) = self.loaded.as_ref() else { return AvDecision::init(seqno) };
+        let Some(l) = self.loaded.as_ref() else {
+            return AvDecision { allowed: u32::MAX, ..AvDecision::init(seqno) }
+        };
         let avd = services::compute_av(&l.db, &l.map, &l.sidtab, ssid, tsid, kernel_class, seqno);
         self.avc.insert(ssid, tsid, kernel_class, avd);
         avd
@@ -301,18 +303,21 @@ impl SecurityServer {
     /// SID of a newly created object. # C: O(rules)
     pub fn transition_sid(&mut self, ssid: Sid, tsid: Sid, kernel_class: u16,
                           objname: Option<&str>) -> Result<Sid> {
+        if let Some(sid) = self.bootstrap_sid(ssid, tsid, kernel_class as u32) { return Ok(sid) }
         let l = self.loaded.as_mut().ok_or(Error::UnknownSid)?;
         services::transition_sid(&l.db, &l.map, &mut l.sidtab, ssid, tsid, kernel_class, objname)
     }
 
     /// SID an object takes when relabelled. # C: O(rules)
     pub fn change_sid(&mut self, ssid: Sid, tsid: Sid, kernel_class: u16) -> Result<Sid> {
+        if let Some(sid) = self.bootstrap_sid(ssid, tsid, kernel_class as u32) { return Ok(sid) }
         let l = self.loaded.as_mut().ok_or(Error::UnknownSid)?;
         services::change_sid(&l.db, &l.map, &mut l.sidtab, ssid, tsid, kernel_class)
     }
 
     /// SID of a polyinstantiated member. # C: O(rules)
     pub fn member_sid(&mut self, ssid: Sid, tsid: Sid, kernel_class: u16) -> Result<Sid> {
+        if let Some(sid) = self.bootstrap_sid(ssid, tsid, kernel_class as u32) { return Ok(sid) }
         let l = self.loaded.as_mut().ok_or(Error::UnknownSid)?;
         services::member_sid(&l.db, &l.map, &mut l.sidtab, ssid, tsid, kernel_class)
     }
@@ -327,6 +332,7 @@ impl SecurityServer {
     pub fn validate_transition(&mut self, old: &str, new: &str, kernel_class: u16, task: &str)
         -> Result<()>
     {
+        if !self.initialized() { return Ok(()) }
         let l = self.loaded.as_mut().ok_or(Error::InvalidContext)?;
         let old_sid = services::string_to_sid(&l.db, &mut l.sidtab, old)?;
         let new_sid = services::string_to_sid(&l.db, &mut l.sidtab, new)?;

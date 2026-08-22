@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2492-selinux-kernel-bootstrap-decisions
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED c42b1bce6 | DEFECT | med | SELinux pre-policy kernel decisions now use the bootstrap owner: source SID for process class, target SID otherwise, allow-all and successful validation. | SELinux/runtime/sched tests and target checks passed. | Chris Watkins |
+
+<<<<<<< HEAD
 ### B2491-serial-sysrq-per-port-state
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -652,6 +659,13 @@
 |---|---|---|---|---|---|
 | FIXED ad892f70c | DEFECT | low | **Serial SysRq arm state now belongs to the UART that received the break, so a byte from another UART cannot complete that port's command sequence.** The 16550 and PL011 live receive wrappers each own a deadline word and pass it through `drv-serial`'s prefilter boundary; probe resets that word so a reprobed device cannot inherit an arm window. The scheduler retains the canonical five-second state machine and uses the supplied port word atomically, preserving the hard-IRQ delivery boundary. | B2491. Linux 7.2.0-rc4 keeps `sysrq` and `sysrq_ch` in each `struct uart_port`; its break and character handlers touch only the supplied port. Callsite: each UART ISR enters its driver-local `deliver`, which supplies its `SYSRQ_ARMED_UNTIL_NS` to `drv_serial::deliver` and `sched::diag::sysrq_rx`. Authentic RED: after arming UART A, a key on UART B incorrectly returned `Run(ShowTasks)` instead of `Passthrough`; restored production routing makes the cross-UART test GREEN. Focused test, 16550 19/19, PL011 20/20, sched 1536/1536, both target checks, and both all-feature checks pass. Final paired smoke reached userspace and answered typed serial SysRq on attempt 1: x86_64 in 46 s and aarch64 in 56 s. | B2491-serial-sysrq-per-port-state |
 >>>>>>> 14d3f7ad1 (docs: close B2491 serial SysRq state issue)
+=======
+### B2492-selinux-kernel-bootstrap-decisions
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED c42b1bce6 | DEFECT | low | **Kernel-facing SELinux transition, relabel, member, access-vector, and validate-transition decisions now answer during the pre-policy bootstrap window instead of refusing or substituting the unlabeled SID.** A process transition keeps the source label, every other class keeps the target label, access is fully allowed, and no absent constraint list can reject a transition. The existing kernel-class bootstrap owner serves both user-facing and kernel-facing entry points, so loading a policy still switches every path to the canonical policy engine. | B2492. Linux 7.2.0-rc4 applies those defaults before initialization. The production decision test was RED with `Err(UnknownSid)` instead of the creator's SID; restored code makes the complete bootstrap ladder GREEN. SELinux 272/272, SELinux runtime 55/55, and scheduler 1,535/1,535 pass, as do both target checks. Final smoke reached userspace with serial RX on attempt 1: x86_64 in 46 s and aarch64 in 57 s. | B2492-selinux-kernel-bootstrap-decisions |
+>>>>>>> cb26c8bc6 (docs: close SELinux bootstrap decisions issue)
 
 ### B2329-freezer-backoff-sleep
 
