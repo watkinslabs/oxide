@@ -1,5 +1,11 @@
 # Fixed issues
 
+### D583-futex-numa-single-node-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED D583 | MISSING | low | **Futex NUMA key separation is not observable on this single-node machine.** | Linux 7.2.0-rc4 resolves the NUMA operand before selecting a per-node queue. Oxide exposes the complete operand, policy, validation, and write-back ladder, while `NR_NODE_IDS == 1`, `nodes_with_memory()` is node 0, and the futex key therefore has exactly one possible node partition. The focused 14-test ladder passes; removing the single-node admission check made 3 tests fail. This remains a blocked topology capability, not an unfinished live behavior. | D583 |
+
 ### D582-f2fs-fsync-merged-checkpoint
 
 | Status | Class | Sev | Issue | Evidence | Owner |
