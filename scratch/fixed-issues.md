@@ -5034,3 +5034,7 @@ against the row's own evidence.
 ### B2608-network-manager-external-state-stale
 
 | FIXED B2608 | DEFECT | med | This network-manager observation predates the B1736/B1737 fixes and is stale. The earlier `connected (externally)` state came from querying loopback for `eth0` and from seeding the emulator address; the corrected path returns the named device and DHCP-owned dynamic lease state. | Existing B1736/B1737 fixed records document the before/after guest evidence (`eth0:connected`, dynamic lease, and no external ownership); no source change is required. | B2608 |
+
+### B2609-stale-lint-ratchet-duplicate
+
+| FIXED B2609 | INFRA | med | This older lint-ratchet baseline snapshot duplicated the same standing tree-wide failure retained by the newer OPEN ratchet rows. Only the historical snapshot is folded; the current ratchet problem remains OPEN. | The current OPEN ratchet row and prior C259/C255 evidence retain the live issue. No lint run or source change is required. | B2609 |
