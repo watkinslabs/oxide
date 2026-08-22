@@ -4938,3 +4938,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED B2583 | MISSING | low | The historical disabled-hook blocklist row was stale-by-design. This kernel publishes only BPF-LSM hooks that have live callsites; an unimplemented or deliberately withheld hook is absent from the attach-target registry and therefore cannot be named or attached. | `security/src/bpf_lsm/hooks.rs::HOOKS` contains only `bpf_lsm_file_open`; `hook_by_stub_name` rejects unpublished and near-miss names, while `security/src/bpf_lsm/registry.rs` resolves only that canonical enum. The existing hook registry tests pin uniqueness, publication, and rejection of unpublished stubs. No source change was needed. | B2583 |
+
+### B2584-stale-membarrier-rows
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2584 | DEFECT/MISSING | med | The three historical membarrier rows claiming that PRIVATE_EXPEDITED_SYNC_CORE, PRIVATE_EXPEDITED_RSEQ, and their REGISTER commands were refused are stale ledger residue. | `syscalls/src/membarrier.rs` advertises all four commands in `QUERY_MASK` and admits each in `decide`; `mm-vmm/src/address_space/membarrier.rs` owns the per-mm SYNC_CORE/RSEQ registration bits and readiness state; the scheduler's `rseq_preempt_return` and the membarrier return-to-user hooks provide the corresponding live consumers. Existing B1989 tests cover command admission, query-mask consistency, sync-core registration, and RSEQ forced fixup. No source change was needed. | B2584 |
