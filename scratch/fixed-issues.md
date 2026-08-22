@@ -247,6 +247,12 @@
 |---|---|---|---|---|---|
 | FIXED R99 | INFRA | low | The older OPEN row repeating the frozen io_uring deferred-opcode premise was stale and duplicated the existing R97 closure. | `docs/30-io-uring.md` enumerates the live opcode surface; `io_uring_abi::ops::op_supported` and `probe_claims_every_dispatched_opcode` enforce the same BIND/LISTEN/PROVIDE_BUFFERS/REMOVE_BUFFERS/MSG_RING/SOCKET set. | Chris Watkins |
 
+### R100-stale-posix-acl-chmod-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED R100 | DEFECT | med | The older OPEN row claiming only f2fs rewrote POSIX ACLs during chmod was stale after the canonical cross-filesystem ACL-store fix. | B2528’s live regression covered tmpfs, ext4 remount persistence, and OverlayFS upper copy-up; `InodeOps::setattr`, tmpfs setattr, and ext4 setattr now call `store_posix_acl_chmod`, while OverlayFS forwards to the corrected upper inode. | Chris Watkins |
+
 ### R97-io-uring-spec-current-opcodes
 
 | Status | Class | Sev | Issue | Evidence | Owner |
