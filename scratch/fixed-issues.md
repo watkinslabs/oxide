@@ -4897,3 +4897,8 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED B2574 | DEFECT | high | The live SELinux server previously held a preemption-disabling spinlock while policy checks could grow SID tables, render contexts, or insert cache entries. It now transfers the server object under that lock, releases it for the policy closure, and reclaims it afterward. | `crates/kernel/selinux-runtime/src/lib.rs::with`; selinux-runtime 55/55; x86_64 and aarch64 kernel checks PASS. | B2574 |
+### B2575-pid1-boot-smoke-probe
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2575 | COVERAGE | high | Boot smoke previously accepted a debug-shell echo even when PID 1 could be wedged. Its default liveness command now queries PID 1 through systemd's private manager and emits the success nonce only after that query succeeds. | `tools/boot-smoke.sh::probe_userspace_alive`; `tools/test-boot-smoke-runtime.sh` passes, including the init-fatal case and the default PID 1 command contract. | B2575 |
