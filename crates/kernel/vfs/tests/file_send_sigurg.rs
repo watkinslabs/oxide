@@ -159,10 +159,10 @@ fn the_fasync_half_keeps_its_own_suppression_rule() {
     f.set_fasync_state(6, false);
 }
 
-// Priority readiness classifies to SIGURG, ordinary readiness to SIGIO — the
-// two default signals now have one owner each rather than a copy per site.
+// An urgent stream send makes both priority and ordinary data ready. The two
+// transitions are independent fasync notifications, in that order.
 #[test]
-fn the_default_async_signals_have_one_definition() {
+fn combined_urgent_and_data_readiness_delivers_both_fasync_notifications() {
     let _g = GATE.lock().unwrap();
     vfs::file::set_sigio_hook(capture_hook);
     let f = file();
@@ -173,9 +173,10 @@ fn the_default_async_signals_have_one_definition() {
     let subs = f.inode().poll_subscribers().expect("poll source");
     subs.notify_mask(vfs::POLL_IN);
     assert_eq!(GOT_CODE.load(Ordering::Acquire), POLL_IN, "data readiness is the SIGIO reason");
+    GOT_FIRES.store(0, Ordering::Release);
     subs.notify_mask(vfs::POLL_IN | vfs::POLL_PRI);
-    assert_eq!(GOT_CODE.load(Ordering::Acquire), POLL_PRI, "urgent outranks data");
-    assert_eq!(GOT_FIRES.load(Ordering::Acquire), 2);
+    assert_eq!(GOT_FIRES.load(Ordering::Acquire), 2, "urgent and ordinary data notify separately");
+    assert_eq!(GOT_CODE.load(Ordering::Acquire), POLL_IN, "ordinary data follows urgent readiness");
     assert_eq!(SIGIO, 29);
     assert_eq!(SIGURG, 23);
     f.set_fasync_state(2, false);

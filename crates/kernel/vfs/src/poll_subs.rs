@@ -157,18 +157,21 @@ impl PollSubscribers {
     /// each holder's own `poll` supplies it — the same re-poll an epoll
     /// subscriber performs for a keyless wake.
     ///
-    /// Linux picks `SIGURG` for out-of-band readiness and `SIGIO` for every
-    /// other reason (`sk_wake_async(SOCK_WAKE_URG, POLL_PRI)` vs the rest).
+    /// Each distinct reason fires separately. Linux sends urgent readiness
+    /// before the ordinary data-ready notification for an out-of-band byte.
+    /// `SIGURG` carries priority readiness; every other reason uses `SIGIO`.
     /// # C: O(N)
     fn fasync_notify(&self, events: u32) {
         use crate::file::{SIGIO, SIGURG};
         let snapshot = self.fasync_snapshot();
         if snapshot.is_empty() { return; }
         for f in snapshot {
-            let mask = if events != 0 { events } else { f.poll() };
-            let Some(reason) = crate::file::reason_for_mask(mask) else { continue };
-            let dfl = if reason == crate::file::reason::POLL_PRI { SIGURG } else { SIGIO };
-            f.kill_fasync(dfl, reason);
+            let mut mask = if events != 0 { events } else { f.poll() };
+            while let Some(reason) = crate::file::reason_for_mask(mask) {
+                let dfl = if reason == crate::file::reason::POLL_PRI { SIGURG } else { SIGIO };
+                f.kill_fasync(dfl, reason);
+                mask &= !(crate::file::band_for(reason) as u32);
+            }
         }
     }
 
