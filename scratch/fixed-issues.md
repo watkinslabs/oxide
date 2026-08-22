@@ -4751,3 +4751,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED R134 | DEFECT | med | **L2CAP sequence-numbered frames now carry and validate their negotiated CRC-16 FCS.** The frame owner covers the basic header, control field, and payload, appends the little-endian checksum when configured, and refuses corruption before exposing state-machine input; no-FCS and extended-control modes retain their negotiated layouts. | Linux 7.2.0-rc4 uses `crc16(0, skb->data, skb->len)` over the header/control/data before appending `L2CAP_FCS_SIZE`, and verifies the same bytes before stripping it. Oxide `l2cap::fcs::{encode,decode}` now owns that boundary; `crc::crc16` matches the Linux reflected 0x8005 polynomial. Focused round-trip, corruption, no-FCS, extended-control, and CRC known-vector tests pass; `cargo test -p bluetooth --lib` = 867 passed. The separate missing L2CAP connection-object row remains open. | R134 |
+
+### D573-git-add-staging-guard
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED D573 | INFRA | med | **A stale pathspec can leave a partial index, allowing an incomplete commit even though the worktree still contains the intended change.** The tracked/untracked staging guard in `.githooks/commit-msg` now rejects both remaining tracked edits and untracked files before commit-message validation. | The guard is exercised by `tools/test-commit-staging-guard.sh`: complete staging passes; a staged edit plus an unstaged edit fails; a clean index plus an untracked file fails. | D573 |

@@ -466,7 +466,6 @@ here now.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| OPEN | INFRA | med | `git add` aborts the entire staging operation on one stale pathspec, so a commit can silently contain none of the intended work while every gate passes in the worktree. That put a broken `main` on origin once this session (reverted in `f1ab81fb6`). A pre-commit check that the staged set matches the working set would catch it. | `git show --stat 8b2211aa6` = 1 file, 0 insertions | — |
 
 ### D513-real-hardware-findings
 
