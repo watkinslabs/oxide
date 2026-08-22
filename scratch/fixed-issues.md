@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2550-stale-sysfs-export-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2550 | DEFECT | low | The open sysfs kernfs file-handle row was stale: sysfs now exports and decodes the live 8-byte handle through the canonical kernfs inode inverse. | B2521's merged implementation and tests cover round-trip, removed-node, unknown-handle, and wrong-type `ESTALE` behavior; no production change is warranted. | B2550-stale-sysfs-export-row |
+
 ### B2549-stale-merged-behavior-rows
 
 | Status | Class | Sev | Issue | Evidence | Owner |
