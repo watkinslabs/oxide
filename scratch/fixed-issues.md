@@ -3196,3 +3196,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED d41569bb4 | INFRA | low | **The open-work summary is generated from canonical issue rows and is no longer stored as merge-conflict-prone derived state.** `tools/issues.sh --summary` validates every live class/severity and renders the matrix. | B2348's self-test covers every class and severity, both live statuses, and exclusion of fixed rows. | d41569bb4 |
+
+### B2349-selinuxfs-trailing-request-fields
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED cd0aebe8d | DEFECT | low | **SELinux filesystem transaction requests consume their defined field prefix and ignore later fields.** Missing required fields and invalid class values remain errors; a context request remains one complete context. | B2349's production transaction tests covered access, create, relabel, member, and validate-transition parsing. | B2349-selinuxfs-trailing-request-fields |

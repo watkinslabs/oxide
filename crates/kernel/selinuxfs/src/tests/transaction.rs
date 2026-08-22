@@ -43,6 +43,20 @@ fn relabel_and_member_ask_their_own_questions() {
 }
 
 #[test]
+fn transaction_queries_ignore_fields_after_their_consumed_prefix() {
+    let mut ops = FakeOps::allow_all();
+    assert_eq!(transact(&mut ops, TxKind::Access, b"s t 6 ignored tail").unwrap(),
+               "0 ffffffff 0 ffffffff 0 0");
+    assert_eq!(transact(&mut ops, TxKind::Create, b"s t 6 name ignored tail").unwrap(),
+               "create:s:t:6");
+    assert_eq!(ops.last_name.as_deref(), Some("name"));
+    assert_eq!(transact(&mut ops, TxKind::Relabel, b"s t 6 ignored tail").unwrap(),
+               "relabel:s:t:6");
+    assert_eq!(transact(&mut ops, TxKind::Member, b"s t 6 ignored tail").unwrap(),
+               "member:s:t:6");
+}
+
+#[test]
 fn the_compatibility_node_answers_without_a_check() {
     let mut ops = FakeOps::allow_all();
     assert_eq!(transact(&mut ops, TxKind::User, b"anything").unwrap(), "0");
