@@ -98,6 +98,44 @@ fn kernel_only_leaf_clears_user_bit() {
     assert!(leaf & NX_BIT != 0, "no EXEC ⇒ NX set");
 }
 
+/// Every neutral translation attribute supported on x86 must reach the leaf
+/// built by the live walker. Cache encodings are compared with their canonical
+/// PAT owner so this pins the packer's call into that owner as well as its
+/// direct permission bits.
+#[test]
+fn every_supported_page_flag_reaches_an_x86_leaf() {
+    let read = PtWalkerX86::pack_4k_leaf(TEST_LEAF_PA, hal::PageFlags::READ);
+    assert_ne!(read & P_BIT, 0);
+    assert_eq!(read & RW_BIT, 0);
+    assert_ne!(read & NX_BIT, 0);
+
+    let write = PtWalkerX86::pack_4k_leaf(
+        TEST_LEAF_PA, hal::PageFlags::READ | hal::PageFlags::WRITE);
+    assert_ne!(write & RW_BIT, 0);
+    let exec = PtWalkerX86::pack_4k_leaf(
+        TEST_LEAF_PA, hal::PageFlags::READ | hal::PageFlags::EXEC);
+    assert_eq!(exec & NX_BIT, 0);
+    let user = PtWalkerX86::pack_4k_leaf(
+        TEST_LEAF_PA, hal::PageFlags::READ | hal::PageFlags::USER);
+    assert_ne!(user & (1 << 2), 0);
+    assert_ne!(PtWalkerX86::pack_block_leaf(
+        TEST_BLOCK_PA, hal::PageFlags::READ | hal::PageFlags::USER) & (1 << 2), 0);
+    let global = PtWalkerX86::pack_4k_leaf(
+        TEST_LEAF_PA, hal::PageFlags::READ | hal::PageFlags::GLOBAL);
+    assert_ne!(global & (1 << 8), 0);
+
+    let cache_mask = crate::pat::PWT | crate::pat::PCD | crate::pat::PAT_4K;
+    for flag in [hal::PageFlags::NO_CACHE, hal::PageFlags::WRITE_THROUGH,
+                 hal::PageFlags::WRITE_COMBINE] {
+        let leaf = PtWalkerX86::pack_4k_leaf(TEST_LEAF_PA, hal::PageFlags::READ | flag);
+        assert_eq!(leaf & cache_mask, crate::pat::cache_bits(flag, false));
+    }
+
+    let keyed = PtWalkerX86::pack_4k_leaf(
+        TEST_LEAF_PA, hal::PageFlags::READ.with_pkey(15));
+    assert_eq!((keyed >> 59) & 0xf, 15);
+}
+
 
 /// The marker family must be impossible to read as a swap entry, as a page
 /// in transit, or as a hole — and every one of THOSE must be impossible to

@@ -71,6 +71,55 @@ fn arm_walker_pack_unpack_roundtrip() {
     assert_eq!(table & PtWalkerArm::PHYS_MASK, pa);
 }
 
+/// Every translation attribute this architecture supports must reach the
+/// descriptor built by the live walker. Keeping this at the packer boundary
+/// prevents its bit layout from drifting from the separate PTE helper.
+#[test]
+fn every_supported_page_flag_reaches_an_arm_leaf() {
+    let read = PtWalkerArm::pack_4k_leaf(TEST_LEAF_PA, hal::PageFlags::READ);
+    assert_eq!(read & (VALID | TABLE | AF), VALID | TABLE | AF);
+    assert_eq!(read & NG, 0, "a kernel leaf is global");
+    assert_ne!(read & ATTR_NORMAL_WB, 0);
+    assert_ne!(read & AP2_RDONLY, 0);
+    assert_ne!(read & (PXN | UXN), 0);
+
+    let write = PtWalkerArm::pack_4k_leaf(
+        TEST_LEAF_PA, hal::PageFlags::READ | hal::PageFlags::WRITE);
+    assert_eq!(write & AP2_RDONLY, 0, "WRITE must select a writable AP encoding");
+
+    let user = PtWalkerArm::pack_4k_leaf(
+        TEST_LEAF_PA, hal::PageFlags::READ | hal::PageFlags::USER);
+    assert_ne!(user & (1 << 6), 0, "USER must select an EL0-accessible AP encoding");
+    assert_ne!(user & NG, 0, "every user leaf must be non-global");
+    assert_ne!(PtWalkerArm::pack_block_leaf(
+        TEST_BLOCK_PA, hal::PageFlags::READ | hal::PageFlags::USER) & NG, 0,
+        "a user block leaf must be non-global too");
+
+    let kexec = PtWalkerArm::pack_4k_leaf(
+        TEST_LEAF_PA, hal::PageFlags::READ | hal::PageFlags::EXEC);
+    assert_eq!(kexec & PXN, 0, "kernel EXEC must clear PXN");
+    assert_ne!(kexec & UXN, 0, "kernel EXEC must remain unavailable to EL0");
+    let uexec = PtWalkerArm::pack_4k_leaf(
+        TEST_LEAF_PA, hal::PageFlags::READ | hal::PageFlags::EXEC | hal::PageFlags::USER);
+    assert_ne!(uexec & PXN, 0, "user EXEC must remain unavailable to EL1");
+    assert_eq!(uexec & UXN, 0, "user EXEC must clear UXN");
+
+    let device = PtWalkerArm::pack_4k_leaf(
+        TEST_LEAF_PA, hal::PageFlags::READ | hal::PageFlags::NO_CACHE);
+    assert_eq!(device & (ATTR_NORMAL_WB | ATTR_NORMAL_NC), 0);
+    let wc = PtWalkerArm::pack_4k_leaf(
+        TEST_LEAF_PA, hal::PageFlags::READ | hal::PageFlags::WRITE_COMBINE);
+    assert_eq!(wc & (ATTR_NORMAL_WB | ATTR_NORMAL_NC), ATTR_NORMAL_NC);
+    let wt = PtWalkerArm::pack_4k_leaf(
+        TEST_LEAF_PA, hal::PageFlags::READ | hal::PageFlags::WRITE_THROUGH);
+    assert_eq!(wt & (ATTR_NORMAL_WB | ATTR_NORMAL_NC), ATTR_NORMAL_WB,
+               "AArch64's canonical MAIR has no write-through slot");
+
+    let keyed = PtWalkerArm::pack_4k_leaf(
+        TEST_LEAF_PA, hal::PageFlags::READ.with_pkey(7));
+    assert_eq!((keyed >> PO_INDEX_SHIFT) & 0x7, 7);
+}
+
 
 /// The marker family must be impossible to read as a swap entry, as a page
 /// in transit, or as a hole — and every one of THOSE must be impossible to

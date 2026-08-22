@@ -22,6 +22,7 @@ const ATTR_NORMAL_NC: u64 = 1 << 3; // AttrIdx 2
 const SH0:      u64 = 1 << 8;
 const SH1:      u64 = 1 << 9;       // SH = 0b11 = Inner Shareable
 const AF:       u64 = 1 << 10;
+const NG:       u64 = 1 << 11;      // not global: translation is ASID-scoped
 /// Contiguous hint — a run of leaves the TLB may fold into one entry.
 const CONT:     u64 = 1 << 52;
 /// Bottom (4 KiB) level index in the shared four-level walker.
@@ -189,6 +190,7 @@ impl PtWalker for PtWalkerArm {
         // AP[2:1] in bits 6:7. AP=0b00 = EL1 RW. AP=0b01 = EL0/EL1 RW.
         // AP=0b10 = EL1 RO. AP=0b11 = EL0/EL1 RO.
         let user = flags.contains(hal::PageFlags::USER);
+        if user { e |= NG; }
         // A monitor's barrier and write permission are one fact: a leaf built
         // protected is never briefly writable, so a peer thread cannot slip a
         // write past the barrier between the install and a later re-protect.
