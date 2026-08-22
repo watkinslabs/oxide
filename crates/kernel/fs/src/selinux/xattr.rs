@@ -1,4 +1,4 @@
-// The `security.*` attribute gate, and the label attribute's VALUE.
+// SELinux's inode-attribute gate, and the label attribute's VALUE.
 
 extern crate alloc;
 
@@ -21,7 +21,7 @@ const EOPNOTSUPP: i64 = -(Errno::Eopnotsupp.as_i32() as i64);
 /// is never granted rather than silently skipped.
 const NO_PERMISSION: u32 = 0;
 
-/// Gate one operation on an inode's `security.*` attribute. # C: O(1) cached
+/// Gate one attribute operation on an inode. # C: O(1) cached
 ///
 /// `value` is the label being written, and is required for a write: the
 /// relabel is priced against the label the caller is asking for, so deciding
@@ -30,12 +30,11 @@ pub fn xattr_gate(inode: &InodeRef, name: &str, op: XattrOp, value: Option<&[u8]
     -> Result<(), i64>
 {
     let gate = selinux_xattr_gate(name, op);
-    if matches!(gate, XattrGate::NotOurs) || !selinux_runtime::active() { return Ok(()); }
+    if !selinux_runtime::active() { return Ok(()); }
     let Some(class) = inode_class(inode.i_mode() as u32) else { return Ok(()) };
     let Some(isid) = super::label::inode_sid(inode) else { return Ok(()) };
     let ssid = selinux_runtime::task::current_sid();
     match gate {
-        XattrGate::NotOurs => Ok(()),
         XattrGate::Refuse => Err(EACCES),
         XattrGate::Perm(perm) => {
             let av = selinux::uapi::classmap::perm_bit(class, perm).unwrap_or(NO_PERMISSION);

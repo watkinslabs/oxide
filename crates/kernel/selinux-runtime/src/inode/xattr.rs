@@ -14,6 +14,9 @@ use crate::label::XATTR_NAME_SELINUX;
 /// Permission a read of an object's metadata asks for.
 pub const PERM_GETATTR: &str = "getattr";
 
+/// Permission a non-label attribute mutation asks for.
+pub const PERM_SETATTR: &str = "setattr";
+
 /// `XATTR_SELINUX_SUFFIX` — what `XATTR_NAME_SELINUX` is left as once the
 /// `security.` prefix the VFS strips is gone.
 pub const SELINUX_SUFFIX: &str = "selinux";
@@ -27,13 +30,13 @@ pub enum XattrOp {
     Set,
     /// Delete the attribute.
     Remove,
+    /// Enumerate every attribute name.
+    List,
 }
 
 /// What the operation costs.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum XattrGate {
-    /// Nothing this module decides; the operation's other rules stand alone.
-    NotOurs,
     /// One permission on the object's own class.
     Perm(&'static str),
     /// The full relabel ladder against the value being written.
@@ -49,11 +52,12 @@ pub enum XattrGate {
 /// a domain can drop back to the mount default, and a filesystem holding such
 /// objects no longer describes what it holds.
 pub fn selinux_xattr_gate(name: &str, op: XattrOp) -> XattrGate {
-    if name != XATTR_NAME_SELINUX { return XattrGate::NotOurs; }
     match op {
         XattrOp::Get => XattrGate::Perm(PERM_GETATTR),
-        XattrOp::Set => XattrGate::Relabel,
-        XattrOp::Remove => XattrGate::Refuse,
+        XattrOp::List => XattrGate::Perm(PERM_GETATTR),
+        XattrOp::Set if name == XATTR_NAME_SELINUX => XattrGate::Relabel,
+        XattrOp::Remove if name == XATTR_NAME_SELINUX => XattrGate::Refuse,
+        XattrOp::Set | XattrOp::Remove => XattrGate::Perm(PERM_SETATTR),
     }
 }
 

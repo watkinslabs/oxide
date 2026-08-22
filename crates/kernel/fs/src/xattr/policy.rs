@@ -95,10 +95,10 @@ pub fn may_write_xattr(inode: &InodeRef) -> Result<(), i64> {
     Ok(())
 }
 
-/// The label-based gate on a READ of `security.selinux`. A write carries a
-/// value and is priced by [`lsm_set_gate`]; a removal by [`lsm_remove_gate`].
+/// The label-based gate on an attribute read. A label write carries a value and
+/// is priced by [`lsm_set_gate`]; a removal by [`lsm_remove_gate`].
 /// # C: O(1) cached
-fn lsm_read_gate(inode: &InodeRef, name: &str, mask: u32) -> Result<(), i64> {
+pub fn lsm_read_gate(inode: &InodeRef, name: &str, mask: u32) -> Result<(), i64> {
     if mask & vfs::MAY_WRITE != 0 { return Ok(()); }
     crate::selinux::xattr_gate(inode, name, selinux_runtime::inode::XattrOp::Get, None)
 }
@@ -116,8 +116,16 @@ pub fn lsm_remove_gate(inode: &InodeRef, name: &str) -> Result<(), i64> {
     crate::selinux::xattr_gate(inode, name, selinux_runtime::inode::XattrOp::Remove, None)
 }
 
-/// `xattr_permission`. `security.*` takes no DAC check and is decided by the
-/// label module ([`lsm_read_gate`], and the two value-aware gates above);
+/// The label-based gate on enumerating attribute names. Linux charges the same
+/// metadata-read permission as `getxattr`, independent of which names exist.
+/// # C: O(1) cached
+pub fn lsm_list_gate(inode: &InodeRef) -> Result<(), i64> {
+    crate::selinux::xattr_gate(inode, "", selinux_runtime::inode::XattrOp::List, None)
+}
+
+/// `xattr_permission`. Every read first takes the label module's `getattr`;
+/// `security.*` then takes no DAC check, while its mutations are decided by
+/// the two value-aware gates above;
 /// `system.*` is left to the filesystem handler;
 /// `trusted.*` is CAP_SYS_ADMIN only; `user.*` is
 /// restricted by file type (and by ownership on a STICKY directory) and then
@@ -125,7 +133,8 @@ pub fn lsm_remove_gate(inode: &InodeRef, name: &str) -> Result<(), i64> {
 /// rejected later by [`resolve_name`]. # C: O(ngroups)
 pub fn xattr_permission(inode: &InodeRef, name: &str, mask: u32, c: &XattrCred) -> Result<(), i64> {
     if mask & vfs::MAY_WRITE != 0 { may_write_xattr(inode)?; }
-    if name.starts_with(SECURITY_PREFIX) { return lsm_read_gate(inode, name, mask); }
+    if mask & vfs::MAY_WRITE == 0 { lsm_read_gate(inode, name, mask)?; }
+    if name.starts_with(SECURITY_PREFIX) { return Ok(()); }
     if name.starts_with(SYSTEM_PREFIX) { return Ok(()); }
     if name.starts_with(TRUSTED_PREFIX) {
         if !c.sys_admin { return Err(permission_error(mask)); }
