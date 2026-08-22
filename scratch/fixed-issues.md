@@ -4950,3 +4950,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED B2585 | MISSING | low | The two historical zero-copy receive rows were stale: they described reference behavior that intentionally refuses virtio-net's device-less registration and uses copy delivery when no capable buffer-provider device exists. | F855 rechecked the reference contract and current Oxide implementation. Virtio-net has no queue-management capability, so `EOPNOTSUPP` is the correct registration result; `IORING_OP_RECV_ZC` correctly copies from ordinary fragments, while by-reference delivery requires a capable provider device. Existing `netdev::rx_queue` and `io_uring` ZCRX tests pin these distinctions. No source change was needed. | B2585 |
+
+### B2586-split-ext4-tmpfs-casefold-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2586 | COVERAGE | low | The tmpfs half of the historical combined casefold row was stale; it was incorrectly bundled with ext4's still-open casefold gap. | B2527/B2538 established the live tmpfs mount encoding, strict-name validation, directory inheritance, and folded lookup path (`tmpfs::mount_opts`, `tmpfs::casefold`, and `tmpfs::dir`). The known ledger now retains only the ext4 residual instead of hiding it behind the closed tmpfs claim. No source change was needed. | B2586 |
