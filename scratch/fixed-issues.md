@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2478-stale-socket-connect-phantom-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2478 | COVERAGE | low | The socket-connect coverage row was stale; the production path is already covered by existing tests. | Net/socket checks passed. | Chris Watkins |
+
+<<<<<<< HEAD
 ### B2477-atomic-serial-latest-link
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -492,6 +499,13 @@
 |---|---|---|---|---|---|
 | FIXED bd56813ef | DEFECT | low | **The stable per-architecture `latest` serial-log link is now replaced atomically.** The live xtask log-path funnel creates a uniquely named relative symlink in the same directory, renames it over the published link in one operation, and removes the staged link if publication fails. Readers therefore see either the previous boot or the newly published boot, never the remove-and-recreate hole. | B2477. Linux 7.2.0-rc4's VFS rename path performs destination replacement under its rename locks. The deterministic staging-boundary regression observed the old implementation's missing `latest` link (RED); the atomic implementation keeps the old target readable until publication and then exposes the new target (GREEN). Xtask 80/80 and both kernel target checks pass. Smoke omitted because this changes only host-side evidence-link publication, not the boot image or guest-visible behaviour. | B2477-atomic-serial-latest-link |
 >>>>>>> 2010198b5 (docs: close B2477 atomic serial latest link)
+=======
+### B2478-stale-socket-connect-phantom-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2478 | COVERAGE | med | **The socket connect tests named by the row are no longer phantom.** Both `sock::ops` and `sock::tcp_lifecycle` are hosted/test-visible, including the blocking-wait realization the old cascade lacked; the four real socket-side-effect tests now execute in the ordinary net suite. | Linux 7.2.0-rc4 `__inet_stream_connect` handles AF_UNSPEC before its state switch, returns EISCONN for an established stream, and `tcp_disconnect` accepts TCP_CLOSE. On current Oxide, `cargo test -p net --lib -- --list` names all four tests. Positive control changing the live fresh-TCP AF_UNSPEC arm to EINVAL made its exact test RED; restored GREEN: focused 4/4 and full net 2574/2574. Both x86_64 and aarch64 release target checks pass. Final diff is ledger-only, so no boot was required. | B2478-stale-socket-connect-phantom-row |
+>>>>>>> 1fb93202a (docs: close stale socket connect coverage row)
 
 ### B2329-freezer-backoff-sleep
 
