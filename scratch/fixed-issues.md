@@ -43,6 +43,12 @@
 |---|---|---|---|---|---|
 | FIXED B2572 | DEFECT | med | The older B1988 early-console row was stale after the default boot line began requesting `earlycon` and B1991 added record-ring replay at console handover. | `KERNEL_CONSOLE_PARAMS` includes `earlycon`; `klog::replay` and `bootcon::handover_to_primary` cover the pre-driver output window and replay contract. | Chris Watkins |
 
+### B2573-stale-pmm-page-lock-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2573 | DEFECT | critical | The older PMM raw page-lock spin row was stale after merged B2204. | PR #5428 (`8a61eea90`) merged the bounded wait-table/park path; `mm-pmm::setup::page_lock` now clears the lock before wake and exposes the non-blocking try-lock separately. | Chris Watkins |
+
 ### B2561-exfat-setattr-persistence
 
 | Status | Class | Sev | Issue | Evidence | Owner |
