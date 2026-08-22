@@ -216,10 +216,16 @@ pub fn write_attr(target: &crate::Task, slot: AttrSlot, src: &[u8]) -> Result<us
     match slot {
         AttrSlot::Current => {
             let new = value.ok_or(Errno::Einval)?;
-            // A domain change applies to the whole process, so a thread that
-            // has siblings would move them too — which none of them asked for
-            // and none of them can observe.
-            if !target.thread_group.is_single_member() { return Err(Errno::Eacces); }
+            // A domain change applies to the whole process. Linux permits a
+            // multithreaded caller only when the new domain is type-bounded by
+            // the old one, then still demands the ordinary dyntransition.
+            if !target.thread_group.is_single_member() {
+                match selinux_runtime::with(|s| s.bounded_transition(old, new)) {
+                    None | Some(Ok(true)) => {}
+                    Some(Ok(false)) => return Err(Errno::Eperm),
+                    Some(Err(_)) => return Err(Errno::Einval),
+                }
+            }
             policy::check(old, new, CLASS_PROCESS, PERM_DYNTRANSITION)?;
             target.selinux_label.lock().enter(new);
         }
