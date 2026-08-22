@@ -455,7 +455,6 @@ here now.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| OPEN | INFRA | med | **`tools/boot-smoke-dhcp.sh` cannot pass regardless of DHCP correctness — it greps for a marker from the retired userspace.** It waits for `udhcpc: configured eth0` and the Makefile sets `OXIDE_UDHCPC_ENABLE=1` for a busybox `rcS` gate. That pipeline belongs to the musl/busybox rootfs that the glibc staging replaced; the shipped Fedora image has no `/sbin/udhcpc`, no `/etc/init.d/rcS`, and nothing reads `OXIDE_UDHCPC_ENABLE` anywhere in the tree. So its `FAIL — timeout without lease` is not evidence about DHCP either way. It needs to check for a lease the way the current image would show one (an address on `eth0`, or the manager's own log), or be deleted. | `boot-smoke-dhcp.sh` marker vs `debugfs -R stat` on the shipped image: all three paths "File not found". | unowned |
 
 ### B1736-getlink-single-device
 
