@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2206-pid-namespace-ref
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2206 | DEFECT | CRITICAL | **Namespace identity lookups no longer reacquire the global namespace registry.** PID mappings retain a direct `NamespacePin` for every namespace that numbers the identity, and lookups compare that retained owner directly. This preserves namespace lifetime without calling `NamespaceWeak::upgrade()` while scheduler registry locks are held. | `b06b0cfd1` changed `PidMapping` from `NamespaceWeak` to `NamespacePin`, removed registry-entering upgrades from `nr_in`, `nr_chain_from`, `namespaces`, and number release, and added the passive-namespace lifetime regression. Sched PID tests and existing pidfd interleaving coverage pass on current main. | B2206-pid-namespace-ref |
+
 ### B2569-stale-f2fs-ipu-fixture-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
