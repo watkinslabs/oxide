@@ -21,7 +21,18 @@
 # shared box room for other lanes, not about throughput.
 set -uo pipefail
 
-cd "$(dirname "$0")/.."
+repo_dir="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)" || {
+    echo "test-build-check: source tree unavailable (worktree was removed or moved)" >&2
+    exit 125
+}
+if [ ! -f "$repo_dir/Cargo.toml" ]; then
+    echo "test-build-check: source tree unavailable (Cargo.toml is missing)" >&2
+    exit 125
+fi
+cd "$repo_dir" || {
+    echo "test-build-check: source tree unavailable (cannot enter worktree)" >&2
+    exit 125
+}
 
 jobs="${TEST_BUILD_CHECK_JOBS:-$(( $(nproc 2>/dev/null || echo 4) / 2 ))}"
 [ "$jobs" -lt 1 ] && jobs=1

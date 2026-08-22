@@ -1,5 +1,11 @@
 # Fixed issues
 
+### D577-test-build-source-tree-diagnostic
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED D577 | INFRA | high | **A deleted lane worktree was reported as a compiler/test-target failure instead of a missing source tree.** | `tools/test-build-check.sh` now validates that the worktree and `Cargo.toml` are present before entering Cargo, returning a distinct source-tree-unavailable diagnostic; `tools/test-build-check-selftest.sh` pins that diagnostic while retaining the existing compiler-error preservation checks. | D577 |
+
 ### D575-hosted-global-payload-claims
 
 | Status | Class | Sev | Issue | Evidence | Owner |
