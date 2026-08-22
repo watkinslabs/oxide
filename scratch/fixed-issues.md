@@ -5022,3 +5022,6 @@ against the row's own evidence.
 ### B2604-wireless-regulatory-row-duplicate
 
 | FIXED B2604 | DEFECT | med | This OPEN regulatory-channel-flags row was a stale duplicate. B2471 is already merged and fixed the exact production gap: accepted regulatory domains update the effective channel snapshot consumed by `GET_WIPHY`, while driver capabilities remain the immutable baseline. | Existing fixed entry `B2471-wireless-regulatory-channel-flags` and its production regression cover the exact row; no new source change is required. | B2604 |
+### B2605-io-uring-stack-negative-result-duplicate
+
+| FIXED B2605 | COVERAGE | low | This B1986 negative-result row duplicated the already-folded stack-gate evidence. The C300 records preserve the same result: splitting the io_uring submission frames makes the aarch64 path deeper or leaves it unchanged, so the remaining stack work belongs to the transmit chain rather than another io_uring split. | Existing FOLDED C300 stack-gate entries record the measurements and reverted experiments; no source change is required. | B2605 |
