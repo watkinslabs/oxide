@@ -262,7 +262,7 @@ mod symlink_tests {
     // tmpfs symlink inode round-trips its target (the systemd /run case).
     #[test]
     fn symlink_inode_readlink_roundtrips() {
-        let s = make_tmpfs_symlink_inode(b"/usr/share/zoneinfo/UTC", 0, 0, Weak::new(), &TmpfsSb::unlimited());
+        let s = make_tmpfs_symlink_inode(b"/usr/share/zoneinfo/UTC", 0, 0, Weak::new(), TmpfsSb::unlimited());
         assert_eq!(s.file_type(), FileType::Symlink);
         assert_eq!(s.size(), 23);
         assert_eq!(s.readlink().unwrap(), b"/usr/share/zoneinfo/UTC".to_vec());
@@ -404,6 +404,7 @@ mod nlink_mode_tests {
 #[cfg(test)]
 mod xattr_tests {
     use super::*;
+    use alloc::vec;
     use alloc::vec::Vec;
     use vfs::posix_acl::{from_xattr, to_xattr, AclEntry, ACL_GROUP_OBJ, ACL_MASK, ACL_OTHER,
                          ACL_UNDEFINED_ID, ACL_USER, ACL_USER_OBJ};
@@ -480,6 +481,21 @@ mod xattr_tests {
         // REPLACE of an existing name → ok, value updated.
         i.setxattr("user.a", b"3".to_vec(), false, true).expect("replace");
         assert_eq!(i.getxattr("user.a"), Ok(b"3".to_vec()));
+    }
+
+    #[test]
+    fn xattrs_consume_and_release_tmpfs_inode_space() {
+        let fs = TmpfsFs::with_limits(String::from("/"), TmpfsSb::new(64, 2));
+        let root = fs.root_inode();
+        let large = vec![b'x'; 900];
+        root.setxattr("user.payload", large.clone(), false, false).expect("first xattr fits");
+        // Replacement charges only the growth delta, so an in-place rewrite
+        // remains possible even when the mount has no spare full inode unit.
+        root.setxattr("user.payload", large, false, false).expect("same-size replacement");
+        assert_eq!(root.setxattr("user.other", vec![b'y'; 100], false, false),
+                   Err(XattrError::Fs(VfsError::Enospc)));
+        root.removexattr("user.payload").expect("remove releases space");
+        root.setxattr("user.other", vec![b'y'; 100], false, false).expect("released space reused");
     }
 
     // Two inodes are INDEPENDENT — no global table, no cross-inode leakage.
