@@ -288,6 +288,12 @@
 |---|---|---|---|---|---|
 | FIXED 771af05d8 | DEFECT | med | Runtime serial consoles now apply parsed baud/parity/bits/flow options after UART probe. | Console/UART/TTY/cmdline tests and target checks passed. | Chris Watkins |
 
+### B2565-stale-runtime-serial-options-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2565 | MISSING | med | The older runtime serial-options row was a stale duplicate of B2515. | Current runtime serial installation consumes canonical parsed baud/parity/bits/flow options; B2515 already records the production call chain and verification. | Chris Watkins |
+
 ### B2514-ext4-journalled-quota-mark-dirty
 
 | Status | Class | Sev | Issue | Evidence | Owner |
