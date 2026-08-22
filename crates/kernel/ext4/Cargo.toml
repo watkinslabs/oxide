@@ -18,6 +18,7 @@ pmm   = { path = "../mm-pmm" }
 cgroup = { path = "../cgroup" }
 sched = { path = "../sched" }
 timer = { path = "../timer" }
+timekeeper = { path = "../timekeeper" }
 
 [dev-dependencies]
 boot-info = { path = "../../shared/boot-info" }

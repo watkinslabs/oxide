@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2480-ext4-itable-highres-pacing
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 05b590aff | DEFECT | med | Ext4 inode-table initialization now measures actual work and paces high-resolution progress correctly. | Ext4 tests and target checks passed. | Chris Watkins |
+
+<<<<<<< HEAD
 ### B2479-f2fs-verity-specific-errnos
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -520,6 +527,13 @@
 |---|---|---|---|---|---|
 | FIXED 6963f4922 | MISSING | low | **F2fs now preserves `ENOKEY`, `EKEYREJECTED`, `EBADMSG`, and `ENOPKG` through its live VFS and syscall boundaries.** `VfsError` owns all four Linux numbers, positive-POSIX reconstruction retains them, the f2fs adapter maps its native errors without collapsing them to `EIO`, and the socket/syscall conversion funnels retain the same values. A signed verity file's open can therefore distinguish an absent key, a rejected signature, a malformed signature, and missing algorithm support from a failing disk. | B2479. Linux 7.2.0-rc4 `fs/verity/signature.c::fsverity_verify_signature` returns `ENOKEY`, `EKEYREJECTED`, and `EBADMSG` distinctly. The live Oxide call chain is `F2fsNodeOps::on_open_file` -> `Volume::verity_file_open` -> `errno_to_vfs` -> syscall errno encoding. With the new VFS variants present but the production f2fs mapping unchanged, `errno_translation_keeps_each_meaning` was RED (`Eio` versus `Enokey`); restored production mapping is GREEN for all four. Full f2fs (3697), VFS, and socket (91) suites pass, as does the focused syscall mirror (5), formatting, and both kernel target checks. Final paired smoke reached userspace with serial RX on attempt 1: x86_64 in 46 s and aarch64 in 56 s. | B2479-f2fs-verity-specific-errnos |
 >>>>>>> 7e348a58a (docs: close f2fs verity errno issue)
+=======
+### B2480-ext4-itable-highres-pacing
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 05b590aff | DEFECT | low | **Lazy ext4 inode-table initialisation now prices each pause from the exact group-zeroing duration instead of the periodic worker's one-second cadence.** The worker samples the shared monotonic clock immediately around `init_next_inode_table`, records completion as the pause origin, and multiplies only that measured interval by `init_itable=`. | B2480. Linux 7.2.0-rc4 samples `ktime_get_ns()` around `ext4_init_inode_table()` and converts the elapsed duration times `s_li_wait_mult` into its next timeout. `a_mount_waits_out_the_pause_its_option_earned` drives the real table write with a deterministic 1,000 ns measurement and requires a 10,000 ns pause beginning at completion. Replacing the measured duration with the periodic tick makes the test RED at `0` versus `10000`; restored GREEN. Full ext4 suite passes, including 319 unit tests and every image integration; both x86_64 and aarch64 kernel target checks pass. Paired smoke reached userspace and passed serial RX on attempt 1: x86_64 in 46 s and aarch64 in 56 s. | B2480-ext4-itable-highres-pacing |
+>>>>>>> 6b66df94a (docs: close B2480 ext4 itable pacing)
 
 ### B2329-freezer-backoff-sleep
 
