@@ -41,6 +41,28 @@ fn every_registered_ino_is_distinct() {
     }
 }
 
+/// Power attributes share the sysfs superblock with device classes.  Their
+/// inode blocks must therefore be globally unique: `iget` keys solely on
+/// `i_ino`, and an alias can turn a regular power attribute into a cached
+/// class directory depending on lookup order.
+#[test]
+fn power_inode_blocks_do_not_alias_device_classes() {
+    const BLOCK_MASK: u64 = 0xffff_0000;
+    let power_blocks = [POWER_ATTR_BASE, POWER_STATS_ATTR_BASE];
+    let device_class_blocks = [
+        crate::ids::POWER_SUPPLY_CLASS,
+        crate::ids::BACKLIGHT_CLASS,
+        crate::ids::THERMAL_CLASS,
+    ];
+    for power in power_blocks {
+        for class in device_class_blocks {
+            assert_ne!(power & BLOCK_MASK, class & BLOCK_MASK,
+                "power inode block {:#x} aliases device-class block {:#x}",
+                power & BLOCK_MASK, class & BLOCK_MASK);
+        }
+    }
+}
+
 /// Every name in `ATTRS` reads back non-empty bytes through the same
 /// `SysfsOps` wrapper `init()` registers.
 #[test]
