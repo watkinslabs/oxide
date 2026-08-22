@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2495-hda-dma-position-buffer
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 41cb68050 | DEFECT | med | HDA stream position now prefers a programmed DMA position buffer with LPIB fallback. | HDA/sound tests, targets, and dedicated smoke passed. | Chris Watkins |
+
+<<<<<<< HEAD
 ### B2494-aarch64-fdt-reserved-memory
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -680,6 +687,13 @@
 |---|---|---|---|---|---|
 | FIXED 9a732871b | MISSING | med | **The aarch64 DT boot path now removes every firmware-owned reservation from usable RAM before the PMM sees the topology.** The shared FDT owner decodes both the mandatory reservation map and every `reg` tuple below `/reserved-memory`, using the bus's declared cell widths; the boot owner page-aligns, sorts, and overlays those ranges through the same physical-topology funnel as the kernel image, DTB, and ACPI tables. | B2494. Linux 7.2.0-rc4 reserves the header reservation map before scanning `/reserved-memory`. The focused wire-image tests cover both sources, 32-bit and 64-bit cell widths, and multiple tuples. Forcing the production decoder to return no ranges turns both tests RED (0 vs 2); restored GREEN. Full suites: FDT 85/85, boot-aarch64 34/34. Both x86_64 and aarch64 kernel target and all-feature checks pass. Final paired smoke passed attempt 1 with serial RX: x86_64 46 s, aarch64 56 s. | B2494-aarch64-fdt-reserved-memory |
 >>>>>>> 33b5728a2 (docs: close aarch64 DT reservation gap)
+=======
+### B2495-hda-dma-position-buffer
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 41cb68050 | DEFECT | low | **HD-Audio stream delay now prefers the controller's DMA position buffer while retaining the link-position fallback for controllers that report zero or an invalid sentinel.** Probe owns one page containing the controller's eight-byte stream slots; controller bring-up publishes its DMA address through `DPLBASE`/`DPUBASE`, each stream enables and clears its slot, and quiesce disables the shared position buffer after stopping the streams. PCM progress and writable-space decisions therefore use the less-laggy hardware position without creating a second accounting owner. | B2495. Linux 7.2.0-rc4 allocates one eight-byte slot per stream, programs the shared position-buffer base, prefers a valid nonzero slot and falls back to `SD_LPIB`. The authentic positive control reproduced the former live LPIB-only decision and failed with `left: 2048`, `right: 3072`; restored GREEN. `drv-hda` 89/89 and `sound` 48/48 pass, as do both target checks and the full feature gate. Dedicated HD-Audio smoke enumerated the controller, duplex codec, control node and both PCM nodes on attempt 1: x86 in 179 s and ARM64 in 177 s. | B2495-hda-dma-position-buffer |
+>>>>>>> ca7e4f9ec (docs: close B2495 HDA position issue)
 
 ### B2329-freezer-backoff-sleep
 
