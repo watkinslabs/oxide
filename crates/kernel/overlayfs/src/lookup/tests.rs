@@ -276,3 +276,18 @@ fn the_marked_whiteout_form_is_recognised_once_a_directory_declares_it() {
     let _ = vec![0u8; 0];
     let _ = CreateCtx::root();
 }
+
+#[test]
+fn a_single_last_lower_does_not_activate_the_marked_whiteout_extension() {
+    let c = Config::default();
+    let lo = layer(1);
+    let d = mkpath(&lo, "d");
+    marker::set(&c, &d, Marker::Opaque, b"x", Errno::Eio).unwrap();
+    let marked = mkfile(&lo, "d/marked", b"");
+    marker::set(&c, &marked, Marker::Xwhiteout, MARKER_YES, Errno::Eio).unwrap();
+    let (s, root) = stack(c, None, &[lo], &[]);
+
+    let e = find(&s, &root, "d").unwrap().unwrap();
+    assert!(!e.xwhiteouts, "the final lower layer does not activate xwhiteouts");
+    assert!(lookup(&s, &e, &root, "marked").unwrap().is_some());
+}
