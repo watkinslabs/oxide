@@ -253,6 +253,12 @@
 |---|---|---|---|---|---|
 | FIXED R100 | DEFECT | med | The older OPEN row claiming only f2fs rewrote POSIX ACLs during chmod was stale after the canonical cross-filesystem ACL-store fix. | B2528’s live regression covered tmpfs, ext4 remount persistence, and OverlayFS upper copy-up; `InodeOps::setattr`, tmpfs setattr, and ext4 setattr now call `store_posix_acl_chmod`, while OverlayFS forwards to the corrected upper inode. | Chris Watkins |
 
+### R101-stale-bpf-perf-event-load-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED R101 | MISSING | high | The older OPEN row claiming `BPF_PROG_TYPE_PERF_EVENT` could not load was stale after the verifier/load implementation merged. | B2519 added the supported type, perf-event context layout/access checks, and production `BPF_PROG_LOAD` coverage; security and perf-BPF tests pass on both target checks. | Chris Watkins |
+
 ### R97-io-uring-spec-current-opcodes
 
 | Status | Class | Sev | Issue | Evidence | Owner |
