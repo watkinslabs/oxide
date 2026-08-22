@@ -126,7 +126,8 @@ impl NetStack {
         let new_entry = build_passive_child(local_ep, own_mss, path_mtu, metrics, packet, &listener,
             bound, iface, ipv6);
         plan.install(&new_entry);
-        let resp = match new_entry.conn.lock().input_prevalidated(src_ip, dst_ip, seg) {
+        let resp = match new_entry.conn.lock().input_prevalidated_with_options(src_ip, dst_ip, seg,
+            crate::sysctl::tcp_option_permissions_in(net_ns)) {
             Ok(resp) => resp,
             Err(_) => {
                 new_entry.release_syn_backlog();
@@ -184,7 +185,8 @@ impl NetStack {
         conn.rcv_iif = iif;
         conn.rcv_ttl = ttl;
         conn.rcv_tos = tos;
-        if conn.input_prevalidated(src_ip, dst_ip, seg).is_err() {
+        if conn.input_prevalidated_with_options(src_ip, dst_ip, seg,
+            crate::sysctl::tcp_option_permissions_in(net_ns)).is_err() {
             listener.syn_backlog_used.fetch_sub(1, ::core::sync::atomic::Ordering::AcqRel);
             return Err(NetError::Einval);
         }

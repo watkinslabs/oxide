@@ -70,6 +70,18 @@ fn a_fast_open_syn_carries_the_cookie_and_the_data() {
 }
 
 #[test]
+fn an_active_syn_omits_every_namespace_disabled_option() {
+    let mut c = client();
+    let (seg, _) = c.active_open_fastopen_with_policy(Some(cookie()), DATA,
+        crate::syncookies::Permitted {
+            timestamps: false, sack: false, window_scaling: false,
+        }).expect("the open");
+    assert!(crate::tcp_hdr::parse_ts_option(&seg).is_none());
+    assert!(!crate::tcp_hdr::parse_sack_permitted(&seg));
+    assert!(crate::tcp_hdr::parse_wscale_option(&seg).is_none());
+}
+
+#[test]
 fn the_syn_and_its_data_are_two_entries_on_the_retransmit_queue() {
     let mut c = client();
     c.active_open_fastopen(Some(cookie()), DATA).expect("the open");

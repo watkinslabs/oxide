@@ -16,6 +16,7 @@
 // - passive_header.rs: network-header state retained across passive open.
 // - active_fastopen.rs: the client half of fast open — a SYN carrying data,
 //                   and what its answer teaches.
+// - option_policy.rs: namespace handshake-option admission at the TCB boundary.
 // - synrecv.rs    : which acknowledgement may complete, or end, a half-open
 //                   passive connection — the request rule and the socket rule.
 // - reqsk.rs      : the half-open request sock (SYN-RECV minisock) a listener holds,
@@ -35,6 +36,7 @@ pub mod segment_opts;
 pub mod syn_opts;
 pub mod fastopen;
 pub mod active_fastopen;
+mod option_policy;
 pub mod timing;
 pub mod delivery;
 pub mod chrono;

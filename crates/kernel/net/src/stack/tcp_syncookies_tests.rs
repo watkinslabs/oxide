@@ -161,6 +161,89 @@ fn the_acknowledgement_carrying_the_cookie_back_opens_the_connection() {
 }
 
 #[test]
+fn cookie_acknowledgement_is_refused_when_its_negotiated_option_is_disabled() {
+    let _domain = crate::hosted_fixture::init_net_domain();
+    for (offset, key) in [
+        crate::net_ns::NetSysctlKey::TcpTimestamps,
+        crate::net_ns::NetSysctlKey::TcpSack,
+        crate::net_ns::NetSysctlKey::TcpWindowScaling,
+    ].into_iter().enumerate() {
+        let stack = NetStack::new();
+        let port = 7_420 + offset as u16;
+        let (iface, lo, _) = fixture(&stack, port);
+        fill_syn_queue(&stack, iface, port, &lo);
+        deliver(&stack, iface, port, 40_002, flags::SYN, CLIENT_SEQ, 0, syn_options());
+        let segment = sent(&lo).expect("cookie SYN-ACK");
+        let synack = head(&segment);
+        drain(&lo);
+        crate::sysctl::set_value_in(0, key, 0).expect("disable the negotiated option");
+        let echo = SynOptions {
+            timestamp: Some((0x1111_3333, tsval(&segment))), ..SynOptions::default()
+        };
+        deliver(&stack, iface, port, 40_002, flags::ACK, CLIENT_SEQ.wrapping_add(1),
+            synack.seq.wrapping_add(1), echo);
+        crate::sysctl::set_value_in(0, key, 1).expect("restore the namespace default");
+        assert!(child(&stack, port, 40_002).is_none(),
+            "a cookie cannot retain an option the host disabled");
+    }
+}
+
+#[test]
+fn cookie_syn_ack_never_offers_a_namespace_disabled_option() {
+    let _domain = crate::hosted_fixture::init_net_domain();
+    for (offset, key) in [
+        crate::net_ns::NetSysctlKey::TcpTimestamps,
+        crate::net_ns::NetSysctlKey::TcpSack,
+        crate::net_ns::NetSysctlKey::TcpWindowScaling,
+    ].into_iter().enumerate() {
+        let stack = NetStack::new();
+        let port = 7_430 + offset as u16;
+        let (iface, lo, _) = fixture(&stack, port);
+        fill_syn_queue(&stack, iface, port, &lo);
+        crate::sysctl::set_value_in(0, key, 0).expect("disable the offered option");
+        deliver(&stack, iface, port, 40_002, flags::SYN, CLIENT_SEQ, 0, syn_options());
+        let segment = sent(&lo).expect("cookie SYN-ACK");
+        crate::sysctl::set_value_in(0, key, 1).expect("restore the namespace default");
+        match key {
+            crate::net_ns::NetSysctlKey::TcpTimestamps =>
+                assert!(crate::tcp_hdr::parse_ts_option(&segment).is_none()),
+            crate::net_ns::NetSysctlKey::TcpSack =>
+                assert!(!crate::tcp_hdr::parse_sack_permitted(&segment)),
+            crate::net_ns::NetSysctlKey::TcpWindowScaling =>
+                assert!(crate::tcp_hdr::parse_wscale_option(&segment).is_none()),
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[test]
+fn stored_request_syn_ack_never_offers_a_namespace_disabled_option() {
+    let _domain = crate::hosted_fixture::init_net_domain();
+    for (offset, key) in [
+        crate::net_ns::NetSysctlKey::TcpTimestamps,
+        crate::net_ns::NetSysctlKey::TcpSack,
+        crate::net_ns::NetSysctlKey::TcpWindowScaling,
+    ].into_iter().enumerate() {
+        let stack = NetStack::new();
+        let port = 7_440 + offset as u16;
+        let (iface, lo, _) = fixture(&stack, port);
+        crate::sysctl::set_value_in(0, key, 0).expect("disable the offered option");
+        deliver(&stack, iface, port, 40_002, flags::SYN, CLIENT_SEQ, 0, syn_options());
+        let segment = sent(&lo).expect("stored-request SYN-ACK");
+        crate::sysctl::set_value_in(0, key, 1).expect("restore the namespace default");
+        match key {
+            crate::net_ns::NetSysctlKey::TcpTimestamps =>
+                assert!(crate::tcp_hdr::parse_ts_option(&segment).is_none()),
+            crate::net_ns::NetSysctlKey::TcpSack =>
+                assert!(!crate::tcp_hdr::parse_sack_permitted(&segment)),
+            crate::net_ns::NetSysctlKey::TcpWindowScaling =>
+                assert!(crate::tcp_hdr::parse_wscale_option(&segment).is_none()),
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[test]
 fn a_forged_acknowledgement_opens_nothing() {
     let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();

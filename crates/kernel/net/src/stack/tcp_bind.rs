@@ -494,7 +494,8 @@ impl NetStack {
             crate::tcp_ext_hdr::ext_hdr_len(ip_opts.options().as_ref()));
         conn.apply_route_metrics(self.route_metrics_for_dst_mark_in(
             bind.net_ns(), remote_ip, bind.bound_iface(), mark_value));
-        let (syn, carried) = conn.active_open_fastopen(fastopen.option, fastopen.payload(data))
+        let (syn, carried) = conn.active_open_fastopen_with_policy(fastopen.option,
+            fastopen.payload(data), crate::sysctl::tcp_option_permissions_in(bind.net_ns()))
             .map_err(|_| NetError::Eio)?;
         Ok((Arc::new(TcpEntry::new_bound_ip_opts_pacing_ipv6_mark(
             conn, error, Some(bind.clone()), bpf_filter, ip_mtu_discover,

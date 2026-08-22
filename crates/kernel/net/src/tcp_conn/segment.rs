@@ -92,15 +92,25 @@ impl TcpConn {
     /// everything this side supports; a SYN-ACK may only echo what the peer's
     /// SYN offered, because an option the peer never asked for would be read
     /// as this side unilaterally turning a feature on. # C: O(1)
+    #[cfg(test)]
     pub(crate) fn syn_options(&self, flag_bits: u8) -> SynOptions {
+        self.syn_options_with_policy(flag_bits, crate::syncookies::Permitted::ALL)
+    }
+
+    /// Build handshake options admitted by the owning namespace.
+    /// # C: O(1)
+    pub(super) fn syn_options_with_policy(&self, flag_bits: u8,
+        permitted: crate::syncookies::Permitted) -> SynOptions
+    {
         let synack = (flag_bits & flags::ACK) != 0;
         let mss = if self.own_mss != 0 { self.own_mss } else { super::OWN_MSS_DEFAULT };
         SynOptions {
             mss: Some(mss),
-            timestamp: (!synack || self.ts_enabled).then(|| (
+            timestamp: (permitted.timestamps && (!synack || self.ts_enabled)).then(|| (
                 self.handshake_tsval(), self.ts_recent)),
-            sack_perm: !synack || self.sack_ok,
-            wscale: (!synack || self.wscale_ok).then_some(self.snd_wscale),
+            sack_perm: permitted.sack && (!synack || self.sack_ok),
+            wscale: (permitted.window_scaling && (!synack || self.wscale_ok))
+                .then_some(self.snd_wscale),
             // Whatever the fast-open decision left for this handshake: a
             // freshly minted cookie for a client that asked, one under the
             // current key for a client whose cookie verified under the
@@ -134,7 +144,15 @@ impl TcpConn {
     /// because the retransmit queue holds the data as its own entry.
     /// # C: O(options + payload)
     pub(crate) fn build_syn_with_data(&self, seq: u32, flag_bits: u8, payload: &[u8]) -> Vec<u8> {
-        let opts = self.syn_options(flag_bits);
+        self.build_syn_with_data_policy(seq, flag_bits, payload, crate::syncookies::Permitted::ALL)
+    }
+
+    /// Build an opening segment under the owning namespace's option policy.
+    /// # C: O(options + payload)
+    pub(super) fn build_syn_with_data_policy(&self, seq: u32, flag_bits: u8, payload: &[u8],
+        permitted: crate::syncookies::Permitted) -> Vec<u8>
+    {
+        let opts = self.syn_options_with_policy(flag_bits, permitted);
         let opts_len = opts.encoded_len();
         let mut buf = alloc::vec![0u8; TCP_HDR_MIN_LEN + opts_len + payload.len()];
         opts.encode(&mut buf[TCP_HDR_MIN_LEN..TCP_HDR_MIN_LEN + opts_len]);
