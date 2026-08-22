@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2452-wiphy-rename-contract
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2452 | MISSING | med | **SET_WIPHY now completes the physical-radio rename contract with validation, mutable registry ownership, generation update, and NEW_WIPHY notification.** | B2452 drives the live rename command path and pins duplicate/canonical-name rejection and notification. | B2452-wiphy-rename-contract |
+
 ### B2450-bpf-test-run-checksum-complete
 
 | Status | Class | Sev | Issue | Evidence | Owner |
