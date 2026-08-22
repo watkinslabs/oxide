@@ -4674,6 +4674,12 @@ against the row's own evidence.
 |---|---|---|---|---|---|
 | FIXED R112 | INFRA | med | **The recorded `boot-smoke-dhcp.sh` failure is stale: that script is absent from the current tree, and neither its `udhcpc: configured eth0` marker nor `OXIDE_UDHCPC_ENABLE` has any live reference.** The row described a retired busybox/musl userspace pipeline, not a current kernel or image behavior. | Current-tree audit: `test ! -e tools/boot-smoke-dhcp.sh` and repository search finds no `udhcpc` or `OXIDE_UDHCPC_ENABLE` references outside the historical ledger; current boot smoke uses the Fedora/glibc image path. No source behavior changed. | R112 |
 
+### R121-split-iopl-ioperm-composite
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED R121 | MISSING | high | **The composite syscall row's `iopl(2)`/`ioperm(2)` half is no longer in progress or absent.** Both ABI shims call the canonical `sched::ioport` owner, which validates the Linux ladder, updates per-task permission state, and publishes the x86 TSS bitmap; the remaining composite work is only `modify_ldt` and kexec. | `syscalls/src/172_iopl.rs`, `173_ioperm.rs`, `sched/src/ioport/{ladder,apply,arch}.rs`, and hosted ladder/bitmap/application tests. B2038 records the merged I/O-permission implementation and its stack-gate evidence. No source behavior changed. | R121 |
+
 ### R118-duplicate-procfs-syscall-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
