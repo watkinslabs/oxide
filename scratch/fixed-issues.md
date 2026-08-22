@@ -3142,3 +3142,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED `43b5c4c93` | DEFECT | med | **Load average now folds runnable plus uninterruptible and killable sleepers from scheduler-owned per-CPU counters.** Interruptible and freezer sleeps do not contribute, and task-owned block/wake ownership keeps the global sum exact across CPU migration. | B2339. `active_fold_includes_cross_cpu_uninterruptible_sum`, `uninterruptible_transition_contributes_until_wake`, `local_uninterruptible_wake_retires_load_contribution`, and `migrated_uninterruptible_wake_preserves_system_sum` passed on the original branch. | `43b5c4c93` |
+
+### B2340-max-cpus-single-truth
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED c72308bee | DEFECT | med | **Logical topology, architecture transport, generic `PerCpu`, RCU quiescent state, allocator contexts, scheduler masks, and driver-local per-CPU storage now derive from one compile-time CPU ceiling.** `hal::MAX_CPUS` is the sole value definition; `cpu::MAX_CPUS` and `sync::MAX_CPUS` are direct re-exports. | B2340. Linux uses one `NR_CPUS` build bound for cpumasks and per-CPU storage, with `nr_cpu_ids` as the runtime subset. The original branch's cross-owner compile check pinned the unified value. | B2340-max-cpus-single-truth |

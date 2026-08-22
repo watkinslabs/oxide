@@ -64,10 +64,10 @@ failure mode this reconcile was supposed to catch, not commit.
 | Class | blocker | critical | high | med | low | Total |
 |---|---:|---:|---:|---:|---:|---:|
 | COVERAGE | 0 | 0 | 10 | 68 | 65 | 143 |
-| DEFECT | 1 | 4 | 17 | 63 | 63 | 148 |
+| DEFECT | 1 | 4 | 17 | 62 | 63 | 147 |
 | INFRA | 0 | 0 | 11 | 40 | 39 | 90 |
 | MISSING | 1 | 0 | 49 | 140 | 113 | 303 |
-| **Total** | **2** | **4** | **87** | **311** | **280** | **684** |
+| **Total** | **2** | **4** | **87** | **310** | **280** | **683** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -851,7 +851,6 @@ here now.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| OPEN | DEFECT | med | **`MAX_CPUS` is a split source of truth and the two copies already disagree.** `cpu::MAX_CPUS = 64` sizes every per-CPU topology array; `sync::MAX_CPUS = 256` sizes `PerCpu<T>`, the kalloc per-CPU state and the RCU quiescent-state table. Same name, two crates, two values, no relationship asserted anywhere — and `drv-zram`'s codec code already reasons in comments about the 256 one while the scheduler bounds itself by the 64 one. Any CPU-count widening must reconcile these before touching anything else, and a mismatch today means a CPU index legal for one table is out of range for the other. | `crates/kernel/cpu/src/lib.rs:20` vs `crates/shared/sync/src/percpu.rs:16`; consumers `crates/shared/kalloc/src/state.rs:66`, `crates/shared/sync/src/rcu.rs`. | — |
 | OPEN | COVERAGE | med | **`decode_madt` has no hosted test at all**, despite being an ungated `pub unsafe fn` that a byte buffer plus `hhdm_offset = 0` can drive directly. It is the function that decides every CPU's APIC id, the I/O APIC base and every legacy-IRQ source override, and nothing here can fail if its entry-type offsets drift. The neighbouring `firmware::acpi::tests` covers only RSDP status. B1984 added exactly this style of coverage for the FADT (offsets pinned by reproducing the conformant table lengths) and did not extend it to the MADT, which is a bigger table with more offsets. | `crates/kernel/firmware/src/acpi/tables.rs decode_madt`; `crates/kernel/firmware/src/acpi/tests.rs` contains only `absent_returns_absent` and `rsdp_status_distinct`. | — |
 | OPEN | DEFECT | med | **No ACPI table is ever checksum-validated.** The RSDP's 8-byte checksum, its extended checksum, and every SDT's own header checksum are all unverified — validation is signature bytes plus a length sanity bound only. The reference refuses a table whose checksum fails; here a corrupt or mis-pointed table is decoded as if it were sound, which for the MADT means fabricated CPU entries and for the FADT (added by B1984) means a fabricated reset register. The crate already has a working checksum helper, but it is SMBIOS-private. | `crates/kernel/firmware/src/acpi/rsdp.rs parse_and_log_rsdp`/`try_log_xsdt` — no checksum anywhere; contrast `crates/kernel/firmware/src/smbios.rs:105 checksum_ok`. | — |
 | OPEN | MISSING | med | **No EFI runtime services are retained after boot**, on either arch. The aarch64 stub and the x86 UEFI path both exit boot services and keep no runtime-services pointer, so the reference's EFI reboot rung has no counterpart (B1984's reset ladder therefore has three rungs where the reference has five — the EFI one and the real-mode BIOS one are absent rather than skipped), and `efivarfs` has no possible backing: variable get/set/list would need `GetVariable`/`SetVariable`. Recorded because "the ladder is shorter than the reference's" is otherwise indistinguishable from an omission. | `crates/kernel/power/src/reset.rs` module comment; `crates/arch/boot-aarch64` stub calls ExitBootServices and records only the RSDP; no `RuntimeServices` symbol anywhere in the tree. | — |
