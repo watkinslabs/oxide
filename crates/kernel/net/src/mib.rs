@@ -331,9 +331,11 @@ pub fn render_proc_netstat(net_ns: u64) -> Vec<u8> {
     use core::fmt::Write as _;
     let v = |m: TcpExt| get_tcp_ext(net_ns, m);
     let mut s = alloc::string::String::new();
-    let _ = writeln!(s, "TcpExt: TCPFastOpenPassive TCPFastOpenPassiveFail \
+    let _ = writeln!(s, "TcpExt: SyncookiesSent SyncookiesRecv SyncookiesFailed \
+TCPFastOpenPassive TCPFastOpenPassiveFail \
 TCPFastOpenPassiveAltKey TCPFastOpenCookieReqd TCPFastOpenListenOverflow TCPACKSkippedSynRecv");
-    let _ = writeln!(s, "TcpExt: {} {} {} {} {} {}",
+    let _ = writeln!(s, "TcpExt: {} {} {} {} {} {} {} {} {}",
+        v(TcpExt::SyncookiesSent), v(TcpExt::SyncookiesRecv), v(TcpExt::SyncookiesFailed),
         v(TcpExt::TcpFastOpenPassive), v(TcpExt::TcpFastOpenPassiveFail),
         v(TcpExt::TcpFastOpenPassiveAltKey), v(TcpExt::TcpFastOpenCookieReqd),
         v(TcpExt::TcpFastOpenListenOverflow), v(TcpExt::TcpAckSkippedSynRecv));
@@ -428,6 +430,20 @@ mod render_tests {
         assert_eq!(column(&text, "TcpExt:", "TCPFastOpenPassive"), 1);
         assert_eq!(column(&text, "TcpExt:", "TCPFastOpenPassiveAltKey"), 1);
         assert_eq!(column(&text, "TcpExt:", "TCPFastOpenCookieReqd"), 0);
+        forget(NS);
+    }
+
+    #[test]
+    fn syncookie_events_render_in_their_tcp_ext_columns() {
+        const NS: u64 = 0x530f;
+        forget(NS);
+        bump_tcp_ext(NS, TcpExt::SyncookiesSent);
+        bump_tcp_ext(NS, TcpExt::SyncookiesRecv);
+        bump_tcp_ext(NS, TcpExt::SyncookiesFailed);
+        let text = alloc::string::String::from_utf8(render_proc_netstat(NS)).unwrap();
+        assert_eq!(column(&text, "TcpExt:", "SyncookiesSent"), 1);
+        assert_eq!(column(&text, "TcpExt:", "SyncookiesRecv"), 1);
+        assert_eq!(column(&text, "TcpExt:", "SyncookiesFailed"), 1);
         forget(NS);
     }
 }
