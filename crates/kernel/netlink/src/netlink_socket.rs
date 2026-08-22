@@ -240,6 +240,12 @@ impl NetlinkSocket {
         -> Result<usize, SendError>
     {
         self.preflight_send(buf.len())?;
+        // Linux broadcasts before attempting the unicast half of a combined
+        // port/group destination. The named port and sender are excluded from
+        // that broadcast, so neither receives a duplicate.
+        if dest.group != 0 && self.protocol != proto::NETLINK_KOBJECT_UEVENT {
+            crate::multicast_from_user(self, dest.port_id, dest.group, buf);
+        }
         if dest.port_id != 0 {
             match crate::unicast_port(self, dest.port_id, buf, nonblock) {
                 crate::admission::Unicast::NoPort =>
@@ -250,7 +256,7 @@ impl NetlinkSocket {
                 // length the caller handed over, as a delivered one does.
                 crate::admission::Unicast::Dropped | crate::admission::Unicast::Queued => {}
             }
-            if dest.group == 0 { return Ok(buf.len()); }
+            return Ok(buf.len());
         }
         self.write_to_groups(buf, dest.group).map_err(SendError::Backend)
     }

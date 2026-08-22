@@ -128,6 +128,39 @@ pub(crate) fn unicast_port(sender: &NetlinkSocket, destination_port_id: u32, byt
     }
 }
 
+/// Broadcast one userspace datagram to subscribed peers in the sender's
+/// namespace and protocol. Linux excludes the sending socket and the named
+/// unicast destination from the broadcast copy. # C: O(N live Netlink ports * len)
+pub(crate) fn multicast_from_user(sender: &NetlinkSocket, destination_port_id: u32,
+    group_mask: u32, bytes: &[u8]) -> usize
+{
+    if group_mask == 0 { return 0; }
+    let group = group_mask.trailing_zeros() + 1;
+    let namespace = sender.net_ns.id().as_u64();
+    let protocol = sender.protocol;
+    let targets: Vec<_> = {
+        let mut owners = PORT_OWNERS.lock();
+        retain_live(&mut owners);
+        owners.iter().filter_map(|owner| {
+            if owner.namespace != namespace || owner.protocol != protocol
+                || owner.port_id == destination_port_id
+            {
+                return None;
+            }
+            let target = owner.socket.upgrade()?;
+            if core::ptr::eq(Arc::as_ptr(&target), sender) || !target.groups.test(group) {
+                return None;
+            }
+            Some(target)
+        }).collect()
+    };
+    let source_port_id = sender.port_id.load(Ordering::Acquire);
+    let creds = net::sock_opts::SenderCreds::current();
+    targets.into_iter().filter(|target| {
+        target.enqueue_user_multicast(bytes.to_vec(), source_port_id, group, creds)
+    }).count()
+}
+
 /// Block until the destination drains, its send timeout expires, or a signal
 /// arrives. `None` means "try again". # C: O(1)
 #[cfg(target_os = "oxide-kernel")]

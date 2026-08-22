@@ -85,7 +85,7 @@ pub use ports::{bind_port_id, proc_rows};
 pub use protocols::protocol_registered;
 pub use selinux_nl::{notify_policyload, notify_setenforce, register_selinux_listener};
 pub use proc_seq::{render as render_proc_netlink, ProcRow};
-pub(crate) use ports::{register_port_id, unicast_port};
+pub(crate) use ports::{multicast_from_user, register_port_id, unicast_port};
 pub use netlink_socket::{NETLINK_RCVBUF_DEFAULT, NETLINK_SNDBUF_DEFAULT, NETLINK_SEND_OVERHEAD,
     NetlinkSocket, SendError};
 pub use receive::{ReceiveState, ReceivedDatagram};
