@@ -63,6 +63,8 @@ impl DirEntry {
     pub fn group_start(&self) -> u64 {
         self.slot - ((self.nr_slots - 1) * ENTRY_BYTES) as u64
     }
+    /// Byte offset of the record after this name's short record. # C: O(1)
+    pub fn next_pos(&self) -> u64 { self.slot + ENTRY_BYTES as u64 }
 }
 
 /// A mounted volume.

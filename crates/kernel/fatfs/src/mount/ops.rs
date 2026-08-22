@@ -168,15 +168,17 @@ impl FileOps for FatOps {
         let self_ino = inode.ino();
         if ctx.pos == 0 && !ctx.emit(".", self_ino, FileType::Directory, 1) { return Ok(()); }
         if ctx.pos == 1 && !ctx.emit("..", self_ino, FileType::Directory, 2) { return Ok(()); }
-        for (i, entry) in entries.iter().enumerate() {
-            let slot = i as u64 + 2;
-            if ctx.pos > slot { continue; }
+        // Cursors 0/1 belong to the synthetic dots; 2 means the first medium
+        // record. Every later cursor is the medium's canonical byte offset.
+        let pos = if ctx.pos <= 2 { 0 } else { ctx.pos };
+        for entry in &entries {
+            if pos > entry.group_start() { continue; }
             // The medium's own dot entries would duplicate the two above.
             if entry.name == "." || entry.name == ".." { continue; }
             let location = ident::location_of(&entry.entry, &node.location);
             let ino = ident::inode_number(&location, Some(&entry.entry));
             let ftype = if entry.is_dir() { FileType::Directory } else { FileType::Regular };
-            if !ctx.emit(&entry.name, ino, ftype, slot + 1) { break; }
+            if !ctx.emit(&entry.name, ino, ftype, entry.next_pos()) { break; }
         }
         Ok(())
     }

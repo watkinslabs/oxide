@@ -164,6 +164,37 @@ fn identity_is_stable_across_lookups_and_distinct_between_files() {
     assert_ne!(sub, root.ino());
 }
 
+/// A saved cursor names the next on-medium record, not the entry's ordinal in
+/// a filtered listing. Removing an earlier name therefore cannot shift it.
+#[test]
+fn a_readdir_cookie_survives_deleting_an_earlier_name() {
+    struct Page { names: Vec<String>, cap: usize }
+    impl vfs::DirEmit for Page {
+        fn emit(&mut self, name: &str, _ino: u64, _kind: FileType, _next: u64) -> bool {
+            if self.names.len() >= self.cap { return false; }
+            self.names.push(name.into());
+            true
+        }
+    }
+
+    let fs = writable_mount("vfat", crate::opts::Options::vfat());
+    let root = fs.root_inode();
+    let mut first = Page { names: Vec::new(), cap: 4 };
+    let mut ctx = vfs::DirContext::new(0, &mut first);
+    root.readdir(&mut ctx).expect("first page");
+    let cookie = ctx.pos;
+    drop(ctx);
+    assert_eq!(first.names, [".", "..", "HELLO.TXT", "SUBDIR"]);
+    assert_eq!(cookie, (2 * crate::dirent::ENTRY_BYTES) as u64,
+               "cookie is the byte offset after SUBDIR's record");
+
+    root.unlink_child("HELLO.TXT").expect("delete the earlier record");
+    let mut rest = Page { names: Vec::new(), cap: usize::MAX };
+    let mut resumed = vfs::DirContext::new(cookie, &mut rest);
+    root.readdir(&mut resumed).expect("resumed page");
+    assert_eq!(rest.names, ["LOCKED.CFG"]);
+}
+
 /// The filesystem reports itself as the reference names it, so `/proc/mounts`
 /// and `statfs(2)` agree with what a caller asked to mount.
 #[test]
