@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2499-ptrace-regset-iovec-order
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 12ab2186d | DEFECT | med | PTRACE regset now performs range-only iovec admission, transfers registers, then writes back iov_len, matching Linux ordering. | Ptrace tests and target checks passed. | Chris Watkins |
+
 ### B2498-oom-coredump-self-free
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -3862,6 +3868,7 @@ against the row's own evidence.
 |---|---|---|---|---|---|
 | FIXED e41310ec3 | COVERAGE | high | **The linked x86_64 S3 waking trampoline now executes in both a deterministic firmware-entry harness and a real Q35/SeaBIOS suspend-resume cycle.** The permanent micro-gate extracts the exact 4 KiB linked blob, enters it at the physical waking vector in 16-bit mode, and requires its own 16→32→64 transition to establish the patched page tables, control registers, EFER bits, and selectors before reaching the oracle. The end-to-end gate boots the distribution image, selects `deep`, observes QEMU enter S3, posts the wake, and requires the same shell to report one successful suspend. | B2332. The micro-gate's positive control replaces the firmware entry byte with `hlt`: RED timeout, restored GREEN with `S3-TRAMPOLINE-PASS`. `make accept-s3-resume-x86` observed QMP `suspended`, returned through processor-state restore, and read `S3-SUCCESS=1`. That runtime exposed a global sysfs inode collision that made `/sys/power/mem_sleep` alias `/sys/class/power_supply`; the power leaves moved to unique blocks, and restoring the old block makes `power_inode_blocks_do_not_alias_device_classes` fail. ARM is deliberately not claimed as executed: QEMU virt declines PSCI `SYSTEM_SUSPEND`, matching Linux 7.2-rc4's rule that deep suspend is installed only after `PSCI_FEATURES` admits it. The unavailable runtime path remains pinned by 10 PSCI probe tests, 11 admission/table tests, and 12 exact save/restore-order tests; ARM boot smoke passed with serial RX in 56 s. | e41310ec3 |
 
+<<<<<<< HEAD
 ### B2336-bpf-program-streams
 
 | Status | Type | Severity | Issue | Evidence | Fixed by |
@@ -4063,3 +4070,10 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 077ebee52 | DEFECT | med | **Every extended-attribute operation now takes the SELinux inode permission Linux assigns it.** Reads and listings require the object's `getattr`; non-label writes and removals require `setattr`; `security.selinux` retains its stricter relabel and no-remove ladders. POSIX ACL names pass through the same hooks instead of returning before the LSM boundary. | B2472 verified Linux 7.2-rc4's `selinux_inode_getxattr`, `selinux_inode_listxattr`, `selinux_inode_setxattr`, and `selinux_inode_removexattr` hooks. `every_attribute_operation_takes_the_linux_inode_permission` covers security, user, trusted, and ACL names plus list; changing the production mutation mapping back to `getattr` makes it fail, restored GREEN. SELinux runtime 55/55 and the complete fs suite passed (1,392 library tests plus integration binaries). Both release target checks passed. Paired smoke passed first attempt with serial RX: x86_64 52 s, aarch64 58 s. | B2472-selinux-all-xattr-permissions |
+=======
+### B2499-ptrace-regset-iovec-order
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 12ab2186d | DEFECT | low | **`PTRACE_GETREGSET` and `PTRACE_SETREGSET` now accept a readable `struct iovec` in a read-only VMA, perform the register transfer, and report `EFAULT` only when the final `iov_len` write-back faults.** The iovec preflight is the same range-only admission as Linux `access_ok`; fault-recovering reads, transfer, and write-back execute in reference order through one hosted decision boundary. | B2499. Linux 7.2.0-rc4 `kernel/ptrace.c::ptrace_request` was verified first. The positive control restored the writable-VMA preflight: the focused test went RED because transfer remained false; range-only preflight restored GREEN and observed the transfer before write-back `EFAULT`. The complete ptrace suite passed 114/114; x86_64 and aarch64 kernel target checks and `make feature-gate` passed. Final paired smoke passed on attempt 1 with serial RX: x86_64 46 s, aarch64 56 s. | B2499 |
+>>>>>>> 98e2f5100 (chore(ledger): close ptrace regset iovec ordering)
