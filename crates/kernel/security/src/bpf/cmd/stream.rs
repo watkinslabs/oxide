@@ -1,26 +1,18 @@
 // `BPF_PROG_STREAM_READ_BY_FD` — drain one of a program's output streams.
 //
-// A loaded program owns two ring buffers that its runtime writes
-// diagnostics into; this command copies out whatever is queued and
-// returns the byte count, 0 when the stream is empty. This kernel's
-// program objects carry no such buffers, so the streams are permanently
-// empty and every well-formed request reads 0 bytes. That is the
-// reference's own answer for an empty stream, not a substitute for one —
-// but it means the diagnostics a program would emit are not collected.
-// See the missing-program-streams row in `scratch/known_issues.md`.
+// A loaded program owns two bounded FIFO streams that its runtime writes;
+// this command drains either stream with partial-element semantics.
 
 use syscall::errno::Errno;
 
 use super::super::attr::{self, Attr};
 use super::super::uapi;
-use super::super::user;
 use super::objfd;
 
 /// Streams a program can be asked to drain. An id outside the set is a
 /// caller error. # C: O(1)
 pub(crate) mod stream_id {
-    pub const STDOUT: u32 = 1;
-    pub const STDERR: u32 = 2;
+    pub(crate) use super::super::super::prog::stream::{STDERR, STDOUT};
 }
 
 /// An id naming no stream is `-ENOENT`, not `-EINVAL`: the command's
@@ -33,11 +25,10 @@ fn stream_id_verdict(stream_id: u32) -> Result<(), Errno> {
     }
 }
 
-/// Bytes available in one of a program's streams. No program object in
-/// this kernel carries stream buffers, so every stream is empty.
-/// # C: O(1)
-fn drain(_prog: &vfs::InodeRef, _stream_id: u32, _buf: u64, _len: u32) -> Result<i64, Errno> {
-    Ok(0)
+/// Bytes available in one of a program's streams. # C: O(bytes copied)
+fn drain(prog: &vfs::InodeRef, stream_id: u32, buf: u64, len: u32) -> Result<i64, Errno> {
+    let prog = prog.private::<super::super::BpfProgInode>().ok_or(Errno::Einval)?;
+    prog.streams.drain_user(stream_id, buf, len as usize).map(|n| n as i64)
 }
 
 /// `prog_stream_read()`. # C: O(bytes copied)
@@ -49,7 +40,6 @@ pub(in super::super) fn read(a: &Attr) -> Result<i64, Errno> {
     stream_id_verdict(stream_id)?;
     let buf = a.u64_at(o::STREAM_BUF);
     let len = a.u32_at(o::STREAM_BUF_LEN);
-    if len != 0 { user::range_ok(buf, len as usize)?; }
     drain(&prog, stream_id, buf, len)
 }
 
@@ -85,5 +75,18 @@ mod tests {
         for other in [0u32, 3, u32::MAX] {
             assert_eq!(stream_id_verdict(other), Err(Errno::Enoent));
         }
+    }
+
+    #[test]
+    fn command_drain_reads_runtime_output_and_then_reports_empty() {
+        let prog = super::super::super::prog::inode::make_bpf_prog_inode(1, alloc::vec![]);
+        let object = prog.private::<super::super::super::BpfProgInode>().unwrap();
+        object.streams.push(stream_id::STDOUT, b"runtime").unwrap();
+        let mut out = [0u8; 16];
+        assert_eq!(drain(&prog, stream_id::STDOUT, out.as_mut_ptr() as u64, 4), Ok(4));
+        assert_eq!(&out[..4], b"runt");
+        assert_eq!(drain(&prog, stream_id::STDOUT, out.as_mut_ptr() as u64, 16), Ok(3));
+        assert_eq!(&out[..3], b"ime");
+        assert_eq!(drain(&prog, stream_id::STDOUT, 0, 16), Ok(0));
     }
 }

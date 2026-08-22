@@ -73,6 +73,13 @@ struct Stub {
     args: &'static [&'static str],
 }
 
+/// Program-stream kfuncs published by the kernel object and callable through
+/// `BPF_PSEUDO_KFUNC_CALL`.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub(crate) enum StreamKfunc { Vprintk }
+
+const STREAM_VPRINTK: &str = "bpf_stream_vprintk";
+
 /// Every stub the object declares, hooks first and then iterator targets.
 /// Both attach-target families are named the same way, so they are
 /// published from one walk rather than from two objects that could
@@ -108,6 +115,26 @@ fn build() -> Vec<u8> {
         let stub_name = b.name(stub.name);
         b.record(stub_name, Kind::Func, FUNC_GLOBAL, proto, &[]);
     }
+    // Exact public prototype: int, const char *, const void *, u32. The
+    // implicit program owner is supplied by the runner and is not a BPF
+    // argument.
+    let uint_name = b.name("unsigned int");
+    let uint_type = b.record(uint_name, Kind::Int, 0, INT_BYTES, &[INT_BITS]);
+    let char_name = b.name("char");
+    let char_type = b.record(char_name, Kind::Int, 0, 1,
+        &[INT_SIGNED << INT_ENCODING_SHIFT | 8]);
+    let const_char = b.record(0, Kind::Const, 0, char_type, &[]);
+    let char_ptr = b.record(0, Kind::Ptr, 0, const_char, &[]);
+    let void_ptr = b.record(0, Kind::Ptr, 0, 0, &[]);
+    let params = [
+        ("stream_id", INT_TYPE_ID), ("fmt", char_ptr),
+        ("args", void_ptr), ("len", uint_type),
+    ];
+    let mut payload = Vec::new();
+    for (name, type_id) in params { payload.push(b.name(name)); payload.push(type_id); }
+    let proto = b.record(0, Kind::FuncProto, params.len() as u32, INT_TYPE_ID, &payload);
+    let name = b.name(STREAM_VPRINTK);
+    b.record(name, Kind::Func, FUNC_GLOBAL, proto, &[]);
     let type_len = b.types.len() as u32;
     let str_len = b.strings.len() as u32;
     let mut raw = Vec::new();
@@ -188,6 +215,22 @@ pub(crate) fn lsm_hook_by_btf_id(btf_id: u32) -> Option<Hook> {
 /// # C: O(target count)
 pub(crate) fn iter_target_by_btf_id(btf_id: u32) -> Option<IterTarget> {
     stub_name_by_btf_id(btf_id).and_then(|name| target_by_stub_name(&name))
+}
+
+/// Resolve a kfunc call id against the same object userspace reads. # C: O(1)
+pub(crate) fn stream_kfunc_by_btf_id(btf_id: u32) -> Option<StreamKfunc> {
+    match stub_name_by_btf_id(btf_id)?.as_slice() {
+        name if name == STREAM_VPRINTK.as_bytes() => Some(StreamKfunc::Vprintk),
+        _ => None,
+    }
+}
+
+/// Published id of `bpf_stream_vprintk`. # C: O(type count)
+#[cfg(test)]
+pub(crate) fn stream_vprintk_btf_id() -> Option<u32> {
+    let btf = published()?;
+    (1..=btf.index.type_count() as u32)
+        .find(|id| stream_kfunc_by_btf_id(*id) == Some(StreamKfunc::Vprintk))
 }
 
 /// Name of the stub function one type id declares, when it declares one.

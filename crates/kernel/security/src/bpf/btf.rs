@@ -19,7 +19,12 @@ mod validate;
 
 pub(super) use command::{get_fd_by_id, get_next_id, load};
 pub(super) use info::get_info_by_fd;
-pub(crate) use kernel::{iter_target_by_btf_id, lsm_hook_by_btf_id, published_len, published_read};
+pub(crate) use kernel::{
+    StreamKfunc, iter_target_by_btf_id, lsm_hook_by_btf_id, published_len, published_read,
+    stream_kfunc_by_btf_id,
+};
+#[cfg(test)]
+pub(crate) use kernel::stream_vprintk_btf_id;
 
 /// Highest type id any object may declare. An attach target above it names
 /// no type in any object and is refused before any object is consulted.

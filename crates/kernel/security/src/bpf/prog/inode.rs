@@ -10,6 +10,7 @@ use sync::{Spinlock, TaskList as TaskListClass};
 use vfs::{FileType, InodeRef, InodeBuilder, default_inode_ops, default_file_ops, mk_mode};
 
 use super::super::{BPF_FD_MODE, ids};
+use super::stream::ProgStreams;
 
 /// eBPF program loaded by `bpf(BPF_PROG_LOAD)`. Instruction bytes and
 /// Linux program type stay coupled in the fd-backed inode's `i_private`.
@@ -27,6 +28,8 @@ pub struct BpfProgInode {
     /// Canonical program-owned map set. Relocation maps retain index order;
     /// explicit lifetime bindings append, and every entry pins its map.
     pub maps: Spinlock<Vec<InodeRef>, TaskListClass>,
+    /// Program-owned diagnostic output, one FIFO for stdout and stderr.
+    pub streams: ProgStreams,
 }
 
 /// What an attach site decides on, read off a loaded program. Every field
@@ -169,7 +172,7 @@ pub fn make_bpf_prog_inode_with_attach_target(
         .size(size)
         .private(Arc::new(BpfProgInode {
             id, prog_type, expected_attach_type, enforce_expected_attach_type,
-            attach_btf_id, insns, maps: Spinlock::new(maps),
+            attach_btf_id, insns, maps: Spinlock::new(maps), streams: ProgStreams::new(),
         }))
         .build();
     PROGRAMS_BY_ID.lock().insert(id, Arc::downgrade(&inode));

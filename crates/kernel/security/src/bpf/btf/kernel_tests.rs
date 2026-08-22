@@ -132,3 +132,14 @@ const NON_STUB_IDS: [u32; 6] = [0, 1, 2, 3, 4, 6];
     assert_eq!(iter_target_by_btf_id(FILE_OPEN_BTF_ID), None);
     for id in NON_STUB_IDS { assert_eq!(iter_target_by_btf_id(id), None); }
 }
+
+#[test] fn stream_vprintk_is_published_once_and_resolves_from_served_btf() {
+    let id = stream_vprintk_btf_id().expect("stream vprintk id");
+    let btf = published().expect("kernel BTF");
+    assert_eq!(btf.index.func_name(&btf.raw, id), Some(&b"bpf_stream_vprintk"[..]));
+    assert_eq!(stream_kfunc_by_btf_id(id), Some(StreamKfunc::Vprintk));
+    let count = (1..=btf.index.type_count() as u32)
+        .filter(|candidate| stream_kfunc_by_btf_id(*candidate) == Some(StreamKfunc::Vprintk))
+        .count();
+    assert_eq!(count, 1);
+}
