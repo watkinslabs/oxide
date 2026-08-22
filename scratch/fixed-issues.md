@@ -1,5 +1,11 @@
 # Fixed issues
 
+### D581-stale-cross-worktree-check-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED D581 | INFRA | med | **The xtask kernel-check cross-worktree log row duplicated an existing workflow rule.** | R119/B2465 already requires every lane to verify `Checking <crate> (<path>)` names its own worktree before trusting a green check, covering redirected and interleaved logs; no separate kernel behavior remains to fix. | D581 |
+
 ### D580-stale-f2fs-registration-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
