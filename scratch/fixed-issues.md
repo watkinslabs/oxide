@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2519-bpf-perf-event-program-load
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 61d21eccd | DEFECT | med | BPF_PROG_TYPE_PERF_EVENT loads now use the canonical perf-event context verifier with Linux-compatible access and errno rules. | Security/BPF tests and target checks passed. | Chris Watkins |
+
 ### B2518-ntfs-reparse-name-surrogates
 
 | Status | Class | Sev | Issue | Evidence | Owner |

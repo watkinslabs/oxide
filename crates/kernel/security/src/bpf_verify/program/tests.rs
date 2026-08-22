@@ -6,6 +6,7 @@
 //!   lsm.rs            LSM hook context and return contracts
 //!   iter.rs           iterator context and step-answer contracts
 //!   raw_tracepoint.rs raw argument slots and attach-cookie helper
+//!   perf_event.rs     perf-event register/sample context contract
 
 #[path = "tests/support.rs"]
 mod support;
@@ -23,3 +24,5 @@ mod lsm;
 mod iter;
 #[path = "tests/raw_tracepoint.rs"]
 mod raw_tracepoint;
+#[path = "tests/perf_event.rs"]
+mod perf_event;

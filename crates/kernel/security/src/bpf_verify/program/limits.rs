@@ -46,6 +46,7 @@ pub(super) fn return_range(profile: &Profile) -> Option<Scalar> {
     match profile.prog_type {
         p::SOCKET_FILTER => None,
         p::RAW_TRACEPOINT | p::RAW_TRACEPOINT_WRITABLE => None,
+        p::PERF_EVENT => None,
         // An iterator program answers one of two things per step: the
         // object was shown, or show it again.
         p::TRACING => Some(Scalar::range(0, 1)),

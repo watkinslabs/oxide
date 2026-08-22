@@ -87,6 +87,14 @@ fn program(insns: &[[u8; 8]]) -> Vec<u8> {
     insns.iter().flatten().copied().collect()
 }
 
+fn perf_context_access(opcode: u8, offset: usize) -> Vec<u8> {
+    let off = (offset as i16).to_le_bytes();
+    let registers = if opcode == 0x7a { 0x01 } else { 0x10 };
+    let mut insns = alloc::vec![opcode, registers, off[0], off[1], 0, 0, 0, 0];
+    insns.extend_from_slice(&[0x95, 0, 0, 0, 0, 0, 0, 0]);
+    insns
+}
+
 /// Type id of the `file_open` hook stub in the kernel's own type
 /// information, which is what an LSM program names as its attach target.
 const FILE_OPEN_BTF_ID: u32 = 5;
@@ -103,6 +111,30 @@ fn load_carries_verifier_egress_attach_contract() {
     assert_eq!(verify(&egress, GPL, &returns(2), &[]), Ok(true));
     assert_eq!(verify(&egress, GPL, &returns(1), &[]), Ok(false));
     assert_eq!(verify(&ingress, GPL, &returns(1), &[]), Ok(false));
+}
+
+#[test]
+fn a_perf_event_program_reaches_the_production_verifier() {
+    let p = request(uapi::prog_type::PERF_EVENT, 0, 0);
+    assert_eq!(verify(&p, GPL, &returns(0), &[]), Ok(false));
+}
+
+#[test]
+fn the_perf_event_load_funnel_enforces_its_read_only_context_boundary() {
+    use crate::bpf_verify::context::perf_event_data as pe;
+    let p = request(uapi::prog_type::PERF_EVENT, 0, 0);
+    // A native-word read of `sample_period` reaches the same profile the
+    // public load command uses.
+    assert_eq!(verify(&p, GPL, &perf_context_access(0x79, pe::SAMPLE_PERIOD), &[]), Ok(false));
+    // Misaligned, past-end and write accesses are well-formed bytecode but
+    // invalid for this context, hence EACCES rather than EINVAL.
+    for body in [
+        perf_context_access(0x79, pe::SAMPLE_PERIOD + 4),
+        perf_context_access(0x71, pe::SIZE),
+        perf_context_access(0x7a, pe::ADDR),
+    ] {
+        assert_eq!(verify(&p, GPL, &body, &[]), Err(Errno::Eacces));
+    }
 }
 
 #[test]

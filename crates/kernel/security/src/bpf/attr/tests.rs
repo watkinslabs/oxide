@@ -144,7 +144,7 @@ fn prog_load_unknown_prog_flag_bit_is_einval_before_any_eperm() {
 }
 
 #[test]
-fn prog_types_without_a_runner_are_not_loadable() {
+fn prog_types_without_a_verifier_profile_are_not_loadable() {
     // find_prog_type(): bpf_prog_types[type] == NULL -> -EINVAL, which is
     // what Linux returns for any type whose CONFIG is not built in.
     assert!(prog_type_supported(uapi::prog_type::SOCKET_FILTER));
@@ -153,6 +153,7 @@ fn prog_types_without_a_runner_are_not_loadable() {
     assert!(prog_type_supported(uapi::prog_type::CGROUP_SOCK_ADDR));
     assert!(prog_type_supported(uapi::prog_type::LSM));
     assert!(prog_type_supported(uapi::prog_type::TRACING));
+    assert!(prog_type_supported(uapi::prog_type::PERF_EVENT));
     for t in [uapi::prog_type::UNSPEC, uapi::prog_type::XDP, uapi::prog_type::KPROBE,
               uapi::prog_type::SCHED_CLS, uapi::prog_type::STRUCT_OPS,
               uapi::prog_type::SYSCALL] {
