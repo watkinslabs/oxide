@@ -39,13 +39,13 @@ fn a_detached_listener_resolves_to_nothing_and_releases_what_it_held() {
 }
 
 #[test]
-fn notification_ids_are_unique_across_listeners() {
+fn notification_ids_start_from_independent_listener_seeds() {
     let a = create(false);
     let b = create(false);
     let data = crate::seccomp::insn::SeccompData::default();
     let ia = a.inner.lock().queue(1, data).unwrap();
     let ib = b.inner.lock().queue(1, data).unwrap();
-    assert_ne!(ia, ib);
+    assert_ne!(ia, ib, "each listener starts from its own random seed");
     detach(&a);
     detach(&b);
 }
