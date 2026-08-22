@@ -4,7 +4,7 @@
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| FIXED 99597f975 | DOC | low | The seccomp specification now records the live filter contract and has focused production coverage. | Seccomp tests and specification checks passed. | Chris Watkins |
+| FIXED 99597f975 | INFRA | low / med | Duplicate frozen security-contract rows are closed by one correction: the contract now records the live seccomp filter surface. | Seccomp tests and specification checks passed. | Chris Watkins |
 
 ### R97-io-uring-spec-current-opcodes
 
