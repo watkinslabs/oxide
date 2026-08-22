@@ -1,5 +1,11 @@
 # Fixed issues
 
+### R108-stale-linux-master-zip-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED | INFRA | high | The obsolete `../linux-master.zip` archive was removed; the pinned checked-out `../reference` tree remains the sole external implementation reference. | `../reference/Makefile` identifies Linux 7.2.0-rc4 and the exact 307 MiB stale archive no longer exists. | R108 |
+
 ### F1247-selinux-inode-label-policy-generation
 
 | Status | Class | Sev | Issue | Evidence | Owner |
