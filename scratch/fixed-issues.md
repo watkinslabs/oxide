@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2515-runtime-serial-console-options
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 771af05d8 | DEFECT | med | Runtime serial consoles now apply parsed baud/parity/bits/flow options after UART probe. | Console/UART/TTY/cmdline tests and target checks passed. | Chris Watkins |
+
 ### B2514-ext4-journalled-quota-mark-dirty
 
 | Status | Class | Sev | Issue | Evidence | Owner |
