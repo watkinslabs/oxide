@@ -1,9 +1,16 @@
 # Fixed issues
 
+### B2505-affinity-abi-current-cpu-width
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2505 | INFRA | low | Duplicate affinity ABI/current-CPU failure rows were consolidated; no production change was required. | Ledger/source audit completed. | Chris Watkins |
+
 ### B2504-rseq-slice-extension-tunable
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
+<<<<<<< HEAD
 | FIXED 5fcebe902 | DEFECT | med | Rseq slice extension now has a shared tunable debugfs owner with Linux range/error semantics. | Sched/tracefs/syscall tests and targets passed. | Chris Watkins |
 
 ### B2503-ntfs-hard-link-creation
@@ -788,6 +795,9 @@
 |---|---|---|---|---|---|
 | FIXED 06623d838 | MISSING | med | **NTFS hard links create and remove the matching on-medium name records.** The mounted inode operation rejects directories, cross-filesystem targets, an existing name and the 4000-link ceiling; otherwise it adds a parent index key and an indexed `$FILE_NAME`, increments the MFT and cached inode counts, and stamps change time. A full parent index restores the target record before returning `ENOSPC`. Unlink removes the exact parent-and-name attribute while decrementing a multiply named record, so the medium never carries more name attributes than its count. | B2503. Linux 7.2.0-rc4 uses `ntfs_link` → `ntfs_link_inode` → `ni_add_name`, with the directory and `NTFS_LINK_MAX` gates ahead of publication. Production reaches `Volume::link` through `syscalls::086_link` → `Inode::link_child` → `NtfsOps::link`. Baseline and explicit positive-control runs with the backend slot restored to `EPERM` failed the mounted block-device test; restored GREEN covers shared identity/data, both cached and remounted counts, surviving unlink, exact attribute removal and full-index rollback. NTFS passed 196/196 tests; x86_64 and aarch64 kernel checks and both all-feature target gates passed. Boot smoke was skipped because the ext4 boot path neither mounts nor probes NTFS. | B2503-ntfs-hard-link-creation |
 >>>>>>> d5adc1e79 (doc: close NTFS hard-link issue)
+=======
+| FIXED 54a363f57 | DEFECT | med | **The affinity ABI tests now derive their buffer boundaries from the configured logical-CPU limit instead of pinning the retired 64-CPU width.** Production was already correct: the syscall mask is 32 bytes for this kernel's 256 CPU identifiers, and both affinity entries use that single owner. Five duplicate ledger observations are consolidated here; the aggregate syscall-failure row retains only its two independent source-contract failures. | B2505. Linux 7.2.0-rc4 derives the syscall mask size from `nr_cpu_ids`. The original focused run reproduced five failures; the corrected 14-test affinity suite passes. Halving the production size formula makes the retained bitmap-size contract fail with 16 versus 32, then exact restoration returns GREEN. Full syscalls reports 1,993 pass and only the two independently tracked source-contract failures; both kernel target checks pass. No smoke: the permanent delta is hosted-test and ledger only. | B2505-affinity-abi-current-cpu-width |
+>>>>>>> 94f093ad6 (docs(issues): consolidate affinity failure rows)
 
 ### B2329-freezer-backoff-sleep
 
