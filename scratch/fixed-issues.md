@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2443-stale-backlog-retirement-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED b46f5e50a | DEFECT | low | **The receive-backlog lease row was stale: dropping queued frames when an interface retires is required behavior.** | B2443 revalidated the failed-reacquire drop boundary and existing device-generation ownership. | B2443-stale-backlog-retirement-row |
+
 ### B2440-stale-perf-inherit-stat-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
