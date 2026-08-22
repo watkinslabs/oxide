@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2518-ntfs-reparse-name-surrogates
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED f8de79770 | DEFECT | med | NTFS junctions, symlinks, and NAME_SURROGATE reparse points now present as links and decode readlink payloads. | NTFS node/volume tests and target checks passed. | Chris Watkins |
+
 ### B2517-loginuid-sessionid-task-identity
 
 | Status | Class | Sev | Issue | Evidence | Owner |
