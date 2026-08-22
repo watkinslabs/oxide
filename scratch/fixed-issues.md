@@ -35,6 +35,12 @@
 |---|---|---|---|---|---|
 | FIXED 2310b12e4 | INFRA | low | **Fixed sysfs inode identities and eventfd allocations now have separate declared pseudo-inode regions.** | B2373. The compile-time region assertion and real eventfd allocation tests protect the disjoint bands. | B2373-sysfs-pseudo-inode-band |
 
+### B2374-stale-unix-oob-length-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED b7d7328fb | DEFECT | low | **The zero-length AF_UNIX `recv(MSG_OOB)` row was stale: the production urgent receive path already returns the fixed one-byte count.** | B2374. The existing urgent-count owner is now pinned by the focused boundary test; the stale row is retired. | B2374-stale-unix-oob-length-row |
+
 ### B2329-freezer-backoff-sleep
 
 | Status | Class | Sev | Issue | Evidence | Owner |
