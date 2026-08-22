@@ -1,5 +1,11 @@
 # Fixed issues
 
+### D589-stale-exfat-texfat-bitmap
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED D589 | COVERAGE | low | The alleged missing TexFAT second-bitmap consumer is not a Linux divergence: the reference selects only the allocation-bitmap entry with flags `0`, while the flags-`1` TexFAT entry is intentionally ignored. Oxide’s parser selects the first valid bitmap entry, which is the flags-`0` entry on a valid volume. | Linux 7.2.0-rc4 bitmap loading filters on `flags == 0`; `dirent::meta::parse_bitmap` preserves the flag and `Volume::load_volume_structures` consumes the canonical first bitmap. No second-bitmap allocation state is required by the reference path. | D589-stale-exfat-texfat-bitmap |
+
 ### D588-f2fs-readahead-geometry
 
 | Status | Class | Sev | Issue | Evidence | Owner |
