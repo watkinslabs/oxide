@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2440-stale-perf-inherit-stat-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED F856 | MISSING | low | **The open `attr.inherit_stat` row was a stale duplicate of F856’s live mid-life context synchronization.** | B2440 revalidated the deferred scheduling consumer and parent/child stat publication. | B2440-stale-perf-inherit-stat-row |
+
 ### B2441-bpf-btf-next-id-single-ladder
 
 | Status | Class | Sev | Issue | Evidence | Owner |
