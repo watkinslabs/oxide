@@ -55,6 +55,13 @@ PAST_TENSE = re.compile(
     r"(had no counterpart|was absent|were absent|had not been implemented|"
     r"was not implemented|previously (?:absent|unimplemented))", re.I)
 
+# AF_UNIX urgent data is implemented. These phrases survived outside the main
+# table after its canonical rows were corrected, so row-only validation could
+# still publish a nonexistent implementation gap in the same matrix.
+STALE_AF_UNIX_OOB = re.compile(
+    r"(?:AF_UNIX\s+)?MSG_OOB\s+(?:is\s+)?not implemented|"
+    r"\bpending\b[^.\n]{0,300}\btrue OOB(?: delivery)?", re.I)
+
 
 def current_evidence(ev):
     """Return the claim after the latest explicit closure marker.
@@ -159,6 +166,12 @@ def main(path, live_branches=None):
     if not VALID:
         print("matrix-lint: could not parse the '## Status Legend' table"); return 1
     bad = check_no_duplicate(path)
+    for i, line in enumerate(lines, start=1):
+        match = STALE_AF_UNIX_OOB.search(line)
+        if match:
+            print(f"{path}:{i}: stale AF_UNIX OOB gap text ({match.group(0)!r}) -- "
+                  "the feature is implemented")
+            bad += 1
     seen_nr = {}
     # Branches that still exist locally or on the remote. An IN-PROGRESS row
     # naming anything else is stale by definition.
@@ -264,7 +277,7 @@ def selftest_run(rows, live_branches=None):
     lines = []
     for line in buf.getvalue().splitlines():
         line = line.replace(path, "<fixture>")
-        lines.append(re.sub(r":\d+: row", ":<LINE>: row", line))
+        lines.append(re.sub(r":\d+: (?=(?:row|stale))", ":<LINE>: ", line))
     return rc, lines
 
 
@@ -325,9 +338,16 @@ def selftest():
         "-- use PARTIAL",
         "matrix-lint: FAIL (1 problem(s))",
     ])
+    fail += selftest_case("stale-af-unix-oob", [
+        selftest_row(status="`PARTIAL`", evidence="pending true OOB delivery"),
+    ], 1, [
+        "<fixture>:<LINE>: stale AF_UNIX OOB gap text ('pending true OOB delivery') -- "
+        "the feature is implemented",
+        "matrix-lint: FAIL (1 problem(s))",
+    ])
     if fail:
         return 1
-    print("matrix-lint: self-test PASS (7 isolated mutants, 3 green controls)")
+    print("matrix-lint: self-test PASS (8 isolated mutants, 3 green controls)")
     return 0
 
 if __name__ == "__main__":
