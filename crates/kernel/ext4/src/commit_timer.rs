@@ -46,11 +46,8 @@ struct Registered {
 /// How far lazy inode-table initialisation has got on one mount.
 #[derive(Clone, Copy, Default)]
 struct ItableProgress {
-    /// When the group being measured started. The periodic tick is the finest
-    /// clock this job has, so a group's cost is measured as the ticks it
-    /// spanned: one for a group that finished inside a tick, more for one that
-    /// ran long. That measurement is what the option multiplies.
-    started_ns: Option<u64>,
+    /// Completion time of the last group. The next pause begins here, after
+    /// the table write, rather than at the periodic tick that started it.
     last_ns: Option<u64>,
     wait_ns: u64,
     next_group: u32,
@@ -109,7 +106,18 @@ pub fn tick(now_ns: u64) {
 /// one tick would spend the pause before earning it.
 /// # C: O(N_mounts) + O(itable bytes) per due mount
 fn run_itable_init(now_ns: u64) {
-    let due: Vec<(Arc<Mount>, u32)> = {
+    #[cfg(target_os = "oxide-kernel")]
+    run_itable_init_measured(now_ns, timekeeper::monotonic_ns);
+    #[cfg(not(target_os = "oxide-kernel"))]
+    run_itable_init_measured(now_ns, || now_ns);
+}
+
+/// Run one due group per mount and price its pause from the exact duration of
+/// the device operation. Keeping the clock injectable makes the production
+/// timing boundary deterministic under hosted tests.
+/// # C: O(N_mounts) + O(itable bytes) per due mount
+fn run_itable_init_measured(now_ns: u64, mut clock: impl FnMut() -> u64) {
+    let due: Vec<(Arc<Mount>, u32, u32)> = {
         let mut g = MOUNTS.lock();
         let mut due = Vec::new();
         for r in g.iter_mut() {
@@ -117,34 +125,37 @@ fn run_itable_init(now_ns: u64) {
             if r.itable.done { continue; }
             // `noinit_itable` is what turns the job off entirely.
             let Some(mult) = m.behaviour().li_wait_mult else { continue };
-            // Close out the previous group's measurement before asking whether
-            // another is due: the pause a group earned is not known until the
-            // tick that observes it finished.
-            if let Some(started) = r.itable.started_ns.take() {
-                r.itable.wait_ns = crate::itable_init::decide::wait_after_group_ns(
-                    now_ns.saturating_sub(started), mult);
-                r.itable.last_ns = Some(started);
-            }
             if !crate::itable_init::decide::is_due(r.itable.last_ns, r.itable.wait_ns, now_ns) {
                 continue;
             }
-            r.itable.started_ns = Some(now_ns);
-            due.push((m, r.itable.next_group));
+            due.push((m, r.itable.next_group, mult));
         }
         due
     };
-    for (m, from) in due {
+    for (m, from, mult) in due {
+        let started_ns = clock();
         let outcome = m.init_next_inode_table(from);
+        let finished_ns = clock().max(started_ns);
         let mut g = MOUNTS.lock();
         let Some(r) = g.iter_mut().find(|r| Weak::as_ptr(&r.mount) == Arc::as_ptr(&m)) else { continue };
         match outcome {
             // Nothing left to initialise: stop walking this mount's groups
             // rather than re-reading every descriptor on every tick.
-            Ok(None) => { r.itable.done = true; r.itable.started_ns = None; }
-            Ok(Some(n)) => r.itable.next_group = n.saturating_add(1),
+            Ok(None) => r.itable.done = true,
+            Ok(Some(n)) => {
+                r.itable.next_group = n.saturating_add(1);
+                r.itable.last_ns = Some(finished_ns);
+                r.itable.wait_ns = crate::itable_init::decide::wait_after_group_ns(
+                    finished_ns.saturating_sub(started_ns), mult);
+            }
             // A group that could not be initialised is skipped, not retried
             // forever: the rest of the filesystem's groups still want doing.
-            Err(_) => r.itable.next_group = from.saturating_add(1),
+            Err(_) => {
+                r.itable.next_group = from.saturating_add(1);
+                r.itable.last_ns = Some(finished_ns);
+                r.itable.wait_ns = crate::itable_init::decide::wait_after_group_ns(
+                    finished_ns.saturating_sub(started_ns), mult);
+            }
         }
     }
 }

@@ -119,8 +119,8 @@ fn the_periodic_walk_leaves_a_mount_that_refused_the_job_alone() {
 }
 
 /// A mount pauses between groups by the multiple its option names, so the job
-/// never becomes a device-wide stall. The pause is priced by the tick that
-/// observes the group finished, which is why two ticks are needed to see it.
+/// never becomes a device-wide stall. Linux prices that pause from the actual
+/// group-zeroing duration, not from the cadence of the periodic worker.
 #[test]
 fn a_mount_waits_out_the_pause_its_option_earned() {
     let _walk = drives_the_walk();
@@ -128,13 +128,16 @@ fn a_mount_waits_out_the_pause_its_option_earned() {
     let m = Ext4Mount::open_with_data(fresh_dev(), None, "init_itable=10").expect("mounts");
     let mount = m.state().mount.clone();
     crate::itable_init::tests::dirty_the_table(&mount, 0);
-    let first = tick_now();
+    let tick = tick_now();
+    let started = tick + 100;
+    let finished = started + 1_000;
+    let mut samples = [started, finished].into_iter();
 
-    run_itable_init(first);
-    run_itable_init(tick_now());
+    run_itable_init_measured(tick, || samples.next().expect("one start and one finish sample"));
     let g = MOUNTS.lock();
     let mine = g.iter().find(|r| Weak::as_ptr(&r.mount) == Arc::as_ptr(&mount)).expect("registered");
-    assert_eq!(mine.itable.last_ns, Some(first), "the pause is timed from the group it paid for");
-    assert!(mine.itable.wait_ns >= MULT * due::NS_PER_SEC,
-        "the pause is the measured work times the multiplier; saw {}", mine.itable.wait_ns);
+    assert_eq!(mine.itable.last_ns, Some(finished),
+        "the pause starts when the group write completes");
+    assert_eq!(mine.itable.wait_ns, MULT * (finished - started),
+        "a sub-tick write is priced at its measured duration");
 }
