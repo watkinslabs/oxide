@@ -76,6 +76,7 @@ pub mod auxrandom;
 // dumpability. Same reason as `auxrandom`: the slot files are kernel-gated, and
 // this is the one decision in exec that must never ship untested.
 pub mod exec_creds;
+pub mod exec_drain;
 // swapon(2) 167: the `swap_flags` decode + its EINVAL-before-EPERM order.
 // futimesat(2) 261 / utimes(2) 235: the `struct timeval[2]` decode. Both slot
 // files are kernel-gated, so the decisions live here where the hosted suite

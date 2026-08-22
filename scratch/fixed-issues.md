@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2525-execve-waits-sibling-retirement
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 56ac9f913 | DEFECT | med | Exec now waits for sibling retirement before replacing the address space, while clone publication is excluded by the exec reader/writer guard. | Scheduler/exec tests, target checks, and smoke passed. | Chris Watkins |
+
 ### B2524-stale-ext4-reserved-block-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
