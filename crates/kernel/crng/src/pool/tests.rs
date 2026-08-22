@@ -29,6 +29,7 @@ fn exclusive() -> std::sync::MutexGuard<'static, ()> {
 
 #[test]
 fn successive_fills_differ() {
+    let _guard = exclusive();
     let a = take(64);
     let b = take(64);
     assert_ne!(a, b, "two fills produced identical bytes");
@@ -36,6 +37,7 @@ fn successive_fills_differ() {
 
 #[test]
 fn output_is_not_a_repeating_block() {
+    let _guard = exclusive();
     let v = take(4 * BLOCK_BYTES);
     for i in 1..4 {
         assert_ne!(&v[0..BLOCK_BYTES], &v[i * BLOCK_BYTES..(i + 1) * BLOCK_BYTES],
@@ -45,6 +47,7 @@ fn output_is_not_a_repeating_block() {
 
 #[test]
 fn short_and_unaligned_lengths_are_filled_completely() {
+    let _guard = exclusive();
     // A fill that silently writes nothing leaves the buffer zeroed EVERY time.
     // One sample cannot tell that apart from real output for a short length —
     // a single random byte is legitimately zero once in 256, which is how this
@@ -65,18 +68,21 @@ fn short_and_unaligned_lengths_are_filled_completely() {
 
 #[test]
 fn zero_length_fill_is_a_no_op() {
+    let _guard = exclusive();
     let mut empty: [u8; 0] = [];
     fill(&mut empty);
 }
 
 #[test]
 fn next_u64_does_not_repeat_over_a_run() {
+    let _guard = exclusive();
     let mut seen = std::collections::BTreeSet::new();
     for _ in 0..256 { assert!(seen.insert(next_u64()), "next_u64 repeated a value"); }
 }
 
 #[test]
 fn output_is_not_linear_the_way_an_lcg_is() {
+    let _guard = exclusive();
     // An LCG's successive outputs satisfy x[n+1] = a*x[n] + c for FIXED a, c,
     // so any two consecutive pairs solve for the same (a, c). Pull four words
     // and check no single (a, c) explains all three steps.
@@ -103,6 +109,7 @@ fn inv_odd(a: u64) -> u64 {
 
 #[test]
 fn adding_entropy_changes_subsequent_output() {
+    let _guard = exclusive();
     let before = take(32);
     add_entropy(b"F755 rseq/getrandom lane entropy sample");
     let after = take(32);
