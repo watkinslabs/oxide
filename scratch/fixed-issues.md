@@ -1,5 +1,11 @@
 # Fixed issues
 
+### D584-selinuxfs-region-duplicate-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED D584 | INFRA | low | **SELinuxfs now declares its pseudo-inode band in the shared registry.** | `vfs::pseudo_ino::SELINUXFS` owns `0x7B00_0000..0x7B0F_FFFF`, the band is included in `REGIONS`, and `selinuxfs` allocates from that sole owner; its private declaration and second overlap walk are gone. `pseudo_ino` tests pin exactly one registered owner. | 4fcadf43d |
+
 ### D583-futex-numa-single-node-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |

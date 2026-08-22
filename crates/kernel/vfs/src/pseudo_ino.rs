@@ -122,6 +122,8 @@ pub const EVDEV: Region = Region::new("evdev", 0x7600_0000, 0x7600_FFFF);
 pub const HUGETLBFS: Region = Region::new("hugetlbfs", 0x7700_0000, 0x77FF_FFFF);
 /// zram's debugfs device directories and their block-state files.
 pub const ZRAM_DEBUGFS: Region = Region::new("zram-debugfs", 0x7A72_0000, 0x7A72_FFFF);
+/// `/sys/fs/selinux` policy and status nodes.
+pub const SELINUXFS: Region = Region::new("selinuxfs", 0x7B00_0000, 0x7B0F_FFFF);
 /// `/dev/fbN`.
 pub const FBDEV: Region = Region::new("fbdev", 0xFB00_0000, 0xFB00_FFFF);
 /// procfs `/proc/net/*` entries with a fixed identity.
@@ -173,7 +175,7 @@ pub const REGIONS: &[Region] = &[
     PROCFS_STATIC, VFS_STATIC_FILE, TRACEFS_RING, PROCFS_DYNAMIC, TMPFS,
     BINFMT_MISC, SYSFS_STATIC, EVENTFD, CGROUP_DIR, CGROUP_FILE,
     DEVPTS, CONFIGFS, DEBUGFS, DEBUGFS_AUTOMOUNT, INOTIFY, SIGNALFD, TIMERFD,
-    EPOLL, BPF, DMA_BUF, EVDEV, ZRAM_DEBUGFS, FBDEV, PROCFS_NET,
+    EPOLL, BPF, DMA_BUF, EVDEV, ZRAM_DEBUGFS, SELINUXFS, FBDEV, PROCFS_NET,
     PROCFS_PID, DRM_CARD, DRM_RENDER, IO_URING, NETLINK, PERF, INET_SOCK, SOUND,
     PSTORE, USERFAULTFD, VSOCK, BLUETOOTH, EXT4,
 ];
