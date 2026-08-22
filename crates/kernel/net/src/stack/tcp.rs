@@ -285,7 +285,8 @@ impl NetStack {
                         entry.bpf_filter.inherit_from(&listener.bpf_filter);
                     }
                 }
-                let input = c.input_prevalidated(src_ip, dst_ip, seg);
+                let input = c.input_prevalidated_with_options(src_ip, dst_ip, seg,
+                    crate::sysctl::tcp_option_permissions_in(net_ns));
                 let urgent = crate::sock::oob_notify::urgent_arrived(pre_urg, c.peek_urgent());
                 let acked = c.snd_una != pre_una;
                 (pre_len, pre_state, input, c.recv_buf.len, c.state, fastopen_child, urgent, acked)

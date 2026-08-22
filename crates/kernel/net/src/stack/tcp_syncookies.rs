@@ -16,7 +16,7 @@
 
 use super::*;
 use super::tcp_tx::TcpTxPolicy;
-use crate::syncookies::{self, Permitted, Rebuild, Request};
+use crate::syncookies::{self, Rebuild, Request};
 
 /// The MSS a SYN with no MSS option is taken to have announced.
 const PEER_MSS_DEFAULT: u16 = 536;
@@ -50,7 +50,8 @@ impl NetStack {
         conn.path_mtu = path_mtu;
         conn.apply_route_metrics(metrics);
         conn.set_syncookie(Request { isn, mss });
-        let resp = conn.input_prevalidated(src_ip, dst_ip, seg).map_err(|_| NetError::Einval)?;
+        let resp = conn.input_prevalidated_with_options(src_ip, dst_ip, seg,
+            crate::sysctl::tcp_option_permissions_in(net_ns)).map_err(|_| NetError::Einval)?;
         let Some(segment) = resp else { return Ok(()); };
         self.send_tcp_segment_in(net_ns, dst_ip, src_ip, &segment, 0, listener.bound_iface(),
             TcpTxPolicy::Listener(listener))?;
@@ -87,7 +88,8 @@ impl NetStack {
         let ts_off = crate::secure_seq::secure_tcp_ts_off(
             dst_ip, src_ip, hdr.dst_port, hdr.src_port);
         let opts = syncookies::tsopt::decode(ts.is_some(),
-            ts.map_or(0, |(_, tsecr)| tsecr.wrapping_sub(ts_off)), Permitted::ALL)?;
+            ts.map_or(0, |(_, tsecr)| tsecr.wrapping_sub(ts_off)),
+            crate::sysctl::tcp_option_permissions_in(net_ns))?;
         Some(Rebuild {
             isn: hdr.ack.wrapping_sub(1),
             peer_isn: hdr.seq.wrapping_sub(1),

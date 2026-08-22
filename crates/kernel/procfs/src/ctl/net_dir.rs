@@ -26,6 +26,10 @@ pub const NET_SYSCTLS: &[Node] = &[
             File("ip_forward",         NetInt(net::net_ns::NetSysctlKey::Ipv4Conf(
                 net::net_ns::Ipv4ConfDev::All, net::net_ns::Ipv4ConfKey::Forwarding), Some((0, 1)))),
             File("tcp_syncookies",     NetInt(net::net_ns::NetSysctlKey::TcpSyncookies, Some((0, 2)))),
+            File("tcp_timestamps",     NetInt(net::net_ns::NetSysctlKey::TcpTimestamps, Some((0, 1)))),
+            File("tcp_sack",           NetInt(net::net_ns::NetSysctlKey::TcpSack, Some((0, 1)))),
+            File("tcp_window_scaling", NetInt(net::net_ns::NetSysctlKey::TcpWindowScaling,
+                Some((0, 1)))),
             File("tcp_tw_reuse",       NetInt(net::net_ns::NetSysctlKey::TcpTwReuse, Some((0, 2)))),
             // Bounds the reserve a listener holds for peers already proven
             // reachable — NOT the size of the SYN queue, which the listen

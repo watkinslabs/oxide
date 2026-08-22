@@ -59,9 +59,8 @@ pub struct Permitted {
 }
 
 impl Permitted {
-    /// Every option permitted. This namespace has no knob that turns any of
-    /// the three off, so this is what the live decision is taken under; the
-    /// parameter exists so the refusal path is still expressible and tested.
+    /// Every option permitted, used by option-codec tests and callers that
+    /// have already admitted the namespace policy.
     pub const ALL: Self = Self { timestamps: true, sack: true, window_scaling: true };
 }
 

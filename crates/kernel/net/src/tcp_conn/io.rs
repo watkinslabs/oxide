@@ -118,7 +118,8 @@ impl TcpConn {
     {
         let hdr = crate::tcp_hdr::parse_ip(seg, src_ip, dst_ip)
             .map_err(|_| TcpConnError::BadHdr)?;
-        self.input_completing_request(src_ip, dst_ip, seg, hdr, vfs::inode_times::realtime_now_ns())
+        self.input_completing_request(src_ip, dst_ip, seg, hdr,
+            vfs::inode_times::realtime_now_ns(), crate::syncookies::Permitted::ALL)
     }
 
     /// Apply a filter-trimmed segment whose original checksum passed. # C: O(payload)
@@ -135,7 +136,8 @@ impl TcpConn {
         -> Result<Option<Vec<u8>>, TcpConnError>
     {
         let hdr = crate::tcp_hdr::parse_prevalidated(seg).map_err(|_| TcpConnError::BadHdr)?;
-        self.input_completing_request(src_ip, dst_ip, seg, hdr, timestamp_ns)
+        self.input_completing_request(src_ip, dst_ip, seg, hdr, timestamp_ns,
+            crate::syncookies::Permitted::ALL)
     }
 
     /// The segment that turns a request into a connection is applied twice:
@@ -147,23 +149,23 @@ impl TcpConn {
     /// handshake. Iterative rather than recursive: the second pass runs in
     /// ESTABLISHED and cannot complete a request again.
     /// # C: O(payload)
-    fn input_completing_request(&mut self, src_ip: crate::addr::IpAddr,
-                                dst_ip: crate::addr::IpAddr, seg: &[u8],
-                                hdr: crate::tcp_hdr::TcpHdr, timestamp_ns: u64)
+    pub(super) fn input_completing_request(&mut self, src_ip: crate::addr::IpAddr,
+                                dst_ip: crate::addr::IpAddr, seg: &[u8], hdr: crate::tcp_hdr::TcpHdr,
+                                timestamp_ns: u64, permitted: crate::syncookies::Permitted)
         -> Result<Option<Vec<u8>>, TcpConnError>
     {
         self.segs_in = self.segs_in.saturating_add(1);
         let was_request = self.state == TcpState::SynRecv;
-        let resp = self.input_with_header(src_ip, dst_ip, seg, hdr, timestamp_ns)?;
+        let resp = self.input_with_header(src_ip, dst_ip, seg, hdr, timestamp_ns, permitted)?;
         if !was_request || self.state != TcpState::Established { return Ok(resp); }
         let carries = seg.len() > hdr.payload_offset() || (hdr.flags & flags::FIN) != 0;
         if !carries { return Ok(resp); }
-        self.input_with_header(src_ip, dst_ip, seg, hdr, timestamp_ns)
+        self.input_with_header(src_ip, dst_ip, seg, hdr, timestamp_ns, permitted)
     }
 
     fn input_with_header(&mut self, src_ip: crate::addr::IpAddr,
                          dst_ip: crate::addr::IpAddr, seg: &[u8], hdr: crate::tcp_hdr::TcpHdr,
-                         timestamp_ns: u64)
+                         timestamp_ns: u64, permitted: crate::syncookies::Permitted)
         -> Result<Option<Vec<u8>>, TcpConnError>
     {
         self.note_info_receive_at(crate::tcp_conn::ka_now_ns(), hdr.flags,
@@ -200,19 +202,21 @@ impl TcpConn {
                 self.ts_off = crate::secure_seq::secure_tcp_ts_off(
                     dst_ip, src_ip, self.local.port, hdr.src_port);
                 if let Some(m) = crate::tcp_hdr::parse_mss_option(seg) { self.peer_mss = m; }
-                if let Some(s) = crate::tcp_hdr::parse_wscale_option(seg) {
+                if let (true, Some(s)) = (permitted.window_scaling,
+                    crate::tcp_hdr::parse_wscale_option(seg)) {
                     self.wscale_ok = true;
                     self.rcv_wscale = s;
                     self.snd_wscale = crate::tcp_conn::OWN_WSCALE;
                 }
-                if let Some((tsval, _)) = crate::tcp_hdr::parse_ts_option(seg) {
+                if let (true, Some((tsval, _))) = (permitted.timestamps,
+                    crate::tcp_hdr::parse_ts_option(seg)) {
                     self.ts_enabled = true;
                     self.ts_recent  = tsval;
                 }
                 // Selective acknowledgement is only usable when the peer said
                 // so on its SYN; sending blocks to a peer that never permitted
                 // them is an option it is entitled to reject the segment over.
-                self.sack_ok = crate::tcp_hdr::parse_sack_permitted(seg);
+                self.sack_ok = permitted.sack && crate::tcp_hdr::parse_sack_permitted(seg);
                 self.snd_wnd = hdr.window as u32;
                 self.state = crate::tcp_state::transition(self.state, TcpEvent::RecvSyn)
                     .ok_or(TcpConnError::BadState)?;
@@ -278,7 +282,9 @@ impl TcpConn {
                 self.advance_snd_una(hdr.ack);
                 self.note_delivery_acked_at(hdr.ack, crate::tcp_conn::ka_now_ns(), ecn_echo_ack(&hdr));
                 if let Some(m) = crate::tcp_hdr::parse_mss_option(seg) { self.peer_mss = m; }
-                match crate::tcp_hdr::parse_wscale_option(seg) {
+                match permitted.window_scaling
+                    .then(|| crate::tcp_hdr::parse_wscale_option(seg)).flatten()
+                {
                     Some(s) => { self.wscale_ok = true; self.rcv_wscale = s; }
                     // The peer declined scaling. This side offered it on the
                     // SYN and set its own scale in advance, so that has to be
@@ -286,8 +292,10 @@ impl TcpConn {
                     // would report a window the peer reads unshifted.
                     None => { self.rcv_wscale = 0; self.snd_wscale = 0; }
                 }
-                self.sack_ok = crate::tcp_hdr::parse_sack_permitted(seg);
-                if let Some((tsval, _)) = crate::tcp_hdr::parse_ts_option(seg) {
+                self.sack_ok = permitted.sack && crate::tcp_hdr::parse_sack_permitted(seg);
+                if let Some((tsval, _)) = permitted.timestamps
+                    .then(|| crate::tcp_hdr::parse_ts_option(seg)).flatten()
+                {
                     self.ts_enabled = true;
                     self.ts_recent  = tsval;
                 }

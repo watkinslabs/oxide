@@ -181,6 +181,16 @@ pub fn set_value(namespace: &NetworkNamespaceRef, key: NetSysctlKey,
     Ok(())
 }
 
+/// TCP handshake options enabled in one live namespace. # C: O(log N)
+pub fn tcp_option_permissions_in(ns: u64) -> crate::syncookies::Permitted {
+    let enabled = |key| value_in(ns, key).unwrap_or(1) != 0;
+    crate::syncookies::Permitted {
+        timestamps: enabled(NetSysctlKey::TcpTimestamps),
+        sack: enabled(NetSysctlKey::TcpSack),
+        window_scaling: enabled(NetSysctlKey::TcpWindowScaling),
+    }
+}
+
 /// Read a live namespace by numeric key without creating state. # C: O(log N)
 pub fn value_in(ns: u64, key: NetSysctlKey) -> Option<i64> {
     crate::net_ns::state_by_id(ns).map(|state| state.sysctls.get(key))

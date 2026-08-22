@@ -31,6 +31,14 @@ impl TcpConn {
     pub fn active_open_fastopen(&mut self, option: Option<Cookie>, data: &[u8])
         -> Result<(Vec<u8>, usize), TcpConnError>
     {
+        self.active_open_fastopen_with_policy(option, data, crate::syncookies::Permitted::ALL)
+    }
+
+    /// Start an active fast-open under the owning namespace's option policy.
+    /// # C: O(bytes carried)
+    pub(crate) fn active_open_fastopen_with_policy(&mut self, option: Option<Cookie>, data: &[u8],
+        permitted: crate::syncookies::Permitted) -> Result<(Vec<u8>, usize), TcpConnError>
+    {
         let new_state = crate::tcp_state::transition(self.state, TcpEvent::ActiveOpen)
             .ok_or(TcpConnError::BadState)?;
         let seq_start = self.snd_nxt;
@@ -44,8 +52,8 @@ impl TcpConn {
             self.fastopen_client_fail = crate::tcp_fastopen::TFO_COOKIE_UNAVAILABLE;
         }
         let flag_bits = flags::SYN | flags::ECE | flags::CWR;
-        let carried = core::cmp::min(data.len(), self.syn_data_room(flag_bits));
-        let seg = self.build_syn_with_data(seq_start, flag_bits, &data[..carried]);
+        let carried = core::cmp::min(data.len(), self.syn_data_room(flag_bits, permitted));
+        let seg = self.build_syn_with_data_policy(seq_start, flag_bits, &data[..carried], permitted);
         // Excluded from every retry: the option is what a middlebox on this
         // path may have objected to.
         self.fastopen_opt = None;
@@ -72,9 +80,10 @@ impl TcpConn {
     /// Bytes of program data an opening SYN has room for beside the
     /// handshake's own options. The connection's own MSS is the ceiling
     /// because no peer has advertised one yet. # C: O(1)
-    fn syn_data_room(&self, flag_bits: u8) -> usize {
+    fn syn_data_room(&self, flag_bits: u8, permitted: crate::syncookies::Permitted) -> usize {
         let mss = if self.own_mss != 0 { self.own_mss } else { crate::tcp_conn::OWN_MSS_DEFAULT };
-        (mss as usize).saturating_sub(self.syn_options(flag_bits).encoded_len())
+        let option_len = self.syn_options_with_policy(flag_bits, permitted).encoded_len();
+        (mss as usize).saturating_sub(option_len)
     }
 
     /// Read the SYN-ACK answering an active open that tried to fast open, and
