@@ -386,11 +386,21 @@ impl<S: SectorSource> Volume<S> {
     /// A segment that is empty is not a recycling candidate — that is what
     /// opening a fresh one is for — and one that is full has nothing to give.
     /// # C: O(main segments) per type
-    pub(crate) fn find_victim_seg(&self, hint: u32, log: usize) -> Option<(u32, u16)> {
+    pub(crate) fn find_victim_seg(&mut self, hint: u32, log: usize) -> Option<(u32, u16)> {
         for ty in crate::place::ssr::victim_type_order(log) {
             if let Some(hit) = self.find_victim_seg_typed(hint, ty as u8) { return Some(hit); }
         }
-        None
+        // With no checkpoint, a segment that became empty cannot cross the
+        // ordinary prefree-to-free boundary. Claim it directly as SSR's last
+        // resort, whatever type its old contents carried.
+        if !self.opts.checkpoint_disabled { return None; }
+        let n = self.sb.segment_count_main;
+        let segno = (0..n).map(|i| (hint + 1 + i) % n).find(|&s| {
+            self.is_prefree(s) && self.seg_valid(s) == 0
+                && !self.is_current(s) && !self.beyond_resize(s)
+        })?;
+        self.segstate.prefree.remove(&segno);
+        Some((segno, 0))
     }
 
     /// One pass of the search, over the segments the table gives `want` as their
