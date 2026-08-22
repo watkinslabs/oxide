@@ -4956,3 +4956,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED B2586 | COVERAGE | low | The tmpfs half of the historical combined casefold row was stale; it was incorrectly bundled with ext4's still-open casefold gap. | B2527/B2538 established the live tmpfs mount encoding, strict-name validation, directory inheritance, and folded lookup path (`tmpfs::mount_opts`, `tmpfs::casefold`, and `tmpfs::dir`). The known ledger now retains only the ext4 residual instead of hiding it behind the closed tmpfs claim. No source change was needed. | B2586 |
+
+### B2587-narrow-strict-encoding-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2587 | DEFECT | low | The former strict-encoding row overstated the gap by claiming tmpfs validation accepted every representable name. The validator is live; only the raw-byte name boundary remains open. | B2527/B2538's production tests and `generic_ci_validate_strict_name` prove admission and validation are wired. The known row now retains the actual remaining divergence: inode operations receive `&str`, so malformed/non-UTF-8 names cannot reach the strict refusal ladder. No source change was needed. | B2587 |
