@@ -8,7 +8,7 @@ use net::uapi::{MSG_CMSG_COMPAT, MSG_DONTWAIT, MSG_ERRQUEUE, MSG_PEEK, MSG_WAITF
 
 use crate::msg_layout::{EntryAbi, MsgLayout, entry_layout};
 
-use super::fake::{Entry, Fake, drive, drive_abi};
+use super::fake::{Entry, Fake, WaitGate, drive, drive_abi};
 
 // The batch does not own the compat question any more — one owner does, for
 // every message syscall — but the ANSWER it acts on is still part of this
@@ -143,6 +143,19 @@ fn waitforone_drains_without_waiting_once_the_first_message_lands() {
     assert_eq!(fake.seen_flags, alloc::vec![0, MSG_DONTWAIT, MSG_DONTWAIT]);
     assert_eq!(result, 2, "the dry queue ends the batch at what it has");
     assert_eq!(fake.latched, None, "EAGAIN is not latched");
+}
+
+#[test]
+fn waitforone_allows_the_first_receive_to_block_then_drains_nonblocking() {
+    let gate = WaitGate::new();
+    let fake = Fake::new(alloc::vec![Entry::WaitThenGot(gate.clone()),
+        Entry::Got { oob: false }]);
+    let worker = std::thread::spawn(move || drive(MSG_WAITFORONE, 2, fake));
+    gate.wait_until_entered();
+    gate.release();
+    let (result, fake) = worker.join().expect("batch worker");
+    assert_eq!(result, 2);
+    assert_eq!(fake.seen_flags, alloc::vec![0, MSG_DONTWAIT]);
 }
 
 #[test]

@@ -10,6 +10,8 @@
 // nothing is hidden: real dead code still surfaces on `xtask kernel`.
 #![cfg_attr(not(target_os = "oxide-kernel"), allow(dead_code))]
 extern crate alloc;
+#[cfg(all(not(target_os = "oxide-kernel"), not(test)))]
+extern crate std;
 
 mod membarrier;
 mod affinity_abi;
