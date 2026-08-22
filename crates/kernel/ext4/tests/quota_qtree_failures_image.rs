@@ -75,9 +75,11 @@ fn qtree_insert_qinfo_failure_removes_new_quota_record() {
     let disk = seeded_quota_disk();
     let (m, sb) = mount_result(disk.clone()).expect("rw mount with hidden quota");
     let qid = Kqid::project(42);
-    vfs::quota_setquota(&sb, qid, MemDqblk { dqb_curspace: 1024, ..MemDqblk::new() }).expect("dirty new quota record");
     m.state().mount.fail_next_quota_info_write_for_tests();
-    assert_eq!(vfs::quota_sync(&sb, vfs::QuotaType::Project), Err(vfs::VfsError::Eio));
+    assert_eq!(
+        vfs::quota_setquota(&sb, qid, MemDqblk { dqb_curspace: 1024, ..MemDqblk::new() }),
+        Err(vfs::VfsError::Eio),
+    );
     drop(sb); drop(m);
 
     let (_m2, sb2) = mount_result(disk).expect("remount after failed insert");
@@ -91,9 +93,11 @@ fn qtree_insert_record_failure_removes_new_quota_record() {
     let disk = seeded_quota_disk();
     let (m, sb) = mount_result(disk.clone()).expect("rw mount with hidden quota");
     let qid = Kqid::project(43);
-    vfs::quota_setquota(&sb, qid, MemDqblk { dqb_curspace: 2048, ..MemDqblk::new() }).expect("dirty new quota record");
     m.state().mount.fail_next_quota_record_write_for_tests();
-    assert_eq!(vfs::quota_sync(&sb, vfs::QuotaType::Project), Err(vfs::VfsError::Eio));
+    assert_eq!(
+        vfs::quota_setquota(&sb, qid, MemDqblk { dqb_curspace: 2048, ..MemDqblk::new() }),
+        Err(vfs::VfsError::Eio),
+    );
     drop(sb); drop(m);
 
     let (_m2, sb2) = mount_result(disk.clone()).expect("remount after failed record write");
@@ -114,10 +118,12 @@ fn qtree_insert_record_failure_cleanup_qblk_failure_is_retryable() {
     let disk = seeded_quota_disk();
     let (m, sb) = mount_result(disk.clone()).expect("rw mount with hidden quota");
     let qid = Kqid::project(44);
-    vfs::quota_setquota(&sb, qid, MemDqblk { dqb_curspace: 8192, ..MemDqblk::new() }).expect("dirty new quota record");
     m.state().mount.fail_next_quota_record_write_for_tests();
     m.state().mount.fail_quota_qblk_write_after_for_tests(EMPTY_QTREE_INSERT_QBLK_WRITES);
-    assert_eq!(vfs::quota_sync(&sb, vfs::QuotaType::Project), Err(vfs::VfsError::Eio));
+    assert_eq!(
+        vfs::quota_setquota(&sb, qid, MemDqblk { dqb_curspace: 8192, ..MemDqblk::new() }),
+        Err(vfs::VfsError::Eio),
+    );
     drop(sb); drop(m);
 
     let (_m2, sb2) = mount_result(disk.clone()).expect("remount after failed cleanup");

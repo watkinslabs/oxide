@@ -44,6 +44,23 @@ impl Mount {
         #[cfg(not(target_os = "oxide-kernel"))]
         if self.faults.next_inode_write.swap(false, Ordering::AcqRel) { return Err(MountError::BlockIo); }
         #[cfg(not(target_os = "oxide-kernel"))]
+        if self.faults.inode_write_ino.load(Ordering::Acquire) == ino {
+            let n = self.faults.inode_write_ino_after.load(Ordering::Acquire);
+            if n == 1 {
+                self.faults.inode_write_ino_after.store(0, Ordering::Release);
+                self.faults.inode_write_ino.store(0, Ordering::Release);
+                return Err(MountError::BlockIo);
+            }
+            if n > 1 {
+                let _ = self.faults.inode_write_ino_after.compare_exchange(
+                    n,
+                    n - 1,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                );
+            }
+        }
+        #[cfg(not(target_os = "oxide-kernel"))]
         {
             let n = self.faults.inode_write_after.load(Ordering::Acquire);
             if n != 0 {

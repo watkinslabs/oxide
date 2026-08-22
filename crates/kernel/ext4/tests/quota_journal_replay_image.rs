@@ -312,11 +312,6 @@ fn rw_mount_flags_recovery_and_clean_unmount_clears_it() {
     assert!(!needs_recovery(&dump(&disk)), "a clean unmount clears the flag");
 }
 
-/// One record commit = one transaction. A quota tree insert touches a new tree
-/// block, its parent's pointer and the file header; splitting those across
-/// transactions makes a crash between them expose a half-linked tree.
-const TXNS_PER_RECORD_FLUSH: u64 = 2; // the record commit, then the file header
-
 #[test]
 fn a_quota_record_insert_commits_as_one_transaction() {
     let image = seeded_image();
@@ -325,13 +320,21 @@ fn a_quota_record_insert_commits_as_one_transaction() {
     let (m, sb) = mount(dev);
     let jsb_sector = journal_sb_sector(&m);
     let qid = Kqid::user(SECOND_ID);
+
+    // One synchronous mark-dirty commit must contain the new tree block, its
+    // parent pointer, the record, and the quota-file header. Splitting those
+    // across transactions makes a crash between them expose a half-linked
+    // tree; deferring them to Q_SYNC misses Linux's journalled-quota contract.
+    disk.watch(jsb_sector);
     vfs::quota_setquota(&sb, qid, MemDqblk { dqb_bhardlimit: CRASH_BHARD, ..MemDqblk::new() })
         .expect("setquota");
-
-    disk.watch(jsb_sector);
-    vfs::quota_sync(&sb, QuotaType::User).expect("flush quota");
-    assert_eq!(disk.publishes(), TXNS_PER_RECORD_FLUSH,
-               "inserting a record and updating the file header is one transaction each");
+    assert_eq!(disk.publishes(), 1, "the complete quota-tree insertion is one transaction");
+    vfs::quota_sync(&sb, QuotaType::User).expect("later Q_SYNC");
+    assert_eq!(
+        vfs::quota_getquota(&sb, qid).expect("quota after Q_SYNC").dqb_bhardlimit,
+        CRASH_BHARD,
+        "Q_SYNC leaves the synchronously persisted record unchanged",
+    );
     drop(sb);
     drop(m);
 }

@@ -155,6 +155,17 @@ impl vfs::DquotOperations for Ext4QuotaOps {
             }
         }
         dq.mark_dirty();
+        // Linux `ext4_mark_dquot_dirty`: hidden quota inodes (the on-disk
+        // QUOTA feature) and named journalled quota files are committed from
+        // the mark-dirty call, in the current journal transaction when one is
+        // already active. Plain usrquota/grpquota files retain generic
+        // writeback semantics and are drained by Q_SYNC/quota-off.
+        let journalled = self.st.mount.sb.has_quota()
+            || self.st.opts().journalled_file(dq.id().kind).is_some();
+        if journalled {
+            self.write_dquot(dq)?;
+            dq.clear_dirty();
+        }
         Ok(())
     }
 
