@@ -2,6 +2,7 @@ use super::*;
 use alloc::string::String;
 use alloc::vec;
 use vfs::FileType;
+use vfs::uapi::FALLOC_FL_KEEP_SIZE;
 use crate::dirent::{ATTR_ARCH, ATTR_DIR, ATTR_RO};
 use alloc::vec::Vec;
 use block::{BlockDevice, BlockError, BlockOp, BlockRequest};
@@ -155,6 +156,21 @@ fn chmod_persists_the_fat_read_only_attribute() {
     let reread = root.lookup("HELLO.TXT").expect("fresh lookup");
     assert_eq!(reread.perm().unwrap_or(0) & 0o222, 0,
                "chmod must survive inode recreation");
+}
+
+/// KEEP_SIZE reserves the backing clusters without changing the visible
+/// length; a later lookup still reports the original file size.
+#[test]
+fn fallocate_keep_size_reserves_clusters_without_growing_the_file() {
+    let fs = writable_mount("vfat", crate::opts::Options::vfat());
+    let root = fs.root_inode();
+    let file = root.lookup("HELLO.TXT").expect("lookup");
+    let before = fs.volume.lock().free_clusters();
+    file.fallocate(FALLOC_FL_KEEP_SIZE, 0, 1024).expect("preallocate");
+    assert_eq!(file.size(), 5, "KEEP_SIZE must not alter i_size");
+    assert_eq!(root.lookup("HELLO.TXT").expect("fresh lookup").size(), 5);
+    assert_eq!(fs.volume.lock().free_clusters(), before - 1,
+               "one additional FAT cluster should be claimed");
 }
 
 /// A missing name is `ENOENT`, and a file is not a directory.

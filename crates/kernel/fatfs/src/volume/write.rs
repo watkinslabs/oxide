@@ -230,6 +230,25 @@ impl<S: SectorSource> Volume<S> {
         self.write_file_cached(dir, hit, &mut cache, offset, data, now)
     }
 
+    /// Allocate the clusters covering a range without changing the visible
+    /// file size or clearing the newly allocated bytes.  This is FAT's
+    /// `FALLOC_FL_KEEP_SIZE` operation; the normal write path can subsequently
+    /// consume the reserved chain without allocating it again.
+    pub fn preallocate_file_cached(&mut self, dir: Option<u32>, hit: &DirEntry,
+                                   cache: &mut ChainCache, offset: u64, len: u64,
+                                   now: FatTime) -> Result<u32, Errno> {
+        if !self.writable() { return Err(Errno::Erofs); }
+        if hit.entry.is_dir() { return Err(Errno::Eisdir); }
+        let end = offset.checked_add(len).ok_or(Errno::Einval)?;
+        let per = self.geo.cluster_bytes();
+        let need = usize::try_from(end.div_ceil(per)).map_err(|_| Errno::Efbig)?;
+        let first = self.extend_chain(hit.entry.cluster, cache, need)?;
+        if first != hit.entry.cluster {
+            self.stamp_record(dir, hit.slot, first, hit.entry.size, now)?;
+        }
+        Ok(first)
+    }
+
     /// Make the chain starting at `first` at least `need` clusters long, and
     /// report its first cluster — which a file that had none acquires here.
     ///

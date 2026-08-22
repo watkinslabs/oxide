@@ -18,6 +18,7 @@ use alloc::vec::Vec;
 use vfs::{CreateCtx, DirContext, FileOps, FileType, Inode, InodeOps, InodeRef, KResult,
           VfsError};
 use vfs::setattr::{Iattr, ATTR_GID, ATTR_UID};
+use vfs::uapi::FALLOC_FL_KEEP_SIZE;
 
 use crate::ident::{self, DirLocation};
 use crate::namei::dir_is_empty;
@@ -151,7 +152,7 @@ impl InodeOps for FatOps {
 
     fn truncate(&self, inode: &Inode, len: u64) -> KResult<()> {
         let node = Self::node(inode)?;
-        let entry = node.entry.ok_or(VfsError::Eisdir)?;
+        let entry = node.current_entry().ok_or(VfsError::Eisdir)?;
         let hit = DirEntry { name: String::new(), entry, slot: node.slot, nr_slots: node.nr_slots };
         let mut v = node.fs.volume.lock();
         let now = now_for(v.options());
@@ -164,6 +165,27 @@ impl InodeOps for FatOps {
         Ok(())
     }
 
+    fn fallocate(&self, inode: &Inode, mode: u32, offset: u64, len: u64) -> KResult<()> {
+        if mode & !FALLOC_FL_KEEP_SIZE != 0 { return Err(VfsError::Eopnotsupp); }
+        let node = Self::node(inode)?;
+        let entry = node.current_entry().ok_or(VfsError::Eisdir)?;
+        let hit = DirEntry { name: String::new(), entry, slot: node.slot, nr_slots: node.nr_slots };
+        let end = offset.checked_add(len).ok_or(VfsError::Einval)?;
+        let mut v = node.fs.volume.lock();
+        let now = now_for(v.options());
+        let mut cache = node.cache.lock();
+        if mode & FALLOC_FL_KEEP_SIZE != 0 {
+            let first = v.preallocate_file_cached(node.container(), &hit, &mut cache,
+                                                   offset, len, now).map_err(errno_to_vfs)?;
+            node.set_current_cluster(first);
+        } else if end > inode.size() {
+            v.truncate_file_cached(node.container(), &hit, &mut cache, end, now)
+                .map_err(errno_to_vfs)?;
+            inode.set_size(end);
+        }
+        Ok(())
+    }
+
     /// Persist the attributes FAT can represent in the exact short record
     /// this inode was resolved from.  FAT has no stored owner, so chown is
     /// valid only when it keeps the mount's synthesized uid/gid; the VFS
@@ -171,7 +193,7 @@ impl InodeOps for FatOps {
     /// # C: O(cluster bytes)
     fn setattr(&self, inode: &Inode, idmap: &vfs::Idmap, ia: &Iattr) -> KResult<()> {
         let node = Self::node(inode)?;
-        let entry = node.entry.ok_or(VfsError::Eisdir)?;
+        let entry = node.current_entry().ok_or(VfsError::Eisdir)?;
         let v = node.fs.volume.lock();
         if !v.writable() { return Err(VfsError::Erofs); }
         let opts = *v.options();
@@ -201,15 +223,15 @@ impl InodeOps for FatOps {
 impl FileOps for FatOps {
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let node = FatOps::node(inode)?;
-        let entry = node.entry.as_ref().ok_or(VfsError::Eisdir)?;
+        let entry = node.current_entry().ok_or(VfsError::Eisdir)?;
         let v = node.fs.volume.lock();
         let mut cache = node.cache.lock();
-        v.read_file_cached(entry, &mut cache, off, buf).map_err(errno_to_vfs)
+        v.read_file_cached(&entry, &mut cache, off, buf).map_err(errno_to_vfs)
     }
 
     fn write(&self, inode: &Inode, off: u64, buf: &[u8]) -> KResult<usize> {
         let node = FatOps::node(inode)?;
-        let entry = node.entry.ok_or(VfsError::Eisdir)?;
+        let entry = node.current_entry().ok_or(VfsError::Eisdir)?;
         // The name is not re-resolved: the record's own slot came with the
         // inode, so the write lands on the record this inode IS.
         let hit = DirEntry { name: String::new(), entry, slot: node.slot, nr_slots: node.nr_slots };

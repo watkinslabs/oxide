@@ -26,6 +26,10 @@ pub struct FatNode {
     /// The record this inode IS, or `None` for the volume's root, which has
     /// none.
     pub(crate) entry: Option<ShortEntry>,
+    /// First cluster may change for an empty file after keep-size
+    /// preallocation; keep that live value with the inode instead of making a
+    /// later write reallocate a second chain.
+    current_cluster: AtomicU32,
     pub(crate) location: DirLocation,
     /// The directory this entry was found in, and where its record sits in
     /// it.
@@ -44,6 +48,17 @@ pub struct FatNode {
 }
 
 impl FatNode {
+    pub(crate) fn current_entry(&self) -> Option<ShortEntry> {
+        self.entry.map(|mut entry| {
+            entry.cluster = self.current_cluster.load(Ordering::Acquire);
+            entry
+        })
+    }
+
+    pub(crate) fn set_current_cluster(&self, cluster: u32) {
+        self.current_cluster.store(cluster, Ordering::Release);
+    }
+
     /// This inode as a directory to operate in, or `None` when it is a file.
     ///
     /// The root reports NO record, which is what makes a child's `..` name
@@ -101,7 +116,8 @@ fn build_inode(fs: Arc<FatFs>, entry: Option<ShortEntry>, location: DirLocation,
     let inode_ops: Arc<dyn InodeOps> = Arc::new(FatOps);
     let file_ops: Arc<dyn FileOps> = Arc::new(FatOps);
     let times = stamps(&fs, parent, slot, entry.is_some());
-    let node = FatNode { fs, entry, location, parent, slot, nr_slots,
+    let current_cluster = entry.map_or(0, |e| e.cluster);
+    let node = FatNode { fs, entry, current_cluster: AtomicU32::new(current_cluster), location, parent, slot, nr_slots,
                          cache: sync::Spinlock::new(ChainCache::new()),
                          release_cluster: AtomicU32::new(0) };
     let weak_sb = node.fs.superblock().as_ref().map(Arc::downgrade).unwrap_or_default();
