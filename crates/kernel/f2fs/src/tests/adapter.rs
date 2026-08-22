@@ -422,13 +422,10 @@ fn errno_translation_keeps_each_meaning() {
     assert_eq!(errno_to_vfs(Errno::Eloop), VfsError::Eloop);
     // Anything without a closer meaning is an I/O error, not a silent success.
     assert_eq!(errno_to_vfs(Errno::Eio), VfsError::Eio);
-    // The three signature refusals and ENOPKG have no spelling in this error
-    // type, so they still arrive as EIO. Pinned so the day the type grows them
-    // this test is what says where to change it.
-    assert_eq!(errno_to_vfs(Errno::Enokey), VfsError::Eio);
-    assert_eq!(errno_to_vfs(Errno::Ekeyrejected), VfsError::Eio);
-    assert_eq!(errno_to_vfs(Errno::Ebadmsg), VfsError::Eio);
-    assert_eq!(errno_to_vfs(Errno::Enopkg), VfsError::Eio);
+    assert_eq!(errno_to_vfs(Errno::Enokey), VfsError::Enokey);
+    assert_eq!(errno_to_vfs(Errno::Ekeyrejected), VfsError::Ekeyrejected);
+    assert_eq!(errno_to_vfs(Errno::Ebadmsg), VfsError::Ebadmsg);
+    assert_eq!(errno_to_vfs(Errno::Enopkg), VfsError::Enopkg);
 }
 
 // --------------------------------------------------------- freeze and thaw

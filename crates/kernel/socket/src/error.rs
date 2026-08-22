@@ -12,16 +12,16 @@ pub enum Error {
     Enotblk = 15, Ebusy = 16, Eexist = 17, Exdev = 18, Enodev = 19, Enotdir = 20, Eisdir = 21,
     Einval = 22, Emfile = 24, Enotty = 25, Etxtbsy = 26, Efbig = 27, Enospc = 28,
     Espipe = 29, Erofs = 30, Emlink = 31, Epipe = 32, Enametoolong = 36,
-    Enosys = 38, Enotempty = 39, Eloop = 40, Ebade = 52, Enodata = 61,
+    Enosys = 38, Enotempty = 39, Eloop = 40, Ebade = 52, Enodata = 61, Enopkg = 65,
     Emsgsize = 90, Enoprotoopt = 92, Esocktnosupport = 94,
     Eopnotsupp = 95, Eafnosupport = 97, Eaddrinuse = 98,
     Eaddrnotavail = 99, Enetdown = 100, Enetunreach = 101, Econnaborted = 103, Econnreset = 104,
     Enobufs = 105, Eisconn = 106, Enotconn = 107, Etimedout = 110,
     Econnrefused = 111, Ehostdown = 112, Ehostunreach = 113,
-    Ealready = 114, Einprogress = 115, Enonet = 64, Eproto = 71,
+    Ealready = 114, Einprogress = 115, Enonet = 64, Eproto = 71, Ebadmsg = 74,
     Ebadfd = 77, Edestaddrreq = 89, Enotsock = 88, Erange = 34, Euclean = 117,
     Estale = 116,
-    Edquot = 122, Ecanceled = 125,
+    Edquot = 122, Ecanceled = 125, Enokey = 126, Ekeyrejected = 129,
 }
 
 pub type KResult<T> = core::result::Result<T, Error>;
@@ -53,9 +53,10 @@ impl From<vfs::VfsError> for Error {
             vfs::VfsError::Enametoolong => Self::Enametoolong, vfs::VfsError::Enosys => Self::Enosys,
             vfs::VfsError::Enotempty => Self::Enotempty, vfs::VfsError::Eloop => Self::Eloop,
             vfs::VfsError::Ebade => Self::Ebade, vfs::VfsError::Enodata => Self::Enodata,
-            vfs::VfsError::Enonet => Self::Enonet,
+            vfs::VfsError::Enonet => Self::Enonet, vfs::VfsError::Enopkg => Self::Enopkg,
             vfs::VfsError::Emsgsize => Self::Emsgsize,
-            vfs::VfsError::Eproto => Self::Eproto, vfs::VfsError::Ebadfd => Self::Ebadfd,
+            vfs::VfsError::Eproto => Self::Eproto, vfs::VfsError::Ebadmsg => Self::Ebadmsg,
+            vfs::VfsError::Ebadfd => Self::Ebadfd,
             vfs::VfsError::Edestaddrreq => Self::Edestaddrreq,
             vfs::VfsError::Enoprotoopt => Self::Enoprotoopt,
             vfs::VfsError::Eopnotsupp => Self::Eopnotsupp,
@@ -68,6 +69,8 @@ impl From<vfs::VfsError> for Error {
             vfs::VfsError::Euclean => Self::Euclean, vfs::VfsError::Estale => Self::Estale,
             vfs::VfsError::Edquot => Self::Edquot,
             vfs::VfsError::Ecanceled => Self::Ecanceled,
+            vfs::VfsError::Enokey => Self::Enokey,
+            vfs::VfsError::Ekeyrejected => Self::Ekeyrejected,
             // No socket path produces an owner-mapping overflow; report the
             // generic invalid-argument rather than inventing a socket errno.
             vfs::VfsError::Eoverflow => Self::Einval,

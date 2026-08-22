@@ -100,7 +100,8 @@ fn udp_sendmsg_rejects_destination_before_payload_materialization() {
 fn vfs_errors_keep_their_exact_errno() {
     for error in [vfs::VfsError::Eintr, vfs::VfsError::Enodev, vfs::VfsError::Eisdir,
         vfs::VfsError::Enospc, vfs::VfsError::Enotempty, vfs::VfsError::Euclean,
-        vfs::VfsError::Edquot, vfs::VfsError::Ecanceled]
+        vfs::VfsError::Edquot, vfs::VfsError::Ecanceled, vfs::VfsError::Enopkg,
+        vfs::VfsError::Ebadmsg, vfs::VfsError::Enokey, vfs::VfsError::Ekeyrejected]
     {
         assert_eq!(Error::from(error).errno(), error as i32);
     }
