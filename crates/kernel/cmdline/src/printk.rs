@@ -75,6 +75,11 @@ pub fn initcall_debug(line: &[u8]) -> bool {
     match value(line, b"initcall_debug") { Some(v) => parse_bool(v).unwrap_or(true), None => bare_flag(line, b"initcall_debug") }
 }
 
+/// Whether registered consoles participate in system sleep. The bare
+/// `no_console_suspend` parameter disables both the suspend and resume halves.
+/// # C: O(line length)
+pub fn console_suspend_enabled(line: &[u8]) -> bool { !bare_flag(line, b"no_console_suspend") }
+
 /// Accept the boolean spellings a kernel parameter takes.
 fn parse_bool(v: &[u8]) -> Option<bool> {
     match v {
@@ -93,7 +98,6 @@ pub fn unsupported_parameter(name: &[u8]) -> Option<&'static str> {
         b"softlockup_panic" => Some("softlockup_panic: lockup detector is report-only"),
         b"nmi_watchdog" => Some("nmi_watchdog: no periodic NMI lockup detector"),
         b"log_buf_len" => Some("log_buf_len: record ring is a fixed-size static"),
-        b"no_console_suspend" => Some("no_console_suspend: no system-suspend path"),
         b"slub_debug" => Some("slub_debug: allocator debug is build-time only"),
         b"page_poison" => Some("page_poison: page poisoning is build-time only"),
         b"debug_pagealloc" => Some("debug_pagealloc: page-alloc debug is build-time only"),

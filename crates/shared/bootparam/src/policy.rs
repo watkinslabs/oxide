@@ -13,7 +13,7 @@ use cmdline::printk::{self, DevkmsgMode};
 
 /// What the boot line asked for, as applied. Returned so the boot path can
 /// report it and a test can assert it without reading klog's globals.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Applied {
     pub console_loglevel: Option<u32>,
     pub ignore_loglevel: bool,
@@ -24,6 +24,18 @@ pub struct Applied {
     pub panic_timeout: Option<i64>,
     pub panic_on_oops: bool,
     pub panic_on_warn: bool,
+    pub console_suspend_enabled: bool,
+}
+
+impl Default for Applied {
+    fn default() -> Self {
+        Self {
+            console_loglevel: None, ignore_loglevel: false, printk_time: None,
+            devkmsg: None, initcall_debug: false, keep_bootcon: false,
+            panic_timeout: None, panic_on_oops: false, panic_on_warn: false,
+            console_suspend_enabled: true,
+        }
+    }
 }
 
 /// Decide what a line asks for, without touching any global. # C: O(len)
@@ -38,6 +50,7 @@ pub fn decide(line: &[u8]) -> Applied {
         panic_timeout: faults::panic_timeout_secs(line),
         panic_on_oops: faults::oops_panic(line),
         panic_on_warn: faults::panic_on_warn(line),
+        console_suspend_enabled: printk::console_suspend_enabled(line),
     }
 }
 
@@ -67,6 +80,7 @@ pub fn install(a: Applied) {
     });
     klog::oops::set_panic_on_oops(a.panic_on_oops);
     klog::oops::set_panic_on_warn(a.panic_on_warn);
+    klog::console_pm::set_suspend_enabled(a.console_suspend_enabled);
     klog::bootcon::set_policy_applied();
 }
 
@@ -146,6 +160,22 @@ mod tests {
     fn a_plain_line_changes_nothing() {
         let a = decide(b"BOOT_IMAGE=/oxide root=/dev/oxide0 ro console=ttyS0,115200 console=tty0");
         assert_eq!(a, Applied::default());
+    }
+
+    #[test]
+    fn no_console_suspend_reaches_the_console_operation() {
+        use core::sync::atomic::{AtomicUsize, Ordering};
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+        fn call() { CALLS.fetch_add(1, Ordering::AcqRel); }
+
+        let _g = serial();
+        CALLS.store(0, Ordering::Release);
+        install(decide(b"no_console_suspend"));
+        assert!(!klog::console_pm::run_if_suspend_enabled(call));
+        assert_eq!(CALLS.load(Ordering::Acquire), 0);
+        install(decide(b"root=/dev/oxide0"));
+        assert!(klog::console_pm::run_if_suspend_enabled(call));
+        assert_eq!(CALLS.load(Ordering::Acquire), 1);
     }
 
     #[test]

@@ -66,16 +66,23 @@ fn initcall_debug_accepts_flag_and_boolean_forms() {
 }
 
 #[test]
+fn no_console_suspend_is_a_bare_disable() {
+    assert!(!console_suspend_enabled(b"root=/dev/oxide0 no_console_suspend"));
+    assert!(console_suspend_enabled(b"root=/dev/oxide0"));
+    assert!(console_suspend_enabled(b"no_console_suspend=0"));
+}
+
+#[test]
 fn a_recognised_but_unhonoured_parameter_is_named() {
     // The defect this guards is a knob that parses and does nothing. Each of
     // these must produce a boot-time line saying which subsystem it needs.
     for p in [&b"softlockup_panic"[..], b"nmi_watchdog",
-              b"log_buf_len", b"no_console_suspend", b"slub_debug", b"page_poison",
+              b"log_buf_len", b"slub_debug", b"page_poison",
               b"debug_pagealloc", b"boot_delay"] {
         assert!(unsupported_parameter(p).is_some(), "parameter must announce that it is inert");
     }
     for p in [&b"earlycon"[..], b"loglevel", b"panic_on_warn", b"panic", b"oops", b"initcall_debug",
-              b"hung_task_panic", b"hung_task_timeout_secs"] {
+              b"hung_task_panic", b"hung_task_timeout_secs", b"no_console_suspend"] {
         assert_eq!(unsupported_parameter(p), None, "an implemented parameter must not be announced as inert");
     }
 }
