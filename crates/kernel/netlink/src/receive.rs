@@ -167,13 +167,34 @@ impl NetlinkSocket {
     /// pressure.  A failed delivery owns `sk_err=ENOBUFS` and wakeup here.
     /// # C: O(1)
     pub(crate) fn enqueue_multicast(&self, msg: Vec<u8>, group: u32, nsid: Option<i32>) -> bool {
+        self.enqueue_multicast_from(msg, 0, group, nsid, SenderCreds::default(),
+            security::network::message_security(None))
+    }
+
+    /// Deliver one userspace multicast while retaining the sender metadata
+    /// Linux stamps into `NETLINK_CB(skb)`. # C: O(1)
+    pub(crate) fn enqueue_user_multicast(&self, msg: Vec<u8>, src_port: u32, group: u32,
+        creds: SenderCreds) -> bool
+    {
+        #[cfg(target_os = "oxide-kernel")]
+        let security = {
+            let sender = sched::live::current().map(|task| alloc::sync::Arc::clone(&task.pid));
+            security::network::message_security(sender.as_deref())
+        };
+        #[cfg(not(target_os = "oxide-kernel"))]
+        let security = security::network::message_security(None);
+        self.enqueue_multicast_from(msg, src_port, group, None, creds, security)
+    }
+
+    fn enqueue_multicast_from(&self, msg: Vec<u8>, src_port: u32, group: u32,
+        nsid: Option<i32>, creds: SenderCreds, security: Option<Vec<u8>>) -> bool
+    {
         let mut queue = self.rx_queue.lock();
         let fits = queue.bytes.checked_add(msg.len()).is_some_and(|used| {
             used <= self.base.rcvbuf_bytes()
         });
         if fits {
-            queue.push(msg, 0, group, nsid, SenderCreds::default(),
-                security::network::message_security(None));
+            queue.push(msg, src_port, group, nsid, creds, security);
             drop(queue);
             #[cfg(feature = "debug-netlink")]
             trace_rx(b"multicast-enqueue", self.rx_drops.load(Ordering::Relaxed));

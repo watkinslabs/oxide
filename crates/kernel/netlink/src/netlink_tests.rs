@@ -7,6 +7,7 @@ use crate::*;
 // `uevent` owns raw, cooked, and unicast uevent delivery tests.
 mod creds;
 mod uevent;
+mod user_multicast;
 
 fn namespace_dropped() {}
 
