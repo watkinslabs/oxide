@@ -44,7 +44,7 @@ fn syscost_profiler_does_not_enable_serial_workload_traces() {
 fn syscall_process_irqs_close_before_return_work() {
     let dispatch = include_str!("dispatch/core.rs");
     let enable = dispatch.find("ProcessIrqs::enable()").expect("process IRQ guard");
-    let route = dispatch.find("dispatch_route_a(nr, &args)").expect("syscall routes");
+    let route = dispatch.find("dispatch_routed_syscall(entry, nr, &args)").expect("syscall routes");
     let close = dispatch.rfind("drop(process_irqs);").expect("IRQ guard close");
     // Match the call by receiver and leading arguments, not its whole signature:
     // a parameter added to the tail must not read as a missing call site. The

@@ -10,11 +10,12 @@ fn m(bits: u64) -> CpuMask { CpuMask::from_words(&[bits]) }
 
 // --- cpumask sizing --------------------------------------------------------
 
-/// `cpumask_size() == bitmap_size(nr_cpu_ids)`: 64 CPU ids is one 8-byte long.
+/// `cpumask_size() == bitmap_size(nr_cpu_ids)`: the ABI follows the kernel's
+/// current logical-CPU ceiling rather than retaining an old fixture width.
 #[test]
 fn cpumask_size_matches_linux_bitmap_size() {
-    assert_eq!(NR_CPU_IDS, 64);
-    assert_eq!(CPUMASK_SIZE, 8);
+    assert_eq!(NR_CPU_IDS, cpu::MAX_CPUS);
+    assert_eq!(CPUMASK_SIZE, cpu::MAX_CPUS.div_ceil(8));
     assert_eq!(CPUMASK_SIZE, ((NR_CPU_IDS + 7) / 8));
 }
 
@@ -24,20 +25,21 @@ fn cpumask_size_matches_linux_bitmap_size() {
 /// CPUs — a buffer that cannot hold the whole kernel mask is refused.
 #[test]
 fn getaffinity_rejects_a_buffer_too_small_for_the_kernel_mask() {
-    for len in 0..8usize {
+    for len in 0..CPUMASK_SIZE {
         assert_eq!(getaffinity_retlen(len), Err(Errno::Einval), "len={len} bytes < cpumask");
     }
-    assert!(getaffinity_retlen(8).is_ok());
+    assert!(getaffinity_retlen(CPUMASK_SIZE).is_ok());
 }
 
 /// `len & (sizeof(unsigned long) - 1)` is EINVAL — the buffer must be a whole
 /// number of longs.
 #[test]
 fn getaffinity_rejects_unaligned_len() {
-    for len in [9usize, 10, 15, 17, 63, 127] {
+    for len in [CPUMASK_SIZE + 1, CPUMASK_SIZE + 2, CPUMASK_SIZE + 7,
+        CPUMASK_SIZE + 9, 63, 127] {
         assert_eq!(getaffinity_retlen(len), Err(Errno::Einval), "len={len} not a multiple of 8");
     }
-    for len in [8usize, 16, 24, 128, 1024] {
+    for len in [CPUMASK_SIZE, CPUMASK_SIZE + BYTES_PER_LONG, 128, 1024] {
         assert!(getaffinity_retlen(len).is_ok(), "len={len} is a whole number of longs");
     }
 }
@@ -48,11 +50,12 @@ fn getaffinity_rejects_unaligned_len() {
 /// bytes, and `__get_nprocs` would report the wrong CPU count.
 #[test]
 fn getaffinity_returns_bytes_written_not_zero() {
-    assert_eq!(getaffinity_retlen(8), Ok(8));
-    assert_eq!(getaffinity_retlen(16), Ok(8), "clamped to cpumask_size()");
+    assert_eq!(getaffinity_retlen(CPUMASK_SIZE), Ok(CPUMASK_SIZE));
+    assert_eq!(getaffinity_retlen(CPUMASK_SIZE + BYTES_PER_LONG), Ok(CPUMASK_SIZE),
+        "clamped to cpumask_size()");
     // glibc's default cpu_set_t is CPU_SETSIZE(1024) bits = 128 bytes.
-    assert_eq!(getaffinity_retlen(128), Ok(8));
-    assert_eq!(getaffinity_retlen(1024), Ok(8));
+    assert_eq!(getaffinity_retlen(128), Ok(CPUMASK_SIZE));
+    assert_eq!(getaffinity_retlen(1024), Ok(CPUMASK_SIZE));
 }
 
 /// The reported mask is `p->cpus_mask & cpu_active_mask`: an offline CPU is
@@ -75,23 +78,24 @@ fn setaffinity_accepts_a_short_len_and_zero_fills() {
     assert_eq!(set_copy_len(1), 1);
     assert_eq!(set_copy_len(4), 4);
     assert_eq!(set_copy_len(8), 8);
-    assert_eq!(set_copy_len(128), 8, "clamped to cpumask_size()");
+    assert_eq!(set_copy_len(128), CPUMASK_SIZE, "clamped to cpumask_size()");
 
     assert_eq!(mask_from_bytes(&[0b0000_0101]), m(0b101), "one byte names CPUs 0..7");
     assert_eq!(mask_from_bytes(&[0xFF, 0xFF, 0xFF, 0xFF]), m(0xFFFF_FFFF));
     assert_eq!(mask_from_bytes(&[]), m(0), "len 0 copies nothing -> empty mask");
     assert_eq!(mask_from_bytes(&[0, 0, 0, 0, 0, 0, 0, 0x80]), m(1u64 << 63));
+    assert_eq!(mask_from_bytes(&[0xFF; 16]), CpuMask::from_words(&[u64::MAX, u64::MAX]));
     // Bytes past cpumask_size() are never consulted.
-    assert_eq!(mask_from_bytes(&[0xFF; 16]), m(u64::MAX));
+    assert_eq!(mask_from_bytes(&[0xFF; CPUMASK_SIZE + 8]), CpuMask::all());
 }
 
 /// The bytes are little-endian: bit N of byte K is CPU `K*8 + N`.
 #[test]
 fn mask_bytes_are_little_endian_cpu_order() {
-    for cpu in 0..64usize {
-        let mut b = [0u8; 8];
+    for cpu in 0..NR_CPU_IDS {
+        let mut b = [0u8; CPUMASK_SIZE];
         b[cpu / 8] = 1u8 << (cpu % 8);
-        assert_eq!(mask_from_bytes(&b), m(1u64 << cpu), "cpu {cpu}");
+        assert_eq!(mask_from_bytes(&b), CpuMask::of(cpu), "cpu {cpu}");
     }
 }
 
