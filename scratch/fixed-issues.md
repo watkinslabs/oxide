@@ -265,6 +265,12 @@
 |---|---|---|---|---|---|
 | FIXED R102 | MISSING | high | The older OPEN row claiming kernel BTF was not exposed to userspace was stale after the sysfs publication fix. | B2508 registers read-only `/sys/kernel/btf/vmlinux` when the canonical BTF object is non-empty and delegates reads to `security::bpf::kernel_btf_read`; the live inode and offset tests cover the production path. | Chris Watkins |
 
+### R103-stale-ext4-quota-mark-dirty-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED R103 | DEFECT | med | The older OPEN row claiming ext4 always deferred quota dquot persistence was stale after the journalled mark-dirty fix. | B2514 makes `Ext4QuotaOps::mark_dirty` synchronously write dquots for the QUOTA feature and named journalled quota files while retaining deferred behavior for plain quota files; its live no-`Q_SYNC` reader test and qtree failure tests cover the distinction. | Chris Watkins |
+
 ### R97-io-uring-spec-current-opcodes
 
 | Status | Class | Sev | Issue | Evidence | Owner |
