@@ -1,5 +1,11 @@
 # Fixed issues
 
+### D582-f2fs-fsync-merged-checkpoint
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED D582 | MISSING | med | **F2FS fsync checkpoint reasons now leave the volume lock before checkpointing and use the mount's merged-checkpoint path.** | `Volume::fsync_for_mount` returns the checkpoint reason without committing; `F2fs::sync_file` releases the volume guard, calls `checkpoint_merged(true)`, and only then retires discard runs. Direct volume tests retain their synchronous checkpoint behavior. Focused mount fsync tests pass (2/2). | D582 |
+
 ### D581-stale-cross-worktree-check-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |

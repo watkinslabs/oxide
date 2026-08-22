@@ -79,7 +79,18 @@ impl<S: SectorSource> Volume<S> {
     /// A mount that may not write reports success without writing: there is
     /// nothing it could have failed to persist.
     /// # C: O(nodes the file has) blocks, or O(a checkpoint)
-    pub fn fsync(&mut self, ino: u32) -> Result<CpReason, Errno> { self.sync_file(ino, false) }
+    pub fn fsync(&mut self, ino: u32) -> Result<CpReason, Errno> {
+        self.sync_file(ino, false, true)
+    }
+
+    /// Prepare the one-file durability decision for the mount adapter. A
+    /// checkpoint reason is returned to the adapter so it can hand the write
+    /// to the mount's merge thread after releasing this volume lock.
+    pub(crate) fn fsync_for_mount(&mut self, ino: u32, datasync: bool)
+        -> Result<CpReason, Errno>
+    {
+        self.sync_file(ino, datasync, false)
+    }
 
     /// Make `ino`'s CONTENTS durable, and report which path it took.
     ///
@@ -89,11 +100,15 @@ impl<S: SectorSource> Volume<S> {
     /// which is the whole point of the call, since every read and every write
     /// moves a timestamp.
     /// # C: O(nodes the file has) blocks, or O(a checkpoint), or none
-    pub fn fdatasync(&mut self, ino: u32) -> Result<CpReason, Errno> { self.sync_file(ino, true) }
+    pub fn fdatasync(&mut self, ino: u32) -> Result<CpReason, Errno> {
+        self.sync_file(ino, true, true)
+    }
 
     /// The path both calls take, parted only by what each promised.
     /// # C: O(nodes the file has) blocks, or O(a checkpoint), or none
-    fn sync_file(&mut self, ino: u32, datasync: bool) -> Result<CpReason, Errno> {
+    fn sync_file(&mut self, ino: u32, datasync: bool, commit_checkpoint: bool)
+        -> Result<CpReason, Errno>
+    {
         if !self.writable { return Ok(CpReason::None); }
         // The DATA first, always, and before the decision below reads what
         // changed. The chain names node blocks and each node names the
@@ -139,7 +154,7 @@ impl<S: SectorSource> Volume<S> {
             // so everything this call was to make durable has already been
             // fenced. Asking again would cost a second barrier for one
             // guarantee.
-            self.commit()?;
+            if commit_checkpoint { self.commit()?; }
             return Ok(reason);
         }
         self.write_fsync_chain(ino, state.need_dentry_mark)?;
