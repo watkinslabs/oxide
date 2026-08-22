@@ -4,6 +4,7 @@
 // the VMM fill.
 
 use super::super::*;
+use super::admit;
 use super::{PAGE_BYTES, PAGE_MASK};
 
 /// Cgroup identity captured when an anonymous page is born. A kernel-thread
@@ -108,16 +109,23 @@ pub(in crate::user_as) fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault
         let name_addr = core::ptr::addr_of!(t.name) as u64;
         vmm::debug_cow::check_task(t.tid, name_addr, sched::TASK_COMM_LEN as u64);
     }
-    // F158: stack auto-grow. If the fault lands just below a
-    // GROWSDOWN VMA's start (within Linux's 64 KiB guard distance),
-    // extend the VMA to cover the faulting address. Subsequent
-    // demand-page resolves it normally.
-    if matches!(fault, FaultKind::NotPresent { .. }) {
-        if as_.find_vma(uva).is_none() {
+    let admitted = admit::fault_vma(
+        fault,
+        || as_.find_vma(uva).is_some(),
+        || {
             let (max_size, max_grow) = stack_growth_caps(as_);
             as_.try_grow_stack(uva, max_size, max_grow);
-        }
-    }
+        },
+    )?;
+    do_handle_admitted(as_, uva, fault, hhdm, user_mode, admitted)
+}
+
+/// Resolve a fault whose address is proven to belong to a VMA. The proof token
+/// keeps every page-table walk and userfaultfd lookup behind admission.
+fn do_handle_admitted(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind, hhdm: u64,
+                      user_mode: bool, _admitted: admit::Admitted)
+    -> Result<(), vmm::Error>
+{
     // A swap PTE is neither an absent mapping nor a userfaultfd-MISSING
     // page. Resolve it before either path can treat it as zero-fillable.
     // The install below compares the exact encoded entry while holding this

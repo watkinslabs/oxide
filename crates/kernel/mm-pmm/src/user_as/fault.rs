@@ -10,6 +10,7 @@ pub(super) const PAGE_MASK: u64 = hal::PAGE_SIZE_BYTES - 1;
 pub(super) const PAGE_BYTES: u64 = hal::PAGE_SIZE_BYTES;
 
 mod entry;
+mod admit;
 mod resolve;
 
 pub use entry::user_fault_handler;
