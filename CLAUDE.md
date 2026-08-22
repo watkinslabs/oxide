@@ -809,6 +809,8 @@ Examples:
 
 **Push policy.** Auto-push every feature branch with `-u` as soon as its focused commit is made; do not hold local-only work across features. Auto-push merged commits to `origin/main` after each merge without asking. Force-push remains forbidden per the Never list below.
 
+**Never pipe a state-changing command when its exit status is the evidence (HARD RULE).** A pipeline such as `git push ... | tail` reports the final command's status by default, so `tail` can return zero after `git push` was rejected. Run `git push` directly, or capture and check the producer's status explicitly (for Bash, enable `pipefail` or inspect `${PIPESTATUS[0]}` immediately). Before reporting a push as landed, fetch and verify that the remote ref resolves to the intended commit SHA; terminal output and a downstream filter's status are not publication proof.
+
 **PRs (mandatory).** Every branch merges to `main` via `gh pr create` then `gh pr merge --merge --delete-branch=true`. No local `--no-ff` merges to `main`. PR-time CI per `docs/40§2` is the gate; until CI exists, manual review then merge. Delete remote + local branch on merge — keeps the branch list clean. Git history (the merge commit) preserves recoverability.
 
 **Never (without explicit user confirmation):**
