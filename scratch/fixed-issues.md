@@ -11,6 +11,12 @@
 |---|---|---|---|---|---|
 | FIXED B2333 | MISSING | high | **`BPF_TASK_FD_QUERY` now describes a raw-tracepoint link from the link's canonical retained attachment.** Classification checks the raw-link operation before generic BPF links and perf events, then reports the pinned program id, `BPF_FD_TYPE_RAW_TRACEPOINT`, canonical tracepoint name, and zero probe address and offset. There is no query-local registry or copied attachment state. The perf remainder in the claimed row was stale: F862 already implements every outcome reachable through the current software-only perf PMUs — no attached program is `-ENOENT`, while the sole attachable program type, `BPF_PROG_TYPE_PERF_EVENT`, is `-EOPNOTSUPP`, exactly as Linux 7.2.0-rc4 specifies. Future tracing-event perf descriptions remain correctly separated in their existing tracepoint/perf rows. | B2333. `bpf::command::trace::query::tests::*` (12 tests) covers a real settled raw link winning before perf and the complete returned description using a real pinned program object, plus the existing perf and short-buffer ladders. Positive control removed raw-link classification and made `a_raw_tracepoint_link_is_classified_before_perf` fail on that real link; restored code passes. Security 498/498 and tracefs 38/38 pass, as do both target and all-feature checks, 177-crate hosted/test-build isolation, and paired frame/task-stack/exception-stack/IRQ-stack gates. The canonical raw-tracepoint foundation's final smoke reached userspace with serial RX on attempt 1: x86_64 in 48 s and aarch64 in 58 s. | B2333-bpf-task-fd-query-perf |
 
+### B2370-keyring-native-test-isolation
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED e59f2eb4a | INFRA | low | **The native NVMe key refresh/revoke test now drives key collection before inspecting the canonical payload, deterministically covering the lifetime race that formerly appeared only under the parallel `fs` suite.** | B2370. The production keyring lifetime pin is covered by the focused test and the change removes the stale flake row. | B2370-keyring-native-test-isolation |
+
 ### B2329-freezer-backoff-sleep
 
 | Status | Class | Sev | Issue | Evidence | Owner |
