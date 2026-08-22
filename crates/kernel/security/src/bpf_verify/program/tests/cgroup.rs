@@ -57,6 +57,24 @@ fn accepts_systemd_257_restrict_ifaces_object_program() {
 }
 
 #[test]
+fn cgroup_skb_refuses_direct_packet_bounds_until_pointer_arithmetic_exists() {
+    let insns: Vec<u8> = [
+        raw(0x61, 2, 1, context::sk_buff::DATA_END as i16, 0),
+        raw(0xb7, 0, 0, 0, 1),
+        raw(0x95, 0, 0, 0, 0),
+    ].into_iter().flatten().collect();
+    assert_eq!(
+        verify_program(
+            uapi::prog_type::CGROUP_SKB,
+            uapi::attach_type::CGROUP_INET_INGRESS,
+            &insns,
+            &[],
+        ),
+        Err(VerifyError::UnsafeContextAccess),
+    );
+}
+
+#[test]
 fn map_value_must_be_checked_for_null_before_dereference() {
     let insns: Vec<u8> = [
         raw(0x62, 10, 0, -4, 0),
