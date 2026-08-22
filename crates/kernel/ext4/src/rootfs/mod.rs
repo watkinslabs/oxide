@@ -221,6 +221,12 @@ impl vfs::fs::FileSystem for Ext4RootfsFs {
     }
     /// ext4 root is always inode 2 (`docs/16§2`).
     fn root(&self) -> Option<vfs::InodeRef> { wrap_any_ino(2) }
+    fn dentry_ops(&self) -> Option<&'static vfs::dentry::DentryOps> {
+        root().and_then(|st| {
+            (st.mount.sb.feature_incompat & crate::superblock::INCOMPAT_CASEFOLD != 0)
+                .then_some(&vfs::dentry::casefold::GENERIC_CI_DENTRY_OPS)
+        })
+    }
     /// Back-stamp the SB into the published ROOT state so root-fs inodes'
     /// `i_sb()` resolves and `fsid()` reports `sb.s_dev`. # C: O(1)
     fn set_sb(&self, sb: alloc::sync::Weak<vfs::SuperBlock>) -> vfs::KResult<()> {

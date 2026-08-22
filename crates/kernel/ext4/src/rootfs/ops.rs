@@ -90,8 +90,9 @@ impl RootfsState {
         let (uid, gid, projid) = (inode.uid, inode.gid, inode.i_projid);
         let times = inode.times();
         let generation = inode.generation;
+        let raw_flags = inode.i_flags;
         let st = self.clone();
-        let build = move || build_stat_inode(st, ino, ft, perm, size, nlink, rdev, uid, gid, projid, times, generation);
+        let build = move || build_stat_inode(st, ino, ft, perm, size, nlink, rdev, uid, gid, projid, times, generation, raw_flags);
         // Route through the SB inode cache so a repeated lookup of the same ino
         // returns the SAME `Arc` (shared inode identity, Linux `iget`). Before
         // the SB is back-stamped (during `fs.root()`) build directly.
@@ -120,7 +121,8 @@ impl RootfsState {
         let (size, mode, nlink, times) = (inode.size, inode.mode, inode.links_count as u32, inode.times());
         let blocks = inode.i_blocks as u64;
         let generation = inode.generation;
-        let build = move || build_file_inode(st, ino, mode, size, nlink, uid, gid, projid, times, blocks, generation);
+        let raw_flags = inode.i_flags;
+        let build = move || build_file_inode(st, ino, mode, size, nlink, uid, gid, projid, times, blocks, generation, raw_flags);
         // Shared identity via the SB inode cache (Linux `iget`).
         match self.i_sb() {
             Some(sb) => sb.iget(ext4_wrap_ino(ino), build),
@@ -149,8 +151,9 @@ impl RootfsState {
         let (perm, size, nlink, times) = (inode.mode & 0o7777, inode.size as u64,
                                           inode.links_count as u32, inode.times());
         let generation = inode.generation;
+        let raw_flags = inode.i_flags;
         let st = self.clone();
-        let build = move || build_stat_inode(st, ino, ft, perm, size, nlink, rdev, uid, gid, projid, times, generation);
+        let build = move || build_stat_inode(st, ino, ft, perm, size, nlink, rdev, uid, gid, projid, times, generation, raw_flags);
         match self.i_sb() {
             Some(sb) => sb.iget(ext4_wrap_ino(ino), build),
             None => build(),
@@ -169,8 +172,9 @@ impl RootfsState {
         let nlink = inode.links_count as u32;
         let blocks = inode.i_blocks as u64;
         let generation = inode.generation;
+        let raw_flags = inode.i_flags;
         let st = self.clone();
-        let build = move || build_file_inode(st, ino, mode, size, nlink, uid, gid, projid, times, blocks, generation);
+        let build = move || build_file_inode(st, ino, mode, size, nlink, uid, gid, projid, times, blocks, generation, raw_flags);
         // Shared identity via the SB inode cache (Linux `iget`).
         Some(match self.i_sb() {
             Some(sb) => sb.iget(ext4_wrap_ino(ino), build),

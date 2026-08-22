@@ -3,10 +3,23 @@ use alloc::vec::Vec;
 use crate::dir;
 use crate::htree::EXT4_INDEX_FL;
 use crate::inode::Inode;
+use crate::inode::flags::EXT4_CASEFOLD_FL;
 
 use super::{Mount, MountError};
 
 impl Mount {
+    fn names_equal(&self, dir: &Inode, a: &[u8], b: &[u8]) -> bool {
+        let folded = dir.i_flags & EXT4_CASEFOLD_FL != 0;
+        self.vfs_superblock().map_or(a == b, |sb|
+            vfs::dentry::casefold::names_eq_bytes(&sb, folded, a, b))
+    }
+
+    fn strict_name_valid(&self, dir: &Inode, name: &[u8]) -> bool {
+        let folded = dir.i_flags & EXT4_CASEFOLD_FL != 0;
+        self.vfs_superblock().map_or(true, |sb|
+            vfs::dentry::casefold::strict_name_ok_bytes(&sb, folded, name))
+    }
+
     /// Grow directory `dir_ino` by one block, subject to the mount's
     /// `max_dir_size_kb=` ceiling.
     ///
@@ -60,6 +73,9 @@ impl Mount {
     {
         let dir_node = self.read_inode(dir_ino)?;
         if !dir_node.is_dir() { return Err(MountError::NotDir); }
+        if !self.strict_name_valid(&dir_node, name) {
+            return Err(MountError::Dir(dir::DirError::BadNameLen));
+        }
         let (flags, gen) = self.inode_flags_gen(dir_ino)?;
         let bs = self.sb.block_size as usize;
         let usable = crate::csum::dir_usable_len(&self.sb, bs);
@@ -109,13 +125,14 @@ impl Mount {
     fn dir_unlink_inner(&self, dir_ino: u32, name: &[u8]) -> Result<u32, MountError> {
         let dir_node = self.read_inode(dir_ino)?;
         if !dir_node.is_dir() { return Err(MountError::NotDir); }
+        if !self.strict_name_valid(&dir_node, name) { return Err(MountError::Dir(dir::DirError::BadNameLen)); }
         let (_flags, gen) = self.inode_flags_gen(dir_ino)?;
         let bs = self.sb.block_size as u64;
         let total = dir_node.size;
         let nblocks = ((total + bs - 1) / bs) as u32;
         for fb in 0..nblocks {
             let mut blk = self.read_file_block_meta(&dir_node, fb)?;
-            match dir::remove(&mut blk, name) {
+            match dir::remove_matching(&mut blk, |entry| self.names_equal(&dir_node, entry, name)) {
                 Ok(removed) => {
                     self.write_dir_block(&dir_node, dir_ino, gen, fb, &mut blk)?;
                     return Ok(removed);
@@ -163,6 +180,7 @@ impl Mount {
     /// # C: O(N_entries)
     pub fn lookup_in_dir(&self, dir_inode: &Inode, name: &[u8]) -> Result<u32, MountError> {
         if !dir_inode.is_dir() { return Err(MountError::NotDir); }
+        if !self.strict_name_valid(dir_inode, name) { return Err(MountError::Dir(dir::DirError::BadNameLen)); }
         let block_size = self.sb.block_size as u64;
         let total = dir_inode.size;
         let nblocks = ((total + block_size - 1) / block_size) as u32;
@@ -186,7 +204,7 @@ impl Mount {
                 super::first_csum_failure(b"directory", dir_inode.ino as u64, fb as u64);
                 return Err(MountError::BadChecksum);
             }
-            match dir::lookup(&blk, name)? {
+            match dir::lookup_matching(&blk, |entry| self.names_equal(dir_inode, entry, name))? {
                 Some(e) => return Ok(e.inode),
                 None    => continue,
             }

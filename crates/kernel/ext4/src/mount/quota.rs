@@ -8,6 +8,10 @@ impl Mount {
         *self.quota_sb.lock() = sb;
     }
 
+    pub(crate) fn vfs_superblock(&self) -> Option<alloc::sync::Arc<vfs::SuperBlock>> {
+        self.quota_sb.lock().upgrade()
+    }
+
     /// Charge/release quota for an exact on-disk i_blocks delta. # C: O(MAXQUOTAS log N)+FS
     pub(crate) fn account_i_blocks_delta(&self, ino: u32, old_sectors: u32, new_sectors: u32) -> Result<(), MountError> {
         if old_sectors == new_sectors { return Ok(()); }

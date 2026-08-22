@@ -113,6 +113,18 @@
     }
 
     #[test]
+    fn casefold_encoding_is_read_from_the_superblock() {
+        let mut b = make_sb(1024, 8192, 2, 8192, 1024, EXT4_SUPER_MAGIC,
+                            INCOMPAT_EXTENTS | INCOMPAT_CASEFOLD, 256);
+        b[SB_OFF_ENCODING..SB_OFF_ENCODING + 2].copy_from_slice(&1u16.to_le_bytes());
+        b[SB_OFF_ENCODING_FLAGS..SB_OFF_ENCODING_FLAGS + 2].copy_from_slice(&1u16.to_le_bytes());
+        let sb = Superblock::parse(&b).expect("parse");
+        assert_eq!(sb.encoding, 1);
+        assert_eq!(sb.encoding_flags, 1);
+        assert!(SUPPORTED_INCOMPAT & INCOMPAT_CASEFOLD != 0);
+    }
+
+    #[test]
     fn magic_pinned() {
         assert_eq!(EXT4_SUPER_MAGIC, 0xEF53);
     }

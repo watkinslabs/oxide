@@ -4998,3 +4998,6 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED B2587 | DEFECT | low | The former strict-encoding row overstated the gap by claiming tmpfs validation accepted every representable name. The validator is live; only the raw-byte name boundary remains open. | B2527/B2538's production tests and `generic_ci_validate_strict_name` prove admission and validation are wired. The known row now retains the actual remaining divergence: inode operations receive `&str`, so malformed/non-UTF-8 names cannot reach the strict refusal ladder. No source change was needed. | B2587 |
+### B2594-ext4-casefold-directory-semantics
+
+| FIXED B2594 | COVERAGE | low | Ext4 now consumes the on-disk casefold incompatibility bit and UTF-8 encoding selector, installs the generic VFS casefold/strict-name state, marks casefolded directories, and compares/removes names through the shared casefold owner. Unsupported encoding selectors remain rejected. | Superblock parser/mount gate, VFS dentry encoding state, ext4 root dentry operations, inode casefold flags, and live directory lookup/link/unlink paths; ext4 lib/tests and VFS compile checks passed. | B2594 |

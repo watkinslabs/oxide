@@ -127,6 +127,11 @@ impl RootfsState {
             crate::timestamp::time_range_for_inode_size(self.mount.sb.inode_size as usize);
         live.set_time_gran(gran);
         live.set_time_range(min, max);
+        if self.mount.sb.feature_incompat & crate::superblock::INCOMPAT_CASEFOLD != 0 {
+            let strict = self.mount.sb.encoding_flags & 1 != 0;
+            vfs::dentry::casefold::sb_enable_casefold(&live, "utf8", strict)
+                .map_err(|_| vfs::VfsError::Einval)?;
+        }
         *self.sb.lock() = sb;
         if let Err(e) = self.enable_mount_quotas(&live, false) {
             self.mount.set_vfs_superblock(Weak::new());

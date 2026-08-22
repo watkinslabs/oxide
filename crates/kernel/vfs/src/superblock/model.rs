@@ -70,8 +70,25 @@ impl SuperBlock {
         s_id: String,
         s_fs_info: Arc<dyn Any + Send + Sync>,
     ) -> Arc<Self> {
+        Self::from_ops_with_dentry_ops(s_type, s_op, root_inode, s_magic, s_dev, s_blocksize,
+            s_id, s_fs_info, None)
+    }
+
+    /// Construct a superblock and install filesystem-wide dentry operations
+    /// before the root is published. # C: O(1)
+    pub fn from_ops_with_dentry_ops(
+        s_type: Arc<dyn FileSystemType>,
+        s_op: Arc<dyn SuperOps>,
+        root_inode: Option<InodeRef>,
+        s_magic: u64,
+        s_dev: u64,
+        s_blocksize: u32,
+        s_id: String,
+        s_fs_info: Arc<dyn Any + Send + Sync>,
+        d_op: Option<&'static crate::dentry::DentryOps>,
+    ) -> Arc<Self> {
         let sb = Self::new(s_type, s_op, s_magic, s_dev, s_blocksize, s_id, s_fs_info);
-        if let Some(i) = root_inode { crate::dcache::d_make_root(i, &sb); }
+        if let Some(i) = root_inode { crate::dcache::d_make_root_ops(i, &sb, d_op); }
         sb
     }
 

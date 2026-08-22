@@ -102,6 +102,14 @@ impl Mount {
         {
             return Err(MountError::UnsupportedFeature);
         }
+        // ext4 casefold stores a compact encoding selector in the
+        // superblock. This tree ships the same UTF-8 table used by VFS; an
+        // unknown selector cannot safely participate in folded lookup.
+        if sb.feature_incompat & crate::superblock::INCOMPAT_CASEFOLD != 0
+            && sb.encoding != 1
+        {
+            return Err(MountError::UnsupportedFeature);
+        }
         // metadata_csum verify on mount: refuse a superblock whose stored
         // s_checksum does not match (Linux ext4_superblock_csum_verify → EFSBADCRC).
         // No-op without metadata_csum.
