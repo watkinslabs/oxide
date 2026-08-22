@@ -10,6 +10,7 @@
 // output-field rule — live in `net::sock_opts::sol_tcp::zerocopy` (`docs/53§4`).
 
 pub mod window;
+pub mod coverage;
 #[cfg(target_os = "oxide-kernel")]
 pub mod receive;
 
