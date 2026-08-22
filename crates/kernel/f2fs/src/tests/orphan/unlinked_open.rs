@@ -32,6 +32,7 @@ use crate::mount::F2fs;
 use crate::opts::Options;
 use crate::test_image;
 use crate::uapi::BLKSIZE;
+use crate::volume::NewInode;
 
 const BS: u32 = BLKSIZE as u32;
 
@@ -82,6 +83,22 @@ fn first_block(fs: &Arc<F2fs>, ino: u32) -> Option<u32> {
 }
 
 fn payload() -> Vec<u8> { (0..2 * BLKSIZE).map(|i| (i % 251) as u8).collect() }
+
+#[test]
+fn a_parked_inode_built_fresh_from_the_medium_keeps_zero_links() {
+    let (fs, sb) = mounted();
+    let ino = {
+        let mut v = fs.volume.lock();
+        let root = v.root_ino();
+        v.tmpfile(root, &NewInode {
+            mode: crate::mode::S_IFREG | 0o600, uid: 0, gid: 0, rdev: 0, now: (0, 0),
+        }).expect("park inode")
+    };
+    assert!(sb.ilookup(u64::from(ino)).is_none(), "fixture accidentally cached the inode");
+    let inode = crate::mount::node::node_inode(Arc::clone(&fs), ino).expect("read parked inode");
+    assert_eq!(inode.nlink(), 0, "the stored zero link count must reach the fresh inode");
+    assert!(fs.volume.lock().is_orphan(ino), "the fixture inode is not parked");
+}
 
 #[test]
 fn a_handle_held_across_the_unlink_still_reads_what_it_wrote() {
