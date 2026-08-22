@@ -4882,3 +4882,8 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED B2571 | DEFECT | high | The final socket-drop caller accumulated transport, namespace, and endpoint teardown in one destructor frame. The existing synchronous process-context close semantics and interrupt-only RTNL deferral are retained, while the locked lifecycle teardown is moved to an out-of-line helper so the caller remains shallow. | `crates/kernel/net/src/sock_drop.rs::release_file` -> `release_lifecycle`; `cargo test -p net --lib` 2,592/2,592. The targeted stack gate reached the pre-existing `nf_hook_eval_in` dead-code warning under `-D warnings`; no B2571 path failed. | B2571 |
+### B2572-stale-netdev-registration-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2572 | COVERAGE | med | The empty historical B1735 heading in `known_issues.md` was stale ledger residue, not an open defect. B1735 already corrected administrative link state at registration and updated the dependent AF_PACKET fixtures. | Existing fixed entries `B1735` and `B1740`; current `netdev::register_netdev` leaves ordinary devices down and hosted registration/transmit tests cover the lifecycle. No source behavior changed. | B2572 |
