@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2509-stale-serial-input-corruption-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2509 | INFRA | low | The serial-input corruption row was stale and covered by existing ownership/transport controls. | Serial/TTY audit completed. | Chris Watkins |
+
+<<<<<<< HEAD
 ### B2508-kernel-btf-sysfs
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -832,6 +839,13 @@
 |---|---|---|---|---|---|
 | FIXED 2e7c97fe3 | MISSING | high | **The canonical kernel BTF object is now published as the read-only binary sysfs file `/sys/kernel/btf/vmlinux`.** Sysfs registers the directory only when the security BTF owner reports a non-zero object length, gives the inode that exact size, and delegates offset reads directly to `security::bpf::kernel_btf_read`, so userspace observes the same object that program-load attach-target resolution parses. | B2508. Linux 7.2.0-rc4 registers a read-only binary `vmlinux` attribute under `/sys/kernel/btf` and omits it for an empty object. The production-tree test was RED because `kernel/btf/vmlinux` did not exist; after registration it resolves the live inode and matches canonical BTF bytes at a non-zero offset. Stubbing the production read owner to return zero was independently RED with 0 bytes instead of 23; restored GREEN. Sysfs 181/181 and security 492/492 pass, as do both kernel target checks, both feature gates, formatting and diff checks. Final paired smoke reached userspace with serial RX on attempt 1: x86_64 in 48 s and aarch64 in 56 s. | B2508-kernel-btf-sysfs |
 >>>>>>> 96338ed2f (docs: close kernel BTF sysfs issue)
+=======
+### B2509-stale-serial-input-corruption-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2509 | DEFECT | med | **The old F858 whole-line serial corruption observation is stale: both UART backends now own bounded drain-until-deasserted receive paths.** The 8250 shared-IRQ service repeats until IIR deasserts (bounded by Linux's `PASS_LIMIT` shape), while PL011 drains the FIFO empty and rechecks RX/timeout status without explicitly clearing a mid-drain indication. | B2509 revalidated Linux 7.2.0-rc4 first: 8250 shared IRQs loop until the line deasserts under a pass bound, and PL011 drains/rechecks status rather than clearing RX before the FIFO is empty. Oxide's canonical fixes are `23d1dd2be` (8250) and `1ac526b01` (PL011). Authentic positive controls made the production 8250 owner service only once (RED: 1 call vs 4) and made PL011 return after its first pass (RED: 16 bytes vs the complete 24-byte mid-drain line); both were restored. Full drv-uart-16550 19/19 and drv-uart-pl011 20/20 pass, as do both kernel target checks. | B2509-stale-serial-input-corruption-row |
+>>>>>>> b2c3d4e91 (ledger: close stale serial input corruption row)
 
 ### B2329-freezer-backoff-sleep
 
