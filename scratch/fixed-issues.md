@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2521-sysfs-kernfs-file-handles
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 5c3a6bcbc | DEFECT | med | Sysfs kernfs file handles now encode/decode live 8-byte node identities and reject stale or wrong-type handles. | Kernfs/sysfs tests and target checks passed. | Chris Watkins |
+
 ### B2520-stale-ntfs-label-version-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
