@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2437-bpf-link-registry-single-name
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2437 | INFRA | low | **BPF link ordering now resolves IDs through the one canonical link registry; the cgroup-specific alias is gone.** | B2437 converts the production consumer and preserves its type check after lookup. | B2437 |
+
 ### B2436-stale-perf-group-inherit-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
