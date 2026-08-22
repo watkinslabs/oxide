@@ -4661,3 +4661,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED R112 | INFRA | med | **The recorded `boot-smoke-dhcp.sh` failure is stale: that script is absent from the current tree, and neither its `udhcpc: configured eth0` marker nor `OXIDE_UDHCPC_ENABLE` has any live reference.** The row described a retired busybox/musl userspace pipeline, not a current kernel or image behavior. | Current-tree audit: `test ! -e tools/boot-smoke-dhcp.sh` and repository search finds no `udhcpc` or `OXIDE_UDHCPC_ENABLE` references outside the historical ledger; current boot smoke uses the Fedora/glibc image path. No source behavior changed. | R112 |
+
+### R118-duplicate-procfs-syscall-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED R118 | COVERAGE | med | **This `/proc/<pid>/syscall` row was a duplicate of the immediately preceding row, which already owns the same sleeping-task syscall contract and also carries the `/proc/<pid>/stack` extension.** The duplicate had no distinct requirement or production callsite; the actual syscall/stack gaps remain open in the survivor row. | Current `scratch/known_issues.md` retained row 320 with the complete B2237/B2244 evidence and removed only this repeated row 328. No source behavior changed. | R118 |
