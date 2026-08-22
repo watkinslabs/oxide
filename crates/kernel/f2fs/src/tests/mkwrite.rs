@@ -20,6 +20,7 @@ use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 
+use vfs::fs::FileSystem;
 use vfs::FileType;
 
 use crate::mount::F2fs;
@@ -208,6 +209,18 @@ fn a_store_into_a_hole_through_the_mapping_reserves_a_block_and_persists() {
     let whole = fresh.read_all(HOLE_INO).expect("read after remount");
     assert_eq!(&whole[..pattern.len()], &pattern[..],
                "a mapped store over a hole was given a block and kept");
+}
+
+/// The reservation is already a claim on free space before writeback places
+/// the block, so `statfs` must publish it at the write fault itself.
+#[test]
+fn statfs_counts_a_mapped_write_reservation_before_writeback() {
+    let (fs, _dev) = mounted();
+    let before = fs.super_ops().expect("superblock operations").statfs().unwrap().f_bfree;
+    let m = mapping_of(&fs, HOLE_INO);
+    fault_write(&m, 0);
+    let after = fs.super_ops().expect("superblock operations").statfs().unwrap().f_bfree;
+    assert_eq!(after, before - 1, "the unplaced reservation already occupies one block");
 }
 
 /// A `read` and the mapping are the same page, in both directions.
