@@ -217,6 +217,22 @@ fn a_directory_on_a_hugetlbfs_mount_holds_files() {
 }
 
 #[test]
+fn hugetlbfs_directories_and_files_expose_no_attribute_store() {
+    use alloc::vec;
+    use vfs::{CreateCtx, XattrError};
+
+    let fs = HugetlbfsFs::from_mount_data("").expect("mount");
+    let root = fs.root_inode();
+    let file = root.create_child("f", 0o600, &CreateCtx::root()).expect("create");
+    for inode in [&root, &file] {
+        assert_eq!(inode.getxattr("user.test"), Err(XattrError::NotSup));
+        assert_eq!(inode.setxattr("user.test", vec![1], false, false),
+                   Err(XattrError::NotSup));
+        assert_eq!(inode.listxattr(), Err(XattrError::NotSup));
+    }
+}
+
+#[test]
 fn an_anonymous_huge_page_file_reports_the_huge_size_as_its_block_size() {
     // The kernel-private mount carries no superblock, and a program reading
     // `st_blksize` off an `MFD_HUGETLB` file must still learn the unit it has

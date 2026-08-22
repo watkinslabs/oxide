@@ -43,7 +43,6 @@ pub(super) fn make_dir_inode(ino: Ino, perm: u16, uid: u32, gid: u32, sb: Weak<S
             .owner(uid, gid)
             .btime(crate::tmpfs::birth_time())
             .fsid(fsid_of(&sb2))
-            .xattrs(vfs::SimpleXattrs::new())
             .private(Arc::new(HugetlbfsDirData {
                 sb:   Spinlock::new(sb2.clone()),
                 kids: Spinlock::new(BTreeMap::new()),

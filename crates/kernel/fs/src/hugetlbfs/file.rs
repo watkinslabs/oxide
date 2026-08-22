@@ -247,7 +247,6 @@ pub(super) fn make_file_inode(perm: u16, uid: u32, gid: u32, sb: Weak<SuperBlock
             .btime(crate::tmpfs::birth_time())
             .fsid(fsid_of(&sb2))
             .mapping(mapping)
-            .xattrs(vfs::SimpleXattrs::new())
             .private(data);
         if let Some(s) = sb2.upgrade() { b = b.sb(Arc::downgrade(&s)); }
         b.build()
