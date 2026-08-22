@@ -71,6 +71,16 @@ run_smoke runtime-timeout MOCK_QEMU_SLEEP=3
 grep -q 'timeout after 1s' "$RUN_OUT"
 grep -q 'mock qemu launched' "$RUN_LOG"
 
+# A successful guest keeps the same exact serial log. This is the supported
+# replacement for redirecting `make qemu-*`, whose stdout is not the guest's
+# early serial stream.
+run_smoke successful MOCK_QEMU_LOG='guest reached ready' MOCK_QEMU_SLEEP=3 \
+    SMOKE_MARKER='guest reached ready' SMOKE_KEEP_LOG_DIR="$TMP/success-attempts"
+[ "$RUN_STATUS" -eq 0 ]
+grep -q 'guest reached ready' "$RUN_LOG"
+grep -q 'guest reached ready' "$TMP/success-attempts/x86-attempt-1-pass.log"
+grep -q 'PASS' "$RUN_OUT"
+
 # Preparation failures have their own exit class and retained build output.
 run_smoke build-failure MOCK_BUILD_FAIL=1
 [ "$RUN_STATUS" -eq 2 ]
