@@ -22,6 +22,7 @@ fn rx_noop(_: vsock::VsockOwner) -> usize { 0 }
 
 fn deny_vsock_listen(context: security::network::Context) -> security::network::Verdict {
     assert_eq!(context.family, crate::socket_args::AF_VSOCK as u16);
+    assert_eq!(context.backlog, Some(TEST_BACKLOG_LIMIT as u32));
     security::network::Verdict::Deny
 }
 

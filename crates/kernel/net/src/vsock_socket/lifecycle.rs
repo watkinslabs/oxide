@@ -104,11 +104,11 @@ impl VsockSocket {
 
     /// Promote a VSOCK bind with Linux-normalized listen backlog capacity. # C: O(N endpoints)
     pub fn listen_with_backlog(&self, backlog: i32) -> Result<(), crate::NetError> {
-        crate::security_admission::check(self.net_ns(), crate::socket_args::AF_VSOCK as u16,
-            security::network::Operation::Listen)?;
-        if self.is_datagram() { return Err(crate::NetError::Eopnotsupp); }
         let somaxconn = crate::sysctl::somaxconn_in(self.net_ns()).ok_or(crate::NetError::Enodev)?;
         let cap = crate::sysctl::normalize_listen_backlog(backlog, somaxconn);
+        crate::security_admission::check_listen(self.net_ns(),
+            crate::socket_args::AF_VSOCK as u16, cap as u32)?;
+        if self.is_datagram() { return Err(crate::NetError::Eopnotsupp); }
         let mut kind = self.kind.lock();
         match &*kind {
             VsockKind::Listener(listener) => {
