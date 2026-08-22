@@ -3298,3 +3298,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED cc0b376d2 | MISSING | low | **`no_console_suspend` now disables both console power-management halves while suspend continues normally.** A printk-owned policy bit is installed from the boot parameter and gates the real framebuffer-console suspend/resume callsites; absence preserves the enabled default. | B2366's policy installation regression turns RED when removed and GREEN when restored; cmdline, bootparam, and klog coverage pinned the path. | B2366-no-console-suspend-policy |
+
+### B2367-fallible-dentry-hash
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED f842a9032 | DEFECT | low | **The alleged fallible-`d_hash` defect is unreachable with the current `&str` pathname boundary and duplicates the separate raw-name strict-encoding gap.** Valid Unicode inputs use the canonical casefold hash; malformed UTF-8 cannot reach this hook. | B2367's strict casefold regression pins valid unassigned and maximum scalar inputs through the installed production hook; the raw-name redesign remains open separately. | B2367-fallible-dentry-hash |

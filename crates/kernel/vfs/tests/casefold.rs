@@ -9,7 +9,7 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use vfs::dcache::{d_add, d_lookup, d_make_root_ops};
-use vfs::dentry::casefold::{generic_ci_validate_strict_name, sb_enable_casefold};
+use vfs::dentry::casefold::{generic_ci_d_hash, generic_ci_validate_strict_name, sb_enable_casefold};
 use vfs::inode::S_CASEFOLD;
 use vfs::superblock::{FileSystemType, SbStatFs, SuperBlock, SuperOps};
 use vfs::{Dentry, FileType, InodeRef, KResult, VfsError};
@@ -132,6 +132,17 @@ fn strict_mode_refuses_a_name_that_is_not_well_formed() {
     assert!(generic_ci_validate_strict_name(&plain, &[0xff, 0xfe]));
     assert_eq!(sb.strict_name_ok(&[0xff, 0xfe]), Err(VfsError::Einval));
     assert_eq!(sb.strict_name_ok("école".as_bytes()), Ok(()));
+}
+
+#[test]
+fn d_hash_receives_only_names_that_are_already_valid_utf8() {
+    let _g = guard();
+    let (sb, root) = casefolded_root(0x7a, "utf8", true);
+    let enc = sb.s_encoding().expect("encoding");
+    for name in ["\u{0378}", "\u{10ffff}"] {
+        assert_eq!(generic_ci_d_hash(&root, name),
+                   utf8::casefold_hash(&enc, name.as_bytes()).expect("valid str hashes"));
+    }
 }
 
 #[test]
