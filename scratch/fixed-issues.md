@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2488-raw4-local-error-hosted-test
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED a98927eeb | COVERAGE | med | Raw IPv4 local send errors now have a hosted production-boundary regression. | Net suite and target checks passed. | Chris Watkins |
+
+<<<<<<< HEAD
 ### B2487-stale-arm-debug-shell-device
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -596,6 +603,13 @@
 |---|---|---|---|---|---|
 | FIXED B2487 | INFRA | low | **The ARM smoke control plane correctly names the serial device node this kernel publishes, while `console=` separately names the PL011 console class.** The old row treated Linux's `ttyAMA0` class name as an Oxide pathname and therefore prescribed a shell path that does not exist. The remaining deliberate `204:64`-as-`ttyS0` naming divergence is tracked once in the canonical tty-device row rather than duplicated as a smoke defect. | B2487. Linux 7.2.0-rc4's PL011 driver publishes `ttyAMA`, while Oxide's canonical sysfs/devnode table publishes its `204:64` line as `ttyS0`; `bootargs::serial_console` therefore supplies `ttyAMA0` only to `console=`, and `SERIAL_DEVNODE` supplies `ttyS0` to path-valued systemd parameters. Temporarily changing that production device-node owner to `ttyAMA0` made `the_serial_control_plane_moves_the_shell_and_masks_the_login` RED; restoring it passes the focused test and all 79 xtask tests. Both kernel target checks pass. | B2487-stale-arm-debug-shell-device |
 >>>>>>> 27a90cb36 (docs: close stale arm debug shell row)
+=======
+### B2488-raw4-local-error-hosted-test
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED a98927eeb | COVERAGE | med | **A raw IPv4 size refusal now has a hosted test at the exact production `sendto_raw4` boundary, proving that `EMSGSIZE` is paired with the requested local-origin extended-error record.** The row's claimed gating obstacle was stale: B2291 had already made `sock::send` and `RemoteAddr` available to hosted builds, so moving the send body again would only have duplicated ownership. | B2488. Linux 7.2.0-rc4's non-header-included IPv4 append path calls `ip_local_error` with `EMSGSIZE`, the destination, port, and payload MTU before returning the refusal. `a_raw_ipv4_size_refusal_reports_the_local_error` enters Oxide's live raw-send owner over a namespace-private 1,280-byte route and checks the errno, local origin, destination, zero raw port, and MTU. Temporarily bypassing only the production report call made it RED at the missing queued record; restoring the call made it GREEN. The focused test and full net suite pass (2,575/2,575), as do x86_64 and aarch64 kernel target checks and the complete both-architecture feature gate. Boot smoke is omitted because the permanent change is hosted test coverage only and cannot enter a kernel image. | B2488-raw4-local-error-hosted-test |
+>>>>>>> 046ca1e9b (docs: close B2488 raw IPv4 error coverage)
 
 ### B2329-freezer-backoff-sleep
 

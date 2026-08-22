@@ -1,6 +1,9 @@
 use super::*;
 use crate::sock_v6::RAW_NO_PORT;
 
+#[cfg(test)]
+mod tests;
+
 /// Arm, recheck, and park one blocking TCP sender on canonical ACK readiness. # C: O(retx) + park
 pub fn wait_transmit(sock: &InetSocket, deadline_ns: u64) -> bool {
     let entry = match &*sock.kind.lock() {
