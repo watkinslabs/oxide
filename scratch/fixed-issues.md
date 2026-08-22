@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2533-stale-selinux-xattr-permission-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED current | DEFECT | med | The former open SELinux xattr-permission row was an exact duplicate of merged B2472: all extended-attribute reads, listings, non-label writes/removals, and ACL names already take the Linux-shaped inode permission while `security.selinux` keeps its relabel/remove rules. | B2472 commit `077ebee52`; `selinux-runtime/src/tests/inode.rs::every_attribute_operation_takes_the_linux_inode_permission`; current fixed entry `B2472-selinux-all-xattr-permissions`. | Chris Watkins |
+
 ### B2532-landlock-send-path-test
 
 | Status | Class | Sev | Issue | Evidence | Owner |
