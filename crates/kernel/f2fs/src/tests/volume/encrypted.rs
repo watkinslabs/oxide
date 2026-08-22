@@ -56,7 +56,10 @@ pub(super) fn image(names: &[&[u8]]) -> Builder {
     let mut all = nodes::dots(ROOT_INO, ROOT_INO);
     for (i, n) in names.iter().enumerate() {
         let ct = info.encrypt_name(n).unwrap();
-        all.push(nodes::Ent { name: ct, ino: 10 + i as u32, file_type: FT_REG_FILE });
+        let child_ino = 10 + i as u32;
+        all.push(nodes::Ent { name: ct, ino: child_ino, file_type: FT_REG_FILE });
+        let child = nodes::Spec::file(child_ino);
+        nodes::place_inode(&mut b, &child, nodes::inode_block(&child), 1);
     }
     let area = nodes::dentry_area(&layout, &all);
     let mut block = nodes::inode_block(&s);
@@ -93,6 +96,15 @@ fn a_locked_directory_lists_names_that_still_find_their_entries() {
     assert_eq!(v.lookup(&root, ROOT_INO, &shown_name).unwrap().ino, 10);
     // The plaintext does NOT, since the directory is locked.
     assert_eq!(v.lookup(&root, ROOT_INO, b"secret.txt").err(), Some(Errno::Enoent));
+}
+
+/// The live volume admission owner, not only the pure policy helper, rejects
+/// a plaintext inode beneath an encrypted directory. This is the guard open,
+/// link and rename must all share before changing or serving the inode.
+#[test]
+fn an_encrypted_parent_rejects_a_plaintext_child_at_the_live_boundary() {
+    let v = image(&[b"secret.txt"]).mount().unwrap();
+    assert_eq!(v.crypt_check_permitted(ROOT_INO, 10), Err(Errno::Eperm));
 }
 
 /// With the key the same directory lists and resolves plaintext.

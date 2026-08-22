@@ -1,5 +1,11 @@
 # Fixed issues
 
+### FIXED F1248-fscrypt-policy-boundaries
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED F1248 | MISSING | med | **F2FS encryption policy boundaries now cover open, link, and rename.** The shared admission owner reads parent/child fscrypt contexts and rejects a plaintext or differently-protected child beneath an encrypted parent before the operation proceeds. `on_open_file`, `link`, and `rename` all call that owner; exchange renames check both moved entries. | Linux 7.2.0-rc4 policy hooks require the parent-policy check at file open and before link/rename. Authentic RED: bypassing the production admission owner made the live encrypted-parent/plain-child test return `Ok(())` instead of `EPERM`; restored GREEN. Focused encrypted-volume suite 10/10; full F2FS lib suite 3712/3712. | F1248-fscrypt-policy-boundaries |
+
 ### B2568-unix-recv-usercopy-under-lock
 
 | Status | Class | Sev | Issue | Evidence | Owner |
