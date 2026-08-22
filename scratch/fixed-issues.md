@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2441-bpf-btf-next-id-single-ladder
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2441 | DEFECT | low | **BPF BTF next-ID enumeration now uses the same shared admission, walk, exhaustion, and copyout ladder as the other object kinds.** | B2441 removes the duplicate BTF ladder and routes the production command through the canonical owner. | B2441 |
+
 ### B2439-return-fastpath-source-contract
 
 | Status | Class | Sev | Issue | Evidence | Owner |
