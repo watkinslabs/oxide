@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2494-aarch64-fdt-reserved-memory
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 9a732871b | DEFECT | med | AArch64 FDT reservation-map and `/reserved-memory` ranges are now admitted before RAM topology publication. | FDT/boot tests and target checks passed. | Chris Watkins |
+
+<<<<<<< HEAD
 ### B2492-selinux-kernel-bootstrap-decisions
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -666,6 +673,13 @@
 |---|---|---|---|---|---|
 | FIXED c42b1bce6 | DEFECT | low | **Kernel-facing SELinux transition, relabel, member, access-vector, and validate-transition decisions now answer during the pre-policy bootstrap window instead of refusing or substituting the unlabeled SID.** A process transition keeps the source label, every other class keeps the target label, access is fully allowed, and no absent constraint list can reject a transition. The existing kernel-class bootstrap owner serves both user-facing and kernel-facing entry points, so loading a policy still switches every path to the canonical policy engine. | B2492. Linux 7.2.0-rc4 applies those defaults before initialization. The production decision test was RED with `Err(UnknownSid)` instead of the creator's SID; restored code makes the complete bootstrap ladder GREEN. SELinux 272/272, SELinux runtime 55/55, and scheduler 1,535/1,535 pass, as do both target checks. Final smoke reached userspace with serial RX on attempt 1: x86_64 in 46 s and aarch64 in 57 s. | B2492-selinux-kernel-bootstrap-decisions |
 >>>>>>> cb26c8bc6 (docs: close SELinux bootstrap decisions issue)
+=======
+### B2494-aarch64-fdt-reserved-memory
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 9a732871b | MISSING | med | **The aarch64 DT boot path now removes every firmware-owned reservation from usable RAM before the PMM sees the topology.** The shared FDT owner decodes both the mandatory reservation map and every `reg` tuple below `/reserved-memory`, using the bus's declared cell widths; the boot owner page-aligns, sorts, and overlays those ranges through the same physical-topology funnel as the kernel image, DTB, and ACPI tables. | B2494. Linux 7.2.0-rc4 reserves the header reservation map before scanning `/reserved-memory`. The focused wire-image tests cover both sources, 32-bit and 64-bit cell widths, and multiple tuples. Forcing the production decoder to return no ranges turns both tests RED (0 vs 2); restored GREEN. Full suites: FDT 85/85, boot-aarch64 34/34. Both x86_64 and aarch64 kernel target and all-feature checks pass. Final paired smoke passed attempt 1 with serial RX: x86_64 46 s, aarch64 56 s. | B2494-aarch64-fdt-reserved-memory |
+>>>>>>> 33b5728a2 (docs: close aarch64 DT reservation gap)
 
 ### B2329-freezer-backoff-sleep
 
