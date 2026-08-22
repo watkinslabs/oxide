@@ -3,7 +3,7 @@
 //! citation cannot hide a new one in a different crate.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::{read, Findings};
 
@@ -86,6 +86,7 @@ fn source_ending(token: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
