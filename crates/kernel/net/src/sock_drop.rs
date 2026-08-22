@@ -37,6 +37,15 @@ impl InetSocket {
         }
         self.release_packet_fanout();
         self.release_packet_rings();
+        self.release_lifecycle(&stk);
+    }
+
+    /// Keep the final-drop caller shallow.  The lifecycle lock remains held
+    /// across the same transport/registry mutations as before; only the
+    /// stack-heavy work is moved out of `release_file`'s destructor frame.
+    #[inline(never)]
+    fn release_lifecycle(&self, stk: &crate::stack::NetStack) {
+        use core::sync::atomic::Ordering;
         let _lifecycle = self.local_port.lock();
         if let SockKind::TcpConn(entry) = &*self.kind.lock() {
             use crate::sock_opts::sol_socket::{Scalar, flag};

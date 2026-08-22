@@ -4877,3 +4877,8 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED D574 | DEFECT | med | **The quotactl user-buffer safety row is stale.** Both classic and XFS quota ABI paths now validate the range and use the canonical `user_mem::{get_pod,put_pod,get_u32}` accessors, whose exception-table-backed implementation returns `EFAULT`; neither owned file contains raw volatile, unaligned, or copy operations. | Current `179_quotactl/abi.rs` routes all structures through `um::get_pod`/`um::put_pod`; `179_quotactl_xfs/core.rs` routes output through `write_raw`. The implementation is present in `471a12258`, and the raw-user-operation sweep over both files is empty. | D574 |
+### B2571-socket-destructor-shallow
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2571 | DEFECT | high | The final socket-drop caller accumulated transport, namespace, and endpoint teardown in one destructor frame. The existing synchronous process-context close semantics and interrupt-only RTNL deferral are retained, while the locked lifecycle teardown is moved to an out-of-line helper so the caller remains shallow. | `crates/kernel/net/src/sock_drop.rs::release_file` -> `release_lifecycle`; `cargo test -p net --lib` 2,592/2,592. The targeted stack gate reached the pre-existing `nf_hook_eval_in` dead-code warning under `-D warnings`; no B2571 path failed. | B2571 |
