@@ -6,6 +6,12 @@
 |---|---|---|---|---|---|
 | FIXED B2554 | MISSING | med | FAT `setattr` now persists the representable mode and FAT-granular timestamps in the exact directory record, while retaining mount-synthesized ownership semantics. | `FatOps::setattr` rewrites the resolved short record without losing long-name case bits or creation metadata; the VFS mount test proves a fresh lookup sees `chmod`'s read-only attribute. Full FAT library suite: 336/336. | Chris Watkins |
 
+### B2555-fat-fallocate-keep-size
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2555 | MISSING | med | FAT now implements `FALLOC_FL_KEEP_SIZE` preallocation without changing the visible file size. | `FatOps::fallocate` and `Volume::preallocate_file_cached` allocate the exact required cluster range, preserve `i_size`, and retain the live first-cluster identity for subsequent writes; the production-path regression proves the free-cluster count changes while size remains 5 bytes. Full FAT library suite: 337/337. | Chris Watkins |
+
 ### B2553-stale-keyring-coverage-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
