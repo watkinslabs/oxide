@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2568-unix-recv-usercopy-under-lock
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2568 | DEFECT | critical | AF_UNIX stream receive copied into user memory while holding the receive-ring Spinlock, so a demand fault could sleep in `inode_wait` and repeatedly report scheduling while atomic. | `UnixPair::read_stream_with_offset` now serializes receive transactions with a sleepable gate, snapshots/commits under the ring lock, and invokes the copy callback after dropping that Spinlock; OOB receives use the same gate. The hosted regression `stream_usercopy_runs_without_receive_spinlock` acquires the incoming ring in the callback. Focused stream tests: 23/23; full net library: 2592/2592. Linux 7.2.0-rc4 likewise releases queue locking before the receive actor while retaining the per-socket receive mutex. | B2568-unix-recv-usercopy-under-lock |
+
 ### D592-scratchpad-lane-prefix
 
 | Status | Class | Sev | Issue | Evidence | Owner |
