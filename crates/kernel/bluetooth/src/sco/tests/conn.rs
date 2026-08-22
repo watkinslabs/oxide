@@ -10,8 +10,9 @@ use crate::uapi::hci::{ESCO_LINK, SCO_LINK};
 use crate::uapi::hci_cmd::{HCI_OP_ACCEPT_SYNC_CONN_REQ, HCI_OP_SETUP_SYNC_CONN};
 use crate::uapi::sco::{SyncConnComplete, BT_CODEC_CVSD, BT_CODEC_TRANSPARENT};
 
-const FULL: LinkCaps = LinkCaps { esco: true, esco_2m: true };
-const NO_2M: LinkCaps = LinkCaps { esco: true, esco_2m: false };
+const FULL: LinkCaps = LinkCaps { esco: true, esco_2m: true, enhanced_setup: false };
+const ENHANCED: LinkCaps = LinkCaps { esco: true, esco_2m: true, enhanced_setup: true };
+const NO_2M: LinkCaps = LinkCaps { esco: true, esco_2m: false, enhanced_setup: false };
 
 fn complete(status: u8) -> SyncConnComplete {
     SyncConnComplete { status, handle: 0x2a, bdaddr: BdAddr([1; 6]), link_type: ESCO_LINK,
@@ -107,12 +108,11 @@ fn a_wideband_link_walks_the_wideband_table() {
 
 #[test]
 fn a_fully_capable_wideband_link_uses_enhanced_setup() {
-    const HCI_OP_ENHANCED_SETUP_SYNC_CONN: u16 = 0x043d;
-    let mut l = SyncLink::new(BdAddr([1; 6]), BT_VOICE_TRANSPARENT, FULL);
+    let mut l = SyncLink::new(BdAddr([1; 6]), BT_VOICE_TRANSPARENT, ENHANCED);
     let mut tx = CmdLog::new();
     l.setup(7, &mut tx).unwrap();
-    assert_eq!(tx.last_cmd().unwrap().0, HCI_OP_ENHANCED_SETUP_SYNC_CONN);
-    assert_eq!(tx.last_cmd().unwrap().1.len(), 59);
+    assert_eq!(tx.last_cmd().unwrap().0, crate::uapi::hci_cmd::HCI_OP_ENHANCED_SETUP_SYNC_CONN);
+    assert_eq!(tx.last_cmd().unwrap().1.len(), crate::uapi::sco::ENHANCED_SETUP_SYNC_CONN_LEN);
 }
 
 #[test]

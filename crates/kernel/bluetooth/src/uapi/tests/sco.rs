@@ -12,6 +12,7 @@ fn the_struct_widths_are_the_ones_the_abi_defines() {
     assert_eq!(BT_CODECS_HDR_LEN, 1);
     assert_eq!(SETUP_SYNC_CONN_LEN, 17);
     assert_eq!(ACCEPT_SYNC_CONN_LEN, 21);
+    assert_eq!(ENHANCED_SETUP_SYNC_CONN_LEN, 59);
     assert_eq!(SYNC_CONN_COMPLETE_LEN, 17);
 }
 

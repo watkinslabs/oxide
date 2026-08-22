@@ -8,12 +8,13 @@
 
 use crate::uapi::bt::{BdAddr, BT_CLOSED, BT_CONFIG, BT_CONNECT, BT_CONNECTED, BT_OPEN,
                       BT_VOICE_CVSD_16BIT};
-use crate::uapi::hci_cmd::{HCI_OP_ACCEPT_SYNC_CONN_REQ, HCI_OP_SETUP_SYNC_CONN};
+use crate::uapi::hci_cmd::{HCI_OP_ACCEPT_SYNC_CONN_REQ, HCI_OP_ENHANCED_SETUP_SYNC_CONN,
+                           HCI_OP_SETUP_SYNC_CONN};
 use crate::uapi::sco::{BtCodec, SyncConnComplete, BT_CODEC_CVSD, BT_CODEC_TRANSPARENT,
                        SCO_DEFAULT_MTU};
 use crate::uapi::hci::{ESCO_LINK, SCO_AIRMODE_MASK, SCO_AIRMODE_TRANSP, SCO_ESCO_MASK,
                        EDR_ESCO_MASK};
-use super::cmd::{AcceptSyncConn, SetupSyncConn};
+use super::cmd::{AcceptSyncConn, EnhancedSetupSyncConn, SetupSyncConn};
 use super::link::ScoTx;
 use super::param::{self, LinkCaps, ParamError};
 
@@ -86,7 +87,13 @@ impl SyncLink {
         self.state = BT_CONNECT;
         self.out = true;
         let cp = SetupSyncConn::new(acl_handle, self.setting, &param);
-        let _ = tx.send_cmd(HCI_OP_SETUP_SYNC_CONN, &cp.to_wire());
+        if self.caps.enhanced_setup {
+            let enhanced = EnhancedSetupSyncConn::new(acl_handle, self.codec, &param)
+                .ok_or(ParamError::BadAirMode)?;
+            let _ = tx.send_cmd(HCI_OP_ENHANCED_SETUP_SYNC_CONN, &enhanced.to_wire());
+        } else {
+            let _ = tx.send_cmd(HCI_OP_SETUP_SYNC_CONN, &cp.to_wire());
+        }
         Ok(cp)
     }
 

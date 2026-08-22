@@ -1,11 +1,11 @@
 //! Command-encoding contract: field order, widths and the bandwidth both
 //! directions ask for.
 
-use crate::sco::cmd::{AcceptSyncConn, SetupSyncConn};
+use crate::sco::cmd::{AcceptSyncConn, EnhancedSetupSyncConn, SetupSyncConn};
 use crate::sco::param::ESCO_PARAM_CVSD;
 use crate::uapi::bt::{BdAddr, BT_VOICE_CVSD_16BIT, BT_VOICE_TRANSPARENT};
 use crate::uapi::hci::{EDR_ESCO_MASK, ESCO_2EV3};
-use crate::uapi::sco as u;
+use crate::uapi::sco::{self as u, BtCodec, BT_CODEC_MSBC};
 
 #[test]
 fn the_setup_command_round_trips_at_its_documented_width() {
@@ -43,6 +43,26 @@ fn the_setup_command_fields_are_in_the_documented_order() {
     assert_eq!(&w[12..14], &[0x0e, 0x0d]);
     assert_eq!(w[14], 0x0f);
     assert_eq!(&w[15..17], &[0x11, 0x10]);
+}
+
+#[test]
+fn the_enhanced_setup_carries_the_codec_and_data_path_contract() {
+    let codec = BtCodec { id: BT_CODEC_MSBC, cid: 0x0102, vid: 0x0304,
+                          data_path: 7, num_caps: 0 };
+    let cp = EnhancedSetupSyncConn::new(0x0042, codec, &ESCO_PARAM_CVSD[0]).unwrap();
+    let w = cp.to_wire();
+    assert_eq!(w.len(), u::ENHANCED_SETUP_SYNC_CONN_LEN);
+    assert_eq!(&w[0..2], &0x0042u16.to_le_bytes());
+    assert_eq!(&w[10..15], &[BT_CODEC_MSBC, 0x02, 0x01, 0x04, 0x03]);
+    assert_eq!(&w[15..20], &[BT_CODEC_MSBC, 0x02, 0x01, 0x04, 0x03]);
+    assert_eq!(&w[20..24], &[60, 0, 60, 0]);
+    assert_eq!(&w[24..28], &u::SCO_MSBC_PCM_BANDWIDTH.to_le_bytes());
+    assert_eq!(&w[32..37], &[u::HCI_CODING_FORMAT_PCM, 0, 0, 0, 0]);
+    assert_eq!(&w[42..46], &[16, 0, 16, 0]);
+    assert_eq!(&w[46..54], &[2, 2, 0, 0, 7, 7, 1, 1]);
+    assert_eq!(&w[54..56], &ESCO_PARAM_CVSD[0].max_latency.to_le_bytes());
+    assert_eq!(&w[56..58], &ESCO_PARAM_CVSD[0].pkt_type.to_le_bytes());
+    assert_eq!(w[58], ESCO_PARAM_CVSD[0].retrans_effort);
 }
 
 #[test]

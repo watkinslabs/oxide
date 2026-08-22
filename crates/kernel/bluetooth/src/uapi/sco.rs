@@ -37,6 +37,14 @@ pub const BT_CODEC_MSBC:        u8 = 0x05;
 
 /// Bandwidth both directions of a synchronous link ask for, in octets/second.
 pub const SCO_BANDWIDTH: u32 = 8000;
+pub const SCO_MSBC_PCM_BANDWIDTH: u32 = 32_000;
+pub const SCO_CVSD_PCM_BANDWIDTH: u32 = 16_000;
+pub const SCO_CODEC_FRAME_SIZE: u16 = 60;
+pub const SCO_CODED_DATA_SIZE: u16 = 16;
+pub const HCI_CODING_FORMAT_PCM: u8 = 0x04;
+pub const HCI_PCM_DATA_FORMAT_TWOS_COMPLEMENT: u8 = 0x02;
+pub const SCO_TRANSPORT_UNIT_CODEC: u8 = 1;
+pub const SCO_TRANSPORT_UNIT_CVSD: u8 = 16;
 
 /// Retransmission-effort values: one retransmission for a reliable eSCO link,
 /// and "no requirement" for a plain SCO link that cannot retransmit.
@@ -56,6 +64,8 @@ pub const SCO_MAX_LATENCY_S3:        u16 = 0x000a;
 pub const SETUP_SYNC_CONN_LEN: usize = 2 + 4 + 4 + 2 + 2 + 1 + 2;
 /// `HCI_OP_ACCEPT_SYNC_CONN_REQ` parameter width.
 pub const ACCEPT_SYNC_CONN_LEN: usize = BDADDR_LEN + 4 + 4 + 2 + 2 + 1 + 2;
+/// `HCI_OP_ENHANCED_SETUP_SYNC_CONN` parameter width.
+pub const ENHANCED_SETUP_SYNC_CONN_LEN: usize = 59;
 /// `HCI_EV_SYNC_CONN_COMPLETE` payload width.
 pub const SYNC_CONN_COMPLETE_LEN: usize = 1 + 2 + BDADDR_LEN + 1 + 1 + 1 + 2 + 2 + 1;
 
