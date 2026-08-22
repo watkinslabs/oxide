@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2450-bpf-test-run-checksum-complete
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 93ae75d42 | DEFECT | low | **BPF_PROG_TEST_RUN now implements BPF_F_TEST_SKB_CHECKSUM_COMPLETE.** | B2450 snapshots and verifies the network-layer checksum around production test runs, returning EBADMSG for mutations only when requested. | B2450 |
+
 ### B2447-stale-arm64-el1-poe-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |

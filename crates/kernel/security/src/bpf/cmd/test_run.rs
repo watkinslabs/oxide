@@ -140,6 +140,50 @@ fn skb_data_size_verdict(data_size_in: u32) -> Result<(), Errno> {
     Ok(())
 }
 
+/// Fold the network-layer bytes into the CHECKSUM_COMPLETE value Linux
+/// stores before running the program. The Ethernet header is not part of
+/// that checksum. # C: O(frame length)
+fn checksum_complete(packet: &[u8]) -> u16 {
+    let network = packet.get(uapi::ETH_HLEN as usize..).unwrap_or(&[]);
+    let mut sum = 0u32;
+    let mut chunks = network.chunks_exact(2);
+    for word in &mut chunks {
+        sum = sum.wrapping_add(u16::from_be_bytes([word[0], word[1]]) as u32);
+    }
+    if let Some(last) = chunks.remainder().first() {
+        sum = sum.wrapping_add((*last as u32) << 8);
+    }
+    while sum >> 16 != 0 { sum = (sum & 0xffff) + (sum >> 16); }
+    !(sum as u16)
+}
+
+/// Recompute CHECKSUM_COMPLETE after the run and reject a changed frame.
+/// No snapshot means the caller did not request this validation.
+/// # C: O(frame length)
+fn checksum_complete_verdict(expected: Option<u16>, packet: &[u8]) -> Result<(), Errno> {
+    match expected {
+        Some(expected) if checksum_complete(packet) != expected => Err(Errno::Ebadmsg),
+        _ => Ok(()),
+    }
+}
+
+/// Bracket one complete test run with the optional checksum snapshot and
+/// validation. # C: O(frame length + run)
+fn run_checksum_complete<T>(
+    flags: u32,
+    packet: &mut [u8],
+    run: impl FnOnce(&mut [u8]) -> Result<T, Errno>,
+) -> Result<T, Errno> {
+    let expected = if flags & uapi::test_flags::SKB_CHECKSUM_COMPLETE != 0 {
+        Some(checksum_complete(packet))
+    } else {
+        None
+    };
+    let result = run(packet)?;
+    checksum_complete_verdict(expected, packet)?;
+    Ok(result)
+}
+
 /// `bpf_prog_test_run_skb()`. # C: O(repeat × instructions)
 fn run_skb(a: &Attr, attr_ptr: u64, prog: &BpfProgInode) -> Result<i64, Errno> {
     use uapi::off::test as o;
@@ -151,23 +195,28 @@ fn run_skb(a: &Attr, attr_ptr: u64, prog: &BpfProgInode) -> Result<i64, Errno> {
         Some(ctx) => skb_ctx::convert_in(ctx, data_size_in, data_size_in)?,
         None => data_size_in,
     };
-    let packet: Vec<u8> = user::read_vec(a.u64_at(o::DATA_IN), data_size_in as usize)?;
+    let mut packet: Vec<u8> = user::read_vec(a.u64_at(o::DATA_IN), data_size_in as usize)?;
 
     let run_ctx = skb_ctx::program_context(
         ctx.as_ref().unwrap_or(&[0u8; skb_ctx::SIZE]), data_size_in,
     );
-    let mut run = run_ctx;
-    let start = monotonic_ns();
-    let mut retval = 0u32;
-    for _ in 0..repeat_count(a.u32_at(o::REPEAT)) {
-        run = run_ctx;
-        retval = crate::bpf_interp::run_program_with_state(
-            prog, &run, &packet, &[], &mut crate::bpf_interp::HelperState::default(),
-        ).ok_or(Errno::Einval)? as u32;
-    }
-    let duration = duration_per_run(
-        monotonic_ns().wrapping_sub(start), repeat_count(a.u32_at(o::REPEAT)),
-    );
+    let (run, retval, duration) = run_checksum_complete(
+        a.u32_at(o::FLAGS), &mut packet, |packet| {
+            let mut run = run_ctx;
+            let start = monotonic_ns();
+            let mut retval = 0u32;
+            for _ in 0..repeat_count(a.u32_at(o::REPEAT)) {
+                run = run_ctx;
+                retval = crate::bpf_interp::run_program_with_state(
+                    prog, &run, packet, &[], &mut crate::bpf_interp::HelperState::default(),
+                ).ok_or(Errno::Einval)? as u32;
+            }
+            let duration = duration_per_run(
+                monotonic_ns().wrapping_sub(start), repeat_count(a.u32_at(o::REPEAT)),
+            );
+            Ok((run, retval, duration))
+        },
+    )?;
 
     if let Some(ctx) = ctx.as_mut() {
         skb_ctx::convert_out(ctx, &run, data_size_in, wire_len);
