@@ -8,7 +8,7 @@
 use sectors::MemImage;
 
 use crate::mode::S_IFREG;
-use crate::place::bits;
+use crate::place::{bits, ssr};
 use crate::test_image::{self, ROOT_INO};
 use crate::uapi::BLKSIZE;
 use crate::volume::{Holder, NewInode, Volume};
@@ -143,6 +143,29 @@ fn the_recycling_decision_reads_the_volumes_own_counts() {
     let mut v = test_image::with_root().mount_opts(lfs).unwrap();
     v.load_segments().unwrap();
     assert!(!v.need_ssr());
+}
+
+/// Directory entries are placed synchronously in this volume, while the inode
+/// records changed by the same operation remain in the node mapping. Therefore
+/// the reference's dentry and inode-metadata pressure belongs here exactly
+/// once: in the dirty-node term, with no separate data-page terms to add.
+#[test]
+fn a_directory_change_reaches_ssr_pressure_once_through_its_nodes() {
+    let mut v = test_image::with_root().mount_rw().unwrap();
+    let before_nodes = v.dirty_node_pages();
+    assert_eq!(v.dirty_data_pages(ROOT_INO), 0);
+
+    let ino = v.create(ROOT_INO, b"f", &spec(), None).unwrap();
+    assert_eq!(v.dirty_data_pages(ROOT_INO), 0,
+               "the changed directory was left dirty in the data mapping");
+    assert_eq!(v.dirty_data_pages(ino), 0, "an empty file acquired a dirty data page");
+    assert!(v.dirty_node_pages() > before_nodes,
+            "the changed inode records did not enter the node mapping");
+
+    let n = v.ssr_state();
+    assert_eq!(n.node_secs, ssr::secs_for_pages(v.dirty_node_pages(), v.blks_per_sec()));
+    assert_eq!((n.dent_secs, n.imeta_secs), (0, 0),
+               "synchronously placed metadata was counted a second time");
 }
 
 /// The cleaner's mode reaches the allocator. Read from the background state the
