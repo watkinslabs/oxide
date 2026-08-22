@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2511-overlay-volatile-incompat-marker
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 91fc49aaa | DEFECT | med | OverlayFS volatile mounts now persist the incompatibility marker and reject unsafe reuse. | OverlayFS tests and target checks passed. | Chris Watkins |
+
+<<<<<<< HEAD
 ### B2510-tcp-save-syn-link-header
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -852,6 +859,13 @@
 |---|---|---|---|---|---|
 | FIXED B2509 | DEFECT | med | **The old F858 whole-line serial corruption observation is stale: both UART backends now own bounded drain-until-deasserted receive paths.** The 8250 shared-IRQ service repeats until IIR deasserts (bounded by Linux's `PASS_LIMIT` shape), while PL011 drains the FIFO empty and rechecks RX/timeout status without explicitly clearing a mid-drain indication. | B2509 revalidated Linux 7.2.0-rc4 first: 8250 shared IRQs loop until the line deasserts under a pass bound, and PL011 drains/rechecks status rather than clearing RX before the FIFO is empty. Oxide's canonical fixes are `23d1dd2be` (8250) and `1ac526b01` (PL011). Authentic positive controls made the production 8250 owner service only once (RED: 1 call vs 4) and made PL011 return after its first pass (RED: 16 bytes vs the complete 24-byte mid-drain line); both were restored. Full drv-uart-16550 19/19 and drv-uart-pl011 20/20 pass, as do both kernel target checks. | B2509-stale-serial-input-corruption-row |
 >>>>>>> b2c3d4e91 (ledger: close stale serial input corruption row)
+=======
+### B2511-overlay-volatile-incompat-marker
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 91fc49aaa | MISSING | low | **A volatile OverlayFS mount now persists `work/incompat/volatile/dirty`, and any later mount refuses that work directory while the incompatibility remains.** The marker is created through the real upper filesystem inode operations before the layer stack becomes visible; workdir admission checks the incompatibility directory before either the ordinary work directory or index directory is returned. | B2511. Linux 7.2.0-rc4 creates the same four-component marker under the work base and rejects workdir cleanup when the incompatibility directory contains a feature. Before the fix, both production `OverlayFs::open` tests were RED: the volatile mount left no marker, and a premarked workdir mounted successfully instead of returning `EINVAL`; restored implementation makes both GREEN. OverlayFS 250/250, both kernel target checks, both feature gates, and diff checks pass. Final smoke was not run: the normal boot does not mount an OverlayFS or exercise the `volatile` mount admission path, while the hosted mount tests drive that exact production path. | B2511-overlay-volatile-incompat-marker |
+>>>>>>> 531cd5f2a (docs: close overlay volatile marker issue)
 
 ### B2329-freezer-backoff-sleep
 
