@@ -127,6 +127,19 @@ fn a_stored_attribute_does_not_outrank_the_live_label() {
     assert_eq!(text.split(':').count(), 4, "user:role:type:level — got {text:?}");
 }
 
+/// A policy update invalidates the inode cache without walking every inode.
+#[test]
+fn a_policy_generation_rejects_an_older_inode_sid() {
+    if !policy_loaded() { return }
+    let (_sb, inode) = inode_on("ext4", FileType::Regular, true);
+    let old_seq = selinux_runtime::policy_seq();
+    inode.set_security_sid_at(0xdead_beef, old_seq);
+    let image = std::fs::read(DISTRO_POLICY).expect("policy image remains available");
+    selinux_runtime::with(|s| s.load_policy(&image).expect("policy reload"));
+    let sid = fs::selinux::inode_sid(&inode).expect("the current policy resolves the inode");
+    assert_ne!(sid, 0xdead_beef, "a prior policy generation must not survive");
+}
+
 /// The `nolsm` fallback: a `security.*` name no module owns is the filesystem's
 /// own attribute, and reads exactly as it was written.
 #[test]

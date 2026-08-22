@@ -154,6 +154,8 @@ pub struct Inode {
     /// it described and could disagree with them. Zero means "not resolved
     /// yet"; the label owner resolves it on first use, and no SID is ever zero.
     pub(super) i_security:     AtomicU32,
+    /// Policy generation that produced `i_security`; zero means untagged.
+    pub(super) i_security_seq: AtomicU32,
 }
 
 impl Inode {
@@ -214,6 +216,7 @@ impl Inode {
             i_rwsem: super::rwsem::InodeRwsem::new(),
             i_flctx: FileLockContext::new(),
             i_security: AtomicU32::new(self.i_security.load(Ordering::Relaxed)),
+            i_security_seq: AtomicU32::new(0),
         })
     }
 }

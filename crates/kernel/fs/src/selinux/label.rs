@@ -43,7 +43,8 @@ pub fn superblock_security(srv: &mut selinux::SecurityServer, fstype: &str)
 /// `None` while the module has no policy: there is no label to compute before
 /// one is loaded, and inventing one would have to be undone on load.
 pub fn inode_sid(inode: &InodeRef) -> Option<u32> {
-    if let Some(sid) = inode.security_sid() { return Some(sid); }
+    let seq = selinux_runtime::policy_seq();
+    if let Some(sid) = inode.security_sid_at(seq) { return Some(sid); }
     if !selinux_runtime::active() { return None; }
     let fstype = fstype(inode)?;
     let class = inode_class(inode.i_mode() as u32)?;
@@ -53,7 +54,7 @@ pub fn inode_sid(inode: &InodeRef) -> Option<u32> {
         let sb = superblock_security(s, &fstype);
         existing_inode_sid(s, &sb, task, class, written.as_deref(), None)
     })?;
-    inode.set_security_sid(sid);
+    inode.set_security_sid_at(sid, seq);
     Some(sid)
 }
 
@@ -65,6 +66,7 @@ pub fn inode_sid(inode: &InodeRef) -> Option<u32> {
 /// rule the policy actually wrote.
 pub fn label_new_inode(dir: &InodeRef, inode: &InodeRef, name: &str) -> Option<u32> {
     if !selinux_runtime::active() { return None; }
+    let seq = selinux_runtime::policy_seq();
     let fstype = fstype(inode).or_else(|| fstype(dir))?;
     let class = inode_class(inode.i_mode() as u32)?;
     let dir_sid = inode_sid(dir)?;
@@ -74,6 +76,6 @@ pub fn label_new_inode(dir: &InodeRef, inode: &InodeRef, name: &str) -> Option<u
         let sb = superblock_security(s, &fstype);
         new_inode_sid(s, &sb, staged, task, dir_sid, class, Some(name))
     })?;
-    inode.set_security_sid(sid);
+    inode.set_security_sid_at(sid, seq);
     Some(sid)
 }

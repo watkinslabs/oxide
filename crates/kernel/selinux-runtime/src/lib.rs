@@ -70,3 +70,6 @@ pub fn with<R>(f: impl FnOnce(&mut SecurityServer) -> R) -> Option<R> {
 pub fn active() -> bool {
     with(|s| s.state().consults_policy()).unwrap_or(false)
 }
+
+/// Return the policy generation for object-label caches. # C: O(1)
+pub fn policy_seq() -> u32 { with(|s| s.state().seqno).unwrap_or(0) }

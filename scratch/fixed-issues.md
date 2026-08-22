@@ -1,5 +1,11 @@
 # Fixed issues
 
+### F1247-selinux-inode-label-policy-generation
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 8507c0217 | DEFECT | med | Inode security labels now carry the SELinux policy generation that resolved them, so policy reloads invalidate cached SIDs without an inode walk. | `fs/tests/selinux_label_attribute.rs::a_policy_generation_rejects_an_older_inode_sid` drives the real label path after a policy reload; the positive control returned the stale `0xdead_beef` SID when generation checking was removed and the restored hook recomputes it. | F1247 |
+
 ### R107-stale-ntfs-label-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
