@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2470-retained-smoke-log-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED bc15e9fc6 | INFRA | low | Successful boot-smoke serial logs are retained through the existing keep-log path and stable debug targets. | Runtime retention regression passed. | Chris Watkins |
+
+<<<<<<< HEAD
 ### B2448-stale-sockaddr-shape-coverage-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -388,6 +395,13 @@
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED fd087af18 | DEFECT | med | **`smaps` reports the actual backing page granule for huge mappings and retains the base-page fallback.** | B2385. The production renderer's 2 MiB hugetlb path and base-page case are pinned by focused tests. | B2385-smaps-huge-page-size |
+=======
+### B2470-retained-smoke-log-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED bc15e9fc6 | INFRA | med | **Passing smoke runs already have a supported retained-log path, so the OPEN row's premise was stale.** `SMOKE_KEEP_LOG` preserves the last attempt and `SMOKE_KEEP_LOG_DIR` preserves every attempt under a status-labelled name; the stable `smoke-debug-x86`, `smoke-debug-arm`, and `smoke-debug` targets set both. The harness copies the captured serial stream before cleanup for `pass` as well as failure statuses. | B2470. Linux 7.2.0-rc4 is not the owner of this repository-local harness contract. The new successful-run regression drives the real `tools/boot-smoke.sh` entry point with a mock QEMU marker and requires the exact retained `x86-attempt-1-pass.log`. **Positive control:** temporarily making `keep_log_copy` skip the pass-directory copy turned the full runtime test RED on that missing file; restoring the production owner returned it GREEN. The complete boot-smoke runtime suite and both kernel target checks pass. No boot was required because the permanent change is hosted test coverage plus this ledger correction, and the already-supported production behavior is unchanged. | B2470-retained-smoke-log-row |
+>>>>>>> f6fe0fcac (docs: close retained smoke log row)
 
 ### B2329-freezer-backoff-sleep
 
