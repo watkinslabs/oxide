@@ -132,3 +132,4 @@ pub mod fs_info;
 pub mod pid_file_policy;
 pub mod wchan_render;
 #[cfg(target_os = "oxide-kernel")] pub mod smaps;
+mod smaps_page_size;
