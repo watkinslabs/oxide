@@ -1,5 +1,11 @@
 # Fixed issues
 
+### R132-duplicate-fs-zram-flake-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED R132 | COVERAGE | low | **The mixed fs/zram intermittent-test row was a duplicate bookkeeping row.** Its zram half is fixed by the provider/driver-model claims, while the fs half is the already-retained `keyring::tests::payload::big_key_accepts_payloads_past_the_user_ceiling` row. | A current full `cargo test -p fs --lib` run reproduced that exact keyring test; the dedicated keyring row remains OPEN with the failure's errno and reproduction history. `drv-zram` passes 104/104. | R132 |
+
 ### R131-stale-zram-workspace-recurrence-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
