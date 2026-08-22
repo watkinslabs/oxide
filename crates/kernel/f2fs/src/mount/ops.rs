@@ -159,6 +159,8 @@ impl InodeOps for F2fsOps {
         let node = Self::writable_dir(inode)?;
         let other = Self::node(target)?;
         if !Arc::ptr_eq(&node.fs, &other.fs) { return Err(VfsError::Exdev); }
+        node.fs.volume.lock().crypt_check_link(node.ino, other.ino)
+            .map_err(errno_to_vfs)?;
         node.fs.link(node.ino, name, other.ino)?;
         // The count on the medium moved, and the cached one has to move with
         // it: a temporary file that has just been given its first name would
@@ -193,6 +195,9 @@ impl InodeOps for F2fsOps {
         // second entry with it, and a directory leaving takes one away.
         let (moved_is_dir, victim_is_dir) = Self::shapes(node, old_name, target, new_name);
         let same_parent = node.ino == target.ino;
+        node.fs.volume.lock().crypt_check_rename(node.ino, old_name.as_bytes(), target.ino,
+                                                 new_name.as_bytes(), flags)
+            .map_err(errno_to_vfs)?;
         // The identity is the CALLER's, and only a whiteout reads it: the
         // marker a whiteout rename leaves behind is a new inode and belongs to
         // whoever asked for the rename.
@@ -385,6 +390,10 @@ impl FileOps for F2fsOps {
             return Ok(());
         }
         let mut v = node.fs.volume.lock();
+        if let Some(parent) = file.dentry().parent().and_then(|d| d.inode()) {
+            let pnode = F2fsOps::node(&parent)?;
+            v.crypt_check_permitted(pnode.ino, node.ino).map_err(errno_to_vfs)?;
+        }
         // Verity first: a sealed file refuses a writable handle outright, and
         // there is nothing to acquire for a handle that is not going to exist.
         v.verity_file_open(&live, node.ino, write).map_err(errno_to_vfs)?;

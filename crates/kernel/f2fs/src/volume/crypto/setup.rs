@@ -28,8 +28,60 @@ use crate::node::Inode;
 use crate::uapi::XATTR_INDEX_ENCRYPTION;
 
 use crate::volume::Volume;
+use vfs::namei::RENAME_EXCHANGE;
 
 impl<S: SectorSource> Volume<S> {
+    /// Refuse an encrypted child whose policy does not belong in `parent`.
+    /// This is the common admission point for open, link and rename: the
+    /// policy is read from the raw xattr, so a missing key does not turn a
+    /// tree-boundary check into an unrelated `ENOKEY`.
+    /// # C: O(region bytes)
+    pub(crate) fn crypt_check_permitted(&self, parent_ino: u32, child_ino: u32)
+        -> Result<(), Errno> {
+        self.crypt_check_permitted_with(parent_ino, child_ino, Errno::Eperm)
+    }
+
+    /// The link hook reports a cross-policy admission as `EXDEV`.
+    /// # C: O(region bytes)
+    pub(crate) fn crypt_check_link(&self, parent_ino: u32, child_ino: u32)
+        -> Result<(), Errno> {
+        self.crypt_check_permitted_with(parent_ino, child_ino, Errno::Exdev)
+    }
+
+    /// Link and rename use `EXDEV` for a policy boundary, while open uses
+    /// `EPERM` for the same underlying inconsistent context.
+    /// # C: O(region bytes)
+    fn crypt_check_permitted_with(&self, parent_ino: u32, child_ino: u32, denied: Errno)
+        -> Result<(), Errno> {
+        let parent = self.read_inode(parent_ino)?;
+        let child = self.read_inode(child_ino)?;
+        let parent_ctx = self.crypt_context(&parent, parent_ino)?;
+        let child_ctx = self.crypt_context(&child, child_ino)?;
+        let parent_policy = parent_ctx.as_ref().map(|c| &c.policy);
+        let child_policy = child_ctx.as_ref().map(|c| &c.policy);
+        let facts = self.crypt_inode_facts(&child);
+        if !crate::crypto::inherit::permitted(parent_policy, &facts, child_policy) {
+            return Err(denied);
+        }
+        Ok(())
+    }
+
+    /// Check the policy boundary before a rename changes either directory.
+    /// A replacement only admits the moved inode into the new directory; an
+    /// exchange additionally admits the destination victim into the old one.
+    /// # C: O(region bytes)
+    pub(crate) fn crypt_check_rename(&self, from: u32, old: &[u8], to: u32,
+                                     new: &[u8], flags: u32) -> Result<(), Errno> {
+        let from_dir = self.read_inode(from)?;
+        let to_dir = self.read_inode(to)?;
+        let moved = self.lookup(&from_dir, from, old)?.ino;
+        self.crypt_check_permitted_with(to, moved, Errno::Exdev)?;
+        if flags & RENAME_EXCHANGE != 0 {
+            let victim = self.lookup(&to_dir, to, new)?.ino;
+            self.crypt_check_permitted_with(from, victim, Errno::Exdev)?;
+        }
+        Ok(())
+    }
     /// A nonce for a newly encrypted inode.
     ///
     /// Derived from the volume's own identity and the inode number rather
