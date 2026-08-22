@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2510-tcp-save-syn-link-header
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2510 | MISSING | med | TCP_SAVE_SYN=2 link-header behavior is already covered by the canonical ingress path; the ledger row was stale. | Net tests and target checks passed. | Chris Watkins |
+
 ### B2509-stale-serial-input-corruption-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -3976,6 +3982,7 @@ against the row's own evidence.
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 ### B2336-bpf-program-streams
 
 | Status | Type | Severity | Issue | Evidence | Fixed by |
@@ -4205,3 +4212,10 @@ against the row's own evidence.
 |---|---|---|---|---|---|
 | FIXED 5fcebe902 | MISSING | low | **Rseq slice grants now take their duration from the writable `/sys/kernel/debug/rseq/slice_ext_nsec` control instead of a fixed 5 us constant.** The scheduler owns one atomic value with the 5–50 us bounds, the debugfs file reports and changes that owner, and every new grant derives its expiry from it. | Linux 7.2-rc4 reference verified first. Missing-file RED became GREEN after boot-time registration. Positive control restored the fixed 5 us grant and failed `5007 != 50007`, then passed after restoration. Scheduler 1,535/1,535, tracefs 39/39, and syscall 153/153 passed; both target checks and paired smoke passed (x86 46 s, ARM 56 s, attempt 1, serial RX). | B2504 |
 >>>>>>> 5e617a83f (docs(issues): close rseq slice tunable gap)
+=======
+### B2510-tcp-save-syn-link-header
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2510 | MISSING | low | **`TCP_SAVE_SYN=2` now records from the admitted link-layer header, while mode 1 and transport-only adapters start at the network header.** Ethernet ingress carries its already-parsed header prefix through the canonical IPv4/IPv6 TCP demux; the listener's single saved-header owner prepends it only for mode 2 and retains exactly the link, network and TCP headers. | B2510. `stack::tcp_save_syn_tests::mode_two_records_the_link_header_from_real_ethernet_ingress` drives the production Ethernet ingress and compares the request's record byte-for-byte with the Ethernet+IPv4+TCP SYN. Before the fix it was RED because the record began at IPv4; restored implementation is GREEN. Focused SAVE_SYN 4/4 and full net 2,575/2,575 pass; both target checks pass. | B2510 |
+>>>>>>> ecfe175fa (docs(ledger): close TCP_SAVE_SYN link header gap)
