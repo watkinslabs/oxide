@@ -357,11 +357,17 @@ fn the_label_cannot_be_deleted_at_any_price() {
 }
 
 #[test]
-fn other_attributes_keep_their_own_rules() {
+fn every_attribute_operation_takes_the_linux_inode_permission() {
     for name in ["security.capability", "user.thing", "trusted.thing", "system.posix_acl_access"] {
-        assert_eq!(selinux_xattr_gate(name, XattrOp::Set), XattrGate::NotOurs, "{name}");
-        assert_eq!(selinux_xattr_gate(name, XattrOp::Get), XattrGate::NotOurs, "{name}");
+        assert_eq!(selinux_xattr_gate(name, XattrOp::Get),
+                   XattrGate::Perm(xattr::PERM_GETATTR), "get {name}");
+        assert_eq!(selinux_xattr_gate(name, XattrOp::Set),
+                   XattrGate::Perm(xattr::PERM_SETATTR), "set {name}");
+        assert_eq!(selinux_xattr_gate(name, XattrOp::Remove),
+                   XattrGate::Perm(xattr::PERM_SETATTR), "remove {name}");
     }
+    assert_eq!(selinux_xattr_gate("", XattrOp::List),
+               XattrGate::Perm(xattr::PERM_GETATTR));
 }
 
 // ---- the ordinary permission check ----------------------------------------

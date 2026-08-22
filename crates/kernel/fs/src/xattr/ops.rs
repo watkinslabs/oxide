@@ -38,7 +38,10 @@ pub fn xattr_errno(e: XattrError) -> i64 {
 pub fn vfs_setxattr(inode: &InodeRef, name: &str, value: Vec<u8>, flags: u32, c: &XattrCred)
     -> Result<(), i64>
 {
-    if acl::is_acl_name(name) { return acl::set_acl(inode, name, value, c); }
+    if acl::is_acl_name(name) {
+        super::policy::lsm_set_gate(inode, name, &value)?;
+        return acl::set_acl(inode, name, value, c);
+    }
     cap_set_gate(name, &value, c)?;
     xattr_permission(inode, name, vfs::MAY_WRITE, c)?;
     // The label write is priced where the VALUE is known: which label the
@@ -67,7 +70,10 @@ pub(super) fn notify_xattr(inode: &InodeRef) { crate::inotify::fire_attrib(inode
 /// # C: O(N_xattr)
 pub fn vfs_getxattr(inode: &InodeRef, name: &str, c: &XattrCred) -> Result<Vec<u8>, i64> {
     // POSIX ACLs bypass `xattr_permission` entirely (`do_get_acl`).
-    if acl::is_acl_name(name) { return inode.getxattr(name).map_err(xattr_errno); }
+    if acl::is_acl_name(name) {
+        super::policy::lsm_read_gate(inode, name, vfs::MAY_READ)?;
+        return inode.getxattr(name).map_err(xattr_errno);
+    }
     xattr_permission(inode, name, vfs::MAY_READ, c)?;
     if let Some(suffix) = name.strip_prefix(SECURITY_PREFIX) {
         match crate::selinux::inode_getsecurity(inode, suffix) {
@@ -90,6 +96,7 @@ pub fn lsm_declined(rv: i64) -> bool { rv == err(Errno::Eopnotsupp) }
 /// `i_op->listxattr` means an EMPTY list rather than an error. `trusted.*`
 /// names are hidden from a caller without CAP_SYS_ADMIN. # C: O(N_xattr)
 pub fn vfs_listxattr(inode: &InodeRef, c: &XattrCred) -> Result<Vec<u8>, i64> {
+    super::policy::lsm_list_gate(inode)?;
     let names: Vec<String> = match inode.listxattr() {
         Ok(ns) => ns,
         Err(XattrError::NotSup) => Vec::new(),
@@ -101,7 +108,10 @@ pub fn vfs_listxattr(inode: &InodeRef, c: &XattrCred) -> Result<Vec<u8>, i64> {
 /// `vfs_removexattr` (with `removexattr`'s POSIX-ACL detour). Removing an
 /// absent attribute is `ENODATA`. # C: O(N_xattr) + backend I/O
 pub fn vfs_removexattr(inode: &InodeRef, name: &str, c: &XattrCred) -> Result<(), i64> {
-    if acl::is_acl_name(name) { return acl::remove_acl(inode, name, c); }
+    if acl::is_acl_name(name) {
+        super::policy::lsm_remove_gate(inode, name)?;
+        return acl::remove_acl(inode, name, c);
+    }
     xattr_permission(inode, name, vfs::MAY_WRITE, c)?;
     cap_remove_gate(name, c)?;
     super::policy::lsm_remove_gate(inode, name)?;
