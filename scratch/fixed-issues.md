@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2414-f2fs-parked-inode-nlink
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 287ba91cb | COVERAGE | low | **A parked f2fs inode built fresh from the medium now directly proves that its stored zero link count reaches the VFS inode.** | B2414 adds the production-path fixture and pins `nlink == 0` plus orphan-list membership. | B2414-f2fs-parked-inode-nlink |
+
 ### B2411-stale-devfs-fileattr-test-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
