@@ -1,5 +1,11 @@
 # Fixed issues
 
+### R131-stale-zram-workspace-recurrence-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED R131 | COVERAGE | low | **The zram hosted-provider recurrence row was stale.** Workspace execution and isolated test-target compilation are already first-class gates, so a provider conflict cannot remain visible only to an ad-hoc package invocation. | `tools/xtask/src/cmds.rs` runs `cargo test --workspace` for `xtask test`; `Makefile:ci` includes `test`; `test-build-gate` is wired into CI and the pre-push hook. B1675/1b56032d3 also gave the provider and driver-model test state explicit claims. | R131 |
+
 ### R130-virtio-blk-poll-interrupt-counter
 
 | Status | Class | Sev | Issue | Evidence | Owner |
