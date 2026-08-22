@@ -4969,6 +4969,12 @@ against the row's own evidence.
 |---|---|---|---|---|---|
 | FIXED B2592 | DEFECT | med | The open ext4 extent-image failure duplicated the existing B2239 fix and is stale ledger residue. | Current `extent_rw_image::fallocate_sparse_extents_promotes_full_root_to_depth3` passes; B2239 fixed the test's metadata-cache invalidation after its deliberate external header poke, with the 16-test image suite and positive control recorded in the fixed ledger. No source change was needed. | B2592 |
 
+### B2593-stale-vsock-netlink-admission-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2593 | DEFECT | low | The open AF_VSOCK/AF_NETLINK bind/connect security-ordering row duplicated the existing B1974 implementation and B2444 ledger re-verification; it is stale ledger residue. | `042_connect.rs` and `049_bind.rs` each take exactly one generic `sock_admit::admit_*_in` token before family parsing, address-shape checks, and Netlink/VSOCK dispatch. `socket_control_tests::dispatch` pins both source-order contracts and confirms the family implementations consume the token rather than running a second security hook. Focused `syscalls` dispatch tests passed (4), with no source change needed. | B2593 |
+
 ### B2584-stale-membarrier-rows
 
 | Status | Class | Sev | Issue | Evidence | Owner |
