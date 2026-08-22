@@ -82,8 +82,10 @@ pub const TMPFS: Region = Region::new("tmpfs", 0x4000_0000, 0x4FFF_FFFF);
 /// `/proc/sys/fs/binfmt_misc` entries. Moved off `0x4249_0000`, inside the span
 /// [`TMPFS`]'s counter walks.
 pub const BINFMT_MISC: Region = Region::new("binfmt-misc", 0x5000_0000, 0x5000_FFFF);
-/// `eventfd(2)`. Moved off `0x4000_0000`, which [`TMPFS`] also claimed.
-pub const EVENTFD: Region = Region::new("eventfd", 0x5100_0000, 0x51FF_FFFF);
+/// Fixed sysfs and kernfs-node identities below the dynamic tagged families.
+pub const SYSFS_STATIC: Region = Region::new("sysfs-static", 0x5100_0000, 0x51FF_FFFF);
+/// `eventfd(2)`. Moved off both [`TMPFS`]'s old base and the fixed sysfs band.
+pub const EVENTFD: Region = Region::new("eventfd", 0x5200_0000, 0x52FF_FFFF);
 /// cgroup2 directories, one per cgroup id.
 pub const CGROUP_DIR: Region = Region::new("cgroup-dir", 0x6000_0000, 0x60FF_FFFF);
 /// cgroup2 control files, `(cgid, file-slot)`.
@@ -169,7 +171,7 @@ pub const EXT4: Region = tag_region("ext4", 0x6E54_0000);
 pub const REGIONS: &[Region] = &[
     CONSOLE_TTY, CONSOLE_VCS, CONSOLE_VCSA, AUTOFS_ROOT, AUTOFS_CONTROL, VFS_ANON, PIPE,
     PROCFS_STATIC, VFS_STATIC_FILE, TRACEFS_RING, PROCFS_DYNAMIC, TMPFS,
-    BINFMT_MISC, EVENTFD, CGROUP_DIR, CGROUP_FILE,
+    BINFMT_MISC, SYSFS_STATIC, EVENTFD, CGROUP_DIR, CGROUP_FILE,
     DEVPTS, CONFIGFS, DEBUGFS, DEBUGFS_AUTOMOUNT, INOTIFY, SIGNALFD, TIMERFD,
     EPOLL, BPF, DMA_BUF, EVDEV, ZRAM_DEBUGFS, FBDEV, PROCFS_NET,
     PROCFS_PID, DRM_CARD, DRM_RENDER, IO_URING, NETLINK, PERF, INET_SOCK, SOUND,
