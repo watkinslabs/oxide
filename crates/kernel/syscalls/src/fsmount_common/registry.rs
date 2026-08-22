@@ -236,14 +236,14 @@ fn register_filesystems() {
         let fs: Arc<dyn vfs::fs::FileSystem> = fatfs;
         mounted(ty, fs, Some(root), source, sb_flags)
     }
-    let _ = register_fs(FsType::new("vfat", fatfs::MSDOS_SUPER_MAGIC, FsFlags::FS_REQUIRES_DEV,
+    let _ = register_fs(FsType::with_parameters("vfat", fatfs::MSDOS_SUPER_MAGIC, FsFlags::FS_REQUIRES_DEV,
         Box::new(|ty, s: Option<&str>, _t: &str, d: &str, f: u64, _p: &[vfs::fs::FsParameter]| -> R {
             fat_ctor(ty, s, d, f, "vfat", fatfs::Options::vfat())
-        })));
-    let _ = register_fs(FsType::new("msdos", fatfs::MSDOS_SUPER_MAGIC, FsFlags::FS_REQUIRES_DEV,
+        }), Some(fatfs::opts::VFAT_PARAMS)));
+    let _ = register_fs(FsType::with_parameters("msdos", fatfs::MSDOS_SUPER_MAGIC, FsFlags::FS_REQUIRES_DEV,
         Box::new(|ty, s: Option<&str>, _t: &str, d: &str, f: u64, _p: &[vfs::fs::FsParameter]| -> R {
             fat_ctor(ty, s, d, f, "msdos", fatfs::Options::msdos())
-        })));
+        }), Some(fatfs::opts::MSDOS_PARAMS)));
     // OverlayFS is what makes a container image runnable: its layers are
     // ordinary directories rather than a device, so it takes no source and
     // resolves every layer out of the option string. `FS_USERNS_MOUNT` because

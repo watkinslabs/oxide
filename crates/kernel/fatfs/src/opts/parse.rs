@@ -25,10 +25,9 @@ const MAX_OFFSET_MINUTES: i32 = 24 * 60;
 
 /// Parse `data` on top of `base`, which carries the type's defaults.
 ///
-/// A key this filesystem does not know is skipped rather than refused: the
-/// generic per-mount words travel in the same string here, and failing on one
-/// would make every ordinary `mount -o ro` of a FAT volume fail. A key it DOES
-/// know with a value it cannot read is `EINVAL` — that one the caller meant.
+/// Generic per-mount words are consumed by the VFS before this parser runs.
+/// Every remaining key belongs to this filesystem, so an unknown one is a
+/// caller error rather than an option that may be silently discarded.
 /// # C: O(len(data))
 pub fn parse(base: Options, data: &str) -> Result<Options, Errno> {
     let mut o = base;
@@ -76,7 +75,7 @@ fn one(o: &mut Options, key: &str, val: Option<&str>) -> Result<(), Errno> {
         "dots" => { flag(val)?; o.dots_ok = true; }
         "nodots" => { flag(val)?; o.dots_ok = false; }
         "dotsOK" => o.dots_ok = boolean(val)?,
-        _ => {}
+        _ => return Err(Errno::Einval),
     }
     Ok(())
 }
