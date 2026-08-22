@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2544-stale-sticky-ipv6-pktinfo-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2544 | MISSING | med | The sticky `IPV6_PKTINFO` row was stale: Linux validates the stored option's size and interface scope at `setsockopt`; source-address ownership, anycast, and non-local-bind checks belong to the later send path. Oxide already applies that live source screen for ancillary `IPV6_PKTINFO` and retains the sticky value after the same shape/binding admission. | Reference `IPV6_PKTINFO` option handling and `ip6_datagram_send_ctl` ordering verified; `sol_ipv6::set::admit_pktinfo` and `054_setsockopt::ipv6::set_pktoptions` preserve the same split. No production change is warranted. | Chris Watkins |
+
 ### B2543-stale-ntfs-fat-rows
 
 | Status | Class | Sev | Issue | Evidence | Owner |
