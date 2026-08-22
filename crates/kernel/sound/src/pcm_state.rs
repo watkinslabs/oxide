@@ -13,6 +13,7 @@ pub(crate) struct Pcm {
     pub start_threshold: u64,
     pub appl_ptr: u64,
     pub hw_ptr: u64,
+    pub time: crate::pcm_time::PcmTime,
 }
 
 pub(crate) static PCM: Spinlock<Vec<Pcm>, L> = Spinlock::new(Vec::new());
@@ -22,6 +23,7 @@ pub(crate) fn initial(owner: crate::SoundOwnerKey) -> Pcm {
     Pcm {
         owner, state: crate::uapi::STATE_OPEN, format: crate::uapi::FMT_S16_LE, rate: 44100, channels: 2,
         frame_bytes: 4, period_frames: 512, buffer_frames: 1024, start_threshold: 1, appl_ptr: 0, hw_ptr: 0,
+        time: crate::pcm_time::PcmTime::new(),
     }
 }
 

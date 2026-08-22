@@ -7,6 +7,8 @@ use sync::{Spinlock, TaskList as SoundLockClass};
 use crate::{cancel_card_reservation, card_number, owner, register_card, reserve_card, unregister_card};
 use crate::{capture, ops, oss, pcm, uapi};
 
+mod timestamp;
+
 const CARD0_NODE_COUNT: usize = 9;
 const CARD1_NODE_COUNT: usize = 6;
 
@@ -292,11 +294,6 @@ fn pcm_sync_ptr_does_not_fabricate_hardware_progress() {
     // A card that does not advertise SNDRV_PCM_INFO_PAUSE refuses PAUSE
     // before any state check, the way ALSA's pre-action does.
     assert_eq!(pcm::handle(owner_id, 0, uapi::PCM_PAUSE, 0), test_err(syscall::errno::Errno::Enosys));
-    assert_eq!(pcm::handle(owner_id, 0, uapi::PCM_TSTAMP, 0), test_err(syscall::errno::Errno::Enotty));
-    assert_eq!(pcm::handle(owner_id, 0, uapi::PCM_TTSTAMP, 0), test_err(syscall::errno::Errno::Enotty));
-    assert_eq!(capture::handle(owner_id, 0, uapi::PCM_TSTAMP, 0), test_err(syscall::errno::Errno::Enotty));
-    assert_eq!(capture::handle(owner_id, 0, uapi::PCM_TTSTAMP, 0), test_err(syscall::errno::Errno::Enotty));
-
     let _ = pcm::unregister_card(owner_id);
     let _ = capture::unregister_card(owner_id);
     let _ = ops::clear(owner_id);

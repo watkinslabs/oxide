@@ -8,6 +8,7 @@ extern crate alloc;
 // - `identity`: driver-supplied card identity strings in ALSA field widths.
 // - `elem`: driver-registered control (mixer/jack) element registry.
 // - `pcm_info`: the one writer for `struct snd_pcm_info`.
+// - `pcm_time`: PCM timestamp selection and ABI publication.
 // - `pcm`,`capture`,`control`,`oss`,`ops`,`uapi`: ALSA/OSS functional groups.
 // - `tests`: sound-crate integration tests for publication and routing.
 
@@ -15,6 +16,7 @@ mod cards;
 mod device;
 mod ids;
 mod pcm_info;
+mod pcm_time;
 pub mod uapi;
 pub mod format;
 pub mod identity;

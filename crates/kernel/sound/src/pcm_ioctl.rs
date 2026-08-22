@@ -38,7 +38,7 @@ pub fn handle(owner: crate::SoundOwnerKey, card: u32, nr: u64, arg: u64) -> i64 
     match nr {
         PCM_PVERSION => write_int(arg, SNDRV_PCM_VERSION),
         PCM_INFO => pcm_info(owner, card, arg),
-        PCM_TSTAMP | PCM_TTSTAMP => err(Errno::Enotty),
+        PCM_TSTAMP | PCM_TTSTAMP => tstamp(owner, arg),
         PCM_HW_REFINE => match UserBuf::new(arg, HW_PARAMS_SIZE) { Some(b) => refine(owner, &b, false), None => err(Errno::Efault) },
         PCM_HW_PARAMS => match UserBuf::new(arg, HW_PARAMS_SIZE) { Some(b) => refine(owner, &b, true), None => err(Errno::Efault) },
         PCM_HW_FREE => hw_free(owner),
@@ -73,6 +73,7 @@ pub fn write_bytes(owner: crate::SoundOwnerKey, buf: &[u8]) -> usize {
         let mut guard = PCM.lock();
         let Some(p) = guard.iter_mut().find(|p| p.owner == owner) else { return 0; };
         p.state = STATE_RUNNING;
+        p.time.stamp_trigger();
     }
     let n = crate::ops::pcm_submit(owner, buf);
     if n > 0 {
@@ -119,6 +120,7 @@ fn pause(owner: crate::SoundOwnerKey, arg: u64) -> i64 {
     let mut guard = PCM.lock();
     let Some(p) = guard.iter_mut().find(|p| p.owner == owner) else { return err(Errno::Enodev); };
     p.state = if want_pause { STATE_PAUSED } else { STATE_RUNNING };
+    p.time.stamp_trigger();
     0
 }
 
@@ -166,6 +168,7 @@ fn start(owner: crate::SoundOwnerKey) -> i64 {
     let mut guard = PCM.lock();
     let Some(p) = guard.iter_mut().find(|p| p.owner == owner) else { return err(Errno::Enodev); };
     p.state = STATE_RUNNING;
+    p.time.stamp_trigger();
     0
 }
 
@@ -176,6 +179,7 @@ fn drop_stream(owner: crate::SoundOwnerKey) -> i64 {
     p.state = STATE_SETUP;
     p.appl_ptr = 0;
     p.hw_ptr = 0;
+    p.time.stamp_trigger();
     0
 }
 
@@ -185,6 +189,13 @@ fn write_int(arg: u64, v: u32) -> i64 {
 
 fn write_long(arg: u64, v: u64) -> i64 {
     match UserBuf::new(arg, 8) { Some(b) => { b.w64(0, v); 0 } None => err(Errno::Efault) }
+}
+
+fn tstamp(owner: crate::SoundOwnerKey, arg: u64) -> i64 {
+    let b = match UserBuf::new(arg, 4) { Some(b) => b, None => return err(Errno::Efault) };
+    let mut guard = PCM.lock();
+    let Some(p) = guard.iter_mut().find(|p| p.owner == owner) else { return err(Errno::Enodev); };
+    match p.time.set_kind(b.r32(0)) { Ok(()) => 0, Err(e) => err(e) }
 }
 
 fn pcm_info(owner: crate::SoundOwnerKey, card: u32, arg: u64) -> i64 {
@@ -201,6 +212,7 @@ fn sw_params(owner: crate::SoundOwnerKey, arg: u64) -> i64 {
     let st = b.r64(SWP_START_THRESHOLD);
     let mut guard = PCM.lock();
     let Some(p) = guard.iter_mut().find(|p| p.owner == owner) else { return err(Errno::Enodev); };
+    if let Err(e) = p.time.apply_sw(&b) { return err(e); }
     p.start_threshold = if st == 0 { 1 } else { st };
     b.w64(SWP_BOUNDARY, BOUNDARY);
     0
@@ -218,6 +230,7 @@ fn pcm_status(owner: crate::SoundOwnerKey, arg: u64) -> i64 {
     b.w64(ST_HW_PTR, p.hw_ptr);
     b.w64(ST_AVAIL, avail);
     b.w64(ST_AVAIL_MAX, avail);
+    p.time.write_status(&b, p.state);
     0
 }
 
@@ -233,6 +246,7 @@ fn sync_ptr(owner: crate::SoundOwnerKey, arg: u64) -> i64 {
     b.w32(SP_STATUS_STATE, p.state);
     b.w64(SP_STATUS_HW_PTR, p.hw_ptr);
     b.w64(SP_CONTROL_APPL_PTR, p.appl_ptr);
+    p.time.write_sync(&b, p.state);
     0
 }
 
@@ -261,6 +275,7 @@ fn writei(owner: crate::SoundOwnerKey, arg: u64) -> i64 {
             let mut guard = PCM.lock();
             let Some(p) = guard.iter_mut().find(|p| p.owner == owner) else { return err(Errno::Enodev); };
             p.state = STATE_RUNNING;
+            p.time.stamp_trigger();
             state = STATE_RUNNING;
         }
     }
