@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2456-stale-exit-notify-flake-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2456 | COVERAGE | low | The recorded exit-notify flake was a stale duplicate of B2032; the test reset now clears the task and zombie/waiter state together. | Repeated exit-notify and scheduler checks passed. | Chris Watkins |
+
 ### B2453-stale-tfo-reset-penalty-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
