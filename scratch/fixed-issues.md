@@ -4631,3 +4631,8 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED B2510 | MISSING | low | **`TCP_SAVE_SYN=2` now records from the admitted link-layer header, while mode 1 and transport-only adapters start at the network header.** Ethernet ingress carries its already-parsed header prefix through the canonical IPv4/IPv6 TCP demux; the listener's single saved-header owner prepends it only for mode 2 and retains exactly the link, network and TCP headers. | B2510. `stack::tcp_save_syn_tests::mode_two_records_the_link_header_from_real_ethernet_ingress` drives the production Ethernet ingress and compares the request's record byte-for-byte with the Ethernet+IPv4+TCP SYN. Before the fix it was RED because the record began at IPv4; restored implementation is GREEN. Focused SAVE_SYN 4/4 and full net 2,575/2,575 pass; both target checks pass. | B2510 |
+### R112-stale-dhcp-smoke-script-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED R112 | INFRA | med | **The recorded `boot-smoke-dhcp.sh` failure is stale: that script is absent from the current tree, and neither its `udhcpc: configured eth0` marker nor `OXIDE_UDHCPC_ENABLE` has any live reference.** The row described a retired busybox/musl userspace pipeline, not a current kernel or image behavior. | Current-tree audit: `test ! -e tools/boot-smoke-dhcp.sh` and repository search finds no `udhcpc` or `OXIDE_UDHCPC_ENABLE` references outside the historical ledger; current boot smoke uses the Fedora/glibc image path. No source behavior changed. | R112 |
