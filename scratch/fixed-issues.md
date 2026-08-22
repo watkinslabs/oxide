@@ -4631,6 +4631,11 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED B2510 | MISSING | low | **`TCP_SAVE_SYN=2` now records from the admitted link-layer header, while mode 1 and transport-only adapters start at the network header.** Ethernet ingress carries its already-parsed header prefix through the canonical IPv4/IPv6 TCP demux; the listener's single saved-header owner prepends it only for mode 2 and retains exactly the link, network and TCP headers. | B2510. `stack::tcp_save_syn_tests::mode_two_records_the_link_header_from_real_ethernet_ingress` drives the production Ethernet ingress and compares the request's record byte-for-byte with the Ethernet+IPv4+TCP SYN. Before the fix it was RED because the record began at IPv4; restored implementation is GREEN. Focused SAVE_SYN 4/4 and full net 2,575/2,575 pass; both target checks pass. | B2510 |
+### R113-stale-ipv6-route-type-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED R113 | MISSING | low | **The recorded IPv6 route-type gap is stale and its reference premise was wrong.** Oxide's local-input owner intentionally treats a matching `RT_TABLE_LOCAL` route as local, while separately consulting the interface-owned anycast map; the reference also treats `RTN_ANYCAST` as a local-input route. There is no current blackhole/prohibit route insertion path in the IPv6 local table, so adding a route-type field would create unused parallel state rather than close a reachable defect. | Current `route6::Route6Entry` has no type; `stack_ipv6::rx::v6_local_route_in` only admits matching local-table entries and `v6_dst_is_local_in` separately checks `v6_anycast_owned_by`. Reference `net/ipv6/route.c` maps both `RTN_LOCAL` and `RTN_ANYCAST` to `ip6_input`; no source behavior changed. | R113 |
 ### R112-stale-dhcp-smoke-script-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
