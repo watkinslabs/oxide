@@ -48,6 +48,13 @@ pub struct Slots {
     pub dst_after_routing: Option<Vec<u8>>,
 }
 
+/// Packet-info state a written ancillary stream asks the socket to validate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Pktinfo {
+    pub addr: crate::Ipv6Addr,
+    pub ifindex: u32,
+}
+
 /// Whether a written stream's length is admissible. # C: O(1)
 pub fn admit_len(optlen: u32) -> Result<(), Errno> {
     if optlen > PKTOPTIONS_MAX { return Err(Errno::Einval); }
@@ -65,13 +72,21 @@ pub fn admit_len(optlen: u32) -> Result<(), Errno> {
 /// class, flow label, packet-info or fragmentation choice named here describes
 /// one datagram, and this write installs no datagram.
 /// # C: O(stream bytes)
-pub fn admit_stream<'a, I>(entries: I, caps: OptCaps) -> Result<Slots, Errno>
-where I: IntoIterator<Item = (i32, i32, &'a [u8])>
+pub fn admit_stream<'a, I, F>(entries: I, caps: OptCaps, mut validate_pktinfo: F)
+    -> Result<Slots, Errno>
+where I: IntoIterator<Item = (i32, i32, &'a [u8])>,
+      F: FnMut(Pktinfo) -> Result<(), Errno>,
 {
     let mut out = Slots::default();
     for (level, kind, data) in entries {
         if level == SOL_SOCKET || level != SOL_IPV6 { continue; }
         admit_one(kind, data, caps, &mut out)?;
+        if kind == cmsg::IPV6_PKTINFO || kind == cmsg::IPV6_2292PKTINFO {
+            let mut addr = [0u8; 16];
+            addr.copy_from_slice(&data[..16]);
+            let ifindex = u32::from_ne_bytes(data[16..20].try_into().unwrap());
+            validate_pktinfo(Pktinfo { addr: crate::Ipv6Addr(addr), ifindex })?;
+        }
     }
     Ok(out)
 }

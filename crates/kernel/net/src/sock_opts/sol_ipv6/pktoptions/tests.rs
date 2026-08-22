@@ -25,7 +25,7 @@ fn rthdr2() -> Vec<u8> {
 }
 
 fn stream(items: &[(i32, i32, Vec<u8>)]) -> Result<Slots, Errno> {
-    admit_stream(items.iter().map(|(l, k, d)| (*l, *k, d.as_slice())), raw())
+    admit_stream(items.iter().map(|(l, k, d)| (*l, *k, d.as_slice())), raw(), |_| Ok(()))
 }
 
 // ---------------------------------------------------------------- write side
@@ -124,7 +124,7 @@ fn only_the_type_two_routing_header_is_admitted_by_a_stream() {
 #[test]
 fn the_options_headers_are_privileged_and_the_routing_header_is_not() {
     let unprivileged = |kind, data: Vec<u8>| admit_stream(
-        core::iter::once((SOL_IPV6, kind, data.as_slice())), none());
+        core::iter::once((SOL_IPV6, kind, data.as_slice())), none(), |_| Ok(()));
     assert_eq!(unprivileged(crate::cmsg::IPV6_HOPOPTS, opts(0)), Err(Errno::Eperm));
     assert_eq!(unprivileged(crate::cmsg::IPV6_DSTOPTS, opts(0)), Err(Errno::Eperm));
     assert_eq!(unprivileged(IPV6_RTHDRDSTOPTS_CMSG, opts(0)), Err(Errno::Eperm));
@@ -137,9 +137,24 @@ fn the_options_headers_are_privileged_and_the_routing_header_is_not() {
 fn a_malformed_options_header_is_refused_before_the_privilege_check() {
     let short = alloc::vec![0u8, 4];
     assert_eq!(admit_stream(core::iter::once(
-        (SOL_IPV6, crate::cmsg::IPV6_HOPOPTS, short.as_slice())), none()), Err(Errno::Einval));
+        (SOL_IPV6, crate::cmsg::IPV6_HOPOPTS, short.as_slice())), none(), |_| Ok(())), Err(Errno::Einval));
     assert_eq!(admit_stream(core::iter::once(
-        (SOL_IPV6, crate::cmsg::IPV6_HOPOPTS, [0u8].as_slice())), none()), Err(Errno::Einval));
+        (SOL_IPV6, crate::cmsg::IPV6_HOPOPTS, [0u8].as_slice())), none(), |_| Ok(())), Err(Errno::Einval));
+}
+
+#[test]
+fn packet_info_reaches_the_socket_context_screen() {
+    let mut data = alloc::vec![0u8; 20];
+    data[..16].copy_from_slice(&[0x20, 1, 0xd, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7]);
+    data[16..20].copy_from_slice(&9u32.to_ne_bytes());
+    let mut seen = None;
+    let result = admit_stream(core::iter::once((SOL_IPV6, IPV6_PKTINFO, data.as_slice())),
+        raw(), |info| { seen = Some(info); Err(Errno::Enodev) });
+    assert_eq!(result, Err(Errno::Enodev));
+    assert_eq!(seen, Some(Pktinfo {
+        addr: crate::Ipv6Addr([0x20, 1, 0xd, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7]),
+        ifindex: 9,
+    }));
 }
 
 // The per-datagram scalars are validated and then dropped: they name state one
