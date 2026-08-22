@@ -4892,3 +4892,8 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED B2573 | INFRA | med | The old B1720 wrong-worktree feature-gate row is already covered by the merged cross-worktree verification rule; it is ledger residue, not an unimplemented gate change. | B2465/R119 require each lane to verify `Checking <crate> (<path>)` names its own worktree before trusting green output. The current `CLAUDE.md` contains that rule; no source behavior changed. | B2573 |
+### B2574-selinux-policy-sleepable-lock
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2574 | DEFECT | high | The live SELinux server previously held a preemption-disabling spinlock while policy checks could grow SID tables, render contexts, or insert cache entries. It now transfers the server object under that lock, releases it for the policy closure, and reclaims it afterward. | `crates/kernel/selinux-runtime/src/lib.rs::with`; selinux-runtime 55/55; x86_64 and aarch64 kernel checks PASS. | B2574 |

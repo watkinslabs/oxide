@@ -30,15 +30,17 @@ pub mod label;
 pub mod network;
 pub mod task;
 
+use core::sync::atomic::{AtomicBool, Ordering};
 use sync::{Spinlock, SecurityPolicy};
 
 use selinux::{BootConfig, SecurityServer};
 
 /// The one security server.
 ///
-/// Held under a lock ranked so a check may be taken with any subsystem lock
-/// already held; see the lock-class declaration for why that rank is safe.
+/// Ownership is transferred under this short lock; policy work runs after the
+/// lock is released, so checks may allocate or sleep without atomic context.
 static SERVER: Spinlock<Option<SecurityServer>, SecurityPolicy> = Spinlock::new(None);
+static INSTALLED: AtomicBool = AtomicBool::new(false);
 
 /// Install the security server for this boot. # C: O(1)
 ///
@@ -48,19 +50,33 @@ pub fn install(boot: BootConfig) -> bool {
     let mut slot = SERVER.lock();
     if slot.is_some() { return false; }
     *slot = Some(SecurityServer::new(boot));
+    INSTALLED.store(true, Ordering::Release);
     true
 }
 
 /// Whether the server has been installed. # C: O(1)
-pub fn installed() -> bool { SERVER.lock().is_some() }
+pub fn installed() -> bool { INSTALLED.load(Ordering::Acquire) }
 
 /// Run a closure against the server, if it is installed. # C: O(1) plus closure
 ///
 /// Every caller goes through here so the lock is never held across a call the
 /// engine cannot make; the engine takes no tracked lock of its own.
 pub fn with<R>(f: impl FnOnce(&mut SecurityServer) -> R) -> Option<R> {
-    let mut slot = SERVER.lock();
-    slot.as_mut().map(f)
+    if !INSTALLED.load(Ordering::Acquire) { return None; }
+    // The spinlock protects only ownership transfer.  Policy parsing, SID
+    // growth, cache insertion, and rendering run after it is released; this
+    // is the critical distinction from the old `slot.as_mut().map(f)` path.
+    let mut server = loop {
+        let mut slot = SERVER.lock();
+        if let Some(server) = slot.take() {
+            break server;
+        }
+        drop(slot);
+        core::hint::spin_loop();
+    };
+    let result = f(&mut server);
+    *SERVER.lock() = Some(server);
+    Some(result)
 }
 
 /// Whether the module runs and has a policy loaded. # C: O(1)
