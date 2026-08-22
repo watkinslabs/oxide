@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2543-stale-ntfs-fat-rows
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2543 | INFRA | low | Two old filesystem rows duplicated merged fixes: NTFS hard-link creation is covered by B2503, and FAT unlink/rmdir lifetime deferral is covered by B2490. | Existing B2503/B2490 fixed entries and their production tests are present in the fixed ledger; no new source change is needed. | Chris Watkins |
+
 ### B2542-stale-synq-reuseport-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
