@@ -71,6 +71,12 @@
 |---|---|---|---|---|---|
 | FIXED 4d0eda084 | MISSING | med | **The sysfs tty class now publishes every numbered VT that `/dev` publishes.** | B2379. The production-path test lists and opens all numbered VTs and verifies each live `dev` attribute. | B2379-sysfs-numbered-vt-devices |
 
+### B2381-tcp-reordering-sysctl
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED c4d48a6ea | MISSING | low | **`net.ipv4.tcp_reordering` is per network namespace and is the single baseline used by TCP metrics.** | B2381. Namespace sysctl and production metrics callsites now share the same baseline owner. | B2381-tcp-reordering-sysctl |
+
 ### B2329-freezer-backoff-sleep
 
 | Status | Class | Sev | Issue | Evidence | Owner |

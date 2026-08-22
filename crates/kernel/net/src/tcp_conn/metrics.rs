@@ -110,10 +110,6 @@ impl TcpConn {
     }
 }
 
-/// `net.ipv4.tcp_reordering`: the degree a connection carries until either the
-/// cache or its own observation replaces it.
-pub const DEFAULT_REORDERING: u32 = 3;
-
 #[cfg(test)]
 #[path = "metrics_tests.rs"]
 mod tests;
