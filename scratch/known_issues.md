@@ -64,10 +64,10 @@ failure mode this reconcile was supposed to catch, not commit.
 | Class | blocker | critical | high | med | low | Total |
 |---|---:|---:|---:|---:|---:|---:|
 | COVERAGE | 0 | 0 | 10 | 68 | 64 | 142 |
-| DEFECT | 1 | 4 | 17 | 62 | 61 | 145 |
+| DEFECT | 1 | 4 | 17 | 62 | 60 | 144 |
 | INFRA | 0 | 0 | 11 | 40 | 39 | 90 |
 | MISSING | 1 | 0 | 49 | 140 | 111 | 301 |
-| **Total** | **2** | **4** | **87** | **310** | **275** | **678** |
+| **Total** | **2** | **4** | **87** | **310** | **274** | **677** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -716,7 +716,6 @@ here now.
 | OPEN | DEFECT | low | `TCP_INFO`'s published struct ends at the retransmit-time field and omits the AccECN tail the reference's uapi now carries, so a caller reading the current structure size gets a short answer. | `crates/kernel/syscalls/src/tcp_info.rs` | — |
 | OPEN | DEFECT | low | `SO_ERROR` reports only the primary error; the reference falls back to the soft (ICMP-derived, non-fatal) error when the primary is clear, reporting it once. | `crates/kernel/syscalls/src/recvmsg/dispatch.rs` `take_error()` has no soft slot. Overlaps B1959's error-queue ownership — not touched here | B1959 |
 | OPEN | COVERAGE | med | No differential probe corpus exercises `setsockopt`/`getsockopt` at SOL_NETLINK or SOL_SOCKET-on-netlink. `userspace/af_packet_diff/` covers SOL_PACKET and `userspace/glibc_conformance/t_{set,get}sockopt.c` covers neither level; the netlink defects fixed here were found by reading, not by a run. | `grep -n "NETLINK" userspace/glibc_conformance/t_setsockopt.c` is empty | — |
-| OPEN | DEFECT | low | An AF_UNIX DATAGRAM send that reports EPIPE does not raise `SIGPIPE`; the send layer raises it for the stream and seqpacket kinds only. The reference raises it for the datagram kind too unless `MSG_NOSIGNAL` | `socket::send::send_unix_blocking` gates the raise on `stream \|\| seqpacket` | unclaimed |
 | OPEN | COVERAGE | low | The wiring from the kernel-gated socket send entry points (`net::sock::udp::socket_sendto_ctl`, `sock_v6::sendto_v6_ctl`) into the mark-carrying route lookup cannot be exercised hosted — both files are `#[cfg(target_os = "oxide-kernel")]`. The DECISIONS they carry are all in ungated modules and tested there; only the call itself rests on the build | `crates/kernel/net/src/sock.rs` module gating | unclaimed |
 | OPEN | INFRA | low | `t_tcp_wait` cannot share a serial conformance run: five probes including it exceed the serial timeout ceiling and abort | the same four probes without it complete well inside the budget; with it the runner service starts and never deactivates | unclaimed |
 | OPEN | COVERAGE | low | Row 42 now runs at its declared `uid=root`, but only the host half is verified: three privileged and three unprivileged host runs are byte-identical, and the guest half is unchecked because the probe overruns the serial budget | the row above | unclaimed |

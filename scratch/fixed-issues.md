@@ -3178,3 +3178,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED B2345 | DEFECT | low | **hugetlbfs exposes no extended-attribute store.** Directory and regular-file inodes leave the canonical VFS attribute slot absent, so get, set, and list report `EOPNOTSUPP`. | B2345's inode-type regression covered both directories and huge-page files; restoring the file store made the control fail. | B2345-hugetlbfs-no-xattrs |
+
+### B2346-unix-dgram-sigpipe
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 700ed16a6 | DEFECT | low | **AF_UNIX broken-pipe signaling now follows socket kind: stream queues `SIGPIPE` unless suppressed, while datagram and seqpacket return `EPIPE` alone.** Revalidation showed the original datagram premise was inverted; seqpacket was the actual divergence. | B2346's socket-kind regression pinned stream, datagram, seqpacket, and urgent-tail behavior through one canonical policy decision. | B2346-unix-dgram-sigpipe |
