@@ -90,7 +90,11 @@ pub(crate) fn unlink_at(dirfd: i32, raw: &str) -> i64 {
         });
     // D29: parent dir `i_rwsem` EXCLUSIVE across the backend unlink (Linux
     // `do_unlinkat` locks the parent); dropped before the dcache delete below.
-    let r = { let _g = parent.inode.inode_lock(); parent.inode.unlink_child(&name) };
+    let victim_inode = victim.as_ref().and_then(|d| d.inode());
+    let r = { let _g = parent.inode.inode_lock(); match victim_inode.as_ref() {
+        Some(inode) => parent.inode.unlink_child_with_victim(&name, inode),
+        None => parent.inode.unlink_child(&name),
+    }};
     let rv = match r {
         // D30: backend `i_op->unlink` ran first; now `d_unlink` reflects it —
         // `drop_link`s the inode (mirrors the backend's link drop in the in-memory
