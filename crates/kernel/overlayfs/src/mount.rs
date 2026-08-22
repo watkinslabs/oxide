@@ -16,7 +16,7 @@ use core::sync::atomic::AtomicBool;
 use syscall::errno::Errno;
 use vfs::fs::FileSystem;
 use vfs::inode_ops::CreateCtx;
-use vfs::types::FileType;
+use vfs::types::{FileType, S_IFREG};
 use vfs::{InodeRef, KResult, SbStatFs, SuperOps};
 
 use crate::config::{Config, XinoMode};
@@ -25,7 +25,7 @@ use crate::inode::make_inode;
 use crate::layers::{dirs_disjoint, Layer, LayerStack, OvlEntry, OvlPath};
 use crate::limits::NAME_MAX;
 use crate::params;
-use crate::uapi::{INDEXDIR_NAME, WORKDIR_NAME};
+use crate::uapi::{INDEXDIR_NAME, VOLATILE_DIRTY_NAME, WORKDIR_NAME};
 use crate::xino;
 
 pub use crate::uapi::OVERLAYFS_SUPER_MAGIC;
@@ -67,7 +67,7 @@ impl OverlayFs {
         }
 
         let (workdir, indexdir) = match (&upper, &config.workdir) {
-            (Some(_), Some(w)) => work_dirs(resolve, w, config.index)?,
+            (Some(_), Some(w)) => work_dirs(resolve, w, config.index, config.is_volatile())?,
             _ => (None, None),
         };
         let stack = build(config, upper, workdir, indexdir, resolve)?;
@@ -120,14 +120,50 @@ fn dir(resolve: Resolve, path: &str) -> Result<InodeRef, Errno> {
 /// object being copied up is linked into the index by the same rename that
 /// puts it in place, and the two cannot be on different directories for that
 /// to be one operation.
-/// # C: O(1)
-fn work_dirs(resolve: Resolve, base: &str, index: bool)
+/// # C: O(work incompat entries)
+fn work_dirs(resolve: Resolve, base: &str, index: bool, volatile: bool)
     -> Result<(Option<InodeRef>, Option<InodeRef>), Errno> {
     let b = dir(resolve, base)?;
     let work = subdir(&b, WORKDIR_NAME)?;
+    refuse_incompatible(&work)?;
+    if volatile { create_volatile_marker(&work)?; }
     if !index { return Ok((Some(work), None)); }
     let idx = subdir(&b, INDEXDIR_NAME)?;
     Ok((Some(idx.clone()), Some(idx)))
+}
+
+/// Refuse a work directory carrying an incompatibility from an earlier mount.
+/// # C: O(directory entries)
+fn refuse_incompatible(work: &InodeRef) -> Result<(), Errno> {
+    let name = VOLATILE_DIRTY_NAME.split('/').next().ok_or(Errno::Einval)?;
+    match work.lookup(name) {
+        Ok(i) if i.file_type() != FileType::Directory || !i.i_op().dir_is_empty(&i) => {
+            Err(Errno::Einval)
+        }
+        Ok(_) | Err(vfs::VfsError::Enoent) => Ok(()),
+        Err(e) => Err(crate::err::to_errno(e)),
+    }
+}
+
+/// Publish the marker which makes an unflushed upper incompatible with reuse.
+/// # C: O(path components)
+fn create_volatile_marker(work: &InodeRef) -> Result<(), Errno> {
+    let mut dir = work.clone();
+    let mut parts = VOLATILE_DIRTY_NAME.split('/').peekable();
+    while let Some(name) = parts.next() {
+        if parts.peek().is_some() {
+            dir = subdir(&dir, name)?;
+            continue;
+        }
+        return match dir.lookup(name) {
+            Ok(_) => Ok(()),
+            Err(vfs::VfsError::Enoent) => dir
+                .create_child(name, S_IFREG as u32, &CreateCtx::root())
+                .map(|_| ()).map_err(crate::err::to_errno),
+            Err(e) => Err(crate::err::to_errno(e)),
+        };
+    }
+    Err(Errno::Einval)
 }
 
 /// Get or create a subdirectory of the work base. # C: O(1)

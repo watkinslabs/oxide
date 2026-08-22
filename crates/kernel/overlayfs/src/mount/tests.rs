@@ -229,6 +229,24 @@ fn the_work_directory_is_created_under_the_named_base() {
 }
 
 #[test]
+fn a_volatile_mount_publishes_the_incompatibility_marker() {
+    let (l, _up, _lo) = image();
+    OverlayFs::open(&alloc::format!("{OPTS},volatile"), &l.resolve(), true).unwrap();
+    let base = l.0.get("/work").unwrap();
+    let work = find_path(base, crate::uapi::WORKDIR_NAME).unwrap();
+    assert!(find_path(&work, crate::uapi::VOLATILE_DIRTY_NAME).is_some());
+}
+
+#[test]
+fn a_mount_refuses_a_workdir_with_a_volatile_incompatibility_marker() {
+    let (l, _up, _lo) = image();
+    let base = l.0.get("/work").unwrap();
+    let work = mkpath(base, crate::uapi::WORKDIR_NAME);
+    mkfile(&work, crate::uapi::VOLATILE_DIRTY_NAME, b"");
+    assert_eq!(OverlayFs::open(OPTS, &l.resolve(), true).err(), Some(Errno::Einval));
+}
+
+#[test]
 fn the_mount_line_names_the_layers_back() {
     let (l, _up, _lo) = image();
     let fs = OverlayFs::open(OPTS, &l.resolve(), true).unwrap();
