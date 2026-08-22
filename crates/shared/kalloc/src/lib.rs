@@ -85,3 +85,5 @@ pub use watchpoint::{set_watchpoint_disarm_hook, set_watchpoint_hook, Watchpoint
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod cpu_limit_tests;

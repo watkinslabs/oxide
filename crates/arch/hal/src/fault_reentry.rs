@@ -43,7 +43,7 @@ use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 /// CPU slots tracked. An index at or above it folds into range rather than
 /// being dropped, because a mis-indexed CPU must still be guarded.
-pub const CPUS: usize = crate::MAX_SMP_CPUS;
+pub const CPUS: usize = crate::MAX_CPUS;
 
 /// In-flight faults tracked per CPU. A legitimate chain is short — a user
 /// access faults, its resolution touches user memory once more. Exhausting the

@@ -17,10 +17,8 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 pub mod mask;
 pub use mask::{AtomicCpuMask, CpuMask};
 
-/// Logical CPU admission cap. Scheduler affinity and architecture transport
-/// are word-array shaped through the full architectural 256-CPU limit.
-pub const MAX_CPUS: usize = 256;
-const _: () = assert!(MAX_CPUS <= hal::MAX_SMP_CPUS);
+/// Logical CPU admission cap shared with every per-CPU owner.
+pub use hal::MAX_CPUS;
 /// Offset in every architecture per-CPU page used by Linux module code.
 pub const LINUX_MODULE_PERCPU_OFFSET: usize = 16;
 /// Module per-CPU allocations reserve one page per logical CPU.
@@ -146,6 +144,13 @@ pub fn enabled_count() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn topology_arrays_use_canonical_cpu_bound() {
+        assert_eq!(IDS.len(), hal::MAX_CPUS);
+        assert_eq!(FLAGS.len(), hal::MAX_CPUS);
+        assert_eq!(ACPI_UIDS.len(), hal::MAX_CPUS);
+    }
 
     fn reset() {
         // Clear by writing u64::MAX to all slots and zeroing count.

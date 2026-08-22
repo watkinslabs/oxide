@@ -14,5 +14,8 @@ license = "MPL-2.0"
 hal = { path = "../../arch/hal" }
 klog = { path = "../../shared/klog" }
 
+[dev-dependencies]
+sync = { path = "../../shared/sync" }
+
 [lints]
 workspace = true
