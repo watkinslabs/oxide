@@ -18,6 +18,12 @@
 |---|---|---|---|---|---|
 | FIXED B2556 | INFRA | med | The test-manifest row was stale: the explicit child `#[path = "tests/<name>.rs"]` bindings are already present, so bare module resolution cannot compile the implementation files as tests. | `crates/kernel/fatfs/src/cluster_alloc/tests.rs` explicitly binds `entry`, `alloc`, `free`, `count`, and `zero`; the current FAT library run executes 337 tests successfully. No production change is warranted. | Chris Watkins |
 
+### B2557-stale-images-build-syntax
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2557 | DEFECT | low | The old shared-images syntax observation is stale: the current `../images/build.sh` parses successfully. The checkout remains user-owned and dirty, so no files there were changed. | `bash -n ../images/build.sh` exits 0 on the current script; the historical B1672 observation is retained only in the existing fixed ledger history. | Chris Watkins |
+
 ### B2553-stale-keyring-coverage-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
