@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2412-acpi-battery-alarm
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED c3db4ddb0 | MISSING | med | **Power-supply providers can publish driver-specific attributes; ACPI batteries expose writable `alarm` backed by `_BTP`.** | B2412 added the provider attribute projection and ACPI alarm read/write path, with focused and target coverage. | B2412-acpi-battery-alarm |
+
 ### B2410-stale-udp-encap-values
 
 | Status | Class | Sev | Issue | Evidence | Owner |
