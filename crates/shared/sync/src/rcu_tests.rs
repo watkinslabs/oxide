@@ -11,6 +11,12 @@ fn guard() -> std::sync::MutexGuard<'static, ()> {
 }
 
 #[test]
+fn quiescent_state_table_uses_canonical_cpu_bound() {
+    assert_eq!(CPU_QS.len(), hal::MAX_CPUS);
+    assert_eq!(CPU_MASK_WORDS, hal::MAX_CPUS.div_ceil(u64::BITS as usize));
+}
+
+#[test]
 fn callback_runs_only_after_a_grace_period() {
     let _g = guard();
     let ran = StdArc::new(AtomicBool::new(false));

@@ -46,9 +46,9 @@ pub fn online_mask() -> u64 { ONLINE_MASK.load(Ordering::Acquire).low_word() }
 /// is for generic infrastructure that cannot depend on the scheduler's CPU
 /// mask type; scheduler consumers use [`online_cpumask`] directly.
 /// # C: O(words)
-pub fn online_transport_mask() -> [u64; hal::MAX_SMP_CPUS.div_ceil(u64::BITS as usize)] {
+pub fn online_transport_mask() -> [u64; hal::MAX_CPUS.div_ceil(u64::BITS as usize)] {
     let source = ONLINE_MASK.load(Ordering::Acquire);
-    let mut out = [0u64; hal::MAX_SMP_CPUS.div_ceil(u64::BITS as usize)];
+    let mut out = [0u64; hal::MAX_CPUS.div_ceil(u64::BITS as usize)];
     let words = source.as_words();
     let mut i = 0;
     while i < words.len() {

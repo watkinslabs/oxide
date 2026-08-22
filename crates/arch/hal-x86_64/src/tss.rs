@@ -151,7 +151,7 @@ unsafe impl Sync for TssCell {}
 /// CPU so each AP scheduling user tasks has its own RSP0 (a shared TSS
 /// would clobber across CPUs on every switch). GDT carries one 16-byte
 /// TSS descriptor per slot at selector `TSS_SEL + cpu*0x10`.
-pub const NR_TSS: usize = hal::MAX_SMP_CPUS;
+pub const NR_TSS: usize = hal::MAX_CPUS;
 
 /// Per-CPU TSS array. CPU `i` uses `TSS[i]`, loaded via `ltr(TSS_SEL +
 /// i*0x10)` and updated via `set_rsp0` (indexed by `current_cpu()`).

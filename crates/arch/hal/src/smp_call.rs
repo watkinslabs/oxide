@@ -102,7 +102,7 @@ pub const ALL: u64 = u64::MAX;
 /// the handler is here, and a counter kept elsewhere would be a second record
 /// of the same fact that only one of the two updates.
 /// Fixed word capacity of the architecture stop transport.
-pub const STOPPED_WORDS: usize = crate::MAX_SMP_CPUS.div_ceil(u64::BITS as usize);
+pub const STOPPED_WORDS: usize = crate::MAX_CPUS.div_ceil(u64::BITS as usize);
 
 static STOPPED: [AtomicU64; STOPPED_WORDS] = [const { AtomicU64::new(0) }; STOPPED_WORDS];
 

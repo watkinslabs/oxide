@@ -13,7 +13,7 @@ use core::cell::UnsafeCell;
 use core::marker::PhantomData;
 
 /// Maximum CPU count supported by generic per-CPU storage.
-pub const MAX_CPUS: usize = hal::MAX_SMP_CPUS;
+pub use hal::MAX_CPUS;
 
 /// Cacheline boundary per `04§6` data-structure-defaults — false-sharing
 /// avoidance for any per-CPU slot.
@@ -164,6 +164,15 @@ mod tests {
     use std::sync::Arc;
     use std::thread;
     use std::vec::Vec;
+
+    #[test]
+    fn storage_uses_canonical_cpu_bound() {
+        let pc: PerCpu<u8, NoopCpuLocal> = PerCpu::new();
+        let mut slots = 0;
+        // SAFETY: single-thread test; no other thread can access this instance.
+        unsafe { pc.for_each_unsynced(|_, _| slots += 1) };
+        assert_eq!(slots, hal::MAX_CPUS);
+    }
 
     #[test]
     fn cacheline_alignment_and_size() {

@@ -11,6 +11,9 @@ path = "src/lib.rs"
 sync = { path = "../../shared/sync" }
 klog = { path = "../../shared/klog", optional = true }
 
+[dev-dependencies]
+hal = { path = "../../arch/hal" }
+
 [features]
 default = []
 hosted  = []

@@ -7,12 +7,12 @@ use crate::PtRegs;
 // A trap can sleep in the fault resolver while other CPUs take faults. The
 // slot key must work before GS is live, because exceptions can arrive during
 // per-CPU bring-up.
-static LIVE: [AtomicPtr<PtRegs>; hal::MAX_SMP_CPUS] =
-    [const { AtomicPtr::new(core::ptr::null_mut()) }; hal::MAX_SMP_CPUS];
-static LIVE_RSP: [AtomicU64; hal::MAX_SMP_CPUS] =
-    [const { AtomicU64::new(0) }; hal::MAX_SMP_CPUS];
-static LIVE_RIP: [AtomicU64; hal::MAX_SMP_CPUS] =
-    [const { AtomicU64::new(0) }; hal::MAX_SMP_CPUS];
+static LIVE: [AtomicPtr<PtRegs>; hal::MAX_CPUS] =
+    [const { AtomicPtr::new(core::ptr::null_mut()) }; hal::MAX_CPUS];
+static LIVE_RSP: [AtomicU64; hal::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; hal::MAX_CPUS];
+static LIVE_RIP: [AtomicU64; hal::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; hal::MAX_CPUS];
 
 #[inline]
 fn cpu_slot() -> usize {

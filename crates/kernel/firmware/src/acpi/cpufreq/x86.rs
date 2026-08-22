@@ -147,7 +147,7 @@ fn command_kind(space: PctSpace) -> Option<CommandKind> {
 /// Program a command on every CPU coordinating this policy. # C: O(cpus + IPI)
 fn program(policy: &cpufreq::Policy, coordination: Coordination, command: Command) -> KResult<()> {
     let current = hal_x86_64::X86CpuOps::current_cpu() as usize;
-    let mut mask = [0u64; hal::MAX_SMP_CPUS.div_ceil(u64::BITS as usize)];
+    let mut mask = [0u64; hal::MAX_CPUS.div_ceil(u64::BITS as usize)];
     let selected: &[usize] = match coordination {
         Coordination::SoftwareAny => policy.cpus.get(..1).unwrap_or(&[]),
         Coordination::SoftwareAll | Coordination::HardwareAll => &policy.cpus,
@@ -155,7 +155,7 @@ fn program(policy: &cpufreq::Policy, coordination: Coordination, command: Comman
     let mut remote = false;
     let mut local = false;
     for cpu in selected {
-        if *cpu >= hal::MAX_SMP_CPUS { return Err(VfsError::Einval); }
+        if *cpu >= hal::MAX_CPUS { return Err(VfsError::Einval); }
         mask[*cpu / u64::BITS as usize] |= 1u64 << (*cpu % u64::BITS as usize);
         if *cpu == current { local = true; } else { remote = true; }
     }
