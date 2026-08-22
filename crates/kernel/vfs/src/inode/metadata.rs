@@ -161,6 +161,12 @@ impl Inode {
             sid => Some(sid),
         }
     }
+    /// Read a cached MAC label only when it belongs to `seq`. # C: O(1)
+    pub fn security_sid_at(&self, seq: u32) -> Option<u32> {
+        let sid = self.i_security.load(Ordering::Acquire);
+        if sid == SECURITY_SID_UNSET { return None; }
+        (self.i_security_seq.load(Ordering::Acquire) == seq).then_some(sid)
+    }
     /// Publish the resolved MAC label. # C: O(1)
     ///
     /// Release-ordered against [`Self::security_sid`]: a reader that observes
@@ -168,9 +174,15 @@ impl Inode {
     pub fn set_security_sid(&self, sid: u32) {
         self.i_security.store(sid, Ordering::Release);
     }
+    /// Publish a resolved MAC label with its policy generation. # C: O(1)
+    pub fn set_security_sid_at(&self, sid: u32, seq: u32) {
+        self.i_security.store(sid, Ordering::Release);
+        self.i_security_seq.store(seq, Ordering::Release);
+    }
     /// Discard the cached MAC label so the next use resolves it again. # C: O(1)
     pub fn clear_security_sid(&self) {
         self.i_security.store(SECURITY_SID_UNSET, Ordering::Release);
+        self.i_security_seq.store(0, Ordering::Release);
     }
     /// Bind a synthesized inode to the superblock that instantiated it. An
     /// inode may be attached repeatedly through aliases of ONE instance, but
