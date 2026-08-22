@@ -4,6 +4,7 @@
 // silently dropped and reported as "ok".
 
 mod action;
+mod contract;
 mod flags;
 mod install;
 mod interp;
