@@ -17,6 +17,12 @@
 |---|---|---|---|---|---|
 | FIXED e59f2eb4a | INFRA | low | **The native NVMe key refresh/revoke test now drives key collection before inspecting the canonical payload, deterministically covering the lifetime race that formerly appeared only under the parallel `fs` suite.** | B2370. The production keyring lifetime pin is covered by the focused test and the change removes the stale flake row. | B2370-keyring-native-test-isolation |
 
+### B2371-f2fs-missing-crypt-context
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 37a074ac6 | DEFECT | low | **An inode flagged encrypted whose context attribute is absent now reports `ENODATA` across the F2FS crypto entry points, matching fscrypt.** | B2371. The production context lookup preserves the missing-attribute errno and the focused write/policy controls pass. | B2371-f2fs-missing-crypt-context |
+
 ### B2329-freezer-backoff-sleep
 
 | Status | Class | Sev | Issue | Evidence | Owner |

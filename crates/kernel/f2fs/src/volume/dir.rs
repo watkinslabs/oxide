@@ -192,10 +192,19 @@ impl<S: SectorSource> Volume<S> {
     /// Whether a directory holds anything beyond `.` and `..`.
     /// # C: O(directory blocks)
     pub fn dir_is_empty(&self, inode: &Inode, ino: u32) -> Result<bool, Errno> {
-        Ok(self
-            .read_dir(inode, ino)?
-            .iter()
-            .all(|e| hash::is_dot_or_dotdot(&e.name)))
+        if inode.inline_dentry() {
+            let (area, layout) = self.inline_dir(inode, ino)?;
+            let list = deblock::entries(&area, &layout).map_err(|_| self.corrupt_dirent())?;
+            return Ok(list.iter().all(|e| hash::is_dot_or_dotdot(&e.name)));
+        }
+        let blocks = inode.size.div_ceil(BLKSIZE as u64);
+        for index in 0..blocks {
+            let Some(block) = self.dir_block(inode, ino, index)? else { continue };
+            let list = deblock::entries(&block, &Layout::block())
+                .map_err(|_| self.corrupt_dirent())?;
+            if list.iter().any(|e| !hash::is_dot_or_dotdot(&e.name)) { return Ok(false); }
+        }
+        Ok(true)
     }
 
     /// One block of a directory's data, or `None` where the directory is

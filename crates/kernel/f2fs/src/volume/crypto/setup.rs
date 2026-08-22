@@ -44,7 +44,7 @@ impl<S: SectorSource> Volume<S> {
         let raw: Vec<u8> =
             crate::xattr::get(&area, XATTR_INDEX_ENCRYPTION, crypto::uapi::XATTR_NAME)
                 .map_err(|_| Errno::Eio)?
-                .ok_or(Errno::Euclean)?;
+                .ok_or(Errno::Enodata)?;
         crypto::policy::parse(&raw).map(Some).map_err(|e| e.errno())
     }
 

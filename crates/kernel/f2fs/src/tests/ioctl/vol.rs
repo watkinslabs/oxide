@@ -235,6 +235,21 @@ fn a_policy_set_on_an_empty_directory_reads_back_through_the_ordinary_path() {
     assert_eq!(ctx.policy.key, crate::crypto::policy::KeyId::Identifier([0x33; 16]));
 }
 
+#[test]
+fn a_missing_context_is_the_no_policy_arm_when_setting_one() {
+    let mut v = test_image::with_root().mount_rw().unwrap();
+    let dir = v.create(ROOT_INO, b"d", &spec(S_IFDIR | 0o755), None).unwrap();
+    v.stamp_inode(dir, |b| {
+        let at = crate::uapi::I_FLAGS;
+        let held = u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
+        crate::volume::dnode::put32(b, at, held | crate::flags::F2FS_ENCRYPT_FL);
+    })
+    .unwrap();
+    assert_eq!(v.set_encryption_policy(dir, &wire_v2()), Ok(()));
+    let inode = v.read_inode(dir).unwrap();
+    assert!(v.crypt_context(&inode, dir).unwrap().is_some());
+}
+
 /// A file is not a directory: only a directory hands a policy down.
 #[test]
 fn a_policy_on_something_that_is_not_a_directory_is_refused() {
