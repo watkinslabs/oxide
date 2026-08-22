@@ -2,10 +2,12 @@
 // - `termios`: PTY termios bits, control chars, and winsize layout helpers.
 // - `pair`: ring buffers plus master/slave PTY data-path state.
 // - `readiness`: `n_tty_poll` / `pty_write_room` predicates for both halves.
+// - `revoke`: per-open hangup generation and retired-slave behavior.
 
 mod termios;
 mod pair;
 mod readiness;
+mod revoke;
 
 pub use pair::{
     Pair, Ring, TIOCPKT_DATA, TIOCPKT_DOSTOP, TIOCPKT_FLUSHREAD,

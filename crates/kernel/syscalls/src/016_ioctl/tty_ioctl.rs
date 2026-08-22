@@ -94,6 +94,9 @@ pub(super) fn handle_tty_ioctl(
     if let Some(e) = console::hung_up_ioctl(file, req as u32) {
         return crate::vfs_errno::errno_from_vfs(e);
     }
+    if let Some(e) = devpts::hung_up_ioctl(file, req as u32) {
+        return crate::vfs_errno::errno_from_vfs(e);
+    }
 
     match req {
         TIOCGWINSZ => {

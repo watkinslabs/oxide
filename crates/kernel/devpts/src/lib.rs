@@ -36,6 +36,7 @@ pub mod mount;
 
 #[cfg(target_os = "oxide-kernel")] pub mod ctty;
 #[cfg(target_os = "oxide-kernel")] mod fileops;
+#[cfg(target_os = "oxide-kernel")] pub use fileops::hung_up_ioctl;
 #[cfg(target_os = "oxide-kernel")] mod smoke;
 
 pub use ids::{DEVPTS_FSID, DEVPTS_MAGIC, MAX_PTY_PAIRS};
