@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2549-stale-merged-behavior-rows
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2549 | MIXED | low | Six open rows were exact pre-fix descriptions of behavior already merged: ext4 `resuid=`/`resgid=` reserved-block admission (B2524), journalled quota root-block claims (B2514), `SHM_NORESERVE` backing (B2489), robust futex unlock-list modifiers (B2512), keep_bootcon same-device fan-out (B2460), and `TCP_SAVE_SYN=2` link-header capture (B2510). | The cited merged implementations and fixed entries cover each exact premise; no production change is warranted. Only the duplicate ledger rows were removed, preserving nearby residual rows. | B2549-stale-merged-behavior-rows |
+
 ### B2548-stale-merged-row-consolidation
 
 | Status | Class | Sev | Issue | Evidence | Owner |
