@@ -17,12 +17,6 @@ use super::uapi::*;
 use super::user;
 use super::verifier;
 
-/// The two structure sizes `SECCOMP_GET_NOTIF_SIZES` reports come from the
-/// notification module that defines the wire format, never from a second copy
-/// of the arithmetic here.
-use super::notif::uapi::{NOTIF_BYTES as SECCOMP_NOTIF_BYTES,
-                         NOTIF_RESP_BYTES as SECCOMP_NOTIF_RESP_BYTES};
-
 /// Linux `seccomp_mode(&current->seccomp)`. The canonical cell, never
 /// re-derived from chain emptiness: STRICT installs no filter at all, so an
 /// empty chain cannot tell mode 0 from mode 1.
@@ -134,9 +128,7 @@ fn do_seccomp_inner(op: u64, flags: u64, uargs: u64) -> Result<i64, Errno> {
         SECCOMP_SET_MODE_FILTER => set_mode_filter(&cur, flags, uargs),
         SECCOMP_GET_ACTION_AVAIL => install::action_avail(user::read_u32(uargs)?).map(|_| 0),
         SECCOMP_GET_NOTIF_SIZES => {
-            user::write_notif_sizes(uargs,
-                [SECCOMP_NOTIF_BYTES as u16, SECCOMP_NOTIF_RESP_BYTES as u16,
-                 SECCOMP_DATA_BYTES as u16])?;
+            user::write_notif_sizes(uargs, super::notif::uapi::notif_sizes())?;
             Ok(0)
         }
         _ => Err(Errno::Einval),
