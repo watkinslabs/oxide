@@ -1,5 +1,11 @@
 # Fixed issues
 
+### R126-stale-exit-notify-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED R126 | COVERAGE | low | **The isolated `sched` exit-notify failure was a stale duplicate, not an unresolved defect.** | B2032 already fixed the leaked global zombie state in the shared test reset; its repeated-run evidence was 0/24 failures after the fix and the positive control reproduced the failure. | R126 |
+
 ### R124-duplicate-perf-event-ring-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
