@@ -78,8 +78,9 @@ fn build_from_mm(mm: &vmm::AddressSpace) -> Vec<u8> {
         out.push(b'\n');
         // Detail block.
         kv_kb(&mut out, b"Size:           ", kb);
-        kv_kb(&mut out, b"KernelPageSize: ", 4);
-        kv_kb(&mut out, b"MMUPageSize:    ", 4);
+        let page_kb = crate::smaps_page_size::for_backing(&vma.backing);
+        kv_kb(&mut out, b"KernelPageSize: ", page_kb);
+        kv_kb(&mut out, b"MMUPageSize:    ", page_kb);
         kv_kb(&mut out, b"Rss:            ", rss_kb);
         kv_kb(&mut out, b"Pss:            ", rss_kb);
         kv_kb(&mut out, b"Pss_Dirty:      ", 0);
