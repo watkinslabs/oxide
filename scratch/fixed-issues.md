@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2520-stale-ntfs-label-version-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 36e9e5a47 | DEFECT | med | NTFS label and volume-version procfs surfaces already persist and report the mounted volume state; the former open premise was stale. | NTFS procfs/remount tests and target checks passed. | Chris Watkins |
+
 ### B2519-bpf-perf-event-program-load
 
 | Status | Class | Sev | Issue | Evidence | Owner |
