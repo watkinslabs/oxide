@@ -4963,6 +4963,12 @@ against the row's own evidence.
 |---|---|---|---|---|---|
 | FIXED B2591 | COVERAGE | med | The open reap-vs-exit interleaving row duplicated C303 and is stale ledger residue. A deterministic turn-based scheduler harness already pins both orders instead of relying on probabilistic thread scheduling. | `sched/src/tests/interleave.rs` and `interleave_wait.rs` implement the linked test harness; its four wait/reap order cases and positive controls are recorded by C303. No source change was needed. | B2591 |
 
+### B2592-stale-ext4-extent-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2592 | DEFECT | med | The open ext4 extent-image failure duplicated the existing B2239 fix and is stale ledger residue. | Current `extent_rw_image::fallocate_sparse_extents_promotes_full_root_to_depth3` passes; B2239 fixed the test's metadata-cache invalidation after its deliberate external header poke, with the 16-test image suite and positive control recorded in the fixed ledger. No source change was needed. | B2592 |
+
 ### B2584-stale-membarrier-rows
 
 | Status | Class | Sev | Issue | Evidence | Owner |
