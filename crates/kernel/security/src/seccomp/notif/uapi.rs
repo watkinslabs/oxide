@@ -45,6 +45,14 @@ pub const ADDFD_SIZE_VER0: u32 = 24;
 /// Upper bound on an extensible-argument ioctl payload.
 pub const ADDFD_SIZE_MAX: u32 = 4096;
 
+/// `struct seccomp_notif_sizes` as returned by `SECCOMP_GET_NOTIF_SIZES`.
+/// Keeping the tuple beside the wire codecs makes these definitions the only
+/// size owner the syscall entry can consult.
+/// # C: O(1)
+pub const fn notif_sizes() -> [u16; 3] {
+    [NOTIF_BYTES as u16, NOTIF_RESP_BYTES as u16, SECCOMP_DATA_BYTES as u16]
+}
+
 // ---- ioctl commands -------------------------------------------------------
 
 pub const IOCTL_NOTIF_RECV:      u32 = ioc(IOC_WRITE | IOC_READ, 0, NOTIF_BYTES);

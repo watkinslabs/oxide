@@ -24,6 +24,13 @@ fn the_three_exchanged_structures_have_their_documented_sizes() {
     assert_eq!(ADDFD_SIZE_VER0, 24);
 }
 
+#[test]
+fn the_seccomp_syscall_reports_the_wire_owners_three_sizes() {
+    assert_eq!(notif_sizes(),
+               [NOTIF_BYTES as u16, NOTIF_RESP_BYTES as u16, SECCOMP_DATA_BYTES as u16]);
+    assert_eq!(notif_sizes(), [80, 24, 64]);
+}
+
 // An extensible-argument command is matched with its size and direction
 // stripped, so a program built against a LARGER addfd structure still reaches
 // the addfd handler instead of falling through to the unknown-command answer.

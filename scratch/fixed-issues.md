@@ -3304,3 +3304,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED f842a9032 | DEFECT | low | **The alleged fallible-`d_hash` defect is unreachable with the current `&str` pathname boundary and duplicates the separate raw-name strict-encoding gap.** Valid Unicode inputs use the canonical casefold hash; malformed UTF-8 cannot reach this hook. | B2367's strict casefold regression pins valid unassigned and maximum scalar inputs through the installed production hook; the raw-name redesign remains open separately. | B2367-fallible-dentry-hash |
+
+### B2368-seccomp-notif-sizes-owner
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED a51e03a09 | COVERAGE | low | **`SECCOMP_GET_NOTIF_SIZES` obtains all three reported sizes from one notification-wire owner.** The syscall publishes the tuple directly from the notification module's wire constants, eliminating arithmetic duplication. | B2368's notification-size regression changes one wire size and fails the reported tuple; restored owner passes. | B2368-seccomp-notif-sizes-owner |
