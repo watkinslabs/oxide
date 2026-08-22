@@ -196,3 +196,20 @@ fn leaf_inode_routed_through_icache_dedup() {
     let via_iget = sb.iget(leaf_ino, || panic!("iget must hit the cache, not rebuild"));
     assert!(Arc::ptr_eq(&a, &via_iget));
 }
+
+#[test]
+fn inode_number_resolution_uses_only_the_live_tree() {
+    let root_ino = dir_ino("/resolve");
+    let r = PseudoDir::new_root(root_ino, 0x1234);
+    let leaf_ino = 0x7000_feed;
+    r.insert_path("one/two/leaf", PseudoSymlink::new(leaf_ino, 0x1234, b"/target"));
+    let dir = r.lookup_path("one/two").expect("directory exists");
+
+    assert_eq!(r.find_ino(root_ino).map(|i| i.ino()), Some(root_ino));
+    assert_eq!(r.find_ino(dir.ino()).map(|i| i.ino()), Some(dir.ino()));
+    assert_eq!(r.find_ino(leaf_ino).map(|i| i.ino()), Some(leaf_ino));
+    assert!(r.find_ino(u64::MAX).is_none());
+
+    assert_eq!(r.remove_subtree("one/two/leaf"), 1);
+    assert!(r.find_ino(leaf_ino).is_none(), "a detached node is stale");
+}

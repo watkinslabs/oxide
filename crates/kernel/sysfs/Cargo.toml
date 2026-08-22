@@ -8,6 +8,7 @@ path = "src/lib.rs"
 [dependencies]
 vfs    = { path = "../vfs" }
 kernfs = { path = "../kernfs" }
+syscall = { path = "../syscall" }
 sync   = { path = "../../shared/sync" }
 net   = { path = "../net" }
 block = { path = "../block" }

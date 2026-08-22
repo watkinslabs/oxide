@@ -2773,6 +2773,7 @@ dependencies = [
  "sched",
  "security",
  "sync",
+ "syscall",
  "thermal",
  "timekeeper",
  "tty",

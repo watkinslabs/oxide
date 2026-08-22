@@ -21,8 +21,10 @@ pub fn dir_ino(path: &str) -> Ino {
     0x5000_0000_0000_0000 | (h & 0x0fff_ffff_ffff_ffff)
 }
 
-// Child module manifest: `clone` owns the per-mount-namespace deep copy.
+// Child module manifest: `clone` owns the per-mount-namespace deep copy;
+// `find` owns live inode-number inversion.
 mod clone;
+mod find;
 
 fn components(path: &str) -> Vec<&str> {
     path.split('/').filter(|c| !c.is_empty()).collect()
