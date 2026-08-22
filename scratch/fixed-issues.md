@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2422-stale-fileattr-errno-owner-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2422 | DEFECT | low | **The ioctl and syscall file-attribute doors intentionally translate absent backends differently; the former OPEN row incorrectly treated that policy as latent duplication.** | B2422 revalidated `ENOTTY` for legacy ioctls and `EOPNOTSUPP` for the newer syscall door. | B2422-stale-fileattr-errno-owner-row |
+
 ### B2426-f2fs-rename-replace-in-place
 
 | Status | Class | Sev | Issue | Evidence | Owner |
