@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2529-stale-wifi-subsystem-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED current | MISSING | high | The former “no Wi‑Fi subsystem” row is stale: wireless/cfg80211, mac80211, and the mac80211-hwsim virtual radio are present, workspace members, and hwsim boot initialization is wired behind `mac80211_hwsim.radios`. | `crates/kernel/wireless`, `crates/kernel/mac80211`, `crates/drivers/drv-mac80211-hwsim`; `kmain/rootfs.rs::init_hwsim_from_cmdline`. | Chris Watkins |
+
 ### R98-security-spec-current-seccomp
 
 | Status | Class | Sev | Issue | Evidence | Owner |
