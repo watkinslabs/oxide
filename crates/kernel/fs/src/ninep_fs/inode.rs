@@ -23,6 +23,11 @@ fn create_mode(mode: u32, ctx: &CreateCtx) -> u32 {
     (mode & PERM_MASK) & !u32::from(ctx.umask)
 }
 
+/// Admit only the unflagged rename the 9P protocol can express. # C: O(1)
+pub(super) fn admit_rename_flags(flags: u32) -> KResult<()> {
+    if flags == 0 { Ok(()) } else { Err(VfsError::Einval) }
+}
+
 /// `i_op` for every 9P inode.
 pub struct NinepInodeOps;
 
@@ -123,7 +128,7 @@ impl InodeOps for NinepInodeOps {
     fn rename(&self, inode: &Inode, old_name: &str, new_dir: &Inode, new_name: &str,
               flags: u32, _ctx: &CreateCtx) -> KResult<()>
     {
-        if flags != 0 { return Err(VfsError::Einval); }
+        admit_rename_flags(flags)?;
         let d = data(inode)?;
         let nd = data(new_dir)?;
         if !Arc::ptr_eq(&d.mount, &nd.mount) { return Err(VfsError::Exdev); }
