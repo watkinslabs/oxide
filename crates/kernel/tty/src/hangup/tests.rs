@@ -19,6 +19,12 @@ fn a_caller_without_a_controlling_tty_succeeds_and_does_nothing() {
 }
 
 #[test]
+fn tiocvhangup_uses_the_ioctl_capability_and_always_has_an_fd_target() {
+    assert_eq!(tiocvhangup_decision(false), TiocvhangupOutcome::Eperm);
+    assert_eq!(tiocvhangup_decision(true), TiocvhangupOutcome::Hangup);
+}
+
+#[test]
 fn only_the_session_leader_is_signalled() {
     // A session member that is not the leader loses the terminal silently:
     // the hangup skips it before any signal is considered.

@@ -65,3 +65,19 @@ pub const fn vhangup_decision(cap_sys_tty_config: bool, has_ctty: bool) -> Vhang
     if !has_ctty { return VhangupOutcome::NoControllingTty; }
     VhangupOutcome::Hangup
 }
+
+/// Outcome of the `TIOCVHANGUP` ioctl's capability gate.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub enum TiocvhangupOutcome {
+    /// The caller lacks `CAP_SYS_ADMIN`.
+    Eperm,
+    /// Hang up the tty named by the open file description.
+    Hangup,
+}
+
+/// `TIOCVHANGUP` admission. Unlike `vhangup(2)`, the ioctl gates on
+/// `CAP_SYS_ADMIN` and its target is always the tty named by the fd.
+/// # C: O(1)
+pub const fn tiocvhangup_decision(cap_sys_admin: bool) -> TiocvhangupOutcome {
+    if cap_sys_admin { TiocvhangupOutcome::Hangup } else { TiocvhangupOutcome::Eperm }
+}

@@ -77,6 +77,8 @@ pub mod req {
     pub const TIOCGETD: u32 = 0x5424;
     /// Get controlling session id.
     pub const TIOCGSID: u32 = 0x5429;
+    /// Revoke every description open across this tty.
+    pub const TIOCVHANGUP: u32 = 0x5437;
     /// Enable packet mode on a Unix98 PTY master.
     pub const TIOCPKT: u32 = 0x5420;
     /// Send an allowed job-control signal across a PTY.
