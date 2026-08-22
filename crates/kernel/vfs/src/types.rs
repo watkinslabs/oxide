@@ -201,10 +201,12 @@ pub enum VfsError {
     Eloop   = 40,
     Ebade   = 52,
     Enodata = 61,
+    Enopkg = 65,
     Enonet  = 64,
     Emsgsize = 90,
     Enoprotoopt = 92,
     Eproto  = 71,
+    Ebadmsg = 74,
     /// EBADFD — a descriptor is valid, but is in the wrong protocol state
     /// for this operation (for example, reading an unsubscribed ALSA control
     /// file). Distinct from EBADF, which means there is no readable fd.
@@ -232,6 +234,8 @@ pub enum VfsError {
     Estale  = 116,
     /// ECANCELED — timerfd read after TFD_TIMER_CANCEL_ON_SET clock change.
     Ecanceled = 125,
+    Enokey = 126,
+    Ekeyrejected = 129,
     /// EDQUOT — quota hard limit exceeded.
     Edquot  = 122,
     /// EOVERFLOW — an owner id that cannot be represented on the target: a
@@ -299,12 +303,14 @@ impl VfsError {
             26 => Etxtbsy, 27 => Efbig, 28 => Enospc, 29 => Espipe, 30 => Erofs,
             31 => Emlink, 32 => Epipe, 34 => Erange, 36 => Enametoolong,
             38 => Enosys, 39 => Enotempty, 40 => Eloop, 52 => Ebade, 61 => Enodata,
-            64 => Enonet, 71 => Eproto, 75 => Eoverflow, 77 => Ebadfd,
+            64 => Enonet, 65 => Enopkg, 71 => Eproto, 74 => Ebadmsg,
+            75 => Eoverflow, 77 => Ebadfd,
             89 => Edestaddrreq, 90 => Emsgsize, 92 => Enoprotoopt, 95 => Eopnotsupp,
             99 => Eaddrnotavail, 101 => Enetunreach, 103 => Econnaborted,
             104 => Econnreset, 105 => Enobufs, 107 => Enotconn, 110 => Etimedout,
             109 => Etoomanyrefs, 111 => Econnrefused, 112 => Ehostdown, 113 => Ehostunreach,
             116 => Estale, 117 => Euclean, 122 => Edquot, 125 => Ecanceled,
+            126 => Enokey, 129 => Ekeyrejected,
             _ => Eio,
         }
     }

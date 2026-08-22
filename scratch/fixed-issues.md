@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2479-f2fs-verity-specific-errnos
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 6963f4922 | DEFECT | med | F2FS fs-verity/signature errors now preserve ENOKEY, EKEYREJECTED, EBADMSG, and ENOPKG instead of collapsing to EIO. | F2FS/VFS/net/syscall tests and targets passed. | Chris Watkins |
+
+<<<<<<< HEAD
 ### B2478-stale-socket-connect-phantom-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
@@ -506,6 +513,13 @@
 |---|---|---|---|---|---|
 | FIXED B2478 | COVERAGE | med | **The socket connect tests named by the row are no longer phantom.** Both `sock::ops` and `sock::tcp_lifecycle` are hosted/test-visible, including the blocking-wait realization the old cascade lacked; the four real socket-side-effect tests now execute in the ordinary net suite. | Linux 7.2.0-rc4 `__inet_stream_connect` handles AF_UNSPEC before its state switch, returns EISCONN for an established stream, and `tcp_disconnect` accepts TCP_CLOSE. On current Oxide, `cargo test -p net --lib -- --list` names all four tests. Positive control changing the live fresh-TCP AF_UNSPEC arm to EINVAL made its exact test RED; restored GREEN: focused 4/4 and full net 2574/2574. Both x86_64 and aarch64 release target checks pass. Final diff is ledger-only, so no boot was required. | B2478-stale-socket-connect-phantom-row |
 >>>>>>> 1fb93202a (docs: close stale socket connect coverage row)
+=======
+### B2479-f2fs-verity-specific-errnos
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 6963f4922 | MISSING | low | **F2fs now preserves `ENOKEY`, `EKEYREJECTED`, `EBADMSG`, and `ENOPKG` through its live VFS and syscall boundaries.** `VfsError` owns all four Linux numbers, positive-POSIX reconstruction retains them, the f2fs adapter maps its native errors without collapsing them to `EIO`, and the socket/syscall conversion funnels retain the same values. A signed verity file's open can therefore distinguish an absent key, a rejected signature, a malformed signature, and missing algorithm support from a failing disk. | B2479. Linux 7.2.0-rc4 `fs/verity/signature.c::fsverity_verify_signature` returns `ENOKEY`, `EKEYREJECTED`, and `EBADMSG` distinctly. The live Oxide call chain is `F2fsNodeOps::on_open_file` -> `Volume::verity_file_open` -> `errno_to_vfs` -> syscall errno encoding. With the new VFS variants present but the production f2fs mapping unchanged, `errno_translation_keeps_each_meaning` was RED (`Eio` versus `Enokey`); restored production mapping is GREEN for all four. Full f2fs (3697), VFS, and socket (91) suites pass, as does the focused syscall mirror (5), formatting, and both kernel target checks. Final paired smoke reached userspace with serial RX on attempt 1: x86_64 in 46 s and aarch64 in 56 s. | B2479-f2fs-verity-specific-errnos |
+>>>>>>> 7e348a58a (docs: close f2fs verity errno issue)
 
 ### B2329-freezer-backoff-sleep
 

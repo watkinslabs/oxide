@@ -405,9 +405,15 @@ pub fn errno_to_vfs(err: Errno) -> VfsError {
         Errno::Efault => VfsError::Efault,
         Errno::Esrch => VfsError::Esrch,
         Errno::Eloop => VfsError::Eloop,
-        // EIO is the answer for a medium failure and for the errnos this
-        // interface's error type cannot spell (the three signature refusals and
-        // ENOPKG), which is recorded as an open issue rather than hidden here.
+        // A sealed file's open reports the signature/key refusal itself.  EIO
+        // would claim that the medium failed and erase the caller's recovery
+        // choice (install a key, reject the file, or add algorithm support).
+        Errno::Enokey => VfsError::Enokey,
+        Errno::Ekeyrejected => VfsError::Ekeyrejected,
+        Errno::Ebadmsg => VfsError::Ebadmsg,
+        Errno::Enopkg => VfsError::Enopkg,
+        // Anything this interface still cannot spell is a real I/O failure,
+        // never a silent success.
         _ => VfsError::Eio,
     }
 }
