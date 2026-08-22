@@ -14,18 +14,20 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::AtomicBool;
 use syscall::errno::Errno;
+use vfs::file_ops::{DirContext, DirEmit};
 use vfs::fs::FileSystem;
 use vfs::inode_ops::CreateCtx;
 use vfs::types::{FileType, S_IFREG};
 use vfs::{InodeRef, KResult, SbStatFs, SuperOps};
 
 use crate::config::{Config, XinoMode};
-use crate::err::to_vfs;
+use crate::err::{to_errno, to_vfs};
 use crate::inode::make_inode;
 use crate::layers::{dirs_disjoint, Layer, LayerStack, OvlEntry, OvlPath};
 use crate::limits::NAME_MAX;
 use crate::params;
 use crate::uapi::{INDEXDIR_NAME, VOLATILE_DIRTY_NAME, WORKDIR_NAME};
+use crate::{fh, marker, origin};
 use crate::xino;
 
 pub use crate::uapi::OVERLAYFS_SUPER_MAGIC;
@@ -71,6 +73,7 @@ impl OverlayFs {
             _ => (None, None),
         };
         let stack = build(config, upper, workdir, indexdir, resolve)?;
+        verify_index(&stack)?;
         let root = make_inode(&stack, stack.root.clone(), None, "");
         Ok(Arc::new(OverlayFs { stack, root }))
     }
@@ -130,6 +133,33 @@ fn work_dirs(resolve: Resolve, base: &str, index: bool, volatile: bool)
     if !index { return Ok((Some(work), None)); }
     let idx = subdir(&b, INDEXDIR_NAME)?;
     Ok((Some(idx.clone()), Some(idx)))
+}
+
+/// Remove index entries whose origin, upper object, or stored origin marker no
+/// longer agrees. Linux does this before publishing the overlay root so a
+/// crashed copy-up cannot make a later lookup return an unrelated object.
+/// # C: O(index entries · layers)
+fn verify_index(stack: &Arc<LayerStack>) -> Result<(), Errno> {
+    let Some(index) = &stack.indexdir else { return Ok(()) };
+    struct Names(Vec<String>);
+    impl DirEmit for Names {
+        fn emit(&mut self, name: &str, _ino: u64, _ty: FileType, _next: u64) -> bool {
+            self.0.push(name.to_string()); true
+        }
+    }
+    let mut names = Names(Vec::new());
+    let mut ctx = DirContext::new(0, &mut names);
+    index.readdir(&mut ctx).map_err(to_errno)?;
+    for name in names.0 {
+        let valid = fh::from_index_name(&name).ok()
+            .and_then(|record| origin::decode(stack, &record).map(|_| record))
+            .and_then(|record| index.lookup(&name).ok().map(|upper| (record, upper)))
+            .and_then(|(record, upper)| marker::get(&stack.config, &upper, crate::uapi::Marker::Origin)
+                .filter(|stored| fh::same(stored, &record)).map(|_| ()))
+            .is_some();
+        if !valid { index.unlink_child(&name).map_err(to_errno)?; }
+    }
+    Ok(())
 }
 
 /// Refuse a work directory carrying an incompatibility from an earlier mount.

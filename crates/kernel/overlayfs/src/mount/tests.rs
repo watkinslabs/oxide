@@ -283,6 +283,20 @@ fn a_mount_refuses_a_workdir_with_a_volatile_incompatibility_marker() {
 }
 
 #[test]
+fn a_mount_removes_a_malformed_index_entry_before_publishing_root() {
+    let (l, _up, _lo) = image();
+    let base = l.0.get("/work").unwrap();
+    let index = mkpath(base, "index");
+    mkfile(&index, "not-an-origin-handle", b"");
+    assert!(names(&index).contains(&"not-an-origin-handle".to_string()));
+    let opts = "lowerdir=/lower,upperdir=/upper,workdir=/work,index=on";
+    let fs = OverlayFs::open(opts, &l.resolve(), true).unwrap();
+    assert!(fs.layers().indexdir.is_some());
+    assert!(index.lookup("not-an-origin-handle").is_err(),
+            "mount must clean an index entry it cannot decode");
+}
+
+#[test]
 fn the_mount_line_names_the_layers_back() {
     let (l, _up, _lo) = image();
     let fs = OverlayFs::open(OPTS, &l.resolve(), true).unwrap();
