@@ -406,6 +406,8 @@ attempt_boot() {
     done
     echo "boot-smoke: QEMU pid=$qemu_pid started; runtime deadline=${TIMEOUT}s"
     deadline=$(( $(date +%s) + TIMEOUT ))
+    local started_at last_progress=0
+    started_at="$(date +%s)"
     while [ "$(date +%s)" -lt "$deadline" ]; do
         local pid
         pid="$(cat "$PIDFILE" 2>/dev/null || true)"
@@ -447,6 +449,18 @@ attempt_boot() {
             keep_log_copy "$1" "pass"
             close_sysrq
             return 0
+        fi
+        # ARM's early userspace handoff can leave the serial stream quiet for
+        # tens of seconds on a healthy boot. Narrate that expected wait so a
+        # live guest is not mistaken for a dead kernel while the next marker
+        # is pending. Keep it periodic and stderr-only; the serial evidence
+        # file must remain an exact guest log.
+        if [ "$ARCH" = arm ]; then
+            local elapsed=$(( $(date +%s) - started_at ))
+            if [ "$elapsed" -ge 15 ] && [ $(( elapsed - last_progress )) -ge 15 ]; then
+                echo "boot-smoke: arm still waiting for guest output after ${elapsed}s (quiet userspace handoff is expected)" >&2
+                last_progress="$elapsed"
+            fi
         fi
         sleep 2
     done

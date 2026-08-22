@@ -87,6 +87,10 @@ run_smoke build-failure MOCK_BUILD_FAIL=1
 grep -q 'image preparation failed before QEMU started' "$RUN_OUT"
 grep -q 'mock make target=qemu-x86-image' "$RUN_LOG"
 
+# The ARM runtime path narrates its known quiet handoff instead of leaving a
+# healthy guest indistinguishable from a stalled kernel.
+grep -Fq 'quiet userspace handoff is expected' "$ROOT/tools/boot-smoke.sh"
+
 # A serial debug shell may answer before PID 1 later dies. That is never a
 # usable boot, so the harness must fail on the init-fatal marker rather than
 # accept any earlier liveness proof.

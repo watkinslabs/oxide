@@ -1,5 +1,11 @@
 # Fixed issues
 
+### D578-boot-smoke-progress
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED D578 | INFRA | med | **A healthy aarch64 boot can leave serial quiet for tens of seconds during the userspace handoff, making an in-flight guest look stalled.** | `tools/boot-smoke.sh` now emits a periodic stderr progress line after 15 seconds of an ARM attempt while preserving the serial log byte-for-byte; `tools/test-boot-smoke-runtime.sh` pins the diagnostic contract. | D578 |
+
 ### D577-test-build-source-tree-diagnostic
 
 | Status | Class | Sev | Issue | Evidence | Owner |
