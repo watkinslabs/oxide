@@ -388,6 +388,8 @@ const FUTEX_WAKE_BITSET: u32 = 10;
 const FUTEX_WAIT_REQUEUE_PI: u32 = 11;
 const FUTEX_CMP_REQUEUE_PI: u32 = 12;
 const FUTEX_LOCK_PI2: u32 = 13;
+const FUTEX_ROBUST_UNLOCK: u32 = 0x200;
+const FUTEX_ROBUST_LIST32: u32 = 0x400;
 
 fn eagain() -> i64 { -(syscall::errno::Errno::Eagain.as_i32() as i64) }
 fn einval() -> i64 { -(syscall::errno::Errno::Einval.as_i32() as i64) }
@@ -440,6 +442,101 @@ fn wake_bitset_zero_is_einval_not_success() {
     let rv = futex::wait::dispatch_timed(
         uaddr, FUTEX_WAKE_BITSET | FUTEX_PRIVATE_FLAG, 1, 0, 0);
     assert_eq!(rv, einval(), "Linux futex_wake: `if (!bitset) return -EINVAL;`");
+}
+
+#[test]
+fn robust_wake_releases_word_before_waking() {
+    let word = AtomicU32::new(0x1234_5678);
+    let pending = AtomicU64::new(u64::MAX);
+    let uaddr = &word as *const AtomicU32 as u64;
+    live::set_current(Arc::new(Task::new(113, SHARED_MM + 0x11)));
+
+    let rv = futex::wait::dispatch_timed_pending(
+        uaddr,
+        FUTEX_WAKE | FUTEX_PRIVATE_FLAG | FUTEX_ROBUST_UNLOCK,
+        1,
+        FUTEX_BITSET_MATCH_ANY,
+        0,
+        &pending as *const AtomicU64 as u64,
+    );
+
+    assert_eq!(rv, 0);
+    assert_eq!(word.load(Ordering::SeqCst), 0, "robust wake must release the user word");
+    assert_eq!(pending.load(Ordering::SeqCst), 0, "robust wake must clear list_op_pending");
+}
+
+#[test]
+fn robust_wake_list32_clears_only_the_compat_pointer() {
+    let word = AtomicU32::new(9);
+    let pending = AtomicU64::new(u64::MAX);
+    let uaddr = &word as *const AtomicU32 as u64;
+    live::set_current(Arc::new(Task::new(114, SHARED_MM + 0x12)));
+
+    let rv = futex::wait::dispatch_timed_pending(
+        uaddr,
+        FUTEX_WAKE | FUTEX_PRIVATE_FLAG | FUTEX_ROBUST_UNLOCK | FUTEX_ROBUST_LIST32,
+        1,
+        FUTEX_BITSET_MATCH_ANY,
+        0,
+        &pending as *const AtomicU64 as u64,
+    );
+
+    assert_eq!(rv, 0);
+    assert_eq!(word.load(Ordering::SeqCst), 0);
+    assert_eq!(pending.load(Ordering::SeqCst), 0xffff_ffff_0000_0000);
+}
+
+#[test]
+fn robust_modifier_refuses_non_unlock_commands_before_user_access() {
+    let rv = futex::wait::dispatch_timed_pending(
+        0,
+        FUTEX_WAIT | FUTEX_ROBUST_UNLOCK,
+        0,
+        FUTEX_BITSET_MATCH_ANY,
+        0,
+        0,
+    );
+    assert_eq!(rv, enosys());
+}
+
+#[test]
+fn robust_wake_pending_fault_leaves_word_released_and_wakes_nobody() {
+    let word = AtomicU32::new(17);
+    let uaddr = &word as *const AtomicU32 as u64;
+    live::set_current(Arc::new(Task::new(115, SHARED_MM + 0x13)));
+
+    let rv = futex::wait::dispatch_timed_pending(
+        uaddr,
+        FUTEX_WAKE | FUTEX_PRIVATE_FLAG | FUTEX_ROBUST_UNLOCK,
+        1,
+        FUTEX_BITSET_MATCH_ANY,
+        0,
+        0,
+    );
+
+    assert_eq!(rv, -(syscall::errno::Errno::Efault.as_i32() as i64));
+    assert_eq!(word.load(Ordering::SeqCst), 0, "Linux releases before the failing pending clear");
+}
+
+#[test]
+fn robust_pi_unlock_clears_pending_after_the_owned_word() {
+    let word = AtomicU32::new(116);
+    let pending = AtomicU64::new(u64::MAX);
+    let uaddr = &word as *const AtomicU32 as u64;
+    live::set_current(Arc::new(Task::new(116, SHARED_MM + 0x14)));
+
+    let rv = futex::wait::dispatch_timed_pending(
+        uaddr,
+        FUTEX_UNLOCK_PI | FUTEX_PRIVATE_FLAG | FUTEX_ROBUST_UNLOCK,
+        0,
+        FUTEX_BITSET_MATCH_ANY,
+        0,
+        &pending as *const AtomicU64 as u64,
+    );
+
+    assert_eq!(rv, 0);
+    assert_eq!(word.load(Ordering::SeqCst), 0);
+    assert_eq!(pending.load(Ordering::SeqCst), 0);
 }
 
 // ---------------------------------------------------------------------------
