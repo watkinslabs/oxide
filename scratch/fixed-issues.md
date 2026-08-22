@@ -4641,6 +4641,11 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED R114 | INFRA | low | **The recorded return-fastpath failure is stale.** The exact test now executes successfully on current `main`; it is not a standing failure and no source change is required. | `cargo test -p syscalls --lib return_fastpath_tests::syscall_process_irqs_close_before_return_work -- --exact --nocapture`: 1 passed, 0 failed, 2,006 filtered out. | R114 |
+### R115-stale-sockaddr-shape-coverage-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED R115 | COVERAGE | med | **The recorded sockaddr shape-coverage gap is stale.** The target-gated syscall marshalling layer delegates every length decision to the ungated `net::sockaddr` owner, whose hosted tests cover signed length/storage bounds and the minimum AF_INET, AF_INET6, and AF_VSOCK structures. No second decision implementation is needed. | `syscalls/src/net_sockaddr.rs` delegates to `net::sockaddr::{validate_sockaddr_len,require_sockaddr_in,require_sockaddr_in6,require_sockaddr_vm}`; `net/src/sockaddr.rs` tests exercise the complete ladder, including EINVAL below each family minimum. | R115 |
 ### R112-stale-dhcp-smoke-script-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
