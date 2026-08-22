@@ -280,6 +280,8 @@ pub mod insn {
 
 /// `src_reg` tags on `BPF_LD_IMM64` map relocations.
 pub mod pseudo {
+    /// `BPF_PSEUDO_KFUNC_CALL`.
+    pub const KFUNC_CALL: u8 = 2;
     pub const MAP_FD:    u8 = 1;
     pub const MAP_VALUE: u8 = 2;
 }

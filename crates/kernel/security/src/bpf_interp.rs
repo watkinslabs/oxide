@@ -27,6 +27,8 @@ extern crate alloc;
 
 #[path = "bpf_interp/memory.rs"]
 mod memory;
+#[path = "bpf_interp/kfunc.rs"]
+mod kfunc;
 use memory::{Context, RunMemory};
 
 pub const NUM_REGS: usize = 11;
@@ -327,7 +329,8 @@ pub fn run_program_with_state(
     helper_state: &mut HelperState,
 ) -> Option<i64> {
     let maps = prog.maps.lock();
-    let memory = RunMemory::new(Context::ReadOnly(context), packet, &maps);
+    let mut memory = RunMemory::new(Context::ReadOnly(context), packet, &maps);
+    memory.attach_prog(prog);
     run_inner(&prog.insns, helpers, helper_state, memory)
 }
 
@@ -340,7 +343,8 @@ pub fn run_program_mut_with_state(
     helper_state: &mut HelperState,
 ) -> Option<i64> {
     let maps = prog.maps.lock();
-    let memory = RunMemory::new(Context::ReadWrite(context), &[], &maps);
+    let mut memory = RunMemory::new(Context::ReadWrite(context), &[], &maps);
+    memory.attach_prog(prog);
     run_inner(&prog.insns, helpers, helper_state, memory)
 }
 
@@ -373,7 +377,9 @@ fn run_inner(
         }
         if i.opcode == BPF_CALL {
             let id = i.imm as u32;
-            regs[0] = match id {
+            regs[0] = if i.src == crate::bpf::uapi::pseudo::KFUNC_CALL {
+                kfunc::call(id, &memory, &stack, &regs)?
+            } else { match id {
                 crate::bpf::uapi::func_id::MAP_LOOKUP_ELEM => {
                     memory.map_lookup(regs[1], regs[2], &stack)
                 }
@@ -389,7 +395,7 @@ fn run_inner(
                     let h = helpers.iter().find(|h| h.id == id)?;
                     (h.f)(helper_state, regs[1], regs[2], regs[3], regs[4], regs[5])
                 }
-            };
+            }};
             regs[1..=5].fill(0);
             pc += 1;
             continue;

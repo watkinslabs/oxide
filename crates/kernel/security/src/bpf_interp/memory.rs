@@ -41,6 +41,9 @@ pub(super) struct RunMemory<'a> {
     values: Vec<ValueRef>,
     /// Present only for a reuseport selection run.
     reuseport: Option<&'a mut super::ReuseportSelection>,
+    /// Present for every canonical loaded-program run; kfunc implicit args
+    /// resolve through this owner rather than a global current-program slot.
+    prog: Option<&'a crate::bpf::BpfProgInode>,
 }
 
 impl<'a> RunMemory<'a> {
@@ -51,7 +54,7 @@ impl<'a> RunMemory<'a> {
         packet: &'a [u8],
         maps: &'a [InodeRef],
     ) -> Self {
-        Self { context, packet, maps, values: Vec::new(), reuseport: None }
+        Self { context, packet, maps, values: Vec::new(), reuseport: None, prog: None }
     }
 
     /// Give this run the group it is selecting within, and the cell its
@@ -59,6 +62,14 @@ impl<'a> RunMemory<'a> {
     pub(super) fn attach_reuseport(&mut self, selection: &'a mut super::ReuseportSelection) {
         self.reuseport = Some(selection);
     }
+
+    /// Attach the loaded program that owns implicit kfunc state. # C: O(1)
+    pub(super) fn attach_prog(&mut self, prog: &'a crate::bpf::BpfProgInode) {
+        self.prog = Some(prog);
+    }
+
+    /// Program owner for an implicit-argument kfunc. # C: O(1)
+    pub(super) fn prog(&self) -> Option<&crate::bpf::BpfProgInode> { self.prog }
 
     /// Resolve a relocated map or map-value pseudo instruction.
     /// # C: O(1)
@@ -114,7 +125,7 @@ impl<'a> RunMemory<'a> {
         Some(u64::from_le_bytes(bytes) as i64)
     }
 
-    fn read_bytes(&self, addr: i64, out: &mut [u8], stack: &[u8]) -> Option<()> {
+    pub(super) fn read_bytes(&self, addr: i64, out: &mut [u8], stack: &[u8]) -> Option<()> {
         let raw = addr as u64;
         if let Some(offset) = Self::stack_location(raw, out.len()) {
             out.copy_from_slice(&stack[offset..offset + out.len()]);

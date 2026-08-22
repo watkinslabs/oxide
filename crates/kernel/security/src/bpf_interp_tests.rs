@@ -301,3 +301,44 @@ fn bounded_backward_loop_executes_to_exit() {
     ]);
     assert_eq!(run(&p, &[]), Some(4));
 }
+
+#[test]
+fn loaded_program_vprintk_reaches_its_own_drainable_stream() {
+    let id = crate::bpf::stream_vprintk_btf_id().expect("vprintk BTF id") as i32;
+    let format = crate::bpf::map::allocate(
+        crate::bpf::uapi::map_type::ARRAY, 4, 8, 1,
+        crate::bpf::uapi::map_flags::RDONLY_PROG,
+    ).unwrap();
+    let map = format.private::<crate::bpf::BpfMapInode>().unwrap();
+    map.array_value(0).unwrap().write_range(0, b"v=%d\n\0\0\0").unwrap();
+    let p = cat(&[
+        raw(0xb7, 1, 0, 0, 1),
+        raw(0x18, 2, crate::bpf::uapi::pseudo::MAP_VALUE, 0, 0),
+        raw(0x00, 0, 0, 0, 0),
+        raw(0x7a, 10, 0, -8, 42),
+        raw(0xbf, 3, 10, 0, 0), raw(0x07, 3, 0, 0, -8),
+        raw(0xb7, 4, 0, 0, 8),
+        raw(0x85, 0, crate::bpf::uapi::pseudo::KFUNC_CALL, 0, id),
+        raw(0x95, 0, 0, 0, 0),
+    ]);
+    assert_eq!(
+        crate::bpf_verify::verify_program(
+            crate::bpf::uapi::prog_type::SOCKET_FILTER, 0, &p,
+            core::slice::from_ref(&format),
+        ),
+        Err(crate::bpf_verify::VerifyError::UnsupportedOpcode),
+    );
+    map.storage.freeze().unwrap();
+    crate::bpf_verify::verify_program(
+        crate::bpf::uapi::prog_type::SOCKET_FILTER, 0, &p, core::slice::from_ref(&format),
+    )
+        .expect("verified kfunc program");
+    let inode = crate::bpf::make_bpf_prog_inode_with_meta(
+        crate::bpf::uapi::prog_type::SOCKET_FILTER, 0, p, alloc::vec![format],
+    );
+    let prog = inode.private::<crate::bpf::BpfProgInode>().unwrap();
+    assert_eq!(run_program_with_state(prog, &[], &[], &[], &mut HelperState::default()), Some(0));
+    let mut out = [0u8; 16];
+    assert_eq!(prog.streams.drain_user(1, out.as_mut_ptr() as u64, out.len()), Ok(5));
+    assert_eq!(&out[..5], b"v=42\n");
+}

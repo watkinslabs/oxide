@@ -26,6 +26,8 @@ mod state;
 pub mod context;
 #[path = "program/helpers.rs"]
 mod helpers;
+#[path = "program/kfunc.rs"]
+mod kfunc;
 
 use limits::{Scalar, return_range};
 use state::{
@@ -203,7 +205,11 @@ fn verify_profile(
                     continue;
                 }
                 if insn.opcode == BPF_OP_CALL {
-                    helpers::verify_helper(prog_type, insn, &mut state, maps)?;
+                    if insn.src == uapi::pseudo::KFUNC_CALL {
+                        kfunc::verify(insn, &mut state, maps)?;
+                    } else {
+                        helpers::verify_helper(prog_type, insn, &mut state, maps)?;
+                    }
                     enqueue(&mut states, &mut queue, &pseudo, pc + 1, state)?;
                     continue;
                 }

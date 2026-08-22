@@ -16,6 +16,8 @@ use inode::make_bpf_prog_inode_with_attach_target;
 
 #[path = "prog/inode.rs"]
 pub(crate) mod inode;
+#[path = "prog/stream.rs"]
+pub(crate) mod stream;
 mod attach;
 mod bind_map;
 #[cfg(test)]
