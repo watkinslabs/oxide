@@ -103,6 +103,18 @@ fn a_font_glyph_span_rejects_empty_and_oversized_counts() {
 }
 
 #[test]
+fn a_font_get_refuses_every_dimension_the_loaded_font_exceeds() {
+    assert_eq!(font_get_fits(8, 16, 256, 8, 16, 256, true), Ok(()));
+    assert_eq!(font_get_fits(7, 16, 256, 8, 16, 256, true), Err(-(Errno::Enospc.as_i32() as i64)));
+    assert_eq!(font_get_fits(8, 15, 256, 8, 16, 256, true), Err(-(Errno::Enospc.as_i32() as i64)));
+    assert_eq!(font_get_fits(8, 16, 255, 8, 16, 256, true), Err(-(Errno::Enospc.as_i32() as i64)));
+    // With no glyph destination the count is metadata, but width and height
+    // remain capacities in the ABI and still gate the answer.
+    assert_eq!(font_get_fits(8, 16, 0, 8, 16, 256, false), Ok(()));
+    assert_eq!(font_get_fits(7, 16, 0, 8, 16, 256, false), Err(-(Errno::Enospc.as_i32() as i64)));
+}
+
+#[test]
 fn a_unimap_span_is_four_bytes_an_entry_and_bounded() {
     assert_eq!(unimap_span(0), Ok(0));
     assert_eq!(unimap_span(3), Ok(3 * UNIMAP_PAIR_BYTES));

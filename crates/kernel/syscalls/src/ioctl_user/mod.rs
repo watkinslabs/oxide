@@ -20,7 +20,8 @@ pub(crate) use copy::{EFAULT, get_bytes, get_into, get_i32, get_u8, get_u16, get
 #[cfg_attr(not(target_os = "oxide-kernel"), allow(unused_imports))]
 pub(crate) use layout::{DEDUPE_MAX_LEN, FIEMAP_EXTENT_BYTES, FONT_GLYPH_STRIDE, TIOCL_PARAM,
                         TIOCL_PARAM32, TIOCL_SUBCODE, UNIMAP_PAIR_BYTES, dedupe_payload_bytes,
-                        fiemap_extent_span, font_glyph_bytes, tiocl_sel_field, unimap_span};
+                        fiemap_extent_span, font_get_fits, font_glyph_bytes, tiocl_sel_field,
+                        unimap_span};
 
 #[cfg(test)]
 mod tests;
