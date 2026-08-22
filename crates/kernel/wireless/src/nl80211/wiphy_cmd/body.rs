@@ -65,7 +65,7 @@ pub fn put(out: &mut Vec<u8>, wiphy: &Arc<Wiphy>) {
     }
 
     put_iftypes(out, a::SUPPORTED_IFTYPES, caps.interface_modes);
-    bands::put_all(out, &caps.bands);
+    bands::put_all(out, &wiphy.bands());
     put_commands(out);
     attr::put_u32(out, a::MAX_REMAIN_ON_CHANNEL_DURATION,
                   caps.max_remain_on_channel_duration);
