@@ -65,12 +65,10 @@ pub fn owes_oob(plan: OobPlan, sent: usize) -> bool {
     matches!(plan, OobPlan::Split { body } if sent == body)
 }
 
-/// Whether a failed AF_UNIX send raises SIGPIPE. The out-of-band tail never
-/// does: the in-band body owns that signal, so a send whose only failure was
-/// the urgent byte reports EPIPE alone. `pipe_kind` is whether the socket kind
-/// raises it at all (stream and seqpacket do, datagram does not).
+/// Whether a failed AF_UNIX send raises SIGPIPE. Only a stream's in-band body
+/// does; datagram and seqpacket report EPIPE alone, as does an urgent tail.
 /// # C: O(1)
-pub fn signals_pipe(pipe_kind: bool, tail: bool) -> bool { pipe_kind && !tail }
+pub fn signals_pipe(stream: bool, _seqpacket: bool, tail: bool) -> bool { stream && !tail }
 
 #[cfg(test)]
 mod tests {
@@ -102,10 +100,11 @@ mod tests {
     }
 
     #[test]
-    fn only_the_in_band_body_raises_sigpipe() {
-        assert!(signals_pipe(true, false));
-        assert!(!signals_pipe(true, true), "an urgent-byte failure reports EPIPE alone");
-        assert!(!signals_pipe(false, false));
+    fn only_a_streams_in_band_body_raises_sigpipe() {
+        assert!(signals_pipe(true, false, false));
+        assert!(!signals_pipe(true, false, true), "an urgent-byte failure reports EPIPE alone");
+        assert!(!signals_pipe(false, false, false), "datagram reports EPIPE alone");
+        assert!(!signals_pipe(false, true, false), "seqpacket reports EPIPE alone");
     }
 
     #[test]

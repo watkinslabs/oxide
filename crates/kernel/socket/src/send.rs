@@ -390,7 +390,8 @@ fn send_unix_blocking(ctx: &SendContext<'_>, target: &SendFile,
                     message.payload.len().saturating_sub(total), cap, deadline)
                 {
                     if total != 0 { return Ok(total); }
-                    return if error == Error::Epipe && (stream || seqpacket) {
+                    return if error == Error::Epipe
+                        && crate::oob::signals_pipe(stream, seqpacket, false) {
                         complete(ctx, flags, Err(error))
                     } else { Err(error) };
                 }
@@ -401,7 +402,7 @@ fn send_unix_blocking(ctx: &SendContext<'_>, target: &SendFile,
                 // EPIPE without raising SIGPIPE: the in-band body owns that
                 // signal, and this pass sent no in-band byte.
                 return if error == Error::Epipe
-                    && crate::oob::signals_pipe(stream || seqpacket, tail)
+                    && crate::oob::signals_pipe(stream, seqpacket, tail)
                 { complete(ctx, flags, Err(error)) } else { Err(error) };
             }
         }
