@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2419-delete-dead-netlink-send-shims
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 0f23c82d4 | COVERAGE | low | **Netlink sends now have one reachable family funnel; dead target-gated legacy shims were removed.** | B2419 found no callers for either legacy function and retained `socket::send::send_prepared` as the sole owner. | B2419-delete-dead-netlink-send-shims |
+
 ### B2417-f2fs-pinned-encrypted-held-key
 
 | Status | Class | Sev | Issue | Evidence | Owner |
