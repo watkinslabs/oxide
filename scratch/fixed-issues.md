@@ -3232,3 +3232,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 87ca17ed4 | COVERAGE | low | **The target-gated ioctl dispatcher no longer carries an unused test-only credential fixture.** Its sole credential path is the production current-task owner; the broader phantom syscall-test row remains open. | B2354 removed the dead helper and narrowed the existing phantom-test boundary without changing production behavior. | 87ca17ed4 |
+
+### B2355-stale-rfcomm-stealdlc-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 51ac73bee | MISSING | low | **RFCOMM's steal-a-channel ioctl is intentionally refused, so the open row described implemented compatibility rather than a missing operation.** The ABI number remains defined while production dispatch returns `EINVAL`, matching Linux's four-operation device ioctl. | B2355's production classifier test and positive control pinned the refusal. | B2355-stale-rfcomm-stealdlc-row |
