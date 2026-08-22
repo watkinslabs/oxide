@@ -3292,3 +3292,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 32c44aea8 | COVERAGE | low | **A TCP metrics stamp from an earlier clock domain fails closed as a cache miss.** The wrapping-age rule remains the single cache decision; future stamps cannot appear freshly learned. | B2365's future-stamp regression turns RED when wrapping subtraction is replaced by saturating subtraction, and GREEN when restored. | B2365-tcp-metrics-clock-domain-test |
+
+### B2366-no-console-suspend-policy
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED cc0b376d2 | MISSING | low | **`no_console_suspend` now disables both console power-management halves while suspend continues normally.** A printk-owned policy bit is installed from the boot parameter and gates the real framebuffer-console suspend/resume callsites; absence preserves the enabled default. | B2366's policy installation regression turns RED when removed and GREEN when restored; cmdline, bootparam, and klog coverage pinned the path. | B2366-no-console-suspend-policy |
