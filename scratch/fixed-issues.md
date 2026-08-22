@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2435-stale-f2fs-shrinker-flake-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED a19f367f8 | COVERAGE | med | **The old F2FS shrink-registry flake row was stale; test-global locking now isolates registry before/after assertions.** | B2435 revalidated the isolated and full shrinker tests. | B2435-stale-f2fs-shrinker-flake-row |
+
 ### B2434-vsock-listen-security-backlog
 
 | Status | Class | Sev | Issue | Evidence | Owner |
