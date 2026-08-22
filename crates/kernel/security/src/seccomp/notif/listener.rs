@@ -22,11 +22,6 @@ use super::wait::WaitList;
 
 /// Listener identity, as recorded on the filter that owns it. Never reused.
 static NEXT_LISTENER_ID: AtomicU64 = AtomicU64::new(1);
-/// Notification identity, drawn from one space across every listener so an id
-/// is unique for the life of the boot. A notification is only ever reachable
-/// through the listener fd that produced it.
-static NEXT_NOTIF_ID: AtomicU64 = AtomicU64::new(1);
-
 /// One supervisor channel.
 pub struct Listener {
     pub id: u64,
@@ -43,7 +38,7 @@ pub struct Listener {
 impl Listener {
     /// # C: O(1)
     pub fn new(wait_killable_recv: bool) -> Arc<Self> {
-        let first = NEXT_NOTIF_ID.fetch_add(NOTIF_ID_STRIDE, Ordering::AcqRel);
+        let first = crng::next_u64();
         Arc::new(Self {
             id: NEXT_LISTENER_ID.fetch_add(1, Ordering::AcqRel),
             inner: Spinlock::new(Inner::new(first, wait_killable_recv)),
@@ -59,11 +54,6 @@ impl Listener {
         self.poll_subs.notify();
     }
 }
-
-/// Notification ids a single listener may issue before it would collide with
-/// the next listener's space. A listener that outruns it wraps into the shared
-/// space and the queue's own id search still distinguishes live entries.
-const NOTIF_ID_STRIDE: u64 = 1 << 20;
 
 /// id -> listener. Entries live from the install that created the listener to
 /// the last close of its fd.
