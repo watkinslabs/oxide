@@ -242,11 +242,6 @@ fn replace_error(error: cgroup::BpfAttachError) -> Errno {
     }
 }
 
-/// Resolve a settled link by id, for the cgroup ordering anchors that
-/// name a link by `BPF_F_ID`. The caller re-checks the kind.
-/// # C: O(log links)
-pub(crate) fn cgroup_link_by_id(id: u32) -> Result<InodeRef, Errno> { link_by_id(id) }
-
 /// Primed cgroup link resources. Attachment happens while the ID remains
 /// unobservable and fd publication cannot fail. # C: O(fd words + log links)
 pub(crate) struct BpfCgroupLinkPrimer {

@@ -4,7 +4,7 @@ use syscall::errno::Errno;
 use vfs::{FdTable, OpenFlags};
 
 use cgroup::tree::ROOT;
-use super::super::link::{cgroup_link_by_id, prime_bpf_cgroup_link_with};
+use super::super::link::{link_by_id, prime_bpf_cgroup_link_with};
 use super::super::{
     make_bpf_prog_inode,
 };
@@ -51,7 +51,7 @@ fn unsettled_link_id_is_eagain_and_failed_attach_cleans_its_fd() {
         Arc::clone(&program),
     ).unwrap();
     let id = primer.id();
-    assert!(matches!(cgroup_link_by_id(id), Err(Errno::Eagain)));
+    assert!(matches!(link_by_id(id), Err(Errno::Eagain)));
 
     assert_eq!(
         cgroup::bpf::attach_link(
@@ -65,7 +65,7 @@ fn unsettled_link_id_is_eagain_and_failed_attach_cleans_its_fd() {
         Err(cgroup::BpfAttachError::Stale),
     );
     drop(primer);
-    assert!(matches!(cgroup_link_by_id(id), Err(Errno::Enoent)));
+    assert!(matches!(link_by_id(id), Err(Errno::Enoent)));
     assert_eq!(
         cgroup::bpf::query(ROOT, cgroup::CgroupBpfAttachType::Device)
             .unwrap().revision,
@@ -89,8 +89,8 @@ fn settlement_publishes_the_id_and_reserved_descriptor_together() {
     ).unwrap();
     let id = primer.id();
     assert_eq!(primer.settle(), 0);
-    assert!(matches!(cgroup_link_by_id(id), Ok(_)));
+    assert!(matches!(link_by_id(id), Ok(_)));
     assert!(fdt.get(0).is_ok());
     fdt.close(0).unwrap();
-    assert!(matches!(cgroup_link_by_id(id), Err(Errno::Enoent)));
+    assert!(matches!(link_by_id(id), Err(Errno::Enoent)));
 }
