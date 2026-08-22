@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2436-stale-perf-group-inherit-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2042 | DEFECT | low | **The open perf group-inheritance row was a stale duplicate of the leader-first cloning already implemented.** | B2436 revalidated the fork path and sibling leader linkage. | B2436-stale-perf-group-inherit-row |
+
 ### B2435-stale-f2fs-shrinker-flake-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
