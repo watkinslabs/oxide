@@ -158,6 +158,18 @@ fn a_victim_that_is_still_exiting_stops_a_second_being_chosen() {
 }
 
 #[test]
+fn a_coredumping_process_is_not_treated_as_promptly_self_freeing() {
+    let _guard = fixture();
+    let dumping = process(4351, 900_000);
+    dumping.thread_group.group_exit(crate::exit::status::from_exit_code(1));
+    assert!(super::kill::will_free_mem(&dumping), "an ordinary exiting process releases its mm");
+    let mm = mm_of(&dumping);
+    mm.set_coredumping(true);
+    assert!(!super::kill::will_free_mem(&dumping),
+        "a dump may sleep while retaining the address space");
+}
+
+#[test]
 fn a_larger_process_is_spared_while_a_smaller_victim_is_still_exiting() {
     let _guard = fixture();
     // The victim was chosen by an earlier event and is worth less than what
