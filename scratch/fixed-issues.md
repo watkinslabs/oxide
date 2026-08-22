@@ -1,5 +1,11 @@
 # Fixed issues
 
+### R109-stale-io-uring-r01-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED | INFRA | med | The obsolete io_uring R01 subset status was removed; this is not an implementation closure. | `docs/30` currently states the full io_uring surface, including shared rings, registration, and the executable opcode contract. Remaining implementation gaps stay in their own backlog rows. | R109 |
+
 ### R108-stale-linux-master-zip-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
