@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B2430-stale-overlay-single-lower-xwhiteout-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2430 | DEFECT | low | **The single-lower marked-whiteout behavior is intentionally reference-identical, so the old defect row was stale.** | B2430 adds the production lookup boundary test and pins single-layer non-activation separately from multi-layer activation. | B2430-stale-overlay-single-lower-xwhiteout-row |
+
 ### B2429-stale-perf-pinned-vm-row
 
 | Status | Class | Sev | Issue | Evidence | Owner |
