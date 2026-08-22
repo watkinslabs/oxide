@@ -46,8 +46,8 @@ fn pc_statm(t: u32, _s: bool) -> InodeRef { make_pid_statm(t) }
 fn pc_wchan(t: u32, _s: bool) -> InodeRef { super::pid_files::make_pid_wchan(t) }
 fn pc_oom_score(t: u32, _s: bool) -> InodeRef { make_pid_oom_score(t) }
 fn pc_oom_score_adj(t: u32, _s: bool) -> InodeRef { make_pid_oom_score_adj(t) }
-fn pc_loginuid(_t: u32, _s: bool) -> InodeRef { crate::sysctl::SysctlInode::new(b"4294967295\n") }
-fn pc_sessionid(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"0\n") }
+fn pc_loginuid(t: u32, _s: bool) -> InodeRef { crate::audit_identity::make_loginuid(t) }
+fn pc_sessionid(t: u32, _s: bool) -> InodeRef { crate::audit_identity::make_sessionid(t) }
 fn pc_io(t: u32, _s: bool) -> InodeRef { make_pid_io(t) }
 fn pc_limits(t: u32, _s: bool) -> InodeRef { make_pid_limits(t) }
 fn pc_personality(t: u32, _s: bool) -> InodeRef { make_pid_personality(t) }

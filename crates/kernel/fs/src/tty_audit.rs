@@ -7,15 +7,6 @@
 use audit::tty::Devno;
 use audit::TtyActor;
 
-/// A login identity that was never established. `/proc/<pid>/loginuid` reports
-/// the same value, and the two must agree — a record claiming a login uid the
-/// process file denies would be worse than one admitting it does not know.
-const AUDIT_UID_UNSET: u32 = u32::MAX;
-
-/// Sessions are not tracked per task yet, so every record reports the same
-/// unset session as `/proc/<pid>/sessionid`.
-const AUDIT_SESSION_UNSET: u32 = 0;
-
 /// Install the read-path hook and the arm notifier. Boot, once.
 /// # C: O(1)
 pub fn install() {
@@ -68,11 +59,28 @@ fn tgid(t: &sched::Task) -> u32 { t.visible_pid() }
 
 /// # C: O(1)
 fn actor<'a>(t: &sched::Task, comm: &'a [u8]) -> TtyActor<'a> {
+    let (auid, ses) = t.audit_identity();
     TtyActor {
         pid: t.visible_pid(),
         uid: t.creds.euid.load(core::sync::atomic::Ordering::Acquire),
-        auid: AUDIT_UID_UNSET,
-        ses: AUDIT_SESSION_UNSET,
+        auid,
+        ses,
         comm,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sched::{SchedClass, Task};
+
+    #[test]
+    fn tty_attribution_reads_the_tasks_canonical_login_identity() {
+        let task = Task::new(8201, "bash", SchedClass::Normal { weight: 1024 });
+        let unset = actor(&task, b"bash");
+        assert_eq!((unset.auid, unset.ses), (u32::MAX, u32::MAX));
+        task.set_audit_identity(1000, 23);
+        let set = actor(&task, b"bash");
+        assert_eq!((set.auid, set.ses), (1000, 23));
     }
 }

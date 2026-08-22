@@ -2093,6 +2093,7 @@ version = "0.1.0"
 dependencies = [
  "arch-irq",
  "aslr",
+ "audit",
  "block",
  "cgroup",
  "cpu",

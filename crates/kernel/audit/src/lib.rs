@@ -19,6 +19,7 @@
 //   clock      — the time source, compiler-gated at the module boundary
 //   producers  — record bodies for kernel producers outside this crate
 //   tty        — per-thread-group terminal-input accumulation and its flushes
+//   login      — loginuid permission ladder and session-id allocation
 //
 // Nothing here reads a task, a socket, or a filesystem: the netlink layer
 // gathers the caller's facts and the producers supply theirs, so every
@@ -46,6 +47,7 @@ pub mod state;
 pub mod clock;
 pub mod producers;
 pub mod tty;
+pub mod login;
 
 pub use admission::Caller;
 pub use control::{handle, Reply, Request};

@@ -308,6 +308,7 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
     // in its own pgrp and shells couldn't track job state.
     child.set_pgrp(cur.pgrp());
     child.set_session(cur.session());
+    child.inherit_audit_identity(cur);
     // Inherit Linux `fs_struct`: CLONE_FS shares one owner; fork snapshots it.
     child.inherit_fs_context_from(cur, (flags & CLONE_FS) != 0);
     // Linux `copy_semundo`. CLONE_SYSVSEM shares the SysV `SEM_UNDO` adjustment

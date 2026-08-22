@@ -3,6 +3,7 @@
 // Module map:
 // - types: signal info, scheduling policy/class, task state.
 // - creds: POSIX credentials and capability helpers.
+// - audit_identity: per-task login uid/session identity and fork inheritance.
 // - dup: refcounted Task allocation (`dup_task_struct` shape) — construct into
 //   the Arc, never onto the creator's kernel stack.
 // - signals: sigaction storage plus mm/rlimit accessors.
@@ -34,6 +35,7 @@ use network_namespace::NetworkNamespaceRef;
 use cpu::AtomicCpuMask;
 
 mod arch;
+mod audit_identity;
 pub mod cap;
 mod comm;
 pub mod dup;
@@ -1020,6 +1022,9 @@ pub struct Task {
     /// Single-mutator: the running task on this CPU is the sole writer
     /// (setuid family runs on the calling task only).
     pub creds: Creds,
+    /// Login uid (high word) and audit session id (low word), published as one
+    /// snapshot so a record cannot pair identities from two login writes.
+    pub audit_identity: AtomicU64,
     #[cfg(feature = "debug-smp")]
     pub dbg_canary_tail: AtomicU64,
 }
