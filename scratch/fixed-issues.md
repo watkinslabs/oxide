@@ -5004,3 +5004,6 @@ against the row's own evidence.
 ### B2598-worktree-isolation-safety-row
 
 | FIXED B2598 | INFRA | high | The worktree-collision incident is closed by the repository's enforced lane protocol: each lane gets a dedicated worktree and branch, and path-scoped checkout/rollback is forbidden for undoing edits. | `AGENTS.md` requires reading `CLAUDE.md`; `CLAUDE.md` requires a fresh worktree per lane, forbids editing main, and requires cleanup after merge. The current repository has one clean main worktree and no shared-lane edits. | B2598 |
+### B2599-crng-source-lock-coverage
+
+| FIXED B2599 | COVERAGE | med | Every hosted CRNG pool test that reads or mutates the process-global source/seed state now takes `SOURCE_LOCK`; the prior five unguarded tests were brought under the same fixture serialization as the source-installing tests. | `crates/kernel/crng/src/pool/tests.rs` has 17 passing tests; all pool-state tests acquire `exclusive()` before `take`, `fill`, `next_u64`, or entropy operations. | B2599 |
