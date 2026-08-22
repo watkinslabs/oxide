@@ -259,6 +259,12 @@
 |---|---|---|---|---|---|
 | FIXED R101 | MISSING | high | The older OPEN row claiming `BPF_PROG_TYPE_PERF_EVENT` could not load was stale after the verifier/load implementation merged. | B2519 added the supported type, perf-event context layout/access checks, and production `BPF_PROG_LOAD` coverage; security and perf-BPF tests pass on both target checks. | Chris Watkins |
 
+### R102-stale-kernel-btf-sysfs-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED R102 | MISSING | high | The older OPEN row claiming kernel BTF was not exposed to userspace was stale after the sysfs publication fix. | B2508 registers read-only `/sys/kernel/btf/vmlinux` when the canonical BTF object is non-empty and delegates reads to `security::bpf::kernel_btf_read`; the live inode and offset tests cover the production path. | Chris Watkins |
+
 ### R97-io-uring-spec-current-opcodes
 
 | Status | Class | Sev | Issue | Evidence | Owner |
