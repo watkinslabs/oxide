@@ -3268,3 +3268,9 @@ against the row's own evidence.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 7b63d4f51 | COVERAGE | low | **OverlayFS intentionally renders the verbatim `lowerdir=` list with another escape layer, matching the mount ABI.** Parsed layers are not re-rendered into a normalized form. | B2360's mounted VFS regression drives `show_options` through the production filesystem interface and pins the escaped-comma behavior. | B2360-stale-overlay-lowerdir-row |
+
+### B2361-fasync-combined-readiness
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED f039e13ae | DEFECT | low | **A combined readiness wake delivers one fasync notification for every distinct `POLL_*` reason instead of collapsing the mask to one reason.** It preserves the full mask for poll/epoll subscribers and orders priority before ordinary-data notification. | B2361's urgent-plus-data readiness regression was RED with one notification and GREEN with two in Linux order. | B2361-fasync-combined-readiness |
