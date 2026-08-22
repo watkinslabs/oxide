@@ -14,6 +14,27 @@ fn an_iovec_is_a_base_and_a_length_at_offsets_zero_and_eight() {
 }
 
 #[test]
+fn a_read_only_iovec_transfers_before_the_length_writeback_faults() {
+    let transferred = core::cell::Cell::new(false);
+    let result = regset_iovec(
+        || Ok(()), // RANGE-only access_ok accepts this read-only mapping.
+        |rec| {
+            rec[0..8].copy_from_slice(&0x7000u64.to_ne_bytes());
+            rec[8..16].copy_from_slice(&32u64.to_ne_bytes());
+            Ok(())
+        },
+        |base, len| {
+            assert_eq!((base, len), (0x7000, 32));
+            transferred.set(true);
+            Ok(32)
+        },
+        |_| Err(Errno::Efault),
+    );
+    assert_eq!(result, Err(Errno::Efault));
+    assert!(transferred.get(), "the regset transfer must precede iov_len write-back");
+}
+
+#[test]
 fn a_copy_out_writes_no_more_than_the_buffer_offered() {
     assert_eq!(copy_len(88, 4096), 88);
     assert_eq!(copy_len(88, 16), 16);
