@@ -4,7 +4,7 @@
 //! one of them changes two directories and up to two inodes, and a failure
 //! part way through leaves a name pointing at nothing or an inode nothing
 //! names. So each form does its allocating FIRST — the whiteout's inode, the
-//! room a replaced victim's removal needs — and only then rewrites entries.
+//! room to park a replaced victim — and only then rewrites entries.
 //!
 //! A flag this filesystem does not answer for is REFUSED, never dropped.
 //! Silently ignoring `RENAME_EXCHANGE` reports success for an atomic swap
@@ -122,25 +122,36 @@ impl<S: SectorSource> Volume<S> {
         // and the whiteout's inode is not taken until the request is certain.
         let whiteout = self.new_whiteout(r)?;
         let replaced = match victim {
-            Some((_, victim_is_dir)) => match self.remove(to, r.new, victim_is_dir, now) {
-                Ok(out) => Some(out),
-                Err(e) => {
-                    if let Some(w) = whiteout { let _ = self.release_orphan(w); }
-                    return Err(e);
+            Some((victim_ino, victim_is_dir)) => {
+                let done = (|| {
+                    self.reserve_orphan()?;
+                    self.set_dentry(to, r.new, hit.ino, hit.file_type, now)?;
+                    self.drop_nlink(to, victim_ino, victim_is_dir, now)?;
+                    Ok(Removed {
+                        ino: victim_ino,
+                        links: self.read_inode(victim_ino)?.links,
+                    })
+                })();
+                match done {
+                    Ok(out) => Some(out),
+                    Err(e) => {
+                        if let Some(w) = whiteout { let _ = self.release_orphan(w); }
+                        return Err(e);
+                    }
                 }
-            },
+            }
             None => None,
         };
-        self.move_entry(r, &hit, moving_is_dir, whiteout)?;
+        self.move_entry(r, &hit, moving_is_dir, whiteout, replaced.is_some())?;
         Ok(replaced)
     }
 
     /// Take the name off the source, put it on the destination, and repair
     /// everything that named either side. # C: O(depth) blocks
     fn move_entry(&mut self, r: &Rename<'_>, hit: &super::DirEntry, moving_is_dir: bool,
-                  whiteout: Option<u32>) -> Result<(), Errno> {
+                  whiteout: Option<u32>, replaced: bool) -> Result<(), Errno> {
         let (from, to, now) = (r.from, r.to, r.now);
-        let done = self.move_entry_inner(r, hit, moving_is_dir, whiteout);
+        let done = self.move_entry_inner(r, hit, moving_is_dir, whiteout, replaced);
         if done.is_err() {
             // The whiteout's inode was taken and nothing will ever name it.
             // Handing it back here is what keeps a refused rename from leaking
@@ -155,10 +166,10 @@ impl<S: SectorSource> Volume<S> {
 
     /// # C: O(depth) blocks
     fn move_entry_inner(&mut self, r: &Rename<'_>, hit: &super::DirEntry, moving_is_dir: bool,
-                        whiteout: Option<u32>) -> Result<(), Errno> {
+                        whiteout: Option<u32>, replaced: bool) -> Result<(), Errno> {
         let (from, to, now) = (r.from, r.to, r.now);
         self.remove_dentry(from, r.old)?;
-        self.add_dentry(to, r.new, hit.ino, hit.file_type)?;
+        if !replaced { self.add_dentry(to, r.new, hit.ino, hit.file_type)?; }
         if moving_is_dir && from != to {
             // The moved directory's own second entry names its parent, and a
             // stale one sends every walk back to the wrong place.
