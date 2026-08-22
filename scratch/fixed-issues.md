@@ -4951,6 +4951,12 @@ against the row's own evidence.
 |---|---|---|---|---|---|
 | FIXED B2589 | MISSING | med | The open `F_GETDELEG`/`F_SETDELEG` row duplicated an existing fixed entry and is stale ledger residue. Both commands are present and use the shared flavored lease/delegation state. | `syscalls/src/072_fcntl.rs` dispatches both commands through `fcntl_deleg`; `vfs/src/file.rs` and `file/lease_policy.rs` retain the flavor and filter queries, with `vfs/tests/file_lease_deleg.rs` covering the distinction. The prior implementation is recorded as fixed by 09765a7f6; no source change was needed. | B2589 |
 
+### B2590-stale-sysrq-boot-row
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2590 | INFRA | med | The open serial-SysRq boot-parameter row duplicated the existing B2244 fix and is stale ledger residue. | `cmdline::sysrq` parses `sysrq_always_enabled`, `sched::diag::sysrq` applies it independently of the distribution's `kernel.sysrq` value, and both arch boot-argument tests require the token. The existing B2244 fixed entry records the guest diagnosis and positive controls; no source change was needed. | B2590 |
+
 ### B2584-stale-membarrier-rows
 
 | Status | Class | Sev | Issue | Evidence | Owner |
