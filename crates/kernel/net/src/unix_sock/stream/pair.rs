@@ -14,6 +14,7 @@ impl UnixPair {
         alloc::sync::Arc::new(Self {
             a_to_b: Spinlock::new(UnixRing::new()),
             b_to_a: Spinlock::new(UnixRing::new()),
+            recv_gate: sched::live::Mutex::new(()),
             a_to_b_waiters: crate::sock_wait::SockWaitQueue::new(),
             b_to_a_waiters: crate::sock_wait::SockWaitQueue::new(),
             a_to_b_writers: crate::sock_wait::SockWaitQueue::new(),

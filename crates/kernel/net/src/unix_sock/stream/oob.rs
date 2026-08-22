@@ -179,6 +179,11 @@ impl UnixPair {
     /// # C: O(1)
     pub fn recv_oob(&self, end: UnixEnd, peek: bool, inline: bool) -> Option<u8> {
         if inline { return None; }
+        // Keep OOB consumption serialized with normal stream receives. The
+        // latter drops the ring Spinlock across usercopy, so the sleepable
+        // gate is the owner-level lock for the whole receive transaction.
+        // SAFETY: ioctl/recv OOB runs in process context.
+        let _recv_gate = unsafe { self.recv_gate.lock() };
         let mut g = self.recv_ring(end).lock();
         let at = g.oob?;
         let index = at.checked_sub(g.consumed)? as usize;

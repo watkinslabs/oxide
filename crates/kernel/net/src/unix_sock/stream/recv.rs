@@ -68,7 +68,8 @@ fn segments(ancillary: &alloc::collections::VecDeque<(u64, GcRights, super::supe
 
 impl UnixPair {
     /// Inspect one boundary-limited stream run and commit it only when
-    /// `copy` succeeds. Callback runs under the receive-ring lock. # C: O(max + rights)
+    /// `copy` succeeds. The callback runs with the receive-ring lock dropped
+    /// while the reader gate serializes concurrent readers. # C: O(max + rights)
     pub fn read_stream_with<R, E>(&self, end: UnixEnd, max: usize, copy: impl FnOnce(&[u8], usize, Option<(u32, u32, u32)>) -> Result<(R, usize), E>)
         -> Result<Option<(R, StreamFiles, Option<(u32, u32, u32)>)>, E>
     { self.read_stream_with_opts(end, max, false, copy) }
@@ -98,6 +99,10 @@ impl UnixPair {
         copy: impl FnOnce(&[u8], usize, Option<(u32, u32, u32)>) -> Result<(R, usize), E>)
         -> Result<Option<(R, StreamFiles, Option<(u32, u32, u32)>)>, E>
     {
+        // Usercopy may fault and sleep. Serialize readers with a sleepable
+        // gate, and keep the ring Spinlock only around the snapshot/commit.
+        // SAFETY: this receive runs in process context and holds no spinlock.
+        let _recv_gate = unsafe { self.recv_gate.lock() };
         let mut g = match end {
             UnixEnd::A => self.b_to_a.lock(),
             UnixEnd::B => self.a_to_b.lock(),
@@ -133,6 +138,9 @@ impl UnixPair {
         let ended_at_cursor = run.cause == StopCause::Sender && run.stop <= window.head;
         if ring_off >= data_end && report_count == 0 && !ended_at_cursor { return Ok(None); }
         let out: Vec<u8> = g.buf.iter().skip(ring_off).take(take).copied().collect();
+        // Do not invoke the usercopy while the receive-ring Spinlock is held:
+        // a demand fault can enter inode_wait and schedule here.
+        drop(g);
         let (copied, commit) = copy(&out, rights_len, cred_out)?;
         let commit = core::cmp::min(commit, take);
         let reached_stop = commit == take && ring_off.saturating_add(take) == cap;
@@ -140,6 +148,10 @@ impl UnixPair {
         // The window's boundary only ends the receive when it is the one the
         // copy actually reached; the in-band rule may have stopped it sooner.
         let oob_stop = window.oob_stop && window.stop <= run.stop && reached_stop;
+        let mut g = match end {
+            UnixEnd::A => self.b_to_a.lock(),
+            UnixEnd::B => self.a_to_b.lock(),
+        };
         if peek {
             let mut files = Vec::with_capacity(rights_len);
             for (_, rights, _) in g.ancillary.iter().skip(report_start).take(report_count) {

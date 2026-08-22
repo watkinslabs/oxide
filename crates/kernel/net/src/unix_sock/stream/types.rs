@@ -23,6 +23,9 @@ pub enum UnixStreamSendError { PeerClosed, WouldBlock }
 pub struct UnixPair {
     pub a_to_b: Spinlock<UnixRing, UnixLockClass>,
     pub b_to_a: Spinlock<UnixRing, UnixLockClass>,
+    /// Serializes stream readers while user memory is copied. The copy may
+    /// fault and sleep; it must never hold a ring Spinlock.
+    pub(crate) recv_gate: sched::live::Mutex<()>,
     /// Reader of a_to_b (UnixEnd::B's read side) parks here.
     /// Writer (UnixEnd::A's write) wakes it after pushing.
     pub a_to_b_waiters: crate::sock_wait::SockWaitQueue,
