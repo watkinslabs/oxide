@@ -5013,6 +5013,9 @@ against the row's own evidence.
 ### B2601-fixture-lock-pure-test-residuals
 
 | FIXED B2601 | COVERAGE | med | The fixture-lock residuals are closed. Stateful module export tests now take the shared module claim; the remaining unclaimed tests in the listed driver, framebuffer, input, and ucounts files are ABI/pure decision checks and do not access the process-global registries. | `cargo test -p modules --lib` 442/442, `drv` 68/68, `fbdev` 31/31, `input` 24/24, and `ucounts` 12/12 passed. The previously unguarded module export test reproduced a registry race before the claim and passes after it. | B2601 |
+### B2603-netns-stack-frame-stale
+
+| FIXED B2603 | DEFECT | med | The 1,168-byte `materialize_state` premise is stale. The inline `NsNet` allocations were already moved to heap-owned construction by F846/B1727; current `NsNet::new` returns `Arc<Self>` directly, so `materialize_state` no longer copies a large namespace value through its stack frame. | `crates/kernel/net/src/net_ns/state.rs::NsNet::new` constructs the state inside `Arc::new`; the existing B1727/F846 fixed records measured the post-fix frame and the current `net_ns` production tests pass (21/21). | B2603 |
 ### B2602-rlimit-sigpending-queue-cap-stale
 
 | FIXED B2602 | MISSING | med | The fixed `RT_QUEUE_CAP` premise is stale. Process-context real-time signal records are admitted by the charged post-increment `RLIMIT_SIGPENDING` value; `RT_QUEUE_CAP` remains only the preallocation floor for IRQ producers. | `crates/kernel/sched/src/sigqueue.rs::queues_push` admits `Charge::Account` records without a fixed-depth check; `Charge::Prealloc` alone uses `prealloc_depth`; `sched::tests::signals::realtime_queue_is_bounded_by_rlimit_sigpending_not_a_constant` passes. | B2602 |
