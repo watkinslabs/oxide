@@ -8,6 +8,20 @@
 # `git config core.hooksPath .githooks`.
 set -u
 
+# A failed `git add <valid-path> <stale-path>` can leave only part of the
+# intended change in the index. Refuse that commit shape: every tracked edit
+# and every untracked file must be accounted for before the message is checked.
+if ! git diff --quiet --; then
+  echo "commit-msg: REJECTED — tracked worktree edits remain unstaged." >&2
+  echo "  A partial index can publish an incomplete change after a stale pathspec." >&2
+  exit 1
+fi
+if [ -n "$(git ls-files --others --exclude-standard)" ]; then
+  echo "commit-msg: REJECTED — untracked files remain outside the index." >&2
+  echo "  Stage or remove every file before committing." >&2
+  exit 1
+fi
+
 msg_file="$1"
 # Strip comment lines (git's scissors/comments) before scanning.
 body="$(grep -v '^#' "$msg_file" 2>/dev/null || cat "$msg_file")"
