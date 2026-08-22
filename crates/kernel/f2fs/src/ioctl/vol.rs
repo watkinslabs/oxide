@@ -267,10 +267,10 @@ impl<S: SectorSource> Volume<S> {
             } else {
                 Err(Errno::Eexist)
             },
-            // Nothing stored yet. `EUCLEAN` is the same answer: it is an inode
+            // Nothing stored yet. `ENODATA` is the same answer: it is an inode
             // whose flag says encrypted and which carries no context at all,
             // which the reference reads as "no policy" and gives one.
-            Ok(None) | Err(Errno::Euclean) => {}
+            Ok(None) | Err(Errno::Enodata) => {}
             Err(Errno::Einval) | Err(Errno::Enopkg) => return Err(Errno::Eexist),
             Err(e) => return Err(e),
         }

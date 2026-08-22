@@ -281,6 +281,7 @@ fn an_encrypted_directory_with_an_impossible_name_is_damaged_not_locked() {
     let mut s = nodes::Spec::dir(ROOT_INO);
     s.flags = F2FS_ENCRYPT_FL;
     s.inline |= INLINE_DENTRY | INLINE_DATA | DATA_EXIST;
+    s.xattr_nid = 100;
     let (at, len) = nodes::inline_span(&s);
     let layout = crate::dirent::Layout::inline(len);
     // A name no encryption could have produced: shorter than the minimum.
@@ -288,17 +289,22 @@ fn an_encrypted_directory_with_an_impossible_name_is_damaged_not_locked() {
     let mut block = nodes::inode_block(&s);
     block[at..at + len].copy_from_slice(&area);
     nodes::place_inode(&mut b, &s, block, 1);
+    let (ctx, n) = crate::crypto::policy::serialize(&crate::crypto::policy::Context {
+        policy: super::encrypted::policy(), nonce: super::encrypted::nonce(),
+    });
+    nodes::add_xattr_block(&mut b, ROOT_INO, 100,
+        &[(XATTR_INDEX_ENCRYPTION, Vec::from(crate::crypto::uapi::XATTR_NAME),
+           Vec::from(&ctx[..n]))]);
     let v = b.mount().unwrap();
     let root = v.root().unwrap();
     assert!(root.encrypted());
     assert_eq!(v.read_dir(&root, ROOT_INO).err(), Some(Errno::Euclean));
 }
 
-/// An inode flagged encrypted with no context attribute is likewise damaged:
-/// nothing else on the medium records which key and which modes its bytes
-/// were written under, so there is no locked state to fall back to.
+/// An inode flagged encrypted with no context attribute reports the absent
+/// context rather than inventing a corruption classification.
 #[test]
-fn an_encrypted_inode_with_no_context_is_damaged() {
+fn an_encrypted_inode_with_no_context_reports_no_data() {
     let mut b = Builder::new();
     let mut s = nodes::Spec::dir(ROOT_INO);
     s.flags = F2FS_ENCRYPT_FL;
@@ -308,7 +314,7 @@ fn an_encrypted_inode_with_no_context_is_damaged() {
     let v = b.mount().unwrap();
     let root = v.root().unwrap();
     assert!(root.encrypted());
-    assert_eq!(v.read_dir(&root, ROOT_INO).err(), Some(Errno::Euclean));
+    assert_eq!(v.read_dir(&root, ROOT_INO).err(), Some(Errno::Enodata));
 }
 
 #[test]

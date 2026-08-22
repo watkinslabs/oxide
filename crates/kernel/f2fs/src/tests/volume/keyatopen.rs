@@ -347,8 +347,8 @@ fn a_write_of_an_encrypted_file_with_no_context_is_refused_at_the_entry() {
         b[I_FLAGS..I_FLAGS + 4].copy_from_slice(&f.to_le_bytes());
     })
     .unwrap();
-    assert_eq!(v.write_file(ino, 0, b"x").err(), Some(Errno::Euclean));
-    assert_eq!(v.truncate_file(ino, 0).err(), Some(Errno::Euclean));
+    assert_eq!(v.write_file(ino, 0, b"x").err(), Some(Errno::Enodata));
+    assert_eq!(v.truncate_file(ino, 0).err(), Some(Errno::Enodata));
     assert!(!v.crypt_is_held(ino));
 }
 
