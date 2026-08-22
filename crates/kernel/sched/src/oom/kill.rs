@@ -11,6 +11,7 @@
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use cgroup::MemoryEvent;
@@ -150,8 +151,8 @@ fn kill_process(task: &Arc<Task>) -> bool {
     OOM_KILLS.fetch_add(1, Ordering::Relaxed);
     cgroup::record_memory_event(cgroup::cgroup_of(u64::from(task.tgid.load(Ordering::Acquire))),
                                 MemoryEvent::OomKill);
-    report(task);
     sigkill_group(task);
+    report(task);
     let Some(mm) = task.clone_mm_for_oom() else { return true; };
     // A process the machine may not kill keeps the mm alive for as long as it
     // runs, so nothing may tear its leaves down. The mm is written off instead:
@@ -185,24 +186,49 @@ fn sigkill_group(task: &Arc<Task>) {
     task.sigpending.fetch_or(Signum::Sigkill.bit(), Ordering::Release);
 }
 
-/// Name the victim on the console.
-///
-/// The reference reports every kill unconditionally. Here the call site is
-/// feature-gated, because `04§4.0` is frozen on every `klog` call being
-/// `cfg`-elidable and a default build emitting zero log bytes. A production
-/// kill is still counted — `/proc/vmstat` `oom_kill` and the victim cgroup's
-/// `memory.events` `oom_kill` — so it is observable, just not on the console.
-#[cfg(all(target_os = "oxide-kernel", feature = "debug-sched"))]
-fn report(task: &Arc<Task>) {
-    klog::write_raw(b"[OOM] killed process pid=");
-    klog::write_dec_u64(u64::from(task.visible_pid()));
-    klog::write_raw(b" oom_score_adj=");
-    klog::write_dec_u64(i64::from(task.oom_score_adj()) as u64);
-    klog::write_raw(b"\n");
+/// One allocation-free OOM console record. The selector is running because
+/// allocation already failed, so formatting this line must not ask the heap
+/// for the memory whose absence selected the victim. # C: O(line length)
+struct ReportLine { bytes: [u8; 80], len: usize }
+
+impl ReportLine {
+    const fn new() -> Self { Self { bytes: [0; 80], len: 0 } }
+    fn as_bytes(&self) -> &[u8] { &self.bytes[..self.len] }
 }
 
-#[cfg(not(all(target_os = "oxide-kernel", feature = "debug-sched")))]
-fn report(_task: &Arc<Task>) {}
+impl fmt::Write for ReportLine {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        let end = self.len.checked_add(s.len()).ok_or(fmt::Error)?;
+        let dst = self.bytes.get_mut(self.len..end).ok_or(fmt::Error)?;
+        dst.copy_from_slice(s.as_bytes());
+        self.len = end;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+static REPORT_OBSERVER: std::sync::Mutex<Option<fn(&[u8])>> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+pub(super) fn install_report_observer_for_tests(observer: fn(&[u8])) {
+    *REPORT_OBSERVER.lock().unwrap_or_else(|e| e.into_inner()) = Some(observer);
+}
+
+/// Name every selected victim on the production console. This is an
+/// operational event, not a sched trace: it happens only after allocation has
+/// failed and a process is irreversibly killed, so hiding it behind
+/// `debug-sched` leaves no explanation for the vanished service. # C: O(1)
+fn report(task: &Arc<Task>) {
+    let mut line = ReportLine::new();
+    let _ = write!(&mut line, "[OOM] killed process pid={} oom_score_adj={}",
+        task.visible_pid(), task.oom_score_adj());
+    #[cfg(test)]
+    if let Some(observer) = *REPORT_OBSERVER.lock().unwrap_or_else(|e| e.into_inner()) {
+        observer(line.as_bytes());
+    }
+    #[cfg(target_os = "oxide-kernel")]
+    klog::announce_bytes(line.as_bytes());
+}
 
 /// Linux `task_will_free_mem`: this task is already on its way out and its
 /// address space is about to be released, so it needs no help from the

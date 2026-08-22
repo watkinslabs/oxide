@@ -18,6 +18,15 @@ use crate::signum::Signum;
 use crate::task::{SchedClass, Task};
 use crate::tests::common::registry_test_lock;
 
+fn reports() -> &'static std::sync::Mutex<Vec<Vec<u8>>> {
+    static REPORTS: std::sync::Mutex<Vec<Vec<u8>>> = std::sync::Mutex::new(Vec::new());
+    &REPORTS
+}
+
+fn remember_report(line: &[u8]) {
+    reports().lock().unwrap_or_else(|e| e.into_inner()).push(line.to_vec());
+}
+
 /// Managed-page total the scores normalise against.
 const TOTAL_PAGES: u64 = 1 << 20;
 /// A control group id with no members, for the scope-narrowing test.
@@ -66,6 +75,8 @@ fn fixture() -> std::sync::MutexGuard<'static, ()> {
     install_managed_pages(TOTAL_PAGES);
     install_memory_observer(observe);
     super::reap::clear_queue_for_tests();
+    reports().lock().unwrap_or_else(|e| e.into_inner()).clear();
+    super::kill::install_report_observer_for_tests(remember_report);
     guard
 }
 
@@ -85,6 +96,17 @@ fn the_largest_process_is_the_one_killed() {
     assert!(!killed(&small));
     assert!(!killed(&middling));
     assert!(large.oom_marked(), "the victim must be marked so a second pass sees it");
+}
+
+#[test]
+fn the_production_kill_path_names_its_victim_for_the_console() {
+    let _guard = fixture();
+    let victim = process(4051, 900_000);
+    assert!(victim.set_oom_score_adj(321));
+
+    assert_eq!(out_of_memory(Scope::Global), Outcome::Killed);
+    assert_eq!(reports().lock().unwrap_or_else(|e| e.into_inner()).as_slice(),
+        [b"[OOM] killed process pid=4051 oom_score_adj=321".to_vec()]);
 }
 
 #[test]
