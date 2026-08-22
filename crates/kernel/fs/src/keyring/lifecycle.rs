@@ -52,10 +52,10 @@ pub fn fork(parent_tid: u32, child_tid: u32) {
 /// same process, so a kernel that divested on exec would hand that handler no
 /// authority and no construction could ever complete.
 /// # C: O(N)
-pub fn exec(tid: u32, tgid: u32) {
+pub fn exec(tid: u32, global_tgid: u32) {
     let mut g = STORE.lock();
     g.thread.remove(&tid);
-    g.process.remove(&tgid);
+    g.process.remove(&global_tgid);
     g.collect();
 }
 
@@ -71,13 +71,13 @@ pub fn exec(tid: u32, tgid: u32) {
 /// quota charge — without this a long-running system leaks a keyring per task
 /// forever, and the owner's key quota with it.
 /// # C: O(N)
-pub fn exit(tid: u32, tgid: u32, last_thread: bool) {
+pub fn exit(tid: u32, global_tgid: u32, last_thread: bool) {
     let mut g = STORE.lock();
     g.thread.remove(&tid);
     g.session.remove(&tid);
     g.jit.remove(&tid);
     g.authkey.remove(&tid);
-    if last_thread { g.process.remove(&tgid); }
+    if last_thread { g.process.remove(&global_tgid); }
     g.collect();
 }
 

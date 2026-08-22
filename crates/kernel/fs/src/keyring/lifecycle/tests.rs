@@ -67,6 +67,22 @@ fn the_process_keyring_is_shared_within_a_thread_group_only() {
         "a separate process does not");
 }
 
+// Linux stores `process_keyring` on the credentials shared by the process;
+// a PID-namespace display number never identifies that object. Two unrelated
+// global thread groups that both appear as PID 1 must retain distinct `@p`s.
+#[test]
+fn pid_namespace_numbers_do_not_key_process_keyrings() {
+    let visible_tgid = 1;
+    let a_tgid = super::super::process_key_identity(4150, visible_tgid);
+    let b_tgid = super::super::process_key_identity(4151, visible_tgid);
+    let a = thread_ctx(4152, a_tgid, 4150);
+    let b = thread_ctx(4153, b_tgid, 4151);
+
+    let a_ring = get_keyring_id(&a, KEY_SPEC_PROCESS_KEYRING, true);
+    let b_ring = get_keyring_id(&b, KEY_SPEC_PROCESS_KEYRING, true);
+    assert_ne!(a_ring, b_ring, "distinct global processes must not alias @p through vtgid");
+}
+
 // exec drops the thread and process keyrings and keeps the session keyring —
 // a key the pre-exec image left in @t must not be readable by the new program.
 #[test]

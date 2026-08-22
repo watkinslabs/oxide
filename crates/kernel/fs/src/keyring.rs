@@ -203,6 +203,14 @@ fn write_user_exact(buf_p: u64, buflen: u64, src: &[u8]) -> i64 {
     match write_user_bytes(buf_p, src) { Ok(()) => full, Err(rv) => rv }
 }
 
+/// Select the stable process identity used by the process-keyring store from
+/// the two process numbers a task carries. A visible tgid is relative to a PID
+/// namespace and can collide with another process; only the global tgid names
+/// the thread group that owns `@p`. # C: O(1)
+pub fn process_key_identity(global_tgid: u32, _visible_tgid: u32) -> u32 {
+    global_tgid
+}
+
 /// The one place `sched::current()` becomes an op [`Ctx`]. Key ownership and
 /// permission both key on the FILESYSTEM ids (`cred->fsuid`/`fsgid`), which is
 /// what `key_alloc` and `key_task_permission` read. Falls back to uid/gid 0
@@ -216,7 +224,7 @@ fn cur_ctx() -> Ctx {
                 .unwrap_or(INITIAL_USER_NS);
             let t = TaskIds {
                 tid: c.tid,
-                tgid: c.vtgid.load(Acquire),
+                tgid: process_key_identity(c.tgid.load(Acquire), c.vtgid.load(Acquire)),
                 ruid: c.creds.ruid.load(Acquire),
                 fsuid: c.creds.fsuid.load(Acquire),
                 fsgid: c.creds.fsgid.load(Acquire),

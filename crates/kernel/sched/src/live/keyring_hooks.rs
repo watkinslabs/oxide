@@ -77,9 +77,8 @@ pub(crate) fn clear_hooks_for_tests() {
     FSIDS_CHANGED_HOOK.store(core::ptr::null_mut(), Ordering::Release);
 }
 
-/// The thread-group id the keyring store keys its process keyring on: the
-/// PID-namespace-visible one, which is what the `keyctl(2)` entry path records
-/// when it mints a `@p`. Reading the global `tgid` here instead would release a
-/// keyring nothing was ever filed under.
+/// The global thread-group id the keyring store keys its process keyring on.
+/// `vtgid` is a PID-namespace display number and may name an unrelated process
+/// in another namespace; it must never identify or release `@p`.
 /// # C: O(1)
-fn keyring_tgid(task: &crate::Task) -> u32 { task.vtgid.load(Ordering::Acquire) }
+fn keyring_tgid(task: &crate::Task) -> u32 { task.tgid.load(Ordering::Acquire) }
