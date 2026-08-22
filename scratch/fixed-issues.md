@@ -5031,3 +5031,6 @@ against the row's own evidence.
 ### B2607-receive-backlog-lease-stale-row
 
 | FIXED B2607 | DEFECT | low | This receive-backlog row was stale and self-contradictory: it described the current drop-on-teardown behavior as an OPEN defect while explicitly stating that it matches the reference and was deliberate. | `net` regression `frames_queued_for_a_down_interface_are_dropped_at_delivery` pins the reference-aligned drop; no source change is required. | B2607 |
+### B2608-network-manager-external-state-stale
+
+| FIXED B2608 | DEFECT | med | This network-manager observation predates the B1736/B1737 fixes and is stale. The earlier `connected (externally)` state came from querying loopback for `eth0` and from seeding the emulator address; the corrected path returns the named device and DHCP-owned dynamic lease state. | Existing B1736/B1737 fixed records document the before/after guest evidence (`eth0:connected`, dynamic lease, and no external ownership); no source change is required. | B2608 |

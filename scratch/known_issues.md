@@ -411,7 +411,6 @@ here now.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| OPEN | DEFECT | med | **The network manager still reports `eth0` as "connected (externally)" even though it now has a lease.** The address, routes and reachability are all correct, so this no longer blocks networking, but the manager's device state is still not derived from the link the way it should be — a device it calls externally-connected is one it will not fully own, which will matter for anything that asks it to reconfigure the link. Worth re-checking now that the single-device query returns real data: the earlier verdict was formed while every by-index query returned loopback, so it may simply be a stale assessment that a fresh probe would clear. | `nmcli -t -f DEVICE,STATE d` → `eth0:connected (externally)` in the same boot that shows the working lease above. | unowned |
 
 ### B1739-cgroup-exit-side-table
 
