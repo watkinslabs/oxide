@@ -3,6 +3,7 @@
 #![cfg(target_os = "oxide-kernel")]
 
 mod fd_table;
+mod de_thread;
 #[cfg(all(target_arch = "x86_64", feature = "debug-execload"))] mod trace;
 #[cfg(target_arch = "aarch64")] mod aarch64;
 #[cfg(target_arch = "x86_64")] mod x86_64;

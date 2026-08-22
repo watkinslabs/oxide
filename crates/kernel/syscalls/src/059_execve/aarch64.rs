@@ -202,7 +202,7 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
     // Linux `load_elf_binary` tail: SVr4 `MMAP_PAGE_ZERO` emulation, mapped
     // after every PT_LOAD so a segment can never be displaced by it.
     crate::exec_persona::map_page_zero(&cur, &new_as, creds.per_clear);
-    sched::live::zap_other_threads();
+    if let Err(e) = super::de_thread::run(&cur) { return -(e.as_i32() as i64); }
     let me = { use hal::CpuOps; (hal_aarch64::ArmCpuOps::current_cpu() as usize).min(cpu::MAX_CPUS - 1) };
     new_as.mark_cpu(me);
     // SAFETY: new_root carries kernel-half cloned from master at new_user_l0; activate writes TTBR0_EL1 + flushes user TLB; preempt-off; single-CPU.

@@ -125,3 +125,36 @@ fn the_latch_survives_the_core_dump_bit() {
     assert_eq!(wtermsig(st), Signum::Sigabrt as i32);
     assert_ne!(st & 0x80, 0, "WCOREDUMP must survive the group latch");
 }
+
+#[test]
+fn exec_drain_completes_only_after_a_real_sibling_retirement() {
+    use crate::task::{SchedClass, Task};
+
+    let leader = Arc::new(Task::new(201, "exec", SchedClass::Normal { weight: 1024 }));
+    let group = Arc::clone(&leader.thread_group);
+    let mut sibling = Task::new(202, "sibling", SchedClass::Normal { weight: 1024 });
+    sibling.join_thread_group(Arc::clone(&group));
+    group.commit_member();
+    let sibling = Arc::new(sibling);
+
+    assert!(!group.exec_siblings_gone(), "exec must not replace mm while a sibling lives");
+    let _ = group.finish_exit(sibling);
+    assert!(group.exec_siblings_gone(), "the real exit retirement releases exec");
+}
+
+#[test]
+fn clone_thread_publication_is_excluded_by_the_exec_writer() {
+    let group = group(1);
+    let writer = group.try_exec_update().expect("exec writer");
+    assert!(group.try_exec_update_read().is_none(), "clone cannot publish behind exec");
+    drop(writer);
+    assert!(group.try_exec_update_read().is_some(), "clone proceeds after exec releases");
+}
+
+#[test]
+fn exec_drain_ready_path_runs_through_the_production_wait_owner() {
+    let group = group(1);
+    // SAFETY: the ready predicate returns before publishing or scheduling.
+    let out = unsafe { group.wait_exec_siblings() };
+    assert_eq!(out, crate::task::WaitOutcome::Ready);
+}

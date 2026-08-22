@@ -4,6 +4,14 @@ use syscall::errno::Errno;
 
 use crate::clone::CLONE_PIDFD;
 
+pub(super) fn exec_guard(
+    current: &sched::Task,
+    thread: bool,
+) -> Result<Option<sched::rwsem::RwSemReadGuard<'_, ()>>, Errno> {
+    if !thread { return Ok(None); }
+    current.thread_group.try_exec_update_read().map(Some).ok_or(Errno::Eagain)
+}
+
 pub(super) fn prepare_pidfd(
     current: &sched::Task,
     child: &Arc<sched::Task>,
@@ -35,6 +43,20 @@ pub(super) fn commit(
     sched::live::publish_new_task(child);
     if let Some(prepared) = pidfd { prepared.commit(); }
     sched::live::wake_new_task(child);
+}
+
+/// Complete the post-publication vfork parent wait. # C: O(N_wakeups)
+pub(super) fn finish(child: Arc<sched::Task>, vfork: bool, child_event_msg: u64) {
+    if !vfork { drop(child); return; }
+    let watch = Arc::clone(&child);
+    drop(child);
+    // SAFETY: process context; watch retains the child through completion.
+    let completed = unsafe { sched::live::wait_for_vfork_done(&watch) };
+    drop(watch);
+    if completed {
+        crate::ptrace::stop::ptrace_event(
+            crate::s101_ptrace_uapi::EVENT_VFORK_DONE, child_event_msg);
+    }
 }
 
 fn open_error(error: pidfd::OpenError) -> i64 {

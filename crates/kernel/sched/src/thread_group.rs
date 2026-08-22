@@ -5,6 +5,7 @@ use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 use sync::{Spinlock, TaskList as TaskListClass};
 
 pub mod child_acct;
+mod exec;
 pub mod group_acct;
 pub mod shared_signal;
 
@@ -112,6 +113,8 @@ pub struct ThreadGroup {
     /// space swap, the fd-table unshare and the credential commit, which
     /// allocate, fault and may be preempted.
     exec_update: crate::rwsem::RwSem<()>,
+    #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+    exec_wait: crate::live::WaitList,
     state: Spinlock<ThreadGroupState, TaskListClass>,
     /// Linux `signal_struct::group_exit_code` and its `SIGNAL_GROUP_EXIT`
     /// flag fused into one word: the status EVERY thread of this group
@@ -231,6 +234,8 @@ impl ThreadGroup {
             session_leader: AtomicBool::new(false),
             is_child_subreaper: AtomicBool::new(false),
             exec_update: crate::rwsem::RwSem::new(()),
+            #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+            exec_wait: crate::live::WaitList::new(),
             state: Spinlock::new(ThreadGroupState { live: 1, pending_leader: None }),
             group_exit_code: AtomicI32::new(GROUP_EXIT_UNSET),
             group_stop_count: AtomicU32::new(0),
@@ -343,6 +348,11 @@ impl ThreadGroup {
     /// # C: O(1)
     pub fn try_exec_update(&self) -> Option<crate::rwsem::RwSemWriteGuard<'_, ()>> {
         self.exec_update.try_write()
+    }
+
+    /// Non-blocking read side used by CLONE_THREAD publication. # C: O(1)
+    pub fn try_exec_update_read(&self) -> Option<crate::rwsem::RwSemReadGuard<'_, ()>> {
+        self.exec_update.try_read()
     }
 
     /// Take Linux `signal_struct::exec_update_lock` for READING
@@ -475,44 +485,4 @@ impl ThreadGroup {
     /// samples. # C: O(1)
     pub fn sched_runtime_sample(&self) -> u64 { self.sched_runtime_ns.load(Ordering::Acquire) }
 
-    /// Retire a switched-out task exactly once and delay an early leader until
-    /// the final sibling exits. # C: O(N_subscribers)
-    pub fn finish_exit(&self, task: Arc<Task>) -> ExitDisposition {
-        if !task.pid.claim_exit_retirement() {
-            release_reference(task);
-            return ExitDisposition::AlreadyRetired;
-        }
-        if task.pid.is_group_leader() {
-            let waitable = {
-                let mut state = self.state.lock();
-                state.live -= 1;
-                if state.live == 0 {
-                    true
-                } else {
-                    state.pending_leader = Some(Arc::clone(&task));
-                    false
-                }
-            };
-            if waitable {
-                self.leader.publish_group_exit();
-                ExitDisposition::WaitableLeader(task)
-            } else {
-                ExitDisposition::DeferredLeader
-            }
-        } else {
-            crate::registry::mark_reaped(&task);
-            let pending_leader = {
-                let mut state = self.state.lock();
-                state.live -= 1;
-                if state.live == 0 { state.pending_leader.take() } else { None }
-            };
-            release_reference(task);
-            if let Some(leader) = pending_leader {
-                self.leader.publish_group_exit();
-                ExitDisposition::WaitableLeader(leader)
-            } else {
-                ExitDisposition::ReleasedThread
-            }
-        }
-    }
 }

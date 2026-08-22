@@ -6,9 +6,7 @@
 // - io_context: CLONE_IO sharing of the I/O priority context.
 
 #![cfg(target_os = "oxide-kernel")]
-
 use syscall::errno::Errno;
-
 #[path = "056_clone/namespaces.rs"]
 mod namespaces;
 #[path = "056_clone/publication.rs"]
@@ -17,76 +15,19 @@ mod publication;
 mod fd_table;
 #[path = "056_clone/io_context.rs"]
 mod io_context;
+#[path = "056_clone/request.rs"]
+mod request;
+#[path = "056_clone/arch_spawn.rs"]
+mod arch_spawn;
 
+use arch_spawn::clone_spawn_arch;
+use request::{caller_facts, errno, put_tid_best_effort, user_i32_ptr_ok};
+pub(crate) use request::set_requested_pids_ok;
 pub(crate) use crate::clone_abi::{
-    CloneCaller, CloneRequest, CLONE_CHILD_CLEARTID, CLONE_CHILD_SETTID,
+    CloneRequest, CLONE_CHILD_CLEARTID, CLONE_CHILD_SETTID,
     CLONE_CLEAR_SIGHAND, CLONE_FS, CLONE_PARENT, CLONE_PARENT_SETTID, CLONE_PIDFD,
     CLONE_SETTLS, CLONE_SIGHAND, CLONE_SYSVSEM, CLONE_THREAD, CLONE_VFORK, CLONE_VM,
 };
-
-fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }
-
-/// `PTRACE_EVENT_VFORK_DONE`, named through the ptrace UAPI owner rather than
-/// inline so the two spellings cannot drift.
-fn uapi_event_vfork_done() -> u32 { crate::s101_ptrace_uapi::EVENT_VFORK_DONE }
-
-/// Publish a tid into a user `int` that the caller nominated through one of the
-/// `CLONE_*_SETTID` flags. Best-effort by contract: the address is never
-/// pre-validated and a fault is swallowed, so a caller that names an
-/// unwritable — or null — destination still gets its child.
-/// # C: O(1)
-fn put_tid_best_effort(uaddr: u64, tid: u32) {
-    if uaddr == 0 { return; }
-    let _ = uaccess::copy_to_user(uaddr, &(tid as i32).to_le_bytes());
-}
-
-/// Facts about the running task the shared validation ladder needs.
-/// # C: O(pid-ns depth)
-fn caller_facts(cur: &sched::Task) -> CloneCaller {
-    CloneCaller { is_ns_init: sched::live::zombies::is_namespace_init(cur) }
-}
-
-/// `clone3` `set_tid[]` admission: every requested pid must be a usable pid
-/// number, must not already name a live task in the namespace it applies to,
-/// and the caller must hold the privilege that lets it pick one. Reserving the
-/// number here keeps the ordinary allocator from handing the same one out
-/// later.
-/// # C: O(N_requested × N_tasks)
-pub(crate) fn set_requested_pids_ok(requested: &[u32]) -> Result<(), Errno> {
-    use namespace_identity::NamespaceKind;
-    let cur = sched::live::current().ok_or(Errno::Esrch)?;
-    let mut level = cur.namespace_owner(NamespaceKind::Pid).map(|ns| ns.pin());
-    let mut depth = 0usize;
-    while let Some(ns) = level {
-        depth += 1;
-        level = ns.parent();
-    }
-    // The child is one level deeper than the caller when it is the init of a
-    // pid namespace this very call creates.
-    crate::clone_abi::set_tid_values_ok(requested, depth + 1)?;
-    let user_ns = cur.namespace_owner(NamespaceKind::User).ok_or(Errno::Esrch)?;
-    if !nscg::proc_ns::has_cap_for(cur, &user_ns.pin(), sched::cap::SYS_ADMIN) {
-        return Err(Errno::Eperm);
-    }
-    // A number already naming a live task in the namespace it applies to
-    // cannot be handed out twice. Levels are walked outward from the caller's
-    // own pid namespace, which is the one the child's innermost entry lands in
-    // unless this call also creates a deeper one.
-    let mut level = cur.namespace_owner(NamespaceKind::Pid);
-    for pid in requested {
-        let Some(here) = level else { break };
-        if sched::registry::lookup_in_namespace(&here, *pid).is_some() {
-            return Err(Errno::Eexist);
-        }
-        level = here.parent().and_then(|parent| parent.get_active());
-    }
-    Ok(())
-}
-
-fn user_i32_ptr_ok(p: u64) -> bool {
-    p != 0 && uaccess::access_ok(p, core::mem::size_of::<i32>())
-}
-
 /// `sys_clone_dispatch` — unified clone path for fork/vfork/
 /// clone/clone3. `flags` carries the Linux CLONE_* bitmap; the lowest
 /// 8 bits are the exit_signal (SIGCHLD = 17 for fork). `child_stack`
@@ -111,12 +52,14 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
     if let Err(e) = crate::clone_abi::clone_dest_ok(flags, user_i32_ptr_ok(pidfd_ptr)) {
         return errno(e);
     }
+    let _exec_guard = match publication::exec_guard(cur, (flags & CLONE_THREAD) != 0) {
+        Ok(guard) => guard, Err(e) => return errno(e),
+    };
     // SAFETY: we are the running task on this CPU; no concurrent writer to our mm; preempt-off through the syscall handler.
     let parent_mm = match unsafe { cur.mm_ref() } {
         Some(m) => m,
         None    => return errno(Errno::Einval),
     };
-
     // cgroup v2 pids controller (`26§4`): a fork/clone producing one more
     // TASK past an ancestor pids.max fails with EAGAIN (Linux
     // pids_can_fork). The pids controller counts threads too, so this gates
@@ -131,7 +74,6 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
             return errno(Errno::Eagain);
         }
     }
-
     let share_vm = (flags & CLONE_VM) != 0;
     let child_mm: alloc::sync::Arc<vmm::AddressSpace> = if share_vm {
         // CLONE_VM: child shares parent's address space; no PT root
@@ -236,7 +178,6 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
             Err(_) => return errno(Errno::Enomem),
         }
     };
-
     let child_tid = sched::live::next_tid();
     let thread_group = if (flags & CLONE_THREAD) != 0 {
         Some(alloc::sync::Arc::clone(&cur.thread_group))
@@ -260,7 +201,6 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
     };
     if !child.try_charge_kernel_stack(stack_memcg) { return errno(Errno::Enomem); }
     child.exit_signal.store(exit_signal as u8, Ordering::Release);
-
     // CLONE_THREAD: the new task joins the caller's thread group.
     // Without it the child is its own process leader and tgid==tid.
     if (flags & CLONE_THREAD) != 0 {
@@ -386,7 +326,6 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
             child.set_parent_weak(Some(alloc::sync::Arc::downgrade(&parent_arc)));
         }
     }
-
     fd_table::inherit(cur, &child, flags);
     io_context::inherit(cur, &child, flags);
 
@@ -551,35 +490,7 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
     // child already alive and already stopped at its own attach point.
     if let Some(ev) = traced_event { crate::ptrace::stop::ptrace_event(ev, child_event_msg); }
 
-    // F156: CLONE_VFORK suspension. Linux semantic — parent blocks
-    // until child execve(2)s or _exit(2)s. With CLONE_VM the two
-    // share the address space, so without this the parent races on
-    // shared heap/stack and may modify state the child is reading.
-    // The child was armed before publication; park the parent until it
-    // clears. Wake sites:
-    //   - sys_execve: after CLOEXEC drop, before SP setup.
-    //   - sys_exit / sys_exit_group: alongside mark_done.
-    if (flags & CLONE_VFORK) != 0 {
-        // Hold the Arc<child> across the yield loop so the child's
-        // task struct stays alive even if it Zombies + parks before
-        // we re-acquire CPU. Zombies-park doesn't free; just releases
-        // the runqueue Arc.
-        let watch = alloc::sync::Arc::clone(&child);
-        drop(child);
-        // SAFETY: process context, with `watch` keeping the child descriptor
-        // live. The completion loop publishes before it observes the flag.
-        let completed = unsafe { sched::live::wait_for_vfork_done(&watch) };
-        drop(watch);
-        // Linux `if (!wait_for_vfork_done(p, &vfork)) ptrace_event_pid(
-        // PTRACE_EVENT_VFORK_DONE, pid)`: the parent reports a SECOND event
-        // once the child released it, so a tracer can tell "vfork issued" from
-        // "vfork's address-space borrow is over".
-        if completed { crate::ptrace::stop::ptrace_event(uapi_event_vfork_done(), child_event_msg); }
-    } else {
-        // Drop our local Arc; runqueue's enqueue clone keeps the
-        // child alive until it Zombies + parks.
-        drop(child);
-    }
+    publication::finish(child, (flags & CLONE_VFORK) != 0, child_event_msg);
 
     // Return the child's vpid to the parent (Linux: clone/fork returns the
     // child's TID == its PID for a new process). vtid==vtgid for a forked
@@ -587,89 +498,4 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
     // the child's getpid()/gettid() report and that waitpid()/kill() take —
     // ONE pid identity. (The internal tid stays a kernel-only registry key.)
     child_vpid_ret as i64
-}
-
-/// x86_64 fork-spawn: capture parent's saved-syscall regs from the
-/// per-task syscall stack, build the child's iretq-resume frame.
-#[cfg(target_arch = "x86_64")]
-fn clone_spawn_arch(
-    child_tid: u32,
-    child_stack: u64,
-    child_mm: alloc::sync::Arc<vmm::AddressSpace>,
-    thread_group: Option<alloc::sync::Arc<sched::thread_group::ThreadGroup>>,
-) -> Result<alloc::sync::Arc<sched::Task>, sched::live::spawn::SpawnError> {
-    let regs = hal_x86_64::current_pt_regs();
-    if regs.is_null() { return Err(sched::live::spawn::SpawnError::NoRunqueue); }
-    // SAFETY: we are running on the parent's per-task syscall stack; current_pt_regs() is its live entry frame; we read but do not write.
-    let frame = unsafe { &*regs };
-    let user_rip = frame.rip;
-    let user_rflags = frame.rflags;
-    // Thread spawns pass a libc-allocated stack via clone()/clone3();
-    // honor it so each thread has its own user stack rather than
-    // racing on the parent's. fork(2) leaves child_stack=0 and the
-    // child resumes on the parent's RSP after the COW copy.
-    let user_rsp = if child_stack != 0 { child_stack } else { frame.rsp };
-    let pregs = hal_x86_64::ForkRegs {
-        rdi: frame.rdi, rsi: frame.rsi, rdx: frame.rdx,
-        r10: frame.r10, r8:  frame.r8,  r9:  frame.r9,
-        rcx: frame.rcx, r11: frame.r11,
-        r12: frame.r12,
-        rbx: frame.rbx, rbp: frame.rbp,
-        r13: frame.r13, r14: frame.r14, r15: frame.r15,
-    };
-    sched::cputime_trace::clone_frame(child_tid, user_rip, user_rsp, user_rflags);
-    // SAFETY: runqueue installed by elf_smoke; child_mm freshly forked from parent AS w/ kernel-half cloned per P2-19; user_rip/rflags/rsp + pregs captured from parent's saved syscall stack.
-    unsafe {
-        sched::live::spawn_user_thread_for_fork(
-            child_tid, "fork-child", user_rip, user_rsp, user_rflags,
-            &pregs, child_mm, thread_group,
-        )
-    }
-}
-
-/// aarch64 fork-spawn: read parent's saved SVC frame, snapshot
-/// x0..x30 + ELR/SPSR/SP_EL0 into a `hal_aarch64::ForkRegs`, then
-/// build the child's IRQ-resume frame via `new_user_for_fork`.
-#[cfg(target_arch = "aarch64")]
-fn clone_spawn_arch(
-    child_tid: u32,
-    child_stack: u64,
-    child_mm: alloc::sync::Arc<vmm::AddressSpace>,
-    thread_group: Option<alloc::sync::Arc<sched::thread_group::ThreadGroup>>,
-) -> Result<alloc::sync::Arc<sched::Task>, sched::live::spawn::SpawnError> {
-    // SAFETY: the task-owned pointer remains tied to this parent even if clone
-    // blocked and another task entered SVC on the same CPU.
-    let svc = unsafe { &*crate::arch_frame::current_svc_frame() };
-    let mut pregs = hal_aarch64::ForkRegs::default();
-    // SvcFrame.gp = [u64; 18]   (x0..x17)
-    // SvcFrame.x18_x29 = [u64; 2]  ([x18, x29] packed via stp)
-    // SvcFrame.x30 = u64
-    for i in 0..18 { pregs.x[i] = svc.gp[i]; }
-    pregs.x[18] = svc.x18_x29[0];
-    pregs.x[29] = svc.x18_x29[1];
-    pregs.x[30] = svc.x30;
-    pregs.elr_el1  = svc.elr_el1;
-    pregs.spsr_el1 = svc.spsr_el1;
-    pregs.sp_el0   = svc.sp_el0;
-    // Callee-saved x19..x28 are now saved by the SVC entry asm into
-    // svc.x19_x28[0..10]. Copy through to the child's ForkRegs so
-    // the child resumes with the parent's full callee-saved state.
-    for i in 0..10 { pregs.x[19 + i] = svc.x19_x28[i]; }
-
-    // fork(2): child_stack=0 → child resumes on parent's SP_EL0.
-    // clone(2) with child_stack: child resumes on the supplied stack.
-    let user_sp = if child_stack != 0 { child_stack } else { pregs.sp_el0 };
-    // ELR_EL1 in the saved frame is already the post-SVC PC (the
-    // instruction following `svc #0`), so the child resumes there
-    // with x0 = 0 (Linux clone return for child).
-    let user_ip = pregs.elr_el1;
-
-    sched::cputime_trace::clone_frame(child_tid, user_ip, user_sp, pregs.spsr_el1);
-    // SAFETY: runqueue installed; child_mm freshly forked from parent AS via fork_copy_pages w/ kernel-half cloned at new_user_l0; pregs captured from parent's SVC frame.
-    unsafe {
-        sched::live::spawn_user_thread_for_fork(
-            child_tid, "fork-child", user_ip, user_sp, &pregs, child_mm,
-            thread_group,
-        )
-    }
 }
