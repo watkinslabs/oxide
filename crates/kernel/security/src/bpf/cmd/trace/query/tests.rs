@@ -69,9 +69,45 @@ fn the_fd_type_numbers_are_the_uapi_enum_order() {
 fn a_link_is_classified_before_the_perf_predicate_is_consulted() {
     let prog = make_bpf_prog_inode(super::super::super::super::uapi::prog_type::TRACING, Vec::new());
     let link = make_bpf_iter_link_inode(IterTarget::BpfProg, prog.clone());
-    assert_eq!(classify(&link, hooks(true)), QueriedFd::OtherLink);
-    assert_eq!(classify(&prog, hooks(true)), QueriedFd::PerfEvent);
-    assert_eq!(classify(&prog, hooks(false)), QueriedFd::Other);
+    assert!(matches!(classify(&link, hooks(true)), QueriedFd::OtherLink));
+    assert!(matches!(classify(&prog, hooks(true)), QueriedFd::PerfEvent));
+    assert!(matches!(classify(&prog, hooks(false)), QueriedFd::Other));
+}
+
+/// The raw-link operation test is inside the generic BPF-link arm and wins
+/// before `perf_get_event()`, even if that predicate would claim the inode.
+#[test]
+fn a_raw_tracepoint_link_is_classified_before_perf() {
+    fn raw(inode: &vfs::InodeRef) -> Option<RawTracepointLinkInfo> {
+        Some(RawTracepointLinkInfo {
+            prog: inode.clone(), name: "sys_enter", cookie: 0,
+        })
+    }
+    let prog = make_bpf_prog_inode(
+        super::super::super::super::uapi::prog_type::RAW_TRACEPOINT, Vec::new());
+    assert!(matches!(classify_with(&prog, hooks(true), raw),
+                     QueriedFd::RawTracepoint(_)));
+}
+
+/// The raw-link arm reports the link's pinned program and canonical event
+/// name. Its cookie belongs to execution context and is not part of this UAPI.
+#[test]
+fn a_raw_tracepoint_link_reports_its_program_and_event_name() {
+    let prog = make_bpf_prog_inode(
+        super::super::super::super::uapi::prog_type::RAW_TRACEPOINT, Vec::new());
+    let prog_id = prog_facts(&prog).unwrap().id;
+    let info = RawTracepointLinkInfo { prog, name: "sys_enter", cookie: 0xfeed };
+    let mut name = [0xAAu8; TP_NAME.len() + 1];
+    let mut out = uattr();
+    let a = attr_with(name.as_mut_ptr() as u64, name.len() as u32);
+
+    assert_eq!(describe(&a, out.as_mut_ptr() as u64,
+                        QueriedFd::RawTracepoint(info), None), Ok(0));
+    assert_eq!(&name, b"sys_enter\0");
+    assert_eq!(u32_at(&out, o::PROG_ID), prog_id);
+    assert_eq!(u32_at(&out, o::FD_TYPE), fd_type::RAW_TRACEPOINT);
+    assert_eq!(u64_at(&out, o::PROBE_OFFSET), 0);
+    assert_eq!(u64_at(&out, o::PROBE_ADDR), 0);
 }
 
 /// Neither describable kind: `-ENOTSUPP` (524), not `-EOPNOTSUPP` (95).

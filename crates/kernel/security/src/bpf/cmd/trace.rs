@@ -114,7 +114,7 @@ pub(in super::super) fn task_fd_query(
     let kind = query::classify(&inode, perf);
     // `event->prog` is read only once the descriptor is known to be a perf
     // event; no other kind has one.
-    let prog = (kind == query::QueriedFd::PerfEvent)
+    let prog = matches!(&kind, query::QueriedFd::PerfEvent)
         .then(|| (perf.attached_prog)(&inode))
         .flatten()
         .and_then(|p| super::super::prog_facts(&p));
