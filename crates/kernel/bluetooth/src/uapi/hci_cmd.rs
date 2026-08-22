@@ -56,6 +56,7 @@ pub const HCI_OP_USER_CONFIRM_NEG_REPLY: u16 = 0x042d;
 pub const HCI_OP_USER_PASSKEY_REPLY:   u16 = 0x042e;
 pub const HCI_OP_USER_PASSKEY_NEG_REPLY: u16 = 0x042f;
 pub const HCI_OP_IO_CAPABILITY_NEG_REPLY: u16 = 0x0434;
+pub const HCI_OP_ENHANCED_SETUP_SYNC_CONN: u16 = 0x043d;
 
 // Link policy (OGF 0x02).
 pub const HCI_OP_SNIFF_MODE:           u16 = 0x0803;

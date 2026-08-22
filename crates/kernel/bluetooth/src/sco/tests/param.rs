@@ -9,9 +9,9 @@ const CVSD: u16 = crate::uapi::bt::BT_VOICE_CVSD_16BIT;
 const TRANSP: u16 = crate::uapi::bt::BT_VOICE_TRANSPARENT;
 const TRANSP16: u16 = crate::uapi::bt::BT_VOICE_TRANSPARENT_16BIT;
 
-const FULL: LinkCaps = LinkCaps { esco: true, esco_2m: true };
-const NO_2M: LinkCaps = LinkCaps { esco: true, esco_2m: false };
-const NO_ESCO: LinkCaps = LinkCaps { esco: false, esco_2m: false };
+const FULL: LinkCaps = LinkCaps { esco: true, esco_2m: true, enhanced_setup: false };
+const NO_2M: LinkCaps = LinkCaps { esco: true, esco_2m: false, enhanced_setup: false };
+const NO_ESCO: LinkCaps = LinkCaps { esco: false, esco_2m: false, enhanced_setup: false };
 
 #[test]
 fn the_variable_slope_table_is_the_documented_one() {
@@ -90,7 +90,7 @@ fn the_plain_table_is_used_without_extended_connections_and_has_no_screen() {
     }
     // Even without the two-megabit capability, which the plain table never asks
     // for.
-    let caps = LinkCaps { esco: false, esco_2m: false };
+    let caps = LinkCaps { esco: false, esco_2m: false, enhanced_setup: false };
     assert_eq!(param::select(CVSD, 1, caps).unwrap().1, SCO_PARAM_CVSD[0]);
 }
 
@@ -98,7 +98,7 @@ fn the_plain_table_is_used_without_extended_connections_and_has_no_screen() {
 fn transparent_coding_always_selects_the_wideband_table() {
     let (_, p) = param::select(TRANSP, 1, FULL).unwrap();
     assert_eq!(p, ESCO_PARAM_MSBC[0]);
-    let no_esco_but_2m = LinkCaps { esco: false, esco_2m: true };
+    let no_esco_but_2m = LinkCaps { esco: false, esco_2m: true, enhanced_setup: false };
     let (_, p) = param::select(TRANSP16, 1, no_esco_but_2m).unwrap();
     assert_eq!(p, ESCO_PARAM_MSBC[0], "the wideband table is not gated on extended connections");
 }

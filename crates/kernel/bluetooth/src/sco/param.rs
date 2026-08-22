@@ -74,6 +74,8 @@ pub struct LinkCaps {
     pub esco: bool,
     /// Whether it can carry the two-megabit eSCO packet types.
     pub esco_2m: bool,
+    /// Controller command support, after applying the broken-command quirk.
+    pub enhanced_setup: bool,
 }
 
 /// Choose the parameters for one attempt. Transparent coding always uses the
